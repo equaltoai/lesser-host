@@ -1,0 +1,7 @@
+.pai/
+.theory/
+.DS_Store
+.env
+.env.*
+tmp/
+bin/
