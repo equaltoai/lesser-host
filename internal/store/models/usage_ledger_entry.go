@@ -1,0 +1,77 @@
+package models
+
+import (
+	"fmt"
+	"strings"
+	"time"
+)
+
+const (
+	BillingTypeIncluded = "included"
+	BillingTypeOverage  = "overage"
+	BillingTypeNone     = "none"
+	BillingTypeMixed    = "mixed"
+)
+
+type UsageLedgerEntry struct {
+	_ struct{} `theorydb:"naming:camelCase"`
+
+	PK string `theorydb:"pk,attr:PK" json:"-"`
+	SK string `theorydb:"sk,attr:SK" json:"-"`
+
+	ID           string `theorydb:"attr:id" json:"id"`
+	InstanceSlug string `theorydb:"attr:instanceSlug" json:"instance_slug"`
+	Month        string `theorydb:"attr:month" json:"month"` // YYYY-MM
+
+	Module string `theorydb:"attr:module" json:"module"`
+	Target string `theorydb:"attr:target" json:"target,omitempty"`
+
+	Cached    bool   `theorydb:"attr:cached" json:"cached"`
+	Reason    string `theorydb:"attr:reason" json:"reason,omitempty"`
+	RequestID string `theorydb:"attr:requestId" json:"request_id,omitempty"`
+
+	RequestedCredits int64 `theorydb:"attr:requestedCredits" json:"requested_credits"`
+	DebitedCredits   int64 `theorydb:"attr:debitedCredits" json:"debited_credits"`
+
+	IncludedDebitedCredits int64 `theorydb:"attr:includedDebitedCredits" json:"included_debited_credits"`
+	OverageDebitedCredits  int64 `theorydb:"attr:overageDebitedCredits" json:"overage_debited_credits"`
+
+	BillingType string `theorydb:"attr:billingType" json:"billing_type"` // included|overage|none|mixed
+
+	ActorURI    string `theorydb:"attr:actorUri" json:"actor_uri,omitempty"`
+	ObjectURI   string `theorydb:"attr:objectUri" json:"object_uri,omitempty"`
+	ContentHash string `theorydb:"attr:contentHash" json:"content_hash,omitempty"`
+	LinksHash   string `theorydb:"attr:linksHash" json:"links_hash,omitempty"`
+
+	CreatedAt time.Time `theorydb:"attr:createdAt" json:"created_at"`
+}
+
+func (UsageLedgerEntry) TableName() string { return MainTableName() }
+
+func (e *UsageLedgerEntry) BeforeCreate() error {
+	if e.CreatedAt.IsZero() {
+		e.CreatedAt = time.Now().UTC()
+	}
+	if err := e.UpdateKeys(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(e.BillingType) == "" {
+		e.BillingType = BillingTypeNone
+	}
+	return nil
+}
+
+func (e *UsageLedgerEntry) UpdateKeys() error {
+	e.ID = strings.TrimSpace(e.ID)
+	e.InstanceSlug = strings.TrimSpace(e.InstanceSlug)
+	e.Month = strings.TrimSpace(e.Month)
+
+	e.PK = fmt.Sprintf("USAGE#%s#%s", e.InstanceSlug, e.Month)
+	// Sort by time then id for stable pagination.
+	ts := e.CreatedAt.UTC().Format(time.RFC3339Nano)
+	e.SK = fmt.Sprintf("ENTRY#%s#%s", ts, e.ID)
+	return nil
+}
+
+func (e *UsageLedgerEntry) GetPK() string { return e.PK }
+func (e *UsageLedgerEntry) GetSK() string { return e.SK }

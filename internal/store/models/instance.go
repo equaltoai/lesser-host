@@ -21,7 +21,10 @@ type Instance struct {
 	Owner                 string    `theorydb:"attr:owner" json:"owner,omitempty"`
 	Status                string    `theorydb:"attr:status" json:"status"`
 	HostedPreviewsEnabled *bool     `theorydb:"attr:hostedPreviewsEnabled" json:"hosted_previews_enabled,omitempty"`
-	RenderPolicy          string    `theorydb:"attr:renderPolicy" json:"render_policy,omitempty"` // always|suspicious
+	LinkSafetyEnabled     *bool     `theorydb:"attr:linkSafetyEnabled" json:"link_safety_enabled,omitempty"`
+	RendersEnabled        *bool     `theorydb:"attr:rendersEnabled" json:"renders_enabled,omitempty"`
+	RenderPolicy          string    `theorydb:"attr:renderPolicy" json:"render_policy,omitempty"`   // always|suspicious
+	OveragePolicy         string    `theorydb:"attr:overagePolicy" json:"overage_policy,omitempty"` // block|allow
 	CreatedAt             time.Time `theorydb:"attr:createdAt" json:"created_at"`
 }
 
@@ -41,8 +44,19 @@ func (i *Instance) BeforeCreate() error {
 		v := true
 		i.HostedPreviewsEnabled = &v
 	}
+	if i.LinkSafetyEnabled == nil {
+		v := true
+		i.LinkSafetyEnabled = &v
+	}
+	if i.RendersEnabled == nil {
+		v := true
+		i.RendersEnabled = &v
+	}
 	if strings.TrimSpace(i.RenderPolicy) == "" {
 		i.RenderPolicy = "suspicious"
+	}
+	if strings.TrimSpace(i.OveragePolicy) == "" {
+		i.OveragePolicy = "block"
 	}
 	return nil
 }

@@ -36,6 +36,10 @@ type RenderArtifact struct {
 
 	TextPreview string `theorydb:"attr:textPreview" json:"text_preview,omitempty"`
 
+	SummaryPolicyVersion string    `theorydb:"attr:summaryPolicyVersion" json:"summary_policy_version,omitempty"`
+	Summary              string    `theorydb:"attr:summary" json:"summary,omitempty"`
+	SummarizedAt         time.Time `theorydb:"attr:summarizedAt" json:"summarized_at,omitempty"`
+
 	RetentionClass string `theorydb:"attr:retentionClass" json:"retention_class"`
 
 	ErrorCode    string `theorydb:"attr:errorCode" json:"error_code,omitempty"`

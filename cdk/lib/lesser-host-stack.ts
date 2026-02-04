@@ -133,6 +133,11 @@ export class LesserHostStack extends cdk.Stack {
 
 		new cdk.CfnOutput(this, 'ControlPlaneUrl', { value: controlPlaneUrl.url });
 		new cdk.CfnOutput(this, 'TrustUrl', { value: trustUrl.url });
+		new cdk.CfnOutput(this, 'StateTableName', { value: stateTable.tableName });
+		new cdk.CfnOutput(this, 'ArtifactsBucketName', { value: artifactsBucket.bucketName });
+		new cdk.CfnOutput(this, 'PreviewQueueUrl', { value: previewQueue.queueUrl });
+		new cdk.CfnOutput(this, 'RenderWorkerFunctionName', { value: renderWorkerFn.functionName });
+		new cdk.CfnOutput(this, 'RetentionSweepRuleName', { value: retentionSweepRule.ruleName });
 	}
 
 	private goLambda(id: string, entry: string, environment: Record<string, string>): lambda.Function {

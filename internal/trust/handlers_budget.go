@@ -20,9 +20,9 @@ type budgetDebitRequest struct {
 }
 
 type budgetDebitResponse struct {
-	Allowed   bool   `json:"allowed"`
-	OverBudget bool  `json:"over_budget"`
-	Reason    string `json:"reason,omitempty"`
+	Allowed    bool   `json:"allowed"`
+	OverBudget bool   `json:"over_budget"`
+	Reason     string `json:"reason,omitempty"`
 
 	InstanceSlug string `json:"instance_slug"`
 	Month        string `json:"month"`
@@ -47,6 +47,9 @@ func (s *Server) handleBudgetDebit(ctx *apptheory.Context) (*apptheory.Response,
 	if instanceSlug == "" {
 		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
 	}
+
+	instCfg := s.loadInstanceTrustConfig(ctx.Context(), instanceSlug)
+	allowOverage := strings.ToLower(strings.TrimSpace(instCfg.OveragePolicy)) == "allow"
 
 	var req budgetDebitRequest
 	if err := parseJSON(ctx, &req); err != nil {
@@ -92,7 +95,7 @@ func (s *Server) handleBudgetDebit(ctx *apptheory.Context) (*apptheory.Response,
 	}
 
 	remaining := budget.IncludedCredits - budget.UsedCredits
-	if remaining < req.Credits {
+	if remaining < req.Credits && !allowOverage {
 		return apptheory.JSON(http.StatusOK, budgetDebitResponse{
 			Allowed:          false,
 			OverBudget:       true,
@@ -118,6 +121,27 @@ func (s *Server) handleBudgetDebit(ctx *apptheory.Context) (*apptheory.Response,
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
+	includedDebited, overageDebited := billingPartsForDebit(budget.IncludedCredits, budget.UsedCredits, req.Credits)
+	billingType := billingTypeFromParts(includedDebited, overageDebited)
+
+	ledger := &models.UsageLedgerEntry{
+		ID:                     usageLedgerEntryID(instanceSlug, month, strings.TrimSpace(ctx.RequestID), "budget.debit", month, req.Credits),
+		InstanceSlug:           instanceSlug,
+		Month:                  month,
+		Module:                 "budget.debit",
+		Target:                 month,
+		Cached:                 false,
+		Reason:                 billingType,
+		RequestID:              strings.TrimSpace(ctx.RequestID),
+		RequestedCredits:       req.Credits,
+		DebitedCredits:         req.Credits,
+		IncludedDebitedCredits: includedDebited,
+		OverageDebitedCredits:  overageDebited,
+		BillingType:            billingType,
+		CreatedAt:              now,
+	}
+	_ = ledger.UpdateKeys()
+
 	audit := &models.AuditLogEntry{
 		Actor:     instanceSlug,
 		Action:    "budget.debit",
@@ -129,20 +153,29 @@ func (s *Server) handleBudgetDebit(ctx *apptheory.Context) (*apptheory.Response,
 
 	err = s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
 		// Atomic debit guarded by included/used condition.
-		tx.UpdateWithBuilder(update, func(ub core.UpdateBuilder) error {
-			ub.Add("UsedCredits", req.Credits)
-			ub.Set("UpdatedAt", now)
-			return nil
-		},
-			tabletheory.IfExists(),
-			tabletheory.ConditionExpression(
-				"if_not_exists(usedCredits, :zero) + :delta <= if_not_exists(includedCredits, :zero)",
-				map[string]any{
-					":zero":  int64(0),
-					":delta": req.Credits,
-				},
-			),
-		)
+		if allowOverage {
+			tx.UpdateWithBuilder(update, func(ub core.UpdateBuilder) error {
+				ub.Add("UsedCredits", req.Credits)
+				ub.Set("UpdatedAt", now)
+				return nil
+			}, tabletheory.IfExists())
+		} else {
+			tx.UpdateWithBuilder(update, func(ub core.UpdateBuilder) error {
+				ub.Add("UsedCredits", req.Credits)
+				ub.Set("UpdatedAt", now)
+				return nil
+			},
+				tabletheory.IfExists(),
+				tabletheory.ConditionExpression(
+					"if_not_exists(usedCredits, :zero) + :delta <= if_not_exists(includedCredits, :zero)",
+					map[string]any{
+						":zero":  int64(0),
+						":delta": req.Credits,
+					},
+				),
+			)
+		}
+		tx.Put(ledger)
 		tx.Put(audit)
 		return nil
 	})
@@ -187,9 +220,15 @@ func (s *Server) handleBudgetDebit(ctx *apptheory.Context) (*apptheory.Response,
 	}
 
 	remaining = latest.IncludedCredits - latest.UsedCredits
+	overBudget := remaining < 0 || overageDebited > 0
+	reason := "debited"
+	if overageDebited > 0 {
+		reason = "overage"
+	}
 	return apptheory.JSON(http.StatusOK, budgetDebitResponse{
 		Allowed:          true,
-		OverBudget:       false,
+		OverBudget:       overBudget,
+		Reason:           reason,
 		InstanceSlug:     instanceSlug,
 		Month:            month,
 		IncludedCredits:  latest.IncludedCredits,

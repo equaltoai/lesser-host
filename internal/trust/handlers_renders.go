@@ -38,6 +38,10 @@ type renderArtifactResponse struct {
 	ThumbnailType string `json:"thumbnail_content_type,omitempty"`
 	SnapshotType  string `json:"snapshot_content_type,omitempty"`
 
+	SummaryPolicyVersion string    `json:"summary_policy_version,omitempty"`
+	Summary              string    `json:"summary,omitempty"`
+	SummarizedAt         time.Time `json:"summarized_at,omitempty"`
+
 	ErrorCode    string `json:"error_code,omitempty"`
 	ErrorMessage string `json:"error_message,omitempty"`
 
@@ -57,6 +61,22 @@ func (s *Server) handleCreateRender(ctx *apptheory.Context) (*apptheory.Response
 	instanceSlug := strings.TrimSpace(ctx.AuthIdentity)
 	if instanceSlug == "" {
 		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+	}
+
+	instCfg := s.loadInstanceTrustConfig(ctx.Context(), instanceSlug)
+	if !instCfg.RendersEnabled {
+		return apptheory.JSON(http.StatusOK, renderArtifactResponse{
+			Status:         "error",
+			Cached:         false,
+			RenderID:       "",
+			PolicyVersion:  rendering.RenderPolicyVersion,
+			NormalizedURL:  "",
+			RetentionClass: "",
+			ErrorCode:      "disabled",
+			ErrorMessage:   "renders disabled for instance",
+			CreatedAt:      time.Now().UTC(),
+			ExpiresAt:      time.Now().UTC().Add(5 * time.Minute),
+		})
 	}
 
 	var req createRenderRequest
@@ -161,7 +181,8 @@ func (s *Server) handleCreateRender(ctx *apptheory.Context) (*apptheory.Response
 	}
 
 	remaining := budget.IncludedCredits - budget.UsedCredits
-	if remaining < linkRenderCreditCost {
+	allowOverage := strings.ToLower(strings.TrimSpace(instCfg.OveragePolicy)) == "allow"
+	if remaining < linkRenderCreditCost && !allowOverage {
 		return apptheory.JSON(http.StatusOK, renderArtifactResponse{
 			Status:         "error",
 			Cached:         false,
@@ -183,6 +204,26 @@ func (s *Server) handleCreateRender(ctx *apptheory.Context) (*apptheory.Response
 	}
 	_ = update.UpdateKeys()
 
+	includedDebited, overageDebited := billingPartsForDebit(budget.IncludedCredits, budget.UsedCredits, linkRenderCreditCost)
+	billingType := billingTypeFromParts(includedDebited, overageDebited)
+	ledger := &models.UsageLedgerEntry{
+		ID:                     usageLedgerEntryID(instanceSlug, month, strings.TrimSpace(ctx.RequestID), "render.request", renderID, linkRenderCreditCost),
+		InstanceSlug:           instanceSlug,
+		Month:                  month,
+		Module:                 "render.request",
+		Target:                 renderID,
+		Cached:                 false,
+		Reason:                 billingType,
+		RequestID:              strings.TrimSpace(ctx.RequestID),
+		RequestedCredits:       linkRenderCreditCost,
+		DebitedCredits:         linkRenderCreditCost,
+		IncludedDebitedCredits: includedDebited,
+		OverageDebitedCredits:  overageDebited,
+		BillingType:            billingType,
+		CreatedAt:              now,
+	}
+	_ = ledger.UpdateKeys()
+
 	auditBudget := &models.AuditLogEntry{
 		Actor:     instanceSlug,
 		Action:    "budget.debit",
@@ -193,20 +234,29 @@ func (s *Server) handleCreateRender(ctx *apptheory.Context) (*apptheory.Response
 	_ = auditBudget.UpdateKeys()
 
 	err = s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
-		tx.UpdateWithBuilder(update, func(ub core.UpdateBuilder) error {
-			ub.Add("UsedCredits", linkRenderCreditCost)
-			ub.Set("UpdatedAt", now)
-			return nil
-		},
-			tabletheory.IfExists(),
-			tabletheory.ConditionExpression(
-				"if_not_exists(usedCredits, :zero) + :delta <= if_not_exists(includedCredits, :zero)",
-				map[string]any{
-					":zero":  int64(0),
-					":delta": linkRenderCreditCost,
-				},
-			),
-		)
+		if allowOverage {
+			tx.UpdateWithBuilder(update, func(ub core.UpdateBuilder) error {
+				ub.Add("UsedCredits", linkRenderCreditCost)
+				ub.Set("UpdatedAt", now)
+				return nil
+			}, tabletheory.IfExists())
+		} else {
+			tx.UpdateWithBuilder(update, func(ub core.UpdateBuilder) error {
+				ub.Add("UsedCredits", linkRenderCreditCost)
+				ub.Set("UpdatedAt", now)
+				return nil
+			},
+				tabletheory.IfExists(),
+				tabletheory.ConditionExpression(
+					"if_not_exists(usedCredits, :zero) + :delta <= if_not_exists(includedCredits, :zero)",
+					map[string]any{
+						":zero":  int64(0),
+						":delta": linkRenderCreditCost,
+					},
+				),
+			)
+		}
+		tx.Put(ledger)
 		tx.Put(auditBudget)
 		return nil
 	})
@@ -386,6 +436,10 @@ func renderArtifactResponseFromModel(ctx *apptheory.Context, item *models.Render
 		TextPreview:   strings.TrimSpace(item.TextPreview),
 		ThumbnailType: strings.TrimSpace(item.ThumbnailContentType),
 		SnapshotType:  strings.TrimSpace(item.SnapshotContentType),
+
+		SummaryPolicyVersion: strings.TrimSpace(item.SummaryPolicyVersion),
+		Summary:              strings.TrimSpace(item.Summary),
+		SummarizedAt:         item.SummarizedAt,
 
 		ErrorCode:    strings.TrimSpace(item.ErrorCode),
 		ErrorMessage: strings.TrimSpace(item.ErrorMessage),

@@ -12,6 +12,7 @@ import (
 	"github.com/theory-cloud/tabletheory/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
+	"github.com/equaltoai/lesser-host/internal/rendering"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -24,12 +25,17 @@ type publishJobModuleRequest struct {
 	Options map[string]any `json:"options,omitempty"`
 }
 
+type publishJobPricing struct {
+	AuthorAtPublish bool `json:"author_at_publish,omitempty"`
+}
+
 type publishJobRequest struct {
 	ActorURI    string                    `json:"actor_uri,omitempty"`
 	ObjectURI   string                    `json:"object_uri,omitempty"`
 	ContentHash string                    `json:"content_hash,omitempty"`
 	Links       []string                  `json:"links,omitempty"`
 	Modules     []publishJobModuleRequest `json:"modules,omitempty"`
+	Pricing     *publishJobPricing        `json:"pricing,omitempty"`
 }
 
 type publishJobResponse struct {
@@ -78,22 +84,9 @@ func (s *Server) handlePublishJob(ctx *apptheory.Context) (*apptheory.Response, 
 		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
 	}
 
-	// Per-instance render policy controls auto-escalation for render-based modules.
-	renderPolicy := "suspicious"
-	{
-		var inst models.Instance
-		err := s.store.DB.WithContext(ctx.Context()).
-			Model(&models.Instance{}).
-			Where("PK", "=", "INSTANCE#"+instanceSlug).
-			Where("SK", "=", models.SKMetadata).
-			First(&inst)
-		if err == nil {
-			renderPolicy = strings.ToLower(strings.TrimSpace(inst.RenderPolicy))
-		}
-		if renderPolicy != "always" && renderPolicy != "suspicious" {
-			renderPolicy = "suspicious"
-		}
-	}
+	// Instance config drives module defaults and billing behavior.
+	instCfg := s.loadInstanceTrustConfig(ctx.Context(), instanceSlug)
+	renderPolicy := instCfg.RenderPolicy
 
 	var req publishJobRequest
 	if err := parseJSON(ctx, &req); err != nil {
@@ -112,6 +105,11 @@ func (s *Server) handlePublishJob(ctx *apptheory.Context) (*apptheory.Response, 
 			{Name: "link_safety_basic"},
 			{Name: "link_safety_render"},
 		}
+	}
+
+	pricingMultiplierBps := int64(10000)
+	if req.Pricing != nil && req.Pricing.AuthorAtPublish {
+		pricingMultiplierBps = authorPublishDiscountBPS
 	}
 
 	// Canonicalize deterministically (no network) and cap links to avoid oversized items.
@@ -152,13 +150,80 @@ func (s *Server) handlePublishJob(ctx *apptheory.Context) (*apptheory.Response, 
 		}
 		switch name {
 		case "link_safety_basic":
-			moduleResp := s.runLinkSafetyBasicJob(ctx, instanceSlug, jobID, actorURI, objectURI, contentHash, linksHash, canonical)
+			if !instCfg.LinkSafetyEnabled {
+				out.Modules = append(out.Modules, publishJobModuleResponse{
+					Name:          "link_safety_basic",
+					PolicyVersion: linkSafetyBasicPolicyVersion,
+					Status:        "disabled",
+					Cached:        false,
+					Budget: budgetDecision{
+						Allowed:          true,
+						OverBudget:       false,
+						Reason:           "disabled",
+						RequestedCredits: 0,
+						DebitedCredits:   0,
+					},
+				})
+				continue
+			}
+			moduleResp := s.runLinkSafetyBasicJob(ctx, instanceSlug, jobID, actorURI, objectURI, contentHash, linksHash, canonical, instCfg.OveragePolicy, pricingMultiplierBps)
 			out.Modules = append(out.Modules, moduleResp)
 		case "link_safety_render":
-			moduleResp := s.runLinkSafetyRenderJob(ctx, instanceSlug, jobID, renderPolicy, canonical)
+			if !instCfg.RendersEnabled {
+				out.Modules = append(out.Modules, publishJobModuleResponse{
+					Name:          "link_safety_render",
+					PolicyVersion: rendering.RenderPolicyVersion,
+					Status:        "disabled",
+					Cached:        false,
+					Budget: budgetDecision{
+						Allowed:          true,
+						OverBudget:       false,
+						Reason:           "disabled",
+						RequestedCredits: 0,
+						DebitedCredits:   0,
+					},
+				})
+				continue
+			}
+			moduleResp := s.runLinkSafetyRenderJob(ctx, instanceSlug, jobID, renderPolicy, instCfg.OveragePolicy, pricingMultiplierBps, canonical)
 			out.Modules = append(out.Modules, moduleResp)
 		case "link_preview_render":
-			moduleResp := s.runLinkPreviewRenderJob(ctx, instanceSlug, jobID, renderPolicy, canonical)
+			if !instCfg.RendersEnabled {
+				out.Modules = append(out.Modules, publishJobModuleResponse{
+					Name:          "link_preview_render",
+					PolicyVersion: rendering.RenderPolicyVersion,
+					Status:        "disabled",
+					Cached:        false,
+					Budget: budgetDecision{
+						Allowed:          true,
+						OverBudget:       false,
+						Reason:           "disabled",
+						RequestedCredits: 0,
+						DebitedCredits:   0,
+					},
+				})
+				continue
+			}
+			moduleResp := s.runLinkPreviewRenderJob(ctx, instanceSlug, jobID, renderPolicy, instCfg.OveragePolicy, pricingMultiplierBps, canonical)
+			out.Modules = append(out.Modules, moduleResp)
+		case "link_render_summary":
+			if !instCfg.RendersEnabled {
+				out.Modules = append(out.Modules, publishJobModuleResponse{
+					Name:          "link_render_summary",
+					PolicyVersion: linkRenderSummaryPolicyVersion,
+					Status:        "disabled",
+					Cached:        false,
+					Budget: budgetDecision{
+						Allowed:          true,
+						OverBudget:       false,
+						Reason:           "disabled",
+						RequestedCredits: 0,
+						DebitedCredits:   0,
+					},
+				})
+				continue
+			}
+			moduleResp := s.runLinkRenderSummaryJob(ctx, instanceSlug, jobID, renderPolicy, instCfg.OveragePolicy, pricingMultiplierBps, canonical)
 			out.Modules = append(out.Modules, moduleResp)
 		default:
 			out.Modules = append(out.Modules, publishJobModuleResponse{
@@ -209,6 +274,10 @@ func (s *Server) handlePublishJob(ctx *apptheory.Context) (*apptheory.Response, 
 	return apptheory.JSON(http.StatusOK, out)
 }
 
+const (
+	authorPublishDiscountBPS int64 = 5000 // 50% discount when explicitly flagged as "author at publish".
+)
+
 var publishJobIDRE = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 func (s *Server) handleGetPublishJob(ctx *apptheory.Context) (*apptheory.Response, error) {
@@ -244,8 +313,12 @@ func (s *Server) runLinkSafetyBasicJob(
 	contentHash string,
 	linksHash string,
 	canonicalLinks []string,
+	overagePolicy string,
+	pricingMultiplierBps int64,
 ) publishJobModuleResponse {
 	now := time.Now().UTC()
+	creditsRequested := int64(len(canonicalLinks))
+	creditsPriced := pricedCredits(creditsRequested, pricingMultiplierBps)
 
 	// Cache hit path (no charge).
 	if cached, err := s.store.GetLinkSafetyBasicResult(ctx.Context(), jobID); err == nil {
@@ -258,7 +331,7 @@ func (s *Server) runLinkSafetyBasicJob(
 				Allowed:          true,
 				OverBudget:       false,
 				Reason:           "cache_hit",
-				RequestedCredits: int64(len(canonicalLinks)),
+				RequestedCredits: creditsPriced,
 				DebitedCredits:   0,
 			},
 			Result: cached,
@@ -274,7 +347,7 @@ func (s *Server) runLinkSafetyBasicJob(
 	month := now.Format("2006-01")
 
 	// No links: store a deterministic empty result without debiting.
-	if credits == 0 {
+	if credits == 0 || creditsPriced == 0 {
 		item := &models.LinkSafetyBasicResult{
 			ID:            jobID,
 			PolicyVersion: linkSafetyBasicPolicyVersion,
@@ -376,7 +449,7 @@ func (s *Server) runLinkSafetyBasicJob(
 				OverBudget:       true,
 				Reason:           "budget not configured",
 				Month:            month,
-				RequestedCredits: credits,
+				RequestedCredits: creditsPriced,
 				DebitedCredits:   0,
 			},
 		}
@@ -391,14 +464,14 @@ func (s *Server) runLinkSafetyBasicJob(
 				Allowed:          true,
 				OverBudget:       false,
 				Reason:           "internal error",
-				RequestedCredits: credits,
+				RequestedCredits: creditsPriced,
 				DebitedCredits:   0,
 			},
 		}
 	}
 
 	remaining := budget.IncludedCredits - budget.UsedCredits
-	if remaining < credits {
+	if remaining < creditsPriced && strings.ToLower(strings.TrimSpace(overagePolicy)) != "allow" {
 		return publishJobModuleResponse{
 			Name:          "link_safety_basic",
 			PolicyVersion: linkSafetyBasicPolicyVersion,
@@ -412,7 +485,7 @@ func (s *Server) runLinkSafetyBasicJob(
 				IncludedCredits:  budget.IncludedCredits,
 				UsedCredits:      budget.UsedCredits,
 				RemainingCredits: remaining,
-				RequestedCredits: credits,
+				RequestedCredits: creditsPriced,
 				DebitedCredits:   0,
 			},
 		}
@@ -440,6 +513,31 @@ func (s *Server) runLinkSafetyBasicJob(
 	}
 	_ = update.UpdateKeys()
 
+	includedDebited, overageDebited := billingPartsForDebit(budget.IncludedCredits, budget.UsedCredits, creditsPriced)
+	billingType := billingTypeFromParts(includedDebited, overageDebited)
+
+	ledger := &models.UsageLedgerEntry{
+		ID:                     usageLedgerEntryID(instanceSlug, month, strings.TrimSpace(ctx.RequestID), "link_safety_basic", jobID, creditsPriced),
+		InstanceSlug:           instanceSlug,
+		Month:                  month,
+		Module:                 "link_safety_basic",
+		Target:                 jobID,
+		Cached:                 false,
+		Reason:                 billingType,
+		RequestID:              strings.TrimSpace(ctx.RequestID),
+		RequestedCredits:       creditsPriced,
+		DebitedCredits:         creditsPriced,
+		IncludedDebitedCredits: includedDebited,
+		OverageDebitedCredits:  overageDebited,
+		BillingType:            billingType,
+		ActorURI:               actorURI,
+		ObjectURI:              objectURI,
+		ContentHash:            contentHash,
+		LinksHash:              linksHash,
+		CreatedAt:              now,
+	}
+	_ = ledger.UpdateKeys()
+
 	auditBudget := &models.AuditLogEntry{
 		Actor:     instanceSlug,
 		Action:    "budget.debit",
@@ -459,21 +557,30 @@ func (s *Server) runLinkSafetyBasicJob(
 	_ = auditScan.UpdateKeys()
 
 	err = s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
-		tx.UpdateWithBuilder(update, func(ub core.UpdateBuilder) error {
-			ub.Add("UsedCredits", credits)
-			ub.Set("UpdatedAt", now)
-			return nil
-		},
-			tabletheory.IfExists(),
-			tabletheory.ConditionExpression(
-				"if_not_exists(usedCredits, :zero) + :delta <= if_not_exists(includedCredits, :zero)",
-				map[string]any{
-					":zero":  int64(0),
-					":delta": credits,
-				},
-			),
-		)
+		if strings.ToLower(strings.TrimSpace(overagePolicy)) == "allow" {
+			tx.UpdateWithBuilder(update, func(ub core.UpdateBuilder) error {
+				ub.Add("UsedCredits", creditsPriced)
+				ub.Set("UpdatedAt", now)
+				return nil
+			}, tabletheory.IfExists())
+		} else {
+			tx.UpdateWithBuilder(update, func(ub core.UpdateBuilder) error {
+				ub.Add("UsedCredits", creditsPriced)
+				ub.Set("UpdatedAt", now)
+				return nil
+			},
+				tabletheory.IfExists(),
+				tabletheory.ConditionExpression(
+					"if_not_exists(usedCredits, :zero) + :delta <= if_not_exists(includedCredits, :zero)",
+					map[string]any{
+						":zero":  int64(0),
+						":delta": creditsPriced,
+					},
+				),
+			)
+		}
 		tx.Put(auditBudget)
+		tx.Put(ledger)
 		tx.Create(item)
 		tx.Put(auditScan)
 		return nil
@@ -490,7 +597,7 @@ func (s *Server) runLinkSafetyBasicJob(
 					Allowed:          true,
 					OverBudget:       false,
 					Reason:           "cache_hit",
-					RequestedCredits: credits,
+					RequestedCredits: creditsPriced,
 					DebitedCredits:   0,
 				},
 				Result: cached,
@@ -507,7 +614,7 @@ func (s *Server) runLinkSafetyBasicJob(
 			First(&latest); err3 == nil {
 			remaining = latest.IncludedCredits - latest.UsedCredits
 			reason := "budget exceeded"
-			if remaining >= credits {
+			if remaining >= creditsPriced {
 				reason = "budget conflict"
 			}
 			return publishJobModuleResponse{
@@ -523,7 +630,7 @@ func (s *Server) runLinkSafetyBasicJob(
 					IncludedCredits:  latest.IncludedCredits,
 					UsedCredits:      latest.UsedCredits,
 					RemainingCredits: remaining,
-					RequestedCredits: credits,
+					RequestedCredits: creditsPriced,
 					DebitedCredits:   0,
 				},
 			}
@@ -539,7 +646,7 @@ func (s *Server) runLinkSafetyBasicJob(
 				OverBudget:       true,
 				Reason:           "budget exceeded",
 				Month:            month,
-				RequestedCredits: credits,
+				RequestedCredits: creditsPriced,
 				DebitedCredits:   0,
 			},
 		}
@@ -554,7 +661,7 @@ func (s *Server) runLinkSafetyBasicJob(
 				Allowed:          true,
 				OverBudget:       false,
 				Reason:           "internal error",
-				RequestedCredits: credits,
+				RequestedCredits: creditsPriced,
 				DebitedCredits:   0,
 			},
 		}
@@ -570,6 +677,15 @@ func (s *Server) runLinkSafetyBasicJob(
 		First(&latest)
 
 	remaining = latest.IncludedCredits - latest.UsedCredits
+	overBudget := remaining < 0
+	if strings.ToLower(strings.TrimSpace(overagePolicy)) == "allow" && overageDebited > 0 {
+		overBudget = true
+	}
+
+	reason := "debited"
+	if overageDebited > 0 {
+		reason = "overage"
+	}
 	return publishJobModuleResponse{
 		Name:          "link_safety_basic",
 		PolicyVersion: linkSafetyBasicPolicyVersion,
@@ -577,13 +693,14 @@ func (s *Server) runLinkSafetyBasicJob(
 		Cached:        false,
 		Budget: budgetDecision{
 			Allowed:          true,
-			OverBudget:       false,
+			OverBudget:       overBudget,
 			Month:            month,
 			IncludedCredits:  latest.IncludedCredits,
 			UsedCredits:      latest.UsedCredits,
 			RemainingCredits: remaining,
-			RequestedCredits: credits,
-			DebitedCredits:   credits,
+			RequestedCredits: creditsPriced,
+			DebitedCredits:   creditsPriced,
+			Reason:           reason,
 		},
 		Result: item,
 	}

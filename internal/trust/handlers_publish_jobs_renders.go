@@ -44,12 +44,12 @@ type linkRenderResult struct {
 	Links        []linkRenderLinkResult `json:"links"`
 }
 
-func (s *Server) runLinkSafetyRenderJob(ctx *apptheory.Context, instanceSlug string, jobID string, renderPolicy string, canonicalLinks []string) publishJobModuleResponse {
-	return s.runLinkRenderJob(ctx, instanceSlug, jobID, "link_safety_render", renderPolicy, canonicalLinks)
+func (s *Server) runLinkSafetyRenderJob(ctx *apptheory.Context, instanceSlug string, jobID string, renderPolicy string, overagePolicy string, pricingMultiplierBps int64, canonicalLinks []string) publishJobModuleResponse {
+	return s.runLinkRenderJob(ctx, instanceSlug, jobID, "link_safety_render", renderPolicy, overagePolicy, pricingMultiplierBps, canonicalLinks)
 }
 
-func (s *Server) runLinkPreviewRenderJob(ctx *apptheory.Context, instanceSlug string, jobID string, renderPolicy string, canonicalLinks []string) publishJobModuleResponse {
-	return s.runLinkRenderJob(ctx, instanceSlug, jobID, "link_preview_render", renderPolicy, canonicalLinks)
+func (s *Server) runLinkPreviewRenderJob(ctx *apptheory.Context, instanceSlug string, jobID string, renderPolicy string, overagePolicy string, pricingMultiplierBps int64, canonicalLinks []string) publishJobModuleResponse {
+	return s.runLinkRenderJob(ctx, instanceSlug, jobID, "link_preview_render", renderPolicy, overagePolicy, pricingMultiplierBps, canonicalLinks)
 }
 
 type missingRenderRequest struct {
@@ -64,6 +64,8 @@ func (s *Server) runLinkRenderJob(
 	jobID string,
 	moduleName string,
 	renderPolicy string,
+	overagePolicy string,
+	pricingMultiplierBps int64,
 	canonicalLinks []string,
 ) publishJobModuleResponse {
 	if s == nil || s.store == nil || s.store.DB == nil {
@@ -208,6 +210,9 @@ func (s *Server) runLinkRenderJob(
 	creditsRequested := int64(candidateCount) * linkRenderCreditCost
 	creditsNeeded := int64(len(missing)) * linkRenderCreditCost
 
+	creditsRequestedPriced := pricedCredits(creditsRequested, pricingMultiplierBps)
+	creditsNeededPriced := pricedCredits(creditsNeeded, pricingMultiplierBps)
+
 	if len(missing) == 0 {
 		out.Summary.Queued = 0
 		return publishJobModuleResponse{
@@ -219,7 +224,7 @@ func (s *Server) runLinkRenderJob(
 				Allowed:          true,
 				OverBudget:       false,
 				Reason:           "cache_hit",
-				RequestedCredits: creditsRequested,
+				RequestedCredits: creditsRequestedPriced,
 				DebitedCredits:   0,
 			},
 			Result: out,
@@ -244,7 +249,7 @@ func (s *Server) runLinkRenderJob(
 				OverBudget:       false,
 				Reason:           "render queue not configured",
 				Month:            month,
-				RequestedCredits: creditsRequested,
+				RequestedCredits: creditsRequestedPriced,
 				DebitedCredits:   0,
 			},
 			Result: out,
@@ -279,7 +284,7 @@ func (s *Server) runLinkRenderJob(
 				OverBudget:       true,
 				Reason:           "budget not configured",
 				Month:            month,
-				RequestedCredits: creditsRequested,
+				RequestedCredits: creditsRequestedPriced,
 				DebitedCredits:   0,
 			},
 			Result: out,
@@ -302,7 +307,7 @@ func (s *Server) runLinkRenderJob(
 				OverBudget:       false,
 				Reason:           "internal error",
 				Month:            month,
-				RequestedCredits: creditsRequested,
+				RequestedCredits: creditsRequestedPriced,
 				DebitedCredits:   0,
 			},
 			Result: out,
@@ -310,7 +315,7 @@ func (s *Server) runLinkRenderJob(
 	}
 
 	remaining := budget.IncludedCredits - budget.UsedCredits
-	if remaining < creditsNeeded {
+	if remaining < creditsNeededPriced && strings.ToLower(strings.TrimSpace(overagePolicy)) != "allow" {
 		for _, mr := range missing {
 			if mr.Index >= 0 && mr.Index < len(out.Links) {
 				out.Links[mr.Index].Status = "not_checked_budget"
@@ -330,7 +335,7 @@ func (s *Server) runLinkRenderJob(
 				IncludedCredits:  budget.IncludedCredits,
 				UsedCredits:      budget.UsedCredits,
 				RemainingCredits: remaining,
-				RequestedCredits: creditsRequested,
+				RequestedCredits: creditsRequestedPriced,
 				DebitedCredits:   0,
 			},
 			Result: out,
@@ -344,6 +349,27 @@ func (s *Server) runLinkRenderJob(
 	}
 	_ = update.UpdateKeys()
 
+	includedDebited, overageDebited := billingPartsForDebit(budget.IncludedCredits, budget.UsedCredits, creditsNeededPriced)
+	billingType := billingTypeFromParts(includedDebited, overageDebited)
+
+	ledger := &models.UsageLedgerEntry{
+		ID:                     usageLedgerEntryID(instanceSlug, month, strings.TrimSpace(ctx.RequestID), moduleName, jobID, creditsNeededPriced),
+		InstanceSlug:           instanceSlug,
+		Month:                  month,
+		Module:                 moduleName,
+		Target:                 jobID,
+		Cached:                 false,
+		Reason:                 billingType,
+		RequestID:              strings.TrimSpace(ctx.RequestID),
+		RequestedCredits:       creditsRequestedPriced,
+		DebitedCredits:         creditsNeededPriced,
+		IncludedDebitedCredits: includedDebited,
+		OverageDebitedCredits:  overageDebited,
+		BillingType:            billingType,
+		CreatedAt:              now,
+	}
+	_ = ledger.UpdateKeys()
+
 	auditBudget := &models.AuditLogEntry{
 		Actor:     instanceSlug,
 		Action:    "budget.debit",
@@ -354,21 +380,30 @@ func (s *Server) runLinkRenderJob(
 	_ = auditBudget.UpdateKeys()
 
 	err = s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
-		tx.UpdateWithBuilder(update, func(ub core.UpdateBuilder) error {
-			ub.Add("UsedCredits", creditsNeeded)
-			ub.Set("UpdatedAt", now)
-			return nil
-		},
-			tabletheory.IfExists(),
-			tabletheory.ConditionExpression(
-				"if_not_exists(usedCredits, :zero) + :delta <= if_not_exists(includedCredits, :zero)",
-				map[string]any{
-					":zero":  int64(0),
-					":delta": creditsNeeded,
-				},
-			),
-		)
+		if strings.ToLower(strings.TrimSpace(overagePolicy)) == "allow" {
+			tx.UpdateWithBuilder(update, func(ub core.UpdateBuilder) error {
+				ub.Add("UsedCredits", creditsNeededPriced)
+				ub.Set("UpdatedAt", now)
+				return nil
+			}, tabletheory.IfExists())
+		} else {
+			tx.UpdateWithBuilder(update, func(ub core.UpdateBuilder) error {
+				ub.Add("UsedCredits", creditsNeededPriced)
+				ub.Set("UpdatedAt", now)
+				return nil
+			},
+				tabletheory.IfExists(),
+				tabletheory.ConditionExpression(
+					"if_not_exists(usedCredits, :zero) + :delta <= if_not_exists(includedCredits, :zero)",
+					map[string]any{
+						":zero":  int64(0),
+						":delta": creditsNeededPriced,
+					},
+				),
+			)
+		}
 		tx.Put(auditBudget)
+		tx.Put(ledger)
 		return nil
 	})
 	if theoryErrors.IsConditionFailed(err) {
@@ -391,7 +426,7 @@ func (s *Server) runLinkRenderJob(
 				IncludedCredits:  budget.IncludedCredits,
 				UsedCredits:      budget.UsedCredits,
 				RemainingCredits: remaining,
-				RequestedCredits: creditsRequested,
+				RequestedCredits: creditsRequestedPriced,
 				DebitedCredits:   0,
 			},
 			Result: out,
@@ -414,7 +449,7 @@ func (s *Server) runLinkRenderJob(
 				OverBudget:       false,
 				Reason:           "internal error",
 				Month:            month,
-				RequestedCredits: creditsRequested,
+				RequestedCredits: creditsRequestedPriced,
 				DebitedCredits:   0,
 			},
 			Result: out,
@@ -452,6 +487,14 @@ func (s *Server) runLinkRenderJob(
 
 	out.Summary.Queued = queuedCount
 
+	// Best-effort current remaining for reporting (may be stale if overage allowed).
+	remainingAfter := budget.IncludedCredits - (budget.UsedCredits + creditsNeededPriced)
+	overBudget := remainingAfter < 0 || overageDebited > 0
+	reason := "debited"
+	if overageDebited > 0 {
+		reason = "overage"
+	}
+
 	return publishJobModuleResponse{
 		Name:          moduleName,
 		PolicyVersion: rendering.RenderPolicyVersion,
@@ -459,14 +502,14 @@ func (s *Server) runLinkRenderJob(
 		Cached:        false,
 		Budget: budgetDecision{
 			Allowed:          true,
-			OverBudget:       false,
-			Reason:           "debited",
+			OverBudget:       overBudget,
+			Reason:           reason,
 			Month:            month,
 			IncludedCredits:  budget.IncludedCredits,
-			UsedCredits:      budget.UsedCredits,
-			RemainingCredits: remaining,
-			RequestedCredits: creditsRequested,
-			DebitedCredits:   creditsNeeded,
+			UsedCredits:      budget.UsedCredits + creditsNeededPriced,
+			RemainingCredits: remainingAfter,
+			RequestedCredits: creditsRequestedPriced,
+			DebitedCredits:   creditsNeededPriced,
 		},
 		Result: out,
 	}

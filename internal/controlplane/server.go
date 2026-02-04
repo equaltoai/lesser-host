@@ -56,4 +56,11 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 	app.Put("/api/v1/instances/{slug}/config", s.handleUpdateInstanceConfig, apptheory.RequireAuth())
 	app.Post("/api/v1/instances/{slug}/keys", s.handleCreateInstanceKey, apptheory.RequireAuth())
 	app.Put("/api/v1/instances/{slug}/budgets/{month}", s.handleSetInstanceBudgetMonth, apptheory.RequireAuth())
+	app.Get("/api/v1/instances/{slug}/usage/{month}", s.handleListInstanceUsage, apptheory.RequireAuth())
+
+	// Domains (admin-only).
+	app.Get("/api/v1/instances/{slug}/domains", s.handleListInstanceDomains, apptheory.RequireAuth())
+	app.Post("/api/v1/instances/{slug}/domains", s.handleAddInstanceDomain, apptheory.RequireAuth())
+	app.Post("/api/v1/instances/{slug}/domains/{domain}/verify", s.handleVerifyInstanceDomain, apptheory.RequireAuth())
+	app.Delete("/api/v1/instances/{slug}/domains/{domain}", s.handleDeleteInstanceDomain, apptheory.RequireAuth())
 }

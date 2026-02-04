@@ -10,6 +10,7 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
+	"github.com/theory-cloud/tabletheory/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/store/models"
@@ -27,7 +28,10 @@ type instanceResponse struct {
 	Owner                 string    `json:"owner,omitempty"`
 	Status                string    `json:"status"`
 	HostedPreviewsEnabled bool      `json:"hosted_previews_enabled"`
+	LinkSafetyEnabled     bool      `json:"link_safety_enabled"`
+	RendersEnabled        bool      `json:"renders_enabled"`
 	RenderPolicy          string    `json:"render_policy"`
+	OveragePolicy         string    `json:"overage_policy"`
 	CreatedAt             time.Time `json:"created_at"`
 }
 
@@ -44,7 +48,10 @@ type createInstanceKeyResponse struct {
 
 type updateInstanceConfigRequest struct {
 	HostedPreviewsEnabled *bool   `json:"hosted_previews_enabled,omitempty"`
-	RenderPolicy          *string `json:"render_policy,omitempty"` // always|suspicious
+	LinkSafetyEnabled     *bool   `json:"link_safety_enabled,omitempty"`
+	RendersEnabled        *bool   `json:"renders_enabled,omitempty"`
+	RenderPolicy          *string `json:"render_policy,omitempty"`  // always|suspicious
+	OveragePolicy         *string `json:"overage_policy,omitempty"` // block|allow
 }
 
 type setBudgetMonthRequest struct {
@@ -92,35 +99,66 @@ func (s *Server) handleCreateInstance(ctx *apptheory.Context) (*apptheory.Respon
 
 	now := time.Now().UTC()
 	hostedPreviewsEnabled := true
+	linkSafetyEnabled := true
+	rendersEnabled := true
 	renderPolicy := "suspicious"
+	overagePolicy := "block"
 	inst := &models.Instance{
 		Slug:                  slug,
 		Owner:                 strings.TrimSpace(req.Owner),
 		Status:                models.InstanceStatusActive,
 		HostedPreviewsEnabled: &hostedPreviewsEnabled,
+		LinkSafetyEnabled:     &linkSafetyEnabled,
+		RendersEnabled:        &rendersEnabled,
 		RenderPolicy:          renderPolicy,
+		OveragePolicy:         overagePolicy,
 		CreatedAt:             now,
 	}
 	if err := inst.UpdateKeys(); err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
-	if err := s.store.DB.WithContext(ctx.Context()).Model(inst).IfNotExists().Create(); err != nil {
-		if theoryErrors.IsConditionFailed(err) {
-			return nil, &apptheory.AppError{Code: "app.conflict", Message: "instance already exists"}
-		}
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create instance"}
-	}
 
-	audit := &models.AuditLogEntry{
+	primaryDomain := &models.Domain{
+		Domain:             slug + ".greater.website",
+		InstanceSlug:       slug,
+		Type:               models.DomainTypePrimary,
+		Status:             models.DomainStatusVerified,
+		VerificationMethod: "managed",
+		CreatedAt:          now,
+		UpdatedAt:          now,
+		VerifiedAt:         now,
+	}
+	_ = primaryDomain.UpdateKeys()
+
+	auditInstance := &models.AuditLogEntry{
 		Actor:     strings.TrimSpace(ctx.AuthIdentity),
 		Action:    "instance.create",
 		Target:    fmt.Sprintf("instance:%s", slug),
 		RequestID: ctx.RequestID,
 		CreatedAt: now,
 	}
-	_ = audit.UpdateKeys()
-	if err := s.store.DB.WithContext(ctx.Context()).Model(audit).Create(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to write audit log"}
+	_ = auditInstance.UpdateKeys()
+
+	auditDomain := &models.AuditLogEntry{
+		Actor:     strings.TrimSpace(ctx.AuthIdentity),
+		Action:    "domain.primary.create",
+		Target:    fmt.Sprintf("domain:%s", primaryDomain.Domain),
+		RequestID: ctx.RequestID,
+		CreatedAt: now,
+	}
+	_ = auditDomain.UpdateKeys()
+
+	if err := s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
+		tx.Create(inst)
+		tx.Create(primaryDomain)
+		tx.Put(auditInstance)
+		tx.Put(auditDomain)
+		return nil
+	}); err != nil {
+		if theoryErrors.IsConditionFailed(err) {
+			return nil, &apptheory.AppError{Code: "app.conflict", Message: "instance already exists"}
+		}
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create instance"}
 	}
 
 	return apptheory.JSON(http.StatusCreated, instanceResponse{
@@ -128,7 +166,10 @@ func (s *Server) handleCreateInstance(ctx *apptheory.Context) (*apptheory.Respon
 		Owner:                 inst.Owner,
 		Status:                inst.Status,
 		HostedPreviewsEnabled: effectiveHostedPreviewsEnabled(inst.HostedPreviewsEnabled),
+		LinkSafetyEnabled:     effectiveLinkSafetyEnabled(inst.LinkSafetyEnabled),
+		RendersEnabled:        effectiveRendersEnabled(inst.RendersEnabled),
 		RenderPolicy:          effectiveRenderPolicy(inst.RenderPolicy),
+		OveragePolicy:         effectiveOveragePolicy(inst.OveragePolicy),
 		CreatedAt:             inst.CreatedAt,
 	})
 }
@@ -154,7 +195,10 @@ func (s *Server) handleListInstances(ctx *apptheory.Context) (*apptheory.Respons
 			Owner:                 inst.Owner,
 			Status:                inst.Status,
 			HostedPreviewsEnabled: effectiveHostedPreviewsEnabled(inst.HostedPreviewsEnabled),
+			LinkSafetyEnabled:     effectiveLinkSafetyEnabled(inst.LinkSafetyEnabled),
+			RendersEnabled:        effectiveRendersEnabled(inst.RendersEnabled),
 			RenderPolicy:          effectiveRenderPolicy(inst.RenderPolicy),
+			OveragePolicy:         effectiveOveragePolicy(inst.OveragePolicy),
 			CreatedAt:             inst.CreatedAt,
 		})
 	}
@@ -172,10 +216,32 @@ func effectiveHostedPreviewsEnabled(v *bool) bool {
 	return *v
 }
 
+func effectiveLinkSafetyEnabled(v *bool) bool {
+	if v == nil {
+		return true
+	}
+	return *v
+}
+
+func effectiveRendersEnabled(v *bool) bool {
+	if v == nil {
+		return true
+	}
+	return *v
+}
+
 func effectiveRenderPolicy(v string) string {
 	v = strings.ToLower(strings.TrimSpace(v))
 	if v == "" {
 		return "suspicious"
+	}
+	return v
+}
+
+func effectiveOveragePolicy(v string) string {
+	v = strings.ToLower(strings.TrimSpace(v))
+	if v == "" {
+		return "block"
 	}
 	return v
 }
@@ -257,7 +323,7 @@ func (s *Server) handleUpdateInstanceConfig(ctx *apptheory.Context) (*apptheory.
 	if err := parseJSON(ctx, &req); err != nil {
 		return nil, err
 	}
-	if req.HostedPreviewsEnabled == nil && req.RenderPolicy == nil {
+	if req.HostedPreviewsEnabled == nil && req.LinkSafetyEnabled == nil && req.RendersEnabled == nil && req.RenderPolicy == nil && req.OveragePolicy == nil {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "no config fields provided"}
 	}
 
@@ -269,6 +335,14 @@ func (s *Server) handleUpdateInstanceConfig(ctx *apptheory.Context) (*apptheory.
 		update.HostedPreviewsEnabled = req.HostedPreviewsEnabled
 		fields = append(fields, "HostedPreviewsEnabled")
 	}
+	if req.LinkSafetyEnabled != nil {
+		update.LinkSafetyEnabled = req.LinkSafetyEnabled
+		fields = append(fields, "LinkSafetyEnabled")
+	}
+	if req.RendersEnabled != nil {
+		update.RendersEnabled = req.RendersEnabled
+		fields = append(fields, "RendersEnabled")
+	}
 	if req.RenderPolicy != nil {
 		rp := strings.ToLower(strings.TrimSpace(*req.RenderPolicy))
 		if rp != "always" && rp != "suspicious" {
@@ -276,6 +350,14 @@ func (s *Server) handleUpdateInstanceConfig(ctx *apptheory.Context) (*apptheory.
 		}
 		update.RenderPolicy = rp
 		fields = append(fields, "RenderPolicy")
+	}
+	if req.OveragePolicy != nil {
+		op := strings.ToLower(strings.TrimSpace(*req.OveragePolicy))
+		if op != "block" && op != "allow" {
+			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "overage_policy must be block or allow"}
+		}
+		update.OveragePolicy = op
+		fields = append(fields, "OveragePolicy")
 	}
 	if err := update.UpdateKeys(); err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
@@ -310,7 +392,10 @@ func (s *Server) handleUpdateInstanceConfig(ctx *apptheory.Context) (*apptheory.
 		Owner:                 inst.Owner,
 		Status:                inst.Status,
 		HostedPreviewsEnabled: effectiveHostedPreviewsEnabled(inst.HostedPreviewsEnabled),
+		LinkSafetyEnabled:     effectiveLinkSafetyEnabled(inst.LinkSafetyEnabled),
+		RendersEnabled:        effectiveRendersEnabled(inst.RendersEnabled),
 		RenderPolicy:          effectiveRenderPolicy(inst.RenderPolicy),
+		OveragePolicy:         effectiveOveragePolicy(inst.OveragePolicy),
 		CreatedAt:             inst.CreatedAt,
 	})
 }
