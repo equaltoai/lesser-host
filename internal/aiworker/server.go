@@ -154,6 +154,16 @@ func (s *Server) processAIJob(ctx context.Context, requestID string, jobID strin
 			return nil
 		}
 		resultJSON, usage, errs, err = s.runRenderSummaryLLMV1(ctx, job)
+	case "moderation_text_llm":
+		if policyVersion != "v1" {
+			return nil
+		}
+		resultJSON, usage, errs, err = s.runModerationTextLLMV1(ctx, job)
+	case "moderation_image_llm":
+		if policyVersion != "v1" {
+			return nil
+		}
+		resultJSON, usage, errs, err = s.runModerationImageLLMV1(ctx, job)
 	default:
 		return nil
 	}
@@ -808,6 +818,262 @@ func (s *Server) runRenderSummaryLLMV1(ctx context.Context, job *models.AIJob) (
 	}
 
 	return string(b), usage, errs, nil
+}
+
+func (s *Server) runModerationTextLLMV1(ctx context.Context, job *models.AIJob) (string, models.AIUsage, []models.AIError, error) {
+	if job == nil {
+		return "", models.AIUsage{}, nil, fmt.Errorf("job is nil")
+	}
+
+	var in ai.ModerationTextInputsV1
+	if err := json.Unmarshal([]byte(job.InputsJSON), &in); err != nil {
+		return "", models.AIUsage{}, nil, nil // drop invalid
+	}
+
+	text := strings.TrimSpace(in.Text)
+	if text == "" {
+		return "", models.AIUsage{}, nil, nil
+	}
+	if len([]byte(text)) > 10_000 {
+		b := []byte(text)
+		text = string(b[:10_000])
+		in.Text = text
+	}
+
+	modelSet := strings.TrimSpace(job.ModelSet)
+	if modelSet == "" {
+		modelSet = "deterministic"
+	}
+
+	start := time.Now()
+	var errs []models.AIError
+
+	evidenceJSON, evidenceUsage, _, evidenceErr := s.runComprehendTextEvidenceV1(ctx, job)
+	if evidenceErr != nil {
+		errs = append(errs, models.AIError{Code: "tool_failed", Message: "Tool evidence failed; continuing with limited signals", Retryable: false})
+		evidenceJSON = ""
+		evidenceUsage = models.AIUsage{}
+	}
+
+	var res ai.ModerationResultV1
+	var usage models.AIUsage
+
+	if strings.HasPrefix(strings.ToLower(modelSet), "openai:") {
+		apiKey, keyErr := openAIAPIKey(ctx)
+		if keyErr != nil || strings.TrimSpace(apiKey) == "" {
+			errs = append(errs, models.AIError{Code: "llm_unavailable", Message: "LLM unavailable; used deterministic fallback", Retryable: false})
+		} else {
+			out, u, err := llm.ModerationTextBatchOpenAI(ctx, apiKey, modelSet, []llm.ModerationTextBatchItem{
+				{ItemID: strings.TrimSpace(job.ID), Input: in, Evidence: json.RawMessage(evidenceJSON)},
+			})
+			if err != nil {
+				errs = append(errs, models.AIError{Code: "llm_failed", Message: "LLM call failed; used deterministic fallback", Retryable: false})
+			} else if item, ok := out[strings.TrimSpace(job.ID)]; ok && strings.TrimSpace(item.Decision) != "" {
+				res = item
+				usage = u
+				usage.ToolCalls += evidenceUsage.ToolCalls
+				usage.DurationMs = time.Since(start).Milliseconds()
+			} else {
+				errs = append(errs, models.AIError{Code: "llm_missing_output", Message: "LLM output missing; used deterministic fallback", Retryable: false})
+			}
+		}
+	}
+
+	if strings.TrimSpace(res.Decision) == "" {
+		res = ai.ModerationTextDeterministicV1(text)
+
+		// Evidence-driven bump: if Comprehend PII signals exist, force at least review + category.
+		var ev comprehendTextEvidenceV1
+		if strings.TrimSpace(evidenceJSON) != "" && json.Unmarshal([]byte(evidenceJSON), &ev) == nil {
+			if len(ev.PIIEntities) > 0 {
+				res.Kind = "moderation_text"
+				res.Version = "v1"
+				if strings.TrimSpace(res.Decision) == "" || res.Decision == "allow" {
+					res.Decision = "review"
+				}
+				hasPII := false
+				for _, c := range res.Categories {
+					if strings.TrimSpace(c.Code) == "pii" {
+						hasPII = true
+						break
+					}
+				}
+				if !hasPII {
+					res.Categories = append(res.Categories, ai.ModerationCategoryV1{
+						Code:       "pii",
+						Confidence: 0.8,
+						Severity:   "medium",
+						Summary:    "Tooling detected potential PII in the text.",
+					})
+				}
+			}
+		}
+
+		usage = evidenceUsage
+		if strings.TrimSpace(usage.Provider) == "" {
+			usage = models.AIUsage{Provider: "deterministic", Model: "deterministic"}
+		}
+		usage.DurationMs = time.Since(start).Milliseconds()
+	}
+
+	b, err := json.Marshal(res)
+	if err != nil {
+		return "", models.AIUsage{}, nil, err
+	}
+	return string(b), usage, errs, nil
+}
+
+func (s *Server) runModerationImageLLMV1(ctx context.Context, job *models.AIJob) (string, models.AIUsage, []models.AIError, error) {
+	if job == nil {
+		return "", models.AIUsage{}, nil, fmt.Errorf("job is nil")
+	}
+
+	var in ai.ModerationImageInputsV1
+	if err := json.Unmarshal([]byte(job.InputsJSON), &in); err != nil {
+		return "", models.AIUsage{}, nil, nil // drop invalid
+	}
+
+	key := strings.TrimSpace(in.ObjectKey)
+	if key == "" {
+		return "", models.AIUsage{}, nil, nil
+	}
+
+	modelSet := strings.TrimSpace(job.ModelSet)
+	if modelSet == "" {
+		modelSet = "deterministic"
+	}
+
+	start := time.Now()
+	var errs []models.AIError
+
+	evidenceJSON, evidenceUsage, _, evidenceErr := s.runRekognitionImageEvidenceV1(ctx, job)
+	if evidenceErr != nil {
+		errs = append(errs, models.AIError{Code: "tool_failed", Message: "Tool evidence failed; continuing with limited signals", Retryable: false})
+		evidenceJSON = ""
+		evidenceUsage = models.AIUsage{}
+	}
+
+	var res ai.ModerationResultV1
+	var usage models.AIUsage
+
+	if strings.HasPrefix(strings.ToLower(modelSet), "openai:") {
+		apiKey, keyErr := openAIAPIKey(ctx)
+		if keyErr != nil || strings.TrimSpace(apiKey) == "" {
+			errs = append(errs, models.AIError{Code: "llm_unavailable", Message: "LLM unavailable; used deterministic fallback", Retryable: false})
+		} else {
+			out, u, err := llm.ModerationImageBatchOpenAI(ctx, apiKey, modelSet, []llm.ModerationImageBatchItem{
+				{ItemID: strings.TrimSpace(job.ID), Input: in, Evidence: json.RawMessage(evidenceJSON)},
+			})
+			if err != nil {
+				errs = append(errs, models.AIError{Code: "llm_failed", Message: "LLM call failed; used deterministic fallback", Retryable: false})
+			} else if item, ok := out[strings.TrimSpace(job.ID)]; ok && strings.TrimSpace(item.Decision) != "" {
+				res = item
+				usage = u
+				usage.ToolCalls += evidenceUsage.ToolCalls
+				usage.DurationMs = time.Since(start).Milliseconds()
+			} else {
+				errs = append(errs, models.AIError{Code: "llm_missing_output", Message: "LLM output missing; used deterministic fallback", Retryable: false})
+			}
+		}
+	}
+
+	if strings.TrimSpace(res.Decision) == "" {
+		var ev rekognitionImageEvidenceV1
+		if strings.TrimSpace(evidenceJSON) != "" {
+			_ = json.Unmarshal([]byte(evidenceJSON), &ev)
+		}
+		res = moderationImageDeterministicFromRekognition(ev)
+		usage = evidenceUsage
+		if strings.TrimSpace(usage.Provider) == "" {
+			usage = models.AIUsage{Provider: "deterministic", Model: "deterministic"}
+		}
+		usage.DurationMs = time.Since(start).Milliseconds()
+	}
+
+	b, err := json.Marshal(res)
+	if err != nil {
+		return "", models.AIUsage{}, nil, err
+	}
+	return string(b), usage, errs, nil
+}
+
+func moderationImageDeterministicFromRekognition(ev rekognitionImageEvidenceV1) ai.ModerationResultV1 {
+	out := ai.ModerationResultV1{
+		Kind:     "moderation_image",
+		Version:  "v1",
+		Decision: "allow",
+	}
+
+	if len(ev.ModerationLabels) == 0 {
+		return out
+	}
+
+	out.Decision = "review"
+	block := false
+
+	for _, l := range ev.ModerationLabels {
+		name := strings.TrimSpace(l.Name)
+		parent := strings.TrimSpace(l.ParentName)
+		if name == "" {
+			continue
+		}
+
+		lower := strings.ToLower(name + " " + parent)
+		code := "other"
+		switch {
+		case strings.Contains(lower, "nudity") || strings.Contains(lower, "explicit") || strings.Contains(lower, "sexual"):
+			code = "nudity"
+		case strings.Contains(lower, "violence") || strings.Contains(lower, "weapon") || strings.Contains(lower, "blood"):
+			code = "violence"
+		}
+
+		conf := l.Confidence / 100
+		if conf < 0 {
+			conf = 0
+		}
+		if conf > 1 {
+			conf = 1
+		}
+
+		severity := "medium"
+		if conf >= 0.9 {
+			severity = "high"
+		}
+
+		out.Categories = append(out.Categories, ai.ModerationCategoryV1{
+			Code:       code,
+			Confidence: conf,
+			Severity:   severity,
+			Summary:    fmt.Sprintf("Tooling flagged %s (%0.1f%%).", name, l.Confidence),
+		})
+		if len(out.Categories) >= 5 {
+			break
+		}
+
+		if code == "nudity" && conf >= 0.95 {
+			block = true
+		}
+	}
+
+	if block {
+		out.Decision = "block"
+	}
+
+	for _, d := range ev.TextDetections {
+		t := strings.TrimSpace(d.Text)
+		if t == "" {
+			continue
+		}
+		if len(t) > 160 {
+			t = strings.TrimSpace(t[:160])
+		}
+		out.Highlights = append(out.Highlights, t)
+		if len(out.Highlights) >= 5 {
+			break
+		}
+	}
+
+	return out
 }
 
 func openAIAPIKey(ctx context.Context) (string, error) {

@@ -58,6 +58,10 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 	// AI tool evidence (cheap, cached).
 	app.Post("/api/v1/ai/evidence/text", s.handleAIEvidenceText, apptheory.RequireAuth())
 	app.Post("/api/v1/ai/evidence/image", s.handleAIEvidenceImage, apptheory.RequireAuth())
+	app.Post("/api/v1/ai/moderation/text", s.handleAIModerationText, apptheory.RequireAuth())
+	app.Post("/api/v1/ai/moderation/image", s.handleAIModerationImage, apptheory.RequireAuth())
+	app.Post("/api/v1/ai/moderation/text/report", s.handleAIModerationTextReport, apptheory.RequireAuth())
+	app.Post("/api/v1/ai/moderation/image/report", s.handleAIModerationImageReport, apptheory.RequireAuth())
 	app.Get("/api/v1/ai/jobs/{jobId}", s.handleGetAIJob, apptheory.RequireAuth())
 
 	app.Post("/api/v1/budget/debit", s.handleBudgetDebit, apptheory.RequireAuth())
