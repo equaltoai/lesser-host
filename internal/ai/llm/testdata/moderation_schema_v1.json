@@ -1,0 +1,91 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "items": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "categories": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "code": {
+                  "enum": [
+                    "sexual_content",
+                    "nudity",
+                    "violence",
+                    "hate_or_harassment",
+                    "self_harm",
+                    "illicit_activity",
+                    "spam_or_scams",
+                    "pii",
+                    "child_safety",
+                    "other"
+                  ],
+                  "type": "string"
+                },
+                "confidence": {
+                  "maximum": 1,
+                  "minimum": 0,
+                  "type": "number"
+                },
+                "severity": {
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high"
+                  ],
+                  "type": "string"
+                },
+                "summary": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "confidence",
+                "severity",
+                "summary"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "decision": {
+            "enum": [
+              "allow",
+              "review",
+              "block"
+            ],
+            "type": "string"
+          },
+          "highlights": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "item_id": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "item_id",
+          "decision",
+          "categories",
+          "highlights",
+          "notes"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "items"
+  ],
+  "type": "object"
+}

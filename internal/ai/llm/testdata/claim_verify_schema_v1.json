@@ -1,0 +1,99 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "items": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "claims": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "citations": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "quote": {
+                        "type": "string"
+                      },
+                      "source_id": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "source_id",
+                      "quote"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "claim_id": {
+                  "type": "string"
+                },
+                "classification": {
+                  "enum": [
+                    "checkable",
+                    "opinion",
+                    "unclear"
+                  ],
+                  "type": "string"
+                },
+                "confidence": {
+                  "maximum": 1,
+                  "minimum": 0,
+                  "type": "number"
+                },
+                "reason": {
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                },
+                "verdict": {
+                  "enum": [
+                    "supported",
+                    "refuted",
+                    "inconclusive"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "claim_id",
+                "text",
+                "classification",
+                "verdict",
+                "confidence",
+                "reason",
+                "citations"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "item_id": {
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "item_id",
+          "claims",
+          "warnings"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "items"
+  ],
+  "type": "object"
+}

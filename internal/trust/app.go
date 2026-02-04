@@ -23,6 +23,9 @@ func New(opts ...apptheory.Option) *apptheory.App {
 	opts = append(opts, apptheory.WithAuthHook(srv.InstanceAuthHook))
 
 	app := apptheory.New(opts...)
+	if mw := srv.aiRateLimitMiddleware(); mw != nil {
+		app.Use(mw)
+	}
 	Register(app, srv)
 	return app
 }

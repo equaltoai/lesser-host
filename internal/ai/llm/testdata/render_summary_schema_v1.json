@@ -1,0 +1,64 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "items": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "item_id": {
+            "type": "string"
+          },
+          "key_bullets": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "risks": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "severity": {
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high"
+                  ],
+                  "type": "string"
+                },
+                "summary": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "severity",
+                "summary"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "short_summary": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "item_id",
+          "short_summary",
+          "key_bullets",
+          "risks"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "items"
+  ],
+  "type": "object"
+}
