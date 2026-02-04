@@ -158,6 +158,28 @@ export class LesserHostStack extends cdk.Stack {
 			}),
 		);
 
+		const ssmParamArns = [
+			`arn:aws:ssm:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:parameter/lesser-host/api/openai/service`,
+			`arn:aws:ssm:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:parameter/lesser-host/api/claude`,
+		];
+		for (const fn of [trustFn, aiWorkerFn]) {
+			fn.addToRolePolicy(
+				new iam.PolicyStatement({
+					actions: ['ssm:GetParameter', 'ssm:GetParameters'],
+					resources: ssmParamArns,
+				}),
+			);
+			fn.addToRolePolicy(
+				new iam.PolicyStatement({
+					actions: ['kms:Decrypt'],
+					resources: ['*'],
+					conditions: {
+						StringEquals: { 'kms:ViaService': `ssm.${cdk.Aws.REGION}.amazonaws.com` },
+					},
+				}),
+			);
+		}
+
 		const retentionSweepRule = new events.Rule(this, 'RetentionSweepRule', {
 			ruleName: `${namePrefix}-retention-sweep`,
 			schedule: events.Schedule.rate(cdk.Duration.days(1)),

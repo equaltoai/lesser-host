@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"net/url"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -19,7 +20,9 @@ import (
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 
 	"github.com/equaltoai/lesser-host/internal/ai"
+	"github.com/equaltoai/lesser-host/internal/ai/llm"
 	"github.com/equaltoai/lesser-host/internal/config"
+	"github.com/equaltoai/lesser-host/internal/secrets"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -82,15 +85,21 @@ func (s *Server) handleSafetyQueueMessage(ctx *apptheory.EventContext, msg event
 	if err := json.Unmarshal([]byte(msg.Body), &jm); err != nil {
 		return nil // drop invalid
 	}
-	if strings.TrimSpace(jm.Kind) != "ai_job" {
+	switch strings.TrimSpace(jm.Kind) {
+	case "ai_job":
+		jobID := strings.TrimSpace(jm.JobID)
+		if jobID == "" {
+			return nil
+		}
+		return s.processAIJob(ctx.Context(), ctx.RequestID, jobID)
+	case "ai_job_batch":
+		if len(jm.JobIDs) == 0 {
+			return nil
+		}
+		return s.processAIBatch(ctx.Context(), ctx.RequestID, jm.JobIDs)
+	default:
 		return nil
 	}
-	jobID := strings.TrimSpace(jm.JobID)
-	if jobID == "" {
-		return nil
-	}
-
-	return s.processAIJob(ctx.Context(), ctx.RequestID, jobID)
 }
 
 func (s *Server) processAIJob(ctx context.Context, requestID string, jobID string) error {
@@ -140,6 +149,11 @@ func (s *Server) processAIJob(ctx context.Context, requestID string, jobID strin
 			return nil
 		}
 		resultJSON, usage, errs, err = s.runRekognitionImageEvidenceV1(ctx, job)
+	case "render_summary_llm":
+		if policyVersion != "v1" {
+			return nil
+		}
+		resultJSON, usage, errs, err = s.runRenderSummaryLLMV1(ctx, job)
 	default:
 		return nil
 	}
@@ -183,6 +197,218 @@ func (s *Server) processAIJob(ctx context.Context, requestID string, jobID strin
 	job.RequestID = strings.TrimSpace(requestID)
 	_ = job.UpdateKeys()
 	_ = s.store.PutAIJob(ctx, job)
+	return nil
+}
+
+func (s *Server) processAIBatch(ctx context.Context, requestID string, jobIDs []string) error {
+	if s == nil || s.store == nil {
+		return fmt.Errorf("store not initialized")
+	}
+
+	now := time.Now().UTC()
+
+	// Collect eligible render summary jobs; fall back to per-job processing for mixed batches.
+	var renderSummaryJobs []*models.AIJob
+	var otherJobIDs []string
+
+	for _, id := range jobIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+
+		job, err := s.store.GetAIJob(ctx, id)
+		if err != nil || job == nil {
+			continue
+		}
+
+		if !job.ExpiresAt.IsZero() && job.ExpiresAt.Before(now) {
+			continue
+		}
+		if strings.TrimSpace(job.Status) != models.AIJobStatusQueued {
+			continue
+		}
+
+		if strings.ToLower(strings.TrimSpace(job.Module)) == "render_summary_llm" && strings.TrimSpace(job.PolicyVersion) == "v1" {
+			renderSummaryJobs = append(renderSummaryJobs, job)
+			continue
+		}
+
+		otherJobIDs = append(otherJobIDs, id)
+	}
+
+	// Mixed batches: process non-render-summary jobs individually.
+	for _, id := range otherJobIDs {
+		_ = s.processAIJob(ctx, requestID, id)
+	}
+
+	if len(renderSummaryJobs) == 0 {
+		return nil
+	}
+
+	return s.processRenderSummaryBatchV1(ctx, requestID, renderSummaryJobs)
+}
+
+func (s *Server) processRenderSummaryBatchV1(ctx context.Context, requestID string, jobs []*models.AIJob) error {
+	if s == nil || s.store == nil {
+		return fmt.Errorf("store not initialized")
+	}
+	if len(jobs) == 0 {
+		return nil
+	}
+
+	now := time.Now().UTC()
+
+	type parsedJob struct {
+		Job   *models.AIJob
+		Input ai.RenderSummaryInputsV1
+	}
+
+	// Parse + filter jobs; split by model set for grouping rules.
+	byModelSet := map[string][]parsedJob{}
+	for _, job := range jobs {
+		if job == nil {
+			continue
+		}
+		if strings.TrimSpace(job.Status) != models.AIJobStatusQueued {
+			continue
+		}
+		if !job.ExpiresAt.IsZero() && job.ExpiresAt.Before(now) {
+			continue
+		}
+
+		// Idempotency: skip jobs that already have results.
+		if existing, err := s.store.GetAIResult(ctx, strings.TrimSpace(job.ID)); err == nil && existing != nil {
+			job.Status = models.AIJobStatusOK
+			job.ErrorCode = ""
+			job.ErrorMessage = ""
+			job.RequestID = strings.TrimSpace(requestID)
+			_ = job.UpdateKeys()
+			_ = s.store.PutAIJob(ctx, job)
+			continue
+		}
+
+		var in ai.RenderSummaryInputsV1
+		if err := json.Unmarshal([]byte(job.InputsJSON), &in); err != nil {
+			continue
+		}
+
+		ms := strings.TrimSpace(job.ModelSet)
+		if ms == "" {
+			ms = "deterministic"
+		}
+		byModelSet[ms] = append(byModelSet[ms], parsedJob{Job: job, Input: in})
+	}
+
+	for modelSet, group := range byModelSet {
+		if len(group) == 0 {
+			continue
+		}
+
+		items := make([]llm.RenderSummaryBatchItem, 0, len(group))
+		for _, pj := range group {
+			if pj.Job == nil {
+				continue
+			}
+			items = append(items, llm.RenderSummaryBatchItem{
+				ItemID: strings.TrimSpace(pj.Job.ID),
+				Input:  pj.Input,
+			})
+		}
+		if len(items) == 0 {
+			continue
+		}
+
+		start := time.Now()
+		results := map[string]ai.RenderSummaryResultV1{}
+		usage := models.AIUsage{}
+		commonErrs := []models.AIError{}
+		usedDeterministic := false
+
+		if strings.HasPrefix(strings.ToLower(modelSet), "openai:") {
+			apiKey, keyErr := openAIAPIKey(ctx)
+			if keyErr != nil || strings.TrimSpace(apiKey) == "" {
+				usedDeterministic = true
+				commonErrs = append(commonErrs, models.AIError{Code: "llm_unavailable", Message: "LLM unavailable; used deterministic fallback", Retryable: false})
+			} else {
+				outMap, u, err := llm.RenderSummaryBatchOpenAI(ctx, apiKey, modelSet, items)
+				if err != nil {
+					usedDeterministic = true
+					commonErrs = append(commonErrs, models.AIError{Code: "llm_failed", Message: "LLM call failed; used deterministic fallback", Retryable: false})
+				} else {
+					results = outMap
+					usage = u
+				}
+			}
+		} else {
+			usedDeterministic = true
+		}
+
+		if usedDeterministic {
+			for _, it := range items {
+				results[it.ItemID] = ai.RenderSummaryDeterministicV1(it.Input)
+			}
+			usage = models.AIUsage{
+				Provider:   "deterministic",
+				Model:      "deterministic",
+				ToolCalls:  0,
+				DurationMs: time.Since(start).Milliseconds(),
+			}
+		}
+
+		for _, pj := range group {
+			job := pj.Job
+			if job == nil {
+				continue
+			}
+			id := strings.TrimSpace(job.ID)
+			if id == "" {
+				continue
+			}
+			res, ok := results[id]
+			itemErrs := append([]models.AIError(nil), commonErrs...)
+			if !ok || strings.TrimSpace(res.ShortSummary) == "" {
+				res = ai.RenderSummaryDeterministicV1(pj.Input)
+				itemErrs = append(itemErrs, models.AIError{Code: "llm_missing_output", Message: "LLM output missing; used deterministic fallback", Retryable: false})
+			}
+
+			b, err := json.Marshal(res)
+			if err != nil {
+				return err
+			}
+
+			item := &models.AIResult{
+				ID:            id,
+				InstanceSlug:  strings.TrimSpace(job.InstanceSlug),
+				Module:        strings.ToLower(strings.TrimSpace(job.Module)),
+				PolicyVersion: strings.TrimSpace(job.PolicyVersion),
+				ModelSet:      strings.TrimSpace(job.ModelSet),
+				CacheScope:    strings.TrimSpace(job.CacheScope),
+				ScopeKey:      strings.TrimSpace(job.ScopeKey),
+				InputsHash:    strings.TrimSpace(job.InputsHash),
+				ResultJSON:    strings.TrimSpace(string(b)),
+				Usage:         usage,
+				Errors:        itemErrs,
+				CreatedAt:     now,
+				ExpiresAt:     now.Add(30 * 24 * time.Hour),
+				JobID:         id,
+				RequestID:     strings.TrimSpace(requestID),
+			}
+			_ = item.UpdateKeys()
+
+			if err := s.store.PutAIResult(ctx, item); err != nil {
+				return err
+			}
+
+			job.Status = models.AIJobStatusOK
+			job.ErrorCode = ""
+			job.ErrorMessage = ""
+			job.RequestID = strings.TrimSpace(requestID)
+			_ = job.UpdateKeys()
+			_ = s.store.PutAIJob(ctx, job)
+		}
+	}
+
 	return nil
 }
 
@@ -517,6 +743,78 @@ func (s *Server) runRekognitionImageEvidenceV1(ctx context.Context, job *models.
 	}
 
 	return string(b), usage, nil, nil
+}
+
+func (s *Server) runRenderSummaryLLMV1(ctx context.Context, job *models.AIJob) (string, models.AIUsage, []models.AIError, error) {
+	if job == nil {
+		return "", models.AIUsage{}, nil, fmt.Errorf("job is nil")
+	}
+
+	var in ai.RenderSummaryInputsV1
+	if err := json.Unmarshal([]byte(job.InputsJSON), &in); err != nil {
+		return "", models.AIUsage{}, nil, nil // drop invalid
+	}
+
+	modelSet := strings.TrimSpace(job.ModelSet)
+	if modelSet == "" {
+		modelSet = "deterministic"
+	}
+
+	start := time.Now()
+	var res ai.RenderSummaryResultV1
+	var usage models.AIUsage
+	var errs []models.AIError
+
+	if strings.HasPrefix(strings.ToLower(modelSet), "openai:") {
+		apiKey, keyErr := openAIAPIKey(ctx)
+		if keyErr != nil || strings.TrimSpace(apiKey) == "" {
+			errs = append(errs, models.AIError{Code: "llm_unavailable", Message: "LLM unavailable; used deterministic fallback", Retryable: false})
+		} else {
+			out, u, err := llm.RenderSummaryBatchOpenAI(ctx, apiKey, modelSet, []llm.RenderSummaryBatchItem{
+				{ItemID: strings.TrimSpace(job.ID), Input: in},
+			})
+			if err != nil {
+				errs = append(errs, models.AIError{Code: "llm_failed", Message: "LLM call failed; used deterministic fallback", Retryable: false})
+			} else if item, ok := out[strings.TrimSpace(job.ID)]; ok && strings.TrimSpace(item.ShortSummary) != "" {
+				res = item
+				usage = u
+			} else {
+				errs = append(errs, models.AIError{Code: "llm_missing_output", Message: "LLM output missing; used deterministic fallback", Retryable: false})
+			}
+		}
+
+		if strings.TrimSpace(res.ShortSummary) == "" {
+			res = ai.RenderSummaryDeterministicV1(in)
+			usage = models.AIUsage{
+				Provider:   "deterministic",
+				Model:      "deterministic",
+				ToolCalls:  0,
+				DurationMs: time.Since(start).Milliseconds(),
+			}
+		}
+	} else {
+		res = ai.RenderSummaryDeterministicV1(in)
+		usage = models.AIUsage{
+			Provider:   "deterministic",
+			Model:      "deterministic",
+			ToolCalls:  0,
+			DurationMs: time.Since(start).Milliseconds(),
+		}
+	}
+
+	b, err := json.Marshal(res)
+	if err != nil {
+		return "", models.AIUsage{}, nil, err
+	}
+
+	return string(b), usage, errs, nil
+}
+
+func openAIAPIKey(ctx context.Context) (string, error) {
+	if k := strings.TrimSpace(os.Getenv("OPENAI_API_KEY")); k != "" {
+		return k, nil
+	}
+	return secrets.OpenAIServiceKey(ctx, nil)
 }
 
 func sqsQueueNameFromURL(raw string) string {

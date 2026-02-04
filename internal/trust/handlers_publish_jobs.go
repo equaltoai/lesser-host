@@ -226,7 +226,7 @@ func (s *Server) handlePublishJob(ctx *apptheory.Context) (*apptheory.Response, 
 				})
 				continue
 			}
-			moduleResp := s.runLinkRenderSummaryJob(ctx, instanceSlug, jobID, renderPolicy, instCfg.OveragePolicy, pricingMultiplierBps, canonical)
+			moduleResp := s.runLinkRenderSummaryJob(ctx, instanceSlug, jobID, renderPolicy, instCfg, pricingMultiplierBps, canonical)
 			out.Modules = append(out.Modules, moduleResp)
 		default:
 			out.Modules = append(out.Modules, publishJobModuleResponse{

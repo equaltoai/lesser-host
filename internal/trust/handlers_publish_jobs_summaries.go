@@ -1,17 +1,20 @@
 package trust
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	"github.com/theory-cloud/tabletheory"
-	"github.com/theory-cloud/tabletheory/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
-	"github.com/equaltoai/lesser-host/internal/billing"
+	"github.com/equaltoai/lesser-host/internal/ai"
+	"github.com/equaltoai/lesser-host/internal/ai/llm"
 	"github.com/equaltoai/lesser-host/internal/rendering"
+	"github.com/equaltoai/lesser-host/internal/secrets"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -30,7 +33,10 @@ type linkRenderSummaryLinkResult struct {
 	Status string `json:"status"` // ok|queued|skipped|blocked|invalid|not_checked_budget|error
 	Cached bool   `json:"cached"`
 
-	Summary string `json:"summary,omitempty"`
+	Summary      string                 `json:"summary,omitempty"`
+	Bullets      []string               `json:"bullets,omitempty"`
+	Risks        []ai.RenderSummaryRisk `json:"risks,omitempty"`
+	SummaryJobID string                 `json:"summary_job_id,omitempty"`
 }
 
 type linkRenderSummarySummary struct {
@@ -55,12 +61,20 @@ type linkRenderSummaryResult struct {
 	Links         []linkRenderSummaryLinkResult `json:"links"`
 }
 
+type queuedRenderSummary struct {
+	Index          int
+	JobID          string
+	Inputs         ai.RenderSummaryInputsV1
+	EstimatedBytes int64
+	Artifact       *models.RenderArtifact
+}
+
 func (s *Server) runLinkRenderSummaryJob(
 	ctx *apptheory.Context,
 	instanceSlug string,
 	jobID string,
 	renderPolicy string,
-	overagePolicy string,
+	instCfg instanceTrustConfig,
 	pricingMultiplierBps int64,
 	canonicalLinks []string,
 ) publishJobModuleResponse {
@@ -111,13 +125,31 @@ func (s *Server) runLinkRenderSummaryJob(
 	}
 
 	now := time.Now().UTC()
-	month := now.Format("2006-01")
 
 	policy := strings.ToLower(strings.TrimSpace(renderPolicy))
 	if policy != "always" && policy != "suspicious" {
 		policy = "suspicious"
 	}
-	allowOverage := strings.ToLower(strings.TrimSpace(overagePolicy)) == "allow"
+
+	allowOverage := strings.ToLower(strings.TrimSpace(instCfg.OveragePolicy)) == "allow"
+	modelSet := "deterministic"
+	if instCfg.AIEnabled && strings.TrimSpace(instCfg.AIModelSet) != "" {
+		modelSet = strings.TrimSpace(instCfg.AIModelSet)
+	}
+
+	// Combine request-level pricing and instance AI multiplier.
+	requestBps := pricingMultiplierBps
+	if requestBps <= 0 {
+		requestBps = 10000
+	}
+	instanceBps := instCfg.AIPricingMultiplierBps
+	if instanceBps <= 0 {
+		instanceBps = 10000
+	}
+	combinedPricingBps := (requestBps * instanceBps) / 10000
+	if combinedPricingBps <= 0 {
+		combinedPricingBps = 10000
+	}
 
 	out := linkRenderSummaryResult{
 		RenderPolicy:  policy,
@@ -128,11 +160,15 @@ func (s *Server) runLinkRenderSummaryJob(
 		Links: make([]linkRenderSummaryLinkResult, 0, len(canonicalLinks)),
 	}
 
-	type missingSummary struct {
-		Index    int
-		Artifact *models.RenderArtifact
-	}
-	var missing []missingSummary
+	var queued []queuedRenderSummary
+
+	var budgetMonth string
+	var budgetIncluded int64
+	var budgetUsed int64
+	var budgetRemaining int64
+	var budgetRequested int64
+	var budgetDebited int64
+	var budgetOver bool
 
 	for _, raw := range canonicalLinks {
 		raw = strings.TrimSpace(raw)
@@ -202,363 +238,403 @@ func (s *Server) runLinkRenderSummaryJob(
 			continue
 		}
 
-		if strings.TrimSpace(artifact.Summary) != "" && strings.TrimSpace(artifact.SummaryPolicyVersion) == linkRenderSummaryPolicyVersion {
-			out.Summary.Cached++
-			linkOut.Status = "ok"
-			linkOut.Cached = true
-			linkOut.Summary = strings.TrimSpace(artifact.Summary)
+		inputs := ai.RenderSummaryInputsV1{
+			RenderID:      strings.TrimSpace(artifact.ID),
+			NormalizedURL: strings.TrimSpace(artifact.NormalizedURL),
+			ResolvedURL:   strings.TrimSpace(artifact.ResolvedURL),
+			LinkRisk:      risk,
+			Text:          strings.TrimSpace(artifact.TextPreview),
+		}
+		if inputs.NormalizedURL == "" {
+			inputs.NormalizedURL = normalized
+		}
+		if !artifact.RenderedAt.IsZero() {
+			inputs.RenderedAt = artifact.RenderedAt.UTC().Format(time.RFC3339Nano)
+		}
+
+		resp, err := s.ai.GetOrQueue(ctx.Context(), ai.Request{
+			InstanceSlug:         strings.TrimSpace(instanceSlug),
+			RequestID:            strings.TrimSpace(ctx.RequestID),
+			Module:               ai.RenderSummaryLLMModule,
+			PolicyVersion:        ai.RenderSummaryLLMPolicyVersion,
+			ModelSet:             modelSet,
+			CacheScope:           ai.CacheScopeInstance,
+			Inputs:               inputs,
+			BaseCredits:          linkRenderSummaryCreditCost,
+			PricingMultiplierBps: combinedPricingBps,
+			AllowOverage:         allowOverage,
+			JobTTL:               30 * 24 * time.Hour,
+		})
+		if err != nil {
+			out.Summary.Errors++
+			linkOut.Status = "error"
 			out.Links = append(out.Links, linkOut)
 			continue
 		}
 
-		// Needs generation.
-		linkOut.Status = "queued"
-		out.Links = append(out.Links, linkOut)
-		missing = append(missing, missingSummary{
-			Index:    len(out.Links) - 1,
-			Artifact: artifact,
-		})
-	}
-
-	creditsRequested := billing.PricedCredits(int64(out.Summary.Candidates)*linkRenderSummaryCreditCost, pricingMultiplierBps)
-	creditsNeeded := billing.PricedCredits(int64(len(missing))*linkRenderSummaryCreditCost, pricingMultiplierBps)
-
-	if len(missing) == 0 {
-		return publishJobModuleResponse{
-			Name:          "link_render_summary",
-			PolicyVersion: linkRenderSummaryPolicyVersion,
-			Status:        "ok",
-			Cached:        true,
-			Budget: budgetDecision{
-				Allowed:          true,
-				OverBudget:       false,
-				Reason:           "cache_hit",
-				RequestedCredits: creditsRequested,
-				DebitedCredits:   0,
-			},
-			Result: out,
+		budgetRequested += resp.Budget.RequestedCredits
+		budgetDebited += resp.Budget.DebitedCredits
+		if resp.Budget.OverBudget {
+			budgetOver = true
 		}
-	}
-
-	// Load budget once; rely on conditional debits in transactions for concurrency safety.
-	pk := fmt.Sprintf("INSTANCE#%s", instanceSlug)
-	sk := fmt.Sprintf("BUDGET#%s", month)
-
-	var budget models.InstanceBudgetMonth
-	err := s.store.DB.WithContext(ctx.Context()).
-		Model(&models.InstanceBudgetMonth{}).
-		Where("PK", "=", pk).
-		Where("SK", "=", sk).
-		ConsistentRead().
-		First(&budget)
-	if theoryErrors.IsNotFound(err) {
-		for _, ms := range missing {
-			if ms.Index >= 0 && ms.Index < len(out.Links) {
-				out.Links[ms.Index].Status = "not_checked_budget"
-			}
-		}
-		out.Summary.NotCheckedBudget = len(missing)
-		return publishJobModuleResponse{
-			Name:          "link_render_summary",
-			PolicyVersion: linkRenderSummaryPolicyVersion,
-			Status:        "not_checked_budget",
-			Cached:        false,
-			Budget: budgetDecision{
-				Allowed:          false,
-				OverBudget:       true,
-				Reason:           "budget not configured",
-				Month:            month,
-				RequestedCredits: creditsNeeded,
-				DebitedCredits:   0,
-			},
-			Result: out,
-		}
-	}
-	if err != nil {
-		return publishJobModuleResponse{
-			Name:          "link_render_summary",
-			PolicyVersion: linkRenderSummaryPolicyVersion,
-			Status:        "error",
-			Cached:        false,
-			Budget: budgetDecision{
-				Allowed:          true,
-				OverBudget:       false,
-				Reason:           "internal error",
-				Month:            month,
-				RequestedCredits: creditsNeeded,
-				DebitedCredits:   0,
-			},
-			Result: out,
-		}
-	}
-
-	remaining := budget.IncludedCredits - budget.UsedCredits
-	if remaining < creditsNeeded && !allowOverage {
-		for _, ms := range missing {
-			if ms.Index >= 0 && ms.Index < len(out.Links) {
-				out.Links[ms.Index].Status = "not_checked_budget"
-			}
-		}
-		out.Summary.NotCheckedBudget = len(missing)
-		return publishJobModuleResponse{
-			Name:          "link_render_summary",
-			PolicyVersion: linkRenderSummaryPolicyVersion,
-			Status:        "not_checked_budget",
-			Cached:        false,
-			Budget: budgetDecision{
-				Allowed:          false,
-				OverBudget:       true,
-				Reason:           "budget exceeded",
-				Month:            month,
-				IncludedCredits:  budget.IncludedCredits,
-				UsedCredits:      budget.UsedCredits,
-				RemainingCredits: remaining,
-				RequestedCredits: creditsNeeded,
-				DebitedCredits:   0,
-			},
-			Result: out,
-		}
-	}
-
-	// Generate summaries sequentially (bounded by snapshot fetch + compute).
-	usedCredits := budget.UsedCredits
-	totalDebited := int64(0)
-	totalOverage := int64(0)
-
-	perSummaryCost := billing.PricedCredits(linkRenderSummaryCreditCost, pricingMultiplierBps)
-
-	for _, ms := range missing {
-		if ms.Index < 0 || ms.Index >= len(out.Links) || ms.Artifact == nil {
-			continue
+		if strings.TrimSpace(resp.Budget.Month) != "" {
+			budgetMonth = strings.TrimSpace(resp.Budget.Month)
+			budgetIncluded = resp.Budget.IncludedCredits
+			budgetUsed = resp.Budget.UsedCredits
+			budgetRemaining = resp.Budget.RemainingCredits
 		}
 
-		if !allowOverage {
-			if (budget.IncludedCredits - usedCredits) < perSummaryCost {
-				out.Links[ms.Index].Status = "not_checked_budget"
-				out.Summary.NotCheckedBudget++
-				continue
-			}
-		}
+		linkOut.SummaryJobID = strings.TrimSpace(resp.JobID)
 
-		snapshotKey := strings.TrimSpace(ms.Artifact.SnapshotObjectKey)
-		if snapshotKey == "" {
-			out.Links[ms.Index].Status = "queued"
-			continue
-		}
+		switch resp.Status {
+		case ai.JobStatusOK:
+			out.Summary.Cached++
+			linkOut.Status = "ok"
+			linkOut.Cached = true
 
-		body, _, _, err := s.artifacts.GetObject(ctx.Context(), snapshotKey, 512*1024)
-		if err != nil {
-			out.Links[ms.Index].Status = "error"
-			out.Summary.Errors++
-			continue
-		}
-
-		summary := summarizeSnapshot(string(body), 512)
-		if strings.TrimSpace(summary) == "" {
-			out.Links[ms.Index].Status = "error"
-			out.Summary.Errors++
-			continue
-		}
-
-		includedDebited, overageDebited := billing.BillingPartsForDebit(budget.IncludedCredits, usedCredits, perSummaryCost)
-		billingType := billing.BillingTypeFromParts(includedDebited, overageDebited)
-
-		updateBudget := &models.InstanceBudgetMonth{
-			InstanceSlug: instanceSlug,
-			Month:        month,
-			UpdatedAt:    now,
-		}
-		_ = updateBudget.UpdateKeys()
-
-		updateArtifact := &models.RenderArtifact{
-			ID:        strings.TrimSpace(ms.Artifact.ID),
-			ExpiresAt: ms.Artifact.ExpiresAt,
-		}
-		_ = updateArtifact.UpdateKeys()
-
-		ledger := &models.UsageLedgerEntry{
-			ID:                     billing.UsageLedgerEntryID(instanceSlug, month, strings.TrimSpace(ctx.RequestID), "link_render_summary", strings.TrimSpace(ms.Artifact.ID), perSummaryCost),
-			InstanceSlug:           instanceSlug,
-			Month:                  month,
-			Module:                 "link_render_summary",
-			Target:                 strings.TrimSpace(ms.Artifact.ID),
-			Cached:                 false,
-			Reason:                 billingType,
-			RequestID:              strings.TrimSpace(ctx.RequestID),
-			RequestedCredits:       perSummaryCost,
-			DebitedCredits:         perSummaryCost,
-			IncludedDebitedCredits: includedDebited,
-			OverageDebitedCredits:  overageDebited,
-			BillingType:            billingType,
-			CreatedAt:              now,
-		}
-		_ = ledger.UpdateKeys()
-
-		auditBudget := &models.AuditLogEntry{
-			Actor:     instanceSlug,
-			Action:    "budget.debit",
-			Target:    fmt.Sprintf("instance_budget:%s:%s", instanceSlug, month),
-			RequestID: strings.TrimSpace(ctx.RequestID),
-			CreatedAt: now,
-		}
-		_ = auditBudget.UpdateKeys()
-
-		auditSummary := &models.AuditLogEntry{
-			Actor:     instanceSlug,
-			Action:    "render.summary.generate",
-			Target:    fmt.Sprintf("render:%s", strings.TrimSpace(ms.Artifact.ID)),
-			RequestID: strings.TrimSpace(ctx.RequestID),
-			CreatedAt: now,
-		}
-		_ = auditSummary.UpdateKeys()
-
-		err = s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
-			if allowOverage {
-				tx.UpdateWithBuilder(updateBudget, func(ub core.UpdateBuilder) error {
-					ub.Add("UsedCredits", perSummaryCost)
-					ub.Set("UpdatedAt", now)
-					return nil
-				}, tabletheory.IfExists())
-			} else {
-				tx.UpdateWithBuilder(updateBudget, func(ub core.UpdateBuilder) error {
-					ub.Add("UsedCredits", perSummaryCost)
-					ub.Set("UpdatedAt", now)
-					return nil
-				},
-					tabletheory.IfExists(),
-					tabletheory.ConditionExpression(
-						"if_not_exists(usedCredits, :zero) + :delta <= if_not_exists(includedCredits, :zero)",
-						map[string]any{
-							":zero":  int64(0),
-							":delta": perSummaryCost,
-						},
-					),
-				)
-			}
-
-			// Only write the summary if it isn't already present for this policy version.
-			tx.UpdateWithBuilder(updateArtifact, func(ub core.UpdateBuilder) error {
-				ub.Set("SummaryPolicyVersion", linkRenderSummaryPolicyVersion)
-				ub.Set("Summary", summary)
-				ub.Set("SummarizedAt", now)
-				return nil
-			},
-				tabletheory.IfExists(),
-				tabletheory.ConditionExpression(
-					"(attribute_not_exists(summaryPolicyVersion) OR summaryPolicyVersion <> :v) OR (attribute_not_exists(summary) OR summary = :empty)",
-					map[string]any{
-						":v":     linkRenderSummaryPolicyVersion,
-						":empty": "",
-					},
-				),
-			)
-
-			tx.Put(ledger)
-			tx.Put(auditBudget)
-			tx.Put(auditSummary)
-			return nil
-		})
-		if theoryErrors.IsConditionFailed(err) {
-			// Either we raced on budget or summary; re-read artifact and, if present, treat as cache hit.
-			if refreshed, err2 := s.store.GetRenderArtifact(ctx.Context(), strings.TrimSpace(ms.Artifact.ID)); err2 == nil && refreshed != nil {
-				if strings.TrimSpace(refreshed.Summary) != "" && strings.TrimSpace(refreshed.SummaryPolicyVersion) == linkRenderSummaryPolicyVersion {
-					out.Links[ms.Index].Status = "ok"
-					out.Links[ms.Index].Cached = true
-					out.Links[ms.Index].Summary = strings.TrimSpace(refreshed.Summary)
-					out.Summary.Cached++
-					continue
+			if resp.Result != nil && strings.TrimSpace(resp.Result.ResultJSON) != "" {
+				var parsed ai.RenderSummaryResultV1
+				if err := json.Unmarshal([]byte(resp.Result.ResultJSON), &parsed); err == nil {
+					linkOut.Summary = strings.TrimSpace(parsed.ShortSummary)
+					linkOut.Bullets = append([]string(nil), parsed.KeyBullets...)
+					linkOut.Risks = append([]ai.RenderSummaryRisk(nil), parsed.Risks...)
 				}
 			}
 
-			out.Links[ms.Index].Status = "not_checked_budget"
+			// Best-effort mirror short summary into the render artifact for backwards-compatible consumers.
+			if strings.TrimSpace(linkOut.Summary) != "" &&
+				(strings.TrimSpace(artifact.Summary) == "" || strings.TrimSpace(artifact.SummaryPolicyVersion) != linkRenderSummaryPolicyVersion) {
+				artifact.SummaryPolicyVersion = linkRenderSummaryPolicyVersion
+				artifact.Summary = strings.TrimSpace(linkOut.Summary)
+				artifact.SummarizedAt = now
+				artifact.RequestID = strings.TrimSpace(ctx.RequestID)
+				artifact.RequestedBy = strings.TrimSpace(instanceSlug)
+				_ = artifact.UpdateKeys()
+				_ = s.store.PutRenderArtifact(ctx.Context(), artifact)
+			}
+		case ai.JobStatusQueued:
+			out.Summary.Queued++
+			linkOut.Status = "queued"
+			estimatedBytes := int64(len([]byte(inputs.Text)))
+			estimatedBytes += int64(len(inputs.RenderID) + len(inputs.NormalizedURL) + len(inputs.ResolvedURL) + len(inputs.RenderedAt) + len(inputs.LinkRisk))
+			queued = append(queued, queuedRenderSummary{
+				Index:          len(out.Links),
+				JobID:          strings.TrimSpace(resp.JobID),
+				Inputs:         inputs,
+				EstimatedBytes: estimatedBytes,
+				Artifact:       artifact,
+			})
+		case ai.JobStatusNotCheckedBudget:
 			out.Summary.NotCheckedBudget++
-			continue
-		}
-		if err != nil {
-			out.Links[ms.Index].Status = "error"
+			linkOut.Status = "not_checked_budget"
+		default:
 			out.Summary.Errors++
-			continue
+			linkOut.Status = "error"
 		}
 
-		usedCredits += perSummaryCost
-		totalDebited += perSummaryCost
-		totalOverage += overageDebited
-
-		out.Links[ms.Index].Status = "ok"
-		out.Links[ms.Index].Cached = false
-		out.Links[ms.Index].Summary = summary
-		out.Summary.Generated++
+		out.Links = append(out.Links, linkOut)
 	}
 
-	// Best-effort refreshed budget for reporting.
-	var latest models.InstanceBudgetMonth
-	_ = s.store.DB.WithContext(ctx.Context()).
-		Model(&models.InstanceBudgetMonth{}).
-		Where("PK", "=", pk).
-		Where("SK", "=", sk).
-		ConsistentRead().
-		First(&latest)
+	if len(queued) > 0 {
+		mode := strings.ToLower(strings.TrimSpace(instCfg.AIBatchingMode))
+		if mode == "" {
+			mode = "none"
+		}
 
-	remaining = latest.IncludedCredits - latest.UsedCredits
-	overBudget := remaining < 0 || totalOverage > 0
-	reason := "debited"
-	if totalOverage > 0 {
-		reason = "overage"
+		maxItems := instCfg.AIBatchMaxItems
+		if maxItems <= 0 {
+			maxItems = 8
+		}
+
+		maxBytes := instCfg.AIBatchMaxTotalBytes
+		if maxBytes <= 0 {
+			maxBytes = 64 * 1024
+		}
+
+		totalBytes := int64(0)
+		for _, q := range queued {
+			totalBytes += q.EstimatedBytes
+		}
+
+		lowerModelSet := strings.ToLower(strings.TrimSpace(modelSet))
+
+		inline := false
+		if !strings.HasPrefix(lowerModelSet, "openai:") {
+			// Deterministic or unsupported provider; compute immediately.
+			inline = true
+		} else if mode == "in_request" {
+			inline = true
+		} else if mode == "hybrid" {
+			inline = int64(len(queued)) <= maxItems && totalBytes <= maxBytes
+		}
+
+		processShard := func(shard []queuedRenderSummary, allowLLM bool) {
+			if len(shard) == 0 {
+				return
+			}
+
+			batchItems := make([]llm.RenderSummaryBatchItem, 0, len(shard))
+			for _, q := range shard {
+				batchItems = append(batchItems, llm.RenderSummaryBatchItem{
+					ItemID: strings.TrimSpace(q.JobID),
+					Input:  q.Inputs,
+				})
+			}
+
+			start := time.Now()
+			results := map[string]ai.RenderSummaryResultV1{}
+			usage := models.AIUsage{}
+			commonErrs := []models.AIError{}
+
+			useDeterministic := true
+			if allowLLM && strings.HasPrefix(lowerModelSet, "openai:") {
+				apiKey, err := openAIAPIKey(ctx.Context())
+				if err != nil || strings.TrimSpace(apiKey) == "" {
+					commonErrs = append(commonErrs, models.AIError{Code: "llm_unavailable", Message: "LLM unavailable; used deterministic fallback", Retryable: false})
+				} else {
+					outMap, u, err := llm.RenderSummaryBatchOpenAI(ctx.Context(), apiKey, modelSet, batchItems)
+					if err != nil {
+						commonErrs = append(commonErrs, models.AIError{Code: "llm_failed", Message: "LLM call failed; used deterministic fallback", Retryable: false})
+					} else {
+						results = outMap
+						usage = u
+						useDeterministic = false
+					}
+				}
+			}
+
+			if useDeterministic {
+				for _, it := range batchItems {
+					results[it.ItemID] = ai.RenderSummaryDeterministicV1(it.Input)
+				}
+				usage = models.AIUsage{
+					Provider:   "deterministic",
+					Model:      "deterministic",
+					ToolCalls:  0,
+					DurationMs: time.Since(start).Milliseconds(),
+				}
+			}
+
+			for _, q := range shard {
+				id := strings.TrimSpace(q.JobID)
+				res, ok := results[id]
+				itemErrs := append([]models.AIError(nil), commonErrs...)
+				if !ok || strings.TrimSpace(res.ShortSummary) == "" {
+					res = ai.RenderSummaryDeterministicV1(q.Inputs)
+					itemErrs = append(itemErrs, models.AIError{Code: "llm_missing_output", Message: "LLM output missing; used deterministic fallback", Retryable: false})
+				}
+
+				b, err := json.Marshal(res)
+				if err != nil {
+					if q.Index >= 0 && q.Index < len(out.Links) {
+						out.Links[q.Index].Status = "error"
+						out.Summary.Errors++
+						out.Summary.Queued--
+					}
+					continue
+				}
+
+				inputsHash, _ := ai.InputsHash(q.Inputs)
+
+				item := &models.AIResult{
+					ID:            id,
+					InstanceSlug:  strings.TrimSpace(instanceSlug),
+					Module:        ai.RenderSummaryLLMModule,
+					PolicyVersion: ai.RenderSummaryLLMPolicyVersion,
+					ModelSet:      modelSet,
+					CacheScope:    string(ai.CacheScopeInstance),
+					ScopeKey:      strings.TrimSpace(instanceSlug),
+					InputsHash:    strings.TrimSpace(inputsHash),
+					ResultJSON:    strings.TrimSpace(string(b)),
+					Usage:         usage,
+					Errors:        append([]models.AIError(nil), itemErrs...),
+					CreatedAt:     now,
+					ExpiresAt:     now.Add(30 * 24 * time.Hour),
+					JobID:         id,
+					RequestID:     strings.TrimSpace(ctx.RequestID),
+				}
+				_ = item.UpdateKeys()
+
+				if err := s.store.PutAIResult(ctx.Context(), item); err != nil {
+					if q.Index >= 0 && q.Index < len(out.Links) {
+						out.Links[q.Index].Status = "error"
+						out.Summary.Errors++
+						out.Summary.Queued--
+					}
+					continue
+				}
+
+				// Best-effort job status update (worker also handles existing results).
+				if job, err := s.store.GetAIJob(ctx.Context(), id); err == nil && job != nil {
+					job.Status = models.AIJobStatusOK
+					job.ErrorCode = ""
+					job.ErrorMessage = ""
+					job.UpdatedAt = now
+					job.RequestID = strings.TrimSpace(ctx.RequestID)
+					_ = job.UpdateKeys()
+					_ = s.store.PutAIJob(ctx.Context(), job)
+				}
+
+				if q.Index >= 0 && q.Index < len(out.Links) {
+					out.Links[q.Index].Status = "ok"
+					out.Links[q.Index].Cached = false
+					out.Links[q.Index].Summary = strings.TrimSpace(res.ShortSummary)
+					out.Links[q.Index].Bullets = append([]string(nil), res.KeyBullets...)
+					out.Links[q.Index].Risks = append([]ai.RenderSummaryRisk(nil), res.Risks...)
+				}
+				out.Summary.Generated++
+				out.Summary.Queued--
+
+				if q.Artifact != nil && strings.TrimSpace(res.ShortSummary) != "" &&
+					(strings.TrimSpace(q.Artifact.Summary) == "" || strings.TrimSpace(q.Artifact.SummaryPolicyVersion) != linkRenderSummaryPolicyVersion) {
+					q.Artifact.SummaryPolicyVersion = linkRenderSummaryPolicyVersion
+					q.Artifact.Summary = strings.TrimSpace(res.ShortSummary)
+					q.Artifact.SummarizedAt = now
+					q.Artifact.RequestID = strings.TrimSpace(ctx.RequestID)
+					q.Artifact.RequestedBy = strings.TrimSpace(instanceSlug)
+					_ = q.Artifact.UpdateKeys()
+					_ = s.store.PutRenderArtifact(ctx.Context(), q.Artifact)
+				}
+			}
+		}
+
+		shards := shardQueuedSummaries(queued, maxItems, maxBytes)
+		if inline {
+			for _, shard := range shards {
+				processShard(shard, true)
+			}
+		} else {
+			enqueue := func(jobIDs []string) error {
+				if len(jobIDs) == 0 {
+					return nil
+				}
+				if s.queues == nil {
+					return fmt.Errorf("safety queue not configured")
+				}
+
+				msg := ai.JobMessage{}
+				if len(jobIDs) == 1 && mode == "none" {
+					msg.Kind = "ai_job"
+					msg.JobID = jobIDs[0]
+				} else {
+					msg.Kind = "ai_job_batch"
+					msg.JobIDs = append([]string(nil), jobIDs...)
+				}
+				return s.queues.enqueueAIJob(ctx.Context(), msg)
+			}
+
+			for _, shard := range shards {
+				if mode == "none" {
+					for _, q := range shard {
+						id := strings.TrimSpace(q.JobID)
+						if err := enqueue([]string{id}); err != nil {
+							processShard([]queuedRenderSummary{q}, true)
+						}
+					}
+					continue
+				}
+
+				ids := make([]string, 0, len(shard))
+				for _, q := range shard {
+					ids = append(ids, strings.TrimSpace(q.JobID))
+				}
+				if err := enqueue(ids); err != nil {
+					processShard(shard, true)
+				}
+			}
+		}
 	}
 
 	status := "ok"
-	if out.Summary.NotCheckedBudget > 0 && out.Summary.Generated == 0 {
+	if out.Summary.NotCheckedBudget > 0 && (out.Summary.Cached+out.Summary.Generated+out.Summary.Queued) == 0 {
 		status = "not_checked_budget"
+	} else if out.Summary.Errors > 0 && (out.Summary.Cached+out.Summary.Generated+out.Summary.Queued) == 0 {
+		status = "error"
+	}
+
+	cached := out.Summary.Candidates > 0 && out.Summary.Generated == 0 && out.Summary.Queued == 0 && out.Summary.Cached > 0
+
+	month := strings.TrimSpace(budgetMonth)
+	if month == "" {
+		month = now.Format("2006-01")
+	}
+	reason := "queued"
+	if budgetDebited > 0 {
+		reason = "debited"
+		if budgetOver {
+			reason = "overage"
+		}
+	} else if cached {
+		reason = "cache_hit"
+	} else if out.Summary.NotCheckedBudget > 0 {
+		reason = "budget"
 	}
 
 	return publishJobModuleResponse{
 		Name:          "link_render_summary",
 		PolicyVersion: linkRenderSummaryPolicyVersion,
 		Status:        status,
-		Cached:        out.Summary.Generated == 0 && out.Summary.Cached > 0,
+		Cached:        cached,
 		Budget: budgetDecision{
 			Allowed:          status != "not_checked_budget",
-			OverBudget:       overBudget,
+			OverBudget:       budgetOver,
 			Reason:           reason,
 			Month:            month,
-			IncludedCredits:  latest.IncludedCredits,
-			UsedCredits:      latest.UsedCredits,
-			RemainingCredits: remaining,
-			RequestedCredits: creditsNeeded,
-			DebitedCredits:   totalDebited,
+			IncludedCredits:  budgetIncluded,
+			UsedCredits:      budgetUsed,
+			RemainingCredits: budgetRemaining,
+			RequestedCredits: budgetRequested,
+			DebitedCredits:   budgetDebited,
 		},
 		Result: out,
 	}
 }
 
-func summarizeSnapshot(in string, max int) string {
-	in = strings.ReplaceAll(in, "\r\n", "\n")
-	in = strings.ReplaceAll(in, "\r", "\n")
+func shardQueuedSummaries(items []queuedRenderSummary, maxItems int64, maxTotalBytes int64) [][]queuedRenderSummary {
+	if len(items) == 0 {
+		return nil
+	}
+	if maxItems <= 0 {
+		maxItems = 8
+	}
+	if maxTotalBytes <= 0 {
+		maxTotalBytes = 64 * 1024
+	}
 
-	lines := strings.Split(in, "\n")
-	out := make([]string, 0, 12)
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
+	var shards [][]queuedRenderSummary
+	var cur []queuedRenderSummary
+	var curBytes int64
+
+	flush := func() {
+		if len(cur) == 0 {
+			return
 		}
-		out = append(out, line)
-		if len(out) >= 12 {
-			break
+		shards = append(shards, cur)
+		cur = nil
+		curBytes = 0
+	}
+
+	for _, it := range items {
+		itemBytes := it.EstimatedBytes
+		if itemBytes <= 0 {
+			itemBytes = 1
 		}
+
+		if int64(len(cur)) >= maxItems || (curBytes > 0 && (curBytes+itemBytes) > maxTotalBytes) {
+			flush()
+		}
+
+		cur = append(cur, it)
+		curBytes += itemBytes
 	}
 
-	joined := strings.Join(out, " ")
-	joined = strings.Join(strings.Fields(joined), " ")
-	if strings.TrimSpace(joined) == "" {
-		return ""
-	}
+	flush()
+	return shards
+}
 
-	if max <= 0 {
-		max = 512
+func openAIAPIKey(ctx context.Context) (string, error) {
+	if k := strings.TrimSpace(os.Getenv("OPENAI_API_KEY")); k != "" {
+		return k, nil
 	}
-	if len(joined) > max {
-		joined = strings.TrimSpace(joined[:max])
-	}
-	return joined
+	return secrets.OpenAIServiceKey(ctx, nil)
 }
