@@ -23,10 +23,11 @@ type createInstanceRequest struct {
 }
 
 type instanceResponse struct {
-	Slug      string    `json:"slug"`
-	Owner     string    `json:"owner,omitempty"`
-	Status    string    `json:"status"`
-	CreatedAt time.Time `json:"created_at"`
+	Slug                  string    `json:"slug"`
+	Owner                 string    `json:"owner,omitempty"`
+	Status                string    `json:"status"`
+	HostedPreviewsEnabled bool      `json:"hosted_previews_enabled"`
+	CreatedAt             time.Time `json:"created_at"`
 }
 
 type listInstancesResponse struct {
@@ -38,6 +39,10 @@ type createInstanceKeyResponse struct {
 	InstanceSlug string `json:"instance_slug"`
 	Key          string `json:"key"`
 	KeyID        string `json:"key_id"`
+}
+
+type updateInstanceConfigRequest struct {
+	HostedPreviewsEnabled *bool `json:"hosted_previews_enabled,omitempty"`
 }
 
 type setBudgetMonthRequest struct {
@@ -84,11 +89,13 @@ func (s *Server) handleCreateInstance(ctx *apptheory.Context) (*apptheory.Respon
 	}
 
 	now := time.Now().UTC()
+	hostedPreviewsEnabled := true
 	inst := &models.Instance{
-		Slug:      slug,
-		Owner:     strings.TrimSpace(req.Owner),
-		Status:    models.InstanceStatusActive,
-		CreatedAt: now,
+		Slug:                  slug,
+		Owner:                 strings.TrimSpace(req.Owner),
+		Status:                models.InstanceStatusActive,
+		HostedPreviewsEnabled: &hostedPreviewsEnabled,
+		CreatedAt:             now,
 	}
 	if err := inst.UpdateKeys(); err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
@@ -113,10 +120,11 @@ func (s *Server) handleCreateInstance(ctx *apptheory.Context) (*apptheory.Respon
 	}
 
 	return apptheory.JSON(http.StatusCreated, instanceResponse{
-		Slug:      inst.Slug,
-		Owner:     inst.Owner,
-		Status:    inst.Status,
-		CreatedAt: inst.CreatedAt,
+		Slug:                  inst.Slug,
+		Owner:                 inst.Owner,
+		Status:                inst.Status,
+		HostedPreviewsEnabled: effectiveHostedPreviewsEnabled(inst.HostedPreviewsEnabled),
+		CreatedAt:             inst.CreatedAt,
 	})
 }
 
@@ -137,10 +145,11 @@ func (s *Server) handleListInstances(ctx *apptheory.Context) (*apptheory.Respons
 	out := make([]instanceResponse, 0, len(items))
 	for _, inst := range items {
 		out = append(out, instanceResponse{
-			Slug:      inst.Slug,
-			Owner:     inst.Owner,
-			Status:    inst.Status,
-			CreatedAt: inst.CreatedAt,
+			Slug:                  inst.Slug,
+			Owner:                 inst.Owner,
+			Status:                inst.Status,
+			HostedPreviewsEnabled: effectiveHostedPreviewsEnabled(inst.HostedPreviewsEnabled),
+			CreatedAt:             inst.CreatedAt,
 		})
 	}
 
@@ -148,6 +157,13 @@ func (s *Server) handleListInstances(ctx *apptheory.Context) (*apptheory.Respons
 		Instances: out,
 		Count:     len(out),
 	})
+}
+
+func effectiveHostedPreviewsEnabled(v *bool) bool {
+	if v == nil {
+		return true
+	}
+	return *v
 }
 
 func (s *Server) handleCreateInstanceKey(ctx *apptheory.Context) (*apptheory.Response, error) {
@@ -204,6 +220,71 @@ func (s *Server) handleCreateInstanceKey(ctx *apptheory.Context) (*apptheory.Res
 		InstanceSlug: slug,
 		Key:          plaintext,
 		KeyID:        keyID,
+	})
+}
+
+func (s *Server) handleUpdateInstanceConfig(ctx *apptheory.Context) (*apptheory.Response, error) {
+	if err := requireAdmin(ctx); err != nil {
+		return nil, err
+	}
+
+	slug := strings.ToLower(strings.TrimSpace(ctx.Param("slug")))
+	if slug == "" {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "slug is required"}
+	}
+
+	if _, err := s.getInstance(ctx, slug); theoryErrors.IsNotFound(err) {
+		return nil, &apptheory.AppError{Code: "app.not_found", Message: "instance not found"}
+	} else if err != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
+	var req updateInstanceConfigRequest
+	if err := parseJSON(ctx, &req); err != nil {
+		return nil, err
+	}
+	if req.HostedPreviewsEnabled == nil {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "hosted_previews_enabled is required"}
+	}
+
+	update := &models.Instance{
+		Slug:                  slug,
+		HostedPreviewsEnabled: req.HostedPreviewsEnabled,
+	}
+	if err := update.UpdateKeys(); err != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if err := s.store.DB.WithContext(ctx.Context()).Model(update).IfExists().Update("HostedPreviewsEnabled"); err != nil {
+		if theoryErrors.IsConditionFailed(err) {
+			return nil, &apptheory.AppError{Code: "app.not_found", Message: "instance not found"}
+		}
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to update instance"}
+	}
+
+	now := time.Now().UTC()
+	audit := &models.AuditLogEntry{
+		Actor:     strings.TrimSpace(ctx.AuthIdentity),
+		Action:    "instance.config.update",
+		Target:    fmt.Sprintf("instance:%s", slug),
+		RequestID: ctx.RequestID,
+		CreatedAt: now,
+	}
+	_ = audit.UpdateKeys()
+	if err := s.store.DB.WithContext(ctx.Context()).Model(audit).Create(); err != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to write audit log"}
+	}
+
+	inst, err := s.getInstance(ctx, slug)
+	if err != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
+	return apptheory.JSON(http.StatusOK, instanceResponse{
+		Slug:                  inst.Slug,
+		Owner:                 inst.Owner,
+		Status:                inst.Status,
+		HostedPreviewsEnabled: effectiveHostedPreviewsEnabled(inst.HostedPreviewsEnabled),
+		CreatedAt:             inst.CreatedAt,
 	})
 }
 
@@ -288,4 +369,3 @@ func (s *Server) handleSetInstanceBudgetMonth(ctx *apptheory.Context) (*apptheor
 		UpdatedAt:       budget.UpdatedAt,
 	})
 }
-

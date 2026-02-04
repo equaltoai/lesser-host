@@ -17,10 +17,11 @@ type Instance struct {
 	PK string `theorydb:"pk,attr:PK" json:"-"`
 	SK string `theorydb:"sk,attr:SK" json:"-"`
 
-	Slug      string    `theorydb:"attr:slug" json:"slug"`
-	Owner     string    `theorydb:"attr:owner" json:"owner,omitempty"`
-	Status    string    `theorydb:"attr:status" json:"status"`
-	CreatedAt time.Time `theorydb:"attr:createdAt" json:"created_at"`
+	Slug                  string    `theorydb:"attr:slug" json:"slug"`
+	Owner                 string    `theorydb:"attr:owner" json:"owner,omitempty"`
+	Status                string    `theorydb:"attr:status" json:"status"`
+	HostedPreviewsEnabled *bool     `theorydb:"attr:hostedPreviewsEnabled" json:"hosted_previews_enabled,omitempty"`
+	CreatedAt             time.Time `theorydb:"attr:createdAt" json:"created_at"`
 }
 
 func (Instance) TableName() string { return MainTableName() }
@@ -35,6 +36,10 @@ func (i *Instance) BeforeCreate() error {
 	if strings.TrimSpace(i.Status) == "" {
 		i.Status = InstanceStatusActive
 	}
+	if i.HostedPreviewsEnabled == nil {
+		v := true
+		i.HostedPreviewsEnabled = &v
+	}
 	return nil
 }
 
@@ -47,4 +52,3 @@ func (i *Instance) UpdateKeys() error {
 
 func (i *Instance) GetPK() string { return i.PK }
 func (i *Instance) GetSK() string { return i.SK }
-

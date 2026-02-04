@@ -8,16 +8,16 @@ import (
 )
 
 type Server struct {
-	cfg     config.Config
-	store   *store.Store
+	cfg      config.Config
+	store    *store.Store
 	webAuthn webAuthnEngine
 }
 
 func NewServer(cfg config.Config, st *store.Store) *Server {
 	webAuthn, _ := newWebAuthnEngine(cfg)
 	return &Server{
-		cfg:     cfg,
-		store:   st,
+		cfg:      cfg,
+		store:    st,
 		webAuthn: webAuthn,
 	}
 }
@@ -53,6 +53,7 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 	// Instance registry + billing primitives (admin-only).
 	app.Post("/api/v1/instances", s.handleCreateInstance, apptheory.RequireAuth())
 	app.Get("/api/v1/instances", s.handleListInstances, apptheory.RequireAuth())
+	app.Put("/api/v1/instances/{slug}/config", s.handleUpdateInstanceConfig, apptheory.RequireAuth())
 	app.Post("/api/v1/instances/{slug}/keys", s.handleCreateInstanceKey, apptheory.RequireAuth())
 	app.Put("/api/v1/instances/{slug}/budgets/{month}", s.handleSetInstanceBudgetMonth, apptheory.RequireAuth())
 }
