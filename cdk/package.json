@@ -1,0 +1,21 @@
+{
+  "name": "lesser-host-cdk",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": {
+    "build": "tsc",
+    "synth": "cdk synth",
+    "deploy": "cdk deploy --all",
+    "destroy": "cdk destroy --all"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "2.237.1",
+    "constructs": "^10.4.2"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "aws-cdk": "2.1104.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  }
+}

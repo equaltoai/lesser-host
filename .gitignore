@@ -5,3 +5,6 @@
 .env.*
 tmp/
 bin/
+node_modules/
+cdk/cdk.out/
+cdk/dist/
