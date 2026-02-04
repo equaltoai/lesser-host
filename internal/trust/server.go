@@ -3,6 +3,7 @@ package trust
 import (
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 
+	"github.com/equaltoai/lesser-host/internal/artifacts"
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/store"
 )
@@ -10,14 +11,16 @@ import (
 type Server struct {
 	cfg       config.Config
 	store     *store.Store
-	artifacts *artifactStore
+	artifacts *artifacts.Store
+	queues    *queueClient
 }
 
 func NewServer(cfg config.Config, st *store.Store) *Server {
 	return &Server{
 		cfg:       cfg,
 		store:     st,
-		artifacts: newArtifactStore(cfg.ArtifactBucketName),
+		artifacts: artifacts.New(cfg.ArtifactBucketName),
+		queues:    newQueueClient(cfg.PreviewQueueURL),
 	}
 }
 
@@ -25,6 +28,12 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 	if app == nil || s == nil {
 		return
 	}
+
+	// Render artifacts.
+	app.Post("/api/v1/renders", s.handleCreateRender, apptheory.RequireAuth())
+	app.Get("/api/v1/renders/{renderId}", s.handleGetRender, apptheory.RequireAuth())
+	app.Get("/api/v1/renders/{renderId}/thumbnail", s.handleGetRenderThumbnail)
+	app.Get("/api/v1/renders/{renderId}/snapshot", s.handleGetRenderSnapshot, apptheory.RequireAuth())
 
 	// Link previews.
 	app.Post("/api/v1/previews", s.handleLinkPreview, apptheory.RequireAuth())

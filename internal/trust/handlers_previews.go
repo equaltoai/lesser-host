@@ -4,15 +4,18 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
+	"github.com/theory-cloud/tabletheory"
 	"github.com/theory-cloud/tabletheory/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
+	"github.com/equaltoai/lesser-host/internal/rendering"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -37,6 +40,8 @@ type linkPreviewResponse struct {
 
 	ImageID  string `json:"image_id,omitempty"`
 	ImageURL string `json:"image_url,omitempty"`
+
+	Render *renderArtifactResponse `json:"render,omitempty"`
 
 	ErrorCode    string `json:"error_code,omitempty"`
 	ErrorMessage string `json:"error_message,omitempty"`
@@ -74,6 +79,7 @@ func (s *Server) handleLinkPreview(ctx *apptheory.Context) (*apptheory.Response,
 	previewID := linkPreviewID(linkPreviewPolicyVersion, normalized)
 
 	// Respect per-instance config toggle (default: enabled).
+	renderPolicy := "suspicious"
 	{
 		var inst models.Instance
 		err := s.store.DB.WithContext(ctx.Context()).
@@ -97,12 +103,20 @@ func (s *Server) handleLinkPreview(ctx *apptheory.Context) (*apptheory.Response,
 				ExpiresAt:     time.Now().UTC().Add(5 * time.Minute),
 			})
 		}
+		if err == nil {
+			rp := strings.ToLower(strings.TrimSpace(inst.RenderPolicy))
+			if rp == "always" || rp == "suspicious" {
+				renderPolicy = rp
+			}
+		}
 	}
 
 	if !req.ForceRefresh {
 		item, err := s.store.GetLinkPreview(ctx.Context(), previewID)
 		if err == nil && !item.ExpiresAt.IsZero() && item.ExpiresAt.After(time.Now().UTC()) {
-			return apptheory.JSON(http.StatusOK, linkPreviewResponseFromModel(ctx, item, true))
+			resp := linkPreviewResponseFromModel(ctx, item, true)
+			s.maybeAttachPreviewRender(ctx, instanceSlug, renderPolicy, normalized, &resp)
+			return apptheory.JSON(http.StatusOK, resp)
 		}
 		if err != nil && !theoryErrors.IsNotFound(err) {
 			return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
@@ -154,7 +168,9 @@ func (s *Server) handleLinkPreview(ctx *apptheory.Context) (*apptheory.Response,
 		}); err != nil {
 			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to store preview"}
 		}
-		return apptheory.JSON(http.StatusOK, linkPreviewResponseFromModel(ctx, item, false))
+		resp := linkPreviewResponseFromModel(ctx, item, false)
+		s.maybeAttachPreviewRender(ctx, instanceSlug, renderPolicy, normalized, &resp)
+		return apptheory.JSON(http.StatusOK, resp)
 	}
 
 	// Fetch and store image if available.
@@ -185,7 +201,9 @@ func (s *Server) handleLinkPreview(ctx *apptheory.Context) (*apptheory.Response,
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to store preview"}
 	}
 
-	return apptheory.JSON(http.StatusOK, linkPreviewResponseFromModel(ctx, item, false))
+	resp := linkPreviewResponseFromModel(ctx, item, false)
+	s.maybeAttachPreviewRender(ctx, instanceSlug, renderPolicy, normalized, &resp)
+	return apptheory.JSON(http.StatusOK, resp)
 }
 
 func (s *Server) handleGetLinkPreview(ctx *apptheory.Context) (*apptheory.Response, error) {
@@ -194,6 +212,11 @@ func (s *Server) handleGetLinkPreview(ctx *apptheory.Context) (*apptheory.Respon
 	}
 	if ctx == nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
+	instanceSlug := strings.TrimSpace(ctx.AuthIdentity)
+	if instanceSlug == "" {
+		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
 	}
 
 	id := strings.TrimSpace(ctx.Param("id"))
@@ -209,7 +232,25 @@ func (s *Server) handleGetLinkPreview(ctx *apptheory.Context) (*apptheory.Respon
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
-	return apptheory.JSON(http.StatusOK, linkPreviewResponseFromModel(ctx, item, true))
+	renderPolicy := "suspicious"
+	{
+		var inst models.Instance
+		err := s.store.DB.WithContext(ctx.Context()).
+			Model(&models.Instance{}).
+			Where("PK", "=", "INSTANCE#"+instanceSlug).
+			Where("SK", "=", models.SKMetadata).
+			First(&inst)
+		if err == nil {
+			rp := strings.ToLower(strings.TrimSpace(inst.RenderPolicy))
+			if rp == "always" || rp == "suspicious" {
+				renderPolicy = rp
+			}
+		}
+	}
+
+	resp := linkPreviewResponseFromModel(ctx, item, true)
+	s.maybeAttachPreviewRender(ctx, instanceSlug, renderPolicy, strings.TrimSpace(item.NormalizedURL), &resp)
+	return apptheory.JSON(http.StatusOK, resp)
 }
 
 var imageIDRE = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -228,7 +269,7 @@ func (s *Server) handleGetLinkPreviewImage(ctx *apptheory.Context) (*apptheory.R
 	}
 
 	key := linkPreviewImageObjectKey(imageID)
-	body, contentType, etag, err := s.artifacts.getObject(ctx.Context(), key, linkPreviewMaxImageBytes)
+	body, contentType, etag, err := s.artifacts.GetObject(ctx.Context(), key, linkPreviewMaxImageBytes)
 	if err != nil {
 		return nil, &apptheory.AppError{Code: "app.not_found", Message: "image not found"}
 	}
@@ -276,10 +317,128 @@ func (s *Server) tryStorePreviewImage(ctx context.Context, rawImageURL string) (
 
 	imageID := imageIDFromNormalizedURL(imgNormalized)
 	key := linkPreviewImageObjectKey(imageID)
-	if err := s.artifacts.putObject(ctx, key, body, contentType, "public, max-age=86400, immutable"); err != nil {
+	if err := s.artifacts.PutObject(ctx, key, body, contentType, "public, max-age=86400, immutable"); err != nil {
 		return "", ""
 	}
 	return imageID, key
+}
+
+func (s *Server) maybeAttachPreviewRender(ctx *apptheory.Context, instanceSlug string, renderPolicy string, normalizedURL string, resp *linkPreviewResponse) {
+	if s == nil || s.store == nil || s.store.DB == nil || ctx == nil || resp == nil {
+		return
+	}
+	if strings.TrimSpace(normalizedURL) == "" {
+		return
+	}
+	if strings.TrimSpace(resp.Status) != "ok" {
+		return
+	}
+
+	renderPolicy = strings.ToLower(strings.TrimSpace(renderPolicy))
+	if renderPolicy != "always" && renderPolicy != "suspicious" {
+		renderPolicy = "suspicious"
+	}
+
+	analysis := analyzeLinkSafetyBasic(ctx.Context(), nil, normalizedURL)
+	risk := strings.ToLower(strings.TrimSpace(analysis.Risk))
+	if !shouldRenderLink(renderPolicy, risk) {
+		return
+	}
+
+	renderID := rendering.RenderArtifactID(rendering.RenderPolicyVersion, normalizedURL)
+
+	// Cache hit path (no debit).
+	if existing, err := s.store.GetRenderArtifact(ctx.Context(), renderID); err == nil && existing != nil {
+		r := renderArtifactResponseFromModel(ctx, existing, true)
+		resp.Render = &r
+		return
+	}
+
+	// Best-effort: only queue if budget allows and the queue is configured.
+	if strings.TrimSpace(s.cfg.PreviewQueueURL) == "" || s.queues == nil {
+		return
+	}
+
+	now := time.Now().UTC()
+	month := now.Format("2006-01")
+
+	pk := fmt.Sprintf("INSTANCE#%s", instanceSlug)
+	sk := fmt.Sprintf("BUDGET#%s", month)
+
+	var budget models.InstanceBudgetMonth
+	err := s.store.DB.WithContext(ctx.Context()).
+		Model(&models.InstanceBudgetMonth{}).
+		Where("PK", "=", pk).
+		Where("SK", "=", sk).
+		ConsistentRead().
+		First(&budget)
+	if err != nil {
+		return
+	}
+
+	remaining := budget.IncludedCredits - budget.UsedCredits
+	if remaining < linkRenderCreditCost {
+		return
+	}
+
+	update := &models.InstanceBudgetMonth{
+		InstanceSlug: instanceSlug,
+		Month:        month,
+		UpdatedAt:    now,
+	}
+	_ = update.UpdateKeys()
+
+	auditBudget := &models.AuditLogEntry{
+		Actor:     instanceSlug,
+		Action:    "budget.debit",
+		Target:    fmt.Sprintf("instance_budget:%s:%s", instanceSlug, month),
+		RequestID: strings.TrimSpace(ctx.RequestID),
+		CreatedAt: now,
+	}
+	_ = auditBudget.UpdateKeys()
+
+	err = s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
+		tx.UpdateWithBuilder(update, func(ub core.UpdateBuilder) error {
+			ub.Add("UsedCredits", linkRenderCreditCost)
+			ub.Set("UpdatedAt", now)
+			return nil
+		},
+			tabletheory.IfExists(),
+			tabletheory.ConditionExpression(
+				"if_not_exists(usedCredits, :zero) + :delta <= if_not_exists(includedCredits, :zero)",
+				map[string]any{
+					":zero":  int64(0),
+					":delta": linkRenderCreditCost,
+				},
+			),
+		)
+		tx.Put(auditBudget)
+		return nil
+	})
+	if err != nil {
+		return
+	}
+
+	retentionClass := retentionClassForRisk(risk)
+	artifact, queued, err := s.queueRender(ctx, normalizedURL, retentionClass, 0)
+	if err != nil || artifact == nil {
+		return
+	}
+
+	if queued {
+		audit := &models.AuditLogEntry{
+			Actor:     instanceSlug,
+			Action:    "render.queue",
+			Target:    fmt.Sprintf("render:%s", strings.TrimSpace(artifact.ID)),
+			RequestID: strings.TrimSpace(ctx.RequestID),
+			CreatedAt: now,
+		}
+		_ = audit.UpdateKeys()
+		_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
+	}
+
+	r := renderArtifactResponseFromModel(ctx, artifact, !queued)
+	resp.Render = &r
 }
 
 func linkPreviewResponseFromModel(ctx *apptheory.Context, item *models.LinkPreview, cached bool) linkPreviewResponse {

@@ -8,3 +8,4 @@ bin/
 node_modules/
 cdk/cdk.out/
 cdk/dist/
+cdk/.build/

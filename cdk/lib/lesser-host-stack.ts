@@ -1,10 +1,14 @@
 import * as path from 'node:path';
 import { execSync } from 'node:child_process';
+import * as fs from 'node:fs';
 
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import * as events from 'aws-cdk-lib/aws-events';
+import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 
@@ -84,14 +88,43 @@ export class LesserHostStack extends cdk.Stack {
 			WEBAUTHN_ORIGINS: webAuthnOrigins,
 		});
 
+		const repoRoot = this.repoRoot();
+		const renderWorkerFn = new lambda.DockerImageFunction(this, 'RenderWorker', {
+			functionName: `${namePrefix}-render-worker`,
+			code: lambda.DockerImageCode.fromImageAsset(repoRoot, {
+				file: 'cmd/render-worker/Dockerfile',
+				exclude: ['cdk/cdk.out/**', 'cdk/node_modules/**', 'cdk/.build/**', '.git/**'],
+			}),
+			memorySize: 1536,
+			timeout: cdk.Duration.seconds(30),
+			environment: {
+				STAGE: stage,
+				STATE_TABLE_NAME: stateTable.tableName,
+				ARTIFACT_BUCKET_NAME: artifactsBucket.bucketName,
+				PREVIEW_QUEUE_URL: previewQueue.queueUrl,
+				SAFETY_QUEUE_URL: safetyQueue.queueUrl,
+			},
+		});
+
 		stateTable.grantReadWriteData(controlPlaneFn);
 		stateTable.grantReadWriteData(trustFn);
+		stateTable.grantReadWriteData(renderWorkerFn);
 		artifactsBucket.grantReadWrite(controlPlaneFn);
 		artifactsBucket.grantReadWrite(trustFn);
+		artifactsBucket.grantReadWrite(renderWorkerFn);
 		previewQueue.grantSendMessages(controlPlaneFn);
 		previewQueue.grantSendMessages(trustFn);
+		previewQueue.grantConsumeMessages(renderWorkerFn);
 		safetyQueue.grantSendMessages(controlPlaneFn);
 		safetyQueue.grantSendMessages(trustFn);
+
+		renderWorkerFn.addEventSource(new lambdaEventSources.SqsEventSource(previewQueue, { batchSize: 1 }));
+
+		const retentionSweepRule = new events.Rule(this, 'RetentionSweepRule', {
+			ruleName: `${namePrefix}-retention-sweep`,
+			schedule: events.Schedule.rate(cdk.Duration.days(1)),
+		});
+		retentionSweepRule.addTarget(new targets.LambdaFunction(renderWorkerFn));
 
 		const controlPlaneUrl = controlPlaneFn.addFunctionUrl({
 			authType: lambda.FunctionUrlAuthType.NONE,
@@ -104,34 +137,19 @@ export class LesserHostStack extends cdk.Stack {
 
 	private goLambda(id: string, entry: string, environment: Record<string, string>): lambda.Function {
 		const repoRoot = this.repoRoot();
-		const code = lambda.Code.fromAsset(repoRoot, {
-			bundling: {
-				local: {
-					tryBundle(outputDir: string) {
-						execSync('go build -o ' + path.join(outputDir, 'main') + ' ' + entry, {
-							cwd: repoRoot,
-							stdio: 'inherit',
-							env: {
-								...process.env,
-								CGO_ENABLED: '0',
-								GOOS: 'linux',
-								GOARCH: 'amd64',
-							},
-						});
-						return true;
-					},
-				},
-				image: lambda.Runtime.GO_1_X.bundlingImage,
-				command: [
-					'bash',
-					'-lc',
-					[
-						'cd /asset-input',
-						'CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /asset-output/main ' + entry,
-					].join(' && '),
-				],
+		const buildDir = path.join(repoRoot, 'cdk', '.build', id);
+		fs.mkdirSync(buildDir, { recursive: true });
+		execSync('go build -o ' + path.join(buildDir, 'main') + ' ' + entry, {
+			cwd: repoRoot,
+			stdio: 'inherit',
+			env: {
+				...process.env,
+				CGO_ENABLED: '0',
+				GOOS: 'linux',
+				GOARCH: 'amd64',
 			},
 		});
+		const code = lambda.Code.fromAsset(buildDir);
 
 		return new lambda.Function(this, id, {
 			functionName: `${this.namePrefix}-${id.replace(/[A-Z]/g, (m) => '-' + m.toLowerCase()).replace(/^-/, '')}`,

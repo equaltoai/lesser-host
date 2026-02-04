@@ -21,6 +21,7 @@ type Instance struct {
 	Owner                 string    `theorydb:"attr:owner" json:"owner,omitempty"`
 	Status                string    `theorydb:"attr:status" json:"status"`
 	HostedPreviewsEnabled *bool     `theorydb:"attr:hostedPreviewsEnabled" json:"hosted_previews_enabled,omitempty"`
+	RenderPolicy          string    `theorydb:"attr:renderPolicy" json:"render_policy,omitempty"` // always|suspicious
 	CreatedAt             time.Time `theorydb:"attr:createdAt" json:"created_at"`
 }
 
@@ -39,6 +40,9 @@ func (i *Instance) BeforeCreate() error {
 	if i.HostedPreviewsEnabled == nil {
 		v := true
 		i.HostedPreviewsEnabled = &v
+	}
+	if strings.TrimSpace(i.RenderPolicy) == "" {
+		i.RenderPolicy = "suspicious"
 	}
 	return nil
 }

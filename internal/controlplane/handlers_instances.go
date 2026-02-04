@@ -27,6 +27,7 @@ type instanceResponse struct {
 	Owner                 string    `json:"owner,omitempty"`
 	Status                string    `json:"status"`
 	HostedPreviewsEnabled bool      `json:"hosted_previews_enabled"`
+	RenderPolicy          string    `json:"render_policy"`
 	CreatedAt             time.Time `json:"created_at"`
 }
 
@@ -42,7 +43,8 @@ type createInstanceKeyResponse struct {
 }
 
 type updateInstanceConfigRequest struct {
-	HostedPreviewsEnabled *bool `json:"hosted_previews_enabled,omitempty"`
+	HostedPreviewsEnabled *bool   `json:"hosted_previews_enabled,omitempty"`
+	RenderPolicy          *string `json:"render_policy,omitempty"` // always|suspicious
 }
 
 type setBudgetMonthRequest struct {
@@ -90,11 +92,13 @@ func (s *Server) handleCreateInstance(ctx *apptheory.Context) (*apptheory.Respon
 
 	now := time.Now().UTC()
 	hostedPreviewsEnabled := true
+	renderPolicy := "suspicious"
 	inst := &models.Instance{
 		Slug:                  slug,
 		Owner:                 strings.TrimSpace(req.Owner),
 		Status:                models.InstanceStatusActive,
 		HostedPreviewsEnabled: &hostedPreviewsEnabled,
+		RenderPolicy:          renderPolicy,
 		CreatedAt:             now,
 	}
 	if err := inst.UpdateKeys(); err != nil {
@@ -124,6 +128,7 @@ func (s *Server) handleCreateInstance(ctx *apptheory.Context) (*apptheory.Respon
 		Owner:                 inst.Owner,
 		Status:                inst.Status,
 		HostedPreviewsEnabled: effectiveHostedPreviewsEnabled(inst.HostedPreviewsEnabled),
+		RenderPolicy:          effectiveRenderPolicy(inst.RenderPolicy),
 		CreatedAt:             inst.CreatedAt,
 	})
 }
@@ -149,6 +154,7 @@ func (s *Server) handleListInstances(ctx *apptheory.Context) (*apptheory.Respons
 			Owner:                 inst.Owner,
 			Status:                inst.Status,
 			HostedPreviewsEnabled: effectiveHostedPreviewsEnabled(inst.HostedPreviewsEnabled),
+			RenderPolicy:          effectiveRenderPolicy(inst.RenderPolicy),
 			CreatedAt:             inst.CreatedAt,
 		})
 	}
@@ -164,6 +170,14 @@ func effectiveHostedPreviewsEnabled(v *bool) bool {
 		return true
 	}
 	return *v
+}
+
+func effectiveRenderPolicy(v string) string {
+	v = strings.ToLower(strings.TrimSpace(v))
+	if v == "" {
+		return "suspicious"
+	}
+	return v
 }
 
 func (s *Server) handleCreateInstanceKey(ctx *apptheory.Context) (*apptheory.Response, error) {
@@ -243,18 +257,30 @@ func (s *Server) handleUpdateInstanceConfig(ctx *apptheory.Context) (*apptheory.
 	if err := parseJSON(ctx, &req); err != nil {
 		return nil, err
 	}
-	if req.HostedPreviewsEnabled == nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "hosted_previews_enabled is required"}
+	if req.HostedPreviewsEnabled == nil && req.RenderPolicy == nil {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "no config fields provided"}
 	}
 
+	var fields []string
 	update := &models.Instance{
-		Slug:                  slug,
-		HostedPreviewsEnabled: req.HostedPreviewsEnabled,
+		Slug: slug,
+	}
+	if req.HostedPreviewsEnabled != nil {
+		update.HostedPreviewsEnabled = req.HostedPreviewsEnabled
+		fields = append(fields, "HostedPreviewsEnabled")
+	}
+	if req.RenderPolicy != nil {
+		rp := strings.ToLower(strings.TrimSpace(*req.RenderPolicy))
+		if rp != "always" && rp != "suspicious" {
+			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "render_policy must be always or suspicious"}
+		}
+		update.RenderPolicy = rp
+		fields = append(fields, "RenderPolicy")
 	}
 	if err := update.UpdateKeys(); err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
-	if err := s.store.DB.WithContext(ctx.Context()).Model(update).IfExists().Update("HostedPreviewsEnabled"); err != nil {
+	if err := s.store.DB.WithContext(ctx.Context()).Model(update).IfExists().Update(fields...); err != nil {
 		if theoryErrors.IsConditionFailed(err) {
 			return nil, &apptheory.AppError{Code: "app.not_found", Message: "instance not found"}
 		}
@@ -284,6 +310,7 @@ func (s *Server) handleUpdateInstanceConfig(ctx *apptheory.Context) (*apptheory.
 		Owner:                 inst.Owner,
 		Status:                inst.Status,
 		HostedPreviewsEnabled: effectiveHostedPreviewsEnabled(inst.HostedPreviewsEnabled),
+		RenderPolicy:          effectiveRenderPolicy(inst.RenderPolicy),
 		CreatedAt:             inst.CreatedAt,
 	})
 }

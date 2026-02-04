@@ -1,4 +1,4 @@
-package trust
+package artifacts
 
 import (
 	"bytes"
@@ -15,7 +15,7 @@ import (
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
-type artifactStore struct {
+type Store struct {
 	bucket string
 
 	once   sync.Once
@@ -23,11 +23,11 @@ type artifactStore struct {
 	err    error
 }
 
-func newArtifactStore(bucket string) *artifactStore {
-	return &artifactStore{bucket: strings.TrimSpace(bucket)}
+func New(bucket string) *Store {
+	return &Store{bucket: strings.TrimSpace(bucket)}
 }
 
-func (a *artifactStore) s3Client(ctx context.Context) (*s3.Client, error) {
+func (a *Store) s3Client(ctx context.Context) (*s3.Client, error) {
 	if a == nil {
 		return nil, fmt.Errorf("artifact store is nil")
 	}
@@ -48,7 +48,7 @@ func (a *artifactStore) s3Client(ctx context.Context) (*s3.Client, error) {
 	return a.client, nil
 }
 
-func (a *artifactStore) putObject(ctx context.Context, key string, body []byte, contentType string, cacheControl string) error {
+func (a *Store) PutObject(ctx context.Context, key string, body []byte, contentType string, cacheControl string) error {
 	if a == nil {
 		return fmt.Errorf("artifact store is nil")
 	}
@@ -82,7 +82,7 @@ func (a *artifactStore) putObject(ctx context.Context, key string, body []byte, 
 	return err
 }
 
-func (a *artifactStore) getObject(ctx context.Context, key string, maxBytes int64) ([]byte, string, string, error) {
+func (a *Store) GetObject(ctx context.Context, key string, maxBytes int64) ([]byte, string, string, error) {
 	if a == nil {
 		return nil, "", "", fmt.Errorf("artifact store is nil")
 	}
@@ -128,4 +128,29 @@ func (a *artifactStore) getObject(ctx context.Context, key string, maxBytes int6
 	contentType := strings.TrimSpace(aws.ToString(out.ContentType))
 	etag := strings.TrimSpace(aws.ToString(out.ETag))
 	return body, contentType, etag, nil
+}
+
+func (a *Store) DeleteObject(ctx context.Context, key string) error {
+	if a == nil {
+		return fmt.Errorf("artifact store is nil")
+	}
+	bucket := strings.TrimSpace(a.bucket)
+	if bucket == "" {
+		return fmt.Errorf("artifact bucket name is not configured")
+	}
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return fmt.Errorf("object key is required")
+	}
+
+	client, err := a.s3Client(ctx)
+	if err != nil {
+		return err
+	}
+
+	_, err = client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	})
+	return err
 }

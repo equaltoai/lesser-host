@@ -78,6 +78,23 @@ func (s *Server) handlePublishJob(ctx *apptheory.Context) (*apptheory.Response, 
 		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
 	}
 
+	// Per-instance render policy controls auto-escalation for render-based modules.
+	renderPolicy := "suspicious"
+	{
+		var inst models.Instance
+		err := s.store.DB.WithContext(ctx.Context()).
+			Model(&models.Instance{}).
+			Where("PK", "=", "INSTANCE#"+instanceSlug).
+			Where("SK", "=", models.SKMetadata).
+			First(&inst)
+		if err == nil {
+			renderPolicy = strings.ToLower(strings.TrimSpace(inst.RenderPolicy))
+		}
+		if renderPolicy != "always" && renderPolicy != "suspicious" {
+			renderPolicy = "suspicious"
+		}
+	}
+
 	var req publishJobRequest
 	if err := parseJSON(ctx, &req); err != nil {
 		return nil, err
@@ -90,7 +107,11 @@ func (s *Server) handlePublishJob(ctx *apptheory.Context) (*apptheory.Response, 
 	// Default modules when omitted.
 	modules := req.Modules
 	if len(modules) == 0 {
-		modules = []publishJobModuleRequest{{Name: "link_safety_basic"}}
+		// Auto-escalate to render for suspicious links by default (budgeted).
+		modules = []publishJobModuleRequest{
+			{Name: "link_safety_basic"},
+			{Name: "link_safety_render"},
+		}
 	}
 
 	// Canonicalize deterministically (no network) and cap links to avoid oversized items.
@@ -132,6 +153,12 @@ func (s *Server) handlePublishJob(ctx *apptheory.Context) (*apptheory.Response, 
 		switch name {
 		case "link_safety_basic":
 			moduleResp := s.runLinkSafetyBasicJob(ctx, instanceSlug, jobID, actorURI, objectURI, contentHash, linksHash, canonical)
+			out.Modules = append(out.Modules, moduleResp)
+		case "link_safety_render":
+			moduleResp := s.runLinkSafetyRenderJob(ctx, instanceSlug, jobID, renderPolicy, canonical)
+			out.Modules = append(out.Modules, moduleResp)
+		case "link_preview_render":
+			moduleResp := s.runLinkPreviewRenderJob(ctx, instanceSlug, jobID, renderPolicy, canonical)
 			out.Modules = append(out.Modules, moduleResp)
 		default:
 			out.Modules = append(out.Modules, publishJobModuleResponse{
