@@ -7,6 +7,7 @@ import { Construct } from 'constructs';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
+import * as iam from 'aws-cdk-lib/aws-iam';
 import * as kms from 'aws-cdk-lib/aws-kms';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
@@ -117,20 +118,45 @@ export class LesserHostStack extends cdk.Stack {
 			},
 		});
 
+		const aiWorkerFn = this.goLambda('AiWorker', './cmd/ai-worker', {
+			STAGE: stage,
+			STATE_TABLE_NAME: stateTable.tableName,
+			ARTIFACT_BUCKET_NAME: artifactsBucket.bucketName,
+			PREVIEW_QUEUE_URL: previewQueue.queueUrl,
+			SAFETY_QUEUE_URL: safetyQueue.queueUrl,
+		});
+
 		stateTable.grantReadWriteData(controlPlaneFn);
 		stateTable.grantReadWriteData(trustFn);
 		stateTable.grantReadWriteData(renderWorkerFn);
+		stateTable.grantReadWriteData(aiWorkerFn);
 		artifactsBucket.grantReadWrite(controlPlaneFn);
 		artifactsBucket.grantReadWrite(trustFn);
 		artifactsBucket.grantReadWrite(renderWorkerFn);
+		artifactsBucket.grantRead(aiWorkerFn);
 		attestationSigningKey.grant(trustFn, 'kms:Sign', 'kms:GetPublicKey');
 		previewQueue.grantSendMessages(controlPlaneFn);
 		previewQueue.grantSendMessages(trustFn);
 		previewQueue.grantConsumeMessages(renderWorkerFn);
 		safetyQueue.grantSendMessages(controlPlaneFn);
 		safetyQueue.grantSendMessages(trustFn);
+		safetyQueue.grantConsumeMessages(aiWorkerFn);
 
 		renderWorkerFn.addEventSource(new lambdaEventSources.SqsEventSource(previewQueue, { batchSize: 1 }));
+		aiWorkerFn.addEventSource(new lambdaEventSources.SqsEventSource(safetyQueue, { batchSize: 5 }));
+
+		aiWorkerFn.addToRolePolicy(
+			new iam.PolicyStatement({
+				actions: ['comprehend:DetectDominantLanguage', 'comprehend:DetectEntities', 'comprehend:DetectPiiEntities'],
+				resources: ['*'],
+			}),
+		);
+		aiWorkerFn.addToRolePolicy(
+			new iam.PolicyStatement({
+				actions: ['rekognition:DetectModerationLabels', 'rekognition:DetectText', 'rekognition:DetectFaces'],
+				resources: ['*'],
+			}),
+		);
 
 		const retentionSweepRule = new events.Rule(this, 'RetentionSweepRule', {
 			ruleName: `${namePrefix}-retention-sweep`,
@@ -149,7 +175,9 @@ export class LesserHostStack extends cdk.Stack {
 		new cdk.CfnOutput(this, 'ArtifactsBucketName', { value: artifactsBucket.bucketName });
 		new cdk.CfnOutput(this, 'AttestationSigningKeyId', { value: attestationSigningKey.keyId });
 		new cdk.CfnOutput(this, 'PreviewQueueUrl', { value: previewQueue.queueUrl });
+		new cdk.CfnOutput(this, 'SafetyQueueUrl', { value: safetyQueue.queueUrl });
 		new cdk.CfnOutput(this, 'RenderWorkerFunctionName', { value: renderWorkerFn.functionName });
+		new cdk.CfnOutput(this, 'AiWorkerFunctionName', { value: aiWorkerFn.functionName });
 		new cdk.CfnOutput(this, 'RetentionSweepRuleName', { value: retentionSweepRule.ruleName });
 	}
 

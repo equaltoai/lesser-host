@@ -3,6 +3,7 @@ package trust
 import (
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 
+	"github.com/equaltoai/lesser-host/internal/ai"
 	"github.com/equaltoai/lesser-host/internal/artifacts"
 	"github.com/equaltoai/lesser-host/internal/attestations"
 	"github.com/equaltoai/lesser-host/internal/config"
@@ -15,6 +16,7 @@ type Server struct {
 	artifacts *artifacts.Store
 	queues    *queueClient
 	attest    *attestations.KMSService
+	ai        *ai.Service
 }
 
 func NewServer(cfg config.Config, st *store.Store) *Server {
@@ -22,8 +24,9 @@ func NewServer(cfg config.Config, st *store.Store) *Server {
 		cfg:       cfg,
 		store:     st,
 		artifacts: artifacts.New(cfg.ArtifactBucketName),
-		queues:    newQueueClient(cfg.PreviewQueueURL),
+		queues:    newQueueClient(cfg.PreviewQueueURL, cfg.SafetyQueueURL),
 		attest:    attestations.NewKMSService(cfg.AttestationSigningKeyID, cfg.AttestationPublicKeyIDs),
+		ai:        ai.NewService(st),
 	}
 }
 
@@ -51,6 +54,11 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 	// Publish-triggered jobs (link safety, etc).
 	app.Post("/api/v1/publish/jobs", s.handlePublishJob, apptheory.RequireAuth())
 	app.Get("/api/v1/publish/jobs/{jobId}", s.handleGetPublishJob, apptheory.RequireAuth())
+
+	// AI tool evidence (cheap, cached).
+	app.Post("/api/v1/ai/evidence/text", s.handleAIEvidenceText, apptheory.RequireAuth())
+	app.Post("/api/v1/ai/evidence/image", s.handleAIEvidenceImage, apptheory.RequireAuth())
+	app.Get("/api/v1/ai/jobs/{jobId}", s.handleGetAIJob, apptheory.RequireAuth())
 
 	app.Post("/api/v1/budget/debit", s.handleBudgetDebit, apptheory.RequireAuth())
 }

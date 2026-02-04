@@ -130,6 +130,38 @@ func (a *Store) GetObject(ctx context.Context, key string, maxBytes int64) ([]by
 	return body, contentType, etag, nil
 }
 
+func (a *Store) HeadObject(ctx context.Context, key string) (string, string, int64, error) {
+	if a == nil {
+		return "", "", 0, fmt.Errorf("artifact store is nil")
+	}
+	bucket := strings.TrimSpace(a.bucket)
+	if bucket == "" {
+		return "", "", 0, fmt.Errorf("artifact bucket name is not configured")
+	}
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return "", "", 0, fmt.Errorf("object key is required")
+	}
+
+	client, err := a.s3Client(ctx)
+	if err != nil {
+		return "", "", 0, err
+	}
+
+	out, err := client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return "", "", 0, err
+	}
+
+	contentType := strings.TrimSpace(aws.ToString(out.ContentType))
+	etag := strings.TrimSpace(aws.ToString(out.ETag))
+	size := aws.ToInt64(out.ContentLength)
+	return contentType, etag, size, nil
+}
+
 func (a *Store) DeleteObject(ctx context.Context, key string) error {
 	if a == nil {
 		return fmt.Errorf("artifact store is nil")

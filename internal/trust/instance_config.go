@@ -6,6 +6,7 @@ import (
 
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
+	"github.com/equaltoai/lesser-host/internal/ai"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -15,6 +16,13 @@ type instanceTrustConfig struct {
 	RendersEnabled        bool
 	RenderPolicy          string // always|suspicious
 	OveragePolicy         string // block|allow
+
+	AIEnabled              bool
+	AIModelSet             string
+	AIBatchingMode         string
+	AIBatchMaxItems        int64
+	AIBatchMaxTotalBytes   int64
+	AIPricingMultiplierBps int64
 }
 
 func defaultInstanceTrustConfig() instanceTrustConfig {
@@ -24,6 +32,13 @@ func defaultInstanceTrustConfig() instanceTrustConfig {
 		RendersEnabled:        true,
 		RenderPolicy:          "suspicious",
 		OveragePolicy:         "block",
+
+		AIEnabled:              false,
+		AIModelSet:             "openai:gpt-4o-mini",
+		AIBatchingMode:         "none",
+		AIBatchMaxItems:        8,
+		AIBatchMaxTotalBytes:   64 * 1024,
+		AIPricingMultiplierBps: 10000,
 	}
 }
 
@@ -71,6 +86,14 @@ func (s *Server) loadInstanceTrustConfig(ctx context.Context, instanceSlug strin
 	if op == "allow" || op == "block" {
 		cfg.OveragePolicy = op
 	}
+
+	aiCfg := ai.EffectiveInstanceConfig(&inst)
+	cfg.AIEnabled = aiCfg.Enabled
+	cfg.AIModelSet = aiCfg.ModelSet
+	cfg.AIBatchingMode = aiCfg.BatchingMode
+	cfg.AIBatchMaxItems = aiCfg.BatchMaxItems
+	cfg.AIBatchMaxTotalBytes = aiCfg.BatchMaxTotalBytes
+	cfg.AIPricingMultiplierBps = aiCfg.PricingMultiplierBps
 
 	return cfg
 }
