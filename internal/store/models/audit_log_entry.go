@@ -46,4 +46,3 @@ func (a *AuditLogEntry) UpdateKeys() error {
 
 func (a *AuditLogEntry) GetPK() string { return a.PK }
 func (a *AuditLogEntry) GetSK() string { return a.SK }
-

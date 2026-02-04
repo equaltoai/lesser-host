@@ -63,12 +63,14 @@ type budgetDecision struct {
 }
 
 type publishJobModuleResponse struct {
-	Name          string         `json:"name"`
-	PolicyVersion string         `json:"policy_version"`
-	Status        string         `json:"status"` // ok | not_checked_budget | unsupported | error
-	Cached        bool           `json:"cached"`
-	Budget        budgetDecision `json:"budget"`
-	Result        any            `json:"result,omitempty"`
+	Name           string         `json:"name"`
+	PolicyVersion  string         `json:"policy_version"`
+	Status         string         `json:"status"` // ok | not_checked_budget | unsupported | error
+	Cached         bool           `json:"cached"`
+	Budget         budgetDecision `json:"budget"`
+	AttestationID  string         `json:"attestation_id,omitempty"`
+	AttestationURL string         `json:"attestation_url,omitempty"`
+	Result         any            `json:"result,omitempty"`
 }
 
 func (s *Server) handlePublishJob(ctx *apptheory.Context) (*apptheory.Response, error) {
@@ -322,6 +324,7 @@ func (s *Server) runLinkSafetyBasicJob(
 
 	// Cache hit path (no charge).
 	if cached, err := s.store.GetLinkSafetyBasicResult(ctx.Context(), jobID); err == nil {
+		attID, _ := s.ensureLinkSafetyBasicAttestation(ctx.Context(), cached)
 		return publishJobModuleResponse{
 			Name:          "link_safety_basic",
 			PolicyVersion: linkSafetyBasicPolicyVersion,
@@ -334,7 +337,9 @@ func (s *Server) runLinkSafetyBasicJob(
 				RequestedCredits: creditsPriced,
 				DebitedCredits:   0,
 			},
-			Result: cached,
+			AttestationID:  strings.TrimSpace(attID),
+			AttestationURL: attestationURL(ctx, attID),
+			Result:         cached,
 		}
 	}
 
@@ -379,6 +384,7 @@ func (s *Server) runLinkSafetyBasicJob(
 		})
 		if theoryErrors.IsConditionFailed(err) {
 			if cached, err2 := s.store.GetLinkSafetyBasicResult(ctx.Context(), jobID); err2 == nil {
+				attID, _ := s.ensureLinkSafetyBasicAttestation(ctx.Context(), cached)
 				return publishJobModuleResponse{
 					Name:          "link_safety_basic",
 					PolicyVersion: linkSafetyBasicPolicyVersion,
@@ -391,7 +397,9 @@ func (s *Server) runLinkSafetyBasicJob(
 						RequestedCredits: 0,
 						DebitedCredits:   0,
 					},
-					Result: cached,
+					AttestationID:  strings.TrimSpace(attID),
+					AttestationURL: attestationURL(ctx, attID),
+					Result:         cached,
 				}
 			}
 		}
@@ -411,6 +419,7 @@ func (s *Server) runLinkSafetyBasicJob(
 			}
 		}
 
+		attID, _ := s.ensureLinkSafetyBasicAttestation(ctx.Context(), item)
 		return publishJobModuleResponse{
 			Name:          "link_safety_basic",
 			PolicyVersion: linkSafetyBasicPolicyVersion,
@@ -423,7 +432,9 @@ func (s *Server) runLinkSafetyBasicJob(
 				RequestedCredits: 0,
 				DebitedCredits:   0,
 			},
-			Result: item,
+			AttestationID:  strings.TrimSpace(attID),
+			AttestationURL: attestationURL(ctx, attID),
+			Result:         item,
 		}
 	}
 
@@ -588,6 +599,7 @@ func (s *Server) runLinkSafetyBasicJob(
 	if theoryErrors.IsConditionFailed(err) {
 		// If the result already exists, treat it as cache hit (no debit happened due to txn rollback).
 		if cached, err2 := s.store.GetLinkSafetyBasicResult(ctx.Context(), jobID); err2 == nil {
+			attID, _ := s.ensureLinkSafetyBasicAttestation(ctx.Context(), cached)
 			return publishJobModuleResponse{
 				Name:          "link_safety_basic",
 				PolicyVersion: linkSafetyBasicPolicyVersion,
@@ -600,7 +612,9 @@ func (s *Server) runLinkSafetyBasicJob(
 					RequestedCredits: creditsPriced,
 					DebitedCredits:   0,
 				},
-				Result: cached,
+				AttestationID:  strings.TrimSpace(attID),
+				AttestationURL: attestationURL(ctx, attID),
+				Result:         cached,
 			}
 		}
 
@@ -686,6 +700,7 @@ func (s *Server) runLinkSafetyBasicJob(
 	if overageDebited > 0 {
 		reason = "overage"
 	}
+	attID, _ := s.ensureLinkSafetyBasicAttestation(ctx.Context(), item)
 	return publishJobModuleResponse{
 		Name:          "link_safety_basic",
 		PolicyVersion: linkSafetyBasicPolicyVersion,
@@ -702,6 +717,8 @@ func (s *Server) runLinkSafetyBasicJob(
 			DebitedCredits:   creditsPriced,
 			Reason:           reason,
 		},
-		Result: item,
+		AttestationID:  strings.TrimSpace(attID),
+		AttestationURL: attestationURL(ctx, attID),
+		Result:         item,
 	}
 }

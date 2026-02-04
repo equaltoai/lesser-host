@@ -35,4 +35,3 @@ func (s *OperatorSession) UpdateKeys() error {
 
 func (s *OperatorSession) GetPK() string { return s.PK }
 func (s *OperatorSession) GetSK() string { return s.SK }
-

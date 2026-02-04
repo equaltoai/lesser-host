@@ -55,4 +55,3 @@ func (s *Server) InstanceAuthHook(ctx *apptheory.Context) (string, error) {
 
 	return slug, nil
 }
-

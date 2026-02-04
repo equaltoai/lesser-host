@@ -22,4 +22,3 @@ func MainTableName() string {
 	}
 	return name
 }
-

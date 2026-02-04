@@ -17,6 +17,9 @@ type Config struct {
 
 	BootstrapWalletAddress string
 
+	AttestationSigningKeyID string
+	AttestationPublicKeyIDs []string
+
 	WebAuthnRPID    string
 	WebAuthnOrigins []string
 }
@@ -39,6 +42,16 @@ func Load() Config {
 		origins = append(origins, part)
 	}
 
+	publicKeyIDsRaw := strings.TrimSpace(os.Getenv("ATTESTATION_PUBLIC_KEY_IDS"))
+	var publicKeyIDs []string
+	for _, part := range strings.Split(publicKeyIDsRaw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		publicKeyIDs = append(publicKeyIDs, part)
+	}
+
 	return Config{
 		AppName: "lesser-host",
 		Stage:   stage,
@@ -51,8 +64,10 @@ func Load() Config {
 
 		BootstrapWalletAddress: strings.TrimSpace(os.Getenv("BOOTSTRAP_WALLET_ADDRESS")),
 
+		AttestationSigningKeyID: strings.TrimSpace(os.Getenv("ATTESTATION_SIGNING_KEY_ID")),
+		AttestationPublicKeyIDs: publicKeyIDs,
+
 		WebAuthnRPID:    strings.TrimSpace(os.Getenv("WEBAUTHN_RP_ID")),
 		WebAuthnOrigins: origins,
 	}
 }
-

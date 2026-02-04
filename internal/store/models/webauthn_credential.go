@@ -65,4 +65,3 @@ func (w *WebAuthnCredential) updateKeysWithTimestamps() error {
 
 func (w *WebAuthnCredential) GetPK() string { return w.PK }
 func (w *WebAuthnCredential) GetSK() string { return w.SK }
-

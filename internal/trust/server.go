@@ -4,6 +4,7 @@ import (
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 
 	"github.com/equaltoai/lesser-host/internal/artifacts"
+	"github.com/equaltoai/lesser-host/internal/attestations"
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/store"
 )
@@ -13,6 +14,7 @@ type Server struct {
 	store     *store.Store
 	artifacts *artifacts.Store
 	queues    *queueClient
+	attest    *attestations.KMSService
 }
 
 func NewServer(cfg config.Config, st *store.Store) *Server {
@@ -21,6 +23,7 @@ func NewServer(cfg config.Config, st *store.Store) *Server {
 		store:     st,
 		artifacts: artifacts.New(cfg.ArtifactBucketName),
 		queues:    newQueueClient(cfg.PreviewQueueURL),
+		attest:    attestations.NewKMSService(cfg.AttestationSigningKeyID, cfg.AttestationPublicKeyIDs),
 	}
 }
 
@@ -28,6 +31,11 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 	if app == nil || s == nil {
 		return
 	}
+
+	// Attestations (public, cacheable).
+	app.Get("/.well-known/jwks.json", s.handleWellKnownJWKS)
+	app.Get("/attestations", s.handleLookupAttestation)
+	app.Get("/attestations/{id}", s.handleGetAttestation)
 
 	// Render artifacts.
 	app.Post("/api/v1/renders", s.handleCreateRender, apptheory.RequireAuth())

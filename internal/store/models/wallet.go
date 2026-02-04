@@ -133,4 +133,3 @@ func (w *WalletIndex) UpdateKeys(walletType, address, username string) {
 
 func (w *WalletIndex) GetPK() string { return w.PK }
 func (w *WalletIndex) GetSK() string { return w.SK }
-

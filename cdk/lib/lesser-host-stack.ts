@@ -7,6 +7,7 @@ import { Construct } from 'constructs';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
+import * as kms from 'aws-cdk-lib/aws-kms';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as s3 from 'aws-cdk-lib/aws-s3';
@@ -62,6 +63,14 @@ export class LesserHostStack extends cdk.Stack {
 		});
 		safetyQueue.applyRemovalPolicy(removalPolicy);
 
+		const attestationSigningKey = new kms.Key(this, 'AttestationSigningKey', {
+			description: `${namePrefix} attestation signing`,
+			keySpec: kms.KeySpec.RSA_2048,
+			keyUsage: kms.KeyUsage.SIGN_VERIFY,
+			removalPolicy,
+		});
+		attestationSigningKey.addAlias(`alias/${namePrefix}-attestation-signing`);
+
 		const bootstrapWalletAddress =
 			(this.node.tryGetContext('bootstrapWalletAddress') as string | undefined) ?? '';
 		const webAuthnRPID = (this.node.tryGetContext('webauthnRpId') as string | undefined) ?? '';
@@ -84,6 +93,8 @@ export class LesserHostStack extends cdk.Stack {
 			ARTIFACT_BUCKET_NAME: artifactsBucket.bucketName,
 			PREVIEW_QUEUE_URL: previewQueue.queueUrl,
 			SAFETY_QUEUE_URL: safetyQueue.queueUrl,
+			ATTESTATION_SIGNING_KEY_ID: attestationSigningKey.keyId,
+			ATTESTATION_PUBLIC_KEY_IDS: attestationSigningKey.keyId,
 			WEBAUTHN_RP_ID: webAuthnRPID,
 			WEBAUTHN_ORIGINS: webAuthnOrigins,
 		});
@@ -112,6 +123,7 @@ export class LesserHostStack extends cdk.Stack {
 		artifactsBucket.grantReadWrite(controlPlaneFn);
 		artifactsBucket.grantReadWrite(trustFn);
 		artifactsBucket.grantReadWrite(renderWorkerFn);
+		attestationSigningKey.grant(trustFn, 'kms:Sign', 'kms:GetPublicKey');
 		previewQueue.grantSendMessages(controlPlaneFn);
 		previewQueue.grantSendMessages(trustFn);
 		previewQueue.grantConsumeMessages(renderWorkerFn);
@@ -135,6 +147,7 @@ export class LesserHostStack extends cdk.Stack {
 		new cdk.CfnOutput(this, 'TrustUrl', { value: trustUrl.url });
 		new cdk.CfnOutput(this, 'StateTableName', { value: stateTable.tableName });
 		new cdk.CfnOutput(this, 'ArtifactsBucketName', { value: artifactsBucket.bucketName });
+		new cdk.CfnOutput(this, 'AttestationSigningKeyId', { value: attestationSigningKey.keyId });
 		new cdk.CfnOutput(this, 'PreviewQueueUrl', { value: previewQueue.queueUrl });
 		new cdk.CfnOutput(this, 'RenderWorkerFunctionName', { value: renderWorkerFn.functionName });
 		new cdk.CfnOutput(this, 'RetentionSweepRuleName', { value: retentionSweepRule.ruleName });

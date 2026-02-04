@@ -36,4 +36,3 @@ func (s *SetupSession) UpdateKeys() error {
 
 func (s *SetupSession) GetPK() string { return s.PK }
 func (s *SetupSession) GetSK() string { return s.SK }
-

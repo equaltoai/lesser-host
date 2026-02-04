@@ -50,4 +50,3 @@ func (u *OperatorUser) UpdateKeys() error {
 
 func (u *OperatorUser) GetPK() string { return u.PK }
 func (u *OperatorUser) GetSK() string { return u.SK }
-

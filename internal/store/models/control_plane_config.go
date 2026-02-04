@@ -30,4 +30,3 @@ func (c *ControlPlaneConfig) UpdateKeys() error {
 
 func (c *ControlPlaneConfig) GetPK() string { return c.PK }
 func (c *ControlPlaneConfig) GetSK() string { return c.SK }
-

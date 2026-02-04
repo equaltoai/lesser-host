@@ -7,6 +7,7 @@ require (
 	github.com/aws/aws-lambda-go v1.52.0
 	github.com/aws/aws-sdk-go-v2 v1.41.1
 	github.com/aws/aws-sdk-go-v2/config v1.32.7
+	github.com/aws/aws-sdk-go-v2/service/kms v1.49.5
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.95.1
 	github.com/aws/aws-sdk-go-v2/service/sqs v1.42.21
 	github.com/chromedp/cdproto v0.0.0-20250724212937-08a3db8b4327
@@ -34,7 +35,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/internal/endpoint-discovery v1.11.17 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.17 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.19.17 // indirect
-	github.com/aws/aws-sdk-go-v2/service/kms v1.49.5 // indirect
 	github.com/aws/aws-sdk-go-v2/service/signin v1.0.5 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sns v1.39.11 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sso v1.30.9 // indirect

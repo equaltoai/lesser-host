@@ -46,4 +46,3 @@ func (b *InstanceBudgetMonth) UpdateKeys() error {
 
 func (b *InstanceBudgetMonth) GetPK() string { return b.PK }
 func (b *InstanceBudgetMonth) GetSK() string { return b.SK }
-

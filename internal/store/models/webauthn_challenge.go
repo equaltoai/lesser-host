@@ -39,4 +39,3 @@ func (w *WebAuthnChallenge) UpdateKeys() error {
 
 func (w *WebAuthnChallenge) GetPK() string { return w.PK }
 func (w *WebAuthnChallenge) GetSK() string { return w.SK }
-

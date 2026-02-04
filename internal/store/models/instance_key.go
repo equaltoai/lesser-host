@@ -40,4 +40,3 @@ func (k *InstanceKey) UpdateKeys() error {
 
 func (k *InstanceKey) GetPK() string { return k.PK }
 func (k *InstanceKey) GetSK() string { return k.SK }
-
