@@ -31,5 +31,9 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 	app.Get("/api/v1/previews/{id}", s.handleGetLinkPreview, apptheory.RequireAuth())
 	app.Get("/api/v1/previews/images/{imageId}", s.handleGetLinkPreviewImage)
 
+	// Publish-triggered jobs (link safety, etc).
+	app.Post("/api/v1/publish/jobs", s.handlePublishJob, apptheory.RequireAuth())
+	app.Get("/api/v1/publish/jobs/{jobId}", s.handleGetPublishJob, apptheory.RequireAuth())
+
 	app.Post("/api/v1/budget/debit", s.handleBudgetDebit, apptheory.RequireAuth())
 }
