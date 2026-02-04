@@ -17,15 +17,21 @@ type Instance struct {
 	PK string `theorydb:"pk,attr:PK" json:"-"`
 	SK string `theorydb:"sk,attr:SK" json:"-"`
 
-	Slug                  string    `theorydb:"attr:slug" json:"slug"`
-	Owner                 string    `theorydb:"attr:owner" json:"owner,omitempty"`
-	Status                string    `theorydb:"attr:status" json:"status"`
-	HostedPreviewsEnabled *bool     `theorydb:"attr:hostedPreviewsEnabled" json:"hosted_previews_enabled,omitempty"`
-	LinkSafetyEnabled     *bool     `theorydb:"attr:linkSafetyEnabled" json:"link_safety_enabled,omitempty"`
-	RendersEnabled        *bool     `theorydb:"attr:rendersEnabled" json:"renders_enabled,omitempty"`
-	RenderPolicy          string    `theorydb:"attr:renderPolicy" json:"render_policy,omitempty"`   // always|suspicious
-	OveragePolicy         string    `theorydb:"attr:overagePolicy" json:"overage_policy,omitempty"` // block|allow
-	CreatedAt             time.Time `theorydb:"attr:createdAt" json:"created_at"`
+	Slug                   string    `theorydb:"attr:slug" json:"slug"`
+	Owner                  string    `theorydb:"attr:owner" json:"owner,omitempty"`
+	Status                 string    `theorydb:"attr:status" json:"status"`
+	HostedPreviewsEnabled  *bool     `theorydb:"attr:hostedPreviewsEnabled" json:"hosted_previews_enabled,omitempty"`
+	LinkSafetyEnabled      *bool     `theorydb:"attr:linkSafetyEnabled" json:"link_safety_enabled,omitempty"`
+	RendersEnabled         *bool     `theorydb:"attr:rendersEnabled" json:"renders_enabled,omitempty"`
+	RenderPolicy           string    `theorydb:"attr:renderPolicy" json:"render_policy,omitempty"`   // always|suspicious
+	OveragePolicy          string    `theorydb:"attr:overagePolicy" json:"overage_policy,omitempty"` // block|allow
+	AIEnabled              *bool     `theorydb:"attr:aiEnabled" json:"ai_enabled,omitempty"`
+	AIModelSet             string    `theorydb:"attr:aiModelSet" json:"ai_model_set,omitempty"`
+	AIBatchingMode         string    `theorydb:"attr:aiBatchingMode" json:"ai_batching_mode,omitempty"` // none|in_request|worker|hybrid
+	AIBatchMaxItems        int64     `theorydb:"attr:aiBatchMaxItems" json:"ai_batch_max_items,omitempty"`
+	AIBatchMaxTotalBytes   int64     `theorydb:"attr:aiBatchMaxTotalBytes" json:"ai_batch_max_total_bytes,omitempty"`
+	AIPricingMultiplierBps *int64    `theorydb:"attr:aiPricingMultiplierBps" json:"ai_pricing_multiplier_bps,omitempty"`
+	CreatedAt              time.Time `theorydb:"attr:createdAt" json:"created_at"`
 }
 
 func (Instance) TableName() string { return MainTableName() }
@@ -57,6 +63,26 @@ func (i *Instance) BeforeCreate() error {
 	}
 	if strings.TrimSpace(i.OveragePolicy) == "" {
 		i.OveragePolicy = "block"
+	}
+	if i.AIEnabled == nil {
+		v := false
+		i.AIEnabled = &v
+	}
+	if strings.TrimSpace(i.AIModelSet) == "" {
+		i.AIModelSet = "openai:gpt-4o-mini"
+	}
+	if strings.TrimSpace(i.AIBatchingMode) == "" {
+		i.AIBatchingMode = "none"
+	}
+	if i.AIBatchMaxItems <= 0 {
+		i.AIBatchMaxItems = 8
+	}
+	if i.AIBatchMaxTotalBytes <= 0 {
+		i.AIBatchMaxTotalBytes = 64 * 1024
+	}
+	if i.AIPricingMultiplierBps == nil {
+		v := int64(10000)
+		i.AIPricingMultiplierBps = &v
 	}
 	return nil
 }

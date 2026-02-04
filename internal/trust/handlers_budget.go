@@ -11,6 +11,7 @@ import (
 	"github.com/theory-cloud/tabletheory/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
+	"github.com/equaltoai/lesser-host/internal/billing"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -121,11 +122,11 @@ func (s *Server) handleBudgetDebit(ctx *apptheory.Context) (*apptheory.Response,
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
-	includedDebited, overageDebited := billingPartsForDebit(budget.IncludedCredits, budget.UsedCredits, req.Credits)
-	billingType := billingTypeFromParts(includedDebited, overageDebited)
+	includedDebited, overageDebited := billing.BillingPartsForDebit(budget.IncludedCredits, budget.UsedCredits, req.Credits)
+	billingType := billing.BillingTypeFromParts(includedDebited, overageDebited)
 
 	ledger := &models.UsageLedgerEntry{
-		ID:                     usageLedgerEntryID(instanceSlug, month, strings.TrimSpace(ctx.RequestID), "budget.debit", month, req.Credits),
+		ID:                     billing.UsageLedgerEntryID(instanceSlug, month, strings.TrimSpace(ctx.RequestID), "budget.debit", month, req.Credits),
 		InstanceSlug:           instanceSlug,
 		Month:                  month,
 		Module:                 "budget.debit",

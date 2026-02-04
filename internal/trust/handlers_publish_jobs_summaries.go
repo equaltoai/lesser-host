@@ -10,6 +10,7 @@ import (
 	"github.com/theory-cloud/tabletheory/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
+	"github.com/equaltoai/lesser-host/internal/billing"
 	"github.com/equaltoai/lesser-host/internal/rendering"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
@@ -219,8 +220,8 @@ func (s *Server) runLinkRenderSummaryJob(
 		})
 	}
 
-	creditsRequested := pricedCredits(int64(out.Summary.Candidates)*linkRenderSummaryCreditCost, pricingMultiplierBps)
-	creditsNeeded := pricedCredits(int64(len(missing))*linkRenderSummaryCreditCost, pricingMultiplierBps)
+	creditsRequested := billing.PricedCredits(int64(out.Summary.Candidates)*linkRenderSummaryCreditCost, pricingMultiplierBps)
+	creditsNeeded := billing.PricedCredits(int64(len(missing))*linkRenderSummaryCreditCost, pricingMultiplierBps)
 
 	if len(missing) == 0 {
 		return publishJobModuleResponse{
@@ -324,7 +325,7 @@ func (s *Server) runLinkRenderSummaryJob(
 	totalDebited := int64(0)
 	totalOverage := int64(0)
 
-	perSummaryCost := pricedCredits(linkRenderSummaryCreditCost, pricingMultiplierBps)
+	perSummaryCost := billing.PricedCredits(linkRenderSummaryCreditCost, pricingMultiplierBps)
 
 	for _, ms := range missing {
 		if ms.Index < 0 || ms.Index >= len(out.Links) || ms.Artifact == nil {
@@ -359,8 +360,8 @@ func (s *Server) runLinkRenderSummaryJob(
 			continue
 		}
 
-		includedDebited, overageDebited := billingPartsForDebit(budget.IncludedCredits, usedCredits, perSummaryCost)
-		billingType := billingTypeFromParts(includedDebited, overageDebited)
+		includedDebited, overageDebited := billing.BillingPartsForDebit(budget.IncludedCredits, usedCredits, perSummaryCost)
+		billingType := billing.BillingTypeFromParts(includedDebited, overageDebited)
 
 		updateBudget := &models.InstanceBudgetMonth{
 			InstanceSlug: instanceSlug,
@@ -376,7 +377,7 @@ func (s *Server) runLinkRenderSummaryJob(
 		_ = updateArtifact.UpdateKeys()
 
 		ledger := &models.UsageLedgerEntry{
-			ID:                     usageLedgerEntryID(instanceSlug, month, strings.TrimSpace(ctx.RequestID), "link_render_summary", strings.TrimSpace(ms.Artifact.ID), perSummaryCost),
+			ID:                     billing.UsageLedgerEntryID(instanceSlug, month, strings.TrimSpace(ctx.RequestID), "link_render_summary", strings.TrimSpace(ms.Artifact.ID), perSummaryCost),
 			InstanceSlug:           instanceSlug,
 			Month:                  month,
 			Module:                 "link_render_summary",

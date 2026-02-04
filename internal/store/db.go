@@ -8,6 +8,8 @@ import (
 
 func LambdaInit() (DB, error) {
 	return tabletheory.LambdaInit(
+		&models.AIJob{},
+		&models.AIResult{},
 		&models.ControlPlaneConfig{},
 		&models.SetupSession{},
 		&models.OperatorUser{},

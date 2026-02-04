@@ -10,6 +10,7 @@ import (
 	"github.com/theory-cloud/tabletheory/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
+	"github.com/equaltoai/lesser-host/internal/billing"
 	"github.com/equaltoai/lesser-host/internal/rendering"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
@@ -210,8 +211,8 @@ func (s *Server) runLinkRenderJob(
 	creditsRequested := int64(candidateCount) * linkRenderCreditCost
 	creditsNeeded := int64(len(missing)) * linkRenderCreditCost
 
-	creditsRequestedPriced := pricedCredits(creditsRequested, pricingMultiplierBps)
-	creditsNeededPriced := pricedCredits(creditsNeeded, pricingMultiplierBps)
+	creditsRequestedPriced := billing.PricedCredits(creditsRequested, pricingMultiplierBps)
+	creditsNeededPriced := billing.PricedCredits(creditsNeeded, pricingMultiplierBps)
 
 	if len(missing) == 0 {
 		out.Summary.Queued = 0
@@ -349,11 +350,11 @@ func (s *Server) runLinkRenderJob(
 	}
 	_ = update.UpdateKeys()
 
-	includedDebited, overageDebited := billingPartsForDebit(budget.IncludedCredits, budget.UsedCredits, creditsNeededPriced)
-	billingType := billingTypeFromParts(includedDebited, overageDebited)
+	includedDebited, overageDebited := billing.BillingPartsForDebit(budget.IncludedCredits, budget.UsedCredits, creditsNeededPriced)
+	billingType := billing.BillingTypeFromParts(includedDebited, overageDebited)
 
 	ledger := &models.UsageLedgerEntry{
-		ID:                     usageLedgerEntryID(instanceSlug, month, strings.TrimSpace(ctx.RequestID), moduleName, jobID, creditsNeededPriced),
+		ID:                     billing.UsageLedgerEntryID(instanceSlug, month, strings.TrimSpace(ctx.RequestID), moduleName, jobID, creditsNeededPriced),
 		InstanceSlug:           instanceSlug,
 		Month:                  month,
 		Module:                 moduleName,

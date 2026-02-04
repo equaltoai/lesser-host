@@ -1,0 +1,75 @@
+package store
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/equaltoai/lesser-host/internal/store/models"
+)
+
+func (s *Store) GetAIJob(ctx context.Context, id string) (*models.AIJob, error) {
+	if s == nil || s.DB == nil {
+		return nil, fmt.Errorf("store not initialized")
+	}
+
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, fmt.Errorf("job id is required")
+	}
+
+	var item models.AIJob
+	err := s.DB.WithContext(ctx).
+		Model(&models.AIJob{}).
+		Where("PK", "=", fmt.Sprintf("AIJOB#%s", id)).
+		Where("SK", "=", "JOB").
+		ConsistentRead().
+		First(&item)
+	if err != nil {
+		return nil, err
+	}
+	return &item, nil
+}
+
+func (s *Store) PutAIJob(ctx context.Context, item *models.AIJob) error {
+	if s == nil || s.DB == nil {
+		return fmt.Errorf("store not initialized")
+	}
+	if item == nil {
+		return fmt.Errorf("job is required")
+	}
+	return s.DB.WithContext(ctx).Model(item).CreateOrUpdate()
+}
+
+func (s *Store) GetAIResult(ctx context.Context, id string) (*models.AIResult, error) {
+	if s == nil || s.DB == nil {
+		return nil, fmt.Errorf("store not initialized")
+	}
+
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, fmt.Errorf("result id is required")
+	}
+
+	var item models.AIResult
+	err := s.DB.WithContext(ctx).
+		Model(&models.AIResult{}).
+		Where("PK", "=", fmt.Sprintf("AIRESULT#%s", id)).
+		Where("SK", "=", "RESULT").
+		ConsistentRead().
+		First(&item)
+	if err != nil {
+		return nil, err
+	}
+	return &item, nil
+}
+
+func (s *Store) PutAIResult(ctx context.Context, item *models.AIResult) error {
+	if s == nil || s.DB == nil {
+		return fmt.Errorf("store not initialized")
+	}
+	if item == nil {
+		return fmt.Errorf("result is required")
+	}
+	return s.DB.WithContext(ctx).Model(item).CreateOrUpdate()
+}

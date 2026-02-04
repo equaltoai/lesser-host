@@ -24,15 +24,21 @@ type createInstanceRequest struct {
 }
 
 type instanceResponse struct {
-	Slug                  string    `json:"slug"`
-	Owner                 string    `json:"owner,omitempty"`
-	Status                string    `json:"status"`
-	HostedPreviewsEnabled bool      `json:"hosted_previews_enabled"`
-	LinkSafetyEnabled     bool      `json:"link_safety_enabled"`
-	RendersEnabled        bool      `json:"renders_enabled"`
-	RenderPolicy          string    `json:"render_policy"`
-	OveragePolicy         string    `json:"overage_policy"`
-	CreatedAt             time.Time `json:"created_at"`
+	Slug                   string    `json:"slug"`
+	Owner                  string    `json:"owner,omitempty"`
+	Status                 string    `json:"status"`
+	HostedPreviewsEnabled  bool      `json:"hosted_previews_enabled"`
+	LinkSafetyEnabled      bool      `json:"link_safety_enabled"`
+	RendersEnabled         bool      `json:"renders_enabled"`
+	RenderPolicy           string    `json:"render_policy"`
+	OveragePolicy          string    `json:"overage_policy"`
+	AIEnabled              bool      `json:"ai_enabled"`
+	AIModelSet             string    `json:"ai_model_set"`
+	AIBatchingMode         string    `json:"ai_batching_mode"`
+	AIBatchMaxItems        int64     `json:"ai_batch_max_items"`
+	AIBatchMaxTotalBytes   int64     `json:"ai_batch_max_total_bytes"`
+	AIPricingMultiplierBps int64     `json:"ai_pricing_multiplier_bps"`
+	CreatedAt              time.Time `json:"created_at"`
 }
 
 type listInstancesResponse struct {
@@ -47,11 +53,17 @@ type createInstanceKeyResponse struct {
 }
 
 type updateInstanceConfigRequest struct {
-	HostedPreviewsEnabled *bool   `json:"hosted_previews_enabled,omitempty"`
-	LinkSafetyEnabled     *bool   `json:"link_safety_enabled,omitempty"`
-	RendersEnabled        *bool   `json:"renders_enabled,omitempty"`
-	RenderPolicy          *string `json:"render_policy,omitempty"`  // always|suspicious
-	OveragePolicy         *string `json:"overage_policy,omitempty"` // block|allow
+	HostedPreviewsEnabled  *bool   `json:"hosted_previews_enabled,omitempty"`
+	LinkSafetyEnabled      *bool   `json:"link_safety_enabled,omitempty"`
+	RendersEnabled         *bool   `json:"renders_enabled,omitempty"`
+	RenderPolicy           *string `json:"render_policy,omitempty"`  // always|suspicious
+	OveragePolicy          *string `json:"overage_policy,omitempty"` // block|allow
+	AIEnabled              *bool   `json:"ai_enabled,omitempty"`
+	AIModelSet             *string `json:"ai_model_set,omitempty"`
+	AIBatchingMode         *string `json:"ai_batching_mode,omitempty"` // none|in_request|worker|hybrid
+	AIBatchMaxItems        *int64  `json:"ai_batch_max_items,omitempty"`
+	AIBatchMaxTotalBytes   *int64  `json:"ai_batch_max_total_bytes,omitempty"`
+	AIPricingMultiplierBps *int64  `json:"ai_pricing_multiplier_bps,omitempty"`
 }
 
 type setBudgetMonthRequest struct {
@@ -103,16 +115,28 @@ func (s *Server) handleCreateInstance(ctx *apptheory.Context) (*apptheory.Respon
 	rendersEnabled := true
 	renderPolicy := "suspicious"
 	overagePolicy := "block"
+	aiEnabled := false
+	aiModelSet := "openai:gpt-4o-mini"
+	aiBatchingMode := "none"
+	aiBatchMaxItems := int64(8)
+	aiBatchMaxTotalBytes := int64(64 * 1024)
+	aiPricingMultiplierBps := int64(10000)
 	inst := &models.Instance{
-		Slug:                  slug,
-		Owner:                 strings.TrimSpace(req.Owner),
-		Status:                models.InstanceStatusActive,
-		HostedPreviewsEnabled: &hostedPreviewsEnabled,
-		LinkSafetyEnabled:     &linkSafetyEnabled,
-		RendersEnabled:        &rendersEnabled,
-		RenderPolicy:          renderPolicy,
-		OveragePolicy:         overagePolicy,
-		CreatedAt:             now,
+		Slug:                   slug,
+		Owner:                  strings.TrimSpace(req.Owner),
+		Status:                 models.InstanceStatusActive,
+		HostedPreviewsEnabled:  &hostedPreviewsEnabled,
+		LinkSafetyEnabled:      &linkSafetyEnabled,
+		RendersEnabled:         &rendersEnabled,
+		RenderPolicy:           renderPolicy,
+		OveragePolicy:          overagePolicy,
+		AIEnabled:              &aiEnabled,
+		AIModelSet:             aiModelSet,
+		AIBatchingMode:         aiBatchingMode,
+		AIBatchMaxItems:        aiBatchMaxItems,
+		AIBatchMaxTotalBytes:   aiBatchMaxTotalBytes,
+		AIPricingMultiplierBps: &aiPricingMultiplierBps,
+		CreatedAt:              now,
 	}
 	if err := inst.UpdateKeys(); err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
@@ -162,15 +186,21 @@ func (s *Server) handleCreateInstance(ctx *apptheory.Context) (*apptheory.Respon
 	}
 
 	return apptheory.JSON(http.StatusCreated, instanceResponse{
-		Slug:                  inst.Slug,
-		Owner:                 inst.Owner,
-		Status:                inst.Status,
-		HostedPreviewsEnabled: effectiveHostedPreviewsEnabled(inst.HostedPreviewsEnabled),
-		LinkSafetyEnabled:     effectiveLinkSafetyEnabled(inst.LinkSafetyEnabled),
-		RendersEnabled:        effectiveRendersEnabled(inst.RendersEnabled),
-		RenderPolicy:          effectiveRenderPolicy(inst.RenderPolicy),
-		OveragePolicy:         effectiveOveragePolicy(inst.OveragePolicy),
-		CreatedAt:             inst.CreatedAt,
+		Slug:                   inst.Slug,
+		Owner:                  inst.Owner,
+		Status:                 inst.Status,
+		HostedPreviewsEnabled:  effectiveHostedPreviewsEnabled(inst.HostedPreviewsEnabled),
+		LinkSafetyEnabled:      effectiveLinkSafetyEnabled(inst.LinkSafetyEnabled),
+		RendersEnabled:         effectiveRendersEnabled(inst.RendersEnabled),
+		RenderPolicy:           effectiveRenderPolicy(inst.RenderPolicy),
+		OveragePolicy:          effectiveOveragePolicy(inst.OveragePolicy),
+		AIEnabled:              effectiveAIEnabled(inst.AIEnabled),
+		AIModelSet:             effectiveAIModelSet(inst.AIModelSet),
+		AIBatchingMode:         effectiveAIBatchingMode(inst.AIBatchingMode),
+		AIBatchMaxItems:        effectiveAIBatchMaxItems(inst.AIBatchMaxItems),
+		AIBatchMaxTotalBytes:   effectiveAIBatchMaxTotalBytes(inst.AIBatchMaxTotalBytes),
+		AIPricingMultiplierBps: effectiveAIPricingMultiplierBps(inst.AIPricingMultiplierBps),
+		CreatedAt:              inst.CreatedAt,
 	})
 }
 
@@ -191,15 +221,21 @@ func (s *Server) handleListInstances(ctx *apptheory.Context) (*apptheory.Respons
 	out := make([]instanceResponse, 0, len(items))
 	for _, inst := range items {
 		out = append(out, instanceResponse{
-			Slug:                  inst.Slug,
-			Owner:                 inst.Owner,
-			Status:                inst.Status,
-			HostedPreviewsEnabled: effectiveHostedPreviewsEnabled(inst.HostedPreviewsEnabled),
-			LinkSafetyEnabled:     effectiveLinkSafetyEnabled(inst.LinkSafetyEnabled),
-			RendersEnabled:        effectiveRendersEnabled(inst.RendersEnabled),
-			RenderPolicy:          effectiveRenderPolicy(inst.RenderPolicy),
-			OveragePolicy:         effectiveOveragePolicy(inst.OveragePolicy),
-			CreatedAt:             inst.CreatedAt,
+			Slug:                   inst.Slug,
+			Owner:                  inst.Owner,
+			Status:                 inst.Status,
+			HostedPreviewsEnabled:  effectiveHostedPreviewsEnabled(inst.HostedPreviewsEnabled),
+			LinkSafetyEnabled:      effectiveLinkSafetyEnabled(inst.LinkSafetyEnabled),
+			RendersEnabled:         effectiveRendersEnabled(inst.RendersEnabled),
+			RenderPolicy:           effectiveRenderPolicy(inst.RenderPolicy),
+			OveragePolicy:          effectiveOveragePolicy(inst.OveragePolicy),
+			AIEnabled:              effectiveAIEnabled(inst.AIEnabled),
+			AIModelSet:             effectiveAIModelSet(inst.AIModelSet),
+			AIBatchingMode:         effectiveAIBatchingMode(inst.AIBatchingMode),
+			AIBatchMaxItems:        effectiveAIBatchMaxItems(inst.AIBatchMaxItems),
+			AIBatchMaxTotalBytes:   effectiveAIBatchMaxTotalBytes(inst.AIBatchMaxTotalBytes),
+			AIPricingMultiplierBps: effectiveAIPricingMultiplierBps(inst.AIPricingMultiplierBps),
+			CreatedAt:              inst.CreatedAt,
 		})
 	}
 
@@ -244,6 +280,52 @@ func effectiveOveragePolicy(v string) string {
 		return "block"
 	}
 	return v
+}
+
+func effectiveAIEnabled(v *bool) bool {
+	if v == nil {
+		return false
+	}
+	return *v
+}
+
+func effectiveAIModelSet(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return "openai:gpt-4o-mini"
+	}
+	return v
+}
+
+func effectiveAIBatchingMode(v string) string {
+	v = strings.ToLower(strings.TrimSpace(v))
+	switch v {
+	case "none", "in_request", "worker", "hybrid":
+		return v
+	default:
+		return "none"
+	}
+}
+
+func effectiveAIBatchMaxItems(v int64) int64 {
+	if v <= 0 {
+		return 8
+	}
+	return v
+}
+
+func effectiveAIBatchMaxTotalBytes(v int64) int64 {
+	if v <= 0 {
+		return 64 * 1024
+	}
+	return v
+}
+
+func effectiveAIPricingMultiplierBps(v *int64) int64 {
+	if v == nil || *v <= 0 {
+		return 10000
+	}
+	return *v
 }
 
 func (s *Server) handleCreateInstanceKey(ctx *apptheory.Context) (*apptheory.Response, error) {
@@ -323,7 +405,7 @@ func (s *Server) handleUpdateInstanceConfig(ctx *apptheory.Context) (*apptheory.
 	if err := parseJSON(ctx, &req); err != nil {
 		return nil, err
 	}
-	if req.HostedPreviewsEnabled == nil && req.LinkSafetyEnabled == nil && req.RendersEnabled == nil && req.RenderPolicy == nil && req.OveragePolicy == nil {
+	if req.HostedPreviewsEnabled == nil && req.LinkSafetyEnabled == nil && req.RendersEnabled == nil && req.RenderPolicy == nil && req.OveragePolicy == nil && req.AIEnabled == nil && req.AIModelSet == nil && req.AIBatchingMode == nil && req.AIBatchMaxItems == nil && req.AIBatchMaxTotalBytes == nil && req.AIPricingMultiplierBps == nil {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "no config fields provided"}
 	}
 
@@ -359,6 +441,53 @@ func (s *Server) handleUpdateInstanceConfig(ctx *apptheory.Context) (*apptheory.
 		update.OveragePolicy = op
 		fields = append(fields, "OveragePolicy")
 	}
+	if req.AIEnabled != nil {
+		update.AIEnabled = req.AIEnabled
+		fields = append(fields, "AIEnabled")
+	}
+	if req.AIModelSet != nil {
+		ms := strings.TrimSpace(*req.AIModelSet)
+		if ms == "" {
+			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "ai_model_set cannot be empty"}
+		}
+		update.AIModelSet = ms
+		fields = append(fields, "AIModelSet")
+	}
+	if req.AIBatchingMode != nil {
+		mode := strings.ToLower(strings.TrimSpace(*req.AIBatchingMode))
+		switch mode {
+		case "none", "in_request", "worker", "hybrid":
+			// ok
+		default:
+			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "ai_batching_mode must be none, in_request, worker, or hybrid"}
+		}
+		update.AIBatchingMode = mode
+		fields = append(fields, "AIBatchingMode")
+	}
+	if req.AIBatchMaxItems != nil {
+		if *req.AIBatchMaxItems <= 0 {
+			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "ai_batch_max_items must be > 0"}
+		}
+		update.AIBatchMaxItems = *req.AIBatchMaxItems
+		fields = append(fields, "AIBatchMaxItems")
+	}
+	if req.AIBatchMaxTotalBytes != nil {
+		if *req.AIBatchMaxTotalBytes <= 0 {
+			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "ai_batch_max_total_bytes must be > 0"}
+		}
+		update.AIBatchMaxTotalBytes = *req.AIBatchMaxTotalBytes
+		fields = append(fields, "AIBatchMaxTotalBytes")
+	}
+	if req.AIPricingMultiplierBps != nil {
+		if *req.AIPricingMultiplierBps <= 0 {
+			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "ai_pricing_multiplier_bps must be > 0"}
+		}
+		if *req.AIPricingMultiplierBps > 1_000_000 {
+			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "ai_pricing_multiplier_bps too large"}
+		}
+		update.AIPricingMultiplierBps = req.AIPricingMultiplierBps
+		fields = append(fields, "AIPricingMultiplierBps")
+	}
 	if err := update.UpdateKeys(); err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
@@ -388,15 +517,21 @@ func (s *Server) handleUpdateInstanceConfig(ctx *apptheory.Context) (*apptheory.
 	}
 
 	return apptheory.JSON(http.StatusOK, instanceResponse{
-		Slug:                  inst.Slug,
-		Owner:                 inst.Owner,
-		Status:                inst.Status,
-		HostedPreviewsEnabled: effectiveHostedPreviewsEnabled(inst.HostedPreviewsEnabled),
-		LinkSafetyEnabled:     effectiveLinkSafetyEnabled(inst.LinkSafetyEnabled),
-		RendersEnabled:        effectiveRendersEnabled(inst.RendersEnabled),
-		RenderPolicy:          effectiveRenderPolicy(inst.RenderPolicy),
-		OveragePolicy:         effectiveOveragePolicy(inst.OveragePolicy),
-		CreatedAt:             inst.CreatedAt,
+		Slug:                   inst.Slug,
+		Owner:                  inst.Owner,
+		Status:                 inst.Status,
+		HostedPreviewsEnabled:  effectiveHostedPreviewsEnabled(inst.HostedPreviewsEnabled),
+		LinkSafetyEnabled:      effectiveLinkSafetyEnabled(inst.LinkSafetyEnabled),
+		RendersEnabled:         effectiveRendersEnabled(inst.RendersEnabled),
+		RenderPolicy:           effectiveRenderPolicy(inst.RenderPolicy),
+		OveragePolicy:          effectiveOveragePolicy(inst.OveragePolicy),
+		AIEnabled:              effectiveAIEnabled(inst.AIEnabled),
+		AIModelSet:             effectiveAIModelSet(inst.AIModelSet),
+		AIBatchingMode:         effectiveAIBatchingMode(inst.AIBatchingMode),
+		AIBatchMaxItems:        effectiveAIBatchMaxItems(inst.AIBatchMaxItems),
+		AIBatchMaxTotalBytes:   effectiveAIBatchMaxTotalBytes(inst.AIBatchMaxTotalBytes),
+		AIPricingMultiplierBps: effectiveAIPricingMultiplierBps(inst.AIPricingMultiplierBps),
+		CreatedAt:              inst.CreatedAt,
 	})
 }
 

@@ -1,4 +1,4 @@
-package trust
+package billing
 
 import (
 	"crypto/sha256"
@@ -9,7 +9,22 @@ import (
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
-func usageLedgerEntryID(instanceSlug string, month string, requestID string, module string, target string, debitedCredits int64) string {
+// PricedCredits applies a per-instance pricing multiplier (basis points) to a base credit cost.
+// It ceils the result to avoid systematic undercharging.
+func PricedCredits(base int64, multiplierBps int64) int64 {
+	if base <= 0 {
+		return 0
+	}
+	if multiplierBps <= 0 {
+		return base
+	}
+	if multiplierBps >= 10000 {
+		return base
+	}
+	return (base*multiplierBps + 9999) / 10000
+}
+
+func UsageLedgerEntryID(instanceSlug string, month string, requestID string, module string, target string, debitedCredits int64) string {
 	sum := sha256.Sum256([]byte(strings.Join([]string{
 		"usage",
 		strings.TrimSpace(instanceSlug),
@@ -22,7 +37,7 @@ func usageLedgerEntryID(instanceSlug string, month string, requestID string, mod
 	return hex.EncodeToString(sum[:])
 }
 
-func billingPartsForDebit(includedCredits int64, usedCredits int64, delta int64) (includedDebited int64, overageDebited int64) {
+func BillingPartsForDebit(includedCredits int64, usedCredits int64, delta int64) (includedDebited int64, overageDebited int64) {
 	remaining := includedCredits - usedCredits
 	if remaining <= 0 {
 		return 0, delta
@@ -33,7 +48,7 @@ func billingPartsForDebit(includedCredits int64, usedCredits int64, delta int64)
 	return remaining, delta - remaining
 }
 
-func billingTypeFromParts(includedDebited int64, overageDebited int64) string {
+func BillingTypeFromParts(includedDebited int64, overageDebited int64) string {
 	if includedDebited > 0 && overageDebited > 0 {
 		return models.BillingTypeMixed
 	}

@@ -12,6 +12,7 @@ import (
 	"github.com/theory-cloud/tabletheory/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
+	"github.com/equaltoai/lesser-host/internal/billing"
 	"github.com/equaltoai/lesser-host/internal/rendering"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
@@ -320,7 +321,7 @@ func (s *Server) runLinkSafetyBasicJob(
 ) publishJobModuleResponse {
 	now := time.Now().UTC()
 	creditsRequested := int64(len(canonicalLinks))
-	creditsPriced := pricedCredits(creditsRequested, pricingMultiplierBps)
+	creditsPriced := billing.PricedCredits(creditsRequested, pricingMultiplierBps)
 
 	// Cache hit path (no charge).
 	if cached, err := s.store.GetLinkSafetyBasicResult(ctx.Context(), jobID); err == nil {
@@ -524,11 +525,11 @@ func (s *Server) runLinkSafetyBasicJob(
 	}
 	_ = update.UpdateKeys()
 
-	includedDebited, overageDebited := billingPartsForDebit(budget.IncludedCredits, budget.UsedCredits, creditsPriced)
-	billingType := billingTypeFromParts(includedDebited, overageDebited)
+	includedDebited, overageDebited := billing.BillingPartsForDebit(budget.IncludedCredits, budget.UsedCredits, creditsPriced)
+	billingType := billing.BillingTypeFromParts(includedDebited, overageDebited)
 
 	ledger := &models.UsageLedgerEntry{
-		ID:                     usageLedgerEntryID(instanceSlug, month, strings.TrimSpace(ctx.RequestID), "link_safety_basic", jobID, creditsPriced),
+		ID:                     billing.UsageLedgerEntryID(instanceSlug, month, strings.TrimSpace(ctx.RequestID), "link_safety_basic", jobID, creditsPriced),
 		InstanceSlug:           instanceSlug,
 		Month:                  month,
 		Module:                 "link_safety_basic",
