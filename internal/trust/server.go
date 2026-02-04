@@ -62,6 +62,7 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 	app.Post("/api/v1/ai/moderation/image", s.handleAIModerationImage, apptheory.RequireAuth())
 	app.Post("/api/v1/ai/moderation/text/report", s.handleAIModerationTextReport, apptheory.RequireAuth())
 	app.Post("/api/v1/ai/moderation/image/report", s.handleAIModerationImageReport, apptheory.RequireAuth())
+	app.Post("/api/v1/ai/claims/verify", s.handleAIClaimVerify, apptheory.RequireAuth())
 	app.Get("/api/v1/ai/jobs/{jobId}", s.handleGetAIJob, apptheory.RequireAuth())
 
 	app.Post("/api/v1/budget/debit", s.handleBudgetDebit, apptheory.RequireAuth())

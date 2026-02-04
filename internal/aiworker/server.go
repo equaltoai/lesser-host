@@ -164,6 +164,11 @@ func (s *Server) processAIJob(ctx context.Context, requestID string, jobID strin
 			return nil
 		}
 		resultJSON, usage, errs, err = s.runModerationImageLLMV1(ctx, job)
+	case "claim_verify_llm":
+		if policyVersion != "v1" {
+			return nil
+		}
+		resultJSON, usage, errs, err = s.runClaimVerifyLLMV1(ctx, job)
 	default:
 		return nil
 	}
@@ -989,6 +994,158 @@ func (s *Server) runModerationImageLLMV1(ctx context.Context, job *models.AIJob)
 		}
 		usage.DurationMs = time.Since(start).Milliseconds()
 	}
+
+	b, err := json.Marshal(res)
+	if err != nil {
+		return "", models.AIUsage{}, nil, err
+	}
+	return string(b), usage, errs, nil
+}
+
+func (s *Server) runClaimVerifyLLMV1(ctx context.Context, job *models.AIJob) (string, models.AIUsage, []models.AIError, error) {
+	if job == nil {
+		return "", models.AIUsage{}, nil, fmt.Errorf("job is nil")
+	}
+
+	var in ai.ClaimVerifyInputsV1
+	if err := json.Unmarshal([]byte(job.InputsJSON), &in); err != nil {
+		return "", models.AIUsage{}, nil, nil // drop invalid
+	}
+
+	modelSet := strings.TrimSpace(job.ModelSet)
+	if modelSet == "" {
+		modelSet = "deterministic"
+	}
+
+	start := time.Now()
+	var errs []models.AIError
+
+	// Precompute evidence source set for citation validation.
+	evidenceIDs := map[string]struct{}{}
+	for _, e := range in.Evidence {
+		id := strings.TrimSpace(e.SourceID)
+		if id == "" {
+			continue
+		}
+		evidenceIDs[id] = struct{}{}
+	}
+	if len(evidenceIDs) == 0 {
+		res := ai.ClaimVerifyDeterministicV1(in)
+		res.Warnings = append(res.Warnings, "missing_evidence")
+		b, err := json.Marshal(res)
+		if err != nil {
+			return "", models.AIUsage{}, nil, err
+		}
+		return string(b), models.AIUsage{Provider: "deterministic", Model: "deterministic", DurationMs: time.Since(start).Milliseconds()}, []models.AIError{{Code: "invalid_inputs", Message: "Evidence is required", Retryable: false}}, nil
+	}
+
+	var res ai.ClaimVerifyResultV1
+	var usage models.AIUsage
+
+	if strings.HasPrefix(strings.ToLower(modelSet), "openai:") {
+		apiKey, keyErr := openAIAPIKey(ctx)
+		if keyErr != nil || strings.TrimSpace(apiKey) == "" {
+			errs = append(errs, models.AIError{Code: "llm_unavailable", Message: "LLM unavailable; used deterministic fallback", Retryable: false})
+		} else {
+			out, u, err := llm.ClaimVerifyBatchOpenAI(ctx, apiKey, modelSet, []llm.ClaimVerifyBatchItem{
+				{ItemID: strings.TrimSpace(job.ID), Input: in},
+			})
+			if err != nil {
+				errs = append(errs, models.AIError{Code: "llm_failed", Message: "LLM call failed; used deterministic fallback", Retryable: false})
+			} else if item, ok := out[strings.TrimSpace(job.ID)]; ok {
+				res = item
+				usage = u
+				usage.DurationMs = time.Since(start).Milliseconds()
+			} else {
+				errs = append(errs, models.AIError{Code: "llm_missing_output", Message: "LLM output missing; used deterministic fallback", Retryable: false})
+			}
+		}
+	}
+
+	if len(res.Claims) == 0 {
+		res = ai.ClaimVerifyDeterministicV1(in)
+		usage = models.AIUsage{
+			Provider:   "deterministic",
+			Model:      "deterministic",
+			ToolCalls:  0,
+			DurationMs: time.Since(start).Milliseconds(),
+		}
+	}
+
+	// Validate + sanitize citations against provided evidence.
+	sanitized := make([]ai.ClaimVerifyClaimV1, 0, len(res.Claims))
+	for _, c := range res.Claims {
+		c.ClaimID = strings.TrimSpace(c.ClaimID)
+		c.Text = strings.TrimSpace(c.Text)
+		if c.ClaimID == "" || c.Text == "" {
+			continue
+		}
+		if len(c.Text) > 240 {
+			c.Text = strings.TrimSpace(c.Text[:240])
+		}
+
+		c.Classification = strings.ToLower(strings.TrimSpace(c.Classification))
+		switch c.Classification {
+		case "checkable", "opinion", "unclear":
+		default:
+			c.Classification = "unclear"
+		}
+
+		c.Verdict = strings.ToLower(strings.TrimSpace(c.Verdict))
+		switch c.Verdict {
+		case "supported", "refuted", "inconclusive":
+		default:
+			c.Verdict = "inconclusive"
+		}
+
+		if c.Confidence < 0 {
+			c.Confidence = 0
+		}
+		if c.Confidence > 1 {
+			c.Confidence = 1
+		}
+
+		c.Reason = strings.TrimSpace(c.Reason)
+		if len(c.Reason) > 240 {
+			c.Reason = strings.TrimSpace(c.Reason[:240])
+		}
+
+		cits := make([]ai.ClaimVerifyCitationV1, 0, len(c.Citations))
+		for _, cit := range c.Citations {
+			cit.SourceID = strings.TrimSpace(cit.SourceID)
+			cit.Quote = strings.TrimSpace(cit.Quote)
+			if cit.SourceID == "" || cit.Quote == "" {
+				continue
+			}
+			if _, ok := evidenceIDs[cit.SourceID]; !ok {
+				continue
+			}
+			if len(cit.Quote) > 200 {
+				cit.Quote = strings.TrimSpace(cit.Quote[:200])
+			}
+			cits = append(cits, cit)
+			if len(cits) >= 3 {
+				break
+			}
+		}
+		c.Citations = cits
+
+		if (c.Verdict == "supported" || c.Verdict == "refuted") && len(c.Citations) == 0 {
+			c.Verdict = "inconclusive"
+			if c.Reason == "" {
+				c.Reason = "missing_citations"
+			} else {
+				c.Reason = c.Reason + " (missing citations)"
+			}
+			c.Confidence = 0
+		}
+
+		sanitized = append(sanitized, c)
+		if len(sanitized) >= 10 {
+			break
+		}
+	}
+	res.Claims = sanitized
 
 	b, err := json.Marshal(res)
 	if err != nil {
