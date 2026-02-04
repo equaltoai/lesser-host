@@ -8,6 +8,7 @@ trust/safety planning.
 
 - Bootstrap plan: `app-theory/init.md`
 - Deployment contract (consumed by `theory app up/down`): `app-theory/app.json`
+- AI services subroadmap: `docs/ai-services-roadmap.md`
 - Pinned frameworks (from `app-theory/app.json`):
   - AppTheory: `github.com/theory-cloud/apptheory@v0.8.0`
   - TableTheory: `github.com/theory-cloud/tabletheory@v1.3.0`
