@@ -15,7 +15,7 @@ func TestHealthz_LambdaFunctionURL(t *testing.T) {
 
 	env := testkit.New()
 	app := env.App()
-	controlplane.Register(app)
+	controlplane.Register(app, nil)
 
 	event := testkit.LambdaFunctionURLRequest("GET", "/healthz", testkit.HTTPEventOptions{})
 	resp := app.ServeLambdaFunctionURL(context.Background(), event)
@@ -29,7 +29,7 @@ func TestHealthz_Portable(t *testing.T) {
 
 	env := testkit.New()
 	app := env.App()
-	controlplane.Register(app)
+	controlplane.Register(app, nil)
 
 	resp := env.Invoke(context.Background(), app, apptheory.Request{
 		Method: "GET",

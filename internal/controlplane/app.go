@@ -4,22 +4,40 @@ import (
 	"net/http"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
+
+	"github.com/equaltoai/lesser-host/internal/config"
+	"github.com/equaltoai/lesser-host/internal/store"
 )
 
 const ServiceName = "control-plane-api"
 
 func New(opts ...apptheory.Option) *apptheory.App {
+	cfg := config.Load()
+
+	db, err := store.LambdaInit()
+	if err != nil {
+		panic(err)
+	}
+
+	srv := NewServer(cfg, store.New(db))
+
+	opts = append(opts, apptheory.WithAuthHook(srv.OperatorAuthHook))
+
 	app := apptheory.New(opts...)
-	Register(app)
+	Register(app, srv)
 	return app
 }
 
-func Register(app *apptheory.App) *apptheory.App {
+func Register(app *apptheory.App, srv *Server) *apptheory.App {
 	if app == nil {
 		return app
 	}
 
 	app.Get("/healthz", healthz)
+
+	if srv != nil {
+		srv.RegisterRoutes(app)
+	}
 
 	return app
 }
