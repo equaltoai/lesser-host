@@ -47,3 +47,11 @@ export async function fetchJson<T>(input: RequestInfo | URL, init?: RequestInit)
 	throw new ApiError(message, res.status, code);
 }
 
+export function jsonRequest<T>(body: T): RequestInit {
+	return {
+		headers: {
+			'content-type': 'application/json',
+		},
+		body: JSON.stringify(body),
+	};
+}
