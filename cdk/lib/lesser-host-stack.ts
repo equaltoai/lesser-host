@@ -822,32 +822,33 @@ export class LesserHostStack extends cdk.Stack {
 			);
 		}
 
-	private goLambda(id: string, entry: string, environment: Record<string, string>): lambda.Function {
-		const repoRoot = this.repoRoot();
-		const buildDir = path.join(repoRoot, 'cdk', '.build', id);
-		fs.mkdirSync(buildDir, { recursive: true });
-		execSync('go build -o ' + path.join(buildDir, 'main') + ' ' + entry, {
-			cwd: repoRoot,
-			stdio: 'inherit',
-			env: {
-				...process.env,
-				CGO_ENABLED: '0',
-				GOOS: 'linux',
-				GOARCH: 'amd64',
-			},
-		});
-		const code = lambda.Code.fromAsset(buildDir);
+		private goLambda(id: string, entry: string, environment: Record<string, string>): lambda.Function {
+			const repoRoot = this.repoRoot();
+			const buildDir = path.join(repoRoot, 'cdk', '.build', id);
+			fs.mkdirSync(buildDir, { recursive: true });
+			// AWS Lambda's legacy `go1.x` runtime has been deprecated; use the AL2023 custom runtime with a `bootstrap` binary.
+			execSync('go build -o ' + path.join(buildDir, 'bootstrap') + ' ' + entry, {
+				cwd: repoRoot,
+				stdio: 'inherit',
+				env: {
+					...process.env,
+					CGO_ENABLED: '0',
+					GOOS: 'linux',
+					GOARCH: 'amd64',
+				},
+			});
+			const code = lambda.Code.fromAsset(buildDir);
 
-		return new lambda.Function(this, id, {
-			functionName: `${this.namePrefix}-${id.replace(/[A-Z]/g, (m) => '-' + m.toLowerCase()).replace(/^-/, '')}`,
-			code,
-			handler: 'main',
-			runtime: lambda.Runtime.GO_1_X,
-			memorySize: 256,
-			timeout: cdk.Duration.seconds(10),
-			environment,
-		});
-	}
+			return new lambda.Function(this, id, {
+				functionName: `${this.namePrefix}-${id.replace(/[A-Z]/g, (m) => '-' + m.toLowerCase()).replace(/^-/, '')}`,
+				code,
+				handler: 'bootstrap',
+				runtime: lambda.Runtime.PROVIDED_AL2023,
+				memorySize: 256,
+				timeout: cdk.Duration.seconds(10),
+				environment,
+			});
+		}
 
 	private repoRoot(): string {
 		// This file lives at cdk/lib/*.ts; repo root is two levels up.
