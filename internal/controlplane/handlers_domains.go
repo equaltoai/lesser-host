@@ -234,7 +234,7 @@ func (s *Server) handleVerifyInstanceDomain(ctx *apptheory.Context) (*apptheory.
 		return nil, &apptheory.AppError{Code: "app.not_found", Message: "domain not found"}
 	}
 
-	if strings.TrimSpace(item.Status) == models.DomainStatusVerified {
+	if strings.TrimSpace(item.Status) == models.DomainStatusVerified || strings.TrimSpace(item.Status) == models.DomainStatusActive {
 		return apptheory.JSON(http.StatusOK, verifyDomainResponse{Domain: domainResponseFromModel(&item)})
 	}
 
@@ -312,6 +312,23 @@ func (s *Server) handleVerifyInstanceDomain(ctx *apptheory.Context) (*apptheory.
 	item.VerificationToken = ""
 	item.VerifiedAt = now
 	item.UpdatedAt = now
+
+	// Create an operator review request for vanity domain activation.
+	if strings.TrimSpace(item.Type) == models.DomainTypeVanity {
+		req := &models.VanityDomainRequest{
+			Domain:       domain,
+			DomainRaw:    strings.TrimSpace(item.DomainRaw),
+			InstanceSlug: slug,
+			RequestedBy:  strings.TrimSpace(ctx.AuthIdentity),
+			Status:       models.VanityDomainRequestStatusPending,
+			VerifiedAt:   now,
+			RequestedAt:  now,
+			CreatedAt:    now,
+			UpdatedAt:    now,
+		}
+		_ = req.UpdateKeys()
+		_ = s.store.DB.WithContext(ctx.Context()).Model(req).CreateOrUpdate()
+	}
 
 	// Best-effort: ensure the vanity domain hostId is registered on-chain for tips (managed instances).
 	if s.cfg.TipEnabled {

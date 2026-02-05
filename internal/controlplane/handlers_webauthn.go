@@ -427,10 +427,10 @@ func (s *Server) handleWebAuthnLoginFinish(ctx *apptheory.Context) (*apptheory.R
 	now := time.Now().UTC()
 
 	update := &models.WebAuthnCredential{
-		ID:            credID,
-		UserID:        username,
-		SignCount:     credential.Authenticator.SignCount,
-		CloneWarning:  credential.Authenticator.CloneWarning,
+		ID:             credID,
+		UserID:         username,
+		SignCount:      credential.Authenticator.SignCount,
+		CloneWarning:   credential.Authenticator.CloneWarning,
 		BackupEligible: credential.Flags.BackupEligible,
 		BackupState:    credential.Flags.BackupState,
 		LastUsedAt:     now,
@@ -447,9 +447,9 @@ func (s *Server) handleWebAuthnLoginFinish(ctx *apptheory.Context) (*apptheory.R
 		"LastUsedAt",
 	)
 
-	var op models.OperatorUser
+	var op models.User
 	err = s.store.DB.WithContext(ctx.Context()).
-		Model(&models.OperatorUser{}).
+		Model(&models.User{}).
 		Where("PK", "=", fmt.Sprintf(models.KeyPatternUser, username)).
 		Where("SK", "=", models.SKProfile).
 		First(&op)

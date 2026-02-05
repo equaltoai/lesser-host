@@ -124,6 +124,13 @@ export class LesserHostStack extends cdk.Stack {
 		const tipDefaultHostFeeBps = (this.node.tryGetContext('tipDefaultHostFeeBps') as string | undefined) ?? '';
 		const tipTxMode = (this.node.tryGetContext('tipTxMode') as string | undefined) ?? '';
 
+		const paymentsProvider = (this.node.tryGetContext('paymentsProvider') as string | undefined) ?? '';
+		const paymentsCentsPer1000Credits =
+			(this.node.tryGetContext('paymentsCentsPer1000Credits') as string | undefined) ?? '';
+		const paymentsCheckoutSuccessUrl =
+			(this.node.tryGetContext('paymentsCheckoutSuccessUrl') as string | undefined) ?? '';
+		const paymentsCheckoutCancelUrl = (this.node.tryGetContext('paymentsCheckoutCancelUrl') as string | undefined) ?? '';
+
 		const provisionRunnerProjectName =
 			managedProvisionRunnerProjectName.trim() || `${namePrefix}-provision-runner`;
 		const lesserGitHubOwner = managedLesserGitHubOwner.trim() || 'equaltoai';
@@ -284,6 +291,10 @@ export class LesserHostStack extends cdk.Stack {
 			TIP_DEFAULT_HOST_WALLET_ADDRESS: tipDefaultHostWalletAddress,
 			TIP_DEFAULT_HOST_FEE_BPS: tipDefaultHostFeeBps,
 			TIP_TX_MODE: tipTxMode,
+			PAYMENTS_PROVIDER: paymentsProvider,
+			PAYMENTS_CENTS_PER_1000_CREDITS: paymentsCentsPer1000Credits,
+			PAYMENTS_CHECKOUT_SUCCESS_URL: paymentsCheckoutSuccessUrl,
+			PAYMENTS_CHECKOUT_CANCEL_URL: paymentsCheckoutCancelUrl,
 		});
 
 		const trustFn = this.goLambda('TrustApi', './cmd/trust-api', {
@@ -477,6 +488,26 @@ export class LesserHostStack extends cdk.Stack {
 				}),
 			);
 		}
+
+		const paymentsSsmParamArns = [
+			`arn:aws:ssm:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:parameter/lesser-host/api/stripe/secret`,
+			`arn:aws:ssm:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:parameter/lesser-host/api/stripe/webhook`,
+		];
+		controlPlaneFn.addToRolePolicy(
+			new iam.PolicyStatement({
+				actions: ['ssm:GetParameter', 'ssm:GetParameters'],
+				resources: paymentsSsmParamArns,
+			}),
+		);
+		controlPlaneFn.addToRolePolicy(
+			new iam.PolicyStatement({
+				actions: ['kms:Decrypt'],
+				resources: ['*'],
+				conditions: {
+					StringEquals: { 'kms:ViaService': `ssm.${cdk.Aws.REGION}.amazonaws.com` },
+				},
+			}),
+		);
 
 		const retentionSweepRule = new events.Rule(this, 'RetentionSweepRule', {
 			ruleName: `${namePrefix}-retention-sweep`,

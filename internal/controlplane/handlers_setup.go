@@ -53,8 +53,8 @@ type setupBootstrapVerifyResponse struct {
 }
 
 type setupCreateAdminRequest struct {
-	Username    string            `json:"username"`
-	DisplayName string            `json:"displayName,omitempty"`
+	Username    string              `json:"username"`
+	DisplayName string              `json:"displayName,omitempty"`
 	Wallet      walletVerifyRequest `json:"wallet"`
 }
 
@@ -427,7 +427,7 @@ func (s *Server) handleSetupCreateAdmin(ctx *apptheory.Context) (*apptheory.Resp
 
 	now := time.Now().UTC()
 
-	user := &models.OperatorUser{
+	user := &models.User{
 		Username:    req.Username,
 		Role:        models.RoleAdmin,
 		DisplayName: strings.TrimSpace(req.DisplayName),
@@ -539,4 +539,3 @@ func (s *Server) handleSetupFinalize(ctx *apptheory.Context) (*apptheory.Respons
 		BootstrappedAt: &t,
 	})
 }
-

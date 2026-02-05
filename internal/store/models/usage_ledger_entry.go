@@ -33,7 +33,11 @@ type UsageLedgerEntry struct {
 	RequestID string `theorydb:"attr:requestId" json:"request_id,omitempty"`
 
 	RequestedCredits int64 `theorydb:"attr:requestedCredits" json:"requested_credits"`
-	DebitedCredits   int64 `theorydb:"attr:debitedCredits" json:"debited_credits"`
+	ListCredits      int64 `theorydb:"attr:listCredits" json:"list_credits,omitempty"`
+	// PricingMultiplierBps records any applied multiplier (e.g., author-at-publish discount).
+	// 10000 means no change.
+	PricingMultiplierBps int64 `theorydb:"attr:pricingMultiplierBps" json:"pricing_multiplier_bps,omitempty"`
+	DebitedCredits       int64 `theorydb:"attr:debitedCredits" json:"debited_credits"`
 
 	IncludedDebitedCredits int64 `theorydb:"attr:includedDebitedCredits" json:"included_debited_credits"`
 	OverageDebitedCredits  int64 `theorydb:"attr:overageDebitedCredits" json:"overage_debited_credits"`

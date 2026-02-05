@@ -115,9 +115,9 @@ func (s *Server) handleWalletLogin(ctx *apptheory.Context) (*apptheory.Response,
 		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
 	}
 
-	var user models.OperatorUser
+	var user models.User
 	err = s.store.DB.WithContext(ctx.Context()).
-		Model(&models.OperatorUser{}).
+		Model(&models.User{}).
 		Where("PK", "=", fmt.Sprintf(models.KeyPatternUser, username)).
 		Where("SK", "=", models.SKProfile).
 		First(&user)
@@ -155,4 +155,3 @@ func (s *Server) handleWalletLogin(ctx *apptheory.Context) (*apptheory.Response,
 		Method:    "wallet",
 	})
 }
-

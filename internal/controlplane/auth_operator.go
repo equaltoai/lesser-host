@@ -25,6 +25,14 @@ func operatorRoleFromContext(ctx *apptheory.Context) string {
 	return strings.TrimSpace(role)
 }
 
+func operatorMethodFromContext(ctx *apptheory.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	method, _ := ctx.Get(ctxKeyOperatorMethod).(string)
+	return strings.TrimSpace(method)
+}
+
 // OperatorAuthHook authenticates an operator request using a bearer token.
 func (s *Server) OperatorAuthHook(ctx *apptheory.Context) (string, error) {
 	if s == nil || s.store == nil || s.store.DB == nil {

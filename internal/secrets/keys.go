@@ -10,8 +10,10 @@ import (
 
 // OpenAIServiceSSMParameterName and ClaudeSSMParameterName are SSM parameter paths for provider API keys.
 const (
-	OpenAIServiceSSMParameterName = "/lesser-host/api/openai/service"
-	ClaudeSSMParameterName        = "/lesser-host/api/claude"
+	OpenAIServiceSSMParameterName       = "/lesser-host/api/openai/service"
+	ClaudeSSMParameterName              = "/lesser-host/api/claude"
+	StripeSecretKeySSMParameterName     = "/lesser-host/api/stripe/secret"
+	StripeWebhookSecretSSMParameterName = "/lesser-host/api/stripe/webhook"
 )
 
 // OpenAIServiceKey loads the OpenAI service API key from SSM.
@@ -26,6 +28,24 @@ func OpenAIServiceKey(ctx context.Context, client SSMAPI) (string, error) {
 // ClaudeAPIKey loads the Claude API key from SSM.
 func ClaudeAPIKey(ctx context.Context, client SSMAPI) (string, error) {
 	raw, err := GetSSMParameterCached(ctx, client, ClaudeSSMParameterName, 10*time.Minute)
+	if err != nil {
+		return "", err
+	}
+	return parseAPIKeyValue(raw)
+}
+
+// StripeSecretKey loads the Stripe secret key from SSM.
+func StripeSecretKey(ctx context.Context, client SSMAPI) (string, error) {
+	raw, err := GetSSMParameterCached(ctx, client, StripeSecretKeySSMParameterName, 10*time.Minute)
+	if err != nil {
+		return "", err
+	}
+	return parseAPIKeyValue(raw)
+}
+
+// StripeWebhookSecret loads the Stripe webhook signing secret from SSM.
+func StripeWebhookSecret(ctx context.Context, client SSMAPI) (string, error) {
+	raw, err := GetSSMParameterCached(ctx, client, StripeWebhookSecretSSMParameterName, 10*time.Minute)
 	if err != nil {
 		return "", err
 	}

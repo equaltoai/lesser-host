@@ -127,6 +127,25 @@ func (s *Server) handleCreateRender(ctx *apptheory.Context) (*apptheory.Response
 		_ = audit.UpdateKeys()
 		_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
 
+		hit := &models.UsageLedgerEntry{
+			ID:                   billing.UsageLedgerEntryID(instanceSlug, now.Format("2006-01"), strings.TrimSpace(ctx.RequestID), "render.request", renderID, 0),
+			InstanceSlug:         instanceSlug,
+			Month:                now.Format("2006-01"),
+			Module:               "render.request",
+			Target:               renderID,
+			Cached:               true,
+			Reason:               "cache_hit",
+			RequestID:            strings.TrimSpace(ctx.RequestID),
+			RequestedCredits:     linkRenderCreditCost,
+			ListCredits:          linkRenderCreditCost,
+			PricingMultiplierBps: 10000,
+			DebitedCredits:       0,
+			BillingType:          models.BillingTypeNone,
+			CreatedAt:            now,
+		}
+		_ = hit.UpdateKeys()
+		_ = s.store.DB.WithContext(ctx.Context()).Model(hit).IfNotExists().Create()
+
 		return apptheory.JSON(http.StatusOK, renderArtifactResponseFromModel(ctx, existing, true))
 	}
 
@@ -255,6 +274,8 @@ func (s *Server) debitBudgetForCreateRender(
 		Reason:                 billingType,
 		RequestID:              strings.TrimSpace(ctx.RequestID),
 		RequestedCredits:       linkRenderCreditCost,
+		ListCredits:            linkRenderCreditCost,
+		PricingMultiplierBps:   10000,
 		DebitedCredits:         linkRenderCreditCost,
 		IncludedDebitedCredits: includedDebited,
 		OverageDebitedCredits:  overageDebited,

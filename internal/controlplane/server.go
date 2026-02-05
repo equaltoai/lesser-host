@@ -36,6 +36,10 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 	app.Post("/auth/wallet/challenge", s.handleWalletChallenge)
 	app.Post("/auth/wallet/login", s.handleWalletLogin)
 
+	// Portal wallet authentication (public, self-serve).
+	app.Post("/api/v1/portal/auth/wallet/challenge", s.handlePortalWalletChallenge)
+	app.Post("/api/v1/portal/auth/wallet/login", s.handlePortalWalletLogin)
+
 	// WebAuthn (passkey) authentication.
 	app.Post("/api/v1/auth/webauthn/register/begin", s.handleWebAuthnRegisterBegin, apptheory.RequireAuth())
 	app.Post("/api/v1/auth/webauthn/register/finish", s.handleWebAuthnRegisterFinish, apptheory.RequireAuth())
@@ -54,6 +58,52 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 
 	// Operator identity helpers.
 	app.Get("/api/v1/operators/me", s.handleOperatorMe, apptheory.RequireAuth())
+
+	// Operator console (approvals/review).
+	app.Get("/api/v1/operators/vanity-domain-requests", s.handleListVanityDomainRequests, apptheory.RequireAuth())
+	app.Post("/api/v1/operators/vanity-domain-requests/{domain}/approve", s.handleApproveVanityDomainRequest, apptheory.RequireAuth())
+	app.Post("/api/v1/operators/vanity-domain-requests/{domain}/reject", s.handleRejectVanityDomainRequest, apptheory.RequireAuth())
+	app.Get("/api/v1/operators/external-instances/registrations", s.handleListExternalInstanceRegistrations, apptheory.RequireAuth())
+	app.Post("/api/v1/operators/external-instances/registrations/{username}/{id}/approve", s.handleApproveExternalInstanceRegistration, apptheory.RequireAuth())
+	app.Post("/api/v1/operators/external-instances/registrations/{username}/{id}/reject", s.handleRejectExternalInstanceRegistration, apptheory.RequireAuth())
+
+	// Portal identity helpers.
+	app.Get("/api/v1/portal/me", s.handlePortalMe, apptheory.RequireAuth())
+
+	// Portal instance management (owner-scoped).
+	app.Post("/api/v1/portal/instances", s.handlePortalCreateInstance, apptheory.RequireAuth())
+	app.Get("/api/v1/portal/instances", s.handlePortalListInstances, apptheory.RequireAuth())
+	app.Get("/api/v1/portal/instances/{slug}", s.handlePortalGetInstance, apptheory.RequireAuth())
+	app.Put("/api/v1/portal/instances/{slug}/config", s.handlePortalUpdateInstanceConfig, apptheory.RequireAuth())
+	app.Post("/api/v1/portal/instances/{slug}/provision", s.handlePortalStartInstanceProvisioning, apptheory.RequireAuth())
+	app.Get("/api/v1/portal/instances/{slug}/provision", s.handlePortalGetInstanceProvisioning, apptheory.RequireAuth())
+	app.Get("/api/v1/portal/instances/{slug}/budgets", s.handlePortalListInstanceBudgets, apptheory.RequireAuth())
+	app.Get("/api/v1/portal/instances/{slug}/budgets/{month}", s.handlePortalGetInstanceBudgetMonth, apptheory.RequireAuth())
+	app.Put("/api/v1/portal/instances/{slug}/budgets/{month}", s.handlePortalSetInstanceBudgetMonth, apptheory.RequireAuth())
+	app.Get("/api/v1/portal/instances/{slug}/usage/{month}", s.handlePortalListInstanceUsage, apptheory.RequireAuth())
+	app.Get("/api/v1/portal/instances/{slug}/usage/{month}/summary", s.handlePortalGetInstanceUsageSummary, apptheory.RequireAuth())
+
+	// Portal domains (owner-scoped).
+	app.Get("/api/v1/portal/instances/{slug}/domains", s.handlePortalListInstanceDomains, apptheory.RequireAuth())
+	app.Post("/api/v1/portal/instances/{slug}/domains", s.handlePortalAddInstanceDomain, apptheory.RequireAuth())
+	app.Post("/api/v1/portal/instances/{slug}/domains/{domain}/verify", s.handlePortalVerifyInstanceDomain, apptheory.RequireAuth())
+	app.Post("/api/v1/portal/instances/{slug}/domains/{domain}/rotate", s.handlePortalRotateInstanceDomain, apptheory.RequireAuth())
+	app.Post("/api/v1/portal/instances/{slug}/domains/{domain}/disable", s.handlePortalDisableInstanceDomain, apptheory.RequireAuth())
+	app.Delete("/api/v1/portal/instances/{slug}/domains/{domain}", s.handlePortalDeleteInstanceDomain, apptheory.RequireAuth())
+	app.Post("/api/v1/portal/instances/{slug}/keys", s.handlePortalCreateInstanceKey, apptheory.RequireAuth())
+
+	// Portal external instance registrations.
+	app.Post("/api/v1/portal/external-instances/registrations", s.handlePortalCreateExternalInstanceRegistration, apptheory.RequireAuth())
+	app.Get("/api/v1/portal/external-instances/registrations", s.handlePortalListExternalInstanceRegistrations, apptheory.RequireAuth())
+
+	// Portal billing.
+	app.Post("/api/v1/portal/billing/credits/checkout", s.handlePortalCreateCreditsCheckout, apptheory.RequireAuth())
+	app.Get("/api/v1/portal/billing/credits/purchases", s.handlePortalListCreditPurchases, apptheory.RequireAuth())
+	app.Post("/api/v1/portal/billing/payment-method/checkout", s.handlePortalCreatePaymentMethodCheckout, apptheory.RequireAuth())
+	app.Get("/api/v1/portal/billing/payment-methods", s.handlePortalListPaymentMethods, apptheory.RequireAuth())
+
+	// Payments webhooks (public).
+	app.Post("/api/v1/payments/stripe/webhook", s.handleStripeWebhook)
 
 	// Instance registry + billing primitives (admin-only).
 	app.Post("/api/v1/instances", s.handleCreateInstance, apptheory.RequireAuth())

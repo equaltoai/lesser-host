@@ -51,6 +51,12 @@ type Config struct {
 	ManagedLesserGitHubOwner          string // GitHub org/user for the lesser repo
 	ManagedLesserGitHubRepo           string // GitHub repo name for lesser
 	ManagedLesserGitHubTokenSSMParam  string // optional SSM param name for a GitHub token (CodeBuild)
+
+	// Payments (M10).
+	PaymentsProvider            string // stripe|mock|none
+	PaymentsCheckoutSuccessURL  string // redirect target after checkout completion
+	PaymentsCheckoutCancelURL   string // redirect target after checkout cancel
+	PaymentsCentsPer1000Credits int64  // pricing policy: cents per 1000 credits
 }
 
 // Load reads environment variables and returns a Config with defaults applied.
@@ -144,6 +150,31 @@ func Load() Config {
 		managedLesserGitHubRepo = "lesser"
 	}
 
+	paymentsProvider := strings.ToLower(strings.TrimSpace(os.Getenv("PAYMENTS_PROVIDER")))
+	if paymentsProvider == "" {
+		paymentsProvider = "none"
+	}
+
+	centsPer1000Credits := int64(100)
+	if v := strings.TrimSpace(os.Getenv("PAYMENTS_CENTS_PER_1000_CREDITS")); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 && n <= 1_000_000 {
+			centsPer1000Credits = n
+		}
+	}
+
+	portalHost := strings.TrimSpace(os.Getenv("WEBAUTHN_RP_ID"))
+	if portalHost == "" {
+		portalHost = "lesser.host"
+	}
+	checkoutSuccessURL := strings.TrimSpace(os.Getenv("PAYMENTS_CHECKOUT_SUCCESS_URL"))
+	if checkoutSuccessURL == "" {
+		checkoutSuccessURL = fmt.Sprintf("https://%s/portal/billing?success=1", portalHost)
+	}
+	checkoutCancelURL := strings.TrimSpace(os.Getenv("PAYMENTS_CHECKOUT_CANCEL_URL"))
+	if checkoutCancelURL == "" {
+		checkoutCancelURL = fmt.Sprintf("https://%s/portal/billing?canceled=1", portalHost)
+	}
+
 	return Config{
 		AppName: "lesser-host",
 		Stage:   stage,
@@ -185,5 +216,10 @@ func Load() Config {
 		ManagedLesserGitHubOwner:          managedLesserGitHubOwner,
 		ManagedLesserGitHubRepo:           managedLesserGitHubRepo,
 		ManagedLesserGitHubTokenSSMParam:  strings.TrimSpace(os.Getenv("MANAGED_LESSER_GITHUB_TOKEN_SSM_PARAM")),
+
+		PaymentsProvider:            paymentsProvider,
+		PaymentsCheckoutSuccessURL:  checkoutSuccessURL,
+		PaymentsCheckoutCancelURL:   checkoutCancelURL,
+		PaymentsCentsPer1000Credits: centsPer1000Credits,
 	}
 }

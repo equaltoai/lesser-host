@@ -98,9 +98,11 @@ type getOrQueuePrepared struct {
 	InputsHash string
 	Evidence   []models.AIEvidenceRef
 
-	Now              time.Time
-	Month            string
-	CreditsRequested int64
+	Now                  time.Time
+	Month                string
+	BaseCredits          int64
+	PricingMultiplierBps int64
+	CreditsRequested     int64
 }
 
 // GetOrQueue returns a cached AIResult when available, otherwise queues an AIJob (budgeted) and returns queued.
@@ -112,6 +114,31 @@ func (s *Service) GetOrQueue(ctx context.Context, req Request) (Response, error)
 	}
 
 	if cached := s.getCachedResult(ctx, prepared); cached != nil {
+		if s != nil && s.store != nil && s.store.DB != nil {
+			requestID := strings.TrimSpace(req.RequestID)
+			if requestID == "" {
+				requestID = prepared.JobID
+			}
+			hit := &models.UsageLedgerEntry{
+				ID:                   billing.UsageLedgerEntryID(prepared.InstanceSlug, prepared.Month, requestID, prepared.Module, prepared.ResultID, 0),
+				InstanceSlug:         prepared.InstanceSlug,
+				Month:                prepared.Month,
+				Module:               prepared.Module,
+				Target:               prepared.ResultID,
+				Cached:               true,
+				Reason:               "cache_hit",
+				RequestID:            requestID,
+				RequestedCredits:     prepared.CreditsRequested,
+				ListCredits:          prepared.BaseCredits,
+				PricingMultiplierBps: prepared.PricingMultiplierBps,
+				DebitedCredits:       0,
+				BillingType:          models.BillingTypeNone,
+				CreatedAt:            prepared.Now,
+			}
+			_ = hit.UpdateKeys()
+			_ = s.store.DB.WithContext(ctx).Model(hit).IfNotExists().Create()
+		}
+
 		return cacheHitResponse(prepared.JobID, prepared.ResultID, cached, prepared.CreditsRequested), nil
 	}
 
@@ -189,7 +216,11 @@ func (s *Service) prepareGetOrQueue(req Request) (getOrQueuePrepared, Response, 
 
 	now := time.Now().UTC()
 	month := now.Format("2006-01")
-	creditsRequested := billing.PricedCredits(req.BaseCredits, req.PricingMultiplierBps)
+	pricingMultiplierBps := req.PricingMultiplierBps
+	if pricingMultiplierBps <= 0 || pricingMultiplierBps >= 10000 {
+		pricingMultiplierBps = 10000
+	}
+	creditsRequested := billing.PricedCredits(req.BaseCredits, pricingMultiplierBps)
 
 	return getOrQueuePrepared{
 		InstanceSlug: instanceSlug,
@@ -206,9 +237,11 @@ func (s *Service) prepareGetOrQueue(req Request) (getOrQueuePrepared, Response, 
 		InputsHash: inputsHash,
 		Evidence:   append([]models.AIEvidenceRef(nil), req.Evidence...),
 
-		Now:              now,
-		Month:            month,
-		CreditsRequested: creditsRequested,
+		Now:                  now,
+		Month:                month,
+		BaseCredits:          req.BaseCredits,
+		PricingMultiplierBps: pricingMultiplierBps,
+		CreditsRequested:     creditsRequested,
 	}, Response{}, nil
 }
 
@@ -465,6 +498,8 @@ func (s *Service) queueWithDebit(ctx context.Context, prepared getOrQueuePrepare
 		Reason:                 billingType,
 		RequestID:              strings.TrimSpace(req.RequestID),
 		RequestedCredits:       prepared.CreditsRequested,
+		ListCredits:            prepared.BaseCredits,
+		PricingMultiplierBps:   prepared.PricingMultiplierBps,
 		DebitedCredits:         prepared.CreditsRequested,
 		IncludedDebitedCredits: includedDebited,
 		OverageDebitedCredits:  overageDebited,

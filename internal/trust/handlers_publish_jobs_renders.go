@@ -107,6 +107,25 @@ func (s *Server) runLinkRenderJob(
 	creditsNeededPriced := billing.PricedCredits(creditsNeeded, pricingMultiplierBps)
 
 	if len(missing) == 0 {
+		hit := &models.UsageLedgerEntry{
+			ID:                   billing.UsageLedgerEntryID(instanceSlug, now.Format("2006-01"), strings.TrimSpace(ctx.RequestID), moduleName, jobID, 0),
+			InstanceSlug:         instanceSlug,
+			Month:                now.Format("2006-01"),
+			Module:               moduleName,
+			Target:               strings.TrimSpace(jobID),
+			Cached:               true,
+			Reason:               "cache_hit",
+			RequestID:            strings.TrimSpace(ctx.RequestID),
+			RequestedCredits:     creditsRequestedPriced,
+			ListCredits:          creditsRequested,
+			PricingMultiplierBps: pricingMultiplierBps,
+			DebitedCredits:       0,
+			BillingType:          models.BillingTypeNone,
+			CreatedAt:            now,
+		}
+		_ = hit.UpdateKeys()
+		_ = s.store.DB.WithContext(ctx.Context()).Model(hit).IfNotExists().Create()
+
 		return publishJobModuleResponse{
 			Name:          moduleName,
 			PolicyVersion: rendering.RenderPolicyVersion,
@@ -151,6 +170,8 @@ func (s *Server) runLinkRenderJob(
 		month,
 		now,
 		overagePolicy,
+		pricingMultiplierBps,
+		creditsRequested,
 		creditsRequestedPriced,
 		creditsNeededPriced,
 	)
@@ -391,6 +412,8 @@ func (s *Server) debitLinkRenderBudget(
 	month string,
 	now time.Time,
 	overagePolicy string,
+	pricingMultiplierBps int64,
+	creditsRequestedList int64,
 	creditsRequestedPriced int64,
 	creditsNeededPriced int64,
 ) (models.InstanceBudgetMonth, int64, int64, string, error) {
@@ -437,6 +460,8 @@ func (s *Server) debitLinkRenderBudget(
 		Reason:                 billingType,
 		RequestID:              strings.TrimSpace(ctx.RequestID),
 		RequestedCredits:       creditsRequestedPriced,
+		ListCredits:            creditsRequestedList,
+		PricingMultiplierBps:   pricingMultiplierBps,
 		DebitedCredits:         creditsNeededPriced,
 		IncludedDebitedCredits: includedDebited,
 		OverageDebitedCredits:  overageDebited,

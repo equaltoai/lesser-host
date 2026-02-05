@@ -311,9 +311,33 @@ func (s *Server) runLinkSafetyBasicJob(
 	now := time.Now().UTC()
 	creditsRequested := int64(len(canonicalLinks))
 	creditsPriced := billing.PricedCredits(creditsRequested, pricingMultiplierBps)
+	month := now.Format("2006-01")
 
 	// Cache hit path (no charge).
 	if cached, err := s.store.GetLinkSafetyBasicResult(ctx.Context(), jobID); err == nil {
+		ledger := &models.UsageLedgerEntry{
+			ID:                   billing.UsageLedgerEntryID(instanceSlug, month, strings.TrimSpace(ctx.RequestID), "link_safety_basic", jobID, 0),
+			InstanceSlug:         instanceSlug,
+			Month:                month,
+			Module:               "link_safety_basic",
+			Target:               jobID,
+			Cached:               true,
+			Reason:               "cache_hit",
+			RequestID:            strings.TrimSpace(ctx.RequestID),
+			RequestedCredits:     creditsPriced,
+			ListCredits:          creditsRequested,
+			PricingMultiplierBps: pricingMultiplierBps,
+			DebitedCredits:       0,
+			BillingType:          models.BillingTypeNone,
+			ActorURI:             actorURI,
+			ObjectURI:            objectURI,
+			ContentHash:          contentHash,
+			LinksHash:            linksHash,
+			CreatedAt:            now,
+		}
+		_ = ledger.UpdateKeys()
+		_ = s.store.DB.WithContext(ctx.Context()).Model(ledger).IfNotExists().Create()
+
 		attID, _ := s.ensureLinkSafetyBasicAttestation(ctx.Context(), cached)
 		return publishJobModuleResponse{
 			Name:          "link_safety_basic",
@@ -339,7 +363,6 @@ func (s *Server) runLinkSafetyBasicJob(
 	}
 
 	credits := int64(len(canonicalLinks))
-	month := now.Format("2006-01")
 
 	// No links: store a deterministic empty result without debiting.
 	if credits == 0 || creditsPriced == 0 {
@@ -527,6 +550,8 @@ func (s *Server) runLinkSafetyBasicJob(
 		Reason:                 billingType,
 		RequestID:              strings.TrimSpace(ctx.RequestID),
 		RequestedCredits:       creditsPriced,
+		ListCredits:            creditsRequested,
+		PricingMultiplierBps:   pricingMultiplierBps,
 		DebitedCredits:         creditsPriced,
 		IncludedDebitedCredits: includedDebited,
 		OverageDebitedCredits:  overageDebited,
@@ -589,6 +614,29 @@ func (s *Server) runLinkSafetyBasicJob(
 	if theoryErrors.IsConditionFailed(err) {
 		// If the result already exists, treat it as cache hit (no debit happened due to txn rollback).
 		if cached, err2 := s.store.GetLinkSafetyBasicResult(ctx.Context(), jobID); err2 == nil {
+			hit := &models.UsageLedgerEntry{
+				ID:                   billing.UsageLedgerEntryID(instanceSlug, month, strings.TrimSpace(ctx.RequestID), "link_safety_basic", jobID, 0),
+				InstanceSlug:         instanceSlug,
+				Month:                month,
+				Module:               "link_safety_basic",
+				Target:               jobID,
+				Cached:               true,
+				Reason:               "cache_hit",
+				RequestID:            strings.TrimSpace(ctx.RequestID),
+				RequestedCredits:     creditsPriced,
+				ListCredits:          creditsRequested,
+				PricingMultiplierBps: pricingMultiplierBps,
+				DebitedCredits:       0,
+				BillingType:          models.BillingTypeNone,
+				ActorURI:             actorURI,
+				ObjectURI:            objectURI,
+				ContentHash:          contentHash,
+				LinksHash:            linksHash,
+				CreatedAt:            now,
+			}
+			_ = hit.UpdateKeys()
+			_ = s.store.DB.WithContext(ctx.Context()).Model(hit).IfNotExists().Create()
+
 			attID, _ := s.ensureLinkSafetyBasicAttestation(ctx.Context(), cached)
 			return publishJobModuleResponse{
 				Name:          "link_safety_basic",

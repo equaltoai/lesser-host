@@ -16,6 +16,8 @@ const (
 const (
 	DomainStatusPending  = "pending"
 	DomainStatusVerified = "verified"
+	DomainStatusActive   = "active"
+	DomainStatusDisabled = "disabled"
 	DomainStatusRejected = "rejected"
 )
 

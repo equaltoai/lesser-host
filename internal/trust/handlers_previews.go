@@ -348,6 +348,27 @@ func (s *Server) maybeAttachPreviewRender(ctx *apptheory.Context, instanceSlug s
 
 	// Cache hit path (no debit).
 	if existing, err := s.store.GetRenderArtifact(ctx.Context(), renderID); err == nil && existing != nil {
+		hitNow := time.Now().UTC()
+		hitMonth := hitNow.Format("2006-01")
+		hit := &models.UsageLedgerEntry{
+			ID:                   billing.UsageLedgerEntryID(instanceSlug, hitMonth, strings.TrimSpace(ctx.RequestID), "link_preview_render", renderID, 0),
+			InstanceSlug:         instanceSlug,
+			Month:                hitMonth,
+			Module:               "link_preview_render",
+			Target:               renderID,
+			Cached:               true,
+			Reason:               "cache_hit",
+			RequestID:            strings.TrimSpace(ctx.RequestID),
+			RequestedCredits:     linkRenderCreditCost,
+			ListCredits:          linkRenderCreditCost,
+			PricingMultiplierBps: 10000,
+			DebitedCredits:       0,
+			BillingType:          models.BillingTypeNone,
+			CreatedAt:            hitNow,
+		}
+		_ = hit.UpdateKeys()
+		_ = s.store.DB.WithContext(ctx.Context()).Model(hit).IfNotExists().Create()
+
 		r := renderArtifactResponseFromModel(ctx, existing, true)
 		resp.Render = &r
 		return
@@ -400,6 +421,8 @@ func (s *Server) maybeAttachPreviewRender(ctx *apptheory.Context, instanceSlug s
 		Reason:                 billingType,
 		RequestID:              strings.TrimSpace(ctx.RequestID),
 		RequestedCredits:       linkRenderCreditCost,
+		ListCredits:            linkRenderCreditCost,
+		PricingMultiplierBps:   10000,
 		DebitedCredits:         linkRenderCreditCost,
 		IncludedDebitedCredits: includedDebited,
 		OverageDebitedCredits:  overageDebited,

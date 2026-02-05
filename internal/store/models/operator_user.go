@@ -6,14 +6,15 @@ import (
 	"time"
 )
 
-// Role* constants define operator roles.
+// Role* constants define portal and operator roles.
 const (
 	RoleAdmin    = "admin"
 	RoleOperator = "operator"
+	RoleCustomer = "customer"
 )
 
-// OperatorUser represents an administrative operator account.
-type OperatorUser struct {
+// User represents an authenticated portal user or operator account.
+type User struct {
 	_ struct{} `theorydb:"naming:camelCase"`
 
 	PK string `theorydb:"pk,attr:PK" json:"-"`
@@ -22,16 +23,17 @@ type OperatorUser struct {
 	Username    string    `theorydb:"attr:username" json:"username"`
 	Role        string    `theorydb:"attr:role" json:"role"`
 	DisplayName string    `theorydb:"attr:displayName" json:"display_name,omitempty"`
+	Email       string    `theorydb:"attr:email" json:"email,omitempty"`
 	CreatedAt   time.Time `theorydb:"attr:createdAt" json:"created_at"`
 }
 
-// TableName returns the database table name for OperatorUser.
-func (OperatorUser) TableName() string {
+// TableName returns the database table name for User.
+func (User) TableName() string {
 	return MainTableName()
 }
 
-// BeforeCreate sets defaults and keys before creating OperatorUser.
-func (u *OperatorUser) BeforeCreate() error {
+// BeforeCreate sets defaults and keys before creating User.
+func (u *User) BeforeCreate() error {
 	if err := u.UpdateKeys(); err != nil {
 		return err
 	}
@@ -39,22 +41,24 @@ func (u *OperatorUser) BeforeCreate() error {
 		u.CreatedAt = time.Now().UTC()
 	}
 	u.Username = strings.TrimSpace(u.Username)
+	u.DisplayName = strings.TrimSpace(u.DisplayName)
+	u.Email = strings.TrimSpace(u.Email)
 	if u.Role == "" {
 		u.Role = RoleOperator
 	}
 	return nil
 }
 
-// UpdateKeys updates the database keys for OperatorUser.
-func (u *OperatorUser) UpdateKeys() error {
+// UpdateKeys updates the database keys for User.
+func (u *User) UpdateKeys() error {
 	username := strings.TrimSpace(u.Username)
 	u.PK = fmt.Sprintf(KeyPatternUser, username)
 	u.SK = SKProfile
 	return nil
 }
 
-// GetPK returns the partition key for OperatorUser.
-func (u *OperatorUser) GetPK() string { return u.PK }
+// GetPK returns the partition key for User.
+func (u *User) GetPK() string { return u.PK }
 
-// GetSK returns the sort key for OperatorUser.
-func (u *OperatorUser) GetSK() string { return u.SK }
+// GetSK returns the sort key for User.
+func (u *User) GetSK() string { return u.SK }

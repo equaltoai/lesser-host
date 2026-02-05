@@ -19,6 +19,9 @@ type Instance struct {
 	PK string `theorydb:"pk,attr:PK" json:"-"`
 	SK string `theorydb:"sk,attr:SK" json:"-"`
 
+	GSI1PK string `theorydb:"index:gsi1,pk,attr:gsi1PK" json:"-"`
+	GSI1SK string `theorydb:"index:gsi1,sk,attr:gsi1SK" json:"-"`
+
 	Slug                   string    `theorydb:"attr:slug" json:"slug"`
 	Owner                  string    `theorydb:"attr:owner" json:"owner,omitempty"`
 	Status                 string    `theorydb:"attr:status" json:"status"`
@@ -118,8 +121,11 @@ func (i *Instance) BeforeCreate() error {
 // UpdateKeys updates the database keys for Instance.
 func (i *Instance) UpdateKeys() error {
 	slug := strings.TrimSpace(i.Slug)
+	owner := strings.TrimSpace(i.Owner)
 	i.PK = fmt.Sprintf("INSTANCE#%s", slug)
 	i.SK = SKMetadata
+	i.GSI1PK = fmt.Sprintf("OWNER#%s", owner)
+	i.GSI1SK = fmt.Sprintf("INSTANCE#%s", slug)
 	return nil
 }
 
