@@ -83,7 +83,7 @@ This roadmap assumes the UI primarily drives these existing HTTP surfaces:
 ### App layout
 
 - Add a dedicated web app at `web/`:
-  - React + TypeScript + Vite (static build; no server required)
+  - Svelte 5 + TypeScript + Vite (static build; no server required)
   - route-based SPA with role-gated navigation
   - `greater-components` for UI primitives and styling
 - Deploy as static assets behind CloudFront (or equivalent), with:
@@ -354,4 +354,3 @@ These are intentionally small; the UI should ship early using the existing API s
 - **Reliability:** clear error states; retries/backoff for long-running polling; no “stuck spinners”.
 - **Observability:** client-side request ids surfaced for support; basic client telemetry (no PII by default).
 - **Performance:** <200KB critical CSS, route-level code splitting, and fast cold-start UX.
-

@@ -1,0 +1,82 @@
+{
+  "$schema": "https://greater.components.dev/schema.json",
+  "version": "1.0.0",
+  "ref": "greater-v0.1.2",
+  "installMode": "vendored",
+  "style": "default",
+  "rsc": false,
+  "tsx": true,
+  "aliases": {
+    "components": "src/lib/components",
+    "utils": "src/lib/utils",
+    "ui": "src/lib/components/ui",
+    "lib": "src/lib",
+    "hooks": "src/lib/primitives",
+    "greater": "src/lib/greater"
+  },
+  "css": {
+    "tokens": true,
+    "primitives": true,
+    "face": null,
+    "source": "local",
+    "localDir": "styles/greater"
+  },
+  "installed": [
+    {
+      "name": "button",
+      "version": "greater-v0.1.2",
+      "installedAt": "2026-02-05T16:35:02.210Z",
+      "modified": false,
+      "checksums": []
+    },
+    {
+      "name": "icons",
+      "version": "greater-v0.1.2",
+      "installedAt": "2026-02-05T16:39:52.484Z",
+      "modified": false,
+      "checksums": []
+    },
+    {
+      "name": "utils",
+      "version": "greater-v0.1.2",
+      "installedAt": "2026-02-05T16:39:52.484Z",
+      "modified": false,
+      "checksums": []
+    },
+    {
+      "name": "tokens",
+      "version": "greater-v0.1.2",
+      "installedAt": "2026-02-05T16:39:52.484Z",
+      "modified": false,
+      "checksums": []
+    },
+    {
+      "name": "primitives",
+      "version": "greater-v0.1.2",
+      "installedAt": "2026-02-05T16:39:52.484Z",
+      "modified": false,
+      "checksums": []
+    },
+    {
+      "name": "content",
+      "version": "greater-v0.1.2",
+      "installedAt": "2026-02-05T16:39:52.484Z",
+      "modified": false,
+      "checksums": []
+    },
+    {
+      "name": "adapters",
+      "version": "greater-v0.1.2",
+      "installedAt": "2026-02-05T16:39:52.484Z",
+      "modified": false,
+      "checksums": []
+    },
+    {
+      "name": "headless",
+      "version": "greater-v0.1.2",
+      "installedAt": "2026-02-05T16:39:52.484Z",
+      "modified": false,
+      "checksums": []
+    }
+  ]
+}

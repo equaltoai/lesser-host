@@ -3,6 +3,7 @@
 .DS_Store
 .env
 .env.*
+!.env.example
 tmp/
 bin/
 node_modules/
@@ -12,3 +13,4 @@ contracts/cache/
 cdk/cdk.out/
 cdk/dist/
 cdk/.build/
+web/dist/

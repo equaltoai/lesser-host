@@ -4,6 +4,9 @@ import * as fs from 'node:fs';
 
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
+import * as acm from 'aws-cdk-lib/aws-certificatemanager';
+import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
+import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import * as codebuild from 'aws-cdk-lib/aws-codebuild';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 	import * as events from 'aws-cdk-lib/aws-events';
@@ -14,7 +17,10 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 	import * as lambda from 'aws-cdk-lib/aws-lambda';
 	import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
 	import * as logs from 'aws-cdk-lib/aws-logs';
+	import * as route53 from 'aws-cdk-lib/aws-route53';
+	import * as route53Targets from 'aws-cdk-lib/aws-route53-targets';
 	import * as s3 from 'aws-cdk-lib/aws-s3';
+	import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
 	import * as sqs from 'aws-cdk-lib/aws-sqs';
 
 export interface LesserHostStackProps extends cdk.StackProps {
@@ -520,8 +526,213 @@ export class LesserHostStack extends cdk.Stack {
 		});
 		const trustUrl = trustFn.addFunctionUrl({ authType: lambda.FunctionUrlAuthType.NONE });
 
+		const webRootDomain = (this.node.tryGetContext('webRootDomain') as string | undefined) ?? 'lesser.host';
+		const webHostedZoneId = (this.node.tryGetContext('webHostedZoneId') as string | undefined) ?? '';
+		const webHostedZoneName =
+			(this.node.tryGetContext('webHostedZoneName') as string | undefined) ?? webRootDomain;
+		const webDomainName = stage === 'live' ? webRootDomain : `${stage}.${webRootDomain}`;
+
+		const webBucket = new s3.Bucket(this, 'WebBucket', {
+			bucketName: `${namePrefix}-${cdk.Aws.ACCOUNT_ID}-${cdk.Aws.REGION}-web`,
+			blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+			enforceSSL: true,
+			removalPolicy,
+			autoDeleteObjects: stage !== 'live',
+		});
+
+		const webCsp = [
+			"default-src 'none'",
+			"base-uri 'none'",
+			"object-src 'none'",
+			"frame-ancestors 'none'",
+			"form-action 'self'",
+			"img-src 'self' data: blob:",
+			"font-src 'self'",
+			"style-src 'self'",
+			"script-src 'self'",
+			"connect-src 'self'",
+			"manifest-src 'self'",
+		].join('; ');
+
+		const webSecurityHeaders = new cloudfront.ResponseHeadersPolicy(this, 'WebSecurityHeaders', {
+			responseHeadersPolicyName: `${namePrefix}-web-security`,
+			securityHeadersBehavior: {
+				contentSecurityPolicy: {
+					contentSecurityPolicy: webCsp,
+					override: true,
+				},
+				contentTypeOptions: { override: true },
+				frameOptions: { frameOption: cloudfront.HeadersFrameOption.DENY, override: true },
+				referrerPolicy: {
+					referrerPolicy: cloudfront.HeadersReferrerPolicy.SAME_ORIGIN,
+					override: true,
+				},
+				strictTransportSecurity: {
+					accessControlMaxAge: cdk.Duration.days(365),
+					includeSubdomains: true,
+					preload: true,
+					override: true,
+				},
+				xssProtection: { protection: true, modeBlock: true, override: true },
+			},
+			customHeadersBehavior: {
+				customHeaders: [
+					{
+						header: 'Permissions-Policy',
+						value: 'camera=(), microphone=(), geolocation=(), interest-cohort=()',
+						override: true,
+					},
+				],
+			},
+		});
+
+		const webSpaRewriteFn = new cloudfront.Function(this, 'WebSpaRewriteFn', {
+			functionName: `${namePrefix}-web-spa-rewrite`,
+			code: cloudfront.FunctionCode.fromInline(`function handler(event) {
+  var request = event.request;
+  var uri = request.uri || "/";
+
+  // Never rewrite API routes.
+  if (
+    uri.startsWith("/api/") ||
+    uri.startsWith("/auth/") ||
+    uri.startsWith("/setup/") ||
+    uri.startsWith("/.well-known/") ||
+    uri.startsWith("/attestations")
+  ) {
+    return request;
+  }
+
+  // If the path looks like a file, do not rewrite.
+  if (uri.indexOf(".") !== -1) {
+    return request;
+  }
+
+  request.uri = "/index.html";
+  return request;
+}`),
+		});
+
+		let webZone: route53.IHostedZone | undefined;
+		let webCert: acm.ICertificate | undefined;
+		if (webHostedZoneId.trim()) {
+			webZone = route53.HostedZone.fromHostedZoneAttributes(this, 'WebHostedZone', {
+				hostedZoneId: webHostedZoneId.trim(),
+				zoneName: webHostedZoneName.trim() || webRootDomain,
+			});
+
+			webCert = new acm.DnsValidatedCertificate(this, 'WebCertificate', {
+				domainName: webDomainName,
+				hostedZone: webZone,
+				region: 'us-east-1',
+			});
+		}
+
+		const webOai = new cloudfront.OriginAccessIdentity(this, 'WebOAI');
+		webBucket.grantRead(webOai);
+
+		const controlPlaneDomain = cdk.Fn.select(2, cdk.Fn.split('/', controlPlaneUrl.url));
+		const trustDomain = cdk.Fn.select(2, cdk.Fn.split('/', trustUrl.url));
+
+		const controlPlaneOrigin = new origins.HttpOrigin(controlPlaneDomain, {
+			protocolPolicy: cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
+		});
+		const trustOrigin = new origins.HttpOrigin(trustDomain, {
+			protocolPolicy: cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
+		});
+
+		const apiBehavior: cloudfront.BehaviorOptions = {
+			origin: controlPlaneOrigin,
+			viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+			allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
+			cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
+			originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+		};
+
+		const trustBehaviorNoCache: cloudfront.BehaviorOptions = {
+			origin: trustOrigin,
+			viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+			allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
+			cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
+			originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+		};
+
+		const trustBehaviorCached: cloudfront.BehaviorOptions = {
+			origin: trustOrigin,
+			viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+			allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
+			cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
+			originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+		};
+
+		const webDistribution = new cloudfront.Distribution(this, 'WebDistribution', {
+			defaultRootObject: 'index.html',
+			certificate: webCert,
+			domainNames: webCert ? [webDomainName] : undefined,
+			defaultBehavior: {
+				origin: new origins.S3Origin(webBucket, { originAccessIdentity: webOai }),
+				viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+				allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
+				cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
+				responseHeadersPolicy: webSecurityHeaders,
+				functionAssociations: [
+					{
+						function: webSpaRewriteFn,
+						eventType: cloudfront.FunctionEventType.VIEWER_REQUEST,
+					},
+				],
+			},
+			additionalBehaviors: {
+				'api/*': apiBehavior,
+				'auth/*': apiBehavior,
+				'setup/status': apiBehavior,
+				'setup/bootstrap/*': apiBehavior,
+				'setup/admin': apiBehavior,
+				'setup/finalize': apiBehavior,
+
+				'.well-known/*': trustBehaviorCached,
+				'attestations': trustBehaviorNoCache,
+				'attestations/*': trustBehaviorCached,
+			},
+		});
+
+		new s3deploy.BucketDeployment(this, 'WebDeployment', {
+			destinationBucket: webBucket,
+			sources: [
+				s3deploy.Source.asset(path.join(this.repoRoot(), 'web'), {
+					bundling: {
+						image: cdk.DockerImage.fromRegistry('node:24-bookworm'),
+						command: [
+							'bash',
+							'-c',
+							'npm ci && npm run build && cp -r dist/* /asset-output/',
+						],
+					},
+				}),
+			],
+			distribution: webDistribution,
+			distributionPaths: ['/*'],
+		});
+
+		if (webZone && webCert) {
+			new route53.ARecord(this, 'WebAliasA', {
+				zone: webZone,
+				recordName: stage === 'live' ? undefined : stage,
+				target: route53.RecordTarget.fromAlias(new route53Targets.CloudFrontTarget(webDistribution)),
+			});
+			new route53.AaaaRecord(this, 'WebAliasAAAA', {
+				zone: webZone,
+				recordName: stage === 'live' ? undefined : stage,
+				target: route53.RecordTarget.fromAlias(new route53Targets.CloudFrontTarget(webDistribution)),
+			});
+		}
+
 		new cdk.CfnOutput(this, 'ControlPlaneUrl', { value: controlPlaneUrl.url });
 		new cdk.CfnOutput(this, 'TrustUrl', { value: trustUrl.url });
+		new cdk.CfnOutput(this, 'WebDistributionDomain', { value: webDistribution.distributionDomainName });
+		new cdk.CfnOutput(this, 'WebUrl', {
+			value: webCert ? `https://${webDomainName}` : `https://${webDistribution.distributionDomainName}`,
+		});
 		new cdk.CfnOutput(this, 'StateTableName', { value: stateTable.tableName });
 			new cdk.CfnOutput(this, 'ArtifactsBucketName', { value: artifactsBucket.bucketName });
 			new cdk.CfnOutput(this, 'AttestationSigningKeyId', { value: attestationSigningKey.keyId });
