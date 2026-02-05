@@ -352,8 +352,12 @@
 			{#if !status.locked}
 				<Alert variant="success" title="Setup complete">
 					<Text size="sm">
-						The control plane is active. Setup endpoints are read-only now. Proceed to operator login (ships in FE2).
+						The control plane is active. Setup endpoints are read-only now. Proceed to sign in.
 					</Text>
+					<div class="setup__row">
+						<Button variant="solid" onclick={() => navigate('/login')}>Sign in</Button>
+						<Button variant="outline" onclick={() => navigate('/')}>Home</Button>
+					</div>
 				</Alert>
 			{:else if !status.bootstrap_wallet_address_set}
 				<Alert variant="error" title="Bootstrap wallet not configured">

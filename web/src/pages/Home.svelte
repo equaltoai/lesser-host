@@ -3,6 +3,7 @@
 	import type { SetupStatusResponse } from 'src/lib/api/controlPlane';
 	import { getSetupStatus } from 'src/lib/api/controlPlane';
 	import { navigate } from 'src/lib/router';
+	import { clearSession, session } from 'src/lib/session';
 	import { Alert, Button, Container, DefinitionItem, DefinitionList, Heading, Spinner, Text } from 'src/lib/ui';
 
 	let loading = $state(false);
@@ -28,6 +29,11 @@
 	onMount(() => {
 		void loadStatus();
 	});
+
+	function defaultRouteForRole(role: string): string {
+		if (role === 'admin' || role === 'operator') return '/operator';
+		return '/portal';
+	}
 </script>
 
 <Container size="lg" gutter="lg">
@@ -35,7 +41,7 @@
 		<header class="home__header">
 			<div class="home__title">
 				<Heading level={1}>lesser.host</Heading>
-				<Text size="sm" color="secondary">Portal foundation (FE0)</Text>
+				<Text size="sm" color="secondary">Portal + operator console</Text>
 			</div>
 
 			<div class="home__actions">
@@ -43,8 +49,34 @@
 					Refresh
 				</Button>
 				<Button variant="ghost" onclick={() => navigate('/setup')}>Setup</Button>
+				{#if $session}
+					<Button variant="ghost" onclick={() => navigate('/account')}>Account</Button>
+					<Button variant="ghost" onclick={() => navigate(defaultRouteForRole($session.role))}>
+						Continue
+					</Button>
+					<Button
+						variant="ghost"
+						onclick={() => {
+							clearSession();
+							navigate('/login');
+						}}
+					>
+						Logout
+					</Button>
+				{:else}
+					<Button variant="solid" onclick={() => navigate('/login')}>Sign in</Button>
+				{/if}
 			</div>
 		</header>
+
+			{#if $session}
+				<Alert variant="info" title="Session">
+					<Text size="sm">
+						Signed in as <strong>{$session.username}</strong> (<strong>{$session.role}</strong>) · expires
+						<strong>{$session.expiresAt}</strong>
+					</Text>
+				</Alert>
+			{/if}
 
 		{#if loading}
 			<div class="home__loading">
