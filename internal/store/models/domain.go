@@ -30,6 +30,7 @@ type Domain struct {
 	GSI1SK string `theorydb:"index:gsi1,sk,attr:gsi1SK" json:"-"`
 
 	Domain       string `theorydb:"attr:domain" json:"domain"`
+	DomainRaw    string `theorydb:"attr:domainRaw" json:"domain_raw,omitempty"`
 	InstanceSlug string `theorydb:"attr:instanceSlug" json:"instance_slug"`
 
 	Type   string `theorydb:"attr:type" json:"type"`     // primary|vanity
@@ -74,6 +75,7 @@ func (d *Domain) BeforeUpdate() error {
 // UpdateKeys updates the database keys for Domain.
 func (d *Domain) UpdateKeys() error {
 	domain := strings.ToLower(strings.TrimSpace(d.Domain))
+	d.DomainRaw = strings.TrimSpace(d.DomainRaw)
 	d.InstanceSlug = strings.TrimSpace(d.InstanceSlug)
 	d.Type = strings.ToLower(strings.TrimSpace(d.Type))
 

@@ -11,6 +11,7 @@ import (
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
+	"github.com/equaltoai/lesser-host/internal/domains"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -134,7 +135,8 @@ func (s *Server) handleAddInstanceDomain(ctx *apptheory.Context) (*apptheory.Res
 		return nil, err
 	}
 
-	domain, err := normalizeDomain(req.Domain)
+	rawDomain := strings.TrimSpace(req.Domain)
+	domain, err := domains.NormalizeDomain(rawDomain)
 	if err != nil {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
 	}
@@ -153,6 +155,7 @@ func (s *Server) handleAddInstanceDomain(ctx *apptheory.Context) (*apptheory.Res
 	now := time.Now().UTC()
 	item := &models.Domain{
 		Domain:             domain,
+		DomainRaw:          rawDomain,
 		InstanceSlug:       slug,
 		Type:               models.DomainTypeVanity,
 		Status:             models.DomainStatusPending,
@@ -210,7 +213,7 @@ func (s *Server) handleVerifyInstanceDomain(ctx *apptheory.Context) (*apptheory.
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "slug is required"}
 	}
 
-	domain, err := normalizeDomain(ctx.Param("domain"))
+	domain, err := domains.NormalizeDomain(ctx.Param("domain"))
 	if err != nil {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
 	}
@@ -310,6 +313,11 @@ func (s *Server) handleVerifyInstanceDomain(ctx *apptheory.Context) (*apptheory.
 	item.VerifiedAt = now
 	item.UpdatedAt = now
 
+	// Best-effort: ensure the vanity domain hostId is registered on-chain for tips (managed instances).
+	if s.cfg.TipEnabled {
+		_, _, _ = s.ensureTipRegistryHostOperation(ctx.Context(), domain, strings.TrimSpace(item.DomainRaw), strings.TrimSpace(ctx.AuthIdentity), ctx.RequestID)
+	}
+
 	return apptheory.JSON(http.StatusOK, verifyDomainResponse{
 		Domain: domainResponseFromModel(&item),
 	})
@@ -327,7 +335,7 @@ func (s *Server) handleDeleteInstanceDomain(ctx *apptheory.Context) (*apptheory.
 	if slug == "" {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "slug is required"}
 	}
-	domain, err := normalizeDomain(ctx.Param("domain"))
+	domain, err := domains.NormalizeDomain(ctx.Param("domain"))
 	if err != nil {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
 	}

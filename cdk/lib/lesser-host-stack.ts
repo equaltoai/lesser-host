@@ -86,6 +86,16 @@ export class LesserHostStack extends cdk.Stack {
 		const webAuthnRPID = (this.node.tryGetContext('webauthnRpId') as string | undefined) ?? '';
 		const webAuthnOrigins = (this.node.tryGetContext('webauthnOrigins') as string | undefined) ?? '';
 
+		const tipEnabled = (this.node.tryGetContext('tipEnabled') as string | undefined) ?? '';
+		const tipChainId = (this.node.tryGetContext('tipChainId') as string | undefined) ?? '';
+		const tipRpcUrl = (this.node.tryGetContext('tipRpcUrl') as string | undefined) ?? '';
+		const tipContractAddress = (this.node.tryGetContext('tipContractAddress') as string | undefined) ?? '';
+		const tipAdminSafeAddress = (this.node.tryGetContext('tipAdminSafeAddress') as string | undefined) ?? '';
+		const tipDefaultHostWalletAddress =
+			(this.node.tryGetContext('tipDefaultHostWalletAddress') as string | undefined) ?? '';
+		const tipDefaultHostFeeBps = (this.node.tryGetContext('tipDefaultHostFeeBps') as string | undefined) ?? '';
+		const tipTxMode = (this.node.tryGetContext('tipTxMode') as string | undefined) ?? '';
+
 		const controlPlaneFn = this.goLambda('ControlPlaneApi', './cmd/control-plane-api', {
 			STAGE: stage,
 			STATE_TABLE_NAME: stateTable.tableName,
@@ -95,6 +105,14 @@ export class LesserHostStack extends cdk.Stack {
 			BOOTSTRAP_WALLET_ADDRESS: bootstrapWalletAddress,
 			WEBAUTHN_RP_ID: webAuthnRPID,
 			WEBAUTHN_ORIGINS: webAuthnOrigins,
+			TIP_ENABLED: tipEnabled,
+			TIP_CHAIN_ID: tipChainId,
+			TIP_RPC_URL: tipRpcUrl,
+			TIP_CONTRACT_ADDRESS: tipContractAddress,
+			TIP_ADMIN_SAFE_ADDRESS: tipAdminSafeAddress,
+			TIP_DEFAULT_HOST_WALLET_ADDRESS: tipDefaultHostWalletAddress,
+			TIP_DEFAULT_HOST_FEE_BPS: tipDefaultHostFeeBps,
+			TIP_TX_MODE: tipTxMode,
 		});
 
 		const trustFn = this.goLambda('TrustApi', './cmd/trust-api', {

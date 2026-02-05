@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -23,6 +24,16 @@ type Config struct {
 
 	WebAuthnRPID    string
 	WebAuthnOrigins []string
+
+	// Tip registry (EVM).
+	TipEnabled                  bool
+	TipChainID                  int64
+	TipRPCURL                   string
+	TipContractAddress          string
+	TipAdminSafeAddress         string
+	TipDefaultHostWalletAddress string
+	TipDefaultHostFeeBps        uint16
+	TipTxMode                   string // safe|direct
 }
 
 // Load reads environment variables and returns a Config with defaults applied.
@@ -54,6 +65,28 @@ func Load() Config {
 		publicKeyIDs = append(publicKeyIDs, part)
 	}
 
+	tipEnabled := strings.ToLower(strings.TrimSpace(os.Getenv("TIP_ENABLED")))
+	tipsOn := tipEnabled == "1" || tipEnabled == "true" || tipEnabled == "yes" || tipEnabled == "on"
+
+	tipChainID := int64(0)
+	if v := strings.TrimSpace(os.Getenv("TIP_CHAIN_ID")); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			tipChainID = n
+		}
+	}
+
+	tipDefaultHostFeeBps := uint16(0)
+	if v := strings.TrimSpace(os.Getenv("TIP_DEFAULT_HOST_FEE_BPS")); v != "" {
+		if n, err := strconv.ParseUint(v, 10, 16); err == nil && n <= 500 {
+			tipDefaultHostFeeBps = uint16(n)
+		}
+	}
+
+	tipTxMode := strings.ToLower(strings.TrimSpace(os.Getenv("TIP_TX_MODE")))
+	if tipTxMode == "" {
+		tipTxMode = "safe"
+	}
+
 	return Config{
 		AppName: "lesser-host",
 		Stage:   stage,
@@ -71,5 +104,14 @@ func Load() Config {
 
 		WebAuthnRPID:    strings.TrimSpace(os.Getenv("WEBAUTHN_RP_ID")),
 		WebAuthnOrigins: origins,
+
+		TipEnabled:                  tipsOn,
+		TipChainID:                  tipChainID,
+		TipRPCURL:                   strings.TrimSpace(os.Getenv("TIP_RPC_URL")),
+		TipContractAddress:          strings.TrimSpace(os.Getenv("TIP_CONTRACT_ADDRESS")),
+		TipAdminSafeAddress:         strings.TrimSpace(os.Getenv("TIP_ADMIN_SAFE_ADDRESS")),
+		TipDefaultHostWalletAddress: strings.TrimSpace(os.Getenv("TIP_DEFAULT_HOST_WALLET_ADDRESS")),
+		TipDefaultHostFeeBps:        tipDefaultHostFeeBps,
+		TipTxMode:                   tipTxMode,
 	}
 }

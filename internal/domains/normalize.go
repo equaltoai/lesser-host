@@ -1,7 +1,8 @@
-package controlplane
+package domains
 
 import (
 	"fmt"
+	"net"
 	"regexp"
 	"strings"
 
@@ -10,7 +11,14 @@ import (
 
 var dnsLabelRE = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 
-func normalizeDomain(raw string) (string, error) {
+// NormalizeDomain canonicalizes a user-supplied domain for storage and hostId hashing.
+//
+// Rules:
+// - trims whitespace, strips trailing dot, lowercases
+// - rejects schemes, paths, ports, credentials, and wildcards
+// - converts IDNs to ASCII (UTS#46) via idna.Lookup
+// - requires at least one dot (public suffix-like shape)
+func NormalizeDomain(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return "", fmt.Errorf("domain is required")
@@ -39,6 +47,10 @@ func normalizeDomain(raw string) (string, error) {
 	}
 	if len(ascii) > 253 {
 		return "", fmt.Errorf("domain is too long")
+	}
+
+	if ip := net.ParseIP(ascii); ip != nil {
+		return "", fmt.Errorf("invalid domain")
 	}
 
 	parts := strings.Split(ascii, ".")

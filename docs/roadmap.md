@@ -10,6 +10,7 @@ trust/safety planning.
 - Deployment contract (consumed by `theory app up/down`): `app-theory/app.json`
 - AI services subroadmap: `docs/ai-services-roadmap.md`
 - Moderation provider notes: `docs/moderation-provider.md`
+- Tip registry notes: `docs/tip-registry.md`
 - Pinned frameworks (from `app-theory/app.json`):
   - AppTheory: `github.com/theory-cloud/apptheory@v0.8.0`
   - TableTheory: `github.com/theory-cloud/tabletheory@v1.3.0`
@@ -222,6 +223,9 @@ Acceptance criteria:
 ### M8 — Tip host registry administration (on-chain integration)
 
 Deliverables:
+- Tip system smart contract (non-upgradeable):
+  - `contracts/contracts/TipSplitter.sol` (host registry + token allowlist + pull-payment tip splitting)
+  - Events-only tip history (no on-chain tip storage)
 - Host Admin workflows:
   - external registration: wallet signature + DNS TXT/HTTPS well-known proof
   - higher assurance updates: require both DNS + HTTPS proof for wallet/fee increases

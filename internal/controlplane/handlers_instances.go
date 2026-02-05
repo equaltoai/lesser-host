@@ -178,6 +178,7 @@ func (s *Server) handleCreateInstance(ctx *apptheory.Context) (*apptheory.Respon
 
 	primaryDomain := &models.Domain{
 		Domain:             slug + ".greater.website",
+		DomainRaw:          slug + ".greater.website",
 		InstanceSlug:       slug,
 		Type:               models.DomainTypePrimary,
 		Status:             models.DomainStatusVerified,
@@ -206,11 +207,22 @@ func (s *Server) handleCreateInstance(ctx *apptheory.Context) (*apptheory.Respon
 	}
 	_ = auditDomain.UpdateKeys()
 
+	tipOp, auditTipOp, err := s.buildAutoTipRegistryOperation(ctx.Context(), primaryDomain.Domain, primaryDomain.DomainRaw, strings.TrimSpace(ctx.AuthIdentity), ctx.RequestID, now)
+	if err != nil {
+		return nil, err
+	}
+
 	if err := s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
 		tx.Create(inst)
 		tx.Create(primaryDomain)
 		tx.Put(auditInstance)
 		tx.Put(auditDomain)
+		if tipOp != nil {
+			tx.Create(tipOp)
+		}
+		if auditTipOp != nil {
+			tx.Put(auditTipOp)
+		}
 		return nil
 	}); err != nil {
 		if theoryErrors.IsConditionFailed(err) {

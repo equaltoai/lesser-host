@@ -6,6 +6,9 @@
 tmp/
 bin/
 node_modules/
+contracts/node_modules/
+contracts/artifacts/
+contracts/cache/
 cdk/cdk.out/
 cdk/dist/
 cdk/.build/

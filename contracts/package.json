@@ -1,0 +1,16 @@
+{
+  "name": "lesser-host-contracts",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "hardhat compile",
+    "test": "hardhat compile"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-ethers": "4.0.1",
+    "@openzeppelin/contracts": "5.4.0",
+    "ethers": "6.15.0",
+    "hardhat": "3.0.6"
+  }
+}

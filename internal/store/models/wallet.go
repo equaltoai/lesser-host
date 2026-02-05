@@ -89,7 +89,7 @@ func (w *WalletCredential) BeforeCreate() error {
 		w.LastUsed = w.LinkedAt
 	}
 	if strings.TrimSpace(w.Type) == "" {
-		w.Type = "ethereum"
+		w.Type = walletTypeEthereum
 	}
 	return nil
 }
@@ -134,7 +134,7 @@ func (WalletIndex) TableName() string {
 // BeforeCreate sets defaults and keys before creating WalletIndex.
 func (w *WalletIndex) BeforeCreate() error {
 	if strings.TrimSpace(w.WalletType) == "" {
-		w.WalletType = "ethereum"
+		w.WalletType = walletTypeEthereum
 	}
 	w.UpdateKeys(w.WalletType, w.Address, w.Username)
 	return nil

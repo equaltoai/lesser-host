@@ -1,0 +1,27 @@
+import "@nomicfoundation/hardhat-ethers";
+
+/** @type import('hardhat/config').HardhatUserConfig */
+const config = {
+  solidity: {
+    version: "0.8.24",
+    settings: {
+      optimizer: {
+        enabled: true,
+        runs: 200,
+      },
+    },
+  },
+  paths: {
+    sources: "./contracts",
+    tests: "./test",
+    cache: "./cache",
+    artifacts: "./artifacts",
+  },
+  networks: {
+    hardhat: {
+      type: "edr-simulated",
+    },
+  },
+};
+
+export default config;

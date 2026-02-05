@@ -11,6 +11,8 @@ const (
 	SKProfile  = "PROFILE"
 )
 
+const walletTypeEthereum = "ethereum"
+
 // KeyPattern* constants define common partition key patterns.
 const (
 	KeyPatternUser    = "USER#%s"

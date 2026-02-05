@@ -66,4 +66,14 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 	app.Post("/api/v1/instances/{slug}/domains", s.handleAddInstanceDomain, apptheory.RequireAuth())
 	app.Post("/api/v1/instances/{slug}/domains/{domain}/verify", s.handleVerifyInstanceDomain, apptheory.RequireAuth())
 	app.Delete("/api/v1/instances/{slug}/domains/{domain}", s.handleDeleteInstanceDomain, apptheory.RequireAuth())
+
+	// Tip registry (public registration flow + admin reconciliation).
+	app.Post("/api/v1/tip-registry/registrations/begin", s.handleTipHostRegistrationBegin)
+	app.Post("/api/v1/tip-registry/registrations/{id}/verify", s.handleTipHostRegistrationVerify)
+	app.Get("/api/v1/tip-registry/operations", s.handleListTipRegistryOperations, apptheory.RequireAuth())
+	app.Get("/api/v1/tip-registry/operations/{id}", s.handleGetTipRegistryOperation, apptheory.RequireAuth())
+	app.Post("/api/v1/tip-registry/operations/{id}/record-execution", s.handleRecordTipRegistryOperationExecution, apptheory.RequireAuth())
+	app.Post("/api/v1/tip-registry/hosts/{domain}/active", s.handleSetTipRegistryHostActive, apptheory.RequireAuth())
+	app.Post("/api/v1/tip-registry/hosts/{domain}/ensure", s.handleEnsureTipRegistryHost, apptheory.RequireAuth())
+	app.Post("/api/v1/tip-registry/tokens/allowlist", s.handleSetTipRegistryTokenAllowed, apptheory.RequireAuth())
 }
