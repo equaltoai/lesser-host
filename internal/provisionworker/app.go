@@ -4,8 +4,11 @@ import (
 	"context"
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/codebuild"
 	"github.com/aws/aws-sdk-go-v2/service/organizations"
 	"github.com/aws/aws-sdk-go-v2/service/route53"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 
@@ -30,7 +33,16 @@ func New(opts ...apptheory.Option) *apptheory.App {
 		panic(err)
 	}
 
-	srv := NewServer(cfg, store.New(db), organizations.NewFromConfig(awsCfg), route53.NewFromConfig(awsCfg), sts.NewFromConfig(awsCfg))
+	srv := NewServer(
+		cfg,
+		store.New(db),
+		organizations.NewFromConfig(awsCfg),
+		route53.NewFromConfig(awsCfg),
+		sts.NewFromConfig(awsCfg),
+		sqs.NewFromConfig(awsCfg),
+		codebuild.NewFromConfig(awsCfg),
+		s3.NewFromConfig(awsCfg),
+	)
 
 	app := apptheory.New(opts...)
 	Register(app, srv)

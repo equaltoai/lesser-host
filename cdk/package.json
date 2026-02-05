@@ -2,6 +2,9 @@
   "name": "lesser-host-cdk",
   "private": true,
   "version": "0.0.0",
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "build": "tsc",
     "synth": "cdk synth",

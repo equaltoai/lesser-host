@@ -4,6 +4,7 @@ import * as fs from 'node:fs';
 
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
+import * as codebuild from 'aws-cdk-lib/aws-codebuild';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 	import * as events from 'aws-cdk-lib/aws-events';
 	import * as targets from 'aws-cdk-lib/aws-events-targets';
@@ -106,6 +107,12 @@ export class LesserHostStack extends cdk.Stack {
 		const managedDefaultRegion = (this.node.tryGetContext('managedDefaultRegion') as string | undefined) ?? '';
 		const managedLesserDefaultVersion =
 			(this.node.tryGetContext('managedLesserDefaultVersion') as string | undefined) ?? '';
+		const managedProvisionRunnerProjectName =
+			(this.node.tryGetContext('managedProvisionRunnerProjectName') as string | undefined) ?? '';
+		const managedLesserGitHubOwner = (this.node.tryGetContext('managedLesserGitHubOwner') as string | undefined) ?? '';
+		const managedLesserGitHubRepo = (this.node.tryGetContext('managedLesserGitHubRepo') as string | undefined) ?? '';
+		const managedLesserGitHubTokenSsmParam =
+			(this.node.tryGetContext('managedLesserGitHubTokenSsmParam') as string | undefined) ?? '';
 
 		const tipEnabled = (this.node.tryGetContext('tipEnabled') as string | undefined) ?? '';
 		const tipChainId = (this.node.tryGetContext('tipChainId') as string | undefined) ?? '';
@@ -116,6 +123,135 @@ export class LesserHostStack extends cdk.Stack {
 			(this.node.tryGetContext('tipDefaultHostWalletAddress') as string | undefined) ?? '';
 		const tipDefaultHostFeeBps = (this.node.tryGetContext('tipDefaultHostFeeBps') as string | undefined) ?? '';
 		const tipTxMode = (this.node.tryGetContext('tipTxMode') as string | undefined) ?? '';
+
+		const provisionRunnerProjectName =
+			managedProvisionRunnerProjectName.trim() || `${namePrefix}-provision-runner`;
+		const lesserGitHubOwner = managedLesserGitHubOwner.trim() || 'equaltoai';
+		const lesserGitHubRepo = managedLesserGitHubRepo.trim() || 'lesser';
+
+		const provisionRunnerProject = new codebuild.Project(this, 'ProvisionRunnerProject', {
+			projectName: provisionRunnerProjectName,
+			timeout: cdk.Duration.hours(3),
+			environment: {
+				buildImage: codebuild.LinuxBuildImage.STANDARD_7_0,
+				computeType: codebuild.ComputeType.SMALL,
+			},
+			environmentVariables: {
+				GITHUB_OWNER: { value: lesserGitHubOwner },
+				GITHUB_REPO: { value: lesserGitHubRepo },
+				...(managedLesserGitHubTokenSsmParam.trim()
+					? {
+							GITHUB_TOKEN: {
+								value: managedLesserGitHubTokenSsmParam.trim(),
+								type: codebuild.BuildEnvironmentVariableType.PARAMETER_STORE,
+							},
+						}
+					: {}),
+			},
+			buildSpec: codebuild.BuildSpec.fromObject({
+				version: '0.2',
+				phases: {
+					install: {
+						commands: [
+							'set -euo pipefail',
+							'echo \"Installing runner tools...\"',
+							'if command -v yum >/dev/null 2>&1; then yum install -y jq tar gzip unzip; fi',
+							'if command -v apt-get >/dev/null 2>&1; then apt-get update -y && apt-get install -y jq tar gzip unzip; fi',
+							'node -v || true',
+							'npm -v || true',
+							'npm install -g n',
+							'n 24',
+							'hash -r',
+							'node -v',
+							'npm install -g aws-cdk@2',
+							'npm install -g pnpm@9',
+							'cdk --version',
+							'pnpm --version',
+						],
+					},
+					pre_build: {
+						commands: [
+							'set -euo pipefail',
+							'echo \"Assuming role into target account...\"',
+							'CREDS=$(aws sts assume-role --role-arn \"arn:aws:iam::$TARGET_ACCOUNT_ID:role/$TARGET_ROLE_NAME\" --role-session-name \"lesser-host-$APP_SLUG\" --duration-seconds 3600 --query \"Credentials.[AccessKeyId,SecretAccessKey,SessionToken]\" --output text)',
+							'read MANAGED_AK MANAGED_SK MANAGED_TOKEN <<< \"$CREDS\"',
+							'mkdir -p ~/.aws',
+							'printf \"[managed]\\\\naws_access_key_id=%s\\\\naws_secret_access_key=%s\\\\naws_session_token=%s\\\\n\" \"$MANAGED_AK\" \"$MANAGED_SK\" \"$MANAGED_TOKEN\" > ~/.aws/credentials',
+							'printf \"[profile managed]\\\\nregion=%s\\\\noutput=json\\\\n\" \"$TARGET_REGION\" > ~/.aws/config',
+							'aws sts get-caller-identity --profile managed',
+						],
+					},
+					build: {
+						commands: [
+							'set -euo pipefail',
+							'OWNER=\"${GITHUB_OWNER:-equaltoai}\"',
+							'REPO=\"${GITHUB_REPO:-lesser}\"',
+							'TOKEN=\"${GITHUB_TOKEN:-}\"',
+							'if [ -z \"${LESSER_VERSION:-}\" ]; then',
+							'  if [ -n \"$TOKEN\" ]; then',
+							'    TAG=$(curl -sSfL -H \"Accept: application/vnd.github+json\" -H \"Authorization: Bearer $TOKEN\" \"https://api.github.com/repos/$OWNER/$REPO/releases/latest\" | jq -r .tag_name)',
+							'  else',
+							'    TAG=$(curl -sSfL -H \"Accept: application/vnd.github+json\" \"https://api.github.com/repos/$OWNER/$REPO/releases/latest\" | jq -r .tag_name)',
+							'  fi',
+							'else',
+							'  TAG=\"$LESSER_VERSION\"',
+							'fi',
+							'echo \"Using Lesser tag: $TAG\"',
+							'if [ -n \"$TOKEN\" ]; then',
+							'  curl -sSfL -H \"Accept: application/vnd.github+json\" -H \"Authorization: Bearer $TOKEN\" -o lesser-src.tgz \"https://api.github.com/repos/$OWNER/$REPO/tarball/$TAG\"',
+							'else',
+							'  curl -sSfL -H \"Accept: application/vnd.github+json\" -o lesser-src.tgz \"https://api.github.com/repos/$OWNER/$REPO/tarball/$TAG\"',
+							'fi',
+							'mkdir -p lesser-src && tar -xzf lesser-src.tgz --strip-components=1 -C lesser-src',
+							'if [ -n \"$TOKEN\" ]; then',
+							'  RELEASE_JSON=$(curl -sSfL -H \"Accept: application/vnd.github+json\" -H \"Authorization: Bearer $TOKEN\" \"https://api.github.com/repos/$OWNER/$REPO/releases/tags/$TAG\")',
+							'else',
+							'  RELEASE_JSON=$(curl -sSfL -H \"Accept: application/vnd.github+json\" \"https://api.github.com/repos/$OWNER/$REPO/releases/tags/$TAG\")',
+							'fi',
+							'BIN_ID=$(echo \"$RELEASE_JSON\" | jq -r \'.assets[] | select(.name==\"lesser-linux-amd64\") | .id\' | head -n 1)',
+							'CHK_ID=$(echo \"$RELEASE_JSON\" | jq -r \'.assets[] | select(.name==\"checksums.txt\") | .id\' | head -n 1)',
+							'test -n \"$BIN_ID\"',
+							'test -n \"$CHK_ID\"',
+							'if [ -n \"$TOKEN\" ]; then',
+							'  curl -sSfL -H \"Authorization: Bearer $TOKEN\" -H \"Accept: application/octet-stream\" -o lesser-linux-amd64 \"https://api.github.com/repos/$OWNER/$REPO/releases/assets/$BIN_ID\"',
+							'  curl -sSfL -H \"Authorization: Bearer $TOKEN\" -H \"Accept: application/octet-stream\" -o checksums.txt \"https://api.github.com/repos/$OWNER/$REPO/releases/assets/$CHK_ID\"',
+							'else',
+							'  curl -sSfL -H \"Accept: application/octet-stream\" -o lesser-linux-amd64 \"https://api.github.com/repos/$OWNER/$REPO/releases/assets/$BIN_ID\"',
+							'  curl -sSfL -H \"Accept: application/octet-stream\" -o checksums.txt \"https://api.github.com/repos/$OWNER/$REPO/releases/assets/$CHK_ID\"',
+							'fi',
+							'EXPECTED=$(grep \"lesser-linux-amd64\" checksums.txt | awk \'{print $1}\')',
+							'ACTUAL=$(sha256sum lesser-linux-amd64 | awk \'{print $1}\')',
+							'test \"$EXPECTED\" = \"$ACTUAL\"',
+							'chmod +x lesser-linux-amd64',
+							'mv lesser-linux-amd64 lesser-src/lesser',
+							'cd lesser-src',
+							'GO_TOOLCHAIN=$(grep \"^toolchain \" go.mod | awk \'{print $2}\')',
+							'GO_VERSION=\"${GO_TOOLCHAIN#go}\"',
+							'echo \"Installing Go toolchain: $GO_VERSION\"',
+							'curl -sSfL -o go.tgz \"https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz\"',
+							'rm -rf /usr/local/go && tar -C /usr/local -xzf go.tgz',
+							'export PATH=\"/usr/local/go/bin:$PATH\"',
+							'go version',
+							'set +e',
+							'./lesser up --app \"$APP_SLUG\" --base-domain \"$BASE_DOMAIN\" --aws-profile managed 2>&1 | tee /tmp/lesser-up.log',
+							'STATUS=$?',
+							'set -e',
+							'if [ \"$STATUS\" -ne 0 ]; then',
+							'  if grep -q \"--out is required\" /tmp/lesser-up.log; then',
+							'    ./lesser up --app \"$APP_SLUG\" --base-domain \"$BASE_DOMAIN\" --aws-profile managed --out /tmp/bootstrap.json',
+							'  else',
+							'    exit \"$STATUS\"',
+							'  fi',
+							'fi',
+							'RECEIPT_PATH=\"$HOME/.lesser/$APP_SLUG/$BASE_DOMAIN/state.json\"',
+							'test -f \"$RECEIPT_PATH\"',
+							'aws s3 cp \"$RECEIPT_PATH\" \"s3://$ARTIFACT_BUCKET/$RECEIPT_S3_KEY\"',
+							'if [ -f /tmp/bootstrap.json ]; then aws s3 cp /tmp/bootstrap.json \"s3://$ARTIFACT_BUCKET/$BOOTSTRAP_S3_KEY\"; fi',
+						],
+					},
+				},
+			}),
+		});
 
 		const controlPlaneFn = this.goLambda('ControlPlaneApi', './cmd/control-plane-api', {
 			STAGE: stage,
@@ -136,6 +272,10 @@ export class LesserHostStack extends cdk.Stack {
 			MANAGED_ACCOUNT_NAME_PREFIX: managedAccountNamePrefix,
 			MANAGED_DEFAULT_REGION: managedDefaultRegion,
 			MANAGED_LESSER_DEFAULT_VERSION: managedLesserDefaultVersion,
+			MANAGED_PROVISION_RUNNER_PROJECT_NAME: provisionRunnerProjectName,
+			MANAGED_LESSER_GITHUB_OWNER: lesserGitHubOwner,
+			MANAGED_LESSER_GITHUB_REPO: lesserGitHubRepo,
+			MANAGED_LESSER_GITHUB_TOKEN_SSM_PARAM: managedLesserGitHubTokenSsmParam.trim(),
 			TIP_ENABLED: tipEnabled,
 			TIP_CHAIN_ID: tipChainId,
 			TIP_RPC_URL: tipRpcUrl,
@@ -189,6 +329,7 @@ export class LesserHostStack extends cdk.Stack {
 		const provisionWorkerFn = this.goLambda('ProvisionWorker', './cmd/provision-worker', {
 			STAGE: stage,
 			STATE_TABLE_NAME: stateTable.tableName,
+			ARTIFACT_BUCKET_NAME: artifactsBucket.bucketName,
 			PROVISION_QUEUE_URL: provisionQueue.queueUrl,
 			MANAGED_PROVISIONING_ENABLED: managedProvisioningEnabled,
 			MANAGED_PARENT_DOMAIN: managedParentDomain,
@@ -199,6 +340,10 @@ export class LesserHostStack extends cdk.Stack {
 			MANAGED_ACCOUNT_NAME_PREFIX: managedAccountNamePrefix,
 			MANAGED_DEFAULT_REGION: managedDefaultRegion,
 			MANAGED_LESSER_DEFAULT_VERSION: managedLesserDefaultVersion,
+			MANAGED_PROVISION_RUNNER_PROJECT_NAME: provisionRunnerProjectName,
+			MANAGED_LESSER_GITHUB_OWNER: lesserGitHubOwner,
+			MANAGED_LESSER_GITHUB_REPO: lesserGitHubRepo,
+			MANAGED_LESSER_GITHUB_TOKEN_SSM_PARAM: managedLesserGitHubTokenSsmParam.trim(),
 		});
 
 		stateTable.grantReadWriteData(controlPlaneFn);
@@ -210,6 +355,8 @@ export class LesserHostStack extends cdk.Stack {
 		artifactsBucket.grantReadWrite(trustFn);
 		artifactsBucket.grantReadWrite(renderWorkerFn);
 		artifactsBucket.grantRead(aiWorkerFn);
+		artifactsBucket.grantRead(provisionWorkerFn);
+		artifactsBucket.grantReadWrite(provisionRunnerProject);
 		attestationSigningKey.grant(trustFn, 'kms:Sign', 'kms:GetPublicKey');
 		attestationSigningKey.grant(aiWorkerFn, 'kms:Sign', 'kms:GetPublicKey');
 		previewQueue.grantSendMessages(controlPlaneFn);
@@ -220,6 +367,77 @@ export class LesserHostStack extends cdk.Stack {
 		safetyQueue.grantConsumeMessages(aiWorkerFn);
 		provisionQueue.grantSendMessages(controlPlaneFn);
 		provisionQueue.grantConsumeMessages(provisionWorkerFn);
+		provisionQueue.grantSendMessages(provisionWorkerFn);
+
+		provisionRunnerProject.addToRolePolicy(
+			new iam.PolicyStatement({
+				actions: ['sts:AssumeRole'],
+				resources: [`arn:aws:iam::*:role/${managedInstanceRoleName.trim() || 'OrganizationAccountAccessRole'}`],
+			}),
+		);
+
+		provisionWorkerFn.addToRolePolicy(
+			new iam.PolicyStatement({
+				actions: [
+					'organizations:CreateAccount',
+					'organizations:DescribeCreateAccountStatus',
+					'organizations:ListParents',
+					'organizations:MoveAccount',
+				],
+				resources: ['*'],
+			}),
+		);
+
+		provisionWorkerFn.addToRolePolicy(
+			new iam.PolicyStatement({
+				actions: ['sts:AssumeRole'],
+				resources: [`arn:aws:iam::*:role/${managedInstanceRoleName.trim() || 'OrganizationAccountAccessRole'}`],
+			}),
+		);
+
+		provisionWorkerFn.addToRolePolicy(
+			new iam.PolicyStatement({
+				actions: ['route53:ChangeResourceRecordSets'],
+				resources: [
+					managedParentHostedZoneId.trim()
+						? `arn:aws:route53:::hostedzone/${managedParentHostedZoneId.trim()}`
+						: 'arn:aws:route53:::hostedzone/*',
+				],
+			}),
+		);
+
+		provisionWorkerFn.addToRolePolicy(
+			new iam.PolicyStatement({
+				actions: ['codebuild:StartBuild'],
+				resources: [provisionRunnerProject.projectArn],
+			}),
+		);
+		provisionWorkerFn.addToRolePolicy(
+			new iam.PolicyStatement({
+				actions: ['codebuild:BatchGetBuilds'],
+				resources: ['*'],
+			}),
+		);
+
+		if (managedLesserGitHubTokenSsmParam.trim()) {
+			const paramName = managedLesserGitHubTokenSsmParam.trim().replace(/^\/+/, '');
+			const paramArn = `arn:aws:ssm:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:parameter/${paramName}`;
+			provisionRunnerProject.addToRolePolicy(
+				new iam.PolicyStatement({
+					actions: ['ssm:GetParameter', 'ssm:GetParameters'],
+					resources: [paramArn],
+				}),
+			);
+			provisionRunnerProject.addToRolePolicy(
+				new iam.PolicyStatement({
+					actions: ['kms:Decrypt'],
+					resources: ['*'],
+					conditions: {
+						StringEquals: { 'kms:ViaService': `ssm.${cdk.Aws.REGION}.amazonaws.com` },
+					},
+				}),
+			);
+		}
 
 		renderWorkerFn.addEventSource(new lambdaEventSources.SqsEventSource(previewQueue, { batchSize: 1 }));
 		aiWorkerFn.addEventSource(new lambdaEventSources.SqsEventSource(safetyQueue, { batchSize: 5 }));

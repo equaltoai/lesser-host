@@ -37,6 +37,8 @@ github.com/aws/aws-sdk-go-v2/internal/v4a v1.4.17 h1:JqcdRG//czea7Ppjb+g/n4o8i/R
 github.com/aws/aws-sdk-go-v2/internal/v4a v1.4.17/go.mod h1:CO+WeGmIdj/MlPel2KwID9Gt7CNq4M65HUfBW97liM0=
 github.com/aws/aws-sdk-go-v2/service/apigatewaymanagementapi v1.29.10 h1:2kw0xNqhIdrtLVvUfCqpvj/4Pa+XHAqTTPGk6AZjNB4=
 github.com/aws/aws-sdk-go-v2/service/apigatewaymanagementapi v1.29.10/go.mod h1:rj15EWI0r5cmVDHEIXpS2FDUjo5uQk1I51o7eFNGOXw=
+github.com/aws/aws-sdk-go-v2/service/codebuild v1.68.9 h1:3YP3XzFGQj7zQVNtwpdWlvcPv/7cv1xHvxNTzUdoDnA=
+github.com/aws/aws-sdk-go-v2/service/codebuild v1.68.9/go.mod h1:7IHEW65aHpPZ/ESPS5XT74RnsVTmNU/mjryr1SRkrdE=
 github.com/aws/aws-sdk-go-v2/service/comprehend v1.40.17 h1:1dD+R6ZPvGnbDdLI0sBbP6lgCkmV5EGDQ/OMp3M1LK0=
 github.com/aws/aws-sdk-go-v2/service/comprehend v1.40.17/go.mod h1:SUPDeDwJztUv53XckbxoT5R6VqutnaCWFsN/p8M3M1s=
 github.com/aws/aws-sdk-go-v2/service/dynamodb v1.53.6 h1:LNmvkGzDO5PYXDW6m7igx+s2jKaPchpfbS0uDICywFc=

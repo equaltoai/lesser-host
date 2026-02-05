@@ -80,6 +80,22 @@ The control plane needs (at minimum):
 - `MANAGED_ACCOUNT_NAME_PREFIX` (default: `lesser-`)
 - `MANAGED_DEFAULT_REGION` (default: `AWS_REGION` or `us-east-1`)
 - `MANAGED_LESSER_DEFAULT_VERSION` (optional semver tag; used when the request doesn’t specify one)
+- `MANAGED_PROVISION_RUNNER_PROJECT_NAME` (CodeBuild project name used to run `lesser up`)
+- `ARTIFACT_BUCKET_NAME` (S3 bucket where the runner writes receipts)
+- `MANAGED_LESSER_GITHUB_OWNER` (default: `equaltoai`)
+- `MANAGED_LESSER_GITHUB_REPO` (default: `lesser`)
+- `MANAGED_LESSER_GITHUB_TOKEN_SSM_PARAM` (optional; SecureString SSM parameter containing a GitHub token)
 
 Infra is expected to provide:
 - `PROVISION_QUEUE_URL` (SQS queue that drives the async pipeline)
+
+## Receipt + bootstrap outputs
+
+The deploy runner writes the Lesser receipt to S3 so the provisioning worker can ingest it and update instance state:
+
+- Receipt: `s3://$ARTIFACT_BUCKET_NAME/managed/provisioning/<slug>/<jobId>/state.json`
+- Bootstrap key material (only on first deploy): `s3://$ARTIFACT_BUCKET_NAME/managed/provisioning/<slug>/<jobId>/bootstrap.json`
+
+Notes:
+- The bootstrap file is sensitive and should be treated like a private key.
+- Future work will eliminate mnemonic-based bootstrap for managed installs (tracked in Lesser issues).

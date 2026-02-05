@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -46,6 +47,10 @@ type Config struct {
 	ManagedAccountNamePrefix          string // e.g. "lesser-"
 	ManagedDefaultRegion              string // e.g. us-east-1
 	ManagedLesserDefaultVersion       string // semver tag, optional
+	ManagedProvisionRunnerProjectName string // CodeBuild project name used to run lesser up
+	ManagedLesserGitHubOwner          string // GitHub org/user for the lesser repo
+	ManagedLesserGitHubRepo           string // GitHub repo name for lesser
+	ManagedLesserGitHubTokenSSMParam  string // optional SSM param name for a GitHub token (CodeBuild)
 }
 
 // Load reads environment variables and returns a Config with defaults applied.
@@ -125,6 +130,20 @@ func Load() Config {
 		managedDefaultRegion = "us-east-1"
 	}
 
+	managedProvisionRunnerProjectName := strings.TrimSpace(os.Getenv("MANAGED_PROVISION_RUNNER_PROJECT_NAME"))
+	if managedProvisionRunnerProjectName == "" {
+		managedProvisionRunnerProjectName = fmt.Sprintf("lesser-host-%s-provision-runner", stage)
+	}
+
+	managedLesserGitHubOwner := strings.TrimSpace(os.Getenv("MANAGED_LESSER_GITHUB_OWNER"))
+	if managedLesserGitHubOwner == "" {
+		managedLesserGitHubOwner = "equaltoai"
+	}
+	managedLesserGitHubRepo := strings.TrimSpace(os.Getenv("MANAGED_LESSER_GITHUB_REPO"))
+	if managedLesserGitHubRepo == "" {
+		managedLesserGitHubRepo = "lesser"
+	}
+
 	return Config{
 		AppName: "lesser-host",
 		Stage:   stage,
@@ -162,5 +181,9 @@ func Load() Config {
 		ManagedAccountNamePrefix:          managedAccountNamePrefix,
 		ManagedDefaultRegion:              managedDefaultRegion,
 		ManagedLesserDefaultVersion:       strings.TrimSpace(os.Getenv("MANAGED_LESSER_DEFAULT_VERSION")),
+		ManagedProvisionRunnerProjectName: managedProvisionRunnerProjectName,
+		ManagedLesserGitHubOwner:          managedLesserGitHubOwner,
+		ManagedLesserGitHubRepo:           managedLesserGitHubRepo,
+		ManagedLesserGitHubTokenSSMParam:  strings.TrimSpace(os.Getenv("MANAGED_LESSER_GITHUB_TOKEN_SSM_PARAM")),
 	}
 }
