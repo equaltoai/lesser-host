@@ -593,10 +593,16 @@ export class LesserHostStack extends cdk.Stack {
   var uri = request.uri || "/";
 
   // Never rewrite API routes.
+  var isSetupApi =
+    uri === "/setup/status" ||
+    uri === "/setup/admin" ||
+    uri === "/setup/finalize" ||
+    uri.startsWith("/setup/bootstrap/");
+
   if (
     uri.startsWith("/api/") ||
     uri.startsWith("/auth/") ||
-    uri.startsWith("/setup/") ||
+    isSetupApi ||
     uri.startsWith("/.well-known/") ||
     uri.startsWith("/attestations")
   ) {
