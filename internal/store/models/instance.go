@@ -22,6 +22,12 @@ type Instance struct {
 	Slug                   string    `theorydb:"attr:slug" json:"slug"`
 	Owner                  string    `theorydb:"attr:owner" json:"owner,omitempty"`
 	Status                 string    `theorydb:"attr:status" json:"status"`
+	ProvisionStatus        string    `theorydb:"attr:provisionStatus" json:"provision_status,omitempty"` // queued|running|ok|error
+	ProvisionJobID         string    `theorydb:"attr:provisionJobId" json:"provision_job_id,omitempty"`
+	HostedAccountID        string    `theorydb:"attr:hostedAccountId" json:"hosted_account_id,omitempty"`
+	HostedRegion           string    `theorydb:"attr:hostedRegion" json:"hosted_region,omitempty"`
+	HostedBaseDomain       string    `theorydb:"attr:hostedBaseDomain" json:"hosted_base_domain,omitempty"`
+	HostedZoneID           string    `theorydb:"attr:hostedZoneId" json:"hosted_zone_id,omitempty"`
 	HostedPreviewsEnabled  *bool     `theorydb:"attr:hostedPreviewsEnabled" json:"hosted_previews_enabled,omitempty"`
 	LinkSafetyEnabled      *bool     `theorydb:"attr:linkSafetyEnabled" json:"link_safety_enabled,omitempty"`
 	RendersEnabled         *bool     `theorydb:"attr:rendersEnabled" json:"renders_enabled,omitempty"`

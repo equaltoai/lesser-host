@@ -16,6 +16,7 @@ type Config struct {
 	ArtifactBucketName string
 	PreviewQueueURL    string
 	SafetyQueueURL     string
+	ProvisionQueueURL  string
 
 	BootstrapWalletAddress string
 
@@ -34,6 +35,17 @@ type Config struct {
 	TipDefaultHostWalletAddress string
 	TipDefaultHostFeeBps        uint16
 	TipTxMode                   string // safe|direct
+
+	// Managed hosting (M9 provisioning).
+	ManagedProvisioningEnabled        bool
+	ManagedParentDomain               string // e.g. greater.website
+	ManagedParentHostedZoneID         string // Route53 hosted zone id for greater.website (central account)
+	ManagedInstanceRoleName           string // role to assume into instance accounts
+	ManagedTargetOrganizationalUnitID string // optional OU id for instance accounts
+	ManagedAccountEmailTemplate       string // e.g. "lesser+{slug}@example.com"
+	ManagedAccountNamePrefix          string // e.g. "lesser-"
+	ManagedDefaultRegion              string // e.g. us-east-1
+	ManagedLesserDefaultVersion       string // semver tag, optional
 }
 
 // Load reads environment variables and returns a Config with defaults applied.
@@ -87,6 +99,32 @@ func Load() Config {
 		tipTxMode = "safe"
 	}
 
+	managedProvisioningEnabled := strings.ToLower(strings.TrimSpace(os.Getenv("MANAGED_PROVISIONING_ENABLED")))
+	managedOn := managedProvisioningEnabled == "1" || managedProvisioningEnabled == "true" || managedProvisioningEnabled == "yes" || managedProvisioningEnabled == "on"
+
+	managedParentDomain := strings.ToLower(strings.TrimSpace(os.Getenv("MANAGED_PARENT_DOMAIN")))
+	if managedParentDomain == "" {
+		managedParentDomain = "greater.website"
+	}
+
+	managedInstanceRoleName := strings.TrimSpace(os.Getenv("MANAGED_INSTANCE_ROLE_NAME"))
+	if managedInstanceRoleName == "" {
+		managedInstanceRoleName = "OrganizationAccountAccessRole"
+	}
+
+	managedAccountNamePrefix := strings.TrimSpace(os.Getenv("MANAGED_ACCOUNT_NAME_PREFIX"))
+	if managedAccountNamePrefix == "" {
+		managedAccountNamePrefix = "lesser-"
+	}
+
+	managedDefaultRegion := strings.TrimSpace(os.Getenv("MANAGED_DEFAULT_REGION"))
+	if managedDefaultRegion == "" {
+		managedDefaultRegion = strings.TrimSpace(os.Getenv("AWS_REGION"))
+	}
+	if managedDefaultRegion == "" {
+		managedDefaultRegion = "us-east-1"
+	}
+
 	return Config{
 		AppName: "lesser-host",
 		Stage:   stage,
@@ -96,6 +134,7 @@ func Load() Config {
 		ArtifactBucketName: strings.TrimSpace(os.Getenv("ARTIFACT_BUCKET_NAME")),
 		PreviewQueueURL:    strings.TrimSpace(os.Getenv("PREVIEW_QUEUE_URL")),
 		SafetyQueueURL:     strings.TrimSpace(os.Getenv("SAFETY_QUEUE_URL")),
+		ProvisionQueueURL:  strings.TrimSpace(os.Getenv("PROVISION_QUEUE_URL")),
 
 		BootstrapWalletAddress: strings.TrimSpace(os.Getenv("BOOTSTRAP_WALLET_ADDRESS")),
 
@@ -113,5 +152,15 @@ func Load() Config {
 		TipDefaultHostWalletAddress: strings.TrimSpace(os.Getenv("TIP_DEFAULT_HOST_WALLET_ADDRESS")),
 		TipDefaultHostFeeBps:        tipDefaultHostFeeBps,
 		TipTxMode:                   tipTxMode,
+
+		ManagedProvisioningEnabled:        managedOn,
+		ManagedParentDomain:               managedParentDomain,
+		ManagedParentHostedZoneID:         strings.TrimSpace(os.Getenv("MANAGED_PARENT_HOSTED_ZONE_ID")),
+		ManagedInstanceRoleName:           managedInstanceRoleName,
+		ManagedTargetOrganizationalUnitID: strings.TrimSpace(os.Getenv("MANAGED_TARGET_OU_ID")),
+		ManagedAccountEmailTemplate:       strings.TrimSpace(os.Getenv("MANAGED_ACCOUNT_EMAIL_TEMPLATE")),
+		ManagedAccountNamePrefix:          managedAccountNamePrefix,
+		ManagedDefaultRegion:              managedDefaultRegion,
+		ManagedLesserDefaultVersion:       strings.TrimSpace(os.Getenv("MANAGED_LESSER_DEFAULT_VERSION")),
 	}
 }

@@ -23,6 +23,7 @@ func LambdaInit() (DB, error) {
 		&models.Instance{},
 		&models.InstanceKey{},
 		&models.InstanceBudgetMonth{},
+		&models.ProvisionJob{},
 		&models.AuditLogEntry{},
 	)
 }

@@ -45,6 +45,12 @@ type instanceResponse struct {
 	Slug                   string    `json:"slug"`
 	Owner                  string    `json:"owner,omitempty"`
 	Status                 string    `json:"status"`
+	ProvisionStatus        string    `json:"provision_status,omitempty"`
+	ProvisionJobID         string    `json:"provision_job_id,omitempty"`
+	HostedAccountID        string    `json:"hosted_account_id,omitempty"`
+	HostedRegion           string    `json:"hosted_region,omitempty"`
+	HostedBaseDomain       string    `json:"hosted_base_domain,omitempty"`
+	HostedZoneID           string    `json:"hosted_zone_id,omitempty"`
 	HostedPreviewsEnabled  bool      `json:"hosted_previews_enabled"`
 	LinkSafetyEnabled      bool      `json:"link_safety_enabled"`
 	RendersEnabled         bool      `json:"renders_enabled"`
@@ -102,6 +108,39 @@ type budgetMonthResponse struct {
 	IncludedCredits int64     `json:"included_credits"`
 	UsedCredits     int64     `json:"used_credits"`
 	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+func instanceResponseFromModel(inst *models.Instance) instanceResponse {
+	if inst == nil {
+		return instanceResponse{}
+	}
+	return instanceResponse{
+		Slug:                   strings.TrimSpace(inst.Slug),
+		Owner:                  strings.TrimSpace(inst.Owner),
+		Status:                 strings.TrimSpace(inst.Status),
+		ProvisionStatus:        strings.TrimSpace(inst.ProvisionStatus),
+		ProvisionJobID:         strings.TrimSpace(inst.ProvisionJobID),
+		HostedAccountID:        strings.TrimSpace(inst.HostedAccountID),
+		HostedRegion:           strings.TrimSpace(inst.HostedRegion),
+		HostedBaseDomain:       strings.TrimSpace(inst.HostedBaseDomain),
+		HostedZoneID:           strings.TrimSpace(inst.HostedZoneID),
+		HostedPreviewsEnabled:  effectiveHostedPreviewsEnabled(inst.HostedPreviewsEnabled),
+		LinkSafetyEnabled:      effectiveLinkSafetyEnabled(inst.LinkSafetyEnabled),
+		RendersEnabled:         effectiveRendersEnabled(inst.RendersEnabled),
+		RenderPolicy:           effectiveRenderPolicy(inst.RenderPolicy),
+		OveragePolicy:          effectiveOveragePolicy(inst.OveragePolicy),
+		ModerationEnabled:      effectiveModerationEnabled(inst.ModerationEnabled),
+		ModerationTrigger:      effectiveModerationTrigger(inst.ModerationTrigger),
+		ModerationViralityMin:  effectiveModerationViralityMin(inst.ModerationViralityMin),
+		AIEnabled:              effectiveAIEnabled(inst.AIEnabled),
+		AIModelSet:             effectiveAIModelSet(inst.AIModelSet),
+		AIBatchingMode:         effectiveAIBatchingMode(inst.AIBatchingMode),
+		AIBatchMaxItems:        effectiveAIBatchMaxItems(inst.AIBatchMaxItems),
+		AIBatchMaxTotalBytes:   effectiveAIBatchMaxTotalBytes(inst.AIBatchMaxTotalBytes),
+		AIPricingMultiplierBps: effectiveAIPricingMultiplierBps(inst.AIPricingMultiplierBps),
+		AIMaxInflightJobs:      effectiveAIMaxInflightJobs(inst.AIMaxInflightJobs),
+		CreatedAt:              inst.CreatedAt,
+	}
 }
 
 func (s *Server) getInstance(ctx *apptheory.Context, slug string) (*models.Instance, error) {
@@ -231,27 +270,7 @@ func (s *Server) handleCreateInstance(ctx *apptheory.Context) (*apptheory.Respon
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create instance"}
 	}
 
-	return apptheory.JSON(http.StatusCreated, instanceResponse{
-		Slug:                   inst.Slug,
-		Owner:                  inst.Owner,
-		Status:                 inst.Status,
-		HostedPreviewsEnabled:  effectiveHostedPreviewsEnabled(inst.HostedPreviewsEnabled),
-		LinkSafetyEnabled:      effectiveLinkSafetyEnabled(inst.LinkSafetyEnabled),
-		RendersEnabled:         effectiveRendersEnabled(inst.RendersEnabled),
-		RenderPolicy:           effectiveRenderPolicy(inst.RenderPolicy),
-		OveragePolicy:          effectiveOveragePolicy(inst.OveragePolicy),
-		ModerationEnabled:      effectiveModerationEnabled(inst.ModerationEnabled),
-		ModerationTrigger:      effectiveModerationTrigger(inst.ModerationTrigger),
-		ModerationViralityMin:  effectiveModerationViralityMin(inst.ModerationViralityMin),
-		AIEnabled:              effectiveAIEnabled(inst.AIEnabled),
-		AIModelSet:             effectiveAIModelSet(inst.AIModelSet),
-		AIBatchingMode:         effectiveAIBatchingMode(inst.AIBatchingMode),
-		AIBatchMaxItems:        effectiveAIBatchMaxItems(inst.AIBatchMaxItems),
-		AIBatchMaxTotalBytes:   effectiveAIBatchMaxTotalBytes(inst.AIBatchMaxTotalBytes),
-		AIPricingMultiplierBps: effectiveAIPricingMultiplierBps(inst.AIPricingMultiplierBps),
-		AIMaxInflightJobs:      effectiveAIMaxInflightJobs(inst.AIMaxInflightJobs),
-		CreatedAt:              inst.CreatedAt,
-	})
+	return apptheory.JSON(http.StatusCreated, instanceResponseFromModel(inst))
 }
 
 func (s *Server) handleListInstances(ctx *apptheory.Context) (*apptheory.Response, error) {
@@ -270,27 +289,7 @@ func (s *Server) handleListInstances(ctx *apptheory.Context) (*apptheory.Respons
 
 	out := make([]instanceResponse, 0, len(items))
 	for _, inst := range items {
-		out = append(out, instanceResponse{
-			Slug:                   inst.Slug,
-			Owner:                  inst.Owner,
-			Status:                 inst.Status,
-			HostedPreviewsEnabled:  effectiveHostedPreviewsEnabled(inst.HostedPreviewsEnabled),
-			LinkSafetyEnabled:      effectiveLinkSafetyEnabled(inst.LinkSafetyEnabled),
-			RendersEnabled:         effectiveRendersEnabled(inst.RendersEnabled),
-			RenderPolicy:           effectiveRenderPolicy(inst.RenderPolicy),
-			OveragePolicy:          effectiveOveragePolicy(inst.OveragePolicy),
-			ModerationEnabled:      effectiveModerationEnabled(inst.ModerationEnabled),
-			ModerationTrigger:      effectiveModerationTrigger(inst.ModerationTrigger),
-			ModerationViralityMin:  effectiveModerationViralityMin(inst.ModerationViralityMin),
-			AIEnabled:              effectiveAIEnabled(inst.AIEnabled),
-			AIModelSet:             effectiveAIModelSet(inst.AIModelSet),
-			AIBatchingMode:         effectiveAIBatchingMode(inst.AIBatchingMode),
-			AIBatchMaxItems:        effectiveAIBatchMaxItems(inst.AIBatchMaxItems),
-			AIBatchMaxTotalBytes:   effectiveAIBatchMaxTotalBytes(inst.AIBatchMaxTotalBytes),
-			AIPricingMultiplierBps: effectiveAIPricingMultiplierBps(inst.AIPricingMultiplierBps),
-			AIMaxInflightJobs:      effectiveAIMaxInflightJobs(inst.AIMaxInflightJobs),
-			CreatedAt:              inst.CreatedAt,
-		})
+		out = append(out, instanceResponseFromModel(inst))
 	}
 
 	return apptheory.JSON(http.StatusOK, listInstancesResponse{

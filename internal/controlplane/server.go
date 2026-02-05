@@ -12,6 +12,7 @@ type Server struct {
 	cfg      config.Config
 	store    *store.Store
 	webAuthn webAuthnEngine
+	queues   *queueClient
 }
 
 // NewServer constructs a new control plane Server.
@@ -21,6 +22,7 @@ func NewServer(cfg config.Config, st *store.Store) *Server {
 		cfg:      cfg,
 		store:    st,
 		webAuthn: webAuthn,
+		queues:   newQueueClient(cfg.ProvisionQueueURL),
 	}
 }
 
@@ -60,6 +62,8 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 	app.Post("/api/v1/instances/{slug}/keys", s.handleCreateInstanceKey, apptheory.RequireAuth())
 	app.Put("/api/v1/instances/{slug}/budgets/{month}", s.handleSetInstanceBudgetMonth, apptheory.RequireAuth())
 	app.Get("/api/v1/instances/{slug}/usage/{month}", s.handleListInstanceUsage, apptheory.RequireAuth())
+	app.Post("/api/v1/instances/{slug}/provision", s.handleStartInstanceProvisioning, apptheory.RequireAuth())
+	app.Get("/api/v1/instances/{slug}/provision", s.handleGetInstanceProvisioning, apptheory.RequireAuth())
 
 	// Domains (admin-only).
 	app.Get("/api/v1/instances/{slug}/domains", s.handleListInstanceDomains, apptheory.RequireAuth())

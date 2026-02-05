@@ -9,6 +9,8 @@ trust/safety planning.
 - Bootstrap plan: `app-theory/init.md`
 - Deployment contract (consumed by `theory app up/down`): `app-theory/app.json`
 - AI services subroadmap: `docs/ai-services-roadmap.md`
+- Lesser release contract (consumed for managed instance deploys): `docs/lesser-release-contract.md`
+- Managed provisioning notes: `docs/managed-instance-provisioning.md`
 - Moderation provider notes: `docs/moderation-provider.md`
 - Tip registry notes: `docs/tip-registry.md`
 - Pinned frameworks (from `app-theory/app.json`):
@@ -249,10 +251,15 @@ Acceptance criteria:
 ### M9 — Hosted instance provisioning (greater.website “wordpress.com” experience)
 
 Deliverables:
+- Define the **Lesser release contract**:
+  - GitHub Release asset requirements + manifest
+  - stable deployment receipt schema used by `lesser.host`
 - Provisioning pipeline (async):
   - create instance record + slug reservation
-  - deploy instance infra (via your chosen hosting stack)
-  - configure default domain `slug.greater.website`
+  - provision/allocate a dedicated AWS account in the org
+  - create delegated Route53 hosted zone for `slug.greater.website` (instance account)
+  - deploy instance infra (Lesser release) into the instance account
+  - configure default domain `slug.greater.website` (via NS delegation under `greater.website`)
   - bootstrap instance credentials + register in `lesser.host`
 - Vanity domains:
   - user-managed DNS required (no hosted zone)
@@ -260,7 +267,7 @@ Deliverables:
   - once activated, register vanity hostId on-chain and route vanity to instance
 
 Acceptance criteria:
-- A new instance can be provisioned end-to-end with a working `slug.greater.website` endpoint.
+- A new instance can be provisioned end-to-end into a dedicated AWS account with a working `slug.greater.website` endpoint.
 - Vanity domain activation requires DNS/HTTPS proof and cannot be flipped without re-proofing.
 - Provisioning is observable (job status, logs, and failure recovery path).
 

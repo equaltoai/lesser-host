@@ -9,6 +9,7 @@ import (
 const (
 	SKMetadata = "METADATA"
 	SKProfile  = "PROFILE"
+	SKInfra    = "INFRA"
 )
 
 const walletTypeEthereum = "ethereum"

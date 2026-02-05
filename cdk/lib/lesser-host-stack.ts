@@ -73,6 +73,11 @@ export class LesserHostStack extends cdk.Stack {
 		});
 		safetyQueue.applyRemovalPolicy(removalPolicy);
 
+		const provisionQueue = new sqs.Queue(this, 'ProvisionQueue', {
+			queueName: `${namePrefix}-provision-queue`,
+		});
+		provisionQueue.applyRemovalPolicy(removalPolicy);
+
 		const attestationSigningKey = new kms.Key(this, 'AttestationSigningKey', {
 			description: `${namePrefix} attestation signing`,
 			keySpec: kms.KeySpec.RSA_2048,
@@ -85,6 +90,22 @@ export class LesserHostStack extends cdk.Stack {
 			(this.node.tryGetContext('bootstrapWalletAddress') as string | undefined) ?? '';
 		const webAuthnRPID = (this.node.tryGetContext('webauthnRpId') as string | undefined) ?? '';
 		const webAuthnOrigins = (this.node.tryGetContext('webauthnOrigins') as string | undefined) ?? '';
+
+		const managedProvisioningEnabled =
+			(this.node.tryGetContext('managedProvisioningEnabled') as string | undefined) ?? '';
+		const managedParentDomain = (this.node.tryGetContext('managedParentDomain') as string | undefined) ?? '';
+		const managedParentHostedZoneId =
+			(this.node.tryGetContext('managedParentHostedZoneId') as string | undefined) ?? '';
+		const managedInstanceRoleName =
+			(this.node.tryGetContext('managedInstanceRoleName') as string | undefined) ?? '';
+		const managedTargetOuId = (this.node.tryGetContext('managedTargetOuId') as string | undefined) ?? '';
+		const managedAccountEmailTemplate =
+			(this.node.tryGetContext('managedAccountEmailTemplate') as string | undefined) ?? '';
+		const managedAccountNamePrefix =
+			(this.node.tryGetContext('managedAccountNamePrefix') as string | undefined) ?? '';
+		const managedDefaultRegion = (this.node.tryGetContext('managedDefaultRegion') as string | undefined) ?? '';
+		const managedLesserDefaultVersion =
+			(this.node.tryGetContext('managedLesserDefaultVersion') as string | undefined) ?? '';
 
 		const tipEnabled = (this.node.tryGetContext('tipEnabled') as string | undefined) ?? '';
 		const tipChainId = (this.node.tryGetContext('tipChainId') as string | undefined) ?? '';
@@ -102,9 +123,19 @@ export class LesserHostStack extends cdk.Stack {
 			ARTIFACT_BUCKET_NAME: artifactsBucket.bucketName,
 			PREVIEW_QUEUE_URL: previewQueue.queueUrl,
 			SAFETY_QUEUE_URL: safetyQueue.queueUrl,
+			PROVISION_QUEUE_URL: provisionQueue.queueUrl,
 			BOOTSTRAP_WALLET_ADDRESS: bootstrapWalletAddress,
 			WEBAUTHN_RP_ID: webAuthnRPID,
 			WEBAUTHN_ORIGINS: webAuthnOrigins,
+			MANAGED_PROVISIONING_ENABLED: managedProvisioningEnabled,
+			MANAGED_PARENT_DOMAIN: managedParentDomain,
+			MANAGED_PARENT_HOSTED_ZONE_ID: managedParentHostedZoneId,
+			MANAGED_INSTANCE_ROLE_NAME: managedInstanceRoleName,
+			MANAGED_TARGET_OU_ID: managedTargetOuId,
+			MANAGED_ACCOUNT_EMAIL_TEMPLATE: managedAccountEmailTemplate,
+			MANAGED_ACCOUNT_NAME_PREFIX: managedAccountNamePrefix,
+			MANAGED_DEFAULT_REGION: managedDefaultRegion,
+			MANAGED_LESSER_DEFAULT_VERSION: managedLesserDefaultVersion,
 			TIP_ENABLED: tipEnabled,
 			TIP_CHAIN_ID: tipChainId,
 			TIP_RPC_URL: tipRpcUrl,
@@ -155,10 +186,26 @@ export class LesserHostStack extends cdk.Stack {
 			ATTESTATION_PUBLIC_KEY_IDS: attestationSigningKey.keyId,
 		});
 
+		const provisionWorkerFn = this.goLambda('ProvisionWorker', './cmd/provision-worker', {
+			STAGE: stage,
+			STATE_TABLE_NAME: stateTable.tableName,
+			PROVISION_QUEUE_URL: provisionQueue.queueUrl,
+			MANAGED_PROVISIONING_ENABLED: managedProvisioningEnabled,
+			MANAGED_PARENT_DOMAIN: managedParentDomain,
+			MANAGED_PARENT_HOSTED_ZONE_ID: managedParentHostedZoneId,
+			MANAGED_INSTANCE_ROLE_NAME: managedInstanceRoleName,
+			MANAGED_TARGET_OU_ID: managedTargetOuId,
+			MANAGED_ACCOUNT_EMAIL_TEMPLATE: managedAccountEmailTemplate,
+			MANAGED_ACCOUNT_NAME_PREFIX: managedAccountNamePrefix,
+			MANAGED_DEFAULT_REGION: managedDefaultRegion,
+			MANAGED_LESSER_DEFAULT_VERSION: managedLesserDefaultVersion,
+		});
+
 		stateTable.grantReadWriteData(controlPlaneFn);
 		stateTable.grantReadWriteData(trustFn);
 		stateTable.grantReadWriteData(renderWorkerFn);
 		stateTable.grantReadWriteData(aiWorkerFn);
+		stateTable.grantReadWriteData(provisionWorkerFn);
 		artifactsBucket.grantReadWrite(controlPlaneFn);
 		artifactsBucket.grantReadWrite(trustFn);
 		artifactsBucket.grantReadWrite(renderWorkerFn);
@@ -171,9 +218,12 @@ export class LesserHostStack extends cdk.Stack {
 		safetyQueue.grantSendMessages(controlPlaneFn);
 		safetyQueue.grantSendMessages(trustFn);
 		safetyQueue.grantConsumeMessages(aiWorkerFn);
+		provisionQueue.grantSendMessages(controlPlaneFn);
+		provisionQueue.grantConsumeMessages(provisionWorkerFn);
 
 		renderWorkerFn.addEventSource(new lambdaEventSources.SqsEventSource(previewQueue, { batchSize: 1 }));
 		aiWorkerFn.addEventSource(new lambdaEventSources.SqsEventSource(safetyQueue, { batchSize: 5 }));
+		provisionWorkerFn.addEventSource(new lambdaEventSources.SqsEventSource(provisionQueue, { batchSize: 1 }));
 
 		aiWorkerFn.addToRolePolicy(
 			new iam.PolicyStatement({
@@ -228,8 +278,10 @@ export class LesserHostStack extends cdk.Stack {
 			new cdk.CfnOutput(this, 'AttestationSigningKeyId', { value: attestationSigningKey.keyId });
 			new cdk.CfnOutput(this, 'PreviewQueueUrl', { value: previewQueue.queueUrl });
 			new cdk.CfnOutput(this, 'SafetyQueueUrl', { value: safetyQueue.queueUrl });
+			new cdk.CfnOutput(this, 'ProvisionQueueUrl', { value: provisionQueue.queueUrl });
 			new cdk.CfnOutput(this, 'RenderWorkerFunctionName', { value: renderWorkerFn.functionName });
 			new cdk.CfnOutput(this, 'AiWorkerFunctionName', { value: aiWorkerFn.functionName });
+			new cdk.CfnOutput(this, 'ProvisionWorkerFunctionName', { value: provisionWorkerFn.functionName });
 			new cdk.CfnOutput(this, 'RetentionSweepRuleName', { value: retentionSweepRule.ruleName });
 
 			const aiDashboard = new cloudwatch.Dashboard(this, 'AiDashboard', {
