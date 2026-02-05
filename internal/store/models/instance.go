@@ -73,7 +73,7 @@ func (i *Instance) BeforeCreate() error {
 		i.AIEnabled = &v
 	}
 	if strings.TrimSpace(i.AIModelSet) == "" {
-		i.AIModelSet = "openai:gpt-4o-mini"
+		i.AIModelSet = "openai:gpt-5-mini-2025-08-07"
 	}
 	if strings.TrimSpace(i.AIBatchingMode) == "" {
 		i.AIBatchingMode = "none"

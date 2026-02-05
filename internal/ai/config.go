@@ -23,7 +23,7 @@ type InstanceConfig struct {
 func DefaultInstanceConfig() InstanceConfig {
 	return InstanceConfig{
 		Enabled:              false,
-		ModelSet:             "openai:gpt-4o-mini",
+		ModelSet:             "openai:gpt-5-mini-2025-08-07",
 		BatchingMode:         "none",
 		BatchMaxItems:        8,
 		BatchMaxTotalBytes:   64 * 1024,

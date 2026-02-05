@@ -9,6 +9,7 @@ const (
 
 	aiBatchingModeNone      = "none"
 	aiBatchingModeInRequest = "in_request"
+	aiBatchingModeWorker    = "worker"
 	aiBatchingModeHybrid    = "hybrid"
 
 	statusOK               = "ok"
@@ -35,4 +36,3 @@ const (
 	budgetErrKindExceeded      = "exceeded"
 	budgetErrKindNotConfigured = "not_configured"
 )
-

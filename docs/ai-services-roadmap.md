@@ -29,7 +29,7 @@ Every AI capability is a **module** with:
 
 - `module`: stable name (e.g., `render_summary_llm`, `moderation_text_llm`)
 - `policyVersion`: version of prompts/toolchain/schema (changes whenever logic or templates change)
-- `modelSet`: named model bundle (e.g., `openai:gpt-4o-mini`, `anthropic:claude-3-5-sonnet`, `deterministic`)
+- `modelSet`: named model bundle (e.g., `openai:gpt-5-mini-2025-08-07`, `anthropic:claude-sonnet-4-5-20250929`, `deterministic`)
 - `inputsHash`: deterministic hash of normalized inputs + evidence hashes/refs
 - `createdAt` / `expiresAt`: validity window for caching and distribution
 
@@ -108,6 +108,13 @@ Provider responsibilities:
 Secrets:
 
 - store provider keys in AWS Secrets Manager (or SSM) and inject into Lambda env at deploy.
+- OpenAI: env `OPENAI_API_KEY` or SSM `/lesser-host/api/openai/service`
+- Anthropic: env `ANTHROPIC_API_KEY` (or `CLAUDE_API_KEY`) or SSM `/lesser-host/api/claude`
+
+Model sets (examples):
+
+- OpenAI: `openai:gpt-5.2-2025-12-11`, `openai:gpt-5-2025-08-07`, `openai:gpt-5-mini-2025-08-07`
+- Anthropic: `anthropic:claude-sonnet-4-5-20250929`, `anthropic:claude-haiku-4-5-20251001`, `anthropic:claude-opus-4-5-20251101`
 
 ## Batching design
 
@@ -227,4 +234,3 @@ Acceptance criteria:
 
 - Regression tests catch prompt/schema drift.
 - Operational dashboards show spend and failure modes per instance/module.
-

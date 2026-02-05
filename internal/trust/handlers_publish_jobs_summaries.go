@@ -221,7 +221,7 @@ func linkRenderSummaryJobConfigFromInstance(instCfg instanceTrustConfig, pricing
 
 	mode := strings.ToLower(strings.TrimSpace(instCfg.AIBatchingMode))
 	switch mode {
-	case aiBatchingModeInRequest, aiBatchingModeHybrid:
+	case aiBatchingModeInRequest, aiBatchingModeWorker, aiBatchingModeHybrid:
 	default:
 		mode = aiBatchingModeNone
 	}
@@ -540,7 +540,7 @@ func (s *Server) processQueuedRenderSummaries(ctx *apptheory.Context, instanceSl
 }
 
 func shouldInlineQueuedSummaries(lowerModelSet string, mode string, queued []queuedRenderSummary, maxItems int64, maxBytes int64) bool {
-	if !strings.HasPrefix(lowerModelSet, "openai:") {
+	if !strings.HasPrefix(lowerModelSet, "openai:") && !strings.HasPrefix(lowerModelSet, "anthropic:") {
 		return true
 	}
 	if mode == aiBatchingModeInRequest {
@@ -616,18 +616,35 @@ func (s *Server) renderSummaryBatchResults(ctx *apptheory.Context, modelSet stri
 
 	lowerModelSet := strings.ToLower(strings.TrimSpace(modelSet))
 	useDeterministic := true
-	if allowLLM && strings.HasPrefix(lowerModelSet, "openai:") {
-		apiKey, err := openAIAPIKey(ctx.Context())
-		if err != nil || strings.TrimSpace(apiKey) == "" {
-			commonErrs = append(commonErrs, models.AIError{Code: "llm_unavailable", Message: "LLM unavailable; used deterministic fallback", Retryable: false})
-		} else {
-			outMap, u, err := llm.RenderSummaryBatchOpenAI(ctx.Context(), apiKey, modelSet, items)
-			if err != nil {
-				commonErrs = append(commonErrs, models.AIError{Code: "llm_failed", Message: "LLM call failed; used deterministic fallback", Retryable: false})
+	if allowLLM {
+		switch {
+		case strings.HasPrefix(lowerModelSet, "openai:"):
+			apiKey, err := openAIAPIKey(ctx.Context())
+			if err != nil || strings.TrimSpace(apiKey) == "" {
+				commonErrs = append(commonErrs, models.AIError{Code: "llm_unavailable", Message: "LLM unavailable; used deterministic fallback", Retryable: false})
 			} else {
-				results = outMap
-				usage = u
-				useDeterministic = false
+				outMap, u, err := llm.RenderSummaryBatchOpenAI(ctx.Context(), apiKey, modelSet, items)
+				if err != nil {
+					commonErrs = append(commonErrs, models.AIError{Code: "llm_failed", Message: "LLM call failed; used deterministic fallback", Retryable: false})
+				} else {
+					results = outMap
+					usage = u
+					useDeterministic = false
+				}
+			}
+		case strings.HasPrefix(lowerModelSet, "anthropic:"):
+			apiKey, err := anthropicAPIKey(ctx.Context())
+			if err != nil || strings.TrimSpace(apiKey) == "" {
+				commonErrs = append(commonErrs, models.AIError{Code: "llm_unavailable", Message: "LLM unavailable; used deterministic fallback", Retryable: false})
+			} else {
+				outMap, u, err := llm.RenderSummaryBatchAnthropic(ctx.Context(), apiKey, modelSet, items)
+				if err != nil {
+					commonErrs = append(commonErrs, models.AIError{Code: "llm_failed", Message: "LLM call failed; used deterministic fallback", Retryable: false})
+				} else {
+					results = outMap
+					usage = u
+					useDeterministic = false
+				}
 			}
 		}
 	}
@@ -796,4 +813,14 @@ func openAIAPIKey(ctx context.Context) (string, error) {
 		return k, nil
 	}
 	return secrets.OpenAIServiceKey(ctx, nil)
+}
+
+func anthropicAPIKey(ctx context.Context) (string, error) {
+	if k := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")); k != "" {
+		return k, nil
+	}
+	if k := strings.TrimSpace(os.Getenv("CLAUDE_API_KEY")); k != "" {
+		return k, nil
+	}
+	return secrets.ClaudeAPIKey(ctx, nil)
 }

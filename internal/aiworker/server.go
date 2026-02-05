@@ -386,12 +386,28 @@ func (s *Server) renderSummaryBatchResults(ctx context.Context, modelSet string,
 	modelSet = strings.TrimSpace(modelSet)
 	useDeterministic := true
 
-	if strings.HasPrefix(strings.ToLower(modelSet), "openai:") {
+	lowerModelSet := strings.ToLower(modelSet)
+	switch {
+	case strings.HasPrefix(lowerModelSet, "openai:"):
 		apiKey, keyErr := openAIAPIKey(ctx)
 		if keyErr != nil || strings.TrimSpace(apiKey) == "" {
 			commonErrs = append(commonErrs, models.AIError{Code: "llm_unavailable", Message: "LLM unavailable; used deterministic fallback", Retryable: false})
 		} else {
 			outMap, u, err := llm.RenderSummaryBatchOpenAI(ctx, apiKey, modelSet, items)
+			if err != nil {
+				commonErrs = append(commonErrs, models.AIError{Code: "llm_failed", Message: "LLM call failed; used deterministic fallback", Retryable: false})
+			} else {
+				results = outMap
+				usage = u
+				useDeterministic = false
+			}
+		}
+	case strings.HasPrefix(lowerModelSet, "anthropic:"):
+		apiKey, keyErr := anthropicAPIKey(ctx)
+		if keyErr != nil || strings.TrimSpace(apiKey) == "" {
+			commonErrs = append(commonErrs, models.AIError{Code: "llm_unavailable", Message: "LLM unavailable; used deterministic fallback", Retryable: false})
+		} else {
+			outMap, u, err := llm.RenderSummaryBatchAnthropic(ctx, apiKey, modelSet, items)
 			if err != nil {
 				commonErrs = append(commonErrs, models.AIError{Code: "llm_failed", Message: "LLM call failed; used deterministic fallback", Retryable: false})
 			} else {
@@ -877,40 +893,52 @@ func (s *Server) runRenderSummaryLLMV1(ctx context.Context, job *models.AIJob) (
 	var usage models.AIUsage
 	var errs []models.AIError
 
-	if strings.HasPrefix(strings.ToLower(modelSet), "openai:") {
-		apiKey, keyErr := openAIAPIKey(ctx)
-		if keyErr != nil || strings.TrimSpace(apiKey) == "" {
-			errs = append(errs, models.AIError{Code: "llm_unavailable", Message: "LLM unavailable; used deterministic fallback", Retryable: false})
-		} else {
-			out, u, err := llm.RenderSummaryBatchOpenAI(ctx, apiKey, modelSet, []llm.RenderSummaryBatchItem{
-				{ItemID: strings.TrimSpace(job.ID), Input: in},
-			})
-			if err != nil {
-				errs = append(errs, models.AIError{Code: "llm_failed", Message: "LLM call failed; used deterministic fallback", Retryable: false})
-			} else if item, ok := out[strings.TrimSpace(job.ID)]; ok && strings.TrimSpace(item.ShortSummary) != "" {
-				res = item
-				usage = u
-			} else {
-				errs = append(errs, models.AIError{Code: "llm_missing_output", Message: "LLM output missing; used deterministic fallback", Retryable: false})
-			}
-		}
-
-		if strings.TrimSpace(res.ShortSummary) == "" {
-			res = ai.RenderSummaryDeterministicV1(in)
-			usage = models.AIUsage{
-				Provider:   deterministicValue,
-				Model:      deterministicValue,
-				ToolCalls:  0,
-				DurationMs: time.Since(start).Milliseconds(),
-			}
-		}
-	} else {
+	jobID := strings.TrimSpace(job.ID)
+	deterministicFallback := func() {
 		res = ai.RenderSummaryDeterministicV1(in)
 		usage = models.AIUsage{
 			Provider:   deterministicValue,
 			Model:      deterministicValue,
 			ToolCalls:  0,
 			DurationMs: time.Since(start).Milliseconds(),
+		}
+	}
+
+	type batchFn func(context.Context, string, string, []llm.RenderSummaryBatchItem) (map[string]ai.RenderSummaryResultV1, models.AIUsage, error)
+	var keyFn func(context.Context) (string, error)
+	var callFn batchFn
+
+	lowerModelSet := strings.ToLower(modelSet)
+	switch {
+	case strings.HasPrefix(lowerModelSet, "openai:"):
+		keyFn = openAIAPIKey
+		callFn = llm.RenderSummaryBatchOpenAI
+	case strings.HasPrefix(lowerModelSet, "anthropic:"):
+		keyFn = anthropicAPIKey
+		callFn = llm.RenderSummaryBatchAnthropic
+	default:
+		deterministicFallback()
+	}
+
+	if callFn != nil {
+		apiKey, keyErr := keyFn(ctx)
+		if keyErr != nil || strings.TrimSpace(apiKey) == "" {
+			errs = append(errs, models.AIError{Code: "llm_unavailable", Message: "LLM unavailable; used deterministic fallback", Retryable: false})
+			deterministicFallback()
+		} else {
+			out, u, err := callFn(ctx, apiKey, modelSet, []llm.RenderSummaryBatchItem{
+				{ItemID: jobID, Input: in},
+			})
+			if err != nil {
+				errs = append(errs, models.AIError{Code: "llm_failed", Message: "LLM call failed; used deterministic fallback", Retryable: false})
+				deterministicFallback()
+			} else if item, ok := out[jobID]; ok && strings.TrimSpace(item.ShortSummary) != "" {
+				res = item
+				usage = u
+			} else {
+				errs = append(errs, models.AIError{Code: "llm_missing_output", Message: "LLM output missing; used deterministic fallback", Retryable: false})
+				deterministicFallback()
+			}
 		}
 	}
 
@@ -957,12 +985,22 @@ func (s *Server) runModerationTextLLMV1(ctx context.Context, job *models.AIJob) 
 	var usage models.AIUsage
 
 	jobID := strings.TrimSpace(job.ID)
-	res, usage, openAIErrs := s.callOpenAIModeration(ctx, modelSet, jobID, func(ctx context.Context, apiKey string) (map[string]ai.ModerationResultV1, models.AIUsage, error) {
-		return llm.ModerationTextBatchOpenAI(ctx, apiKey, modelSet, []llm.ModerationTextBatchItem{
-			{ItemID: jobID, Input: in, Evidence: json.RawMessage(evidenceJSON)},
-		})
-	})
-	errs = append(errs, openAIErrs...)
+	res, usage, llmErrs := s.callModerationLLM(
+		ctx,
+		modelSet,
+		jobID,
+		func(ctx context.Context, apiKey string) (map[string]ai.ModerationResultV1, models.AIUsage, error) {
+			return llm.ModerationTextBatchOpenAI(ctx, apiKey, modelSet, []llm.ModerationTextBatchItem{
+				{ItemID: jobID, Input: in, Evidence: json.RawMessage(evidenceJSON)},
+			})
+		},
+		func(ctx context.Context, apiKey string) (map[string]ai.ModerationResultV1, models.AIUsage, error) {
+			return llm.ModerationTextBatchAnthropic(ctx, apiKey, modelSet, []llm.ModerationTextBatchItem{
+				{ItemID: jobID, Input: in, Evidence: json.RawMessage(evidenceJSON)},
+			})
+		},
+	)
+	errs = append(errs, llmErrs...)
 	if strings.TrimSpace(res.Decision) != "" {
 		usage.ToolCalls += evidenceUsage.ToolCalls
 		usage.DurationMs = time.Since(start).Milliseconds()
@@ -1066,12 +1104,22 @@ func (s *Server) runModerationImageLLMV1(ctx context.Context, job *models.AIJob)
 	var usage models.AIUsage
 
 	jobID := strings.TrimSpace(job.ID)
-	res, usage, openAIErrs := s.callOpenAIModeration(ctx, modelSet, jobID, func(ctx context.Context, apiKey string) (map[string]ai.ModerationResultV1, models.AIUsage, error) {
-		return llm.ModerationImageBatchOpenAI(ctx, apiKey, modelSet, []llm.ModerationImageBatchItem{
-			{ItemID: jobID, Input: in, Evidence: json.RawMessage(evidenceJSON)},
-		})
-	})
-	errs = append(errs, openAIErrs...)
+	res, usage, llmErrs := s.callModerationLLM(
+		ctx,
+		modelSet,
+		jobID,
+		func(ctx context.Context, apiKey string) (map[string]ai.ModerationResultV1, models.AIUsage, error) {
+			return llm.ModerationImageBatchOpenAI(ctx, apiKey, modelSet, []llm.ModerationImageBatchItem{
+				{ItemID: jobID, Input: in, Evidence: json.RawMessage(evidenceJSON)},
+			})
+		},
+		func(ctx context.Context, apiKey string) (map[string]ai.ModerationResultV1, models.AIUsage, error) {
+			return llm.ModerationImageBatchAnthropic(ctx, apiKey, modelSet, []llm.ModerationImageBatchItem{
+				{ItemID: jobID, Input: in, Evidence: json.RawMessage(evidenceJSON)},
+			})
+		},
+	)
+	errs = append(errs, llmErrs...)
 	if strings.TrimSpace(res.Decision) != "" {
 		usage.ToolCalls += evidenceUsage.ToolCalls
 		usage.DurationMs = time.Since(start).Milliseconds()
@@ -1097,13 +1145,15 @@ func (s *Server) runModerationImageLLMV1(ctx context.Context, job *models.AIJob)
 	return string(b), usage, errs, nil
 }
 
-func (s *Server) callOpenAIModeration(
+func (s *Server) callModerationLLM(
 	ctx context.Context,
 	modelSet string,
 	jobID string,
-	call func(context.Context, string) (map[string]ai.ModerationResultV1, models.AIUsage, error),
+	callOpenAI func(context.Context, string) (map[string]ai.ModerationResultV1, models.AIUsage, error),
+	callAnthropic func(context.Context, string) (map[string]ai.ModerationResultV1, models.AIUsage, error),
 ) (ai.ModerationResultV1, models.AIUsage, []models.AIError) {
-	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(modelSet)), "openai:") {
+	modelSetLower := strings.ToLower(strings.TrimSpace(modelSet))
+	if !strings.HasPrefix(modelSetLower, "openai:") && !strings.HasPrefix(modelSetLower, "anthropic:") {
 		return ai.ModerationResultV1{}, models.AIUsage{}, nil
 	}
 
@@ -1115,6 +1165,14 @@ func (s *Server) callOpenAIModeration(
 			Retryable: false,
 		}}
 	}
+
+	call := callOpenAI
+	keyFn := openAIAPIKey
+	if strings.HasPrefix(modelSetLower, "anthropic:") {
+		call = callAnthropic
+		keyFn = anthropicAPIKey
+	}
+
 	if call == nil {
 		return ai.ModerationResultV1{}, models.AIUsage{}, []models.AIError{{
 			Code:      "internal_error",
@@ -1123,7 +1181,7 @@ func (s *Server) callOpenAIModeration(
 		}}
 	}
 
-	apiKey, keyErr := openAIAPIKey(ctx)
+	apiKey, keyErr := keyFn(ctx)
 	if keyErr != nil || strings.TrimSpace(apiKey) == "" {
 		return ai.ModerationResultV1{}, models.AIUsage{}, []models.AIError{{
 			Code:      "llm_unavailable",
@@ -1236,17 +1294,27 @@ func (s *Server) claimVerifyWithLLM(
 	var usage models.AIUsage
 	var errs []models.AIError
 
-	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(modelSet)), "openai:") {
+	modelSetLower := strings.ToLower(strings.TrimSpace(modelSet))
+
+	keyFn := openAIAPIKey
+	callFn := llm.ClaimVerifyBatchOpenAI
+	switch {
+	case strings.HasPrefix(modelSetLower, "openai:"):
+		// ok
+	case strings.HasPrefix(modelSetLower, "anthropic:"):
+		keyFn = anthropicAPIKey
+		callFn = llm.ClaimVerifyBatchAnthropic
+	default:
 		return res, usage, errs
 	}
 
-	apiKey, keyErr := openAIAPIKey(ctx)
+	apiKey, keyErr := keyFn(ctx)
 	if keyErr != nil || strings.TrimSpace(apiKey) == "" {
 		errs = append(errs, models.AIError{Code: "llm_unavailable", Message: "LLM unavailable; used deterministic fallback", Retryable: false})
 		return res, usage, errs
 	}
 
-	out, u, err := llm.ClaimVerifyBatchOpenAI(ctx, apiKey, modelSet, []llm.ClaimVerifyBatchItem{
+	out, u, err := callFn(ctx, apiKey, modelSet, []llm.ClaimVerifyBatchItem{
 		{ItemID: strings.TrimSpace(jobID), Input: in},
 	})
 	if err != nil {
@@ -1435,6 +1503,16 @@ func openAIAPIKey(ctx context.Context) (string, error) {
 		return k, nil
 	}
 	return secrets.OpenAIServiceKey(ctx, nil)
+}
+
+func anthropicAPIKey(ctx context.Context) (string, error) {
+	if k := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")); k != "" {
+		return k, nil
+	}
+	if k := strings.TrimSpace(os.Getenv("CLAUDE_API_KEY")); k != "" {
+		return k, nil
+	}
+	return secrets.ClaudeAPIKey(ctx, nil)
 }
 
 func sqsQueueNameFromURL(raw string) string {

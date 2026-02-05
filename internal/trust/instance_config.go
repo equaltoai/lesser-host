@@ -34,7 +34,7 @@ func defaultInstanceTrustConfig() instanceTrustConfig {
 		OveragePolicy:         overagePolicyBlock,
 
 		AIEnabled:              false,
-		AIModelSet:             "openai:gpt-4o-mini",
+		AIModelSet:             "openai:gpt-5-mini-2025-08-07",
 		AIBatchingMode:         aiBatchingModeNone,
 		AIBatchMaxItems:        8,
 		AIBatchMaxTotalBytes:   64 * 1024,

@@ -129,7 +129,7 @@ func (s *Server) handleCreateInstance(ctx *apptheory.Context) (*apptheory.Respon
 	renderPolicy := renderPolicySuspicious
 	overagePolicy := overagePolicyBlock
 	aiEnabled := false
-	aiModelSet := "openai:gpt-4o-mini"
+	aiModelSet := "openai:gpt-5-mini-2025-08-07"
 	aiBatchingMode := aiBatchingModeNone
 	aiBatchMaxItems := int64(8)
 	aiBatchMaxTotalBytes := int64(64 * 1024)
@@ -305,7 +305,7 @@ func effectiveAIEnabled(v *bool) bool {
 func effectiveAIModelSet(v string) string {
 	v = strings.TrimSpace(v)
 	if v == "" {
-		return "openai:gpt-4o-mini"
+		return "openai:gpt-5-mini-2025-08-07"
 	}
 	return v
 }
