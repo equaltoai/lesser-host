@@ -8,6 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/rekognition"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 
+	"github.com/equaltoai/lesser-host/internal/artifacts"
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/store"
 )
@@ -29,7 +30,7 @@ func New(opts ...apptheory.Option) *apptheory.App {
 		panic(err)
 	}
 
-	srv := NewServer(cfg, store.New(db), comprehend.NewFromConfig(awsCfg), rekognition.NewFromConfig(awsCfg))
+	srv := NewServer(cfg, store.New(db), artifacts.New(cfg.ArtifactBucketName), comprehend.NewFromConfig(awsCfg), rekognition.NewFromConfig(awsCfg))
 
 	app := apptheory.New(opts...)
 	Register(app, srv)

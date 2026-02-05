@@ -21,6 +21,9 @@ type AIJob struct {
 	SK  string `theorydb:"sk,attr:SK" json:"-"`
 	TTL int64  `theorydb:"ttl,attr:ttl" json:"-"`
 
+	GSI1PK string `theorydb:"index:gsi1,pk,attr:gsi1PK" json:"-"`
+	GSI1SK string `theorydb:"index:gsi1,sk,attr:gsi1SK" json:"-"`
+
 	ID string `theorydb:"attr:id" json:"id"`
 
 	InstanceSlug string `theorydb:"attr:instanceSlug" json:"instance_slug,omitempty"`
@@ -73,6 +76,7 @@ func (j *AIJob) BeforeCreate() error {
 	if j.MaxAttempts <= 0 {
 		j.MaxAttempts = 3
 	}
+	j.updateGSI1()
 	return nil
 }
 
@@ -80,6 +84,7 @@ func (j *AIJob) BeforeCreate() error {
 func (j *AIJob) BeforeUpdate() error {
 	j.UpdatedAt = time.Now().UTC()
 	j.TTL = j.ExpiresAt.Unix()
+	j.updateGSI1()
 	return nil
 }
 
@@ -107,3 +112,24 @@ func (j *AIJob) GetPK() string { return j.PK }
 
 // GetSK returns the sort key for AIJob.
 func (j *AIJob) GetSK() string { return j.SK }
+
+func (j *AIJob) updateGSI1() {
+	if j == nil {
+		return
+	}
+	instanceSlug := strings.TrimSpace(j.InstanceSlug)
+	status := strings.ToLower(strings.TrimSpace(j.Status))
+	if instanceSlug == "" || status == "" {
+		j.GSI1PK = ""
+		j.GSI1SK = ""
+		return
+	}
+
+	createdAt := j.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+
+	j.GSI1PK = fmt.Sprintf("AIJOB_STATUS#%s#%s", instanceSlug, status)
+	j.GSI1SK = fmt.Sprintf("%s#%s", createdAt.UTC().Format(time.RFC3339Nano), strings.TrimSpace(j.ID))
+}

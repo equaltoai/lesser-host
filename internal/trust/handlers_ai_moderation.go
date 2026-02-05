@@ -2,6 +2,7 @@ package trust
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -98,8 +99,10 @@ func (s *Server) handleAIModerationTextTriggered(ctx *apptheory.Context, action 
 		PricingMultiplierBps: instCfg.AIPricingMultiplierBps,
 		AllowOverage:         allowOverage,
 		JobTTL:               30 * 24 * time.Hour,
+		MaxInflightJobs:      instCfg.AIMaxInflightJobs,
 	})
 	if err != nil {
+		s.emitAIRequestMetrics(instanceSlug, ai.ModerationTextLLMModule, ai.Response{Status: ai.JobStatusError}, err)
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to queue job"}
 	}
 
@@ -117,12 +120,15 @@ func (s *Server) handleAIModerationTextTriggered(ctx *apptheory.Context, action 
 
 	if resp.Status == ai.JobStatusQueued {
 		if s.queues == nil {
+			s.emitAIRequestMetrics(instanceSlug, ai.ModerationTextLLMModule, ai.Response{Status: ai.JobStatusError, Budget: resp.Budget}, fmt.Errorf("safety queue not configured"))
 			return nil, &apptheory.AppError{Code: "app.internal", Message: "safety queue not configured"}
 		}
 		if err := s.queues.enqueueAIJob(ctx.Context(), ai.JobMessage{Kind: "ai_job", JobID: resp.JobID}); err != nil {
+			s.emitAIRequestMetrics(instanceSlug, ai.ModerationTextLLMModule, ai.Response{Status: ai.JobStatusError, Budget: resp.Budget}, err)
 			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to enqueue job"}
 		}
 	}
+	s.emitAIRequestMetrics(instanceSlug, ai.ModerationTextLLMModule, resp, nil)
 
 	out := aiModerationResponse{
 		Status: string(resp.Status),
@@ -224,8 +230,10 @@ func (s *Server) handleAIModerationImageTriggered(ctx *apptheory.Context, action
 		PricingMultiplierBps: instCfg.AIPricingMultiplierBps,
 		AllowOverage:         allowOverage,
 		JobTTL:               30 * 24 * time.Hour,
+		MaxInflightJobs:      instCfg.AIMaxInflightJobs,
 	})
 	if err != nil {
+		s.emitAIRequestMetrics(instanceSlug, ai.ModerationImageLLMModule, ai.Response{Status: ai.JobStatusError}, err)
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to queue job"}
 	}
 
@@ -243,12 +251,15 @@ func (s *Server) handleAIModerationImageTriggered(ctx *apptheory.Context, action
 
 	if resp.Status == ai.JobStatusQueued {
 		if s.queues == nil {
+			s.emitAIRequestMetrics(instanceSlug, ai.ModerationImageLLMModule, ai.Response{Status: ai.JobStatusError, Budget: resp.Budget}, fmt.Errorf("safety queue not configured"))
 			return nil, &apptheory.AppError{Code: "app.internal", Message: "safety queue not configured"}
 		}
 		if err := s.queues.enqueueAIJob(ctx.Context(), ai.JobMessage{Kind: "ai_job", JobID: resp.JobID}); err != nil {
+			s.emitAIRequestMetrics(instanceSlug, ai.ModerationImageLLMModule, ai.Response{Status: ai.JobStatusError, Budget: resp.Budget}, err)
 			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to enqueue job"}
 		}
 	}
+	s.emitAIRequestMetrics(instanceSlug, ai.ModerationImageLLMModule, resp, nil)
 
 	out := aiModerationResponse{
 		Status: string(resp.Status),

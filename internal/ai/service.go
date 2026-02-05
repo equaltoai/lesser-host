@@ -56,6 +56,9 @@ type Request struct {
 
 	// JobTTL controls how long queued jobs remain claimable before expiring.
 	JobTTL time.Duration
+
+	// MaxInflightJobs caps the number of queued AI jobs for the instance (best-effort).
+	MaxInflightJobs int64
 }
 
 // Response is the output of an AI request, either cached, queued, or error.
@@ -114,6 +117,13 @@ func (s *Service) GetOrQueue(ctx context.Context, req Request) (Response, error)
 
 	if s.jobExists(ctx, prepared.JobID) {
 		return alreadyQueuedResponse(prepared.JobID, prepared.ResultID, prepared.CreditsRequested), nil
+	}
+
+	if req.MaxInflightJobs > 0 {
+		n, err := s.store.CountQueuedAIJobsByInstance(ctx, prepared.InstanceSlug, int(req.MaxInflightJobs))
+		if err == nil && int64(n) >= req.MaxInflightJobs {
+			return concurrencyExceededResponse(prepared.JobID, prepared.ResultID, req.MaxInflightJobs, int64(n), prepared.CreditsRequested), nil
+		}
 	}
 
 	if prepared.CreditsRequested <= 0 {
@@ -373,6 +383,28 @@ func budgetExceededResponse(jobID string, resultID string, month string, budget 
 			IncludedCredits:  budget.IncludedCredits,
 			UsedCredits:      budget.UsedCredits,
 			RemainingCredits: remaining,
+			RequestedCredits: creditsRequested,
+			DebitedCredits:   0,
+		},
+	}
+}
+
+func concurrencyExceededResponse(jobID string, resultID string, maxInflight int64, inflight int64, creditsRequested int64) Response {
+	if maxInflight <= 0 {
+		maxInflight = 1
+	}
+	if inflight < 0 {
+		inflight = 0
+	}
+	return Response{
+		Status:   JobStatusNotCheckedBudget,
+		Cached:   false,
+		JobID:    jobID,
+		ResultID: resultID,
+		Budget: BudgetDecision{
+			Allowed:          false,
+			OverBudget:       false,
+			Reason:           fmt.Sprintf("concurrency limit exceeded (%d/%d)", inflight, maxInflight),
 			RequestedCredits: creditsRequested,
 			DebitedCredits:   0,
 		},

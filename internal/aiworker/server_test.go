@@ -14,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/rekognition"
 	rekognitiontypes "github.com/aws/aws-sdk-go-v2/service/rekognition/types"
 
+	"github.com/equaltoai/lesser-host/internal/artifacts"
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
@@ -163,7 +164,7 @@ func TestProcessAIJob_WritesComprehendEvidenceResult(t *testing.T) {
 	}
 	st.jobs[job.ID] = job
 
-	srv := NewServer(config.Config{ArtifactBucketName: "bucket"}, st, fakeComprehend{}, fakeRekognition{})
+	srv := NewServer(config.Config{ArtifactBucketName: "bucket"}, st, artifacts.New("bucket"), fakeComprehend{}, fakeRekognition{})
 	if err := srv.processAIJob(context.Background(), "req", job.ID); err != nil {
 		t.Fatalf("processAIJob error: %v", err)
 	}
@@ -211,7 +212,7 @@ func TestProcessAIJob_WritesRekognitionEvidenceResult(t *testing.T) {
 	}
 	st.jobs[job.ID] = job
 
-	srv := NewServer(config.Config{ArtifactBucketName: "bucket"}, st, fakeComprehend{}, fakeRekognition{})
+	srv := NewServer(config.Config{ArtifactBucketName: "bucket"}, st, artifacts.New("bucket"), fakeComprehend{}, fakeRekognition{})
 	if err := srv.processAIJob(context.Background(), "req", job.ID); err != nil {
 		t.Fatalf("processAIJob error: %v", err)
 	}

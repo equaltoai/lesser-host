@@ -17,6 +17,8 @@ type InstanceConfig struct {
 	BatchMaxTotalBytes int64
 
 	PricingMultiplierBps int64
+
+	MaxInflightJobs int64
 }
 
 // DefaultInstanceConfig returns the default AI instance configuration.
@@ -28,6 +30,7 @@ func DefaultInstanceConfig() InstanceConfig {
 		BatchMaxItems:        8,
 		BatchMaxTotalBytes:   64 * 1024,
 		PricingMultiplierBps: 10000,
+		MaxInflightJobs:      200,
 	}
 }
 
@@ -60,6 +63,10 @@ func EffectiveInstanceConfig(inst *models.Instance) InstanceConfig {
 
 	if inst.AIPricingMultiplierBps != nil && *inst.AIPricingMultiplierBps > 0 {
 		cfg.PricingMultiplierBps = *inst.AIPricingMultiplierBps
+	}
+
+	if inst.AIMaxInflightJobs != nil && *inst.AIMaxInflightJobs > 0 {
+		cfg.MaxInflightJobs = *inst.AIMaxInflightJobs
 	}
 
 	return cfg

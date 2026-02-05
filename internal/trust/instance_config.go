@@ -23,6 +23,7 @@ type instanceTrustConfig struct {
 	AIBatchMaxItems        int64
 	AIBatchMaxTotalBytes   int64
 	AIPricingMultiplierBps int64
+	AIMaxInflightJobs      int64
 }
 
 func defaultInstanceTrustConfig() instanceTrustConfig {
@@ -39,6 +40,7 @@ func defaultInstanceTrustConfig() instanceTrustConfig {
 		AIBatchMaxItems:        8,
 		AIBatchMaxTotalBytes:   64 * 1024,
 		AIPricingMultiplierBps: 10000,
+		AIMaxInflightJobs:      200,
 	}
 }
 
@@ -94,6 +96,7 @@ func (s *Server) loadInstanceTrustConfig(ctx context.Context, instanceSlug strin
 	cfg.AIBatchMaxItems = aiCfg.BatchMaxItems
 	cfg.AIBatchMaxTotalBytes = aiCfg.BatchMaxTotalBytes
 	cfg.AIPricingMultiplierBps = aiCfg.PricingMultiplierBps
+	cfg.AIMaxInflightJobs = aiCfg.MaxInflightJobs
 
 	return cfg
 }

@@ -17,6 +17,7 @@ type ClaimVerifyEvidenceV1 struct {
 	SourceID string `json:"source_id"`
 	URL      string `json:"url,omitempty"`
 	Title    string `json:"title,omitempty"`
+	RenderID string `json:"render_id,omitempty"`
 
 	// Text is bounded untrusted evidence text provided by callers.
 	Text string `json:"text"`

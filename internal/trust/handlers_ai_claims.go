@@ -25,7 +25,8 @@ type claimVerifyEvidenceRequest struct {
 	SourceID string `json:"source_id"`
 	URL      string `json:"url,omitempty"`
 	Title    string `json:"title,omitempty"`
-	Text     string `json:"text"`
+	RenderID string `json:"render_id,omitempty"`
+	Text     string `json:"text,omitempty"`
 }
 
 type claimVerifyRequest struct {
@@ -109,14 +110,18 @@ func (s *Server) handleAIClaimVerify(ctx *apptheory.Context) (*apptheory.Respons
 		PricingMultiplierBps: instCfg.AIPricingMultiplierBps,
 		AllowOverage:         allowOverage,
 		JobTTL:               30 * 24 * time.Hour,
+		MaxInflightJobs:      instCfg.AIMaxInflightJobs,
 	})
 	if err != nil {
+		s.emitAIRequestMetrics(instanceSlug, ai.ClaimVerifyLLMModule, ai.Response{Status: ai.JobStatusError}, err)
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to queue job"}
 	}
 
 	if err := s.enqueueAIJobIfQueued(ctx, resp); err != nil {
+		s.emitAIRequestMetrics(instanceSlug, ai.ClaimVerifyLLMModule, ai.Response{Status: ai.JobStatusError, Budget: resp.Budget}, err)
 		return nil, err
 	}
+	s.emitAIRequestMetrics(instanceSlug, ai.ClaimVerifyLLMModule, resp, nil)
 
 	out := buildAIClaimVerifyResponse(resp, modelSet, inputsHash)
 
@@ -180,11 +185,27 @@ func buildClaimVerifyEvidence(req []claimVerifyEvidenceRequest) ([]ai.ClaimVerif
 		}
 		seenIDs[id] = struct{}{}
 
-		evText, b, err := clampEvidenceText(e.Text, claimVerifyMaxEvidenceBytes)
-		if err != nil {
-			return nil, 0, err
+		renderID := strings.TrimSpace(e.RenderID)
+		if renderID != "" && !aiJobIDRE.MatchString(renderID) {
+			return nil, 0, &apptheory.AppError{Code: "app.bad_request", Message: "invalid evidence.render_id"}
+		}
+
+		evText := ""
+		b := int64(0)
+		if strings.TrimSpace(e.Text) != "" {
+			var err error
+			evText, b, err = clampEvidenceText(e.Text, claimVerifyMaxEvidenceBytes)
+			if err != nil {
+				return nil, 0, err
+			}
+		} else if renderID == "" {
+			return nil, 0, &apptheory.AppError{Code: "app.bad_request", Message: "evidence.text or evidence.render_id is required"}
 		}
 		totalEvidenceBytes += b
+		if renderID != "" && b == 0 {
+			// Approximate bounded evidence size when using render snapshots to avoid under-estimating costs.
+			totalEvidenceBytes += claimVerifyMaxEvidenceBytes
+		}
 		if totalEvidenceBytes > claimVerifyMaxTotalEvidence {
 			return nil, 0, &apptheory.AppError{Code: "app.bad_request", Message: "evidence too large"}
 		}
@@ -193,6 +214,7 @@ func buildClaimVerifyEvidence(req []claimVerifyEvidenceRequest) ([]ai.ClaimVerif
 			SourceID: id,
 			URL:      strings.TrimSpace(e.URL),
 			Title:    strings.TrimSpace(e.Title),
+			RenderID: renderID,
 			Text:     evText,
 		})
 	}

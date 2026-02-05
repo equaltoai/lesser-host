@@ -2,6 +2,7 @@ package trust
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
@@ -165,19 +166,24 @@ func (s *Server) handleAIEvidenceText(ctx *apptheory.Context) (*apptheory.Respon
 		PricingMultiplierBps: instCfg.AIPricingMultiplierBps,
 		AllowOverage:         allowOverage,
 		JobTTL:               30 * 24 * time.Hour,
+		MaxInflightJobs:      instCfg.AIMaxInflightJobs,
 	})
 	if err != nil {
+		s.emitAIRequestMetrics(instanceSlug, aiEvidenceTextModule, ai.Response{Status: ai.JobStatusError}, err)
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to queue job"}
 	}
 
 	if resp.Status == ai.JobStatusQueued {
 		if s.queues == nil {
+			s.emitAIRequestMetrics(instanceSlug, aiEvidenceTextModule, ai.Response{Status: ai.JobStatusError, Budget: resp.Budget}, fmt.Errorf("safety queue not configured"))
 			return nil, &apptheory.AppError{Code: "app.internal", Message: "safety queue not configured"}
 		}
 		if err := s.queues.enqueueAIJob(ctx.Context(), ai.JobMessage{Kind: "ai_job", JobID: resp.JobID}); err != nil {
+			s.emitAIRequestMetrics(instanceSlug, aiEvidenceTextModule, ai.Response{Status: ai.JobStatusError, Budget: resp.Budget}, err)
 			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to enqueue job"}
 		}
 	}
+	s.emitAIRequestMetrics(instanceSlug, aiEvidenceTextModule, resp, nil)
 
 	out := aiEvidenceResponse{
 		Status: string(resp.Status),
@@ -276,19 +282,24 @@ func (s *Server) handleAIEvidenceImage(ctx *apptheory.Context) (*apptheory.Respo
 		PricingMultiplierBps: instCfg.AIPricingMultiplierBps,
 		AllowOverage:         allowOverage,
 		JobTTL:               30 * 24 * time.Hour,
+		MaxInflightJobs:      instCfg.AIMaxInflightJobs,
 	})
 	if err != nil {
+		s.emitAIRequestMetrics(instanceSlug, aiEvidenceImageModule, ai.Response{Status: ai.JobStatusError}, err)
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to queue job"}
 	}
 
 	if resp.Status == ai.JobStatusQueued {
 		if s.queues == nil {
+			s.emitAIRequestMetrics(instanceSlug, aiEvidenceImageModule, ai.Response{Status: ai.JobStatusError, Budget: resp.Budget}, fmt.Errorf("safety queue not configured"))
 			return nil, &apptheory.AppError{Code: "app.internal", Message: "safety queue not configured"}
 		}
 		if err := s.queues.enqueueAIJob(ctx.Context(), ai.JobMessage{Kind: "ai_job", JobID: resp.JobID}); err != nil {
+			s.emitAIRequestMetrics(instanceSlug, aiEvidenceImageModule, ai.Response{Status: ai.JobStatusError, Budget: resp.Budget}, err)
 			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to enqueue job"}
 		}
 	}
+	s.emitAIRequestMetrics(instanceSlug, aiEvidenceImageModule, resp, nil)
 
 	out := aiEvidenceResponse{
 		Status: string(resp.Status),

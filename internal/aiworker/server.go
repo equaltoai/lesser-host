@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/url"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -21,7 +22,9 @@ import (
 
 	"github.com/equaltoai/lesser-host/internal/ai"
 	"github.com/equaltoai/lesser-host/internal/ai/llm"
+	"github.com/equaltoai/lesser-host/internal/artifacts"
 	"github.com/equaltoai/lesser-host/internal/config"
+	"github.com/equaltoai/lesser-host/internal/rendering"
 	"github.com/equaltoai/lesser-host/internal/secrets"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
@@ -29,7 +32,11 @@ import (
 const (
 	deterministicValue       = "deterministic"
 	claimVerdictInconclusive = "inconclusive"
+
+	claimVerifyEvidenceMaxBytes = int64(8 * 1024)
 )
+
+var hex64RE = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 type aiStore interface {
 	GetAIJob(ctx context.Context, id string) (*models.AIJob, error)
@@ -55,15 +62,17 @@ type Server struct {
 	cfg config.Config
 
 	store       aiStore
+	artifacts   *artifacts.Store
 	comprehend  comprehendAPI
 	rekognition rekognitionAPI
 }
 
 // NewServer constructs a Server with AWS service clients and a store.
-func NewServer(cfg config.Config, st aiStore, comp comprehendAPI, rek rekognitionAPI) *Server {
+func NewServer(cfg config.Config, st aiStore, art *artifacts.Store, comp comprehendAPI, rek rekognitionAPI) *Server {
 	return &Server{
 		cfg:         cfg,
 		store:       st,
+		artifacts:   art,
 		comprehend:  comp,
 		rekognition: rek,
 	}
@@ -188,6 +197,7 @@ func (s *Server) processAIJob(ctx context.Context, requestID string, jobID strin
 		job.RequestID = strings.TrimSpace(requestID)
 		_ = job.UpdateKeys()
 		_ = s.store.PutAIJob(ctx, job)
+		s.emitAIJobMetrics(job.InstanceSlug, module, models.AIJobStatusError, usage, errs, err)
 		return err
 	}
 
@@ -220,6 +230,7 @@ func (s *Server) processAIJob(ctx context.Context, requestID string, jobID strin
 	job.RequestID = strings.TrimSpace(requestID)
 	_ = job.UpdateKeys()
 	_ = s.store.PutAIJob(ctx, job)
+	s.emitAIJobMetrics(job.InstanceSlug, module, models.AIJobStatusOK, usage, errs, nil)
 	return nil
 }
 
@@ -494,6 +505,7 @@ func (s *Server) putRenderSummaryResult(
 	job.RequestID = strings.TrimSpace(requestID)
 	_ = job.UpdateKeys()
 	_ = s.store.PutAIJob(ctx, job)
+	s.emitAIJobMetrics(job.InstanceSlug, strings.ToLower(strings.TrimSpace(job.Module)), models.AIJobStatusOK, usage, itemErrs, nil)
 
 	return nil
 }
@@ -1227,10 +1239,11 @@ func (s *Server) runClaimVerifyLLMV1(ctx context.Context, job *models.AIJob) (st
 	}
 
 	start := time.Now()
+	hydrationErrs := s.hydrateClaimVerifyEvidenceFromRenders(ctx, &in)
 	var errs []models.AIError
 
-	evidenceIDs := claimVerifyEvidenceSourceSet(in.Evidence)
-	if len(evidenceIDs) == 0 {
+	evidenceIDs, evidenceText := claimVerifyEvidenceMaps(in.Evidence)
+	if len(evidenceIDs) == 0 || len(evidenceText) == 0 {
 		return claimVerifyMissingEvidenceResponse(in, start)
 	}
 
@@ -1238,6 +1251,9 @@ func (s *Server) runClaimVerifyLLMV1(ctx context.Context, job *models.AIJob) (st
 	var usage models.AIUsage
 
 	res, usage, errs = s.claimVerifyWithLLM(ctx, modelSet, strings.TrimSpace(job.ID), in, start)
+	if len(hydrationErrs) > 0 {
+		errs = append(hydrationErrs, errs...)
+	}
 
 	if len(res.Claims) == 0 {
 		res = ai.ClaimVerifyDeterministicV1(in)
@@ -1249,7 +1265,7 @@ func (s *Server) runClaimVerifyLLMV1(ctx context.Context, job *models.AIJob) (st
 		}
 	}
 
-	res.Claims = sanitizeClaimVerifyClaims(res.Claims, evidenceIDs)
+	res.Claims = sanitizeClaimVerifyClaims(res.Claims, evidenceIDs, evidenceText)
 
 	b, err := json.Marshal(res)
 	if err != nil {
@@ -1258,16 +1274,61 @@ func (s *Server) runClaimVerifyLLMV1(ctx context.Context, job *models.AIJob) (st
 	return string(b), usage, errs, nil
 }
 
-func claimVerifyEvidenceSourceSet(in []ai.ClaimVerifyEvidenceV1) map[string]struct{} {
-	out := make(map[string]struct{}, len(in))
+func (s *Server) hydrateClaimVerifyEvidenceFromRenders(ctx context.Context, in *ai.ClaimVerifyInputsV1) []models.AIError {
+	if s == nil || s.artifacts == nil || in == nil {
+		return nil
+	}
+
+	errs := []models.AIError{}
+
+	for i := range in.Evidence {
+		if strings.TrimSpace(in.Evidence[i].Text) != "" {
+			continue
+		}
+
+		renderID := strings.TrimSpace(in.Evidence[i].RenderID)
+		if renderID == "" {
+			continue
+		}
+		if !hex64RE.MatchString(renderID) {
+			errs = append(errs, models.AIError{Code: "invalid_inputs", Message: "Invalid evidence render_id", Retryable: false})
+			continue
+		}
+
+		key := rendering.SnapshotObjectKey(renderID)
+		body, _, _, err := s.artifacts.GetObject(ctx, key, claimVerifyEvidenceMaxBytes)
+		if err != nil {
+			errs = append(errs, models.AIError{Code: "evidence_unavailable", Message: "Evidence snapshot unavailable; continuing with limited evidence", Retryable: true})
+			continue
+		}
+
+		text := strings.TrimSpace(string(body))
+		if text == "" {
+			continue
+		}
+		if int64(len([]byte(text))) > claimVerifyEvidenceMaxBytes {
+			text = strings.TrimSpace(string([]byte(text)[:claimVerifyEvidenceMaxBytes]))
+		}
+		in.Evidence[i].Text = text
+	}
+
+	return errs
+}
+
+func claimVerifyEvidenceMaps(in []ai.ClaimVerifyEvidenceV1) (map[string]struct{}, map[string]string) {
+	ids := make(map[string]struct{}, len(in))
+	text := make(map[string]string, len(in))
 	for _, e := range in {
 		id := strings.TrimSpace(e.SourceID)
 		if id == "" {
 			continue
 		}
-		out[id] = struct{}{}
+		ids[id] = struct{}{}
+		if t := strings.TrimSpace(e.Text); t != "" {
+			text[id] = t
+		}
 	}
-	return out
+	return ids, text
 }
 
 func claimVerifyMissingEvidenceResponse(in ai.ClaimVerifyInputsV1, start time.Time) (string, models.AIUsage, []models.AIError, error) {
@@ -1334,10 +1395,10 @@ func (s *Server) claimVerifyWithLLM(
 	return res, usage, errs
 }
 
-func sanitizeClaimVerifyClaims(in []ai.ClaimVerifyClaimV1, evidenceIDs map[string]struct{}) []ai.ClaimVerifyClaimV1 {
+func sanitizeClaimVerifyClaims(in []ai.ClaimVerifyClaimV1, evidenceIDs map[string]struct{}, evidenceText map[string]string) []ai.ClaimVerifyClaimV1 {
 	out := make([]ai.ClaimVerifyClaimV1, 0, len(in))
 	for _, c := range in {
-		c = sanitizeClaimVerifyClaim(c, evidenceIDs)
+		c = sanitizeClaimVerifyClaim(c, evidenceIDs, evidenceText)
 		if c.ClaimID == "" || c.Text == "" {
 			continue
 		}
@@ -1349,7 +1410,7 @@ func sanitizeClaimVerifyClaims(in []ai.ClaimVerifyClaimV1, evidenceIDs map[strin
 	return out
 }
 
-func sanitizeClaimVerifyClaim(c ai.ClaimVerifyClaimV1, evidenceIDs map[string]struct{}) ai.ClaimVerifyClaimV1 {
+func sanitizeClaimVerifyClaim(c ai.ClaimVerifyClaimV1, evidenceIDs map[string]struct{}, evidenceText map[string]string) ai.ClaimVerifyClaimV1 {
 	c.ClaimID = strings.TrimSpace(c.ClaimID)
 	c.Text = strings.TrimSpace(c.Text)
 	if len(c.Text) > 240 {
@@ -1382,7 +1443,7 @@ func sanitizeClaimVerifyClaim(c ai.ClaimVerifyClaimV1, evidenceIDs map[string]st
 		c.Reason = strings.TrimSpace(c.Reason[:240])
 	}
 
-	c.Citations = sanitizeClaimVerifyCitations(c.Citations, evidenceIDs)
+	c.Citations = sanitizeClaimVerifyCitations(c.Citations, evidenceIDs, evidenceText)
 
 	if (c.Verdict == "supported" || c.Verdict == "refuted") && len(c.Citations) == 0 {
 		c.Verdict = claimVerdictInconclusive
@@ -1397,7 +1458,7 @@ func sanitizeClaimVerifyClaim(c ai.ClaimVerifyClaimV1, evidenceIDs map[string]st
 	return c
 }
 
-func sanitizeClaimVerifyCitations(in []ai.ClaimVerifyCitationV1, evidenceIDs map[string]struct{}) []ai.ClaimVerifyCitationV1 {
+func sanitizeClaimVerifyCitations(in []ai.ClaimVerifyCitationV1, evidenceIDs map[string]struct{}, evidenceText map[string]string) []ai.ClaimVerifyCitationV1 {
 	out := make([]ai.ClaimVerifyCitationV1, 0, len(in))
 	for _, cit := range in {
 		cit.SourceID = strings.TrimSpace(cit.SourceID)
@@ -1408,8 +1469,15 @@ func sanitizeClaimVerifyCitations(in []ai.ClaimVerifyCitationV1, evidenceIDs map
 		if _, ok := evidenceIDs[cit.SourceID]; !ok {
 			continue
 		}
+		evText := strings.TrimSpace(evidenceText[cit.SourceID])
+		if evText == "" {
+			continue
+		}
 		if len(cit.Quote) > 200 {
 			cit.Quote = strings.TrimSpace(cit.Quote[:200])
+		}
+		if !claimVerifyQuoteMatchesEvidence(evText, cit.Quote) {
+			continue
 		}
 		out = append(out, cit)
 		if len(out) >= 3 {
@@ -1417,6 +1485,27 @@ func sanitizeClaimVerifyCitations(in []ai.ClaimVerifyCitationV1, evidenceIDs map
 		}
 	}
 	return out
+}
+
+func claimVerifyQuoteMatchesEvidence(evidenceText string, quote string) bool {
+	evidenceText = strings.TrimSpace(evidenceText)
+	quote = strings.TrimSpace(quote)
+	if evidenceText == "" || quote == "" {
+		return false
+	}
+
+	norm := func(s string) string {
+		s = strings.ToLower(s)
+		s = strings.Join(strings.Fields(s), " ")
+		return s
+	}
+
+	nEvidence := norm(evidenceText)
+	nQuote := norm(quote)
+	if len(nQuote) < 8 {
+		return false
+	}
+	return strings.Contains(nEvidence, nQuote)
 }
 
 func moderationImageDeterministicFromRekognition(ev rekognitionImageEvidenceV1) ai.ModerationResultV1 {

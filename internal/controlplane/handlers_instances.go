@@ -51,6 +51,7 @@ type instanceResponse struct {
 	AIBatchMaxItems        int64     `json:"ai_batch_max_items"`
 	AIBatchMaxTotalBytes   int64     `json:"ai_batch_max_total_bytes"`
 	AIPricingMultiplierBps int64     `json:"ai_pricing_multiplier_bps"`
+	AIMaxInflightJobs      int64     `json:"ai_max_inflight_jobs"`
 	CreatedAt              time.Time `json:"created_at"`
 }
 
@@ -77,6 +78,7 @@ type updateInstanceConfigRequest struct {
 	AIBatchMaxItems        *int64  `json:"ai_batch_max_items,omitempty"`
 	AIBatchMaxTotalBytes   *int64  `json:"ai_batch_max_total_bytes,omitempty"`
 	AIPricingMultiplierBps *int64  `json:"ai_pricing_multiplier_bps,omitempty"`
+	AIMaxInflightJobs      *int64  `json:"ai_max_inflight_jobs,omitempty"`
 }
 
 type setBudgetMonthRequest struct {
@@ -134,6 +136,7 @@ func (s *Server) handleCreateInstance(ctx *apptheory.Context) (*apptheory.Respon
 	aiBatchMaxItems := int64(8)
 	aiBatchMaxTotalBytes := int64(64 * 1024)
 	aiPricingMultiplierBps := int64(10000)
+	aiMaxInflightJobs := int64(200)
 	inst := &models.Instance{
 		Slug:                   slug,
 		Owner:                  strings.TrimSpace(req.Owner),
@@ -149,6 +152,7 @@ func (s *Server) handleCreateInstance(ctx *apptheory.Context) (*apptheory.Respon
 		AIBatchMaxItems:        aiBatchMaxItems,
 		AIBatchMaxTotalBytes:   aiBatchMaxTotalBytes,
 		AIPricingMultiplierBps: &aiPricingMultiplierBps,
+		AIMaxInflightJobs:      &aiMaxInflightJobs,
 		CreatedAt:              now,
 	}
 	if err := inst.UpdateKeys(); err != nil {
@@ -213,6 +217,7 @@ func (s *Server) handleCreateInstance(ctx *apptheory.Context) (*apptheory.Respon
 		AIBatchMaxItems:        effectiveAIBatchMaxItems(inst.AIBatchMaxItems),
 		AIBatchMaxTotalBytes:   effectiveAIBatchMaxTotalBytes(inst.AIBatchMaxTotalBytes),
 		AIPricingMultiplierBps: effectiveAIPricingMultiplierBps(inst.AIPricingMultiplierBps),
+		AIMaxInflightJobs:      effectiveAIMaxInflightJobs(inst.AIMaxInflightJobs),
 		CreatedAt:              inst.CreatedAt,
 	})
 }
@@ -248,6 +253,7 @@ func (s *Server) handleListInstances(ctx *apptheory.Context) (*apptheory.Respons
 			AIBatchMaxItems:        effectiveAIBatchMaxItems(inst.AIBatchMaxItems),
 			AIBatchMaxTotalBytes:   effectiveAIBatchMaxTotalBytes(inst.AIBatchMaxTotalBytes),
 			AIPricingMultiplierBps: effectiveAIPricingMultiplierBps(inst.AIPricingMultiplierBps),
+			AIMaxInflightJobs:      effectiveAIMaxInflightJobs(inst.AIMaxInflightJobs),
 			CreatedAt:              inst.CreatedAt,
 		})
 	}
@@ -337,6 +343,13 @@ func effectiveAIBatchMaxTotalBytes(v int64) int64 {
 func effectiveAIPricingMultiplierBps(v *int64) int64 {
 	if v == nil || *v <= 0 {
 		return 10000
+	}
+	return *v
+}
+
+func effectiveAIMaxInflightJobs(v *int64) int64 {
+	if v == nil || *v <= 0 {
+		return 200
 	}
 	return *v
 }
@@ -466,6 +479,7 @@ func (s *Server) handleUpdateInstanceConfig(ctx *apptheory.Context) (*apptheory.
 		AIBatchMaxItems:        effectiveAIBatchMaxItems(inst.AIBatchMaxItems),
 		AIBatchMaxTotalBytes:   effectiveAIBatchMaxTotalBytes(inst.AIBatchMaxTotalBytes),
 		AIPricingMultiplierBps: effectiveAIPricingMultiplierBps(inst.AIPricingMultiplierBps),
+		AIMaxInflightJobs:      effectiveAIMaxInflightJobs(inst.AIMaxInflightJobs),
 		CreatedAt:              inst.CreatedAt,
 	})
 }
@@ -500,6 +514,9 @@ func buildInstanceConfigUpdate(slug string, req updateInstanceConfigRequest) (*m
 		return nil, nil, err
 	}
 	if err := setAIPricingMultiplierBps(update, req.AIPricingMultiplierBps, &fields); err != nil {
+		return nil, nil, err
+	}
+	if err := setAIMaxInflightJobs(update, req.AIMaxInflightJobs, &fields); err != nil {
 		return nil, nil, err
 	}
 
@@ -596,6 +613,21 @@ func setAIPricingMultiplierBps(update *models.Instance, src *int64, fields *[]st
 	}
 	update.AIPricingMultiplierBps = src
 	*fields = append(*fields, "AIPricingMultiplierBps")
+	return nil
+}
+
+func setAIMaxInflightJobs(update *models.Instance, src *int64, fields *[]string) error {
+	if src == nil {
+		return nil
+	}
+	if *src <= 0 {
+		return &apptheory.AppError{Code: "app.bad_request", Message: "ai_max_inflight_jobs must be > 0"}
+	}
+	if *src > 10_000 {
+		return &apptheory.AppError{Code: "app.bad_request", Message: "ai_max_inflight_jobs too large"}
+	}
+	update.AIMaxInflightJobs = src
+	*fields = append(*fields, "AIMaxInflightJobs")
 	return nil
 }
 func (s *Server) handleSetInstanceBudgetMonth(ctx *apptheory.Context) (*apptheory.Response, error) {

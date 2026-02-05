@@ -5,14 +5,16 @@ import * as fs from 'node:fs';
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
-import * as events from 'aws-cdk-lib/aws-events';
-import * as targets from 'aws-cdk-lib/aws-events-targets';
-import * as iam from 'aws-cdk-lib/aws-iam';
-import * as kms from 'aws-cdk-lib/aws-kms';
-import * as lambda from 'aws-cdk-lib/aws-lambda';
-import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
-import * as s3 from 'aws-cdk-lib/aws-s3';
-import * as sqs from 'aws-cdk-lib/aws-sqs';
+	import * as events from 'aws-cdk-lib/aws-events';
+	import * as targets from 'aws-cdk-lib/aws-events-targets';
+	import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
+	import * as iam from 'aws-cdk-lib/aws-iam';
+	import * as kms from 'aws-cdk-lib/aws-kms';
+	import * as lambda from 'aws-cdk-lib/aws-lambda';
+	import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
+	import * as logs from 'aws-cdk-lib/aws-logs';
+	import * as s3 from 'aws-cdk-lib/aws-s3';
+	import * as sqs from 'aws-cdk-lib/aws-sqs';
 
 export interface LesserHostStackProps extends cdk.StackProps {
 	stage: string;
@@ -194,14 +196,85 @@ export class LesserHostStack extends cdk.Stack {
 		new cdk.CfnOutput(this, 'ControlPlaneUrl', { value: controlPlaneUrl.url });
 		new cdk.CfnOutput(this, 'TrustUrl', { value: trustUrl.url });
 		new cdk.CfnOutput(this, 'StateTableName', { value: stateTable.tableName });
-		new cdk.CfnOutput(this, 'ArtifactsBucketName', { value: artifactsBucket.bucketName });
-		new cdk.CfnOutput(this, 'AttestationSigningKeyId', { value: attestationSigningKey.keyId });
-		new cdk.CfnOutput(this, 'PreviewQueueUrl', { value: previewQueue.queueUrl });
-		new cdk.CfnOutput(this, 'SafetyQueueUrl', { value: safetyQueue.queueUrl });
-		new cdk.CfnOutput(this, 'RenderWorkerFunctionName', { value: renderWorkerFn.functionName });
-		new cdk.CfnOutput(this, 'AiWorkerFunctionName', { value: aiWorkerFn.functionName });
-		new cdk.CfnOutput(this, 'RetentionSweepRuleName', { value: retentionSweepRule.ruleName });
-	}
+			new cdk.CfnOutput(this, 'ArtifactsBucketName', { value: artifactsBucket.bucketName });
+			new cdk.CfnOutput(this, 'AttestationSigningKeyId', { value: attestationSigningKey.keyId });
+			new cdk.CfnOutput(this, 'PreviewQueueUrl', { value: previewQueue.queueUrl });
+			new cdk.CfnOutput(this, 'SafetyQueueUrl', { value: safetyQueue.queueUrl });
+			new cdk.CfnOutput(this, 'RenderWorkerFunctionName', { value: renderWorkerFn.functionName });
+			new cdk.CfnOutput(this, 'AiWorkerFunctionName', { value: aiWorkerFn.functionName });
+			new cdk.CfnOutput(this, 'RetentionSweepRuleName', { value: retentionSweepRule.ruleName });
+
+			const aiDashboard = new cloudwatch.Dashboard(this, 'AiDashboard', {
+				dashboardName: `${namePrefix}-ai`,
+			});
+
+			const trustCredits = new cloudwatch.MathExpression({
+				expression: `SUM(SEARCH('{lesser-host,Stage,Service,Instance,Module,Status} MetricName="AICreditsDebited" AND Stage="${stage}" AND Service="trust-api"', 'Sum', 300))`,
+				period: cdk.Duration.minutes(5),
+			});
+			const trustErrors = new cloudwatch.MathExpression({
+				expression: `SUM(SEARCH('{lesser-host,Stage,Service,Instance,Module,Status} MetricName="AIErrors" AND Stage="${stage}" AND Service="trust-api"', 'Sum', 300))`,
+				period: cdk.Duration.minutes(5),
+			});
+			const workerErrors = new cloudwatch.MathExpression({
+				expression: `SUM(SEARCH('{lesser-host,Stage,Service,Instance,Module,Status,Provider} MetricName="AIJobErrors" AND Stage="${stage}" AND Service="ai-worker"', 'Sum', 300))`,
+				period: cdk.Duration.minutes(5),
+			});
+			const workerFallback = new cloudwatch.MathExpression({
+				expression: `SUM(SEARCH('{lesser-host,Stage,Service,Instance,Module,Status,Provider} MetricName="AILLMFallback" AND Stage="${stage}" AND Service="ai-worker"', 'Sum', 300))`,
+				period: cdk.Duration.minutes(5),
+			});
+
+			aiDashboard.addWidgets(
+				new cloudwatch.GraphWidget({
+					title: 'AI Credits Debited (Total)',
+					left: [trustCredits],
+					width: 12,
+				}),
+				new cloudwatch.GraphWidget({
+					title: 'AI Errors (Total)',
+					left: [trustErrors, workerErrors],
+					width: 12,
+				}),
+				new cloudwatch.GraphWidget({
+					title: 'LLM Fallback (Total)',
+					left: [workerFallback],
+					width: 12,
+				}),
+			);
+
+			const trustLogGroupName = `/aws/lambda/${trustFn.functionName}`;
+			const workerLogGroupName = `/aws/lambda/${aiWorkerFn.functionName}`;
+			logs.LogGroup.fromLogGroupName(this, 'TrustLogGroup', trustLogGroupName);
+			logs.LogGroup.fromLogGroupName(this, 'AiWorkerLogGroup', workerLogGroupName);
+
+			aiDashboard.addWidgets(
+				new cloudwatch.LogQueryWidget({
+					title: 'Top AI Spend (Credits Debited)',
+					width: 24,
+					height: 6,
+					logGroupNames: [trustLogGroupName, workerLogGroupName],
+					queryString: [
+						'filter ispresent(AICreditsDebited) and AICreditsDebited > 0',
+						'| stats sum(AICreditsDebited) as credits by Stage, Service, Instance, Module',
+						'| sort credits desc',
+						'| limit 20',
+					].join('\n'),
+				}),
+				new cloudwatch.LogQueryWidget({
+					title: 'Top AI Failures',
+					width: 24,
+					height: 6,
+					logGroupNames: [trustLogGroupName, workerLogGroupName],
+					queryString: [
+						'filter ispresent(AIErrors) or ispresent(AIJobErrors) or ispresent(AIInternalErrors) or ispresent(AIJobInternalErrors)',
+						'| stats sum(AIErrors) as req_errors, sum(AIJobErrors) as job_errors, sum(AIInternalErrors) as req_internal, sum(AIJobInternalErrors) as job_internal by Stage, Service, Instance, Module',
+						'| sort (req_errors + job_errors + req_internal + job_internal) desc',
+						'| limit 20',
+					].join('\n'),
+				}),
+			);
+		}
 
 	private goLambda(id: string, entry: string, environment: Record<string, string>): lambda.Function {
 		const repoRoot = this.repoRoot();

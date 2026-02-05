@@ -33,6 +33,7 @@ type Instance struct {
 	AIBatchMaxItems        int64     `theorydb:"attr:aiBatchMaxItems" json:"ai_batch_max_items,omitempty"`
 	AIBatchMaxTotalBytes   int64     `theorydb:"attr:aiBatchMaxTotalBytes" json:"ai_batch_max_total_bytes,omitempty"`
 	AIPricingMultiplierBps *int64    `theorydb:"attr:aiPricingMultiplierBps" json:"ai_pricing_multiplier_bps,omitempty"`
+	AIMaxInflightJobs      *int64    `theorydb:"attr:aiMaxInflightJobs" json:"ai_max_inflight_jobs,omitempty"`
 	CreatedAt              time.Time `theorydb:"attr:createdAt" json:"created_at"`
 }
 
@@ -87,6 +88,10 @@ func (i *Instance) BeforeCreate() error {
 	if i.AIPricingMultiplierBps == nil {
 		v := int64(10000)
 		i.AIPricingMultiplierBps = &v
+	}
+	if i.AIMaxInflightJobs == nil {
+		v := int64(200)
+		i.AIMaxInflightJobs = &v
 	}
 	return nil
 }

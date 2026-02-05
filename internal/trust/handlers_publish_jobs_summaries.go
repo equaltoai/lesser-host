@@ -144,6 +144,7 @@ type linkRenderSummaryJobConfig struct {
 	BatchMaxItems      int64
 	BatchMaxTotalBytes int64
 	JobTTL             time.Duration
+	MaxInflightJobs    int64
 }
 
 type linkRenderSummaryBudgetTotals struct {
@@ -243,6 +244,7 @@ func linkRenderSummaryJobConfigFromInstance(instCfg instanceTrustConfig, pricing
 		BatchMaxItems:      maxItems,
 		BatchMaxTotalBytes: maxBytes,
 		JobTTL:             30 * 24 * time.Hour,
+		MaxInflightJobs:    instCfg.AIMaxInflightJobs,
 	}
 }
 
@@ -381,11 +383,14 @@ func (s *Server) processLinkRenderSummaryLink(
 		PricingMultiplierBps: cfg.CombinedPricingBps,
 		AllowOverage:         cfg.AllowOverage,
 		JobTTL:               cfg.JobTTL,
+		MaxInflightJobs:      cfg.MaxInflightJobs,
 	})
 	if err != nil {
+		s.emitAIRequestMetrics(instanceSlug, ai.RenderSummaryLLMModule, ai.Response{Status: ai.JobStatusError}, err)
 		linkOut.Status = statusError
 		return linkOut, nil
 	}
+	s.emitAIRequestMetrics(instanceSlug, ai.RenderSummaryLLMModule, resp, nil)
 
 	if budget != nil {
 		budget.add(resp.Budget)

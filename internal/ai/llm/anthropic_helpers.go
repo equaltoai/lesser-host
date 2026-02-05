@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -39,10 +40,14 @@ func anthropicModelFromSet(modelSet string) (anthropic.Model, error) {
 
 func anthropicClientForKey(apiKey string) anthropic.Client {
 	apiKey = strings.TrimSpace(apiKey)
+	opts := []option.RequestOption{}
 	if apiKey != "" {
-		return anthropic.NewClient(option.WithAPIKey(apiKey))
+		opts = append(opts, option.WithAPIKey(apiKey))
 	}
-	return anthropic.NewClient()
+	if baseURL := strings.TrimSpace(os.Getenv("ANTHROPIC_BASE_URL")); baseURL != "" {
+		opts = append(opts, option.WithBaseURL(baseURL))
+	}
+	return anthropic.NewClient(opts...)
 }
 
 func anthropicToolInputSchemaFromJSONSchema(schema map[string]any) anthropic.ToolInputSchemaParam {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -37,10 +38,14 @@ func openAIModelFromSet(modelSet string) (string, error) {
 
 func openAIClientForKey(apiKey string) openai.Client {
 	apiKey = strings.TrimSpace(apiKey)
+	opts := []option.RequestOption{}
 	if apiKey != "" {
-		return openai.NewClient(option.WithAPIKey(apiKey))
+		opts = append(opts, option.WithAPIKey(apiKey))
 	}
-	return openai.NewClient()
+	if baseURL := strings.TrimSpace(os.Getenv("OPENAI_BASE_URL")); baseURL != "" {
+		opts = append(opts, option.WithBaseURL(baseURL))
+	}
+	return openai.NewClient(opts...)
 }
 
 func openAIContentFromChat(chat *openai.ChatCompletion) (string, error) {

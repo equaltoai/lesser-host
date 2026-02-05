@@ -77,3 +77,32 @@ func (s *Store) PutAIResult(ctx context.Context, item *models.AIResult) error {
 	}
 	return s.DB.WithContext(ctx).Model(item).CreateOrUpdate()
 }
+
+// CountQueuedAIJobsByInstance returns the number of queued AI jobs for an instance, up to limit.
+func (s *Store) CountQueuedAIJobsByInstance(ctx context.Context, instanceSlug string, limit int) (int, error) {
+	if s == nil || s.DB == nil {
+		return 0, fmt.Errorf("store not initialized")
+	}
+
+	instanceSlug = strings.TrimSpace(instanceSlug)
+	if instanceSlug == "" {
+		return 0, fmt.Errorf("instance slug is required")
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+
+	pk := fmt.Sprintf("AIJOB_STATUS#%s#queued", instanceSlug)
+
+	var items []*models.AIJob
+	err := s.DB.WithContext(ctx).
+		Model(&models.AIJob{}).
+		Index("gsi1").
+		Where("gsi1PK", "=", pk).
+		Limit(limit).
+		All(&items)
+	if err != nil {
+		return 0, err
+	}
+	return len(items), nil
+}
