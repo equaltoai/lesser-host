@@ -24,6 +24,8 @@ type anthropicToolBatchConfig struct {
 	MaxTokens       int64
 }
 
+var anthropicHTTPClient option.HTTPClient
+
 func anthropicModelFromSet(modelSet string) (anthropic.Model, error) {
 	modelSet = strings.TrimSpace(modelSet)
 	if !strings.HasPrefix(strings.ToLower(modelSet), "anthropic:") {
@@ -46,6 +48,9 @@ func anthropicClientForKey(apiKey string) anthropic.Client {
 	}
 	if baseURL := strings.TrimSpace(os.Getenv("ANTHROPIC_BASE_URL")); baseURL != "" {
 		opts = append(opts, option.WithBaseURL(baseURL))
+	}
+	if anthropicHTTPClient != nil {
+		opts = append(opts, option.WithHTTPClient(anthropicHTTPClient))
 	}
 	return anthropic.NewClient(opts...)
 }

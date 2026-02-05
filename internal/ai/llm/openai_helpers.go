@@ -22,6 +22,8 @@ type openAIJSONSchemaBatchConfig struct {
 	Temperature       float64
 }
 
+var openAIHTTPClient option.HTTPClient
+
 func openAIModelFromSet(modelSet string) (string, error) {
 	modelSet = strings.TrimSpace(modelSet)
 	if !strings.HasPrefix(strings.ToLower(modelSet), "openai:") {
@@ -44,6 +46,9 @@ func openAIClientForKey(apiKey string) openai.Client {
 	}
 	if baseURL := strings.TrimSpace(os.Getenv("OPENAI_BASE_URL")); baseURL != "" {
 		opts = append(opts, option.WithBaseURL(baseURL))
+	}
+	if openAIHTTPClient != nil {
+		opts = append(opts, option.WithHTTPClient(openAIHTTPClient))
 	}
 	return openai.NewClient(opts...)
 }
