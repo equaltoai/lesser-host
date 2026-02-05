@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -76,7 +75,7 @@ func normalizeLinkURL(raw string) (string, *url.URL, error) {
 	}
 
 	u.Scheme = strings.ToLower(strings.TrimSpace(u.Scheme))
-	if u.Scheme != "http" && u.Scheme != "https" {
+	if u.Scheme != schemeHTTP && u.Scheme != schemeHTTPS {
 		return "", nil, &linkPreviewError{Code: "invalid_url", Message: "url scheme must be http or https"}
 	}
 	if u.User != nil {
@@ -104,7 +103,7 @@ func normalizeLinkURL(raw string) (string, *url.URL, error) {
 			return "", nil, &linkPreviewError{Code: "invalid_url", Message: "invalid port"}
 		}
 		// Only allow default ports (SSRF hardening).
-		if (u.Scheme == "http" && n != 80) || (u.Scheme == "https" && n != 443) {
+		if (u.Scheme == schemeHTTP && n != 80) || (u.Scheme == schemeHTTPS && n != 443) {
 			return "", nil, &linkPreviewError{Code: "invalid_url", Message: "non-default ports are not allowed"}
 		}
 	}
@@ -135,7 +134,7 @@ func validateOutboundURL(ctx context.Context, resolver ipResolver, u *url.URL) e
 	}
 
 	scheme := strings.ToLower(strings.TrimSpace(u.Scheme))
-	if scheme != "http" && scheme != "https" {
+	if scheme != schemeHTTP && scheme != schemeHTTPS {
 		return &linkPreviewError{Code: "invalid_url", Message: "url scheme must be http or https"}
 	}
 
@@ -286,86 +285,134 @@ type linkPreviewMeta struct {
 	ImageURL    string
 }
 
+type linkPreviewMetaParser struct {
+	inHead    bool
+	titleText string
+	meta      linkPreviewMeta
+}
+
 func extractLinkPreviewMeta(base *url.URL, doc []byte) linkPreviewMeta {
 	tok := html.NewTokenizer(bytes.NewReader(doc))
 
-	inHead := false
-	var titleText string
-
-	meta := linkPreviewMeta{}
+	parser := linkPreviewMetaParser{}
 	for {
 		tt := tok.Next()
 		switch tt {
 		case html.ErrorToken:
-			if errors.Is(tok.Err(), io.EOF) {
-				if meta.Title == "" {
-					meta.Title = strings.TrimSpace(titleText)
-				}
-				return meta
-			}
-			if meta.Title == "" {
-				meta.Title = strings.TrimSpace(titleText)
-			}
-			return meta
-
-		case html.StartTagToken, html.SelfClosingTagToken:
-			name, hasAttr := tok.TagName()
-			tag := strings.ToLower(string(name))
-			if tag == "head" {
-				inHead = true
-				continue
-			}
-			if tag == "title" && inHead && meta.Title == "" {
-				// Next token should be the title text.
-				if tok.Next() == html.TextToken {
-					titleText = string(tok.Text())
-				}
-				continue
-			}
-			if tag != "meta" || !hasAttr || !inHead {
-				continue
-			}
-
-			var property, metaName, content string
-			for {
-				k, v, more := tok.TagAttr()
-				key := strings.ToLower(string(k))
-				val := strings.TrimSpace(string(v))
-				switch key {
-				case "property":
-					property = strings.ToLower(val)
-				case "name":
-					metaName = strings.ToLower(val)
-				case "content":
-					content = val
-				}
-				if !more {
-					break
-				}
-			}
-
-			if content == "" {
-				continue
-			}
-
-			switch {
-			case (property == "og:title" || property == "twitter:title") && meta.Title == "":
-				meta.Title = content
-			case (property == "og:description" || property == "twitter:description") && meta.Description == "":
-				meta.Description = content
-			case (property == "og:image" || property == "og:image:url" || property == "twitter:image") && meta.ImageURL == "":
-				meta.ImageURL = resolveMaybeRelativeURL(base, content)
-			case metaName == "description" && meta.Description == "":
-				meta.Description = content
-			}
-
-		case html.EndTagToken:
-			name, _ := tok.TagName()
-			tag := strings.ToLower(string(name))
-			if tag == "head" {
-				inHead = false
-			}
+			return parser.result()
+		default:
+			parser.consume(tt, tok, base)
 		}
+	}
+}
+
+func (p *linkPreviewMetaParser) consume(tt html.TokenType, tok *html.Tokenizer, base *url.URL) {
+	if p == nil || tok == nil {
+		return
+	}
+
+	switch tt {
+	case html.StartTagToken, html.SelfClosingTagToken:
+		p.consumeStartTag(tok, base)
+	case html.EndTagToken:
+		p.consumeEndTag(tok)
+	}
+}
+
+func (p *linkPreviewMetaParser) consumeStartTag(tok *html.Tokenizer, base *url.URL) {
+	name, hasAttr := tok.TagName()
+	tag := strings.ToLower(string(name))
+
+	if tag == "head" {
+		p.inHead = true
+		return
+	}
+
+	if tag == "title" && p.inHead && p.meta.Title == "" {
+		p.titleText = readTokenizerText(tok)
+		return
+	}
+
+	if tag != "meta" || !p.inHead || !hasAttr {
+		return
+	}
+
+	property, metaName, content := readLinkPreviewMetaAttrs(tok)
+	applyLinkPreviewMeta(&p.meta, base, property, metaName, content)
+}
+
+func (p *linkPreviewMetaParser) consumeEndTag(tok *html.Tokenizer) {
+	name, _ := tok.TagName()
+	tag := strings.ToLower(string(name))
+	if tag == "head" {
+		p.inHead = false
+	}
+}
+
+func (p *linkPreviewMetaParser) result() linkPreviewMeta {
+	if p == nil {
+		return linkPreviewMeta{}
+	}
+	if p.meta.Title == "" {
+		p.meta.Title = strings.TrimSpace(p.titleText)
+	}
+	return p.meta
+}
+
+func readTokenizerText(tok *html.Tokenizer) string {
+	if tok == nil {
+		return ""
+	}
+	if tok.Next() == html.TextToken {
+		return string(tok.Text())
+	}
+	return ""
+}
+
+func readLinkPreviewMetaAttrs(tok *html.Tokenizer) (property, metaName, content string) {
+	if tok == nil {
+		return "", "", ""
+	}
+
+	for {
+		k, v, more := tok.TagAttr()
+		key := strings.ToLower(string(k))
+		val := strings.TrimSpace(string(v))
+		switch key {
+		case "property":
+			property = strings.ToLower(val)
+		case "name":
+			metaName = strings.ToLower(val)
+		case "content":
+			content = val
+		}
+		if !more {
+			break
+		}
+	}
+
+	return strings.TrimSpace(property), strings.TrimSpace(metaName), strings.TrimSpace(content)
+}
+
+func applyLinkPreviewMeta(meta *linkPreviewMeta, base *url.URL, property, metaName, content string) {
+	if meta == nil {
+		return
+	}
+
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return
+	}
+
+	switch {
+	case (property == "og:title" || property == "twitter:title") && meta.Title == "":
+		meta.Title = content
+	case (property == "og:description" || property == "twitter:description") && meta.Description == "":
+		meta.Description = content
+	case (property == "og:image" || property == "og:image:url" || property == "twitter:image") && meta.ImageURL == "":
+		meta.ImageURL = resolveMaybeRelativeURL(base, content)
+	case metaName == "description" && meta.Description == "":
+		meta.Description = content
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
+// GetLinkPreview loads a LinkPreview by ID.
 func (s *Store) GetLinkPreview(ctx context.Context, id string) (*models.LinkPreview, error) {
 	if s == nil || s.DB == nil {
 		return nil, fmt.Errorf("store not initialized")
@@ -30,6 +31,7 @@ func (s *Store) GetLinkPreview(ctx context.Context, id string) (*models.LinkPrev
 	return &item, nil
 }
 
+// PutLinkPreview creates or updates a LinkPreview.
 func (s *Store) PutLinkPreview(ctx context.Context, item *models.LinkPreview) error {
 	if s == nil || s.DB == nil {
 		return fmt.Errorf("store not initialized")

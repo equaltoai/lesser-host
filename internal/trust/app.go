@@ -9,8 +9,10 @@ import (
 	"github.com/equaltoai/lesser-host/internal/store"
 )
 
+// ServiceName is the canonical service identifier for the trust API.
 const ServiceName = "trust-api"
 
+// New constructs the trust API app.
 func New(opts ...apptheory.Option) *apptheory.App {
 	cfg := config.Load()
 
@@ -30,6 +32,7 @@ func New(opts ...apptheory.Option) *apptheory.App {
 	return app
 }
 
+// Register registers trust API routes and hooks with an app.
 func Register(app *apptheory.App, srv *Server) *apptheory.App {
 	if app == nil {
 		return app

@@ -5,15 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
-
-	"github.com/openai/openai-go"
-	"github.com/openai/openai-go/option"
 
 	"github.com/equaltoai/lesser-host/internal/ai"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
+// ClaimVerifyBatchItem is a single item for claim verification batching.
 type ClaimVerifyBatchItem struct {
 	ItemID string
 	Input  ai.ClaimVerifyInputsV1
@@ -40,129 +37,111 @@ type claimVerifyBatchOutputItem struct {
 	Warnings []string                `json:"warnings"`
 }
 
+// ClaimVerifyBatchOpenAI verifies claims for a batch of inputs using OpenAI.
 func ClaimVerifyBatchOpenAI(ctx context.Context, apiKey string, modelSet string, items []ClaimVerifyBatchItem) (map[string]ai.ClaimVerifyResultV1, models.AIUsage, error) {
-	modelSet = strings.TrimSpace(modelSet)
-	if !strings.HasPrefix(strings.ToLower(modelSet), "openai:") {
-		return nil, models.AIUsage{}, fmt.Errorf("unsupported openai model set %q", modelSet)
-	}
-	model := strings.TrimSpace(strings.TrimPrefix(modelSet, "openai:"))
-	if model == "" {
-		return nil, models.AIUsage{}, fmt.Errorf("openai model is required")
-	}
 	if len(items) == 0 {
 		return map[string]ai.ClaimVerifyResultV1{}, models.AIUsage{}, nil
 	}
 
-	prompt := claimVerifyPrompt{Items: make([]claimVerifyPromptItem, 0, len(items))}
+	prompt := claimVerifyPrompt{Items: buildClaimVerifyPromptItems(items)}
+	if len(prompt.Items) == 0 {
+		return map[string]ai.ClaimVerifyResultV1{}, models.AIUsage{}, nil
+	}
+
+	return openAIJSONSchemaBatch(
+		ctx,
+		apiKey,
+		modelSet,
+		prompt,
+		openAIJSONSchemaBatchConfig{
+			SchemaName:        "claim_verify_batch",
+			SchemaDescription: "Verify claims with citations for lesser.host.",
+			Schema:            claimVerifyJSONSchemaV1(),
+			SystemPrompt:      claimVerifySystemPromptV1(),
+			Temperature:       0.2,
+		},
+		parseClaimVerifyBatchOutput,
+		normalizeClaimVerifyBatchOutput,
+	)
+}
+
+func buildClaimVerifyPromptItems(items []ClaimVerifyBatchItem) []claimVerifyPromptItem {
+	promptItems := make([]claimVerifyPromptItem, 0, len(items))
 	for _, it := range items {
 		id := strings.TrimSpace(it.ItemID)
 		if id == "" {
 			continue
 		}
+
 		text := strings.TrimSpace(it.Input.Text)
 		if len(text) > 8*1024 {
 			text = strings.TrimSpace(text[:8*1024])
 		}
 
-		claims := make([]string, 0, len(it.Input.Claims))
-		for _, c := range it.Input.Claims {
-			c = strings.TrimSpace(c)
-			if c == "" {
-				continue
-			}
-			if len(c) > 240 {
-				c = strings.TrimSpace(c[:240])
-			}
-			claims = append(claims, c)
-			if len(claims) >= 10 {
-				break
-			}
-		}
-
-		evidence := make([]ai.ClaimVerifyEvidenceV1, 0, len(it.Input.Evidence))
-		for _, e := range it.Input.Evidence {
-			e.SourceID = strings.TrimSpace(e.SourceID)
-			e.URL = strings.TrimSpace(e.URL)
-			e.Title = strings.TrimSpace(e.Title)
-			e.Text = strings.TrimSpace(e.Text)
-			if e.SourceID == "" || e.Text == "" {
-				continue
-			}
-			if len(e.Text) > 8*1024 {
-				e.Text = strings.TrimSpace(e.Text[:8*1024])
-			}
-			evidence = append(evidence, e)
-			if len(evidence) >= 5 {
-				break
-			}
-		}
+		claims := trimClaimVerifyClaims(it.Input.Claims)
+		evidence := trimClaimVerifyEvidence(it.Input.Evidence)
 		if len(evidence) == 0 {
 			continue
 		}
 
-		prompt.Items = append(prompt.Items, claimVerifyPromptItem{
+		promptItems = append(promptItems, claimVerifyPromptItem{
 			ItemID:   id,
 			Text:     text,
 			Claims:   claims,
 			Evidence: evidence,
 		})
 	}
-	if len(prompt.Items) == 0 {
-		return map[string]ai.ClaimVerifyResultV1{}, models.AIUsage{}, nil
-	}
+	return promptItems
+}
 
-	payload, err := json.Marshal(prompt)
-	if err != nil {
-		return nil, models.AIUsage{}, err
+func trimClaimVerifyClaims(in []string) []string {
+	claims := make([]string, 0, len(in))
+	for _, c := range in {
+		c = strings.TrimSpace(c)
+		if c == "" {
+			continue
+		}
+		if len(c) > 240 {
+			c = strings.TrimSpace(c[:240])
+		}
+		claims = append(claims, c)
+		if len(claims) >= 10 {
+			break
+		}
 	}
+	return claims
+}
 
-	schema := claimVerifyJSONSchemaV1()
-	system := claimVerifySystemPromptV1()
-
-	schemaParam := openai.ResponseFormatJSONSchemaJSONSchemaParam{
-		Name:        "claim_verify_batch",
-		Description: openai.String("Verify claims with citations for lesser.host."),
-		Schema:      schema,
-		Strict:      openai.Bool(true),
+func trimClaimVerifyEvidence(in []ai.ClaimVerifyEvidenceV1) []ai.ClaimVerifyEvidenceV1 {
+	evidence := make([]ai.ClaimVerifyEvidenceV1, 0, len(in))
+	for _, e := range in {
+		e.SourceID = strings.TrimSpace(e.SourceID)
+		e.URL = strings.TrimSpace(e.URL)
+		e.Title = strings.TrimSpace(e.Title)
+		e.Text = strings.TrimSpace(e.Text)
+		if e.SourceID == "" || e.Text == "" {
+			continue
+		}
+		if len(e.Text) > 8*1024 {
+			e.Text = strings.TrimSpace(e.Text[:8*1024])
+		}
+		evidence = append(evidence, e)
+		if len(evidence) >= 5 {
+			break
+		}
 	}
+	return evidence
+}
 
-	apiKey = strings.TrimSpace(apiKey)
-	var client openai.Client
-	if apiKey != "" {
-		client = openai.NewClient(option.WithAPIKey(apiKey))
-	} else {
-		client = openai.NewClient()
-	}
-
-	start := time.Now()
-	chat, err := client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
-		Model: openai.ChatModel(model),
-		Messages: []openai.ChatCompletionMessageParamUnion{
-			openai.SystemMessage(system),
-			openai.UserMessage(string(payload)),
-		},
-		ResponseFormat: openai.ChatCompletionNewParamsResponseFormatUnion{
-			OfJSONSchema: &openai.ResponseFormatJSONSchemaParam{JSONSchema: schemaParam},
-		},
-		Temperature: openai.Float(0.2),
-	})
-	if err != nil {
-		return nil, models.AIUsage{}, err
-	}
-	if len(chat.Choices) == 0 {
-		return nil, models.AIUsage{}, fmt.Errorf("openai: empty choices")
-	}
-
-	raw := strings.TrimSpace(chat.Choices[0].Message.Content)
-	if raw == "" {
-		return nil, models.AIUsage{}, fmt.Errorf("openai: empty content")
-	}
-
+func parseClaimVerifyBatchOutput(raw string) (claimVerifyBatchOutput, error) {
 	var parsed claimVerifyBatchOutput
 	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
-		return nil, models.AIUsage{}, fmt.Errorf("openai: invalid json output: %w", err)
+		return claimVerifyBatchOutput{}, fmt.Errorf("openai: invalid json output: %w", err)
 	}
+	return parsed, nil
+}
 
+func normalizeClaimVerifyBatchOutput(parsed claimVerifyBatchOutput) map[string]ai.ClaimVerifyResultV1 {
 	out := make(map[string]ai.ClaimVerifyResultV1, len(parsed.Items))
 	for _, item := range parsed.Items {
 		id := strings.TrimSpace(item.ItemID)
@@ -170,96 +149,100 @@ func ClaimVerifyBatchOpenAI(ctx context.Context, apiKey string, modelSet string,
 			continue
 		}
 
-		claimsOut := make([]ai.ClaimVerifyClaimV1, 0, len(item.Claims))
-		for _, c := range item.Claims {
-			c.ClaimID = strings.TrimSpace(c.ClaimID)
-			c.Text = strings.TrimSpace(c.Text)
-			c.Classification = strings.ToLower(strings.TrimSpace(c.Classification))
-			c.Verdict = strings.ToLower(strings.TrimSpace(c.Verdict))
-			c.Reason = strings.TrimSpace(c.Reason)
-			if c.ClaimID == "" || c.Text == "" {
-				continue
-			}
-			switch c.Classification {
-			case "checkable", "opinion", "unclear":
-			default:
-				c.Classification = "unclear"
-			}
-			switch c.Verdict {
-			case "supported", "refuted", "inconclusive":
-			default:
-				c.Verdict = "inconclusive"
-			}
-			if c.Confidence < 0 {
-				c.Confidence = 0
-			}
-			if c.Confidence > 1 {
-				c.Confidence = 1
-			}
-			if len(c.Text) > 240 {
-				c.Text = strings.TrimSpace(c.Text[:240])
-			}
-			if len(c.Reason) > 240 {
-				c.Reason = strings.TrimSpace(c.Reason[:240])
-			}
-
-			cits := make([]ai.ClaimVerifyCitationV1, 0, len(c.Citations))
-			for _, cit := range c.Citations {
-				cit.SourceID = strings.TrimSpace(cit.SourceID)
-				cit.Quote = strings.TrimSpace(cit.Quote)
-				if cit.SourceID == "" || cit.Quote == "" {
-					continue
-				}
-				if len(cit.Quote) > 200 {
-					cit.Quote = strings.TrimSpace(cit.Quote[:200])
-				}
-				cits = append(cits, cit)
-				if len(cits) >= 3 {
-					break
-				}
-			}
-			c.Citations = cits
-
-			claimsOut = append(claimsOut, c)
-			if len(claimsOut) >= 10 {
-				break
-			}
-		}
-
-		warnings := make([]string, 0, len(item.Warnings))
-		for _, w := range item.Warnings {
-			w = strings.TrimSpace(w)
-			if w == "" {
-				continue
-			}
-			if len(w) > 160 {
-				w = strings.TrimSpace(w[:160])
-			}
-			warnings = append(warnings, w)
-			if len(warnings) >= 10 {
-				break
-			}
-		}
-
 		out[id] = ai.ClaimVerifyResultV1{
 			Kind:     "claim_verify",
 			Version:  "v1",
-			Claims:   claimsOut,
-			Warnings: warnings,
+			Claims:   normalizeClaimVerifyClaims(item.Claims),
+			Warnings: normalizeClaimVerifyWarnings(item.Warnings),
 		}
 	}
+	return out
+}
 
-	usage := models.AIUsage{
-		Provider:     "openai",
-		Model:        strings.TrimSpace(chat.Model),
-		InputTokens:  chat.Usage.PromptTokens,
-		OutputTokens: chat.Usage.CompletionTokens,
-		TotalTokens:  chat.Usage.TotalTokens,
-		DurationMs:   time.Since(start).Milliseconds(),
-		ToolCalls:    1,
+func normalizeClaimVerifyClaims(in []ai.ClaimVerifyClaimV1) []ai.ClaimVerifyClaimV1 {
+	out := make([]ai.ClaimVerifyClaimV1, 0, len(in))
+	for _, c := range in {
+		c = normalizeClaimVerifyClaim(c)
+		if c.ClaimID == "" || c.Text == "" {
+			continue
+		}
+		out = append(out, c)
+		if len(out) >= 10 {
+			break
+		}
+	}
+	return out
+}
+
+func normalizeClaimVerifyClaim(c ai.ClaimVerifyClaimV1) ai.ClaimVerifyClaimV1 {
+	c.ClaimID = strings.TrimSpace(c.ClaimID)
+	c.Text = strings.TrimSpace(c.Text)
+	c.Classification = strings.ToLower(strings.TrimSpace(c.Classification))
+	c.Verdict = strings.ToLower(strings.TrimSpace(c.Verdict))
+	c.Reason = strings.TrimSpace(c.Reason)
+
+	switch c.Classification {
+	case "checkable", "opinion", "unclear":
+	default:
+		c.Classification = "unclear"
+	}
+	switch c.Verdict {
+	case "supported", "refuted", "inconclusive":
+	default:
+		c.Verdict = "inconclusive"
+	}
+	if c.Confidence < 0 {
+		c.Confidence = 0
+	}
+	if c.Confidence > 1 {
+		c.Confidence = 1
+	}
+	if len(c.Text) > 240 {
+		c.Text = strings.TrimSpace(c.Text[:240])
+	}
+	if len(c.Reason) > 240 {
+		c.Reason = strings.TrimSpace(c.Reason[:240])
 	}
 
-	return out, usage, nil
+	c.Citations = normalizeClaimVerifyCitations(c.Citations)
+	return c
+}
+
+func normalizeClaimVerifyCitations(in []ai.ClaimVerifyCitationV1) []ai.ClaimVerifyCitationV1 {
+	out := make([]ai.ClaimVerifyCitationV1, 0, len(in))
+	for _, cit := range in {
+		cit.SourceID = strings.TrimSpace(cit.SourceID)
+		cit.Quote = strings.TrimSpace(cit.Quote)
+		if cit.SourceID == "" || cit.Quote == "" {
+			continue
+		}
+		if len(cit.Quote) > 200 {
+			cit.Quote = strings.TrimSpace(cit.Quote[:200])
+		}
+		out = append(out, cit)
+		if len(out) >= 3 {
+			break
+		}
+	}
+	return out
+}
+
+func normalizeClaimVerifyWarnings(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, w := range in {
+		w = strings.TrimSpace(w)
+		if w == "" {
+			continue
+		}
+		if len(w) > 160 {
+			w = strings.TrimSpace(w[:160])
+		}
+		out = append(out, w)
+		if len(out) >= 10 {
+			break
+		}
+	}
+	return out
 }
 
 func claimVerifySystemPromptV1() string {

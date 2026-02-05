@@ -5,15 +5,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
-
-	"github.com/openai/openai-go"
-	"github.com/openai/openai-go/option"
 
 	"github.com/equaltoai/lesser-host/internal/ai"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
+const (
+	renderSummarySeverityLow    = "low"
+	renderSummarySeverityMedium = "medium"
+	renderSummarySeverityHigh   = "high"
+)
+
+// RenderSummaryBatchItem is a single item for render summary batching.
 type RenderSummaryBatchItem struct {
 	ItemID string
 	Input  ai.RenderSummaryInputsV1
@@ -42,20 +45,36 @@ type renderSummaryBatchOutputItem struct {
 	Risks        []ai.RenderSummaryRisk `json:"risks"`
 }
 
+// RenderSummaryBatchOpenAI generates summaries for a batch of render artifacts using OpenAI.
 func RenderSummaryBatchOpenAI(ctx context.Context, apiKey string, modelSet string, items []RenderSummaryBatchItem) (map[string]ai.RenderSummaryResultV1, models.AIUsage, error) {
-	modelSet = strings.TrimSpace(modelSet)
-	if !strings.HasPrefix(strings.ToLower(modelSet), "openai:") {
-		return nil, models.AIUsage{}, fmt.Errorf("unsupported openai model set %q", modelSet)
-	}
-	model := strings.TrimSpace(strings.TrimPrefix(modelSet, "openai:"))
-	if model == "" {
-		return nil, models.AIUsage{}, fmt.Errorf("openai model is required")
-	}
 	if len(items) == 0 {
 		return map[string]ai.RenderSummaryResultV1{}, models.AIUsage{}, nil
 	}
 
-	prompt := renderSummaryPrompt{Items: make([]renderSummaryPromptItem, 0, len(items))}
+	prompt := renderSummaryPrompt{Items: buildRenderSummaryPromptItems(items)}
+	if len(prompt.Items) == 0 {
+		return map[string]ai.RenderSummaryResultV1{}, models.AIUsage{}, nil
+	}
+
+	return openAIJSONSchemaBatch(
+		ctx,
+		apiKey,
+		modelSet,
+		prompt,
+		openAIJSONSchemaBatchConfig{
+			SchemaName:        "render_summary_batch",
+			SchemaDescription: "Batch render summaries for lesser.host.",
+			Schema:            renderSummaryJSONSchemaV1(),
+			SystemPrompt:      renderSummarySystemPromptV1(),
+			Temperature:       0.2,
+		},
+		parseRenderSummaryBatchOutput,
+		normalizeRenderSummaryBatchOutput,
+	)
+}
+
+func buildRenderSummaryPromptItems(items []RenderSummaryBatchItem) []renderSummaryPromptItem {
+	promptItems := make([]renderSummaryPromptItem, 0, len(items))
 	for _, it := range items {
 		itemID := strings.TrimSpace(it.ItemID)
 		if itemID == "" {
@@ -65,7 +84,8 @@ func RenderSummaryBatchOpenAI(ctx context.Context, apiKey string, modelSet strin
 		if len(text) > 8*1024 {
 			text = strings.TrimSpace(text[:8*1024])
 		}
-		prompt.Items = append(prompt.Items, renderSummaryPromptItem{
+
+		promptItems = append(promptItems, renderSummaryPromptItem{
 			ItemID:        itemID,
 			NormalizedURL: strings.TrimSpace(it.Input.NormalizedURL),
 			ResolvedURL:   strings.TrimSpace(it.Input.ResolvedURL),
@@ -73,67 +93,25 @@ func RenderSummaryBatchOpenAI(ctx context.Context, apiKey string, modelSet strin
 			Text:          text,
 		})
 	}
-	if len(prompt.Items) == 0 {
-		return map[string]ai.RenderSummaryResultV1{}, models.AIUsage{}, nil
-	}
+	return promptItems
+}
 
-	payload, err := json.Marshal(prompt)
-	if err != nil {
-		return nil, models.AIUsage{}, err
-	}
-
-	schema := renderSummaryJSONSchemaV1()
-	system := renderSummarySystemPromptV1()
-
-	schemaParam := openai.ResponseFormatJSONSchemaJSONSchemaParam{
-		Name:        "render_summary_batch",
-		Description: openai.String("Batch render summaries for lesser.host."),
-		Schema:      schema,
-		Strict:      openai.Bool(true),
-	}
-
-	apiKey = strings.TrimSpace(apiKey)
-	var client openai.Client
-	if apiKey != "" {
-		client = openai.NewClient(option.WithAPIKey(apiKey))
-	} else {
-		client = openai.NewClient()
-	}
-	start := time.Now()
-	chat, err := client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
-		Model: openai.ChatModel(model),
-		Messages: []openai.ChatCompletionMessageParamUnion{
-			openai.SystemMessage(system),
-			openai.UserMessage(string(payload)),
-		},
-		ResponseFormat: openai.ChatCompletionNewParamsResponseFormatUnion{
-			OfJSONSchema: &openai.ResponseFormatJSONSchemaParam{JSONSchema: schemaParam},
-		},
-		Temperature: openai.Float(0.2),
-	})
-	if err != nil {
-		return nil, models.AIUsage{}, err
-	}
-	if len(chat.Choices) == 0 {
-		return nil, models.AIUsage{}, fmt.Errorf("openai: empty choices")
-	}
-
-	raw := strings.TrimSpace(chat.Choices[0].Message.Content)
-	if raw == "" {
-		return nil, models.AIUsage{}, fmt.Errorf("openai: empty content")
-	}
-
+func parseRenderSummaryBatchOutput(raw string) (renderSummaryBatchOutput, error) {
 	var parsed renderSummaryBatchOutput
 	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
-		return nil, models.AIUsage{}, fmt.Errorf("openai: invalid json output: %w", err)
+		return renderSummaryBatchOutput{}, fmt.Errorf("openai: invalid json output: %w", err)
 	}
+	return parsed, nil
+}
 
+func normalizeRenderSummaryBatchOutput(parsed renderSummaryBatchOutput) map[string]ai.RenderSummaryResultV1 {
 	out := make(map[string]ai.RenderSummaryResultV1, len(parsed.Items))
 	for _, item := range parsed.Items {
 		itemID := strings.TrimSpace(item.ItemID)
 		if itemID == "" {
 			continue
 		}
+
 		short := strings.TrimSpace(item.ShortSummary)
 		if short == "" {
 			continue
@@ -141,6 +119,7 @@ func RenderSummaryBatchOpenAI(ctx context.Context, apiKey string, modelSet strin
 		if len(short) > 240 {
 			short = strings.TrimSpace(short[:240])
 		}
+
 		keyBullets := make([]string, 0, len(item.KeyBullets))
 		for _, b := range item.KeyBullets {
 			b = strings.TrimSpace(b)
@@ -152,19 +131,12 @@ func RenderSummaryBatchOpenAI(ctx context.Context, apiKey string, modelSet strin
 			}
 			keyBullets = append(keyBullets, b)
 		}
+
 		risks := make([]ai.RenderSummaryRisk, 0, len(item.Risks))
 		for _, r := range item.Risks {
-			r.Code = strings.TrimSpace(r.Code)
-			r.Severity = strings.ToLower(strings.TrimSpace(r.Severity))
-			r.Summary = strings.TrimSpace(r.Summary)
+			r = normalizeRenderSummaryRisk(r)
 			if r.Code == "" || r.Summary == "" {
 				continue
-			}
-			switch r.Severity {
-			case "low", "medium", "high":
-				// ok
-			default:
-				r.Severity = "medium"
 			}
 			risks = append(risks, r)
 		}
@@ -177,18 +149,22 @@ func RenderSummaryBatchOpenAI(ctx context.Context, apiKey string, modelSet strin
 			Risks:        risks,
 		}
 	}
+	return out
+}
 
-	usage := models.AIUsage{
-		Provider:     "openai",
-		Model:        strings.TrimSpace(chat.Model),
-		InputTokens:  chat.Usage.PromptTokens,
-		OutputTokens: chat.Usage.CompletionTokens,
-		TotalTokens:  chat.Usage.TotalTokens,
-		DurationMs:   time.Since(start).Milliseconds(),
-		ToolCalls:    1,
+func normalizeRenderSummaryRisk(r ai.RenderSummaryRisk) ai.RenderSummaryRisk {
+	r.Code = strings.TrimSpace(r.Code)
+	r.Severity = strings.ToLower(strings.TrimSpace(r.Severity))
+	r.Summary = strings.TrimSpace(r.Summary)
+
+	switch r.Severity {
+	case renderSummarySeverityLow, renderSummarySeverityMedium, renderSummarySeverityHigh:
+		// ok
+	default:
+		r.Severity = renderSummarySeverityMedium
 	}
 
-	return out, usage, nil
+	return r
 }
 
 func renderSummarySystemPromptV1() string {
@@ -227,7 +203,7 @@ func renderSummaryJSONSchemaV1() map[string]any {
 								"additionalProperties": false,
 								"properties": map[string]any{
 									"code":     map[string]any{"type": "string"},
-									"severity": map[string]any{"type": "string", "enum": []string{"low", "medium", "high"}},
+									"severity": map[string]any{"type": "string", "enum": []string{renderSummarySeverityLow, renderSummarySeverityMedium, renderSummarySeverityHigh}},
 									"summary":  map[string]any{"type": "string"},
 								},
 								"required": []string{"code", "severity", "summary"},

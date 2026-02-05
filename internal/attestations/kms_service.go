@@ -15,6 +15,7 @@ import (
 	kmstypes "github.com/aws/aws-sdk-go-v2/service/kms/types"
 )
 
+// KMSService signs attestations using AWS KMS and serves public keys as JWKS.
 type KMSService struct {
 	signingKeyID string
 	publicKeyIDs []string
@@ -31,6 +32,7 @@ type KMSService struct {
 	publicKeyMemo map[string]*rsa.PublicKey
 }
 
+// NewKMSService constructs a KMSService for a signing key and a set of public key IDs.
 func NewKMSService(signingKeyID string, publicKeyIDs []string) *KMSService {
 	signingKeyID = strings.TrimSpace(signingKeyID)
 
@@ -59,6 +61,7 @@ func NewKMSService(signingKeyID string, publicKeyIDs []string) *KMSService {
 	}
 }
 
+// Enabled reports whether the service has a signing key configured.
 func (s *KMSService) Enabled() bool {
 	return s != nil && strings.TrimSpace(s.signingKeyID) != ""
 }
@@ -84,6 +87,7 @@ func (s *KMSService) kmsClient(ctx context.Context) (*kms.Client, error) {
 	return s.client, nil
 }
 
+// SignPayloadJWS signs a payload and returns a compact JWS and the signing key ID.
 func (s *KMSService) SignPayloadJWS(ctx context.Context, payload []byte) (string, string, error) {
 	if s == nil {
 		return "", "", fmt.Errorf("kms service is nil")
@@ -118,6 +122,7 @@ func (s *KMSService) SignPayloadJWS(ctx context.Context, payload []byte) (string
 	return jws, keyID, nil
 }
 
+// JWKS returns a JSON Web Key Set for the configured public key IDs.
 func (s *KMSService) JWKS(ctx context.Context) (JWKS, error) {
 	if s == nil {
 		return JWKS{}, fmt.Errorf("kms service is nil")

@@ -8,6 +8,7 @@ import (
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
+// GetAIJob loads an AIJob by ID.
 func (s *Store) GetAIJob(ctx context.Context, id string) (*models.AIJob, error) {
 	if s == nil || s.DB == nil {
 		return nil, fmt.Errorf("store not initialized")
@@ -31,6 +32,7 @@ func (s *Store) GetAIJob(ctx context.Context, id string) (*models.AIJob, error) 
 	return &item, nil
 }
 
+// PutAIJob creates or updates an AIJob.
 func (s *Store) PutAIJob(ctx context.Context, item *models.AIJob) error {
 	if s == nil || s.DB == nil {
 		return fmt.Errorf("store not initialized")
@@ -41,6 +43,7 @@ func (s *Store) PutAIJob(ctx context.Context, item *models.AIJob) error {
 	return s.DB.WithContext(ctx).Model(item).CreateOrUpdate()
 }
 
+// GetAIResult loads an AIResult by ID.
 func (s *Store) GetAIResult(ctx context.Context, id string) (*models.AIResult, error) {
 	if s == nil || s.DB == nil {
 		return nil, fmt.Errorf("store not initialized")
@@ -64,6 +67,7 @@ func (s *Store) GetAIResult(ctx context.Context, id string) (*models.AIResult, e
 	return &item, nil
 }
 
+// PutAIResult creates or updates an AIResult.
 func (s *Store) PutAIResult(ctx context.Context, item *models.AIResult) error {
 	if s == nil || s.DB == nil {
 		return fmt.Errorf("store not initialized")

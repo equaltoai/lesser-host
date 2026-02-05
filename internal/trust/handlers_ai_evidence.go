@@ -148,7 +148,7 @@ func (s *Server) handleAIEvidenceText(ctx *apptheory.Context) (*apptheory.Respon
 	}
 
 	instCfg := s.loadInstanceTrustConfig(ctx.Context(), instanceSlug)
-	allowOverage := strings.ToLower(strings.TrimSpace(instCfg.OveragePolicy)) == "allow"
+	allowOverage := strings.ToLower(strings.TrimSpace(instCfg.OveragePolicy)) == overagePolicyAllow
 
 	inputs := aiEvidenceTextInputsV1{Text: text}
 	inputsHash, _ := ai.InputsHash(inputs)
@@ -245,7 +245,7 @@ func (s *Server) handleAIEvidenceImage(ctx *apptheory.Context) (*apptheory.Respo
 	}
 
 	instCfg := s.loadInstanceTrustConfig(ctx.Context(), instanceSlug)
-	allowOverage := strings.ToLower(strings.TrimSpace(instCfg.OveragePolicy)) == "allow"
+	allowOverage := strings.ToLower(strings.TrimSpace(instCfg.OveragePolicy)) == overagePolicyAllow
 
 	inputs := aiEvidenceImageInputsV1{
 		ObjectKey:   key,

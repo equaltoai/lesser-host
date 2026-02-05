@@ -9,12 +9,14 @@ import (
 	"strings"
 )
 
+// CompactJWSHeader is the JSON header used in compact JWS serialization.
 type CompactJWSHeader struct {
 	Alg string `json:"alg"`
 	Kid string `json:"kid,omitempty"`
 	Typ string `json:"typ,omitempty"`
 }
 
+// BuildCompactJWSRS256 builds a compact JWS signed with RS256.
 func BuildCompactJWSRS256(ctx context.Context, kid string, payload []byte, signDigest func(context.Context, []byte) ([]byte, error)) (string, error) {
 	if len(payload) == 0 {
 		return "", fmt.Errorf("payload is required")
@@ -51,6 +53,7 @@ func BuildCompactJWSRS256(ctx context.Context, kid string, payload []byte, signD
 	return signingInput + "." + sb64, nil
 }
 
+// ParseCompactJWS splits and decodes a compact JWS into header, payload, and signature bytes.
 func ParseCompactJWS(jws string) ([]byte, []byte, []byte, error) {
 	jws = strings.TrimSpace(jws)
 	if jws == "" {

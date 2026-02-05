@@ -6,6 +6,7 @@ import (
 	"time"
 )
 
+// AuditLogEntry records an operator action for auditing.
 type AuditLogEntry struct {
 	_ struct{} `theorydb:"naming:camelCase"`
 
@@ -20,8 +21,10 @@ type AuditLogEntry struct {
 	CreatedAt time.Time `theorydb:"attr:createdAt" json:"created_at"`
 }
 
+// TableName returns the database table name for AuditLogEntry.
 func (AuditLogEntry) TableName() string { return MainTableName() }
 
+// BeforeCreate sets defaults and keys before creating AuditLogEntry.
 func (a *AuditLogEntry) BeforeCreate() error {
 	if a.CreatedAt.IsZero() {
 		a.CreatedAt = time.Now().UTC()
@@ -29,6 +32,7 @@ func (a *AuditLogEntry) BeforeCreate() error {
 	return a.UpdateKeys()
 }
 
+// UpdateKeys updates the database keys for AuditLogEntry.
 func (a *AuditLogEntry) UpdateKeys() error {
 	createdAt := a.CreatedAt
 	if createdAt.IsZero() {
@@ -44,5 +48,8 @@ func (a *AuditLogEntry) UpdateKeys() error {
 	return nil
 }
 
+// GetPK returns the partition key for AuditLogEntry.
 func (a *AuditLogEntry) GetPK() string { return a.PK }
+
+// GetSK returns the sort key for AuditLogEntry.
 func (a *AuditLogEntry) GetSK() string { return a.SK }

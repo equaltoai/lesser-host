@@ -11,20 +11,28 @@ import (
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
+// CacheScope controls how AI results are scoped for caching.
 type CacheScope string
 
 const (
+	// CacheScopeInstance scopes cache entries to a single instance.
 	CacheScopeInstance CacheScope = "instance"
-	CacheScopeGlobal   CacheScope = "global"
+	// CacheScopeGlobal scopes cache entries globally across instances.
+	CacheScopeGlobal CacheScope = "global"
 )
 
+// JobStatus describes the lifecycle status of an AI job.
 type JobStatus string
 
 const (
-	JobStatusQueued           JobStatus = "queued"
-	JobStatusOK               JobStatus = "ok"
+	// JobStatusQueued indicates an AI job has been queued but not yet completed.
+	JobStatusQueued JobStatus = "queued"
+	// JobStatusOK indicates an AI job completed successfully and a result is available.
+	JobStatusOK JobStatus = "ok"
+	// JobStatusNotCheckedBudget indicates the job could not be queued due to missing or exceeded budget.
 	JobStatusNotCheckedBudget JobStatus = "not_checked_budget"
-	JobStatusError            JobStatus = "error"
+	// JobStatusError indicates the job failed due to an internal error.
+	JobStatusError JobStatus = "error"
 )
 
 // ModuleContract is the common envelope for all AI modules.
@@ -47,6 +55,7 @@ type ModuleOutput struct {
 	Errors   []models.AIError `json:"errors,omitempty"`
 }
 
+// CanonicalJSON encodes a value as JSON suitable for hashing and caching.
 func CanonicalJSON(v any) (string, error) {
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -55,6 +64,7 @@ func CanonicalJSON(v any) (string, error) {
 	return string(b), nil
 }
 
+// InputsHash returns a stable hash of the canonical JSON encoding of v.
 func InputsHash(v any) (string, error) {
 	s, err := CanonicalJSON(v)
 	if err != nil {
@@ -64,6 +74,7 @@ func InputsHash(v any) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
+// CacheKey builds the cache key for an AI result given the scope and module contract fields.
 func CacheKey(scope CacheScope, scopeKey string, module string, policyVersion string, modelSet string, inputsHash string) (string, error) {
 	module = strings.ToLower(strings.TrimSpace(module))
 	policyVersion = strings.TrimSpace(policyVersion)

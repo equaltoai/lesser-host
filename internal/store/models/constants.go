@@ -5,16 +5,19 @@ import (
 	"strings"
 )
 
+// SK* constants are shared sort key values.
 const (
 	SKMetadata = "METADATA"
 	SKProfile  = "PROFILE"
 )
 
+// KeyPattern* constants define common partition key patterns.
 const (
 	KeyPatternUser    = "USER#%s"
 	KeyPatternSession = "SESSION#%s"
 )
 
+// MainTableName returns the configured database table name.
 func MainTableName() string {
 	name := strings.TrimSpace(os.Getenv("STATE_TABLE_NAME"))
 	if name == "" {

@@ -6,6 +6,7 @@ import (
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
+// InstanceConfig is the effective AI configuration for an instance.
 type InstanceConfig struct {
 	Enabled bool
 
@@ -18,6 +19,7 @@ type InstanceConfig struct {
 	PricingMultiplierBps int64
 }
 
+// DefaultInstanceConfig returns the default AI instance configuration.
 func DefaultInstanceConfig() InstanceConfig {
 	return InstanceConfig{
 		Enabled:              false,
@@ -29,6 +31,7 @@ func DefaultInstanceConfig() InstanceConfig {
 	}
 }
 
+// EffectiveInstanceConfig resolves an InstanceConfig from an instance record.
 func EffectiveInstanceConfig(inst *models.Instance) InstanceConfig {
 	cfg := DefaultInstanceConfig()
 	if inst == nil {

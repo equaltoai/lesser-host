@@ -15,6 +15,7 @@ import (
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
+// Store provides access to artifact objects stored in S3.
 type Store struct {
 	bucket string
 
@@ -23,6 +24,7 @@ type Store struct {
 	err    error
 }
 
+// New constructs a new artifact Store for an S3 bucket name.
 func New(bucket string) *Store {
 	return &Store{bucket: strings.TrimSpace(bucket)}
 }
@@ -48,6 +50,7 @@ func (a *Store) s3Client(ctx context.Context) (*s3.Client, error) {
 	return a.client, nil
 }
 
+// PutObject uploads an object to the artifact bucket.
 func (a *Store) PutObject(ctx context.Context, key string, body []byte, contentType string, cacheControl string) error {
 	if a == nil {
 		return fmt.Errorf("artifact store is nil")
@@ -82,6 +85,7 @@ func (a *Store) PutObject(ctx context.Context, key string, body []byte, contentT
 	return err
 }
 
+// GetObject fetches and returns object bytes with basic metadata.
 func (a *Store) GetObject(ctx context.Context, key string, maxBytes int64) ([]byte, string, string, error) {
 	if a == nil {
 		return nil, "", "", fmt.Errorf("artifact store is nil")
@@ -111,7 +115,7 @@ func (a *Store) GetObject(ctx context.Context, key string, maxBytes int64) ([]by
 		}
 		return nil, "", "", err
 	}
-	defer out.Body.Close()
+	defer func() { _ = out.Body.Close() }()
 
 	if maxBytes <= 0 {
 		maxBytes = 5 * 1024 * 1024
@@ -130,6 +134,7 @@ func (a *Store) GetObject(ctx context.Context, key string, maxBytes int64) ([]by
 	return body, contentType, etag, nil
 }
 
+// HeadObject returns object metadata without downloading the object body.
 func (a *Store) HeadObject(ctx context.Context, key string) (string, string, int64, error) {
 	if a == nil {
 		return "", "", 0, fmt.Errorf("artifact store is nil")
@@ -162,6 +167,7 @@ func (a *Store) HeadObject(ctx context.Context, key string) (string, string, int
 	return contentType, etag, size, nil
 }
 
+// DeleteObject deletes an object from the artifact bucket.
 func (a *Store) DeleteObject(ctx context.Context, key string) error {
 	if a == nil {
 		return fmt.Errorf("artifact store is nil")

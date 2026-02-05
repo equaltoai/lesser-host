@@ -6,6 +6,7 @@ import (
 	"time"
 )
 
+// SetupSession represents a short-lived bootstrap/setup session.
 type SetupSession struct {
 	_ struct{} `theorydb:"naming:camelCase"`
 
@@ -22,10 +23,12 @@ type SetupSession struct {
 	InstanceLock bool      `theorydb:"attr:instanceLocked" json:"instance_locked"`
 }
 
+// TableName returns the database table name for SetupSession.
 func (SetupSession) TableName() string {
 	return MainTableName()
 }
 
+// UpdateKeys updates the database keys and TTL for SetupSession.
 func (s *SetupSession) UpdateKeys() error {
 	s.ID = strings.TrimSpace(s.ID)
 	s.PK = fmt.Sprintf("SETUP_SESSION#%s", s.ID)
@@ -34,5 +37,8 @@ func (s *SetupSession) UpdateKeys() error {
 	return nil
 }
 
+// GetPK returns the partition key for SetupSession.
 func (s *SetupSession) GetPK() string { return s.PK }
+
+// GetSK returns the sort key for SetupSession.
 func (s *SetupSession) GetSK() string { return s.SK }

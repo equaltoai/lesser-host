@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 )
 
+// SSMAPI is the subset of the AWS SSM client used by this package.
 type SSMAPI interface {
 	GetParameter(ctx context.Context, params *ssm.GetParameterInput, optFns ...func(*ssm.Options)) (*ssm.GetParameterOutput, error)
 }
@@ -29,6 +30,7 @@ type cachedParam struct {
 
 var paramCache sync.Map // map[name]cachedParam
 
+// GetSSMParameter loads and returns a decrypted parameter value from SSM.
 func GetSSMParameter(ctx context.Context, client SSMAPI, name string) (string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -60,6 +62,7 @@ func GetSSMParameter(ctx context.Context, client SSMAPI, name string) (string, e
 	return value, nil
 }
 
+// GetSSMParameterCached loads a parameter from SSM and caches it for a TTL.
 func GetSSMParameterCached(ctx context.Context, client SSMAPI, name string, ttl time.Duration) (string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {

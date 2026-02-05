@@ -7,10 +7,12 @@ import (
 	"math/big"
 )
 
+// JWKS is a JSON Web Key Set.
 type JWKS struct {
 	Keys []JWK `json:"keys"`
 }
 
+// JWK is a JSON Web Key.
 type JWK struct {
 	Kty string `json:"kty"`
 	Use string `json:"use,omitempty"`
@@ -21,6 +23,7 @@ type JWK struct {
 	E string `json:"e,omitempty"`
 }
 
+// JWKFromRSAPublicKey converts an RSA public key into a JWK.
 func JWKFromRSAPublicKey(kid string, key *rsa.PublicKey) (JWK, error) {
 	if key == nil {
 		return JWK{}, fmt.Errorf("public key is nil")

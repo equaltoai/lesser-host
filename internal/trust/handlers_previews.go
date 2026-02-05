@@ -71,10 +71,7 @@ func (s *Server) handleLinkPreview(ctx *apptheory.Context) (*apptheory.Response,
 
 	normalized, _, err := normalizeLinkURL(req.URL)
 	if err != nil {
-		if pe, ok := err.(*linkPreviewError); ok && pe.Code == "invalid_url" {
-			return nil, &apptheory.AppError{Code: "app.bad_request", Message: pe.Message}
-		}
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid url"}
+		return nil, linkPreviewBadRequestError(err)
 	}
 
 	previewID := linkPreviewID(linkPreviewPolicyVersion, normalized)
@@ -82,31 +79,21 @@ func (s *Server) handleLinkPreview(ctx *apptheory.Context) (*apptheory.Response,
 	// Respect per-instance config toggle (default: enabled).
 	instCfg := s.loadInstanceTrustConfig(ctx.Context(), instanceSlug)
 	if !instCfg.HostedPreviewsEnabled {
-		return apptheory.JSON(http.StatusOK, linkPreviewResponse{
-			Status:        "disabled",
-			Cached:        false,
-			ID:            previewID,
-			PolicyVersion: linkPreviewPolicyVersion,
-			NormalizedURL: normalized,
-			ErrorCode:     "disabled",
-			ErrorMessage:  "hosted previews disabled for instance",
-			FetchedAt:     time.Now().UTC(),
-			ExpiresAt:     time.Now().UTC().Add(5 * time.Minute),
-		})
+		return apptheory.JSON(http.StatusOK, linkPreviewResponseDisabled(previewID, normalized))
 	}
 	renderPolicy := instCfg.RenderPolicy
 
 	if !req.ForceRefresh {
-		item, err := s.store.GetLinkPreview(ctx.Context(), previewID)
-		if err == nil && !item.ExpiresAt.IsZero() && item.ExpiresAt.After(time.Now().UTC()) {
+		item, ok, err := s.getFreshLinkPreview(ctx.Context(), previewID, time.Now().UTC())
+		if err != nil {
+			return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		}
+		if ok && item != nil {
 			resp := linkPreviewResponseFromModel(ctx, item, true)
 			if instCfg.RendersEnabled {
 				s.maybeAttachPreviewRender(ctx, instanceSlug, renderPolicy, instCfg.OveragePolicy, normalized, &resp)
 			}
 			return apptheory.JSON(http.StatusOK, resp)
-		}
-		if err != nil && !theoryErrors.IsNotFound(err) {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 		}
 	}
 
@@ -130,40 +117,9 @@ func (s *Server) handleLinkPreview(ctx *apptheory.Context) (*apptheory.Response,
 	}
 
 	if fetchErr != nil {
-		if pe, ok := fetchErr.(*linkPreviewError); ok {
-			item.ErrorCode = pe.Code
-			item.ErrorMessage = pe.Message
-		} else {
-			item.ErrorCode = "fetch_failed"
-			item.ErrorMessage = "fetch failed"
-		}
-		if err := item.UpdateKeys(); err != nil {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-		}
-		audit := &models.AuditLogEntry{
-			Actor:     instanceSlug,
-			Action:    "link_preview.fetch",
-			Target:    "link_preview:" + previewID,
-			RequestID: strings.TrimSpace(ctx.RequestID),
-			CreatedAt: now,
-		}
-		_ = audit.UpdateKeys()
-		if err := s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
-			tx.Put(item)
-			tx.Put(audit)
-			return nil
-		}); err != nil {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to store preview"}
-		}
-		resp := linkPreviewResponseFromModel(ctx, item, false)
-		if instCfg.RendersEnabled {
-			s.maybeAttachPreviewRender(ctx, instanceSlug, renderPolicy, instCfg.OveragePolicy, normalized, &resp)
-		}
-		return apptheory.JSON(http.StatusOK, resp)
-	}
-
-	// Fetch and store image if available.
-	if strings.TrimSpace(fetched.ImageURL) != "" && s.artifacts != nil {
+		applyLinkPreviewFetchError(item, fetchErr)
+	} else if strings.TrimSpace(fetched.ImageURL) != "" && s.artifacts != nil {
+		// Fetch and store image if available.
 		imageID, objectKey := s.tryStorePreviewImage(ctx.Context(), fetched.ImageURL)
 		if imageID != "" && objectKey != "" {
 			item.ImageID = imageID
@@ -171,22 +127,7 @@ func (s *Server) handleLinkPreview(ctx *apptheory.Context) (*apptheory.Response,
 		}
 	}
 
-	if err := item.UpdateKeys(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-	audit := &models.AuditLogEntry{
-		Actor:     instanceSlug,
-		Action:    "link_preview.fetch",
-		Target:    "link_preview:" + previewID,
-		RequestID: strings.TrimSpace(ctx.RequestID),
-		CreatedAt: now,
-	}
-	_ = audit.UpdateKeys()
-	if err := s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
-		tx.Put(item)
-		tx.Put(audit)
-		return nil
-	}); err != nil {
+	if err := s.putLinkPreviewWithAudit(ctx.Context(), instanceSlug, item, previewID, now, strings.TrimSpace(ctx.RequestID)); err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to store preview"}
 	}
 
@@ -195,6 +136,84 @@ func (s *Server) handleLinkPreview(ctx *apptheory.Context) (*apptheory.Response,
 		s.maybeAttachPreviewRender(ctx, instanceSlug, renderPolicy, instCfg.OveragePolicy, normalized, &resp)
 	}
 	return apptheory.JSON(http.StatusOK, resp)
+}
+
+func linkPreviewBadRequestError(err error) error {
+	if pe, ok := err.(*linkPreviewError); ok && pe.Code == "invalid_url" {
+		return &apptheory.AppError{Code: "app.bad_request", Message: pe.Message}
+	}
+	return &apptheory.AppError{Code: "app.bad_request", Message: "invalid url"}
+}
+
+func linkPreviewResponseDisabled(previewID, normalizedURL string) linkPreviewResponse {
+	now := time.Now().UTC()
+	return linkPreviewResponse{
+		Status:        "disabled",
+		Cached:        false,
+		ID:            strings.TrimSpace(previewID),
+		PolicyVersion: linkPreviewPolicyVersion,
+		NormalizedURL: strings.TrimSpace(normalizedURL),
+		ErrorCode:     "disabled",
+		ErrorMessage:  "hosted previews disabled for instance",
+		FetchedAt:     now,
+		ExpiresAt:     now.Add(5 * time.Minute),
+	}
+}
+
+func (s *Server) getFreshLinkPreview(ctx context.Context, id string, now time.Time) (*models.LinkPreview, bool, error) {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return nil, false, fmt.Errorf("store not configured")
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, false, nil
+	}
+
+	item, err := s.store.GetLinkPreview(ctx, id)
+	if err == nil && item != nil && !item.ExpiresAt.IsZero() && item.ExpiresAt.After(now) {
+		return item, true, nil
+	}
+	if err != nil && !theoryErrors.IsNotFound(err) {
+		return nil, false, err
+	}
+	return nil, false, nil
+}
+
+func applyLinkPreviewFetchError(item *models.LinkPreview, fetchErr error) {
+	if item == nil {
+		return
+	}
+	if pe, ok := fetchErr.(*linkPreviewError); ok {
+		item.ErrorCode = pe.Code
+		item.ErrorMessage = pe.Message
+		return
+	}
+	item.ErrorCode = "fetch_failed"
+	item.ErrorMessage = "fetch failed"
+}
+
+func (s *Server) putLinkPreviewWithAudit(ctx context.Context, instanceSlug string, item *models.LinkPreview, previewID string, now time.Time, requestID string) error {
+	if s == nil || s.store == nil || s.store.DB == nil || item == nil {
+		return fmt.Errorf("store not configured")
+	}
+	if err := item.UpdateKeys(); err != nil {
+		return err
+	}
+
+	audit := &models.AuditLogEntry{
+		Actor:     strings.TrimSpace(instanceSlug),
+		Action:    "link_preview.fetch",
+		Target:    "link_preview:" + strings.TrimSpace(previewID),
+		RequestID: strings.TrimSpace(requestID),
+		CreatedAt: now,
+	}
+	_ = audit.UpdateKeys()
+
+	return s.store.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
+		tx.Put(item)
+		tx.Put(audit)
+		return nil
+	})
 }
 
 func (s *Server) handleGetLinkPreview(ctx *apptheory.Context) (*apptheory.Response, error) {
@@ -369,8 +388,8 @@ func (s *Server) maybeAttachPreviewRender(ctx *apptheory.Context, instanceSlug s
 	}
 	_ = update.UpdateKeys()
 
-	includedDebited, overageDebited := billing.BillingPartsForDebit(budget.IncludedCredits, budget.UsedCredits, linkRenderCreditCost)
-	billingType := billing.BillingTypeFromParts(includedDebited, overageDebited)
+	includedDebited, overageDebited := billing.PartsForDebit(budget.IncludedCredits, budget.UsedCredits, linkRenderCreditCost)
+	billingType := billing.TypeFromParts(includedDebited, overageDebited)
 	ledger := &models.UsageLedgerEntry{
 		ID:                     billing.UsageLedgerEntryID(instanceSlug, month, strings.TrimSpace(ctx.RequestID), "link_preview_render", renderID, linkRenderCreditCost),
 		InstanceSlug:           instanceSlug,
@@ -469,16 +488,15 @@ func linkPreviewResponseFromModel(ctx *apptheory.Context, item *models.LinkPrevi
 		ExpiresAt:     item.ExpiresAt,
 	}
 
-	if resp.ErrorCode != "" {
-		if resp.ErrorCode == "blocked_ssrf" {
-			resp.Status = "blocked"
-		} else if resp.ErrorCode == "disabled" {
-			resp.Status = "disabled"
-		} else {
-			resp.Status = "error"
-		}
-	} else {
+	switch resp.ErrorCode {
+	case "":
 		resp.Status = "ok"
+	case "blocked_ssrf":
+		resp.Status = "blocked"
+	case "disabled":
+		resp.Status = "disabled"
+	default:
+		resp.Status = "error"
 	}
 
 	if resp.ImageID != "" {

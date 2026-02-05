@@ -24,6 +24,7 @@ func PricedCredits(base int64, multiplierBps int64) int64 {
 	return (base*multiplierBps + 9999) / 10000
 }
 
+// UsageLedgerEntryID derives a deterministic ID for a usage ledger entry.
 func UsageLedgerEntryID(instanceSlug string, month string, requestID string, module string, target string, debitedCredits int64) string {
 	sum := sha256.Sum256([]byte(strings.Join([]string{
 		"usage",
@@ -37,7 +38,8 @@ func UsageLedgerEntryID(instanceSlug string, month string, requestID string, mod
 	return hex.EncodeToString(sum[:])
 }
 
-func BillingPartsForDebit(includedCredits int64, usedCredits int64, delta int64) (includedDebited int64, overageDebited int64) {
+// PartsForDebit splits a debit into included and overage portions.
+func PartsForDebit(includedCredits int64, usedCredits int64, delta int64) (includedDebited int64, overageDebited int64) {
 	remaining := includedCredits - usedCredits
 	if remaining <= 0 {
 		return 0, delta
@@ -48,7 +50,8 @@ func BillingPartsForDebit(includedCredits int64, usedCredits int64, delta int64)
 	return remaining, delta - remaining
 }
 
-func BillingTypeFromParts(includedDebited int64, overageDebited int64) string {
+// TypeFromParts determines the billing type based on included and overage portions.
+func TypeFromParts(includedDebited int64, overageDebited int64) string {
 	if includedDebited > 0 && overageDebited > 0 {
 		return models.BillingTypeMixed
 	}

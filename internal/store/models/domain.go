@@ -6,17 +6,20 @@ import (
 	"time"
 )
 
+// DomainType* constants define the type of a domain.
 const (
 	DomainTypePrimary = "primary"
 	DomainTypeVanity  = "vanity"
 )
 
+// DomainStatus* constants define the verification status of a domain.
 const (
 	DomainStatusPending  = "pending"
 	DomainStatusVerified = "verified"
 	DomainStatusRejected = "rejected"
 )
 
+// Domain represents an instance-owned domain and its verification status.
 type Domain struct {
 	_ struct{} `theorydb:"naming:camelCase"`
 
@@ -40,8 +43,10 @@ type Domain struct {
 	VerifiedAt time.Time `theorydb:"attr:verifiedAt" json:"verified_at,omitempty"`
 }
 
+// TableName returns the database table name for Domain.
 func (Domain) TableName() string { return MainTableName() }
 
+// BeforeCreate sets defaults and keys before creating Domain.
 func (d *Domain) BeforeCreate() error {
 	if err := d.UpdateKeys(); err != nil {
 		return err
@@ -60,11 +65,13 @@ func (d *Domain) BeforeCreate() error {
 	return nil
 }
 
+// BeforeUpdate updates timestamps and keys before updating Domain.
 func (d *Domain) BeforeUpdate() error {
 	d.UpdatedAt = time.Now().UTC()
 	return d.UpdateKeys()
 }
 
+// UpdateKeys updates the database keys for Domain.
 func (d *Domain) UpdateKeys() error {
 	domain := strings.ToLower(strings.TrimSpace(d.Domain))
 	d.InstanceSlug = strings.TrimSpace(d.InstanceSlug)
@@ -79,5 +86,8 @@ func (d *Domain) UpdateKeys() error {
 	return nil
 }
 
+// GetPK returns the partition key for Domain.
 func (d *Domain) GetPK() string { return d.PK }
+
+// GetSK returns the sort key for Domain.
 func (d *Domain) GetSK() string { return d.SK }

@@ -2,6 +2,7 @@ package models
 
 import "time"
 
+// WebAuthnChallenge stores a short-lived WebAuthn authentication challenge.
 type WebAuthnChallenge struct {
 	_ struct{} `theorydb:"naming:camelCase"`
 
@@ -19,14 +20,17 @@ type WebAuthnChallenge struct {
 	TTL int64 `theorydb:"ttl,attr:ttl" json:"-"`
 }
 
+// TableName returns the database table name for WebAuthnChallenge.
 func (WebAuthnChallenge) TableName() string {
 	return MainTableName()
 }
 
+// BeforeCreate sets keys before creating WebAuthnChallenge.
 func (w *WebAuthnChallenge) BeforeCreate() error {
 	return w.UpdateKeys()
 }
 
+// UpdateKeys updates the database keys and TTL for WebAuthnChallenge.
 func (w *WebAuthnChallenge) UpdateKeys() error {
 	w.PK = "CHALLENGE#" + w.Challenge
 	w.SK = "WEBAUTHN"
@@ -37,5 +41,8 @@ func (w *WebAuthnChallenge) UpdateKeys() error {
 	return nil
 }
 
+// GetPK returns the partition key for WebAuthnChallenge.
 func (w *WebAuthnChallenge) GetPK() string { return w.PK }
+
+// GetSK returns the sort key for WebAuthnChallenge.
 func (w *WebAuthnChallenge) GetSK() string { return w.SK }

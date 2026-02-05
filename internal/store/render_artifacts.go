@@ -9,6 +9,7 @@ import (
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
+// GetRenderArtifact loads a RenderArtifact by ID.
 func (s *Store) GetRenderArtifact(ctx context.Context, id string) (*models.RenderArtifact, error) {
 	if s == nil || s.DB == nil {
 		return nil, fmt.Errorf("store not initialized")
@@ -32,6 +33,7 @@ func (s *Store) GetRenderArtifact(ctx context.Context, id string) (*models.Rende
 	return &item, nil
 }
 
+// PutRenderArtifact creates or updates a RenderArtifact.
 func (s *Store) PutRenderArtifact(ctx context.Context, item *models.RenderArtifact) error {
 	if s == nil || s.DB == nil {
 		return fmt.Errorf("store not initialized")
@@ -42,6 +44,7 @@ func (s *Store) PutRenderArtifact(ctx context.Context, item *models.RenderArtifa
 	return s.DB.WithContext(ctx).Model(item).CreateOrUpdate()
 }
 
+// DeleteRenderArtifact deletes a RenderArtifact by ID.
 func (s *Store) DeleteRenderArtifact(ctx context.Context, id string) error {
 	if s == nil || s.DB == nil {
 		return fmt.Errorf("store not initialized")
@@ -58,6 +61,7 @@ func (s *Store) DeleteRenderArtifact(ctx context.Context, id string) error {
 		Delete()
 }
 
+// ListExpiredRenderArtifacts lists artifacts past their expiry, ordered by expiry time.
 func (s *Store) ListExpiredRenderArtifacts(ctx context.Context, now time.Time, limit int) ([]*models.RenderArtifact, error) {
 	if s == nil || s.DB == nil {
 		return nil, fmt.Errorf("store not initialized")

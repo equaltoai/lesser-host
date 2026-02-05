@@ -52,10 +52,7 @@ type renderArtifactResponse struct {
 }
 
 func (s *Server) handleCreateRender(ctx *apptheory.Context) (*apptheory.Response, error) {
-	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-	if ctx == nil {
+	if s == nil || s.store == nil || s.store.DB == nil || ctx == nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
@@ -87,10 +84,7 @@ func (s *Server) handleCreateRender(ctx *apptheory.Context) (*apptheory.Response
 
 	normalized, _, err := normalizeLinkURL(req.URL)
 	if err != nil {
-		if pe, ok := err.(*linkPreviewError); ok && pe.Code == "invalid_url" {
-			return nil, &apptheory.AppError{Code: "app.bad_request", Message: pe.Message}
-		}
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid url"}
+		return nil, linkPreviewBadRequestError(err)
 	}
 
 	now := time.Now().UTC()
@@ -152,12 +146,57 @@ func (s *Server) handleCreateRender(ctx *apptheory.Context) (*apptheory.Response
 		})
 	}
 
+	allowOverage := strings.ToLower(strings.TrimSpace(instCfg.OveragePolicy)) == overagePolicyAllow
+
+	if resp, err := s.debitBudgetForCreateRender(ctx, instanceSlug, now, allowOverage, renderID, normalized, classOut); resp != nil || err != nil {
+		return resp, err
+	}
+
+	artifact, queued, err := s.queueRender(ctx, normalized, classOut, retentionDays)
+	if err != nil {
+		return nil, err
+	}
+
+	audit := &models.AuditLogEntry{
+		Actor:     strings.TrimSpace(ctx.AuthIdentity),
+		Action:    "render.request",
+		Target:    fmt.Sprintf("render:%s", renderID),
+		RequestID: strings.TrimSpace(ctx.RequestID),
+		CreatedAt: now,
+	}
+	_ = audit.UpdateKeys()
+	_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
+
+	if queued && artifact != nil {
+		auditQueue := &models.AuditLogEntry{
+			Actor:     strings.TrimSpace(ctx.AuthIdentity),
+			Action:    "render.queue",
+			Target:    fmt.Sprintf("render:%s", strings.TrimSpace(artifact.ID)),
+			RequestID: strings.TrimSpace(ctx.RequestID),
+			CreatedAt: now,
+		}
+		_ = auditQueue.UpdateKeys()
+		_ = s.store.DB.WithContext(ctx.Context()).Model(auditQueue).Create()
+	}
+
+	return apptheory.JSON(http.StatusOK, renderArtifactResponseFromModel(ctx, artifact, !queued))
+}
+
+func (s *Server) debitBudgetForCreateRender(
+	ctx *apptheory.Context,
+	instanceSlug string,
+	now time.Time,
+	allowOverage bool,
+	renderID string,
+	normalizedURL string,
+	retentionClass string,
+) (*apptheory.Response, error) {
 	month := now.Format("2006-01")
 	pk := fmt.Sprintf("INSTANCE#%s", instanceSlug)
 	sk := fmt.Sprintf("BUDGET#%s", month)
 
 	var budget models.InstanceBudgetMonth
-	err = s.store.DB.WithContext(ctx.Context()).
+	err := s.store.DB.WithContext(ctx.Context()).
 		Model(&models.InstanceBudgetMonth{}).
 		Where("PK", "=", pk).
 		Where("SK", "=", sk).
@@ -169,8 +208,8 @@ func (s *Server) handleCreateRender(ctx *apptheory.Context) (*apptheory.Response
 			Cached:         false,
 			RenderID:       renderID,
 			PolicyVersion:  rendering.RenderPolicyVersion,
-			NormalizedURL:  normalized,
-			RetentionClass: classOut,
+			NormalizedURL:  normalizedURL,
+			RetentionClass: retentionClass,
 			ErrorCode:      "not_checked_budget",
 			ErrorMessage:   "budget not configured",
 			CreatedAt:      now,
@@ -182,15 +221,14 @@ func (s *Server) handleCreateRender(ctx *apptheory.Context) (*apptheory.Response
 	}
 
 	remaining := budget.IncludedCredits - budget.UsedCredits
-	allowOverage := strings.ToLower(strings.TrimSpace(instCfg.OveragePolicy)) == "allow"
 	if remaining < linkRenderCreditCost && !allowOverage {
 		return apptheory.JSON(http.StatusOK, renderArtifactResponse{
 			Status:         "error",
 			Cached:         false,
 			RenderID:       renderID,
 			PolicyVersion:  rendering.RenderPolicyVersion,
-			NormalizedURL:  normalized,
-			RetentionClass: classOut,
+			NormalizedURL:  normalizedURL,
+			RetentionClass: retentionClass,
 			ErrorCode:      "not_checked_budget",
 			ErrorMessage:   "budget exceeded",
 			CreatedAt:      now,
@@ -205,8 +243,8 @@ func (s *Server) handleCreateRender(ctx *apptheory.Context) (*apptheory.Response
 	}
 	_ = update.UpdateKeys()
 
-	includedDebited, overageDebited := billing.BillingPartsForDebit(budget.IncludedCredits, budget.UsedCredits, linkRenderCreditCost)
-	billingType := billing.BillingTypeFromParts(includedDebited, overageDebited)
+	includedDebited, overageDebited := billing.PartsForDebit(budget.IncludedCredits, budget.UsedCredits, linkRenderCreditCost)
+	billingType := billing.TypeFromParts(includedDebited, overageDebited)
 	ledger := &models.UsageLedgerEntry{
 		ID:                     billing.UsageLedgerEntryID(instanceSlug, month, strings.TrimSpace(ctx.RequestID), "render.request", renderID, linkRenderCreditCost),
 		InstanceSlug:           instanceSlug,
@@ -267,8 +305,8 @@ func (s *Server) handleCreateRender(ctx *apptheory.Context) (*apptheory.Response
 			Cached:         false,
 			RenderID:       renderID,
 			PolicyVersion:  rendering.RenderPolicyVersion,
-			NormalizedURL:  normalized,
-			RetentionClass: classOut,
+			NormalizedURL:  normalizedURL,
+			RetentionClass: retentionClass,
 			ErrorCode:      "not_checked_budget",
 			ErrorMessage:   "budget exceeded",
 			CreatedAt:      now,
@@ -276,34 +314,7 @@ func (s *Server) handleCreateRender(ctx *apptheory.Context) (*apptheory.Response
 		})
 	}
 
-	artifact, queued, err := s.queueRender(ctx, normalized, classOut, retentionDays)
-	if err != nil {
-		return nil, err
-	}
-
-	audit := &models.AuditLogEntry{
-		Actor:     strings.TrimSpace(ctx.AuthIdentity),
-		Action:    "render.request",
-		Target:    fmt.Sprintf("render:%s", renderID),
-		RequestID: strings.TrimSpace(ctx.RequestID),
-		CreatedAt: now,
-	}
-	_ = audit.UpdateKeys()
-	_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
-
-	if queued && artifact != nil {
-		auditQueue := &models.AuditLogEntry{
-			Actor:     strings.TrimSpace(ctx.AuthIdentity),
-			Action:    "render.queue",
-			Target:    fmt.Sprintf("render:%s", strings.TrimSpace(artifact.ID)),
-			RequestID: strings.TrimSpace(ctx.RequestID),
-			CreatedAt: now,
-		}
-		_ = auditQueue.UpdateKeys()
-		_ = s.store.DB.WithContext(ctx.Context()).Model(auditQueue).Create()
-	}
-
-	return apptheory.JSON(http.StatusOK, renderArtifactResponseFromModel(ctx, artifact, !queued))
+	return nil, nil
 }
 
 var renderIDRE = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -472,8 +483,4 @@ func renderArtifactResponseFromModel(ctx *apptheory.Context, item *models.Render
 	}
 
 	return out
-}
-
-func renderIDForURL(normalizedURL string) string {
-	return rendering.RenderArtifactID(rendering.RenderPolicyVersion, normalizedURL)
 }

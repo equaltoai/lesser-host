@@ -29,12 +29,14 @@ type artifactStore interface {
 	DeleteObject(ctx context.Context, key string) error
 }
 
+// Server processes render jobs and retention sweep events.
 type Server struct {
 	cfg       config.Config
 	store     renderStore
 	artifacts artifactStore
 }
 
+// NewServer constructs a render worker Server.
 func NewServer(cfg config.Config, st renderStore, artifactsStore artifactStore) *Server {
 	return &Server{
 		cfg:       cfg,
@@ -43,6 +45,7 @@ func NewServer(cfg config.Config, st renderStore, artifactsStore artifactStore) 
 	}
 }
 
+// Register registers queue handlers and scheduled events with the provided app.
 func (s *Server) Register(app *apptheory.App) {
 	if app == nil || s == nil {
 		return
@@ -235,10 +238,7 @@ func (s *Server) handleRetentionSweep(ctx *apptheory.EventContext, _ events.Even
 	now := time.Now().UTC()
 	deleted := 0
 
-	for {
-		if ctx.RemainingMS > 0 && ctx.RemainingMS < 5000 {
-			break
-		}
+	for ctx.RemainingMS <= 0 || ctx.RemainingMS >= 5000 {
 
 		items, err := s.store.ListExpiredRenderArtifacts(ctx.Context(), now, 25)
 		if err != nil {

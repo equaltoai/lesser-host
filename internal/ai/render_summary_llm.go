@@ -5,11 +5,13 @@ import (
 	"strings"
 )
 
+// RenderSummaryLLMModule and RenderSummaryLLMPolicyVersion identify the render-summary module and version.
 const (
 	RenderSummaryLLMModule        = "render_summary_llm"
 	RenderSummaryLLMPolicyVersion = "v1"
 )
 
+// RenderSummaryInputsV1 is the input payload for render summarization.
 type RenderSummaryInputsV1 struct {
 	RenderID      string `json:"render_id"`
 	NormalizedURL string `json:"normalized_url"`
@@ -22,12 +24,14 @@ type RenderSummaryInputsV1 struct {
 	Text string `json:"text,omitempty"`
 }
 
+// RenderSummaryRisk describes a single risk signal extracted during summarization.
 type RenderSummaryRisk struct {
 	Code     string `json:"code"`
 	Severity string `json:"severity"` // low|medium|high
 	Summary  string `json:"summary"`
 }
 
+// RenderSummaryResultV1 is the normalized output payload for render summarization.
 type RenderSummaryResultV1 struct {
 	Kind string `json:"kind"`
 	// Version is the module-specific result schema version (not the policyVersion).
@@ -38,7 +42,8 @@ type RenderSummaryResultV1 struct {
 	Risks        []RenderSummaryRisk `json:"risks,omitempty"`
 }
 
-func SummarizeTextDeterministic(in string, max int) string {
+// SummarizeTextDeterministic returns a bounded, deterministic summary string.
+func SummarizeTextDeterministic(in string, maxLen int) string {
 	in = strings.ReplaceAll(in, "\r\n", "\n")
 	in = strings.ReplaceAll(in, "\r", "\n")
 
@@ -61,11 +66,11 @@ func SummarizeTextDeterministic(in string, max int) string {
 		return ""
 	}
 
-	if max <= 0 {
-		max = 512
+	if maxLen <= 0 {
+		maxLen = 512
 	}
-	if len(joined) > max {
-		joined = strings.TrimSpace(joined[:max])
+	if len(joined) > maxLen {
+		joined = strings.TrimSpace(joined[:maxLen])
 	}
 	return joined
 }
@@ -110,6 +115,7 @@ func bulletsDeterministic(in string, maxBullets int, maxLen int) []string {
 
 var riskyKeywordRE = regexp.MustCompile(`(?i)\b(download|install|password|verify\s+account|free\s+gift|crypto|wallet)\b`)
 
+// RenderSummaryDeterministicV1 produces a deterministic summary and risk signals from inputs.
 func RenderSummaryDeterministicV1(in RenderSummaryInputsV1) RenderSummaryResultV1 {
 	text := strings.TrimSpace(in.Text)
 	short := SummarizeTextDeterministic(text, 512)

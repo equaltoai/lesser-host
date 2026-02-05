@@ -18,6 +18,19 @@ import (
 
 var instanceSlugRE = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])?$`)
 
+const (
+	renderPolicyAlways     = "always"
+	renderPolicySuspicious = "suspicious"
+
+	overagePolicyAllow = "allow"
+	overagePolicyBlock = "block"
+
+	aiBatchingModeNone      = "none"
+	aiBatchingModeInRequest = "in_request"
+	aiBatchingModeWorker    = "worker"
+	aiBatchingModeHybrid    = "hybrid"
+)
+
 type createInstanceRequest struct {
 	Slug  string `json:"slug"`
 	Owner string `json:"owner,omitempty"`
@@ -113,11 +126,11 @@ func (s *Server) handleCreateInstance(ctx *apptheory.Context) (*apptheory.Respon
 	hostedPreviewsEnabled := true
 	linkSafetyEnabled := true
 	rendersEnabled := true
-	renderPolicy := "suspicious"
-	overagePolicy := "block"
+	renderPolicy := renderPolicySuspicious
+	overagePolicy := overagePolicyBlock
 	aiEnabled := false
 	aiModelSet := "openai:gpt-4o-mini"
-	aiBatchingMode := "none"
+	aiBatchingMode := aiBatchingModeNone
 	aiBatchMaxItems := int64(8)
 	aiBatchMaxTotalBytes := int64(64 * 1024)
 	aiPricingMultiplierBps := int64(10000)
@@ -269,7 +282,7 @@ func effectiveRendersEnabled(v *bool) bool {
 func effectiveRenderPolicy(v string) string {
 	v = strings.ToLower(strings.TrimSpace(v))
 	if v == "" {
-		return "suspicious"
+		return renderPolicySuspicious
 	}
 	return v
 }
@@ -277,7 +290,7 @@ func effectiveRenderPolicy(v string) string {
 func effectiveOveragePolicy(v string) string {
 	v = strings.ToLower(strings.TrimSpace(v))
 	if v == "" {
-		return "block"
+		return overagePolicyBlock
 	}
 	return v
 }
@@ -300,10 +313,10 @@ func effectiveAIModelSet(v string) string {
 func effectiveAIBatchingMode(v string) string {
 	v = strings.ToLower(strings.TrimSpace(v))
 	switch v {
-	case "none", "in_request", "worker", "hybrid":
+	case aiBatchingModeNone, aiBatchingModeInRequest, aiBatchingModeWorker, aiBatchingModeHybrid:
 		return v
 	default:
-		return "none"
+		return aiBatchingModeNone
 	}
 }
 
@@ -405,88 +418,10 @@ func (s *Server) handleUpdateInstanceConfig(ctx *apptheory.Context) (*apptheory.
 	if err := parseJSON(ctx, &req); err != nil {
 		return nil, err
 	}
-	if req.HostedPreviewsEnabled == nil && req.LinkSafetyEnabled == nil && req.RendersEnabled == nil && req.RenderPolicy == nil && req.OveragePolicy == nil && req.AIEnabled == nil && req.AIModelSet == nil && req.AIBatchingMode == nil && req.AIBatchMaxItems == nil && req.AIBatchMaxTotalBytes == nil && req.AIPricingMultiplierBps == nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "no config fields provided"}
-	}
 
-	var fields []string
-	update := &models.Instance{
-		Slug: slug,
-	}
-	if req.HostedPreviewsEnabled != nil {
-		update.HostedPreviewsEnabled = req.HostedPreviewsEnabled
-		fields = append(fields, "HostedPreviewsEnabled")
-	}
-	if req.LinkSafetyEnabled != nil {
-		update.LinkSafetyEnabled = req.LinkSafetyEnabled
-		fields = append(fields, "LinkSafetyEnabled")
-	}
-	if req.RendersEnabled != nil {
-		update.RendersEnabled = req.RendersEnabled
-		fields = append(fields, "RendersEnabled")
-	}
-	if req.RenderPolicy != nil {
-		rp := strings.ToLower(strings.TrimSpace(*req.RenderPolicy))
-		if rp != "always" && rp != "suspicious" {
-			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "render_policy must be always or suspicious"}
-		}
-		update.RenderPolicy = rp
-		fields = append(fields, "RenderPolicy")
-	}
-	if req.OveragePolicy != nil {
-		op := strings.ToLower(strings.TrimSpace(*req.OveragePolicy))
-		if op != "block" && op != "allow" {
-			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "overage_policy must be block or allow"}
-		}
-		update.OveragePolicy = op
-		fields = append(fields, "OveragePolicy")
-	}
-	if req.AIEnabled != nil {
-		update.AIEnabled = req.AIEnabled
-		fields = append(fields, "AIEnabled")
-	}
-	if req.AIModelSet != nil {
-		ms := strings.TrimSpace(*req.AIModelSet)
-		if ms == "" {
-			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "ai_model_set cannot be empty"}
-		}
-		update.AIModelSet = ms
-		fields = append(fields, "AIModelSet")
-	}
-	if req.AIBatchingMode != nil {
-		mode := strings.ToLower(strings.TrimSpace(*req.AIBatchingMode))
-		switch mode {
-		case "none", "in_request", "worker", "hybrid":
-			// ok
-		default:
-			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "ai_batching_mode must be none, in_request, worker, or hybrid"}
-		}
-		update.AIBatchingMode = mode
-		fields = append(fields, "AIBatchingMode")
-	}
-	if req.AIBatchMaxItems != nil {
-		if *req.AIBatchMaxItems <= 0 {
-			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "ai_batch_max_items must be > 0"}
-		}
-		update.AIBatchMaxItems = *req.AIBatchMaxItems
-		fields = append(fields, "AIBatchMaxItems")
-	}
-	if req.AIBatchMaxTotalBytes != nil {
-		if *req.AIBatchMaxTotalBytes <= 0 {
-			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "ai_batch_max_total_bytes must be > 0"}
-		}
-		update.AIBatchMaxTotalBytes = *req.AIBatchMaxTotalBytes
-		fields = append(fields, "AIBatchMaxTotalBytes")
-	}
-	if req.AIPricingMultiplierBps != nil {
-		if *req.AIPricingMultiplierBps <= 0 {
-			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "ai_pricing_multiplier_bps must be > 0"}
-		}
-		if *req.AIPricingMultiplierBps > 1_000_000 {
-			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "ai_pricing_multiplier_bps too large"}
-		}
-		update.AIPricingMultiplierBps = req.AIPricingMultiplierBps
-		fields = append(fields, "AIPricingMultiplierBps")
+	update, fields, err := buildInstanceConfigUpdate(slug, req)
+	if err != nil {
+		return nil, err
 	}
 	if err := update.UpdateKeys(); err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
@@ -535,6 +470,134 @@ func (s *Server) handleUpdateInstanceConfig(ctx *apptheory.Context) (*apptheory.
 	})
 }
 
+func buildInstanceConfigUpdate(slug string, req updateInstanceConfigRequest) (*models.Instance, []string, error) {
+	update := &models.Instance{Slug: slug}
+	fields := make([]string, 0, 12)
+
+	setBoolPtr(&update.HostedPreviewsEnabled, req.HostedPreviewsEnabled, "HostedPreviewsEnabled", &fields)
+	setBoolPtr(&update.LinkSafetyEnabled, req.LinkSafetyEnabled, "LinkSafetyEnabled", &fields)
+	setBoolPtr(&update.RendersEnabled, req.RendersEnabled, "RendersEnabled", &fields)
+
+	if err := setRenderPolicy(update, req.RenderPolicy, &fields); err != nil {
+		return nil, nil, err
+	}
+	if err := setOveragePolicy(update, req.OveragePolicy, &fields); err != nil {
+		return nil, nil, err
+	}
+
+	setBoolPtr(&update.AIEnabled, req.AIEnabled, "AIEnabled", &fields)
+
+	if err := setAIModelSet(update, req.AIModelSet, &fields); err != nil {
+		return nil, nil, err
+	}
+	if err := setAIBatchingMode(update, req.AIBatchingMode, &fields); err != nil {
+		return nil, nil, err
+	}
+	if err := setPositiveInt64(&update.AIBatchMaxItems, req.AIBatchMaxItems, "ai_batch_max_items", "AIBatchMaxItems", &fields); err != nil {
+		return nil, nil, err
+	}
+	if err := setPositiveInt64(&update.AIBatchMaxTotalBytes, req.AIBatchMaxTotalBytes, "ai_batch_max_total_bytes", "AIBatchMaxTotalBytes", &fields); err != nil {
+		return nil, nil, err
+	}
+	if err := setAIPricingMultiplierBps(update, req.AIPricingMultiplierBps, &fields); err != nil {
+		return nil, nil, err
+	}
+
+	if len(fields) == 0 {
+		return nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: "no config fields provided"}
+	}
+	return update, fields, nil
+}
+
+func setBoolPtr(dst **bool, src *bool, fieldName string, fields *[]string) {
+	if src == nil {
+		return
+	}
+	*dst = src
+	*fields = append(*fields, fieldName)
+}
+
+func setRenderPolicy(update *models.Instance, src *string, fields *[]string) error {
+	if src == nil {
+		return nil
+	}
+	rp := strings.ToLower(strings.TrimSpace(*src))
+	if rp != renderPolicyAlways && rp != renderPolicySuspicious {
+		return &apptheory.AppError{Code: "app.bad_request", Message: "render_policy must be always or suspicious"}
+	}
+	update.RenderPolicy = rp
+	*fields = append(*fields, "RenderPolicy")
+	return nil
+}
+
+func setOveragePolicy(update *models.Instance, src *string, fields *[]string) error {
+	if src == nil {
+		return nil
+	}
+	op := strings.ToLower(strings.TrimSpace(*src))
+	if op != overagePolicyBlock && op != overagePolicyAllow {
+		return &apptheory.AppError{Code: "app.bad_request", Message: "overage_policy must be block or allow"}
+	}
+	update.OveragePolicy = op
+	*fields = append(*fields, "OveragePolicy")
+	return nil
+}
+
+func setAIModelSet(update *models.Instance, src *string, fields *[]string) error {
+	if src == nil {
+		return nil
+	}
+	ms := strings.TrimSpace(*src)
+	if ms == "" {
+		return &apptheory.AppError{Code: "app.bad_request", Message: "ai_model_set cannot be empty"}
+	}
+	update.AIModelSet = ms
+	*fields = append(*fields, "AIModelSet")
+	return nil
+}
+
+func setAIBatchingMode(update *models.Instance, src *string, fields *[]string) error {
+	if src == nil {
+		return nil
+	}
+	mode := strings.ToLower(strings.TrimSpace(*src))
+	switch mode {
+	case aiBatchingModeNone, aiBatchingModeInRequest, aiBatchingModeWorker, aiBatchingModeHybrid:
+		// ok
+	default:
+		return &apptheory.AppError{Code: "app.bad_request", Message: "ai_batching_mode must be none, in_request, worker, or hybrid"}
+	}
+	update.AIBatchingMode = mode
+	*fields = append(*fields, "AIBatchingMode")
+	return nil
+}
+
+func setPositiveInt64(dst *int64, src *int64, jsonField string, modelField string, fields *[]string) error {
+	if src == nil {
+		return nil
+	}
+	if *src <= 0 {
+		return &apptheory.AppError{Code: "app.bad_request", Message: jsonField + " must be > 0"}
+	}
+	*dst = *src
+	*fields = append(*fields, modelField)
+	return nil
+}
+
+func setAIPricingMultiplierBps(update *models.Instance, src *int64, fields *[]string) error {
+	if src == nil {
+		return nil
+	}
+	if *src <= 0 {
+		return &apptheory.AppError{Code: "app.bad_request", Message: "ai_pricing_multiplier_bps must be > 0"}
+	}
+	if *src > 1_000_000 {
+		return &apptheory.AppError{Code: "app.bad_request", Message: "ai_pricing_multiplier_bps too large"}
+	}
+	update.AIPricingMultiplierBps = src
+	*fields = append(*fields, "AIPricingMultiplierBps")
+	return nil
+}
 func (s *Server) handleSetInstanceBudgetMonth(ctx *apptheory.Context) (*apptheory.Response, error) {
 	if err := requireAdmin(ctx); err != nil {
 		return nil, err

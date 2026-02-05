@@ -5,6 +5,7 @@ import (
 	"strings"
 )
 
+// Config holds runtime configuration loaded from environment variables.
 type Config struct {
 	AppName string
 	Stage   string
@@ -24,6 +25,7 @@ type Config struct {
 	WebAuthnOrigins []string
 }
 
+// Load reads environment variables and returns a Config with defaults applied.
 func Load() Config {
 	stage := strings.TrimSpace(os.Getenv("STAGE"))
 	if stage == "" {

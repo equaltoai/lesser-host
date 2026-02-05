@@ -103,11 +103,7 @@ func (s *Server) handlePublishJob(ctx *apptheory.Context) (*apptheory.Response, 
 	// Default modules when omitted.
 	modules := req.Modules
 	if len(modules) == 0 {
-		// Auto-escalate to render for suspicious links by default (budgeted).
-		modules = []publishJobModuleRequest{
-			{Name: "link_safety_basic"},
-			{Name: "link_safety_render"},
-		}
+		modules = defaultPublishJobModules()
 	}
 
 	pricingMultiplierBps := int64(10000)
@@ -115,23 +111,7 @@ func (s *Server) handlePublishJob(ctx *apptheory.Context) (*apptheory.Response, 
 		pricingMultiplierBps = authorPublishDiscountBPS
 	}
 
-	// Canonicalize deterministically (no network) and cap links to avoid oversized items.
-	canonical := make([]string, 0, len(req.Links))
-	seen := map[string]struct{}{}
-	for _, raw := range req.Links {
-		if len(canonical) >= maxPublishLinks {
-			break
-		}
-		key := strings.TrimSpace(normalizeLinkURLDeterministic(raw))
-		if key == "" {
-			continue
-		}
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		canonical = append(canonical, key)
-	}
+	canonical := canonicalizePublishLinks(req.Links)
 
 	linksHash := linkSafetyBasicLinksHash(canonical)
 
@@ -151,98 +131,7 @@ func (s *Server) handlePublishJob(ctx *apptheory.Context) (*apptheory.Response, 
 		if name == "" {
 			continue
 		}
-		switch name {
-		case "link_safety_basic":
-			if !instCfg.LinkSafetyEnabled {
-				out.Modules = append(out.Modules, publishJobModuleResponse{
-					Name:          "link_safety_basic",
-					PolicyVersion: linkSafetyBasicPolicyVersion,
-					Status:        "disabled",
-					Cached:        false,
-					Budget: budgetDecision{
-						Allowed:          true,
-						OverBudget:       false,
-						Reason:           "disabled",
-						RequestedCredits: 0,
-						DebitedCredits:   0,
-					},
-				})
-				continue
-			}
-			moduleResp := s.runLinkSafetyBasicJob(ctx, instanceSlug, jobID, actorURI, objectURI, contentHash, linksHash, canonical, instCfg.OveragePolicy, pricingMultiplierBps)
-			out.Modules = append(out.Modules, moduleResp)
-		case "link_safety_render":
-			if !instCfg.RendersEnabled {
-				out.Modules = append(out.Modules, publishJobModuleResponse{
-					Name:          "link_safety_render",
-					PolicyVersion: rendering.RenderPolicyVersion,
-					Status:        "disabled",
-					Cached:        false,
-					Budget: budgetDecision{
-						Allowed:          true,
-						OverBudget:       false,
-						Reason:           "disabled",
-						RequestedCredits: 0,
-						DebitedCredits:   0,
-					},
-				})
-				continue
-			}
-			moduleResp := s.runLinkSafetyRenderJob(ctx, instanceSlug, jobID, renderPolicy, instCfg.OveragePolicy, pricingMultiplierBps, canonical)
-			out.Modules = append(out.Modules, moduleResp)
-		case "link_preview_render":
-			if !instCfg.RendersEnabled {
-				out.Modules = append(out.Modules, publishJobModuleResponse{
-					Name:          "link_preview_render",
-					PolicyVersion: rendering.RenderPolicyVersion,
-					Status:        "disabled",
-					Cached:        false,
-					Budget: budgetDecision{
-						Allowed:          true,
-						OverBudget:       false,
-						Reason:           "disabled",
-						RequestedCredits: 0,
-						DebitedCredits:   0,
-					},
-				})
-				continue
-			}
-			moduleResp := s.runLinkPreviewRenderJob(ctx, instanceSlug, jobID, renderPolicy, instCfg.OveragePolicy, pricingMultiplierBps, canonical)
-			out.Modules = append(out.Modules, moduleResp)
-		case "link_render_summary":
-			if !instCfg.RendersEnabled {
-				out.Modules = append(out.Modules, publishJobModuleResponse{
-					Name:          "link_render_summary",
-					PolicyVersion: linkRenderSummaryPolicyVersion,
-					Status:        "disabled",
-					Cached:        false,
-					Budget: budgetDecision{
-						Allowed:          true,
-						OverBudget:       false,
-						Reason:           "disabled",
-						RequestedCredits: 0,
-						DebitedCredits:   0,
-					},
-				})
-				continue
-			}
-			moduleResp := s.runLinkRenderSummaryJob(ctx, instanceSlug, jobID, renderPolicy, instCfg, pricingMultiplierBps, canonical)
-			out.Modules = append(out.Modules, moduleResp)
-		default:
-			out.Modules = append(out.Modules, publishJobModuleResponse{
-				Name:          name,
-				PolicyVersion: "",
-				Status:        "unsupported",
-				Cached:        false,
-				Budget: budgetDecision{
-					Allowed:          true,
-					OverBudget:       false,
-					Reason:           "unsupported module",
-					RequestedCredits: 0,
-					DebitedCredits:   0,
-				},
-			})
-		}
+		out.Modules = append(out.Modules, s.runPublishJobModule(ctx, instanceSlug, jobID, actorURI, objectURI, contentHash, linksHash, renderPolicy, instCfg, pricingMultiplierBps, canonical, name))
 	}
 
 	if len(out.Modules) == 0 {
@@ -275,6 +164,106 @@ func (s *Server) handlePublishJob(ctx *apptheory.Context) (*apptheory.Response, 
 	}
 
 	return apptheory.JSON(http.StatusOK, out)
+}
+
+func defaultPublishJobModules() []publishJobModuleRequest {
+	// Auto-escalate to render for suspicious links by default (budgeted).
+	return []publishJobModuleRequest{
+		{Name: "link_safety_basic"},
+		{Name: "link_safety_render"},
+	}
+}
+
+func canonicalizePublishLinks(links []string) []string {
+	canonical := make([]string, 0, len(links))
+	seen := map[string]struct{}{}
+	for _, raw := range links {
+		if len(canonical) >= maxPublishLinks {
+			break
+		}
+		key := strings.TrimSpace(normalizeLinkURLDeterministic(raw))
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		canonical = append(canonical, key)
+	}
+	return canonical
+}
+
+func disabledPublishJobModuleResponse(name string, policyVersion string) publishJobModuleResponse {
+	return publishJobModuleResponse{
+		Name:          strings.TrimSpace(name),
+		PolicyVersion: strings.TrimSpace(policyVersion),
+		Status:        "disabled",
+		Cached:        false,
+		Budget: budgetDecision{
+			Allowed:          true,
+			OverBudget:       false,
+			Reason:           "disabled",
+			RequestedCredits: 0,
+			DebitedCredits:   0,
+		},
+	}
+}
+
+func unsupportedPublishJobModuleResponse(name string) publishJobModuleResponse {
+	return publishJobModuleResponse{
+		Name:          strings.TrimSpace(name),
+		PolicyVersion: "",
+		Status:        "unsupported",
+		Cached:        false,
+		Budget: budgetDecision{
+			Allowed:          true,
+			OverBudget:       false,
+			Reason:           "unsupported module",
+			RequestedCredits: 0,
+			DebitedCredits:   0,
+		},
+	}
+}
+
+func (s *Server) runPublishJobModule(
+	ctx *apptheory.Context,
+	instanceSlug string,
+	jobID string,
+	actorURI string,
+	objectURI string,
+	contentHash string,
+	linksHash string,
+	renderPolicy string,
+	instCfg instanceTrustConfig,
+	pricingMultiplierBps int64,
+	canonicalLinks []string,
+	moduleName string,
+) publishJobModuleResponse {
+	switch moduleName {
+	case "link_safety_basic":
+		if !instCfg.LinkSafetyEnabled {
+			return disabledPublishJobModuleResponse("link_safety_basic", linkSafetyBasicPolicyVersion)
+		}
+		return s.runLinkSafetyBasicJob(ctx, instanceSlug, jobID, actorURI, objectURI, contentHash, linksHash, canonicalLinks, instCfg.OveragePolicy, pricingMultiplierBps)
+	case "link_safety_render":
+		if !instCfg.RendersEnabled {
+			return disabledPublishJobModuleResponse("link_safety_render", rendering.RenderPolicyVersion)
+		}
+		return s.runLinkSafetyRenderJob(ctx, instanceSlug, jobID, renderPolicy, instCfg.OveragePolicy, pricingMultiplierBps, canonicalLinks)
+	case "link_preview_render":
+		if !instCfg.RendersEnabled {
+			return disabledPublishJobModuleResponse("link_preview_render", rendering.RenderPolicyVersion)
+		}
+		return s.runLinkPreviewRenderJob(ctx, instanceSlug, jobID, renderPolicy, instCfg.OveragePolicy, pricingMultiplierBps, canonicalLinks)
+	case "link_render_summary":
+		if !instCfg.RendersEnabled {
+			return disabledPublishJobModuleResponse("link_render_summary", linkRenderSummaryPolicyVersion)
+		}
+		return s.runLinkRenderSummaryJob(ctx, instanceSlug, renderPolicy, instCfg, pricingMultiplierBps, canonicalLinks)
+	default:
+		return unsupportedPublishJobModuleResponse(moduleName)
+	}
 }
 
 const (
@@ -483,7 +472,7 @@ func (s *Server) runLinkSafetyBasicJob(
 	}
 
 	remaining := budget.IncludedCredits - budget.UsedCredits
-	if remaining < creditsPriced && strings.ToLower(strings.TrimSpace(overagePolicy)) != "allow" {
+	if remaining < creditsPriced && strings.ToLower(strings.TrimSpace(overagePolicy)) != overagePolicyAllow {
 		return publishJobModuleResponse{
 			Name:          "link_safety_basic",
 			PolicyVersion: linkSafetyBasicPolicyVersion,
@@ -525,8 +514,8 @@ func (s *Server) runLinkSafetyBasicJob(
 	}
 	_ = update.UpdateKeys()
 
-	includedDebited, overageDebited := billing.BillingPartsForDebit(budget.IncludedCredits, budget.UsedCredits, creditsPriced)
-	billingType := billing.BillingTypeFromParts(includedDebited, overageDebited)
+	includedDebited, overageDebited := billing.PartsForDebit(budget.IncludedCredits, budget.UsedCredits, creditsPriced)
+	billingType := billing.TypeFromParts(includedDebited, overageDebited)
 
 	ledger := &models.UsageLedgerEntry{
 		ID:                     billing.UsageLedgerEntryID(instanceSlug, month, strings.TrimSpace(ctx.RequestID), "link_safety_basic", jobID, creditsPriced),
@@ -569,7 +558,7 @@ func (s *Server) runLinkSafetyBasicJob(
 	_ = auditScan.UpdateKeys()
 
 	err = s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
-		if strings.ToLower(strings.TrimSpace(overagePolicy)) == "allow" {
+		if strings.ToLower(strings.TrimSpace(overagePolicy)) == overagePolicyAllow {
 			tx.UpdateWithBuilder(update, func(ub core.UpdateBuilder) error {
 				ub.Add("UsedCredits", creditsPriced)
 				ub.Set("UpdatedAt", now)
@@ -693,7 +682,7 @@ func (s *Server) runLinkSafetyBasicJob(
 
 	remaining = latest.IncludedCredits - latest.UsedCredits
 	overBudget := remaining < 0
-	if strings.ToLower(strings.TrimSpace(overagePolicy)) == "allow" && overageDebited > 0 {
+	if strings.ToLower(strings.TrimSpace(overagePolicy)) == overagePolicyAllow && overageDebited > 0 {
 		overBudget = true
 	}
 

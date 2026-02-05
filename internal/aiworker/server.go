@@ -26,6 +26,11 @@ import (
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
+const (
+	deterministicValue       = "deterministic"
+	claimVerdictInconclusive = "inconclusive"
+)
+
 type aiStore interface {
 	GetAIJob(ctx context.Context, id string) (*models.AIJob, error)
 	PutAIJob(ctx context.Context, item *models.AIJob) error
@@ -45,6 +50,7 @@ type rekognitionAPI interface {
 	DetectFaces(ctx context.Context, params *rekognition.DetectFacesInput, optFns ...func(*rekognition.Options)) (*rekognition.DetectFacesOutput, error)
 }
 
+// Server processes AI jobs from the worker queue.
 type Server struct {
 	cfg config.Config
 
@@ -53,6 +59,7 @@ type Server struct {
 	rekognition rekognitionAPI
 }
 
+// NewServer constructs a Server with AWS service clients and a store.
 func NewServer(cfg config.Config, st aiStore, comp comprehendAPI, rek rekognitionAPI) *Server {
 	return &Server{
 		cfg:         cfg,
@@ -62,6 +69,7 @@ func NewServer(cfg config.Config, st aiStore, comp comprehendAPI, rek rekognitio
 	}
 }
 
+// Register registers SQS handlers with the provided app.
 func (s *Server) Register(app *apptheory.App) {
 	if app == nil || s == nil {
 		return
@@ -274,155 +282,202 @@ func (s *Server) processRenderSummaryBatchV1(ctx context.Context, requestID stri
 
 	now := time.Now().UTC()
 
-	type parsedJob struct {
-		Job   *models.AIJob
-		Input ai.RenderSummaryInputsV1
-	}
-
-	// Parse + filter jobs; split by model set for grouping rules.
-	byModelSet := map[string][]parsedJob{}
-	for _, job := range jobs {
-		if job == nil {
-			continue
-		}
-		if strings.TrimSpace(job.Status) != models.AIJobStatusQueued {
-			continue
-		}
-		if !job.ExpiresAt.IsZero() && job.ExpiresAt.Before(now) {
-			continue
-		}
-
-		// Idempotency: skip jobs that already have results.
-		if existing, err := s.store.GetAIResult(ctx, strings.TrimSpace(job.ID)); err == nil && existing != nil {
-			job.Status = models.AIJobStatusOK
-			job.ErrorCode = ""
-			job.ErrorMessage = ""
-			job.RequestID = strings.TrimSpace(requestID)
-			_ = job.UpdateKeys()
-			_ = s.store.PutAIJob(ctx, job)
-			continue
-		}
-
-		var in ai.RenderSummaryInputsV1
-		if err := json.Unmarshal([]byte(job.InputsJSON), &in); err != nil {
-			continue
-		}
-
-		ms := strings.TrimSpace(job.ModelSet)
-		if ms == "" {
-			ms = "deterministic"
-		}
-		byModelSet[ms] = append(byModelSet[ms], parsedJob{Job: job, Input: in})
-	}
-
+	byModelSet := s.groupRenderSummaryJobs(ctx, requestID, now, jobs)
 	for modelSet, group := range byModelSet {
-		if len(group) == 0 {
-			continue
-		}
-
-		items := make([]llm.RenderSummaryBatchItem, 0, len(group))
-		for _, pj := range group {
-			if pj.Job == nil {
-				continue
-			}
-			items = append(items, llm.RenderSummaryBatchItem{
-				ItemID: strings.TrimSpace(pj.Job.ID),
-				Input:  pj.Input,
-			})
-		}
-		if len(items) == 0 {
-			continue
-		}
-
-		start := time.Now()
-		results := map[string]ai.RenderSummaryResultV1{}
-		usage := models.AIUsage{}
-		commonErrs := []models.AIError{}
-		usedDeterministic := false
-
-		if strings.HasPrefix(strings.ToLower(modelSet), "openai:") {
-			apiKey, keyErr := openAIAPIKey(ctx)
-			if keyErr != nil || strings.TrimSpace(apiKey) == "" {
-				usedDeterministic = true
-				commonErrs = append(commonErrs, models.AIError{Code: "llm_unavailable", Message: "LLM unavailable; used deterministic fallback", Retryable: false})
-			} else {
-				outMap, u, err := llm.RenderSummaryBatchOpenAI(ctx, apiKey, modelSet, items)
-				if err != nil {
-					usedDeterministic = true
-					commonErrs = append(commonErrs, models.AIError{Code: "llm_failed", Message: "LLM call failed; used deterministic fallback", Retryable: false})
-				} else {
-					results = outMap
-					usage = u
-				}
-			}
-		} else {
-			usedDeterministic = true
-		}
-
-		if usedDeterministic {
-			for _, it := range items {
-				results[it.ItemID] = ai.RenderSummaryDeterministicV1(it.Input)
-			}
-			usage = models.AIUsage{
-				Provider:   "deterministic",
-				Model:      "deterministic",
-				ToolCalls:  0,
-				DurationMs: time.Since(start).Milliseconds(),
-			}
-		}
-
-		for _, pj := range group {
-			job := pj.Job
-			if job == nil {
-				continue
-			}
-			id := strings.TrimSpace(job.ID)
-			if id == "" {
-				continue
-			}
-			res, ok := results[id]
-			itemErrs := append([]models.AIError(nil), commonErrs...)
-			if !ok || strings.TrimSpace(res.ShortSummary) == "" {
-				res = ai.RenderSummaryDeterministicV1(pj.Input)
-				itemErrs = append(itemErrs, models.AIError{Code: "llm_missing_output", Message: "LLM output missing; used deterministic fallback", Retryable: false})
-			}
-
-			b, err := json.Marshal(res)
-			if err != nil {
-				return err
-			}
-
-			item := &models.AIResult{
-				ID:            id,
-				InstanceSlug:  strings.TrimSpace(job.InstanceSlug),
-				Module:        strings.ToLower(strings.TrimSpace(job.Module)),
-				PolicyVersion: strings.TrimSpace(job.PolicyVersion),
-				ModelSet:      strings.TrimSpace(job.ModelSet),
-				CacheScope:    strings.TrimSpace(job.CacheScope),
-				ScopeKey:      strings.TrimSpace(job.ScopeKey),
-				InputsHash:    strings.TrimSpace(job.InputsHash),
-				ResultJSON:    strings.TrimSpace(string(b)),
-				Usage:         usage,
-				Errors:        itemErrs,
-				CreatedAt:     now,
-				ExpiresAt:     now.Add(30 * 24 * time.Hour),
-				JobID:         id,
-				RequestID:     strings.TrimSpace(requestID),
-			}
-			_ = item.UpdateKeys()
-
-			if err := s.store.PutAIResult(ctx, item); err != nil {
-				return err
-			}
-
-			job.Status = models.AIJobStatusOK
-			job.ErrorCode = ""
-			job.ErrorMessage = ""
-			job.RequestID = strings.TrimSpace(requestID)
-			_ = job.UpdateKeys()
-			_ = s.store.PutAIJob(ctx, job)
+		if err := s.processRenderSummaryGroup(ctx, requestID, now, modelSet, group); err != nil {
+			return err
 		}
 	}
+	return nil
+}
+
+type renderSummaryParsedJob struct {
+	Job   *models.AIJob
+	Input ai.RenderSummaryInputsV1
+}
+
+func (s *Server) groupRenderSummaryJobs(ctx context.Context, requestID string, now time.Time, jobs []*models.AIJob) map[string][]renderSummaryParsedJob {
+	byModelSet := make(map[string][]renderSummaryParsedJob)
+	for _, job := range jobs {
+		pj, ok := s.parseRenderSummaryJob(ctx, requestID, now, job)
+		if !ok {
+			continue
+		}
+		ms := strings.TrimSpace(pj.Job.ModelSet)
+		if ms == "" {
+			ms = deterministicValue
+		}
+		byModelSet[ms] = append(byModelSet[ms], pj)
+	}
+	return byModelSet
+}
+
+func (s *Server) parseRenderSummaryJob(ctx context.Context, requestID string, now time.Time, job *models.AIJob) (renderSummaryParsedJob, bool) {
+	if s == nil || s.store == nil || job == nil {
+		return renderSummaryParsedJob{}, false
+	}
+	if strings.TrimSpace(job.Status) != models.AIJobStatusQueued {
+		return renderSummaryParsedJob{}, false
+	}
+	if !job.ExpiresAt.IsZero() && job.ExpiresAt.Before(now) {
+		return renderSummaryParsedJob{}, false
+	}
+
+	// Idempotency: if result already exists, mark job OK and skip.
+	if existing, err := s.store.GetAIResult(ctx, strings.TrimSpace(job.ID)); err == nil && existing != nil {
+		job.Status = models.AIJobStatusOK
+		job.ErrorCode = ""
+		job.ErrorMessage = ""
+		job.RequestID = strings.TrimSpace(requestID)
+		_ = job.UpdateKeys()
+		_ = s.store.PutAIJob(ctx, job)
+		return renderSummaryParsedJob{}, false
+	}
+
+	var in ai.RenderSummaryInputsV1
+	if err := json.Unmarshal([]byte(job.InputsJSON), &in); err != nil {
+		return renderSummaryParsedJob{}, false
+	}
+
+	return renderSummaryParsedJob{Job: job, Input: in}, true
+}
+
+func (s *Server) processRenderSummaryGroup(ctx context.Context, requestID string, now time.Time, modelSet string, group []renderSummaryParsedJob) error {
+	if len(group) == 0 {
+		return nil
+	}
+
+	items := renderSummaryBatchItems(group)
+	if len(items) == 0 {
+		return nil
+	}
+
+	results, usage, commonErrs := s.renderSummaryBatchResults(ctx, modelSet, items)
+
+	for _, pj := range group {
+		if err := s.putRenderSummaryResult(ctx, requestID, now, pj, modelSet, results, usage, commonErrs); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func renderSummaryBatchItems(group []renderSummaryParsedJob) []llm.RenderSummaryBatchItem {
+	items := make([]llm.RenderSummaryBatchItem, 0, len(group))
+	for _, pj := range group {
+		if pj.Job == nil {
+			continue
+		}
+		items = append(items, llm.RenderSummaryBatchItem{
+			ItemID: strings.TrimSpace(pj.Job.ID),
+			Input:  pj.Input,
+		})
+	}
+	return items
+}
+
+func (s *Server) renderSummaryBatchResults(ctx context.Context, modelSet string, items []llm.RenderSummaryBatchItem) (map[string]ai.RenderSummaryResultV1, models.AIUsage, []models.AIError) {
+	start := time.Now()
+	results := map[string]ai.RenderSummaryResultV1{}
+	usage := models.AIUsage{}
+	commonErrs := []models.AIError{}
+
+	modelSet = strings.TrimSpace(modelSet)
+	useDeterministic := true
+
+	if strings.HasPrefix(strings.ToLower(modelSet), "openai:") {
+		apiKey, keyErr := openAIAPIKey(ctx)
+		if keyErr != nil || strings.TrimSpace(apiKey) == "" {
+			commonErrs = append(commonErrs, models.AIError{Code: "llm_unavailable", Message: "LLM unavailable; used deterministic fallback", Retryable: false})
+		} else {
+			outMap, u, err := llm.RenderSummaryBatchOpenAI(ctx, apiKey, modelSet, items)
+			if err != nil {
+				commonErrs = append(commonErrs, models.AIError{Code: "llm_failed", Message: "LLM call failed; used deterministic fallback", Retryable: false})
+			} else {
+				results = outMap
+				usage = u
+				useDeterministic = false
+			}
+		}
+	}
+
+	if useDeterministic {
+		for _, it := range items {
+			results[it.ItemID] = ai.RenderSummaryDeterministicV1(it.Input)
+		}
+		usage = models.AIUsage{
+			Provider:   deterministicValue,
+			Model:      deterministicValue,
+			ToolCalls:  0,
+			DurationMs: time.Since(start).Milliseconds(),
+		}
+	}
+
+	return results, usage, commonErrs
+}
+
+func (s *Server) putRenderSummaryResult(
+	ctx context.Context,
+	requestID string,
+	now time.Time,
+	pj renderSummaryParsedJob,
+	modelSet string,
+	results map[string]ai.RenderSummaryResultV1,
+	usage models.AIUsage,
+	commonErrs []models.AIError,
+) error {
+	job := pj.Job
+	if s == nil || s.store == nil || job == nil {
+		return nil
+	}
+
+	id := strings.TrimSpace(job.ID)
+	if id == "" {
+		return nil
+	}
+
+	res, ok := results[id]
+	itemErrs := append([]models.AIError(nil), commonErrs...)
+	if !ok || strings.TrimSpace(res.ShortSummary) == "" {
+		res = ai.RenderSummaryDeterministicV1(pj.Input)
+		itemErrs = append(itemErrs, models.AIError{Code: "llm_missing_output", Message: "LLM output missing; used deterministic fallback", Retryable: false})
+	}
+
+	b, err := json.Marshal(res)
+	if err != nil {
+		return err
+	}
+
+	item := &models.AIResult{
+		ID:            id,
+		InstanceSlug:  strings.TrimSpace(job.InstanceSlug),
+		Module:        strings.ToLower(strings.TrimSpace(job.Module)),
+		PolicyVersion: strings.TrimSpace(job.PolicyVersion),
+		ModelSet:      strings.TrimSpace(modelSet),
+		CacheScope:    strings.TrimSpace(job.CacheScope),
+		ScopeKey:      strings.TrimSpace(job.ScopeKey),
+		InputsHash:    strings.TrimSpace(job.InputsHash),
+		ResultJSON:    strings.TrimSpace(string(b)),
+		Usage:         usage,
+		Errors:        itemErrs,
+		CreatedAt:     now,
+		ExpiresAt:     now.Add(30 * 24 * time.Hour),
+		JobID:         id,
+		RequestID:     strings.TrimSpace(requestID),
+	}
+	_ = item.UpdateKeys()
+
+	if err := s.store.PutAIResult(ctx, item); err != nil {
+		return err
+	}
+
+	job.Status = models.AIJobStatusOK
+	job.ErrorCode = ""
+	job.ErrorMessage = ""
+	job.RequestID = strings.TrimSpace(requestID)
+	_ = job.UpdateKeys()
+	_ = s.store.PutAIJob(ctx, job)
 
 	return nil
 }
@@ -473,18 +528,9 @@ func (s *Server) runComprehendTextEvidenceV1(ctx context.Context, job *models.AI
 		return "", models.AIUsage{}, nil, fmt.Errorf("job is nil")
 	}
 
-	var in comprehendTextInputsV1
-	if err := json.Unmarshal([]byte(job.InputsJSON), &in); err != nil {
-		return "", models.AIUsage{}, nil, nil // drop invalid
-	}
-
-	text := strings.TrimSpace(in.Text)
-	if text == "" {
+	text, ok := parseComprehendTextInputs(job)
+	if !ok {
 		return "", models.AIUsage{}, nil, nil
-	}
-	if len([]byte(text)) > 5000 {
-		b := []byte(text)
-		text = string(b[:5000])
 	}
 
 	start := time.Now()
@@ -494,105 +540,10 @@ func (s *Server) runComprehendTextEvidenceV1(ctx context.Context, job *models.AI
 		Version: "v1",
 	}
 
-	// Detect language.
-	langOut, err := s.comprehend.DetectDominantLanguage(ctx, &comprehend.DetectDominantLanguageInput{
-		Text: aws.String(text),
-	})
-	if err != nil {
-		out.Warnings = append(out.Warnings, "detect_dominant_language_failed")
-	} else {
-		for _, l := range langOut.Languages {
-			code := strings.TrimSpace(aws.ToString(l.LanguageCode))
-			if code == "" {
-				continue
-			}
-			out.Language = append(out.Language, comprehendTextLanguage{
-				Code:  code,
-				Score: roundScore(l.Score),
-			})
-		}
-		sort.Slice(out.Language, func(i, j int) bool {
-			if out.Language[i].Score == out.Language[j].Score {
-				return out.Language[i].Code < out.Language[j].Code
-			}
-			return out.Language[i].Score > out.Language[j].Score
-		})
-		if len(out.Language) > 0 {
-			out.DominantLanguage = out.Language[0].Code
-		}
-	}
-
-	languageCode := strings.TrimSpace(out.DominantLanguage)
-	if languageCode == "" {
-		languageCode = "en"
-	}
-
-	// Entities.
-	entOut, err := s.comprehend.DetectEntities(ctx, &comprehend.DetectEntitiesInput{
-		Text:         aws.String(text),
-		LanguageCode: comprehendtypes.LanguageCode(languageCode),
-	})
-	if err != nil {
-		out.Warnings = append(out.Warnings, "detect_entities_failed")
-	} else {
-		const maxEntities = 50
-		for _, e := range entOut.Entities {
-			t := strings.TrimSpace(aws.ToString(e.Text))
-			if t == "" {
-				continue
-			}
-			if len(t) > 64 {
-				t = t[:64]
-			}
-			out.Entities = append(out.Entities, comprehendTextEntity{
-				Text:  t,
-				Type:  strings.TrimSpace(string(e.Type)),
-				Score: roundScore(e.Score),
-				Begin: aws.ToInt32(e.BeginOffset),
-				End:   aws.ToInt32(e.EndOffset),
-			})
-			if len(out.Entities) >= maxEntities {
-				out.Truncated = true
-				break
-			}
-		}
-		sort.Slice(out.Entities, func(i, j int) bool {
-			if out.Entities[i].Begin == out.Entities[j].Begin {
-				return out.Entities[i].Type < out.Entities[j].Type
-			}
-			return out.Entities[i].Begin < out.Entities[j].Begin
-		})
-	}
-
-	// PII: Comprehend PII is best-effort and not available for all languages.
+	languageCode := s.detectComprehendLanguage(ctx, text, &out)
+	s.detectComprehendEntities(ctx, text, languageCode, &out)
 	if strings.EqualFold(languageCode, "en") {
-		piiOut, err := s.comprehend.DetectPiiEntities(ctx, &comprehend.DetectPiiEntitiesInput{
-			Text:         aws.String(text),
-			LanguageCode: comprehendtypes.LanguageCodeEn,
-		})
-		if err != nil {
-			out.Warnings = append(out.Warnings, "detect_pii_failed")
-		} else {
-			const maxPII = 50
-			for _, p := range piiOut.Entities {
-				out.PIIEntities = append(out.PIIEntities, comprehendTextPIIEntity{
-					Type:  strings.TrimSpace(string(p.Type)),
-					Score: roundScore(p.Score),
-					Begin: aws.ToInt32(p.BeginOffset),
-					End:   aws.ToInt32(p.EndOffset),
-				})
-				if len(out.PIIEntities) >= maxPII {
-					out.Truncated = true
-					break
-				}
-			}
-			sort.Slice(out.PIIEntities, func(i, j int) bool {
-				if out.PIIEntities[i].Begin == out.PIIEntities[j].Begin {
-					return out.PIIEntities[i].Type < out.PIIEntities[j].Type
-				}
-				return out.PIIEntities[i].Begin < out.PIIEntities[j].Begin
-			})
-		}
+		s.detectComprehendPII(ctx, text, &out)
 	}
 
 	b, err := json.Marshal(out)
@@ -608,6 +559,152 @@ func (s *Server) runComprehendTextEvidenceV1(ctx context.Context, job *models.AI
 	}
 
 	return string(b), usage, nil, nil
+}
+
+func parseComprehendTextInputs(job *models.AIJob) (string, bool) {
+	if job == nil {
+		return "", false
+	}
+
+	var in comprehendTextInputsV1
+	if err := json.Unmarshal([]byte(job.InputsJSON), &in); err != nil {
+		return "", false
+	}
+
+	text := strings.TrimSpace(in.Text)
+	if text == "" {
+		return "", false
+	}
+
+	if len([]byte(text)) > 5000 {
+		b := []byte(text)
+		text = string(b[:5000])
+	}
+
+	return text, true
+}
+
+func (s *Server) detectComprehendLanguage(ctx context.Context, text string, out *comprehendTextEvidenceV1) string {
+	if s == nil || s.comprehend == nil || out == nil {
+		return "en"
+	}
+
+	langOut, err := s.comprehend.DetectDominantLanguage(ctx, &comprehend.DetectDominantLanguageInput{
+		Text: aws.String(text),
+	})
+	if err != nil {
+		out.Warnings = append(out.Warnings, "detect_dominant_language_failed")
+		return "en"
+	}
+
+	for _, l := range langOut.Languages {
+		code := strings.TrimSpace(aws.ToString(l.LanguageCode))
+		if code == "" {
+			continue
+		}
+		out.Language = append(out.Language, comprehendTextLanguage{
+			Code:  code,
+			Score: roundScore(l.Score),
+		})
+	}
+	sort.Slice(out.Language, func(i, j int) bool {
+		if out.Language[i].Score == out.Language[j].Score {
+			return out.Language[i].Code < out.Language[j].Code
+		}
+		return out.Language[i].Score > out.Language[j].Score
+	})
+	if len(out.Language) > 0 {
+		out.DominantLanguage = out.Language[0].Code
+	}
+
+	code := strings.TrimSpace(out.DominantLanguage)
+	if code == "" {
+		code = "en"
+	}
+	return code
+}
+
+func (s *Server) detectComprehendEntities(ctx context.Context, text string, languageCode string, out *comprehendTextEvidenceV1) {
+	if s == nil || s.comprehend == nil || out == nil {
+		return
+	}
+
+	lang := strings.TrimSpace(languageCode)
+	if lang == "" {
+		lang = "en"
+	}
+
+	entOut, err := s.comprehend.DetectEntities(ctx, &comprehend.DetectEntitiesInput{
+		Text:         aws.String(text),
+		LanguageCode: comprehendtypes.LanguageCode(lang),
+	})
+	if err != nil {
+		out.Warnings = append(out.Warnings, "detect_entities_failed")
+		return
+	}
+
+	const maxEntities = 50
+	for _, e := range entOut.Entities {
+		t := strings.TrimSpace(aws.ToString(e.Text))
+		if t == "" {
+			continue
+		}
+		if len(t) > 64 {
+			t = t[:64]
+		}
+		out.Entities = append(out.Entities, comprehendTextEntity{
+			Text:  t,
+			Type:  strings.TrimSpace(string(e.Type)),
+			Score: roundScore(e.Score),
+			Begin: aws.ToInt32(e.BeginOffset),
+			End:   aws.ToInt32(e.EndOffset),
+		})
+		if len(out.Entities) >= maxEntities {
+			out.Truncated = true
+			break
+		}
+	}
+	sort.Slice(out.Entities, func(i, j int) bool {
+		if out.Entities[i].Begin == out.Entities[j].Begin {
+			return out.Entities[i].Type < out.Entities[j].Type
+		}
+		return out.Entities[i].Begin < out.Entities[j].Begin
+	})
+}
+
+func (s *Server) detectComprehendPII(ctx context.Context, text string, out *comprehendTextEvidenceV1) {
+	if s == nil || s.comprehend == nil || out == nil {
+		return
+	}
+
+	piiOut, err := s.comprehend.DetectPiiEntities(ctx, &comprehend.DetectPiiEntitiesInput{
+		Text:         aws.String(text),
+		LanguageCode: comprehendtypes.LanguageCodeEn,
+	})
+	if err != nil {
+		out.Warnings = append(out.Warnings, "detect_pii_failed")
+		return
+	}
+
+	const maxPII = 50
+	for _, p := range piiOut.Entities {
+		out.PIIEntities = append(out.PIIEntities, comprehendTextPIIEntity{
+			Type:  strings.TrimSpace(string(p.Type)),
+			Score: roundScore(p.Score),
+			Begin: aws.ToInt32(p.BeginOffset),
+			End:   aws.ToInt32(p.EndOffset),
+		})
+		if len(out.PIIEntities) >= maxPII {
+			out.Truncated = true
+			break
+		}
+	}
+	sort.Slice(out.PIIEntities, func(i, j int) bool {
+		if out.PIIEntities[i].Begin == out.PIIEntities[j].Begin {
+			return out.PIIEntities[i].Type < out.PIIEntities[j].Type
+		}
+		return out.PIIEntities[i].Begin < out.PIIEntities[j].Begin
+	})
 }
 
 type rekognitionImageInputsV1 struct {
@@ -772,7 +869,7 @@ func (s *Server) runRenderSummaryLLMV1(ctx context.Context, job *models.AIJob) (
 
 	modelSet := strings.TrimSpace(job.ModelSet)
 	if modelSet == "" {
-		modelSet = "deterministic"
+		modelSet = deterministicValue
 	}
 
 	start := time.Now()
@@ -801,8 +898,8 @@ func (s *Server) runRenderSummaryLLMV1(ctx context.Context, job *models.AIJob) (
 		if strings.TrimSpace(res.ShortSummary) == "" {
 			res = ai.RenderSummaryDeterministicV1(in)
 			usage = models.AIUsage{
-				Provider:   "deterministic",
-				Model:      "deterministic",
+				Provider:   deterministicValue,
+				Model:      deterministicValue,
 				ToolCalls:  0,
 				DurationMs: time.Since(start).Milliseconds(),
 			}
@@ -810,8 +907,8 @@ func (s *Server) runRenderSummaryLLMV1(ctx context.Context, job *models.AIJob) (
 	} else {
 		res = ai.RenderSummaryDeterministicV1(in)
 		usage = models.AIUsage{
-			Provider:   "deterministic",
-			Model:      "deterministic",
+			Provider:   deterministicValue,
+			Model:      deterministicValue,
 			ToolCalls:  0,
 			DurationMs: time.Since(start).Milliseconds(),
 		}
@@ -847,76 +944,37 @@ func (s *Server) runModerationTextLLMV1(ctx context.Context, job *models.AIJob) 
 
 	modelSet := strings.TrimSpace(job.ModelSet)
 	if modelSet == "" {
-		modelSet = "deterministic"
+		modelSet = deterministicValue
 	}
 
 	start := time.Now()
 	var errs []models.AIError
 
-	evidenceJSON, evidenceUsage, _, evidenceErr := s.runComprehendTextEvidenceV1(ctx, job)
-	if evidenceErr != nil {
-		errs = append(errs, models.AIError{Code: "tool_failed", Message: "Tool evidence failed; continuing with limited signals", Retryable: false})
-		evidenceJSON = ""
-		evidenceUsage = models.AIUsage{}
-	}
+	evidenceJSON, evidenceUsage, evidenceErrs := s.moderationTextEvidence(ctx, job)
+	errs = append(errs, evidenceErrs...)
 
 	var res ai.ModerationResultV1
 	var usage models.AIUsage
 
-	if strings.HasPrefix(strings.ToLower(modelSet), "openai:") {
-		apiKey, keyErr := openAIAPIKey(ctx)
-		if keyErr != nil || strings.TrimSpace(apiKey) == "" {
-			errs = append(errs, models.AIError{Code: "llm_unavailable", Message: "LLM unavailable; used deterministic fallback", Retryable: false})
-		} else {
-			out, u, err := llm.ModerationTextBatchOpenAI(ctx, apiKey, modelSet, []llm.ModerationTextBatchItem{
-				{ItemID: strings.TrimSpace(job.ID), Input: in, Evidence: json.RawMessage(evidenceJSON)},
-			})
-			if err != nil {
-				errs = append(errs, models.AIError{Code: "llm_failed", Message: "LLM call failed; used deterministic fallback", Retryable: false})
-			} else if item, ok := out[strings.TrimSpace(job.ID)]; ok && strings.TrimSpace(item.Decision) != "" {
-				res = item
-				usage = u
-				usage.ToolCalls += evidenceUsage.ToolCalls
-				usage.DurationMs = time.Since(start).Milliseconds()
-			} else {
-				errs = append(errs, models.AIError{Code: "llm_missing_output", Message: "LLM output missing; used deterministic fallback", Retryable: false})
-			}
-		}
+	jobID := strings.TrimSpace(job.ID)
+	res, usage, openAIErrs := s.callOpenAIModeration(ctx, modelSet, jobID, func(ctx context.Context, apiKey string) (map[string]ai.ModerationResultV1, models.AIUsage, error) {
+		return llm.ModerationTextBatchOpenAI(ctx, apiKey, modelSet, []llm.ModerationTextBatchItem{
+			{ItemID: jobID, Input: in, Evidence: json.RawMessage(evidenceJSON)},
+		})
+	})
+	errs = append(errs, openAIErrs...)
+	if strings.TrimSpace(res.Decision) != "" {
+		usage.ToolCalls += evidenceUsage.ToolCalls
+		usage.DurationMs = time.Since(start).Milliseconds()
 	}
 
 	if strings.TrimSpace(res.Decision) == "" {
 		res = ai.ModerationTextDeterministicV1(text)
-
-		// Evidence-driven bump: if Comprehend PII signals exist, force at least review + category.
-		var ev comprehendTextEvidenceV1
-		if strings.TrimSpace(evidenceJSON) != "" && json.Unmarshal([]byte(evidenceJSON), &ev) == nil {
-			if len(ev.PIIEntities) > 0 {
-				res.Kind = "moderation_text"
-				res.Version = "v1"
-				if strings.TrimSpace(res.Decision) == "" || res.Decision == "allow" {
-					res.Decision = "review"
-				}
-				hasPII := false
-				for _, c := range res.Categories {
-					if strings.TrimSpace(c.Code) == "pii" {
-						hasPII = true
-						break
-					}
-				}
-				if !hasPII {
-					res.Categories = append(res.Categories, ai.ModerationCategoryV1{
-						Code:       "pii",
-						Confidence: 0.8,
-						Severity:   "medium",
-						Summary:    "Tooling detected potential PII in the text.",
-					})
-				}
-			}
-		}
+		res = bumpModerationTextWithPII(res, evidenceJSON)
 
 		usage = evidenceUsage
 		if strings.TrimSpace(usage.Provider) == "" {
-			usage = models.AIUsage{Provider: "deterministic", Model: "deterministic"}
+			usage = models.AIUsage{Provider: deterministicValue, Model: deterministicValue}
 		}
 		usage.DurationMs = time.Since(start).Milliseconds()
 	}
@@ -926,6 +984,52 @@ func (s *Server) runModerationTextLLMV1(ctx context.Context, job *models.AIJob) 
 		return "", models.AIUsage{}, nil, err
 	}
 	return string(b), usage, errs, nil
+}
+
+func (s *Server) moderationTextEvidence(ctx context.Context, job *models.AIJob) (string, models.AIUsage, []models.AIError) {
+	if s == nil {
+		return "", models.AIUsage{}, nil
+	}
+
+	evidenceJSON, evidenceUsage, _, evidenceErr := s.runComprehendTextEvidenceV1(ctx, job)
+	if evidenceErr != nil {
+		return "", models.AIUsage{}, []models.AIError{{
+			Code:      "tool_failed",
+			Message:   "Tool evidence failed; continuing with limited signals",
+			Retryable: false,
+		}}
+	}
+
+	return evidenceJSON, evidenceUsage, nil
+}
+
+func bumpModerationTextWithPII(res ai.ModerationResultV1, evidenceJSON string) ai.ModerationResultV1 {
+	// Evidence-driven bump: if Comprehend PII signals exist, force at least review + category.
+	var ev comprehendTextEvidenceV1
+	if strings.TrimSpace(evidenceJSON) == "" || json.Unmarshal([]byte(evidenceJSON), &ev) != nil {
+		return res
+	}
+	if len(ev.PIIEntities) == 0 {
+		return res
+	}
+
+	if strings.TrimSpace(res.Decision) == "" || res.Decision == "allow" {
+		res.Decision = "review"
+	}
+
+	for _, c := range res.Categories {
+		if strings.TrimSpace(c.Code) == "pii" {
+			return res
+		}
+	}
+
+	res.Categories = append(res.Categories, ai.ModerationCategoryV1{
+		Code:       "pii",
+		Confidence: 0.8,
+		Severity:   "medium",
+		Summary:    "Tooling detected potential PII in the text.",
+	})
+	return res
 }
 
 func (s *Server) runModerationImageLLMV1(ctx context.Context, job *models.AIJob) (string, models.AIUsage, []models.AIError, error) {
@@ -945,7 +1049,7 @@ func (s *Server) runModerationImageLLMV1(ctx context.Context, job *models.AIJob)
 
 	modelSet := strings.TrimSpace(job.ModelSet)
 	if modelSet == "" {
-		modelSet = "deterministic"
+		modelSet = deterministicValue
 	}
 
 	start := time.Now()
@@ -961,25 +1065,16 @@ func (s *Server) runModerationImageLLMV1(ctx context.Context, job *models.AIJob)
 	var res ai.ModerationResultV1
 	var usage models.AIUsage
 
-	if strings.HasPrefix(strings.ToLower(modelSet), "openai:") {
-		apiKey, keyErr := openAIAPIKey(ctx)
-		if keyErr != nil || strings.TrimSpace(apiKey) == "" {
-			errs = append(errs, models.AIError{Code: "llm_unavailable", Message: "LLM unavailable; used deterministic fallback", Retryable: false})
-		} else {
-			out, u, err := llm.ModerationImageBatchOpenAI(ctx, apiKey, modelSet, []llm.ModerationImageBatchItem{
-				{ItemID: strings.TrimSpace(job.ID), Input: in, Evidence: json.RawMessage(evidenceJSON)},
-			})
-			if err != nil {
-				errs = append(errs, models.AIError{Code: "llm_failed", Message: "LLM call failed; used deterministic fallback", Retryable: false})
-			} else if item, ok := out[strings.TrimSpace(job.ID)]; ok && strings.TrimSpace(item.Decision) != "" {
-				res = item
-				usage = u
-				usage.ToolCalls += evidenceUsage.ToolCalls
-				usage.DurationMs = time.Since(start).Milliseconds()
-			} else {
-				errs = append(errs, models.AIError{Code: "llm_missing_output", Message: "LLM output missing; used deterministic fallback", Retryable: false})
-			}
-		}
+	jobID := strings.TrimSpace(job.ID)
+	res, usage, openAIErrs := s.callOpenAIModeration(ctx, modelSet, jobID, func(ctx context.Context, apiKey string) (map[string]ai.ModerationResultV1, models.AIUsage, error) {
+		return llm.ModerationImageBatchOpenAI(ctx, apiKey, modelSet, []llm.ModerationImageBatchItem{
+			{ItemID: jobID, Input: in, Evidence: json.RawMessage(evidenceJSON)},
+		})
+	})
+	errs = append(errs, openAIErrs...)
+	if strings.TrimSpace(res.Decision) != "" {
+		usage.ToolCalls += evidenceUsage.ToolCalls
+		usage.DurationMs = time.Since(start).Milliseconds()
 	}
 
 	if strings.TrimSpace(res.Decision) == "" {
@@ -990,7 +1085,7 @@ func (s *Server) runModerationImageLLMV1(ctx context.Context, job *models.AIJob)
 		res = moderationImageDeterministicFromRekognition(ev)
 		usage = evidenceUsage
 		if strings.TrimSpace(usage.Provider) == "" {
-			usage = models.AIUsage{Provider: "deterministic", Model: "deterministic"}
+			usage = models.AIUsage{Provider: deterministicValue, Model: deterministicValue}
 		}
 		usage.DurationMs = time.Since(start).Milliseconds()
 	}
@@ -1000,6 +1095,62 @@ func (s *Server) runModerationImageLLMV1(ctx context.Context, job *models.AIJob)
 		return "", models.AIUsage{}, nil, err
 	}
 	return string(b), usage, errs, nil
+}
+
+func (s *Server) callOpenAIModeration(
+	ctx context.Context,
+	modelSet string,
+	jobID string,
+	call func(context.Context, string) (map[string]ai.ModerationResultV1, models.AIUsage, error),
+) (ai.ModerationResultV1, models.AIUsage, []models.AIError) {
+	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(modelSet)), "openai:") {
+		return ai.ModerationResultV1{}, models.AIUsage{}, nil
+	}
+
+	jobID = strings.TrimSpace(jobID)
+	if jobID == "" {
+		return ai.ModerationResultV1{}, models.AIUsage{}, []models.AIError{{
+			Code:      "invalid_inputs",
+			Message:   "job id is required",
+			Retryable: false,
+		}}
+	}
+	if call == nil {
+		return ai.ModerationResultV1{}, models.AIUsage{}, []models.AIError{{
+			Code:      "internal_error",
+			Message:   "moderation LLM call is not configured",
+			Retryable: false,
+		}}
+	}
+
+	apiKey, keyErr := openAIAPIKey(ctx)
+	if keyErr != nil || strings.TrimSpace(apiKey) == "" {
+		return ai.ModerationResultV1{}, models.AIUsage{}, []models.AIError{{
+			Code:      "llm_unavailable",
+			Message:   "LLM unavailable; used deterministic fallback",
+			Retryable: false,
+		}}
+	}
+
+	out, usage, err := call(ctx, apiKey)
+	if err != nil {
+		return ai.ModerationResultV1{}, models.AIUsage{}, []models.AIError{{
+			Code:      "llm_failed",
+			Message:   "LLM call failed; used deterministic fallback",
+			Retryable: false,
+		}}
+	}
+
+	item, ok := out[jobID]
+	if !ok || strings.TrimSpace(item.Decision) == "" {
+		return ai.ModerationResultV1{}, models.AIUsage{}, []models.AIError{{
+			Code:      "llm_missing_output",
+			Message:   "LLM output missing; used deterministic fallback",
+			Retryable: false,
+		}}
+	}
+
+	return item, usage, nil
 }
 
 func (s *Server) runClaimVerifyLLMV1(ctx context.Context, job *models.AIJob) (string, models.AIUsage, []models.AIError, error) {
@@ -1014,144 +1165,190 @@ func (s *Server) runClaimVerifyLLMV1(ctx context.Context, job *models.AIJob) (st
 
 	modelSet := strings.TrimSpace(job.ModelSet)
 	if modelSet == "" {
-		modelSet = "deterministic"
+		modelSet = deterministicValue
 	}
 
 	start := time.Now()
 	var errs []models.AIError
 
-	// Precompute evidence source set for citation validation.
-	evidenceIDs := map[string]struct{}{}
-	for _, e := range in.Evidence {
-		id := strings.TrimSpace(e.SourceID)
-		if id == "" {
-			continue
-		}
-		evidenceIDs[id] = struct{}{}
-	}
+	evidenceIDs := claimVerifyEvidenceSourceSet(in.Evidence)
 	if len(evidenceIDs) == 0 {
-		res := ai.ClaimVerifyDeterministicV1(in)
-		res.Warnings = append(res.Warnings, "missing_evidence")
-		b, err := json.Marshal(res)
-		if err != nil {
-			return "", models.AIUsage{}, nil, err
-		}
-		return string(b), models.AIUsage{Provider: "deterministic", Model: "deterministic", DurationMs: time.Since(start).Milliseconds()}, []models.AIError{{Code: "invalid_inputs", Message: "Evidence is required", Retryable: false}}, nil
+		return claimVerifyMissingEvidenceResponse(in, start)
 	}
 
 	var res ai.ClaimVerifyResultV1
 	var usage models.AIUsage
 
-	if strings.HasPrefix(strings.ToLower(modelSet), "openai:") {
-		apiKey, keyErr := openAIAPIKey(ctx)
-		if keyErr != nil || strings.TrimSpace(apiKey) == "" {
-			errs = append(errs, models.AIError{Code: "llm_unavailable", Message: "LLM unavailable; used deterministic fallback", Retryable: false})
-		} else {
-			out, u, err := llm.ClaimVerifyBatchOpenAI(ctx, apiKey, modelSet, []llm.ClaimVerifyBatchItem{
-				{ItemID: strings.TrimSpace(job.ID), Input: in},
-			})
-			if err != nil {
-				errs = append(errs, models.AIError{Code: "llm_failed", Message: "LLM call failed; used deterministic fallback", Retryable: false})
-			} else if item, ok := out[strings.TrimSpace(job.ID)]; ok {
-				res = item
-				usage = u
-				usage.DurationMs = time.Since(start).Milliseconds()
-			} else {
-				errs = append(errs, models.AIError{Code: "llm_missing_output", Message: "LLM output missing; used deterministic fallback", Retryable: false})
-			}
-		}
-	}
+	res, usage, errs = s.claimVerifyWithLLM(ctx, modelSet, strings.TrimSpace(job.ID), in, start)
 
 	if len(res.Claims) == 0 {
 		res = ai.ClaimVerifyDeterministicV1(in)
 		usage = models.AIUsage{
-			Provider:   "deterministic",
-			Model:      "deterministic",
+			Provider:   deterministicValue,
+			Model:      deterministicValue,
 			ToolCalls:  0,
 			DurationMs: time.Since(start).Milliseconds(),
 		}
 	}
 
-	// Validate + sanitize citations against provided evidence.
-	sanitized := make([]ai.ClaimVerifyClaimV1, 0, len(res.Claims))
-	for _, c := range res.Claims {
-		c.ClaimID = strings.TrimSpace(c.ClaimID)
-		c.Text = strings.TrimSpace(c.Text)
-		if c.ClaimID == "" || c.Text == "" {
-			continue
-		}
-		if len(c.Text) > 240 {
-			c.Text = strings.TrimSpace(c.Text[:240])
-		}
-
-		c.Classification = strings.ToLower(strings.TrimSpace(c.Classification))
-		switch c.Classification {
-		case "checkable", "opinion", "unclear":
-		default:
-			c.Classification = "unclear"
-		}
-
-		c.Verdict = strings.ToLower(strings.TrimSpace(c.Verdict))
-		switch c.Verdict {
-		case "supported", "refuted", "inconclusive":
-		default:
-			c.Verdict = "inconclusive"
-		}
-
-		if c.Confidence < 0 {
-			c.Confidence = 0
-		}
-		if c.Confidence > 1 {
-			c.Confidence = 1
-		}
-
-		c.Reason = strings.TrimSpace(c.Reason)
-		if len(c.Reason) > 240 {
-			c.Reason = strings.TrimSpace(c.Reason[:240])
-		}
-
-		cits := make([]ai.ClaimVerifyCitationV1, 0, len(c.Citations))
-		for _, cit := range c.Citations {
-			cit.SourceID = strings.TrimSpace(cit.SourceID)
-			cit.Quote = strings.TrimSpace(cit.Quote)
-			if cit.SourceID == "" || cit.Quote == "" {
-				continue
-			}
-			if _, ok := evidenceIDs[cit.SourceID]; !ok {
-				continue
-			}
-			if len(cit.Quote) > 200 {
-				cit.Quote = strings.TrimSpace(cit.Quote[:200])
-			}
-			cits = append(cits, cit)
-			if len(cits) >= 3 {
-				break
-			}
-		}
-		c.Citations = cits
-
-		if (c.Verdict == "supported" || c.Verdict == "refuted") && len(c.Citations) == 0 {
-			c.Verdict = "inconclusive"
-			if c.Reason == "" {
-				c.Reason = "missing_citations"
-			} else {
-				c.Reason = c.Reason + " (missing citations)"
-			}
-			c.Confidence = 0
-		}
-
-		sanitized = append(sanitized, c)
-		if len(sanitized) >= 10 {
-			break
-		}
-	}
-	res.Claims = sanitized
+	res.Claims = sanitizeClaimVerifyClaims(res.Claims, evidenceIDs)
 
 	b, err := json.Marshal(res)
 	if err != nil {
 		return "", models.AIUsage{}, nil, err
 	}
 	return string(b), usage, errs, nil
+}
+
+func claimVerifyEvidenceSourceSet(in []ai.ClaimVerifyEvidenceV1) map[string]struct{} {
+	out := make(map[string]struct{}, len(in))
+	for _, e := range in {
+		id := strings.TrimSpace(e.SourceID)
+		if id == "" {
+			continue
+		}
+		out[id] = struct{}{}
+	}
+	return out
+}
+
+func claimVerifyMissingEvidenceResponse(in ai.ClaimVerifyInputsV1, start time.Time) (string, models.AIUsage, []models.AIError, error) {
+	res := ai.ClaimVerifyDeterministicV1(in)
+	res.Warnings = append(res.Warnings, "missing_evidence")
+	b, err := json.Marshal(res)
+	if err != nil {
+		return "", models.AIUsage{}, nil, err
+	}
+	return string(b),
+		models.AIUsage{Provider: deterministicValue, Model: deterministicValue, DurationMs: time.Since(start).Milliseconds()},
+		[]models.AIError{{Code: "invalid_inputs", Message: "Evidence is required", Retryable: false}},
+		nil
+}
+
+func (s *Server) claimVerifyWithLLM(
+	ctx context.Context,
+	modelSet string,
+	jobID string,
+	in ai.ClaimVerifyInputsV1,
+	start time.Time,
+) (ai.ClaimVerifyResultV1, models.AIUsage, []models.AIError) {
+	var res ai.ClaimVerifyResultV1
+	var usage models.AIUsage
+	var errs []models.AIError
+
+	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(modelSet)), "openai:") {
+		return res, usage, errs
+	}
+
+	apiKey, keyErr := openAIAPIKey(ctx)
+	if keyErr != nil || strings.TrimSpace(apiKey) == "" {
+		errs = append(errs, models.AIError{Code: "llm_unavailable", Message: "LLM unavailable; used deterministic fallback", Retryable: false})
+		return res, usage, errs
+	}
+
+	out, u, err := llm.ClaimVerifyBatchOpenAI(ctx, apiKey, modelSet, []llm.ClaimVerifyBatchItem{
+		{ItemID: strings.TrimSpace(jobID), Input: in},
+	})
+	if err != nil {
+		errs = append(errs, models.AIError{Code: "llm_failed", Message: "LLM call failed; used deterministic fallback", Retryable: false})
+		return res, usage, errs
+	}
+
+	item, ok := out[strings.TrimSpace(jobID)]
+	if !ok {
+		errs = append(errs, models.AIError{Code: "llm_missing_output", Message: "LLM output missing; used deterministic fallback", Retryable: false})
+		return res, usage, errs
+	}
+
+	res = item
+	usage = u
+	usage.DurationMs = time.Since(start).Milliseconds()
+	return res, usage, errs
+}
+
+func sanitizeClaimVerifyClaims(in []ai.ClaimVerifyClaimV1, evidenceIDs map[string]struct{}) []ai.ClaimVerifyClaimV1 {
+	out := make([]ai.ClaimVerifyClaimV1, 0, len(in))
+	for _, c := range in {
+		c = sanitizeClaimVerifyClaim(c, evidenceIDs)
+		if c.ClaimID == "" || c.Text == "" {
+			continue
+		}
+		out = append(out, c)
+		if len(out) >= 10 {
+			break
+		}
+	}
+	return out
+}
+
+func sanitizeClaimVerifyClaim(c ai.ClaimVerifyClaimV1, evidenceIDs map[string]struct{}) ai.ClaimVerifyClaimV1 {
+	c.ClaimID = strings.TrimSpace(c.ClaimID)
+	c.Text = strings.TrimSpace(c.Text)
+	if len(c.Text) > 240 {
+		c.Text = strings.TrimSpace(c.Text[:240])
+	}
+
+	c.Classification = strings.ToLower(strings.TrimSpace(c.Classification))
+	switch c.Classification {
+	case "checkable", "opinion", "unclear":
+	default:
+		c.Classification = "unclear"
+	}
+
+	c.Verdict = strings.ToLower(strings.TrimSpace(c.Verdict))
+	switch c.Verdict {
+	case "supported", "refuted", claimVerdictInconclusive:
+	default:
+		c.Verdict = claimVerdictInconclusive
+	}
+
+	if c.Confidence < 0 {
+		c.Confidence = 0
+	}
+	if c.Confidence > 1 {
+		c.Confidence = 1
+	}
+
+	c.Reason = strings.TrimSpace(c.Reason)
+	if len(c.Reason) > 240 {
+		c.Reason = strings.TrimSpace(c.Reason[:240])
+	}
+
+	c.Citations = sanitizeClaimVerifyCitations(c.Citations, evidenceIDs)
+
+	if (c.Verdict == "supported" || c.Verdict == "refuted") && len(c.Citations) == 0 {
+		c.Verdict = claimVerdictInconclusive
+		if c.Reason == "" {
+			c.Reason = "missing_citations"
+		} else {
+			c.Reason = c.Reason + " (missing citations)"
+		}
+		c.Confidence = 0
+	}
+
+	return c
+}
+
+func sanitizeClaimVerifyCitations(in []ai.ClaimVerifyCitationV1, evidenceIDs map[string]struct{}) []ai.ClaimVerifyCitationV1 {
+	out := make([]ai.ClaimVerifyCitationV1, 0, len(in))
+	for _, cit := range in {
+		cit.SourceID = strings.TrimSpace(cit.SourceID)
+		cit.Quote = strings.TrimSpace(cit.Quote)
+		if cit.SourceID == "" || cit.Quote == "" {
+			continue
+		}
+		if _, ok := evidenceIDs[cit.SourceID]; !ok {
+			continue
+		}
+		if len(cit.Quote) > 200 {
+			cit.Quote = strings.TrimSpace(cit.Quote[:200])
+		}
+		out = append(out, cit)
+		if len(out) >= 3 {
+			break
+		}
+	}
+	return out
 }
 
 func moderationImageDeterministicFromRekognition(ev rekognitionImageEvidenceV1) ai.ModerationResultV1 {

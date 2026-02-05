@@ -6,11 +6,13 @@ import (
 	"strings"
 )
 
+// ClaimVerifyLLMModule and ClaimVerifyLLMPolicyVersion identify the claim verification module and schema version.
 const (
 	ClaimVerifyLLMModule        = "claim_verify_llm"
 	ClaimVerifyLLMPolicyVersion = "v1"
 )
 
+// ClaimVerifyEvidenceV1 is an evidence snippet used to verify claims.
 type ClaimVerifyEvidenceV1 struct {
 	SourceID string `json:"source_id"`
 	URL      string `json:"url,omitempty"`
@@ -20,6 +22,7 @@ type ClaimVerifyEvidenceV1 struct {
 	Text string `json:"text"`
 }
 
+// ClaimVerifyInputsV1 is the input payload for claim verification.
 type ClaimVerifyInputsV1 struct {
 	// Text is the content to extract claims from. Optional if Claims is provided.
 	Text string `json:"text,omitempty"`
@@ -30,11 +33,13 @@ type ClaimVerifyInputsV1 struct {
 	Evidence []ClaimVerifyEvidenceV1 `json:"evidence"`
 }
 
+// ClaimVerifyCitationV1 references an evidence source and quote.
 type ClaimVerifyCitationV1 struct {
 	SourceID string `json:"source_id"`
 	Quote    string `json:"quote,omitempty"`
 }
 
+// ClaimVerifyClaimV1 is a single claim verification result.
 type ClaimVerifyClaimV1 struct {
 	ClaimID string `json:"claim_id"`
 	Text    string `json:"text"`
@@ -47,6 +52,7 @@ type ClaimVerifyClaimV1 struct {
 	Citations []ClaimVerifyCitationV1 `json:"citations,omitempty"`
 }
 
+// ClaimVerifyResultV1 is the output schema for claim verification.
 type ClaimVerifyResultV1 struct {
 	Kind     string               `json:"kind"`    // claim_verify
 	Version  string               `json:"version"` // v1
@@ -57,6 +63,7 @@ type ClaimVerifyResultV1 struct {
 var sentenceSplitRE = regexp.MustCompile(`[.!?]+\s+`)
 var hasDigitRE = regexp.MustCompile(`\d`)
 
+// ExtractClaimsDeterministicV1 extracts simple claims from text without any model calls.
 func ExtractClaimsDeterministicV1(text string, maxClaims int) []string {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -107,6 +114,7 @@ func classifyClaimDeterministic(text string) string {
 	}
 }
 
+// ClaimVerifyDeterministicV1 generates a best-effort claim verification result without any model calls.
 func ClaimVerifyDeterministicV1(in ClaimVerifyInputsV1) ClaimVerifyResultV1 {
 	claims := make([]string, 0, 10)
 	for _, c := range in.Claims {

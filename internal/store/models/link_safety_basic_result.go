@@ -6,6 +6,7 @@ import (
 	"time"
 )
 
+// LinkSafetyBasicSummary summarizes risk counts for a set of analyzed links.
 type LinkSafetyBasicSummary struct {
 	_ struct{} `theorydb:"naming:camelCase"`
 
@@ -20,6 +21,7 @@ type LinkSafetyBasicSummary struct {
 	OverallRisk string `theorydb:"attr:overallRisk" json:"overall_risk"`
 }
 
+// LinkSafetyBasicLinkResult contains the risk analysis for a single link.
 type LinkSafetyBasicLinkResult struct {
 	_ struct{} `theorydb:"naming:camelCase"`
 
@@ -34,6 +36,7 @@ type LinkSafetyBasicLinkResult struct {
 	ErrorMessage string `theorydb:"attr:errorMessage" json:"error_message,omitempty"`
 }
 
+// LinkSafetyBasicResult stores the output of the link-safety-basic analysis module.
 type LinkSafetyBasicResult struct {
 	_ struct{} `theorydb:"naming:camelCase"`
 
@@ -57,8 +60,10 @@ type LinkSafetyBasicResult struct {
 	RequestID string    `theorydb:"attr:requestId" json:"request_id,omitempty"`
 }
 
+// TableName returns the database table name for LinkSafetyBasicResult.
 func (LinkSafetyBasicResult) TableName() string { return MainTableName() }
 
+// BeforeCreate sets defaults and keys before creating LinkSafetyBasicResult.
 func (r *LinkSafetyBasicResult) BeforeCreate() error {
 	if err := r.UpdateKeys(); err != nil {
 		return err
@@ -74,6 +79,7 @@ func (r *LinkSafetyBasicResult) BeforeCreate() error {
 	return nil
 }
 
+// UpdateKeys updates the database keys for LinkSafetyBasicResult.
 func (r *LinkSafetyBasicResult) UpdateKeys() error {
 	r.ID = strings.TrimSpace(r.ID)
 	r.PK = fmt.Sprintf("LINK_SAFETY_BASIC#%s", r.ID)
@@ -82,5 +88,8 @@ func (r *LinkSafetyBasicResult) UpdateKeys() error {
 	return nil
 }
 
+// GetPK returns the partition key for LinkSafetyBasicResult.
 func (r *LinkSafetyBasicResult) GetPK() string { return r.PK }
+
+// GetSK returns the sort key for LinkSafetyBasicResult.
 func (r *LinkSafetyBasicResult) GetSK() string { return r.SK }

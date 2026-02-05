@@ -9,8 +9,10 @@ import (
 	"github.com/equaltoai/lesser-host/internal/store"
 )
 
+// ServiceName is the canonical service identifier for the control plane API.
 const ServiceName = "control-plane-api"
 
+// New constructs the control plane API app.
 func New(opts ...apptheory.Option) *apptheory.App {
 	cfg := config.Load()
 
@@ -28,6 +30,7 @@ func New(opts ...apptheory.Option) *apptheory.App {
 	return app
 }
 
+// Register registers control plane routes and hooks with an app.
 func Register(app *apptheory.App, srv *Server) *apptheory.App {
 	if app == nil {
 		return app

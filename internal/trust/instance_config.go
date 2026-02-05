@@ -30,12 +30,12 @@ func defaultInstanceTrustConfig() instanceTrustConfig {
 		HostedPreviewsEnabled: true,
 		LinkSafetyEnabled:     true,
 		RendersEnabled:        true,
-		RenderPolicy:          "suspicious",
-		OveragePolicy:         "block",
+		RenderPolicy:          renderPolicySuspicious,
+		OveragePolicy:         overagePolicyBlock,
 
 		AIEnabled:              false,
 		AIModelSet:             "openai:gpt-4o-mini",
-		AIBatchingMode:         "none",
+		AIBatchingMode:         aiBatchingModeNone,
 		AIBatchMaxItems:        8,
 		AIBatchMaxTotalBytes:   64 * 1024,
 		AIPricingMultiplierBps: 10000,
@@ -78,12 +78,12 @@ func (s *Server) loadInstanceTrustConfig(ctx context.Context, instanceSlug strin
 	}
 
 	rp := strings.ToLower(strings.TrimSpace(inst.RenderPolicy))
-	if rp == "always" || rp == "suspicious" {
+	if rp == renderPolicyAlways || rp == renderPolicySuspicious {
 		cfg.RenderPolicy = rp
 	}
 
 	op := strings.ToLower(strings.TrimSpace(inst.OveragePolicy))
-	if op == "allow" || op == "block" {
+	if op == overagePolicyAllow || op == overagePolicyBlock {
 		cfg.OveragePolicy = op
 	}
 

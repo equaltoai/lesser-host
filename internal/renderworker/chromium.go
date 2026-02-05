@@ -84,27 +84,36 @@ func inflateBrotliFile(src string, dest string, mode os.FileMode) error {
 		return fmt.Errorf("brotli source is required")
 	}
 
+	// #nosec G304 -- src is controlled by Lambda configuration and points to packaged assets.
 	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
-	defer in.Close()
+	defer func() { _ = in.Close() }()
 
-	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(dest), 0o750); err != nil {
 		return err
 	}
 
 	tmp := dest + ".tmp"
+	// #nosec G304 -- tmp is derived from a controlled destination path in /tmp.
 	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
 	if err != nil {
 		return err
 	}
 
+	const maxBrotliInflatedBytes = 512 << 20 // 512 MiB
 	r := brotli.NewReader(in)
-	if _, err := io.Copy(out, r); err != nil {
+	lr := &io.LimitedReader{R: r, N: maxBrotliInflatedBytes + 1}
+	if _, err := io.Copy(out, lr); err != nil {
 		_ = out.Close()
 		_ = os.Remove(tmp)
 		return err
+	}
+	if lr.N <= 0 {
+		_ = out.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("brotli output too large")
 	}
 	if err := out.Close(); err != nil {
 		_ = os.Remove(tmp)
@@ -126,77 +135,103 @@ func inflateTarBrotli(src string, destDir string, kind string) error {
 		return fmt.Errorf("dest dir is required")
 	}
 
-	switch kind {
-	case "fonts":
-		if dirExists(destDir) {
-			return nil
-		}
-	case "al2023":
-		if dirExists(destDir) {
-			return nil
-		}
-	case "swiftshader":
-		if fileExists(filepath.Join(destDir, "libGLESv2.so")) {
-			return nil
-		}
+	if shouldSkipTarInflation(destDir, kind) {
+		return nil
 	}
 
-	in, err := os.Open(src)
+	in, err := openTarSource(src, kind)
 	if err != nil {
-		// swiftshader is optional.
-		if kind == "swiftshader" && errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
 		return err
 	}
-	defer in.Close()
+	if in == nil {
+		return nil
+	}
+	defer func() { _ = in.Close() }()
 
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
+	if err := os.MkdirAll(destDir, 0o750); err != nil {
 		return err
 	}
 
 	r := brotli.NewReader(in)
 	tr := tar.NewReader(r)
 
+	limits := tarExtractLimits{
+		MaxFileBytes:  128 << 20,  // 128 MiB per file
+		MaxTotalBytes: 1024 << 20, // 1 GiB across the archive
+	}
+
+	if err := extractTar(tr, destDir, limits); err != nil {
+		return err
+	}
+
+	// Give the filesystem a moment; this avoids rare races in Lambda warm starts.
+	time.Sleep(5 * time.Millisecond)
+	return nil
+}
+
+type tarExtractLimits struct {
+	MaxFileBytes  int64
+	MaxTotalBytes int64
+}
+
+func shouldSkipTarInflation(destDir string, kind string) bool {
+	switch kind {
+	case "fonts", "al2023":
+		return dirExists(destDir)
+	case "swiftshader":
+		return fileExists(filepath.Join(destDir, "libGLESv2.so"))
+	default:
+		return false
+	}
+}
+
+func openTarSource(src string, kind string) (*os.File, error) {
+	// #nosec G304 -- src is controlled by Lambda configuration and points to packaged assets.
+	f, err := os.Open(src)
+	if err != nil {
+		// swiftshader is optional.
+		if kind == "swiftshader" && errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return f, nil
+}
+
+func extractTar(tr *tar.Reader, destDir string, limits tarExtractLimits) error {
+	if tr == nil {
+		return fmt.Errorf("tar reader is nil")
+	}
+
+	var extractedBytes int64
+
 	for {
 		hdr, err := tr.Next()
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				break
+				return nil
 			}
 			return err
 		}
 
-		name := filepath.Clean(hdr.Name)
-		name = strings.TrimPrefix(name, "/")
-		if name == "" || name == "." {
+		name, ok := sanitizeTarName(hdr.Name)
+		if !ok {
 			continue
 		}
 
-		target := filepath.Join(destDir, name)
-		if !strings.HasPrefix(target, destDir+string(os.PathSeparator)) && target != destDir {
-			return fmt.Errorf("invalid tar path: %q", hdr.Name)
+		target, err := validateTarTarget(destDir, name, hdr.Name)
+		if err != nil {
+			return err
 		}
 
 		switch hdr.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(target, 0o755); err != nil {
+			if err := os.MkdirAll(target, 0o750); err != nil {
 				return err
 			}
-		case tar.TypeReg, tar.TypeRegA:
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-				return err
-			}
-
-			f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode)&0o777)
+		case tar.TypeReg:
+			extractedBytes, err = extractTarFile(tr, hdr, target, extractedBytes, limits)
 			if err != nil {
-				return err
-			}
-			if _, err := io.Copy(f, tr); err != nil {
-				_ = f.Close()
-				return err
-			}
-			if err := f.Close(); err != nil {
 				return err
 			}
 		case tar.TypeSymlink:
@@ -206,10 +241,55 @@ func inflateTarBrotli(src string, destDir string, kind string) error {
 			continue
 		}
 	}
+}
 
-	// Give the filesystem a moment; this avoids rare races in Lambda warm starts.
-	time.Sleep(5 * time.Millisecond)
-	return nil
+func sanitizeTarName(raw string) (string, bool) {
+	name := filepath.Clean(raw)
+	name = strings.TrimPrefix(name, "/")
+	if name == "" || name == "." {
+		return "", false
+	}
+	return name, true
+}
+
+func validateTarTarget(destDir string, name string, rawName string) (string, error) {
+	target := filepath.Join(destDir, name)
+	if !strings.HasPrefix(target, destDir+string(os.PathSeparator)) && target != destDir {
+		return "", fmt.Errorf("invalid tar path: %q", rawName)
+	}
+	return target, nil
+}
+
+func extractTarFile(tr *tar.Reader, hdr *tar.Header, target string, extractedBytes int64, limits tarExtractLimits) (int64, error) {
+	if hdr == nil {
+		return extractedBytes, fmt.Errorf("tar header is nil")
+	}
+	if hdr.Size < 0 || (limits.MaxFileBytes > 0 && hdr.Size > limits.MaxFileBytes) {
+		return extractedBytes, fmt.Errorf("tar entry too large: %q", hdr.Name)
+	}
+
+	extractedBytes += hdr.Size
+	if limits.MaxTotalBytes > 0 && extractedBytes > limits.MaxTotalBytes {
+		return extractedBytes, fmt.Errorf("tar output too large")
+	}
+
+	if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
+		return extractedBytes, err
+	}
+
+	// #nosec G304 -- target is validated to be within destDir.
+	f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return extractedBytes, err
+	}
+	if _, err := io.CopyN(f, tr, hdr.Size); err != nil {
+		_ = f.Close()
+		return extractedBytes, err
+	}
+	if err := f.Close(); err != nil {
+		return extractedBytes, err
+	}
+	return extractedBytes, nil
 }
 
 func fileExists(path string) bool {

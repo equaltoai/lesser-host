@@ -6,6 +6,7 @@ import (
 	"time"
 )
 
+// LinkPreview stores derived preview metadata for a normalized URL.
 type LinkPreview struct {
 	_ struct{} `theorydb:"naming:camelCase"`
 
@@ -37,8 +38,10 @@ type LinkPreview struct {
 	SourceType string    `theorydb:"attr:sourceType" json:"source_type,omitempty"`
 }
 
+// TableName returns the database table name for LinkPreview.
 func (LinkPreview) TableName() string { return MainTableName() }
 
+// BeforeCreate sets defaults and keys before creating LinkPreview.
 func (p *LinkPreview) BeforeCreate() error {
 	if err := p.UpdateKeys(); err != nil {
 		return err
@@ -57,6 +60,7 @@ func (p *LinkPreview) BeforeCreate() error {
 	return nil
 }
 
+// UpdateKeys updates the database keys for LinkPreview.
 func (p *LinkPreview) UpdateKeys() error {
 	p.ID = strings.TrimSpace(p.ID)
 	p.PK = fmt.Sprintf("LINK_PREVIEW#%s", p.ID)
@@ -65,5 +69,8 @@ func (p *LinkPreview) UpdateKeys() error {
 	return nil
 }
 
+// GetPK returns the partition key for LinkPreview.
 func (p *LinkPreview) GetPK() string { return p.PK }
+
+// GetSK returns the sort key for LinkPreview.
 func (p *LinkPreview) GetSK() string { return p.SK }

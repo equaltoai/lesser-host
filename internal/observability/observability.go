@@ -8,6 +8,7 @@ import (
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 )
 
+// New constructs observability hooks for apptheory services.
 func New(service string) apptheory.ObservabilityHooks {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,

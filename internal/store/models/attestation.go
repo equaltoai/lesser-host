@@ -6,6 +6,7 @@ import (
 	"time"
 )
 
+// Attestation stores a signed attestation for an AI module output.
 type Attestation struct {
 	_ struct{} `theorydb:"naming:camelCase"`
 
@@ -29,8 +30,10 @@ type Attestation struct {
 	ExpiresAt time.Time `theorydb:"attr:expiresAt" json:"expires_at"`
 }
 
+// TableName returns the database table name for Attestation.
 func (Attestation) TableName() string { return MainTableName() }
 
+// BeforeCreate sets defaults and keys before creating Attestation.
 func (a *Attestation) BeforeCreate() error {
 	if err := a.UpdateKeys(); err != nil {
 		return err
@@ -46,6 +49,7 @@ func (a *Attestation) BeforeCreate() error {
 	return nil
 }
 
+// UpdateKeys updates the database keys for Attestation.
 func (a *Attestation) UpdateKeys() error {
 	a.ID = strings.TrimSpace(a.ID)
 	a.ActorURI = strings.TrimSpace(a.ActorURI)
@@ -63,5 +67,8 @@ func (a *Attestation) UpdateKeys() error {
 	return nil
 }
 
+// GetPK returns the partition key for Attestation.
 func (a *Attestation) GetPK() string { return a.PK }
+
+// GetSK returns the sort key for Attestation.
 func (a *Attestation) GetSK() string { return a.SK }

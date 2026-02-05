@@ -76,9 +76,9 @@ func (s *Server) handleAIModerationTextTriggered(ctx *apptheory.Context, action 
 	}
 
 	instCfg := s.loadInstanceTrustConfig(ctx.Context(), instanceSlug)
-	allowOverage := strings.ToLower(strings.TrimSpace(instCfg.OveragePolicy)) == "allow"
+	allowOverage := strings.ToLower(strings.TrimSpace(instCfg.OveragePolicy)) == overagePolicyAllow
 
-	modelSet := "deterministic"
+	modelSet := modelSetDeterministic
 	if instCfg.AIEnabled && strings.TrimSpace(instCfg.AIModelSet) != "" {
 		modelSet = strings.TrimSpace(instCfg.AIModelSet)
 	}
@@ -197,9 +197,9 @@ func (s *Server) handleAIModerationImageTriggered(ctx *apptheory.Context, action
 	}
 
 	instCfg := s.loadInstanceTrustConfig(ctx.Context(), instanceSlug)
-	allowOverage := strings.ToLower(strings.TrimSpace(instCfg.OveragePolicy)) == "allow"
+	allowOverage := strings.ToLower(strings.TrimSpace(instCfg.OveragePolicy)) == overagePolicyAllow
 
-	modelSet := "deterministic"
+	modelSet := modelSetDeterministic
 	if instCfg.AIEnabled && strings.TrimSpace(instCfg.AIModelSet) != "" {
 		modelSet = strings.TrimSpace(instCfg.AIModelSet)
 	}

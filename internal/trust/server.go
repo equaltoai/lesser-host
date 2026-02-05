@@ -10,6 +10,7 @@ import (
 	"github.com/equaltoai/lesser-host/internal/store"
 )
 
+// Server implements the trust API.
 type Server struct {
 	cfg       config.Config
 	store     *store.Store
@@ -19,6 +20,7 @@ type Server struct {
 	ai        *ai.Service
 }
 
+// NewServer constructs a new trust Server.
 func NewServer(cfg config.Config, st *store.Store) *Server {
 	return &Server{
 		cfg:       cfg,
@@ -30,6 +32,7 @@ func NewServer(cfg config.Config, st *store.Store) *Server {
 	}
 }
 
+// RegisterRoutes registers HTTP routes for the trust API.
 func (s *Server) RegisterRoutes(app *apptheory.App) {
 	if app == nil || s == nil {
 		return

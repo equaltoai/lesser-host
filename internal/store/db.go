@@ -6,6 +6,7 @@ import (
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
+// LambdaInit initializes the database connection and registers all models.
 func LambdaInit() (DB, error) {
 	return tabletheory.LambdaInit(
 		&models.AIJob{},

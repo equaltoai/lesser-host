@@ -2,6 +2,7 @@ package models
 
 import "time"
 
+// WebAuthnCredential stores a user's WebAuthn credential.
 type WebAuthnCredential struct {
 	_ struct{} `theorydb:"naming:camelCase"`
 
@@ -26,14 +27,17 @@ type WebAuthnCredential struct {
 	Type string `theorydb:"attr:type" json:"Type"`
 }
 
+// TableName returns the database table name for WebAuthnCredential.
 func (WebAuthnCredential) TableName() string {
 	return MainTableName()
 }
 
+// BeforeCreate updates keys and timestamps before creating WebAuthnCredential.
 func (w *WebAuthnCredential) BeforeCreate() error {
 	return w.updateKeysWithTimestamps()
 }
 
+// BeforeUpdate updates timestamps and secondary index keys before updating WebAuthnCredential.
 func (w *WebAuthnCredential) BeforeUpdate() error {
 	w.LastUsedAt = time.Now().UTC()
 	w.GSI1PK = "WEBAUTHN_CREDENTIAL#" + w.ID
@@ -41,6 +45,7 @@ func (w *WebAuthnCredential) BeforeUpdate() error {
 	return nil
 }
 
+// UpdateKeys updates the database keys for WebAuthnCredential.
 func (w *WebAuthnCredential) UpdateKeys() error {
 	w.PK = "USER#" + w.UserID
 	w.SK = "WEBAUTHN_CRED#" + w.ID
@@ -63,5 +68,8 @@ func (w *WebAuthnCredential) updateKeysWithTimestamps() error {
 	return nil
 }
 
+// GetPK returns the partition key for WebAuthnCredential.
 func (w *WebAuthnCredential) GetPK() string { return w.PK }
+
+// GetSK returns the sort key for WebAuthnCredential.
 func (w *WebAuthnCredential) GetSK() string { return w.SK }

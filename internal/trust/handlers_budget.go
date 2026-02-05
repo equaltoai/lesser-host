@@ -50,7 +50,7 @@ func (s *Server) handleBudgetDebit(ctx *apptheory.Context) (*apptheory.Response,
 	}
 
 	instCfg := s.loadInstanceTrustConfig(ctx.Context(), instanceSlug)
-	allowOverage := strings.ToLower(strings.TrimSpace(instCfg.OveragePolicy)) == "allow"
+	allowOverage := strings.ToLower(strings.TrimSpace(instCfg.OveragePolicy)) == overagePolicyAllow
 
 	var req budgetDebitRequest
 	if err := parseJSON(ctx, &req); err != nil {
@@ -122,8 +122,8 @@ func (s *Server) handleBudgetDebit(ctx *apptheory.Context) (*apptheory.Response,
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
-	includedDebited, overageDebited := billing.BillingPartsForDebit(budget.IncludedCredits, budget.UsedCredits, req.Credits)
-	billingType := billing.BillingTypeFromParts(includedDebited, overageDebited)
+	includedDebited, overageDebited := billing.PartsForDebit(budget.IncludedCredits, budget.UsedCredits, req.Credits)
+	billingType := billing.TypeFromParts(includedDebited, overageDebited)
 
 	ledger := &models.UsageLedgerEntry{
 		ID:                     billing.UsageLedgerEntryID(instanceSlug, month, strings.TrimSpace(ctx.RequestID), "budget.debit", month, req.Credits),

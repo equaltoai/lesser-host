@@ -6,6 +6,7 @@ import (
 	"time"
 )
 
+// BillingType* constants describe how a request was billed.
 const (
 	BillingTypeIncluded = "included"
 	BillingTypeOverage  = "overage"
@@ -13,6 +14,7 @@ const (
 	BillingTypeMixed    = "mixed"
 )
 
+// UsageLedgerEntry records per-request credit usage and billing attribution.
 type UsageLedgerEntry struct {
 	_ struct{} `theorydb:"naming:camelCase"`
 
@@ -46,8 +48,10 @@ type UsageLedgerEntry struct {
 	CreatedAt time.Time `theorydb:"attr:createdAt" json:"created_at"`
 }
 
+// TableName returns the database table name for UsageLedgerEntry.
 func (UsageLedgerEntry) TableName() string { return MainTableName() }
 
+// BeforeCreate sets defaults and keys before creating UsageLedgerEntry.
 func (e *UsageLedgerEntry) BeforeCreate() error {
 	if e.CreatedAt.IsZero() {
 		e.CreatedAt = time.Now().UTC()
@@ -61,6 +65,7 @@ func (e *UsageLedgerEntry) BeforeCreate() error {
 	return nil
 }
 
+// UpdateKeys updates the database keys for UsageLedgerEntry.
 func (e *UsageLedgerEntry) UpdateKeys() error {
 	e.ID = strings.TrimSpace(e.ID)
 	e.InstanceSlug = strings.TrimSpace(e.InstanceSlug)
@@ -73,5 +78,8 @@ func (e *UsageLedgerEntry) UpdateKeys() error {
 	return nil
 }
 
+// GetPK returns the partition key for UsageLedgerEntry.
 func (e *UsageLedgerEntry) GetPK() string { return e.PK }
+
+// GetSK returns the sort key for UsageLedgerEntry.
 func (e *UsageLedgerEntry) GetSK() string { return e.SK }

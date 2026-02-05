@@ -6,12 +6,14 @@ import (
 	"time"
 )
 
+// AIJobStatus* constants define the lifecycle state of an AI job.
 const (
 	AIJobStatusQueued = "queued"
 	AIJobStatusOK     = "ok"
 	AIJobStatusError  = "error"
 )
 
+// AIJob represents an asynchronous AI job request and its status.
 type AIJob struct {
 	_ struct{} `theorydb:"naming:camelCase"`
 
@@ -48,8 +50,10 @@ type AIJob struct {
 	RequestID string    `theorydb:"attr:requestId" json:"request_id,omitempty"`
 }
 
+// TableName returns the database table name for AIJob.
 func (AIJob) TableName() string { return MainTableName() }
 
+// BeforeCreate sets defaults and keys before creating AIJob.
 func (j *AIJob) BeforeCreate() error {
 	if err := j.UpdateKeys(); err != nil {
 		return err
@@ -72,12 +76,14 @@ func (j *AIJob) BeforeCreate() error {
 	return nil
 }
 
+// BeforeUpdate updates timestamps and TTL before updating AIJob.
 func (j *AIJob) BeforeUpdate() error {
 	j.UpdatedAt = time.Now().UTC()
 	j.TTL = j.ExpiresAt.Unix()
 	return nil
 }
 
+// UpdateKeys updates the database keys for AIJob.
 func (j *AIJob) UpdateKeys() error {
 	j.ID = strings.TrimSpace(j.ID)
 	j.InstanceSlug = strings.TrimSpace(j.InstanceSlug)
@@ -96,5 +102,8 @@ func (j *AIJob) UpdateKeys() error {
 	return nil
 }
 
+// GetPK returns the partition key for AIJob.
 func (j *AIJob) GetPK() string { return j.PK }
+
+// GetSK returns the sort key for AIJob.
 func (j *AIJob) GetSK() string { return j.SK }

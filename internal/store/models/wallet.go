@@ -6,6 +6,7 @@ import (
 	"time"
 )
 
+// WalletChallenge represents a wallet sign-in challenge.
 type WalletChallenge struct {
 	_ struct{} `theorydb:"naming:camelCase"`
 
@@ -25,10 +26,12 @@ type WalletChallenge struct {
 	Spent     bool      `theorydb:"attr:spent" json:"spent"`
 }
 
+// TableName returns the database table name for WalletChallenge.
 func (WalletChallenge) TableName() string {
 	return MainTableName()
 }
 
+// BeforeCreate updates keys and timestamps before creating WalletChallenge.
 func (w *WalletChallenge) BeforeCreate() error {
 	if err := w.UpdateKeys(); err != nil {
 		return fmt.Errorf("update keys: %w", err)
@@ -39,6 +42,7 @@ func (w *WalletChallenge) BeforeCreate() error {
 	return nil
 }
 
+// UpdateKeys updates the database keys and TTL for WalletChallenge.
 func (w *WalletChallenge) UpdateKeys() error {
 	w.PK = fmt.Sprintf("WALLET_CHALLENGE#%s", strings.TrimSpace(w.ID))
 	w.SK = "CHALLENGE"
@@ -46,9 +50,13 @@ func (w *WalletChallenge) UpdateKeys() error {
 	return nil
 }
 
+// GetPK returns the partition key for WalletChallenge.
 func (w *WalletChallenge) GetPK() string { return w.PK }
+
+// GetSK returns the sort key for WalletChallenge.
 func (w *WalletChallenge) GetSK() string { return w.SK }
 
+// WalletCredential represents a wallet linked to a user.
 type WalletCredential struct {
 	_ struct{} `theorydb:"naming:camelCase"`
 
@@ -64,10 +72,12 @@ type WalletCredential struct {
 	LastUsed time.Time `theorydb:"attr:lastUsed" json:"last_used"`
 }
 
+// TableName returns the database table name for WalletCredential.
 func (WalletCredential) TableName() string {
 	return MainTableName()
 }
 
+// BeforeCreate updates keys and timestamps before creating WalletCredential.
 func (w *WalletCredential) BeforeCreate() error {
 	if err := w.UpdateKeys(); err != nil {
 		return fmt.Errorf("update keys: %w", err)
@@ -84,11 +94,13 @@ func (w *WalletCredential) BeforeCreate() error {
 	return nil
 }
 
+// BeforeUpdate updates timestamps before updating WalletCredential.
 func (w *WalletCredential) BeforeUpdate() error {
 	w.LastUsed = time.Now().UTC()
 	return nil
 }
 
+// UpdateKeys updates the database keys for WalletCredential.
 func (w *WalletCredential) UpdateKeys() error {
 	address := strings.ToLower(strings.TrimSpace(w.Address))
 	w.PK = fmt.Sprintf(KeyPatternUser, strings.TrimSpace(w.Username))
@@ -96,9 +108,13 @@ func (w *WalletCredential) UpdateKeys() error {
 	return nil
 }
 
+// GetPK returns the partition key for WalletCredential.
 func (w *WalletCredential) GetPK() string { return w.PK }
+
+// GetSK returns the sort key for WalletCredential.
 func (w *WalletCredential) GetSK() string { return w.SK }
 
+// WalletIndex is a reverse index for looking up users by wallet address.
 type WalletIndex struct {
 	_ struct{} `theorydb:"naming:camelCase"`
 
@@ -110,10 +126,12 @@ type WalletIndex struct {
 	Address    string `theorydb:"attr:address" json:"address"`
 }
 
+// TableName returns the database table name for WalletIndex.
 func (WalletIndex) TableName() string {
 	return MainTableName()
 }
 
+// BeforeCreate sets defaults and keys before creating WalletIndex.
 func (w *WalletIndex) BeforeCreate() error {
 	if strings.TrimSpace(w.WalletType) == "" {
 		w.WalletType = "ethereum"
@@ -122,6 +140,7 @@ func (w *WalletIndex) BeforeCreate() error {
 	return nil
 }
 
+// UpdateKeys updates the database keys for WalletIndex.
 func (w *WalletIndex) UpdateKeys(walletType, address, username string) {
 	address = strings.ToLower(strings.TrimSpace(address))
 	w.PK = fmt.Sprintf("WALLET#%s#%s", walletType, address)
@@ -131,5 +150,8 @@ func (w *WalletIndex) UpdateKeys(walletType, address, username string) {
 	w.Address = address
 }
 
+// GetPK returns the partition key for WalletIndex.
 func (w *WalletIndex) GetPK() string { return w.PK }
+
+// GetSK returns the sort key for WalletIndex.
 func (w *WalletIndex) GetSK() string { return w.SK }

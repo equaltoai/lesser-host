@@ -8,11 +8,13 @@ import (
 	"time"
 )
 
+// OpenAIServiceSSMParameterName and ClaudeSSMParameterName are SSM parameter paths for provider API keys.
 const (
 	OpenAIServiceSSMParameterName = "/lesser-host/api/openai/service"
 	ClaudeSSMParameterName        = "/lesser-host/api/claude"
 )
 
+// OpenAIServiceKey loads the OpenAI service API key from SSM.
 func OpenAIServiceKey(ctx context.Context, client SSMAPI) (string, error) {
 	raw, err := GetSSMParameterCached(ctx, client, OpenAIServiceSSMParameterName, 10*time.Minute)
 	if err != nil {
@@ -21,6 +23,7 @@ func OpenAIServiceKey(ctx context.Context, client SSMAPI) (string, error) {
 	return parseAPIKeyValue(raw)
 }
 
+// ClaudeAPIKey loads the Claude API key from SSM.
 func ClaudeAPIKey(ctx context.Context, client SSMAPI) (string, error) {
 	raw, err := GetSSMParameterCached(ctx, client, ClaudeSSMParameterName, 10*time.Minute)
 	if err != nil {

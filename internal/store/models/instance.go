@@ -6,11 +6,13 @@ import (
 	"time"
 )
 
+// InstanceStatus* constants define whether an instance is active.
 const (
 	InstanceStatusActive   = "active"
 	InstanceStatusDisabled = "disabled"
 )
 
+// Instance represents a tenant instance and its configuration.
 type Instance struct {
 	_ struct{} `theorydb:"naming:camelCase"`
 
@@ -34,8 +36,10 @@ type Instance struct {
 	CreatedAt              time.Time `theorydb:"attr:createdAt" json:"created_at"`
 }
 
+// TableName returns the database table name for Instance.
 func (Instance) TableName() string { return MainTableName() }
 
+// BeforeCreate sets defaults and keys before creating Instance.
 func (i *Instance) BeforeCreate() error {
 	if err := i.UpdateKeys(); err != nil {
 		return err
@@ -87,6 +91,7 @@ func (i *Instance) BeforeCreate() error {
 	return nil
 }
 
+// UpdateKeys updates the database keys for Instance.
 func (i *Instance) UpdateKeys() error {
 	slug := strings.TrimSpace(i.Slug)
 	i.PK = fmt.Sprintf("INSTANCE#%s", slug)
@@ -94,5 +99,8 @@ func (i *Instance) UpdateKeys() error {
 	return nil
 }
 
+// GetPK returns the partition key for Instance.
 func (i *Instance) GetPK() string { return i.PK }
+
+// GetSK returns the sort key for Instance.
 func (i *Instance) GetSK() string { return i.SK }

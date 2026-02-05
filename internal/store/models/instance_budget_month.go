@@ -6,6 +6,7 @@ import (
 	"time"
 )
 
+// InstanceBudgetMonth tracks monthly credits included and used for an instance.
 type InstanceBudgetMonth struct {
 	_ struct{} `theorydb:"naming:camelCase"`
 
@@ -19,8 +20,10 @@ type InstanceBudgetMonth struct {
 	UpdatedAt       time.Time `theorydb:"attr:updatedAt" json:"updated_at"`
 }
 
+// TableName returns the database table name for InstanceBudgetMonth.
 func (InstanceBudgetMonth) TableName() string { return MainTableName() }
 
+// BeforeCreate sets defaults and keys before creating InstanceBudgetMonth.
 func (b *InstanceBudgetMonth) BeforeCreate() error {
 	if err := b.UpdateKeys(); err != nil {
 		return err
@@ -31,11 +34,13 @@ func (b *InstanceBudgetMonth) BeforeCreate() error {
 	return nil
 }
 
+// BeforeUpdate updates timestamps before updating InstanceBudgetMonth.
 func (b *InstanceBudgetMonth) BeforeUpdate() error {
 	b.UpdatedAt = time.Now().UTC()
 	return nil
 }
 
+// UpdateKeys updates the database keys for InstanceBudgetMonth.
 func (b *InstanceBudgetMonth) UpdateKeys() error {
 	slug := strings.TrimSpace(b.InstanceSlug)
 	month := strings.TrimSpace(b.Month)
@@ -44,5 +49,8 @@ func (b *InstanceBudgetMonth) UpdateKeys() error {
 	return nil
 }
 
+// GetPK returns the partition key for InstanceBudgetMonth.
 func (b *InstanceBudgetMonth) GetPK() string { return b.PK }
+
+// GetSK returns the sort key for InstanceBudgetMonth.
 func (b *InstanceBudgetMonth) GetSK() string { return b.SK }

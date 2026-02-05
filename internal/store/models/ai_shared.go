@@ -1,5 +1,6 @@
 package models
 
+// AIEvidenceRef references an evidence artifact used for an AI request.
 type AIEvidenceRef struct {
 	_ struct{} `theorydb:"naming:camelCase"`
 
@@ -10,6 +11,7 @@ type AIEvidenceRef struct {
 	ContentType string `theorydb:"attr:contentType" json:"content_type,omitempty"`
 }
 
+// AIUsage captures provider usage metadata for an AI request.
 type AIUsage struct {
 	_ struct{} `theorydb:"naming:camelCase"`
 
@@ -24,6 +26,7 @@ type AIUsage struct {
 	ToolCalls  int64 `theorydb:"attr:toolCalls" json:"tool_calls,omitempty"`
 }
 
+// AIError captures an error returned by an AI provider call.
 type AIError struct {
 	_ struct{} `theorydb:"naming:camelCase"`
 

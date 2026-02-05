@@ -6,11 +6,15 @@ import (
 	"time"
 )
 
+// RenderRetentionClass* constants define the retention class for rendered artifacts.
 const (
 	RenderRetentionClassBenign   = "benign"
 	RenderRetentionClassEvidence = "evidence"
+
+	renderExpiresGSI1PK = "RENDER_EXPIRES"
 )
 
+// RenderArtifact stores the output of a link render (snapshot, thumbnail, and derived metadata).
 type RenderArtifact struct {
 	_ struct{} `theorydb:"naming:camelCase"`
 
@@ -53,8 +57,10 @@ type RenderArtifact struct {
 	ExpiresAt  time.Time `theorydb:"attr:expiresAt" json:"expires_at"`
 }
 
+// TableName returns the database table name for RenderArtifact.
 func (RenderArtifact) TableName() string { return MainTableName() }
 
+// BeforeCreate sets defaults and keys before creating RenderArtifact.
 func (r *RenderArtifact) BeforeCreate() error {
 	if err := r.UpdateKeys(); err != nil {
 		return err
@@ -67,29 +73,34 @@ func (r *RenderArtifact) BeforeCreate() error {
 		r.ExpiresAt = now.Add(30 * 24 * time.Hour)
 	}
 	r.TTL = ttlForExpiresAt(r.ExpiresAt)
-	r.GSI1PK = "RENDER_EXPIRES"
+	r.GSI1PK = renderExpiresGSI1PK
 	r.GSI1SK = fmt.Sprintf("%s#%s", r.ExpiresAt.UTC().Format(time.RFC3339Nano), r.ID)
 	return nil
 }
 
+// BeforeUpdate updates secondary index keys and TTL before updating RenderArtifact.
 func (r *RenderArtifact) BeforeUpdate() error {
 	r.TTL = ttlForExpiresAt(r.ExpiresAt)
-	r.GSI1PK = "RENDER_EXPIRES"
+	r.GSI1PK = renderExpiresGSI1PK
 	r.GSI1SK = fmt.Sprintf("%s#%s", r.ExpiresAt.UTC().Format(time.RFC3339Nano), r.ID)
 	return nil
 }
 
+// UpdateKeys updates the database keys for RenderArtifact.
 func (r *RenderArtifact) UpdateKeys() error {
 	r.ID = strings.TrimSpace(r.ID)
 	r.PK = fmt.Sprintf("RENDER#%s", r.ID)
 	r.SK = "ARTIFACT"
 	r.TTL = ttlForExpiresAt(r.ExpiresAt)
-	r.GSI1PK = "RENDER_EXPIRES"
+	r.GSI1PK = renderExpiresGSI1PK
 	r.GSI1SK = fmt.Sprintf("%s#%s", r.ExpiresAt.UTC().Format(time.RFC3339Nano), r.ID)
 	return nil
 }
 
+// GetPK returns the partition key for RenderArtifact.
 func (r *RenderArtifact) GetPK() string { return r.PK }
+
+// GetSK returns the sort key for RenderArtifact.
 func (r *RenderArtifact) GetSK() string { return r.SK }
 
 func ttlForExpiresAt(expiresAt time.Time) int64 {

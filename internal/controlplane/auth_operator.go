@@ -25,6 +25,7 @@ func operatorRoleFromContext(ctx *apptheory.Context) string {
 	return strings.TrimSpace(role)
 }
 
+// OperatorAuthHook authenticates an operator request using a bearer token.
 func (s *Server) OperatorAuthHook(ctx *apptheory.Context) (string, error) {
 	if s == nil || s.store == nil || s.store.DB == nil {
 		return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
@@ -64,4 +65,3 @@ func (s *Server) OperatorAuthHook(ctx *apptheory.Context) (string, error) {
 
 	return strings.TrimSpace(session.Username), nil
 }
-

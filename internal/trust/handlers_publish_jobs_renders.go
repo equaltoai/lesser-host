@@ -59,6 +59,18 @@ type missingRenderRequest struct {
 	RetentionClass string
 }
 
+type linkRenderDecision struct {
+	link      linkRenderLinkResult
+	candidate bool
+	cached    bool
+	missing   *missingRenderCandidate
+}
+
+type missingRenderCandidate struct {
+	NormalizedURL  string
+	RetentionClass string
+}
+
 func (s *Server) runLinkRenderJob(
 	ctx *apptheory.Context,
 	instanceSlug string,
@@ -69,7 +81,7 @@ func (s *Server) runLinkRenderJob(
 	pricingMultiplierBps int64,
 	canonicalLinks []string,
 ) publishJobModuleResponse {
-	if s == nil || s.store == nil || s.store.DB == nil {
+	if s == nil || s.store == nil || s.store.DB == nil || ctx == nil {
 		return publishJobModuleResponse{
 			Name:          moduleName,
 			PolicyVersion: rendering.RenderPolicyVersion,
@@ -84,138 +96,17 @@ func (s *Server) runLinkRenderJob(
 			},
 		}
 	}
-	if ctx == nil {
-		return publishJobModuleResponse{
-			Name:          moduleName,
-			PolicyVersion: rendering.RenderPolicyVersion,
-			Status:        "error",
-			Cached:        false,
-			Budget: budgetDecision{
-				Allowed:          true,
-				OverBudget:       false,
-				Reason:           "internal error",
-				RequestedCredits: 0,
-				DebitedCredits:   0,
-			},
-		}
-	}
-
 	now := time.Now().UTC()
 
-	policy := strings.ToLower(strings.TrimSpace(renderPolicy))
-	if policy != "always" && policy != "suspicious" {
-		policy = "suspicious"
-	}
+	policy := normalizeRenderPolicy(renderPolicy)
+	out, missing := s.buildLinkRenderResult(ctx, now, policy, strings.TrimSpace(instanceSlug), canonicalLinks)
 
-	out := linkRenderResult{
-		RenderPolicy: policy,
-		Summary: linkRenderSummary{
-			TotalLinks: len(canonicalLinks),
-		},
-		Links: make([]linkRenderLinkResult, 0, len(canonicalLinks)),
-	}
-
-	var missing []missingRenderRequest
-	candidateCount := 0
-	queuedCount := 0
-	cachedCount := 0
-
-	for _, raw := range canonicalLinks {
-		raw = strings.TrimSpace(raw)
-		analysis := analyzeLinkSafetyBasic(ctx.Context(), nil, raw)
-		risk := strings.ToLower(strings.TrimSpace(analysis.Risk))
-		normalized := strings.TrimSpace(analysis.NormalizedURL)
-		if normalized == "" {
-			normalized = raw
-		}
-
-		linkOut := linkRenderLinkResult{
-			URL:           raw,
-			NormalizedURL: normalized,
-			Risk:          risk,
-		}
-
-		switch risk {
-		case "invalid":
-			out.Summary.Invalid++
-			linkOut.Status = "invalid"
-			out.Links = append(out.Links, linkOut)
-			continue
-		case "blocked":
-			out.Summary.Blocked++
-			linkOut.Status = "blocked"
-			out.Links = append(out.Links, linkOut)
-			continue
-		}
-
-		if !shouldRenderLink(policy, risk) {
-			out.Summary.Skipped++
-			linkOut.Status = "skipped"
-			out.Links = append(out.Links, linkOut)
-			continue
-		}
-
-		candidateCount++
-
-		retentionClass := retentionClassForRisk(risk)
-		renderID := rendering.RenderArtifactID(rendering.RenderPolicyVersion, normalized)
-
-		artifact, err := s.store.GetRenderArtifact(ctx.Context(), renderID)
-		if err == nil && artifact != nil {
-			cachedCount++
-			// Best-effort retention upgrade (no new render work).
-			if retentionClass == models.RenderRetentionClassEvidence {
-				desiredDays, desiredClass := rendering.RetentionForClass(retentionClass)
-				desiredExpiresAt := rendering.ExpiresAtForRetention(now, desiredDays)
-				updated := false
-				if artifact.ExpiresAt.Before(desiredExpiresAt) {
-					artifact.ExpiresAt = desiredExpiresAt
-					updated = true
-				}
-				if artifact.RetentionClass != models.RenderRetentionClassEvidence && desiredClass == models.RenderRetentionClassEvidence {
-					artifact.RetentionClass = desiredClass
-					updated = true
-				}
-				if updated {
-					artifact.RequestID = strings.TrimSpace(ctx.RequestID)
-					artifact.RequestedBy = strings.TrimSpace(instanceSlug)
-					_ = artifact.UpdateKeys()
-					_ = s.store.PutRenderArtifact(ctx.Context(), artifact)
-				}
-			}
-
-			r := renderArtifactResponseFromModel(ctx, artifact, true)
-			linkOut.Render = &r
-			linkOut.Status = r.Status
-			out.Links = append(out.Links, linkOut)
-			continue
-		}
-		if err != nil && !theoryErrors.IsNotFound(err) {
-			linkOut.Status = "error"
-			out.Links = append(out.Links, linkOut)
-			continue
-		}
-
-		linkOut.Status = "queued"
-		out.Links = append(out.Links, linkOut)
-		missing = append(missing, missingRenderRequest{
-			Index:          len(out.Links) - 1,
-			NormalizedURL:  normalized,
-			RetentionClass: retentionClass,
-		})
-	}
-
-	out.Summary.Candidates = candidateCount
-	out.Summary.Cached = cachedCount
-
-	creditsRequested := int64(candidateCount) * linkRenderCreditCost
+	creditsRequested := int64(out.Summary.Candidates) * linkRenderCreditCost
 	creditsNeeded := int64(len(missing)) * linkRenderCreditCost
-
 	creditsRequestedPriced := billing.PricedCredits(creditsRequested, pricingMultiplierBps)
 	creditsNeededPriced := billing.PricedCredits(creditsNeeded, pricingMultiplierBps)
 
 	if len(missing) == 0 {
-		out.Summary.Queued = 0
 		return publishJobModuleResponse{
 			Name:          moduleName,
 			PolicyVersion: rendering.RenderPolicyVersion,
@@ -234,12 +125,7 @@ func (s *Server) runLinkRenderJob(
 
 	month := now.Format("2006-01")
 	if strings.TrimSpace(s.cfg.PreviewQueueURL) == "" || s.queues == nil {
-		for _, mr := range missing {
-			if mr.Index >= 0 && mr.Index < len(out.Links) {
-				out.Links[mr.Index].Status = "error"
-			}
-		}
-		out.Summary.Queued = 0
+		setMissingLinkRenderStatuses(&out, missing, "error")
 		return publishJobModuleResponse{
 			Name:          moduleName,
 			PolicyVersion: rendering.RenderPolicyVersion,
@@ -257,81 +143,54 @@ func (s *Server) runLinkRenderJob(
 		}
 	}
 
-	// Budget check (charge only on cache miss renders).
-	pk := fmt.Sprintf("INSTANCE#%s", instanceSlug)
-	sk := fmt.Sprintf("BUDGET#%s", month)
-
-	var budget models.InstanceBudgetMonth
-	err := s.store.DB.WithContext(ctx.Context()).
-		Model(&models.InstanceBudgetMonth{}).
-		Where("PK", "=", pk).
-		Where("SK", "=", sk).
-		ConsistentRead().
-		First(&budget)
-	if theoryErrors.IsNotFound(err) {
-		for _, mr := range missing {
-			if mr.Index >= 0 && mr.Index < len(out.Links) {
-				out.Links[mr.Index].Status = "not_checked_budget"
-			}
-		}
-		out.Summary.Queued = 0
-		return publishJobModuleResponse{
-			Name:          moduleName,
-			PolicyVersion: rendering.RenderPolicyVersion,
-			Status:        "not_checked_budget",
-			Cached:        false,
-			Budget: budgetDecision{
-				Allowed:          false,
-				OverBudget:       true,
-				Reason:           "budget not configured",
-				Month:            month,
-				RequestedCredits: creditsRequestedPriced,
-				DebitedCredits:   0,
-			},
-			Result: out,
-		}
-	}
+	budget, _, overageDebited, errKind, err := s.debitLinkRenderBudget(
+		ctx,
+		strings.TrimSpace(instanceSlug),
+		moduleName,
+		strings.TrimSpace(jobID),
+		month,
+		now,
+		overagePolicy,
+		creditsRequestedPriced,
+		creditsNeededPriced,
+	)
 	if err != nil {
-		for _, mr := range missing {
-			if mr.Index >= 0 && mr.Index < len(out.Links) {
-				out.Links[mr.Index].Status = "error"
+		if errKind == budgetErrKindInternal {
+			setMissingLinkRenderStatuses(&out, missing, "error")
+			return publishJobModuleResponse{
+				Name:          moduleName,
+				PolicyVersion: rendering.RenderPolicyVersion,
+				Status:        "error",
+				Cached:        false,
+				Budget: budgetDecision{
+					Allowed:          true,
+					OverBudget:       false,
+					Reason:           "internal error",
+					Month:            month,
+					RequestedCredits: creditsRequestedPriced,
+					DebitedCredits:   0,
+				},
+				Result: out,
 			}
 		}
-		out.Summary.Queued = 0
-		return publishJobModuleResponse{
-			Name:          moduleName,
-			PolicyVersion: rendering.RenderPolicyVersion,
-			Status:        "error",
-			Cached:        false,
-			Budget: budgetDecision{
-				Allowed:          true,
-				OverBudget:       false,
-				Reason:           "internal error",
-				Month:            month,
-				RequestedCredits: creditsRequestedPriced,
-				DebitedCredits:   0,
-			},
-			Result: out,
-		}
-	}
 
-	remaining := budget.IncludedCredits - budget.UsedCredits
-	if remaining < creditsNeededPriced && strings.ToLower(strings.TrimSpace(overagePolicy)) != "allow" {
-		for _, mr := range missing {
-			if mr.Index >= 0 && mr.Index < len(out.Links) {
-				out.Links[mr.Index].Status = "not_checked_budget"
-			}
+		setMissingLinkRenderStatuses(&out, missing, "not_checked_budget")
+		reason := "budget not configured"
+		budgetAllowed := false
+		if errKind == budgetErrKindExceeded {
+			reason = "budget exceeded"
 		}
-		out.Summary.Queued = 0
+
+		remaining := budget.IncludedCredits - budget.UsedCredits
 		return publishJobModuleResponse{
 			Name:          moduleName,
 			PolicyVersion: rendering.RenderPolicyVersion,
 			Status:        "not_checked_budget",
 			Cached:        false,
 			Budget: budgetDecision{
-				Allowed:          false,
+				Allowed:          budgetAllowed,
 				OverBudget:       true,
-				Reason:           "budget exceeded",
+				Reason:           reason,
 				Month:            month,
 				IncludedCredits:  budget.IncludedCredits,
 				UsedCredits:      budget.UsedCredits,
@@ -343,6 +202,221 @@ func (s *Server) runLinkRenderJob(
 		}
 	}
 
+	queuedCount := s.queueMissingRenders(ctx, strings.TrimSpace(instanceSlug), now, missing, &out)
+	out.Summary.Queued = queuedCount
+
+	// Best-effort current remaining for reporting (may be stale if overage allowed).
+	remainingAfter := budget.IncludedCredits - (budget.UsedCredits + creditsNeededPriced)
+	overBudget := remainingAfter < 0 || overageDebited > 0
+	reason := budgetReasonDebited
+	if overageDebited > 0 {
+		reason = budgetReasonOverage
+	}
+
+	return publishJobModuleResponse{
+		Name:          moduleName,
+		PolicyVersion: rendering.RenderPolicyVersion,
+		Status:        "ok",
+		Cached:        false,
+		Budget: budgetDecision{
+			Allowed:          true,
+			OverBudget:       overBudget,
+			Reason:           reason,
+			Month:            month,
+			IncludedCredits:  budget.IncludedCredits,
+			UsedCredits:      budget.UsedCredits + creditsNeededPriced,
+			RemainingCredits: remainingAfter,
+			RequestedCredits: creditsRequestedPriced,
+			DebitedCredits:   creditsNeededPriced,
+		},
+		Result: out,
+	}
+}
+
+func normalizeRenderPolicy(renderPolicy string) string {
+	policy := strings.ToLower(strings.TrimSpace(renderPolicy))
+	switch policy {
+	case renderPolicyAlways, renderPolicySuspicious:
+		return policy
+	default:
+		return renderPolicySuspicious
+	}
+}
+
+func (s *Server) buildLinkRenderResult(ctx *apptheory.Context, now time.Time, policy string, instanceSlug string, canonicalLinks []string) (linkRenderResult, []missingRenderRequest) {
+	out := linkRenderResult{
+		RenderPolicy: strings.TrimSpace(policy),
+		Summary: linkRenderSummary{
+			TotalLinks: len(canonicalLinks),
+		},
+		Links: make([]linkRenderLinkResult, 0, len(canonicalLinks)),
+	}
+
+	missing := make([]missingRenderRequest, 0)
+	for _, raw := range canonicalLinks {
+		decision := s.decideLinkRender(ctx, now, policy, instanceSlug, raw)
+		out.Links = append(out.Links, decision.link)
+
+		switch decision.link.Status {
+		case statusInvalid:
+			out.Summary.Invalid++
+		case statusBlocked:
+			out.Summary.Blocked++
+		case statusSkipped:
+			out.Summary.Skipped++
+		}
+
+		if decision.candidate {
+			out.Summary.Candidates++
+		}
+		if decision.cached {
+			out.Summary.Cached++
+		}
+		if decision.missing != nil {
+			missing = append(missing, missingRenderRequest{
+				Index:          len(out.Links) - 1,
+				NormalizedURL:  decision.missing.NormalizedURL,
+				RetentionClass: decision.missing.RetentionClass,
+			})
+		}
+	}
+
+	return out, missing
+}
+
+func (s *Server) decideLinkRender(ctx *apptheory.Context, now time.Time, policy string, instanceSlug string, raw string) linkRenderDecision {
+	raw = strings.TrimSpace(raw)
+	analysis := analyzeLinkSafetyBasic(ctx.Context(), nil, raw)
+	risk := strings.ToLower(strings.TrimSpace(analysis.Risk))
+	normalized := strings.TrimSpace(analysis.NormalizedURL)
+	if normalized == "" {
+		normalized = raw
+	}
+
+	linkOut := linkRenderLinkResult{
+		URL:           raw,
+		NormalizedURL: normalized,
+		Risk:          risk,
+	}
+
+	switch risk {
+	case statusInvalid:
+		linkOut.Status = statusInvalid
+		return linkRenderDecision{link: linkOut}
+	case statusBlocked:
+		linkOut.Status = statusBlocked
+		return linkRenderDecision{link: linkOut}
+	}
+
+	if !shouldRenderLink(policy, risk) {
+		linkOut.Status = statusSkipped
+		return linkRenderDecision{link: linkOut}
+	}
+
+	retentionClass := retentionClassForRisk(risk)
+	renderID := rendering.RenderArtifactID(rendering.RenderPolicyVersion, normalized)
+	artifact, err := s.store.GetRenderArtifact(ctx.Context(), renderID)
+	if err == nil && artifact != nil {
+		s.maybeUpgradeRenderArtifactRetention(ctx, artifact, retentionClass, now, instanceSlug)
+		r := renderArtifactResponseFromModel(ctx, artifact, true)
+		linkOut.Render = &r
+		linkOut.Status = r.Status
+		return linkRenderDecision{
+			link:      linkOut,
+			candidate: true,
+			cached:    true,
+		}
+	}
+	if err != nil && !theoryErrors.IsNotFound(err) {
+		linkOut.Status = statusError
+		return linkRenderDecision{
+			link:      linkOut,
+			candidate: true,
+		}
+	}
+
+	linkOut.Status = statusQueued
+	return linkRenderDecision{
+		link:      linkOut,
+		candidate: true,
+		missing: &missingRenderCandidate{
+			NormalizedURL:  normalized,
+			RetentionClass: retentionClass,
+		},
+	}
+}
+
+func (s *Server) maybeUpgradeRenderArtifactRetention(ctx *apptheory.Context, artifact *models.RenderArtifact, retentionClass string, now time.Time, instanceSlug string) {
+	if ctx == nil || artifact == nil || strings.TrimSpace(retentionClass) != models.RenderRetentionClassEvidence {
+		return
+	}
+
+	desiredDays, desiredClass := rendering.RetentionForClass(retentionClass)
+	desiredExpiresAt := rendering.ExpiresAtForRetention(now, desiredDays)
+	updated := false
+	if artifact.ExpiresAt.Before(desiredExpiresAt) {
+		artifact.ExpiresAt = desiredExpiresAt
+		updated = true
+	}
+	if artifact.RetentionClass != models.RenderRetentionClassEvidence && desiredClass == models.RenderRetentionClassEvidence {
+		artifact.RetentionClass = desiredClass
+		updated = true
+	}
+	if !updated {
+		return
+	}
+
+	artifact.RequestID = strings.TrimSpace(ctx.RequestID)
+	artifact.RequestedBy = strings.TrimSpace(instanceSlug)
+	_ = artifact.UpdateKeys()
+	_ = s.store.PutRenderArtifact(ctx.Context(), artifact)
+}
+
+func setMissingLinkRenderStatuses(out *linkRenderResult, missing []missingRenderRequest, status string) {
+	if out == nil {
+		return
+	}
+	for _, mr := range missing {
+		if mr.Index >= 0 && mr.Index < len(out.Links) {
+			out.Links[mr.Index].Status = status
+		}
+	}
+}
+
+func (s *Server) debitLinkRenderBudget(
+	ctx *apptheory.Context,
+	instanceSlug string,
+	moduleName string,
+	jobID string,
+	month string,
+	now time.Time,
+	overagePolicy string,
+	creditsRequestedPriced int64,
+	creditsNeededPriced int64,
+) (models.InstanceBudgetMonth, int64, int64, string, error) {
+	pk := fmt.Sprintf("INSTANCE#%s", instanceSlug)
+	sk := fmt.Sprintf("BUDGET#%s", month)
+
+	var budget models.InstanceBudgetMonth
+	err := s.store.DB.WithContext(ctx.Context()).
+		Model(&models.InstanceBudgetMonth{}).
+		Where("PK", "=", pk).
+		Where("SK", "=", sk).
+		ConsistentRead().
+		First(&budget)
+	if theoryErrors.IsNotFound(err) {
+		return models.InstanceBudgetMonth{}, 0, 0, budgetErrKindNotConfigured, err
+	}
+	if err != nil {
+		return models.InstanceBudgetMonth{}, 0, 0, budgetErrKindInternal, err
+	}
+
+	remaining := budget.IncludedCredits - budget.UsedCredits
+	allowOverage := strings.ToLower(strings.TrimSpace(overagePolicy)) == overagePolicyAllow
+	if remaining < creditsNeededPriced && !allowOverage {
+		return budget, 0, 0, budgetErrKindExceeded, fmt.Errorf("budget exceeded")
+	}
+
 	update := &models.InstanceBudgetMonth{
 		InstanceSlug: instanceSlug,
 		Month:        month,
@@ -350,8 +424,8 @@ func (s *Server) runLinkRenderJob(
 	}
 	_ = update.UpdateKeys()
 
-	includedDebited, overageDebited := billing.BillingPartsForDebit(budget.IncludedCredits, budget.UsedCredits, creditsNeededPriced)
-	billingType := billing.BillingTypeFromParts(includedDebited, overageDebited)
+	includedDebited, overageDebited := billing.PartsForDebit(budget.IncludedCredits, budget.UsedCredits, creditsNeededPriced)
+	billingType := billing.TypeFromParts(includedDebited, overageDebited)
 
 	ledger := &models.UsageLedgerEntry{
 		ID:                     billing.UsageLedgerEntryID(instanceSlug, month, strings.TrimSpace(ctx.RequestID), moduleName, jobID, creditsNeededPriced),
@@ -381,7 +455,7 @@ func (s *Server) runLinkRenderJob(
 	_ = auditBudget.UpdateKeys()
 
 	err = s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
-		if strings.ToLower(strings.TrimSpace(overagePolicy)) == "allow" {
+		if allowOverage {
 			tx.UpdateWithBuilder(update, func(ub core.UpdateBuilder) error {
 				ub.Add("UsedCredits", creditsNeededPriced)
 				ub.Set("UpdatedAt", now)
@@ -408,60 +482,26 @@ func (s *Server) runLinkRenderJob(
 		return nil
 	})
 	if theoryErrors.IsConditionFailed(err) {
-		for _, mr := range missing {
-			if mr.Index >= 0 && mr.Index < len(out.Links) {
-				out.Links[mr.Index].Status = "not_checked_budget"
-			}
-		}
-		out.Summary.Queued = 0
-		return publishJobModuleResponse{
-			Name:          moduleName,
-			PolicyVersion: rendering.RenderPolicyVersion,
-			Status:        "not_checked_budget",
-			Cached:        false,
-			Budget: budgetDecision{
-				Allowed:          false,
-				OverBudget:       true,
-				Reason:           "budget exceeded",
-				Month:            month,
-				IncludedCredits:  budget.IncludedCredits,
-				UsedCredits:      budget.UsedCredits,
-				RemainingCredits: remaining,
-				RequestedCredits: creditsRequestedPriced,
-				DebitedCredits:   0,
-			},
-			Result: out,
-		}
+		return budget, 0, 0, budgetErrKindExceeded, err
 	}
 	if err != nil {
-		for _, mr := range missing {
-			if mr.Index >= 0 && mr.Index < len(out.Links) {
-				out.Links[mr.Index].Status = "error"
-			}
-		}
-		out.Summary.Queued = 0
-		return publishJobModuleResponse{
-			Name:          moduleName,
-			PolicyVersion: rendering.RenderPolicyVersion,
-			Status:        "error",
-			Cached:        false,
-			Budget: budgetDecision{
-				Allowed:          true,
-				OverBudget:       false,
-				Reason:           "internal error",
-				Month:            month,
-				RequestedCredits: creditsRequestedPriced,
-				DebitedCredits:   0,
-			},
-			Result: out,
-		}
+		return budget, 0, 0, budgetErrKindInternal, err
 	}
 
+	return budget, includedDebited, overageDebited, "", nil
+}
+
+func (s *Server) queueMissingRenders(ctx *apptheory.Context, instanceSlug string, now time.Time, missing []missingRenderRequest, out *linkRenderResult) int {
+	if s == nil || ctx == nil || out == nil {
+		return 0
+	}
+
+	queuedCount := 0
 	for _, mr := range missing {
 		artifact, queued, err := s.queueRender(ctx, mr.NormalizedURL, mr.RetentionClass, 0)
 		if err != nil {
 			if mr.Index >= 0 && mr.Index < len(out.Links) {
-				out.Links[mr.Index].Status = "error"
+				out.Links[mr.Index].Status = statusError
 			}
 			continue
 		}
@@ -486,34 +526,7 @@ func (s *Server) runLinkRenderJob(
 		}
 	}
 
-	out.Summary.Queued = queuedCount
-
-	// Best-effort current remaining for reporting (may be stale if overage allowed).
-	remainingAfter := budget.IncludedCredits - (budget.UsedCredits + creditsNeededPriced)
-	overBudget := remainingAfter < 0 || overageDebited > 0
-	reason := "debited"
-	if overageDebited > 0 {
-		reason = "overage"
-	}
-
-	return publishJobModuleResponse{
-		Name:          moduleName,
-		PolicyVersion: rendering.RenderPolicyVersion,
-		Status:        "ok",
-		Cached:        false,
-		Budget: budgetDecision{
-			Allowed:          true,
-			OverBudget:       overBudget,
-			Reason:           reason,
-			Month:            month,
-			IncludedCredits:  budget.IncludedCredits,
-			UsedCredits:      budget.UsedCredits + creditsNeededPriced,
-			RemainingCredits: remainingAfter,
-			RequestedCredits: creditsRequestedPriced,
-			DebitedCredits:   creditsNeededPriced,
-		},
-		Result: out,
-	}
+	return queuedCount
 }
 
 func shouldRenderLink(renderPolicy string, risk string) bool {

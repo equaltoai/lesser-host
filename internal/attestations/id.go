@@ -6,6 +6,7 @@ import (
 	"strings"
 )
 
+// AttestationID derives a deterministic attestation ID from canonical identity inputs.
 func AttestationID(actorURI string, objectURI string, contentHash string, module string, policyVersion string) string {
 	actorURI = strings.TrimSpace(actorURI)
 	objectURI = strings.TrimSpace(objectURI)

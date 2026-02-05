@@ -8,18 +8,19 @@ import (
 	"time"
 
 	"github.com/openai/openai-go"
-	"github.com/openai/openai-go/option"
 
 	"github.com/equaltoai/lesser-host/internal/ai"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
+// ModerationTextBatchItem is a single item for batch text moderation.
 type ModerationTextBatchItem struct {
 	ItemID   string
 	Input    ai.ModerationTextInputsV1
 	Evidence json.RawMessage
 }
 
+// ModerationImageBatchItem is a single item for batch image moderation.
 type ModerationImageBatchItem struct {
 	ItemID   string
 	Input    ai.ModerationImageInputsV1
@@ -49,12 +50,16 @@ type moderationBatchOutputItem struct {
 	Notes      string                    `json:"notes"`
 }
 
+// ModerationTextBatchOpenAI runs moderation for a batch of text inputs using OpenAI.
 func ModerationTextBatchOpenAI(ctx context.Context, apiKey string, modelSet string, items []ModerationTextBatchItem) (map[string]ai.ModerationResultV1, models.AIUsage, error) {
-	return moderationBatchOpenAI(ctx, apiKey, modelSet, "moderation_text", items, nil)
+	prompt := moderationPrompt{Items: buildModerationTextPromptItems(items)}
+	return moderationBatchOpenAI(ctx, apiKey, modelSet, "moderation_text", prompt)
 }
 
+// ModerationImageBatchOpenAI runs moderation for a batch of image inputs using OpenAI.
 func ModerationImageBatchOpenAI(ctx context.Context, apiKey string, modelSet string, items []ModerationImageBatchItem) (map[string]ai.ModerationResultV1, models.AIUsage, error) {
-	return moderationBatchOpenAI(ctx, apiKey, modelSet, "moderation_image", nil, items)
+	prompt := moderationPrompt{Items: buildModerationImagePromptItems(items)}
+	return moderationBatchOpenAI(ctx, apiKey, modelSet, "moderation_image", prompt)
 }
 
 func moderationBatchOpenAI(
@@ -62,49 +67,11 @@ func moderationBatchOpenAI(
 	apiKey string,
 	modelSet string,
 	kind string,
-	textItems []ModerationTextBatchItem,
-	imageItems []ModerationImageBatchItem,
+	prompt moderationPrompt,
 ) (map[string]ai.ModerationResultV1, models.AIUsage, error) {
-	modelSet = strings.TrimSpace(modelSet)
-	if !strings.HasPrefix(strings.ToLower(modelSet), "openai:") {
-		return nil, models.AIUsage{}, fmt.Errorf("unsupported openai model set %q", modelSet)
-	}
-	model := strings.TrimSpace(strings.TrimPrefix(modelSet, "openai:"))
-	if model == "" {
-		return nil, models.AIUsage{}, fmt.Errorf("openai model is required")
-	}
-
-	prompt := moderationPrompt{}
-	if kind == "moderation_text" {
-		for _, it := range textItems {
-			id := strings.TrimSpace(it.ItemID)
-			if id == "" {
-				continue
-			}
-			text := strings.TrimSpace(it.Input.Text)
-			if len(text) > 8*1024 {
-				text = strings.TrimSpace(text[:8*1024])
-			}
-			prompt.Items = append(prompt.Items, moderationPromptItem{
-				ItemID:  id,
-				Text:    text,
-				Signals: json.RawMessage(strings.TrimSpace(string(it.Evidence))),
-			})
-		}
-	} else if kind == "moderation_image" {
-		for _, it := range imageItems {
-			id := strings.TrimSpace(it.ItemID)
-			if id == "" {
-				continue
-			}
-			prompt.Items = append(prompt.Items, moderationPromptItem{
-				ItemID:    id,
-				ObjectKey: strings.TrimSpace(it.Input.ObjectKey),
-				Signals:   json.RawMessage(strings.TrimSpace(string(it.Evidence))),
-			})
-		}
-	} else {
-		return nil, models.AIUsage{}, fmt.Errorf("unsupported moderation kind %q", kind)
+	model, err := openAIModelFromSet(modelSet)
+	if err != nil {
+		return nil, models.AIUsage{}, err
 	}
 
 	if len(prompt.Items) == 0 {
@@ -126,14 +93,7 @@ func moderationBatchOpenAI(
 		Strict:      openai.Bool(true),
 	}
 
-	apiKey = strings.TrimSpace(apiKey)
-	var client openai.Client
-	if apiKey != "" {
-		client = openai.NewClient(option.WithAPIKey(apiKey))
-	} else {
-		client = openai.NewClient()
-	}
-
+	client := openAIClientForKey(apiKey)
 	start := time.Now()
 	chat, err := client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
 		Model: openai.ChatModel(model),
@@ -149,20 +109,66 @@ func moderationBatchOpenAI(
 	if err != nil {
 		return nil, models.AIUsage{}, err
 	}
-	if len(chat.Choices) == 0 {
-		return nil, models.AIUsage{}, fmt.Errorf("openai: empty choices")
+
+	raw, err := openAIContentFromChat(chat)
+	if err != nil {
+		return nil, models.AIUsage{}, err
 	}
 
-	raw := strings.TrimSpace(chat.Choices[0].Message.Content)
-	if raw == "" {
-		return nil, models.AIUsage{}, fmt.Errorf("openai: empty content")
+	parsed, err := parseModerationBatchOutput(raw)
+	if err != nil {
+		return nil, models.AIUsage{}, err
 	}
 
+	out := normalizeModerationBatchOutput(parsed, kind)
+	return out, openAIUsageFromChat(chat, start), nil
+}
+
+func buildModerationTextPromptItems(items []ModerationTextBatchItem) []moderationPromptItem {
+	out := make([]moderationPromptItem, 0, len(items))
+	for _, it := range items {
+		id := strings.TrimSpace(it.ItemID)
+		if id == "" {
+			continue
+		}
+		text := strings.TrimSpace(it.Input.Text)
+		if len(text) > 8*1024 {
+			text = strings.TrimSpace(text[:8*1024])
+		}
+		out = append(out, moderationPromptItem{
+			ItemID:  id,
+			Text:    text,
+			Signals: json.RawMessage(strings.TrimSpace(string(it.Evidence))),
+		})
+	}
+	return out
+}
+
+func buildModerationImagePromptItems(items []ModerationImageBatchItem) []moderationPromptItem {
+	out := make([]moderationPromptItem, 0, len(items))
+	for _, it := range items {
+		id := strings.TrimSpace(it.ItemID)
+		if id == "" {
+			continue
+		}
+		out = append(out, moderationPromptItem{
+			ItemID:    id,
+			ObjectKey: strings.TrimSpace(it.Input.ObjectKey),
+			Signals:   json.RawMessage(strings.TrimSpace(string(it.Evidence))),
+		})
+	}
+	return out
+}
+
+func parseModerationBatchOutput(raw string) (moderationBatchOutput, error) {
 	var parsed moderationBatchOutput
 	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
-		return nil, models.AIUsage{}, fmt.Errorf("openai: invalid json output: %w", err)
+		return moderationBatchOutput{}, fmt.Errorf("openai: invalid json output: %w", err)
 	}
+	return parsed, nil
+}
 
+func normalizeModerationBatchOutput(parsed moderationBatchOutput, kind string) map[string]ai.ModerationResultV1 {
 	out := make(map[string]ai.ModerationResultV1, len(parsed.Items))
 	for _, item := range parsed.Items {
 		id := strings.TrimSpace(item.ItemID)
@@ -170,56 +176,9 @@ func moderationBatchOpenAI(
 			continue
 		}
 
-		decision := strings.ToLower(strings.TrimSpace(item.Decision))
-		switch decision {
-		case "allow", "review", "block":
-			// ok
-		default:
-			decision = "review"
-		}
-
-		cats := make([]ai.ModerationCategoryV1, 0, len(item.Categories))
-		for _, c := range item.Categories {
-			c.Code = strings.TrimSpace(c.Code)
-			c.Severity = strings.ToLower(strings.TrimSpace(c.Severity))
-			c.Summary = strings.TrimSpace(c.Summary)
-			if c.Code == "" || c.Summary == "" {
-				continue
-			}
-			if c.Confidence < 0 {
-				c.Confidence = 0
-			}
-			if c.Confidence > 1 {
-				c.Confidence = 1
-			}
-			switch c.Severity {
-			case "low", "medium", "high":
-			default:
-				c.Severity = "medium"
-			}
-			if len(c.Summary) > 240 {
-				c.Summary = strings.TrimSpace(c.Summary[:240])
-			}
-			cats = append(cats, c)
-			if len(cats) >= 5 {
-				break
-			}
-		}
-
-		highlights := make([]string, 0, len(item.Highlights))
-		for _, h := range item.Highlights {
-			h = strings.TrimSpace(h)
-			if h == "" {
-				continue
-			}
-			if len(h) > 160 {
-				h = strings.TrimSpace(h[:160])
-			}
-			highlights = append(highlights, h)
-			if len(highlights) >= 5 {
-				break
-			}
-		}
+		decision := normalizeModerationDecision(item.Decision)
+		cats := normalizeModerationCategories(item.Categories)
+		highlights := normalizeModerationHighlights(item.Highlights)
 
 		notes := strings.TrimSpace(item.Notes)
 		if len(notes) > 240 {
@@ -235,18 +194,66 @@ func moderationBatchOpenAI(
 			Notes:      notes,
 		}
 	}
+	return out
+}
 
-	usage := models.AIUsage{
-		Provider:     "openai",
-		Model:        strings.TrimSpace(chat.Model),
-		InputTokens:  chat.Usage.PromptTokens,
-		OutputTokens: chat.Usage.CompletionTokens,
-		TotalTokens:  chat.Usage.TotalTokens,
-		DurationMs:   time.Since(start).Milliseconds(),
-		ToolCalls:    1,
+func normalizeModerationDecision(v string) string {
+	v = strings.ToLower(strings.TrimSpace(v))
+	switch v {
+	case "allow", "review", "block":
+		return v
+	default:
+		return "review"
 	}
+}
 
-	return out, usage, nil
+func normalizeModerationCategories(in []ai.ModerationCategoryV1) []ai.ModerationCategoryV1 {
+	out := make([]ai.ModerationCategoryV1, 0, len(in))
+	for _, c := range in {
+		c.Code = strings.TrimSpace(c.Code)
+		c.Severity = strings.ToLower(strings.TrimSpace(c.Severity))
+		c.Summary = strings.TrimSpace(c.Summary)
+		if c.Code == "" || c.Summary == "" {
+			continue
+		}
+		if c.Confidence < 0 {
+			c.Confidence = 0
+		}
+		if c.Confidence > 1 {
+			c.Confidence = 1
+		}
+		switch c.Severity {
+		case "low", "medium", "high":
+		default:
+			c.Severity = "medium"
+		}
+		if len(c.Summary) > 240 {
+			c.Summary = strings.TrimSpace(c.Summary[:240])
+		}
+		out = append(out, c)
+		if len(out) >= 5 {
+			break
+		}
+	}
+	return out
+}
+
+func normalizeModerationHighlights(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, h := range in {
+		h = strings.TrimSpace(h)
+		if h == "" {
+			continue
+		}
+		if len(h) > 160 {
+			h = strings.TrimSpace(h[:160])
+		}
+		out = append(out, h)
+		if len(out) >= 5 {
+			break
+		}
+	}
+	return out
 }
 
 func moderationSystemPromptV1() string {

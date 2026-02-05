@@ -6,6 +6,7 @@ import (
 	"time"
 )
 
+// AIResult stores a cached AI module result and usage metadata.
 type AIResult struct {
 	_ struct{} `theorydb:"naming:camelCase"`
 
@@ -36,8 +37,10 @@ type AIResult struct {
 	RequestID string `theorydb:"attr:requestId" json:"request_id,omitempty"`
 }
 
+// TableName returns the database table name for AIResult.
 func (AIResult) TableName() string { return MainTableName() }
 
+// BeforeCreate sets defaults and keys before creating AIResult.
 func (r *AIResult) BeforeCreate() error {
 	if err := r.UpdateKeys(); err != nil {
 		return err
@@ -53,6 +56,7 @@ func (r *AIResult) BeforeCreate() error {
 	return nil
 }
 
+// UpdateKeys updates the database keys for AIResult.
 func (r *AIResult) UpdateKeys() error {
 	r.ID = strings.TrimSpace(r.ID)
 	r.InstanceSlug = strings.TrimSpace(r.InstanceSlug)
@@ -72,5 +76,8 @@ func (r *AIResult) UpdateKeys() error {
 	return nil
 }
 
+// GetPK returns the partition key for AIResult.
 func (r *AIResult) GetPK() string { return r.PK }
+
+// GetSK returns the sort key for AIResult.
 func (r *AIResult) GetSK() string { return r.SK }

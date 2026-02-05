@@ -81,10 +81,41 @@ func linkSafetyBasicLinksHash(normalized []string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+type linkSafetyBasicInput struct {
+	Raw           string
+	ParsedURL     *url.URL
+	Scheme        string
+	Host          string
+	Port          string
+	NormalizedURL string
+	Flags         []string
+}
+
 func analyzeLinkSafetyBasic(ctx context.Context, resolver ipResolver, raw string) models.LinkSafetyBasicLinkResult {
+	in, invalid := parseLinkSafetyBasicInput(raw)
+	if invalid != nil {
+		return *invalid
+	}
+
+	flags, blocked := applyLinkSafetyBasicHostChecks(ctx, resolver, in)
+	if blocked != nil {
+		return *blocked
+	}
+
+	risk := riskFromFlags(flags)
+	return models.LinkSafetyBasicLinkResult{
+		URL:           in.Raw,
+		NormalizedURL: in.NormalizedURL,
+		Host:          in.Host,
+		Flags:         uniqueSorted(flags),
+		Risk:          risk,
+	}
+}
+
+func parseLinkSafetyBasicInput(raw string) (linkSafetyBasicInput, *models.LinkSafetyBasicLinkResult) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return models.LinkSafetyBasicLinkResult{
+		return linkSafetyBasicInput{}, &models.LinkSafetyBasicLinkResult{
 			URL:          raw,
 			Risk:         "invalid",
 			ErrorCode:    "invalid_url",
@@ -94,7 +125,7 @@ func analyzeLinkSafetyBasic(ctx context.Context, resolver ipResolver, raw string
 
 	u, err := url.Parse(raw)
 	if err != nil {
-		return models.LinkSafetyBasicLinkResult{
+		return linkSafetyBasicInput{}, &models.LinkSafetyBasicLinkResult{
 			URL:          raw,
 			Risk:         "invalid",
 			ErrorCode:    "invalid_url",
@@ -103,13 +134,8 @@ func analyzeLinkSafetyBasic(ctx context.Context, resolver ipResolver, raw string
 	}
 
 	scheme := strings.ToLower(strings.TrimSpace(u.Scheme))
-	host := strings.TrimSpace(u.Hostname())
-	port := strings.TrimSpace(u.Port())
-
-	var flags []string
-
 	if scheme == "" {
-		return models.LinkSafetyBasicLinkResult{
+		return linkSafetyBasicInput{}, &models.LinkSafetyBasicLinkResult{
 			URL:          raw,
 			Risk:         "invalid",
 			ErrorCode:    "invalid_url",
@@ -117,16 +143,17 @@ func analyzeLinkSafetyBasic(ctx context.Context, resolver ipResolver, raw string
 		}
 	}
 
-	if scheme != "http" && scheme != "https" {
+	flags := []string{}
+	if scheme != schemeHTTP && scheme != schemeHTTPS {
 		flags = append(flags, "scheme_non_http")
 	}
-
 	if u.User != nil {
 		flags = append(flags, "userinfo")
 	}
 
+	host := strings.TrimSpace(u.Hostname())
 	if host == "" {
-		return models.LinkSafetyBasicLinkResult{
+		return linkSafetyBasicInput{}, &models.LinkSafetyBasicLinkResult{
 			URL:          raw,
 			Risk:         "invalid",
 			ErrorCode:    "invalid_url",
@@ -136,7 +163,7 @@ func analyzeLinkSafetyBasic(ctx context.Context, resolver ipResolver, raw string
 
 	asciiHost, err := idna.Lookup.ToASCII(host)
 	if err != nil {
-		return models.LinkSafetyBasicLinkResult{
+		return linkSafetyBasicInput{}, &models.LinkSafetyBasicLinkResult{
 			URL:          raw,
 			Risk:         "invalid",
 			ErrorCode:    "invalid_url",
@@ -145,37 +172,36 @@ func analyzeLinkSafetyBasic(ctx context.Context, resolver ipResolver, raw string
 	}
 	asciiHost = strings.ToLower(strings.TrimSpace(asciiHost))
 	if asciiHost == "" {
-		return models.LinkSafetyBasicLinkResult{
+		return linkSafetyBasicInput{}, &models.LinkSafetyBasicLinkResult{
 			URL:          raw,
 			Risk:         "invalid",
 			ErrorCode:    "invalid_url",
 			ErrorMessage: "invalid host",
 		}
 	}
-
 	if strings.Contains(asciiHost, "xn--") {
 		flags = append(flags, "punycode")
 	}
 
+	port := strings.TrimSpace(u.Port())
 	if port != "" {
 		n, err := strconv.Atoi(port)
 		if err != nil || n <= 0 || n > 65535 {
-			return models.LinkSafetyBasicLinkResult{
+			return linkSafetyBasicInput{}, &models.LinkSafetyBasicLinkResult{
 				URL:          raw,
 				Risk:         "invalid",
 				ErrorCode:    "invalid_url",
 				ErrorMessage: "invalid port",
 			}
 		}
-		if (scheme == "http" && n != 80) || (scheme == "https" && n != 443) {
+		if (scheme == schemeHTTP && n != 80) || (scheme == schemeHTTPS && n != 443) {
 			flags = append(flags, "non_default_port")
 		}
 	}
 
-	if scheme == "http" {
+	if scheme == schemeHTTP {
 		flags = append(flags, "unencrypted_http")
 	}
-
 	if isKnownShortener(asciiHost) {
 		flags = append(flags, "shortener")
 	}
@@ -184,14 +210,27 @@ func analyzeLinkSafetyBasic(ctx context.Context, resolver ipResolver, raw string
 	}
 
 	normalizedURL := normalizeURLForSafety(u, scheme, asciiHost, port)
+	return linkSafetyBasicInput{
+		Raw:           raw,
+		ParsedURL:     u,
+		Scheme:        scheme,
+		Host:          asciiHost,
+		Port:          port,
+		NormalizedURL: normalizedURL,
+		Flags:         flags,
+	}, nil
+}
+
+func applyLinkSafetyBasicHostChecks(ctx context.Context, resolver ipResolver, in linkSafetyBasicInput) ([]string, *models.LinkSafetyBasicLinkResult) {
+	flags := append([]string(nil), in.Flags...)
 
 	// Host safety / "broken where possible".
-	if isInternalHostname(asciiHost) {
+	if isInternalHostname(in.Host) {
 		flags = append(flags, "internal_host")
-		return models.LinkSafetyBasicLinkResult{
-			URL:           raw,
-			NormalizedURL: normalizedURL,
-			Host:          asciiHost,
+		return flags, &models.LinkSafetyBasicLinkResult{
+			URL:           in.Raw,
+			NormalizedURL: in.NormalizedURL,
+			Host:          in.Host,
 			Flags:         uniqueSorted(flags),
 			Risk:          "blocked",
 			ErrorCode:     "blocked_ssrf",
@@ -199,60 +238,59 @@ func analyzeLinkSafetyBasic(ctx context.Context, resolver ipResolver, raw string
 		}
 	}
 
-	if ip := net.ParseIP(asciiHost); ip != nil {
+	if ip := net.ParseIP(in.Host); ip != nil {
 		if isDeniedIP(ip) {
 			flags = append(flags, "private_ip")
-			return models.LinkSafetyBasicLinkResult{
-				URL:           raw,
-				NormalizedURL: normalizedURL,
-				Host:          asciiHost,
+			return flags, &models.LinkSafetyBasicLinkResult{
+				URL:           in.Raw,
+				NormalizedURL: in.NormalizedURL,
+				Host:          in.Host,
 				Flags:         uniqueSorted(flags),
 				Risk:          "blocked",
 				ErrorCode:     "blocked_ssrf",
 				ErrorMessage:  "ip is not allowed",
 			}
 		}
-	} else if scheme == "http" || scheme == "https" {
-		// DNS resolution check (best-effort).
-		resolutionCtx := ctx
-		if resolutionCtx == nil {
-			resolutionCtx = context.Background()
-		}
-		rc, cancel := context.WithTimeout(resolutionCtx, 800*time.Millisecond)
-		defer cancel()
+		return flags, nil
+	}
 
-		if resolver == nil {
-			resolver = net.DefaultResolver
-		}
-		ips, err := resolver.LookupIPAddr(rc, asciiHost)
-		if err != nil || len(ips) == 0 {
-			flags = append(flags, "unresolved_host")
-		} else {
-			for _, ipAddr := range ips {
-				if isDeniedIP(ipAddr.IP) {
-					flags = append(flags, "private_ip")
-					return models.LinkSafetyBasicLinkResult{
-						URL:           raw,
-						NormalizedURL: normalizedURL,
-						Host:          asciiHost,
-						Flags:         uniqueSorted(flags),
-						Risk:          "blocked",
-						ErrorCode:     "blocked_ssrf",
-						ErrorMessage:  "host resolves to a blocked ip",
-					}
-				}
+	if in.Scheme != schemeHTTP && in.Scheme != schemeHTTPS {
+		return flags, nil
+	}
+
+	// DNS resolution check (best-effort).
+	resolutionCtx := ctx
+	if resolutionCtx == nil {
+		resolutionCtx = context.Background()
+	}
+	rc, cancel := context.WithTimeout(resolutionCtx, 800*time.Millisecond)
+	defer cancel()
+
+	if resolver == nil {
+		resolver = net.DefaultResolver
+	}
+	ips, err := resolver.LookupIPAddr(rc, in.Host)
+	if err != nil || len(ips) == 0 {
+		flags = append(flags, "unresolved_host")
+		return flags, nil
+	}
+
+	for _, ipAddr := range ips {
+		if isDeniedIP(ipAddr.IP) {
+			flags = append(flags, "private_ip")
+			return flags, &models.LinkSafetyBasicLinkResult{
+				URL:           in.Raw,
+				NormalizedURL: in.NormalizedURL,
+				Host:          in.Host,
+				Flags:         uniqueSorted(flags),
+				Risk:          "blocked",
+				ErrorCode:     "blocked_ssrf",
+				ErrorMessage:  "host resolves to a blocked ip",
 			}
 		}
 	}
 
-	risk := riskFromFlags(flags)
-	return models.LinkSafetyBasicLinkResult{
-		URL:           raw,
-		NormalizedURL: normalizedURL,
-		Host:          asciiHost,
-		Flags:         uniqueSorted(flags),
-		Risk:          risk,
-	}
+	return flags, nil
 }
 
 func normalizeURLForSafety(u *url.URL, scheme string, asciiHost string, port string) string {
@@ -318,20 +356,20 @@ func riskFromFlags(flags []string) string {
 		case "shortener":
 			score += 2
 		case "userinfo":
-			score += 1
+			score++
 		case "unencrypted_http":
-			score += 1
+			score++
 		case "unresolved_host":
-			score += 1
+			score++
 		}
 	}
 	if score >= 4 {
-		return "high"
+		return riskHigh
 	}
 	if score >= 2 {
-		return "medium"
+		return riskMedium
 	}
-	return "low"
+	return riskLow
 }
 
 func computeLinkSafetyBasicSummary(links []models.LinkSafetyBasicLinkResult) models.LinkSafetyBasicSummary {
@@ -339,21 +377,21 @@ func computeLinkSafetyBasicSummary(links []models.LinkSafetyBasicLinkResult) mod
 		TotalLinks: len(links),
 	}
 
-	overall := "low"
+	overall := riskLow
 	for _, l := range links {
 		switch strings.ToLower(strings.TrimSpace(l.Risk)) {
-		case "invalid":
+		case statusInvalid:
 			summary.InvalidCount++
-			overall = maxRisk(overall, "invalid")
-		case "blocked":
+			overall = maxRisk(overall, statusInvalid)
+		case statusBlocked:
 			summary.BlockedCount++
-			overall = maxRisk(overall, "blocked")
-		case "high":
+			overall = maxRisk(overall, statusBlocked)
+		case riskHigh:
 			summary.HighCount++
-			overall = maxRisk(overall, "high")
-		case "medium":
+			overall = maxRisk(overall, riskHigh)
+		case riskMedium:
 			summary.MediumCount++
-			overall = maxRisk(overall, "medium")
+			overall = maxRisk(overall, riskMedium)
 		default:
 			summary.LowCount++
 		}
@@ -365,11 +403,11 @@ func computeLinkSafetyBasicSummary(links []models.LinkSafetyBasicLinkResult) mod
 
 func maxRisk(a, b string) string {
 	order := map[string]int{
-		"low":     1,
-		"medium":  2,
-		"high":    3,
-		"blocked": 4,
-		"invalid": 5,
+		riskLow:       1,
+		riskMedium:    2,
+		riskHigh:      3,
+		statusBlocked: 4,
+		statusInvalid: 5,
 	}
 	if order[b] > order[a] {
 		return b

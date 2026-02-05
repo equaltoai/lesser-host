@@ -5,6 +5,7 @@ import (
 	"strings"
 )
 
+// Moderation*LLMModule and Moderation*LLMPolicyVersion identify moderation modules and versions.
 const (
 	ModerationTextLLMModule        = "moderation_text_llm"
 	ModerationTextLLMPolicyVersion = "v1"
@@ -13,11 +14,13 @@ const (
 	ModerationImageLLMPolicyVersion = "v1"
 )
 
+// ModerationTextInputsV1 is the input payload for text moderation.
 type ModerationTextInputsV1 struct {
 	// Text is bounded untrusted content to scan.
 	Text string `json:"text"`
 }
 
+// ModerationImageInputsV1 is the input payload for image moderation.
 type ModerationImageInputsV1 struct {
 	ObjectKey string `json:"object_key"`
 
@@ -27,6 +30,7 @@ type ModerationImageInputsV1 struct {
 	ContentType string `json:"content_type,omitempty"`
 }
 
+// ModerationCategoryV1 describes a single moderation category signal.
 type ModerationCategoryV1 struct {
 	Code       string  `json:"code"`
 	Confidence float64 `json:"confidence"`
@@ -34,6 +38,7 @@ type ModerationCategoryV1 struct {
 	Summary    string  `json:"summary,omitempty"`
 }
 
+// ModerationResultV1 is the normalized output payload for moderation modules.
 type ModerationResultV1 struct {
 	Kind    string `json:"kind"`    // moderation_text|moderation_image
 	Version string `json:"version"` // v1
@@ -47,6 +52,7 @@ type ModerationResultV1 struct {
 
 var moderationPIIRE = regexp.MustCompile(`(?i)(\b\d{3}-\d{2}-\d{4}\b|\b\d{12,19}\b|\b[\w.+-]+@[\w.-]+\.[a-z]{2,}\b)`)
 
+// ModerationTextDeterministicV1 performs a deterministic moderation pass over text.
 func ModerationTextDeterministicV1(text string) ModerationResultV1 {
 	text = strings.TrimSpace(text)
 	lower := strings.ToLower(text)

@@ -7,12 +7,14 @@ import (
 	"github.com/equaltoai/lesser-host/internal/store"
 )
 
+// Server implements the control plane API.
 type Server struct {
 	cfg      config.Config
 	store    *store.Store
 	webAuthn webAuthnEngine
 }
 
+// NewServer constructs a new control plane Server.
 func NewServer(cfg config.Config, st *store.Store) *Server {
 	webAuthn, _ := newWebAuthnEngine(cfg)
 	return &Server{
@@ -22,6 +24,7 @@ func NewServer(cfg config.Config, st *store.Store) *Server {
 	}
 }
 
+// RegisterRoutes registers HTTP routes for the control plane API.
 func (s *Server) RegisterRoutes(app *apptheory.App) {
 	if app == nil || s == nil {
 		return
