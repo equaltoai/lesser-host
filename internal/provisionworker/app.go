@@ -2,8 +2,13 @@ package provisionworker
 
 import (
 	"context"
+	"fmt"
+	"strings"
+	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
 	"github.com/aws/aws-sdk-go-v2/service/codebuild"
 	"github.com/aws/aws-sdk-go-v2/service/organizations"
 	"github.com/aws/aws-sdk-go-v2/service/route53"
@@ -33,12 +38,32 @@ func New(opts ...apptheory.Option) *apptheory.App {
 		panic(err)
 	}
 
+	baseSTS := sts.NewFromConfig(awsCfg)
+	orgClient := organizations.NewFromConfig(awsCfg)
+	stsClient := baseSTS
+	if strings.TrimSpace(cfg.ManagedOrgVendingRoleARN) != "" {
+		roleArn := strings.TrimSpace(cfg.ManagedOrgVendingRoleARN)
+		provider := stscreds.NewAssumeRoleProvider(baseSTS, roleArn, func(o *stscreds.AssumeRoleOptions) {
+			sessionName := fmt.Sprintf("lesser-host-%s-org-vending", strings.TrimSpace(cfg.Stage))
+			if len(sessionName) > 64 {
+				sessionName = sessionName[:64]
+			}
+			o.RoleSessionName = sessionName
+			o.Duration = 3600 * time.Second
+		})
+
+		mgmtCfg := awsCfg
+		mgmtCfg.Credentials = aws.NewCredentialsCache(provider)
+		orgClient = organizations.NewFromConfig(mgmtCfg)
+		stsClient = sts.NewFromConfig(mgmtCfg)
+	}
+
 	srv := NewServer(
 		cfg,
 		store.New(db),
-		organizations.NewFromConfig(awsCfg),
+		orgClient,
 		route53.NewFromConfig(awsCfg),
-		sts.NewFromConfig(awsCfg),
+		stsClient,
 		sqs.NewFromConfig(awsCfg),
 		codebuild.NewFromConfig(awsCfg),
 		s3.NewFromConfig(awsCfg),

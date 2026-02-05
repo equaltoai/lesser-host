@@ -72,6 +72,8 @@ zone.
 
 The control plane needs (at minimum):
 - `MANAGED_PROVISIONING_ENABLED=true` to allow the provisioning worker to run.
+- `MANAGED_ORG_VENDING_ROLE_ARN` (optional) role ARN in the Organizations management/delegated admin account that the
+  control plane can assume for `organizations:*` and cross-account `sts:AssumeRole` into instance accounts.
 - `MANAGED_PARENT_DOMAIN` (default: `greater.website`)
 - `MANAGED_PARENT_HOSTED_ZONE_ID` (central account Route53 hosted zone id for `greater.website`)
 - `MANAGED_INSTANCE_ROLE_NAME` (default: `OrganizationAccountAccessRole`)
@@ -94,7 +96,7 @@ Infra is expected to provide:
 The deploy runner writes the Lesser receipt to S3 so the provisioning worker can ingest it and update instance state:
 
 - Receipt: `s3://$ARTIFACT_BUCKET_NAME/managed/provisioning/<slug>/<jobId>/state.json`
-- Bootstrap key material (only on first deploy): `s3://$ARTIFACT_BUCKET_NAME/managed/provisioning/<slug>/<jobId>/bootstrap.json`
+- Bootstrap key material (only if a mnemonic is used): `s3://$ARTIFACT_BUCKET_NAME/managed/provisioning/<slug>/bootstrap.json`
 
 Notes:
 - The bootstrap file is sensitive and should be treated like a private key.

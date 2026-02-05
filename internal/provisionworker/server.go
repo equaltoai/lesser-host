@@ -625,6 +625,7 @@ func (s *Server) advanceProvisionChildZone(ctx context.Context, job *models.Prov
 		if job.Attempts >= job.MaxAttempts {
 			return 0, false, s.failJob(ctx, job, requestID, now, "child_zone_failed", "failed to ensure child hosted zone: "+err.Error())
 		}
+		job.Note = "failed to ensure child hosted zone; retrying: " + compactErr(err)
 		_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
 		return jitteredBackoff(job.Attempts, provisionDefaultShortRetryDelay, 10*time.Minute), false, nil
 	}
@@ -662,6 +663,7 @@ func (s *Server) advanceProvisionParentDelegation(ctx context.Context, job *mode
 		if job.Attempts >= job.MaxAttempts {
 			return 0, false, s.failJob(ctx, job, requestID, now, "parent_delegation_failed", "failed to upsert parent NS delegation: "+err.Error())
 		}
+		job.Note = "failed to upsert parent NS delegation; retrying: " + compactErr(err)
 		_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
 		return jitteredBackoff(job.Attempts, provisionDefaultShortRetryDelay, 10*time.Minute), false, nil
 	}
@@ -690,6 +692,7 @@ func (s *Server) advanceProvisionDeployStart(ctx context.Context, job *models.Pr
 		if job.Attempts >= job.MaxAttempts {
 			return 0, false, s.failJob(ctx, job, requestID, now, "deploy_start_failed", "failed to start deploy runner: "+err.Error())
 		}
+		job.Note = "failed to start deploy runner; retrying: " + compactErr(err)
 		_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
 		return jitteredBackoff(job.Attempts, provisionDefaultShortRetryDelay, 10*time.Minute), false, nil
 	}
@@ -714,6 +717,7 @@ func (s *Server) advanceProvisionDeployWait(ctx context.Context, job *models.Pro
 		if job.Attempts >= job.MaxAttempts {
 			return 0, false, s.failJob(ctx, job, requestID, now, "deploy_status_failed", "failed to poll deploy runner: "+err.Error())
 		}
+		job.Note = "failed to poll deploy runner; retrying: " + compactErr(err)
 		_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
 		return jitteredBackoff(job.Attempts, provisionDefaultPollDelay, 10*time.Minute), false, nil
 	}
@@ -754,6 +758,7 @@ func (s *Server) advanceProvisionReceiptIngest(ctx context.Context, job *models.
 		if job.Attempts >= job.MaxAttempts {
 			return 0, false, s.failJob(ctx, job, requestID, now, "receipt_load_failed", "failed to load receipt: "+err.Error())
 		}
+		job.Note = "failed to load receipt; retrying: " + compactErr(err)
 		_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
 		return jitteredBackoff(job.Attempts, provisionDefaultShortRetryDelay, 5*time.Minute), false, nil
 	}
@@ -922,7 +927,7 @@ func (s *Server) ensureChildHostedZone(ctx context.Context, accountID string, ro
 
 	assumed, _, err := s.assumeInstanceRole(ctx, accountID, roleName, slug, jobID)
 	if err != nil {
-		return "", nil, err
+		return "", nil, fmt.Errorf("assume instance role: %w", err)
 	}
 	if assumed == nil || assumed.Credentials == nil {
 		return "", nil, fmt.Errorf("assume role returned empty credentials")
@@ -948,14 +953,14 @@ func (s *Server) ensureChildHostedZone(ctx context.Context, accountID string, ro
 	if zoneID == "" {
 		zoneID, err = findHostedZoneIDByName(ctx, childClient, domainDot)
 		if err != nil {
-			return "", nil, err
+			return "", nil, fmt.Errorf("list hosted zones by name: %w", err)
 		}
 	}
 
 	if zoneID == "" {
 		zoneID, nameServers, err = createHostedZone(ctx, childClient, domainDot, jobID)
 		if err != nil {
-			return "", nil, err
+			return "", nil, fmt.Errorf("create hosted zone: %w", err)
 		}
 	}
 
@@ -966,7 +971,7 @@ func (s *Server) ensureChildHostedZone(ctx context.Context, accountID string, ro
 	if len(nameServers) == 0 {
 		nameServers, err = getHostedZoneNameServers(ctx, childClient, zoneID)
 		if err != nil {
-			return "", nil, err
+			return "", nil, fmt.Errorf("get hosted zone: %w", err)
 		}
 		nameServers = normalizeNameServers(nameServers)
 	}
@@ -1141,6 +1146,12 @@ func (s *Server) startDeployRunner(ctx context.Context, job *models.ProvisionJob
 		cbtypes.EnvironmentVariable{Name: aws.String("GITHUB_OWNER"), Value: aws.String(strings.TrimSpace(s.cfg.ManagedLesserGitHubOwner))},
 		cbtypes.EnvironmentVariable{Name: aws.String("GITHUB_REPO"), Value: aws.String(strings.TrimSpace(s.cfg.ManagedLesserGitHubRepo))},
 	)
+	if strings.TrimSpace(s.cfg.ManagedOrgVendingRoleARN) != "" {
+		env = append(env, cbtypes.EnvironmentVariable{
+			Name:  aws.String("MANAGED_ORG_VENDING_ROLE_ARN"),
+			Value: aws.String(strings.TrimSpace(s.cfg.ManagedOrgVendingRoleARN)),
+		})
+	}
 
 	out, err := s.cb.StartBuild(ctx, &codebuild.StartBuildInput{
 		ProjectName:                  aws.String(projectName),
@@ -1227,7 +1238,7 @@ func (s *Server) bootstrapS3Key(job *models.ProvisionJob) string {
 	if job == nil {
 		return ""
 	}
-	return fmt.Sprintf("managed/provisioning/%s/%s/bootstrap.json", strings.TrimSpace(job.InstanceSlug), strings.TrimSpace(job.ID))
+	return fmt.Sprintf("managed/provisioning/%s/bootstrap.json", strings.TrimSpace(job.InstanceSlug))
 }
 
 func (s *Server) loadReceiptFromS3(ctx context.Context, bucket string, key string) (string, *lesserUpReceipt, error) {
@@ -1300,6 +1311,21 @@ func dedupeSortedStrings(in []string) []string {
 		}
 	}
 	return out
+}
+
+func compactErr(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := strings.TrimSpace(err.Error())
+	if msg == "" {
+		return "unknown error"
+	}
+	const maxLen = 350
+	if len(msg) > maxLen {
+		msg = msg[:maxLen] + "…"
+	}
+	return msg
 }
 
 func jitteredBackoff(attempt int64, minDelay time.Duration, maxDelay time.Duration) time.Duration {

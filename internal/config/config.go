@@ -36,6 +36,7 @@ type Config struct {
 
 	// Managed hosting (M9 provisioning).
 	ManagedProvisioningEnabled        bool
+	ManagedOrgVendingRoleARN          string // optional; assume this role for Organizations + instance-account role assumptions
 	ManagedParentDomain               string // e.g. greater.website
 	ManagedParentHostedZoneID         string // Route53 hosted zone id for greater.website (central account)
 	ManagedInstanceRoleName           string // role to assume into instance accounts
@@ -123,6 +124,7 @@ func Load() Config {
 		TipTxMode:                   tipTxMode,
 
 		ManagedProvisioningEnabled:        managedOn,
+		ManagedOrgVendingRoleARN:          envString("MANAGED_ORG_VENDING_ROLE_ARN"),
 		ManagedParentDomain:               managedParentDomain,
 		ManagedParentHostedZoneID:         envString("MANAGED_PARENT_HOSTED_ZONE_ID"),
 		ManagedInstanceRoleName:           managedInstanceRoleName,

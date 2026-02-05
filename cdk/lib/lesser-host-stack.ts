@@ -100,6 +100,8 @@ export class LesserHostStack extends cdk.Stack {
 
 		const managedProvisioningEnabled =
 			(this.node.tryGetContext('managedProvisioningEnabled') as string | undefined) ?? '';
+		const managedOrgVendingRoleArn =
+			(this.node.tryGetContext('managedOrgVendingRoleArn') as string | undefined) ?? '';
 		const managedParentDomain = (this.node.tryGetContext('managedParentDomain') as string | undefined) ?? '';
 		const managedParentHostedZoneId =
 			(this.node.tryGetContext('managedParentHostedZoneId') as string | undefined) ?? '';
@@ -142,6 +144,87 @@ export class LesserHostStack extends cdk.Stack {
 		const lesserGitHubOwner = managedLesserGitHubOwner.trim() || 'equaltoai';
 		const lesserGitHubRepo = managedLesserGitHubRepo.trim() || 'lesser';
 
+		const provisionRunnerPreBuild = [
+			'set -euo pipefail',
+			'echo "Assuming role into target account..."',
+			'if [ -n "${MANAGED_ORG_VENDING_ROLE_ARN:-}" ]; then',
+			'  echo "Assuming org vending role..."',
+			'  ORG_CREDS=$(aws sts assume-role --role-arn "$MANAGED_ORG_VENDING_ROLE_ARN" --role-session-name "lesser-host-org-$APP_SLUG" --duration-seconds 3600 --query "Credentials.[AccessKeyId,SecretAccessKey,SessionToken]" --output text)',
+			'  read ORG_AK ORG_SK ORG_TOKEN <<< "$ORG_CREDS"',
+			'  CREDS=$(AWS_ACCESS_KEY_ID=$ORG_AK AWS_SECRET_ACCESS_KEY=$ORG_SK AWS_SESSION_TOKEN=$ORG_TOKEN aws sts assume-role --role-arn "arn:aws:iam::$TARGET_ACCOUNT_ID:role/$TARGET_ROLE_NAME" --role-session-name "lesser-host-$APP_SLUG" --duration-seconds 3600 --query "Credentials.[AccessKeyId,SecretAccessKey,SessionToken]" --output text)',
+			'else',
+			'  CREDS=$(aws sts assume-role --role-arn "arn:aws:iam::$TARGET_ACCOUNT_ID:role/$TARGET_ROLE_NAME" --role-session-name "lesser-host-$APP_SLUG" --duration-seconds 3600 --query "Credentials.[AccessKeyId,SecretAccessKey,SessionToken]" --output text)',
+			'fi',
+			'read MANAGED_AK MANAGED_SK MANAGED_TOKEN <<< "$CREDS"',
+			'mkdir -p ~/.aws',
+			'printf "[managed]\\naws_access_key_id=%s\\naws_secret_access_key=%s\\naws_session_token=%s\\n" "$MANAGED_AK" "$MANAGED_SK" "$MANAGED_TOKEN" > ~/.aws/credentials',
+			'printf "[profile managed]\\nregion=%s\\noutput=json\\n" "$TARGET_REGION" > ~/.aws/config',
+			'aws sts get-caller-identity --profile managed',
+		].join('\n');
+
+		const provisionRunnerBuild = [
+			'set -euo pipefail',
+			'OWNER="${GITHUB_OWNER:-equaltoai}"',
+			'REPO="${GITHUB_REPO:-lesser}"',
+			'TOKEN="${GITHUB_TOKEN:-}"',
+			'TAG="${LESSER_VERSION:-}"',
+			'if [ -z "$TAG" ]; then',
+			'  echo "Resolving latest Lesser release..."',
+			'  if [ -n "$TOKEN" ]; then',
+			'    TAG=$(curl -sSfL -H "Accept: application/vnd.github+json" -H "Authorization: Bearer $TOKEN" "https://api.github.com/repos/$OWNER/$REPO/releases/latest" | jq -r .tag_name)',
+			'  else',
+			'    TAG=$(curl -sSfL -H "Accept: application/vnd.github+json" "https://api.github.com/repos/$OWNER/$REPO/releases/latest" | jq -r .tag_name)',
+			'  fi',
+			'fi',
+			'test -n "$TAG"',
+			'test "$TAG" != "null"',
+			'echo "Using Lesser release: $TAG"',
+			'if [ -n "$TOKEN" ]; then',
+			'  curl -sSfL -H "Accept: application/vnd.github+json" -H "Authorization: Bearer $TOKEN" -o lesser-src.tgz "https://api.github.com/repos/$OWNER/$REPO/tarball/$TAG"',
+			'  RELEASE_JSON=$(curl -sSfL -H "Accept: application/vnd.github+json" -H "Authorization: Bearer $TOKEN" "https://api.github.com/repos/$OWNER/$REPO/releases/tags/$TAG")',
+			'else',
+			'  curl -sSfL -H "Accept: application/vnd.github+json" -o lesser-src.tgz "https://api.github.com/repos/$OWNER/$REPO/tarball/$TAG"',
+			'  RELEASE_JSON=$(curl -sSfL -H "Accept: application/vnd.github+json" "https://api.github.com/repos/$OWNER/$REPO/releases/tags/$TAG")',
+			'fi',
+			'mkdir -p lesser-src && tar -xzf lesser-src.tgz --strip-components=1 -C lesser-src',
+			'ARCH=$(uname -m)',
+			'if [ "$ARCH" = "x86_64" ] || [ "$ARCH" = "amd64" ]; then BIN_NAME="lesser-linux-amd64"; fi',
+			'if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then BIN_NAME="lesser-linux-arm64"; fi',
+			'test -n "${BIN_NAME:-}"',
+			'BIN_ID=$(echo "$RELEASE_JSON" | jq -r --arg name "$BIN_NAME" \'.assets[] | select(.name==$name) | .id\' | head -n 1)',
+			'CHK_ID=$(echo "$RELEASE_JSON" | jq -r \'.assets[] | select(.name=="checksums.txt") | .id\' | head -n 1)',
+			'test -n "$BIN_ID" && test "$BIN_ID" != "null"',
+			'test -n "$CHK_ID" && test "$CHK_ID" != "null"',
+			'if [ -n "$TOKEN" ]; then',
+			'  curl -sSfL -H "Authorization: Bearer $TOKEN" -H "Accept: application/octet-stream" -o lesser-src/lesser "https://api.github.com/repos/$OWNER/$REPO/releases/assets/$BIN_ID"',
+			'  curl -sSfL -H "Authorization: Bearer $TOKEN" -H "Accept: application/octet-stream" -o checksums.txt "https://api.github.com/repos/$OWNER/$REPO/releases/assets/$CHK_ID"',
+			'else',
+			'  curl -sSfL -H "Accept: application/octet-stream" -o lesser-src/lesser "https://api.github.com/repos/$OWNER/$REPO/releases/assets/$BIN_ID"',
+			'  curl -sSfL -H "Accept: application/octet-stream" -o checksums.txt "https://api.github.com/repos/$OWNER/$REPO/releases/assets/$CHK_ID"',
+			'fi',
+			'EXPECTED=$(grep -E "(\\\\s|\\\\*)$BIN_NAME$" checksums.txt | awk \'{print $1}\' | head -n 1)',
+			'test -n "$EXPECTED"',
+			'ACTUAL=$(sha256sum lesser-src/lesser | awk \'{print $1}\')',
+			'test "$EXPECTED" = "$ACTUAL"',
+			'chmod +x lesser-src/lesser',
+			'cd lesser-src',
+			'GO_TOOLCHAIN=$(grep "^toolchain " go.mod | awk \'{print $2}\')',
+			'GO_VERSION="${GO_TOOLCHAIN#go}"',
+			'echo "Installing Go toolchain: $GO_VERSION"',
+			'curl -sSfL -o go.tgz "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"',
+			'rm -rf /usr/local/go && tar -C /usr/local -xzf go.tgz',
+			'export PATH="/usr/local/go/bin:$PATH"',
+			'go version',
+			'STATE_DIR="$HOME/.lesser/$APP_SLUG/$BASE_DOMAIN"',
+			'mkdir -p "$STATE_DIR"',
+			'aws s3 cp "s3://$ARTIFACT_BUCKET/$BOOTSTRAP_S3_KEY" "$STATE_DIR/bootstrap.json" 2>/dev/null || true',
+			'./lesser up --app "$APP_SLUG" --base-domain "$BASE_DOMAIN" --aws-profile managed --out /tmp/bootstrap.json',
+			'RECEIPT_PATH="$STATE_DIR/state.json"',
+			'test -f "$RECEIPT_PATH"',
+			'aws s3 cp "$RECEIPT_PATH" "s3://$ARTIFACT_BUCKET/$RECEIPT_S3_KEY"',
+			'if [ -f /tmp/bootstrap.json ]; then aws s3 cp /tmp/bootstrap.json "s3://$ARTIFACT_BUCKET/$BOOTSTRAP_S3_KEY"; fi',
+		].join('\n');
+
 		const provisionRunnerProject = new codebuild.Project(this, 'ProvisionRunnerProject', {
 			projectName: provisionRunnerProjectName,
 			timeout: cdk.Duration.hours(3),
@@ -163,6 +246,9 @@ export class LesserHostStack extends cdk.Stack {
 			},
 			buildSpec: codebuild.BuildSpec.fromObject({
 				version: '0.2',
+				env: {
+					shell: 'bash',
+				},
 				phases: {
 					install: {
 						commands: [
@@ -172,7 +258,7 @@ export class LesserHostStack extends cdk.Stack {
 							'if command -v apt-get >/dev/null 2>&1; then apt-get update -y && apt-get install -y jq tar gzip unzip; fi',
 							'node -v || true',
 							'npm -v || true',
-							'npm install -g n',
+							'if ! command -v n >/dev/null 2>&1; then npm install -g n; fi',
 							'n 24',
 							'hash -r',
 							'node -v',
@@ -183,84 +269,10 @@ export class LesserHostStack extends cdk.Stack {
 						],
 					},
 					pre_build: {
-						commands: [
-							'set -euo pipefail',
-							'echo \"Assuming role into target account...\"',
-							'CREDS=$(aws sts assume-role --role-arn \"arn:aws:iam::$TARGET_ACCOUNT_ID:role/$TARGET_ROLE_NAME\" --role-session-name \"lesser-host-$APP_SLUG\" --duration-seconds 3600 --query \"Credentials.[AccessKeyId,SecretAccessKey,SessionToken]\" --output text)',
-							'read MANAGED_AK MANAGED_SK MANAGED_TOKEN <<< \"$CREDS\"',
-							'mkdir -p ~/.aws',
-							'printf \"[managed]\\\\naws_access_key_id=%s\\\\naws_secret_access_key=%s\\\\naws_session_token=%s\\\\n\" \"$MANAGED_AK\" \"$MANAGED_SK\" \"$MANAGED_TOKEN\" > ~/.aws/credentials',
-							'printf \"[profile managed]\\\\nregion=%s\\\\noutput=json\\\\n\" \"$TARGET_REGION\" > ~/.aws/config',
-							'aws sts get-caller-identity --profile managed',
-						],
+						commands: [provisionRunnerPreBuild],
 					},
 					build: {
-						commands: [
-							'set -euo pipefail',
-							'OWNER=\"${GITHUB_OWNER:-equaltoai}\"',
-							'REPO=\"${GITHUB_REPO:-lesser}\"',
-							'TOKEN=\"${GITHUB_TOKEN:-}\"',
-							'if [ -z \"${LESSER_VERSION:-}\" ]; then',
-							'  if [ -n \"$TOKEN\" ]; then',
-							'    TAG=$(curl -sSfL -H \"Accept: application/vnd.github+json\" -H \"Authorization: Bearer $TOKEN\" \"https://api.github.com/repos/$OWNER/$REPO/releases/latest\" | jq -r .tag_name)',
-							'  else',
-							'    TAG=$(curl -sSfL -H \"Accept: application/vnd.github+json\" \"https://api.github.com/repos/$OWNER/$REPO/releases/latest\" | jq -r .tag_name)',
-							'  fi',
-							'else',
-							'  TAG=\"$LESSER_VERSION\"',
-							'fi',
-							'echo \"Using Lesser tag: $TAG\"',
-							'if [ -n \"$TOKEN\" ]; then',
-							'  curl -sSfL -H \"Accept: application/vnd.github+json\" -H \"Authorization: Bearer $TOKEN\" -o lesser-src.tgz \"https://api.github.com/repos/$OWNER/$REPO/tarball/$TAG\"',
-							'else',
-							'  curl -sSfL -H \"Accept: application/vnd.github+json\" -o lesser-src.tgz \"https://api.github.com/repos/$OWNER/$REPO/tarball/$TAG\"',
-							'fi',
-							'mkdir -p lesser-src && tar -xzf lesser-src.tgz --strip-components=1 -C lesser-src',
-							'if [ -n \"$TOKEN\" ]; then',
-							'  RELEASE_JSON=$(curl -sSfL -H \"Accept: application/vnd.github+json\" -H \"Authorization: Bearer $TOKEN\" \"https://api.github.com/repos/$OWNER/$REPO/releases/tags/$TAG\")',
-							'else',
-							'  RELEASE_JSON=$(curl -sSfL -H \"Accept: application/vnd.github+json\" \"https://api.github.com/repos/$OWNER/$REPO/releases/tags/$TAG\")',
-							'fi',
-							'BIN_ID=$(echo \"$RELEASE_JSON\" | jq -r \'.assets[] | select(.name==\"lesser-linux-amd64\") | .id\' | head -n 1)',
-							'CHK_ID=$(echo \"$RELEASE_JSON\" | jq -r \'.assets[] | select(.name==\"checksums.txt\") | .id\' | head -n 1)',
-							'test -n \"$BIN_ID\"',
-							'test -n \"$CHK_ID\"',
-							'if [ -n \"$TOKEN\" ]; then',
-							'  curl -sSfL -H \"Authorization: Bearer $TOKEN\" -H \"Accept: application/octet-stream\" -o lesser-linux-amd64 \"https://api.github.com/repos/$OWNER/$REPO/releases/assets/$BIN_ID\"',
-							'  curl -sSfL -H \"Authorization: Bearer $TOKEN\" -H \"Accept: application/octet-stream\" -o checksums.txt \"https://api.github.com/repos/$OWNER/$REPO/releases/assets/$CHK_ID\"',
-							'else',
-							'  curl -sSfL -H \"Accept: application/octet-stream\" -o lesser-linux-amd64 \"https://api.github.com/repos/$OWNER/$REPO/releases/assets/$BIN_ID\"',
-							'  curl -sSfL -H \"Accept: application/octet-stream\" -o checksums.txt \"https://api.github.com/repos/$OWNER/$REPO/releases/assets/$CHK_ID\"',
-							'fi',
-							'EXPECTED=$(grep \"lesser-linux-amd64\" checksums.txt | awk \'{print $1}\')',
-							'ACTUAL=$(sha256sum lesser-linux-amd64 | awk \'{print $1}\')',
-							'test \"$EXPECTED\" = \"$ACTUAL\"',
-							'chmod +x lesser-linux-amd64',
-							'mv lesser-linux-amd64 lesser-src/lesser',
-							'cd lesser-src',
-							'GO_TOOLCHAIN=$(grep \"^toolchain \" go.mod | awk \'{print $2}\')',
-							'GO_VERSION=\"${GO_TOOLCHAIN#go}\"',
-							'echo \"Installing Go toolchain: $GO_VERSION\"',
-							'curl -sSfL -o go.tgz \"https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz\"',
-							'rm -rf /usr/local/go && tar -C /usr/local -xzf go.tgz',
-							'export PATH=\"/usr/local/go/bin:$PATH\"',
-							'go version',
-							'set +e',
-							'./lesser up --app \"$APP_SLUG\" --base-domain \"$BASE_DOMAIN\" --aws-profile managed 2>&1 | tee /tmp/lesser-up.log',
-							'STATUS=$?',
-							'set -e',
-							'if [ \"$STATUS\" -ne 0 ]; then',
-							'  if grep -q \"--out is required\" /tmp/lesser-up.log; then',
-							'    ./lesser up --app \"$APP_SLUG\" --base-domain \"$BASE_DOMAIN\" --aws-profile managed --out /tmp/bootstrap.json',
-							'  else',
-							'    exit \"$STATUS\"',
-							'  fi',
-							'fi',
-							'RECEIPT_PATH=\"$HOME/.lesser/$APP_SLUG/$BASE_DOMAIN/state.json\"',
-							'test -f \"$RECEIPT_PATH\"',
-							'aws s3 cp \"$RECEIPT_PATH\" \"s3://$ARTIFACT_BUCKET/$RECEIPT_S3_KEY\"',
-							'if [ -f /tmp/bootstrap.json ]; then aws s3 cp /tmp/bootstrap.json \"s3://$ARTIFACT_BUCKET/$BOOTSTRAP_S3_KEY\"; fi',
-						],
+						commands: [provisionRunnerBuild],
 					},
 				},
 			}),
@@ -349,6 +361,7 @@ export class LesserHostStack extends cdk.Stack {
 			ARTIFACT_BUCKET_NAME: artifactsBucket.bucketName,
 			PROVISION_QUEUE_URL: provisionQueue.queueUrl,
 			MANAGED_PROVISIONING_ENABLED: managedProvisioningEnabled,
+			MANAGED_ORG_VENDING_ROLE_ARN: managedOrgVendingRoleArn,
 			MANAGED_PARENT_DOMAIN: managedParentDomain,
 			MANAGED_PARENT_HOSTED_ZONE_ID: managedParentHostedZoneId,
 			MANAGED_INSTANCE_ROLE_NAME: managedInstanceRoleName,
@@ -392,6 +405,14 @@ export class LesserHostStack extends cdk.Stack {
 				resources: [`arn:aws:iam::*:role/${managedInstanceRoleName.trim() || 'OrganizationAccountAccessRole'}`],
 			}),
 		);
+		if (managedOrgVendingRoleArn.trim()) {
+			provisionRunnerProject.addToRolePolicy(
+				new iam.PolicyStatement({
+					actions: ['sts:AssumeRole'],
+					resources: [managedOrgVendingRoleArn.trim()],
+				}),
+			);
+		}
 
 		provisionWorkerFn.addToRolePolicy(
 			new iam.PolicyStatement({
@@ -411,6 +432,14 @@ export class LesserHostStack extends cdk.Stack {
 				resources: [`arn:aws:iam::*:role/${managedInstanceRoleName.trim() || 'OrganizationAccountAccessRole'}`],
 			}),
 		);
+		if (managedOrgVendingRoleArn.trim()) {
+			provisionWorkerFn.addToRolePolicy(
+				new iam.PolicyStatement({
+					actions: ['sts:AssumeRole'],
+					resources: [managedOrgVendingRoleArn.trim()],
+				}),
+			);
+		}
 
 		provisionWorkerFn.addToRolePolicy(
 			new iam.PolicyStatement({
