@@ -25,6 +25,11 @@ const (
 	overagePolicyAllow = "allow"
 	overagePolicyBlock = "block"
 
+	moderationTriggerOnReports      = "on_reports"
+	moderationTriggerAlways         = "always"
+	moderationTriggerLinksMediaOnly = "links_media_only"
+	moderationTriggerVirality       = "virality"
+
 	aiBatchingModeNone      = "none"
 	aiBatchingModeInRequest = "in_request"
 	aiBatchingModeWorker    = "worker"
@@ -45,6 +50,9 @@ type instanceResponse struct {
 	RendersEnabled         bool      `json:"renders_enabled"`
 	RenderPolicy           string    `json:"render_policy"`
 	OveragePolicy          string    `json:"overage_policy"`
+	ModerationEnabled      bool      `json:"moderation_enabled"`
+	ModerationTrigger      string    `json:"moderation_trigger"`
+	ModerationViralityMin  int64     `json:"moderation_virality_min"`
 	AIEnabled              bool      `json:"ai_enabled"`
 	AIModelSet             string    `json:"ai_model_set"`
 	AIBatchingMode         string    `json:"ai_batching_mode"`
@@ -72,6 +80,9 @@ type updateInstanceConfigRequest struct {
 	RendersEnabled         *bool   `json:"renders_enabled,omitempty"`
 	RenderPolicy           *string `json:"render_policy,omitempty"`  // always|suspicious
 	OveragePolicy          *string `json:"overage_policy,omitempty"` // block|allow
+	ModerationEnabled      *bool   `json:"moderation_enabled,omitempty"`
+	ModerationTrigger      *string `json:"moderation_trigger,omitempty"` // on_reports|always|links_media_only|virality
+	ModerationViralityMin  *int64  `json:"moderation_virality_min,omitempty"`
 	AIEnabled              *bool   `json:"ai_enabled,omitempty"`
 	AIModelSet             *string `json:"ai_model_set,omitempty"`
 	AIBatchingMode         *string `json:"ai_batching_mode,omitempty"` // none|in_request|worker|hybrid
@@ -130,6 +141,9 @@ func (s *Server) handleCreateInstance(ctx *apptheory.Context) (*apptheory.Respon
 	rendersEnabled := true
 	renderPolicy := renderPolicySuspicious
 	overagePolicy := overagePolicyBlock
+	moderationEnabled := false
+	moderationTrigger := moderationTriggerOnReports
+	moderationViralityMin := int64(0)
 	aiEnabled := false
 	aiModelSet := "openai:gpt-5-mini-2025-08-07"
 	aiBatchingMode := aiBatchingModeNone
@@ -146,6 +160,9 @@ func (s *Server) handleCreateInstance(ctx *apptheory.Context) (*apptheory.Respon
 		RendersEnabled:         &rendersEnabled,
 		RenderPolicy:           renderPolicy,
 		OveragePolicy:          overagePolicy,
+		ModerationEnabled:      &moderationEnabled,
+		ModerationTrigger:      moderationTrigger,
+		ModerationViralityMin:  moderationViralityMin,
 		AIEnabled:              &aiEnabled,
 		AIModelSet:             aiModelSet,
 		AIBatchingMode:         aiBatchingMode,
@@ -211,6 +228,9 @@ func (s *Server) handleCreateInstance(ctx *apptheory.Context) (*apptheory.Respon
 		RendersEnabled:         effectiveRendersEnabled(inst.RendersEnabled),
 		RenderPolicy:           effectiveRenderPolicy(inst.RenderPolicy),
 		OveragePolicy:          effectiveOveragePolicy(inst.OveragePolicy),
+		ModerationEnabled:      effectiveModerationEnabled(inst.ModerationEnabled),
+		ModerationTrigger:      effectiveModerationTrigger(inst.ModerationTrigger),
+		ModerationViralityMin:  effectiveModerationViralityMin(inst.ModerationViralityMin),
 		AIEnabled:              effectiveAIEnabled(inst.AIEnabled),
 		AIModelSet:             effectiveAIModelSet(inst.AIModelSet),
 		AIBatchingMode:         effectiveAIBatchingMode(inst.AIBatchingMode),
@@ -247,6 +267,9 @@ func (s *Server) handleListInstances(ctx *apptheory.Context) (*apptheory.Respons
 			RendersEnabled:         effectiveRendersEnabled(inst.RendersEnabled),
 			RenderPolicy:           effectiveRenderPolicy(inst.RenderPolicy),
 			OveragePolicy:          effectiveOveragePolicy(inst.OveragePolicy),
+			ModerationEnabled:      effectiveModerationEnabled(inst.ModerationEnabled),
+			ModerationTrigger:      effectiveModerationTrigger(inst.ModerationTrigger),
+			ModerationViralityMin:  effectiveModerationViralityMin(inst.ModerationViralityMin),
 			AIEnabled:              effectiveAIEnabled(inst.AIEnabled),
 			AIModelSet:             effectiveAIModelSet(inst.AIModelSet),
 			AIBatchingMode:         effectiveAIBatchingMode(inst.AIBatchingMode),
@@ -297,6 +320,30 @@ func effectiveOveragePolicy(v string) string {
 	v = strings.ToLower(strings.TrimSpace(v))
 	if v == "" {
 		return overagePolicyBlock
+	}
+	return v
+}
+
+func effectiveModerationEnabled(v *bool) bool {
+	if v == nil {
+		return false
+	}
+	return *v
+}
+
+func effectiveModerationTrigger(v string) string {
+	v = strings.ToLower(strings.TrimSpace(v))
+	switch v {
+	case moderationTriggerOnReports, moderationTriggerAlways, moderationTriggerLinksMediaOnly, moderationTriggerVirality:
+		return v
+	default:
+		return moderationTriggerOnReports
+	}
+}
+
+func effectiveModerationViralityMin(v int64) int64 {
+	if v < 0 {
+		return 0
 	}
 	return v
 }
@@ -473,6 +520,9 @@ func (s *Server) handleUpdateInstanceConfig(ctx *apptheory.Context) (*apptheory.
 		RendersEnabled:         effectiveRendersEnabled(inst.RendersEnabled),
 		RenderPolicy:           effectiveRenderPolicy(inst.RenderPolicy),
 		OveragePolicy:          effectiveOveragePolicy(inst.OveragePolicy),
+		ModerationEnabled:      effectiveModerationEnabled(inst.ModerationEnabled),
+		ModerationTrigger:      effectiveModerationTrigger(inst.ModerationTrigger),
+		ModerationViralityMin:  effectiveModerationViralityMin(inst.ModerationViralityMin),
 		AIEnabled:              effectiveAIEnabled(inst.AIEnabled),
 		AIModelSet:             effectiveAIModelSet(inst.AIModelSet),
 		AIBatchingMode:         effectiveAIBatchingMode(inst.AIBatchingMode),
@@ -496,6 +546,14 @@ func buildInstanceConfigUpdate(slug string, req updateInstanceConfigRequest) (*m
 		return nil, nil, err
 	}
 	if err := setOveragePolicy(update, req.OveragePolicy, &fields); err != nil {
+		return nil, nil, err
+	}
+
+	setBoolPtr(&update.ModerationEnabled, req.ModerationEnabled, "ModerationEnabled", &fields)
+	if err := setModerationTrigger(update, req.ModerationTrigger, &fields); err != nil {
+		return nil, nil, err
+	}
+	if err := setModerationViralityMin(update, req.ModerationViralityMin, &fields); err != nil {
 		return nil, nil, err
 	}
 
@@ -557,6 +615,34 @@ func setOveragePolicy(update *models.Instance, src *string, fields *[]string) er
 	}
 	update.OveragePolicy = op
 	*fields = append(*fields, "OveragePolicy")
+	return nil
+}
+
+func setModerationTrigger(update *models.Instance, src *string, fields *[]string) error {
+	if src == nil {
+		return nil
+	}
+	mode := strings.ToLower(strings.TrimSpace(*src))
+	switch mode {
+	case moderationTriggerOnReports, moderationTriggerAlways, moderationTriggerLinksMediaOnly, moderationTriggerVirality:
+		// ok
+	default:
+		return &apptheory.AppError{Code: "app.bad_request", Message: "moderation_trigger must be on_reports, always, links_media_only, or virality"}
+	}
+	update.ModerationTrigger = mode
+	*fields = append(*fields, "ModerationTrigger")
+	return nil
+}
+
+func setModerationViralityMin(update *models.Instance, src *int64, fields *[]string) error {
+	if src == nil {
+		return nil
+	}
+	if *src < 0 {
+		return &apptheory.AppError{Code: "app.bad_request", Message: "moderation_virality_min must be >= 0"}
+	}
+	update.ModerationViralityMin = *src
+	*fields = append(*fields, "ModerationViralityMin")
 	return nil
 }
 

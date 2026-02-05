@@ -7,6 +7,11 @@ const (
 	overagePolicyAllow = "allow"
 	overagePolicyBlock = "block"
 
+	moderationTriggerOnReports      = "on_reports"
+	moderationTriggerAlways         = "always"
+	moderationTriggerLinksMediaOnly = "links_media_only"
+	moderationTriggerVirality       = "virality"
+
 	aiBatchingModeNone      = "none"
 	aiBatchingModeInRequest = "in_request"
 	aiBatchingModeWorker    = "worker"

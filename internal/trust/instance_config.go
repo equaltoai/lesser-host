@@ -17,6 +17,10 @@ type instanceTrustConfig struct {
 	RenderPolicy          string // always|suspicious
 	OveragePolicy         string // block|allow
 
+	ModerationEnabled     bool
+	ModerationTrigger     string // on_reports|always|links_media_only|virality
+	ModerationViralityMin int64
+
 	AIEnabled              bool
 	AIModelSet             string
 	AIBatchingMode         string
@@ -33,6 +37,10 @@ func defaultInstanceTrustConfig() instanceTrustConfig {
 		RendersEnabled:        true,
 		RenderPolicy:          renderPolicySuspicious,
 		OveragePolicy:         overagePolicyBlock,
+
+		ModerationEnabled:     false,
+		ModerationTrigger:     moderationTriggerOnReports,
+		ModerationViralityMin: 0,
 
 		AIEnabled:              false,
 		AIModelSet:             "openai:gpt-5-mini-2025-08-07",
@@ -87,6 +95,18 @@ func (s *Server) loadInstanceTrustConfig(ctx context.Context, instanceSlug strin
 	op := strings.ToLower(strings.TrimSpace(inst.OveragePolicy))
 	if op == overagePolicyAllow || op == overagePolicyBlock {
 		cfg.OveragePolicy = op
+	}
+
+	if inst.ModerationEnabled != nil {
+		cfg.ModerationEnabled = *inst.ModerationEnabled
+	}
+	mt := strings.ToLower(strings.TrimSpace(inst.ModerationTrigger))
+	switch mt {
+	case moderationTriggerOnReports, moderationTriggerAlways, moderationTriggerLinksMediaOnly, moderationTriggerVirality:
+		cfg.ModerationTrigger = mt
+	}
+	if inst.ModerationViralityMin >= 0 {
+		cfg.ModerationViralityMin = inst.ModerationViralityMin
 	}
 
 	aiCfg := ai.EffectiveInstanceConfig(&inst)

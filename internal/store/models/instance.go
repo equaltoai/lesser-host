@@ -27,6 +27,9 @@ type Instance struct {
 	RendersEnabled         *bool     `theorydb:"attr:rendersEnabled" json:"renders_enabled,omitempty"`
 	RenderPolicy           string    `theorydb:"attr:renderPolicy" json:"render_policy,omitempty"`   // always|suspicious
 	OveragePolicy          string    `theorydb:"attr:overagePolicy" json:"overage_policy,omitempty"` // block|allow
+	ModerationEnabled      *bool     `theorydb:"attr:moderationEnabled" json:"moderation_enabled,omitempty"`
+	ModerationTrigger      string    `theorydb:"attr:moderationTrigger" json:"moderation_trigger,omitempty"` // on_reports|always|links_media_only|virality
+	ModerationViralityMin  int64     `theorydb:"attr:moderationViralityMin" json:"moderation_virality_min,omitempty"`
 	AIEnabled              *bool     `theorydb:"attr:aiEnabled" json:"ai_enabled,omitempty"`
 	AIModelSet             string    `theorydb:"attr:aiModelSet" json:"ai_model_set,omitempty"`
 	AIBatchingMode         string    `theorydb:"attr:aiBatchingMode" json:"ai_batching_mode,omitempty"` // none|in_request|worker|hybrid
@@ -68,6 +71,16 @@ func (i *Instance) BeforeCreate() error {
 	}
 	if strings.TrimSpace(i.OveragePolicy) == "" {
 		i.OveragePolicy = "block"
+	}
+	if i.ModerationEnabled == nil {
+		v := false
+		i.ModerationEnabled = &v
+	}
+	if strings.TrimSpace(i.ModerationTrigger) == "" {
+		i.ModerationTrigger = "on_reports"
+	}
+	if i.ModerationViralityMin < 0 {
+		i.ModerationViralityMin = 0
 	}
 	if i.AIEnabled == nil {
 		v := false

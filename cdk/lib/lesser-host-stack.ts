@@ -52,6 +52,13 @@ export class LesserHostStack extends cdk.Stack {
 			bucketName: `${namePrefix}-${cdk.Aws.ACCOUNT_ID}-${cdk.Aws.REGION}-artifacts`,
 			blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
 			enforceSSL: true,
+			lifecycleRules: [
+				{
+					id: 'ExpireModerationInputs',
+					prefix: 'moderation/',
+					expiration: cdk.Duration.days(30),
+				},
+			],
 			removalPolicy,
 			autoDeleteObjects: stage !== 'live',
 		});

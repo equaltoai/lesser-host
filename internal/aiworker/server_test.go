@@ -238,3 +238,95 @@ func TestProcessAIJob_WritesRekognitionEvidenceResult(t *testing.T) {
 		t.Fatalf("expected job status ok, got %+v", j2)
 	}
 }
+
+func TestProcessAIJob_WritesModerationTextResult(t *testing.T) {
+	t.Parallel()
+
+	st := &fakeAIStore{
+		jobs: map[string]*models.AIJob{},
+	}
+	job := &models.AIJob{
+		ID:            strings.Repeat("c", 64),
+		InstanceSlug:  "inst",
+		Module:        "moderation_text_llm",
+		PolicyVersion: "v1",
+		ModelSet:      "deterministic",
+		InputsHash:    "hash",
+		InputsJSON:    `{"text":"kill yourself 123-45-6789"}`,
+		Status:        models.AIJobStatusQueued,
+		CreatedAt:     time.Now().UTC(),
+		UpdatedAt:     time.Now().UTC(),
+		ExpiresAt:     time.Now().UTC().Add(1 * time.Hour),
+	}
+	st.jobs[job.ID] = job
+
+	srv := NewServer(config.Config{ArtifactBucketName: "bucket"}, st, artifacts.New("bucket"), fakeComprehend{}, fakeRekognition{})
+	if err := srv.processAIJob(context.Background(), "req", job.ID); err != nil {
+		t.Fatalf("processAIJob error: %v", err)
+	}
+
+	res, err := st.GetAIResult(context.Background(), job.ID)
+	if err != nil || res == nil {
+		t.Fatalf("expected result, got err=%v res=%v", err, res)
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(res.ResultJSON), &parsed); err != nil {
+		t.Fatalf("unmarshal resultJSON: %v", err)
+	}
+	if parsed["kind"] != "moderation_text" {
+		t.Fatalf("expected kind=moderation_text, got %v", parsed["kind"])
+	}
+	if parsed["version"] != "v1" {
+		t.Fatalf("expected version=v1, got %v", parsed["version"])
+	}
+	if parsed["decision"] != "block" {
+		t.Fatalf("expected decision=block, got %v", parsed["decision"])
+	}
+}
+
+func TestProcessAIJob_WritesModerationImageResult(t *testing.T) {
+	t.Parallel()
+
+	st := &fakeAIStore{
+		jobs: map[string]*models.AIJob{},
+	}
+	job := &models.AIJob{
+		ID:            strings.Repeat("d", 64),
+		InstanceSlug:  "inst",
+		Module:        "moderation_image_llm",
+		PolicyVersion: "v1",
+		ModelSet:      "deterministic",
+		InputsHash:    "hash",
+		InputsJSON:    `{"object_key":"moderation/inst/img"}`,
+		Status:        models.AIJobStatusQueued,
+		CreatedAt:     time.Now().UTC(),
+		UpdatedAt:     time.Now().UTC(),
+		ExpiresAt:     time.Now().UTC().Add(1 * time.Hour),
+	}
+	st.jobs[job.ID] = job
+
+	srv := NewServer(config.Config{ArtifactBucketName: "bucket"}, st, artifacts.New("bucket"), fakeComprehend{}, fakeRekognition{})
+	if err := srv.processAIJob(context.Background(), "req", job.ID); err != nil {
+		t.Fatalf("processAIJob error: %v", err)
+	}
+
+	res, err := st.GetAIResult(context.Background(), job.ID)
+	if err != nil || res == nil {
+		t.Fatalf("expected result, got err=%v res=%v", err, res)
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(res.ResultJSON), &parsed); err != nil {
+		t.Fatalf("unmarshal resultJSON: %v", err)
+	}
+	if parsed["kind"] != "moderation_image" {
+		t.Fatalf("expected kind=moderation_image, got %v", parsed["kind"])
+	}
+	if parsed["version"] != "v1" {
+		t.Fatalf("expected version=v1, got %v", parsed["version"])
+	}
+	if parsed["decision"] != "block" {
+		t.Fatalf("expected decision=block, got %v", parsed["decision"])
+	}
+}

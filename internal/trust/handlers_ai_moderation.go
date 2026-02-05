@@ -1,15 +1,19 @@
 package trust
 
 import (
+	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 
 	"github.com/equaltoai/lesser-host/internal/ai"
+	"github.com/equaltoai/lesser-host/internal/billing"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -19,11 +23,20 @@ const (
 )
 
 type aiModerationTextRequest struct {
-	Text string `json:"text"`
+	Text    string                 `json:"text"`
+	Context *aiModerationScanCtxV1 `json:"context,omitempty"`
 }
 
 type aiModerationImageRequest struct {
-	ObjectKey string `json:"object_key"`
+	ObjectKey string                 `json:"object_key,omitempty"`
+	URL       string                 `json:"url,omitempty"`
+	Context   *aiModerationScanCtxV1 `json:"context,omitempty"`
+}
+
+type aiModerationScanCtxV1 struct {
+	HasLinks      bool  `json:"has_links,omitempty"`
+	HasMedia      bool  `json:"has_media,omitempty"`
+	ViralityScore int64 `json:"virality_score,omitempty"`
 }
 
 type aiModerationResponse struct {
@@ -38,6 +51,9 @@ type aiModerationResponse struct {
 	Result any              `json:"result,omitempty"`
 	Usage  models.AIUsage   `json:"usage,omitempty"`
 	Errors []models.AIError `json:"errors,omitempty"`
+
+	ErrorCode    string `json:"error_code,omitempty"`
+	ErrorMessage string `json:"error_message,omitempty"`
 }
 
 func (s *Server) handleAIModerationText(ctx *apptheory.Context) (*apptheory.Response, error) {
@@ -86,6 +102,39 @@ func (s *Server) handleAIModerationTextTriggered(ctx *apptheory.Context, action 
 
 	inputs := ai.ModerationTextInputsV1{Text: text}
 	inputsHash, _ := ai.InputsHash(inputs)
+
+	creditsRequested := billing.PricedCredits(aiModerationTextBaseCredits, instCfg.AIPricingMultiplierBps)
+	if !instCfg.ModerationEnabled {
+		return apptheory.JSON(
+			http.StatusOK,
+			moderationDisabledResponse(
+				ai.ModerationTextLLMModule,
+				ai.ModerationTextLLMPolicyVersion,
+				modelSet,
+				inputsHash,
+				creditsRequested,
+				"moderation scanning disabled for instance",
+			),
+		)
+	}
+
+	if strings.EqualFold(action, "moderation.scan.request") {
+		trigger := strings.ToLower(strings.TrimSpace(instCfg.ModerationTrigger))
+		ok, msg := moderationRequestAllowed(trigger, req.Context, instCfg.ModerationViralityMin, "text")
+		if !ok {
+			return apptheory.JSON(
+				http.StatusOK,
+				moderationDisabledResponse(
+					ai.ModerationTextLLMModule,
+					ai.ModerationTextLLMPolicyVersion,
+					modelSet,
+					inputsHash,
+					creditsRequested,
+					msg,
+				),
+			)
+		}
+	}
 
 	resp, err := s.ai.GetOrQueue(ctx.Context(), ai.Request{
 		InstanceSlug:         instanceSlug,
@@ -186,15 +235,14 @@ func (s *Server) handleAIModerationImageTriggered(ctx *apptheory.Context, action
 		return nil, err
 	}
 
-	key := strings.TrimSpace(req.ObjectKey)
+	key, contentType, etag, size, err := s.prepareModerationImageInput(ctx.Context(), instanceSlug, req)
+	if err != nil {
+		return nil, err
+	}
 	if key == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "object_key is required"}
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "object_key or url is required"}
 	}
 
-	contentType, etag, size, err := s.artifacts.HeadObject(ctx.Context(), key)
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "object not found"}
-	}
 	if size <= 0 || size > 5*1024*1024 {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "object too large"}
 	}
@@ -217,6 +265,39 @@ func (s *Server) handleAIModerationImageTriggered(ctx *apptheory.Context, action
 		ContentType: strings.TrimSpace(contentType),
 	}
 	inputsHash, _ := ai.InputsHash(inputs)
+
+	creditsRequested := billing.PricedCredits(aiModerationImageBaseCredits, instCfg.AIPricingMultiplierBps)
+	if !instCfg.ModerationEnabled {
+		return apptheory.JSON(
+			http.StatusOK,
+			moderationDisabledResponse(
+				ai.ModerationImageLLMModule,
+				ai.ModerationImageLLMPolicyVersion,
+				modelSet,
+				inputsHash,
+				creditsRequested,
+				"moderation scanning disabled for instance",
+			),
+		)
+	}
+
+	if strings.EqualFold(action, "moderation.scan.request") {
+		trigger := strings.ToLower(strings.TrimSpace(instCfg.ModerationTrigger))
+		ok, msg := moderationRequestAllowed(trigger, req.Context, instCfg.ModerationViralityMin, "image")
+		if !ok {
+			return apptheory.JSON(
+				http.StatusOK,
+				moderationDisabledResponse(
+					ai.ModerationImageLLMModule,
+					ai.ModerationImageLLMPolicyVersion,
+					modelSet,
+					inputsHash,
+					creditsRequested,
+					msg,
+				),
+			)
+		}
+	}
 
 	resp, err := s.ai.GetOrQueue(ctx.Context(), ai.Request{
 		InstanceSlug:         instanceSlug,
@@ -286,4 +367,124 @@ func (s *Server) handleAIModerationImageTriggered(ctx *apptheory.Context, action
 	}
 
 	return apptheory.JSON(http.StatusOK, out)
+}
+
+func (s *Server) prepareModerationImageInput(ctx context.Context, instanceSlug string, req aiModerationImageRequest) (key string, contentType string, etag string, size int64, err error) {
+	if s == nil || s.artifacts == nil {
+		return "", "", "", 0, &apptheory.AppError{Code: "app.internal", Message: "artifact store not configured"}
+	}
+
+	instanceSlug = strings.TrimSpace(instanceSlug)
+	key = strings.TrimSpace(req.ObjectKey)
+	rawURL := strings.TrimSpace(req.URL)
+	if rawURL != "" {
+		start, err2 := normalizeModerationImageURL(rawURL)
+		if err2 != nil {
+			return "", "", "", 0, &apptheory.AppError{Code: "app.bad_request", Message: "invalid url"}
+		}
+
+		client := newPreviewHTTPClient(8 * time.Second)
+		_, _, body, ct, fetchErr := fetchWithRedirects(ctx, nil, client, start, 3, 5*1024*1024)
+		if fetchErr != nil {
+			return "", "", "", 0, &apptheory.AppError{Code: "app.bad_request", Message: "failed to fetch url"}
+		}
+		ct = strings.TrimSpace(ct)
+		if ct == "" {
+			ct = http.DetectContentType(body)
+		}
+		if strings.TrimSpace(ct) == "" || !strings.HasPrefix(strings.ToLower(ct), "image/") {
+			return "", "", "", 0, &apptheory.AppError{Code: "app.bad_request", Message: "url must be an image"}
+		}
+
+		sum := sha256.Sum256(body)
+		etag = fmt.Sprintf("%x", sum[:])
+		key = fmt.Sprintf("moderation/%s/%s", instanceSlug, etag)
+		if putErr := s.artifacts.PutObject(ctx, key, body, ct, "no-store"); putErr != nil {
+			return "", "", "", 0, &apptheory.AppError{Code: "app.internal", Message: "failed to store object"}
+		}
+		return key, ct, etag, int64(len(body)), nil
+	}
+
+	if key == "" {
+		return "", "", "", 0, nil
+	}
+
+	prefix := fmt.Sprintf("moderation/%s/", instanceSlug)
+	if !strings.HasPrefix(key, prefix) {
+		return "", "", "", 0, &apptheory.AppError{Code: "app.bad_request", Message: "object_key must be under " + prefix}
+	}
+
+	ct, e, sz, headErr := s.artifacts.HeadObject(ctx, key)
+	if headErr != nil {
+		return "", "", "", 0, &apptheory.AppError{Code: "app.bad_request", Message: "object not found"}
+	}
+	return key, ct, e, sz, nil
+}
+
+func normalizeModerationImageURL(raw string) (*url.URL, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, fmt.Errorf("url is required")
+	}
+	_, normalized, err := normalizeLinkURL(raw)
+	if err != nil || normalized == nil {
+		return nil, fmt.Errorf("invalid url")
+	}
+	return normalized, nil
+}
+
+func moderationDisabledResponse(module string, policyVersion string, modelSet string, inputsHash string, creditsRequested int64, message string) aiModerationResponse {
+	return aiModerationResponse{
+		Status: "disabled",
+		Cached: false,
+		Budget: ai.BudgetDecision{
+			Allowed:          true,
+			OverBudget:       false,
+			Reason:           "disabled",
+			RequestedCredits: creditsRequested,
+			DebitedCredits:   0,
+		},
+		Contract: ai.ModuleContract{
+			Module:        strings.TrimSpace(module),
+			PolicyVersion: strings.TrimSpace(policyVersion),
+			ModelSet:      strings.TrimSpace(modelSet),
+			InputsHash:    strings.TrimSpace(inputsHash),
+		},
+		ErrorCode:    "disabled",
+		ErrorMessage: strings.TrimSpace(message),
+	}
+}
+
+func moderationRequestAllowed(trigger string, scanCtx *aiModerationScanCtxV1, viralityMin int64, kind string) (bool, string) {
+	trigger = strings.ToLower(strings.TrimSpace(trigger))
+	switch trigger {
+	case moderationTriggerOnReports:
+		return false, fmt.Sprintf("moderation trigger is on_reports; use /ai/moderation/%s/report", strings.TrimSpace(kind))
+	case moderationTriggerLinksMediaOnly:
+		// For image scans, the item is inherently "media".
+		if strings.EqualFold(kind, "image") {
+			return true, ""
+		}
+
+		hasLinks := scanCtx != nil && scanCtx.HasLinks
+		hasMedia := scanCtx != nil && scanCtx.HasMedia
+		if !hasLinks && !hasMedia {
+			return false, "moderation trigger is links_media_only and context indicates no links or media"
+		}
+		return true, ""
+	case moderationTriggerVirality:
+		if viralityMin <= 0 {
+			return false, "moderation trigger is virality but moderation_virality_min is not configured"
+		}
+		score := int64(0)
+		if scanCtx != nil {
+			score = scanCtx.ViralityScore
+		}
+		if score < viralityMin {
+			return false, "moderation trigger is virality and virality_score is below threshold"
+		}
+		return true, ""
+	default:
+		return true, ""
+	}
 }
