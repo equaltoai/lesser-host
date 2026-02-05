@@ -9,6 +9,7 @@ import (
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 
 	"github.com/equaltoai/lesser-host/internal/ai"
+	"github.com/equaltoai/lesser-host/internal/attestations"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -29,10 +30,23 @@ type claimVerifyEvidenceRequest struct {
 	Text     string `json:"text,omitempty"`
 }
 
+type claimVerifyRetrievalRequest struct {
+	Mode string `json:"mode,omitempty"` // provided_only|openai_web_search
+
+	MaxSources        int    `json:"max_sources,omitempty"`
+	SearchContextSize string `json:"search_context_size,omitempty"` // low|medium|high
+}
+
 type claimVerifyRequest struct {
-	Text     string                       `json:"text,omitempty"`
-	Claims   []string                     `json:"claims,omitempty"`
-	Evidence []claimVerifyEvidenceRequest `json:"evidence"`
+	ActorURI    string `json:"actor_uri,omitempty"`
+	ObjectURI   string `json:"object_uri,omitempty"`
+	ContentHash string `json:"content_hash,omitempty"`
+
+	Text   string   `json:"text,omitempty"`
+	Claims []string `json:"claims,omitempty"`
+
+	Evidence  []claimVerifyEvidenceRequest `json:"evidence,omitempty"`
+	Retrieval *claimVerifyRetrievalRequest `json:"retrieval,omitempty"`
 }
 
 type aiClaimVerifyResponse struct {
@@ -47,6 +61,9 @@ type aiClaimVerifyResponse struct {
 	Result any              `json:"result,omitempty"`
 	Usage  models.AIUsage   `json:"usage,omitempty"`
 	Errors []models.AIError `json:"errors,omitempty"`
+
+	AttestationID  string `json:"attestation_id,omitempty"`
+	AttestationURL string `json:"attestation_url,omitempty"`
 }
 
 func (s *Server) handleAIClaimVerify(ctx *apptheory.Context) (*apptheory.Response, error) {
@@ -60,10 +77,24 @@ func (s *Server) handleAIClaimVerify(ctx *apptheory.Context) (*apptheory.Respons
 		return nil, err
 	}
 
+	actorURI := strings.TrimSpace(req.ActorURI)
+	objectURI := strings.TrimSpace(req.ObjectURI)
+	contentHash := strings.TrimSpace(req.ContentHash)
+
 	text := strings.TrimSpace(req.Text)
 	claims := sanitizeClaimVerifyClaims(req.Claims)
 	if len(claims) == 0 && text == "" {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "text or claims is required"}
+	}
+
+	retrieval := normalizeClaimVerifyRetrieval(req.Retrieval)
+	retrievalMode := ai.ClaimVerifyRetrievalModeProvidedOnly
+	if retrieval != nil && strings.TrimSpace(retrieval.Mode) != "" {
+		retrievalMode = strings.TrimSpace(retrieval.Mode)
+	}
+
+	if len(req.Evidence) == 0 && retrievalMode != ai.ClaimVerifyRetrievalModeOpenAIWebSearch {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "evidence is required"}
 	}
 
 	evidence, totalEvidenceBytes, err := buildClaimVerifyEvidence(req.Evidence)
@@ -81,7 +112,22 @@ func (s *Server) handleAIClaimVerify(ctx *apptheory.Context) (*apptheory.Respons
 		claimCount = 1
 	}
 
-	baseCredits := estimateClaimVerifyBaseCredits(claimCount, totalEvidenceBytes)
+	estimatedEvidenceBytes := totalEvidenceBytes
+	if retrievalMode == ai.ClaimVerifyRetrievalModeOpenAIWebSearch {
+		estSources := 3
+		if retrieval != nil && retrieval.MaxSources > 0 {
+			estSources = retrieval.MaxSources
+		}
+		if estSources > claimVerifyMaxEvidenceItems {
+			estSources = claimVerifyMaxEvidenceItems
+		}
+		estimatedEvidenceBytes += int64(estSources) * claimVerifyMaxEvidenceBytes
+	}
+
+	baseCredits := estimateClaimVerifyBaseCredits(claimCount, estimatedEvidenceBytes)
+	if retrievalMode == ai.ClaimVerifyRetrievalModeOpenAIWebSearch {
+		baseCredits += 10 // retrieval overhead (coarse)
+	}
 
 	instCfg := s.loadInstanceTrustConfig(ctx.Context(), instanceSlug)
 	allowOverage := strings.ToLower(strings.TrimSpace(instCfg.OveragePolicy)) == overagePolicyAllow
@@ -90,11 +136,18 @@ func (s *Server) handleAIClaimVerify(ctx *apptheory.Context) (*apptheory.Respons
 	if instCfg.AIEnabled && strings.TrimSpace(instCfg.AIModelSet) != "" {
 		modelSet = strings.TrimSpace(instCfg.AIModelSet)
 	}
+	if retrievalMode == ai.ClaimVerifyRetrievalModeOpenAIWebSearch && (!instCfg.AIEnabled || !strings.HasPrefix(strings.ToLower(modelSet), "openai:")) {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "retrieval.mode=openai_web_search requires ai_enabled and an openai:* model_set"}
+	}
 
 	inputs := ai.ClaimVerifyInputsV1{
-		Text:     text,
-		Claims:   claims,
-		Evidence: evidence,
+		ActorURI:    actorURI,
+		ObjectURI:   objectURI,
+		ContentHash: contentHash,
+		Text:        text,
+		Claims:      claims,
+		Evidence:    evidence,
+		Retrieval:   retrieval,
 	}
 	inputsHash, _ := ai.InputsHash(inputs)
 
@@ -123,7 +176,14 @@ func (s *Server) handleAIClaimVerify(ctx *apptheory.Context) (*apptheory.Respons
 	}
 	s.emitAIRequestMetrics(instanceSlug, ai.ClaimVerifyLLMModule, resp, nil)
 
-	out := buildAIClaimVerifyResponse(resp, modelSet, inputsHash)
+	attID := ""
+	attURL := ""
+	if actorURI != "" && objectURI != "" && contentHash != "" {
+		attID = attestations.AttestationID(actorURI, objectURI, contentHash, ai.ClaimVerifyLLMModule, ai.ClaimVerifyLLMPolicyVersion)
+		attURL = attestationURL(ctx, attID)
+	}
+
+	out := buildAIClaimVerifyResponse(resp, modelSet, inputsHash, attID, attURL)
 
 	return apptheory.JSON(http.StatusOK, out)
 }
@@ -164,9 +224,6 @@ func sanitizeClaimVerifyClaims(in []string) []string {
 
 func buildClaimVerifyEvidence(req []claimVerifyEvidenceRequest) ([]ai.ClaimVerifyEvidenceV1, int64, error) {
 	// Evidence policy v1: caller must supply bounded evidence texts for citations.
-	if len(req) == 0 {
-		return nil, 0, &apptheory.AppError{Code: "app.bad_request", Message: "evidence is required"}
-	}
 	if len(req) > claimVerifyMaxEvidenceItems {
 		return nil, 0, &apptheory.AppError{Code: "app.bad_request", Message: "too many evidence items"}
 	}
@@ -222,6 +279,44 @@ func buildClaimVerifyEvidence(req []claimVerifyEvidenceRequest) ([]ai.ClaimVerif
 	return evidence, totalEvidenceBytes, nil
 }
 
+func normalizeClaimVerifyRetrieval(req *claimVerifyRetrievalRequest) *ai.ClaimVerifyRetrievalV1 {
+	if req == nil {
+		return nil
+	}
+
+	mode := strings.ToLower(strings.TrimSpace(req.Mode))
+	switch mode {
+	case "":
+		mode = ai.ClaimVerifyRetrievalModeProvidedOnly
+	case ai.ClaimVerifyRetrievalModeProvidedOnly, ai.ClaimVerifyRetrievalModeOpenAIWebSearch:
+		// ok
+	default:
+		mode = ai.ClaimVerifyRetrievalModeProvidedOnly
+	}
+
+	maxSources := req.MaxSources
+	if maxSources < 0 {
+		maxSources = 0
+	}
+	if maxSources > claimVerifyMaxEvidenceItems {
+		maxSources = claimVerifyMaxEvidenceItems
+	}
+
+	ctxSize := strings.ToLower(strings.TrimSpace(req.SearchContextSize))
+	switch ctxSize {
+	case "", ai.ClaimVerifySearchContextLow, ai.ClaimVerifySearchContextMedium, ai.ClaimVerifySearchContextHigh:
+		// ok
+	default:
+		ctxSize = ""
+	}
+
+	return &ai.ClaimVerifyRetrievalV1{
+		Mode:              mode,
+		MaxSources:        maxSources,
+		SearchContextSize: ctxSize,
+	}
+}
+
 func clampEvidenceText(raw string, maxBytes int64) (string, int64, error) {
 	evText := strings.TrimSpace(raw)
 	if evText == "" {
@@ -258,7 +353,7 @@ func (s *Server) enqueueAIJobIfQueued(ctx *apptheory.Context, resp ai.Response) 
 	return nil
 }
 
-func buildAIClaimVerifyResponse(resp ai.Response, modelSet string, inputsHash string) aiClaimVerifyResponse {
+func buildAIClaimVerifyResponse(resp ai.Response, modelSet string, inputsHash string, attestationID string, attestationURL string) aiClaimVerifyResponse {
 	out := aiClaimVerifyResponse{
 		Status: string(resp.Status),
 		Cached: resp.Cached,
@@ -270,6 +365,8 @@ func buildAIClaimVerifyResponse(resp ai.Response, modelSet string, inputsHash st
 			ModelSet:      modelSet,
 			InputsHash:    strings.TrimSpace(inputsHash),
 		},
+		AttestationID:  strings.TrimSpace(attestationID),
+		AttestationURL: strings.TrimSpace(attestationURL),
 	}
 	if resp.Result == nil {
 		return out

@@ -2,6 +2,8 @@ package aiworker
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -19,13 +21,16 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/rekognition"
 	rekognitiontypes "github.com/aws/aws-sdk-go-v2/service/rekognition/types"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
+	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/ai"
 	"github.com/equaltoai/lesser-host/internal/ai/llm"
 	"github.com/equaltoai/lesser-host/internal/artifacts"
+	"github.com/equaltoai/lesser-host/internal/attestations"
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/rendering"
 	"github.com/equaltoai/lesser-host/internal/secrets"
+	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -34,6 +39,7 @@ const (
 	claimVerdictInconclusive = "inconclusive"
 
 	claimVerifyEvidenceMaxBytes = int64(8 * 1024)
+	claimVerifyMaxEvidenceItems = 5
 )
 
 var hex64RE = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -65,6 +71,7 @@ type Server struct {
 	artifacts   *artifacts.Store
 	comprehend  comprehendAPI
 	rekognition rekognitionAPI
+	attest      *attestations.KMSService
 }
 
 // NewServer constructs a Server with AWS service clients and a store.
@@ -75,6 +82,7 @@ func NewServer(cfg config.Config, st aiStore, art *artifacts.Store, comp compreh
 		artifacts:   art,
 		comprehend:  comp,
 		rekognition: rek,
+		attest:      attestations.NewKMSService(cfg.AttestationSigningKeyID, cfg.AttestationPublicKeyIDs),
 	}
 }
 
@@ -1240,38 +1248,113 @@ func (s *Server) runClaimVerifyLLMV1(ctx context.Context, job *models.AIJob) (st
 
 	start := time.Now()
 	hydrationErrs := s.hydrateClaimVerifyEvidenceFromRenders(ctx, &in)
-	var errs []models.AIError
+	in.Retrieval = normalizeClaimVerifyRetrievalV1(in.Retrieval)
+	retrievalUsed, retrievalDisclaimer, retrievalUsage, retrievalErrs := s.maybeAddClaimVerifyWebSearchEvidence(ctx, modelSet, &in)
 
 	evidenceIDs, evidenceText := claimVerifyEvidenceMaps(in.Evidence)
 	if len(evidenceIDs) == 0 || len(evidenceText) == 0 {
-		return claimVerifyMissingEvidenceResponse(in, start)
+		out, usage, errs, err := claimVerifyMissingEvidenceResponse(in, start)
+		if len(hydrationErrs) > 0 {
+			errs = append(hydrationErrs, errs...)
+		}
+		if len(retrievalErrs) > 0 {
+			errs = append(retrievalErrs, errs...)
+		}
+		return out, usage, errs, err
 	}
 
 	var res ai.ClaimVerifyResultV1
 	var usage models.AIUsage
 
-	res, usage, errs = s.claimVerifyWithLLM(ctx, modelSet, strings.TrimSpace(job.ID), in, start)
+	res, usage, errs := s.claimVerifyWithLLM(ctx, modelSet, strings.TrimSpace(job.ID), in, start)
+	if len(retrievalErrs) > 0 {
+		errs = append(retrievalErrs, errs...)
+	}
 	if len(hydrationErrs) > 0 {
 		errs = append(hydrationErrs, errs...)
+	}
+	if retrievalUsed {
+		usage = mergeAIUsage(usage, retrievalUsage, start)
 	}
 
 	if len(res.Claims) == 0 {
 		res = ai.ClaimVerifyDeterministicV1(in)
-		usage = models.AIUsage{
-			Provider:   deterministicValue,
-			Model:      deterministicValue,
-			ToolCalls:  0,
-			DurationMs: time.Since(start).Milliseconds(),
+		if strings.TrimSpace(usage.Provider) == "" {
+			usage = models.AIUsage{
+				Provider:   deterministicValue,
+				Model:      deterministicValue,
+				ToolCalls:  0,
+				DurationMs: time.Since(start).Milliseconds(),
+			}
 		}
 	}
 
+	res.Sources = trimClaimVerifySourcesForOutput(in.Evidence)
+	if retrievalUsed {
+		res.Disclaimer = retrievalDisclaimer
+		res.Warnings = append(res.Warnings, "web_search_used")
+	}
+
 	res.Claims = sanitizeClaimVerifyClaims(res.Claims, evidenceIDs, evidenceText)
+
+	if attErrs := s.issueClaimVerifyAttestationV1(ctx, job, in, res); len(attErrs) > 0 {
+		errs = append(errs, attErrs...)
+	}
 
 	b, err := json.Marshal(res)
 	if err != nil {
 		return "", models.AIUsage{}, nil, err
 	}
 	return string(b), usage, errs, nil
+}
+
+func (s *Server) maybeAddClaimVerifyWebSearchEvidence(
+	ctx context.Context,
+	modelSet string,
+	in *ai.ClaimVerifyInputsV1,
+) (used bool, disclaimer string, usage models.AIUsage, errs []models.AIError) {
+	if in == nil || in.Retrieval == nil {
+		return false, "", models.AIUsage{}, nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(in.Retrieval.Mode), ai.ClaimVerifyRetrievalModeOpenAIWebSearch) {
+		return false, "", models.AIUsage{}, nil
+	}
+
+	maxSources := in.Retrieval.MaxSources
+	if maxSources <= 0 {
+		maxSources = 3
+	}
+	if maxSources > claimVerifyMaxEvidenceItems {
+		maxSources = claimVerifyMaxEvidenceItems
+	}
+
+	remaining := claimVerifyMaxEvidenceItems - len(in.Evidence)
+	if remaining <= 0 {
+		return false, "", models.AIUsage{}, []models.AIError{{Code: "retrieval_skipped", Message: "Evidence limit reached; skipping web search retrieval", Retryable: false}}
+	}
+	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(modelSet)), "openai:") {
+		return false, "", models.AIUsage{}, []models.AIError{{Code: "retrieval_unsupported", Message: "Web search retrieval requires an openai:* model set; continuing without retrieval", Retryable: false}}
+	}
+
+	if maxSources > remaining {
+		maxSources = remaining
+	}
+
+	apiKey, keyErr := openAIAPIKey(ctx)
+	if keyErr != nil || strings.TrimSpace(apiKey) == "" {
+		return false, "", models.AIUsage{}, []models.AIError{{Code: "llm_unavailable", Message: "LLM unavailable; skipped web search retrieval", Retryable: false}}
+	}
+
+	ev, disc, u, evErr := llm.ClaimVerifyWebSearchEvidenceOpenAI(ctx, apiKey, modelSet, in.Claims, in.Text, maxSources, strings.TrimSpace(in.Retrieval.SearchContextSize))
+	if evErr != nil {
+		return false, "", models.AIUsage{}, []models.AIError{{Code: "retrieval_failed", Message: "Web search retrieval failed; continuing with provided evidence", Retryable: true}}
+	}
+	if len(ev) == 0 {
+		return false, "", models.AIUsage{}, nil
+	}
+
+	in.Evidence = append(in.Evidence, uniquifyClaimVerifyEvidenceIDs(in.Evidence, ev)...)
+	return true, strings.TrimSpace(disc), u, nil
 }
 
 func (s *Server) hydrateClaimVerifyEvidenceFromRenders(ctx context.Context, in *ai.ClaimVerifyInputsV1) []models.AIError {
@@ -1313,6 +1396,255 @@ func (s *Server) hydrateClaimVerifyEvidenceFromRenders(ctx context.Context, in *
 	}
 
 	return errs
+}
+
+func normalizeClaimVerifyRetrievalV1(in *ai.ClaimVerifyRetrievalV1) *ai.ClaimVerifyRetrievalV1 {
+	if in == nil {
+		return nil
+	}
+
+	mode := strings.ToLower(strings.TrimSpace(in.Mode))
+	switch mode {
+	case "":
+		mode = ai.ClaimVerifyRetrievalModeProvidedOnly
+	case ai.ClaimVerifyRetrievalModeProvidedOnly, ai.ClaimVerifyRetrievalModeOpenAIWebSearch:
+		// ok
+	default:
+		mode = ai.ClaimVerifyRetrievalModeProvidedOnly
+	}
+
+	maxSources := in.MaxSources
+	if maxSources < 0 {
+		maxSources = 0
+	}
+	if maxSources > claimVerifyMaxEvidenceItems {
+		maxSources = claimVerifyMaxEvidenceItems
+	}
+
+	ctxSize := strings.ToLower(strings.TrimSpace(in.SearchContextSize))
+	switch ctxSize {
+	case "", ai.ClaimVerifySearchContextLow, ai.ClaimVerifySearchContextMedium, ai.ClaimVerifySearchContextHigh:
+		// ok
+	default:
+		ctxSize = ""
+	}
+
+	return &ai.ClaimVerifyRetrievalV1{
+		Mode:              mode,
+		MaxSources:        maxSources,
+		SearchContextSize: ctxSize,
+	}
+}
+
+func uniquifyClaimVerifyEvidenceIDs(existing []ai.ClaimVerifyEvidenceV1, add []ai.ClaimVerifyEvidenceV1) []ai.ClaimVerifyEvidenceV1 {
+	seen := map[string]struct{}{}
+	for _, e := range existing {
+		id := strings.TrimSpace(e.SourceID)
+		if id == "" {
+			continue
+		}
+		seen[id] = struct{}{}
+	}
+
+	out := make([]ai.ClaimVerifyEvidenceV1, 0, len(add))
+	next := 1
+	for _, e := range add {
+		if len(out) >= claimVerifyMaxEvidenceItems {
+			break
+		}
+
+		id := strings.TrimSpace(e.SourceID)
+		if id == "" {
+			id = fmt.Sprintf("web_%d", next)
+		}
+		for {
+			if _, ok := seen[id]; !ok {
+				break
+			}
+			next++
+			id = fmt.Sprintf("web_%d", next)
+		}
+		next++
+
+		e.SourceID = id
+		seen[id] = struct{}{}
+		out = append(out, e)
+	}
+
+	return out
+}
+
+func trimClaimVerifySourcesForOutput(in []ai.ClaimVerifyEvidenceV1) []ai.ClaimVerifyEvidenceV1 {
+	out := make([]ai.ClaimVerifyEvidenceV1, 0, len(in))
+	for _, e := range in {
+		e.SourceID = strings.TrimSpace(e.SourceID)
+		e.URL = strings.TrimSpace(e.URL)
+		e.Title = strings.TrimSpace(e.Title)
+		e.RenderID = strings.TrimSpace(e.RenderID)
+		e.Text = strings.TrimSpace(e.Text)
+		if e.SourceID == "" || e.Text == "" {
+			continue
+		}
+		if int64(len([]byte(e.Text))) > claimVerifyEvidenceMaxBytes {
+			e.Text = strings.TrimSpace(string([]byte(e.Text)[:claimVerifyEvidenceMaxBytes]))
+		}
+		out = append(out, e)
+		if len(out) >= claimVerifyMaxEvidenceItems {
+			break
+		}
+	}
+	return out
+}
+
+func mergeAIUsage(primary models.AIUsage, extra models.AIUsage, start time.Time) models.AIUsage {
+	primary.DurationMs = time.Since(start).Milliseconds()
+	if strings.TrimSpace(extra.Provider) == "" {
+		return primary
+	}
+
+	if strings.TrimSpace(primary.Provider) == "" || strings.EqualFold(primary.Provider, deterministicValue) {
+		primary.Provider = strings.TrimSpace(extra.Provider)
+		if strings.TrimSpace(primary.Model) == "" {
+			primary.Model = strings.TrimSpace(extra.Model)
+		}
+	}
+
+	if strings.EqualFold(strings.TrimSpace(primary.Provider), strings.TrimSpace(extra.Provider)) {
+		primary.InputTokens += extra.InputTokens
+		primary.OutputTokens += extra.OutputTokens
+		primary.TotalTokens += extra.TotalTokens
+		primary.ToolCalls += extra.ToolCalls
+	}
+	return primary
+}
+
+type claimVerifyAttestationEvidenceSourceV1 struct {
+	SourceID string `json:"source_id"`
+	URL      string `json:"url,omitempty"`
+	Title    string `json:"title,omitempty"`
+	RenderID string `json:"render_id,omitempty"`
+
+	TextSHA256 string `json:"text_sha256,omitempty"`
+}
+
+type claimVerifyAttestationEvidenceV1 struct {
+	Sources       []claimVerifyAttestationEvidenceSourceV1 `json:"sources,omitempty"`
+	RetrievalMode string                                   `json:"retrieval_mode,omitempty"`
+	Disclaimer    string                                   `json:"disclaimer,omitempty"`
+}
+
+func (s *Server) issueClaimVerifyAttestationV1(ctx context.Context, job *models.AIJob, in ai.ClaimVerifyInputsV1, res ai.ClaimVerifyResultV1) []models.AIError {
+	if s == nil || s.attest == nil || !s.attest.Enabled() || job == nil {
+		return nil
+	}
+
+	actorURI := strings.TrimSpace(in.ActorURI)
+	objectURI := strings.TrimSpace(in.ObjectURI)
+	contentHash := strings.TrimSpace(in.ContentHash)
+	if actorURI == "" || objectURI == "" || contentHash == "" {
+		return nil
+	}
+
+	st, ok := s.store.(*store.Store)
+	if !ok || st == nil || st.DB == nil {
+		return []models.AIError{{Code: "attestation_unavailable", Message: "Attestation store unavailable", Retryable: true}}
+	}
+
+	module := strings.ToLower(strings.TrimSpace(job.Module))
+	policyVersion := strings.TrimSpace(job.PolicyVersion)
+	if module == "" || policyVersion == "" {
+		return nil
+	}
+
+	id := attestations.AttestationID(actorURI, objectURI, contentHash, module, policyVersion)
+
+	if existing, err := st.GetAttestation(ctx, id); err == nil && existing != nil {
+		return nil
+	} else if err != nil && !store.IsNotFound(err) {
+		return []models.AIError{{Code: "attestation_failed", Message: "Failed to check existing attestation", Retryable: true}}
+	}
+
+	now := time.Now().UTC()
+	expiresAt := now.Add(30 * 24 * time.Hour)
+
+	// Do not include full evidence texts in the public attestation.
+	evidenceRefs := []claimVerifyAttestationEvidenceSourceV1{}
+	for _, e := range trimClaimVerifySourcesForOutput(in.Evidence) {
+		txt := strings.TrimSpace(e.Text)
+		sum := sha256.Sum256([]byte(txt))
+		evidenceRefs = append(evidenceRefs, claimVerifyAttestationEvidenceSourceV1{
+			SourceID:   strings.TrimSpace(e.SourceID),
+			URL:        strings.TrimSpace(e.URL),
+			Title:      strings.TrimSpace(e.Title),
+			RenderID:   strings.TrimSpace(e.RenderID),
+			TextSHA256: hex.EncodeToString(sum[:]),
+		})
+	}
+
+	retrievalMode := ai.ClaimVerifyRetrievalModeProvidedOnly
+	if in.Retrieval != nil && strings.TrimSpace(in.Retrieval.Mode) != "" {
+		retrievalMode = strings.TrimSpace(in.Retrieval.Mode)
+	}
+
+	resForAttest := res
+	resForAttest.Sources = nil
+
+	payload := attestations.PayloadV1{
+		Type: attestations.PayloadTypeV1,
+
+		ActorURI:    actorURI,
+		ObjectURI:   objectURI,
+		ContentHash: contentHash,
+
+		Module:        module,
+		PolicyVersion: policyVersion,
+		ModelSet:      strings.TrimSpace(job.ModelSet),
+
+		CreatedAt: now,
+		ExpiresAt: expiresAt,
+
+		Evidence: claimVerifyAttestationEvidenceV1{
+			Sources:       evidenceRefs,
+			RetrievalMode: retrievalMode,
+			Disclaimer:    strings.TrimSpace(res.Disclaimer),
+		},
+		Result: resForAttest,
+	}
+
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return []models.AIError{{Code: "attestation_failed", Message: "Failed to encode attestation payload", Retryable: false}}
+	}
+
+	jws, _, err := s.attest.SignPayloadJWS(ctx, payloadBytes)
+	if err != nil {
+		return []models.AIError{{Code: "attestation_failed", Message: "Failed to sign attestation", Retryable: true}}
+	}
+
+	item := &models.Attestation{
+		ID:          id,
+		ActorURI:    actorURI,
+		ObjectURI:   objectURI,
+		ContentHash: contentHash,
+
+		Module:        module,
+		PolicyVersion: policyVersion,
+		ModelSet:      strings.TrimSpace(job.ModelSet),
+		JWS:           jws,
+
+		CreatedAt: now,
+		ExpiresAt: expiresAt,
+	}
+	_ = item.UpdateKeys()
+
+	err = st.DB.WithContext(ctx).Model(item).Create()
+	if theoryErrors.IsConditionFailed(err) {
+		return nil
+	}
+	if err != nil {
+		return []models.AIError{{Code: "attestation_failed", Message: "Failed to write attestation", Retryable: true}}
+	}
+	return nil
 }
 
 func claimVerifyEvidenceMaps(in []ai.ClaimVerifyEvidenceV1) (map[string]struct{}, map[string]string) {

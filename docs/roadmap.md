@@ -209,6 +209,9 @@ Deliverables:
 - Multi-model option support (model set configured per job)
 - Public attestation output includes per-claim verdicts with citations and confidence
 
+Reference:
+- Evidence policy v1: `docs/evidence-policy-v1.md`
+
 Acceptance criteria:
 - Claim checks produce structured outputs with citations for each claim.
 - Costs are clearly estimated up-front and charged only on cache miss.

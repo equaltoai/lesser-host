@@ -133,6 +133,8 @@ export class LesserHostStack extends cdk.Stack {
 			ARTIFACT_BUCKET_NAME: artifactsBucket.bucketName,
 			PREVIEW_QUEUE_URL: previewQueue.queueUrl,
 			SAFETY_QUEUE_URL: safetyQueue.queueUrl,
+			ATTESTATION_SIGNING_KEY_ID: attestationSigningKey.keyId,
+			ATTESTATION_PUBLIC_KEY_IDS: attestationSigningKey.keyId,
 		});
 
 		stateTable.grantReadWriteData(controlPlaneFn);
@@ -144,6 +146,7 @@ export class LesserHostStack extends cdk.Stack {
 		artifactsBucket.grantReadWrite(renderWorkerFn);
 		artifactsBucket.grantRead(aiWorkerFn);
 		attestationSigningKey.grant(trustFn, 'kms:Sign', 'kms:GetPublicKey');
+		attestationSigningKey.grant(aiWorkerFn, 'kms:Sign', 'kms:GetPublicKey');
 		previewQueue.grantSendMessages(controlPlaneFn);
 		previewQueue.grantSendMessages(trustFn);
 		previewQueue.grantConsumeMessages(renderWorkerFn);

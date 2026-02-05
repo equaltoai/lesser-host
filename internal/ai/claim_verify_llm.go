@@ -10,6 +10,13 @@ import (
 const (
 	ClaimVerifyLLMModule        = "claim_verify_llm"
 	ClaimVerifyLLMPolicyVersion = "v1"
+
+	ClaimVerifyRetrievalModeProvidedOnly    = "provided_only"
+	ClaimVerifyRetrievalModeOpenAIWebSearch = "openai_web_search"
+
+	ClaimVerifySearchContextLow    = "low"
+	ClaimVerifySearchContextMedium = "medium"
+	ClaimVerifySearchContextHigh   = "high"
 )
 
 // ClaimVerifyEvidenceV1 is an evidence snippet used to verify claims.
@@ -23,8 +30,22 @@ type ClaimVerifyEvidenceV1 struct {
 	Text string `json:"text"`
 }
 
+// ClaimVerifyRetrievalV1 configures optional retrieval behavior for claim verification.
+type ClaimVerifyRetrievalV1 struct {
+	Mode string `json:"mode,omitempty"` // provided_only|openai_web_search
+
+	// MaxSources limits how many sources retrieval may add (bounded to 0..5).
+	MaxSources int `json:"max_sources,omitempty"`
+	// SearchContextSize is provider-specific; for OpenAI it maps to the web search tool context size.
+	SearchContextSize string `json:"search_context_size,omitempty"` // low|medium|high
+}
+
 // ClaimVerifyInputsV1 is the input payload for claim verification.
 type ClaimVerifyInputsV1 struct {
+	ActorURI    string `json:"actor_uri,omitempty"`
+	ObjectURI   string `json:"object_uri,omitempty"`
+	ContentHash string `json:"content_hash,omitempty"`
+
 	// Text is the content to extract claims from. Optional if Claims is provided.
 	Text string `json:"text,omitempty"`
 	// Claims optionally provides explicit claims; when set, extraction is skipped.
@@ -32,6 +53,9 @@ type ClaimVerifyInputsV1 struct {
 
 	// Evidence is required; citations must reference these SourceIDs.
 	Evidence []ClaimVerifyEvidenceV1 `json:"evidence"`
+
+	// Retrieval controls whether the verifier may augment evidence (e.g., OpenAI web search).
+	Retrieval *ClaimVerifyRetrievalV1 `json:"retrieval,omitempty"`
 }
 
 // ClaimVerifyCitationV1 references an evidence source and quote.
@@ -59,6 +83,11 @@ type ClaimVerifyResultV1 struct {
 	Version  string               `json:"version"` // v1
 	Claims   []ClaimVerifyClaimV1 `json:"claims"`
 	Warnings []string             `json:"warnings,omitempty"`
+
+	// Sources optionally echoes the bounded evidence texts used for citations (useful when web search retrieval is enabled).
+	Sources []ClaimVerifyEvidenceV1 `json:"sources,omitempty"`
+	// Disclaimer provides a short disclosure when retrieval/web search was used.
+	Disclaimer string `json:"disclaimer,omitempty"`
 }
 
 var sentenceSplitRE = regexp.MustCompile(`[.!?]+\s+`)
