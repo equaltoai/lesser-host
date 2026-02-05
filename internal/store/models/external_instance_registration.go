@@ -6,6 +6,7 @@ import (
 	"time"
 )
 
+// ExternalInstanceRegistrationStatusPending, ExternalInstanceRegistrationStatusApproved, and ExternalInstanceRegistrationStatusRejected define lifecycle states for external instance registrations.
 const (
 	ExternalInstanceRegistrationStatusPending  = "pending"
 	ExternalInstanceRegistrationStatusApproved = "approved"

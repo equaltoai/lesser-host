@@ -181,7 +181,7 @@ func (s *Server) handlePortalCreateCreditsCheckout(ctx *apptheory.Context) (*app
 	}
 
 	provider := payments.NewProvider(s.cfg.PaymentsProvider)
-	if provider.Name() != "stripe" {
+	if provider.Name() != paymentsProviderStripeName {
 		return nil, &apptheory.AppError{Code: "app.conflict", Message: "payments provider not configured"}
 	}
 
@@ -352,7 +352,7 @@ func (s *Server) handlePortalCreatePaymentMethodCheckout(ctx *apptheory.Context)
 	}
 
 	provider := payments.NewProvider(s.cfg.PaymentsProvider)
-	if provider.Name() != "stripe" {
+	if provider.Name() != paymentsProviderStripeName {
 		return nil, &apptheory.AppError{Code: "app.conflict", Message: "payments provider not configured"}
 	}
 
@@ -466,7 +466,7 @@ func (s *Server) handleStripeWebhook(ctx *apptheory.Context) (*apptheory.Respons
 	}
 
 	provider := payments.NewProvider(s.cfg.PaymentsProvider)
-	if provider.Name() != "stripe" {
+	if provider.Name() != paymentsProviderStripeName {
 		// Ignore webhooks when payments are disabled.
 		return apptheory.JSON(http.StatusOK, map[string]any{"ok": true, "ignored": true})
 	}
@@ -480,180 +480,210 @@ func (s *Server) handleStripeWebhook(ctx *apptheory.Context) (*apptheory.Respons
 		return apptheory.JSON(http.StatusOK, map[string]any{"ok": true})
 	}
 
+	switch strings.TrimSpace(ev.Type) {
+	case stripeWebhookEventCheckoutCompleted:
+		return s.handleStripeCheckoutSessionCompleted(ctx, provider, ev)
+	case stripeWebhookEventCheckoutExpired:
+		return s.handleStripeCheckoutSessionExpired(ctx, ev)
+	default:
+		return apptheory.JSON(http.StatusOK, map[string]any{"ok": true})
+	}
+}
+
+const (
+	stripeWebhookEventCheckoutCompleted = "checkout.session.completed"
+	stripeWebhookEventCheckoutExpired   = "checkout.session.expired"
+	stripeCheckoutModePayment           = "payment"
+	stripeCheckoutModeSetup             = "setup"
+)
+
+func (s *Server) handleStripeCheckoutSessionCompleted(ctx *apptheory.Context, provider payments.Provider, ev *payments.WebhookEvent) (*apptheory.Response, error) {
+	mode := strings.ToLower(strings.TrimSpace(ev.Session.Mode))
 	now := time.Now().UTC()
-	switch ev.Type {
-	case "checkout.session.completed":
-		switch strings.ToLower(strings.TrimSpace(ev.Session.Mode)) {
-		case "payment":
-			purchaseID := strings.TrimSpace(ev.Session.Metadata["purchase_id"])
-			if purchaseID == "" {
-				return apptheory.JSON(http.StatusOK, map[string]any{"ok": true, "skipped": "missing purchase_id"})
-			}
 
-			var purchase models.CreditPurchase
-			err := s.store.DB.WithContext(ctx.Context()).
-				Model(&models.CreditPurchase{}).
-				Where("PK", "=", fmt.Sprintf("CREDIT_PURCHASE#%s", purchaseID)).
-				Where("SK", "=", models.SKMetadata).
-				First(&purchase)
-			if err != nil {
-				return apptheory.JSON(http.StatusOK, map[string]any{"ok": true, "skipped": "purchase not found"})
-			}
-			if strings.TrimSpace(purchase.Status) == models.CreditPurchaseStatusPaid {
-				return apptheory.JSON(http.StatusOK, map[string]any{"ok": true})
-			}
+	switch mode {
+	case stripeCheckoutModePayment:
+		return s.handleStripePaymentCheckoutCompleted(ctx, ev, now)
+	case stripeCheckoutModeSetup:
+		return s.handleStripeSetupCheckoutCompleted(ctx, provider, ev, now)
+	default:
+		return apptheory.JSON(http.StatusOK, map[string]any{"ok": true})
+	}
+}
 
-			updatePurchase := &models.CreditPurchase{ID: purchaseID}
-			_ = updatePurchase.UpdateKeys()
-
-			updateBudget := &models.InstanceBudgetMonth{
-				InstanceSlug: strings.TrimSpace(purchase.InstanceSlug),
-				Month:        strings.TrimSpace(purchase.Month),
-				UpdatedAt:    now,
-			}
-			_ = updateBudget.UpdateKeys()
-
-			audit := &models.AuditLogEntry{
-				Actor:     "stripe",
-				Action:    "billing.credits.purchase.paid",
-				Target:    fmt.Sprintf("credit_purchase:%s", purchaseID),
-				RequestID: strings.TrimSpace(ctx.RequestID),
-				CreatedAt: now,
-			}
-			_ = audit.UpdateKeys()
-
-			err = s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
-				tx.UpdateWithBuilder(updatePurchase, func(ub core.UpdateBuilder) error {
-					ub.Set("Status", models.CreditPurchaseStatusPaid)
-					ub.Set("PaidAt", now)
-					ub.Set("UpdatedAt", now)
-					if strings.TrimSpace(ev.Session.ID) != "" {
-						ub.Set("ProviderCheckoutSessionID", strings.TrimSpace(ev.Session.ID))
-					}
-					if strings.TrimSpace(ev.Session.PaymentIntentID) != "" {
-						ub.Set("ProviderPaymentIntentID", strings.TrimSpace(ev.Session.PaymentIntentID))
-					}
-					if strings.TrimSpace(ev.Session.CustomerID) != "" {
-						ub.Set("ProviderCustomerID", strings.TrimSpace(ev.Session.CustomerID))
-					}
-					if strings.TrimSpace(ev.Session.Currency) != "" {
-						ub.Set("Currency", strings.TrimSpace(ev.Session.Currency))
-					}
-					if ev.Session.AmountTotal > 0 {
-						ub.Set("AmountCents", ev.Session.AmountTotal)
-					}
-					return nil
-				},
-					tabletheory.IfExists(),
-					tabletheory.ConditionExpression("status = :pending", map[string]any{":pending": models.CreditPurchaseStatusPending}),
-				)
-
-				tx.UpdateWithBuilder(updateBudget, func(ub core.UpdateBuilder) error {
-					ub.Add("IncludedCredits", purchase.Credits)
-					ub.Set("UpdatedAt", now)
-					ub.Set("InstanceSlug", strings.TrimSpace(purchase.InstanceSlug))
-					ub.Set("Month", strings.TrimSpace(purchase.Month))
-					return nil
-				})
-
-				tx.Put(audit)
-				return nil
-			})
-			if theoryErrors.IsConditionFailed(err) {
-				return apptheory.JSON(http.StatusOK, map[string]any{"ok": true})
-			}
-			if err != nil {
-				return apptheory.JSON(http.StatusOK, map[string]any{"ok": true, "error": "failed to apply credits"})
-			}
-
-			return apptheory.JSON(http.StatusOK, map[string]any{"ok": true})
-
-		case "setup":
-			username := strings.TrimSpace(ev.Session.Metadata["username"])
-			if username == "" {
-				username = strings.TrimSpace(ev.Session.Metadata["user"])
-			}
-			if username == "" {
-				return apptheory.JSON(http.StatusOK, map[string]any{"ok": true, "skipped": "missing username"})
-			}
-
-			setupIntentID := strings.TrimSpace(ev.Session.SetupIntentID)
-			if setupIntentID == "" {
-				return apptheory.JSON(http.StatusOK, map[string]any{"ok": true, "skipped": "missing setup_intent"})
-			}
-
-			pm, err := provider.ResolveSetupPaymentMethod(ctx.Context(), setupIntentID)
-			if err != nil || pm == nil || strings.TrimSpace(pm.ID) == "" {
-				return apptheory.JSON(http.StatusOK, map[string]any{"ok": true, "error": "failed to resolve payment method"})
-			}
-
-			profile := &models.BillingProfile{
-				Username:               username,
-				Provider:               models.BillingProviderStripe,
-				StripeCustomerID:       strings.TrimSpace(ev.Session.CustomerID),
-				DefaultPaymentMethodID: strings.TrimSpace(pm.ID),
-				UpdatedAt:              now,
-			}
-			_ = profile.UpdateKeys()
-
-			method := &models.BillingPaymentMethod{
-				Username:  username,
-				Provider:  models.BillingProviderStripe,
-				ID:        strings.TrimSpace(pm.ID),
-				Type:      strings.TrimSpace(pm.Type),
-				Brand:     strings.TrimSpace(pm.Brand),
-				Last4:     strings.TrimSpace(pm.Last4),
-				ExpMonth:  pm.ExpMonth,
-				ExpYear:   pm.ExpYear,
-				Status:    models.BillingPaymentMethodStatusActive,
-				CreatedAt: now,
-				UpdatedAt: now,
-			}
-			_ = method.UpdateKeys()
-
-			audit := &models.AuditLogEntry{
-				Actor:     "stripe",
-				Action:    "billing.payment_method.attached",
-				Target:    fmt.Sprintf("billing:%s", username),
-				RequestID: strings.TrimSpace(ctx.RequestID),
-				CreatedAt: now,
-			}
-			_ = audit.UpdateKeys()
-
-			err = s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
-				tx.Put(profile)
-				tx.Put(method)
-				tx.Put(audit)
-				return nil
-			})
-			if err != nil {
-				return apptheory.JSON(http.StatusOK, map[string]any{"ok": true, "error": "failed to store payment method"})
-			}
-
-			return apptheory.JSON(http.StatusOK, map[string]any{"ok": true})
-		}
-
-	case "checkout.session.expired":
-		purchaseID := strings.TrimSpace(ev.Session.Metadata["purchase_id"])
-		if purchaseID == "" {
-			return apptheory.JSON(http.StatusOK, map[string]any{"ok": true})
-		}
-		var purchase models.CreditPurchase
-		err := s.store.DB.WithContext(ctx.Context()).
-			Model(&models.CreditPurchase{}).
-			Where("PK", "=", fmt.Sprintf("CREDIT_PURCHASE#%s", purchaseID)).
-			Where("SK", "=", models.SKMetadata).
-			First(&purchase)
-		if err == nil && strings.TrimSpace(purchase.Status) == models.CreditPurchaseStatusPending {
-			update := &models.CreditPurchase{
-				ID:        purchaseID,
-				Status:    models.CreditPurchaseStatusExpired,
-				UpdatedAt: now,
-			}
-			_ = update.UpdateKeys()
-			_ = s.store.DB.WithContext(ctx.Context()).Model(update).IfExists().Update("Status", "UpdatedAt")
-		}
+func (s *Server) handleStripePaymentCheckoutCompleted(ctx *apptheory.Context, ev *payments.WebhookEvent, now time.Time) (*apptheory.Response, error) {
+	purchaseID := strings.TrimSpace(ev.Session.Metadata["purchase_id"])
+	if purchaseID == "" {
+		return apptheory.JSON(http.StatusOK, map[string]any{"ok": true, "skipped": "missing purchase_id"})
 	}
 
+	var purchase models.CreditPurchase
+	err := s.store.DB.WithContext(ctx.Context()).
+		Model(&models.CreditPurchase{}).
+		Where("PK", "=", fmt.Sprintf("CREDIT_PURCHASE#%s", purchaseID)).
+		Where("SK", "=", models.SKMetadata).
+		First(&purchase)
+	if err != nil {
+		return apptheory.JSON(http.StatusOK, map[string]any{"ok": true, "skipped": "purchase not found"})
+	}
+	if strings.TrimSpace(purchase.Status) == models.CreditPurchaseStatusPaid {
+		return apptheory.JSON(http.StatusOK, map[string]any{"ok": true})
+	}
+
+	updatePurchase := &models.CreditPurchase{ID: purchaseID}
+	_ = updatePurchase.UpdateKeys()
+
+	updateBudget := &models.InstanceBudgetMonth{
+		InstanceSlug: strings.TrimSpace(purchase.InstanceSlug),
+		Month:        strings.TrimSpace(purchase.Month),
+		UpdatedAt:    now,
+	}
+	_ = updateBudget.UpdateKeys()
+
+	audit := &models.AuditLogEntry{
+		Actor:     paymentsActorStripe,
+		Action:    "billing.credits.purchase.paid",
+		Target:    fmt.Sprintf("credit_purchase:%s", purchaseID),
+		RequestID: strings.TrimSpace(ctx.RequestID),
+		CreatedAt: now,
+	}
+	_ = audit.UpdateKeys()
+
+	err = s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
+		tx.UpdateWithBuilder(updatePurchase, func(ub core.UpdateBuilder) error {
+			ub.Set("Status", models.CreditPurchaseStatusPaid)
+			ub.Set("PaidAt", now)
+			ub.Set("UpdatedAt", now)
+			if strings.TrimSpace(ev.Session.ID) != "" {
+				ub.Set("ProviderCheckoutSessionID", strings.TrimSpace(ev.Session.ID))
+			}
+			if strings.TrimSpace(ev.Session.PaymentIntentID) != "" {
+				ub.Set("ProviderPaymentIntentID", strings.TrimSpace(ev.Session.PaymentIntentID))
+			}
+			if strings.TrimSpace(ev.Session.CustomerID) != "" {
+				ub.Set("ProviderCustomerID", strings.TrimSpace(ev.Session.CustomerID))
+			}
+			if strings.TrimSpace(ev.Session.Currency) != "" {
+				ub.Set("Currency", strings.TrimSpace(ev.Session.Currency))
+			}
+			if ev.Session.AmountTotal > 0 {
+				ub.Set("AmountCents", ev.Session.AmountTotal)
+			}
+			return nil
+		},
+			tabletheory.IfExists(),
+			tabletheory.ConditionExpression("status = :pending", map[string]any{":pending": models.CreditPurchaseStatusPending}),
+		)
+
+		tx.UpdateWithBuilder(updateBudget, func(ub core.UpdateBuilder) error {
+			ub.Add("IncludedCredits", purchase.Credits)
+			ub.Set("UpdatedAt", now)
+			ub.Set("InstanceSlug", strings.TrimSpace(purchase.InstanceSlug))
+			ub.Set("Month", strings.TrimSpace(purchase.Month))
+			return nil
+		})
+
+		tx.Put(audit)
+		return nil
+	})
+	if theoryErrors.IsConditionFailed(err) {
+		return apptheory.JSON(http.StatusOK, map[string]any{"ok": true})
+	}
+	if err != nil {
+		return apptheory.JSON(http.StatusOK, map[string]any{"ok": true, "error": "failed to apply credits"})
+	}
+
+	return apptheory.JSON(http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleStripeSetupCheckoutCompleted(ctx *apptheory.Context, provider payments.Provider, ev *payments.WebhookEvent, now time.Time) (*apptheory.Response, error) {
+	username := strings.TrimSpace(ev.Session.Metadata["username"])
+	if username == "" {
+		username = strings.TrimSpace(ev.Session.Metadata["user"])
+	}
+	if username == "" {
+		return apptheory.JSON(http.StatusOK, map[string]any{"ok": true, "skipped": "missing username"})
+	}
+
+	setupIntentID := strings.TrimSpace(ev.Session.SetupIntentID)
+	if setupIntentID == "" {
+		return apptheory.JSON(http.StatusOK, map[string]any{"ok": true, "skipped": "missing setup_intent"})
+	}
+
+	pm, err := provider.ResolveSetupPaymentMethod(ctx.Context(), setupIntentID)
+	if err != nil || pm == nil || strings.TrimSpace(pm.ID) == "" {
+		return apptheory.JSON(http.StatusOK, map[string]any{"ok": true, "error": "failed to resolve payment method"})
+	}
+
+	profile := &models.BillingProfile{
+		Username:               username,
+		Provider:               models.BillingProviderStripe,
+		StripeCustomerID:       strings.TrimSpace(ev.Session.CustomerID),
+		DefaultPaymentMethodID: strings.TrimSpace(pm.ID),
+		UpdatedAt:              now,
+	}
+	_ = profile.UpdateKeys()
+
+	method := &models.BillingPaymentMethod{
+		Username:  username,
+		Provider:  models.BillingProviderStripe,
+		ID:        strings.TrimSpace(pm.ID),
+		Type:      strings.TrimSpace(pm.Type),
+		Brand:     strings.TrimSpace(pm.Brand),
+		Last4:     strings.TrimSpace(pm.Last4),
+		ExpMonth:  pm.ExpMonth,
+		ExpYear:   pm.ExpYear,
+		Status:    models.BillingPaymentMethodStatusActive,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	_ = method.UpdateKeys()
+
+	audit := &models.AuditLogEntry{
+		Actor:     paymentsActorStripe,
+		Action:    "billing.payment_method.attached",
+		Target:    fmt.Sprintf("billing:%s", username),
+		RequestID: strings.TrimSpace(ctx.RequestID),
+		CreatedAt: now,
+	}
+	_ = audit.UpdateKeys()
+
+	err = s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
+		tx.Put(profile)
+		tx.Put(method)
+		tx.Put(audit)
+		return nil
+	})
+	if err != nil {
+		return apptheory.JSON(http.StatusOK, map[string]any{"ok": true, "error": "failed to store payment method"})
+	}
+
+	return apptheory.JSON(http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleStripeCheckoutSessionExpired(ctx *apptheory.Context, ev *payments.WebhookEvent) (*apptheory.Response, error) {
+	purchaseID := strings.TrimSpace(ev.Session.Metadata["purchase_id"])
+	if purchaseID == "" {
+		return apptheory.JSON(http.StatusOK, map[string]any{"ok": true})
+	}
+
+	var purchase models.CreditPurchase
+	err := s.store.DB.WithContext(ctx.Context()).
+		Model(&models.CreditPurchase{}).
+		Where("PK", "=", fmt.Sprintf("CREDIT_PURCHASE#%s", purchaseID)).
+		Where("SK", "=", models.SKMetadata).
+		First(&purchase)
+	if err != nil || strings.TrimSpace(purchase.Status) != models.CreditPurchaseStatusPending {
+		return apptheory.JSON(http.StatusOK, map[string]any{"ok": true})
+	}
+
+	now := time.Now().UTC()
+	update := &models.CreditPurchase{
+		ID:        purchaseID,
+		Status:    models.CreditPurchaseStatusExpired,
+		UpdatedAt: now,
+	}
+	_ = update.UpdateKeys()
+	_ = s.store.DB.WithContext(ctx.Context()).Model(update).IfExists().Update("Status", "UpdatedAt")
 	return apptheory.JSON(http.StatusOK, map[string]any{"ok": true})
 }

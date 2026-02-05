@@ -127,7 +127,7 @@ func (s *Server) handleStartInstanceProvisioning(ctx *apptheory.Context) (*appth
 	now := time.Now().UTC()
 	parentDomain := strings.TrimSpace(s.cfg.ManagedParentDomain)
 	if parentDomain == "" {
-		parentDomain = "greater.website"
+		parentDomain = defaultManagedParentDomain
 	}
 	baseDomain := fmt.Sprintf("%s.%s", slug, strings.TrimPrefix(parentDomain, "."))
 

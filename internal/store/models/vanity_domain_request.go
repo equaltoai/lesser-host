@@ -6,6 +6,7 @@ import (
 	"time"
 )
 
+// VanityDomainRequestStatusPending, VanityDomainRequestStatusApproved, and VanityDomainRequestStatusRejected define lifecycle states for vanity domain activation requests.
 const (
 	VanityDomainRequestStatusPending  = "pending"
 	VanityDomainRequestStatusApproved = "approved"

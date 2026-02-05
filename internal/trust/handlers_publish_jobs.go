@@ -315,46 +315,21 @@ func (s *Server) runLinkSafetyBasicJob(
 
 	// Cache hit path (no charge).
 	if cached, err := s.store.GetLinkSafetyBasicResult(ctx.Context(), jobID); err == nil {
-		ledger := &models.UsageLedgerEntry{
-			ID:                   billing.UsageLedgerEntryID(instanceSlug, month, strings.TrimSpace(ctx.RequestID), "link_safety_basic", jobID, 0),
-			InstanceSlug:         instanceSlug,
-			Month:                month,
-			Module:               "link_safety_basic",
-			Target:               jobID,
-			Cached:               true,
-			Reason:               "cache_hit",
-			RequestID:            strings.TrimSpace(ctx.RequestID),
-			RequestedCredits:     creditsPriced,
-			ListCredits:          creditsRequested,
-			PricingMultiplierBps: pricingMultiplierBps,
-			DebitedCredits:       0,
-			BillingType:          models.BillingTypeNone,
-			ActorURI:             actorURI,
-			ObjectURI:            objectURI,
-			ContentHash:          contentHash,
-			LinksHash:            linksHash,
-			CreatedAt:            now,
-		}
-		_ = ledger.UpdateKeys()
-		_ = s.store.DB.WithContext(ctx.Context()).Model(ledger).IfNotExists().Create()
-
-		attID, _ := s.ensureLinkSafetyBasicAttestation(ctx.Context(), cached)
-		return publishJobModuleResponse{
-			Name:          "link_safety_basic",
-			PolicyVersion: linkSafetyBasicPolicyVersion,
-			Status:        "ok",
-			Cached:        true,
-			Budget: budgetDecision{
-				Allowed:          true,
-				OverBudget:       false,
-				Reason:           "cache_hit",
-				RequestedCredits: creditsPriced,
-				DebitedCredits:   0,
-			},
-			AttestationID:  strings.TrimSpace(attID),
-			AttestationURL: attestationURL(ctx, attID),
-			Result:         cached,
-		}
+		return s.linkSafetyBasicCacheHitResponse(
+			ctx,
+			instanceSlug,
+			month,
+			jobID,
+			actorURI,
+			objectURI,
+			contentHash,
+			linksHash,
+			creditsRequested,
+			creditsPriced,
+			pricingMultiplierBps,
+			now,
+			cached,
+		)
 	}
 
 	links := make([]models.LinkSafetyBasicLinkResult, 0, len(canonicalLinks))
@@ -614,46 +589,21 @@ func (s *Server) runLinkSafetyBasicJob(
 	if theoryErrors.IsConditionFailed(err) {
 		// If the result already exists, treat it as cache hit (no debit happened due to txn rollback).
 		if cached, err2 := s.store.GetLinkSafetyBasicResult(ctx.Context(), jobID); err2 == nil {
-			hit := &models.UsageLedgerEntry{
-				ID:                   billing.UsageLedgerEntryID(instanceSlug, month, strings.TrimSpace(ctx.RequestID), "link_safety_basic", jobID, 0),
-				InstanceSlug:         instanceSlug,
-				Month:                month,
-				Module:               "link_safety_basic",
-				Target:               jobID,
-				Cached:               true,
-				Reason:               "cache_hit",
-				RequestID:            strings.TrimSpace(ctx.RequestID),
-				RequestedCredits:     creditsPriced,
-				ListCredits:          creditsRequested,
-				PricingMultiplierBps: pricingMultiplierBps,
-				DebitedCredits:       0,
-				BillingType:          models.BillingTypeNone,
-				ActorURI:             actorURI,
-				ObjectURI:            objectURI,
-				ContentHash:          contentHash,
-				LinksHash:            linksHash,
-				CreatedAt:            now,
-			}
-			_ = hit.UpdateKeys()
-			_ = s.store.DB.WithContext(ctx.Context()).Model(hit).IfNotExists().Create()
-
-			attID, _ := s.ensureLinkSafetyBasicAttestation(ctx.Context(), cached)
-			return publishJobModuleResponse{
-				Name:          "link_safety_basic",
-				PolicyVersion: linkSafetyBasicPolicyVersion,
-				Status:        "ok",
-				Cached:        true,
-				Budget: budgetDecision{
-					Allowed:          true,
-					OverBudget:       false,
-					Reason:           "cache_hit",
-					RequestedCredits: creditsPriced,
-					DebitedCredits:   0,
-				},
-				AttestationID:  strings.TrimSpace(attID),
-				AttestationURL: attestationURL(ctx, attID),
-				Result:         cached,
-			}
+			return s.linkSafetyBasicCacheHitResponse(
+				ctx,
+				instanceSlug,
+				month,
+				jobID,
+				actorURI,
+				objectURI,
+				contentHash,
+				linksHash,
+				creditsRequested,
+				creditsPriced,
+				pricingMultiplierBps,
+				now,
+				cached,
+			)
 		}
 
 		// Otherwise, assume we raced with another debit and are now over budget.
@@ -758,5 +708,62 @@ func (s *Server) runLinkSafetyBasicJob(
 		AttestationID:  strings.TrimSpace(attID),
 		AttestationURL: attestationURL(ctx, attID),
 		Result:         item,
+	}
+}
+
+func (s *Server) linkSafetyBasicCacheHitResponse(
+	ctx *apptheory.Context,
+	instanceSlug string,
+	month string,
+	jobID string,
+	actorURI string,
+	objectURI string,
+	contentHash string,
+	linksHash string,
+	creditsRequested int64,
+	creditsPriced int64,
+	pricingMultiplierBps int64,
+	now time.Time,
+	cached *models.LinkSafetyBasicResult,
+) publishJobModuleResponse {
+	ledger := &models.UsageLedgerEntry{
+		ID:                   billing.UsageLedgerEntryID(instanceSlug, month, strings.TrimSpace(ctx.RequestID), "link_safety_basic", jobID, 0),
+		InstanceSlug:         instanceSlug,
+		Month:                month,
+		Module:               "link_safety_basic",
+		Target:               jobID,
+		Cached:               true,
+		Reason:               "cache_hit",
+		RequestID:            strings.TrimSpace(ctx.RequestID),
+		RequestedCredits:     creditsPriced,
+		ListCredits:          creditsRequested,
+		PricingMultiplierBps: pricingMultiplierBps,
+		DebitedCredits:       0,
+		BillingType:          models.BillingTypeNone,
+		ActorURI:             actorURI,
+		ObjectURI:            objectURI,
+		ContentHash:          contentHash,
+		LinksHash:            linksHash,
+		CreatedAt:            now,
+	}
+	_ = ledger.UpdateKeys()
+	_ = s.store.DB.WithContext(ctx.Context()).Model(ledger).IfNotExists().Create()
+
+	attID, _ := s.ensureLinkSafetyBasicAttestation(ctx.Context(), cached)
+	return publishJobModuleResponse{
+		Name:          "link_safety_basic",
+		PolicyVersion: linkSafetyBasicPolicyVersion,
+		Status:        "ok",
+		Cached:        true,
+		Budget: budgetDecision{
+			Allowed:          true,
+			OverBudget:       false,
+			Reason:           "cache_hit",
+			RequestedCredits: creditsPriced,
+			DebitedCredits:   0,
+		},
+		AttestationID:  strings.TrimSpace(attID),
+		AttestationURL: attestationURL(ctx, attID),
+		Result:         cached,
 	}
 }

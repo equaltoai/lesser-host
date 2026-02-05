@@ -118,7 +118,7 @@ func (s *Server) handlePortalCreateInstance(ctx *apptheory.Context) (*apptheory.
 	moderationTrigger := moderationTriggerOnReports
 	moderationViralityMin := int64(0)
 	aiEnabled := false
-	aiModelSet := "openai:gpt-5-mini-2025-08-07"
+	aiModelSet := defaultAIModelSet
 	aiBatchingMode := aiBatchingModeNone
 	aiBatchMaxItems := int64(8)
 	aiBatchMaxTotalBytes := int64(64 * 1024)
@@ -151,7 +151,7 @@ func (s *Server) handlePortalCreateInstance(ctx *apptheory.Context) (*apptheory.
 
 	parentDomain := strings.TrimSpace(s.cfg.ManagedParentDomain)
 	if parentDomain == "" {
-		parentDomain = "greater.website"
+		parentDomain = defaultManagedParentDomain
 	}
 	baseDomain := fmt.Sprintf("%s.%s", slug, strings.TrimPrefix(parentDomain, "."))
 
@@ -330,7 +330,7 @@ func (s *Server) handlePortalStartInstanceProvisioning(ctx *apptheory.Context) (
 	now := time.Now().UTC()
 	parentDomain := strings.TrimSpace(s.cfg.ManagedParentDomain)
 	if parentDomain == "" {
-		parentDomain = "greater.website"
+		parentDomain = defaultManagedParentDomain
 	}
 	baseDomain := fmt.Sprintf("%s.%s", slug, strings.TrimPrefix(parentDomain, "."))
 
@@ -735,7 +735,7 @@ func (s *Server) handlePortalAddInstanceDomain(ctx *apptheory.Context) (*apptheo
 
 	parentDomain := strings.TrimSpace(s.cfg.ManagedParentDomain)
 	if parentDomain == "" {
-		parentDomain = "greater.website"
+		parentDomain = defaultManagedParentDomain
 	}
 	primary := fmt.Sprintf("%s.%s", slug, strings.TrimPrefix(parentDomain, "."))
 	if domain == primary {
@@ -754,7 +754,7 @@ func (s *Server) handlePortalAddInstanceDomain(ctx *apptheory.Context) (*apptheo
 		InstanceSlug:       slug,
 		Type:               models.DomainTypeVanity,
 		Status:             models.DomainStatusPending,
-		VerificationMethod: "dns_txt",
+		VerificationMethod: domainVerificationMethodDNSTXT,
 		VerificationToken:  token,
 		CreatedAt:          now,
 		UpdatedAt:          now,
@@ -784,7 +784,7 @@ func (s *Server) handlePortalAddInstanceDomain(ctx *apptheory.Context) (*apptheo
 	return apptheory.JSON(http.StatusCreated, addDomainResponse{
 		Domain: domainResponseFromModel(item),
 		Verification: addDomainVerification{
-			Method:   "dns_txt",
+			Method:   domainVerificationMethodDNSTXT,
 			TXTName:  txtName,
 			TXTValue: txtValue,
 		},
@@ -862,7 +862,7 @@ func (s *Server) handlePortalVerifyInstanceDomain(ctx *apptheory.Context) (*appt
 		InstanceSlug:       slug,
 		Type:               strings.TrimSpace(item.Type),
 		Status:             models.DomainStatusVerified,
-		VerificationMethod: "dns_txt",
+		VerificationMethod: domainVerificationMethodDNSTXT,
 		VerificationToken:  "",
 		VerifiedAt:         now,
 		UpdatedAt:          now,
@@ -893,7 +893,7 @@ func (s *Server) handlePortalVerifyInstanceDomain(ctx *apptheory.Context) (*appt
 	_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
 
 	item.Status = models.DomainStatusVerified
-	item.VerificationMethod = "dns_txt"
+	item.VerificationMethod = domainVerificationMethodDNSTXT
 	item.VerificationToken = ""
 	item.VerifiedAt = now
 	item.UpdatedAt = now
@@ -964,7 +964,7 @@ func (s *Server) handlePortalRotateInstanceDomain(ctx *apptheory.Context) (*appt
 		InstanceSlug:       slug,
 		Type:               strings.TrimSpace(item.Type),
 		Status:             models.DomainStatusPending,
-		VerificationMethod: "dns_txt",
+		VerificationMethod: domainVerificationMethodDNSTXT,
 		VerificationToken:  token,
 		VerifiedAt:         time.Time{},
 		UpdatedAt:          now,
@@ -998,7 +998,7 @@ func (s *Server) handlePortalRotateInstanceDomain(ctx *apptheory.Context) (*appt
 	txtValue := domainVerificationValuePrefix + token
 
 	item.Status = models.DomainStatusPending
-	item.VerificationMethod = "dns_txt"
+	item.VerificationMethod = domainVerificationMethodDNSTXT
 	item.VerificationToken = token
 	item.VerifiedAt = time.Time{}
 	item.UpdatedAt = now
@@ -1006,7 +1006,7 @@ func (s *Server) handlePortalRotateInstanceDomain(ctx *apptheory.Context) (*appt
 	return apptheory.JSON(http.StatusOK, addDomainResponse{
 		Domain: domainResponseFromModel(&item),
 		Verification: addDomainVerification{
-			Method:   "dns_txt",
+			Method:   domainVerificationMethodDNSTXT,
 			TXTName:  txtName,
 			TXTValue: txtValue,
 		},

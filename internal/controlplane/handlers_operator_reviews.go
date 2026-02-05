@@ -24,33 +24,54 @@ type reviewNoteRequest struct {
 	Note string `json:"note,omitempty"`
 }
 
-func (s *Server) handleListVanityDomainRequests(ctx *apptheory.Context) (*apptheory.Response, error) {
-	if err := requireOperator(ctx); err != nil {
-		return nil, err
-	}
+func listByGSI1PK[T any](ctx *apptheory.Context, s *Server, model any, pk string, limit int) ([]T, error) {
 	if s == nil || s.store == nil || s.store.DB == nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
-
-	var items []*models.VanityDomainRequest
-	err := s.store.DB.WithContext(ctx.Context()).
-		Model(&models.VanityDomainRequest{}).
-		Index("gsi1").
-		Where("gsi1PK", "=", fmt.Sprintf("VANITY_DOMAIN_REQUESTS#%s", models.VanityDomainRequestStatusPending)).
-		Limit(200).
-		All(&items)
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list requests"}
+	if ctx == nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if limit <= 0 {
+		limit = 200
 	}
 
-	out := make([]models.VanityDomainRequest, 0, len(items))
+	var items []*T
+	err := s.store.DB.WithContext(ctx.Context()).
+		Model(model).
+		Index("gsi1").
+		Where("gsi1PK", "=", strings.TrimSpace(pk)).
+		Limit(limit).
+		All(&items)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]T, 0, len(items))
 	for _, it := range items {
 		if it != nil {
 			out = append(out, *it)
 		}
 	}
 
-	return apptheory.JSON(http.StatusOK, listVanityDomainRequestsResponse{Requests: out, Count: len(out)})
+	return out, nil
+}
+
+func (s *Server) handleListVanityDomainRequests(ctx *apptheory.Context) (*apptheory.Response, error) {
+	if err := requireOperator(ctx); err != nil {
+		return nil, err
+	}
+	items, err := listByGSI1PK[models.VanityDomainRequest](
+		ctx,
+		s,
+		&models.VanityDomainRequest{},
+		fmt.Sprintf("VANITY_DOMAIN_REQUESTS#%s", models.VanityDomainRequestStatusPending),
+		200,
+	)
+	if err != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list requests"}
+	}
+
+	return apptheory.JSON(http.StatusOK, listVanityDomainRequestsResponse{Requests: items, Count: len(items)})
 }
 
 func (s *Server) handleApproveVanityDomainRequest(ctx *apptheory.Context) (*apptheory.Response, error) {
@@ -411,29 +432,18 @@ func (s *Server) handleListExternalInstanceRegistrations(ctx *apptheory.Context)
 	if err := requireOperator(ctx); err != nil {
 		return nil, err
 	}
-	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-
-	var items []*models.ExternalInstanceRegistration
-	err := s.store.DB.WithContext(ctx.Context()).
-		Model(&models.ExternalInstanceRegistration{}).
-		Index("gsi1").
-		Where("gsi1PK", "=", fmt.Sprintf("EXTERNAL_INSTANCE_REGS#%s", models.ExternalInstanceRegistrationStatusPending)).
-		Limit(200).
-		All(&items)
+	items, err := listByGSI1PK[models.ExternalInstanceRegistration](
+		ctx,
+		s,
+		&models.ExternalInstanceRegistration{},
+		fmt.Sprintf("EXTERNAL_INSTANCE_REGS#%s", models.ExternalInstanceRegistrationStatusPending),
+		200,
+	)
 	if err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list registrations"}
 	}
 
-	out := make([]models.ExternalInstanceRegistration, 0, len(items))
-	for _, it := range items {
-		if it != nil {
-			out = append(out, *it)
-		}
-	}
-
-	return apptheory.JSON(http.StatusOK, listExternalInstanceRegistrationsResponse{Registrations: out, Count: len(out)})
+	return apptheory.JSON(http.StatusOK, listExternalInstanceRegistrationsResponse{Registrations: items, Count: len(items)})
 }
 
 func (s *Server) handleApproveExternalInstanceRegistration(ctx *apptheory.Context) (*apptheory.Response, error) {

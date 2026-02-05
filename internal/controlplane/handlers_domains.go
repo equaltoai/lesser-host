@@ -142,7 +142,11 @@ func (s *Server) handleAddInstanceDomain(ctx *apptheory.Context) (*apptheory.Res
 	}
 
 	// Prevent operators from manually re-adding the managed primary domain.
-	primary := slug + ".greater.website"
+	parentDomain := strings.TrimSpace(s.cfg.ManagedParentDomain)
+	if parentDomain == "" {
+		parentDomain = defaultManagedParentDomain
+	}
+	primary := fmt.Sprintf("%s.%s", slug, strings.TrimPrefix(parentDomain, "."))
 	if domain == primary {
 		return nil, &apptheory.AppError{Code: "app.conflict", Message: "domain is already managed as the primary domain"}
 	}
@@ -159,7 +163,7 @@ func (s *Server) handleAddInstanceDomain(ctx *apptheory.Context) (*apptheory.Res
 		InstanceSlug:       slug,
 		Type:               models.DomainTypeVanity,
 		Status:             models.DomainStatusPending,
-		VerificationMethod: "dns_txt",
+		VerificationMethod: domainVerificationMethodDNSTXT,
 		VerificationToken:  token,
 		CreatedAt:          now,
 		UpdatedAt:          now,
@@ -189,7 +193,7 @@ func (s *Server) handleAddInstanceDomain(ctx *apptheory.Context) (*apptheory.Res
 	return apptheory.JSON(http.StatusCreated, addDomainResponse{
 		Domain: domainResponseFromModel(item),
 		Verification: addDomainVerification{
-			Method:   "dns_txt",
+			Method:   domainVerificationMethodDNSTXT,
 			TXTName:  txtName,
 			TXTValue: txtValue,
 		},
@@ -277,7 +281,7 @@ func (s *Server) handleVerifyInstanceDomain(ctx *apptheory.Context) (*apptheory.
 		Type:         strings.TrimSpace(item.Type),
 		Status:       models.DomainStatusVerified,
 		// Keep method stable; clear token after successful verification.
-		VerificationMethod: "dns_txt",
+		VerificationMethod: domainVerificationMethodDNSTXT,
 		VerificationToken:  "",
 		VerifiedAt:         now,
 		UpdatedAt:          now,
@@ -308,7 +312,7 @@ func (s *Server) handleVerifyInstanceDomain(ctx *apptheory.Context) (*apptheory.
 	_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
 
 	item.Status = models.DomainStatusVerified
-	item.VerificationMethod = "dns_txt"
+	item.VerificationMethod = domainVerificationMethodDNSTXT
 	item.VerificationToken = ""
 	item.VerifiedAt = now
 	item.UpdatedAt = now

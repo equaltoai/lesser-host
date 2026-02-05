@@ -29,6 +29,7 @@ type BillingPaymentMethod struct {
 	UpdatedAt time.Time `theorydb:"attr:updatedAt" json:"updated_at"`
 }
 
+// BillingPaymentMethodStatusActive and BillingPaymentMethodStatusDetached define lifecycle states for stored payment methods.
 const (
 	BillingPaymentMethodStatusActive   = "active"
 	BillingPaymentMethodStatusDetached = "detached"

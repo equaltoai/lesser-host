@@ -19,11 +19,13 @@ type Provider interface {
 	ResolveSetupPaymentMethod(ctx context.Context, setupIntentID string) (*PaymentMethodDetails, error)
 }
 
+// EnsureCustomerInput identifies the user/customer to ensure in the provider.
 type EnsureCustomerInput struct {
 	Username string
 	Email    string
 }
 
+// CreditsCheckoutInput configures a one-time payment checkout session for purchasing credits.
 type CreditsCheckoutInput struct {
 	CustomerID string
 
@@ -40,6 +42,7 @@ type CreditsCheckoutInput struct {
 	CancelURL  string
 }
 
+// SetupCheckoutInput configures a setup checkout session for collecting an overage payment method.
 type SetupCheckoutInput struct {
 	CustomerID string
 	Username   string
@@ -48,6 +51,7 @@ type SetupCheckoutInput struct {
 	CancelURL  string
 }
 
+// CheckoutSession is a provider-agnostic representation of a checkout session.
 type CheckoutSession struct {
 	ID   string
 	URL  string
@@ -64,11 +68,13 @@ type CheckoutSession struct {
 	ExpiresAt time.Time
 }
 
+// WebhookEvent is a provider-agnostic representation of a webhook event carrying a checkout session payload.
 type WebhookEvent struct {
 	Type    string
 	Session CheckoutSession
 }
 
+// PaymentMethodDetails is a normalized snapshot of a payment method attached to a customer.
 type PaymentMethodDetails struct {
 	ID    string
 	Type  string

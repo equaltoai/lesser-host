@@ -10,9 +10,11 @@ import (
 
 // OpenAIServiceSSMParameterName and ClaudeSSMParameterName are SSM parameter paths for provider API keys.
 const (
-	OpenAIServiceSSMParameterName       = "/lesser-host/api/openai/service"
-	ClaudeSSMParameterName              = "/lesser-host/api/claude"
-	StripeSecretKeySSMParameterName     = "/lesser-host/api/stripe/secret"
+	OpenAIServiceSSMParameterName = "/lesser-host/api/openai/service"
+	ClaudeSSMParameterName        = "/lesser-host/api/claude"
+	// #nosec G101 -- SSM parameter path, not a hardcoded credential.
+	StripeSecretKeySSMParameterName = "/lesser-host/api/stripe/secret"
+	// #nosec G101 -- SSM parameter path, not a hardcoded credential.
 	StripeWebhookSecretSSMParameterName = "/lesser-host/api/stripe/webhook"
 )
 

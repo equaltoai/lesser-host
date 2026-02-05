@@ -43,6 +43,35 @@ func portalUsernameForWalletAddress(address string) string {
 	return "wallet-" + address
 }
 
+func parsePortalWalletLogin(ctx *apptheory.Context) (portalWalletLoginRequest, error) {
+	var req portalWalletLoginRequest
+	if err := parseJSON(ctx, &req); err != nil {
+		return req, err
+	}
+
+	req.ChallengeID = strings.TrimSpace(req.ChallengeID)
+	req.Address = strings.TrimSpace(req.Address)
+	req.Signature = strings.TrimSpace(req.Signature)
+	req.Message = strings.TrimSpace(req.Message)
+	req.Email = strings.TrimSpace(req.Email)
+	req.DisplayName = strings.TrimSpace(req.DisplayName)
+
+	if req.ChallengeID == "" {
+		return req, &apptheory.AppError{Code: "app.bad_request", Message: "challengeId is required"}
+	}
+	if req.Address == "" {
+		return req, &apptheory.AppError{Code: "app.bad_request", Message: "address is required"}
+	}
+	if req.Signature == "" {
+		return req, &apptheory.AppError{Code: "app.bad_request", Message: "signature is required"}
+	}
+	if req.Message == "" {
+		return req, &apptheory.AppError{Code: "app.bad_request", Message: "message is required"}
+	}
+
+	return req, nil
+}
+
 func (s *Server) handlePortalWalletChallenge(ctx *apptheory.Context) (*apptheory.Response, error) {
 	if s == nil || s.store == nil || s.store.DB == nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
@@ -79,72 +108,56 @@ func (s *Server) handlePortalWalletChallenge(ctx *apptheory.Context) (*apptheory
 	})
 }
 
-func (s *Server) handlePortalWalletLogin(ctx *apptheory.Context) (*apptheory.Response, error) {
-	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-
-	var req portalWalletLoginRequest
-	if err := parseJSON(ctx, &req); err != nil {
-		return nil, err
-	}
-
-	req.ChallengeID = strings.TrimSpace(req.ChallengeID)
-	req.Address = strings.TrimSpace(req.Address)
-	req.Signature = strings.TrimSpace(req.Signature)
-	req.Message = strings.TrimSpace(req.Message)
-	req.Email = strings.TrimSpace(req.Email)
-	req.DisplayName = strings.TrimSpace(req.DisplayName)
-
-	if req.ChallengeID == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "challengeId is required"}
-	}
-	if req.Address == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "address is required"}
-	}
-	if req.Signature == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "signature is required"}
-	}
-	if req.Message == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "message is required"}
-	}
-
+func (s *Server) validatePortalWalletLoginChallenge(ctx *apptheory.Context, req portalWalletLoginRequest) (*models.WalletChallenge, string, string, error) {
 	challenge, err := s.getWalletChallenge(ctx.Context(), req.ChallengeID)
 	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		return nil, "", "", &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, "", "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
 	username := strings.TrimSpace(challenge.Username)
 	if username == "" {
-		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		return nil, "", "", &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
 	}
 
 	address := strings.ToLower(strings.TrimSpace(req.Address))
 	if address != strings.ToLower(strings.TrimSpace(challenge.Address)) {
-		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		return nil, "", "", &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
 	}
-	if req.Message != strings.TrimSpace(challenge.Message) {
-		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+	if strings.TrimSpace(req.Message) != strings.TrimSpace(challenge.Message) {
+		return nil, "", "", &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
 	}
 
 	if err := verifyEthereumSignature(address, req.Message, req.Signature); err != nil {
-		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "invalid signature"}
+		return nil, "", "", &apptheory.AppError{Code: "app.unauthorized", Message: "invalid signature"}
 	}
 	_ = s.deleteWalletChallenge(ctx.Context(), req.ChallengeID)
 
-	linked, err := s.walletLinkedUsername(ctx, "ethereum", address)
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-	if linked != "" && linked != username {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "wallet is already linked to a different user"}
-	}
+	return challenge, username, address, nil
+}
 
+func defaultDisplayNameForWallet(address string) string {
+	short := strings.ToLower(strings.TrimPrefix(address, "0x"))
+	if len(short) > 8 {
+		short = short[:8]
+	}
+	return "Wallet " + short
+}
+
+func (s *Server) ensurePortalWalletUser(
+	ctx *apptheory.Context,
+	username string,
+	address string,
+	chainID int,
+	linked string,
+	email string,
+	displayName string,
+	now time.Time,
+) (models.User, error) {
 	var user models.User
-	err = s.store.DB.WithContext(ctx.Context()).
+	err := s.store.DB.WithContext(ctx.Context()).
 		Model(&models.User{}).
 		Where("PK", "=", fmt.Sprintf(models.KeyPatternUser, username)).
 		Where("SK", "=", models.SKProfile).
@@ -152,25 +165,18 @@ func (s *Server) handlePortalWalletLogin(ctx *apptheory.Context) (*apptheory.Res
 
 	needsUserCreate := theoryErrors.IsNotFound(err)
 	if err != nil && !needsUserCreate {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return models.User{}, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
-	now := time.Now().UTC()
-
-	// Create the portal user record on first login.
 	if needsUserCreate {
-		if req.DisplayName == "" {
-			short := strings.ToLower(strings.TrimPrefix(address, "0x"))
-			if len(short) > 8 {
-				short = short[:8]
-			}
-			req.DisplayName = "Wallet " + short
+		if displayName == "" {
+			displayName = defaultDisplayNameForWallet(address)
 		}
 		newUser := &models.User{
 			Username:    username,
 			Role:        models.RoleCustomer,
-			DisplayName: req.DisplayName,
-			Email:       req.Email,
+			DisplayName: displayName,
+			Email:       email,
 			CreatedAt:   now,
 		}
 		_ = newUser.UpdateKeys()
@@ -178,7 +184,7 @@ func (s *Server) handlePortalWalletLogin(ctx *apptheory.Context) (*apptheory.Res
 		cred := &models.WalletCredential{
 			Username: username,
 			Address:  address,
-			ChainID:  challenge.ChainID,
+			ChainID:  chainID,
 			Type:     "ethereum",
 			LinkedAt: now,
 			LastUsed: now,
@@ -194,24 +200,24 @@ func (s *Server) handlePortalWalletLogin(ctx *apptheory.Context) (*apptheory.Res
 			tx.Create(index)
 			return nil
 		}); err != nil {
-			if theoryErrors.IsConditionFailed(err) {
-				// Someone raced us. Continue through the normal path.
-			} else {
-				return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create user"}
+			if !theoryErrors.IsConditionFailed(err) {
+				return models.User{}, &apptheory.AppError{Code: "app.internal", Message: "failed to create user"}
 			}
 		}
 
 		user = *newUser
-	} else if linked == "" {
+	}
+
+	if linked == "" && !needsUserCreate {
 		// Existing user: link the wallet only for customer accounts.
 		if strings.TrimSpace(user.Role) != models.RoleCustomer {
-			return nil, &apptheory.AppError{Code: "app.forbidden", Message: "wallet is not linked to this user"}
+			return models.User{}, &apptheory.AppError{Code: "app.forbidden", Message: "wallet is not linked to this user"}
 		}
 
 		cred := &models.WalletCredential{
 			Username: username,
 			Address:  address,
-			ChainID:  challenge.ChainID,
+			ChainID:  chainID,
 			Type:     "ethereum",
 			LinkedAt: now,
 			LastUsed: now,
@@ -227,18 +233,50 @@ func (s *Server) handlePortalWalletLogin(ctx *apptheory.Context) (*apptheory.Res
 			return nil
 		}); err != nil {
 			if !theoryErrors.IsConditionFailed(err) {
-				return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to link wallet"}
+				return models.User{}, &apptheory.AppError{Code: "app.internal", Message: "failed to link wallet"}
 			}
 		}
 
-		if req.Email != "" && strings.TrimSpace(user.Email) == "" {
+		if email != "" && strings.TrimSpace(user.Email) == "" {
 			update := &models.User{
 				Username: username,
-				Email:    req.Email,
+				Email:    email,
 			}
 			_ = update.UpdateKeys()
 			_ = s.store.DB.WithContext(ctx.Context()).Model(update).IfExists().Update("Email")
 		}
+	}
+
+	return user, nil
+}
+
+func (s *Server) handlePortalWalletLogin(ctx *apptheory.Context) (*apptheory.Response, error) {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
+	req, err := parsePortalWalletLogin(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	challenge, username, address, err := s.validatePortalWalletLoginChallenge(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	linked, err := s.walletLinkedUsername(ctx, "ethereum", address)
+	if err != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if linked != "" && linked != username {
+		return nil, &apptheory.AppError{Code: "app.conflict", Message: "wallet is already linked to a different user"}
+	}
+
+	now := time.Now().UTC()
+	user, err := s.ensurePortalWalletUser(ctx, username, address, challenge.ChainID, linked, req.Email, req.DisplayName, now)
+	if err != nil {
+		return nil, err
 	}
 
 	role := strings.TrimSpace(user.Role)

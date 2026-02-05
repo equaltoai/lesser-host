@@ -184,7 +184,7 @@ func (s *Server) handleCreateInstance(ctx *apptheory.Context) (*apptheory.Respon
 	moderationTrigger := moderationTriggerOnReports
 	moderationViralityMin := int64(0)
 	aiEnabled := false
-	aiModelSet := "openai:gpt-5-mini-2025-08-07"
+	aiModelSet := defaultAIModelSet
 	aiBatchingMode := aiBatchingModeNone
 	aiBatchMaxItems := int64(8)
 	aiBatchMaxTotalBytes := int64(64 * 1024)
@@ -215,9 +215,15 @@ func (s *Server) handleCreateInstance(ctx *apptheory.Context) (*apptheory.Respon
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
+	parentDomain := strings.TrimSpace(s.cfg.ManagedParentDomain)
+	if parentDomain == "" {
+		parentDomain = defaultManagedParentDomain
+	}
+	baseDomain := fmt.Sprintf("%s.%s", slug, strings.TrimPrefix(parentDomain, "."))
+
 	primaryDomain := &models.Domain{
-		Domain:             slug + ".greater.website",
-		DomainRaw:          slug + ".greater.website",
+		Domain:             baseDomain,
+		DomainRaw:          baseDomain,
 		InstanceSlug:       slug,
 		Type:               models.DomainTypePrimary,
 		Status:             models.DomainStatusVerified,
@@ -369,7 +375,7 @@ func effectiveAIEnabled(v *bool) bool {
 func effectiveAIModelSet(v string) string {
 	v = strings.TrimSpace(v)
 	if v == "" {
-		return "openai:gpt-5-mini-2025-08-07"
+		return defaultAIModelSet
 	}
 	return v
 }
