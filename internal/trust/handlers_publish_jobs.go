@@ -296,6 +296,368 @@ func (s *Server) handleGetPublishJob(ctx *apptheory.Context) (*apptheory.Respons
 	return apptheory.JSON(http.StatusOK, item)
 }
 
+func analyzeLinkSafetyBasicBatch(ctx *apptheory.Context, canonicalLinks []string) []models.LinkSafetyBasicLinkResult {
+	out := make([]models.LinkSafetyBasicLinkResult, 0, len(canonicalLinks))
+	for _, raw := range canonicalLinks {
+		out = append(out, analyzeLinkSafetyBasic(ctx.Context(), nil, raw))
+	}
+	return out
+}
+
+func (s *Server) storeLinkSafetyBasicNoLinksResult(
+	ctx *apptheory.Context,
+	instanceSlug string,
+	jobID string,
+	actorURI string,
+	objectURI string,
+	contentHash string,
+	linksHash string,
+	now time.Time,
+) publishJobModuleResponse {
+	item := &models.LinkSafetyBasicResult{
+		ID:            jobID,
+		PolicyVersion: linkSafetyBasicPolicyVersion,
+		ActorURI:      actorURI,
+		ObjectURI:     objectURI,
+		ContentHash:   contentHash,
+		LinksHash:     linksHash,
+		Links:         []models.LinkSafetyBasicLinkResult{},
+		Summary:       models.LinkSafetyBasicSummary{TotalLinks: 0, OverallRisk: "low"},
+		CreatedAt:     now,
+		ExpiresAt:     now.Add(7 * 24 * time.Hour),
+		RequestID:     strings.TrimSpace(ctx.RequestID),
+	}
+	_ = item.UpdateKeys()
+
+	audit := &models.AuditLogEntry{
+		Actor:     instanceSlug,
+		Action:    "link_safety_basic.check",
+		Target:    fmt.Sprintf("link_safety_basic:%s", jobID),
+		RequestID: strings.TrimSpace(ctx.RequestID),
+		CreatedAt: now,
+	}
+	_ = audit.UpdateKeys()
+
+	err := s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
+		tx.Create(item)
+		tx.Put(audit)
+		return nil
+	})
+	if theoryErrors.IsConditionFailed(err) {
+		if cached, err2 := s.store.GetLinkSafetyBasicResult(ctx.Context(), jobID); err2 == nil {
+			attID, _ := s.ensureLinkSafetyBasicAttestation(ctx.Context(), cached)
+			return publishJobModuleResponse{
+				Name:          "link_safety_basic",
+				PolicyVersion: linkSafetyBasicPolicyVersion,
+				Status:        "ok",
+				Cached:        true,
+				Budget: budgetDecision{
+					Allowed:          true,
+					OverBudget:       false,
+					Reason:           "cache_hit",
+					RequestedCredits: 0,
+					DebitedCredits:   0,
+				},
+				AttestationID:  strings.TrimSpace(attID),
+				AttestationURL: attestationURL(ctx, attID),
+				Result:         cached,
+			}
+		}
+	}
+	if err != nil {
+		return publishJobModuleResponse{
+			Name:          "link_safety_basic",
+			PolicyVersion: linkSafetyBasicPolicyVersion,
+			Status:        "error",
+			Cached:        false,
+			Budget: budgetDecision{
+				Allowed:          true,
+				OverBudget:       false,
+				Reason:           "internal error",
+				RequestedCredits: 0,
+				DebitedCredits:   0,
+			},
+		}
+	}
+
+	attID, _ := s.ensureLinkSafetyBasicAttestation(ctx.Context(), item)
+	return publishJobModuleResponse{
+		Name:          "link_safety_basic",
+		PolicyVersion: linkSafetyBasicPolicyVersion,
+		Status:        "ok",
+		Cached:        false,
+		Budget: budgetDecision{
+			Allowed:          true,
+			OverBudget:       false,
+			Reason:           "no_links",
+			RequestedCredits: 0,
+			DebitedCredits:   0,
+		},
+		AttestationID:  strings.TrimSpace(attID),
+		AttestationURL: attestationURL(ctx, attID),
+		Result:         item,
+	}
+}
+
+func (s *Server) precheckLinkSafetyBasicBudget(
+	ctx *apptheory.Context,
+	instanceSlug string,
+	month string,
+	pk string,
+	sk string,
+	creditsPriced int64,
+	overagePolicy string,
+) (*models.InstanceBudgetMonth, *publishJobModuleResponse) {
+	var budget models.InstanceBudgetMonth
+	err := s.store.DB.WithContext(ctx.Context()).
+		Model(&models.InstanceBudgetMonth{}).
+		Where("PK", "=", pk).
+		Where("SK", "=", sk).
+		ConsistentRead().
+		First(&budget)
+	if theoryErrors.IsNotFound(err) {
+		resp := publishJobModuleResponse{
+			Name:          "link_safety_basic",
+			PolicyVersion: linkSafetyBasicPolicyVersion,
+			Status:        "not_checked_budget",
+			Cached:        false,
+			Budget: budgetDecision{
+				Allowed:          false,
+				OverBudget:       true,
+				Reason:           "budget not configured",
+				Month:            month,
+				RequestedCredits: creditsPriced,
+				DebitedCredits:   0,
+			},
+		}
+		return nil, &resp
+	}
+	if err != nil {
+		resp := publishJobModuleResponse{
+			Name:          "link_safety_basic",
+			PolicyVersion: linkSafetyBasicPolicyVersion,
+			Status:        "error",
+			Cached:        false,
+			Budget: budgetDecision{
+				Allowed:          true,
+				OverBudget:       false,
+				Reason:           "internal error",
+				RequestedCredits: creditsPriced,
+				DebitedCredits:   0,
+			},
+		}
+		return nil, &resp
+	}
+
+	remaining := budget.IncludedCredits - budget.UsedCredits
+	allowOverage := strings.ToLower(strings.TrimSpace(overagePolicy)) == overagePolicyAllow
+	if remaining < creditsPriced && !allowOverage {
+		resp := publishJobModuleResponse{
+			Name:          "link_safety_basic",
+			PolicyVersion: linkSafetyBasicPolicyVersion,
+			Status:        "not_checked_budget",
+			Cached:        false,
+			Budget: budgetDecision{
+				Allowed:          false,
+				OverBudget:       true,
+				Reason:           "budget exceeded",
+				Month:            month,
+				IncludedCredits:  budget.IncludedCredits,
+				UsedCredits:      budget.UsedCredits,
+				RemainingCredits: remaining,
+				RequestedCredits: creditsPriced,
+				DebitedCredits:   0,
+			},
+		}
+		return nil, &resp
+	}
+
+	return &budget, nil
+}
+
+func (s *Server) transactDebitBudgetAndStoreLinkSafetyBasic(
+	ctx *apptheory.Context,
+	allowOverage bool,
+	update *models.InstanceBudgetMonth,
+	ledger *models.UsageLedgerEntry,
+	item *models.LinkSafetyBasicResult,
+	auditBudget *models.AuditLogEntry,
+	auditScan *models.AuditLogEntry,
+	creditsPriced int64,
+	now time.Time,
+) error {
+	if allowOverage {
+		return s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
+			tx.UpdateWithBuilder(update, func(ub core.UpdateBuilder) error {
+				ub.Add("UsedCredits", creditsPriced)
+				ub.Set("UpdatedAt", now)
+				return nil
+			}, tabletheory.IfExists())
+			tx.Put(auditBudget)
+			tx.Put(ledger)
+			tx.Create(item)
+			tx.Put(auditScan)
+			return nil
+		})
+	}
+
+	return s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
+		tx.UpdateWithBuilder(update, func(ub core.UpdateBuilder) error {
+			ub.Add("UsedCredits", creditsPriced)
+			ub.Set("UpdatedAt", now)
+			return nil
+		},
+			tabletheory.IfExists(),
+			tabletheory.ConditionExpression(
+				"if_not_exists(usedCredits, :zero) + :delta <= if_not_exists(includedCredits, :zero)",
+				map[string]any{
+					":zero":  int64(0),
+					":delta": creditsPriced,
+				},
+			),
+		)
+		tx.Put(auditBudget)
+		tx.Put(ledger)
+		tx.Create(item)
+		tx.Put(auditScan)
+		return nil
+	})
+}
+
+func (s *Server) handleLinkSafetyBasicConditionFailed(
+	ctx *apptheory.Context,
+	instanceSlug string,
+	month string,
+	pk string,
+	sk string,
+	jobID string,
+	actorURI string,
+	objectURI string,
+	contentHash string,
+	linksHash string,
+	creditsRequested int64,
+	creditsPriced int64,
+	pricingMultiplierBps int64,
+	now time.Time,
+) publishJobModuleResponse {
+	if cached, err2 := s.store.GetLinkSafetyBasicResult(ctx.Context(), jobID); err2 == nil {
+		return s.linkSafetyBasicCacheHitResponse(
+			ctx,
+			instanceSlug,
+			month,
+			jobID,
+			actorURI,
+			objectURI,
+			contentHash,
+			linksHash,
+			creditsRequested,
+			creditsPriced,
+			pricingMultiplierBps,
+			now,
+			cached,
+		)
+	}
+
+	var latest models.InstanceBudgetMonth
+	if err3 := s.store.DB.WithContext(ctx.Context()).
+		Model(&models.InstanceBudgetMonth{}).
+		Where("PK", "=", pk).
+		Where("SK", "=", sk).
+		ConsistentRead().
+		First(&latest); err3 == nil {
+		remaining := latest.IncludedCredits - latest.UsedCredits
+		reason := "budget exceeded"
+		if remaining >= creditsPriced {
+			reason = "budget conflict"
+		}
+		return publishJobModuleResponse{
+			Name:          "link_safety_basic",
+			PolicyVersion: linkSafetyBasicPolicyVersion,
+			Status:        "not_checked_budget",
+			Cached:        false,
+			Budget: budgetDecision{
+				Allowed:          false,
+				OverBudget:       true,
+				Reason:           reason,
+				Month:            month,
+				IncludedCredits:  latest.IncludedCredits,
+				UsedCredits:      latest.UsedCredits,
+				RemainingCredits: remaining,
+				RequestedCredits: creditsPriced,
+				DebitedCredits:   0,
+			},
+		}
+	}
+
+	return publishJobModuleResponse{
+		Name:          "link_safety_basic",
+		PolicyVersion: linkSafetyBasicPolicyVersion,
+		Status:        "not_checked_budget",
+		Cached:        false,
+		Budget: budgetDecision{
+			Allowed:          false,
+			OverBudget:       true,
+			Reason:           "budget exceeded",
+			Month:            month,
+			RequestedCredits: creditsPriced,
+			DebitedCredits:   0,
+		},
+	}
+}
+
+func (s *Server) linkSafetyBasicDebitedResponse(
+	ctx *apptheory.Context,
+	instanceSlug string,
+	month string,
+	pk string,
+	sk string,
+	creditsPriced int64,
+	overageDebited int64,
+	overagePolicy string,
+	now time.Time,
+	item *models.LinkSafetyBasicResult,
+) publishJobModuleResponse {
+	var latest models.InstanceBudgetMonth
+	_ = s.store.DB.WithContext(ctx.Context()).
+		Model(&models.InstanceBudgetMonth{}).
+		Where("PK", "=", pk).
+		Where("SK", "=", sk).
+		ConsistentRead().
+		First(&latest)
+
+	remaining := latest.IncludedCredits - latest.UsedCredits
+	overBudget := remaining < 0
+	if strings.ToLower(strings.TrimSpace(overagePolicy)) == overagePolicyAllow && overageDebited > 0 {
+		overBudget = true
+	}
+
+	reason := "debited"
+	if overageDebited > 0 {
+		reason = "overage"
+	}
+	attID, _ := s.ensureLinkSafetyBasicAttestation(ctx.Context(), item)
+	return publishJobModuleResponse{
+		Name:          "link_safety_basic",
+		PolicyVersion: linkSafetyBasicPolicyVersion,
+		Status:        "ok",
+		Cached:        false,
+		Budget: budgetDecision{
+			Allowed:          true,
+			OverBudget:       overBudget,
+			Month:            month,
+			IncludedCredits:  latest.IncludedCredits,
+			UsedCredits:      latest.UsedCredits,
+			RemainingCredits: remaining,
+			RequestedCredits: creditsPriced,
+			DebitedCredits:   creditsPriced,
+			Reason:           reason,
+		},
+		AttestationID:  strings.TrimSpace(attID),
+		AttestationURL: attestationURL(ctx, attID),
+		Result:         item,
+	}
+}
+
 func (s *Server) runLinkSafetyBasicJob(
 	ctx *apptheory.Context,
 	instanceSlug string,
@@ -332,162 +694,19 @@ func (s *Server) runLinkSafetyBasicJob(
 		)
 	}
 
-	links := make([]models.LinkSafetyBasicLinkResult, 0, len(canonicalLinks))
-	for _, raw := range canonicalLinks {
-		links = append(links, analyzeLinkSafetyBasic(ctx.Context(), nil, raw))
-	}
-
-	credits := int64(len(canonicalLinks))
-
 	// No links: store a deterministic empty result without debiting.
-	if credits == 0 || creditsPriced == 0 {
-		item := &models.LinkSafetyBasicResult{
-			ID:            jobID,
-			PolicyVersion: linkSafetyBasicPolicyVersion,
-			ActorURI:      actorURI,
-			ObjectURI:     objectURI,
-			ContentHash:   contentHash,
-			LinksHash:     linksHash,
-			Links:         []models.LinkSafetyBasicLinkResult{},
-			Summary:       models.LinkSafetyBasicSummary{TotalLinks: 0, OverallRisk: "low"},
-			CreatedAt:     now,
-			ExpiresAt:     now.Add(7 * 24 * time.Hour),
-			RequestID:     strings.TrimSpace(ctx.RequestID),
-		}
-		_ = item.UpdateKeys()
-
-		audit := &models.AuditLogEntry{
-			Actor:     instanceSlug,
-			Action:    "link_safety_basic.check",
-			Target:    fmt.Sprintf("link_safety_basic:%s", jobID),
-			RequestID: strings.TrimSpace(ctx.RequestID),
-			CreatedAt: now,
-		}
-		_ = audit.UpdateKeys()
-
-		err := s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
-			tx.Create(item)
-			tx.Put(audit)
-			return nil
-		})
-		if theoryErrors.IsConditionFailed(err) {
-			if cached, err2 := s.store.GetLinkSafetyBasicResult(ctx.Context(), jobID); err2 == nil {
-				attID, _ := s.ensureLinkSafetyBasicAttestation(ctx.Context(), cached)
-				return publishJobModuleResponse{
-					Name:          "link_safety_basic",
-					PolicyVersion: linkSafetyBasicPolicyVersion,
-					Status:        "ok",
-					Cached:        true,
-					Budget: budgetDecision{
-						Allowed:          true,
-						OverBudget:       false,
-						Reason:           "cache_hit",
-						RequestedCredits: 0,
-						DebitedCredits:   0,
-					},
-					AttestationID:  strings.TrimSpace(attID),
-					AttestationURL: attestationURL(ctx, attID),
-					Result:         cached,
-				}
-			}
-		}
-		if err != nil {
-			return publishJobModuleResponse{
-				Name:          "link_safety_basic",
-				PolicyVersion: linkSafetyBasicPolicyVersion,
-				Status:        "error",
-				Cached:        false,
-				Budget: budgetDecision{
-					Allowed:          true,
-					OverBudget:       false,
-					Reason:           "internal error",
-					RequestedCredits: 0,
-					DebitedCredits:   0,
-				},
-			}
-		}
-
-		attID, _ := s.ensureLinkSafetyBasicAttestation(ctx.Context(), item)
-		return publishJobModuleResponse{
-			Name:          "link_safety_basic",
-			PolicyVersion: linkSafetyBasicPolicyVersion,
-			Status:        "ok",
-			Cached:        false,
-			Budget: budgetDecision{
-				Allowed:          true,
-				OverBudget:       false,
-				Reason:           "no_links",
-				RequestedCredits: 0,
-				DebitedCredits:   0,
-			},
-			AttestationID:  strings.TrimSpace(attID),
-			AttestationURL: attestationURL(ctx, attID),
-			Result:         item,
-		}
+	if creditsRequested == 0 || creditsPriced == 0 {
+		return s.storeLinkSafetyBasicNoLinksResult(ctx, instanceSlug, jobID, actorURI, objectURI, contentHash, linksHash, now)
 	}
+
+	links := analyzeLinkSafetyBasicBatch(ctx, canonicalLinks)
 
 	// Budget pre-check to avoid ambiguous transaction condition failures.
 	pk := fmt.Sprintf("INSTANCE#%s", instanceSlug)
 	sk := fmt.Sprintf("BUDGET#%s", month)
-
-	var budget models.InstanceBudgetMonth
-	err := s.store.DB.WithContext(ctx.Context()).
-		Model(&models.InstanceBudgetMonth{}).
-		Where("PK", "=", pk).
-		Where("SK", "=", sk).
-		ConsistentRead().
-		First(&budget)
-	if theoryErrors.IsNotFound(err) {
-		return publishJobModuleResponse{
-			Name:          "link_safety_basic",
-			PolicyVersion: linkSafetyBasicPolicyVersion,
-			Status:        "not_checked_budget",
-			Cached:        false,
-			Budget: budgetDecision{
-				Allowed:          false,
-				OverBudget:       true,
-				Reason:           "budget not configured",
-				Month:            month,
-				RequestedCredits: creditsPriced,
-				DebitedCredits:   0,
-			},
-		}
-	}
-	if err != nil {
-		return publishJobModuleResponse{
-			Name:          "link_safety_basic",
-			PolicyVersion: linkSafetyBasicPolicyVersion,
-			Status:        "error",
-			Cached:        false,
-			Budget: budgetDecision{
-				Allowed:          true,
-				OverBudget:       false,
-				Reason:           "internal error",
-				RequestedCredits: creditsPriced,
-				DebitedCredits:   0,
-			},
-		}
-	}
-
-	remaining := budget.IncludedCredits - budget.UsedCredits
-	if remaining < creditsPriced && strings.ToLower(strings.TrimSpace(overagePolicy)) != overagePolicyAllow {
-		return publishJobModuleResponse{
-			Name:          "link_safety_basic",
-			PolicyVersion: linkSafetyBasicPolicyVersion,
-			Status:        "not_checked_budget",
-			Cached:        false,
-			Budget: budgetDecision{
-				Allowed:          false,
-				OverBudget:       true,
-				Reason:           "budget exceeded",
-				Month:            month,
-				IncludedCredits:  budget.IncludedCredits,
-				UsedCredits:      budget.UsedCredits,
-				RemainingCredits: remaining,
-				RequestedCredits: creditsPriced,
-				DebitedCredits:   0,
-			},
-		}
+	budget, precheckResp := s.precheckLinkSafetyBasicBudget(ctx, instanceSlug, month, pk, sk, creditsPriced, overagePolicy)
+	if precheckResp != nil {
+		return *precheckResp
 	}
 
 	item := &models.LinkSafetyBasicResult{
@@ -557,103 +776,27 @@ func (s *Server) runLinkSafetyBasicJob(
 	}
 	_ = auditScan.UpdateKeys()
 
-	err = s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
-		if strings.ToLower(strings.TrimSpace(overagePolicy)) == overagePolicyAllow {
-			tx.UpdateWithBuilder(update, func(ub core.UpdateBuilder) error {
-				ub.Add("UsedCredits", creditsPriced)
-				ub.Set("UpdatedAt", now)
-				return nil
-			}, tabletheory.IfExists())
-		} else {
-			tx.UpdateWithBuilder(update, func(ub core.UpdateBuilder) error {
-				ub.Add("UsedCredits", creditsPriced)
-				ub.Set("UpdatedAt", now)
-				return nil
-			},
-				tabletheory.IfExists(),
-				tabletheory.ConditionExpression(
-					"if_not_exists(usedCredits, :zero) + :delta <= if_not_exists(includedCredits, :zero)",
-					map[string]any{
-						":zero":  int64(0),
-						":delta": creditsPriced,
-					},
-				),
-			)
-		}
-		tx.Put(auditBudget)
-		tx.Put(ledger)
-		tx.Create(item)
-		tx.Put(auditScan)
-		return nil
-	})
-	if theoryErrors.IsConditionFailed(err) {
-		// If the result already exists, treat it as cache hit (no debit happened due to txn rollback).
-		if cached, err2 := s.store.GetLinkSafetyBasicResult(ctx.Context(), jobID); err2 == nil {
-			return s.linkSafetyBasicCacheHitResponse(
-				ctx,
-				instanceSlug,
-				month,
-				jobID,
-				actorURI,
-				objectURI,
-				contentHash,
-				linksHash,
-				creditsRequested,
-				creditsPriced,
-				pricingMultiplierBps,
-				now,
-				cached,
-			)
-		}
-
-		// Otherwise, assume we raced with another debit and are now over budget.
-		var latest models.InstanceBudgetMonth
-		if err3 := s.store.DB.WithContext(ctx.Context()).
-			Model(&models.InstanceBudgetMonth{}).
-			Where("PK", "=", pk).
-			Where("SK", "=", sk).
-			ConsistentRead().
-			First(&latest); err3 == nil {
-			remaining = latest.IncludedCredits - latest.UsedCredits
-			reason := "budget exceeded"
-			if remaining >= creditsPriced {
-				reason = "budget conflict"
-			}
-			return publishJobModuleResponse{
-				Name:          "link_safety_basic",
-				PolicyVersion: linkSafetyBasicPolicyVersion,
-				Status:        "not_checked_budget",
-				Cached:        false,
-				Budget: budgetDecision{
-					Allowed:          false,
-					OverBudget:       true,
-					Reason:           reason,
-					Month:            month,
-					IncludedCredits:  latest.IncludedCredits,
-					UsedCredits:      latest.UsedCredits,
-					RemainingCredits: remaining,
-					RequestedCredits: creditsPriced,
-					DebitedCredits:   0,
-				},
-			}
-		}
-
-		return publishJobModuleResponse{
-			Name:          "link_safety_basic",
-			PolicyVersion: linkSafetyBasicPolicyVersion,
-			Status:        "not_checked_budget",
-			Cached:        false,
-			Budget: budgetDecision{
-				Allowed:          false,
-				OverBudget:       true,
-				Reason:           "budget exceeded",
-				Month:            month,
-				RequestedCredits: creditsPriced,
-				DebitedCredits:   0,
-			},
-		}
+	allowOverage := strings.ToLower(strings.TrimSpace(overagePolicy)) == overagePolicyAllow
+	txnErr := s.transactDebitBudgetAndStoreLinkSafetyBasic(ctx, allowOverage, update, ledger, item, auditBudget, auditScan, creditsPriced, now)
+	if theoryErrors.IsConditionFailed(txnErr) {
+		return s.handleLinkSafetyBasicConditionFailed(
+			ctx,
+			instanceSlug,
+			month,
+			pk,
+			sk,
+			jobID,
+			actorURI,
+			objectURI,
+			contentHash,
+			linksHash,
+			creditsRequested,
+			creditsPriced,
+			pricingMultiplierBps,
+			now,
+		)
 	}
-	if err != nil {
+	if txnErr != nil {
 		return publishJobModuleResponse{
 			Name:          "link_safety_basic",
 			PolicyVersion: linkSafetyBasicPolicyVersion,
@@ -669,46 +812,7 @@ func (s *Server) runLinkSafetyBasicJob(
 		}
 	}
 
-	// Re-read budget for accurate reporting.
-	var latest models.InstanceBudgetMonth
-	_ = s.store.DB.WithContext(ctx.Context()).
-		Model(&models.InstanceBudgetMonth{}).
-		Where("PK", "=", pk).
-		Where("SK", "=", sk).
-		ConsistentRead().
-		First(&latest)
-
-	remaining = latest.IncludedCredits - latest.UsedCredits
-	overBudget := remaining < 0
-	if strings.ToLower(strings.TrimSpace(overagePolicy)) == overagePolicyAllow && overageDebited > 0 {
-		overBudget = true
-	}
-
-	reason := "debited"
-	if overageDebited > 0 {
-		reason = "overage"
-	}
-	attID, _ := s.ensureLinkSafetyBasicAttestation(ctx.Context(), item)
-	return publishJobModuleResponse{
-		Name:          "link_safety_basic",
-		PolicyVersion: linkSafetyBasicPolicyVersion,
-		Status:        "ok",
-		Cached:        false,
-		Budget: budgetDecision{
-			Allowed:          true,
-			OverBudget:       overBudget,
-			Month:            month,
-			IncludedCredits:  latest.IncludedCredits,
-			UsedCredits:      latest.UsedCredits,
-			RemainingCredits: remaining,
-			RequestedCredits: creditsPriced,
-			DebitedCredits:   creditsPriced,
-			Reason:           reason,
-		},
-		AttestationID:  strings.TrimSpace(attID),
-		AttestationURL: attestationURL(ctx, attID),
-		Result:         item,
-	}
+	return s.linkSafetyBasicDebitedResponse(ctx, instanceSlug, month, pk, sk, creditsPriced, overageDebited, overagePolicy, now, item)
 }
 
 func (s *Server) linkSafetyBasicCacheHitResponse(

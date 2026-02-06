@@ -100,21 +100,39 @@ func parseAPIKeyValue(raw string) (string, error) {
 		return "", fmt.Errorf("api key is empty")
 	}
 
-	if strings.HasPrefix(raw, "{") && strings.HasSuffix(raw, "}") {
-		var obj map[string]any
-		if err := json.Unmarshal([]byte(raw), &obj); err == nil {
-			for _, key := range []string{"api_key", "apiKey", "key", "token", "value"} {
-				if v, ok := obj[key]; ok {
-					if s, ok := v.(string); ok {
-						s = strings.TrimSpace(s)
-						if s != "" {
-							return s, nil
-						}
-					}
-				}
-			}
-		}
+	if parseValue, ok := parseAPIKeyValueFromJSON(raw); ok {
+		return parseValue, nil
 	}
 
 	return raw, nil
+}
+
+func parseAPIKeyValueFromJSON(raw string) (string, bool) {
+	if !looksLikeJSONObject(raw) {
+		return "", false
+	}
+
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(raw), &obj); err != nil {
+		return "", false
+	}
+
+	for _, key := range []string{"api_key", "apiKey", "key", "token", "value"} {
+		s, ok := obj[key].(string)
+		if !ok {
+			continue
+		}
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		return s, true
+	}
+
+	return "", false
+}
+
+func looksLikeJSONObject(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	return strings.HasPrefix(raw, "{") && strings.HasSuffix(raw, "}")
 }

@@ -39,4 +39,3 @@ func (r *route53Client) get(ctx context.Context) (*route53.Client, error) {
 	}
 	return r.client, nil
 }
-

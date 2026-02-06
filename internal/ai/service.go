@@ -114,31 +114,7 @@ func (s *Service) GetOrQueue(ctx context.Context, req Request) (Response, error)
 	}
 
 	if cached := s.getCachedResult(ctx, prepared); cached != nil {
-		if s != nil && s.store != nil && s.store.DB != nil {
-			requestID := strings.TrimSpace(req.RequestID)
-			if requestID == "" {
-				requestID = prepared.JobID
-			}
-			hit := &models.UsageLedgerEntry{
-				ID:                   billing.UsageLedgerEntryID(prepared.InstanceSlug, prepared.Month, requestID, prepared.Module, prepared.ResultID, 0),
-				InstanceSlug:         prepared.InstanceSlug,
-				Month:                prepared.Month,
-				Module:               prepared.Module,
-				Target:               prepared.ResultID,
-				Cached:               true,
-				Reason:               "cache_hit",
-				RequestID:            requestID,
-				RequestedCredits:     prepared.CreditsRequested,
-				ListCredits:          prepared.BaseCredits,
-				PricingMultiplierBps: prepared.PricingMultiplierBps,
-				DebitedCredits:       0,
-				BillingType:          models.BillingTypeNone,
-				CreatedAt:            prepared.Now,
-			}
-			_ = hit.UpdateKeys()
-			_ = s.store.DB.WithContext(ctx).Model(hit).IfNotExists().Create()
-		}
-
+		s.recordCacheHit(ctx, prepared, req)
 		return cacheHitResponse(prepared.JobID, prepared.ResultID, cached, prepared.CreditsRequested), nil
 	}
 
@@ -147,8 +123,8 @@ func (s *Service) GetOrQueue(ctx context.Context, req Request) (Response, error)
 	}
 
 	if req.MaxInflightJobs > 0 {
-		n, err := s.store.CountQueuedAIJobsByInstance(ctx, prepared.InstanceSlug, int(req.MaxInflightJobs))
-		if err == nil && int64(n) >= req.MaxInflightJobs {
+		n, countErr := s.store.CountQueuedAIJobsByInstance(ctx, prepared.InstanceSlug, int(req.MaxInflightJobs))
+		if countErr == nil && int64(n) >= req.MaxInflightJobs {
 			return concurrencyExceededResponse(prepared.JobID, prepared.ResultID, req.MaxInflightJobs, int64(n), prepared.CreditsRequested), nil
 		}
 	}
@@ -171,6 +147,36 @@ func (s *Service) GetOrQueue(ctx context.Context, req Request) (Response, error)
 	}
 
 	return s.queueWithDebit(ctx, prepared, req, budget)
+}
+
+func (s *Service) recordCacheHit(ctx context.Context, prepared getOrQueuePrepared, req Request) {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return
+	}
+
+	requestID := strings.TrimSpace(req.RequestID)
+	if requestID == "" {
+		requestID = prepared.JobID
+	}
+
+	hit := &models.UsageLedgerEntry{
+		ID:                   billing.UsageLedgerEntryID(prepared.InstanceSlug, prepared.Month, requestID, prepared.Module, prepared.ResultID, 0),
+		InstanceSlug:         prepared.InstanceSlug,
+		Month:                prepared.Month,
+		Module:               prepared.Module,
+		Target:               prepared.ResultID,
+		Cached:               true,
+		Reason:               "cache_hit",
+		RequestID:            requestID,
+		RequestedCredits:     prepared.CreditsRequested,
+		ListCredits:          prepared.BaseCredits,
+		PricingMultiplierBps: prepared.PricingMultiplierBps,
+		DebitedCredits:       0,
+		BillingType:          models.BillingTypeNone,
+		CreatedAt:            prepared.Now,
+	}
+	_ = hit.UpdateKeys()
+	_ = s.store.DB.WithContext(ctx).Model(hit).IfNotExists().Create()
 }
 
 func (s *Service) prepareGetOrQueue(req Request) (getOrQueuePrepared, Response, error) {

@@ -500,11 +500,11 @@ func (s *Server) handleUpdateInstanceConfig(ctx *apptheory.Context) (*apptheory.
 	if err != nil {
 		return nil, err
 	}
-	if err := update.UpdateKeys(); err != nil {
+	if updateErr := update.UpdateKeys(); updateErr != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
-	if err := s.store.DB.WithContext(ctx.Context()).Model(update).IfExists().Update(fields...); err != nil {
-		if theoryErrors.IsConditionFailed(err) {
+	if dbErr := s.store.DB.WithContext(ctx.Context()).Model(update).IfExists().Update(fields...); dbErr != nil {
+		if theoryErrors.IsConditionFailed(dbErr) {
 			return nil, &apptheory.AppError{Code: "app.not_found", Message: "instance not found"}
 		}
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to update instance"}
@@ -519,7 +519,7 @@ func (s *Server) handleUpdateInstanceConfig(ctx *apptheory.Context) (*apptheory.
 		CreatedAt: now,
 	}
 	_ = audit.UpdateKeys()
-	if err := s.store.DB.WithContext(ctx.Context()).Model(audit).Create(); err != nil {
+	if auditErr := s.store.DB.WithContext(ctx.Context()).Model(audit).Create(); auditErr != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to write audit log"}
 	}
 

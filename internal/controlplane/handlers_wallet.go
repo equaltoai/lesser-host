@@ -1,7 +1,6 @@
 package controlplane
 
 import (
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -58,70 +57,18 @@ func (s *Server) handleWalletChallenge(ctx *apptheory.Context) (*apptheory.Respo
 }
 
 func (s *Server) handleWalletLogin(ctx *apptheory.Context) (*apptheory.Response, error) {
-	var req walletVerifyRequest
-	if err := parseJSON(ctx, &req); err != nil {
+	req, err := parseWalletLoginRequest(ctx)
+	if err != nil {
 		return nil, err
 	}
 
-	req.ChallengeID = strings.TrimSpace(req.ChallengeID)
-	req.Address = strings.TrimSpace(req.Address)
-	req.Signature = strings.TrimSpace(req.Signature)
-	req.Message = strings.TrimSpace(req.Message)
-
-	if req.ChallengeID == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "challengeId is required"}
-	}
-	if req.Address == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "address is required"}
-	}
-	if req.Signature == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "signature is required"}
-	}
-	if req.Message == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "message is required"}
-	}
-
-	challenge, err := s.getWalletChallenge(ctx.Context(), req.ChallengeID)
-	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
-	}
+	username, err := s.verifyWalletLoginChallenge(ctx, req)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, err
 	}
 
-	username := strings.TrimSpace(challenge.Username)
-	if username == "" {
-		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
-	}
-
-	address := strings.ToLower(strings.TrimSpace(req.Address))
-	if address != strings.ToLower(strings.TrimSpace(challenge.Address)) {
-		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
-	}
-	if req.Message != strings.TrimSpace(challenge.Message) {
-		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
-	}
-
-	if err := verifyEthereumSignature(address, req.Message, req.Signature); err != nil {
-		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "invalid signature"}
-	}
-	_ = s.deleteWalletChallenge(ctx.Context(), req.ChallengeID)
-
-	linked, err := s.walletLinkedUsername(ctx, "ethereum", address)
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-	if linked == "" || linked != username {
-		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
-	}
-
-	var user models.User
-	err = s.store.DB.WithContext(ctx.Context()).
-		Model(&models.User{}).
-		Where("PK", "=", fmt.Sprintf(models.KeyPatternUser, username)).
-		Where("SK", "=", models.SKProfile).
-		First(&user)
-	if theoryErrors.IsNotFound(err) {
+	user, err := s.loadUser(ctx, username)
+	if theoryErrors.IsNotFound(err) || user == nil {
 		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
 	}
 	if err != nil {
@@ -154,4 +101,76 @@ func (s *Server) handleWalletLogin(ctx *apptheory.Context) (*apptheory.Response,
 		Role:      user.Role,
 		Method:    "wallet",
 	})
+}
+
+func parseWalletLoginRequest(ctx *apptheory.Context) (walletVerifyRequest, error) {
+	var req walletVerifyRequest
+	if err := parseJSON(ctx, &req); err != nil {
+		return walletVerifyRequest{}, err
+	}
+
+	req.ChallengeID = strings.TrimSpace(req.ChallengeID)
+	req.Address = strings.TrimSpace(req.Address)
+	req.Signature = strings.TrimSpace(req.Signature)
+	req.Message = strings.TrimSpace(req.Message)
+
+	if req.ChallengeID == "" {
+		return walletVerifyRequest{}, &apptheory.AppError{Code: "app.bad_request", Message: "challengeId is required"}
+	}
+	if req.Address == "" {
+		return walletVerifyRequest{}, &apptheory.AppError{Code: "app.bad_request", Message: "address is required"}
+	}
+	if req.Signature == "" {
+		return walletVerifyRequest{}, &apptheory.AppError{Code: "app.bad_request", Message: "signature is required"}
+	}
+	if req.Message == "" {
+		return walletVerifyRequest{}, &apptheory.AppError{Code: "app.bad_request", Message: "message is required"}
+	}
+
+	return req, nil
+}
+
+func (s *Server) verifyWalletLoginChallenge(ctx *apptheory.Context, req walletVerifyRequest) (string, error) {
+	if s == nil || ctx == nil {
+		return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
+	challenge, err := s.getWalletChallenge(ctx.Context(), req.ChallengeID)
+	if theoryErrors.IsNotFound(err) {
+		return "", &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+	}
+	if err != nil {
+		return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
+	username := strings.TrimSpace(challenge.Username)
+	if username == "" {
+		return "", &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+	}
+
+	address := strings.ToLower(strings.TrimSpace(req.Address))
+	if address != strings.ToLower(strings.TrimSpace(challenge.Address)) {
+		return "", &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+	}
+	if req.Message != strings.TrimSpace(challenge.Message) {
+		return "", &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+	}
+
+	if verifyErr := verifyEthereumSignature(address, req.Message, req.Signature); verifyErr != nil {
+		return "", &apptheory.AppError{Code: "app.unauthorized", Message: "invalid signature"}
+	}
+	_ = s.deleteWalletChallenge(ctx.Context(), req.ChallengeID)
+
+	linked, err := s.walletLinkedUsername(ctx, "ethereum", address)
+	if err != nil {
+		return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if linked == "" {
+		return "", &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+	}
+	if linked != username {
+		return "", &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+	}
+
+	return username, nil
 }

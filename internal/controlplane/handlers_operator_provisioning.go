@@ -234,11 +234,8 @@ func (s *Server) handleRetryOperatorProvisionJob(ctx *apptheory.Context) (*appth
 	if err := requireOperator(ctx); err != nil {
 		return nil, err
 	}
-	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-	if s.queues == nil || strings.TrimSpace(s.cfg.ProvisionQueueURL) == "" {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "provision queue not configured"}
+	if appErr := s.requireProvisionRetryReady(); appErr != nil {
+		return nil, appErr
 	}
 
 	id := strings.TrimSpace(ctx.Param("id"))
@@ -341,6 +338,16 @@ func (s *Server) handleRetryOperatorProvisionJob(ctx *apptheory.Context) (*appth
 
 	updated, _ := s.store.GetProvisionJob(ctx.Context(), strings.TrimSpace(job.ID))
 	return apptheory.JSON(http.StatusOK, operatorProvisionJobDetailFromModel(updated))
+}
+
+func (s *Server) requireProvisionRetryReady() *apptheory.AppError {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if s.queues == nil || strings.TrimSpace(s.cfg.ProvisionQueueURL) == "" {
+		return &apptheory.AppError{Code: "app.conflict", Message: "provision queue not configured"}
+	}
+	return nil
 }
 
 func (s *Server) handleAppendOperatorProvisionJobNote(ctx *apptheory.Context) (*apptheory.Response, error) {

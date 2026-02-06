@@ -1,8 +1,8 @@
 package trust
 
 import (
+	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
@@ -173,15 +173,9 @@ func (s *Server) handleAIEvidenceText(ctx *apptheory.Context) (*apptheory.Respon
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to queue job"}
 	}
 
-	if resp.Status == ai.JobStatusQueued {
-		if s.queues == nil {
-			s.emitAIRequestMetrics(instanceSlug, aiEvidenceTextModule, ai.Response{Status: ai.JobStatusError, Budget: resp.Budget}, fmt.Errorf("safety queue not configured"))
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "safety queue not configured"}
-		}
-		if err := s.queues.enqueueAIJob(ctx.Context(), ai.JobMessage{Kind: "ai_job", JobID: resp.JobID}); err != nil {
-			s.emitAIRequestMetrics(instanceSlug, aiEvidenceTextModule, ai.Response{Status: ai.JobStatusError, Budget: resp.Budget}, err)
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to enqueue job"}
-		}
+	if enqueueErr := s.enqueueAIJobIfQueued(ctx, resp); enqueueErr != nil {
+		s.emitAIRequestMetrics(instanceSlug, aiEvidenceTextModule, ai.Response{Status: ai.JobStatusError, Budget: resp.Budget}, enqueueErr)
+		return nil, enqueueErr
 	}
 	s.emitAIRequestMetrics(instanceSlug, aiEvidenceTextModule, resp, nil)
 
@@ -213,93 +207,36 @@ func (s *Server) handleAIEvidenceText(ctx *apptheory.Context) (*apptheory.Respon
 }
 
 func (s *Server) handleAIEvidenceImage(ctx *apptheory.Context) (*apptheory.Response, error) {
-	if s == nil || s.ai == nil || s.store == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-	if ctx == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-	if s.artifacts == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "artifact store not configured"}
-	}
-
-	instanceSlug := strings.TrimSpace(ctx.AuthIdentity)
-	if instanceSlug == "" {
-		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
-	}
-
-	var req aiEvidenceImageRequest
-	if err := parseJSON(ctx, &req); err != nil {
+	prepared, err := s.prepareAIEvidenceImage(ctx)
+	if err != nil {
 		return nil, err
 	}
 
-	key := strings.TrimSpace(req.ObjectKey)
-	if key == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "object_key is required"}
-	}
-
-	// Small ref + ETag for stable caching without reading the full object.
-	contentType, etag, size, err := s.artifacts.HeadObject(ctx.Context(), key)
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "object not found"}
-	}
-	if size <= 0 || size > 5*1024*1024 {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "object too large"}
-	}
-	if ct := strings.ToLower(strings.TrimSpace(contentType)); ct != "" && !strings.HasPrefix(ct, "image/") {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "object must be an image"}
-	}
-
-	instCfg := s.loadInstanceTrustConfig(ctx.Context(), instanceSlug)
-	allowOverage := strings.ToLower(strings.TrimSpace(instCfg.OveragePolicy)) == overagePolicyAllow
-
-	inputs := aiEvidenceImageInputsV1{
-		ObjectKey:   key,
-		ObjectETag:  strings.TrimSpace(etag),
-		Bytes:       size,
-		ContentType: strings.TrimSpace(contentType),
-	}
-	inputsHash, _ := ai.InputsHash(inputs)
-
 	resp, err := s.ai.GetOrQueue(ctx.Context(), ai.Request{
-		InstanceSlug:  instanceSlug,
-		RequestID:     strings.TrimSpace(ctx.RequestID),
-		Module:        aiEvidenceImageModule,
-		PolicyVersion: aiEvidenceImagePolicyVersion,
-		ModelSet:      aiEvidenceImageModelSet,
-		CacheScope:    ai.CacheScopeInstance,
-		Inputs:        inputs,
-		Evidence: []models.AIEvidenceRef{
-			{
-				Kind:        "s3_object",
-				Ref:         key,
-				Hash:        strings.TrimSpace(etag),
-				Bytes:       size,
-				ContentType: strings.TrimSpace(contentType),
-			},
-		},
+		InstanceSlug:         prepared.InstanceSlug,
+		RequestID:            strings.TrimSpace(ctx.RequestID),
+		Module:               aiEvidenceImageModule,
+		PolicyVersion:        aiEvidenceImagePolicyVersion,
+		ModelSet:             aiEvidenceImageModelSet,
+		CacheScope:           ai.CacheScopeInstance,
+		Inputs:               prepared.Inputs,
+		Evidence:             prepared.Evidence,
 		BaseCredits:          aiEvidenceImageBaseCredits,
-		PricingMultiplierBps: instCfg.AIPricingMultiplierBps,
-		AllowOverage:         allowOverage,
+		PricingMultiplierBps: prepared.InstCfg.AIPricingMultiplierBps,
+		AllowOverage:         prepared.AllowOverage,
 		JobTTL:               30 * 24 * time.Hour,
-		MaxInflightJobs:      instCfg.AIMaxInflightJobs,
+		MaxInflightJobs:      prepared.InstCfg.AIMaxInflightJobs,
 	})
 	if err != nil {
-		s.emitAIRequestMetrics(instanceSlug, aiEvidenceImageModule, ai.Response{Status: ai.JobStatusError}, err)
+		s.emitAIRequestMetrics(prepared.InstanceSlug, aiEvidenceImageModule, ai.Response{Status: ai.JobStatusError}, err)
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to queue job"}
 	}
 
-	if resp.Status == ai.JobStatusQueued {
-		if s.queues == nil {
-			s.emitAIRequestMetrics(instanceSlug, aiEvidenceImageModule, ai.Response{Status: ai.JobStatusError, Budget: resp.Budget}, fmt.Errorf("safety queue not configured"))
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "safety queue not configured"}
-		}
-		if err := s.queues.enqueueAIJob(ctx.Context(), ai.JobMessage{Kind: "ai_job", JobID: resp.JobID}); err != nil {
-			s.emitAIRequestMetrics(instanceSlug, aiEvidenceImageModule, ai.Response{Status: ai.JobStatusError, Budget: resp.Budget}, err)
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to enqueue job"}
-		}
+	if enqueueErr := s.enqueueAIJobIfQueued(ctx, resp); enqueueErr != nil {
+		s.emitAIRequestMetrics(prepared.InstanceSlug, aiEvidenceImageModule, ai.Response{Status: ai.JobStatusError, Budget: resp.Budget}, enqueueErr)
+		return nil, enqueueErr
 	}
-	s.emitAIRequestMetrics(instanceSlug, aiEvidenceImageModule, resp, nil)
+	s.emitAIRequestMetrics(prepared.InstanceSlug, aiEvidenceImageModule, resp, nil)
 
 	out := aiEvidenceResponse{
 		Status: string(resp.Status),
@@ -310,7 +247,7 @@ func (s *Server) handleAIEvidenceImage(ctx *apptheory.Context) (*apptheory.Respo
 			Module:        aiEvidenceImageModule,
 			PolicyVersion: aiEvidenceImagePolicyVersion,
 			ModelSet:      aiEvidenceImageModelSet,
-			InputsHash:    strings.TrimSpace(inputsHash),
+			InputsHash:    strings.TrimSpace(prepared.InputsHash),
 		},
 	}
 	if resp.Result != nil {
@@ -326,4 +263,99 @@ func (s *Server) handleAIEvidenceImage(ctx *apptheory.Context) (*apptheory.Respo
 	}
 
 	return apptheory.JSON(http.StatusOK, out)
+}
+
+type aiEvidenceImagePrepared struct {
+	InstanceSlug string
+	InstCfg      instanceTrustConfig
+	AllowOverage bool
+	Inputs       aiEvidenceImageInputsV1
+	InputsHash   string
+	Evidence     []models.AIEvidenceRef
+}
+
+func (s *Server) prepareAIEvidenceImage(ctx *apptheory.Context) (aiEvidenceImagePrepared, error) {
+	if s == nil || s.ai == nil || s.store == nil {
+		return aiEvidenceImagePrepared{}, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if ctx == nil {
+		return aiEvidenceImagePrepared{}, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if s.artifacts == nil {
+		return aiEvidenceImagePrepared{}, &apptheory.AppError{Code: "app.internal", Message: "artifact store not configured"}
+	}
+
+	instanceSlug := strings.TrimSpace(ctx.AuthIdentity)
+	if instanceSlug == "" {
+		return aiEvidenceImagePrepared{}, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+	}
+
+	var req aiEvidenceImageRequest
+	if err := parseJSON(ctx, &req); err != nil {
+		return aiEvidenceImagePrepared{}, err
+	}
+
+	key := strings.TrimSpace(req.ObjectKey)
+	if key == "" {
+		return aiEvidenceImagePrepared{}, &apptheory.AppError{Code: "app.bad_request", Message: "object_key is required"}
+	}
+
+	contentType, etag, size, err := s.headAndValidateEvidenceImageObject(ctx.Context(), key)
+	if err != nil {
+		return aiEvidenceImagePrepared{}, err
+	}
+
+	instCfg := s.loadInstanceTrustConfig(ctx.Context(), instanceSlug)
+	allowOverage := strings.ToLower(strings.TrimSpace(instCfg.OveragePolicy)) == overagePolicyAllow
+
+	inputs := aiEvidenceImageInputsV1{
+		ObjectKey:   key,
+		ObjectETag:  strings.TrimSpace(etag),
+		Bytes:       size,
+		ContentType: strings.TrimSpace(contentType),
+	}
+	inputsHash, _ := ai.InputsHash(inputs)
+
+	evidence := models.AIEvidenceRef{
+		Kind:        "s3_object",
+		Ref:         key,
+		Hash:        strings.TrimSpace(etag),
+		Bytes:       size,
+		ContentType: strings.TrimSpace(contentType),
+	}
+
+	return aiEvidenceImagePrepared{
+		InstanceSlug: instanceSlug,
+		InstCfg:      instCfg,
+		AllowOverage: allowOverage,
+		Inputs:       inputs,
+		InputsHash:   strings.TrimSpace(inputsHash),
+		Evidence:     []models.AIEvidenceRef{evidence},
+	}, nil
+}
+
+func (s *Server) headAndValidateEvidenceImageObject(ctx context.Context, key string) (contentType, etag string, size int64, err error) {
+	if s == nil || s.artifacts == nil {
+		return "", "", 0, &apptheory.AppError{Code: "app.internal", Message: "artifact store not configured"}
+	}
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return "", "", 0, &apptheory.AppError{Code: "app.bad_request", Message: "object_key is required"}
+	}
+
+	// Small ref + ETag for stable caching without reading the full object.
+	contentType, etag, size, err = s.artifacts.HeadObject(ctx, key)
+	if err != nil {
+		return "", "", 0, &apptheory.AppError{Code: "app.bad_request", Message: "object not found"}
+	}
+	if size <= 0 || size > 5*1024*1024 {
+		return "", "", 0, &apptheory.AppError{Code: "app.bad_request", Message: "object too large"}
+	}
+	ct := strings.ToLower(strings.TrimSpace(contentType))
+	if ct != "" {
+		if !strings.HasPrefix(ct, "image/") {
+			return "", "", 0, &apptheory.AppError{Code: "app.bad_request", Message: "object must be an image"}
+		}
+	}
+	return strings.TrimSpace(contentType), strings.TrimSpace(etag), size, nil
 }

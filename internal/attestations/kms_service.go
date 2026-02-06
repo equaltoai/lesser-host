@@ -103,14 +103,14 @@ func (s *KMSService) SignPayloadJWS(ctx context.Context, payload []byte) (string
 	}
 
 	signDigest := func(ctx context.Context, digest []byte) ([]byte, error) {
-		out, err := client.Sign(ctx, &kms.SignInput{
+		out, signErr := client.Sign(ctx, &kms.SignInput{
 			KeyId:            &keyID,
 			Message:          digest,
 			MessageType:      kmstypes.MessageTypeDigest,
 			SigningAlgorithm: kmstypes.SigningAlgorithmSpecRsassaPkcs1V15Sha256,
 		})
-		if err != nil {
-			return nil, err
+		if signErr != nil {
+			return nil, signErr
 		}
 		return out.Signature, nil
 	}

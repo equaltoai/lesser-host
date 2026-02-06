@@ -153,7 +153,7 @@ func (s *Server) handleWebAuthnRegisterBegin(ctx *apptheory.Context) (*apptheory
 		ExpiresAt:   time.Now().UTC().Add(webAuthnChallengeDuration),
 		Type:        "registration",
 	}
-	if err := s.storeWebAuthnChallenge(ctx, challenge); err != nil {
+	if storeErr := s.storeWebAuthnChallenge(ctx, challenge); storeErr != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to store challenge"}
 	}
 
@@ -193,38 +193,17 @@ func (s *Server) handleWebAuthnRegisterFinish(ctx *apptheory.Context) (*apptheor
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "challenge is required"}
 	}
 
-	challengeData, err := s.getWebAuthnChallenge(ctx, req.Challenge)
-	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
-	}
+	session, err := s.loadWebAuthnSession(ctx, req.Challenge, username, "registration")
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-	if challengeData.UserID != username || strings.TrimSpace(challengeData.Type) != "registration" {
-		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		return nil, err
 	}
 
-	var session webauthn.SessionData
-	if err := json.Unmarshal(challengeData.SessionData, &session); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "invalid session"}
-	}
-
-	creds, err := s.listUserWebAuthnCredentials(ctx, username)
+	user, creds, err := s.buildWebAuthnUser(ctx, username)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, err
 	}
 	if len(creds) >= maxWebAuthnCredentials {
 		return nil, &apptheory.AppError{Code: "app.conflict", Message: "max credentials reached"}
-	}
-
-	user := &webAuthnUser{
-		id:          username,
-		name:        username,
-		displayName: username,
-		credentials: []webauthn.Credential{},
-	}
-	for _, cred := range creds {
-		user.credentials = append(user.credentials, *toWebAuthnCredential(cred))
 	}
 
 	respBytes, err := json.Marshal(req.Response)
@@ -335,7 +314,7 @@ func (s *Server) handleWebAuthnLoginBegin(ctx *apptheory.Context) (*apptheory.Re
 		ExpiresAt:   time.Now().UTC().Add(webAuthnChallengeDuration),
 		Type:        "login",
 	}
-	if err := s.storeWebAuthnChallenge(ctx, challenge); err != nil {
+	if storeErr := s.storeWebAuthnChallenge(ctx, challenge); storeErr != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to store challenge"}
 	}
 
@@ -359,51 +338,23 @@ func (s *Server) handleWebAuthnLoginFinish(ctx *apptheory.Context) (*apptheory.R
 		return nil, err
 	}
 
-	var req webAuthnFinishLoginRequest
-	if err := parseJSON(ctx, &req); err != nil {
+	req, err := parseWebAuthnLoginFinishRequest(ctx)
+	if err != nil {
 		return nil, err
 	}
-	username := strings.TrimSpace(req.Username)
-	if username == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "username is required"}
-	}
-	req.Challenge = strings.TrimSpace(req.Challenge)
-	if req.Challenge == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "challenge is required"}
-	}
+	username := req.Username
 
-	challengeData, err := s.getWebAuthnChallenge(ctx, req.Challenge)
-	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
-	}
+	session, err := s.loadWebAuthnSession(ctx, req.Challenge, username, "login")
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-	if challengeData.UserID != username || strings.TrimSpace(challengeData.Type) != "login" {
-		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		return nil, err
 	}
 
-	var session webauthn.SessionData
-	if err := json.Unmarshal(challengeData.SessionData, &session); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "invalid session"}
-	}
-
-	creds, err := s.listUserWebAuthnCredentials(ctx, username)
+	user, creds, err := s.buildWebAuthnUser(ctx, username)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, err
 	}
 	if len(creds) == 0 {
 		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
-	}
-
-	user := &webAuthnUser{
-		id:          username,
-		name:        username,
-		displayName: username,
-		credentials: []webauthn.Credential{},
-	}
-	for _, cred := range creds {
-		user.credentials = append(user.credentials, *toWebAuthnCredential(cred))
 	}
 
 	respBytes, err := json.Marshal(req.Response)
@@ -435,7 +386,7 @@ func (s *Server) handleWebAuthnLoginFinish(ctx *apptheory.Context) (*apptheory.R
 		BackupState:    credential.Flags.BackupState,
 		LastUsedAt:     now,
 	}
-	if err := update.UpdateKeys(); err != nil {
+	if updateErr := update.UpdateKeys(); updateErr != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 	// Update mutable fields.
@@ -447,12 +398,7 @@ func (s *Server) handleWebAuthnLoginFinish(ctx *apptheory.Context) (*apptheory.R
 		"LastUsedAt",
 	)
 
-	var op models.User
-	err = s.store.DB.WithContext(ctx.Context()).
-		Model(&models.User{}).
-		Where("PK", "=", fmt.Sprintf(models.KeyPatternUser, username)).
-		Where("SK", "=", models.SKProfile).
-		First(&op)
+	op, err := s.loadUser(ctx, username)
 	if theoryErrors.IsNotFound(err) {
 		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
 	}
@@ -485,6 +431,70 @@ func (s *Server) handleWebAuthnLoginFinish(ctx *apptheory.Context) (*apptheory.R
 		Role:      op.Role,
 		Method:    "webauthn",
 	})
+}
+
+func parseWebAuthnLoginFinishRequest(ctx *apptheory.Context) (webAuthnFinishLoginRequest, error) {
+	var req webAuthnFinishLoginRequest
+	if err := parseJSON(ctx, &req); err != nil {
+		return webAuthnFinishLoginRequest{}, err
+	}
+	req.Username = strings.TrimSpace(req.Username)
+	if req.Username == "" {
+		return webAuthnFinishLoginRequest{}, &apptheory.AppError{Code: "app.bad_request", Message: "username is required"}
+	}
+	req.Challenge = strings.TrimSpace(req.Challenge)
+	if req.Challenge == "" {
+		return webAuthnFinishLoginRequest{}, &apptheory.AppError{Code: "app.bad_request", Message: "challenge is required"}
+	}
+	return req, nil
+}
+
+func (s *Server) loadWebAuthnSession(ctx *apptheory.Context, challenge string, username string, expectedType string) (webauthn.SessionData, error) {
+	if s == nil || ctx == nil {
+		return webauthn.SessionData{}, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
+	challengeData, err := s.getWebAuthnChallenge(ctx, challenge)
+	if theoryErrors.IsNotFound(err) {
+		return webauthn.SessionData{}, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+	}
+	if err != nil {
+		return webauthn.SessionData{}, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if challengeData.UserID != username {
+		return webauthn.SessionData{}, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+	}
+	if strings.TrimSpace(challengeData.Type) != expectedType {
+		return webauthn.SessionData{}, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+	}
+
+	var session webauthn.SessionData
+	if unmarshalErr := json.Unmarshal(challengeData.SessionData, &session); unmarshalErr != nil {
+		return webauthn.SessionData{}, &apptheory.AppError{Code: "app.internal", Message: "invalid session"}
+	}
+	return session, nil
+}
+
+func (s *Server) buildWebAuthnUser(ctx *apptheory.Context, username string) (*webAuthnUser, []*models.WebAuthnCredential, error) {
+	creds, err := s.listUserWebAuthnCredentials(ctx, username)
+	if err != nil {
+		return nil, nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
+	user := &webAuthnUser{
+		id:          username,
+		name:        username,
+		displayName: username,
+		credentials: []webauthn.Credential{},
+	}
+	for _, cred := range creds {
+		if cred == nil {
+			continue
+		}
+		user.credentials = append(user.credentials, *toWebAuthnCredential(cred))
+	}
+
+	return user, creds, nil
 }
 
 func (s *Server) handleWebAuthnCredentials(ctx *apptheory.Context) (*apptheory.Response, error) {

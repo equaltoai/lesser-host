@@ -76,12 +76,12 @@ func renderHTMLWithChrome(ctx context.Context, html []byte) ([]byte, []byte, str
 		chromedp.WaitReady("body", chromedp.ByQuery),
 		chromedp.Evaluate(`(document && document.body && document.body.innerText) ? document.body.innerText : ""`, &innerText),
 		chromedp.ActionFunc(func(ctx context.Context) error {
-			buf, err := page.CaptureScreenshot().
+			buf, screenshotErr := page.CaptureScreenshot().
 				WithFormat(page.CaptureScreenshotFormatJpeg).
 				WithQuality(70).
 				Do(ctx)
-			if err != nil {
-				return err
+			if screenshotErr != nil {
+				return screenshotErr
 			}
 			screenshot = buf
 			return nil

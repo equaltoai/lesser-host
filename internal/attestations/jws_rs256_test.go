@@ -108,10 +108,10 @@ func TestJWKFromRSAPublicKey_RoundTrip(t *testing.T) {
 	n := new(big.Int).SetBytes(nBytes)
 	e := new(big.Int).SetBytes(eBytes)
 
-	if n.Cmp(priv.PublicKey.N) != 0 {
+	if n.Cmp(priv.N) != 0 {
 		t.Fatalf("modulus mismatch")
 	}
-	if int(e.Int64()) != priv.PublicKey.E {
+	if int(e.Int64()) != priv.E {
 		t.Fatalf("exponent mismatch")
 	}
 }

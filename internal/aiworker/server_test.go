@@ -19,6 +19,8 @@ import (
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
+const decisionBlock = "block"
+
 type fakeAIStore struct {
 	mu      sync.Mutex
 	jobs    map[string]*models.AIJob
@@ -143,12 +145,47 @@ func (fakeRekognition) DetectFaces(_ context.Context, _ *rekognition.DetectFaces
 	}, nil
 }
 
+func runProcessAIJobAndParseResult(t *testing.T, job *models.AIJob, wantKind string) map[string]any {
+	t.Helper()
+
+	st := &fakeAIStore{
+		jobs: map[string]*models.AIJob{
+			job.ID: job,
+		},
+	}
+
+	srv := NewServer(config.Config{ArtifactBucketName: "bucket"}, st, artifacts.New("bucket"), fakeComprehend{}, fakeRekognition{})
+	if err := srv.processAIJob(context.Background(), "req", job.ID); err != nil {
+		t.Fatalf("processAIJob error: %v", err)
+	}
+
+	res, err := st.GetAIResult(context.Background(), job.ID)
+	if err != nil || res == nil {
+		t.Fatalf("expected result, got err=%v res=%v", err, res)
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(res.ResultJSON), &parsed); err != nil {
+		t.Fatalf("unmarshal resultJSON: %v", err)
+	}
+	if parsed["kind"] != wantKind {
+		t.Fatalf("expected kind=%s, got %v", wantKind, parsed["kind"])
+	}
+	if parsed["version"] != job.PolicyVersion {
+		t.Fatalf("expected version=%s, got %v", job.PolicyVersion, parsed["version"])
+	}
+
+	j2, _ := st.GetAIJob(context.Background(), job.ID)
+	if j2 == nil || strings.TrimSpace(j2.Status) != models.AIJobStatusOK {
+		t.Fatalf("expected job status ok, got %+v", j2)
+	}
+
+	return parsed
+}
+
 func TestProcessAIJob_WritesComprehendEvidenceResult(t *testing.T) {
 	t.Parallel()
 
-	st := &fakeAIStore{
-		jobs: map[string]*models.AIJob{},
-	}
 	job := &models.AIJob{
 		ID:            strings.Repeat("a", 64),
 		InstanceSlug:  "inst",
@@ -162,41 +199,13 @@ func TestProcessAIJob_WritesComprehendEvidenceResult(t *testing.T) {
 		UpdatedAt:     time.Now().UTC(),
 		ExpiresAt:     time.Now().UTC().Add(1 * time.Hour),
 	}
-	st.jobs[job.ID] = job
 
-	srv := NewServer(config.Config{ArtifactBucketName: "bucket"}, st, artifacts.New("bucket"), fakeComprehend{}, fakeRekognition{})
-	if err := srv.processAIJob(context.Background(), "req", job.ID); err != nil {
-		t.Fatalf("processAIJob error: %v", err)
-	}
-
-	res, err := st.GetAIResult(context.Background(), job.ID)
-	if err != nil || res == nil {
-		t.Fatalf("expected result, got err=%v res=%v", err, res)
-	}
-
-	var parsed map[string]any
-	if err := json.Unmarshal([]byte(res.ResultJSON), &parsed); err != nil {
-		t.Fatalf("unmarshal resultJSON: %v", err)
-	}
-	if parsed["kind"] != "comprehend_text" {
-		t.Fatalf("expected kind=comprehend_text, got %v", parsed["kind"])
-	}
-	if parsed["version"] != "v1" {
-		t.Fatalf("expected version=v1, got %v", parsed["version"])
-	}
-
-	j2, _ := st.GetAIJob(context.Background(), job.ID)
-	if j2 == nil || strings.TrimSpace(j2.Status) != models.AIJobStatusOK {
-		t.Fatalf("expected job status ok, got %+v", j2)
-	}
+	runProcessAIJobAndParseResult(t, job, "comprehend_text")
 }
 
 func TestProcessAIJob_WritesRekognitionEvidenceResult(t *testing.T) {
 	t.Parallel()
 
-	st := &fakeAIStore{
-		jobs: map[string]*models.AIJob{},
-	}
 	job := &models.AIJob{
 		ID:            strings.Repeat("b", 64),
 		InstanceSlug:  "inst",
@@ -210,41 +219,13 @@ func TestProcessAIJob_WritesRekognitionEvidenceResult(t *testing.T) {
 		UpdatedAt:     time.Now().UTC(),
 		ExpiresAt:     time.Now().UTC().Add(1 * time.Hour),
 	}
-	st.jobs[job.ID] = job
 
-	srv := NewServer(config.Config{ArtifactBucketName: "bucket"}, st, artifacts.New("bucket"), fakeComprehend{}, fakeRekognition{})
-	if err := srv.processAIJob(context.Background(), "req", job.ID); err != nil {
-		t.Fatalf("processAIJob error: %v", err)
-	}
-
-	res, err := st.GetAIResult(context.Background(), job.ID)
-	if err != nil || res == nil {
-		t.Fatalf("expected result, got err=%v res=%v", err, res)
-	}
-
-	var parsed map[string]any
-	if err := json.Unmarshal([]byte(res.ResultJSON), &parsed); err != nil {
-		t.Fatalf("unmarshal resultJSON: %v", err)
-	}
-	if parsed["kind"] != "rekognition_image" {
-		t.Fatalf("expected kind=rekognition_image, got %v", parsed["kind"])
-	}
-	if parsed["version"] != "v1" {
-		t.Fatalf("expected version=v1, got %v", parsed["version"])
-	}
-
-	j2, _ := st.GetAIJob(context.Background(), job.ID)
-	if j2 == nil || strings.TrimSpace(j2.Status) != models.AIJobStatusOK {
-		t.Fatalf("expected job status ok, got %+v", j2)
-	}
+	runProcessAIJobAndParseResult(t, job, "rekognition_image")
 }
 
 func TestProcessAIJob_WritesModerationTextResult(t *testing.T) {
 	t.Parallel()
 
-	st := &fakeAIStore{
-		jobs: map[string]*models.AIJob{},
-	}
 	job := &models.AIJob{
 		ID:            strings.Repeat("c", 64),
 		InstanceSlug:  "inst",
@@ -258,39 +239,16 @@ func TestProcessAIJob_WritesModerationTextResult(t *testing.T) {
 		UpdatedAt:     time.Now().UTC(),
 		ExpiresAt:     time.Now().UTC().Add(1 * time.Hour),
 	}
-	st.jobs[job.ID] = job
 
-	srv := NewServer(config.Config{ArtifactBucketName: "bucket"}, st, artifacts.New("bucket"), fakeComprehend{}, fakeRekognition{})
-	if err := srv.processAIJob(context.Background(), "req", job.ID); err != nil {
-		t.Fatalf("processAIJob error: %v", err)
-	}
-
-	res, err := st.GetAIResult(context.Background(), job.ID)
-	if err != nil || res == nil {
-		t.Fatalf("expected result, got err=%v res=%v", err, res)
-	}
-
-	var parsed map[string]any
-	if err := json.Unmarshal([]byte(res.ResultJSON), &parsed); err != nil {
-		t.Fatalf("unmarshal resultJSON: %v", err)
-	}
-	if parsed["kind"] != "moderation_text" {
-		t.Fatalf("expected kind=moderation_text, got %v", parsed["kind"])
-	}
-	if parsed["version"] != "v1" {
-		t.Fatalf("expected version=v1, got %v", parsed["version"])
-	}
-	if parsed["decision"] != "block" {
-		t.Fatalf("expected decision=block, got %v", parsed["decision"])
+	parsed := runProcessAIJobAndParseResult(t, job, "moderation_text")
+	if parsed["decision"] != decisionBlock {
+		t.Fatalf("expected decision=%s, got %v", decisionBlock, parsed["decision"])
 	}
 }
 
 func TestProcessAIJob_WritesModerationImageResult(t *testing.T) {
 	t.Parallel()
 
-	st := &fakeAIStore{
-		jobs: map[string]*models.AIJob{},
-	}
 	job := &models.AIJob{
 		ID:            strings.Repeat("d", 64),
 		InstanceSlug:  "inst",
@@ -304,29 +262,9 @@ func TestProcessAIJob_WritesModerationImageResult(t *testing.T) {
 		UpdatedAt:     time.Now().UTC(),
 		ExpiresAt:     time.Now().UTC().Add(1 * time.Hour),
 	}
-	st.jobs[job.ID] = job
 
-	srv := NewServer(config.Config{ArtifactBucketName: "bucket"}, st, artifacts.New("bucket"), fakeComprehend{}, fakeRekognition{})
-	if err := srv.processAIJob(context.Background(), "req", job.ID); err != nil {
-		t.Fatalf("processAIJob error: %v", err)
-	}
-
-	res, err := st.GetAIResult(context.Background(), job.ID)
-	if err != nil || res == nil {
-		t.Fatalf("expected result, got err=%v res=%v", err, res)
-	}
-
-	var parsed map[string]any
-	if err := json.Unmarshal([]byte(res.ResultJSON), &parsed); err != nil {
-		t.Fatalf("unmarshal resultJSON: %v", err)
-	}
-	if parsed["kind"] != "moderation_image" {
-		t.Fatalf("expected kind=moderation_image, got %v", parsed["kind"])
-	}
-	if parsed["version"] != "v1" {
-		t.Fatalf("expected version=v1, got %v", parsed["version"])
-	}
-	if parsed["decision"] != "block" {
-		t.Fatalf("expected decision=block, got %v", parsed["decision"])
+	parsed := runProcessAIJobAndParseResult(t, job, "moderation_image")
+	if parsed["decision"] != decisionBlock {
+		t.Fatalf("expected decision=%s, got %v", decisionBlock, parsed["decision"])
 	}
 }

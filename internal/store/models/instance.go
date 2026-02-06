@@ -57,11 +57,28 @@ func (i *Instance) BeforeCreate() error {
 	if err := i.UpdateKeys(); err != nil {
 		return err
 	}
+	i.ensureCoreDefaults()
+	i.ensureTrustDefaults()
+	i.ensureModerationDefaults()
+	i.ensureAIDefaults()
+	return nil
+}
+
+func (i *Instance) ensureCoreDefaults() {
+	if i == nil {
+		return
+	}
 	if i.CreatedAt.IsZero() {
 		i.CreatedAt = time.Now().UTC()
 	}
 	if strings.TrimSpace(i.Status) == "" {
 		i.Status = InstanceStatusActive
+	}
+}
+
+func (i *Instance) ensureTrustDefaults() {
+	if i == nil {
+		return
 	}
 	if i.HostedPreviewsEnabled == nil {
 		v := true
@@ -81,6 +98,12 @@ func (i *Instance) BeforeCreate() error {
 	if strings.TrimSpace(i.OveragePolicy) == "" {
 		i.OveragePolicy = "block"
 	}
+}
+
+func (i *Instance) ensureModerationDefaults() {
+	if i == nil {
+		return
+	}
 	if i.ModerationEnabled == nil {
 		v := false
 		i.ModerationEnabled = &v
@@ -90,6 +113,12 @@ func (i *Instance) BeforeCreate() error {
 	}
 	if i.ModerationViralityMin < 0 {
 		i.ModerationViralityMin = 0
+	}
+}
+
+func (i *Instance) ensureAIDefaults() {
+	if i == nil {
+		return
 	}
 	if i.AIEnabled == nil {
 		v := false
@@ -115,7 +144,6 @@ func (i *Instance) BeforeCreate() error {
 		v := int64(200)
 		i.AIMaxInflightJobs = &v
 	}
-	return nil
 }
 
 // UpdateKeys updates the database keys for Instance.

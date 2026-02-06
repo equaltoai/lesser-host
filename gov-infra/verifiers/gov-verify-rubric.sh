@@ -38,8 +38,9 @@ export PATH="${GOV_TOOLS_BIN}:${PATH}"
 # Tool pins (optional; populated by gov.init when possible).
 # If these remain unset, checks that depend on them should be marked BLOCKED (never "use whatever is installed").
 #
-# NOTE: this repo currently does not pin these in CI; keep them unset to fail closed.
-PIN_GOLANGCI_LINT_VERSION=""
+# NOTE: this repo currently does not pin these in CI; keep checks fail-closed until pins are set intentionally.
+# M1 intent: pin golangci-lint to unblock deterministic lint/config verification.
+PIN_GOLANGCI_LINT_VERSION="v2.8.0"
 PIN_GOVULNCHECK_VERSION=""
 
 # Optional feature flags (opt-in pack features).
@@ -1105,10 +1106,40 @@ __GOV_CMD_COVERAGE__
 )
 
 CMD_FMT=$(cat <<'__GOV_CMD_FMT__'
-unformatted="$(gofmt -l . | sed '/^$/d' || true)"
+if ! command -v gofmt >/dev/null 2>&1; then
+  echo "BLOCKED: gofmt is required" >&2
+  exit 2
+fi
+
+# Format check should apply to repo-owned sources only (not build outputs like cdk.out/ or dependency trees like node_modules/).
+if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  if [[ -z "$(git ls-files '*.go')" ]]; then
+    echo "FAIL: no tracked Go files found for formatting check"
+    exit 1
+  fi
+
+  tmp_err="$(mktemp)"
+  set +e
+  unformatted="$(git ls-files -z '*.go' | xargs -0 gofmt -l 2>"${tmp_err}")"
+  ec=$?
+  set -e
+
+  if [[ $ec -ne 0 ]]; then
+    echo "FAIL: gofmt errored"
+    cat "${tmp_err}" || true
+    rm -f "${tmp_err}"
+    exit 1
+  fi
+  rm -f "${tmp_err}"
+else
+  echo "BLOCKED: git is required for deterministic formatting scope" >&2
+  exit 2
+fi
+
+unformatted="$(printf '%s\n' "${unformatted}" | sed '/^$/d')"
 if [[ -n "${unformatted}" ]]; then
-  echo "Unformatted Go files:";
-  echo "${unformatted}";
+  echo "Unformatted Go files:"
+  echo "${unformatted}"
   exit 1
 fi
 
@@ -1144,6 +1175,7 @@ mods="$(find . -name go.mod \
   -not -path './**/node_modules/**' \
   -not -path './**/dist/**' \
   -not -path './**/.build/**' \
+  -not -path './**/cdk.out/**' \
   -not -path './**/vendor/**' \
   2>/dev/null | LC_ALL=C sort)"
 
@@ -1257,7 +1289,7 @@ fi
 
 # Prefer a dedicated config verification command if supported by the pinned golangci-lint.
 # Fail closed if not supported (avoid silently trusting an unvalidated config).
-if golangci-lint help config 2>/dev/null | grep -q 'verify'; then
+if golangci-lint config --help 2>/dev/null | grep -q 'verify'; then
   golangci-lint config verify --config .golangci.yml
   echo "PASS: golangci-lint config verified"
   exit 0
@@ -1385,13 +1417,21 @@ __GOV_CMD_SINGLETON__
 CMD_DOC_INTEGRITY=$(cat <<'__GOV_CMD_DOC_INTEGRITY__'
 # Doc integrity: ensure no template tokens remain and required planning files exist.
 
-if grep -R --line-number '{{' gov-infra >/dev/null 2>&1; then
-  echo "FAIL: unrendered template tokens found in gov-infra/"
-  grep -R --line-number '{{' gov-infra || true
+token_paths=(
+  "gov-infra/pack.json"
+  "gov-infra/README.md"
+  "gov-infra/AGENTS.md"
+  "gov-infra/planning"
+)
+if grep -R --line-number '{{' "${token_paths[@]}" >/dev/null 2>&1; then
+  echo "FAIL: unrendered template tokens found in governance artifacts"
+  grep -R --line-number '{{' "${token_paths[@]}" || true
   exit 1
 fi
 
 required=(
+  "gov-infra/README.md"
+  "gov-infra/AGENTS.md"
   "gov-infra/pack.json"
   "gov-infra/planning/lesser-host-controls-matrix.md"
   "gov-infra/planning/lesser-host-threat-model.md"
@@ -1400,6 +1440,8 @@ required=(
   "gov-infra/planning/lesser-host-evidence-plan.md"
   "gov-infra/planning/lesser-host-supply-chain-allowlist.txt"
   "gov-infra/planning/lesser-host-ai-drift-recovery.md"
+  "gov-infra/planning/lesser-host-lint-green-roadmap.md"
+  "gov-infra/planning/lesser-host-coverage-roadmap.md"
 )
 
 missing=0

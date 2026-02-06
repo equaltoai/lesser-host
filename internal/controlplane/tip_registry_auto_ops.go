@@ -15,58 +15,59 @@ import (
 	"github.com/equaltoai/lesser-host/internal/tips"
 )
 
-func (s *Server) buildAutoTipRegistryOperation(ctx context.Context, domain string, domainRaw string, actor string, requestID string, now time.Time) (*models.TipRegistryOperation, *models.AuditLogEntry, error) {
-	if s == nil || !s.cfg.TipEnabled {
-		return nil, nil, nil
+func (s *Server) validateTipRegistryConfigForAutoOps() *apptheory.AppError {
+	if s == nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 	if s.cfg.TipChainID <= 0 || strings.TrimSpace(s.cfg.TipContractAddress) == "" {
-		return nil, nil, &apptheory.AppError{Code: "app.conflict", Message: "tip registry is not configured"}
+		return &apptheory.AppError{Code: "app.conflict", Message: "tip registry is not configured"}
 	}
 	if s.cfg.TipTxMode == tipTxModeSafe && !common.IsHexAddress(strings.TrimSpace(s.cfg.TipAdminSafeAddress)) {
-		return nil, nil, &apptheory.AppError{Code: "app.conflict", Message: "tip registry safe is not configured"}
+		return &apptheory.AppError{Code: "app.conflict", Message: "tip registry safe is not configured"}
 	}
 	if !common.IsHexAddress(strings.TrimSpace(s.cfg.TipDefaultHostWalletAddress)) {
-		return nil, nil, &apptheory.AppError{Code: "app.conflict", Message: "tip default host wallet is not configured"}
+		return &apptheory.AppError{Code: "app.conflict", Message: "tip default host wallet is not configured"}
 	}
 	if s.cfg.TipDefaultHostFeeBps > 500 {
-		return nil, nil, &apptheory.AppError{Code: "app.conflict", Message: "tip default host fee is not configured"}
+		return &apptheory.AppError{Code: "app.conflict", Message: "tip default host fee is not configured"}
 	}
+	return nil
+}
 
-	domainNormalized, err := domains.NormalizeDomain(domain)
-	if err != nil {
-		return nil, nil, &apptheory.AppError{Code: "app.internal", Message: "failed to normalize domain"}
-	}
-
-	hostID := tips.HostIDFromDomain(domainNormalized)
-	contractAddr := common.HexToAddress(strings.TrimSpace(s.cfg.TipContractAddress))
-	txTo := strings.ToLower(contractAddr.Hex())
-
-	desiredWallet := common.HexToAddress(strings.TrimSpace(s.cfg.TipDefaultHostWalletAddress))
-	desiredFee := s.cfg.TipDefaultHostFeeBps
-
+func (s *Server) determineAutoTipRegistryOpKind(ctx context.Context, contractAddr common.Address, hostID common.Hash, desiredWallet common.Address, desiredFee uint16) string {
 	opKind := models.TipRegistryOperationKindRegisterHost
-	if strings.TrimSpace(s.cfg.TipRPCURL) != "" {
-		if client, err := dialEthClient(ctx, s.cfg.TipRPCURL); err == nil {
-			if host, err := tipSplitterGetHost(ctx, client, contractAddr, hostID); err == nil && host != nil && host.Wallet != (common.Address{}) {
-				switch {
-				case host.Wallet == desiredWallet && host.FeeBps == desiredFee && host.IsActive:
-					opKind = ""
-				case host.Wallet != desiredWallet || host.FeeBps != desiredFee:
-					opKind = models.TipRegistryOperationKindUpdateHost
-				default:
-					opKind = models.TipRegistryOperationKindSetHostActive
-				}
-			}
-			client.Close()
-		}
-	}
-	if opKind == "" {
-		return nil, nil, nil
+	rpcURL := strings.TrimSpace(s.cfg.TipRPCURL)
+	if rpcURL == "" {
+		return opKind
 	}
 
+	client, dialErr := dialEthClient(ctx, rpcURL)
+	if dialErr != nil {
+		return opKind
+	}
+	defer client.Close()
+
+	host, getHostErr := tipSplitterGetHost(ctx, client, contractAddr, hostID)
+	if getHostErr != nil || host == nil || host.Wallet == (common.Address{}) {
+		return opKind
+	}
+
+	switch {
+	case host.Wallet == desiredWallet && host.FeeBps == desiredFee && host.IsActive:
+		return ""
+	case host.Wallet != desiredWallet || host.FeeBps != desiredFee:
+		return models.TipRegistryOperationKindUpdateHost
+	default:
+		return models.TipRegistryOperationKindSetHostActive
+	}
+}
+
+func encodeAutoTipRegistryTx(opKind string, hostID common.Hash, desiredWallet common.Address, desiredFee uint16) (string, string, int64, *bool, *apptheory.AppError) {
 	var data []byte
+	var err error
 	var active *bool
-	var walletAddr string
+
+	walletAddr := ""
 	hostFeeBps := int64(desiredFee)
 
 	switch opKind {
@@ -85,10 +86,42 @@ func (s *Server) buildAutoTipRegistryOperation(ctx context.Context, domain strin
 		err = fmt.Errorf("unsupported tip registry op kind")
 	}
 	if err != nil {
-		return nil, nil, &apptheory.AppError{Code: "app.internal", Message: "failed to encode transaction"}
+		return "", "", 0, nil, &apptheory.AppError{Code: "app.internal", Message: "failed to encode transaction"}
 	}
 
 	txData := "0x" + hex.EncodeToString(data)
+	return txData, walletAddr, hostFeeBps, active, nil
+}
+
+func (s *Server) buildAutoTipRegistryOperation(ctx context.Context, domain string, domainRaw string, actor string, requestID string, now time.Time) (*models.TipRegistryOperation, *models.AuditLogEntry, error) {
+	if s == nil || !s.cfg.TipEnabled {
+		return nil, nil, nil
+	}
+	if appErr := s.validateTipRegistryConfigForAutoOps(); appErr != nil {
+		return nil, nil, appErr
+	}
+
+	domainNormalized, err := domains.NormalizeDomain(domain)
+	if err != nil {
+		return nil, nil, &apptheory.AppError{Code: "app.internal", Message: "failed to normalize domain"}
+	}
+
+	hostID := tips.HostIDFromDomain(domainNormalized)
+	contractAddr := common.HexToAddress(strings.TrimSpace(s.cfg.TipContractAddress))
+	txTo := strings.ToLower(contractAddr.Hex())
+
+	desiredWallet := common.HexToAddress(strings.TrimSpace(s.cfg.TipDefaultHostWalletAddress))
+	desiredFee := s.cfg.TipDefaultHostFeeBps
+
+	opKind := s.determineAutoTipRegistryOpKind(ctx, contractAddr, hostID, desiredWallet, desiredFee)
+	if opKind == "" {
+		return nil, nil, nil
+	}
+
+	txData, walletAddr, hostFeeBps, active, appErr := encodeAutoTipRegistryTx(opKind, hostID, desiredWallet, desiredFee)
+	if appErr != nil {
+		return nil, nil, appErr
+	}
 	opID := tipRegistryOpID(opKind, s.cfg.TipChainID, txTo, hostID.Hex(), walletAddr, hostFeeBps, "", active, nil)
 
 	op := &models.TipRegistryOperation{

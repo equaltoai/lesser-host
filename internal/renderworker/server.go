@@ -83,6 +83,95 @@ func (s *Server) handlePreviewQueueMessage(ctx *apptheory.EventContext, msg even
 	return s.processRenderJob(ctx.Context(), ctx.RequestID, job)
 }
 
+func normalizeRenderJobID(normalized string, renderID string) string {
+	normalized = strings.TrimSpace(normalized)
+	renderID = strings.TrimSpace(renderID)
+
+	wantID := rendering.RenderArtifactID(rendering.RenderPolicyVersion, normalized)
+	if renderID == "" || renderID != wantID {
+		return wantID
+	}
+	return renderID
+}
+
+func desiredRenderExpiration(now time.Time, retentionClass string, retentionDays int) (int, string, time.Time) {
+	retentionDaysDefault, classOut := rendering.RetentionForClass(retentionClass)
+	if retentionDays > 0 {
+		retentionDaysDefault = retentionDays
+	}
+	return retentionDaysDefault, classOut, rendering.ExpiresAtForRetention(now, retentionDaysDefault)
+}
+
+func (s *Server) maybeShortCircuitExistingRender(ctx context.Context, renderID string, desiredExpiresAt time.Time, classOut string, requestID string, requestedBy string) (bool, error) {
+	if s == nil || s.store == nil {
+		return false, fmt.Errorf("store not initialized")
+	}
+
+	existing, err := s.store.GetRenderArtifact(ctx, renderID)
+	if err != nil || existing == nil {
+		return false, nil
+	}
+
+	if existing.ExpiresAt.Before(desiredExpiresAt) || (existing.RetentionClass != models.RenderRetentionClassEvidence && classOut == models.RenderRetentionClassEvidence) {
+		existing.ExpiresAt = maxTime(existing.ExpiresAt, desiredExpiresAt)
+		existing.RetentionClass = classOutOrExisting(existing.RetentionClass, classOut)
+		existing.RequestID = strings.TrimSpace(requestID)
+		existing.RequestedBy = strings.TrimSpace(requestedBy)
+		_ = existing.UpdateKeys()
+		_ = s.store.PutRenderArtifact(ctx, existing)
+	}
+
+	return !existing.RenderedAt.IsZero() && strings.TrimSpace(existing.ThumbnailObjectKey) != "", nil
+}
+
+func validateAndFetchRenderHTML(ctx context.Context, normalized string) (*url.URL, []string, []byte, string, string, string, error) {
+	_, start, err := trust.NormalizeLinkURL(normalized)
+	if err != nil {
+		return nil, nil, nil, "", "invalid_url", "invalid url", err
+	}
+	if validateErr := trust.ValidateOutboundURL(ctx, start); validateErr != nil {
+		return nil, nil, nil, "", "blocked_ssrf", "host is not allowed", validateErr
+	}
+
+	client := trust.NewPreviewHTTPClient(6 * time.Second)
+	finalURL, chain, body, contentType, err := trust.FetchWithRedirects(ctx, client, start, 5, 1024*1024)
+	if err == nil {
+		return finalURL, chain, body, contentType, "", "", nil
+	}
+
+	code := "fetch_failed"
+	msg := "fetch failed"
+	if pe, ok := err.(*trust.LinkPreviewError); ok {
+		code = pe.Code
+		msg = pe.Message
+	}
+	return nil, nil, nil, "", code, msg, err
+}
+
+func (s *Server) storeNonHTMLArtifact(ctx context.Context, renderID string, normalized string, finalURL *url.URL, chain []string, classOut string, desiredExpiresAt time.Time, requestID string, requestedBy string, now time.Time) error {
+	if s == nil || s.store == nil {
+		return fmt.Errorf("store not initialized")
+	}
+
+	item := &models.RenderArtifact{
+		ID:             renderID,
+		PolicyVersion:  rendering.RenderPolicyVersion,
+		NormalizedURL:  normalized,
+		ResolvedURL:    safeURLString(finalURL),
+		RedirectChain:  append([]string(nil), chain...),
+		RetentionClass: classOut,
+		RequestID:      strings.TrimSpace(requestID),
+		RequestedBy:    strings.TrimSpace(requestedBy),
+		CreatedAt:      now,
+		RenderedAt:     now,
+		ExpiresAt:      desiredExpiresAt,
+		ErrorCode:      "not_html",
+		ErrorMessage:   "content is not html",
+	}
+	_ = item.UpdateKeys()
+	return s.store.PutRenderArtifact(ctx, item)
+}
+
 func (s *Server) processRenderJob(ctx context.Context, requestID string, job rendering.RenderJobMessage) error {
 	if s == nil || s.store == nil {
 		return fmt.Errorf("store not initialized")
@@ -94,77 +183,25 @@ func (s *Server) processRenderJob(ctx context.Context, requestID string, job ren
 	now := time.Now().UTC()
 
 	normalized := strings.TrimSpace(job.NormalizedURL)
-	renderID := strings.TrimSpace(job.RenderID)
+	renderID := normalizeRenderJobID(normalized, job.RenderID)
+	_, classOut, desiredExpiresAt := desiredRenderExpiration(now, job.RetentionClass, job.RetentionDays)
 
-	// Ensure ID is deterministic and correct.
-	wantID := rendering.RenderArtifactID(rendering.RenderPolicyVersion, normalized)
-	if renderID == "" {
-		renderID = wantID
-	} else if renderID != wantID {
-		renderID = wantID
-	}
-
-	retentionDays, classOut := rendering.RetentionForClass(job.RetentionClass)
-	if job.RetentionDays > 0 {
-		retentionDays = job.RetentionDays
-	}
-	desiredExpiresAt := rendering.ExpiresAtForRetention(now, retentionDays)
-
-	// Fast path: existing, rendered, and not expired.
-	if existing, err := s.store.GetRenderArtifact(ctx, renderID); err == nil {
-		if existing.ExpiresAt.Before(desiredExpiresAt) || (existing.RetentionClass != models.RenderRetentionClassEvidence && classOut == models.RenderRetentionClassEvidence) {
-			existing.ExpiresAt = maxTime(existing.ExpiresAt, desiredExpiresAt)
-			existing.RetentionClass = classOutOrExisting(existing.RetentionClass, classOut)
-			existing.RequestID = strings.TrimSpace(requestID)
-			existing.RequestedBy = strings.TrimSpace(job.RequestedBy)
-			_ = existing.UpdateKeys()
-			_ = s.store.PutRenderArtifact(ctx, existing)
-		}
-
-		if !existing.RenderedAt.IsZero() && strings.TrimSpace(existing.ThumbnailObjectKey) != "" {
-			return nil
-		}
-	}
-
-	// Fetch HTML with hardened rules.
-	_, start, err := trust.NormalizeLinkURL(normalized)
+	done, err := s.maybeShortCircuitExistingRender(ctx, renderID, desiredExpiresAt, classOut, requestID, job.RequestedBy)
 	if err != nil {
-		return s.storeRenderError(ctx, renderID, normalized, classOut, desiredExpiresAt, requestID, job.RequestedBy, "invalid_url", "invalid url")
+		return err
 	}
-	if err := trust.ValidateOutboundURL(ctx, start); err != nil {
-		return s.storeRenderError(ctx, renderID, normalized, classOut, desiredExpiresAt, requestID, job.RequestedBy, "blocked_ssrf", "host is not allowed")
+	if done {
+		return nil
 	}
 
-	client := trust.NewPreviewHTTPClient(6 * time.Second)
-	finalURL, chain, body, contentType, err := trust.FetchWithRedirects(ctx, client, start, 5, 1024*1024)
-	if err != nil {
-		code := "fetch_failed"
-		msg := "fetch failed"
-		if pe, ok := err.(*trust.LinkPreviewError); ok {
-			code = pe.Code
-			msg = pe.Message
-		}
+	finalURL, chain, body, contentType, code, msg, fetchErr := validateAndFetchRenderHTML(ctx, normalized)
+	if fetchErr != nil {
 		return s.storeRenderError(ctx, renderID, normalized, classOut, desiredExpiresAt, requestID, job.RequestedBy, code, msg)
 	}
+
 	if !strings.Contains(strings.ToLower(contentType), "text/html") {
 		// Not HTML: store a minimal artifact without screenshot.
-		item := &models.RenderArtifact{
-			ID:             renderID,
-			PolicyVersion:  rendering.RenderPolicyVersion,
-			NormalizedURL:  normalized,
-			ResolvedURL:    safeURLString(finalURL),
-			RedirectChain:  append([]string(nil), chain...),
-			RetentionClass: classOut,
-			RequestID:      strings.TrimSpace(requestID),
-			RequestedBy:    strings.TrimSpace(job.RequestedBy),
-			CreatedAt:      now,
-			RenderedAt:     now,
-			ExpiresAt:      desiredExpiresAt,
-			ErrorCode:      "not_html",
-			ErrorMessage:   "content is not html",
-		}
-		_ = item.UpdateKeys()
-		return s.store.PutRenderArtifact(ctx, item)
+		return s.storeNonHTMLArtifact(ctx, renderID, normalized, finalURL, chain, classOut, desiredExpiresAt, requestID, job.RequestedBy, now)
 	}
 
 	// Render screenshot + snapshot with network blocked.

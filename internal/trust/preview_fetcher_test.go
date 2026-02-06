@@ -10,6 +10,8 @@ import (
 	"time"
 )
 
+const linkPreviewErrBlockedSSRF = "blocked_ssrf"
+
 type stubResolver struct {
 	ipsByHost map[string][]net.IP
 }
@@ -85,7 +87,7 @@ func TestValidateOutboundURL_BlocksPrivateIP(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if pe, ok := err.(*linkPreviewError); !ok || pe.Code != "blocked_ssrf" {
+	if pe, ok := err.(*linkPreviewError); !ok || pe.Code != linkPreviewErrBlockedSSRF {
 		t.Fatalf("expected blocked_ssrf, got %T: %v", err, err)
 	}
 }
@@ -104,7 +106,7 @@ func TestValidateOutboundURL_BlocksHostnameResolvingToPrivateIP(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if pe, ok := err.(*linkPreviewError); !ok || pe.Code != "blocked_ssrf" {
+	if pe, ok := err.(*linkPreviewError); !ok || pe.Code != linkPreviewErrBlockedSSRF {
 		t.Fatalf("expected blocked_ssrf, got %T: %v", err, err)
 	}
 }
@@ -141,7 +143,7 @@ func TestFetchWithRedirects_BlocksRedirectToPrivateIP(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if pe, ok := err.(*linkPreviewError); !ok || pe.Code != "blocked_ssrf" {
+	if pe, ok := err.(*linkPreviewError); !ok || pe.Code != linkPreviewErrBlockedSSRF {
 		t.Fatalf("expected blocked_ssrf, got %T: %v", err, err)
 	}
 	if len(chain) != 2 {

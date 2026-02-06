@@ -50,4 +50,3 @@ func (s *Server) handleAuthLogout(ctx *apptheory.Context) (*apptheory.Response, 
 
 	return apptheory.JSON(http.StatusOK, authLogoutResponse{OK: true})
 }
-

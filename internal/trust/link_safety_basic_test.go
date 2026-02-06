@@ -26,7 +26,7 @@ func TestAnalyzeLinkSafetyBasic_FlagsShortener(t *testing.T) {
 	}}
 
 	got := analyzeLinkSafetyBasic(context.Background(), resolver, "https://bit.ly/x")
-	if got.Risk == "invalid" || got.Risk == "blocked" {
+	if got.Risk == statusInvalid || got.Risk == statusBlocked {
 		t.Fatalf("unexpected risk %q (flags=%v)", got.Risk, got.Flags)
 	}
 	if !hasFlag(got.Flags, "shortener") {
@@ -42,7 +42,7 @@ func TestAnalyzeLinkSafetyBasic_FlagsRedirector(t *testing.T) {
 	}}
 
 	got := analyzeLinkSafetyBasic(context.Background(), resolver, "https://www.google.com/url?url=https%3A%2F%2Fexample.com")
-	if got.Risk == "invalid" || got.Risk == "blocked" {
+	if got.Risk == statusInvalid || got.Risk == statusBlocked {
 		t.Fatalf("unexpected risk %q (flags=%v)", got.Risk, got.Flags)
 	}
 	if !hasFlag(got.Flags, "redirector") {
@@ -58,7 +58,7 @@ func TestAnalyzeLinkSafetyBasic_FlagsPunycode(t *testing.T) {
 	}}
 
 	got := analyzeLinkSafetyBasic(context.Background(), resolver, "https://bücher.example/")
-	if got.Risk == "invalid" || got.Risk == "blocked" {
+	if got.Risk == statusInvalid || got.Risk == statusBlocked {
 		t.Fatalf("unexpected risk %q (flags=%v)", got.Risk, got.Flags)
 	}
 	if !hasFlag(got.Flags, "punycode") {
@@ -70,7 +70,7 @@ func TestAnalyzeLinkSafetyBasic_BlocksLoopback(t *testing.T) {
 	t.Parallel()
 
 	got := analyzeLinkSafetyBasic(context.Background(), nil, "http://127.0.0.1/")
-	if got.Risk != "blocked" {
+	if got.Risk != statusBlocked {
 		t.Fatalf("expected blocked risk, got %q (flags=%v)", got.Risk, got.Flags)
 	}
 	if got.ErrorCode != "blocked_ssrf" {
@@ -85,8 +85,8 @@ func TestComputeLinkSafetyBasicSummary(t *testing.T) {
 		{Risk: "low"},
 		{Risk: "medium"},
 		{Risk: "high"},
-		{Risk: "blocked"},
-		{Risk: "invalid"},
+		{Risk: statusBlocked},
+		{Risk: statusInvalid},
 	}
 
 	s := computeLinkSafetyBasicSummary(links)
@@ -96,7 +96,7 @@ func TestComputeLinkSafetyBasicSummary(t *testing.T) {
 	if s.LowCount != 1 || s.MediumCount != 1 || s.HighCount != 1 || s.BlockedCount != 1 || s.InvalidCount != 1 {
 		t.Fatalf("unexpected counts: %+v", s)
 	}
-	if s.OverallRisk != "invalid" {
+	if s.OverallRisk != statusInvalid {
 		t.Fatalf("expected overall_risk=invalid, got %q", s.OverallRisk)
 	}
 }

@@ -64,41 +64,93 @@ func (s *Server) handleAIModerationTextReport(ctx *apptheory.Context) (*apptheor
 	return s.handleAIModerationTextTriggered(ctx, "moderation.scan.report")
 }
 
+func clampModerationText(raw string) (string, *apptheory.AppError) {
+	text := strings.TrimSpace(raw)
+	if text == "" {
+		return "", &apptheory.AppError{Code: "app.bad_request", Message: "text is required"}
+	}
+	if len([]byte(text)) <= 10_000 {
+		return text, nil
+	}
+	return string([]byte(text)[:10_000]), nil
+}
+
+func moderationModelSet(instCfg instanceTrustConfig) string {
+	modelSet := modelSetDeterministic
+	if instCfg.AIEnabled && strings.TrimSpace(instCfg.AIModelSet) != "" {
+		modelSet = strings.TrimSpace(instCfg.AIModelSet)
+	}
+	return modelSet
+}
+
+func (s *Server) writeAIJobAuditEntryBestEffort(ctx *apptheory.Context, instanceSlug string, action string, resp ai.Response) {
+	if s == nil || s.store == nil || s.store.DB == nil || ctx == nil {
+		return
+	}
+	if strings.TrimSpace(action) == "" || strings.TrimSpace(resp.JobID) == "" {
+		return
+	}
+
+	entry := &models.AuditLogEntry{
+		Actor:     strings.TrimSpace(instanceSlug),
+		Action:    strings.TrimSpace(action),
+		Target:    "ai_job:" + strings.TrimSpace(resp.JobID),
+		RequestID: strings.TrimSpace(ctx.RequestID),
+		CreatedAt: time.Now().UTC(),
+	}
+	_ = entry.UpdateKeys()
+	_ = s.store.DB.WithContext(ctx.Context()).Model(entry).Create()
+}
+
+func buildAIModerationResponse(resp ai.Response, module string, policyVersion string, modelSet string, inputsHash string) aiModerationResponse {
+	out := aiModerationResponse{
+		Status: string(resp.Status),
+		Cached: resp.Cached,
+		JobID:  strings.TrimSpace(resp.JobID),
+		Budget: resp.Budget,
+		Contract: ai.ModuleContract{
+			Module:        strings.TrimSpace(module),
+			PolicyVersion: strings.TrimSpace(policyVersion),
+			ModelSet:      strings.TrimSpace(modelSet),
+			InputsHash:    strings.TrimSpace(inputsHash),
+		},
+	}
+	if resp.Result == nil {
+		return out
+	}
+
+	var parsed any
+	if strings.TrimSpace(resp.Result.ResultJSON) != "" {
+		_ = json.Unmarshal([]byte(resp.Result.ResultJSON), &parsed)
+	}
+	out.Contract.CreatedAt = resp.Result.CreatedAt
+	out.Contract.ExpiresAt = resp.Result.ExpiresAt
+	out.Result = parsed
+	out.Usage = resp.Result.Usage
+	out.Errors = resp.Result.Errors
+	return out
+}
+
 func (s *Server) handleAIModerationTextTriggered(ctx *apptheory.Context, action string) (*apptheory.Response, error) {
-	if s == nil || s.ai == nil || s.store == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-	if ctx == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-
-	instanceSlug := strings.TrimSpace(ctx.AuthIdentity)
-	if instanceSlug == "" {
-		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
-	}
-
-	var req aiModerationTextRequest
-	if err := parseJSON(ctx, &req); err != nil {
+	instanceSlug, err := s.requireAIHandler(ctx)
+	if err != nil {
 		return nil, err
 	}
 
-	text := strings.TrimSpace(req.Text)
-	if text == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "text is required"}
+	var req aiModerationTextRequest
+	if parseErr := parseJSON(ctx, &req); parseErr != nil {
+		return nil, parseErr
 	}
-	// Guardrail: keep moderation input bounded.
-	if len([]byte(text)) > 10_000 {
-		b := []byte(text)
-		text = string(b[:10_000])
+
+	text, appErr := clampModerationText(req.Text)
+	if appErr != nil {
+		return nil, appErr
 	}
 
 	instCfg := s.loadInstanceTrustConfig(ctx.Context(), instanceSlug)
 	allowOverage := strings.ToLower(strings.TrimSpace(instCfg.OveragePolicy)) == overagePolicyAllow
 
-	modelSet := modelSetDeterministic
-	if instCfg.AIEnabled && strings.TrimSpace(instCfg.AIModelSet) != "" {
-		modelSet = strings.TrimSpace(instCfg.AIModelSet)
-	}
+	modelSet := moderationModelSet(instCfg)
 
 	inputs := ai.ModerationTextInputsV1{Text: text}
 	inputsHash, _ := ai.InputsHash(inputs)
@@ -155,55 +207,15 @@ func (s *Server) handleAIModerationTextTriggered(ctx *apptheory.Context, action 
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to queue job"}
 	}
 
-	if strings.TrimSpace(action) != "" && s.store.DB != nil && strings.TrimSpace(resp.JobID) != "" {
-		entry := &models.AuditLogEntry{
-			Actor:     instanceSlug,
-			Action:    strings.TrimSpace(action),
-			Target:    "ai_job:" + strings.TrimSpace(resp.JobID),
-			RequestID: strings.TrimSpace(ctx.RequestID),
-			CreatedAt: time.Now().UTC(),
-		}
-		_ = entry.UpdateKeys()
-		_ = s.store.DB.WithContext(ctx.Context()).Model(entry).Create()
-	}
+	s.writeAIJobAuditEntryBestEffort(ctx, instanceSlug, action, resp)
 
-	if resp.Status == ai.JobStatusQueued {
-		if s.queues == nil {
-			s.emitAIRequestMetrics(instanceSlug, ai.ModerationTextLLMModule, ai.Response{Status: ai.JobStatusError, Budget: resp.Budget}, fmt.Errorf("safety queue not configured"))
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "safety queue not configured"}
-		}
-		if err := s.queues.enqueueAIJob(ctx.Context(), ai.JobMessage{Kind: "ai_job", JobID: resp.JobID}); err != nil {
-			s.emitAIRequestMetrics(instanceSlug, ai.ModerationTextLLMModule, ai.Response{Status: ai.JobStatusError, Budget: resp.Budget}, err)
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to enqueue job"}
-		}
+	if enqueueErr := s.enqueueAIJobIfQueued(ctx, resp); enqueueErr != nil {
+		s.emitAIRequestMetrics(instanceSlug, ai.ModerationTextLLMModule, ai.Response{Status: ai.JobStatusError, Budget: resp.Budget}, enqueueErr)
+		return nil, enqueueErr
 	}
 	s.emitAIRequestMetrics(instanceSlug, ai.ModerationTextLLMModule, resp, nil)
 
-	out := aiModerationResponse{
-		Status: string(resp.Status),
-		Cached: resp.Cached,
-		JobID:  strings.TrimSpace(resp.JobID),
-		Budget: resp.Budget,
-		Contract: ai.ModuleContract{
-			Module:        ai.ModerationTextLLMModule,
-			PolicyVersion: ai.ModerationTextLLMPolicyVersion,
-			ModelSet:      modelSet,
-			InputsHash:    strings.TrimSpace(inputsHash),
-		},
-	}
-	if resp.Result != nil {
-		var parsed any
-		if strings.TrimSpace(resp.Result.ResultJSON) != "" {
-			_ = json.Unmarshal([]byte(resp.Result.ResultJSON), &parsed)
-		}
-		out.Contract.CreatedAt = resp.Result.CreatedAt
-		out.Contract.ExpiresAt = resp.Result.ExpiresAt
-		out.Result = parsed
-		out.Usage = resp.Result.Usage
-		out.Errors = resp.Result.Errors
-	}
-
-	return apptheory.JSON(http.StatusOK, out)
+	return apptheory.JSON(http.StatusOK, buildAIModerationResponse(resp, ai.ModerationTextLLMModule, ai.ModerationTextLLMPolicyVersion, modelSet, inputsHash))
 }
 
 func (s *Server) handleAIModerationImage(ctx *apptheory.Context) (*apptheory.Response, error) {
@@ -215,24 +227,18 @@ func (s *Server) handleAIModerationImageReport(ctx *apptheory.Context) (*apptheo
 }
 
 func (s *Server) handleAIModerationImageTriggered(ctx *apptheory.Context, action string) (*apptheory.Response, error) {
-	if s == nil || s.ai == nil || s.store == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-	if ctx == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
 	if s.artifacts == nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "artifact store not configured"}
 	}
 
-	instanceSlug := strings.TrimSpace(ctx.AuthIdentity)
-	if instanceSlug == "" {
-		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+	instanceSlug, err := s.requireAIHandler(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	var req aiModerationImageRequest
-	if err := parseJSON(ctx, &req); err != nil {
-		return nil, err
+	if parseErr := parseJSON(ctx, &req); parseErr != nil {
+		return nil, parseErr
 	}
 
 	key, contentType, etag, size, err := s.prepareModerationImageInput(ctx.Context(), instanceSlug, req)
@@ -253,10 +259,7 @@ func (s *Server) handleAIModerationImageTriggered(ctx *apptheory.Context, action
 	instCfg := s.loadInstanceTrustConfig(ctx.Context(), instanceSlug)
 	allowOverage := strings.ToLower(strings.TrimSpace(instCfg.OveragePolicy)) == overagePolicyAllow
 
-	modelSet := modelSetDeterministic
-	if instCfg.AIEnabled && strings.TrimSpace(instCfg.AIModelSet) != "" {
-		modelSet = strings.TrimSpace(instCfg.AIModelSet)
-	}
+	modelSet := moderationModelSet(instCfg)
 
 	inputs := ai.ModerationImageInputsV1{
 		ObjectKey:   key,
@@ -318,55 +321,15 @@ func (s *Server) handleAIModerationImageTriggered(ctx *apptheory.Context, action
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to queue job"}
 	}
 
-	if strings.TrimSpace(action) != "" && s.store.DB != nil && strings.TrimSpace(resp.JobID) != "" {
-		entry := &models.AuditLogEntry{
-			Actor:     instanceSlug,
-			Action:    strings.TrimSpace(action),
-			Target:    "ai_job:" + strings.TrimSpace(resp.JobID),
-			RequestID: strings.TrimSpace(ctx.RequestID),
-			CreatedAt: time.Now().UTC(),
-		}
-		_ = entry.UpdateKeys()
-		_ = s.store.DB.WithContext(ctx.Context()).Model(entry).Create()
-	}
+	s.writeAIJobAuditEntryBestEffort(ctx, instanceSlug, action, resp)
 
-	if resp.Status == ai.JobStatusQueued {
-		if s.queues == nil {
-			s.emitAIRequestMetrics(instanceSlug, ai.ModerationImageLLMModule, ai.Response{Status: ai.JobStatusError, Budget: resp.Budget}, fmt.Errorf("safety queue not configured"))
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "safety queue not configured"}
-		}
-		if err := s.queues.enqueueAIJob(ctx.Context(), ai.JobMessage{Kind: "ai_job", JobID: resp.JobID}); err != nil {
-			s.emitAIRequestMetrics(instanceSlug, ai.ModerationImageLLMModule, ai.Response{Status: ai.JobStatusError, Budget: resp.Budget}, err)
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to enqueue job"}
-		}
+	if enqueueErr := s.enqueueAIJobIfQueued(ctx, resp); enqueueErr != nil {
+		s.emitAIRequestMetrics(instanceSlug, ai.ModerationImageLLMModule, ai.Response{Status: ai.JobStatusError, Budget: resp.Budget}, enqueueErr)
+		return nil, enqueueErr
 	}
 	s.emitAIRequestMetrics(instanceSlug, ai.ModerationImageLLMModule, resp, nil)
 
-	out := aiModerationResponse{
-		Status: string(resp.Status),
-		Cached: resp.Cached,
-		JobID:  strings.TrimSpace(resp.JobID),
-		Budget: resp.Budget,
-		Contract: ai.ModuleContract{
-			Module:        ai.ModerationImageLLMModule,
-			PolicyVersion: ai.ModerationImageLLMPolicyVersion,
-			ModelSet:      modelSet,
-			InputsHash:    strings.TrimSpace(inputsHash),
-		},
-	}
-	if resp.Result != nil {
-		var parsed any
-		if strings.TrimSpace(resp.Result.ResultJSON) != "" {
-			_ = json.Unmarshal([]byte(resp.Result.ResultJSON), &parsed)
-		}
-		out.Contract.CreatedAt = resp.Result.CreatedAt
-		out.Contract.ExpiresAt = resp.Result.ExpiresAt
-		out.Result = parsed
-		out.Usage = resp.Result.Usage
-		out.Errors = resp.Result.Errors
-	}
-
-	return apptheory.JSON(http.StatusOK, out)
+	return apptheory.JSON(http.StatusOK, buildAIModerationResponse(resp, ai.ModerationImageLLMModule, ai.ModerationImageLLMPolicyVersion, modelSet, inputsHash))
 }
 
 func (s *Server) prepareModerationImageInput(ctx context.Context, instanceSlug string, req aiModerationImageRequest) (key string, contentType string, etag string, size int64, err error) {

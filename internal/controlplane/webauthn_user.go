@@ -54,4 +54,3 @@ func toWebAuthnCredential(c *models.WebAuthnCredential) *webauthn.Credential {
 		},
 	}
 }
-

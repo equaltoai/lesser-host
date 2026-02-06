@@ -94,6 +94,164 @@ func (s *Server) putBillingProfile(ctx *apptheory.Context, profile *models.Billi
 	return s.store.DB.WithContext(ctx.Context()).Model(profile).CreateOrUpdate()
 }
 
+func parsePortalCreditsCheckoutRequest(ctx *apptheory.Context) (portalCreditsCheckoutRequest, *apptheory.AppError) {
+	var req portalCreditsCheckoutRequest
+	if err := parseJSON(ctx, &req); err != nil {
+		if appErr, ok := err.(*apptheory.AppError); ok {
+			return portalCreditsCheckoutRequest{}, appErr
+		}
+		return portalCreditsCheckoutRequest{}, &apptheory.AppError{Code: "app.bad_request", Message: "invalid request"}
+	}
+
+	req.InstanceSlug = strings.ToLower(strings.TrimSpace(req.InstanceSlug))
+	if req.InstanceSlug == "" {
+		return portalCreditsCheckoutRequest{}, &apptheory.AppError{Code: "app.bad_request", Message: "instance_slug is required"}
+	}
+	if req.Credits <= 0 {
+		return portalCreditsCheckoutRequest{}, &apptheory.AppError{Code: "app.bad_request", Message: "credits must be > 0"}
+	}
+
+	req.Month = strings.TrimSpace(req.Month)
+	return req, nil
+}
+
+func normalizeCreditsCheckoutMonth(raw string, now time.Time) (string, *apptheory.AppError) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		raw = now.UTC().Format("2006-01")
+	}
+	if _, parseErr := time.Parse("2006-01", raw); parseErr != nil {
+		return "", &apptheory.AppError{Code: "app.bad_request", Message: "month must be YYYY-MM"}
+	}
+	return raw, nil
+}
+
+func (s *Server) portalUserEmailBestEffort(ctx *apptheory.Context, username string) string {
+	if s == nil || ctx == nil {
+		return ""
+	}
+
+	user, _ := s.loadUser(ctx, username)
+	if user == nil {
+		return ""
+	}
+	return strings.TrimSpace(user.Email)
+}
+
+func (s *Server) ensureStripeCustomerProfile(ctx *apptheory.Context, provider payments.Provider, username string, email string) (*models.BillingProfile, *apptheory.AppError) {
+	profile, ok, err := s.loadBillingProfile(ctx, username)
+	if err != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if !ok || profile == nil {
+		profile = &models.BillingProfile{
+			Username:  username,
+			Provider:  models.BillingProviderStripe,
+			CreatedAt: time.Now().UTC(),
+			UpdatedAt: time.Now().UTC(),
+		}
+	}
+	if strings.TrimSpace(profile.StripeCustomerID) != "" {
+		return profile, nil
+	}
+
+	cid, ensureErr := provider.EnsureCustomer(ctx.Context(), payments.EnsureCustomerInput{
+		Username: username,
+		Email:    email,
+	})
+	if ensureErr != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create customer"}
+	}
+
+	profile.Provider = models.BillingProviderStripe
+	profile.StripeCustomerID = cid
+	if putErr := s.putBillingProfile(ctx, profile); putErr != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to store billing profile"}
+	}
+
+	return profile, nil
+}
+
+func (s *Server) createPendingCreditPurchase(
+	ctx *apptheory.Context,
+	username string,
+	instanceSlug string,
+	month string,
+	credits int64,
+	amountCents int64,
+	providerName string,
+) (*models.CreditPurchase, *apptheory.AppError) {
+	if s == nil || s.store == nil || s.store.DB == nil || ctx == nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
+	purchaseID, err := newToken(16)
+	if err != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create purchase"}
+	}
+
+	now := time.Now().UTC()
+	purchase := &models.CreditPurchase{
+		ID:           purchaseID,
+		Username:     strings.TrimSpace(username),
+		InstanceSlug: strings.TrimSpace(instanceSlug),
+		Month:        strings.TrimSpace(month),
+		Credits:      credits,
+		AmountCents:  amountCents,
+		Currency:     "usd",
+		Provider:     strings.TrimSpace(providerName),
+		Status:       models.CreditPurchaseStatusPending,
+		RequestID:    strings.TrimSpace(ctx.RequestID),
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	_ = purchase.UpdateKeys()
+
+	if createErr := s.store.DB.WithContext(ctx.Context()).Model(purchase).IfNotExists().Create(); createErr != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create purchase"}
+	}
+
+	return purchase, nil
+}
+
+func (s *Server) markCreditPurchaseFailedBestEffort(ctx *apptheory.Context, purchaseID string) {
+	if s == nil || s.store == nil || s.store.DB == nil || ctx == nil {
+		return
+	}
+
+	fail := &models.CreditPurchase{
+		ID:        strings.TrimSpace(purchaseID),
+		Status:    models.CreditPurchaseStatusFailed,
+		UpdatedAt: time.Now().UTC(),
+	}
+	_ = fail.UpdateKeys()
+	_ = s.store.DB.WithContext(ctx.Context()).Model(fail).IfExists().Update("Status", "UpdatedAt")
+}
+
+func (s *Server) updateCreditPurchaseWithCheckoutSessionBestEffort(ctx *apptheory.Context, purchaseID string, session *payments.CheckoutSession) {
+	if s == nil || s.store == nil || s.store.DB == nil || ctx == nil || session == nil {
+		return
+	}
+
+	purchaseUpdate := &models.CreditPurchase{
+		ID:                        strings.TrimSpace(purchaseID),
+		ProviderCheckoutSessionID: strings.TrimSpace(session.ID),
+		ProviderPaymentIntentID:   strings.TrimSpace(session.PaymentIntentID),
+		ProviderCustomerID:        strings.TrimSpace(session.CustomerID),
+		UpdatedAt:                 time.Now().UTC(),
+	}
+	_ = purchaseUpdate.UpdateKeys()
+
+	fields := []string{"ProviderCheckoutSessionID", "UpdatedAt"}
+	if strings.TrimSpace(purchaseUpdate.ProviderPaymentIntentID) != "" {
+		fields = append(fields, "ProviderPaymentIntentID")
+	}
+	if strings.TrimSpace(purchaseUpdate.ProviderCustomerID) != "" {
+		fields = append(fields, "ProviderCustomerID")
+	}
+	_ = s.store.DB.WithContext(ctx.Context()).Model(purchaseUpdate).IfExists().Update(fields...)
+}
+
 func (s *Server) handlePortalCreateInstanceKey(ctx *apptheory.Context) (*apptheory.Response, error) {
 	inst, err := s.requireInstanceAccess(ctx, ctx.Param("slug"))
 	if err != nil {
@@ -145,21 +303,13 @@ func (s *Server) handlePortalCreateCreditsCheckout(ctx *apptheory.Context) (*app
 	if err := requireAuthenticated(ctx); err != nil {
 		return nil, err
 	}
-	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	if appErr := requireStoreDB(s); appErr != nil {
+		return nil, appErr
 	}
 
-	var req portalCreditsCheckoutRequest
-	if err := parseJSON(ctx, &req); err != nil {
-		return nil, err
-	}
-
-	req.InstanceSlug = strings.ToLower(strings.TrimSpace(req.InstanceSlug))
-	if req.InstanceSlug == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "instance_slug is required"}
-	}
-	if req.Credits <= 0 {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "credits must be > 0"}
+	req, appErr := parsePortalCreditsCheckoutRequest(ctx)
+	if appErr != nil {
+		return nil, appErr
 	}
 
 	inst, err := s.requireInstanceAccess(ctx, req.InstanceSlug)
@@ -167,12 +317,9 @@ func (s *Server) handlePortalCreateCreditsCheckout(ctx *apptheory.Context) (*app
 		return nil, err
 	}
 
-	month := strings.TrimSpace(req.Month)
-	if month == "" {
-		month = time.Now().UTC().Format("2006-01")
-	}
-	if _, err := time.Parse("2006-01", month); err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "month must be YYYY-MM"}
+	month, appErr := normalizeCreditsCheckoutMonth(req.Month, time.Now().UTC())
+	if appErr != nil {
+		return nil, appErr
 	}
 
 	amountCents, err := creditsAmountCents(req.Credits, s.cfg.PaymentsCentsPer1000Credits)
@@ -186,67 +333,21 @@ func (s *Server) handlePortalCreateCreditsCheckout(ctx *apptheory.Context) (*app
 	}
 
 	username := strings.TrimSpace(ctx.AuthIdentity)
-	user, _ := s.loadUser(ctx, username)
-	email := ""
-	if user != nil {
-		email = strings.TrimSpace(user.Email)
+	email := s.portalUserEmailBestEffort(ctx, username)
+
+	profile, appErr := s.ensureStripeCustomerProfile(ctx, provider, username, email)
+	if appErr != nil {
+		return nil, appErr
 	}
 
-	profile, ok, err := s.loadBillingProfile(ctx, username)
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-	if !ok {
-		profile = &models.BillingProfile{
-			Username:  username,
-			Provider:  models.BillingProviderStripe,
-			CreatedAt: time.Now().UTC(),
-			UpdatedAt: time.Now().UTC(),
-		}
-	}
-	if strings.TrimSpace(profile.StripeCustomerID) == "" {
-		cid, err := provider.EnsureCustomer(ctx.Context(), payments.EnsureCustomerInput{
-			Username: username,
-			Email:    email,
-		})
-		if err != nil {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create customer"}
-		}
-		profile.Provider = models.BillingProviderStripe
-		profile.StripeCustomerID = cid
-		if err := s.putBillingProfile(ctx, profile); err != nil {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to store billing profile"}
-		}
-	}
-
-	purchaseID, err := newToken(16)
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create purchase"}
-	}
-
-	now := time.Now().UTC()
-	purchase := &models.CreditPurchase{
-		ID:           purchaseID,
-		Username:     username,
-		InstanceSlug: strings.TrimSpace(inst.Slug),
-		Month:        month,
-		Credits:      req.Credits,
-		AmountCents:  amountCents,
-		Currency:     "usd",
-		Provider:     provider.Name(),
-		Status:       models.CreditPurchaseStatusPending,
-		RequestID:    strings.TrimSpace(ctx.RequestID),
-		CreatedAt:    now,
-		UpdatedAt:    now,
-	}
-	_ = purchase.UpdateKeys()
-	if err := s.store.DB.WithContext(ctx.Context()).Model(purchase).IfNotExists().Create(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create purchase"}
+	purchase, appErr := s.createPendingCreditPurchase(ctx, username, inst.Slug, month, req.Credits, amountCents, provider.Name())
+	if appErr != nil {
+		return nil, appErr
 	}
 
 	session, err := provider.CreateCreditsCheckout(ctx.Context(), payments.CreditsCheckoutInput{
 		CustomerID:   strings.TrimSpace(profile.StripeCustomerID),
-		PurchaseID:   purchaseID,
+		PurchaseID:   strings.TrimSpace(purchase.ID),
 		Username:     username,
 		InstanceSlug: strings.TrimSpace(inst.Slug),
 		Month:        month,
@@ -257,37 +358,17 @@ func (s *Server) handlePortalCreateCreditsCheckout(ctx *apptheory.Context) (*app
 		CancelURL:    strings.TrimSpace(s.cfg.PaymentsCheckoutCancelURL),
 	})
 	if err != nil || session == nil || strings.TrimSpace(session.URL) == "" {
-		fail := &models.CreditPurchase{
-			ID:        purchaseID,
-			Status:    models.CreditPurchaseStatusFailed,
-			UpdatedAt: time.Now().UTC(),
-		}
-		_ = fail.UpdateKeys()
-		_ = s.store.DB.WithContext(ctx.Context()).Model(fail).IfExists().Update("Status", "UpdatedAt")
+		s.markCreditPurchaseFailedBestEffort(ctx, purchase.ID)
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create checkout"}
 	}
 
-	purchaseUpdate := &models.CreditPurchase{
-		ID:                        purchaseID,
-		ProviderCheckoutSessionID: strings.TrimSpace(session.ID),
-		ProviderPaymentIntentID:   strings.TrimSpace(session.PaymentIntentID),
-		ProviderCustomerID:        strings.TrimSpace(session.CustomerID),
-		UpdatedAt:                 time.Now().UTC(),
-	}
-	_ = purchaseUpdate.UpdateKeys()
-	fields := []string{"ProviderCheckoutSessionID", "UpdatedAt"}
-	if strings.TrimSpace(purchaseUpdate.ProviderPaymentIntentID) != "" {
-		fields = append(fields, "ProviderPaymentIntentID")
-	}
-	if strings.TrimSpace(purchaseUpdate.ProviderCustomerID) != "" {
-		fields = append(fields, "ProviderCustomerID")
-	}
-	_ = s.store.DB.WithContext(ctx.Context()).Model(purchaseUpdate).IfExists().Update(fields...)
+	s.updateCreditPurchaseWithCheckoutSessionBestEffort(ctx, purchase.ID, session)
 
+	now := time.Now().UTC()
 	audit := &models.AuditLogEntry{
 		Actor:     username,
 		Action:    "billing.credits.checkout.create",
-		Target:    fmt.Sprintf("credit_purchase:%s", purchaseID),
+		Target:    fmt.Sprintf("credit_purchase:%s", strings.TrimSpace(purchase.ID)),
 		RequestID: ctx.RequestID,
 		CreatedAt: now,
 	}
@@ -298,7 +379,7 @@ func (s *Server) handlePortalCreateCreditsCheckout(ctx *apptheory.Context) (*app
 	var latest models.CreditPurchase
 	_ = s.store.DB.WithContext(ctx.Context()).
 		Model(&models.CreditPurchase{}).
-		Where("PK", "=", fmt.Sprintf("CREDIT_PURCHASE#%s", purchaseID)).
+		Where("PK", "=", fmt.Sprintf("CREDIT_PURCHASE#%s", strings.TrimSpace(purchase.ID))).
 		Where("SK", "=", models.SKMetadata).
 		First(&latest)
 
@@ -376,16 +457,16 @@ func (s *Server) handlePortalCreatePaymentMethodCheckout(ctx *apptheory.Context)
 		}
 	}
 	if strings.TrimSpace(profile.StripeCustomerID) == "" {
-		cid, err := provider.EnsureCustomer(ctx.Context(), payments.EnsureCustomerInput{
+		cid, ensureErr := provider.EnsureCustomer(ctx.Context(), payments.EnsureCustomerInput{
 			Username: username,
 			Email:    email,
 		})
-		if err != nil {
+		if ensureErr != nil {
 			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create customer"}
 		}
 		profile.Provider = models.BillingProviderStripe
 		profile.StripeCustomerID = cid
-		if err := s.putBillingProfile(ctx, profile); err != nil {
+		if putErr := s.putBillingProfile(ctx, profile); putErr != nil {
 			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to store billing profile"}
 		}
 	}

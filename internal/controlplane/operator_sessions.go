@@ -36,4 +36,3 @@ func (s *Server) createOperatorSession(ctx context.Context, username, role, meth
 
 	return token, expiresAt, nil
 }
-

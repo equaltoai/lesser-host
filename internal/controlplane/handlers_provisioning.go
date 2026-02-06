@@ -81,59 +81,72 @@ func provisionJobResponseFromModel(j *models.ProvisionJob) provisionJobResponse 
 	}
 }
 
-func (s *Server) handleStartInstanceProvisioning(ctx *apptheory.Context) (*apptheory.Response, error) {
-	if err := requireAdmin(ctx); err != nil {
-		return nil, err
-	}
-	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-
-	slug := strings.ToLower(strings.TrimSpace(ctx.Param("slug")))
-	if slug == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "slug is required"}
-	}
-	if !instanceSlugRE.MatchString(slug) {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid slug"}
-	}
-
-	inst, err := s.getInstance(ctx, slug)
-	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "instance not found"}
-	}
-	if err != nil || inst == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-
-	// Idempotency: if a job is already queued/running, return it.
-	existingStatus := strings.ToLower(strings.TrimSpace(inst.ProvisionStatus))
-	existingJobID := strings.TrimSpace(inst.ProvisionJobID)
-	if (existingStatus == models.ProvisionJobStatusQueued || existingStatus == models.ProvisionJobStatusRunning) && existingJobID != "" {
-		if job, jerr := s.store.GetProvisionJob(ctx.Context(), existingJobID); jerr == nil && job != nil {
-			// Best-effort: allow admins to "nudge" stalled jobs by re-enqueuing the existing idempotent job.
-			if s.queues != nil && strings.TrimSpace(s.cfg.ProvisionQueueURL) != "" {
-				_ = s.queues.enqueueProvisionJob(ctx.Context(), provisioning.JobMessage{
-					Kind:  "provision_job",
-					JobID: existingJobID,
-				})
-			}
-			return apptheory.JSON(http.StatusOK, provisionJobResponseFromModel(job))
-		}
-	}
-
+func parseStartInstanceProvisionRequest(ctx *apptheory.Context) (startInstanceProvisionRequest, error) {
 	var req startInstanceProvisionRequest
-	if len(ctx.Request.Body) > 0 {
-		if err := parseJSON(ctx, &req); err != nil {
-			return nil, err
-		}
+	if ctx == nil {
+		return req, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if len(ctx.Request.Body) == 0 {
+		return req, nil
+	}
+	if err := parseJSON(ctx, &req); err != nil {
+		return req, err
+	}
+	return req, nil
+}
+
+func (s *Server) enqueueProvisionJobBestEffort(ctx *apptheory.Context, jobID string) {
+	if s == nil || s.queues == nil || ctx == nil {
+		return
+	}
+	if strings.TrimSpace(s.cfg.ProvisionQueueURL) == "" {
+		return
+	}
+	jobID = strings.TrimSpace(jobID)
+	if jobID == "" {
+		return
+	}
+
+	_ = s.queues.enqueueProvisionJob(ctx.Context(), provisioning.JobMessage{
+		Kind:  "provision_job",
+		JobID: jobID,
+	})
+}
+
+func (s *Server) getExistingProvisionJobAndNudge(ctx *apptheory.Context, inst *models.Instance) (*models.ProvisionJob, bool) {
+	if s == nil || s.store == nil || ctx == nil || inst == nil {
+		return nil, false
+	}
+
+	status := strings.ToLower(strings.TrimSpace(inst.ProvisionStatus))
+	jobID := strings.TrimSpace(inst.ProvisionJobID)
+	if jobID == "" {
+		return nil, false
+	}
+
+	if status != models.ProvisionJobStatusQueued && status != models.ProvisionJobStatusRunning {
+		return nil, false
+	}
+
+	job, err := s.store.GetProvisionJob(ctx.Context(), jobID)
+	if err != nil || job == nil {
+		return nil, false
+	}
+
+	s.enqueueProvisionJobBestEffort(ctx, jobID)
+	return job, true
+}
+
+func (s *Server) buildManagedProvisionJob(slug string, req startInstanceProvisionRequest, requestID string, now time.Time) (*models.ProvisionJob, string, string, *apptheory.AppError) {
+	if s == nil {
+		return nil, "", "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
 	id, err := newToken(16)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create provisioning job"}
+		return nil, "", "", &apptheory.AppError{Code: "app.internal", Message: "failed to create provisioning job"}
 	}
 
-	now := time.Now().UTC()
 	parentDomain := strings.TrimSpace(s.cfg.ManagedParentDomain)
 	if parentDomain == "" {
 		parentDomain = defaultManagedParentDomain
@@ -162,18 +175,29 @@ func (s *Server) handleStartInstanceProvisioning(ctx *apptheory.Context) (*appth
 		BaseDomain:         baseDomain,
 		CreatedAt:          now,
 		ExpiresAt:          now.Add(30 * 24 * time.Hour),
-		RequestID:          strings.TrimSpace(ctx.RequestID),
+		RequestID:          strings.TrimSpace(requestID),
 	}
 	_ = job.UpdateKeys()
+
+	return job, baseDomain, region, nil
+}
+
+func (s *Server) createManagedProvisionJobTx(ctx *apptheory.Context, job *models.ProvisionJob, slug string, baseDomain string, region string, actor string, auditAction string, requestID string, now time.Time) *apptheory.AppError {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if ctx == nil || job == nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
 
 	updateInst := &models.Instance{Slug: slug}
 	_ = updateInst.UpdateKeys()
 
 	audit := &models.AuditLogEntry{
-		Actor:     strings.TrimSpace(ctx.AuthIdentity),
-		Action:    "instance.provision.start",
+		Actor:     strings.TrimSpace(actor),
+		Action:    strings.TrimSpace(auditAction),
 		Target:    fmt.Sprintf("instance:%s", slug),
-		RequestID: ctx.RequestID,
+		RequestID: strings.TrimSpace(requestID),
 		CreatedAt: now,
 	}
 	_ = audit.UpdateKeys()
@@ -182,27 +206,66 @@ func (s *Server) handleStartInstanceProvisioning(ctx *apptheory.Context) (*appth
 		tx.Create(job)
 		tx.UpdateWithBuilder(updateInst, func(ub core.UpdateBuilder) error {
 			ub.Set("ProvisionStatus", models.ProvisionJobStatusQueued)
-			ub.Set("ProvisionJobID", id)
-			ub.Set("HostedBaseDomain", baseDomain)
-			if region != "" {
-				ub.Set("HostedRegion", region)
+			ub.Set("ProvisionJobID", strings.TrimSpace(job.ID))
+			ub.Set("HostedBaseDomain", strings.TrimSpace(baseDomain))
+			if strings.TrimSpace(region) != "" {
+				ub.Set("HostedRegion", strings.TrimSpace(region))
 			}
 			return nil
 		}, tabletheory.IfExists())
 		tx.Put(audit)
 		return nil
 	}); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to start provisioning"}
+		return &apptheory.AppError{Code: "app.internal", Message: "failed to start provisioning"}
 	}
 
-	// Best-effort: enqueue provisioning work if configured.
-	if s.queues != nil && strings.TrimSpace(s.cfg.ProvisionQueueURL) != "" {
-		_ = s.queues.enqueueProvisionJob(ctx.Context(), provisioning.JobMessage{
-			Kind:  "provision_job",
-			JobID: id,
-		})
+	return nil
+}
+
+func (s *Server) handleStartInstanceProvisioning(ctx *apptheory.Context) (*apptheory.Response, error) {
+	if err := requireAdmin(ctx); err != nil {
+		return nil, err
+	}
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
+	slug := strings.ToLower(strings.TrimSpace(ctx.Param("slug")))
+	if slug == "" {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "slug is required"}
+	}
+	if !instanceSlugRE.MatchString(slug) {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid slug"}
+	}
+
+	inst, err := s.getInstance(ctx, slug)
+	if theoryErrors.IsNotFound(err) {
+		return nil, &apptheory.AppError{Code: "app.not_found", Message: "instance not found"}
+	}
+	if err != nil || inst == nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
+	if job, ok := s.getExistingProvisionJobAndNudge(ctx, inst); ok {
+		return apptheory.JSON(http.StatusOK, provisionJobResponseFromModel(job))
+	}
+
+	req, err := parseStartInstanceProvisionRequest(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	now := time.Now().UTC()
+	job, baseDomain, region, appErr := s.buildManagedProvisionJob(slug, req, ctx.RequestID, now)
+	if appErr != nil {
+		return nil, appErr
+	}
+
+	if appErr := s.createManagedProvisionJobTx(ctx, job, slug, baseDomain, region, ctx.AuthIdentity, "instance.provision.start", ctx.RequestID, now); appErr != nil {
+		return nil, appErr
+	}
+
+	s.enqueueProvisionJobBestEffort(ctx, job.ID)
 	return apptheory.JSON(http.StatusAccepted, provisionJobResponseFromModel(job))
 }
 

@@ -613,57 +613,63 @@ func (s *Server) processRenderSummaryShard(
 	}
 }
 
+func (s *Server) tryRenderSummaryBatchLLM(ctx context.Context, modelSet string, items []llm.RenderSummaryBatchItem) (map[string]ai.RenderSummaryResultV1, models.AIUsage, []models.AIError, bool) {
+	lowerModelSet := strings.ToLower(strings.TrimSpace(modelSet))
+
+	switch {
+	case strings.HasPrefix(lowerModelSet, "openai:"):
+		apiKey, err := openAIAPIKey(ctx)
+		if err != nil || strings.TrimSpace(apiKey) == "" {
+			return nil, models.AIUsage{}, []models.AIError{{Code: "llm_unavailable", Message: "LLM unavailable; used deterministic fallback", Retryable: false}}, false
+		}
+		outMap, usage, err := llm.RenderSummaryBatchOpenAI(ctx, apiKey, modelSet, items)
+		if err != nil {
+			return nil, models.AIUsage{}, []models.AIError{{Code: "llm_failed", Message: "LLM call failed; used deterministic fallback", Retryable: false}}, false
+		}
+		return outMap, usage, nil, true
+
+	case strings.HasPrefix(lowerModelSet, "anthropic:"):
+		apiKey, err := anthropicAPIKey(ctx)
+		if err != nil || strings.TrimSpace(apiKey) == "" {
+			return nil, models.AIUsage{}, []models.AIError{{Code: "llm_unavailable", Message: "LLM unavailable; used deterministic fallback", Retryable: false}}, false
+		}
+		outMap, usage, err := llm.RenderSummaryBatchAnthropic(ctx, apiKey, modelSet, items)
+		if err != nil {
+			return nil, models.AIUsage{}, []models.AIError{{Code: "llm_failed", Message: "LLM call failed; used deterministic fallback", Retryable: false}}, false
+		}
+		return outMap, usage, nil, true
+
+	default:
+		return nil, models.AIUsage{}, nil, false
+	}
+}
+
+func renderSummaryBatchDeterministic(items []llm.RenderSummaryBatchItem) map[string]ai.RenderSummaryResultV1 {
+	results := make(map[string]ai.RenderSummaryResultV1, len(items))
+	for _, it := range items {
+		results[it.ItemID] = ai.RenderSummaryDeterministicV1(it.Input)
+	}
+	return results
+}
+
 func (s *Server) renderSummaryBatchResults(ctx *apptheory.Context, modelSet string, allowLLM bool, items []llm.RenderSummaryBatchItem) (map[string]ai.RenderSummaryResultV1, models.AIUsage, []models.AIError) {
 	start := time.Now()
-	results := map[string]ai.RenderSummaryResultV1{}
-	usage := models.AIUsage{}
 	commonErrs := []models.AIError{}
 
-	lowerModelSet := strings.ToLower(strings.TrimSpace(modelSet))
-	useDeterministic := true
-	if allowLLM {
-		switch {
-		case strings.HasPrefix(lowerModelSet, "openai:"):
-			apiKey, err := openAIAPIKey(ctx.Context())
-			if err != nil || strings.TrimSpace(apiKey) == "" {
-				commonErrs = append(commonErrs, models.AIError{Code: "llm_unavailable", Message: "LLM unavailable; used deterministic fallback", Retryable: false})
-			} else {
-				outMap, u, err := llm.RenderSummaryBatchOpenAI(ctx.Context(), apiKey, modelSet, items)
-				if err != nil {
-					commonErrs = append(commonErrs, models.AIError{Code: "llm_failed", Message: "LLM call failed; used deterministic fallback", Retryable: false})
-				} else {
-					results = outMap
-					usage = u
-					useDeterministic = false
-				}
-			}
-		case strings.HasPrefix(lowerModelSet, "anthropic:"):
-			apiKey, err := anthropicAPIKey(ctx.Context())
-			if err != nil || strings.TrimSpace(apiKey) == "" {
-				commonErrs = append(commonErrs, models.AIError{Code: "llm_unavailable", Message: "LLM unavailable; used deterministic fallback", Retryable: false})
-			} else {
-				outMap, u, err := llm.RenderSummaryBatchAnthropic(ctx.Context(), apiKey, modelSet, items)
-				if err != nil {
-					commonErrs = append(commonErrs, models.AIError{Code: "llm_failed", Message: "LLM call failed; used deterministic fallback", Retryable: false})
-				} else {
-					results = outMap
-					usage = u
-					useDeterministic = false
-				}
-			}
+	if allowLLM && ctx != nil {
+		outMap, usage, errs, ok := s.tryRenderSummaryBatchLLM(ctx.Context(), modelSet, items)
+		commonErrs = append(commonErrs, errs...)
+		if ok {
+			return outMap, usage, commonErrs
 		}
 	}
 
-	if useDeterministic {
-		for _, it := range items {
-			results[it.ItemID] = ai.RenderSummaryDeterministicV1(it.Input)
-		}
-		usage = models.AIUsage{
-			Provider:   modelSetDeterministic,
-			Model:      modelSetDeterministic,
-			ToolCalls:  0,
-			DurationMs: time.Since(start).Milliseconds(),
-		}
+	results := renderSummaryBatchDeterministic(items)
+	usage := models.AIUsage{
+		Provider:   modelSetDeterministic,
+		Model:      modelSetDeterministic,
+		ToolCalls:  0,
+		DurationMs: time.Since(start).Milliseconds(),
 	}
 
 	return results, usage, commonErrs

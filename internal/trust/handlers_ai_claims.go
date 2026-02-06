@@ -66,46 +66,28 @@ type aiClaimVerifyResponse struct {
 	AttestationURL string `json:"attestation_url,omitempty"`
 }
 
-func (s *Server) handleAIClaimVerify(ctx *apptheory.Context) (*apptheory.Response, error) {
-	instanceSlug, err := s.requireAIHandler(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	var req claimVerifyRequest
-	if err := parseJSON(ctx, &req); err != nil {
-		return nil, err
-	}
-
-	actorURI := strings.TrimSpace(req.ActorURI)
-	objectURI := strings.TrimSpace(req.ObjectURI)
-	contentHash := strings.TrimSpace(req.ContentHash)
-
-	text := strings.TrimSpace(req.Text)
-	claims := sanitizeClaimVerifyClaims(req.Claims)
-	if len(claims) == 0 && text == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "text or claims is required"}
-	}
-
-	retrieval := normalizeClaimVerifyRetrieval(req.Retrieval)
-	retrievalMode := ai.ClaimVerifyRetrievalModeProvidedOnly
+func claimVerifyRetrievalMode(retrieval *ai.ClaimVerifyRetrievalV1) string {
+	mode := ai.ClaimVerifyRetrievalModeProvidedOnly
 	if retrieval != nil && strings.TrimSpace(retrieval.Mode) != "" {
-		retrievalMode = strings.TrimSpace(retrieval.Mode)
+		mode = strings.TrimSpace(retrieval.Mode)
 	}
+	return mode
+}
 
-	if len(req.Evidence) == 0 && retrievalMode != ai.ClaimVerifyRetrievalModeOpenAIWebSearch {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "evidence is required"}
+func validateClaimVerifyRequest(text string, claims []string, evidence []claimVerifyEvidenceRequest, retrievalMode string) *apptheory.AppError {
+	if len(claims) == 0 && strings.TrimSpace(text) == "" {
+		return &apptheory.AppError{Code: "app.bad_request", Message: "text or claims is required"}
 	}
-
-	evidence, totalEvidenceBytes, err := buildClaimVerifyEvidence(req.Evidence)
-	if err != nil {
-		return nil, err
+	if len(evidence) == 0 && retrievalMode != ai.ClaimVerifyRetrievalModeOpenAIWebSearch {
+		return &apptheory.AppError{Code: "app.bad_request", Message: "evidence is required"}
 	}
+	return nil
+}
 
-	// Estimate claims count when only text is provided.
+func estimateClaimVerifyCredits(text string, claims []string, retrieval *ai.ClaimVerifyRetrievalV1, retrievalMode string, totalEvidenceBytes int64) int64 {
 	estimatedClaims := claims
 	if len(estimatedClaims) == 0 {
-		estimatedClaims = ai.ExtractClaimsDeterministicV1(text, claimVerifyMaxClaims)
+		estimatedClaims = ai.ExtractClaimsDeterministicV1(strings.TrimSpace(text), claimVerifyMaxClaims)
 	}
 	claimCount := int64(len(estimatedClaims))
 	if claimCount <= 0 {
@@ -128,16 +110,56 @@ func (s *Server) handleAIClaimVerify(ctx *apptheory.Context) (*apptheory.Respons
 	if retrievalMode == ai.ClaimVerifyRetrievalModeOpenAIWebSearch {
 		baseCredits += 10 // retrieval overhead (coarse)
 	}
+	return baseCredits
+}
 
-	instCfg := s.loadInstanceTrustConfig(ctx.Context(), instanceSlug)
-	allowOverage := strings.ToLower(strings.TrimSpace(instCfg.OveragePolicy)) == overagePolicyAllow
-
+func claimVerifyModelSet(instCfg instanceTrustConfig, retrievalMode string) (string, *apptheory.AppError) {
 	modelSet := "deterministic"
 	if instCfg.AIEnabled && strings.TrimSpace(instCfg.AIModelSet) != "" {
 		modelSet = strings.TrimSpace(instCfg.AIModelSet)
 	}
 	if retrievalMode == ai.ClaimVerifyRetrievalModeOpenAIWebSearch && (!instCfg.AIEnabled || !strings.HasPrefix(strings.ToLower(modelSet), "openai:")) {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "retrieval.mode=openai_web_search requires ai_enabled and an openai:* model_set"}
+		return "", &apptheory.AppError{Code: "app.bad_request", Message: "retrieval.mode=openai_web_search requires ai_enabled and an openai:* model_set"}
+	}
+	return modelSet, nil
+}
+
+func (s *Server) handleAIClaimVerify(ctx *apptheory.Context) (*apptheory.Response, error) {
+	instanceSlug, err := s.requireAIHandler(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var req claimVerifyRequest
+	if parseErr := parseJSON(ctx, &req); parseErr != nil {
+		return nil, parseErr
+	}
+
+	actorURI := strings.TrimSpace(req.ActorURI)
+	objectURI := strings.TrimSpace(req.ObjectURI)
+	contentHash := strings.TrimSpace(req.ContentHash)
+
+	text := strings.TrimSpace(req.Text)
+	claims := sanitizeClaimVerifyClaims(req.Claims)
+
+	retrieval := normalizeClaimVerifyRetrieval(req.Retrieval)
+	retrievalMode := claimVerifyRetrievalMode(retrieval)
+	if appErr := validateClaimVerifyRequest(text, claims, req.Evidence, retrievalMode); appErr != nil {
+		return nil, appErr
+	}
+
+	evidence, totalEvidenceBytes, err := buildClaimVerifyEvidence(req.Evidence)
+	if err != nil {
+		return nil, err
+	}
+
+	instCfg := s.loadInstanceTrustConfig(ctx.Context(), instanceSlug)
+	allowOverage := strings.ToLower(strings.TrimSpace(instCfg.OveragePolicy)) == overagePolicyAllow
+	baseCredits := estimateClaimVerifyCredits(text, claims, retrieval, retrievalMode, totalEvidenceBytes)
+
+	modelSet, appErr := claimVerifyModelSet(instCfg, retrievalMode)
+	if appErr != nil {
+		return nil, appErr
 	}
 
 	inputs := ai.ClaimVerifyInputsV1{

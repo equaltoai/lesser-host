@@ -51,102 +51,153 @@ type renderArtifactResponse struct {
 	ExpiresAt  time.Time `json:"expires_at,omitempty"`
 }
 
-func (s *Server) handleCreateRender(ctx *apptheory.Context) (*apptheory.Response, error) {
+func requireCreateRenderAuth(s *Server, ctx *apptheory.Context) (string, *apptheory.AppError) {
 	if s == nil || s.store == nil || s.store.DB == nil || ctx == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
 	instanceSlug := strings.TrimSpace(ctx.AuthIdentity)
 	if instanceSlug == "" {
-		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		return "", &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+	}
+	return instanceSlug, nil
+}
+
+func renderDisabledResponse() renderArtifactResponse {
+	now := time.Now().UTC()
+	return renderArtifactResponse{
+		Status:         "error",
+		Cached:         false,
+		RenderID:       "",
+		PolicyVersion:  rendering.RenderPolicyVersion,
+		NormalizedURL:  "",
+		RetentionClass: "",
+		ErrorCode:      "disabled",
+		ErrorMessage:   "renders disabled for instance",
+		CreatedAt:      now,
+		ExpiresAt:      now.Add(5 * time.Minute),
+	}
+}
+
+func parseCreateRenderRequestInput(ctx *apptheory.Context) (createRenderRequest, error) {
+	var req createRenderRequest
+	if err := parseJSON(ctx, &req); err != nil {
+		return createRenderRequest{}, err
+	}
+	return req, nil
+}
+
+func normalizeCreateRenderURL(raw string) (string, *apptheory.AppError) {
+	normalized, _, err := normalizeLinkURL(raw)
+	if err == nil {
+		return normalized, nil
+	}
+
+	if appErr, ok := linkPreviewBadRequestError(err).(*apptheory.AppError); ok {
+		return "", appErr
+	}
+	return "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid url"}
+}
+
+func resolveCreateRenderRetention(now time.Time, retentionClass string, retentionDays int) (int, string, time.Time) {
+	classDays, classOut := rendering.RetentionForClass(retentionClass)
+	if retentionDays <= 0 {
+		retentionDays = classDays
+	}
+	desiredExpiresAt := rendering.ExpiresAtForRetention(now, retentionDays)
+	return retentionDays, classOut, desiredExpiresAt
+}
+
+func (s *Server) maybeServeCachedRenderRequest(
+	ctx *apptheory.Context,
+	instanceSlug string,
+	renderID string,
+	retentionClass string,
+	desiredExpiresAt time.Time,
+	now time.Time,
+) (*apptheory.Response, bool, error) {
+	if s == nil || s.store == nil || s.store.DB == nil || ctx == nil {
+		return nil, false, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
+	existing, getErr := s.store.GetRenderArtifact(ctx.Context(), renderID)
+	if getErr != nil || existing == nil {
+		return nil, false, nil
+	}
+
+	if maybeExtendRenderArtifact(existing, desiredExpiresAt, retentionClass, ctx.AuthIdentity, ctx.RequestID) {
+		_ = s.store.PutRenderArtifact(ctx.Context(), existing)
+	}
+
+	audit := &models.AuditLogEntry{
+		Actor:     strings.TrimSpace(ctx.AuthIdentity),
+		Action:    "render.request",
+		Target:    fmt.Sprintf("render:%s", renderID),
+		RequestID: strings.TrimSpace(ctx.RequestID),
+		CreatedAt: now,
+	}
+	_ = audit.UpdateKeys()
+	_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
+
+	hit := &models.UsageLedgerEntry{
+		ID:                   billing.UsageLedgerEntryID(instanceSlug, now.Format("2006-01"), strings.TrimSpace(ctx.RequestID), "render.request", renderID, 0),
+		InstanceSlug:         instanceSlug,
+		Month:                now.Format("2006-01"),
+		Module:               "render.request",
+		Target:               renderID,
+		Cached:               true,
+		Reason:               "cache_hit",
+		RequestID:            strings.TrimSpace(ctx.RequestID),
+		RequestedCredits:     linkRenderCreditCost,
+		ListCredits:          linkRenderCreditCost,
+		PricingMultiplierBps: 10000,
+		DebitedCredits:       0,
+		BillingType:          models.BillingTypeNone,
+		CreatedAt:            now,
+	}
+	_ = hit.UpdateKeys()
+	_ = s.store.DB.WithContext(ctx.Context()).Model(hit).IfNotExists().Create()
+
+	resp, err := apptheory.JSON(http.StatusOK, renderArtifactResponseFromModel(ctx, existing, true))
+	if err != nil {
+		return nil, false, err
+	}
+	return resp, true, nil
+}
+
+func (s *Server) handleCreateRender(ctx *apptheory.Context) (*apptheory.Response, error) {
+	instanceSlug, appErr := requireCreateRenderAuth(s, ctx)
+	if appErr != nil {
+		return nil, appErr
 	}
 
 	instCfg := s.loadInstanceTrustConfig(ctx.Context(), instanceSlug)
 	if !instCfg.RendersEnabled {
-		return apptheory.JSON(http.StatusOK, renderArtifactResponse{
-			Status:         "error",
-			Cached:         false,
-			RenderID:       "",
-			PolicyVersion:  rendering.RenderPolicyVersion,
-			NormalizedURL:  "",
-			RetentionClass: "",
-			ErrorCode:      "disabled",
-			ErrorMessage:   "renders disabled for instance",
-			CreatedAt:      time.Now().UTC(),
-			ExpiresAt:      time.Now().UTC().Add(5 * time.Minute),
-		})
+		return apptheory.JSON(http.StatusOK, renderDisabledResponse())
 	}
 
-	var req createRenderRequest
-	if err := parseJSON(ctx, &req); err != nil {
+	req, err := parseCreateRenderRequestInput(ctx)
+	if err != nil {
 		return nil, err
 	}
 
-	normalized, _, err := normalizeLinkURL(req.URL)
-	if err != nil {
-		return nil, linkPreviewBadRequestError(err)
+	normalized, appErr := normalizeCreateRenderURL(req.URL)
+	if appErr != nil {
+		return nil, appErr
 	}
 
 	now := time.Now().UTC()
 
 	// Resolve retention request (defaults when omitted).
-	classDays, classOut := rendering.RetentionForClass(req.RetentionClass)
-	retentionDays := req.RetentionDays
-	if retentionDays <= 0 {
-		retentionDays = classDays
-	}
+	retentionDays, classOut, desiredExpiresAt := resolveCreateRenderRetention(now, req.RetentionClass, req.RetentionDays)
 
 	renderID := rendering.RenderArtifactID(rendering.RenderPolicyVersion, normalized)
 
 	// Cache hit: return existing (best-effort retention upgrade, no budget debit).
-	if existing, err := s.store.GetRenderArtifact(ctx.Context(), renderID); err == nil && existing != nil {
-		desiredExpiresAt := rendering.ExpiresAtForRetention(now, retentionDays)
-		updated := false
-		if existing.ExpiresAt.Before(desiredExpiresAt) {
-			existing.ExpiresAt = desiredExpiresAt
-			updated = true
-		}
-		if existing.RetentionClass != models.RenderRetentionClassEvidence && classOut == models.RenderRetentionClassEvidence {
-			existing.RetentionClass = classOut
-			updated = true
-		}
-		if updated {
-			existing.RequestID = strings.TrimSpace(ctx.RequestID)
-			existing.RequestedBy = strings.TrimSpace(ctx.AuthIdentity)
-			_ = existing.UpdateKeys()
-			_ = s.store.PutRenderArtifact(ctx.Context(), existing)
-		}
-
-		audit := &models.AuditLogEntry{
-			Actor:     strings.TrimSpace(ctx.AuthIdentity),
-			Action:    "render.request",
-			Target:    fmt.Sprintf("render:%s", renderID),
-			RequestID: strings.TrimSpace(ctx.RequestID),
-			CreatedAt: now,
-		}
-		_ = audit.UpdateKeys()
-		_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
-
-		hit := &models.UsageLedgerEntry{
-			ID:                   billing.UsageLedgerEntryID(instanceSlug, now.Format("2006-01"), strings.TrimSpace(ctx.RequestID), "render.request", renderID, 0),
-			InstanceSlug:         instanceSlug,
-			Month:                now.Format("2006-01"),
-			Module:               "render.request",
-			Target:               renderID,
-			Cached:               true,
-			Reason:               "cache_hit",
-			RequestID:            strings.TrimSpace(ctx.RequestID),
-			RequestedCredits:     linkRenderCreditCost,
-			ListCredits:          linkRenderCreditCost,
-			PricingMultiplierBps: 10000,
-			DebitedCredits:       0,
-			BillingType:          models.BillingTypeNone,
-			CreatedAt:            now,
-		}
-		_ = hit.UpdateKeys()
-		_ = s.store.DB.WithContext(ctx.Context()).Model(hit).IfNotExists().Create()
-
-		return apptheory.JSON(http.StatusOK, renderArtifactResponseFromModel(ctx, existing, true))
+	if resp, ok, cacheErr := s.maybeServeCachedRenderRequest(ctx, instanceSlug, renderID, classOut, desiredExpiresAt, now); cacheErr != nil {
+		return nil, cacheErr
+	} else if ok {
+		return resp, nil
 	}
 
 	// Budget check (charge only on cache miss render requests).
@@ -167,8 +218,8 @@ func (s *Server) handleCreateRender(ctx *apptheory.Context) (*apptheory.Response
 
 	allowOverage := strings.ToLower(strings.TrimSpace(instCfg.OveragePolicy)) == overagePolicyAllow
 
-	if resp, err := s.debitBudgetForCreateRender(ctx, instanceSlug, now, allowOverage, renderID, normalized, classOut); resp != nil || err != nil {
-		return resp, err
+	if resp, debitErr := s.debitBudgetForCreateRender(ctx, instanceSlug, now, allowOverage, renderID, normalized, classOut); resp != nil || debitErr != nil {
+		return resp, debitErr
 	}
 
 	artifact, queued, err := s.queueRender(ctx, normalized, classOut, retentionDays)

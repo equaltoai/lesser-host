@@ -1,9 +1,7 @@
 package controlplane
 
 import (
-	"context"
 	"fmt"
-	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -204,81 +202,18 @@ type verifyDomainResponse struct {
 	Domain domainResponse `json:"domain"`
 }
 
-func (s *Server) handleVerifyInstanceDomain(ctx *apptheory.Context) (*apptheory.Response, error) {
-	if err := requireAdmin(ctx); err != nil {
-		return nil, err
-	}
+func (s *Server) markDomainVerified(ctx *apptheory.Context, domain string, slug string, domainType string, now time.Time) *apptheory.AppError {
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if ctx == nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
-	slug := strings.ToLower(strings.TrimSpace(ctx.Param("slug")))
-	if slug == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "slug is required"}
-	}
-
-	domain, err := domains.NormalizeDomain(ctx.Param("domain"))
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
-	}
-
-	var item models.Domain
-	err = s.store.DB.WithContext(ctx.Context()).
-		Model(&models.Domain{}).
-		Where("PK", "=", fmt.Sprintf("DOMAIN#%s", domain)).
-		Where("SK", "=", models.SKMetadata).
-		First(&item)
-	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "domain not found"}
-	}
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-	if strings.TrimSpace(item.InstanceSlug) != slug {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "domain not found"}
-	}
-
-	if strings.TrimSpace(item.Status) == models.DomainStatusVerified || strings.TrimSpace(item.Status) == models.DomainStatusActive {
-		return apptheory.JSON(http.StatusOK, verifyDomainResponse{Domain: domainResponseFromModel(&item)})
-	}
-
-	token := strings.TrimSpace(item.VerificationToken)
-	if token == "" {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "domain is not eligible for verification"}
-	}
-
-	want := domainVerificationValuePrefix + token
-	txtName := domainVerificationRecordPrefix + domain
-
-	lookupCtx := ctx.Context()
-	if lookupCtx == nil {
-		lookupCtx = context.Background()
-	}
-	rc, cancel := context.WithTimeout(lookupCtx, 4*time.Second)
-	defer cancel()
-
-	records, err := net.DefaultResolver.LookupTXT(rc, txtName)
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "verification record not found"}
-	}
-
-	found := false
-	for _, r := range records {
-		r = strings.TrimSpace(r)
-		if r == want {
-			found = true
-			break
-		}
-	}
-	if !found {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "verification record not found"}
-	}
-
-	now := time.Now().UTC()
 	update := &models.Domain{
 		Domain:       domain,
 		InstanceSlug: slug,
-		Type:         strings.TrimSpace(item.Type),
+		Type:         strings.TrimSpace(domainType),
 		Status:       models.DomainStatusVerified,
 		// Keep method stable; clear token after successful verification.
 		VerificationMethod: domainVerificationMethodDNSTXT,
@@ -296,9 +231,81 @@ func (s *Server) handleVerifyInstanceDomain(ctx *apptheory.Context) (*apptheory.
 		"UpdatedAt",
 	); err != nil {
 		if theoryErrors.IsConditionFailed(err) {
-			return nil, &apptheory.AppError{Code: "app.not_found", Message: "domain not found"}
+			return &apptheory.AppError{Code: "app.not_found", Message: "domain not found"}
 		}
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to verify domain"}
+		return &apptheory.AppError{Code: "app.internal", Message: "failed to verify domain"}
+	}
+
+	return nil
+}
+
+func (s *Server) createVanityDomainRequestBestEffort(ctx *apptheory.Context, item *models.Domain, now time.Time) {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return
+	}
+	if ctx == nil || item == nil {
+		return
+	}
+	if strings.TrimSpace(item.Type) != models.DomainTypeVanity {
+		return
+	}
+
+	req := &models.VanityDomainRequest{
+		Domain:       strings.TrimSpace(item.Domain),
+		DomainRaw:    strings.TrimSpace(item.DomainRaw),
+		InstanceSlug: strings.TrimSpace(item.InstanceSlug),
+		RequestedBy:  strings.TrimSpace(ctx.AuthIdentity),
+		Status:       models.VanityDomainRequestStatusPending,
+		VerifiedAt:   now,
+		RequestedAt:  now,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	_ = req.UpdateKeys()
+	_ = s.store.DB.WithContext(ctx.Context()).Model(req).CreateOrUpdate()
+}
+
+func (s *Server) handleVerifyInstanceDomain(ctx *apptheory.Context) (*apptheory.Response, error) {
+	if err := requireAdmin(ctx); err != nil {
+		return nil, err
+	}
+	if appErr := requireStoreDB(s); appErr != nil {
+		return nil, appErr
+	}
+
+	slug := strings.ToLower(strings.TrimSpace(ctx.Param("slug")))
+	if slug == "" {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "slug is required"}
+	}
+
+	domain, err := domains.NormalizeDomain(ctx.Param("domain"))
+	if err != nil {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
+	}
+
+	item, err := s.loadInstanceDomain(ctx, domain, slug)
+	if err != nil {
+		return nil, err
+	}
+
+	if domainIsVerifiedOrActive(item.Status) {
+		return apptheory.JSON(http.StatusOK, verifyDomainResponse{Domain: domainResponseFromModel(item)})
+	}
+
+	token := strings.TrimSpace(item.VerificationToken)
+	if token == "" {
+		return nil, &apptheory.AppError{Code: "app.conflict", Message: "domain is not eligible for verification"}
+	}
+
+	want := domainVerificationValuePrefix + token
+	txtName := domainVerificationRecordPrefix + domain
+	if err := verifyDomainTXT(ctx.Context(), txtName, want); err != nil {
+		return nil, err
+	}
+
+	now := time.Now().UTC()
+	if appErr := s.markDomainVerified(ctx, domain, slug, item.Type, now); appErr != nil {
+		return nil, appErr
 	}
 
 	audit := &models.AuditLogEntry{
@@ -318,21 +325,7 @@ func (s *Server) handleVerifyInstanceDomain(ctx *apptheory.Context) (*apptheory.
 	item.UpdatedAt = now
 
 	// Create an operator review request for vanity domain activation.
-	if strings.TrimSpace(item.Type) == models.DomainTypeVanity {
-		req := &models.VanityDomainRequest{
-			Domain:       domain,
-			DomainRaw:    strings.TrimSpace(item.DomainRaw),
-			InstanceSlug: slug,
-			RequestedBy:  strings.TrimSpace(ctx.AuthIdentity),
-			Status:       models.VanityDomainRequestStatusPending,
-			VerifiedAt:   now,
-			RequestedAt:  now,
-			CreatedAt:    now,
-			UpdatedAt:    now,
-		}
-		_ = req.UpdateKeys()
-		_ = s.store.DB.WithContext(ctx.Context()).Model(req).CreateOrUpdate()
-	}
+	s.createVanityDomainRequestBestEffort(ctx, item, now)
 
 	// Best-effort: ensure the vanity domain hostId is registered on-chain for tips (managed instances).
 	if s.cfg.TipEnabled {
@@ -340,7 +333,7 @@ func (s *Server) handleVerifyInstanceDomain(ctx *apptheory.Context) (*apptheory.
 	}
 
 	return apptheory.JSON(http.StatusOK, verifyDomainResponse{
-		Domain: domainResponseFromModel(&item),
+		Domain: domainResponseFromModel(item),
 	})
 }
 

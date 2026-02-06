@@ -217,4 +217,3 @@ func verifyEthereumSignature(address, message, signature string) error {
 
 	return nil
 }
-
