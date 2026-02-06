@@ -165,7 +165,7 @@ func (s *Server) handleApproveVanityDomainRequest(ctx *apptheory.Context) (*appt
 			return nil
 		},
 			tabletheory.IfExists(),
-			tabletheory.ConditionExpression("status = :verified", map[string]any{":verified": models.DomainStatusVerified}),
+			tabletheory.Condition("Status", "=", models.DomainStatusVerified),
 		)
 
 		tx.UpdateWithBuilder(reqKey, func(ub core.UpdateBuilder) error {
@@ -179,7 +179,7 @@ func (s *Server) handleApproveVanityDomainRequest(ctx *apptheory.Context) (*appt
 			return nil
 		},
 			tabletheory.IfExists(),
-			tabletheory.ConditionExpression("status = :pending", map[string]any{":pending": models.VanityDomainRequestStatusPending}),
+			tabletheory.Condition("Status", "=", models.VanityDomainRequestStatusPending),
 		)
 
 		tx.Put(audit)
@@ -295,7 +295,7 @@ func (s *Server) handleRejectVanityDomainRequest(ctx *apptheory.Context) (*appth
 			return nil
 		},
 			tabletheory.IfExists(),
-			tabletheory.ConditionExpression("status = :pending", map[string]any{":pending": models.VanityDomainRequestStatusPending}),
+			tabletheory.Condition("Status", "=", models.VanityDomainRequestStatusPending),
 		)
 
 		tx.Put(audit)
@@ -536,7 +536,7 @@ func (s *Server) handleApproveExternalInstanceRegistration(ctx *apptheory.Contex
 			return nil
 		},
 			tabletheory.IfExists(),
-			tabletheory.ConditionExpression("status = :pending", map[string]any{":pending": models.ExternalInstanceRegistrationStatusPending}),
+			tabletheory.Condition("Status", "=", models.ExternalInstanceRegistrationStatusPending),
 		)
 		tx.Put(audit)
 		return nil
@@ -614,7 +614,7 @@ func (s *Server) handleRejectExternalInstanceRegistration(ctx *apptheory.Context
 			return nil
 		},
 			tabletheory.IfExists(),
-			tabletheory.ConditionExpression("status = :pending", map[string]any{":pending": models.ExternalInstanceRegistrationStatusPending}),
+			tabletheory.Condition("Status", "=", models.ExternalInstanceRegistrationStatusPending),
 		)
 		tx.Put(audit)
 		return nil

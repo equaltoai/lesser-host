@@ -572,7 +572,7 @@ func (s *Server) handleStripePaymentCheckoutCompleted(ctx *apptheory.Context, ev
 			return nil
 		},
 			tabletheory.IfExists(),
-			tabletheory.ConditionExpression("status = :pending", map[string]any{":pending": models.CreditPurchaseStatusPending}),
+			tabletheory.Condition("Status", "=", models.CreditPurchaseStatusPending),
 		)
 
 		tx.UpdateWithBuilder(updateBudget, func(ub core.UpdateBuilder) error {
