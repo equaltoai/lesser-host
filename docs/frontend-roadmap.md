@@ -213,6 +213,9 @@ Deliverables:
 - Domains UI:
   - list domains (`GET /api/v1/portal/instances/{slug}/domains`)
   - add vanity domain and show TXT instructions (`POST /api/v1/portal/instances/{slug}/domains`)
+  - DNS assist (Route53-managed zones):
+    - if the domain is hosted in Route53 (in an operator-managed AWS account), offer a one-click UPSERT of the TXT proof
+      record and then run verification (no copy/paste required)
   - verify (`POST /api/v1/portal/instances/{slug}/domains/{domain}/verify`)
   - rotate/disable/delete
   - show “verified → pending operator approval → active” lifecycle clearly
@@ -222,6 +225,8 @@ Deliverables:
 
 Acceptance criteria:
 - Vanity domain proof instructions are copy/paste correct and include record name + value.
+- For Route53-managed domains, the portal can create the TXT proof record automatically and verify without manual DNS
+  edits.
 - Verified vanity domains show “awaiting approval” until operator action.
 - Instance key plaintext is never displayed again after leaving the page.
 

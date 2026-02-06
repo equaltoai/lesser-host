@@ -263,8 +263,10 @@ Deliverables:
   - configure default domain `slug.greater.website` (via NS delegation under `greater.website`)
   - bootstrap instance credentials + register in `lesser.host`
 - Vanity domains:
-  - user-managed DNS required (no hosted zone)
-  - proof flow before activation
+  - DNS proof required before activation
+  - support both:
+    - user-managed DNS (copy/paste proof + routing records)
+    - Route53-managed DNS (optional) where `lesser.host` can UPSERT proof + routing records automatically
   - once activated, register vanity hostId on-chain and route vanity to instance
 
 Acceptance criteria:
