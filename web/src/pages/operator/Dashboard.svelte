@@ -90,6 +90,8 @@
 				</Button>
 				<Button variant="outline" onclick={() => navigate('/operator/provisioning/jobs')}>Provisioning jobs</Button>
 				<Button variant="outline" onclick={() => navigate('/operator/instances')}>Instance search</Button>
+				<Button variant="outline" onclick={() => navigate('/operator/tip-registry')}>Tip registry</Button>
+				<Button variant="outline" onclick={() => navigate('/operator/audit')}>Audit log</Button>
 			</div>
 		</Card>
 	{/if}
