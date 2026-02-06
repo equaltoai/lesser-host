@@ -5,13 +5,34 @@
 	import type { PortalMeResponse } from 'src/lib/api/portal';
 	import { getPortalMe } from 'src/lib/api/portal';
 	import { logout } from 'src/lib/auth/logout';
-	import { navigate } from 'src/lib/router';
+	import { currentPath, navigate } from 'src/lib/router';
 	import { session } from 'src/lib/session';
 	import { Alert, Button, Card, Container, Heading, Spinner, Text } from 'src/lib/ui';
+
+	import InstanceDetail from 'src/pages/portal/InstanceDetail.svelte';
+	import Instances from 'src/pages/portal/Instances.svelte';
 
 	let loading = $state(false);
 	let errorMessage = $state<string | null>(null);
 	let me = $state<PortalMeResponse | null>(null);
+
+	type PortalRoute = { kind: 'instances' } | { kind: 'instance'; slug: string } | { kind: 'notFound' };
+
+	const portalRoute = $derived.by<PortalRoute>(() => {
+		const path = $currentPath;
+		if (!path.startsWith('/portal')) return { kind: 'instances' };
+
+		const rest = path.slice('/portal'.length);
+		const parts = rest.split('/').filter(Boolean);
+
+		if (parts.length === 0) return { kind: 'instances' };
+		if (parts[0] === 'instances') {
+			if (parts[1]) return { kind: 'instance', slug: parts[1] };
+			return { kind: 'instances' };
+		}
+
+		return { kind: 'notFound' };
+	});
 
 	function formatError(err: unknown): string {
 		if (!err) return 'unknown error';
@@ -32,6 +53,10 @@
 			navigate('/login');
 			return;
 		}
+		if (current.role === 'admin' || current.role === 'operator') {
+			navigate('/operator');
+			return;
+		}
 
 		loading = true;
 		try {
@@ -41,6 +66,7 @@
 			errorMessage = message;
 			if ((err as Partial<ApiError>).status === 401) {
 				await logout();
+				navigate('/login');
 			}
 		} finally {
 			loading = false;
@@ -86,7 +112,7 @@
 		{:else if me}
 			<Card variant="outlined" padding="lg">
 				{#snippet header()}
-					<Heading level={2} size="xl">Who am I?</Heading>
+					<Heading level={2} size="xl">Account</Heading>
 				{/snippet}
 				<div class="portal__me">
 					<Text size="sm">
@@ -103,6 +129,23 @@
 					</Text>
 				</div>
 			</Card>
+
+			{#if !$session}
+				<Alert variant="warning" title="Signed out">
+					<Text size="sm">Sign in to continue.</Text>
+					<div class="portal__actions-inline">
+						<Button variant="outline" onclick={() => navigate('/login')}>Sign in</Button>
+					</div>
+				</Alert>
+			{:else if portalRoute.kind === 'instances'}
+				<Instances token={$session.token} />
+			{:else if portalRoute.kind === 'instance'}
+				<InstanceDetail token={$session.token} slug={portalRoute.slug} />
+			{:else}
+				<Alert variant="warning" title="Not found">
+					<Text size="sm">Unknown portal path.</Text>
+				</Alert>
+			{/if}
 		{:else}
 			<Alert variant="warning" title="No session">
 				<Text size="sm">You are signed out.</Text>

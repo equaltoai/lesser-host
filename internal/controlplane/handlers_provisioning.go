@@ -45,6 +45,7 @@ type provisionJobResponse struct {
 
 	ErrorCode    string `json:"error_code,omitempty"`
 	ErrorMessage string `json:"error_message,omitempty"`
+	RequestID    string `json:"request_id,omitempty"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -74,6 +75,7 @@ func provisionJobResponseFromModel(j *models.ProvisionJob) provisionJobResponse 
 		RunID:              strings.TrimSpace(j.RunID),
 		ErrorCode:          strings.TrimSpace(j.ErrorCode),
 		ErrorMessage:       strings.TrimSpace(j.ErrorMessage),
+		RequestID:          strings.TrimSpace(j.RequestID),
 		CreatedAt:          j.CreatedAt,
 		UpdatedAt:          j.UpdatedAt,
 	}

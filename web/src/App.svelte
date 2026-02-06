@@ -18,9 +18,9 @@
 		<Login />
 	{:else if $currentPath === '/setup'}
 		<Setup />
-	{:else if $currentPath === '/portal'}
+	{:else if $currentPath === '/portal' || $currentPath.startsWith('/portal/')}
 		<Portal />
-	{:else if $currentPath === '/operator'}
+	{:else if $currentPath === '/operator' || $currentPath.startsWith('/operator/')}
 		<Operator />
 	{:else if $currentPath === '/account'}
 		<Account />
