@@ -5,13 +5,46 @@
 	import type { OperatorMeResponse } from 'src/lib/api/operators';
 	import { getOperatorMe } from 'src/lib/api/operators';
 	import { logout } from 'src/lib/auth/logout';
-	import { navigate } from 'src/lib/router';
+	import { currentPath, navigate } from 'src/lib/router';
 	import { session } from 'src/lib/session';
 	import { Alert, Button, Card, Container, Heading, Spinner, Text } from 'src/lib/ui';
+
+	import Dashboard from 'src/pages/operator/Dashboard.svelte';
+	import ExternalInstanceRegistrations from 'src/pages/operator/ExternalInstanceRegistrations.svelte';
+	import InstanceSupport from 'src/pages/operator/InstanceSupport.svelte';
+	import VanityDomainRequests from 'src/pages/operator/VanityDomainRequests.svelte';
 
 	let loading = $state(false);
 	let errorMessage = $state<string | null>(null);
 	let me = $state<OperatorMeResponse | null>(null);
+
+	type OperatorRoute =
+		| { kind: 'dashboard' }
+		| { kind: 'vanityDomains' }
+		| { kind: 'externalRegistrations' }
+		| { kind: 'instances' }
+		| { kind: 'instanceDetail'; slug: string }
+		| { kind: 'notFound' };
+
+	const operatorRoute = $derived.by<OperatorRoute>(() => {
+		const path = $currentPath;
+		if (!path.startsWith('/operator')) return { kind: 'dashboard' };
+
+		const rest = path.slice('/operator'.length);
+		const parts = rest.split('/').filter(Boolean);
+
+		if (parts.length === 0) return { kind: 'dashboard' };
+		if (parts[0] === 'approvals') {
+			if (parts[1] === 'domains') return { kind: 'vanityDomains' };
+			if (parts[1] === 'external-instances') return { kind: 'externalRegistrations' };
+			return { kind: 'notFound' };
+		}
+		if (parts[0] === 'instances') {
+			if (parts[1]) return { kind: 'instanceDetail', slug: parts[1] };
+			return { kind: 'instances' };
+		}
+		return { kind: 'notFound' };
+	});
 
 	function formatError(err: unknown): string {
 		if (!err) return 'unknown error';
@@ -69,12 +102,16 @@
 				<Heading level={1}>Operator console</Heading>
 				<Text color="secondary">Admin/operator access.</Text>
 			</div>
-			<div class="operator__actions">
-				<Button variant="outline" onclick={() => void loadMe()} disabled={loading}>Refresh</Button>
-				<Button variant="ghost" onclick={() => navigate('/account')}>Account</Button>
-				<Button variant="ghost" onclick={() => navigate('/portal')}>Portal</Button>
-				<Button
-					variant="ghost"
+		<div class="operator__actions">
+			<Button variant="outline" onclick={() => void loadMe()} disabled={loading}>Refresh</Button>
+			<Button variant="ghost" onclick={() => navigate('/operator')}>Dashboard</Button>
+			<Button variant="ghost" onclick={() => navigate('/operator/approvals/domains')}>Domains</Button>
+			<Button variant="ghost" onclick={() => navigate('/operator/approvals/external-instances')}>External regs</Button>
+			<Button variant="ghost" onclick={() => navigate('/operator/instances')}>Instances</Button>
+			<Button variant="ghost" onclick={() => navigate('/account')}>Account</Button>
+			<Button variant="ghost" onclick={() => navigate('/portal')}>Portal</Button>
+			<Button
+				variant="ghost"
 					onclick={() => void handleLogout()}
 				>
 					Logout
@@ -110,6 +147,24 @@
 			<Alert variant="warning" title="No data">
 				<Text size="sm">No response from /api/v1/operators/me.</Text>
 			</Alert>
+		{/if}
+
+		{#if $session && me}
+			{#if operatorRoute.kind === 'dashboard'}
+				<Dashboard token={$session.token} />
+			{:else if operatorRoute.kind === 'vanityDomains'}
+				<VanityDomainRequests token={$session.token} />
+			{:else if operatorRoute.kind === 'externalRegistrations'}
+				<ExternalInstanceRegistrations token={$session.token} />
+			{:else if operatorRoute.kind === 'instances'}
+				<InstanceSupport token={$session.token} />
+			{:else if operatorRoute.kind === 'instanceDetail'}
+				<InstanceSupport token={$session.token} slug={operatorRoute.slug} />
+			{:else}
+				<Alert variant="warning" title="Not found">
+					<Text size="sm">Unknown operator path.</Text>
+				</Alert>
+			{/if}
 		{/if}
 
 		{#if $session}
