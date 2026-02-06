@@ -13,6 +13,7 @@ type Server struct {
 	store    *store.Store
 	webAuthn webAuthnEngine
 	queues   *queueClient
+	r53      *route53Client
 }
 
 // NewServer constructs a new control plane Server.
@@ -23,6 +24,7 @@ func NewServer(cfg config.Config, st *store.Store) *Server {
 		store:    st,
 		webAuthn: webAuthn,
 		queues:   newQueueClient(cfg.ProvisionQueueURL),
+		r53:      newRoute53Client(),
 	}
 }
 
@@ -85,12 +87,13 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 	app.Get("/api/v1/portal/instances/{slug}/usage/{month}/summary", s.handlePortalGetInstanceUsageSummary, apptheory.RequireAuth())
 
 	// Portal domains (owner-scoped).
-	app.Get("/api/v1/portal/instances/{slug}/domains", s.handlePortalListInstanceDomains, apptheory.RequireAuth())
-	app.Post("/api/v1/portal/instances/{slug}/domains", s.handlePortalAddInstanceDomain, apptheory.RequireAuth())
-	app.Post("/api/v1/portal/instances/{slug}/domains/{domain}/verify", s.handlePortalVerifyInstanceDomain, apptheory.RequireAuth())
-	app.Post("/api/v1/portal/instances/{slug}/domains/{domain}/rotate", s.handlePortalRotateInstanceDomain, apptheory.RequireAuth())
-	app.Post("/api/v1/portal/instances/{slug}/domains/{domain}/disable", s.handlePortalDisableInstanceDomain, apptheory.RequireAuth())
-	app.Delete("/api/v1/portal/instances/{slug}/domains/{domain}", s.handlePortalDeleteInstanceDomain, apptheory.RequireAuth())
+		app.Get("/api/v1/portal/instances/{slug}/domains", s.handlePortalListInstanceDomains, apptheory.RequireAuth())
+		app.Post("/api/v1/portal/instances/{slug}/domains", s.handlePortalAddInstanceDomain, apptheory.RequireAuth())
+		app.Post("/api/v1/portal/instances/{slug}/domains/{domain}/verify", s.handlePortalVerifyInstanceDomain, apptheory.RequireAuth())
+		app.Post("/api/v1/portal/instances/{slug}/domains/{domain}/dns/route53", s.handlePortalUpsertDomainVerificationRoute53, apptheory.RequireAuth())
+		app.Post("/api/v1/portal/instances/{slug}/domains/{domain}/rotate", s.handlePortalRotateInstanceDomain, apptheory.RequireAuth())
+		app.Post("/api/v1/portal/instances/{slug}/domains/{domain}/disable", s.handlePortalDisableInstanceDomain, apptheory.RequireAuth())
+		app.Delete("/api/v1/portal/instances/{slug}/domains/{domain}", s.handlePortalDeleteInstanceDomain, apptheory.RequireAuth())
 	app.Post("/api/v1/portal/instances/{slug}/keys", s.handlePortalCreateInstanceKey, apptheory.RequireAuth())
 
 	// Portal external instance registrations.

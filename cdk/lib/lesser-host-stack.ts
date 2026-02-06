@@ -542,19 +542,32 @@ export class LesserHostStack extends cdk.Stack {
 				resources: paymentsSsmParamArns,
 			}),
 		);
-		controlPlaneFn.addToRolePolicy(
-			new iam.PolicyStatement({
-				actions: ['kms:Decrypt'],
-				resources: ['*'],
-				conditions: {
-					StringEquals: { 'kms:ViaService': `ssm.${cdk.Aws.REGION}.amazonaws.com` },
-				},
-			}),
-		);
+			controlPlaneFn.addToRolePolicy(
+				new iam.PolicyStatement({
+					actions: ['kms:Decrypt'],
+					resources: ['*'],
+					conditions: {
+						StringEquals: { 'kms:ViaService': `ssm.${cdk.Aws.REGION}.amazonaws.com` },
+					},
+				}),
+			);
 
-		const retentionSweepRule = new events.Rule(this, 'RetentionSweepRule', {
-			ruleName: `${namePrefix}-retention-sweep`,
-			schedule: events.Schedule.rate(cdk.Duration.days(1)),
+			controlPlaneFn.addToRolePolicy(
+				new iam.PolicyStatement({
+					actions: ['route53:ListHostedZonesByName'],
+					resources: ['*'],
+				}),
+			);
+			controlPlaneFn.addToRolePolicy(
+				new iam.PolicyStatement({
+					actions: ['route53:ChangeResourceRecordSets'],
+					resources: ['arn:aws:route53:::hostedzone/*'],
+				}),
+			);
+
+			const retentionSweepRule = new events.Rule(this, 'RetentionSweepRule', {
+				ruleName: `${namePrefix}-retention-sweep`,
+				schedule: events.Schedule.rate(cdk.Duration.days(1)),
 		});
 		retentionSweepRule.addTarget(new targets.LambdaFunction(renderWorkerFn));
 

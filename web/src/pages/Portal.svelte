@@ -10,13 +10,20 @@
 	import { Alert, Button, Card, Container, Heading, Spinner, Text } from 'src/lib/ui';
 
 	import InstanceDetail from 'src/pages/portal/InstanceDetail.svelte';
+	import InstanceDomains from 'src/pages/portal/InstanceDomains.svelte';
+	import InstanceKeys from 'src/pages/portal/InstanceKeys.svelte';
 	import Instances from 'src/pages/portal/Instances.svelte';
 
 	let loading = $state(false);
 	let errorMessage = $state<string | null>(null);
 	let me = $state<PortalMeResponse | null>(null);
 
-	type PortalRoute = { kind: 'instances' } | { kind: 'instance'; slug: string } | { kind: 'notFound' };
+	type PortalRoute =
+		| { kind: 'instances' }
+		| { kind: 'instance'; slug: string }
+		| { kind: 'instanceDomains'; slug: string }
+		| { kind: 'instanceKeys'; slug: string }
+		| { kind: 'notFound' };
 
 	const portalRoute = $derived.by<PortalRoute>(() => {
 		const path = $currentPath;
@@ -27,7 +34,12 @@
 
 		if (parts.length === 0) return { kind: 'instances' };
 		if (parts[0] === 'instances') {
-			if (parts[1]) return { kind: 'instance', slug: parts[1] };
+			if (parts[1]) {
+				if (parts.length === 2) return { kind: 'instance', slug: parts[1] };
+				if (parts[2] === 'domains') return { kind: 'instanceDomains', slug: parts[1] };
+				if (parts[2] === 'keys') return { kind: 'instanceKeys', slug: parts[1] };
+				return { kind: 'notFound' };
+			}
 			return { kind: 'instances' };
 		}
 
@@ -141,6 +153,10 @@
 				<Instances token={$session.token} />
 			{:else if portalRoute.kind === 'instance'}
 				<InstanceDetail token={$session.token} slug={portalRoute.slug} />
+			{:else if portalRoute.kind === 'instanceDomains'}
+				<InstanceDomains token={$session.token} slug={portalRoute.slug} />
+			{:else if portalRoute.kind === 'instanceKeys'}
+				<InstanceKeys token={$session.token} slug={portalRoute.slug} />
 			{:else}
 				<Alert variant="warning" title="Not found">
 					<Text size="sm">Unknown portal path.</Text>
