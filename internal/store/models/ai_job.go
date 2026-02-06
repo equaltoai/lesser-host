@@ -101,6 +101,10 @@ func (j *AIJob) UpdateKeys() error {
 	j.InputsJSON = strings.TrimSpace(j.InputsJSON)
 	j.Status = strings.ToLower(strings.TrimSpace(j.Status))
 
+	if j.MaxAttempts <= 0 {
+		j.MaxAttempts = 3
+	}
+
 	j.PK = fmt.Sprintf("AIJOB#%s", j.ID)
 	j.SK = "JOB"
 	j.TTL = j.ExpiresAt.Unix()

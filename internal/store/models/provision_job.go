@@ -125,6 +125,10 @@ func (j *ProvisionJob) UpdateKeys() error {
 	j.ErrorMessage = strings.TrimSpace(j.ErrorMessage)
 	j.RequestID = strings.TrimSpace(j.RequestID)
 
+	if j.MaxAttempts <= 0 {
+		j.MaxAttempts = 10
+	}
+
 	j.PK = fmt.Sprintf("PROVISION_JOB#%s", j.ID)
 	j.SK = "JOB"
 	j.TTL = j.ExpiresAt.Unix()

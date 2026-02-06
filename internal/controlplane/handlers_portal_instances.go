@@ -311,6 +311,13 @@ func (s *Server) handlePortalStartInstanceProvisioning(ctx *apptheory.Context) (
 	existingJobID := strings.TrimSpace(inst.ProvisionJobID)
 	if (existingStatus == models.ProvisionJobStatusQueued || existingStatus == models.ProvisionJobStatusRunning) && existingJobID != "" {
 		if job, jerr := s.store.GetProvisionJob(ctx.Context(), existingJobID); jerr == nil && job != nil {
+			// Best-effort: allow callers to "nudge" stalled jobs by re-enqueuing the existing idempotent job.
+			if s.queues != nil && strings.TrimSpace(s.cfg.ProvisionQueueURL) != "" {
+				_ = s.queues.enqueueProvisionJob(ctx.Context(), provisioning.JobMessage{
+					Kind:  "provision_job",
+					JobID: existingJobID,
+				})
+			}
 			return apptheory.JSON(http.StatusOK, provisionJobResponseFromModel(job))
 		}
 	}
