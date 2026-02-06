@@ -9,6 +9,7 @@
 	import Operator from 'src/pages/Operator.svelte';
 	import Portal from 'src/pages/Portal.svelte';
 	import Setup from 'src/pages/Setup.svelte';
+	import Trust from 'src/pages/Trust.svelte';
 </script>
 
 <IdProvider>
@@ -22,6 +23,8 @@
 		<Portal />
 	{:else if $currentPath === '/operator' || $currentPath.startsWith('/operator/')}
 		<Operator />
+	{:else if $currentPath === '/trust' || $currentPath.startsWith('/trust/')}
+		<Trust />
 	{:else if $currentPath === '/account'}
 		<Account />
 	{:else}

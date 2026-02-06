@@ -55,6 +55,7 @@
 					Refresh
 				</Button>
 				<Button variant="ghost" onclick={() => navigate('/setup')}>Setup</Button>
+				<Button variant="ghost" onclick={() => navigate('/trust')}>Trust</Button>
 				{#if $session}
 					<Button variant="ghost" onclick={() => navigate('/account')}>Account</Button>
 					<Button variant="ghost" onclick={() => navigate(defaultRouteForRole($session.role))}>
