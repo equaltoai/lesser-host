@@ -123,6 +123,7 @@ func (o *TipRegistryOperation) UpdateKeys() error {
 
 	o.PK = fmt.Sprintf("TIPREG_OP#%s", o.ID)
 	o.SK = SKMetadata
+	o.updateGSI1()
 
 	return nil
 }

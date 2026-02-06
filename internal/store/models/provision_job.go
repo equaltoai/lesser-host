@@ -128,6 +128,7 @@ func (j *ProvisionJob) UpdateKeys() error {
 	j.PK = fmt.Sprintf("PROVISION_JOB#%s", j.ID)
 	j.SK = "JOB"
 	j.TTL = j.ExpiresAt.Unix()
+	j.updateGSI1()
 	return nil
 }
 

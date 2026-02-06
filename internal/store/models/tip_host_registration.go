@@ -122,6 +122,7 @@ func (r *TipHostRegistration) UpdateKeys() error {
 	if !r.ExpiresAt.IsZero() {
 		r.TTL = r.ExpiresAt.Unix()
 	}
+	r.updateGSI1()
 
 	return nil
 }

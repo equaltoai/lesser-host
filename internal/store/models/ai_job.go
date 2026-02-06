@@ -104,6 +104,7 @@ func (j *AIJob) UpdateKeys() error {
 	j.PK = fmt.Sprintf("AIJOB#%s", j.ID)
 	j.SK = "JOB"
 	j.TTL = j.ExpiresAt.Unix()
+	j.updateGSI1()
 	return nil
 }
 
