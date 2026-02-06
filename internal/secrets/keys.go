@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 )
@@ -38,7 +39,7 @@ func ClaudeAPIKey(ctx context.Context, client SSMAPI) (string, error) {
 
 // StripeSecretKey loads the Stripe secret key from SSM.
 func StripeSecretKey(ctx context.Context, client SSMAPI) (string, error) {
-	raw, err := GetSSMParameterCached(ctx, client, StripeSecretKeySSMParameterName, 10*time.Minute)
+	raw, err := loadFirstSSMParameterCached(ctx, client, stripeSecretKeyCandidates(), 10*time.Minute)
 	if err != nil {
 		return "", err
 	}
@@ -47,11 +48,50 @@ func StripeSecretKey(ctx context.Context, client SSMAPI) (string, error) {
 
 // StripeWebhookSecret loads the Stripe webhook signing secret from SSM.
 func StripeWebhookSecret(ctx context.Context, client SSMAPI) (string, error) {
-	raw, err := GetSSMParameterCached(ctx, client, StripeWebhookSecretSSMParameterName, 10*time.Minute)
+	raw, err := loadFirstSSMParameterCached(ctx, client, stripeWebhookSecretCandidates(), 10*time.Minute)
 	if err != nil {
 		return "", err
 	}
 	return parseAPIKeyValue(raw)
+}
+
+func stripeStage() string {
+	stage := strings.ToLower(strings.TrimSpace(os.Getenv("STAGE")))
+	if stage == "" {
+		stage = "lab"
+	}
+	return stage
+}
+
+func stripeSecretKeyCandidates() []string {
+	stage := stripeStage()
+	return []string{
+		fmt.Sprintf("/lesser-host/stripe/%s/secret", stage),
+		StripeSecretKeySSMParameterName,
+	}
+}
+
+func stripeWebhookSecretCandidates() []string {
+	stage := stripeStage()
+	return []string{
+		fmt.Sprintf("/lesser-host/stripe/%s/webhook", stage),
+		StripeWebhookSecretSSMParameterName,
+	}
+}
+
+func loadFirstSSMParameterCached(ctx context.Context, client SSMAPI, names []string, ttl time.Duration) (string, error) {
+	var lastErr error
+	for _, name := range names {
+		raw, err := GetSSMParameterCached(ctx, client, name, ttl)
+		if err == nil {
+			return raw, nil
+		}
+		lastErr = err
+	}
+	if lastErr != nil {
+		return "", lastErr
+	}
+	return "", fmt.Errorf("no parameter candidates provided")
 }
 
 func parseAPIKeyValue(raw string) (string, error) {

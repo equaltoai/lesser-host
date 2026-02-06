@@ -9,9 +9,12 @@
 	import { session } from 'src/lib/session';
 	import { Alert, Button, Card, Container, Heading, Spinner, Text } from 'src/lib/ui';
 
+	import Billing from 'src/pages/portal/Billing.svelte';
 	import InstanceDetail from 'src/pages/portal/InstanceDetail.svelte';
+	import InstanceBudgets from 'src/pages/portal/InstanceBudgets.svelte';
 	import InstanceDomains from 'src/pages/portal/InstanceDomains.svelte';
 	import InstanceKeys from 'src/pages/portal/InstanceKeys.svelte';
+	import InstanceUsage from 'src/pages/portal/InstanceUsage.svelte';
 	import Instances from 'src/pages/portal/Instances.svelte';
 
 	let loading = $state(false);
@@ -21,8 +24,11 @@
 	type PortalRoute =
 		| { kind: 'instances' }
 		| { kind: 'instance'; slug: string }
+		| { kind: 'instanceBudgets'; slug: string }
+		| { kind: 'instanceUsage'; slug: string }
 		| { kind: 'instanceDomains'; slug: string }
 		| { kind: 'instanceKeys'; slug: string }
+		| { kind: 'billing' }
 		| { kind: 'notFound' };
 
 	const portalRoute = $derived.by<PortalRoute>(() => {
@@ -36,11 +42,17 @@
 		if (parts[0] === 'instances') {
 			if (parts[1]) {
 				if (parts.length === 2) return { kind: 'instance', slug: parts[1] };
+				if (parts[2] === 'budgets') return { kind: 'instanceBudgets', slug: parts[1] };
+				if (parts[2] === 'usage') return { kind: 'instanceUsage', slug: parts[1] };
 				if (parts[2] === 'domains') return { kind: 'instanceDomains', slug: parts[1] };
 				if (parts[2] === 'keys') return { kind: 'instanceKeys', slug: parts[1] };
 				return { kind: 'notFound' };
 			}
 			return { kind: 'instances' };
+		}
+		if (parts[0] === 'billing') {
+			if (parts.length === 1) return { kind: 'billing' };
+			return { kind: 'notFound' };
 		}
 
 		return { kind: 'notFound' };
@@ -104,6 +116,7 @@
 			</div>
 			<div class="portal__actions">
 				<Button variant="outline" onclick={() => void loadMe()} disabled={loading}>Refresh</Button>
+				<Button variant="ghost" onclick={() => navigate('/portal/billing')}>Billing</Button>
 				<Button variant="ghost" onclick={() => navigate('/account')}>Account</Button>
 				<Button
 					variant="ghost"
@@ -153,10 +166,16 @@
 				<Instances token={$session.token} />
 			{:else if portalRoute.kind === 'instance'}
 				<InstanceDetail token={$session.token} slug={portalRoute.slug} />
+			{:else if portalRoute.kind === 'instanceBudgets'}
+				<InstanceBudgets token={$session.token} slug={portalRoute.slug} />
+			{:else if portalRoute.kind === 'instanceUsage'}
+				<InstanceUsage token={$session.token} slug={portalRoute.slug} />
 			{:else if portalRoute.kind === 'instanceDomains'}
 				<InstanceDomains token={$session.token} slug={portalRoute.slug} />
 			{:else if portalRoute.kind === 'instanceKeys'}
 				<InstanceKeys token={$session.token} slug={portalRoute.slug} />
+			{:else if portalRoute.kind === 'billing'}
+				<Billing token={$session.token} />
 			{:else}
 				<Alert variant="warning" title="Not found">
 					<Text size="sm">Unknown portal path.</Text>
