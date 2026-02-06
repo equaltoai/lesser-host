@@ -2,8 +2,9 @@
 	import { onMount } from 'svelte';
 	import type { SetupStatusResponse } from 'src/lib/api/controlPlane';
 	import { getSetupStatus } from 'src/lib/api/controlPlane';
+	import { logout } from 'src/lib/auth/logout';
 	import { navigate } from 'src/lib/router';
-	import { clearSession, session } from 'src/lib/session';
+	import { session } from 'src/lib/session';
 	import { Alert, Button, Container, DefinitionItem, DefinitionList, Heading, Spinner, Text } from 'src/lib/ui';
 
 	let loading = $state(false);
@@ -34,6 +35,11 @@
 		if (role === 'admin' || role === 'operator') return '/operator';
 		return '/portal';
 	}
+
+	async function handleLogout() {
+		await logout();
+		navigate('/login');
+	}
 </script>
 
 <Container size="lg" gutter="lg">
@@ -56,10 +62,7 @@
 					</Button>
 					<Button
 						variant="ghost"
-						onclick={() => {
-							clearSession();
-							navigate('/login');
-						}}
+						onclick={() => void handleLogout()}
 					>
 						Logout
 					</Button>

@@ -4,8 +4,9 @@
 	import type { ApiError } from 'src/lib/api/http';
 	import type { OperatorMeResponse } from 'src/lib/api/operators';
 	import { getOperatorMe } from 'src/lib/api/operators';
+	import { logout } from 'src/lib/auth/logout';
 	import { navigate } from 'src/lib/router';
-	import { clearSession, session } from 'src/lib/session';
+	import { session } from 'src/lib/session';
 	import { Alert, Button, Card, Container, Heading, Spinner, Text } from 'src/lib/ui';
 
 	let loading = $state(false);
@@ -44,11 +45,16 @@
 			const message = formatError(err);
 			errorMessage = message;
 			if ((err as Partial<ApiError>).status === 401) {
-				clearSession();
+				await logout();
 			}
 		} finally {
 			loading = false;
 		}
+	}
+
+	async function handleLogout() {
+		await logout();
+		navigate('/login');
 	}
 
 	onMount(() => {
@@ -69,10 +75,7 @@
 				<Button variant="ghost" onclick={() => navigate('/portal')}>Portal</Button>
 				<Button
 					variant="ghost"
-					onclick={() => {
-						clearSession();
-						navigate('/login');
-					}}
+					onclick={() => void handleLogout()}
 				>
 					Logout
 				</Button>
@@ -174,4 +177,3 @@
 			monospace;
 	}
 </style>
-

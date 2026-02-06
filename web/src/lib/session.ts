@@ -11,6 +11,18 @@ export interface Session {
 }
 
 const SESSION_STORAGE_KEY = 'lesser-host:session:v1';
+const SESSION_EXPIRED_AT_KEY = 'lesser-host:session:v1:expiredAt';
+
+export function consumeSessionExpiredAt(): string | null {
+	try {
+		const value = sessionStorage.getItem(SESSION_EXPIRED_AT_KEY);
+		if (!value) return null;
+		sessionStorage.removeItem(SESSION_EXPIRED_AT_KEY);
+		return value;
+	} catch {
+		return null;
+	}
+}
 
 function isValidSession(value: unknown): value is Session {
 	if (!value || typeof value !== 'object') return false;
@@ -37,7 +49,14 @@ function loadInitialSession(): Session | null {
 	try {
 		const parsed = JSON.parse(raw) as unknown;
 		if (!isValidSession(parsed)) return null;
-		if (isExpired(parsed.expiresAt)) return null;
+		if (isExpired(parsed.expiresAt)) {
+			try {
+				sessionStorage.setItem(SESSION_EXPIRED_AT_KEY, parsed.expiresAt);
+			} catch {
+				// ignore
+			}
+			return null;
+		}
 		return parsed;
 	} catch {
 		return null;
@@ -53,6 +72,11 @@ session.subscribe((value) => {
 	}
 
 	if (isExpired(value.expiresAt)) {
+		try {
+			sessionStorage.setItem(SESSION_EXPIRED_AT_KEY, value.expiresAt);
+		} catch {
+			// ignore
+		}
 		sessionStorage.removeItem(SESSION_STORAGE_KEY);
 		session.set(null);
 		return;
@@ -74,4 +98,3 @@ export const isAuthenticated = derived(session, (value) => Boolean(value?.token)
 export const isOperatorSession = derived(session, (value) =>
 	value ? value.role === 'admin' || value.role === 'operator' : false,
 );
-

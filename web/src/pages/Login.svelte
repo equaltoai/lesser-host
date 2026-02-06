@@ -4,8 +4,9 @@
 	import { walletChallenge, walletLogin } from 'src/lib/api/controlPlane';
 	import { portalWalletChallenge, portalWalletLogin } from 'src/lib/api/portal';
 	import { webAuthnLoginBegin, webAuthnLoginFinish } from 'src/lib/api/webauthn';
+	import { logout } from 'src/lib/auth/logout';
 	import { navigate } from 'src/lib/router';
-	import { clearSession, setSession, session } from 'src/lib/session';
+	import { clearSession, consumeSessionExpiredAt, setSession, session } from 'src/lib/session';
 	import { getChainId, getEthereumProvider, personalSign, requestAccounts } from 'src/lib/wallet/ethereum';
 	import type { Eip1193Provider } from 'src/lib/wallet/ethereum';
 	import { serializeCredentialRequest, toPublicKeyRequestOptions } from 'src/lib/webauthn/client';
@@ -36,6 +37,8 @@
 	let passkeyUsername = $state('');
 	let passkeyLoading = $state(false);
 	let passkeyError = $state<string | null>(null);
+
+	let sessionExpiredAt = $state<string | null>(null);
 
 	function formatError(err: unknown): string {
 		if (!err) return 'unknown error';
@@ -264,11 +267,18 @@
 	}
 
 	onMount(() => {
+		sessionExpiredAt = consumeSessionExpiredAt();
 		const current = $session;
 		if (current) {
 			navigate(defaultRouteForRole(current.role));
 		}
 	});
+
+	async function handleLogout() {
+		await logout();
+		portalChallenge = null;
+		operatorChallenge = null;
+	}
 </script>
 
 <Container size="lg" gutter="lg">
@@ -282,10 +292,19 @@
 				<Button variant="ghost" onclick={() => navigate('/')}>Home</Button>
 				<Button variant="ghost" onclick={() => navigate('/setup')}>Setup</Button>
 			</div>
-		</header>
+			</header>
 
-		<Card variant="outlined" padding="lg">
-			<div class="login__mode-toggle">
+			{#if sessionExpiredAt}
+				<Alert variant="info" title="Session expired">
+					<Text size="sm">
+						Your session expired at <span class="login__mono">{sessionExpiredAt}</span>. Sign in again to
+						continue.
+					</Text>
+				</Alert>
+			{/if}
+
+			<Card variant="outlined" padding="lg">
+				<div class="login__mode-toggle">
 				<Button
 					variant={mode === 'portal' ? 'solid' : 'outline'}
 					onclick={() => {
@@ -485,9 +504,7 @@
 					<Button
 						variant="ghost"
 						onclick={() => {
-							clearSession();
-							portalChallenge = null;
-							operatorChallenge = null;
+							void handleLogout();
 						}}
 					>
 						Logout

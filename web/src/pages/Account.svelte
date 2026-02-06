@@ -14,7 +14,8 @@
 		webAuthnUpdateCredential,
 	} from 'src/lib/api/webauthn';
 	import { navigate } from 'src/lib/router';
-	import { clearSession, session } from 'src/lib/session';
+	import { logout } from 'src/lib/auth/logout';
+	import { session } from 'src/lib/session';
 	import { serializeCredentialCreation, toPublicKeyCreationOptions } from 'src/lib/webauthn/client';
 	import { Alert, Button, Card, Container, Heading, Spinner, Text, TextField } from 'src/lib/ui';
 
@@ -87,7 +88,7 @@
 		} catch (err) {
 			profileError = formatError(err);
 			if ((err as Partial<ApiError>).status === 401) {
-				clearSession();
+				await logout();
 				navigate('/login');
 			}
 		} finally {
@@ -114,7 +115,7 @@
 		} catch (err) {
 			passkeysError = formatError(err);
 			if ((err as Partial<ApiError>).status === 401) {
-				clearSession();
+				await logout();
 			}
 		} finally {
 			passkeysLoading = false;
@@ -252,6 +253,11 @@
 		void loadProfile();
 		void loadPasskeys();
 	});
+
+	async function handleLogout() {
+		await logout();
+		navigate('/login');
+	}
 </script>
 
 <Container size="lg" gutter="lg">
@@ -267,10 +273,7 @@
 				<Button variant="ghost" onclick={() => navigate('/login')}>Sign in</Button>
 				<Button
 					variant="ghost"
-					onclick={() => {
-						clearSession();
-						navigate('/login');
-					}}
+					onclick={() => void handleLogout()}
 				>
 					Logout
 				</Button>

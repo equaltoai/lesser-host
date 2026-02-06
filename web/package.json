@@ -11,6 +11,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "lint": "eslint .",
+    "test": "vitest run",
     "typecheck": "svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json",
     "check": "npm run typecheck"
   },
@@ -22,11 +23,13 @@
     "eslint": "^9.20.1",
     "eslint-plugin-svelte": "^3.12.2",
     "globals": "^15.15.0",
+    "jsdom": "^26.0.0",
     "svelte": "^5.43.8",
     "svelte-check": "^4.3.4",
     "typescript-eslint": "^8.23.0",
     "typescript": "~5.9.3",
-    "vite": "^7.2.4"
+    "vite": "^7.2.4",
+    "vitest": "^3.2.4"
   },
   "dependencies": {
     "@apollo/client": "^4.1.3",

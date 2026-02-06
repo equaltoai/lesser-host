@@ -48,6 +48,7 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 	app.Get("/api/v1/auth/webauthn/credentials", s.handleWebAuthnCredentials, apptheory.RequireAuth())
 	app.Delete("/api/v1/auth/webauthn/credentials/{credentialId}", s.handleWebAuthnDeleteCredential, apptheory.RequireAuth())
 	app.Put("/api/v1/auth/webauthn/credentials/{credentialId}", s.handleWebAuthnUpdateCredential, apptheory.RequireAuth())
+	app.Post("/api/v1/auth/logout", s.handleAuthLogout, apptheory.RequireAuth())
 
 	// Setup (bootstrap-only) endpoints.
 	app.Get("/setup/status", s.handleSetupStatus)
