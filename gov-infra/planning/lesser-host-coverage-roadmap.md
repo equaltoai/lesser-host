@@ -21,7 +21,7 @@ Snapshot (2026-02-06):
 ## Progress snapshots
 - Baseline (2026-02-06): **7.3%** (from `gov-infra/evidence/coverage-summary.txt`)
 - After COV-1 (2026-02-06): **8.6%** (auth hooks + secrets cache tests; `internal/controlplane`, `internal/trust`, `internal/secrets`)
-- After COV-2: TBD
+- After COV-2 (2026-02-06): **25.0%** (broad helper floors across `internal/controlplane` + `internal/trust` + AI harness, plus first tests for `internal/domains`, `internal/metrics`, `internal/billing`, `internal/rendering`, `internal/observability`)
 - After COV-3: TBD
 - After COV-4: TBD
 - After COV-5: TBD (≥ 80%, QUA-3 PASS)
