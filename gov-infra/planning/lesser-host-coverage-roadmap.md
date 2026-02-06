@@ -13,15 +13,18 @@ intermediate milestones, guardrails, and repeatable measurement.
 ## Current state
 Snapshot (2026-02-06):
 - Coverage gate (target): generate `gov-infra/evidence/coverage.out` and enforce total ≥ 80%
-- Current result: unknown (run `bash gov-infra/verifiers/gov-verify-rubric.sh` to generate evidence)
+- Current result: **7.3%** total (FAIL)
 - Measurement surface:
   - In-scope: all packages included by `go test ./...` in the root Go module
   - Out-of-scope (explicit): nested Go modules (e.g., `cdk/`) unless added intentionally later
 
 ## Progress snapshots
-- Baseline (2026-02-06): TBD (record % from `gov-infra/evidence/QUA-3-output.log`)
-- After COV-1: TBD (record % + changed packages)
-- After COV-2: TBD (record % + changed packages)
+- Baseline (2026-02-06): **7.3%** (from `gov-infra/evidence/coverage-summary.txt`)
+- After COV-1 (2026-02-06): **8.6%** (auth hooks + secrets cache tests; `internal/controlplane`, `internal/trust`, `internal/secrets`)
+- After COV-2: TBD
+- After COV-3: TBD
+- After COV-4: TBD
+- After COV-5: TBD (≥ 80%, QUA-3 PASS)
 
 ## Guardrails (no denominator games)
 - Do not exclude additional production code from the coverage denominator to “hit the number”.
@@ -36,11 +39,48 @@ Snapshot (2026-02-06):
    - `gov-infra/evidence/QUA-3-output.log`
 
 ## Proposed milestones (incremental, reviewable)
-- COV-1: eliminate “0% islands” in security-critical packages (auth, sessions, provisioning, trust)
-- COV-2: broad floor (25%+ across in-scope packages)
-- COV-3: meaningful safety net (50%+)
-- COV-4: high confidence (70%+)
-- COV-5: finish line (≥ 80% and the gate is green)
+Milestones are designed to be **reviewable** and to avoid denominator games. Each milestone should:
+- Add tests that exercise real logic (not only panics / trivial getters).
+- Prefer deterministic, offline tests (no AWS / network calls).
+- Be accompanied by an updated snapshot line above (percentage + notable packages covered).
+
+### COV-1 — Eliminate 0% islands in security-critical paths
+**Goal:** ensure the highest-risk auth surfaces are no longer completely untested.
+
+**Acceptance criteria**
+- Coverage increases (recorded in snapshots).
+- At least one meaningful test exists for each:
+  - `internal/controlplane`: operator auth/session + RBAC helpers
+  - `internal/trust`: instance key auth hook
+  - `internal/secrets`: SSM parameter parsing + caching (offline)
+
+### COV-2 — Broad floor
+**Goal:** reduce “untested cliff edges” by ensuring most in-scope packages have non-trivial coverage.
+
+**Acceptance criteria**
+- Total coverage ≥ **25%** (recorded).
+- No package with ≥ 50 statements remains at **0%** coverage.
+
+### COV-3 — Meaningful safety net
+**Goal:** most core packages have real regression protection.
+
+**Acceptance criteria**
+- Total coverage ≥ **50%** (recorded).
+- `internal/controlplane` and `internal/trust` each reach ≥ **50%**.
+
+### COV-4 — High confidence
+**Goal:** coverage is high enough that refactors are realistically safer.
+
+**Acceptance criteria**
+- Total coverage ≥ **70%** (recorded).
+- `internal/controlplane` and `internal/trust` each reach ≥ **70%**.
+
+### COV-5 — Finish line
+**Goal:** meet the rubric gate and keep it green.
+
+**Acceptance criteria**
+- Total coverage ≥ **80%** (QUA-3 PASS).
+- Coverage verifier stays deterministic (no scope reductions / excludes).
 
 ## Workstreams (target the highest-leverage paths first)
 Suggested hotspots in this repo:
