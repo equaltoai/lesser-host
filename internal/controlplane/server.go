@@ -69,6 +69,10 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 	app.Get("/api/v1/operators/external-instances/registrations", s.handleListExternalInstanceRegistrations, apptheory.RequireAuth())
 	app.Post("/api/v1/operators/external-instances/registrations/{username}/{id}/approve", s.handleApproveExternalInstanceRegistration, apptheory.RequireAuth())
 	app.Post("/api/v1/operators/external-instances/registrations/{username}/{id}/reject", s.handleRejectExternalInstanceRegistration, apptheory.RequireAuth())
+	app.Get("/api/v1/operators/provisioning/jobs", s.handleListOperatorProvisionJobs, apptheory.RequireAuth())
+	app.Get("/api/v1/operators/provisioning/jobs/{id}", s.handleGetOperatorProvisionJob, apptheory.RequireAuth())
+	app.Post("/api/v1/operators/provisioning/jobs/{id}/retry", s.handleRetryOperatorProvisionJob, apptheory.RequireAuth())
+	app.Post("/api/v1/operators/provisioning/jobs/{id}/note", s.handleAppendOperatorProvisionJobNote, apptheory.RequireAuth())
 
 	// Portal identity helpers.
 	app.Get("/api/v1/portal/me", s.handlePortalMe, apptheory.RequireAuth())
@@ -87,13 +91,13 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 	app.Get("/api/v1/portal/instances/{slug}/usage/{month}/summary", s.handlePortalGetInstanceUsageSummary, apptheory.RequireAuth())
 
 	// Portal domains (owner-scoped).
-		app.Get("/api/v1/portal/instances/{slug}/domains", s.handlePortalListInstanceDomains, apptheory.RequireAuth())
-		app.Post("/api/v1/portal/instances/{slug}/domains", s.handlePortalAddInstanceDomain, apptheory.RequireAuth())
-		app.Post("/api/v1/portal/instances/{slug}/domains/{domain}/verify", s.handlePortalVerifyInstanceDomain, apptheory.RequireAuth())
-		app.Post("/api/v1/portal/instances/{slug}/domains/{domain}/dns/route53", s.handlePortalUpsertDomainVerificationRoute53, apptheory.RequireAuth())
-		app.Post("/api/v1/portal/instances/{slug}/domains/{domain}/rotate", s.handlePortalRotateInstanceDomain, apptheory.RequireAuth())
-		app.Post("/api/v1/portal/instances/{slug}/domains/{domain}/disable", s.handlePortalDisableInstanceDomain, apptheory.RequireAuth())
-		app.Delete("/api/v1/portal/instances/{slug}/domains/{domain}", s.handlePortalDeleteInstanceDomain, apptheory.RequireAuth())
+	app.Get("/api/v1/portal/instances/{slug}/domains", s.handlePortalListInstanceDomains, apptheory.RequireAuth())
+	app.Post("/api/v1/portal/instances/{slug}/domains", s.handlePortalAddInstanceDomain, apptheory.RequireAuth())
+	app.Post("/api/v1/portal/instances/{slug}/domains/{domain}/verify", s.handlePortalVerifyInstanceDomain, apptheory.RequireAuth())
+	app.Post("/api/v1/portal/instances/{slug}/domains/{domain}/dns/route53", s.handlePortalUpsertDomainVerificationRoute53, apptheory.RequireAuth())
+	app.Post("/api/v1/portal/instances/{slug}/domains/{domain}/rotate", s.handlePortalRotateInstanceDomain, apptheory.RequireAuth())
+	app.Post("/api/v1/portal/instances/{slug}/domains/{domain}/disable", s.handlePortalDisableInstanceDomain, apptheory.RequireAuth())
+	app.Delete("/api/v1/portal/instances/{slug}/domains/{domain}", s.handlePortalDeleteInstanceDomain, apptheory.RequireAuth())
 	app.Post("/api/v1/portal/instances/{slug}/keys", s.handlePortalCreateInstanceKey, apptheory.RequireAuth())
 
 	// Portal external instance registrations.

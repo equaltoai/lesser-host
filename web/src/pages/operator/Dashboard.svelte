@@ -88,6 +88,7 @@
 				<Button variant="outline" onclick={() => navigate('/operator/approvals/external-instances')}>
 					Review external registrations
 				</Button>
+				<Button variant="outline" onclick={() => navigate('/operator/provisioning/jobs')}>Provisioning jobs</Button>
 				<Button variant="outline" onclick={() => navigate('/operator/instances')}>Instance search</Button>
 			</div>
 		</Card>
@@ -136,4 +137,3 @@
 		flex-wrap: wrap;
 	}
 </style>
-

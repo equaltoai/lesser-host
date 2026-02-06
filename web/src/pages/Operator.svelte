@@ -12,6 +12,8 @@
 	import Dashboard from 'src/pages/operator/Dashboard.svelte';
 	import ExternalInstanceRegistrations from 'src/pages/operator/ExternalInstanceRegistrations.svelte';
 	import InstanceSupport from 'src/pages/operator/InstanceSupport.svelte';
+	import ProvisioningJobDetail from 'src/pages/operator/ProvisioningJobDetail.svelte';
+	import ProvisioningJobs from 'src/pages/operator/ProvisioningJobs.svelte';
 	import VanityDomainRequests from 'src/pages/operator/VanityDomainRequests.svelte';
 
 	let loading = $state(false);
@@ -22,6 +24,8 @@
 		| { kind: 'dashboard' }
 		| { kind: 'vanityDomains' }
 		| { kind: 'externalRegistrations' }
+		| { kind: 'provisioningJobs' }
+		| { kind: 'provisioningJobDetail'; id: string }
 		| { kind: 'instances' }
 		| { kind: 'instanceDetail'; slug: string }
 		| { kind: 'notFound' };
@@ -42,6 +46,14 @@
 		if (parts[0] === 'instances') {
 			if (parts[1]) return { kind: 'instanceDetail', slug: parts[1] };
 			return { kind: 'instances' };
+		}
+		if (parts[0] === 'provisioning') {
+			if (parts[1] === 'jobs') {
+				if (parts[2]) return { kind: 'provisioningJobDetail', id: parts[2] };
+				return { kind: 'provisioningJobs' };
+			}
+			if (parts.length === 1) return { kind: 'provisioningJobs' };
+			return { kind: 'notFound' };
 		}
 		return { kind: 'notFound' };
 	});
@@ -107,6 +119,7 @@
 			<Button variant="ghost" onclick={() => navigate('/operator')}>Dashboard</Button>
 			<Button variant="ghost" onclick={() => navigate('/operator/approvals/domains')}>Domains</Button>
 			<Button variant="ghost" onclick={() => navigate('/operator/approvals/external-instances')}>External regs</Button>
+			<Button variant="ghost" onclick={() => navigate('/operator/provisioning/jobs')}>Provisioning</Button>
 			<Button variant="ghost" onclick={() => navigate('/operator/instances')}>Instances</Button>
 			<Button variant="ghost" onclick={() => navigate('/account')}>Account</Button>
 			<Button variant="ghost" onclick={() => navigate('/portal')}>Portal</Button>
@@ -156,6 +169,10 @@
 				<VanityDomainRequests token={$session.token} />
 			{:else if operatorRoute.kind === 'externalRegistrations'}
 				<ExternalInstanceRegistrations token={$session.token} />
+			{:else if operatorRoute.kind === 'provisioningJobs'}
+				<ProvisioningJobs token={$session.token} />
+			{:else if operatorRoute.kind === 'provisioningJobDetail'}
+				<ProvisioningJobDetail token={$session.token} id={operatorRoute.id} />
 			{:else if operatorRoute.kind === 'instances'}
 				<InstanceSupport token={$session.token} />
 			{:else if operatorRoute.kind === 'instanceDetail'}
