@@ -108,8 +108,16 @@ export class LesserHostStack extends cdk.Stack {
 		const managedInstanceRoleName =
 			(this.node.tryGetContext('managedInstanceRoleName') as string | undefined) ?? '';
 		const managedTargetOuId = (this.node.tryGetContext('managedTargetOuId') as string | undefined) ?? '';
-		const managedAccountEmailTemplate =
+		const managedAccountEmailTemplateLab =
+			(this.node.tryGetContext('managedAccountEmailTemplateLab') as string | undefined) ?? '';
+		const managedAccountEmailTemplateLive =
+			(this.node.tryGetContext('managedAccountEmailTemplateLive') as string | undefined) ?? '';
+		const managedAccountEmailTemplateLegacy =
 			(this.node.tryGetContext('managedAccountEmailTemplate') as string | undefined) ?? '';
+		const managedAccountEmailTemplate =
+			stage === 'live'
+				? managedAccountEmailTemplateLive.trim() || managedAccountEmailTemplateLegacy.trim()
+				: managedAccountEmailTemplateLab.trim() || managedAccountEmailTemplateLegacy.trim();
 		const managedAccountNamePrefix =
 			(this.node.tryGetContext('managedAccountNamePrefix') as string | undefined) ?? '';
 		const managedDefaultRegion = (this.node.tryGetContext('managedDefaultRegion') as string | undefined) ?? '';

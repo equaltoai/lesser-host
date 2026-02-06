@@ -1,7 +1,23 @@
 {
   "app": "npx ts-node --prefer-ts-exts bin/lesser-host.ts",
   "context": {
-    "@aws-cdk/core:newStyleStackSynthesis": true
+    "@aws-cdk/core:newStyleStackSynthesis": true,
+
+    "webRootDomain": "lesser.host",
+    "webHostedZoneId": "Z0051991INEKM5CN2M42",
+    "webHostedZoneName": "lesser.host",
+
+    "bootstrapWalletAddress": "0x80189edB676D51b2FB2257B2AD38e018B20CA46E",
+
+    "webauthnRpId": "lesser.host",
+    "webauthnOrigins": "https://lab.lesser.host,https://lesser.host",
+
+    "managedProvisioningEnabled": "true",
+    "managedOrgVendingRoleArn": "arn:aws:iam::902552026581:role/lesser-host-org-vending",
+    "managedParentDomain": "greater.website",
+    "managedParentHostedZoneId": "Z0830280V8754TDWDDF",
+    "managedAccountEmailTemplateLab": "aron+lab-{slug}@equal-to.ai",
+    "managedAccountEmailTemplateLive": "aron+{slug}@equal-to.ai",
+    "managedDefaultRegion": "us-east-1"
   }
 }
-
