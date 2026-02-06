@@ -107,6 +107,24 @@ export interface Route53AssistResponse {
 	record_value: string;
 }
 
+export interface UpdateInstanceConfigRequest {
+	hosted_previews_enabled?: boolean;
+	link_safety_enabled?: boolean;
+	renders_enabled?: boolean;
+	render_policy?: string;
+	overage_policy?: string;
+	moderation_enabled?: boolean;
+	moderation_trigger?: string;
+	moderation_virality_min?: number;
+	ai_enabled?: boolean;
+	ai_model_set?: string;
+	ai_batching_mode?: string;
+	ai_batch_max_items?: number;
+	ai_batch_max_total_bytes?: number;
+	ai_pricing_multiplier_bps?: number;
+	ai_max_inflight_jobs?: number;
+}
+
 export function portalListInstances(token: string): Promise<ListInstancesResponse> {
 	return fetchJson<ListInstancesResponse>('/api/v1/portal/instances', {
 		headers: {
@@ -132,6 +150,22 @@ export function portalGetInstance(token: string, slug: string): Promise<Instance
 		headers: {
 			authorization: `Bearer ${token}`,
 		},
+	});
+}
+
+export function portalUpdateInstanceConfig(
+	token: string,
+	slug: string,
+	input: UpdateInstanceConfigRequest,
+): Promise<InstanceResponse> {
+	const req = jsonRequest(input);
+	return fetchJson<InstanceResponse>(`/api/v1/portal/instances/${encodeURIComponent(slug)}/config`, {
+		method: 'PUT',
+		headers: {
+			authorization: `Bearer ${token}`,
+			...req.headers,
+		},
+		body: req.body,
 	});
 }
 

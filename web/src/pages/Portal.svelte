@@ -10,6 +10,7 @@
 	import { Alert, Button, Card, Container, Heading, Spinner, Text } from 'src/lib/ui';
 
 	import Billing from 'src/pages/portal/Billing.svelte';
+	import InstanceConfig from 'src/pages/portal/InstanceConfig.svelte';
 	import InstanceDetail from 'src/pages/portal/InstanceDetail.svelte';
 	import InstanceBudgets from 'src/pages/portal/InstanceBudgets.svelte';
 	import InstanceDomains from 'src/pages/portal/InstanceDomains.svelte';
@@ -24,6 +25,7 @@
 	type PortalRoute =
 		| { kind: 'instances' }
 		| { kind: 'instance'; slug: string }
+		| { kind: 'instanceConfig'; slug: string }
 		| { kind: 'instanceBudgets'; slug: string }
 		| { kind: 'instanceUsage'; slug: string }
 		| { kind: 'instanceDomains'; slug: string }
@@ -42,6 +44,7 @@
 		if (parts[0] === 'instances') {
 			if (parts[1]) {
 				if (parts.length === 2) return { kind: 'instance', slug: parts[1] };
+				if (parts[2] === 'config') return { kind: 'instanceConfig', slug: parts[1] };
 				if (parts[2] === 'budgets') return { kind: 'instanceBudgets', slug: parts[1] };
 				if (parts[2] === 'usage') return { kind: 'instanceUsage', slug: parts[1] };
 				if (parts[2] === 'domains') return { kind: 'instanceDomains', slug: parts[1] };
@@ -166,6 +169,8 @@
 				<Instances token={$session.token} />
 			{:else if portalRoute.kind === 'instance'}
 				<InstanceDetail token={$session.token} slug={portalRoute.slug} />
+			{:else if portalRoute.kind === 'instanceConfig'}
+				<InstanceConfig token={$session.token} slug={portalRoute.slug} />
 			{:else if portalRoute.kind === 'instanceBudgets'}
 				<InstanceBudgets token={$session.token} slug={portalRoute.slug} />
 			{:else if portalRoute.kind === 'instanceUsage'}

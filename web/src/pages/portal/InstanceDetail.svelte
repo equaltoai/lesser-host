@@ -248,6 +248,7 @@
 			<Button variant="outline" onclick={() => void refreshAll()} disabled={instanceLoading || domainsLoading || provisioningLoading}>
 				Refresh
 			</Button>
+			<Button variant="ghost" onclick={() => navigate(`/portal/instances/${slug}/config`)}>Config</Button>
 			<Button variant="ghost" onclick={() => navigate(`/portal/instances/${slug}/budgets`)}>Budgets</Button>
 			<Button variant="ghost" onclick={() => navigate(`/portal/instances/${slug}/usage`)}>Usage</Button>
 			<Button variant="ghost" onclick={() => navigate(`/portal/instances/${slug}/domains`)}>Domains</Button>
