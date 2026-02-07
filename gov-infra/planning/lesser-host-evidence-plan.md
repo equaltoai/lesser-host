@@ -1,4 +1,4 @@
-# lesser-host: Evidence Plan (Rubric v0.1.2)
+# lesser-host: Evidence Plan (Rubric v0.1.3)
 
 This document defines the **evidence surface** for the lesser-host governance rubric.
 
@@ -48,7 +48,7 @@ Legend:
 | Quality | QUA-2 | Multi-language test/build surface runs (web/contracts/cdk) | `gov-infra/evidence/QUA-2-output.log` |
 | Quality | QUA-3 | Coverage measurement is produced and threshold enforced (≥ 80%) | `gov-infra/evidence/QUA-3-output.log`, `gov-infra/evidence/coverage.out` |
 | Consistency | CON-1 | Go formatting is clean (no gofmt diffs) | `gov-infra/evidence/CON-1-output.log` |
-| Consistency | CON-2 | Lint/static analysis gates run with pinned toolchain | `gov-infra/evidence/CON-2-output.log` |
+| Consistency | CON-2 | Lint/static analysis gates run with pinned toolchain (Go + web + CDK + Solidity) | `gov-infra/evidence/CON-2-output.log` |
 | Consistency | CON-3 | Public boundary contract parity checks run | `gov-infra/evidence/CON-3-output.log` |
 | Completeness | COM-1 | All Go modules compile from a clean checkout | `gov-infra/evidence/COM-1-output.log` |
 | Completeness | COM-2 | Toolchain pins and CI expectations align (Go/Node/tooling) | `gov-infra/evidence/COM-2-output.log` |
@@ -56,7 +56,7 @@ Legend:
 | Completeness | COM-4 | Coverage threshold is not diluted (still ≥ 80% in docs + verifier) | `gov-infra/evidence/COM-4-output.log` |
 | Completeness | COM-5 | Security scan policy is not diluted (no blanket excludes) | `gov-infra/evidence/COM-5-output.log` |
 | Completeness | COM-6 | Logging/operational standards checks run | `gov-infra/evidence/COM-6-output.log` |
-| Security | SEC-1 | Static security scan runs with pinned tooling | `gov-infra/evidence/SEC-1-output.log` |
+| Security | SEC-1 | Static security scan runs with pinned tooling (Go + Solidity) | `gov-infra/evidence/SEC-1-output.log` |
 | Security | SEC-2 | Dependency vulnerability scan runs with pinned tooling | `gov-infra/evidence/SEC-2-output.log` |
 | Security | SEC-3 | Supply-chain verification gates run (Actions pinning + dependency lifecycle scan) | `gov-infra/evidence/SEC-3-output.log` |
 | Security | SEC-4 | Domain-specific P0 security regression tests run | `gov-infra/evidence/SEC-4-output.log` |

@@ -1173,6 +1173,9 @@ golangci-lint run --timeout=10m
 
 # CDK build (TypeScript)
 ( cd cdk && npm ci && npm run build )
+
+# Solidity lint (contracts)
+( cd contracts && npm ci && npm run lint )
 __GOV_CMD_LINT__
 )
 
@@ -1540,10 +1543,29 @@ __GOV_CMD_LOGGING__
 )
 
 CMD_SAST=$(cat <<'__GOV_CMD_SAST__'
-# SAST is implemented via golangci-lint with gosec enabled.
-# This is BLOCKED until golangci-lint is pinned.
+# SAST is implemented via golangci-lint with gosec enabled + Slither for Solidity.
+# This is BLOCKED until golangci-lint is pinned (and slither is installed).
 
 golangci-lint run --timeout=10m
+
+if ! command -v slither >/dev/null 2>&1; then
+  echo "BLOCKED: slither is required" >&2
+  exit 2
+fi
+
+if ! command -v solc-select >/dev/null 2>&1; then
+  echo "BLOCKED: solc-select is required for slither" >&2
+  exit 2
+fi
+
+solc-select install 0.8.24
+solc-select use 0.8.24
+
+(
+  cd contracts
+  npm ci
+  slither contracts/TipSplitter.sol --config-file slither.config.json
+)
 __GOV_CMD_SAST__
 )
 

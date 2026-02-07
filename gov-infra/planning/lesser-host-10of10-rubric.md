@@ -4,11 +4,12 @@ This rubric defines what “10/10” means and how category grades are computed.
 “green by dilution” by making scoring **versioned, measurable, and repeatable**.
 
 ## Versioning (no moving goalposts)
-- **Rubric version:** `v0.1.2` (2026-02-07)
+- **Rubric version:** `v0.1.3` (2026-02-07)
 - **Comparability rule:** grades are comparable only within the same version.
 - **Change rule:** bump the version + changelog entry for any rubric change (what changed + why).
 
 ### Changelog
+- `v0.1.3`: Extend CON-2 to include Solidity lint (solhint) and SEC-1 to include Solidity SAST (Slither) via the rubric verifier.
 - `v0.1.2`: Implement remaining planned verifiers for CON-3/COM-6/SEC-4/MAI-1/MAI-3 and update rubric text to reference the verifier evidence logs (requirements unchanged).
 - `v0.1.1`: Update SEC-2 verification to use `govulncheck -mode=binary` on shipped binaries due to an SSA panic in `govulncheck ./...` symbol scanning for a generic + variadic edge case (requirement unchanged).
 - `v0.1`: Initial governance scaffold for lesser-host (multi-language: Go + TypeScript + CDK + Solidity) with strict anti-drift items.
@@ -42,7 +43,7 @@ Enforcement rule (anti-drift):
 | ID | Points | Requirement | How to verify |
 | --- | ---: | --- | --- |
 | CON-1 | 3 | gofmt clean (no diffs) | `test -z "$(gofmt -l . | sed '/^$/d')"` |
-| CON-2 | 5 | Lint/static analysis green (pinned version) | `golangci-lint run --timeout=10m` + `web` lint/typecheck + `cdk` build (implemented in verifier; see `gov-infra/evidence/CON-2-output.log`). |
+| CON-2 | 5 | Lint/static analysis green (pinned version) | `golangci-lint run --timeout=10m` + `web` lint/typecheck + `cdk` build + `contracts` solhint (implemented in verifier; see `gov-infra/evidence/CON-2-output.log`). |
 | CON-3 | 2 | Public boundary contract parity (if applicable) | TipSplitter ABI parity: Go `TipSplitterABI` entries must exist in the Hardhat artifact ABI (implemented in verifier; see `gov-infra/evidence/CON-3-output.log`). |
 
 **10/10 definition:** CON-1 through CON-3 pass (or document why CON-3 is N/A and remove it with a version bump).
@@ -62,7 +63,7 @@ Enforcement rule (anti-drift):
 ## Security (SEC) — abuse-resilient and reviewable
 | ID | Points | Requirement | How to verify |
 | --- | ---: | --- | --- |
-| SEC-1 | 3 | Static security scan green (pinned version) | `golangci-lint run --timeout=10m` with `gosec` enabled (implemented in verifier; see `gov-infra/evidence/SEC-1-output.log`). |
+| SEC-1 | 3 | Static security scan green (pinned version) | `golangci-lint run --timeout=10m` with `gosec` enabled + `slither` on `contracts` (implemented in verifier; see `gov-infra/evidence/SEC-1-output.log`). |
 | SEC-2 | 3 | Dependency vulnerability scan green | `govulncheck -mode=binary` on shipped `cmd/*` binaries (implemented in verifier; see `gov-infra/evidence/SEC-2-output.log`). |
 | SEC-3 | 2 | Supply-chain verification green | GitHub Actions must be pinned by commit SHA (no `uses: ...@vN`); Node lifecycle hooks scanned with scripts-disabled installs; Go/Python metadata scans (implemented in verifier; see `gov-infra/evidence/SEC-3-output.log`) |
 | SEC-4 | 2 | Domain-specific P0 regression tests (security critical paths) | Run `TestP0_*` regression suite (bootstrap/authz invariants, SSRF defense, instance auth) (implemented in verifier; see `gov-infra/evidence/SEC-4-output.log`). |
