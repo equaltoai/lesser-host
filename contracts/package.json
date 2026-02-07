@@ -8,15 +8,19 @@
   },
   "scripts": {
     "build": "hardhat compile",
+    "deploy:sepolia": "hardhat run --network sepolia scripts/deploy-tip-splitter.js",
     "lint": "solhint \"contracts/**/*.sol\"",
-    "test": "hardhat compile && node --test test/*.test.js"
+    "test": "hardhat compile && node --test test/*.test.js",
+    "verify:sepolia": "hardhat verify --build-profile default --network sepolia"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-ethers": "4.0.1",
     "@nomicfoundation/hardhat-network-helpers": "^3.0.3",
+    "@nomicfoundation/hardhat-verify": "^3.0.9",
     "@openzeppelin/contracts": "5.4.0",
+    "dotenv": "16.6.1",
     "ethers": "6.15.0",
-    "hardhat": "3.0.6",
+    "hardhat": "3.1.7",
     "solhint": "5.0.3"
   }
 }
