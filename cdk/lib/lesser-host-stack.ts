@@ -760,6 +760,23 @@ export class LesserHostStack extends cdk.Stack {
 				s3deploy.Source.asset(path.join(this.repoRoot(), 'web'), {
 					bundling: {
 						image: cdk.DockerImage.fromRegistry('node:24-bookworm'),
+						local: {
+							tryBundle(outputDir: string) {
+								if (process.env.CI !== 'true') {
+									return false;
+								}
+
+								const webDir = path.join(repoRoot, 'web');
+								try {
+									execSync('npm ci', { cwd: webDir, stdio: 'inherit' });
+									execSync('npm run build', { cwd: webDir, stdio: 'inherit' });
+									fs.cpSync(path.join(webDir, 'dist'), outputDir, { recursive: true });
+									return true;
+								} catch (err) {
+									return false;
+								}
+							},
+						},
 						command: [
 							'bash',
 							'-c',

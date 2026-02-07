@@ -1,9 +1,7 @@
 {
   "exclude_dependencies": true,
   "filter_paths": "node_modules",
-  "solc_remaps": [
-    "@openzeppelin/=node_modules/@openzeppelin/"
-  ],
+  "solc_remaps": "@openzeppelin/=node_modules/@openzeppelin/",
   "solc_solcs_select": "0.8.24",
   "fail_on": "medium"
 }
