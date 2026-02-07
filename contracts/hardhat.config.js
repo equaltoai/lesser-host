@@ -1,7 +1,8 @@
-import "@nomicfoundation/hardhat-ethers";
+import HardhatEthers from "@nomicfoundation/hardhat-ethers";
 
 /** @type import('hardhat/config').HardhatUserConfig */
 const config = {
+  plugins: [HardhatEthers],
   solidity: {
     version: "0.8.24",
     settings: {
