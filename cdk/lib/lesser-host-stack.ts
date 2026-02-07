@@ -130,15 +130,24 @@ export class LesserHostStack extends cdk.Stack {
 		const managedLesserGitHubTokenSsmParam =
 			(this.node.tryGetContext('managedLesserGitHubTokenSsmParam') as string | undefined) ?? '';
 
-		const tipEnabled = (this.node.tryGetContext('tipEnabled') as string | undefined) ?? '';
-		const tipChainId = (this.node.tryGetContext('tipChainId') as string | undefined) ?? '';
-		const tipRpcUrl = (this.node.tryGetContext('tipRpcUrl') as string | undefined) ?? '';
-		const tipContractAddress = (this.node.tryGetContext('tipContractAddress') as string | undefined) ?? '';
-		const tipAdminSafeAddress = (this.node.tryGetContext('tipAdminSafeAddress') as string | undefined) ?? '';
-		const tipDefaultHostWalletAddress =
-			(this.node.tryGetContext('tipDefaultHostWalletAddress') as string | undefined) ?? '';
-		const tipDefaultHostFeeBps = (this.node.tryGetContext('tipDefaultHostFeeBps') as string | undefined) ?? '';
-		const tipTxMode = (this.node.tryGetContext('tipTxMode') as string | undefined) ?? '';
+		const tipStageSuffix = stage === 'live' ? 'Live' : 'Lab';
+		const tipContext = (key: string): string =>
+			(this.node.tryGetContext(`${key}${tipStageSuffix}`) as string | undefined) ??
+			(this.node.tryGetContext(key) as string | undefined) ??
+			'';
+
+		const tipEnabled = tipContext('tipEnabled');
+		const tipChainId = tipContext('tipChainId');
+		const tipContractAddress = tipContext('tipContractAddress');
+		const tipAdminSafeAddress = tipContext('tipAdminSafeAddress');
+		const tipDefaultHostWalletAddress = tipContext('tipDefaultHostWalletAddress');
+		const tipDefaultHostFeeBps = tipContext('tipDefaultHostFeeBps');
+		const tipTxMode = tipContext('tipTxMode');
+
+		const tipRpcUrlSsmParam = tipContext('tipRpcUrlSsmParam');
+		const tipRpcUrl = tipRpcUrlSsmParam.trim()
+			? cdk.SecretValue.ssmSecure(tipRpcUrlSsmParam.trim()).toString()
+			: tipContext('tipRpcUrl');
 
 		const paymentsProvider = (this.node.tryGetContext('paymentsProvider') as string | undefined) ?? '';
 		const paymentsCentsPer1000Credits =
