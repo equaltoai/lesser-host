@@ -6,6 +6,8 @@
 !.env.example
 tmp/
 bin/
+!cdk/bin/
+!cdk/bin/**
 node_modules/
 contracts/node_modules/
 contracts/artifacts/
