@@ -64,52 +64,125 @@ func linkPreviewID(policyVersion, normalizedURL string) string {
 }
 
 func normalizeLinkURL(raw string) (string, *url.URL, error) {
+	u, err := parseRawLinkURL(raw)
+	if err != nil {
+		return "", nil, err
+	}
+
+	if err := canonicalizeLinkSchemeAndUserinfo(u); err != nil {
+		return "", nil, err
+	}
+	if err := canonicalizeLinkHostAndPort(u); err != nil {
+		return "", nil, err
+	}
+	canonicalizeLinkPathQuery(u)
+
+	u.Fragment = ""
+	normalized := u.String()
+	return normalized, u, nil
+}
+
+func parseRawLinkURL(raw string) (*url.URL, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return "", nil, &linkPreviewError{Code: "invalid_url", Message: "url is required"}
+		return nil, &linkPreviewError{Code: "invalid_url", Message: "url is required"}
 	}
 
 	u, err := url.Parse(raw)
 	if err != nil {
-		return "", nil, &linkPreviewError{Code: "invalid_url", Message: "invalid url"}
+		return nil, &linkPreviewError{Code: "invalid_url", Message: "invalid url"}
+	}
+	return u, nil
+}
+
+func canonicalizeLinkSchemeAndUserinfo(u *url.URL) error {
+	if u == nil {
+		return &linkPreviewError{Code: "invalid_url", Message: "invalid url"}
 	}
 
 	u.Scheme = strings.ToLower(strings.TrimSpace(u.Scheme))
-	if u.Scheme != schemeHTTP && u.Scheme != schemeHTTPS {
-		return "", nil, &linkPreviewError{Code: "invalid_url", Message: "url scheme must be http or https"}
+	switch u.Scheme {
+	case schemeHTTP, schemeHTTPS:
+		// ok
+	default:
+		return &linkPreviewError{Code: "invalid_url", Message: "url scheme must be http or https"}
 	}
+
 	if u.User != nil {
-		return "", nil, &linkPreviewError{Code: "invalid_url", Message: "url must not include userinfo"}
+		return &linkPreviewError{Code: "invalid_url", Message: "url must not include userinfo"}
+	}
+
+	return nil
+}
+
+func canonicalizeLinkHostAndPort(u *url.URL) error {
+	if u == nil {
+		return &linkPreviewError{Code: "invalid_url", Message: "invalid url"}
 	}
 
 	host := strings.TrimSpace(u.Hostname())
 	if host == "" {
-		return "", nil, &linkPreviewError{Code: "invalid_url", Message: "url host is required"}
+		return &linkPreviewError{Code: "invalid_url", Message: "url host is required"}
 	}
 
 	asciiHost, err := idna.Lookup.ToASCII(host)
 	if err != nil {
-		return "", nil, &linkPreviewError{Code: "invalid_url", Message: "invalid host"}
+		return &linkPreviewError{Code: "invalid_url", Message: "invalid host"}
 	}
 	asciiHost = strings.ToLower(strings.TrimSpace(asciiHost))
 	if asciiHost == "" {
-		return "", nil, &linkPreviewError{Code: "invalid_url", Message: "invalid host"}
+		return &linkPreviewError{Code: "invalid_url", Message: "invalid host"}
 	}
 
-	port := strings.TrimSpace(u.Port())
-	if port != "" {
-		n, err := strconv.Atoi(port)
-		if err != nil || n <= 0 || n > 65535 {
-			return "", nil, &linkPreviewError{Code: "invalid_url", Message: "invalid port"}
-		}
-		// Only allow default ports (SSRF hardening).
-		if (u.Scheme == schemeHTTP && n != 80) || (u.Scheme == schemeHTTPS && n != 443) {
-			return "", nil, &linkPreviewError{Code: "invalid_url", Message: "non-default ports are not allowed"}
-		}
+	if err := validateDefaultPort(u); err != nil {
+		return err
 	}
 
 	u.Host = asciiHost
-	u.Fragment = ""
+	return nil
+}
+
+func validateDefaultPort(u *url.URL) error {
+	if u == nil {
+		return &linkPreviewError{Code: "invalid_url", Message: "invalid url"}
+	}
+
+	port := strings.TrimSpace(u.Port())
+	if port == "" {
+		return nil
+	}
+
+	n, err := strconv.Atoi(port)
+	if err != nil {
+		return &linkPreviewError{Code: "invalid_url", Message: "invalid port"}
+	}
+	if n <= 0 || n > 65535 {
+		return &linkPreviewError{Code: "invalid_url", Message: "invalid port"}
+	}
+
+	// Only allow default ports (SSRF hardening).
+	allowed := defaultPortForScheme(u.Scheme)
+	if allowed == 0 || n != allowed {
+		return &linkPreviewError{Code: "invalid_url", Message: "non-default ports are not allowed"}
+	}
+	return nil
+}
+
+func defaultPortForScheme(scheme string) int {
+	switch strings.ToLower(strings.TrimSpace(scheme)) {
+	case schemeHTTP:
+		return 80
+	case schemeHTTPS:
+		return 443
+	default:
+		return 0
+	}
+}
+
+func canonicalizeLinkPathQuery(u *url.URL) {
+	if u == nil {
+		return
+	}
 
 	if u.Path == "" {
 		u.Path = "/"
@@ -123,9 +196,6 @@ func normalizeLinkURL(raw string) (string, *url.URL, error) {
 	if u.RawQuery != "" {
 		u.RawQuery = u.Query().Encode()
 	}
-
-	normalized := u.String()
-	return normalized, u, nil
 }
 
 func validateOutboundURL(ctx context.Context, resolver ipResolver, u *url.URL) error {
@@ -133,9 +203,8 @@ func validateOutboundURL(ctx context.Context, resolver ipResolver, u *url.URL) e
 		return &linkPreviewError{Code: "invalid_url", Message: "invalid url"}
 	}
 
-	scheme := strings.ToLower(strings.TrimSpace(u.Scheme))
-	if scheme != schemeHTTP && scheme != schemeHTTPS {
-		return &linkPreviewError{Code: "invalid_url", Message: "url scheme must be http or https"}
+	if err := validateOutboundScheme(u.Scheme); err != nil {
+		return err
 	}
 
 	host := strings.ToLower(strings.TrimSpace(u.Hostname()))
@@ -143,35 +212,71 @@ func validateOutboundURL(ctx context.Context, resolver ipResolver, u *url.URL) e
 		return &linkPreviewError{Code: "invalid_url", Message: "url host is required"}
 	}
 
-	if host == "localhost" || strings.HasSuffix(host, ".localhost") || strings.HasSuffix(host, ".local") || strings.HasSuffix(host, ".internal") {
+	if isDeniedHostname(host) {
 		return &linkPreviewError{Code: "blocked_ssrf", Message: "host is not allowed"}
 	}
 
 	if ip := net.ParseIP(host); ip != nil {
-		if isDeniedIP(ip) {
-			return &linkPreviewError{Code: "blocked_ssrf", Message: "ip is not allowed"}
-		}
-		return nil
+		return validateOutboundIP(ip)
 	}
 
+	ips, err := resolveHostIPs(ctx, resolver, host)
+	if err != nil {
+		return err
+	}
+	return validateResolvedIPAddrs(ips)
+}
+
+func validateOutboundScheme(scheme string) error {
+	switch strings.ToLower(strings.TrimSpace(scheme)) {
+	case schemeHTTP, schemeHTTPS:
+		return nil
+	default:
+		return &linkPreviewError{Code: "invalid_url", Message: "url scheme must be http or https"}
+	}
+}
+
+func validateOutboundIP(ip net.IP) error {
+	if isDeniedIP(ip) {
+		return &linkPreviewError{Code: "blocked_ssrf", Message: "ip is not allowed"}
+	}
+	return nil
+}
+
+func isDeniedHostname(host string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "localhost" {
+		return true
+	}
+	for _, suffix := range []string{".localhost", ".local", ".internal"} {
+		if strings.HasSuffix(host, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+func resolveHostIPs(ctx context.Context, resolver ipResolver, host string) ([]net.IPAddr, error) {
 	if resolver == nil {
 		resolver = net.DefaultResolver
 	}
 
 	ips, err := resolver.LookupIPAddr(ctx, host)
 	if err != nil {
-		return &linkPreviewError{Code: "blocked_ssrf", Message: "failed to resolve host"}
+		return nil, &linkPreviewError{Code: "blocked_ssrf", Message: "failed to resolve host"}
 	}
 	if len(ips) == 0 {
-		return &linkPreviewError{Code: "blocked_ssrf", Message: "host did not resolve"}
+		return nil, &linkPreviewError{Code: "blocked_ssrf", Message: "host did not resolve"}
 	}
+	return ips, nil
+}
 
+func validateResolvedIPAddrs(ips []net.IPAddr) error {
 	for _, ipAddr := range ips {
 		if isDeniedIP(ipAddr.IP) {
 			return &linkPreviewError{Code: "blocked_ssrf", Message: "host resolves to a blocked ip"}
 		}
 	}
-
 	return nil
 }
 
@@ -244,11 +349,11 @@ func fetchLinkPreview(ctx context.Context, resolver ipResolver, rawURL string) (
 	ctx, cancel := context.WithTimeout(ctx, linkPreviewFetchTimeout)
 	defer cancel()
 
-	if err := validateOutboundURL(ctx, resolver, u); err != nil {
+	if validateErr := validateOutboundURL(ctx, resolver, u); validateErr != nil {
 		return &fetchedLinkPreview{
 			PolicyVersion: linkPreviewPolicyVersion,
 			NormalizedURL: normalized,
-		}, err
+		}, validateErr
 	}
 
 	client := newPreviewHTTPClient(linkPreviewFetchTimeout)
@@ -498,20 +603,12 @@ func fetchWithRedirects(
 
 		contentType := resp.Header.Get("Content-Type")
 		if isRedirectStatus(resp.StatusCode) {
-			loc := strings.TrimSpace(resp.Header.Get("Location"))
 			_ = drainAndClose(resp.Body)
-			if loc == "" {
-				return current, chain, nil, contentType, &linkPreviewError{Code: "fetch_failed", Message: "redirect missing location"}
+			next, followErr := followRedirect(current, resp)
+			if followErr != nil {
+				return current, chain, nil, contentType, followErr
 			}
-			next, err := resolveRedirect(current, loc)
-			if err != nil {
-				return current, chain, nil, contentType, err
-			}
-			_, normalizedNext, err := normalizeLinkURL(next.String())
-			if err != nil {
-				return current, chain, nil, contentType, err
-			}
-			current = normalizedNext
+			current = next
 			chain = append(chain, current.String())
 			continue
 		}
@@ -525,6 +622,28 @@ func fetchWithRedirects(
 	}
 
 	return current, chain, nil, "", &linkPreviewError{Code: "fetch_failed", Message: "too many redirects"}
+}
+
+func followRedirect(current *url.URL, resp *http.Response) (*url.URL, error) {
+	if resp == nil {
+		return nil, &linkPreviewError{Code: "internal", Message: "redirect response is required"}
+	}
+
+	loc := strings.TrimSpace(resp.Header.Get("Location"))
+	if loc == "" {
+		return nil, &linkPreviewError{Code: "fetch_failed", Message: "redirect missing location"}
+	}
+
+	next, err := resolveRedirect(current, loc)
+	if err != nil {
+		return nil, err
+	}
+
+	_, normalizedNext, err := normalizeLinkURL(next.String())
+	if err != nil {
+		return nil, err
+	}
+	return normalizedNext, nil
 }
 
 func isRedirectStatus(status int) bool {

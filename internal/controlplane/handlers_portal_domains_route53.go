@@ -74,19 +74,7 @@ func (s *Server) findRoute53HostedZoneID(ctx *apptheory.Context, domain string) 
 			return "", err
 		}
 
-		for _, hz := range out.HostedZones {
-			name := normalizeRoute53ZoneName(aws.ToString(hz.Name))
-			if !domainInZone(domain, name) {
-				continue
-			}
-			if hz.Config != nil && hz.Config.PrivateZone {
-				continue
-			}
-			if len(name) > bestLen {
-				bestLen = len(name)
-				bestID = aws.ToString(hz.Id)
-			}
-		}
+		bestID, bestLen = pickBestHostedZoneID(domain, out.HostedZones, bestID, bestLen)
 
 		if !out.IsTruncated {
 			break
@@ -103,6 +91,23 @@ func (s *Server) findRoute53HostedZoneID(ctx *apptheory.Context, domain string) 
 	}
 
 	return bestID, nil
+}
+
+func pickBestHostedZoneID(domain string, hostedZones []r53types.HostedZone, bestID string, bestLen int) (string, int) {
+	for _, hz := range hostedZones {
+		name := normalizeRoute53ZoneName(aws.ToString(hz.Name))
+		if !domainInZone(domain, name) {
+			continue
+		}
+		if hz.Config != nil && hz.Config.PrivateZone {
+			continue
+		}
+		if len(name) > bestLen {
+			bestLen = len(name)
+			bestID = aws.ToString(hz.Id)
+		}
+	}
+	return bestID, bestLen
 }
 
 func (s *Server) handlePortalUpsertDomainVerificationRoute53(ctx *apptheory.Context) (*apptheory.Response, error) {

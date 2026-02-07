@@ -35,59 +35,20 @@ type Metric struct {
 // Dimensions define the CloudWatch metric dimensions for this record. Keys must match the values emitted into
 // the top-level JSON object.
 func Emit(namespace string, dimensions map[string]string, metrics []Metric, properties map[string]any) {
-	namespace = strings.TrimSpace(namespace)
-	if namespace == "" {
-		namespace = "lesser-host"
-	}
-
+	namespace = normalizeNamespace(namespace)
 	if len(dimensions) == 0 || len(metrics) == 0 {
 		return
 	}
 
-	dimKeys := make([]string, 0, len(dimensions))
-	for k := range dimensions {
-		k = strings.TrimSpace(k)
-		if k == "" {
-			continue
-		}
-		dimKeys = append(dimKeys, k)
-	}
-	sort.Strings(dimKeys)
+	dimKeys := dimensionKeys(dimensions)
 	if len(dimKeys) == 0 {
 		return
 	}
 
-	metricDefs := make([]map[string]any, 0, len(metrics))
 	payload := map[string]any{}
-
-	for _, k := range dimKeys {
-		payload[k] = strings.TrimSpace(dimensions[k])
-	}
-	for k, v := range properties {
-		if strings.TrimSpace(k) == "" {
-			continue
-		}
-		payload[k] = v
-	}
-
-	for _, m := range metrics {
-		m.Name = strings.TrimSpace(m.Name)
-		if m.Name == "" {
-			continue
-		}
-		if math.IsNaN(m.Value) || math.IsInf(m.Value, 0) {
-			continue
-		}
-		if strings.TrimSpace(string(m.Unit)) == "" {
-			m.Unit = UnitNone
-		}
-
-		metricDefs = append(metricDefs, map[string]any{
-			"Name": m.Name,
-			"Unit": string(m.Unit),
-		})
-		payload[m.Name] = m.Value
-	}
+	addDimensions(payload, dimensions, dimKeys)
+	addProperties(payload, properties)
+	metricDefs := addMetricDefs(payload, metrics)
 
 	if len(metricDefs) == 0 {
 		return
@@ -107,4 +68,65 @@ func Emit(namespace string, dimensions map[string]string, metrics []Metric, prop
 		return
 	}
 	_, _ = fmt.Fprintln(os.Stdout, string(b))
+}
+
+func normalizeNamespace(namespace string) string {
+	namespace = strings.TrimSpace(namespace)
+	if namespace == "" {
+		return "lesser-host"
+	}
+	return namespace
+}
+
+func dimensionKeys(dimensions map[string]string) []string {
+	keys := make([]string, 0, len(dimensions))
+	for k := range dimensions {
+		k = strings.TrimSpace(k)
+		if k == "" {
+			continue
+		}
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func addDimensions(payload map[string]any, dimensions map[string]string, dimKeys []string) {
+	for _, k := range dimKeys {
+		payload[k] = strings.TrimSpace(dimensions[k])
+	}
+}
+
+func addProperties(payload map[string]any, properties map[string]any) {
+	for k, v := range properties {
+		if strings.TrimSpace(k) == "" {
+			continue
+		}
+		payload[k] = v
+	}
+}
+
+func addMetricDefs(payload map[string]any, metrics []Metric) []map[string]any {
+	metricDefs := make([]map[string]any, 0, len(metrics))
+	for _, m := range metrics {
+		name := strings.TrimSpace(m.Name)
+		if name == "" {
+			continue
+		}
+		if math.IsNaN(m.Value) || math.IsInf(m.Value, 0) {
+			continue
+		}
+
+		unit := m.Unit
+		if strings.TrimSpace(string(unit)) == "" {
+			unit = UnitNone
+		}
+
+		metricDefs = append(metricDefs, map[string]any{
+			"Name": name,
+			"Unit": string(unit),
+		})
+		payload[name] = m.Value
+	}
+	return metricDefs
 }

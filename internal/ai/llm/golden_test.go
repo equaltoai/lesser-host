@@ -61,7 +61,7 @@ func TestGoldenSchemasAndPrompts(t *testing.T) {
 				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 					t.Fatalf("mkdir testdata: %v", err)
 				}
-				if err := os.WriteFile(path, tc.content, 0o644); err != nil {
+				if err := os.WriteFile(path, tc.content, 0o600); err != nil {
 					t.Fatalf("write golden %s: %v", path, err)
 				}
 			}

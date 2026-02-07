@@ -18,12 +18,14 @@ import (
 	"github.com/equaltoai/lesser-host/internal/secrets"
 )
 
-type stripeProvider struct{}
+type stripeProvider struct {
+	ssmClient secrets.SSMAPI
+}
 
 func (stripeProvider) Name() string { return "stripe" }
 
-func (stripeProvider) ensureKey(ctx context.Context) error {
-	key, err := secrets.StripeSecretKey(ctx, nil)
+func (p stripeProvider) ensureKey(ctx context.Context) error {
+	key, err := secrets.StripeSecretKey(ctx, p.ssmClient)
 	if err != nil {
 		return err
 	}
@@ -34,8 +36,8 @@ func (stripeProvider) ensureKey(ctx context.Context) error {
 	return nil
 }
 
-func (stripeProvider) webhookSecret(ctx context.Context) (string, error) {
-	secret, err := secrets.StripeWebhookSecret(ctx, nil)
+func (p stripeProvider) webhookSecret(ctx context.Context) (string, error) {
+	secret, err := secrets.StripeWebhookSecret(ctx, p.ssmClient)
 	if err != nil {
 		return "", err
 	}
@@ -216,15 +218,28 @@ func (p stripeProvider) ParseWebhookEvent(ctx context.Context, headers map[strin
 		return nil, err
 	}
 
+	customerID := ""
+	if sess.Customer != nil {
+		customerID = strings.TrimSpace(sess.Customer.ID)
+	}
+	paymentIntentID := ""
+	if sess.PaymentIntent != nil {
+		paymentIntentID = strings.TrimSpace(sess.PaymentIntent.ID)
+	}
+	setupIntentID := ""
+	if sess.SetupIntent != nil {
+		setupIntentID = strings.TrimSpace(sess.SetupIntent.ID)
+	}
+
 	out := WebhookEvent{
 		Type: string(event.Type),
 		Session: CheckoutSession{
 			ID:              strings.TrimSpace(sess.ID),
 			URL:             strings.TrimSpace(sess.URL),
 			Mode:            string(sess.Mode),
-			CustomerID:      strings.TrimSpace(sess.Customer.ID),
-			PaymentIntentID: strings.TrimSpace(sess.PaymentIntent.ID),
-			SetupIntentID:   strings.TrimSpace(sess.SetupIntent.ID),
+			CustomerID:      customerID,
+			PaymentIntentID: paymentIntentID,
+			SetupIntentID:   setupIntentID,
 			AmountTotal:     sess.AmountTotal,
 			Currency:        strings.TrimSpace(string(sess.Currency)),
 			Metadata:        sess.Metadata,

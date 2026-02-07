@@ -12,22 +12,23 @@ import (
 )
 
 func (s *Server) ensureLinkSafetyBasicAttestation(ctx context.Context, result *models.LinkSafetyBasicResult) (string, error) {
-	if s == nil || s.store == nil || s.store.DB == nil || s.attest == nil || !s.attest.Enabled() || result == nil {
+	if !s.canIssueAttestations() {
 		return "", nil
 	}
 
-	actorURI := strings.TrimSpace(result.ActorURI)
-	objectURI := strings.TrimSpace(result.ObjectURI)
-	contentHash := strings.TrimSpace(result.ContentHash)
-	if actorURI == "" || objectURI == "" || contentHash == "" {
+	actorURI, objectURI, contentHash, ok := linkSafetyBasicAttestationParts(result)
+	if !ok {
 		return "", nil
 	}
 
 	id := attestations.AttestationID(actorURI, objectURI, contentHash, "link_safety_basic", linkSafetyBasicPolicyVersion)
 
-	if existing, err := s.store.GetAttestation(ctx, id); err == nil && existing != nil {
-		return id, nil
-	} else if err != nil && !theoryErrors.IsNotFound(err) {
+	existing, err := s.store.GetAttestation(ctx, id)
+	if err == nil {
+		if existing != nil {
+			return id, nil
+		}
+	} else if !theoryErrors.IsNotFound(err) {
 		return "", err
 	}
 
@@ -86,4 +87,24 @@ func (s *Server) ensureLinkSafetyBasicAttestation(ctx context.Context, result *m
 		return "", err
 	}
 	return id, nil
+}
+
+func (s *Server) canIssueAttestations() bool {
+	if s == nil || s.store == nil || s.store.DB == nil || s.attest == nil {
+		return false
+	}
+	return s.attest.Enabled()
+}
+
+func linkSafetyBasicAttestationParts(result *models.LinkSafetyBasicResult) (actorURI, objectURI, contentHash string, ok bool) {
+	if result == nil {
+		return "", "", "", false
+	}
+	actorURI = strings.TrimSpace(result.ActorURI)
+	objectURI = strings.TrimSpace(result.ObjectURI)
+	contentHash = strings.TrimSpace(result.ContentHash)
+	if actorURI == "" || objectURI == "" || contentHash == "" {
+		return "", "", "", false
+	}
+	return actorURI, objectURI, contentHash, true
 }

@@ -51,4 +51,3 @@ func firstHeaderValue(headers map[string][]string, key string) string {
 	}
 	return values[0]
 }
-

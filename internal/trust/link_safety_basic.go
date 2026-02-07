@@ -112,35 +112,27 @@ func analyzeLinkSafetyBasic(ctx context.Context, resolver ipResolver, raw string
 	}
 }
 
-func parseLinkSafetyBasicInput(raw string) (linkSafetyBasicInput, *models.LinkSafetyBasicLinkResult) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return linkSafetyBasicInput{}, &models.LinkSafetyBasicLinkResult{
-			URL:          raw,
-			Risk:         "invalid",
-			ErrorCode:    "invalid_url",
-			ErrorMessage: "empty url",
-		}
+func invalidLinkSafetyBasicURL(raw string, message string) *models.LinkSafetyBasicLinkResult {
+	return &models.LinkSafetyBasicLinkResult{
+		URL:          raw,
+		Risk:         "invalid",
+		ErrorCode:    "invalid_url",
+		ErrorMessage: message,
 	}
+}
 
+func parseLinkSafetyBasicURL(raw string) (*url.URL, *models.LinkSafetyBasicLinkResult) {
 	u, err := url.Parse(raw)
 	if err != nil {
-		return linkSafetyBasicInput{}, &models.LinkSafetyBasicLinkResult{
-			URL:          raw,
-			Risk:         "invalid",
-			ErrorCode:    "invalid_url",
-			ErrorMessage: "invalid url",
-		}
+		return nil, invalidLinkSafetyBasicURL(raw, "invalid url")
 	}
+	return u, nil
+}
 
+func parseLinkSafetyBasicScheme(u *url.URL, raw string) (string, []string, *models.LinkSafetyBasicLinkResult) {
 	scheme := strings.ToLower(strings.TrimSpace(u.Scheme))
 	if scheme == "" {
-		return linkSafetyBasicInput{}, &models.LinkSafetyBasicLinkResult{
-			URL:          raw,
-			Risk:         "invalid",
-			ErrorCode:    "invalid_url",
-			ErrorMessage: "missing scheme",
-		}
+		return "", nil, invalidLinkSafetyBasicURL(raw, "missing scheme")
 	}
 
 	flags := []string{}
@@ -151,54 +143,48 @@ func parseLinkSafetyBasicInput(raw string) (linkSafetyBasicInput, *models.LinkSa
 		flags = append(flags, "userinfo")
 	}
 
+	return scheme, flags, nil
+}
+
+func parseLinkSafetyBasicHost(u *url.URL, raw string, flags []string) (string, []string, *models.LinkSafetyBasicLinkResult) {
 	host := strings.TrimSpace(u.Hostname())
 	if host == "" {
-		return linkSafetyBasicInput{}, &models.LinkSafetyBasicLinkResult{
-			URL:          raw,
-			Risk:         "invalid",
-			ErrorCode:    "invalid_url",
-			ErrorMessage: "missing host",
-		}
+		return "", flags, invalidLinkSafetyBasicURL(raw, "missing host")
 	}
 
 	asciiHost, err := idna.Lookup.ToASCII(host)
 	if err != nil {
-		return linkSafetyBasicInput{}, &models.LinkSafetyBasicLinkResult{
-			URL:          raw,
-			Risk:         "invalid",
-			ErrorCode:    "invalid_url",
-			ErrorMessage: "invalid host",
-		}
+		return "", flags, invalidLinkSafetyBasicURL(raw, "invalid host")
 	}
 	asciiHost = strings.ToLower(strings.TrimSpace(asciiHost))
 	if asciiHost == "" {
-		return linkSafetyBasicInput{}, &models.LinkSafetyBasicLinkResult{
-			URL:          raw,
-			Risk:         "invalid",
-			ErrorCode:    "invalid_url",
-			ErrorMessage: "invalid host",
-		}
+		return "", flags, invalidLinkSafetyBasicURL(raw, "invalid host")
 	}
 	if strings.Contains(asciiHost, "xn--") {
 		flags = append(flags, "punycode")
 	}
 
+	return asciiHost, flags, nil
+}
+
+func parseLinkSafetyBasicPort(u *url.URL, raw string, scheme string, flags []string) (string, []string, *models.LinkSafetyBasicLinkResult) {
 	port := strings.TrimSpace(u.Port())
-	if port != "" {
-		n, err := strconv.Atoi(port)
-		if err != nil || n <= 0 || n > 65535 {
-			return linkSafetyBasicInput{}, &models.LinkSafetyBasicLinkResult{
-				URL:          raw,
-				Risk:         "invalid",
-				ErrorCode:    "invalid_url",
-				ErrorMessage: "invalid port",
-			}
-		}
-		if (scheme == schemeHTTP && n != 80) || (scheme == schemeHTTPS && n != 443) {
-			flags = append(flags, "non_default_port")
-		}
+	if port == "" {
+		return "", flags, nil
 	}
 
+	n, err := strconv.Atoi(port)
+	if err != nil || n <= 0 || n > 65535 {
+		return "", flags, invalidLinkSafetyBasicURL(raw, "invalid port")
+	}
+	if (scheme == schemeHTTP && n != 80) || (scheme == schemeHTTPS && n != 443) {
+		flags = append(flags, "non_default_port")
+	}
+
+	return port, flags, nil
+}
+
+func appendLinkSafetyBasicBehaviorFlags(u *url.URL, scheme string, asciiHost string, flags []string) []string {
 	if scheme == schemeHTTP {
 		flags = append(flags, "unencrypted_http")
 	}
@@ -208,6 +194,36 @@ func parseLinkSafetyBasicInput(raw string) (linkSafetyBasicInput, *models.LinkSa
 	if looksLikeRedirector(u, asciiHost) {
 		flags = append(flags, "redirector")
 	}
+	return flags
+}
+
+func parseLinkSafetyBasicInput(raw string) (linkSafetyBasicInput, *models.LinkSafetyBasicLinkResult) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return linkSafetyBasicInput{}, invalidLinkSafetyBasicURL(raw, "empty url")
+	}
+
+	u, invalid := parseLinkSafetyBasicURL(raw)
+	if invalid != nil {
+		return linkSafetyBasicInput{}, invalid
+	}
+
+	scheme, flags, invalid := parseLinkSafetyBasicScheme(u, raw)
+	if invalid != nil {
+		return linkSafetyBasicInput{}, invalid
+	}
+
+	asciiHost, flags, invalid := parseLinkSafetyBasicHost(u, raw, flags)
+	if invalid != nil {
+		return linkSafetyBasicInput{}, invalid
+	}
+
+	port, flags, invalid := parseLinkSafetyBasicPort(u, raw, scheme, flags)
+	if invalid != nil {
+		return linkSafetyBasicInput{}, invalid
+	}
+
+	flags = appendLinkSafetyBasicBehaviorFlags(u, scheme, asciiHost, flags)
 
 	normalizedURL := normalizeURLForSafety(u, scheme, asciiHost, port)
 	return linkSafetyBasicInput{

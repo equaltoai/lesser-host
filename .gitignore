@@ -14,3 +14,8 @@ cdk/cdk.out/
 cdk/dist/
 cdk/.build/
 web/dist/
+gov-infra/.tools/
+gov-infra/evidence/*-output.log
+gov-infra/evidence/DOC-5-parity.log
+gov-infra/evidence/coverage.out
+gov-infra/evidence/coverage-summary.txt

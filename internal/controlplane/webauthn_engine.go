@@ -36,4 +36,3 @@ func newWebAuthnEngine(cfg config.Config) (webAuthnEngine, error) {
 
 	return webauthn.New(wconfig)
 }
-

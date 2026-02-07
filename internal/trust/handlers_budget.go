@@ -1,6 +1,7 @@
 package trust
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -36,17 +37,114 @@ type budgetDebitResponse struct {
 	DebitedCredits   int64 `json:"debited_credits"`
 }
 
+type budgetDebitPrepared struct {
+	InstanceSlug string
+	RequestID    string
+	Month        string
+	Credits      int64
+	AllowOverage bool
+	PK           string
+	SK           string
+}
+
 func (s *Server) handleBudgetDebit(ctx *apptheory.Context) (*apptheory.Response, error) {
-	if s == nil || s.store == nil || s.store.DB == nil {
+	prepared, err := s.prepareBudgetDebit(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	budget, ok, err := s.loadInstanceBudgetMonth(ctx.Context(), prepared.PK, prepared.SK)
+	if err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
-	if ctx == nil {
+	if !ok {
+		return apptheory.JSON(http.StatusOK, budgetDebitNotConfiguredResponse(prepared))
+	}
+
+	remaining := budget.IncludedCredits - budget.UsedCredits
+	if remaining < prepared.Credits {
+		if !prepared.AllowOverage {
+			return apptheory.JSON(http.StatusOK, budgetDebitExceededResponse(prepared, budget, remaining))
+		}
+	}
+
+	now := time.Now().UTC()
+
+	includedDebited, overageDebited := billing.PartsForDebit(budget.IncludedCredits, budget.UsedCredits, prepared.Credits)
+	billingType := billing.TypeFromParts(includedDebited, overageDebited)
+
+	update := &models.InstanceBudgetMonth{
+		InstanceSlug: prepared.InstanceSlug,
+		Month:        prepared.Month,
+		UpdatedAt:    now,
+	}
+	if updateErr := update.UpdateKeys(); updateErr != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
+	ledger := buildBudgetDebitLedgerEntry(prepared, now, billingType, includedDebited, overageDebited)
+	audit := buildBudgetDebitAuditEntry(prepared, now)
+
+	err = s.transactBudgetDebit(ctx.Context(), update, prepared.AllowOverage, prepared.Credits, now, ledger, audit)
+	if theoryErrors.IsConditionFailed(err) {
+		latest, _, _ := s.loadInstanceBudgetMonth(ctx.Context(), prepared.PK, prepared.SK)
+		remaining = latest.IncludedCredits - latest.UsedCredits
+		return apptheory.JSON(http.StatusOK, budgetDebitExceededResponse(prepared, latest, remaining))
+	}
+	if err != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
+	latest, ok, err := s.loadInstanceBudgetMonth(ctx.Context(), prepared.PK, prepared.SK)
+	if err != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if !ok {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
+	remaining = latest.IncludedCredits - latest.UsedCredits
+	overBudget := remaining < 0
+	if overageDebited > 0 {
+		overBudget = true
+	}
+
+	reason := budgetReasonDebited
+	if overageDebited > 0 {
+		reason = budgetReasonOverage
+	}
+
+	return apptheory.JSON(http.StatusOK, budgetDebitResponse{
+		Allowed:          true,
+		OverBudget:       overBudget,
+		Reason:           reason,
+		InstanceSlug:     prepared.InstanceSlug,
+		Month:            prepared.Month,
+		IncludedCredits:  latest.IncludedCredits,
+		UsedCredits:      latest.UsedCredits,
+		RemainingCredits: remaining,
+		RequestedCredits: prepared.Credits,
+		DebitedCredits:   prepared.Credits,
+	})
+}
+
+func (s *Server) prepareBudgetDebit(ctx *apptheory.Context) (budgetDebitPrepared, error) {
+	if ctx == nil {
+		return budgetDebitPrepared{}, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if s == nil {
+		return budgetDebitPrepared{}, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if s.store == nil {
+		return budgetDebitPrepared{}, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if s.store.DB == nil {
+		return budgetDebitPrepared{}, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
 	instanceSlug := strings.TrimSpace(ctx.AuthIdentity)
 	if instanceSlug == "" {
-		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		return budgetDebitPrepared{}, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
 	}
 
 	instCfg := s.loadInstanceTrustConfig(ctx.Context(), instanceSlug)
@@ -54,190 +152,160 @@ func (s *Server) handleBudgetDebit(ctx *apptheory.Context) (*apptheory.Response,
 
 	var req budgetDebitRequest
 	if err := parseJSON(ctx, &req); err != nil {
-		return nil, err
+		return budgetDebitPrepared{}, err
 	}
 	if req.Credits <= 0 {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "credits must be > 0"}
+		return budgetDebitPrepared{}, &apptheory.AppError{Code: "app.bad_request", Message: "credits must be > 0"}
 	}
 
-	month := strings.TrimSpace(req.Month)
+	month, err := normalizeBudgetMonth(req.Month, time.Now().UTC())
+	if err != nil {
+		return budgetDebitPrepared{}, &apptheory.AppError{Code: "app.bad_request", Message: "month must be YYYY-MM"}
+	}
+
+	return budgetDebitPrepared{
+		InstanceSlug: instanceSlug,
+		RequestID:    strings.TrimSpace(ctx.RequestID),
+		Month:        month,
+		Credits:      req.Credits,
+		AllowOverage: allowOverage,
+		PK:           fmt.Sprintf("INSTANCE#%s", instanceSlug),
+		SK:           fmt.Sprintf("BUDGET#%s", month),
+	}, nil
+}
+
+func normalizeBudgetMonth(raw string, now time.Time) (string, error) {
+	month := strings.TrimSpace(raw)
 	if month == "" {
-		month = time.Now().UTC().Format("2006-01")
-	} else if _, err := time.Parse("2006-01", month); err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "month must be YYYY-MM"}
+		return now.Format("2006-01"), nil
 	}
+	_, err := time.Parse("2006-01", month)
+	if err != nil {
+		return "", err
+	}
+	return month, nil
+}
 
-	pk := fmt.Sprintf("INSTANCE#%s", instanceSlug)
-	sk := fmt.Sprintf("BUDGET#%s", month)
+func (s *Server) loadInstanceBudgetMonth(ctx context.Context, pk, sk string) (models.InstanceBudgetMonth, bool, error) {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return models.InstanceBudgetMonth{}, false, fmt.Errorf("store not initialized")
+	}
 
 	var budget models.InstanceBudgetMonth
-	err := s.store.DB.WithContext(ctx.Context()).
+	err := s.store.DB.WithContext(ctx).
 		Model(&models.InstanceBudgetMonth{}).
 		Where("PK", "=", pk).
 		Where("SK", "=", sk).
 		ConsistentRead().
 		First(&budget)
 	if theoryErrors.IsNotFound(err) {
-		return apptheory.JSON(http.StatusOK, budgetDebitResponse{
-			Allowed:          false,
-			OverBudget:       true,
-			Reason:           "budget not configured",
-			InstanceSlug:     instanceSlug,
-			Month:            month,
-			IncludedCredits:  0,
-			UsedCredits:      0,
-			RemainingCredits: 0,
-			RequestedCredits: req.Credits,
-			DebitedCredits:   0,
-		})
+		return models.InstanceBudgetMonth{}, false, nil
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return models.InstanceBudgetMonth{}, false, err
+	}
+	return budget, true, nil
+}
+
+func (s *Server) transactBudgetDebit(
+	ctx context.Context,
+	update *models.InstanceBudgetMonth,
+	allowOverage bool,
+	credits int64,
+	now time.Time,
+	ledger *models.UsageLedgerEntry,
+	audit *models.AuditLogEntry,
+) error {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return fmt.Errorf("store not initialized")
 	}
 
-	remaining := budget.IncludedCredits - budget.UsedCredits
-	if remaining < req.Credits && !allowOverage {
-		return apptheory.JSON(http.StatusOK, budgetDebitResponse{
-			Allowed:          false,
-			OverBudget:       true,
-			Reason:           "budget exceeded",
-			InstanceSlug:     instanceSlug,
-			Month:            month,
-			IncludedCredits:  budget.IncludedCredits,
-			UsedCredits:      budget.UsedCredits,
-			RemainingCredits: remaining,
-			RequestedCredits: req.Credits,
-			DebitedCredits:   0,
-		})
-	}
+	return s.store.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
+		conditions := []core.TransactCondition{tabletheory.IfExists()}
+		if !allowOverage {
+			conditions = append(conditions,
+				tabletheory.ConditionExpression(
+					"if_not_exists(usedCredits, :zero) + :delta <= if_not_exists(includedCredits, :zero)",
+					map[string]any{
+						":zero":  int64(0),
+						":delta": credits,
+					},
+				),
+			)
+		}
 
-	now := time.Now().UTC()
+		tx.UpdateWithBuilder(update, func(ub core.UpdateBuilder) error {
+			ub.Add("UsedCredits", credits)
+			ub.Set("UpdatedAt", now)
+			return nil
+		}, conditions...)
+		tx.Put(ledger)
+		tx.Put(audit)
+		return nil
+	})
+}
 
-	update := &models.InstanceBudgetMonth{
-		InstanceSlug: instanceSlug,
-		Month:        month,
-		UpdatedAt:    now,
-	}
-	if err := update.UpdateKeys(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-
-	includedDebited, overageDebited := billing.PartsForDebit(budget.IncludedCredits, budget.UsedCredits, req.Credits)
-	billingType := billing.TypeFromParts(includedDebited, overageDebited)
-
+func buildBudgetDebitLedgerEntry(prepared budgetDebitPrepared, now time.Time, billingType string, includedDebited, overageDebited int64) *models.UsageLedgerEntry {
 	ledger := &models.UsageLedgerEntry{
-		ID:                     billing.UsageLedgerEntryID(instanceSlug, month, strings.TrimSpace(ctx.RequestID), "budget.debit", month, req.Credits),
-		InstanceSlug:           instanceSlug,
-		Month:                  month,
+		ID:                     billing.UsageLedgerEntryID(prepared.InstanceSlug, prepared.Month, prepared.RequestID, "budget.debit", prepared.Month, prepared.Credits),
+		InstanceSlug:           prepared.InstanceSlug,
+		Month:                  prepared.Month,
 		Module:                 "budget.debit",
-		Target:                 month,
+		Target:                 prepared.Month,
 		Cached:                 false,
 		Reason:                 billingType,
-		RequestID:              strings.TrimSpace(ctx.RequestID),
-		RequestedCredits:       req.Credits,
-		ListCredits:            req.Credits,
+		RequestID:              prepared.RequestID,
+		RequestedCredits:       prepared.Credits,
+		ListCredits:            prepared.Credits,
 		PricingMultiplierBps:   10000,
-		DebitedCredits:         req.Credits,
+		DebitedCredits:         prepared.Credits,
 		IncludedDebitedCredits: includedDebited,
 		OverageDebitedCredits:  overageDebited,
 		BillingType:            billingType,
 		CreatedAt:              now,
 	}
 	_ = ledger.UpdateKeys()
+	return ledger
+}
 
+func buildBudgetDebitAuditEntry(prepared budgetDebitPrepared, now time.Time) *models.AuditLogEntry {
 	audit := &models.AuditLogEntry{
-		Actor:     instanceSlug,
+		Actor:     prepared.InstanceSlug,
 		Action:    "budget.debit",
-		Target:    fmt.Sprintf("instance_budget:%s:%s", instanceSlug, month),
-		RequestID: ctx.RequestID,
+		Target:    fmt.Sprintf("instance_budget:%s:%s", prepared.InstanceSlug, prepared.Month),
+		RequestID: prepared.RequestID,
 		CreatedAt: now,
 	}
 	_ = audit.UpdateKeys()
+	return audit
+}
 
-	err = s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
-		// Atomic debit guarded by included/used condition.
-		if allowOverage {
-			tx.UpdateWithBuilder(update, func(ub core.UpdateBuilder) error {
-				ub.Add("UsedCredits", req.Credits)
-				ub.Set("UpdatedAt", now)
-				return nil
-			}, tabletheory.IfExists())
-		} else {
-			tx.UpdateWithBuilder(update, func(ub core.UpdateBuilder) error {
-				ub.Add("UsedCredits", req.Credits)
-				ub.Set("UpdatedAt", now)
-				return nil
-			},
-				tabletheory.IfExists(),
-				tabletheory.ConditionExpression(
-					"if_not_exists(usedCredits, :zero) + :delta <= if_not_exists(includedCredits, :zero)",
-					map[string]any{
-						":zero":  int64(0),
-						":delta": req.Credits,
-					},
-				),
-			)
-		}
-		tx.Put(ledger)
-		tx.Put(audit)
-		return nil
-	})
-	if theoryErrors.IsConditionFailed(err) {
-		// Re-read to report current state.
-		var latest models.InstanceBudgetMonth
-		_ = s.store.DB.WithContext(ctx.Context()).
-			Model(&models.InstanceBudgetMonth{}).
-			Where("PK", "=", pk).
-			Where("SK", "=", sk).
-			ConsistentRead().
-			First(&latest)
+func budgetDebitNotConfiguredResponse(prepared budgetDebitPrepared) budgetDebitResponse {
+	return budgetDebitResponse{
+		Allowed:          false,
+		OverBudget:       true,
+		Reason:           "budget not configured",
+		InstanceSlug:     prepared.InstanceSlug,
+		Month:            prepared.Month,
+		IncludedCredits:  0,
+		UsedCredits:      0,
+		RemainingCredits: 0,
+		RequestedCredits: prepared.Credits,
+		DebitedCredits:   0,
+	}
+}
 
-		remaining = latest.IncludedCredits - latest.UsedCredits
-		return apptheory.JSON(http.StatusOK, budgetDebitResponse{
-			Allowed:          false,
-			OverBudget:       true,
-			Reason:           "budget exceeded",
-			InstanceSlug:     instanceSlug,
-			Month:            month,
-			IncludedCredits:  latest.IncludedCredits,
-			UsedCredits:      latest.UsedCredits,
-			RemainingCredits: remaining,
-			RequestedCredits: req.Credits,
-			DebitedCredits:   0,
-		})
-	}
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-
-	// Return updated budget (consistent read).
-	var latest models.InstanceBudgetMonth
-	err = s.store.DB.WithContext(ctx.Context()).
-		Model(&models.InstanceBudgetMonth{}).
-		Where("PK", "=", pk).
-		Where("SK", "=", sk).
-		ConsistentRead().
-		First(&latest)
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-
-	remaining = latest.IncludedCredits - latest.UsedCredits
-	overBudget := remaining < 0 || overageDebited > 0
-	reason := "debited"
-	if overageDebited > 0 {
-		reason = "overage"
-	}
-	return apptheory.JSON(http.StatusOK, budgetDebitResponse{
-		Allowed:          true,
-		OverBudget:       overBudget,
-		Reason:           reason,
-		InstanceSlug:     instanceSlug,
-		Month:            month,
-		IncludedCredits:  latest.IncludedCredits,
-		UsedCredits:      latest.UsedCredits,
+func budgetDebitExceededResponse(prepared budgetDebitPrepared, budget models.InstanceBudgetMonth, remaining int64) budgetDebitResponse {
+	return budgetDebitResponse{
+		Allowed:          false,
+		OverBudget:       true,
+		Reason:           "budget exceeded",
+		InstanceSlug:     prepared.InstanceSlug,
+		Month:            prepared.Month,
+		IncludedCredits:  budget.IncludedCredits,
+		UsedCredits:      budget.UsedCredits,
 		RemainingCredits: remaining,
-		RequestedCredits: req.Credits,
-		DebitedCredits:   req.Credits,
-	})
+		RequestedCredits: prepared.Credits,
+		DebitedCredits:   0,
+	}
 }

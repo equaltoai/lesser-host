@@ -132,16 +132,11 @@ func (s *Server) processProvisionJob(ctx context.Context, requestID string, jobI
 		return fmt.Errorf("store not initialized")
 	}
 
-	job, err := s.store.GetProvisionJob(ctx, jobID)
-	if theoryErrors.IsNotFound(err) || job == nil {
-		return nil
-	}
+	job, err := s.loadProvisionJob(ctx, jobID)
 	if err != nil {
 		return err
 	}
-
-	status := strings.ToLower(strings.TrimSpace(job.Status))
-	if status != models.ProvisionJobStatusQueued && status != models.ProvisionJobStatusRunning {
+	if job == nil || !provisionJobProcessable(job) {
 		return nil
 	}
 
@@ -151,11 +146,48 @@ func (s *Server) processProvisionJob(ctx context.Context, requestID string, jobI
 		return s.failJob(ctx, job, requestID, now, "disabled", "managed provisioning is disabled (set MANAGED_PROVISIONING_ENABLED=true)")
 	}
 
+	if missing := s.missingManagedProvisioningConfig(job); len(missing) > 0 {
+		return s.failJob(ctx, job, requestID, now, "missing_config", "missing required config: "+strings.Join(missing, ", "))
+	}
+
+	return s.runManagedProvisioningStateMachine(ctx, job, requestID, now)
+}
+
+func (s *Server) loadProvisionJob(ctx context.Context, jobID string) (*models.ProvisionJob, error) {
+	if s == nil || s.store == nil {
+		return nil, fmt.Errorf("store not initialized")
+	}
+
+	job, err := s.store.GetProvisionJob(ctx, strings.TrimSpace(jobID))
+	if theoryErrors.IsNotFound(err) || job == nil {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return job, nil
+}
+
+func provisionJobProcessable(job *models.ProvisionJob) bool {
+	if job == nil {
+		return false
+	}
+	status := strings.ToLower(strings.TrimSpace(job.Status))
+	return status == models.ProvisionJobStatusQueued || status == models.ProvisionJobStatusRunning
+}
+
+func (s *Server) missingManagedProvisioningConfig(job *models.ProvisionJob) []string {
+	if s == nil || job == nil {
+		return nil
+	}
+
 	var missing []string
 	if strings.TrimSpace(s.cfg.ManagedParentHostedZoneID) == "" {
 		missing = append(missing, "MANAGED_PARENT_HOSTED_ZONE_ID")
 	}
-	if strings.TrimSpace(s.cfg.ManagedAccountEmailTemplate) == "" && strings.TrimSpace(job.AccountID) == "" && strings.TrimSpace(job.AccountRequestID) == "" {
+	if strings.TrimSpace(s.cfg.ManagedAccountEmailTemplate) == "" &&
+		strings.TrimSpace(job.AccountID) == "" &&
+		strings.TrimSpace(job.AccountRequestID) == "" {
 		missing = append(missing, "MANAGED_ACCOUNT_EMAIL_TEMPLATE")
 	}
 	if strings.TrimSpace(s.cfg.ManagedInstanceRoleName) == "" {
@@ -167,11 +199,7 @@ func (s *Server) processProvisionJob(ctx context.Context, requestID string, jobI
 	if strings.TrimSpace(s.cfg.ArtifactBucketName) == "" {
 		missing = append(missing, "ARTIFACT_BUCKET_NAME")
 	}
-	if len(missing) > 0 {
-		return s.failJob(ctx, job, requestID, now, "missing_config", "missing required config: "+strings.Join(missing, ", "))
-	}
-
-	return s.runManagedProvisioningStateMachine(ctx, job, requestID, now)
+	return missing
 }
 
 func (s *Server) failJob(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time, code string, msg string) error {
@@ -256,10 +284,21 @@ func (s *Server) runManagedProvisioningStateMachine(ctx context.Context, job *mo
 		return s.failJob(ctx, job, requestID, now, "expired", "provisioning job has expired")
 	}
 
+	s.initializeManagedProvisionJob(job)
+	if err := s.startManagedProvisioningJobIfQueued(ctx, job, requestID, now); err != nil {
+		return err
+	}
+	return s.advanceManagedProvisioningLoop(ctx, job, requestID, now)
+}
+
+func (s *Server) initializeManagedProvisionJob(job *models.ProvisionJob) {
+	if s == nil || job == nil {
+		return
+	}
+
 	if strings.TrimSpace(job.Step) == "" {
 		job.Step = provisionStepQueued
 	}
-
 	if strings.TrimSpace(job.Region) == "" {
 		job.Region = strings.TrimSpace(s.cfg.ManagedDefaultRegion)
 	}
@@ -270,31 +309,48 @@ func (s *Server) runManagedProvisioningStateMachine(ctx context.Context, job *mo
 		job.AccountRoleName = strings.TrimSpace(s.cfg.ManagedInstanceRoleName)
 	}
 	if strings.TrimSpace(job.BaseDomain) == "" {
-		parentDomain := strings.TrimSpace(s.cfg.ManagedParentDomain)
-		if parentDomain == "" {
-			parentDomain = "greater.website"
-		}
-		job.BaseDomain = fmt.Sprintf("%s.%s", strings.TrimSpace(job.InstanceSlug), strings.TrimPrefix(parentDomain, "."))
+		job.BaseDomain = managedBaseDomain(strings.TrimSpace(job.InstanceSlug), strings.TrimSpace(s.cfg.ManagedParentDomain))
+	}
+}
+
+func managedBaseDomain(slug string, parentDomain string) string {
+	slug = strings.TrimSpace(slug)
+	parentDomain = strings.TrimSpace(parentDomain)
+	if parentDomain == "" {
+		parentDomain = "greater.website"
+	}
+	return fmt.Sprintf("%s.%s", slug, strings.TrimPrefix(parentDomain, "."))
+}
+
+func (s *Server) startManagedProvisioningJobIfQueued(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) error {
+	if s == nil || job == nil {
+		return nil
 	}
 
 	status := strings.ToLower(strings.TrimSpace(job.Status))
-	if status == models.ProvisionJobStatusQueued {
-		job.Status = models.ProvisionJobStatusRunning
-		job.Note = "starting provisioning"
-		job.Step = provisionStepQueued
-		if err := s.persistJobAndInstance(ctx, job, requestID, now, func(ub core.UpdateBuilder) error {
-			ub.Set("ProvisionStatus", models.ProvisionJobStatusRunning)
-			ub.Set("ProvisionJobID", strings.TrimSpace(job.ID))
-			if strings.TrimSpace(job.BaseDomain) != "" {
-				ub.Set("HostedBaseDomain", strings.TrimSpace(job.BaseDomain))
-			}
-			if strings.TrimSpace(job.Region) != "" {
-				ub.Set("HostedRegion", strings.TrimSpace(job.Region))
-			}
-			return nil
-		}); err != nil {
-			return err
+	if status != models.ProvisionJobStatusQueued {
+		return nil
+	}
+
+	job.Status = models.ProvisionJobStatusRunning
+	job.Note = "starting provisioning"
+	job.Step = provisionStepQueued
+	return s.persistJobAndInstance(ctx, job, requestID, now, func(ub core.UpdateBuilder) error {
+		ub.Set("ProvisionStatus", models.ProvisionJobStatusRunning)
+		ub.Set("ProvisionJobID", strings.TrimSpace(job.ID))
+		if strings.TrimSpace(job.BaseDomain) != "" {
+			ub.Set("HostedBaseDomain", strings.TrimSpace(job.BaseDomain))
 		}
+		if strings.TrimSpace(job.Region) != "" {
+			ub.Set("HostedRegion", strings.TrimSpace(job.Region))
+		}
+		return nil
+	})
+}
+
+func (s *Server) advanceManagedProvisioningLoop(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) error {
+	if s == nil || job == nil {
+		return nil
 	}
 
 	for i := 0; i < provisionMaxTransitionsPerRun; i++ {
@@ -360,70 +416,74 @@ func (s *Server) advanceProvisionQueued(ctx context.Context, job *models.Provisi
 
 func (s *Server) advanceProvisionAccountCreate(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {
 	if strings.TrimSpace(job.AccountID) != "" {
-		job.Step = provisionStepAccountMove
-		job.Note = "AWS account allocated"
-		if err := s.persistJobAndInstance(ctx, job, requestID, now, func(ub core.UpdateBuilder) error {
-			ub.Set("HostedAccountID", strings.TrimSpace(job.AccountID))
-			return nil
-		}); err != nil {
-			return 0, false, err
-		}
-		return 0, false, nil
+		return s.advanceToAccountMove(ctx, job, requestID, now, "AWS account allocated")
 	}
-
 	if strings.TrimSpace(job.AccountRequestID) == "" {
-		email := strings.TrimSpace(job.AccountEmail)
-		if email == "" {
-			email = strings.TrimSpace(expandManagedAccountEmailTemplate(s.cfg.ManagedAccountEmailTemplate, job.InstanceSlug))
-			job.AccountEmail = email
-		}
+		return s.startProvisionAccountCreate(ctx, job, requestID, now)
+	}
+	return s.advanceToAccountCreatePoll(ctx, job, requestID, now, "waiting for AWS account creation")
+}
 
-		accountName := strings.TrimSpace(s.cfg.ManagedAccountNamePrefix) + strings.TrimSpace(job.InstanceSlug)
-		accountName = strings.TrimSpace(accountName)
-		if len(accountName) > 50 {
-			accountName = accountName[:50]
-		}
-
-		roleName := strings.TrimSpace(job.AccountRoleName)
-		if roleName == "" {
-			roleName = strings.TrimSpace(s.cfg.ManagedInstanceRoleName)
-		}
-
-		out, err := s.org.CreateAccount(ctx, &organizations.CreateAccountInput{
-			AccountName:            aws.String(accountName),
-			Email:                  aws.String(email),
-			RoleName:               aws.String(roleName),
-			IamUserAccessToBilling: orgtypes.IAMUserAccessToBillingAllow,
-		})
-		if err != nil {
-			job.Attempts++
-			if job.Attempts >= job.MaxAttempts {
-				return 0, false, s.failJob(ctx, job, requestID, now, "create_account_failed", "organizations CreateAccount failed: "+err.Error())
-			}
-			job.Note = "retrying account allocation"
-			_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
-			return jitteredBackoff(job.Attempts, provisionDefaultShortRetryDelay, 5*time.Minute), false, nil
-		}
-
-		reqID := ""
-		if out != nil && out.CreateAccountStatus != nil && out.CreateAccountStatus.Id != nil {
-			reqID = strings.TrimSpace(*out.CreateAccountStatus.Id)
-		}
-		if reqID == "" {
-			return 0, false, s.failJob(ctx, job, requestID, now, "create_account_failed", "organizations CreateAccount returned empty request id")
-		}
-
-		job.AccountRequestID = reqID
-		job.Note = "waiting for AWS account creation"
-		job.Step = provisionStepAccountCreatePoll
-		if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
-			return 0, false, err
-		}
-		return provisionDefaultPollDelay, false, nil
+func (s *Server) startProvisionAccountCreate(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {
+	email := strings.TrimSpace(job.AccountEmail)
+	if email == "" {
+		email = strings.TrimSpace(expandManagedAccountEmailTemplate(s.cfg.ManagedAccountEmailTemplate, job.InstanceSlug))
+		job.AccountEmail = email
 	}
 
+	accountName := strings.TrimSpace(strings.TrimSpace(s.cfg.ManagedAccountNamePrefix) + strings.TrimSpace(job.InstanceSlug))
+	if len(accountName) > 50 {
+		accountName = accountName[:50]
+	}
+
+	roleName := strings.TrimSpace(job.AccountRoleName)
+	if roleName == "" {
+		roleName = strings.TrimSpace(s.cfg.ManagedInstanceRoleName)
+	}
+
+	out, err := s.org.CreateAccount(ctx, &organizations.CreateAccountInput{
+		AccountName:            aws.String(accountName),
+		Email:                  aws.String(email),
+		RoleName:               aws.String(roleName),
+		IamUserAccessToBilling: orgtypes.IAMUserAccessToBillingAllow,
+	})
+	if err != nil {
+		job.Attempts++
+		if job.Attempts >= job.MaxAttempts {
+			return 0, false, s.failJob(ctx, job, requestID, now, "create_account_failed", "organizations CreateAccount failed: "+err.Error())
+		}
+		job.Note = "retrying account allocation"
+		_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
+		return jitteredBackoff(job.Attempts, provisionDefaultShortRetryDelay, 5*time.Minute), false, nil
+	}
+
+	reqID := ""
+	if out != nil && out.CreateAccountStatus != nil && out.CreateAccountStatus.Id != nil {
+		reqID = strings.TrimSpace(*out.CreateAccountStatus.Id)
+	}
+	if reqID == "" {
+		return 0, false, s.failJob(ctx, job, requestID, now, "create_account_failed", "organizations CreateAccount returned empty request id")
+	}
+
+	job.AccountRequestID = reqID
+	return s.advanceToAccountCreatePoll(ctx, job, requestID, now, "waiting for AWS account creation")
+}
+
+func (s *Server) advanceToAccountMove(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time, note string) (time.Duration, bool, error) {
+	job.Step = provisionStepAccountMove
+	job.Note = strings.TrimSpace(note)
+	if err := s.persistJobAndInstance(ctx, job, requestID, now, func(ub core.UpdateBuilder) error {
+		ub.Set("HostedAccountID", strings.TrimSpace(job.AccountID))
+		return nil
+	}); err != nil {
+		return 0, false, err
+	}
+	return 0, false, nil
+}
+
+func (s *Server) advanceToAccountCreatePoll(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time, note string) (time.Duration, bool, error) {
 	job.Step = provisionStepAccountCreatePoll
-	job.Note = "waiting for AWS account creation"
+	job.Note = strings.TrimSpace(note)
 	if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
 		return 0, false, err
 	}
@@ -432,23 +492,10 @@ func (s *Server) advanceProvisionAccountCreate(ctx context.Context, job *models.
 
 func (s *Server) advanceProvisionAccountCreatePoll(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {
 	if strings.TrimSpace(job.AccountID) != "" {
-		job.Step = provisionStepAccountMove
-		job.Note = "AWS account ready"
-		if err := s.persistJobAndInstance(ctx, job, requestID, now, func(ub core.UpdateBuilder) error {
-			ub.Set("HostedAccountID", strings.TrimSpace(job.AccountID))
-			return nil
-		}); err != nil {
-			return 0, false, err
-		}
-		return 0, false, nil
+		return s.advanceToAccountMove(ctx, job, requestID, now, "AWS account ready")
 	}
 	if strings.TrimSpace(job.AccountRequestID) == "" {
-		job.Step = provisionStepAccountCreate
-		job.Note = "missing account request id; restarting account allocation"
-		if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
-			return 0, false, err
-		}
-		return 0, false, nil
+		return s.restartProvisionAccountCreate(ctx, job, requestID, now, "missing account request id; restarting account allocation")
 	}
 
 	if !job.CreatedAt.IsZero() && now.Sub(job.CreatedAt) > provisionMaxAccountCreateAge {
@@ -459,37 +506,63 @@ func (s *Server) advanceProvisionAccountCreatePoll(ctx context.Context, job *mod
 		CreateAccountRequestId: aws.String(strings.TrimSpace(job.AccountRequestID)),
 	})
 	if err != nil {
-		job.Attempts++
-		if job.Attempts >= job.MaxAttempts {
-			return 0, false, s.failJob(ctx, job, requestID, now, "describe_account_failed", "organizations DescribeCreateAccountStatus failed: "+err.Error())
-		}
-		_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
-		return jitteredBackoff(job.Attempts, provisionDefaultPollDelay, 10*time.Minute), false, nil
+		return s.retryProvisionJobOrFail(ctx, job, requestID, now, "describe_account_failed", "organizations DescribeCreateAccountStatus failed: "+err.Error(), provisionDefaultPollDelay, 10*time.Minute)
 	}
 	if out == nil || out.CreateAccountStatus == nil || out.CreateAccountStatus.State == "" {
 		return provisionDefaultPollDelay, false, nil
 	}
 
-	switch out.CreateAccountStatus.State {
+	return s.handleProvisionAccountCreateStatus(ctx, job, requestID, now, out.CreateAccountStatus)
+}
+
+func (s *Server) restartProvisionAccountCreate(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time, note string) (time.Duration, bool, error) {
+	job.Step = provisionStepAccountCreate
+	job.Note = strings.TrimSpace(note)
+	if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
+		return 0, false, err
+	}
+	return 0, false, nil
+}
+
+func (s *Server) retryProvisionJobOrFail(
+	ctx context.Context,
+	job *models.ProvisionJob,
+	requestID string,
+	now time.Time,
+	code string,
+	msg string,
+	baseDelay time.Duration,
+	maxDelay time.Duration,
+) (time.Duration, bool, error) {
+	job.Attempts++
+	if job.Attempts >= job.MaxAttempts {
+		return 0, false, s.failJob(ctx, job, requestID, now, strings.TrimSpace(code), strings.TrimSpace(msg))
+	}
+	_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
+	return jitteredBackoff(job.Attempts, baseDelay, maxDelay), false, nil
+}
+
+func (s *Server) handleProvisionAccountCreateStatus(
+	ctx context.Context,
+	job *models.ProvisionJob,
+	requestID string,
+	now time.Time,
+	st *orgtypes.CreateAccountStatus,
+) (time.Duration, bool, error) {
+	if st == nil || st.State == "" {
+		return provisionDefaultPollDelay, false, nil
+	}
+
+	switch st.State {
 	case orgtypes.CreateAccountStateSucceeded:
-		accID := ""
-		if out.CreateAccountStatus.AccountId != nil {
-			accID = strings.TrimSpace(*out.CreateAccountStatus.AccountId)
-		}
+		accID := strings.TrimSpace(aws.ToString(st.AccountId))
 		if accID == "" {
 			return 0, false, s.failJob(ctx, job, requestID, now, "account_create_failed", "Organizations CreateAccount SUCCEEDED but AccountId is empty")
 		}
 
 		job.AccountID = accID
 		job.Note = "AWS account created"
-		job.Step = provisionStepAccountMove
-		if err := s.persistJobAndInstance(ctx, job, requestID, now, func(ub core.UpdateBuilder) error {
-			ub.Set("HostedAccountID", strings.TrimSpace(job.AccountID))
-			return nil
-		}); err != nil {
-			return 0, false, err
-		}
-		return 0, false, nil
+		return s.advanceToAccountMove(ctx, job, requestID, now, job.Note)
 
 	case orgtypes.CreateAccountStateInProgress:
 		job.Note = "AWS account creation in progress"
@@ -498,13 +571,13 @@ func (s *Server) advanceProvisionAccountCreatePoll(ctx context.Context, job *mod
 
 	case orgtypes.CreateAccountStateFailed:
 		reason := "unknown"
-		if out.CreateAccountStatus.FailureReason != "" {
-			reason = string(out.CreateAccountStatus.FailureReason)
+		if st.FailureReason != "" {
+			reason = string(st.FailureReason)
 		}
 		return 0, false, s.failJob(ctx, job, requestID, now, "account_create_failed", "AWS account creation failed: "+reason)
 
 	default:
-		job.Note = "AWS account creation state: " + string(out.CreateAccountStatus.State)
+		job.Note = "AWS account creation state: " + string(st.State)
 		_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
 		return provisionDefaultPollDelay, false, nil
 	}
@@ -513,52 +586,52 @@ func (s *Server) advanceProvisionAccountCreatePoll(ctx context.Context, job *mod
 func (s *Server) advanceProvisionAccountMove(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {
 	targetOu := strings.TrimSpace(s.cfg.ManagedTargetOrganizationalUnitID)
 	if targetOu != "" {
-		accID := strings.TrimSpace(job.AccountID)
-		if accID == "" {
-			job.Step = provisionStepAccountCreate
-			job.Note = noteMissingAccountIDRestart
-			if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
-				return 0, false, err
-			}
-			return 0, false, nil
-		}
-
-		parents, err := s.org.ListParents(ctx, &organizations.ListParentsInput{ChildId: aws.String(accID)})
-		if err != nil {
-			job.Attempts++
-			if job.Attempts >= job.MaxAttempts {
-				return 0, false, s.failJob(ctx, job, requestID, now, "list_parents_failed", "organizations ListParents failed: "+err.Error())
-			}
-			_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
-			return jitteredBackoff(job.Attempts, provisionDefaultShortRetryDelay, 5*time.Minute), false, nil
-		}
-
-		sourceParent := ""
-		if parents != nil && len(parents.Parents) > 0 && parents.Parents[0].Id != nil {
-			sourceParent = strings.TrimSpace(*parents.Parents[0].Id)
-		}
-		if sourceParent != "" && sourceParent != targetOu {
-			_, err := s.org.MoveAccount(ctx, &organizations.MoveAccountInput{
-				AccountId:           aws.String(accID),
-				SourceParentId:      aws.String(sourceParent),
-				DestinationParentId: aws.String(targetOu),
-			})
-			if err != nil {
-				job.Attempts++
-				if job.Attempts >= job.MaxAttempts {
-					return 0, false, s.failJob(ctx, job, requestID, now, "move_account_failed", "organizations MoveAccount failed: "+err.Error())
-				}
-				job.Note = "retrying OU move"
-				_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
-				return jitteredBackoff(job.Attempts, provisionDefaultShortRetryDelay, 10*time.Minute), false, nil
-			}
-			job.Note = "moved account to OU"
-			if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
-				return 0, false, err
-			}
+		requeueDelay, done, err := s.moveProvisionAccountToTargetOU(ctx, job, requestID, now, targetOu)
+		if err != nil || done || requeueDelay > 0 {
+			return requeueDelay, done, err
 		}
 	}
 
+	return s.advanceToAssumeRole(ctx, job, requestID, now)
+}
+
+func (s *Server) moveProvisionAccountToTargetOU(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time, targetOu string) (time.Duration, bool, error) {
+	accID := strings.TrimSpace(job.AccountID)
+	if accID == "" {
+		return s.restartProvisionAccountCreate(ctx, job, requestID, now, noteMissingAccountIDRestart)
+	}
+
+	parents, err := s.org.ListParents(ctx, &organizations.ListParentsInput{ChildId: aws.String(accID)})
+	if err != nil {
+		return s.retryProvisionJobOrFail(ctx, job, requestID, now, "list_parents_failed", "organizations ListParents failed: "+err.Error(), provisionDefaultShortRetryDelay, 5*time.Minute)
+	}
+
+	sourceParent := ""
+	if parents != nil && len(parents.Parents) > 0 {
+		sourceParent = strings.TrimSpace(aws.ToString(parents.Parents[0].Id))
+	}
+	if sourceParent == "" || sourceParent == targetOu {
+		return 0, false, nil
+	}
+
+	_, err = s.org.MoveAccount(ctx, &organizations.MoveAccountInput{
+		AccountId:           aws.String(accID),
+		SourceParentId:      aws.String(sourceParent),
+		DestinationParentId: aws.String(targetOu),
+	})
+	if err != nil {
+		job.Note = "retrying OU move"
+		return s.retryProvisionJobOrFail(ctx, job, requestID, now, "move_account_failed", "organizations MoveAccount failed: "+err.Error(), provisionDefaultShortRetryDelay, 10*time.Minute)
+	}
+
+	job.Note = "moved account to OU"
+	if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
+		return 0, false, err
+	}
+	return 0, false, nil
+}
+
+func (s *Server) advanceToAssumeRole(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {
 	job.Step = provisionStepAssumeRole
 	job.Note = "assuming provisioning role into instance account"
 	if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
@@ -925,12 +998,25 @@ func (s *Server) ensureChildHostedZone(ctx context.Context, accountID string, ro
 		return "", nil, fmt.Errorf("accountID, roleName, and baseDomain are required")
 	}
 
+	domainDot := ensureTrailingDot(baseDomain)
+	childClient, err := s.childRoute53Client(ctx, accountID, roleName, slug, jobID)
+	if err != nil {
+		return "", nil, err
+	}
+	return ensureHostedZoneAndNameServers(ctx, childClient, domainDot, existingZoneID, existingNameServers, jobID)
+}
+
+func (s *Server) childRoute53Client(ctx context.Context, accountID string, roleName string, slug string, jobID string) (*route53.Client, error) {
+	if s == nil {
+		return nil, fmt.Errorf("server not initialized")
+	}
+
 	assumed, _, err := s.assumeInstanceRole(ctx, accountID, roleName, slug, jobID)
 	if err != nil {
-		return "", nil, fmt.Errorf("assume instance role: %w", err)
+		return nil, fmt.Errorf("assume instance role: %w", err)
 	}
 	if assumed == nil || assumed.Credentials == nil {
-		return "", nil, fmt.Errorf("assume role returned empty credentials")
+		return nil, fmt.Errorf("assume role returned empty credentials")
 	}
 
 	creds := credentials.NewStaticCredentialsProvider(
@@ -938,17 +1024,28 @@ func (s *Server) ensureChildHostedZone(ctx context.Context, accountID string, ro
 		aws.ToString(assumed.Credentials.SecretAccessKey),
 		aws.ToString(assumed.Credentials.SessionToken),
 	)
-	childClient := route53.New(route53.Options{
+	return route53.New(route53.Options{
 		Region:      strings.TrimSpace(s.cfg.ManagedDefaultRegion),
 		Credentials: aws.NewCredentialsCache(creds),
-	})
+	}), nil
+}
 
-	domainDot := ensureTrailingDot(baseDomain)
+func ensureHostedZoneAndNameServers(
+	ctx context.Context,
+	childClient *route53.Client,
+	domainDot string,
+	existingZoneID string,
+	existingNameServers []string,
+	jobID string,
+) (string, []string, error) {
+	domainDot = strings.TrimSpace(domainDot)
 	zoneID := normalizeHostedZoneID(existingZoneID)
 	nameServers := normalizeNameServers(existingNameServers)
 	if zoneID != "" && len(nameServers) > 0 {
 		return zoneID, nameServers, nil
 	}
+
+	var err error
 
 	if zoneID == "" {
 		zoneID, err = findHostedZoneIDByName(ctx, childClient, domainDot)
@@ -1192,38 +1289,36 @@ func (s *Server) getDeployRunnerStatus(ctx context.Context, runID string) (strin
 		return "", "", fmt.Errorf("build not found")
 	}
 	build := out.Builds[0]
-	status := string(build.BuildStatus)
-	deepLink := ""
-	if build.Logs != nil && build.Logs.DeepLink != nil {
-		deepLink = strings.TrimSpace(*build.Logs.DeepLink)
+	return normalizeCodebuildStatus(build.BuildStatus), codebuildBuildDeepLink(build), nil
+}
+
+func codebuildBuildDeepLink(build cbtypes.Build) string {
+	if build.Logs == nil || build.Logs.DeepLink == nil {
+		return ""
 	}
-	if status == "" {
-		status = codebuildStatusUnknown
-	}
-	if status == codebuildStatusInProgress ||
-		status == codebuildStatusSucceeded ||
-		status == codebuildStatusFailed ||
-		status == codebuildStatusFault ||
-		status == codebuildStatusStopped ||
-		status == codebuildStatusTimedOut {
-		return status, deepLink, nil
-	}
-	// Some states are enums; map to strings for handling.
-	switch build.BuildStatus {
+	return strings.TrimSpace(*build.Logs.DeepLink)
+}
+
+func normalizeCodebuildStatus(st cbtypes.StatusType) string {
+	switch st {
 	case cbtypes.StatusTypeInProgress:
-		return codebuildStatusInProgress, deepLink, nil
+		return codebuildStatusInProgress
 	case cbtypes.StatusTypeSucceeded:
-		return codebuildStatusSucceeded, deepLink, nil
+		return codebuildStatusSucceeded
 	case cbtypes.StatusTypeFailed:
-		return codebuildStatusFailed, deepLink, nil
+		return codebuildStatusFailed
 	case cbtypes.StatusTypeFault:
-		return codebuildStatusFault, deepLink, nil
+		return codebuildStatusFault
 	case cbtypes.StatusTypeStopped:
-		return codebuildStatusStopped, deepLink, nil
+		return codebuildStatusStopped
 	case cbtypes.StatusTypeTimedOut:
-		return codebuildStatusTimedOut, deepLink, nil
+		return codebuildStatusTimedOut
 	default:
-		return status, deepLink, nil
+		status := strings.TrimSpace(string(st))
+		if status == "" {
+			return codebuildStatusUnknown
+		}
+		return status
 	}
 }
 

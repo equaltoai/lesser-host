@@ -32,81 +32,97 @@ func parseRFC3339Time(raw string) (time.Time, error) {
 	return t.UTC(), nil
 }
 
-func (s *Server) handleListOperatorAuditLog(ctx *apptheory.Context) (*apptheory.Response, error) {
-	if err := requireOperator(ctx); err != nil {
-		return nil, err
-	}
-	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
+type operatorAuditLogFilters struct {
+	Target    string
+	Actor     string
+	Action    string
+	RequestID string
+	Since     time.Time
+	Until     time.Time
+	Limit     int
+}
 
-	target := strings.TrimSpace(queryFirst(ctx, "target"))
-	actor := strings.TrimSpace(queryFirst(ctx, "actor"))
-	action := strings.TrimSpace(queryFirst(ctx, "action"))
-	requestID := strings.TrimSpace(queryFirst(ctx, "request_id"))
+func parseOperatorAuditLogFilters(ctx *apptheory.Context) (operatorAuditLogFilters, *apptheory.AppError) {
+	filters := operatorAuditLogFilters{
+		Target:    strings.TrimSpace(queryFirst(ctx, "target")),
+		Actor:     strings.TrimSpace(queryFirst(ctx, "actor")),
+		Action:    strings.TrimSpace(queryFirst(ctx, "action")),
+		RequestID: strings.TrimSpace(queryFirst(ctx, "request_id")),
+		Limit:     parseLimit(queryFirst(ctx, "limit"), 50, 1, 200),
+	}
 
 	since, err := parseRFC3339Time(queryFirst(ctx, "since"))
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "since must be RFC3339"}
+		return operatorAuditLogFilters{}, &apptheory.AppError{Code: "app.bad_request", Message: "since must be RFC3339"}
 	}
+	filters.Since = since
+
 	until, err := parseRFC3339Time(queryFirst(ctx, "until"))
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "until must be RFC3339"}
+		return operatorAuditLogFilters{}, &apptheory.AppError{Code: "app.bad_request", Message: "until must be RFC3339"}
 	}
+	filters.Until = until
 
-	limit := parseLimit(queryFirst(ctx, "limit"), 50, 1, 200)
+	return filters, nil
+}
 
+func (s *Server) listOperatorAuditLogEntries(ctx *apptheory.Context, filters operatorAuditLogFilters) ([]*models.AuditLogEntry, *apptheory.AppError) {
 	var items []*models.AuditLogEntry
-	if target != "" {
-		pk := fmt.Sprintf("AUDIT#%s", target)
+
+	if filters.Target != "" {
+		pk := fmt.Sprintf("AUDIT#%s", filters.Target)
 		q := s.store.DB.WithContext(ctx.Context()).
 			Model(&models.AuditLogEntry{}).
 			Where("PK", "=", pk).
 			Limit(200)
 
-		if since.IsZero() && until.IsZero() {
+		if filters.Since.IsZero() && filters.Until.IsZero() {
 			q = q.Where("SK", "BEGINS_WITH", "EVENT#")
 		} else {
-			if !since.IsZero() {
-				q = q.Where("SK", ">=", fmt.Sprintf("EVENT#%s#", since.UTC().Format(time.RFC3339Nano)))
+			if !filters.Since.IsZero() {
+				q = q.Where("SK", ">=", fmt.Sprintf("EVENT#%s#", filters.Since.UTC().Format(time.RFC3339Nano)))
 			}
-			if !until.IsZero() {
-				q = q.Where("SK", "<=", fmt.Sprintf("EVENT#%s#~", until.UTC().Format(time.RFC3339Nano)))
+			if !filters.Until.IsZero() {
+				q = q.Where("SK", "<=", fmt.Sprintf("EVENT#%s#~", filters.Until.UTC().Format(time.RFC3339Nano)))
 			}
 		}
 
 		if err := q.All(&items); err != nil {
 			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list audit log"}
 		}
-	} else {
-		// Operator-friendly: scan audit log (limited) and filter/sort in-memory.
-		if err := s.store.DB.WithContext(ctx.Context()).
-			Model(&models.AuditLogEntry{}).
-			Where("SK", "BEGINS_WITH", "EVENT#").
-			Limit(200).
-			All(&items); err != nil {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list audit log"}
-		}
+		return items, nil
 	}
 
+	if err := s.store.DB.WithContext(ctx.Context()).
+		Model(&models.AuditLogEntry{}).
+		Where("SK", "BEGINS_WITH", "EVENT#").
+		Limit(200).
+		All(&items); err != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list audit log"}
+	}
+
+	return items, nil
+}
+
+func filterOperatorAuditLogEntries(items []*models.AuditLogEntry, filters operatorAuditLogFilters) []models.AuditLogEntry {
 	out := make([]models.AuditLogEntry, 0, len(items))
 	for _, it := range items {
 		if it == nil {
 			continue
 		}
-		if actor != "" && strings.TrimSpace(it.Actor) != actor {
+		if filters.Actor != "" && strings.TrimSpace(it.Actor) != filters.Actor {
 			continue
 		}
-		if action != "" && strings.TrimSpace(it.Action) != action {
+		if filters.Action != "" && strings.TrimSpace(it.Action) != filters.Action {
 			continue
 		}
-		if requestID != "" && strings.TrimSpace(it.RequestID) != requestID {
+		if filters.RequestID != "" && strings.TrimSpace(it.RequestID) != filters.RequestID {
 			continue
 		}
-		if !since.IsZero() && it.CreatedAt.Before(since) {
+		if !filters.Since.IsZero() && it.CreatedAt.Before(filters.Since) {
 			continue
 		}
-		if !until.IsZero() && it.CreatedAt.After(until) {
+		if !filters.Until.IsZero() && it.CreatedAt.After(filters.Until) {
 			continue
 		}
 		out = append(out, *it)
@@ -116,9 +132,31 @@ func (s *Server) handleListOperatorAuditLog(ctx *apptheory.Context) (*apptheory.
 		return out[i].CreatedAt.After(out[j].CreatedAt)
 	})
 
-	if len(out) > limit {
-		out = out[:limit]
+	if len(out) > filters.Limit {
+		out = out[:filters.Limit]
 	}
 
+	return out
+}
+
+func (s *Server) handleListOperatorAuditLog(ctx *apptheory.Context) (*apptheory.Response, error) {
+	if err := requireOperator(ctx); err != nil {
+		return nil, err
+	}
+	if appErr := requireStoreDB(s); appErr != nil {
+		return nil, appErr
+	}
+
+	filters, appErr := parseOperatorAuditLogFilters(ctx)
+	if appErr != nil {
+		return nil, appErr
+	}
+
+	items, appErr := s.listOperatorAuditLogEntries(ctx, filters)
+	if appErr != nil {
+		return nil, appErr
+	}
+
+	out := filterOperatorAuditLogEntries(items, filters)
 	return apptheory.JSON(http.StatusOK, listOperatorAuditLogResponse{Entries: out, Count: len(out)})
 }

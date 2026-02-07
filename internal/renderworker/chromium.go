@@ -91,8 +91,8 @@ func inflateBrotliFile(src string, dest string, mode os.FileMode) error {
 	}
 	defer func() { _ = in.Close() }()
 
-	if err := os.MkdirAll(filepath.Dir(dest), 0o750); err != nil {
-		return err
+	if mkdirErr := os.MkdirAll(filepath.Dir(dest), 0o750); mkdirErr != nil {
+		return mkdirErr
 	}
 
 	tmp := dest + ".tmp"
@@ -226,8 +226,8 @@ func extractTar(tr *tar.Reader, destDir string, limits tarExtractLimits) error {
 
 		switch hdr.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(target, 0o750); err != nil {
-				return err
+			if mkdirErr := os.MkdirAll(target, 0o750); mkdirErr != nil {
+				return mkdirErr
 			}
 		case tar.TypeReg:
 			extractedBytes, err = extractTarFile(tr, hdr, target, extractedBytes, limits)

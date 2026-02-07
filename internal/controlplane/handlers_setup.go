@@ -155,8 +155,8 @@ func (s *Server) handleSetupBootstrapChallenge(ctx *apptheory.Context) (*apptheo
 	}
 
 	var req setupBootstrapChallengeRequest
-	if err := parseJSON(ctx, &req); err != nil {
-		return nil, err
+	if parseErr := parseJSON(ctx, &req); parseErr != nil {
+		return nil, parseErr
 	}
 
 	if strings.TrimSpace(req.Address) == "" {
@@ -201,59 +201,13 @@ func (s *Server) handleSetupBootstrapVerify(ctx *apptheory.Context) (*apptheory.
 		return nil, &apptheory.AppError{Code: "app.conflict", Message: "bootstrap wallet is not configured"}
 	}
 
-	var raw setupBootstrapVerifyRequest
-	if err := parseJSON(ctx, &raw); err != nil {
+	in, err := parseSetupBootstrapVerifyInput(ctx)
+	if err != nil {
 		return nil, err
 	}
-
-	challengeID := strings.TrimSpace(raw.ChallengeID)
-	if challengeID == "" {
-		challengeID = strings.TrimSpace(raw.ChallengeIDSnake)
+	if verifyErr := s.verifySetupBootstrapChallenge(ctx, bootstrapWallet, in); verifyErr != nil {
+		return nil, verifyErr
 	}
-	message := strings.TrimSpace(raw.Message)
-	if message == "" {
-		message = strings.TrimSpace(raw.Challenge)
-	}
-
-	if challengeID == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "challengeId is required"}
-	}
-	if strings.TrimSpace(raw.Address) == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "address is required"}
-	}
-	if strings.TrimSpace(raw.Signature) == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "signature is required"}
-	}
-	if message == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "message is required"}
-	}
-
-	if strings.ToLower(strings.TrimSpace(raw.Address)) != bootstrapWallet {
-		return nil, &apptheory.AppError{Code: "app.forbidden", Message: "wallet does not match bootstrap credential"}
-	}
-
-	challenge, err := s.getWalletChallenge(ctx.Context(), challengeID)
-	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
-	}
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-
-	if strings.TrimSpace(challenge.Username) != setupBootstrapUser {
-		return nil, &apptheory.AppError{Code: "app.forbidden", Message: "challenge is not bound to bootstrap identity"}
-	}
-	if strings.ToLower(strings.TrimSpace(challenge.Address)) != bootstrapWallet {
-		return nil, &apptheory.AppError{Code: "app.forbidden", Message: "challenge address mismatch"}
-	}
-	if strings.TrimSpace(challenge.Message) != message {
-		return nil, &apptheory.AppError{Code: "app.forbidden", Message: "message mismatch"}
-	}
-
-	if err := verifyEthereumSignature(bootstrapWallet, message, raw.Signature); err != nil {
-		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "invalid signature"}
-	}
-	_ = s.deleteWalletChallenge(ctx.Context(), challengeID)
 
 	token, err := newToken(32)
 	if err != nil {
@@ -284,6 +238,87 @@ func (s *Server) handleSetupBootstrapVerify(ctx *apptheory.Context) (*apptheory.
 		Token:     token,
 		ExpiresAt: expiresAt,
 	})
+}
+
+type setupBootstrapVerifyInput struct {
+	ChallengeID string
+	Address     string
+	Signature   string
+	Message     string
+}
+
+func parseSetupBootstrapVerifyInput(ctx *apptheory.Context) (setupBootstrapVerifyInput, error) {
+	var raw setupBootstrapVerifyRequest
+	if parseErr := parseJSON(ctx, &raw); parseErr != nil {
+		return setupBootstrapVerifyInput{}, parseErr
+	}
+
+	challengeID := strings.TrimSpace(raw.ChallengeID)
+	if challengeID == "" {
+		challengeID = strings.TrimSpace(raw.ChallengeIDSnake)
+	}
+	message := strings.TrimSpace(raw.Message)
+	if message == "" {
+		message = strings.TrimSpace(raw.Challenge)
+	}
+
+	address := strings.TrimSpace(raw.Address)
+	signature := strings.TrimSpace(raw.Signature)
+
+	if challengeID == "" {
+		return setupBootstrapVerifyInput{}, &apptheory.AppError{Code: "app.bad_request", Message: "challengeId is required"}
+	}
+	if address == "" {
+		return setupBootstrapVerifyInput{}, &apptheory.AppError{Code: "app.bad_request", Message: "address is required"}
+	}
+	if signature == "" {
+		return setupBootstrapVerifyInput{}, &apptheory.AppError{Code: "app.bad_request", Message: "signature is required"}
+	}
+	if message == "" {
+		return setupBootstrapVerifyInput{}, &apptheory.AppError{Code: "app.bad_request", Message: "message is required"}
+	}
+
+	return setupBootstrapVerifyInput{
+		ChallengeID: challengeID,
+		Address:     address,
+		Signature:   signature,
+		Message:     message,
+	}, nil
+}
+
+func (s *Server) verifySetupBootstrapChallenge(ctx *apptheory.Context, bootstrapWallet string, in setupBootstrapVerifyInput) error {
+	if s == nil || ctx == nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
+	if strings.ToLower(strings.TrimSpace(in.Address)) != bootstrapWallet {
+		return &apptheory.AppError{Code: "app.forbidden", Message: "wallet does not match bootstrap credential"}
+	}
+
+	challenge, err := s.getWalletChallenge(ctx.Context(), in.ChallengeID)
+	if theoryErrors.IsNotFound(err) {
+		return &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+	}
+	if err != nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
+	if strings.TrimSpace(challenge.Username) != setupBootstrapUser {
+		return &apptheory.AppError{Code: "app.forbidden", Message: "challenge is not bound to bootstrap identity"}
+	}
+	if strings.ToLower(strings.TrimSpace(challenge.Address)) != bootstrapWallet {
+		return &apptheory.AppError{Code: "app.forbidden", Message: "challenge address mismatch"}
+	}
+	if strings.TrimSpace(challenge.Message) != in.Message {
+		return &apptheory.AppError{Code: "app.forbidden", Message: "message mismatch"}
+	}
+
+	if verifyErr := verifyEthereumSignature(bootstrapWallet, in.Message, in.Signature); verifyErr != nil {
+		return &apptheory.AppError{Code: "app.unauthorized", Message: "invalid signature"}
+	}
+	_ = s.deleteWalletChallenge(ctx.Context(), in.ChallengeID)
+
+	return nil
 }
 
 func (s *Server) requireSetupSession(ctx *apptheory.Context) (*models.SetupSession, error) {
@@ -350,7 +385,7 @@ func (s *Server) walletLinkedUsername(ctx *apptheory.Context, walletType, addres
 	return strings.TrimSpace(index.Username), nil
 }
 
-func (s *Server) handleSetupCreateAdmin(ctx *apptheory.Context) (*apptheory.Response, error) {
+func (s *Server) validateSetupCreateAdminState(ctx *apptheory.Context) (*models.ControlPlaneConfig, *apptheory.AppError) {
 	locked, cfg, err := s.controlPlaneLocked(ctx)
 	if err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
@@ -362,115 +397,172 @@ func (s *Server) handleSetupCreateAdmin(ctx *apptheory.Context) (*apptheory.Resp
 		return nil, &apptheory.AppError{Code: "app.conflict", Message: "primary admin already created"}
 	}
 
-	if _, err := s.requireSetupSession(ctx); err != nil {
-		return nil, err
+	if _, setupErr := s.requireSetupSession(ctx); setupErr != nil {
+		if appErr, ok := setupErr.(*apptheory.AppError); ok {
+			return nil, appErr
+		}
+		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
 	}
 
+	return cfg, nil
+}
+
+func parseSetupCreateAdminRequestInput(ctx *apptheory.Context) (setupCreateAdminRequest, *apptheory.AppError) {
 	var req setupCreateAdminRequest
-	if err := parseJSON(ctx, &req); err != nil {
-		return nil, err
+	if parseErr := parseJSON(ctx, &req); parseErr != nil {
+		if appErr, ok := parseErr.(*apptheory.AppError); ok {
+			return setupCreateAdminRequest{}, appErr
+		}
+		return setupCreateAdminRequest{}, &apptheory.AppError{Code: "app.bad_request", Message: "invalid request"}
 	}
 
 	req.Username = strings.TrimSpace(req.Username)
+	req.DisplayName = strings.TrimSpace(req.DisplayName)
+	req.Wallet.ChallengeID = strings.TrimSpace(req.Wallet.ChallengeID)
+	req.Wallet.Address = strings.TrimSpace(req.Wallet.Address)
+	req.Wallet.Signature = strings.TrimSpace(req.Wallet.Signature)
+	req.Wallet.Message = strings.TrimSpace(req.Wallet.Message)
+
 	if req.Username == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "username is required"}
+		return setupCreateAdminRequest{}, &apptheory.AppError{Code: "app.bad_request", Message: "username is required"}
 	}
 	if strings.EqualFold(req.Username, setupBootstrapUser) {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "username is reserved"}
+		return setupCreateAdminRequest{}, &apptheory.AppError{Code: "app.bad_request", Message: "username is reserved"}
 	}
 
-	if strings.TrimSpace(req.Wallet.ChallengeID) == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "wallet.challengeId is required"}
+	if req.Wallet.ChallengeID == "" {
+		return setupCreateAdminRequest{}, &apptheory.AppError{Code: "app.bad_request", Message: "wallet.challengeId is required"}
 	}
-	if strings.TrimSpace(req.Wallet.Address) == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "wallet.address is required"}
+	if req.Wallet.Address == "" {
+		return setupCreateAdminRequest{}, &apptheory.AppError{Code: "app.bad_request", Message: "wallet.address is required"}
 	}
-	if strings.TrimSpace(req.Wallet.Signature) == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "wallet.signature is required"}
+	if req.Wallet.Signature == "" {
+		return setupCreateAdminRequest{}, &apptheory.AppError{Code: "app.bad_request", Message: "wallet.signature is required"}
 	}
-	if strings.TrimSpace(req.Wallet.Message) == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "wallet.message is required"}
+	if req.Wallet.Message == "" {
+		return setupCreateAdminRequest{}, &apptheory.AppError{Code: "app.bad_request", Message: "wallet.message is required"}
 	}
 
-	challenge, err := s.getWalletChallenge(ctx.Context(), req.Wallet.ChallengeID)
+	return req, nil
+}
+
+func (s *Server) verifySetupCreateAdminWallet(ctx *apptheory.Context, username string, wallet walletVerifyRequest) (string, int, *apptheory.AppError) {
+	challenge, err := s.getWalletChallenge(ctx.Context(), wallet.ChallengeID)
 	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		return "", 0, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return "", 0, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if strings.TrimSpace(challenge.Username) != strings.TrimSpace(username) {
+		return "", 0, &apptheory.AppError{Code: "app.forbidden", Message: "wallet challenge username mismatch"}
 	}
 
-	if strings.TrimSpace(challenge.Username) != req.Username {
-		return nil, &apptheory.AppError{Code: "app.forbidden", Message: "wallet challenge username mismatch"}
-	}
-
-	adminWalletAddr := strings.ToLower(strings.TrimSpace(req.Wallet.Address))
+	adminWalletAddr := strings.ToLower(strings.TrimSpace(wallet.Address))
 	if adminWalletAddr != strings.ToLower(strings.TrimSpace(challenge.Address)) {
-		return nil, &apptheory.AppError{Code: "app.forbidden", Message: "wallet challenge address mismatch"}
+		return "", 0, &apptheory.AppError{Code: "app.forbidden", Message: "wallet challenge address mismatch"}
 	}
-	if strings.TrimSpace(req.Wallet.Message) != strings.TrimSpace(challenge.Message) {
-		return nil, &apptheory.AppError{Code: "app.forbidden", Message: "wallet challenge message mismatch"}
+	if strings.TrimSpace(wallet.Message) != strings.TrimSpace(challenge.Message) {
+		return "", 0, &apptheory.AppError{Code: "app.forbidden", Message: "wallet challenge message mismatch"}
 	}
 
 	existing, err := s.walletLinkedUsername(ctx, "ethereum", adminWalletAddr)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return "", 0, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 	if existing != "" {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "wallet is already linked to a user"}
+		return "", 0, &apptheory.AppError{Code: "app.conflict", Message: "wallet is already linked to a user"}
 	}
 
-	if err := verifyEthereumSignature(adminWalletAddr, req.Wallet.Message, req.Wallet.Signature); err != nil {
-		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "invalid signature"}
+	if err := verifyEthereumSignature(adminWalletAddr, wallet.Message, wallet.Signature); err != nil {
+		return "", 0, &apptheory.AppError{Code: "app.unauthorized", Message: "invalid signature"}
 	}
-	_ = s.deleteWalletChallenge(ctx.Context(), req.Wallet.ChallengeID)
+	_ = s.deleteWalletChallenge(ctx.Context(), wallet.ChallengeID)
 
-	now := time.Now().UTC()
+	return adminWalletAddr, challenge.ChainID, nil
+}
 
+func (s *Server) createSetupAdminUser(ctx *apptheory.Context, username string, displayName string, now time.Time) *apptheory.AppError {
 	user := &models.User{
-		Username:    req.Username,
+		Username:    strings.TrimSpace(username),
 		Role:        models.RoleAdmin,
-		DisplayName: strings.TrimSpace(req.DisplayName),
+		DisplayName: strings.TrimSpace(displayName),
 		CreatedAt:   now,
 	}
 	if err := user.UpdateKeys(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 	if err := s.store.DB.WithContext(ctx.Context()).Model(user).IfNotExists().Create(); err != nil {
 		if theoryErrors.IsConditionFailed(err) {
-			return nil, &apptheory.AppError{Code: "app.conflict", Message: "username already exists"}
+			return &apptheory.AppError{Code: "app.conflict", Message: "username already exists"}
 		}
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create admin"}
+		return &apptheory.AppError{Code: "app.internal", Message: "failed to create admin"}
 	}
+	return nil
+}
 
+func (s *Server) linkSetupAdminWallet(ctx *apptheory.Context, username string, walletAddr string, chainID int, now time.Time) *apptheory.AppError {
 	cred := &models.WalletCredential{
-		Username: req.Username,
-		Address:  adminWalletAddr,
-		ChainID:  challenge.ChainID,
+		Username: strings.TrimSpace(username),
+		Address:  strings.ToLower(strings.TrimSpace(walletAddr)),
+		ChainID:  chainID,
 		Type:     "ethereum",
 		LinkedAt: now,
 		LastUsed: now,
 	}
 	if err := cred.UpdateKeys(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 	if err := s.store.DB.WithContext(ctx.Context()).Model(cred).IfNotExists().Create(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to link wallet"}
+		return &apptheory.AppError{Code: "app.internal", Message: "failed to link wallet"}
 	}
 
 	index := &models.WalletIndex{}
-	index.UpdateKeys("ethereum", adminWalletAddr, req.Username)
+	index.UpdateKeys("ethereum", walletAddr, username)
 	if err := s.store.DB.WithContext(ctx.Context()).Model(index).IfNotExists().Create(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to link wallet"}
+		return &apptheory.AppError{Code: "app.internal", Message: "failed to link wallet"}
 	}
 
+	return nil
+}
+
+func (s *Server) setControlPlanePrimaryAdmin(ctx *apptheory.Context, username string) *apptheory.AppError {
 	cp := &models.ControlPlaneConfig{
-		PrimaryAdminUsername: req.Username,
+		PrimaryAdminUsername: strings.TrimSpace(username),
 		BootstrappedAt:       time.Time{},
 	}
 	_ = cp.UpdateKeys()
 	if err := s.store.DB.WithContext(ctx.Context()).Model(cp).CreateOrUpdate(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to update control plane config"}
+		return &apptheory.AppError{Code: "app.internal", Message: "failed to update control plane config"}
+	}
+	return nil
+}
+
+func (s *Server) handleSetupCreateAdmin(ctx *apptheory.Context) (*apptheory.Response, error) {
+	if _, appErr := s.validateSetupCreateAdminState(ctx); appErr != nil {
+		return nil, appErr
+	}
+
+	req, appErr := parseSetupCreateAdminRequestInput(ctx)
+	if appErr != nil {
+		return nil, appErr
+	}
+
+	adminWalletAddr, chainID, appErr := s.verifySetupCreateAdminWallet(ctx, req.Username, req.Wallet)
+	if appErr != nil {
+		return nil, appErr
+	}
+
+	now := time.Now().UTC()
+
+	if appErr := s.createSetupAdminUser(ctx, req.Username, req.DisplayName, now); appErr != nil {
+		return nil, appErr
+	}
+	if appErr := s.linkSetupAdminWallet(ctx, req.Username, adminWalletAddr, chainID, now); appErr != nil {
+		return nil, appErr
+	}
+	if appErr := s.setControlPlanePrimaryAdmin(ctx, req.Username); appErr != nil {
+		return nil, appErr
 	}
 
 	audit := &models.AuditLogEntry{
@@ -485,9 +577,7 @@ func (s *Server) handleSetupCreateAdmin(ctx *apptheory.Context) (*apptheory.Resp
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to write audit log"}
 	}
 
-	return apptheory.JSON(http.StatusCreated, setupCreateAdminResponse{
-		Username: req.Username,
-	})
+	return apptheory.JSON(http.StatusCreated, setupCreateAdminResponse{Username: req.Username})
 }
 
 func (s *Server) handleSetupFinalize(ctx *apptheory.Context) (*apptheory.Response, error) {

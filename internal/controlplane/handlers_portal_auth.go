@@ -146,6 +146,107 @@ func defaultDisplayNameForWallet(address string) string {
 	return "Wallet " + short
 }
 
+func (s *Server) getUserProfile(ctx *apptheory.Context, username string) (models.User, bool, error) {
+	var user models.User
+	err := s.store.DB.WithContext(ctx.Context()).
+		Model(&models.User{}).
+		Where("PK", "=", fmt.Sprintf(models.KeyPatternUser, username)).
+		Where("SK", "=", models.SKProfile).
+		First(&user)
+	if theoryErrors.IsNotFound(err) {
+		return models.User{}, false, nil
+	}
+	if err != nil {
+		return models.User{}, false, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	return user, true, nil
+}
+
+func (s *Server) createPortalWalletUser(ctx *apptheory.Context, username string, address string, chainID int, email string, displayName string, now time.Time) (models.User, error) {
+	if displayName == "" {
+		displayName = defaultDisplayNameForWallet(address)
+	}
+
+	newUser := &models.User{
+		Username:    username,
+		Role:        models.RoleCustomer,
+		DisplayName: displayName,
+		Email:       email,
+		CreatedAt:   now,
+	}
+	_ = newUser.UpdateKeys()
+
+	cred := &models.WalletCredential{
+		Username: username,
+		Address:  address,
+		ChainID:  chainID,
+		Type:     "ethereum",
+		LinkedAt: now,
+		LastUsed: now,
+	}
+	_ = cred.UpdateKeys()
+
+	index := &models.WalletIndex{}
+	index.UpdateKeys("ethereum", address, username)
+
+	if err := s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
+		tx.Create(newUser)
+		tx.Create(cred)
+		tx.Create(index)
+		return nil
+	}); err != nil {
+		if !theoryErrors.IsConditionFailed(err) {
+			return models.User{}, &apptheory.AppError{Code: "app.internal", Message: "failed to create user"}
+		}
+
+		if user, found, getErr := s.getUserProfile(ctx, username); getErr == nil && found {
+			return user, nil
+		}
+	}
+
+	return *newUser, nil
+}
+
+func (s *Server) linkPortalWalletToCustomer(ctx *apptheory.Context, user models.User, username string, address string, chainID int, email string, now time.Time) error {
+	if strings.TrimSpace(user.Role) != models.RoleCustomer {
+		return &apptheory.AppError{Code: "app.forbidden", Message: "wallet is not linked to this user"}
+	}
+
+	cred := &models.WalletCredential{
+		Username: username,
+		Address:  address,
+		ChainID:  chainID,
+		Type:     "ethereum",
+		LinkedAt: now,
+		LastUsed: now,
+	}
+	_ = cred.UpdateKeys()
+
+	index := &models.WalletIndex{}
+	index.UpdateKeys("ethereum", address, username)
+
+	if err := s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
+		tx.Create(cred)
+		tx.Create(index)
+		return nil
+	}); err != nil {
+		if !theoryErrors.IsConditionFailed(err) {
+			return &apptheory.AppError{Code: "app.internal", Message: "failed to link wallet"}
+		}
+	}
+
+	if email != "" && strings.TrimSpace(user.Email) == "" {
+		update := &models.User{
+			Username: username,
+			Email:    email,
+		}
+		_ = update.UpdateKeys()
+		_ = s.store.DB.WithContext(ctx.Context()).Model(update).IfExists().Update("Email")
+	}
+
+	return nil
+}
+
 func (s *Server) ensurePortalWalletUser(
 	ctx *apptheory.Context,
 	username string,
@@ -156,94 +257,18 @@ func (s *Server) ensurePortalWalletUser(
 	displayName string,
 	now time.Time,
 ) (models.User, error) {
-	var user models.User
-	err := s.store.DB.WithContext(ctx.Context()).
-		Model(&models.User{}).
-		Where("PK", "=", fmt.Sprintf(models.KeyPatternUser, username)).
-		Where("SK", "=", models.SKProfile).
-		First(&user)
-
-	needsUserCreate := theoryErrors.IsNotFound(err)
-	if err != nil && !needsUserCreate {
-		return models.User{}, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	user, found, err := s.getUserProfile(ctx, username)
+	if err != nil {
+		return models.User{}, err
 	}
 
-	if needsUserCreate {
-		if displayName == "" {
-			displayName = defaultDisplayNameForWallet(address)
-		}
-		newUser := &models.User{
-			Username:    username,
-			Role:        models.RoleCustomer,
-			DisplayName: displayName,
-			Email:       email,
-			CreatedAt:   now,
-		}
-		_ = newUser.UpdateKeys()
-
-		cred := &models.WalletCredential{
-			Username: username,
-			Address:  address,
-			ChainID:  chainID,
-			Type:     "ethereum",
-			LinkedAt: now,
-			LastUsed: now,
-		}
-		_ = cred.UpdateKeys()
-
-		index := &models.WalletIndex{}
-		index.UpdateKeys("ethereum", address, username)
-
-		if err := s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
-			tx.Create(newUser)
-			tx.Create(cred)
-			tx.Create(index)
-			return nil
-		}); err != nil {
-			if !theoryErrors.IsConditionFailed(err) {
-				return models.User{}, &apptheory.AppError{Code: "app.internal", Message: "failed to create user"}
-			}
-		}
-
-		user = *newUser
+	if !found {
+		return s.createPortalWalletUser(ctx, username, address, chainID, email, displayName, now)
 	}
 
-	if linked == "" && !needsUserCreate {
-		// Existing user: link the wallet only for customer accounts.
-		if strings.TrimSpace(user.Role) != models.RoleCustomer {
-			return models.User{}, &apptheory.AppError{Code: "app.forbidden", Message: "wallet is not linked to this user"}
-		}
-
-		cred := &models.WalletCredential{
-			Username: username,
-			Address:  address,
-			ChainID:  chainID,
-			Type:     "ethereum",
-			LinkedAt: now,
-			LastUsed: now,
-		}
-		_ = cred.UpdateKeys()
-
-		index := &models.WalletIndex{}
-		index.UpdateKeys("ethereum", address, username)
-
-		if err := s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
-			tx.Create(cred)
-			tx.Create(index)
-			return nil
-		}); err != nil {
-			if !theoryErrors.IsConditionFailed(err) {
-				return models.User{}, &apptheory.AppError{Code: "app.internal", Message: "failed to link wallet"}
-			}
-		}
-
-		if email != "" && strings.TrimSpace(user.Email) == "" {
-			update := &models.User{
-				Username: username,
-				Email:    email,
-			}
-			_ = update.UpdateKeys()
-			_ = s.store.DB.WithContext(ctx.Context()).Model(update).IfExists().Update("Email")
+	if linked == "" {
+		if err := s.linkPortalWalletToCustomer(ctx, user, username, address, chainID, email, now); err != nil {
+			return models.User{}, err
 		}
 	}
 

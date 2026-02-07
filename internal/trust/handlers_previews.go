@@ -51,59 +51,82 @@ type linkPreviewResponse struct {
 	ExpiresAt time.Time `json:"expires_at,omitempty"`
 }
 
-func (s *Server) handleLinkPreview(ctx *apptheory.Context) (*apptheory.Response, error) {
+func requireLinkPreviewAuth(s *Server, ctx *apptheory.Context) (string, *apptheory.AppError) {
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 	if ctx == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
 	instanceSlug := strings.TrimSpace(ctx.AuthIdentity)
 	if instanceSlug == "" {
-		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		return "", &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
 	}
+	return instanceSlug, nil
+}
 
+func parseLinkPreviewRequestInput(ctx *apptheory.Context) (linkPreviewRequest, error) {
 	var req linkPreviewRequest
 	if err := parseJSON(ctx, &req); err != nil {
-		return nil, err
+		return linkPreviewRequest{}, err
+	}
+	return req, nil
+}
+
+func parseLinkPreviewNormalizedURL(raw string) (string, *apptheory.AppError) {
+	normalized, _, err := normalizeLinkURL(raw)
+	if err == nil {
+		return normalized, nil
 	}
 
-	normalized, _, err := normalizeLinkURL(req.URL)
+	if appErr, ok := linkPreviewBadRequestError(err).(*apptheory.AppError); ok {
+		return "", appErr
+	}
+	return "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid url"}
+}
+
+func (s *Server) maybeServeCachedLinkPreview(
+	ctx *apptheory.Context,
+	instanceSlug string,
+	instCfg instanceTrustConfig,
+	previewID string,
+	normalizedURL string,
+	forceRefresh bool,
+) (*linkPreviewResponse, bool, *apptheory.AppError) {
+	if forceRefresh {
+		return nil, false, nil
+	}
+
+	item, ok, err := s.getFreshLinkPreview(ctx.Context(), previewID, time.Now().UTC())
 	if err != nil {
-		return nil, linkPreviewBadRequestError(err)
+		return nil, false, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if !ok || item == nil {
+		return nil, false, nil
 	}
 
-	previewID := linkPreviewID(linkPreviewPolicyVersion, normalized)
-
-	// Respect per-instance config toggle (default: enabled).
-	instCfg := s.loadInstanceTrustConfig(ctx.Context(), instanceSlug)
-	if !instCfg.HostedPreviewsEnabled {
-		return apptheory.JSON(http.StatusOK, linkPreviewResponseDisabled(previewID, normalized))
-	}
-	renderPolicy := instCfg.RenderPolicy
-
-	if !req.ForceRefresh {
-		item, ok, err := s.getFreshLinkPreview(ctx.Context(), previewID, time.Now().UTC())
-		if err != nil {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-		}
-		if ok && item != nil {
-			resp := linkPreviewResponseFromModel(ctx, item, true)
-			if instCfg.RendersEnabled {
-				s.maybeAttachPreviewRender(ctx, instanceSlug, renderPolicy, instCfg.OveragePolicy, normalized, &resp)
-			}
-			return apptheory.JSON(http.StatusOK, resp)
-		}
+	resp := linkPreviewResponseFromModel(ctx, item, true)
+	if instCfg.RendersEnabled {
+		s.maybeAttachPreviewRender(ctx, instanceSlug, instCfg.RenderPolicy, instCfg.OveragePolicy, normalizedURL, &resp)
 	}
 
-	fetched, fetchErr := fetchLinkPreview(ctx.Context(), nil, normalized)
+	return &resp, true, nil
+}
+
+func (s *Server) fetchAndStoreLinkPreview(
+	ctx *apptheory.Context,
+	instanceSlug string,
+	previewID string,
+	normalizedURL string,
+) (*models.LinkPreview, *apptheory.AppError) {
+	fetched, fetchErr := fetchLinkPreview(ctx.Context(), nil, normalizedURL)
 
 	now := time.Now().UTC()
 	item := &models.LinkPreview{
 		ID:            previewID,
 		PolicyVersion: linkPreviewPolicyVersion,
-		NormalizedURL: strings.TrimSpace(normalized),
+		NormalizedURL: strings.TrimSpace(normalizedURL),
 		ResolvedURL:   strings.TrimSpace(fetched.ResolvedURL),
 		RedirectChain: append([]string(nil), fetched.RedirectChain...),
 		Title:         strings.TrimSpace(fetched.Title),
@@ -131,9 +154,49 @@ func (s *Server) handleLinkPreview(ctx *apptheory.Context) (*apptheory.Response,
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to store preview"}
 	}
 
+	return item, nil
+}
+
+func (s *Server) handleLinkPreview(ctx *apptheory.Context) (*apptheory.Response, error) {
+	instanceSlug, appErr := requireLinkPreviewAuth(s, ctx)
+	if appErr != nil {
+		return nil, appErr
+	}
+
+	req, err := parseLinkPreviewRequestInput(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	normalized, appErr := parseLinkPreviewNormalizedURL(req.URL)
+	if appErr != nil {
+		return nil, appErr
+	}
+
+	previewID := linkPreviewID(linkPreviewPolicyVersion, normalized)
+
+	// Respect per-instance config toggle (default: enabled).
+	instCfg := s.loadInstanceTrustConfig(ctx.Context(), instanceSlug)
+	if !instCfg.HostedPreviewsEnabled {
+		return apptheory.JSON(http.StatusOK, linkPreviewResponseDisabled(previewID, normalized))
+	}
+
+	cachedResp, ok, cacheErr := s.maybeServeCachedLinkPreview(ctx, instanceSlug, instCfg, previewID, normalized, req.ForceRefresh)
+	if cacheErr != nil {
+		return nil, cacheErr
+	}
+	if ok {
+		return apptheory.JSON(http.StatusOK, *cachedResp)
+	}
+
+	item, appErr := s.fetchAndStoreLinkPreview(ctx, instanceSlug, previewID, normalized)
+	if appErr != nil {
+		return nil, appErr
+	}
+
 	resp := linkPreviewResponseFromModel(ctx, item, false)
 	if instCfg.RendersEnabled {
-		s.maybeAttachPreviewRender(ctx, instanceSlug, renderPolicy, instCfg.OveragePolicy, normalized, &resp)
+		s.maybeAttachPreviewRender(ctx, instanceSlug, instCfg.RenderPolicy, instCfg.OveragePolicy, normalized, &resp)
 	}
 	return apptheory.JSON(http.StatusOK, resp)
 }
@@ -297,7 +360,7 @@ func (s *Server) tryStorePreviewImage(ctx context.Context, rawImageURL string) (
 	if err != nil {
 		return "", ""
 	}
-	if err := validateOutboundURL(ctx, nil, imgURL); err != nil {
+	if validateErr := validateOutboundURL(ctx, nil, imgURL); validateErr != nil {
 		return "", ""
 	}
 
@@ -322,64 +385,80 @@ func (s *Server) tryStorePreviewImage(ctx context.Context, rawImageURL string) (
 	return imageID, key
 }
 
-func (s *Server) maybeAttachPreviewRender(ctx *apptheory.Context, instanceSlug string, renderPolicy string, overagePolicy string, normalizedURL string, resp *linkPreviewResponse) {
+func normalizePreviewRenderPolicy(renderPolicy string) string {
+	renderPolicy = strings.ToLower(strings.TrimSpace(renderPolicy))
+	switch renderPolicy {
+	case "always", "suspicious":
+		return renderPolicy
+	default:
+		return "suspicious"
+	}
+}
+
+func previewRenderEligible(s *Server, ctx *apptheory.Context, normalizedURL string, resp *linkPreviewResponse) bool {
 	if s == nil || s.store == nil || s.store.DB == nil || ctx == nil || resp == nil {
-		return
+		return false
 	}
 	if strings.TrimSpace(normalizedURL) == "" {
-		return
+		return false
 	}
-	if strings.TrimSpace(resp.Status) != "ok" {
-		return
-	}
+	return strings.TrimSpace(resp.Status) == "ok"
+}
 
-	renderPolicy = strings.ToLower(strings.TrimSpace(renderPolicy))
-	if renderPolicy != "always" && renderPolicy != "suspicious" {
-		renderPolicy = "suspicious"
+func (s *Server) attachCachedPreviewRender(ctx *apptheory.Context, instanceSlug string, renderID string, resp *linkPreviewResponse) bool {
+	if s == nil || s.store == nil || s.store.DB == nil || ctx == nil || resp == nil {
+		return false
 	}
-
-	analysis := analyzeLinkSafetyBasic(ctx.Context(), nil, normalizedURL)
-	risk := strings.ToLower(strings.TrimSpace(analysis.Risk))
-	if !shouldRenderLink(renderPolicy, risk) {
-		return
+	if strings.TrimSpace(renderID) == "" {
+		return false
 	}
 
-	renderID := rendering.RenderArtifactID(rendering.RenderPolicyVersion, normalizedURL)
-
-	// Cache hit path (no debit).
-	if existing, err := s.store.GetRenderArtifact(ctx.Context(), renderID); err == nil && existing != nil {
-		hitNow := time.Now().UTC()
-		hitMonth := hitNow.Format("2006-01")
-		hit := &models.UsageLedgerEntry{
-			ID:                   billing.UsageLedgerEntryID(instanceSlug, hitMonth, strings.TrimSpace(ctx.RequestID), "link_preview_render", renderID, 0),
-			InstanceSlug:         instanceSlug,
-			Month:                hitMonth,
-			Module:               "link_preview_render",
-			Target:               renderID,
-			Cached:               true,
-			Reason:               "cache_hit",
-			RequestID:            strings.TrimSpace(ctx.RequestID),
-			RequestedCredits:     linkRenderCreditCost,
-			ListCredits:          linkRenderCreditCost,
-			PricingMultiplierBps: 10000,
-			DebitedCredits:       0,
-			BillingType:          models.BillingTypeNone,
-			CreatedAt:            hitNow,
-		}
-		_ = hit.UpdateKeys()
-		_ = s.store.DB.WithContext(ctx.Context()).Model(hit).IfNotExists().Create()
-
-		r := renderArtifactResponseFromModel(ctx, existing, true)
-		resp.Render = &r
-		return
+	existing, err := s.store.GetRenderArtifact(ctx.Context(), renderID)
+	if err != nil || existing == nil {
+		return false
 	}
 
-	// Best-effort: only queue if budget allows and the queue is configured.
-	if strings.TrimSpace(s.cfg.PreviewQueueURL) == "" || s.queues == nil {
-		return
+	hitNow := time.Now().UTC()
+	hitMonth := hitNow.Format("2006-01")
+	hit := &models.UsageLedgerEntry{
+		ID:                   billing.UsageLedgerEntryID(instanceSlug, hitMonth, strings.TrimSpace(ctx.RequestID), "link_preview_render", renderID, 0),
+		InstanceSlug:         instanceSlug,
+		Month:                hitMonth,
+		Module:               "link_preview_render",
+		Target:               renderID,
+		Cached:               true,
+		Reason:               "cache_hit",
+		RequestID:            strings.TrimSpace(ctx.RequestID),
+		RequestedCredits:     linkRenderCreditCost,
+		ListCredits:          linkRenderCreditCost,
+		PricingMultiplierBps: 10000,
+		DebitedCredits:       0,
+		BillingType:          models.BillingTypeNone,
+		CreatedAt:            hitNow,
+	}
+	_ = hit.UpdateKeys()
+	_ = s.store.DB.WithContext(ctx.Context()).Model(hit).IfNotExists().Create()
+
+	r := renderArtifactResponseFromModel(ctx, existing, true)
+	resp.Render = &r
+	return true
+}
+
+func previewRenderQueueReady(s *Server) bool {
+	if s == nil || s.queues == nil {
+		return false
+	}
+	return strings.TrimSpace(s.cfg.PreviewQueueURL) != ""
+}
+
+func (s *Server) debitBudgetForPreviewRender(ctx *apptheory.Context, instanceSlug string, overagePolicy string, renderID string, now time.Time) bool {
+	if s == nil || s.store == nil || s.store.DB == nil || ctx == nil {
+		return false
+	}
+	if strings.TrimSpace(instanceSlug) == "" || strings.TrimSpace(renderID) == "" {
+		return false
 	}
 
-	now := time.Now().UTC()
 	month := now.Format("2006-01")
 
 	pk := fmt.Sprintf("INSTANCE#%s", instanceSlug)
@@ -393,13 +472,13 @@ func (s *Server) maybeAttachPreviewRender(ctx *apptheory.Context, instanceSlug s
 		ConsistentRead().
 		First(&budget)
 	if err != nil {
-		return
+		return false
 	}
 
 	remaining := budget.IncludedCredits - budget.UsedCredits
 	allowOverage := strings.ToLower(strings.TrimSpace(overagePolicy)) == "allow"
 	if remaining < linkRenderCreditCost && !allowOverage {
-		return
+		return false
 	}
 
 	update := &models.InstanceBudgetMonth{
@@ -440,34 +519,72 @@ func (s *Server) maybeAttachPreviewRender(ctx *apptheory.Context, instanceSlug s
 	}
 	_ = auditBudget.UpdateKeys()
 
+	budgetUpdateConditions := []core.TransactCondition{tabletheory.IfExists()}
+	if !allowOverage {
+		budgetUpdateConditions = append(budgetUpdateConditions,
+			tabletheory.ConditionExpression(
+				"if_not_exists(usedCredits, :zero) + :delta <= if_not_exists(includedCredits, :zero)",
+				map[string]any{
+					":zero":  int64(0),
+					":delta": linkRenderCreditCost,
+				},
+			),
+		)
+	}
+
 	err = s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
-		if allowOverage {
-			tx.UpdateWithBuilder(update, func(ub core.UpdateBuilder) error {
-				ub.Add("UsedCredits", linkRenderCreditCost)
-				ub.Set("UpdatedAt", now)
-				return nil
-			}, tabletheory.IfExists())
-		} else {
-			tx.UpdateWithBuilder(update, func(ub core.UpdateBuilder) error {
-				ub.Add("UsedCredits", linkRenderCreditCost)
-				ub.Set("UpdatedAt", now)
-				return nil
-			},
-				tabletheory.IfExists(),
-				tabletheory.ConditionExpression(
-					"if_not_exists(usedCredits, :zero) + :delta <= if_not_exists(includedCredits, :zero)",
-					map[string]any{
-						":zero":  int64(0),
-						":delta": linkRenderCreditCost,
-					},
-				),
-			)
-		}
+		tx.UpdateWithBuilder(update, func(ub core.UpdateBuilder) error {
+			ub.Add("UsedCredits", linkRenderCreditCost)
+			ub.Set("UpdatedAt", now)
+			return nil
+		}, budgetUpdateConditions...)
 		tx.Put(ledger)
 		tx.Put(auditBudget)
 		return nil
 	})
-	if err != nil {
+	return err == nil
+}
+
+func (s *Server) auditPreviewRenderQueuedBestEffort(ctx *apptheory.Context, instanceSlug string, artifact *models.RenderArtifact, now time.Time) {
+	if s == nil || s.store == nil || s.store.DB == nil || ctx == nil || artifact == nil {
+		return
+	}
+	audit := &models.AuditLogEntry{
+		Actor:     instanceSlug,
+		Action:    "render.queue",
+		Target:    fmt.Sprintf("render:%s", strings.TrimSpace(artifact.ID)),
+		RequestID: strings.TrimSpace(ctx.RequestID),
+		CreatedAt: now,
+	}
+	_ = audit.UpdateKeys()
+	_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
+}
+
+func (s *Server) maybeAttachPreviewRender(ctx *apptheory.Context, instanceSlug string, renderPolicy string, overagePolicy string, normalizedURL string, resp *linkPreviewResponse) {
+	if !previewRenderEligible(s, ctx, normalizedURL, resp) {
+		return
+	}
+
+	renderPolicy = normalizePreviewRenderPolicy(renderPolicy)
+
+	analysis := analyzeLinkSafetyBasic(ctx.Context(), nil, normalizedURL)
+	risk := strings.ToLower(strings.TrimSpace(analysis.Risk))
+	if !shouldRenderLink(renderPolicy, risk) {
+		return
+	}
+
+	renderID := rendering.RenderArtifactID(rendering.RenderPolicyVersion, normalizedURL)
+
+	if s.attachCachedPreviewRender(ctx, instanceSlug, renderID, resp) {
+		return
+	}
+
+	if !previewRenderQueueReady(s) {
+		return
+	}
+
+	now := time.Now().UTC()
+	if !s.debitBudgetForPreviewRender(ctx, instanceSlug, overagePolicy, renderID, now) {
 		return
 	}
 
@@ -478,15 +595,7 @@ func (s *Server) maybeAttachPreviewRender(ctx *apptheory.Context, instanceSlug s
 	}
 
 	if queued {
-		audit := &models.AuditLogEntry{
-			Actor:     instanceSlug,
-			Action:    "render.queue",
-			Target:    fmt.Sprintf("render:%s", strings.TrimSpace(artifact.ID)),
-			RequestID: strings.TrimSpace(ctx.RequestID),
-			CreatedAt: now,
-		}
-		_ = audit.UpdateKeys()
-		_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
+		s.auditPreviewRenderQueuedBestEffort(ctx, instanceSlug, artifact, now)
 	}
 
 	r := renderArtifactResponseFromModel(ctx, artifact, !queued)

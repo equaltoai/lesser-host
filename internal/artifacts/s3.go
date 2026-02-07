@@ -29,6 +29,23 @@ func New(bucket string) *Store {
 	return &Store{bucket: strings.TrimSpace(bucket)}
 }
 
+// NewWithClient constructs a Store backed by an injected S3 client.
+//
+// This is primarily intended for deterministic, offline tests.
+func NewWithClient(bucket string, client *s3.Client) *Store {
+	st := New(bucket)
+	if client == nil {
+		return st
+	}
+
+	// Prevent lazy init from overwriting the injected client.
+	st.once.Do(func() {})
+	st.client = client
+	st.err = nil
+
+	return st
+}
+
 func (a *Store) s3Client(ctx context.Context) (*s3.Client, error) {
 	if a == nil {
 		return nil, fmt.Errorf("artifact store is nil")

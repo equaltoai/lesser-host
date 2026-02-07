@@ -24,6 +24,25 @@ type reviewNoteRequest struct {
 	Note string `json:"note,omitempty"`
 }
 
+func requireStoreDB(s *Server) *apptheory.AppError {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	return nil
+}
+
+func parseOptionalReviewNote(ctx *apptheory.Context) reviewNoteRequest {
+	var note reviewNoteRequest
+	if ctx == nil {
+		return note
+	}
+	if len(ctx.Request.Body) == 0 {
+		return note
+	}
+	_ = parseJSON(ctx, &note)
+	return note
+}
+
 func listByGSI1PK[T any](ctx *apptheory.Context, s *Server, model any, pk string, limit int) ([]T, error) {
 	if s == nil || s.store == nil || s.store.DB == nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
@@ -78,8 +97,8 @@ func (s *Server) handleApproveVanityDomainRequest(ctx *apptheory.Context) (*appt
 	if err := requireOperator(ctx); err != nil {
 		return nil, err
 	}
-	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	if appErr := requireStoreDB(s); appErr != nil {
+		return nil, appErr
 	}
 
 	domain, err := domains.NormalizeDomain(ctx.Param("domain"))
@@ -126,10 +145,7 @@ func (s *Server) handleApproveVanityDomainRequest(ctx *apptheory.Context) (*appt
 		return nil, &apptheory.AppError{Code: "app.conflict", Message: "domain must be verified before activation"}
 	}
 
-	var note reviewNoteRequest
-	if len(ctx.Request.Body) > 0 {
-		_ = parseJSON(ctx, &note)
-	}
+	note := parseOptionalReviewNote(ctx)
 
 	now := time.Now().UTC()
 	actor := strings.TrimSpace(ctx.AuthIdentity)
@@ -204,8 +220,8 @@ func (s *Server) handleRejectVanityDomainRequest(ctx *apptheory.Context) (*appth
 	if err := requireOperator(ctx); err != nil {
 		return nil, err
 	}
-	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	if appErr := requireStoreDB(s); appErr != nil {
+		return nil, appErr
 	}
 
 	domain, err := domains.NormalizeDomain(ctx.Param("domain"))
@@ -246,10 +262,7 @@ func (s *Server) handleRejectVanityDomainRequest(ctx *apptheory.Context) (*appth
 		return nil, &apptheory.AppError{Code: "app.conflict", Message: "domain is not a vanity domain"}
 	}
 
-	var note reviewNoteRequest
-	if len(ctx.Request.Body) > 0 {
-		_ = parseJSON(ctx, &note)
-	}
+	note := parseOptionalReviewNote(ctx)
 
 	now := time.Now().UTC()
 	actor := strings.TrimSpace(ctx.AuthIdentity)

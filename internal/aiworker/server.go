@@ -132,87 +132,133 @@ func (s *Server) processAIJob(ctx context.Context, requestID string, jobID strin
 		return fmt.Errorf("store not initialized")
 	}
 
-	job, err := s.store.GetAIJob(ctx, jobID)
-	if err != nil || job == nil {
-		return nil // drop missing
+	now := time.Now().UTC()
+	job := s.getQueuedAIJob(ctx, jobID, now)
+	if job == nil {
+		return nil // drop missing/expired/not-queued
 	}
 
-	now := time.Now().UTC()
+	if s.markAIJobOKIfResultExists(ctx, job, requestID) {
+		return nil
+	}
+
+	module, resultJSON, usage, errs, runErr, ok := s.runAIJobModuleV1(ctx, job)
+	if !ok {
+		return nil // drop unknown module/policy
+	}
+	if runErr != nil {
+		s.recordAIJobError(ctx, job, requestID, now, module, usage, errs, runErr)
+		return runErr
+	}
+
+	if err := s.persistAIJobResult(ctx, job, requestID, now, module, resultJSON, usage, errs); err != nil {
+		return err
+	}
+	s.emitAIJobMetrics(job.InstanceSlug, module, models.AIJobStatusOK, usage, errs, nil)
+	return nil
+}
+
+func (s *Server) getQueuedAIJob(ctx context.Context, jobID string, now time.Time) *models.AIJob {
+	if s == nil || s.store == nil {
+		return nil
+	}
+
+	job, err := s.store.GetAIJob(ctx, strings.TrimSpace(jobID))
+	if err != nil || job == nil {
+		return nil
+	}
+
 	if !job.ExpiresAt.IsZero() && job.ExpiresAt.Before(now) {
-		return nil // drop expired
+		return nil
 	}
 	if strings.TrimSpace(job.Status) != models.AIJobStatusQueued {
 		return nil
 	}
 
-	// Idempotency: if result already exists, mark job OK and exit.
-	if existing, err := s.store.GetAIResult(ctx, jobID); err == nil && existing != nil {
+	return job
+}
+
+func (s *Server) markAIJobOKIfResultExists(ctx context.Context, job *models.AIJob, requestID string) bool {
+	if s == nil || s.store == nil || job == nil {
+		return false
+	}
+
+	jobID := strings.TrimSpace(job.ID)
+	if jobID == "" {
+		return false
+	}
+
+	if existing, getResErr := s.store.GetAIResult(ctx, jobID); getResErr == nil && existing != nil {
 		job.Status = models.AIJobStatusOK
 		job.ErrorCode = ""
 		job.ErrorMessage = ""
 		job.RequestID = strings.TrimSpace(requestID)
 		_ = job.UpdateKeys()
 		_ = s.store.PutAIJob(ctx, job)
-		return nil
+		return true
+	}
+
+	return false
+}
+
+func (s *Server) runAIJobModuleV1(ctx context.Context, job *models.AIJob) (string, string, models.AIUsage, []models.AIError, error, bool) {
+	if s == nil || job == nil {
+		return "", "", models.AIUsage{}, nil, nil, false
 	}
 
 	module := strings.ToLower(strings.TrimSpace(job.Module))
-	policyVersion := strings.TrimSpace(job.PolicyVersion)
-
-	var resultJSON string
-	var usage models.AIUsage
-	var errs []models.AIError
+	if module == "" || strings.TrimSpace(job.PolicyVersion) != "v1" {
+		return module, "", models.AIUsage{}, nil, nil, false
+	}
 
 	switch module {
 	case "evidence_text_comprehend":
-		if policyVersion != "v1" {
-			return nil
-		}
-		resultJSON, usage, errs, err = s.runComprehendTextEvidenceV1(ctx, job)
+		resultJSON, usage, errs, err := s.runComprehendTextEvidenceV1(ctx, job)
+		return module, resultJSON, usage, errs, err, true
 	case "evidence_image_rekognition":
-		if policyVersion != "v1" {
-			return nil
-		}
-		resultJSON, usage, errs, err = s.runRekognitionImageEvidenceV1(ctx, job)
+		resultJSON, usage, errs, err := s.runRekognitionImageEvidenceV1(ctx, job)
+		return module, resultJSON, usage, errs, err, true
 	case "render_summary_llm":
-		if policyVersion != "v1" {
-			return nil
-		}
-		resultJSON, usage, errs, err = s.runRenderSummaryLLMV1(ctx, job)
+		resultJSON, usage, errs, err := s.runRenderSummaryLLMV1(ctx, job)
+		return module, resultJSON, usage, errs, err, true
 	case "moderation_text_llm":
-		if policyVersion != "v1" {
-			return nil
-		}
-		resultJSON, usage, errs, err = s.runModerationTextLLMV1(ctx, job)
+		resultJSON, usage, errs, err := s.runModerationTextLLMV1(ctx, job)
+		return module, resultJSON, usage, errs, err, true
 	case "moderation_image_llm":
-		if policyVersion != "v1" {
-			return nil
-		}
-		resultJSON, usage, errs, err = s.runModerationImageLLMV1(ctx, job)
+		resultJSON, usage, errs, err := s.runModerationImageLLMV1(ctx, job)
+		return module, resultJSON, usage, errs, err, true
 	case "claim_verify_llm":
-		if policyVersion != "v1" {
-			return nil
-		}
-		resultJSON, usage, errs, err = s.runClaimVerifyLLMV1(ctx, job)
+		resultJSON, usage, errs, err := s.runClaimVerifyLLMV1(ctx, job)
+		return module, resultJSON, usage, errs, err, true
 	default:
-		return nil
+		return module, "", models.AIUsage{}, nil, nil, false
 	}
-	if err != nil {
-		job.Status = models.AIJobStatusError
-		job.Attempts++
-		job.ErrorCode = "tool_failed"
-		job.ErrorMessage = "tool execution failed"
-		job.RequestID = strings.TrimSpace(requestID)
-		_ = job.UpdateKeys()
-		_ = s.store.PutAIJob(ctx, job)
-		s.emitAIJobMetrics(job.InstanceSlug, module, models.AIJobStatusError, usage, errs, err)
-		return err
+}
+
+func (s *Server) recordAIJobError(ctx context.Context, job *models.AIJob, requestID string, now time.Time, module string, usage models.AIUsage, errs []models.AIError, runErr error) {
+	if s == nil || s.store == nil || job == nil {
+		return
+	}
+
+	job.Status = models.AIJobStatusError
+	job.Attempts++
+	job.ErrorCode = "tool_failed"
+	job.ErrorMessage = "tool execution failed"
+	job.RequestID = strings.TrimSpace(requestID)
+	_ = job.UpdateKeys()
+	_ = s.store.PutAIJob(ctx, job)
+	s.emitAIJobMetrics(job.InstanceSlug, strings.TrimSpace(module), models.AIJobStatusError, usage, errs, runErr)
+}
+
+func (s *Server) persistAIJobResult(ctx context.Context, job *models.AIJob, requestID string, now time.Time, module string, resultJSON string, usage models.AIUsage, errs []models.AIError) error {
+	if s == nil || s.store == nil || job == nil {
+		return fmt.Errorf("store not initialized")
 	}
 
 	res := &models.AIResult{
 		ID:            strings.TrimSpace(job.ID),
 		InstanceSlug:  strings.TrimSpace(job.InstanceSlug),
-		Module:        module,
+		Module:        strings.TrimSpace(module),
 		PolicyVersion: strings.TrimSpace(job.PolicyVersion),
 		ModelSet:      strings.TrimSpace(job.ModelSet),
 		CacheScope:    strings.TrimSpace(job.CacheScope),
@@ -238,7 +284,6 @@ func (s *Server) processAIJob(ctx context.Context, requestID string, jobID strin
 	job.RequestID = strings.TrimSpace(requestID)
 	_ = job.UpdateKeys()
 	_ = s.store.PutAIJob(ctx, job)
-	s.emitAIJobMetrics(job.InstanceSlug, module, models.AIJobStatusOK, usage, errs, nil)
 	return nil
 }
 
@@ -772,6 +817,96 @@ type rekognitionImageEvidenceV1 struct {
 	Warnings  []string `json:"warnings,omitempty"`
 }
 
+func (s *Server) addRekognitionModerationLabels(ctx context.Context, img *rekognitiontypes.Image, out *rekognitionImageEvidenceV1) {
+	if s == nil || s.rekognition == nil || img == nil || out == nil {
+		return
+	}
+
+	mlOut, err := s.rekognition.DetectModerationLabels(ctx, &rekognition.DetectModerationLabelsInput{
+		Image:         img,
+		MinConfidence: aws.Float32(60),
+	})
+	if err != nil {
+		out.Warnings = append(out.Warnings, "detect_moderation_failed")
+		return
+	}
+
+	const maxLabels = 50
+	for _, l := range mlOut.ModerationLabels {
+		name := strings.TrimSpace(aws.ToString(l.Name))
+		if name == "" {
+			continue
+		}
+		out.ModerationLabels = append(out.ModerationLabels, rekognitionLabel{
+			Name:       name,
+			ParentName: strings.TrimSpace(aws.ToString(l.ParentName)),
+			Confidence: roundScore(l.Confidence),
+		})
+		if len(out.ModerationLabels) >= maxLabels {
+			out.Truncated = true
+			break
+		}
+	}
+	sort.Slice(out.ModerationLabels, func(i, j int) bool {
+		return out.ModerationLabels[i].Name < out.ModerationLabels[j].Name
+	})
+}
+
+func (s *Server) addRekognitionTextDetections(ctx context.Context, img *rekognitiontypes.Image, out *rekognitionImageEvidenceV1) {
+	if s == nil || s.rekognition == nil || img == nil || out == nil {
+		return
+	}
+
+	txtOut, err := s.rekognition.DetectText(ctx, &rekognition.DetectTextInput{Image: img})
+	if err != nil {
+		out.Warnings = append(out.Warnings, "detect_text_failed")
+		return
+	}
+
+	const maxText = 50
+	for _, d := range txtOut.TextDetections {
+		t := strings.TrimSpace(aws.ToString(d.DetectedText))
+		if t == "" {
+			continue
+		}
+		if len(t) > 64 {
+			t = t[:64]
+		}
+		out.TextDetections = append(out.TextDetections, rekognitionTextDetection{
+			Text:       t,
+			Type:       strings.TrimSpace(string(d.Type)),
+			Confidence: roundScore(d.Confidence),
+		})
+		if len(out.TextDetections) >= maxText {
+			out.Truncated = true
+			break
+		}
+	}
+	sort.Slice(out.TextDetections, func(i, j int) bool {
+		if out.TextDetections[i].Confidence == out.TextDetections[j].Confidence {
+			return out.TextDetections[i].Text < out.TextDetections[j].Text
+		}
+		return out.TextDetections[i].Confidence > out.TextDetections[j].Confidence
+	})
+}
+
+func (s *Server) addRekognitionFaceCount(ctx context.Context, img *rekognitiontypes.Image, out *rekognitionImageEvidenceV1) {
+	if s == nil || s.rekognition == nil || img == nil || out == nil {
+		return
+	}
+
+	fOut, err := s.rekognition.DetectFaces(ctx, &rekognition.DetectFacesInput{
+		Image:      img,
+		Attributes: []rekognitiontypes.Attribute{rekognitiontypes.AttributeDefault},
+	})
+	if err != nil {
+		out.Warnings = append(out.Warnings, "detect_faces_failed")
+		return
+	}
+
+	out.FaceCount = len(fOut.FaceDetails)
+}
+
 func (s *Server) runRekognitionImageEvidenceV1(ctx context.Context, job *models.AIJob) (string, models.AIUsage, []models.AIError, error) {
 	if s == nil || s.rekognition == nil {
 		return "", models.AIUsage{}, nil, fmt.Errorf("rekognition client not configured")
@@ -809,74 +944,9 @@ func (s *Server) runRekognitionImageEvidenceV1(ctx context.Context, job *models.
 		Version: "v1",
 	}
 
-	mlOut, err := s.rekognition.DetectModerationLabels(ctx, &rekognition.DetectModerationLabelsInput{
-		Image:         img,
-		MinConfidence: aws.Float32(60),
-	})
-	if err != nil {
-		out.Warnings = append(out.Warnings, "detect_moderation_failed")
-	} else {
-		const maxLabels = 50
-		for _, l := range mlOut.ModerationLabels {
-			name := strings.TrimSpace(aws.ToString(l.Name))
-			if name == "" {
-				continue
-			}
-			out.ModerationLabels = append(out.ModerationLabels, rekognitionLabel{
-				Name:       name,
-				ParentName: strings.TrimSpace(aws.ToString(l.ParentName)),
-				Confidence: roundScore(l.Confidence),
-			})
-			if len(out.ModerationLabels) >= maxLabels {
-				out.Truncated = true
-				break
-			}
-		}
-		sort.Slice(out.ModerationLabels, func(i, j int) bool {
-			return out.ModerationLabels[i].Name < out.ModerationLabels[j].Name
-		})
-	}
-
-	txtOut, err := s.rekognition.DetectText(ctx, &rekognition.DetectTextInput{Image: img})
-	if err != nil {
-		out.Warnings = append(out.Warnings, "detect_text_failed")
-	} else {
-		const maxText = 50
-		for _, d := range txtOut.TextDetections {
-			t := strings.TrimSpace(aws.ToString(d.DetectedText))
-			if t == "" {
-				continue
-			}
-			if len(t) > 64 {
-				t = t[:64]
-			}
-			out.TextDetections = append(out.TextDetections, rekognitionTextDetection{
-				Text:       t,
-				Type:       strings.TrimSpace(string(d.Type)),
-				Confidence: roundScore(d.Confidence),
-			})
-			if len(out.TextDetections) >= maxText {
-				out.Truncated = true
-				break
-			}
-		}
-		sort.Slice(out.TextDetections, func(i, j int) bool {
-			if out.TextDetections[i].Confidence == out.TextDetections[j].Confidence {
-				return out.TextDetections[i].Text < out.TextDetections[j].Text
-			}
-			return out.TextDetections[i].Confidence > out.TextDetections[j].Confidence
-		})
-	}
-
-	fOut, err := s.rekognition.DetectFaces(ctx, &rekognition.DetectFacesInput{
-		Image:      img,
-		Attributes: []rekognitiontypes.Attribute{rekognitiontypes.AttributeDefault},
-	})
-	if err != nil {
-		out.Warnings = append(out.Warnings, "detect_faces_failed")
-	} else {
-		out.FaceCount = len(fOut.FaceDetails)
-	}
+	s.addRekognitionModerationLabels(ctx, img, &out)
+	s.addRekognitionTextDetections(ctx, img, &out)
+	s.addRekognitionFaceCount(ctx, img, &out)
 
 	b, err := json.Marshal(out)
 	if err != nil {
@@ -1254,12 +1324,8 @@ func (s *Server) runClaimVerifyLLMV1(ctx context.Context, job *models.AIJob) (st
 	evidenceIDs, evidenceText := claimVerifyEvidenceMaps(in.Evidence)
 	if len(evidenceIDs) == 0 || len(evidenceText) == 0 {
 		out, usage, errs, err := claimVerifyMissingEvidenceResponse(in, start)
-		if len(hydrationErrs) > 0 {
-			errs = append(hydrationErrs, errs...)
-		}
-		if len(retrievalErrs) > 0 {
-			errs = append(retrievalErrs, errs...)
-		}
+		errs = append(hydrationErrs, errs...)
+		errs = append(retrievalErrs, errs...)
 		return out, usage, errs, err
 	}
 
@@ -1267,15 +1333,8 @@ func (s *Server) runClaimVerifyLLMV1(ctx context.Context, job *models.AIJob) (st
 	var usage models.AIUsage
 
 	res, usage, errs := s.claimVerifyWithLLM(ctx, modelSet, strings.TrimSpace(job.ID), in, start)
-	if len(retrievalErrs) > 0 {
-		errs = append(retrievalErrs, errs...)
-	}
-	if len(hydrationErrs) > 0 {
-		errs = append(hydrationErrs, errs...)
-	}
-	if retrievalUsed {
-		usage = mergeAIUsage(usage, retrievalUsage, start)
-	}
+	errs = append(retrievalErrs, errs...)
+	errs = append(hydrationErrs, errs...)
 
 	if len(res.Claims) == 0 {
 		res = ai.ClaimVerifyDeterministicV1(in)
@@ -1290,22 +1349,34 @@ func (s *Server) runClaimVerifyLLMV1(ctx context.Context, job *models.AIJob) (st
 	}
 
 	res.Sources = trimClaimVerifySourcesForOutput(in.Evidence)
-	if retrievalUsed {
-		res.Disclaimer = retrievalDisclaimer
-		res.Warnings = append(res.Warnings, "web_search_used")
-	}
+	usage = applyClaimVerifyRetrievalEffects(&res, usage, start, retrievalUsed, retrievalDisclaimer, retrievalUsage)
 
 	res.Claims = sanitizeClaimVerifyClaims(res.Claims, evidenceIDs, evidenceText)
 
-	if attErrs := s.issueClaimVerifyAttestationV1(ctx, job, in, res); len(attErrs) > 0 {
-		errs = append(errs, attErrs...)
-	}
+	errs = append(errs, s.issueClaimVerifyAttestationV1(ctx, job, in, res)...)
 
 	b, err := json.Marshal(res)
 	if err != nil {
 		return "", models.AIUsage{}, nil, err
 	}
 	return string(b), usage, errs, nil
+}
+
+func applyClaimVerifyRetrievalEffects(
+	res *ai.ClaimVerifyResultV1,
+	usage models.AIUsage,
+	start time.Time,
+	used bool,
+	disclaimer string,
+	retrievalUsage models.AIUsage,
+) models.AIUsage {
+	if res == nil || !used {
+		return usage
+	}
+
+	res.Disclaimer = strings.TrimSpace(disclaimer)
+	res.Warnings = append(res.Warnings, "web_search_used")
+	return mergeAIUsage(usage, retrievalUsage, start)
 }
 
 func (s *Server) maybeAddClaimVerifyWebSearchEvidence(
@@ -1538,56 +1609,38 @@ func (s *Server) issueClaimVerifyAttestationV1(ctx context.Context, job *models.
 		return nil
 	}
 
-	actorURI := strings.TrimSpace(in.ActorURI)
-	objectURI := strings.TrimSpace(in.ObjectURI)
-	contentHash := strings.TrimSpace(in.ContentHash)
-	if actorURI == "" || objectURI == "" || contentHash == "" {
+	actorURI, objectURI, contentHash, ok := claimVerifyAttestationSubject(in)
+	if !ok {
 		return nil
 	}
 
-	st, ok := s.store.(*store.Store)
-	if !ok || st == nil || st.DB == nil {
+	st, err := s.attestationStoreForAIJob()
+	if err != nil || st == nil {
 		return []models.AIError{{Code: "attestation_unavailable", Message: "Attestation store unavailable", Retryable: true}}
 	}
 
-	module := strings.ToLower(strings.TrimSpace(job.Module))
-	policyVersion := strings.TrimSpace(job.PolicyVersion)
-	if module == "" || policyVersion == "" {
+	module, policyVersion, ok := aiJobModulePolicy(job)
+	if !ok {
 		return nil
 	}
 
 	id := attestations.AttestationID(actorURI, objectURI, contentHash, module, policyVersion)
 
-	if existing, err := st.GetAttestation(ctx, id); err == nil && existing != nil {
+	exists, errs := s.attestationAlreadyExists(ctx, st, id)
+	if len(errs) > 0 {
+		return errs
+	}
+	if exists {
 		return nil
-	} else if err != nil && !store.IsNotFound(err) {
-		return []models.AIError{{Code: "attestation_failed", Message: "Failed to check existing attestation", Retryable: true}}
 	}
 
 	now := time.Now().UTC()
 	expiresAt := now.Add(30 * 24 * time.Hour)
 
 	// Do not include full evidence texts in the public attestation.
-	evidenceRefs := []claimVerifyAttestationEvidenceSourceV1{}
-	for _, e := range trimClaimVerifySourcesForOutput(in.Evidence) {
-		txt := strings.TrimSpace(e.Text)
-		sum := sha256.Sum256([]byte(txt))
-		evidenceRefs = append(evidenceRefs, claimVerifyAttestationEvidenceSourceV1{
-			SourceID:   strings.TrimSpace(e.SourceID),
-			URL:        strings.TrimSpace(e.URL),
-			Title:      strings.TrimSpace(e.Title),
-			RenderID:   strings.TrimSpace(e.RenderID),
-			TextSHA256: hex.EncodeToString(sum[:]),
-		})
-	}
-
-	retrievalMode := ai.ClaimVerifyRetrievalModeProvidedOnly
-	if in.Retrieval != nil && strings.TrimSpace(in.Retrieval.Mode) != "" {
-		retrievalMode = strings.TrimSpace(in.Retrieval.Mode)
-	}
-
-	resForAttest := res
-	resForAttest.Sources = nil
+	evidenceRefs := claimVerifyAttestationEvidenceRefs(in.Evidence)
+	retrievalMode := claimVerifyAttestationRetrievalMode(in.Retrieval)
+	resForAttest := claimVerifyResultForAttestation(res)
 
 	payload := attestations.PayloadV1{
 		Type: attestations.PayloadTypeV1,
@@ -1645,6 +1698,87 @@ func (s *Server) issueClaimVerifyAttestationV1(ctx context.Context, job *models.
 		return []models.AIError{{Code: "attestation_failed", Message: "Failed to write attestation", Retryable: true}}
 	}
 	return nil
+}
+
+func claimVerifyAttestationSubject(in ai.ClaimVerifyInputsV1) (string, string, string, bool) {
+	actorURI := strings.TrimSpace(in.ActorURI)
+	objectURI := strings.TrimSpace(in.ObjectURI)
+	contentHash := strings.TrimSpace(in.ContentHash)
+	if actorURI == "" || objectURI == "" || contentHash == "" {
+		return "", "", "", false
+	}
+	return actorURI, objectURI, contentHash, true
+}
+
+func (s *Server) attestationStoreForAIJob() (*store.Store, error) {
+	if s == nil || s.store == nil {
+		return nil, fmt.Errorf("store not initialized")
+	}
+	st, ok := s.store.(*store.Store)
+	if !ok || st == nil || st.DB == nil {
+		return nil, fmt.Errorf("attestation store unavailable")
+	}
+	return st, nil
+}
+
+func aiJobModulePolicy(job *models.AIJob) (string, string, bool) {
+	if job == nil {
+		return "", "", false
+	}
+	module := strings.ToLower(strings.TrimSpace(job.Module))
+	policyVersion := strings.TrimSpace(job.PolicyVersion)
+	if module == "" || policyVersion == "" {
+		return "", "", false
+	}
+	return module, policyVersion, true
+}
+
+func (s *Server) attestationAlreadyExists(ctx context.Context, st *store.Store, id string) (bool, []models.AIError) {
+	if s == nil || st == nil || st.DB == nil {
+		return false, []models.AIError{{Code: "attestation_unavailable", Message: "Attestation store unavailable", Retryable: true}}
+	}
+
+	existing, err := st.GetAttestation(ctx, id)
+	if err == nil && existing != nil {
+		return true, nil
+	}
+	if err != nil && !store.IsNotFound(err) {
+		return false, []models.AIError{{Code: "attestation_failed", Message: "Failed to check existing attestation", Retryable: true}}
+	}
+
+	return false, nil
+}
+
+func claimVerifyAttestationEvidenceRefs(in []ai.ClaimVerifyEvidenceV1) []claimVerifyAttestationEvidenceSourceV1 {
+	out := make([]claimVerifyAttestationEvidenceSourceV1, 0, len(in))
+	for _, e := range trimClaimVerifySourcesForOutput(in) {
+		txt := strings.TrimSpace(e.Text)
+		sum := sha256.Sum256([]byte(txt))
+		out = append(out, claimVerifyAttestationEvidenceSourceV1{
+			SourceID:   strings.TrimSpace(e.SourceID),
+			URL:        strings.TrimSpace(e.URL),
+			Title:      strings.TrimSpace(e.Title),
+			RenderID:   strings.TrimSpace(e.RenderID),
+			TextSHA256: hex.EncodeToString(sum[:]),
+		})
+	}
+	return out
+}
+
+func claimVerifyAttestationRetrievalMode(in *ai.ClaimVerifyRetrievalV1) string {
+	retrievalMode := ai.ClaimVerifyRetrievalModeProvidedOnly
+	if in == nil {
+		return retrievalMode
+	}
+	if mode := strings.TrimSpace(in.Mode); mode != "" {
+		retrievalMode = mode
+	}
+	return retrievalMode
+}
+
+func claimVerifyResultForAttestation(res ai.ClaimVerifyResultV1) ai.ClaimVerifyResultV1 {
+	res.Sources = nil
+	return res
 }
 
 func claimVerifyEvidenceMaps(in []ai.ClaimVerifyEvidenceV1) (map[string]struct{}, map[string]string) {
@@ -1840,6 +1974,90 @@ func claimVerifyQuoteMatchesEvidence(evidenceText string, quote string) bool {
 	return strings.Contains(nEvidence, nQuote)
 }
 
+func moderationCategoryCodeFromRekognitionLabel(lowerNameAndParent string) string {
+	switch {
+	case strings.Contains(lowerNameAndParent, "nudity") ||
+		strings.Contains(lowerNameAndParent, "explicit") ||
+		strings.Contains(lowerNameAndParent, "sexual"):
+		return "nudity"
+	case strings.Contains(lowerNameAndParent, "violence") ||
+		strings.Contains(lowerNameAndParent, "weapon") ||
+		strings.Contains(lowerNameAndParent, "blood"):
+		return "violence"
+	default:
+		return "other"
+	}
+}
+
+func normalizeConfidence01(confPct float64) float64 {
+	conf := confPct / 100
+	if conf < 0 {
+		return 0
+	}
+	if conf > 1 {
+		return 1
+	}
+	return conf
+}
+
+func moderationSeverityFromConfidence(conf float64) string {
+	if conf >= 0.9 {
+		return "high"
+	}
+	return "medium"
+}
+
+func moderationCategoriesFromRekognitionLabels(labels []rekognitionLabel) ([]ai.ModerationCategoryV1, bool) {
+	out := make([]ai.ModerationCategoryV1, 0, len(labels))
+	block := false
+
+	for _, l := range labels {
+		name := strings.TrimSpace(l.Name)
+		parent := strings.TrimSpace(l.ParentName)
+		if name == "" {
+			continue
+		}
+
+		lower := strings.ToLower(name + " " + parent)
+		code := moderationCategoryCodeFromRekognitionLabel(lower)
+		conf := normalizeConfidence01(l.Confidence)
+
+		out = append(out, ai.ModerationCategoryV1{
+			Code:       code,
+			Confidence: conf,
+			Severity:   moderationSeverityFromConfidence(conf),
+			Summary:    fmt.Sprintf("Tooling flagged %s (%0.1f%%).", name, l.Confidence),
+		})
+		if len(out) >= 5 {
+			break
+		}
+
+		if code == "nudity" && conf >= 0.95 {
+			block = true
+		}
+	}
+
+	return out, block
+}
+
+func moderationHighlightsFromRekognitionTextDetections(detections []rekognitionTextDetection) []string {
+	out := make([]string, 0, len(detections))
+	for _, d := range detections {
+		t := strings.TrimSpace(d.Text)
+		if t == "" {
+			continue
+		}
+		if len(t) > 160 {
+			t = strings.TrimSpace(t[:160])
+		}
+		out = append(out, t)
+		if len(out) >= 5 {
+			break
+		}
+	}
+	return out
+}
+
 func moderationImageDeterministicFromRekognition(ev rekognitionImageEvidenceV1) ai.ModerationResultV1 {
 	out := ai.ModerationResultV1{
 		Kind:     "moderation_image",
@@ -1852,69 +2070,14 @@ func moderationImageDeterministicFromRekognition(ev rekognitionImageEvidenceV1) 
 	}
 
 	out.Decision = "review"
-	block := false
 
-	for _, l := range ev.ModerationLabels {
-		name := strings.TrimSpace(l.Name)
-		parent := strings.TrimSpace(l.ParentName)
-		if name == "" {
-			continue
-		}
-
-		lower := strings.ToLower(name + " " + parent)
-		code := "other"
-		switch {
-		case strings.Contains(lower, "nudity") || strings.Contains(lower, "explicit") || strings.Contains(lower, "sexual"):
-			code = "nudity"
-		case strings.Contains(lower, "violence") || strings.Contains(lower, "weapon") || strings.Contains(lower, "blood"):
-			code = "violence"
-		}
-
-		conf := l.Confidence / 100
-		if conf < 0 {
-			conf = 0
-		}
-		if conf > 1 {
-			conf = 1
-		}
-
-		severity := "medium"
-		if conf >= 0.9 {
-			severity = "high"
-		}
-
-		out.Categories = append(out.Categories, ai.ModerationCategoryV1{
-			Code:       code,
-			Confidence: conf,
-			Severity:   severity,
-			Summary:    fmt.Sprintf("Tooling flagged %s (%0.1f%%).", name, l.Confidence),
-		})
-		if len(out.Categories) >= 5 {
-			break
-		}
-
-		if code == "nudity" && conf >= 0.95 {
-			block = true
-		}
-	}
-
+	categories, block := moderationCategoriesFromRekognitionLabels(ev.ModerationLabels)
+	out.Categories = categories
 	if block {
 		out.Decision = "block"
 	}
 
-	for _, d := range ev.TextDetections {
-		t := strings.TrimSpace(d.Text)
-		if t == "" {
-			continue
-		}
-		if len(t) > 160 {
-			t = strings.TrimSpace(t[:160])
-		}
-		out.Highlights = append(out.Highlights, t)
-		if len(out.Highlights) >= 5 {
-			break
-		}
-	}
+	out.Highlights = moderationHighlightsFromRekognitionTextDetections(ev.TextDetections)
 
 	return out
 }

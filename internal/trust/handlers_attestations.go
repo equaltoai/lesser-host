@@ -101,7 +101,7 @@ func (s *Server) serveAttestationByID(ctx *apptheory.Context, id string) (*appth
 	}
 
 	var header any
-	if err := json.Unmarshal(headerBytes, &header); err != nil {
+	if unmarshalErr := json.Unmarshal(headerBytes, &header); unmarshalErr != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 

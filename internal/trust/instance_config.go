@@ -4,8 +4,6 @@ import (
 	"context"
 	"strings"
 
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
-
 	"github.com/equaltoai/lesser-host/internal/ai"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
@@ -54,7 +52,7 @@ func defaultInstanceTrustConfig() instanceTrustConfig {
 
 func (s *Server) loadInstanceTrustConfig(ctx context.Context, instanceSlug string) instanceTrustConfig {
 	cfg := defaultInstanceTrustConfig()
-	if s == nil || s.store == nil || s.store.DB == nil {
+	if !s.trustConfigStoreReady() {
 		return cfg
 	}
 
@@ -70,11 +68,27 @@ func (s *Server) loadInstanceTrustConfig(ctx context.Context, instanceSlug strin
 		Where("SK", "=", models.SKMetadata).
 		First(&inst)
 	if err != nil {
-		// Default config for missing instance record.
-		if theoryErrors.IsNotFound(err) {
-			return cfg
-		}
 		return cfg
+	}
+
+	applyInstanceTrustConfigOverrides(&cfg, &inst)
+
+	return cfg
+}
+
+func (s *Server) trustConfigStoreReady() bool {
+	if s == nil {
+		return false
+	}
+	if s.store == nil {
+		return false
+	}
+	return s.store.DB != nil
+}
+
+func applyInstanceTrustConfigOverrides(cfg *instanceTrustConfig, inst *models.Instance) {
+	if cfg == nil || inst == nil {
+		return
 	}
 
 	if inst.HostedPreviewsEnabled != nil {
@@ -88,12 +102,14 @@ func (s *Server) loadInstanceTrustConfig(ctx context.Context, instanceSlug strin
 	}
 
 	rp := strings.ToLower(strings.TrimSpace(inst.RenderPolicy))
-	if rp == renderPolicyAlways || rp == renderPolicySuspicious {
+	switch rp {
+	case renderPolicyAlways, renderPolicySuspicious:
 		cfg.RenderPolicy = rp
 	}
 
 	op := strings.ToLower(strings.TrimSpace(inst.OveragePolicy))
-	if op == overagePolicyAllow || op == overagePolicyBlock {
+	switch op {
+	case overagePolicyAllow, overagePolicyBlock:
 		cfg.OveragePolicy = op
 	}
 
@@ -109,7 +125,7 @@ func (s *Server) loadInstanceTrustConfig(ctx context.Context, instanceSlug strin
 		cfg.ModerationViralityMin = inst.ModerationViralityMin
 	}
 
-	aiCfg := ai.EffectiveInstanceConfig(&inst)
+	aiCfg := ai.EffectiveInstanceConfig(inst)
 	cfg.AIEnabled = aiCfg.Enabled
 	cfg.AIModelSet = aiCfg.ModelSet
 	cfg.AIBatchingMode = aiCfg.BatchingMode
@@ -117,6 +133,4 @@ func (s *Server) loadInstanceTrustConfig(ctx context.Context, instanceSlug strin
 	cfg.AIBatchMaxTotalBytes = aiCfg.BatchMaxTotalBytes
 	cfg.AIPricingMultiplierBps = aiCfg.PricingMultiplierBps
 	cfg.AIMaxInflightJobs = aiCfg.MaxInflightJobs
-
-	return cfg
 }

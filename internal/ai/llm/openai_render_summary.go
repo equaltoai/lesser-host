@@ -120,26 +120,8 @@ func normalizeRenderSummaryBatchOutput(parsed renderSummaryBatchOutput) map[stri
 			short = strings.TrimSpace(short[:240])
 		}
 
-		keyBullets := make([]string, 0, len(item.KeyBullets))
-		for _, b := range item.KeyBullets {
-			b = strings.TrimSpace(b)
-			if b == "" {
-				continue
-			}
-			if len(b) > 140 {
-				b = strings.TrimSpace(b[:140])
-			}
-			keyBullets = append(keyBullets, b)
-		}
-
-		risks := make([]ai.RenderSummaryRisk, 0, len(item.Risks))
-		for _, r := range item.Risks {
-			r = normalizeRenderSummaryRisk(r)
-			if r.Code == "" || r.Summary == "" {
-				continue
-			}
-			risks = append(risks, r)
-		}
+		keyBullets := normalizeRenderSummaryKeyBullets(item.KeyBullets)
+		risks := normalizeRenderSummaryRisks(item.Risks)
 
 		out[itemID] = ai.RenderSummaryResultV1{
 			Kind:         "render_summary",
@@ -148,6 +130,33 @@ func normalizeRenderSummaryBatchOutput(parsed renderSummaryBatchOutput) map[stri
 			KeyBullets:   keyBullets,
 			Risks:        risks,
 		}
+	}
+	return out
+}
+
+func normalizeRenderSummaryKeyBullets(bullets []string) []string {
+	out := make([]string, 0, len(bullets))
+	for _, bullet := range bullets {
+		bullet = strings.TrimSpace(bullet)
+		if bullet == "" {
+			continue
+		}
+		if len(bullet) > 140 {
+			bullet = strings.TrimSpace(bullet[:140])
+		}
+		out = append(out, bullet)
+	}
+	return out
+}
+
+func normalizeRenderSummaryRisks(risks []ai.RenderSummaryRisk) []ai.RenderSummaryRisk {
+	out := make([]ai.RenderSummaryRisk, 0, len(risks))
+	for _, risk := range risks {
+		risk = normalizeRenderSummaryRisk(risk)
+		if risk.Code == "" || risk.Summary == "" {
+			continue
+		}
+		out = append(out, risk)
 	}
 	return out
 }
