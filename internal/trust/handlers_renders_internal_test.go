@@ -46,7 +46,7 @@ func TestRenderDisabledResponse(t *testing.T) {
 	t.Parallel()
 
 	out := renderDisabledResponse()
-	if out.Status != "error" || out.ErrorCode != "disabled" {
+	if out.Status != statusError || out.ErrorCode != statusDisabled {
 		t.Fatalf("unexpected response: %#v", out)
 	}
 	if out.ExpiresAt.Before(out.CreatedAt) {
@@ -80,7 +80,7 @@ func TestNormalizeCreateRenderURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if normalized != "https://xn--bcher-kva.example/?a=1&b=2" {
+	if normalized != testNormalizedBucherURL {
 		t.Fatalf("unexpected normalized: %q", normalized)
 	}
 

@@ -16,6 +16,7 @@ import (
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
+	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
 func TestHandleWellKnownJWKS_NotFoundWhenDisabled(t *testing.T) {
@@ -36,7 +37,7 @@ func TestHandleGetAttestation_InvalidID(t *testing.T) {
 
 	ctx := &apptheory.Context{Params: map[string]string{"id": "nope"}}
 	_, err := s.handleGetAttestation(ctx)
-	if appErr, ok := err.(*apptheory.AppError); !ok || appErr.Code != "app.bad_request" {
+	if appErr, ok := err.(*apptheory.AppError); !ok || appErr.Code != appErrCodeBadRequest {
 		t.Fatalf("expected bad_request, got %T: %v", err, err)
 	}
 }
@@ -80,7 +81,7 @@ func TestServeAttestationByID_Success(t *testing.T) {
 	q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 	q.On("ConsistentRead").Return(q).Maybe()
 	q.On("First", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Attestation)
+		dest := testutil.RequireMockArg[*models.Attestation](t, args, 0)
 		*dest = models.Attestation{
 			ID:        "id",
 			JWS:       jws,
@@ -143,7 +144,7 @@ func TestHandleLookupAttestation_ValidatesAndServes(t *testing.T) {
 	id := attestations.AttestationID(actorURI, objectURI, contentHash, module, policyVersion)
 
 	q.On("First", mock.AnythingOfType("*models.Attestation")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Attestation)
+		dest := testutil.RequireMockArg[*models.Attestation](t, args, 0)
 		*dest = models.Attestation{
 			ID:        id,
 			JWS:       jws,
@@ -154,7 +155,7 @@ func TestHandleLookupAttestation_ValidatesAndServes(t *testing.T) {
 	s := &Server{store: store.New(db)}
 
 	// Missing params.
-	if _, err := s.handleLookupAttestation(&apptheory.Context{Request: apptheory.Request{Query: map[string][]string{}}}); err == nil {
+	if _, lookupErr := s.handleLookupAttestation(&apptheory.Context{Request: apptheory.Request{Query: map[string][]string{}}}); lookupErr == nil {
 		t.Fatalf("expected error for missing params")
 	}
 

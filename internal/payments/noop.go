@@ -4,7 +4,7 @@ import "context"
 
 type noopProvider struct{}
 
-func (noopProvider) Name() string { return "none" }
+func (noopProvider) Name() string { return providerNameNone }
 
 func (noopProvider) EnsureCustomer(ctx context.Context, in EnsureCustomerInput) (string, error) {
 	_ = ctx

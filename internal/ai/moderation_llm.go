@@ -12,6 +12,10 @@ const (
 
 	ModerationImageLLMModule        = "moderation_image_llm"
 	ModerationImageLLMPolicyVersion = "v1"
+
+	moderationDecisionAllow  = "allow"
+	moderationDecisionReview = "review"
+	moderationDecisionBlock  = "block"
 )
 
 // ModerationTextInputsV1 is the input payload for text moderation.
@@ -60,11 +64,11 @@ func ModerationTextDeterministicV1(text string) ModerationResultV1 {
 	out := ModerationResultV1{
 		Kind:     "moderation_text",
 		Version:  "v1",
-		Decision: "allow",
+		Decision: moderationDecisionAllow,
 	}
 
 	if moderationPIIRE.MatchString(text) {
-		out.Decision = "review"
+		out.Decision = moderationDecisionReview
 		out.Categories = append(out.Categories, ModerationCategoryV1{
 			Code:       "pii",
 			Confidence: 0.7,
@@ -75,7 +79,7 @@ func ModerationTextDeterministicV1(text string) ModerationResultV1 {
 
 	switch {
 	case strings.Contains(lower, "kill yourself") || strings.Contains(lower, "suicide"):
-		out.Decision = "block"
+		out.Decision = moderationDecisionBlock
 		out.Categories = append(out.Categories, ModerationCategoryV1{
 			Code:       "self_harm",
 			Confidence: 0.8,
@@ -83,8 +87,8 @@ func ModerationTextDeterministicV1(text string) ModerationResultV1 {
 			Summary:    "Text references self-harm.",
 		})
 	case strings.Contains(lower, "password") || strings.Contains(lower, "verify account") || strings.Contains(lower, "seed phrase"):
-		if out.Decision != "block" {
-			out.Decision = "review"
+		if out.Decision != moderationDecisionBlock {
+			out.Decision = moderationDecisionReview
 		}
 		out.Categories = append(out.Categories, ModerationCategoryV1{
 			Code:       "spam_or_scams",
@@ -95,7 +99,7 @@ func ModerationTextDeterministicV1(text string) ModerationResultV1 {
 	}
 
 	// Keep highlights bounded and deterministic.
-	if out.Decision != "allow" && len(text) > 0 {
+	if out.Decision != moderationDecisionAllow && len(text) > 0 {
 		h := text
 		if len(h) > 160 {
 			h = strings.TrimSpace(h[:160])

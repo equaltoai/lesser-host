@@ -16,6 +16,7 @@ import (
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/billing"
+	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/rendering"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
@@ -68,7 +69,7 @@ func requireLinkPreviewAuth(s *Server, ctx *apptheory.Context) (string, *apptheo
 
 func parseLinkPreviewRequestInput(ctx *apptheory.Context) (linkPreviewRequest, error) {
 	var req linkPreviewRequest
-	if err := parseJSON(ctx, &req); err != nil {
+	if err := httpx.ParseJSON(ctx, &req); err != nil {
 		return linkPreviewRequest{}, err
 	}
 	return req, nil
@@ -202,7 +203,7 @@ func (s *Server) handleLinkPreview(ctx *apptheory.Context) (*apptheory.Response,
 }
 
 func linkPreviewBadRequestError(err error) error {
-	if pe, ok := err.(*linkPreviewError); ok && pe.Code == "invalid_url" {
+	if pe, ok := err.(*linkPreviewError); ok && pe.Code == errorCodeInvalidURL {
 		return &apptheory.AppError{Code: "app.bad_request", Message: pe.Message}
 	}
 	return &apptheory.AppError{Code: "app.bad_request", Message: "invalid url"}
@@ -211,12 +212,12 @@ func linkPreviewBadRequestError(err error) error {
 func linkPreviewResponseDisabled(previewID, normalizedURL string) linkPreviewResponse {
 	now := time.Now().UTC()
 	return linkPreviewResponse{
-		Status:        "disabled",
+		Status:        statusDisabled,
 		Cached:        false,
 		ID:            strings.TrimSpace(previewID),
 		PolicyVersion: linkPreviewPolicyVersion,
 		NormalizedURL: strings.TrimSpace(normalizedURL),
-		ErrorCode:     "disabled",
+		ErrorCode:     statusDisabled,
 		ErrorMessage:  "hosted previews disabled for instance",
 		FetchedAt:     now,
 		ExpiresAt:     now.Add(5 * time.Minute),
@@ -388,10 +389,10 @@ func (s *Server) tryStorePreviewImage(ctx context.Context, rawImageURL string) (
 func normalizePreviewRenderPolicy(renderPolicy string) string {
 	renderPolicy = strings.ToLower(strings.TrimSpace(renderPolicy))
 	switch renderPolicy {
-	case "always", "suspicious":
+	case renderPolicyAlways, renderPolicySuspicious:
 		return renderPolicy
 	default:
-		return "suspicious"
+		return renderPolicySuspicious
 	}
 }
 
@@ -402,7 +403,7 @@ func previewRenderEligible(s *Server, ctx *apptheory.Context, normalizedURL stri
 	if strings.TrimSpace(normalizedURL) == "" {
 		return false
 	}
-	return strings.TrimSpace(resp.Status) == "ok"
+	return strings.TrimSpace(resp.Status) == statusOK
 }
 
 func (s *Server) attachCachedPreviewRender(ctx *apptheory.Context, instanceSlug string, renderID string, resp *linkPreviewResponse) bool {
@@ -622,13 +623,13 @@ func linkPreviewResponseFromModel(ctx *apptheory.Context, item *models.LinkPrevi
 
 	switch resp.ErrorCode {
 	case "":
-		resp.Status = "ok"
-	case "blocked_ssrf":
-		resp.Status = "blocked"
-	case "disabled":
-		resp.Status = "disabled"
+		resp.Status = statusOK
+	case errorCodeBlockedSSRF:
+		resp.Status = statusBlocked
+	case statusDisabled:
+		resp.Status = statusDisabled
 	default:
-		resp.Status = "error"
+		resp.Status = statusError
 	}
 
 	if resp.ImageID != "" {
@@ -647,14 +648,14 @@ func requestBaseURL(ctx *apptheory.Context) string {
 	if ctx == nil {
 		return ""
 	}
-	host := strings.TrimSpace(firstHeaderValue(ctx.Request.Headers, "x-forwarded-host"))
+	host := strings.TrimSpace(httpx.FirstHeaderValue(ctx.Request.Headers, "x-forwarded-host"))
 	if host == "" {
-		host = strings.TrimSpace(firstHeaderValue(ctx.Request.Headers, "host"))
+		host = strings.TrimSpace(httpx.FirstHeaderValue(ctx.Request.Headers, "host"))
 	}
 	if host == "" {
 		return ""
 	}
-	proto := strings.TrimSpace(firstHeaderValue(ctx.Request.Headers, "x-forwarded-proto"))
+	proto := strings.TrimSpace(httpx.FirstHeaderValue(ctx.Request.Headers, "x-forwarded-proto"))
 	if proto == "" {
 		proto = "https"
 	}

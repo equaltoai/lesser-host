@@ -50,11 +50,11 @@ func TestKMSService_EnabledAndErrors(t *testing.T) {
 func TestKMSService_JWKS_UsesMemoAndCaches(t *testing.T) {
 	t.Parallel()
 
-	key1, err := rsa.GenerateKey(rand.Reader, 1024)
+	key1, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
-	key2, err := rsa.GenerateKey(rand.Reader, 1024)
+	key2, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestKMSService_JWKS_UsesMemoAndCaches(t *testing.T) {
 func TestKMSService_RSAKeyMemoAndClientErrors(t *testing.T) {
 	t.Parallel()
 
-	key, err := rsa.GenerateKey(rand.Reader, 1024)
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}

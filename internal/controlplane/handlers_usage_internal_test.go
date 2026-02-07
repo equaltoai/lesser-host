@@ -12,6 +12,7 @@ import (
 
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
+	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
 type usageTestDB struct {
@@ -90,7 +91,7 @@ func TestHandleListInstanceUsage_ListErrorAndSuccess(t *testing.T) {
 	s := &Server{store: store.New(tdb.db)}
 
 	tdb.qInst.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
 		*dest = models.Instance{Slug: "demo"}
 	}).Maybe()
 
@@ -105,7 +106,7 @@ func TestHandleListInstanceUsage_ListErrorAndSuccess(t *testing.T) {
 	}
 
 	tdb.qUsage.On("All", mock.AnythingOfType("*[]*models.UsageLedgerEntry")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*[]*models.UsageLedgerEntry)
+		dest := testutil.RequireMockArg[*[]*models.UsageLedgerEntry](t, args, 0)
 		*dest = []*models.UsageLedgerEntry{{ID: "e1"}, {ID: "e2"}}
 	}).Once()
 

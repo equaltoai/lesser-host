@@ -35,13 +35,20 @@ GOV_TOOLS_BIN="${GOV_TOOLS_DIR}/bin"
 mkdir -p "${GOV_TOOLS_BIN}"
 export PATH="${GOV_TOOLS_BIN}:${PATH}"
 
+# Force the Go toolchain to match go.mod even when the host `go` is older.
+# This avoids mixed-version builds (notably when running `go test -coverprofile`).
+EXPECTED_GO_VERSION="$(awk '$1=="go"{print $2; exit}' "${REPO_ROOT}/go.mod" 2>/dev/null || true)"
+if [[ -n "${EXPECTED_GO_VERSION}" ]]; then
+  export GOTOOLCHAIN="go${EXPECTED_GO_VERSION}"
+fi
+
 # Tool pins (optional; populated by gov.init when possible).
 # If these remain unset, checks that depend on them should be marked BLOCKED (never "use whatever is installed").
 #
 # NOTE: this repo currently does not pin these in CI; keep checks fail-closed until pins are set intentionally.
 # M1 intent: pin golangci-lint to unblock deterministic lint/config verification.
 PIN_GOLANGCI_LINT_VERSION="v2.8.0"
-PIN_GOVULNCHECK_VERSION=""
+PIN_GOVULNCHECK_VERSION="v1.1.4"
 
 # Optional feature flags (opt-in pack features).
 FEATURE_OSS_RELEASE="false"
@@ -444,7 +451,7 @@ check_supply_chain_actions_pinned() {
   fi
 
   local matches=""
-  matches="$(grep -R --include='*.yml' --include='*.yaml' -nE '^[[:space:]]*uses:[[:space:]].*@v[0-9]+' "${wf_dir}" 2>/dev/null || true)"
+  matches="$(grep -R --include='*.yml' --include='*.yaml' -nE '^[[:space:]]*(-[[:space:]]*)?uses:[[:space:]].*@v[0-9]+' "${wf_dir}" 2>/dev/null || true)"
   if [[ -n "${matches}" ]]; then
     echo "FAIL: unpinned GitHub Action detected (uses @vN; pin by commit SHA)"
     echo "${matches}"
@@ -934,6 +941,15 @@ prepare_check_env() {
     return 0
   fi
 
+  # Node workspaces (web/cdk/contracts) can create node_modules/ during other rubric checks.
+  # Some Node dependencies can trip `go test ./...` and `golangci-lint` when present.
+  # Treat node_modules as non-source and remove it before Go-scoped checks.
+  if [[ "$cmd" == *"go test"* || "$cmd" == *"golangci-lint"* || "$cmd" == *"govulncheck"* ]]; then
+    while IFS= read -r -d '' d; do
+      rm -rf "${d}"
+    done < <(find "${REPO_ROOT}" -type d -name node_modules -prune -not -path "${REPO_ROOT}/.git/*" -print0 2>/dev/null)
+  fi
+
   case "$id" in
     CON-2|COM-3|SEC-1)
       if [[ -f "${REPO_ROOT}/.golangci.yml" ]] || [[ "$cmd" == *"golangci-lint"* ]]; then
@@ -1157,11 +1173,119 @@ golangci-lint run --timeout=10m
 
 # CDK build (TypeScript)
 ( cd cdk && npm ci && npm run build )
+
+# Solidity lint (contracts)
+( cd contracts && npm ci && npm run lint )
 __GOV_CMD_LINT__
 )
 
 CMD_CONTRACT=$(cat <<'__GOV_CMD_CONTRACT__'
-TODO: add explicit contract-parity checks for API schemas / deploy receipt invariants
+# Contract parity: ensure Go boundary ABIs match Solidity artifacts.
+#
+# TipSplitter ABI is defined in Go for host registry ops; it must remain compatible
+# with the Solidity contract compiled by Hardhat.
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "BLOCKED: node is required" >&2
+  exit 2
+fi
+
+artifact="contracts/artifacts/contracts/TipSplitter.sol/TipSplitter.json"
+if [[ ! -f "${artifact}" ]]; then
+  echo "BLOCKED: missing TipSplitter artifact at ${artifact} (run contracts build/tests to generate Hardhat artifacts)" >&2
+  exit 2
+fi
+
+node <<'__GOV_NODE_CONTRACT__'
+const fs = require('fs');
+
+const goPath = 'internal/tips/tipsplitter_abi.go';
+const artifactPath = 'contracts/artifacts/contracts/TipSplitter.sol/TipSplitter.json';
+
+function readText(p) {
+  return fs.readFileSync(p, 'utf8');
+}
+
+function extractGoRawStringConst(source, constName) {
+  const re = new RegExp('const\\s+' + constName + '\\s*=\\s*`([\\s\\S]*?)`', 'm');
+  const m = source.match(re);
+  if (!m) {
+    throw new Error(`could not find const ${constName} raw string in ${goPath}`);
+  }
+  return m[1];
+}
+
+function normalizeAbiEntry(entry) {
+  const type = String(entry.type || '').trim();
+  const name = String(entry.name || '').trim();
+  const stateMutability = entry.stateMutability == null ? '' : String(entry.stateMutability).trim();
+
+  const normalizeParams = (list) =>
+    Array.isArray(list)
+      ? list.map((p) => ({
+          name: String(p.name || '').trim(),
+          type: String(p.type || '').trim(),
+        }))
+      : [];
+
+  return {
+    type,
+    name,
+    stateMutability,
+    inputs: normalizeParams(entry.inputs),
+    outputs: normalizeParams(entry.outputs),
+  };
+}
+
+function keyFor(entry) {
+  const e = normalizeAbiEntry(entry);
+  const inTypes = e.inputs.map((p) => p.type).join(',');
+  const outTypes = e.outputs.map((p) => p.type).join(',');
+  return `${e.type}:${e.name}:${e.stateMutability}:in(${inTypes}):out(${outTypes})`;
+}
+
+function signatureFor(entry) {
+  const e = normalizeAbiEntry(entry);
+  const inTypes = e.inputs.map((p) => p.type).join(',');
+  return `${e.type} ${e.name}(${inTypes})`;
+}
+
+const goSource = readText(goPath);
+const goAbiRaw = extractGoRawStringConst(goSource, 'TipSplitterABI');
+
+let goAbi;
+try {
+  goAbi = JSON.parse(goAbiRaw);
+} catch (e) {
+  throw new Error(`failed to parse Go TipSplitterABI JSON: ${e.message}`);
+}
+if (!Array.isArray(goAbi)) {
+  throw new Error(`Go TipSplitterABI JSON must be an array`);
+}
+
+const artifact = JSON.parse(readText(artifactPath));
+if (!artifact || !Array.isArray(artifact.abi)) {
+  throw new Error(`artifact missing .abi array at ${artifactPath}`);
+}
+
+const artifactKeys = new Set(artifact.abi.map(keyFor));
+
+const missing = [];
+for (const entry of goAbi) {
+  const k = keyFor(entry);
+  if (!artifactKeys.has(k)) {
+    missing.push(signatureFor(entry));
+  }
+}
+
+if (missing.length > 0) {
+  console.error(`FAIL: Go TipSplitterABI entries not found in Solidity artifact ABI (${missing.length}):`);
+  for (const m of missing) console.error(`- ${m}`);
+  process.exit(1);
+}
+
+console.log('PASS: contract parity (TipSplitter ABI subset)');
+__GOV_NODE_CONTRACT__
 __GOV_CMD_CONTRACT__
 )
 
@@ -1188,13 +1312,25 @@ echo "Go modules found:"
 echo "${mods}"
 
 echo ""
-while IFS= read -r mod; do
-  [[ -z "${mod}" ]] && continue
-  dir="$(dirname "${mod}")"
-  echo "Compiling module: ${dir}"
-  (cd "${dir}" && go test -run=^$ ./...)
-  echo ""
-done <<< "${mods}"
+	while IFS= read -r mod; do
+	  [[ -z "${mod}" ]] && continue
+	  dir="$(dirname "${mod}")"
+	  echo "Compiling module: ${dir}"
+	  # Node workspaces (CDK/web/contracts) may materialize node_modules/ during other rubric checks.
+	  # Some Node dependencies include Go templates with invalid filenames, which can break `go test ./...`.
+	  # COM-1 is defined against a clean checkout, so treat node_modules as non-source and remove it for module compilation.
+	  if [[ -d "${dir}/node_modules" ]]; then
+	    echo "Cleaning ${dir}/node_modules (not part of Go module)"
+	    rm -rf "${dir}/node_modules"
+	  fi
+	  pkgs="$(cd "${dir}" && go list ./... 2>/dev/null)"
+	  if [[ -z "${pkgs}" ]]; then
+	    echo "No Go packages detected (skipping): ${dir}"
+	  else
+	    (cd "${dir}" && go test -run=^$ ./...)
+	  fi
+	  echo ""
+	done <<< "${mods}"
 
 echo "PASS: all modules compile"
 __GOV_CMD_MODULES__
@@ -1356,15 +1492,80 @@ __GOV_CMD_SEC_CONFIG__
 )
 
 CMD_LOGGING=$(cat <<'__GOV_CMD_LOGGING__'
-TODO: add logging/PII redaction checks (no raw bearer tokens; no secrets; structured logging)
+set -euo pipefail
+
+# COM-6: logging/operational standards.
+#
+# Policy (rubric v0.1):
+# - Use structured JSON logs via slog to stdout.
+# - All Lambda entrypoints wire apptheory observability hooks.
+# - Avoid fmt.Print*/log.Print* in non-test Go sources.
+
+fail=0
+
+if [[ ! -f internal/observability/observability.go ]]; then
+  echo "FAIL: missing internal/observability/observability.go"
+  exit 1
+fi
+
+if ! grep -q 'slog.NewJSONHandler(os.Stdout' internal/observability/observability.go; then
+  echo "FAIL: observability must use slog.NewJSONHandler(os.Stdout, ...)"
+  fail=1
+fi
+
+missing=0
+for f in cmd/*/main.go; do
+  [[ -f "${f}" ]] || continue
+  if ! grep -q 'apptheory.WithObservability(observability.New(' "${f}"; then
+    echo "FAIL: missing apptheory.WithObservability(observability.New(...)) in ${f}"
+    missing=1
+  fi
+done
+if [[ "${missing}" -ne 0 ]]; then
+  fail=1
+fi
+
+go_files="$(git ls-files '*.go' | grep -v '_test\\.go$' || true)"
+if [[ -n "${go_files}" ]]; then
+  if echo "${go_files}" | xargs grep -nE '\\b(fmt|log)\\.Print(ln|f)?\\b' >/dev/null 2>&1; then
+    echo "FAIL: fmt.Print*/log.Print* found in non-test Go sources:"
+    echo "${go_files}" | xargs grep -nE '\\b(fmt|log)\\.Print(ln|f)?\\b' || true
+    fail=1
+  fi
+fi
+
+if [[ "${fail}" -ne 0 ]]; then
+  exit 1
+fi
+
+echo "PASS: logging standards"
 __GOV_CMD_LOGGING__
 )
 
 CMD_SAST=$(cat <<'__GOV_CMD_SAST__'
-# SAST is implemented via golangci-lint with gosec enabled.
-# This is BLOCKED until golangci-lint is pinned.
+# SAST is implemented via golangci-lint with gosec enabled + Slither for Solidity.
+# This is BLOCKED until golangci-lint is pinned (and slither is installed).
 
 golangci-lint run --timeout=10m
+
+if ! command -v slither >/dev/null 2>&1; then
+  echo "BLOCKED: slither is required" >&2
+  exit 2
+fi
+
+if ! command -v solc-select >/dev/null 2>&1; then
+  echo "BLOCKED: solc-select is required for slither" >&2
+  exit 2
+fi
+
+solc-select install 0.8.24
+solc-select use 0.8.24
+
+(
+  cd contracts
+  npm ci
+  slither contracts/TipSplitter.sol --config-file slither.config.json
+)
 __GOV_CMD_SAST__
 )
 
@@ -1372,7 +1573,35 @@ CMD_VULN=$(cat <<'__GOV_CMD_VULN__'
 # Dependency vulnerability scan (Go).
 # This is BLOCKED until govulncheck is pinned.
 
-govulncheck ./...
+# NOTE: govulncheck's default (-scan=symbol) analysis uses SSA and currently panics on a known
+# generic + variadic edge case involving named byte-slices (reproducible with jsontext.Value).
+#
+# To avoid weakening the vuln gate (while still being deterministic), we scan the shipped binaries.
+# This exercises dependency usage as actually built, and avoids SSA construction.
+
+tmp_bin_dir="${GOV_TOOLS_DIR}/tmp/sec-2-bin"
+rm -rf "${tmp_bin_dir}"
+mkdir -p "${tmp_bin_dir}"
+
+bins=(
+  "ai-worker=./cmd/ai-worker"
+  "control-plane-api=./cmd/control-plane-api"
+  "provision-worker=./cmd/provision-worker"
+  "render-worker=./cmd/render-worker"
+  "trust-api=./cmd/trust-api"
+)
+
+for entry in "${bins[@]}"; do
+  name="${entry%%=*}"
+  pkg="${entry#*=}"
+  echo "Building ${pkg}..."
+  go build -o "${tmp_bin_dir}/${name}" "${pkg}"
+  echo "Scanning ${name}..."
+  govulncheck -mode=binary "${tmp_bin_dir}/${name}"
+  echo ""
+done
+
+echo "PASS: govulncheck (binary mode)"
 __GOV_CMD_VULN__
 )
 
@@ -1382,12 +1611,79 @@ __GOV_CMD_SUPPLY__
 )
 
 CMD_P0=$(cat <<'__GOV_CMD_P0__'
-TODO: add explicit P0 regression tests (bootstrap authz invariants, SSRF defense, instance key auth, prompt boundary invariants)
+if ! command -v go >/dev/null 2>&1; then
+  echo "BLOCKED: go is required" >&2
+  exit 2
+fi
+
+# Ensure P0 tests actually exist (otherwise -run would be a false green).
+p0_list="$(go test ./... -list '^TestP0_' 2>/dev/null | grep -E '^TestP0_' || true)"
+p0_count="$(printf '%s\n' "${p0_list}" | sed '/^$/d' | wc -l | tr -d ' ')"
+if [[ "${p0_count}" -lt 1 ]]; then
+  echo "FAIL: no TestP0_* tests found"
+  exit 1
+fi
+
+echo "P0 tests found (${p0_count}):"
+printf '%s\n' "${p0_list}"
+
+echo ""
+go test -count=1 ./... -run '^TestP0_'
+
+echo "PASS: P0 regression suite"
 __GOV_CMD_P0__
 )
 
 CMD_FILE_BUDGET=$(cat <<'__GOV_CMD_FILE_BUDGET__'
-TODO: enforce file size/complexity budgets (Go + TS) and fail on outliers
+fail=0
+
+go_max_lines=2500
+ts_max_lines=2000
+
+echo "Go file budget: max_lines=${go_max_lines}"
+go_files="$(git ls-files '*.go' | grep -v '^vendor/' || true)"
+if [[ -n "${go_files}" ]]; then
+  while IFS= read -r f; do
+    [[ -z "${f}" ]] && continue
+    lines="$(wc -l < "${f}" | tr -d ' ')"
+    if [[ "${lines}" -gt "${go_max_lines}" ]]; then
+      echo "FAIL: Go file too large (${lines} > ${go_max_lines}): ${f}"
+      fail=1
+    fi
+  done <<< "${go_files}"
+
+  echo ""
+  echo "Top Go files by line count:"
+  echo "${go_files}" | xargs wc -l | sort -n | tail -n 10
+fi
+
+echo ""
+echo "TS/JS file budget: max_lines=${ts_max_lines} (excluding generated + .d.ts)"
+ts_files="$(git ls-files '*.ts' '*.tsx' '*.js' '*.mjs' '*.cjs' \
+  | grep -v '^web/src/lib/greater/adapters/graphql/generated/' \
+  | grep -v '^web/src/lib/greater/adapters/rest/generated/' \
+  | grep -v '\.d\.ts$' \
+  || true)"
+if [[ -n "${ts_files}" ]]; then
+  while IFS= read -r f; do
+    [[ -z "${f}" ]] && continue
+    lines="$(wc -l < "${f}" | tr -d ' ')"
+    if [[ "${lines}" -gt "${ts_max_lines}" ]]; then
+      echo "FAIL: TS/JS file too large (${lines} > ${ts_max_lines}): ${f}"
+      fail=1
+    fi
+  done <<< "${ts_files}"
+
+  echo ""
+  echo "Top TS/JS files by line count:"
+  echo "${ts_files}" | xargs wc -l | sort -n | tail -n 10
+fi
+
+if [[ "${fail}" -ne 0 ]]; then
+  exit 1
+fi
+
+echo "PASS: file budgets"
 __GOV_CMD_FILE_BUDGET__
 )
 
@@ -1410,7 +1706,49 @@ __GOV_CMD_MAINTAINABILITY__
 )
 
 CMD_SINGLETON=$(cat <<'__GOV_CMD_SINGLETON__'
-TODO: add deterministic singleton checks for canonical security helpers (no duplicate semantics)
+if ! command -v git >/dev/null 2>&1; then
+  echo "BLOCKED: git is required" >&2
+  exit 2
+fi
+
+canon="internal/httpx/http_helpers.go"
+if [[ ! -f "${canon}" ]]; then
+  echo "FAIL: missing canonical helper file: ${canon}"
+  exit 1
+fi
+
+# Enforce exactly one exported implementation for each helper.
+declare -a exported_pats=(
+  '^func ParseJSON[(]'
+  '^func BearerToken[(]'
+  '^func FirstHeaderValue[(]'
+  '^func FirstQueryValue[(]'
+)
+
+for pat in "${exported_pats[@]}"; do
+  matches="$(git grep -nE "${pat}" -- '*.go' | grep -v '_test\\.go:' || true)"
+  count="$(printf '%s\n' "${matches}" | sed '/^$/d' | wc -l | tr -d ' ')"
+  if [[ "${count}" -ne 1 ]]; then
+    echo "FAIL: expected exactly 1 definition matching ${pat}, found ${count}"
+    printf '%s\n' "${matches}"
+    exit 1
+  fi
+  if ! printf '%s\n' "${matches}" | grep -q "^${canon}:"; then
+    echo "FAIL: canonical definition for ${pat} not in ${canon}"
+    printf '%s\n' "${matches}"
+    exit 1
+  fi
+done
+
+# Ensure legacy helper names are not reintroduced elsewhere.
+legacy_matches="$(git grep -nE '^func (parseJSON|bearerToken|firstHeaderValue|firstQueryValue)[(]' -- '*.go' | grep -v '_test\\.go:' || true)"
+if [[ -n "${legacy_matches}" ]]; then
+  echo "FAIL: legacy helper definitions still present (use internal/httpx instead):"
+  printf '%s\n' "${legacy_matches}"
+  exit 1
+fi
+
+echo "PASS: canonical helper singletons enforced"
 __GOV_CMD_SINGLETON__
 )
 

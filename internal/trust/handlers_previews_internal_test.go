@@ -11,6 +11,7 @@ import (
 
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
+	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
 func TestRequestBaseURL(t *testing.T) {
@@ -31,7 +32,7 @@ func TestRequestBaseURL(t *testing.T) {
 	ctx = &apptheory.Context{Request: apptheory.Request{Headers: map[string][]string{
 		"host": {"example.com"},
 	}}}
-	if got := requestBaseURL(ctx); got != "https://example.com" {
+	if got := requestBaseURL(ctx); got != testURLExampleCom {
 		t.Fatalf("unexpected base URL: %q", got)
 	}
 }
@@ -39,13 +40,13 @@ func TestRequestBaseURL(t *testing.T) {
 func TestLinkPreviewBadRequestError(t *testing.T) {
 	t.Parallel()
 
-	err := linkPreviewBadRequestError(&linkPreviewError{Code: "invalid_url", Message: "nope"})
-	if appErr, ok := err.(*apptheory.AppError); !ok || appErr.Code != "app.bad_request" || appErr.Message != "nope" {
+	err := linkPreviewBadRequestError(&linkPreviewError{Code: errorCodeInvalidURL, Message: "nope"})
+	if appErr, ok := err.(*apptheory.AppError); !ok || appErr.Code != appErrCodeBadRequest || appErr.Message != "nope" {
 		t.Fatalf("unexpected error: %T: %v", err, err)
 	}
 
 	err = linkPreviewBadRequestError(assertErr{})
-	if appErr, ok := err.(*apptheory.AppError); !ok || appErr.Code != "app.bad_request" {
+	if appErr, ok := err.(*apptheory.AppError); !ok || appErr.Code != appErrCodeBadRequest {
 		t.Fatalf("unexpected error: %T: %v", err, err)
 	}
 }
@@ -54,7 +55,7 @@ func TestLinkPreviewResponseDisabled(t *testing.T) {
 	t.Parallel()
 
 	out := linkPreviewResponseDisabled(" id ", " url ")
-	if out.Status != "disabled" || out.ErrorCode != "disabled" || out.ID != "id" || out.NormalizedURL != "url" {
+	if out.Status != statusDisabled || out.ErrorCode != statusDisabled || out.ID != "id" || out.NormalizedURL != testURL {
 		t.Fatalf("unexpected response: %#v", out)
 	}
 }
@@ -66,7 +67,7 @@ func TestParseLinkPreviewNormalizedURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if got != "https://xn--bcher-kva.example/?a=1&b=2" {
+	if got != testNormalizedBucherURL {
 		t.Fatalf("unexpected normalized: %q", got)
 	}
 
@@ -86,7 +87,7 @@ func TestHandleLinkPreview_DisabledByConfig(t *testing.T) {
 	db.On("Model", mock.Anything).Return(q).Maybe()
 	q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 	q.On("First", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
 		*dest = models.Instance{
 			Slug:                  "inst",
 			HostedPreviewsEnabled: &hpe,
@@ -95,7 +96,7 @@ func TestHandleLinkPreview_DisabledByConfig(t *testing.T) {
 
 	s := &Server{store: store.New(db)}
 
-	body, _ := json.Marshal(linkPreviewRequest{URL: "https://example.com"})
+	body, _ := json.Marshal(linkPreviewRequest{URL: testURLExampleCom})
 	ctx := &apptheory.Context{
 		AuthIdentity: "inst",
 		Request:      apptheory.Request{Body: body},
@@ -113,7 +114,7 @@ func TestHandleLinkPreview_DisabledByConfig(t *testing.T) {
 	if unmarshalErr := json.Unmarshal(resp.Body, &parsed); unmarshalErr != nil {
 		t.Fatalf("unmarshal response: %v", unmarshalErr)
 	}
-	if parsed.Status != "disabled" || parsed.ErrorCode != "disabled" {
+	if parsed.Status != statusDisabled || parsed.ErrorCode != statusDisabled {
 		t.Fatalf("unexpected parsed response: %#v", parsed)
 	}
 }

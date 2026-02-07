@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/andybalholm/brotli"
+	"github.com/stretchr/testify/require"
 )
 
 func TestSanitizeTarName(t *testing.T) {
@@ -235,15 +236,10 @@ func TestEnsureChromiumReady_InflatesAllAssets(t *testing.T) {
 		t.Helper()
 		var buf bytes.Buffer
 		w := brotli.NewWriter(&buf)
-		if _, err := w.Write(payload); err != nil {
-			t.Fatalf("brotli write: %v", err)
-		}
-		if err := w.Close(); err != nil {
-			t.Fatalf("brotli close: %v", err)
-		}
-		if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
-			t.Fatalf("write brotli file: %v", err)
-		}
+		_, err := w.Write(payload)
+		require.NoError(t, err)
+		require.NoError(t, w.Close())
+		require.NoError(t, os.WriteFile(path, buf.Bytes(), 0o600))
 	}
 
 	writeTarBrotli := func(path string, files map[string]string) {
@@ -252,16 +248,11 @@ func TestEnsureChromiumReady_InflatesAllAssets(t *testing.T) {
 		tw := tar.NewWriter(&tarBuf)
 		for name, content := range files {
 			body := []byte(content)
-			if err := tw.WriteHeader(&tar.Header{Name: name, Typeflag: tar.TypeReg, Mode: 0o600, Size: int64(len(body))}); err != nil {
-				t.Fatalf("tar header: %v", err)
-			}
-			if _, err := tw.Write(body); err != nil {
-				t.Fatalf("tar write: %v", err)
-			}
+			require.NoError(t, tw.WriteHeader(&tar.Header{Name: name, Typeflag: tar.TypeReg, Mode: 0o600, Size: int64(len(body))}))
+			_, err := tw.Write(body)
+			require.NoError(t, err)
 		}
-		if err := tw.Close(); err != nil {
-			t.Fatalf("tar close: %v", err)
-		}
+		require.NoError(t, tw.Close())
 
 		writeBrotli(path, tarBuf.Bytes())
 	}
@@ -272,34 +263,23 @@ func TestEnsureChromiumReady_InflatesAllAssets(t *testing.T) {
 	writeTarBrotli(filepath.Join(binDir, "al2023.tar.br"), map[string]string{"lib/libfoo.so": "lib"})
 
 	execPath, err := ensureChromiumReady(context.Background())
-	if err != nil {
-		t.Fatalf("ensureChromiumReady err: %v", err)
-	}
+	require.NoError(t, err)
 	wantExec := filepath.Join(tmp, "chromium")
-	if execPath != wantExec {
-		t.Fatalf("expected exec path %q, got %q", wantExec, execPath)
-	}
+	require.Equal(t, wantExec, execPath)
 
 	b, err := os.ReadFile(execPath)
-	if err != nil {
-		t.Fatalf("read chromium: %v", err)
-	}
-	if string(b) != "chromium-binary" {
-		t.Fatalf("unexpected chromium content: %q", string(b))
-	}
+	require.NoError(t, err)
+	require.Equal(t, "chromium-binary", string(b))
 
-	if _, err := os.Stat(filepath.Join(tmp, "fonts")); err != nil {
-		t.Fatalf("expected fonts extracted: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(tmp, "al2023", "lib")); err != nil {
-		t.Fatalf("expected al2023 extracted: %v", err)
-	}
+	_, statErr := os.Stat(filepath.Join(tmp, "fonts"))
+	require.NoError(t, statErr)
+	_, statErr = os.Stat(filepath.Join(tmp, "al2023", "lib"))
+	require.NoError(t, statErr)
 
 	// Second call should be a memoized hit.
 	execPath2, err := ensureChromiumReady(context.Background())
-	if err != nil || execPath2 != execPath {
-		t.Fatalf("expected memoized path, got path=%q err=%v", execPath2, err)
-	}
+	require.NoError(t, err)
+	require.Equal(t, execPath, execPath2)
 }
 
 func TestInitChromium_SkipsInflationWhenBinaryAlreadyPresent(t *testing.T) {
@@ -310,7 +290,7 @@ func TestInitChromium_SkipsInflationWhenBinaryAlreadyPresent(t *testing.T) {
 	t.Setenv("LD_LIBRARY_PATH", "")
 
 	execPath := filepath.Join(tmp, "chromium")
-	if err := os.WriteFile(execPath, []byte("already"), 0o700); err != nil {
+	if err := os.WriteFile(execPath, []byte("already"), 0o600); err != nil {
 		t.Fatalf("write chromium: %v", err)
 	}
 

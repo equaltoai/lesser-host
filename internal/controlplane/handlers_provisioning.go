@@ -11,6 +11,7 @@ import (
 	"github.com/theory-cloud/tabletheory/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
+	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/provisioning"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
@@ -89,7 +90,7 @@ func parseStartInstanceProvisionRequest(ctx *apptheory.Context) (startInstancePr
 	if len(ctx.Request.Body) == 0 {
 		return req, nil
 	}
-	if err := parseJSON(ctx, &req); err != nil {
+	if err := httpx.ParseJSON(ctx, &req); err != nil {
 		return req, err
 	}
 	return req, nil

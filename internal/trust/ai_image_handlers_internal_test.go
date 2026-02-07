@@ -2,7 +2,7 @@ package trust
 
 import (
 	"context"
-	"crypto/md5"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -26,13 +26,14 @@ import (
 	"github.com/equaltoai/lesser-host/internal/artifacts"
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
+	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
 type memS3Object struct {
-	body        []byte
-	contentType string
+	body         []byte
+	contentType  string
 	cacheControl string
-	etag        string
+	etag         string
 }
 
 type memS3Server struct {
@@ -53,7 +54,7 @@ func (m *memS3Server) handler(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		_ = r.Body.Close()
 
-		sum := md5.Sum(body)
+		sum := sha256.Sum256(body)
 		etag := `"` + hex.EncodeToString(sum[:]) + `"`
 
 		contentType := strings.TrimSpace(r.Header.Get("Content-Type"))
@@ -188,7 +189,7 @@ func TestHandleAIEvidenceImage_BudgetNotConfigured(t *testing.T) {
 	tdb.qJob.On("First", mock.AnythingOfType("*models.AIJob")).Return(theoryErrors.ErrItemNotFound).Once()
 	// Concurrency check queries queued jobs by instance.
 	tdb.qJob.On("All", mock.AnythingOfType("*[]*models.AIJob")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*[]*models.AIJob)
+		dest := testutil.RequireMockArg[*[]*models.AIJob](t, args, 0)
 		*dest = nil
 	}).Once()
 	// Budget month missing => not_checked_budget response.
@@ -260,7 +261,7 @@ func TestHandleAIModerationTextAndImageReport_BudgetNotConfigured(t *testing.T) 
 
 	// Instance overrides: moderation enabled, deterministic model set.
 	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
 		v := true
 		dest.ModerationEnabled = &v
 	}).Twice()
@@ -270,7 +271,7 @@ func TestHandleAIModerationTextAndImageReport_BudgetNotConfigured(t *testing.T) 
 	tdb.qJob.On("First", mock.AnythingOfType("*models.AIJob")).Return(theoryErrors.ErrItemNotFound).Twice()
 	// Concurrency check queries queued jobs by instance.
 	tdb.qJob.On("All", mock.AnythingOfType("*[]*models.AIJob")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*[]*models.AIJob)
+		dest := testutil.RequireMockArg[*[]*models.AIJob](t, args, 0)
 		*dest = nil
 	}).Twice()
 	// Budget month missing => not_checked_budget response.
@@ -290,8 +291,8 @@ func TestHandleAIModerationTextAndImageReport_BudgetNotConfigured(t *testing.T) 
 	}
 
 	var out aiModerationResponse
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+	if unmarshalErr := json.Unmarshal(resp.Body, &out); unmarshalErr != nil {
+		t.Fatalf("unmarshal: %v", unmarshalErr)
 	}
 	if out.Status != string(ai.JobStatusNotCheckedBudget) || out.Budget.Allowed {
 		t.Fatalf("unexpected text moderation response: %#v", out)
@@ -310,8 +311,8 @@ func TestHandleAIModerationTextAndImageReport_BudgetNotConfigured(t *testing.T) 
 		t.Fatalf("expected 200, got %d (body=%q)", resp.Status, string(resp.Body))
 	}
 
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+	if unmarshalErr := json.Unmarshal(resp.Body, &out); unmarshalErr != nil {
+		t.Fatalf("unmarshal: %v", unmarshalErr)
 	}
 	if out.Status != string(ai.JobStatusNotCheckedBudget) || out.Budget.Allowed {
 		t.Fatalf("unexpected image moderation response: %#v", out)

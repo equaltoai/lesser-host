@@ -13,10 +13,11 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/organizations"
 	orgtypes "github.com/aws/aws-sdk-go-v2/service/organizations/types"
 	"github.com/aws/aws-sdk-go-v2/service/route53"
+	r53types "github.com/aws/aws-sdk-go-v2/service/route53/types"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	ststypes "github.com/aws/aws-sdk-go-v2/service/sts/types"
-	r53types "github.com/aws/aws-sdk-go-v2/service/route53/types"
+	"github.com/stretchr/testify/require"
 	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
 
 	"github.com/equaltoai/lesser-host/internal/config"
@@ -178,20 +179,20 @@ func TestProvisionStateMachine_SuccessPathAcrossSteps(t *testing.T) {
 
 	s := &Server{
 		cfg: config.Config{
-			ManagedProvisioningEnabled:          true,
-			ManagedDefaultRegion:                "us-east-1",
-			ManagedParentHostedZoneID:           "ZPARENT",
-			ManagedParentDomain:                 "example.com",
-			ManagedInstanceRoleName:             "role",
-			ManagedAccountEmailTemplate:         "ops+{slug}@example.com",
-			ManagedAccountNamePrefix:            "lesser-",
-			ManagedTargetOrganizationalUnitID:   "ou-target",
-			ManagedProvisionRunnerProjectName:   "proj",
-			ManagedLesserGitHubOwner:            "o",
-			ManagedLesserGitHubRepo:             "r",
-			ArtifactBucketName:                  "bucket",
-			ProvisionQueueURL:                   "https://sqs.us-east-1.amazonaws.com/123/q",
-			ManagedOrgVendingRoleARN:            "",
+			ManagedProvisioningEnabled:        true,
+			ManagedDefaultRegion:              "us-east-1",
+			ManagedParentHostedZoneID:         "ZPARENT",
+			ManagedParentDomain:               "example.com",
+			ManagedInstanceRoleName:           "role",
+			ManagedAccountEmailTemplate:       "ops+{slug}@example.com",
+			ManagedAccountNamePrefix:          "lesser-",
+			ManagedTargetOrganizationalUnitID: "ou-target",
+			ManagedProvisionRunnerProjectName: "proj",
+			ManagedLesserGitHubOwner:          "o",
+			ManagedLesserGitHubRepo:           "r",
+			ArtifactBucketName:                "bucket",
+			ProvisionQueueURL:                 "https://sqs.us-east-1.amazonaws.com/123/q",
+			ManagedOrgVendingRoleARN:          "",
 		},
 		store: st,
 		org:   org,
@@ -203,7 +204,7 @@ func TestProvisionStateMachine_SuccessPathAcrossSteps(t *testing.T) {
 
 	now := time.Now().UTC()
 	job := &models.ProvisionJob{
-		ID:           "j1",
+		ID:            "j1",
 		InstanceSlug:  "demo",
 		Status:        models.ProvisionJobStatusRunning,
 		Step:          provisionStepQueued,
@@ -217,72 +218,72 @@ func TestProvisionStateMachine_SuccessPathAcrossSteps(t *testing.T) {
 	// Initialize missing fields for downstream steps.
 	s.initializeManagedProvisionJob(job)
 
-	if _, _, err := s.advanceProvisionQueued(context.Background(), job, "req", now); err != nil {
-		t.Fatalf("advanceProvisionQueued: %v", err)
-	}
-	if job.Step != provisionStepAccountCreate {
-		t.Fatalf("expected account.create, got %q", job.Step)
-	}
+	_, _, err := s.advanceProvisionQueued(context.Background(), job, "req", now)
+	require.NoError(t, err)
+	require.Equal(t, provisionStepAccountCreate, job.Step)
 
 	delay, _, err := s.advanceProvisionAccountCreate(context.Background(), job, "req", now)
-	if err != nil || delay != provisionDefaultPollDelay || job.Step != provisionStepAccountCreatePoll || job.AccountRequestID != "req1" {
-		t.Fatalf("unexpected account create: delay=%v step=%q req=%q err=%v", delay, job.Step, job.AccountRequestID, err)
-	}
+	require.NoError(t, err)
+	require.Equal(t, provisionDefaultPollDelay, delay)
+	require.Equal(t, provisionStepAccountCreatePoll, job.Step)
+	require.Equal(t, "req1", job.AccountRequestID)
 
 	delay, _, err = s.advanceProvisionAccountCreatePoll(context.Background(), job, "req", now)
-	if err != nil || delay != 0 || job.Step != provisionStepAccountMove || strings.TrimSpace(job.AccountID) == "" {
-		t.Fatalf("unexpected account poll: delay=%v step=%q acc=%q err=%v", delay, job.Step, job.AccountID, err)
-	}
+	require.NoError(t, err)
+	require.Zero(t, delay)
+	require.Equal(t, provisionStepAccountMove, job.Step)
+	require.NotEmpty(t, strings.TrimSpace(job.AccountID))
 
 	// Move to target OU then advance to assume role.
 	delay, _, err = s.advanceProvisionAccountMove(context.Background(), job, "req", now)
-	if err != nil || delay != 0 || job.Step != provisionStepAssumeRole {
-		t.Fatalf("unexpected account move: delay=%v step=%q err=%v", delay, job.Step, err)
-	}
+	require.NoError(t, err)
+	require.Zero(t, delay)
+	require.Equal(t, provisionStepAssumeRole, job.Step)
 
 	// Assume role advances to child zone.
 	delay, _, err = s.advanceProvisionAssumeRole(context.Background(), job, "req", now)
-	if err != nil || delay != 0 || job.Step != provisionStepChildZone {
-		t.Fatalf("unexpected assume role: delay=%v step=%q err=%v", delay, job.Step, err)
-	}
+	require.NoError(t, err)
+	require.Zero(t, delay)
+	require.Equal(t, provisionStepChildZone, job.Step)
 
 	// Pre-populate child zone info so Route53 calls are skipped.
 	job.ChildHostedZoneID = "ZCHILD"
 	job.ChildNameServers = []string{"ns-1", "ns-2", "ns-1"}
 	delay, _, err = s.advanceProvisionChildZone(context.Background(), job, "req", now)
-	if err != nil || delay != 0 || job.Step != provisionStepParentDelegation || job.ChildHostedZoneID != "ZCHILD" {
-		t.Fatalf("unexpected child zone: delay=%v step=%q zone=%q err=%v", delay, job.Step, job.ChildHostedZoneID, err)
-	}
+	require.NoError(t, err)
+	require.Zero(t, delay)
+	require.Equal(t, provisionStepParentDelegation, job.Step)
+	require.Equal(t, "ZCHILD", job.ChildHostedZoneID)
 
 	delay, _, err = s.advanceProvisionParentDelegation(context.Background(), job, "req", now)
-	if err != nil || delay != 0 || job.Step != provisionStepDeployStart {
-		t.Fatalf("unexpected parent delegation: delay=%v step=%q err=%v", delay, job.Step, err)
-	}
+	require.NoError(t, err)
+	require.Zero(t, delay)
+	require.Equal(t, provisionStepDeployStart, job.Step)
 
 	delay, _, err = s.advanceProvisionDeployStart(context.Background(), job, "req", now)
-	if err != nil || delay != provisionDefaultPollDelay || job.Step != provisionStepDeployWait || job.RunID != "run1" {
-		t.Fatalf("unexpected deploy start: delay=%v step=%q run=%q err=%v", delay, job.Step, job.RunID, err)
-	}
+	require.NoError(t, err)
+	require.Equal(t, provisionDefaultPollDelay, delay)
+	require.Equal(t, provisionStepDeployWait, job.Step)
+	require.Equal(t, "run1", job.RunID)
 
 	delay, _, err = s.advanceProvisionDeployWait(context.Background(), job, "req", now)
-	if err != nil || delay != 0 || job.Step != provisionStepReceiptIngest {
-		t.Fatalf("unexpected deploy wait: delay=%v step=%q err=%v", delay, job.Step, err)
-	}
+	require.NoError(t, err)
+	require.Zero(t, delay)
+	require.Equal(t, provisionStepReceiptIngest, job.Step)
 
 	delay, done, err := s.advanceProvisionReceiptIngest(context.Background(), job, "req", now)
-	if err != nil || delay != 0 || !done || job.Step != provisionStepDone || job.Status != models.ProvisionJobStatusOK {
-		t.Fatalf("unexpected receipt ingest: delay=%v done=%v step=%q status=%q err=%v", delay, done, job.Step, job.Status, err)
-	}
+	require.NoError(t, err)
+	require.Zero(t, delay)
+	require.True(t, done)
+	require.Equal(t, provisionStepDone, job.Step)
+	require.Equal(t, models.ProvisionJobStatusOK, job.Status)
 
 	// upsertParentNSDelegation handles trim + dedupe.
-	if err := s.upsertParentNSDelegation(context.Background(), "ZPARENT", "demo.example.com", []string{" ns-1 ", "", "ns-1"}); err != nil {
-		t.Fatalf("upsertParentNSDelegation: %v", err)
-	}
+	require.NoError(t, s.upsertParentNSDelegation(context.Background(), "ZPARENT", "demo.example.com", []string{" ns-1 ", "", "ns-1"}))
 
-	if r53.lastChange == nil || r53.lastChange.ChangeBatch == nil || len(r53.lastChange.ChangeBatch.Changes) != 1 {
-		t.Fatalf("expected route53 change, got %#v", r53.lastChange)
-	}
-	if r53.lastChange.ChangeBatch.Changes[0].ResourceRecordSet == nil || r53.lastChange.ChangeBatch.Changes[0].ResourceRecordSet.Type != r53types.RRTypeNs {
-		t.Fatalf("unexpected record type: %#v", r53.lastChange)
-	}
+	require.NotNil(t, r53.lastChange)
+	require.NotNil(t, r53.lastChange.ChangeBatch)
+	require.Len(t, r53.lastChange.ChangeBatch.Changes, 1)
+	require.NotNil(t, r53.lastChange.ChangeBatch.Changes[0].ResourceRecordSet)
+	require.Equal(t, r53types.RRTypeNs, r53.lastChange.ChangeBatch.Changes[0].ResourceRecordSet.Type)
 }

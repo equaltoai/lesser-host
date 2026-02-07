@@ -12,8 +12,6 @@ import (
 	"time"
 )
 
-const linkPreviewErrBlockedSSRF = "blocked_ssrf"
-
 type stubResolver struct {
 	ipsByHost map[string][]net.IP
 	errByHost map[string]error
@@ -76,7 +74,7 @@ func TestNormalizeLinkURL_IDNA_QueryAndFragment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("normalizeLinkURL error: %v", err)
 	}
-	want := "https://xn--bcher-kva.example/?a=1&b=2"
+	want := testNormalizedBucherURL
 	if got != want {
 		t.Fatalf("normalized mismatch: got %q want %q", got, want)
 	}
@@ -105,7 +103,7 @@ func TestValidateOutboundURL_BlocksPrivateIP(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if pe, ok := err.(*linkPreviewError); !ok || pe.Code != linkPreviewErrBlockedSSRF {
+	if pe, ok := err.(*linkPreviewError); !ok || pe.Code != errorCodeBlockedSSRF {
 		t.Fatalf("expected blocked_ssrf, got %T: %v", err, err)
 	}
 }
@@ -124,7 +122,7 @@ func TestValidateOutboundURL_BlocksHostnameResolvingToPrivateIP(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if pe, ok := err.(*linkPreviewError); !ok || pe.Code != linkPreviewErrBlockedSSRF {
+	if pe, ok := err.(*linkPreviewError); !ok || pe.Code != errorCodeBlockedSSRF {
 		t.Fatalf("expected blocked_ssrf, got %T: %v", err, err)
 	}
 }
@@ -161,7 +159,7 @@ func TestFetchWithRedirects_BlocksRedirectToPrivateIP(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if pe, ok := err.(*linkPreviewError); !ok || pe.Code != linkPreviewErrBlockedSSRF {
+	if pe, ok := err.(*linkPreviewError); !ok || pe.Code != errorCodeBlockedSSRF {
 		t.Fatalf("expected blocked_ssrf, got %T: %v", err, err)
 	}
 	if len(chain) != 2 {
@@ -228,7 +226,7 @@ func TestCanonicalizeLinkSchemeAndUserinfo_RejectsInvalidAndUserinfo(t *testing.
 	}
 
 	u = &url.URL{Scheme: "HTTPS", Host: "example.com"}
-	if err := canonicalizeLinkSchemeAndUserinfo(u); err != nil || u.Scheme != "https" {
+	if err := canonicalizeLinkSchemeAndUserinfo(u); err != nil || u.Scheme != schemeHTTPS {
 		t.Fatalf("expected scheme normalized, got scheme=%q err=%v", u.Scheme, err)
 	}
 }
@@ -265,7 +263,7 @@ func TestValidateOutboundURL_BlocksDeniedHostnamesAndResolverFailures(t *testing
 	if err != nil {
 		t.Fatalf("normalizeLinkURL error: %v", err)
 	}
-	if err := validateOutboundURL(context.Background(), nil, u); err == nil {
+	if validateErr := validateOutboundURL(context.Background(), nil, u); validateErr == nil {
 		t.Fatalf("expected localhost to be blocked")
 	}
 

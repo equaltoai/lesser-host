@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
 
@@ -13,7 +14,10 @@ import (
 
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
+	"github.com/equaltoai/lesser-host/internal/testutil"
 )
+
+const budgetReasonExceeded = "budget exceeded"
 
 type aiServiceTestDB struct {
 	db      *ttmocks.MockExtendedDB
@@ -87,7 +91,7 @@ func TestServiceGetOrQueue_CacheHit(t *testing.T) {
 	svc := NewService(store.New(tdb.db))
 
 	tdb.qRes.On("First", mock.AnythingOfType("*models.AIResult")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.AIResult)
+		dest := testutil.RequireMockArg[*models.AIResult](t, args, 0)
 		*dest = models.AIResult{
 			ID:        strings.Repeat("a", 64),
 			CreatedAt: time.Now().UTC(),
@@ -127,7 +131,7 @@ func TestServiceGetOrQueue_AlreadyQueued(t *testing.T) {
 	tdb.qRes.On("First", mock.AnythingOfType("*models.AIResult")).Return(theoryErrors.ErrItemNotFound).Once()
 	// Job exists.
 	tdb.qJob.On("First", mock.AnythingOfType("*models.AIJob")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.AIJob)
+		dest := testutil.RequireMockArg[*models.AIJob](t, args, 0)
 		*dest = models.AIJob{ID: strings.Repeat("b", 64)}
 		_ = dest.UpdateKeys()
 	}).Once()
@@ -158,7 +162,7 @@ func TestServiceGetOrQueue_ConcurrencyExceeded(t *testing.T) {
 	tdb.qRes.On("First", mock.AnythingOfType("*models.AIResult")).Return(theoryErrors.ErrItemNotFound).Once()
 	tdb.qJob.On("First", mock.AnythingOfType("*models.AIJob")).Return(theoryErrors.ErrItemNotFound).Once()
 	tdb.qJob.On("All", mock.AnythingOfType("*[]*models.AIJob")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*[]*models.AIJob)
+		dest := testutil.RequireMockArg[*[]*models.AIJob](t, args, 0)
 		*dest = []*models.AIJob{{ID: "x"}}
 	}).Once()
 
@@ -211,7 +215,7 @@ func TestServiceGetOrQueue_BudgetNotConfiguredAndExceeded(t *testing.T) {
 	tdb.qRes.On("First", mock.AnythingOfType("*models.AIResult")).Return(theoryErrors.ErrItemNotFound).Once()
 	tdb.qJob.On("First", mock.AnythingOfType("*models.AIJob")).Return(theoryErrors.ErrItemNotFound).Once()
 	tdb.qBudget.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.InstanceBudgetMonth)
+		dest := testutil.RequireMockArg[*models.InstanceBudgetMonth](t, args, 0)
 		*dest = models.InstanceBudgetMonth{IncludedCredits: 0, UsedCredits: 0}
 		_ = dest.UpdateKeys()
 	}).Once()
@@ -228,7 +232,7 @@ func TestServiceGetOrQueue_BudgetNotConfiguredAndExceeded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetOrQueue err: %v", err)
 	}
-	if resp.Status != JobStatusNotCheckedBudget || resp.Budget.Reason != "budget exceeded" {
+	if resp.Status != JobStatusNotCheckedBudget || resp.Budget.Reason != budgetReasonExceeded {
 		t.Fatalf("unexpected response: %#v", resp)
 	}
 }
@@ -264,12 +268,12 @@ func TestServiceGetOrQueue_QueueNoChargeAndDebit(t *testing.T) {
 	tdb.qRes.On("First", mock.AnythingOfType("*models.AIResult")).Return(theoryErrors.ErrItemNotFound).Once()
 	tdb.qJob.On("First", mock.AnythingOfType("*models.AIJob")).Return(theoryErrors.ErrItemNotFound).Once()
 	tdb.qBudget.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.InstanceBudgetMonth)
+		dest := testutil.RequireMockArg[*models.InstanceBudgetMonth](t, args, 0)
 		*dest = models.InstanceBudgetMonth{IncludedCredits: 100, UsedCredits: 0}
 		_ = dest.UpdateKeys()
 	}).Once()
 	tdb.qBudget.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.InstanceBudgetMonth)
+		dest := testutil.RequireMockArg[*models.InstanceBudgetMonth](t, args, 0)
 		*dest = models.InstanceBudgetMonth{IncludedCredits: 100, UsedCredits: 10}
 		_ = dest.UpdateKeys()
 	}).Once()
@@ -308,18 +312,16 @@ func TestServiceHandleDebitConditionFailed_CoversBranches(t *testing.T) {
 		svc := NewService(store.New(tdb.db))
 
 		tdb.qRes.On("First", mock.AnythingOfType("*models.AIResult")).Return(nil).Run(func(args mock.Arguments) {
-			dest := args.Get(0).(*models.AIResult)
+			dest := testutil.RequireMockArg[*models.AIResult](t, args, 0)
 			*dest = models.AIResult{ID: prepared.ResultID, ExpiresAt: now.Add(1 * time.Hour)}
 			_ = dest.UpdateKeys()
 		}).Once()
 
 		resp, err := svc.handleDebitConditionFailed(context.Background(), prepared, "PK", "SK", 10)
-		if err != nil {
-			t.Fatalf("unexpected err: %v", err)
-		}
-		if resp.Status != JobStatusOK || !resp.Cached || resp.Budget.Reason != "cache_hit" {
-			t.Fatalf("unexpected resp: %#v", resp)
-		}
+		require.NoError(t, err)
+		require.Equal(t, JobStatusOK, resp.Status)
+		require.True(t, resp.Cached)
+		require.Equal(t, "cache_hit", resp.Budget.Reason)
 	})
 
 	t.Run("already_queued", func(t *testing.T) {
@@ -328,18 +330,15 @@ func TestServiceHandleDebitConditionFailed_CoversBranches(t *testing.T) {
 
 		tdb.qRes.On("First", mock.AnythingOfType("*models.AIResult")).Return(theoryErrors.ErrItemNotFound).Once()
 		tdb.qJob.On("First", mock.AnythingOfType("*models.AIJob")).Return(nil).Run(func(args mock.Arguments) {
-			dest := args.Get(0).(*models.AIJob)
+			dest := testutil.RequireMockArg[*models.AIJob](t, args, 0)
 			*dest = models.AIJob{ID: prepared.JobID}
 			_ = dest.UpdateKeys()
 		}).Once()
 
 		resp, err := svc.handleDebitConditionFailed(context.Background(), prepared, "PK", "SK", 10)
-		if err != nil {
-			t.Fatalf("unexpected err: %v", err)
-		}
-		if resp.Status != JobStatusQueued || resp.Budget.Reason != "already_queued" {
-			t.Fatalf("unexpected resp: %#v", resp)
-		}
+		require.NoError(t, err)
+		require.Equal(t, JobStatusQueued, resp.Status)
+		require.Equal(t, "already_queued", resp.Budget.Reason)
 	})
 
 	t.Run("budget_conflict_and_exceeded", func(t *testing.T) {
@@ -349,7 +348,7 @@ func TestServiceHandleDebitConditionFailed_CoversBranches(t *testing.T) {
 			reason string
 		}{
 			{name: "conflict", used: 50, reason: "budget conflict"},
-			{name: "exceeded", used: 95, reason: "budget exceeded"},
+			{name: "exceeded", used: 95, reason: budgetReasonExceeded},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				tdb := newAIServiceTestDB()
@@ -358,21 +357,20 @@ func TestServiceHandleDebitConditionFailed_CoversBranches(t *testing.T) {
 				tdb.qRes.On("First", mock.AnythingOfType("*models.AIResult")).Return(theoryErrors.ErrItemNotFound).Once()
 				tdb.qJob.On("First", mock.AnythingOfType("*models.AIJob")).Return(theoryErrors.ErrItemNotFound).Once()
 				tdb.qBudget.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(nil).Run(func(args mock.Arguments) {
-					dest := args.Get(0).(*models.InstanceBudgetMonth)
+					dest := testutil.RequireMockArg[*models.InstanceBudgetMonth](t, args, 0)
 					*dest = models.InstanceBudgetMonth{IncludedCredits: 100, UsedCredits: tc.used}
 					_ = dest.UpdateKeys()
 				}).Once()
 
 				resp, err := svc.handleDebitConditionFailed(context.Background(), prepared, "INSTANCE#inst", "BUDGET#2026-02", 10)
-				if err != nil {
-					t.Fatalf("unexpected err: %v", err)
-				}
-				if resp.Status != JobStatusNotCheckedBudget || resp.Budget.Allowed || !resp.Budget.OverBudget || resp.Budget.Reason != tc.reason {
-					t.Fatalf("unexpected resp: %#v", resp)
-				}
-				if resp.Budget.IncludedCredits != 100 || resp.Budget.UsedCredits != tc.used || resp.Budget.RequestedCredits != 10 {
-					t.Fatalf("unexpected budget: %#v", resp.Budget)
-				}
+				require.NoError(t, err)
+				require.Equal(t, JobStatusNotCheckedBudget, resp.Status)
+				require.False(t, resp.Budget.Allowed)
+				require.True(t, resp.Budget.OverBudget)
+				require.Equal(t, tc.reason, resp.Budget.Reason)
+				require.Equal(t, int64(100), resp.Budget.IncludedCredits)
+				require.Equal(t, tc.used, resp.Budget.UsedCredits)
+				require.Equal(t, int64(10), resp.Budget.RequestedCredits)
 			})
 		}
 	})
@@ -386,14 +384,12 @@ func TestServiceHandleDebitConditionFailed_CoversBranches(t *testing.T) {
 		tdb.qBudget.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(theoryErrors.ErrItemNotFound).Once()
 
 		resp, err := svc.handleDebitConditionFailed(context.Background(), prepared, "INSTANCE#inst", "BUDGET#2026-02", 10)
-		if err != nil {
-			t.Fatalf("unexpected err: %v", err)
-		}
-		if resp.Status != JobStatusNotCheckedBudget || resp.Budget.Allowed || !resp.Budget.OverBudget || resp.Budget.Reason != "budget exceeded" {
-			t.Fatalf("unexpected resp: %#v", resp)
-		}
-		if resp.Budget.IncludedCredits != 0 || resp.Budget.UsedCredits != 0 {
-			t.Fatalf("expected unknown budget totals, got %#v", resp.Budget)
-		}
+		require.NoError(t, err)
+		require.Equal(t, JobStatusNotCheckedBudget, resp.Status)
+		require.False(t, resp.Budget.Allowed)
+		require.True(t, resp.Budget.OverBudget)
+		require.Equal(t, budgetReasonExceeded, resp.Budget.Reason)
+		require.Zero(t, resp.Budget.IncludedCredits)
+		require.Zero(t, resp.Budget.UsedCredits)
 	})
 }

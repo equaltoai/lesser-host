@@ -1,4 +1,4 @@
-# lesser-host: Coverage Roadmap (to 80%) (Rubric v0.1)
+# lesser-host: Coverage Roadmap (to 80%) (Rubric v0.1.2)
 
 Goal: raise and maintain meaningful Go coverage to **≥ 80%** as measured by the canonical verifier command, without
 reducing the measurement surface.

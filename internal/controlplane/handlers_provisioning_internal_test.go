@@ -14,6 +14,7 @@ import (
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
+	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
 type provisioningTestDB struct {
@@ -73,7 +74,7 @@ func TestStartAndGetInstanceProvisioning(t *testing.T) {
 
 	// Instance exists.
 	tdb.qInst.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
 		*dest = models.Instance{Slug: "demo", Status: models.InstanceStatusActive}
 		_ = dest.UpdateKeys()
 	}).Once()
@@ -93,10 +94,10 @@ func TestStartAndGetInstanceProvisioning(t *testing.T) {
 
 	// Existing queued job path: instance has job id + status, job fetch succeeds.
 	tdb.qInst.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
 		*dest = models.Instance{
-			Slug:            "demo",
-			Status:          models.InstanceStatusActive,
+			Slug:             "demo",
+			Status:           models.InstanceStatusActive,
 			ProvisionJobID:   "job1",
 			ProvisionStatus:  models.ProvisionJobStatusQueued,
 			HostedBaseDomain: "demo.lesser.host",
@@ -104,7 +105,7 @@ func TestStartAndGetInstanceProvisioning(t *testing.T) {
 		_ = dest.UpdateKeys()
 	}).Once()
 	tdb.qJob.On("First", mock.AnythingOfType("*models.ProvisionJob")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.ProvisionJob)
+		dest := testutil.RequireMockArg[*models.ProvisionJob](t, args, 0)
 		*dest = models.ProvisionJob{ID: "job1", InstanceSlug: "demo", Status: models.ProvisionJobStatusQueued, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 		_ = dest.UpdateKeys()
 	}).Once()
@@ -118,12 +119,12 @@ func TestStartAndGetInstanceProvisioning(t *testing.T) {
 
 	// Get provisioning: instance points to job id.
 	tdb.qInst.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
 		*dest = models.Instance{Slug: "demo", Status: models.InstanceStatusActive, ProvisionJobID: "job2"}
 		_ = dest.UpdateKeys()
 	}).Once()
 	tdb.qJob.On("First", mock.AnythingOfType("*models.ProvisionJob")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.ProvisionJob)
+		dest := testutil.RequireMockArg[*models.ProvisionJob](t, args, 0)
 		*dest = models.ProvisionJob{ID: "job2", InstanceSlug: "demo", Status: models.ProvisionJobStatusRunning, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 		_ = dest.UpdateKeys()
 	}).Once()
@@ -137,7 +138,7 @@ func TestStartAndGetInstanceProvisioning(t *testing.T) {
 
 	// No provisioning job.
 	tdb.qInst.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
 		*dest = models.Instance{Slug: "demo", Status: models.InstanceStatusActive, ProvisionJobID: ""}
 		_ = dest.UpdateKeys()
 	}).Once()
@@ -149,7 +150,7 @@ func TestStartAndGetInstanceProvisioning(t *testing.T) {
 
 	// Job missing.
 	tdb.qInst.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
 		*dest = models.Instance{Slug: "demo", Status: models.InstanceStatusActive, ProvisionJobID: "job404"}
 		_ = dest.UpdateKeys()
 	}).Once()

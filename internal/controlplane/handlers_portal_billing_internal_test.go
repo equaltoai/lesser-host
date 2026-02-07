@@ -12,10 +12,12 @@ import (
 	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 
 	"github.com/equaltoai/lesser-host/internal/payments"
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
+	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
 type billingTestDB struct {
@@ -117,15 +119,19 @@ func TestLoadBillingProfile_NotFoundAndSuccess(t *testing.T) {
 	s := &Server{store: store.New(tdb.db)}
 
 	tdb.qProfile.On("First", mock.AnythingOfType("*models.BillingProfile")).Return(theoryErrors.ErrItemNotFound).Once()
-	if _, ok, err := s.loadBillingProfile(&apptheory.Context{}, "alice"); err != nil || ok {
+	if _, ok, err := s.loadBillingProfile(&apptheory.Context{}, testUsernameAlice); err != nil || ok {
 		t.Fatalf("expected not found, ok=%v err=%v", ok, err)
 	}
 
 	tdb.qProfile.On("First", mock.AnythingOfType("*models.BillingProfile")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.BillingProfile)
-		*dest = models.BillingProfile{Username: "alice", StripeCustomerID: "cus_123"}
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.BillingProfile)
+		if !ok {
+			t.Fatalf("expected *models.BillingProfile, got %T", destAny)
+		}
+		*dest = models.BillingProfile{Username: testUsernameAlice, StripeCustomerID: "cus_123"}
 	}).Once()
-	profile, ok, err := s.loadBillingProfile(&apptheory.Context{}, "alice")
+	profile, ok, err := s.loadBillingProfile(&apptheory.Context{}, testUsernameAlice)
 	if err != nil || !ok || profile == nil || profile.StripeCustomerID != "cus_123" {
 		t.Fatalf("unexpected result: profile=%#v ok=%v err=%v", profile, ok, err)
 	}
@@ -142,7 +148,7 @@ func TestPutBillingProfile_ValidatesAndUpserts(t *testing.T) {
 	}
 
 	tdb.qProfile.On("CreateOrUpdate").Return(nil).Once()
-	if err := s.putBillingProfile(&apptheory.Context{}, &models.BillingProfile{Username: "alice"}); err != nil {
+	if err := s.putBillingProfile(&apptheory.Context{}, &models.BillingProfile{Username: testUsernameAlice}); err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
 }
@@ -159,14 +165,14 @@ func TestEnsureStripeCustomerProfile_CreatesAndStoresWhenMissing(t *testing.T) {
 	provider := stubPaymentsProvider{
 		name: "stripe",
 		ensureCustomer: func(_ context.Context, in payments.EnsureCustomerInput) (string, error) {
-			if in.Username != "alice" {
+			if in.Username != testUsernameAlice {
 				t.Fatalf("unexpected username: %#v", in)
 			}
 			return "cus_new", nil
 		},
 	}
 
-	profile, appErr := s.ensureStripeCustomerProfile(&apptheory.Context{}, provider, "alice", "a@example.com")
+	profile, appErr := s.ensureStripeCustomerProfile(&apptheory.Context{}, provider, testUsernameAlice, "a@example.com")
 	if appErr != nil || profile == nil || profile.StripeCustomerID != "cus_new" {
 		t.Fatalf("unexpected result: profile=%#v err=%v", profile, appErr)
 	}
@@ -179,14 +185,18 @@ func TestHandlePortalListCreditPurchases_ListsAndFiltersNil(t *testing.T) {
 	s := &Server{store: store.New(tdb.db)}
 
 	tdb.qPurchase.On("All", mock.AnythingOfType("*[]*models.CreditPurchase")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*[]*models.CreditPurchase)
+		destAny := args.Get(0)
+		dest, ok := destAny.(*[]*models.CreditPurchase)
+		if !ok {
+			t.Fatalf("expected *[]*models.CreditPurchase, got %T", destAny)
+		}
 		*dest = []*models.CreditPurchase{
 			nil,
 			{ID: "p1", Status: models.CreditPurchaseStatusPending},
 		}
 	}).Once()
 
-	resp, err := s.handlePortalListCreditPurchases(&apptheory.Context{AuthIdentity: "alice"})
+	resp, err := s.handlePortalListCreditPurchases(&apptheory.Context{AuthIdentity: testUsernameAlice})
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -202,14 +212,18 @@ func TestHandlePortalCreateInstanceKey_CreatesKeyAndAudits(t *testing.T) {
 	s := &Server{store: store.New(tdb.db)}
 
 	tdb.qInst.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
-		*dest = models.Instance{Slug: "demo", Owner: "alice"}
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.Instance)
+		if !ok {
+			t.Fatalf("expected *models.Instance, got %T", destAny)
+		}
+		*dest = models.Instance{Slug: "demo", Owner: testUsernameAlice}
 	}).Once()
 	tdb.qKey.On("Create").Return(nil).Once()
 	tdb.qAudit.On("Create").Return(nil).Once()
 
 	resp, err := s.handlePortalCreateInstanceKey(&apptheory.Context{
-		AuthIdentity: "alice",
+		AuthIdentity: testUsernameAlice,
 		RequestID:    "r1",
 		Params:       map[string]string{"slug": "demo"},
 	})
@@ -231,7 +245,11 @@ func TestStripeWebhookHandlers_PaymentAndSetupAndExpired(t *testing.T) {
 
 	// Payment completed (pending -> paid).
 	tdb.qPurchase.On("First", mock.AnythingOfType("*models.CreditPurchase")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.CreditPurchase)
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.CreditPurchase)
+		if !ok {
+			t.Fatalf("expected *models.CreditPurchase, got %T", destAny)
+		}
 		*dest = models.CreditPurchase{
 			ID:           "p1",
 			InstanceSlug: "demo",
@@ -267,7 +285,7 @@ func TestStripeWebhookHandlers_PaymentAndSetupAndExpired(t *testing.T) {
 	}
 	resp, err = s.handleStripeSetupCheckoutCompleted(&apptheory.Context{RequestID: "r2"}, provider, &payments.WebhookEvent{
 		Session: payments.CheckoutSession{
-			Metadata:      map[string]string{"username": "alice"},
+			Metadata:      map[string]string{"username": testUsernameAlice},
 			CustomerID:    "cus_1",
 			SetupIntentID: "seti_1",
 		},
@@ -278,7 +296,11 @@ func TestStripeWebhookHandlers_PaymentAndSetupAndExpired(t *testing.T) {
 
 	// Checkout expired marks pending purchase expired.
 	tdb.qPurchase.On("First", mock.AnythingOfType("*models.CreditPurchase")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.CreditPurchase)
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.CreditPurchase)
+		if !ok {
+			t.Fatalf("expected *models.CreditPurchase, got %T", destAny)
+		}
 		*dest = models.CreditPurchase{ID: "p2", Status: models.CreditPurchaseStatusPending}
 	}).Once()
 	tdb.qPurchase.On("Update", mock.Anything).Return(nil).Once()
@@ -325,12 +347,12 @@ func TestCreatePendingCreditPurchase_ValidatesAndCreates(t *testing.T) {
 	tdb := newBillingTestDB()
 	s := &Server{store: store.New(tdb.db)}
 
-	if _, err := s.createPendingCreditPurchase(nil, "alice", "demo", "2026-02", 1, 1, "stripe"); err == nil {
+	if _, err := s.createPendingCreditPurchase(nil, testUsernameAlice, "demo", "2026-02", 1, 1, "stripe"); err == nil {
 		t.Fatalf("expected error")
 	}
 
 	tdb.qPurchase.On("Create").Return(nil).Once()
-	p, appErr := s.createPendingCreditPurchase(&apptheory.Context{}, "alice", "demo", "2026-02", 1, 1, "stripe")
+	p, appErr := s.createPendingCreditPurchase(&apptheory.Context{}, testUsernameAlice, "demo", "2026-02", 1, 1, "stripe")
 	if appErr != nil || p == nil || p.ID == "" {
 		t.Fatalf("unexpected: p=%#v err=%v", p, appErr)
 	}
@@ -342,15 +364,19 @@ func TestPortalUserEmailBestEffort(t *testing.T) {
 	tdb := newBillingTestDB()
 	s := &Server{store: store.New(tdb.db)}
 
-	if got := s.portalUserEmailBestEffort(nil, "alice"); got != "" {
+	if got := s.portalUserEmailBestEffort(nil, testUsernameAlice); got != "" {
 		t.Fatalf("expected empty")
 	}
 
 	tdb.qUser.On("First", mock.AnythingOfType("*models.User")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.User)
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.User)
+		if !ok {
+			t.Fatalf("expected *models.User, got %T", destAny)
+		}
 		*dest = models.User{Email: " a@example.com "}
 	}).Once()
-	if got := s.portalUserEmailBestEffort(&apptheory.Context{}, "alice"); got != "a@example.com" {
+	if got := s.portalUserEmailBestEffort(&apptheory.Context{}, testUsernameAlice); got != "a@example.com" {
 		t.Fatalf("unexpected email: %q", got)
 	}
 }
@@ -373,12 +399,16 @@ func TestHandlePortalCreateCreditsCheckout_RejectsWhenPricingNotConfigured(t *te
 
 	body, _ := json.Marshal(portalCreditsCheckoutRequest{InstanceSlug: "demo", Credits: 1})
 	tdb.qInst.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
-		*dest = models.Instance{Slug: "demo", Owner: "alice"}
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.Instance)
+		if !ok {
+			t.Fatalf("expected *models.Instance, got %T", destAny)
+		}
+		*dest = models.Instance{Slug: "demo", Owner: testUsernameAlice}
 	}).Once()
 
 	if _, err := s.handlePortalCreateCreditsCheckout(&apptheory.Context{
-		AuthIdentity: "alice",
+		AuthIdentity: testUsernameAlice,
 		Request:      apptheory.Request{Body: body},
 	}); err == nil {
 		t.Fatalf("expected conflict when pricing is not configured")
@@ -392,19 +422,27 @@ func TestHandlePortalListPaymentMethods_ReturnsDefaultAndMethods(t *testing.T) {
 	s := &Server{store: store.New(tdb.db)}
 
 	tdb.qMethod.On("All", mock.AnythingOfType("*[]*models.BillingPaymentMethod")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*[]*models.BillingPaymentMethod)
+		destAny := args.Get(0)
+		dest, ok := destAny.(*[]*models.BillingPaymentMethod)
+		if !ok {
+			t.Fatalf("expected *[]*models.BillingPaymentMethod, got %T", destAny)
+		}
 		*dest = []*models.BillingPaymentMethod{
 			nil,
 			{ID: "pm_1", Type: "card", Brand: "visa", Last4: "4242"},
 		}
 	}).Once()
 	tdb.qProfile.On("First", mock.AnythingOfType("*models.BillingProfile")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.BillingProfile)
-		*dest = models.BillingProfile{Username: "alice", DefaultPaymentMethodID: "pm_1"}
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.BillingProfile)
+		if !ok {
+			t.Fatalf("expected *models.BillingProfile, got %T", destAny)
+		}
+		*dest = models.BillingProfile{Username: testUsernameAlice, DefaultPaymentMethodID: "pm_1"}
 		_ = dest.UpdateKeys()
 	}).Once()
 
-	resp, err := s.handlePortalListPaymentMethods(&apptheory.Context{AuthIdentity: "alice"})
+	resp, err := s.handlePortalListPaymentMethods(&apptheory.Context{AuthIdentity: testUsernameAlice})
 	if err != nil || resp == nil || resp.Status != 200 {
 		t.Fatalf("resp=%#v err=%v", resp, err)
 	}
@@ -424,7 +462,7 @@ func TestHandlePortalCreatePaymentMethodCheckout_ProviderNotConfigured(t *testin
 	tdb := newBillingTestDB()
 	s := &Server{store: store.New(tdb.db)}
 
-	if _, err := s.handlePortalCreatePaymentMethodCheckout(&apptheory.Context{AuthIdentity: "alice"}); err == nil {
+	if _, err := s.handlePortalCreatePaymentMethodCheckout(&apptheory.Context{AuthIdentity: testUsernameAlice}); err == nil {
 		t.Fatalf("expected conflict when payments provider is not configured")
 	}
 }
@@ -503,9 +541,9 @@ func TestHandleStripePaymentCheckoutCompleted_Branches(t *testing.T) {
 		resp, err := s.handleStripePaymentCheckoutCompleted(&apptheory.Context{}, &payments.WebhookEvent{
 			Session: payments.CheckoutSession{Metadata: map[string]string{}},
 		}, now)
-		if err != nil || resp == nil || resp.Status != 200 {
-			t.Fatalf("resp=%#v err=%v", resp, err)
-		}
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		require.Equal(t, 200, resp.Status)
 	})
 
 	t.Run("purchase_not_found", func(t *testing.T) {
@@ -517,9 +555,9 @@ func TestHandleStripePaymentCheckoutCompleted_Branches(t *testing.T) {
 		resp, err := s.handleStripePaymentCheckoutCompleted(&apptheory.Context{}, &payments.WebhookEvent{
 			Session: payments.CheckoutSession{Metadata: map[string]string{"purchase_id": "p1"}},
 		}, now)
-		if err != nil || resp == nil || resp.Status != 200 {
-			t.Fatalf("resp=%#v err=%v", resp, err)
-		}
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		require.Equal(t, 200, resp.Status)
 	})
 
 	t.Run("already_paid", func(t *testing.T) {
@@ -527,16 +565,16 @@ func TestHandleStripePaymentCheckoutCompleted_Branches(t *testing.T) {
 		s := &Server{store: store.New(tdb.db)}
 
 		tdb.qPurchase.On("First", mock.AnythingOfType("*models.CreditPurchase")).Return(nil).Run(func(args mock.Arguments) {
-			dest := args.Get(0).(*models.CreditPurchase)
+			dest := testutil.RequireMockArg[*models.CreditPurchase](t, args, 0)
 			*dest = models.CreditPurchase{ID: "p1", Status: models.CreditPurchaseStatusPaid}
 		}).Once()
 
 		resp, err := s.handleStripePaymentCheckoutCompleted(&apptheory.Context{}, &payments.WebhookEvent{
 			Session: payments.CheckoutSession{Metadata: map[string]string{"purchase_id": "p1"}},
 		}, now)
-		if err != nil || resp == nil || resp.Status != 200 {
-			t.Fatalf("resp=%#v err=%v", resp, err)
-		}
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		require.Equal(t, 200, resp.Status)
 	})
 
 	t.Run("condition_failed_returns_ok", func(t *testing.T) {
@@ -547,7 +585,7 @@ func TestHandleStripePaymentCheckoutCompleted_Branches(t *testing.T) {
 		db.On("Model", mock.AnythingOfType("*models.CreditPurchase")).Return(qPurchase)
 		qPurchase.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qPurchase)
 		qPurchase.On("First", mock.AnythingOfType("*models.CreditPurchase")).Return(nil).Run(func(args mock.Arguments) {
-			dest := args.Get(0).(*models.CreditPurchase)
+			dest := testutil.RequireMockArg[*models.CreditPurchase](t, args, 0)
 			*dest = models.CreditPurchase{
 				ID:           "p1",
 				InstanceSlug: "demo",
@@ -562,9 +600,9 @@ func TestHandleStripePaymentCheckoutCompleted_Branches(t *testing.T) {
 		resp, err := s.handleStripePaymentCheckoutCompleted(&apptheory.Context{}, &payments.WebhookEvent{
 			Session: payments.CheckoutSession{Metadata: map[string]string{"purchase_id": "p1"}},
 		}, now)
-		if err != nil || resp == nil || resp.Status != 200 {
-			t.Fatalf("resp=%#v err=%v", resp, err)
-		}
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		require.Equal(t, 200, resp.Status)
 	})
 
 	t.Run("transact_error_returns_ok_with_error_field", func(t *testing.T) {
@@ -575,7 +613,7 @@ func TestHandleStripePaymentCheckoutCompleted_Branches(t *testing.T) {
 		db.On("Model", mock.AnythingOfType("*models.CreditPurchase")).Return(qPurchase)
 		qPurchase.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qPurchase)
 		qPurchase.On("First", mock.AnythingOfType("*models.CreditPurchase")).Return(nil).Run(func(args mock.Arguments) {
-			dest := args.Get(0).(*models.CreditPurchase)
+			dest := testutil.RequireMockArg[*models.CreditPurchase](t, args, 0)
 			*dest = models.CreditPurchase{
 				ID:           "p1",
 				InstanceSlug: "demo",
@@ -590,14 +628,12 @@ func TestHandleStripePaymentCheckoutCompleted_Branches(t *testing.T) {
 		resp, err := s.handleStripePaymentCheckoutCompleted(&apptheory.Context{}, &payments.WebhookEvent{
 			Session: payments.CheckoutSession{Metadata: map[string]string{"purchase_id": "p1"}},
 		}, now)
-		if err != nil || resp == nil || resp.Status != 200 {
-			t.Fatalf("resp=%#v err=%v", resp, err)
-		}
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		require.Equal(t, 200, resp.Status)
 		var parsed map[string]any
-		_ = json.Unmarshal(resp.Body, &parsed)
-		if parsed["error"] != "failed to apply credits" {
-			t.Fatalf("expected error field, got body=%q", string(resp.Body))
-		}
+		require.NoError(t, json.Unmarshal(resp.Body, &parsed))
+		require.Equal(t, "failed to apply credits", parsed["error"])
 	})
 }
 
@@ -619,7 +655,7 @@ func TestHandleStripeSetupCheckoutCompleted_Branches(t *testing.T) {
 
 	// Missing setup intent.
 	resp, err = s.handleStripeSetupCheckoutCompleted(&apptheory.Context{}, stubPaymentsProvider{name: "stripe"}, &payments.WebhookEvent{
-		Session: payments.CheckoutSession{Metadata: map[string]string{"username": "alice"}},
+		Session: payments.CheckoutSession{Metadata: map[string]string{"username": testUsernameAlice}},
 	}, now)
 	if err != nil || resp == nil || resp.Status != 200 {
 		t.Fatalf("missing setup intent resp=%#v err=%v", resp, err)
@@ -633,7 +669,7 @@ func TestHandleStripeSetupCheckoutCompleted_Branches(t *testing.T) {
 		},
 	}, &payments.WebhookEvent{
 		Session: payments.CheckoutSession{
-			Metadata:      map[string]string{"username": "alice"},
+			Metadata:      map[string]string{"username": testUsernameAlice},
 			SetupIntentID: "seti_1",
 		},
 	}, now)
@@ -643,7 +679,7 @@ func TestHandleStripeSetupCheckoutCompleted_Branches(t *testing.T) {
 
 	// Transact write error.
 	db := ttmocks.NewMockExtendedDBStrict()
-	db.On("TransactWrite", mock.Anything, mock.Anything).Return(errors.New("nope")).Once()
+	db.On("TransactWrite", mock.Anything, mock.Anything).Return(errors.New(testNope)).Once()
 
 	s2 := &Server{store: store.New(db)}
 	resp, err = s2.handleStripeSetupCheckoutCompleted(&apptheory.Context{}, stubPaymentsProvider{
@@ -653,7 +689,7 @@ func TestHandleStripeSetupCheckoutCompleted_Branches(t *testing.T) {
 		},
 	}, &payments.WebhookEvent{
 		Session: payments.CheckoutSession{
-			Metadata:      map[string]string{"username": "alice"},
+			Metadata:      map[string]string{"username": testUsernameAlice},
 			CustomerID:    "cus_1",
 			SetupIntentID: "seti_1",
 		},
@@ -688,7 +724,7 @@ func TestHandleStripeCheckoutSessionExpired_Branches(t *testing.T) {
 		s := &Server{store: store.New(tdb.db)}
 
 		tdb.qPurchase.On("First", mock.AnythingOfType("*models.CreditPurchase")).Return(nil).Run(func(args mock.Arguments) {
-			dest := args.Get(0).(*models.CreditPurchase)
+			dest := testutil.RequireMockArg[*models.CreditPurchase](t, args, 0)
 			*dest = models.CreditPurchase{ID: "p1", Status: models.CreditPurchaseStatusPaid}
 		}).Once()
 

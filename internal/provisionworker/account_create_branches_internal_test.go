@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/organizations"
 	orgtypes "github.com/aws/aws-sdk-go-v2/service/organizations/types"
+	"github.com/stretchr/testify/require"
 	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
 
 	"github.com/equaltoai/lesser-host/internal/config"
@@ -26,7 +27,7 @@ func TestHandleProvisionAccountCreateStatus_Branches(t *testing.T) {
 
 	now := time.Now().UTC()
 	job := &models.ProvisionJob{
-		ID:          "job1",
+		ID:           "job1",
 		InstanceSlug: "slug",
 		Status:       models.ProvisionJobStatusRunning,
 		Step:         provisionStepAccountCreatePoll,
@@ -38,30 +39,33 @@ func TestHandleProvisionAccountCreateStatus_Branches(t *testing.T) {
 
 	// Nil/empty state is a no-op poll.
 	delay, done, err := s.handleProvisionAccountCreateStatus(context.Background(), job, "req", now, nil)
-	if err != nil || done || delay != provisionDefaultPollDelay {
-		t.Fatalf("unexpected nil status: delay=%v done=%v err=%v", delay, done, err)
-	}
+	require.NoError(t, err)
+	require.False(t, done)
+	require.Equal(t, provisionDefaultPollDelay, delay)
 	delay, done, err = s.handleProvisionAccountCreateStatus(context.Background(), job, "req", now, &orgtypes.CreateAccountStatus{})
-	if err != nil || done || delay != provisionDefaultPollDelay {
-		t.Fatalf("unexpected empty state: delay=%v done=%v err=%v", delay, done, err)
-	}
+	require.NoError(t, err)
+	require.False(t, done)
+	require.Equal(t, provisionDefaultPollDelay, delay)
 
 	// In progress.
 	delay, done, err = s.handleProvisionAccountCreateStatus(context.Background(), job, "req", now, &orgtypes.CreateAccountStatus{
 		State: orgtypes.CreateAccountStateInProgress,
 	})
-	if err != nil || done || delay != provisionDefaultPollDelay || !strings.Contains(job.Note, "in progress") {
-		t.Fatalf("unexpected in progress: delay=%v done=%v job=%#v err=%v", delay, done, job, err)
-	}
+	require.NoError(t, err)
+	require.False(t, done)
+	require.Equal(t, provisionDefaultPollDelay, delay)
+	require.Contains(t, job.Note, "in progress")
 
 	// Failed.
 	delay, done, err = s.handleProvisionAccountCreateStatus(context.Background(), job, "req", now, &orgtypes.CreateAccountStatus{
 		State:         orgtypes.CreateAccountStateFailed,
 		FailureReason: orgtypes.CreateAccountFailureReasonEmailAlreadyExists,
 	})
-	if err != nil || done || delay != 0 || job.Step != provisionStepFailed || job.ErrorCode != "account_create_failed" {
-		t.Fatalf("unexpected failed: delay=%v done=%v job=%#v err=%v", delay, done, job, err)
-	}
+	require.NoError(t, err)
+	require.False(t, done)
+	require.Zero(t, delay)
+	require.Equal(t, provisionStepFailed, job.Step)
+	require.Equal(t, "account_create_failed", job.ErrorCode)
 
 	// Succeeded but missing account id.
 	job.Step = provisionStepAccountCreatePoll
@@ -69,9 +73,11 @@ func TestHandleProvisionAccountCreateStatus_Branches(t *testing.T) {
 	delay, done, err = s.handleProvisionAccountCreateStatus(context.Background(), job, "req", now, &orgtypes.CreateAccountStatus{
 		State: orgtypes.CreateAccountStateSucceeded,
 	})
-	if err != nil || done || delay != 0 || job.Step != provisionStepFailed || job.ErrorCode != "account_create_failed" {
-		t.Fatalf("unexpected succeeded missing id: delay=%v done=%v job=%#v err=%v", delay, done, job, err)
-	}
+	require.NoError(t, err)
+	require.False(t, done)
+	require.Zero(t, delay)
+	require.Equal(t, provisionStepFailed, job.Step)
+	require.Equal(t, "account_create_failed", job.ErrorCode)
 
 	// Succeeded with account id advances to account move.
 	job.Step = provisionStepAccountCreatePoll
@@ -81,17 +87,20 @@ func TestHandleProvisionAccountCreateStatus_Branches(t *testing.T) {
 		State:     orgtypes.CreateAccountStateSucceeded,
 		AccountId: aws.String("123456789012"),
 	})
-	if err != nil || done || delay != 0 || job.Step != provisionStepAccountMove || strings.TrimSpace(job.AccountID) == "" {
-		t.Fatalf("unexpected succeeded: delay=%v done=%v job=%#v err=%v", delay, done, job, err)
-	}
+	require.NoError(t, err)
+	require.False(t, done)
+	require.Zero(t, delay)
+	require.Equal(t, provisionStepAccountMove, job.Step)
+	require.NotEmpty(t, strings.TrimSpace(job.AccountID))
 
 	// Unknown state keeps polling.
 	delay, done, err = s.handleProvisionAccountCreateStatus(context.Background(), job, "req", now, &orgtypes.CreateAccountStatus{
 		State: orgtypes.CreateAccountState("weird"),
 	})
-	if err != nil || done || delay != provisionDefaultPollDelay || !strings.Contains(job.Note, "state") {
-		t.Fatalf("unexpected default state: delay=%v done=%v job=%#v err=%v", delay, done, job, err)
-	}
+	require.NoError(t, err)
+	require.False(t, done)
+	require.Equal(t, provisionDefaultPollDelay, delay)
+	require.Contains(t, job.Note, "state")
 }
 
 func TestStartProvisionAccountCreate_ErrorBranches(t *testing.T) {
@@ -118,9 +127,11 @@ func TestStartProvisionAccountCreate_ErrorBranches(t *testing.T) {
 		job := &models.ProvisionJob{ID: "j1", InstanceSlug: "slug", Status: models.ProvisionJobStatusRunning, Step: provisionStepAccountCreate, MaxAttempts: 3}
 
 		delay, done, err := s.startProvisionAccountCreate(context.Background(), job, "req", now)
-		if err != nil || done || delay <= 0 || job.Attempts != 1 || !strings.Contains(job.Note, "retry") {
-			t.Fatalf("unexpected retry: delay=%v done=%v job=%#v err=%v", delay, done, job, err)
-		}
+		require.NoError(t, err)
+		require.False(t, done)
+		require.Greater(t, delay, time.Duration(0))
+		require.Equal(t, int64(1), job.Attempts)
+		require.Contains(t, job.Note, "retry")
 	})
 
 	t.Run("create_error_fails_at_max_attempts", func(t *testing.T) {
@@ -128,9 +139,11 @@ func TestStartProvisionAccountCreate_ErrorBranches(t *testing.T) {
 		job := &models.ProvisionJob{ID: "j2", InstanceSlug: "slug", Status: models.ProvisionJobStatusRunning, Step: provisionStepAccountCreate, MaxAttempts: 1}
 
 		delay, done, err := s.startProvisionAccountCreate(context.Background(), job, "req", now)
-		if err != nil || done || delay != 0 || job.Step != provisionStepFailed || job.ErrorCode != "create_account_failed" {
-			t.Fatalf("unexpected fail: delay=%v done=%v job=%#v err=%v", delay, done, job, err)
-		}
+		require.NoError(t, err)
+		require.False(t, done)
+		require.Zero(t, delay)
+		require.Equal(t, provisionStepFailed, job.Step)
+		require.Equal(t, "create_account_failed", job.ErrorCode)
 	})
 
 	t.Run("empty_request_id_fails", func(t *testing.T) {
@@ -140,9 +153,11 @@ func TestStartProvisionAccountCreate_ErrorBranches(t *testing.T) {
 		job := &models.ProvisionJob{ID: "j3", InstanceSlug: "slug", Status: models.ProvisionJobStatusRunning, Step: provisionStepAccountCreate, MaxAttempts: 3}
 
 		delay, done, err := s.startProvisionAccountCreate(context.Background(), job, "req", now)
-		if err != nil || done || delay != 0 || job.Step != provisionStepFailed || job.ErrorCode != "create_account_failed" {
-			t.Fatalf("unexpected empty req id: delay=%v done=%v job=%#v err=%v", delay, done, job, err)
-		}
+		require.NoError(t, err)
+		require.False(t, done)
+		require.Zero(t, delay)
+		require.Equal(t, provisionStepFailed, job.Step)
+		require.Equal(t, "create_account_failed", job.ErrorCode)
 	})
 }
 
@@ -189,34 +204,38 @@ func TestAdvanceProvisionAccountCreatePoll_RestartTimeoutAndDescribeError(t *tes
 		job := &models.ProvisionJob{ID: "j", InstanceSlug: "slug", Status: models.ProvisionJobStatusRunning, Step: provisionStepAccountCreatePoll}
 
 		delay, done, err := s.advanceProvisionAccountCreatePoll(context.Background(), job, "req", now)
-		if err != nil || done || delay != 0 || job.Step != provisionStepAccountCreate || !strings.Contains(job.Note, "missing account request id") {
-			t.Fatalf("unexpected restart: delay=%v done=%v job=%#v err=%v", delay, done, job, err)
-		}
+		require.NoError(t, err)
+		require.False(t, done)
+		require.Zero(t, delay)
+		require.Equal(t, provisionStepAccountCreate, job.Step)
+		require.Contains(t, job.Note, "missing account request id")
 	})
 
 	t.Run("timeout_fails", func(t *testing.T) {
 		s := makeServer(&fakeOrg{})
 		job := &models.ProvisionJob{
-			ID:             "j",
-			InstanceSlug:    "slug",
-			Status:          models.ProvisionJobStatusRunning,
-			Step:            provisionStepAccountCreatePoll,
+			ID:               "j",
+			InstanceSlug:     "slug",
+			Status:           models.ProvisionJobStatusRunning,
+			Step:             provisionStepAccountCreatePoll,
 			AccountRequestID: "req1",
-			MaxAttempts:     3,
-			CreatedAt:       now.Add(-(provisionMaxAccountCreateAge + 1*time.Minute)),
+			MaxAttempts:      3,
+			CreatedAt:        now.Add(-(provisionMaxAccountCreateAge + 1*time.Minute)),
 		}
 
 		delay, done, err := s.advanceProvisionAccountCreatePoll(context.Background(), job, "req", now)
-		if err != nil || done || delay != 0 || job.Step != provisionStepFailed || job.ErrorCode != "account_create_timeout" {
-			t.Fatalf("unexpected timeout: delay=%v done=%v job=%#v err=%v", delay, done, job, err)
-		}
+		require.NoError(t, err)
+		require.False(t, done)
+		require.Zero(t, delay)
+		require.Equal(t, provisionStepFailed, job.Step)
+		require.Equal(t, "account_create_timeout", job.ErrorCode)
 	})
 
 	t.Run("describe_error_retries_and_then_fails", func(t *testing.T) {
 		s := makeServer(&fakeOrg{describeErr: errors.New("boom")})
 
 		job := &models.ProvisionJob{
-			ID:              "j",
+			ID:               "j",
 			InstanceSlug:     "slug",
 			Status:           models.ProvisionJobStatusRunning,
 			Step:             provisionStepAccountCreatePoll,
@@ -225,15 +244,18 @@ func TestAdvanceProvisionAccountCreatePoll_RestartTimeoutAndDescribeError(t *tes
 			CreatedAt:        now.Add(-1 * time.Minute),
 		}
 		delay, done, err := s.advanceProvisionAccountCreatePoll(context.Background(), job, "req", now)
-		if err != nil || done || delay <= 0 || job.Attempts != 1 {
-			t.Fatalf("unexpected retry: delay=%v done=%v job=%#v err=%v", delay, done, job, err)
-		}
+		require.NoError(t, err)
+		require.False(t, done)
+		require.Greater(t, delay, time.Duration(0))
+		require.Equal(t, int64(1), job.Attempts)
 
 		// Next attempt hits max and fails.
 		delay, done, err = s.advanceProvisionAccountCreatePoll(context.Background(), job, "req", now)
-		if err != nil || done || delay != 0 || job.Step != provisionStepFailed || job.ErrorCode != "describe_account_failed" {
-			t.Fatalf("unexpected fail: delay=%v done=%v job=%#v err=%v", delay, done, job, err)
-		}
+		require.NoError(t, err)
+		require.False(t, done)
+		require.Zero(t, delay)
+		require.Equal(t, provisionStepFailed, job.Step)
+		require.Equal(t, "describe_account_failed", job.ErrorCode)
 	})
 }
 
@@ -266,4 +288,3 @@ func TestMoveProvisionAccountToTargetOU_Branches(t *testing.T) {
 		}
 	})
 }
-

@@ -365,20 +365,29 @@ describe("TipSplitter — Withdrawals", () => {
         await assert.rejects(splitter.connect(actor).withdraw(tokenAddr), /no pending/);
     });
 
-    it("reverts when paused (M-2)", async () => {
+    it("allows withdrawals when paused", async () => {
         const { splitter, actor, tipper, owner, HOST_ID, CONTENT_HASH } = await deploy();
         const amount = ethers.parseEther("1");
         await splitter.connect(tipper).tipETH(HOST_ID, actor.address, CONTENT_HASH, { value: amount });
         await splitter.connect(owner).pause();
-        await assert.rejects(splitter.connect(actor).withdraw(ethers.ZeroAddress), /EnforcedPause/);
+        await splitter.connect(actor).withdraw(ethers.ZeroAddress);
     });
 
-    it("works again after unpause", async () => {
+    it("reverts when withdrawals are paused", async () => {
         const { splitter, actor, tipper, owner, HOST_ID, CONTENT_HASH } = await deploy();
         const amount = ethers.parseEther("1");
         await splitter.connect(tipper).tipETH(HOST_ID, actor.address, CONTENT_HASH, { value: amount });
-        await splitter.connect(owner).pause();
-        await splitter.connect(owner).unpause();
+        await splitter.connect(owner).setWithdrawalsPaused(true);
+        await assert.rejects(splitter.connect(actor).withdraw(ethers.ZeroAddress), /withdrawals paused/);
+    });
+
+    it("works again after withdrawals unpause", async () => {
+        const { splitter, actor, tipper, owner, HOST_ID, CONTENT_HASH } = await deploy();
+        const amount = ethers.parseEther("1");
+        await splitter.connect(tipper).tipETH(HOST_ID, actor.address, CONTENT_HASH, { value: amount });
+        await splitter.connect(owner).setWithdrawalsPaused(true);
+        await assert.rejects(splitter.connect(actor).withdraw(ethers.ZeroAddress), /withdrawals paused/);
+        await splitter.connect(owner).setWithdrawalsPaused(false);
         await splitter.connect(actor).withdraw(ethers.ZeroAddress);
     });
 
@@ -654,6 +663,14 @@ describe("TipSplitter — Pause / Unpause", () => {
         const { splitter, owner, tipper } = await deploy();
         await splitter.connect(owner).pause();
         await assert.rejects(splitter.connect(tipper).unpause(), /OwnableUnauthorizedAccount/);
+    });
+
+    it("non-owner cannot set withdrawals paused", async () => {
+        const { splitter, tipper } = await deploy();
+        await assert.rejects(
+            splitter.connect(tipper).setWithdrawalsPaused(true),
+            /OwnableUnauthorizedAccount/
+        );
     });
 });
 

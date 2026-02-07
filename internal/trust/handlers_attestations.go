@@ -12,6 +12,7 @@ import (
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/attestations"
+	"github.com/equaltoai/lesser-host/internal/httpx"
 )
 
 var attestationIDRE = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -52,11 +53,11 @@ func (s *Server) handleLookupAttestation(ctx *apptheory.Context) (*apptheory.Res
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
-	actorURI := strings.TrimSpace(firstQueryValue(ctx.Request.Query, "actor_uri"))
-	objectURI := strings.TrimSpace(firstQueryValue(ctx.Request.Query, "object_uri"))
-	contentHash := strings.TrimSpace(firstQueryValue(ctx.Request.Query, "content_hash"))
-	module := strings.TrimSpace(firstQueryValue(ctx.Request.Query, "module"))
-	policyVersion := strings.TrimSpace(firstQueryValue(ctx.Request.Query, "policy_version"))
+	actorURI := strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "actor_uri"))
+	objectURI := strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "object_uri"))
+	contentHash := strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "content_hash"))
+	module := strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "module"))
+	policyVersion := strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "policy_version"))
 
 	if actorURI == "" || objectURI == "" || contentHash == "" || module == "" || policyVersion == "" {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "missing required query parameters"}

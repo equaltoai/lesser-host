@@ -15,6 +15,7 @@ import (
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
+	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
 type publishJobsTestDB struct {
@@ -189,20 +190,20 @@ func TestRunLinkSafetyBasicJob_BudgetPaths(t *testing.T) {
 	tdb.qBudget.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(theoryErrors.ErrItemNotFound).Once()
 
 	got := s.runLinkSafetyBasicJob(ctx, "inst", strings.Repeat("a", 64), "", "", "", "lh", []string{"https://example.com"}, overagePolicyBlock, 10000)
-	if got.Status != "not_checked_budget" || got.Budget.Reason != "budget not configured" {
+	if got.Status != statusNotCheckedBudget || got.Budget.Reason != budgetReasonNotConfigured {
 		t.Fatalf("unexpected response: %#v", got)
 	}
 
 	// Budget exceeded (no overage).
 	tdb.qLSB.On("First", mock.AnythingOfType("*models.LinkSafetyBasicResult")).Return(theoryErrors.ErrItemNotFound).Once()
 	tdb.qBudget.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.InstanceBudgetMonth)
+		dest := testutil.RequireMockArg[*models.InstanceBudgetMonth](t, args, 0)
 		*dest = models.InstanceBudgetMonth{IncludedCredits: 0, UsedCredits: 0}
 		_ = dest.UpdateKeys()
 	}).Once()
 
 	got = s.runLinkSafetyBasicJob(ctx, "inst", strings.Repeat("b", 64), "", "", "", "lh", []string{"https://example.com"}, overagePolicyBlock, 10000)
-	if got.Status != "not_checked_budget" || got.Budget.Reason != "budget exceeded" {
+	if got.Status != statusNotCheckedBudget || got.Budget.Reason != budgetReasonExceeded {
 		t.Fatalf("unexpected response: %#v", got)
 	}
 }
@@ -220,14 +221,14 @@ func TestRunLinkSafetyBasicJob_DebitedSuccess(t *testing.T) {
 
 	// Budget precheck passes.
 	tdb.qBudget.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.InstanceBudgetMonth)
+		dest := testutil.RequireMockArg[*models.InstanceBudgetMonth](t, args, 0)
 		*dest = models.InstanceBudgetMonth{IncludedCredits: 10, UsedCredits: 0}
 		_ = dest.UpdateKeys()
 	}).Once()
 
 	// Refresh budget for debited response.
 	tdb.qBudget.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.InstanceBudgetMonth)
+		dest := testutil.RequireMockArg[*models.InstanceBudgetMonth](t, args, 0)
 		*dest = models.InstanceBudgetMonth{IncludedCredits: 10, UsedCredits: 1}
 		_ = dest.UpdateKeys()
 	}).Once()
@@ -247,7 +248,7 @@ func TestRunLinkSafetyBasicJob_CacheHit(t *testing.T) {
 
 	// Cache hit.
 	tdb.qLSB.On("First", mock.AnythingOfType("*models.LinkSafetyBasicResult")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.LinkSafetyBasicResult)
+		dest := testutil.RequireMockArg[*models.LinkSafetyBasicResult](t, args, 0)
 		*dest = models.LinkSafetyBasicResult{
 			ID:            strings.Repeat("a", 64),
 			PolicyVersion: linkSafetyBasicPolicyVersion,
@@ -280,13 +281,13 @@ func TestHandleLinkSafetyBasicConditionFailed_BudgetLookupBranches(t *testing.T)
 	// No cached result, but budget record exists => "budget conflict" when remaining >= priced.
 	tdb.qLSB.On("First", mock.AnythingOfType("*models.LinkSafetyBasicResult")).Return(theoryErrors.ErrItemNotFound).Once()
 	tdb.qBudget.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.InstanceBudgetMonth)
+		dest := testutil.RequireMockArg[*models.InstanceBudgetMonth](t, args, 0)
 		*dest = models.InstanceBudgetMonth{IncludedCredits: 10, UsedCredits: 5}
 		_ = dest.UpdateKeys()
 	}).Once()
 
 	resp := s.handleLinkSafetyBasicConditionFailed(ctx, "inst", "2026-02", "pk", "sk", "job", "actor", "obj", "ch", "lh", 1, 4, 10000, now)
-	if resp.Status != "not_checked_budget" || resp.Budget.Reason != "budget conflict" {
+	if resp.Status != statusNotCheckedBudget || resp.Budget.Reason != "budget conflict" {
 		t.Fatalf("unexpected resp: %#v", resp)
 	}
 
@@ -295,7 +296,7 @@ func TestHandleLinkSafetyBasicConditionFailed_BudgetLookupBranches(t *testing.T)
 	tdb.qBudget.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(theoryErrors.ErrItemNotFound).Once()
 
 	resp = s.handleLinkSafetyBasicConditionFailed(ctx, "inst", "2026-02", "pk", "sk", "job", "actor", "obj", "ch", "lh", 1, 10, 10000, now)
-	if resp.Status != "not_checked_budget" || resp.Budget.Reason != "budget exceeded" {
+	if resp.Status != statusNotCheckedBudget || resp.Budget.Reason != budgetReasonExceeded {
 		t.Fatalf("unexpected resp: %#v", resp)
 	}
 }
@@ -320,7 +321,7 @@ func TestHandleGetPublishJob_ValidationNotFoundAndSuccess(t *testing.T) {
 
 	// Success.
 	tdb.qLSB.On("First", mock.AnythingOfType("*models.LinkSafetyBasicResult")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.LinkSafetyBasicResult)
+		dest := testutil.RequireMockArg[*models.LinkSafetyBasicResult](t, args, 0)
 		*dest = models.LinkSafetyBasicResult{ID: jobID, PolicyVersion: linkSafetyBasicPolicyVersion, CreatedAt: time.Now().UTC()}
 		_ = dest.UpdateKeys()
 	}).Once()

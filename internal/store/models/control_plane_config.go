@@ -2,6 +2,11 @@ package models
 
 import "time"
 
+const (
+	controlPlaneConfigPK = "CONTROL_PLANE"
+	controlPlaneConfigSK = "CONFIG"
+)
+
 // ControlPlaneConfig stores global control-plane configuration.
 type ControlPlaneConfig struct {
 	_ struct{} `theorydb:"naming:camelCase"`
@@ -20,15 +25,15 @@ func (ControlPlaneConfig) TableName() string {
 
 // BeforeCreate sets keys before creating ControlPlaneConfig.
 func (c *ControlPlaneConfig) BeforeCreate() error {
-	c.PK = "CONTROL_PLANE"
-	c.SK = "CONFIG"
+	c.PK = controlPlaneConfigPK
+	c.SK = controlPlaneConfigSK
 	return nil
 }
 
 // UpdateKeys updates the database keys for ControlPlaneConfig.
 func (c *ControlPlaneConfig) UpdateKeys() error {
-	c.PK = "CONTROL_PLANE"
-	c.SK = "CONFIG"
+	c.PK = controlPlaneConfigPK
+	c.SK = controlPlaneConfigSK
 	return nil
 }
 

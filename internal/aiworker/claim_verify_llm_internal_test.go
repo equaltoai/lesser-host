@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/ai"
@@ -139,7 +140,7 @@ func TestClaimVerifyWithLLM_OpenAI_SuccessMissingOutputAndError(t *testing.T) {
 			Evidence: []ai.ClaimVerifyEvidenceV1{{SourceID: "s1", Text: "Alice is 30."}},
 		}
 		_, _, errs := s.claimVerifyWithLLM(context.Background(), "openai:gpt-test", jobID, in, time.Now())
-		if len(errs) != 1 || errs[0].Code != "llm_missing_output" {
+		if len(errs) != 1 || errs[0].Code != aiErrorCodeLLMMissingOutput {
 			t.Fatalf("expected llm_missing_output, got %#v", errs)
 		}
 	})
@@ -162,149 +163,141 @@ func TestClaimVerifyWithLLM_OpenAI_SuccessMissingOutputAndError(t *testing.T) {
 			Evidence: []ai.ClaimVerifyEvidenceV1{{SourceID: "s1", Text: "Alice is 30."}},
 		}
 		_, _, errs := s.claimVerifyWithLLM(context.Background(), "openai:gpt-test", "job-1", in, time.Now())
-		if len(errs) != 1 || errs[0].Code != "llm_failed" {
+		if len(errs) != 1 || errs[0].Code != aiErrorCodeLLMFailed {
 			t.Fatalf("expected llm_failed, got %#v", errs)
 		}
 	})
 }
 
-func TestMaybeAddClaimVerifyWebSearchEvidence_SkipsAndAdds(t *testing.T) {
-	t.Run("skips_when_evidence_limit_reached", func(t *testing.T) {
-		s := &Server{}
-		in := &ai.ClaimVerifyInputsV1{
-			Retrieval: &ai.ClaimVerifyRetrievalV1{Mode: ai.ClaimVerifyRetrievalModeOpenAIWebSearch, MaxSources: 3},
-			Evidence: []ai.ClaimVerifyEvidenceV1{
-				{SourceID: "1", Text: "t1"},
-				{SourceID: "2", Text: "t2"},
-				{SourceID: "3", Text: "t3"},
-				{SourceID: "4", Text: "t4"},
-				{SourceID: "5", Text: "t5"},
+func TestMaybeAddClaimVerifyWebSearchEvidence_SkipsWhenEvidenceLimitReached(t *testing.T) {
+	s := &Server{}
+	in := &ai.ClaimVerifyInputsV1{
+		Retrieval: &ai.ClaimVerifyRetrievalV1{Mode: ai.ClaimVerifyRetrievalModeOpenAIWebSearch, MaxSources: 3},
+		Evidence: []ai.ClaimVerifyEvidenceV1{
+			{SourceID: "1", Text: "t1"},
+			{SourceID: "2", Text: "t2"},
+			{SourceID: "3", Text: "t3"},
+			{SourceID: "4", Text: "t4"},
+			{SourceID: "5", Text: "t5"},
+		},
+	}
+	used, _, _, errs := s.maybeAddClaimVerifyWebSearchEvidence(context.Background(), "openai:gpt-test", in)
+	require.False(t, used)
+	require.Len(t, errs, 1)
+	require.Equal(t, "retrieval_skipped", errs[0].Code)
+}
+
+func TestMaybeAddClaimVerifyWebSearchEvidence_SkipsWhenModelSetNotOpenAI(t *testing.T) {
+	s := &Server{}
+	in := &ai.ClaimVerifyInputsV1{
+		Retrieval: &ai.ClaimVerifyRetrievalV1{Mode: ai.ClaimVerifyRetrievalModeOpenAIWebSearch, MaxSources: 3},
+		Claims:    []string{"c"},
+		Text:      "t",
+		Evidence:  []ai.ClaimVerifyEvidenceV1{{SourceID: "s1", Text: "e"}},
+	}
+	used, _, _, errs := s.maybeAddClaimVerifyWebSearchEvidence(context.Background(), "anthropic:claude", in)
+	require.False(t, used)
+	require.Len(t, errs, 1)
+	require.Equal(t, "retrieval_unsupported", errs[0].Code)
+}
+
+func TestMaybeAddClaimVerifyWebSearchEvidence_ReturnsErrorWhenLLMCallFails(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "k")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.Body.Close()
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"boom"}`))
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("OPENAI_BASE_URL", server.URL)
+
+	s := &Server{}
+	in := &ai.ClaimVerifyInputsV1{
+		Retrieval: &ai.ClaimVerifyRetrievalV1{Mode: ai.ClaimVerifyRetrievalModeOpenAIWebSearch, MaxSources: 3, SearchContextSize: ai.ClaimVerifySearchContextLow},
+		Claims:    []string{"c"},
+		Text:      "t",
+		Evidence:  []ai.ClaimVerifyEvidenceV1{{SourceID: "s1", Text: "e"}},
+	}
+	used, _, _, errs := s.maybeAddClaimVerifyWebSearchEvidence(context.Background(), "openai:gpt-test", in)
+	require.False(t, used)
+	require.Len(t, errs, 1)
+	require.Equal(t, "retrieval_failed", errs[0].Code)
+	require.True(t, errs[0].Retryable)
+}
+
+func TestMaybeAddClaimVerifyWebSearchEvidence_AddsSourcesWhenSuccessful(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "k")
+
+	outPayload, err := json.Marshal(map[string]any{
+		"sources": []any{map[string]any{
+			"url":   "https://example.com",
+			"title": "Example",
+			"text":  "Excerpt",
+		}},
+		"disclaimer": "disc",
+	})
+	require.NoError(t, err)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() { _ = r.Body.Close() }()
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":         "resp_test",
+			"object":     "response",
+			"created_at": 123,
+			"error":      map[string]any{"code": "", "message": ""},
+			"incomplete_details": map[string]any{
+				"reason": "",
 			},
-		}
-		used, _, _, errs := s.maybeAddClaimVerifyWebSearchEvidence(context.Background(), "openai:gpt-test", in)
-		if used || len(errs) != 1 || errs[0].Code != "retrieval_skipped" {
-			t.Fatalf("expected retrieval_skipped, used=%v errs=%#v", used, errs)
-		}
-	})
-
-	t.Run("skips_when_modelset_not_openai", func(t *testing.T) {
-		s := &Server{}
-		in := &ai.ClaimVerifyInputsV1{
-			Retrieval: &ai.ClaimVerifyRetrievalV1{Mode: ai.ClaimVerifyRetrievalModeOpenAIWebSearch, MaxSources: 3},
-			Claims:    []string{"c"},
-			Text:      "t",
-			Evidence:   []ai.ClaimVerifyEvidenceV1{{SourceID: "s1", Text: "e"}},
-		}
-		used, _, _, errs := s.maybeAddClaimVerifyWebSearchEvidence(context.Background(), "anthropic:claude", in)
-		if used || len(errs) != 1 || errs[0].Code != "retrieval_unsupported" {
-			t.Fatalf("expected retrieval_unsupported, used=%v errs=%#v", used, errs)
-		}
-	})
-
-	t.Run("returns_error_when_llm_call_fails", func(t *testing.T) {
-		t.Setenv("OPENAI_API_KEY", "k")
-
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			_ = r.Body.Close()
-			w.WriteHeader(http.StatusInternalServerError)
-			_, _ = w.Write([]byte(`{"error":"boom"}`))
-		}))
-		t.Cleanup(server.Close)
-		t.Setenv("OPENAI_BASE_URL", server.URL)
-
-		s := &Server{}
-		in := &ai.ClaimVerifyInputsV1{
-			Retrieval: &ai.ClaimVerifyRetrievalV1{Mode: ai.ClaimVerifyRetrievalModeOpenAIWebSearch, MaxSources: 3, SearchContextSize: ai.ClaimVerifySearchContextLow},
-			Claims:    []string{"c"},
-			Text:      "t",
-			Evidence:   []ai.ClaimVerifyEvidenceV1{{SourceID: "s1", Text: "e"}},
-		}
-		used, _, _, errs := s.maybeAddClaimVerifyWebSearchEvidence(context.Background(), "openai:gpt-test", in)
-		if used || len(errs) != 1 || errs[0].Code != "retrieval_failed" || !errs[0].Retryable {
-			t.Fatalf("expected retrieval_failed, used=%v errs=%#v", used, errs)
-		}
-	})
-
-	t.Run("adds_sources_when_successful", func(t *testing.T) {
-		t.Setenv("OPENAI_API_KEY", "k")
-
-		outPayload, err := json.Marshal(map[string]any{
-			"sources": []any{map[string]any{
-				"url":   "https://example.com",
-				"title": "Example",
-				"text":  "Excerpt",
-			}},
-			"disclaimer": "disc",
-		})
-		if err != nil {
-			t.Fatalf("marshal output payload: %v", err)
-		}
-
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			defer func() { _ = r.Body.Close() }()
-
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"id":         "resp_test",
-				"object":     "response",
-				"created_at": 123,
-				"error":      map[string]any{"code": "", "message": ""},
-				"incomplete_details": map[string]any{
-					"reason": "",
-				},
-				"instructions": "",
-				"metadata":     map[string]any{},
-				"model":        "gpt-test",
-				"output": []any{map[string]any{
-					"id":     "msg_1",
-					"type":   "message",
-					"role":   "assistant",
-					"status": "completed",
-					"content": []any{
-						map[string]any{
-							"type": "output_text",
-							"text": string(outPayload),
-						},
+			"instructions": "",
+			"metadata":     map[string]any{},
+			"model":        "gpt-test",
+			"output": []any{map[string]any{
+				"id":     "msg_1",
+				"type":   "message",
+				"role":   "assistant",
+				"status": "completed",
+				"content": []any{
+					map[string]any{
+						"type": "output_text",
+						"text": string(outPayload),
 					},
-				}},
-				"parallel_tool_calls": false,
-				"temperature":         0.2,
-				"tool_choice":         "required",
-				"tools":               []any{},
-				"top_p":               1,
-				"usage": map[string]any{
-					"input_tokens":          10,
-					"input_tokens_details":  map[string]any{"cached_tokens": 0},
-					"output_tokens":         20,
-					"output_tokens_details": map[string]any{"reasoning_tokens": 0},
-					"total_tokens":          30,
 				},
-			})
-		}))
-		t.Cleanup(server.Close)
-		t.Setenv("OPENAI_BASE_URL", server.URL)
+			}},
+			"parallel_tool_calls": false,
+			"temperature":         0.2,
+			"tool_choice":         "required",
+			"tools":               []any{},
+			"top_p":               1,
+			"usage": map[string]any{
+				"input_tokens":          10,
+				"input_tokens_details":  map[string]any{"cached_tokens": 0},
+				"output_tokens":         20,
+				"output_tokens_details": map[string]any{"reasoning_tokens": 0},
+				"total_tokens":          30,
+			},
+		})
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("OPENAI_BASE_URL", server.URL)
 
-		s := &Server{}
-		in := &ai.ClaimVerifyInputsV1{
-			Retrieval: &ai.ClaimVerifyRetrievalV1{Mode: ai.ClaimVerifyRetrievalModeOpenAIWebSearch, MaxSources: 3, SearchContextSize: ai.ClaimVerifySearchContextLow},
-			Claims:    []string{"c"},
-			Text:      "t",
-			Evidence:   []ai.ClaimVerifyEvidenceV1{{SourceID: "s1", Text: "e"}},
-		}
-		used, disclaimer, usage, errs := s.maybeAddClaimVerifyWebSearchEvidence(context.Background(), "openai:gpt-test", in)
-		if !used || len(errs) != 0 {
-			t.Fatalf("expected used without errs, used=%v errs=%#v", used, errs)
-		}
-		if disclaimer != "disc" {
-			t.Fatalf("unexpected disclaimer: %q", disclaimer)
-		}
-		if usage.Provider != "openai" || usage.TotalTokens != 30 {
-			t.Fatalf("unexpected usage: %#v", usage)
-		}
-		if len(in.Evidence) != 2 || !strings.HasPrefix(in.Evidence[1].SourceID, "web_") {
-			t.Fatalf("expected web evidence appended, got %#v", in.Evidence)
-		}
-	})
+	s := &Server{}
+	in := &ai.ClaimVerifyInputsV1{
+		Retrieval: &ai.ClaimVerifyRetrievalV1{Mode: ai.ClaimVerifyRetrievalModeOpenAIWebSearch, MaxSources: 3, SearchContextSize: ai.ClaimVerifySearchContextLow},
+		Claims:    []string{"c"},
+		Text:      "t",
+		Evidence:  []ai.ClaimVerifyEvidenceV1{{SourceID: "s1", Text: "e"}},
+	}
+	used, disclaimer, usage, errs := s.maybeAddClaimVerifyWebSearchEvidence(context.Background(), "openai:gpt-test", in)
+	require.True(t, used)
+	require.Empty(t, errs)
+	require.Equal(t, "disc", disclaimer)
+	require.Equal(t, testProviderOpenAI, usage.Provider)
+	require.Equal(t, int64(30), usage.TotalTokens)
+	require.Len(t, in.Evidence, 2)
+	require.True(t, strings.HasPrefix(in.Evidence[1].SourceID, "web_"))
 }
 
 func TestIssueClaimVerifyAttestationV1_SignsAndStoresOrReturnsErrors(t *testing.T) {
@@ -438,9 +431,9 @@ func TestMaybeAddClaimVerifyWebSearchEvidence_ClampsMaxSourcesAndUniquifiesIDs(t
 	}
 
 	var (
-		mu        sync.Mutex
-		lastReq   string
-		reqCount  int
+		mu       sync.Mutex
+		lastReq  string
+		reqCount int
 	)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -452,10 +445,10 @@ func TestMaybeAddClaimVerifyWebSearchEvidence_ClampsMaxSourcesAndUniquifiesIDs(t
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"id":         "resp_test",
-			"object":     "response",
-			"created_at": 123,
-			"error":      map[string]any{"code": "", "message": ""},
+			"id":                 "resp_test",
+			"object":             "response",
+			"created_at":         123,
+			"error":              map[string]any{"code": "", "message": ""},
 			"incomplete_details": map[string]any{"reason": ""},
 			"instructions":       "",
 			"metadata":           map[string]any{},
@@ -491,7 +484,7 @@ func TestMaybeAddClaimVerifyWebSearchEvidence_ClampsMaxSourcesAndUniquifiesIDs(t
 		Retrieval: &ai.ClaimVerifyRetrievalV1{Mode: ai.ClaimVerifyRetrievalModeOpenAIWebSearch, MaxSources: 999},
 		Claims:    []string{"c"},
 		Text:      "t",
-		Evidence:   []ai.ClaimVerifyEvidenceV1{{SourceID: "web_1", Text: "existing"}},
+		Evidence:  []ai.ClaimVerifyEvidenceV1{{SourceID: "web_1", Text: "existing"}},
 	}
 	used, disc, _, errs := s.maybeAddClaimVerifyWebSearchEvidence(context.Background(), "openai:gpt-test", in)
 	if !used || len(errs) != 0 {

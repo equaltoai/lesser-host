@@ -14,6 +14,7 @@ import (
 	"github.com/equaltoai/lesser-host/internal/rendering"
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
+	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
 func TestRenderQueue_Helpers(t *testing.T) {
@@ -87,7 +88,7 @@ func TestQueueRender_ExistingAndCreateRaceAndEnqueueFailure(t *testing.T) {
 
 	// Existing artifact: returned without enqueue.
 	qRender.On("First", mock.AnythingOfType("*models.RenderArtifact")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.RenderArtifact)
+		dest := testutil.RequireMockArg[*models.RenderArtifact](t, args, 0)
 		*dest = models.RenderArtifact{ID: renderID, PolicyVersion: rendering.RenderPolicyVersion, NormalizedURL: normalized, ExpiresAt: time.Now().UTC().Add(1 * time.Hour)}
 		_ = dest.UpdateKeys()
 	}).Once()
@@ -100,7 +101,7 @@ func TestQueueRender_ExistingAndCreateRaceAndEnqueueFailure(t *testing.T) {
 	qRender.On("First", mock.AnythingOfType("*models.RenderArtifact")).Return(theoryErrors.ErrItemNotFound).Once()
 	qRender.On("Create").Return(theoryErrors.ErrConditionFailed).Once()
 	qRender.On("First", mock.AnythingOfType("*models.RenderArtifact")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.RenderArtifact)
+		dest := testutil.RequireMockArg[*models.RenderArtifact](t, args, 0)
 		*dest = models.RenderArtifact{ID: renderID, PolicyVersion: rendering.RenderPolicyVersion, NormalizedURL: normalized}
 		_ = dest.UpdateKeys()
 	}).Once()

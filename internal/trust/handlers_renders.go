@@ -13,6 +13,7 @@ import (
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/billing"
+	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/rendering"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
@@ -81,7 +82,7 @@ func renderDisabledResponse() renderArtifactResponse {
 
 func parseCreateRenderRequestInput(ctx *apptheory.Context) (createRenderRequest, error) {
 	var req createRenderRequest
-	if err := parseJSON(ctx, &req); err != nil {
+	if err := httpx.ParseJSON(ctx, &req); err != nil {
 		return createRenderRequest{}, err
 	}
 	return req, nil
@@ -534,11 +535,11 @@ func renderArtifactResponseFromModel(ctx *apptheory.Context, item *models.Render
 	}
 
 	if out.ErrorCode != "" {
-		out.Status = "error"
+		out.Status = statusError
 	} else if strings.TrimSpace(item.ThumbnailObjectKey) != "" || strings.TrimSpace(item.SnapshotObjectKey) != "" {
-		out.Status = "ok"
+		out.Status = statusOK
 	} else {
-		out.Status = "queued"
+		out.Status = statusQueued
 	}
 
 	base := requestBaseURL(ctx)

@@ -53,9 +53,9 @@ func (manyComprehend) DetectDominantLanguage(_ context.Context, _ *comprehend.De
 func (manyComprehend) DetectEntities(_ context.Context, _ *comprehend.DetectEntitiesInput, _ ...func(*comprehend.Options)) (*comprehend.DetectEntitiesOutput, error) {
 	score := float32(0.8)
 	ents := make([]comprehendtypes.Entity, 0, 60)
-	for i := 0; i < 60; i++ {
+	for i := int32(0); i < 60; i++ {
 		txt := fmt.Sprintf("entity-%02d-%s", i, strings.Repeat("x", 100))
-		begin := int32(100 - i) // reverse order to force sorting
+		begin := int32(100) - i // reverse order to force sorting
 		end := begin + 10
 		ents = append(ents, comprehendtypes.Entity{
 			Text:        aws.String(txt),
@@ -72,12 +72,12 @@ func (manyComprehend) DetectEntities(_ context.Context, _ *comprehend.DetectEnti
 func (manyComprehend) DetectPiiEntities(_ context.Context, _ *comprehend.DetectPiiEntitiesInput, _ ...func(*comprehend.Options)) (*comprehend.DetectPiiEntitiesOutput, error) {
 	score := float32(0.7)
 	out := make([]comprehendtypes.PiiEntity, 0, 60)
-	for i := 0; i < 60; i++ {
+	for i := int32(0); i < 60; i++ {
 		out = append(out, comprehendtypes.PiiEntity{
 			Type:        comprehendtypes.PiiEntityTypeName,
 			Score:       &score,
-			BeginOffset: aws.Int32(int32(i)),
-			EndOffset:   aws.Int32(int32(i + 1)),
+			BeginOffset: aws.Int32(i),
+			EndOffset:   aws.Int32(i + 1),
 		})
 	}
 	return &comprehend.DetectPiiEntitiesOutput{Entities: out}, nil
@@ -253,7 +253,7 @@ func TestModerationImageDeterministicFromRekognition_BlocksHighConfidenceNudity(
 	if out.Decision != decisionBlock {
 		t.Fatalf("expected block, got %#v", out)
 	}
-	if len(out.Categories) == 0 || out.Categories[0].Code != "nudity" {
+	if len(out.Categories) == 0 || out.Categories[0].Code != testCategoryNudity {
 		t.Fatalf("expected nudity category, got %#v", out.Categories)
 	}
 	if len(out.Highlights) != 1 || out.Highlights[0] != "hello" {
@@ -266,10 +266,10 @@ func TestBumpModerationTextWithPII_BumpsAllowToReviewAndAddsCategory(t *testing.
 
 	in := `{"kind":"comprehend_text","version":"v1","pii_entities":[{"type":"NAME","score":0.9}]}`
 	got := bumpModerationTextWithPII(
-		ai.ModerationResultV1{Kind: "moderation_text", Version: "v1", Decision: "allow"},
+		ai.ModerationResultV1{Kind: "moderation_text", Version: "v1", Decision: testDecisionAllow},
 		in,
 	)
-	if got.Decision != "review" {
+	if got.Decision != testDecisionReview {
 		t.Fatalf("expected review, got %#v", got)
 	}
 	found := false
@@ -283,8 +283,8 @@ func TestBumpModerationTextWithPII_BumpsAllowToReviewAndAddsCategory(t *testing.
 		t.Fatalf("expected pii category, got %#v", got.Categories)
 	}
 
-	unchanged := bumpModerationTextWithPII(ai.ModerationResultV1{Decision: "allow"}, "{")
-	if unchanged.Decision != "allow" {
+	unchanged := bumpModerationTextWithPII(ai.ModerationResultV1{Decision: testDecisionAllow}, "{")
+	if unchanged.Decision != testDecisionAllow {
 		t.Fatalf("expected invalid evidence to no-op, got %#v", unchanged)
 	}
 }

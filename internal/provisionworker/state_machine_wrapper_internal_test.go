@@ -33,7 +33,7 @@ func TestManagedProvisioningStateMachine_RequeuesAfterStartingAccountCreate(t *t
 
 	s := NewServer(
 		config.Config{
-			ProvisionQueueURL:          "https://sqs.us-east-1.amazonaws.com/123/provision",
+			ProvisionQueueURL:           "https://sqs.us-east-1.amazonaws.com/123/provision",
 			ManagedAccountEmailTemplate: "ops+{slug}@example.com",
 		},
 		st,
@@ -99,4 +99,3 @@ func TestProvisionWorkerRegisterHelpers(t *testing.T) {
 		t.Fatalf("expected same app")
 	}
 }
-

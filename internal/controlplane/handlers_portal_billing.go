@@ -13,6 +13,7 @@ import (
 	"github.com/theory-cloud/tabletheory/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
+	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/payments"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
@@ -96,7 +97,7 @@ func (s *Server) putBillingProfile(ctx *apptheory.Context, profile *models.Billi
 
 func parsePortalCreditsCheckoutRequest(ctx *apptheory.Context) (portalCreditsCheckoutRequest, *apptheory.AppError) {
 	var req portalCreditsCheckoutRequest
-	if err := parseJSON(ctx, &req); err != nil {
+	if err := httpx.ParseJSON(ctx, &req); err != nil {
 		if appErr, ok := err.(*apptheory.AppError); ok {
 			return portalCreditsCheckoutRequest{}, appErr
 		}

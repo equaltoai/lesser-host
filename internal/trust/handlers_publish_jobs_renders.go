@@ -196,10 +196,10 @@ func (s *Server) runLinkRenderJob(
 		}
 
 		setMissingLinkRenderStatuses(&out, missing, "not_checked_budget")
-		reason := "budget not configured"
+		reason := budgetReasonNotConfigured
 		budgetAllowed := false
 		if errKind == budgetErrKindExceeded {
-			reason = "budget exceeded"
+			reason = budgetReasonExceeded
 		}
 
 		remaining := budget.IncludedCredits - budget.UsedCredits
@@ -559,22 +559,22 @@ func shouldRenderLink(renderPolicy string, risk string) bool {
 	risk = strings.ToLower(strings.TrimSpace(risk))
 
 	// Never render invalid/SSRF-blocked links.
-	if risk == "invalid" || risk == "blocked" {
+	if risk == statusInvalid || risk == statusBlocked {
 		return false
 	}
 
 	switch renderPolicy {
-	case "always":
+	case renderPolicyAlways:
 		return true
 	default: // suspicious
-		return risk == "medium" || risk == "high"
+		return risk == riskMedium || risk == riskHigh
 	}
 }
 
 func retentionClassForRisk(risk string) string {
 	risk = strings.ToLower(strings.TrimSpace(risk))
 	switch risk {
-	case "medium", "high":
+	case riskMedium, riskHigh:
 		return models.RenderRetentionClassEvidence
 	default:
 		return models.RenderRetentionClassBenign

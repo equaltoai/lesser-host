@@ -16,6 +16,7 @@ import (
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
+	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
 type portalTestDB struct {
@@ -88,7 +89,11 @@ func TestRequireInstanceAccess(t *testing.T) {
 	// Operator can access regardless of owner.
 	ctx.Set(ctxKeyOperatorRole, models.RoleAdmin)
 	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.Instance)
+		if !ok {
+			t.Fatalf("expected *models.Instance, got %T", destAny)
+		}
 		*dest = models.Instance{Slug: "demo", Owner: "someone-else"}
 	}).Once()
 	inst, err := s.requireInstanceAccess(ctx, "demo")
@@ -99,7 +104,11 @@ func TestRequireInstanceAccess(t *testing.T) {
 	// Non-operator owner mismatch => forbidden.
 	ctx = &apptheory.Context{AuthIdentity: "alice"}
 	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.Instance)
+		if !ok {
+			t.Fatalf("expected *models.Instance, got %T", destAny)
+		}
 		*dest = models.Instance{Slug: "demo", Owner: "bob"}
 	}).Once()
 	if _, err := s.requireInstanceAccess(ctx, "demo"); err == nil {
@@ -114,7 +123,11 @@ func TestHandlePortalCreateInstance_ReturnsExistingWhenOwned(t *testing.T) {
 	s := &Server{cfg: config.Config{}, store: store.New(tdb.db)}
 
 	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.Instance)
+		if !ok {
+			t.Fatalf("expected *models.Instance, got %T", destAny)
+		}
 		*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive}
 	}).Once()
 
@@ -155,7 +168,11 @@ func TestHandlePortalListInstances(t *testing.T) {
 	s := &Server{store: store.New(tdb.db)}
 
 	tdb.qInstance.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*[]*models.Instance)
+		destAny := args.Get(0)
+		dest, ok := destAny.(*[]*models.Instance)
+		if !ok {
+			t.Fatalf("expected *[]*models.Instance, got %T", destAny)
+		}
 		*dest = []*models.Instance{
 			{Slug: "a", Owner: "alice", Status: models.InstanceStatusActive},
 			{Slug: "b", Owner: "alice", Status: models.InstanceStatusActive},
@@ -180,7 +197,11 @@ func TestHandlePortalUpdateInstanceConfig(t *testing.T) {
 
 	// requireInstanceAccess -> getInstance
 	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.Instance)
+		if !ok {
+			t.Fatalf("expected *models.Instance, got %T", destAny)
+		}
 		*dest = models.Instance{
 			Slug:              "demo",
 			Owner:             "alice",
@@ -192,7 +213,11 @@ func TestHandlePortalUpdateInstanceConfig(t *testing.T) {
 	// Update then reload instance.
 	tdb.qInstance.On("Update", mock.Anything).Return(nil).Once()
 	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.Instance)
+		if !ok {
+			t.Fatalf("expected *models.Instance, got %T", destAny)
+		}
 		*dest = models.Instance{
 			Slug:              "demo",
 			Owner:             "alice",
@@ -219,21 +244,19 @@ func TestHandlePortalUpdateInstanceConfig(t *testing.T) {
 	}
 }
 
-func TestPortalBudgetsAndUsageHandlers(t *testing.T) {
+func TestHandlePortalListInstanceBudgets_Success(t *testing.T) {
 	t.Parallel()
 
 	tdb := newPortalTestDB()
 	s := &Server{store: store.New(tdb.db)}
 
-	// requireInstanceAccess -> getInstance
 	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
 		*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive}
-	}).Maybe()
+	}).Once()
 
-	// List budgets.
 	tdb.qBudget.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*[]*models.InstanceBudgetMonth)
+		dest := testutil.RequireMockArg[*[]*models.InstanceBudgetMonth](t, args, 0)
 		*dest = []*models.InstanceBudgetMonth{
 			{InstanceSlug: "demo", Month: "2026-01", IncludedCredits: 100, UsedCredits: 5},
 		}
@@ -244,45 +267,79 @@ func TestPortalBudgetsAndUsageHandlers(t *testing.T) {
 	if err != nil || resp == nil || resp.Status != 200 {
 		t.Fatalf("unexpected budgets resp: %#v err=%v", resp, err)
 	}
+}
 
-	// Get budget month not found.
+func TestHandlePortalGetInstanceBudgetMonth_NotFound(t *testing.T) {
+	t.Parallel()
+
+	tdb := newPortalTestDB()
+	s := &Server{store: store.New(tdb.db)}
+
+	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive}
+	}).Once()
+
 	tdb.qBudget.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(theoryErrors.ErrItemNotFound).Once()
-	ctx = &apptheory.Context{AuthIdentity: "alice", Params: map[string]string{"slug": "demo", "month": "2026-01"}}
-	resp, err = s.handlePortalGetInstanceBudgetMonth(ctx)
+
+	ctx := &apptheory.Context{AuthIdentity: "alice", Params: map[string]string{"slug": "demo", "month": "2026-01"}}
+	resp, err := s.handlePortalGetInstanceBudgetMonth(ctx)
 	if err != nil || resp == nil || resp.Status != 200 {
 		t.Fatalf("unexpected get budget resp: %#v err=%v", resp, err)
 	}
+}
 
-	// Set budget month success (existing preserves used).
+func TestHandlePortalSetInstanceBudgetMonth_SuccessPreservesUsedCredits(t *testing.T) {
+	t.Parallel()
+
+	tdb := newPortalTestDB()
+	s := &Server{store: store.New(tdb.db)}
+
+	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive}
+	}).Once()
+
 	tdb.qBudget.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.InstanceBudgetMonth)
+		dest := testutil.RequireMockArg[*models.InstanceBudgetMonth](t, args, 0)
 		*dest = models.InstanceBudgetMonth{InstanceSlug: "demo", Month: "2026-01", UsedCredits: 7}
 	}).Once()
 	tdb.qBudget.On("CreateOrUpdate").Return(nil).Once()
 	tdb.qAudit.On("Create").Return(nil).Maybe()
 
 	body, _ := json.Marshal(setBudgetMonthRequest{IncludedCredits: 10})
-	ctx = &apptheory.Context{AuthIdentity: "alice", Params: map[string]string{"slug": "demo", "month": "2026-01"}, Request: apptheory.Request{Body: body}}
-	resp, err = s.handlePortalSetInstanceBudgetMonth(ctx)
+	ctx := &apptheory.Context{AuthIdentity: "alice", Params: map[string]string{"slug": "demo", "month": "2026-01"}, Request: apptheory.Request{Body: body}}
+	resp, err := s.handlePortalSetInstanceBudgetMonth(ctx)
 	if err != nil || resp == nil || resp.Status != 200 {
 		t.Fatalf("unexpected set budget resp: %#v err=%v", resp, err)
 	}
+}
 
-	// Usage summary computes cached counts and includes budget (best-effort).
+func TestHandlePortalGetInstanceUsageSummary_ComputesCachedCountsAndBudget(t *testing.T) {
+	t.Parallel()
+
+	tdb := newPortalTestDB()
+	s := &Server{store: store.New(tdb.db)}
+
+	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive}
+	}).Once()
+
 	tdb.qUsage.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*[]*models.UsageLedgerEntry)
+		dest := testutil.RequireMockArg[*[]*models.UsageLedgerEntry](t, args, 0)
 		*dest = []*models.UsageLedgerEntry{
 			{Cached: true, ListCredits: 10, RequestedCredits: 5, DebitedCredits: 5},
 			{Cached: false, ListCredits: 2, RequestedCredits: 2, DebitedCredits: 2},
 		}
 	}).Once()
 	tdb.qBudget.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.InstanceBudgetMonth)
+		dest := testutil.RequireMockArg[*models.InstanceBudgetMonth](t, args, 0)
 		*dest = models.InstanceBudgetMonth{InstanceSlug: "demo", Month: "2026-01", IncludedCredits: 100, UsedCredits: 9}
 	}).Once()
 
-	ctx = &apptheory.Context{AuthIdentity: "alice", Params: map[string]string{"slug": "demo", "month": "2026-01"}}
-	resp, err = s.handlePortalGetInstanceUsageSummary(ctx)
+	ctx := &apptheory.Context{AuthIdentity: "alice", Params: map[string]string{"slug": "demo", "month": "2026-01"}}
+	resp, err := s.handlePortalGetInstanceUsageSummary(ctx)
 	if err != nil || resp == nil || resp.Status != 200 {
 		t.Fatalf("unexpected usage summary resp: %#v err=%v", resp, err)
 	}
@@ -310,12 +367,20 @@ func TestHandlePortalListInstanceUsage(t *testing.T) {
 
 	// requireInstanceAccess -> getInstance
 	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.Instance)
+		if !ok {
+			t.Fatalf("expected *models.Instance, got %T", destAny)
+		}
 		*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive}
 	}).Once()
 
 	tdb.qUsage.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*[]*models.UsageLedgerEntry)
+		destAny := args.Get(0)
+		dest, ok := destAny.(*[]*models.UsageLedgerEntry)
+		if !ok {
+			t.Fatalf("expected *[]*models.UsageLedgerEntry, got %T", destAny)
+		}
 		*dest = []*models.UsageLedgerEntry{{ID: "e1"}, {ID: "e2"}}
 	}).Once()
 
@@ -356,7 +421,11 @@ func TestLoadInstanceDomain_NotFoundAndSlugMismatch(t *testing.T) {
 	}
 
 	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Domain)
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.Domain)
+		if !ok {
+			t.Fatalf("expected *models.Domain, got %T", destAny)
+		}
 		*dest = models.Domain{Domain: "example.com", InstanceSlug: "other"}
 	}).Once()
 	if _, err := s.loadInstanceDomain(ctx, "example.com", "demo"); err == nil {
@@ -371,7 +440,11 @@ func TestHandlePortalGetInstanceBudgetMonth_ValidatesMonth(t *testing.T) {
 	s := &Server{store: store.New(tdb.db)}
 
 	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.Instance)
+		if !ok {
+			t.Fatalf("expected *models.Instance, got %T", destAny)
+		}
 		*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive}
 	}).Once()
 
@@ -388,12 +461,20 @@ func TestHandlePortalSetInstanceBudgetMonth_RejectsIncludedLessThanUsed(t *testi
 	s := &Server{store: store.New(tdb.db)}
 
 	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.Instance)
+		if !ok {
+			t.Fatalf("expected *models.Instance, got %T", destAny)
+		}
 		*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive}
 	}).Once()
 
 	tdb.qBudget.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.InstanceBudgetMonth)
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.InstanceBudgetMonth)
+		if !ok {
+			t.Fatalf("expected *models.InstanceBudgetMonth, got %T", destAny)
+		}
 		*dest = models.InstanceBudgetMonth{InstanceSlug: "demo", Month: "2026-01", UsedCredits: 9}
 	}).Once()
 
@@ -411,7 +492,11 @@ func TestHandlePortalAddInstanceDomain_PrimaryConflict(t *testing.T) {
 	s := &Server{cfg: config.Config{}, store: store.New(tdb.db)}
 
 	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.Instance)
+		if !ok {
+			t.Fatalf("expected *models.Instance, got %T", destAny)
+		}
 		*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive}
 	}).Once()
 
@@ -429,7 +514,11 @@ func TestHandlePortalAddInstanceDomain_Success(t *testing.T) {
 	s := &Server{cfg: config.Config{}, store: store.New(tdb.db)}
 
 	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.Instance)
+		if !ok {
+			t.Fatalf("expected *models.Instance, got %T", destAny)
+		}
 		*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive}
 	}).Once()
 
@@ -455,12 +544,20 @@ func TestHandlePortalVerifyInstanceDomain_AlreadyVerifiedReturnsOK(t *testing.T)
 	s := &Server{store: store.New(tdb.db)}
 
 	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.Instance)
+		if !ok {
+			t.Fatalf("expected *models.Instance, got %T", destAny)
+		}
 		*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive}
 	}).Once()
 
 	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Domain)
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.Domain)
+		if !ok {
+			t.Fatalf("expected *models.Domain, got %T", destAny)
+		}
 		*dest = models.Domain{Domain: "example.com", InstanceSlug: "demo", Status: models.DomainStatusVerified}
 	}).Once()
 
@@ -474,174 +571,189 @@ func TestHandlePortalVerifyInstanceDomain_AlreadyVerifiedReturnsOK(t *testing.T)
 	}
 }
 
-func TestHandlePortalRotateInstanceDomain_NotFound(t *testing.T) {
+func TestHandlePortalInstanceDomainOps_NotFound(t *testing.T) {
 	t.Parallel()
 
-	tdb := newPortalTestDB()
-	s := &Server{store: store.New(tdb.db)}
+	cases := []struct {
+		name string
+		call func(s *Server, ctx *apptheory.Context) (*apptheory.Response, error)
+	}{
+		{
+			name: "rotate",
+			call: func(s *Server, ctx *apptheory.Context) (*apptheory.Response, error) {
+				return s.handlePortalRotateInstanceDomain(ctx)
+			},
+		},
+		{
+			name: "disable",
+			call: func(s *Server, ctx *apptheory.Context) (*apptheory.Response, error) {
+				return s.handlePortalDisableInstanceDomain(ctx)
+			},
+		},
+		{
+			name: "delete",
+			call: func(s *Server, ctx *apptheory.Context) (*apptheory.Response, error) {
+				return s.handlePortalDeleteInstanceDomain(ctx)
+			},
+		},
+	}
 
-	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
-		*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive}
-	}).Once()
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(theoryErrors.ErrItemNotFound).Once()
+			tdb := newPortalTestDB()
+			s := &Server{store: store.New(tdb.db)}
 
-	ctx := &apptheory.Context{AuthIdentity: "alice", Params: map[string]string{"slug": "demo", "domain": "example.com"}}
-	if _, err := s.handlePortalRotateInstanceDomain(ctx); err == nil {
-		t.Fatalf("expected not found")
+			tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+				destAny := args.Get(0)
+				dest, ok := destAny.(*models.Instance)
+				if !ok {
+					t.Fatalf("expected *models.Instance, got %T", destAny)
+				}
+				*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive}
+			}).Once()
+
+			tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(theoryErrors.ErrItemNotFound).Once()
+
+			ctx := &apptheory.Context{AuthIdentity: "alice", Params: map[string]string{"slug": "demo", "domain": "example.com"}}
+			if _, err := tc.call(s, ctx); err == nil {
+				t.Fatalf("expected not found")
+			}
+		})
 	}
 }
 
-func TestHandlePortalDisableInstanceDomain_NotFound(t *testing.T) {
+func TestHandlePortalRotateInstanceDomain_Success(t *testing.T) {
 	t.Parallel()
 
 	tdb := newPortalTestDB()
 	s := &Server{store: store.New(tdb.db)}
 
 	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
 		*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive}
 	}).Once()
 
-	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(theoryErrors.ErrItemNotFound).Once()
+	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
+		*dest = models.Domain{
+			Domain:       "example.com",
+			DomainRaw:    "Example.COM",
+			InstanceSlug: "demo",
+			Type:         models.DomainTypeVanity,
+			Status:       models.DomainStatusVerified,
+		}
+		_ = dest.UpdateKeys()
+	}).Once()
 
-	ctx := &apptheory.Context{AuthIdentity: "alice", Params: map[string]string{"slug": "demo", "domain": "example.com"}}
-	if _, err := s.handlePortalDisableInstanceDomain(ctx); err == nil {
-		t.Fatalf("expected not found")
+	tdb.qDomain.On("Update", mock.Anything).Return(nil).Once()
+	tdb.qAudit.On("Create").Return(nil).Maybe()
+
+	ctx := &apptheory.Context{
+		AuthIdentity: "alice",
+		RequestID:    "rid",
+		Params:       map[string]string{"slug": "demo", "domain": "example.com"},
+	}
+	resp, err := s.handlePortalRotateInstanceDomain(ctx)
+	if err != nil || resp == nil || resp.Status != 200 {
+		t.Fatalf("resp=%#v err=%v", resp, err)
+	}
+
+	var out addDomainResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if strings.TrimSpace(out.Domain.Status) != models.DomainStatusPending || strings.TrimSpace(out.Verification.TXTValue) == "" {
+		t.Fatalf("unexpected rotate response: %#v", out)
 	}
 }
 
-func TestHandlePortalRotateAndDisableAndDeleteInstanceDomain_Success(t *testing.T) {
+func TestHandlePortalDisableInstanceDomain_Success(t *testing.T) {
 	t.Parallel()
 
 	tdb := newPortalTestDB()
 	s := &Server{store: store.New(tdb.db)}
 
 	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
-		*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive}
-	}).Maybe()
-
-	t.Run("rotate_success", func(t *testing.T) {
-		tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
-			dest := args.Get(0).(*models.Domain)
-			*dest = models.Domain{
-				Domain:       "example.com",
-				DomainRaw:    "Example.COM",
-				InstanceSlug: "demo",
-				Type:         models.DomainTypeVanity,
-				Status:       models.DomainStatusVerified,
-			}
-			_ = dest.UpdateKeys()
-		}).Once()
-
-		tdb.qDomain.On("Update", mock.Anything).Return(nil).Once()
-		tdb.qAudit.On("Create").Return(nil).Maybe()
-
-		ctx := &apptheory.Context{
-			AuthIdentity: "alice",
-			RequestID:    "rid",
-			Params:       map[string]string{"slug": "demo", "domain": "example.com"},
-		}
-		resp, err := s.handlePortalRotateInstanceDomain(ctx)
-		if err != nil || resp == nil || resp.Status != 200 {
-			t.Fatalf("resp=%#v err=%v", resp, err)
-		}
-
-		var out addDomainResponse
-		if err := json.Unmarshal(resp.Body, &out); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
-		if strings.TrimSpace(out.Domain.Status) != models.DomainStatusPending || strings.TrimSpace(out.Verification.TXTValue) == "" {
-			t.Fatalf("unexpected rotate response: %#v", out)
-		}
-	})
-
-	t.Run("disable_success", func(t *testing.T) {
-		tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
-			dest := args.Get(0).(*models.Domain)
-			*dest = models.Domain{
-				Domain:       "example.com",
-				InstanceSlug: "demo",
-				Type:         models.DomainTypeVanity,
-				Status:       models.DomainStatusVerified,
-			}
-			_ = dest.UpdateKeys()
-		}).Once()
-
-		tdb.qDomain.On("Update", mock.Anything).Return(nil).Once()
-		tdb.qAudit.On("Create").Return(nil).Maybe()
-
-		ctx := &apptheory.Context{
-			AuthIdentity: "alice",
-			RequestID:    "rid",
-			Params:       map[string]string{"slug": "demo", "domain": "example.com"},
-		}
-		resp, err := s.handlePortalDisableInstanceDomain(ctx)
-		if err != nil || resp == nil || resp.Status != 200 {
-			t.Fatalf("resp=%#v err=%v", resp, err)
-		}
-
-		var out verifyDomainResponse
-		if err := json.Unmarshal(resp.Body, &out); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
-		if strings.TrimSpace(out.Domain.Status) != models.DomainStatusDisabled {
-			t.Fatalf("expected disabled domain, got %#v", out.Domain)
-		}
-	})
-
-	t.Run("delete_success", func(t *testing.T) {
-		tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
-			dest := args.Get(0).(*models.Domain)
-			*dest = models.Domain{
-				Domain:       "example.com",
-				InstanceSlug: "demo",
-				Type:         models.DomainTypeVanity,
-				Status:       models.DomainStatusDisabled,
-			}
-			_ = dest.UpdateKeys()
-		}).Once()
-
-		tdb.qAudit.On("Create").Return(nil).Maybe()
-
-		ctx := &apptheory.Context{
-			AuthIdentity: "alice",
-			RequestID:    "rid",
-			Params:       map[string]string{"slug": "demo", "domain": "example.com"},
-		}
-		resp, err := s.handlePortalDeleteInstanceDomain(ctx)
-		if err != nil || resp == nil || resp.Status != 200 {
-			t.Fatalf("resp=%#v err=%v", resp, err)
-		}
-
-		var out map[string]any
-		if err := json.Unmarshal(resp.Body, &out); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
-		if deleted, ok := out["deleted"].(bool); !ok || !deleted {
-			t.Fatalf("expected deleted true, got %#v", out)
-		}
-	})
-}
-
-func TestHandlePortalDeleteInstanceDomain_NotFound(t *testing.T) {
-	t.Parallel()
-
-	tdb := newPortalTestDB()
-	s := &Server{store: store.New(tdb.db)}
-
-	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
 		*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive}
 	}).Once()
 
-	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(theoryErrors.ErrItemNotFound).Once()
+	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
+		*dest = models.Domain{
+			Domain:       "example.com",
+			InstanceSlug: "demo",
+			Type:         models.DomainTypeVanity,
+			Status:       models.DomainStatusVerified,
+		}
+		_ = dest.UpdateKeys()
+	}).Once()
 
-	ctx := &apptheory.Context{AuthIdentity: "alice", Params: map[string]string{"slug": "demo", "domain": "example.com"}}
-	if _, err := s.handlePortalDeleteInstanceDomain(ctx); err == nil {
-		t.Fatalf("expected not found")
+	tdb.qDomain.On("Update", mock.Anything).Return(nil).Once()
+	tdb.qAudit.On("Create").Return(nil).Maybe()
+
+	ctx := &apptheory.Context{
+		AuthIdentity: "alice",
+		RequestID:    "rid",
+		Params:       map[string]string{"slug": "demo", "domain": "example.com"},
+	}
+	resp, err := s.handlePortalDisableInstanceDomain(ctx)
+	if err != nil || resp == nil || resp.Status != 200 {
+		t.Fatalf("resp=%#v err=%v", resp, err)
+	}
+
+	var out verifyDomainResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if strings.TrimSpace(out.Domain.Status) != models.DomainStatusDisabled {
+		t.Fatalf("expected disabled domain, got %#v", out.Domain)
+	}
+}
+
+func TestHandlePortalDeleteInstanceDomain_Success(t *testing.T) {
+	t.Parallel()
+
+	tdb := newPortalTestDB()
+	s := &Server{store: store.New(tdb.db)}
+
+	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive}
+	}).Once()
+
+	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
+		*dest = models.Domain{
+			Domain:       "example.com",
+			InstanceSlug: "demo",
+			Type:         models.DomainTypeVanity,
+			Status:       models.DomainStatusDisabled,
+		}
+		_ = dest.UpdateKeys()
+	}).Once()
+
+	tdb.qAudit.On("Create").Return(nil).Maybe()
+
+	ctx := &apptheory.Context{
+		AuthIdentity: "alice",
+		RequestID:    "rid",
+		Params:       map[string]string{"slug": "demo", "domain": "example.com"},
+	}
+	resp, err := s.handlePortalDeleteInstanceDomain(ctx)
+	if err != nil || resp == nil || resp.Status != 200 {
+		t.Fatalf("resp=%#v err=%v", resp, err)
+	}
+
+	var out map[string]any
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if deleted, ok := out["deleted"].(bool); !ok || !deleted {
+		t.Fatalf("expected deleted true, got %#v", out)
 	}
 }
 
@@ -682,7 +794,11 @@ func TestHandlePortalGetInstance(t *testing.T) {
 	s := &Server{store: store.New(tdb.db)}
 
 	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.Instance)
+		if !ok {
+			t.Fatalf("expected *models.Instance, got %T", destAny)
+		}
 		*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive}
 	}).Once()
 
@@ -701,17 +817,25 @@ func TestPortalProvisioningHandlers_ReturnExistingAndNewJob(t *testing.T) {
 
 	// Existing queued job branch.
 	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.Instance)
+		if !ok {
+			t.Fatalf("expected *models.Instance, got %T", destAny)
+		}
 		*dest = models.Instance{
-			Slug:           "demo",
-			Owner:          "alice",
-			Status:         models.InstanceStatusActive,
-			ProvisionJobID: "job1",
+			Slug:            "demo",
+			Owner:           "alice",
+			Status:          models.InstanceStatusActive,
+			ProvisionJobID:  "job1",
 			ProvisionStatus: models.ProvisionJobStatusQueued,
 		}
 	}).Once()
 	tdb.qJob.On("First", mock.AnythingOfType("*models.ProvisionJob")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.ProvisionJob)
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.ProvisionJob)
+		if !ok {
+			t.Fatalf("expected *models.ProvisionJob, got %T", destAny)
+		}
 		*dest = models.ProvisionJob{ID: "job1", InstanceSlug: "demo", Status: models.ProvisionJobStatusQueued}
 		_ = dest.UpdateKeys()
 	}).Once()
@@ -724,7 +848,11 @@ func TestPortalProvisioningHandlers_ReturnExistingAndNewJob(t *testing.T) {
 
 	// New job branch.
 	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.Instance)
+		if !ok {
+			t.Fatalf("expected *models.Instance, got %T", destAny)
+		}
 		*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive}
 	}).Once()
 
@@ -742,11 +870,19 @@ func TestHandlePortalGetInstanceProvisioning(t *testing.T) {
 	s := &Server{store: store.New(tdb.db)}
 
 	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.Instance)
+		if !ok {
+			t.Fatalf("expected *models.Instance, got %T", destAny)
+		}
 		*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive, ProvisionJobID: "job1"}
 	}).Once()
 	tdb.qJob.On("First", mock.AnythingOfType("*models.ProvisionJob")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.ProvisionJob)
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.ProvisionJob)
+		if !ok {
+			t.Fatalf("expected *models.ProvisionJob, got %T", destAny)
+		}
 		*dest = models.ProvisionJob{ID: "job1", InstanceSlug: "demo", Status: models.ProvisionJobStatusQueued}
 		_ = dest.UpdateKeys()
 	}).Once()
@@ -765,11 +901,19 @@ func TestHandlePortalListInstanceDomains(t *testing.T) {
 	s := &Server{store: store.New(tdb.db)}
 
 	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.Instance)
+		if !ok {
+			t.Fatalf("expected *models.Instance, got %T", destAny)
+		}
 		*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive}
 	}).Once()
 	tdb.qDomain.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*[]*models.Domain)
+		destAny := args.Get(0)
+		dest, ok := destAny.(*[]*models.Domain)
+		if !ok {
+			t.Fatalf("expected *[]*models.Domain, got %T", destAny)
+		}
 		*dest = []*models.Domain{
 			{Domain: "demo.example", InstanceSlug: "demo", Type: models.DomainTypePrimary, Status: models.DomainStatusVerified},
 		}
@@ -782,114 +926,57 @@ func TestHandlePortalListInstanceDomains(t *testing.T) {
 	}
 }
 
-func TestHandlePortalRotateInstanceDomain_PrimaryConflict(t *testing.T) {
+func TestHandlePortalInstanceDomainOps_PrimaryConflict(t *testing.T) {
 	t.Parallel()
 
-	tdb := newPortalTestDB()
-	s := &Server{store: store.New(tdb.db)}
-
-	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
-		*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive}
-	}).Once()
-	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Domain)
-		*dest = models.Domain{Domain: "demo.example", InstanceSlug: "demo", Type: models.DomainTypePrimary, Status: models.DomainStatusVerified}
-		_ = dest.UpdateKeys()
-	}).Once()
-
-	ctx := &apptheory.Context{AuthIdentity: "alice", Params: map[string]string{"slug": "demo", "domain": "demo.example"}}
-	if _, err := s.handlePortalRotateInstanceDomain(ctx); err == nil {
-		t.Fatalf("expected conflict")
-	}
-}
-
-func TestHandlePortalRotateInstanceDomain_Success(t *testing.T) {
-	t.Parallel()
-
-	tdb := newPortalTestDB()
-	s := &Server{store: store.New(tdb.db)}
-
-	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
-		*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive}
-	}).Once()
-	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Domain)
-		*dest = models.Domain{Domain: "vanity.example", InstanceSlug: "demo", Type: models.DomainTypeVanity, Status: models.DomainStatusVerified}
-		_ = dest.UpdateKeys()
-	}).Once()
-
-	ctx := &apptheory.Context{AuthIdentity: "alice", RequestID: "rid", Params: map[string]string{"slug": "demo", "domain": "vanity.example"}}
-	resp, err := s.handlePortalRotateInstanceDomain(ctx)
-	if err != nil || resp == nil || resp.Status != 200 {
-		t.Fatalf("resp=%#v err=%v", resp, err)
+	cases := []struct {
+		name string
+		call func(s *Server, ctx *apptheory.Context) (*apptheory.Response, error)
+	}{
+		{
+			name: "rotate",
+			call: func(s *Server, ctx *apptheory.Context) (*apptheory.Response, error) {
+				return s.handlePortalRotateInstanceDomain(ctx)
+			},
+		},
+		{
+			name: "disable",
+			call: func(s *Server, ctx *apptheory.Context) (*apptheory.Response, error) {
+				return s.handlePortalDisableInstanceDomain(ctx)
+			},
+		},
 	}
 
-	var parsed addDomainResponse
-	if err := json.Unmarshal(resp.Body, &parsed); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if strings.TrimSpace(parsed.Domain.Status) != models.DomainStatusPending {
-		t.Fatalf("expected pending, got %#v", parsed)
-	}
-	if strings.TrimSpace(parsed.Verification.TXTName) == "" || !strings.HasPrefix(parsed.Verification.TXTName, domainVerificationRecordPrefix) {
-		t.Fatalf("expected txt name with prefix, got %#v", parsed.Verification)
-	}
-	if strings.TrimSpace(parsed.Verification.TXTValue) == "" || !strings.HasPrefix(parsed.Verification.TXTValue, domainVerificationValuePrefix) {
-		t.Fatalf("expected txt value with prefix, got %#v", parsed.Verification)
-	}
-}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-func TestHandlePortalDisableInstanceDomain_PrimaryConflict(t *testing.T) {
-	t.Parallel()
+			tdb := newPortalTestDB()
+			s := &Server{store: store.New(tdb.db)}
 
-	tdb := newPortalTestDB()
-	s := &Server{store: store.New(tdb.db)}
+			tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+				destAny := args.Get(0)
+				dest, ok := destAny.(*models.Instance)
+				if !ok {
+					t.Fatalf("expected *models.Instance, got %T", destAny)
+				}
+				*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive}
+			}).Once()
+			tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
+				destAny := args.Get(0)
+				dest, ok := destAny.(*models.Domain)
+				if !ok {
+					t.Fatalf("expected *models.Domain, got %T", destAny)
+				}
+				*dest = models.Domain{Domain: "demo.example", InstanceSlug: "demo", Type: models.DomainTypePrimary, Status: models.DomainStatusVerified}
+				_ = dest.UpdateKeys()
+			}).Once()
 
-	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
-		*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive}
-	}).Once()
-	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Domain)
-		*dest = models.Domain{Domain: "demo.example", InstanceSlug: "demo", Type: models.DomainTypePrimary, Status: models.DomainStatusVerified}
-		_ = dest.UpdateKeys()
-	}).Once()
-
-	ctx := &apptheory.Context{AuthIdentity: "alice", Params: map[string]string{"slug": "demo", "domain": "demo.example"}}
-	if _, err := s.handlePortalDisableInstanceDomain(ctx); err == nil {
-		t.Fatalf("expected conflict")
-	}
-}
-
-func TestHandlePortalDisableInstanceDomain_Success(t *testing.T) {
-	t.Parallel()
-
-	tdb := newPortalTestDB()
-	s := &Server{store: store.New(tdb.db)}
-
-	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
-		*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive}
-	}).Once()
-	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Domain)
-		*dest = models.Domain{Domain: "vanity.example", InstanceSlug: "demo", Type: models.DomainTypeVanity, Status: models.DomainStatusActive}
-		_ = dest.UpdateKeys()
-	}).Once()
-
-	ctx := &apptheory.Context{AuthIdentity: "alice", RequestID: "rid", Params: map[string]string{"slug": "demo", "domain": "vanity.example"}}
-	resp, err := s.handlePortalDisableInstanceDomain(ctx)
-	if err != nil || resp == nil || resp.Status != 200 {
-		t.Fatalf("resp=%#v err=%v", resp, err)
-	}
-
-	var parsed verifyDomainResponse
-	if err := json.Unmarshal(resp.Body, &parsed); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if strings.TrimSpace(parsed.Domain.Status) != models.DomainStatusDisabled {
-		t.Fatalf("expected disabled, got %#v", parsed)
+			ctx := &apptheory.Context{AuthIdentity: "alice", Params: map[string]string{"slug": "demo", "domain": "demo.example"}}
+			if _, err := tc.call(s, ctx); err == nil {
+				t.Fatalf("expected conflict")
+			}
+		})
 	}
 }

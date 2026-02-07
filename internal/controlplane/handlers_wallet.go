@@ -8,6 +8,7 @@ import (
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
+	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -23,7 +24,7 @@ type operatorLoginResponse struct {
 
 func (s *Server) handleWalletChallenge(ctx *apptheory.Context) (*apptheory.Response, error) {
 	var req walletChallengeRequest
-	if err := parseJSON(ctx, &req); err != nil {
+	if err := httpx.ParseJSON(ctx, &req); err != nil {
 		return nil, err
 	}
 
@@ -105,7 +106,7 @@ func (s *Server) handleWalletLogin(ctx *apptheory.Context) (*apptheory.Response,
 
 func parseWalletLoginRequest(ctx *apptheory.Context) (walletVerifyRequest, error) {
 	var req walletVerifyRequest
-	if err := parseJSON(ctx, &req); err != nil {
+	if err := httpx.ParseJSON(ctx, &req); err != nil {
 		return walletVerifyRequest{}, err
 	}
 

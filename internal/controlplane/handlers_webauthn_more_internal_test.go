@@ -1,8 +1,8 @@
 package controlplane
 
 import (
-	"errors"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
@@ -13,11 +13,12 @@ import (
 
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
+	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
 type webAuthnMoreTestDB struct {
-	db        *ttmocks.MockExtendedDB
-	qCred     *ttmocks.MockQuery
+	db         *ttmocks.MockExtendedDB
+	qCred      *ttmocks.MockQuery
 	qChallenge *ttmocks.MockQuery
 }
 
@@ -72,7 +73,7 @@ func TestBuildWebAuthnUser_LoadsCredentials(t *testing.T) {
 	s := &Server{store: store.New(tdb.db)}
 
 	tdb.qCred.On("All", mock.AnythingOfType("*[]*models.WebAuthnCredential")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*[]*models.WebAuthnCredential)
+		dest := testutil.RequireMockArg[*[]*models.WebAuthnCredential](t, args, 0)
 		*dest = []*models.WebAuthnCredential{
 			nil,
 			{ID: "YQ==", UserID: "alice", Name: "key1"},

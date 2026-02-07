@@ -113,4 +113,3 @@ func TestRenderSummaryDeterministicV1_EmitsRisksAndFallbackSummary(t *testing.T)
 		t.Fatalf("expected fallback summary from URL, got %q", out2.ShortSummary)
 	}
 }
-

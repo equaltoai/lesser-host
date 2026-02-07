@@ -20,6 +20,7 @@ import (
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
+	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
 type attestationStoreTestDB struct {
@@ -55,7 +56,7 @@ func TestMergeAIUsage_PrefersNonDeterministicProviderAndAccumulatesTokens(t *tes
 		ToolCalls:    0,
 	}
 	extra := models.AIUsage{
-		Provider:     "openai",
+		Provider:     testProviderOpenAI,
 		Model:        "gpt-x",
 		InputTokens:  10,
 		OutputTokens: 20,
@@ -64,7 +65,7 @@ func TestMergeAIUsage_PrefersNonDeterministicProviderAndAccumulatesTokens(t *tes
 	}
 
 	got := mergeAIUsage(primary, extra, start)
-	if got.Provider != "openai" || got.Model != "gpt-x" {
+	if got.Provider != testProviderOpenAI || got.Model != "gpt-x" {
 		t.Fatalf("unexpected provider/model: %#v", got)
 	}
 	if got.InputTokens != 11 || got.OutputTokens != 22 || got.TotalTokens != 33 || got.ToolCalls != 2 {
@@ -75,8 +76,8 @@ func TestMergeAIUsage_PrefersNonDeterministicProviderAndAccumulatesTokens(t *tes
 	}
 
 	// Extra provider empty: should not change provider/model/tokens (except duration).
-	got2 := mergeAIUsage(models.AIUsage{Provider: "openai", Model: "m", InputTokens: 1}, models.AIUsage{}, start)
-	if got2.Provider != "openai" || got2.Model != "m" || got2.InputTokens != 1 {
+	got2 := mergeAIUsage(models.AIUsage{Provider: testProviderOpenAI, Model: "m", InputTokens: 1}, models.AIUsage{}, start)
+	if got2.Provider != testProviderOpenAI || got2.Model != "m" || got2.InputTokens != 1 {
 		t.Fatalf("unexpected merge with empty extra: %#v", got2)
 	}
 }
@@ -194,7 +195,7 @@ func TestAttestationAlreadyExists_ReturnsExpectedStates(t *testing.T) {
 		st := store.New(tdb.db)
 
 		tdb.qAtt.On("First", mock.AnythingOfType("*models.Attestation")).Return(nil).Run(func(args mock.Arguments) {
-			dest := args.Get(0).(*models.Attestation)
+			dest := testutil.RequireMockArg[*models.Attestation](t, args, 0)
 			dest.ID = "a1"
 		}).Once()
 

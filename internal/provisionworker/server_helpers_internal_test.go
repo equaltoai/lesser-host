@@ -24,6 +24,7 @@ import (
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
+	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
 type fakeSQS struct {
@@ -253,7 +254,7 @@ func TestProcessProvisionJob_DisabledAndMissingConfig(t *testing.T) {
 
 	var loaded *models.ProvisionJob
 	qJob.On("First", mock.AnythingOfType("*models.ProvisionJob")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.ProvisionJob)
+		dest := testutil.RequireMockArg[*models.ProvisionJob](t, args, 0)
 		*dest = models.ProvisionJob{ID: "j1", InstanceSlug: "slug", Status: models.ProvisionJobStatusQueued}
 		loaded = dest
 	}).Once()
@@ -269,7 +270,7 @@ func TestProcessProvisionJob_DisabledAndMissingConfig(t *testing.T) {
 
 	// Missing config triggers failJob as well.
 	qJob.On("First", mock.AnythingOfType("*models.ProvisionJob")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.ProvisionJob)
+		dest := testutil.RequireMockArg[*models.ProvisionJob](t, args, 0)
 		*dest = models.ProvisionJob{ID: "j2", InstanceSlug: "slug", Status: models.ProvisionJobStatusQueued}
 		loaded = dest
 	}).Once()

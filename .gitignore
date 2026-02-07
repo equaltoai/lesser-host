@@ -6,6 +6,8 @@
 !.env.example
 tmp/
 bin/
+!cdk/bin/
+!cdk/bin/**
 node_modules/
 contracts/node_modules/
 contracts/artifacts/
@@ -19,3 +21,4 @@ gov-infra/evidence/*-output.log
 gov-infra/evidence/DOC-5-parity.log
 gov-infra/evidence/coverage.out
 gov-infra/evidence/coverage-summary.txt
+gov-infra/evidence/gov-rubric-report.json

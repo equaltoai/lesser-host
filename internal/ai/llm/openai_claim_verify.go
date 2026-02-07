@@ -10,6 +10,16 @@ import (
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
+const (
+	claimVerifyClassificationCheckable = "checkable"
+	claimVerifyClassificationOpinion   = "opinion"
+	claimVerifyClassificationUnclear   = "unclear"
+
+	claimVerifyVerdictSupported    = "supported"
+	claimVerifyVerdictRefuted      = "refuted"
+	claimVerifyVerdictInconclusive = "inconclusive"
+)
+
 // ClaimVerifyBatchItem is a single item for claim verification batching.
 type ClaimVerifyBatchItem struct {
 	ItemID string
@@ -182,14 +192,14 @@ func normalizeClaimVerifyClaim(c ai.ClaimVerifyClaimV1) ai.ClaimVerifyClaimV1 {
 	c.Reason = strings.TrimSpace(c.Reason)
 
 	switch c.Classification {
-	case "checkable", "opinion", "unclear":
+	case claimVerifyClassificationCheckable, claimVerifyClassificationOpinion, claimVerifyClassificationUnclear:
 	default:
-		c.Classification = "unclear"
+		c.Classification = claimVerifyClassificationUnclear
 	}
 	switch c.Verdict {
-	case "supported", "refuted", "inconclusive":
+	case claimVerifyVerdictSupported, claimVerifyVerdictRefuted, claimVerifyVerdictInconclusive:
 	default:
-		c.Verdict = "inconclusive"
+		c.Verdict = claimVerifyVerdictInconclusive
 	}
 	if c.Confidence < 0 {
 		c.Confidence = 0

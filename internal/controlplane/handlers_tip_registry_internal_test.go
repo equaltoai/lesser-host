@@ -15,10 +15,12 @@ import (
 	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
+	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
 type tipRegistryTestDB struct {
@@ -109,16 +111,16 @@ func TestHandleTipHostRegistrationBegin_Success(t *testing.T) {
 func TestValidateOutboundHost_AndIsDeniedIP(t *testing.T) {
 	t.Parallel()
 
-	if err := validateOutboundHost(nil, " "); err == nil {
+	if err := validateOutboundHost(context.TODO(), " "); err == nil {
 		t.Fatalf("expected error")
 	}
-	if err := validateOutboundHost(nil, "localhost"); err == nil {
+	if err := validateOutboundHost(context.TODO(), "localhost"); err == nil {
 		t.Fatalf("expected localhost blocked")
 	}
-	if err := validateOutboundHost(nil, "127.0.0.1"); err == nil {
+	if err := validateOutboundHost(context.TODO(), "127.0.0.1"); err == nil {
 		t.Fatalf("expected loopback blocked")
 	}
-	if err := validateOutboundHost(nil, "8.8.8.8"); err != nil {
+	if err := validateOutboundHost(context.TODO(), "8.8.8.8"); err != nil {
 		t.Fatalf("expected public ip allowed, got %v", err)
 	}
 
@@ -184,7 +186,7 @@ func TestTipRegistryAdminEndpoints_ListAndGet(t *testing.T) {
 	ctx.Set(ctxKeyOperatorRole, models.RoleAdmin)
 
 	tdb.qOp.On("All", mock.AnythingOfType("*[]*models.TipRegistryOperation")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*[]*models.TipRegistryOperation)
+		dest := testutil.RequireMockArg[*[]*models.TipRegistryOperation](t, args, 0)
 		*dest = []*models.TipRegistryOperation{
 			nil,
 			{ID: "op1", Status: models.TipRegistryOperationStatusPending},
@@ -250,12 +252,12 @@ func TestTipRegistry_MoreHelperCoverage(t *testing.T) {
 
 	// receipt snapshots
 	r := &types.Receipt{
-		Status:           1,
-		GasUsed:          123,
-		ContractAddress:  common.HexToAddress("0x0000000000000000000000000000000000000001"),
-		BlockNumber:      big.NewInt(99),
+		Status:            1,
+		GasUsed:           123,
+		ContractAddress:   common.HexToAddress("0x0000000000000000000000000000000000000001"),
+		BlockNumber:       big.NewInt(99),
 		EffectiveGasPrice: big.NewInt(456),
-		Logs:             []*types.Log{{}, {}},
+		Logs:              []*types.Log{{}, {}},
 	}
 	snapJSON := tipRegistryReceiptSnapshotJSON(" 0xabc ", r)
 	if strings.TrimSpace(snapJSON) == "" {
@@ -287,59 +289,48 @@ func TestLoadAndCompleteTipHostRegistrationForVerify(t *testing.T) {
 
 	// Not found.
 	tdb.qReg.On("First", mock.AnythingOfType("*models.TipHostRegistration")).Return(theoryErrors.ErrItemNotFound).Once()
-	if _, err := s.loadTipHostRegistrationForVerify(ctx, "missing"); err == nil {
-		t.Fatalf("expected not found")
-	}
+	_, appErr := s.loadTipHostRegistrationForVerify(ctx, "missing")
+	require.NotNil(t, appErr)
 
 	// Expired registration.
 	tdb.qReg.On("First", mock.AnythingOfType("*models.TipHostRegistration")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.TipHostRegistration)
+		dest := testutil.RequireMockArg[*models.TipHostRegistration](t, args, 0)
 		*dest = models.TipHostRegistration{ID: "r1", ExpiresAt: time.Now().UTC().Add(-1 * time.Hour)}
 	}).Once()
-	if _, err := s.loadTipHostRegistrationForVerify(ctx, "r1"); err == nil {
-		t.Fatalf("expected expired")
-	}
+	_, appErr = s.loadTipHostRegistrationForVerify(ctx, "r1")
+	require.NotNil(t, appErr)
 
 	// Completed registration.
 	tdb.qReg.On("First", mock.AnythingOfType("*models.TipHostRegistration")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.TipHostRegistration)
+		dest := testutil.RequireMockArg[*models.TipHostRegistration](t, args, 0)
 		*dest = models.TipHostRegistration{ID: "r2", Status: models.TipHostRegistrationStatusCompleted}
 	}).Once()
-	if _, err := s.loadTipHostRegistrationForVerify(ctx, "r2"); err == nil {
-		t.Fatalf("expected conflict for completed")
-	}
+	_, appErr = s.loadTipHostRegistrationForVerify(ctx, "r2")
+	require.NotNil(t, appErr)
 
 	// Happy path.
 	tdb.qReg.On("First", mock.AnythingOfType("*models.TipHostRegistration")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.TipHostRegistration)
+		dest := testutil.RequireMockArg[*models.TipHostRegistration](t, args, 0)
 		*dest = models.TipHostRegistration{ID: "r3", Status: models.TipHostRegistrationStatusPending}
 	}).Once()
-	reg, err := s.loadTipHostRegistrationForVerify(ctx, "r3")
-	if err != nil || reg == nil || reg.ID != "r3" {
-		t.Fatalf("unexpected reg=%#v err=%v", reg, err)
-	}
+	reg, appErr := s.loadTipHostRegistrationForVerify(ctx, "r3")
+	require.Nil(t, appErr)
+	require.NotNil(t, reg)
+	require.Equal(t, "r3", reg.ID)
 
-	if _, _, err := verifyTipHostRegistrationProofs(nil, nil, requiredProofSet{}); err == nil {
-		t.Fatalf("expected internal error for nil reg")
-	}
+	_, _, appErr = verifyTipHostRegistrationProofs(context.TODO(), nil, requiredProofSet{})
+	require.NotNil(t, appErr)
 
-	if reg == nil {
-		t.Fatalf("unexpected nil reg")
-	}
 	reg.DNSVerified = true
 	reg.HTTPSVerified = false
-	vDNS, vHTTPS, err2 := verifyTipHostRegistrationProofs(nil, reg, requiredProofSet{})
-	if err2 != nil || !vDNS || vHTTPS {
-		t.Fatalf("unexpected proof result: dns=%v https=%v err=%v", vDNS, vHTTPS, err2)
-	}
+	vDNS, vHTTPS, appErr := verifyTipHostRegistrationProofs(context.TODO(), reg, requiredProofSet{})
+	require.Nil(t, appErr)
+	require.True(t, vDNS)
+	require.False(t, vHTTPS)
 
 	// enforceTipRegistryUpdateProofPolicy: non-update kind is a no-op.
-	if err := s.enforceTipRegistryUpdateProofPolicy(context.Background(), nil, false, false); err == nil {
-		t.Fatalf("expected internal for nil reg")
-	}
-	if err := s.enforceTipRegistryUpdateProofPolicy(context.Background(), &models.TipHostRegistration{Kind: models.TipRegistryOperationKindRegisterHost}, false, false); err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
+	require.NotNil(t, s.enforceTipRegistryUpdateProofPolicy(context.Background(), nil, false, false))
+	require.Nil(t, s.enforceTipRegistryUpdateProofPolicy(context.Background(), &models.TipHostRegistration{Kind: models.TipRegistryOperationKindRegisterHost}, false, false))
 
 	// completeTipHostRegistration updates verification flags.
 	now := time.Unix(123, 0).UTC()
@@ -367,9 +358,11 @@ func TestLoadAndCompleteTipHostRegistrationForVerify(t *testing.T) {
 	_ = reg.UpdateKeys()
 
 	update, appErr := s.completeTipHostRegistration(&apptheory.Context{RequestID: "rid"}, reg, true, false, now)
-	if appErr != nil || update == nil || !update.DNSVerified || update.HTTPSVerified || update.Status != models.TipHostRegistrationStatusCompleted {
-		t.Fatalf("unexpected update=%#v err=%v", update, appErr)
-	}
+	require.Nil(t, appErr)
+	require.NotNil(t, update)
+	require.True(t, update.DNSVerified)
+	require.False(t, update.HTTPSVerified)
+	require.Equal(t, models.TipHostRegistrationStatusCompleted, update.Status)
 }
 
 func TestCreateOrLoadTipRegistryOperation(t *testing.T) {
@@ -394,7 +387,7 @@ func TestCreateOrLoadTipRegistryOperation(t *testing.T) {
 	// Condition failed returns existing record when load succeeds.
 	tdb.qOp.On("Create").Return(theoryErrors.ErrConditionFailed).Once()
 	tdb.qOp.On("First", mock.AnythingOfType("*models.TipRegistryOperation")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.TipRegistryOperation)
+		dest := testutil.RequireMockArg[*models.TipRegistryOperation](t, args, 0)
 		*dest = models.TipRegistryOperation{ID: "existing"}
 		_ = dest.UpdateKeys()
 	}).Once()
@@ -426,7 +419,7 @@ func TestHandleTipHostRegistrationVerify_FailsOnInvalidSignature(t *testing.T) {
 	}
 
 	tdb.qReg.On("First", mock.AnythingOfType("*models.TipHostRegistration")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.TipHostRegistration)
+		dest := testutil.RequireMockArg[*models.TipHostRegistration](t, args, 0)
 		*dest = models.TipHostRegistration{
 			ID:            "reg1",
 			WalletAddr:    "0x0000000000000000000000000000000000000003",
@@ -471,7 +464,7 @@ func TestHandleSetTipRegistryHostActive_CreatesOrLoadsOperation(t *testing.T) {
 	// Condition failed: load existing.
 	tdb.qOp.On("Create").Return(theoryErrors.ErrConditionFailed).Once()
 	tdb.qOp.On("First", mock.AnythingOfType("*models.TipRegistryOperation")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.TipRegistryOperation)
+		dest := testutil.RequireMockArg[*models.TipRegistryOperation](t, args, 0)
 		*dest = models.TipRegistryOperation{ID: "existing", Status: models.TipRegistryOperationStatusProposed}
 		_ = dest.UpdateKeys()
 	}).Once()
@@ -526,13 +519,13 @@ func TestHandleEnsureTipRegistryHost_CreatesAutoOperation(t *testing.T) {
 	s := &Server{
 		store: store.New(tdb.db),
 		cfg: config.Config{
-			TipEnabled:                    true,
-			TipChainID:                    1,
-			TipContractAddress:            "0x0000000000000000000000000000000000000001",
-			TipTxMode:                     tipTxModeSafe,
-			TipAdminSafeAddress:           "0x0000000000000000000000000000000000000002",
-			TipDefaultHostWalletAddress:   "0x0000000000000000000000000000000000000003",
-			TipDefaultHostFeeBps:          250,
+			TipEnabled:                  true,
+			TipChainID:                  1,
+			TipContractAddress:          "0x0000000000000000000000000000000000000001",
+			TipTxMode:                   tipTxModeSafe,
+			TipAdminSafeAddress:         "0x0000000000000000000000000000000000000002",
+			TipDefaultHostWalletAddress: "0x0000000000000000000000000000000000000003",
+			TipDefaultHostFeeBps:        250,
 		},
 	}
 

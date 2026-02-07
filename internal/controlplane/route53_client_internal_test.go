@@ -29,4 +29,3 @@ func TestRoute53ClientGet_ErrorsAndNotInitialized(t *testing.T) {
 		t.Fatalf("expected injected error, got %v", err)
 	}
 }
-

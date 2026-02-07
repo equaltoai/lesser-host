@@ -14,6 +14,7 @@ import (
 	"github.com/equaltoai/lesser-host/internal/rendering"
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
+	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
 type linkRenderFlowTestDB struct {
@@ -24,24 +25,15 @@ type linkRenderFlowTestDB struct {
 }
 
 func newLinkRenderFlowTestDB() linkRenderFlowTestDB {
-	db := ttmocks.NewMockExtendedDB()
 	qRender := new(ttmocks.MockQuery)
 	qBudget := new(ttmocks.MockQuery)
 	qLedger := new(ttmocks.MockQuery)
 
-	db.On("WithContext", mock.Anything).Return(db).Maybe()
-	db.On("Model", mock.AnythingOfType("*models.RenderArtifact")).Return(qRender).Maybe()
-	db.On("Model", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(qBudget).Maybe()
-	db.On("Model", mock.AnythingOfType("*models.UsageLedgerEntry")).Return(qLedger).Maybe()
-
-	for _, q := range []*ttmocks.MockQuery{qRender, qBudget, qLedger} {
-		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
-		q.On("Index", mock.Anything).Return(q).Maybe()
-		q.On("Limit", mock.Anything).Return(q).Maybe()
-		q.On("IfExists").Return(q).Maybe()
-		q.On("IfNotExists").Return(q).Maybe()
-		q.On("ConsistentRead").Return(q).Maybe()
-	}
+	db := newTestDBWithModelQueries(
+		modelQueryPair{model: &models.RenderArtifact{}, query: qRender},
+		modelQueryPair{model: &models.InstanceBudgetMonth{}, query: qBudget},
+		modelQueryPair{model: &models.UsageLedgerEntry{}, query: qLedger},
+	)
 
 	return linkRenderFlowTestDB{
 		db:      db,
@@ -71,7 +63,7 @@ func TestRunLinkRenderJob_CacheHit_WritesUsageAndReturnsOK(t *testing.T) {
 	renderID := rendering.RenderArtifactID(rendering.RenderPolicyVersion, normalized)
 
 	tdb.qRender.On("First", mock.AnythingOfType("*models.RenderArtifact")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.RenderArtifact)
+		dest := testutil.RequireMockArg[*models.RenderArtifact](t, args, 0)
 		*dest = models.RenderArtifact{
 			ID:                 renderID,
 			PolicyVersion:      rendering.RenderPolicyVersion,
@@ -87,7 +79,7 @@ func TestRunLinkRenderJob_CacheHit_WritesUsageAndReturnsOK(t *testing.T) {
 
 	ctx := &apptheory.Context{AuthIdentity: "inst", RequestID: "rid"}
 	out := s.runLinkRenderJob(ctx, "inst", "job", "link_preview_render", renderPolicyAlways, overagePolicyBlock, 10000, []string{normalized})
-	if out.Status != statusOK || !out.Cached || out.Budget.Reason != "cache_hit" {
+	if out.Status != statusOK || !out.Cached || out.Budget.Reason != budgetReasonCacheHit {
 		t.Fatalf("unexpected response: %#v", out)
 	}
 
@@ -167,7 +159,7 @@ func TestRunLinkRenderJob_BudgetExceeded_ReturnsNotCheckedBudget(t *testing.T) {
 
 	tdb.qRender.On("First", mock.AnythingOfType("*models.RenderArtifact")).Return(theoryErrors.ErrItemNotFound).Once()
 	tdb.qBudget.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.InstanceBudgetMonth)
+		dest := testutil.RequireMockArg[*models.InstanceBudgetMonth](t, args, 0)
 		*dest = models.InstanceBudgetMonth{IncludedCredits: 0, UsedCredits: 0}
 	}).Once()
 
@@ -176,7 +168,7 @@ func TestRunLinkRenderJob_BudgetExceeded_ReturnsNotCheckedBudget(t *testing.T) {
 	if out.Status != statusNotCheckedBudget || out.Budget.Allowed {
 		t.Fatalf("unexpected response: %#v", out)
 	}
-	if out.Budget.Reason != "budget exceeded" || !out.Budget.OverBudget {
+	if out.Budget.Reason != budgetReasonExceeded || !out.Budget.OverBudget {
 		t.Fatalf("expected budget exceeded response, got %#v", out.Budget)
 	}
 }
@@ -198,7 +190,7 @@ func TestRunLinkRenderJob_BudgetDebited_QueueFailuresStillReturnOK(t *testing.T)
 	tdb.qRender.On("CreateOrUpdate").Return(nil).Once()
 
 	tdb.qBudget.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.InstanceBudgetMonth)
+		dest := testutil.RequireMockArg[*models.InstanceBudgetMonth](t, args, 0)
 		*dest = models.InstanceBudgetMonth{IncludedCredits: 10, UsedCredits: 0}
 	}).Once()
 
@@ -237,7 +229,7 @@ func TestRunLinkRenderJob_AllowOverage_ReportsOverageReason(t *testing.T) {
 	tdb.qRender.On("CreateOrUpdate").Return(nil).Once()
 
 	tdb.qBudget.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.InstanceBudgetMonth)
+		dest := testutil.RequireMockArg[*models.InstanceBudgetMonth](t, args, 0)
 		*dest = models.InstanceBudgetMonth{IncludedCredits: 0, UsedCredits: 0}
 	}).Once()
 

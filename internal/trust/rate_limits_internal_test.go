@@ -4,6 +4,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
@@ -20,19 +21,13 @@ func TestAIRateLimitMiddleware_Basic(t *testing.T) {
 	})
 	_ = os.Unsetenv("APPTHEORY_RATE_LIMIT_TABLE_NAME")
 
-	if (&Server{}).aiRateLimitMiddleware() != nil {
-		t.Fatalf("expected nil middleware with nil store")
-	}
+	require.Nil(t, (&Server{}).aiRateLimitMiddleware())
 
-	if (&Server{store: store.New(nil)}).aiRateLimitMiddleware() != nil {
-		t.Fatalf("expected nil middleware with nil db")
-	}
+	require.Nil(t, (&Server{store: store.New(nil)}).aiRateLimitMiddleware())
 
 	db := ttmocks.NewMockExtendedDB()
 
-	if (&Server{store: store.New(db)}).aiRateLimitMiddleware() != nil {
-		t.Fatalf("expected nil middleware when table name not configured")
-	}
+	require.Nil(t, (&Server{store: store.New(db)}).aiRateLimitMiddleware())
 
 	s := &Server{
 		cfg:   configForTests(),
@@ -41,9 +36,7 @@ func TestAIRateLimitMiddleware_Basic(t *testing.T) {
 	s.cfg.StateTableName = "tbl"
 
 	mw := s.aiRateLimitMiddleware()
-	if mw == nil {
-		t.Fatalf("expected middleware when table name configured")
-	}
+	require.NotNil(t, mw)
 
 	var called int
 	next := func(_ *apptheory.Context) (*apptheory.Response, error) {
@@ -52,35 +45,25 @@ func TestAIRateLimitMiddleware_Basic(t *testing.T) {
 	}
 
 	h := mw(next)
-	if h == nil {
-		t.Fatalf("expected wrapped handler")
-	}
+	require.NotNil(t, h)
 
 	resp, err := h(&apptheory.Context{Request: apptheory.Request{Path: "/healthz"}})
-	if err != nil || resp == nil || resp.Status != 200 {
-		t.Fatalf("unexpected response: resp=%#v err=%v", resp, err)
-	}
-	if called != 1 {
-		t.Fatalf("expected next called once, got %d", called)
-	}
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.Equal(t, 200, resp.Status)
+	require.Equal(t, 1, called)
 
 	resp, err = h(&apptheory.Context{Request: apptheory.Request{Path: ""}})
-	if err != nil || resp == nil || resp.Status != 200 {
-		t.Fatalf("unexpected response: resp=%#v err=%v", resp, err)
-	}
-	if called != 2 {
-		t.Fatalf("expected next called twice, got %d", called)
-	}
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.Equal(t, 200, resp.Status)
+	require.Equal(t, 2, called)
 
 	resp, err = h(nil)
-	if err != nil || resp == nil || resp.Status != 200 {
-		t.Fatalf("unexpected response: resp=%#v err=%v", resp, err)
-	}
-	if called != 3 {
-		t.Fatalf("expected next called thrice, got %d", called)
-	}
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.Equal(t, 200, resp.Status)
+	require.Equal(t, 3, called)
 
-	if mw(nil) != nil {
-		t.Fatalf("expected nil when next is nil")
-	}
+	require.Nil(t, mw(nil))
 }

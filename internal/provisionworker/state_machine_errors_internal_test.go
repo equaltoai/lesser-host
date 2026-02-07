@@ -21,15 +21,15 @@ func TestAdvanceProvisionAccountCreatePoll_RestartsWhenRequestIDMissing(t *testi
 
 	now := time.Now().UTC()
 	job := &models.ProvisionJob{
-		ID:           "j1",
-		InstanceSlug:  "slug",
-		Status:        models.ProvisionJobStatusRunning,
-		Step:          provisionStepAccountCreatePoll,
-		MaxAttempts:   3,
-		CreatedAt:     now,
-		UpdatedAt:     now,
-		ExpiresAt:     now.Add(1 * time.Hour),
-		AccountID:     "",
+		ID:               "j1",
+		InstanceSlug:     "slug",
+		Status:           models.ProvisionJobStatusRunning,
+		Step:             provisionStepAccountCreatePoll,
+		MaxAttempts:      3,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+		ExpiresAt:        now.Add(1 * time.Hour),
+		AccountID:        "",
 		AccountRequestID: "",
 	}
 
@@ -54,7 +54,7 @@ func TestAdvanceProvisionAccountCreatePoll_FailsAfterTimeout(t *testing.T) {
 
 	now := time.Now().UTC()
 	job := &models.ProvisionJob{
-		ID:              "j1",
+		ID:               "j1",
 		InstanceSlug:     "slug",
 		Status:           models.ProvisionJobStatusRunning,
 		Step:             provisionStepAccountCreatePoll,
@@ -83,7 +83,7 @@ func TestAdvanceProvisionAccountCreatePoll_RetriesOnDescribeError(t *testing.T) 
 
 	now := time.Now().UTC()
 	job := &models.ProvisionJob{
-		ID:              "j1",
+		ID:               "j1",
 		InstanceSlug:     "slug",
 		Status:           models.ProvisionJobStatusRunning,
 		Step:             provisionStepAccountCreatePoll,
@@ -116,7 +116,7 @@ func TestAdvanceProvisionAccountCreatePoll_FailsAfterMaxAttempts(t *testing.T) {
 
 	now := time.Now().UTC()
 	job := &models.ProvisionJob{
-		ID:              "j1",
+		ID:               "j1",
 		InstanceSlug:     "slug",
 		Status:           models.ProvisionJobStatusRunning,
 		Step:             provisionStepAccountCreatePoll,
@@ -139,4 +139,3 @@ func TestAdvanceProvisionAccountCreatePoll_FailsAfterMaxAttempts(t *testing.T) {
 		t.Fatalf("expected attempts incremented to 3, got %d", job.Attempts)
 	}
 }
-

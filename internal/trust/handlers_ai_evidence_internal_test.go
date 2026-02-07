@@ -1,6 +1,7 @@
 package trust
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -15,6 +16,7 @@ import (
 	"github.com/equaltoai/lesser-host/internal/ai"
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
+	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
 type aiEvidenceTestDB struct {
@@ -76,7 +78,7 @@ func TestHandleAIEvidenceText_BudgetNotConfigured(t *testing.T) {
 	tdb.qJob.On("First", mock.AnythingOfType("*models.AIJob")).Return(theoryErrors.ErrItemNotFound).Once()
 	// Concurrency check queries queued jobs by instance.
 	tdb.qJob.On("All", mock.AnythingOfType("*[]*models.AIJob")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*[]*models.AIJob)
+		dest := testutil.RequireMockArg[*[]*models.AIJob](t, args, 0)
 		*dest = nil
 	}).Once()
 	// Budget month missing => not_checked_budget response.
@@ -128,7 +130,7 @@ func TestHandleGetAIJob_ValidatesAndHidesCrossInstance(t *testing.T) {
 
 	// Cross-instance job must not be visible.
 	tdb.qJob.On("First", mock.AnythingOfType("*models.AIJob")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.AIJob)
+		dest := testutil.RequireMockArg[*models.AIJob](t, args, 0)
 		*dest = models.AIJob{ID: jobID, InstanceSlug: "other"}
 	}).Once()
 	if _, err := s.handleGetAIJob(ctx); err == nil {
@@ -146,12 +148,12 @@ func TestHandleGetAIJob_IncludesResultWhenPresent(t *testing.T) {
 	ctx := &apptheory.Context{AuthIdentity: "inst", Params: map[string]string{"jobId": jobID}}
 
 	tdb.qJob.On("First", mock.AnythingOfType("*models.AIJob")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.AIJob)
+		dest := testutil.RequireMockArg[*models.AIJob](t, args, 0)
 		*dest = models.AIJob{ID: jobID, InstanceSlug: "inst"}
 	}).Once()
 
 	tdb.qResult.On("First", mock.AnythingOfType("*models.AIResult")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.AIResult)
+		dest := testutil.RequireMockArg[*models.AIResult](t, args, 0)
 		*dest = models.AIResult{
 			ID:            jobID,
 			Module:        aiEvidenceTextModule,
@@ -191,7 +193,7 @@ func TestPrepareAIEvidenceImage_ArtifactsRequired(t *testing.T) {
 	if _, err := s.prepareAIEvidenceImage(&apptheory.Context{AuthIdentity: "inst", Request: apptheory.Request{Body: []byte(`{"object_key":"k"}`)}}); err == nil {
 		t.Fatalf("expected error without artifacts store")
 	}
-	if _, _, _, err := s.headAndValidateEvidenceImageObject(nil, "k"); err == nil {
+	if _, _, _, err := s.headAndValidateEvidenceImageObject(context.TODO(), "k"); err == nil {
 		t.Fatalf("expected error without artifacts store")
 	}
 }

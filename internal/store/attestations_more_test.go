@@ -46,14 +46,14 @@ func TestStore_AttestationsAndAIResults(t *testing.T) {
 	if err != nil || res == nil || res.ID != "res-1" {
 		t.Fatalf("GetAIResult: res=%#v err=%v", res, err)
 	}
-	if err := st.PutAIResult(ctx, &models.AIResult{ID: "res-1"}); err != nil {
-		t.Fatalf("PutAIResult: %v", err)
+	if putErr := st.PutAIResult(ctx, &models.AIResult{ID: "res-1"}); putErr != nil {
+		t.Fatalf("PutAIResult: %v", putErr)
 	}
 
-	if _, err := st.GetAttestation(ctx, " "); err == nil {
+	if _, getErr := st.GetAttestation(ctx, " "); getErr == nil {
 		t.Fatalf("expected error for empty attestation id")
 	}
-	if err := st.PutAttestation(ctx, nil); err == nil {
+	if putErr := st.PutAttestation(ctx, nil); putErr == nil {
 		t.Fatalf("expected error for nil attestation")
 	}
 	att, err := st.GetAttestation(ctx, "att-1")
@@ -64,4 +64,3 @@ func TestStore_AttestationsAndAIResults(t *testing.T) {
 		t.Fatalf("PutAttestation: %v", err)
 	}
 }
-

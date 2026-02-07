@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/route53"
+	"github.com/stretchr/testify/require"
 )
 
 type memZone struct {
@@ -186,39 +187,36 @@ func TestRoute53Helpers_FindCreateGetAndEnsureHostedZoneAndNameServers(t *testin
 	defer cancel()
 
 	// findHostedZoneIDByName: success.
-	if got, err := findHostedZoneIDByName(ctx, client, "example.com."); err != nil || got != "ZEXISTING" {
-		t.Fatalf("findHostedZoneIDByName: got=%q err=%v (last=%s %s?%s)", got, err, mem.lastMethod, mem.lastPath, mem.lastQuery)
-	}
+	got, err := findHostedZoneIDByName(ctx, client, "example.com.")
+	require.NoError(t, err)
+	require.Equal(t, "ZEXISTING", got, "last=%s %s?%s", mem.lastMethod, mem.lastPath, mem.lastQuery)
 
 	// findHostedZoneIDByName: no match.
-	if got, err := findHostedZoneIDByName(ctx, client, "missing.example."); err != nil || got != "" {
-		t.Fatalf("expected empty for missing, got=%q err=%v", got, err)
-	}
+	got, err = findHostedZoneIDByName(ctx, client, "missing.example.")
+	require.NoError(t, err)
+	require.Empty(t, got)
 
 	// createHostedZone: normalizes id + name servers.
 	zoneID, ns, err := createHostedZone(ctx, client, "example.com.", "job1")
-	if err != nil {
-		t.Fatalf("createHostedZone: %v", err)
-	}
-	if zoneID == "" || len(ns) != 2 || ns[0] != "ns-a" || ns[1] != "ns-b" {
-		t.Fatalf("unexpected create output: zoneID=%q ns=%#v", zoneID, ns)
-	}
+	require.NoError(t, err)
+	require.NotEmpty(t, zoneID)
+	require.Equal(t, []string{"ns-a", "ns-b"}, ns)
 
 	// getHostedZoneNameServers: validates.
-	if _, err := getHostedZoneNameServers(ctx, client, " "); err == nil {
+	if _, zoneErr := getHostedZoneNameServers(ctx, client, " "); zoneErr == nil {
 		t.Fatalf("expected zone id required error")
 	}
 
 	// ensureHostedZoneAndNameServers: short-circuit when existing inputs present.
 	gotID, gotNS, err := ensureHostedZoneAndNameServers(ctx, nil, "example.com.", "/hostedzone/Z1", []string{" b ", "a"}, "job")
-	if err != nil || gotID != "Z1" || len(gotNS) != 2 || gotNS[0] != "a" || gotNS[1] != "b" {
-		t.Fatalf("unexpected short-circuit: id=%q ns=%#v err=%v", gotID, gotNS, err)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "Z1", gotID)
+	require.Equal(t, []string{"a", "b"}, gotNS)
 
 	// ensureHostedZoneAndNameServers: list -> get.
 	mem.ensureZone("ZLIST", "list.example.", []string{"ns-x", "ns-y"})
 	gotID, gotNS, err = ensureHostedZoneAndNameServers(ctx, client, "list.example.", "", nil, "job")
-	if err != nil || gotID != "ZLIST" || len(gotNS) != 2 {
-		t.Fatalf("unexpected list->get: id=%q ns=%#v err=%v", gotID, gotNS, err)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "ZLIST", gotID)
+	require.Len(t, gotNS, 2)
 }

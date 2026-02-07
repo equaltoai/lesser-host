@@ -3,8 +3,12 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "build": "hardhat compile",
+    "lint": "solhint \"contracts/**/*.sol\"",
     "test": "hardhat compile && node --test test/*.test.js"
   },
   "devDependencies": {
@@ -12,6 +16,7 @@
     "@nomicfoundation/hardhat-network-helpers": "^3.0.3",
     "@openzeppelin/contracts": "5.4.0",
     "ethers": "6.15.0",
-    "hardhat": "3.0.6"
+    "hardhat": "3.0.6",
+    "solhint": "5.0.3"
   }
 }

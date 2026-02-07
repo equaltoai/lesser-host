@@ -25,6 +25,7 @@ import (
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/domains"
+	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 	"github.com/equaltoai/lesser-host/internal/tips"
 )
@@ -111,7 +112,7 @@ func (s *Server) handleTipHostRegistrationBegin(ctx *apptheory.Context) (*appthe
 	}
 
 	var req tipHostRegistrationBeginRequest
-	if err := parseJSON(ctx, &req); err != nil {
+	if err := httpx.ParseJSON(ctx, &req); err != nil {
 		return nil, err
 	}
 
@@ -253,7 +254,7 @@ func buildTipRegistryWalletMessage(domainNormalized, walletAddr string, chainID 
 
 func parseTipHostRegistrationVerifyInput(ctx *apptheory.Context) (string, requiredProofSet, *apptheory.AppError) {
 	var req tipHostRegistrationVerifyRequest
-	if err := parseJSON(ctx, &req); err != nil {
+	if err := httpx.ParseJSON(ctx, &req); err != nil {
 		if appErr, ok := err.(*apptheory.AppError); ok {
 			return "", requiredProofSet{}, appErr
 		}
@@ -987,7 +988,7 @@ func (s *Server) handleRecordTipRegistryOperationExecution(ctx *apptheory.Contex
 	}
 
 	var req recordTipRegistryExecutionRequest
-	if err := parseJSON(ctx, &req); err != nil {
+	if err := httpx.ParseJSON(ctx, &req); err != nil {
 		return nil, err
 	}
 
@@ -1229,7 +1230,7 @@ func (s *Server) handleSetTipRegistryHostActive(ctx *apptheory.Context) (*appthe
 	}
 
 	var req setTipRegistryHostActiveRequest
-	if parseErr := parseJSON(ctx, &req); parseErr != nil {
+	if parseErr := httpx.ParseJSON(ctx, &req); parseErr != nil {
 		return nil, parseErr
 	}
 
@@ -1314,7 +1315,7 @@ func (s *Server) handleSetTipRegistryTokenAllowed(ctx *apptheory.Context) (*appt
 	}
 
 	var req setTipRegistryTokenAllowedRequest
-	if err := parseJSON(ctx, &req); err != nil {
+	if err := httpx.ParseJSON(ctx, &req); err != nil {
 		return nil, err
 	}
 

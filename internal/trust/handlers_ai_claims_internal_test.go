@@ -95,7 +95,7 @@ func TestClaimVerifyModelSet(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected err: %v", err)
 		}
-		if strings.ToLower(modelSet) != "openai:gpt" {
+		if strings.ToLower(modelSet) != testModelSetOpenAIGPT {
 			t.Fatalf("expected openai model set preserved, got %q", modelSet)
 		}
 	}

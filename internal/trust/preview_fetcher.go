@@ -213,7 +213,7 @@ func validateOutboundURL(ctx context.Context, resolver ipResolver, u *url.URL) e
 	}
 
 	if isDeniedHostname(host) {
-		return &linkPreviewError{Code: "blocked_ssrf", Message: "host is not allowed"}
+		return &linkPreviewError{Code: errorCodeBlockedSSRF, Message: "host is not allowed"}
 	}
 
 	if ip := net.ParseIP(host); ip != nil {
@@ -238,7 +238,7 @@ func validateOutboundScheme(scheme string) error {
 
 func validateOutboundIP(ip net.IP) error {
 	if isDeniedIP(ip) {
-		return &linkPreviewError{Code: "blocked_ssrf", Message: "ip is not allowed"}
+		return &linkPreviewError{Code: errorCodeBlockedSSRF, Message: "ip is not allowed"}
 	}
 	return nil
 }
@@ -263,10 +263,10 @@ func resolveHostIPs(ctx context.Context, resolver ipResolver, host string) ([]ne
 
 	ips, err := resolver.LookupIPAddr(ctx, host)
 	if err != nil {
-		return nil, &linkPreviewError{Code: "blocked_ssrf", Message: "failed to resolve host"}
+		return nil, &linkPreviewError{Code: errorCodeBlockedSSRF, Message: "failed to resolve host"}
 	}
 	if len(ips) == 0 {
-		return nil, &linkPreviewError{Code: "blocked_ssrf", Message: "host did not resolve"}
+		return nil, &linkPreviewError{Code: errorCodeBlockedSSRF, Message: "host did not resolve"}
 	}
 	return ips, nil
 }
@@ -274,7 +274,7 @@ func resolveHostIPs(ctx context.Context, resolver ipResolver, host string) ([]ne
 func validateResolvedIPAddrs(ips []net.IPAddr) error {
 	for _, ipAddr := range ips {
 		if isDeniedIP(ipAddr.IP) {
-			return &linkPreviewError{Code: "blocked_ssrf", Message: "host resolves to a blocked ip"}
+			return &linkPreviewError{Code: errorCodeBlockedSSRF, Message: "host resolves to a blocked ip"}
 		}
 	}
 	return nil

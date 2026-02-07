@@ -13,6 +13,12 @@ import (
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
+const (
+	moderationDecisionAllow  = "allow"
+	moderationDecisionReview = "review"
+	moderationDecisionBlock  = "block"
+)
+
 // ModerationTextBatchItem is a single item for batch text moderation.
 type ModerationTextBatchItem struct {
 	ItemID   string
@@ -200,10 +206,10 @@ func normalizeModerationBatchOutput(parsed moderationBatchOutput, kind string) m
 func normalizeModerationDecision(v string) string {
 	v = strings.ToLower(strings.TrimSpace(v))
 	switch v {
-	case "allow", "review", "block":
+	case moderationDecisionAllow, moderationDecisionReview, moderationDecisionBlock:
 		return v
 	default:
-		return "review"
+		return moderationDecisionReview
 	}
 }
 

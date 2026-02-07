@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 
 	"github.com/equaltoai/lesser-host/internal/ai"
@@ -75,7 +76,7 @@ func TestServerRegister_RegistersSQSWhenConfigured(t *testing.T) {
 	srv.Register(app)
 }
 
-func TestRenderSummaryBatchResults_OpenAIAnthropicAndFallback(t *testing.T) {
+func TestRenderSummaryBatchResults_OpenAISuccess(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
@@ -85,113 +86,113 @@ func TestRenderSummaryBatchResults_OpenAIAnthropicAndFallback(t *testing.T) {
 		Input:  ai.RenderSummaryInputsV1{NormalizedURL: "https://example.com", Text: "hello"},
 	}}
 
-	t.Run("openai_success", func(t *testing.T) {
-		t.Setenv("OPENAI_API_KEY", "k")
+	t.Setenv("OPENAI_API_KEY", "k")
 
-		outPayload, err := json.Marshal(map[string]any{
+	outPayload, err := json.Marshal(map[string]any{
+		"items": []any{map[string]any{
+			"item_id":       itemID,
+			"short_summary": "Example summary.",
+			"key_bullets":   []any{"a", "b", "c"},
+			"risks":         []any{},
+		}},
+	})
+	require.NoError(t, err)
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.Body.Close()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(openAIChatCompletionResponseJSON(t, "gpt-test", string(outPayload)))
+	}))
+	t.Cleanup(ts.Close)
+	t.Setenv("OPENAI_BASE_URL", ts.URL)
+
+	s := &Server{}
+	res, usage, errs := s.renderSummaryBatchResults(ctx, "openai:gpt-test", items)
+	require.Empty(t, errs)
+	require.Equal(t, testProviderOpenAI, usage.Provider)
+	require.Equal(t, "Example summary.", strings.TrimSpace(res[itemID].ShortSummary))
+}
+
+func TestRenderSummaryBatchResults_OpenAIErrorFallback(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	itemID := strings.Repeat("a", 64)
+	items := []llm.RenderSummaryBatchItem{{
+		ItemID: itemID,
+		Input:  ai.RenderSummaryInputsV1{NormalizedURL: "https://example.com", Text: "hello"},
+	}}
+
+	t.Setenv("OPENAI_API_KEY", "k")
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.Body.Close()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"boom"}`))
+	}))
+	t.Cleanup(ts.Close)
+	t.Setenv("OPENAI_BASE_URL", ts.URL)
+
+	s := &Server{}
+	res, usage, errs := s.renderSummaryBatchResults(ctx, "openai:gpt-test", items)
+	require.Len(t, errs, 1)
+	require.Equal(t, aiErrorCodeLLMFailed, errs[0].Code)
+	require.Equal(t, deterministicValue, usage.Provider)
+	require.NotEmpty(t, strings.TrimSpace(res[itemID].ShortSummary))
+}
+
+func TestRenderSummaryBatchResults_AnthropicSuccess(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	itemID := strings.Repeat("a", 64)
+	items := []llm.RenderSummaryBatchItem{{
+		ItemID: itemID,
+		Input:  ai.RenderSummaryInputsV1{NormalizedURL: "https://example.com", Text: "hello"},
+	}}
+
+	t.Setenv("ANTHROPIC_API_KEY", "a")
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.Body.Close()
+		w.Header().Set("Content-Type", "application/json")
+
+		outPayload := map[string]any{
 			"items": []any{map[string]any{
 				"item_id":       itemID,
 				"short_summary": "Example summary.",
 				"key_bullets":   []any{"a", "b", "c"},
 				"risks":         []any{},
 			}},
-		})
-		if err != nil {
-			t.Fatalf("marshal payload: %v", err)
 		}
+		_, _ = w.Write(anthropicToolUseResponseJSON(t, "claude-test", "render_summary_batch", outPayload))
+	}))
+	t.Cleanup(ts.Close)
+	t.Setenv("ANTHROPIC_BASE_URL", ts.URL)
 
-		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			_ = r.Body.Close()
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write(openAIChatCompletionResponseJSON(t, "gpt-test", string(outPayload)))
-		}))
-		t.Cleanup(ts.Close)
-		t.Setenv("OPENAI_BASE_URL", ts.URL)
+	s := &Server{}
+	res, usage, errs := s.renderSummaryBatchResults(ctx, "anthropic:claude-test", items)
+	require.Empty(t, errs)
+	require.Equal(t, testProviderAnthropic, usage.Provider)
+	require.Equal(t, "Example summary.", strings.TrimSpace(res[itemID].ShortSummary))
+}
 
-		s := &Server{}
-		res, usage, errs := s.renderSummaryBatchResults(ctx, "openai:gpt-test", items)
-		if len(errs) != 0 {
-			t.Fatalf("expected no errs, got %#v", errs)
-		}
-		if usage.Provider != "openai" {
-			t.Fatalf("expected openai usage, got %#v", usage)
-		}
-		if got := strings.TrimSpace(res[itemID].ShortSummary); got != "Example summary." {
-			t.Fatalf("expected summary from llm, got %q", got)
-		}
-	})
+func TestRenderSummaryBatchResults_NonLLMDeterministic(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 
-	t.Run("openai_error_fallback", func(t *testing.T) {
-		t.Setenv("OPENAI_API_KEY", "k")
+	itemID := strings.Repeat("a", 64)
+	items := []llm.RenderSummaryBatchItem{{
+		ItemID: itemID,
+		Input:  ai.RenderSummaryInputsV1{NormalizedURL: "https://example.com", Text: "hello"},
+	}}
 
-		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			_ = r.Body.Close()
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusInternalServerError)
-			_, _ = w.Write([]byte(`{"error":"boom"}`))
-		}))
-		t.Cleanup(ts.Close)
-		t.Setenv("OPENAI_BASE_URL", ts.URL)
-
-		s := &Server{}
-		res, usage, errs := s.renderSummaryBatchResults(ctx, "openai:gpt-test", items)
-		if len(errs) != 1 || errs[0].Code != "llm_failed" {
-			t.Fatalf("expected llm_failed, got %#v", errs)
-		}
-		if usage.Provider != deterministicValue {
-			t.Fatalf("expected deterministic usage, got %#v", usage)
-		}
-		if strings.TrimSpace(res[itemID].ShortSummary) == "" {
-			t.Fatalf("expected deterministic summary, got %#v", res[itemID])
-		}
-	})
-
-	t.Run("anthropic_success", func(t *testing.T) {
-		t.Setenv("ANTHROPIC_API_KEY", "a")
-
-		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			_ = r.Body.Close()
-			w.Header().Set("Content-Type", "application/json")
-
-			outPayload := map[string]any{
-				"items": []any{map[string]any{
-					"item_id":       itemID,
-					"short_summary": "Example summary.",
-					"key_bullets":   []any{"a", "b", "c"},
-					"risks":         []any{},
-				}},
-			}
-			_, _ = w.Write(anthropicToolUseResponseJSON(t, "claude-test", "render_summary_batch", outPayload))
-		}))
-		t.Cleanup(ts.Close)
-		t.Setenv("ANTHROPIC_BASE_URL", ts.URL)
-
-		s := &Server{}
-		res, usage, errs := s.renderSummaryBatchResults(ctx, "anthropic:claude-test", items)
-		if len(errs) != 0 {
-			t.Fatalf("expected no errs, got %#v", errs)
-		}
-		if usage.Provider != "anthropic" {
-			t.Fatalf("expected anthropic usage, got %#v", usage)
-		}
-		if got := strings.TrimSpace(res[itemID].ShortSummary); got != "Example summary." {
-			t.Fatalf("expected summary from llm, got %q", got)
-		}
-	})
-
-	t.Run("non_llm_deterministic", func(t *testing.T) {
-		s := &Server{}
-		res, usage, errs := s.renderSummaryBatchResults(ctx, "deterministic", items)
-		if len(errs) != 0 {
-			t.Fatalf("expected no errs, got %#v", errs)
-		}
-		if usage.Provider != deterministicValue {
-			t.Fatalf("expected deterministic usage, got %#v", usage)
-		}
-		if strings.TrimSpace(res[itemID].ShortSummary) == "" {
-			t.Fatalf("expected deterministic summary, got %#v", res[itemID])
-		}
-	})
+	s := &Server{}
+	res, usage, errs := s.renderSummaryBatchResults(ctx, deterministicValue, items)
+	require.Empty(t, errs)
+	require.Equal(t, deterministicValue, usage.Provider)
+	require.NotEmpty(t, strings.TrimSpace(res[itemID].ShortSummary))
 }
 
 func TestRunRenderSummaryLLMV1_LLMMissingOutputAndSuccess(t *testing.T) {
@@ -200,12 +201,12 @@ func TestRunRenderSummaryLLMV1_LLMMissingOutputAndSuccess(t *testing.T) {
 
 	jobID := strings.Repeat("b", 64)
 	job := &models.AIJob{
-		ID:         jobID,
-		InstanceSlug: "inst",
-		Module:      "render_summary_llm",
+		ID:            jobID,
+		InstanceSlug:  "inst",
+		Module:        "render_summary_llm",
 		PolicyVersion: "v1",
-		ModelSet:    "openai:gpt-test",
-		InputsJSON:  `{"normalized_url":"https://example.com/","text":"hello"}`,
+		ModelSet:      "openai:gpt-test",
+		InputsJSON:    `{"normalized_url":"https://example.com/","text":"hello"}`,
 	}
 
 	t.Run("missing_output", func(t *testing.T) {
@@ -236,7 +237,7 @@ func TestRunRenderSummaryLLMV1_LLMMissingOutputAndSuccess(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected err: %v", err)
 		}
-		if len(errs) != 1 || errs[0].Code != "llm_missing_output" {
+		if len(errs) != 1 || errs[0].Code != aiErrorCodeLLMMissingOutput {
 			t.Fatalf("expected llm_missing_output, got %#v", errs)
 		}
 		if usage.Provider != deterministicValue {
@@ -272,7 +273,7 @@ func TestRunRenderSummaryLLMV1_LLMMissingOutputAndSuccess(t *testing.T) {
 		if err != nil || len(errs) != 0 {
 			t.Fatalf("out=%q usage=%#v errs=%#v err=%v", outJSON, usage, errs, err)
 		}
-		if usage.Provider != "openai" {
+		if usage.Provider != testProviderOpenAI {
 			t.Fatalf("expected openai usage, got %#v", usage)
 		}
 		if !strings.Contains(outJSON, "Example summary.") {

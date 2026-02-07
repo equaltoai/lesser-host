@@ -13,6 +13,11 @@ import (
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
+const (
+	testMonth202602 = "2026-02"
+	testSlug        = "slug"
+)
+
 func TestCreditsAmountCents(t *testing.T) {
 	t.Parallel()
 
@@ -44,7 +49,7 @@ func TestPortalBillingParsers(t *testing.T) {
 	if got, appErr := normalizeCreditsCheckoutMonth("", now); appErr != nil || got != "1970-01" {
 		t.Fatalf("expected default month 1970-01, got %q err=%v", got, appErr)
 	}
-	if _, appErr := normalizeCreditsCheckoutMonth("nope", now); appErr == nil {
+	if _, appErr := normalizeCreditsCheckoutMonth(testNope, now); appErr == nil {
 		t.Fatalf("expected error for invalid month")
 	}
 
@@ -53,12 +58,12 @@ func TestPortalBillingParsers(t *testing.T) {
 		t.Fatalf("expected error for missing fields")
 	}
 
-	ctx.Request.Body = []byte(`{"instance_slug":" Slug ","credits":10,"month":"2026-02"}`)
+	ctx.Request.Body = []byte(`{"instance_slug":" Slug ","credits":10,"month":"` + testMonth202602 + `"}`)
 	req, appErr := parsePortalCreditsCheckoutRequest(ctx)
 	if appErr != nil {
 		t.Fatalf("parsePortalCreditsCheckoutRequest: %v", appErr)
 	}
-	if req.InstanceSlug != "slug" || req.Credits != 10 || req.Month != "2026-02" {
+	if req.InstanceSlug != testSlug || req.Credits != 10 || req.Month != testMonth202602 {
 		t.Fatalf("unexpected request: %#v", req)
 	}
 }
@@ -109,12 +114,12 @@ func TestOperatorProvisioningHelpers(t *testing.T) {
 
 	j := &models.ProvisionJob{ID: " id ", InstanceSlug: " slug ", Status: " ok ", ReceiptJSON: " {} "}
 	item := operatorProvisionJobListItemFromModel(j)
-	if item.ID != "id" || item.InstanceSlug != "slug" || !item.HasReceipt {
+	if item.ID != "id" || item.InstanceSlug != testSlug || !item.HasReceipt {
 		t.Fatalf("unexpected list item: %#v", item)
 	}
 
 	detail := operatorProvisionJobDetailFromModel(j)
-	if detail.ID != "id" || detail.InstanceSlug != "slug" || !detail.HasReceipt {
+	if detail.ID != "id" || detail.InstanceSlug != testSlug || !detail.HasReceipt {
 		t.Fatalf("unexpected detail: %#v", detail)
 	}
 }
@@ -130,7 +135,7 @@ func TestInstanceAndDomainResponsesApplyDefaults(t *testing.T) {
 
 	inst := &models.Instance{Slug: " slug ", Owner: " owner ", AIModelSet: ""}
 	resp = instanceResponseFromModel(inst)
-	if resp.Slug != "slug" || resp.Owner != "owner" {
+	if resp.Slug != testSlug || resp.Owner != "owner" {
 		t.Fatalf("expected trimmed fields, got %#v", resp)
 	}
 	if resp.RenderPolicy == "" || resp.OveragePolicy == "" {
@@ -177,10 +182,10 @@ func TestTipRegistryProofParsingAndWalletVerification(t *testing.T) {
 		t.Fatalf("expected dns required by default, got %#v err=%v", proofs, err)
 	}
 
-	if _, err := parseTipRegistryProofs([]string{"nope"}); err == nil {
+	if _, parseErr := parseTipRegistryProofs([]string{testNope}); parseErr == nil {
 		t.Fatalf("expected error for invalid proof")
 	}
-	if _, err := parseTipRegistryProofs([]string{" "}); err == nil {
+	if _, parseErr := parseTipRegistryProofs([]string{" "}); parseErr == nil {
 		t.Fatalf("expected error for no proofs selected")
 	}
 

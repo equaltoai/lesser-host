@@ -17,6 +17,7 @@ import (
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
+	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
 type previewsMoreTestDB struct {
@@ -70,7 +71,7 @@ func TestHandleLinkPreview_FetchBlockedSSRF_StoresErrorPreview(t *testing.T) {
 	hpe := true
 	re := false
 	tdb.qInst.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
 		*dest = models.Instance{Slug: "inst", HostedPreviewsEnabled: &hpe, RendersEnabled: &re}
 	}).Once()
 
@@ -91,7 +92,7 @@ func TestHandleLinkPreview_FetchBlockedSSRF_StoresErrorPreview(t *testing.T) {
 	if err := json.Unmarshal(resp.Body, &parsed); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if parsed.Status != "blocked" || parsed.ErrorCode != "blocked_ssrf" {
+	if parsed.Status != statusBlocked || parsed.ErrorCode != errorCodeBlockedSSRF {
 		t.Fatalf("unexpected preview response: %#v", parsed)
 	}
 }
@@ -149,17 +150,17 @@ func TestPreviewRenderHelpers_PolicyEligibilityAndQueueReady(t *testing.T) {
 	if got := normalizePreviewRenderPolicy(" always "); got != "always" {
 		t.Fatalf("unexpected policy: %q", got)
 	}
-	if got := normalizePreviewRenderPolicy("bad"); got != "suspicious" {
+	if got := normalizePreviewRenderPolicy("bad"); got != renderPolicySuspicious {
 		t.Fatalf("expected default suspicious, got %q", got)
 	}
 
-	if previewRenderEligible(nil, &apptheory.Context{}, "x", &linkPreviewResponse{Status: "ok"}) {
+	if previewRenderEligible(nil, &apptheory.Context{}, "x", &linkPreviewResponse{Status: statusOK}) {
 		t.Fatalf("expected false for nil server")
 	}
-	if previewRenderEligible(&Server{}, &apptheory.Context{}, "", &linkPreviewResponse{Status: "ok"}) {
+	if previewRenderEligible(&Server{}, &apptheory.Context{}, "", &linkPreviewResponse{Status: statusOK}) {
 		t.Fatalf("expected false for empty normalized url")
 	}
-	if previewRenderEligible(&Server{}, &apptheory.Context{}, "x", &linkPreviewResponse{Status: "error"}) {
+	if previewRenderEligible(&Server{}, &apptheory.Context{}, "x", &linkPreviewResponse{Status: statusError}) {
 		t.Fatalf("expected false for non-ok status")
 	}
 
@@ -204,7 +205,7 @@ func TestMaybeAttachPreviewRender_QueuesOnCreateRace(t *testing.T) {
 	tdb.qRender.On("First", mock.AnythingOfType("*models.RenderArtifact")).Return(theoryErrors.ErrItemNotFound).Times(2)
 	tdb.qRender.On("Create").Return(theoryErrors.ErrConditionFailed).Once()
 	tdb.qRender.On("First", mock.AnythingOfType("*models.RenderArtifact")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.RenderArtifact)
+		dest := testutil.RequireMockArg[*models.RenderArtifact](t, args, 0)
 		*dest = models.RenderArtifact{
 			ID:            "rid",
 			PolicyVersion: "v1",
@@ -215,7 +216,7 @@ func TestMaybeAttachPreviewRender_QueuesOnCreateRace(t *testing.T) {
 	}).Once()
 
 	tdb.qBudget.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.InstanceBudgetMonth)
+		dest := testutil.RequireMockArg[*models.InstanceBudgetMonth](t, args, 0)
 		*dest = models.InstanceBudgetMonth{IncludedCredits: 10, UsedCredits: 0}
 	}).Once()
 
@@ -280,7 +281,7 @@ func TestLinkPreviewResponseFromModel_StatusAndImageURL(t *testing.T) {
 		t.Fatalf("unexpected ok response: %#v", resp)
 	}
 
-	item.ErrorCode = "blocked_ssrf"
+	item.ErrorCode = errorCodeBlockedSSRF
 	resp = linkPreviewResponseFromModel(ctx, item, true)
 	if resp.Status != "blocked" {
 		t.Fatalf("expected blocked, got %#v", resp)

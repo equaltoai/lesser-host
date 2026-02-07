@@ -18,6 +18,7 @@ import (
 
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
+	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
 type authTestDB struct {
@@ -93,7 +94,7 @@ func TestHandleWalletChallenge_Success(t *testing.T) {
 	tdb := newAuthTestDB()
 	s := &Server{store: store.New(tdb.db)}
 
-	body, _ := json.Marshal(walletChallengeRequest{Address: "0xabc", Username: "alice"})
+	body, _ := json.Marshal(walletChallengeRequest{Address: "0xabc", Username: testUsernameAlice})
 	resp, err := s.handleWalletChallenge(&apptheory.Context{
 		Request: apptheory.Request{Body: body},
 	})
@@ -127,10 +128,10 @@ func TestHandleWalletLogin_Success(t *testing.T) {
 	sig := signWalletMessage(t, key, message)
 
 	tdb.qWallet.On("First", mock.AnythingOfType("*models.WalletChallenge")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.WalletChallenge)
+		dest := testutil.RequireMockArg[*models.WalletChallenge](t, args, 0)
 		*dest = models.WalletChallenge{
 			ID:        "c1",
-			Username:  "alice",
+			Username:  testUsernameAlice,
 			Address:   strings.ToLower(addr),
 			ChainID:   1,
 			Nonce:     "n",
@@ -143,13 +144,13 @@ func TestHandleWalletLogin_Success(t *testing.T) {
 	tdb.qWallet.On("Delete").Return(nil).Once()
 
 	tdb.qWalletIndex.On("First", mock.AnythingOfType("*models.WalletIndex")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.WalletIndex)
-		*dest = models.WalletIndex{Username: "alice"}
+		dest := testutil.RequireMockArg[*models.WalletIndex](t, args, 0)
+		*dest = models.WalletIndex{Username: testUsernameAlice}
 	}).Once()
 
 	tdb.qUser.On("First", mock.AnythingOfType("*models.User")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.User)
-		*dest = models.User{Username: "alice", Role: models.RoleAdmin}
+		dest := testutil.RequireMockArg[*models.User](t, args, 0)
+		*dest = models.User{Username: testUsernameAlice, Role: models.RoleAdmin}
 	}).Once()
 
 	tdb.qSession.On("Create").Return(nil).Once()
@@ -177,7 +178,7 @@ func TestHandleWalletLogin_Success(t *testing.T) {
 	if err := json.Unmarshal(resp.Body, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if out.Token == "" || out.Username != "alice" || out.Role != models.RoleAdmin || out.Method != "wallet" {
+	if out.Token == "" || out.Username != testUsernameAlice || out.Role != models.RoleAdmin || out.Method != "wallet" {
 		t.Fatalf("unexpected response: %#v", out)
 	}
 }
@@ -208,7 +209,7 @@ func TestHandlePortalWalletChallengeAndLogin_CreatesUserWhenMissing(t *testing.T
 
 	// Fetch challenge for login.
 	tdb.qWallet.On("First", mock.AnythingOfType("*models.WalletChallenge")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.WalletChallenge)
+		dest := testutil.RequireMockArg[*models.WalletChallenge](t, args, 0)
 		*dest = models.WalletChallenge{
 			ID:        chal.ID,
 			Username:  chal.Username,
@@ -257,20 +258,20 @@ func TestHandlePortalMe_OperatorMe_AndLogout(t *testing.T) {
 	s := &Server{store: store.New(tdb.db)}
 
 	tdb.qUser.On("First", mock.AnythingOfType("*models.User")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.User)
-		*dest = models.User{Username: "alice", Role: models.RoleCustomer, DisplayName: "Alice", Email: "a@example.com"}
+		dest := testutil.RequireMockArg[*models.User](t, args, 0)
+		*dest = models.User{Username: testUsernameAlice, Role: models.RoleCustomer, DisplayName: "Alice", Email: "a@example.com"}
 	}).Twice()
 
-	if resp, err := s.handlePortalMe(&apptheory.Context{AuthIdentity: "alice"}); err != nil || resp.Status != 200 {
+	if resp, err := s.handlePortalMe(&apptheory.Context{AuthIdentity: testUsernameAlice}); err != nil || resp.Status != 200 {
 		t.Fatalf("portal me: resp=%#v err=%v", resp, err)
 	}
-	if resp, err := s.handleOperatorMe(&apptheory.Context{AuthIdentity: "alice"}); err != nil || resp.Status != 200 {
+	if resp, err := s.handleOperatorMe(&apptheory.Context{AuthIdentity: testUsernameAlice}); err != nil || resp.Status != 200 {
 		t.Fatalf("operator me: resp=%#v err=%v", resp, err)
 	}
 
 	tdb.qSession.On("Delete").Return(theoryErrors.ErrItemNotFound).Once()
 	tdb.qAudit.On("Create").Return(nil).Once()
-	ctx := &apptheory.Context{AuthIdentity: "alice"}
+	ctx := &apptheory.Context{AuthIdentity: testUsernameAlice}
 	ctx.Set(ctxKeyOperatorSessionID, "session1")
 	if resp, err := s.handleAuthLogout(ctx); err != nil || resp.Status != 200 {
 		t.Fatalf("logout: resp=%#v err=%v", resp, err)

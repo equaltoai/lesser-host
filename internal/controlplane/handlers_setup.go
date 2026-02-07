@@ -9,6 +9,7 @@ import (
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
+	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -155,7 +156,7 @@ func (s *Server) handleSetupBootstrapChallenge(ctx *apptheory.Context) (*apptheo
 	}
 
 	var req setupBootstrapChallengeRequest
-	if parseErr := parseJSON(ctx, &req); parseErr != nil {
+	if parseErr := httpx.ParseJSON(ctx, &req); parseErr != nil {
 		return nil, parseErr
 	}
 
@@ -249,7 +250,7 @@ type setupBootstrapVerifyInput struct {
 
 func parseSetupBootstrapVerifyInput(ctx *apptheory.Context) (setupBootstrapVerifyInput, error) {
 	var raw setupBootstrapVerifyRequest
-	if parseErr := parseJSON(ctx, &raw); parseErr != nil {
+	if parseErr := httpx.ParseJSON(ctx, &raw); parseErr != nil {
 		return setupBootstrapVerifyInput{}, parseErr
 	}
 
@@ -322,7 +323,7 @@ func (s *Server) verifySetupBootstrapChallenge(ctx *apptheory.Context, bootstrap
 }
 
 func (s *Server) requireSetupSession(ctx *apptheory.Context) (*models.SetupSession, error) {
-	token := bearerToken(ctx.Request.Headers)
+	token := httpx.BearerToken(ctx.Request.Headers)
 	if token == "" {
 		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
 	}
@@ -409,7 +410,7 @@ func (s *Server) validateSetupCreateAdminState(ctx *apptheory.Context) (*models.
 
 func parseSetupCreateAdminRequestInput(ctx *apptheory.Context) (setupCreateAdminRequest, *apptheory.AppError) {
 	var req setupCreateAdminRequest
-	if parseErr := parseJSON(ctx, &req); parseErr != nil {
+	if parseErr := httpx.ParseJSON(ctx, &req); parseErr != nil {
 		if appErr, ok := parseErr.(*apptheory.AppError); ok {
 			return setupCreateAdminRequest{}, appErr
 		}

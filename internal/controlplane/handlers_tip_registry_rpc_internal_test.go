@@ -22,6 +22,7 @@ import (
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
+	"github.com/equaltoai/lesser-host/internal/testutil"
 	"github.com/equaltoai/lesser-host/internal/tips"
 )
 
@@ -135,8 +136,8 @@ func TestTipRegistryUpdateRequiresBothProofs_UsesRPCState(t *testing.T) {
 	}}
 
 	reg := &models.TipHostRegistration{
-		Kind:      models.TipRegistryOperationKindUpdateHost,
-		HostIDHex: hostID.Hex(),
+		Kind:       models.TipRegistryOperationKindUpdateHost,
+		HostIDHex:  hostID.Hex(),
 		WalletAddr: "0x00000000000000000000000000000000000000bb", // wallet change
 		HostFeeBps: 10,
 	}
@@ -217,7 +218,7 @@ func TestHandleRecordTipRegistryOperationExecution_RecordsReceiptAndSnapshots(t 
 	_ = op.UpdateKeys()
 
 	tdb.qOp.On("First", mock.AnythingOfType("*models.TipRegistryOperation")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.TipRegistryOperation)
+		dest := testutil.RequireMockArg[*models.TipRegistryOperation](t, args, 0)
 		*dest = op
 	}).Once()
 
@@ -304,7 +305,7 @@ func TestHandleRecordTipRegistryOperationExecution_RecordsFailureStatus(t *testi
 	_ = op.UpdateKeys()
 
 	tdb.qOp.On("First", mock.AnythingOfType("*models.TipRegistryOperation")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.TipRegistryOperation)
+		dest := testutil.RequireMockArg[*models.TipRegistryOperation](t, args, 0)
 		*dest = op
 	}).Once()
 

@@ -17,6 +17,10 @@ const (
 	ClaimVerifySearchContextLow    = "low"
 	ClaimVerifySearchContextMedium = "medium"
 	ClaimVerifySearchContextHigh   = "high"
+
+	claimClassificationUnclear   = "unclear"
+	claimClassificationCheckable = "checkable"
+	claimClassificationOpinion   = "opinion"
 )
 
 // ClaimVerifyEvidenceV1 is an evidence snippet used to verify claims.
@@ -130,17 +134,17 @@ func ExtractClaimsDeterministicV1(text string, maxClaims int) []string {
 func classifyClaimDeterministic(text string) string {
 	text = strings.TrimSpace(text)
 	if text == "" {
-		return "unclear"
+		return claimClassificationUnclear
 	}
 	if hasDigitRE.MatchString(text) {
-		return "checkable"
+		return claimClassificationCheckable
 	}
 	l := strings.ToLower(text)
 	switch {
 	case strings.Contains(l, "i think"), strings.Contains(l, "i feel"), strings.Contains(l, "best"), strings.Contains(l, "worst"):
-		return "opinion"
+		return claimClassificationOpinion
 	default:
-		return "unclear"
+		return claimClassificationUnclear
 	}
 }
 

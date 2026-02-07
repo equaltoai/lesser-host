@@ -22,7 +22,7 @@ type stripeProvider struct {
 	ssmClient secrets.SSMAPI
 }
 
-func (stripeProvider) Name() string { return "stripe" }
+func (stripeProvider) Name() string { return providerNameStripe }
 
 func (p stripeProvider) ensureKey(ctx context.Context) error {
 	key, err := secrets.StripeSecretKey(ctx, p.ssmClient)

@@ -16,6 +16,7 @@ import (
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
+	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
 func TestParseSetupBootstrapVerifyInput(t *testing.T) {
@@ -55,7 +56,7 @@ func TestParseSetupCreateAdminRequestInput(t *testing.T) {
 	if appErr != nil {
 		t.Fatalf("parseSetupCreateAdminRequestInput: %v", appErr)
 	}
-	if req.Username != "alice" || req.DisplayName != "Alice" || req.Wallet.ChallengeID != "c" {
+	if req.Username != testUsernameAlice || req.DisplayName != "Alice" || req.Wallet.ChallengeID != "c" {
 		t.Fatalf("unexpected request: %#v", req)
 	}
 }
@@ -130,8 +131,8 @@ func TestHandleSetupStatus_LockedAndActive(t *testing.T) {
 		t.Fatalf("expected 200, got %d", resp.Status)
 	}
 	var out setupStatusResponse
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+	if unmarshalErr := json.Unmarshal(resp.Body, &out); unmarshalErr != nil {
+		t.Fatalf("unmarshal: %v", unmarshalErr)
 	}
 	if out.ControlPlaneState != "locked" || !out.Locked {
 		t.Fatalf("unexpected locked status: %#v", out)
@@ -140,7 +141,11 @@ func TestHandleSetupStatus_LockedAndActive(t *testing.T) {
 	// Active when bootstrapped.
 	now := time.Now().UTC()
 	tdb.qCP.On("First", mock.AnythingOfType("*models.ControlPlaneConfig")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.ControlPlaneConfig)
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.ControlPlaneConfig)
+		if !ok {
+			t.Fatalf("expected *models.ControlPlaneConfig, got %T", destAny)
+		}
 		*dest = models.ControlPlaneConfig{PrimaryAdminUsername: "admin", BootstrappedAt: now}
 		_ = dest.UpdateKeys()
 	}).Once()
@@ -206,7 +211,11 @@ func TestHandleSetupBootstrapVerify_Success(t *testing.T) {
 	sig := signWalletMessage(t, key, msg)
 
 	tdb.qWallet.On("First", mock.AnythingOfType("*models.WalletChallenge")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.WalletChallenge)
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.WalletChallenge)
+		if !ok {
+			t.Fatalf("expected *models.WalletChallenge, got %T", destAny)
+		}
 		*dest = models.WalletChallenge{
 			ID:        "c1",
 			Username:  setupBootstrapUser,
@@ -251,7 +260,11 @@ func TestRequireSetupSession_ExpiredDeletesAndUnauthorized(t *testing.T) {
 	s := &Server{cfg: config.Config{BootstrapWalletAddress: "0xabc"}, store: store.New(tdb.db)}
 
 	tdb.qSetup.On("First", mock.AnythingOfType("*models.SetupSession")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.SetupSession)
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.SetupSession)
+		if !ok {
+			t.Fatalf("expected *models.SetupSession, got %T", destAny)
+		}
 		*dest = models.SetupSession{
 			ID:         "tok",
 			Purpose:    setupPurposeBootstrap,
@@ -284,7 +297,11 @@ func TestHandleSetupCreateAdmin_AndFinalize_Success(t *testing.T) {
 
 	// Setup session present.
 	tdb.qSetup.On("First", mock.AnythingOfType("*models.SetupSession")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.SetupSession)
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.SetupSession)
+		if !ok {
+			t.Fatalf("expected *models.SetupSession, got %T", destAny)
+		}
 		*dest = models.SetupSession{
 			ID:         "setup-token",
 			Purpose:    setupPurposeBootstrap,
@@ -300,10 +317,14 @@ func TestHandleSetupCreateAdmin_AndFinalize_Success(t *testing.T) {
 	msg := "admin challenge"
 	sig := signWalletMessage(t, key, msg)
 	tdb.qWallet.On("First", mock.AnythingOfType("*models.WalletChallenge")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.WalletChallenge)
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.WalletChallenge)
+		if !ok {
+			t.Fatalf("expected *models.WalletChallenge, got %T", destAny)
+		}
 		*dest = models.WalletChallenge{
 			ID:        "wc1",
-			Username:  "alice",
+			Username:  testUsernameAlice,
 			Address:   strings.ToLower(addr),
 			ChainID:   1,
 			Nonce:     "n",
@@ -325,7 +346,7 @@ func TestHandleSetupCreateAdmin_AndFinalize_Success(t *testing.T) {
 	tdb.qAudit.On("Create").Return(nil).Once()
 
 	body, _ := json.Marshal(setupCreateAdminRequest{
-		Username:    "alice",
+		Username:    testUsernameAlice,
 		DisplayName: "Alice",
 		Wallet: walletVerifyRequest{
 			ChallengeID: "wc1",
@@ -337,7 +358,7 @@ func TestHandleSetupCreateAdmin_AndFinalize_Success(t *testing.T) {
 	ctx := &apptheory.Context{
 		RequestID:    "rid",
 		Request:      apptheory.Request{Body: body, Headers: map[string][]string{"authorization": {"Bearer setup-token"}}},
-		AuthIdentity: "alice", // unused by create_admin but present
+		AuthIdentity: testUsernameAlice, // unused by create_admin but present
 	}
 	resp, err := s.handleSetupCreateAdmin(ctx)
 	if err != nil {
@@ -349,14 +370,18 @@ func TestHandleSetupCreateAdmin_AndFinalize_Success(t *testing.T) {
 
 	// Finalize requires admin auth and primary admin configured.
 	tdb.qCP.On("First", mock.AnythingOfType("*models.ControlPlaneConfig")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.ControlPlaneConfig)
-		*dest = models.ControlPlaneConfig{PrimaryAdminUsername: "alice"}
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.ControlPlaneConfig)
+		if !ok {
+			t.Fatalf("expected *models.ControlPlaneConfig, got %T", destAny)
+		}
+		*dest = models.ControlPlaneConfig{PrimaryAdminUsername: testUsernameAlice}
 		_ = dest.UpdateKeys()
 	}).Once()
 	tdb.qCP.On("CreateOrUpdate").Return(nil).Once()
 	tdb.qAudit.On("Create").Return(nil).Once()
 
-	ctx2 := &apptheory.Context{AuthIdentity: "alice", RequestID: "rid2"}
+	ctx2 := &apptheory.Context{AuthIdentity: testUsernameAlice, RequestID: "rid2"}
 	ctx2.Set(ctxKeyOperatorRole, models.RoleAdmin)
 	resp, err = s.handleSetupFinalize(ctx2)
 	if err != nil {
@@ -367,120 +392,138 @@ func TestHandleSetupCreateAdmin_AndFinalize_Success(t *testing.T) {
 	}
 }
 
-func TestSetupAdminAndFinalize_ErrorBranches(t *testing.T) {
-	t.Run("validateSetupCreateAdminState_conflicts_and_unauthorized", func(t *testing.T) {
-		tdb := newSetupTestDB()
-		s := &Server{cfg: config.Config{BootstrapWalletAddress: "0xboot"}, store: store.New(tdb.db)}
+func TestValidateSetupCreateAdminState_ConflictsAndUnauthorized(t *testing.T) {
+	tdb := newSetupTestDB()
+	s := &Server{cfg: config.Config{BootstrapWalletAddress: "0xboot"}, store: store.New(tdb.db)}
 
-		// Already bootstrapped => conflict.
-		tdb.qCP.On("First", mock.AnythingOfType("*models.ControlPlaneConfig")).Return(nil).Run(func(args mock.Arguments) {
-			dest := args.Get(0).(*models.ControlPlaneConfig)
-			*dest = models.ControlPlaneConfig{PrimaryAdminUsername: "admin", BootstrappedAt: time.Now().UTC()}
-			_ = dest.UpdateKeys()
-		}).Once()
-		if _, appErr := s.validateSetupCreateAdminState(&apptheory.Context{}); appErr == nil || appErr.Code != "app.conflict" {
-			t.Fatalf("expected conflict for bootstrapped, got %#v", appErr)
+	// Already bootstrapped => conflict.
+	tdb.qCP.On("First", mock.AnythingOfType("*models.ControlPlaneConfig")).Return(nil).Run(func(args mock.Arguments) {
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.ControlPlaneConfig)
+		if !ok {
+			t.Fatalf("expected *models.ControlPlaneConfig, got %T", destAny)
 		}
+		*dest = models.ControlPlaneConfig{PrimaryAdminUsername: "admin", BootstrappedAt: time.Now().UTC()}
+		_ = dest.UpdateKeys()
+	}).Once()
+	if _, appErr := s.validateSetupCreateAdminState(&apptheory.Context{}); appErr == nil || appErr.Code != appErrCodeConflict {
+		t.Fatalf("expected conflict for bootstrapped, got %#v", appErr)
+	}
 
-		// Primary admin already set => conflict.
-		tdb.qCP.On("First", mock.AnythingOfType("*models.ControlPlaneConfig")).Return(nil).Run(func(args mock.Arguments) {
-			dest := args.Get(0).(*models.ControlPlaneConfig)
-			*dest = models.ControlPlaneConfig{PrimaryAdminUsername: "admin"}
-			_ = dest.UpdateKeys()
-		}).Once()
-		if _, appErr := s.validateSetupCreateAdminState(&apptheory.Context{}); appErr == nil || appErr.Code != "app.conflict" {
-			t.Fatalf("expected conflict for primary admin set, got %#v", appErr)
+	// Primary admin already set => conflict.
+	tdb.qCP.On("First", mock.AnythingOfType("*models.ControlPlaneConfig")).Return(nil).Run(func(args mock.Arguments) {
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.ControlPlaneConfig)
+		if !ok {
+			t.Fatalf("expected *models.ControlPlaneConfig, got %T", destAny)
 		}
+		*dest = models.ControlPlaneConfig{PrimaryAdminUsername: "admin"}
+		_ = dest.UpdateKeys()
+	}).Once()
+	if _, appErr := s.validateSetupCreateAdminState(&apptheory.Context{}); appErr == nil || appErr.Code != appErrCodeConflict {
+		t.Fatalf("expected conflict for primary admin set, got %#v", appErr)
+	}
 
-		// Missing setup session token => unauthorized.
-		tdb.qCP.On("First", mock.AnythingOfType("*models.ControlPlaneConfig")).Return(theoryErrors.ErrItemNotFound).Once()
-		if _, appErr := s.validateSetupCreateAdminState(&apptheory.Context{}); appErr == nil || appErr.Code != "app.unauthorized" {
-			t.Fatalf("expected unauthorized for missing setup session, got %#v", appErr)
+	// Missing setup session token => unauthorized.
+	tdb.qCP.On("First", mock.AnythingOfType("*models.ControlPlaneConfig")).Return(theoryErrors.ErrItemNotFound).Once()
+	if _, appErr := s.validateSetupCreateAdminState(&apptheory.Context{}); appErr == nil || appErr.Code != "app.unauthorized" {
+		t.Fatalf("expected unauthorized for missing setup session, got %#v", appErr)
+	}
+}
+
+func TestCreateSetupAdminUser_ConflictAndInternal(t *testing.T) {
+	makeServer := func(createErr error) *Server {
+		db := ttmocks.NewMockExtendedDBStrict()
+		qUser := new(ttmocks.MockQuery)
+		db.On("WithContext", mock.Anything).Return(db).Maybe()
+		db.On("Model", mock.AnythingOfType("*models.User")).Return(qUser).Maybe()
+		qUser.On("IfNotExists").Return(qUser).Maybe()
+		qUser.On("Create").Return(createErr).Once()
+		return &Server{store: store.New(db)}
+	}
+
+	ctx := &apptheory.Context{}
+
+	s := makeServer(theoryErrors.ErrConditionFailed)
+	if appErr := s.createSetupAdminUser(ctx, testUsernameAlice, "", time.Now().UTC()); appErr == nil || appErr.Code != appErrCodeConflict {
+		t.Fatalf("expected conflict for username exists, got %#v", appErr)
+	}
+
+	s = makeServer(errors.New("boom"))
+	if appErr := s.createSetupAdminUser(ctx, "bob", "", time.Now().UTC()); appErr == nil || appErr.Code != "app.internal" {
+		t.Fatalf("expected internal error, got %#v", appErr)
+	}
+}
+
+func TestVerifySetupCreateAdminWallet_ConflictWhenAlreadyLinked(t *testing.T) {
+	tdb := newSetupTestDB()
+	s := &Server{store: store.New(tdb.db)}
+
+	tdb.qWallet.On("First", mock.AnythingOfType("*models.WalletChallenge")).Return(nil).Run(func(args mock.Arguments) {
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.WalletChallenge)
+		if !ok {
+			t.Fatalf("expected *models.WalletChallenge, got %T", destAny)
 		}
+		*dest = models.WalletChallenge{
+			ID:        "wc1",
+			Username:  testUsernameAlice,
+			Address:   strings.ToLower("0xabc"),
+			ChainID:   1,
+			Nonce:     "n",
+			Message:   "m",
+			IssuedAt:  time.Now().UTC(),
+			ExpiresAt: time.Now().UTC().Add(5 * time.Minute),
+		}
+		_ = dest.UpdateKeys()
+	}).Once()
+
+	tdb.qWalletIndex.On("First", mock.AnythingOfType("*models.WalletIndex")).Return(nil).Run(func(args mock.Arguments) {
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.WalletIndex)
+		if !ok {
+			t.Fatalf("expected *models.WalletIndex, got %T", destAny)
+		}
+		*dest = models.WalletIndex{Username: "someone-else"}
+		dest.UpdateKeys("ethereum", "0xabc", "someone-else")
+	}).Once()
+
+	_, _, appErr := s.verifySetupCreateAdminWallet(&apptheory.Context{}, testUsernameAlice, walletVerifyRequest{
+		ChallengeID: "wc1",
+		Address:     "0xAbc",
+		Signature:   "sig",
+		Message:     "m",
 	})
+	if appErr == nil || appErr.Code != appErrCodeConflict {
+		t.Fatalf("expected conflict for already linked wallet, got %#v", appErr)
+	}
+}
 
-	t.Run("createSetupAdminUser_conflict_and_internal", func(t *testing.T) {
-		makeServer := func(createErr error) *Server {
-			db := ttmocks.NewMockExtendedDBStrict()
-			qUser := new(ttmocks.MockQuery)
-			db.On("WithContext", mock.Anything).Return(db).Maybe()
-			db.On("Model", mock.AnythingOfType("*models.User")).Return(qUser).Maybe()
-			qUser.On("IfNotExists").Return(qUser).Maybe()
-			qUser.On("Create").Return(createErr).Once()
-			return &Server{store: store.New(db)}
+func TestHandleSetupFinalize_ForbiddenForNonAdminAndNonPrimary(t *testing.T) {
+	tdb := newSetupTestDB()
+	s := &Server{store: store.New(tdb.db)}
+
+	tdb.qCP.On("First", mock.AnythingOfType("*models.ControlPlaneConfig")).Return(nil).Run(func(args mock.Arguments) {
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.ControlPlaneConfig)
+		if !ok {
+			t.Fatalf("expected *models.ControlPlaneConfig, got %T", destAny)
 		}
+		*dest = models.ControlPlaneConfig{PrimaryAdminUsername: testUsernameAlice}
+		_ = dest.UpdateKeys()
+	}).Maybe()
 
-		ctx := &apptheory.Context{}
+	ctx := &apptheory.Context{AuthIdentity: "bob"}
+	ctx.Set(ctxKeyOperatorRole, models.RoleOperator)
+	if _, err := s.handleSetupFinalize(ctx); err == nil {
+		t.Fatalf("expected forbidden for non-admin")
+	}
 
-		s := makeServer(theoryErrors.ErrConditionFailed)
-		if appErr := s.createSetupAdminUser(ctx, "alice", "", time.Now().UTC()); appErr == nil || appErr.Code != "app.conflict" {
-			t.Fatalf("expected conflict for username exists, got %#v", appErr)
-		}
-
-		s = makeServer(errors.New("boom"))
-		if appErr := s.createSetupAdminUser(ctx, "bob", "", time.Now().UTC()); appErr == nil || appErr.Code != "app.internal" {
-			t.Fatalf("expected internal error, got %#v", appErr)
-		}
-	})
-
-	t.Run("verifySetupCreateAdminWallet_conflict_when_already_linked", func(t *testing.T) {
-		tdb := newSetupTestDB()
-		s := &Server{store: store.New(tdb.db)}
-
-		tdb.qWallet.On("First", mock.AnythingOfType("*models.WalletChallenge")).Return(nil).Run(func(args mock.Arguments) {
-			dest := args.Get(0).(*models.WalletChallenge)
-			*dest = models.WalletChallenge{
-				ID:        "wc1",
-				Username:  "alice",
-				Address:   strings.ToLower("0xabc"),
-				ChainID:   1,
-				Nonce:     "n",
-				Message:   "m",
-				IssuedAt:  time.Now().UTC(),
-				ExpiresAt: time.Now().UTC().Add(5 * time.Minute),
-			}
-			_ = dest.UpdateKeys()
-		}).Once()
-
-		tdb.qWalletIndex.On("First", mock.AnythingOfType("*models.WalletIndex")).Return(nil).Run(func(args mock.Arguments) {
-			dest := args.Get(0).(*models.WalletIndex)
-			*dest = models.WalletIndex{Username: "someone-else"}
-			dest.UpdateKeys("ethereum", "0xabc", "someone-else")
-		}).Once()
-
-		_, _, appErr := s.verifySetupCreateAdminWallet(&apptheory.Context{}, "alice", walletVerifyRequest{
-			ChallengeID: "wc1",
-			Address:     "0xAbc",
-			Signature:   "sig",
-			Message:     "m",
-		})
-		if appErr == nil || appErr.Code != "app.conflict" {
-			t.Fatalf("expected conflict for already linked wallet, got %#v", appErr)
-		}
-	})
-
-	t.Run("handleSetupFinalize_forbidden_for_non_admin_and_non_primary", func(t *testing.T) {
-		tdb := newSetupTestDB()
-		s := &Server{store: store.New(tdb.db)}
-
-		tdb.qCP.On("First", mock.AnythingOfType("*models.ControlPlaneConfig")).Return(nil).Run(func(args mock.Arguments) {
-			dest := args.Get(0).(*models.ControlPlaneConfig)
-			*dest = models.ControlPlaneConfig{PrimaryAdminUsername: "alice"}
-			_ = dest.UpdateKeys()
-		}).Maybe()
-
-		ctx := &apptheory.Context{AuthIdentity: "bob"}
-		ctx.Set(ctxKeyOperatorRole, models.RoleOperator)
-		if _, err := s.handleSetupFinalize(ctx); err == nil {
-			t.Fatalf("expected forbidden for non-admin")
-		}
-
-		ctx2 := &apptheory.Context{AuthIdentity: "bob"}
-		ctx2.Set(ctxKeyOperatorRole, models.RoleAdmin)
-		if _, err := s.handleSetupFinalize(ctx2); err == nil {
-			t.Fatalf("expected forbidden for non-primary admin")
-		}
-	})
+	ctx2 := &apptheory.Context{AuthIdentity: "bob"}
+	ctx2.Set(ctxKeyOperatorRole, models.RoleAdmin)
+	if _, err := s.handleSetupFinalize(ctx2); err == nil {
+		t.Fatalf("expected forbidden for non-primary admin")
+	}
 }
 
 func TestParseSetupCreateAdminRequestInput_ValidatesWalletFields(t *testing.T) {
@@ -502,148 +545,178 @@ func TestParseSetupCreateAdminRequestInput_ValidatesWalletFields(t *testing.T) {
 			_, appErr := parseSetupCreateAdminRequestInput(&apptheory.Context{
 				Request: apptheory.Request{Body: []byte(tc.body)},
 			})
-			if appErr == nil || appErr.Code != "app.bad_request" || !strings.Contains(appErr.Message, tc.wantMsg) {
+			if appErr == nil || appErr.Code != appErrCodeBadRequest || !strings.Contains(appErr.Message, tc.wantMsg) {
 				t.Fatalf("expected bad_request %q, got %#v", tc.wantMsg, appErr)
 			}
 		})
 	}
 }
 
-func TestVerifySetupBootstrapChallenge_ErrorBranches(t *testing.T) {
+func TestVerifySetupBootstrapChallenge_ReturnsInternalErrorForNilServerOrCtx(t *testing.T) {
 	t.Parallel()
 
-	// Nil server / nil ctx.
-	{
-		var s *Server
-		if err := s.verifySetupBootstrapChallenge(&apptheory.Context{}, "boot", setupBootstrapVerifyInput{}); err == nil {
-			t.Fatalf("expected internal error for nil server")
-		}
-		s2 := &Server{}
-		if err := s2.verifySetupBootstrapChallenge(nil, "boot", setupBootstrapVerifyInput{}); err == nil {
-			t.Fatalf("expected internal error for nil ctx")
-		}
+	var s *Server
+	if err := s.verifySetupBootstrapChallenge(&apptheory.Context{}, "boot", setupBootstrapVerifyInput{}); err == nil {
+		t.Fatalf("expected internal error for nil server")
 	}
 
-	// Wallet mismatch.
-	{
-		s := &Server{}
-		err := s.verifySetupBootstrapChallenge(&apptheory.Context{}, "boot", setupBootstrapVerifyInput{
-			ChallengeID: "c",
-			Address:     "other",
-			Signature:   "s",
-			Message:     "m",
-		})
-		if err == nil {
-			t.Fatalf("expected forbidden wallet mismatch")
-		}
+	s2 := &Server{}
+	if err := s2.verifySetupBootstrapChallenge(nil, "boot", setupBootstrapVerifyInput{}); err == nil {
+		t.Fatalf("expected internal error for nil ctx")
 	}
+}
 
-	// DB / challenge mismatches.
+func TestVerifySetupBootstrapChallenge_ForbiddenWhenWalletMismatch(t *testing.T) {
+	t.Parallel()
+
+	s := &Server{}
+	err := s.verifySetupBootstrapChallenge(&apptheory.Context{}, "boot", setupBootstrapVerifyInput{
+		ChallengeID: "c",
+		Address:     "other",
+		Signature:   "s",
+		Message:     "m",
+	})
+	if err == nil {
+		t.Fatalf("expected forbidden wallet mismatch")
+	}
+}
+
+func TestVerifySetupBootstrapChallenge_ChallengeNotFound(t *testing.T) {
+	t.Parallel()
+
 	tdb := newSetupTestDB()
 	s := &Server{store: store.New(tdb.db)}
 	ctx := &apptheory.Context{}
 
-	t.Run("challenge_not_found", func(t *testing.T) {
-		tdb.qWallet.On("First", mock.AnythingOfType("*models.WalletChallenge")).Return(theoryErrors.ErrItemNotFound).Once()
-		err := s.verifySetupBootstrapChallenge(ctx, "boot", setupBootstrapVerifyInput{
-			ChallengeID: "c1",
-			Address:     "boot",
-			Signature:   "s",
-			Message:     "m",
-		})
-		if err == nil {
-			t.Fatalf("expected unauthorized")
-		}
+	tdb.qWallet.On("First", mock.AnythingOfType("*models.WalletChallenge")).Return(theoryErrors.ErrItemNotFound).Once()
+	err := s.verifySetupBootstrapChallenge(ctx, "boot", setupBootstrapVerifyInput{
+		ChallengeID: "c1",
+		Address:     "boot",
+		Signature:   "s",
+		Message:     "m",
 	})
+	if err == nil {
+		t.Fatalf("expected unauthorized")
+	}
+}
 
-	t.Run("challenge_db_error", func(t *testing.T) {
-		tdb.qWallet.On("First", mock.AnythingOfType("*models.WalletChallenge")).Return(errors.New("boom")).Once()
-		err := s.verifySetupBootstrapChallenge(ctx, "boot", setupBootstrapVerifyInput{
-			ChallengeID: "c1",
-			Address:     "boot",
-			Signature:   "s",
-			Message:     "m",
-		})
-		if err == nil {
-			t.Fatalf("expected internal error")
-		}
+func TestVerifySetupBootstrapChallenge_ChallengeDBError(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSetupTestDB()
+	s := &Server{store: store.New(tdb.db)}
+	ctx := &apptheory.Context{}
+
+	tdb.qWallet.On("First", mock.AnythingOfType("*models.WalletChallenge")).Return(errors.New("boom")).Once()
+	err := s.verifySetupBootstrapChallenge(ctx, "boot", setupBootstrapVerifyInput{
+		ChallengeID: "c1",
+		Address:     "boot",
+		Signature:   "s",
+		Message:     "m",
 	})
+	if err == nil {
+		t.Fatalf("expected internal error")
+	}
+}
 
-	t.Run("challenge_username_mismatch", func(t *testing.T) {
-		tdb.qWallet.On("First", mock.AnythingOfType("*models.WalletChallenge")).Return(nil).Run(func(args mock.Arguments) {
-			dest := args.Get(0).(*models.WalletChallenge)
-			*dest = models.WalletChallenge{ID: "c1", Username: "alice", Address: "boot", Message: "m"}
-			_ = dest.UpdateKeys()
-		}).Once()
+func TestVerifySetupBootstrapChallenge_ChallengeUsernameMismatch(t *testing.T) {
+	t.Parallel()
 
-		err := s.verifySetupBootstrapChallenge(ctx, "boot", setupBootstrapVerifyInput{
-			ChallengeID: "c1",
-			Address:     "boot",
-			Signature:   "s",
-			Message:     "m",
-		})
-		if err == nil {
-			t.Fatalf("expected forbidden")
-		}
+	tdb := newSetupTestDB()
+	s := &Server{store: store.New(tdb.db)}
+	ctx := &apptheory.Context{}
+
+	tdb.qWallet.On("First", mock.AnythingOfType("*models.WalletChallenge")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.WalletChallenge](t, args, 0)
+		*dest = models.WalletChallenge{ID: "c1", Username: testUsernameAlice, Address: "boot", Message: "m"}
+		_ = dest.UpdateKeys()
+	}).Once()
+
+	err := s.verifySetupBootstrapChallenge(ctx, "boot", setupBootstrapVerifyInput{
+		ChallengeID: "c1",
+		Address:     "boot",
+		Signature:   "s",
+		Message:     "m",
 	})
+	if err == nil {
+		t.Fatalf("expected forbidden")
+	}
+}
 
-	t.Run("challenge_address_mismatch", func(t *testing.T) {
-		tdb.qWallet.On("First", mock.AnythingOfType("*models.WalletChallenge")).Return(nil).Run(func(args mock.Arguments) {
-			dest := args.Get(0).(*models.WalletChallenge)
-			*dest = models.WalletChallenge{ID: "c1", Username: setupBootstrapUser, Address: "other", Message: "m"}
-			_ = dest.UpdateKeys()
-		}).Once()
+func TestVerifySetupBootstrapChallenge_ChallengeAddressMismatch(t *testing.T) {
+	t.Parallel()
 
-		err := s.verifySetupBootstrapChallenge(ctx, "boot", setupBootstrapVerifyInput{
-			ChallengeID: "c1",
-			Address:     "boot",
-			Signature:   "s",
-			Message:     "m",
-		})
-		if err == nil {
-			t.Fatalf("expected forbidden")
-		}
+	tdb := newSetupTestDB()
+	s := &Server{store: store.New(tdb.db)}
+	ctx := &apptheory.Context{}
+
+	tdb.qWallet.On("First", mock.AnythingOfType("*models.WalletChallenge")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.WalletChallenge](t, args, 0)
+		*dest = models.WalletChallenge{ID: "c1", Username: setupBootstrapUser, Address: "other", Message: "m"}
+		_ = dest.UpdateKeys()
+	}).Once()
+
+	err := s.verifySetupBootstrapChallenge(ctx, "boot", setupBootstrapVerifyInput{
+		ChallengeID: "c1",
+		Address:     "boot",
+		Signature:   "s",
+		Message:     "m",
 	})
+	if err == nil {
+		t.Fatalf("expected forbidden")
+	}
+}
 
-	t.Run("challenge_message_mismatch", func(t *testing.T) {
-		tdb.qWallet.On("First", mock.AnythingOfType("*models.WalletChallenge")).Return(nil).Run(func(args mock.Arguments) {
-			dest := args.Get(0).(*models.WalletChallenge)
-			*dest = models.WalletChallenge{ID: "c1", Username: setupBootstrapUser, Address: "boot", Message: "other"}
-			_ = dest.UpdateKeys()
-		}).Once()
+func TestVerifySetupBootstrapChallenge_ChallengeMessageMismatch(t *testing.T) {
+	t.Parallel()
 
-		err := s.verifySetupBootstrapChallenge(ctx, "boot", setupBootstrapVerifyInput{
-			ChallengeID: "c1",
-			Address:     "boot",
-			Signature:   "s",
-			Message:     "m",
-		})
-		if err == nil {
-			t.Fatalf("expected forbidden")
-		}
+	tdb := newSetupTestDB()
+	s := &Server{store: store.New(tdb.db)}
+	ctx := &apptheory.Context{}
+
+	tdb.qWallet.On("First", mock.AnythingOfType("*models.WalletChallenge")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.WalletChallenge](t, args, 0)
+		*dest = models.WalletChallenge{ID: "c1", Username: setupBootstrapUser, Address: "boot", Message: "other"}
+		_ = dest.UpdateKeys()
+	}).Once()
+
+	err := s.verifySetupBootstrapChallenge(ctx, "boot", setupBootstrapVerifyInput{
+		ChallengeID: "c1",
+		Address:     "boot",
+		Signature:   "s",
+		Message:     "m",
 	})
+	if err == nil {
+		t.Fatalf("expected forbidden")
+	}
+}
 
-	t.Run("invalid_signature", func(t *testing.T) {
-		key, addr := generateWalletKey(t)
-		_ = key
-		bootstrapWallet := strings.ToLower(addr)
+func TestVerifySetupBootstrapChallenge_InvalidSignature(t *testing.T) {
+	t.Parallel()
 
-		tdb.qWallet.On("First", mock.AnythingOfType("*models.WalletChallenge")).Return(nil).Run(func(args mock.Arguments) {
-			dest := args.Get(0).(*models.WalletChallenge)
-			*dest = models.WalletChallenge{ID: "c1", Username: setupBootstrapUser, Address: bootstrapWallet, Message: "m"}
-			_ = dest.UpdateKeys()
-		}).Once()
+	tdb := newSetupTestDB()
+	s := &Server{store: store.New(tdb.db)}
+	ctx := &apptheory.Context{}
 
-		err := s.verifySetupBootstrapChallenge(ctx, bootstrapWallet, setupBootstrapVerifyInput{
-			ChallengeID: "c1",
-			Address:     bootstrapWallet,
-			Signature:   "not-a-signature",
-			Message:     "m",
-		})
-		if err == nil {
-			t.Fatalf("expected unauthorized invalid signature")
-		}
+	key, addr := generateWalletKey(t)
+	_ = key
+	bootstrapWallet := strings.ToLower(addr)
+
+	tdb.qWallet.On("First", mock.AnythingOfType("*models.WalletChallenge")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.WalletChallenge](t, args, 0)
+		*dest = models.WalletChallenge{ID: "c1", Username: setupBootstrapUser, Address: bootstrapWallet, Message: "m"}
+		_ = dest.UpdateKeys()
+	}).Once()
+
+	err := s.verifySetupBootstrapChallenge(ctx, bootstrapWallet, setupBootstrapVerifyInput{
+		ChallengeID: "c1",
+		Address:     bootstrapWallet,
+		Signature:   "not-a-signature",
+		Message:     "m",
 	})
+	if err == nil {
+		t.Fatalf("expected unauthorized invalid signature")
+	}
 }
 
 func TestRequireSetupSession_RejectsMissingTokenAndMismatchedFields(t *testing.T) {
@@ -659,7 +732,11 @@ func TestRequireSetupSession_RejectsMissingTokenAndMismatchedFields(t *testing.T
 
 	// Purpose mismatch.
 	tdb.qSetup.On("First", mock.AnythingOfType("*models.SetupSession")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.SetupSession)
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.SetupSession)
+		if !ok {
+			t.Fatalf("expected *models.SetupSession, got %T", destAny)
+		}
 		*dest = models.SetupSession{ID: "tok", Purpose: "other", WalletAddr: "0xboot", ExpiresAt: time.Now().UTC().Add(1 * time.Hour)}
 		_ = dest.UpdateKeys()
 	}).Once()
@@ -669,7 +746,11 @@ func TestRequireSetupSession_RejectsMissingTokenAndMismatchedFields(t *testing.T
 
 	// Bootstrap wallet mismatch.
 	tdb.qSetup.On("First", mock.AnythingOfType("*models.SetupSession")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.SetupSession)
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.SetupSession)
+		if !ok {
+			t.Fatalf("expected *models.SetupSession, got %T", destAny)
+		}
 		*dest = models.SetupSession{ID: "tok", Purpose: setupPurposeBootstrap, WalletAddr: "0xother", ExpiresAt: time.Now().UTC().Add(1 * time.Hour)}
 		_ = dest.UpdateKeys()
 	}).Once()
@@ -692,7 +773,11 @@ func TestHandleSetupBootstrapChallenge_ConflictAndValidationBranches(t *testing.
 
 	// Already bootstrapped => conflict.
 	tdb.qCP.On("First", mock.AnythingOfType("*models.ControlPlaneConfig")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.ControlPlaneConfig)
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.ControlPlaneConfig)
+		if !ok {
+			t.Fatalf("expected *models.ControlPlaneConfig, got %T", destAny)
+		}
 		*dest = models.ControlPlaneConfig{BootstrappedAt: time.Now().UTC()}
 		_ = dest.UpdateKeys()
 	}).Once()

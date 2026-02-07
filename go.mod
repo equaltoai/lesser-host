@@ -1,6 +1,6 @@
 module github.com/equaltoai/lesser-host
 
-go 1.25.6
+go 1.25.7
 
 require (
 	github.com/andybalholm/brotli v1.2.0
@@ -28,7 +28,7 @@ require (
 	github.com/stripe/stripe-go/v79 v79.12.0
 	github.com/theory-cloud/apptheory v0.8.0
 	github.com/theory-cloud/tabletheory v1.3.0
-	golang.org/x/net v0.45.0
+	golang.org/x/net v0.47.0
 )
 
 require (
@@ -55,7 +55,7 @@ require (
 	github.com/aws/smithy-go v1.24.0 // indirect
 	github.com/bits-and-blooms/bitset v1.20.0 // indirect
 	github.com/chromedp/sysutil v1.1.0 // indirect
-	github.com/consensys/gnark-crypto v0.18.0 // indirect
+	github.com/consensys/gnark-crypto v0.18.1 // indirect
 	github.com/crate-crypto/go-eth-kzg v1.4.0 // indirect
 	github.com/crate-crypto/go-ipa v0.0.0-20240724233137-53bbb0ceb27a // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
@@ -88,9 +88,9 @@ require (
 	github.com/tklauser/go-sysconf v0.3.12 // indirect
 	github.com/tklauser/numcpus v0.6.1 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
-	golang.org/x/crypto v0.43.0 // indirect
-	golang.org/x/sync v0.17.0 // indirect
-	golang.org/x/sys v0.37.0 // indirect
-	golang.org/x/text v0.30.0 // indirect
+	golang.org/x/crypto v0.45.0 // indirect
+	golang.org/x/sync v0.18.0 // indirect
+	golang.org/x/sys v0.38.0 // indirect
+	golang.org/x/text v0.31.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

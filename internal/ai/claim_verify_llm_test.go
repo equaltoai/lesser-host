@@ -38,16 +38,16 @@ func TestExtractClaimsDeterministicV1_TrimsDedupesAndLimits(t *testing.T) {
 func TestClassifyClaimDeterministic(t *testing.T) {
 	t.Parallel()
 
-	if got := classifyClaimDeterministic(""); got != "unclear" {
+	if got := classifyClaimDeterministic(""); got != claimClassificationUnclear {
 		t.Fatalf("expected unclear, got %q", got)
 	}
-	if got := classifyClaimDeterministic("I think this is best"); got != "opinion" {
+	if got := classifyClaimDeterministic("I think this is best"); got != claimClassificationOpinion {
 		t.Fatalf("expected opinion, got %q", got)
 	}
-	if got := classifyClaimDeterministic("GDP is 3.2%"); got != "checkable" {
+	if got := classifyClaimDeterministic("GDP is 3.2%"); got != claimClassificationCheckable {
 		t.Fatalf("expected checkable, got %q", got)
 	}
-	if got := classifyClaimDeterministic("hello world"); got != "unclear" {
+	if got := classifyClaimDeterministic("hello world"); got != claimClassificationUnclear {
 		t.Fatalf("expected unclear, got %q", got)
 	}
 }
@@ -66,10 +66,10 @@ func TestClaimVerifyDeterministicV1_UsesProvidedClaims(t *testing.T) {
 		t.Fatalf("expected 2 claims, got %#v", out.Claims)
 	}
 
-	if out.Claims[0].ClaimID != "c1" || out.Claims[0].Classification != "checkable" {
+	if out.Claims[0].ClaimID != "c1" || out.Claims[0].Classification != claimClassificationCheckable {
 		t.Fatalf("unexpected claim[0]: %#v", out.Claims[0])
 	}
-	if out.Claims[1].ClaimID != "c2" || out.Claims[1].Classification != "opinion" {
+	if out.Claims[1].ClaimID != "c2" || out.Claims[1].Classification != claimClassificationOpinion {
 		t.Fatalf("unexpected claim[1]: %#v", out.Claims[1])
 	}
 }

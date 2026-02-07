@@ -13,6 +13,7 @@ import (
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/domains"
+	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -101,7 +102,7 @@ func (s *Server) handlePortalCreateInstance(ctx *apptheory.Context) (*apptheory.
 	}
 
 	var req createInstanceRequest
-	if err := parseJSON(ctx, &req); err != nil {
+	if err := httpx.ParseJSON(ctx, &req); err != nil {
 		return nil, err
 	}
 
@@ -275,7 +276,7 @@ func (s *Server) handlePortalUpdateInstanceConfig(ctx *apptheory.Context) (*appt
 	}
 
 	var req updateInstanceConfigRequest
-	if parseErr := parseJSON(ctx, &req); parseErr != nil {
+	if parseErr := httpx.ParseJSON(ctx, &req); parseErr != nil {
 		return nil, parseErr
 	}
 
@@ -456,7 +457,7 @@ func (s *Server) handlePortalSetInstanceBudgetMonth(ctx *apptheory.Context) (*ap
 	}
 
 	var req setBudgetMonthRequest
-	if parseErr := parseJSON(ctx, &req); parseErr != nil {
+	if parseErr := httpx.ParseJSON(ctx, &req); parseErr != nil {
 		return nil, parseErr
 	}
 	if req.IncludedCredits < 0 {
@@ -668,7 +669,7 @@ func (s *Server) handlePortalAddInstanceDomain(ctx *apptheory.Context) (*apptheo
 	slug := strings.ToLower(strings.TrimSpace(inst.Slug))
 
 	var req addDomainRequest
-	if parseErr := parseJSON(ctx, &req); parseErr != nil {
+	if parseErr := httpx.ParseJSON(ctx, &req); parseErr != nil {
 		return nil, parseErr
 	}
 

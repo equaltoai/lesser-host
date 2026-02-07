@@ -57,7 +57,7 @@ func (s *Server) emitAIJobMetrics(instanceSlug string, module string, status str
 	llmFallback := false
 	for _, e := range errs {
 		switch strings.ToLower(strings.TrimSpace(e.Code)) {
-		case "llm_unavailable", "llm_failed", "llm_missing_output":
+		case aiErrorCodeLLMUnavailable, aiErrorCodeLLMFailed, aiErrorCodeLLMMissingOutput:
 			llmFallback = true
 		}
 	}
