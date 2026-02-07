@@ -2,6 +2,8 @@ package trust
 
 import "testing"
 
+const testQueryValueOne = "one"
+
 func TestFirstQueryValue(t *testing.T) {
 	t.Parallel()
 
@@ -13,20 +15,20 @@ func TestFirstQueryValue(t *testing.T) {
 	}
 
 	q := map[string][]string{
-		"a":     {"one", "two"},
+		"a":     {testQueryValueOne, "two"},
 		"lower": {"ok"},
 		" A ":   {"spaced"},
 	}
-	if got := firstQueryValue(q, "a"); got != "one" {
+	if got := firstQueryValue(q, "a"); got != testQueryValueOne {
 		t.Fatalf("unexpected value: %q", got)
 	}
 	if got := firstQueryValue(q, "LOWER"); got != "ok" {
 		t.Fatalf("unexpected lower-case fallback: %q", got)
 	}
-	if got := firstQueryValue(q, "a "); got != "one" {
+	if got := firstQueryValue(q, "a "); got != testQueryValueOne {
 		t.Fatalf("unexpected trimmed key: %q", got)
 	}
-	if got := firstQueryValue(q, "A"); got != "one" {
+	if got := firstQueryValue(q, "A"); got != testQueryValueOne {
 		t.Fatalf("unexpected case-insensitive scan: %q", got)
 	}
 

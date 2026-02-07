@@ -125,8 +125,8 @@ func TestLinkRenderSummaryStatusCachedReason(t *testing.T) {
 func TestBuildRenderSummaryInputsAndFillFromResult(t *testing.T) {
 	t.Parallel()
 
-	in := buildRenderSummaryInputs(nil, " https://example.com ", "low")
-	if in.NormalizedURL != "https://example.com" || in.RenderID == "" {
+	in := buildRenderSummaryInputs(nil, " "+testURLExampleCom+" ", "low")
+	if in.NormalizedURL != testURLExampleCom || in.RenderID == "" {
 		t.Fatalf("unexpected inputs: %#v", in)
 	}
 
@@ -299,7 +299,7 @@ func TestAPIKeyEnvShortCircuit(t *testing.T) {
 func TestRenderSummaryPaths_UsesRenderIDFunc(t *testing.T) {
 	t.Parallel()
 
-	id := rendering.RenderArtifactID(rendering.RenderPolicyVersion, "https://example.com")
+	id := rendering.RenderArtifactID(rendering.RenderPolicyVersion, testURLExampleCom)
 	if len(id) != 64 {
 		t.Fatalf("expected hex id, got %q", id)
 	}

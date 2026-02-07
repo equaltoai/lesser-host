@@ -46,7 +46,7 @@ func TestBuildModerationPromptItems_TrimsAndBounds(t *testing.T) {
 func TestNormalizeModerationHelpers(t *testing.T) {
 	t.Parallel()
 
-	if got := normalizeModerationDecision(" "); got != "review" {
+	if got := normalizeModerationDecision(" "); got != moderationDecisionReview {
 		t.Fatalf("expected default review, got %q", got)
 	}
 	if got := normalizeModerationDecision("ALLOW"); got != "allow" {
@@ -57,7 +57,7 @@ func TestNormalizeModerationHelpers(t *testing.T) {
 		{Code: " ", Severity: "high", Summary: "x", Confidence: 0.9},
 		{Code: "pii", Severity: "NOPE", Summary: strings.Repeat("s", 300), Confidence: 2},
 	})
-	if len(cats) != 1 || cats[0].Code != "pii" || cats[0].Severity != "medium" {
+	if len(cats) != 1 || cats[0].Code != "pii" || cats[0].Severity != renderSummarySeverityMedium {
 		t.Fatalf("unexpected categories: %#v", cats)
 	}
 	if cats[0].Confidence != 1 || len(cats[0].Summary) != 240 {
@@ -93,7 +93,7 @@ func TestNormalizeModerationBatchOutput(t *testing.T) {
 	if item.Kind != "moderation_text" || item.Version != "v1" {
 		t.Fatalf("unexpected envelope: %#v", item)
 	}
-	if item.Decision != "review" {
+	if item.Decision != moderationDecisionReview {
 		t.Fatalf("expected decision normalized to review, got %q", item.Decision)
 	}
 	if len(item.Notes) != 240 {

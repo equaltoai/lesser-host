@@ -53,4 +53,3 @@ func TestLinkPortalWalletToCustomer_LinksAndUpdatesEmailBestEffort(t *testing.T)
 		t.Fatalf("unexpected err: %v", err)
 	}
 }
-

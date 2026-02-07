@@ -13,25 +13,28 @@ import (
 
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
+	"github.com/equaltoai/lesser-host/internal/testutil"
 )
+
+const testDomainExampleCom = "example.com"
 
 func TestRoute53Helpers_NormalizeAndQuoteAndZonePicking(t *testing.T) {
 	t.Parallel()
 
-	if got := normalizeRoute53ZoneName(" Example.COM. "); got != "example.com" {
+	if got := normalizeRoute53ZoneName(" Example.COM. "); got != testDomainExampleCom {
 		t.Fatalf("unexpected normalize: %q", got)
 	}
 
-	if domainInZone("a.b.example.com", "example.com") != true {
+	if domainInZone("a.b.example.com", testDomainExampleCom) != true {
 		t.Fatalf("expected in-zone")
 	}
-	if domainInZone("example.com", "example.com") != true {
+	if domainInZone(testDomainExampleCom, testDomainExampleCom) != true {
 		t.Fatalf("expected equal in-zone")
 	}
-	if domainInZone("evil.com", "example.com") != false {
+	if domainInZone("evil.com", testDomainExampleCom) != false {
 		t.Fatalf("expected out-of-zone")
 	}
-	if domainInZone("", "example.com") != false {
+	if domainInZone("", testDomainExampleCom) != false {
 		t.Fatalf("expected false for empty domain")
 	}
 
@@ -60,7 +63,7 @@ func TestFindRoute53HostedZoneID_RequiresClient(t *testing.T) {
 	t.Parallel()
 
 	s := &Server{}
-	if _, err := s.findRoute53HostedZoneID(&apptheory.Context{}, "example.com"); err == nil {
+	if _, err := s.findRoute53HostedZoneID(&apptheory.Context{}, testDomainExampleCom); err == nil {
 		t.Fatalf("expected error")
 	}
 }
@@ -99,7 +102,7 @@ func TestHandlePortalUpsertDomainVerificationRoute53_ForbiddenWhenNotOwner(t *te
 	s := &Server{store: store.New(tdb.db)} // Route53 client intentionally nil.
 
 	tdb.qInst.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
 		*dest = models.Instance{Slug: "demo", Owner: "bob"}
 		_ = dest.UpdateKeys()
 	}).Once()
@@ -107,7 +110,7 @@ func TestHandlePortalUpsertDomainVerificationRoute53_ForbiddenWhenNotOwner(t *te
 	ctx := &apptheory.Context{
 		AuthIdentity: "alice",
 		RequestID:    "rid",
-		Params:       map[string]string{"slug": "demo", "domain": "example.com"},
+		Params:       map[string]string{"slug": "demo", "domain": testDomainExampleCom},
 	}
 	if _, err := s.handlePortalUpsertDomainVerificationRoute53(ctx); err == nil {
 		t.Fatalf("expected forbidden")
@@ -123,7 +126,7 @@ func TestHandlePortalUpsertDomainVerificationRoute53_NotFoundWhenDomainMissing(t
 	s := &Server{store: store.New(tdb.db)}
 
 	tdb.qInst.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
 		*dest = models.Instance{Slug: "demo", Owner: "alice"}
 		_ = dest.UpdateKeys()
 	}).Once()
@@ -133,7 +136,7 @@ func TestHandlePortalUpsertDomainVerificationRoute53_NotFoundWhenDomainMissing(t
 	ctx := &apptheory.Context{
 		AuthIdentity: "alice",
 		RequestID:    "rid",
-		Params:       map[string]string{"slug": "demo", "domain": "example.com"},
+		Params:       map[string]string{"slug": "demo", "domain": testDomainExampleCom},
 	}
 	if _, err := s.handlePortalUpsertDomainVerificationRoute53(ctx); err == nil {
 		t.Fatalf("expected not_found")
@@ -149,25 +152,25 @@ func TestHandlePortalUpsertDomainVerificationRoute53_ConflictWhenNotEligible(t *
 	s := &Server{store: store.New(tdb.db)}
 
 	tdb.qInst.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
 		*dest = models.Instance{Slug: "demo", Owner: "alice"}
 		_ = dest.UpdateKeys()
 	}).Once()
 
 	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Domain)
-		*dest = models.Domain{Domain: "example.com", InstanceSlug: "demo", Status: models.DomainStatusPending}
+		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
+		*dest = models.Domain{Domain: testDomainExampleCom, InstanceSlug: "demo", Status: models.DomainStatusPending}
 		_ = dest.UpdateKeys()
 	}).Once()
 
 	ctx := &apptheory.Context{
 		AuthIdentity: "alice",
 		RequestID:    "rid",
-		Params:       map[string]string{"slug": "demo", "domain": "example.com"},
+		Params:       map[string]string{"slug": "demo", "domain": testDomainExampleCom},
 	}
 	if _, err := s.handlePortalUpsertDomainVerificationRoute53(ctx); err == nil {
 		t.Fatalf("expected conflict")
-	} else if appErr, ok := err.(*apptheory.AppError); !ok || appErr.Code != "app.conflict" {
+	} else if appErr, ok := err.(*apptheory.AppError); !ok || appErr.Code != appErrCodeConflict {
 		t.Fatalf("expected app.conflict, got %#v", err)
 	}
 }
@@ -179,15 +182,15 @@ func TestHandlePortalUpsertDomainVerificationRoute53_ConflictWhenRoute53ClientMi
 	s := &Server{store: store.New(tdb.db)}
 
 	tdb.qInst.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
 		*dest = models.Instance{Slug: "demo", Owner: "alice"}
 		_ = dest.UpdateKeys()
 	}).Once()
 
 	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Domain)
+		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
 		*dest = models.Domain{
-			Domain:            "example.com",
+			Domain:            testDomainExampleCom,
 			InstanceSlug:      "demo",
 			Status:            models.DomainStatusPending,
 			VerificationToken: "tok",
@@ -198,11 +201,11 @@ func TestHandlePortalUpsertDomainVerificationRoute53_ConflictWhenRoute53ClientMi
 	ctx := &apptheory.Context{
 		AuthIdentity: "alice",
 		RequestID:    "rid",
-		Params:       map[string]string{"slug": "demo", "domain": "example.com"},
+		Params:       map[string]string{"slug": "demo", "domain": testDomainExampleCom},
 	}
 	if _, err := s.handlePortalUpsertDomainVerificationRoute53(ctx); err == nil {
 		t.Fatalf("expected conflict")
-	} else if appErr, ok := err.(*apptheory.AppError); !ok || appErr.Code != "app.conflict" {
+	} else if appErr, ok := err.(*apptheory.AppError); !ok || appErr.Code != appErrCodeConflict {
 		t.Fatalf("expected app.conflict, got %#v", err)
 	}
 }

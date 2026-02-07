@@ -398,12 +398,12 @@ func normalizeModerationImageURL(raw string) (*url.URL, error) {
 
 func moderationDisabledResponse(module string, policyVersion string, modelSet string, inputsHash string, creditsRequested int64, message string) aiModerationResponse {
 	return aiModerationResponse{
-		Status: "disabled",
+		Status: statusDisabled,
 		Cached: false,
 		Budget: ai.BudgetDecision{
 			Allowed:          true,
 			OverBudget:       false,
-			Reason:           "disabled",
+			Reason:           statusDisabled,
 			RequestedCredits: creditsRequested,
 			DebitedCredits:   0,
 		},
@@ -413,7 +413,7 @@ func moderationDisabledResponse(module string, policyVersion string, modelSet st
 			ModelSet:      strings.TrimSpace(modelSet),
 			InputsHash:    strings.TrimSpace(inputsHash),
 		},
-		ErrorCode:    "disabled",
+		ErrorCode:    statusDisabled,
 		ErrorMessage: strings.TrimSpace(message),
 	}
 }

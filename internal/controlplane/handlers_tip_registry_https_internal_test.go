@@ -45,7 +45,7 @@ func TestVerifyTipRegistryHTTPS_Branches(t *testing.T) {
 			gotURL = req.URL.String()
 			return &http.Response{
 				StatusCode: http.StatusNotFound,
-				Body:       io.NopCloser(strings.NewReader("nope")),
+				Body:       io.NopCloser(strings.NewReader(testNope)),
 				Header:     make(http.Header),
 				Request:    req,
 			}, nil

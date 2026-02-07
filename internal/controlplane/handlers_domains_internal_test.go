@@ -15,6 +15,7 @@ import (
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
+	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
 type domainsTestDB struct {
@@ -62,14 +63,14 @@ func TestHandleListAddAndDeleteInstanceDomain(t *testing.T) {
 
 	// Instance exists.
 	tdb.qInst.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
 		*dest = models.Instance{Slug: "demo", Status: models.InstanceStatusActive}
 		_ = dest.UpdateKeys()
 	}).Maybe()
 
 	// List domains.
 	tdb.qDomain.On("All", mock.AnythingOfType("*[]*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*[]*models.Domain)
+		dest := testutil.RequireMockArg[*[]*models.Domain](t, args, 0)
 		*dest = []*models.Domain{{Domain: "demo.lesser.host", InstanceSlug: "demo", Type: models.DomainTypePrimary, Status: models.DomainStatusVerified}}
 	}).Once()
 
@@ -85,7 +86,7 @@ func TestHandleListAddAndDeleteInstanceDomain(t *testing.T) {
 	ctx2 := adminCtx()
 	ctx2.Params = map[string]string{"slug": "demo"}
 	ctx2.Request.Body = addPrimaryBody
-	if _, err := s.handleAddInstanceDomain(ctx2); err == nil {
+	if _, addErr := s.handleAddInstanceDomain(ctx2); addErr == nil {
 		t.Fatalf("expected conflict for primary domain")
 	}
 
@@ -106,25 +107,25 @@ func TestHandleListAddAndDeleteInstanceDomain(t *testing.T) {
 	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(theoryErrors.ErrItemNotFound).Once()
 	ctx4 := adminCtx()
 	ctx4.Params = map[string]string{"slug": "demo", "domain": "example.com"}
-	if _, err := s.handleDeleteInstanceDomain(ctx4); err == nil {
+	if _, delErr := s.handleDeleteInstanceDomain(ctx4); delErr == nil {
 		t.Fatalf("expected not found")
 	}
 
 	// Delete primary conflict.
 	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Domain)
+		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
 		*dest = models.Domain{Domain: "demo.lesser.host", InstanceSlug: "demo", Type: models.DomainTypePrimary}
 		_ = dest.UpdateKeys()
 	}).Once()
 	ctx5 := adminCtx()
 	ctx5.Params = map[string]string{"slug": "demo", "domain": "demo.lesser.host"}
-	if _, err := s.handleDeleteInstanceDomain(ctx5); err == nil {
+	if _, delErr := s.handleDeleteInstanceDomain(ctx5); delErr == nil {
 		t.Fatalf("expected conflict for primary domain")
 	}
 
 	// Delete success.
 	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Domain)
+		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
 		*dest = models.Domain{Domain: "example.net", InstanceSlug: "demo", Type: models.DomainTypeVanity, Status: models.DomainStatusPending}
 		_ = dest.UpdateKeys()
 	}).Once()
@@ -168,7 +169,7 @@ func TestHandleVerifyInstanceDomain_ReturnsExistingWhenAlreadyVerified(t *testin
 	s := &Server{store: store.New(tdb.db)}
 
 	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Domain)
+		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
 		*dest = models.Domain{Domain: "example.com", InstanceSlug: "demo", Status: models.DomainStatusVerified}
 		_ = dest.UpdateKeys()
 	}).Once()
@@ -188,7 +189,7 @@ func TestHandleVerifyInstanceDomain_ConflictWhenNoVerificationToken(t *testing.T
 	s := &Server{store: store.New(tdb.db)}
 
 	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Domain)
+		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
 		*dest = models.Domain{Domain: "example.com", InstanceSlug: "demo", Status: models.DomainStatusPending, VerificationToken: " "}
 		_ = dest.UpdateKeys()
 	}).Once()
@@ -197,7 +198,7 @@ func TestHandleVerifyInstanceDomain_ConflictWhenNoVerificationToken(t *testing.T
 	ctx.Params = map[string]string{"slug": "demo", "domain": "example.com"}
 	if _, err := s.handleVerifyInstanceDomain(ctx); err == nil {
 		t.Fatalf("expected conflict")
-	} else if appErr, ok := err.(*apptheory.AppError); !ok || appErr.Code != "app.conflict" {
+	} else if appErr, ok := err.(*apptheory.AppError); !ok || appErr.Code != appErrCodeConflict {
 		t.Fatalf("expected app.conflict, got %#v", err)
 	}
 }
@@ -207,7 +208,7 @@ func TestHandleVerifyInstanceDomain_VerifiesDNSAndMarksVerified(t *testing.T) {
 	s := &Server{cfg: config.Config{TipEnabled: false}, store: store.New(tdb.db)}
 
 	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Domain)
+		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
 		*dest = models.Domain{
 			Domain:             "example.com",
 			DomainRaw:          "Example.COM",
@@ -257,7 +258,7 @@ func TestHandleVerifyInstanceDomain_ReturnsBadRequestWhenVerificationTXTDoesNotM
 	s := &Server{store: store.New(tdb.db)}
 
 	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Domain)
+		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
 		*dest = models.Domain{
 			Domain:            "example.com",
 			InstanceSlug:      "demo",
@@ -275,7 +276,7 @@ func TestHandleVerifyInstanceDomain_ReturnsBadRequestWhenVerificationTXTDoesNotM
 	withDNSTXTResolver(t, txtName, "wrong", func() {
 		if _, err := s.handleVerifyInstanceDomain(ctx); err == nil {
 			t.Fatalf("expected bad_request for missing verification record")
-		} else if appErr, ok := err.(*apptheory.AppError); !ok || appErr.Code != "app.bad_request" {
+		} else if appErr, ok := err.(*apptheory.AppError); !ok || appErr.Code != appErrCodeBadRequest {
 			t.Fatalf("expected app.bad_request, got %#v", err)
 		}
 	})

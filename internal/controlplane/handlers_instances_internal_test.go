@@ -13,6 +13,7 @@ import (
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
+	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
 type adminInstanceTestDB struct {
@@ -25,41 +26,20 @@ type adminInstanceTestDB struct {
 }
 
 func newAdminInstanceTestDB() adminInstanceTestDB {
-	db := ttmocks.NewMockExtendedDB()
-	qInst := new(ttmocks.MockQuery)
-	qDomain := new(ttmocks.MockQuery)
-	qKey := new(ttmocks.MockQuery)
-	qBudget := new(ttmocks.MockQuery)
-	qAudit := new(ttmocks.MockQuery)
-
-	db.On("WithContext", mock.Anything).Return(db).Maybe()
-	db.On("Model", mock.AnythingOfType("*models.Instance")).Return(qInst).Maybe()
-	db.On("Model", mock.AnythingOfType("*models.Domain")).Return(qDomain).Maybe()
-	db.On("Model", mock.AnythingOfType("*models.InstanceKey")).Return(qKey).Maybe()
-	db.On("Model", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(qBudget).Maybe()
-	db.On("Model", mock.AnythingOfType("*models.AuditLogEntry")).Return(qAudit).Maybe()
-
-	for _, q := range []*ttmocks.MockQuery{qInst, qDomain, qKey, qBudget, qAudit} {
-		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
-		q.On("Filter", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
-		q.On("Index", mock.Anything).Return(q).Maybe()
-		q.On("Limit", mock.Anything).Return(q).Maybe()
-		q.On("IfExists").Return(q).Maybe()
-		q.On("IfNotExists").Return(q).Maybe()
-		q.On("ConsistentRead").Return(q).Maybe()
-		q.On("Create").Return(nil).Maybe()
-		q.On("CreateOrUpdate").Return(nil).Maybe()
-		q.On("Delete").Return(nil).Maybe()
-		q.On("Update", mock.Anything).Return(nil).Maybe()
-	}
-
+	db, qs := newTestDBWithModelQueries(
+		"*models.Instance",
+		"*models.Domain",
+		"*models.InstanceKey",
+		"*models.InstanceBudgetMonth",
+		"*models.AuditLogEntry",
+	)
 	return adminInstanceTestDB{
 		db:      db,
-		qInst:   qInst,
-		qDomain: qDomain,
-		qKey:    qKey,
-		qBudget: qBudget,
-		qAudit:  qAudit,
+		qInst:   qs[0],
+		qDomain: qs[1],
+		qKey:    qs[2],
+		qBudget: qs[3],
+		qAudit:  qs[4],
 	}
 }
 
@@ -88,7 +68,7 @@ func TestHandleCreateInstance_AndListInstances(t *testing.T) {
 	}
 
 	tdb.qInst.On("Scan", mock.AnythingOfType("*[]*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*[]*models.Instance)
+		dest := testutil.RequireMockArg[*[]*models.Instance](t, args, 0)
 		*dest = []*models.Instance{{Slug: "demo"}}
 	}).Once()
 
@@ -108,7 +88,7 @@ func TestHandleCreateInstanceKey_AndUpdateConfig_AndSetBudget(t *testing.T) {
 	instCall := 0
 	tdb.qInst.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
 		instCall++
-		dest := args.Get(0).(*models.Instance)
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
 		*dest = models.Instance{Slug: "demo", Status: models.InstanceStatusActive}
 		// The update handler reloads the instance after persisting config.
 		if instCall == 3 {
@@ -162,7 +142,7 @@ func TestHandleCreateInstanceKey_AndUpdateConfig_AndSetBudget(t *testing.T) {
 
 	// Existing record preserves UsedCredits.
 	tdb.qBudget.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.InstanceBudgetMonth)
+		dest := testutil.RequireMockArg[*models.InstanceBudgetMonth](t, args, 0)
 		*dest = models.InstanceBudgetMonth{UsedCredits: 50}
 	}).Once()
 	tdb.qBudget.On("CreateOrUpdate").Return(nil).Once()

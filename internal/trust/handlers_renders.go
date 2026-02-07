@@ -534,11 +534,11 @@ func renderArtifactResponseFromModel(ctx *apptheory.Context, item *models.Render
 	}
 
 	if out.ErrorCode != "" {
-		out.Status = "error"
+		out.Status = statusError
 	} else if strings.TrimSpace(item.ThumbnailObjectKey) != "" || strings.TrimSpace(item.SnapshotObjectKey) != "" {
-		out.Status = "ok"
+		out.Status = statusOK
 	} else {
-		out.Status = "queued"
+		out.Status = statusQueued
 	}
 
 	base := requestBaseURL(ctx)

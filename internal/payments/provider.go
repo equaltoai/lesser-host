@@ -7,6 +7,11 @@ import (
 	"time"
 )
 
+const (
+	providerNameNone   = "none"
+	providerNameStripe = "stripe"
+)
+
 // Provider is a minimal provider-agnostic payments interface used by the portal.
 type Provider interface {
 	Name() string
@@ -91,7 +96,7 @@ var ErrNotConfigured = fmt.Errorf("payments not configured")
 func normalizeProviderName(name string) string {
 	name = strings.ToLower(strings.TrimSpace(name))
 	if name == "" {
-		return "none"
+		return providerNameNone
 	}
 	return name
 }

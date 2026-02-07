@@ -18,7 +18,7 @@ type roundTripperFunc func(*http.Request) (*http.Response, error)
 func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestRenderSummaryBatchOpenAI_AdapterIsCISafe(t *testing.T) {
-	itemID := "item-1"
+	itemID := testItemID
 	wantSummary := "Example summary."
 
 	outPayload, err := json.Marshal(renderSummaryBatchOutput{
@@ -81,7 +81,7 @@ func TestRenderSummaryBatchOpenAI_AdapterIsCISafe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RenderSummaryBatchOpenAI error: %v", err)
 	}
-	if usage.Provider != "openai" {
+	if usage.Provider != testProviderOpenAI {
 		t.Fatalf("expected provider openai, got %q", usage.Provider)
 	}
 	got, ok := out[itemID]
@@ -94,7 +94,7 @@ func TestRenderSummaryBatchOpenAI_AdapterIsCISafe(t *testing.T) {
 }
 
 func TestRenderSummaryBatchAnthropic_AdapterIsCISafe(t *testing.T) {
-	itemID := "item-1"
+	itemID := testItemID
 	wantSummary := "Example summary."
 
 	respBytes, err := json.Marshal(map[string]any{
@@ -150,7 +150,7 @@ func TestRenderSummaryBatchAnthropic_AdapterIsCISafe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RenderSummaryBatchAnthropic error: %v", err)
 	}
-	if usage.Provider != "anthropic" {
+	if usage.Provider != testProviderAnthropic {
 		t.Fatalf("expected provider anthropic, got %q", usage.Provider)
 	}
 	got, ok := out[itemID]

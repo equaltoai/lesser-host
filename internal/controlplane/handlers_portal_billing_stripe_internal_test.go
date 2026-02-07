@@ -24,6 +24,7 @@ import (
 	"github.com/equaltoai/lesser-host/internal/secrets"
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
+	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
 type stubStripeSSM struct{}
@@ -111,7 +112,7 @@ func TestHandlePortalCreateCreditsCheckout_SucceedsWithStripeMock(t *testing.T) 
 		tdb.qUser.On("First", mock.AnythingOfType("*models.User")).Return(theoryErrors.ErrItemNotFound).Once()
 
 		tdb.qInst.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-			dest := args.Get(0).(*models.Instance)
+			dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
 			*dest = models.Instance{Slug: "demo", Owner: "alice"}
 		}).Once()
 
@@ -120,7 +121,7 @@ func TestHandlePortalCreateCreditsCheckout_SucceedsWithStripeMock(t *testing.T) 
 
 		tdb.qPurchase.On("Create").Return(nil).Once()
 		tdb.qPurchase.On("First", mock.AnythingOfType("*models.CreditPurchase")).Return(nil).Run(func(args mock.Arguments) {
-			dest := args.Get(0).(*models.CreditPurchase)
+			dest := testutil.RequireMockArg[*models.CreditPurchase](t, args, 0)
 			*dest = models.CreditPurchase{ID: "p1"}
 		}).Once()
 
@@ -157,7 +158,7 @@ func TestHandlePortalCreatePaymentMethodCheckout_SucceedsWithStripeMock(t *testi
 		}
 
 		tdb.qUser.On("First", mock.AnythingOfType("*models.User")).Return(nil).Run(func(args mock.Arguments) {
-			dest := args.Get(0).(*models.User)
+			dest := testutil.RequireMockArg[*models.User](t, args, 0)
 			*dest = models.User{Email: "alice@example.com"}
 		}).Once()
 

@@ -17,6 +17,7 @@ import (
 	"github.com/equaltoai/lesser-host/internal/rendering"
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
+	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
 type rendersFlowTestDB struct {
@@ -75,7 +76,7 @@ func TestHandleCreateRender_DisabledAndCacheHit(t *testing.T) {
 	// Disabled by instance config.
 	re := false
 	tdb.qInst.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
 		*dest = models.Instance{Slug: "inst", RendersEnabled: &re}
 		_ = dest.UpdateKeys()
 	}).Once()
@@ -87,17 +88,17 @@ func TestHandleCreateRender_DisabledAndCacheHit(t *testing.T) {
 	}
 
 	var out renderArtifactResponse
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+	if unmarshalErr := json.Unmarshal(resp.Body, &out); unmarshalErr != nil {
+		t.Fatalf("unmarshal: %v", unmarshalErr)
 	}
-	if out.ErrorCode != "disabled" {
+	if out.ErrorCode != statusDisabled {
 		t.Fatalf("unexpected response: %#v", out)
 	}
 
 	// Cache hit path.
 	re = true
 	tdb.qInst.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
 		*dest = models.Instance{Slug: "inst", RendersEnabled: &re}
 		_ = dest.UpdateKeys()
 	}).Once()
@@ -105,7 +106,7 @@ func TestHandleCreateRender_DisabledAndCacheHit(t *testing.T) {
 	normalized := "https://example.com/"
 	renderID := rendering.RenderArtifactID(rendering.RenderPolicyVersion, normalized)
 	tdb.qRender.On("First", mock.AnythingOfType("*models.RenderArtifact")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.RenderArtifact)
+		dest := testutil.RequireMockArg[*models.RenderArtifact](t, args, 0)
 		*dest = models.RenderArtifact{
 			ID:             renderID,
 			PolicyVersion:  rendering.RenderPolicyVersion,
@@ -139,7 +140,7 @@ func TestHandleCreateRender_QueueAndBudgetErrors(t *testing.T) {
 
 	re := true
 	tdb.qInst.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
 		*dest = models.Instance{Slug: "inst", RendersEnabled: &re}
 		_ = dest.UpdateKeys()
 	}).Maybe()
@@ -160,7 +161,7 @@ func TestHandleCreateRender_QueueAndBudgetErrors(t *testing.T) {
 	}
 
 	// Budget not configured.
-	s.cfg.PreviewQueueURL = "url"
+	s.cfg.PreviewQueueURL = testURL
 	s.queues = &queueClient{} // configured enough for handler; enqueue will be ignored until queueRender
 
 	tdb.qBudget.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(theoryErrors.ErrItemNotFound).Once()
@@ -169,13 +170,13 @@ func TestHandleCreateRender_QueueAndBudgetErrors(t *testing.T) {
 		t.Fatalf("resp=%#v err=%v", resp, err)
 	}
 	_ = json.Unmarshal(resp.Body, &out)
-	if out.ErrorCode != "not_checked_budget" || out.ErrorMessage == "" {
+	if out.ErrorCode != statusNotCheckedBudget || out.ErrorMessage == "" {
 		t.Fatalf("unexpected: %#v", out)
 	}
 
 	// Budget exceeded.
 	tdb.qBudget.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.InstanceBudgetMonth)
+		dest := testutil.RequireMockArg[*models.InstanceBudgetMonth](t, args, 0)
 		*dest = models.InstanceBudgetMonth{IncludedCredits: 0, UsedCredits: 0}
 		_ = dest.UpdateKeys()
 	}).Once()
@@ -184,7 +185,7 @@ func TestHandleCreateRender_QueueAndBudgetErrors(t *testing.T) {
 		t.Fatalf("resp=%#v err=%v", resp, err)
 	}
 	_ = json.Unmarshal(resp.Body, &out)
-	if out.ErrorCode != "not_checked_budget" || out.ErrorMessage != "budget exceeded" {
+	if out.ErrorCode != statusNotCheckedBudget || out.ErrorMessage != budgetReasonExceeded {
 		t.Fatalf("unexpected: %#v", out)
 	}
 }
@@ -207,7 +208,7 @@ func TestHandleGetRender_AndArtifactsNotFoundPaths(t *testing.T) {
 	}
 
 	tdb.qRender.On("First", mock.AnythingOfType("*models.RenderArtifact")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.RenderArtifact)
+		dest := testutil.RequireMockArg[*models.RenderArtifact](t, args, 0)
 		*dest = models.RenderArtifact{ID: renderID, PolicyVersion: rendering.RenderPolicyVersion, NormalizedURL: "https://example.com/"}
 		_ = dest.UpdateKeys()
 	}).Once()
@@ -218,7 +219,7 @@ func TestHandleGetRender_AndArtifactsNotFoundPaths(t *testing.T) {
 
 	// Thumbnail missing key path.
 	tdb.qRender.On("First", mock.AnythingOfType("*models.RenderArtifact")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.RenderArtifact)
+		dest := testutil.RequireMockArg[*models.RenderArtifact](t, args, 0)
 		*dest = models.RenderArtifact{ID: renderID, ThumbnailObjectKey: ""}
 		_ = dest.UpdateKeys()
 	}).Once()
@@ -228,7 +229,7 @@ func TestHandleGetRender_AndArtifactsNotFoundPaths(t *testing.T) {
 
 	// Thumbnail GetObject failure returns not found.
 	tdb.qRender.On("First", mock.AnythingOfType("*models.RenderArtifact")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.RenderArtifact)
+		dest := testutil.RequireMockArg[*models.RenderArtifact](t, args, 0)
 		*dest = models.RenderArtifact{ID: renderID, ThumbnailObjectKey: "thumb"}
 		_ = dest.UpdateKeys()
 	}).Once()
@@ -238,7 +239,7 @@ func TestHandleGetRender_AndArtifactsNotFoundPaths(t *testing.T) {
 
 	// Snapshot missing key path.
 	tdb.qRender.On("First", mock.AnythingOfType("*models.RenderArtifact")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.RenderArtifact)
+		dest := testutil.RequireMockArg[*models.RenderArtifact](t, args, 0)
 		*dest = models.RenderArtifact{ID: renderID, SnapshotObjectKey: ""}
 		_ = dest.UpdateKeys()
 	}).Once()
@@ -246,4 +247,3 @@ func TestHandleGetRender_AndArtifactsNotFoundPaths(t *testing.T) {
 		t.Fatalf("expected not found for missing key")
 	}
 }
-

@@ -18,6 +18,7 @@ import (
 	"github.com/equaltoai/lesser-host/internal/ai/llm"
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
+	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
 func TestProcessQueuedRenderSummaries_InlinesDeterministicAndStoresResults(t *testing.T) {
@@ -33,7 +34,7 @@ func TestProcessQueuedRenderSummaries_InlinesDeterministicAndStoresResults(t *te
 		n := jobCalls
 		mu.Unlock()
 
-		dest := args.Get(0).(*models.AIJob)
+		dest := testutil.RequireMockArg[*models.AIJob](t, args, 0)
 		*dest = models.AIJob{ID: "job" + string(rune('0'+n))}
 	}).Twice()
 	tdb.qAIJob.On("CreateOrUpdate").Return(nil).Twice()
@@ -70,9 +71,9 @@ func TestProcessQueuedRenderSummaries_InlinesDeterministicAndStoresResults(t *te
 	}
 
 	s.processQueuedRenderSummaries(ctx, "inst", now, linkRenderSummaryJobConfig{
-		ModelSet:         modelSetDeterministic,
-		BatchingMode:     aiBatchingModeWorker,
-		BatchMaxItems:    8,
+		ModelSet:           modelSetDeterministic,
+		BatchingMode:       aiBatchingModeWorker,
+		BatchMaxItems:      8,
 		BatchMaxTotalBytes: 64 * 1024,
 	}, queued, out)
 
@@ -139,7 +140,7 @@ func TestProcessQueuedRenderSummaries_EnqueueFails_FallsBackToInlineLLM(t *testi
 
 	tdb.qAIRes.On("CreateOrUpdate").Return(nil).Twice()
 	tdb.qAIJob.On("First", mock.AnythingOfType("*models.AIJob")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.AIJob)
+		dest := testutil.RequireMockArg[*models.AIJob](t, args, 0)
 		*dest = models.AIJob{ID: "x"}
 	}).Twice()
 	tdb.qAIJob.On("CreateOrUpdate").Return(nil).Twice()

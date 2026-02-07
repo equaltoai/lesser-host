@@ -2,7 +2,7 @@ package artifacts
 
 import (
 	"context"
-	"crypto/md5"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -44,7 +44,7 @@ func (m *memS3) handler(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		_ = r.Body.Close()
 
-		sum := md5.Sum(body)
+		sum := sha256.Sum256(body)
 		etag := `"` + hex.EncodeToString(sum[:]) + `"`
 
 		m.mu.Lock()
@@ -192,8 +192,8 @@ func TestStore_ObjectLifecycle_SucceedsWithoutAWS(t *testing.T) {
 		t.Fatalf("unexpected get response: body=%q ct=%q etag=%q", string(body), ct2, etag2)
 	}
 
-	if err := st.DeleteObject(ctx, "k1"); err != nil {
-		t.Fatalf("DeleteObject: %v", err)
+	if deleteErr := st.DeleteObject(ctx, "k1"); deleteErr != nil {
+		t.Fatalf("DeleteObject: %v", deleteErr)
 	}
 
 	_, _, _, err = st.GetObject(ctx, "k1", 1)

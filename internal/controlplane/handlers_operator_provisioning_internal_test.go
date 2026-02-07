@@ -14,6 +14,7 @@ import (
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
+	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
 type operatorProvisioningTestDB struct {
@@ -67,7 +68,7 @@ func TestOperatorProvisioningHelpers_AdditionalCases(t *testing.T) {
 	if got := parseLimit("", 50, 1, 200); got != 50 {
 		t.Fatalf("unexpected default: %d", got)
 	}
-	if got := parseLimit("nope", 50, 1, 200); got != 50 {
+	if got := parseLimit(testNope, 50, 1, 200); got != 50 {
 		t.Fatalf("unexpected invalid: %d", got)
 	}
 }
@@ -85,7 +86,7 @@ func TestHandleListOperatorProvisionJobs_FiltersAndLimits(t *testing.T) {
 	}
 
 	tdb.qJob.On("All", mock.AnythingOfType("*[]*models.ProvisionJob")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*[]*models.ProvisionJob)
+		dest := testutil.RequireMockArg[*[]*models.ProvisionJob](t, args, 0)
 		*dest = []*models.ProvisionJob{
 			{ID: "a", Status: models.ProvisionJobStatusQueued, UpdatedAt: time.Unix(10, 0).UTC()},
 			{ID: "b", Status: models.ProvisionJobStatusError, UpdatedAt: time.Unix(20, 0).UTC()},
@@ -123,7 +124,7 @@ func TestHandleGetOperatorProvisionJob_NotFoundAndSuccess(t *testing.T) {
 	ctx = operatorCtx()
 	ctx.Params = map[string]string{"id": "j1"}
 	tdb.qJob.On("First", mock.AnythingOfType("*models.ProvisionJob")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.ProvisionJob)
+		dest := testutil.RequireMockArg[*models.ProvisionJob](t, args, 0)
 		*dest = models.ProvisionJob{ID: "j1", InstanceSlug: "inst", Status: models.ProvisionJobStatusQueued}
 		_ = dest.UpdateKeys()
 	}).Once()
@@ -147,7 +148,7 @@ func TestHandleRetryOperatorProvisionJob_QueuedAndErrorBranches(t *testing.T) {
 	ctx := operatorCtx()
 	ctx.Params = map[string]string{"id": "ok"}
 	tdb.qJob.On("First", mock.AnythingOfType("*models.ProvisionJob")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.ProvisionJob)
+		dest := testutil.RequireMockArg[*models.ProvisionJob](t, args, 0)
 		*dest = models.ProvisionJob{ID: "ok", InstanceSlug: "inst", Status: models.ProvisionJobStatusOK}
 		_ = dest.UpdateKeys()
 	}).Once()
@@ -159,7 +160,7 @@ func TestHandleRetryOperatorProvisionJob_QueuedAndErrorBranches(t *testing.T) {
 	ctx = operatorCtx()
 	ctx.Params = map[string]string{"id": "q1"}
 	tdb.qJob.On("First", mock.AnythingOfType("*models.ProvisionJob")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.ProvisionJob)
+		dest := testutil.RequireMockArg[*models.ProvisionJob](t, args, 0)
 		*dest = models.ProvisionJob{ID: "q1", InstanceSlug: "inst", Status: models.ProvisionJobStatusQueued}
 		_ = dest.UpdateKeys()
 	}).Twice() // initial + updated
@@ -172,7 +173,7 @@ func TestHandleRetryOperatorProvisionJob_QueuedAndErrorBranches(t *testing.T) {
 	ctx = operatorCtx()
 	ctx.Params = map[string]string{"id": "e1"}
 	tdb.qJob.On("First", mock.AnythingOfType("*models.ProvisionJob")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.ProvisionJob)
+		dest := testutil.RequireMockArg[*models.ProvisionJob](t, args, 0)
 		*dest = models.ProvisionJob{ID: "e1", InstanceSlug: "inst", Status: models.ProvisionJobStatusError, CreatedAt: time.Unix(1, 0).UTC()}
 		_ = dest.UpdateKeys()
 	}).Twice()
@@ -207,7 +208,7 @@ func TestHandleAppendOperatorProvisionJobNote_ValidationsAndSuccess(t *testing.T
 	ctx.Params = map[string]string{"id": "j1"}
 	ctx.Request.Body = []byte(`{"note":"hello"}`)
 	tdb.qJob.On("First", mock.AnythingOfType("*models.ProvisionJob")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.ProvisionJob)
+		dest := testutil.RequireMockArg[*models.ProvisionJob](t, args, 0)
 		*dest = models.ProvisionJob{ID: "j1", InstanceSlug: "inst", Status: models.ProvisionJobStatusQueued}
 		_ = dest.UpdateKeys()
 	}).Twice()

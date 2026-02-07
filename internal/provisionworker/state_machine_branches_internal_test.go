@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/codebuild"
 	cbtypes "github.com/aws/aws-sdk-go-v2/service/codebuild/types"
+	"github.com/stretchr/testify/require"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
 
@@ -39,7 +40,7 @@ func TestAdvanceManagedProvisioning_UnknownStepFailsJob(t *testing.T) {
 
 	now := time.Now().UTC()
 	job := &models.ProvisionJob{
-		ID:          "job-1",
+		ID:           "job-1",
 		InstanceSlug: "slug",
 		Status:       models.ProvisionJobStatusRunning,
 		Step:         "???",
@@ -75,16 +76,16 @@ func TestAdvanceProvisionAssumeRole_Branches(t *testing.T) {
 	t.Run("timeout_fails", func(t *testing.T) {
 		s := &Server{store: st, sts: &fakeSTS{err: errors.New("AccessDenied")}}
 		job := &models.ProvisionJob{
-			ID:           "j",
-			InstanceSlug:  "slug",
-			Status:        models.ProvisionJobStatusRunning,
-			Step:          provisionStepAssumeRole,
-			AccountID:     "123",
+			ID:              "j",
+			InstanceSlug:    "slug",
+			Status:          models.ProvisionJobStatusRunning,
+			Step:            provisionStepAssumeRole,
+			AccountID:       "123",
 			AccountRoleName: "role",
-			MaxAttempts:   3,
-			CreatedAt:     now.Add(-(provisionMaxAssumeRoleAge + provisionMaxAccountCreateAge + 1*time.Minute)),
-			UpdatedAt:     now,
-			ExpiresAt:     now.Add(1 * time.Hour),
+			MaxAttempts:     3,
+			CreatedAt:       now.Add(-(provisionMaxAssumeRoleAge + provisionMaxAccountCreateAge + 1*time.Minute)),
+			UpdatedAt:       now,
+			ExpiresAt:       now.Add(1 * time.Hour),
 		}
 		_, _, err := s.advanceProvisionAssumeRole(context.Background(), job, "req", now)
 		if err != nil || job.Step != provisionStepFailed || job.ErrorCode != "assume_role_timeout" {
@@ -95,16 +96,16 @@ func TestAdvanceProvisionAssumeRole_Branches(t *testing.T) {
 	t.Run("assume_role_not_ready_retries", func(t *testing.T) {
 		s := &Server{store: st, sts: &fakeSTS{err: errors.New("AccessDenied: not ready")}}
 		job := &models.ProvisionJob{
-			ID:            "j",
-			InstanceSlug:   "slug",
-			Status:         models.ProvisionJobStatusRunning,
-			Step:           provisionStepAssumeRole,
-			AccountID:      "123",
+			ID:              "j",
+			InstanceSlug:    "slug",
+			Status:          models.ProvisionJobStatusRunning,
+			Step:            provisionStepAssumeRole,
+			AccountID:       "123",
 			AccountRoleName: "role",
-			MaxAttempts:    3,
-			CreatedAt:      now.Add(-1 * time.Minute),
-			UpdatedAt:      now,
-			ExpiresAt:      now.Add(1 * time.Hour),
+			MaxAttempts:     3,
+			CreatedAt:       now.Add(-1 * time.Minute),
+			UpdatedAt:       now,
+			ExpiresAt:       now.Add(1 * time.Hour),
 		}
 		delay, _, err := s.advanceProvisionAssumeRole(context.Background(), job, "req", now)
 		if err != nil || delay <= 0 || job.Note == "" || !strings.Contains(job.Note, "assumable") {
@@ -115,16 +116,16 @@ func TestAdvanceProvisionAssumeRole_Branches(t *testing.T) {
 	t.Run("non_retryable_error_backoff", func(t *testing.T) {
 		s := &Server{store: st, sts: &fakeSTS{err: errors.New("boom")}}
 		job := &models.ProvisionJob{
-			ID:            "j",
-			InstanceSlug:   "slug",
-			Status:         models.ProvisionJobStatusRunning,
-			Step:           provisionStepAssumeRole,
-			AccountID:      "123",
+			ID:              "j",
+			InstanceSlug:    "slug",
+			Status:          models.ProvisionJobStatusRunning,
+			Step:            provisionStepAssumeRole,
+			AccountID:       "123",
 			AccountRoleName: "role",
-			MaxAttempts:    3,
-			CreatedAt:      now.Add(-1 * time.Minute),
-			UpdatedAt:      now,
-			ExpiresAt:      now.Add(1 * time.Hour),
+			MaxAttempts:     3,
+			CreatedAt:       now.Add(-1 * time.Minute),
+			UpdatedAt:       now,
+			ExpiresAt:       now.Add(1 * time.Hour),
 		}
 		delay, _, err := s.advanceProvisionAssumeRole(context.Background(), job, "req", now)
 		if err != nil || delay <= 0 || job.Attempts != 1 {
@@ -153,13 +154,13 @@ func TestAdvanceProvisionParentDelegation_Branches(t *testing.T) {
 	t.Run("missing_child_name_servers_rewinds", func(t *testing.T) {
 		s := &Server{store: st}
 		job := &models.ProvisionJob{
-			ID:              "j",
-			InstanceSlug:     "slug",
-			Status:           models.ProvisionJobStatusRunning,
-			Step:             provisionStepParentDelegation,
+			ID:                 "j",
+			InstanceSlug:       "slug",
+			Status:             models.ProvisionJobStatusRunning,
+			Step:               provisionStepParentDelegation,
 			ParentHostedZoneID: "ZPARENT",
-			BaseDomain:       "slug.example.com",
-			ChildNameServers: nil,
+			BaseDomain:         "slug.example.com",
+			ChildNameServers:   nil,
 		}
 		_, _, err := s.advanceProvisionParentDelegation(context.Background(), job, "req", now)
 		if err != nil || job.Step != provisionStepChildZone {
@@ -171,17 +172,17 @@ func TestAdvanceProvisionParentDelegation_Branches(t *testing.T) {
 		r53 := &fakeRoute53{changeErr: errors.New("nope")}
 		s := &Server{store: st, r53: r53}
 		job := &models.ProvisionJob{
-			ID:               "j",
-			InstanceSlug:      "slug",
-			Status:            models.ProvisionJobStatusRunning,
-			Step:              provisionStepParentDelegation,
+			ID:                 "j",
+			InstanceSlug:       "slug",
+			Status:             models.ProvisionJobStatusRunning,
+			Step:               provisionStepParentDelegation,
 			ParentHostedZoneID: "ZPARENT",
-			BaseDomain:        "slug.example.com",
-			ChildNameServers:  []string{"ns-1"},
-			MaxAttempts:       3,
-			CreatedAt:         now.Add(-1 * time.Minute),
-			UpdatedAt:         now,
-			ExpiresAt:         now.Add(1 * time.Hour),
+			BaseDomain:         "slug.example.com",
+			ChildNameServers:   []string{"ns-1"},
+			MaxAttempts:        3,
+			CreatedAt:          now.Add(-1 * time.Minute),
+			UpdatedAt:          now,
+			ExpiresAt:          now.Add(1 * time.Hour),
 		}
 
 		delay, _, err := s.advanceProvisionParentDelegation(context.Background(), job, "req", now)
@@ -208,7 +209,7 @@ func TestAdvanceProvisionDeployStart_Branches(t *testing.T) {
 	t.Run("run_already_set_advances_to_wait", func(t *testing.T) {
 		s := &Server{store: st}
 		job := &models.ProvisionJob{
-			ID:          "j",
+			ID:           "j",
 			InstanceSlug: "slug",
 			Status:       models.ProvisionJobStatusRunning,
 			Step:         provisionStepDeployStart,
@@ -237,19 +238,19 @@ func TestAdvanceProvisionDeployStart_Branches(t *testing.T) {
 			cb:    cb,
 		}
 		job := &models.ProvisionJob{
-			ID:           "j",
-			InstanceSlug:  "slug",
-			Status:        models.ProvisionJobStatusRunning,
-			Step:          provisionStepDeployStart,
-			AccountID:     "123",
+			ID:              "j",
+			InstanceSlug:    "slug",
+			Status:          models.ProvisionJobStatusRunning,
+			Step:            provisionStepDeployStart,
+			AccountID:       "123",
 			AccountRoleName: "role",
-			BaseDomain:    "slug.example.com",
-			Region:        "us-east-1",
-			LesserVersion: "v",
-			MaxAttempts:   3,
-			CreatedAt:     now.Add(-1 * time.Minute),
-			UpdatedAt:     now,
-			ExpiresAt:     now.Add(1 * time.Hour),
+			BaseDomain:      "slug.example.com",
+			Region:          "us-east-1",
+			LesserVersion:   "v",
+			MaxAttempts:     3,
+			CreatedAt:       now.Add(-1 * time.Minute),
+			UpdatedAt:       now,
+			ExpiresAt:       now.Add(1 * time.Hour),
 		}
 		delay, _, err := s.advanceProvisionDeployStart(context.Background(), job, "req", now)
 		if err != nil || delay <= 0 || job.Attempts != 1 || !strings.Contains(job.Note, "retrying") {
@@ -269,7 +270,7 @@ func TestAdvanceProvisionDeployWait_StatusBranches(t *testing.T) {
 	t.Run("timeout_fails", func(t *testing.T) {
 		s := &Server{store: st, cb: &fakeCodebuild{}}
 		job := &models.ProvisionJob{
-			ID:          "j",
+			ID:           "j",
 			InstanceSlug: "slug",
 			Status:       models.ProvisionJobStatusRunning,
 			Step:         provisionStepDeployWait,
@@ -280,16 +281,16 @@ func TestAdvanceProvisionDeployWait_StatusBranches(t *testing.T) {
 			ExpiresAt:    now.Add(1 * time.Hour),
 		}
 		_, _, err := s.advanceProvisionDeployWait(context.Background(), job, "req", now)
-		if err != nil || job.Step != provisionStepFailed || job.ErrorCode != "deploy_timeout" {
-			t.Fatalf("expected deploy_timeout, got job=%#v err=%v", job, err)
-		}
+		require.NoError(t, err)
+		require.Equal(t, provisionStepFailed, job.Step)
+		require.Equal(t, "deploy_timeout", job.ErrorCode)
 	})
 
 	t.Run("status_error_retries", func(t *testing.T) {
 		cb := &fakeCodebuild{batchErr: errors.New("boom")}
 		s := &Server{store: st, cb: cb}
 		job := &models.ProvisionJob{
-			ID:          "j",
+			ID:           "j",
 			InstanceSlug: "slug",
 			Status:       models.ProvisionJobStatusRunning,
 			Step:         provisionStepDeployWait,
@@ -300,16 +301,17 @@ func TestAdvanceProvisionDeployWait_StatusBranches(t *testing.T) {
 			ExpiresAt:    now.Add(1 * time.Hour),
 		}
 		delay, _, err := s.advanceProvisionDeployWait(context.Background(), job, "req", now)
-		if err != nil || delay <= 0 || job.Attempts != 1 || !strings.Contains(job.Note, "retrying") {
-			t.Fatalf("expected retry delay, got delay=%v job=%#v err=%v", delay, job, err)
-		}
+		require.NoError(t, err)
+		require.Greater(t, delay, time.Duration(0))
+		require.Equal(t, int64(1), job.Attempts)
+		require.Contains(t, job.Note, "retrying")
 	})
 
 	t.Run("in_progress_polls", func(t *testing.T) {
 		cb := &fakeCodebuild{batchOut: &codebuild.BatchGetBuildsOutput{Builds: []cbtypes.Build{{BuildStatus: cbtypes.StatusTypeInProgress}}}}
 		s := &Server{store: st, cb: cb}
 		job := &models.ProvisionJob{
-			ID:          "j",
+			ID:           "j",
 			InstanceSlug: "slug",
 			Status:       models.ProvisionJobStatusRunning,
 			Step:         provisionStepDeployWait,
@@ -320,9 +322,9 @@ func TestAdvanceProvisionDeployWait_StatusBranches(t *testing.T) {
 			ExpiresAt:    now.Add(1 * time.Hour),
 		}
 		delay, _, err := s.advanceProvisionDeployWait(context.Background(), job, "req", now)
-		if err != nil || delay != provisionDefaultPollDelay || job.Step != provisionStepDeployWait {
-			t.Fatalf("unexpected: delay=%v job=%#v err=%v", delay, job, err)
-		}
+		require.NoError(t, err)
+		require.Equal(t, provisionDefaultPollDelay, delay)
+		require.Equal(t, provisionStepDeployWait, job.Step)
 	})
 
 	t.Run("failed_includes_deeplink", func(t *testing.T) {
@@ -332,7 +334,7 @@ func TestAdvanceProvisionDeployWait_StatusBranches(t *testing.T) {
 		}}}}
 		s := &Server{store: st, cb: cb}
 		job := &models.ProvisionJob{
-			ID:          "j",
+			ID:           "j",
 			InstanceSlug: "slug",
 			Status:       models.ProvisionJobStatusRunning,
 			Step:         provisionStepDeployWait,
@@ -343,16 +345,17 @@ func TestAdvanceProvisionDeployWait_StatusBranches(t *testing.T) {
 			ExpiresAt:    now.Add(1 * time.Hour),
 		}
 		_, _, err := s.advanceProvisionDeployWait(context.Background(), job, "req", now)
-		if err != nil || job.Step != provisionStepFailed || job.ErrorCode != "deploy_failed" || !strings.Contains(job.ErrorMessage, "CodeBuild") {
-			t.Fatalf("expected deploy_failed with link, got job=%#v err=%v", job, err)
-		}
+		require.NoError(t, err)
+		require.Equal(t, provisionStepFailed, job.Step)
+		require.Equal(t, "deploy_failed", job.ErrorCode)
+		require.Contains(t, job.ErrorMessage, "CodeBuild")
 	})
 
 	t.Run("unknown_status_polls", func(t *testing.T) {
 		cb := &fakeCodebuild{batchOut: &codebuild.BatchGetBuildsOutput{Builds: []cbtypes.Build{{BuildStatus: cbtypes.StatusType("WAT")}}}}
 		s := &Server{store: st, cb: cb}
 		job := &models.ProvisionJob{
-			ID:          "j",
+			ID:           "j",
 			InstanceSlug: "slug",
 			Status:       models.ProvisionJobStatusRunning,
 			Step:         provisionStepDeployWait,
@@ -363,8 +366,8 @@ func TestAdvanceProvisionDeployWait_StatusBranches(t *testing.T) {
 			ExpiresAt:    now.Add(1 * time.Hour),
 		}
 		delay, _, err := s.advanceProvisionDeployWait(context.Background(), job, "req", now)
-		if err != nil || delay != provisionDefaultPollDelay || !strings.Contains(job.Note, "deploy runner status") {
-			t.Fatalf("unexpected: delay=%v job=%#v err=%v", delay, job, err)
-		}
+		require.NoError(t, err)
+		require.Equal(t, provisionDefaultPollDelay, delay)
+		require.Contains(t, job.Note, "deploy runner status")
 	})
 }

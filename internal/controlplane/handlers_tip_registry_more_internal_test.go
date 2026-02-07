@@ -10,12 +10,13 @@ import (
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
-	apptheory "github.com/theory-cloud/apptheory/runtime"
 	"github.com/stretchr/testify/mock"
+	apptheory "github.com/theory-cloud/apptheory/runtime"
 
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
+	"github.com/equaltoai/lesser-host/internal/testutil"
 	"github.com/equaltoai/lesser-host/internal/tips"
 )
 
@@ -78,20 +79,20 @@ func TestEnforceTipRegistryUpdateProofPolicy_RequiresBoth(t *testing.T) {
 	}}
 
 	reg := &models.TipHostRegistration{
-		Kind:      models.TipRegistryOperationKindUpdateHost,
-		HostIDHex: hostID.Hex(),
+		Kind:       models.TipRegistryOperationKindUpdateHost,
+		HostIDHex:  hostID.Hex(),
 		WalletAddr: "0x00000000000000000000000000000000000000bb", // wallet change
 		HostFeeBps: 10,
 	}
 	appErr := s.enforceTipRegistryUpdateProofPolicy(context.Background(), reg, true, false)
-	if appErr == nil || appErr.Code != "app.bad_request" || !strings.Contains(appErr.Message, "requires both") {
+	if appErr == nil || appErr.Code != appErrCodeBadRequest || !strings.Contains(appErr.Message, "requires both") {
 		t.Fatalf("expected bad_request requires both proofs, got %#v", appErr)
 	}
 
 	// Update kind: errors from the RPC requirement surface to caller.
 	s2 := &Server{cfg: config.Config{TipContractAddress: "0x0000000000000000000000000000000000000001"}}
 	appErr = s2.enforceTipRegistryUpdateProofPolicy(context.Background(), reg, true, true)
-	if appErr == nil || appErr.Code != "app.conflict" {
+	if appErr == nil || appErr.Code != appErrCodeConflict {
 		t.Fatalf("expected conflict for missing rpc, got %#v", appErr)
 	}
 }
@@ -256,7 +257,7 @@ func TestHandleTipHostRegistrationVerify_SucceedsWithDNSProof(t *testing.T) {
 	_ = reg.UpdateKeys()
 
 	tdb.qReg.On("First", mock.AnythingOfType("*models.TipHostRegistration")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.TipHostRegistration)
+		dest := testutil.RequireMockArg[*models.TipHostRegistration](t, args, 0)
 		*dest = reg
 	}).Once()
 

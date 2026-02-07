@@ -15,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
+	"github.com/stretchr/testify/require"
 	"github.com/stripe/stripe-go/v79"
 	"github.com/stripe/stripe-go/v79/webhook"
 )
@@ -53,6 +54,106 @@ func parseFormBody(t *testing.T, r *http.Request) url.Values {
 	return vals
 }
 
+type stripeTestHandler struct {
+	t *testing.T
+
+	gotCustomer        *url.Values
+	gotCreditsCheckout *url.Values
+	gotSetupCheckout   *url.Values
+}
+
+func (h *stripeTestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	switch {
+	case r.Method == http.MethodPost && r.URL.Path == "/v1/customers":
+		h.handleCustomers(w, r)
+		return
+	case r.Method == http.MethodPost && r.URL.Path == "/v1/checkout/sessions":
+		h.handleCheckoutSessions(w, r)
+		return
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/setup_intents/"):
+		h.writeJSON(w, `{"id":"seti_123","object":"setup_intent","payment_method":{"id":"pm_123","object":"payment_method"}}`)
+		return
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/payment_methods/"):
+		h.writeJSON(w, `{"id":"pm_123","object":"payment_method","type":"card","card":{"brand":"visa","last4":"4242","exp_month":12,"exp_year":2030}}`)
+		return
+	default:
+		http.NotFound(w, r)
+		return
+	}
+}
+
+func (h *stripeTestHandler) handleCustomers(w http.ResponseWriter, r *http.Request) {
+	*h.gotCustomer = parseFormBody(h.t, r)
+	h.writeJSON(w, `{"id":"cus_123","object":"customer"}`)
+}
+
+func (h *stripeTestHandler) handleCheckoutSessions(w http.ResponseWriter, r *http.Request) {
+	vals := parseFormBody(h.t, r)
+	mode := vals.Get("mode")
+
+	switch mode {
+	case "payment":
+		*h.gotCreditsCheckout = vals
+		resp := map[string]any{
+			"id":     "cs_credits",
+			"object": "checkout.session",
+			"url":    "https://stripe.test/checkout/credits",
+			"mode":   "payment",
+			"customer": map[string]any{
+				"id":     vals.Get("customer"),
+				"object": "customer",
+			},
+			"payment_intent": map[string]any{
+				"id":     "pi_123",
+				"object": "payment_intent",
+			},
+			"amount_total": 1234,
+			"currency":     "usd",
+			"metadata": map[string]string{
+				"purchase_id":   vals.Get("metadata[purchase_id]"),
+				"username":      vals.Get("metadata[username]"),
+				"instance_slug": vals.Get("metadata[instance_slug]"),
+				"month":         vals.Get("metadata[month]"),
+				"credits":       vals.Get("metadata[credits]"),
+			},
+			"expires_at": time.Now().Add(10 * time.Minute).Unix(),
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+		return
+	case "setup":
+		*h.gotSetupCheckout = vals
+		resp := map[string]any{
+			"id":     "cs_setup",
+			"object": "checkout.session",
+			"url":    "https://stripe.test/checkout/setup",
+			"mode":   "setup",
+			"customer": map[string]any{
+				"id":     vals.Get("customer"),
+				"object": "customer",
+			},
+			"setup_intent": map[string]any{
+				"id":     "seti_123",
+				"object": "setup_intent",
+			},
+			"metadata": map[string]string{
+				"username": vals.Get("metadata[username]"),
+				"purpose":  vals.Get("metadata[purpose]"),
+			},
+			"expires_at": time.Now().Add(10 * time.Minute).Unix(),
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+		return
+	default:
+		http.Error(w, "unexpected mode", http.StatusBadRequest)
+		return
+	}
+}
+
+func (h *stripeTestHandler) writeJSON(w http.ResponseWriter, body string) {
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = io.WriteString(w, body)
+}
+
 func TestStripeProvider_HTTPFlows_AreCISafe(t *testing.T) {
 	t.Setenv("STAGE", "payments-test")
 
@@ -70,91 +171,13 @@ func TestStripeProvider_HTTPFlows_AreCISafe(t *testing.T) {
 	var gotCreditsCheckout url.Values
 	var gotSetupCheckout url.Values
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodPost && r.URL.Path == "/v1/customers":
-			gotCustomer = parseFormBody(t, r)
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = io.WriteString(w, `{"id":"cus_123","object":"customer"}`)
-			return
-
-		case r.Method == http.MethodPost && r.URL.Path == "/v1/checkout/sessions":
-			vals := parseFormBody(t, r)
-			mode := vals.Get("mode")
-			w.Header().Set("Content-Type", "application/json")
-
-			switch mode {
-			case "payment":
-				gotCreditsCheckout = vals
-				resp := map[string]any{
-					"id":     "cs_credits",
-					"object": "checkout.session",
-					"url":    "https://stripe.test/checkout/credits",
-					"mode":   "payment",
-					"customer": map[string]any{
-						"id":     vals.Get("customer"),
-						"object": "customer",
-					},
-					"payment_intent": map[string]any{
-						"id":     "pi_123",
-						"object": "payment_intent",
-					},
-					"amount_total": 1234,
-					"currency":     "usd",
-					"metadata": map[string]string{
-						"purchase_id":   vals.Get("metadata[purchase_id]"),
-						"username":      vals.Get("metadata[username]"),
-						"instance_slug": vals.Get("metadata[instance_slug]"),
-						"month":         vals.Get("metadata[month]"),
-						"credits":       vals.Get("metadata[credits]"),
-					},
-					"expires_at": time.Now().Add(10 * time.Minute).Unix(),
-				}
-				_ = json.NewEncoder(w).Encode(resp)
-				return
-
-			case "setup":
-				gotSetupCheckout = vals
-				resp := map[string]any{
-					"id":     "cs_setup",
-					"object": "checkout.session",
-					"url":    "https://stripe.test/checkout/setup",
-					"mode":   "setup",
-					"customer": map[string]any{
-						"id":     vals.Get("customer"),
-						"object": "customer",
-					},
-					"setup_intent": map[string]any{
-						"id":     "seti_123",
-						"object": "setup_intent",
-					},
-					"metadata": map[string]string{
-						"username": vals.Get("metadata[username]"),
-						"purpose":  vals.Get("metadata[purpose]"),
-					},
-					"expires_at": time.Now().Add(10 * time.Minute).Unix(),
-				}
-				_ = json.NewEncoder(w).Encode(resp)
-				return
-			default:
-				http.Error(w, "unexpected mode", http.StatusBadRequest)
-				return
-			}
-
-		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/setup_intents/"):
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = io.WriteString(w, `{"id":"seti_123","object":"setup_intent","payment_method":{"id":"pm_123","object":"payment_method"}}`)
-			return
-
-		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/payment_methods/"):
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = io.WriteString(w, `{"id":"pm_123","object":"payment_method","type":"card","card":{"brand":"visa","last4":"4242","exp_month":12,"exp_year":2030}}`)
-			return
-		default:
-			http.NotFound(w, r)
-			return
-		}
-	}))
+	handler := &stripeTestHandler{
+		t:                  t,
+		gotCustomer:        &gotCustomer,
+		gotCreditsCheckout: &gotCreditsCheckout,
+		gotSetupCheckout:   &gotSetupCheckout,
+	}
+	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
 	oldBackend := stripe.GetBackend(stripe.APIBackend)
@@ -171,15 +194,10 @@ func TestStripeProvider_HTTPFlows_AreCISafe(t *testing.T) {
 	defer cancel()
 
 	custID, err := p.EnsureCustomer(ctx, EnsureCustomerInput{Username: " u ", Email: " e@example.com "})
-	if err != nil {
-		t.Fatalf("EnsureCustomer: %v", err)
-	}
-	if custID != "cus_123" {
-		t.Fatalf("expected customer id cus_123, got %q", custID)
-	}
-	if gotCustomer.Get("email") != "e@example.com" || gotCustomer.Get("metadata[username]") != "u" {
-		t.Fatalf("unexpected customer params: %#v", gotCustomer)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "cus_123", custID)
+	require.Equal(t, "e@example.com", gotCustomer.Get("email"))
+	require.Equal(t, "u", gotCustomer.Get("metadata[username]"))
 
 	creditsSess, err := p.CreateCreditsCheckout(ctx, CreditsCheckoutInput{
 		CustomerID:   custID,
@@ -192,18 +210,15 @@ func TestStripeProvider_HTTPFlows_AreCISafe(t *testing.T) {
 		SuccessURL:   "https://example.com/success",
 		CancelURL:    "https://example.com/cancel",
 	})
-	if err != nil {
-		t.Fatalf("CreateCreditsCheckout: %v", err)
-	}
-	if creditsSess == nil || creditsSess.ID != "cs_credits" || creditsSess.CustomerID != custID || creditsSess.PaymentIntentID != "pi_123" {
-		t.Fatalf("unexpected credits session: %#v", creditsSess)
-	}
-	if gotCreditsCheckout.Get("mode") != "payment" || gotCreditsCheckout.Get("line_items[0][price_data][currency]") != "usd" {
-		t.Fatalf("unexpected checkout params: %#v", gotCreditsCheckout)
-	}
-	if gotCreditsCheckout.Get("metadata[instance_slug]") != "inst" || gotCreditsCheckout.Get("metadata[credits]") != "10" {
-		t.Fatalf("unexpected checkout metadata: %#v", gotCreditsCheckout)
-	}
+	require.NoError(t, err)
+	require.NotNil(t, creditsSess)
+	require.Equal(t, "cs_credits", creditsSess.ID)
+	require.Equal(t, custID, creditsSess.CustomerID)
+	require.Equal(t, "pi_123", creditsSess.PaymentIntentID)
+	require.Equal(t, "payment", gotCreditsCheckout.Get("mode"))
+	require.Equal(t, "usd", gotCreditsCheckout.Get("line_items[0][price_data][currency]"))
+	require.Equal(t, "inst", gotCreditsCheckout.Get("metadata[instance_slug]"))
+	require.Equal(t, "10", gotCreditsCheckout.Get("metadata[credits]"))
 
 	setupSess, err := p.CreateSetupCheckout(ctx, SetupCheckoutInput{
 		CustomerID: custID,
@@ -211,23 +226,20 @@ func TestStripeProvider_HTTPFlows_AreCISafe(t *testing.T) {
 		SuccessURL: "https://example.com/success",
 		CancelURL:  "https://example.com/cancel",
 	})
-	if err != nil {
-		t.Fatalf("CreateSetupCheckout: %v", err)
-	}
-	if setupSess == nil || setupSess.ID != "cs_setup" || setupSess.CustomerID != custID || setupSess.SetupIntentID != "seti_123" {
-		t.Fatalf("unexpected setup session: %#v", setupSess)
-	}
-	if gotSetupCheckout.Get("metadata[purpose]") != "overage_payment_method" {
-		t.Fatalf("unexpected setup metadata: %#v", gotSetupCheckout)
-	}
+	require.NoError(t, err)
+	require.NotNil(t, setupSess)
+	require.Equal(t, "cs_setup", setupSess.ID)
+	require.Equal(t, custID, setupSess.CustomerID)
+	require.Equal(t, "seti_123", setupSess.SetupIntentID)
+	require.Equal(t, "overage_payment_method", gotSetupCheckout.Get("metadata[purpose]"))
 
 	pm, err := p.ResolveSetupPaymentMethod(ctx, "seti_123")
-	if err != nil {
-		t.Fatalf("ResolveSetupPaymentMethod: %v", err)
-	}
-	if pm == nil || pm.ID != "pm_123" || pm.Type != "card" || pm.Brand != "visa" || pm.Last4 != "4242" {
-		t.Fatalf("unexpected payment method: %#v", pm)
-	}
+	require.NoError(t, err)
+	require.NotNil(t, pm)
+	require.Equal(t, "pm_123", pm.ID)
+	require.Equal(t, "card", pm.Type)
+	require.Equal(t, "visa", pm.Brand)
+	require.Equal(t, "4242", pm.Last4)
 }
 
 func TestStripeProvider_ParseWebhookEvent_ValidatesAndFilters(t *testing.T) {
@@ -266,11 +278,11 @@ func TestStripeProvider_ParseWebhookEvent_ValidatesAndFilters(t *testing.T) {
 	}
 
 	bodyBytes, err := json.Marshal(map[string]any{
-		"id":      "evt_1",
-		"object":  "event",
+		"id":          "evt_1",
+		"object":      "event",
 		"api_version": stripe.APIVersion,
-		"type":    "checkout.session.completed",
-		"created": time.Now().Unix(),
+		"type":        "checkout.session.completed",
+		"created":     time.Now().Unix(),
 		"data": map[string]any{
 			"object": sessObj,
 		},
@@ -297,11 +309,11 @@ func TestStripeProvider_ParseWebhookEvent_ValidatesAndFilters(t *testing.T) {
 	}
 
 	unsupportedBody, err := json.Marshal(map[string]any{
-		"id":      "evt_2",
-		"object":  "event",
+		"id":          "evt_2",
+		"object":      "event",
 		"api_version": stripe.APIVersion,
-		"type":    "customer.created",
-		"created": time.Now().Unix(),
+		"type":        "customer.created",
+		"created":     time.Now().Unix(),
 		"data": map[string]any{
 			"object": map[string]any{"id": "cus_x"},
 		},
@@ -374,8 +386,8 @@ func TestStripeProvider_ParseWebhookEvent_TrimsAndRejectsEmptySecret(t *testing.
 	legacyWebhookParam := "/lesser-host/api/stripe/webhook"
 
 	p := stripeProvider{ssmClient: stubSSM{values: map[string]string{
-		secretParam:  "sk_test",
-		webhookParam: "   ",
+		secretParam:        "sk_test",
+		webhookParam:       "   ",
 		legacyWebhookParam: "   ",
 	}}}
 
@@ -391,7 +403,7 @@ func TestStripeProvider_EnsureCustomer_ErrorsWhenNotConfigured(t *testing.T) {
 	legacySecretParam := "/lesser-host/api/stripe/secret"
 
 	p := stripeProvider{ssmClient: stubSSM{values: map[string]string{
-		secretParam: "   ",
+		secretParam:       "   ",
 		legacySecretParam: "   ",
 	}}}
 

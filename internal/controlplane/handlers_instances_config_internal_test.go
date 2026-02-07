@@ -3,6 +3,7 @@ package controlplane
 import (
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 )
 
@@ -10,18 +11,14 @@ func TestBuildInstanceConfigUpdate(t *testing.T) {
 	t.Parallel()
 
 	_, _, err := buildInstanceConfigUpdate("slug", updateInstanceConfigRequest{})
-	if err == nil {
-		t.Fatalf("expected error for empty request")
-	}
+	require.Error(t, err)
 
-	rp := "nope"
+	rp := testNope
 	_, _, err = buildInstanceConfigUpdate("slug", updateInstanceConfigRequest{RenderPolicy: &rp})
-	if err == nil {
-		t.Fatalf("expected error for invalid render policy")
-	}
-	if appErr, ok := err.(*apptheory.AppError); !ok || appErr.Code != "app.bad_request" {
-		t.Fatalf("expected bad_request app error, got %#v", err)
-	}
+	require.Error(t, err)
+	var appErr *apptheory.AppError
+	require.ErrorAs(t, err, &appErr)
+	require.Equal(t, appErrCodeBadRequest, appErr.Code)
 
 	op := "allow"
 	mt := "virality"
@@ -44,28 +41,18 @@ func TestBuildInstanceConfigUpdate(t *testing.T) {
 		AIMaxInflightJobs:      &inflight,
 		AIEnabled:              &enabled,
 	})
-	if err != nil {
-		t.Fatalf("buildInstanceConfigUpdate: %v", err)
-	}
-	if update == nil || update.Slug != "slug" {
-		t.Fatalf("unexpected update: %#v", update)
-	}
-	if len(fields) == 0 {
-		t.Fatalf("expected fields list")
-	}
-	if update.OveragePolicy != "allow" || update.ModerationTrigger != "virality" {
-		t.Fatalf("unexpected policy fields: %#v", update)
-	}
-	if update.AIModelSet != "openai:test" || update.AIBatchingMode != "worker" {
-		t.Fatalf("unexpected ai fields: %#v", update)
-	}
-	if update.AIBatchMaxItems != 2 || update.AIBatchMaxTotalBytes != 100 {
-		t.Fatalf("unexpected ai bounds: %#v", update)
-	}
-	if update.AIPricingMultiplierBps == nil || *update.AIPricingMultiplierBps != 11000 {
-		t.Fatalf("unexpected multiplier: %#v", update.AIPricingMultiplierBps)
-	}
-	if update.AIMaxInflightJobs == nil || *update.AIMaxInflightJobs != 10 {
-		t.Fatalf("unexpected inflight: %#v", update.AIMaxInflightJobs)
-	}
+	require.NoError(t, err)
+	require.NotNil(t, update)
+	require.Equal(t, "slug", update.Slug)
+	require.NotEmpty(t, fields)
+	require.Equal(t, "allow", update.OveragePolicy)
+	require.Equal(t, "virality", update.ModerationTrigger)
+	require.Equal(t, "openai:test", update.AIModelSet)
+	require.Equal(t, "worker", update.AIBatchingMode)
+	require.Equal(t, int64(2), update.AIBatchMaxItems)
+	require.Equal(t, int64(100), update.AIBatchMaxTotalBytes)
+	require.NotNil(t, update.AIPricingMultiplierBps)
+	require.Equal(t, int64(11000), *update.AIPricingMultiplierBps)
+	require.NotNil(t, update.AIMaxInflightJobs)
+	require.Equal(t, int64(10), *update.AIMaxInflightJobs)
 }

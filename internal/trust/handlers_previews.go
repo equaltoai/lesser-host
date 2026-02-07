@@ -202,7 +202,7 @@ func (s *Server) handleLinkPreview(ctx *apptheory.Context) (*apptheory.Response,
 }
 
 func linkPreviewBadRequestError(err error) error {
-	if pe, ok := err.(*linkPreviewError); ok && pe.Code == "invalid_url" {
+	if pe, ok := err.(*linkPreviewError); ok && pe.Code == errorCodeInvalidURL {
 		return &apptheory.AppError{Code: "app.bad_request", Message: pe.Message}
 	}
 	return &apptheory.AppError{Code: "app.bad_request", Message: "invalid url"}
@@ -211,12 +211,12 @@ func linkPreviewBadRequestError(err error) error {
 func linkPreviewResponseDisabled(previewID, normalizedURL string) linkPreviewResponse {
 	now := time.Now().UTC()
 	return linkPreviewResponse{
-		Status:        "disabled",
+		Status:        statusDisabled,
 		Cached:        false,
 		ID:            strings.TrimSpace(previewID),
 		PolicyVersion: linkPreviewPolicyVersion,
 		NormalizedURL: strings.TrimSpace(normalizedURL),
-		ErrorCode:     "disabled",
+		ErrorCode:     statusDisabled,
 		ErrorMessage:  "hosted previews disabled for instance",
 		FetchedAt:     now,
 		ExpiresAt:     now.Add(5 * time.Minute),
@@ -388,10 +388,10 @@ func (s *Server) tryStorePreviewImage(ctx context.Context, rawImageURL string) (
 func normalizePreviewRenderPolicy(renderPolicy string) string {
 	renderPolicy = strings.ToLower(strings.TrimSpace(renderPolicy))
 	switch renderPolicy {
-	case "always", "suspicious":
+	case renderPolicyAlways, renderPolicySuspicious:
 		return renderPolicy
 	default:
-		return "suspicious"
+		return renderPolicySuspicious
 	}
 }
 
@@ -402,7 +402,7 @@ func previewRenderEligible(s *Server, ctx *apptheory.Context, normalizedURL stri
 	if strings.TrimSpace(normalizedURL) == "" {
 		return false
 	}
-	return strings.TrimSpace(resp.Status) == "ok"
+	return strings.TrimSpace(resp.Status) == statusOK
 }
 
 func (s *Server) attachCachedPreviewRender(ctx *apptheory.Context, instanceSlug string, renderID string, resp *linkPreviewResponse) bool {
@@ -622,13 +622,13 @@ func linkPreviewResponseFromModel(ctx *apptheory.Context, item *models.LinkPrevi
 
 	switch resp.ErrorCode {
 	case "":
-		resp.Status = "ok"
-	case "blocked_ssrf":
-		resp.Status = "blocked"
-	case "disabled":
-		resp.Status = "disabled"
+		resp.Status = statusOK
+	case errorCodeBlockedSSRF:
+		resp.Status = statusBlocked
+	case statusDisabled:
+		resp.Status = statusDisabled
 	default:
-		resp.Status = "error"
+		resp.Status = statusError
 	}
 
 	if resp.ImageID != "" {

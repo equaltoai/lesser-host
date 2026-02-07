@@ -10,6 +10,7 @@ import (
 
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
+	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
 func TestDefaultInstanceTrustConfig_Invariants(t *testing.T) {
@@ -115,7 +116,7 @@ func TestLoadInstanceTrustConfig_AppliesOverridesFromInstance(t *testing.T) {
 	db.On("Model", mock.Anything).Return(q).Maybe()
 	q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 	q.On("First", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
 		*dest = models.Instance{
 			Slug:                  "inst",
 			HostedPreviewsEnabled: &hpe,

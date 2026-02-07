@@ -17,6 +17,13 @@ import (
 	"github.com/equaltoai/lesser-host/internal/trust"
 )
 
+const (
+	renderErrCodeInvalidURL  = "invalid_url"
+	renderErrCodeBlockedSSRF = "blocked_ssrf"
+	renderErrCodeFetchFailed = "fetch_failed"
+	renderErrCodeNotHTML     = "not_html"
+)
+
 type renderStore interface {
 	GetRenderArtifact(ctx context.Context, id string) (*models.RenderArtifact, error)
 	PutRenderArtifact(ctx context.Context, item *models.RenderArtifact) error
@@ -127,10 +134,10 @@ func (s *Server) maybeShortCircuitExistingRender(ctx context.Context, renderID s
 func validateAndFetchRenderHTML(ctx context.Context, normalized string) (*url.URL, []string, []byte, string, string, string, error) {
 	_, start, err := trust.NormalizeLinkURL(normalized)
 	if err != nil {
-		return nil, nil, nil, "", "invalid_url", "invalid url", err
+		return nil, nil, nil, "", renderErrCodeInvalidURL, "invalid url", err
 	}
 	if validateErr := trust.ValidateOutboundURL(ctx, start); validateErr != nil {
-		return nil, nil, nil, "", "blocked_ssrf", "host is not allowed", validateErr
+		return nil, nil, nil, "", renderErrCodeBlockedSSRF, "host is not allowed", validateErr
 	}
 
 	client := trust.NewPreviewHTTPClient(6 * time.Second)
@@ -139,7 +146,7 @@ func validateAndFetchRenderHTML(ctx context.Context, normalized string) (*url.UR
 		return finalURL, chain, body, contentType, "", "", nil
 	}
 
-	code := "fetch_failed"
+	code := renderErrCodeFetchFailed
 	msg := "fetch failed"
 	if pe, ok := err.(*trust.LinkPreviewError); ok {
 		code = pe.Code
@@ -165,7 +172,7 @@ func (s *Server) storeNonHTMLArtifact(ctx context.Context, renderID string, norm
 		CreatedAt:      now,
 		RenderedAt:     now,
 		ExpiresAt:      desiredExpiresAt,
-		ErrorCode:      "not_html",
+		ErrorCode:      renderErrCodeNotHTML,
 		ErrorMessage:   "content is not html",
 	}
 	_ = item.UpdateKeys()

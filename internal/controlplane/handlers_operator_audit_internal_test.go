@@ -11,6 +11,7 @@ import (
 
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
+	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
 type operatorAuditTestDB struct {
@@ -70,7 +71,7 @@ func TestHandleListOperatorAuditLog_TargetAndGlobalQueryPaths(t *testing.T) {
 
 	// Target-scoped query path.
 	tdb.qAudit.On("All", mock.AnythingOfType("*[]*models.AuditLogEntry")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*[]*models.AuditLogEntry)
+		dest := testutil.RequireMockArg[*[]*models.AuditLogEntry](t, args, 0)
 		*dest = []*models.AuditLogEntry{
 			nil,
 			{Actor: "alice", Action: "x", RequestID: "r1", CreatedAt: time.Unix(10, 0).UTC()},
@@ -90,8 +91,8 @@ func TestHandleListOperatorAuditLog_TargetAndGlobalQueryPaths(t *testing.T) {
 	}
 
 	var parsed listOperatorAuditLogResponse
-	if err := json.Unmarshal(resp.Body, &parsed); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+	if unmarshalErr := json.Unmarshal(resp.Body, &parsed); unmarshalErr != nil {
+		t.Fatalf("unmarshal: %v", unmarshalErr)
 	}
 	if parsed.Count != 1 || len(parsed.Entries) != 1 || parsed.Entries[0].Actor != "bob" {
 		t.Fatalf("unexpected output: %#v", parsed)
@@ -99,7 +100,7 @@ func TestHandleListOperatorAuditLog_TargetAndGlobalQueryPaths(t *testing.T) {
 
 	// Global query path (no target).
 	tdb.qAudit.On("All", mock.AnythingOfType("*[]*models.AuditLogEntry")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*[]*models.AuditLogEntry)
+		dest := testutil.RequireMockArg[*[]*models.AuditLogEntry](t, args, 0)
 		*dest = []*models.AuditLogEntry{
 			{Actor: "alice", Action: "a", CreatedAt: time.Unix(5, 0).UTC()},
 		}

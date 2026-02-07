@@ -20,20 +20,20 @@ func TestValidateTipRegistryConfigForAutoOps(t *testing.T) {
 	}
 
 	s := &Server{cfg: config.Config{}}
-	if appErr := s.validateTipRegistryConfigForAutoOps(); appErr == nil || appErr.Code != "app.conflict" {
+	if appErr := s.validateTipRegistryConfigForAutoOps(); appErr == nil || appErr.Code != appErrCodeConflict {
 		t.Fatalf("expected conflict for missing config, got %#v", appErr)
 	}
 
 	s.cfg.TipChainID = 1
 	s.cfg.TipContractAddress = "0x0000000000000000000000000000000000000001"
 	s.cfg.TipTxMode = tipTxModeSafe
-	s.cfg.TipAdminSafeAddress = "nope"
+	s.cfg.TipAdminSafeAddress = testNope
 	if appErr := s.validateTipRegistryConfigForAutoOps(); appErr == nil || !strings.Contains(appErr.Message, "safe") {
 		t.Fatalf("expected safe not configured, got %#v", appErr)
 	}
 
 	s.cfg.TipAdminSafeAddress = "0x0000000000000000000000000000000000000002"
-	s.cfg.TipDefaultHostWalletAddress = "nope"
+	s.cfg.TipDefaultHostWalletAddress = testNope
 	if appErr := s.validateTipRegistryConfigForAutoOps(); appErr == nil || !strings.Contains(appErr.Message, "wallet") {
 		t.Fatalf("expected wallet not configured, got %#v", appErr)
 	}
@@ -77,7 +77,7 @@ func TestEncodeAutoTipRegistryTx(t *testing.T) {
 		})
 	}
 
-	if _, _, _, _, appErr := encodeAutoTipRegistryTx("nope", hostID, wallet, 1); appErr == nil {
+	if _, _, _, _, appErr := encodeAutoTipRegistryTx(testNope, hostID, wallet, 1); appErr == nil {
 		t.Fatalf("expected error for unsupported kind")
 	}
 }

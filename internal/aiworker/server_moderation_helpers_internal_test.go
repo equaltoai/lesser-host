@@ -36,27 +36,27 @@ func TestCallModerationLLM_ErrorsAndSuccess(t *testing.T) {
 	// Call failure.
 	if _, _, errs := srv.callModerationLLM(context.Background(), "openai:gpt-test", "job", func(context.Context, string) (map[string]ai.ModerationResultV1, models.AIUsage, error) {
 		return nil, models.AIUsage{}, fmt.Errorf("boom")
-	}, nil); len(errs) != 1 || errs[0].Code != "llm_failed" {
+	}, nil); len(errs) != 1 || errs[0].Code != aiErrorCodeLLMFailed {
 		t.Fatalf("expected llm_failed, got %#v", errs)
 	}
 
 	// Missing output.
 	if _, _, errs := srv.callModerationLLM(context.Background(), "openai:gpt-test", "job", func(context.Context, string) (map[string]ai.ModerationResultV1, models.AIUsage, error) {
-		return map[string]ai.ModerationResultV1{}, models.AIUsage{Provider: "openai"}, nil
-	}, nil); len(errs) != 1 || errs[0].Code != "llm_missing_output" {
+		return map[string]ai.ModerationResultV1{}, models.AIUsage{Provider: testProviderOpenAI}, nil
+	}, nil); len(errs) != 1 || errs[0].Code != aiErrorCodeLLMMissingOutput {
 		t.Fatalf("expected llm_missing_output, got %#v", errs)
 	}
 
 	// Success.
 	got, usage, errs := srv.callModerationLLM(context.Background(), "openai:gpt-test", "job", func(context.Context, string) (map[string]ai.ModerationResultV1, models.AIUsage, error) {
 		return map[string]ai.ModerationResultV1{
-			"job": {Kind: "moderation_text", Version: "v1", Decision: "allow"},
-		}, models.AIUsage{Provider: "openai", Model: "gpt-test", TotalTokens: 1}, nil
+			"job": {Kind: "moderation_text", Version: "v1", Decision: testDecisionAllow},
+		}, models.AIUsage{Provider: testProviderOpenAI, Model: "gpt-test", TotalTokens: 1}, nil
 	}, nil)
-	if errs != nil || strings.TrimSpace(got.Decision) != "allow" {
+	if errs != nil || strings.TrimSpace(got.Decision) != testDecisionAllow {
 		t.Fatalf("expected allow, got=%#v errs=%#v", got, errs)
 	}
-	if usage.Provider != "openai" || usage.TotalTokens != 1 {
+	if usage.Provider != testProviderOpenAI || usage.TotalTokens != 1 {
 		t.Fatalf("unexpected usage: %#v", usage)
 	}
 }

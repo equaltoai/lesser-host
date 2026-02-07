@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/mock"
 
 	"github.com/equaltoai/lesser-host/internal/store/models"
+	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
 func TestIsNotFound(t *testing.T) {
@@ -70,7 +71,7 @@ func TestStore_AIQueries(t *testing.T) {
 	q.On("ConsistentRead").Return(q)
 
 	q.On("First", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.AIJob)
+		dest := testutil.RequireMockArg[*models.AIJob](t, args, 0)
 		dest.ID = "job-1"
 	})
 
@@ -78,7 +79,7 @@ func TestStore_AIQueries(t *testing.T) {
 	q.On("Index", mock.Anything).Return(q)
 	q.On("Limit", mock.Anything).Return(q)
 	q.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*[]*models.AIJob)
+		dest := testutil.RequireMockArg[*[]*models.AIJob](t, args, 0)
 		*dest = []*models.AIJob{{ID: "a"}, {ID: "b"}}
 	})
 
@@ -95,14 +96,14 @@ func TestStore_AIQueries(t *testing.T) {
 		t.Fatalf("unexpected job: %#v", job)
 	}
 
-	if err := st.PutAIJob(ctx, nil); err == nil {
+	if putErr := st.PutAIJob(ctx, nil); putErr == nil {
 		t.Fatalf("expected error for nil job")
 	}
-	if err := st.PutAIJob(ctx, &models.AIJob{ID: "job-1"}); err != nil {
-		t.Fatalf("PutAIJob: %v", err)
+	if putErr := st.PutAIJob(ctx, &models.AIJob{ID: "job-1"}); putErr != nil {
+		t.Fatalf("PutAIJob: %v", putErr)
 	}
 
-	if _, err := st.CountQueuedAIJobsByInstance(ctx, "", 10); err == nil {
+	if _, countErr := st.CountQueuedAIJobsByInstance(ctx, "", 10); countErr == nil {
 		t.Fatalf("expected error for empty slug")
 	}
 	n, err := st.CountQueuedAIJobsByInstance(ctx, "slug", -1)

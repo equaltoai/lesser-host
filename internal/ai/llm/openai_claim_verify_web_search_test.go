@@ -3,6 +3,8 @@ package llm
 import (
 	"strings"
 	"testing"
+
+	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
 func TestClampInt(t *testing.T) {
@@ -37,16 +39,16 @@ func TestClaimVerifyWebSearchJSONSchemaV1_BoundsMaxSources(t *testing.T) {
 	t.Parallel()
 
 	low := claimVerifyWebSearchJSONSchemaV1(0)
-	props := low["properties"].(map[string]any)
-	sources := props["sources"].(map[string]any)
-	if sources["maxItems"].(int) != 3 {
+	props := testutil.RequireType[map[string]any](t, low["properties"])
+	sources := testutil.RequireType[map[string]any](t, props["sources"])
+	if got := testutil.RequireType[int](t, sources["maxItems"]); got != 3 {
 		t.Fatalf("expected default 3, got %#v", sources["maxItems"])
 	}
 
 	high := claimVerifyWebSearchJSONSchemaV1(999)
-	props = high["properties"].(map[string]any)
-	sources = props["sources"].(map[string]any)
-	if sources["maxItems"].(int) != 5 {
+	props = testutil.RequireType[map[string]any](t, high["properties"])
+	sources = testutil.RequireType[map[string]any](t, props["sources"])
+	if got := testutil.RequireType[int](t, sources["maxItems"]); got != 5 {
 		t.Fatalf("expected max 5, got %#v", sources["maxItems"])
 	}
 }

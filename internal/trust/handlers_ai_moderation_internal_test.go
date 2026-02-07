@@ -15,6 +15,8 @@ import (
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
+const testHello = "hello"
+
 func TestClampModerationText(t *testing.T) {
 	t.Parallel()
 
@@ -22,11 +24,11 @@ func TestClampModerationText(t *testing.T) {
 		t.Fatalf("expected error")
 	}
 
-	got, err := clampModerationText(" hello ")
+	got, err := clampModerationText(" " + testHello + " ")
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if got != "hello" {
+	if got != testHello {
 		t.Fatalf("expected trimmed, got %q", got)
 	}
 
@@ -43,11 +45,11 @@ func TestClampModerationText(t *testing.T) {
 func TestModerationModelSet(t *testing.T) {
 	t.Parallel()
 
-	if got := moderationModelSet(instanceTrustConfig{AIEnabled: false, AIModelSet: "openai:gpt"}); got != modelSetDeterministic {
+	if got := moderationModelSet(instanceTrustConfig{AIEnabled: false, AIModelSet: testModelSetOpenAIGPT}); got != modelSetDeterministic {
 		t.Fatalf("expected deterministic when AI disabled, got %q", got)
 	}
 
-	if got := moderationModelSet(instanceTrustConfig{AIEnabled: true, AIModelSet: " openai:gpt "}); got != "openai:gpt" {
+	if got := moderationModelSet(instanceTrustConfig{AIEnabled: true, AIModelSet: " " + testModelSetOpenAIGPT + " "}); got != testModelSetOpenAIGPT {
 		t.Fatalf("expected trimmed model set, got %q", got)
 	}
 }
@@ -84,7 +86,7 @@ func TestModerationDisabledResponse(t *testing.T) {
 	t.Parallel()
 
 	out := moderationDisabledResponse(" m ", " pv ", " ms ", " ih ", 7, " msg ")
-	if out.Status != "disabled" || out.ErrorCode != "disabled" || out.ErrorMessage != "msg" {
+	if out.Status != statusDisabled || out.ErrorCode != statusDisabled || out.ErrorMessage != "msg" {
 		t.Fatalf("unexpected response: %#v", out)
 	}
 	if out.Budget.RequestedCredits != 7 || out.Budget.DebitedCredits != 0 || !out.Budget.Allowed {
@@ -172,7 +174,7 @@ func TestHandleAIModerationText_DisabledEarlyReturn(t *testing.T) {
 		store: store.New(nil), // trust config store not ready -> default config (moderation disabled)
 	}
 
-	body, _ := json.Marshal(aiModerationTextRequest{Text: "hello"})
+	body, _ := json.Marshal(aiModerationTextRequest{Text: testHello})
 	ctx := &apptheory.Context{
 		AuthIdentity: "inst",
 		Request:      apptheory.Request{Body: body},
@@ -184,7 +186,7 @@ func TestHandleAIModerationText_DisabledEarlyReturn(t *testing.T) {
 	if resp == nil || resp.Status != 200 {
 		t.Fatalf("expected 200 response, got %#v", resp)
 	}
-	if !strings.Contains(string(resp.Body), `"status":"disabled"`) {
+	if !strings.Contains(string(resp.Body), "\"status\":\""+statusDisabled+"\"") {
 		t.Fatalf("expected disabled body, got %q", string(resp.Body))
 	}
 }

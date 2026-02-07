@@ -14,6 +14,13 @@ import (
 
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
+	"github.com/equaltoai/lesser-host/internal/testutil"
+)
+
+const (
+	testBudgetMonth202601  = "2026-01"
+	testBudgetMonth202602  = "2026-02"
+	testBudgetInstanceSlug = "inst"
 )
 
 func TestNormalizeBudgetMonth(t *testing.T) {
@@ -25,12 +32,12 @@ func TestNormalizeBudgetMonth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if got != "2026-02" {
+	if got != testBudgetMonth202602 {
 		t.Fatalf("unexpected month: %q", got)
 	}
 
-	got, err = normalizeBudgetMonth(" 2026-01 ", now)
-	if err != nil || got != "2026-01" {
+	got, err = normalizeBudgetMonth(" "+testBudgetMonth202601+" ", now)
+	if err != nil || got != testBudgetMonth202601 {
 		t.Fatalf("unexpected result: month=%q err=%v", got, err)
 	}
 
@@ -62,8 +69,8 @@ func TestPrepareBudgetDebit_ErrorsAndSuccess(t *testing.T) {
 	}
 
 	{
-		body, _ := json.Marshal(budgetDebitRequest{Credits: 0, Month: "2026-01"})
-		_, err := s.prepareBudgetDebit(&apptheory.Context{AuthIdentity: "inst", Request: apptheory.Request{Body: body}})
+		body, _ := json.Marshal(budgetDebitRequest{Credits: 0, Month: testBudgetMonth202601})
+		_, err := s.prepareBudgetDebit(&apptheory.Context{AuthIdentity: testBudgetInstanceSlug, Request: apptheory.Request{Body: body}})
 		if err == nil {
 			t.Fatalf("expected error for credits <= 0")
 		}
@@ -78,19 +85,19 @@ func TestPrepareBudgetDebit_ErrorsAndSuccess(t *testing.T) {
 	}
 
 	{
-		body, _ := json.Marshal(budgetDebitRequest{Credits: 5, Month: "2026-01"})
+		body, _ := json.Marshal(budgetDebitRequest{Credits: 5, Month: testBudgetMonth202601})
 		prepared, err := s.prepareBudgetDebit(&apptheory.Context{
-			AuthIdentity: "inst",
+			AuthIdentity: testBudgetInstanceSlug,
 			RequestID:    "rid",
 			Request:      apptheory.Request{Body: body},
 		})
 		if err != nil {
 			t.Fatalf("unexpected err: %v", err)
 		}
-		if prepared.InstanceSlug != "inst" || prepared.Month != "2026-01" || prepared.Credits != 5 {
+		if prepared.InstanceSlug != testBudgetInstanceSlug || prepared.Month != testBudgetMonth202601 || prepared.Credits != 5 {
 			t.Fatalf("unexpected prepared: %#v", prepared)
 		}
-		if prepared.PK != "INSTANCE#inst" || prepared.SK != "BUDGET#2026-01" || prepared.RequestID != "rid" {
+		if prepared.PK != "INSTANCE#"+testBudgetInstanceSlug || prepared.SK != "BUDGET#"+testBudgetMonth202601 || prepared.RequestID != "rid" {
 			t.Fatalf("unexpected prepared keys: %#v", prepared)
 		}
 		if prepared.AllowOverage {
@@ -118,8 +125,8 @@ func TestLoadInstanceBudgetMonth(t *testing.T) {
 	}
 
 	q.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.InstanceBudgetMonth)
-		*dest = models.InstanceBudgetMonth{InstanceSlug: "inst", Month: "2026-01", IncludedCredits: 10, UsedCredits: 3}
+		dest := testutil.RequireMockArg[*models.InstanceBudgetMonth](t, args, 0)
+		*dest = models.InstanceBudgetMonth{InstanceSlug: testBudgetInstanceSlug, Month: testBudgetMonth202601, IncludedCredits: 10, UsedCredits: 3}
 	}).Once()
 	b, ok, err := s.loadInstanceBudgetMonth(context.Background(), "PK", "SK")
 	if err != nil || !ok || b.IncludedCredits != 10 || b.UsedCredits != 3 {
@@ -134,13 +141,13 @@ func TestTransactBudgetDebit(t *testing.T) {
 	s := &Server{store: store.New(db)}
 
 	now := time.Date(2026, 2, 6, 0, 0, 0, 0, time.UTC)
-	update := &models.InstanceBudgetMonth{InstanceSlug: "inst", Month: "2026-02"}
+	update := &models.InstanceBudgetMonth{InstanceSlug: testBudgetInstanceSlug, Month: testBudgetMonth202602}
 	_ = update.UpdateKeys()
 
-	ledger := &models.UsageLedgerEntry{InstanceSlug: "inst", Month: "2026-02"}
+	ledger := &models.UsageLedgerEntry{InstanceSlug: testBudgetInstanceSlug, Month: testBudgetMonth202602}
 	_ = ledger.UpdateKeys()
 
-	audit := &models.AuditLogEntry{Actor: "inst", Action: "budget.debit", Target: "x"}
+	audit := &models.AuditLogEntry{Actor: testBudgetInstanceSlug, Action: "budget.debit", Target: "x"}
 	_ = audit.UpdateKeys()
 
 	if err := s.transactBudgetDebit(context.Background(), update, false, 5, now, ledger, audit); err != nil {
@@ -154,7 +161,7 @@ func TestTransactBudgetDebit(t *testing.T) {
 func TestBudgetDebitResponses(t *testing.T) {
 	t.Parallel()
 
-	prepared := budgetDebitPrepared{InstanceSlug: "inst", Month: "2026-02", Credits: 5}
+	prepared := budgetDebitPrepared{InstanceSlug: testBudgetInstanceSlug, Month: testBudgetMonth202602, Credits: 5}
 
 	notCfg := budgetDebitNotConfiguredResponse(prepared)
 	if notCfg.Allowed || notCfg.DebitedCredits != 0 || notCfg.RequestedCredits != 5 {
@@ -184,8 +191,8 @@ func TestHandleBudgetDebit_NotConfiguredAndExceeded(t *testing.T) {
 
 	s := &Server{store: store.New(db)}
 
-	body, _ := json.Marshal(budgetDebitRequest{Credits: 5, Month: "2026-01"})
-	ctx := &apptheory.Context{AuthIdentity: "inst", Request: apptheory.Request{Body: body}}
+	body, _ := json.Marshal(budgetDebitRequest{Credits: 5, Month: testBudgetMonth202601})
+	ctx := &apptheory.Context{AuthIdentity: testBudgetInstanceSlug, Request: apptheory.Request{Body: body}}
 
 	// Not configured.
 	q.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(theoryErrors.ErrItemNotFound).Once()
@@ -196,8 +203,8 @@ func TestHandleBudgetDebit_NotConfiguredAndExceeded(t *testing.T) {
 
 	// Exceeded (block overage): IncludedCredits=3, UsedCredits=0, request 5.
 	q.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.InstanceBudgetMonth)
-		*dest = models.InstanceBudgetMonth{InstanceSlug: "inst", Month: "2026-01", IncludedCredits: 3, UsedCredits: 0}
+		dest := testutil.RequireMockArg[*models.InstanceBudgetMonth](t, args, 0)
+		*dest = models.InstanceBudgetMonth{InstanceSlug: testBudgetInstanceSlug, Month: testBudgetMonth202601, IncludedCredits: 3, UsedCredits: 0}
 	}).Once()
 	resp, err = s.handleBudgetDebit(ctx)
 	if err != nil || resp == nil || resp.Status != 200 {
@@ -210,14 +217,14 @@ func TestBuildBudgetDebitEntries(t *testing.T) {
 
 	now := time.Unix(100, 0).UTC()
 	prepared := budgetDebitPrepared{
-		InstanceSlug: "inst",
+		InstanceSlug: testBudgetInstanceSlug,
 		RequestID:    "rid",
-		Month:        "2026-01",
+		Month:        testBudgetMonth202601,
 		Credits:      5,
 	}
 
 	ledger := buildBudgetDebitLedgerEntry(prepared, now, "included", 4, 1)
-	if ledger == nil || ledger.InstanceSlug != "inst" || ledger.Month != "2026-01" || ledger.Module != "budget.debit" {
+	if ledger == nil || ledger.InstanceSlug != testBudgetInstanceSlug || ledger.Month != testBudgetMonth202601 || ledger.Module != "budget.debit" {
 		t.Fatalf("unexpected ledger: %#v", ledger)
 	}
 	if ledger.IncludedDebitedCredits != 4 || ledger.OverageDebitedCredits != 1 || ledger.DebitedCredits != 5 {
@@ -225,7 +232,7 @@ func TestBuildBudgetDebitEntries(t *testing.T) {
 	}
 
 	audit := buildBudgetDebitAuditEntry(prepared, now)
-	if audit == nil || audit.Actor != "inst" || audit.Action != "budget.debit" || audit.Target == "" {
+	if audit == nil || audit.Actor != testBudgetInstanceSlug || audit.Action != "budget.debit" || audit.Target == "" {
 		t.Fatalf("unexpected audit: %#v", audit)
 	}
 }

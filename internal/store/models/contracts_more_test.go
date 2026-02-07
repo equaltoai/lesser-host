@@ -3,114 +3,114 @@ package models
 import (
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
+
+const testStateTableName = "tbl_test"
 
 func TestMainTableName_DefaultAndOverride(t *testing.T) {
 	t.Setenv("STATE_TABLE_NAME", "")
-	if got := MainTableName(); got != "lesser-host-state" {
-		t.Fatalf("expected default table name, got %q", got)
-	}
+	require.Equal(t, "lesser-host-state", MainTableName())
 
 	t.Setenv("STATE_TABLE_NAME", "  custom  ")
-	if got := MainTableName(); got != "custom" {
-		t.Fatalf("expected trimmed table name, got %q", got)
-	}
+	require.Equal(t, "custom", MainTableName())
 }
 
 func TestModelContracts_TableNameAndKeyAccessors(t *testing.T) {
-	t.Setenv("STATE_TABLE_NAME", "tbl_test")
+	t.Setenv("STATE_TABLE_NAME", testStateTableName)
 
-	if (AIJob{}).TableName() != "tbl_test" ||
-		(AIResult{}).TableName() != "tbl_test" ||
-		(Attestation{}).TableName() != "tbl_test" ||
-		(AuditLogEntry{}).TableName() != "tbl_test" ||
-		(BillingPaymentMethod{}).TableName() != "tbl_test" ||
-		(BillingProfile{}).TableName() != "tbl_test" ||
-		(ControlPlaneConfig{}).TableName() != "tbl_test" ||
-		(CreditPurchase{}).TableName() != "tbl_test" ||
-		(Domain{}).TableName() != "tbl_test" ||
-		(ExternalInstanceRegistration{}).TableName() != "tbl_test" ||
-		(Instance{}).TableName() != "tbl_test" ||
-		(InstanceBudgetMonth{}).TableName() != "tbl_test" ||
-		(InstanceKey{}).TableName() != "tbl_test" ||
-		(LinkPreview{}).TableName() != "tbl_test" ||
-		(LinkSafetyBasicResult{}).TableName() != "tbl_test" ||
-		(OperatorSession{}).TableName() != "tbl_test" ||
-		(User{}).TableName() != "tbl_test" ||
-		(ProvisionJob{}).TableName() != "tbl_test" ||
-		(RenderArtifact{}).TableName() != "tbl_test" ||
-		(SetupSession{}).TableName() != "tbl_test" ||
-		(TipHostRegistration{}).TableName() != "tbl_test" ||
-		(TipHostState{}).TableName() != "tbl_test" ||
-		(TipRegistryOperation{}).TableName() != "tbl_test" {
-		t.Fatalf("expected TableName() to use MainTableName()")
+	type tableNamer interface {
+		TableName() string
+	}
+	for _, model := range []tableNamer{
+		AIJob{},
+		AIResult{},
+		Attestation{},
+		AuditLogEntry{},
+		BillingPaymentMethod{},
+		BillingProfile{},
+		ControlPlaneConfig{},
+		CreditPurchase{},
+		Domain{},
+		ExternalInstanceRegistration{},
+		Instance{},
+		InstanceBudgetMonth{},
+		InstanceKey{},
+		LinkPreview{},
+		LinkSafetyBasicResult{},
+		OperatorSession{},
+		User{},
+		ProvisionJob{},
+		RenderArtifact{},
+		SetupSession{},
+		TipHostRegistration{},
+		TipHostState{},
+		TipRegistryOperation{},
+		WebAuthnChallenge{},
+		WebAuthnCredential{},
+		VanityDomainRequest{},
+		WalletChallenge{},
+		WalletCredential{},
+		WalletIndex{},
+	} {
+		require.Equal(t, testStateTableName, model.TableName())
 	}
 
 	aiJob := &AIJob{ID: "id", InstanceSlug: "slug", Status: AIJobStatusQueued}
-	_ = aiJob.BeforeCreate()
-	if aiJob.GetPK() == "" || aiJob.GetSK() == "" {
-		t.Fatalf("expected ai job keys set")
-	}
+	require.NoError(t, aiJob.BeforeCreate())
+	require.NotEmpty(t, aiJob.GetPK())
+	require.NotEmpty(t, aiJob.GetSK())
 
 	aiRes := &AIResult{ID: "id", InstanceSlug: "slug"}
-	_ = aiRes.BeforeCreate()
-	if aiRes.GetPK() == "" || aiRes.GetSK() == "" {
-		t.Fatalf("expected ai result keys set")
-	}
+	require.NoError(t, aiRes.BeforeCreate())
+	require.NotEmpty(t, aiRes.GetPK())
+	require.NotEmpty(t, aiRes.GetSK())
 
 	a := &Attestation{ID: "id"}
-	_ = a.BeforeCreate()
-	if a.GetPK() == "" || a.GetSK() == "" {
-		t.Fatalf("expected attestation keys set")
-	}
+	require.NoError(t, a.BeforeCreate())
+	require.NotEmpty(t, a.GetPK())
+	require.NotEmpty(t, a.GetSK())
 
 	bl := &BillingProfile{Username: "u"}
-	_ = bl.BeforeCreate()
-	if bl.GetPK() == "" || bl.GetSK() == "" {
-		t.Fatalf("expected billing profile keys set")
-	}
+	require.NoError(t, bl.BeforeCreate())
+	require.NotEmpty(t, bl.GetPK())
+	require.NotEmpty(t, bl.GetSK())
 
 	pm := &BillingPaymentMethod{ID: "pm", Username: "u", Provider: BillingProviderStripe}
-	_ = pm.BeforeCreate()
-	if pm.GetPK() == "" || pm.GetSK() == "" {
-		t.Fatalf("expected payment method keys set")
-	}
+	require.NoError(t, pm.BeforeCreate())
+	require.NotEmpty(t, pm.GetPK())
+	require.NotEmpty(t, pm.GetSK())
 
 	p := &CreditPurchase{ID: "p", Username: "u", InstanceSlug: "slug", Month: "2026-02"}
-	_ = p.BeforeCreate()
-	if p.GetPK() == "" || p.GetSK() == "" {
-		t.Fatalf("expected credit purchase keys set")
-	}
+	require.NoError(t, p.BeforeCreate())
+	require.NotEmpty(t, p.GetPK())
+	require.NotEmpty(t, p.GetSK())
 
 	er := &ExternalInstanceRegistration{ID: "id", Username: "u", Slug: "slug"}
-	_ = er.BeforeCreate()
-	if er.GetPK() == "" || er.GetSK() == "" {
-		t.Fatalf("expected external registration keys set")
-	}
+	require.NoError(t, er.BeforeCreate())
+	require.NotEmpty(t, er.GetPK())
+	require.NotEmpty(t, er.GetSK())
 
 	bm := &InstanceBudgetMonth{InstanceSlug: "slug", Month: "2026-02"}
-	_ = bm.BeforeCreate()
-	if bm.GetPK() == "" || bm.GetSK() == "" {
-		t.Fatalf("expected budget month keys set")
-	}
+	require.NoError(t, bm.BeforeCreate())
+	require.NotEmpty(t, bm.GetPK())
+	require.NotEmpty(t, bm.GetSK())
 
 	pj := &ProvisionJob{ID: "pj", InstanceSlug: "slug"}
-	_ = pj.BeforeCreate()
-	if pj.GetPK() == "" || pj.GetSK() == "" {
-		t.Fatalf("expected provision job keys set")
-	}
+	require.NoError(t, pj.BeforeCreate())
+	require.NotEmpty(t, pj.GetPK())
+	require.NotEmpty(t, pj.GetSK())
 
 	ra := &RenderArtifact{ID: "r", NormalizedURL: "https://example.com", PolicyVersion: "1"}
-	_ = ra.BeforeCreate()
-	if ra.GetPK() == "" || ra.GetSK() == "" {
-		t.Fatalf("expected render artifact keys set")
-	}
+	require.NoError(t, ra.BeforeCreate())
+	require.NotEmpty(t, ra.GetPK())
+	require.NotEmpty(t, ra.GetSK())
 
 	th := &TipHostState{HostIDHex: "abc", DomainNormalized: "example.com", ContractAddress: "0x0"}
-	_ = th.BeforeCreate()
-	if th.GetPK() == "" || th.GetSK() == "" {
-		t.Fatalf("expected tip host state keys set")
-	}
+	require.NoError(t, th.BeforeCreate())
+	require.NotEmpty(t, th.GetPK())
+	require.NotEmpty(t, th.GetSK())
 }
 
 func TestModelContracts_BeforeUpdate_MaintainsKeys(t *testing.T) {
@@ -119,100 +119,61 @@ func TestModelContracts_BeforeUpdate_MaintainsKeys(t *testing.T) {
 	job := &AIJob{ID: "j", InstanceSlug: "slug", Status: AIJobStatusQueued, ExpiresAt: now.Add(1 * time.Hour), CreatedAt: now, UpdatedAt: now}
 	_ = job.UpdateKeys()
 	before := job.UpdatedAt
-	if err := job.BeforeUpdate(); err != nil {
-		t.Fatalf("AIJob.BeforeUpdate: %v", err)
-	}
-	if !job.UpdatedAt.After(before) {
-		t.Fatalf("expected UpdatedAt advanced")
-	}
-	if job.TTL != job.ExpiresAt.Unix() {
-		t.Fatalf("expected TTL from ExpiresAt")
-	}
-	if job.GetPK() == "" || job.GetSK() == "" {
-		t.Fatalf("expected keys still set")
-	}
+	require.NoError(t, job.BeforeUpdate())
+	require.True(t, job.UpdatedAt.After(before))
+	require.Equal(t, job.ExpiresAt.Unix(), job.TTL)
+	require.NotEmpty(t, job.GetPK())
+	require.NotEmpty(t, job.GetSK())
 
 	profile := &BillingProfile{Username: "u", Provider: BillingProviderNone, CreatedAt: now, UpdatedAt: time.Unix(1, 0).UTC()}
 	_ = profile.UpdateKeys()
 	before = profile.UpdatedAt
-	if err := profile.BeforeUpdate(); err != nil {
-		t.Fatalf("BillingProfile.BeforeUpdate: %v", err)
-	}
-	if !profile.UpdatedAt.After(before) {
-		t.Fatalf("expected UpdatedAt advanced")
-	}
+	require.NoError(t, profile.BeforeUpdate())
+	require.True(t, profile.UpdatedAt.After(before))
 
 	method := &BillingPaymentMethod{ID: "pm", Username: "u", Provider: BillingProviderStripe, Status: BillingPaymentMethodStatusActive, CreatedAt: now, UpdatedAt: time.Unix(1, 0).UTC()}
 	_ = method.UpdateKeys()
 	before = method.UpdatedAt
-	if err := method.BeforeUpdate(); err != nil {
-		t.Fatalf("BillingPaymentMethod.BeforeUpdate: %v", err)
-	}
-	if !method.UpdatedAt.After(before) {
-		t.Fatalf("expected UpdatedAt advanced")
-	}
+	require.NoError(t, method.BeforeUpdate())
+	require.True(t, method.UpdatedAt.After(before))
 
 	purchase := &CreditPurchase{ID: "p", Username: "u", InstanceSlug: "slug", Month: "2026-02", CreatedAt: now, UpdatedAt: time.Unix(1, 0).UTC()}
 	_ = purchase.UpdateKeys()
 	before = purchase.UpdatedAt
-	if err := purchase.BeforeUpdate(); err != nil {
-		t.Fatalf("CreditPurchase.BeforeUpdate: %v", err)
-	}
-	if !purchase.UpdatedAt.After(before) {
-		t.Fatalf("expected UpdatedAt advanced")
-	}
+	require.NoError(t, purchase.BeforeUpdate())
+	require.True(t, purchase.UpdatedAt.After(before))
 
 	reg := &ExternalInstanceRegistration{ID: "id", Username: "u", Slug: "slug", CreatedAt: now, UpdatedAt: time.Unix(1, 0).UTC()}
 	_ = reg.UpdateKeys()
 	before = reg.UpdatedAt
-	if err := reg.BeforeUpdate(); err != nil {
-		t.Fatalf("ExternalInstanceRegistration.BeforeUpdate: %v", err)
-	}
-	if !reg.UpdatedAt.After(before) {
-		t.Fatalf("expected UpdatedAt advanced")
-	}
+	require.NoError(t, reg.BeforeUpdate())
+	require.True(t, reg.UpdatedAt.After(before))
 
 	budget := &InstanceBudgetMonth{InstanceSlug: "slug", Month: "2026-02", UpdatedAt: time.Unix(1, 0).UTC()}
 	_ = budget.UpdateKeys()
 	before = budget.UpdatedAt
-	if err := budget.BeforeUpdate(); err != nil {
-		t.Fatalf("InstanceBudgetMonth.BeforeUpdate: %v", err)
-	}
-	if !budget.UpdatedAt.After(before) {
-		t.Fatalf("expected UpdatedAt advanced")
-	}
+	require.NoError(t, budget.BeforeUpdate())
+	require.True(t, budget.UpdatedAt.After(before))
 
 	prov := &ProvisionJob{ID: "pj", InstanceSlug: "slug", CreatedAt: now, UpdatedAt: time.Unix(1, 0).UTC()}
 	_ = prov.UpdateKeys()
 	before = prov.UpdatedAt
-	if err := prov.BeforeUpdate(); err != nil {
-		t.Fatalf("ProvisionJob.BeforeUpdate: %v", err)
-	}
-	if !prov.UpdatedAt.After(before) {
-		t.Fatalf("expected UpdatedAt advanced")
-	}
+	require.NoError(t, prov.BeforeUpdate())
+	require.True(t, prov.UpdatedAt.After(before))
 
 	artifact := &RenderArtifact{ID: "r", NormalizedURL: "https://example.com", PolicyVersion: "1", CreatedAt: now, ExpiresAt: now.Add(1 * time.Hour)}
 	_ = artifact.UpdateKeys()
 	beforeTTL := artifact.TTL
 	artifact.ExpiresAt = now.Add(2 * time.Hour)
-	if err := artifact.BeforeUpdate(); err != nil {
-		t.Fatalf("RenderArtifact.BeforeUpdate: %v", err)
-	}
-	if artifact.TTL == beforeTTL || artifact.TTL == 0 {
-		t.Fatalf("expected TTL updated, got %d", artifact.TTL)
-	}
-	if artifact.GSI1PK == "" || artifact.GSI1SK == "" {
-		t.Fatalf("expected render artifact gsi keys set")
-	}
+	require.NoError(t, artifact.BeforeUpdate())
+	require.NotEqual(t, beforeTTL, artifact.TTL)
+	require.NotZero(t, artifact.TTL)
+	require.NotEmpty(t, artifact.GSI1PK)
+	require.NotEmpty(t, artifact.GSI1SK)
 
 	host := &TipHostState{HostIDHex: "abc", DomainNormalized: "example.com", ContractAddress: "0x0", UpdatedAt: time.Unix(1, 0).UTC()}
 	_ = host.UpdateKeys()
 	before = host.UpdatedAt
-	if err := host.BeforeUpdate(); err != nil {
-		t.Fatalf("TipHostState.BeforeUpdate: %v", err)
-	}
-	if !host.UpdatedAt.After(before) {
-		t.Fatalf("expected UpdatedAt advanced")
-	}
+	require.NoError(t, host.BeforeUpdate())
+	require.True(t, host.UpdatedAt.After(before))
 }

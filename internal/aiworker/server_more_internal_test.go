@@ -8,12 +8,14 @@ import (
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
+	"github.com/stretchr/testify/require"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 
 	"github.com/equaltoai/lesser-host/internal/ai"
 	"github.com/equaltoai/lesser-host/internal/artifacts"
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/store/models"
+	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
 func TestProcessAIJob_WritesRenderSummaryResult(t *testing.T) {
@@ -34,7 +36,7 @@ func TestProcessAIJob_WritesRenderSummaryResult(t *testing.T) {
 	}
 
 	parsed := runProcessAIJobAndParseResult(t, job, "render_summary")
-	if strings.TrimSpace(parsed["short_summary"].(string)) == "" {
+	if strings.TrimSpace(testutil.RequireType[string](t, parsed["short_summary"])) == "" {
 		t.Fatalf("expected summary, got %#v", parsed)
 	}
 }
@@ -104,66 +106,59 @@ func TestProcessAIBatch_RenderSummaryGroupingAndIdempotency(t *testing.T) {
 }
 
 func TestClaimVerifyHelperFunctions(t *testing.T) {
-	if got := sqsQueueNameFromURL(" https://sqs.us-east-1.amazonaws.com/123/q "); got != "q" {
-		t.Fatalf("unexpected queue name: %q", got)
-	}
+	require.Equal(t, "q", sqsQueueNameFromURL(" https://sqs.us-east-1.amazonaws.com/123/q "))
 
 	t.Setenv("OPENAI_API_KEY", "k")
-	if k, err := openAIAPIKey(context.Background()); err != nil || k != "k" {
-		t.Fatalf("unexpected openai key: %q err=%v", k, err)
-	}
+	k, err := openAIAPIKey(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, "k", k)
 
 	t.Setenv("ANTHROPIC_API_KEY", "a")
-	if k, err := anthropicAPIKey(context.Background()); err != nil || k != "a" {
-		t.Fatalf("unexpected anthropic key: %q err=%v", k, err)
-	}
+	k, err = anthropicAPIKey(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, "a", k)
 
-	if got := normalizeClaimVerifyRetrievalV1(nil); got != nil {
-		t.Fatalf("expected nil")
-	}
+	require.Nil(t, normalizeClaimVerifyRetrievalV1(nil))
 	norm := normalizeClaimVerifyRetrievalV1(&ai.ClaimVerifyRetrievalV1{Mode: "BAD", MaxSources: 99, SearchContextSize: "nope"})
-	if norm == nil || norm.Mode != ai.ClaimVerifyRetrievalModeProvidedOnly || norm.MaxSources != 5 || norm.SearchContextSize != "" {
-		t.Fatalf("unexpected normalized: %#v", norm)
-	}
+	require.NotNil(t, norm)
+	require.Equal(t, ai.ClaimVerifyRetrievalModeProvidedOnly, norm.Mode)
+	require.Equal(t, 5, norm.MaxSources)
+	require.Empty(t, norm.SearchContextSize)
 
 	add := uniquifyClaimVerifyEvidenceIDs(
 		[]ai.ClaimVerifyEvidenceV1{{SourceID: "s1", Text: "t"}},
 		[]ai.ClaimVerifyEvidenceV1{{SourceID: "s1", Text: "x"}, {SourceID: "", Text: "y"}},
 	)
-	if len(add) != 2 || add[0].SourceID == "s1" || !strings.HasPrefix(add[1].SourceID, "web_") {
-		t.Fatalf("unexpected uniquified: %#v", add)
-	}
+	require.Len(t, add, 2)
+	require.NotEqual(t, "s1", add[0].SourceID)
+	require.True(t, strings.HasPrefix(add[1].SourceID, "web_"))
 
 	trimmed := trimClaimVerifySourcesForOutput([]ai.ClaimVerifyEvidenceV1{
 		{SourceID: " ", Text: "x"},
 		{SourceID: "s1", Text: " "},
 		{SourceID: "s1", Text: " ok "},
 	})
-	if len(trimmed) != 1 || trimmed[0].SourceID != "s1" || trimmed[0].Text != "ok" {
-		t.Fatalf("unexpected trimmed: %#v", trimmed)
-	}
+	require.Len(t, trimmed, 1)
+	require.Equal(t, "s1", trimmed[0].SourceID)
+	require.Equal(t, "ok", trimmed[0].Text)
 
 	ids, texts := claimVerifyEvidenceMaps([]ai.ClaimVerifyEvidenceV1{
 		{SourceID: "s1", Text: "t1"},
 		{SourceID: "s2", Text: ""},
 	})
-	if _, ok := ids["s1"]; !ok || texts["s1"] != "t1" {
-		t.Fatalf("unexpected maps: ids=%#v texts=%#v", ids, texts)
-	}
+	require.Contains(t, ids, "s1")
+	require.Equal(t, "t1", texts["s1"])
 
 	actorURI, objURI, hash, ok := claimVerifyAttestationSubject(ai.ClaimVerifyInputsV1{ActorURI: "a", ObjectURI: "o", ContentHash: "h"})
-	if !ok || actorURI != "a" || objURI != "o" || hash != "h" {
-		t.Fatalf("unexpected subject: %v %q %q %q", ok, actorURI, objURI, hash)
-	}
+	require.True(t, ok)
+	require.Equal(t, "a", actorURI)
+	require.Equal(t, "o", objURI)
+	require.Equal(t, "h", hash)
 
-	if got := claimVerifyAttestationRetrievalMode(nil); got != ai.ClaimVerifyRetrievalModeProvidedOnly {
-		t.Fatalf("unexpected retrieval mode: %q", got)
-	}
+	require.Equal(t, ai.ClaimVerifyRetrievalModeProvidedOnly, claimVerifyAttestationRetrievalMode(nil))
 
 	res := claimVerifyResultForAttestation(ai.ClaimVerifyResultV1{Kind: "claim_verify", Version: "v1", Sources: []ai.ClaimVerifyEvidenceV1{{SourceID: "s1", Text: "t"}}})
-	if res.Sources != nil {
-		t.Fatalf("expected sources stripped: %#v", res)
-	}
+	require.Nil(t, res.Sources)
 }
 
 func TestHydrateClaimVerifyEvidenceFromRenders_NoAWS(t *testing.T) {

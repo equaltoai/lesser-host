@@ -10,11 +10,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/equaltoai/lesser-host/internal/ai"
 )
 
 func TestModerationBatchOpenAI_AdapterIsCISafe(t *testing.T) {
-	itemID := "item-1"
+	itemID := testItemID
 
 	outPayload, err := json.Marshal(moderationBatchOutput{
 		Items: []moderationBatchOutputItem{{
@@ -30,9 +32,7 @@ func TestModerationBatchOpenAI_AdapterIsCISafe(t *testing.T) {
 			Notes:      "ok",
 		}},
 	})
-	if err != nil {
-		t.Fatalf("marshal output payload: %v", err)
-	}
+	require.NoError(t, err)
 
 	respBytes, err := json.Marshal(map[string]any{
 		"id":      "chatcmpl_test",
@@ -52,9 +52,7 @@ func TestModerationBatchOpenAI_AdapterIsCISafe(t *testing.T) {
 			"total_tokens":      30,
 		},
 	})
-	if err != nil {
-		t.Fatalf("marshal openai response: %v", err)
-	}
+	require.NoError(t, err)
 
 	old := os.Getenv("OPENAI_BASE_URL")
 	t.Cleanup(func() { _ = os.Setenv("OPENAI_BASE_URL", old) })
@@ -81,44 +79,30 @@ func TestModerationBatchOpenAI_AdapterIsCISafe(t *testing.T) {
 		ItemID: itemID,
 		Input:  ai.ModerationTextInputsV1{Text: "hello"},
 	}})
-	if err != nil {
-		t.Fatalf("ModerationTextBatchOpenAI error: %v", err)
-	}
-	if usageText.Provider != "openai" {
-		t.Fatalf("expected provider openai, got %q", usageText.Provider)
-	}
+	require.NoError(t, err)
+	require.Equal(t, testProviderOpenAI, usageText.Provider)
 	gotText, ok := outText[itemID]
-	if !ok {
-		t.Fatalf("expected output for %q", itemID)
-	}
-	if gotText.Kind != "moderation_text" || gotText.Version != "v1" || gotText.Decision != "allow" {
-		t.Fatalf("unexpected moderation text result: %#v", gotText)
-	}
+	require.True(t, ok)
+	require.Equal(t, "moderation_text", gotText.Kind)
+	require.Equal(t, "v1", gotText.Version)
+	require.Equal(t, "allow", gotText.Decision)
 
 	outImage, usageImage, err := ModerationImageBatchOpenAI(ctx, "sk-test", "openai:gpt-test", []ModerationImageBatchItem{{
 		ItemID: itemID,
 		Input:  ai.ModerationImageInputsV1{ObjectKey: "obj-1"},
 	}})
-	if err != nil {
-		t.Fatalf("ModerationImageBatchOpenAI error: %v", err)
-	}
-	if usageImage.Provider != "openai" {
-		t.Fatalf("expected provider openai, got %q", usageImage.Provider)
-	}
+	require.NoError(t, err)
+	require.Equal(t, testProviderOpenAI, usageImage.Provider)
 	gotImage, ok := outImage[itemID]
-	if !ok {
-		t.Fatalf("expected output for %q", itemID)
-	}
-	if gotImage.Kind != "moderation_image" || gotImage.Version != "v1" || gotImage.Decision != "allow" {
-		t.Fatalf("unexpected moderation image result: %#v", gotImage)
-	}
-	if calls != 2 {
-		t.Fatalf("expected 2 OpenAI calls, got %d", calls)
-	}
+	require.True(t, ok)
+	require.Equal(t, "moderation_image", gotImage.Kind)
+	require.Equal(t, "v1", gotImage.Version)
+	require.Equal(t, "allow", gotImage.Decision)
+	require.Equal(t, 2, calls)
 }
 
 func TestModerationBatchAnthropic_AdapterIsCISafe(t *testing.T) {
-	itemID := "item-1"
+	itemID := testItemID
 
 	respBytes, err := json.Marshal(map[string]any{
 		"id":    "msg_test",
@@ -176,7 +160,7 @@ func TestModerationBatchAnthropic_AdapterIsCISafe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ModerationTextBatchAnthropic error: %v", err)
 	}
-	if usageText.Provider != "anthropic" {
+	if usageText.Provider != testProviderAnthropic {
 		t.Fatalf("expected provider anthropic, got %q", usageText.Provider)
 	}
 	gotText, ok := outText[itemID]
@@ -194,7 +178,7 @@ func TestModerationBatchAnthropic_AdapterIsCISafe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ModerationImageBatchAnthropic error: %v", err)
 	}
-	if usageImage.Provider != "anthropic" {
+	if usageImage.Provider != testProviderAnthropic {
 		t.Fatalf("expected provider anthropic, got %q", usageImage.Provider)
 	}
 	gotImage, ok := outImage[itemID]
@@ -211,7 +195,7 @@ func TestModerationBatchAnthropic_AdapterIsCISafe(t *testing.T) {
 }
 
 func TestClaimVerifyBatchOpenAI_AdapterIsCISafe(t *testing.T) {
-	itemID := "item-1"
+	itemID := testItemID
 
 	outPayload, err := json.Marshal(claimVerifyBatchOutput{
 		Items: []claimVerifyBatchOutputItem{{
@@ -287,7 +271,7 @@ func TestClaimVerifyBatchOpenAI_AdapterIsCISafe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ClaimVerifyBatchOpenAI error: %v", err)
 	}
-	if usage.Provider != "openai" {
+	if usage.Provider != testProviderOpenAI {
 		t.Fatalf("expected provider openai, got %q", usage.Provider)
 	}
 	got, ok := out[itemID]
@@ -300,7 +284,7 @@ func TestClaimVerifyBatchOpenAI_AdapterIsCISafe(t *testing.T) {
 }
 
 func TestClaimVerifyBatchAnthropic_AdapterIsCISafe(t *testing.T) {
-	itemID := "item-1"
+	itemID := testItemID
 
 	respBytes, err := json.Marshal(map[string]any{
 		"id":    "msg_test",
@@ -366,7 +350,7 @@ func TestClaimVerifyBatchAnthropic_AdapterIsCISafe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ClaimVerifyBatchAnthropic error: %v", err)
 	}
-	if usage.Provider != "anthropic" {
+	if usage.Provider != testProviderAnthropic {
 		t.Fatalf("expected provider anthropic, got %q", usage.Provider)
 	}
 	got, ok := out[itemID]
@@ -450,7 +434,7 @@ func TestClaimVerifyWebSearchEvidenceOpenAI_AdapterIsCISafe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ClaimVerifyWebSearchEvidenceOpenAI error: %v", err)
 	}
-	if usage.Provider != "openai" {
+	if usage.Provider != testProviderOpenAI {
 		t.Fatalf("expected provider openai, got %q", usage.Provider)
 	}
 	if len(evidence) != 1 || evidence[0].SourceID != "web_1" || evidence[0].URL != "https://example.com/1" {

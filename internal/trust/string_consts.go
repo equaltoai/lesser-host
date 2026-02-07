@@ -21,6 +21,7 @@ const (
 	statusQueued           = "queued"
 	statusSkipped          = "skipped"
 	statusBlocked          = "blocked"
+	statusDisabled         = "disabled"
 	statusInvalid          = "invalid"
 	statusError            = "error"
 	statusNotCheckedBudget = "not_checked_budget"
@@ -34,10 +35,16 @@ const (
 
 	modelSetDeterministic = "deterministic"
 
-	budgetReasonDebited = "debited"
-	budgetReasonOverage = "overage"
+	budgetReasonDebited       = "debited"
+	budgetReasonOverage       = "overage"
+	budgetReasonCacheHit      = "cache_hit"
+	budgetReasonNotConfigured = "budget not configured"
+	budgetReasonExceeded      = "budget exceeded"
 
 	budgetErrKindInternal      = "internal"
 	budgetErrKindExceeded      = "exceeded"
 	budgetErrKindNotConfigured = "not_configured"
+
+	errorCodeBlockedSSRF = "blocked_ssrf"
+	errorCodeInvalidURL  = "invalid_url"
 )

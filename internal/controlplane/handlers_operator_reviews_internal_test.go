@@ -13,6 +13,7 @@ import (
 
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
+	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
 type operatorReviewsTestDB struct {
@@ -25,41 +26,20 @@ type operatorReviewsTestDB struct {
 }
 
 func newOperatorReviewsTestDB() operatorReviewsTestDB {
-	db := ttmocks.NewMockExtendedDB()
-	qVReq := new(ttmocks.MockQuery)
-	qDomain := new(ttmocks.MockQuery)
-	qReg := new(ttmocks.MockQuery)
-	qInst := new(ttmocks.MockQuery)
-	qAudit := new(ttmocks.MockQuery)
-
-	db.On("WithContext", mock.Anything).Return(db).Maybe()
-	db.On("Model", mock.AnythingOfType("*models.VanityDomainRequest")).Return(qVReq).Maybe()
-	db.On("Model", mock.AnythingOfType("*models.Domain")).Return(qDomain).Maybe()
-	db.On("Model", mock.AnythingOfType("*models.ExternalInstanceRegistration")).Return(qReg).Maybe()
-	db.On("Model", mock.AnythingOfType("*models.Instance")).Return(qInst).Maybe()
-	db.On("Model", mock.AnythingOfType("*models.AuditLogEntry")).Return(qAudit).Maybe()
-
-	for _, q := range []*ttmocks.MockQuery{qVReq, qDomain, qReg, qInst, qAudit} {
-		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
-		q.On("Filter", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
-		q.On("Index", mock.Anything).Return(q).Maybe()
-		q.On("Limit", mock.Anything).Return(q).Maybe()
-		q.On("IfNotExists").Return(q).Maybe()
-		q.On("IfExists").Return(q).Maybe()
-		q.On("ConsistentRead").Return(q).Maybe()
-		q.On("Create").Return(nil).Maybe()
-		q.On("CreateOrUpdate").Return(nil).Maybe()
-		q.On("Delete").Return(nil).Maybe()
-		q.On("Update", mock.Anything).Return(nil).Maybe()
-	}
-
+	db, qs := newTestDBWithModelQueries(
+		"*models.VanityDomainRequest",
+		"*models.Domain",
+		"*models.ExternalInstanceRegistration",
+		"*models.Instance",
+		"*models.AuditLogEntry",
+	)
 	return operatorReviewsTestDB{
 		db:      db,
-		qVReq:   qVReq,
-		qDomain: qDomain,
-		qReg:    qReg,
-		qInst:   qInst,
-		qAudit:  qAudit,
+		qVReq:   qs[0],
+		qDomain: qs[1],
+		qReg:    qs[2],
+		qInst:   qs[3],
+		qAudit:  qs[4],
 	}
 }
 
@@ -74,7 +54,7 @@ func TestHandleListVanityDomainRequests(t *testing.T) {
 	s := &Server{store: store.New(tdb.db)}
 
 	tdb.qVReq.On("All", mock.AnythingOfType("*[]*models.VanityDomainRequest")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*[]*models.VanityDomainRequest)
+		dest := testutil.RequireMockArg[*[]*models.VanityDomainRequest](t, args, 0)
 		*dest = []*models.VanityDomainRequest{{Domain: "example.com", Status: models.VanityDomainRequestStatusPending}}
 	}).Once()
 
@@ -97,12 +77,12 @@ func TestApproveAndRejectVanityDomainRequest(t *testing.T) {
 
 	// Approve path.
 	tdb.qVReq.On("First", mock.AnythingOfType("*models.VanityDomainRequest")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.VanityDomainRequest)
+		dest := testutil.RequireMockArg[*models.VanityDomainRequest](t, args, 0)
 		*dest = models.VanityDomainRequest{Domain: "example.com", Status: models.VanityDomainRequestStatusPending, CreatedAt: now}
 		_ = dest.UpdateKeys()
 	}).Once()
 	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Domain)
+		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
 		*dest = models.Domain{Domain: "example.com", Type: models.DomainTypeVanity, Status: models.DomainStatusVerified, InstanceSlug: "inst"}
 		_ = dest.UpdateKeys()
 	}).Once()
@@ -120,12 +100,12 @@ func TestApproveAndRejectVanityDomainRequest(t *testing.T) {
 
 	// Reject path.
 	tdb.qVReq.On("First", mock.AnythingOfType("*models.VanityDomainRequest")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.VanityDomainRequest)
+		dest := testutil.RequireMockArg[*models.VanityDomainRequest](t, args, 0)
 		*dest = models.VanityDomainRequest{Domain: "example.net", Status: models.VanityDomainRequestStatusPending, CreatedAt: now}
 		_ = dest.UpdateKeys()
 	}).Once()
 	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Domain)
+		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
 		*dest = models.Domain{Domain: "example.net", Type: models.DomainTypeVanity, Status: models.DomainStatusVerified, InstanceSlug: "inst"}
 		_ = dest.UpdateKeys()
 	}).Once()
@@ -168,7 +148,7 @@ func TestPortalExternalInstanceRegistrationLifecycle(t *testing.T) {
 
 	// Portal list.
 	tdb.qReg.On("All", mock.AnythingOfType("*[]*models.ExternalInstanceRegistration")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*[]*models.ExternalInstanceRegistration)
+		dest := testutil.RequireMockArg[*[]*models.ExternalInstanceRegistration](t, args, 0)
 		*dest = []*models.ExternalInstanceRegistration{{ID: "x", Username: "alice", Slug: "demo", Status: models.ExternalInstanceRegistrationStatusPending}}
 	}).Once()
 	resp, err = s.handlePortalListExternalInstanceRegistrations(portalCtx("alice"))
@@ -178,7 +158,7 @@ func TestPortalExternalInstanceRegistrationLifecycle(t *testing.T) {
 
 	// Operator list (GSI).
 	tdb.qReg.On("All", mock.AnythingOfType("*[]*models.ExternalInstanceRegistration")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*[]*models.ExternalInstanceRegistration)
+		dest := testutil.RequireMockArg[*[]*models.ExternalInstanceRegistration](t, args, 0)
 		*dest = []*models.ExternalInstanceRegistration{{ID: "x", Username: "alice", Slug: "demo", Status: models.ExternalInstanceRegistrationStatusPending}}
 	}).Once()
 	resp, err = s.handleListExternalInstanceRegistrations(adminCtx())
@@ -188,7 +168,7 @@ func TestPortalExternalInstanceRegistrationLifecycle(t *testing.T) {
 
 	// Operator approve.
 	tdb.qReg.On("First", mock.AnythingOfType("*models.ExternalInstanceRegistration")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.ExternalInstanceRegistration)
+		dest := testutil.RequireMockArg[*models.ExternalInstanceRegistration](t, args, 0)
 		*dest = models.ExternalInstanceRegistration{ID: "x", Username: "alice", Slug: "demo", Status: models.ExternalInstanceRegistrationStatusPending, CreatedAt: time.Now().UTC()}
 		_ = dest.UpdateKeys()
 	}).Once()
@@ -201,7 +181,7 @@ func TestPortalExternalInstanceRegistrationLifecycle(t *testing.T) {
 
 	// Operator reject.
 	tdb.qReg.On("First", mock.AnythingOfType("*models.ExternalInstanceRegistration")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.ExternalInstanceRegistration)
+		dest := testutil.RequireMockArg[*models.ExternalInstanceRegistration](t, args, 0)
 		*dest = models.ExternalInstanceRegistration{ID: "y", Username: "alice", Slug: "demo2", Status: models.ExternalInstanceRegistrationStatusPending, CreatedAt: time.Now().UTC()}
 		_ = dest.UpdateKeys()
 	}).Once()

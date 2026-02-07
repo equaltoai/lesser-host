@@ -14,6 +14,7 @@ import (
 	"github.com/equaltoai/lesser-host/internal/rendering"
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
+	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
 type previewsFlowTestDB struct {
@@ -76,13 +77,13 @@ func TestHandleLinkPreview_CacheHitAndGetPreview(t *testing.T) {
 	hpe := true
 	re := false
 	tdb.qInst.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
 		*dest = models.Instance{Slug: "inst", HostedPreviewsEnabled: &hpe, RendersEnabled: &re}
 	}).Once()
 
 	// Cached preview is fresh.
 	tdb.qPrev.On("First", mock.AnythingOfType("*models.LinkPreview")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.LinkPreview)
+		dest := testutil.RequireMockArg[*models.LinkPreview](t, args, 0)
 		*dest = models.LinkPreview{
 			ID:            "prev1",
 			PolicyVersion: linkPreviewPolicyVersion,
@@ -104,17 +105,17 @@ func TestHandleLinkPreview_CacheHitAndGetPreview(t *testing.T) {
 
 	// Get preview: not found.
 	tdb.qPrev.On("First", mock.AnythingOfType("*models.LinkPreview")).Return(theoryErrors.ErrItemNotFound).Once()
-	if _, err := s.handleGetLinkPreview(&apptheory.Context{AuthIdentity: "inst", Params: map[string]string{"id": "missing"}}); err == nil {
+	if _, getErr := s.handleGetLinkPreview(&apptheory.Context{AuthIdentity: "inst", Params: map[string]string{"id": "missing"}}); getErr == nil {
 		t.Fatalf("expected not found")
 	}
 
 	// Get preview: success.
 	tdb.qInst.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.Instance)
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
 		*dest = models.Instance{Slug: "inst", HostedPreviewsEnabled: &hpe, RendersEnabled: &re}
 	}).Once()
 	tdb.qPrev.On("First", mock.AnythingOfType("*models.LinkPreview")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.LinkPreview)
+		dest := testutil.RequireMockArg[*models.LinkPreview](t, args, 0)
 		*dest = models.LinkPreview{ID: "ok", PolicyVersion: linkPreviewPolicyVersion, NormalizedURL: "https://example.com/", ExpiresAt: time.Now().UTC().Add(1 * time.Hour)}
 		_ = dest.UpdateKeys()
 	}).Once()
@@ -131,7 +132,7 @@ func TestAttachCachedPreviewRenderAndDebitBudget(t *testing.T) {
 	s := &Server{store: store.New(tdb.db)}
 
 	tdb.qRender.On("First", mock.AnythingOfType("*models.RenderArtifact")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.RenderArtifact)
+		dest := testutil.RequireMockArg[*models.RenderArtifact](t, args, 0)
 		*dest = models.RenderArtifact{
 			ID:            "render1",
 			PolicyVersion: rendering.RenderPolicyVersion,
@@ -151,7 +152,7 @@ func TestAttachCachedPreviewRenderAndDebitBudget(t *testing.T) {
 
 	// Debit preview render budget (allow overage=false).
 	tdb.qBudget.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.InstanceBudgetMonth)
+		dest := testutil.RequireMockArg[*models.InstanceBudgetMonth](t, args, 0)
 		*dest = models.InstanceBudgetMonth{IncludedCredits: 10, UsedCredits: 0}
 		_ = dest.UpdateKeys()
 	}).Once()

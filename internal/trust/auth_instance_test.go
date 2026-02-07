@@ -15,7 +15,10 @@ import (
 
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
+	"github.com/equaltoai/lesser-host/internal/testutil"
 )
+
+const testInstanceSlug = "slug"
 
 func TestInstanceAuthHook_Basics(t *testing.T) {
 	t.Parallel()
@@ -98,7 +101,7 @@ func TestInstanceAuthHook_LookupAndRevocation(t *testing.T) {
 
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q)
 		q.On("First", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
-			dest := args.Get(0).(*models.InstanceKey)
+			dest := testutil.RequireMockArg[*models.InstanceKey](t, args, 0)
 			dest.ID = keyID
 			dest.InstanceSlug = "example"
 			dest.RevokedAt = time.Unix(1, 0).UTC()
@@ -128,9 +131,9 @@ func TestInstanceAuthHook_LookupAndRevocation(t *testing.T) {
 
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q)
 		q.On("First", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
-			dest := args.Get(0).(*models.InstanceKey)
+			dest := testutil.RequireMockArg[*models.InstanceKey](t, args, 0)
 			dest.ID = keyID
-			dest.InstanceSlug = "slug"
+			dest.InstanceSlug = testInstanceSlug
 		})
 
 		s := &Server{store: store.New(db)}
@@ -141,10 +144,10 @@ func TestInstanceAuthHook_LookupAndRevocation(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if slug != "slug" {
+		if slug != testInstanceSlug {
 			t.Fatalf("expected slug, got %q", slug)
 		}
-		if got := ctx.Get(ctxKeyInstanceSlug); got != "slug" {
+		if got := ctx.Get(ctxKeyInstanceSlug); got != testInstanceSlug {
 			t.Fatalf("expected ctx instance slug set, got %#v", got)
 		}
 		if got := ctx.Get(ctxKeyInstanceKey); got != keyID {

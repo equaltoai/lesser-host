@@ -38,6 +38,10 @@ const (
 	deterministicValue       = "deterministic"
 	claimVerdictInconclusive = "inconclusive"
 
+	aiErrorCodeLLMUnavailable   = "llm_unavailable"
+	aiErrorCodeLLMFailed        = "llm_failed"
+	aiErrorCodeLLMMissingOutput = "llm_missing_output"
+
 	claimVerifyEvidenceMaxBytes = int64(8 * 1024)
 	claimVerifyMaxEvidenceItems = 5
 )
@@ -455,11 +459,11 @@ func (s *Server) renderSummaryBatchResults(ctx context.Context, modelSet string,
 	case strings.HasPrefix(lowerModelSet, "openai:"):
 		apiKey, keyErr := openAIAPIKey(ctx)
 		if keyErr != nil || strings.TrimSpace(apiKey) == "" {
-			commonErrs = append(commonErrs, models.AIError{Code: "llm_unavailable", Message: "LLM unavailable; used deterministic fallback", Retryable: false})
+			commonErrs = append(commonErrs, models.AIError{Code: aiErrorCodeLLMUnavailable, Message: "LLM unavailable; used deterministic fallback", Retryable: false})
 		} else {
 			outMap, u, err := llm.RenderSummaryBatchOpenAI(ctx, apiKey, modelSet, items)
 			if err != nil {
-				commonErrs = append(commonErrs, models.AIError{Code: "llm_failed", Message: "LLM call failed; used deterministic fallback", Retryable: false})
+				commonErrs = append(commonErrs, models.AIError{Code: aiErrorCodeLLMFailed, Message: "LLM call failed; used deterministic fallback", Retryable: false})
 			} else {
 				results = outMap
 				usage = u
@@ -469,11 +473,11 @@ func (s *Server) renderSummaryBatchResults(ctx context.Context, modelSet string,
 	case strings.HasPrefix(lowerModelSet, "anthropic:"):
 		apiKey, keyErr := anthropicAPIKey(ctx)
 		if keyErr != nil || strings.TrimSpace(apiKey) == "" {
-			commonErrs = append(commonErrs, models.AIError{Code: "llm_unavailable", Message: "LLM unavailable; used deterministic fallback", Retryable: false})
+			commonErrs = append(commonErrs, models.AIError{Code: aiErrorCodeLLMUnavailable, Message: "LLM unavailable; used deterministic fallback", Retryable: false})
 		} else {
 			outMap, u, err := llm.RenderSummaryBatchAnthropic(ctx, apiKey, modelSet, items)
 			if err != nil {
-				commonErrs = append(commonErrs, models.AIError{Code: "llm_failed", Message: "LLM call failed; used deterministic fallback", Retryable: false})
+				commonErrs = append(commonErrs, models.AIError{Code: aiErrorCodeLLMFailed, Message: "LLM call failed; used deterministic fallback", Retryable: false})
 			} else {
 				results = outMap
 				usage = u
@@ -521,7 +525,7 @@ func (s *Server) putRenderSummaryResult(
 	itemErrs := append([]models.AIError(nil), commonErrs...)
 	if !ok || strings.TrimSpace(res.ShortSummary) == "" {
 		res = ai.RenderSummaryDeterministicV1(pj.Input)
-		itemErrs = append(itemErrs, models.AIError{Code: "llm_missing_output", Message: "LLM output missing; used deterministic fallback", Retryable: false})
+		itemErrs = append(itemErrs, models.AIError{Code: aiErrorCodeLLMMissingOutput, Message: "LLM output missing; used deterministic fallback", Retryable: false})
 	}
 
 	b, err := json.Marshal(res)
@@ -1013,20 +1017,20 @@ func (s *Server) runRenderSummaryLLMV1(ctx context.Context, job *models.AIJob) (
 	if callFn != nil {
 		apiKey, keyErr := keyFn(ctx)
 		if keyErr != nil || strings.TrimSpace(apiKey) == "" {
-			errs = append(errs, models.AIError{Code: "llm_unavailable", Message: "LLM unavailable; used deterministic fallback", Retryable: false})
+			errs = append(errs, models.AIError{Code: aiErrorCodeLLMUnavailable, Message: "LLM unavailable; used deterministic fallback", Retryable: false})
 			deterministicFallback()
 		} else {
 			out, u, err := callFn(ctx, apiKey, modelSet, []llm.RenderSummaryBatchItem{
 				{ItemID: jobID, Input: in},
 			})
 			if err != nil {
-				errs = append(errs, models.AIError{Code: "llm_failed", Message: "LLM call failed; used deterministic fallback", Retryable: false})
+				errs = append(errs, models.AIError{Code: aiErrorCodeLLMFailed, Message: "LLM call failed; used deterministic fallback", Retryable: false})
 				deterministicFallback()
 			} else if item, ok := out[jobID]; ok && strings.TrimSpace(item.ShortSummary) != "" {
 				res = item
 				usage = u
 			} else {
-				errs = append(errs, models.AIError{Code: "llm_missing_output", Message: "LLM output missing; used deterministic fallback", Retryable: false})
+				errs = append(errs, models.AIError{Code: aiErrorCodeLLMMissingOutput, Message: "LLM output missing; used deterministic fallback", Retryable: false})
 				deterministicFallback()
 			}
 		}
@@ -1274,7 +1278,7 @@ func (s *Server) callModerationLLM(
 	apiKey, keyErr := keyFn(ctx)
 	if keyErr != nil || strings.TrimSpace(apiKey) == "" {
 		return ai.ModerationResultV1{}, models.AIUsage{}, []models.AIError{{
-			Code:      "llm_unavailable",
+			Code:      aiErrorCodeLLMUnavailable,
 			Message:   "LLM unavailable; used deterministic fallback",
 			Retryable: false,
 		}}
@@ -1283,7 +1287,7 @@ func (s *Server) callModerationLLM(
 	out, usage, err := call(ctx, apiKey)
 	if err != nil {
 		return ai.ModerationResultV1{}, models.AIUsage{}, []models.AIError{{
-			Code:      "llm_failed",
+			Code:      aiErrorCodeLLMFailed,
 			Message:   "LLM call failed; used deterministic fallback",
 			Retryable: false,
 		}}
@@ -1292,7 +1296,7 @@ func (s *Server) callModerationLLM(
 	item, ok := out[jobID]
 	if !ok || strings.TrimSpace(item.Decision) == "" {
 		return ai.ModerationResultV1{}, models.AIUsage{}, []models.AIError{{
-			Code:      "llm_missing_output",
+			Code:      aiErrorCodeLLMMissingOutput,
 			Message:   "LLM output missing; used deterministic fallback",
 			Retryable: false,
 		}}
@@ -1413,7 +1417,7 @@ func (s *Server) maybeAddClaimVerifyWebSearchEvidence(
 
 	apiKey, keyErr := openAIAPIKey(ctx)
 	if keyErr != nil || strings.TrimSpace(apiKey) == "" {
-		return false, "", models.AIUsage{}, []models.AIError{{Code: "llm_unavailable", Message: "LLM unavailable; skipped web search retrieval", Retryable: false}}
+		return false, "", models.AIUsage{}, []models.AIError{{Code: aiErrorCodeLLMUnavailable, Message: "LLM unavailable; skipped web search retrieval", Retryable: false}}
 	}
 
 	ev, disc, u, evErr := llm.ClaimVerifyWebSearchEvidenceOpenAI(ctx, apiKey, modelSet, in.Claims, in.Text, maxSources, strings.TrimSpace(in.Retrieval.SearchContextSize))
@@ -1837,7 +1841,7 @@ func (s *Server) claimVerifyWithLLM(
 
 	apiKey, keyErr := keyFn(ctx)
 	if keyErr != nil || strings.TrimSpace(apiKey) == "" {
-		errs = append(errs, models.AIError{Code: "llm_unavailable", Message: "LLM unavailable; used deterministic fallback", Retryable: false})
+		errs = append(errs, models.AIError{Code: aiErrorCodeLLMUnavailable, Message: "LLM unavailable; used deterministic fallback", Retryable: false})
 		return res, usage, errs
 	}
 
@@ -1845,13 +1849,13 @@ func (s *Server) claimVerifyWithLLM(
 		{ItemID: strings.TrimSpace(jobID), Input: in},
 	})
 	if err != nil {
-		errs = append(errs, models.AIError{Code: "llm_failed", Message: "LLM call failed; used deterministic fallback", Retryable: false})
+		errs = append(errs, models.AIError{Code: aiErrorCodeLLMFailed, Message: "LLM call failed; used deterministic fallback", Retryable: false})
 		return res, usage, errs
 	}
 
 	item, ok := out[strings.TrimSpace(jobID)]
 	if !ok {
-		errs = append(errs, models.AIError{Code: "llm_missing_output", Message: "LLM output missing; used deterministic fallback", Retryable: false})
+		errs = append(errs, models.AIError{Code: aiErrorCodeLLMMissingOutput, Message: "LLM output missing; used deterministic fallback", Retryable: false})
 		return res, usage, errs
 	}
 

@@ -16,6 +16,7 @@ import (
 
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
+	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
 type webAuthnTestDB struct {
@@ -95,16 +96,16 @@ func TestWebAuthnUser_Methods(t *testing.T) {
 	t.Parallel()
 
 	u := &webAuthnUser{
-		id:          "alice",
-		name:        "alice",
+		id:          testUsernameAlice,
+		name:        testUsernameAlice,
 		displayName: "Alice",
 		credentials: []webauthn.Credential{{ID: []byte("id")}},
 	}
 
-	if string(u.WebAuthnID()) != "alice" {
+	if string(u.WebAuthnID()) != testUsernameAlice {
 		t.Fatalf("unexpected id: %q", string(u.WebAuthnID()))
 	}
-	if u.WebAuthnName() != "alice" {
+	if u.WebAuthnName() != testUsernameAlice {
 		t.Fatalf("unexpected name: %q", u.WebAuthnName())
 	}
 	if u.WebAuthnDisplayName() != "Alice" {
@@ -127,7 +128,7 @@ func TestLoadWebAuthnSession_UnauthorizedWhenNotFound(t *testing.T) {
 	tdb.qChallenge.On("First", mock.AnythingOfType("*models.WebAuthnChallenge")).Return(theoryErrors.ErrItemNotFound).Once()
 
 	ctx := &apptheory.Context{}
-	if _, err := s.loadWebAuthnSession(ctx, "challenge", "alice", "login"); err == nil {
+	if _, err := s.loadWebAuthnSession(ctx, "challenge", testUsernameAlice, "login"); err == nil {
 		t.Fatalf("expected error")
 	}
 }
@@ -139,7 +140,7 @@ func TestLoadWebAuthnSession_ValidatesUserAndTypeAndSessionJSON(t *testing.T) {
 	s := &Server{store: store.New(tdb.db)}
 
 	tdb.qChallenge.On("First", mock.AnythingOfType("*models.WebAuthnChallenge")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.WebAuthnChallenge)
+		dest := testutil.RequireMockArg[*models.WebAuthnChallenge](t, args, 0)
 		*dest = models.WebAuthnChallenge{
 			Challenge:   "c1",
 			UserID:      "bob",
@@ -148,33 +149,33 @@ func TestLoadWebAuthnSession_ValidatesUserAndTypeAndSessionJSON(t *testing.T) {
 		}
 	}).Once()
 	ctx := &apptheory.Context{}
-	if _, err := s.loadWebAuthnSession(ctx, "c1", "alice", "login"); err == nil {
+	if _, err := s.loadWebAuthnSession(ctx, "c1", testUsernameAlice, "login"); err == nil {
 		t.Fatalf("expected unauthorized for user mismatch")
 	}
 
 	tdb.qChallenge.On("First", mock.AnythingOfType("*models.WebAuthnChallenge")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.WebAuthnChallenge)
+		dest := testutil.RequireMockArg[*models.WebAuthnChallenge](t, args, 0)
 		*dest = models.WebAuthnChallenge{
 			Challenge:   "c2",
-			UserID:      "alice",
+			UserID:      testUsernameAlice,
 			Type:        "registration",
 			SessionData: []byte(`{}`),
 		}
 	}).Once()
-	if _, err := s.loadWebAuthnSession(ctx, "c2", "alice", "login"); err == nil {
+	if _, err := s.loadWebAuthnSession(ctx, "c2", testUsernameAlice, "login"); err == nil {
 		t.Fatalf("expected unauthorized for type mismatch")
 	}
 
 	tdb.qChallenge.On("First", mock.AnythingOfType("*models.WebAuthnChallenge")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.WebAuthnChallenge)
+		dest := testutil.RequireMockArg[*models.WebAuthnChallenge](t, args, 0)
 		*dest = models.WebAuthnChallenge{
 			Challenge:   "c3",
-			UserID:      "alice",
+			UserID:      testUsernameAlice,
 			Type:        "login",
 			SessionData: []byte(`not-json`),
 		}
 	}).Once()
-	if _, err := s.loadWebAuthnSession(ctx, "c3", "alice", "login"); err == nil {
+	if _, err := s.loadWebAuthnSession(ctx, "c3", testUsernameAlice, "login"); err == nil {
 		t.Fatalf("expected invalid session error")
 	}
 }
@@ -186,10 +187,10 @@ func TestGetWebAuthnChallenge_ExpiredDeletesAndNotFound(t *testing.T) {
 	s := &Server{store: store.New(tdb.db)}
 
 	tdb.qChallenge.On("First", mock.AnythingOfType("*models.WebAuthnChallenge")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.WebAuthnChallenge)
+		dest := testutil.RequireMockArg[*models.WebAuthnChallenge](t, args, 0)
 		*dest = models.WebAuthnChallenge{
 			Challenge: "expired",
-			UserID:    "alice",
+			UserID:    testUsernameAlice,
 			Type:      "login",
 			ExpiresAt: time.Now().UTC().Add(-1 * time.Minute),
 		}
@@ -214,13 +215,13 @@ func TestHandleWebAuthnCredentials_UnauthorizedAndSuccess(t *testing.T) {
 	}
 
 	tdb.qCred.On("All", mock.AnythingOfType("*[]*models.WebAuthnCredential")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*[]*models.WebAuthnCredential)
+		dest := testutil.RequireMockArg[*[]*models.WebAuthnCredential](t, args, 0)
 		*dest = []*models.WebAuthnCredential{
 			{ID: "cred1", Name: "My Passkey", CreatedAt: time.Unix(10, 0).UTC(), LastUsedAt: time.Unix(11, 0).UTC()},
 		}
 	}).Once()
 
-	resp, err := s.handleWebAuthnCredentials(&apptheory.Context{AuthIdentity: "alice"})
+	resp, err := s.handleWebAuthnCredentials(&apptheory.Context{AuthIdentity: testUsernameAlice})
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -236,13 +237,13 @@ func TestHandleWebAuthnUpdateCredential_ValidatesInputAndUpdates(t *testing.T) {
 	s := &Server{store: store.New(tdb.db), webAuthn: stubWebAuthnEngine{}}
 
 	// Missing path param.
-	if _, err := s.handleWebAuthnUpdateCredential(&apptheory.Context{AuthIdentity: "alice", Request: apptheory.Request{Body: []byte(`{}`)}}); err == nil {
+	if _, err := s.handleWebAuthnUpdateCredential(&apptheory.Context{AuthIdentity: testUsernameAlice, Request: apptheory.Request{Body: []byte(`{}`)}}); err == nil {
 		t.Fatalf("expected bad_request")
 	}
 
 	// Missing name.
 	if _, err := s.handleWebAuthnUpdateCredential(&apptheory.Context{
-		AuthIdentity: "alice",
+		AuthIdentity: testUsernameAlice,
 		Params:       map[string]string{"credentialId": "c1"},
 		Request:      apptheory.Request{Body: []byte(`{}`)},
 	}); err == nil {
@@ -252,7 +253,7 @@ func TestHandleWebAuthnUpdateCredential_ValidatesInputAndUpdates(t *testing.T) {
 	tdb.qCred.On("Update", mock.Anything).Return(nil).Once()
 	tdb.qAudit.On("Create").Return(nil).Once()
 	resp, err := s.handleWebAuthnUpdateCredential(&apptheory.Context{
-		AuthIdentity: "alice",
+		AuthIdentity: testUsernameAlice,
 		RequestID:    "r1",
 		Params:       map[string]string{"credentialId": "c1"},
 		Request:      apptheory.Request{Body: []byte(`{"name":" New "}`)},
@@ -272,14 +273,14 @@ func TestHandleWebAuthnDeleteCredential_Idempotent(t *testing.T) {
 	s := &Server{store: store.New(tdb.db), webAuthn: stubWebAuthnEngine{}}
 
 	// Missing credentialId.
-	if _, err := s.handleWebAuthnDeleteCredential(&apptheory.Context{AuthIdentity: "alice"}); err == nil {
+	if _, err := s.handleWebAuthnDeleteCredential(&apptheory.Context{AuthIdentity: testUsernameAlice}); err == nil {
 		t.Fatalf("expected bad_request")
 	}
 
 	tdb.qCred.On("Delete").Return(theoryErrors.ErrItemNotFound).Once()
 	tdb.qAudit.On("Create").Return(nil).Once()
 	resp, err := s.handleWebAuthnDeleteCredential(&apptheory.Context{
-		AuthIdentity: "alice",
+		AuthIdentity: testUsernameAlice,
 		Params:       map[string]string{"credentialId": "c1"},
 	})
 	if err != nil {
@@ -303,13 +304,13 @@ func TestHandleWebAuthnRegisterBegin_StoresChallenge(t *testing.T) {
 	s := &Server{store: store.New(tdb.db), webAuthn: engine}
 
 	tdb.qCred.On("All", mock.AnythingOfType("*[]*models.WebAuthnCredential")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*[]*models.WebAuthnCredential)
+		dest := testutil.RequireMockArg[*[]*models.WebAuthnCredential](t, args, 0)
 		// Include a credential to exercise base64 decoding path.
 		*dest = []*models.WebAuthnCredential{{ID: base64.StdEncoding.EncodeToString([]byte("id"))}}
 	}).Once()
 	tdb.qChallenge.On("Create").Return(nil).Once()
 
-	resp, err := s.handleWebAuthnRegisterBegin(&apptheory.Context{AuthIdentity: "alice"})
+	resp, err := s.handleWebAuthnRegisterBegin(&apptheory.Context{AuthIdentity: testUsernameAlice})
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -340,7 +341,7 @@ func TestHandleWebAuthnLoginBegin_RequiresCredentialsAndStoresChallenge(t *testi
 
 	// No credentials => not_found.
 	tdb.qCred.On("All", mock.AnythingOfType("*[]*models.WebAuthnCredential")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*[]*models.WebAuthnCredential)
+		dest := testutil.RequireMockArg[*[]*models.WebAuthnCredential](t, args, 0)
 		*dest = nil
 	}).Once()
 	if _, err := s.handleWebAuthnLoginBegin(&apptheory.Context{Request: apptheory.Request{Body: []byte(`{"username":"alice"}`)}}); err == nil {
@@ -348,7 +349,7 @@ func TestHandleWebAuthnLoginBegin_RequiresCredentialsAndStoresChallenge(t *testi
 	}
 
 	tdb.qCred.On("All", mock.AnythingOfType("*[]*models.WebAuthnCredential")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*[]*models.WebAuthnCredential)
+		dest := testutil.RequireMockArg[*[]*models.WebAuthnCredential](t, args, 0)
 		*dest = []*models.WebAuthnCredential{{ID: base64.StdEncoding.EncodeToString([]byte("id"))}}
 	}).Once()
 	tdb.qChallenge.On("Create").Return(nil).Once()

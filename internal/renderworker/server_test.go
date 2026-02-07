@@ -20,6 +20,8 @@ import (
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
+const testBlockedURL = "https://8.8.8.8/"
+
 type fakeRenderStore struct {
 	mu    sync.Mutex
 	items map[string]*models.RenderArtifact
@@ -250,7 +252,7 @@ func TestHandlePreviewQueueMessage_StoreNotInitializedAndMissingFields(t *testin
 	s = &Server{store: &fakeRenderStore{}}
 	ctx := &apptheory.EventContext{RequestID: "r1"}
 
-	body, _ := json.Marshal(rendering.RenderJobMessage{Kind: "render", NormalizedURL: "https://8.8.8.8/"})
+	body, _ := json.Marshal(rendering.RenderJobMessage{Kind: "render", NormalizedURL: testBlockedURL})
 	if err := s.handlePreviewQueueMessage(ctx, events.SQSMessage{Body: string(body)}); err != nil {
 		t.Fatalf("expected drop for missing render_id, got %v", err)
 	}
@@ -281,7 +283,7 @@ func TestSQSQueueNameFromURL(t *testing.T) {
 func TestRenderJobHelpers(t *testing.T) {
 	t.Parallel()
 
-	normalized := "https://8.8.8.8/"
+	normalized := testBlockedURL
 	wantID := normalizeRenderJobID(normalized, "")
 	if wantID == "" {
 		t.Fatalf("expected render id")
@@ -327,7 +329,7 @@ func TestMaybeShortCircuitExistingRender_UpdatesRetentionAndReturnsDone(t *testi
 	t.Parallel()
 
 	now := time.Now().UTC()
-	normalized := "https://8.8.8.8/"
+	normalized := testBlockedURL
 	renderID := normalizeRenderJobID(normalized, "")
 
 	st := &fakeRenderStore{
@@ -409,8 +411,8 @@ func TestValidateAndFetchRenderHTML_ReturnsFetchFailedOnCanceledContext(t *testi
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, _, _, _, code, msg, err := validateAndFetchRenderHTML(ctx, "https://8.8.8.8/")
-	if err == nil || code != "fetch_failed" || strings.TrimSpace(msg) == "" {
+	_, _, _, _, code, msg, err := validateAndFetchRenderHTML(ctx, testBlockedURL)
+	if err == nil || code != renderErrCodeFetchFailed || strings.TrimSpace(msg) == "" {
 		t.Fatalf("expected fetch_failed, got code=%q msg=%q err=%v", code, msg, err)
 	}
 }
@@ -419,7 +421,7 @@ func TestProcessRenderJob_ShortCircuitsWhenExistingAlreadyRendered(t *testing.T)
 	t.Parallel()
 
 	now := time.Now().UTC()
-	normalized := "https://8.8.8.8/"
+	normalized := testBlockedURL
 	renderID := normalizeRenderJobID(normalized, "")
 
 	st := &fakeRenderStore{
@@ -446,13 +448,13 @@ func TestProcessRenderJob_ReturnsErrorsWhenMisconfigured(t *testing.T) {
 	t.Parallel()
 
 	// Store missing.
-	if err := (&Server{}).processRenderJob(context.Background(), "req", rendering.RenderJobMessage{Kind: "render", NormalizedURL: "https://8.8.8.8/"}); err == nil {
+	if err := (&Server{}).processRenderJob(context.Background(), "req", rendering.RenderJobMessage{Kind: "render", NormalizedURL: testBlockedURL}); err == nil {
 		t.Fatalf("expected store not initialized error")
 	}
 
 	// Artifact store missing.
 	srv := NewServer(config.Config{}, &fakeRenderStore{}, nil)
-	if err := srv.processRenderJob(context.Background(), "req", rendering.RenderJobMessage{Kind: "render", NormalizedURL: "https://8.8.8.8/"}); err == nil {
+	if err := srv.processRenderJob(context.Background(), "req", rendering.RenderJobMessage{Kind: "render", NormalizedURL: testBlockedURL}); err == nil {
 		t.Fatalf("expected artifact store not initialized error")
 	}
 }
@@ -466,7 +468,7 @@ func TestProcessRenderJob_StoresFetchFailedError(t *testing.T) {
 	st := &fakeRenderStore{}
 	srv := NewServer(config.Config{}, st, &fakeArtifactStore{})
 
-	if err := srv.processRenderJob(ctx, "req", rendering.RenderJobMessage{Kind: "render", NormalizedURL: "https://8.8.8.8/", RequestedBy: "inst"}); err != nil {
+	if err := srv.processRenderJob(ctx, "req", rendering.RenderJobMessage{Kind: "render", NormalizedURL: testBlockedURL, RequestedBy: "inst"}); err != nil {
 		t.Fatalf("processRenderJob: %v", err)
 	}
 
@@ -479,7 +481,7 @@ func TestProcessRenderJob_StoresFetchFailedError(t *testing.T) {
 		if it == nil || strings.TrimSpace(it.ErrorCode) == "" {
 			t.Fatalf("expected error artifact, got %#v", it)
 		}
-		if strings.TrimSpace(it.ErrorCode) != "fetch_failed" {
+		if strings.TrimSpace(it.ErrorCode) != renderErrCodeFetchFailed {
 			t.Fatalf("expected fetch_failed error_code, got %#v", it)
 		}
 		if strings.TrimSpace(it.RequestID) != "req" {

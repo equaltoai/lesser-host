@@ -14,7 +14,7 @@ func TestNormalizeLinkURLDeterministic_CanonicalizesQueryAndIDNA(t *testing.T) {
 	t.Parallel()
 
 	got := normalizeLinkURLDeterministic("https://bücher.example/path/../?b=2&a=1#frag")
-	want := "https://xn--bcher-kva.example/?a=1&b=2"
+	want := testNormalizedBucherURL
 	if got != want {
 		t.Fatalf("got %q want %q", got, want)
 	}
@@ -75,7 +75,7 @@ func TestAnalyzeLinkSafetyBasic_BlocksLoopback(t *testing.T) {
 	if got.Risk != statusBlocked {
 		t.Fatalf("expected blocked risk, got %q (flags=%v)", got.Risk, got.Flags)
 	}
-	if got.ErrorCode != "blocked_ssrf" {
+	if got.ErrorCode != errorCodeBlockedSSRF {
 		t.Fatalf("expected blocked_ssrf error_code, got %q", got.ErrorCode)
 	}
 }
@@ -134,17 +134,17 @@ func TestParseLinkSafetyBasicPort_ValidatesAndFlagsNonDefault(t *testing.T) {
 	}
 
 	u = &url.URL{Scheme: "https", Host: "example.com:999999999999999999999999999999"}
-	if _, _, invalid = parseLinkSafetyBasicPort(u, "https://example.com:999999999999999999999999999999/", schemeHTTPS, nil); invalid == nil || invalid.ErrorCode != "invalid_url" {
+	if _, _, invalid = parseLinkSafetyBasicPort(u, "https://example.com:999999999999999999999999999999/", schemeHTTPS, nil); invalid == nil || invalid.ErrorCode != errorCodeInvalidURL {
 		t.Fatalf("expected invalid_url for bad port, got %#v", invalid)
 	}
 
 	u, _ = url.Parse("https://example.com:0/")
-	if _, _, invalid = parseLinkSafetyBasicPort(u, u.String(), schemeHTTPS, nil); invalid == nil || invalid.ErrorCode != "invalid_url" {
+	if _, _, invalid = parseLinkSafetyBasicPort(u, u.String(), schemeHTTPS, nil); invalid == nil || invalid.ErrorCode != errorCodeInvalidURL {
 		t.Fatalf("expected invalid_url for port 0, got %#v", invalid)
 	}
 
 	u, _ = url.Parse("https://example.com:65536/")
-	if _, _, invalid = parseLinkSafetyBasicPort(u, u.String(), schemeHTTPS, nil); invalid == nil || invalid.ErrorCode != "invalid_url" {
+	if _, _, invalid = parseLinkSafetyBasicPort(u, u.String(), schemeHTTPS, nil); invalid == nil || invalid.ErrorCode != errorCodeInvalidURL {
 		t.Fatalf("expected invalid_url for port overflow, got %#v", invalid)
 	}
 }
@@ -153,7 +153,7 @@ func TestAnalyzeLinkSafetyBasic_BlocksInternalHostname(t *testing.T) {
 	t.Parallel()
 
 	got := analyzeLinkSafetyBasic(context.Background(), nil, "https://localhost/path")
-	if got.Risk != statusBlocked || got.ErrorCode != "blocked_ssrf" || !hasFlag(got.Flags, "internal_host") {
+	if got.Risk != statusBlocked || got.ErrorCode != errorCodeBlockedSSRF || !hasFlag(got.Flags, "internal_host") {
 		t.Fatalf("unexpected blocked output: %#v", got)
 	}
 }
@@ -176,7 +176,7 @@ func TestAnalyzeLinkSafetyBasic_BlocksHostnameResolvingToPrivateIP(t *testing.T)
 
 	resolver := stubResolver{ipsByHost: map[string][]net.IP{"example.com": {net.ParseIP("127.0.0.1")}}}
 	got := analyzeLinkSafetyBasic(context.Background(), resolver, "https://example.com/")
-	if got.Risk != statusBlocked || got.ErrorCode != "blocked_ssrf" || !hasFlag(got.Flags, "private_ip") {
+	if got.Risk != statusBlocked || got.ErrorCode != errorCodeBlockedSSRF || !hasFlag(got.Flags, "private_ip") {
 		t.Fatalf("unexpected blocked output: %#v", got)
 	}
 }

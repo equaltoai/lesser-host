@@ -16,11 +16,12 @@ import (
 
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
+	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
 type webAuthnFinishTestDB struct {
-	db        *ttmocks.MockExtendedDB
-	qCred     *ttmocks.MockQuery
+	db         *ttmocks.MockExtendedDB
+	qCred      *ttmocks.MockQuery
 	qChallenge *ttmocks.MockQuery
 	qAudit     *ttmocks.MockQuery
 	qUser      *ttmocks.MockQuery
@@ -55,8 +56,8 @@ func newWebAuthnFinishTestDB() webAuthnFinishTestDB {
 	}
 
 	return webAuthnFinishTestDB{
-		db:        db,
-		qCred:     qCred,
+		db:         db,
+		qCred:      qCred,
 		qChallenge: qChallenge,
 		qAudit:     qAudit,
 		qUser:      qUser,
@@ -110,7 +111,7 @@ func TestHandleWebAuthnLoginFinish_Success(t *testing.T) {
 	}
 
 	tdb.qChallenge.On("First", mock.AnythingOfType("*models.WebAuthnChallenge")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.WebAuthnChallenge)
+		dest := testutil.RequireMockArg[*models.WebAuthnChallenge](t, args, 0)
 		*dest = models.WebAuthnChallenge{
 			Challenge:   "c1",
 			UserID:      "alice",
@@ -121,14 +122,14 @@ func TestHandleWebAuthnLoginFinish_Success(t *testing.T) {
 	}).Once()
 
 	tdb.qCred.On("All", mock.AnythingOfType("*[]*models.WebAuthnCredential")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*[]*models.WebAuthnCredential)
+		dest := testutil.RequireMockArg[*[]*models.WebAuthnCredential](t, args, 0)
 		*dest = []*models.WebAuthnCredential{
 			{ID: base64.StdEncoding.EncodeToString([]byte("id")), UserID: "alice"},
 		}
 	}).Once()
 
 	tdb.qUser.On("First", mock.AnythingOfType("*models.User")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.User)
+		dest := testutil.RequireMockArg[*models.User](t, args, 0)
 		*dest = models.User{Username: "alice", Role: "admin"}
 		_ = dest.UpdateKeys()
 	}).Once()
@@ -180,12 +181,12 @@ func TestHandleWebAuthnRegisterFinish_InvalidResponse(t *testing.T) {
 
 	tdb := newWebAuthnFinishTestDB()
 	s := &Server{
-		store:   store.New(tdb.db),
+		store:    store.New(tdb.db),
 		webAuthn: stubWebAuthnFinishEngine{},
 	}
 
 	tdb.qChallenge.On("First", mock.AnythingOfType("*models.WebAuthnChallenge")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.WebAuthnChallenge)
+		dest := testutil.RequireMockArg[*models.WebAuthnChallenge](t, args, 0)
 		*dest = models.WebAuthnChallenge{
 			Challenge:   "c1",
 			UserID:      "alice",
@@ -196,7 +197,7 @@ func TestHandleWebAuthnRegisterFinish_InvalidResponse(t *testing.T) {
 	}).Once()
 
 	tdb.qCred.On("All", mock.AnythingOfType("*[]*models.WebAuthnCredential")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*[]*models.WebAuthnCredential)
+		dest := testutil.RequireMockArg[*[]*models.WebAuthnCredential](t, args, 0)
 		*dest = nil
 	}).Once()
 
@@ -211,8 +212,7 @@ func TestHandleWebAuthnRegisterFinish_InvalidResponse(t *testing.T) {
 		AuthIdentity: "alice",
 		Request:      apptheory.Request{Body: body},
 	})
-	if appErr, ok := err.(*apptheory.AppError); !ok || appErr.Code != "app.bad_request" {
+	if appErr, ok := err.(*apptheory.AppError); !ok || appErr.Code != appErrCodeBadRequest {
 		t.Fatalf("expected bad_request, got %T: %v", err, err)
 	}
 }
-

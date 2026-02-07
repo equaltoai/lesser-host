@@ -248,8 +248,8 @@ func applyLinkSafetyBasicHostChecks(ctx context.Context, resolver ipResolver, in
 			NormalizedURL: in.NormalizedURL,
 			Host:          in.Host,
 			Flags:         uniqueSorted(flags),
-			Risk:          "blocked",
-			ErrorCode:     "blocked_ssrf",
+			Risk:          statusBlocked,
+			ErrorCode:     errorCodeBlockedSSRF,
 			ErrorMessage:  "host is not allowed",
 		}
 	}
@@ -262,8 +262,8 @@ func applyLinkSafetyBasicHostChecks(ctx context.Context, resolver ipResolver, in
 				NormalizedURL: in.NormalizedURL,
 				Host:          in.Host,
 				Flags:         uniqueSorted(flags),
-				Risk:          "blocked",
-				ErrorCode:     "blocked_ssrf",
+				Risk:          statusBlocked,
+				ErrorCode:     errorCodeBlockedSSRF,
 				ErrorMessage:  "ip is not allowed",
 			}
 		}
@@ -299,8 +299,8 @@ func applyLinkSafetyBasicHostChecks(ctx context.Context, resolver ipResolver, in
 				NormalizedURL: in.NormalizedURL,
 				Host:          in.Host,
 				Flags:         uniqueSorted(flags),
-				Risk:          "blocked",
-				ErrorCode:     "blocked_ssrf",
+				Risk:          statusBlocked,
+				ErrorCode:     errorCodeBlockedSSRF,
 				ErrorMessage:  "host resolves to a blocked ip",
 			}
 		}

@@ -15,6 +15,7 @@ import (
 	"github.com/equaltoai/lesser-host/internal/artifacts"
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
+	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
 type summariesFlowTestDB struct {
@@ -25,24 +26,15 @@ type summariesFlowTestDB struct {
 }
 
 func newSummariesFlowTestDB() summariesFlowTestDB {
-	db := ttmocks.NewMockExtendedDB()
 	qRender := new(ttmocks.MockQuery)
 	qAIJob := new(ttmocks.MockQuery)
 	qAIRes := new(ttmocks.MockQuery)
 
-	db.On("WithContext", mock.Anything).Return(db).Maybe()
-	db.On("Model", mock.AnythingOfType("*models.RenderArtifact")).Return(qRender).Maybe()
-	db.On("Model", mock.AnythingOfType("*models.AIJob")).Return(qAIJob).Maybe()
-	db.On("Model", mock.AnythingOfType("*models.AIResult")).Return(qAIRes).Maybe()
-
-	for _, q := range []*ttmocks.MockQuery{qRender, qAIJob, qAIRes} {
-		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
-		q.On("Index", mock.Anything).Return(q).Maybe()
-		q.On("Limit", mock.Anything).Return(q).Maybe()
-		q.On("IfExists").Return(q).Maybe()
-		q.On("IfNotExists").Return(q).Maybe()
-		q.On("ConsistentRead").Return(q).Maybe()
-	}
+	db := newTestDBWithModelQueries(
+		modelQueryPair{model: &models.RenderArtifact{}, query: qRender},
+		modelQueryPair{model: &models.AIJob{}, query: qAIJob},
+		modelQueryPair{model: &models.AIResult{}, query: qAIRes},
+	)
 
 	return summariesFlowTestDB{
 		db:      db,
@@ -105,7 +97,7 @@ func TestLoadRenderArtifactForSummary_Statuses(t *testing.T) {
 	}
 
 	tdb.qRender.On("First", mock.AnythingOfType("*models.RenderArtifact")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.RenderArtifact)
+		dest := testutil.RequireMockArg[*models.RenderArtifact](t, args, 0)
 		*dest = models.RenderArtifact{ID: "rid", ErrorCode: "x"}
 	}).Once()
 	if art, status := s.loadRenderArtifactForSummary(&apptheory.Context{}, "rid"); art != nil || status != statusError {
@@ -113,7 +105,7 @@ func TestLoadRenderArtifactForSummary_Statuses(t *testing.T) {
 	}
 
 	tdb.qRender.On("First", mock.AnythingOfType("*models.RenderArtifact")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.RenderArtifact)
+		dest := testutil.RequireMockArg[*models.RenderArtifact](t, args, 0)
 		*dest = models.RenderArtifact{ID: "rid", ErrorCode: "", SnapshotObjectKey: ""}
 	}).Once()
 	if art, status := s.loadRenderArtifactForSummary(&apptheory.Context{}, "rid"); art != nil || status != statusQueued {
@@ -121,7 +113,7 @@ func TestLoadRenderArtifactForSummary_Statuses(t *testing.T) {
 	}
 
 	tdb.qRender.On("First", mock.AnythingOfType("*models.RenderArtifact")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*models.RenderArtifact)
+		dest := testutil.RequireMockArg[*models.RenderArtifact](t, args, 0)
 		*dest = models.RenderArtifact{ID: "rid", ErrorCode: "", SnapshotObjectKey: "snap"}
 	}).Once()
 	if art, status := s.loadRenderArtifactForSummary(&apptheory.Context{}, "rid"); art == nil || status != "" {
@@ -141,7 +133,7 @@ func TestPersistQueuedSummaryResult_SuccessAndFailure(t *testing.T) {
 		tdb.qAIRes.On("CreateOrUpdate").Return(nil).Once()
 
 		tdb.qAIJob.On("First", mock.AnythingOfType("*models.AIJob")).Return(nil).Run(func(args mock.Arguments) {
-			dest := args.Get(0).(*models.AIJob)
+			dest := testutil.RequireMockArg[*models.AIJob](t, args, 0)
 			*dest = models.AIJob{ID: "job1"}
 		}).Once()
 		tdb.qAIJob.On("CreateOrUpdate").Return(nil).Once()
