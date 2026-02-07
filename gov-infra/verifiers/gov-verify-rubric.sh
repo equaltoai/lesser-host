@@ -35,13 +35,20 @@ GOV_TOOLS_BIN="${GOV_TOOLS_DIR}/bin"
 mkdir -p "${GOV_TOOLS_BIN}"
 export PATH="${GOV_TOOLS_BIN}:${PATH}"
 
+# Force the Go toolchain to match go.mod even when the host `go` is older.
+# This avoids mixed-version builds (notably when running `go test -coverprofile`).
+EXPECTED_GO_VERSION="$(awk '$1=="go"{print $2; exit}' "${REPO_ROOT}/go.mod" 2>/dev/null || true)"
+if [[ -n "${EXPECTED_GO_VERSION}" ]]; then
+  export GOTOOLCHAIN="go${EXPECTED_GO_VERSION}"
+fi
+
 # Tool pins (optional; populated by gov.init when possible).
 # If these remain unset, checks that depend on them should be marked BLOCKED (never "use whatever is installed").
 #
 # NOTE: this repo currently does not pin these in CI; keep checks fail-closed until pins are set intentionally.
 # M1 intent: pin golangci-lint to unblock deterministic lint/config verification.
 PIN_GOLANGCI_LINT_VERSION="v2.8.0"
-PIN_GOVULNCHECK_VERSION=""
+PIN_GOVULNCHECK_VERSION="v1.1.4"
 
 # Optional feature flags (opt-in pack features).
 FEATURE_OSS_RELEASE="false"
@@ -444,7 +451,7 @@ check_supply_chain_actions_pinned() {
   fi
 
   local matches=""
-  matches="$(grep -R --include='*.yml' --include='*.yaml' -nE '^[[:space:]]*uses:[[:space:]].*@v[0-9]+' "${wf_dir}" 2>/dev/null || true)"
+  matches="$(grep -R --include='*.yml' --include='*.yaml' -nE '^[[:space:]]*(-[[:space:]]*)?uses:[[:space:]].*@v[0-9]+' "${wf_dir}" 2>/dev/null || true)"
   if [[ -n "${matches}" ]]; then
     echo "FAIL: unpinned GitHub Action detected (uses @vN; pin by commit SHA)"
     echo "${matches}"
@@ -934,6 +941,15 @@ prepare_check_env() {
     return 0
   fi
 
+  # Node workspaces (web/cdk/contracts) can create node_modules/ during other rubric checks.
+  # Some Node dependencies can trip `go test ./...` and `golangci-lint` when present.
+  # Treat node_modules as non-source and remove it before Go-scoped checks.
+  if [[ "$cmd" == *"go test"* || "$cmd" == *"golangci-lint"* || "$cmd" == *"govulncheck"* ]]; then
+    while IFS= read -r -d '' d; do
+      rm -rf "${d}"
+    done < <(find "${REPO_ROOT}" -type d -name node_modules -prune -not -path "${REPO_ROOT}/.git/*" -print0 2>/dev/null)
+  fi
+
   case "$id" in
     CON-2|COM-3|SEC-1)
       if [[ -f "${REPO_ROOT}/.golangci.yml" ]] || [[ "$cmd" == *"golangci-lint"* ]]; then
@@ -1188,13 +1204,25 @@ echo "Go modules found:"
 echo "${mods}"
 
 echo ""
-while IFS= read -r mod; do
-  [[ -z "${mod}" ]] && continue
-  dir="$(dirname "${mod}")"
-  echo "Compiling module: ${dir}"
-  (cd "${dir}" && go test -run=^$ ./...)
-  echo ""
-done <<< "${mods}"
+	while IFS= read -r mod; do
+	  [[ -z "${mod}" ]] && continue
+	  dir="$(dirname "${mod}")"
+	  echo "Compiling module: ${dir}"
+	  # Node workspaces (CDK/web/contracts) may materialize node_modules/ during other rubric checks.
+	  # Some Node dependencies include Go templates with invalid filenames, which can break `go test ./...`.
+	  # COM-1 is defined against a clean checkout, so treat node_modules as non-source and remove it for module compilation.
+	  if [[ -d "${dir}/node_modules" ]]; then
+	    echo "Cleaning ${dir}/node_modules (not part of Go module)"
+	    rm -rf "${dir}/node_modules"
+	  fi
+	  pkgs="$(cd "${dir}" && go list ./... 2>/dev/null)"
+	  if [[ -z "${pkgs}" ]]; then
+	    echo "No Go packages detected (skipping): ${dir}"
+	  else
+	    (cd "${dir}" && go test -run=^$ ./...)
+	  fi
+	  echo ""
+	done <<< "${mods}"
 
 echo "PASS: all modules compile"
 __GOV_CMD_MODULES__
@@ -1356,7 +1384,53 @@ __GOV_CMD_SEC_CONFIG__
 )
 
 CMD_LOGGING=$(cat <<'__GOV_CMD_LOGGING__'
-TODO: add logging/PII redaction checks (no raw bearer tokens; no secrets; structured logging)
+set -euo pipefail
+
+# COM-6: logging/operational standards.
+#
+# Policy (rubric v0.1):
+# - Use structured JSON logs via slog to stdout.
+# - All Lambda entrypoints wire apptheory observability hooks.
+# - Avoid fmt.Print*/log.Print* in non-test Go sources.
+
+fail=0
+
+if [[ ! -f internal/observability/observability.go ]]; then
+  echo "FAIL: missing internal/observability/observability.go"
+  exit 1
+fi
+
+if ! grep -q 'slog.NewJSONHandler(os.Stdout' internal/observability/observability.go; then
+  echo "FAIL: observability must use slog.NewJSONHandler(os.Stdout, ...)"
+  fail=1
+fi
+
+missing=0
+for f in cmd/*/main.go; do
+  [[ -f "${f}" ]] || continue
+  if ! grep -q 'apptheory.WithObservability(observability.New(' "${f}"; then
+    echo "FAIL: missing apptheory.WithObservability(observability.New(...)) in ${f}"
+    missing=1
+  fi
+done
+if [[ "${missing}" -ne 0 ]]; then
+  fail=1
+fi
+
+go_files="$(git ls-files '*.go' | grep -v '_test\\.go$' || true)"
+if [[ -n "${go_files}" ]]; then
+  if echo "${go_files}" | xargs grep -nE '\\b(fmt|log)\\.Print(ln|f)?\\b' >/dev/null 2>&1; then
+    echo "FAIL: fmt.Print*/log.Print* found in non-test Go sources:"
+    echo "${go_files}" | xargs grep -nE '\\b(fmt|log)\\.Print(ln|f)?\\b' || true
+    fail=1
+  fi
+fi
+
+if [[ "${fail}" -ne 0 ]]; then
+  exit 1
+fi
+
+echo "PASS: logging standards"
 __GOV_CMD_LOGGING__
 )
 
@@ -1372,7 +1446,35 @@ CMD_VULN=$(cat <<'__GOV_CMD_VULN__'
 # Dependency vulnerability scan (Go).
 # This is BLOCKED until govulncheck is pinned.
 
-govulncheck ./...
+# NOTE: govulncheck's default (-scan=symbol) analysis uses SSA and currently panics on a known
+# generic + variadic edge case involving named byte-slices (reproducible with jsontext.Value).
+#
+# To avoid weakening the vuln gate (while still being deterministic), we scan the shipped binaries.
+# This exercises dependency usage as actually built, and avoids SSA construction.
+
+tmp_bin_dir="${GOV_TOOLS_DIR}/tmp/sec-2-bin"
+rm -rf "${tmp_bin_dir}"
+mkdir -p "${tmp_bin_dir}"
+
+bins=(
+  "ai-worker=./cmd/ai-worker"
+  "control-plane-api=./cmd/control-plane-api"
+  "provision-worker=./cmd/provision-worker"
+  "render-worker=./cmd/render-worker"
+  "trust-api=./cmd/trust-api"
+)
+
+for entry in "${bins[@]}"; do
+  name="${entry%%=*}"
+  pkg="${entry#*=}"
+  echo "Building ${pkg}..."
+  go build -o "${tmp_bin_dir}/${name}" "${pkg}"
+  echo "Scanning ${name}..."
+  govulncheck -mode=binary "${tmp_bin_dir}/${name}"
+  echo ""
+done
+
+echo "PASS: govulncheck (binary mode)"
 __GOV_CMD_VULN__
 )
 

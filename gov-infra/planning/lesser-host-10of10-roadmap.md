@@ -1,8 +1,8 @@
-# lesser-host: 10/10 Roadmap (Rubric v0.1)
+# lesser-host: 10/10 Roadmap (Rubric v0.1.1)
 
 This roadmap maps milestones directly to rubric IDs with measurable acceptance criteria and verification commands.
 
-## Current scorecard (Rubric v0.1)
+## Current scorecard (Rubric v0.1.1)
 Until the first verifier run, treat the scorecard as **unknown** (fail closed). Generate the scorecard by running:
 
 - `bash gov-infra/verifiers/gov-verify-rubric.sh`

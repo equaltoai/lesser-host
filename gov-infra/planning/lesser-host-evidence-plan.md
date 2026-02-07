@@ -1,4 +1,4 @@
-# lesser-host: Evidence Plan (Rubric v0.1)
+# lesser-host: Evidence Plan (Rubric v0.1.1)
 
 This document defines the **evidence surface** for the lesser-host governance rubric.
 

@@ -4,11 +4,12 @@ This rubric defines what “10/10” means and how category grades are computed.
 “green by dilution” by making scoring **versioned, measurable, and repeatable**.
 
 ## Versioning (no moving goalposts)
-- **Rubric version:** `v0.1` (2026-02-06)
+- **Rubric version:** `v0.1.1` (2026-02-07)
 - **Comparability rule:** grades are comparable only within the same version.
 - **Change rule:** bump the version + changelog entry for any rubric change (what changed + why).
 
 ### Changelog
+- `v0.1.1`: Update SEC-2 verification to use `govulncheck -mode=binary` on shipped binaries due to an SSA panic in `govulncheck ./...` symbol scanning for a generic + variadic edge case (requirement unchanged).
 - `v0.1`: Initial governance scaffold for lesser-host (multi-language: Go + TypeScript + CDK + Solidity) with strict anti-drift items.
 
 ## Scoring (deterministic)
@@ -61,7 +62,7 @@ Enforcement rule (anti-drift):
 | ID | Points | Requirement | How to verify |
 | --- | ---: | --- | --- |
 | SEC-1 | 3 | Static security scan green (pinned version) | `golangci-lint run --timeout=10m` with `gosec` enabled (**BLOCKED** until golangci-lint pinned) |
-| SEC-2 | 3 | Dependency vulnerability scan green | `govulncheck ./...` (**BLOCKED** until govulncheck pinned) |
+| SEC-2 | 3 | Dependency vulnerability scan green | `govulncheck -mode=binary` on shipped `cmd/*` binaries (implemented in verifier; **BLOCKED** until govulncheck pinned) |
 | SEC-3 | 2 | Supply-chain verification green | GitHub Actions must be pinned by commit SHA (no `uses: ...@vN`); Node lifecycle hooks scanned with scripts-disabled installs; Go/Python metadata scans (implemented in verifier; see `gov-infra/evidence/SEC-3-output.log`) |
 | SEC-4 | 2 | Domain-specific P0 regression tests (security critical paths) | `Planned: add explicit P0 regression tests (bootstrap/authz invariants, SSRF defense, instance auth, AI prompt boundary invariants) (currently unimplemented; expect BLOCKED until implemented).` |
 
