@@ -1,11 +1,15 @@
 package trust
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
+	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
+
+	"github.com/stretchr/testify/mock"
 
 	"github.com/equaltoai/lesser-host/internal/rendering"
 	"github.com/equaltoai/lesser-host/internal/store"
@@ -58,5 +62,61 @@ func TestRenderQueue_Helpers(t *testing.T) {
 	// No-op extension returns false.
 	if maybeExtendRenderArtifact(existing, existing.ExpiresAt, existing.RetentionClass, "x", "y") {
 		t.Fatalf("expected no update")
+	}
+}
+
+func TestQueueRender_ExistingAndCreateRaceAndEnqueueFailure(t *testing.T) {
+	t.Parallel()
+
+	db := ttmocks.NewMockExtendedDB()
+	qRender := new(ttmocks.MockQuery)
+	db.On("WithContext", mock.Anything).Return(db).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.RenderArtifact")).Return(qRender).Maybe()
+
+	qRender.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qRender).Maybe()
+	qRender.On("ConsistentRead").Return(qRender).Maybe()
+	qRender.On("IfNotExists").Return(qRender).Maybe()
+	qRender.On("CreateOrUpdate").Return(nil).Maybe()
+
+	st := store.New(db)
+	s := &Server{store: st, queues: &queueClient{previewQueueURL: ""}}
+
+	ctx := &apptheory.Context{AuthIdentity: "inst", RequestID: "rid"}
+	normalized := "https://example.com/"
+	renderID := rendering.RenderArtifactID(rendering.RenderPolicyVersion, normalized)
+
+	// Existing artifact: returned without enqueue.
+	qRender.On("First", mock.AnythingOfType("*models.RenderArtifact")).Return(nil).Run(func(args mock.Arguments) {
+		dest := args.Get(0).(*models.RenderArtifact)
+		*dest = models.RenderArtifact{ID: renderID, PolicyVersion: rendering.RenderPolicyVersion, NormalizedURL: normalized, ExpiresAt: time.Now().UTC().Add(1 * time.Hour)}
+		_ = dest.UpdateKeys()
+	}).Once()
+	got, queued, err := s.queueRender(ctx, normalized, models.RenderRetentionClassBenign, 1)
+	if err != nil || got == nil || queued {
+		t.Fatalf("unexpected existing: got=%#v queued=%v err=%v", got, queued, err)
+	}
+
+	// Create race (condition failed): treat as existing.
+	qRender.On("First", mock.AnythingOfType("*models.RenderArtifact")).Return(theoryErrors.ErrItemNotFound).Once()
+	qRender.On("Create").Return(theoryErrors.ErrConditionFailed).Once()
+	qRender.On("First", mock.AnythingOfType("*models.RenderArtifact")).Return(nil).Run(func(args mock.Arguments) {
+		dest := args.Get(0).(*models.RenderArtifact)
+		*dest = models.RenderArtifact{ID: renderID, PolicyVersion: rendering.RenderPolicyVersion, NormalizedURL: normalized}
+		_ = dest.UpdateKeys()
+	}).Once()
+	got, queued, err = s.queueRender(ctx, normalized, models.RenderRetentionClassBenign, 1)
+	if err != nil || got == nil || queued {
+		t.Fatalf("unexpected race: got=%#v queued=%v err=%v", got, queued, err)
+	}
+
+	// Enqueue failure records error on placeholder.
+	qRender.On("First", mock.AnythingOfType("*models.RenderArtifact")).Return(theoryErrors.ErrItemNotFound).Once()
+	qRender.On("Create").Return(nil).Once()
+	got, queued, err = s.queueRender(ctx, normalized, models.RenderRetentionClassBenign, 1)
+	if err == nil || got == nil || queued {
+		t.Fatalf("expected enqueue failure, got=%#v queued=%v err=%v", got, queued, err)
+	}
+	if strings.TrimSpace(got.ErrorCode) != "queue_failed" {
+		t.Fatalf("expected placeholder error code set, got %#v", got)
 	}
 }

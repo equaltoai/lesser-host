@@ -13,7 +13,7 @@ intermediate milestones, guardrails, and repeatable measurement.
 ## Current state
 Snapshot (2026-02-07):
 - Coverage gate (target): generate `gov-infra/evidence/coverage.out` and enforce total ≥ 80%
-- Current result: **50.1%** total (FAIL; target is 80%)
+- Current result: **70.1%** total (FAIL; target is 80%)
 - Measurement surface:
   - In-scope: all packages included by `go test ./...` in the root Go module
   - Out-of-scope (explicit): nested Go modules (e.g., `cdk/`) unless added intentionally later
@@ -23,7 +23,7 @@ Snapshot (2026-02-07):
 - After COV-1 (2026-02-06): **8.6%** (auth hooks + secrets cache tests; `internal/controlplane`, `internal/trust`, `internal/secrets`)
 - After COV-2 (2026-02-06): **25.0%** (broad helper floors across `internal/controlplane` + `internal/trust` + AI harness, plus first tests for `internal/domains`, `internal/metrics`, `internal/billing`, `internal/rendering`, `internal/observability`)
 - After COV-3 (2026-02-07): **50.1%** (setup bootstrap + operator reviews; publish jobs + link safety budget paths; AI service queue/budget/cache; renderworker chromium inflate/extract; KMS JWKS memo/caching; TipSplitter ABI decoders)
-- After COV-4: TBD
+- After COV-4 (2026-02-07): **70.1%** (raise `internal/controlplane` + `internal/trust` to ≥ 70%; deterministic AI modules; LLM adapter harness for claim-verify + moderation + web-search; provisionworker flow wrappers)
 - After COV-5: TBD (≥ 80%, QUA-3 PASS)
 
 ## Guardrails (no denominator games)

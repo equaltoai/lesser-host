@@ -383,3 +383,47 @@ func TestHandlePortalCreateCreditsCheckout_RejectsWhenPricingNotConfigured(t *te
 		t.Fatalf("expected conflict when pricing is not configured")
 	}
 }
+
+func TestHandlePortalListPaymentMethods_ReturnsDefaultAndMethods(t *testing.T) {
+	t.Parallel()
+
+	tdb := newBillingTestDB()
+	s := &Server{store: store.New(tdb.db)}
+
+	tdb.qMethod.On("All", mock.AnythingOfType("*[]*models.BillingPaymentMethod")).Return(nil).Run(func(args mock.Arguments) {
+		dest := args.Get(0).(*[]*models.BillingPaymentMethod)
+		*dest = []*models.BillingPaymentMethod{
+			nil,
+			{ID: "pm_1", Type: "card", Brand: "visa", Last4: "4242"},
+		}
+	}).Once()
+	tdb.qProfile.On("First", mock.AnythingOfType("*models.BillingProfile")).Return(nil).Run(func(args mock.Arguments) {
+		dest := args.Get(0).(*models.BillingProfile)
+		*dest = models.BillingProfile{Username: "alice", DefaultPaymentMethodID: "pm_1"}
+		_ = dest.UpdateKeys()
+	}).Once()
+
+	resp, err := s.handlePortalListPaymentMethods(&apptheory.Context{AuthIdentity: "alice"})
+	if err != nil || resp == nil || resp.Status != 200 {
+		t.Fatalf("resp=%#v err=%v", resp, err)
+	}
+
+	var parsed portalListPaymentMethodsResponse
+	if err := json.Unmarshal(resp.Body, &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if parsed.DefaultPaymentMethodID != "pm_1" || parsed.Count != 1 || len(parsed.Methods) != 1 {
+		t.Fatalf("unexpected output: %#v", parsed)
+	}
+}
+
+func TestHandlePortalCreatePaymentMethodCheckout_ProviderNotConfigured(t *testing.T) {
+	t.Parallel()
+
+	tdb := newBillingTestDB()
+	s := &Server{store: store.New(tdb.db)}
+
+	if _, err := s.handlePortalCreatePaymentMethodCheckout(&apptheory.Context{AuthIdentity: "alice"}); err == nil {
+		t.Fatalf("expected conflict when payments provider is not configured")
+	}
+}

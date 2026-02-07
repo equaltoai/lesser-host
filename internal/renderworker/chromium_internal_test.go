@@ -3,6 +3,7 @@ package renderworker
 import (
 	"archive/tar"
 	"bytes"
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -220,5 +221,83 @@ func TestSetupChromiumEnv(t *testing.T) {
 	ld := os.Getenv("LD_LIBRARY_PATH")
 	if !strings.Contains(ld, "al2023") {
 		t.Fatalf("expected LD_LIBRARY_PATH to include al2023, got %q", ld)
+	}
+}
+
+func TestEnsureChromiumReady_InflatesAllAssets(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+
+	binDir := t.TempDir()
+	t.Setenv("CHROMIUM_BIN_DIR", binDir)
+
+	writeBrotli := func(path string, payload []byte) {
+		t.Helper()
+		var buf bytes.Buffer
+		w := brotli.NewWriter(&buf)
+		if _, err := w.Write(payload); err != nil {
+			t.Fatalf("brotli write: %v", err)
+		}
+		if err := w.Close(); err != nil {
+			t.Fatalf("brotli close: %v", err)
+		}
+		if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
+			t.Fatalf("write brotli file: %v", err)
+		}
+	}
+
+	writeTarBrotli := func(path string, files map[string]string) {
+		t.Helper()
+		var tarBuf bytes.Buffer
+		tw := tar.NewWriter(&tarBuf)
+		for name, content := range files {
+			body := []byte(content)
+			if err := tw.WriteHeader(&tar.Header{Name: name, Typeflag: tar.TypeReg, Mode: 0o600, Size: int64(len(body))}); err != nil {
+				t.Fatalf("tar header: %v", err)
+			}
+			if _, err := tw.Write(body); err != nil {
+				t.Fatalf("tar write: %v", err)
+			}
+		}
+		if err := tw.Close(); err != nil {
+			t.Fatalf("tar close: %v", err)
+		}
+
+		writeBrotli(path, tarBuf.Bytes())
+	}
+
+	writeBrotli(filepath.Join(binDir, "chromium.br"), []byte("chromium-binary"))
+	writeTarBrotli(filepath.Join(binDir, "fonts.tar.br"), map[string]string{"fonts/a.txt": "font"})
+	writeTarBrotli(filepath.Join(binDir, "swiftshader.tar.br"), map[string]string{"libGLESv2.so": "shader"})
+	writeTarBrotli(filepath.Join(binDir, "al2023.tar.br"), map[string]string{"lib/libfoo.so": "lib"})
+
+	execPath, err := ensureChromiumReady(context.Background())
+	if err != nil {
+		t.Fatalf("ensureChromiumReady err: %v", err)
+	}
+	wantExec := filepath.Join(tmp, "chromium")
+	if execPath != wantExec {
+		t.Fatalf("expected exec path %q, got %q", wantExec, execPath)
+	}
+
+	b, err := os.ReadFile(execPath)
+	if err != nil {
+		t.Fatalf("read chromium: %v", err)
+	}
+	if string(b) != "chromium-binary" {
+		t.Fatalf("unexpected chromium content: %q", string(b))
+	}
+
+	if _, err := os.Stat(filepath.Join(tmp, "fonts")); err != nil {
+		t.Fatalf("expected fonts extracted: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, "al2023", "lib")); err != nil {
+		t.Fatalf("expected al2023 extracted: %v", err)
+	}
+
+	// Second call should be a memoized hit.
+	execPath2, err := ensureChromiumReady(context.Background())
+	if err != nil || execPath2 != execPath {
+		t.Fatalf("expected memoized path, got path=%q err=%v", execPath2, err)
 	}
 }

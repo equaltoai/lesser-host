@@ -115,3 +115,61 @@ func TestServeAttestationByID_Success(t *testing.T) {
 }
 
 func configForTests() config.Config { return config.Config{ArtifactBucketName: "bucket"} }
+
+func TestHandleLookupAttestation_ValidatesAndServes(t *testing.T) {
+	t.Parallel()
+
+	payload := []byte(`{"ok":true}`)
+	jws, err := attestations.BuildCompactJWSRS256(context.Background(), "kid", payload, func(_ context.Context, _ []byte) ([]byte, error) {
+		return []byte("sig"), nil
+	})
+	if err != nil {
+		t.Fatalf("BuildCompactJWSRS256: %v", err)
+	}
+
+	db := ttmocks.NewMockExtendedDB()
+	q := new(ttmocks.MockQuery)
+
+	db.On("WithContext", mock.Anything).Return(db).Maybe()
+	db.On("Model", mock.Anything).Return(q).Maybe()
+	q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
+	q.On("ConsistentRead").Return(q).Maybe()
+
+	actorURI := "at://did:example:alice/app.bsky.feed.post/123"
+	objectURI := "at://did:example:alice/app.bsky.feed.post/123"
+	contentHash := "sha256:deadbeef"
+	module := "claim_verify_llm"
+	policyVersion := "v1"
+	id := attestations.AttestationID(actorURI, objectURI, contentHash, module, policyVersion)
+
+	q.On("First", mock.AnythingOfType("*models.Attestation")).Return(nil).Run(func(args mock.Arguments) {
+		dest := args.Get(0).(*models.Attestation)
+		*dest = models.Attestation{
+			ID:        id,
+			JWS:       jws,
+			ExpiresAt: time.Now().UTC().Add(1 * time.Hour),
+		}
+	}).Once()
+
+	s := &Server{store: store.New(db)}
+
+	// Missing params.
+	if _, err := s.handleLookupAttestation(&apptheory.Context{Request: apptheory.Request{Query: map[string][]string{}}}); err == nil {
+		t.Fatalf("expected error for missing params")
+	}
+
+	ctx := &apptheory.Context{Request: apptheory.Request{Query: map[string][]string{
+		"actor_uri":      {actorURI},
+		"object_uri":     {objectURI},
+		"content_hash":   {contentHash},
+		"module":         {module},
+		"policy_version": {policyVersion},
+	}}}
+	resp, err := s.handleLookupAttestation(ctx)
+	if err != nil {
+		t.Fatalf("handleLookupAttestation err: %v", err)
+	}
+	if resp == nil || resp.Status != 200 {
+		t.Fatalf("expected 200, got %#v", resp)
+	}
+}

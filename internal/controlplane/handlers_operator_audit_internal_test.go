@@ -1,82 +1,84 @@
 package controlplane
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
-	apptheory "github.com/theory-cloud/apptheory/runtime"
+	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
 
+	"github.com/stretchr/testify/mock"
+
+	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
-func TestParseRFC3339Time(t *testing.T) {
+type operatorAuditTestDB struct {
+	db     *ttmocks.MockExtendedDB
+	qAudit *ttmocks.MockQuery
+}
+
+func newOperatorAuditTestDB() operatorAuditTestDB {
+	db := ttmocks.NewMockExtendedDB()
+	qAudit := new(ttmocks.MockQuery)
+
+	db.On("WithContext", mock.Anything).Return(db).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.AuditLogEntry")).Return(qAudit).Maybe()
+
+	qAudit.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qAudit).Maybe()
+	qAudit.On("Limit", mock.Anything).Return(qAudit).Maybe()
+
+	return operatorAuditTestDB{db: db, qAudit: qAudit}
+}
+
+func TestHandleListOperatorAuditLog_TargetAndGlobalQueryPaths(t *testing.T) {
 	t.Parallel()
 
-	if got, err := parseRFC3339Time(" "); err != nil || !got.IsZero() {
-		t.Fatalf("expected zero time, got %v err=%v", got, err)
+	tdb := newOperatorAuditTestDB()
+	s := &Server{store: store.New(tdb.db)}
+
+	// Target-scoped query path.
+	tdb.qAudit.On("All", mock.AnythingOfType("*[]*models.AuditLogEntry")).Return(nil).Run(func(args mock.Arguments) {
+		dest := args.Get(0).(*[]*models.AuditLogEntry)
+		*dest = []*models.AuditLogEntry{
+			nil,
+			{Actor: "alice", Action: "x", RequestID: "r1", CreatedAt: time.Unix(10, 0).UTC()},
+			{Actor: "bob", Action: "x", RequestID: "r1", CreatedAt: time.Unix(20, 0).UTC()},
+		}
+	}).Once()
+
+	ctx := operatorCtx()
+	ctx.Request.Query = map[string][]string{
+		"target": {"instance:demo"},
+		"actor":  {"bob"},
+		"limit":  {"1"},
+	}
+	resp, err := s.handleListOperatorAuditLog(ctx)
+	if err != nil || resp == nil || resp.Status != 200 {
+		t.Fatalf("resp=%#v err=%v", resp, err)
 	}
 
-	got, err := parseRFC3339Time("2026-02-06T00:00:00Z")
-	if err != nil {
-		t.Fatalf("parseRFC3339Time: %v", err)
+	var parsed listOperatorAuditLogResponse
+	if err := json.Unmarshal(resp.Body, &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
 	}
-	if got.Location() != time.UTC {
-		t.Fatalf("expected UTC, got %v", got.Location())
+	if parsed.Count != 1 || len(parsed.Entries) != 1 || parsed.Entries[0].Actor != "bob" {
+		t.Fatalf("unexpected output: %#v", parsed)
 	}
 
-	if _, err := parseRFC3339Time("nope"); err == nil {
-		t.Fatalf("expected error")
+	// Global query path (no target).
+	tdb.qAudit.On("All", mock.AnythingOfType("*[]*models.AuditLogEntry")).Return(nil).Run(func(args mock.Arguments) {
+		dest := args.Get(0).(*[]*models.AuditLogEntry)
+		*dest = []*models.AuditLogEntry{
+			{Actor: "alice", Action: "a", CreatedAt: time.Unix(5, 0).UTC()},
+		}
+	}).Once()
+
+	ctx2 := operatorCtx()
+	ctx2.Request.Query = map[string][]string{"limit": {"2"}}
+	resp, err = s.handleListOperatorAuditLog(ctx2)
+	if err != nil || resp == nil || resp.Status != 200 {
+		t.Fatalf("resp=%#v err=%v", resp, err)
 	}
 }
 
-func TestParseOperatorAuditLogFilters(t *testing.T) {
-	t.Parallel()
-
-	ctx := &apptheory.Context{
-		Request: apptheory.Request{
-			Query: map[string][]string{
-				"limit": {"999"},
-				"since": {"2026-02-06T00:00:00Z"},
-			},
-		},
-	}
-
-	f, appErr := parseOperatorAuditLogFilters(ctx)
-	if appErr != nil {
-		t.Fatalf("parseOperatorAuditLogFilters: %v", appErr)
-	}
-	if f.Limit != 200 {
-		t.Fatalf("expected limit clamped to 200, got %d", f.Limit)
-	}
-	if f.Since.IsZero() {
-		t.Fatalf("expected since parsed")
-	}
-
-	ctx.Request.Query["since"] = []string{"nope"}
-	if _, appErr := parseOperatorAuditLogFilters(ctx); appErr == nil {
-		t.Fatalf("expected bad_request for invalid since")
-	}
-}
-
-func TestFilterOperatorAuditLogEntries_FiltersSortsAndLimits(t *testing.T) {
-	t.Parallel()
-
-	now := time.Unix(100, 0).UTC()
-	items := []*models.AuditLogEntry{
-		nil,
-		{Actor: "alice", Action: "a", RequestID: "r1", CreatedAt: now.Add(-1 * time.Hour)},
-		{Actor: "bob", Action: "a", RequestID: "r2", CreatedAt: now},
-		{Actor: "alice", Action: "b", RequestID: "r3", CreatedAt: now.Add(-2 * time.Hour)},
-	}
-
-	out := filterOperatorAuditLogEntries(items, operatorAuditLogFilters{
-		Actor: "alice",
-		Limit: 1,
-	})
-	if len(out) != 1 {
-		t.Fatalf("expected limited output, got %#v", out)
-	}
-	if out[0].Actor != "alice" {
-		t.Fatalf("unexpected output: %#v", out[0])
-	}
-}

@@ -239,6 +239,67 @@ func TestRunLinkSafetyBasicJob_DebitedSuccess(t *testing.T) {
 	}
 }
 
+func TestRunLinkSafetyBasicJob_CacheHit(t *testing.T) {
+	t.Parallel()
+
+	tdb := newPublishJobsTestDB()
+	s := NewServer(config.Config{}, store.New(tdb.db))
+
+	// Cache hit.
+	tdb.qLSB.On("First", mock.AnythingOfType("*models.LinkSafetyBasicResult")).Return(nil).Run(func(args mock.Arguments) {
+		dest := args.Get(0).(*models.LinkSafetyBasicResult)
+		*dest = models.LinkSafetyBasicResult{
+			ID:            strings.Repeat("a", 64),
+			PolicyVersion: linkSafetyBasicPolicyVersion,
+			ActorURI:      "https://actor.example",
+			ObjectURI:     "https://obj.example",
+			ContentHash:   "hash",
+			LinksHash:     "lh",
+			CreatedAt:     time.Unix(1, 0).UTC(),
+			ExpiresAt:     time.Unix(2, 0).UTC(),
+		}
+		_ = dest.UpdateKeys()
+	}).Once()
+
+	ctx := &apptheory.Context{RequestID: "rid"}
+	got := s.runLinkSafetyBasicJob(ctx, "inst", strings.Repeat("a", 64), "actor", "obj", "ch", "lh", []string{"https://example.com"}, overagePolicyBlock, 10000)
+	if got.Status != "ok" || !got.Cached || got.Budget.Reason != "cache_hit" {
+		t.Fatalf("unexpected response: %#v", got)
+	}
+}
+
+func TestHandleLinkSafetyBasicConditionFailed_BudgetLookupBranches(t *testing.T) {
+	t.Parallel()
+
+	tdb := newPublishJobsTestDB()
+	s := NewServer(config.Config{}, store.New(tdb.db))
+
+	now := time.Unix(100, 0).UTC()
+	ctx := &apptheory.Context{RequestID: "rid"}
+
+	// No cached result, but budget record exists => "budget conflict" when remaining >= priced.
+	tdb.qLSB.On("First", mock.AnythingOfType("*models.LinkSafetyBasicResult")).Return(theoryErrors.ErrItemNotFound).Once()
+	tdb.qBudget.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(nil).Run(func(args mock.Arguments) {
+		dest := args.Get(0).(*models.InstanceBudgetMonth)
+		*dest = models.InstanceBudgetMonth{IncludedCredits: 10, UsedCredits: 5}
+		_ = dest.UpdateKeys()
+	}).Once()
+
+	resp := s.handleLinkSafetyBasicConditionFailed(ctx, "inst", "2026-02", "pk", "sk", "job", "actor", "obj", "ch", "lh", 1, 4, 10000, now)
+	if resp.Status != "not_checked_budget" || resp.Budget.Reason != "budget conflict" {
+		t.Fatalf("unexpected resp: %#v", resp)
+	}
+
+	// No cached result and no readable budget record => defaults to "budget exceeded".
+	tdb.qLSB.On("First", mock.AnythingOfType("*models.LinkSafetyBasicResult")).Return(theoryErrors.ErrItemNotFound).Once()
+	tdb.qBudget.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(theoryErrors.ErrItemNotFound).Once()
+
+	resp = s.handleLinkSafetyBasicConditionFailed(ctx, "inst", "2026-02", "pk", "sk", "job", "actor", "obj", "ch", "lh", 1, 10, 10000, now)
+	if resp.Status != "not_checked_budget" || resp.Budget.Reason != "budget exceeded" {
+		t.Fatalf("unexpected resp: %#v", resp)
+	}
+}
+
 func TestHandleGetPublishJob_ValidationNotFoundAndSuccess(t *testing.T) {
 	t.Parallel()
 

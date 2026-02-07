@@ -204,3 +204,28 @@ func TestHandleBudgetDebit_NotConfiguredAndExceeded(t *testing.T) {
 		t.Fatalf("unexpected resp: %#v err=%v", resp, err)
 	}
 }
+
+func TestBuildBudgetDebitEntries(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(100, 0).UTC()
+	prepared := budgetDebitPrepared{
+		InstanceSlug: "inst",
+		RequestID:    "rid",
+		Month:        "2026-01",
+		Credits:      5,
+	}
+
+	ledger := buildBudgetDebitLedgerEntry(prepared, now, "included", 4, 1)
+	if ledger == nil || ledger.InstanceSlug != "inst" || ledger.Month != "2026-01" || ledger.Module != "budget.debit" {
+		t.Fatalf("unexpected ledger: %#v", ledger)
+	}
+	if ledger.IncludedDebitedCredits != 4 || ledger.OverageDebitedCredits != 1 || ledger.DebitedCredits != 5 {
+		t.Fatalf("unexpected ledger credits: %#v", ledger)
+	}
+
+	audit := buildBudgetDebitAuditEntry(prepared, now)
+	if audit == nil || audit.Actor != "inst" || audit.Action != "budget.debit" || audit.Target == "" {
+		t.Fatalf("unexpected audit: %#v", audit)
+	}
+}

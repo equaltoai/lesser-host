@@ -2,16 +2,21 @@ package renderworker
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/aws/aws-lambda-go/events"
+	apptheory "github.com/theory-cloud/apptheory/runtime"
 	"github.com/theory-cloud/apptheory/testkit"
 
 	"github.com/equaltoai/lesser-host/internal/config"
+	"github.com/equaltoai/lesser-host/internal/rendering"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -207,4 +212,189 @@ func containsString(haystack []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+func TestHandlePreviewQueueMessage_DropsInvalidAndUnknown(t *testing.T) {
+	t.Parallel()
+
+	s := &Server{store: &fakeRenderStore{}}
+
+	if err := s.handlePreviewQueueMessage(nil, events.SQSMessage{}); err == nil {
+		t.Fatalf("expected error for nil ctx")
+	}
+
+	ctx := &apptheory.EventContext{RequestID: "r1"}
+
+	// Invalid JSON is dropped.
+	if err := s.handlePreviewQueueMessage(ctx, events.SQSMessage{Body: "{"}); err != nil {
+		t.Fatalf("expected nil for invalid json, got %v", err)
+	}
+
+	// Unknown kind is dropped.
+	body, _ := json.Marshal(rendering.RenderJobMessage{Kind: "other"})
+	if err := s.handlePreviewQueueMessage(ctx, events.SQSMessage{Body: string(body)}); err != nil {
+		t.Fatalf("expected nil for unknown kind, got %v", err)
+	}
+}
+
+func TestSQSQueueNameFromURL(t *testing.T) {
+	t.Parallel()
+
+	if got := sqsQueueNameFromURL(""); got != "" {
+		t.Fatalf("expected empty, got %q", got)
+	}
+	if got := sqsQueueNameFromURL("http://%"); got != "" {
+		t.Fatalf("expected empty, got %q", got)
+	}
+	if got := sqsQueueNameFromURL("not a url"); got != "not a url" {
+		t.Fatalf("expected last path segment, got %q", got)
+	}
+	if got := sqsQueueNameFromURL("https://sqs.us-east-1.amazonaws.com/123/q"); got != "q" {
+		t.Fatalf("expected q, got %q", got)
+	}
+}
+
+func TestRenderJobHelpers(t *testing.T) {
+	t.Parallel()
+
+	normalized := "https://8.8.8.8/"
+	wantID := normalizeRenderJobID(normalized, "")
+	if wantID == "" {
+		t.Fatalf("expected render id")
+	}
+	if got := normalizeRenderJobID(normalized, "wrong"); got != wantID {
+		t.Fatalf("expected computed id, got %q", got)
+	}
+	if got := normalizeRenderJobID(normalized, wantID); got != wantID {
+		t.Fatalf("expected preserved id, got %q", got)
+	}
+
+	now := time.Date(2026, 2, 7, 0, 0, 0, 0, time.UTC)
+	days, classOut, expiresAt := desiredRenderExpiration(now, models.RenderRetentionClassEvidence, 0)
+	if days <= 0 || classOut == "" || expiresAt.IsZero() {
+		t.Fatalf("unexpected desiredRenderExpiration: days=%d class=%q expiresAt=%v", days, classOut, expiresAt)
+	}
+
+	days2, _, _ := desiredRenderExpiration(now, models.RenderRetentionClassBenign, 3)
+	if days2 != 3 {
+		t.Fatalf("expected override retention days, got %d", days2)
+	}
+
+	if maxTime(now, now.Add(1*time.Minute)) != now.Add(1*time.Minute) {
+		t.Fatalf("expected maxTime to pick later time")
+	}
+
+	if got := classOutOrExisting("", models.RenderRetentionClassEvidence); got != models.RenderRetentionClassEvidence {
+		t.Fatalf("expected evidence preference, got %q", got)
+	}
+	if got := classOutOrExisting("custom", ""); got != "custom" {
+		t.Fatalf("expected preserve existing class, got %q", got)
+	}
+	if got := safeURLString(nil); got != "" {
+		t.Fatalf("expected empty")
+	}
+	u, _ := url.Parse("https://example.com/")
+	if got := safeURLString(u); got != "https://example.com/" {
+		t.Fatalf("unexpected url string: %q", got)
+	}
+}
+
+func TestMaybeShortCircuitExistingRender_UpdatesRetentionAndReturnsDone(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	normalized := "https://8.8.8.8/"
+	renderID := normalizeRenderJobID(normalized, "")
+
+	st := &fakeRenderStore{
+		items: map[string]*models.RenderArtifact{
+			renderID: {
+				ID:                 renderID,
+				PolicyVersion:      "v1",
+				NormalizedURL:      normalized,
+				RetentionClass:     models.RenderRetentionClassBenign,
+				ThumbnailObjectKey: "renders/" + renderID + "/thumbnail.jpg",
+				RenderedAt:         now.Add(-1 * time.Minute),
+				ExpiresAt:          now.Add(1 * time.Hour),
+			},
+		},
+	}
+
+	srv := NewServer(config.Config{}, st, &fakeArtifactStore{})
+
+	done, err := srv.maybeShortCircuitExistingRender(context.Background(), renderID, now.Add(48*time.Hour), models.RenderRetentionClassEvidence, "req", "inst")
+	if err != nil || !done {
+		t.Fatalf("expected done=true, got done=%v err=%v", done, err)
+	}
+
+	st.mu.Lock()
+	got := st.items[renderID]
+	st.mu.Unlock()
+	if got == nil || got.RetentionClass != models.RenderRetentionClassEvidence {
+		t.Fatalf("expected retention upgraded, got %#v", got)
+	}
+	if !got.ExpiresAt.After(now.Add(1 * time.Hour)) {
+		t.Fatalf("expected expiry extended, got %v", got.ExpiresAt)
+	}
+}
+
+func TestProcessRenderJob_StoresInvalidAndBlockedErrors(t *testing.T) {
+	t.Parallel()
+
+	st := &fakeRenderStore{}
+	srv := NewServer(config.Config{}, st, &fakeArtifactStore{})
+
+	ctx := context.Background()
+
+	invalid := rendering.RenderJobMessage{Kind: "render", NormalizedURL: "not a url", RequestedBy: "inst"}
+	if err := srv.processRenderJob(ctx, "req1", invalid); err != nil {
+		t.Fatalf("invalid url job: %v", err)
+	}
+
+	blocked := rendering.RenderJobMessage{Kind: "render", NormalizedURL: "http://127.0.0.1/", RequestedBy: "inst"}
+	if err := srv.processRenderJob(ctx, "req2", blocked); err != nil {
+		t.Fatalf("blocked url job: %v", err)
+	}
+
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if len(st.items) != 2 {
+		t.Fatalf("expected 2 artifacts stored, got %d", len(st.items))
+	}
+	foundInvalid := false
+	foundBlocked := false
+	for _, it := range st.items {
+		if it == nil {
+			continue
+		}
+		switch strings.TrimSpace(it.ErrorCode) {
+		case "invalid_url":
+			foundInvalid = true
+		case "blocked_ssrf":
+			foundBlocked = true
+		}
+	}
+	if !foundInvalid || !foundBlocked {
+		t.Fatalf("expected both invalid_url and blocked_ssrf stored, got %#v", st.items)
+	}
+}
+
+func TestStoreNonHTMLArtifact_StoresNotHTML(t *testing.T) {
+	t.Parallel()
+
+	st := &fakeRenderStore{}
+	srv := NewServer(config.Config{}, st, &fakeArtifactStore{})
+
+	now := time.Now().UTC()
+	finalURL, _ := url.Parse("https://example.com/")
+	if err := srv.storeNonHTMLArtifact(context.Background(), "rid", "https://example.com/", finalURL, []string{"https://example.com/"}, models.RenderRetentionClassBenign, now.Add(1*time.Hour), "req", "inst", now); err != nil {
+		t.Fatalf("storeNonHTMLArtifact: %v", err)
+	}
+
+	st.mu.Lock()
+	got := st.items["rid"]
+	st.mu.Unlock()
+	if got == nil || got.ErrorCode != "not_html" {
+		t.Fatalf("expected not_html artifact, got %#v", got)
+	}
 }
