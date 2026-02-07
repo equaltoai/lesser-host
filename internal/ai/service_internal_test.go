@@ -290,3 +290,110 @@ func TestServiceGetOrQueue_QueueNoChargeAndDebit(t *testing.T) {
 		t.Fatalf("unexpected response: %#v", resp)
 	}
 }
+
+func TestServiceHandleDebitConditionFailed_CoversBranches(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	prepared := getOrQueuePrepared{
+		InstanceSlug: "inst",
+		JobID:        strings.Repeat("c", 64),
+		ResultID:     strings.Repeat("c", 64),
+		Now:          now,
+		Month:        "2026-02",
+	}
+
+	t.Run("cache_hit", func(t *testing.T) {
+		tdb := newAIServiceTestDB()
+		svc := NewService(store.New(tdb.db))
+
+		tdb.qRes.On("First", mock.AnythingOfType("*models.AIResult")).Return(nil).Run(func(args mock.Arguments) {
+			dest := args.Get(0).(*models.AIResult)
+			*dest = models.AIResult{ID: prepared.ResultID, ExpiresAt: now.Add(1 * time.Hour)}
+			_ = dest.UpdateKeys()
+		}).Once()
+
+		resp, err := svc.handleDebitConditionFailed(context.Background(), prepared, "PK", "SK", 10)
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if resp.Status != JobStatusOK || !resp.Cached || resp.Budget.Reason != "cache_hit" {
+			t.Fatalf("unexpected resp: %#v", resp)
+		}
+	})
+
+	t.Run("already_queued", func(t *testing.T) {
+		tdb := newAIServiceTestDB()
+		svc := NewService(store.New(tdb.db))
+
+		tdb.qRes.On("First", mock.AnythingOfType("*models.AIResult")).Return(theoryErrors.ErrItemNotFound).Once()
+		tdb.qJob.On("First", mock.AnythingOfType("*models.AIJob")).Return(nil).Run(func(args mock.Arguments) {
+			dest := args.Get(0).(*models.AIJob)
+			*dest = models.AIJob{ID: prepared.JobID}
+			_ = dest.UpdateKeys()
+		}).Once()
+
+		resp, err := svc.handleDebitConditionFailed(context.Background(), prepared, "PK", "SK", 10)
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if resp.Status != JobStatusQueued || resp.Budget.Reason != "already_queued" {
+			t.Fatalf("unexpected resp: %#v", resp)
+		}
+	})
+
+	t.Run("budget_conflict_and_exceeded", func(t *testing.T) {
+		for _, tc := range []struct {
+			name   string
+			used   int64
+			reason string
+		}{
+			{name: "conflict", used: 50, reason: "budget conflict"},
+			{name: "exceeded", used: 95, reason: "budget exceeded"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				tdb := newAIServiceTestDB()
+				svc := NewService(store.New(tdb.db))
+
+				tdb.qRes.On("First", mock.AnythingOfType("*models.AIResult")).Return(theoryErrors.ErrItemNotFound).Once()
+				tdb.qJob.On("First", mock.AnythingOfType("*models.AIJob")).Return(theoryErrors.ErrItemNotFound).Once()
+				tdb.qBudget.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(nil).Run(func(args mock.Arguments) {
+					dest := args.Get(0).(*models.InstanceBudgetMonth)
+					*dest = models.InstanceBudgetMonth{IncludedCredits: 100, UsedCredits: tc.used}
+					_ = dest.UpdateKeys()
+				}).Once()
+
+				resp, err := svc.handleDebitConditionFailed(context.Background(), prepared, "INSTANCE#inst", "BUDGET#2026-02", 10)
+				if err != nil {
+					t.Fatalf("unexpected err: %v", err)
+				}
+				if resp.Status != JobStatusNotCheckedBudget || resp.Budget.Allowed || !resp.Budget.OverBudget || resp.Budget.Reason != tc.reason {
+					t.Fatalf("unexpected resp: %#v", resp)
+				}
+				if resp.Budget.IncludedCredits != 100 || resp.Budget.UsedCredits != tc.used || resp.Budget.RequestedCredits != 10 {
+					t.Fatalf("unexpected budget: %#v", resp.Budget)
+				}
+			})
+		}
+	})
+
+	t.Run("fallback_budget_exceeded_when_refresh_fails", func(t *testing.T) {
+		tdb := newAIServiceTestDB()
+		svc := NewService(store.New(tdb.db))
+
+		tdb.qRes.On("First", mock.AnythingOfType("*models.AIResult")).Return(theoryErrors.ErrItemNotFound).Once()
+		tdb.qJob.On("First", mock.AnythingOfType("*models.AIJob")).Return(theoryErrors.ErrItemNotFound).Once()
+		tdb.qBudget.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(theoryErrors.ErrItemNotFound).Once()
+
+		resp, err := svc.handleDebitConditionFailed(context.Background(), prepared, "INSTANCE#inst", "BUDGET#2026-02", 10)
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if resp.Status != JobStatusNotCheckedBudget || resp.Budget.Allowed || !resp.Budget.OverBudget || resp.Budget.Reason != "budget exceeded" {
+			t.Fatalf("unexpected resp: %#v", resp)
+		}
+		if resp.Budget.IncludedCredits != 0 || resp.Budget.UsedCredits != 0 {
+			t.Fatalf("expected unknown budget totals, got %#v", resp.Budget)
+		}
+	})
+}

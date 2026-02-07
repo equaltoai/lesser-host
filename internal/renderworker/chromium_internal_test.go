@@ -301,3 +301,99 @@ func TestEnsureChromiumReady_InflatesAllAssets(t *testing.T) {
 		t.Fatalf("expected memoized path, got path=%q err=%v", execPath2, err)
 	}
 }
+
+func TestInitChromium_SkipsInflationWhenBinaryAlreadyPresent(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	t.Setenv("FONTCONFIG_PATH", "")
+	t.Setenv("HOME", "")
+	t.Setenv("LD_LIBRARY_PATH", "")
+
+	execPath := filepath.Join(tmp, "chromium")
+	if err := os.WriteFile(execPath, []byte("already"), 0o700); err != nil {
+		t.Fatalf("write chromium: %v", err)
+	}
+
+	got, err := initChromium()
+	if err != nil {
+		t.Fatalf("initChromium err: %v", err)
+	}
+	if got != execPath {
+		t.Fatalf("expected exec path %q, got %q", execPath, got)
+	}
+	if os.Getenv("FONTCONFIG_PATH") == "" || os.Getenv("HOME") == "" || os.Getenv("LD_LIBRARY_PATH") == "" {
+		t.Fatalf("expected chromium env set")
+	}
+}
+
+func TestInflateBrotliFile_ReturnsErrorWhenSourceMissing(t *testing.T) {
+	t.Parallel()
+
+	dest := filepath.Join(t.TempDir(), "out.bin")
+	if err := inflateBrotliFile(filepath.Join(t.TempDir(), "missing.br"), dest, 0o600); err == nil {
+		t.Fatalf("expected error for missing src")
+	}
+}
+
+func TestInflateBrotliFile_ReturnsErrorWhenDestIsDirectory(t *testing.T) {
+	t.Parallel()
+
+	// Create a valid brotli file.
+	src := filepath.Join(t.TempDir(), "in.br")
+	{
+		var buf bytes.Buffer
+		w := brotli.NewWriter(&buf)
+		if _, err := w.Write([]byte("hello")); err != nil {
+			t.Fatalf("brotli write: %v", err)
+		}
+		if err := w.Close(); err != nil {
+			t.Fatalf("brotli close: %v", err)
+		}
+		if err := os.WriteFile(src, buf.Bytes(), 0o600); err != nil {
+			t.Fatalf("write src: %v", err)
+		}
+	}
+
+	destDir := filepath.Join(t.TempDir(), "outdir")
+	if err := os.MkdirAll(destDir, 0o750); err != nil {
+		t.Fatalf("mkdir dest: %v", err)
+	}
+
+	if err := inflateBrotliFile(src, destDir, 0o600); err == nil {
+		t.Fatalf("expected error when dest is directory")
+	}
+}
+
+func TestInflateTarBrotli_ReturnsErrorWhenSourceMissingAndNotOptional(t *testing.T) {
+	t.Parallel()
+
+	destDir := filepath.Join(t.TempDir(), "fonts") // must not exist to avoid skip
+	if err := inflateTarBrotli(filepath.Join(t.TempDir(), "missing.tar.br"), destDir, "fonts"); err == nil {
+		t.Fatalf("expected error for missing fonts archive")
+	}
+}
+
+func TestExtractTarFile_ReturnsErrorsForLimitsAndShortReads(t *testing.T) {
+	t.Parallel()
+
+	dest := t.TempDir()
+
+	// Header too large.
+	_, err := extractTarFile(nil, &tar.Header{Name: "big.txt", Typeflag: tar.TypeReg, Size: 5}, filepath.Join(dest, "big.txt"), 0, tarExtractLimits{MaxFileBytes: 4})
+	if err == nil {
+		t.Fatalf("expected size limit error")
+	}
+
+	// Total too large.
+	_, err = extractTarFile(nil, &tar.Header{Name: "big.txt", Typeflag: tar.TypeReg, Size: 5}, filepath.Join(dest, "big2.txt"), 0, tarExtractLimits{MaxTotalBytes: 4})
+	if err == nil {
+		t.Fatalf("expected total limit error")
+	}
+
+	// Short read when tar reader has no current file.
+	tr := tar.NewReader(bytes.NewReader(nil))
+	_, err = extractTarFile(tr, &tar.Header{Name: "x.txt", Typeflag: tar.TypeReg, Size: 1}, filepath.Join(dest, "x.txt"), 0, tarExtractLimits{MaxFileBytes: 10, MaxTotalBytes: 10})
+	if err == nil {
+		t.Fatalf("expected short read error")
+	}
+}

@@ -131,9 +131,9 @@ func TestModerationBatchAnthropic_AdapterIsCISafe(t *testing.T) {
 			"name": "moderation_batch",
 			"input": map[string]any{
 				"items": []any{map[string]any{
-					"item_id":   itemID,
-					"decision":  "review",
-					"notes":     "ok",
+					"item_id":    itemID,
+					"decision":   "review",
+					"notes":      "ok",
 					"highlights": []any{},
 					"categories": []any{},
 				}},
@@ -169,25 +169,44 @@ func TestModerationBatchAnthropic_AdapterIsCISafe(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	out, usage, err := ModerationTextBatchAnthropic(ctx, "sk-ant-test", "anthropic:claude-test", []ModerationTextBatchItem{{
+	outText, usageText, err := ModerationTextBatchAnthropic(ctx, "sk-ant-test", "anthropic:claude-test", []ModerationTextBatchItem{{
 		ItemID: itemID,
 		Input:  ai.ModerationTextInputsV1{Text: "hello"},
 	}})
 	if err != nil {
 		t.Fatalf("ModerationTextBatchAnthropic error: %v", err)
 	}
-	if usage.Provider != "anthropic" {
-		t.Fatalf("expected provider anthropic, got %q", usage.Provider)
+	if usageText.Provider != "anthropic" {
+		t.Fatalf("expected provider anthropic, got %q", usageText.Provider)
 	}
-	got, ok := out[itemID]
+	gotText, ok := outText[itemID]
 	if !ok {
 		t.Fatalf("expected output for %q", itemID)
 	}
-	if got.Kind != "moderation_text" || got.Version != "v1" || got.Decision != "review" {
-		t.Fatalf("unexpected moderation result: %#v", got)
+	if gotText.Kind != "moderation_text" || gotText.Version != "v1" || gotText.Decision != "review" {
+		t.Fatalf("unexpected moderation text result: %#v", gotText)
 	}
-	if calls != 1 {
-		t.Fatalf("expected 1 anthropic call, got %d", calls)
+
+	outImage, usageImage, err := ModerationImageBatchAnthropic(ctx, "sk-ant-test", "anthropic:claude-test", []ModerationImageBatchItem{{
+		ItemID: itemID,
+		Input:  ai.ModerationImageInputsV1{ObjectKey: "obj-1"},
+	}})
+	if err != nil {
+		t.Fatalf("ModerationImageBatchAnthropic error: %v", err)
+	}
+	if usageImage.Provider != "anthropic" {
+		t.Fatalf("expected provider anthropic, got %q", usageImage.Provider)
+	}
+	gotImage, ok := outImage[itemID]
+	if !ok {
+		t.Fatalf("expected output for %q", itemID)
+	}
+	if gotImage.Kind != "moderation_image" || gotImage.Version != "v1" || gotImage.Decision != "review" {
+		t.Fatalf("unexpected moderation image result: %#v", gotImage)
+	}
+
+	if calls != 2 {
+		t.Fatalf("expected 2 anthropic calls, got %d", calls)
 	}
 }
 
@@ -296,13 +315,13 @@ func TestClaimVerifyBatchAnthropic_AdapterIsCISafe(t *testing.T) {
 				"items": []any{map[string]any{
 					"item_id": itemID,
 					"claims": []any{map[string]any{
-						"claim_id":        "c1",
-						"text":            "Example claim.",
-						"classification":  "checkable",
-						"verdict":         "supported",
-						"confidence":      0.9,
-						"reason":          "ok",
-						"citations":       []any{map[string]any{"source_id": "s1", "quote": "quote"}},
+						"claim_id":       "c1",
+						"text":           "Example claim.",
+						"classification": "checkable",
+						"verdict":        "supported",
+						"confidence":     0.9,
+						"reason":         "ok",
+						"citations":      []any{map[string]any{"source_id": "s1", "quote": "quote"}},
 					}},
 					"warnings": []any{},
 				}},
@@ -372,14 +391,14 @@ func TestClaimVerifyWebSearchEvidenceOpenAI_AdapterIsCISafe(t *testing.T) {
 	}
 
 	respBytes, err := json.Marshal(map[string]any{
-		"id":                "resp_test",
-		"object":            "response",
-		"created_at":        123,
-		"error":             map[string]any{"code": "", "message": ""},
+		"id":                 "resp_test",
+		"object":             "response",
+		"created_at":         123,
+		"error":              map[string]any{"code": "", "message": ""},
 		"incomplete_details": map[string]any{},
-		"instructions":      "",
-		"metadata":          map[string]any{},
-		"model":             "gpt-test",
+		"instructions":       "",
+		"metadata":           map[string]any{},
+		"model":              "gpt-test",
 		"output": []any{map[string]any{
 			"id":     "msg_test",
 			"type":   "message",
@@ -454,4 +473,3 @@ func TestNormalizeRenderSummaryRisk_DefaultsSeverity(t *testing.T) {
 		t.Fatalf("unexpected normalized risk: %#v", got)
 	}
 }
-

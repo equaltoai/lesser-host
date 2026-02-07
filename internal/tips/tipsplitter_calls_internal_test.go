@@ -96,3 +96,38 @@ func TestDecodeIsTokenAllowedResult(t *testing.T) {
 		t.Fatalf("expected allowed=true")
 	}
 }
+
+func TestEncodeTipSplitterCalls_ReturnNonEmpty(t *testing.T) {
+	t.Parallel()
+
+	hostID := common.HexToHash("0x00000000000000000000000000000000000000000000000000000000000000bb")
+	wallet := common.HexToAddress("0x00000000000000000000000000000000000000aa")
+	token := common.HexToAddress("0x00000000000000000000000000000000000000cc")
+
+	cases := []struct {
+		name string
+		fn   func() ([]byte, error)
+	}{
+		{name: "register_host", fn: func() ([]byte, error) { return EncodeRegisterHostCall(hostID, wallet, 25) }},
+		{name: "update_host", fn: func() ([]byte, error) { return EncodeUpdateHostCall(hostID, wallet, 25) }},
+		{name: "set_host_active", fn: func() ([]byte, error) { return EncodeSetHostActiveCall(hostID, true) }},
+		{name: "set_token_allowed", fn: func() ([]byte, error) { return EncodeSetTokenAllowedCall(token, true) }},
+		{name: "get_host", fn: func() ([]byte, error) { return EncodeGetHostCall(hostID) }},
+		{name: "is_token_allowed", fn: func() ([]byte, error) { return EncodeIsTokenAllowedCall(token) }},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			out, err := tc.fn()
+			if err != nil {
+				t.Fatalf("encode: %v", err)
+			}
+			if len(out) < 4 {
+				t.Fatalf("expected non-empty call data, got %d bytes", len(out))
+			}
+		})
+	}
+}

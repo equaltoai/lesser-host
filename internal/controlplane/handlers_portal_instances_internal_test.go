@@ -512,6 +512,120 @@ func TestHandlePortalDisableInstanceDomain_NotFound(t *testing.T) {
 	}
 }
 
+func TestHandlePortalRotateAndDisableAndDeleteInstanceDomain_Success(t *testing.T) {
+	t.Parallel()
+
+	tdb := newPortalTestDB()
+	s := &Server{store: store.New(tdb.db)}
+
+	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := args.Get(0).(*models.Instance)
+		*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive}
+	}).Maybe()
+
+	t.Run("rotate_success", func(t *testing.T) {
+		tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
+			dest := args.Get(0).(*models.Domain)
+			*dest = models.Domain{
+				Domain:       "example.com",
+				DomainRaw:    "Example.COM",
+				InstanceSlug: "demo",
+				Type:         models.DomainTypeVanity,
+				Status:       models.DomainStatusVerified,
+			}
+			_ = dest.UpdateKeys()
+		}).Once()
+
+		tdb.qDomain.On("Update", mock.Anything).Return(nil).Once()
+		tdb.qAudit.On("Create").Return(nil).Maybe()
+
+		ctx := &apptheory.Context{
+			AuthIdentity: "alice",
+			RequestID:    "rid",
+			Params:       map[string]string{"slug": "demo", "domain": "example.com"},
+		}
+		resp, err := s.handlePortalRotateInstanceDomain(ctx)
+		if err != nil || resp == nil || resp.Status != 200 {
+			t.Fatalf("resp=%#v err=%v", resp, err)
+		}
+
+		var out addDomainResponse
+		if err := json.Unmarshal(resp.Body, &out); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if strings.TrimSpace(out.Domain.Status) != models.DomainStatusPending || strings.TrimSpace(out.Verification.TXTValue) == "" {
+			t.Fatalf("unexpected rotate response: %#v", out)
+		}
+	})
+
+	t.Run("disable_success", func(t *testing.T) {
+		tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
+			dest := args.Get(0).(*models.Domain)
+			*dest = models.Domain{
+				Domain:       "example.com",
+				InstanceSlug: "demo",
+				Type:         models.DomainTypeVanity,
+				Status:       models.DomainStatusVerified,
+			}
+			_ = dest.UpdateKeys()
+		}).Once()
+
+		tdb.qDomain.On("Update", mock.Anything).Return(nil).Once()
+		tdb.qAudit.On("Create").Return(nil).Maybe()
+
+		ctx := &apptheory.Context{
+			AuthIdentity: "alice",
+			RequestID:    "rid",
+			Params:       map[string]string{"slug": "demo", "domain": "example.com"},
+		}
+		resp, err := s.handlePortalDisableInstanceDomain(ctx)
+		if err != nil || resp == nil || resp.Status != 200 {
+			t.Fatalf("resp=%#v err=%v", resp, err)
+		}
+
+		var out verifyDomainResponse
+		if err := json.Unmarshal(resp.Body, &out); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if strings.TrimSpace(out.Domain.Status) != models.DomainStatusDisabled {
+			t.Fatalf("expected disabled domain, got %#v", out.Domain)
+		}
+	})
+
+	t.Run("delete_success", func(t *testing.T) {
+		tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
+			dest := args.Get(0).(*models.Domain)
+			*dest = models.Domain{
+				Domain:       "example.com",
+				InstanceSlug: "demo",
+				Type:         models.DomainTypeVanity,
+				Status:       models.DomainStatusDisabled,
+			}
+			_ = dest.UpdateKeys()
+		}).Once()
+
+		tdb.qAudit.On("Create").Return(nil).Maybe()
+
+		ctx := &apptheory.Context{
+			AuthIdentity: "alice",
+			RequestID:    "rid",
+			Params:       map[string]string{"slug": "demo", "domain": "example.com"},
+		}
+		resp, err := s.handlePortalDeleteInstanceDomain(ctx)
+		if err != nil || resp == nil || resp.Status != 200 {
+			t.Fatalf("resp=%#v err=%v", resp, err)
+		}
+
+		var out map[string]any
+		if err := json.Unmarshal(resp.Body, &out); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if deleted, ok := out["deleted"].(bool); !ok || !deleted {
+			t.Fatalf("expected deleted true, got %#v", out)
+		}
+	})
+}
+
 func TestHandlePortalDeleteInstanceDomain_NotFound(t *testing.T) {
 	t.Parallel()
 

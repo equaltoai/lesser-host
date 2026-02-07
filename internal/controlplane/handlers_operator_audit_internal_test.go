@@ -31,6 +31,37 @@ func newOperatorAuditTestDB() operatorAuditTestDB {
 	return operatorAuditTestDB{db: db, qAudit: qAudit}
 }
 
+func TestParseRFC3339Time_CoversBranches(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty_ok", func(t *testing.T) {
+		out, err := parseRFC3339Time(" ")
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if !out.IsZero() {
+			t.Fatalf("expected zero time, got %v", out)
+		}
+	})
+
+	t.Run("nano_ok", func(t *testing.T) {
+		in := "2026-02-07T01:02:03.123456789Z"
+		out, err := parseRFC3339Time(in)
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if out.Format(time.RFC3339Nano) != in {
+			t.Fatalf("expected %q, got %q", in, out.Format(time.RFC3339Nano))
+		}
+	})
+
+	t.Run("invalid_err", func(t *testing.T) {
+		if _, err := parseRFC3339Time("not-a-time"); err == nil {
+			t.Fatalf("expected error")
+		}
+	})
+}
+
 func TestHandleListOperatorAuditLog_TargetAndGlobalQueryPaths(t *testing.T) {
 	t.Parallel()
 
@@ -81,4 +112,3 @@ func TestHandleListOperatorAuditLog_TargetAndGlobalQueryPaths(t *testing.T) {
 		t.Fatalf("resp=%#v err=%v", resp, err)
 	}
 }
-

@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -199,4 +200,83 @@ func TestHandleVerifyInstanceDomain_ConflictWhenNoVerificationToken(t *testing.T
 	} else if appErr, ok := err.(*apptheory.AppError); !ok || appErr.Code != "app.conflict" {
 		t.Fatalf("expected app.conflict, got %#v", err)
 	}
+}
+
+func TestHandleVerifyInstanceDomain_VerifiesDNSAndMarksVerified(t *testing.T) {
+	tdb := newDomainsTestDB()
+	s := &Server{cfg: config.Config{TipEnabled: false}, store: store.New(tdb.db)}
+
+	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
+		dest := args.Get(0).(*models.Domain)
+		*dest = models.Domain{
+			Domain:             "example.com",
+			DomainRaw:          "Example.COM",
+			InstanceSlug:       "demo",
+			Type:               models.DomainTypeVanity,
+			Status:             models.DomainStatusPending,
+			VerificationMethod: domainVerificationMethodDNSTXT,
+			VerificationToken:  "tok",
+		}
+		_ = dest.UpdateKeys()
+	}).Once()
+	tdb.qDomain.On("Update", mock.Anything).Return(nil).Once()
+	tdb.qAudit.On("Create").Return(nil).Once()
+	tdb.qVReq.On("CreateOrUpdate").Return(nil).Once()
+
+	ctx := adminCtx()
+	ctx.RequestID = "rid"
+	ctx.Params = map[string]string{"slug": "demo", "domain": "example.com"}
+
+	txtName := domainVerificationRecordPrefix + "example.com"
+	want := domainVerificationValuePrefix + "tok"
+
+	withDNSTXTResolver(t, txtName, want, func() {
+		resp, err := s.handleVerifyInstanceDomain(ctx)
+		if err != nil || resp == nil || resp.Status != 200 {
+			t.Fatalf("resp=%#v err=%v", resp, err)
+		}
+
+		var out verifyDomainResponse
+		if err := json.Unmarshal(resp.Body, &out); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if strings.TrimSpace(out.Domain.Status) != models.DomainStatusVerified {
+			t.Fatalf("expected verified, got %#v", out.Domain)
+		}
+		if strings.TrimSpace(out.Domain.VerificationMethod) != domainVerificationMethodDNSTXT {
+			t.Fatalf("expected dns_txt method, got %#v", out.Domain)
+		}
+		if out.Domain.VerifiedAt.IsZero() {
+			t.Fatalf("expected VerifiedAt set, got %#v", out.Domain)
+		}
+	})
+}
+
+func TestHandleVerifyInstanceDomain_ReturnsBadRequestWhenVerificationTXTDoesNotMatch(t *testing.T) {
+	tdb := newDomainsTestDB()
+	s := &Server{store: store.New(tdb.db)}
+
+	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
+		dest := args.Get(0).(*models.Domain)
+		*dest = models.Domain{
+			Domain:            "example.com",
+			InstanceSlug:      "demo",
+			Type:              models.DomainTypeVanity,
+			Status:            models.DomainStatusPending,
+			VerificationToken: "tok",
+		}
+		_ = dest.UpdateKeys()
+	}).Once()
+
+	ctx := adminCtx()
+	ctx.Params = map[string]string{"slug": "demo", "domain": "example.com"}
+
+	txtName := domainVerificationRecordPrefix + "example.com"
+	withDNSTXTResolver(t, txtName, "wrong", func() {
+		if _, err := s.handleVerifyInstanceDomain(ctx); err == nil {
+			t.Fatalf("expected bad_request for missing verification record")
+		} else if appErr, ok := err.(*apptheory.AppError); !ok || appErr.Code != "app.bad_request" {
+			t.Fatalf("expected app.bad_request, got %#v", err)
+		}
+	})
 }

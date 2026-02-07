@@ -237,6 +237,30 @@ func TestHandlePreviewQueueMessage_DropsInvalidAndUnknown(t *testing.T) {
 	}
 }
 
+func TestHandlePreviewQueueMessage_StoreNotInitializedAndMissingFields(t *testing.T) {
+	t.Parallel()
+
+	// Store not initialized.
+	s := &Server{}
+	if err := s.handlePreviewQueueMessage(&apptheory.EventContext{RequestID: "r1"}, events.SQSMessage{Body: `{}`}); err == nil {
+		t.Fatalf("expected store not initialized error")
+	}
+
+	// Missing render id / normalized url => drop.
+	s = &Server{store: &fakeRenderStore{}}
+	ctx := &apptheory.EventContext{RequestID: "r1"}
+
+	body, _ := json.Marshal(rendering.RenderJobMessage{Kind: "render", NormalizedURL: "https://8.8.8.8/"})
+	if err := s.handlePreviewQueueMessage(ctx, events.SQSMessage{Body: string(body)}); err != nil {
+		t.Fatalf("expected drop for missing render_id, got %v", err)
+	}
+
+	body, _ = json.Marshal(rendering.RenderJobMessage{Kind: "render", RenderID: "rid"})
+	if err := s.handlePreviewQueueMessage(ctx, events.SQSMessage{Body: string(body)}); err != nil {
+		t.Fatalf("expected drop for missing normalized_url, got %v", err)
+	}
+}
+
 func TestSQSQueueNameFromURL(t *testing.T) {
 	t.Parallel()
 
@@ -379,6 +403,91 @@ func TestProcessRenderJob_StoresInvalidAndBlockedErrors(t *testing.T) {
 	}
 }
 
+func TestValidateAndFetchRenderHTML_ReturnsFetchFailedOnCanceledContext(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, _, _, _, code, msg, err := validateAndFetchRenderHTML(ctx, "https://8.8.8.8/")
+	if err == nil || code != "fetch_failed" || strings.TrimSpace(msg) == "" {
+		t.Fatalf("expected fetch_failed, got code=%q msg=%q err=%v", code, msg, err)
+	}
+}
+
+func TestProcessRenderJob_ShortCircuitsWhenExistingAlreadyRendered(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	normalized := "https://8.8.8.8/"
+	renderID := normalizeRenderJobID(normalized, "")
+
+	st := &fakeRenderStore{
+		items: map[string]*models.RenderArtifact{
+			renderID: {
+				ID:                 renderID,
+				PolicyVersion:      rendering.RenderPolicyVersion,
+				NormalizedURL:      normalized,
+				RetentionClass:     models.RenderRetentionClassBenign,
+				ThumbnailObjectKey: "renders/" + renderID + "/thumbnail.jpg",
+				RenderedAt:         now.Add(-1 * time.Minute),
+				ExpiresAt:          now.Add(24 * time.Hour),
+			},
+		},
+	}
+
+	srv := NewServer(config.Config{}, st, &fakeArtifactStore{})
+	if err := srv.processRenderJob(context.Background(), "req", rendering.RenderJobMessage{Kind: "render", NormalizedURL: normalized}); err != nil {
+		t.Fatalf("processRenderJob: %v", err)
+	}
+}
+
+func TestProcessRenderJob_ReturnsErrorsWhenMisconfigured(t *testing.T) {
+	t.Parallel()
+
+	// Store missing.
+	if err := (&Server{}).processRenderJob(context.Background(), "req", rendering.RenderJobMessage{Kind: "render", NormalizedURL: "https://8.8.8.8/"}); err == nil {
+		t.Fatalf("expected store not initialized error")
+	}
+
+	// Artifact store missing.
+	srv := NewServer(config.Config{}, &fakeRenderStore{}, nil)
+	if err := srv.processRenderJob(context.Background(), "req", rendering.RenderJobMessage{Kind: "render", NormalizedURL: "https://8.8.8.8/"}); err == nil {
+		t.Fatalf("expected artifact store not initialized error")
+	}
+}
+
+func TestProcessRenderJob_StoresFetchFailedError(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	st := &fakeRenderStore{}
+	srv := NewServer(config.Config{}, st, &fakeArtifactStore{})
+
+	if err := srv.processRenderJob(ctx, "req", rendering.RenderJobMessage{Kind: "render", NormalizedURL: "https://8.8.8.8/", RequestedBy: "inst"}); err != nil {
+		t.Fatalf("processRenderJob: %v", err)
+	}
+
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if len(st.items) != 1 {
+		t.Fatalf("expected 1 artifact stored, got %d", len(st.items))
+	}
+	for _, it := range st.items {
+		if it == nil || strings.TrimSpace(it.ErrorCode) == "" {
+			t.Fatalf("expected error artifact, got %#v", it)
+		}
+		if strings.TrimSpace(it.ErrorCode) != "fetch_failed" {
+			t.Fatalf("expected fetch_failed error_code, got %#v", it)
+		}
+		if strings.TrimSpace(it.RequestID) != "req" {
+			t.Fatalf("expected request id set, got %#v", it)
+		}
+	}
+}
+
 func TestStoreNonHTMLArtifact_StoresNotHTML(t *testing.T) {
 	t.Parallel()
 
@@ -396,5 +505,23 @@ func TestStoreNonHTMLArtifact_StoresNotHTML(t *testing.T) {
 	st.mu.Unlock()
 	if got == nil || got.ErrorCode != "not_html" {
 		t.Fatalf("expected not_html artifact, got %#v", got)
+	}
+}
+
+func TestHandleRetentionSweep_ReturnsErrorsForNilInputs(t *testing.T) {
+	t.Parallel()
+
+	if _, err := (&Server{}).handleRetentionSweep(nil, events.EventBridgeEvent{}); err == nil {
+		t.Fatalf("expected store not initialized error")
+	}
+
+	srv := NewServer(config.Config{}, &fakeRenderStore{}, nil)
+	if _, err := srv.handleRetentionSweep(&apptheory.EventContext{RemainingMS: 6000}, events.EventBridgeEvent{}); err == nil {
+		t.Fatalf("expected artifact store not initialized error")
+	}
+
+	srv = NewServer(config.Config{}, &fakeRenderStore{}, &fakeArtifactStore{})
+	if _, err := srv.handleRetentionSweep(nil, events.EventBridgeEvent{}); err == nil {
+		t.Fatalf("expected event context nil error")
 	}
 }

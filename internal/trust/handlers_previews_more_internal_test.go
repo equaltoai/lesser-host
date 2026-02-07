@@ -3,6 +3,7 @@ package trust
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -224,5 +225,95 @@ func TestMaybeAttachPreviewRender_QueuesOnCreateRace(t *testing.T) {
 
 	if resp.Render == nil || resp.Render.RenderID == "" {
 		t.Fatalf("expected render attached, got %#v", resp)
+	}
+}
+
+func TestHandleGetLinkPreviewImage_ServesAndSetsHeaders(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	art, cleanup := newTestArtifactsStore(t, "bucket")
+	t.Cleanup(cleanup)
+
+	imageID := strings.Repeat("a", 64)
+	key := linkPreviewImageObjectKey(imageID)
+
+	// Store without a content-type so handler falls back to DetectContentType.
+	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00}
+	if err := art.PutObject(ctx, key, png, "", ""); err != nil {
+		t.Fatalf("PutObject: %v", err)
+	}
+
+	s := &Server{artifacts: art}
+	resp, err := s.handleGetLinkPreviewImage(&apptheory.Context{Params: map[string]string{"imageId": imageID}})
+	if err != nil || resp == nil || resp.Status != 200 {
+		t.Fatalf("resp=%#v err=%v", resp, err)
+	}
+	if ct := resp.Headers["content-type"]; len(ct) == 0 || !strings.HasPrefix(ct[0], "image/") {
+		t.Fatalf("expected image content-type, got %#v", resp.Headers)
+	}
+	if cc := resp.Headers["cache-control"]; len(cc) == 0 || !strings.Contains(cc[0], "max-age") {
+		t.Fatalf("expected cache-control max-age, got %#v", resp.Headers)
+	}
+	if et := resp.Headers["etag"]; len(et) == 0 || strings.TrimSpace(et[0]) == "" {
+		t.Fatalf("expected etag header, got %#v", resp.Headers)
+	}
+	if string(resp.Body) != string(png) || !resp.IsBase64 {
+		t.Fatalf("unexpected body/base64: resp=%#v", resp)
+	}
+}
+
+func TestLinkPreviewResponseFromModel_StatusAndImageURL(t *testing.T) {
+	t.Parallel()
+
+	imageID := strings.Repeat("b", 64)
+	item := &models.LinkPreview{
+		ID:            "id",
+		PolicyVersion: linkPreviewPolicyVersion,
+		NormalizedURL: "https://example.com/",
+		ImageID:       imageID,
+	}
+
+	ctx := &apptheory.Context{Request: apptheory.Request{Headers: map[string][]string{"host": {"example.com"}}}}
+	resp := linkPreviewResponseFromModel(ctx, item, true)
+	if resp.Status != "ok" || !resp.Cached || !strings.Contains(resp.ImageURL, "/api/v1/previews/images/") {
+		t.Fatalf("unexpected ok response: %#v", resp)
+	}
+
+	item.ErrorCode = "blocked_ssrf"
+	resp = linkPreviewResponseFromModel(ctx, item, true)
+	if resp.Status != "blocked" {
+		t.Fatalf("expected blocked, got %#v", resp)
+	}
+
+	item.ErrorCode = "disabled"
+	resp = linkPreviewResponseFromModel(ctx, item, true)
+	if resp.Status != "disabled" {
+		t.Fatalf("expected disabled, got %#v", resp)
+	}
+
+	item.ErrorCode = "fetch_failed"
+	resp = linkPreviewResponseFromModel(ctx, item, true)
+	if resp.Status != "error" {
+		t.Fatalf("expected error, got %#v", resp)
+	}
+
+	resp = linkPreviewResponseFromModel(nil, item, true)
+	if !strings.HasPrefix(resp.ImageURL, "/api/v1/previews/images/") {
+		t.Fatalf("expected relative image url when base empty, got %#v", resp)
+	}
+}
+
+func TestRequireLinkPreviewAuth_Errors(t *testing.T) {
+	t.Parallel()
+
+	if _, err := requireLinkPreviewAuth(nil, &apptheory.Context{}); err == nil {
+		t.Fatalf("expected internal error")
+	}
+	if _, err := requireLinkPreviewAuth(&Server{}, nil); err == nil {
+		t.Fatalf("expected internal error")
+	}
+	if _, err := requireLinkPreviewAuth(&Server{store: store.New(ttmocks.NewMockExtendedDB())}, &apptheory.Context{}); err == nil {
+		t.Fatalf("expected unauthorized")
 	}
 }

@@ -2,9 +2,11 @@ package trust
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -14,9 +16,13 @@ const linkPreviewErrBlockedSSRF = "blocked_ssrf"
 
 type stubResolver struct {
 	ipsByHost map[string][]net.IP
+	errByHost map[string]error
 }
 
 func (r stubResolver) LookupIPAddr(_ context.Context, host string) ([]net.IPAddr, error) {
+	if err := r.errByHost[host]; err != nil {
+		return nil, err
+	}
 	var out []net.IPAddr
 	for _, ip := range r.ipsByHost[host] {
 		out = append(out, net.IPAddr{IP: ip})
@@ -26,6 +32,7 @@ func (r stubResolver) LookupIPAddr(_ context.Context, host string) ([]net.IPAddr
 
 type stubTransport struct {
 	responses map[string]*http.Response
+	errByURL  map[string]error
 }
 
 func (t stubTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -33,6 +40,9 @@ func (t stubTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, io.ErrUnexpectedEOF
 	}
 	key := req.URL.String()
+	if err := t.errByURL[key]; err != nil {
+		return nil, err
+	}
 	resp := t.responses[key]
 	if resp == nil {
 		return &http.Response{
@@ -50,6 +60,14 @@ func (t stubTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	out.Request = req
 	return &out, nil
 }
+
+type errorReadCloser struct {
+	readErr  error
+	closeErr error
+}
+
+func (e errorReadCloser) Read(_ []byte) (int, error) { return 0, e.readErr }
+func (e errorReadCloser) Close() error               { return e.closeErr }
 
 func TestNormalizeLinkURL_IDNA_QueryAndFragment(t *testing.T) {
 	t.Parallel()
@@ -188,5 +206,172 @@ func TestFetchWithRedirects_EnforcesByteLimit(t *testing.T) {
 	}
 	if pe, ok := err.(*linkPreviewError); !ok || pe.Code != "too_large" {
 		t.Fatalf("expected too_large, got %T: %v", err, err)
+	}
+}
+
+func TestCanonicalizeLinkSchemeAndUserinfo_RejectsInvalidAndUserinfo(t *testing.T) {
+	t.Parallel()
+
+	if err := canonicalizeLinkSchemeAndUserinfo(nil); err == nil {
+		t.Fatalf("expected error")
+	}
+
+	u := &url.URL{Scheme: "ftp", Host: "example.com"}
+	if err := canonicalizeLinkSchemeAndUserinfo(u); err == nil {
+		t.Fatalf("expected invalid scheme error")
+	}
+
+	u = &url.URL{Scheme: "HTTP", Host: "example.com"}
+	u.User = url.User("user")
+	if err := canonicalizeLinkSchemeAndUserinfo(u); err == nil {
+		t.Fatalf("expected userinfo rejection")
+	}
+
+	u = &url.URL{Scheme: "HTTPS", Host: "example.com"}
+	if err := canonicalizeLinkSchemeAndUserinfo(u); err != nil || u.Scheme != "https" {
+		t.Fatalf("expected scheme normalized, got scheme=%q err=%v", u.Scheme, err)
+	}
+}
+
+func TestValidateDefaultPort_RejectsBadPortsAndNonDefault(t *testing.T) {
+	t.Parallel()
+
+	if err := validateDefaultPort(nil); err == nil {
+		t.Fatalf("expected error")
+	}
+
+	for _, host := range []string{"example.com:0", "example.com:65536"} {
+		u := &url.URL{Scheme: "https", Host: host}
+		if err := validateDefaultPort(u); err == nil {
+			t.Fatalf("expected invalid port error for host %q", host)
+		}
+	}
+
+	u := &url.URL{Scheme: "http", Host: "example.com:443"}
+	if err := validateDefaultPort(u); err == nil {
+		t.Fatalf("expected non-default port error")
+	}
+
+	u = &url.URL{Scheme: "https", Host: "example.com:443"}
+	if err := validateDefaultPort(u); err != nil {
+		t.Fatalf("expected default https port allowed, got %v", err)
+	}
+}
+
+func TestValidateOutboundURL_BlocksDeniedHostnamesAndResolverFailures(t *testing.T) {
+	t.Parallel()
+
+	_, u, err := normalizeLinkURL("https://localhost/")
+	if err != nil {
+		t.Fatalf("normalizeLinkURL error: %v", err)
+	}
+	if err := validateOutboundURL(context.Background(), nil, u); err == nil {
+		t.Fatalf("expected localhost to be blocked")
+	}
+
+	_, u, err = normalizeLinkURL("https://example.com/")
+	if err != nil {
+		t.Fatalf("normalizeLinkURL error: %v", err)
+	}
+
+	resolver := stubResolver{errByHost: map[string]error{"example.com": errors.New("boom")}}
+	if err := validateOutboundURL(context.Background(), resolver, u); err == nil {
+		t.Fatalf("expected resolve error")
+	}
+
+	resolver = stubResolver{ipsByHost: map[string][]net.IP{"example.com": nil}}
+	if err := validateOutboundURL(context.Background(), resolver, u); err == nil {
+		t.Fatalf("expected empty resolve to block")
+	}
+}
+
+func TestFetchWithRedirects_ValidatesInputsAndRedirectErrors(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, start, err := normalizeLinkURL("https://good.example/")
+	if err != nil {
+		t.Fatalf("normalizeLinkURL error: %v", err)
+	}
+
+	resolver := stubResolver{ipsByHost: map[string][]net.IP{"good.example": {net.ParseIP("93.184.216.34")}}}
+
+	if _, _, _, _, err := fetchWithRedirects(ctx, resolver, nil, start, 1, 10); err == nil {
+		t.Fatalf("expected client required error")
+	}
+	if _, _, _, _, err := fetchWithRedirects(ctx, resolver, &http.Client{}, nil, 1, 10); err == nil {
+		t.Fatalf("expected start required error")
+	}
+
+	client := &http.Client{
+		Transport: stubTransport{responses: map[string]*http.Response{
+			"https://good.example/": {
+				StatusCode: http.StatusFound,
+				Header:     http.Header{"Location": []string{"/"}},
+				Body:       io.NopCloser(strings.NewReader("")),
+			},
+		}},
+		Timeout: linkPreviewFetchTimeout,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	if _, _, _, _, err := fetchWithRedirects(ctx, resolver, client, start, 0, 10); err == nil || !strings.Contains(err.Error(), "too many redirects") {
+		t.Fatalf("expected too many redirects error, got %v", err)
+	}
+
+	// followRedirect: missing Location.
+	if _, err := followRedirect(start, &http.Response{StatusCode: http.StatusFound, Header: make(http.Header)}); err == nil {
+		t.Fatalf("expected missing location error")
+	}
+
+	// resolveRedirect: invalid location.
+	if _, err := resolveRedirect(start, "http://%zz"); err == nil {
+		t.Fatalf("expected invalid redirect location error")
+	}
+}
+
+func TestReadBodyLimit_InvalidLimitAndReadError(t *testing.T) {
+	t.Parallel()
+
+	if _, err := readBodyLimit(strings.NewReader("x"), 0); err == nil {
+		t.Fatalf("expected invalid limit error")
+	}
+
+	if _, err := readBodyLimit(errorReadCloser{readErr: io.ErrUnexpectedEOF}, 10); err == nil {
+		t.Fatalf("expected read failed error")
+	}
+}
+
+func TestExtractLinkPreviewMeta_ParsesTitleDescriptionAndImage(t *testing.T) {
+	t.Parallel()
+
+	base, err := url.Parse("https://example.com/path/")
+	if err != nil {
+		t.Fatalf("parse base: %v", err)
+	}
+
+	htmlDoc := `<!doctype html>
+<html>
+  <head>
+    <title> Page Title </title>
+    <meta property="og:description" content=" OG desc "/>
+    <meta name="description" content=" fallback "/>
+    <meta property="og:image" content="/img.png"/>
+  </head>
+  <body>hello</body>
+</html>`
+
+	meta := extractLinkPreviewMeta(base, []byte(htmlDoc))
+	if meta.Title != "Page Title" {
+		t.Fatalf("expected title, got %q", meta.Title)
+	}
+	if meta.Description != "OG desc" {
+		t.Fatalf("expected description from og, got %q", meta.Description)
+	}
+	if meta.ImageURL != "https://example.com/img.png" {
+		t.Fatalf("expected resolved image url, got %q", meta.ImageURL)
 	}
 }
