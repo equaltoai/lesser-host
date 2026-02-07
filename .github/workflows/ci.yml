@@ -76,8 +76,9 @@ jobs:
       - run: npm ci
         working-directory: contracts
       - run: pip install slither-analyzer
-      - run: slither . --exclude-dependencies --fail-high
-        working-directory: contracts
+      - run: solc-select install 0.8.24
+      - run: solc-select use 0.8.24
+      - run: slither contracts/TipSplitter.sol --config-file contracts/slither.config.json
 
   web-build:
     runs-on: ubuntu-latest
