@@ -78,7 +78,8 @@ jobs:
       - run: pip install slither-analyzer
       - run: solc-select install 0.8.24
       - run: solc-select use 0.8.24
-      - run: slither contracts/TipSplitter.sol --config-file contracts/slither.config.json
+      - run: slither contracts/TipSplitter.sol --config-file slither.config.json
+        working-directory: contracts
 
   web-build:
     runs-on: ubuntu-latest
