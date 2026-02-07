@@ -58,4 +58,3 @@ func TestClaimVerifyWebSearchSystemPromptV1_IsNonEmpty(t *testing.T) {
 		t.Fatalf("expected non-empty prompt")
 	}
 }
-

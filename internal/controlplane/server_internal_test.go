@@ -15,4 +15,3 @@ func TestServer_RegisterRoutes(t *testing.T) {
 	srv := NewServer(config.Config{}, nil)
 	srv.RegisterRoutes(app)
 }
-

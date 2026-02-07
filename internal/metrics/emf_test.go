@@ -47,4 +47,3 @@ func TestEmit_DoesNotPanic(t *testing.T) {
 		"bad": func() {},
 	})
 }
-

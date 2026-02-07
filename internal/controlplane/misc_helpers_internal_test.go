@@ -229,4 +229,3 @@ func TestParseTipHostRegistrationVerifyInput(t *testing.T) {
 		t.Fatalf("unexpected parsed input: sig=%q proofs=%#v", sig, proofs)
 	}
 }
-

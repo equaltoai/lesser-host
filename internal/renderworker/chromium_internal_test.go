@@ -1,0 +1,224 @@
+package renderworker
+
+import (
+	"archive/tar"
+	"bytes"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/andybalholm/brotli"
+)
+
+func TestSanitizeTarName(t *testing.T) {
+	t.Parallel()
+
+	if _, ok := sanitizeTarName(""); ok {
+		t.Fatalf("expected empty to be rejected")
+	}
+	if _, ok := sanitizeTarName("."); ok {
+		t.Fatalf("expected dot to be rejected")
+	}
+
+	name, ok := sanitizeTarName("/a/b/../c.txt")
+	if !ok || name != "a/c.txt" {
+		t.Fatalf("unexpected sanitize: ok=%v name=%q", ok, name)
+	}
+}
+
+func TestValidateTarTarget_PreventsTraversal(t *testing.T) {
+	t.Parallel()
+
+	dest := t.TempDir()
+	if _, err := validateTarTarget(dest, "../evil.txt", "../evil.txt"); err == nil {
+		t.Fatalf("expected traversal error")
+	}
+}
+
+func TestExtractTar_ExtractsFilesAndRejectsTraversal(t *testing.T) {
+	t.Parallel()
+
+	dest := t.TempDir()
+
+	makeTar := func(entries func(tw *tar.Writer) error) []byte {
+		t.Helper()
+		var buf bytes.Buffer
+		tw := tar.NewWriter(&buf)
+		if err := entries(tw); err != nil {
+			t.Fatalf("write tar: %v", err)
+		}
+		if err := tw.Close(); err != nil {
+			t.Fatalf("close tar: %v", err)
+		}
+		return buf.Bytes()
+	}
+
+	// Happy path: directory + file.
+	archive := makeTar(func(tw *tar.Writer) error {
+		if err := tw.WriteHeader(&tar.Header{Name: "ok", Typeflag: tar.TypeDir, Mode: 0o750}); err != nil {
+			return err
+		}
+		data := []byte("hello")
+		if err := tw.WriteHeader(&tar.Header{Name: "ok/file.txt", Typeflag: tar.TypeReg, Mode: 0o600, Size: int64(len(data))}); err != nil {
+			return err
+		}
+		if _, err := tw.Write(data); err != nil {
+			return err
+		}
+		// Symlink should be ignored.
+		if err := tw.WriteHeader(&tar.Header{Name: "ok/link", Typeflag: tar.TypeSymlink}); err != nil {
+			return err
+		}
+		return nil
+	})
+
+	tr := tar.NewReader(bytes.NewReader(archive))
+	if err := extractTar(tr, dest, tarExtractLimits{MaxFileBytes: 1024, MaxTotalBytes: 1024}); err != nil {
+		t.Fatalf("extractTar err: %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(dest, "ok", "file.txt"))
+	if err != nil {
+		t.Fatalf("read extracted file: %v", err)
+	}
+	if string(b) != "hello" {
+		t.Fatalf("unexpected extracted content: %q", string(b))
+	}
+
+	// Traversal attempt should error.
+	badArchive := makeTar(func(tw *tar.Writer) error {
+		data := []byte("x")
+		if err := tw.WriteHeader(&tar.Header{Name: "../evil.txt", Typeflag: tar.TypeReg, Mode: 0o600, Size: int64(len(data))}); err != nil {
+			return err
+		}
+		_, err := tw.Write(data)
+		return err
+	})
+	tr2 := tar.NewReader(bytes.NewReader(badArchive))
+	if err := extractTar(tr2, dest, tarExtractLimits{MaxFileBytes: 1024, MaxTotalBytes: 1024}); err == nil {
+		t.Fatalf("expected traversal error")
+	}
+}
+
+func TestInflateBrotliFile_ErrorsAndSuccess(t *testing.T) {
+	t.Parallel()
+
+	dest := filepath.Join(t.TempDir(), "out.bin")
+	if err := inflateBrotliFile("", dest, 0o600); err == nil {
+		t.Fatalf("expected error for empty src")
+	}
+
+	// If dest exists, inflation is skipped.
+	if err := os.WriteFile(dest, []byte("already"), 0o600); err != nil {
+		t.Fatalf("write dest: %v", err)
+	}
+	if err := inflateBrotliFile("missing", dest, 0o600); err != nil {
+		t.Fatalf("expected skip when dest exists, got %v", err)
+	}
+
+	// Successful inflate.
+	src := filepath.Join(t.TempDir(), "in.br")
+	{
+		var buf bytes.Buffer
+		w := brotli.NewWriter(&buf)
+		if _, err := w.Write([]byte("hello")); err != nil {
+			t.Fatalf("brotli write: %v", err)
+		}
+		if err := w.Close(); err != nil {
+			t.Fatalf("brotli close: %v", err)
+		}
+		if err := os.WriteFile(src, buf.Bytes(), 0o600); err != nil {
+			t.Fatalf("write src: %v", err)
+		}
+	}
+
+	dest2 := filepath.Join(t.TempDir(), "inflated.txt")
+	if err := inflateBrotliFile(src, dest2, 0o600); err != nil {
+		t.Fatalf("inflateBrotliFile err: %v", err)
+	}
+	b, err := os.ReadFile(dest2)
+	if err != nil {
+		t.Fatalf("read inflated: %v", err)
+	}
+	if string(b) != "hello" {
+		t.Fatalf("unexpected inflated content: %q", string(b))
+	}
+}
+
+func TestInflateTarBrotli_SuccessSkipAndOptional(t *testing.T) {
+	t.Parallel()
+
+	dest := t.TempDir()
+	src := filepath.Join(t.TempDir(), "fonts.tar.br")
+
+	// Build tar -> brotli file.
+	{
+		var tarBuf bytes.Buffer
+		tw := tar.NewWriter(&tarBuf)
+		data := []byte("font")
+		if err := tw.WriteHeader(&tar.Header{Name: "fonts/a.txt", Typeflag: tar.TypeReg, Mode: 0o600, Size: int64(len(data))}); err != nil {
+			t.Fatalf("tar header: %v", err)
+		}
+		if _, err := tw.Write(data); err != nil {
+			t.Fatalf("tar write: %v", err)
+		}
+		if err := tw.Close(); err != nil {
+			t.Fatalf("tar close: %v", err)
+		}
+
+		var brBuf bytes.Buffer
+		bw := brotli.NewWriter(&brBuf)
+		if _, err := io.Copy(bw, bytes.NewReader(tarBuf.Bytes())); err != nil {
+			t.Fatalf("brotli copy: %v", err)
+		}
+		if err := bw.Close(); err != nil {
+			t.Fatalf("brotli close: %v", err)
+		}
+		if err := os.WriteFile(src, brBuf.Bytes(), 0o600); err != nil {
+			t.Fatalf("write src: %v", err)
+		}
+	}
+
+	// Extract into a non-existent directory.
+	destDir := filepath.Join(dest, "fonts")
+	if err := inflateTarBrotli(src, destDir, "fonts"); err != nil {
+		t.Fatalf("inflateTarBrotli err: %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(destDir, "fonts", "a.txt"))
+	if err != nil {
+		t.Fatalf("read extracted: %v", err)
+	}
+	if strings.TrimSpace(string(b)) != "font" {
+		t.Fatalf("unexpected extracted content: %q", string(b))
+	}
+
+	// Second call should skip (dest dir exists).
+	if err := inflateTarBrotli(src, destDir, "fonts"); err != nil {
+		t.Fatalf("expected skip to succeed, got %v", err)
+	}
+
+	// Optional swiftshader: missing file should be ignored.
+	if err := inflateTarBrotli(filepath.Join(t.TempDir(), "missing.tar.br"), t.TempDir(), "swiftshader"); err != nil {
+		t.Fatalf("expected optional swiftshader missing to be ok, got %v", err)
+	}
+}
+
+func TestSetupChromiumEnv(t *testing.T) {
+	t.Setenv("FONTCONFIG_PATH", "")
+	t.Setenv("HOME", "")
+	t.Setenv("LD_LIBRARY_PATH", "other")
+
+	setupChromiumEnv()
+
+	if got := os.Getenv("FONTCONFIG_PATH"); got == "" || !strings.Contains(got, "fonts") {
+		t.Fatalf("expected FONTCONFIG_PATH set, got %q", got)
+	}
+	if got := os.Getenv("HOME"); got == "" {
+		t.Fatalf("expected HOME set")
+	}
+	ld := os.Getenv("LD_LIBRARY_PATH")
+	if !strings.Contains(ld, "al2023") {
+		t.Fatalf("expected LD_LIBRARY_PATH to include al2023, got %q", ld)
+	}
+}

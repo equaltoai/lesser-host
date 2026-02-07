@@ -45,4 +45,3 @@ func TestNormalizeDomain(t *testing.T) {
 		})
 	}
 }
-

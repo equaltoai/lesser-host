@@ -80,4 +80,3 @@ func TestStore_OperationsValidateInputs(t *testing.T) {
 		t.Fatalf("expected error for missing key")
 	}
 }
-

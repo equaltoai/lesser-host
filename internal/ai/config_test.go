@@ -87,4 +87,3 @@ func TestDefaultAndEffectiveInstanceConfig(t *testing.T) {
 		}
 	})
 }
-

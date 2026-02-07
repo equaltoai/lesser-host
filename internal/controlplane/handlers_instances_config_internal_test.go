@@ -69,4 +69,3 @@ func TestBuildInstanceConfigUpdate(t *testing.T) {
 		t.Fatalf("unexpected inflight: %#v", update.AIMaxInflightJobs)
 	}
 }
-

@@ -80,4 +80,3 @@ func TestFilterOperatorAuditLogEntries_FiltersSortsAndLimits(t *testing.T) {
 		t.Fatalf("unexpected output: %#v", out[0])
 	}
 }
-

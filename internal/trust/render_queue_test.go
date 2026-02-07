@@ -60,4 +60,3 @@ func TestRenderQueue_Helpers(t *testing.T) {
 		t.Fatalf("expected no update")
 	}
 }
-

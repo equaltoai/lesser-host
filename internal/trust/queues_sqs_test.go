@@ -57,4 +57,3 @@ func TestQueueClient_EnqueueValidatesInputs(t *testing.T) {
 		t.Fatalf("expected error for missing safety queue url")
 	}
 }
-

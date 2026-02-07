@@ -20,4 +20,3 @@ func TestHostIDFromDomain_NormalizesAndHashes(t *testing.T) {
 		t.Fatalf("unexpected hash: got %s want %s", got2.Hex(), want.Hex())
 	}
 }
-

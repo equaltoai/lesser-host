@@ -85,4 +85,3 @@ func TestParseWalletLoginRequest(t *testing.T) {
 		t.Fatalf("parseWalletLoginRequest: %v", err)
 	}
 }
-

@@ -165,4 +165,3 @@ func TestParseClaimVerifyBatchOutput(t *testing.T) {
 		t.Fatalf("unexpected parsed output: %#v", parsed)
 	}
 }
-

@@ -116,4 +116,3 @@ func TestParseModerationBatchOutput(t *testing.T) {
 		t.Fatalf("unexpected parsed output: %#v", parsed)
 	}
 }
-

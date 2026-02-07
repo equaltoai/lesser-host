@@ -33,10 +33,10 @@ func TestRetentionAndExpiresAt(t *testing.T) {
 	}
 
 	now := time.Unix(100, 0).UTC()
-	if got := ExpiresAtForRetention(now, 0); !got.Equal(now.Add(30*24*time.Hour)) {
+	if got := ExpiresAtForRetention(now, 0); !got.Equal(now.Add(30 * 24 * time.Hour)) {
 		t.Fatalf("unexpected default expiry: %v", got)
 	}
-	if got := ExpiresAtForRetention(now, 2); !got.Equal(now.Add(2*24*time.Hour)) {
+	if got := ExpiresAtForRetention(now, 2); !got.Equal(now.Add(2 * 24 * time.Hour)) {
 		t.Fatalf("unexpected expiry: %v", got)
 	}
 }
@@ -51,4 +51,3 @@ func TestRenderObjectKeys(t *testing.T) {
 		t.Fatalf("unexpected snapshot key: %q", got)
 	}
 }
-

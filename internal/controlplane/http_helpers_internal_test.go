@@ -55,4 +55,3 @@ func TestHeaderHelpers(t *testing.T) {
 		t.Fatalf("expected empty for non-bearer, got %q", got)
 	}
 }
-

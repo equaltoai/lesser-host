@@ -49,4 +49,3 @@ func TestPickBestHostedZoneID_PrefersLongestPublicMatch(t *testing.T) {
 		t.Fatalf("expected bestLen > 0, got %d", bestLen)
 	}
 }
-
