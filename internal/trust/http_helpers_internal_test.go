@@ -1,16 +1,20 @@
 package trust
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/equaltoai/lesser-host/internal/httpx"
+)
 
 const testQueryValueOne = "one"
 
 func TestFirstQueryValue(t *testing.T) {
 	t.Parallel()
 
-	if got := firstQueryValue(nil, "a"); got != "" {
+	if got := httpx.FirstQueryValue(nil, "a"); got != "" {
 		t.Fatalf("expected empty, got %q", got)
 	}
-	if got := firstQueryValue(map[string][]string{"a": {"x"}}, " "); got != "" {
+	if got := httpx.FirstQueryValue(map[string][]string{"a": {"x"}}, " "); got != "" {
 		t.Fatalf("expected empty, got %q", got)
 	}
 
@@ -19,21 +23,21 @@ func TestFirstQueryValue(t *testing.T) {
 		"lower": {"ok"},
 		" A ":   {"spaced"},
 	}
-	if got := firstQueryValue(q, "a"); got != testQueryValueOne {
+	if got := httpx.FirstQueryValue(q, "a"); got != testQueryValueOne {
 		t.Fatalf("unexpected value: %q", got)
 	}
-	if got := firstQueryValue(q, "LOWER"); got != "ok" {
+	if got := httpx.FirstQueryValue(q, "LOWER"); got != "ok" {
 		t.Fatalf("unexpected lower-case fallback: %q", got)
 	}
-	if got := firstQueryValue(q, "a "); got != testQueryValueOne {
+	if got := httpx.FirstQueryValue(q, "a "); got != testQueryValueOne {
 		t.Fatalf("unexpected trimmed key: %q", got)
 	}
-	if got := firstQueryValue(q, "A"); got != testQueryValueOne {
+	if got := httpx.FirstQueryValue(q, "A"); got != testQueryValueOne {
 		t.Fatalf("unexpected case-insensitive scan: %q", got)
 	}
 
 	q2 := map[string][]string{" X ": {"v"}}
-	if got := firstQueryValue(q2, "x"); got != "v" {
+	if got := httpx.FirstQueryValue(q2, "x"); got != "v" {
 		t.Fatalf("unexpected scan match: %q", got)
 	}
 }

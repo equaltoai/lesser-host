@@ -6,4 +6,3 @@ const (
 
 	testNope = "nope"
 )
-

@@ -12,6 +12,7 @@ import (
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/domains"
+	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -39,7 +40,7 @@ func parseOptionalReviewNote(ctx *apptheory.Context) reviewNoteRequest {
 	if len(ctx.Request.Body) == 0 {
 		return note
 	}
-	_ = parseJSON(ctx, &note)
+	_ = httpx.ParseJSON(ctx, &note)
 	return note
 }
 
@@ -352,7 +353,7 @@ func (s *Server) handlePortalCreateExternalInstanceRegistration(ctx *apptheory.C
 	}
 
 	var req externalInstanceRegistrationRequest
-	if err := parseJSON(ctx, &req); err != nil {
+	if err := httpx.ParseJSON(ctx, &req); err != nil {
 		return nil, err
 	}
 

@@ -13,6 +13,7 @@ import (
 	"github.com/theory-cloud/tabletheory/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
+	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -162,7 +163,7 @@ func (s *Server) handleCreateInstance(ctx *apptheory.Context) (*apptheory.Respon
 	}
 
 	var req createInstanceRequest
-	if err := parseJSON(ctx, &req); err != nil {
+	if err := httpx.ParseJSON(ctx, &req); err != nil {
 		return nil, err
 	}
 
@@ -492,7 +493,7 @@ func (s *Server) handleUpdateInstanceConfig(ctx *apptheory.Context) (*apptheory.
 	}
 
 	var req updateInstanceConfigRequest
-	if err := parseJSON(ctx, &req); err != nil {
+	if err := httpx.ParseJSON(ctx, &req); err != nil {
 		return nil, err
 	}
 
@@ -757,7 +758,7 @@ func (s *Server) handleSetInstanceBudgetMonth(ctx *apptheory.Context) (*apptheor
 	}
 
 	var req setBudgetMonthRequest
-	if err := parseJSON(ctx, &req); err != nil {
+	if err := httpx.ParseJSON(ctx, &req); err != nil {
 		return nil, err
 	}
 	if req.IncludedCredits < 0 {

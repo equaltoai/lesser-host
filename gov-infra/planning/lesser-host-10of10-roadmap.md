@@ -1,18 +1,14 @@
-# lesser-host: 10/10 Roadmap (Rubric v0.1.1)
+# lesser-host: 10/10 Roadmap (Rubric v0.1.2)
 
 This roadmap maps milestones directly to rubric IDs with measurable acceptance criteria and verification commands.
 
-## Current scorecard (Rubric v0.1.1)
-Until the first verifier run, treat the scorecard as **unknown** (fail closed). Generate the scorecard by running:
+## Current scorecard (Rubric v0.1.2)
+Generate the scorecard by running:
 
 - `bash gov-infra/verifiers/gov-verify-rubric.sh`
 - Then read: `gov-infra/evidence/gov-rubric-report.json`
 
-Expected early blockers for this repo (based on current CI and pin policy):
-- **SEC-3 likely FAIL** until GitHub Actions are pinned by commit SHA (current workflows use `@v*`).
-- **CON-2/COM-3/SEC-1 likely BLOCKED** until a `golangci-lint` version is pinned.
-- **SEC-2 likely BLOCKED** until a `govulncheck` version is pinned.
-- **MAI-4 currently FAIL** until CI runs `bash gov-infra/verifiers/gov-verify-rubric.sh`.
+Snapshot (2026-02-07): verifier reports **PASS** (28/28).
 
 ## Evidence commands (canonical)
 All evidence is produced by the deterministic verifier:
@@ -27,7 +23,7 @@ Status meanings used in this roadmap:
 - **BLOCKED**: verifier cannot be trusted yet (missing pin/tooling)
 - **TBD**: needs first verifier run to confirm
 
-| Rubric ID | Status (initial) | Milestone |
+| Rubric ID | Status (current) | Milestone |
 | --- | --- | --- |
 | CMP-1 | PASS | M0 |
 | CMP-2 | PASS | M0 |
@@ -37,26 +33,26 @@ Status meanings used in this roadmap:
 | DOC-3 | PASS | M0 |
 | DOC-5 | PASS | M0 |
 | DOC-4 | PASS | M0 |
-| QUA-1 | TBD | M1 |
-| QUA-2 | TBD | M1 |
-| QUA-3 | TBD | M1.5 |
-| CON-1 | TBD | M1 |
-| CON-2 | BLOCKED | M1 |
-| CON-3 | BLOCKED | M3 |
-| COM-1 | TBD | M2 |
-| COM-2 | FAIL/BLOCKED | M2 |
-| COM-3 | BLOCKED | M1 |
+| QUA-1 | PASS | M1 |
+| QUA-2 | PASS | M1 |
+| QUA-3 | PASS | M1.5 |
+| CON-1 | PASS | M1 |
+| CON-2 | PASS | M1 |
+| CON-3 | PASS | M3 |
+| COM-1 | PASS | M2 |
+| COM-2 | PASS | M2 |
+| COM-3 | PASS | M1 |
 | COM-4 | PASS | M1.5 |
 | COM-5 | PASS | M2 |
-| COM-6 | BLOCKED | M2 |
-| SEC-1 | BLOCKED | M2 |
-| SEC-2 | BLOCKED | M2 |
-| SEC-3 | FAIL | M2 |
-| SEC-4 | BLOCKED | M3 |
-| MAI-1 | BLOCKED | M3 |
+| COM-6 | PASS | M2 |
+| SEC-1 | PASS | M2 |
+| SEC-2 | PASS | M2 |
+| SEC-3 | PASS | M2 |
+| SEC-4 | PASS | M3 |
+| MAI-1 | PASS | M3 |
 | MAI-2 | PASS | M0 |
-| MAI-3 | BLOCKED | M3 |
-| MAI-4 | FAIL | M2 |
+| MAI-3 | PASS | M3 |
+| MAI-4 | PASS | M2 |
 
 ## Workstream tracking docs (generated)
 - Lint remediation: `gov-infra/planning/lesser-host-lint-green-roadmap.md`

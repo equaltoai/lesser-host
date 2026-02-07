@@ -12,6 +12,7 @@ import (
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/ai"
+	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -134,7 +135,7 @@ func (s *Server) handleAIEvidenceText(ctx *apptheory.Context) (*apptheory.Respon
 	}
 
 	var req aiEvidenceTextRequest
-	if err := parseJSON(ctx, &req); err != nil {
+	if err := httpx.ParseJSON(ctx, &req); err != nil {
 		return nil, err
 	}
 
@@ -291,7 +292,7 @@ func (s *Server) prepareAIEvidenceImage(ctx *apptheory.Context) (aiEvidenceImage
 	}
 
 	var req aiEvidenceImageRequest
-	if err := parseJSON(ctx, &req); err != nil {
+	if err := httpx.ParseJSON(ctx, &req); err != nil {
 		return aiEvidenceImagePrepared{}, err
 	}
 

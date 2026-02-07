@@ -14,6 +14,7 @@ import (
 
 	"github.com/equaltoai/lesser-host/internal/ai"
 	"github.com/equaltoai/lesser-host/internal/billing"
+	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -138,7 +139,7 @@ func (s *Server) handleAIModerationTextTriggered(ctx *apptheory.Context, action 
 	}
 
 	var req aiModerationTextRequest
-	if parseErr := parseJSON(ctx, &req); parseErr != nil {
+	if parseErr := httpx.ParseJSON(ctx, &req); parseErr != nil {
 		return nil, parseErr
 	}
 
@@ -237,7 +238,7 @@ func (s *Server) handleAIModerationImageTriggered(ctx *apptheory.Context, action
 	}
 
 	var req aiModerationImageRequest
-	if parseErr := parseJSON(ctx, &req); parseErr != nil {
+	if parseErr := httpx.ParseJSON(ctx, &req); parseErr != nil {
 		return nil, parseErr
 	}
 

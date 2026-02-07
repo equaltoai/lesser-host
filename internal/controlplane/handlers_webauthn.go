@@ -14,6 +14,7 @@ import (
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
 
+	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -184,7 +185,7 @@ func (s *Server) handleWebAuthnRegisterFinish(ctx *apptheory.Context) (*apptheor
 	}
 
 	var req webAuthnFinishRegistrationRequest
-	if err := parseJSON(ctx, &req); err != nil {
+	if err := httpx.ParseJSON(ctx, &req); err != nil {
 		return nil, err
 	}
 
@@ -271,7 +272,7 @@ func (s *Server) handleWebAuthnLoginBegin(ctx *apptheory.Context) (*apptheory.Re
 	}
 
 	var req webAuthnBeginLoginRequest
-	if err := parseJSON(ctx, &req); err != nil {
+	if err := httpx.ParseJSON(ctx, &req); err != nil {
 		return nil, err
 	}
 	username := strings.TrimSpace(req.Username)
@@ -435,7 +436,7 @@ func (s *Server) handleWebAuthnLoginFinish(ctx *apptheory.Context) (*apptheory.R
 
 func parseWebAuthnLoginFinishRequest(ctx *apptheory.Context) (webAuthnFinishLoginRequest, error) {
 	var req webAuthnFinishLoginRequest
-	if err := parseJSON(ctx, &req); err != nil {
+	if err := httpx.ParseJSON(ctx, &req); err != nil {
 		return webAuthnFinishLoginRequest{}, err
 	}
 	req.Username = strings.TrimSpace(req.Username)
@@ -584,7 +585,7 @@ func (s *Server) handleWebAuthnUpdateCredential(ctx *apptheory.Context) (*appthe
 	}
 
 	var req webAuthnUpdateCredentialRequest
-	if err := parseJSON(ctx, &req); err != nil {
+	if err := httpx.ParseJSON(ctx, &req); err != nil {
 		return nil, err
 	}
 	req.Name = strings.TrimSpace(req.Name)

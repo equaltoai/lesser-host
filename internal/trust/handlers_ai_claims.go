@@ -10,6 +10,7 @@ import (
 
 	"github.com/equaltoai/lesser-host/internal/ai"
 	"github.com/equaltoai/lesser-host/internal/attestations"
+	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -131,7 +132,7 @@ func (s *Server) handleAIClaimVerify(ctx *apptheory.Context) (*apptheory.Respons
 	}
 
 	var req claimVerifyRequest
-	if parseErr := parseJSON(ctx, &req); parseErr != nil {
+	if parseErr := httpx.ParseJSON(ctx, &req); parseErr != nil {
 		return nil, parseErr
 	}
 

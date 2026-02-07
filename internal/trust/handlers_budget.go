@@ -13,6 +13,7 @@ import (
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/billing"
+	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -151,7 +152,7 @@ func (s *Server) prepareBudgetDebit(ctx *apptheory.Context) (budgetDebitPrepared
 	allowOverage := strings.ToLower(strings.TrimSpace(instCfg.OveragePolicy)) == overagePolicyAllow
 
 	var req budgetDebitRequest
-	if err := parseJSON(ctx, &req); err != nil {
+	if err := httpx.ParseJSON(ctx, &req); err != nil {
 		return budgetDebitPrepared{}, err
 	}
 	if req.Credits <= 0 {

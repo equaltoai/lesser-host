@@ -1177,7 +1177,112 @@ __GOV_CMD_LINT__
 )
 
 CMD_CONTRACT=$(cat <<'__GOV_CMD_CONTRACT__'
-TODO: add explicit contract-parity checks for API schemas / deploy receipt invariants
+# Contract parity: ensure Go boundary ABIs match Solidity artifacts.
+#
+# TipSplitter ABI is defined in Go for host registry ops; it must remain compatible
+# with the Solidity contract compiled by Hardhat.
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "BLOCKED: node is required" >&2
+  exit 2
+fi
+
+artifact="contracts/artifacts/contracts/TipSplitter.sol/TipSplitter.json"
+if [[ ! -f "${artifact}" ]]; then
+  echo "BLOCKED: missing TipSplitter artifact at ${artifact} (run contracts build/tests to generate Hardhat artifacts)" >&2
+  exit 2
+fi
+
+node <<'__GOV_NODE_CONTRACT__'
+const fs = require('fs');
+
+const goPath = 'internal/tips/tipsplitter_abi.go';
+const artifactPath = 'contracts/artifacts/contracts/TipSplitter.sol/TipSplitter.json';
+
+function readText(p) {
+  return fs.readFileSync(p, 'utf8');
+}
+
+function extractGoRawStringConst(source, constName) {
+  const re = new RegExp('const\\s+' + constName + '\\s*=\\s*`([\\s\\S]*?)`', 'm');
+  const m = source.match(re);
+  if (!m) {
+    throw new Error(`could not find const ${constName} raw string in ${goPath}`);
+  }
+  return m[1];
+}
+
+function normalizeAbiEntry(entry) {
+  const type = String(entry.type || '').trim();
+  const name = String(entry.name || '').trim();
+  const stateMutability = entry.stateMutability == null ? '' : String(entry.stateMutability).trim();
+
+  const normalizeParams = (list) =>
+    Array.isArray(list)
+      ? list.map((p) => ({
+          name: String(p.name || '').trim(),
+          type: String(p.type || '').trim(),
+        }))
+      : [];
+
+  return {
+    type,
+    name,
+    stateMutability,
+    inputs: normalizeParams(entry.inputs),
+    outputs: normalizeParams(entry.outputs),
+  };
+}
+
+function keyFor(entry) {
+  const e = normalizeAbiEntry(entry);
+  const inTypes = e.inputs.map((p) => p.type).join(',');
+  const outTypes = e.outputs.map((p) => p.type).join(',');
+  return `${e.type}:${e.name}:${e.stateMutability}:in(${inTypes}):out(${outTypes})`;
+}
+
+function signatureFor(entry) {
+  const e = normalizeAbiEntry(entry);
+  const inTypes = e.inputs.map((p) => p.type).join(',');
+  return `${e.type} ${e.name}(${inTypes})`;
+}
+
+const goSource = readText(goPath);
+const goAbiRaw = extractGoRawStringConst(goSource, 'TipSplitterABI');
+
+let goAbi;
+try {
+  goAbi = JSON.parse(goAbiRaw);
+} catch (e) {
+  throw new Error(`failed to parse Go TipSplitterABI JSON: ${e.message}`);
+}
+if (!Array.isArray(goAbi)) {
+  throw new Error(`Go TipSplitterABI JSON must be an array`);
+}
+
+const artifact = JSON.parse(readText(artifactPath));
+if (!artifact || !Array.isArray(artifact.abi)) {
+  throw new Error(`artifact missing .abi array at ${artifactPath}`);
+}
+
+const artifactKeys = new Set(artifact.abi.map(keyFor));
+
+const missing = [];
+for (const entry of goAbi) {
+  const k = keyFor(entry);
+  if (!artifactKeys.has(k)) {
+    missing.push(signatureFor(entry));
+  }
+}
+
+if (missing.length > 0) {
+  console.error(`FAIL: Go TipSplitterABI entries not found in Solidity artifact ABI (${missing.length}):`);
+  for (const m of missing) console.error(`- ${m}`);
+  process.exit(1);
+}
+
+console.log('PASS: contract parity (TipSplitter ABI subset)');
+__GOV_NODE_CONTRACT__
 __GOV_CMD_CONTRACT__
 )
 
@@ -1484,12 +1589,79 @@ __GOV_CMD_SUPPLY__
 )
 
 CMD_P0=$(cat <<'__GOV_CMD_P0__'
-TODO: add explicit P0 regression tests (bootstrap authz invariants, SSRF defense, instance key auth, prompt boundary invariants)
+if ! command -v go >/dev/null 2>&1; then
+  echo "BLOCKED: go is required" >&2
+  exit 2
+fi
+
+# Ensure P0 tests actually exist (otherwise -run would be a false green).
+p0_list="$(go test ./... -list '^TestP0_' 2>/dev/null | grep -E '^TestP0_' || true)"
+p0_count="$(printf '%s\n' "${p0_list}" | sed '/^$/d' | wc -l | tr -d ' ')"
+if [[ "${p0_count}" -lt 1 ]]; then
+  echo "FAIL: no TestP0_* tests found"
+  exit 1
+fi
+
+echo "P0 tests found (${p0_count}):"
+printf '%s\n' "${p0_list}"
+
+echo ""
+go test -count=1 ./... -run '^TestP0_'
+
+echo "PASS: P0 regression suite"
 __GOV_CMD_P0__
 )
 
 CMD_FILE_BUDGET=$(cat <<'__GOV_CMD_FILE_BUDGET__'
-TODO: enforce file size/complexity budgets (Go + TS) and fail on outliers
+fail=0
+
+go_max_lines=2500
+ts_max_lines=2000
+
+echo "Go file budget: max_lines=${go_max_lines}"
+go_files="$(git ls-files '*.go' | grep -v '^vendor/' || true)"
+if [[ -n "${go_files}" ]]; then
+  while IFS= read -r f; do
+    [[ -z "${f}" ]] && continue
+    lines="$(wc -l < "${f}" | tr -d ' ')"
+    if [[ "${lines}" -gt "${go_max_lines}" ]]; then
+      echo "FAIL: Go file too large (${lines} > ${go_max_lines}): ${f}"
+      fail=1
+    fi
+  done <<< "${go_files}"
+
+  echo ""
+  echo "Top Go files by line count:"
+  echo "${go_files}" | xargs wc -l | sort -n | tail -n 10
+fi
+
+echo ""
+echo "TS/JS file budget: max_lines=${ts_max_lines} (excluding generated + .d.ts)"
+ts_files="$(git ls-files '*.ts' '*.tsx' '*.js' '*.mjs' '*.cjs' \
+  | grep -v '^web/src/lib/greater/adapters/graphql/generated/' \
+  | grep -v '^web/src/lib/greater/adapters/rest/generated/' \
+  | grep -v '\.d\.ts$' \
+  || true)"
+if [[ -n "${ts_files}" ]]; then
+  while IFS= read -r f; do
+    [[ -z "${f}" ]] && continue
+    lines="$(wc -l < "${f}" | tr -d ' ')"
+    if [[ "${lines}" -gt "${ts_max_lines}" ]]; then
+      echo "FAIL: TS/JS file too large (${lines} > ${ts_max_lines}): ${f}"
+      fail=1
+    fi
+  done <<< "${ts_files}"
+
+  echo ""
+  echo "Top TS/JS files by line count:"
+  echo "${ts_files}" | xargs wc -l | sort -n | tail -n 10
+fi
+
+if [[ "${fail}" -ne 0 ]]; then
+  exit 1
+fi
+
+echo "PASS: file budgets"
 __GOV_CMD_FILE_BUDGET__
 )
 
@@ -1512,7 +1684,49 @@ __GOV_CMD_MAINTAINABILITY__
 )
 
 CMD_SINGLETON=$(cat <<'__GOV_CMD_SINGLETON__'
-TODO: add deterministic singleton checks for canonical security helpers (no duplicate semantics)
+if ! command -v git >/dev/null 2>&1; then
+  echo "BLOCKED: git is required" >&2
+  exit 2
+fi
+
+canon="internal/httpx/http_helpers.go"
+if [[ ! -f "${canon}" ]]; then
+  echo "FAIL: missing canonical helper file: ${canon}"
+  exit 1
+fi
+
+# Enforce exactly one exported implementation for each helper.
+declare -a exported_pats=(
+  '^func ParseJSON[(]'
+  '^func BearerToken[(]'
+  '^func FirstHeaderValue[(]'
+  '^func FirstQueryValue[(]'
+)
+
+for pat in "${exported_pats[@]}"; do
+  matches="$(git grep -nE "${pat}" -- '*.go' | grep -v '_test\\.go:' || true)"
+  count="$(printf '%s\n' "${matches}" | sed '/^$/d' | wc -l | tr -d ' ')"
+  if [[ "${count}" -ne 1 ]]; then
+    echo "FAIL: expected exactly 1 definition matching ${pat}, found ${count}"
+    printf '%s\n' "${matches}"
+    exit 1
+  fi
+  if ! printf '%s\n' "${matches}" | grep -q "^${canon}:"; then
+    echo "FAIL: canonical definition for ${pat} not in ${canon}"
+    printf '%s\n' "${matches}"
+    exit 1
+  fi
+done
+
+# Ensure legacy helper names are not reintroduced elsewhere.
+legacy_matches="$(git grep -nE '^func (parseJSON|bearerToken|firstHeaderValue|firstQueryValue)[(]' -- '*.go' | grep -v '_test\\.go:' || true)"
+if [[ -n "${legacy_matches}" ]]; then
+  echo "FAIL: legacy helper definitions still present (use internal/httpx instead):"
+  printf '%s\n' "${legacy_matches}"
+  exit 1
+fi
+
+echo "PASS: canonical helper singletons enforced"
 __GOV_CMD_SINGLETON__
 )
 

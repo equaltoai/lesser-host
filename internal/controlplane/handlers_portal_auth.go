@@ -10,6 +10,7 @@ import (
 	"github.com/theory-cloud/tabletheory/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
+	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -45,7 +46,7 @@ func portalUsernameForWalletAddress(address string) string {
 
 func parsePortalWalletLogin(ctx *apptheory.Context) (portalWalletLoginRequest, error) {
 	var req portalWalletLoginRequest
-	if err := parseJSON(ctx, &req); err != nil {
+	if err := httpx.ParseJSON(ctx, &req); err != nil {
 		return req, err
 	}
 
@@ -78,7 +79,7 @@ func (s *Server) handlePortalWalletChallenge(ctx *apptheory.Context) (*apptheory
 	}
 
 	var req portalWalletChallengeRequest
-	if err := parseJSON(ctx, &req); err != nil {
+	if err := httpx.ParseJSON(ctx, &req); err != nil {
 		return nil, err
 	}
 

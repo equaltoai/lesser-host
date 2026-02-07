@@ -16,6 +16,7 @@ import (
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/billing"
+	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/rendering"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
@@ -68,7 +69,7 @@ func requireLinkPreviewAuth(s *Server, ctx *apptheory.Context) (string, *apptheo
 
 func parseLinkPreviewRequestInput(ctx *apptheory.Context) (linkPreviewRequest, error) {
 	var req linkPreviewRequest
-	if err := parseJSON(ctx, &req); err != nil {
+	if err := httpx.ParseJSON(ctx, &req); err != nil {
 		return linkPreviewRequest{}, err
 	}
 	return req, nil
@@ -647,14 +648,14 @@ func requestBaseURL(ctx *apptheory.Context) string {
 	if ctx == nil {
 		return ""
 	}
-	host := strings.TrimSpace(firstHeaderValue(ctx.Request.Headers, "x-forwarded-host"))
+	host := strings.TrimSpace(httpx.FirstHeaderValue(ctx.Request.Headers, "x-forwarded-host"))
 	if host == "" {
-		host = strings.TrimSpace(firstHeaderValue(ctx.Request.Headers, "host"))
+		host = strings.TrimSpace(httpx.FirstHeaderValue(ctx.Request.Headers, "host"))
 	}
 	if host == "" {
 		return ""
 	}
-	proto := strings.TrimSpace(firstHeaderValue(ctx.Request.Headers, "x-forwarded-proto"))
+	proto := strings.TrimSpace(httpx.FirstHeaderValue(ctx.Request.Headers, "x-forwarded-proto"))
 	if proto == "" {
 		proto = "https"
 	}

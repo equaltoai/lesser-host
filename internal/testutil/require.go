@@ -30,4 +30,3 @@ func RequireMockArg[T any](t *testing.T, args mock.Arguments, index int) T {
 
 	return typed
 }
-

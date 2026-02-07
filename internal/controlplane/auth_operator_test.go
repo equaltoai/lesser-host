@@ -13,6 +13,7 @@ import (
 
 	"github.com/stretchr/testify/mock"
 
+	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 	"github.com/equaltoai/lesser-host/internal/testutil"
@@ -26,16 +27,16 @@ const (
 func TestBearerToken(t *testing.T) {
 	t.Parallel()
 
-	if got := bearerToken(nil); got != "" {
+	if got := httpx.BearerToken(nil); got != "" {
 		t.Fatalf("expected empty token, got %q", got)
 	}
-	if got := bearerToken(map[string][]string{"authorization": {testNope}}); got != "" {
+	if got := httpx.BearerToken(map[string][]string{"authorization": {testNope}}); got != "" {
 		t.Fatalf("expected empty token, got %q", got)
 	}
-	if got := bearerToken(map[string][]string{"authorization": {"Bearer abc"}}); got != "abc" {
+	if got := httpx.BearerToken(map[string][]string{"authorization": {"Bearer abc"}}); got != "abc" {
 		t.Fatalf("expected abc, got %q", got)
 	}
-	if got := bearerToken(map[string][]string{"authorization": {"bearer   xyz  "}}); got != "xyz" {
+	if got := httpx.BearerToken(map[string][]string{"authorization": {"bearer   xyz  "}}); got != "xyz" {
 		t.Fatalf("expected xyz, got %q", got)
 	}
 }

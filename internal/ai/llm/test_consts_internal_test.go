@@ -5,4 +5,3 @@ const (
 	testProviderOpenAI    = "openai"
 	testProviderAnthropic = "anthropic"
 )
-

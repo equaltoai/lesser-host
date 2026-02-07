@@ -13,6 +13,7 @@ import (
 	"github.com/theory-cloud/tabletheory/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
+	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/provisioning"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
@@ -364,7 +365,7 @@ func (s *Server) handleAppendOperatorProvisionJobNote(ctx *apptheory.Context) (*
 	}
 
 	var req appendProvisionJobNoteRequest
-	if err := parseJSON(ctx, &req); err != nil {
+	if err := httpx.ParseJSON(ctx, &req); err != nil {
 		return nil, err
 	}
 	note := strings.TrimSpace(req.Note)

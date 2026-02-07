@@ -35,4 +35,3 @@ func addStandardMockQueryStubs(q *ttmocks.MockQuery) {
 	q.On("Delete").Return(nil).Maybe()
 	q.On("Update", mock.Anything).Return(nil).Maybe()
 }
-

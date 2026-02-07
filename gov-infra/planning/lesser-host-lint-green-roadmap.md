@@ -1,4 +1,4 @@
-# lesser-host: Lint Green Roadmap (Rubric v0.1.1)
+# lesser-host: Lint Green Roadmap (Rubric v0.1.2)
 
 Goal: get to a green lint/static-analysis pass across **Go + TypeScript + CDK** using the repo’s strict lint configuration,
 **without** weakening thresholds or adding blanket exclusions.

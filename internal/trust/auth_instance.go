@@ -9,6 +9,7 @@ import (
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
+	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -26,7 +27,7 @@ func (s *Server) InstanceAuthHook(ctx *apptheory.Context) (string, error) {
 		return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
-	raw := strings.TrimSpace(bearerToken(ctx.Request.Headers))
+	raw := strings.TrimSpace(httpx.BearerToken(ctx.Request.Headers))
 	if raw == "" {
 		return "", nil
 	}
