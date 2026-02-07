@@ -80,6 +80,9 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
         _tipETH(hostId, actor, msg.value, contentHash);
     }
 
+    /// @notice Batch-tip multiple actors in ETH within a single transaction.
+    /// @dev The summation of amounts[] is safe from overflow because Solidity 0.8.x
+    ///      uses checked arithmetic — any uint256 overflow will revert automatically.
     function batchTipETH(bytes32 hostId, address[] calldata actors, uint256[] calldata amounts, bytes32[] calldata contentHashes)
         external
         payable
@@ -92,7 +95,7 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
 
         uint256 total = 0;
         for (uint256 i = 0; i < n; i++) {
-            total += amounts[i];
+            total += amounts[i]; // checked arithmetic — overflow reverts
         }
         require(msg.value == total, "TipSplitter: incorrect total");
 
@@ -128,6 +131,10 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
         _tipToken(token, hostId, actor, amount, contentHash);
     }
 
+    /// @notice Batch-tip multiple actors in an ERC-20 token within a single transaction.
+    /// @dev The summation of amounts[] is safe from overflow because Solidity 0.8.x
+    ///      uses checked arithmetic — any uint256 overflow will revert automatically.
+    ///      Uses balance-before/after pattern to defend against fee-on-transfer tokens.
     function batchTipToken(
         address token,
         bytes32 hostId,
@@ -143,23 +150,32 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
 
         uint256 total = 0;
         for (uint256 i = 0; i < n; i++) {
-            total += amounts[i];
+            total += amounts[i]; // checked arithmetic — overflow reverts
         }
         require(total > 0, "TipSplitter: total must be > 0");
 
+        // Measure actual received amount to defend against fee-on-transfer tokens
+        uint256 balBefore = IERC20(token).balanceOf(address(this));
         IERC20(token).safeTransferFrom(msg.sender, address(this), total);
+        uint256 received = IERC20(token).balanceOf(address(this)) - balBefore;
+        require(received == total, "TipSplitter: fee-on-transfer tokens not supported");
 
         for (uint256 i = 0; i < n; i++) {
             _creditToken(hostId, token, actors[i], amounts[i], contentHashes[i], msg.sender);
         }
     }
 
+    /// @dev Uses balance-before/after pattern to defend against fee-on-transfer tokens.
     function _tipToken(address token, bytes32 hostId, address actor, uint256 amount, bytes32 contentHash) internal {
         require(token != address(0), "TipSplitter: token required");
         require(allowedTokens[token], "TipSplitter: token not allowed");
         require(amount > 0, "TipSplitter: amount must be > 0");
 
+        // Measure actual received amount to defend against fee-on-transfer tokens
+        uint256 balBefore = IERC20(token).balanceOf(address(this));
         IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
+        uint256 received = IERC20(token).balanceOf(address(this)) - balBefore;
+        require(received == amount, "TipSplitter: fee-on-transfer tokens not supported");
 
         _creditToken(hostId, token, actor, amount, contentHash, msg.sender);
     }
