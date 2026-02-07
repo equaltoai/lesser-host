@@ -34,6 +34,8 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
     mapping(address => mapping(address => uint256)) public pendingToken; // token => recipient => amount
 
     mapping(address => bool) public allowedTokens; // ERC20 token allowlist (ETH is always allowed)
+    address[] public allowedTokenList; // enumerable list for migration
+    mapping(address => uint256) private _tokenIndex; // token => index in allowedTokenList (1-based)
 
     event TipSent(
         bytes32 indexed hostId,
@@ -55,6 +57,7 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
 
     event TokenAllowedSet(address indexed token, bool allowed);
     event LesserWalletUpdated(address indexed oldWallet, address indexed newWallet);
+    event PendingBalanceMigrated(address indexed token, address indexed from, address indexed to, uint256 amount);
 
     constructor(address _lesserWallet, address _owner) Ownable(_owner) {
         require(_lesserWallet != address(0), "TipSplitter: invalid lesser wallet");
@@ -216,6 +219,11 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
         require(wallet != address(0), "TipSplitter: invalid wallet");
         require(feeBps <= MAX_HOST_FEE_BPS, "TipSplitter: fee too high");
 
+        address oldWallet = hosts[hostId].wallet;
+        if (oldWallet != wallet) {
+            _migratePendingBalances(oldWallet, wallet);
+        }
+
         hosts[hostId].wallet = wallet;
         hosts[hostId].feeBps = feeBps;
         emit HostUpdated(hostId, wallet, feeBps);
@@ -231,8 +239,29 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
 
     function setTokenAllowed(address token, bool allowed) external onlyOwner {
         require(token != address(0), "TipSplitter: token required");
+
+        if (allowed && !allowedTokens[token]) {
+            allowedTokenList.push(token);
+            _tokenIndex[token] = allowedTokenList.length; // 1-based
+        } else if (!allowed && allowedTokens[token]) {
+            uint256 idx = _tokenIndex[token] - 1; // convert to 0-based
+            uint256 last = allowedTokenList.length - 1;
+            if (idx != last) {
+                address lastToken = allowedTokenList[last];
+                allowedTokenList[idx] = lastToken;
+                _tokenIndex[lastToken] = idx + 1; // 1-based
+            }
+            allowedTokenList.pop();
+            delete _tokenIndex[token];
+        }
+
         allowedTokens[token] = allowed;
         emit TokenAllowedSet(token, allowed);
+    }
+
+    /// @notice Returns the number of tokens in the allowlist.
+    function allowedTokenCount() external view returns (uint256) {
+        return allowedTokenList.length;
     }
 
     // ========= Admin =========
@@ -240,6 +269,9 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
     function setLesserWallet(address newWallet) external onlyOwner {
         require(newWallet != address(0), "TipSplitter: invalid wallet");
         address old = lesserWallet;
+        if (old != newWallet) {
+            _migratePendingBalances(old, newWallet);
+        }
         lesserWallet = newWallet;
         emit LesserWalletUpdated(old, newWallet);
     }
@@ -253,6 +285,29 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
     }
 
     // ========= Helpers =========
+
+    /// @dev Migrates all pending ETH and token balances from one address to another.
+    function _migratePendingBalances(address from, address to) internal {
+        // Migrate pending ETH
+        uint256 ethBal = pendingETH[from];
+        if (ethBal > 0) {
+            pendingETH[from] = 0;
+            pendingETH[to] += ethBal;
+            emit PendingBalanceMigrated(address(0), from, to, ethBal);
+        }
+
+        // Migrate pending tokens for all known allowed tokens
+        uint256 len = allowedTokenList.length;
+        for (uint256 i = 0; i < len; i++) {
+            address token = allowedTokenList[i];
+            uint256 tokenBal = pendingToken[token][from];
+            if (tokenBal > 0) {
+                pendingToken[token][from] = 0;
+                pendingToken[token][to] += tokenBal;
+                emit PendingBalanceMigrated(token, from, to, tokenBal);
+            }
+        }
+    }
 
     function _split(uint16 hostFeeBps, uint256 amount)
         internal
