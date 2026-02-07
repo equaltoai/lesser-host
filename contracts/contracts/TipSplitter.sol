@@ -19,6 +19,7 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
     uint256 public constant LESSER_FEE_BPS = 100; // 1%
     uint256 public constant MAX_HOST_FEE_BPS = 500; // 5%
     uint256 public constant BPS_DENOMINATOR = 10_000;
+    uint256 public constant MIN_TIP_AMOUNT = 10_000; // minimum to guarantee non-zero fee splits
 
     address public lesserWallet;
 
@@ -36,6 +37,9 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
     mapping(address => bool) public allowedTokens; // ERC20 token allowlist (ETH is always allowed)
     address[] public allowedTokenList; // enumerable list for migration
     mapping(address => uint256) private _tokenIndex; // token => index in allowedTokenList (1-based)
+
+    /// @notice Per-token max tip amount (0 = unlimited). Use address(0) key for ETH.
+    mapping(address => uint256) public maxTipAmount;
 
     event TipSent(
         bytes32 indexed hostId,
@@ -58,6 +62,7 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
     event TokenAllowedSet(address indexed token, bool allowed);
     event LesserWalletUpdated(address indexed oldWallet, address indexed newWallet);
     event PendingBalanceMigrated(address indexed token, address indexed from, address indexed to, uint256 amount);
+    event MaxTipAmountSet(address indexed token, uint256 amount);
 
     constructor(address _lesserWallet, address _owner) Ownable(_owner) {
         require(_lesserWallet != address(0), "TipSplitter: invalid lesser wallet");
@@ -105,9 +110,12 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
     }
 
     function _tipETH(bytes32 hostId, address actor, uint256 amount, bytes32 contentHash) internal {
-        require(amount > 0, "TipSplitter: amount must be > 0");
+        require(amount >= MIN_TIP_AMOUNT, "TipSplitter: amount below minimum");
         require(actor != address(0), "TipSplitter: invalid actor");
         require(actor != msg.sender, "TipSplitter: cannot tip yourself");
+
+        uint256 cap = maxTipAmount[address(0)];
+        require(cap == 0 || amount <= cap, "TipSplitter: amount exceeds max");
 
         HostConfig memory host = hosts[hostId];
         require(host.wallet != address(0) && host.isActive, "TipSplitter: host not active");
@@ -183,6 +191,10 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
     function _creditToken(bytes32 hostId, address token, address actor, uint256 amount, bytes32 contentHash, address tipper) internal {
         require(actor != address(0), "TipSplitter: invalid actor");
         require(actor != tipper, "TipSplitter: cannot tip yourself");
+        require(amount >= MIN_TIP_AMOUNT, "TipSplitter: amount below minimum");
+
+        uint256 cap = maxTipAmount[token];
+        require(cap == 0 || amount <= cap, "TipSplitter: amount exceeds max");
 
         HostConfig memory host = hosts[hostId];
         require(host.wallet != address(0) && host.isActive, "TipSplitter: host not active");
@@ -198,7 +210,8 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
 
     // ========= Withdrawals =========
 
-    function withdraw(address token) external nonReentrant {
+    /// @notice Withdraw pending balance. Paused during emergency to enable full freeze.
+    function withdraw(address token) external nonReentrant whenNotPaused {
         if (token == address(0)) {
             uint256 ethAmount = pendingETH[msg.sender];
             require(ethAmount > 0, "TipSplitter: no pending");
@@ -223,6 +236,7 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
 
     function registerHost(bytes32 hostId, address wallet, uint16 feeBps) external onlyOwner {
         require(wallet != address(0), "TipSplitter: invalid wallet");
+        require(wallet != lesserWallet, "TipSplitter: wallet cannot be lesser wallet");
         require(feeBps <= MAX_HOST_FEE_BPS, "TipSplitter: fee too high");
         require(hosts[hostId].wallet == address(0), "TipSplitter: host exists");
 
@@ -233,6 +247,7 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
     function updateHost(bytes32 hostId, address wallet, uint16 feeBps) external onlyOwner {
         require(hosts[hostId].wallet != address(0), "TipSplitter: host missing");
         require(wallet != address(0), "TipSplitter: invalid wallet");
+        require(wallet != lesserWallet, "TipSplitter: wallet cannot be lesser wallet");
         require(feeBps <= MAX_HOST_FEE_BPS, "TipSplitter: fee too high");
 
         address oldWallet = hosts[hostId].wallet;
@@ -298,6 +313,12 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
 
     function unpause() external onlyOwner {
         _unpause();
+    }
+
+    /// @notice Set the maximum tip amount for a token. Use address(0) for ETH. 0 = unlimited.
+    function setMaxTipAmount(address token, uint256 amount) external onlyOwner {
+        maxTipAmount[token] = amount;
+        emit MaxTipAmountSet(token, amount);
     }
 
     // ========= Helpers =========
