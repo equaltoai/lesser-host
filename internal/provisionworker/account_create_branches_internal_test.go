@@ -165,9 +165,9 @@ func TestStartProvisionAccountCreate_ErrorBranches(t *testing.T) {
 			createErr: errors.New("should not create"),
 			listOut: &organizations.ListAccountsOutput{
 				Accounts: []orgtypes.Account{{
-					Id:    aws.String("123456789012"),
-					Email: aws.String("ops+slug@example.com"),
-					Name:  aws.String("lesser-slug"),
+					Id:     aws.String("123456789012"),
+					Email:  aws.String("ops+slug@example.com"),
+					Name:   aws.String("lesser-slug"),
 					Status: orgtypes.AccountStatusActive,
 				}},
 			},

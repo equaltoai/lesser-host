@@ -629,14 +629,14 @@ func (s *Server) handleAccountCreateEmailExists(
 	}
 	acct, err := s.findAccountByEmail(ctx, email)
 	if err != nil {
-		delay, done, err := s.retryProvisionJobOrFail(ctx, job, requestID, now, "account_lookup_failed", "account lookup failed after email exists: "+err.Error(), provisionDefaultShortRetryDelay, 5*time.Minute)
-		return delay, done, err, true
+		delay, done, retryErr := s.retryProvisionJobOrFail(ctx, job, requestID, now, "account_lookup_failed", "account lookup failed after email exists: "+err.Error(), provisionDefaultShortRetryDelay, 5*time.Minute)
+		return delay, done, retryErr, true
 	}
 	if acct == nil {
 		return 0, false, nil, false
 	}
-	if err := ensureAccountMatchesExpected(acct, accountName); err != nil {
-		return 0, false, s.failJob(ctx, job, requestID, now, "account_email_conflict", err.Error()), true
+	if matchErr := ensureAccountMatchesExpected(acct, accountName); matchErr != nil {
+		return 0, false, s.failJob(ctx, job, requestID, now, "account_email_conflict", matchErr.Error()), true
 	}
 	job.AccountID = strings.TrimSpace(aws.ToString(acct.Id))
 	job.Note = "AWS account already exists; reusing"
