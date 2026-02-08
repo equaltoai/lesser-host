@@ -9,6 +9,7 @@
 	import Operator from 'src/pages/Operator.svelte';
 	import Portal from 'src/pages/Portal.svelte';
 	import Setup from 'src/pages/Setup.svelte';
+	import TipRegistryRegister from 'src/pages/TipRegistryRegister.svelte';
 	import Trust from 'src/pages/Trust.svelte';
 </script>
 
@@ -27,6 +28,8 @@
 		<Trust />
 	{:else if $currentPath === '/account'}
 		<Account />
+	{:else if $currentPath === '/tip-registry' || $currentPath === '/tip-registry/register'}
+		<TipRegistryRegister />
 	{:else}
 		<NotFound />
 	{/if}

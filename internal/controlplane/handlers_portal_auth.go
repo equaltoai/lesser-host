@@ -171,6 +171,7 @@ func (s *Server) createPortalWalletUser(ctx *apptheory.Context, username string,
 	newUser := &models.User{
 		Username:    username,
 		Role:        models.RoleCustomer,
+		Approved:    false,
 		DisplayName: displayName,
 		Email:       email,
 		CreatedAt:   now,
@@ -181,14 +182,14 @@ func (s *Server) createPortalWalletUser(ctx *apptheory.Context, username string,
 		Username: username,
 		Address:  address,
 		ChainID:  chainID,
-		Type:     "ethereum",
+		Type:     walletTypeEthereum,
 		LinkedAt: now,
 		LastUsed: now,
 	}
 	_ = cred.UpdateKeys()
 
 	index := &models.WalletIndex{}
-	index.UpdateKeys("ethereum", address, username)
+	index.UpdateKeys(walletTypeEthereum, address, username)
 
 	if err := s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
 		tx.Create(newUser)
@@ -217,14 +218,14 @@ func (s *Server) linkPortalWalletToCustomer(ctx *apptheory.Context, user models.
 		Username: username,
 		Address:  address,
 		ChainID:  chainID,
-		Type:     "ethereum",
+		Type:     walletTypeEthereum,
 		LinkedAt: now,
 		LastUsed: now,
 	}
 	_ = cred.UpdateKeys()
 
 	index := &models.WalletIndex{}
-	index.UpdateKeys("ethereum", address, username)
+	index.UpdateKeys(walletTypeEthereum, address, username)
 
 	if err := s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
 		tx.Create(cred)
@@ -291,7 +292,7 @@ func (s *Server) handlePortalWalletLogin(ctx *apptheory.Context) (*apptheory.Res
 		return nil, err
 	}
 
-	linked, err := s.walletLinkedUsername(ctx, "ethereum", address)
+	linked, err := s.walletLinkedUsername(ctx, walletTypeEthereum, address)
 	if err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}

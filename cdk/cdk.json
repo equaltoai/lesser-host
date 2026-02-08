@@ -20,7 +20,7 @@
     "tipRpcUrlSsmParamLive": "/lesser-host/api/infura/mainnet",
 
     "tipAdminSafeAddress": "0xfE63333F303D4f7b2354f7E3eca752C812D65907",
-    "tipDefaultHostWalletAddress": "0x80189edB676D51b2FB2257B2AD38e018B20CA46E",
+    "tipDefaultHostWalletAddress": "0x5B38Da6a701c568545dCfcB03FcB875f56beddC4",
     "tipDefaultHostFeeBps": "500",
     "tipTxMode": "safe",
 

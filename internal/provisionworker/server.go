@@ -2,6 +2,7 @@ package provisionworker
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1212,37 +1213,64 @@ func (s *Server) upsertParentNSDelegation(ctx context.Context, parentZoneID stri
 	return err
 }
 
-func (s *Server) startDeployRunner(ctx context.Context, job *models.ProvisionJob) (string, error) {
-	if s == nil || s.cb == nil {
-		return "", fmt.Errorf("codebuild client not initialized")
-	}
-	if job == nil {
-		return "", fmt.Errorf("job is nil")
-	}
-
+func (s *Server) provisionRunnerProjectName() (string, error) {
 	projectName := strings.TrimSpace(s.cfg.ManagedProvisionRunnerProjectName)
 	if projectName == "" {
 		return "", fmt.Errorf("runner project name not configured")
 	}
+	return projectName, nil
+}
 
-	receiptKey := s.receiptS3Key(job)
-	bootstrapKey := s.bootstrapS3Key(job)
+func (s *Server) validateDeployRunnerJob(job *models.ProvisionJob) error {
+	if job == nil {
+		return fmt.Errorf("job is nil")
+	}
+	if strings.TrimSpace(job.AdminUsername) == "" {
+		return fmt.Errorf("admin username not configured")
+	}
+	if strings.TrimSpace(job.AdminWalletAddr) == "" {
+		return fmt.Errorf("admin wallet not configured")
+	}
+	return nil
+}
 
-	var env []cbtypes.EnvironmentVariable
-	env = append(env,
-		cbtypes.EnvironmentVariable{Name: aws.String("JOB_ID"), Value: aws.String(strings.TrimSpace(job.ID))},
-		cbtypes.EnvironmentVariable{Name: aws.String("APP_SLUG"), Value: aws.String(strings.TrimSpace(job.InstanceSlug))},
-		cbtypes.EnvironmentVariable{Name: aws.String("BASE_DOMAIN"), Value: aws.String(strings.TrimSpace(job.BaseDomain))},
-		cbtypes.EnvironmentVariable{Name: aws.String("TARGET_ACCOUNT_ID"), Value: aws.String(strings.TrimSpace(job.AccountID))},
-		cbtypes.EnvironmentVariable{Name: aws.String("TARGET_ROLE_NAME"), Value: aws.String(strings.TrimSpace(job.AccountRoleName))},
-		cbtypes.EnvironmentVariable{Name: aws.String("TARGET_REGION"), Value: aws.String(strings.TrimSpace(job.Region))},
-		cbtypes.EnvironmentVariable{Name: aws.String("LESSER_VERSION"), Value: aws.String(strings.TrimSpace(job.LesserVersion))},
-		cbtypes.EnvironmentVariable{Name: aws.String("ARTIFACT_BUCKET"), Value: aws.String(strings.TrimSpace(s.cfg.ArtifactBucketName))},
-		cbtypes.EnvironmentVariable{Name: aws.String("RECEIPT_S3_KEY"), Value: aws.String(receiptKey)},
-		cbtypes.EnvironmentVariable{Name: aws.String("BOOTSTRAP_S3_KEY"), Value: aws.String(bootstrapKey)},
-		cbtypes.EnvironmentVariable{Name: aws.String("GITHUB_OWNER"), Value: aws.String(strings.TrimSpace(s.cfg.ManagedLesserGitHubOwner))},
-		cbtypes.EnvironmentVariable{Name: aws.String("GITHUB_REPO"), Value: aws.String(strings.TrimSpace(s.cfg.ManagedLesserGitHubRepo))},
-	)
+func (s *Server) deployRunnerStage(job *models.ProvisionJob) string {
+	stage := strings.TrimSpace(job.Stage)
+	if stage == "" {
+		stage = strings.TrimSpace(s.cfg.Stage)
+	}
+	return stage
+}
+
+func (s *Server) buildDeployRunnerEnv(job *models.ProvisionJob, stage, receiptKey, bootstrapKey string) []cbtypes.EnvironmentVariable {
+	consentMessage := strings.TrimSpace(job.ConsentMessage)
+	consentMessageB64 := ""
+	if consentMessage != "" {
+		consentMessageB64 = base64.StdEncoding.EncodeToString([]byte(consentMessage))
+	}
+	consentSignature := strings.TrimSpace(job.ConsentSignature)
+
+	env := []cbtypes.EnvironmentVariable{
+		{Name: aws.String("JOB_ID"), Value: aws.String(strings.TrimSpace(job.ID))},
+		{Name: aws.String("APP_SLUG"), Value: aws.String(strings.TrimSpace(job.InstanceSlug))},
+		{Name: aws.String("STAGE"), Value: aws.String(stage)},
+		{Name: aws.String("ADMIN_USERNAME"), Value: aws.String(strings.TrimSpace(job.AdminUsername))},
+		{Name: aws.String("ADMIN_WALLET_ADDRESS"), Value: aws.String(strings.TrimSpace(job.AdminWalletAddr))},
+		{Name: aws.String("ADMIN_WALLET_CHAIN_ID"), Value: aws.String(fmt.Sprintf("%d", job.AdminWalletChainID))},
+		{Name: aws.String("CONSENT_MESSAGE_B64"), Value: aws.String(consentMessageB64)},
+		{Name: aws.String("CONSENT_SIGNATURE"), Value: aws.String(consentSignature)},
+		{Name: aws.String("BASE_DOMAIN"), Value: aws.String(strings.TrimSpace(job.BaseDomain))},
+		{Name: aws.String("TARGET_ACCOUNT_ID"), Value: aws.String(strings.TrimSpace(job.AccountID))},
+		{Name: aws.String("TARGET_ROLE_NAME"), Value: aws.String(strings.TrimSpace(job.AccountRoleName))},
+		{Name: aws.String("TARGET_REGION"), Value: aws.String(strings.TrimSpace(job.Region))},
+		{Name: aws.String("LESSER_VERSION"), Value: aws.String(strings.TrimSpace(job.LesserVersion))},
+		{Name: aws.String("ARTIFACT_BUCKET"), Value: aws.String(strings.TrimSpace(s.cfg.ArtifactBucketName))},
+		{Name: aws.String("RECEIPT_S3_KEY"), Value: aws.String(receiptKey)},
+		{Name: aws.String("BOOTSTRAP_S3_KEY"), Value: aws.String(bootstrapKey)},
+		{Name: aws.String("GITHUB_OWNER"), Value: aws.String(strings.TrimSpace(s.cfg.ManagedLesserGitHubOwner))},
+		{Name: aws.String("GITHUB_REPO"), Value: aws.String(strings.TrimSpace(s.cfg.ManagedLesserGitHubRepo))},
+	}
+
 	if strings.TrimSpace(s.cfg.ManagedOrgVendingRoleARN) != "" {
 		env = append(env, cbtypes.EnvironmentVariable{
 			Name:  aws.String("MANAGED_ORG_VENDING_ROLE_ARN"),
@@ -1250,14 +1278,10 @@ func (s *Server) startDeployRunner(ctx context.Context, job *models.ProvisionJob
 		})
 	}
 
-	out, err := s.cb.StartBuild(ctx, &codebuild.StartBuildInput{
-		ProjectName:                  aws.String(projectName),
-		EnvironmentVariablesOverride: env,
-	})
-	if err != nil {
-		return "", err
-	}
+	return env
+}
 
+func codebuildBuildID(out *codebuild.StartBuildOutput) (string, error) {
 	if out == nil || out.Build == nil {
 		return "", fmt.Errorf("codebuild StartBuild returned empty build")
 	}
@@ -1268,6 +1292,33 @@ func (s *Server) startDeployRunner(ctx context.Context, job *models.ProvisionJob
 		return strings.TrimSpace(*out.Build.Arn), nil
 	}
 	return "", fmt.Errorf("codebuild StartBuild returned empty build id")
+}
+
+func (s *Server) startDeployRunner(ctx context.Context, job *models.ProvisionJob) (string, error) {
+	if s == nil || s.cb == nil {
+		return "", fmt.Errorf("codebuild client not initialized")
+	}
+	if err := s.validateDeployRunnerJob(job); err != nil {
+		return "", err
+	}
+	projectName, err := s.provisionRunnerProjectName()
+	if err != nil {
+		return "", err
+	}
+
+	receiptKey := s.receiptS3Key(job)
+	bootstrapKey := s.bootstrapS3Key(job)
+	stage := s.deployRunnerStage(job)
+	env := s.buildDeployRunnerEnv(job, stage, receiptKey, bootstrapKey)
+
+	out, err := s.cb.StartBuild(ctx, &codebuild.StartBuildInput{
+		ProjectName:                  aws.String(projectName),
+		EnvironmentVariablesOverride: env,
+	})
+	if err != nil {
+		return "", err
+	}
+	return codebuildBuildID(out)
 }
 
 func (s *Server) getDeployRunnerStatus(ctx context.Context, runID string) (string, string, error) {

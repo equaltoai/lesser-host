@@ -144,10 +144,7 @@ export class LesserHostStack extends cdk.Stack {
 		const tipDefaultHostFeeBps = tipContext('tipDefaultHostFeeBps');
 		const tipTxMode = tipContext('tipTxMode');
 
-		const tipRpcUrlSsmParam = tipContext('tipRpcUrlSsmParam');
-		const tipRpcUrl = tipRpcUrlSsmParam.trim()
-			? cdk.SecretValue.ssmSecure(tipRpcUrlSsmParam.trim()).toString()
-			: tipContext('tipRpcUrl');
+		const tipRpcUrlSsmParam = tipContext('tipRpcUrlSsmParam').trim();
 
 		const paymentsProvider = (this.node.tryGetContext('paymentsProvider') as string | undefined) ?? '';
 		const paymentsCentsPer1000Credits =
@@ -235,7 +232,12 @@ export class LesserHostStack extends cdk.Stack {
 			'STATE_DIR="$HOME/.lesser/$APP_SLUG/$BASE_DOMAIN"',
 			'mkdir -p "$STATE_DIR"',
 			'aws s3 cp "s3://$ARTIFACT_BUCKET/$BOOTSTRAP_S3_KEY" "$STATE_DIR/bootstrap.json" 2>/dev/null || true',
-			'./lesser up --app "$APP_SLUG" --base-domain "$BASE_DOMAIN" --aws-profile managed --out /tmp/bootstrap.json',
+			'CONSENT_MESSAGE=""',
+			'if [ -n "${CONSENT_MESSAGE_B64:-}" ]; then CONSENT_MESSAGE=$(printf "%s" "$CONSENT_MESSAGE_B64" | base64 --decode); fi',
+			'PROVISION_INPUT="$STATE_DIR/provision.json"',
+			'jq -n --arg slug "$APP_SLUG" --arg stage "$STAGE" --arg admin_wallet_address "$ADMIN_WALLET_ADDRESS" --arg admin_username "$ADMIN_USERNAME" --arg admin_wallet_chain_id "${ADMIN_WALLET_CHAIN_ID:-}" --arg consent_message "$CONSENT_MESSAGE" --arg consent_signature "${CONSENT_SIGNATURE:-}" \'{"schema":1,"slug":$slug,"stage":$stage,"admin_wallet_address":$admin_wallet_address,"admin_username":$admin_username} | if $admin_wallet_chain_id != "" then .admin_wallet_chain_id = ($admin_wallet_chain_id|tonumber) else . end | if $consent_message != "" then .consent_message = $consent_message else . end | if $consent_signature != "" then .consent_signature = $consent_signature else . end\' > "$PROVISION_INPUT"',
+			'./lesser up --app "$APP_SLUG" --base-domain "$BASE_DOMAIN" --aws-profile managed --provisioning-input "$PROVISION_INPUT"',
+			'if [ -n "${CONSENT_MESSAGE_B64:-}" ] && [ -n "${CONSENT_SIGNATURE:-}" ]; then ./lesser init-admin --base-domain "$BASE_DOMAIN" --aws-profile managed --provisioning-input "$PROVISION_INPUT"; else echo "Skipping init-admin (missing consent message/signature)."; fi',
 			'RECEIPT_PATH="$STATE_DIR/state.json"',
 			'test -f "$RECEIPT_PATH"',
 			'aws s3 cp "$RECEIPT_PATH" "s3://$ARTIFACT_BUCKET/$RECEIPT_S3_KEY"',
@@ -320,7 +322,7 @@ export class LesserHostStack extends cdk.Stack {
 			MANAGED_LESSER_GITHUB_TOKEN_SSM_PARAM: managedLesserGitHubTokenSsmParam.trim(),
 			TIP_ENABLED: tipEnabled,
 			TIP_CHAIN_ID: tipChainId,
-			TIP_RPC_URL: tipRpcUrl,
+			TIP_RPC_URL_SSM_PARAM: tipRpcUrlSsmParam,
 			TIP_CONTRACT_ADDRESS: tipContractAddress,
 			TIP_ADMIN_SAFE_ADDRESS: tipAdminSafeAddress,
 			TIP_DEFAULT_HOST_WALLET_ADDRESS: tipDefaultHostWalletAddress,
@@ -553,32 +555,40 @@ export class LesserHostStack extends cdk.Stack {
 				resources: paymentsSsmParamArns,
 			}),
 		);
+		if (tipRpcUrlSsmParam) {
 			controlPlaneFn.addToRolePolicy(
 				new iam.PolicyStatement({
-					actions: ['kms:Decrypt'],
-					resources: ['*'],
-					conditions: {
-						StringEquals: { 'kms:ViaService': `ssm.${cdk.Aws.REGION}.amazonaws.com` },
-					},
+					actions: ['ssm:GetParameter'],
+					resources: [`arn:aws:ssm:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:parameter/${tipRpcUrlSsmParam.replace(/^\//, '')}`],
 				}),
 			);
+		}
+		controlPlaneFn.addToRolePolicy(
+			new iam.PolicyStatement({
+				actions: ['kms:Decrypt'],
+				resources: ['*'],
+				conditions: {
+					StringEquals: { 'kms:ViaService': `ssm.${cdk.Aws.REGION}.amazonaws.com` },
+				},
+			}),
+		);
 
-			controlPlaneFn.addToRolePolicy(
-				new iam.PolicyStatement({
-					actions: ['route53:ListHostedZonesByName'],
-					resources: ['*'],
-				}),
-			);
-			controlPlaneFn.addToRolePolicy(
-				new iam.PolicyStatement({
-					actions: ['route53:ChangeResourceRecordSets'],
-					resources: ['arn:aws:route53:::hostedzone/*'],
-				}),
-			);
+		controlPlaneFn.addToRolePolicy(
+			new iam.PolicyStatement({
+				actions: ['route53:ListHostedZonesByName'],
+				resources: ['*'],
+			}),
+		);
+		controlPlaneFn.addToRolePolicy(
+			new iam.PolicyStatement({
+				actions: ['route53:ChangeResourceRecordSets'],
+				resources: ['arn:aws:route53:::hostedzone/*'],
+			}),
+		);
 
-			const retentionSweepRule = new events.Rule(this, 'RetentionSweepRule', {
-				ruleName: `${namePrefix}-retention-sweep`,
-				schedule: events.Schedule.rate(cdk.Duration.days(1)),
+		const retentionSweepRule = new events.Rule(this, 'RetentionSweepRule', {
+			ruleName: `${namePrefix}-retention-sweep`,
+			schedule: events.Schedule.rate(cdk.Duration.days(1)),
 		});
 		retentionSweepRule.addTarget(new targets.LambdaFunction(renderWorkerFn));
 

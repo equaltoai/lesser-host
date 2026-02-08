@@ -22,6 +22,7 @@ type User struct {
 
 	Username    string    `theorydb:"attr:username" json:"username"`
 	Role        string    `theorydb:"attr:role" json:"role"`
+	Approved    bool      `theorydb:"attr:approved" json:"approved"`
 	DisplayName string    `theorydb:"attr:displayName" json:"display_name,omitempty"`
 	Email       string    `theorydb:"attr:email" json:"email,omitempty"`
 	CreatedAt   time.Time `theorydb:"attr:createdAt" json:"created_at"`

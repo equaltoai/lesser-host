@@ -38,6 +38,63 @@ export interface SafeTxPayload {
 	data: string;
 }
 
+export interface TipHostRegistration {
+	id: string;
+	kind: string;
+	domain_raw?: string;
+	domain_normalized: string;
+	host_id_hex: string;
+	chain_id: number;
+	wallet_type: string;
+	wallet_address: string;
+	host_fee_bps: number;
+	tx_mode?: string;
+	safe_address?: string;
+	wallet_nonce?: string;
+	wallet_message?: string;
+	dns_token?: string;
+	http_token?: string;
+	dns_verified?: boolean;
+	https_verified?: boolean;
+	wallet_verified?: boolean;
+	verified_at?: string;
+	status: string;
+	created_at: string;
+	updated_at: string;
+	expires_at?: string;
+	completed_at?: string;
+}
+
+export interface TipRegistryWalletChallenge {
+	id: string;
+	address: string;
+	chainId: number;
+	nonce: string;
+	message: string;
+	issuedAt: string;
+	expiresAt: string;
+}
+
+export interface TipRegistryProofInstructions {
+	method: string;
+	dns_name?: string;
+	dns_value?: string;
+	https_url?: string;
+	https_body?: string;
+}
+
+export interface TipRegistryRegistrationBeginResponse {
+	registration: TipHostRegistration;
+	wallet: TipRegistryWalletChallenge;
+	proofs: TipRegistryProofInstructions[];
+}
+
+export interface TipRegistryRegistrationVerifyResponse {
+	registration: TipHostRegistration;
+	operation: TipRegistryOperation;
+	safe_tx?: SafeTxPayload;
+}
+
 export interface CreateTipRegistryOperationResponse {
 	operation: TipRegistryOperation;
 	safe_tx?: SafeTxPayload;
@@ -51,6 +108,34 @@ export interface EnsureTipRegistryHostNoopResponse {
 export interface ListTipRegistryOperationsResponse {
 	operations: TipRegistryOperation[];
 	count: number;
+}
+
+export function beginTipRegistryRegistration(input: {
+	kind?: string;
+	domain: string;
+	wallet_address: string;
+	host_fee_bps: number;
+}): Promise<TipRegistryRegistrationBeginResponse> {
+	const req = jsonRequest(input);
+	return fetchJson<TipRegistryRegistrationBeginResponse>('/api/v1/tip-registry/registrations/begin', {
+		method: 'POST',
+		...req,
+	});
+}
+
+export function verifyTipRegistryRegistration(
+	id: string,
+	signature: string,
+	proofs?: string[],
+): Promise<TipRegistryRegistrationVerifyResponse> {
+	const req = jsonRequest({ signature, proofs });
+	return fetchJson<TipRegistryRegistrationVerifyResponse>(
+		`/api/v1/tip-registry/registrations/${encodeURIComponent(id)}/verify`,
+		{
+			method: 'POST',
+			...req,
+		},
+	);
 }
 
 export function listTipRegistryOperations(token: string, status?: string): Promise<ListTipRegistryOperationsResponse> {
@@ -138,4 +223,3 @@ export function setTipRegistryTokenAllowed(
 		body: req.body,
 	});
 }
-
