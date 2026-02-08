@@ -332,6 +332,21 @@
 							{/if}
 						</Text>
 					</Alert>
+
+					<Alert variant="info" title="Restart provisioning">
+						<Text size="sm">Update the inputs (optional) and retry provisioning.</Text>
+					</Alert>
+
+					<div class="instance-detail__form">
+						<TextField label="Region (optional)" bind:value={provisionRegion} placeholder="us-east-1" />
+						<TextField label="Lesser version (optional)" bind:value={provisionLesserVersion} placeholder="vX.Y.Z" />
+					</div>
+
+					<div class="instance-detail__row">
+						<Button variant="solid" onclick={() => void startProvisioning()} disabled={provisioningLoading}>
+							Restart provisioning
+						</Button>
+					</div>
 				{/if}
 			{:else}
 				<Alert variant="info" title="Not started">
