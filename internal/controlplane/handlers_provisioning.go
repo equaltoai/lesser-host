@@ -22,6 +22,7 @@ type startInstanceProvisionRequest struct {
 	LesserVersion   string `json:"lesser_version,omitempty"`
 	Region          string `json:"region,omitempty"`
 	AdminUsername   string `json:"admin_username,omitempty"`
+	ConsentChallengeID string `json:"consent_challenge_id,omitempty"`
 	ConsentMessage  string `json:"consent_message,omitempty"`
 	ConsentSignature string `json:"consent_signature,omitempty"`
 }

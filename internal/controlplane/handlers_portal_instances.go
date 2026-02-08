@@ -341,6 +341,49 @@ func (s *Server) handlePortalStartInstanceProvisioning(ctx *apptheory.Context) (
 		return nil, err
 	}
 
+	consentChallengeID := strings.TrimSpace(req.ConsentChallengeID)
+	consentMessage := strings.TrimSpace(req.ConsentMessage)
+	consentSignature := strings.TrimSpace(req.ConsentSignature)
+	if consentChallengeID == "" {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "consent_challenge_id is required"}
+	}
+	if consentMessage == "" {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "consent_message is required"}
+	}
+	if consentSignature == "" {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "consent_signature is required"}
+	}
+
+	chall, loadErr := s.getProvisionConsentChallenge(ctx, consentChallengeID)
+	if loadErr != nil {
+		return nil, normalizeNotFound(loadErr)
+	}
+
+	stage := strings.TrimSpace(s.cfg.Stage)
+	if stage == "" {
+		stage = "lab"
+	}
+
+	if appErr := validateProvisionConsentChallenge(ctx, chall, slug, stage, consentMessage); appErr != nil {
+		return nil, appErr
+	}
+	if reservedErr := validateNotReservedWalletAddress(strings.TrimSpace(chall.WalletAddr), "wallet"); reservedErr != nil {
+		return nil, reservedErr
+	}
+	if verifyErr := verifyEthereumSignature(strings.TrimSpace(chall.WalletAddr), strings.TrimSpace(chall.Message), consentSignature); verifyErr != nil {
+		return nil, &apptheory.AppError{Code: "app.forbidden", Message: "invalid signature"}
+	}
+	_ = s.deleteProvisionConsentChallenge(ctx, chall)
+
+	if reqAdmin := strings.ToLower(strings.TrimSpace(req.AdminUsername)); reqAdmin != "" && reqAdmin != strings.ToLower(strings.TrimSpace(chall.AdminUsername)) {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "admin_username does not match consent challenge"}
+	}
+
+	// Canonicalize consent artifacts from the stored challenge message.
+	req.AdminUsername = strings.TrimSpace(chall.AdminUsername)
+	req.ConsentMessage = strings.TrimSpace(chall.Message)
+	req.ConsentSignature = consentSignature
+
 	now := time.Now().UTC()
 	job, baseDomain, region, appErr := s.buildManagedProvisionJob(slug, req, ctx.RequestID, now)
 	if appErr != nil {

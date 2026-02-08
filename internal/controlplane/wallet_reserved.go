@@ -47,24 +47,10 @@ func validateNotReservedWalletAddress(addr string, field string) *apptheory.AppE
 	return &apptheory.AppError{Code: "app.bad_request", Message: msg}
 }
 
-func reservedWalletAddressFromUsername(username string) string {
-	username = strings.ToLower(strings.TrimSpace(username))
-	if !strings.HasPrefix(username, "wallet-") {
-		return ""
-	}
-	hex := strings.TrimPrefix(username, "wallet-")
-	hex = strings.TrimSpace(hex)
-	if hex == "" {
-		return ""
-	}
-	return "0x" + hex
-}
-
 func validateNotReservedWalletUsername(username string) *apptheory.AppError {
-	addr := reservedWalletAddressFromUsername(username)
+	addr := walletAddressFromUsername(username)
 	if addr == "" {
 		return nil
 	}
 	return validateNotReservedWalletAddress(addr, "wallet")
 }
-

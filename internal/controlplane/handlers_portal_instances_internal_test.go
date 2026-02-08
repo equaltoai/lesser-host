@@ -7,6 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ethereum/go-ethereum/accounts"
+	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/crypto"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
@@ -28,6 +31,7 @@ type portalTestDB struct {
 	qDomain   *ttmocks.MockQuery
 	qAudit    *ttmocks.MockQuery
 	qJob      *ttmocks.MockQuery
+	qConsent  *ttmocks.MockQuery
 }
 
 func newPortalTestDB() portalTestDB {
@@ -39,6 +43,7 @@ func newPortalTestDB() portalTestDB {
 	qDomain := new(ttmocks.MockQuery)
 	qAudit := new(ttmocks.MockQuery)
 	qJob := new(ttmocks.MockQuery)
+	qConsent := new(ttmocks.MockQuery)
 
 	db.On("WithContext", mock.Anything).Return(db).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.User")).Return(qUser).Maybe()
@@ -48,8 +53,9 @@ func newPortalTestDB() portalTestDB {
 	db.On("Model", mock.AnythingOfType("*models.Domain")).Return(qDomain).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.AuditLogEntry")).Return(qAudit).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.ProvisionJob")).Return(qJob).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.ProvisionConsentChallenge")).Return(qConsent).Maybe()
 
-	for _, q := range []*ttmocks.MockQuery{qUser, qInstance, qBudget, qUsage, qDomain, qAudit, qJob} {
+	for _, q := range []*ttmocks.MockQuery{qUser, qInstance, qBudget, qUsage, qDomain, qAudit, qJob, qConsent} {
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("Index", mock.Anything).Return(q).Maybe()
 		q.On("Limit", mock.Anything).Return(q).Maybe()
@@ -81,6 +87,7 @@ func newPortalTestDB() portalTestDB {
 		qDomain:   qDomain,
 		qAudit:    qAudit,
 		qJob:      qJob,
+		qConsent:  qConsent,
 	}
 }
 
@@ -867,10 +874,60 @@ func TestPortalProvisioningHandlers_ReturnExistingAndNewJob(t *testing.T) {
 		if !ok {
 			t.Fatalf("expected *models.Instance, got %T", destAny)
 		}
-		*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive}
+			*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive}
+		}).Once()
+
+	challengeID := "c1"
+	privKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	walletAddr := strings.ToLower(crypto.PubkeyToAddress(privKey.PublicKey).Hex())
+
+	issuedAt := time.Now().UTC()
+	expiresAt := issuedAt.Add(5 * time.Minute)
+	msg := buildProvisionConsentMessage("demo", "lab", "demo", walletAddr, "nonce", issuedAt, expiresAt)
+	sigBytes, err := crypto.Sign(accounts.TextHash([]byte(msg)), privKey)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	signature := hexutil.Encode(sigBytes)
+
+	tdb.qConsent.On("First", mock.AnythingOfType("*models.ProvisionConsentChallenge")).Return(nil).Run(func(args mock.Arguments) {
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.ProvisionConsentChallenge)
+		if !ok {
+			t.Fatalf("expected *models.ProvisionConsentChallenge, got %T", destAny)
+		}
+		*dest = models.ProvisionConsentChallenge{
+			ID:            challengeID,
+			Username:      "alice",
+			InstanceSlug:  "demo",
+			Stage:         "lab",
+			AdminUsername: "demo",
+			WalletType:    "ethereum",
+			WalletAddr:    walletAddr,
+			ChainID:       1,
+			Nonce:         "nonce",
+			Message:       msg,
+			IssuedAt:      issuedAt,
+			ExpiresAt:     expiresAt,
+		}
+		_ = dest.UpdateKeys()
 	}).Once()
 
-	ctx2 := &apptheory.Context{AuthIdentity: "alice", Params: map[string]string{"slug": "demo"}}
+	body := map[string]any{
+		"consent_challenge_id": challengeID,
+		"consent_message":      msg,
+		"consent_signature":    signature,
+	}
+	bodyJSON, _ := json.Marshal(body)
+
+	ctx2 := &apptheory.Context{
+		AuthIdentity: "alice",
+		Params:       map[string]string{"slug": "demo"},
+		Request:      apptheory.Request{Body: bodyJSON},
+	}
 	resp, err = s.handlePortalStartInstanceProvisioning(ctx2)
 	if err != nil || resp == nil || resp.Status != 202 {
 		t.Fatalf("new job resp=%#v err=%v", resp, err)
