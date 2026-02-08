@@ -594,32 +594,14 @@ func (s *Server) handleProvisionAccountCreateStatus(
 		return provisionDefaultPollDelay, false, nil
 
 	case orgtypes.CreateAccountStateFailed:
+		if st.FailureReason == orgtypes.CreateAccountFailureReasonEmailAlreadyExists {
+			if delay, done, err, handled := s.handleAccountCreateEmailExists(ctx, job, requestID, now); handled {
+				return delay, done, err
+			}
+		}
 		reason := "unknown"
 		if st.FailureReason != "" {
 			reason = string(st.FailureReason)
-		}
-		if st.FailureReason == orgtypes.CreateAccountFailureReasonEmailAlreadyExists {
-			email := strings.TrimSpace(job.AccountEmail)
-			if email == "" {
-				email = strings.TrimSpace(expandManagedAccountEmailTemplate(s.cfg.ManagedAccountEmailTemplate, job.InstanceSlug))
-				job.AccountEmail = email
-			}
-			accountName := strings.TrimSpace(strings.TrimSpace(s.cfg.ManagedAccountNamePrefix) + strings.TrimSpace(job.InstanceSlug))
-			if len(accountName) > 50 {
-				accountName = accountName[:50]
-			}
-			acct, err := s.findAccountByEmail(ctx, email)
-			if err != nil {
-				return s.retryProvisionJobOrFail(ctx, job, requestID, now, "account_lookup_failed", "account lookup failed after email exists: "+err.Error(), provisionDefaultShortRetryDelay, 5*time.Minute)
-			}
-			if acct != nil {
-				if err := ensureAccountMatchesExpected(acct, accountName); err != nil {
-					return 0, false, s.failJob(ctx, job, requestID, now, "account_email_conflict", err.Error())
-				}
-				job.AccountID = strings.TrimSpace(aws.ToString(acct.Id))
-				job.Note = "AWS account already exists; reusing"
-				return s.advanceToAccountMove(ctx, job, requestID, now, job.Note)
-			}
 		}
 		return 0, false, s.failJob(ctx, job, requestID, now, "account_create_failed", "AWS account creation failed: "+reason)
 
@@ -628,6 +610,38 @@ func (s *Server) handleProvisionAccountCreateStatus(
 		_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
 		return provisionDefaultPollDelay, false, nil
 	}
+}
+
+func (s *Server) handleAccountCreateEmailExists(
+	ctx context.Context,
+	job *models.ProvisionJob,
+	requestID string,
+	now time.Time,
+) (time.Duration, bool, error, bool) {
+	email := strings.TrimSpace(job.AccountEmail)
+	if email == "" {
+		email = strings.TrimSpace(expandManagedAccountEmailTemplate(s.cfg.ManagedAccountEmailTemplate, job.InstanceSlug))
+		job.AccountEmail = email
+	}
+	accountName := strings.TrimSpace(strings.TrimSpace(s.cfg.ManagedAccountNamePrefix) + strings.TrimSpace(job.InstanceSlug))
+	if len(accountName) > 50 {
+		accountName = accountName[:50]
+	}
+	acct, err := s.findAccountByEmail(ctx, email)
+	if err != nil {
+		delay, done, err := s.retryProvisionJobOrFail(ctx, job, requestID, now, "account_lookup_failed", "account lookup failed after email exists: "+err.Error(), provisionDefaultShortRetryDelay, 5*time.Minute)
+		return delay, done, err, true
+	}
+	if acct == nil {
+		return 0, false, nil, false
+	}
+	if err := ensureAccountMatchesExpected(acct, accountName); err != nil {
+		return 0, false, s.failJob(ctx, job, requestID, now, "account_email_conflict", err.Error()), true
+	}
+	job.AccountID = strings.TrimSpace(aws.ToString(acct.Id))
+	job.Note = "AWS account already exists; reusing"
+	delay, done, err := s.advanceToAccountMove(ctx, job, requestID, now, job.Note)
+	return delay, done, err, true
 }
 
 func (s *Server) advanceProvisionAccountMove(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {

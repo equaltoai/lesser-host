@@ -2,16 +2,22 @@ package provisionworker
 
 import "strings"
 
+const (
+	managedStageDev     = "dev"
+	managedStageStaging = "staging"
+	managedStageLive    = "live"
+)
+
 func normalizeManagedLesserStage(value string) string {
 	stage := strings.ToLower(strings.TrimSpace(value))
 	switch stage {
-	case "live", "prod", "production":
-		return "live"
-	case "staging", "stage":
-		return "staging"
-	case "dev", "development", "lab", "test", "sandbox", "":
-		return "dev"
+	case managedStageLive, "prod", "production":
+		return managedStageLive
+	case managedStageStaging, "stage":
+		return managedStageStaging
+	case managedStageDev, "development", "lab", "test", "sandbox", "":
+		return managedStageDev
 	default:
-		return "dev"
+		return managedStageDev
 	}
 }
