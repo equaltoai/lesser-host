@@ -171,6 +171,7 @@ func (s *Server) createPortalWalletUser(ctx *apptheory.Context, username string,
 	newUser := &models.User{
 		Username:    username,
 		Role:        models.RoleCustomer,
+		Approved:    false,
 		DisplayName: displayName,
 		Email:       email,
 		CreatedAt:   now,

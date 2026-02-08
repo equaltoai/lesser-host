@@ -100,6 +100,9 @@ func (s *Server) handlePortalCreateInstance(ctx *apptheory.Context) (*apptheory.
 	if appErr := requireStoreDB(s); appErr != nil {
 		return nil, appErr
 	}
+	if appErr := s.requirePortalApproved(ctx); appErr != nil {
+		return nil, appErr
+	}
 
 	var req createInstanceRequest
 	if err := httpx.ParseJSON(ctx, &req); err != nil {
@@ -321,6 +324,9 @@ func (s *Server) handlePortalStartInstanceProvisioning(ctx *apptheory.Context) (
 	}
 
 	if appErr := validateNotReservedWalletUsername(strings.TrimSpace(ctx.AuthIdentity)); appErr != nil {
+		return nil, appErr
+	}
+	if appErr := s.requirePortalApproved(ctx); appErr != nil {
 		return nil, appErr
 	}
 

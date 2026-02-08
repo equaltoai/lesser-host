@@ -37,6 +37,10 @@ type ProvisionJob struct {
 	Region        string `theorydb:"attr:region" json:"region,omitempty"`                // target region (if applicable)
 	Stage         string `theorydb:"attr:stage" json:"stage,omitempty"`                  // optional stage selector
 	LesserVersion string `theorydb:"attr:lesserVersion" json:"lesser_version,omitempty"` // semver tag
+	AdminUsername string `theorydb:"attr:adminUsername" json:"admin_username,omitempty"`
+
+	ConsentMessageHash string `theorydb:"attr:consentMessageHash" json:"consent_message_hash,omitempty"`
+	ConsentSignature   string `theorydb:"attr:consentSignature" json:"consent_signature,omitempty"`
 
 	// Account allocation / creation.
 	AccountRequestID string `theorydb:"attr:accountRequestId" json:"account_request_id,omitempty"`
@@ -113,6 +117,9 @@ func (j *ProvisionJob) UpdateKeys() error {
 	j.Region = strings.TrimSpace(j.Region)
 	j.Stage = strings.TrimSpace(j.Stage)
 	j.LesserVersion = strings.TrimSpace(j.LesserVersion)
+	j.AdminUsername = strings.TrimSpace(j.AdminUsername)
+	j.ConsentMessageHash = strings.TrimSpace(j.ConsentMessageHash)
+	j.ConsentSignature = strings.TrimSpace(j.ConsentSignature)
 	j.AccountRequestID = strings.TrimSpace(j.AccountRequestID)
 	j.AccountID = strings.TrimSpace(j.AccountID)
 	j.AccountEmail = strings.TrimSpace(j.AccountEmail)

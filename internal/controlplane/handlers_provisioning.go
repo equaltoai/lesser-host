@@ -1,6 +1,8 @@
 package controlplane
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"strings"
@@ -17,8 +19,11 @@ import (
 )
 
 type startInstanceProvisionRequest struct {
-	LesserVersion string `json:"lesser_version,omitempty"`
-	Region        string `json:"region,omitempty"`
+	LesserVersion   string `json:"lesser_version,omitempty"`
+	Region          string `json:"region,omitempty"`
+	AdminUsername   string `json:"admin_username,omitempty"`
+	ConsentMessage  string `json:"consent_message,omitempty"`
+	ConsentSignature string `json:"consent_signature,omitempty"`
 }
 
 type provisionJobResponse struct {
@@ -33,6 +38,10 @@ type provisionJobResponse struct {
 	Region        string `json:"region,omitempty"`
 	Stage         string `json:"stage,omitempty"`
 	LesserVersion string `json:"lesser_version,omitempty"`
+	AdminUsername string `json:"admin_username,omitempty"`
+
+	ConsentMessageHash string `json:"consent_message_hash,omitempty"`
+	ConsentSignature   string `json:"consent_signature,omitempty"`
 
 	AccountRequestID string `json:"account_request_id,omitempty"`
 	AccountID        string `json:"account_id,omitempty"`
@@ -67,6 +76,9 @@ func provisionJobResponseFromModel(j *models.ProvisionJob) provisionJobResponse 
 		Region:             strings.TrimSpace(j.Region),
 		Stage:              strings.TrimSpace(j.Stage),
 		LesserVersion:      strings.TrimSpace(j.LesserVersion),
+		AdminUsername:      strings.TrimSpace(j.AdminUsername),
+		ConsentMessageHash: strings.TrimSpace(j.ConsentMessageHash),
+		ConsentSignature:   strings.TrimSpace(j.ConsentSignature),
 		AccountRequestID:   strings.TrimSpace(j.AccountRequestID),
 		AccountID:          strings.TrimSpace(j.AccountID),
 		ParentHostedZoneID: strings.TrimSpace(j.ParentHostedZoneID),
@@ -94,6 +106,11 @@ func parseStartInstanceProvisionRequest(ctx *apptheory.Context) (startInstancePr
 		return req, err
 	}
 	return req, nil
+}
+
+func sha256Hex(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
 }
 
 func (s *Server) enqueueProvisionJobBestEffort(ctx *apptheory.Context, jobID string) {
@@ -143,6 +160,14 @@ func (s *Server) buildManagedProvisionJob(slug string, req startInstanceProvisio
 		return nil, "", "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
+	adminUsername := strings.ToLower(strings.TrimSpace(req.AdminUsername))
+	if adminUsername == "" {
+		adminUsername = strings.ToLower(strings.TrimSpace(slug))
+	}
+	if adminUsername == "" || !instanceSlugRE.MatchString(adminUsername) {
+		return nil, "", "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid admin_username"}
+	}
+
 	id, err := newToken(16)
 	if err != nil {
 		return nil, "", "", &apptheory.AppError{Code: "app.internal", Message: "failed to create provisioning job"}
@@ -172,6 +197,15 @@ func (s *Server) buildManagedProvisionJob(slug string, req startInstanceProvisio
 		Mode:               "managed",
 		Region:             region,
 		LesserVersion:      lesserVersion,
+		AdminUsername:      adminUsername,
+		ConsentSignature:   strings.TrimSpace(req.ConsentSignature),
+		ConsentMessageHash: func() string {
+			msg := strings.TrimSpace(req.ConsentMessage)
+			if msg == "" {
+				return ""
+			}
+			return sha256Hex(msg)
+		}(),
 		ParentHostedZoneID: strings.TrimSpace(s.cfg.ManagedParentHostedZoneID),
 		BaseDomain:         baseDomain,
 		CreatedAt:          now,

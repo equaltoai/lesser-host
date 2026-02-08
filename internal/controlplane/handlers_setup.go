@@ -487,6 +487,7 @@ func (s *Server) createSetupAdminUser(ctx *apptheory.Context, username string, d
 	user := &models.User{
 		Username:    strings.TrimSpace(username),
 		Role:        models.RoleAdmin,
+		Approved:    true,
 		DisplayName: strings.TrimSpace(displayName),
 		CreatedAt:   now,
 	}

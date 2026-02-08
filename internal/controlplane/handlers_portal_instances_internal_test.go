@@ -21,6 +21,7 @@ import (
 
 type portalTestDB struct {
 	db        *ttmocks.MockExtendedDB
+	qUser     *ttmocks.MockQuery
 	qInstance *ttmocks.MockQuery
 	qBudget   *ttmocks.MockQuery
 	qUsage    *ttmocks.MockQuery
@@ -31,6 +32,7 @@ type portalTestDB struct {
 
 func newPortalTestDB() portalTestDB {
 	db := ttmocks.NewMockExtendedDB()
+	qUser := new(ttmocks.MockQuery)
 	qInstance := new(ttmocks.MockQuery)
 	qBudget := new(ttmocks.MockQuery)
 	qUsage := new(ttmocks.MockQuery)
@@ -39,6 +41,7 @@ func newPortalTestDB() portalTestDB {
 	qJob := new(ttmocks.MockQuery)
 
 	db.On("WithContext", mock.Anything).Return(db).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.User")).Return(qUser).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.Instance")).Return(qInstance).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(qBudget).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.UsageLedgerEntry")).Return(qUsage).Maybe()
@@ -46,7 +49,7 @@ func newPortalTestDB() portalTestDB {
 	db.On("Model", mock.AnythingOfType("*models.AuditLogEntry")).Return(qAudit).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.ProvisionJob")).Return(qJob).Maybe()
 
-	for _, q := range []*ttmocks.MockQuery{qInstance, qBudget, qUsage, qDomain, qAudit, qJob} {
+	for _, q := range []*ttmocks.MockQuery{qUser, qInstance, qBudget, qUsage, qDomain, qAudit, qJob} {
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("Index", mock.Anything).Return(q).Maybe()
 		q.On("Limit", mock.Anything).Return(q).Maybe()
@@ -59,8 +62,19 @@ func newPortalTestDB() portalTestDB {
 		q.On("Update", mock.Anything).Return(nil).Maybe()
 	}
 
+	qUser.On("First", mock.AnythingOfType("*models.User")).Return(nil).Run(func(args mock.Arguments) {
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.User)
+		if !ok {
+			return
+		}
+		*dest = models.User{Username: "alice", Role: models.RoleCustomer, Approved: true}
+		_ = dest.UpdateKeys()
+	}).Maybe()
+
 	return portalTestDB{
 		db:        db,
+		qUser:     qUser,
 		qInstance: qInstance,
 		qBudget:   qBudget,
 		qUsage:    qUsage,
