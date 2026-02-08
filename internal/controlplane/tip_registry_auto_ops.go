@@ -28,6 +28,9 @@ func (s *Server) validateTipRegistryConfigForAutoOps() *apptheory.AppError {
 	if !common.IsHexAddress(strings.TrimSpace(s.cfg.TipDefaultHostWalletAddress)) {
 		return &apptheory.AppError{Code: "app.conflict", Message: "tip default host wallet is not configured"}
 	}
+	if isReservedWalletAddress(s.cfg.TipDefaultHostWalletAddress) {
+		return &apptheory.AppError{Code: "app.conflict", Message: "tip default host wallet is reserved"}
+	}
 	if s.cfg.TipDefaultHostFeeBps > 500 {
 		return &apptheory.AppError{Code: "app.conflict", Message: "tip default host fee is not configured"}
 	}
@@ -97,6 +100,9 @@ func (s *Server) buildAutoTipRegistryOperation(ctx context.Context, domain strin
 	if s == nil || !s.cfg.TipEnabled {
 		return nil, nil, nil
 	}
+	if s.store == nil || s.store.DB == nil {
+		return nil, nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
 	if appErr := s.validateTipRegistryConfigForAutoOps(); appErr != nil {
 		return nil, nil, appErr
 	}
@@ -121,6 +127,11 @@ func (s *Server) buildAutoTipRegistryOperation(ctx context.Context, domain strin
 	txData, walletAddr, hostFeeBps, active, appErr := encodeAutoTipRegistryTx(opKind, hostID, desiredWallet, desiredFee)
 	if appErr != nil {
 		return nil, nil, appErr
+	}
+	if walletAddr != "" {
+		if appErr := s.validateNotPrivilegedWalletAddress(ctx, "ethereum", walletAddr, "tip default host wallet"); appErr != nil {
+			return nil, nil, appErr
+		}
 	}
 	opID := tipRegistryOpID(opKind, s.cfg.TipChainID, txTo, hostID.Hex(), walletAddr, hostFeeBps, "", active, nil)
 

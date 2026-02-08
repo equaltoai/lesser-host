@@ -144,6 +144,9 @@ func (s *Server) handleTipHostRegistrationBegin(ctx *apptheory.Context) (*appthe
 	if appErr := validateNotReservedWalletAddress(walletAddr, "wallet_address"); appErr != nil {
 		return nil, appErr
 	}
+	if appErr := s.validateNotPrivilegedWalletAddress(ctx.Context(), "ethereum", walletAddr, "wallet_address"); appErr != nil {
+		return nil, appErr
+	}
 
 	if req.HostFeeBps < 0 || req.HostFeeBps > 500 {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "host_fee_bps must be between 0 and 500"}
@@ -738,6 +741,9 @@ func (s *Server) createTipRegistryOperationForRegistration(ctx context.Context, 
 	if appErr := validateNotReservedWalletAddress(walletAddrRaw, "wallet_address"); appErr != nil {
 		return nil, nil, appErr
 	}
+	if appErr := s.validateNotPrivilegedWalletAddress(ctx, "ethereum", walletAddrRaw, "wallet_address"); appErr != nil {
+		return nil, nil, appErr
+	}
 	walletAddr := common.HexToAddress(walletAddrRaw)
 
 	if reg.HostFeeBps < 0 || reg.HostFeeBps > 500 {
@@ -900,6 +906,40 @@ func tipSplitterGetHost(ctx context.Context, client *ethclient.Client, contract 
 		return nil, err
 	}
 	return tips.DecodeGetHostResult(ret)
+}
+
+func (s *Server) requireTipRegistryHostRegistered(ctx context.Context, hostID common.Hash) *apptheory.AppError {
+	if s == nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if appErr := s.requireTipRPCConfigured(); appErr != nil {
+		return appErr
+	}
+
+	contractAddrRaw := strings.TrimSpace(s.cfg.TipContractAddress)
+	if !common.IsHexAddress(contractAddrRaw) {
+		return &apptheory.AppError{Code: "app.conflict", Message: "tip registry is not configured"}
+	}
+	contractAddr := common.HexToAddress(contractAddrRaw)
+
+	client, err := dialEthClient(ctx, s.cfg.TipRPCURL)
+	if err != nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "failed to connect to rpc"}
+	}
+	defer client.Close()
+
+	host, err := tipSplitterGetHost(ctx, client, contractAddr, hostID)
+	if err != nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "failed to read host state"}
+	}
+	if host == nil || (host.Wallet == common.Address{}) {
+		return &apptheory.AppError{Code: "app.bad_request", Message: "host is not registered"}
+	}
+
+	return nil
 }
 
 // --- Admin endpoints (operations + reconciliation) ---
@@ -1241,6 +1281,9 @@ func (s *Server) handleSetTipRegistryHostActive(ctx *apptheory.Context) (*appthe
 	}
 
 	hostID := tips.HostIDFromDomain(domainNormalized)
+	if appErr := s.requireTipRegistryHostRegistered(ctx.Context(), hostID); appErr != nil {
+		return nil, appErr
+	}
 	data, err := tips.EncodeSetHostActiveCall(hostID, req.Active)
 	if err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to encode transaction"}
@@ -1465,6 +1508,11 @@ func (s *Server) ensureTipRegistryHostOperation(ctx context.Context, domainNorma
 	txData, walletAddr, hostFeeBps, active, appErr := encodeAutoTipRegistryTx(opKind, hostID, desiredWallet, desiredFee)
 	if appErr != nil {
 		return nil, nil, appErr
+	}
+	if walletAddr != "" {
+		if appErr := s.validateNotPrivilegedWalletAddress(ctx, "ethereum", walletAddr, "tip default host wallet"); appErr != nil {
+			return nil, nil, appErr
+		}
 	}
 
 	opID := tipRegistryOpID(opKind, s.cfg.TipChainID, txTo, hostID.Hex(), walletAddr, hostFeeBps, "", active, nil)
