@@ -320,6 +320,10 @@ func (s *Server) handlePortalStartInstanceProvisioning(ctx *apptheory.Context) (
 		return nil, err
 	}
 
+	if appErr := validateNotReservedWalletUsername(strings.TrimSpace(ctx.AuthIdentity)); appErr != nil {
+		return nil, appErr
+	}
+
 	slug := strings.ToLower(strings.TrimSpace(inst.Slug))
 
 	if job, ok := s.getExistingProvisionJobAndNudge(ctx, inst); ok {

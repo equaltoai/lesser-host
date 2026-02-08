@@ -141,6 +141,9 @@ func (s *Server) handleTipHostRegistrationBegin(ctx *apptheory.Context) (*appthe
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid wallet_address"}
 	}
 	walletAddr = strings.ToLower(walletAddr)
+	if appErr := validateNotReservedWalletAddress(walletAddr, "wallet_address"); appErr != nil {
+		return nil, appErr
+	}
 
 	if req.HostFeeBps < 0 || req.HostFeeBps > 500 {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "host_fee_bps must be between 0 and 500"}
@@ -731,6 +734,9 @@ func (s *Server) createTipRegistryOperationForRegistration(ctx context.Context, 
 	walletAddrRaw := strings.TrimSpace(reg.WalletAddr)
 	if !common.IsHexAddress(walletAddrRaw) {
 		return nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid wallet address"}
+	}
+	if appErr := validateNotReservedWalletAddress(walletAddrRaw, "wallet_address"); appErr != nil {
+		return nil, nil, appErr
 	}
 	walletAddr := common.HexToAddress(walletAddrRaw)
 
