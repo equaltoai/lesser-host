@@ -7,6 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ethereum/go-ethereum/accounts"
+	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/crypto"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
@@ -19,37 +22,47 @@ import (
 	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
+const testPortalInstanceSlugDemo = "demo"
+
 type portalTestDB struct {
 	db        *ttmocks.MockExtendedDB
+	qUser     *ttmocks.MockQuery
+	qCred     *ttmocks.MockQuery
 	qInstance *ttmocks.MockQuery
 	qBudget   *ttmocks.MockQuery
 	qUsage    *ttmocks.MockQuery
 	qDomain   *ttmocks.MockQuery
 	qAudit    *ttmocks.MockQuery
 	qJob      *ttmocks.MockQuery
-	qUser     *ttmocks.MockQuery
+	qConsent  *ttmocks.MockQuery
+
+	stubUser *models.User
 }
 
 func newPortalTestDB() portalTestDB {
 	db := ttmocks.NewMockExtendedDB()
+	qUser := new(ttmocks.MockQuery)
+	qCred := new(ttmocks.MockQuery)
 	qInstance := new(ttmocks.MockQuery)
 	qBudget := new(ttmocks.MockQuery)
 	qUsage := new(ttmocks.MockQuery)
 	qDomain := new(ttmocks.MockQuery)
 	qAudit := new(ttmocks.MockQuery)
 	qJob := new(ttmocks.MockQuery)
-	qUser := new(ttmocks.MockQuery)
+	qConsent := new(ttmocks.MockQuery)
 
 	db.On("WithContext", mock.Anything).Return(db).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.User")).Return(qUser).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.WalletCredential")).Return(qCred).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.Instance")).Return(qInstance).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(qBudget).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.UsageLedgerEntry")).Return(qUsage).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.Domain")).Return(qDomain).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.AuditLogEntry")).Return(qAudit).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.ProvisionJob")).Return(qJob).Maybe()
-	db.On("Model", mock.AnythingOfType("*models.User")).Return(qUser).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.ProvisionConsentChallenge")).Return(qConsent).Maybe()
 
-	for _, q := range []*ttmocks.MockQuery{qInstance, qBudget, qUsage, qDomain, qAudit, qJob, qUser} {
+	for _, q := range []*ttmocks.MockQuery{qUser, qCred, qInstance, qBudget, qUsage, qDomain, qAudit, qJob, qConsent} {
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("Index", mock.Anything).Return(q).Maybe()
 		q.On("Limit", mock.Anything).Return(q).Maybe()
@@ -62,15 +75,29 @@ func newPortalTestDB() portalTestDB {
 		q.On("Update", mock.Anything).Return(nil).Maybe()
 	}
 
+	stubUser := &models.User{Username: "alice", Role: models.RoleCustomer, Approved: true}
+	qUser.On("First", mock.AnythingOfType("*models.User")).Return(nil).Run(func(args mock.Arguments) {
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.User)
+		if !ok {
+			return
+		}
+		*dest = *stubUser
+		_ = dest.UpdateKeys()
+	}).Maybe()
+
 	return portalTestDB{
 		db:        db,
+		qUser:     qUser,
+		qCred:     qCred,
 		qInstance: qInstance,
 		qBudget:   qBudget,
 		qUsage:    qUsage,
 		qDomain:   qDomain,
 		qAudit:    qAudit,
 		qJob:      qJob,
-		qUser:     qUser,
+		qConsent:  qConsent,
+		stubUser:  stubUser,
 	}
 }
 
@@ -86,7 +113,7 @@ func TestRequireInstanceAccess(t *testing.T) {
 	}
 
 	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(theoryErrors.ErrItemNotFound).Once()
-	if _, err := s.requireInstanceAccess(ctx, "demo"); err == nil {
+	if _, err := s.requireInstanceAccess(ctx, testPortalInstanceSlugDemo); err == nil {
 		t.Fatalf("expected not_found for missing instance")
 	}
 
@@ -98,10 +125,10 @@ func TestRequireInstanceAccess(t *testing.T) {
 		if !ok {
 			t.Fatalf("expected *models.Instance, got %T", destAny)
 		}
-		*dest = models.Instance{Slug: "demo", Owner: "someone-else"}
+		*dest = models.Instance{Slug: testPortalInstanceSlugDemo, Owner: "someone-else"}
 	}).Once()
-	inst, err := s.requireInstanceAccess(ctx, "demo")
-	if err != nil || inst == nil || inst.Slug != "demo" {
+	inst, err := s.requireInstanceAccess(ctx, testPortalInstanceSlugDemo)
+	if err != nil || inst == nil || inst.Slug != testPortalInstanceSlugDemo {
 		t.Fatalf("unexpected result: inst=%#v err=%v", inst, err)
 	}
 
@@ -113,9 +140,9 @@ func TestRequireInstanceAccess(t *testing.T) {
 		if !ok {
 			t.Fatalf("expected *models.Instance, got %T", destAny)
 		}
-		*dest = models.Instance{Slug: "demo", Owner: "bob"}
+		*dest = models.Instance{Slug: testPortalInstanceSlugDemo, Owner: "bob"}
 	}).Once()
-	if _, err := s.requireInstanceAccess(ctx, "demo"); err == nil {
+	if _, err := s.requireInstanceAccess(ctx, testPortalInstanceSlugDemo); err == nil {
 		t.Fatalf("expected forbidden for owner mismatch")
 	}
 }
@@ -201,28 +228,15 @@ func TestHandlePortalCreateInstance_RequiresApproval(t *testing.T) {
 	t.Parallel()
 
 	tdb := newPortalTestDB()
-	s := &Server{cfg: config.Config{}, store: store.New(tdb.db)}
+	tdb.stubUser.Approved = false
+	tdb.stubUser.ApprovalStatus = models.UserApprovalStatusPending
 
-	tdb.qUser.On("First", mock.AnythingOfType("*models.User")).Return(nil).Run(func(args mock.Arguments) {
-		destAny := args.Get(0)
-		dest, ok := destAny.(*models.User)
-		if !ok {
-			t.Fatalf("expected *models.User, got %T", destAny)
-		}
-		*dest = models.User{
-			Username:       "alice",
-			Role:           models.RoleCustomer,
-			Approved:       false,
-			ApprovalStatus: models.UserApprovalStatusPending,
-			CreatedAt:      time.Now().UTC(),
-		}
-		_ = dest.UpdateKeys()
-	}).Once()
+	s := &Server{cfg: config.Config{}, store: store.New(tdb.db)}
 
 	body, _ := json.Marshal(createInstanceRequest{Slug: "demo"})
 	ctx := &apptheory.Context{AuthIdentity: "alice", Request: apptheory.Request{Body: body}}
 	if _, err := s.handlePortalCreateInstance(ctx); err == nil {
-		t.Fatalf("expected approval error")
+		t.Fatalf("expected forbidden for unapproved user")
 	}
 }
 
@@ -957,10 +971,262 @@ func TestPortalProvisioningHandlers_ReturnExistingAndNewJob(t *testing.T) {
 		*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive}
 	}).Once()
 
-	ctx2 := &apptheory.Context{AuthIdentity: "alice", Params: map[string]string{"slug": "demo"}}
+	challengeID := "c1"
+	privKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	walletAddr := strings.ToLower(crypto.PubkeyToAddress(privKey.PublicKey).Hex())
+
+	issuedAt := time.Now().UTC()
+	expiresAt := issuedAt.Add(5 * time.Minute)
+	msg := buildProvisionConsentMessage("demo", "lab", "demo", walletAddr, "nonce", issuedAt, expiresAt)
+	sigBytes, err := crypto.Sign(accounts.TextHash([]byte(msg)), privKey)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	signature := hexutil.Encode(sigBytes)
+
+	tdb.qConsent.On("First", mock.AnythingOfType("*models.ProvisionConsentChallenge")).Return(nil).Run(func(args mock.Arguments) {
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.ProvisionConsentChallenge)
+		if !ok {
+			t.Fatalf("expected *models.ProvisionConsentChallenge, got %T", destAny)
+		}
+		*dest = models.ProvisionConsentChallenge{
+			ID:            challengeID,
+			Username:      "alice",
+			InstanceSlug:  "demo",
+			Stage:         "lab",
+			AdminUsername: "demo",
+			WalletType:    "ethereum",
+			WalletAddr:    walletAddr,
+			ChainID:       1,
+			Nonce:         "nonce",
+			Message:       msg,
+			IssuedAt:      issuedAt,
+			ExpiresAt:     expiresAt,
+		}
+		_ = dest.UpdateKeys()
+	}).Once()
+
+	body := map[string]any{
+		"consent_challenge_id": challengeID,
+		"consent_message":      msg,
+		"consent_signature":    signature,
+	}
+	bodyJSON, _ := json.Marshal(body)
+
+	ctx2 := &apptheory.Context{
+		AuthIdentity: "alice",
+		Params:       map[string]string{"slug": "demo"},
+		Request:      apptheory.Request{Body: bodyJSON},
+	}
 	resp, err = s.handlePortalStartInstanceProvisioning(ctx2)
 	if err != nil || resp == nil || resp.Status != 202 {
 		t.Fatalf("new job resp=%#v err=%v", resp, err)
+	}
+}
+
+func TestHandlePortalStartInstanceProvisioning_RequiresApproval(t *testing.T) {
+	t.Parallel()
+
+	tdb := newPortalTestDB()
+	tdb.stubUser.Approved = false
+
+	s := &Server{store: store.New(tdb.db)}
+
+	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.Instance)
+		if !ok {
+			t.Fatalf("expected *models.Instance, got %T", destAny)
+		}
+		*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive}
+	}).Once()
+
+	ctx := &apptheory.Context{AuthIdentity: "alice", Params: map[string]string{"slug": "demo"}}
+	if _, err := s.handlePortalStartInstanceProvisioning(ctx); err == nil {
+		t.Fatalf("expected forbidden for unapproved user")
+	}
+}
+
+func TestHandlePortalStartInstanceProvisioning_BlocksReservedWallet(t *testing.T) {
+	t.Parallel()
+
+	tdb := newPortalTestDB()
+	s := &Server{store: store.New(tdb.db)}
+
+	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.Instance)
+		if !ok {
+			t.Fatalf("expected *models.Instance, got %T", destAny)
+		}
+		*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive}
+	}).Once()
+
+	issuedAt := time.Now().UTC()
+	expiresAt := issuedAt.Add(5 * time.Minute)
+	msg := buildProvisionConsentMessage("demo", "lab", "demo", reservedWalletLesserHostAdmin, "nonce", issuedAt, expiresAt)
+
+	tdb.qConsent.On("First", mock.AnythingOfType("*models.ProvisionConsentChallenge")).Return(nil).Run(func(args mock.Arguments) {
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.ProvisionConsentChallenge)
+		if !ok {
+			t.Fatalf("expected *models.ProvisionConsentChallenge, got %T", destAny)
+		}
+		*dest = models.ProvisionConsentChallenge{
+			ID:            "c1",
+			Username:      "alice",
+			InstanceSlug:  "demo",
+			Stage:         "lab",
+			AdminUsername: "demo",
+			WalletType:    "ethereum",
+			WalletAddr:    reservedWalletLesserHostAdmin,
+			ChainID:       1,
+			Nonce:         "nonce",
+			Message:       msg,
+			IssuedAt:      issuedAt,
+			ExpiresAt:     expiresAt,
+		}
+		_ = dest.UpdateKeys()
+	}).Once()
+
+	body := map[string]any{
+		"consent_challenge_id": "c1",
+		"consent_message":      msg,
+		"consent_signature":    "0xdead",
+	}
+	bodyJSON, _ := json.Marshal(body)
+
+	ctx := &apptheory.Context{
+		AuthIdentity: "alice",
+		Params:       map[string]string{"slug": "demo"},
+		Request:      apptheory.Request{Body: bodyJSON},
+	}
+	if _, err := s.handlePortalStartInstanceProvisioning(ctx); err == nil {
+		t.Fatalf("expected bad_request for reserved wallet")
+	}
+}
+
+func TestHandlePortalStartInstanceProvisioning_FailsOnInvalidSignature(t *testing.T) {
+	t.Parallel()
+
+	tdb := newPortalTestDB()
+	s := &Server{store: store.New(tdb.db)}
+
+	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.Instance)
+		if !ok {
+			t.Fatalf("expected *models.Instance, got %T", destAny)
+		}
+		*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive}
+	}).Once()
+
+	walletAddr := "0x00000000000000000000000000000000000000aa"
+	issuedAt := time.Now().UTC()
+	expiresAt := issuedAt.Add(5 * time.Minute)
+	msg := buildProvisionConsentMessage("demo", "lab", "demo", walletAddr, "nonce", issuedAt, expiresAt)
+
+	tdb.qConsent.On("First", mock.AnythingOfType("*models.ProvisionConsentChallenge")).Return(nil).Run(func(args mock.Arguments) {
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.ProvisionConsentChallenge)
+		if !ok {
+			t.Fatalf("expected *models.ProvisionConsentChallenge, got %T", destAny)
+		}
+		*dest = models.ProvisionConsentChallenge{
+			ID:            "c1",
+			Username:      "alice",
+			InstanceSlug:  "demo",
+			Stage:         "lab",
+			AdminUsername: "demo",
+			WalletType:    "ethereum",
+			WalletAddr:    walletAddr,
+			ChainID:       1,
+			Nonce:         "nonce",
+			Message:       msg,
+			IssuedAt:      issuedAt,
+			ExpiresAt:     expiresAt,
+		}
+		_ = dest.UpdateKeys()
+	}).Once()
+
+	body := map[string]any{
+		"consent_challenge_id": "c1",
+		"consent_message":      msg,
+		"consent_signature":    "0xdead",
+	}
+	bodyJSON, _ := json.Marshal(body)
+
+	ctx := &apptheory.Context{
+		AuthIdentity: "alice",
+		Params:       map[string]string{"slug": "demo"},
+		Request:      apptheory.Request{Body: bodyJSON},
+	}
+	if _, err := s.handlePortalStartInstanceProvisioning(ctx); err == nil {
+		t.Fatalf("expected forbidden for invalid signature")
+	}
+}
+
+func TestHandlePortalStartInstanceProvisioning_FailsOnExpiredConsentChallenge(t *testing.T) {
+	t.Parallel()
+
+	tdb := newPortalTestDB()
+	s := &Server{store: store.New(tdb.db)}
+
+	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.Instance)
+		if !ok {
+			t.Fatalf("expected *models.Instance, got %T", destAny)
+		}
+		*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive}
+	}).Once()
+
+	walletAddr := "0x00000000000000000000000000000000000000aa"
+	expiresAt := time.Now().UTC().Add(-5 * time.Minute)
+	issuedAt := expiresAt.Add(-5 * time.Minute)
+	msg := buildProvisionConsentMessage("demo", "lab", "demo", walletAddr, "nonce", issuedAt, expiresAt)
+
+	tdb.qConsent.On("First", mock.AnythingOfType("*models.ProvisionConsentChallenge")).Return(nil).Run(func(args mock.Arguments) {
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.ProvisionConsentChallenge)
+		if !ok {
+			t.Fatalf("expected *models.ProvisionConsentChallenge, got %T", destAny)
+		}
+		*dest = models.ProvisionConsentChallenge{
+			ID:            "c1",
+			Username:      "alice",
+			InstanceSlug:  "demo",
+			Stage:         "lab",
+			AdminUsername: "demo",
+			WalletType:    "ethereum",
+			WalletAddr:    walletAddr,
+			ChainID:       1,
+			Nonce:         "nonce",
+			Message:       msg,
+			IssuedAt:      issuedAt,
+			ExpiresAt:     expiresAt,
+		}
+		_ = dest.UpdateKeys()
+	}).Once()
+
+	body := map[string]any{
+		"consent_challenge_id": "c1",
+		"consent_message":      msg,
+		"consent_signature":    "0xdead",
+	}
+	bodyJSON, _ := json.Marshal(body)
+
+	ctx := &apptheory.Context{
+		AuthIdentity: "alice",
+		Params:       map[string]string{"slug": "demo"},
+		Request:      apptheory.Request{Body: bodyJSON},
+	}
+	if _, err := s.handlePortalStartInstanceProvisioning(ctx); err == nil {
+		t.Fatalf("expected bad_request for expired consent challenge")
 	}
 }
 

@@ -7,11 +7,13 @@
 		portalGetInstance,
 		portalGetProvisioning,
 		portalListInstanceDomains,
+		portalProvisionConsentChallenge,
 		portalStartProvisioning,
 	} from 'src/lib/api/portalInstances';
 	import { logout } from 'src/lib/auth/logout';
 	import { pollUntil } from 'src/lib/polling';
 	import { navigate } from 'src/lib/router';
+	import { getEthereumProvider, personalSign, requestAccounts } from 'src/lib/wallet/ethereum';
 	import {
 		Alert,
 		Button,
@@ -41,8 +43,11 @@
 
 	let provisionRegion = $state('');
 	let provisionLesserVersion = $state('');
+	let provisionAdminUsername = $state('');
 
 	let pollController: AbortController | null = null;
+
+	const slugRE = /^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])?$/;
 
 	function formatError(err: unknown): string {
 		if (!err) return 'unknown error';
@@ -192,22 +197,63 @@
 
 		const region = provisionRegion.trim();
 		const lesserVersion = provisionLesserVersion.trim();
-		const input =
-			region || lesserVersion
-				? {
-						region: region || undefined,
-						lesser_version: lesserVersion || undefined,
-					}
-				: undefined;
+		const adminUsernameRaw = provisionAdminUsername.trim().toLowerCase();
+		const adminUsername = adminUsernameRaw || slug.trim().toLowerCase();
+		if (!slugRE.test(adminUsername)) {
+			provisioningError =
+				'Admin username must be 1–63 chars, lowercase letters/numbers, and hyphens (cannot start/end with hyphen).';
+			return;
+		}
+
+		const provider = getEthereumProvider();
+		if (!provider) {
+			provisioningError = 'No wallet detected. Install or enable a wallet extension to sign the consent message.';
+			return;
+		}
 
 		provisioningLoading = true;
 		try {
-			provisioningJob = await portalStartProvisioning(token, slug, input);
+			const challenge = await portalProvisionConsentChallenge(token, slug, adminUsername);
+
+			const expected = (challenge.wallet?.address || '').trim();
+			if (!expected) {
+				provisioningError = 'Consent challenge did not include a wallet address.';
+				return;
+			}
+
+			const accounts = await requestAccounts(provider);
+			const normalized = accounts.map((a) => a.toLowerCase());
+			if (!normalized.includes(expected.toLowerCase())) {
+				provisioningError = `Connected wallet does not match your portal wallet (${expected}).`;
+				return;
+			}
+
+			const signature = await personalSign(provider, challenge.wallet.message, expected);
+
+			provisioningJob = await portalStartProvisioning(token, slug, {
+				region: region || undefined,
+				lesser_version: lesserVersion || undefined,
+				admin_username: challenge.admin_username,
+				consent_challenge_id: challenge.wallet.id,
+				consent_message: challenge.wallet.message,
+				consent_signature: signature,
+			});
 			void pollProvisioning();
 		} catch (err) {
 			if ((err as Partial<ApiError>).status === 401) {
 				await logout();
 				navigate('/login');
+				return;
+			}
+			const maybe = err as Partial<ApiError>;
+			if (maybe.status === 403 && typeof maybe.message === 'string' && maybe.message.includes('approval')) {
+				provisioningError =
+					'Your account is pending approval. Provisioning is blocked until an admin approves your user.';
+				return;
+			}
+			if (typeof maybe.message === 'string' && maybe.message.includes('reserved')) {
+				provisioningError =
+					'This wallet address is reserved and cannot be used for managed instance provisioning.';
 				return;
 			}
 			provisioningError = formatError(err);
@@ -231,6 +277,14 @@
 		if (!normalized) return;
 		if (normalized === slug) return;
 		navigate(`/portal/instances/${normalized}`);
+	});
+
+	$effect(() => {
+		const normalized = slug.trim().toLowerCase();
+		if (!normalized) return;
+		if (!provisionAdminUsername.trim()) {
+			provisionAdminUsername = normalized;
+		}
 	});
 
 	onDestroy(() => {
@@ -305,6 +359,7 @@
 					<DefinitionItem label="Run id" monospace>{provisioningJob.run_id || '—'}</DefinitionItem>
 					<DefinitionItem label="Base domain" monospace>{provisioningJob.base_domain || '—'}</DefinitionItem>
 					<DefinitionItem label="Account id" monospace>{provisioningJob.account_id || '—'}</DefinitionItem>
+					<DefinitionItem label="Admin username" monospace>{provisioningJob.admin_username || '—'}</DefinitionItem>
 				</DefinitionList>
 
 				{#if polling && (provisioningJob.status === 'queued' || provisioningJob.status === 'running')}
@@ -333,12 +388,33 @@
 						</Text>
 					</Alert>
 				{/if}
+
+				{#if provisioningJob.status === 'ok'}
+					<Alert variant="success" title="Provisioning complete">
+						<Text size="sm">Next: open your instance and complete passkey-only setup.</Text>
+						{#if provisioningJob.base_domain}
+							<div class="instance-detail__row">
+								<Button
+									variant="outline"
+									onclick={() => {
+										const baseDomain = provisioningJob?.base_domain;
+										if (!baseDomain) return;
+										window.open(`https://${baseDomain}`, '_blank', 'noopener,noreferrer');
+									}}
+								>
+									Open instance
+								</Button>
+							</div>
+						{/if}
+					</Alert>
+				{/if}
 			{:else}
 				<Alert variant="info" title="Not started">
 					<Text size="sm">Start managed provisioning to allocate infrastructure for this instance.</Text>
 				</Alert>
 
 				<div class="instance-detail__form">
+					<TextField label="Admin username" bind:value={provisionAdminUsername} placeholder={slug} />
 					<TextField label="Region (optional)" bind:value={provisionRegion} placeholder="us-east-1" />
 					<TextField label="Lesser version (optional)" bind:value={provisionLesserVersion} placeholder="vX.Y.Z" />
 				</div>

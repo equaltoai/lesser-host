@@ -36,6 +36,7 @@ func LambdaInit() (DB, error) {
 		&models.LinkSafetyBasicResult{},
 		&models.InstanceKey{},
 		&models.ProvisionJob{},
+		&models.ProvisionConsentChallenge{},
 		&models.RenderArtifact{},
 		&models.AuditLogEntry{},
 		&models.VanityDomainRequest{},

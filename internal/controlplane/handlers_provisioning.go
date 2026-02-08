@@ -1,11 +1,14 @@
 package controlplane
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 	"github.com/theory-cloud/tabletheory"
 	"github.com/theory-cloud/tabletheory/pkg/core"
@@ -17,8 +20,15 @@ import (
 )
 
 type startInstanceProvisionRequest struct {
-	LesserVersion string `json:"lesser_version,omitempty"`
-	Region        string `json:"region,omitempty"`
+	LesserVersion      string `json:"lesser_version,omitempty"`
+	Region             string `json:"region,omitempty"`
+	AdminUsername      string `json:"admin_username,omitempty"`
+	AdminWalletType    string `json:"admin_wallet_type,omitempty"`
+	AdminWalletAddress string `json:"admin_wallet_address,omitempty"`
+	AdminWalletChainID int    `json:"admin_wallet_chain_id,omitempty"`
+	ConsentChallengeID string `json:"consent_challenge_id,omitempty"`
+	ConsentMessage     string `json:"consent_message,omitempty"`
+	ConsentSignature   string `json:"consent_signature,omitempty"`
 }
 
 type provisionJobResponse struct {
@@ -33,6 +43,10 @@ type provisionJobResponse struct {
 	Region        string `json:"region,omitempty"`
 	Stage         string `json:"stage,omitempty"`
 	LesserVersion string `json:"lesser_version,omitempty"`
+	AdminUsername string `json:"admin_username,omitempty"`
+
+	ConsentMessageHash string `json:"consent_message_hash,omitempty"`
+	ConsentSignature   string `json:"consent_signature,omitempty"`
 
 	AccountRequestID string `json:"account_request_id,omitempty"`
 	AccountID        string `json:"account_id,omitempty"`
@@ -67,6 +81,9 @@ func provisionJobResponseFromModel(j *models.ProvisionJob) provisionJobResponse 
 		Region:             strings.TrimSpace(j.Region),
 		Stage:              strings.TrimSpace(j.Stage),
 		LesserVersion:      strings.TrimSpace(j.LesserVersion),
+		AdminUsername:      strings.TrimSpace(j.AdminUsername),
+		ConsentMessageHash: strings.TrimSpace(j.ConsentMessageHash),
+		ConsentSignature:   strings.TrimSpace(j.ConsentSignature),
 		AccountRequestID:   strings.TrimSpace(j.AccountRequestID),
 		AccountID:          strings.TrimSpace(j.AccountID),
 		ParentHostedZoneID: strings.TrimSpace(j.ParentHostedZoneID),
@@ -94,6 +111,43 @@ func parseStartInstanceProvisionRequest(ctx *apptheory.Context) (startInstancePr
 		return req, err
 	}
 	return req, nil
+}
+
+func sha256Hex(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
+}
+
+func normalizeAdminWalletType(walletType string) (string, *apptheory.AppError) {
+	walletType = strings.ToLower(strings.TrimSpace(walletType))
+	if walletType == "" {
+		walletType = walletTypeEthereum
+	}
+	if walletType != walletTypeEthereum {
+		return "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid admin_wallet_type"}
+	}
+	return walletType, nil
+}
+
+func normalizeAdminWalletAddress(addr string) (string, *apptheory.AppError) {
+	addr = strings.ToLower(strings.TrimSpace(addr))
+	if addr == "" {
+		return "", &apptheory.AppError{Code: "app.bad_request", Message: "admin_wallet_address is required"}
+	}
+	if !common.IsHexAddress(addr) {
+		return "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid admin_wallet_address"}
+	}
+	if reservedErr := validateNotReservedWalletAddress(addr, "admin_wallet_address"); reservedErr != nil {
+		return "", reservedErr
+	}
+	return addr, nil
+}
+
+func normalizeAdminWalletChainID(chainID int) int {
+	if chainID <= 0 {
+		return 1
+	}
+	return chainID
 }
 
 func (s *Server) enqueueProvisionJobBestEffort(ctx *apptheory.Context, jobID string) {
@@ -143,6 +197,24 @@ func (s *Server) buildManagedProvisionJob(slug string, req startInstanceProvisio
 		return nil, "", "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
+	stage := normalizeControlPlaneStage(s.cfg.Stage)
+
+	adminUsername, appErr := normalizeProvisionAdminUsername(slug, req.AdminUsername)
+	if appErr != nil {
+		return nil, "", "", appErr
+	}
+
+	adminWalletType, appErr := normalizeAdminWalletType(req.AdminWalletType)
+	if appErr != nil {
+		return nil, "", "", appErr
+	}
+
+	adminWalletAddr, appErr := normalizeAdminWalletAddress(req.AdminWalletAddress)
+	if appErr != nil {
+		return nil, "", "", appErr
+	}
+	adminWalletChainID := normalizeAdminWalletChainID(req.AdminWalletChainID)
+
 	id, err := newToken(16)
 	if err != nil {
 		return nil, "", "", &apptheory.AppError{Code: "app.internal", Message: "failed to create provisioning job"}
@@ -171,7 +243,21 @@ func (s *Server) buildManagedProvisionJob(slug string, req startInstanceProvisio
 		Step:               "queued",
 		Mode:               "managed",
 		Region:             region,
+		Stage:              stage,
 		LesserVersion:      lesserVersion,
+		AdminUsername:      adminUsername,
+		AdminWalletType:    adminWalletType,
+		AdminWalletAddr:    adminWalletAddr,
+		AdminWalletChainID: adminWalletChainID,
+		ConsentMessage:     strings.TrimSpace(req.ConsentMessage),
+		ConsentSignature:   strings.TrimSpace(req.ConsentSignature),
+		ConsentMessageHash: func() string {
+			msg := strings.TrimSpace(req.ConsentMessage)
+			if msg == "" {
+				return ""
+			}
+			return sha256Hex(msg)
+		}(),
 		ParentHostedZoneID: strings.TrimSpace(s.cfg.ManagedParentHostedZoneID),
 		BaseDomain:         baseDomain,
 		CreatedAt:          now,

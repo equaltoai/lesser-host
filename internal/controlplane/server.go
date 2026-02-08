@@ -86,6 +86,7 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 	app.Get("/api/v1/portal/instances", s.handlePortalListInstances, apptheory.RequireAuth())
 	app.Get("/api/v1/portal/instances/{slug}", s.handlePortalGetInstance, apptheory.RequireAuth())
 	app.Put("/api/v1/portal/instances/{slug}/config", s.handlePortalUpdateInstanceConfig, apptheory.RequireAuth())
+	app.Post("/api/v1/portal/instances/{slug}/provision/consent/challenge", s.handlePortalProvisionConsentChallenge, apptheory.RequireAuth())
 	app.Post("/api/v1/portal/instances/{slug}/provision", s.handlePortalStartInstanceProvisioning, apptheory.RequireAuth())
 	app.Get("/api/v1/portal/instances/{slug}/provision", s.handlePortalGetInstanceProvisioning, apptheory.RequireAuth())
 	app.Get("/api/v1/portal/instances/{slug}/budgets", s.handlePortalListInstanceBudgets, apptheory.RequireAuth())

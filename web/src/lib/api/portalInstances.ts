@@ -44,6 +44,9 @@ export interface ProvisionJobResponse {
 	region?: string;
 	stage?: string;
 	lesser_version?: string;
+	admin_username?: string;
+	consent_message_hash?: string;
+	consent_signature?: string;
 	account_request_id?: string;
 	account_id?: string;
 	parent_hosted_zone_id?: string;
@@ -56,6 +59,24 @@ export interface ProvisionJobResponse {
 	request_id?: string;
 	created_at: string;
 	updated_at: string;
+}
+
+export interface WalletChallengeResponse {
+	id: string;
+	username?: string;
+	address: string;
+	chainId: number;
+	nonce: string;
+	message: string;
+	issuedAt: string;
+	expiresAt: string;
+}
+
+export interface ProvisionConsentChallengeResponse {
+	instance_slug: string;
+	stage: string;
+	admin_username: string;
+	wallet: WalletChallengeResponse;
 }
 
 export interface DomainResponse {
@@ -172,17 +193,44 @@ export function portalUpdateInstanceConfig(
 export function portalStartProvisioning(
 	token: string,
 	slug: string,
-	input?: { region?: string; lesser_version?: string },
+	input: {
+		region?: string;
+		lesser_version?: string;
+		admin_username?: string;
+		consent_challenge_id: string;
+		consent_message: string;
+		consent_signature: string;
+	},
 ): Promise<ProvisionJobResponse> {
-	const req = input ? jsonRequest(input) : null;
+	const req = jsonRequest(input);
 	return fetchJson<ProvisionJobResponse>(`/api/v1/portal/instances/${encodeURIComponent(slug)}/provision`, {
 		method: 'POST',
 		headers: {
 			authorization: `Bearer ${token}`,
-			...(req?.headers ?? {}),
+			...req.headers,
 		},
-		body: req?.body,
+		body: req.body,
 	});
+}
+
+export function portalProvisionConsentChallenge(
+	token: string,
+	slug: string,
+	adminUsername?: string,
+): Promise<ProvisionConsentChallengeResponse> {
+	const input = adminUsername ? { admin_username: adminUsername } : {};
+	const req = jsonRequest(input);
+	return fetchJson<ProvisionConsentChallengeResponse>(
+		`/api/v1/portal/instances/${encodeURIComponent(slug)}/provision/consent/challenge`,
+		{
+			method: 'POST',
+			headers: {
+				authorization: `Bearer ${token}`,
+				...req.headers,
+			},
+			body: req.body,
+		},
+	);
 }
 
 export function portalGetProvisioning(token: string, slug: string): Promise<ProvisionJobResponse> {

@@ -31,21 +31,29 @@ function decodeField(input: unknown, fieldName: string): ArrayBuffer {
 	return decodeBase64Url(input).buffer as ArrayBuffer;
 }
 
+function unwrapPublicKeyOptions(input: Record<string, unknown>): Record<string, unknown> {
+	if (isRecord(input.publicKey)) {
+		return input.publicKey as Record<string, unknown>;
+	}
+	return input;
+}
+
 export function toPublicKeyCreationOptions(
 	publicKey: Record<string, unknown>,
 ): PublicKeyCredentialCreationOptions {
-	const out: Record<string, unknown> = { ...publicKey };
-	out.challenge = decodeField(publicKey.challenge, 'challenge');
+	const root = unwrapPublicKeyOptions(publicKey);
+	const out: Record<string, unknown> = { ...root };
+	out.challenge = decodeField(root.challenge, 'challenge');
 
-	if (isRecord(publicKey.user)) {
+	if (isRecord(root.user)) {
 		out.user = {
-			...publicKey.user,
-			id: decodeField(publicKey.user.id, 'user.id'),
+			...root.user,
+			id: decodeField(root.user.id, 'user.id'),
 		};
 	}
 
-	if (Array.isArray(publicKey.excludeCredentials)) {
-		out.excludeCredentials = publicKey.excludeCredentials.map((cred) => {
+	if (Array.isArray(root.excludeCredentials)) {
+		out.excludeCredentials = root.excludeCredentials.map((cred) => {
 			if (!isRecord(cred)) return cred;
 			return {
 				...cred,
@@ -58,11 +66,12 @@ export function toPublicKeyCreationOptions(
 }
 
 export function toPublicKeyRequestOptions(publicKey: Record<string, unknown>): PublicKeyCredentialRequestOptions {
-	const out: Record<string, unknown> = { ...publicKey };
-	out.challenge = decodeField(publicKey.challenge, 'challenge');
+	const root = unwrapPublicKeyOptions(publicKey);
+	const out: Record<string, unknown> = { ...root };
+	out.challenge = decodeField(root.challenge, 'challenge');
 
-	if (Array.isArray(publicKey.allowCredentials)) {
-		out.allowCredentials = publicKey.allowCredentials.map((cred) => {
+	if (Array.isArray(root.allowCredentials)) {
+		out.allowCredentials = root.allowCredentials.map((cred) => {
 			if (!isRecord(cred)) return cred;
 			return {
 				...cred,
