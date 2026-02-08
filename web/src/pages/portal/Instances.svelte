@@ -76,6 +76,19 @@
 				navigate('/login');
 				return;
 			}
+			const maybe = err as Partial<ApiError>;
+			if (maybe.status === 403 && typeof maybe.message === 'string') {
+				const lower = maybe.message.toLowerCase();
+				if (lower.includes('approval rejected')) {
+					createError = 'Your account was rejected. Contact support if you believe this is a mistake.';
+					return;
+				}
+				if (lower.includes('approval required')) {
+					createError =
+						'Your account is pending approval. Instance creation and provisioning are blocked until an admin approves your user.';
+					return;
+				}
+			}
 			createError = formatError(err);
 		} finally {
 			createLoading = false;

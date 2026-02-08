@@ -27,6 +27,7 @@ type portalTestDB struct {
 	qDomain   *ttmocks.MockQuery
 	qAudit    *ttmocks.MockQuery
 	qJob      *ttmocks.MockQuery
+	qUser     *ttmocks.MockQuery
 }
 
 func newPortalTestDB() portalTestDB {
@@ -37,6 +38,7 @@ func newPortalTestDB() portalTestDB {
 	qDomain := new(ttmocks.MockQuery)
 	qAudit := new(ttmocks.MockQuery)
 	qJob := new(ttmocks.MockQuery)
+	qUser := new(ttmocks.MockQuery)
 
 	db.On("WithContext", mock.Anything).Return(db).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.Instance")).Return(qInstance).Maybe()
@@ -45,8 +47,9 @@ func newPortalTestDB() portalTestDB {
 	db.On("Model", mock.AnythingOfType("*models.Domain")).Return(qDomain).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.AuditLogEntry")).Return(qAudit).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.ProvisionJob")).Return(qJob).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.User")).Return(qUser).Maybe()
 
-	for _, q := range []*ttmocks.MockQuery{qInstance, qBudget, qUsage, qDomain, qAudit, qJob} {
+	for _, q := range []*ttmocks.MockQuery{qInstance, qBudget, qUsage, qDomain, qAudit, qJob, qUser} {
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("Index", mock.Anything).Return(q).Maybe()
 		q.On("Limit", mock.Anything).Return(q).Maybe()
@@ -67,6 +70,7 @@ func newPortalTestDB() portalTestDB {
 		qDomain:   qDomain,
 		qAudit:    qAudit,
 		qJob:      qJob,
+		qUser:     qUser,
 	}
 }
 
@@ -122,6 +126,22 @@ func TestHandlePortalCreateInstance_ReturnsExistingWhenOwned(t *testing.T) {
 	tdb := newPortalTestDB()
 	s := &Server{cfg: config.Config{}, store: store.New(tdb.db)}
 
+	tdb.qUser.On("First", mock.AnythingOfType("*models.User")).Return(nil).Run(func(args mock.Arguments) {
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.User)
+		if !ok {
+			t.Fatalf("expected *models.User, got %T", destAny)
+		}
+		*dest = models.User{
+			Username:       "alice",
+			Role:           models.RoleCustomer,
+			Approved:       true,
+			ApprovalStatus: models.UserApprovalStatusApproved,
+			CreatedAt:      time.Now().UTC(),
+		}
+		_ = dest.UpdateKeys()
+	}).Once()
+
 	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
 		destAny := args.Get(0)
 		dest, ok := destAny.(*models.Instance)
@@ -148,6 +168,22 @@ func TestHandlePortalCreateInstance_CreatesNewInstance(t *testing.T) {
 	tdb := newPortalTestDB()
 	s := &Server{cfg: config.Config{}, store: store.New(tdb.db)}
 
+	tdb.qUser.On("First", mock.AnythingOfType("*models.User")).Return(nil).Run(func(args mock.Arguments) {
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.User)
+		if !ok {
+			t.Fatalf("expected *models.User, got %T", destAny)
+		}
+		*dest = models.User{
+			Username:       "alice",
+			Role:           models.RoleCustomer,
+			Approved:       true,
+			ApprovalStatus: models.UserApprovalStatusApproved,
+			CreatedAt:      time.Now().UTC(),
+		}
+		_ = dest.UpdateKeys()
+	}).Once()
+
 	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(theoryErrors.ErrItemNotFound).Once()
 
 	body, _ := json.Marshal(createInstanceRequest{Slug: "demo"})
@@ -158,6 +194,55 @@ func TestHandlePortalCreateInstance_CreatesNewInstance(t *testing.T) {
 	}
 	if resp == nil || resp.Status != 201 {
 		t.Fatalf("expected 201, got %#v", resp)
+	}
+}
+
+func TestHandlePortalCreateInstance_RequiresApproval(t *testing.T) {
+	t.Parallel()
+
+	tdb := newPortalTestDB()
+	s := &Server{cfg: config.Config{}, store: store.New(tdb.db)}
+
+	tdb.qUser.On("First", mock.AnythingOfType("*models.User")).Return(nil).Run(func(args mock.Arguments) {
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.User)
+		if !ok {
+			t.Fatalf("expected *models.User, got %T", destAny)
+		}
+		*dest = models.User{
+			Username:       "alice",
+			Role:           models.RoleCustomer,
+			Approved:       false,
+			ApprovalStatus: models.UserApprovalStatusPending,
+			CreatedAt:      time.Now().UTC(),
+		}
+		_ = dest.UpdateKeys()
+	}).Once()
+
+	body, _ := json.Marshal(createInstanceRequest{Slug: "demo"})
+	ctx := &apptheory.Context{AuthIdentity: "alice", Request: apptheory.Request{Body: body}}
+	if _, err := s.handlePortalCreateInstance(ctx); err == nil {
+		t.Fatalf("expected approval error")
+	}
+}
+
+func TestParsePortalCreateInstanceSlug_Invalid(t *testing.T) {
+	t.Parallel()
+
+	ctxMissing := &apptheory.Context{Request: apptheory.Request{Body: []byte(`{}`)}}
+	if _, err := parsePortalCreateInstanceSlug(ctxMissing); err == nil {
+		t.Fatalf("expected error for missing slug")
+	}
+
+	body, _ := json.Marshal(createInstanceRequest{Slug: "-bad"})
+	ctxInvalid := &apptheory.Context{Request: apptheory.Request{Body: body}}
+	if _, err := parsePortalCreateInstanceSlug(ctxInvalid); err == nil {
+		t.Fatalf("expected error for invalid slug")
+	}
+
+	ctxBadJSON := &apptheory.Context{Request: apptheory.Request{Body: []byte(`{not json}`)}}
+	if _, err := parsePortalCreateInstanceSlug(ctxBadJSON); err == nil {
+		t.Fatalf("expected error for invalid json")
 	}
 }
 
@@ -814,6 +899,22 @@ func TestPortalProvisioningHandlers_ReturnExistingAndNewJob(t *testing.T) {
 
 	tdb := newPortalTestDB()
 	s := &Server{store: store.New(tdb.db)}
+
+	tdb.qUser.On("First", mock.AnythingOfType("*models.User")).Return(nil).Run(func(args mock.Arguments) {
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.User)
+		if !ok {
+			t.Fatalf("expected *models.User, got %T", destAny)
+		}
+		*dest = models.User{
+			Username:       "alice",
+			Role:           models.RoleCustomer,
+			Approved:       true,
+			ApprovalStatus: models.UserApprovalStatusApproved,
+			CreatedAt:      time.Now().UTC(),
+		}
+		_ = dest.UpdateKeys()
+	}).Twice()
 
 	// Existing queued job branch.
 	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {

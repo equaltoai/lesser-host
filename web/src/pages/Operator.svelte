@@ -17,6 +17,7 @@
 	import ProvisioningJobs from 'src/pages/operator/ProvisioningJobs.svelte';
 	import TipRegistry from 'src/pages/operator/TipRegistry.svelte';
 	import TipRegistryOperationDetail from 'src/pages/operator/TipRegistryOperationDetail.svelte';
+	import UserApprovals from 'src/pages/operator/UserApprovals.svelte';
 	import VanityDomainRequests from 'src/pages/operator/VanityDomainRequests.svelte';
 
 	let loading = $state(false);
@@ -26,6 +27,7 @@
 	type OperatorRoute =
 		| { kind: 'dashboard' }
 		| { kind: 'vanityDomains' }
+		| { kind: 'portalUsers' }
 		| { kind: 'externalRegistrations' }
 		| { kind: 'provisioningJobs' }
 		| { kind: 'provisioningJobDetail'; id: string }
@@ -46,6 +48,7 @@
 		if (parts.length === 0) return { kind: 'dashboard' };
 		if (parts[0] === 'approvals') {
 			if (parts[1] === 'domains') return { kind: 'vanityDomains' };
+			if (parts[1] === 'users') return { kind: 'portalUsers' };
 			if (parts[1] === 'external-instances') return { kind: 'externalRegistrations' };
 			return { kind: 'notFound' };
 		}
@@ -133,6 +136,7 @@
 			<Button variant="outline" onclick={() => void loadMe()} disabled={loading}>Refresh</Button>
 			<Button variant="ghost" onclick={() => navigate('/operator')}>Dashboard</Button>
 			<Button variant="ghost" onclick={() => navigate('/operator/approvals/domains')}>Domains</Button>
+			<Button variant="ghost" onclick={() => navigate('/operator/approvals/users')}>Users</Button>
 			<Button variant="ghost" onclick={() => navigate('/operator/approvals/external-instances')}>External regs</Button>
 			<Button variant="ghost" onclick={() => navigate('/operator/provisioning/jobs')}>Provisioning</Button>
 			<Button variant="ghost" onclick={() => navigate('/operator/instances')}>Instances</Button>
@@ -184,6 +188,8 @@
 				<Dashboard token={$session.token} />
 			{:else if operatorRoute.kind === 'vanityDomains'}
 				<VanityDomainRequests token={$session.token} />
+			{:else if operatorRoute.kind === 'portalUsers'}
+				<UserApprovals token={$session.token} />
 			{:else if operatorRoute.kind === 'externalRegistrations'}
 				<ExternalInstanceRegistrations token={$session.token} />
 			{:else if operatorRoute.kind === 'provisioningJobs'}

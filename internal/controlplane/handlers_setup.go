@@ -485,10 +485,12 @@ func (s *Server) verifySetupCreateAdminWallet(ctx *apptheory.Context, username s
 
 func (s *Server) createSetupAdminUser(ctx *apptheory.Context, username string, displayName string, now time.Time) *apptheory.AppError {
 	user := &models.User{
-		Username:    strings.TrimSpace(username),
-		Role:        models.RoleAdmin,
-		DisplayName: strings.TrimSpace(displayName),
-		CreatedAt:   now,
+		Username:       strings.TrimSpace(username),
+		Role:           models.RoleAdmin,
+		Approved:       true,
+		ApprovalStatus: models.UserApprovalStatusApproved,
+		DisplayName:    strings.TrimSpace(displayName),
+		CreatedAt:      now,
 	}
 	if err := user.UpdateKeys(); err != nil {
 		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}

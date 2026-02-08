@@ -100,18 +100,13 @@ func (s *Server) handlePortalCreateInstance(ctx *apptheory.Context) (*apptheory.
 	if appErr := requireStoreDB(s); appErr != nil {
 		return nil, appErr
 	}
-
-	var req createInstanceRequest
-	if err := httpx.ParseJSON(ctx, &req); err != nil {
-		return nil, err
+	if appErr := s.requirePortalApproved(ctx); appErr != nil {
+		return nil, appErr
 	}
 
-	slug := strings.ToLower(strings.TrimSpace(req.Slug))
-	if slug == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "slug is required"}
-	}
-	if !instanceSlugRE.MatchString(slug) {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid slug"}
+	slug, appErr := parsePortalCreateInstanceSlug(ctx)
+	if appErr != nil {
+		return nil, appErr
 	}
 
 	username := strings.TrimSpace(ctx.AuthIdentity)
@@ -125,6 +120,39 @@ func (s *Server) handlePortalCreateInstance(ctx *apptheory.Context) (*apptheory.
 	}
 
 	now := time.Now().UTC()
+	inst, appErr := buildPortalInstanceDefaults(slug, username, now)
+	if appErr != nil {
+		return nil, appErr
+	}
+	primaryDomain := s.buildPortalPrimaryDomain(slug, now)
+	if appErr := s.createPortalInstanceTx(ctx, inst, primaryDomain, username, now); appErr != nil {
+		return nil, appErr
+	}
+
+	return apptheory.JSON(http.StatusCreated, instanceResponseFromModel(inst))
+}
+
+func parsePortalCreateInstanceSlug(ctx *apptheory.Context) (string, *apptheory.AppError) {
+	var req createInstanceRequest
+	if err := httpx.ParseJSON(ctx, &req); err != nil {
+		if appErr, ok := err.(*apptheory.AppError); ok {
+			return "", appErr
+		}
+		return "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid request"}
+	}
+
+	slug := strings.ToLower(strings.TrimSpace(req.Slug))
+	if slug == "" {
+		return "", &apptheory.AppError{Code: "app.bad_request", Message: "slug is required"}
+	}
+	if !instanceSlugRE.MatchString(slug) {
+		return "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid slug"}
+	}
+
+	return slug, nil
+}
+
+func buildPortalInstanceDefaults(slug string, owner string, now time.Time) (*models.Instance, *apptheory.AppError) {
 	hostedPreviewsEnabled := true
 	linkSafetyEnabled := true
 	rendersEnabled := true
@@ -142,7 +170,7 @@ func (s *Server) handlePortalCreateInstance(ctx *apptheory.Context) (*apptheory.
 	aiMaxInflightJobs := int64(200)
 	inst := &models.Instance{
 		Slug:                   slug,
-		Owner:                  username,
+		Owner:                  owner,
 		Status:                 models.InstanceStatusActive,
 		HostedPreviewsEnabled:  &hostedPreviewsEnabled,
 		LinkSafetyEnabled:      &linkSafetyEnabled,
@@ -164,7 +192,10 @@ func (s *Server) handlePortalCreateInstance(ctx *apptheory.Context) (*apptheory.
 	if err := inst.UpdateKeys(); err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
+	return inst, nil
+}
 
+func (s *Server) buildPortalPrimaryDomain(slug string, now time.Time) *models.Domain {
 	parentDomain := strings.TrimSpace(s.cfg.ManagedParentDomain)
 	if parentDomain == "" {
 		parentDomain = defaultManagedParentDomain
@@ -183,11 +214,18 @@ func (s *Server) handlePortalCreateInstance(ctx *apptheory.Context) (*apptheory.
 		VerifiedAt:         now,
 	}
 	_ = primaryDomain.UpdateKeys()
+	return primaryDomain
+}
+
+func (s *Server) createPortalInstanceTx(ctx *apptheory.Context, inst *models.Instance, primaryDomain *models.Domain, username string, now time.Time) *apptheory.AppError {
+	if s == nil || s.store == nil || s.store.DB == nil || ctx == nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
 
 	auditInstance := &models.AuditLogEntry{
 		Actor:     username,
 		Action:    "portal.instance.create",
-		Target:    fmt.Sprintf("instance:%s", slug),
+		Target:    fmt.Sprintf("instance:%s", inst.Slug),
 		RequestID: ctx.RequestID,
 		CreatedAt: now,
 	}
@@ -204,7 +242,10 @@ func (s *Server) handlePortalCreateInstance(ctx *apptheory.Context) (*apptheory.
 
 	tipOp, auditTipOp, err := s.buildAutoTipRegistryOperation(ctx.Context(), primaryDomain.Domain, primaryDomain.DomainRaw, username, ctx.RequestID, now)
 	if err != nil {
-		return nil, err
+		if appErr, ok := err.(*apptheory.AppError); ok {
+			return appErr
+		}
+		return &apptheory.AppError{Code: "app.internal", Message: "failed to create tip registry operation"}
 	}
 
 	if err := s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
@@ -221,12 +262,12 @@ func (s *Server) handlePortalCreateInstance(ctx *apptheory.Context) (*apptheory.
 		return nil
 	}); err != nil {
 		if theoryErrors.IsConditionFailed(err) {
-			return nil, &apptheory.AppError{Code: "app.conflict", Message: "instance already exists"}
+			return &apptheory.AppError{Code: "app.conflict", Message: "instance already exists"}
 		}
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create instance"}
+		return &apptheory.AppError{Code: "app.internal", Message: "failed to create instance"}
 	}
 
-	return apptheory.JSON(http.StatusCreated, instanceResponseFromModel(inst))
+	return nil
 }
 
 func (s *Server) handlePortalListInstances(ctx *apptheory.Context) (*apptheory.Response, error) {
@@ -315,6 +356,10 @@ func (s *Server) handlePortalUpdateInstanceConfig(ctx *apptheory.Context) (*appt
 }
 
 func (s *Server) handlePortalStartInstanceProvisioning(ctx *apptheory.Context) (*apptheory.Response, error) {
+	if appErr := s.requirePortalApproved(ctx); appErr != nil {
+		return nil, appErr
+	}
+
 	inst, err := s.requireInstanceAccess(ctx, ctx.Param("slug"))
 	if err != nil {
 		return nil, err

@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 
 	import type { ApiError } from 'src/lib/api/http';
-	import { listExternalInstanceRegistrations, listVanityDomainRequests } from 'src/lib/api/operators';
+	import { listExternalInstanceRegistrations, listPortalUserApprovals, listVanityDomainRequests } from 'src/lib/api/operators';
 	import { logout } from 'src/lib/auth/logout';
 	import { navigate } from 'src/lib/router';
 	import { Alert, Button, Card, DefinitionItem, DefinitionList, Heading, Spinner, Text } from 'src/lib/ui';
@@ -14,6 +14,7 @@
 
 	let vanityCount = $state<number | null>(null);
 	let externalCount = $state<number | null>(null);
+	let userCount = $state<number | null>(null);
 
 	function formatError(err: unknown): string {
 		if (!err) return 'unknown error';
@@ -29,15 +30,18 @@
 		errorMessage = null;
 		vanityCount = null;
 		externalCount = null;
+		userCount = null;
 
 		loading = true;
 		try {
-			const [vanity, external] = await Promise.all([
+			const [vanity, external, users] = await Promise.all([
 				listVanityDomainRequests(token),
 				listExternalInstanceRegistrations(token),
+				listPortalUserApprovals(token),
 			]);
 			vanityCount = vanity.count ?? vanity.requests?.length ?? 0;
 			externalCount = external.count ?? external.registrations?.length ?? 0;
+			userCount = users.count ?? users.users?.length ?? 0;
 		} catch (err) {
 			if ((err as Partial<ApiError>).status === 401) {
 				await logout();
@@ -80,11 +84,13 @@
 			{/snippet}
 			<DefinitionList>
 				<DefinitionItem label="Vanity domain requests" monospace>{String(vanityCount ?? 0)}</DefinitionItem>
+				<DefinitionItem label="Portal user approvals" monospace>{String(userCount ?? 0)}</DefinitionItem>
 				<DefinitionItem label="External instance registrations" monospace>{String(externalCount ?? 0)}</DefinitionItem>
 			</DefinitionList>
 
 			<div class="op-dashboard__row">
 				<Button variant="outline" onclick={() => navigate('/operator/approvals/domains')}>Review domains</Button>
+				<Button variant="outline" onclick={() => navigate('/operator/approvals/users')}>Review users</Button>
 				<Button variant="outline" onclick={() => navigate('/operator/approvals/external-instances')}>
 					Review external registrations
 				</Button>
