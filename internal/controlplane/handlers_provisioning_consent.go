@@ -19,10 +19,55 @@ type provisionConsentChallengeRequest struct {
 }
 
 type provisionConsentChallengeResponse struct {
-	InstanceSlug  string                `json:"instance_slug"`
-	Stage         string                `json:"stage"`
-	AdminUsername string                `json:"admin_username"`
+	InstanceSlug  string                  `json:"instance_slug"`
+	Stage         string                  `json:"stage"`
+	AdminUsername string                  `json:"admin_username"`
 	Wallet        walletChallengeResponse `json:"wallet"`
+}
+
+func parseProvisionConsentChallengeRequest(ctx *apptheory.Context) (provisionConsentChallengeRequest, error) {
+	var req provisionConsentChallengeRequest
+	if ctx == nil {
+		return req, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if len(ctx.Request.Body) == 0 {
+		return req, nil
+	}
+	if err := httpx.ParseJSON(ctx, &req); err != nil {
+		return req, err
+	}
+	return req, nil
+}
+
+func normalizeControlPlaneStage(stage string) string {
+	stage = strings.TrimSpace(stage)
+	if stage == "" {
+		stage = "lab"
+	}
+	return stage
+}
+
+func normalizeProvisionAdminUsername(slug, adminUsername string) (string, *apptheory.AppError) {
+	slug = strings.ToLower(strings.TrimSpace(slug))
+	adminUsername = strings.ToLower(strings.TrimSpace(adminUsername))
+	if adminUsername == "" {
+		adminUsername = slug
+	}
+	if adminUsername == "" || !instanceSlugRE.MatchString(adminUsername) {
+		return "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid admin_username"}
+	}
+	return adminUsername, nil
+}
+
+func normalizeLinkedWalletAddress(cred *models.WalletCredential) (string, *apptheory.AppError) {
+	walletAddr := strings.ToLower(strings.TrimSpace(cred.Address))
+	if !common.IsHexAddress(walletAddr) {
+		return "", &apptheory.AppError{Code: "app.conflict", Message: "wallet is not linked"}
+	}
+	if reservedErr := validateNotReservedWalletAddress(walletAddr, "wallet"); reservedErr != nil {
+		return "", reservedErr
+	}
+	return walletAddr, nil
 }
 
 func buildProvisionConsentMessage(slug, stage, adminUsername, walletAddr, nonce string, issuedAt, expiresAt time.Time) string {
@@ -65,38 +110,27 @@ func (s *Server) handlePortalProvisionConsentChallenge(ctx *apptheory.Context) (
 		return nil, appErr
 	}
 
-	var req provisionConsentChallengeRequest
-	if len(ctx.Request.Body) > 0 {
-		if parseErr := httpx.ParseJSON(ctx, &req); parseErr != nil {
-			return nil, parseErr
-		}
+	req, err := parseProvisionConsentChallengeRequest(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	slug := strings.ToLower(strings.TrimSpace(inst.Slug))
-	adminUsername := strings.ToLower(strings.TrimSpace(req.AdminUsername))
-	if adminUsername == "" {
-		adminUsername = slug
-	}
-	if adminUsername == "" || !instanceSlugRE.MatchString(adminUsername) {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid admin_username"}
+	adminUsername, appErr := normalizeProvisionAdminUsername(slug, req.AdminUsername)
+	if appErr != nil {
+		return nil, appErr
 	}
 
-	stage := strings.TrimSpace(s.cfg.Stage)
-	if stage == "" {
-		stage = "lab"
-	}
+	stage := normalizeControlPlaneStage(s.cfg.Stage)
 
 	cred, appErr := s.requireUserWalletCredential(ctx, strings.TrimSpace(ctx.AuthIdentity))
 	if appErr != nil {
 		return nil, appErr
 	}
 
-	walletAddr := strings.ToLower(strings.TrimSpace(cred.Address))
-	if !common.IsHexAddress(walletAddr) {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "wallet is not linked"}
-	}
-	if reservedErr := validateNotReservedWalletAddress(walletAddr, "wallet"); reservedErr != nil {
-		return nil, reservedErr
+	walletAddr, appErr := normalizeLinkedWalletAddress(cred)
+	if appErr != nil {
+		return nil, appErr
 	}
 
 	nonce, err := generateNonce()
@@ -232,4 +266,3 @@ func normalizeNotFound(err error) *apptheory.AppError {
 	}
 	return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 }
-

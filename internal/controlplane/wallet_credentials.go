@@ -34,6 +34,42 @@ func (s *Server) getWalletCredential(ctx *apptheory.Context, username string, wa
 	return &cred, nil
 }
 
+func (s *Server) credentialForWalletUsername(ctx *apptheory.Context, username string) (*models.WalletCredential, *apptheory.AppError) {
+	if s == nil || s.store == nil || s.store.DB == nil || ctx == nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
+	addr := walletAddressFromUsername(username)
+	if addr == "" {
+		return nil, nil
+	}
+
+	cred, err := s.getWalletCredential(ctx, username, addr)
+	if err == nil && cred != nil {
+		return cred, nil
+	}
+	if err != nil && !theoryErrors.IsNotFound(err) {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	return nil, nil
+}
+
+func mostRecentlyUsedWalletCredential(creds []*models.WalletCredential) *models.WalletCredential {
+	var best *models.WalletCredential
+	for _, cred := range creds {
+		if cred == nil {
+			continue
+		}
+		if strings.TrimSpace(cred.Address) == "" {
+			continue
+		}
+		if best == nil || cred.LastUsed.After(best.LastUsed) {
+			best = cred
+		}
+	}
+	return best
+}
+
 func (s *Server) requireUserWalletCredential(ctx *apptheory.Context, username string) (*models.WalletCredential, *apptheory.AppError) {
 	if s == nil || s.store == nil || s.store.DB == nil || ctx == nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
@@ -45,12 +81,12 @@ func (s *Server) requireUserWalletCredential(ctx *apptheory.Context, username st
 	}
 
 	// Happy path: wallet-derived username with a matching credential record.
-	if addr := walletAddressFromUsername(username); addr != "" {
-		if cred, err := s.getWalletCredential(ctx, username, addr); err == nil && cred != nil {
-			return cred, nil
-		} else if err != nil && !theoryErrors.IsNotFound(err) {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-		}
+	cred, appErr := s.credentialForWalletUsername(ctx, username)
+	if appErr != nil {
+		return nil, appErr
+	}
+	if cred != nil {
+		return cred, nil
 	}
 
 	// Fallback: pick the most recently used linked wallet.
@@ -64,22 +100,10 @@ func (s *Server) requireUserWalletCredential(ctx *apptheory.Context, username st
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
-	var best *models.WalletCredential
-	for _, cred := range creds {
-		if cred == nil {
-			continue
-		}
-		if strings.TrimSpace(cred.Address) == "" {
-			continue
-		}
-		if best == nil || cred.LastUsed.After(best.LastUsed) {
-			best = cred
-		}
-	}
+	best := mostRecentlyUsedWalletCredential(creds)
 	if best == nil {
 		return nil, &apptheory.AppError{Code: "app.conflict", Message: "wallet not linked"}
 	}
 
 	return best, nil
 }
-

@@ -118,6 +118,38 @@ func sha256Hex(value string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+func normalizeAdminWalletType(walletType string) (string, *apptheory.AppError) {
+	walletType = strings.ToLower(strings.TrimSpace(walletType))
+	if walletType == "" {
+		walletType = walletTypeEthereum
+	}
+	if walletType != walletTypeEthereum {
+		return "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid admin_wallet_type"}
+	}
+	return walletType, nil
+}
+
+func normalizeAdminWalletAddress(addr string) (string, *apptheory.AppError) {
+	addr = strings.ToLower(strings.TrimSpace(addr))
+	if addr == "" {
+		return "", &apptheory.AppError{Code: "app.bad_request", Message: "admin_wallet_address is required"}
+	}
+	if !common.IsHexAddress(addr) {
+		return "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid admin_wallet_address"}
+	}
+	if reservedErr := validateNotReservedWalletAddress(addr, "admin_wallet_address"); reservedErr != nil {
+		return "", reservedErr
+	}
+	return addr, nil
+}
+
+func normalizeAdminWalletChainID(chainID int) int {
+	if chainID <= 0 {
+		return 1
+	}
+	return chainID
+}
+
 func (s *Server) enqueueProvisionJobBestEffort(ctx *apptheory.Context, jobID string) {
 	if s == nil || s.queues == nil || ctx == nil {
 		return
@@ -165,41 +197,23 @@ func (s *Server) buildManagedProvisionJob(slug string, req startInstanceProvisio
 		return nil, "", "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
-	stage := strings.TrimSpace(s.cfg.Stage)
-	if stage == "" {
-		stage = "lab"
+	stage := normalizeControlPlaneStage(s.cfg.Stage)
+
+	adminUsername, appErr := normalizeProvisionAdminUsername(slug, req.AdminUsername)
+	if appErr != nil {
+		return nil, "", "", appErr
 	}
 
-	adminUsername := strings.ToLower(strings.TrimSpace(req.AdminUsername))
-	if adminUsername == "" {
-		adminUsername = strings.ToLower(strings.TrimSpace(slug))
-	}
-	if adminUsername == "" || !instanceSlugRE.MatchString(adminUsername) {
-		return nil, "", "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid admin_username"}
+	adminWalletType, appErr := normalizeAdminWalletType(req.AdminWalletType)
+	if appErr != nil {
+		return nil, "", "", appErr
 	}
 
-	adminWalletType := strings.ToLower(strings.TrimSpace(req.AdminWalletType))
-	if adminWalletType == "" {
-		adminWalletType = "ethereum"
+	adminWalletAddr, appErr := normalizeAdminWalletAddress(req.AdminWalletAddress)
+	if appErr != nil {
+		return nil, "", "", appErr
 	}
-	if adminWalletType != "ethereum" {
-		return nil, "", "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid admin_wallet_type"}
-	}
-
-	adminWalletAddr := strings.ToLower(strings.TrimSpace(req.AdminWalletAddress))
-	if adminWalletAddr == "" {
-		return nil, "", "", &apptheory.AppError{Code: "app.bad_request", Message: "admin_wallet_address is required"}
-	}
-	if !common.IsHexAddress(adminWalletAddr) {
-		return nil, "", "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid admin_wallet_address"}
-	}
-	if reservedErr := validateNotReservedWalletAddress(adminWalletAddr, "admin_wallet_address"); reservedErr != nil {
-		return nil, "", "", reservedErr
-	}
-	adminWalletChainID := req.AdminWalletChainID
-	if adminWalletChainID <= 0 {
-		adminWalletChainID = 1
-	}
+	adminWalletChainID := normalizeAdminWalletChainID(req.AdminWalletChainID)
 
 	id, err := newToken(16)
 	if err != nil {

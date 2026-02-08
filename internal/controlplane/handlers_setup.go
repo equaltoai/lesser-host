@@ -221,7 +221,7 @@ func (s *Server) handleSetupBootstrapVerify(ctx *apptheory.Context) (*apptheory.
 	session := &models.SetupSession{
 		ID:           token,
 		Purpose:      setupPurposeBootstrap,
-		WalletType:   "ethereum",
+		WalletType:   walletTypeEthereum,
 		WalletAddr:   bootstrapWallet,
 		IssuedAt:     now,
 		ExpiresAt:    expiresAt,
@@ -364,7 +364,7 @@ func (s *Server) requireSetupSession(ctx *apptheory.Context) (*models.SetupSessi
 func (s *Server) walletLinkedUsername(ctx *apptheory.Context, walletType, address string) (string, error) {
 	walletType = strings.TrimSpace(walletType)
 	if walletType == "" {
-		walletType = "ethereum"
+		walletType = walletTypeEthereum
 	}
 	address = strings.ToLower(strings.TrimSpace(address))
 	if address == "" {
@@ -467,7 +467,7 @@ func (s *Server) verifySetupCreateAdminWallet(ctx *apptheory.Context, username s
 		return "", 0, &apptheory.AppError{Code: "app.forbidden", Message: "wallet challenge message mismatch"}
 	}
 
-	existing, err := s.walletLinkedUsername(ctx, "ethereum", adminWalletAddr)
+	existing, err := s.walletLinkedUsername(ctx, walletTypeEthereum, adminWalletAddr)
 	if err != nil {
 		return "", 0, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
@@ -508,7 +508,7 @@ func (s *Server) linkSetupAdminWallet(ctx *apptheory.Context, username string, w
 		Username: strings.TrimSpace(username),
 		Address:  strings.ToLower(strings.TrimSpace(walletAddr)),
 		ChainID:  chainID,
-		Type:     "ethereum",
+		Type:     walletTypeEthereum,
 		LinkedAt: now,
 		LastUsed: now,
 	}
@@ -520,7 +520,7 @@ func (s *Server) linkSetupAdminWallet(ctx *apptheory.Context, username string, w
 	}
 
 	index := &models.WalletIndex{}
-	index.UpdateKeys("ethereum", walletAddr, username)
+	index.UpdateKeys(walletTypeEthereum, walletAddr, username)
 	if err := s.store.DB.WithContext(ctx.Context()).Model(index).IfNotExists().Create(); err != nil {
 		return &apptheory.AppError{Code: "app.internal", Message: "failed to link wallet"}
 	}

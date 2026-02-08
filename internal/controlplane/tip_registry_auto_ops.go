@@ -129,7 +129,7 @@ func (s *Server) buildAutoTipRegistryOperation(ctx context.Context, domain strin
 		return nil, nil, appErr
 	}
 	if walletAddr != "" {
-		if appErr := s.validateNotPrivilegedWalletAddress(ctx, "ethereum", walletAddr, "tip default host wallet"); appErr != nil {
+		if appErr := s.validateNotPrivilegedWalletAddress(ctx, walletTypeEthereum, walletAddr, "tip default host wallet"); appErr != nil {
 			return nil, nil, appErr
 		}
 	}

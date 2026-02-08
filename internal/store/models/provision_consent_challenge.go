@@ -14,10 +14,10 @@ type ProvisionConsentChallenge struct {
 	SK  string `theorydb:"sk,attr:SK" json:"-"`
 	TTL int64  `theorydb:"ttl,attr:ttl" json:"-"`
 
-	ID           string `theorydb:"attr:id" json:"id"`
-	Username     string `theorydb:"attr:username" json:"username"`
-	InstanceSlug string `theorydb:"attr:instanceSlug" json:"instance_slug"`
-	Stage        string `theorydb:"attr:stage" json:"stage"`
+	ID            string `theorydb:"attr:id" json:"id"`
+	Username      string `theorydb:"attr:username" json:"username"`
+	InstanceSlug  string `theorydb:"attr:instanceSlug" json:"instance_slug"`
+	Stage         string `theorydb:"attr:stage" json:"stage"`
 	AdminUsername string `theorydb:"attr:adminUsername" json:"admin_username"`
 
 	WalletType string `theorydb:"attr:walletType" json:"wallet_type"`
@@ -75,4 +75,3 @@ func (c *ProvisionConsentChallenge) GetPK() string { return c.PK }
 
 // GetSK returns the sort key for ProvisionConsentChallenge.
 func (c *ProvisionConsentChallenge) GetSK() string { return c.SK }
-

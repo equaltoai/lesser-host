@@ -13,4 +13,3 @@ func walletAddressFromUsername(username string) string {
 	}
 	return "0x" + hex
 }
-

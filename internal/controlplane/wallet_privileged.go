@@ -21,7 +21,7 @@ func (s *Server) validateNotPrivilegedWalletAddress(ctx context.Context, walletT
 
 	walletType = strings.TrimSpace(walletType)
 	if walletType == "" {
-		walletType = "ethereum"
+		walletType = walletTypeEthereum
 	}
 	address = strings.ToLower(strings.TrimSpace(address))
 	if address == "" {

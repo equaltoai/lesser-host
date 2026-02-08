@@ -22,6 +22,8 @@ import (
 	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
+const testPortalInstanceSlugDemo = "demo"
+
 type portalTestDB struct {
 	db        *ttmocks.MockExtendedDB
 	qUser     *ttmocks.MockQuery
@@ -111,7 +113,7 @@ func TestRequireInstanceAccess(t *testing.T) {
 	}
 
 	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(theoryErrors.ErrItemNotFound).Once()
-	if _, err := s.requireInstanceAccess(ctx, "demo"); err == nil {
+	if _, err := s.requireInstanceAccess(ctx, testPortalInstanceSlugDemo); err == nil {
 		t.Fatalf("expected not_found for missing instance")
 	}
 
@@ -123,10 +125,10 @@ func TestRequireInstanceAccess(t *testing.T) {
 		if !ok {
 			t.Fatalf("expected *models.Instance, got %T", destAny)
 		}
-		*dest = models.Instance{Slug: "demo", Owner: "someone-else"}
+		*dest = models.Instance{Slug: testPortalInstanceSlugDemo, Owner: "someone-else"}
 	}).Once()
-	inst, err := s.requireInstanceAccess(ctx, "demo")
-	if err != nil || inst == nil || inst.Slug != "demo" {
+	inst, err := s.requireInstanceAccess(ctx, testPortalInstanceSlugDemo)
+	if err != nil || inst == nil || inst.Slug != testPortalInstanceSlugDemo {
 		t.Fatalf("unexpected result: inst=%#v err=%v", inst, err)
 	}
 
@@ -138,9 +140,9 @@ func TestRequireInstanceAccess(t *testing.T) {
 		if !ok {
 			t.Fatalf("expected *models.Instance, got %T", destAny)
 		}
-		*dest = models.Instance{Slug: "demo", Owner: "bob"}
+		*dest = models.Instance{Slug: testPortalInstanceSlugDemo, Owner: "bob"}
 	}).Once()
-	if _, err := s.requireInstanceAccess(ctx, "demo"); err == nil {
+	if _, err := s.requireInstanceAccess(ctx, testPortalInstanceSlugDemo); err == nil {
 		t.Fatalf("expected forbidden for owner mismatch")
 	}
 }

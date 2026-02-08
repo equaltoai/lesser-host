@@ -16,15 +16,21 @@ import (
 	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
+const (
+	testProvisionConsentStageLab         = "lab"
+	testProvisionConsentSlugDemo         = "demo"
+	testProvisionConsentCodeUnauthorized = "app.unauthorized"
+)
+
 func TestHandlePortalProvisionConsentChallenge_CreatesChallenge(t *testing.T) {
 	t.Parallel()
 
 	tdb := newPortalTestDB()
-	s := &Server{store: store.New(tdb.db), cfg: config.Config{Stage: "lab"}}
+	s := &Server{store: store.New(tdb.db), cfg: config.Config{Stage: testProvisionConsentStageLab}}
 
 	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
-		*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive}
+		*dest = models.Instance{Slug: testProvisionConsentSlugDemo, Owner: "alice", Status: models.InstanceStatusActive}
 	}).Once()
 
 	now := time.Now().UTC()
@@ -44,7 +50,7 @@ func TestHandlePortalProvisionConsentChallenge_CreatesChallenge(t *testing.T) {
 
 	ctx := &apptheory.Context{
 		AuthIdentity: "alice",
-		Params:       map[string]string{"slug": "demo"},
+		Params:       map[string]string{"slug": testProvisionConsentSlugDemo},
 		Request:      apptheory.Request{Body: []byte(`{"admin_username":"demo"}`)},
 	}
 	resp, err := s.handlePortalProvisionConsentChallenge(ctx)
@@ -56,7 +62,7 @@ func TestHandlePortalProvisionConsentChallenge_CreatesChallenge(t *testing.T) {
 	if err := json.Unmarshal(resp.Body, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if out.InstanceSlug != "demo" || out.Stage != "lab" || out.AdminUsername != "demo" {
+	if out.InstanceSlug != testProvisionConsentSlugDemo || out.Stage != testProvisionConsentStageLab || out.AdminUsername != testProvisionConsentSlugDemo {
 		t.Fatalf("unexpected response: %#v", out)
 	}
 	if out.Wallet.ID == "" || out.Wallet.Address == "" || out.Wallet.Message == "" {
@@ -69,14 +75,14 @@ func TestHandlePortalProvisionConsentChallenge_RequiresApproval(t *testing.T) {
 
 	tdb := newPortalTestDB()
 	tdb.stubUser.Approved = false
-	s := &Server{store: store.New(tdb.db), cfg: config.Config{Stage: "lab"}}
+	s := &Server{store: store.New(tdb.db), cfg: config.Config{Stage: testProvisionConsentStageLab}}
 
 	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
-		*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive}
+		*dest = models.Instance{Slug: testProvisionConsentSlugDemo, Owner: "alice", Status: models.InstanceStatusActive}
 	}).Once()
 
-	ctx := &apptheory.Context{AuthIdentity: "alice", Params: map[string]string{"slug": "demo"}}
+	ctx := &apptheory.Context{AuthIdentity: "alice", Params: map[string]string{"slug": testProvisionConsentSlugDemo}}
 	if _, err := s.handlePortalProvisionConsentChallenge(ctx); err == nil {
 		t.Fatalf("expected forbidden for unapproved user")
 	}
@@ -86,11 +92,11 @@ func TestHandlePortalProvisionConsentChallenge_BlocksReservedWallet(t *testing.T
 	t.Parallel()
 
 	tdb := newPortalTestDB()
-	s := &Server{store: store.New(tdb.db), cfg: config.Config{Stage: "lab"}}
+	s := &Server{store: store.New(tdb.db), cfg: config.Config{Stage: testProvisionConsentStageLab}}
 
 	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
-		*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive}
+		*dest = models.Instance{Slug: testProvisionConsentSlugDemo, Owner: "alice", Status: models.InstanceStatusActive}
 	}).Once()
 
 	tdb.qCred.On("All", mock.AnythingOfType("*[]*models.WalletCredential")).Return(nil).Run(func(args mock.Arguments) {
@@ -105,7 +111,7 @@ func TestHandlePortalProvisionConsentChallenge_BlocksReservedWallet(t *testing.T
 		}}
 	}).Once()
 
-	ctx := &apptheory.Context{AuthIdentity: "alice", Params: map[string]string{"slug": "demo"}}
+	ctx := &apptheory.Context{AuthIdentity: "alice", Params: map[string]string{"slug": testProvisionConsentSlugDemo}}
 	if _, err := s.handlePortalProvisionConsentChallenge(ctx); err == nil {
 		t.Fatalf("expected reserved wallet error")
 	}
@@ -125,7 +131,7 @@ func TestGetProvisionConsentChallenge_NormalizesNotFoundToUnauthorized(t *testin
 		t.Fatalf("expected error")
 	}
 
-	if appErr := normalizeNotFound(err); appErr == nil || appErr.Code != "app.unauthorized" {
+	if appErr := normalizeNotFound(err); appErr == nil || appErr.Code != testProvisionConsentCodeUnauthorized {
 		t.Fatalf("expected app.unauthorized, got %#v", appErr)
 	}
 }

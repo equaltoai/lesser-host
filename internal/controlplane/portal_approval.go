@@ -35,4 +35,3 @@ func (s *Server) requirePortalApproved(ctx *apptheory.Context) *apptheory.AppErr
 
 	return &apptheory.AppError{Code: "app.forbidden", Message: "approval required"}
 }
-
