@@ -38,6 +38,7 @@ import (
 type organizationsAPI interface {
 	CreateAccount(ctx context.Context, params *organizations.CreateAccountInput, optFns ...func(*organizations.Options)) (*organizations.CreateAccountOutput, error)
 	DescribeCreateAccountStatus(ctx context.Context, params *organizations.DescribeCreateAccountStatusInput, optFns ...func(*organizations.Options)) (*organizations.DescribeCreateAccountStatusOutput, error)
+	ListAccounts(ctx context.Context, params *organizations.ListAccountsInput, optFns ...func(*organizations.Options)) (*organizations.ListAccountsOutput, error)
 	ListParents(ctx context.Context, params *organizations.ListParentsInput, optFns ...func(*organizations.Options)) (*organizations.ListParentsOutput, error)
 	MoveAccount(ctx context.Context, params *organizations.MoveAccountInput, optFns ...func(*organizations.Options)) (*organizations.MoveAccountOutput, error)
 }
@@ -303,6 +304,11 @@ func (s *Server) initializeManagedProvisionJob(job *models.ProvisionJob) {
 	if strings.TrimSpace(job.Region) == "" {
 		job.Region = strings.TrimSpace(s.cfg.ManagedDefaultRegion)
 	}
+	if strings.TrimSpace(job.Stage) == "" {
+		job.Stage = normalizeManagedLesserStage(s.cfg.Stage)
+	} else {
+		job.Stage = normalizeManagedLesserStage(job.Stage)
+	}
 	if strings.TrimSpace(job.ParentHostedZoneID) == "" {
 		job.ParentHostedZoneID = strings.TrimSpace(s.cfg.ManagedParentHostedZoneID)
 	}
@@ -442,6 +448,23 @@ func (s *Server) startProvisionAccountCreate(ctx context.Context, job *models.Pr
 		roleName = strings.TrimSpace(s.cfg.ManagedInstanceRoleName)
 	}
 
+	if strings.TrimSpace(email) != "" {
+		acct, err := s.findAccountByEmail(ctx, email)
+		if err != nil {
+			job.Note = "account lookup failed; proceeding with create"
+			_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
+		} else if acct != nil {
+			if err := ensureAccountMatchesExpected(acct, accountName); err != nil {
+				return 0, false, s.failJob(ctx, job, requestID, now, "account_email_conflict", err.Error())
+			}
+			if strings.TrimSpace(job.AccountID) == "" {
+				job.AccountID = strings.TrimSpace(aws.ToString(acct.Id))
+			}
+			job.Note = "AWS account already exists; reusing"
+			return s.advanceToAccountMove(ctx, job, requestID, now, job.Note)
+		}
+	}
+
 	out, err := s.org.CreateAccount(ctx, &organizations.CreateAccountInput{
 		AccountName:            aws.String(accountName),
 		Email:                  aws.String(email),
@@ -571,6 +594,11 @@ func (s *Server) handleProvisionAccountCreateStatus(
 		return provisionDefaultPollDelay, false, nil
 
 	case orgtypes.CreateAccountStateFailed:
+		if st.FailureReason == orgtypes.CreateAccountFailureReasonEmailAlreadyExists {
+			if delay, done, err, handled := s.handleAccountCreateEmailExists(ctx, job, requestID, now); handled {
+				return delay, done, err
+			}
+		}
 		reason := "unknown"
 		if st.FailureReason != "" {
 			reason = string(st.FailureReason)
@@ -582,6 +610,38 @@ func (s *Server) handleProvisionAccountCreateStatus(
 		_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
 		return provisionDefaultPollDelay, false, nil
 	}
+}
+
+func (s *Server) handleAccountCreateEmailExists(
+	ctx context.Context,
+	job *models.ProvisionJob,
+	requestID string,
+	now time.Time,
+) (time.Duration, bool, error, bool) {
+	email := strings.TrimSpace(job.AccountEmail)
+	if email == "" {
+		email = strings.TrimSpace(expandManagedAccountEmailTemplate(s.cfg.ManagedAccountEmailTemplate, job.InstanceSlug))
+		job.AccountEmail = email
+	}
+	accountName := strings.TrimSpace(strings.TrimSpace(s.cfg.ManagedAccountNamePrefix) + strings.TrimSpace(job.InstanceSlug))
+	if len(accountName) > 50 {
+		accountName = accountName[:50]
+	}
+	acct, err := s.findAccountByEmail(ctx, email)
+	if err != nil {
+		delay, done, retryErr := s.retryProvisionJobOrFail(ctx, job, requestID, now, "account_lookup_failed", "account lookup failed after email exists: "+err.Error(), provisionDefaultShortRetryDelay, 5*time.Minute)
+		return delay, done, retryErr, true
+	}
+	if acct == nil {
+		return 0, false, nil, false
+	}
+	if matchErr := ensureAccountMatchesExpected(acct, accountName); matchErr != nil {
+		return 0, false, s.failJob(ctx, job, requestID, now, "account_email_conflict", matchErr.Error()), true
+	}
+	job.AccountID = strings.TrimSpace(aws.ToString(acct.Id))
+	job.Note = "AWS account already exists; reusing"
+	delay, done, err := s.advanceToAccountMove(ctx, job, requestID, now, job.Note)
+	return delay, done, err, true
 }
 
 func (s *Server) advanceProvisionAccountMove(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {
@@ -945,6 +1005,56 @@ func expandManagedAccountEmailTemplate(tmpl string, slug string) string {
 	return strings.ReplaceAll(tmpl, "{slug}", slug)
 }
 
+func ensureAccountMatchesExpected(acct *orgtypes.Account, expectedName string) error {
+	if acct == nil {
+		return fmt.Errorf("account lookup returned nil")
+	}
+	expectedName = strings.TrimSpace(expectedName)
+	if expectedName != "" {
+		actualName := strings.TrimSpace(aws.ToString(acct.Name))
+		if actualName != "" && !strings.EqualFold(actualName, expectedName) {
+			return fmt.Errorf("account email already exists but name %q does not match expected %q", actualName, expectedName)
+		}
+	}
+	status := acct.Status
+	if status != "" && status != orgtypes.AccountStatusActive {
+		return fmt.Errorf("account status %s is not active", status)
+	}
+	return nil
+}
+
+func (s *Server) findAccountByEmail(ctx context.Context, email string) (*orgtypes.Account, error) {
+	if s == nil || s.org == nil {
+		return nil, fmt.Errorf("org client not initialized")
+	}
+	email = strings.TrimSpace(strings.ToLower(email))
+	if email == "" {
+		return nil, nil
+	}
+
+	var nextToken *string
+	for {
+		out, err := s.org.ListAccounts(ctx, &organizations.ListAccountsInput{NextToken: nextToken})
+		if err != nil {
+			return nil, err
+		}
+		if out != nil {
+			for _, acct := range out.Accounts {
+				if strings.EqualFold(strings.TrimSpace(aws.ToString(acct.Email)), email) {
+					return &acct, nil
+				}
+			}
+			if out.NextToken == nil || strings.TrimSpace(aws.ToString(out.NextToken)) == "" {
+				break
+			}
+			nextToken = out.NextToken
+			continue
+		}
+		break
+	}
+	return nil, nil
+}
+
 var errAssumeRoleNotReady = errors.New("assume role not ready")
 
 func (s *Server) assumeInstanceRole(ctx context.Context, accountID string, roleName string, slug string, jobID string) (*sts.AssumeRoleOutput, time.Duration, error) {
@@ -1239,7 +1349,7 @@ func (s *Server) deployRunnerStage(job *models.ProvisionJob) string {
 	if stage == "" {
 		stage = strings.TrimSpace(s.cfg.Stage)
 	}
-	return stage
+	return normalizeManagedLesserStage(stage)
 }
 
 func (s *Server) buildDeployRunnerEnv(job *models.ProvisionJob, stage, receiptKey, bootstrapKey string) []cbtypes.EnvironmentVariable {
@@ -1270,7 +1380,6 @@ func (s *Server) buildDeployRunnerEnv(job *models.ProvisionJob, stage, receiptKe
 		{Name: aws.String("GITHUB_OWNER"), Value: aws.String(strings.TrimSpace(s.cfg.ManagedLesserGitHubOwner))},
 		{Name: aws.String("GITHUB_REPO"), Value: aws.String(strings.TrimSpace(s.cfg.ManagedLesserGitHubRepo))},
 	}
-
 	if strings.TrimSpace(s.cfg.ManagedOrgVendingRoleARN) != "" {
 		env = append(env, cbtypes.EnvironmentVariable{
 			Name:  aws.String("MANAGED_ORG_VENDING_ROLE_ARN"),

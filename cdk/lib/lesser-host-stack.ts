@@ -438,6 +438,7 @@ export class LesserHostStack extends cdk.Stack {
 				actions: [
 					'organizations:CreateAccount',
 					'organizations:DescribeCreateAccountStatus',
+					'organizations:ListAccounts',
 					'organizations:ListParents',
 					'organizations:MoveAccount',
 				],

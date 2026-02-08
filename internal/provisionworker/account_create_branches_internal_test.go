@@ -23,7 +23,7 @@ func TestHandleProvisionAccountCreateStatus_Branches(t *testing.T) {
 
 	db := ttmocks.NewMockExtendedDB()
 	st := store.New(db)
-	s := &Server{store: st}
+	s := &Server{store: st, org: &fakeOrg{}}
 
 	now := time.Now().UTC()
 	job := &models.ProvisionJob{
@@ -158,6 +158,29 @@ func TestStartProvisionAccountCreate_ErrorBranches(t *testing.T) {
 		require.Zero(t, delay)
 		require.Equal(t, provisionStepFailed, job.Step)
 		require.Equal(t, "create_account_failed", job.ErrorCode)
+	})
+
+	t.Run("reuse_existing_account_by_email", func(t *testing.T) {
+		s := makeServer(&fakeOrg{
+			createErr: errors.New("should not create"),
+			listOut: &organizations.ListAccountsOutput{
+				Accounts: []orgtypes.Account{{
+					Id:     aws.String("123456789012"),
+					Email:  aws.String("ops+slug@example.com"),
+					Name:   aws.String("lesser-slug"),
+					Status: orgtypes.AccountStatusActive,
+				}},
+			},
+		})
+		job := &models.ProvisionJob{ID: "j4", InstanceSlug: "slug", Status: models.ProvisionJobStatusRunning, Step: provisionStepAccountCreate, MaxAttempts: 3}
+
+		delay, done, err := s.startProvisionAccountCreate(context.Background(), job, "req", now)
+		require.NoError(t, err)
+		require.False(t, done)
+		require.Zero(t, delay)
+		require.Equal(t, provisionStepAccountMove, job.Step)
+		require.Equal(t, "123456789012", job.AccountID)
+		require.Contains(t, job.Note, "reusing")
 	})
 }
 
