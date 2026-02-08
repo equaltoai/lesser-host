@@ -2,6 +2,7 @@ package provisionworker
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1242,6 +1243,13 @@ func (s *Server) deployRunnerStage(job *models.ProvisionJob) string {
 }
 
 func (s *Server) buildDeployRunnerEnv(job *models.ProvisionJob, stage, receiptKey, bootstrapKey string) []cbtypes.EnvironmentVariable {
+	consentMessage := strings.TrimSpace(job.ConsentMessage)
+	consentMessageB64 := ""
+	if consentMessage != "" {
+		consentMessageB64 = base64.StdEncoding.EncodeToString([]byte(consentMessage))
+	}
+	consentSignature := strings.TrimSpace(job.ConsentSignature)
+
 	env := []cbtypes.EnvironmentVariable{
 		{Name: aws.String("JOB_ID"), Value: aws.String(strings.TrimSpace(job.ID))},
 		{Name: aws.String("APP_SLUG"), Value: aws.String(strings.TrimSpace(job.InstanceSlug))},
@@ -1249,6 +1257,8 @@ func (s *Server) buildDeployRunnerEnv(job *models.ProvisionJob, stage, receiptKe
 		{Name: aws.String("ADMIN_USERNAME"), Value: aws.String(strings.TrimSpace(job.AdminUsername))},
 		{Name: aws.String("ADMIN_WALLET_ADDRESS"), Value: aws.String(strings.TrimSpace(job.AdminWalletAddr))},
 		{Name: aws.String("ADMIN_WALLET_CHAIN_ID"), Value: aws.String(fmt.Sprintf("%d", job.AdminWalletChainID))},
+		{Name: aws.String("CONSENT_MESSAGE_B64"), Value: aws.String(consentMessageB64)},
+		{Name: aws.String("CONSENT_SIGNATURE"), Value: aws.String(consentSignature)},
 		{Name: aws.String("BASE_DOMAIN"), Value: aws.String(strings.TrimSpace(job.BaseDomain))},
 		{Name: aws.String("TARGET_ACCOUNT_ID"), Value: aws.String(strings.TrimSpace(job.AccountID))},
 		{Name: aws.String("TARGET_ROLE_NAME"), Value: aws.String(strings.TrimSpace(job.AccountRoleName))},

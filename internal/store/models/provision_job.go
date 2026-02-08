@@ -42,6 +42,7 @@ type ProvisionJob struct {
 	AdminWalletAddr    string `theorydb:"attr:adminWalletAddress" json:"admin_wallet_address,omitempty"`
 	AdminWalletChainID int    `theorydb:"attr:adminWalletChainID" json:"admin_wallet_chain_id,omitempty"`
 
+	ConsentMessage     string `theorydb:"attr:consentMessage" json:"consent_message,omitempty"`
 	ConsentMessageHash string `theorydb:"attr:consentMessageHash" json:"consent_message_hash,omitempty"`
 	ConsentSignature   string `theorydb:"attr:consentSignature" json:"consent_signature,omitempty"`
 
@@ -123,6 +124,7 @@ func (j *ProvisionJob) UpdateKeys() error {
 	j.AdminUsername = strings.TrimSpace(j.AdminUsername)
 	j.AdminWalletType = strings.TrimSpace(j.AdminWalletType)
 	j.AdminWalletAddr = strings.ToLower(strings.TrimSpace(j.AdminWalletAddr))
+	j.ConsentMessage = strings.TrimSpace(j.ConsentMessage)
 	j.ConsentMessageHash = strings.TrimSpace(j.ConsentMessageHash)
 	j.ConsentSignature = strings.TrimSpace(j.ConsentSignature)
 	j.AccountRequestID = strings.TrimSpace(j.AccountRequestID)

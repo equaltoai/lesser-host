@@ -249,6 +249,7 @@ func (s *Server) buildManagedProvisionJob(slug string, req startInstanceProvisio
 		AdminWalletType:    adminWalletType,
 		AdminWalletAddr:    adminWalletAddr,
 		AdminWalletChainID: adminWalletChainID,
+		ConsentMessage:     strings.TrimSpace(req.ConsentMessage),
 		ConsentSignature:   strings.TrimSpace(req.ConsentSignature),
 		ConsentMessageHash: func() string {
 			msg := strings.TrimSpace(req.ConsentMessage)

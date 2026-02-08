@@ -17,6 +17,8 @@ This tracks the managed provisioning redesign in `lesser-host`: approval gating,
   - `ADMIN_USERNAME`
   - `ADMIN_WALLET_ADDRESS`
   - `ADMIN_WALLET_CHAIN_ID`
+  - `CONSENT_MESSAGE_B64`
+  - `CONSENT_SIGNATURE`
 - Setup wizard for provisioned instances is passkey-only (implemented in `lesser`).
 
 ## Reserved Wallet Rules (Implemented)
@@ -30,6 +32,7 @@ Reserved wallets must never be used as instance admin wallets or tip host wallet
 3. Implement consent challenge endpoint + signature verification (message includes slug, stage, admin username, nonce, timestamps).
 4. Portal UI flow: admin username input, consent signature, and passkey-only setup prompt.
 5. Worker integration: propagate admin wallet + username to CodeBuild runner env.
+   - Build `provision.json` in CodeBuild and run `lesser up` + `lesser init-admin`.
 6. Tip registry preflight: reject reserved + privileged control-plane wallets and require host registration before creating `setHostActive` operations.
 7. Add tests for approval gating, reserved-wallet validation, and consent verification; update docs.
 
