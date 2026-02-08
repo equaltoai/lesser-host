@@ -162,7 +162,7 @@ func (s *Server) verifyWalletLoginChallenge(ctx *apptheory.Context, req walletVe
 	}
 	_ = s.deleteWalletChallenge(ctx.Context(), req.ChallengeID)
 
-	linked, err := s.walletLinkedUsername(ctx, "ethereum", address)
+	linked, err := s.walletLinkedUsername(ctx, walletTypeEthereum, address)
 	if err != nil {
 		return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}

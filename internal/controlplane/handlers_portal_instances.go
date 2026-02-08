@@ -93,11 +93,24 @@ func (s *Server) maybeReturnExistingPortalInstance(ctx *apptheory.Context, slug 
 	return nil, false, nil
 }
 
-func (s *Server) handlePortalCreateInstance(ctx *apptheory.Context) (*apptheory.Response, error) {
+func (s *Server) requirePortalCreateInstancePrereqs(ctx *apptheory.Context) *apptheory.AppError {
 	if err := requireAuthenticated(ctx); err != nil {
-		return nil, err
+		if appErr, ok := err.(*apptheory.AppError); ok {
+			return appErr
+		}
+		return &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
 	}
 	if appErr := requireStoreDB(s); appErr != nil {
+		return appErr
+	}
+	if appErr := s.requirePortalApproved(ctx); appErr != nil {
+		return appErr
+	}
+	return nil
+}
+
+func (s *Server) handlePortalCreateInstance(ctx *apptheory.Context) (*apptheory.Response, error) {
+	if appErr := s.requirePortalCreateInstancePrereqs(ctx); appErr != nil {
 		return nil, appErr
 	}
 
@@ -314,10 +327,67 @@ func (s *Server) handlePortalUpdateInstanceConfig(ctx *apptheory.Context) (*appt
 	return apptheory.JSON(http.StatusOK, instanceResponseFromModel(updated))
 }
 
+func (s *Server) verifyPortalStartProvisionConsent(ctx *apptheory.Context, slug string, req startInstanceProvisionRequest) (startInstanceProvisionRequest, *apptheory.AppError) {
+	consentChallengeID := strings.TrimSpace(req.ConsentChallengeID)
+	consentMessage := strings.TrimSpace(req.ConsentMessage)
+	consentSignature := strings.TrimSpace(req.ConsentSignature)
+	if consentChallengeID == "" {
+		return req, &apptheory.AppError{Code: "app.bad_request", Message: "consent_challenge_id is required"}
+	}
+	if consentMessage == "" {
+		return req, &apptheory.AppError{Code: "app.bad_request", Message: "consent_message is required"}
+	}
+	if consentSignature == "" {
+		return req, &apptheory.AppError{Code: "app.bad_request", Message: "consent_signature is required"}
+	}
+
+	chall, loadErr := s.getProvisionConsentChallenge(ctx, consentChallengeID)
+	if loadErr != nil {
+		return req, normalizeNotFound(loadErr)
+	}
+
+	stage := strings.TrimSpace(s.cfg.Stage)
+	if stage == "" {
+		stage = "lab"
+	}
+
+	if appErr := validateProvisionConsentChallenge(ctx, chall, slug, stage, consentMessage); appErr != nil {
+		return req, appErr
+	}
+	if reservedErr := validateNotReservedWalletAddress(strings.TrimSpace(chall.WalletAddr), "wallet"); reservedErr != nil {
+		return req, reservedErr
+	}
+	if verifyErr := verifyEthereumSignature(strings.TrimSpace(chall.WalletAddr), strings.TrimSpace(chall.Message), consentSignature); verifyErr != nil {
+		return req, &apptheory.AppError{Code: "app.forbidden", Message: "invalid signature"}
+	}
+	_ = s.deleteProvisionConsentChallenge(ctx, chall)
+
+	if reqAdmin := strings.ToLower(strings.TrimSpace(req.AdminUsername)); reqAdmin != "" && reqAdmin != strings.ToLower(strings.TrimSpace(chall.AdminUsername)) {
+		return req, &apptheory.AppError{Code: "app.bad_request", Message: "admin_username does not match consent challenge"}
+	}
+
+	// Canonicalize consent artifacts from the stored challenge message.
+	req.AdminUsername = strings.TrimSpace(chall.AdminUsername)
+	req.AdminWalletType = strings.TrimSpace(chall.WalletType)
+	req.AdminWalletAddress = strings.TrimSpace(chall.WalletAddr)
+	req.AdminWalletChainID = chall.ChainID
+	req.ConsentMessage = strings.TrimSpace(chall.Message)
+	req.ConsentSignature = consentSignature
+
+	return req, nil
+}
+
 func (s *Server) handlePortalStartInstanceProvisioning(ctx *apptheory.Context) (*apptheory.Response, error) {
 	inst, err := s.requireInstanceAccess(ctx, ctx.Param("slug"))
 	if err != nil {
 		return nil, err
+	}
+
+	if appErr := validateNotReservedWalletUsername(strings.TrimSpace(ctx.AuthIdentity)); appErr != nil {
+		return nil, appErr
+	}
+	if appErr := s.requirePortalApproved(ctx); appErr != nil {
+		return nil, appErr
 	}
 
 	slug := strings.ToLower(strings.TrimSpace(inst.Slug))
@@ -329,6 +399,11 @@ func (s *Server) handlePortalStartInstanceProvisioning(ctx *apptheory.Context) (
 	req, err := parseStartInstanceProvisionRequest(ctx)
 	if err != nil {
 		return nil, err
+	}
+
+	req, appErr := s.verifyPortalStartProvisionConsent(ctx, slug, req)
+	if appErr != nil {
+		return nil, appErr
 	}
 
 	now := time.Now().UTC()

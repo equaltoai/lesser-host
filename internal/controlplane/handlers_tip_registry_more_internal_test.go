@@ -12,6 +12,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/stretchr/testify/mock"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
+	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/store"
@@ -201,6 +202,7 @@ func TestHandleEnsureTipRegistryHost_NoOpAndCreate(t *testing.T) {
 		// Operation write path.
 		tdb.qOp.On("Create").Return(nil).Once()
 		tdb.qAudit.On("Create").Return(nil).Maybe()
+		tdb.qWalletIdx.On("First", mock.AnythingOfType("*models.WalletIndex")).Return(theoryErrors.ErrItemNotFound).Once()
 
 		ctx := adminCtx()
 		ctx.RequestID = "rid"
@@ -262,6 +264,7 @@ func TestHandleTipHostRegistrationVerify_SucceedsWithDNSProof(t *testing.T) {
 	}).Once()
 
 	tdb.qOp.On("Create").Return(nil).Once()
+	tdb.qWalletIdx.On("First", mock.AnythingOfType("*models.WalletIndex")).Return(theoryErrors.ErrItemNotFound).Once()
 
 	txtName := tipRegistryProofPrefix + domain
 	txtValue := tipRegistryProofValue + reg.DNSToken

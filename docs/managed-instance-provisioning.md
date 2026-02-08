@@ -31,12 +31,21 @@ It assumes:
 4) **Delegate from `greater.website`**
    - in the central account, create an `NS` record in the parent zone delegating `slug.greater.website` to the child zone.
 
-5) **Deploy Lesser**
+5) **Deploy Lesser + seed admin**
    - select a Lesser release (see `docs/lesser-release-contract.md`).
+   - build a managed provisioning input file that includes:
+     - `slug`
+     - `stage`
+     - `admin_wallet_address`
+     - `admin_username`
+     - `admin_wallet_chain_id`
+     - `consent_message` + `consent_signature`
    - run `lesser up` in the instance account with:
-     - `--app <slug>`
      - `--base-domain <slug.greater.website>`
      - `--aws-profile <temp-profile>` (static session creds)
+     - `--provisioning-input <path>`
+   - immediately seed the admin wallet and unlock the instance:
+     - `lesser init-admin --base-domain <slug.greater.website> --aws-profile <temp-profile> --provisioning-input <path>`
    - read the deployment receipt `~/.lesser/<app>/<base-domain>/state.json`.
 
 6) **Register with lesser.host**
@@ -96,8 +105,8 @@ Infra is expected to provide:
 The deploy runner writes the Lesser receipt to S3 so the provisioning worker can ingest it and update instance state:
 
 - Receipt: `s3://$ARTIFACT_BUCKET_NAME/managed/provisioning/<slug>/<jobId>/state.json`
-- Bootstrap key material (only if a mnemonic is used): `s3://$ARTIFACT_BUCKET_NAME/managed/provisioning/<slug>/bootstrap.json`
+- Bootstrap key material (legacy only): `s3://$ARTIFACT_BUCKET_NAME/managed/provisioning/<slug>/bootstrap.json`
 
 Notes:
-- The bootstrap file is sensitive and should be treated like a private key.
-- Future work will eliminate mnemonic-based bootstrap for managed installs (tracked in Lesser issues).
+- Managed provisioning now seeds the admin wallet via `init-admin`, so a bootstrap mnemonic should not be generated.
+- If a legacy bootstrap file exists, treat it as sensitive and rotate/delete it after migration.

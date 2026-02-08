@@ -28,6 +28,7 @@ type Config struct {
 	TipEnabled                  bool
 	TipChainID                  int64
 	TipRPCURL                   string
+	TipRPCURLSSMParam           string
 	TipContractAddress          string
 	TipAdminSafeAddress         string
 	TipDefaultHostWalletAddress string
@@ -117,6 +118,7 @@ func Load() Config {
 		TipEnabled:                  tipsOn,
 		TipChainID:                  tipChainID,
 		TipRPCURL:                   envString("TIP_RPC_URL"),
+		TipRPCURLSSMParam:           envString("TIP_RPC_URL_SSM_PARAM"),
 		TipContractAddress:          envString("TIP_CONTRACT_ADDRESS"),
 		TipAdminSafeAddress:         envString("TIP_ADMIN_SAFE_ADDRESS"),
 		TipDefaultHostWalletAddress: envString("TIP_DEFAULT_HOST_WALLET_ADDRESS"),

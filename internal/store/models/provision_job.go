@@ -28,15 +28,23 @@ type ProvisionJob struct {
 	ID           string `theorydb:"attr:id" json:"id"`
 	InstanceSlug string `theorydb:"attr:instanceSlug" json:"instance_slug"`
 
-	Status        string `theorydb:"attr:status" json:"status"`                          // queued|running|ok|error
-	Step          string `theorydb:"attr:step" json:"step,omitempty"`                    // implementation-defined
-	Note          string `theorydb:"attr:note" json:"note,omitempty"`                    // operator-visible
-	RunID         string `theorydb:"attr:runId" json:"run_id,omitempty"`                 // external runner id (e.g. CodeBuild)
-	Mode          string `theorydb:"attr:mode" json:"mode,omitempty"`                    // managed|manual
-	Plan          string `theorydb:"attr:plan" json:"plan,omitempty"`                    // hosting plan identifier
-	Region        string `theorydb:"attr:region" json:"region,omitempty"`                // target region (if applicable)
-	Stage         string `theorydb:"attr:stage" json:"stage,omitempty"`                  // optional stage selector
-	LesserVersion string `theorydb:"attr:lesserVersion" json:"lesser_version,omitempty"` // semver tag
+	Status             string `theorydb:"attr:status" json:"status"`                          // queued|running|ok|error
+	Step               string `theorydb:"attr:step" json:"step,omitempty"`                    // implementation-defined
+	Note               string `theorydb:"attr:note" json:"note,omitempty"`                    // operator-visible
+	RunID              string `theorydb:"attr:runId" json:"run_id,omitempty"`                 // external runner id (e.g. CodeBuild)
+	Mode               string `theorydb:"attr:mode" json:"mode,omitempty"`                    // managed|manual
+	Plan               string `theorydb:"attr:plan" json:"plan,omitempty"`                    // hosting plan identifier
+	Region             string `theorydb:"attr:region" json:"region,omitempty"`                // target region (if applicable)
+	Stage              string `theorydb:"attr:stage" json:"stage,omitempty"`                  // optional stage selector
+	LesserVersion      string `theorydb:"attr:lesserVersion" json:"lesser_version,omitempty"` // semver tag
+	AdminUsername      string `theorydb:"attr:adminUsername" json:"admin_username,omitempty"`
+	AdminWalletType    string `theorydb:"attr:adminWalletType" json:"admin_wallet_type,omitempty"`
+	AdminWalletAddr    string `theorydb:"attr:adminWalletAddress" json:"admin_wallet_address,omitempty"`
+	AdminWalletChainID int    `theorydb:"attr:adminWalletChainID" json:"admin_wallet_chain_id,omitempty"`
+
+	ConsentMessage     string `theorydb:"attr:consentMessage" json:"consent_message,omitempty"`
+	ConsentMessageHash string `theorydb:"attr:consentMessageHash" json:"consent_message_hash,omitempty"`
+	ConsentSignature   string `theorydb:"attr:consentSignature" json:"consent_signature,omitempty"`
 
 	// Account allocation / creation.
 	AccountRequestID string `theorydb:"attr:accountRequestId" json:"account_request_id,omitempty"`
@@ -113,6 +121,12 @@ func (j *ProvisionJob) UpdateKeys() error {
 	j.Region = strings.TrimSpace(j.Region)
 	j.Stage = strings.TrimSpace(j.Stage)
 	j.LesserVersion = strings.TrimSpace(j.LesserVersion)
+	j.AdminUsername = strings.TrimSpace(j.AdminUsername)
+	j.AdminWalletType = strings.TrimSpace(j.AdminWalletType)
+	j.AdminWalletAddr = strings.ToLower(strings.TrimSpace(j.AdminWalletAddr))
+	j.ConsentMessage = strings.TrimSpace(j.ConsentMessage)
+	j.ConsentMessageHash = strings.TrimSpace(j.ConsentMessageHash)
+	j.ConsentSignature = strings.TrimSpace(j.ConsentSignature)
 	j.AccountRequestID = strings.TrimSpace(j.AccountRequestID)
 	j.AccountID = strings.TrimSpace(j.AccountID)
 	j.AccountEmail = strings.TrimSpace(j.AccountEmail)

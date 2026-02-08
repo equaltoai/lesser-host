@@ -22,3 +22,6 @@ gov-infra/evidence/DOC-5-parity.log
 gov-infra/evidence/coverage.out
 gov-infra/evidence/coverage-summary.txt
 gov-infra/evidence/gov-rubric-report.json
+
+# Local command transcripts may contain bearer tokens; keep them out of git.
+**/*local-command-caveatcaveat*

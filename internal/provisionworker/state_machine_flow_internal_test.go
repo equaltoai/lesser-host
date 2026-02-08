@@ -216,15 +216,20 @@ func TestProvisionStateMachine_SuccessPathAcrossSteps(t *testing.T) {
 
 	now := time.Now().UTC()
 	job := &models.ProvisionJob{
-		ID:            "j1",
-		InstanceSlug:  "demo",
-		Status:        models.ProvisionJobStatusRunning,
-		Step:          provisionStepQueued,
-		MaxAttempts:   3,
-		CreatedAt:     now.Add(-1 * time.Minute),
-		UpdatedAt:     now.Add(-1 * time.Minute),
-		ExpiresAt:     now.Add(1 * time.Hour),
-		LesserVersion: "v",
+		ID:                 "j1",
+		InstanceSlug:       "demo",
+		Status:             models.ProvisionJobStatusRunning,
+		Step:               provisionStepQueued,
+		MaxAttempts:        3,
+		CreatedAt:          now.Add(-1 * time.Minute),
+		UpdatedAt:          now.Add(-1 * time.Minute),
+		ExpiresAt:          now.Add(1 * time.Hour),
+		Stage:              "lab",
+		LesserVersion:      "v",
+		AdminUsername:      "demo",
+		AdminWalletType:    "ethereum",
+		AdminWalletAddr:    "0x0000000000000000000000000000000000000003",
+		AdminWalletChainID: 1,
 	}
 
 	// Initialize missing fields for downstream steps.

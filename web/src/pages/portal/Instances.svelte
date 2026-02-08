@@ -76,6 +76,12 @@
 				navigate('/login');
 				return;
 			}
+			const maybe = err as Partial<ApiError>;
+			if (maybe.status === 403 && typeof maybe.message === 'string' && maybe.message.includes('approval')) {
+				createError =
+					'Your account is pending approval. Instance creation and provisioning are blocked until an admin approves your user.';
+				return;
+			}
 			createError = formatError(err);
 		} finally {
 			createLoading = false;

@@ -2,12 +2,14 @@ package controlplane
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"math/big"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
@@ -21,13 +23,16 @@ import (
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 	"github.com/equaltoai/lesser-host/internal/testutil"
+	"github.com/equaltoai/lesser-host/internal/tips"
 )
 
 type tipRegistryTestDB struct {
-	db     *ttmocks.MockExtendedDB
-	qReg   *ttmocks.MockQuery
-	qOp    *ttmocks.MockQuery
-	qAudit *ttmocks.MockQuery
+	db         *ttmocks.MockExtendedDB
+	qReg       *ttmocks.MockQuery
+	qOp        *ttmocks.MockQuery
+	qAudit     *ttmocks.MockQuery
+	qWalletIdx *ttmocks.MockQuery
+	qUser      *ttmocks.MockQuery
 }
 
 func newTipRegistryTestDB() tipRegistryTestDB {
@@ -35,13 +40,17 @@ func newTipRegistryTestDB() tipRegistryTestDB {
 	qReg := new(ttmocks.MockQuery)
 	qOp := new(ttmocks.MockQuery)
 	qAudit := new(ttmocks.MockQuery)
+	qWalletIdx := new(ttmocks.MockQuery)
+	qUser := new(ttmocks.MockQuery)
 
 	db.On("WithContext", mock.Anything).Return(db).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.TipHostRegistration")).Return(qReg).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.TipRegistryOperation")).Return(qOp).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.AuditLogEntry")).Return(qAudit).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.WalletIndex")).Return(qWalletIdx).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.User")).Return(qUser).Maybe()
 
-	for _, q := range []*ttmocks.MockQuery{qReg, qOp, qAudit} {
+	for _, q := range []*ttmocks.MockQuery{qReg, qOp, qAudit, qWalletIdx, qUser} {
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("Index", mock.Anything).Return(q).Maybe()
 		q.On("Limit", mock.Anything).Return(q).Maybe()
@@ -53,7 +62,14 @@ func newTipRegistryTestDB() tipRegistryTestDB {
 	qReg.On("Create").Return(nil).Maybe()
 	qAudit.On("Create").Return(nil).Maybe()
 
-	return tipRegistryTestDB{db: db, qReg: qReg, qOp: qOp, qAudit: qAudit}
+	return tipRegistryTestDB{
+		db:         db,
+		qReg:       qReg,
+		qOp:        qOp,
+		qAudit:     qAudit,
+		qWalletIdx: qWalletIdx,
+		qUser:      qUser,
+	}
 }
 
 func TestHandleTipHostRegistrationBegin_Success(t *testing.T) {
@@ -76,6 +92,7 @@ func TestHandleTipHostRegistrationBegin_Success(t *testing.T) {
 		WalletAddr: "0x000000000000000000000000000000000000dEaD",
 		HostFeeBps: 5,
 	})
+	tdb.qWalletIdx.On("First", mock.AnythingOfType("*models.WalletIndex")).Return(theoryErrors.ErrItemNotFound).Once()
 	resp, err := s.handleTipHostRegistrationBegin(&apptheory.Context{RequestID: "r1", Request: apptheory.Request{Body: body}})
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
@@ -167,6 +184,7 @@ func TestCreateTipRegistryOperationForRegistration_ValidatesAndStores(t *testing
 		WalletAddr:       "0x0000000000000000000000000000000000000003",
 		HostFeeBps:       5,
 	}
+	tdb.qWalletIdx.On("First", mock.AnythingOfType("*models.WalletIndex")).Return(theoryErrors.ErrItemNotFound).Once()
 	op, safeTx, err := s.createTipRegistryOperationForRegistration(context.Background(), reg)
 	if err != nil || op == nil || safeTx == nil {
 		t.Fatalf("unexpected: op=%#v safeTx=%#v err=%v", op, safeTx, err)
@@ -437,12 +455,32 @@ func TestHandleTipHostRegistrationVerify_FailsOnInvalidSignature(t *testing.T) {
 func TestHandleSetTipRegistryHostActive_CreatesOrLoadsOperation(t *testing.T) {
 	t.Parallel()
 
+	parsedABI, err := abi.JSON(strings.NewReader(tips.TipSplitterABI))
+	if err != nil {
+		t.Fatalf("parse abi: %v", err)
+	}
+
+	hostID := tips.HostIDFromDomain("example.com")
+	hostCall, _ := tips.EncodeGetHostCall(hostID)
+	hostCallHex := "0x" + hex.EncodeToString(hostCall)
+
+	hostWallet := common.HexToAddress("0x00000000000000000000000000000000000000aa")
+	ret, err := parsedABI.Methods["hosts"].Outputs.Pack(hostWallet, uint16(10), true)
+	if err != nil {
+		t.Fatalf("pack hosts outputs: %v", err)
+	}
+	hostResultHex := "0x" + hex.EncodeToString(ret)
+
+	rpcSrv := newTipRegistryRPCTestServer(t, hostCallHex, hostResultHex, "", "", nil)
+	t.Cleanup(rpcSrv.Close)
+
 	tdb := newTipRegistryTestDB()
 	s := &Server{
 		store: store.New(tdb.db),
 		cfg: config.Config{
 			TipEnabled:          true,
 			TipChainID:          1,
+			TipRPCURL:           rpcSrv.URL,
 			TipContractAddress:  "0x0000000000000000000000000000000000000001",
 			TipTxMode:           tipTxModeSafe,
 			TipAdminSafeAddress: "0x0000000000000000000000000000000000000002",
@@ -470,7 +508,7 @@ func TestHandleSetTipRegistryHostActive_CreatesOrLoadsOperation(t *testing.T) {
 	}).Once()
 
 	ctx2 := adminCtx()
-	ctx2.Params = map[string]string{"domain": "example.org"}
+	ctx2.Params = map[string]string{"domain": "example.com"}
 	ctx2.Request.Body = []byte(`{"active":false}`)
 	resp, err = s.handleSetTipRegistryHostActive(ctx2)
 	if err != nil || resp == nil || resp.Status != 200 {
@@ -531,6 +569,7 @@ func TestHandleEnsureTipRegistryHost_CreatesAutoOperation(t *testing.T) {
 
 	tdb.qOp.On("Create").Return(nil).Once()
 	tdb.qAudit.On("Create").Return(nil).Maybe()
+	tdb.qWalletIdx.On("First", mock.AnythingOfType("*models.WalletIndex")).Return(theoryErrors.ErrItemNotFound).Once()
 
 	ctx := adminCtx()
 	ctx.Params = map[string]string{"domain": "example.com"}

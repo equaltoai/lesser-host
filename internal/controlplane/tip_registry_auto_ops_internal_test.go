@@ -7,8 +7,11 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/stretchr/testify/mock"
+	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/config"
+	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -87,7 +90,11 @@ func TestBuildAutoTipRegistryOperation_NoRPC_DefaultsToRegister(t *testing.T) {
 
 	now := time.Unix(100, 0).UTC()
 
+	tdb := newTipRegistryTestDB()
+	tdb.qWalletIdx.On("First", mock.AnythingOfType("*models.WalletIndex")).Return(theoryErrors.ErrItemNotFound).Once()
+
 	s := &Server{
+		store: store.New(tdb.db),
 		cfg: config.Config{
 			TipEnabled:                  true,
 			TipChainID:                  1,
