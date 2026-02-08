@@ -144,10 +144,7 @@ export class LesserHostStack extends cdk.Stack {
 		const tipDefaultHostFeeBps = tipContext('tipDefaultHostFeeBps');
 		const tipTxMode = tipContext('tipTxMode');
 
-		const tipRpcUrlSsmParam = tipContext('tipRpcUrlSsmParam');
-		const tipRpcUrl = tipRpcUrlSsmParam.trim()
-			? cdk.SecretValue.ssmSecure(tipRpcUrlSsmParam.trim()).toString()
-			: tipContext('tipRpcUrl');
+		const tipRpcUrlSsmParam = tipContext('tipRpcUrlSsmParam').trim();
 
 		const paymentsProvider = (this.node.tryGetContext('paymentsProvider') as string | undefined) ?? '';
 		const paymentsCentsPer1000Credits =
@@ -320,7 +317,7 @@ export class LesserHostStack extends cdk.Stack {
 			MANAGED_LESSER_GITHUB_TOKEN_SSM_PARAM: managedLesserGitHubTokenSsmParam.trim(),
 			TIP_ENABLED: tipEnabled,
 			TIP_CHAIN_ID: tipChainId,
-			TIP_RPC_URL: tipRpcUrl,
+			TIP_RPC_URL_SSM_PARAM: tipRpcUrlSsmParam,
 			TIP_CONTRACT_ADDRESS: tipContractAddress,
 			TIP_ADMIN_SAFE_ADDRESS: tipAdminSafeAddress,
 			TIP_DEFAULT_HOST_WALLET_ADDRESS: tipDefaultHostWalletAddress,
@@ -553,32 +550,40 @@ export class LesserHostStack extends cdk.Stack {
 				resources: paymentsSsmParamArns,
 			}),
 		);
+		if (tipRpcUrlSsmParam) {
 			controlPlaneFn.addToRolePolicy(
 				new iam.PolicyStatement({
-					actions: ['kms:Decrypt'],
-					resources: ['*'],
-					conditions: {
-						StringEquals: { 'kms:ViaService': `ssm.${cdk.Aws.REGION}.amazonaws.com` },
-					},
+					actions: ['ssm:GetParameter'],
+					resources: [`arn:aws:ssm:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:parameter/${tipRpcUrlSsmParam.replace(/^\//, '')}`],
 				}),
 			);
+		}
+		controlPlaneFn.addToRolePolicy(
+			new iam.PolicyStatement({
+				actions: ['kms:Decrypt'],
+				resources: ['*'],
+				conditions: {
+					StringEquals: { 'kms:ViaService': `ssm.${cdk.Aws.REGION}.amazonaws.com` },
+				},
+			}),
+		);
 
-			controlPlaneFn.addToRolePolicy(
-				new iam.PolicyStatement({
-					actions: ['route53:ListHostedZonesByName'],
-					resources: ['*'],
-				}),
-			);
-			controlPlaneFn.addToRolePolicy(
-				new iam.PolicyStatement({
-					actions: ['route53:ChangeResourceRecordSets'],
-					resources: ['arn:aws:route53:::hostedzone/*'],
-				}),
-			);
+		controlPlaneFn.addToRolePolicy(
+			new iam.PolicyStatement({
+				actions: ['route53:ListHostedZonesByName'],
+				resources: ['*'],
+			}),
+		);
+		controlPlaneFn.addToRolePolicy(
+			new iam.PolicyStatement({
+				actions: ['route53:ChangeResourceRecordSets'],
+				resources: ['arn:aws:route53:::hostedzone/*'],
+			}),
+		);
 
-			const retentionSweepRule = new events.Rule(this, 'RetentionSweepRule', {
-				ruleName: `${namePrefix}-retention-sweep`,
-				schedule: events.Schedule.rate(cdk.Duration.days(1)),
+		const retentionSweepRule = new events.Rule(this, 'RetentionSweepRule', {
+			ruleName: `${namePrefix}-retention-sweep`,
+			schedule: events.Schedule.rate(cdk.Duration.days(1)),
 		});
 		retentionSweepRule.addTarget(new targets.LambdaFunction(renderWorkerFn));
 
