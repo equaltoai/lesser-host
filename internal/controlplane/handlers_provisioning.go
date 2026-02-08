@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 	"github.com/theory-cloud/tabletheory"
 	"github.com/theory-cloud/tabletheory/pkg/core"
@@ -19,12 +20,15 @@ import (
 )
 
 type startInstanceProvisionRequest struct {
-	LesserVersion   string `json:"lesser_version,omitempty"`
-	Region          string `json:"region,omitempty"`
-	AdminUsername   string `json:"admin_username,omitempty"`
+	LesserVersion      string `json:"lesser_version,omitempty"`
+	Region             string `json:"region,omitempty"`
+	AdminUsername      string `json:"admin_username,omitempty"`
+	AdminWalletType    string `json:"admin_wallet_type,omitempty"`
+	AdminWalletAddress string `json:"admin_wallet_address,omitempty"`
+	AdminWalletChainID int    `json:"admin_wallet_chain_id,omitempty"`
 	ConsentChallengeID string `json:"consent_challenge_id,omitempty"`
-	ConsentMessage  string `json:"consent_message,omitempty"`
-	ConsentSignature string `json:"consent_signature,omitempty"`
+	ConsentMessage     string `json:"consent_message,omitempty"`
+	ConsentSignature   string `json:"consent_signature,omitempty"`
 }
 
 type provisionJobResponse struct {
@@ -161,12 +165,40 @@ func (s *Server) buildManagedProvisionJob(slug string, req startInstanceProvisio
 		return nil, "", "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
+	stage := strings.TrimSpace(s.cfg.Stage)
+	if stage == "" {
+		stage = "lab"
+	}
+
 	adminUsername := strings.ToLower(strings.TrimSpace(req.AdminUsername))
 	if adminUsername == "" {
 		adminUsername = strings.ToLower(strings.TrimSpace(slug))
 	}
 	if adminUsername == "" || !instanceSlugRE.MatchString(adminUsername) {
 		return nil, "", "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid admin_username"}
+	}
+
+	adminWalletType := strings.ToLower(strings.TrimSpace(req.AdminWalletType))
+	if adminWalletType == "" {
+		adminWalletType = "ethereum"
+	}
+	if adminWalletType != "ethereum" {
+		return nil, "", "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid admin_wallet_type"}
+	}
+
+	adminWalletAddr := strings.ToLower(strings.TrimSpace(req.AdminWalletAddress))
+	if adminWalletAddr == "" {
+		return nil, "", "", &apptheory.AppError{Code: "app.bad_request", Message: "admin_wallet_address is required"}
+	}
+	if !common.IsHexAddress(adminWalletAddr) {
+		return nil, "", "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid admin_wallet_address"}
+	}
+	if reservedErr := validateNotReservedWalletAddress(adminWalletAddr, "admin_wallet_address"); reservedErr != nil {
+		return nil, "", "", reservedErr
+	}
+	adminWalletChainID := req.AdminWalletChainID
+	if adminWalletChainID <= 0 {
+		adminWalletChainID = 1
 	}
 
 	id, err := newToken(16)
@@ -197,8 +229,12 @@ func (s *Server) buildManagedProvisionJob(slug string, req startInstanceProvisio
 		Step:               "queued",
 		Mode:               "managed",
 		Region:             region,
+		Stage:              stage,
 		LesserVersion:      lesserVersion,
 		AdminUsername:      adminUsername,
+		AdminWalletType:    adminWalletType,
+		AdminWalletAddr:    adminWalletAddr,
+		AdminWalletChainID: adminWalletChainID,
 		ConsentSignature:   strings.TrimSpace(req.ConsentSignature),
 		ConsentMessageHash: func() string {
 			msg := strings.TrimSpace(req.ConsentMessage)

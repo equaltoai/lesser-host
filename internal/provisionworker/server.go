@@ -1225,13 +1225,29 @@ func (s *Server) startDeployRunner(ctx context.Context, job *models.ProvisionJob
 		return "", fmt.Errorf("runner project name not configured")
 	}
 
+	if strings.TrimSpace(job.AdminUsername) == "" {
+		return "", fmt.Errorf("admin username not configured")
+	}
+	if strings.TrimSpace(job.AdminWalletAddr) == "" {
+		return "", fmt.Errorf("admin wallet not configured")
+	}
+
 	receiptKey := s.receiptS3Key(job)
 	bootstrapKey := s.bootstrapS3Key(job)
+
+	stage := strings.TrimSpace(job.Stage)
+	if stage == "" {
+		stage = strings.TrimSpace(s.cfg.Stage)
+	}
 
 	var env []cbtypes.EnvironmentVariable
 	env = append(env,
 		cbtypes.EnvironmentVariable{Name: aws.String("JOB_ID"), Value: aws.String(strings.TrimSpace(job.ID))},
 		cbtypes.EnvironmentVariable{Name: aws.String("APP_SLUG"), Value: aws.String(strings.TrimSpace(job.InstanceSlug))},
+		cbtypes.EnvironmentVariable{Name: aws.String("STAGE"), Value: aws.String(stage)},
+		cbtypes.EnvironmentVariable{Name: aws.String("ADMIN_USERNAME"), Value: aws.String(strings.TrimSpace(job.AdminUsername))},
+		cbtypes.EnvironmentVariable{Name: aws.String("ADMIN_WALLET_ADDRESS"), Value: aws.String(strings.TrimSpace(job.AdminWalletAddr))},
+		cbtypes.EnvironmentVariable{Name: aws.String("ADMIN_WALLET_CHAIN_ID"), Value: aws.String(fmt.Sprintf("%d", job.AdminWalletChainID))},
 		cbtypes.EnvironmentVariable{Name: aws.String("BASE_DOMAIN"), Value: aws.String(strings.TrimSpace(job.BaseDomain))},
 		cbtypes.EnvironmentVariable{Name: aws.String("TARGET_ACCOUNT_ID"), Value: aws.String(strings.TrimSpace(job.AccountID))},
 		cbtypes.EnvironmentVariable{Name: aws.String("TARGET_ROLE_NAME"), Value: aws.String(strings.TrimSpace(job.AccountRoleName))},

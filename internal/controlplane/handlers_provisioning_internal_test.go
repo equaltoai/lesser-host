@@ -79,7 +79,13 @@ func TestStartAndGetInstanceProvisioning(t *testing.T) {
 		_ = dest.UpdateKeys()
 	}).Once()
 
-	body, _ := json.Marshal(startInstanceProvisionRequest{Region: "us-west-2", LesserVersion: "v1"})
+	body, _ := json.Marshal(startInstanceProvisionRequest{
+		Region:             "us-west-2",
+		LesserVersion:      "v1",
+		AdminWalletType:    "ethereum",
+		AdminWalletAddress: "0x0000000000000000000000000000000000000003",
+		AdminWalletChainID: 1,
+	})
 	ctx := adminCtx()
 	ctx.Params = map[string]string{"slug": "demo"}
 	ctx.Request.Body = body

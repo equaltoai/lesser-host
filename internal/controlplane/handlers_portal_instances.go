@@ -381,6 +381,9 @@ func (s *Server) handlePortalStartInstanceProvisioning(ctx *apptheory.Context) (
 
 	// Canonicalize consent artifacts from the stored challenge message.
 	req.AdminUsername = strings.TrimSpace(chall.AdminUsername)
+	req.AdminWalletType = strings.TrimSpace(chall.WalletType)
+	req.AdminWalletAddress = strings.TrimSpace(chall.WalletAddr)
+	req.AdminWalletChainID = chall.ChainID
 	req.ConsentMessage = strings.TrimSpace(chall.Message)
 	req.ConsentSignature = consentSignature
 
