@@ -4,6 +4,8 @@ import (
 	"strings"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
+
+	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
 func (s *Server) requirePortalApproved(ctx *apptheory.Context) *apptheory.AppError {
@@ -29,9 +31,21 @@ func (s *Server) requirePortalApproved(ctx *apptheory.Context) *apptheory.AppErr
 	if !found {
 		return &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
 	}
-	if user.Approved {
-		return nil
+
+	status := strings.ToLower(strings.TrimSpace(user.ApprovalStatus))
+	if status == "" {
+		if user.Approved {
+			return nil
+		}
+		return &apptheory.AppError{Code: "app.forbidden", Message: "approval required"}
 	}
 
-	return &apptheory.AppError{Code: "app.forbidden", Message: "approval required"}
+	switch status {
+	case models.UserApprovalStatusApproved:
+		return nil
+	case models.UserApprovalStatusRejected:
+		return &apptheory.AppError{Code: "app.forbidden", Message: "approval rejected"}
+	default:
+		return &apptheory.AppError{Code: "app.forbidden", Message: "approval required"}
+	}
 }

@@ -47,6 +47,25 @@ export interface ExternalInstanceRegistrationResponse {
 	registration: ExternalInstanceRegistration;
 }
 
+export interface PortalUserApproval {
+	username: string;
+	role: string;
+	approved: boolean;
+	approval_status: string;
+	reviewed_by?: string;
+	reviewed_at?: string;
+	approval_note?: string;
+	display_name?: string;
+	email?: string;
+	created_at: string;
+	wallet_address?: string;
+}
+
+export interface ListPortalUserApprovalsResponse {
+	users: PortalUserApproval[];
+	count: number;
+}
+
 export function getOperatorMe(token: string): Promise<OperatorMeResponse> {
 	return fetchJson<OperatorMeResponse>('/api/v1/operators/me', {
 		headers: {
@@ -139,4 +158,40 @@ export function rejectExternalInstanceRegistration(
 			},
 		},
 	).then((res) => res.registration);
+}
+
+export function listPortalUserApprovals(
+	token: string,
+	status?: string,
+): Promise<ListPortalUserApprovalsResponse> {
+	const qs = status ? `?status=${encodeURIComponent(status)}` : '';
+	return fetchJson<ListPortalUserApprovalsResponse>(`/api/v1/operators/portal-users${qs}`, {
+		headers: {
+			authorization: `Bearer ${token}`,
+		},
+	});
+}
+
+export function approvePortalUser(token: string, username: string, note?: string): Promise<PortalUserApproval> {
+	const req = note ? jsonRequest({ note }) : null;
+	return fetchJson<PortalUserApproval>(`/api/v1/operators/portal-users/${encodeURIComponent(username)}/approve`, {
+		method: 'POST',
+		headers: {
+			authorization: `Bearer ${token}`,
+			...(req?.headers ?? {}),
+		},
+		body: req?.body,
+	});
+}
+
+export function rejectPortalUser(token: string, username: string, note?: string): Promise<PortalUserApproval> {
+	const req = note ? jsonRequest({ note }) : null;
+	return fetchJson<PortalUserApproval>(`/api/v1/operators/portal-users/${encodeURIComponent(username)}/reject`, {
+		method: 'POST',
+		headers: {
+			authorization: `Bearer ${token}`,
+			...(req?.headers ?? {}),
+		},
+		body: req?.body,
+	});
 }

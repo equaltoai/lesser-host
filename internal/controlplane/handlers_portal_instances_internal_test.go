@@ -153,6 +153,22 @@ func TestHandlePortalCreateInstance_ReturnsExistingWhenOwned(t *testing.T) {
 	tdb := newPortalTestDB()
 	s := &Server{cfg: config.Config{}, store: store.New(tdb.db)}
 
+	tdb.qUser.On("First", mock.AnythingOfType("*models.User")).Return(nil).Run(func(args mock.Arguments) {
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.User)
+		if !ok {
+			t.Fatalf("expected *models.User, got %T", destAny)
+		}
+		*dest = models.User{
+			Username:       "alice",
+			Role:           models.RoleCustomer,
+			Approved:       true,
+			ApprovalStatus: models.UserApprovalStatusApproved,
+			CreatedAt:      time.Now().UTC(),
+		}
+		_ = dest.UpdateKeys()
+	}).Once()
+
 	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
 		destAny := args.Get(0)
 		dest, ok := destAny.(*models.Instance)
@@ -179,6 +195,22 @@ func TestHandlePortalCreateInstance_CreatesNewInstance(t *testing.T) {
 	tdb := newPortalTestDB()
 	s := &Server{cfg: config.Config{}, store: store.New(tdb.db)}
 
+	tdb.qUser.On("First", mock.AnythingOfType("*models.User")).Return(nil).Run(func(args mock.Arguments) {
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.User)
+		if !ok {
+			t.Fatalf("expected *models.User, got %T", destAny)
+		}
+		*dest = models.User{
+			Username:       "alice",
+			Role:           models.RoleCustomer,
+			Approved:       true,
+			ApprovalStatus: models.UserApprovalStatusApproved,
+			CreatedAt:      time.Now().UTC(),
+		}
+		_ = dest.UpdateKeys()
+	}).Once()
+
 	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(theoryErrors.ErrItemNotFound).Once()
 
 	body, _ := json.Marshal(createInstanceRequest{Slug: "demo"})
@@ -197,6 +229,7 @@ func TestHandlePortalCreateInstance_RequiresApproval(t *testing.T) {
 
 	tdb := newPortalTestDB()
 	tdb.stubUser.Approved = false
+	tdb.stubUser.ApprovalStatus = models.UserApprovalStatusPending
 
 	s := &Server{cfg: config.Config{}, store: store.New(tdb.db)}
 
@@ -204,6 +237,26 @@ func TestHandlePortalCreateInstance_RequiresApproval(t *testing.T) {
 	ctx := &apptheory.Context{AuthIdentity: "alice", Request: apptheory.Request{Body: body}}
 	if _, err := s.handlePortalCreateInstance(ctx); err == nil {
 		t.Fatalf("expected forbidden for unapproved user")
+	}
+}
+
+func TestParsePortalCreateInstanceSlug_Invalid(t *testing.T) {
+	t.Parallel()
+
+	ctxMissing := &apptheory.Context{Request: apptheory.Request{Body: []byte(`{}`)}}
+	if _, err := parsePortalCreateInstanceSlug(ctxMissing); err == nil {
+		t.Fatalf("expected error for missing slug")
+	}
+
+	body, _ := json.Marshal(createInstanceRequest{Slug: "-bad"})
+	ctxInvalid := &apptheory.Context{Request: apptheory.Request{Body: body}}
+	if _, err := parsePortalCreateInstanceSlug(ctxInvalid); err == nil {
+		t.Fatalf("expected error for invalid slug")
+	}
+
+	ctxBadJSON := &apptheory.Context{Request: apptheory.Request{Body: []byte(`{not json}`)}}
+	if _, err := parsePortalCreateInstanceSlug(ctxBadJSON); err == nil {
+		t.Fatalf("expected error for invalid json")
 	}
 }
 
@@ -860,6 +913,22 @@ func TestPortalProvisioningHandlers_ReturnExistingAndNewJob(t *testing.T) {
 
 	tdb := newPortalTestDB()
 	s := &Server{store: store.New(tdb.db)}
+
+	tdb.qUser.On("First", mock.AnythingOfType("*models.User")).Return(nil).Run(func(args mock.Arguments) {
+		destAny := args.Get(0)
+		dest, ok := destAny.(*models.User)
+		if !ok {
+			t.Fatalf("expected *models.User, got %T", destAny)
+		}
+		*dest = models.User{
+			Username:       "alice",
+			Role:           models.RoleCustomer,
+			Approved:       true,
+			ApprovalStatus: models.UserApprovalStatusApproved,
+			CreatedAt:      time.Now().UTC(),
+		}
+		_ = dest.UpdateKeys()
+	}).Twice()
 
 	// Existing queued job branch.
 	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {

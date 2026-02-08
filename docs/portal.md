@@ -161,6 +161,15 @@ Operators:
 
 Approving creates an `Instance` record owned by the user, without managed DNS/provisioning.
 
+### Portal user approvals
+
+Portal wallet logins auto-create a `customer` user in `pending` approval status. Operators must approve before the user
+can create instances or start provisioning.
+
+- `GET /api/v1/operators/portal-users?status=pending`
+- `POST /api/v1/operators/portal-users/{username}/approve`
+- `POST /api/v1/operators/portal-users/{username}/reject`
+
 ## Audit trail
 
 All meaningful portal + operator actions write `AuditLogEntry` records (best-effort for a few non-critical paths).

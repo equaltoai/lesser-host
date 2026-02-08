@@ -216,6 +216,11 @@ Evidence:
 - [ ] **[LLM+HUMAN]** Portal wallet login
   - **HUMAN** signs challenge
   - **LLM** submits
+- [ ] **[LLM+HUMAN]** Operator approves portal user
+  - **HUMAN** opens `/operator/approvals/users`
+  - **LLM** confirms user appears as pending
+  - **HUMAN** approves (or rejects) with optional note
+  - **LLM** retries instance creation to confirm approval unblocks provisioning
 - [ ] **[LLM]** `/api/v1/portal/me`
 - [ ] **[LLM+HUMAN]** Stripe checkout (if enabled)
   - **HUMAN** completes payment
