@@ -30,6 +30,8 @@ type fakeOrg struct {
 	createErr   error
 	describeOut *organizations.DescribeCreateAccountStatusOutput
 	describeErr error
+	listOut     *organizations.ListAccountsOutput
+	listErr     error
 
 	parentsOut *organizations.ListParentsOutput
 	parentsErr error
@@ -49,6 +51,16 @@ func (f *fakeOrg) DescribeCreateAccountStatus(_ context.Context, _ *organization
 		return nil, f.describeErr
 	}
 	return f.describeOut, nil
+}
+
+func (f *fakeOrg) ListAccounts(_ context.Context, _ *organizations.ListAccountsInput, _ ...func(*organizations.Options)) (*organizations.ListAccountsOutput, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	if f.listOut != nil {
+		return f.listOut, nil
+	}
+	return &organizations.ListAccountsOutput{}, nil
 }
 
 func (f *fakeOrg) ListParents(_ context.Context, _ *organizations.ListParentsInput, _ ...func(*organizations.Options)) (*organizations.ListParentsOutput, error) {
