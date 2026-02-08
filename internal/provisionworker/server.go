@@ -302,6 +302,11 @@ func (s *Server) initializeManagedProvisionJob(job *models.ProvisionJob) {
 	if strings.TrimSpace(job.Region) == "" {
 		job.Region = strings.TrimSpace(s.cfg.ManagedDefaultRegion)
 	}
+	if strings.TrimSpace(job.Stage) == "" {
+		job.Stage = normalizeManagedLesserStage(s.cfg.Stage)
+	} else {
+		job.Stage = normalizeManagedLesserStage(job.Stage)
+	}
 	if strings.TrimSpace(job.ParentHostedZoneID) == "" {
 		job.ParentHostedZoneID = strings.TrimSpace(s.cfg.ManagedParentHostedZoneID)
 	}
@@ -1227,6 +1232,10 @@ func (s *Server) startDeployRunner(ctx context.Context, job *models.ProvisionJob
 
 	receiptKey := s.receiptS3Key(job)
 	bootstrapKey := s.bootstrapS3Key(job)
+	lesserStage := strings.TrimSpace(job.Stage)
+	if lesserStage == "" {
+		lesserStage = normalizeManagedLesserStage(s.cfg.Stage)
+	}
 
 	var env []cbtypes.EnvironmentVariable
 	env = append(env,
@@ -1237,6 +1246,7 @@ func (s *Server) startDeployRunner(ctx context.Context, job *models.ProvisionJob
 		cbtypes.EnvironmentVariable{Name: aws.String("TARGET_ROLE_NAME"), Value: aws.String(strings.TrimSpace(job.AccountRoleName))},
 		cbtypes.EnvironmentVariable{Name: aws.String("TARGET_REGION"), Value: aws.String(strings.TrimSpace(job.Region))},
 		cbtypes.EnvironmentVariable{Name: aws.String("LESSER_VERSION"), Value: aws.String(strings.TrimSpace(job.LesserVersion))},
+		cbtypes.EnvironmentVariable{Name: aws.String("LESSER_STAGE"), Value: aws.String(lesserStage)},
 		cbtypes.EnvironmentVariable{Name: aws.String("ARTIFACT_BUCKET"), Value: aws.String(strings.TrimSpace(s.cfg.ArtifactBucketName))},
 		cbtypes.EnvironmentVariable{Name: aws.String("RECEIPT_S3_KEY"), Value: aws.String(receiptKey)},
 		cbtypes.EnvironmentVariable{Name: aws.String("BOOTSTRAP_S3_KEY"), Value: aws.String(bootstrapKey)},
