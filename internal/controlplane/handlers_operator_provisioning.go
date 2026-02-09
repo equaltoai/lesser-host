@@ -162,6 +162,121 @@ func isAWSAccountID(raw string) bool {
 	return true
 }
 
+func parseAdoptProvisionJobAccountRequest(ctx *apptheory.Context) (adoptProvisionJobAccountRequest, *apptheory.AppError) {
+	var req adoptProvisionJobAccountRequest
+	if err := httpx.ParseJSON(ctx, &req); err != nil {
+		if appErr, ok := err.(*apptheory.AppError); ok {
+			return req, appErr
+		}
+		return req, &apptheory.AppError{Code: "app.bad_request", Message: "invalid request"}
+	}
+	req.AccountID = strings.TrimSpace(req.AccountID)
+	req.AccountEmail = strings.TrimSpace(req.AccountEmail)
+	req.Note = strings.TrimSpace(req.Note)
+	if !isAWSAccountID(req.AccountID) {
+		return req, &apptheory.AppError{Code: "app.bad_request", Message: "account_id must be a 12-digit AWS account id"}
+	}
+	return req, nil
+}
+
+func validateAdoptableProvisionJob(job *models.ProvisionJob) *apptheory.AppError {
+	if job == nil {
+		return &apptheory.AppError{Code: "app.not_found", Message: "job not found"}
+	}
+	status := strings.ToLower(strings.TrimSpace(job.Status))
+	if status == models.ProvisionJobStatusOK {
+		return &apptheory.AppError{Code: "app.conflict", Message: "job already ok"}
+	}
+	if status != models.ProvisionJobStatusError {
+		return &apptheory.AppError{Code: "app.conflict", Message: "job must be in error state to adopt an account"}
+	}
+	mode := strings.ToLower(strings.TrimSpace(job.Mode))
+	if mode != "" && mode != "managed" {
+		return &apptheory.AppError{Code: "app.conflict", Message: "job is not a managed provisioning job"}
+	}
+	return nil
+}
+
+func buildAdoptAccountNote(existingNote string, actor string, accountID string, note string, now time.Time) string {
+	noteLine := fmt.Sprintf("%s operator adopt account %s by %s", now.Format(time.RFC3339), accountID, actor)
+	if strings.TrimSpace(note) != "" {
+		noteLine = noteLine + ": " + strings.TrimSpace(note)
+	}
+	nextNote := strings.TrimSpace(existingNote)
+	if nextNote != "" {
+		return nextNote + "\n" + noteLine
+	}
+	return noteLine
+}
+
+func (s *Server) loadProvisionJobForOperator(ctx *apptheory.Context, id string) (*models.ProvisionJob, *apptheory.AppError) {
+	job, err := s.store.GetProvisionJob(ctx.Context(), id)
+	if theoryErrors.IsNotFound(err) || job == nil {
+		return nil, &apptheory.AppError{Code: "app.not_found", Message: "job not found"}
+	}
+	if err != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	return job, nil
+}
+
+func (s *Server) adoptProvisionJobAccountTx(ctx *apptheory.Context, job *models.ProvisionJob, req adoptProvisionJobAccountRequest, note string, now time.Time) *apptheory.AppError {
+	actor := strings.TrimSpace(ctx.AuthIdentity)
+
+	jobKey := &models.ProvisionJob{
+		ID:           strings.TrimSpace(job.ID),
+		InstanceSlug: strings.TrimSpace(job.InstanceSlug),
+		CreatedAt:    job.CreatedAt,
+		ExpiresAt:    job.ExpiresAt,
+	}
+	_ = jobKey.UpdateKeys()
+
+	instKey := &models.Instance{Slug: strings.TrimSpace(job.InstanceSlug)}
+	_ = instKey.UpdateKeys()
+
+	audit := &models.AuditLogEntry{
+		Actor:     actor,
+		Action:    "provision_job.adopt_account",
+		Target:    fmt.Sprintf("provision_job:%s", strings.TrimSpace(job.ID)),
+		RequestID: ctx.RequestID,
+		CreatedAt: now,
+	}
+	_ = audit.UpdateKeys()
+
+	if err := s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
+		tx.UpdateWithBuilder(jobKey, func(ub core.UpdateBuilder) error {
+			ub.Set("Status", models.ProvisionJobStatusQueued)
+			ub.Set("Step", "account.move")
+			ub.Set("Attempts", int64(0))
+			ub.Set("ErrorCode", "")
+			ub.Set("ErrorMessage", "")
+			ub.Set("AccountID", req.AccountID)
+			ub.Set("AccountEmail", req.AccountEmail)
+			ub.Set("AccountRequestID", "")
+			ub.Set("RequestID", strings.TrimSpace(ctx.RequestID))
+			ub.Set("UpdatedAt", now)
+			ub.Set("Note", note)
+			return nil
+		},
+			tabletheory.IfExists(),
+			tabletheory.Condition("Status", "=", models.ProvisionJobStatusError),
+		)
+
+		tx.UpdateWithBuilder(instKey, func(ub core.UpdateBuilder) error {
+			ub.Set("ProvisionStatus", models.ProvisionJobStatusQueued)
+			ub.Set("ProvisionJobID", strings.TrimSpace(job.ID))
+			ub.Set("HostedAccountID", req.AccountID)
+			return nil
+		}, tabletheory.IfExists())
+
+		tx.Put(audit)
+		return nil
+	}); err != nil && !theoryErrors.IsConditionFailed(err) {
+		return &apptheory.AppError{Code: "app.internal", Message: "failed to adopt account"}
+	}
+	return nil
+}
+
 func (s *Server) handleListOperatorProvisionJobs(ctx *apptheory.Context) (*apptheory.Response, error) {
 	if err := requireOperator(ctx); err != nil {
 		return nil, err
@@ -373,103 +488,23 @@ func (s *Server) handleAdoptOperatorProvisionJobAccount(ctx *apptheory.Context) 
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "job id is required"}
 	}
 
-	var req adoptProvisionJobAccountRequest
-	if err := httpx.ParseJSON(ctx, &req); err != nil {
-		return nil, err
+	req, appErr := parseAdoptProvisionJobAccountRequest(ctx)
+	if appErr != nil {
+		return nil, appErr
 	}
 
-	accountID := strings.TrimSpace(req.AccountID)
-	if !isAWSAccountID(accountID) {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "account_id must be a 12-digit AWS account id"}
+	job, appErr := s.loadProvisionJobForOperator(ctx, id)
+	if appErr != nil {
+		return nil, appErr
 	}
-	accountEmail := strings.TrimSpace(req.AccountEmail)
-
-	job, err := s.store.GetProvisionJob(ctx.Context(), id)
-	if theoryErrors.IsNotFound(err) || job == nil {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "job not found"}
-	}
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-
-	status := strings.ToLower(strings.TrimSpace(job.Status))
-	if status == models.ProvisionJobStatusOK {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "job already ok"}
-	}
-	if status != models.ProvisionJobStatusError {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "job must be in error state to adopt an account"}
-	}
-
-	mode := strings.ToLower(strings.TrimSpace(job.Mode))
-	if mode != "" && mode != "managed" {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "job is not a managed provisioning job"}
+	if appErr := validateAdoptableProvisionJob(job); appErr != nil {
+		return nil, appErr
 	}
 
 	now := time.Now().UTC()
-	actor := strings.TrimSpace(ctx.AuthIdentity)
-
-	noteLine := fmt.Sprintf("%s operator adopt account %s by %s", now.Format(time.RFC3339), accountID, actor)
-	if note := strings.TrimSpace(req.Note); note != "" {
-		noteLine = noteLine + ": " + note
-	}
-
-	nextNote := strings.TrimSpace(job.Note)
-	if nextNote != "" {
-		nextNote = nextNote + "\n" + noteLine
-	} else {
-		nextNote = noteLine
-	}
-
-	jobKey := &models.ProvisionJob{
-		ID:           strings.TrimSpace(job.ID),
-		InstanceSlug: strings.TrimSpace(job.InstanceSlug),
-		CreatedAt:    job.CreatedAt,
-		ExpiresAt:    job.ExpiresAt,
-	}
-	_ = jobKey.UpdateKeys()
-
-	instKey := &models.Instance{Slug: strings.TrimSpace(job.InstanceSlug)}
-	_ = instKey.UpdateKeys()
-
-	audit := &models.AuditLogEntry{
-		Actor:     actor,
-		Action:    "provision_job.adopt_account",
-		Target:    fmt.Sprintf("provision_job:%s", strings.TrimSpace(job.ID)),
-		RequestID: ctx.RequestID,
-		CreatedAt: now,
-	}
-	_ = audit.UpdateKeys()
-
-	if err := s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
-		tx.UpdateWithBuilder(jobKey, func(ub core.UpdateBuilder) error {
-			ub.Set("Status", models.ProvisionJobStatusQueued)
-			ub.Set("Step", "account.move")
-			ub.Set("Attempts", int64(0))
-			ub.Set("ErrorCode", "")
-			ub.Set("ErrorMessage", "")
-			ub.Set("AccountID", accountID)
-			ub.Set("AccountEmail", accountEmail)
-			ub.Set("AccountRequestID", "")
-			ub.Set("RequestID", strings.TrimSpace(ctx.RequestID))
-			ub.Set("UpdatedAt", now)
-			ub.Set("Note", nextNote)
-			return nil
-		},
-			tabletheory.IfExists(),
-			tabletheory.Condition("Status", "=", models.ProvisionJobStatusError),
-		)
-
-		tx.UpdateWithBuilder(instKey, func(ub core.UpdateBuilder) error {
-			ub.Set("ProvisionStatus", models.ProvisionJobStatusQueued)
-			ub.Set("ProvisionJobID", strings.TrimSpace(job.ID))
-			ub.Set("HostedAccountID", accountID)
-			return nil
-		}, tabletheory.IfExists())
-
-		tx.Put(audit)
-		return nil
-	}); err != nil && !theoryErrors.IsConditionFailed(err) {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to adopt account"}
+	note := buildAdoptAccountNote(job.Note, strings.TrimSpace(ctx.AuthIdentity), req.AccountID, req.Note, now)
+	if appErr := s.adoptProvisionJobAccountTx(ctx, job, req, note, now); appErr != nil {
+		return nil, appErr
 	}
 
 	_ = s.queues.enqueueProvisionJob(ctx.Context(), provisioning.JobMessage{

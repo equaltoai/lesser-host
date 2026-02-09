@@ -48,6 +48,17 @@
 	let showReceipt = $state(false);
 
 	const statusBadge = $derived.by(() => badgeForStatus(job?.status ?? ''));
+	const stalledMinutes = $derived.by(() => {
+		if (!job) return null;
+		const status = (job.status || '').toLowerCase();
+		if (status !== 'queued' && status !== 'running') return null;
+		const updatedAt = Date.parse(job.updated_at);
+		if (!Number.isFinite(updatedAt)) return null;
+		const ageMs = Date.now() - updatedAt;
+		const thresholdMs = 30 * 60 * 1000;
+		if (ageMs < thresholdMs) return null;
+		return Math.floor(ageMs / 60000);
+	});
 
 	function formatError(err: unknown): string {
 		if (!err) return 'unknown error';
@@ -230,6 +241,14 @@
 				{#if job.error_message}
 					<Text size="sm">{job.error_message}</Text>
 				{/if}
+			</Alert>
+		{/if}
+
+		{#if stalledMinutes}
+			<Alert variant="warning" title="Provisioning may be stalled">
+				<Text size="sm">
+					No updates in {stalledMinutes} minutes. If this looks stuck, retry or adopt an existing account.
+				</Text>
 			</Alert>
 		{/if}
 

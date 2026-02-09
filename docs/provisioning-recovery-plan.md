@@ -108,6 +108,6 @@ This role **must be created/managed by code** (org-bootstrap stack).
 - [x] Org-bootstrap stack added
 - [x] Fail-fast permission errors
 - [x] Operator recovery workflow
-- [ ] UI stalled/failure visibility (adopt UI added; stalled indicator pending)
+- [x] UI stalled/failure visibility
 - [ ] Tests + rubric pass
 - [ ] Recovery executed for existing slug(s)

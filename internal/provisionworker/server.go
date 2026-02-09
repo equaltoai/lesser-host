@@ -432,42 +432,76 @@ func (s *Server) advanceProvisionAccountCreate(ctx context.Context, job *models.
 	return s.advanceToAccountCreatePoll(ctx, job, requestID, now, "waiting for AWS account creation")
 }
 
-func (s *Server) startProvisionAccountCreate(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {
+func ensureProvisionAccountEmail(job *models.ProvisionJob, tmpl string) string {
+	if job == nil {
+		return ""
+	}
 	email := strings.TrimSpace(job.AccountEmail)
 	if email == "" {
-		email = strings.TrimSpace(expandManagedAccountEmailTemplate(s.cfg.ManagedAccountEmailTemplate, job.InstanceSlug))
+		email = strings.TrimSpace(expandManagedAccountEmailTemplate(tmpl, job.InstanceSlug))
 		job.AccountEmail = email
 	}
+	return email
+}
 
-	accountName := strings.TrimSpace(strings.TrimSpace(s.cfg.ManagedAccountNamePrefix) + strings.TrimSpace(job.InstanceSlug))
-	if len(accountName) > 50 {
-		accountName = accountName[:50]
+func managedAccountName(prefix, slug string) string {
+	name := strings.TrimSpace(strings.TrimSpace(prefix) + strings.TrimSpace(slug))
+	if len(name) > 50 {
+		name = name[:50]
 	}
+	return name
+}
 
-	roleName := strings.TrimSpace(job.AccountRoleName)
+func managedAccountRoleName(jobRole string, defaultRole string) string {
+	roleName := strings.TrimSpace(jobRole)
 	if roleName == "" {
-		roleName = strings.TrimSpace(s.cfg.ManagedInstanceRoleName)
+		roleName = strings.TrimSpace(defaultRole)
+	}
+	return roleName
+}
+
+func (s *Server) startProvisionAccountCreate(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {
+	email := ensureProvisionAccountEmail(job, s.cfg.ManagedAccountEmailTemplate)
+	accountName := managedAccountName(s.cfg.ManagedAccountNamePrefix, job.InstanceSlug)
+	roleName := managedAccountRoleName(job.AccountRoleName, s.cfg.ManagedInstanceRoleName)
+
+	handled, delay, done, err := s.tryReuseAccountByEmail(ctx, job, requestID, now, email, accountName)
+	if handled {
+		return delay, done, err
 	}
 
-	if strings.TrimSpace(email) != "" {
-		acct, err := s.findAccountByEmail(ctx, email)
-		if err != nil {
-			if isOrgAccessDenied(err) {
-				return 0, false, s.failOrgPermissions(ctx, job, requestID, now, "ListAccounts", err)
-			}
-			return s.retryProvisionJobOrFail(ctx, job, requestID, now, "account_lookup_failed", "account lookup failed: "+err.Error(), provisionDefaultShortRetryDelay, 5*time.Minute)
-		} else if acct != nil {
-			if err := ensureAccountMatchesExpected(acct, accountName); err != nil {
-				return 0, false, s.failJob(ctx, job, requestID, now, "account_email_conflict", err.Error())
-			}
-			if strings.TrimSpace(job.AccountID) == "" {
-				job.AccountID = strings.TrimSpace(aws.ToString(acct.Id))
-			}
-			job.Note = "AWS account already exists; reusing"
-			return s.advanceToAccountMove(ctx, job, requestID, now, job.Note)
+	return s.requestAccountCreate(ctx, job, requestID, now, email, accountName, roleName)
+}
+
+func (s *Server) tryReuseAccountByEmail(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time, email string, accountName string) (bool, time.Duration, bool, error) {
+	if strings.TrimSpace(email) == "" {
+		return false, 0, false, nil
+	}
+
+	acct, err := s.findAccountByEmail(ctx, email)
+	if err != nil {
+		if isOrgAccessDenied(err) {
+			return true, 0, false, s.failOrgPermissions(ctx, job, requestID, now, "ListAccounts", err)
 		}
+		delay, done, retryErr := s.retryProvisionJobOrFail(ctx, job, requestID, now, "account_lookup_failed", "account lookup failed: "+err.Error(), provisionDefaultShortRetryDelay, 5*time.Minute)
+		return true, delay, done, retryErr
+	}
+	if acct == nil {
+		return false, 0, false, nil
 	}
 
+	if matchErr := ensureAccountMatchesExpected(acct, accountName); matchErr != nil {
+		return true, 0, false, s.failJob(ctx, job, requestID, now, "account_email_conflict", matchErr.Error())
+	}
+	if strings.TrimSpace(job.AccountID) == "" {
+		job.AccountID = strings.TrimSpace(aws.ToString(acct.Id))
+	}
+	job.Note = "AWS account already exists; reusing"
+	delay, done, err := s.advanceToAccountMove(ctx, job, requestID, now, job.Note)
+	return true, delay, done, err
+}
+
+func (s *Server) requestAccountCreate(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time, email string, accountName string, roleName string) (time.Duration, bool, error) {
 	out, err := s.org.CreateAccount(ctx, &organizations.CreateAccountInput{
 		AccountName:            aws.String(accountName),
 		Email:                  aws.String(email),
