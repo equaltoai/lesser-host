@@ -36,6 +36,8 @@ Updates that **increase** wallet/fee require **both** proofs.
 ## API (control-plane)
 
 Public:
+- `GET /api/v1/tip-registry/config`
+  - returns `{ enabled, chain_id, contract_address }` for client integrations
 - `POST /api/v1/tip-registry/registrations/begin`
   - body: `{ kind?, domain, wallet_address, host_fee_bps }`
   - response includes:
@@ -73,4 +75,3 @@ TIP_DEFAULT_HOST_WALLET_ADDRESS=0x...
 TIP_DEFAULT_HOST_FEE_BPS=500
 TIP_TX_MODE=safe
 ```
-

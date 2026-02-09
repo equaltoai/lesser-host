@@ -136,6 +136,7 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 	app.Delete("/api/v1/instances/{slug}/domains/{domain}", s.handleDeleteInstanceDomain, apptheory.RequireAuth())
 
 	// Tip registry (public registration flow + admin reconciliation).
+	app.Get("/api/v1/tip-registry/config", s.handleTipRegistryConfig)
 	app.Post("/api/v1/tip-registry/registrations/begin", s.handleTipHostRegistrationBegin)
 	app.Post("/api/v1/tip-registry/registrations/{id}/verify", s.handleTipHostRegistrationVerify)
 	app.Get("/api/v1/tip-registry/operations", s.handleListTipRegistryOperations, apptheory.RequireAuth())
