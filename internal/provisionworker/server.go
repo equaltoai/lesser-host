@@ -24,6 +24,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
+	"github.com/aws/smithy-go"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 	"github.com/theory-cloud/tabletheory"
 	"github.com/theory-cloud/tabletheory/pkg/core"
@@ -451,8 +452,10 @@ func (s *Server) startProvisionAccountCreate(ctx context.Context, job *models.Pr
 	if strings.TrimSpace(email) != "" {
 		acct, err := s.findAccountByEmail(ctx, email)
 		if err != nil {
-			job.Note = "account lookup failed; proceeding with create"
-			_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
+			if isOrgAccessDenied(err) {
+				return 0, false, s.failOrgPermissions(ctx, job, requestID, now, "ListAccounts", err)
+			}
+			return s.retryProvisionJobOrFail(ctx, job, requestID, now, "account_lookup_failed", "account lookup failed: "+err.Error(), provisionDefaultShortRetryDelay, 5*time.Minute)
 		} else if acct != nil {
 			if err := ensureAccountMatchesExpected(acct, accountName); err != nil {
 				return 0, false, s.failJob(ctx, job, requestID, now, "account_email_conflict", err.Error())
@@ -472,6 +475,9 @@ func (s *Server) startProvisionAccountCreate(ctx context.Context, job *models.Pr
 		IamUserAccessToBilling: orgtypes.IAMUserAccessToBillingAllow,
 	})
 	if err != nil {
+		if isOrgAccessDenied(err) {
+			return 0, false, s.failOrgPermissions(ctx, job, requestID, now, "CreateAccount", err)
+		}
 		job.Attempts++
 		if job.Attempts >= job.MaxAttempts {
 			return 0, false, s.failJob(ctx, job, requestID, now, "create_account_failed", "organizations CreateAccount failed: "+err.Error())
@@ -530,6 +536,9 @@ func (s *Server) advanceProvisionAccountCreatePoll(ctx context.Context, job *mod
 		CreateAccountRequestId: aws.String(strings.TrimSpace(job.AccountRequestID)),
 	})
 	if err != nil {
+		if isOrgAccessDenied(err) {
+			return 0, false, s.failOrgPermissions(ctx, job, requestID, now, "DescribeCreateAccountStatus", err)
+		}
 		return s.retryProvisionJobOrFail(ctx, job, requestID, now, "describe_account_failed", "organizations DescribeCreateAccountStatus failed: "+err.Error(), provisionDefaultPollDelay, 10*time.Minute)
 	}
 	if out == nil || out.CreateAccountStatus == nil || out.CreateAccountStatus.State == "" {
@@ -564,6 +573,30 @@ func (s *Server) retryProvisionJobOrFail(
 	}
 	_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
 	return jitteredBackoff(job.Attempts, baseDelay, maxDelay), false, nil
+}
+
+func isOrgAccessDenied(err error) bool {
+	if err == nil {
+		return false
+	}
+	var apiErr smithy.APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	code := strings.ToLower(strings.TrimSpace(apiErr.ErrorCode()))
+	return code == "accessdeniedexception" || code == "accessdenied"
+}
+
+func (s *Server) failOrgPermissions(
+	ctx context.Context,
+	job *models.ProvisionJob,
+	requestID string,
+	now time.Time,
+	action string,
+	err error,
+) error {
+	msg := fmt.Sprintf("organizations %s access denied: %s", strings.TrimSpace(action), compactErr(err))
+	return s.failJob(ctx, job, requestID, now, "org_permissions_missing", msg)
 }
 
 func (s *Server) handleProvisionAccountCreateStatus(
@@ -629,6 +662,9 @@ func (s *Server) handleAccountCreateEmailExists(
 	}
 	acct, err := s.findAccountByEmail(ctx, email)
 	if err != nil {
+		if isOrgAccessDenied(err) {
+			return 0, false, s.failOrgPermissions(ctx, job, requestID, now, "ListAccounts", err), true
+		}
 		delay, done, retryErr := s.retryProvisionJobOrFail(ctx, job, requestID, now, "account_lookup_failed", "account lookup failed after email exists: "+err.Error(), provisionDefaultShortRetryDelay, 5*time.Minute)
 		return delay, done, retryErr, true
 	}
@@ -664,6 +700,9 @@ func (s *Server) moveProvisionAccountToTargetOU(ctx context.Context, job *models
 
 	parents, err := s.org.ListParents(ctx, &organizations.ListParentsInput{ChildId: aws.String(accID)})
 	if err != nil {
+		if isOrgAccessDenied(err) {
+			return 0, false, s.failOrgPermissions(ctx, job, requestID, now, "ListParents", err)
+		}
 		return s.retryProvisionJobOrFail(ctx, job, requestID, now, "list_parents_failed", "organizations ListParents failed: "+err.Error(), provisionDefaultShortRetryDelay, 5*time.Minute)
 	}
 
@@ -681,6 +720,9 @@ func (s *Server) moveProvisionAccountToTargetOU(ctx context.Context, job *models
 		DestinationParentId: aws.String(targetOu),
 	})
 	if err != nil {
+		if isOrgAccessDenied(err) {
+			return 0, false, s.failOrgPermissions(ctx, job, requestID, now, "MoveAccount", err)
+		}
 		job.Note = "retrying OU move"
 		return s.retryProvisionJobOrFail(ctx, job, requestID, now, "move_account_failed", "organizations MoveAccount failed: "+err.Error(), provisionDefaultShortRetryDelay, 10*time.Minute)
 	}

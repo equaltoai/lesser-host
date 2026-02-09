@@ -29,6 +29,9 @@
 
     "managedProvisioningEnabled": "true",
     "managedOrgVendingRoleArn": "arn:aws:iam::902552026581:role/lesser-host-org-vending",
+    "managedOrgVendingRoleName": "lesser-host-org-vending",
+    "orgBootstrapControlPlaneAccountId": "693925625407",
+    "orgBootstrapStackName": "lesser-host-org-bootstrap",
     "managedParentDomain": "greater.website",
     "managedParentHostedZoneId": "Z0830280V8754TDWDDF",
     "managedAccountEmailTemplateLab": "aron+lab-{slug}@equal-to.ai",

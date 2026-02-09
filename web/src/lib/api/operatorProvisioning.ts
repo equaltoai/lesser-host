@@ -72,6 +72,22 @@ export function retryOperatorProvisionJob(token: string, id: string): Promise<Op
 	});
 }
 
+export function adoptOperatorProvisionJobAccount(
+	token: string,
+	id: string,
+	input: { account_id: string; account_email?: string; note?: string },
+): Promise<OperatorProvisionJobDetail> {
+	const req = jsonRequest(input);
+	return fetchJson<OperatorProvisionJobDetail>(`/api/v1/operators/provisioning/jobs/${encodeURIComponent(id)}/adopt`, {
+		method: 'POST',
+		headers: {
+			authorization: `Bearer ${token}`,
+			...req.headers,
+		},
+		body: req.body,
+	});
+}
+
 export function appendOperatorProvisionJobNote(
 	token: string,
 	id: string,
@@ -87,4 +103,3 @@ export function appendOperatorProvisionJobNote(
 		body: req.body,
 	});
 }
-

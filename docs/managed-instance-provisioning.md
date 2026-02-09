@@ -110,3 +110,38 @@ The deploy runner writes the Lesser receipt to S3 so the provisioning worker can
 Notes:
 - Managed provisioning now seeds the admin wallet via `init-admin`, so a bootstrap mnemonic should not be generated.
 - If a legacy bootstrap file exists, treat it as sensitive and rotate/delete it after migration.
+
+## Org bootstrap (required)
+
+Managed provisioning requires a dedicated **org vending role** in the AWS Organizations management/delegated admin
+account. This repo now ships a small **org bootstrap CDK app** that creates/updates that role and its required policy.
+
+**Deploy once in the org account:**
+
+```bash
+cd cdk
+AWS_PROFILE=<org-admin-profile> npx cdk deploy --app "npx ts-node --prefer-ts-exts bin/org-bootstrap.ts" \
+  -c orgBootstrapControlPlaneAccountId=693925625407 \
+  -c managedOrgVendingRoleName=lesser-host-org-vending \
+  -c orgBootstrapStackName=lesser-host-org-bootstrap
+```
+
+This stack creates the `lesser-host-org-vending` role with permissions for:
+- `organizations:CreateAccount`
+- `organizations:DescribeCreateAccountStatus`
+- `organizations:ListAccounts`
+- `organizations:ListParents`
+- `organizations:MoveAccount`
+
+The control plane assumes this role when performing org-level operations.
+
+## Recovery: adopt existing account
+
+If AWS account creation succeeds but the provisioning job fails before the account is attached, operators can recover
+without creating a second account:
+
+1) Open the provisioning job in the operator console.
+2) Use **Adopt existing account** with the 12-digit AWS account id (and optional email).
+3) The job is reset to `account.move` and requeued to resume the workflow.
+
+This is the preferred recovery path for `EMAIL_ALREADY_EXISTS`, org permission failures, or other partial failures.
