@@ -31,6 +31,7 @@ func newOperatorProvisioningTestDB() operatorProvisioningTestDB {
 	db.On("WithContext", mock.Anything).Return(db).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.ProvisionJob")).Return(qJob).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.AuditLogEntry")).Return(qAudit).Maybe()
+	db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Maybe()
 
 	for _, q := range []*ttmocks.MockQuery{qJob, qAudit} {
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
@@ -213,6 +214,57 @@ func TestHandleAppendOperatorProvisionJobNote_ValidationsAndSuccess(t *testing.T
 		_ = dest.UpdateKeys()
 	}).Twice()
 	resp, err := s.handleAppendOperatorProvisionJobNote(ctx)
+	if err != nil || resp.Status != 200 {
+		t.Fatalf("resp=%#v err=%v", resp, err)
+	}
+}
+
+func TestHandleAdoptOperatorProvisionJobAccount(t *testing.T) {
+	t.Parallel()
+
+	tdb := newOperatorProvisioningTestDB()
+	s := &Server{
+		store:  store.New(tdb.db),
+		queues: &queueClient{},
+		cfg:    config.Config{ProvisionQueueURL: "url"},
+	}
+
+	ctx := operatorCtx()
+	ctx.Params = map[string]string{"id": "j"}
+	ctx.Request.Body = []byte(`{"account_id":"bad"}`)
+	if _, err := s.handleAdoptOperatorProvisionJobAccount(ctx); err == nil {
+		t.Fatalf("expected bad request for account id")
+	}
+
+	ctx = operatorCtx()
+	ctx.Params = map[string]string{"id": "missing"}
+	ctx.Request.Body = []byte(`{"account_id":"123456789012"}`)
+	tdb.qJob.On("First", mock.AnythingOfType("*models.ProvisionJob")).Return(theoryErrors.ErrItemNotFound).Once()
+	if _, err := s.handleAdoptOperatorProvisionJobAccount(ctx); err == nil {
+		t.Fatalf("expected not found")
+	}
+
+	ctx = operatorCtx()
+	ctx.Params = map[string]string{"id": "ok"}
+	ctx.Request.Body = []byte(`{"account_id":"123456789012"}`)
+	tdb.qJob.On("First", mock.AnythingOfType("*models.ProvisionJob")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.ProvisionJob](t, args, 0)
+		*dest = models.ProvisionJob{ID: "ok", InstanceSlug: "inst", Status: models.ProvisionJobStatusOK}
+		_ = dest.UpdateKeys()
+	}).Once()
+	if _, err := s.handleAdoptOperatorProvisionJobAccount(ctx); err == nil {
+		t.Fatalf("expected conflict for ok job")
+	}
+
+	ctx = operatorCtx()
+	ctx.Params = map[string]string{"id": "e1"}
+	ctx.Request.Body = []byte(`{"account_id":"123456789012","account_email":"ops+demo@example.com","note":"recover"}`)
+	tdb.qJob.On("First", mock.AnythingOfType("*models.ProvisionJob")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.ProvisionJob](t, args, 0)
+		*dest = models.ProvisionJob{ID: "e1", InstanceSlug: "inst", Status: models.ProvisionJobStatusError, CreatedAt: time.Unix(1, 0).UTC()}
+		_ = dest.UpdateKeys()
+	}).Twice()
+	resp, err := s.handleAdoptOperatorProvisionJobAccount(ctx)
 	if err != nil || resp.Status != 200 {
 		t.Fatalf("resp=%#v err=%v", resp, err)
 	}

@@ -90,7 +90,7 @@ func TestPortalWalletHelpers(t *testing.T) {
 	}
 }
 
-func TestOperatorProvisioningHelpers(t *testing.T) {
+func TestOperatorProvisioningQueryHelpers(t *testing.T) {
 	t.Parallel()
 
 	ctx := &apptheory.Context{}
@@ -111,6 +111,28 @@ func TestOperatorProvisioningHelpers(t *testing.T) {
 	if got := parseLimit("999", 50, 1, 200); got != 200 {
 		t.Fatalf("expected clamp to max, got %d", got)
 	}
+}
+
+func TestOperatorProvisioningAccountHelpers(t *testing.T) {
+	t.Parallel()
+
+	if !isAWSAccountID("123456789012") {
+		t.Fatalf("expected valid account id")
+	}
+	if isAWSAccountID("123") || isAWSAccountID("abc") || isAWSAccountID("12345678901a") {
+		t.Fatalf("expected invalid account ids to fail")
+	}
+
+	if got := expandManagedAccountEmailTemplate("ops+{slug}@example.com", " demo "); got != "ops+demo@example.com" {
+		t.Fatalf("unexpected email template expansion: %q", got)
+	}
+	if got := expandManagedAccountEmailTemplate("", "demo"); got != "" {
+		t.Fatalf("expected empty template to return empty, got %q", got)
+	}
+}
+
+func TestOperatorProvisioningJobModelConversion(t *testing.T) {
+	t.Parallel()
 
 	j := &models.ProvisionJob{ID: " id ", InstanceSlug: " slug ", Status: " ok ", ReceiptJSON: " {} "}
 	item := operatorProvisionJobListItemFromModel(j)

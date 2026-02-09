@@ -3,10 +3,28 @@
 
 	import type { ApiError } from 'src/lib/api/http';
 	import type { OperatorProvisionJobDetail } from 'src/lib/api/operatorProvisioning';
-	import { appendOperatorProvisionJobNote, getOperatorProvisionJob, retryOperatorProvisionJob } from 'src/lib/api/operatorProvisioning';
+	import {
+		adoptOperatorProvisionJobAccount,
+		appendOperatorProvisionJobNote,
+		getOperatorProvisionJob,
+		retryOperatorProvisionJob,
+	} from 'src/lib/api/operatorProvisioning';
 	import { logout } from 'src/lib/auth/logout';
 	import { navigate } from 'src/lib/router';
-	import { Alert, Badge, Button, Card, CopyButton, DefinitionItem, DefinitionList, Heading, Spinner, Text, TextArea } from 'src/lib/ui';
+	import {
+		Alert,
+		Badge,
+		Button,
+		Card,
+		CopyButton,
+		DefinitionItem,
+		DefinitionList,
+		Heading,
+		Spinner,
+		Text,
+		TextArea,
+		TextField,
+	} from 'src/lib/ui';
 
 	let { token, id } = $props<{ token: string; id: string }>();
 
@@ -21,9 +39,26 @@
 	let noteLoading = $state(false);
 	let noteError = $state<string | null>(null);
 
+	let adoptAccountId = $state('');
+	let adoptAccountEmail = $state('');
+	let adoptNote = $state('');
+	let adoptLoading = $state(false);
+	let adoptError = $state<string | null>(null);
+
 	let showReceipt = $state(false);
 
 	const statusBadge = $derived.by(() => badgeForStatus(job?.status ?? ''));
+	const stalledMinutes = $derived.by(() => {
+		if (!job) return null;
+		const status = (job.status || '').toLowerCase();
+		if (status !== 'queued' && status !== 'running') return null;
+		const updatedAt = Date.parse(job.updated_at);
+		if (!Number.isFinite(updatedAt)) return null;
+		const ageMs = Date.now() - updatedAt;
+		const thresholdMs = 30 * 60 * 1000;
+		if (ageMs < thresholdMs) return null;
+		return Math.floor(ageMs / 60000);
+	});
 
 	function formatError(err: unknown): string {
 		if (!err) return 'unknown error';
@@ -103,6 +138,36 @@
 		}
 	}
 
+	async function adoptAccount() {
+		adoptError = null;
+		const accountId = adoptAccountId.trim();
+		if (!/^\d{12}$/.test(accountId)) {
+			adoptError = 'Account id must be a 12-digit AWS account id.';
+			return;
+		}
+
+		adoptLoading = true;
+		try {
+			job = await adoptOperatorProvisionJobAccount(token, id, {
+				account_id: accountId,
+				account_email: adoptAccountEmail.trim() || undefined,
+				note: adoptNote.trim() || undefined,
+			});
+			adoptAccountId = '';
+			adoptAccountEmail = '';
+			adoptNote = '';
+		} catch (err) {
+			if ((err as Partial<ApiError>).status === 401) {
+				await logout();
+				navigate('/login');
+				return;
+			}
+			adoptError = formatError(err);
+		} finally {
+			adoptLoading = false;
+		}
+	}
+
 	onMount(() => {
 		void load();
 	});
@@ -177,6 +242,58 @@
 					<Text size="sm">{job.error_message}</Text>
 				{/if}
 			</Alert>
+		{/if}
+
+		{#if stalledMinutes}
+			<Alert variant="warning" title="Provisioning may be stalled">
+				<Text size="sm">
+					No updates in {stalledMinutes} minutes. If this looks stuck, retry or adopt an existing account.
+				</Text>
+			</Alert>
+		{/if}
+
+		{#if job.status === 'error'}
+			<Card variant="outlined" padding="lg">
+				{#snippet header()}
+					<Heading level={3} size="lg">Adopt existing account</Heading>
+				{/snippet}
+
+				<Text size="sm" color="secondary">
+					Use this when an AWS account was created but provisioning failed before it could be attached.
+					This resets the job to <span class="op-job__mono">account.move</span> and requeues it.
+				</Text>
+
+				<div class="op-job__adopt">
+					<TextField
+						label="Account id"
+						placeholder="123456789012"
+						bind:value={adoptAccountId}
+						required
+					/>
+					<TextField
+						label="Account email (optional)"
+						placeholder="ops+slug@example.com"
+						bind:value={adoptAccountEmail}
+					/>
+					<TextField
+						label="Note (optional)"
+						placeholder="Why we are adopting this account"
+						bind:value={adoptNote}
+					/>
+					<div class="op-job__row">
+						<Button variant="solid" onclick={() => void adoptAccount()} disabled={adoptLoading}>Adopt account</Button>
+						{#if adoptLoading}
+							<div class="op-job__loading-inline">
+								<Spinner size="sm" />
+								<Text size="sm">Working…</Text>
+							</div>
+						{/if}
+					</div>
+					{#if adoptError}
+						<Alert variant="error" title="Adopt failed">{adoptError}</Alert>
+					{/if}
+				</div>
+			</Card>
 		{/if}
 
 		<Card variant="outlined" padding="lg">
@@ -299,6 +416,13 @@
 	}
 
 	.op-job__note {
+		display: flex;
+		flex-direction: column;
+		gap: var(--gr-spacing-scale-3);
+		margin-top: var(--gr-spacing-scale-4);
+	}
+
+	.op-job__adopt {
 		display: flex;
 		flex-direction: column;
 		gap: var(--gr-spacing-scale-3);

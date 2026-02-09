@@ -75,6 +75,7 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 	app.Get("/api/v1/operators/provisioning/jobs", s.handleListOperatorProvisionJobs, apptheory.RequireAuth())
 	app.Get("/api/v1/operators/provisioning/jobs/{id}", s.handleGetOperatorProvisionJob, apptheory.RequireAuth())
 	app.Post("/api/v1/operators/provisioning/jobs/{id}/retry", s.handleRetryOperatorProvisionJob, apptheory.RequireAuth())
+	app.Post("/api/v1/operators/provisioning/jobs/{id}/adopt", s.handleAdoptOperatorProvisionJobAccount, apptheory.RequireAuth())
 	app.Post("/api/v1/operators/provisioning/jobs/{id}/note", s.handleAppendOperatorProvisionJobNote, apptheory.RequireAuth())
 	app.Get("/api/v1/operators/audit", s.handleListOperatorAuditLog, apptheory.RequireAuth())
 

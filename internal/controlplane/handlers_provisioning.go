@@ -236,6 +236,8 @@ func (s *Server) buildManagedProvisionJob(slug string, req startInstanceProvisio
 		lesserVersion = strings.TrimSpace(s.cfg.ManagedLesserDefaultVersion)
 	}
 
+	accountEmail := strings.TrimSpace(expandManagedAccountEmailTemplate(s.cfg.ManagedAccountEmailTemplate, slug))
+
 	job := &models.ProvisionJob{
 		ID:                 id,
 		InstanceSlug:       slug,
@@ -249,6 +251,7 @@ func (s *Server) buildManagedProvisionJob(slug string, req startInstanceProvisio
 		AdminWalletType:    adminWalletType,
 		AdminWalletAddr:    adminWalletAddr,
 		AdminWalletChainID: adminWalletChainID,
+		AccountEmail:       accountEmail,
 		ConsentMessage:     strings.TrimSpace(req.ConsentMessage),
 		ConsentSignature:   strings.TrimSpace(req.ConsentSignature),
 		ConsentMessageHash: func() string {
@@ -267,6 +270,18 @@ func (s *Server) buildManagedProvisionJob(slug string, req startInstanceProvisio
 	_ = job.UpdateKeys()
 
 	return job, baseDomain, region, nil
+}
+
+func expandManagedAccountEmailTemplate(tmpl string, slug string) string {
+	tmpl = strings.TrimSpace(tmpl)
+	if tmpl == "" {
+		return ""
+	}
+	slug = strings.TrimSpace(slug)
+	if slug == "" {
+		return ""
+	}
+	return strings.ReplaceAll(tmpl, "{slug}", slug)
 }
 
 func (s *Server) createManagedProvisionJobTx(ctx *apptheory.Context, job *models.ProvisionJob, slug string, baseDomain string, region string, actor string, auditAction string, requestID string, now time.Time) *apptheory.AppError {
