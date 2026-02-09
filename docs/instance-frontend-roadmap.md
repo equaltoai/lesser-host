@@ -22,7 +22,7 @@ fronted.
 
 ## Assumptions
 
-- Instance base domain: `fedipack.greater.website`.
+- Instance base domain: `dev.simulacrum.greater.website`.
 - Backend API is running and healthy (ActivityPub + app API).
 - We can modify the `lesser` repo to add/ship a frontend bundle.
 - Static assets can be served from the instance (S3 + CloudFront) or from the app server.
