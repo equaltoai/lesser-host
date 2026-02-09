@@ -1,4 +1,4 @@
-# Prototype instance frontend roadmap (fedipack.greater.website)
+# Prototype instance frontend roadmap (dev.simulacrum.greater.website)
 
 This roadmap defines how to ship a **Mastodon-like frontend** for the prototype instance that lives in the `AWS_PROFILE=Sim`
 account. The instance is already **activated**, but has **no frontend enabled** (or not installed). We will use
@@ -82,15 +82,16 @@ Acceptance criteria:
 - A user can post, reply, and see updates without page reloads.
 - Home timeline and notifications update correctly.
 
-### P4 — Settings + minimal admin
+### P4 — Settings + admin surface
 
 Deliverables:
 - Account settings (profile, display name, avatar/bio).
 - Preferences (language, content filters if supported).
-- Minimal moderator/admin entry points (if supported by API).
+- Moderator/admin console (role-gated) covering report queue actions, user management, instance configuration, federation controls, and audit/insights views where available.
 
 Acceptance criteria:
 - Settings changes persist and reflect after reload.
+- Admin routes are role-gated and operational for a seeded admin.
 
 ### P5 — Deployment + automation
 
@@ -98,6 +99,7 @@ Deliverables:
 - Integrate frontend build into the `lesser up` flow.
 - Ensure new instance provisioning **automatically ships the frontend**.
 - Document upgrade path for frontend assets (new release → instance update).
+- Support direct deploy for prototypes via `lesser client deploy` (uploads `dist/` to the client bucket and invalidates CloudFront).
 
 Acceptance criteria:
 - A fresh instance deploy includes the frontend without manual steps.
@@ -121,7 +123,7 @@ Acceptance criteria:
 
 ## Next steps
 
-1. Confirm current `fedipack.greater.website` backend endpoints and auth flow.
+1. Confirm current `dev.simulacrum.greater.website` backend endpoints and auth flow.
 2. Choose frontend hosting path for the prototype.
 3. Kick off `lesser` frontend scaffolding with `greater-components`.
 4. Update testing plan to include prototype instance UI verification.
