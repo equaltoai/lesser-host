@@ -2,7 +2,7 @@
 
 This roadmap defines how to ship a **Mastodon-like frontend** for the prototype instance that lives in the `AWS_PROFILE=Sim`
 account. The instance is already **activated**, but has **no frontend enabled** (or not installed). We will use
-`greater-components` as the UI foundation.
+`greater-components` as the UI foundation. The client app source lives in `/home/aron/ai-workspace/codebases/simulacrum`.
 
 This is a **prototype** effort intended to harden the provisioning pipeline and define how future instances should be
 fronted.
@@ -127,3 +127,4 @@ Acceptance criteria:
 2. Choose frontend hosting path for the prototype.
 3. Kick off `lesser` frontend scaffolding with `greater-components`.
 4. Update testing plan to include prototype instance UI verification.
+5. Follow `docs/runbook-simulacrum-client.md` for build + deploy steps.

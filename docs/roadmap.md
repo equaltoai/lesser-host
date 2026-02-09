@@ -10,6 +10,7 @@ trust/safety planning.
 - Deployment contract (consumed by `theory app up/down`): `app-theory/app.json`
 - Frontend roadmap (portal + operator console): `docs/frontend-roadmap.md`
 - Prototype instance frontend roadmap: `docs/instance-frontend-roadmap.md`
+- Simulacrum client runbook: `docs/runbook-simulacrum-client.md`
 - AI services subroadmap: `docs/ai-services-roadmap.md`
 - Lesser release contract (consumed for managed instance deploys): `docs/lesser-release-contract.md`
 - Managed provisioning notes: `docs/managed-instance-provisioning.md`
