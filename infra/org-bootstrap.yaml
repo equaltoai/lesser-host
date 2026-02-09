@@ -1,0 +1,42 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: lesser-host org vending role (Organizations permissions for managed provisioning)
+
+Parameters:
+  ControlPlaneAccountId:
+    Type: String
+    Description: AWS account id for the lesser-host control plane
+  RoleName:
+    Type: String
+    Default: lesser-host-org-vending
+    Description: Name of the org vending role
+
+Resources:
+  OrgVendingRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref RoleName
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${ControlPlaneAccountId}:root'
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: lesser-host-org-vending
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - organizations:CreateAccount
+                  - organizations:DescribeCreateAccountStatus
+                  - organizations:ListAccounts
+                  - organizations:ListParents
+                  - organizations:MoveAccount
+                Resource: '*'
+
+Outputs:
+  OrgVendingRoleArn:
+    Description: ARN of the org vending role
+    Value: !GetAtt OrgVendingRole.Arn

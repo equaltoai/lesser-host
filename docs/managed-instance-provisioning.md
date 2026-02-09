@@ -116,7 +116,17 @@ Notes:
 Managed provisioning requires a dedicated **org vending role** in the AWS Organizations management/delegated admin
 account. This repo now ships a small **org bootstrap CDK app** that creates/updates that role and its required policy.
 
-**Deploy once in the org account:**
+**Deploy once in the org account (preferred, no CDK bootstrap):**
+
+```bash
+AWS_PROFILE=<org-admin-profile> aws cloudformation deploy \
+  --stack-name lesser-host-org-bootstrap \
+  --template-file infra/org-bootstrap.yaml \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --parameter-overrides ControlPlaneAccountId=693925625407 RoleName=lesser-host-org-vending
+```
+
+**Alternative (CDK app, requires CDK bootstrap):**
 
 ```bash
 cd cdk
