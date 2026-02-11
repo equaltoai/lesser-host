@@ -113,7 +113,7 @@ func TestNormalizeLinkURL_RejectsNonDefaultPort(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if pe, ok := err.(*linkPreviewError); !ok || pe.Code != "invalid_url" {
+	if pe, ok := err.(*linkPreviewError); !ok || pe.Code != errorCodeInvalidURL {
 		t.Fatalf("expected invalid_url, got %T: %v", err, err)
 	}
 }
@@ -455,7 +455,7 @@ func TestParseAndValidateDialTarget_RejectsEmptyHostAndNonDefaultPorts(t *testin
 	if err == nil {
 		t.Fatalf("expected error for non-default port")
 	}
-	if pe, ok := err.(*linkPreviewError); !ok || pe.Code != "invalid_url" {
+	if pe, ok := err.(*linkPreviewError); !ok || pe.Code != errorCodeInvalidURL {
 		t.Fatalf("expected invalid_url, got %T: %v", err, err)
 	}
 }
@@ -520,7 +520,7 @@ func TestDialSSRFProtected_RejectsInvalidDialTargets(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error")
 	}
-	if pe, ok := err.(*linkPreviewError); !ok || pe.Code != "invalid_url" {
+	if pe, ok := err.(*linkPreviewError); !ok || pe.Code != errorCodeInvalidURL {
 		t.Fatalf("expected invalid_url, got %T: %v", err, err)
 	}
 }
