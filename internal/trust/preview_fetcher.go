@@ -547,8 +547,8 @@ func newPreviewHTTPClient(timeout time.Duration, resolver ipResolver) *http.Clie
 	tr := &http.Transport{
 		// Never use environment proxies here. SSRF enforcement is implemented at dial-time and
 		// is only sound for direct connections to the request host.
-		Proxy:       nil,
-		DialContext: dialContext,
+		Proxy:                 nil,
+		DialContext:           dialContext,
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          20,
 		IdleConnTimeout:       30 * time.Second,
@@ -578,48 +578,65 @@ func newSSRFProtectedDialContext(resolver ipResolver) func(ctx context.Context, 
 	}
 
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
-		host, port, err := net.SplitHostPort(addr)
-		if err != nil {
-			return nil, err
-		}
-		host = strings.ToLower(strings.TrimSpace(host))
-		port = strings.TrimSpace(port)
-		if host == "" {
-			return nil, &linkPreviewError{Code: "invalid_url", Message: "url host is required"}
-		}
-		if port != "80" && port != "443" {
-			return nil, &linkPreviewError{Code: "invalid_url", Message: "non-default ports are not allowed"}
-		}
-
-		if isDeniedHostname(host) {
-			return nil, &linkPreviewError{Code: errorCodeBlockedSSRF, Message: "host is not allowed"}
-		}
-
-		if ip := net.ParseIP(host); ip != nil {
-			if err := validateOutboundIP(ip); err != nil {
-				return nil, err
-			}
-			return dialer.DialContext(ctx, network, net.JoinHostPort(host, port))
-		}
-
-		ips, err := resolveHostIPs(ctx, resolver, host)
-		if err != nil {
-			return nil, err
-		}
-		if err := validateResolvedIPAddrs(ips); err != nil {
-			return nil, err
-		}
-
-		var lastErr error
-		for _, ipAddr := range ips {
-			conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(ipAddr.IP.String(), port))
-			if err == nil {
-				return conn, nil
-			}
-			lastErr = err
-		}
-		return nil, lastErr
+		return dialSSRFProtected(ctx, dialer, resolver, network, addr)
 	}
+}
+
+func dialSSRFProtected(ctx context.Context, dialer *net.Dialer, resolver ipResolver, network, addr string) (net.Conn, error) {
+	host, port, err := parseAndValidateDialTarget(addr)
+	if err != nil {
+		return nil, err
+	}
+
+	if ip := net.ParseIP(host); ip != nil {
+		if err = validateOutboundIP(ip); err != nil {
+			return nil, err
+		}
+		return dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+	}
+
+	ips, err := resolveHostIPs(ctx, resolver, host)
+	if err != nil {
+		return nil, err
+	}
+	if err = validateResolvedIPAddrs(ips); err != nil {
+		return nil, err
+	}
+
+	return dialResolvedIPs(ctx, dialer, network, port, ips)
+}
+
+func parseAndValidateDialTarget(addr string) (string, string, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", "", err
+	}
+
+	host = strings.ToLower(strings.TrimSpace(host))
+	port = strings.TrimSpace(port)
+	if host == "" {
+		return "", "", &linkPreviewError{Code: "invalid_url", Message: "url host is required"}
+	}
+	if port != "80" && port != "443" {
+		return "", "", &linkPreviewError{Code: "invalid_url", Message: "non-default ports are not allowed"}
+	}
+	if isDeniedHostname(host) {
+		return "", "", &linkPreviewError{Code: errorCodeBlockedSSRF, Message: "host is not allowed"}
+	}
+
+	return host, port, nil
+}
+
+func dialResolvedIPs(ctx context.Context, dialer *net.Dialer, network, port string, ips []net.IPAddr) (net.Conn, error) {
+	var lastErr error
+	for _, ipAddr := range ips {
+		conn, dialErr := dialer.DialContext(ctx, network, net.JoinHostPort(ipAddr.IP.String(), port))
+		if dialErr == nil {
+			return conn, nil
+		}
+		lastErr = dialErr
+	}
+	return nil, lastErr
 }
 
 func fetchWithRedirects(
