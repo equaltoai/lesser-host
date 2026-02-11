@@ -77,7 +77,7 @@ func TestPreviewMetaHelpers(t *testing.T) {
 		t.Fatalf("expected html content type false")
 	}
 
-	c := newPreviewHTTPClient(2 * time.Second)
+	c := newPreviewHTTPClient(2*time.Second, nil)
 	if c == nil || c.Timeout != 2*time.Second {
 		t.Fatalf("unexpected http client: %#v", c)
 	}

@@ -365,7 +365,7 @@ func (s *Server) tryStorePreviewImage(ctx context.Context, rawImageURL string) (
 		return "", ""
 	}
 
-	client := newPreviewHTTPClient(linkPreviewFetchTimeout)
+	client := newPreviewHTTPClient(linkPreviewFetchTimeout, nil)
 	_, _, body, contentType, err := fetchWithRedirects(ctx, nil, client, imgURL, linkPreviewMaxRedirects, linkPreviewMaxImageBytes)
 	if err != nil {
 		return "", ""

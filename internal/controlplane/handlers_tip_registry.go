@@ -582,8 +582,17 @@ func verifyTipRegistryHTTPS(ctx context.Context, domainNormalized, proofValue st
 		return false
 	}
 
+	transport := http.DefaultTransport
+	if base, ok := transport.(*http.Transport); ok {
+		tr := base.Clone()
+		tr.Proxy = nil
+		tr.DialContext = newTipRegistrySSRFProtectedDialContext()
+		transport = tr
+	}
+
 	client := &http.Client{
-		Timeout: 5 * time.Second,
+		Transport: transport,
+		Timeout:   5 * time.Second,
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return errors.New("redirects not allowed")
 		},
@@ -606,20 +615,54 @@ func verifyTipRegistryHTTPS(ctx context.Context, domainNormalized, proofValue st
 	return strings.TrimSpace(string(body)) == proofValue
 }
 
+func newTipRegistrySSRFProtectedDialContext() func(ctx context.Context, network, addr string) (net.Conn, error) {
+	dialer := &net.Dialer{
+		Timeout:   3 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
+
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, err
+		}
+
+		ips, err := resolveAndValidateOutboundHostIPs(ctx, host)
+		if err != nil {
+			return nil, err
+		}
+
+		var lastErr error
+		for _, ipAddr := range ips {
+			conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(ipAddr.IP.String(), port))
+			if err == nil {
+				return conn, nil
+			}
+			lastErr = err
+		}
+		return nil, lastErr
+	}
+}
+
 func validateOutboundHost(ctx context.Context, host string) error {
+	_, err := resolveAndValidateOutboundHostIPs(ctx, host)
+	return err
+}
+
+func resolveAndValidateOutboundHostIPs(ctx context.Context, host string) ([]net.IPAddr, error) {
 	host = strings.ToLower(strings.TrimSpace(host))
 	if host == "" {
-		return errors.New("host is required")
+		return nil, errors.New("host is required")
 	}
 	if host == "localhost" || strings.HasSuffix(host, ".localhost") || strings.HasSuffix(host, ".local") || strings.HasSuffix(host, ".internal") {
-		return errors.New("host is not allowed")
+		return nil, errors.New("host is not allowed")
 	}
 
 	if ip := net.ParseIP(host); ip != nil {
 		if isDeniedIP(ip) {
-			return errors.New("ip is not allowed")
+			return nil, errors.New("ip is not allowed")
 		}
-		return nil
+		return []net.IPAddr{{IP: ip}}, nil
 	}
 
 	if ctx == nil {
@@ -627,14 +670,14 @@ func validateOutboundHost(ctx context.Context, host string) error {
 	}
 	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
 	if err != nil || len(ips) == 0 {
-		return errors.New("failed to resolve host")
+		return nil, errors.New("failed to resolve host")
 	}
 	for _, ipAddr := range ips {
 		if isDeniedIP(ipAddr.IP) {
-			return errors.New("host resolves to blocked ip")
+			return nil, errors.New("host resolves to blocked ip")
 		}
 	}
-	return nil
+	return ips, nil
 }
 
 func isDeniedIP(ip net.IP) bool {

@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -23,6 +24,31 @@ func (r stubResolver) LookupIPAddr(_ context.Context, host string) ([]net.IPAddr
 	}
 	var out []net.IPAddr
 	for _, ip := range r.ipsByHost[host] {
+		out = append(out, net.IPAddr{IP: ip})
+	}
+	return out, nil
+}
+
+type sequenceResolver struct {
+	host string
+	seq  [][]net.IP
+
+	calls int
+}
+
+func (r *sequenceResolver) LookupIPAddr(_ context.Context, host string) ([]net.IPAddr, error) {
+	r.calls++
+	var ips []net.IP
+	if strings.TrimSpace(r.host) == "" || host == r.host {
+		if r.calls <= len(r.seq) {
+			ips = r.seq[r.calls-1]
+		} else if len(r.seq) > 0 {
+			ips = r.seq[len(r.seq)-1]
+		}
+	}
+
+	out := make([]net.IPAddr, 0, len(ips))
+	for _, ip := range ips {
 		out = append(out, net.IPAddr{IP: ip})
 	}
 	return out, nil
@@ -87,7 +113,7 @@ func TestNormalizeLinkURL_RejectsNonDefaultPort(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if pe, ok := err.(*linkPreviewError); !ok || pe.Code != "invalid_url" {
+	if pe, ok := err.(*linkPreviewError); !ok || pe.Code != errorCodeInvalidURL {
 		t.Fatalf("expected invalid_url, got %T: %v", err, err)
 	}
 }
@@ -167,6 +193,35 @@ func TestFetchWithRedirects_BlocksRedirectToPrivateIP(t *testing.T) {
 	}
 	if !strings.Contains(chain[1], "127.0.0.1") {
 		t.Fatalf("expected redirect target to include 127.0.0.1, got %q", chain[1])
+	}
+}
+
+func TestFetchWithRedirects_BlocksDNSRebindingAtDialTime(t *testing.T) {
+	t.Parallel()
+
+	_, start, err := normalizeLinkURL("https://rebinding.example/")
+	if err != nil {
+		t.Fatalf("normalizeLinkURL error: %v", err)
+	}
+
+	resolver := &sequenceResolver{
+		host: "rebinding.example",
+		seq: [][]net.IP{
+			{net.ParseIP("93.184.216.34")}, // passes validateOutboundURL
+			{net.ParseIP("10.0.0.1")},      // blocked at dial-time
+		},
+	}
+
+	client := newPreviewHTTPClient(2*time.Second, resolver)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, _, _, _, err = fetchWithRedirects(ctx, resolver, client, start, 0, 64)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if pe, ok := err.(*linkPreviewError); !ok || pe.Code != errorCodeBlockedSSRF {
+		t.Fatalf("expected blocked_ssrf, got %T: %v", err, err)
 	}
 }
 
@@ -371,5 +426,179 @@ func TestExtractLinkPreviewMeta_ParsesTitleDescriptionAndImage(t *testing.T) {
 	}
 	if meta.ImageURL != "https://example.com/img.png" {
 		t.Fatalf("expected resolved image url, got %q", meta.ImageURL)
+	}
+}
+
+func TestParseAndValidateDialTarget_AllowsAndNormalizesDefaultPorts(t *testing.T) {
+	t.Parallel()
+
+	host, port, err := parseAndValidateDialTarget("Example.COM:443")
+	if err != nil {
+		t.Fatalf("parseAndValidateDialTarget error: %v", err)
+	}
+	if host != "example.com" {
+		t.Fatalf("expected host normalized, got %q", host)
+	}
+	if port != "443" {
+		t.Fatalf("expected port 443, got %q", port)
+	}
+}
+
+func TestParseAndValidateDialTarget_RejectsEmptyHostAndNonDefaultPorts(t *testing.T) {
+	t.Parallel()
+
+	if _, _, err := parseAndValidateDialTarget(":443"); err == nil {
+		t.Fatalf("expected error for empty host")
+	}
+
+	_, _, err := parseAndValidateDialTarget("example.com:8443")
+	if err == nil {
+		t.Fatalf("expected error for non-default port")
+	}
+	if pe, ok := err.(*linkPreviewError); !ok || pe.Code != errorCodeInvalidURL {
+		t.Fatalf("expected invalid_url, got %T: %v", err, err)
+	}
+}
+
+func TestParseAndValidateDialTarget_BlocksDeniedHostnames(t *testing.T) {
+	t.Parallel()
+
+	_, _, err := parseAndValidateDialTarget("localhost:443")
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if pe, ok := err.(*linkPreviewError); !ok || pe.Code != errorCodeBlockedSSRF {
+		t.Fatalf("expected blocked_ssrf, got %T: %v", err, err)
+	}
+}
+
+func TestDialSSRFProtected_BlocksLoopbackAndBlockedResolutions(t *testing.T) {
+	t.Parallel()
+
+	dialer := &net.Dialer{Timeout: 10 * time.Millisecond}
+
+	_, err := dialSSRFProtected(context.Background(), dialer, nil, "tcp", "127.0.0.1:443")
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if pe, ok := err.(*linkPreviewError); !ok || pe.Code != errorCodeBlockedSSRF {
+		t.Fatalf("expected blocked_ssrf, got %T: %v", err, err)
+	}
+
+	resolver := stubResolver{ipsByHost: map[string][]net.IP{
+		"example.com": {net.ParseIP("10.0.0.1")},
+	}}
+	_, err = dialSSRFProtected(context.Background(), dialer, resolver, "tcp", "example.com:443")
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if pe, ok := err.(*linkPreviewError); !ok || pe.Code != errorCodeBlockedSSRF {
+		t.Fatalf("expected blocked_ssrf, got %T: %v", err, err)
+	}
+}
+
+func TestDialSSRFProtected_ResolverFailureBlocksRequest(t *testing.T) {
+	t.Parallel()
+
+	dialer := &net.Dialer{Timeout: 10 * time.Millisecond}
+	resolver := stubResolver{errByHost: map[string]error{"example.com": errors.New("boom")}}
+
+	_, err := dialSSRFProtected(context.Background(), dialer, resolver, "tcp", "example.com:443")
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if pe, ok := err.(*linkPreviewError); !ok || pe.Code != errorCodeBlockedSSRF {
+		t.Fatalf("expected blocked_ssrf, got %T: %v", err, err)
+	}
+}
+
+func TestDialSSRFProtected_RejectsInvalidDialTargets(t *testing.T) {
+	t.Parallel()
+
+	dialer := &net.Dialer{Timeout: 10 * time.Millisecond}
+	_, err := dialSSRFProtected(context.Background(), dialer, nil, "tcp", "example.com:8443")
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if pe, ok := err.(*linkPreviewError); !ok || pe.Code != errorCodeInvalidURL {
+		t.Fatalf("expected invalid_url, got %T: %v", err, err)
+	}
+}
+
+func TestDialSSRFProtected_DialsForAllowedIPLiteral(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	dialer := &net.Dialer{Timeout: 10 * time.Millisecond}
+	conn, err := dialSSRFProtected(ctx, dialer, nil, "unix", "93.184.216.34:443")
+	if err == nil {
+		_ = conn.Close()
+		t.Fatalf("expected error")
+	}
+	if conn != nil {
+		_ = conn.Close()
+		t.Fatalf("expected nil conn on error")
+	}
+}
+
+func TestDialResolvedIPs_SucceedsWhenAnyIPConnects(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer listener.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		_ = conn.Close()
+	}()
+
+	tcpAddr, ok := listener.Addr().(*net.TCPAddr)
+	if !ok {
+		t.Fatalf("expected TCPAddr, got %T", listener.Addr())
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	dialer := &net.Dialer{Timeout: 500 * time.Millisecond}
+	conn, err := dialResolvedIPs(ctx, dialer, "tcp", strconv.Itoa(tcpAddr.Port), []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}})
+	if err != nil {
+		t.Fatalf("dialResolvedIPs error: %v", err)
+	}
+	if conn == nil {
+		t.Fatalf("expected connection")
+	}
+	_ = conn.Close()
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatalf("accept timed out: %v", ctx.Err())
+	}
+}
+
+func TestDialResolvedIPs_ReturnsErrorWhenAllIPsFail(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	dialer := &net.Dialer{Timeout: 100 * time.Millisecond}
+	conn, err := dialResolvedIPs(ctx, dialer, "tcp", "0", []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}})
+	if err == nil {
+		_ = conn.Close()
+		t.Fatalf("expected error")
+	}
+	if conn != nil {
+		_ = conn.Close()
+		t.Fatalf("expected nil connection on error")
 	}
 }

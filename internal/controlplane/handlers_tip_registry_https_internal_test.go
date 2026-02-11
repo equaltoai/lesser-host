@@ -109,3 +109,16 @@ func TestVerifyTipRegistryHTTPS_Branches(t *testing.T) {
 		}
 	})
 }
+
+func TestTipRegistrySSRFProtectedDialContext_BlocksInternalHosts(t *testing.T) {
+	t.Parallel()
+
+	dial := newTipRegistrySSRFProtectedDialContext()
+
+	if _, err := dial(context.Background(), "tcp", "127.0.0.1:443"); err == nil {
+		t.Fatalf("expected blocked dial for loopback")
+	}
+	if _, err := dial(context.Background(), "tcp", "localhost:443"); err == nil {
+		t.Fatalf("expected blocked dial for localhost")
+	}
+}
