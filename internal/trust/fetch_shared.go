@@ -24,7 +24,7 @@ func ValidateOutboundURL(ctx context.Context, u *url.URL) error {
 
 // NewPreviewHTTPClient constructs an HTTP client suitable for preview fetching.
 func NewPreviewHTTPClient(timeout time.Duration) *http.Client {
-	return newPreviewHTTPClient(timeout)
+	return newPreviewHTTPClient(timeout, nil)
 }
 
 // FetchWithRedirects fetches a URL with redirect handling and a maximum body size.

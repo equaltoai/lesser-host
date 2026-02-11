@@ -347,7 +347,7 @@ func (s *Server) prepareModerationImageInput(ctx context.Context, instanceSlug s
 			return "", "", "", 0, &apptheory.AppError{Code: "app.bad_request", Message: "invalid url"}
 		}
 
-		client := newPreviewHTTPClient(8 * time.Second)
+		client := newPreviewHTTPClient(8*time.Second, nil)
 		_, _, body, ct, fetchErr := fetchWithRedirects(ctx, nil, client, start, 3, 5*1024*1024)
 		if fetchErr != nil {
 			return "", "", "", 0, &apptheory.AppError{Code: "app.bad_request", Message: "failed to fetch url"}

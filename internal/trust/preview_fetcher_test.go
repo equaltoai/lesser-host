@@ -28,6 +28,31 @@ func (r stubResolver) LookupIPAddr(_ context.Context, host string) ([]net.IPAddr
 	return out, nil
 }
 
+type sequenceResolver struct {
+	host string
+	seq  [][]net.IP
+
+	calls int
+}
+
+func (r *sequenceResolver) LookupIPAddr(_ context.Context, host string) ([]net.IPAddr, error) {
+	r.calls++
+	var ips []net.IP
+	if strings.TrimSpace(r.host) == "" || host == r.host {
+		if r.calls <= len(r.seq) {
+			ips = r.seq[r.calls-1]
+		} else if len(r.seq) > 0 {
+			ips = r.seq[len(r.seq)-1]
+		}
+	}
+
+	out := make([]net.IPAddr, 0, len(ips))
+	for _, ip := range ips {
+		out = append(out, net.IPAddr{IP: ip})
+	}
+	return out, nil
+}
+
 type stubTransport struct {
 	responses map[string]*http.Response
 	errByURL  map[string]error
@@ -167,6 +192,35 @@ func TestFetchWithRedirects_BlocksRedirectToPrivateIP(t *testing.T) {
 	}
 	if !strings.Contains(chain[1], "127.0.0.1") {
 		t.Fatalf("expected redirect target to include 127.0.0.1, got %q", chain[1])
+	}
+}
+
+func TestFetchWithRedirects_BlocksDNSRebindingAtDialTime(t *testing.T) {
+	t.Parallel()
+
+	_, start, err := normalizeLinkURL("https://rebinding.example/")
+	if err != nil {
+		t.Fatalf("normalizeLinkURL error: %v", err)
+	}
+
+	resolver := &sequenceResolver{
+		host: "rebinding.example",
+		seq: [][]net.IP{
+			{net.ParseIP("93.184.216.34")}, // passes validateOutboundURL
+			{net.ParseIP("10.0.0.1")},      // blocked at dial-time
+		},
+	}
+
+	client := newPreviewHTTPClient(2*time.Second, resolver)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, _, _, _, err = fetchWithRedirects(ctx, resolver, client, start, 0, 64)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if pe, ok := err.(*linkPreviewError); !ok || pe.Code != errorCodeBlockedSSRF {
+		t.Fatalf("expected blocked_ssrf, got %T: %v", err, err)
 	}
 }
 
