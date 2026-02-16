@@ -2,6 +2,7 @@ package trust
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -189,6 +190,7 @@ func (s *Server) handleAIClaimVerify(ctx *apptheory.Context) (*apptheory.Respons
 		MaxInflightJobs:      instCfg.AIMaxInflightJobs,
 	})
 	if err != nil {
+		fmt.Printf("ai.GetOrQueue error request_id=%s instance=%s module=%s err=%v\n", strings.TrimSpace(ctx.RequestID), instanceSlug, ai.ClaimVerifyLLMModule, err)
 		s.emitAIRequestMetrics(instanceSlug, ai.ClaimVerifyLLMModule, ai.Response{Status: ai.JobStatusError}, err)
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to queue job"}
 	}

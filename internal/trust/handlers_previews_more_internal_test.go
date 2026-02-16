@@ -295,7 +295,7 @@ func TestLinkPreviewResponseFromModel_StatusAndImageURL(t *testing.T) {
 
 	item.ErrorCode = "fetch_failed"
 	resp = linkPreviewResponseFromModel(ctx, item, true)
-	if resp.Status != "error" {
+	if resp.Status != statusError {
 		t.Fatalf("expected error, got %#v", resp)
 	}
 

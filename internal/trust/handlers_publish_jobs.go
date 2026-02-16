@@ -479,6 +479,7 @@ func (s *Server) precheckLinkSafetyBasicBudget(
 func (s *Server) transactDebitBudgetAndStoreLinkSafetyBasic(
 	ctx *apptheory.Context,
 	allowOverage bool,
+	maxUsed int64,
 	update *models.InstanceBudgetMonth,
 	ledger *models.UsageLedgerEntry,
 	item *models.LinkSafetyBasicResult,
@@ -510,10 +511,9 @@ func (s *Server) transactDebitBudgetAndStoreLinkSafetyBasic(
 		},
 			tabletheory.IfExists(),
 			tabletheory.ConditionExpression(
-				"if_not_exists(usedCredits, :zero) + :delta <= if_not_exists(includedCredits, :zero)",
+				"attribute_not_exists(usedCredits) OR usedCredits <= :max",
 				map[string]any{
-					":zero":  int64(0),
-					":delta": creditsPriced,
+					":max": maxUsed,
 				},
 			),
 		)
@@ -778,7 +778,8 @@ func (s *Server) runLinkSafetyBasicJob(
 	_ = auditScan.UpdateKeys()
 
 	allowOverage := strings.ToLower(strings.TrimSpace(overagePolicy)) == overagePolicyAllow
-	txnErr := s.transactDebitBudgetAndStoreLinkSafetyBasic(ctx, allowOverage, update, ledger, item, auditBudget, auditScan, creditsPriced, now)
+	maxUsed := budget.IncludedCredits - creditsPriced
+	txnErr := s.transactDebitBudgetAndStoreLinkSafetyBasic(ctx, allowOverage, maxUsed, update, ledger, item, auditBudget, auditScan, creditsPriced, now)
 	if theoryErrors.IsConditionFailed(txnErr) {
 		return s.handleLinkSafetyBasicConditionFailed(
 			ctx,
@@ -798,6 +799,7 @@ func (s *Server) runLinkSafetyBasicJob(
 		)
 	}
 	if txnErr != nil {
+		fmt.Printf("link_safety_basic transact error request_id=%s instance=%s job_id=%s err=%v\n", strings.TrimSpace(ctx.RequestID), instanceSlug, jobID, txnErr)
 		return publishJobModuleResponse{
 			Name:          "link_safety_basic",
 			PolicyVersion: linkSafetyBasicPolicyVersion,

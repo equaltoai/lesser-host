@@ -26,14 +26,14 @@ type LinkSafetyBasicLinkResult struct {
 	_ struct{} `theorydb:"naming:camelCase"`
 
 	URL           string   `theorydb:"attr:url" json:"url"`
-	NormalizedURL string   `theorydb:"attr:normalizedUrl" json:"normalized_url,omitempty"`
-	Host          string   `theorydb:"attr:host" json:"host,omitempty"`
-	Flags         []string `theorydb:"attr:flags" json:"flags,omitempty"`
+	NormalizedURL string   `theorydb:"attr:normalizedUrl,omitempty" json:"normalized_url,omitempty"`
+	Host          string   `theorydb:"attr:host,omitempty" json:"host,omitempty"`
+	Flags         []string `theorydb:"attr:flags,omitempty" json:"flags,omitempty"`
 
 	Risk string `theorydb:"attr:risk" json:"risk"`
 
-	ErrorCode    string `theorydb:"attr:errorCode" json:"error_code,omitempty"`
-	ErrorMessage string `theorydb:"attr:errorMessage" json:"error_message,omitempty"`
+	ErrorCode    string `theorydb:"attr:errorCode,omitempty" json:"error_code,omitempty"`
+	ErrorMessage string `theorydb:"attr:errorMessage,omitempty" json:"error_message,omitempty"`
 }
 
 // LinkSafetyBasicResult stores the output of the link-safety-basic analysis module.

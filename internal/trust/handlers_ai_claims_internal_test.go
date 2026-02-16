@@ -359,3 +359,32 @@ func TestHandleAIClaimVerify_OpenAIWebSearchRequiresOpenAIModel(t *testing.T) {
 		t.Fatalf("expected bad_request, got %T: %v", err, err)
 	}
 }
+
+func TestHandleAIClaimVerify_ReturnsInternalErrorWhenAIServiceNotReady(t *testing.T) {
+	t.Parallel()
+
+	s := &Server{
+		ai:    ai.NewService(nil),
+		store: store.New(nil), // trust config store not ready -> default config
+	}
+
+	body, _ := json.Marshal(claimVerifyRequest{
+		Claims: []string{"hello"},
+		Evidence: []claimVerifyEvidenceRequest{
+			{SourceID: "s1", Text: "evidence"},
+		},
+	})
+	ctx := &apptheory.Context{
+		AuthIdentity: "inst",
+		RequestID:    "rid",
+		Request:      apptheory.Request{Body: body},
+	}
+
+	_, err := s.handleAIClaimVerify(ctx)
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if appErr, ok := err.(*apptheory.AppError); !ok || appErr.Code != "app.internal" {
+		t.Fatalf("expected app.internal, got %T: %v", err, err)
+	}
+}

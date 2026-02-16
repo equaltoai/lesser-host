@@ -21,36 +21,36 @@ type AIJob struct {
 	SK  string `theorydb:"sk,attr:SK" json:"-"`
 	TTL int64  `theorydb:"ttl,attr:ttl" json:"-"`
 
-	GSI1PK string `theorydb:"index:gsi1,pk,attr:gsi1PK" json:"-"`
-	GSI1SK string `theorydb:"index:gsi1,sk,attr:gsi1SK" json:"-"`
+	GSI1PK string `theorydb:"index:gsi1,pk,attr:gsi1PK,omitempty" json:"-"`
+	GSI1SK string `theorydb:"index:gsi1,sk,attr:gsi1SK,omitempty" json:"-"`
 
 	ID string `theorydb:"attr:id" json:"id"`
 
-	InstanceSlug string `theorydb:"attr:instanceSlug" json:"instance_slug,omitempty"`
+	InstanceSlug string `theorydb:"attr:instanceSlug,omitempty" json:"instance_slug,omitempty"`
 
 	Module        string `theorydb:"attr:module" json:"module"`
 	PolicyVersion string `theorydb:"attr:policyVersion" json:"policy_version"`
 	ModelSet      string `theorydb:"attr:modelSet" json:"model_set"`
 
-	CacheScope string `theorydb:"attr:cacheScope" json:"cache_scope,omitempty"`
-	ScopeKey   string `theorydb:"attr:scopeKey" json:"scope_key,omitempty"`
+	CacheScope string `theorydb:"attr:cacheScope,omitempty" json:"cache_scope,omitempty"`
+	ScopeKey   string `theorydb:"attr:scopeKey,omitempty" json:"scope_key,omitempty"`
 	InputsHash string `theorydb:"attr:inputsHash" json:"inputs_hash"`
 
-	InputsJSON string          `theorydb:"attr:inputsJson" json:"inputs_json,omitempty"`
-	Evidence   []AIEvidenceRef `theorydb:"attr:evidence" json:"evidence,omitempty"`
+	InputsJSON string          `theorydb:"attr:inputsJson,omitempty" json:"inputs_json,omitempty"`
+	Evidence   []AIEvidenceRef `theorydb:"attr:evidence,omitempty" json:"evidence,omitempty"`
 
 	Status string `theorydb:"attr:status" json:"status"` // queued|ok|error
 
 	Attempts    int64 `theorydb:"attr:attempts" json:"attempts"`
 	MaxAttempts int64 `theorydb:"attr:maxAttempts" json:"max_attempts,omitempty"`
 
-	ErrorCode    string `theorydb:"attr:errorCode" json:"error_code,omitempty"`
-	ErrorMessage string `theorydb:"attr:errorMessage" json:"error_message,omitempty"`
+	ErrorCode    string `theorydb:"attr:errorCode,omitempty" json:"error_code,omitempty"`
+	ErrorMessage string `theorydb:"attr:errorMessage,omitempty" json:"error_message,omitempty"`
 
 	CreatedAt time.Time `theorydb:"attr:createdAt" json:"created_at"`
 	UpdatedAt time.Time `theorydb:"attr:updatedAt" json:"updated_at"`
 	ExpiresAt time.Time `theorydb:"attr:expiresAt" json:"expires_at"`
-	RequestID string    `theorydb:"attr:requestId" json:"request_id,omitempty"`
+	RequestID string    `theorydb:"attr:requestId,omitempty" json:"request_id,omitempty"`
 }
 
 // TableName returns the database table name for AIJob.

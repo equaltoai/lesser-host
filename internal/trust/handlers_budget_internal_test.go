@@ -150,10 +150,10 @@ func TestTransactBudgetDebit(t *testing.T) {
 	audit := &models.AuditLogEntry{Actor: testBudgetInstanceSlug, Action: "budget.debit", Target: "x"}
 	_ = audit.UpdateKeys()
 
-	if err := s.transactBudgetDebit(context.Background(), update, false, 5, now, ledger, audit); err != nil {
+	if err := s.transactBudgetDebit(context.Background(), update, false, 5, 5, now, ledger, audit); err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if err := s.transactBudgetDebit(context.Background(), update, true, 5, now, ledger, audit); err != nil {
+	if err := s.transactBudgetDebit(context.Background(), update, true, 5, 5, now, ledger, audit); err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
 }

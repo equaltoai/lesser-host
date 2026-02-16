@@ -295,6 +295,44 @@ func TestServiceGetOrQueue_QueueNoChargeAndDebit(t *testing.T) {
 	}
 }
 
+func TestServiceGetOrQueue_AllowOverage_DebitsAndReturnsOverageReason(t *testing.T) {
+	t.Parallel()
+
+	tdb := newAIServiceTestDB()
+	svc := NewService(store.New(tdb.db))
+
+	tdb.qRes.On("First", mock.AnythingOfType("*models.AIResult")).Return(theoryErrors.ErrItemNotFound).Once()
+	tdb.qJob.On("First", mock.AnythingOfType("*models.AIJob")).Return(theoryErrors.ErrItemNotFound).Once()
+	tdb.qBudget.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.InstanceBudgetMonth](t, args, 0)
+		*dest = models.InstanceBudgetMonth{IncludedCredits: 0, UsedCredits: 0}
+		_ = dest.UpdateKeys()
+	}).Once()
+	tdb.qBudget.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.InstanceBudgetMonth](t, args, 0)
+		*dest = models.InstanceBudgetMonth{IncludedCredits: 0, UsedCredits: 10}
+		_ = dest.UpdateKeys()
+	}).Once()
+
+	resp, err := svc.GetOrQueue(context.Background(), Request{
+		InstanceSlug:  "inst",
+		RequestID:     "rid",
+		Module:        "moderation_text_llm",
+		PolicyVersion: "v1",
+		ModelSet:      "deterministic",
+		Inputs:        map[string]any{"text": "hello"},
+		BaseCredits:   10,
+		AllowOverage:  true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, JobStatusQueued, resp.Status)
+	require.True(t, resp.Budget.Allowed)
+	require.True(t, resp.Budget.OverBudget)
+	require.Equal(t, "overage", resp.Budget.Reason)
+	require.Equal(t, int64(0), resp.Budget.IncludedCredits)
+	require.Equal(t, int64(10), resp.Budget.UsedCredits)
+}
+
 func TestServiceHandleDebitConditionFailed_CoversBranches(t *testing.T) {
 	t.Parallel()
 
