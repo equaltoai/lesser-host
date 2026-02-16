@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/codebuild"
 	cbtypes "github.com/aws/aws-sdk-go-v2/service/codebuild/types"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
@@ -17,6 +18,7 @@ import (
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
+	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
 func TestProvisionWorkerServerRegister_CoversQueueHookBranch(t *testing.T) {
@@ -202,6 +204,7 @@ func TestAdvanceProvisionDeployStart_Branches(t *testing.T) {
 	t.Parallel()
 
 	db := ttmocks.NewMockExtendedDB()
+	db.On("WithContext", mock.Anything).Return(db).Maybe()
 	st := store.New(db)
 
 	now := time.Now().UTC()
@@ -226,6 +229,18 @@ func TestAdvanceProvisionDeployStart_Branches(t *testing.T) {
 	})
 
 	t.Run("start_runner_error_retries", func(t *testing.T) {
+		qInst := new(ttmocks.MockQuery)
+		db.On("Model", mock.AnythingOfType("*models.Instance")).Return(qInst).Maybe()
+		qInst.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qInst).Maybe()
+		qInst.On("ConsistentRead").Return(qInst).Maybe()
+		qInst.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+			*dest = models.Instance{
+				Slug:                        "slug",
+				LesserHostInstanceKeySecretARN: "arn:aws:secretsmanager:us-east-1:123:secret:test",
+			}
+		}).Maybe()
+
 		cb := &fakeCodebuild{startErr: errors.New("boom")}
 		s := &Server{
 			cfg: config.Config{

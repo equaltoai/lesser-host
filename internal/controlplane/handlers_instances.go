@@ -52,6 +52,10 @@ type instanceResponse struct {
 	HostedRegion           string    `json:"hosted_region,omitempty"`
 	HostedBaseDomain       string    `json:"hosted_base_domain,omitempty"`
 	HostedZoneID           string    `json:"hosted_zone_id,omitempty"`
+	LesserVersion          string    `json:"lesser_version,omitempty"`
+	LesserHostBaseURL      string    `json:"lesser_host_base_url,omitempty"`
+	LesserHostAttestationsURL string `json:"lesser_host_attestations_url,omitempty"`
+	TranslationEnabled     bool      `json:"translation_enabled"`
 	HostedPreviewsEnabled  bool      `json:"hosted_previews_enabled"`
 	LinkSafetyEnabled      bool      `json:"link_safety_enabled"`
 	RendersEnabled         bool      `json:"renders_enabled"`
@@ -97,6 +101,7 @@ type updateInstanceConfigRequest struct {
 	AIBatchMaxTotalBytes   *int64  `json:"ai_batch_max_total_bytes,omitempty"`
 	AIPricingMultiplierBps *int64  `json:"ai_pricing_multiplier_bps,omitempty"`
 	AIMaxInflightJobs      *int64  `json:"ai_max_inflight_jobs,omitempty"`
+	TranslationEnabled     *bool   `json:"translation_enabled,omitempty"`
 }
 
 type setBudgetMonthRequest struct {
@@ -125,6 +130,10 @@ func instanceResponseFromModel(inst *models.Instance) instanceResponse {
 		HostedRegion:           strings.TrimSpace(inst.HostedRegion),
 		HostedBaseDomain:       strings.TrimSpace(inst.HostedBaseDomain),
 		HostedZoneID:           strings.TrimSpace(inst.HostedZoneID),
+		LesserVersion:          strings.TrimSpace(inst.LesserVersion),
+		LesserHostBaseURL:      strings.TrimSpace(inst.LesserHostBaseURL),
+		LesserHostAttestationsURL: strings.TrimSpace(inst.LesserHostAttestationsURL),
+		TranslationEnabled:     effectiveTranslationEnabled(inst.TranslationEnabled),
 		HostedPreviewsEnabled:  effectiveHostedPreviewsEnabled(inst.HostedPreviewsEnabled),
 		LinkSafetyEnabled:      effectiveLinkSafetyEnabled(inst.LinkSafetyEnabled),
 		RendersEnabled:         effectiveRendersEnabled(inst.RendersEnabled),
@@ -419,6 +428,13 @@ func effectiveAIMaxInflightJobs(v *int64) int64 {
 	return *v
 }
 
+func effectiveTranslationEnabled(v *bool) bool {
+	if v == nil {
+		return false
+	}
+	return *v
+}
+
 func (s *Server) handleCreateInstanceKey(ctx *apptheory.Context) (*apptheory.Response, error) {
 	if err := requireAdmin(ctx); err != nil {
 		return nil, err
@@ -529,27 +545,7 @@ func (s *Server) handleUpdateInstanceConfig(ctx *apptheory.Context) (*apptheory.
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
-	return apptheory.JSON(http.StatusOK, instanceResponse{
-		Slug:                   inst.Slug,
-		Owner:                  inst.Owner,
-		Status:                 inst.Status,
-		HostedPreviewsEnabled:  effectiveHostedPreviewsEnabled(inst.HostedPreviewsEnabled),
-		LinkSafetyEnabled:      effectiveLinkSafetyEnabled(inst.LinkSafetyEnabled),
-		RendersEnabled:         effectiveRendersEnabled(inst.RendersEnabled),
-		RenderPolicy:           effectiveRenderPolicy(inst.RenderPolicy),
-		OveragePolicy:          effectiveOveragePolicy(inst.OveragePolicy),
-		ModerationEnabled:      effectiveModerationEnabled(inst.ModerationEnabled),
-		ModerationTrigger:      effectiveModerationTrigger(inst.ModerationTrigger),
-		ModerationViralityMin:  effectiveModerationViralityMin(inst.ModerationViralityMin),
-		AIEnabled:              effectiveAIEnabled(inst.AIEnabled),
-		AIModelSet:             effectiveAIModelSet(inst.AIModelSet),
-		AIBatchingMode:         effectiveAIBatchingMode(inst.AIBatchingMode),
-		AIBatchMaxItems:        effectiveAIBatchMaxItems(inst.AIBatchMaxItems),
-		AIBatchMaxTotalBytes:   effectiveAIBatchMaxTotalBytes(inst.AIBatchMaxTotalBytes),
-		AIPricingMultiplierBps: effectiveAIPricingMultiplierBps(inst.AIPricingMultiplierBps),
-		AIMaxInflightJobs:      effectiveAIMaxInflightJobs(inst.AIMaxInflightJobs),
-		CreatedAt:              inst.CreatedAt,
-	})
+	return apptheory.JSON(http.StatusOK, instanceResponseFromModel(inst))
 }
 
 func buildInstanceConfigUpdate(slug string, req updateInstanceConfigRequest) (*models.Instance, []string, error) {
@@ -595,6 +591,8 @@ func buildInstanceConfigUpdate(slug string, req updateInstanceConfigRequest) (*m
 	if err := setAIMaxInflightJobs(update, req.AIMaxInflightJobs, &fields); err != nil {
 		return nil, nil, err
 	}
+
+	setBoolPtr(&update.TranslationEnabled, req.TranslationEnabled, "TranslationEnabled", &fields)
 
 	if len(fields) == 0 {
 		return nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: "no config fields provided"}

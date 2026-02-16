@@ -15,14 +15,18 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/route53"
 	r53types "github.com/aws/aws-sdk-go-v2/service/route53/types"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
+	smtypes "github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	ststypes "github.com/aws/aws-sdk-go-v2/service/sts/types"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
 
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
+	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
 type fakeOrg struct {
@@ -118,6 +122,38 @@ func (f *fakeCodebuild) StartBuild(_ context.Context, _ *codebuild.StartBuildInp
 	return f.startOut, nil
 }
 
+type fakeSecretsManager struct {
+	describeOut *secretsmanager.DescribeSecretOutput
+	describeErr error
+
+	getOut *secretsmanager.GetSecretValueOutput
+	getErr error
+
+	createOut *secretsmanager.CreateSecretOutput
+	createErr error
+}
+
+func (f *fakeSecretsManager) CreateSecret(_ context.Context, _ *secretsmanager.CreateSecretInput, _ ...func(*secretsmanager.Options)) (*secretsmanager.CreateSecretOutput, error) {
+	if f.createErr != nil {
+		return nil, f.createErr
+	}
+	return f.createOut, nil
+}
+
+func (f *fakeSecretsManager) DescribeSecret(_ context.Context, _ *secretsmanager.DescribeSecretInput, _ ...func(*secretsmanager.Options)) (*secretsmanager.DescribeSecretOutput, error) {
+	if f.describeErr != nil {
+		return nil, f.describeErr
+	}
+	return f.describeOut, nil
+}
+
+func (f *fakeSecretsManager) GetSecretValue(_ context.Context, _ *secretsmanager.GetSecretValueInput, _ ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error) {
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
+	return f.getOut, nil
+}
+
 func (f *fakeCodebuild) BatchGetBuilds(_ context.Context, _ *codebuild.BatchGetBuildsInput, _ ...func(*codebuild.Options)) (*codebuild.BatchGetBuildsOutput, error) {
 	if f.batchErr != nil {
 		return nil, f.batchErr
@@ -157,6 +193,36 @@ func TestProvisionStateMachine_SuccessPathAcrossSteps(t *testing.T) {
 	t.Parallel()
 
 	db := ttmocks.NewMockExtendedDB()
+	db.On("WithContext", mock.Anything).Return(db).Maybe()
+
+	qInst := new(ttmocks.MockQuery)
+	db.On("Model", mock.AnythingOfType("*models.Instance")).Return(qInst).Maybe()
+	qInst.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qInst).Maybe()
+	qInst.On("ConsistentRead").Return(qInst).Maybe()
+
+	instanceLoads := 0
+	translationEnabled := true
+	qInst.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		instanceLoads++
+		if instanceLoads == 1 {
+			*dest = models.Instance{Slug: "demo"}
+			return
+		}
+		*dest = models.Instance{
+			Slug:                        "demo",
+			LesserHostInstanceKeySecretARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:test",
+			LesserHostBaseURL:           "https://lab.lesser.host",
+			LesserHostAttestationsURL:   "https://lab.lesser.host",
+			TranslationEnabled:          &translationEnabled,
+		}
+	}).Maybe()
+
+	qKey := new(ttmocks.MockQuery)
+	db.On("Model", mock.AnythingOfType("*models.InstanceKey")).Return(qKey).Maybe()
+	qKey.On("IfNotExists").Return(qKey).Maybe()
+	qKey.On("Create").Return(nil).Maybe()
+
 	st := store.New(db)
 
 	org := &fakeOrg{
@@ -189,8 +255,15 @@ func TestProvisionStateMachine_SuccessPathAcrossSteps(t *testing.T) {
 
 	s3Client := &fakeS3{out: &s3.GetObjectOutput{Body: io.NopCloser(strings.NewReader(`{"app":"x","base_domain":"d","account_id":"123456789012","region":"us-east-1","hosted_zone":{"id":"/hostedzone/Z1","name":"d."}}`))}}
 
+	sm := &fakeSecretsManager{
+		describeErr: &smtypes.ResourceNotFoundException{},
+		createOut:   &secretsmanager.CreateSecretOutput{ARN: aws.String("arn:aws:secretsmanager:us-east-1:123456789012:secret:test")},
+	}
+
 	s := &Server{
 		cfg: config.Config{
+			Stage:                            "lab",
+			WebAuthnRPID:                     "lesser.host",
 			ManagedProvisioningEnabled:        true,
 			ManagedDefaultRegion:              "us-east-1",
 			ManagedParentHostedZoneID:         "ZPARENT",
@@ -212,6 +285,9 @@ func TestProvisionStateMachine_SuccessPathAcrossSteps(t *testing.T) {
 		sts:   stsClient,
 		cb:    cb,
 		s3:    s3Client,
+		smFactory: func(context.Context, string, string, string, string, string) (secretsManagerAPI, error) {
+			return sm, nil
+		},
 	}
 
 	now := time.Now().UTC()
@@ -273,6 +349,11 @@ func TestProvisionStateMachine_SuccessPathAcrossSteps(t *testing.T) {
 	require.Equal(t, "ZCHILD", job.ChildHostedZoneID)
 
 	delay, _, err = s.advanceProvisionParentDelegation(context.Background(), job, "req", now)
+	require.NoError(t, err)
+	require.Zero(t, delay)
+	require.Equal(t, provisionStepInstanceConfig, job.Step)
+
+	delay, _, err = s.advanceProvisionInstanceConfig(context.Background(), job, "req", now)
 	require.NoError(t, err)
 	require.Zero(t, delay)
 	require.Equal(t, provisionStepDeployStart, job.Step)

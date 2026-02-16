@@ -2,7 +2,9 @@ package provisionworker
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +24,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/route53"
 	r53types "github.com/aws/aws-sdk-go-v2/service/route53/types"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
+	smtypes "github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/aws/smithy-go"
@@ -68,6 +72,14 @@ type s3API interface {
 	GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error)
 }
 
+type secretsManagerAPI interface {
+	CreateSecret(ctx context.Context, params *secretsmanager.CreateSecretInput, optFns ...func(*secretsmanager.Options)) (*secretsmanager.CreateSecretOutput, error)
+	DescribeSecret(ctx context.Context, params *secretsmanager.DescribeSecretInput, optFns ...func(*secretsmanager.Options)) (*secretsmanager.DescribeSecretOutput, error)
+	GetSecretValue(ctx context.Context, params *secretsmanager.GetSecretValueInput, optFns ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error)
+}
+
+type secretsManagerClientFactory func(ctx context.Context, accountID string, roleName string, region string, slug string, jobID string) (secretsManagerAPI, error)
+
 // Server processes provisioning jobs from the worker queue.
 type Server struct {
 	cfg config.Config
@@ -80,6 +92,8 @@ type Server struct {
 	sqs sqsAPI
 	cb  codebuildAPI
 	s3  s3API
+
+	smFactory secretsManagerClientFactory
 }
 
 // NewServer constructs a Server with AWS service clients and a store.
@@ -171,6 +185,32 @@ func (s *Server) loadProvisionJob(ctx context.Context, jobID string) (*models.Pr
 	return job, nil
 }
 
+func (s *Server) loadInstance(ctx context.Context, slug string) (*models.Instance, error) {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return nil, fmt.Errorf("store not initialized")
+	}
+
+	slug = strings.TrimSpace(strings.ToLower(slug))
+	if slug == "" {
+		return nil, fmt.Errorf("instance slug is required")
+	}
+
+	var inst models.Instance
+	err := s.store.DB.WithContext(ctx).
+		Model(&models.Instance{}).
+		Where("PK", "=", fmt.Sprintf("INSTANCE#%s", slug)).
+		Where("SK", "=", models.SKMetadata).
+		ConsistentRead().
+		First(&inst)
+	if theoryErrors.IsNotFound(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &inst, nil
+}
+
 func provisionJobProcessable(job *models.ProvisionJob) bool {
 	if job == nil {
 		return false
@@ -240,6 +280,7 @@ const (
 	provisionStepAssumeRole         = "account.assumeRole"
 	provisionStepChildZone          = "dns.childZone"
 	provisionStepParentDelegation   = "dns.parentDelegation"
+	provisionStepInstanceConfig     = "instance.config"
 	provisionStepDeployStart        = "deploy.start"
 	provisionStepDeployWait         = "deploy.wait"
 	provisionStepReceiptIngest      = "receipt.ingest"
@@ -330,6 +371,29 @@ func managedBaseDomain(slug string, parentDomain string) string {
 	return fmt.Sprintf("%s.%s", slug, strings.TrimPrefix(parentDomain, "."))
 }
 
+func (s *Server) publicBaseURL() string {
+	if s == nil {
+		return ""
+	}
+
+	rootDomain := strings.TrimSpace(s.cfg.WebAuthnRPID)
+	if rootDomain == "" {
+		rootDomain = "lesser.host"
+	}
+
+	stage := strings.ToLower(strings.TrimSpace(s.cfg.Stage))
+	if stage == "" {
+		stage = "lab"
+	}
+
+	switch stage {
+	case "live", "prod", "production":
+		return "https://" + rootDomain
+	default:
+		return "https://" + stage + "." + rootDomain
+	}
+}
+
 func (s *Server) startManagedProvisioningJobIfQueued(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) error {
 	if s == nil || job == nil {
 		return nil
@@ -399,6 +463,8 @@ func (s *Server) advanceManagedProvisioning(ctx context.Context, job *models.Pro
 		return s.advanceProvisionChildZone(ctx, job, requestID, now)
 	case provisionStepParentDelegation:
 		return s.advanceProvisionParentDelegation(ctx, job, requestID, now)
+	case provisionStepInstanceConfig:
+		return s.advanceProvisionInstanceConfig(ctx, job, requestID, now)
 	case provisionStepDeployStart:
 		return s.advanceProvisionDeployStart(ctx, job, requestID, now)
 	case provisionStepDeployWait:
@@ -878,12 +944,270 @@ func (s *Server) advanceProvisionParentDelegation(ctx context.Context, job *mode
 		return jitteredBackoff(job.Attempts, provisionDefaultShortRetryDelay, 10*time.Minute), false, nil
 	}
 
-	job.Step = provisionStepDeployStart
-	job.Note = "starting instance deploy runner"
+	job.Step = provisionStepInstanceConfig
+	job.Note = "ensuring instance configuration"
 	if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
 		return 0, false, err
 	}
 	return 0, false, nil
+}
+
+func (s *Server) advanceProvisionInstanceConfig(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return 0, false, fmt.Errorf("store not initialized")
+	}
+	if job == nil {
+		return 0, true, nil
+	}
+
+	accID := strings.TrimSpace(job.AccountID)
+	if accID == "" {
+		job.Step = provisionStepAccountCreate
+		job.Note = noteMissingAccountIDRestart
+		if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
+			return 0, false, err
+		}
+		return 0, false, nil
+	}
+
+	inst, err := s.loadInstance(ctx, strings.TrimSpace(job.InstanceSlug))
+	if err != nil {
+		return s.retryProvisionJobOrFail(ctx, job, requestID, now, "instance_load_failed", "failed to load instance: "+err.Error(), provisionDefaultShortRetryDelay, 2*time.Minute)
+	}
+	if inst == nil {
+		return 0, false, s.failJob(ctx, job, requestID, now, "instance_not_found", "instance record not found")
+	}
+
+	publicBaseURL := strings.TrimSpace(s.publicBaseURL())
+	attestationsURL := strings.TrimSpace(publicBaseURL)
+
+	translationEnabled := effectiveTranslationEnabled(inst.TranslationEnabled)
+	if inst.TranslationEnabled == nil {
+		translationEnabled = true
+	}
+
+	secretArn, err := s.ensureManagedInstanceKeySecret(ctx, job, inst)
+	if err != nil {
+		return s.retryProvisionJobOrFail(ctx, job, requestID, now, "instance_key_secret_failed", "failed to ensure instance key secret: "+err.Error(), provisionDefaultShortRetryDelay, 5*time.Minute)
+	}
+
+	job.Step = provisionStepDeployStart
+	job.Note = "starting instance deploy runner"
+	if err := s.persistJobAndInstance(ctx, job, requestID, now, func(ub core.UpdateBuilder) error {
+		if strings.TrimSpace(job.LesserVersion) != "" {
+			ub.Set("LesserVersion", strings.TrimSpace(job.LesserVersion))
+		}
+		if publicBaseURL != "" {
+			ub.Set("LesserHostBaseURL", publicBaseURL)
+			ub.Set("LesserHostAttestationsURL", attestationsURL)
+		}
+		if strings.TrimSpace(secretArn) != "" {
+			ub.Set("LesserHostInstanceKeySecretARN", strings.TrimSpace(secretArn))
+		}
+		if inst.TranslationEnabled == nil {
+			ub.Set("TranslationEnabled", translationEnabled)
+		}
+		return nil
+	}); err != nil {
+		return 0, false, err
+	}
+	return 0, false, nil
+}
+
+func effectiveTranslationEnabled(v *bool) bool {
+	if v == nil {
+		return false
+	}
+	return *v
+}
+
+const (
+	managedInstanceKeySecretTagInstanceSlug = "lesser-host:instance-slug"
+	managedInstanceKeySecretTagKeyID        = "lesser-host:instance-key-id"
+	managedInstanceKeySecretTagManaged      = "lesser-host:managed"
+)
+
+func managedInstanceKeySecretName(controlPlaneStage, slug string) string {
+	stage := strings.ToLower(strings.TrimSpace(controlPlaneStage))
+	if stage == "" {
+		stage = "lab"
+	}
+	slug = strings.ToLower(strings.TrimSpace(slug))
+	if slug == "" {
+		return ""
+	}
+	return fmt.Sprintf("lesser-host/%s/instances/%s/instance-key", stage, slug)
+}
+
+func secretsManagerTagValue(tags []smtypes.Tag, key string) string {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return ""
+	}
+	for _, t := range tags {
+		if strings.TrimSpace(aws.ToString(t.Key)) == key {
+			return strings.TrimSpace(aws.ToString(t.Value))
+		}
+	}
+	return ""
+}
+
+func isSecretsManagerNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	var nf *smtypes.ResourceNotFoundException
+	return errors.As(err, &nf)
+}
+
+func isSecretsManagerExists(err error) bool {
+	if err == nil {
+		return false
+	}
+	var exists *smtypes.ResourceExistsException
+	return errors.As(err, &exists)
+}
+
+func secretValueToKeyID(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
+}
+
+func (s *Server) ensureInstanceKeyRecord(ctx context.Context, slug, keyID string) error {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return fmt.Errorf("store not initialized")
+	}
+	slug = strings.ToLower(strings.TrimSpace(slug))
+	keyID = strings.TrimSpace(keyID)
+	if slug == "" || keyID == "" {
+		return fmt.Errorf("slug and keyID are required")
+	}
+
+	now := time.Now().UTC()
+	key := &models.InstanceKey{
+		ID:           keyID,
+		InstanceSlug: slug,
+		CreatedAt:    now,
+	}
+	_ = key.UpdateKeys()
+
+	err := s.store.DB.WithContext(ctx).Model(key).IfNotExists().Create()
+	if theoryErrors.IsConditionFailed(err) {
+		return nil
+	}
+	return err
+}
+
+func (s *Server) ensureManagedInstanceKeySecret(ctx context.Context, job *models.ProvisionJob, inst *models.Instance) (string, error) {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return "", fmt.Errorf("store not initialized")
+	}
+	if job == nil || inst == nil {
+		return "", fmt.Errorf("job and instance are required")
+	}
+
+	accountID := strings.TrimSpace(job.AccountID)
+	roleName := strings.TrimSpace(job.AccountRoleName)
+	region := strings.TrimSpace(job.Region)
+	slug := strings.ToLower(strings.TrimSpace(job.InstanceSlug))
+	jobID := strings.TrimSpace(job.ID)
+	if accountID == "" || roleName == "" || slug == "" || jobID == "" {
+		return "", fmt.Errorf("missing required provisioning inputs")
+	}
+
+	secretName := managedInstanceKeySecretName(s.cfg.Stage, slug)
+	if secretName == "" {
+		return "", fmt.Errorf("failed to derive secret name")
+	}
+
+	sm, err := s.childSecretsManagerClient(ctx, accountID, roleName, region, slug, jobID)
+	if err != nil {
+		return "", err
+	}
+
+	secretID := strings.TrimSpace(inst.LesserHostInstanceKeySecretARN)
+	if secretID == "" {
+		secretID = secretName
+	}
+
+	describeAndEnsure := func(secretID string) (string, error) {
+		desc, err := sm.DescribeSecret(ctx, &secretsmanager.DescribeSecretInput{SecretId: aws.String(secretID)})
+		if err != nil {
+			return "", err
+		}
+		secretArn := strings.TrimSpace(aws.ToString(desc.ARN))
+		if secretArn == "" {
+			secretArn = strings.TrimSpace(secretID)
+		}
+
+		keyID := secretsManagerTagValue(desc.Tags, managedInstanceKeySecretTagKeyID)
+		if keyID == "" {
+			out, err := sm.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{SecretId: aws.String(secretArn)})
+			if err != nil {
+				return "", fmt.Errorf("get secret value: %w", err)
+			}
+			raw := strings.TrimSpace(aws.ToString(out.SecretString))
+			if raw == "" && len(out.SecretBinary) > 0 {
+				raw = strings.TrimSpace(string(out.SecretBinary))
+			}
+			keyID = secretValueToKeyID(raw)
+		}
+		if keyID == "" {
+			return "", fmt.Errorf("unable to resolve instance key id from secret")
+		}
+		if err := s.ensureInstanceKeyRecord(ctx, slug, keyID); err != nil {
+			return "", fmt.Errorf("ensure instance key record: %w", err)
+		}
+
+		return secretArn, nil
+	}
+
+	if arn, err := describeAndEnsure(secretID); err == nil {
+		return arn, nil
+	} else if err != nil && !isSecretsManagerNotFound(err) {
+		return "", err
+	}
+
+	secretToken, err := newToken(32)
+	if err != nil {
+		return "", err
+	}
+	plaintext := "lhk_" + secretToken
+	keyID := secretValueToKeyID(plaintext)
+	if keyID == "" {
+		return "", fmt.Errorf("failed to derive instance key id")
+	}
+
+	createOut, err := sm.CreateSecret(ctx, &secretsmanager.CreateSecretInput{
+		Name:         aws.String(secretName),
+		Description:  aws.String("lesser.host managed instance API key"),
+		SecretString: aws.String(plaintext),
+		Tags: []smtypes.Tag{
+			{Key: aws.String(managedInstanceKeySecretTagInstanceSlug), Value: aws.String(slug)},
+			{Key: aws.String(managedInstanceKeySecretTagKeyID), Value: aws.String(keyID)},
+			{Key: aws.String(managedInstanceKeySecretTagManaged), Value: aws.String("true")},
+		},
+	})
+	if err != nil {
+		if isSecretsManagerExists(err) {
+			return describeAndEnsure(secretName)
+		}
+		return "", err
+	}
+
+	if err := s.ensureInstanceKeyRecord(ctx, slug, keyID); err != nil {
+		return "", fmt.Errorf("ensure instance key record: %w", err)
+	}
+
+	arn := strings.TrimSpace(aws.ToString(createOut.ARN))
+	if arn == "" {
+		return describeAndEnsure(secretName)
+	}
+	return arn, nil
 }
 
 func (s *Server) advanceProvisionDeployStart(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {
@@ -894,6 +1218,22 @@ func (s *Server) advanceProvisionDeployStart(ctx context.Context, job *models.Pr
 			return 0, false, err
 		}
 		return provisionDefaultPollDelay, false, nil
+	}
+
+	inst, err := s.loadInstance(ctx, strings.TrimSpace(job.InstanceSlug))
+	if err != nil {
+		return s.retryProvisionJobOrFail(ctx, job, requestID, now, "instance_load_failed", "failed to load instance: "+err.Error(), provisionDefaultShortRetryDelay, 2*time.Minute)
+	}
+	if inst == nil {
+		return 0, false, s.failJob(ctx, job, requestID, now, "instance_not_found", "instance record not found")
+	}
+	if strings.TrimSpace(inst.LesserHostInstanceKeySecretARN) == "" {
+		job.Step = provisionStepInstanceConfig
+		job.Note = "ensuring instance configuration"
+		if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
+			return 0, false, err
+		}
+		return 0, false, nil
 	}
 
 	runID, err := s.startDeployRunner(ctx, job)
@@ -1217,6 +1557,41 @@ func (s *Server) childRoute53Client(ctx context.Context, accountID string, roleN
 	}), nil
 }
 
+func (s *Server) childSecretsManagerClient(ctx context.Context, accountID string, roleName string, region string, slug string, jobID string) (secretsManagerAPI, error) {
+	if s == nil {
+		return nil, fmt.Errorf("server not initialized")
+	}
+	if s.smFactory != nil {
+		return s.smFactory(ctx, accountID, roleName, region, slug, jobID)
+	}
+
+	region = strings.TrimSpace(region)
+	if region == "" {
+		region = strings.TrimSpace(s.cfg.ManagedDefaultRegion)
+	}
+	if region == "" {
+		region = "us-east-1"
+	}
+
+	assumed, _, err := s.assumeInstanceRole(ctx, accountID, roleName, slug, jobID)
+	if err != nil {
+		return nil, fmt.Errorf("assume instance role: %w", err)
+	}
+	if assumed == nil || assumed.Credentials == nil {
+		return nil, fmt.Errorf("assume role returned empty credentials")
+	}
+
+	creds := credentials.NewStaticCredentialsProvider(
+		aws.ToString(assumed.Credentials.AccessKeyId),
+		aws.ToString(assumed.Credentials.SecretAccessKey),
+		aws.ToString(assumed.Credentials.SessionToken),
+	)
+	return secretsmanager.New(secretsmanager.Options{
+		Region:      region,
+		Credentials: aws.NewCredentialsCache(creds),
+	}), nil
+}
+
 func ensureHostedZoneAndNameServers(
 	ctx context.Context,
 	childClient *route53.Client,
@@ -1491,10 +1866,40 @@ func (s *Server) startDeployRunner(ctx context.Context, job *models.ProvisionJob
 		return "", err
 	}
 
+	inst, err := s.loadInstance(ctx, strings.TrimSpace(job.InstanceSlug))
+	if err != nil {
+		return "", err
+	}
+	if inst == nil {
+		return "", fmt.Errorf("instance not found")
+	}
+
+	lesserHostURL := strings.TrimSpace(inst.LesserHostBaseURL)
+	if lesserHostURL == "" {
+		lesserHostURL = strings.TrimSpace(s.publicBaseURL())
+	}
+	lesserHostAttestationsURL := strings.TrimSpace(inst.LesserHostAttestationsURL)
+	if lesserHostAttestationsURL == "" {
+		lesserHostAttestationsURL = lesserHostURL
+	}
+	instanceKeySecretArn := strings.TrimSpace(inst.LesserHostInstanceKeySecretARN)
+	if instanceKeySecretArn == "" {
+		return "", fmt.Errorf("instance key secret arn is missing")
+	}
+	if lesserHostURL == "" {
+		return "", fmt.Errorf("lesser host base url is missing")
+	}
+
 	receiptKey := s.receiptS3Key(job)
 	bootstrapKey := s.bootstrapS3Key(job)
 	stage := s.deployRunnerStage(job)
 	env := s.buildDeployRunnerEnv(job, stage, receiptKey, bootstrapKey)
+	env = append(env,
+		cbtypes.EnvironmentVariable{Name: aws.String("LESSER_HOST_URL"), Value: aws.String(lesserHostURL)},
+		cbtypes.EnvironmentVariable{Name: aws.String("LESSER_HOST_ATTESTATIONS_URL"), Value: aws.String(lesserHostAttestationsURL)},
+		cbtypes.EnvironmentVariable{Name: aws.String("LESSER_HOST_INSTANCE_KEY_ARN"), Value: aws.String(instanceKeySecretArn)},
+		cbtypes.EnvironmentVariable{Name: aws.String("TRANSLATION_ENABLED"), Value: aws.String(fmt.Sprintf("%t", effectiveTranslationEnabled(inst.TranslationEnabled)))},
+	)
 
 	out, err := s.cb.StartBuild(ctx, &codebuild.StartBuildInput{
 		ProjectName:                  aws.String(projectName),

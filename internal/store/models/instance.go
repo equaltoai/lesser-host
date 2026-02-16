@@ -31,6 +31,11 @@ type Instance struct {
 	HostedRegion           string    `theorydb:"attr:hostedRegion" json:"hosted_region,omitempty"`
 	HostedBaseDomain       string    `theorydb:"attr:hostedBaseDomain" json:"hosted_base_domain,omitempty"`
 	HostedZoneID           string    `theorydb:"attr:hostedZoneId" json:"hosted_zone_id,omitempty"`
+	LesserVersion          string    `theorydb:"attr:lesserVersion" json:"lesser_version,omitempty"`
+	LesserHostBaseURL      string    `theorydb:"attr:lesserHostBaseUrl" json:"lesser_host_base_url,omitempty"`
+	LesserHostAttestationsURL string `theorydb:"attr:lesserHostAttestationsUrl" json:"lesser_host_attestations_url,omitempty"`
+	LesserHostInstanceKeySecretARN string `theorydb:"attr:lesserHostInstanceKeySecretArn" json:"lesser_host_instance_key_secret_arn,omitempty"`
+	TranslationEnabled     *bool     `theorydb:"attr:translationEnabled" json:"translation_enabled,omitempty"`
 	HostedPreviewsEnabled  *bool     `theorydb:"attr:hostedPreviewsEnabled" json:"hosted_previews_enabled,omitempty"`
 	LinkSafetyEnabled      *bool     `theorydb:"attr:linkSafetyEnabled" json:"link_safety_enabled,omitempty"`
 	RendersEnabled         *bool     `theorydb:"attr:rendersEnabled" json:"renders_enabled,omitempty"`
