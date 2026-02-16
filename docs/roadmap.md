@@ -10,6 +10,7 @@ trust/safety planning.
 - Deployment contract (consumed by `theory app up/down`): `app-theory/app.json`
 - Frontend roadmap (portal + operator console): `docs/frontend-roadmap.md`
 - AI services subroadmap: `docs/ai-services-roadmap.md`
+- Domain-first URLs + provisioned config + managed updates: `docs/roadmap-domain-first.md`
 - Lesser release contract (consumed for managed instance deploys): `docs/lesser-release-contract.md`
 - Managed provisioning notes: `docs/managed-instance-provisioning.md`
 - Moderation provider notes: `docs/moderation-provider.md`

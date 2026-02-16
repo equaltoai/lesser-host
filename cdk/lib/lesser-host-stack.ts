@@ -727,6 +727,14 @@ export class LesserHostStack extends cdk.Stack {
 			originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
 		};
 
+		const trustApiBehavior: cloudfront.BehaviorOptions = {
+			origin: trustOrigin,
+			viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+			allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
+			cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
+			originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+		};
+
 		const trustBehaviorNoCache: cloudfront.BehaviorOptions = {
 			origin: trustOrigin,
 			viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
@@ -761,6 +769,12 @@ export class LesserHostStack extends cdk.Stack {
 				],
 			},
 			additionalBehaviors: {
+				'api/v1/previews*': trustApiBehavior,
+				'api/v1/renders*': trustApiBehavior,
+				'api/v1/publish/jobs*': trustApiBehavior,
+				'api/v1/ai/*': trustApiBehavior,
+				'api/v1/budget/debit': trustApiBehavior,
+
 				'api/*': apiBehavior,
 				'auth/*': apiBehavior,
 				'setup/status': apiBehavior,
@@ -825,6 +839,7 @@ export class LesserHostStack extends cdk.Stack {
 		new cdk.CfnOutput(this, 'ControlPlaneUrl', { value: controlPlaneUrl.url });
 		new cdk.CfnOutput(this, 'TrustUrl', { value: trustUrl.url });
 		new cdk.CfnOutput(this, 'WebDistributionDomain', { value: webDistribution.distributionDomainName });
+		new cdk.CfnOutput(this, 'PublicBaseUrl', { value: `https://${webDomainName}` });
 		new cdk.CfnOutput(this, 'WebUrl', {
 			value: webCert ? `https://${webDomainName}` : `https://${webDistribution.distributionDomainName}`,
 		});
