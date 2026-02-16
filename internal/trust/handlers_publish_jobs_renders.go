@@ -479,6 +479,7 @@ func (s *Server) debitLinkRenderBudget(
 	}
 	_ = auditBudget.UpdateKeys()
 
+	maxUsed := budget.IncludedCredits - creditsNeededPriced
 	err = s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
 		if allowOverage {
 			tx.UpdateWithBuilder(update, func(ub core.UpdateBuilder) error {
@@ -494,10 +495,9 @@ func (s *Server) debitLinkRenderBudget(
 			},
 				tabletheory.IfExists(),
 				tabletheory.ConditionExpression(
-					"if_not_exists(usedCredits, :zero) + :delta <= if_not_exists(includedCredits, :zero)",
+					"attribute_not_exists(usedCredits) OR usedCredits <= :max",
 					map[string]any{
-						":zero":  int64(0),
-						":delta": creditsNeededPriced,
+						":max": maxUsed,
 					},
 				),
 			)

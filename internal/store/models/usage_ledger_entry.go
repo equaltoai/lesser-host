@@ -26,11 +26,11 @@ type UsageLedgerEntry struct {
 	Month        string `theorydb:"attr:month" json:"month"` // YYYY-MM
 
 	Module string `theorydb:"attr:module" json:"module"`
-	Target string `theorydb:"attr:target" json:"target,omitempty"`
+	Target string `theorydb:"attr:target,omitempty" json:"target,omitempty"`
 
 	Cached    bool   `theorydb:"attr:cached" json:"cached"`
-	Reason    string `theorydb:"attr:reason" json:"reason,omitempty"`
-	RequestID string `theorydb:"attr:requestId" json:"request_id,omitempty"`
+	Reason    string `theorydb:"attr:reason,omitempty" json:"reason,omitempty"`
+	RequestID string `theorydb:"attr:requestId,omitempty" json:"request_id,omitempty"`
 
 	RequestedCredits int64 `theorydb:"attr:requestedCredits" json:"requested_credits"`
 	ListCredits      int64 `theorydb:"attr:listCredits" json:"list_credits,omitempty"`
@@ -44,10 +44,10 @@ type UsageLedgerEntry struct {
 
 	BillingType string `theorydb:"attr:billingType" json:"billing_type"` // included|overage|none|mixed
 
-	ActorURI    string `theorydb:"attr:actorUri" json:"actor_uri,omitempty"`
-	ObjectURI   string `theorydb:"attr:objectUri" json:"object_uri,omitempty"`
-	ContentHash string `theorydb:"attr:contentHash" json:"content_hash,omitempty"`
-	LinksHash   string `theorydb:"attr:linksHash" json:"links_hash,omitempty"`
+	ActorURI    string `theorydb:"attr:actorUri,omitempty" json:"actor_uri,omitempty"`
+	ObjectURI   string `theorydb:"attr:objectUri,omitempty" json:"object_uri,omitempty"`
+	ContentHash string `theorydb:"attr:contentHash,omitempty" json:"content_hash,omitempty"`
+	LinksHash   string `theorydb:"attr:linksHash,omitempty" json:"links_hash,omitempty"`
 
 	CreatedAt time.Time `theorydb:"attr:createdAt" json:"created_at"`
 }

@@ -2,6 +2,7 @@ package trust
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -236,6 +237,31 @@ func TestRunLinkSafetyBasicJob_DebitedSuccess(t *testing.T) {
 	jobID := strings.Repeat("c", 64)
 	got := s.runLinkSafetyBasicJob(ctx, "inst", jobID, "", "", "", "lh", []string{"https://example.com"}, overagePolicyBlock, 10000)
 	if got.Status != "ok" || got.Budget.Reason == "" || got.Budget.DebitedCredits <= 0 {
+		t.Fatalf("unexpected response: %#v", got)
+	}
+}
+
+func TestRunLinkSafetyBasicJob_TransactError_ReturnsInternalErrorResponse(t *testing.T) {
+	t.Parallel()
+
+	tdb := newPublishJobsTestDB()
+	s := NewServer(config.Config{}, store.New(tdb.db))
+
+	ctx := &apptheory.Context{RequestID: "rid"}
+
+	tdb.qLSB.On("First", mock.AnythingOfType("*models.LinkSafetyBasicResult")).Return(theoryErrors.ErrItemNotFound).Once()
+	tdb.qBudget.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.InstanceBudgetMonth](t, args, 0)
+		*dest = models.InstanceBudgetMonth{IncludedCredits: 10, UsedCredits: 0}
+		_ = dest.UpdateKeys()
+	}).Once()
+	tb := new(ttmocks.MockTransactionBuilder)
+	tb.On("Execute").Return(errors.New("boom")).Once()
+	tdb.db.TransactWriteBuilder = tb
+
+	jobID := strings.Repeat("e", 64)
+	got := s.runLinkSafetyBasicJob(ctx, "inst", jobID, "", "", "", "lh", []string{"https://example.com"}, overagePolicyBlock, 10000)
+	if got.Status != statusError || got.Budget.Reason != "internal error" || got.Budget.DebitedCredits != 0 {
 		t.Fatalf("unexpected response: %#v", got)
 	}
 }

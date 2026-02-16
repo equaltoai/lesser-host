@@ -86,7 +86,8 @@ func (s *Server) handleBudgetDebit(ctx *apptheory.Context) (*apptheory.Response,
 	ledger := buildBudgetDebitLedgerEntry(prepared, now, billingType, includedDebited, overageDebited)
 	audit := buildBudgetDebitAuditEntry(prepared, now)
 
-	err = s.transactBudgetDebit(ctx.Context(), update, prepared.AllowOverage, prepared.Credits, now, ledger, audit)
+	maxUsed := budget.IncludedCredits - prepared.Credits
+	err = s.transactBudgetDebit(ctx.Context(), update, prepared.AllowOverage, maxUsed, prepared.Credits, now, ledger, audit)
 	if theoryErrors.IsConditionFailed(err) {
 		latest, _, _ := s.loadInstanceBudgetMonth(ctx.Context(), prepared.PK, prepared.SK)
 		remaining = latest.IncludedCredits - latest.UsedCredits
@@ -212,6 +213,7 @@ func (s *Server) transactBudgetDebit(
 	ctx context.Context,
 	update *models.InstanceBudgetMonth,
 	allowOverage bool,
+	maxUsed int64,
 	credits int64,
 	now time.Time,
 	ledger *models.UsageLedgerEntry,
@@ -226,10 +228,9 @@ func (s *Server) transactBudgetDebit(
 		if !allowOverage {
 			conditions = append(conditions,
 				tabletheory.ConditionExpression(
-					"if_not_exists(usedCredits, :zero) + :delta <= if_not_exists(includedCredits, :zero)",
+					"attribute_not_exists(usedCredits) OR usedCredits <= :max",
 					map[string]any{
-						":zero":  int64(0),
-						":delta": credits,
+						":max": maxUsed,
 					},
 				),
 			)

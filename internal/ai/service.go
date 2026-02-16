@@ -534,13 +534,17 @@ func (s *Service) queueWithDebit(ctx context.Context, prepared getOrQueuePrepare
 
 	pk := fmt.Sprintf("INSTANCE#%s", prepared.InstanceSlug)
 	sk := fmt.Sprintf("BUDGET#%s", prepared.Month)
+	maxUsed := int64(0)
+	if budget != nil {
+		maxUsed = budget.IncludedCredits - prepared.CreditsRequested
+	}
 
 	err := s.store.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
 		tx.Create(job)
 		tx.Put(ledger)
 		tx.Put(auditBudget)
 		tx.Put(auditJob)
-		return s.applyBudgetDebit(tx, updateBudget, prepared.Now, prepared.CreditsRequested, req.AllowOverage)
+		return s.applyBudgetDebit(tx, updateBudget, prepared.Now, maxUsed, prepared.CreditsRequested, req.AllowOverage)
 	})
 	if theoryErrors.IsConditionFailed(err) {
 		return s.handleDebitConditionFailed(ctx, prepared, pk, sk, prepared.CreditsRequested)
@@ -553,7 +557,7 @@ func (s *Service) queueWithDebit(ctx context.Context, prepared getOrQueuePrepare
 	return queuedWithDebitResponse(prepared, latest, overageDebited), nil
 }
 
-func (s *Service) applyBudgetDebit(tx core.TransactionBuilder, budget *models.InstanceBudgetMonth, now time.Time, creditsRequested int64, allowOverage bool) error {
+func (s *Service) applyBudgetDebit(tx core.TransactionBuilder, budget *models.InstanceBudgetMonth, now time.Time, maxUsed int64, creditsRequested int64, allowOverage bool) error {
 	if tx == nil || budget == nil {
 		return nil
 	}
@@ -574,10 +578,9 @@ func (s *Service) applyBudgetDebit(tx core.TransactionBuilder, budget *models.In
 	},
 		tabletheory.IfExists(),
 		tabletheory.ConditionExpression(
-			"if_not_exists(usedCredits, :zero) + :delta <= if_not_exists(includedCredits, :zero)",
+			"attribute_not_exists(usedCredits) OR usedCredits <= :max",
 			map[string]any{
-				":zero":  int64(0),
-				":delta": creditsRequested,
+				":max": maxUsed,
 			},
 		),
 	)

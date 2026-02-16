@@ -137,7 +137,7 @@ func TestRenderArtifactResponseFromModel_StatusAndURLs(t *testing.T) {
 		NormalizedURL: "https://example.com",
 		ErrorCode:     "boom",
 	}, true)
-	if errResp.Status != "error" || errResp.ErrorCode != "boom" {
+	if errResp.Status != statusError || errResp.ErrorCode != "boom" {
 		t.Fatalf("unexpected error response: %#v", errResp)
 	}
 }

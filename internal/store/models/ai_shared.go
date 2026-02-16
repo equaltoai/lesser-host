@@ -5,18 +5,18 @@ type AIEvidenceRef struct {
 	_ struct{} `theorydb:"naming:camelCase"`
 
 	Kind        string `theorydb:"attr:kind" json:"kind"`
-	Ref         string `theorydb:"attr:ref" json:"ref,omitempty"`
-	Hash        string `theorydb:"attr:hash" json:"hash,omitempty"`
+	Ref         string `theorydb:"attr:ref,omitempty" json:"ref,omitempty"`
+	Hash        string `theorydb:"attr:hash,omitempty" json:"hash,omitempty"`
 	Bytes       int64  `theorydb:"attr:bytes" json:"bytes,omitempty"`
-	ContentType string `theorydb:"attr:contentType" json:"content_type,omitempty"`
+	ContentType string `theorydb:"attr:contentType,omitempty" json:"content_type,omitempty"`
 }
 
 // AIUsage captures provider usage metadata for an AI request.
 type AIUsage struct {
 	_ struct{} `theorydb:"naming:camelCase"`
 
-	Provider string `theorydb:"attr:provider" json:"provider,omitempty"`
-	Model    string `theorydb:"attr:model" json:"model,omitempty"`
+	Provider string `theorydb:"attr:provider,omitempty" json:"provider,omitempty"`
+	Model    string `theorydb:"attr:model,omitempty" json:"model,omitempty"`
 
 	InputTokens  int64 `theorydb:"attr:inputTokens" json:"input_tokens,omitempty"`
 	OutputTokens int64 `theorydb:"attr:outputTokens" json:"output_tokens,omitempty"`
