@@ -742,7 +742,11 @@ func (s *Server) resolveInstanceKeyPlaintext(ctx context.Context, job *models.Up
 	if raw == "" {
 		return "", fmt.Errorf("secret value is empty")
 	}
-	return raw, nil
+	plaintext, err := unwrapSecretsManagerSecretString(raw)
+	if err != nil {
+		return "", err
+	}
+	return plaintext, nil
 }
 
 func verifyTrustEndpoint(ctx context.Context, baseURL string, instanceKey string, jobID string) (bool, string) {

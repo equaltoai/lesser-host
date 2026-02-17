@@ -1082,6 +1082,41 @@ func secretValueToKeyID(value string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+type secretsManagerSecretPayload struct {
+	Secret string `json:"secret"`
+}
+
+func unwrapSecretsManagerSecretString(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", fmt.Errorf("secret value is empty")
+	}
+	if strings.HasPrefix(raw, "{") {
+		var parsed secretsManagerSecretPayload
+		if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+			return "", fmt.Errorf("unmarshal secret string: %w", err)
+		}
+		val := strings.TrimSpace(parsed.Secret)
+		if val == "" {
+			return "", fmt.Errorf("secret payload missing 'secret' key")
+		}
+		return val, nil
+	}
+	return raw, nil
+}
+
+func wrapSecretsManagerSecretString(secret string) (string, error) {
+	secret = strings.TrimSpace(secret)
+	if secret == "" {
+		return "", fmt.Errorf("secret value is empty")
+	}
+	out, err := json.Marshal(secretsManagerSecretPayload{Secret: secret})
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
 func (s *Server) ensureInstanceKeyRecord(ctx context.Context, slug, keyID string) error {
 	if s == nil || s.store == nil || s.store.DB == nil {
 		return fmt.Errorf("store not initialized")
@@ -1159,7 +1194,11 @@ func (s *Server) ensureManagedInstanceKeySecret(ctx context.Context, job *models
 			if raw == "" && len(out.SecretBinary) > 0 {
 				raw = strings.TrimSpace(string(out.SecretBinary))
 			}
-			keyID = secretValueToKeyID(raw)
+			plaintext, err := unwrapSecretsManagerSecretString(raw)
+			if err != nil {
+				return "", fmt.Errorf("parse secret value: %w", err)
+			}
+			keyID = secretValueToKeyID(plaintext)
 		}
 		if keyID == "" {
 			return "", fmt.Errorf("unable to resolve instance key id from secret")
@@ -1187,10 +1226,15 @@ func (s *Server) ensureManagedInstanceKeySecret(ctx context.Context, job *models
 		return "", fmt.Errorf("failed to derive instance key id")
 	}
 
+	secretJSON, err := wrapSecretsManagerSecretString(plaintext)
+	if err != nil {
+		return "", err
+	}
+
 	createOut, err := sm.CreateSecret(ctx, &secretsmanager.CreateSecretInput{
 		Name:         aws.String(secretName),
 		Description:  aws.String("lesser.host managed instance API key"),
-		SecretString: aws.String(plaintext),
+		SecretString: aws.String(secretJSON),
 		Tags: []smtypes.Tag{
 			{Key: aws.String(managedInstanceKeySecretTagInstanceSlug), Value: aws.String(slug)},
 			{Key: aws.String(managedInstanceKeySecretTagKeyID), Value: aws.String(keyID)},
