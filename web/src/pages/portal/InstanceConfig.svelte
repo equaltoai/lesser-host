@@ -190,6 +190,10 @@
 					<Switch bind:checked={form.renders_enabled} label="Renders" />
 					<Text size="sm" color="secondary">Enable rendering pipeline.</Text>
 				</div>
+				<div class="config__toggle">
+					<Switch bind:checked={form.translation_enabled} label="Translation" />
+					<Text size="sm" color="secondary">Enable instance translation (requires AWS Translate permissions).</Text>
+				</div>
 			</div>
 
 			<div class="config__grid">

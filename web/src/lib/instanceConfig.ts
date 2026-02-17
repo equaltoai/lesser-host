@@ -9,6 +9,7 @@ export interface InstanceConfigForm {
 	hosted_previews_enabled: boolean;
 	link_safety_enabled: boolean;
 	renders_enabled: boolean;
+	translation_enabled: boolean;
 	render_policy: RenderPolicy;
 	overage_policy: OveragePolicy;
 	moderation_enabled: boolean;
@@ -28,6 +29,7 @@ export function configFormFromInstance(instance: InstanceResponse): InstanceConf
 		hosted_previews_enabled: Boolean(instance.hosted_previews_enabled),
 		link_safety_enabled: Boolean(instance.link_safety_enabled),
 		renders_enabled: Boolean(instance.renders_enabled),
+		translation_enabled: Boolean(instance.translation_enabled),
 		render_policy: (instance.render_policy as RenderPolicy) || 'suspicious',
 		overage_policy: (instance.overage_policy as OveragePolicy) || 'block',
 		moderation_enabled: Boolean(instance.moderation_enabled),
@@ -93,6 +95,7 @@ export function buildUpdateInstanceConfigRequest(form: InstanceConfigForm): Upda
 		hosted_previews_enabled: form.hosted_previews_enabled,
 		link_safety_enabled: form.link_safety_enabled,
 		renders_enabled: form.renders_enabled,
+		translation_enabled: form.translation_enabled,
 		render_policy: form.render_policy,
 		overage_policy: form.overage_policy,
 		moderation_enabled: form.moderation_enabled,
@@ -120,4 +123,3 @@ function parsePositiveIntStrict(raw: string): number {
 	if (!Number.isFinite(parsed) || parsed <= 0) return Number.NaN;
 	return parsed;
 }
-

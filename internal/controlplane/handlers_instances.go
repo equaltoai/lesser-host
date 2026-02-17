@@ -43,35 +43,37 @@ type createInstanceRequest struct {
 }
 
 type instanceResponse struct {
-	Slug                   string    `json:"slug"`
-	Owner                  string    `json:"owner,omitempty"`
-	Status                 string    `json:"status"`
-	ProvisionStatus        string    `json:"provision_status,omitempty"`
-	ProvisionJobID         string    `json:"provision_job_id,omitempty"`
-	HostedAccountID        string    `json:"hosted_account_id,omitempty"`
-	HostedRegion           string    `json:"hosted_region,omitempty"`
-	HostedBaseDomain       string    `json:"hosted_base_domain,omitempty"`
-	HostedZoneID           string    `json:"hosted_zone_id,omitempty"`
-	LesserVersion          string    `json:"lesser_version,omitempty"`
-	LesserHostBaseURL      string    `json:"lesser_host_base_url,omitempty"`
-	LesserHostAttestationsURL string `json:"lesser_host_attestations_url,omitempty"`
-	TranslationEnabled     bool      `json:"translation_enabled"`
-	HostedPreviewsEnabled  bool      `json:"hosted_previews_enabled"`
-	LinkSafetyEnabled      bool      `json:"link_safety_enabled"`
-	RendersEnabled         bool      `json:"renders_enabled"`
-	RenderPolicy           string    `json:"render_policy"`
-	OveragePolicy          string    `json:"overage_policy"`
-	ModerationEnabled      bool      `json:"moderation_enabled"`
-	ModerationTrigger      string    `json:"moderation_trigger"`
-	ModerationViralityMin  int64     `json:"moderation_virality_min"`
-	AIEnabled              bool      `json:"ai_enabled"`
-	AIModelSet             string    `json:"ai_model_set"`
-	AIBatchingMode         string    `json:"ai_batching_mode"`
-	AIBatchMaxItems        int64     `json:"ai_batch_max_items"`
-	AIBatchMaxTotalBytes   int64     `json:"ai_batch_max_total_bytes"`
-	AIPricingMultiplierBps int64     `json:"ai_pricing_multiplier_bps"`
-	AIMaxInflightJobs      int64     `json:"ai_max_inflight_jobs"`
-	CreatedAt              time.Time `json:"created_at"`
+	Slug                      string    `json:"slug"`
+	Owner                     string    `json:"owner,omitempty"`
+	Status                    string    `json:"status"`
+	ProvisionStatus           string    `json:"provision_status,omitempty"`
+	ProvisionJobID            string    `json:"provision_job_id,omitempty"`
+	UpdateStatus              string    `json:"update_status,omitempty"`
+	UpdateJobID               string    `json:"update_job_id,omitempty"`
+	HostedAccountID           string    `json:"hosted_account_id,omitempty"`
+	HostedRegion              string    `json:"hosted_region,omitempty"`
+	HostedBaseDomain          string    `json:"hosted_base_domain,omitempty"`
+	HostedZoneID              string    `json:"hosted_zone_id,omitempty"`
+	LesserVersion             string    `json:"lesser_version,omitempty"`
+	LesserHostBaseURL         string    `json:"lesser_host_base_url,omitempty"`
+	LesserHostAttestationsURL string    `json:"lesser_host_attestations_url,omitempty"`
+	TranslationEnabled        bool      `json:"translation_enabled"`
+	HostedPreviewsEnabled     bool      `json:"hosted_previews_enabled"`
+	LinkSafetyEnabled         bool      `json:"link_safety_enabled"`
+	RendersEnabled            bool      `json:"renders_enabled"`
+	RenderPolicy              string    `json:"render_policy"`
+	OveragePolicy             string    `json:"overage_policy"`
+	ModerationEnabled         bool      `json:"moderation_enabled"`
+	ModerationTrigger         string    `json:"moderation_trigger"`
+	ModerationViralityMin     int64     `json:"moderation_virality_min"`
+	AIEnabled                 bool      `json:"ai_enabled"`
+	AIModelSet                string    `json:"ai_model_set"`
+	AIBatchingMode            string    `json:"ai_batching_mode"`
+	AIBatchMaxItems           int64     `json:"ai_batch_max_items"`
+	AIBatchMaxTotalBytes      int64     `json:"ai_batch_max_total_bytes"`
+	AIPricingMultiplierBps    int64     `json:"ai_pricing_multiplier_bps"`
+	AIMaxInflightJobs         int64     `json:"ai_max_inflight_jobs"`
+	CreatedAt                 time.Time `json:"created_at"`
 }
 
 type listInstancesResponse struct {
@@ -121,35 +123,37 @@ func instanceResponseFromModel(inst *models.Instance) instanceResponse {
 		return instanceResponse{}
 	}
 	return instanceResponse{
-		Slug:                   strings.TrimSpace(inst.Slug),
-		Owner:                  strings.TrimSpace(inst.Owner),
-		Status:                 strings.TrimSpace(inst.Status),
-		ProvisionStatus:        strings.TrimSpace(inst.ProvisionStatus),
-		ProvisionJobID:         strings.TrimSpace(inst.ProvisionJobID),
-		HostedAccountID:        strings.TrimSpace(inst.HostedAccountID),
-		HostedRegion:           strings.TrimSpace(inst.HostedRegion),
-		HostedBaseDomain:       strings.TrimSpace(inst.HostedBaseDomain),
-		HostedZoneID:           strings.TrimSpace(inst.HostedZoneID),
-		LesserVersion:          strings.TrimSpace(inst.LesserVersion),
-		LesserHostBaseURL:      strings.TrimSpace(inst.LesserHostBaseURL),
+		Slug:                      strings.TrimSpace(inst.Slug),
+		Owner:                     strings.TrimSpace(inst.Owner),
+		Status:                    strings.TrimSpace(inst.Status),
+		ProvisionStatus:           strings.TrimSpace(inst.ProvisionStatus),
+		ProvisionJobID:            strings.TrimSpace(inst.ProvisionJobID),
+		UpdateStatus:              strings.TrimSpace(inst.UpdateStatus),
+		UpdateJobID:               strings.TrimSpace(inst.UpdateJobID),
+		HostedAccountID:           strings.TrimSpace(inst.HostedAccountID),
+		HostedRegion:              strings.TrimSpace(inst.HostedRegion),
+		HostedBaseDomain:          strings.TrimSpace(inst.HostedBaseDomain),
+		HostedZoneID:              strings.TrimSpace(inst.HostedZoneID),
+		LesserVersion:             strings.TrimSpace(inst.LesserVersion),
+		LesserHostBaseURL:         strings.TrimSpace(inst.LesserHostBaseURL),
 		LesserHostAttestationsURL: strings.TrimSpace(inst.LesserHostAttestationsURL),
-		TranslationEnabled:     effectiveTranslationEnabled(inst.TranslationEnabled),
-		HostedPreviewsEnabled:  effectiveHostedPreviewsEnabled(inst.HostedPreviewsEnabled),
-		LinkSafetyEnabled:      effectiveLinkSafetyEnabled(inst.LinkSafetyEnabled),
-		RendersEnabled:         effectiveRendersEnabled(inst.RendersEnabled),
-		RenderPolicy:           effectiveRenderPolicy(inst.RenderPolicy),
-		OveragePolicy:          effectiveOveragePolicy(inst.OveragePolicy),
-		ModerationEnabled:      effectiveModerationEnabled(inst.ModerationEnabled),
-		ModerationTrigger:      effectiveModerationTrigger(inst.ModerationTrigger),
-		ModerationViralityMin:  effectiveModerationViralityMin(inst.ModerationViralityMin),
-		AIEnabled:              effectiveAIEnabled(inst.AIEnabled),
-		AIModelSet:             effectiveAIModelSet(inst.AIModelSet),
-		AIBatchingMode:         effectiveAIBatchingMode(inst.AIBatchingMode),
-		AIBatchMaxItems:        effectiveAIBatchMaxItems(inst.AIBatchMaxItems),
-		AIBatchMaxTotalBytes:   effectiveAIBatchMaxTotalBytes(inst.AIBatchMaxTotalBytes),
-		AIPricingMultiplierBps: effectiveAIPricingMultiplierBps(inst.AIPricingMultiplierBps),
-		AIMaxInflightJobs:      effectiveAIMaxInflightJobs(inst.AIMaxInflightJobs),
-		CreatedAt:              inst.CreatedAt,
+		TranslationEnabled:        effectiveTranslationEnabled(inst.TranslationEnabled),
+		HostedPreviewsEnabled:     effectiveHostedPreviewsEnabled(inst.HostedPreviewsEnabled),
+		LinkSafetyEnabled:         effectiveLinkSafetyEnabled(inst.LinkSafetyEnabled),
+		RendersEnabled:            effectiveRendersEnabled(inst.RendersEnabled),
+		RenderPolicy:              effectiveRenderPolicy(inst.RenderPolicy),
+		OveragePolicy:             effectiveOveragePolicy(inst.OveragePolicy),
+		ModerationEnabled:         effectiveModerationEnabled(inst.ModerationEnabled),
+		ModerationTrigger:         effectiveModerationTrigger(inst.ModerationTrigger),
+		ModerationViralityMin:     effectiveModerationViralityMin(inst.ModerationViralityMin),
+		AIEnabled:                 effectiveAIEnabled(inst.AIEnabled),
+		AIModelSet:                effectiveAIModelSet(inst.AIModelSet),
+		AIBatchingMode:            effectiveAIBatchingMode(inst.AIBatchingMode),
+		AIBatchMaxItems:           effectiveAIBatchMaxItems(inst.AIBatchMaxItems),
+		AIBatchMaxTotalBytes:      effectiveAIBatchMaxTotalBytes(inst.AIBatchMaxTotalBytes),
+		AIPricingMultiplierBps:    effectiveAIPricingMultiplierBps(inst.AIPricingMultiplierBps),
+		AIMaxInflightJobs:         effectiveAIMaxInflightJobs(inst.AIMaxInflightJobs),
+		CreatedAt:                 inst.CreatedAt,
 	}
 }
 

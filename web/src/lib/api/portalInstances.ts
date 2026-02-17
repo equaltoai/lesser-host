@@ -6,10 +6,14 @@ export interface InstanceResponse {
 	status: string;
 	provision_status?: string;
 	provision_job_id?: string;
+	update_status?: string;
+	update_job_id?: string;
 	hosted_account_id?: string;
 	hosted_region?: string;
 	hosted_base_domain?: string;
 	hosted_zone_id?: string;
+	lesser_version?: string;
+	translation_enabled: boolean;
 	hosted_previews_enabled: boolean;
 	link_safety_enabled: boolean;
 	renders_enabled: boolean;
@@ -144,6 +148,40 @@ export interface UpdateInstanceConfigRequest {
 	ai_batch_max_total_bytes?: number;
 	ai_pricing_multiplier_bps?: number;
 	ai_max_inflight_jobs?: number;
+	translation_enabled?: boolean;
+}
+
+export interface UpdateJobResponse {
+	id: string;
+	instance_slug: string;
+	status: string;
+	step?: string;
+	note?: string;
+	run_id?: string;
+	run_url?: string;
+	account_id?: string;
+	account_role_name?: string;
+	region?: string;
+	base_domain?: string;
+	lesser_version?: string;
+	lesser_host_base_url?: string;
+	lesser_host_attestations_url?: string;
+	lesser_host_instance_key_secret_arn?: string;
+	translation_enabled: boolean;
+	verify_translation_ok?: boolean;
+	verify_trust_ok?: boolean;
+	verify_translation_err?: string;
+	verify_trust_err?: string;
+	error_code?: string;
+	error_message?: string;
+	request_id?: string;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface ListUpdateJobsResponse {
+	jobs: UpdateJobResponse[];
+	count: number;
 }
 
 export function portalListInstances(token: string): Promise<ListInstancesResponse> {
@@ -235,6 +273,33 @@ export function portalProvisionConsentChallenge(
 
 export function portalGetProvisioning(token: string, slug: string): Promise<ProvisionJobResponse> {
 	return fetchJson<ProvisionJobResponse>(`/api/v1/portal/instances/${encodeURIComponent(slug)}/provision`, {
+		headers: {
+			authorization: `Bearer ${token}`,
+		},
+	});
+}
+
+export function portalCreateUpdateJob(
+	token: string,
+	slug: string,
+	input?: {
+		lesser_version?: string;
+	},
+): Promise<UpdateJobResponse> {
+	const req = jsonRequest(input ?? {});
+	return fetchJson<UpdateJobResponse>(`/api/v1/portal/instances/${encodeURIComponent(slug)}/updates`, {
+		method: 'POST',
+		headers: {
+			authorization: `Bearer ${token}`,
+			...req.headers,
+		},
+		body: req.body,
+	});
+}
+
+export function portalListUpdateJobs(token: string, slug: string, limit?: number): Promise<ListUpdateJobsResponse> {
+	const qs = limit ? `?limit=${encodeURIComponent(String(limit))}` : '';
+	return fetchJson<ListUpdateJobsResponse>(`/api/v1/portal/instances/${encodeURIComponent(slug)}/updates${qs}`, {
 		headers: {
 			authorization: `Bearer ${token}`,
 		},

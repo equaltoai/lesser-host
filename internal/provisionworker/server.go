@@ -134,14 +134,19 @@ func (s *Server) handleProvisionQueueMessage(ctx *apptheory.EventContext, msg ev
 	if err := json.Unmarshal([]byte(msg.Body), &jm); err != nil {
 		return nil // drop invalid
 	}
-	if strings.TrimSpace(jm.Kind) != "provision_job" {
-		return nil
-	}
 	jobID := strings.TrimSpace(jm.JobID)
 	if jobID == "" {
 		return nil
 	}
-	return s.processProvisionJob(ctx.Context(), ctx.RequestID, jobID)
+
+	switch strings.TrimSpace(jm.Kind) {
+	case "provision_job":
+		return s.processProvisionJob(ctx.Context(), ctx.RequestID, jobID)
+	case "update_job":
+		return s.processUpdateJob(ctx.Context(), ctx.RequestID, jobID)
+	default:
+		return nil
+	}
 }
 
 func (s *Server) processProvisionJob(ctx context.Context, requestID string, jobID string) error {

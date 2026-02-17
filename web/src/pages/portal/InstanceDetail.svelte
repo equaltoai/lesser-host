@@ -2,10 +2,12 @@
 	import { onDestroy, onMount } from 'svelte';
 
 	import type { ApiError } from 'src/lib/api/http';
-	import type { DomainResponse, InstanceResponse, ProvisionJobResponse } from 'src/lib/api/portalInstances';
+	import type { DomainResponse, InstanceResponse, ProvisionJobResponse, UpdateJobResponse } from 'src/lib/api/portalInstances';
 	import {
+		portalCreateUpdateJob,
 		portalGetInstance,
 		portalGetProvisioning,
+		portalListUpdateJobs,
 		portalListInstanceDomains,
 		portalProvisionConsentChallenge,
 		portalStartProvisioning,
@@ -41,11 +43,19 @@
 	let provisioningJob = $state<ProvisionJobResponse | null>(null);
 	let polling = $state(false);
 
+	let updatesLoading = $state(false);
+	let updatesError = $state<string | null>(null);
+	let updateJobs = $state<UpdateJobResponse[]>([]);
+	let updatesPolling = $state(false);
+	let updateCreating = $state(false);
+	let updateLesserVersion = $state('');
+
 	let provisionRegion = $state('');
 	let provisionLesserVersion = $state('');
 	let provisionAdminUsername = $state('');
 
 	let pollController: AbortController | null = null;
+	let updatesPollController: AbortController | null = null;
 
 	const slugRE = /^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])?$/;
 
@@ -84,6 +94,14 @@
 			pollController = null;
 		}
 		polling = false;
+	}
+
+	function abortUpdatesPolling() {
+		if (updatesPollController) {
+			updatesPollController.abort();
+			updatesPollController = null;
+		}
+		updatesPolling = false;
 	}
 
 	async function loadInstance() {
@@ -147,6 +165,122 @@
 		} finally {
 			provisioningLoading = false;
 		}
+	}
+
+	async function loadUpdates() {
+		updatesError = null;
+		updateJobs = [];
+
+		updatesLoading = true;
+		try {
+			const res = await portalListUpdateJobs(token, slug, 50);
+			updateJobs = res.jobs ?? [];
+		} catch (err) {
+			const maybe = err as Partial<ApiError>;
+			if (maybe.status === 401) {
+				await logout();
+				navigate('/login');
+				return;
+			}
+			updatesError = formatError(err);
+		} finally {
+			updatesLoading = false;
+		}
+	}
+
+	function latestUpdateJob(): UpdateJobResponse | null {
+		return updateJobs.length > 0 ? updateJobs[0] : null;
+	}
+
+	function isUpdateTerminal(job: UpdateJobResponse | null): boolean {
+		if (!job) return true;
+		return job.status === 'ok' || job.status === 'error';
+	}
+
+	async function pollUpdateJob(jobId: string) {
+		abortUpdatesPolling();
+
+		const current = updateJobs.find((j) => j.id === jobId) ?? null;
+		if (current && isUpdateTerminal(current)) {
+			return;
+		}
+
+		updatesPolling = true;
+		const controller = new AbortController();
+		updatesPollController = controller;
+
+		try {
+			await pollUntil(
+				async () => {
+					const res = await portalListUpdateJobs(token, slug, 50);
+					updateJobs = res.jobs ?? [];
+					return (res.jobs ?? []).find((j) => j.id === jobId) ?? null;
+				},
+				(job) => Boolean(job && isUpdateTerminal(job)),
+				{
+					signal: controller.signal,
+					backoff: {
+						initialDelayMs: 1000,
+						maxDelayMs: 15_000,
+						factor: 1.6,
+					},
+					onUpdate: (job) => {
+						if (!job) return;
+						const idx = updateJobs.findIndex((j) => j.id === job.id);
+						if (idx >= 0) {
+							updateJobs = [
+								job,
+								...updateJobs.slice(0, idx),
+								...updateJobs.slice(idx + 1),
+							];
+						}
+					},
+				},
+			);
+			void loadInstance();
+		} catch (err) {
+			if ((err as Partial<ApiError>).status === 401) {
+				await logout();
+				navigate('/login');
+				return;
+			}
+			if ((err as Error).name !== 'AbortError') {
+				updatesError = formatError(err);
+			}
+		} finally {
+			updatesPolling = false;
+			if (updatesPollController === controller) {
+				updatesPollController = null;
+			}
+		}
+	}
+
+	async function startUpdateJob(lesserVersion?: string) {
+		updatesError = null;
+
+		const version = (lesserVersion || '').trim();
+
+		updateCreating = true;
+		try {
+			const job = await portalCreateUpdateJob(token, slug, version ? { lesser_version: version } : undefined);
+			updateJobs = [job, ...updateJobs.filter((j) => j.id !== job.id)];
+			void pollUpdateJob(job.id);
+		} catch (err) {
+			if ((err as Partial<ApiError>).status === 401) {
+				await logout();
+				navigate('/login');
+				return;
+			}
+			updatesError = formatError(err);
+		} finally {
+			updateCreating = false;
+		}
+	}
+
+	function updateInProgress(): boolean {
+		const j = latestUpdateJob();
+		if (!j) return false;
+		return j.status === 'queued' || j.status === 'running';
 	}
 
 	async function pollProvisioning() {
@@ -264,8 +398,13 @@
 
 	async function refreshAll() {
 		abortPolling();
-		await Promise.all([loadInstance(), loadDomains(), loadProvisioning()]);
+		abortUpdatesPolling();
+		await Promise.all([loadInstance(), loadDomains(), loadProvisioning(), loadUpdates()]);
 		void pollProvisioning();
+		const latest = latestUpdateJob();
+		if (latest && !isUpdateTerminal(latest)) {
+			void pollUpdateJob(latest.id);
+		}
 	}
 
 	onMount(() => {
@@ -289,6 +428,7 @@
 
 	onDestroy(() => {
 		abortPolling();
+		abortUpdatesPolling();
 	});
 </script>
 
@@ -441,6 +581,133 @@
 				</div>
 			{/if}
 		</Card>
+
+		<Card variant="outlined" padding="lg">
+			{#snippet header()}
+				<Heading level={3} size="lg">Updates</Heading>
+			{/snippet}
+
+			{#if updatesLoading && updateJobs.length === 0}
+				<div class="instance-detail__loading-inline">
+					<Spinner size="sm" />
+					<Text size="sm">Loading updates…</Text>
+				</div>
+			{:else if updatesError}
+				<Alert variant="error" title="Update jobs">{updatesError}</Alert>
+			{/if}
+
+			<div class="instance-detail__row">
+				<Button
+					variant="solid"
+					onclick={() => void startUpdateJob()}
+					disabled={updateCreating || updatesPolling || updatesLoading || updateInProgress()}
+				>
+					Apply configuration
+				</Button>
+				<Text size="sm" color="secondary">
+					Re-runs <span class="instance-detail__mono">lesser up</span> to apply stored trust/translation config.
+				</Text>
+			</div>
+
+			<div class="instance-detail__form">
+				<TextField label="Update Lesser version" bind:value={updateLesserVersion} placeholder="vX.Y.Z or latest" />
+			</div>
+			<div class="instance-detail__row">
+				<Button
+					variant="outline"
+					onclick={() => void startUpdateJob(updateLesserVersion)}
+					disabled={
+						updateCreating ||
+						updatesPolling ||
+						updatesLoading ||
+						updateInProgress() ||
+						!updateLesserVersion.trim()
+					}
+				>
+					Start version update
+				</Button>
+			</div>
+
+			{#if updatesPolling && updateInProgress()}
+				<div class="instance-detail__loading-inline">
+					<Spinner size="sm" />
+					<Text size="sm">Updating…</Text>
+				</div>
+			{/if}
+
+			{#if latestUpdateJob()}
+				{@const job = latestUpdateJob()}
+				<DefinitionList>
+					<DefinitionItem label="Status" monospace>{job?.status}</DefinitionItem>
+					<DefinitionItem label="Step" monospace>{formatStep(job?.step)}</DefinitionItem>
+					<DefinitionItem label="Updated" monospace>{job?.updated_at}</DefinitionItem>
+					<DefinitionItem label="Lesser version" monospace>{job?.lesser_version || '—'}</DefinitionItem>
+					<DefinitionItem label="Run id" monospace>{job?.run_id || '—'}</DefinitionItem>
+					<DefinitionItem label="Run url" monospace>
+						{#if job?.run_url}
+							<a href={job.run_url} target="_blank" rel="noopener noreferrer">Open logs</a>
+						{:else}
+							—
+						{/if}
+					</DefinitionItem>
+					<DefinitionItem label="Verify translation" monospace>
+						{#if job?.verify_translation_ok === true}
+							ok
+						{:else if job?.verify_translation_ok === false}
+							fail{job.verify_translation_err ? `: ${job.verify_translation_err}` : ''}
+						{:else}
+							—
+						{/if}
+					</DefinitionItem>
+					<DefinitionItem label="Verify trust" monospace>
+						{#if job?.verify_trust_ok === true}
+							ok
+						{:else if job?.verify_trust_ok === false}
+							fail{job.verify_trust_err ? `: ${job.verify_trust_err}` : ''}
+						{:else}
+							—
+						{/if}
+					</DefinitionItem>
+				</DefinitionList>
+
+				{#if job?.status === 'error'}
+					<Alert variant="error" title="Update failed">
+						<Text size="sm">
+							Error: <span class="instance-detail__mono">{job.error_code || 'unknown'}</span>
+						</Text>
+						{#if job.error_message}
+							<Text size="sm">{job.error_message}</Text>
+						{/if}
+						{#if job.note}
+							<Text size="sm" color="secondary">{job.note}</Text>
+						{/if}
+						<Text size="sm" color="secondary">
+							Contact support with job id <span class="instance-detail__mono">{job.id}</span>
+							{#if job.request_id}
+								and request id <span class="instance-detail__mono">{job.request_id}</span>.
+							{/if}
+						</Text>
+					</Alert>
+				{/if}
+			{:else}
+				<Alert variant="info" title="No update jobs">
+					<Text size="sm">No updates have been run yet.</Text>
+				</Alert>
+			{/if}
+
+			{#if updateJobs.length > 1}
+				<div class="instance-detail__row">
+					<Text size="sm" color="secondary">Recent update jobs:</Text>
+				</div>
+				<ul class="instance-detail__list">
+					{#each updateJobs.slice(0, 10) as j (j.id)}
+						<li class="instance-detail__list-item">
+							<span class="instance-detail__mono">{j.id}</span> — {j.status} ({formatStep(j.step)})
+						</li>
+					{/each}
+				</ul>
+			{/if}
+		</Card>
 	{:else}
 		<Alert variant="warning" title="No data">No instance response.</Alert>
 	{/if}
@@ -504,5 +771,14 @@
 	.instance-detail__mono {
 		font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New',
 			monospace;
+	}
+
+	.instance-detail__list {
+		margin: var(--gr-spacing-scale-3) 0 0 0;
+		padding-left: var(--gr-spacing-scale-5);
+	}
+
+	.instance-detail__list-item {
+		margin: var(--gr-spacing-scale-1) 0;
 	}
 </style>
