@@ -72,6 +72,17 @@ func emitTrustProxy503BestEffort(service string, rec apptheory.LogRecord) {
 	}
 
 	metrics.Emit("lesser-host", map[string]string{
+		"Stage":   stage,
+		"Service": strings.TrimSpace(service),
+	}, []metrics.Metric{
+		{Name: "TrustProxy503", Unit: metrics.UnitCount, Value: 1},
+	}, map[string]any{
+		"instance": instanceSlug,
+		"method":   strings.TrimSpace(rec.Method),
+		"path":     strings.TrimSpace(rec.Path),
+	})
+
+	metrics.Emit("lesser-host", map[string]string{
 		"Stage":    stage,
 		"Service":  strings.TrimSpace(service),
 		"Instance": instanceSlug,

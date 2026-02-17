@@ -925,14 +925,15 @@ export class LesserHostStack extends cdk.Stack {
 					}),
 				);
 
-				const trustProxy503AnyInstance = new cloudwatch.MathExpression({
-					expression: `MAX(SEARCH('{lesser-host,Stage,Service,Instance} MetricName="TrustProxy503" AND Stage="${stage}" AND Service="trust-api"', 'Sum', 300))`,
-					period: cdk.Duration.minutes(5),
-				});
-
 				new cloudwatch.Alarm(this, 'TrustProxy503Alarm', {
 					alarmName: `${namePrefix}-trust-proxy-503`,
-					metric: trustProxy503AnyInstance,
+					metric: new cloudwatch.Metric({
+						namespace: 'lesser-host',
+						metricName: 'TrustProxy503',
+						dimensionsMap: { Stage: stage, Service: 'trust-api' },
+						statistic: 'Sum',
+						period: cdk.Duration.minutes(5),
+					}),
 					threshold: 1,
 					evaluationPeriods: 1,
 					datapointsToAlarm: 1,
