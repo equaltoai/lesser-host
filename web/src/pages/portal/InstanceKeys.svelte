@@ -1,7 +1,9 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
+
 	import type { ApiError } from 'src/lib/api/http';
-	import type { CreateInstanceKeyResponse } from 'src/lib/api/portalInstances';
-	import { portalCreateInstanceKey } from 'src/lib/api/portalInstances';
+	import type { CreateInstanceKeyResponse, InstanceKeyListItem } from 'src/lib/api/portalInstances';
+	import { portalCreateInstanceKey, portalListInstanceKeys, portalRevokeInstanceKey } from 'src/lib/api/portalInstances';
 	import { logout } from 'src/lib/auth/logout';
 	import { navigate } from 'src/lib/router';
 	import { Alert, Button, Card, Heading, Spinner, Text } from 'src/lib/ui';
@@ -11,6 +13,12 @@
 	let createLoading = $state(false);
 	let createError = $state<string | null>(null);
 	let created = $state<CreateInstanceKeyResponse | null>(null);
+
+	let keysLoading = $state(false);
+	let keysError = $state<string | null>(null);
+	let keys = $state<InstanceKeyListItem[]>([]);
+
+	let revoking = $state<string | null>(null);
 
 	let copyNotice = $state<string | null>(null);
 
@@ -44,6 +52,7 @@
 		createLoading = true;
 		try {
 			created = await portalCreateInstanceKey(token, slug);
+			void loadKeys();
 		} catch (err) {
 			if ((err as Partial<ApiError>).status === 401) {
 				await logout();
@@ -55,6 +64,48 @@
 			createLoading = false;
 		}
 	}
+
+	async function loadKeys() {
+		keysError = null;
+		keysLoading = true;
+		try {
+			const res = await portalListInstanceKeys(token, slug, 50);
+			keys = res.keys ?? [];
+		} catch (err) {
+			if ((err as Partial<ApiError>).status === 401) {
+				await logout();
+				navigate('/login');
+				return;
+			}
+			keysError = formatError(err);
+		} finally {
+			keysLoading = false;
+		}
+	}
+
+	async function revokeKey(keyId: string) {
+		if (!keyId.trim()) return;
+		if (!window.confirm(`Revoke key ${keyId}? This immediately invalidates it.`)) return;
+
+		revoking = keyId;
+		try {
+			await portalRevokeInstanceKey(token, slug, keyId);
+			void loadKeys();
+		} catch (err) {
+			if ((err as Partial<ApiError>).status === 401) {
+				await logout();
+				navigate('/login');
+				return;
+			}
+			keysError = formatError(err);
+		} finally {
+			revoking = null;
+		}
+	}
+
+	onMount(() => {
+		void loadKeys();
+	});
 </script>
 
 <div class="keys">
@@ -105,6 +156,56 @@
 					<Button variant="outline" onclick={() => void copy(created?.key || '')}>Copy key</Button>
 				</div>
 			</Alert>
+		{/if}
+	</Card>
+
+	<Card variant="outlined" padding="lg">
+		{#snippet header()}
+			<Heading level={3} size="lg">Existing keys</Heading>
+		{/snippet}
+
+		<Text size="sm" color="secondary">Keys can overlap. Revoke old keys after you’ve updated your instance.</Text>
+
+		<div class="keys__row">
+			<Button variant="outline" onclick={() => void loadKeys()} disabled={keysLoading}>Refresh</Button>
+		</div>
+
+		{#if keysLoading && keys.length === 0}
+			<div class="keys__loading-inline">
+				<Spinner size="sm" />
+				<Text size="sm">Loading…</Text>
+			</div>
+		{:else if keysError}
+			<Alert variant="error" title="Keys">{keysError}</Alert>
+		{:else if keys.length === 0}
+			<Text size="sm" color="secondary">No keys created yet.</Text>
+		{:else}
+			<ul class="keys__list">
+				{#each keys as k (k.id)}
+					<li class="keys__list-item">
+						<div class="keys__list-main">
+							<Text size="sm">
+								Key ID: <span class="keys__mono">{k.id}</span>
+							</Text>
+							<Text size="sm" color="secondary">Created: {k.created_at}</Text>
+							{#if k.revoked_at}
+								<Text size="sm" color="secondary">Revoked: {k.revoked_at}</Text>
+							{/if}
+						</div>
+						<div class="keys__list-actions">
+							{#if !k.revoked_at}
+								<Button
+									variant="outline"
+									onclick={() => void revokeKey(k.id)}
+									disabled={revoking === k.id}
+								>
+									Revoke
+								</Button>
+							{/if}
+						</div>
+					</li>
+				{/each}
+			</ul>
 		{/if}
 	</Card>
 </div>
@@ -164,5 +265,35 @@
 		font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New',
 			monospace;
 		word-break: break-word;
+	}
+
+	.keys__list {
+		list-style: none;
+		padding: 0;
+		margin: var(--gr-spacing-scale-4) 0 0 0;
+		display: flex;
+		flex-direction: column;
+		gap: var(--gr-spacing-scale-3);
+	}
+
+	.keys__list-item {
+		display: flex;
+		justify-content: space-between;
+		gap: var(--gr-spacing-scale-4);
+		padding: var(--gr-spacing-scale-3);
+		border: 1px solid var(--gr-color-border-default);
+		border-radius: var(--gr-radius-md);
+		flex-wrap: wrap;
+	}
+
+	.keys__list-main {
+		display: flex;
+		flex-direction: column;
+		gap: var(--gr-spacing-scale-1);
+	}
+
+	.keys__list-actions {
+		display: flex;
+		align-items: flex-start;
 	}
 </style>

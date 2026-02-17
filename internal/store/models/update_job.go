@@ -46,6 +46,10 @@ type UpdateJob struct {
 	LesserHostInstanceKeySecretARN string `theorydb:"attr:lesserHostInstanceKeySecretArn" json:"lesser_host_instance_key_secret_arn,omitempty"`
 	TranslationEnabled             bool   `theorydb:"attr:translationEnabled" json:"translation_enabled"`
 
+	// Optional instance key rotation (safe overlap by leaving prior keys unrevoked).
+	RotateInstanceKey    bool   `theorydb:"attr:rotateInstanceKey" json:"rotate_instance_key,omitempty"`
+	RotatedInstanceKeyID string `theorydb:"attr:rotatedInstanceKeyId" json:"rotated_instance_key_id,omitempty"`
+
 	// Post-deploy verification signals (nil until verification runs).
 	VerifyTranslationOK  *bool  `theorydb:"attr:verifyTranslationOk" json:"verify_translation_ok,omitempty"`
 	VerifyTrustOK        *bool  `theorydb:"attr:verifyTrustOk" json:"verify_trust_ok,omitempty"`
@@ -114,6 +118,7 @@ func (j *UpdateJob) UpdateKeys() error {
 	j.LesserHostBaseURL = strings.TrimSpace(j.LesserHostBaseURL)
 	j.LesserHostAttestationsURL = strings.TrimSpace(j.LesserHostAttestationsURL)
 	j.LesserHostInstanceKeySecretARN = strings.TrimSpace(j.LesserHostInstanceKeySecretARN)
+	j.RotatedInstanceKeyID = strings.TrimSpace(j.RotatedInstanceKeyID)
 	j.VerifyTranslationErr = strings.TrimSpace(j.VerifyTranslationErr)
 	j.VerifyTrustErr = strings.TrimSpace(j.VerifyTrustErr)
 	j.ReceiptJSON = strings.TrimSpace(j.ReceiptJSON)

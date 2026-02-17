@@ -106,7 +106,9 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 	app.Post("/api/v1/portal/instances/{slug}/domains/{domain}/rotate", s.handlePortalRotateInstanceDomain, apptheory.RequireAuth())
 	app.Post("/api/v1/portal/instances/{slug}/domains/{domain}/disable", s.handlePortalDisableInstanceDomain, apptheory.RequireAuth())
 	app.Delete("/api/v1/portal/instances/{slug}/domains/{domain}", s.handlePortalDeleteInstanceDomain, apptheory.RequireAuth())
+	app.Get("/api/v1/portal/instances/{slug}/keys", s.handlePortalListInstanceKeys, apptheory.RequireAuth())
 	app.Post("/api/v1/portal/instances/{slug}/keys", s.handlePortalCreateInstanceKey, apptheory.RequireAuth())
+	app.Delete("/api/v1/portal/instances/{slug}/keys/{keyId}", s.handlePortalRevokeInstanceKey, apptheory.RequireAuth())
 
 	// Portal external instance registrations.
 	app.Post("/api/v1/portal/external-instances/registrations", s.handlePortalCreateExternalInstanceRegistration, apptheory.RequireAuth())

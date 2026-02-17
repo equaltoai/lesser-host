@@ -17,7 +17,8 @@ import (
 )
 
 type createUpdateJobRequest struct {
-	LesserVersion string `json:"lesser_version,omitempty"`
+	LesserVersion     string `json:"lesser_version,omitempty"`
+	RotateInstanceKey bool   `json:"rotate_instance_key,omitempty"`
 }
 
 type updateJobResponse struct {
@@ -41,6 +42,8 @@ type updateJobResponse struct {
 	LesserHostAttestationsURL      string `json:"lesser_host_attestations_url,omitempty"`
 	LesserHostInstanceKeySecretARN string `json:"lesser_host_instance_key_secret_arn,omitempty"`
 	TranslationEnabled             bool   `json:"translation_enabled"`
+	RotateInstanceKey              bool   `json:"rotate_instance_key,omitempty"`
+	RotatedInstanceKeyID           string `json:"rotated_instance_key_id,omitempty"`
 
 	VerifyTranslationOK  *bool  `json:"verify_translation_ok,omitempty"`
 	VerifyTrustOK        *bool  `json:"verify_trust_ok,omitempty"`
@@ -81,6 +84,8 @@ func updateJobResponseFromModel(j *models.UpdateJob) updateJobResponse {
 		LesserHostAttestationsURL:      strings.TrimSpace(j.LesserHostAttestationsURL),
 		LesserHostInstanceKeySecretARN: strings.TrimSpace(j.LesserHostInstanceKeySecretARN),
 		TranslationEnabled:             j.TranslationEnabled,
+		RotateInstanceKey:              j.RotateInstanceKey,
+		RotatedInstanceKeyID:           strings.TrimSpace(j.RotatedInstanceKeyID),
 		VerifyTranslationOK:            j.VerifyTranslationOK,
 		VerifyTrustOK:                  j.VerifyTrustOK,
 		VerifyTranslationErr:           strings.TrimSpace(j.VerifyTranslationErr),
@@ -218,6 +223,7 @@ func (s *Server) handlePortalCreateInstanceUpdateJob(ctx *apptheory.Context) (*a
 		LesserHostAttestationsURL:      attestationsURL,
 		LesserHostInstanceKeySecretARN: strings.TrimSpace(inst.LesserHostInstanceKeySecretARN),
 		TranslationEnabled:             translationEnabled,
+		RotateInstanceKey:              req.RotateInstanceKey,
 		CreatedAt:                      now,
 		ExpiresAt:                      now.Add(30 * 24 * time.Hour),
 		RequestID:                      strings.TrimSpace(ctx.RequestID),

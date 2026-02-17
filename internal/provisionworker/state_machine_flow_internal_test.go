@@ -131,6 +131,15 @@ type fakeSecretsManager struct {
 
 	createOut *secretsmanager.CreateSecretOutput
 	createErr error
+
+	updateOut *secretsmanager.UpdateSecretOutput
+	updateErr error
+
+	tagOut *secretsmanager.TagResourceOutput
+	tagErr error
+
+	untagOut *secretsmanager.UntagResourceOutput
+	untagErr error
 }
 
 func (f *fakeSecretsManager) CreateSecret(_ context.Context, _ *secretsmanager.CreateSecretInput, _ ...func(*secretsmanager.Options)) (*secretsmanager.CreateSecretOutput, error) {
@@ -152,6 +161,36 @@ func (f *fakeSecretsManager) GetSecretValue(_ context.Context, _ *secretsmanager
 		return nil, f.getErr
 	}
 	return f.getOut, nil
+}
+
+func (f *fakeSecretsManager) UpdateSecret(_ context.Context, _ *secretsmanager.UpdateSecretInput, _ ...func(*secretsmanager.Options)) (*secretsmanager.UpdateSecretOutput, error) {
+	if f.updateErr != nil {
+		return nil, f.updateErr
+	}
+	if f.updateOut != nil {
+		return f.updateOut, nil
+	}
+	return &secretsmanager.UpdateSecretOutput{}, nil
+}
+
+func (f *fakeSecretsManager) TagResource(_ context.Context, _ *secretsmanager.TagResourceInput, _ ...func(*secretsmanager.Options)) (*secretsmanager.TagResourceOutput, error) {
+	if f.tagErr != nil {
+		return nil, f.tagErr
+	}
+	if f.tagOut != nil {
+		return f.tagOut, nil
+	}
+	return &secretsmanager.TagResourceOutput{}, nil
+}
+
+func (f *fakeSecretsManager) UntagResource(_ context.Context, _ *secretsmanager.UntagResourceInput, _ ...func(*secretsmanager.Options)) (*secretsmanager.UntagResourceOutput, error) {
+	if f.untagErr != nil {
+		return nil, f.untagErr
+	}
+	if f.untagOut != nil {
+		return f.untagOut, nil
+	}
+	return &secretsmanager.UntagResourceOutput{}, nil
 }
 
 func (f *fakeCodebuild) BatchGetBuilds(_ context.Context, _ *codebuild.BatchGetBuildsInput, _ ...func(*codebuild.Options)) (*codebuild.BatchGetBuildsOutput, error) {
@@ -210,11 +249,11 @@ func TestProvisionStateMachine_SuccessPathAcrossSteps(t *testing.T) {
 			return
 		}
 		*dest = models.Instance{
-			Slug:                        "demo",
+			Slug:                           "demo",
 			LesserHostInstanceKeySecretARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:test",
-			LesserHostBaseURL:           "https://lab.lesser.host",
-			LesserHostAttestationsURL:   "https://lab.lesser.host",
-			TranslationEnabled:          &translationEnabled,
+			LesserHostBaseURL:              "https://lab.lesser.host",
+			LesserHostAttestationsURL:      "https://lab.lesser.host",
+			TranslationEnabled:             &translationEnabled,
 		}
 	}).Maybe()
 
@@ -262,8 +301,8 @@ func TestProvisionStateMachine_SuccessPathAcrossSteps(t *testing.T) {
 
 	s := &Server{
 		cfg: config.Config{
-			Stage:                            "lab",
-			WebAuthnRPID:                     "lesser.host",
+			Stage:                             "lab",
+			WebAuthnRPID:                      "lesser.host",
 			ManagedProvisioningEnabled:        true,
 			ManagedDefaultRegion:              "us-east-1",
 			ManagedParentHostedZoneID:         "ZPARENT",

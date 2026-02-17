@@ -898,11 +898,11 @@ export class LesserHostStack extends cdk.Stack {
 			logs.LogGroup.fromLogGroupName(this, 'TrustLogGroup', trustLogGroupName);
 			logs.LogGroup.fromLogGroupName(this, 'AiWorkerLogGroup', workerLogGroupName);
 
-			aiDashboard.addWidgets(
-				new cloudwatch.LogQueryWidget({
-					title: 'Top AI Spend (Credits Debited)',
-					width: 24,
-					height: 6,
+				aiDashboard.addWidgets(
+					new cloudwatch.LogQueryWidget({
+						title: 'Top AI Spend (Credits Debited)',
+						width: 24,
+						height: 6,
 					logGroupNames: [trustLogGroupName, workerLogGroupName],
 					queryString: [
 						'filter ispresent(AICreditsDebited) and AICreditsDebited > 0',
@@ -922,9 +922,23 @@ export class LesserHostStack extends cdk.Stack {
 						'| sort (req_errors + job_errors + req_internal + job_internal) desc',
 						'| limit 20',
 					].join('\n'),
-				}),
-			);
-		}
+					}),
+				);
+
+				const trustProxy503AnyInstance = new cloudwatch.MathExpression({
+					expression: `MAX(SEARCH('{lesser-host,Stage,Service,Instance} MetricName="TrustProxy503" AND Stage="${stage}" AND Service="trust-api"', 'Sum', 300))`,
+					period: cdk.Duration.minutes(5),
+				});
+
+				new cloudwatch.Alarm(this, 'TrustProxy503Alarm', {
+					alarmName: `${namePrefix}-trust-proxy-503`,
+					metric: trustProxy503AnyInstance,
+					threshold: 1,
+					evaluationPeriods: 1,
+					datapointsToAlarm: 1,
+					treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+				});
+			}
 
 		private goLambda(id: string, entry: string, environment: Record<string, string>): lambda.Function {
 			const repoRoot = this.repoRoot();

@@ -380,6 +380,14 @@ func (s *Server) advanceUpdateInstanceConfig(ctx context.Context, job *models.Up
 		return s.retryUpdateJobOrFail(ctx, job, requestID, now, "instance_key_secret_failed", "failed to ensure instance key secret: "+err.Error(), provisionDefaultShortRetryDelay, 5*time.Minute)
 	}
 
+	if job.RotateInstanceKey && strings.TrimSpace(job.RotatedInstanceKeyID) == "" {
+		keyID, err := s.rotateManagedInstanceKeySecret(ctx, pseudo, secretArn)
+		if err != nil {
+			return s.retryUpdateJobOrFail(ctx, job, requestID, now, "instance_key_rotation_failed", "failed to rotate instance key: "+err.Error(), provisionDefaultShortRetryDelay, 5*time.Minute)
+		}
+		job.RotatedInstanceKeyID = strings.TrimSpace(keyID)
+	}
+
 	job.AccountID = accountID
 	job.Region = region
 	job.BaseDomain = baseDomain

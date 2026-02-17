@@ -129,7 +129,7 @@ func (s *Server) handlePortalCreateInstance(ctx *apptheory.Context) (*apptheory.
 		return nil, appErr
 	}
 	if ok {
-		return apptheory.JSON(http.StatusOK, instanceResponseFromModel(existing))
+		return apptheory.JSON(http.StatusOK, s.portalInstanceResponseFromModel(existing))
 	}
 
 	now := time.Now().UTC()
@@ -142,7 +142,7 @@ func (s *Server) handlePortalCreateInstance(ctx *apptheory.Context) (*apptheory.
 		return nil, appErr
 	}
 
-	return apptheory.JSON(http.StatusCreated, instanceResponseFromModel(inst))
+	return apptheory.JSON(http.StatusCreated, s.portalInstanceResponseFromModel(inst))
 }
 
 func parsePortalCreateInstanceSlug(ctx *apptheory.Context) (string, *apptheory.AppError) {
@@ -306,7 +306,7 @@ func (s *Server) handlePortalListInstances(ctx *apptheory.Context) (*apptheory.R
 
 	out := make([]instanceResponse, 0, len(items))
 	for _, inst := range items {
-		out = append(out, instanceResponseFromModel(inst))
+		out = append(out, s.portalInstanceResponseFromModel(inst))
 	}
 
 	return apptheory.JSON(http.StatusOK, listInstancesResponse{
@@ -320,7 +320,7 @@ func (s *Server) handlePortalGetInstance(ctx *apptheory.Context) (*apptheory.Res
 	if err != nil {
 		return nil, err
 	}
-	return apptheory.JSON(http.StatusOK, instanceResponseFromModel(inst))
+	return apptheory.JSON(http.StatusOK, s.portalInstanceResponseFromModel(inst))
 }
 
 func (s *Server) handlePortalUpdateInstanceConfig(ctx *apptheory.Context) (*apptheory.Response, error) {
@@ -365,7 +365,7 @@ func (s *Server) handlePortalUpdateInstanceConfig(ctx *apptheory.Context) (*appt
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
-	return apptheory.JSON(http.StatusOK, instanceResponseFromModel(updated))
+	return apptheory.JSON(http.StatusOK, s.portalInstanceResponseFromModel(updated))
 }
 
 func (s *Server) verifyPortalStartProvisionConsent(ctx *apptheory.Context, slug string, req startInstanceProvisionRequest) (startInstanceProvisionRequest, *apptheory.AppError) {

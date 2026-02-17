@@ -255,14 +255,18 @@
 		}
 	}
 
-	async function startUpdateJob(lesserVersion?: string) {
+	async function startUpdateJob(lesserVersion?: string, rotateInstanceKey?: boolean) {
 		updatesError = null;
 
 		const version = (lesserVersion || '').trim();
 
 		updateCreating = true;
 		try {
-			const job = await portalCreateUpdateJob(token, slug, version ? { lesser_version: version } : undefined);
+			const input: { lesser_version?: string; rotate_instance_key?: boolean } = {};
+			if (version) input.lesser_version = version;
+			if (rotateInstanceKey) input.rotate_instance_key = true;
+
+			const job = await portalCreateUpdateJob(token, slug, input);
 			updateJobs = [job, ...updateJobs.filter((j) => j.id !== job.id)];
 			void pollUpdateJob(job.id);
 		} catch (err) {
@@ -281,6 +285,24 @@
 		const j = latestUpdateJob();
 		if (!j) return false;
 		return j.status === 'queued' || j.status === 'running';
+	}
+
+	function trustHealthLabel(): string {
+		const job = latestUpdateJob();
+		if (!job) return 'unverified';
+		if (job.verify_trust_ok === true) return 'ok';
+		if (job.verify_trust_ok === false) return `fail${job.verify_trust_err ? `: ${job.verify_trust_err}` : ''}`;
+		return 'unverified';
+	}
+
+	function translationHealthLabel(): string {
+		const job = latestUpdateJob();
+		if (!job) return 'unverified';
+		if (job.verify_translation_ok === true) return 'ok';
+		if (job.verify_translation_ok === false) {
+			return `fail${job.verify_translation_err ? `: ${job.verify_translation_err}` : ''}`;
+		}
+		return 'unverified';
 	}
 
 	async function pollProvisioning() {
@@ -481,6 +503,25 @@
 
 		<Card variant="outlined" padding="lg">
 			{#snippet header()}
+				<Heading level={3} size="lg">Integration health</Heading>
+			{/snippet}
+
+			<DefinitionList>
+				<DefinitionItem label="Lesser host base url" monospace>{instance.lesser_host_base_url || '—'}</DefinitionItem>
+				<DefinitionItem label="Attestations url" monospace>{instance.lesser_host_attestations_url || '—'}</DefinitionItem>
+				<DefinitionItem label="Verify trust" monospace>{trustHealthLabel()}</DefinitionItem>
+				<DefinitionItem label="Verify translation" monospace>{translationHealthLabel()}</DefinitionItem>
+			</DefinitionList>
+
+			{#if trustHealthLabel() !== 'ok'}
+				<Alert variant="info" title="Trust not verified yet">
+					<Text size="sm">Run an update to apply config and verify trust wiring.</Text>
+				</Alert>
+			{/if}
+		</Card>
+
+		<Card variant="outlined" padding="lg">
+			{#snippet header()}
 				<Heading level={3} size="lg">Provisioning</Heading>
 			{/snippet}
 
@@ -596,16 +637,38 @@
 				<Alert variant="error" title="Update jobs">{updatesError}</Alert>
 			{/if}
 
+			{@const managed = Boolean(instance.hosted_account_id && instance.hosted_region && instance.hosted_base_domain)}
+
+			{#if !managed}
+				<Alert variant="info" title="Managed updates unavailable">
+					<Text size="sm">Update jobs and managed key rotation are only available for managed provisioned instances.</Text>
+				</Alert>
+			{/if}
+
 			<div class="instance-detail__row">
 				<Button
 					variant="solid"
 					onclick={() => void startUpdateJob()}
-					disabled={updateCreating || updatesPolling || updatesLoading || updateInProgress()}
+					disabled={updateCreating || updatesPolling || updatesLoading || updateInProgress() || !managed}
 				>
 					Apply configuration
 				</Button>
 				<Text size="sm" color="secondary">
 					Re-runs <span class="instance-detail__mono">lesser up</span> to apply stored trust/translation config.
+				</Text>
+			</div>
+
+			<div class="instance-detail__row">
+				<Button
+					variant="outline"
+					onclick={() => void startUpdateJob(undefined, true)}
+					disabled={updateCreating || updatesPolling || updatesLoading || updateInProgress() || !managed}
+				>
+					Rotate instance key
+				</Button>
+				<Text size="sm" color="secondary">
+					Writes a new key to the managed secret and re-runs <span class="instance-detail__mono">lesser up</span>. Old keys stay
+					valid until revoked.
 				</Text>
 			</div>
 
@@ -621,7 +684,8 @@
 						updatesPolling ||
 						updatesLoading ||
 						updateInProgress() ||
-						!updateLesserVersion.trim()
+						!updateLesserVersion.trim() ||
+						!managed
 					}
 				>
 					Start version update

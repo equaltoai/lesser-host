@@ -76,6 +76,9 @@ type secretsManagerAPI interface {
 	CreateSecret(ctx context.Context, params *secretsmanager.CreateSecretInput, optFns ...func(*secretsmanager.Options)) (*secretsmanager.CreateSecretOutput, error)
 	DescribeSecret(ctx context.Context, params *secretsmanager.DescribeSecretInput, optFns ...func(*secretsmanager.Options)) (*secretsmanager.DescribeSecretOutput, error)
 	GetSecretValue(ctx context.Context, params *secretsmanager.GetSecretValueInput, optFns ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error)
+	UpdateSecret(ctx context.Context, params *secretsmanager.UpdateSecretInput, optFns ...func(*secretsmanager.Options)) (*secretsmanager.UpdateSecretOutput, error)
+	TagResource(ctx context.Context, params *secretsmanager.TagResourceInput, optFns ...func(*secretsmanager.Options)) (*secretsmanager.TagResourceOutput, error)
+	UntagResource(ctx context.Context, params *secretsmanager.UntagResourceInput, optFns ...func(*secretsmanager.Options)) (*secretsmanager.UntagResourceOutput, error)
 }
 
 type secretsManagerClientFactory func(ctx context.Context, accountID string, roleName string, region string, slug string, jobID string) (secretsManagerAPI, error)
@@ -1257,6 +1260,76 @@ func (s *Server) ensureManagedInstanceKeySecret(ctx context.Context, job *models
 		return describeAndEnsure(secretName)
 	}
 	return arn, nil
+}
+
+func (s *Server) rotateManagedInstanceKeySecret(ctx context.Context, job *models.ProvisionJob, secretArn string) (string, error) {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return "", fmt.Errorf("store not initialized")
+	}
+	if job == nil {
+		return "", fmt.Errorf("job is required")
+	}
+	secretArn = strings.TrimSpace(secretArn)
+	if secretArn == "" {
+		return "", fmt.Errorf("secretArn is required")
+	}
+
+	accountID := strings.TrimSpace(job.AccountID)
+	roleName := strings.TrimSpace(job.AccountRoleName)
+	region := strings.TrimSpace(job.Region)
+	slug := strings.ToLower(strings.TrimSpace(job.InstanceSlug))
+	jobID := strings.TrimSpace(job.ID)
+	if accountID == "" || roleName == "" || region == "" || slug == "" || jobID == "" {
+		return "", fmt.Errorf("missing required rotation inputs")
+	}
+
+	sm, err := s.childSecretsManagerClient(ctx, accountID, roleName, region, slug, jobID)
+	if err != nil {
+		return "", err
+	}
+
+	secretToken, err := newToken(32)
+	if err != nil {
+		return "", err
+	}
+	plaintext := "lhk_" + secretToken
+	keyID := secretValueToKeyID(plaintext)
+	if keyID == "" {
+		return "", fmt.Errorf("failed to derive instance key id")
+	}
+
+	if err := s.ensureInstanceKeyRecord(ctx, slug, keyID); err != nil {
+		return "", fmt.Errorf("ensure instance key record: %w", err)
+	}
+
+	secretJSON, err := wrapSecretsManagerSecretString(plaintext)
+	if err != nil {
+		return "", err
+	}
+
+	if _, err := sm.UpdateSecret(ctx, &secretsmanager.UpdateSecretInput{
+		SecretId:     aws.String(secretArn),
+		SecretString: aws.String(secretJSON),
+	}); err != nil {
+		return "", err
+	}
+
+	// Ensure the secret tags reflect the current key id so future ensures can resolve the key id
+	// without fetching the secret value.
+	_, _ = sm.UntagResource(ctx, &secretsmanager.UntagResourceInput{
+		SecretId: aws.String(secretArn),
+		TagKeys:  []string{managedInstanceKeySecretTagKeyID},
+	})
+	_, _ = sm.TagResource(ctx, &secretsmanager.TagResourceInput{
+		SecretId: aws.String(secretArn),
+		Tags: []smtypes.Tag{
+			{Key: aws.String(managedInstanceKeySecretTagInstanceSlug), Value: aws.String(slug)},
+			{Key: aws.String(managedInstanceKeySecretTagKeyID), Value: aws.String(keyID)},
+			{Key: aws.String(managedInstanceKeySecretTagManaged), Value: aws.String("true")},
+		},
+	})
+
+	return keyID, nil
 }
 
 func (s *Server) advanceProvisionDeployStart(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {

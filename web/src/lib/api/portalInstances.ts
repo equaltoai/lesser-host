@@ -13,6 +13,8 @@ export interface InstanceResponse {
 	hosted_base_domain?: string;
 	hosted_zone_id?: string;
 	lesser_version?: string;
+	lesser_host_base_url?: string;
+	lesser_host_attestations_url?: string;
 	translation_enabled: boolean;
 	hosted_previews_enabled: boolean;
 	link_safety_enabled: boolean;
@@ -125,6 +127,24 @@ export interface CreateInstanceKeyResponse {
 	key_id: string;
 }
 
+export interface InstanceKeyListItem {
+	id: string;
+	created_at: string;
+	last_used_at?: string;
+	revoked_at?: string;
+}
+
+export interface ListInstanceKeysResponse {
+	keys: InstanceKeyListItem[];
+	count: number;
+}
+
+export interface RevokeInstanceKeyResponse {
+	instance_slug: string;
+	key_id: string;
+	revoked: boolean;
+}
+
 export interface Route53AssistResponse {
 	ok: boolean;
 	hosted_zone_id?: string;
@@ -168,6 +188,8 @@ export interface UpdateJobResponse {
 	lesser_host_attestations_url?: string;
 	lesser_host_instance_key_secret_arn?: string;
 	translation_enabled: boolean;
+	rotate_instance_key?: boolean;
+	rotated_instance_key_id?: string;
 	verify_translation_ok?: boolean;
 	verify_trust_ok?: boolean;
 	verify_translation_err?: string;
@@ -284,6 +306,7 @@ export function portalCreateUpdateJob(
 	slug: string,
 	input?: {
 		lesser_version?: string;
+		rotate_instance_key?: boolean;
 	},
 ): Promise<UpdateJobResponse> {
 	const req = jsonRequest(input ?? {});
@@ -304,6 +327,27 @@ export function portalListUpdateJobs(token: string, slug: string, limit?: number
 			authorization: `Bearer ${token}`,
 		},
 	});
+}
+
+export function portalListInstanceKeys(token: string, slug: string, limit?: number): Promise<ListInstanceKeysResponse> {
+	const qs = limit ? `?limit=${encodeURIComponent(String(limit))}` : '';
+	return fetchJson<ListInstanceKeysResponse>(`/api/v1/portal/instances/${encodeURIComponent(slug)}/keys${qs}`, {
+		headers: {
+			authorization: `Bearer ${token}`,
+		},
+	});
+}
+
+export function portalRevokeInstanceKey(token: string, slug: string, keyId: string): Promise<RevokeInstanceKeyResponse> {
+	return fetchJson<RevokeInstanceKeyResponse>(
+		`/api/v1/portal/instances/${encodeURIComponent(slug)}/keys/${encodeURIComponent(keyId)}`,
+		{
+			method: 'DELETE',
+			headers: {
+				authorization: `Bearer ${token}`,
+			},
+		},
+	);
 }
 
 export function portalListInstanceDomains(token: string, slug: string): Promise<ListDomainsResponse> {
