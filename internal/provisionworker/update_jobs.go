@@ -267,6 +267,7 @@ func (s *Server) advanceManagedUpdateLoop(ctx context.Context, job *models.Updat
 			return nil
 		}
 
+		var err error
 		switch strings.TrimSpace(job.Step) {
 		case updateStepQueued:
 			job.Step = updateStepInstanceConfig
@@ -277,19 +278,19 @@ func (s *Server) advanceManagedUpdateLoop(ctx context.Context, job *models.Updat
 			continue
 
 		case updateStepInstanceConfig:
-			delay, done, _ = s.advanceUpdateInstanceConfig(ctx, job, requestID, now)
+			delay, done, err = s.advanceUpdateInstanceConfig(ctx, job, requestID, now)
 
 		case updateStepDeployStart:
-			delay, done, _ = s.advanceUpdateDeployStart(ctx, job, requestID, now)
+			delay, done, err = s.advanceUpdateDeployStart(ctx, job, requestID, now)
 
 		case updateStepDeployWait:
-			delay, done, _ = s.advanceUpdateDeployWait(ctx, job, requestID, now)
+			delay, done, err = s.advanceUpdateDeployWait(ctx, job, requestID, now)
 
 		case updateStepReceiptIngest:
-			delay, done, _ = s.advanceUpdateReceiptIngest(ctx, job, requestID, now)
+			delay, done, err = s.advanceUpdateReceiptIngest(ctx, job, requestID, now)
 
 		case updateStepVerify:
-			delay, done, _ = s.advanceUpdateVerify(ctx, job, requestID, now)
+			delay, done, err = s.advanceUpdateVerify(ctx, job, requestID, now)
 
 		case updateStepDone:
 			done = true
@@ -299,6 +300,9 @@ func (s *Server) advanceManagedUpdateLoop(ctx context.Context, job *models.Updat
 			return s.failUpdateJob(ctx, job, requestID, now, "invalid_step", "unknown update job step: "+strings.TrimSpace(job.Step))
 		}
 
+		if err != nil {
+			return err
+		}
 		if done {
 			return nil
 		}
@@ -309,6 +313,11 @@ func (s *Server) advanceManagedUpdateLoop(ctx context.Context, job *models.Updat
 
 	if delay > 0 {
 		return s.requeueUpdateJob(ctx, strings.TrimSpace(job.ID), delay)
+	}
+
+	// Safety: if we progressed quickly through multiple steps, requeue to continue.
+	if updateJobProcessable(job) {
+		return s.requeueUpdateJob(ctx, strings.TrimSpace(job.ID), provisionDefaultShortRetryDelay)
 	}
 	return nil
 }
@@ -588,10 +597,6 @@ func (s *Server) advanceUpdateDeployWait(ctx context.Context, job *models.Update
 		return 0, true, nil
 	}
 
-	if !job.CreatedAt.IsZero() && now.Sub(job.CreatedAt) > provisionMaxDeployAge {
-		return 0, false, s.failUpdateJob(ctx, job, requestID, now, "deploy_timeout", "deploy runner timed out")
-	}
-
 	status, deepLink, err := s.getDeployRunnerStatus(ctx, strings.TrimSpace(job.RunID))
 	if err != nil {
 		job.Attempts++
@@ -617,6 +622,9 @@ func (s *Server) advanceUpdateDeployWait(ctx context.Context, job *models.Update
 		return 0, false, nil
 
 	case codebuildStatusInProgress:
+		if !job.CreatedAt.IsZero() && now.Sub(job.CreatedAt) > provisionMaxDeployAge {
+			return 0, false, s.failUpdateJob(ctx, job, requestID, now, "deploy_timeout", "deploy runner timed out")
+		}
 		job.Note = "deploy runner in progress"
 		_ = s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil)
 		return provisionDefaultPollDelay, false, nil
@@ -631,6 +639,9 @@ func (s *Server) advanceUpdateDeployWait(ctx context.Context, job *models.Update
 		return 0, false, s.failUpdateJob(ctx, job, requestID, now, "deploy_failed", msg)
 
 	default:
+		if !job.CreatedAt.IsZero() && now.Sub(job.CreatedAt) > provisionMaxDeployAge {
+			return 0, false, s.failUpdateJob(ctx, job, requestID, now, "deploy_timeout", "deploy runner timed out")
+		}
 		job.Note = "deploy runner status: " + status
 		_ = s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil)
 		return provisionDefaultPollDelay, false, nil

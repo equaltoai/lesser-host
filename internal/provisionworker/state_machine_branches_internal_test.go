@@ -283,7 +283,8 @@ func TestAdvanceProvisionDeployWait_StatusBranches(t *testing.T) {
 	now := time.Now().UTC()
 
 	t.Run("timeout_fails", func(t *testing.T) {
-		s := &Server{store: st, cb: &fakeCodebuild{}}
+		cb := &fakeCodebuild{batchOut: &codebuild.BatchGetBuildsOutput{Builds: []cbtypes.Build{{BuildStatus: cbtypes.StatusTypeInProgress}}}}
+		s := &Server{store: st, cb: cb}
 		job := &models.ProvisionJob{
 			ID:           "j",
 			InstanceSlug: "slug",

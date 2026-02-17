@@ -1379,10 +1379,6 @@ func (s *Server) advanceProvisionDeployStart(ctx context.Context, job *models.Pr
 }
 
 func (s *Server) advanceProvisionDeployWait(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {
-	if !job.CreatedAt.IsZero() && now.Sub(job.CreatedAt) > provisionMaxDeployAge {
-		return 0, false, s.failJob(ctx, job, requestID, now, "deploy_timeout", "deploy runner timed out")
-	}
-
 	status, deepLink, err := s.getDeployRunnerStatus(ctx, strings.TrimSpace(job.RunID))
 	if err != nil {
 		job.Attempts++
@@ -1404,6 +1400,9 @@ func (s *Server) advanceProvisionDeployWait(ctx context.Context, job *models.Pro
 		return 0, false, nil
 
 	case codebuildStatusInProgress:
+		if !job.CreatedAt.IsZero() && now.Sub(job.CreatedAt) > provisionMaxDeployAge {
+			return 0, false, s.failJob(ctx, job, requestID, now, "deploy_timeout", "deploy runner timed out")
+		}
 		job.Note = "deploy runner in progress"
 		_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
 		return provisionDefaultPollDelay, false, nil
@@ -1416,6 +1415,9 @@ func (s *Server) advanceProvisionDeployWait(ctx context.Context, job *models.Pro
 		return 0, false, s.failJob(ctx, job, requestID, now, "deploy_failed", msg)
 
 	default:
+		if !job.CreatedAt.IsZero() && now.Sub(job.CreatedAt) > provisionMaxDeployAge {
+			return 0, false, s.failJob(ctx, job, requestID, now, "deploy_timeout", "deploy runner timed out")
+		}
 		job.Note = "deploy runner status: " + status
 		_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
 		return provisionDefaultPollDelay, false, nil
