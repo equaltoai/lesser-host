@@ -1,16 +1,19 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onDestroy, onMount } from 'svelte';
 
 	import type { ApiError } from 'src/lib/api/http';
 	import type { BudgetMonthResponse, ListBudgetsResponse } from 'src/lib/api/portalUsage';
 	import { portalListBudgets } from 'src/lib/api/portalUsage';
-	import type { DomainResponse, InstanceResponse, ProvisionJobResponse } from 'src/lib/api/portalInstances';
+	import type { DomainResponse, InstanceResponse, ProvisionJobResponse, UpdateJobResponse } from 'src/lib/api/portalInstances';
 	import {
+		portalCreateUpdateJob,
 		portalGetInstance,
 		portalGetProvisioning,
 		portalListInstanceDomains,
+		portalListUpdateJobs,
 	} from 'src/lib/api/portalInstances';
 	import { logout } from 'src/lib/auth/logout';
+	import { pollUntil } from 'src/lib/polling';
 	import { navigate } from 'src/lib/router';
 	import { Alert, Button, Card, CopyButton, DefinitionItem, DefinitionList, Heading, Spinner, Text, TextField } from 'src/lib/ui';
 
@@ -25,6 +28,15 @@
 	let domains = $state<DomainResponse[]>([]);
 	let budgets = $state<ListBudgetsResponse | null>(null);
 	let provisioning = $state<ProvisionJobResponse | null>(null);
+
+	let updatesLoading = $state(false);
+	let updatesError = $state<string | null>(null);
+	let updateJobs = $state<UpdateJobResponse[]>([]);
+	let updatesPolling = $state(false);
+	let updateCreating = $state(false);
+	let updateLesserVersion = $state('');
+
+	let updatesPollController: AbortController | null = null;
 
 	function formatError(err: unknown): string {
 		if (!err) return 'unknown error';
@@ -53,23 +65,157 @@
 		return [...list].sort((a, b) => b.month.localeCompare(a.month));
 	}
 
+	function formatStep(step?: string): string {
+		const raw = (step || '').trim();
+		if (!raw) return '—';
+		const parts = raw.split(/[_-]+/g).filter(Boolean);
+		return parts.map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join(' ');
+	}
+
+	function managed(): boolean {
+		return Boolean(instance?.hosted_account_id && instance?.hosted_region && instance?.hosted_base_domain);
+	}
+
+	function isUpdateTerminal(job: UpdateJobResponse | null): boolean {
+		if (!job) return true;
+		return job.status === 'ok' || job.status === 'error';
+	}
+
+	function latestUpdateJob(): UpdateJobResponse | null {
+		return updateJobs.length > 0 ? updateJobs[0] : null;
+	}
+
+	function updateInProgress(): boolean {
+		const j = latestUpdateJob();
+		if (!j) return false;
+		return j.status === 'queued' || j.status === 'running';
+	}
+
+	function abortUpdatesPolling() {
+		if (updatesPollController) {
+			updatesPollController.abort();
+			updatesPollController = null;
+		}
+		updatesPolling = false;
+	}
+
+	async function loadUpdates(targetSlug: string) {
+		updatesError = null;
+		updatesLoading = true;
+		try {
+			const res = await portalListUpdateJobs(token, targetSlug, 50);
+			updateJobs = res.jobs ?? [];
+		} catch (err) {
+			if ((err as Partial<ApiError>).status === 401) {
+				await logout();
+				navigate('/login');
+				return;
+			}
+			updatesError = formatError(err);
+		} finally {
+			updatesLoading = false;
+		}
+	}
+
+	async function pollUpdateJob(targetSlug: string, jobId: string) {
+		abortUpdatesPolling();
+
+		const current = updateJobs.find((j) => j.id === jobId) ?? null;
+		if (current && isUpdateTerminal(current)) {
+			return;
+		}
+
+		updatesPolling = true;
+		const controller = new AbortController();
+		updatesPollController = controller;
+
+		try {
+			await pollUntil(
+				async () => {
+					const res = await portalListUpdateJobs(token, targetSlug, 50);
+					updateJobs = res.jobs ?? [];
+					return (res.jobs ?? []).find((j) => j.id === jobId) ?? null;
+				},
+				(job) => Boolean(job && isUpdateTerminal(job)),
+				{
+					signal: controller.signal,
+					backoff: {
+						initialDelayMs: 1000,
+						maxDelayMs: 15_000,
+						factor: 1.6,
+					},
+					onUpdate: (job) => {
+						if (!job) return;
+						const idx = updateJobs.findIndex((j) => j.id === job.id);
+						if (idx >= 0) {
+							updateJobs = [job, ...updateJobs.slice(0, idx), ...updateJobs.slice(idx + 1)];
+						}
+					},
+				},
+			);
+			void loadAll(targetSlug);
+		} catch (err) {
+			if ((err as Partial<ApiError>).status === 401) {
+				await logout();
+				navigate('/login');
+				return;
+			}
+			if ((err as Error).name !== 'AbortError') {
+				updatesError = formatError(err);
+			}
+		} finally {
+			updatesPolling = false;
+			if (updatesPollController === controller) {
+				updatesPollController = null;
+			}
+		}
+	}
+
+	async function startUpdateJob(targetSlug: string, lesserVersion?: string, rotateInstanceKey?: boolean) {
+		updatesError = null;
+		const version = (lesserVersion || '').trim();
+
+		updateCreating = true;
+		try {
+			const input: { lesser_version?: string; rotate_instance_key?: boolean } = {};
+			if (version) input.lesser_version = version;
+			if (rotateInstanceKey) input.rotate_instance_key = true;
+			const job = await portalCreateUpdateJob(token, targetSlug, input);
+			updateJobs = [job, ...updateJobs.filter((j) => j.id !== job.id)];
+			void pollUpdateJob(targetSlug, job.id);
+		} catch (err) {
+			if ((err as Partial<ApiError>).status === 401) {
+				await logout();
+				navigate('/login');
+				return;
+			}
+			updatesError = formatError(err);
+		} finally {
+			updateCreating = false;
+		}
+	}
+
 	async function loadAll(targetSlug: string) {
 		errorMessage = null;
 		instance = null;
 		domains = [];
 		budgets = null;
 		provisioning = null;
+		updatesError = null;
+		updateJobs = [];
 
 		loading = true;
 		try {
-			const [inst, dom, bud] = await Promise.all([
+			const [inst, dom, bud, upd] = await Promise.all([
 				portalGetInstance(token, targetSlug),
 				portalListInstanceDomains(token, targetSlug),
 				portalListBudgets(token, targetSlug),
+				portalListUpdateJobs(token, targetSlug, 50),
 			]);
 			instance = inst;
 			domains = dom.domains ?? [];
 			budgets = bud;
+			updateJobs = upd.jobs ?? [];
 
 			try {
 				provisioning = await portalGetProvisioning(token, targetSlug);
@@ -104,6 +250,10 @@
 		if (normalized) {
 			void loadAll(normalized);
 		}
+	});
+
+	onDestroy(() => {
+		abortUpdatesPolling();
 	});
 
 	$effect(() => {
@@ -271,6 +421,152 @@
 				<Alert variant="info" title="Not started">
 					<Text size="sm">No provisioning job for this instance.</Text>
 				</Alert>
+			{/if}
+		</Card>
+
+		<Card variant="outlined" padding="lg">
+			{#snippet header()}
+				<Heading level={3} size="lg">Updates</Heading>
+			{/snippet}
+
+			{#if updatesLoading && updateJobs.length === 0}
+				<div class="op-support__loading">
+					<Spinner size="md" />
+					<Text>Loading…</Text>
+				</div>
+			{:else if updatesError}
+				<Alert variant="error" title="Update jobs">{updatesError}</Alert>
+			{/if}
+
+			{#if !managed()}
+				<Alert variant="info" title="Managed updates unavailable">
+					<Text size="sm">Update jobs and managed key rotation are only available for managed provisioned instances.</Text>
+				</Alert>
+			{/if}
+
+			<div class="op-support__row">
+				<Button
+					variant="solid"
+					onclick={() => slug && void startUpdateJob(slug)}
+					disabled={!slug || updateCreating || updatesPolling || updatesLoading || updateInProgress() || !managed()}
+				>
+					Apply configuration
+				</Button>
+				<Text size="sm" color="secondary">
+					Re-runs <span class="op-support__mono">lesser up</span> to apply stored trust/translation config.
+				</Text>
+			</div>
+
+			<div class="op-support__row">
+				<Button
+					variant="outline"
+					onclick={() => slug && void startUpdateJob(slug, undefined, true)}
+					disabled={!slug || updateCreating || updatesPolling || updatesLoading || updateInProgress() || !managed()}
+				>
+					Rotate instance key
+				</Button>
+				<Text size="sm" color="secondary">
+					Writes a new key to the managed secret and re-runs <span class="op-support__mono">lesser up</span>. Old keys stay valid until revoked.
+				</Text>
+			</div>
+
+			<div class="op-support__form">
+				<TextField label="Update Lesser version" bind:value={updateLesserVersion} placeholder="vX.Y.Z or latest" />
+			</div>
+
+			<div class="op-support__actions">
+				<Button
+					variant="outline"
+					onclick={() => slug && void startUpdateJob(slug, updateLesserVersion)}
+					disabled={
+						!slug ||
+						updateCreating ||
+						updatesPolling ||
+						updatesLoading ||
+						updateInProgress() ||
+						!updateLesserVersion.trim() ||
+						!managed()
+					}
+				>
+					Start version update
+				</Button>
+				<Button variant="outline" onclick={() => slug && void loadUpdates(slug)} disabled={!slug || updatesLoading}>
+					Refresh
+				</Button>
+			</div>
+
+			{#if updatesPolling && updateInProgress()}
+				<div class="op-support__loading">
+					<Spinner size="md" />
+					<Text>Updating…</Text>
+				</div>
+			{/if}
+
+			{#if latestUpdateJob()}
+				{@const job = latestUpdateJob()}
+				<DefinitionList>
+					<DefinitionItem label="Status" monospace>{job?.status}</DefinitionItem>
+					<DefinitionItem label="Step" monospace>{formatStep(job?.step)}</DefinitionItem>
+					<DefinitionItem label="Updated" monospace>{job?.updated_at}</DefinitionItem>
+					<DefinitionItem label="Lesser version" monospace>{job?.lesser_version || '—'}</DefinitionItem>
+					<DefinitionItem label="Run id" monospace>{job?.run_id || '—'}</DefinitionItem>
+					<DefinitionItem label="Run url" monospace>
+						{#if job?.run_url}
+							<a href={job.run_url} target="_blank" rel="noopener noreferrer">Open logs</a>
+						{:else}
+							—
+						{/if}
+					</DefinitionItem>
+					<DefinitionItem label="Verify translation" monospace>
+						{#if job?.verify_translation_ok === true}
+							ok
+						{:else if job?.verify_translation_ok === false}
+							fail{job.verify_translation_err ? `: ${job.verify_translation_err}` : ''}
+						{:else}
+							—
+						{/if}
+					</DefinitionItem>
+					<DefinitionItem label="Verify trust" monospace>
+						{#if job?.verify_trust_ok === true}
+							ok
+						{:else if job?.verify_trust_ok === false}
+							fail{job.verify_trust_err ? `: ${job.verify_trust_err}` : ''}
+						{:else}
+							—
+						{/if}
+					</DefinitionItem>
+				</DefinitionList>
+
+				{#if job?.status === 'error'}
+					<Alert variant="error" title="Update failed">
+						<Text size="sm">
+							Error: <span class="op-support__mono">{job.error_code || 'unknown'}</span>
+						</Text>
+						{#if job.error_message}
+							<Text size="sm">{job.error_message}</Text>
+						{/if}
+						{#if job.note}
+							<Text size="sm" color="secondary">{job.note}</Text>
+						{/if}
+					</Alert>
+				{/if}
+			{:else}
+				<Alert variant="info" title="No update jobs">
+					<Text size="sm">No updates have been run yet.</Text>
+				</Alert>
+			{/if}
+
+			{#if updateJobs.length > 1}
+				<div class="op-support__list">
+					{#each updateJobs.slice(0, 10) as j (j.id)}
+						<div class="op-support__list-row">
+							<Text size="sm">
+								<span class="op-support__mono">{j.id}</span> — {j.status} ({formatStep(j.step)})
+							</Text>
+							<CopyButton size="sm" text={j.id} />
+						</div>
+					{/each}
+				</div>
 			{/if}
 		</Card>
 	{:else}
