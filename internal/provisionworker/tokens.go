@@ -15,4 +15,3 @@ func newToken(bytes int) (string, error) {
 	}
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
-

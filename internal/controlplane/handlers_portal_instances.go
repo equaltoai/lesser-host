@@ -389,7 +389,7 @@ func (s *Server) verifyPortalStartProvisionConsent(ctx *apptheory.Context, slug 
 
 	stage := strings.TrimSpace(s.cfg.Stage)
 	if stage == "" {
-		stage = "lab"
+		stage = defaultControlPlaneStage
 	}
 
 	if appErr := validateProvisionConsentChallenge(ctx, chall, slug, stage, consentMessage); appErr != nil {

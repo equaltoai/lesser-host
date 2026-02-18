@@ -14,7 +14,7 @@ func (s *Server) publicBaseURL() string {
 
 	stage := strings.ToLower(strings.TrimSpace(s.cfg.Stage))
 	if stage == "" {
-		stage = "lab"
+		stage = defaultControlPlaneStage
 	}
 
 	switch stage {

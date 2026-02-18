@@ -58,6 +58,15 @@ type instanceResponse struct {
 	LesserHostBaseURL         string    `json:"lesser_host_base_url,omitempty"`
 	LesserHostAttestationsURL string    `json:"lesser_host_attestations_url,omitempty"`
 	TranslationEnabled        bool      `json:"translation_enabled"`
+	TipEnabled                bool      `json:"tip_enabled"`
+	TipChainID                int64     `json:"tip_chain_id,omitempty"`
+	TipContractAddress        string    `json:"tip_contract_address,omitempty"`
+	LesserAIEnabled           bool      `json:"lesser_ai_enabled"`
+	LesserAIModerationEnabled bool      `json:"lesser_ai_moderation_enabled"`
+	LesserAINsfwEnabled       bool      `json:"lesser_ai_nsfw_detection_enabled"`
+	LesserAISpamEnabled       bool      `json:"lesser_ai_spam_detection_enabled"`
+	LesserAIPiiEnabled        bool      `json:"lesser_ai_pii_detection_enabled"`
+	LesserAIContentEnabled    bool      `json:"lesser_ai_content_detection_enabled"`
 	HostedPreviewsEnabled     bool      `json:"hosted_previews_enabled"`
 	LinkSafetyEnabled         bool      `json:"link_safety_enabled"`
 	RendersEnabled            bool      `json:"renders_enabled"`
@@ -104,6 +113,17 @@ type updateInstanceConfigRequest struct {
 	AIPricingMultiplierBps *int64  `json:"ai_pricing_multiplier_bps,omitempty"`
 	AIMaxInflightJobs      *int64  `json:"ai_max_inflight_jobs,omitempty"`
 	TranslationEnabled     *bool   `json:"translation_enabled,omitempty"`
+
+	TipEnabled         *bool   `json:"tip_enabled,omitempty"`
+	TipChainID         *int64  `json:"tip_chain_id,omitempty"`
+	TipContractAddress *string `json:"tip_contract_address,omitempty"`
+
+	LesserAIEnabled                 *bool `json:"lesser_ai_enabled,omitempty"`
+	LesserAIModerationEnabled       *bool `json:"lesser_ai_moderation_enabled,omitempty"`
+	LesserAINsfwDetectionEnabled    *bool `json:"lesser_ai_nsfw_detection_enabled,omitempty"`
+	LesserAISpamDetectionEnabled    *bool `json:"lesser_ai_spam_detection_enabled,omitempty"`
+	LesserAIPiiDetectionEnabled     *bool `json:"lesser_ai_pii_detection_enabled,omitempty"`
+	LesserAIContentDetectionEnabled *bool `json:"lesser_ai_content_detection_enabled,omitempty"`
 }
 
 type setBudgetMonthRequest struct {
@@ -138,6 +158,15 @@ func instanceResponseFromModel(inst *models.Instance) instanceResponse {
 		LesserHostBaseURL:         strings.TrimSpace(inst.LesserHostBaseURL),
 		LesserHostAttestationsURL: strings.TrimSpace(inst.LesserHostAttestationsURL),
 		TranslationEnabled:        effectiveTranslationEnabled(inst.TranslationEnabled),
+		TipEnabled:                effectiveTipEnabled(inst.TipEnabled),
+		TipChainID:                effectiveTipChainID(inst.TipChainID),
+		TipContractAddress:        strings.TrimSpace(inst.TipContractAddress),
+		LesserAIEnabled:           effectiveLesserAIEnabled(inst.LesserAIEnabled),
+		LesserAIModerationEnabled: effectiveLesserAIModerationEnabled(inst.LesserAIModerationEnabled),
+		LesserAINsfwEnabled:       effectiveLesserAINsfwDetectionEnabled(inst.LesserAINsfwDetectionEnabled),
+		LesserAISpamEnabled:       effectiveLesserAISpamDetectionEnabled(inst.LesserAISpamDetectionEnabled),
+		LesserAIPiiEnabled:        effectiveLesserAIPiiDetectionEnabled(inst.LesserAIPiiDetectionEnabled),
+		LesserAIContentEnabled:    effectiveLesserAIContentDetectionEnabled(inst.LesserAIContentDetectionEnabled),
 		HostedPreviewsEnabled:     effectiveHostedPreviewsEnabled(inst.HostedPreviewsEnabled),
 		LinkSafetyEnabled:         effectiveLinkSafetyEnabled(inst.LinkSafetyEnabled),
 		RendersEnabled:            effectiveRendersEnabled(inst.RendersEnabled),
@@ -439,6 +468,62 @@ func effectiveTranslationEnabled(v *bool) bool {
 	return *v
 }
 
+func effectiveTipEnabled(v *bool) bool {
+	if v == nil {
+		return false
+	}
+	return *v
+}
+
+func effectiveTipChainID(v int64) int64 {
+	if v < 0 {
+		return 0
+	}
+	return v
+}
+
+func effectiveLesserAIEnabled(v *bool) bool {
+	if v == nil {
+		return true
+	}
+	return *v
+}
+
+func effectiveLesserAIModerationEnabled(v *bool) bool {
+	if v == nil {
+		return true
+	}
+	return *v
+}
+
+func effectiveLesserAINsfwDetectionEnabled(v *bool) bool {
+	if v == nil {
+		return true
+	}
+	return *v
+}
+
+func effectiveLesserAISpamDetectionEnabled(v *bool) bool {
+	if v == nil {
+		return true
+	}
+	return *v
+}
+
+func effectiveLesserAIPiiDetectionEnabled(v *bool) bool {
+	if v == nil {
+		return false
+	}
+	return *v
+}
+
+func effectiveLesserAIContentDetectionEnabled(v *bool) bool {
+	if v == nil {
+		return false
+	}
+	return *v
+}
+
 func (s *Server) handleCreateInstanceKey(ctx *apptheory.Context) (*apptheory.Response, error) {
 	if err := requireAdmin(ctx); err != nil {
 		return nil, err
@@ -598,10 +683,46 @@ func buildInstanceConfigUpdate(slug string, req updateInstanceConfigRequest) (*m
 
 	setBoolPtr(&update.TranslationEnabled, req.TranslationEnabled, "TranslationEnabled", &fields)
 
+	setBoolPtr(&update.TipEnabled, req.TipEnabled, "TipEnabled", &fields)
+	if err := setTipChainID(update, req.TipChainID, &fields); err != nil {
+		return nil, nil, err
+	}
+	if err := setTipContractAddress(update, req.TipContractAddress, &fields); err != nil {
+		return nil, nil, err
+	}
+
+	setBoolPtr(&update.LesserAIEnabled, req.LesserAIEnabled, "LesserAIEnabled", &fields)
+	setBoolPtr(&update.LesserAIModerationEnabled, req.LesserAIModerationEnabled, "LesserAIModerationEnabled", &fields)
+	setBoolPtr(&update.LesserAINsfwDetectionEnabled, req.LesserAINsfwDetectionEnabled, "LesserAINsfwDetectionEnabled", &fields)
+	setBoolPtr(&update.LesserAISpamDetectionEnabled, req.LesserAISpamDetectionEnabled, "LesserAISpamDetectionEnabled", &fields)
+	setBoolPtr(&update.LesserAIPiiDetectionEnabled, req.LesserAIPiiDetectionEnabled, "LesserAIPiiDetectionEnabled", &fields)
+	setBoolPtr(&update.LesserAIContentDetectionEnabled, req.LesserAIContentDetectionEnabled, "LesserAIContentDetectionEnabled", &fields)
+
 	if len(fields) == 0 {
 		return nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: "no config fields provided"}
 	}
 	return update, fields, nil
+}
+
+func setTipChainID(update *models.Instance, src *int64, fields *[]string) error {
+	if src == nil {
+		return nil
+	}
+	if *src < 0 {
+		return &apptheory.AppError{Code: "app.bad_request", Message: "tip_chain_id must be >= 0"}
+	}
+	update.TipChainID = *src
+	*fields = append(*fields, "TipChainID")
+	return nil
+}
+
+func setTipContractAddress(update *models.Instance, src *string, fields *[]string) error {
+	if src == nil {
+		return nil
+	}
+	update.TipContractAddress = strings.TrimSpace(*src)
+	*fields = append(*fields, "TipContractAddress")
+	return nil
 }
 
 func setBoolPtr(dst **bool, src *bool, fieldName string, fields *[]string) {

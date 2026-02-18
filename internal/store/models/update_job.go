@@ -46,6 +46,17 @@ type UpdateJob struct {
 	LesserHostInstanceKeySecretARN string `theorydb:"attr:lesserHostInstanceKeySecretArn" json:"lesser_host_instance_key_secret_arn,omitempty"`
 	TranslationEnabled             bool   `theorydb:"attr:translationEnabled" json:"translation_enabled"`
 
+	TipEnabled         bool   `theorydb:"attr:tipEnabled" json:"tip_enabled"`
+	TipChainID         int64  `theorydb:"attr:tipChainId" json:"tip_chain_id,omitempty"`
+	TipContractAddress string `theorydb:"attr:tipContractAddress" json:"tip_contract_address,omitempty"`
+
+	AIEnabled                 bool `theorydb:"attr:aiEnabled" json:"ai_enabled"`
+	AIModerationEnabled       bool `theorydb:"attr:aiModerationEnabled" json:"ai_moderation_enabled"`
+	AINsfwDetectionEnabled    bool `theorydb:"attr:aiNsfwDetectionEnabled" json:"ai_nsfw_detection_enabled"`
+	AISpamDetectionEnabled    bool `theorydb:"attr:aiSpamDetectionEnabled" json:"ai_spam_detection_enabled"`
+	AIPiiDetectionEnabled     bool `theorydb:"attr:aiPiiDetectionEnabled" json:"ai_pii_detection_enabled"`
+	AIContentDetectionEnabled bool `theorydb:"attr:aiContentDetectionEnabled" json:"ai_content_detection_enabled"`
+
 	// Optional instance key rotation (safe overlap by leaving prior keys unrevoked).
 	RotateInstanceKey    bool   `theorydb:"attr:rotateInstanceKey" json:"rotate_instance_key,omitempty"`
 	RotatedInstanceKeyID string `theorydb:"attr:rotatedInstanceKeyId" json:"rotated_instance_key_id,omitempty"`
@@ -53,8 +64,12 @@ type UpdateJob struct {
 	// Post-deploy verification signals (nil until verification runs).
 	VerifyTranslationOK  *bool  `theorydb:"attr:verifyTranslationOk" json:"verify_translation_ok,omitempty"`
 	VerifyTrustOK        *bool  `theorydb:"attr:verifyTrustOk" json:"verify_trust_ok,omitempty"`
+	VerifyTipsOK         *bool  `theorydb:"attr:verifyTipsOk" json:"verify_tips_ok,omitempty"`
+	VerifyAIOK           *bool  `theorydb:"attr:verifyAiOk" json:"verify_ai_ok,omitempty"`
 	VerifyTranslationErr string `theorydb:"attr:verifyTranslationErr" json:"verify_translation_err,omitempty"`
 	VerifyTrustErr       string `theorydb:"attr:verifyTrustErr" json:"verify_trust_err,omitempty"`
+	VerifyTipsErr        string `theorydb:"attr:verifyTipsErr" json:"verify_tips_err,omitempty"`
+	VerifyAIErr          string `theorydb:"attr:verifyAiErr" json:"verify_ai_err,omitempty"`
 
 	ReceiptJSON string `theorydb:"attr:receiptJson" json:"receipt_json,omitempty"`
 
@@ -118,9 +133,12 @@ func (j *UpdateJob) UpdateKeys() error {
 	j.LesserHostBaseURL = strings.TrimSpace(j.LesserHostBaseURL)
 	j.LesserHostAttestationsURL = strings.TrimSpace(j.LesserHostAttestationsURL)
 	j.LesserHostInstanceKeySecretARN = strings.TrimSpace(j.LesserHostInstanceKeySecretARN)
+	j.TipContractAddress = strings.TrimSpace(j.TipContractAddress)
 	j.RotatedInstanceKeyID = strings.TrimSpace(j.RotatedInstanceKeyID)
 	j.VerifyTranslationErr = strings.TrimSpace(j.VerifyTranslationErr)
 	j.VerifyTrustErr = strings.TrimSpace(j.VerifyTrustErr)
+	j.VerifyTipsErr = strings.TrimSpace(j.VerifyTipsErr)
+	j.VerifyAIErr = strings.TrimSpace(j.VerifyAIErr)
 	j.ReceiptJSON = strings.TrimSpace(j.ReceiptJSON)
 	j.ErrorCode = strings.TrimSpace(j.ErrorCode)
 	j.ErrorMessage = strings.TrimSpace(j.ErrorMessage)
@@ -131,7 +149,7 @@ func (j *UpdateJob) UpdateKeys() error {
 	}
 
 	j.PK = fmt.Sprintf("UPDATE_JOB#%s", j.ID)
-	j.SK = "JOB"
+	j.SK = SKJob
 	j.TTL = j.ExpiresAt.Unix()
 	j.updateGSI1()
 	return nil

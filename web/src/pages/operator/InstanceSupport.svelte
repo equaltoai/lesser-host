@@ -453,7 +453,7 @@
 					Apply configuration
 				</Button>
 				<Text size="sm" color="secondary">
-					Re-runs <span class="op-support__mono">lesser up</span> to apply stored trust/translation config.
+					Re-runs <span class="op-support__mono">lesser up</span> to apply stored trust/translation/tips/AI config.
 				</Text>
 			</div>
 
@@ -531,6 +531,24 @@
 							ok
 						{:else if job?.verify_trust_ok === false}
 							fail{job.verify_trust_err ? `: ${job.verify_trust_err}` : ''}
+						{:else}
+							—
+						{/if}
+					</DefinitionItem>
+					<DefinitionItem label="Verify tips" monospace>
+						{#if job?.verify_tips_ok === true}
+							ok
+						{:else if job?.verify_tips_ok === false}
+							fail{job.verify_tips_err ? `: ${job.verify_tips_err}` : ''}
+						{:else}
+							—
+						{/if}
+					</DefinitionItem>
+					<DefinitionItem label="Verify AI" monospace>
+						{#if job?.verify_ai_ok === true}
+							ok
+						{:else if job?.verify_ai_ok === false}
+							fail{job.verify_ai_err ? `: ${job.verify_ai_err}` : ''}
 						{:else}
 							—
 						{/if}

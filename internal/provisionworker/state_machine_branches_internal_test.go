@@ -236,7 +236,7 @@ func TestAdvanceProvisionDeployStart_Branches(t *testing.T) {
 		qInst.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
 			dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
 			*dest = models.Instance{
-				Slug:                        "slug",
+				Slug:                           "slug",
 				LesserHostInstanceKeySecretARN: "arn:aws:secretsmanager:us-east-1:123:secret:test",
 			}
 		}).Maybe()

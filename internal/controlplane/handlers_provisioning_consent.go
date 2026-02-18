@@ -42,7 +42,7 @@ func parseProvisionConsentChallengeRequest(ctx *apptheory.Context) (provisionCon
 func normalizeControlPlaneStage(stage string) string {
 	stage = strings.TrimSpace(stage)
 	if stage == "" {
-		stage = "lab"
+		stage = defaultControlPlaneStage
 	}
 	return stage
 }
