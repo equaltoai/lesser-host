@@ -10,6 +10,7 @@ const (
 	SKMetadata = "METADATA"
 	SKProfile  = "PROFILE"
 	SKInfra    = "INFRA"
+	SKJob      = "JOB"
 )
 
 const walletTypeEthereum = "ethereum"

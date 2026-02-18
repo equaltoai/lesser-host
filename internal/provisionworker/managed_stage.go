@@ -15,7 +15,7 @@ func normalizeManagedLesserStage(value string) string {
 		return managedStageLive
 	case managedStageStaging, "stage":
 		return managedStageStaging
-	case managedStageDev, "development", "lab", "test", "sandbox", "":
+	case managedStageDev, "development", defaultControlPlaneStage, "test", "sandbox", "":
 		return managedStageDev
 	default:
 		return managedStageDev

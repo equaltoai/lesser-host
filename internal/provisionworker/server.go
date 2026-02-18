@@ -395,7 +395,7 @@ func (s *Server) publicBaseURL() string {
 
 	stage := strings.ToLower(strings.TrimSpace(s.cfg.Stage))
 	if stage == "" {
-		stage = "lab"
+		stage = defaultControlPlaneStage
 	}
 
 	switch stage {
@@ -957,7 +957,7 @@ func (s *Server) advanceProvisionParentDelegation(ctx context.Context, job *mode
 	}
 
 	job.Step = provisionStepInstanceConfig
-	job.Note = "ensuring instance configuration"
+	job.Note = noteEnsuringInstanceConfiguration
 	if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
 		return 0, false, err
 	}
@@ -965,8 +965,8 @@ func (s *Server) advanceProvisionParentDelegation(ctx context.Context, job *mode
 }
 
 func (s *Server) advanceProvisionInstanceConfig(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {
-	if s == nil || s.store == nil || s.store.DB == nil {
-		return 0, false, fmt.Errorf("store not initialized")
+	if err := s.requireStoreDB(); err != nil {
+		return 0, false, err
 	}
 	if job == nil {
 		return 0, true, nil
@@ -992,11 +992,7 @@ func (s *Server) advanceProvisionInstanceConfig(ctx context.Context, job *models
 
 	publicBaseURL := strings.TrimSpace(s.publicBaseURL())
 	attestationsURL := strings.TrimSpace(publicBaseURL)
-
-	translationEnabled := effectiveTranslationEnabled(inst.TranslationEnabled)
-	if inst.TranslationEnabled == nil {
-		translationEnabled = true
-	}
+	translationEnabled := provisionTranslationEnabled(inst)
 
 	secretArn, err := s.ensureManagedInstanceKeySecret(ctx, job, inst)
 	if err != nil {
@@ -1005,43 +1001,7 @@ func (s *Server) advanceProvisionInstanceConfig(ctx context.Context, job *models
 
 	job.Step = provisionStepDeployStart
 	job.Note = "starting instance deploy runner"
-	if err := s.persistJobAndInstance(ctx, job, requestID, now, func(ub core.UpdateBuilder) error {
-		if strings.TrimSpace(job.LesserVersion) != "" {
-			ub.Set("LesserVersion", strings.TrimSpace(job.LesserVersion))
-		}
-		if publicBaseURL != "" {
-			ub.Set("LesserHostBaseURL", publicBaseURL)
-			ub.Set("LesserHostAttestationsURL", attestationsURL)
-		}
-		if strings.TrimSpace(secretArn) != "" {
-			ub.Set("LesserHostInstanceKeySecretARN", strings.TrimSpace(secretArn))
-		}
-		if inst.TranslationEnabled == nil {
-			ub.Set("TranslationEnabled", translationEnabled)
-		}
-		if inst.TipEnabled == nil {
-			ub.Set("TipEnabled", effectiveTipEnabled(inst.TipEnabled))
-		}
-		if inst.LesserAIEnabled == nil {
-			ub.Set("LesserAIEnabled", effectiveLesserAIEnabled(inst.LesserAIEnabled))
-		}
-		if inst.LesserAIModerationEnabled == nil {
-			ub.Set("LesserAIModerationEnabled", effectiveLesserAIModerationEnabled(inst.LesserAIModerationEnabled))
-		}
-		if inst.LesserAINsfwDetectionEnabled == nil {
-			ub.Set("LesserAINsfwDetectionEnabled", effectiveLesserAINsfwDetectionEnabled(inst.LesserAINsfwDetectionEnabled))
-		}
-		if inst.LesserAISpamDetectionEnabled == nil {
-			ub.Set("LesserAISpamDetectionEnabled", effectiveLesserAISpamDetectionEnabled(inst.LesserAISpamDetectionEnabled))
-		}
-		if inst.LesserAIPiiDetectionEnabled == nil {
-			ub.Set("LesserAIPiiDetectionEnabled", effectiveLesserAIPiiDetectionEnabled(inst.LesserAIPiiDetectionEnabled))
-		}
-		if inst.LesserAIContentDetectionEnabled == nil {
-			ub.Set("LesserAIContentDetectionEnabled", effectiveLesserAIContentDetectionEnabled(inst.LesserAIContentDetectionEnabled))
-		}
-		return nil
-	}); err != nil {
+	if err := s.persistJobAndInstance(ctx, job, requestID, now, provisionInstanceConfigInstanceUpdate(job, inst, publicBaseURL, attestationsURL, secretArn, translationEnabled)); err != nil {
 		return 0, false, err
 	}
 	return 0, false, nil
@@ -1112,7 +1072,7 @@ const (
 func managedInstanceKeySecretName(controlPlaneStage, slug string) string {
 	stage := strings.ToLower(strings.TrimSpace(controlPlaneStage))
 	if stage == "" {
-		stage = "lab"
+		stage = defaultControlPlaneStage
 	}
 	slug = strings.ToLower(strings.TrimSpace(slug))
 	if slug == "" {
@@ -1220,28 +1180,24 @@ func (s *Server) ensureInstanceKeyRecord(ctx context.Context, slug, keyID string
 }
 
 func (s *Server) ensureManagedInstanceKeySecret(ctx context.Context, job *models.ProvisionJob, inst *models.Instance) (string, error) {
-	if s == nil || s.store == nil || s.store.DB == nil {
-		return "", fmt.Errorf("store not initialized")
+	if err := s.requireStoreDB(); err != nil {
+		return "", err
 	}
 	if job == nil || inst == nil {
 		return "", fmt.Errorf("job and instance are required")
 	}
 
-	accountID := strings.TrimSpace(job.AccountID)
-	roleName := strings.TrimSpace(job.AccountRoleName)
-	region := strings.TrimSpace(job.Region)
-	slug := strings.ToLower(strings.TrimSpace(job.InstanceSlug))
-	jobID := strings.TrimSpace(job.ID)
-	if accountID == "" || roleName == "" || slug == "" || jobID == "" {
-		return "", fmt.Errorf("missing required provisioning inputs")
+	inputs, err := managedInstanceSecretsInputsFromJob(job)
+	if err != nil {
+		return "", err
 	}
 
-	secretName := managedInstanceKeySecretName(s.cfg.Stage, slug)
+	secretName := managedInstanceKeySecretName(s.cfg.Stage, inputs.slug)
 	if secretName == "" {
 		return "", fmt.Errorf("failed to derive secret name")
 	}
 
-	sm, err := s.childSecretsManagerClient(ctx, accountID, roleName, region, slug, jobID)
+	sm, err := s.childSecretsManagerClient(ctx, inputs.accountID, inputs.roleName, inputs.region, inputs.slug, inputs.jobID)
 	if err != nil {
 		return "", err
 	}
@@ -1251,94 +1207,36 @@ func (s *Server) ensureManagedInstanceKeySecret(ctx context.Context, job *models
 		secretID = secretName
 	}
 
-	describeAndEnsure := func(secretID string) (string, error) {
-		desc, err := sm.DescribeSecret(ctx, &secretsmanager.DescribeSecretInput{SecretId: aws.String(secretID)})
-		if err != nil {
-			return "", err
-		}
-		secretArn := strings.TrimSpace(aws.ToString(desc.ARN))
-		if secretArn == "" {
-			secretArn = strings.TrimSpace(secretID)
-		}
-
-		keyID := secretsManagerTagValue(desc.Tags, managedInstanceKeySecretTagKeyID)
-		if keyID == "" {
-			out, err := sm.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{SecretId: aws.String(secretArn)})
-			if err != nil {
-				return "", fmt.Errorf("get secret value: %w", err)
-			}
-			raw := strings.TrimSpace(aws.ToString(out.SecretString))
-			if raw == "" && len(out.SecretBinary) > 0 {
-				raw = strings.TrimSpace(string(out.SecretBinary))
-			}
-			plaintext, err := unwrapSecretsManagerSecretString(raw)
-			if err != nil {
-				return "", fmt.Errorf("parse secret value: %w", err)
-			}
-			keyID = secretValueToKeyID(plaintext)
-		}
-		if keyID == "" {
-			return "", fmt.Errorf("unable to resolve instance key id from secret")
-		}
-		if err := s.ensureInstanceKeyRecord(ctx, slug, keyID); err != nil {
-			return "", fmt.Errorf("ensure instance key record: %w", err)
-		}
-
-		return secretArn, nil
-	}
-
-	if arn, err := describeAndEnsure(secretID); err == nil {
+	arn, describeErr := s.describeAndEnsureManagedInstanceKeySecret(ctx, sm, inputs.slug, secretID)
+	if describeErr == nil {
 		return arn, nil
-	} else if err != nil && !isSecretsManagerNotFound(err) {
-		return "", err
+	}
+	if !isSecretsManagerNotFound(describeErr) {
+		return "", describeErr
 	}
 
-	secretToken, err := newToken(32)
-	if err != nil {
-		return "", err
-	}
-	plaintext := "lhk_" + secretToken
-	keyID := secretValueToKeyID(plaintext)
-	if keyID == "" {
-		return "", fmt.Errorf("failed to derive instance key id")
-	}
-
-	secretJSON, err := wrapSecretsManagerSecretString(plaintext)
-	if err != nil {
-		return "", err
-	}
-
-	createOut, err := sm.CreateSecret(ctx, &secretsmanager.CreateSecretInput{
-		Name:         aws.String(secretName),
-		Description:  aws.String("lesser.host managed instance API key"),
-		SecretString: aws.String(secretJSON),
-		Tags: []smtypes.Tag{
-			{Key: aws.String(managedInstanceKeySecretTagInstanceSlug), Value: aws.String(slug)},
-			{Key: aws.String(managedInstanceKeySecretTagKeyID), Value: aws.String(keyID)},
-			{Key: aws.String(managedInstanceKeySecretTagManaged), Value: aws.String("true")},
-		},
-	})
-	if err != nil {
-		if isSecretsManagerExists(err) {
-			return describeAndEnsure(secretName)
+	createdArn, keyID, createErr := s.createManagedInstanceKeySecret(ctx, sm, secretName, inputs.slug)
+	if createErr != nil {
+		if isSecretsManagerExists(createErr) {
+			return s.describeAndEnsureManagedInstanceKeySecret(ctx, sm, inputs.slug, secretName)
 		}
-		return "", err
+		return "", createErr
 	}
 
-	if err := s.ensureInstanceKeyRecord(ctx, slug, keyID); err != nil {
-		return "", fmt.Errorf("ensure instance key record: %w", err)
+	if ensureErr := s.ensureInstanceKeyRecord(ctx, inputs.slug, keyID); ensureErr != nil {
+		return "", fmt.Errorf("ensure instance key record: %w", ensureErr)
 	}
 
-	arn := strings.TrimSpace(aws.ToString(createOut.ARN))
-	if arn == "" {
-		return describeAndEnsure(secretName)
+	createdArn = strings.TrimSpace(createdArn)
+	if createdArn != "" {
+		return createdArn, nil
 	}
-	return arn, nil
+	return s.describeAndEnsureManagedInstanceKeySecret(ctx, sm, inputs.slug, secretName)
 }
 
 func (s *Server) rotateManagedInstanceKeySecret(ctx context.Context, job *models.ProvisionJob, secretArn string) (string, error) {
-	if s == nil || s.store == nil || s.store.DB == nil {
-		return "", fmt.Errorf("store not initialized")
+	if err := s.requireStoreDB(); err != nil {
+		return "", err
 	}
 	if job == nil {
 		return "", fmt.Errorf("job is required")
@@ -1348,37 +1246,23 @@ func (s *Server) rotateManagedInstanceKeySecret(ctx context.Context, job *models
 		return "", fmt.Errorf("secretArn is required")
 	}
 
-	accountID := strings.TrimSpace(job.AccountID)
-	roleName := strings.TrimSpace(job.AccountRoleName)
-	region := strings.TrimSpace(job.Region)
-	slug := strings.ToLower(strings.TrimSpace(job.InstanceSlug))
-	jobID := strings.TrimSpace(job.ID)
-	if accountID == "" || roleName == "" || region == "" || slug == "" || jobID == "" {
+	inputs, inputErr := managedInstanceSecretsInputsFromJob(job)
+	if inputErr != nil || strings.TrimSpace(inputs.region) == "" {
 		return "", fmt.Errorf("missing required rotation inputs")
 	}
 
-	sm, err := s.childSecretsManagerClient(ctx, accountID, roleName, region, slug, jobID)
+	sm, clientErr := s.childSecretsManagerClient(ctx, inputs.accountID, inputs.roleName, inputs.region, inputs.slug, inputs.jobID)
+	if clientErr != nil {
+		return "", clientErr
+	}
+
+	_, keyID, secretJSON, err := generateInstanceKeySecret()
 	if err != nil {
 		return "", err
 	}
 
-	secretToken, err := newToken(32)
-	if err != nil {
-		return "", err
-	}
-	plaintext := "lhk_" + secretToken
-	keyID := secretValueToKeyID(plaintext)
-	if keyID == "" {
-		return "", fmt.Errorf("failed to derive instance key id")
-	}
-
-	if err := s.ensureInstanceKeyRecord(ctx, slug, keyID); err != nil {
-		return "", fmt.Errorf("ensure instance key record: %w", err)
-	}
-
-	secretJSON, err := wrapSecretsManagerSecretString(plaintext)
-	if err != nil {
-		return "", err
+	if ensureErr := s.ensureInstanceKeyRecord(ctx, inputs.slug, keyID); ensureErr != nil {
+		return "", fmt.Errorf("ensure instance key record: %w", ensureErr)
 	}
 
 	if _, err := sm.UpdateSecret(ctx, &secretsmanager.UpdateSecretInput{
@@ -1388,20 +1272,7 @@ func (s *Server) rotateManagedInstanceKeySecret(ctx context.Context, job *models
 		return "", err
 	}
 
-	// Ensure the secret tags reflect the current key id so future ensures can resolve the key id
-	// without fetching the secret value.
-	_, _ = sm.UntagResource(ctx, &secretsmanager.UntagResourceInput{
-		SecretId: aws.String(secretArn),
-		TagKeys:  []string{managedInstanceKeySecretTagKeyID},
-	})
-	_, _ = sm.TagResource(ctx, &secretsmanager.TagResourceInput{
-		SecretId: aws.String(secretArn),
-		Tags: []smtypes.Tag{
-			{Key: aws.String(managedInstanceKeySecretTagInstanceSlug), Value: aws.String(slug)},
-			{Key: aws.String(managedInstanceKeySecretTagKeyID), Value: aws.String(keyID)},
-			{Key: aws.String(managedInstanceKeySecretTagManaged), Value: aws.String("true")},
-		},
-	})
+	updateManagedInstanceKeySecretTags(ctx, sm, secretArn, inputs.slug, keyID)
 
 	return keyID, nil
 }
@@ -1425,9 +1296,10 @@ func (s *Server) advanceProvisionDeployStart(ctx context.Context, job *models.Pr
 	}
 	if strings.TrimSpace(inst.LesserHostInstanceKeySecretARN) == "" {
 		job.Step = provisionStepInstanceConfig
-		job.Note = "ensuring instance configuration"
-		if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
-			return 0, false, err
+		job.Note = noteEnsuringInstanceConfiguration
+		persistErr := s.persistJobAndInstance(ctx, job, requestID, now, nil)
+		if persistErr != nil {
+			return 0, false, persistErr
 		}
 		return 0, false, nil
 	}
@@ -1445,7 +1317,7 @@ func (s *Server) advanceProvisionDeployStart(ctx context.Context, job *models.Pr
 
 	job.RunID = strings.TrimSpace(runID)
 	job.Step = provisionStepDeployWait
-	job.Note = "deploy runner in progress"
+	job.Note = noteDeployRunnerInProgress
 	if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
 		return 0, false, err
 	}
@@ -1477,7 +1349,7 @@ func (s *Server) advanceProvisionDeployWait(ctx context.Context, job *models.Pro
 		if !job.CreatedAt.IsZero() && now.Sub(job.CreatedAt) > provisionMaxDeployAge {
 			return 0, false, s.failJob(ctx, job, requestID, now, "deploy_timeout", "deploy runner timed out")
 		}
-		job.Note = "deploy runner in progress"
+		job.Note = noteDeployRunnerInProgress
 		_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
 		return provisionDefaultPollDelay, false, nil
 
@@ -1552,6 +1424,22 @@ func (s *Server) advanceProvisionReceiptIngest(ctx context.Context, job *models.
 	return 0, true, nil
 }
 
+func (s *Server) persistModelAndInstance(ctx context.Context, model any, instanceSlug string, instanceUpdate func(core.UpdateBuilder) error) error {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return fmt.Errorf("store not initialized")
+	}
+	updateInst := &models.Instance{Slug: strings.TrimSpace(instanceSlug)}
+	_ = updateInst.UpdateKeys()
+
+	return s.store.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
+		tx.Put(model)
+		if instanceUpdate != nil {
+			tx.UpdateWithBuilder(updateInst, instanceUpdate, tabletheory.IfExists())
+		}
+		return nil
+	})
+}
+
 func (s *Server) persistJobAndInstance(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time, instanceUpdate func(core.UpdateBuilder) error) error {
 	if s == nil || s.store == nil || s.store.DB == nil {
 		return fmt.Errorf("store not initialized")
@@ -1564,19 +1452,25 @@ func (s *Server) persistJobAndInstance(ctx context.Context, job *models.Provisio
 	job.UpdatedAt = now
 	_ = job.UpdateKeys()
 
-	updateInst := &models.Instance{Slug: strings.TrimSpace(job.InstanceSlug)}
-	_ = updateInst.UpdateKeys()
-
-	return s.store.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
-		tx.Put(job)
-		if instanceUpdate != nil {
-			tx.UpdateWithBuilder(updateInst, instanceUpdate, tabletheory.IfExists())
-		}
-		return nil
-	})
+	return s.persistModelAndInstance(ctx, job, strings.TrimSpace(job.InstanceSlug), instanceUpdate)
 }
 
 func (s *Server) requeueProvisionJob(ctx context.Context, jobID string, delay time.Duration) error {
+	return s.requeueJob(ctx, provisioning.JobMessage{Kind: "provision_job", JobID: strings.TrimSpace(jobID)}, delay)
+}
+
+func sqsDelaySeconds(delay time.Duration) int32 {
+	delaySeconds := int32(delay.Round(time.Second).Seconds())
+	if delaySeconds < 0 {
+		return 0
+	}
+	if delaySeconds > 900 {
+		return 900
+	}
+	return delaySeconds
+}
+
+func (s *Server) requeueJob(ctx context.Context, msg provisioning.JobMessage, delay time.Duration) error {
 	if s == nil || s.sqs == nil {
 		return fmt.Errorf("sqs client not initialized")
 	}
@@ -1584,28 +1478,20 @@ func (s *Server) requeueProvisionJob(ctx context.Context, jobID string, delay ti
 	if url == "" {
 		return fmt.Errorf("provision queue url is not configured")
 	}
-	jobID = strings.TrimSpace(jobID)
-	if jobID == "" {
+	msg.JobID = strings.TrimSpace(msg.JobID)
+	if msg.JobID == "" {
 		return nil
 	}
 
-	body, err := json.Marshal(provisioning.JobMessage{Kind: "provision_job", JobID: jobID})
+	body, err := json.Marshal(msg)
 	if err != nil {
 		return err
-	}
-
-	delaySeconds := int32(delay.Round(time.Second).Seconds())
-	if delaySeconds < 0 {
-		delaySeconds = 0
-	}
-	if delaySeconds > 900 {
-		delaySeconds = 900
 	}
 
 	_, err = s.sqs.SendMessage(ctx, &sqs.SendMessageInput{
 		QueueUrl:     aws.String(url),
 		MessageBody:  aws.String(string(body)),
-		DelaySeconds: delaySeconds,
+		DelaySeconds: sqsDelaySeconds(delay),
 	})
 	return err
 }

@@ -149,7 +149,7 @@ func (j *UpdateJob) UpdateKeys() error {
 	}
 
 	j.PK = fmt.Sprintf("UPDATE_JOB#%s", j.ID)
-	j.SK = "JOB"
+	j.SK = SKJob
 	j.TTL = j.ExpiresAt.Unix()
 	j.updateGSI1()
 	return nil

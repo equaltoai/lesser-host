@@ -15,7 +15,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/codebuild"
 	cbtypes "github.com/aws/aws-sdk-go-v2/service/codebuild/types"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
-	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/theory-cloud/tabletheory"
 	"github.com/theory-cloud/tabletheory/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
@@ -36,6 +35,18 @@ const (
 
 	updateMaxTransitionsPerRun = 6
 )
+
+type updateStepHandler func(*Server, context.Context, *models.UpdateJob, string, time.Time) (time.Duration, bool, error)
+
+var managedUpdateStepHandlers = map[string]updateStepHandler{
+	updateStepQueued:         (*Server).advanceUpdateQueued,
+	updateStepInstanceConfig: (*Server).advanceUpdateInstanceConfig,
+	updateStepDeployStart:    (*Server).advanceUpdateDeployStart,
+	updateStepDeployWait:     (*Server).advanceUpdateDeployWait,
+	updateStepReceiptIngest:  (*Server).advanceUpdateReceiptIngest,
+	updateStepVerify:         (*Server).advanceUpdateVerify,
+	updateStepDone:           (*Server).advanceUpdateDone,
+}
 
 func updateJobProcessable(job *models.UpdateJob) bool {
 	if job == nil {
@@ -149,50 +160,11 @@ func (s *Server) persistUpdateJobAndInstance(ctx context.Context, job *models.Up
 	job.UpdatedAt = now
 	_ = job.UpdateKeys()
 
-	updateInst := &models.Instance{Slug: strings.TrimSpace(job.InstanceSlug)}
-	_ = updateInst.UpdateKeys()
-
-	return s.store.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
-		tx.Put(job)
-		if instanceUpdate != nil {
-			tx.UpdateWithBuilder(updateInst, instanceUpdate, tabletheory.IfExists())
-		}
-		return nil
-	})
+	return s.persistModelAndInstance(ctx, job, strings.TrimSpace(job.InstanceSlug), instanceUpdate)
 }
 
 func (s *Server) requeueUpdateJob(ctx context.Context, jobID string, delay time.Duration) error {
-	if s == nil || s.sqs == nil {
-		return fmt.Errorf("sqs client not initialized")
-	}
-	url := strings.TrimSpace(s.cfg.ProvisionQueueURL)
-	if url == "" {
-		return fmt.Errorf("provision queue url is not configured")
-	}
-	jobID = strings.TrimSpace(jobID)
-	if jobID == "" {
-		return nil
-	}
-
-	body, err := json.Marshal(provisioning.JobMessage{Kind: "update_job", JobID: jobID})
-	if err != nil {
-		return err
-	}
-
-	delaySeconds := int32(delay.Round(time.Second).Seconds())
-	if delaySeconds < 0 {
-		delaySeconds = 0
-	}
-	if delaySeconds > 900 {
-		delaySeconds = 900
-	}
-
-	_, err = s.sqs.SendMessage(ctx, &sqs.SendMessageInput{
-		QueueUrl:     aws.String(url),
-		MessageBody:  aws.String(string(body)),
-		DelaySeconds: delaySeconds,
-	})
-	return err
+	return s.requeueJob(ctx, provisioning.JobMessage{Kind: "update_job", JobID: strings.TrimSpace(jobID)}, delay)
 }
 
 func (s *Server) runManagedUpdateStateMachine(ctx context.Context, job *models.UpdateJob, requestID string, now time.Time) error {
@@ -261,52 +233,25 @@ func (s *Server) advanceManagedUpdateLoop(ctx context.Context, job *models.Updat
 	}
 
 	delay := time.Duration(0)
-	done := false
-
 	for transitions := 0; transitions < updateMaxTransitionsPerRun; transitions++ {
 		if !updateJobProcessable(job) {
 			return nil
 		}
 
-		var err error
-		switch strings.TrimSpace(job.Step) {
-		case updateStepQueued:
-			job.Step = updateStepInstanceConfig
-			job.Note = "ensuring instance configuration"
-			if err := s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil); err != nil {
-				return err
-			}
-			continue
-
-		case updateStepInstanceConfig:
-			delay, done, err = s.advanceUpdateInstanceConfig(ctx, job, requestID, now)
-
-		case updateStepDeployStart:
-			delay, done, err = s.advanceUpdateDeployStart(ctx, job, requestID, now)
-
-		case updateStepDeployWait:
-			delay, done, err = s.advanceUpdateDeployWait(ctx, job, requestID, now)
-
-		case updateStepReceiptIngest:
-			delay, done, err = s.advanceUpdateReceiptIngest(ctx, job, requestID, now)
-
-		case updateStepVerify:
-			delay, done, err = s.advanceUpdateVerify(ctx, job, requestID, now)
-
-		case updateStepDone:
-			done = true
-			delay = 0
-
-		default:
-			return s.failUpdateJob(ctx, job, requestID, now, "invalid_step", "unknown update job step: "+strings.TrimSpace(job.Step))
+		step := strings.TrimSpace(job.Step)
+		handler, ok := managedUpdateStepHandlers[step]
+		if !ok || handler == nil {
+			return s.failUpdateJob(ctx, job, requestID, now, "invalid_step", "unknown update job step: "+step)
 		}
 
+		stepDelay, done, err := handler(s, ctx, job, requestID, now)
 		if err != nil {
 			return err
 		}
 		if done {
 			return nil
 		}
+		delay = stepDelay
 		if delay > 0 {
 			break
 		}
@@ -321,6 +266,23 @@ func (s *Server) advanceManagedUpdateLoop(ctx context.Context, job *models.Updat
 		return s.requeueUpdateJob(ctx, strings.TrimSpace(job.ID), provisionDefaultShortRetryDelay)
 	}
 	return nil
+}
+
+func (s *Server) advanceUpdateQueued(ctx context.Context, job *models.UpdateJob, requestID string, now time.Time) (time.Duration, bool, error) {
+	if job == nil {
+		return 0, true, nil
+	}
+
+	job.Step = updateStepInstanceConfig
+	job.Note = noteEnsuringInstanceConfiguration
+	if err := s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil); err != nil {
+		return 0, false, err
+	}
+	return 0, false, nil
+}
+
+func (s *Server) advanceUpdateDone(ctx context.Context, job *models.UpdateJob, requestID string, now time.Time) (time.Duration, bool, error) {
+	return 0, true, nil
 }
 
 func (s *Server) retryUpdateJobOrFail(
@@ -341,31 +303,37 @@ func (s *Server) retryUpdateJobOrFail(
 	return jitteredBackoff(job.Attempts, baseDelay, maxDelay), false, nil
 }
 
-func (s *Server) advanceUpdateInstanceConfig(ctx context.Context, job *models.UpdateJob, requestID string, now time.Time) (time.Duration, bool, error) {
-	if s == nil || s.store == nil || s.store.DB == nil {
-		return 0, false, fmt.Errorf("store not initialized")
-	}
-	if job == nil {
-		return 0, true, nil
+type managedUpdateMetadata struct {
+	accountID  string
+	roleName   string
+	region     string
+	baseDomain string
+}
+
+func (s *Server) resolveManagedUpdateMetadata(job *models.UpdateJob, inst *models.Instance) (managedUpdateMetadata, error) {
+	if s == nil || job == nil || inst == nil {
+		return managedUpdateMetadata{}, fmt.Errorf("managed instance account metadata is missing")
 	}
 
-	inst, err := s.loadInstance(ctx, strings.TrimSpace(job.InstanceSlug))
-	if err != nil {
-		return s.retryUpdateJobOrFail(ctx, job, requestID, now, "instance_load_failed", "failed to load instance: "+err.Error(), provisionDefaultShortRetryDelay, 2*time.Minute)
+	md := managedUpdateMetadata{
+		accountID:  strings.TrimSpace(inst.HostedAccountID),
+		region:     strings.TrimSpace(inst.HostedRegion),
+		baseDomain: strings.TrimSpace(inst.HostedBaseDomain),
+		roleName:   strings.TrimSpace(job.AccountRoleName),
 	}
-	if inst == nil {
-		return 0, false, s.failUpdateJob(ctx, job, requestID, now, "instance_not_found", "instance record not found")
+	if md.roleName == "" {
+		md.roleName = strings.TrimSpace(s.cfg.ManagedInstanceRoleName)
 	}
 
-	accountID := strings.TrimSpace(inst.HostedAccountID)
-	region := strings.TrimSpace(inst.HostedRegion)
-	baseDomain := strings.TrimSpace(inst.HostedBaseDomain)
-	roleName := strings.TrimSpace(job.AccountRoleName)
-	if roleName == "" {
-		roleName = strings.TrimSpace(s.cfg.ManagedInstanceRoleName)
+	if md.accountID == "" || md.region == "" || md.baseDomain == "" || md.roleName == "" {
+		return managedUpdateMetadata{}, fmt.Errorf("managed instance account metadata is missing")
 	}
-	if accountID == "" || region == "" || baseDomain == "" || roleName == "" {
-		return 0, false, s.failUpdateJob(ctx, job, requestID, now, "missing_instance_metadata", "managed instance account metadata is missing")
+	return md, nil
+}
+
+func (s *Server) resolveUpdateHostURLs(job *models.UpdateJob) (string, string) {
+	if s == nil || job == nil {
+		return "", ""
 	}
 
 	publicBaseURL := strings.TrimSpace(job.LesserHostBaseURL)
@@ -377,49 +345,24 @@ func (s *Server) advanceUpdateInstanceConfig(ctx context.Context, job *models.Up
 		attestationsURL = publicBaseURL
 	}
 
-	// Ensure the instance key secret exists in the instance account (and the InstanceKey record exists in lesser-host state).
-	pseudo := &models.ProvisionJob{
-		ID:              strings.TrimSpace(job.ID),
-		InstanceSlug:    strings.TrimSpace(job.InstanceSlug),
-		AccountID:       accountID,
-		AccountRoleName: roleName,
-		Region:          region,
-	}
-	secretArn, err := s.ensureManagedInstanceKeySecret(ctx, pseudo, inst)
-	if err != nil {
-		return s.retryUpdateJobOrFail(ctx, job, requestID, now, "instance_key_secret_failed", "failed to ensure instance key secret: "+err.Error(), provisionDefaultShortRetryDelay, 5*time.Minute)
-	}
+	return publicBaseURL, attestationsURL
+}
 
-	if job.RotateInstanceKey && strings.TrimSpace(job.RotatedInstanceKeyID) == "" {
-		keyID, err := s.rotateManagedInstanceKeySecret(ctx, pseudo, secretArn)
-		if err != nil {
-			return s.retryUpdateJobOrFail(ctx, job, requestID, now, "instance_key_rotation_failed", "failed to rotate instance key: "+err.Error(), provisionDefaultShortRetryDelay, 5*time.Minute)
-		}
-		job.RotatedInstanceKeyID = strings.TrimSpace(keyID)
+func shouldRotateUpdateInstanceKey(job *models.UpdateJob) bool {
+	if job == nil {
+		return false
 	}
+	if !job.RotateInstanceKey {
+		return false
+	}
+	return strings.TrimSpace(job.RotatedInstanceKeyID) == ""
+}
 
-	job.AccountID = accountID
-	job.Region = region
-	job.BaseDomain = baseDomain
-	job.LesserHostBaseURL = publicBaseURL
-	job.LesserHostAttestationsURL = attestationsURL
-	job.LesserHostInstanceKeySecretARN = strings.TrimSpace(secretArn)
-	job.TipEnabled = effectiveTipEnabled(inst.TipEnabled)
-	job.TipChainID = inst.TipChainID
-	job.TipContractAddress = strings.TrimSpace(inst.TipContractAddress)
-	job.AIEnabled = effectiveLesserAIEnabled(inst.LesserAIEnabled)
-	job.AIModerationEnabled = effectiveLesserAIModerationEnabled(inst.LesserAIModerationEnabled)
-	job.AINsfwDetectionEnabled = effectiveLesserAINsfwDetectionEnabled(inst.LesserAINsfwDetectionEnabled)
-	job.AISpamDetectionEnabled = effectiveLesserAISpamDetectionEnabled(inst.LesserAISpamDetectionEnabled)
-	job.AIPiiDetectionEnabled = effectiveLesserAIPiiDetectionEnabled(inst.LesserAIPiiDetectionEnabled)
-	job.AIContentDetectionEnabled = effectiveLesserAIContentDetectionEnabled(inst.LesserAIContentDetectionEnabled)
-	job.Step = updateStepDeployStart
-	job.Note = "starting update deploy runner"
-
-	if err := s.persistUpdateJobAndInstance(ctx, job, requestID, now, func(ub core.UpdateBuilder) error {
-		if publicBaseURL != "" {
-			ub.Set("LesserHostBaseURL", publicBaseURL)
-			ub.Set("LesserHostAttestationsURL", attestationsURL)
+func updateInstanceConfigInstanceUpdate(publicBaseURL, attestationsURL, secretArn string, job *models.UpdateJob) func(core.UpdateBuilder) error {
+	return func(ub core.UpdateBuilder) error {
+		if strings.TrimSpace(publicBaseURL) != "" {
+			ub.Set("LesserHostBaseURL", strings.TrimSpace(publicBaseURL))
+			ub.Set("LesserHostAttestationsURL", strings.TrimSpace(attestationsURL))
 		}
 		if strings.TrimSpace(secretArn) != "" {
 			ub.Set("LesserHostInstanceKeySecretARN", strings.TrimSpace(secretArn))
@@ -435,7 +378,72 @@ func (s *Server) advanceUpdateInstanceConfig(ctx context.Context, job *models.Up
 		ub.Set("LesserAIPiiDetectionEnabled", job.AIPiiDetectionEnabled)
 		ub.Set("LesserAIContentDetectionEnabled", job.AIContentDetectionEnabled)
 		return nil
-	}); err != nil {
+	}
+}
+
+func (s *Server) advanceUpdateInstanceConfig(ctx context.Context, job *models.UpdateJob, requestID string, now time.Time) (time.Duration, bool, error) {
+	if err := s.requireStoreDB(); err != nil {
+		return 0, false, err
+	}
+	if job == nil {
+		return 0, true, nil
+	}
+
+	inst, err := s.loadInstance(ctx, strings.TrimSpace(job.InstanceSlug))
+	if err != nil {
+		return s.retryUpdateJobOrFail(ctx, job, requestID, now, "instance_load_failed", "failed to load instance: "+err.Error(), provisionDefaultShortRetryDelay, 2*time.Minute)
+	}
+	if inst == nil {
+		return 0, false, s.failUpdateJob(ctx, job, requestID, now, "instance_not_found", "instance record not found")
+	}
+
+	md, mdErr := s.resolveManagedUpdateMetadata(job, inst)
+	if mdErr != nil {
+		return 0, false, s.failUpdateJob(ctx, job, requestID, now, "missing_instance_metadata", mdErr.Error())
+	}
+
+	publicBaseURL, attestationsURL := s.resolveUpdateHostURLs(job)
+
+	// Ensure the instance key secret exists in the instance account (and the InstanceKey record exists in lesser-host state).
+	pseudo := &models.ProvisionJob{
+		ID:              strings.TrimSpace(job.ID),
+		InstanceSlug:    strings.TrimSpace(job.InstanceSlug),
+		AccountID:       md.accountID,
+		AccountRoleName: md.roleName,
+		Region:          md.region,
+	}
+	secretArn, err := s.ensureManagedInstanceKeySecret(ctx, pseudo, inst)
+	if err != nil {
+		return s.retryUpdateJobOrFail(ctx, job, requestID, now, "instance_key_secret_failed", "failed to ensure instance key secret: "+err.Error(), provisionDefaultShortRetryDelay, 5*time.Minute)
+	}
+
+	if shouldRotateUpdateInstanceKey(job) {
+		keyID, err := s.rotateManagedInstanceKeySecret(ctx, pseudo, secretArn)
+		if err != nil {
+			return s.retryUpdateJobOrFail(ctx, job, requestID, now, "instance_key_rotation_failed", "failed to rotate instance key: "+err.Error(), provisionDefaultShortRetryDelay, 5*time.Minute)
+		}
+		job.RotatedInstanceKeyID = strings.TrimSpace(keyID)
+	}
+
+	job.AccountID = md.accountID
+	job.Region = md.region
+	job.BaseDomain = md.baseDomain
+	job.LesserHostBaseURL = publicBaseURL
+	job.LesserHostAttestationsURL = attestationsURL
+	job.LesserHostInstanceKeySecretARN = strings.TrimSpace(secretArn)
+	job.TipEnabled = effectiveTipEnabled(inst.TipEnabled)
+	job.TipChainID = inst.TipChainID
+	job.TipContractAddress = strings.TrimSpace(inst.TipContractAddress)
+	job.AIEnabled = effectiveLesserAIEnabled(inst.LesserAIEnabled)
+	job.AIModerationEnabled = effectiveLesserAIModerationEnabled(inst.LesserAIModerationEnabled)
+	job.AINsfwDetectionEnabled = effectiveLesserAINsfwDetectionEnabled(inst.LesserAINsfwDetectionEnabled)
+	job.AISpamDetectionEnabled = effectiveLesserAISpamDetectionEnabled(inst.LesserAISpamDetectionEnabled)
+	job.AIPiiDetectionEnabled = effectiveLesserAIPiiDetectionEnabled(inst.LesserAIPiiDetectionEnabled)
+	job.AIContentDetectionEnabled = effectiveLesserAIContentDetectionEnabled(inst.LesserAIContentDetectionEnabled)
+	job.Step = updateStepDeployStart
+	job.Note = "starting update deploy runner"
+
+	if err := s.persistUpdateJobAndInstance(ctx, job, requestID, now, updateInstanceConfigInstanceUpdate(publicBaseURL, attestationsURL, secretArn, job)); err != nil {
 		return 0, false, err
 	}
 	return 0, false, nil
@@ -468,77 +476,97 @@ func walletAddressFromUsername(username string) string {
 	return "0x" + hexPart
 }
 
-func (s *Server) startUpdateDeployRunner(ctx context.Context, job *models.UpdateJob, inst *models.Instance) (string, error) {
-	if s == nil || s.cb == nil {
-		return "", fmt.Errorf("codebuild client not initialized")
+type updateDeployRunnerInputs struct {
+	accountID                 string
+	roleName                  string
+	region                    string
+	baseDomain                string
+	lesserVersion             string
+	instanceKeySecretArn      string
+	adminWallet               string
+	stage                     string
+	receiptKey                string
+	bootstrapKey              string
+	lesserHostURL             string
+	lesserHostAttestationsURL string
+}
+
+func (s *Server) resolveUpdateDeployRunnerInputs(job *models.UpdateJob, inst *models.Instance) (updateDeployRunnerInputs, error) {
+	if s == nil {
+		return updateDeployRunnerInputs{}, fmt.Errorf("server is nil")
 	}
 	if job == nil {
-		return "", fmt.Errorf("job is nil")
+		return updateDeployRunnerInputs{}, fmt.Errorf("job is nil")
 	}
 	if inst == nil {
-		return "", fmt.Errorf("instance is nil")
+		return updateDeployRunnerInputs{}, fmt.Errorf("instance is nil")
 	}
 
-	projectName, err := s.provisionRunnerProjectName()
-	if err != nil {
-		return "", err
+	inputs := updateDeployRunnerInputs{
+		accountID:            strings.TrimSpace(job.AccountID),
+		roleName:             strings.TrimSpace(job.AccountRoleName),
+		region:               strings.TrimSpace(job.Region),
+		baseDomain:           strings.TrimSpace(job.BaseDomain),
+		lesserVersion:        strings.TrimSpace(job.LesserVersion),
+		instanceKeySecretArn: strings.TrimSpace(job.LesserHostInstanceKeySecretARN),
+	}
+	if inputs.accountID == "" || inputs.roleName == "" || inputs.region == "" || inputs.baseDomain == "" || inputs.lesserVersion == "" {
+		return updateDeployRunnerInputs{}, fmt.Errorf("missing required update job deploy inputs")
+	}
+	if inputs.instanceKeySecretArn == "" {
+		return updateDeployRunnerInputs{}, fmt.Errorf("instance key secret arn is missing")
 	}
 
-	accountID := strings.TrimSpace(job.AccountID)
-	roleName := strings.TrimSpace(job.AccountRoleName)
-	region := strings.TrimSpace(job.Region)
-	baseDomain := strings.TrimSpace(job.BaseDomain)
-	lesserVersion := strings.TrimSpace(job.LesserVersion)
-	instanceKeySecretArn := strings.TrimSpace(job.LesserHostInstanceKeySecretARN)
-	if accountID == "" || roleName == "" || region == "" || baseDomain == "" || lesserVersion == "" {
-		return "", fmt.Errorf("missing required update job deploy inputs")
-	}
-	if instanceKeySecretArn == "" {
-		return "", fmt.Errorf("instance key secret arn is missing")
+	inputs.adminWallet = walletAddressFromUsername(strings.TrimSpace(inst.Owner))
+	if inputs.adminWallet == "" {
+		return updateDeployRunnerInputs{}, fmt.Errorf("instance owner is not a wallet username")
 	}
 
-	adminWallet := walletAddressFromUsername(strings.TrimSpace(inst.Owner))
-	if adminWallet == "" {
-		return "", fmt.Errorf("instance owner is not a wallet username")
+	inputs.stage = normalizeManagedLesserStage(strings.TrimSpace(s.cfg.Stage))
+	inputs.receiptKey = s.updateReceiptS3Key(job)
+	inputs.bootstrapKey = s.updateBootstrapS3Key(strings.TrimSpace(job.InstanceSlug))
+
+	inputs.lesserHostURL = strings.TrimSpace(job.LesserHostBaseURL)
+	if inputs.lesserHostURL == "" {
+		inputs.lesserHostURL = strings.TrimSpace(s.publicBaseURL())
+	}
+	inputs.lesserHostAttestationsURL = strings.TrimSpace(job.LesserHostAttestationsURL)
+	if inputs.lesserHostAttestationsURL == "" {
+		inputs.lesserHostAttestationsURL = inputs.lesserHostURL
+	}
+	if inputs.lesserHostURL == "" {
+		return updateDeployRunnerInputs{}, fmt.Errorf("lesser host base url is missing")
 	}
 
-	stage := normalizeManagedLesserStage(strings.TrimSpace(s.cfg.Stage))
-	receiptKey := s.updateReceiptS3Key(job)
-	bootstrapKey := s.updateBootstrapS3Key(strings.TrimSpace(job.InstanceSlug))
+	return inputs, nil
+}
 
-	lesserHostURL := strings.TrimSpace(job.LesserHostBaseURL)
-	if lesserHostURL == "" {
-		lesserHostURL = strings.TrimSpace(s.publicBaseURL())
-	}
-	lesserHostAttestationsURL := strings.TrimSpace(job.LesserHostAttestationsURL)
-	if lesserHostAttestationsURL == "" {
-		lesserHostAttestationsURL = lesserHostURL
-	}
-	if lesserHostURL == "" {
-		return "", fmt.Errorf("lesser host base url is missing")
+func (s *Server) buildUpdateDeployRunnerEnv(job *models.UpdateJob, inputs updateDeployRunnerInputs) []cbtypes.EnvironmentVariable {
+	if s == nil || job == nil {
+		return nil
 	}
 
 	tipEnabled := job.TipEnabled
 	env := []cbtypes.EnvironmentVariable{
 		{Name: aws.String("JOB_ID"), Value: aws.String(strings.TrimSpace(job.ID))},
 		{Name: aws.String("APP_SLUG"), Value: aws.String(strings.TrimSpace(job.InstanceSlug))},
-		{Name: aws.String("STAGE"), Value: aws.String(stage)},
+		{Name: aws.String("STAGE"), Value: aws.String(inputs.stage)},
 		{Name: aws.String("ADMIN_USERNAME"), Value: aws.String(strings.TrimSpace(job.InstanceSlug))},
-		{Name: aws.String("ADMIN_WALLET_ADDRESS"), Value: aws.String(adminWallet)},
-		{Name: aws.String("BASE_DOMAIN"), Value: aws.String(baseDomain)},
-		{Name: aws.String("TARGET_ACCOUNT_ID"), Value: aws.String(accountID)},
-		{Name: aws.String("TARGET_ROLE_NAME"), Value: aws.String(roleName)},
-		{Name: aws.String("TARGET_REGION"), Value: aws.String(region)},
-		{Name: aws.String("LESSER_VERSION"), Value: aws.String(lesserVersion)},
+		{Name: aws.String("ADMIN_WALLET_ADDRESS"), Value: aws.String(inputs.adminWallet)},
+		{Name: aws.String("BASE_DOMAIN"), Value: aws.String(inputs.baseDomain)},
+		{Name: aws.String("TARGET_ACCOUNT_ID"), Value: aws.String(inputs.accountID)},
+		{Name: aws.String("TARGET_ROLE_NAME"), Value: aws.String(inputs.roleName)},
+		{Name: aws.String("TARGET_REGION"), Value: aws.String(inputs.region)},
+		{Name: aws.String("LESSER_VERSION"), Value: aws.String(inputs.lesserVersion)},
 		{Name: aws.String("ARTIFACT_BUCKET"), Value: aws.String(strings.TrimSpace(s.cfg.ArtifactBucketName))},
-		{Name: aws.String("RECEIPT_S3_KEY"), Value: aws.String(receiptKey)},
-		{Name: aws.String("BOOTSTRAP_S3_KEY"), Value: aws.String(bootstrapKey)},
+		{Name: aws.String("RECEIPT_S3_KEY"), Value: aws.String(inputs.receiptKey)},
+		{Name: aws.String("BOOTSTRAP_S3_KEY"), Value: aws.String(inputs.bootstrapKey)},
 		{Name: aws.String("GITHUB_OWNER"), Value: aws.String(strings.TrimSpace(s.cfg.ManagedLesserGitHubOwner))},
 		{Name: aws.String("GITHUB_REPO"), Value: aws.String(strings.TrimSpace(s.cfg.ManagedLesserGitHubRepo))},
 
-		{Name: aws.String("LESSER_HOST_URL"), Value: aws.String(lesserHostURL)},
-		{Name: aws.String("LESSER_HOST_ATTESTATIONS_URL"), Value: aws.String(lesserHostAttestationsURL)},
-		{Name: aws.String("LESSER_HOST_INSTANCE_KEY_ARN"), Value: aws.String(instanceKeySecretArn)},
+		{Name: aws.String("LESSER_HOST_URL"), Value: aws.String(inputs.lesserHostURL)},
+		{Name: aws.String("LESSER_HOST_ATTESTATIONS_URL"), Value: aws.String(inputs.lesserHostAttestationsURL)},
+		{Name: aws.String("LESSER_HOST_INSTANCE_KEY_ARN"), Value: aws.String(inputs.instanceKeySecretArn)},
 		{Name: aws.String("TRANSLATION_ENABLED"), Value: aws.String(fmt.Sprintf("%t", job.TranslationEnabled))},
 		{Name: aws.String("TIP_ENABLED"), Value: aws.String(fmt.Sprintf("%t", tipEnabled))},
 		{Name: aws.String("AI_ENABLED"), Value: aws.String(fmt.Sprintf("%t", job.AIEnabled))},
@@ -561,6 +589,31 @@ func (s *Server) startUpdateDeployRunner(ctx context.Context, job *models.Update
 			Value: aws.String(strings.TrimSpace(s.cfg.ManagedOrgVendingRoleARN)),
 		})
 	}
+
+	return env
+}
+
+func (s *Server) startUpdateDeployRunner(ctx context.Context, job *models.UpdateJob, inst *models.Instance) (string, error) {
+	if s == nil || s.cb == nil {
+		return "", fmt.Errorf("codebuild client not initialized")
+	}
+	if job == nil {
+		return "", fmt.Errorf("job is nil")
+	}
+	if inst == nil {
+		return "", fmt.Errorf("instance is nil")
+	}
+
+	projectName, err := s.provisionRunnerProjectName()
+	if err != nil {
+		return "", err
+	}
+
+	inputs, err := s.resolveUpdateDeployRunnerInputs(job, inst)
+	if err != nil {
+		return "", err
+	}
+	env := s.buildUpdateDeployRunnerEnv(job, inputs)
 
 	out, err := s.cb.StartBuild(ctx, &codebuild.StartBuildInput{
 		ProjectName:                  aws.String(projectName),
@@ -595,9 +648,10 @@ func (s *Server) advanceUpdateDeployStart(ctx context.Context, job *models.Updat
 	}
 	if strings.TrimSpace(job.LesserHostInstanceKeySecretARN) == "" && strings.TrimSpace(inst.LesserHostInstanceKeySecretARN) == "" {
 		job.Step = updateStepInstanceConfig
-		job.Note = "ensuring instance configuration"
-		if err := s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil); err != nil {
-			return 0, false, err
+		job.Note = noteEnsuringInstanceConfiguration
+		persistErr := s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil)
+		if persistErr != nil {
+			return 0, false, persistErr
 		}
 		return 0, false, nil
 	}
@@ -618,7 +672,7 @@ func (s *Server) advanceUpdateDeployStart(ctx context.Context, job *models.Updat
 
 	job.RunID = strings.TrimSpace(runID)
 	job.Step = updateStepDeployWait
-	job.Note = "deploy runner in progress"
+	job.Note = noteDeployRunnerInProgress
 	if err := s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil); err != nil {
 		return 0, false, err
 	}
@@ -658,7 +712,7 @@ func (s *Server) advanceUpdateDeployWait(ctx context.Context, job *models.Update
 		if !job.CreatedAt.IsZero() && now.Sub(job.CreatedAt) > provisionMaxDeployAge {
 			return 0, false, s.failUpdateJob(ctx, job, requestID, now, "deploy_timeout", "deploy runner timed out")
 		}
-		job.Note = "deploy runner in progress"
+		job.Note = noteDeployRunnerInProgress
 		_ = s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil)
 		return provisionDefaultPollDelay, false, nil
 
@@ -918,124 +972,109 @@ func normalizeVerifyURL(raw string) string {
 	return raw
 }
 
-func (s *Server) advanceUpdateVerify(ctx context.Context, job *models.UpdateJob, requestID string, now time.Time) (time.Duration, bool, error) {
-	if s == nil || s.store == nil || s.store.DB == nil {
-		return 0, false, fmt.Errorf("store not initialized")
-	}
-	if job == nil {
-		return 0, true, nil
-	}
-
-	transOK := false
-	transErr := ""
-	verifyDomain := strings.TrimSpace(job.BaseDomain)
-	managedStage := normalizeManagedLesserStage(strings.TrimSpace(s.cfg.Stage))
+func updateVerifyDomain(baseDomain, stage string) string {
+	verifyDomain := strings.TrimSpace(baseDomain)
+	managedStage := normalizeManagedLesserStage(strings.TrimSpace(stage))
 	if managedStage != managedStageLive && verifyDomain != "" {
 		verifyDomain = managedStage + "." + verifyDomain
 	}
-	client := &http.Client{Timeout: 10 * time.Second}
-	if s != nil && s.httpClient != nil {
-		client = s.httpClient
-	}
+	return verifyDomain
+}
 
-	trustOK := false
-	trustErr := ""
-	tipsOK := false
-	tipsErr := ""
-	aiOK := false
-	aiErr := ""
-
-	cfg, cfgErr := fetchInstanceConfigV2(ctx, client, verifyDomain)
+func verifyUpdateTranslation(ctx context.Context, client *http.Client, verifyDomain string, cfg instanceV2Response, cfgErr error, expectedEnabled bool) (bool, string) {
 	if cfgErr != nil {
-		errStr := strings.TrimSpace(cfgErr.Error())
-		transErr = errStr
-		trustErr = errStr
-		tipsErr = errStr
-	} else {
-		// Translation: flag match, plus translation_languages endpoint if enabled.
-		if cfg.Configuration.Translation.Enabled != job.TranslationEnabled {
-			transErr = fmt.Sprintf("expected %t, got %t", job.TranslationEnabled, cfg.Configuration.Translation.Enabled)
-		} else if job.TranslationEnabled {
-			if err := requireInstanceEndpoint2xx(ctx, client, verifyDomain, "/api/v1/instance/translation_languages"); err != nil {
-				transErr = err.Error()
-			} else {
-				transOK = true
-			}
-		} else {
-			transOK = true
-		}
-
-		// Trust: enabled, base_url match, plus JWKS endpoint.
-		if !cfg.Configuration.Trust.Enabled {
-			trustErr = "disabled"
-		} else {
-			expectedBaseURL := strings.TrimSpace(job.LesserHostAttestationsURL)
-			if expectedBaseURL == "" {
-				expectedBaseURL = strings.TrimSpace(job.LesserHostBaseURL)
-			}
-			if expectedBaseURL == "" {
-				expectedBaseURL = strings.TrimSpace(s.publicBaseURL())
-			}
-
-			gotBaseURL := normalizeVerifyURL(cfg.Configuration.Trust.BaseURL)
-			wantBaseURL := normalizeVerifyURL(expectedBaseURL)
-			if gotBaseURL != wantBaseURL {
-				trustErr = fmt.Sprintf("expected base_url %q, got %q", wantBaseURL, gotBaseURL)
-			} else if err := requireInstanceEndpoint2xx(ctx, client, verifyDomain, "/api/v1/trust/jwks.json"); err != nil {
-				trustErr = err.Error()
-			} else {
-				trustOK = true
-			}
-		}
-
-		// Tips: enabled match, plus chain/contract comparison if enabled.
-		if cfg.Configuration.Tips.Enabled != job.TipEnabled {
-			tipsErr = fmt.Sprintf("expected %t, got %t", job.TipEnabled, cfg.Configuration.Tips.Enabled)
-		} else if job.TipEnabled {
-			if cfg.Configuration.Tips.ChainID != job.TipChainID {
-				tipsErr = fmt.Sprintf("expected chain_id %d, got %d", job.TipChainID, cfg.Configuration.Tips.ChainID)
-			} else if !strings.EqualFold(strings.TrimSpace(cfg.Configuration.Tips.ContractAddress), strings.TrimSpace(job.TipContractAddress)) {
-				tipsErr = fmt.Sprintf("expected contract_address %q, got %q", strings.TrimSpace(job.TipContractAddress), strings.TrimSpace(cfg.Configuration.Tips.ContractAddress))
-			} else {
-				tipsOK = true
-			}
-		} else {
-			tipsOK = true
-		}
+		return false, strings.TrimSpace(cfgErr.Error())
 	}
+	if cfg.Configuration.Translation.Enabled != expectedEnabled {
+		return false, fmt.Sprintf("expected %t, got %t", expectedEnabled, cfg.Configuration.Translation.Enabled)
+	}
+	if !expectedEnabled {
+		return true, ""
+	}
+	if err := requireInstanceEndpoint2xx(ctx, client, verifyDomain, "/api/v1/instance/translation_languages"); err != nil {
+		return false, err.Error()
+	}
+	return true, ""
+}
 
-	// AI: best-effort; accept 2xx/404 from lesser-host when enabled, else mark OK.
+func resolveExpectedTrustBaseURL(job *models.UpdateJob, fallback string) string {
+	if job == nil {
+		return strings.TrimSpace(fallback)
+	}
+	expectedBaseURL := strings.TrimSpace(job.LesserHostAttestationsURL)
+	if expectedBaseURL == "" {
+		expectedBaseURL = strings.TrimSpace(job.LesserHostBaseURL)
+	}
+	if expectedBaseURL == "" {
+		expectedBaseURL = strings.TrimSpace(fallback)
+	}
+	return expectedBaseURL
+}
+
+func verifyUpdateTrust(ctx context.Context, client *http.Client, verifyDomain string, cfg instanceV2Response, cfgErr error, expectedBaseURL string) (bool, string) {
+	if cfgErr != nil {
+		return false, strings.TrimSpace(cfgErr.Error())
+	}
+	if !cfg.Configuration.Trust.Enabled {
+		return false, "disabled"
+	}
+	gotBaseURL := normalizeVerifyURL(cfg.Configuration.Trust.BaseURL)
+	wantBaseURL := normalizeVerifyURL(expectedBaseURL)
+	if gotBaseURL != wantBaseURL {
+		return false, fmt.Sprintf("expected base_url %q, got %q", wantBaseURL, gotBaseURL)
+	}
+	if err := requireInstanceEndpoint2xx(ctx, client, verifyDomain, "/api/v1/trust/jwks.json"); err != nil {
+		return false, err.Error()
+	}
+	return true, ""
+}
+
+func verifyUpdateTips(cfg instanceV2Response, cfgErr error, expectedEnabled bool, expectedChainID int64, expectedContractAddress string) (bool, string) {
+	if cfgErr != nil {
+		return false, strings.TrimSpace(cfgErr.Error())
+	}
+	if cfg.Configuration.Tips.Enabled != expectedEnabled {
+		return false, fmt.Sprintf("expected %t, got %t", expectedEnabled, cfg.Configuration.Tips.Enabled)
+	}
+	if !expectedEnabled {
+		return true, ""
+	}
+	if cfg.Configuration.Tips.ChainID != expectedChainID {
+		return false, fmt.Sprintf("expected chain_id %d, got %d", expectedChainID, cfg.Configuration.Tips.ChainID)
+	}
+	got := strings.TrimSpace(cfg.Configuration.Tips.ContractAddress)
+	want := strings.TrimSpace(expectedContractAddress)
+	if !strings.EqualFold(got, want) {
+		return false, fmt.Sprintf("expected contract_address %q, got %q", want, got)
+	}
+	return true, ""
+}
+
+func (s *Server) verifyUpdateAI(ctx context.Context, client *http.Client, job *models.UpdateJob) (bool, string) {
+	if s == nil || job == nil {
+		return false, "internal error"
+	}
 	if !job.AIEnabled {
-		aiOK = true
-	} else {
-		key, err := s.resolveInstanceKeyPlaintext(ctx, job)
-		if err != nil {
-			aiErr = err.Error()
-		} else {
-			baseURL := strings.TrimSpace(job.LesserHostBaseURL)
-			if baseURL == "" {
-				baseURL = strings.TrimSpace(s.publicBaseURL())
-			}
-			aiOK, aiErr = verifyAIEndpoint(ctx, client, baseURL, key, strings.TrimSpace(job.ID))
-		}
+		return true, ""
 	}
 
-	job.VerifyTranslationOK = &transOK
-	job.VerifyTranslationErr = strings.TrimSpace(transErr)
-	job.VerifyTrustOK = &trustOK
-	job.VerifyTrustErr = strings.TrimSpace(trustErr)
-	job.VerifyTipsOK = &tipsOK
-	job.VerifyTipsErr = strings.TrimSpace(tipsErr)
-	job.VerifyAIOK = &aiOK
-	job.VerifyAIErr = strings.TrimSpace(aiErr)
+	key, err := s.resolveInstanceKeyPlaintext(ctx, job)
+	if err != nil {
+		return false, err.Error()
+	}
 
-	job.Step = updateStepDone
-	job.Status = models.UpdateJobStatusOK
-	job.Note = "updated"
-	job.ErrorCode = ""
-	job.ErrorMessage = ""
+	baseURL := strings.TrimSpace(job.LesserHostBaseURL)
+	if baseURL == "" {
+		baseURL = strings.TrimSpace(s.publicBaseURL())
+	}
+	return verifyAIEndpoint(ctx, client, baseURL, key, strings.TrimSpace(job.ID))
+}
 
-	if err := s.persistUpdateJobAndInstance(ctx, job, requestID, now, func(ub core.UpdateBuilder) error {
+func updateVerifyInstanceUpdate(job *models.UpdateJob) func(core.UpdateBuilder) error {
+	return func(ub core.UpdateBuilder) error {
+		if job == nil {
+			return nil
+		}
 		ub.Set("UpdateStatus", models.UpdateJobStatusOK)
 		ub.Set("UpdateJobID", strings.TrimSpace(job.ID))
 		if strings.TrimSpace(job.LesserVersion) != "" {
@@ -1061,7 +1100,46 @@ func (s *Server) advanceUpdateVerify(ctx context.Context, job *models.UpdateJob,
 			ub.Set("LesserHostInstanceKeySecretARN", strings.TrimSpace(job.LesserHostInstanceKeySecretARN))
 		}
 		return nil
-	}); err != nil {
+	}
+}
+
+func (s *Server) advanceUpdateVerify(ctx context.Context, job *models.UpdateJob, requestID string, now time.Time) (time.Duration, bool, error) {
+	if err := s.requireStoreDB(); err != nil {
+		return 0, false, err
+	}
+	if job == nil {
+		return 0, true, nil
+	}
+
+	verifyDomain := updateVerifyDomain(job.BaseDomain, s.cfg.Stage)
+	client := s.httpClient
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
+
+	cfg, cfgErr := fetchInstanceConfigV2(ctx, client, verifyDomain)
+	transOK, transErr := verifyUpdateTranslation(ctx, client, verifyDomain, cfg, cfgErr, job.TranslationEnabled)
+	expectedTrustBaseURL := resolveExpectedTrustBaseURL(job, s.publicBaseURL())
+	trustOK, trustErr := verifyUpdateTrust(ctx, client, verifyDomain, cfg, cfgErr, expectedTrustBaseURL)
+	tipsOK, tipsErr := verifyUpdateTips(cfg, cfgErr, job.TipEnabled, job.TipChainID, job.TipContractAddress)
+	aiOK, aiErr := s.verifyUpdateAI(ctx, client, job)
+
+	job.VerifyTranslationOK = &transOK
+	job.VerifyTranslationErr = strings.TrimSpace(transErr)
+	job.VerifyTrustOK = &trustOK
+	job.VerifyTrustErr = strings.TrimSpace(trustErr)
+	job.VerifyTipsOK = &tipsOK
+	job.VerifyTipsErr = strings.TrimSpace(tipsErr)
+	job.VerifyAIOK = &aiOK
+	job.VerifyAIErr = strings.TrimSpace(aiErr)
+
+	job.Step = updateStepDone
+	job.Status = models.UpdateJobStatusOK
+	job.Note = "updated"
+	job.ErrorCode = ""
+	job.ErrorMessage = ""
+
+	if err := s.persistUpdateJobAndInstance(ctx, job, requestID, now, updateVerifyInstanceUpdate(job)); err != nil {
 		return 0, false, err
 	}
 
