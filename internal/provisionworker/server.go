@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"sort"
 	"strings"
@@ -89,6 +90,8 @@ type Server struct {
 
 	store *store.Store
 
+	httpClient *http.Client
+
 	org organizationsAPI
 	r53 route53API
 	sts stsAPI
@@ -102,14 +105,15 @@ type Server struct {
 // NewServer constructs a Server with AWS service clients and a store.
 func NewServer(cfg config.Config, st *store.Store, org organizationsAPI, r53 route53API, stsClient stsAPI, sqsClient sqsAPI, cbClient codebuildAPI, s3Client s3API) *Server {
 	return &Server{
-		cfg:   cfg,
-		store: st,
-		org:   org,
-		r53:   r53,
-		sts:   stsClient,
-		sqs:   sqsClient,
-		cb:    cbClient,
-		s3:    s3Client,
+		cfg:        cfg,
+		store:      st,
+		httpClient: &http.Client{Timeout: 10 * time.Second},
+		org:        org,
+		r53:        r53,
+		sts:        stsClient,
+		sqs:        sqsClient,
+		cb:         cbClient,
+		s3:         s3Client,
 	}
 }
 

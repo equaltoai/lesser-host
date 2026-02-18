@@ -64,8 +64,12 @@ type UpdateJob struct {
 	// Post-deploy verification signals (nil until verification runs).
 	VerifyTranslationOK  *bool  `theorydb:"attr:verifyTranslationOk" json:"verify_translation_ok,omitempty"`
 	VerifyTrustOK        *bool  `theorydb:"attr:verifyTrustOk" json:"verify_trust_ok,omitempty"`
+	VerifyTipsOK         *bool  `theorydb:"attr:verifyTipsOk" json:"verify_tips_ok,omitempty"`
+	VerifyAIOK           *bool  `theorydb:"attr:verifyAiOk" json:"verify_ai_ok,omitempty"`
 	VerifyTranslationErr string `theorydb:"attr:verifyTranslationErr" json:"verify_translation_err,omitempty"`
 	VerifyTrustErr       string `theorydb:"attr:verifyTrustErr" json:"verify_trust_err,omitempty"`
+	VerifyTipsErr        string `theorydb:"attr:verifyTipsErr" json:"verify_tips_err,omitempty"`
+	VerifyAIErr          string `theorydb:"attr:verifyAiErr" json:"verify_ai_err,omitempty"`
 
 	ReceiptJSON string `theorydb:"attr:receiptJson" json:"receipt_json,omitempty"`
 
@@ -133,6 +137,8 @@ func (j *UpdateJob) UpdateKeys() error {
 	j.RotatedInstanceKeyID = strings.TrimSpace(j.RotatedInstanceKeyID)
 	j.VerifyTranslationErr = strings.TrimSpace(j.VerifyTranslationErr)
 	j.VerifyTrustErr = strings.TrimSpace(j.VerifyTrustErr)
+	j.VerifyTipsErr = strings.TrimSpace(j.VerifyTipsErr)
+	j.VerifyAIErr = strings.TrimSpace(j.VerifyAIErr)
 	j.ReceiptJSON = strings.TrimSpace(j.ReceiptJSON)
 	j.ErrorCode = strings.TrimSpace(j.ErrorCode)
 	j.ErrorMessage = strings.TrimSpace(j.ErrorMessage)

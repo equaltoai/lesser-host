@@ -59,8 +59,12 @@ type updateJobResponse struct {
 
 	VerifyTranslationOK  *bool  `json:"verify_translation_ok,omitempty"`
 	VerifyTrustOK        *bool  `json:"verify_trust_ok,omitempty"`
+	VerifyTipsOK         *bool  `json:"verify_tips_ok,omitempty"`
+	VerifyAIOK           *bool  `json:"verify_ai_ok,omitempty"`
 	VerifyTranslationErr string `json:"verify_translation_err,omitempty"`
 	VerifyTrustErr       string `json:"verify_trust_err,omitempty"`
+	VerifyTipsErr        string `json:"verify_tips_err,omitempty"`
+	VerifyAIErr          string `json:"verify_ai_err,omitempty"`
 
 	ErrorCode    string `json:"error_code,omitempty"`
 	ErrorMessage string `json:"error_message,omitempty"`
@@ -109,8 +113,12 @@ func updateJobResponseFromModel(j *models.UpdateJob) updateJobResponse {
 		RotatedInstanceKeyID:           strings.TrimSpace(j.RotatedInstanceKeyID),
 		VerifyTranslationOK:            j.VerifyTranslationOK,
 		VerifyTrustOK:                  j.VerifyTrustOK,
+		VerifyTipsOK:                   j.VerifyTipsOK,
+		VerifyAIOK:                     j.VerifyAIOK,
 		VerifyTranslationErr:           strings.TrimSpace(j.VerifyTranslationErr),
 		VerifyTrustErr:                 strings.TrimSpace(j.VerifyTrustErr),
+		VerifyTipsErr:                  strings.TrimSpace(j.VerifyTipsErr),
+		VerifyAIErr:                    strings.TrimSpace(j.VerifyAIErr),
 		ErrorCode:                      strings.TrimSpace(j.ErrorCode),
 		ErrorMessage:                   strings.TrimSpace(j.ErrorMessage),
 		RequestID:                      strings.TrimSpace(j.RequestID),

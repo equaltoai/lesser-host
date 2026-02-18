@@ -192,8 +192,12 @@ export interface UpdateJobResponse {
 	rotated_instance_key_id?: string;
 	verify_translation_ok?: boolean;
 	verify_trust_ok?: boolean;
+	verify_tips_ok?: boolean;
+	verify_ai_ok?: boolean;
 	verify_translation_err?: string;
 	verify_trust_err?: string;
+	verify_tips_err?: string;
+	verify_ai_err?: string;
 	error_code?: string;
 	error_message?: string;
 	request_id?: string;

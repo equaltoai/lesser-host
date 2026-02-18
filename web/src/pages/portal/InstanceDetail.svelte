@@ -305,6 +305,22 @@
 		return 'unverified';
 	}
 
+	function tipsHealthLabel(): string {
+		const job = latestUpdateJob();
+		if (!job) return 'unverified';
+		if (job.verify_tips_ok === true) return 'ok';
+		if (job.verify_tips_ok === false) return `fail${job.verify_tips_err ? `: ${job.verify_tips_err}` : ''}`;
+		return 'unverified';
+	}
+
+	function aiHealthLabel(): string {
+		const job = latestUpdateJob();
+		if (!job) return 'unverified';
+		if (job.verify_ai_ok === true) return 'ok';
+		if (job.verify_ai_ok === false) return `fail${job.verify_ai_err ? `: ${job.verify_ai_err}` : ''}`;
+		return 'unverified';
+	}
+
 	async function pollProvisioning() {
 		abortPolling();
 		if (isProvisionTerminal(provisioningJob)) {
@@ -511,6 +527,8 @@
 				<DefinitionItem label="Attestations url" monospace>{instance.lesser_host_attestations_url || '—'}</DefinitionItem>
 				<DefinitionItem label="Verify trust" monospace>{trustHealthLabel()}</DefinitionItem>
 				<DefinitionItem label="Verify translation" monospace>{translationHealthLabel()}</DefinitionItem>
+				<DefinitionItem label="Verify tips" monospace>{tipsHealthLabel()}</DefinitionItem>
+				<DefinitionItem label="Verify AI" monospace>{aiHealthLabel()}</DefinitionItem>
 			</DefinitionList>
 
 			{#if trustHealthLabel() !== 'ok'}
@@ -728,6 +746,24 @@
 							ok
 						{:else if job?.verify_trust_ok === false}
 							fail{job.verify_trust_err ? `: ${job.verify_trust_err}` : ''}
+						{:else}
+							—
+						{/if}
+					</DefinitionItem>
+					<DefinitionItem label="Verify tips" monospace>
+						{#if job?.verify_tips_ok === true}
+							ok
+						{:else if job?.verify_tips_ok === false}
+							fail{job.verify_tips_err ? `: ${job.verify_tips_err}` : ''}
+						{:else}
+							—
+						{/if}
+					</DefinitionItem>
+					<DefinitionItem label="Verify AI" monospace>
+						{#if job?.verify_ai_ok === true}
+							ok
+						{:else if job?.verify_ai_ok === false}
+							fail{job.verify_ai_err ? `: ${job.verify_ai_err}` : ''}
 						{:else}
 							—
 						{/if}

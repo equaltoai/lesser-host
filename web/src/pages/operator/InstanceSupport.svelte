@@ -535,6 +535,24 @@
 							—
 						{/if}
 					</DefinitionItem>
+					<DefinitionItem label="Verify tips" monospace>
+						{#if job?.verify_tips_ok === true}
+							ok
+						{:else if job?.verify_tips_ok === false}
+							fail{job.verify_tips_err ? `: ${job.verify_tips_err}` : ''}
+						{:else}
+							—
+						{/if}
+					</DefinitionItem>
+					<DefinitionItem label="Verify AI" monospace>
+						{#if job?.verify_ai_ok === true}
+							ok
+						{:else if job?.verify_ai_ok === false}
+							fail{job.verify_ai_err ? `: ${job.verify_ai_err}` : ''}
+						{:else}
+							—
+						{/if}
+					</DefinitionItem>
 				</DefinitionList>
 
 				{#if job?.status === 'error'}

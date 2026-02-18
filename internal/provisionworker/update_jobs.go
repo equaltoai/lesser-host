@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -711,45 +712,114 @@ type instanceV2Response struct {
 		Translation struct {
 			Enabled bool `json:"enabled"`
 		} `json:"translation"`
+		Trust struct {
+			Enabled bool   `json:"enabled"`
+			BaseURL string `json:"base_url"`
+		} `json:"trust"`
+		Tips struct {
+			Enabled         bool   `json:"enabled"`
+			ChainID         int64  `json:"chain_id"`
+			ContractAddress string `json:"contract_address"`
+		} `json:"tips"`
 	} `json:"configuration"`
 }
 
-func fetchInstanceTranslationEnabled(ctx context.Context, baseDomain string) (bool, error) {
-	baseDomain = strings.TrimSpace(baseDomain)
-	if baseDomain == "" {
-		return false, fmt.Errorf("base domain is required")
+func normalizeVerifyHost(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", fmt.Errorf("base domain is required")
 	}
 
-	host := strings.TrimSpace(baseDomain)
-	host = strings.TrimPrefix(host, "https://")
+	// Accept either a bare host (`example.com`, `127.0.0.1:443`) or a full URL.
+	if strings.Contains(raw, "://") {
+		if parsed, err := url.Parse(raw); err == nil && strings.TrimSpace(parsed.Host) != "" {
+			return strings.TrimSpace(parsed.Host), nil
+		}
+	}
+
+	host := strings.TrimPrefix(raw, "https://")
 	host = strings.TrimPrefix(host, "http://")
 	host = strings.TrimRight(host, "/")
+	if idx := strings.IndexByte(host, '/'); idx >= 0 {
+		host = host[:idx]
+	}
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return "", fmt.Errorf("base domain is required")
+	}
+	return host, nil
+}
+
+func fetchInstanceConfigV2(ctx context.Context, client *http.Client, baseDomain string) (instanceV2Response, error) {
+	var parsed instanceV2Response
+
+	host, err := normalizeVerifyHost(baseDomain)
+	if err != nil {
+		return parsed, err
+	}
+
 	u := fmt.Sprintf("https://%s/api/v2/instance", host)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
-		return false, err
+		return parsed, err
 	}
 	req.Header.Set("Accept", "application/json")
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return false, err
+		return parsed, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return false, fmt.Errorf("instance config request failed (HTTP %d)", resp.StatusCode)
+		return parsed, fmt.Errorf("instance config request failed (HTTP %d)", resp.StatusCode)
 	}
 
-	var parsed instanceV2Response
 	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
-		return false, err
+		return parsed, err
 	}
-	return parsed.Configuration.Translation.Enabled, nil
+	return parsed, nil
 }
 
-func updateTrustVerifyJobID(jobID string) string {
+func requireInstanceEndpoint2xx(ctx context.Context, client *http.Client, baseDomain string, path string) error {
+	host, err := normalizeVerifyHost(baseDomain)
+	if err != nil {
+		return err
+	}
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return fmt.Errorf("path is required")
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+
+	u := fmt.Sprintf("https://%s%s", host, path)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "application/json")
+
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return fmt.Errorf("endpoint request failed (HTTP %d)", resp.StatusCode)
+	}
+	return nil
+}
+
+func updateVerifyHealthJobID(jobID string) string {
 	sum := sha256.Sum256([]byte("trust-verify:" + strings.TrimSpace(jobID)))
 	return hex.EncodeToString(sum[:])
 }
@@ -800,7 +870,7 @@ func (s *Server) resolveInstanceKeyPlaintext(ctx context.Context, job *models.Up
 	return plaintext, nil
 }
 
-func verifyTrustEndpoint(ctx context.Context, baseURL string, instanceKey string, jobID string) (bool, string) {
+func verifyAIEndpoint(ctx context.Context, client *http.Client, baseURL string, instanceKey string, jobID string) (bool, string) {
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	instanceKey = strings.TrimSpace(instanceKey)
 	if baseURL == "" {
@@ -810,7 +880,7 @@ func verifyTrustEndpoint(ctx context.Context, baseURL string, instanceKey string
 		return false, "instance key is missing"
 	}
 
-	healthID := updateTrustVerifyJobID(jobID)
+	healthID := updateVerifyHealthJobID(jobID)
 	u := baseURL + "/api/v1/ai/jobs/" + healthID
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
@@ -819,7 +889,9 @@ func verifyTrustEndpoint(ctx context.Context, baseURL string, instanceKey string
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", "Bearer "+instanceKey)
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return false, err.Error()
@@ -840,6 +912,12 @@ func verifyTrustEndpoint(ctx context.Context, baseURL string, instanceKey string
 	}
 }
 
+func normalizeVerifyURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	raw = strings.TrimRight(raw, "/")
+	return raw
+}
+
 func (s *Server) advanceUpdateVerify(ctx context.Context, job *models.UpdateJob, requestID string, now time.Time) (time.Duration, bool, error) {
 	if s == nil || s.store == nil || s.store.DB == nil {
 		return 0, false, fmt.Errorf("store not initialized")
@@ -855,31 +933,101 @@ func (s *Server) advanceUpdateVerify(ctx context.Context, job *models.UpdateJob,
 	if managedStage != managedStageLive && verifyDomain != "" {
 		verifyDomain = managedStage + "." + verifyDomain
 	}
-	if got, err := fetchInstanceTranslationEnabled(ctx, verifyDomain); err != nil {
-		transErr = err.Error()
-	} else if got != job.TranslationEnabled {
-		transErr = fmt.Sprintf("expected %t, got %t", job.TranslationEnabled, got)
-	} else {
-		transOK = true
+	client := &http.Client{Timeout: 10 * time.Second}
+	if s != nil && s.httpClient != nil {
+		client = s.httpClient
 	}
 
 	trustOK := false
 	trustErr := ""
-	key, err := s.resolveInstanceKeyPlaintext(ctx, job)
-	if err != nil {
-		trustErr = err.Error()
+	tipsOK := false
+	tipsErr := ""
+	aiOK := false
+	aiErr := ""
+
+	cfg, cfgErr := fetchInstanceConfigV2(ctx, client, verifyDomain)
+	if cfgErr != nil {
+		errStr := strings.TrimSpace(cfgErr.Error())
+		transErr = errStr
+		trustErr = errStr
+		tipsErr = errStr
 	} else {
-		baseURL := strings.TrimSpace(job.LesserHostBaseURL)
-		if baseURL == "" {
-			baseURL = strings.TrimSpace(s.publicBaseURL())
+		// Translation: flag match, plus translation_languages endpoint if enabled.
+		if cfg.Configuration.Translation.Enabled != job.TranslationEnabled {
+			transErr = fmt.Sprintf("expected %t, got %t", job.TranslationEnabled, cfg.Configuration.Translation.Enabled)
+		} else if job.TranslationEnabled {
+			if err := requireInstanceEndpoint2xx(ctx, client, verifyDomain, "/api/v1/instance/translation_languages"); err != nil {
+				transErr = err.Error()
+			} else {
+				transOK = true
+			}
+		} else {
+			transOK = true
 		}
-		trustOK, trustErr = verifyTrustEndpoint(ctx, baseURL, key, strings.TrimSpace(job.ID))
+
+		// Trust: enabled, base_url match, plus JWKS endpoint.
+		if !cfg.Configuration.Trust.Enabled {
+			trustErr = "disabled"
+		} else {
+			expectedBaseURL := strings.TrimSpace(job.LesserHostAttestationsURL)
+			if expectedBaseURL == "" {
+				expectedBaseURL = strings.TrimSpace(job.LesserHostBaseURL)
+			}
+			if expectedBaseURL == "" {
+				expectedBaseURL = strings.TrimSpace(s.publicBaseURL())
+			}
+
+			gotBaseURL := normalizeVerifyURL(cfg.Configuration.Trust.BaseURL)
+			wantBaseURL := normalizeVerifyURL(expectedBaseURL)
+			if gotBaseURL != wantBaseURL {
+				trustErr = fmt.Sprintf("expected base_url %q, got %q", wantBaseURL, gotBaseURL)
+			} else if err := requireInstanceEndpoint2xx(ctx, client, verifyDomain, "/api/v1/trust/jwks.json"); err != nil {
+				trustErr = err.Error()
+			} else {
+				trustOK = true
+			}
+		}
+
+		// Tips: enabled match, plus chain/contract comparison if enabled.
+		if cfg.Configuration.Tips.Enabled != job.TipEnabled {
+			tipsErr = fmt.Sprintf("expected %t, got %t", job.TipEnabled, cfg.Configuration.Tips.Enabled)
+		} else if job.TipEnabled {
+			if cfg.Configuration.Tips.ChainID != job.TipChainID {
+				tipsErr = fmt.Sprintf("expected chain_id %d, got %d", job.TipChainID, cfg.Configuration.Tips.ChainID)
+			} else if !strings.EqualFold(strings.TrimSpace(cfg.Configuration.Tips.ContractAddress), strings.TrimSpace(job.TipContractAddress)) {
+				tipsErr = fmt.Sprintf("expected contract_address %q, got %q", strings.TrimSpace(job.TipContractAddress), strings.TrimSpace(cfg.Configuration.Tips.ContractAddress))
+			} else {
+				tipsOK = true
+			}
+		} else {
+			tipsOK = true
+		}
+	}
+
+	// AI: best-effort; accept 2xx/404 from lesser-host when enabled, else mark OK.
+	if !job.AIEnabled {
+		aiOK = true
+	} else {
+		key, err := s.resolveInstanceKeyPlaintext(ctx, job)
+		if err != nil {
+			aiErr = err.Error()
+		} else {
+			baseURL := strings.TrimSpace(job.LesserHostBaseURL)
+			if baseURL == "" {
+				baseURL = strings.TrimSpace(s.publicBaseURL())
+			}
+			aiOK, aiErr = verifyAIEndpoint(ctx, client, baseURL, key, strings.TrimSpace(job.ID))
+		}
 	}
 
 	job.VerifyTranslationOK = &transOK
 	job.VerifyTranslationErr = strings.TrimSpace(transErr)
 	job.VerifyTrustOK = &trustOK
 	job.VerifyTrustErr = strings.TrimSpace(trustErr)
+	job.VerifyTipsOK = &tipsOK
+	job.VerifyTipsErr = strings.TrimSpace(tipsErr)
+	job.VerifyAIOK = &aiOK
+	job.VerifyAIErr = strings.TrimSpace(aiErr)
 
 	job.Step = updateStepDone
 	job.Status = models.UpdateJobStatusOK
