@@ -403,6 +403,15 @@ func (s *Server) advanceUpdateInstanceConfig(ctx context.Context, job *models.Up
 	job.LesserHostBaseURL = publicBaseURL
 	job.LesserHostAttestationsURL = attestationsURL
 	job.LesserHostInstanceKeySecretARN = strings.TrimSpace(secretArn)
+	job.TipEnabled = effectiveTipEnabled(inst.TipEnabled)
+	job.TipChainID = inst.TipChainID
+	job.TipContractAddress = strings.TrimSpace(inst.TipContractAddress)
+	job.AIEnabled = effectiveLesserAIEnabled(inst.LesserAIEnabled)
+	job.AIModerationEnabled = effectiveLesserAIModerationEnabled(inst.LesserAIModerationEnabled)
+	job.AINsfwDetectionEnabled = effectiveLesserAINsfwDetectionEnabled(inst.LesserAINsfwDetectionEnabled)
+	job.AISpamDetectionEnabled = effectiveLesserAISpamDetectionEnabled(inst.LesserAISpamDetectionEnabled)
+	job.AIPiiDetectionEnabled = effectiveLesserAIPiiDetectionEnabled(inst.LesserAIPiiDetectionEnabled)
+	job.AIContentDetectionEnabled = effectiveLesserAIContentDetectionEnabled(inst.LesserAIContentDetectionEnabled)
 	job.Step = updateStepDeployStart
 	job.Note = "starting update deploy runner"
 
@@ -415,6 +424,15 @@ func (s *Server) advanceUpdateInstanceConfig(ctx context.Context, job *models.Up
 			ub.Set("LesserHostInstanceKeySecretARN", strings.TrimSpace(secretArn))
 		}
 		ub.Set("TranslationEnabled", job.TranslationEnabled)
+		ub.Set("TipEnabled", job.TipEnabled)
+		ub.Set("TipChainID", job.TipChainID)
+		ub.Set("TipContractAddress", strings.TrimSpace(job.TipContractAddress))
+		ub.Set("LesserAIEnabled", job.AIEnabled)
+		ub.Set("LesserAIModerationEnabled", job.AIModerationEnabled)
+		ub.Set("LesserAINsfwDetectionEnabled", job.AINsfwDetectionEnabled)
+		ub.Set("LesserAISpamDetectionEnabled", job.AISpamDetectionEnabled)
+		ub.Set("LesserAIPiiDetectionEnabled", job.AIPiiDetectionEnabled)
+		ub.Set("LesserAIContentDetectionEnabled", job.AIContentDetectionEnabled)
 		return nil
 	}); err != nil {
 		return 0, false, err
@@ -862,6 +880,15 @@ func (s *Server) advanceUpdateVerify(ctx context.Context, job *models.UpdateJob,
 			ub.Set("LesserVersion", strings.TrimSpace(job.LesserVersion))
 		}
 		ub.Set("TranslationEnabled", job.TranslationEnabled)
+		ub.Set("TipEnabled", job.TipEnabled)
+		ub.Set("TipChainID", job.TipChainID)
+		ub.Set("TipContractAddress", strings.TrimSpace(job.TipContractAddress))
+		ub.Set("LesserAIEnabled", job.AIEnabled)
+		ub.Set("LesserAIModerationEnabled", job.AIModerationEnabled)
+		ub.Set("LesserAINsfwDetectionEnabled", job.AINsfwDetectionEnabled)
+		ub.Set("LesserAISpamDetectionEnabled", job.AISpamDetectionEnabled)
+		ub.Set("LesserAIPiiDetectionEnabled", job.AIPiiDetectionEnabled)
+		ub.Set("LesserAIContentDetectionEnabled", job.AIContentDetectionEnabled)
 		if strings.TrimSpace(job.LesserHostBaseURL) != "" {
 			ub.Set("LesserHostBaseURL", strings.TrimSpace(job.LesserHostBaseURL))
 		}

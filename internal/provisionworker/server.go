@@ -1015,6 +1015,27 @@ func (s *Server) advanceProvisionInstanceConfig(ctx context.Context, job *models
 		if inst.TranslationEnabled == nil {
 			ub.Set("TranslationEnabled", translationEnabled)
 		}
+		if inst.TipEnabled == nil {
+			ub.Set("TipEnabled", effectiveTipEnabled(inst.TipEnabled))
+		}
+		if inst.LesserAIEnabled == nil {
+			ub.Set("LesserAIEnabled", effectiveLesserAIEnabled(inst.LesserAIEnabled))
+		}
+		if inst.LesserAIModerationEnabled == nil {
+			ub.Set("LesserAIModerationEnabled", effectiveLesserAIModerationEnabled(inst.LesserAIModerationEnabled))
+		}
+		if inst.LesserAINsfwDetectionEnabled == nil {
+			ub.Set("LesserAINsfwDetectionEnabled", effectiveLesserAINsfwDetectionEnabled(inst.LesserAINsfwDetectionEnabled))
+		}
+		if inst.LesserAISpamDetectionEnabled == nil {
+			ub.Set("LesserAISpamDetectionEnabled", effectiveLesserAISpamDetectionEnabled(inst.LesserAISpamDetectionEnabled))
+		}
+		if inst.LesserAIPiiDetectionEnabled == nil {
+			ub.Set("LesserAIPiiDetectionEnabled", effectiveLesserAIPiiDetectionEnabled(inst.LesserAIPiiDetectionEnabled))
+		}
+		if inst.LesserAIContentDetectionEnabled == nil {
+			ub.Set("LesserAIContentDetectionEnabled", effectiveLesserAIContentDetectionEnabled(inst.LesserAIContentDetectionEnabled))
+		}
 		return nil
 	}); err != nil {
 		return 0, false, err
@@ -1023,6 +1044,55 @@ func (s *Server) advanceProvisionInstanceConfig(ctx context.Context, job *models
 }
 
 func effectiveTranslationEnabled(v *bool) bool {
+	if v == nil {
+		return false
+	}
+	return *v
+}
+
+func effectiveTipEnabled(v *bool) bool {
+	if v == nil {
+		return false
+	}
+	return *v
+}
+
+func effectiveLesserAIEnabled(v *bool) bool {
+	if v == nil {
+		return true
+	}
+	return *v
+}
+
+func effectiveLesserAIModerationEnabled(v *bool) bool {
+	if v == nil {
+		return true
+	}
+	return *v
+}
+
+func effectiveLesserAINsfwDetectionEnabled(v *bool) bool {
+	if v == nil {
+		return true
+	}
+	return *v
+}
+
+func effectiveLesserAISpamDetectionEnabled(v *bool) bool {
+	if v == nil {
+		return true
+	}
+	return *v
+}
+
+func effectiveLesserAIPiiDetectionEnabled(v *bool) bool {
+	if v == nil {
+		return false
+	}
+	return *v
+}
+
+func effectiveLesserAIContentDetectionEnabled(v *bool) bool {
 	if v == nil {
 		return false
 	}

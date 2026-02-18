@@ -42,8 +42,20 @@ type updateJobResponse struct {
 	LesserHostAttestationsURL      string `json:"lesser_host_attestations_url,omitempty"`
 	LesserHostInstanceKeySecretARN string `json:"lesser_host_instance_key_secret_arn,omitempty"`
 	TranslationEnabled             bool   `json:"translation_enabled"`
-	RotateInstanceKey              bool   `json:"rotate_instance_key,omitempty"`
-	RotatedInstanceKeyID           string `json:"rotated_instance_key_id,omitempty"`
+
+	TipEnabled         bool   `json:"tip_enabled"`
+	TipChainID         int64  `json:"tip_chain_id,omitempty"`
+	TipContractAddress string `json:"tip_contract_address,omitempty"`
+
+	AIEnabled                 bool `json:"ai_enabled"`
+	AIModerationEnabled       bool `json:"ai_moderation_enabled"`
+	AINsfwDetectionEnabled    bool `json:"ai_nsfw_detection_enabled"`
+	AISpamDetectionEnabled    bool `json:"ai_spam_detection_enabled"`
+	AIPiiDetectionEnabled     bool `json:"ai_pii_detection_enabled"`
+	AIContentDetectionEnabled bool `json:"ai_content_detection_enabled"`
+
+	RotateInstanceKey    bool   `json:"rotate_instance_key,omitempty"`
+	RotatedInstanceKeyID string `json:"rotated_instance_key_id,omitempty"`
 
 	VerifyTranslationOK  *bool  `json:"verify_translation_ok,omitempty"`
 	VerifyTrustOK        *bool  `json:"verify_trust_ok,omitempty"`
@@ -84,6 +96,15 @@ func updateJobResponseFromModel(j *models.UpdateJob) updateJobResponse {
 		LesserHostAttestationsURL:      strings.TrimSpace(j.LesserHostAttestationsURL),
 		LesserHostInstanceKeySecretARN: strings.TrimSpace(j.LesserHostInstanceKeySecretARN),
 		TranslationEnabled:             j.TranslationEnabled,
+		TipEnabled:                     j.TipEnabled,
+		TipChainID:                     j.TipChainID,
+		TipContractAddress:             strings.TrimSpace(j.TipContractAddress),
+		AIEnabled:                      j.AIEnabled,
+		AIModerationEnabled:            j.AIModerationEnabled,
+		AINsfwDetectionEnabled:         j.AINsfwDetectionEnabled,
+		AISpamDetectionEnabled:         j.AISpamDetectionEnabled,
+		AIPiiDetectionEnabled:          j.AIPiiDetectionEnabled,
+		AIContentDetectionEnabled:      j.AIContentDetectionEnabled,
 		RotateInstanceKey:              j.RotateInstanceKey,
 		RotatedInstanceKeyID:           strings.TrimSpace(j.RotatedInstanceKeyID),
 		VerifyTranslationOK:            j.VerifyTranslationOK,
@@ -223,6 +244,15 @@ func (s *Server) handlePortalCreateInstanceUpdateJob(ctx *apptheory.Context) (*a
 		LesserHostAttestationsURL:      attestationsURL,
 		LesserHostInstanceKeySecretARN: strings.TrimSpace(inst.LesserHostInstanceKeySecretARN),
 		TranslationEnabled:             translationEnabled,
+		TipEnabled:                     effectiveTipEnabled(inst.TipEnabled),
+		TipChainID:                     effectiveTipChainID(inst.TipChainID),
+		TipContractAddress:             strings.TrimSpace(inst.TipContractAddress),
+		AIEnabled:                      effectiveLesserAIEnabled(inst.LesserAIEnabled),
+		AIModerationEnabled:            effectiveLesserAIModerationEnabled(inst.LesserAIModerationEnabled),
+		AINsfwDetectionEnabled:         effectiveLesserAINsfwDetectionEnabled(inst.LesserAINsfwDetectionEnabled),
+		AISpamDetectionEnabled:         effectiveLesserAISpamDetectionEnabled(inst.LesserAISpamDetectionEnabled),
+		AIPiiDetectionEnabled:          effectiveLesserAIPiiDetectionEnabled(inst.LesserAIPiiDetectionEnabled),
+		AIContentDetectionEnabled:      effectiveLesserAIContentDetectionEnabled(inst.LesserAIContentDetectionEnabled),
 		RotateInstanceKey:              req.RotateInstanceKey,
 		CreatedAt:                      now,
 		ExpiresAt:                      now.Add(30 * 24 * time.Hour),
