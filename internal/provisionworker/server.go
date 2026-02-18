@@ -2088,12 +2088,26 @@ func (s *Server) startDeployRunner(ctx context.Context, job *models.ProvisionJob
 	bootstrapKey := s.bootstrapS3Key(job)
 	stage := s.deployRunnerStage(job)
 	env := s.buildDeployRunnerEnv(job, stage, receiptKey, bootstrapKey)
+	tipEnabled := effectiveTipEnabled(inst.TipEnabled)
 	env = append(env,
 		cbtypes.EnvironmentVariable{Name: aws.String("LESSER_HOST_URL"), Value: aws.String(lesserHostURL)},
 		cbtypes.EnvironmentVariable{Name: aws.String("LESSER_HOST_ATTESTATIONS_URL"), Value: aws.String(lesserHostAttestationsURL)},
 		cbtypes.EnvironmentVariable{Name: aws.String("LESSER_HOST_INSTANCE_KEY_ARN"), Value: aws.String(instanceKeySecretArn)},
 		cbtypes.EnvironmentVariable{Name: aws.String("TRANSLATION_ENABLED"), Value: aws.String(fmt.Sprintf("%t", effectiveTranslationEnabled(inst.TranslationEnabled)))},
+		cbtypes.EnvironmentVariable{Name: aws.String("TIP_ENABLED"), Value: aws.String(fmt.Sprintf("%t", tipEnabled))},
+		cbtypes.EnvironmentVariable{Name: aws.String("AI_ENABLED"), Value: aws.String(fmt.Sprintf("%t", effectiveLesserAIEnabled(inst.LesserAIEnabled)))},
+		cbtypes.EnvironmentVariable{Name: aws.String("AI_MODERATION_ENABLED"), Value: aws.String(fmt.Sprintf("%t", effectiveLesserAIModerationEnabled(inst.LesserAIModerationEnabled)))},
+		cbtypes.EnvironmentVariable{Name: aws.String("AI_NSFW_DETECTION_ENABLED"), Value: aws.String(fmt.Sprintf("%t", effectiveLesserAINsfwDetectionEnabled(inst.LesserAINsfwDetectionEnabled)))},
+		cbtypes.EnvironmentVariable{Name: aws.String("AI_SPAM_DETECTION_ENABLED"), Value: aws.String(fmt.Sprintf("%t", effectiveLesserAISpamDetectionEnabled(inst.LesserAISpamDetectionEnabled)))},
+		cbtypes.EnvironmentVariable{Name: aws.String("AI_PII_DETECTION_ENABLED"), Value: aws.String(fmt.Sprintf("%t", effectiveLesserAIPiiDetectionEnabled(inst.LesserAIPiiDetectionEnabled)))},
+		cbtypes.EnvironmentVariable{Name: aws.String("AI_CONTENT_DETECTION_ENABLED"), Value: aws.String(fmt.Sprintf("%t", effectiveLesserAIContentDetectionEnabled(inst.LesserAIContentDetectionEnabled)))},
 	)
+	if tipEnabled {
+		env = append(env,
+			cbtypes.EnvironmentVariable{Name: aws.String("TIP_CHAIN_ID"), Value: aws.String(fmt.Sprintf("%d", inst.TipChainID))},
+			cbtypes.EnvironmentVariable{Name: aws.String("TIP_CONTRACT_ADDRESS"), Value: aws.String(strings.TrimSpace(inst.TipContractAddress))},
+		)
+	}
 
 	out, err := s.cb.StartBuild(ctx, &codebuild.StartBuildInput{
 		ProjectName:                  aws.String(projectName),
