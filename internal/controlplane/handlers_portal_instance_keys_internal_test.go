@@ -104,4 +104,3 @@ func TestHandlePortalRevokeInstanceKey_NotFoundAndAlreadyRevoked(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 200, resp.Status)
 }
-

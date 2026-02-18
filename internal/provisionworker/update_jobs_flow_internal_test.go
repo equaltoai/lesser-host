@@ -92,21 +92,21 @@ func TestRunManagedUpdateStateMachine_HappyPath(t *testing.T) {
 	aiContentEnabled := false
 
 	instValue := models.Instance{
-		Slug:                           "slug",
-		Owner:                          "wallet-deadbeef",
-		HostedAccountID:                "123",
-		HostedRegion:                   "us-east-1",
-		HostedBaseDomain:               ts.URL,
-		LesserHostInstanceKeySecretARN: "",
-		TranslationEnabled:             &translationEnabled,
-		TipEnabled:                     &tipEnabled,
-		TipChainID:                     8453,
-		TipContractAddress:             "0xabc",
-		LesserAIEnabled:                &aiEnabled,
-		LesserAIModerationEnabled:      &aiModerationEnabled,
-		LesserAINsfwDetectionEnabled:   &aiNsfwEnabled,
-		LesserAISpamDetectionEnabled:   &aiSpamEnabled,
-		LesserAIPiiDetectionEnabled:    &aiPiiEnabled,
+		Slug:                            "slug",
+		Owner:                           "wallet-deadbeef",
+		HostedAccountID:                 "123",
+		HostedRegion:                    "us-east-1",
+		HostedBaseDomain:                ts.URL,
+		LesserHostInstanceKeySecretARN:  "",
+		TranslationEnabled:              &translationEnabled,
+		TipEnabled:                      &tipEnabled,
+		TipChainID:                      8453,
+		TipContractAddress:              "0xabc",
+		LesserAIEnabled:                 &aiEnabled,
+		LesserAIModerationEnabled:       &aiModerationEnabled,
+		LesserAINsfwDetectionEnabled:    &aiNsfwEnabled,
+		LesserAISpamDetectionEnabled:    &aiSpamEnabled,
+		LesserAIPiiDetectionEnabled:     &aiPiiEnabled,
 		LesserAIContentDetectionEnabled: &aiContentEnabled,
 	}
 
@@ -138,13 +138,13 @@ func TestRunManagedUpdateStateMachine_HappyPath(t *testing.T) {
 	}
 
 	cfg := config.Config{
-		Stage:                          "live",
-		ManagedProvisioningEnabled:     true,
-		ManagedInstanceRoleName:        "role",
+		Stage:                             "live",
+		ManagedProvisioningEnabled:        true,
+		ManagedInstanceRoleName:           "role",
 		ManagedProvisionRunnerProjectName: "project",
-		ArtifactBucketName:             "artifact-bucket",
-		ProvisionQueueURL:              "https://example.com/queue",
-		ManagedOrgVendingRoleARN:       "arn:aws:iam::123:role/vending",
+		ArtifactBucketName:                "artifact-bucket",
+		ProvisionQueueURL:                 "https://example.com/queue",
+		ManagedOrgVendingRoleARN:          "arn:aws:iam::123:role/vending",
 	}
 
 	st := store.New(db)
@@ -166,15 +166,15 @@ func TestRunManagedUpdateStateMachine_HappyPath(t *testing.T) {
 	}
 
 	job := &models.UpdateJob{
-		ID:                      "job1",
-		InstanceSlug:            "slug",
-		Status:                  models.UpdateJobStatusQueued,
-		LesserVersion:           "v1.2.3",
-		RotateInstanceKey:       true,
-		LesserHostBaseURL:       ts.URL,
+		ID:                        "job1",
+		InstanceSlug:              "slug",
+		Status:                    models.UpdateJobStatusQueued,
+		LesserVersion:             "v1.2.3",
+		RotateInstanceKey:         true,
+		LesserHostBaseURL:         ts.URL,
 		LesserHostAttestationsURL: ts.URL,
-		TranslationEnabled:      true,
-		MaxAttempts:             3,
+		TranslationEnabled:        true,
+		MaxAttempts:               3,
 	}
 
 	now := time.Unix(100, 0).UTC()

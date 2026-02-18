@@ -45,8 +45,8 @@ func TestHandlePortalCreateInstanceUpdateJob_ReturnsExistingJobWhenQueued(t *tes
 	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
 		*dest = models.Instance{
-			Slug:        testPortalInstanceSlugDemo,
-			Owner:       "alice",
+			Slug:         testPortalInstanceSlugDemo,
+			Owner:        "alice",
 			UpdateStatus: models.UpdateJobStatusRunning,
 			UpdateJobID:  "job1",
 		}
@@ -89,17 +89,17 @@ func TestHandlePortalCreateInstanceUpdateJob_CreatesNewJob(t *testing.T) {
 	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
 		*dest = models.Instance{
-			Slug:               testPortalInstanceSlugDemo,
-			Owner:              "alice",
-			HostedAccountID:     "123",
-			HostedRegion:        "us-east-1",
-			HostedBaseDomain:    "demo.example.com",
-			LesserVersion:       "v1.2.3",
-			UpdateStatus:        models.UpdateJobStatusOK,
-			UpdateJobID:         "",
-			TranslationEnabled:  nil,
-			TipEnabled:          nil,
-			LesserAIEnabled:     nil,
+			Slug:                        testPortalInstanceSlugDemo,
+			Owner:                       "alice",
+			HostedAccountID:             "123",
+			HostedRegion:                "us-east-1",
+			HostedBaseDomain:            "demo.example.com",
+			LesserVersion:               "v1.2.3",
+			UpdateStatus:                models.UpdateJobStatusOK,
+			UpdateJobID:                 "",
+			TranslationEnabled:          nil,
+			TipEnabled:                  nil,
+			LesserAIEnabled:             nil,
 			LesserAIPiiDetectionEnabled: nil,
 		}
 	}).Once()
@@ -141,12 +141,12 @@ func TestHandlePortalCreateInstanceUpdateJob_TransactWriteFailureReturnsInternal
 	qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
 		*dest = models.Instance{
-			Slug:            testPortalInstanceSlugDemo,
-			Owner:           "alice",
-			HostedAccountID: "123",
-			HostedRegion:    "us-east-1",
+			Slug:             testPortalInstanceSlugDemo,
+			Owner:            "alice",
+			HostedAccountID:  "123",
+			HostedRegion:     "us-east-1",
 			HostedBaseDomain: "demo.example.com",
-			LesserVersion:   "v1",
+			LesserVersion:    "v1",
 		}
 	}).Once()
 

@@ -117,13 +117,13 @@ func TestAdvanceUpdateDeployWait_StatusVariants(t *testing.T) {
 
 		now := time.Unix(1000, 0).UTC()
 		job := &models.UpdateJob{
-			ID:         "j1",
+			ID:           "j1",
 			InstanceSlug: "slug",
-			Status:     models.UpdateJobStatusRunning,
-			Step:       updateStepDeployWait,
-			RunID:      "run",
-			MaxAttempts: 3,
-			CreatedAt:  now.Add(-4 * time.Hour),
+			Status:       models.UpdateJobStatusRunning,
+			Step:         updateStepDeployWait,
+			RunID:        "run",
+			MaxAttempts:  3,
+			CreatedAt:    now.Add(-4 * time.Hour),
 		}
 		delay, done, err := srv.advanceUpdateDeployWait(context.Background(), job, "req", now)
 		require.NoError(t, err)
@@ -144,12 +144,12 @@ func TestAdvanceUpdateDeployWait_StatusVariants(t *testing.T) {
 		srv := &Server{store: st, cb: cb}
 
 		job := &models.UpdateJob{
-			ID:         "j1",
+			ID:           "j1",
 			InstanceSlug: "slug",
-			Status:     models.UpdateJobStatusRunning,
-			Step:       updateStepDeployWait,
-			RunID:      "run",
-			MaxAttempts: 3,
+			Status:       models.UpdateJobStatusRunning,
+			Step:         updateStepDeployWait,
+			RunID:        "run",
+			MaxAttempts:  3,
 		}
 		delay, done, err := srv.advanceUpdateDeployWait(context.Background(), job, "req", time.Unix(1, 0).UTC())
 		require.NoError(t, err)
@@ -167,12 +167,12 @@ func TestAdvanceUpdateDeployWait_StatusVariants(t *testing.T) {
 		srv := &Server{store: st, cb: cb}
 
 		job := &models.UpdateJob{
-			ID:         "j1",
+			ID:           "j1",
 			InstanceSlug: "slug",
-			Status:     models.UpdateJobStatusRunning,
-			Step:       updateStepDeployWait,
-			RunID:      "run",
-			MaxAttempts: 3,
+			Status:       models.UpdateJobStatusRunning,
+			Step:         updateStepDeployWait,
+			RunID:        "run",
+			MaxAttempts:  3,
 		}
 		delay, done, err := srv.advanceUpdateDeployWait(context.Background(), job, "req", time.Unix(1, 0).UTC())
 		require.NoError(t, err)
@@ -189,12 +189,12 @@ func TestAdvanceUpdateDeployWait_StatusVariants(t *testing.T) {
 		srv := &Server{store: st, cb: cb}
 
 		job := &models.UpdateJob{
-			ID:         "j1",
+			ID:           "j1",
 			InstanceSlug: "slug",
-			Status:     models.UpdateJobStatusRunning,
-			Step:       updateStepDeployWait,
-			RunID:      "run",
-			MaxAttempts: 2,
+			Status:       models.UpdateJobStatusRunning,
+			Step:         updateStepDeployWait,
+			RunID:        "run",
+			MaxAttempts:  2,
 		}
 
 		delay, done, err := srv.advanceUpdateDeployWait(context.Background(), job, "req", time.Unix(1, 0).UTC())
@@ -566,10 +566,10 @@ func TestAdvanceUpdateInstanceConfig_RetriesWhenSecretsManagerClientCannotBeAssu
 	qInst.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
 		*dest = models.Instance{
-			Slug:            "slug",
-			Owner:           "wallet-deadbeef",
-			HostedAccountID: "123",
-			HostedRegion:    "us-east-1",
+			Slug:             "slug",
+			Owner:            "wallet-deadbeef",
+			HostedAccountID:  "123",
+			HostedRegion:     "us-east-1",
 			HostedBaseDomain: "example.com",
 		}
 	}).Once()
