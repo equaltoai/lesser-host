@@ -654,7 +654,7 @@
 					Apply configuration
 				</Button>
 				<Text size="sm" color="secondary">
-					Re-runs <span class="instance-detail__mono">lesser up</span> to apply stored trust/translation config.
+					Re-runs <span class="instance-detail__mono">lesser up</span> to apply stored trust/translation/tips/AI config.
 				</Text>
 			</div>
 
