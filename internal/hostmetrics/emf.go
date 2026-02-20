@@ -1,5 +1,5 @@
-// Package metrics provides minimal, dependency-free metric emission via CloudWatch Embedded Metric Format (EMF).
-package metrics
+// Package hostmetrics provides minimal, dependency-free metric emission via CloudWatch Embedded Metric Format (EMF).
+package hostmetrics
 
 import (
 	"encoding/json"

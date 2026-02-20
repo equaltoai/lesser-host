@@ -47,7 +47,7 @@ fi
 #
 # NOTE: this repo currently does not pin these in CI; keep checks fail-closed until pins are set intentionally.
 # M1 intent: pin golangci-lint to unblock deterministic lint/config verification.
-PIN_GOLANGCI_LINT_VERSION="v2.8.0"
+PIN_GOLANGCI_LINT_VERSION="v2.10.1"
 PIN_GOVULNCHECK_VERSION="v1.1.4"
 
 # Optional feature flags (opt-in pack features).

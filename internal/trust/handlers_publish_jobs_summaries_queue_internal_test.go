@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -35,7 +36,7 @@ func TestProcessQueuedRenderSummaries_InlinesDeterministicAndStoresResults(t *te
 		mu.Unlock()
 
 		dest := testutil.RequireMockArg[*models.AIJob](t, args, 0)
-		*dest = models.AIJob{ID: "job" + string(rune('0'+n))}
+		*dest = models.AIJob{ID: "job" + strconv.Itoa(n)}
 	}).Twice()
 	tdb.qAIJob.On("CreateOrUpdate").Return(nil).Twice()
 

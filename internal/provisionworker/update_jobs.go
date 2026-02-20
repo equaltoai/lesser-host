@@ -820,9 +820,9 @@ func fetchInstanceConfigV2(ctx context.Context, client *http.Client, baseDomain 
 	req.Header.Set("Accept", "application/json")
 
 	if client == nil {
-		client = &http.Client{Timeout: 10 * time.Second}
+		client = ssrfProtectedHTTPClient(nil)
 	}
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) //nolint:gosec // SSRF mitigated by ssrfProtectedHTTPClient (verify path) or caller-provided transport in tests.
 	if err != nil {
 		return parsed, err
 	}
@@ -859,9 +859,9 @@ func requireInstanceEndpoint2xx(ctx context.Context, client *http.Client, baseDo
 	req.Header.Set("Accept", "application/json")
 
 	if client == nil {
-		client = &http.Client{Timeout: 10 * time.Second}
+		client = ssrfProtectedHTTPClient(nil)
 	}
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) //nolint:gosec // SSRF mitigated by ssrfProtectedHTTPClient (verify path) or caller-provided transport in tests.
 	if err != nil {
 		return err
 	}
@@ -944,9 +944,9 @@ func verifyAIEndpoint(ctx context.Context, client *http.Client, baseURL string, 
 	req.Header.Set("Authorization", "Bearer "+instanceKey)
 
 	if client == nil {
-		client = &http.Client{Timeout: 10 * time.Second}
+		client = ssrfProtectedHTTPClient(nil)
 	}
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) //nolint:gosec // SSRF mitigated by ssrfProtectedHTTPClient (verify path) or caller-provided transport in tests.
 	if err != nil {
 		return false, err.Error()
 	}
@@ -1112,10 +1112,7 @@ func (s *Server) advanceUpdateVerify(ctx context.Context, job *models.UpdateJob,
 	}
 
 	verifyDomain := updateVerifyDomain(job.BaseDomain, s.cfg.Stage)
-	client := s.httpClient
-	if client == nil {
-		client = &http.Client{Timeout: 10 * time.Second}
-	}
+	client := ssrfProtectedHTTPClient(s.httpClient)
 
 	cfg, cfgErr := fetchInstanceConfigV2(ctx, client, verifyDomain)
 	transOK, transErr := verifyUpdateTranslation(ctx, client, verifyDomain, cfg, cfgErr, job.TranslationEnabled)

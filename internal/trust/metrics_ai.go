@@ -4,7 +4,7 @@ import (
 	"strings"
 
 	"github.com/equaltoai/lesser-host/internal/ai"
-	"github.com/equaltoai/lesser-host/internal/metrics"
+	"github.com/equaltoai/lesser-host/internal/hostmetrics"
 )
 
 const unknownValue = "unknown"
@@ -38,33 +38,33 @@ func (s *Server) emitAIRequestMetrics(instanceSlug string, module string, resp a
 		}
 	}
 
-	ms := []metrics.Metric{
-		{Name: "AIRequests", Unit: metrics.UnitCount, Value: 1},
-		{Name: "AICreditsRequested", Unit: metrics.UnitCount, Value: float64(resp.Budget.RequestedCredits)},
-		{Name: "AICreditsDebited", Unit: metrics.UnitCount, Value: float64(resp.Budget.DebitedCredits)},
+	ms := []hostmetrics.Metric{
+		{Name: "AIRequests", Unit: hostmetrics.UnitCount, Value: 1},
+		{Name: "AICreditsRequested", Unit: hostmetrics.UnitCount, Value: float64(resp.Budget.RequestedCredits)},
+		{Name: "AICreditsDebited", Unit: hostmetrics.UnitCount, Value: float64(resp.Budget.DebitedCredits)},
 	}
 
 	switch resp.Status {
 	case ai.JobStatusOK:
 		if resp.Cached {
-			ms = append(ms, metrics.Metric{Name: "AICacheHits", Unit: metrics.UnitCount, Value: 1})
+			ms = append(ms, hostmetrics.Metric{Name: "AICacheHits", Unit: hostmetrics.UnitCount, Value: 1})
 		}
 	case ai.JobStatusQueued:
-		ms = append(ms, metrics.Metric{Name: "AIQueued", Unit: metrics.UnitCount, Value: 1})
+		ms = append(ms, hostmetrics.Metric{Name: "AIQueued", Unit: hostmetrics.UnitCount, Value: 1})
 	case ai.JobStatusNotCheckedBudget:
-		ms = append(ms, metrics.Metric{Name: "AINotChecked", Unit: metrics.UnitCount, Value: 1})
+		ms = append(ms, hostmetrics.Metric{Name: "AINotChecked", Unit: hostmetrics.UnitCount, Value: 1})
 		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(resp.Budget.Reason)), "concurrency") {
-			ms = append(ms, metrics.Metric{Name: "AIConcurrencyRejected", Unit: metrics.UnitCount, Value: 1})
+			ms = append(ms, hostmetrics.Metric{Name: "AIConcurrencyRejected", Unit: hostmetrics.UnitCount, Value: 1})
 		}
 	case ai.JobStatusError:
-		ms = append(ms, metrics.Metric{Name: "AIErrors", Unit: metrics.UnitCount, Value: 1})
+		ms = append(ms, hostmetrics.Metric{Name: "AIErrors", Unit: hostmetrics.UnitCount, Value: 1})
 	}
 
 	if err != nil {
-		ms = append(ms, metrics.Metric{Name: "AIInternalErrors", Unit: metrics.UnitCount, Value: 1})
+		ms = append(ms, hostmetrics.Metric{Name: "AIInternalErrors", Unit: hostmetrics.UnitCount, Value: 1})
 	}
 
-	metrics.Emit("lesser-host", map[string]string{
+	hostmetrics.Emit("lesser-host", map[string]string{
 		"Stage":    stage,
 		"Service":  ServiceName,
 		"Instance": instanceSlug,

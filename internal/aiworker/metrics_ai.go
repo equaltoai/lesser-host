@@ -3,7 +3,7 @@ package aiworker
 import (
 	"strings"
 
-	"github.com/equaltoai/lesser-host/internal/metrics"
+	"github.com/equaltoai/lesser-host/internal/hostmetrics"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -38,20 +38,20 @@ func (s *Server) emitAIJobMetrics(instanceSlug string, module string, status str
 		}
 	}
 
-	ms := []metrics.Metric{
-		{Name: "AIJobs", Unit: metrics.UnitCount, Value: 1},
-		{Name: "AIJobDurationMs", Unit: metrics.UnitMilliseconds, Value: float64(usage.DurationMs)},
+	ms := []hostmetrics.Metric{
+		{Name: "AIJobs", Unit: hostmetrics.UnitCount, Value: 1},
+		{Name: "AIJobDurationMs", Unit: hostmetrics.UnitMilliseconds, Value: float64(usage.DurationMs)},
 	}
 
 	switch status {
 	case "ok":
-		ms = append(ms, metrics.Metric{Name: "AIJobOK", Unit: metrics.UnitCount, Value: 1})
+		ms = append(ms, hostmetrics.Metric{Name: "AIJobOK", Unit: hostmetrics.UnitCount, Value: 1})
 	case "error":
-		ms = append(ms, metrics.Metric{Name: "AIJobErrors", Unit: metrics.UnitCount, Value: 1})
+		ms = append(ms, hostmetrics.Metric{Name: "AIJobErrors", Unit: hostmetrics.UnitCount, Value: 1})
 	}
 
 	if err != nil {
-		ms = append(ms, metrics.Metric{Name: "AIJobInternalErrors", Unit: metrics.UnitCount, Value: 1})
+		ms = append(ms, hostmetrics.Metric{Name: "AIJobInternalErrors", Unit: hostmetrics.UnitCount, Value: 1})
 	}
 
 	llmFallback := false
@@ -62,7 +62,7 @@ func (s *Server) emitAIJobMetrics(instanceSlug string, module string, status str
 		}
 	}
 	if llmFallback {
-		ms = append(ms, metrics.Metric{Name: "AILLMFallback", Unit: metrics.UnitCount, Value: 1})
+		ms = append(ms, hostmetrics.Metric{Name: "AILLMFallback", Unit: hostmetrics.UnitCount, Value: 1})
 	}
 
 	provider := strings.TrimSpace(usage.Provider)
@@ -70,7 +70,7 @@ func (s *Server) emitAIJobMetrics(instanceSlug string, module string, status str
 		provider = unknownValue
 	}
 
-	metrics.Emit("lesser-host", map[string]string{
+	hostmetrics.Emit("lesser-host", map[string]string{
 		"Stage":    stage,
 		"Service":  ServiceName,
 		"Instance": instanceSlug,

@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -258,9 +259,9 @@ func buildTipRegistryWalletMessage(domainNormalized, walletAddr string, chainID 
 	sb.WriteString("Wallet: ")
 	sb.WriteString(strings.ToLower(strings.TrimSpace(walletAddr)))
 	sb.WriteString("\nChain ID: ")
-	sb.WriteString(fmt.Sprintf("%d", chainID))
+	sb.WriteString(strconv.FormatInt(chainID, 10))
 	sb.WriteString("\nHost fee (bps): ")
-	sb.WriteString(fmt.Sprintf("%d", hostFeeBps))
+	sb.WriteString(strconv.FormatInt(hostFeeBps, 10))
 	sb.WriteString("\nProof value: ")
 	sb.WriteString(proofValue)
 	sb.WriteString("\nNonce: ")
@@ -598,7 +599,7 @@ func verifyTipRegistryHTTPS(ctx context.Context, domainNormalized, proofValue st
 		},
 	}
 
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) //nolint:gosec // SSRF mitigated by validateOutboundHost + custom DialContext + redirects disabled.
 	if err != nil {
 		return false
 	}
@@ -926,7 +927,7 @@ func tipRegistryOpID(kind string, chainID int64, contractTo, hostIDHex, walletAd
 	var sb strings.Builder
 	sb.WriteString(kind)
 	sb.WriteString("|")
-	sb.WriteString(fmt.Sprintf("%d", chainID))
+	sb.WriteString(strconv.FormatInt(chainID, 10))
 	sb.WriteString("|")
 	sb.WriteString(contractTo)
 	sb.WriteString("|")
@@ -934,7 +935,7 @@ func tipRegistryOpID(kind string, chainID int64, contractTo, hostIDHex, walletAd
 	sb.WriteString("|")
 	sb.WriteString(walletAddr)
 	sb.WriteString("|")
-	sb.WriteString(fmt.Sprintf("%d", feeBps))
+	sb.WriteString(strconv.FormatInt(feeBps, 10))
 	sb.WriteString("|")
 	sb.WriteString(tokenAddr)
 	if active != nil {
