@@ -1,4 +1,4 @@
-import { type ColorHarmony } from 'src/lib/greater/utils';
+import { type ColorHarmony } from '@equaltoai/greater-components-utils';
 interface Props {
 	seedColor: string;
 	harmonyType?: keyof Omit<ColorHarmony, 'base'>;

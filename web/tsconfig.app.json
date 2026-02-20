@@ -9,7 +9,15 @@
     "noEmit": true,
     "baseUrl": ".",
     "paths": {
-      "src/*": ["src/*"]
+      "src/*": ["src/*"],
+      "@equaltoai/greater-components-icons": ["src/lib/greater/icons/index.ts"],
+      "@equaltoai/greater-components-icons/*": ["src/lib/greater/icons/*"],
+      "@equaltoai/greater-components-primitives": ["src/lib/greater/primitives/index.ts"],
+      "@equaltoai/greater-components-primitives/*": ["src/lib/greater/primitives/*"],
+      "@equaltoai/greater-components-tokens": ["src/lib/greater/tokens/index.ts"],
+      "@equaltoai/greater-components-tokens/*": ["src/lib/greater/tokens/*"],
+      "@equaltoai/greater-components-utils": ["src/lib/greater/utils/index.ts"],
+      "@equaltoai/greater-components-utils/*": ["src/lib/greater/utils/*"]
     },
     /**
      * Typecheck JS in `.svelte` and `.js` files by default.

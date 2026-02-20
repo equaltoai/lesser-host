@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import type { Snippet } from 'svelte';
-	import { useStableId } from 'src/lib/greater/utils';
+	import { useStableId } from '@equaltoai/greater-components-utils';
 	import { getMenuContext } from './context.svelte';
 
 	interface Props {

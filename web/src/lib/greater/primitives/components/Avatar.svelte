@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { HTMLAttributes } from 'svelte/elements';
 	import type { Snippet } from 'svelte';
-	import { useStableId } from 'src/lib/greater/utils';
+	import { useStableId } from '@equaltoai/greater-components-utils';
 	import defaultAvatar from '../assets/greater-default-profile.png';
 	import Spinner from './Spinner.svelte';
 

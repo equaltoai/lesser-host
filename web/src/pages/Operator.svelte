@@ -115,11 +115,6 @@
 		}
 	}
 
-	async function handleLogout() {
-		await logout();
-		navigate('/login');
-	}
-
 	onMount(() => {
 		void loadMe();
 	});
@@ -129,27 +124,10 @@
 	<div class="operator">
 		<header class="operator__header">
 			<div class="operator__title">
-				<Heading level={1}>Operator console</Heading>
-				<Text color="secondary">Admin/operator access.</Text>
+				<Heading level={1}>Operator Actions</Heading>
 			</div>
-		<div class="operator__actions">
-			<Button variant="outline" onclick={() => void loadMe()} disabled={loading}>Refresh</Button>
-			<Button variant="ghost" onclick={() => navigate('/operator')}>Dashboard</Button>
-			<Button variant="ghost" onclick={() => navigate('/operator/approvals/domains')}>Domains</Button>
-			<Button variant="ghost" onclick={() => navigate('/operator/approvals/users')}>Users</Button>
-			<Button variant="ghost" onclick={() => navigate('/operator/approvals/external-instances')}>External regs</Button>
-			<Button variant="ghost" onclick={() => navigate('/operator/provisioning/jobs')}>Provisioning</Button>
-			<Button variant="ghost" onclick={() => navigate('/operator/instances')}>Instances</Button>
-			<Button variant="ghost" onclick={() => navigate('/operator/tip-registry')}>Tip registry</Button>
-			<Button variant="ghost" onclick={() => navigate('/operator/audit')}>Audit</Button>
-			<Button variant="ghost" onclick={() => navigate('/account')}>Account</Button>
-			<Button variant="ghost" onclick={() => navigate('/portal')}>Portal</Button>
-			<Button
-				variant="ghost"
-					onclick={() => void handleLogout()}
-				>
-					Logout
-				</Button>
+			<div class="operator__actions">
+				<Button variant="outline" onclick={() => void loadMe()} disabled={loading}>Refresh</Button>
 			</div>
 		</header>
 
@@ -211,23 +189,6 @@
 					<Text size="sm">Unknown operator path.</Text>
 				</Alert>
 			{/if}
-		{/if}
-
-		{#if $session}
-			<Card variant="outlined" padding="lg">
-				{#snippet header()}
-					<Heading level={2} size="xl">Session</Heading>
-				{/snippet}
-				<Text size="sm">
-					Method: <span class="operator__mono">{$session.method || '—'}</span>
-				</Text>
-				<Text size="sm">
-					Wallet: <span class="operator__mono">{$session.walletAddress || '—'}</span>
-				</Text>
-				<Text size="sm">
-					Expires: <span class="operator__mono">{$session.expiresAt}</span>
-				</Text>
-			</Card>
 		{/if}
 	</div>
 </Container>

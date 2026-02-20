@@ -2,6 +2,10 @@
  * @equaltoai/greater-components-adapters - Transport adapters and state management for Fediverse protocols
  */
 
+import type { AiAnalysisQuery } from './graphql';
+
+export type AIAnalysis = NonNullable<AiAnalysisQuery['aiAnalysis']>;
+
 // Transport Clients
 export { WebSocketClient } from './WebSocketClient';
 export { SseClient } from './SseClient';
@@ -37,6 +41,7 @@ export type {
 	CreateQuoteNoteMutationVariables,
 	SearchVariables,
 	Visibility,
+	NotificationLevel,
 	ObjectFieldsFragment,
 	Actor,
 	ViewerQuery,
@@ -48,6 +53,10 @@ export type {
 	UploadMediaMutation,
 	UploadMediaPayload,
 } from './graphql';
+
+// Messaging handlers (Lesser → shared/messaging)
+export { createLesserMessagesHandlers } from './messaging/index.js';
+export type { LesserMessagesHandlersConfig } from './messaging/index.js';
 
 // Reactive Stores (Svelte 5 Runes)
 export { createTimelineStore, createNotificationStore, createPresenceStore } from './stores';

@@ -100,11 +100,6 @@
 		}
 	}
 
-	async function handleLogout() {
-		await logout();
-		navigate('/login');
-	}
-
 	onMount(() => {
 		void loadMe();
 	});
@@ -114,19 +109,12 @@
 	<div class="portal">
 		<header class="portal__header">
 			<div class="portal__title">
-				<Heading level={1}>Portal</Heading>
-				<Text color="secondary">Self-serve customer portal.</Text>
+				<Heading level={1}>Portal Dashboard</Heading>
+				<Text color="secondary">Self-serve customer dashboard.</Text>
 			</div>
 			<div class="portal__actions">
 				<Button variant="outline" onclick={() => void loadMe()} disabled={loading}>Refresh</Button>
 				<Button variant="ghost" onclick={() => navigate('/portal/billing')}>Billing</Button>
-				<Button variant="ghost" onclick={() => navigate('/account')}>Account</Button>
-				<Button
-					variant="ghost"
-					onclick={() => void handleLogout()}
-				>
-					Logout
-				</Button>
 			</div>
 		</header>
 
@@ -193,17 +181,6 @@
 					<Button variant="outline" onclick={() => navigate('/login')}>Sign in</Button>
 				</div>
 			</Alert>
-		{/if}
-
-		{#if $session}
-			<Card variant="outlined" padding="lg">
-				{#snippet header()}
-					<Heading level={2} size="xl">Session</Heading>
-				{/snippet}
-				<Text size="sm">
-					Expires: <span class="portal__mono">{$session.expiresAt}</span>
-				</Text>
-			</Card>
 		{/if}
 	</div>
 </Container>
