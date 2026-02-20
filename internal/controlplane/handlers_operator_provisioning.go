@@ -34,6 +34,7 @@ type operatorProvisionJobListItem struct {
 	RequestID    string `json:"request_id,omitempty"`
 
 	HasReceipt bool `json:"has_receipt"`
+	HasSoulReceipt bool `json:"has_soul_receipt"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -58,6 +59,7 @@ type operatorProvisionJobDetail struct {
 	ChildNameServers   []string `json:"child_name_servers,omitempty"`
 
 	ReceiptJSON string `json:"receipt_json,omitempty"`
+	SoulReceiptJSON string `json:"soul_receipt_json,omitempty"`
 }
 
 type listOperatorProvisionJobsResponse struct {
@@ -80,6 +82,7 @@ func operatorProvisionJobListItemFromModel(j *models.ProvisionJob) operatorProvi
 		return operatorProvisionJobListItem{}
 	}
 	receipt := strings.TrimSpace(j.ReceiptJSON)
+	soulReceipt := strings.TrimSpace(j.SoulReceiptJSON)
 	return operatorProvisionJobListItem{
 		ID:           strings.TrimSpace(j.ID),
 		InstanceSlug: strings.TrimSpace(j.InstanceSlug),
@@ -93,6 +96,7 @@ func operatorProvisionJobListItemFromModel(j *models.ProvisionJob) operatorProvi
 		ErrorMessage: strings.TrimSpace(j.ErrorMessage),
 		RequestID:    strings.TrimSpace(j.RequestID),
 		HasReceipt:   receipt != "",
+		HasSoulReceipt: soulReceipt != "",
 		CreatedAt:    j.CreatedAt,
 		UpdatedAt:    j.UpdatedAt,
 	}
@@ -103,7 +107,7 @@ func operatorProvisionJobDetailFromModel(j *models.ProvisionJob) operatorProvisi
 		return operatorProvisionJobDetail{}
 	}
 	base := operatorProvisionJobListItemFromModel(j)
-	return operatorProvisionJobDetail{
+		return operatorProvisionJobDetail{
 		operatorProvisionJobListItem: base,
 		Mode:                         strings.TrimSpace(j.Mode),
 		Plan:                         strings.TrimSpace(j.Plan),
@@ -115,11 +119,12 @@ func operatorProvisionJobDetailFromModel(j *models.ProvisionJob) operatorProvisi
 		AccountEmail:                 strings.TrimSpace(j.AccountEmail),
 		ParentHostedZoneID:           strings.TrimSpace(j.ParentHostedZoneID),
 		BaseDomain:                   strings.TrimSpace(j.BaseDomain),
-		ChildHostedZoneID:            strings.TrimSpace(j.ChildHostedZoneID),
-		ChildNameServers:             append([]string(nil), j.ChildNameServers...),
-		ReceiptJSON:                  strings.TrimSpace(j.ReceiptJSON),
+			ChildHostedZoneID:            strings.TrimSpace(j.ChildHostedZoneID),
+			ChildNameServers:             append([]string(nil), j.ChildNameServers...),
+			ReceiptJSON:                  strings.TrimSpace(j.ReceiptJSON),
+			SoulReceiptJSON:              strings.TrimSpace(j.SoulReceiptJSON),
+		}
 	}
-}
 
 func queryFirst(ctx *apptheory.Context, key string) string {
 	if ctx == nil || key == "" || len(ctx.Request.Query) == 0 {

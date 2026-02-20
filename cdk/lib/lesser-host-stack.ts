@@ -18,10 +18,11 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 	import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
 	import * as logs from 'aws-cdk-lib/aws-logs';
 	import * as route53 from 'aws-cdk-lib/aws-route53';
-	import * as route53Targets from 'aws-cdk-lib/aws-route53-targets';
-	import * as s3 from 'aws-cdk-lib/aws-s3';
-	import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
-	import * as sqs from 'aws-cdk-lib/aws-sqs';
+		import * as route53Targets from 'aws-cdk-lib/aws-route53-targets';
+		import * as s3 from 'aws-cdk-lib/aws-s3';
+		import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
+		import * as ssm from 'aws-cdk-lib/aws-ssm';
+		import * as sqs from 'aws-cdk-lib/aws-sqs';
 
 export interface LesserHostStackProps extends cdk.StackProps {
 	stage: string;
@@ -85,13 +86,49 @@ export class LesserHostStack extends cdk.Stack {
 		});
 		provisionQueue.applyRemovalPolicy(removalPolicy);
 
-		const attestationSigningKey = new kms.Key(this, 'AttestationSigningKey', {
-			description: `${namePrefix} attestation signing`,
-			keySpec: kms.KeySpec.RSA_2048,
-			keyUsage: kms.KeyUsage.SIGN_VERIFY,
-			removalPolicy,
-		});
-		attestationSigningKey.addAlias(`alias/${namePrefix}-attestation-signing`);
+			const attestationSigningKey = new kms.Key(this, 'AttestationSigningKey', {
+				description: `${namePrefix} attestation signing`,
+				keySpec: kms.KeySpec.RSA_2048,
+				keyUsage: kms.KeyUsage.SIGN_VERIFY,
+				removalPolicy,
+			});
+			attestationSigningKey.addAlias(`alias/${namePrefix}-attestation-signing`);
+
+			const soulPackBucket = new s3.Bucket(this, 'SoulPackBucket', {
+				bucketName: `${namePrefix}-${cdk.Aws.ACCOUNT_ID}-${cdk.Aws.REGION}-soul-packs`,
+				blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+				enforceSSL: true,
+				versioned: true,
+				removalPolicy,
+				autoDeleteObjects: stage !== 'live',
+			});
+
+			const soulPackSigningKey = new kms.Key(this, 'SoulPackSigningKey', {
+				description: `${namePrefix} lesser-soul pack signing`,
+				keySpec: kms.KeySpec.RSA_2048,
+				keyUsage: kms.KeyUsage.SIGN_VERIFY,
+				removalPolicy,
+			});
+			soulPackSigningKey.addAlias(`alias/${namePrefix}-soul-pack-signing`);
+
+			new ssm.StringParameter(this, 'SoulPackBucketNameParam', {
+				parameterName: `/soul/${stage}/packBucketName`,
+				stringValue: soulPackBucket.bucketName,
+				description: `lesser-soul pack bucket name (${stage})`,
+				tier: ssm.ParameterTier.STANDARD,
+			});
+			new ssm.StringParameter(this, 'SoulPackSigningKeyArnParam', {
+				parameterName: `/soul/${stage}/signingKeyArn`,
+				stringValue: soulPackSigningKey.keyArn,
+				description: `lesser-soul pack signing key ARN (${stage})`,
+				tier: ssm.ParameterTier.STANDARD,
+			});
+			new ssm.StringParameter(this, 'SoulPackVersionParam', {
+				parameterName: `/soul/${stage}/packVersion`,
+				stringValue: 'unset',
+				description: `lesser-soul stage pack version pointer (${stage})`,
+				tier: ssm.ParameterTier.STANDARD,
+			});
 
 		const bootstrapWalletAddress =
 			(this.node.tryGetContext('bootstrapWalletAddress') as string | undefined) ?? '';
@@ -262,40 +299,63 @@ export class LesserHostStack extends cdk.Stack {
 				'jq -n --arg slug "$APP_SLUG" --arg stage "$STAGE" --arg admin_wallet_address "$ADMIN_WALLET_ADDRESS" --arg admin_username "$ADMIN_USERNAME" --arg admin_wallet_chain_id "${ADMIN_WALLET_CHAIN_ID:-}" --arg consent_message "$CONSENT_MESSAGE" --arg consent_signature "${CONSENT_SIGNATURE:-}" --arg lesser_host_url "${LESSER_HOST_URL:-}" --arg lesser_host_attestations_url "${LESSER_HOST_ATTESTATIONS_URL:-}" --arg lesser_host_instance_key_arn "${LESSER_HOST_INSTANCE_KEY_ARN:-}" --arg translation_enabled "${TRANSLATION_ENABLED:-}" --arg tip_enabled "${TIP_ENABLED:-}" --arg tip_chain_id "${TIP_CHAIN_ID:-}" --arg tip_contract_address "${TIP_CONTRACT_ADDRESS:-}" --arg ai_enabled "${AI_ENABLED:-}" --arg ai_moderation_enabled "${AI_MODERATION_ENABLED:-}" --arg ai_nsfw_detection_enabled "${AI_NSFW_DETECTION_ENABLED:-}" --arg ai_spam_detection_enabled "${AI_SPAM_DETECTION_ENABLED:-}" --arg ai_pii_detection_enabled "${AI_PII_DETECTION_ENABLED:-}" --arg ai_content_detection_enabled "${AI_CONTENT_DETECTION_ENABLED:-}" \'def bool($v): ($v|ascii_downcase) as $x | ($x=="true" or $x=="1" or $x=="yes" or $x=="on"); {"schema":1,"slug":$slug,"stage":$stage,"admin_wallet_address":$admin_wallet_address,"admin_username":$admin_username} | if $admin_wallet_chain_id != "" then .admin_wallet_chain_id = ($admin_wallet_chain_id|tonumber) else . end | if $consent_message != "" then .consent_message = $consent_message else . end | if $consent_signature != "" then .consent_signature = $consent_signature else . end | if $lesser_host_url != "" then .lesser_host_url = $lesser_host_url else . end | if $lesser_host_attestations_url != "" then .lesser_host_attestations_url = $lesser_host_attestations_url elif $lesser_host_url != "" then .lesser_host_attestations_url = $lesser_host_url else . end | if $lesser_host_instance_key_arn != "" then .lesser_host_instance_key_arn = $lesser_host_instance_key_arn else . end | if $translation_enabled != "" then .translation_enabled = bool($translation_enabled) else . end | if $tip_enabled != "" then .tip_enabled = bool($tip_enabled) else . end | if $tip_chain_id != "" then .tip_chain_id = ($tip_chain_id|tonumber) else . end | if $tip_contract_address != "" then .tip_contract_address = $tip_contract_address else . end | if $ai_enabled != "" then .ai_enabled = bool($ai_enabled) else . end | if $ai_moderation_enabled != "" then .ai_moderation_enabled = bool($ai_moderation_enabled) else . end | if $ai_nsfw_detection_enabled != "" then .ai_nsfw_detection_enabled = bool($ai_nsfw_detection_enabled) else . end | if $ai_spam_detection_enabled != "" then .ai_spam_detection_enabled = bool($ai_spam_detection_enabled) else . end | if $ai_pii_detection_enabled != "" then .ai_pii_detection_enabled = bool($ai_pii_detection_enabled) else . end | if $ai_content_detection_enabled != "" then .ai_content_detection_enabled = bool($ai_content_detection_enabled) else . end\' > "$PROVISION_INPUT"',
 				'STAGE_DOMAIN="$BASE_DOMAIN"',
 				'if [ "$STAGE" != "live" ]; then STAGE_DOMAIN="$STAGE.$BASE_DOMAIN"; fi',
-				'SOUL_STAGE="lab"',
-				'if [ "$STAGE" = "live" ]; then SOUL_STAGE="live"; fi',
-				'SOUL_INSTANCE_DOMAIN="$STAGE_DOMAIN"',
-				'if [ "$RUN_MODE" = "lesser" ]; then',
+					'SOUL_STAGE="lab"',
+					'if [ "$STAGE" = "live" ]; then SOUL_STAGE="live"; fi',
+					'SOUL_INSTANCE_DOMAIN="$STAGE_DOMAIN"',
+					'fetch_and_verify_soul_pack() {',
+					'  VERSION="${SOUL_VERSION:-}"',
+					'  if [ -z "$VERSION" ]; then',
+					'    VERSION=$(aws ssm get-parameter --name "/soul/$SOUL_STAGE/packVersion" --query "Parameter.Value" --output text)',
+					'  fi',
+					'  test -n "$VERSION" && test "$VERSION" != "null" && test "$VERSION" != "unset"',
+					'  PACK_BUCKET=$(aws ssm get-parameter --name "/soul/$SOUL_STAGE/packBucketName" --query "Parameter.Value" --output text)',
+					'  SIGNING_KEY_ARN=$(aws ssm get-parameter --name "/soul/$SOUL_STAGE/signingKeyArn" --query "Parameter.Value" --output text)',
+					'  test -n "$PACK_BUCKET" && test "$PACK_BUCKET" != "null"',
+					'  test -n "$SIGNING_KEY_ARN" && test "$SIGNING_KEY_ARN" != "null"',
+					'  PACK_TGZ="soul-pack-${VERSION}.tgz"',
+					'  MANIFEST="soul-pack-${VERSION}.manifest.json"',
+					'  SIG="soul-pack-${VERSION}.manifest.sig"',
+					'  aws s3 cp "s3://$PACK_BUCKET/$PACK_TGZ" "/tmp/$PACK_TGZ"',
+					'  aws s3 cp "s3://$PACK_BUCKET/$MANIFEST" "/tmp/$MANIFEST"',
+					'  aws s3 cp "s3://$PACK_BUCKET/$SIG" "/tmp/$SIG"',
+					'  openssl dgst -sha256 -binary "/tmp/$MANIFEST" > "/tmp/$MANIFEST.sha256"',
+					'  VERIFY_JSON=$(aws kms verify --key-id "$SIGNING_KEY_ARN" --message-type DIGEST --message "fileb:///tmp/$MANIFEST.sha256" --signature "fileb:///tmp/$SIG" --signing-algorithm RSASSA_PSS_SHA_256)',
+					'  if [ "$(echo "$VERIFY_JSON" | jq -r ".SignatureValid")" != "true" ]; then fail "soul pack manifest signature invalid: $VERSION"; fi',
+					'  if tar -tzf "/tmp/$PACK_TGZ" | grep -E "(^/|\\.\\./|/\\.\\./)" >/dev/null; then fail "soul pack contains unsafe paths"; fi',
+					'  rm -rf /tmp/soul-pack && mkdir -p /tmp/soul-pack',
+					'  tar -xzf "/tmp/$PACK_TGZ" -C /tmp/soul-pack',
+					'  jq -r \'.files[] | "\\(.sha256)  \\(.path)"\' "/tmp/$MANIFEST" > /tmp/soul-pack.checksums',
+					'  (cd /tmp/soul-pack && sha256sum -c /tmp/soul-pack.checksums)',
+					'  jq -r \'.files[].path\' "/tmp/$MANIFEST" | sort > /tmp/soul-pack.expected',
+					'  (cd /tmp/soul-pack && find . -type f -print | sed "s|^./||" | sort > /tmp/soul-pack.actual)',
+					'  if ! diff -u /tmp/soul-pack.expected /tmp/soul-pack.actual >/dev/null; then',
+					'    echo "ERROR: soul pack file set mismatch ($VERSION)" >&2',
+					'    diff -u /tmp/soul-pack.expected /tmp/soul-pack.actual || true',
+					'    exit 1',
+					'  fi',
+					'  SOUL_PACK_DIR="/tmp/soul-pack"',
+					'  SOUL_PACK_VERSION="$VERSION"',
+					'}',
+					'if [ "$RUN_MODE" = "lesser" ]; then',
 				'  ./lesser up --app "$APP_SLUG" --base-domain "$BASE_DOMAIN" --aws-profile managed --provisioning-input "$PROVISION_INPUT"',
 				'  if [ -n "${CONSENT_MESSAGE_B64:-}" ] && [ -n "${CONSENT_SIGNATURE:-}" ]; then ./lesser init-admin --base-domain "$BASE_DOMAIN" --aws-profile managed --provisioning-input "$PROVISION_INPUT"; else echo "Skipping init-admin (missing consent message/signature)."; fi',
 				'  RECEIPT_PATH="$STATE_DIR/state.json"',
-				'  test -f "$RECEIPT_PATH"',
-				'  aws s3 cp "$RECEIPT_PATH" "s3://$ARTIFACT_BUCKET/$RECEIPT_S3_KEY"',
-				'  if [ -f /tmp/bootstrap.json ]; then aws s3 cp /tmp/bootstrap.json "s3://$ARTIFACT_BUCKET/$BOOTSTRAP_S3_KEY"; fi',
-				'elif [ "$RUN_MODE" = "soul-deploy" ]; then',
-				'  SOUL_OWNER="${SOUL_GITHUB_OWNER:-equaltoai}"',
-				'  SOUL_REPO="${SOUL_GITHUB_REPO:-lesser-soul}"',
-				'  SOUL_REF="${SOUL_VERSION:-main}"',
-				'  SOUL_TOKEN="${SOUL_GITHUB_TOKEN:-$TOKEN}"',
-				'  echo "Deploying lesser-soul ($SOUL_OWNER/$SOUL_REPO@$SOUL_REF)..."',
-				'  if [ -n "$SOUL_TOKEN" ]; then',
-				'    curl -sSfL -H "Accept: application/vnd.github+json" -H "Authorization: Bearer $SOUL_TOKEN" -o /tmp/soul-src.tgz "https://api.github.com/repos/$SOUL_OWNER/$SOUL_REPO/tarball/$SOUL_REF"',
-				'  else',
-				'    curl -sSfL -H "Accept: application/vnd.github+json" -o /tmp/soul-src.tgz "https://api.github.com/repos/$SOUL_OWNER/$SOUL_REPO/tarball/$SOUL_REF"',
-				'  fi',
-				'  rm -rf /tmp/soul-src && mkdir -p /tmp/soul-src',
-				'  tar -xzf /tmp/soul-src.tgz --strip-components=1 -C /tmp/soul-src',
-				'  cd /tmp/soul-src/infra/cdk',
-				'  npm ci',
-				'  AWS_PROFILE=managed npx cdk deploy --all --require-approval never -c stage="$SOUL_STAGE" -c instanceDomain="$SOUL_INSTANCE_DOMAIN"',
-				'  cd - >/dev/null',
-				'elif [ "$RUN_MODE" = "soul-init" ]; then',
-				'  SOUL_OWNER="${SOUL_GITHUB_OWNER:-equaltoai}"',
-				'  SOUL_REPO="${SOUL_GITHUB_REPO:-lesser-soul}"',
-				'  SOUL_REF="${SOUL_VERSION:-main}"',
-				'  SOUL_TOKEN="${SOUL_GITHUB_TOKEN:-$TOKEN}"',
-				'  echo "Bootstrapping lesser-soul ($SOUL_OWNER/$SOUL_REPO@$SOUL_REF)..."',
-				'  if [ ! -f "$STATE_DIR/bootstrap.json" ]; then fail "bootstrap key material missing: $STATE_DIR/bootstrap.json"; fi',
+					'  test -f "$RECEIPT_PATH"',
+					'  aws s3 cp "$RECEIPT_PATH" "s3://$ARTIFACT_BUCKET/$RECEIPT_S3_KEY"',
+					'  if [ -f /tmp/bootstrap.json ]; then aws s3 cp /tmp/bootstrap.json "s3://$ARTIFACT_BUCKET/$BOOTSTRAP_S3_KEY"; fi',
+					'elif [ "$RUN_MODE" = "soul-deploy" ]; then',
+					'  echo "Deploying lesser-soul pack..."',
+					'  fetch_and_verify_soul_pack',
+					'  echo "Deploying lesser-soul version: $SOUL_PACK_VERSION"',
+					'  cd "$SOUL_PACK_DIR/infra/cdk"',
+					'  npm ci',
+					'  AWS_PROFILE=managed npx cdk deploy --all --require-approval never -c stage="$SOUL_STAGE" -c instanceDomain="$SOUL_INSTANCE_DOMAIN"',
+					'  cd - >/dev/null',
+					'elif [ "$RUN_MODE" = "soul-init" ]; then',
+					'  echo "Bootstrapping lesser-soul from signed pack..."',
+					'  fetch_and_verify_soul_pack',
+					'  echo "Bootstrapping lesser-soul version: $SOUL_PACK_VERSION"',
+					'  if [ ! -f "$STATE_DIR/bootstrap.json" ]; then fail "bootstrap key material missing: $STATE_DIR/bootstrap.json"; fi',
 				'  BOOTSTRAP_ADDR=$(jq -r ".wallet.address" "$STATE_DIR/bootstrap.json")',
 				'  BOOTSTRAP_MNEMONIC=$(jq -r ".wallet.mnemonic" "$STATE_DIR/bootstrap.json")',
 				'  BOOTSTRAP_PATH=$(jq -r ".wallet.derivation_path" "$STATE_DIR/bootstrap.json")',
@@ -414,35 +474,49 @@ export class LesserHostStack extends cdk.Stack {
 				'  SIG=$(printf "%s" "$CHALLENGE_MESSAGE" | go run "$SIGNER_PATH" "$STATE_DIR/bootstrap.json")',
 				'  test -n "$SIG"',
 				'  LOGIN_BODY=$(jq -nc --arg address "$BOOTSTRAP_ADDR" --arg challengeId "$CHALLENGE_ID" --arg message "$CHALLENGE_MESSAGE" --arg signature "$SIG" "{address:$address,challengeId:$challengeId,message:$message,signature:$signature}")',
-				'  AUTH_JSON=$(curl -sSfL -X POST "https://$STAGE_DOMAIN/auth/wallet/login" -H "Content-Type: application/json" -d "$LOGIN_BODY")',
-				'  ACCESS_TOKEN=$(echo "$AUTH_JSON" | jq -r ".access_token")',
-				'  test -n "$ACCESS_TOKEN" && test "$ACCESS_TOKEN" != "null"',
-				'  if [ -n "$SOUL_TOKEN" ]; then',
-				'    curl -sSfL -H "Accept: application/vnd.github+json" -H "Authorization: Bearer $SOUL_TOKEN" -o /tmp/soul-src.tgz "https://api.github.com/repos/$SOUL_OWNER/$SOUL_REPO/tarball/$SOUL_REF"',
-				'  else',
-				'    curl -sSfL -H "Accept: application/vnd.github+json" -o /tmp/soul-src.tgz "https://api.github.com/repos/$SOUL_OWNER/$SOUL_REPO/tarball/$SOUL_REF"',
-				'  fi',
-				'  rm -rf /tmp/soul-src && mkdir -p /tmp/soul-src',
-				'  tar -xzf /tmp/soul-src.tgz --strip-components=1 -C /tmp/soul-src',
-				'  export AWS_PROFILE=managed',
-				'  export SOUL_STAGE="$SOUL_STAGE"',
-				'  export SOUL_INSTANCE_DOMAIN="$SOUL_INSTANCE_DOMAIN"',
-				'  export LESSER_TOKEN="$ACCESS_TOKEN"',
-				'  export LESSER_ADMIN_TOKEN="$ACCESS_TOKEN"',
-				'  (cd /tmp/soul-src && GOTOOLCHAIN=auto go run ./cmd/soul-cli bootstrap)',
-				'  SOUL_RECEIPT_PATH="$STATE_DIR/soul-state.json"',
-				'  jq -n --arg app "lesser-soul" --arg instance_domain "$SOUL_INSTANCE_DOMAIN" --arg soul_version "$SOUL_REF" "{version:1,app:$app,instance_domain:$instance_domain,soul_version:$soul_version}" > "$SOUL_RECEIPT_PATH"',
-				'  aws s3 cp "$SOUL_RECEIPT_PATH" "s3://$ARTIFACT_BUCKET/$RECEIPT_S3_KEY"',
-				'else',
-				'  fail "unknown RUN_MODE: $RUN_MODE"',
-				'fi',
+					'  AUTH_JSON=$(curl -sSfL -X POST "https://$STAGE_DOMAIN/auth/wallet/login" -H "Content-Type: application/json" -d "$LOGIN_BODY")',
+					'  ACCESS_TOKEN=$(echo "$AUTH_JSON" | jq -r ".access_token")',
+					'  test -n "$ACCESS_TOKEN" && test "$ACCESS_TOKEN" != "null"',
+					'  export AWS_PROFILE=managed',
+					'  export SOUL_STAGE="$SOUL_STAGE"',
+					'  export SOUL_INSTANCE_DOMAIN="$SOUL_INSTANCE_DOMAIN"',
+					'  export LESSER_TOKEN="$ACCESS_TOKEN"',
+					'  export LESSER_ADMIN_TOKEN="$ACCESS_TOKEN"',
+					'  (cd "$SOUL_PACK_DIR" && GOTOOLCHAIN=auto go run ./cmd/soul-cli bootstrap)',
+					'  SOUL_RECEIPT_PATH="$STATE_DIR/soul-state.json"',
+					'  SOUL_TABLE_NAME="soul-$SOUL_STAGE"',
+					'  QUEUE_BASE="https://sqs.$TARGET_REGION.amazonaws.com/$TARGET_ACCOUNT_ID"',
+					'  RESEARCHER_QUEUE_URL="$QUEUE_BASE/soul-researcher"',
+					'  ASSISTANT_QUEUE_URL="$QUEUE_BASE/soul-assistant"',
+					'  CURATOR_QUEUE_URL="$QUEUE_BASE/soul-curator"',
+					'  BRIDGE_QUEUE_URL="$QUEUE_BASE/soul-bridge"',
+					'  CUSTOM_CODER_QUEUE_URL="$QUEUE_BASE/soul-custom-coder"',
+					'  CUSTOM_SUMMARIZER_QUEUE_URL="$QUEUE_BASE/soul-custom-summarizer"',
+					'  RESULTS_QUEUE_URL="$QUEUE_BASE/soul-results"',
+					'  RESEARCHER_TOKEN_PATH="/soul/$SOUL_INSTANCE_DOMAIN/agents/researcher/token"',
+					'  RESEARCHER_REFRESH_PATH="/soul/$SOUL_INSTANCE_DOMAIN/agents/researcher/refresh"',
+					'  ASSISTANT_TOKEN_PATH="/soul/$SOUL_INSTANCE_DOMAIN/agents/assistant/token"',
+					'  ASSISTANT_REFRESH_PATH="/soul/$SOUL_INSTANCE_DOMAIN/agents/assistant/refresh"',
+					'  CURATOR_TOKEN_PATH="/soul/$SOUL_INSTANCE_DOMAIN/agents/curator/token"',
+					'  CURATOR_REFRESH_PATH="/soul/$SOUL_INSTANCE_DOMAIN/agents/curator/refresh"',
+					'  BRIDGE_TOKEN_PATH="/soul/$SOUL_INSTANCE_DOMAIN/agents/bridge/token"',
+					'  BRIDGE_REFRESH_PATH="/soul/$SOUL_INSTANCE_DOMAIN/agents/bridge/refresh"',
+					'  CUSTOM_CODER_TOKEN_PATH="/soul/$SOUL_INSTANCE_DOMAIN/agents/custom-coder/token"',
+					'  CUSTOM_CODER_REFRESH_PATH="/soul/$SOUL_INSTANCE_DOMAIN/agents/custom-coder/refresh"',
+					'  CUSTOM_SUMMARIZER_TOKEN_PATH="/soul/$SOUL_INSTANCE_DOMAIN/agents/custom-summarizer/token"',
+					'  CUSTOM_SUMMARIZER_REFRESH_PATH="/soul/$SOUL_INSTANCE_DOMAIN/agents/custom-summarizer/refresh"',
+					'  jq -n --arg app "lesser-soul" --arg stage "$SOUL_STAGE" --arg instance_domain "$SOUL_INSTANCE_DOMAIN" --arg soul_version "$SOUL_PACK_VERSION" --arg soul_table_name "$SOUL_TABLE_NAME" --arg researcher_queue_url "$RESEARCHER_QUEUE_URL" --arg assistant_queue_url "$ASSISTANT_QUEUE_URL" --arg curator_queue_url "$CURATOR_QUEUE_URL" --arg bridge_queue_url "$BRIDGE_QUEUE_URL" --arg custom_coder_queue_url "$CUSTOM_CODER_QUEUE_URL" --arg custom_summarizer_queue_url "$CUSTOM_SUMMARIZER_QUEUE_URL" --arg results_queue_url "$RESULTS_QUEUE_URL" --arg researcher_token_path "$RESEARCHER_TOKEN_PATH" --arg researcher_refresh_path "$RESEARCHER_REFRESH_PATH" --arg assistant_token_path "$ASSISTANT_TOKEN_PATH" --arg assistant_refresh_path "$ASSISTANT_REFRESH_PATH" --arg curator_token_path "$CURATOR_TOKEN_PATH" --arg curator_refresh_path "$CURATOR_REFRESH_PATH" --arg bridge_token_path "$BRIDGE_TOKEN_PATH" --arg bridge_refresh_path "$BRIDGE_REFRESH_PATH" --arg custom_coder_token_path "$CUSTOM_CODER_TOKEN_PATH" --arg custom_coder_refresh_path "$CUSTOM_CODER_REFRESH_PATH" --arg custom_summarizer_token_path "$CUSTOM_SUMMARIZER_TOKEN_PATH" --arg custom_summarizer_refresh_path "$CUSTOM_SUMMARIZER_REFRESH_PATH" \'{version:2,app:$app,stage:$stage,instance_domain:$instance_domain,soul_version:$soul_version,soul_table_name:$soul_table_name,queue_urls:{researcher:$researcher_queue_url,assistant:$assistant_queue_url,curator:$curator_queue_url,bridge:$bridge_queue_url,custom_coder:$custom_coder_queue_url,custom_summarizer:$custom_summarizer_queue_url,results:$results_queue_url},agents:{researcher:{username:"soul-researcher",token_ssm_path:$researcher_token_path,refresh_ssm_path:$researcher_refresh_path},assistant:{username:"soul-assistant",token_ssm_path:$assistant_token_path,refresh_ssm_path:$assistant_refresh_path},curator:{username:"soul-curator",token_ssm_path:$curator_token_path,refresh_ssm_path:$curator_refresh_path},bridge:{username:"soul-bridge",token_ssm_path:$bridge_token_path,refresh_ssm_path:$bridge_refresh_path},custom_coder:{username:"soul-custom-coder",token_ssm_path:$custom_coder_token_path,refresh_ssm_path:$custom_coder_refresh_path},custom_summarizer:{username:"soul-custom-summarizer",token_ssm_path:$custom_summarizer_token_path,refresh_ssm_path:$custom_summarizer_refresh_path}}}\' > "$SOUL_RECEIPT_PATH"',
+					'  aws s3 cp "$SOUL_RECEIPT_PATH" "s3://$ARTIFACT_BUCKET/$RECEIPT_S3_KEY"',
+					'else',
+					'  fail "unknown RUN_MODE: $RUN_MODE"',
+					'fi',
 			].join('\n');
 
-		const provisionRunnerProject = new codebuild.Project(this, 'ProvisionRunnerProject', {
-			projectName: provisionRunnerProjectName,
-			timeout: cdk.Duration.hours(3),
-			environment: {
-				buildImage: codebuild.LinuxBuildImage.STANDARD_7_0,
+			const provisionRunnerProject = new codebuild.Project(this, 'ProvisionRunnerProject', {
+				projectName: provisionRunnerProjectName,
+				timeout: cdk.Duration.hours(3),
+				environment: {
+					buildImage: codebuild.LinuxBuildImage.STANDARD_7_0,
 				computeType: codebuild.ComputeType.SMALL,
 			},
 			environmentVariables: {
@@ -463,16 +537,16 @@ export class LesserHostStack extends cdk.Stack {
 					shell: 'bash',
 				},
 				phases: {
-					install: {
-						commands: [
-							'set -euo pipefail',
-							'echo \"Installing runner tools...\"',
-							'if command -v yum >/dev/null 2>&1; then yum install -y jq tar gzip unzip; fi',
-							'if command -v apt-get >/dev/null 2>&1; then apt-get update -y && apt-get install -y jq tar gzip unzip; fi',
-							'node -v || true',
-							'npm -v || true',
-							'if ! command -v n >/dev/null 2>&1; then npm install -g n; fi',
-							'n 24',
+						install: {
+							commands: [
+								'set -euo pipefail',
+								'echo \"Installing runner tools...\"',
+								'if command -v yum >/dev/null 2>&1; then yum install -y jq tar gzip unzip openssl; fi',
+								'if command -v apt-get >/dev/null 2>&1; then apt-get update -y && apt-get install -y jq tar gzip unzip openssl; fi',
+								'node -v || true',
+								'npm -v || true',
+								'if ! command -v n >/dev/null 2>&1; then npm install -g n; fi',
+								'n 24',
 							'hash -r',
 							'node -v',
 							'npm install -g aws-cdk@2',
@@ -488,12 +562,27 @@ export class LesserHostStack extends cdk.Stack {
 						commands: [provisionRunnerBuild],
 					},
 				},
-			}),
-		});
+				}),
+			});
 
-		const controlPlaneFn = this.goLambda('ControlPlaneApi', './cmd/control-plane-api', {
-			STAGE: stage,
-			STATE_TABLE_NAME: stateTable.tableName,
+			soulPackBucket.grantRead(provisionRunnerProject);
+			soulPackSigningKey.grant(provisionRunnerProject, 'kms:Verify');
+			provisionRunnerProject.addToRolePolicy(
+				new iam.PolicyStatement({
+					actions: ['ssm:GetParameter', 'ssm:GetParameters'],
+					resources: [
+						cdk.Stack.of(this).formatArn({
+							service: 'ssm',
+							resource: 'parameter',
+							resourceName: `soul/${stage}/*`,
+						}),
+					],
+				}),
+			);
+
+			const controlPlaneFn = this.goLambda('ControlPlaneApi', './cmd/control-plane-api', {
+				STAGE: stage,
+				STATE_TABLE_NAME: stateTable.tableName,
 			ARTIFACT_BUCKET_NAME: artifactsBucket.bucketName,
 			PREVIEW_QUEUE_URL: previewQueue.queueUrl,
 			SAFETY_QUEUE_URL: safetyQueue.queueUrl,

@@ -640,13 +640,14 @@ func TestProvisionStateMachine_SoulEnabled_SuccessPathAcrossSteps(t *testing.T) 
 	delay, done, err = s.advanceProvisionSoulReceiptIngest(context.Background(), job, "req", now)
 	require.NoError(t, err)
 	require.Zero(t, delay)
-	require.True(t, done)
-	require.Equal(t, provisionStepDone, job.Step)
-	require.Equal(t, models.ProvisionJobStatusOK, job.Status)
-	require.Equal(t, now, job.SoulProvisionedAt)
+		require.True(t, done)
+		require.Equal(t, provisionStepDone, job.Step)
+		require.Equal(t, models.ProvisionJobStatusOK, job.Status)
+		require.Equal(t, now, job.SoulProvisionedAt)
+		require.Equal(t, soulReceipt, job.SoulReceiptJSON)
 
-	// upsertParentNSDelegation handles trim + dedupe.
-	require.NoError(t, s.upsertParentNSDelegation(context.Background(), "ZPARENT", "demo.example.com", []string{" ns-1 ", "", "ns-1"}))
+		// upsertParentNSDelegation handles trim + dedupe.
+		require.NoError(t, s.upsertParentNSDelegation(context.Background(), "ZPARENT", "demo.example.com", []string{" ns-1 ", "", "ns-1"}))
 
 	require.NotNil(t, r53.lastChange)
 	require.NotNil(t, r53.lastChange.ChangeBatch)

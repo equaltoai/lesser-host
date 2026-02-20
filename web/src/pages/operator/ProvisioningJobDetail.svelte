@@ -42,10 +42,11 @@
 	let adoptAccountId = $state('');
 	let adoptAccountEmail = $state('');
 	let adoptNote = $state('');
-	let adoptLoading = $state(false);
-	let adoptError = $state<string | null>(null);
+		let adoptLoading = $state(false);
+		let adoptError = $state<string | null>(null);
 
-	let showReceipt = $state(false);
+		let showReceipt = $state(false);
+		let showSoulReceipt = $state(false);
 
 	const statusBadge = $derived.by(() => badgeForStatus(job?.status ?? ''));
 	const stalledMinutes = $derived.by(() => {
@@ -324,10 +325,10 @@
 			</div>
 		</Card>
 
-		<Card variant="outlined" padding="lg">
-			{#snippet header()}
-				<Heading level={3} size="lg">Receipt</Heading>
-			{/snippet}
+			<Card variant="outlined" padding="lg">
+				{#snippet header()}
+					<Heading level={3} size="lg">Lesser receipt</Heading>
+				{/snippet}
 
 			<Text size="sm" color="secondary">
 				Receipt JSON may be large. Only display when needed.
@@ -342,14 +343,41 @@
 				{/if}
 			</div>
 
-			{#if showReceipt && job?.receipt_json}
-				<TextArea value={job.receipt_json} readonly rows={10} />
-			{/if}
-		</Card>
-	{:else}
-		<Alert variant="warning" title="No data">
-			<Text size="sm">No job response.</Text>
-		</Alert>
+				{#if showReceipt && job?.receipt_json}
+					<TextArea value={job.receipt_json} readonly rows={10} />
+				{/if}
+			</Card>
+
+			<Card variant="outlined" padding="lg">
+				{#snippet header()}
+					<Heading level={3} size="lg">Soul receipt</Heading>
+				{/snippet}
+
+				<Text size="sm" color="secondary">
+					Soul receipt JSON may be large. Only display when needed.
+				</Text>
+
+				<div class="op-job__row">
+					<Button
+						variant="outline"
+						onclick={() => (showSoulReceipt = !showSoulReceipt)}
+						disabled={!job?.has_soul_receipt}
+					>
+						{showSoulReceipt ? 'Hide soul receipt' : 'Show soul receipt'}
+					</Button>
+					{#if !job?.has_soul_receipt}
+						<Text size="sm" color="secondary">No soul receipt stored.</Text>
+					{/if}
+				</div>
+
+				{#if showSoulReceipt && job?.soul_receipt_json}
+					<TextArea value={job.soul_receipt_json} readonly rows={10} />
+				{/if}
+			</Card>
+		{:else}
+			<Alert variant="warning" title="No data">
+				<Text size="sm">No job response.</Text>
+			</Alert>
 	{/if}
 </div>
 

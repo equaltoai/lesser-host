@@ -1645,7 +1645,7 @@ func (s *Server) advanceProvisionSoulReceiptIngest(ctx context.Context, job *mod
 	}
 
 	receiptKey := s.soulReceiptS3Key(job)
-	_, receipt, err := s.loadSoulReceiptFromS3(ctx, strings.TrimSpace(s.cfg.ArtifactBucketName), receiptKey)
+	receiptJSON, receipt, err := s.loadSoulReceiptFromS3(ctx, strings.TrimSpace(s.cfg.ArtifactBucketName), receiptKey)
 	if err != nil {
 		job.Attempts++
 		if job.Attempts >= job.MaxAttempts {
@@ -1656,6 +1656,7 @@ func (s *Server) advanceProvisionSoulReceiptIngest(ctx context.Context, job *mod
 		return jitteredBackoff(job.Attempts, provisionDefaultShortRetryDelay, 5*time.Minute), false, nil
 	}
 
+	job.SoulReceiptJSON = strings.TrimSpace(receiptJSON)
 	job.SoulProvisionedAt = now
 	job.Step = provisionStepDone
 	job.Status = models.ProvisionJobStatusOK
@@ -2257,6 +2258,9 @@ func (s *Server) startDeployRunnerWithMode(ctx context.Context, job *models.Prov
 		mode = "lesser"
 	}
 	env = append(env, cbtypes.EnvironmentVariable{Name: aws.String("RUN_MODE"), Value: aws.String(mode)})
+	if strings.HasPrefix(mode, "soul") {
+		env = append(env, cbtypes.EnvironmentVariable{Name: aws.String("SOUL_VERSION"), Value: aws.String(strings.TrimSpace(inst.SoulVersion))})
+	}
 	tipEnabled := effectiveTipEnabled(inst.TipEnabled)
 	env = append(env,
 		cbtypes.EnvironmentVariable{Name: aws.String("LESSER_HOST_URL"), Value: aws.String(lesserHostURL)},

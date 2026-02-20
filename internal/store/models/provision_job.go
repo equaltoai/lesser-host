@@ -63,6 +63,9 @@ type ProvisionJob struct {
 	// Deployment receipt (optional; can be large).
 	ReceiptJSON string `theorydb:"attr:receiptJson" json:"receipt_json,omitempty"`
 
+	// Soul deployment receipt (optional; can be large).
+	SoulReceiptJSON string `theorydb:"attr:soulReceiptJson" json:"soul_receipt_json,omitempty"`
+
 	Attempts    int64 `theorydb:"attr:attempts" json:"attempts"`
 	MaxAttempts int64 `theorydb:"attr:maxAttempts" json:"max_attempts,omitempty"`
 
@@ -137,6 +140,7 @@ func (j *ProvisionJob) UpdateKeys() error {
 	j.BaseDomain = strings.ToLower(strings.TrimSpace(j.BaseDomain))
 	j.ChildHostedZoneID = strings.TrimSpace(j.ChildHostedZoneID)
 	j.ReceiptJSON = strings.TrimSpace(j.ReceiptJSON)
+	j.SoulReceiptJSON = strings.TrimSpace(j.SoulReceiptJSON)
 	j.ErrorCode = strings.TrimSpace(j.ErrorCode)
 	j.ErrorMessage = strings.TrimSpace(j.ErrorMessage)
 	j.RequestID = strings.TrimSpace(j.RequestID)
