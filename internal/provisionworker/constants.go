@@ -5,4 +5,5 @@ const (
 
 	noteEnsuringInstanceConfiguration = "ensuring instance configuration"
 	noteDeployRunnerInProgress        = "deploy runner in progress"
+	noteProvisioned                   = "provisioned"
 )

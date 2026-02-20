@@ -13,6 +13,7 @@ export interface OperatorProvisionJobListItem {
 	error_message?: string;
 	request_id?: string;
 	has_receipt: boolean;
+	has_soul_receipt: boolean;
 	created_at: string;
 	updated_at: string;
 }
@@ -31,6 +32,7 @@ export interface OperatorProvisionJobDetail extends OperatorProvisionJobListItem
 	child_hosted_zone_id?: string;
 	child_name_servers?: string[];
 	receipt_json?: string;
+	soul_receipt_json?: string;
 }
 
 export interface ListOperatorProvisionJobsResponse {

@@ -56,3 +56,17 @@ func TestBuildInstanceConfigUpdate(t *testing.T) {
 	require.NotNil(t, update.AIMaxInflightJobs)
 	require.Equal(t, int64(10), *update.AIMaxInflightJobs)
 }
+
+func TestBuildInstanceConfigUpdate_SoulEnabled(t *testing.T) {
+	t.Parallel()
+
+	enabled := true
+	update, fields, err := buildInstanceConfigUpdate("slug", updateInstanceConfigRequest{
+		SoulEnabled: &enabled,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, update)
+	require.NotNil(t, update.SoulEnabled)
+	require.True(t, *update.SoulEnabled)
+	require.Contains(t, fields, "SoulEnabled")
+}

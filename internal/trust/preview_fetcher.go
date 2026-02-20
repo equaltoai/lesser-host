@@ -669,7 +669,7 @@ func fetchWithRedirects(
 		req.Header.Set("User-Agent", linkPreviewUA)
 		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 
-		resp, err := client.Do(req)
+		resp, err := client.Do(req) //nolint:gosec // SSRF mitigated by validateOutboundURL on every redirect hop.
 		if err != nil {
 			var pe *linkPreviewError
 			if errors.As(err, &pe) {

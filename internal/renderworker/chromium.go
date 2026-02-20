@@ -84,8 +84,7 @@ func inflateBrotliFile(src string, dest string, mode os.FileMode) error {
 		return fmt.Errorf("brotli source is required")
 	}
 
-	// #nosec G304 -- src is controlled by Lambda configuration and points to packaged assets.
-	in, err := os.Open(src)
+	in, err := os.Open(src) //nolint:gosec // src is controlled by Lambda configuration and points to packaged assets.
 	if err != nil {
 		return err
 	}
@@ -186,8 +185,7 @@ func shouldSkipTarInflation(destDir string, kind string) bool {
 }
 
 func openTarSource(src string, kind string) (*os.File, error) {
-	// #nosec G304 -- src is controlled by Lambda configuration and points to packaged assets.
-	f, err := os.Open(src)
+	f, err := os.Open(src) //nolint:gosec // src is controlled by Lambda configuration and points to packaged assets.
 	if err != nil {
 		// swiftshader is optional.
 		if kind == "swiftshader" && errors.Is(err, os.ErrNotExist) {
@@ -226,7 +224,7 @@ func extractTar(tr *tar.Reader, destDir string, limits tarExtractLimits) error {
 
 		switch hdr.Typeflag {
 		case tar.TypeDir:
-			if mkdirErr := os.MkdirAll(target, 0o750); mkdirErr != nil {
+			if mkdirErr := os.MkdirAll(target, 0o750); mkdirErr != nil { //nolint:gosec // target is validated to be within destDir.
 				return mkdirErr
 			}
 		case tar.TypeReg:
@@ -273,12 +271,11 @@ func extractTarFile(tr *tar.Reader, hdr *tar.Header, target string, extractedByt
 		return extractedBytes, fmt.Errorf("tar output too large")
 	}
 
-	if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
+	if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil { //nolint:gosec // target is validated to be within destDir.
 		return extractedBytes, err
 	}
 
-	// #nosec G304 -- target is validated to be within destDir.
-	f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600) //nolint:gosec // target is validated to be within destDir.
 	if err != nil {
 		return extractedBytes, err
 	}

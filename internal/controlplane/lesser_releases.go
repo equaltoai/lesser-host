@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -19,9 +20,16 @@ func resolveLatestGitHubReleaseTag(ctx context.Context, owner string, repo strin
 	if owner == "" || repo == "" {
 		return "", fmt.Errorf("owner and repo are required")
 	}
+	if !isValidGitHubRepoSegment(owner) || !isValidGitHubRepoSegment(repo) {
+		return "", fmt.Errorf("invalid github repo")
+	}
 
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", owner, repo)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	u := &url.URL{
+		Scheme: "https",
+		Host:   "api.github.com",
+		Path:   fmt.Sprintf("/repos/%s/%s/releases/latest", owner, repo),
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return "", err
 	}
@@ -29,7 +37,7 @@ func resolveLatestGitHubReleaseTag(ctx context.Context, owner string, repo strin
 	req.Header.Set("User-Agent", "lesser-host-controlplane")
 
 	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) //nolint:gosec // Host is fixed to api.github.com and path segments are validated.
 	if err != nil {
 		return "", err
 	}
@@ -49,4 +57,22 @@ func resolveLatestGitHubReleaseTag(ctx context.Context, owner string, repo strin
 		return "", fmt.Errorf("github latest release tag is empty")
 	}
 	return tag, nil
+}
+
+func isValidGitHubRepoSegment(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '-', r == '_', r == '.':
+		default:
+			return false
+		}
+	}
+	return true
 }

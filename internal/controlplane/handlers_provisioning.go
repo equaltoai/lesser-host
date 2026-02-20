@@ -38,12 +38,14 @@ type provisionJobResponse struct {
 	Step         string `json:"step,omitempty"`
 	Note         string `json:"note,omitempty"`
 
-	Mode          string `json:"mode,omitempty"`
-	Plan          string `json:"plan,omitempty"`
-	Region        string `json:"region,omitempty"`
-	Stage         string `json:"stage,omitempty"`
-	LesserVersion string `json:"lesser_version,omitempty"`
-	AdminUsername string `json:"admin_username,omitempty"`
+	Mode              string    `json:"mode,omitempty"`
+	Plan              string    `json:"plan,omitempty"`
+	Region            string    `json:"region,omitempty"`
+	Stage             string    `json:"stage,omitempty"`
+	LesserVersion     string    `json:"lesser_version,omitempty"`
+	SoulEnabled       bool      `json:"soul_enabled"`
+	SoulProvisionedAt time.Time `json:"soul_provisioned_at,omitempty"`
+	AdminUsername     string    `json:"admin_username,omitempty"`
 
 	ConsentMessageHash string `json:"consent_message_hash,omitempty"`
 	ConsentSignature   string `json:"consent_signature,omitempty"`
@@ -81,6 +83,8 @@ func provisionJobResponseFromModel(j *models.ProvisionJob) provisionJobResponse 
 		Region:             strings.TrimSpace(j.Region),
 		Stage:              strings.TrimSpace(j.Stage),
 		LesserVersion:      strings.TrimSpace(j.LesserVersion),
+		SoulEnabled:        j.SoulEnabled,
+		SoulProvisionedAt:  j.SoulProvisionedAt,
 		AdminUsername:      strings.TrimSpace(j.AdminUsername),
 		ConsentMessageHash: strings.TrimSpace(j.ConsentMessageHash),
 		ConsentSignature:   strings.TrimSpace(j.ConsentSignature),
@@ -362,6 +366,7 @@ func (s *Server) handleStartInstanceProvisioning(ctx *apptheory.Context) (*appth
 	if appErr != nil {
 		return nil, appErr
 	}
+	job.SoulEnabled = effectiveSoulEnabled(inst.SoulEnabled)
 
 	if appErr := s.createManagedProvisionJobTx(ctx, job, slug, baseDomain, region, ctx.AuthIdentity, "instance.provision.start", ctx.RequestID, now); appErr != nil {
 		return nil, appErr

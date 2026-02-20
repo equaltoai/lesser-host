@@ -2,6 +2,7 @@ package provisionworker
 
 import (
 	"context"
+	"encoding/xml"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -29,6 +30,12 @@ type memRoute53 struct {
 	lastMethod string
 	lastPath   string
 	lastQuery  string
+}
+
+func escapeXMLString(s string) string {
+	var b strings.Builder
+	_ = xml.EscapeText(&b, []byte(s))
+	return b.String()
 }
 
 func (m *memRoute53) ensureZone(id string, name string, ns []string) {
@@ -74,6 +81,7 @@ func (m *memRoute53) handler(w http.ResponseWriter, r *http.Request) {
 		// ListHostedZonesByName.
 		dns := strings.TrimSpace(r.URL.Query().Get("dnsname"))
 		if z, ok := m.findByName(dns); ok {
+			//nolint:gosec // Test-only XML response; values are escaped via escapeXMLString.
 			_, _ = fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?>
 <ListHostedZonesByNameResponse xmlns="https://route53.amazonaws.com/doc/2013-04-01/">
   <HostedZones>
@@ -87,7 +95,7 @@ func (m *memRoute53) handler(w http.ResponseWriter, r *http.Request) {
   </HostedZones>
   <IsTruncated>false</IsTruncated>
   <MaxItems>10</MaxItems>
-</ListHostedZonesByNameResponse>`, z.id, z.name)
+</ListHostedZonesByNameResponse>`, escapeXMLString(z.id), escapeXMLString(z.name))
 			return
 		}
 		_, _ = fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?>
@@ -106,6 +114,7 @@ func (m *memRoute53) handler(w http.ResponseWriter, r *http.Request) {
 		m.ensureZone(id, name, ns)
 
 		w.WriteHeader(http.StatusCreated)
+		//nolint:gosec // Test-only XML response; values are escaped via escapeXMLString.
 		_, _ = fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?>
 <CreateHostedZoneResponse xmlns="https://route53.amazonaws.com/doc/2013-04-01/">
   <HostedZone>
@@ -120,13 +129,14 @@ func (m *memRoute53) handler(w http.ResponseWriter, r *http.Request) {
       <NameServer>%s</NameServer>
     </NameServers>
   </DelegationSet>
-</CreateHostedZoneResponse>`, id, name, ns[0], ns[1], ns[2])
+</CreateHostedZoneResponse>`, escapeXMLString(id), escapeXMLString(name), escapeXMLString(ns[0]), escapeXMLString(ns[1]), escapeXMLString(ns[2]))
 		return
 
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/2013-04-01/hostedzone/"):
 		// GetHostedZone.
 		id := strings.TrimPrefix(r.URL.Path, "/2013-04-01/hostedzone/")
 		if z, ok := m.findByID(id); ok {
+			//nolint:gosec // Test-only XML response; values are escaped via escapeXMLString.
 			_, _ = fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?>
 <GetHostedZoneResponse xmlns="https://route53.amazonaws.com/doc/2013-04-01/">
   <HostedZone>
@@ -140,7 +150,7 @@ func (m *memRoute53) handler(w http.ResponseWriter, r *http.Request) {
       <NameServer>%s</NameServer>
     </NameServers>
   </DelegationSet>
-</GetHostedZoneResponse>`, z.id, z.name, z.nameServers[0], z.nameServers[1])
+</GetHostedZoneResponse>`, escapeXMLString(z.id), escapeXMLString(z.name), escapeXMLString(z.nameServers[0]), escapeXMLString(z.nameServers[1]))
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)

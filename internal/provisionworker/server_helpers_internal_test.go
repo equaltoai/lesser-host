@@ -62,11 +62,18 @@ func (f *fakeSTS) AssumeRole(_ context.Context, params *sts.AssumeRoleInput, _ .
 type fakeS3 struct {
 	out *s3.GetObjectOutput
 	err error
+
+	byKey map[string]*s3.GetObjectOutput
 }
 
-func (f *fakeS3) GetObject(_ context.Context, _ *s3.GetObjectInput, _ ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
+func (f *fakeS3) GetObject(_ context.Context, in *s3.GetObjectInput, _ ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
 	if f.err != nil {
 		return nil, f.err
+	}
+	if f.byKey != nil && in != nil && in.Key != nil {
+		if out, ok := f.byKey[*in.Key]; ok {
+			return out, nil
+		}
 	}
 	return f.out, nil
 }

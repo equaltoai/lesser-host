@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"sort"
@@ -296,6 +295,11 @@ const (
 	provisionStepDeployStart        = "deploy.start"
 	provisionStepDeployWait         = "deploy.wait"
 	provisionStepReceiptIngest      = "receipt.ingest"
+	provisionStepSoulDeployStart    = "soul.deploy.start"
+	provisionStepSoulDeployWait     = "soul.deploy.wait"
+	provisionStepSoulInitStart      = "soul.init.start"
+	provisionStepSoulInitWait       = "soul.init.wait"
+	provisionStepSoulReceiptIngest  = "soul.receipt.ingest"
 	provisionStepDone               = "done"
 	provisionStepFailed             = "failed"
 	provisionMaxTransitionsPerRun   = 6
@@ -315,18 +319,6 @@ const (
 	codebuildStatusTimedOut   = "TIMED_OUT"
 	codebuildStatusUnknown    = "UNKNOWN"
 )
-
-type lesserUpReceipt struct {
-	Version    int    `json:"version"`
-	App        string `json:"app"`
-	BaseDomain string `json:"base_domain"`
-	AccountID  string `json:"account_id"`
-	Region     string `json:"region"`
-	HostedZone struct {
-		ID   string `json:"id"`
-		Name string `json:"name"`
-	} `json:"hosted_zone"`
-}
 
 func (s *Server) runManagedProvisioningStateMachine(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) error {
 	if s == nil || s.store == nil || s.store.DB == nil {
@@ -455,40 +447,42 @@ func (s *Server) advanceManagedProvisioningLoop(ctx context.Context, job *models
 	return s.requeueProvisionJob(ctx, strings.TrimSpace(job.ID), provisionDefaultShortRetryDelay)
 }
 
+type managedProvisionStepHandler func(*Server, context.Context, *models.ProvisionJob, string, time.Time) (time.Duration, bool, error)
+
+var managedProvisionStepHandlers = map[string]managedProvisionStepHandler{
+	provisionStepQueued:            (*Server).advanceProvisionQueued,
+	provisionStepAccountCreate:     (*Server).advanceProvisionAccountCreate,
+	provisionStepAccountCreatePoll: (*Server).advanceProvisionAccountCreatePoll,
+	provisionStepAccountMove:       (*Server).advanceProvisionAccountMove,
+	provisionStepAssumeRole:        (*Server).advanceProvisionAssumeRole,
+	provisionStepChildZone:         (*Server).advanceProvisionChildZone,
+	provisionStepParentDelegation:  (*Server).advanceProvisionParentDelegation,
+	provisionStepInstanceConfig:    (*Server).advanceProvisionInstanceConfig,
+	provisionStepDeployStart:       (*Server).advanceProvisionDeployStart,
+	provisionStepDeployWait:        (*Server).advanceProvisionDeployWait,
+	provisionStepReceiptIngest:     (*Server).advanceProvisionReceiptIngest,
+	provisionStepSoulDeployStart:   (*Server).advanceProvisionSoulDeployStart,
+	provisionStepSoulDeployWait:    (*Server).advanceProvisionSoulDeployWait,
+	provisionStepSoulInitStart:     (*Server).advanceProvisionSoulInitStart,
+	provisionStepSoulInitWait:      (*Server).advanceProvisionSoulInitWait,
+	provisionStepSoulReceiptIngest: (*Server).advanceProvisionSoulReceiptIngest,
+}
+
 func (s *Server) advanceManagedProvisioning(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {
 	if s == nil || job == nil {
 		return 0, true, nil
 	}
 
-	switch strings.TrimSpace(job.Step) {
-	case provisionStepQueued:
-		return s.advanceProvisionQueued(ctx, job, requestID, now)
-	case provisionStepAccountCreate:
-		return s.advanceProvisionAccountCreate(ctx, job, requestID, now)
-	case provisionStepAccountCreatePoll:
-		return s.advanceProvisionAccountCreatePoll(ctx, job, requestID, now)
-	case provisionStepAccountMove:
-		return s.advanceProvisionAccountMove(ctx, job, requestID, now)
-	case provisionStepAssumeRole:
-		return s.advanceProvisionAssumeRole(ctx, job, requestID, now)
-	case provisionStepChildZone:
-		return s.advanceProvisionChildZone(ctx, job, requestID, now)
-	case provisionStepParentDelegation:
-		return s.advanceProvisionParentDelegation(ctx, job, requestID, now)
-	case provisionStepInstanceConfig:
-		return s.advanceProvisionInstanceConfig(ctx, job, requestID, now)
-	case provisionStepDeployStart:
-		return s.advanceProvisionDeployStart(ctx, job, requestID, now)
-	case provisionStepDeployWait:
-		return s.advanceProvisionDeployWait(ctx, job, requestID, now)
-	case provisionStepReceiptIngest:
-		return s.advanceProvisionReceiptIngest(ctx, job, requestID, now)
-	case provisionStepDone, provisionStepFailed:
+	step := strings.TrimSpace(job.Step)
+	if step == provisionStepDone || step == provisionStepFailed {
 		return 0, true, nil
-	default:
-		step := strings.TrimSpace(job.Step)
+	}
+
+	handler, ok := managedProvisionStepHandlers[step]
+	if !ok {
 		return 0, false, s.failJob(ctx, job, requestID, now, "unknown_step", "unknown provisioning step: "+step)
 	}
+	return handler(s, ctx, job, requestID, now)
 }
 
 func (s *Server) advanceProvisionQueued(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {
@@ -1119,21 +1113,17 @@ func secretValueToKeyID(value string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-type secretsManagerSecretPayload struct {
-	Secret string `json:"secret"`
-}
-
 func unwrapSecretsManagerSecretString(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return "", fmt.Errorf("secret value is empty")
 	}
 	if strings.HasPrefix(raw, "{") {
-		var parsed secretsManagerSecretPayload
+		var parsed map[string]string
 		if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
 			return "", fmt.Errorf("unmarshal secret string: %w", err)
 		}
-		val := strings.TrimSpace(parsed.Secret)
+		val := strings.TrimSpace(parsed["secret"])
 		if val == "" {
 			return "", fmt.Errorf("secret payload missing 'secret' key")
 		}
@@ -1147,7 +1137,7 @@ func wrapSecretsManagerSecretString(secret string) (string, error) {
 	if secret == "" {
 		return "", fmt.Errorf("secret value is empty")
 	}
-	out, err := json.Marshal(secretsManagerSecretPayload{Secret: secret})
+	out, err := json.Marshal(map[string]string{"secret": secret})
 	if err != nil {
 		return "", err
 	}
@@ -1371,35 +1361,301 @@ func (s *Server) advanceProvisionDeployWait(ctx context.Context, job *models.Pro
 }
 
 func (s *Server) advanceProvisionReceiptIngest(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {
+	receiptJSON, receipt, err := s.loadProvisionReceipt(ctx, job)
+	if err != nil {
+		return s.retryProvisionReceiptLoad(ctx, job, requestID, now, err)
+	}
+
+	applyLesserUpReceipt(job, receiptJSON, receipt)
+
+	continueToSoul := job.SoulEnabled && job.SoulProvisionedAt.IsZero()
+	if continueToSoul {
+		job.Step = provisionStepSoulDeployStart
+		job.Note = "starting soul deploy runner"
+		job.RunID = ""
+	} else {
+		job.Step = provisionStepDone
+		job.Status = models.ProvisionJobStatusOK
+		job.Note = noteProvisioned
+	}
+
+	if err := s.persistJobAndInstance(ctx, job, requestID, now, provisionReceiptIngestInstanceUpdate(job, continueToSoul)); err != nil {
+		return 0, false, err
+	}
+	return 0, !continueToSoul, nil
+}
+
+func (s *Server) loadProvisionReceipt(ctx context.Context, job *models.ProvisionJob) (string, *lesserUpReceipt, error) {
 	receiptKey := s.receiptS3Key(job)
-	receiptJSON, receipt, err := s.loadReceiptFromS3(ctx, strings.TrimSpace(s.cfg.ArtifactBucketName), receiptKey)
+	return s.loadReceiptFromS3(ctx, strings.TrimSpace(s.cfg.ArtifactBucketName), receiptKey)
+}
+
+func (s *Server) retryProvisionReceiptLoad(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time, err error) (time.Duration, bool, error) {
+	job.Attempts++
+	if job.Attempts >= job.MaxAttempts {
+		return 0, false, s.failJob(ctx, job, requestID, now, "receipt_load_failed", "failed to load receipt: "+err.Error())
+	}
+	job.Note = "failed to load receipt; retrying: " + compactErr(err)
+	_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
+	return jitteredBackoff(job.Attempts, provisionDefaultShortRetryDelay, 5*time.Minute), false, nil
+}
+
+func applyLesserUpReceipt(job *models.ProvisionJob, receiptJSON string, receipt *lesserUpReceipt) {
+	if job == nil {
+		return
+	}
+
+	job.ReceiptJSON = strings.TrimSpace(receiptJSON)
+	job.ErrorCode = ""
+	job.ErrorMessage = ""
+
+	if receipt == nil {
+		return
+	}
+	if v := strings.TrimSpace(receipt.AccountID); v != "" {
+		job.AccountID = v
+	}
+	if v := strings.TrimSpace(receipt.Region); v != "" {
+		job.Region = v
+	}
+	if v := strings.TrimSpace(receipt.HostedZone.ID); v != "" {
+		job.ChildHostedZoneID = normalizeHostedZoneID(v)
+	}
+}
+
+func provisionReceiptIngestInstanceUpdate(job *models.ProvisionJob, continueToSoul bool) func(core.UpdateBuilder) error {
+	return func(ub core.UpdateBuilder) error {
+		ub.Set("ProvisionJobID", strings.TrimSpace(job.ID))
+		if continueToSoul {
+			ub.Set("ProvisionStatus", models.ProvisionJobStatusRunning)
+		} else {
+			ub.Set("ProvisionStatus", models.ProvisionJobStatusOK)
+		}
+		if strings.TrimSpace(job.AccountID) != "" {
+			ub.Set("HostedAccountID", strings.TrimSpace(job.AccountID))
+		}
+		if strings.TrimSpace(job.Region) != "" {
+			ub.Set("HostedRegion", strings.TrimSpace(job.Region))
+		}
+		if strings.TrimSpace(job.BaseDomain) != "" {
+			ub.Set("HostedBaseDomain", strings.TrimSpace(job.BaseDomain))
+		}
+		if strings.TrimSpace(job.ChildHostedZoneID) != "" {
+			ub.Set("HostedZoneID", strings.TrimSpace(job.ChildHostedZoneID))
+		}
+		return nil
+	}
+}
+
+func (s *Server) advanceProvisionSoulDeployStart(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {
+	if job == nil {
+		return 0, true, nil
+	}
+	if !job.SoulEnabled {
+		job.Step = provisionStepDone
+		job.Status = models.ProvisionJobStatusOK
+		job.Note = noteProvisioned
+		if err := s.persistJobAndInstance(ctx, job, requestID, now, func(ub core.UpdateBuilder) error {
+			ub.Set("ProvisionStatus", models.ProvisionJobStatusOK)
+			ub.Set("ProvisionJobID", strings.TrimSpace(job.ID))
+			return nil
+		}); err != nil {
+			return 0, false, err
+		}
+		return 0, true, nil
+	}
+
+	if strings.TrimSpace(job.RunID) != "" {
+		job.Step = provisionStepSoulDeployWait
+		job.Note = "soul deploy runner already started"
+		if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
+			return 0, false, err
+		}
+		return provisionDefaultPollDelay, false, nil
+	}
+
+	runID, err := s.startDeployRunnerWithMode(ctx, job, "soul-deploy", s.soulReceiptS3Key(job))
 	if err != nil {
 		job.Attempts++
 		if job.Attempts >= job.MaxAttempts {
-			return 0, false, s.failJob(ctx, job, requestID, now, "receipt_load_failed", "failed to load receipt: "+err.Error())
+			return 0, false, s.failJob(ctx, job, requestID, now, "soul_deploy_start_failed", "failed to start soul deploy runner: "+err.Error())
 		}
-		job.Note = "failed to load receipt; retrying: " + compactErr(err)
+		job.Note = "failed to start soul deploy runner; retrying: " + compactErr(err)
+		_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
+		return jitteredBackoff(job.Attempts, provisionDefaultShortRetryDelay, 10*time.Minute), false, nil
+	}
+
+	job.RunID = strings.TrimSpace(runID)
+	job.Step = provisionStepSoulDeployWait
+	job.Note = "soul deploy runner in progress"
+	if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
+		return 0, false, err
+	}
+	return provisionDefaultPollDelay, false, nil
+}
+
+func (s *Server) advanceProvisionSoulDeployWait(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {
+	if job == nil {
+		return 0, true, nil
+	}
+
+	status, deepLink, err := s.getDeployRunnerStatus(ctx, strings.TrimSpace(job.RunID))
+	if err != nil {
+		job.Attempts++
+		if job.Attempts >= job.MaxAttempts {
+			return 0, false, s.failJob(ctx, job, requestID, now, "soul_deploy_status_failed", "failed to poll soul deploy runner: "+err.Error())
+		}
+		job.Note = "failed to poll soul deploy runner; retrying: " + compactErr(err)
+		_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
+		return jitteredBackoff(job.Attempts, provisionDefaultPollDelay, 10*time.Minute), false, nil
+	}
+
+	switch status {
+	case codebuildStatusSucceeded:
+		job.Step = provisionStepSoulInitStart
+		job.RunID = ""
+		job.Note = "starting soul init runner"
+		if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
+			return 0, false, err
+		}
+		return 0, false, nil
+
+	case codebuildStatusInProgress:
+		if !job.CreatedAt.IsZero() && now.Sub(job.CreatedAt) > provisionMaxDeployAge {
+			return 0, false, s.failJob(ctx, job, requestID, now, "soul_deploy_timeout", "soul deploy runner timed out")
+		}
+		job.Note = "soul deploy runner in progress"
+		_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
+		return provisionDefaultPollDelay, false, nil
+
+	case codebuildStatusFailed, codebuildStatusFault, codebuildStatusStopped, codebuildStatusTimedOut:
+		msg := "soul deploy runner failed"
+		if deepLink != "" {
+			msg = msg + " (CodeBuild: " + deepLink + ")"
+		}
+		return 0, false, s.failJob(ctx, job, requestID, now, "soul_deploy_failed", msg)
+
+	default:
+		if !job.CreatedAt.IsZero() && now.Sub(job.CreatedAt) > provisionMaxDeployAge {
+			return 0, false, s.failJob(ctx, job, requestID, now, "soul_deploy_timeout", "soul deploy runner timed out")
+		}
+		job.Note = "soul deploy runner status: " + status
+		_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
+		return provisionDefaultPollDelay, false, nil
+	}
+}
+
+func (s *Server) advanceProvisionSoulInitStart(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {
+	if job == nil {
+		return 0, true, nil
+	}
+	if strings.TrimSpace(job.RunID) != "" {
+		job.Step = provisionStepSoulInitWait
+		job.Note = "soul init runner already started"
+		if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
+			return 0, false, err
+		}
+		return provisionDefaultPollDelay, false, nil
+	}
+
+	runID, err := s.startDeployRunnerWithMode(ctx, job, "soul-init", s.soulReceiptS3Key(job))
+	if err != nil {
+		job.Attempts++
+		if job.Attempts >= job.MaxAttempts {
+			return 0, false, s.failJob(ctx, job, requestID, now, "soul_init_start_failed", "failed to start soul init runner: "+err.Error())
+		}
+		job.Note = "failed to start soul init runner; retrying: " + compactErr(err)
+		_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
+		return jitteredBackoff(job.Attempts, provisionDefaultShortRetryDelay, 10*time.Minute), false, nil
+	}
+
+	job.RunID = strings.TrimSpace(runID)
+	job.Step = provisionStepSoulInitWait
+	job.Note = "soul init runner in progress"
+	if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
+		return 0, false, err
+	}
+	return provisionDefaultPollDelay, false, nil
+}
+
+func (s *Server) advanceProvisionSoulInitWait(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {
+	if job == nil {
+		return 0, true, nil
+	}
+
+	status, deepLink, err := s.getDeployRunnerStatus(ctx, strings.TrimSpace(job.RunID))
+	if err != nil {
+		job.Attempts++
+		if job.Attempts >= job.MaxAttempts {
+			return 0, false, s.failJob(ctx, job, requestID, now, "soul_init_status_failed", "failed to poll soul init runner: "+err.Error())
+		}
+		job.Note = "failed to poll soul init runner; retrying: " + compactErr(err)
+		_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
+		return jitteredBackoff(job.Attempts, provisionDefaultPollDelay, 10*time.Minute), false, nil
+	}
+
+	switch status {
+	case codebuildStatusSucceeded:
+		job.Step = provisionStepSoulReceiptIngest
+		job.Note = "ingesting soul receipt"
+		if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
+			return 0, false, err
+		}
+		return 0, false, nil
+
+	case codebuildStatusInProgress:
+		if !job.CreatedAt.IsZero() && now.Sub(job.CreatedAt) > provisionMaxDeployAge {
+			return 0, false, s.failJob(ctx, job, requestID, now, "soul_init_timeout", "soul init runner timed out")
+		}
+		job.Note = "soul init runner in progress"
+		_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
+		return provisionDefaultPollDelay, false, nil
+
+	case codebuildStatusFailed, codebuildStatusFault, codebuildStatusStopped, codebuildStatusTimedOut:
+		msg := "soul init runner failed"
+		if deepLink != "" {
+			msg = msg + " (CodeBuild: " + deepLink + ")"
+		}
+		return 0, false, s.failJob(ctx, job, requestID, now, "soul_init_failed", msg)
+
+	default:
+		if !job.CreatedAt.IsZero() && now.Sub(job.CreatedAt) > provisionMaxDeployAge {
+			return 0, false, s.failJob(ctx, job, requestID, now, "soul_init_timeout", "soul init runner timed out")
+		}
+		job.Note = "soul init runner status: " + status
+		_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
+		return provisionDefaultPollDelay, false, nil
+	}
+}
+
+func (s *Server) advanceProvisionSoulReceiptIngest(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {
+	if job == nil {
+		return 0, true, nil
+	}
+
+	receiptKey := s.soulReceiptS3Key(job)
+	receiptJSON, receipt, err := s.loadSoulReceiptFromS3(ctx, strings.TrimSpace(s.cfg.ArtifactBucketName), receiptKey)
+	if err != nil {
+		job.Attempts++
+		if job.Attempts >= job.MaxAttempts {
+			return 0, false, s.failJob(ctx, job, requestID, now, "soul_receipt_load_failed", "failed to load soul receipt: "+err.Error())
+		}
+		job.Note = "failed to load soul receipt; retrying: " + compactErr(err)
 		_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
 		return jitteredBackoff(job.Attempts, provisionDefaultShortRetryDelay, 5*time.Minute), false, nil
 	}
 
-	job.ReceiptJSON = strings.TrimSpace(receiptJSON)
+	job.SoulReceiptJSON = strings.TrimSpace(receiptJSON)
+	job.SoulProvisionedAt = now
 	job.Step = provisionStepDone
 	job.Status = models.ProvisionJobStatusOK
-	job.Note = "provisioned"
+	job.Note = noteProvisioned
 	job.ErrorCode = ""
 	job.ErrorMessage = ""
 
+	soulVersion := ""
 	if receipt != nil {
-		if strings.TrimSpace(receipt.AccountID) != "" {
-			job.AccountID = strings.TrimSpace(receipt.AccountID)
-		}
-		if strings.TrimSpace(receipt.Region) != "" {
-			job.Region = strings.TrimSpace(receipt.Region)
-		}
-		if strings.TrimSpace(receipt.HostedZone.ID) != "" {
-			job.ChildHostedZoneID = normalizeHostedZoneID(strings.TrimSpace(receipt.HostedZone.ID))
-		}
+		soulVersion = strings.TrimSpace(receipt.SoulVersion)
 	}
 
 	if err := s.persistJobAndInstance(ctx, job, requestID, now, func(ub core.UpdateBuilder) error {
@@ -1416,6 +1672,11 @@ func (s *Server) advanceProvisionReceiptIngest(ctx context.Context, job *models.
 		}
 		if strings.TrimSpace(job.ChildHostedZoneID) != "" {
 			ub.Set("HostedZoneID", strings.TrimSpace(job.ChildHostedZoneID))
+		}
+
+		ub.Set("SoulProvisionedAt", job.SoulProvisionedAt)
+		if soulVersion != "" {
+			ub.Set("SoulVersion", soulVersion)
 		}
 		return nil
 	}); err != nil {
@@ -1939,6 +2200,10 @@ func codebuildBuildID(out *codebuild.StartBuildOutput) (string, error) {
 }
 
 func (s *Server) startDeployRunner(ctx context.Context, job *models.ProvisionJob) (string, error) {
+	return s.startDeployRunnerWithMode(ctx, job, "lesser", s.receiptS3Key(job))
+}
+
+func (s *Server) startDeployRunnerWithMode(ctx context.Context, job *models.ProvisionJob, mode string, receiptKey string) (string, error) {
 	if s == nil || s.cb == nil {
 		return "", fmt.Errorf("codebuild client not initialized")
 	}
@@ -1974,10 +2239,17 @@ func (s *Server) startDeployRunner(ctx context.Context, job *models.ProvisionJob
 		return "", fmt.Errorf("lesser host base url is missing")
 	}
 
-	receiptKey := s.receiptS3Key(job)
 	bootstrapKey := s.bootstrapS3Key(job)
 	stage := s.deployRunnerStage(job)
 	env := s.buildDeployRunnerEnv(job, stage, receiptKey, bootstrapKey)
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "" {
+		mode = "lesser"
+	}
+	env = append(env, cbtypes.EnvironmentVariable{Name: aws.String("RUN_MODE"), Value: aws.String(mode)})
+	if strings.HasPrefix(mode, "soul") {
+		env = append(env, cbtypes.EnvironmentVariable{Name: aws.String("SOUL_VERSION"), Value: aws.String(strings.TrimSpace(inst.SoulVersion))})
+	}
 	tipEnabled := effectiveTipEnabled(inst.TipEnabled)
 	env = append(env,
 		cbtypes.EnvironmentVariable{Name: aws.String("LESSER_HOST_URL"), Value: aws.String(lesserHostURL)},
@@ -2059,58 +2331,6 @@ func normalizeCodebuildStatus(st cbtypes.StatusType) string {
 		}
 		return status
 	}
-}
-
-func (s *Server) receiptS3Key(job *models.ProvisionJob) string {
-	if job == nil {
-		return ""
-	}
-	return fmt.Sprintf("managed/provisioning/%s/%s/state.json", strings.TrimSpace(job.InstanceSlug), strings.TrimSpace(job.ID))
-}
-
-func (s *Server) bootstrapS3Key(job *models.ProvisionJob) string {
-	if job == nil {
-		return ""
-	}
-	return fmt.Sprintf("managed/provisioning/%s/bootstrap.json", strings.TrimSpace(job.InstanceSlug))
-}
-
-func (s *Server) loadReceiptFromS3(ctx context.Context, bucket string, key string) (string, *lesserUpReceipt, error) {
-	if s == nil || s.s3 == nil {
-		return "", nil, fmt.Errorf("s3 client not initialized")
-	}
-	bucket = strings.TrimSpace(bucket)
-	key = strings.TrimSpace(key)
-	if bucket == "" || key == "" {
-		return "", nil, fmt.Errorf("bucket and key are required")
-	}
-
-	out, err := s.s3.GetObject(ctx, &s3.GetObjectInput{
-		Bucket: aws.String(bucket),
-		Key:    aws.String(key),
-	})
-	if err != nil {
-		return "", nil, err
-	}
-	defer func() { _ = out.Body.Close() }()
-
-	data, err := io.ReadAll(out.Body)
-	if err != nil {
-		return "", nil, err
-	}
-	raw := strings.TrimSpace(string(data))
-	if raw == "" {
-		return "", nil, fmt.Errorf("receipt is empty")
-	}
-
-	var parsed lesserUpReceipt
-	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
-		return raw, nil, err
-	}
-	if strings.TrimSpace(parsed.BaseDomain) == "" || strings.TrimSpace(parsed.App) == "" {
-		return raw, &parsed, fmt.Errorf("receipt is missing required fields")
-	}
-	return raw, &parsed, nil
 }
 
 func ensureTrailingDot(name string) string {

@@ -55,6 +55,9 @@ type instanceResponse struct {
 	HostedBaseDomain          string    `json:"hosted_base_domain,omitempty"`
 	HostedZoneID              string    `json:"hosted_zone_id,omitempty"`
 	LesserVersion             string    `json:"lesser_version,omitempty"`
+	SoulEnabled               bool      `json:"soul_enabled"`
+	SoulVersion               string    `json:"soul_version,omitempty"`
+	SoulProvisionedAt         time.Time `json:"soul_provisioned_at,omitempty"`
 	LesserHostBaseURL         string    `json:"lesser_host_base_url,omitempty"`
 	LesserHostAttestationsURL string    `json:"lesser_host_attestations_url,omitempty"`
 	TranslationEnabled        bool      `json:"translation_enabled"`
@@ -97,6 +100,8 @@ type createInstanceKeyResponse struct {
 }
 
 type updateInstanceConfigRequest struct {
+	SoulEnabled *bool `json:"soul_enabled,omitempty"`
+
 	HostedPreviewsEnabled  *bool   `json:"hosted_previews_enabled,omitempty"`
 	LinkSafetyEnabled      *bool   `json:"link_safety_enabled,omitempty"`
 	RendersEnabled         *bool   `json:"renders_enabled,omitempty"`
@@ -155,6 +160,9 @@ func instanceResponseFromModel(inst *models.Instance) instanceResponse {
 		HostedBaseDomain:          strings.TrimSpace(inst.HostedBaseDomain),
 		HostedZoneID:              strings.TrimSpace(inst.HostedZoneID),
 		LesserVersion:             strings.TrimSpace(inst.LesserVersion),
+		SoulEnabled:               effectiveSoulEnabled(inst.SoulEnabled),
+		SoulVersion:               strings.TrimSpace(inst.SoulVersion),
+		SoulProvisionedAt:         inst.SoulProvisionedAt,
 		LesserHostBaseURL:         strings.TrimSpace(inst.LesserHostBaseURL),
 		LesserHostAttestationsURL: strings.TrimSpace(inst.LesserHostAttestationsURL),
 		TranslationEnabled:        effectiveTranslationEnabled(inst.TranslationEnabled),
@@ -468,6 +476,13 @@ func effectiveTranslationEnabled(v *bool) bool {
 	return *v
 }
 
+func effectiveSoulEnabled(v *bool) bool {
+	if v == nil {
+		return false
+	}
+	return *v
+}
+
 func effectiveTipEnabled(v *bool) bool {
 	if v == nil {
 		return false
@@ -641,6 +656,7 @@ func buildInstanceConfigUpdate(slug string, req updateInstanceConfigRequest) (*m
 	update := &models.Instance{Slug: slug}
 	fields := make([]string, 0, 12)
 
+	setBoolPtr(&update.SoulEnabled, req.SoulEnabled, "SoulEnabled", &fields)
 	setBoolPtr(&update.HostedPreviewsEnabled, req.HostedPreviewsEnabled, "HostedPreviewsEnabled", &fields)
 	setBoolPtr(&update.LinkSafetyEnabled, req.LinkSafetyEnabled, "LinkSafetyEnabled", &fields)
 	setBoolPtr(&update.RendersEnabled, req.RendersEnabled, "RendersEnabled", &fields)

@@ -28,19 +28,21 @@ type ProvisionJob struct {
 	ID           string `theorydb:"attr:id" json:"id"`
 	InstanceSlug string `theorydb:"attr:instanceSlug" json:"instance_slug"`
 
-	Status             string `theorydb:"attr:status" json:"status"`                          // queued|running|ok|error
-	Step               string `theorydb:"attr:step" json:"step,omitempty"`                    // implementation-defined
-	Note               string `theorydb:"attr:note" json:"note,omitempty"`                    // operator-visible
-	RunID              string `theorydb:"attr:runId" json:"run_id,omitempty"`                 // external runner id (e.g. CodeBuild)
-	Mode               string `theorydb:"attr:mode" json:"mode,omitempty"`                    // managed|manual
-	Plan               string `theorydb:"attr:plan" json:"plan,omitempty"`                    // hosting plan identifier
-	Region             string `theorydb:"attr:region" json:"region,omitempty"`                // target region (if applicable)
-	Stage              string `theorydb:"attr:stage" json:"stage,omitempty"`                  // optional stage selector
-	LesserVersion      string `theorydb:"attr:lesserVersion" json:"lesser_version,omitempty"` // semver tag
-	AdminUsername      string `theorydb:"attr:adminUsername" json:"admin_username,omitempty"`
-	AdminWalletType    string `theorydb:"attr:adminWalletType" json:"admin_wallet_type,omitempty"`
-	AdminWalletAddr    string `theorydb:"attr:adminWalletAddress" json:"admin_wallet_address,omitempty"`
-	AdminWalletChainID int    `theorydb:"attr:adminWalletChainID" json:"admin_wallet_chain_id,omitempty"`
+	Status             string    `theorydb:"attr:status" json:"status"`                          // queued|running|ok|error
+	Step               string    `theorydb:"attr:step" json:"step,omitempty"`                    // implementation-defined
+	Note               string    `theorydb:"attr:note" json:"note,omitempty"`                    // operator-visible
+	RunID              string    `theorydb:"attr:runId" json:"run_id,omitempty"`                 // external runner id (e.g. CodeBuild)
+	Mode               string    `theorydb:"attr:mode" json:"mode,omitempty"`                    // managed|manual
+	Plan               string    `theorydb:"attr:plan" json:"plan,omitempty"`                    // hosting plan identifier
+	Region             string    `theorydb:"attr:region" json:"region,omitempty"`                // target region (if applicable)
+	Stage              string    `theorydb:"attr:stage" json:"stage,omitempty"`                  // optional stage selector
+	LesserVersion      string    `theorydb:"attr:lesserVersion" json:"lesser_version,omitempty"` // semver tag
+	SoulEnabled        bool      `theorydb:"attr:soulEnabled" json:"soul_enabled"`
+	SoulProvisionedAt  time.Time `theorydb:"attr:soulProvisionedAt" json:"soul_provisioned_at,omitempty"`
+	AdminUsername      string    `theorydb:"attr:adminUsername" json:"admin_username,omitempty"`
+	AdminWalletType    string    `theorydb:"attr:adminWalletType" json:"admin_wallet_type,omitempty"`
+	AdminWalletAddr    string    `theorydb:"attr:adminWalletAddress" json:"admin_wallet_address,omitempty"`
+	AdminWalletChainID int       `theorydb:"attr:adminWalletChainID" json:"admin_wallet_chain_id,omitempty"`
 
 	ConsentMessage     string `theorydb:"attr:consentMessage" json:"consent_message,omitempty"`
 	ConsentMessageHash string `theorydb:"attr:consentMessageHash" json:"consent_message_hash,omitempty"`
@@ -60,6 +62,9 @@ type ProvisionJob struct {
 
 	// Deployment receipt (optional; can be large).
 	ReceiptJSON string `theorydb:"attr:receiptJson" json:"receipt_json,omitempty"`
+
+	// Soul deployment receipt (optional; can be large).
+	SoulReceiptJSON string `theorydb:"attr:soulReceiptJson" json:"soul_receipt_json,omitempty"`
 
 	Attempts    int64 `theorydb:"attr:attempts" json:"attempts"`
 	MaxAttempts int64 `theorydb:"attr:maxAttempts" json:"max_attempts,omitempty"`
@@ -135,6 +140,7 @@ func (j *ProvisionJob) UpdateKeys() error {
 	j.BaseDomain = strings.ToLower(strings.TrimSpace(j.BaseDomain))
 	j.ChildHostedZoneID = strings.TrimSpace(j.ChildHostedZoneID)
 	j.ReceiptJSON = strings.TrimSpace(j.ReceiptJSON)
+	j.SoulReceiptJSON = strings.TrimSpace(j.SoulReceiptJSON)
 	j.ErrorCode = strings.TrimSpace(j.ErrorCode)
 	j.ErrorMessage = strings.TrimSpace(j.ErrorMessage)
 	j.RequestID = strings.TrimSpace(j.RequestID)

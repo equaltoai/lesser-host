@@ -1,6 +1,6 @@
 module github.com/equaltoai/lesser-host
 
-go 1.25.7
+go 1.26.0
 
 require (
 	github.com/andybalholm/brotli v1.2.0

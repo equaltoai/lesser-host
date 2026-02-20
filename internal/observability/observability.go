@@ -8,7 +8,7 @@ import (
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 
-	"github.com/equaltoai/lesser-host/internal/metrics"
+	"github.com/equaltoai/lesser-host/internal/hostmetrics"
 )
 
 // New constructs observability hooks for apptheory services.
@@ -71,23 +71,23 @@ func emitTrustProxy503BestEffort(service string, rec apptheory.LogRecord) {
 		instanceSlug = "unknown"
 	}
 
-	metrics.Emit("lesser-host", map[string]string{
+	hostmetrics.Emit("lesser-host", map[string]string{
 		"Stage":   stage,
 		"Service": strings.TrimSpace(service),
-	}, []metrics.Metric{
-		{Name: "TrustProxy503", Unit: metrics.UnitCount, Value: 1},
+	}, []hostmetrics.Metric{
+		{Name: "TrustProxy503", Unit: hostmetrics.UnitCount, Value: 1},
 	}, map[string]any{
 		"instance": instanceSlug,
 		"method":   strings.TrimSpace(rec.Method),
 		"path":     strings.TrimSpace(rec.Path),
 	})
 
-	metrics.Emit("lesser-host", map[string]string{
+	hostmetrics.Emit("lesser-host", map[string]string{
 		"Stage":    stage,
 		"Service":  strings.TrimSpace(service),
 		"Instance": instanceSlug,
-	}, []metrics.Metric{
-		{Name: "TrustProxy503", Unit: metrics.UnitCount, Value: 1},
+	}, []hostmetrics.Metric{
+		{Name: "TrustProxy503", Unit: hostmetrics.UnitCount, Value: 1},
 	}, map[string]any{
 		"method": strings.TrimSpace(rec.Method),
 		"path":   strings.TrimSpace(rec.Path),
