@@ -424,3 +424,233 @@ func TestProvisionStateMachine_SuccessPathAcrossSteps(t *testing.T) {
 	require.NotNil(t, r53.lastChange.ChangeBatch.Changes[0].ResourceRecordSet)
 	require.Equal(t, r53types.RRTypeNs, r53.lastChange.ChangeBatch.Changes[0].ResourceRecordSet.Type)
 }
+
+func TestProvisionStateMachine_SoulEnabled_SuccessPathAcrossSteps(t *testing.T) {
+	t.Parallel()
+
+	db := ttmocks.NewMockExtendedDB()
+	db.On("WithContext", mock.Anything).Return(db).Maybe()
+
+	qInst := new(ttmocks.MockQuery)
+	db.On("Model", mock.AnythingOfType("*models.Instance")).Return(qInst).Maybe()
+	qInst.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qInst).Maybe()
+	qInst.On("ConsistentRead").Return(qInst).Maybe()
+
+	instanceLoads := 0
+	translationEnabled := true
+	qInst.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		instanceLoads++
+		if instanceLoads == 1 {
+			*dest = models.Instance{Slug: "demo"}
+			return
+		}
+		*dest = models.Instance{
+			Slug:                           "demo",
+			LesserHostInstanceKeySecretARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:test",
+			LesserHostBaseURL:              "https://lab.lesser.host",
+			LesserHostAttestationsURL:      "https://lab.lesser.host",
+			TranslationEnabled:             &translationEnabled,
+		}
+	}).Maybe()
+
+	qKey := new(ttmocks.MockQuery)
+	db.On("Model", mock.AnythingOfType("*models.InstanceKey")).Return(qKey).Maybe()
+	qKey.On("IfNotExists").Return(qKey).Maybe()
+	qKey.On("Create").Return(nil).Maybe()
+
+	st := store.New(db)
+
+	org := &fakeOrg{
+		createOut: &organizations.CreateAccountOutput{CreateAccountStatus: &orgtypes.CreateAccountStatus{Id: aws.String("req1")}},
+		describeOut: &organizations.DescribeCreateAccountStatusOutput{
+			CreateAccountStatus: &orgtypes.CreateAccountStatus{
+				State:     orgtypes.CreateAccountStateSucceeded,
+				AccountId: aws.String("123456789012"),
+			},
+		},
+		parentsOut: &organizations.ListParentsOutput{
+			Parents: []orgtypes.Parent{{Id: aws.String("ou-source")}},
+		},
+	}
+	r53 := &fakeRoute53{}
+
+	stsClient := &fakeSTS{out: &sts.AssumeRoleOutput{Credentials: &ststypes.Credentials{
+		AccessKeyId:     aws.String("a"),
+		SecretAccessKey: aws.String("b"),
+		SessionToken:    aws.String("c"),
+	}}}
+
+	cb := &fakeCodebuild{
+		startOut: &codebuild.StartBuildOutput{Build: &cbtypes.Build{Id: aws.String("run1")}},
+		batchOut: &codebuild.BatchGetBuildsOutput{Builds: []cbtypes.Build{{
+			BuildStatus: cbtypes.StatusTypeSucceeded,
+			Logs:        &cbtypes.LogsLocation{DeepLink: aws.String(" link ")},
+		}}},
+	}
+
+	lesserReceipt := `{"app":"x","base_domain":"d","account_id":"123456789012","region":"us-east-1","hosted_zone":{"id":"/hostedzone/Z1","name":"d."}}`
+	soulReceipt := `{"version":1,"app":"lesser-soul","instance_domain":"dev.demo.example.com","soul_version":"main"}`
+	s3Client := &fakeS3{byKey: map[string]*s3.GetObjectOutput{
+		"managed/provisioning/demo/j1/state.json":      {Body: io.NopCloser(strings.NewReader(lesserReceipt))},
+		"managed/provisioning/demo/j1/soul-state.json": {Body: io.NopCloser(strings.NewReader(soulReceipt))},
+	}}
+
+	sm := &fakeSecretsManager{
+		describeErr: &smtypes.ResourceNotFoundException{},
+		createOut:   &secretsmanager.CreateSecretOutput{ARN: aws.String("arn:aws:secretsmanager:us-east-1:123456789012:secret:test")},
+	}
+
+	s := &Server{
+		cfg: config.Config{
+			Stage:                             "lab",
+			WebAuthnRPID:                      "lesser.host",
+			ManagedProvisioningEnabled:        true,
+			ManagedDefaultRegion:              "us-east-1",
+			ManagedParentHostedZoneID:         "ZPARENT",
+			ManagedParentDomain:               "example.com",
+			ManagedInstanceRoleName:           "role",
+			ManagedAccountEmailTemplate:       "ops+{slug}@example.com",
+			ManagedAccountNamePrefix:          "lesser-",
+			ManagedTargetOrganizationalUnitID: "ou-target",
+			ManagedProvisionRunnerProjectName: "proj",
+			ManagedLesserGitHubOwner:          "o",
+			ManagedLesserGitHubRepo:           "r",
+			ArtifactBucketName:                "bucket",
+			ProvisionQueueURL:                 "https://sqs.us-east-1.amazonaws.com/123/q",
+			ManagedOrgVendingRoleARN:          "",
+		},
+		store: st,
+		org:   org,
+		r53:   r53,
+		sts:   stsClient,
+		cb:    cb,
+		s3:    s3Client,
+		smFactory: func(context.Context, string, string, string, string, string) (secretsManagerAPI, error) {
+			return sm, nil
+		},
+	}
+
+	now := time.Now().UTC()
+	job := &models.ProvisionJob{
+		ID:                 "j1",
+		InstanceSlug:       "demo",
+		Status:             models.ProvisionJobStatusRunning,
+		Step:               provisionStepQueued,
+		MaxAttempts:        3,
+		CreatedAt:          now.Add(-1 * time.Minute),
+		UpdatedAt:          now.Add(-1 * time.Minute),
+		ExpiresAt:          now.Add(1 * time.Hour),
+		SoulEnabled:        true,
+		Stage:              "lab",
+		LesserVersion:      "v",
+		AdminUsername:      "demo",
+		AdminWalletType:    "ethereum",
+		AdminWalletAddr:    "0x0000000000000000000000000000000000000003",
+		AdminWalletChainID: 1,
+	}
+
+	// Initialize missing fields for downstream steps.
+	s.initializeManagedProvisionJob(job)
+
+	_, _, err := s.advanceProvisionQueued(context.Background(), job, "req", now)
+	require.NoError(t, err)
+	require.Equal(t, provisionStepAccountCreate, job.Step)
+
+	delay, _, err := s.advanceProvisionAccountCreate(context.Background(), job, "req", now)
+	require.NoError(t, err)
+	require.Equal(t, provisionDefaultPollDelay, delay)
+	require.Equal(t, provisionStepAccountCreatePoll, job.Step)
+	require.Equal(t, "req1", job.AccountRequestID)
+
+	delay, _, err = s.advanceProvisionAccountCreatePoll(context.Background(), job, "req", now)
+	require.NoError(t, err)
+	require.Zero(t, delay)
+	require.Equal(t, provisionStepAccountMove, job.Step)
+	require.NotEmpty(t, strings.TrimSpace(job.AccountID))
+
+	// Move to target OU then advance to assume role.
+	delay, _, err = s.advanceProvisionAccountMove(context.Background(), job, "req", now)
+	require.NoError(t, err)
+	require.Zero(t, delay)
+	require.Equal(t, provisionStepAssumeRole, job.Step)
+
+	// Assume role advances to child zone.
+	delay, _, err = s.advanceProvisionAssumeRole(context.Background(), job, "req", now)
+	require.NoError(t, err)
+	require.Zero(t, delay)
+	require.Equal(t, provisionStepChildZone, job.Step)
+
+	// Pre-populate child zone info so Route53 calls are skipped.
+	job.ChildHostedZoneID = "ZCHILD"
+	job.ChildNameServers = []string{"ns-1", "ns-2", "ns-1"}
+	delay, _, err = s.advanceProvisionChildZone(context.Background(), job, "req", now)
+	require.NoError(t, err)
+	require.Zero(t, delay)
+	require.Equal(t, provisionStepParentDelegation, job.Step)
+	require.Equal(t, "ZCHILD", job.ChildHostedZoneID)
+
+	delay, _, err = s.advanceProvisionParentDelegation(context.Background(), job, "req", now)
+	require.NoError(t, err)
+	require.Zero(t, delay)
+	require.Equal(t, provisionStepInstanceConfig, job.Step)
+
+	delay, _, err = s.advanceProvisionInstanceConfig(context.Background(), job, "req", now)
+	require.NoError(t, err)
+	require.Zero(t, delay)
+	require.Equal(t, provisionStepDeployStart, job.Step)
+
+	delay, _, err = s.advanceProvisionDeployStart(context.Background(), job, "req", now)
+	require.NoError(t, err)
+	require.Equal(t, provisionDefaultPollDelay, delay)
+	require.Equal(t, provisionStepDeployWait, job.Step)
+	require.Equal(t, "run1", job.RunID)
+
+	delay, _, err = s.advanceProvisionDeployWait(context.Background(), job, "req", now)
+	require.NoError(t, err)
+	require.Zero(t, delay)
+	require.Equal(t, provisionStepReceiptIngest, job.Step)
+
+	delay, done, err := s.advanceProvisionReceiptIngest(context.Background(), job, "req", now)
+	require.NoError(t, err)
+	require.Zero(t, delay)
+	require.False(t, done)
+	require.Equal(t, provisionStepSoulDeployStart, job.Step)
+
+	delay, _, err = s.advanceProvisionSoulDeployStart(context.Background(), job, "req", now)
+	require.NoError(t, err)
+	require.Equal(t, provisionDefaultPollDelay, delay)
+	require.Equal(t, provisionStepSoulDeployWait, job.Step)
+
+	delay, _, err = s.advanceProvisionSoulDeployWait(context.Background(), job, "req", now)
+	require.NoError(t, err)
+	require.Zero(t, delay)
+	require.Equal(t, provisionStepSoulInitStart, job.Step)
+
+	delay, _, err = s.advanceProvisionSoulInitStart(context.Background(), job, "req", now)
+	require.NoError(t, err)
+	require.Equal(t, provisionDefaultPollDelay, delay)
+	require.Equal(t, provisionStepSoulInitWait, job.Step)
+
+	delay, _, err = s.advanceProvisionSoulInitWait(context.Background(), job, "req", now)
+	require.NoError(t, err)
+	require.Zero(t, delay)
+	require.Equal(t, provisionStepSoulReceiptIngest, job.Step)
+
+	delay, done, err = s.advanceProvisionSoulReceiptIngest(context.Background(), job, "req", now)
+	require.NoError(t, err)
+	require.Zero(t, delay)
+	require.True(t, done)
+	require.Equal(t, provisionStepDone, job.Step)
+	require.Equal(t, models.ProvisionJobStatusOK, job.Status)
+	require.Equal(t, now, job.SoulProvisionedAt)
+
+	// upsertParentNSDelegation handles trim + dedupe.
+	require.NoError(t, s.upsertParentNSDelegation(context.Background(), "ZPARENT", "demo.example.com", []string{" ns-1 ", "", "ns-1"}))
+
+	require.NotNil(t, r53.lastChange)
+	require.NotNil(t, r53.lastChange.ChangeBatch)
+	require.Len(t, r53.lastChange.ChangeBatch.Changes, 1)
+	require.NotNil(t, r53.lastChange.ChangeBatch.Changes[0].ResourceRecordSet)
+	require.Equal(t, r53types.RRTypeNs, r53.lastChange.ChangeBatch.Changes[0].ResourceRecordSet.Type)
+}
