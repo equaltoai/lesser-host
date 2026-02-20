@@ -18,6 +18,10 @@ export default defineConfig(({ mode }) => {
 		resolve: {
 			alias: {
 				src: path.resolve(__dirname, './src'),
+				'@equaltoai/greater-components-icons': path.resolve(__dirname, './src/lib/greater/icons'),
+				'@equaltoai/greater-components-primitives': path.resolve(__dirname, './src/lib/greater/primitives'),
+				'@equaltoai/greater-components-tokens': path.resolve(__dirname, './src/lib/greater/tokens'),
+				'@equaltoai/greater-components-utils': path.resolve(__dirname, './src/lib/greater/utils'),
 			},
 		},
 		server: {

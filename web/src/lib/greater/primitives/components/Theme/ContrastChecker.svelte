@@ -3,7 +3,7 @@
   CSP-compliant: Uses preset classes instead of inline styles
 -->
 <script lang="ts">
-	import { getContrastRatio, meetsWCAG } from 'src/lib/greater/utils';
+	import { getContrastRatio, meetsWCAG } from '@equaltoai/greater-components-utils';
 
 	type ContrastPreset = 'text-on-surface' | 'primary-on-surface' | 'text-on-primary' | 'custom';
 

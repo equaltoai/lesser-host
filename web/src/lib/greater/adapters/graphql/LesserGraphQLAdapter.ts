@@ -37,6 +37,15 @@ import type {
 	UpdateListMutationVariables,
 	ConversationsQueryVariables,
 	UpdateRelationshipMutationVariables,
+	AgentsQueryVariables,
+	AgentActivityQueryVariables,
+	AgentMemorySearchQueryVariables,
+	RegisterAgentMutationVariables,
+	UpdateAgentMutationVariables,
+	DelegateToAgentMutationVariables,
+	UpdateAdminAgentPolicyMutationVariables,
+	AdminVerifyAgentMutationVariables,
+	AdminUnverifyAgentMutationVariables,
 	TimelineUpdatesSubscription,
 	TimelineUpdatesSubscriptionVariables,
 	NotificationStreamSubscription,
@@ -76,6 +85,8 @@ import type {
 	PerformanceAlertSubscription,
 	PerformanceAlertSubscriptionVariables,
 	InfrastructureEventSubscription,
+	AgentActivityUpdatesSubscription,
+	AgentActivityUpdatesSubscriptionVariables,
 	RelationshipQuery,
 	RelationshipsQuery,
 	RelationshipsQueryVariables,
@@ -97,6 +108,13 @@ import {
 	ObjectByIdDocument,
 	ActorByIdDocument,
 	ActorByUsernameDocument,
+	AgentByUsernameDocument,
+	AgentsDocument,
+	MyAgentsDocument,
+	AgentActivityDocument,
+	AdminAgentPolicyDocument,
+	UpdateAdminAgentPolicyDocument,
+	AgentMemorySearchDocument,
 	CreateNoteDocument,
 	CreateQuoteNoteDocument,
 	WithdrawFromQuotesDocument,
@@ -195,6 +213,15 @@ import {
 	ThreatIntelligenceDocument,
 	PerformanceAlertDocument,
 	InfrastructureEventDocument,
+	RegisterAgentDocument,
+	UpdateAgentDocument,
+	DeleteAgentDocument,
+	DelegateToAgentDocument,
+	RevokeAgentTokenDocument,
+	AdminVerifyAgentDocument,
+	AdminUnverifyAgentDocument,
+	AdminSuspendAgentDocument,
+	AgentActivityUpdatesDocument,
 } from './generated/types.js';
 
 export type ViewerQuery = { viewer: Actor };
@@ -456,8 +483,26 @@ export class LesserGraphQLAdapter {
 		const result = await this.client.client.query<TData, TVariables>(options);
 
 		const { data } = result;
-		if (data === undefined) {
-			throw new Error('Query completed without returning data.');
+
+		const errors = (result as unknown as { errors?: Array<{ message?: string }> }).errors;
+		if (Array.isArray(errors) && errors.length > 0) {
+			throw new Error(
+				errors
+					.map((error) => error.message)
+					.filter(Boolean)
+					.join('; ')
+			);
+		}
+
+		const transportError = (result as unknown as { error?: unknown }).error;
+		if (transportError) {
+			throw new Error(
+				transportError instanceof Error ? transportError.message : String(transportError)
+			);
+		}
+
+		if (data == null) {
+			return {} as TData;
 		}
 
 		return data;
@@ -647,6 +692,85 @@ export class LesserGraphQLAdapter {
 		return data.actor;
 	}
 
+	// ============================================================================
+	// AGENTS
+	// ============================================================================
+
+	async getAgentByUsername(username: string) {
+		const data = await this.query(AgentByUsernameDocument, { username });
+		return data.agent;
+	}
+
+	async getAgents(variables?: AgentsQueryVariables) {
+		const data = await this.query(AgentsDocument, variables);
+		return data.agents;
+	}
+
+	async getMyAgents() {
+		const data = await this.query(MyAgentsDocument);
+		return data.myAgents;
+	}
+
+	async getAgentActivity(variables: AgentActivityQueryVariables) {
+		const data = await this.query(AgentActivityDocument, variables);
+		return data.agentActivity;
+	}
+
+	async getAdminAgentPolicy() {
+		const data = await this.query(AdminAgentPolicyDocument);
+		return data.adminAgentPolicy;
+	}
+
+	async updateAdminAgentPolicy(input: UpdateAdminAgentPolicyMutationVariables['input']) {
+		const data = await this.mutate(UpdateAdminAgentPolicyDocument, { input });
+		return data.updateAdminAgentPolicy;
+	}
+
+	async agentMemorySearch(variables: AgentMemorySearchQueryVariables) {
+		const data = await this.query(AgentMemorySearchDocument, variables);
+		return data.agentMemorySearch;
+	}
+
+	async registerAgent(input: RegisterAgentMutationVariables['input']) {
+		const data = await this.mutate(RegisterAgentDocument, { input });
+		return data.registerAgent;
+	}
+
+	async updateAgent(username: string, input: UpdateAgentMutationVariables['input']) {
+		const data = await this.mutate(UpdateAgentDocument, { username, input });
+		return data.updateAgent;
+	}
+
+	async deleteAgent(username: string) {
+		const data = await this.mutate(DeleteAgentDocument, { username });
+		return data.deleteAgent;
+	}
+
+	async delegateToAgent(input: DelegateToAgentMutationVariables['input']) {
+		const data = await this.mutate(DelegateToAgentDocument, { input });
+		return data.delegateToAgent;
+	}
+
+	async revokeAgentToken(username: string) {
+		const data = await this.mutate(RevokeAgentTokenDocument, { username });
+		return data.revokeAgentToken;
+	}
+
+	async adminVerifyAgent(username: string, input?: AdminVerifyAgentMutationVariables['input']) {
+		const data = await this.mutate(AdminVerifyAgentDocument, { username, input });
+		return data.adminVerifyAgent;
+	}
+
+	async adminUnverifyAgent(username: string, input?: AdminUnverifyAgentMutationVariables['input']) {
+		const data = await this.mutate(AdminUnverifyAgentDocument, { username, input });
+		return data.adminUnverifyAgent;
+	}
+
+	async adminSuspendAgent(username: string) {
+		const data = await this.mutate(AdminSuspendAgentDocument, { username });
+		return data.adminSuspendAgent;
+	}
+
 	async search(variables: SearchQueryVariables) {
 		const data = await this.query(SearchDocument, variables);
 		return data.search;
@@ -669,7 +793,8 @@ export class LesserGraphQLAdapter {
 
 	async getConversations(variables: ConversationsQueryVariables) {
 		const data = await this.query(ConversationsDocument, variables);
-		return data.conversations;
+		const conversations = (data as Partial<typeof data>).conversations;
+		return Array.isArray(conversations) ? conversations : [];
 	}
 
 	async getConversation(id: string) {
@@ -682,8 +807,8 @@ export class LesserGraphQLAdapter {
 		return data.markConversationAsRead;
 	}
 
-	async deleteConversation(id: string) {
-		const data = await this.mutate(DeleteConversationDocument, { id });
+	async deleteConversation(conversationId: string) {
+		const data = await this.mutate(DeleteConversationDocument, { conversationId });
 		return data.deleteConversation;
 	}
 
@@ -1439,6 +1564,15 @@ export class LesserGraphQLAdapter {
 	subscribeToInfrastructureEvent(): Observable<FetchResult<InfrastructureEventSubscription>> {
 		return this.client.client.subscribe({
 			query: InfrastructureEventDocument,
+		});
+	}
+
+	subscribeToAgentActivityUpdates(
+		variables: AgentActivityUpdatesSubscriptionVariables
+	): Observable<FetchResult<AgentActivityUpdatesSubscription>> {
+		return this.client.client.subscribe({
+			query: AgentActivityUpdatesDocument,
+			variables,
 		});
 	}
 }

@@ -19,7 +19,7 @@ export type {
 	ColorScale,
 	ColorShade,
 	FontPreset,
-} from 'src/lib/greater/tokens';
+} from '@equaltoai/greater-components-tokens';
 export type { WidthPreset, HeightPreset } from './components/Skeleton.svelte';
 export type { ContainerSize, GutterPreset } from './components/Container.svelte';
 export type {

@@ -3,7 +3,7 @@
   CSP-compliant: Uses SVG fill attributes (no inline styles)
 -->
 <script lang="ts">
-	import { generateColorHarmony, type ColorHarmony } from 'src/lib/greater/utils';
+	import { generateColorHarmony, type ColorHarmony } from '@equaltoai/greater-components-utils';
 
 	interface Props {
 		seedColor: string;

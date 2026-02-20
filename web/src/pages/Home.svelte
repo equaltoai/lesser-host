@@ -2,9 +2,6 @@
 	import { onMount } from 'svelte';
 	import type { SetupStatusResponse } from 'src/lib/api/controlPlane';
 	import { getSetupStatus } from 'src/lib/api/controlPlane';
-	import { logout } from 'src/lib/auth/logout';
-	import { navigate } from 'src/lib/router';
-	import { session } from 'src/lib/session';
 	import { Alert, Button, Container, DefinitionItem, DefinitionList, Heading, Spinner, Text } from 'src/lib/ui';
 
 	let loading = $state(false);
@@ -31,57 +28,18 @@
 		void loadStatus();
 	});
 
-	function defaultRouteForRole(role: string): string {
-		if (role === 'admin' || role === 'operator') return '/operator';
-		return '/portal';
-	}
-
-	async function handleLogout() {
-		await logout();
-		navigate('/login');
-	}
 </script>
 
 <Container size="lg" gutter="lg">
 	<div class="home">
 		<header class="home__header">
-			<div class="home__title">
-				<Heading level={1}>lesser.host</Heading>
-				<Text size="sm" color="secondary">Portal + operator console</Text>
-			</div>
-
-			<div class="home__actions">
-				<Button variant="outline" onclick={() => void loadStatus()} disabled={loading}>
-					Refresh
-				</Button>
-				<Button variant="ghost" onclick={() => navigate('/setup')}>Setup</Button>
-				<Button variant="ghost" onclick={() => navigate('/tip-registry/register')}>Register host</Button>
-				<Button variant="ghost" onclick={() => navigate('/trust')}>Trust</Button>
-				{#if $session}
-					<Button variant="ghost" onclick={() => navigate('/account')}>Account</Button>
-					<Button variant="ghost" onclick={() => navigate(defaultRouteForRole($session.role))}>
-						Continue
-					</Button>
-					<Button
-						variant="ghost"
-						onclick={() => void handleLogout()}
-					>
-						Logout
-					</Button>
-				{:else}
-					<Button variant="solid" onclick={() => navigate('/login')}>Sign in</Button>
-				{/if}
-			</div>
+			<Heading level={1}>System Status</Heading>
+			<Button variant="outline" onclick={() => void loadStatus()} disabled={loading}>
+				Refresh
+			</Button>
 		</header>
 
-			{#if $session}
-				<Alert variant="info" title="Session">
-					<Text size="sm">
-						Signed in as <strong>{$session.username}</strong> (<strong>{$session.role}</strong>) · expires
-						<strong>{$session.expiresAt}</strong>
-					</Text>
-				</Alert>
-			{/if}
+
 
 		{#if loading}
 			<div class="home__loading">
@@ -143,18 +101,6 @@
 		align-items: flex-start;
 		justify-content: space-between;
 		flex-wrap: wrap;
-	}
-
-	.home__title {
-		display: flex;
-		flex-direction: column;
-		gap: var(--gr-spacing-scale-2);
-	}
-
-	.home__actions {
-		display: flex;
-		gap: var(--gr-spacing-scale-2);
-		align-items: center;
 	}
 
 	.home__loading {

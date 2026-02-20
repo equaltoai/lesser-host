@@ -2,7 +2,7 @@
 	import type { HTMLAttributes } from 'svelte/elements';
 	import type { Snippet } from 'svelte';
 	import { untrack } from 'svelte';
-	import { useStableId } from 'src/lib/greater/utils';
+	import { useStableId } from '@equaltoai/greater-components-utils';
 
 	export type Placement = 'top' | 'bottom' | 'left' | 'right' | 'auto';
 	type ActualPlacement = Exclude<Placement, 'auto'>;

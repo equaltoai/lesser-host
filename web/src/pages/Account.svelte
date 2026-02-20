@@ -254,29 +254,13 @@
 		void loadPasskeys();
 	});
 
-	async function handleLogout() {
-		await logout();
-		navigate('/login');
-	}
 </script>
 
 <Container size="lg" gutter="lg">
 	<div class="account">
 		<header class="account__header">
 			<div class="account__title">
-				<Heading level={1}>Account</Heading>
-				<Text color="secondary">Settings and passkeys.</Text>
-			</div>
-			<div class="account__actions">
-				<Button variant="ghost" onclick={() => navigate('/portal')}>Portal</Button>
-				<Button variant="ghost" onclick={() => navigate('/operator')}>Operator</Button>
-				<Button variant="ghost" onclick={() => navigate('/login')}>Sign in</Button>
-				<Button
-					variant="ghost"
-					onclick={() => void handleLogout()}
-				>
-					Logout
-				</Button>
+				<Heading level={1}>Account settings</Heading>
 			</div>
 		</header>
 
@@ -458,13 +442,6 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--gr-spacing-scale-2);
-	}
-
-	.account__actions {
-		display: flex;
-		gap: var(--gr-spacing-scale-2);
-		align-items: center;
-		flex-wrap: wrap;
 	}
 
 	.account__loading {
