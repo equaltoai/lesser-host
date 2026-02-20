@@ -17,4 +17,3 @@ func TestNew_ConstructsApp(t *testing.T) {
 		t.Fatalf("expected app, got nil")
 	}
 }
-
