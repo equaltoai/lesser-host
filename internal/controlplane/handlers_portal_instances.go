@@ -456,6 +456,7 @@ func (s *Server) handlePortalStartInstanceProvisioning(ctx *apptheory.Context) (
 	if appErr != nil {
 		return nil, appErr
 	}
+	job.SoulEnabled = effectiveSoulEnabled(inst.SoulEnabled)
 
 	if appErr := s.createManagedProvisionJobTx(ctx, job, slug, baseDomain, region, ctx.AuthIdentity, "portal.instance.provision.start", ctx.RequestID, now); appErr != nil {
 		return nil, appErr

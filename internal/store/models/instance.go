@@ -22,22 +22,25 @@ type Instance struct {
 	GSI1PK string `theorydb:"index:gsi1,pk,attr:gsi1PK" json:"-"`
 	GSI1SK string `theorydb:"index:gsi1,sk,attr:gsi1SK" json:"-"`
 
-	Slug                           string `theorydb:"attr:slug" json:"slug"`
-	Owner                          string `theorydb:"attr:owner" json:"owner,omitempty"`
-	Status                         string `theorydb:"attr:status" json:"status"`
-	ProvisionStatus                string `theorydb:"attr:provisionStatus" json:"provision_status,omitempty"` // queued|running|ok|error
-	ProvisionJobID                 string `theorydb:"attr:provisionJobId" json:"provision_job_id,omitempty"`
-	UpdateStatus                   string `theorydb:"attr:updateStatus" json:"update_status,omitempty"` // queued|running|ok|error
-	UpdateJobID                    string `theorydb:"attr:updateJobId" json:"update_job_id,omitempty"`
-	HostedAccountID                string `theorydb:"attr:hostedAccountId" json:"hosted_account_id,omitempty"`
-	HostedRegion                   string `theorydb:"attr:hostedRegion" json:"hosted_region,omitempty"`
-	HostedBaseDomain               string `theorydb:"attr:hostedBaseDomain" json:"hosted_base_domain,omitempty"`
-	HostedZoneID                   string `theorydb:"attr:hostedZoneId" json:"hosted_zone_id,omitempty"`
-	LesserVersion                  string `theorydb:"attr:lesserVersion" json:"lesser_version,omitempty"`
-	LesserHostBaseURL              string `theorydb:"attr:lesserHostBaseUrl" json:"lesser_host_base_url,omitempty"`
-	LesserHostAttestationsURL      string `theorydb:"attr:lesserHostAttestationsUrl" json:"lesser_host_attestations_url,omitempty"`
-	LesserHostInstanceKeySecretARN string `theorydb:"attr:lesserHostInstanceKeySecretArn" json:"lesser_host_instance_key_secret_arn,omitempty"`
-	TranslationEnabled             *bool  `theorydb:"attr:translationEnabled" json:"translation_enabled,omitempty"`
+	Slug                           string    `theorydb:"attr:slug" json:"slug"`
+	Owner                          string    `theorydb:"attr:owner" json:"owner,omitempty"`
+	Status                         string    `theorydb:"attr:status" json:"status"`
+	ProvisionStatus                string    `theorydb:"attr:provisionStatus" json:"provision_status,omitempty"` // queued|running|ok|error
+	ProvisionJobID                 string    `theorydb:"attr:provisionJobId" json:"provision_job_id,omitempty"`
+	UpdateStatus                   string    `theorydb:"attr:updateStatus" json:"update_status,omitempty"` // queued|running|ok|error
+	UpdateJobID                    string    `theorydb:"attr:updateJobId" json:"update_job_id,omitempty"`
+	HostedAccountID                string    `theorydb:"attr:hostedAccountId" json:"hosted_account_id,omitempty"`
+	HostedRegion                   string    `theorydb:"attr:hostedRegion" json:"hosted_region,omitempty"`
+	HostedBaseDomain               string    `theorydb:"attr:hostedBaseDomain" json:"hosted_base_domain,omitempty"`
+	HostedZoneID                   string    `theorydb:"attr:hostedZoneId" json:"hosted_zone_id,omitempty"`
+	LesserVersion                  string    `theorydb:"attr:lesserVersion" json:"lesser_version,omitempty"`
+	SoulEnabled                    *bool     `theorydb:"attr:soulEnabled" json:"soul_enabled,omitempty"`
+	SoulVersion                    string    `theorydb:"attr:soulVersion" json:"soul_version,omitempty"`
+	SoulProvisionedAt              time.Time `theorydb:"attr:soulProvisionedAt" json:"soul_provisioned_at,omitempty"`
+	LesserHostBaseURL              string    `theorydb:"attr:lesserHostBaseUrl" json:"lesser_host_base_url,omitempty"`
+	LesserHostAttestationsURL      string    `theorydb:"attr:lesserHostAttestationsUrl" json:"lesser_host_attestations_url,omitempty"`
+	LesserHostInstanceKeySecretARN string    `theorydb:"attr:lesserHostInstanceKeySecretArn" json:"lesser_host_instance_key_secret_arn,omitempty"`
+	TranslationEnabled             *bool     `theorydb:"attr:translationEnabled" json:"translation_enabled,omitempty"`
 
 	// Tips config for hosted Lesser instances (applied via provisioning input).
 	TipEnabled         *bool  `theorydb:"attr:tipEnabled" json:"tip_enabled,omitempty"`
