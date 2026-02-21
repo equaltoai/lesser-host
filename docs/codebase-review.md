@@ -125,6 +125,8 @@ The `TipSplitter.sol` contract demonstrates strong security practices:
 - **Fee-on-transfer defense**: Balance-before/after pattern for ERC-20 tokens.
 - **Batch size limits**: Capped at 20 per batch transaction.
 - **Minimum tip amount** enforcement.
+- **Constrained emergency migration**: only callable under full pause and only to `recipient` or `lesserWallet` (no arbitrary destination).
+- **Stray-funds sweep controls**: only sweeps balances above tracked liabilities (`totalPendingETH`, `totalPendingToken`) and routes to `lesserWallet`.
 - **Slither** static analysis in CI.
 - **Max tip amount per token** configurable by owner.
 

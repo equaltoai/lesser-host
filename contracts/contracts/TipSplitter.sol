@@ -8,6 +8,10 @@ import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
+interface IERC8004IdentityRegistry {
+    function getAgentWallet(uint256 agentId) external view returns (address);
+}
+
 /**
  * @title TipSplitter
  * @notice Splits tips between Lesser org, host instance, and actor.
@@ -22,6 +26,7 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
     uint256 public constant MIN_TIP_AMOUNT = 10_000; // minimum to guarantee non-zero fee splits
 
     address public lesserWallet;
+    address public agentIdentityRegistry;
     bool public withdrawalsPaused;
 
     struct HostConfig {
@@ -34,15 +39,25 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
 
     mapping(address => uint256) public pendingETH; // recipient => wei
     mapping(address => mapping(address => uint256)) public pendingToken; // token => recipient => amount
+    uint256 public totalPendingETH; // total tracked ETH liabilities across all recipients
+    mapping(address => uint256) public totalPendingToken; // token => total tracked token liabilities
 
     mapping(address => bool) public allowedTokens; // ERC20 token allowlist (ETH is always allowed)
     address[] public allowedTokenList; // enumerable list for allowlist management
     mapping(address => uint256) private _tokenIndex; // token => index in allowedTokenList (1-based)
-    address[] public knownTokenList; // enumerable list for migrations (never shrinks)
-    mapping(address => uint256) private _knownTokenIndex; // token => index in knownTokenList (1-based)
+
+    mapping(address => uint256) private _hostWalletRefCount; // wallet => number of hosts using it
+
+    // recipient => list of tokens with a non-zero pending balance for that recipient.
+    // Maintained to make migrations bounded to the recipient's active tokens (instead of a global ever-allowed list).
+    mapping(address => address[]) private _recipientTokenList;
+    mapping(address => mapping(address => uint256)) private _recipientTokenIndex; // recipient => token => index in _recipientTokenList (1-based)
 
     /// @notice Per-token max tip amount (0 = unlimited). Use address(0) key for ETH.
     mapping(address => uint256) public maxTipAmount;
+    /// @notice Per-token min tip amount (0 = MIN_TIP_AMOUNT unless hasCustomMinTipAmount is true). Use address(0) key for ETH.
+    mapping(address => uint256) public minTipAmount;
+    mapping(address => bool) public hasCustomMinTipAmount;
 
     event TipSent(
         bytes32 indexed hostId,
@@ -64,14 +79,29 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
 
     event TokenAllowedSet(address indexed token, bool allowed);
     event LesserWalletUpdated(address indexed oldWallet, address indexed newWallet);
-    event PendingBalanceMigrated(address indexed token, address indexed from, address indexed to, uint256 amount);
     event MaxTipAmountSet(address indexed token, uint256 amount);
+    event MinTipAmountSet(address indexed token, uint256 oldAmount, uint256 newAmount);
     event WithdrawalsPausedSet(bool paused);
+    event StraySwept(address indexed token, address indexed destination, uint256 amount);
+    event AgentIdentityRegistryUpdated(address indexed oldRegistry, address indexed newRegistry);
+    event AgentTipSent(
+        bytes32 indexed hostId,
+        uint256 indexed agentId,
+        address indexed token,
+        address tipper,
+        address agentWallet,
+        uint256 amount,
+        bytes32 contentHash
+    );
 
-    constructor(address _lesserWallet, address initialOwner) Ownable(initialOwner) {
+    constructor(address _lesserWallet, address initialOwner, address _agentIdentityRegistry) Ownable(initialOwner) {
         require(_lesserWallet != address(0), "TipSplitter: invalid lesser wallet");
         require(initialOwner != address(0), "TipSplitter: invalid owner");
+        if (_agentIdentityRegistry != address(0)) {
+            require(_agentIdentityRegistry.code.length > 0, "TipSplitter: invalid agent registry");
+        }
         lesserWallet = _lesserWallet;
+        agentIdentityRegistry = _agentIdentityRegistry;
     }
 
     receive() external payable {
@@ -114,7 +144,7 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
     }
 
     function _tipETH(bytes32 hostId, address actor, uint256 amount, bytes32 contentHash) internal {
-        require(amount >= MIN_TIP_AMOUNT, "TipSplitter: amount below minimum");
+        require(amount >= _effectiveMinTipAmount(address(0)), "TipSplitter: amount below minimum");
         require(actor != address(0), "TipSplitter: invalid actor");
         require(actor != msg.sender, "TipSplitter: cannot tip yourself");
 
@@ -129,6 +159,7 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
         pendingETH[lesserWallet] += lesserShare;
         pendingETH[host.wallet] += hostShare;
         pendingETH[actor] += actorShare;
+        totalPendingETH += amount;
 
         emit TipSent(hostId, address(0), msg.sender, actor, amount, lesserShare, hostShare, actorShare, contentHash);
     }
@@ -197,7 +228,7 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
     function _creditToken(bytes32 hostId, address token, address actor, uint256 amount, bytes32 contentHash, address tipper) internal {
         require(actor != address(0), "TipSplitter: invalid actor");
         require(actor != tipper, "TipSplitter: cannot tip yourself");
-        require(amount >= MIN_TIP_AMOUNT, "TipSplitter: amount below minimum");
+        require(amount >= _effectiveMinTipAmount(token), "TipSplitter: amount below minimum");
 
         uint256 cap = maxTipAmount[token];
         require(cap == 0 || amount <= cap, "TipSplitter: amount exceeds max");
@@ -207,11 +238,42 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
 
         (uint256 lesserShare, uint256 hostShare, uint256 actorShare) = _split(host.feeBps, amount);
 
-        pendingToken[token][lesserWallet] += lesserShare;
-        pendingToken[token][host.wallet] += hostShare;
-        pendingToken[token][actor] += actorShare;
+        _creditPendingToken(token, lesserWallet, lesserShare);
+        _creditPendingToken(token, host.wallet, hostShare);
+        _creditPendingToken(token, actor, actorShare);
 
         emit TipSent(hostId, token, tipper, actor, amount, lesserShare, hostShare, actorShare, contentHash);
+    }
+
+    // ========= Tips (ERC-8004 agents) =========
+
+    function tipAgentETH(bytes32 hostId, uint256 agentId, bytes32 contentHash)
+        external
+        payable
+        nonReentrant
+        whenNotPaused
+    {
+        address actor = _resolveAgentWallet(agentId);
+        _tipETH(hostId, actor, msg.value, contentHash);
+        emit AgentTipSent(hostId, agentId, address(0), msg.sender, actor, msg.value, contentHash);
+    }
+
+    function tipAgentToken(address token, bytes32 hostId, uint256 agentId, uint256 amount, bytes32 contentHash)
+        external
+        nonReentrant
+        whenNotPaused
+    {
+        address actor = _resolveAgentWallet(agentId);
+        _tipToken(token, hostId, actor, amount, contentHash);
+        emit AgentTipSent(hostId, agentId, token, msg.sender, actor, amount, contentHash);
+    }
+
+    function _resolveAgentWallet(uint256 agentId) internal view returns (address) {
+        address reg = agentIdentityRegistry;
+        require(reg != address(0), "TipSplitter: agent registry not set");
+        address wallet = IERC8004IdentityRegistry(reg).getAgentWallet(agentId);
+        require(wallet != address(0), "TipSplitter: agent wallet not set");
+        return wallet;
     }
 
     // ========= Withdrawals =========
@@ -223,6 +285,7 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
             uint256 ethAmount = pendingETH[msg.sender];
             require(ethAmount > 0, "TipSplitter: no pending");
             pendingETH[msg.sender] = 0;
+            totalPendingETH -= ethAmount;
 
             // slither-disable-next-line low-level-calls
             (bool ok, ) = payable(msg.sender).call{value: ethAmount}("");
@@ -235,6 +298,8 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
         uint256 tokenAmount = pendingToken[token][msg.sender];
         require(tokenAmount > 0, "TipSplitter: no pending");
         pendingToken[token][msg.sender] = 0;
+        _removeRecipientToken(msg.sender, token);
+        totalPendingToken[token] -= tokenAmount;
 
         IERC20(token).safeTransfer(msg.sender, tokenAmount);
         emit Withdrawal(token, msg.sender, tokenAmount);
@@ -248,6 +313,7 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
         require(feeBps <= MAX_HOST_FEE_BPS, "TipSplitter: fee too high");
         require(hosts[hostId].wallet == address(0), "TipSplitter: host exists");
 
+        _hostWalletRefCount[wallet]++;
         hosts[hostId] = HostConfig({wallet: wallet, feeBps: feeBps, isActive: true});
         emit HostRegistered(hostId, wallet, feeBps);
     }
@@ -260,9 +326,9 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
 
         address oldWallet = hosts[hostId].wallet;
         if (oldWallet != wallet) {
-            _migratePendingBalances(oldWallet, wallet);
+            _hostWalletRefCount[oldWallet]--;
+            _hostWalletRefCount[wallet]++;
         }
-
         hosts[hostId].wallet = wallet;
         hosts[hostId].feeBps = feeBps;
         emit HostUpdated(hostId, wallet, feeBps);
@@ -276,14 +342,12 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
 
     // ========= Token Allowlist (owner) =========
 
+    /// @notice Add or remove an ERC20 token from the allowlist.
+    /// @dev DO NOT allow rebasing tokens. This contract defends against fee-on-transfer but cannot handle rebasing shifts.
     function setTokenAllowed(address token, bool allowed) external onlyOwner {
         require(token != address(0), "TipSplitter: token required");
 
         if (allowed && !allowedTokens[token]) {
-            if (_knownTokenIndex[token] == 0) {
-                knownTokenList.push(token);
-                _knownTokenIndex[token] = knownTokenList.length; // 1-based
-            }
             allowedTokenList.push(token);
             _tokenIndex[token] = allowedTokenList.length; // 1-based
         } else if (!allowed && allowedTokens[token]) {
@@ -311,12 +375,19 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
 
     function setLesserWallet(address newWallet) external onlyOwner {
         require(newWallet != address(0), "TipSplitter: invalid wallet");
+        require(_hostWalletRefCount[newWallet] == 0, "TipSplitter: wallet is a host wallet");
         address old = lesserWallet;
-        if (old != newWallet) {
-            _migratePendingBalances(old, newWallet);
-        }
         lesserWallet = newWallet;
         emit LesserWalletUpdated(old, newWallet);
+    }
+
+    function setAgentIdentityRegistry(address registry) external onlyOwner {
+        if (registry != address(0)) {
+            require(registry.code.length > 0, "TipSplitter: invalid agent registry");
+        }
+        address old = agentIdentityRegistry;
+        agentIdentityRegistry = registry;
+        emit AgentIdentityRegistryUpdated(old, registry);
     }
 
     function pause() external onlyOwner {
@@ -328,40 +399,103 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
     }
 
     /// @notice Pause or unpause withdrawals independently from tips.
-    function setWithdrawalsPaused(bool withdrawalsPaused_) external onlyOwner {
-        withdrawalsPaused = withdrawalsPaused_;
-        emit WithdrawalsPausedSet(withdrawalsPaused_);
+    function setWithdrawalsPaused(bool paused_) external onlyOwner {
+        withdrawalsPaused = paused_;
+        emit WithdrawalsPausedSet(paused_);
     }
 
     /// @notice Set the maximum tip amount for a token. Use address(0) for ETH. 0 = unlimited.
     function setMaxTipAmount(address token, uint256 amount) external onlyOwner {
+        if (amount > 0 && hasCustomMinTipAmount[token]) {
+            require(amount >= minTipAmount[token], "TipSplitter: max below min");
+        }
         maxTipAmount[token] = amount;
         emit MaxTipAmountSet(token, amount);
     }
 
+    /// @notice Set the minimum tip amount for a token. Use address(0) for ETH.
+    function setMinTipAmount(address token, uint256 amount) external onlyOwner {
+        require(amount >= 100, "TipSplitter: min amount too low");
+        uint256 cap = maxTipAmount[token];
+        if (cap > 0) {
+            require(amount <= cap, "TipSplitter: min exceeds max");
+        }
+        uint256 oldAmount = minTipAmount[token];
+        minTipAmount[token] = amount;
+        hasCustomMinTipAmount[token] = true;
+        emit MinTipAmountSet(token, oldAmount, amount);
+    }
+
+    // ========= Emergency =========
+
+    /// @notice Sweep untracked ETH balance to lesserWallet.
+    /// @dev Only sweeps ETH above tracked pending liabilities; requires full emergency pause.
+    function sweepStrayETH() external onlyOwner nonReentrant {
+        require(paused(), "TipSplitter: must be paused");
+        require(withdrawalsPaused, "TipSplitter: withdrawals must be paused");
+
+        uint256 bal = address(this).balance;
+        uint256 accounted = totalPendingETH;
+        require(bal > accounted, "TipSplitter: no stray");
+        uint256 amount = bal - accounted;
+
+        // slither-disable-next-line low-level-calls
+        (bool ok, ) = payable(lesserWallet).call{value: amount}("");
+        require(ok, "TipSplitter: sweep failed");
+
+        emit StraySwept(address(0), lesserWallet, amount);
+    }
+
+    /// @notice Sweep untracked token balance to lesserWallet.
+    /// @dev Only sweeps token balance above tracked pending liabilities; requires full emergency pause.
+    function sweepStrayToken(address token) external onlyOwner nonReentrant {
+        require(paused(), "TipSplitter: must be paused");
+        require(withdrawalsPaused, "TipSplitter: withdrawals must be paused");
+        require(token != address(0), "TipSplitter: token required");
+
+        uint256 bal = IERC20(token).balanceOf(address(this));
+        uint256 accounted = totalPendingToken[token];
+        require(bal > accounted, "TipSplitter: no stray");
+        uint256 amount = bal - accounted;
+
+        IERC20(token).safeTransfer(lesserWallet, amount);
+        emit StraySwept(token, lesserWallet, amount);
+    }
+
     // ========= Helpers =========
 
-    /// @dev Migrates all pending ETH and token balances from one address to another.
-    function _migratePendingBalances(address from, address to) internal {
-        // Migrate pending ETH
-        uint256 ethBal = pendingETH[from];
-        if (ethBal > 0) {
-            pendingETH[from] = 0;
-            pendingETH[to] += ethBal;
-            emit PendingBalanceMigrated(address(0), from, to, ethBal);
+    function _effectiveMinTipAmount(address token) internal view returns (uint256) {
+        if (hasCustomMinTipAmount[token]) {
+            return minTipAmount[token];
         }
+        return MIN_TIP_AMOUNT;
+    }
 
-        // Migrate pending tokens for all known tokens
-        uint256 len = knownTokenList.length;
-        for (uint256 i = 0; i < len; i++) {
-            address token = knownTokenList[i];
-            uint256 tokenBal = pendingToken[token][from];
-            if (tokenBal > 0) {
-                pendingToken[token][from] = 0;
-                pendingToken[token][to] += tokenBal;
-                emit PendingBalanceMigrated(token, from, to, tokenBal);
-            }
+    function _creditPendingToken(address token, address recipient, uint256 amount) internal {
+        if (amount == 0) {
+            return;
         }
+        if (_recipientTokenIndex[recipient][token] == 0) {
+            _recipientTokenList[recipient].push(token);
+            _recipientTokenIndex[recipient][token] = _recipientTokenList[recipient].length; // 1-based
+        }
+        pendingToken[token][recipient] += amount;
+        totalPendingToken[token] += amount;
+    }
+
+    function _removeRecipientToken(address recipient, address token) internal {
+        uint256 idx = _recipientTokenIndex[recipient][token];
+        if (idx == 0) {
+            return;
+        }
+        uint256 last = _recipientTokenList[recipient].length;
+        if (idx != last) {
+            address lastToken = _recipientTokenList[recipient][last - 1];
+            _recipientTokenList[recipient][idx - 1] = lastToken;
+            _recipientTokenIndex[recipient][lastToken] = idx;
+        }
+        _recipientTokenList[recipient].pop();
+        delete _recipientTokenIndex[recipient][token];
     }
 
     function _split(uint16 hostFeeBps, uint256 amount)
@@ -370,6 +504,7 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
         returns (uint256 lesserShare, uint256 hostShare, uint256 actorShare)
     {
         lesserShare = (amount * LESSER_FEE_BPS) / BPS_DENOMINATOR;
+        require(lesserShare > 0, "TipSplitter: amount too small for split");
         hostShare = (amount * hostFeeBps) / BPS_DENOMINATOR;
         actorShare = amount - lesserShare - hostShare;
     }
