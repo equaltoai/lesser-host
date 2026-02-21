@@ -56,6 +56,10 @@ type Config struct {
 	SoulReputationWeightValidation  float64
 	SoulReputationWeightTrust       float64
 
+	// Soul validation (v0).
+	SoulValidationDecayEpochHours int64
+	SoulValidationDecayRate       float64
+
 	// Managed hosting (M9 provisioning).
 	ManagedProvisioningEnabled        bool
 	ManagedOrgVendingRoleARN          string // optional; assume this role for Organizations + instance-account role assumptions
@@ -105,6 +109,9 @@ func Load() Config {
 	soulRepWeightSocial := envFloat64Bounded("SOUL_REPUTATION_WEIGHT_SOCIAL", 0, 0, 1000)
 	soulRepWeightValidation := envFloat64Bounded("SOUL_REPUTATION_WEIGHT_VALIDATION", 0, 0, 1000)
 	soulRepWeightTrust := envFloat64Bounded("SOUL_REPUTATION_WEIGHT_TRUST", 0, 0, 1000)
+
+	soulValEpochHours := envInt64Bounded("SOUL_VALIDATION_DECAY_EPOCH_HOURS", 168, 1, 24*365)
+	soulValDecayRate := envFloat64Bounded("SOUL_VALIDATION_DECAY_RATE", 0.01, 0, 1)
 
 	managedOn := envBoolOn("MANAGED_PROVISIONING_ENABLED")
 	managedParentDomain := envLowerStringDefault("MANAGED_PARENT_DOMAIN", "greater.website")
@@ -178,6 +185,8 @@ func Load() Config {
 		SoulReputationWeightSocial:      soulRepWeightSocial,
 		SoulReputationWeightValidation:  soulRepWeightValidation,
 		SoulReputationWeightTrust:       soulRepWeightTrust,
+		SoulValidationDecayEpochHours:   soulValEpochHours,
+		SoulValidationDecayRate:         soulValDecayRate,
 
 		ManagedProvisioningEnabled:        managedOn,
 		ManagedOrgVendingRoleARN:          envString("MANAGED_ORG_VENDING_ROLE_ARN"),

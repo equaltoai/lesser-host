@@ -35,6 +35,7 @@ func TestComputeV0_EconomicOnly_UsesTipScore(t *testing.T) {
 		now,
 		V0Config{TipScale: 10, Weights: Weights{Economic: 1}},
 		SignalCounts{TipsReceived: 3},
+		SignalScores{},
 	)
 
 	wantEconomic := 1 - math.Exp(-0.3)

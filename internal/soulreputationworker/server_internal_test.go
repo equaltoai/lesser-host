@@ -126,6 +126,7 @@ func TestHandleRecompute_EndToEndFixture(t *testing.T) {
 	agentA := "0x00000000000000000000000000000000000000000000000000000000000000aa"
 	agentB := "0x00000000000000000000000000000000000000000000000000000000000000bb"
 	agentC := "0x00000000000000000000000000000000000000000000000000000000000000cc"
+	fixedNow := time.Date(2026, 2, 21, 12, 0, 0, 0, time.UTC)
 
 	contract := common.HexToAddress("0x0000000000000000000000000000000000000001")
 	topicAgentA := common.HexToHash(agentA)
@@ -143,10 +144,12 @@ func TestHandleRecompute_EndToEndFixture(t *testing.T) {
 	db := ttmocks.NewMockExtendedDB()
 	qIdentity := new(ttmocks.MockQuery)
 	qRep := new(ttmocks.MockQuery)
+	qVal := new(ttmocks.MockQuery)
 
 	db.On("WithContext", mock.Anything).Return(db).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(qIdentity).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentReputation")).Return(qRep).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentValidationRecord")).Return(qVal).Maybe()
 
 	qIdentity.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qIdentity).Maybe()
 	qIdentity.On("All", mock.Anything).Run(func(args mock.Arguments) {
@@ -165,6 +168,25 @@ func TestHandleRecompute_EndToEndFixture(t *testing.T) {
 	qRep.On("IfNotExists").Return(qRep).Maybe()
 	qRep.On("Update", mock.Anything).Return(theoryErrors.ErrItemNotFound).Times(2)
 	qRep.On("Create").Return(nil).Times(2)
+
+	qVal.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qVal).Maybe()
+	qVal.On("OrderBy", mock.Anything, mock.Anything).Return(qVal).Maybe()
+	valCalls := 0
+	qVal.On("All", mock.Anything).Run(func(args mock.Arguments) {
+		dest, ok := args.Get(0).(*[]*models.SoulAgentValidationRecord)
+		if !ok {
+			t.Fatalf("expected *[]*models.SoulAgentValidationRecord, got %T", args.Get(0))
+		}
+		switch valCalls {
+		case 0:
+			*dest = []*models.SoulAgentValidationRecord{
+				{AgentID: agentA, ChallengeID: "c1", ChallengeType: "identity_verify", ValidatorID: "system", Result: "pass", Score: 0.2, EvaluatedAt: fixedNow},
+			}
+		default:
+			*dest = nil
+		}
+		valCalls++
+	}).Return(nil).Times(2)
 
 	packs := &fakeSoulPackStore{}
 	cfg := config.Config{
@@ -191,7 +213,6 @@ func TestHandleRecompute_EndToEndFixture(t *testing.T) {
 		return fakeClient, nil
 	}
 
-	fixedNow := time.Date(2026, 2, 21, 12, 0, 0, 0, time.UTC)
 	srv.now = func() time.Time { return fixedNow }
 
 	_, err := srv.handleRecompute(&apptheory.EventContext{RequestID: "r1"}, events.EventBridgeEvent{})
@@ -231,16 +252,21 @@ func TestHandleRecompute_EndToEndFixture(t *testing.T) {
 
 	wantEconomicA := 1 - math.Exp(-0.3)
 	gotA := snap.Reputations[0]
-	if gotA.TipsReceived != 3 || math.Abs(gotA.Economic-wantEconomicA) > 1e-9 || math.Abs(gotA.Composite-wantEconomicA) > 1e-9 {
+	if gotA.TipsReceived != 3 ||
+		gotA.ValidationsPassed != 1 ||
+		math.Abs(gotA.Validation-0.2) > 1e-9 ||
+		math.Abs(gotA.Economic-wantEconomicA) > 1e-9 ||
+		math.Abs(gotA.Composite-wantEconomicA) > 1e-9 {
 		t.Fatalf("unexpected rep A: %#v", gotA)
 	}
 
 	gotC := snap.Reputations[1]
-	if gotC.TipsReceived != 0 || gotC.Composite != 0 || gotC.Economic != 0 {
+	if gotC.TipsReceived != 0 || gotC.ValidationsPassed != 0 || gotC.Validation != 0 || gotC.Composite != 0 || gotC.Economic != 0 {
 		t.Fatalf("unexpected rep C: %#v", gotC)
 	}
 
 	db.AssertExpectations(t)
 	qIdentity.AssertExpectations(t)
 	qRep.AssertExpectations(t)
+	qVal.AssertExpectations(t)
 }

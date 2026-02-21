@@ -36,6 +36,12 @@ type SignalCounts struct {
 	Flags             int64 `json:"flags"`
 }
 
+type SignalScores struct {
+	Social     float64 `json:"social"`
+	Validation float64 `json:"validation"`
+	Trust      float64 `json:"trust"`
+}
+
 type V0Config struct {
 	TipScale float64
 	Weights  Weights
@@ -62,15 +68,15 @@ func clamp01(v float64) float64 {
 	}
 }
 
-func ComputeV0(agentID string, blockRef uint64, now time.Time, cfg V0Config, signals SignalCounts) models.SoulAgentReputation {
+func ComputeV0(agentID string, blockRef uint64, now time.Time, cfg V0Config, signals SignalCounts, scores SignalScores) models.SoulAgentReputation {
 	agentID = strings.ToLower(strings.TrimSpace(agentID))
 
 	weights := cfg.Weights.Normalized()
 
 	economic := tipScore(signals.TipsReceived, cfg.TipScale)
-	social := 0.0
-	validation := 0.0
-	trust := 0.0
+	social := clamp01(scores.Social)
+	validation := clamp01(scores.Validation)
+	trust := clamp01(scores.Trust)
 
 	composite := clamp01(
 		weights.Economic*economic +

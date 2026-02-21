@@ -203,6 +203,8 @@ export class LesserHostStack extends cdk.Stack {
 		const soulReputationWeightSocial = soulContext('soulReputationWeightSocial');
 		const soulReputationWeightValidation = soulContext('soulReputationWeightValidation');
 		const soulReputationWeightTrust = soulContext('soulReputationWeightTrust');
+		const soulValidationDecayEpochHours = soulContext('soulValidationDecayEpochHours');
+		const soulValidationDecayRate = soulContext('soulValidationDecayRate');
 
 		const paymentsProvider = (this.node.tryGetContext('paymentsProvider') as string | undefined) ?? '';
 		const paymentsCentsPer1000Credits =
@@ -701,6 +703,8 @@ export class LesserHostStack extends cdk.Stack {
 				SOUL_REPUTATION_WEIGHT_SOCIAL: soulReputationWeightSocial,
 				SOUL_REPUTATION_WEIGHT_VALIDATION: soulReputationWeightValidation,
 				SOUL_REPUTATION_WEIGHT_TRUST: soulReputationWeightTrust,
+				SOUL_VALIDATION_DECAY_EPOCH_HOURS: soulValidationDecayEpochHours,
+				SOUL_VALIDATION_DECAY_RATE: soulValidationDecayRate,
 			},
 			{ memorySize: 512, timeoutSeconds: 120 },
 		);

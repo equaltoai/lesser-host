@@ -23,6 +23,7 @@ import (
 
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/soulreputation"
+	"github.com/equaltoai/lesser-host/internal/soulvalidation"
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
@@ -186,16 +187,26 @@ func (s *Server) handleRecompute(ctx *apptheory.EventContext, _ events.EventBrid
 			continue
 		}
 
+		validationScore, validationsPassed, err := s.computeValidationSignals(ctx.Context(), agentID, now)
+		if err != nil {
+			return nil, fmt.Errorf("failed to compute validation signals for %s: %w", agentID, err)
+		}
+
 		signals := soulreputation.SignalCounts{
-			TipsReceived: tipCounts[agentID],
-			// Stubs for v0.
+			TipsReceived:      tipCounts[agentID],
 			Interactions:      0,
-			ValidationsPassed: 0,
+			ValidationsPassed: validationsPassed,
 			Endorsements:      0,
 			Flags:             0,
 		}
 
-		rep := soulreputation.ComputeV0(agentID, blockRef, now, v0cfg, signals)
+		scores := soulreputation.SignalScores{
+			Social:     0,
+			Validation: validationScore,
+			Trust:      0,
+		}
+
+		rep := soulreputation.ComputeV0(agentID, blockRef, now, v0cfg, signals, scores)
 		if putErr := s.putAgentReputation(ctx.Context(), &rep); putErr != nil {
 			return nil, fmt.Errorf("failed to persist reputation for %s: %w", agentID, putErr)
 		}
@@ -304,6 +315,53 @@ func (s *Server) listAgentIdentities(ctx context.Context) ([]*models.SoulAgentId
 		return nil, err
 	}
 	return items, nil
+}
+
+func (s *Server) listAgentValidationRecords(ctx context.Context, agentID string) ([]*models.SoulAgentValidationRecord, error) {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return nil, errors.New("store not initialized")
+	}
+	agentID = strings.ToLower(strings.TrimSpace(agentID))
+	if agentID == "" {
+		return nil, errors.New("agent id is required")
+	}
+
+	var items []*models.SoulAgentValidationRecord
+	if err := s.store.DB.WithContext(ctx).
+		Model(&models.SoulAgentValidationRecord{}).
+		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentID)).
+		Where("SK", "BEGINS_WITH", "VALIDATION#").
+		OrderBy("SK", "ASC").
+		All(&items); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+func (s *Server) computeValidationSignals(ctx context.Context, agentID string, now time.Time) (float64, int64, error) {
+	items, err := s.listAgentValidationRecords(ctx, agentID)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	evs := make([]soulvalidation.Event, 0, len(items))
+	for _, it := range items {
+		if it == nil || it.EvaluatedAt.IsZero() {
+			continue
+		}
+		evs = append(evs, soulvalidation.Event{
+			EvaluatedAt: it.EvaluatedAt,
+			Result:      it.Result,
+			Delta:       it.Score,
+		})
+	}
+
+	cfg := soulvalidation.Config{
+		Epoch:     time.Duration(s.cfg.SoulValidationDecayEpochHours) * time.Hour,
+		DecayRate: s.cfg.SoulValidationDecayRate,
+	}
+	score, passed := soulvalidation.ComputeProgressiveScore(evs, now, cfg)
+	return score, passed, nil
 }
 
 func (s *Server) putAgentReputation(ctx context.Context, rep *models.SoulAgentReputation) error {
