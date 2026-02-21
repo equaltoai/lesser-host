@@ -23,6 +23,8 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 		import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
 		import * as ssm from 'aws-cdk-lib/aws-ssm';
 		import * as sqs from 'aws-cdk-lib/aws-sqs';
+		import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
+		import * as apigwv2Integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 
 export interface LesserHostStackProps extends cdk.StackProps {
 	stage: string;
@@ -1059,10 +1061,19 @@ export class LesserHostStack extends cdk.Stack {
 		});
 		soulReputationRecomputeRule.addTarget(new targets.LambdaFunction(soulReputationWorkerFn));
 
-		const controlPlaneUrl = controlPlaneFn.addFunctionUrl({
-			authType: lambda.FunctionUrlAuthType.NONE,
+		const controlPlaneApi = new apigwv2.HttpApi(this, 'ControlPlaneHttpApi', {
+			apiName: `${namePrefix}-control-plane`,
+			defaultIntegration: new apigwv2Integrations.HttpLambdaIntegration(
+				'ControlPlaneIntegration', controlPlaneFn,
+			),
 		});
-		const trustUrl = trustFn.addFunctionUrl({ authType: lambda.FunctionUrlAuthType.NONE });
+
+		const trustApi = new apigwv2.HttpApi(this, 'TrustHttpApi', {
+			apiName: `${namePrefix}-trust`,
+			defaultIntegration: new apigwv2Integrations.HttpLambdaIntegration(
+				'TrustIntegration', trustFn,
+			),
+		});
 
 		const webRootDomain = (this.node.tryGetContext('webRootDomain') as string | undefined) ?? 'lesser.host';
 		const webHostedZoneId = (this.node.tryGetContext('webHostedZoneId') as string | undefined) ?? '';
@@ -1175,8 +1186,8 @@ export class LesserHostStack extends cdk.Stack {
 		const webOai = new cloudfront.OriginAccessIdentity(this, 'WebOAI');
 		webBucket.grantRead(webOai);
 
-		const controlPlaneDomain = cdk.Fn.select(2, cdk.Fn.split('/', controlPlaneUrl.url));
-		const trustDomain = cdk.Fn.select(2, cdk.Fn.split('/', trustUrl.url));
+		const controlPlaneDomain = `${controlPlaneApi.httpApiId}.execute-api.${cdk.Aws.REGION}.amazonaws.com`;
+		const trustDomain = `${trustApi.httpApiId}.execute-api.${cdk.Aws.REGION}.amazonaws.com`;
 
 		const controlPlaneOrigin = new origins.HttpOrigin(controlPlaneDomain, {
 			protocolPolicy: cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
@@ -1302,8 +1313,8 @@ export class LesserHostStack extends cdk.Stack {
 			});
 		}
 
-		new cdk.CfnOutput(this, 'ControlPlaneUrl', { value: controlPlaneUrl.url });
-		new cdk.CfnOutput(this, 'TrustUrl', { value: trustUrl.url });
+		new cdk.CfnOutput(this, 'ControlPlaneUrl', { value: controlPlaneApi.url! });
+		new cdk.CfnOutput(this, 'TrustUrl', { value: trustApi.url! });
 		new cdk.CfnOutput(this, 'WebDistributionDomain', { value: webDistribution.distributionDomainName });
 		new cdk.CfnOutput(this, 'PublicBaseUrl', { value: `https://${webDomainName}` });
 		new cdk.CfnOutput(this, 'WebUrl', {

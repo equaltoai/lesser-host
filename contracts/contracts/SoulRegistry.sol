@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import {SignatureChecker} from "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
 import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
@@ -19,7 +19,6 @@ import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
  * - wallet rotation is Safe-first (onlyOwner) but requires signatures from both current and new wallets
  */
 contract SoulRegistry is ERC721, Ownable2Step, Pausable, EIP712 {
-    using ECDSA for bytes32;
 
     // Claim window duration (seconds). After this, normal ERC-721 transfers are blocked.
     uint256 public immutable claimWindowSeconds;
@@ -146,12 +145,10 @@ contract SoulRegistry is ERC721, Ownable2Step, Pausable, EIP712 {
         bytes32 structHash = keccak256(abi.encode(_ROTATION_TYPEHASH, agentId, currentWallet, newWallet, nonce, deadline));
         bytes32 digest = _hashTypedDataV4(structHash);
 
-        address recoveredCurrent = ECDSA.recover(digest, currentSig);
-        if (recoveredCurrent != currentWallet) {
+        if (!SignatureChecker.isValidSignatureNow(currentWallet, digest, currentSig)) {
             revert("SoulRegistry: invalid current sig");
         }
-        address recoveredNew = ECDSA.recover(digest, newSig);
-        if (recoveredNew != newWallet) {
+        if (!SignatureChecker.isValidSignatureNow(newWallet, digest, newSig)) {
             revert("SoulRegistry: invalid new sig");
         }
 
