@@ -47,7 +47,12 @@ type SoulOperation struct {
 
 	SafePayloadJSON string `theorydb:"attr:safePayload" json:"safe_payload,omitempty"`
 
-	ExecTxHash string `theorydb:"attr:execTxHash" json:"exec_tx_hash,omitempty"`
+	ExecTxHash      string `theorydb:"attr:execTxHash" json:"exec_tx_hash,omitempty"`
+	ExecBlockNumber int64  `theorydb:"attr:execBlockNumber" json:"exec_block_number,omitempty"`
+	ExecSuccess     *bool  `theorydb:"attr:execSuccess" json:"exec_success,omitempty"`
+
+	ReceiptJSON  string `theorydb:"attr:receiptJson" json:"receipt_json,omitempty"`
+	SnapshotJSON string `theorydb:"attr:snapshotJson" json:"snapshot_json,omitempty"`
 
 	CreatedAt  time.Time `theorydb:"attr:createdAt" json:"created_at"`
 	UpdatedAt  time.Time `theorydb:"attr:updatedAt" json:"updated_at"`
@@ -89,6 +94,8 @@ func (o *SoulOperation) UpdateKeys() error {
 	o.Status = strings.ToLower(strings.TrimSpace(o.Status))
 	o.SafePayloadJSON = strings.TrimSpace(o.SafePayloadJSON)
 	o.ExecTxHash = strings.ToLower(strings.TrimSpace(o.ExecTxHash))
+	o.ReceiptJSON = strings.TrimSpace(o.ReceiptJSON)
+	o.SnapshotJSON = strings.TrimSpace(o.SnapshotJSON)
 
 	o.PK = fmt.Sprintf("SOUL#OP#%s", o.OperationID)
 	o.SK = "OPERATION"

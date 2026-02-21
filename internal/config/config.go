@@ -38,10 +38,14 @@ type Config struct {
 	// Soul registry (EVM).
 	SoulEnabled                 bool
 	SoulChainID                 int64
+	SoulRPCURL                  string
+	SoulRPCURLSSMParam          string
 	SoulRegistryContractAddress string
 	SoulAdminSafeAddress        string
 	SoulTxMode                  string // safe|direct
 	SoulSupportedCapabilities   []string
+	SoulPackBucketName          string
+	SoulPackBucketNameSSMParam  string // optional override; default is /soul/<stage>/packBucketName
 
 	// Managed hosting (M9 provisioning).
 	ManagedProvisioningEnabled        bool
@@ -83,6 +87,7 @@ func Load() Config {
 	soulChainID := envInt64Positive("SOUL_CHAIN_ID", 0)
 	soulTxMode := envLowerStringDefault("SOUL_TX_MODE", "safe")
 	soulCaps := parseCSV(envString("SOUL_SUPPORTED_CAPABILITIES"))
+	soulPackBucketName := envString("SOUL_PACK_BUCKET_NAME")
 
 	managedOn := envBoolOn("MANAGED_PROVISIONING_ENABLED")
 	managedParentDomain := envLowerStringDefault("MANAGED_PARENT_DOMAIN", "greater.website")
@@ -140,10 +145,14 @@ func Load() Config {
 
 		SoulEnabled:                 soulOn,
 		SoulChainID:                 soulChainID,
+		SoulRPCURL:                  envString("SOUL_RPC_URL"),
+		SoulRPCURLSSMParam:          envString("SOUL_RPC_URL_SSM_PARAM"),
 		SoulRegistryContractAddress: envString("SOUL_REGISTRY_CONTRACT_ADDRESS"),
 		SoulAdminSafeAddress:        envString("SOUL_ADMIN_SAFE_ADDRESS"),
 		SoulTxMode:                  soulTxMode,
 		SoulSupportedCapabilities:   soulCaps,
+		SoulPackBucketName:          soulPackBucketName,
+		SoulPackBucketNameSSMParam:  envString("SOUL_PACK_BUCKET_NAME_SSM_PARAM"),
 
 		ManagedProvisioningEnabled:        managedOn,
 		ManagedOrgVendingRoleARN:          envString("MANAGED_ORG_VENDING_ROLE_ARN"),

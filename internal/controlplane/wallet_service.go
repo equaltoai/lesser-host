@@ -217,3 +217,34 @@ func verifyEthereumSignature(address, message, signature string) error {
 
 	return nil
 }
+
+func verifyEthereumSignatureBytes(address string, message []byte, signature string) error {
+	sig, err := hexutil.Decode(signature)
+	if err != nil {
+		return errors.Join(errInvalidWalletSignature, err)
+	}
+	if len(sig) != 65 {
+		return errInvalidWalletSignature
+	}
+
+	if sig[64] == 27 || sig[64] == 28 {
+		sig[64] -= 27
+	}
+
+	msgHash := accounts.TextHash(message)
+	pubKey, err := crypto.SigToPub(msgHash, sig)
+	if err != nil {
+		return errors.Join(errInvalidWalletSignature, err)
+	}
+
+	recoveredAddr := crypto.PubkeyToAddress(*pubKey)
+
+	recoveredHex := strings.ToLower(strings.TrimPrefix(recoveredAddr.Hex(), "0x"))
+	expectedHex := strings.ToLower(strings.TrimPrefix(address, "0x"))
+
+	if recoveredHex != expectedHex {
+		return errInvalidWalletSignature
+	}
+
+	return nil
+}

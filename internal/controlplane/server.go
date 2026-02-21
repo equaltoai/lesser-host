@@ -1,30 +1,43 @@
 package controlplane
 
 import (
+	"context"
+
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 
+	"github.com/equaltoai/lesser-host/internal/artifacts"
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/store"
 )
 
+type soulPackStore interface {
+	PutObject(ctx context.Context, key string, body []byte, contentType string, cacheControl string) error
+}
+
 // Server implements the control plane API.
 type Server struct {
-	cfg      config.Config
-	store    *store.Store
-	webAuthn webAuthnEngine
-	queues   *queueClient
-	r53      *route53Client
+	cfg       config.Config
+	store     *store.Store
+	webAuthn  webAuthnEngine
+	queues    *queueClient
+	r53       *route53Client
+	soulPacks soulPackStore
+	dialEVM   ethRPCDialer
 }
 
 // NewServer constructs a new control plane Server.
 func NewServer(cfg config.Config, st *store.Store) *Server {
 	webAuthn, _ := newWebAuthnEngine(cfg)
 	return &Server{
-		cfg:      cfg,
-		store:    st,
-		webAuthn: webAuthn,
-		queues:   newQueueClient(cfg.ProvisionQueueURL),
-		r53:      newRoute53Client(),
+		cfg:       cfg,
+		store:     st,
+		webAuthn:  webAuthn,
+		queues:    newQueueClient(cfg.ProvisionQueueURL),
+		r53:       newRoute53Client(),
+		soulPacks: artifacts.New(cfg.SoulPackBucketName),
+		dialEVM: func(ctx context.Context, rpcURL string) (ethRPCClient, error) {
+			return dialEthClient(ctx, rpcURL)
+		},
 	}
 }
 
@@ -154,4 +167,12 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 	app.Get("/api/v1/soul/config", s.handleSoulConfig)
 	app.Post("/api/v1/soul/agents/register/begin", s.handleSoulAgentRegistrationBegin, apptheory.RequireAuth())
 	app.Post("/api/v1/soul/agents/register/{id}/verify", s.handleSoulAgentRegistrationVerify, apptheory.RequireAuth())
+	app.Post("/api/v1/soul/agents/{agentId}/rotate-wallet/begin", s.handleSoulAgentRotateWalletBegin, apptheory.RequireAuth())
+	app.Post("/api/v1/soul/agents/{agentId}/rotate-wallet/confirm", s.handleSoulAgentRotateWalletConfirm, apptheory.RequireAuth())
+	app.Post("/api/v1/soul/agents/{agentId}/update-registration", s.handleSoulAgentUpdateRegistration, apptheory.RequireAuth())
+	app.Get("/api/v1/soul/operations", s.handleListSoulOperations, apptheory.RequireAuth())
+	app.Get("/api/v1/soul/operations/{id}", s.handleGetSoulOperation, apptheory.RequireAuth())
+	app.Post("/api/v1/soul/operations/{id}/record-execution", s.handleRecordSoulOperationExecution, apptheory.RequireAuth())
+	app.Post("/api/v1/soul/agents/{agentId}/suspend", s.handleSuspendSoulAgent, apptheory.RequireAuth())
+	app.Post("/api/v1/soul/agents/{agentId}/reinstate", s.handleReinstateSoulAgent, apptheory.RequireAuth())
 }

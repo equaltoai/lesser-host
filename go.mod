@@ -23,6 +23,7 @@ require (
 	github.com/aws/smithy-go v1.24.0
 	github.com/chromedp/cdproto v0.0.0-20250724212937-08a3db8b4327
 	github.com/chromedp/chromedp v0.14.2
+	github.com/cyberphone/json-canonicalization v0.0.0-20241213102144-19d51d7fe467
 	github.com/ethereum/go-ethereum v1.16.8
 	github.com/go-webauthn/webauthn v0.15.0
 	github.com/openai/openai-go v1.12.0

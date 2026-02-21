@@ -19,6 +19,20 @@
     "tipContractAddressLive": "",
     "tipRpcUrlSsmParamLive": "/lesser-host/api/infura/mainnet",
 
+    "soulEnabledLab": "false",
+    "soulChainIdLab": "84532",
+    "soulRegistryContractAddressLab": "",
+    "soulRpcUrlSsmParamLab": "",
+
+    "soulEnabledLive": "false",
+    "soulChainIdLive": "8453",
+    "soulRegistryContractAddressLive": "",
+    "soulRpcUrlSsmParamLive": "",
+
+    "soulAdminSafeAddress": "0xfE63333F303D4f7b2354f7E3eca752C812D65907",
+    "soulTxMode": "safe",
+    "soulSupportedCapabilities": "social,commerce",
+
     "tipAdminSafeAddress": "0xfE63333F303D4f7b2354f7E3eca752C812D65907",
     "tipDefaultHostWalletAddress": "0x5B38Da6a701c568545dCfcB03FcB875f56beddC4",
     "tipDefaultHostFeeBps": "500",

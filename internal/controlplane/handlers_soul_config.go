@@ -33,6 +33,13 @@ func (s *Server) requireSoulRegistryConfigured() *apptheory.AppError {
 	return nil
 }
 
+func (s *Server) requireSoulRPCConfigured() *apptheory.AppError {
+	if strings.TrimSpace(s.cfg.SoulRPCURL) == "" {
+		return &apptheory.AppError{Code: "app.conflict", Message: "soul rpc not configured"}
+	}
+	return nil
+}
+
 func (s *Server) handleSoulConfig(ctx *apptheory.Context) (*apptheory.Response, error) {
 	if s == nil || ctx == nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}

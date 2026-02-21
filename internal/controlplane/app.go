@@ -22,6 +22,8 @@ const ServiceName = "control-plane-api"
 func New(opts ...apptheory.Option) *apptheory.App {
 	cfg := config.Load()
 	resolveTipRPCURLFromSSM(&cfg)
+	resolveSoulRPCURLFromSSM(&cfg)
+	resolveSoulPackBucketNameFromSSM(&cfg)
 
 	db, err := store.LambdaInit()
 	if err != nil {
@@ -64,6 +66,69 @@ func resolveTipRPCURLFromSSM(cfg *config.Config) {
 		return
 	}
 	cfg.TipRPCURL = val
+}
+
+func resolveSoulRPCURLFromSSM(cfg *config.Config) {
+	if cfg == nil {
+		return
+	}
+	if strings.TrimSpace(cfg.SoulRPCURL) != "" {
+		return
+	}
+	paramName := strings.TrimSpace(cfg.SoulRPCURLSSMParam)
+	if paramName == "" {
+		return
+	}
+
+	// Tests and local tooling should not require live AWS connections.
+	// In Lambda, AWS runtime env vars are always present.
+	if os.Getenv("AWS_LAMBDA_FUNCTION_NAME") == "" && os.Getenv("AWS_EXECUTION_ENV") == "" {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	val, err := secrets.GetSSMParameter(ctx, nil, paramName)
+	if err != nil {
+		log.Printf("controlplane: failed to resolve SOUL_RPC_URL from SSM param %q: %v", paramName, err)
+		return
+	}
+	cfg.SoulRPCURL = val
+}
+
+func resolveSoulPackBucketNameFromSSM(cfg *config.Config) {
+	if cfg == nil {
+		return
+	}
+	if strings.TrimSpace(cfg.SoulPackBucketName) != "" {
+		return
+	}
+
+	paramName := strings.TrimSpace(cfg.SoulPackBucketNameSSMParam)
+	if paramName == "" {
+		stage := strings.ToLower(strings.TrimSpace(cfg.Stage))
+		if stage == "" {
+			return
+		}
+		paramName = "/soul/" + stage + "/packBucketName"
+	}
+
+	// Tests and local tooling should not require live AWS connections.
+	// In Lambda, AWS runtime env vars are always present.
+	if os.Getenv("AWS_LAMBDA_FUNCTION_NAME") == "" && os.Getenv("AWS_EXECUTION_ENV") == "" {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	val, err := secrets.GetSSMParameter(ctx, nil, paramName)
+	if err != nil {
+		log.Printf("controlplane: failed to resolve SOUL_PACK_BUCKET_NAME from SSM param %q: %v", paramName, err)
+		return
+	}
+	cfg.SoulPackBucketName = val
 }
 
 // Register registers control plane routes and hooks with an app.

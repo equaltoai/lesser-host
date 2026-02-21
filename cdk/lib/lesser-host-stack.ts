@@ -183,6 +183,20 @@ export class LesserHostStack extends cdk.Stack {
 
 		const tipRpcUrlSsmParam = tipContext('tipRpcUrlSsmParam').trim();
 
+		const soulStageSuffix = stage === 'live' ? 'Live' : 'Lab';
+		const soulContext = (key: string): string =>
+			(this.node.tryGetContext(`${key}${soulStageSuffix}`) as string | undefined) ??
+			(this.node.tryGetContext(key) as string | undefined) ??
+			'';
+
+		const soulEnabled = soulContext('soulEnabled');
+		const soulChainId = soulContext('soulChainId');
+		const soulRegistryContractAddress = soulContext('soulRegistryContractAddress');
+		const soulRpcUrlSsmParam = soulContext('soulRpcUrlSsmParam').trim();
+		const soulAdminSafeAddress = soulContext('soulAdminSafeAddress');
+		const soulTxMode = soulContext('soulTxMode');
+		const soulSupportedCapabilities = soulContext('soulSupportedCapabilities');
+
 		const paymentsProvider = (this.node.tryGetContext('paymentsProvider') as string | undefined) ?? '';
 		const paymentsCentsPer1000Credits =
 			(this.node.tryGetContext('paymentsCentsPer1000Credits') as string | undefined) ?? '';
@@ -609,6 +623,13 @@ export class LesserHostStack extends cdk.Stack {
 			TIP_DEFAULT_HOST_WALLET_ADDRESS: tipDefaultHostWalletAddress,
 			TIP_DEFAULT_HOST_FEE_BPS: tipDefaultHostFeeBps,
 			TIP_TX_MODE: tipTxMode,
+			SOUL_ENABLED: soulEnabled,
+			SOUL_CHAIN_ID: soulChainId,
+			SOUL_RPC_URL_SSM_PARAM: soulRpcUrlSsmParam,
+			SOUL_REGISTRY_CONTRACT_ADDRESS: soulRegistryContractAddress,
+			SOUL_ADMIN_SAFE_ADDRESS: soulAdminSafeAddress,
+			SOUL_TX_MODE: soulTxMode,
+			SOUL_SUPPORTED_CAPABILITIES: soulSupportedCapabilities,
 			PAYMENTS_PROVIDER: paymentsProvider,
 			PAYMENTS_CENTS_PER_1000_CREDITS: paymentsCentsPer1000Credits,
 			PAYMENTS_CHECKOUT_SUCCESS_URL: paymentsCheckoutSuccessUrl,
@@ -682,6 +703,7 @@ export class LesserHostStack extends cdk.Stack {
 		stateTable.grantReadWriteData(aiWorkerFn);
 		stateTable.grantReadWriteData(provisionWorkerFn);
 		artifactsBucket.grantReadWrite(controlPlaneFn);
+		soulPackBucket.grantReadWrite(controlPlaneFn);
 		artifactsBucket.grantReadWrite(trustFn);
 		artifactsBucket.grantReadWrite(renderWorkerFn);
 		artifactsBucket.grantRead(aiWorkerFn);
@@ -842,6 +864,28 @@ export class LesserHostStack extends cdk.Stack {
 				new iam.PolicyStatement({
 					actions: ['ssm:GetParameter'],
 					resources: [`arn:aws:ssm:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:parameter/${tipRpcUrlSsmParam.replace(/^\//, '')}`],
+				}),
+			);
+		}
+		controlPlaneFn.addToRolePolicy(
+			new iam.PolicyStatement({
+				actions: ['ssm:GetParameter', 'ssm:GetParameters'],
+				resources: [
+					cdk.Stack.of(this).formatArn({
+						service: 'ssm',
+						resource: 'parameter',
+						resourceName: `soul/${stage}/*`,
+					}),
+				],
+			}),
+		);
+		if (soulRpcUrlSsmParam) {
+			controlPlaneFn.addToRolePolicy(
+				new iam.PolicyStatement({
+					actions: ['ssm:GetParameter'],
+					resources: [
+						`arn:aws:ssm:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:parameter/${soulRpcUrlSsmParam.replace(/^\//, '')}`,
+					],
 				}),
 			);
 		}
