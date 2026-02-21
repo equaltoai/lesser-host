@@ -1,0 +1,71 @@
+package models
+
+import (
+	"fmt"
+	"strings"
+	"time"
+)
+
+// SoulAgentReputation stores the off-chain reputation summary record for a soul agent.
+//
+// Keys:
+//
+//	PK: SOUL#AGENT#{agentId}
+//	SK: REPUTATION
+type SoulAgentReputation struct {
+	_ struct{} `theorydb:"naming:camelCase"`
+
+	PK string `theorydb:"pk,attr:PK" json:"-"`
+	SK string `theorydb:"sk,attr:SK" json:"-"`
+
+	AgentID string `theorydb:"attr:agentId" json:"agent_id"` // hex-encoded uint256
+
+	Composite  float64 `theorydb:"attr:composite" json:"composite"`
+	Economic   float64 `theorydb:"attr:economic" json:"economic"`
+	Social     float64 `theorydb:"attr:social" json:"social"`
+	Validation float64 `theorydb:"attr:validation" json:"validation"`
+	Trust      float64 `theorydb:"attr:trust" json:"trust"`
+
+	TipsReceived      int64 `theorydb:"attr:tipsReceived" json:"tips_received"`
+	Interactions      int64 `theorydb:"attr:interactions" json:"interactions"`
+	ValidationsPassed int64 `theorydb:"attr:validationsPassed" json:"validations_passed"`
+	Endorsements      int64 `theorydb:"attr:endorsements" json:"endorsements"`
+	Flags             int64 `theorydb:"attr:flags" json:"flags"`
+
+	UpdatedAt time.Time `theorydb:"attr:updatedAt" json:"updated_at,omitempty"`
+}
+
+// TableName returns the database table name for SoulAgentReputation.
+func (SoulAgentReputation) TableName() string { return MainTableName() }
+
+// BeforeCreate sets defaults and keys before creating SoulAgentReputation.
+func (r *SoulAgentReputation) BeforeCreate() error {
+	if err := r.UpdateKeys(); err != nil {
+		return err
+	}
+	if r.UpdatedAt.IsZero() {
+		r.UpdatedAt = time.Now().UTC()
+	}
+	return nil
+}
+
+// BeforeUpdate updates timestamps and keys before updating SoulAgentReputation.
+func (r *SoulAgentReputation) BeforeUpdate() error {
+	r.UpdatedAt = time.Now().UTC()
+	return r.UpdateKeys()
+}
+
+// UpdateKeys updates the database keys for SoulAgentReputation.
+func (r *SoulAgentReputation) UpdateKeys() error {
+	r.AgentID = strings.ToLower(strings.TrimSpace(r.AgentID))
+
+	r.PK = fmt.Sprintf("SOUL#AGENT#%s", r.AgentID)
+	r.SK = "REPUTATION"
+	return nil
+}
+
+// GetPK returns the partition key for SoulAgentReputation.
+func (r *SoulAgentReputation) GetPK() string { return r.PK }
+
+// GetSK returns the sort key for SoulAgentReputation.
+func (r *SoulAgentReputation) GetSK() string { return r.SK }

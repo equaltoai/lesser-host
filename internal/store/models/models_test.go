@@ -367,4 +367,132 @@ func TestModels_UpdateKeysAndDefaults(t *testing.T) {
 		require.NotEmpty(t, a.PK)
 		require.NotEmpty(t, a.SK)
 	})
+
+	t.Run("SoulAgentIdentity_BeforeCreate", func(t *testing.T) {
+		t.Parallel()
+
+		a := &SoulAgentIdentity{
+			AgentID:    " 0xABC ",
+			Domain:     " Example.COM ",
+			LocalID:    " @Alice/ ",
+			Wallet:     " 0xDEF ",
+			TokenID:    " 0x123 ",
+			MetaURI:    " https://example.com/agent.json ",
+			Status:     "",
+			MintTxHash: " 0xBEEF ",
+		}
+		require.NoError(t, a.BeforeCreate())
+		require.Equal(t, "SOUL#AGENT#0xabc", a.PK)
+		require.Equal(t, "IDENTITY", a.SK)
+		require.Equal(t, "0xabc", a.AgentID)
+		require.Equal(t, "example.com", a.Domain)
+		require.Equal(t, "alice", a.LocalID)
+		require.Equal(t, "0xdef", a.Wallet)
+		require.Equal(t, "0x123", a.TokenID)
+		require.Equal(t, "https://example.com/agent.json", a.MetaURI)
+		require.Equal(t, SoulAgentStatusPending, a.Status)
+		require.Equal(t, "0xbeef", a.MintTxHash)
+		require.False(t, a.UpdatedAt.IsZero())
+	})
+
+	t.Run("SoulAgentReputation_BeforeCreate", func(t *testing.T) {
+		t.Parallel()
+
+		r := &SoulAgentReputation{AgentID: " 0xABC "}
+		require.NoError(t, r.BeforeCreate())
+		require.Equal(t, "SOUL#AGENT#0xabc", r.PK)
+		require.Equal(t, "REPUTATION", r.SK)
+		require.False(t, r.UpdatedAt.IsZero())
+	})
+
+	t.Run("SoulAgentValidationRecord_BeforeCreate", func(t *testing.T) {
+		t.Parallel()
+
+		ts := time.Unix(100, 0).UTC()
+		v := &SoulAgentValidationRecord{
+			AgentID:       " 0xABC ",
+			ChallengeID:   " c1 ",
+			ChallengeType: " Capability_Probe ",
+			ValidatorID:   " System ",
+			Request:       " {} ",
+			Response:      " {} ",
+			Result:        " PASS ",
+			Score:         1.25,
+			EvaluatedAt:   ts,
+		}
+		require.NoError(t, v.BeforeCreate())
+		require.Equal(t, "SOUL#AGENT#0xabc", v.PK)
+		require.Equal(t, "VALIDATION#1970-01-01T00:01:40Z#c1", v.SK)
+		require.Equal(t, "c1", v.ChallengeID)
+		require.Equal(t, "capability_probe", v.ChallengeType)
+		require.Equal(t, "system", v.ValidatorID)
+		require.Equal(t, "{}", v.Request)
+		require.Equal(t, "{}", v.Response)
+		require.Equal(t, "pass", v.Result)
+	})
+
+	t.Run("SoulAgentPeerEndorsement_BeforeCreate", func(t *testing.T) {
+		t.Parallel()
+
+		e := &SoulAgentPeerEndorsement{
+			AgentID:         " 0xABC ",
+			EndorserAgentID: " 0xDEF ",
+			Message:         " hi ",
+			Signature:       " 0xBEEF ",
+		}
+		require.NoError(t, e.BeforeCreate())
+		require.Equal(t, "SOUL#AGENT#0xabc", e.PK)
+		require.Equal(t, "ENDORSEMENT#0xdef", e.SK)
+		require.Equal(t, "0xbeef", e.Signature)
+		require.False(t, e.CreatedAt.IsZero())
+	})
+
+	t.Run("SoulOperation_BeforeCreate", func(t *testing.T) {
+		t.Parallel()
+
+		o := &SoulOperation{
+			OperationID:     " op1 ",
+			Kind:            " MINT ",
+			AgentID:         " 0xABC ",
+			Status:          "",
+			SafePayloadJSON: " {\"to\":\"0x0\"} ",
+			ExecTxHash:      " 0xBEEF ",
+		}
+		require.NoError(t, o.BeforeCreate())
+		require.Equal(t, "SOUL#OP#op1", o.PK)
+		require.Equal(t, "OPERATION", o.SK)
+		require.Equal(t, "mint", o.Kind)
+		require.Equal(t, "0xabc", o.AgentID)
+		require.Equal(t, SoulOperationStatusPending, o.Status)
+		require.Equal(t, "{\"to\":\"0x0\"}", o.SafePayloadJSON)
+		require.Equal(t, "0xbeef", o.ExecTxHash)
+		require.Equal(t, "SOUL_OP_STATUS#pending", o.GSI1PK)
+		require.Contains(t, o.GSI1SK, "#op1")
+		require.False(t, o.CreatedAt.IsZero())
+		require.False(t, o.UpdatedAt.IsZero())
+	})
+
+	t.Run("SoulIndexItems_BeforeCreate", func(t *testing.T) {
+		t.Parallel()
+
+		walletIdx := &SoulWalletAgentIndex{Wallet: " 0xDEF ", AgentID: " 0xABC "}
+		require.NoError(t, walletIdx.BeforeCreate())
+		require.Equal(t, "SOUL#WALLET#0xdef", walletIdx.PK)
+		require.Equal(t, "AGENT#0xabc", walletIdx.SK)
+
+		domainIdx := &SoulDomainAgentIndex{Domain: " Example.COM ", LocalID: " @Alice/ ", AgentID: " 0xABC "}
+		require.NoError(t, domainIdx.BeforeCreate())
+		require.Equal(t, "SOUL#DOMAIN#example.com", domainIdx.PK)
+		require.Equal(t, "LOCAL#alice#AGENT#0xabc", domainIdx.SK)
+
+		capIdx := &SoulCapabilityAgentIndex{
+			Capability: " Social ",
+			Domain:     " Example.COM ",
+			LocalID:    " @Alice/ ",
+			AgentID:    " 0xABC ",
+		}
+		require.NoError(t, capIdx.BeforeCreate())
+		require.Equal(t, "SOUL#CAP#social", capIdx.PK)
+		require.Equal(t, "DOMAIN#example.com#LOCAL#alice#AGENT#0xabc", capIdx.SK)
+	})
 }
