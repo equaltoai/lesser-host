@@ -75,6 +75,9 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.ManagedParentDomain == "" || cfg.ManagedInstanceRoleName == "" || cfg.ManagedDefaultRegion == "" {
 		t.Fatalf("expected managed defaults set")
 	}
+	if cfg.ManagedLesserBodyGitHubOwner == "" || cfg.ManagedLesserBodyGitHubRepo == "" {
+		t.Fatalf("expected managed lesser-body defaults set")
+	}
 	if cfg.PaymentsCentsPer1000Credits <= 0 {
 		t.Fatalf("expected payments pricing default set")
 	}

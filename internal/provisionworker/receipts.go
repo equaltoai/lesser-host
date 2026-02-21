@@ -46,6 +46,20 @@ func (s *Server) soulReceiptS3Key(job *models.ProvisionJob) string {
 	return fmt.Sprintf("managed/provisioning/%s/%s/soul-state.json", strings.TrimSpace(job.InstanceSlug), strings.TrimSpace(job.ID))
 }
 
+func (s *Server) bodyReceiptS3Key(job *models.ProvisionJob) string {
+	if job == nil {
+		return ""
+	}
+	return fmt.Sprintf("managed/provisioning/%s/%s/body-state.json", strings.TrimSpace(job.InstanceSlug), strings.TrimSpace(job.ID))
+}
+
+func (s *Server) mcpReceiptS3Key(job *models.ProvisionJob) string {
+	if job == nil {
+		return ""
+	}
+	return fmt.Sprintf("managed/provisioning/%s/%s/mcp-state.json", strings.TrimSpace(job.InstanceSlug), strings.TrimSpace(job.ID))
+}
+
 func (s *Server) bootstrapS3Key(job *models.ProvisionJob) string {
 	if job == nil {
 		return ""

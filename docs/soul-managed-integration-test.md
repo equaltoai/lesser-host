@@ -32,6 +32,7 @@ Notes:
 Create a new instance via the operator UI or API:
 
 - Set `soul_enabled: true`.
+- Leave `body_enabled: true` (default) unless you explicitly want to skip MCP provisioning.
 - Optional: set `soul_version: <version>` to pin a specific pack version for this instance (otherwise the runner defaults
   to `/soul/<stage>/packVersion`).
 
@@ -42,6 +43,8 @@ In the operator console: **Provisioning Jobs → Job detail**.
 Expected step sequence (high level):
 
 - `deploy.*` + `receipt.ingest` (Lesser)
+- `body.deploy.*` (lesser-body deploy)
+- `deploy.mcp.*` (re-run Lesser stage deploy to attach `POST /mcp`)
 - `soul.deploy.*` (Soul CDK deploy from signed pack)
 - `soul.init.*` (Soul bootstrap from signed pack)
 - `soul.receipt.ingest`
@@ -99,4 +102,3 @@ Expected:
 - **Manifest verify failures:** confirm the correct stage (`lab` vs `live`), SSM pointers, and that the pack objects exist
   in the pack bucket. Ensure the CodeBuild runner role has `ssm:GetParameter`, `s3:GetObject`, and `kms:Verify`.
 - **Agent quarantine:** in `live`, verify agents manually or run bootstrap with `--auto-verify-agents=true` (explicit opt-in).
-

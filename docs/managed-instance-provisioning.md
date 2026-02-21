@@ -48,11 +48,19 @@ It assumes:
      - `lesser init-admin --base-domain <slug.greater.website> --aws-profile <temp-profile> --provisioning-input <path>`
    - read the deployment receipt `~/.lesser/<app>/<base-domain>/state.json`.
 
-6) **Register with lesser.host**
+6) **(Optional, default-on) Deploy lesser-body (AgentCore MCP) + wire `POST /mcp`**
+   - deploy `lesser-body` (AgentCore-compatible MCP runtime) into the instance account/stage.
+   - ensure `lesser-body` writes SSM exports in the instance account:
+     - `/${app}/${stage}/lesser-body/exports/v1/mcp_lambda_arn`
+   - re-run the Lesser stage deploy with the MCP wiring feature enabled so the instance’s API Gateway exposes:
+     - `POST https://api.<stageDomain>/mcp`
+     - `GET  https://api.<stageDomain>/.well-known/mcp.json`
+
+7) **Register with lesser.host**
    - store instance endpoints from the receipt.
    - mint an instance API key for `lesser.host` calls (future: inject into Lesser at deploy time).
 
-7) **Observability + recovery**
+8) **Observability + recovery**
    - persist provisioning job status and step-level errors.
    - allow safe retry (idempotent per slug) and clean rollback where possible.
 
@@ -96,6 +104,9 @@ The control plane needs (at minimum):
 - `MANAGED_LESSER_GITHUB_OWNER` (default: `equaltoai`)
 - `MANAGED_LESSER_GITHUB_REPO` (default: `lesser`)
 - `MANAGED_LESSER_GITHUB_TOKEN_SSM_PARAM` (optional; SecureString SSM parameter containing a GitHub token)
+- `MANAGED_LESSER_BODY_DEFAULT_VERSION` (optional semver tag for `lesser-body`; used when unset to pin deterministically)
+- `MANAGED_LESSER_BODY_GITHUB_OWNER` (default: `equaltoai`)
+- `MANAGED_LESSER_BODY_GITHUB_REPO` (default: `lesser-body`)
 
 Infra is expected to provide:
 - `PROVISION_QUEUE_URL` (SQS queue that drives the async pipeline)
@@ -105,11 +116,43 @@ Infra is expected to provide:
 The deploy runner writes the Lesser receipt to S3 so the provisioning worker can ingest it and update instance state:
 
 - Receipt: `s3://$ARTIFACT_BUCKET_NAME/managed/provisioning/<slug>/<jobId>/state.json`
+- Lesser-body receipt (optional): `s3://$ARTIFACT_BUCKET_NAME/managed/provisioning/<slug>/<jobId>/body-state.json`
+- MCP wiring receipt (optional): `s3://$ARTIFACT_BUCKET_NAME/managed/provisioning/<slug>/<jobId>/mcp-state.json`
 - Bootstrap key material (legacy only): `s3://$ARTIFACT_BUCKET_NAME/managed/provisioning/<slug>/bootstrap.json`
 
 Notes:
 - Managed provisioning now seeds the admin wallet via `init-admin`, so a bootstrap mnemonic should not be generated.
 - If a legacy bootstrap file exists, treat it as sensitive and rotate/delete it after migration.
+
+## SSM contract (instance account)
+
+Managed provisioning relies on **SSM Parameter Store** for cross-stack wiring inside the instance account (no CloudFormation
+exports/imports).
+
+Required parameters (well-known names; `${app}` = instance slug/app name, `${stage}` = `dev|staging|live`):
+
+From Lesser (inputs for `lesser-body`):
+- `/${app}/${stage}/lesser/exports/v1/table_name`
+- `/${app}/${stage}/lesser/exports/v1/domain`
+
+From `lesser-body` (inputs for Lesser API Gateway `/mcp` wiring):
+- `/${app}/${stage}/lesser-body/exports/v1/mcp_lambda_arn`
+
+## Smoke test (MCP)
+
+Once provisioning completes with `body_enabled=true`, validate the instance MCP endpoint:
+
+1) Initialize (JSON-RPC):
+```bash
+curl -sSfL -X POST "https://api.<stageDomain>/mcp" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}'
+```
+
+2) Expect:
+- HTTP `200`
+- a valid JSON-RPC response containing `result`
+- an `mcp-session-id` header
 
 ## Org bootstrap (required)
 

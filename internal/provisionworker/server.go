@@ -295,6 +295,10 @@ const (
 	provisionStepDeployStart        = "deploy.start"
 	provisionStepDeployWait         = "deploy.wait"
 	provisionStepReceiptIngest      = "receipt.ingest"
+	provisionStepBodyDeployStart    = "body.deploy.start"
+	provisionStepBodyDeployWait     = "body.deploy.wait"
+	provisionStepDeployMcpStart     = "deploy.mcp.start"
+	provisionStepDeployMcpWait      = "deploy.mcp.wait"
 	provisionStepSoulDeployStart    = "soul.deploy.start"
 	provisionStepSoulDeployWait     = "soul.deploy.wait"
 	provisionStepSoulInitStart      = "soul.init.start"
@@ -461,6 +465,10 @@ var managedProvisionStepHandlers = map[string]managedProvisionStepHandler{
 	provisionStepDeployStart:       (*Server).advanceProvisionDeployStart,
 	provisionStepDeployWait:        (*Server).advanceProvisionDeployWait,
 	provisionStepReceiptIngest:     (*Server).advanceProvisionReceiptIngest,
+	provisionStepBodyDeployStart:   (*Server).advanceProvisionBodyDeployStart,
+	provisionStepBodyDeployWait:    (*Server).advanceProvisionBodyDeployWait,
+	provisionStepDeployMcpStart:    (*Server).advanceProvisionDeployMcpStart,
+	provisionStepDeployMcpWait:     (*Server).advanceProvisionDeployMcpWait,
 	provisionStepSoulDeployStart:   (*Server).advanceProvisionSoulDeployStart,
 	provisionStepSoulDeployWait:    (*Server).advanceProvisionSoulDeployWait,
 	provisionStepSoulInitStart:     (*Server).advanceProvisionSoulInitStart,
@@ -1368,8 +1376,19 @@ func (s *Server) advanceProvisionReceiptIngest(ctx context.Context, job *models.
 
 	applyLesserUpReceipt(job, receiptJSON, receipt)
 
+	continueToBody := job.BodyEnabled && job.McpWiredAt.IsZero()
 	continueToSoul := job.SoulEnabled && job.SoulProvisionedAt.IsZero()
-	if continueToSoul {
+
+	if continueToBody {
+		job.RunID = ""
+		if job.BodyProvisionedAt.IsZero() {
+			job.Step = provisionStepBodyDeployStart
+			job.Note = "starting lesser-body deploy runner"
+		} else {
+			job.Step = provisionStepDeployMcpStart
+			job.Note = "starting MCP wiring deploy runner"
+		}
+	} else if continueToSoul {
 		job.Step = provisionStepSoulDeployStart
 		job.Note = "starting soul deploy runner"
 		job.RunID = ""
@@ -1379,10 +1398,11 @@ func (s *Server) advanceProvisionReceiptIngest(ctx context.Context, job *models.
 		job.Note = noteProvisioned
 	}
 
-	if err := s.persistJobAndInstance(ctx, job, requestID, now, provisionReceiptIngestInstanceUpdate(job, continueToSoul)); err != nil {
+	continuing := continueToBody || continueToSoul
+	if err := s.persistJobAndInstance(ctx, job, requestID, now, provisionReceiptIngestInstanceUpdate(job, continuing)); err != nil {
 		return 0, false, err
 	}
-	return 0, !continueToSoul, nil
+	return 0, !continuing, nil
 }
 
 func (s *Server) loadProvisionReceipt(ctx context.Context, job *models.ProvisionJob) (string, *lesserUpReceipt, error) {
@@ -1423,10 +1443,10 @@ func applyLesserUpReceipt(job *models.ProvisionJob, receiptJSON string, receipt 
 	}
 }
 
-func provisionReceiptIngestInstanceUpdate(job *models.ProvisionJob, continueToSoul bool) func(core.UpdateBuilder) error {
+func provisionReceiptIngestInstanceUpdate(job *models.ProvisionJob, continuing bool) func(core.UpdateBuilder) error {
 	return func(ub core.UpdateBuilder) error {
 		ub.Set("ProvisionJobID", strings.TrimSpace(job.ID))
-		if continueToSoul {
+		if continuing {
 			ub.Set("ProvisionStatus", models.ProvisionJobStatusRunning)
 		} else {
 			ub.Set("ProvisionStatus", models.ProvisionJobStatusOK)
@@ -1444,6 +1464,284 @@ func provisionReceiptIngestInstanceUpdate(job *models.ProvisionJob, continueToSo
 			ub.Set("HostedZoneID", strings.TrimSpace(job.ChildHostedZoneID))
 		}
 		return nil
+	}
+}
+
+func (s *Server) advanceProvisionBodyDeployStart(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {
+	if job == nil {
+		return 0, true, nil
+	}
+
+	if !job.BodyEnabled {
+		// Skip body + MCP wiring and continue to soul (if configured).
+		continuing := job.SoulEnabled && job.SoulProvisionedAt.IsZero()
+		if continuing {
+			job.Step = provisionStepSoulDeployStart
+			job.Note = "starting soul deploy runner"
+			job.RunID = ""
+		} else {
+			job.Step = provisionStepDone
+			job.Status = models.ProvisionJobStatusOK
+			job.Note = noteProvisioned
+		}
+		if err := s.persistJobAndInstance(ctx, job, requestID, now, func(ub core.UpdateBuilder) error {
+			ub.Set("ProvisionJobID", strings.TrimSpace(job.ID))
+			if continuing {
+				ub.Set("ProvisionStatus", models.ProvisionJobStatusRunning)
+			} else {
+				ub.Set("ProvisionStatus", models.ProvisionJobStatusOK)
+			}
+			return nil
+		}); err != nil {
+			return 0, false, err
+		}
+		return 0, !continuing, nil
+	}
+
+	if !job.BodyProvisionedAt.IsZero() {
+		job.Step = provisionStepDeployMcpStart
+		job.Note = "starting MCP wiring deploy runner"
+		job.RunID = ""
+		if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
+			return 0, false, err
+		}
+		return 0, false, nil
+	}
+
+	if strings.TrimSpace(job.RunID) != "" {
+		job.Step = provisionStepBodyDeployWait
+		job.Note = "lesser-body deploy runner already started"
+		if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
+			return 0, false, err
+		}
+		return provisionDefaultPollDelay, false, nil
+	}
+
+	runID, err := s.startDeployRunnerWithMode(ctx, job, "lesser-body", s.bodyReceiptS3Key(job))
+	if err != nil {
+		job.Attempts++
+		if job.Attempts >= job.MaxAttempts {
+			return 0, false, s.failJob(ctx, job, requestID, now, "body_deploy_start_failed", "failed to start lesser-body deploy runner: "+err.Error())
+		}
+		job.Note = "failed to start lesser-body deploy runner; retrying: " + compactErr(err)
+		_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
+		return jitteredBackoff(job.Attempts, provisionDefaultShortRetryDelay, 10*time.Minute), false, nil
+	}
+
+	job.RunID = strings.TrimSpace(runID)
+	job.Step = provisionStepBodyDeployWait
+	job.Note = "lesser-body deploy runner in progress"
+	if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
+		return 0, false, err
+	}
+	return provisionDefaultPollDelay, false, nil
+}
+
+func (s *Server) advanceProvisionBodyDeployWait(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {
+	if job == nil {
+		return 0, true, nil
+	}
+
+	status, deepLink, err := s.getDeployRunnerStatus(ctx, strings.TrimSpace(job.RunID))
+	if err != nil {
+		job.Attempts++
+		if job.Attempts >= job.MaxAttempts {
+			return 0, false, s.failJob(ctx, job, requestID, now, "body_deploy_status_failed", "failed to poll lesser-body deploy runner: "+err.Error())
+		}
+		job.Note = "failed to poll lesser-body deploy runner; retrying: " + compactErr(err)
+		_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
+		return jitteredBackoff(job.Attempts, provisionDefaultPollDelay, 10*time.Minute), false, nil
+	}
+
+	switch status {
+	case codebuildStatusSucceeded:
+		job.BodyProvisionedAt = now
+		job.Step = provisionStepDeployMcpStart
+		job.RunID = ""
+		job.Note = "starting MCP wiring deploy runner"
+		if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
+			return 0, false, err
+		}
+		return 0, false, nil
+
+	case codebuildStatusInProgress:
+		if !job.CreatedAt.IsZero() && now.Sub(job.CreatedAt) > provisionMaxDeployAge {
+			return 0, false, s.failJob(ctx, job, requestID, now, "body_deploy_timeout", "lesser-body deploy runner timed out")
+		}
+		job.Note = "lesser-body deploy runner in progress"
+		_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
+		return provisionDefaultPollDelay, false, nil
+
+	case codebuildStatusFailed, codebuildStatusFault, codebuildStatusStopped, codebuildStatusTimedOut:
+		msg := "lesser-body deploy runner failed"
+		if deepLink != "" {
+			msg = msg + " (CodeBuild: " + deepLink + ")"
+		}
+		return 0, false, s.failJob(ctx, job, requestID, now, "body_deploy_failed", msg)
+
+	default:
+		if !job.CreatedAt.IsZero() && now.Sub(job.CreatedAt) > provisionMaxDeployAge {
+			return 0, false, s.failJob(ctx, job, requestID, now, "body_deploy_timeout", "lesser-body deploy runner timed out")
+		}
+		job.Note = "lesser-body deploy runner status: " + status
+		_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
+		return provisionDefaultPollDelay, false, nil
+	}
+}
+
+func (s *Server) advanceProvisionDeployMcpStart(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {
+	if job == nil {
+		return 0, true, nil
+	}
+
+	if !job.BodyEnabled {
+		// Skip MCP wiring and continue to soul (if configured).
+		continuing := job.SoulEnabled && job.SoulProvisionedAt.IsZero()
+		if continuing {
+			job.Step = provisionStepSoulDeployStart
+			job.Note = "starting soul deploy runner"
+			job.RunID = ""
+		} else {
+			job.Step = provisionStepDone
+			job.Status = models.ProvisionJobStatusOK
+			job.Note = noteProvisioned
+		}
+		if err := s.persistJobAndInstance(ctx, job, requestID, now, func(ub core.UpdateBuilder) error {
+			ub.Set("ProvisionJobID", strings.TrimSpace(job.ID))
+			if continuing {
+				ub.Set("ProvisionStatus", models.ProvisionJobStatusRunning)
+			} else {
+				ub.Set("ProvisionStatus", models.ProvisionJobStatusOK)
+			}
+			return nil
+		}); err != nil {
+			return 0, false, err
+		}
+		return 0, !continuing, nil
+	}
+
+	if job.BodyProvisionedAt.IsZero() {
+		job.Step = provisionStepBodyDeployStart
+		job.Note = "starting lesser-body deploy runner"
+		job.RunID = ""
+		if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
+			return 0, false, err
+		}
+		return 0, false, nil
+	}
+
+	if !job.McpWiredAt.IsZero() {
+		continuing := job.SoulEnabled && job.SoulProvisionedAt.IsZero()
+		if continuing {
+			job.Step = provisionStepSoulDeployStart
+			job.Note = "starting soul deploy runner"
+			job.RunID = ""
+		} else {
+			job.Step = provisionStepDone
+			job.Status = models.ProvisionJobStatusOK
+			job.Note = noteProvisioned
+		}
+		if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
+			return 0, false, err
+		}
+		return 0, !continuing, nil
+	}
+
+	if strings.TrimSpace(job.RunID) != "" {
+		job.Step = provisionStepDeployMcpWait
+		job.Note = "MCP wiring deploy runner already started"
+		if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
+			return 0, false, err
+		}
+		return provisionDefaultPollDelay, false, nil
+	}
+
+	runID, err := s.startDeployRunnerWithMode(ctx, job, "lesser-mcp", s.mcpReceiptS3Key(job))
+	if err != nil {
+		job.Attempts++
+		if job.Attempts >= job.MaxAttempts {
+			return 0, false, s.failJob(ctx, job, requestID, now, "mcp_deploy_start_failed", "failed to start MCP wiring deploy runner: "+err.Error())
+		}
+		job.Note = "failed to start MCP wiring deploy runner; retrying: " + compactErr(err)
+		_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
+		return jitteredBackoff(job.Attempts, provisionDefaultShortRetryDelay, 10*time.Minute), false, nil
+	}
+
+	job.RunID = strings.TrimSpace(runID)
+	job.Step = provisionStepDeployMcpWait
+	job.Note = "MCP wiring deploy runner in progress"
+	if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
+		return 0, false, err
+	}
+	return provisionDefaultPollDelay, false, nil
+}
+
+func (s *Server) advanceProvisionDeployMcpWait(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {
+	if job == nil {
+		return 0, true, nil
+	}
+
+	status, deepLink, err := s.getDeployRunnerStatus(ctx, strings.TrimSpace(job.RunID))
+	if err != nil {
+		job.Attempts++
+		if job.Attempts >= job.MaxAttempts {
+			return 0, false, s.failJob(ctx, job, requestID, now, "mcp_deploy_status_failed", "failed to poll MCP wiring deploy runner: "+err.Error())
+		}
+		job.Note = "failed to poll MCP wiring deploy runner; retrying: " + compactErr(err)
+		_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
+		return jitteredBackoff(job.Attempts, provisionDefaultPollDelay, 10*time.Minute), false, nil
+	}
+
+	switch status {
+	case codebuildStatusSucceeded:
+		job.McpWiredAt = now
+		job.RunID = ""
+
+		continueToSoul := job.SoulEnabled && job.SoulProvisionedAt.IsZero()
+		if continueToSoul {
+			job.Step = provisionStepSoulDeployStart
+			job.Note = "starting soul deploy runner"
+		} else {
+			job.Step = provisionStepDone
+			job.Status = models.ProvisionJobStatusOK
+			job.Note = noteProvisioned
+		}
+
+		if err := s.persistJobAndInstance(ctx, job, requestID, now, func(ub core.UpdateBuilder) error {
+			ub.Set("ProvisionJobID", strings.TrimSpace(job.ID))
+			if continueToSoul {
+				ub.Set("ProvisionStatus", models.ProvisionJobStatusRunning)
+			} else {
+				ub.Set("ProvisionStatus", models.ProvisionJobStatusOK)
+			}
+			return nil
+		}); err != nil {
+			return 0, false, err
+		}
+		return 0, !continueToSoul, nil
+
+	case codebuildStatusInProgress:
+		if !job.CreatedAt.IsZero() && now.Sub(job.CreatedAt) > provisionMaxDeployAge {
+			return 0, false, s.failJob(ctx, job, requestID, now, "mcp_deploy_timeout", "MCP wiring deploy runner timed out")
+		}
+		job.Note = "MCP wiring deploy runner in progress"
+		_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
+		return provisionDefaultPollDelay, false, nil
+
+	case codebuildStatusFailed, codebuildStatusFault, codebuildStatusStopped, codebuildStatusTimedOut:
+		msg := "MCP wiring deploy runner failed"
+		if deepLink != "" {
+			msg = msg + " (CodeBuild: " + deepLink + ")"
+		}
+		return 0, false, s.failJob(ctx, job, requestID, now, "mcp_deploy_failed", msg)
+
+	default:
+		if !job.CreatedAt.IsZero() && now.Sub(job.CreatedAt) > provisionMaxDeployAge {
+			return 0, false, s.failJob(ctx, job, requestID, now, "mcp_deploy_timeout", "MCP wiring deploy runner timed out")
+		}
+		job.Note = "MCP wiring deploy runner status: " + status
+		_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
+		return provisionDefaultPollDelay, false, nil
 	}
 }
 
@@ -2175,6 +2473,9 @@ func (s *Server) buildDeployRunnerEnv(job *models.ProvisionJob, stage, receiptKe
 		{Name: aws.String("BOOTSTRAP_S3_KEY"), Value: aws.String(bootstrapKey)},
 		{Name: aws.String("GITHUB_OWNER"), Value: aws.String(strings.TrimSpace(s.cfg.ManagedLesserGitHubOwner))},
 		{Name: aws.String("GITHUB_REPO"), Value: aws.String(strings.TrimSpace(s.cfg.ManagedLesserGitHubRepo))},
+		{Name: aws.String("LESSER_BODY_GITHUB_OWNER"), Value: aws.String(strings.TrimSpace(s.cfg.ManagedLesserBodyGitHubOwner))},
+		{Name: aws.String("LESSER_BODY_GITHUB_REPO"), Value: aws.String(strings.TrimSpace(s.cfg.ManagedLesserBodyGitHubRepo))},
+		{Name: aws.String("LESSER_BODY_VERSION"), Value: aws.String(strings.TrimSpace(s.cfg.ManagedLesserBodyDefaultVersion))},
 	}
 	if strings.TrimSpace(s.cfg.ManagedOrgVendingRoleARN) != "" {
 		env = append(env, cbtypes.EnvironmentVariable{

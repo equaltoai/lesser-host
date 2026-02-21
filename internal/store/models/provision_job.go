@@ -39,6 +39,9 @@ type ProvisionJob struct {
 	LesserVersion      string    `theorydb:"attr:lesserVersion" json:"lesser_version,omitempty"` // semver tag
 	SoulEnabled        bool      `theorydb:"attr:soulEnabled" json:"soul_enabled"`
 	SoulProvisionedAt  time.Time `theorydb:"attr:soulProvisionedAt" json:"soul_provisioned_at,omitempty"`
+	BodyEnabled        bool      `theorydb:"attr:bodyEnabled" json:"body_enabled"`
+	BodyProvisionedAt  time.Time `theorydb:"attr:bodyProvisionedAt" json:"body_provisioned_at,omitempty"`
+	McpWiredAt         time.Time `theorydb:"attr:mcpWiredAt" json:"mcp_wired_at,omitempty"`
 	AdminUsername      string    `theorydb:"attr:adminUsername" json:"admin_username,omitempty"`
 	AdminWalletType    string    `theorydb:"attr:adminWalletType" json:"admin_wallet_type,omitempty"`
 	AdminWalletAddr    string    `theorydb:"attr:adminWalletAddress" json:"admin_wallet_address,omitempty"`

@@ -35,6 +35,7 @@ type Instance struct {
 	HostedZoneID                   string    `theorydb:"attr:hostedZoneId" json:"hosted_zone_id,omitempty"`
 	LesserVersion                  string    `theorydb:"attr:lesserVersion" json:"lesser_version,omitempty"`
 	SoulEnabled                    *bool     `theorydb:"attr:soulEnabled" json:"soul_enabled,omitempty"`
+	BodyEnabled                    *bool     `theorydb:"attr:bodyEnabled" json:"body_enabled,omitempty"`
 	SoulVersion                    string    `theorydb:"attr:soulVersion" json:"soul_version,omitempty"`
 	SoulProvisionedAt              time.Time `theorydb:"attr:soulProvisionedAt" json:"soul_provisioned_at,omitempty"`
 	LesserHostBaseURL              string    `theorydb:"attr:lesserHostBaseUrl" json:"lesser_host_base_url,omitempty"`
@@ -97,6 +98,10 @@ func (i *Instance) ensureCoreDefaults() {
 	}
 	if strings.TrimSpace(i.Status) == "" {
 		i.Status = InstanceStatusActive
+	}
+	if i.BodyEnabled == nil {
+		v := true
+		i.BodyEnabled = &v
 	}
 }
 

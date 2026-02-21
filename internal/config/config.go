@@ -77,6 +77,9 @@ type Config struct {
 	ManagedLesserGitHubOwner          string // GitHub org/user for the lesser repo
 	ManagedLesserGitHubRepo           string // GitHub repo name for lesser
 	ManagedLesserGitHubTokenSSMParam  string // optional SSM param name for a GitHub token (CodeBuild)
+	ManagedLesserBodyDefaultVersion   string // semver tag, optional
+	ManagedLesserBodyGitHubOwner      string // GitHub org/user for the lesser-body repo
+	ManagedLesserBodyGitHubRepo       string // GitHub repo name for lesser-body
 
 	// Payments (M10).
 	PaymentsProvider            string // stripe|mock|none
@@ -126,6 +129,8 @@ func Load() Config {
 	)
 	managedLesserGitHubOwner := envStringDefault("MANAGED_LESSER_GITHUB_OWNER", "equaltoai")
 	managedLesserGitHubRepo := envStringDefault("MANAGED_LESSER_GITHUB_REPO", "lesser")
+	managedLesserBodyGitHubOwner := envStringDefault("MANAGED_LESSER_BODY_GITHUB_OWNER", "equaltoai")
+	managedLesserBodyGitHubRepo := envStringDefault("MANAGED_LESSER_BODY_GITHUB_REPO", "lesser-body")
 
 	paymentsProvider := envLowerStringDefault("PAYMENTS_PROVIDER", "none")
 	centsPer1000Credits := envInt64Bounded("PAYMENTS_CENTS_PER_1000_CREDITS", 100, 1, 1_000_000)
@@ -206,6 +211,9 @@ func Load() Config {
 		ManagedLesserGitHubOwner:          managedLesserGitHubOwner,
 		ManagedLesserGitHubRepo:           managedLesserGitHubRepo,
 		ManagedLesserGitHubTokenSSMParam:  envString("MANAGED_LESSER_GITHUB_TOKEN_SSM_PARAM"),
+		ManagedLesserBodyDefaultVersion:   envString("MANAGED_LESSER_BODY_DEFAULT_VERSION"),
+		ManagedLesserBodyGitHubOwner:      managedLesserBodyGitHubOwner,
+		ManagedLesserBodyGitHubRepo:       managedLesserBodyGitHubRepo,
 
 		PaymentsProvider:            paymentsProvider,
 		PaymentsCheckoutSuccessURL:  checkoutSuccessURL,

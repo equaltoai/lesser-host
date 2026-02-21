@@ -160,12 +160,18 @@ export class LesserHostStack extends cdk.Stack {
 		const managedDefaultRegion = (this.node.tryGetContext('managedDefaultRegion') as string | undefined) ?? '';
 		const managedLesserDefaultVersion =
 			(this.node.tryGetContext('managedLesserDefaultVersion') as string | undefined) ?? '';
-		const managedProvisionRunnerProjectName =
-			(this.node.tryGetContext('managedProvisionRunnerProjectName') as string | undefined) ?? '';
-		const managedLesserGitHubOwner = (this.node.tryGetContext('managedLesserGitHubOwner') as string | undefined) ?? '';
-		const managedLesserGitHubRepo = (this.node.tryGetContext('managedLesserGitHubRepo') as string | undefined) ?? '';
-		const managedLesserGitHubTokenSsmParam =
-			(this.node.tryGetContext('managedLesserGitHubTokenSsmParam') as string | undefined) ?? '';
+			const managedProvisionRunnerProjectName =
+				(this.node.tryGetContext('managedProvisionRunnerProjectName') as string | undefined) ?? '';
+			const managedLesserGitHubOwner = (this.node.tryGetContext('managedLesserGitHubOwner') as string | undefined) ?? '';
+			const managedLesserGitHubRepo = (this.node.tryGetContext('managedLesserGitHubRepo') as string | undefined) ?? '';
+			const managedLesserGitHubTokenSsmParam =
+				(this.node.tryGetContext('managedLesserGitHubTokenSsmParam') as string | undefined) ?? '';
+			const managedLesserBodyDefaultVersion =
+				(this.node.tryGetContext('managedLesserBodyDefaultVersion') as string | undefined) ?? '';
+			const managedLesserBodyGitHubOwner =
+				(this.node.tryGetContext('managedLesserBodyGitHubOwner') as string | undefined) ?? '';
+			const managedLesserBodyGitHubRepo =
+				(this.node.tryGetContext('managedLesserBodyGitHubRepo') as string | undefined) ?? '';
 
 		const tipStageSuffix = stage === 'live' ? 'Live' : 'Lab';
 		const tipContext = (key: string): string =>
@@ -215,12 +221,14 @@ export class LesserHostStack extends cdk.Stack {
 			(this.node.tryGetContext('paymentsCheckoutSuccessUrl') as string | undefined) ?? '';
 		const paymentsCheckoutCancelUrl = (this.node.tryGetContext('paymentsCheckoutCancelUrl') as string | undefined) ?? '';
 
-		const provisionRunnerProjectName =
-			managedProvisionRunnerProjectName.trim() || `${namePrefix}-provision-runner`;
-		const lesserGitHubOwner = managedLesserGitHubOwner.trim() || 'equaltoai';
-		const lesserGitHubRepo = managedLesserGitHubRepo.trim() || 'lesser';
+			const provisionRunnerProjectName =
+				managedProvisionRunnerProjectName.trim() || `${namePrefix}-provision-runner`;
+			const lesserGitHubOwner = managedLesserGitHubOwner.trim() || 'equaltoai';
+			const lesserGitHubRepo = managedLesserGitHubRepo.trim() || 'lesser';
+			const lesserBodyGitHubOwner = managedLesserBodyGitHubOwner.trim() || 'equaltoai';
+			const lesserBodyGitHubRepo = managedLesserBodyGitHubRepo.trim() || 'lesser-body';
 
-		const provisionRunnerPreBuild = [
+			const provisionRunnerPreBuild = [
 			'set -euo pipefail',
 			'echo "Assuming role into target account..."',
 			'if [ -n "${MANAGED_ORG_VENDING_ROLE_ARN:-}" ]; then',
@@ -285,10 +293,14 @@ export class LesserHostStack extends cdk.Stack {
 			'test "$EXPECTED" = "$ACTUAL"',
 			'chmod +x lesser-src/lesser',
 			'cd lesser-src',
-			'GO_TOOLCHAIN=$(grep "^toolchain " go.mod | awk \'{print $2}\')',
+			'GO_TOOLCHAIN=$(grep "^toolchain " go.mod | awk \'{print $2}\' || true)',
 			'GO_VERSION="${GO_TOOLCHAIN#go}"',
-			'echo "Installing Go toolchain: $GO_VERSION"',
-			'curl -sSfL -o go.tgz "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"',
+			'if [ -z "$GO_VERSION" ]; then GO_VERSION=$(grep "^go " go.mod | awk \'{print $2}\'); fi',
+			'test -n "$GO_VERSION"',
+			'GO_ARCH="amd64"',
+			'if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then GO_ARCH="arm64"; fi',
+			'echo "Installing Go toolchain: $GO_VERSION (linux-$GO_ARCH)"',
+			'curl -sSfL -o go.tgz "https://go.dev/dl/go${GO_VERSION}.linux-${GO_ARCH}.tar.gz"',
 			'rm -rf /usr/local/go && tar -C /usr/local -xzf go.tgz',
 			'export PATH="/usr/local/go/bin:$PATH"',
 			'go version',
@@ -364,14 +376,57 @@ export class LesserHostStack extends cdk.Stack {
 					'if [ "$RUN_MODE" = "lesser" ]; then',
 				'  ./lesser up --app "$APP_SLUG" --base-domain "$BASE_DOMAIN" --aws-profile managed --provisioning-input "$PROVISION_INPUT"',
 				'  if [ -n "${CONSENT_MESSAGE_B64:-}" ] && [ -n "${CONSENT_SIGNATURE:-}" ]; then ./lesser init-admin --base-domain "$BASE_DOMAIN" --aws-profile managed --provisioning-input "$PROVISION_INPUT"; else echo "Skipping init-admin (missing consent message/signature)."; fi',
-				'  RECEIPT_PATH="$STATE_DIR/state.json"',
-					'  test -f "$RECEIPT_PATH"',
-					'  aws s3 cp "$RECEIPT_PATH" "s3://$ARTIFACT_BUCKET/$RECEIPT_S3_KEY"',
-					'  if [ -f /tmp/bootstrap.json ]; then aws s3 cp /tmp/bootstrap.json "s3://$ARTIFACT_BUCKET/$BOOTSTRAP_S3_KEY"; fi',
-					'elif [ "$RUN_MODE" = "soul-deploy" ]; then',
-					'  echo "Deploying lesser-soul pack..."',
-					'  fetch_and_verify_soul_pack',
-					'  echo "Deploying lesser-soul version: $SOUL_PACK_VERSION"',
+						'  RECEIPT_PATH="$STATE_DIR/state.json"',
+						'  test -f "$RECEIPT_PATH"',
+						'  aws s3 cp "$RECEIPT_PATH" "s3://$ARTIFACT_BUCKET/$RECEIPT_S3_KEY"',
+						'  if [ -f /tmp/bootstrap.json ]; then aws s3 cp /tmp/bootstrap.json "s3://$ARTIFACT_BUCKET/$BOOTSTRAP_S3_KEY"; fi',
+						'elif [ "$RUN_MODE" = "lesser-body" ]; then',
+						'  echo "Deploying lesser-body (AgentCore MCP)..."',
+						'  BODY_OWNER="${LESSER_BODY_GITHUB_OWNER:-equaltoai}"',
+						'  BODY_REPO="${LESSER_BODY_GITHUB_REPO:-lesser-body}"',
+						'  BODY_TAG="${LESSER_BODY_VERSION:-}"',
+						'  if [ -z "$BODY_TAG" ]; then',
+						'    echo "Resolving latest lesser-body release..."',
+						'    if [ -n "$TOKEN" ]; then',
+						'      BODY_TAG=$(curl -sSfL -H "Accept: application/vnd.github+json" -H "Authorization: Bearer $TOKEN" "https://api.github.com/repos/$BODY_OWNER/$BODY_REPO/releases/latest" | jq -r .tag_name)',
+						'    else',
+						'      BODY_TAG=$(curl -sSfL -H "Accept: application/vnd.github+json" "https://api.github.com/repos/$BODY_OWNER/$BODY_REPO/releases/latest" | jq -r .tag_name)',
+						'    fi',
+						'  fi',
+						'  test -n "$BODY_TAG" && test "$BODY_TAG" != "null"',
+						'  echo "Using lesser-body release: $BODY_TAG"',
+						'  if [ -n "$TOKEN" ]; then',
+						'    curl -sSfL -H "Accept: application/vnd.github+json" -H "Authorization: Bearer $TOKEN" -o lesser-body-src.tgz "https://api.github.com/repos/$BODY_OWNER/$BODY_REPO/tarball/$BODY_TAG"',
+						'  else',
+						'    curl -sSfL -H "Accept: application/vnd.github+json" -o lesser-body-src.tgz "https://api.github.com/repos/$BODY_OWNER/$BODY_REPO/tarball/$BODY_TAG"',
+						'  fi',
+						'  rm -rf lesser-body-src && mkdir -p lesser-body-src && tar -xzf lesser-body-src.tgz --strip-components=1 -C lesser-body-src',
+						'  cd lesser-body-src/cdk',
+						'  npm ci',
+						'  AWS_PROFILE=managed npx cdk deploy --all --require-approval never -c app="$APP_SLUG" -c stage="$STAGE" -c baseDomain="$BASE_DOMAIN"',
+						'  cd - >/dev/null',
+						'  BODY_PARAM="/$APP_SLUG/$STAGE/lesser-body/exports/v1/mcp_lambda_arn"',
+						'  BODY_LAMBDA_ARN=$(aws ssm get-parameter --profile managed --name "$BODY_PARAM" --query "Parameter.Value" --output text)',
+						'  test -n "$BODY_LAMBDA_ARN" && test "$BODY_LAMBDA_ARN" != "null"',
+						'  BODY_RECEIPT_PATH="$STATE_DIR/body-state.json"',
+						'  jq -n --arg stage "$STAGE" --arg base_domain "$BASE_DOMAIN" --arg mcp_url "https://api.$STAGE_DOMAIN/mcp" --arg version "$BODY_TAG" --arg mcp_lambda_arn "$BODY_LAMBDA_ARN" \'{version:1,stage:$stage,base_domain:$base_domain,mcp_url:$mcp_url,lesser_body_version:$version,mcp_lambda_arn:$mcp_lambda_arn}\' > "$BODY_RECEIPT_PATH"',
+						'  aws s3 cp "$BODY_RECEIPT_PATH" "s3://$ARTIFACT_BUCKET/$RECEIPT_S3_KEY"',
+						'elif [ "$RUN_MODE" = "lesser-mcp" ]; then',
+						'  echo "Wiring POST /mcp on existing Lesser API domain..."',
+						'  HOSTED_ZONE_NAME="${BASE_DOMAIN%.}."',
+						'  HOSTED_ZONE_ID=$(aws route53 list-hosted-zones-by-name --profile managed --dns-name "$HOSTED_ZONE_NAME" --output json | jq -r --arg name "$HOSTED_ZONE_NAME" \'.HostedZones[] | select(.Name==$name and (.Config.PrivateZone|not)) | .Id\' | head -n 1)',
+						'  test -n "$HOSTED_ZONE_ID" && test "$HOSTED_ZONE_ID" != "null"',
+						'  HOSTED_ZONE_ID="${HOSTED_ZONE_ID#/hostedzone/}"',
+						'  cd infra/cdk',
+						'  AWS_PROFILE=managed cdk deploy "$APP_SLUG-$STAGE" --require-approval never -c app="$APP_SLUG" -c baseDomain="$BASE_DOMAIN" -c hostedZoneId="$HOSTED_ZONE_ID" -c stage="$STAGE" -c soulEnabled=true -c lesserHostUrl="$LESSER_HOST_URL" -c lesserHostAttestationsUrl="$LESSER_HOST_ATTESTATIONS_URL" -c lesserHostInstanceKeyArn="$LESSER_HOST_INSTANCE_KEY_ARN" -c translationEnabled="$TRANSLATION_ENABLED" -c tipEnabled="$TIP_ENABLED" -c tipChainId="${TIP_CHAIN_ID:-}" -c tipContractAddress="${TIP_CONTRACT_ADDRESS:-}"',
+						'  cd - >/dev/null',
+						'  MCP_RECEIPT_PATH="$STATE_DIR/mcp-state.json"',
+						'  jq -n --arg stage "$STAGE" --arg base_domain "$BASE_DOMAIN" --arg mcp_url "https://api.$STAGE_DOMAIN/mcp" \'{version:1,stage:$stage,base_domain:$base_domain,mcp_url:$mcp_url}\' > "$MCP_RECEIPT_PATH"',
+						'  aws s3 cp "$MCP_RECEIPT_PATH" "s3://$ARTIFACT_BUCKET/$RECEIPT_S3_KEY"',
+						'elif [ "$RUN_MODE" = "soul-deploy" ]; then',
+						'  echo "Deploying lesser-soul pack..."',
+						'  fetch_and_verify_soul_pack',
+						'  echo "Deploying lesser-soul version: $SOUL_PACK_VERSION"',
 					'  cd "$SOUL_PACK_DIR/infra/cdk"',
 					'  npm ci',
 					'  AWS_PROFILE=managed npx cdk deploy --all --require-approval never -c stage="$SOUL_STAGE" -c instanceDomain="$SOUL_INSTANCE_DOMAIN"',
@@ -542,13 +597,16 @@ export class LesserHostStack extends cdk.Stack {
 					buildImage: codebuild.LinuxBuildImage.STANDARD_7_0,
 				computeType: codebuild.ComputeType.SMALL,
 			},
-			environmentVariables: {
-				GITHUB_OWNER: { value: lesserGitHubOwner },
-				GITHUB_REPO: { value: lesserGitHubRepo },
-				...(managedLesserGitHubTokenSsmParam.trim()
-					? {
-							GITHUB_TOKEN: {
-								value: managedLesserGitHubTokenSsmParam.trim(),
+				environmentVariables: {
+					GITHUB_OWNER: { value: lesserGitHubOwner },
+					GITHUB_REPO: { value: lesserGitHubRepo },
+					LESSER_BODY_GITHUB_OWNER: { value: lesserBodyGitHubOwner },
+					LESSER_BODY_GITHUB_REPO: { value: lesserBodyGitHubRepo },
+					LESSER_BODY_VERSION: { value: managedLesserBodyDefaultVersion.trim() },
+					...(managedLesserGitHubTokenSsmParam.trim()
+						? {
+								GITHUB_TOKEN: {
+									value: managedLesserGitHubTokenSsmParam.trim(),
 								type: codebuild.BuildEnvironmentVariableType.PARAMETER_STORE,
 							},
 						}
@@ -620,16 +678,19 @@ export class LesserHostStack extends cdk.Stack {
 			MANAGED_TARGET_OU_ID: managedTargetOuId,
 			MANAGED_ACCOUNT_EMAIL_TEMPLATE: managedAccountEmailTemplate,
 			MANAGED_ACCOUNT_NAME_PREFIX: managedAccountNamePrefix,
-			MANAGED_DEFAULT_REGION: managedDefaultRegion,
-			MANAGED_LESSER_DEFAULT_VERSION: managedLesserDefaultVersion,
-			MANAGED_PROVISION_RUNNER_PROJECT_NAME: provisionRunnerProjectName,
-			MANAGED_LESSER_GITHUB_OWNER: lesserGitHubOwner,
-			MANAGED_LESSER_GITHUB_REPO: lesserGitHubRepo,
-			MANAGED_LESSER_GITHUB_TOKEN_SSM_PARAM: managedLesserGitHubTokenSsmParam.trim(),
-			TIP_ENABLED: tipEnabled,
-			TIP_CHAIN_ID: tipChainId,
-			TIP_RPC_URL_SSM_PARAM: tipRpcUrlSsmParam,
-			TIP_CONTRACT_ADDRESS: tipContractAddress,
+				MANAGED_DEFAULT_REGION: managedDefaultRegion,
+				MANAGED_LESSER_DEFAULT_VERSION: managedLesserDefaultVersion,
+				MANAGED_PROVISION_RUNNER_PROJECT_NAME: provisionRunnerProjectName,
+				MANAGED_LESSER_GITHUB_OWNER: lesserGitHubOwner,
+				MANAGED_LESSER_GITHUB_REPO: lesserGitHubRepo,
+				MANAGED_LESSER_GITHUB_TOKEN_SSM_PARAM: managedLesserGitHubTokenSsmParam.trim(),
+				MANAGED_LESSER_BODY_DEFAULT_VERSION: managedLesserBodyDefaultVersion,
+				MANAGED_LESSER_BODY_GITHUB_OWNER: lesserBodyGitHubOwner,
+				MANAGED_LESSER_BODY_GITHUB_REPO: lesserBodyGitHubRepo,
+				TIP_ENABLED: tipEnabled,
+				TIP_CHAIN_ID: tipChainId,
+				TIP_RPC_URL_SSM_PARAM: tipRpcUrlSsmParam,
+				TIP_CONTRACT_ADDRESS: tipContractAddress,
 			TIP_ADMIN_SAFE_ADDRESS: tipAdminSafeAddress,
 			TIP_DEFAULT_HOST_WALLET_ADDRESS: tipDefaultHostWalletAddress,
 			TIP_DEFAULT_HOST_FEE_BPS: tipDefaultHostFeeBps,
@@ -726,13 +787,16 @@ export class LesserHostStack extends cdk.Stack {
 			MANAGED_TARGET_OU_ID: managedTargetOuId,
 			MANAGED_ACCOUNT_EMAIL_TEMPLATE: managedAccountEmailTemplate,
 			MANAGED_ACCOUNT_NAME_PREFIX: managedAccountNamePrefix,
-			MANAGED_DEFAULT_REGION: managedDefaultRegion,
-			MANAGED_LESSER_DEFAULT_VERSION: managedLesserDefaultVersion,
-			MANAGED_PROVISION_RUNNER_PROJECT_NAME: provisionRunnerProjectName,
-			MANAGED_LESSER_GITHUB_OWNER: lesserGitHubOwner,
-			MANAGED_LESSER_GITHUB_REPO: lesserGitHubRepo,
-			MANAGED_LESSER_GITHUB_TOKEN_SSM_PARAM: managedLesserGitHubTokenSsmParam.trim(),
-		});
+				MANAGED_DEFAULT_REGION: managedDefaultRegion,
+				MANAGED_LESSER_DEFAULT_VERSION: managedLesserDefaultVersion,
+				MANAGED_PROVISION_RUNNER_PROJECT_NAME: provisionRunnerProjectName,
+				MANAGED_LESSER_GITHUB_OWNER: lesserGitHubOwner,
+				MANAGED_LESSER_GITHUB_REPO: lesserGitHubRepo,
+				MANAGED_LESSER_GITHUB_TOKEN_SSM_PARAM: managedLesserGitHubTokenSsmParam.trim(),
+				MANAGED_LESSER_BODY_DEFAULT_VERSION: managedLesserBodyDefaultVersion,
+				MANAGED_LESSER_BODY_GITHUB_OWNER: lesserBodyGitHubOwner,
+				MANAGED_LESSER_BODY_GITHUB_REPO: lesserBodyGitHubRepo,
+			});
 
 		stateTable.grantReadWriteData(controlPlaneFn);
 		stateTable.grantReadWriteData(trustFn);

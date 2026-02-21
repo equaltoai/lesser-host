@@ -341,6 +341,7 @@ func TestProvisionStateMachine_SuccessPathAcrossSteps(t *testing.T) {
 		ExpiresAt:          now.Add(1 * time.Hour),
 		Stage:              "lab",
 		LesserVersion:      "v",
+		BodyEnabled:        true,
 		AdminUsername:      "demo",
 		AdminWalletType:    "ethereum",
 		AdminWalletAddr:    "0x0000000000000000000000000000000000000003",
@@ -411,9 +412,33 @@ func TestProvisionStateMachine_SuccessPathAcrossSteps(t *testing.T) {
 	delay, done, err := s.advanceProvisionReceiptIngest(context.Background(), job, "req", now)
 	require.NoError(t, err)
 	require.Zero(t, delay)
+	require.False(t, done)
+	require.Equal(t, provisionStepBodyDeployStart, job.Step)
+
+	delay, _, err = s.advanceProvisionBodyDeployStart(context.Background(), job, "req", now)
+	require.NoError(t, err)
+	require.Equal(t, provisionDefaultPollDelay, delay)
+	require.Equal(t, provisionStepBodyDeployWait, job.Step)
+	require.Equal(t, "run1", job.RunID)
+
+	delay, _, err = s.advanceProvisionBodyDeployWait(context.Background(), job, "req", now)
+	require.NoError(t, err)
+	require.Zero(t, delay)
+	require.Equal(t, provisionStepDeployMcpStart, job.Step)
+	require.Equal(t, now, job.BodyProvisionedAt)
+
+	delay, _, err = s.advanceProvisionDeployMcpStart(context.Background(), job, "req", now)
+	require.NoError(t, err)
+	require.Equal(t, provisionDefaultPollDelay, delay)
+	require.Equal(t, provisionStepDeployMcpWait, job.Step)
+
+	delay, done, err = s.advanceProvisionDeployMcpWait(context.Background(), job, "req", now)
+	require.NoError(t, err)
+	require.Zero(t, delay)
 	require.True(t, done)
 	require.Equal(t, provisionStepDone, job.Step)
 	require.Equal(t, models.ProvisionJobStatusOK, job.Status)
+	require.Equal(t, now, job.McpWiredAt)
 
 	// upsertParentNSDelegation handles trim + dedupe.
 	require.NoError(t, s.upsertParentNSDelegation(context.Background(), "ZPARENT", "demo.example.com", []string{" ns-1 ", "", "ns-1"}))
@@ -542,6 +567,7 @@ func TestProvisionStateMachine_SoulEnabled_SuccessPathAcrossSteps(t *testing.T) 
 		UpdatedAt:          now.Add(-1 * time.Minute),
 		ExpiresAt:          now.Add(1 * time.Hour),
 		SoulEnabled:        true,
+		BodyEnabled:        true,
 		Stage:              "lab",
 		LesserVersion:      "v",
 		AdminUsername:      "demo",
@@ -615,7 +641,30 @@ func TestProvisionStateMachine_SoulEnabled_SuccessPathAcrossSteps(t *testing.T) 
 	require.NoError(t, err)
 	require.Zero(t, delay)
 	require.False(t, done)
+	require.Equal(t, provisionStepBodyDeployStart, job.Step)
+
+	delay, _, err = s.advanceProvisionBodyDeployStart(context.Background(), job, "req", now)
+	require.NoError(t, err)
+	require.Equal(t, provisionDefaultPollDelay, delay)
+	require.Equal(t, provisionStepBodyDeployWait, job.Step)
+
+	delay, _, err = s.advanceProvisionBodyDeployWait(context.Background(), job, "req", now)
+	require.NoError(t, err)
+	require.Zero(t, delay)
+	require.Equal(t, provisionStepDeployMcpStart, job.Step)
+	require.Equal(t, now, job.BodyProvisionedAt)
+
+	delay, _, err = s.advanceProvisionDeployMcpStart(context.Background(), job, "req", now)
+	require.NoError(t, err)
+	require.Equal(t, provisionDefaultPollDelay, delay)
+	require.Equal(t, provisionStepDeployMcpWait, job.Step)
+
+	delay, done, err = s.advanceProvisionDeployMcpWait(context.Background(), job, "req", now)
+	require.NoError(t, err)
+	require.Zero(t, delay)
+	require.False(t, done)
 	require.Equal(t, provisionStepSoulDeployStart, job.Step)
+	require.Equal(t, now, job.McpWiredAt)
 
 	delay, _, err = s.advanceProvisionSoulDeployStart(context.Background(), job, "req", now)
 	require.NoError(t, err)

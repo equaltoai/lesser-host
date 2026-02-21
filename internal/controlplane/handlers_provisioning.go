@@ -45,6 +45,10 @@ type provisionJobResponse struct {
 	LesserVersion     string    `json:"lesser_version,omitempty"`
 	SoulEnabled       bool      `json:"soul_enabled"`
 	SoulProvisionedAt time.Time `json:"soul_provisioned_at,omitempty"`
+	BodyEnabled       bool      `json:"body_enabled"`
+	BodyProvisionedAt time.Time `json:"body_provisioned_at,omitempty"`
+	McpWiredAt        time.Time `json:"mcp_wired_at,omitempty"`
+	McpURL            string    `json:"mcp_url,omitempty"`
 	AdminUsername     string    `json:"admin_username,omitempty"`
 
 	ConsentMessageHash string `json:"consent_message_hash,omitempty"`
@@ -85,6 +89,9 @@ func provisionJobResponseFromModel(j *models.ProvisionJob) provisionJobResponse 
 		LesserVersion:      strings.TrimSpace(j.LesserVersion),
 		SoulEnabled:        j.SoulEnabled,
 		SoulProvisionedAt:  j.SoulProvisionedAt,
+		BodyEnabled:        j.BodyEnabled,
+		BodyProvisionedAt:  j.BodyProvisionedAt,
+		McpWiredAt:         j.McpWiredAt,
 		AdminUsername:      strings.TrimSpace(j.AdminUsername),
 		ConsentMessageHash: strings.TrimSpace(j.ConsentMessageHash),
 		ConsentSignature:   strings.TrimSpace(j.ConsentSignature),
@@ -353,7 +360,7 @@ func (s *Server) handleStartInstanceProvisioning(ctx *apptheory.Context) (*appth
 	}
 
 	if job, ok := s.getExistingProvisionJobAndNudge(ctx, inst); ok {
-		return apptheory.JSON(http.StatusOK, provisionJobResponseFromModel(job))
+		return apptheory.JSON(http.StatusOK, s.provisionJobResponseWithDerivedFields(job))
 	}
 
 	req, err := parseStartInstanceProvisionRequest(ctx)
@@ -367,13 +374,14 @@ func (s *Server) handleStartInstanceProvisioning(ctx *apptheory.Context) (*appth
 		return nil, appErr
 	}
 	job.SoulEnabled = effectiveSoulEnabled(inst.SoulEnabled)
+	job.BodyEnabled = effectiveBodyEnabled(inst.BodyEnabled)
 
 	if appErr := s.createManagedProvisionJobTx(ctx, job, slug, baseDomain, region, ctx.AuthIdentity, "instance.provision.start", ctx.RequestID, now); appErr != nil {
 		return nil, appErr
 	}
 
 	s.enqueueProvisionJobBestEffort(ctx, job.ID)
-	return apptheory.JSON(http.StatusAccepted, provisionJobResponseFromModel(job))
+	return apptheory.JSON(http.StatusAccepted, s.provisionJobResponseWithDerivedFields(job))
 }
 
 func (s *Server) handleGetInstanceProvisioning(ctx *apptheory.Context) (*apptheory.Response, error) {
@@ -410,5 +418,5 @@ func (s *Server) handleGetInstanceProvisioning(ctx *apptheory.Context) (*apptheo
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
-	return apptheory.JSON(http.StatusOK, provisionJobResponseFromModel(job))
+	return apptheory.JSON(http.StatusOK, s.provisionJobResponseWithDerivedFields(job))
 }

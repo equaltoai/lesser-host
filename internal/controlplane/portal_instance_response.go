@@ -7,7 +7,7 @@ import (
 )
 
 func (s *Server) portalInstanceResponseFromModel(inst *models.Instance) instanceResponse {
-	resp := instanceResponseFromModel(inst)
+	resp := s.instanceResponseWithDerivedFields(inst)
 
 	baseURL := ""
 	if s != nil {

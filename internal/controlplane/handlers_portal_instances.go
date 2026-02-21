@@ -138,6 +138,7 @@ func (s *Server) handlePortalCreateInstance(ctx *apptheory.Context) (*apptheory.
 		return nil, appErr
 	}
 	primaryDomain := s.buildPortalPrimaryDomain(slug, now)
+	inst.HostedBaseDomain = strings.TrimSpace(primaryDomain.Domain)
 	if appErr := s.createPortalInstanceTx(ctx, inst, primaryDomain, username, now); appErr != nil {
 		return nil, appErr
 	}
@@ -438,7 +439,7 @@ func (s *Server) handlePortalStartInstanceProvisioning(ctx *apptheory.Context) (
 	slug := strings.ToLower(strings.TrimSpace(inst.Slug))
 
 	if job, ok := s.getExistingProvisionJobAndNudge(ctx, inst); ok {
-		return apptheory.JSON(http.StatusOK, provisionJobResponseFromModel(job))
+		return apptheory.JSON(http.StatusOK, s.provisionJobResponseWithDerivedFields(job))
 	}
 
 	req, err := parseStartInstanceProvisionRequest(ctx)
@@ -457,6 +458,7 @@ func (s *Server) handlePortalStartInstanceProvisioning(ctx *apptheory.Context) (
 		return nil, appErr
 	}
 	job.SoulEnabled = effectiveSoulEnabled(inst.SoulEnabled)
+	job.BodyEnabled = effectiveBodyEnabled(inst.BodyEnabled)
 
 	if appErr := s.createManagedProvisionJobTx(ctx, job, slug, baseDomain, region, ctx.AuthIdentity, "portal.instance.provision.start", ctx.RequestID, now); appErr != nil {
 		return nil, appErr
@@ -464,7 +466,7 @@ func (s *Server) handlePortalStartInstanceProvisioning(ctx *apptheory.Context) (
 
 	s.enqueueProvisionJobBestEffort(ctx, job.ID)
 
-	return apptheory.JSON(http.StatusAccepted, provisionJobResponseFromModel(job))
+	return apptheory.JSON(http.StatusAccepted, s.provisionJobResponseWithDerivedFields(job))
 }
 
 func (s *Server) handlePortalGetInstanceProvisioning(ctx *apptheory.Context) (*apptheory.Response, error) {
@@ -486,7 +488,7 @@ func (s *Server) handlePortalGetInstanceProvisioning(ctx *apptheory.Context) (*a
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
-	return apptheory.JSON(http.StatusOK, provisionJobResponseFromModel(job))
+	return apptheory.JSON(http.StatusOK, s.provisionJobResponseWithDerivedFields(job))
 }
 
 func (s *Server) handlePortalListInstanceBudgets(ctx *apptheory.Context) (*apptheory.Response, error) {

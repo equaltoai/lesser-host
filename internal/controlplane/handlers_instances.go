@@ -56,8 +56,10 @@ type instanceResponse struct {
 	HostedZoneID              string    `json:"hosted_zone_id,omitempty"`
 	LesserVersion             string    `json:"lesser_version,omitempty"`
 	SoulEnabled               bool      `json:"soul_enabled"`
+	BodyEnabled               bool      `json:"body_enabled"`
 	SoulVersion               string    `json:"soul_version,omitempty"`
 	SoulProvisionedAt         time.Time `json:"soul_provisioned_at,omitempty"`
+	McpURL                    string    `json:"mcp_url,omitempty"`
 	LesserHostBaseURL         string    `json:"lesser_host_base_url,omitempty"`
 	LesserHostAttestationsURL string    `json:"lesser_host_attestations_url,omitempty"`
 	TranslationEnabled        bool      `json:"translation_enabled"`
@@ -101,6 +103,7 @@ type createInstanceKeyResponse struct {
 
 type updateInstanceConfigRequest struct {
 	SoulEnabled *bool `json:"soul_enabled,omitempty"`
+	BodyEnabled *bool `json:"body_enabled,omitempty"`
 
 	HostedPreviewsEnabled  *bool   `json:"hosted_previews_enabled,omitempty"`
 	LinkSafetyEnabled      *bool   `json:"link_safety_enabled,omitempty"`
@@ -161,6 +164,7 @@ func instanceResponseFromModel(inst *models.Instance) instanceResponse {
 		HostedZoneID:              strings.TrimSpace(inst.HostedZoneID),
 		LesserVersion:             strings.TrimSpace(inst.LesserVersion),
 		SoulEnabled:               effectiveSoulEnabled(inst.SoulEnabled),
+		BodyEnabled:               effectiveBodyEnabled(inst.BodyEnabled),
 		SoulVersion:               strings.TrimSpace(inst.SoulVersion),
 		SoulProvisionedAt:         inst.SoulProvisionedAt,
 		LesserHostBaseURL:         strings.TrimSpace(inst.LesserHostBaseURL),
@@ -271,6 +275,7 @@ func (s *Server) handleCreateInstance(ctx *apptheory.Context) (*apptheory.Respon
 		parentDomain = defaultManagedParentDomain
 	}
 	baseDomain := fmt.Sprintf("%s.%s", slug, strings.TrimPrefix(parentDomain, "."))
+	inst.HostedBaseDomain = baseDomain
 
 	primaryDomain := &models.Domain{
 		Domain:             baseDomain,
@@ -327,7 +332,7 @@ func (s *Server) handleCreateInstance(ctx *apptheory.Context) (*apptheory.Respon
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create instance"}
 	}
 
-	return apptheory.JSON(http.StatusCreated, instanceResponseFromModel(inst))
+	return apptheory.JSON(http.StatusCreated, s.instanceResponseWithDerivedFields(inst))
 }
 
 func (s *Server) handleListInstances(ctx *apptheory.Context) (*apptheory.Response, error) {
@@ -346,7 +351,7 @@ func (s *Server) handleListInstances(ctx *apptheory.Context) (*apptheory.Respons
 
 	out := make([]instanceResponse, 0, len(items))
 	for _, inst := range items {
-		out = append(out, instanceResponseFromModel(inst))
+		out = append(out, s.instanceResponseWithDerivedFields(inst))
 	}
 
 	return apptheory.JSON(http.StatusOK, listInstancesResponse{
@@ -479,6 +484,13 @@ func effectiveTranslationEnabled(v *bool) bool {
 func effectiveSoulEnabled(v *bool) bool {
 	if v == nil {
 		return false
+	}
+	return *v
+}
+
+func effectiveBodyEnabled(v *bool) bool {
+	if v == nil {
+		return true
 	}
 	return *v
 }
@@ -649,7 +661,7 @@ func (s *Server) handleUpdateInstanceConfig(ctx *apptheory.Context) (*apptheory.
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
-	return apptheory.JSON(http.StatusOK, instanceResponseFromModel(inst))
+	return apptheory.JSON(http.StatusOK, s.instanceResponseWithDerivedFields(inst))
 }
 
 func buildInstanceConfigUpdate(slug string, req updateInstanceConfigRequest) (*models.Instance, []string, error) {
@@ -657,6 +669,7 @@ func buildInstanceConfigUpdate(slug string, req updateInstanceConfigRequest) (*m
 	fields := make([]string, 0, 12)
 
 	setBoolPtr(&update.SoulEnabled, req.SoulEnabled, "SoulEnabled", &fields)
+	setBoolPtr(&update.BodyEnabled, req.BodyEnabled, "BodyEnabled", &fields)
 	setBoolPtr(&update.HostedPreviewsEnabled, req.HostedPreviewsEnabled, "HostedPreviewsEnabled", &fields)
 	setBoolPtr(&update.LinkSafetyEnabled, req.LinkSafetyEnabled, "LinkSafetyEnabled", &fields)
 	setBoolPtr(&update.RendersEnabled, req.RendersEnabled, "RendersEnabled", &fields)
