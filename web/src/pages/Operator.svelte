@@ -15,6 +15,8 @@
 	import InstanceSupport from 'src/pages/operator/InstanceSupport.svelte';
 	import ProvisioningJobDetail from 'src/pages/operator/ProvisioningJobDetail.svelte';
 	import ProvisioningJobs from 'src/pages/operator/ProvisioningJobs.svelte';
+	import SoulOperationDetail from 'src/pages/operator/SoulOperationDetail.svelte';
+	import SoulRegistry from 'src/pages/operator/SoulRegistry.svelte';
 	import TipRegistry from 'src/pages/operator/TipRegistry.svelte';
 	import TipRegistryOperationDetail from 'src/pages/operator/TipRegistryOperationDetail.svelte';
 	import UserApprovals from 'src/pages/operator/UserApprovals.svelte';
@@ -33,6 +35,8 @@
 		| { kind: 'provisioningJobDetail'; id: string }
 		| { kind: 'tipRegistry' }
 		| { kind: 'tipRegistryOperation'; id: string }
+		| { kind: 'soulRegistry' }
+		| { kind: 'soulOperation'; id: string }
 		| { kind: 'audit' }
 		| { kind: 'instances' }
 		| { kind: 'instanceDetail'; slug: string }
@@ -67,6 +71,11 @@
 		if (parts[0] === 'tip-registry') {
 			if (parts[1] === 'operations' && parts[2]) return { kind: 'tipRegistryOperation', id: parts[2] };
 			if (parts.length === 1) return { kind: 'tipRegistry' };
+			return { kind: 'notFound' };
+		}
+		if (parts[0] === 'soul') {
+			if (parts[1] === 'operations' && parts[2]) return { kind: 'soulOperation', id: parts[2] };
+			if (parts.length === 1) return { kind: 'soulRegistry' };
 			return { kind: 'notFound' };
 		}
 		if (parts[0] === 'audit') {
@@ -182,6 +191,10 @@
 				<TipRegistry token={$session.token} />
 			{:else if operatorRoute.kind === 'tipRegistryOperation'}
 				<TipRegistryOperationDetail token={$session.token} id={operatorRoute.id} />
+			{:else if operatorRoute.kind === 'soulRegistry'}
+				<SoulRegistry token={$session.token} />
+			{:else if operatorRoute.kind === 'soulOperation'}
+				<SoulOperationDetail token={$session.token} id={operatorRoute.id} />
 			{:else if operatorRoute.kind === 'audit'}
 				<AuditLog token={$session.token} />
 			{:else}

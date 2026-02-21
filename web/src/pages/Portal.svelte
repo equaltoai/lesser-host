@@ -17,6 +17,9 @@
 	import InstanceKeys from 'src/pages/portal/InstanceKeys.svelte';
 	import InstanceUsage from 'src/pages/portal/InstanceUsage.svelte';
 	import Instances from 'src/pages/portal/Instances.svelte';
+	import SoulAgentDetail from 'src/pages/portal/SoulAgentDetail.svelte';
+	import SoulRegister from 'src/pages/portal/SoulRegister.svelte';
+	import Souls from 'src/pages/portal/Souls.svelte';
 
 	let loading = $state(false);
 	let errorMessage = $state<string | null>(null);
@@ -30,6 +33,9 @@
 		| { kind: 'instanceUsage'; slug: string }
 		| { kind: 'instanceDomains'; slug: string }
 		| { kind: 'instanceKeys'; slug: string }
+		| { kind: 'souls' }
+		| { kind: 'soulRegister' }
+		| { kind: 'soulAgent'; agentId: string }
 		| { kind: 'billing' }
 		| { kind: 'notFound' };
 
@@ -55,6 +61,12 @@
 		}
 		if (parts[0] === 'billing') {
 			if (parts.length === 1) return { kind: 'billing' };
+			return { kind: 'notFound' };
+		}
+		if (parts[0] === 'souls') {
+			if (parts.length === 1) return { kind: 'souls' };
+			if (parts[1] === 'register') return { kind: 'soulRegister' };
+			if (parts[1]) return { kind: 'soulAgent', agentId: parts[1] };
 			return { kind: 'notFound' };
 		}
 
@@ -167,6 +179,12 @@
 				<InstanceDomains token={$session.token} slug={portalRoute.slug} />
 			{:else if portalRoute.kind === 'instanceKeys'}
 				<InstanceKeys token={$session.token} slug={portalRoute.slug} />
+			{:else if portalRoute.kind === 'souls'}
+				<Souls token={$session.token} />
+			{:else if portalRoute.kind === 'soulRegister'}
+				<SoulRegister token={$session.token} />
+			{:else if portalRoute.kind === 'soulAgent'}
+				<SoulAgentDetail token={$session.token} agentId={portalRoute.agentId} />
 			{:else if portalRoute.kind === 'billing'}
 				<Billing token={$session.token} />
 			{:else}

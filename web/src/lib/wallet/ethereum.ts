@@ -43,3 +43,22 @@ export async function personalSign(
 		return (await provider.request({ method: 'personal_sign', params: paramsB })) as string;
 	}
 }
+
+export async function signTypedDataV4(
+	provider: Eip1193Provider,
+	address: string,
+	typedData: unknown,
+): Promise<string> {
+	const payload = typeof typedData === 'string' ? typedData : JSON.stringify(typedData);
+	const params = [address, payload];
+	try {
+		return (await provider.request({ method: 'eth_signTypedData_v4', params })) as string;
+	} catch {
+		// Wallets may only support older variants.
+		try {
+			return (await provider.request({ method: 'eth_signTypedData_v3', params })) as string;
+		} catch {
+			return (await provider.request({ method: 'eth_signTypedData', params })) as string;
+		}
+	}
+}

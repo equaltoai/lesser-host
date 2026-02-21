@@ -166,6 +166,7 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 
 	// Soul registry (public config + portal registration flow).
 	app.Get("/api/v1/soul/config", s.handleSoulConfig)
+	app.Get("/api/v1/soul/agents/mine", s.handleSoulListMyAgents, apptheory.RequireAuth())
 	app.Get("/api/v1/soul/agents/{agentId}", s.handleSoulPublicGetAgent)
 	app.Get("/api/v1/soul/agents/{agentId}/registration", s.handleSoulPublicGetRegistration)
 	app.Get("/api/v1/soul/agents/{agentId}/reputation", s.handleSoulPublicGetReputation)

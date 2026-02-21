@@ -16,6 +16,10 @@
 		if (exact) return $currentPath === path;
 		return $currentPath.startsWith(path);
 	}
+
+	function isPortalActive(): boolean {
+		return isActive('/portal') && !isActive('/portal/souls');
+	}
 </script>
 
 <div class="layout">
@@ -25,10 +29,16 @@
 		</div>
 		<div class="layout__nav">
 			<Button
-				variant={isActive('/portal') ? 'solid' : 'ghost'}
+				variant={isPortalActive() ? 'solid' : 'ghost'}
 				onclick={() => navigate('/portal')}
 			>
 				Portal
+			</Button>
+			<Button
+				variant={isActive('/portal/souls') ? 'solid' : 'ghost'}
+				onclick={() => navigate('/portal/souls')}
+			>
+				Souls
 			</Button>
 			<Button
 				variant={isActive('/trust') ? 'solid' : 'ghost'}

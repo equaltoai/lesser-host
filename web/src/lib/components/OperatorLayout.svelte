@@ -67,6 +67,12 @@
 				Tip registry
 			</Button>
 			<Button
+				variant={isActive('/operator/soul') ? 'solid' : 'ghost'}
+				onclick={() => navigate('/operator/soul')}
+			>
+				Souls
+			</Button>
+			<Button
 				variant={isActive('/operator/audit') ? 'solid' : 'ghost'}
 				onclick={() => navigate('/operator/audit')}
 			>
