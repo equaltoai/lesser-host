@@ -36,16 +36,18 @@ type Config struct {
 	TipTxMode                   string // safe|direct
 
 	// Soul registry (EVM).
-	SoulEnabled                 bool
-	SoulChainID                 int64
-	SoulRPCURL                  string
-	SoulRPCURLSSMParam          string
-	SoulRegistryContractAddress string
-	SoulAdminSafeAddress        string
-	SoulTxMode                  string // safe|direct
-	SoulSupportedCapabilities   []string
-	SoulPackBucketName          string
-	SoulPackBucketNameSSMParam  string // optional override; default is /soul/<stage>/packBucketName
+	SoulEnabled                              bool
+	SoulChainID                              int64
+	SoulRPCURL                               string
+	SoulRPCURLSSMParam                       string
+	SoulRegistryContractAddress              string
+	SoulReputationAttestationContractAddress string
+	SoulValidationAttestationContractAddress string
+	SoulAdminSafeAddress                     string
+	SoulTxMode                               string // safe|direct
+	SoulSupportedCapabilities                []string
+	SoulPackBucketName                       string
+	SoulPackBucketNameSSMParam               string // optional override; default is /soul/<stage>/packBucketName
 
 	// Soul reputation (v0).
 	SoulReputationTipStartBlock     uint64
@@ -167,16 +169,18 @@ func Load() Config {
 		TipDefaultHostFeeBps:        tipDefaultHostFeeBps,
 		TipTxMode:                   tipTxMode,
 
-		SoulEnabled:                 soulOn,
-		SoulChainID:                 soulChainID,
-		SoulRPCURL:                  envString("SOUL_RPC_URL"),
-		SoulRPCURLSSMParam:          envString("SOUL_RPC_URL_SSM_PARAM"),
-		SoulRegistryContractAddress: envString("SOUL_REGISTRY_CONTRACT_ADDRESS"),
-		SoulAdminSafeAddress:        envString("SOUL_ADMIN_SAFE_ADDRESS"),
-		SoulTxMode:                  soulTxMode,
-		SoulSupportedCapabilities:   soulCaps,
-		SoulPackBucketName:          soulPackBucketName,
-		SoulPackBucketNameSSMParam:  envString("SOUL_PACK_BUCKET_NAME_SSM_PARAM"),
+		SoulEnabled:                              soulOn,
+		SoulChainID:                              soulChainID,
+		SoulRPCURL:                               envString("SOUL_RPC_URL"),
+		SoulRPCURLSSMParam:                       envString("SOUL_RPC_URL_SSM_PARAM"),
+		SoulRegistryContractAddress:              envString("SOUL_REGISTRY_CONTRACT_ADDRESS"),
+		SoulReputationAttestationContractAddress: envString("SOUL_REPUTATION_ATTESTATION_CONTRACT_ADDRESS"),
+		SoulValidationAttestationContractAddress: envString("SOUL_VALIDATION_ATTESTATION_CONTRACT_ADDRESS"),
+		SoulAdminSafeAddress:                     envString("SOUL_ADMIN_SAFE_ADDRESS"),
+		SoulTxMode:                               soulTxMode,
+		SoulSupportedCapabilities:                soulCaps,
+		SoulPackBucketName:                       soulPackBucketName,
+		SoulPackBucketNameSSMParam:               envString("SOUL_PACK_BUCKET_NAME_SSM_PARAM"),
 
 		SoulReputationTipStartBlock:     soulRepTipStartBlock,
 		SoulReputationTipBlockChunkSize: soulRepTipChunkSize,

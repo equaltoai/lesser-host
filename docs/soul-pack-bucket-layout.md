@@ -45,6 +45,8 @@ Notes:
 ### Reputation snapshots (historical, immutable)
 
 - `registry/v1/reputation/roots/<rootHex>/snapshot.json`
+- `registry/v1/reputation/roots/<rootHex>/proofs.json`
+- `registry/v1/reputation/roots/<rootHex>/manifest.json`
 
 Where `<rootHex>` is the on-chain Merkle root (lowercase hex with `0x` prefix) published via
 `ReputationAttestation.publishRoot(...)`.
@@ -58,15 +60,19 @@ Notes:
 - These snapshots are repeatable/deterministic for the same block range + weights configuration; overwrites are
   acceptable and bucket versioning retains history.
 
-### Validation snapshot packs (historical, immutable; optional)
+### Validation snapshots (historical, immutable)
 
-- `registry/v1/validation/roots/<rootHex>/snapshot.tgz`
+- `registry/v1/validation/roots/<rootHex>/snapshot.json`
+- `registry/v1/validation/roots/<rootHex>/proofs.json`
+- `registry/v1/validation/roots/<rootHex>/manifest.json`
 
 Where `<rootHex>` is the on-chain Merkle root published via `ValidationAttestation.publishRoot(...)`.
 
 ### Snapshot signing (KMS; when distributed)
 
-When a snapshot is distributed as a pack (e.g., `snapshot.tgz`), use the same pattern as Soul packs for integrity:
+Current root publications include a `manifest.json` with sha256 sums, but do not yet write a KMS signature.
+
+When a snapshot is distributed as a pack, use the same pattern as Soul packs for integrity:
 
 - `registry/v1/<type>/roots/<rootHex>/manifest.json`
 - `registry/v1/<type>/roots/<rootHex>/manifest.sig`

@@ -192,6 +192,8 @@ export class LesserHostStack extends cdk.Stack {
 		const soulEnabled = soulContext('soulEnabled');
 		const soulChainId = soulContext('soulChainId');
 		const soulRegistryContractAddress = soulContext('soulRegistryContractAddress');
+		const soulReputationAttestationContractAddress = soulContext('soulReputationAttestationContractAddress');
+		const soulValidationAttestationContractAddress = soulContext('soulValidationAttestationContractAddress');
 		const soulRpcUrlSsmParam = soulContext('soulRpcUrlSsmParam').trim();
 		const soulAdminSafeAddress = soulContext('soulAdminSafeAddress');
 		const soulTxMode = soulContext('soulTxMode');
@@ -636,6 +638,8 @@ export class LesserHostStack extends cdk.Stack {
 			SOUL_CHAIN_ID: soulChainId,
 			SOUL_RPC_URL_SSM_PARAM: soulRpcUrlSsmParam,
 			SOUL_REGISTRY_CONTRACT_ADDRESS: soulRegistryContractAddress,
+			SOUL_REPUTATION_ATTESTATION_CONTRACT_ADDRESS: soulReputationAttestationContractAddress,
+			SOUL_VALIDATION_ATTESTATION_CONTRACT_ADDRESS: soulValidationAttestationContractAddress,
 			SOUL_ADMIN_SAFE_ADDRESS: soulAdminSafeAddress,
 			SOUL_TX_MODE: soulTxMode,
 			SOUL_SUPPORTED_CAPABILITIES: soulSupportedCapabilities,

@@ -146,7 +146,11 @@ func (s *Server) handleRecordSoulOperationExecution(ctx *apptheory.Context) (*ap
 	success := receipt.Status == 1
 	blockNum := soulBlockNumber(receipt)
 	receiptJSON := soulReceiptSnapshotJSON(txHash, receipt)
-	snapshotJSON := s.soulOperationSnapshotJSON(ctx.Context(), client, op)
+	snapshotJSON := strings.TrimSpace(op.SnapshotJSON)
+	chainSnapshotJSON := s.soulOperationSnapshotJSON(ctx.Context(), client, op)
+	if strings.TrimSpace(chainSnapshotJSON) != "" {
+		snapshotJSON = chainSnapshotJSON
+	}
 
 	update := &models.SoulOperation{
 		OperationID:     op.OperationID,

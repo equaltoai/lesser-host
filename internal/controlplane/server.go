@@ -184,4 +184,6 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 	app.Post("/api/v1/soul/operations/{id}/record-execution", s.handleRecordSoulOperationExecution, apptheory.RequireAuth())
 	app.Post("/api/v1/soul/agents/{agentId}/suspend", s.handleSuspendSoulAgent, apptheory.RequireAuth())
 	app.Post("/api/v1/soul/agents/{agentId}/reinstate", s.handleReinstateSoulAgent, apptheory.RequireAuth())
+	app.Post("/api/v1/soul/reputation/publish", s.handleSoulPublishReputationRoot, apptheory.RequireAuth())
+	app.Post("/api/v1/soul/validation/publish", s.handleSoulPublishValidationRoot, apptheory.RequireAuth())
 }
