@@ -196,6 +196,13 @@ export class LesserHostStack extends cdk.Stack {
 		const soulAdminSafeAddress = soulContext('soulAdminSafeAddress');
 		const soulTxMode = soulContext('soulTxMode');
 		const soulSupportedCapabilities = soulContext('soulSupportedCapabilities');
+		const soulReputationTipStartBlock = soulContext('soulReputationTipStartBlock');
+		const soulReputationTipBlockChunkSize = soulContext('soulReputationTipBlockChunkSize');
+		const soulReputationTipScale = soulContext('soulReputationTipScale');
+		const soulReputationWeightEconomic = soulContext('soulReputationWeightEconomic');
+		const soulReputationWeightSocial = soulContext('soulReputationWeightSocial');
+		const soulReputationWeightValidation = soulContext('soulReputationWeightValidation');
+		const soulReputationWeightTrust = soulContext('soulReputationWeightTrust');
 
 		const paymentsProvider = (this.node.tryGetContext('paymentsProvider') as string | undefined) ?? '';
 		const paymentsCentsPer1000Credits =
@@ -676,6 +683,28 @@ export class LesserHostStack extends cdk.Stack {
 			ATTESTATION_PUBLIC_KEY_IDS: attestationSigningKey.keyId,
 		});
 
+		const soulReputationWorkerFn = this.goLambda(
+			'SoulReputationWorker',
+			'./cmd/soul-reputation-worker',
+			{
+				STAGE: stage,
+				STATE_TABLE_NAME: stateTable.tableName,
+				TIP_ENABLED: tipEnabled,
+				TIP_CHAIN_ID: tipChainId,
+				TIP_RPC_URL_SSM_PARAM: tipRpcUrlSsmParam,
+				TIP_CONTRACT_ADDRESS: tipContractAddress,
+				SOUL_ENABLED: soulEnabled,
+				SOUL_REPUTATION_TIP_START_BLOCK: soulReputationTipStartBlock,
+				SOUL_REPUTATION_TIP_BLOCK_CHUNK_SIZE: soulReputationTipBlockChunkSize,
+				SOUL_REPUTATION_TIP_SCALE: soulReputationTipScale,
+				SOUL_REPUTATION_WEIGHT_ECONOMIC: soulReputationWeightEconomic,
+				SOUL_REPUTATION_WEIGHT_SOCIAL: soulReputationWeightSocial,
+				SOUL_REPUTATION_WEIGHT_VALIDATION: soulReputationWeightValidation,
+				SOUL_REPUTATION_WEIGHT_TRUST: soulReputationWeightTrust,
+			},
+			{ memorySize: 512, timeoutSeconds: 120 },
+		);
+
 		const provisionWorkerFn = this.goLambda('ProvisionWorker', './cmd/provision-worker', {
 			STAGE: stage,
 			STATE_TABLE_NAME: stateTable.tableName,
@@ -701,9 +730,11 @@ export class LesserHostStack extends cdk.Stack {
 		stateTable.grantReadWriteData(trustFn);
 		stateTable.grantReadWriteData(renderWorkerFn);
 		stateTable.grantReadWriteData(aiWorkerFn);
+		stateTable.grantReadWriteData(soulReputationWorkerFn);
 		stateTable.grantReadWriteData(provisionWorkerFn);
 		artifactsBucket.grantReadWrite(controlPlaneFn);
 		soulPackBucket.grantReadWrite(controlPlaneFn);
+		soulPackBucket.grantReadWrite(soulReputationWorkerFn);
 		artifactsBucket.grantReadWrite(trustFn);
 		artifactsBucket.grantReadWrite(renderWorkerFn);
 		artifactsBucket.grantRead(aiWorkerFn);
@@ -899,6 +930,38 @@ export class LesserHostStack extends cdk.Stack {
 			}),
 		);
 
+		if (tipRpcUrlSsmParam) {
+			soulReputationWorkerFn.addToRolePolicy(
+				new iam.PolicyStatement({
+					actions: ['ssm:GetParameter'],
+					resources: [
+						`arn:aws:ssm:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:parameter/${tipRpcUrlSsmParam.replace(/^\//, '')}`,
+					],
+				}),
+			);
+		}
+		soulReputationWorkerFn.addToRolePolicy(
+			new iam.PolicyStatement({
+				actions: ['ssm:GetParameter', 'ssm:GetParameters'],
+				resources: [
+					cdk.Stack.of(this).formatArn({
+						service: 'ssm',
+						resource: 'parameter',
+						resourceName: `soul/${stage}/*`,
+					}),
+				],
+			}),
+		);
+		soulReputationWorkerFn.addToRolePolicy(
+			new iam.PolicyStatement({
+				actions: ['kms:Decrypt'],
+				resources: ['*'],
+				conditions: {
+					StringEquals: { 'kms:ViaService': `ssm.${cdk.Aws.REGION}.amazonaws.com` },
+				},
+			}),
+		);
+
 		controlPlaneFn.addToRolePolicy(
 			new iam.PolicyStatement({
 				actions: ['route53:ListHostedZonesByName'],
@@ -917,6 +980,12 @@ export class LesserHostStack extends cdk.Stack {
 			schedule: events.Schedule.rate(cdk.Duration.days(1)),
 		});
 		retentionSweepRule.addTarget(new targets.LambdaFunction(renderWorkerFn));
+
+		const soulReputationRecomputeRule = new events.Rule(this, 'SoulReputationRecomputeRule', {
+			ruleName: `${namePrefix}-soul-reputation-recompute`,
+			schedule: events.Schedule.rate(cdk.Duration.hours(1)),
+		});
+		soulReputationRecomputeRule.addTarget(new targets.LambdaFunction(soulReputationWorkerFn));
 
 		const controlPlaneUrl = controlPlaneFn.addFunctionUrl({
 			authType: lambda.FunctionUrlAuthType.NONE,
@@ -1266,7 +1335,12 @@ export class LesserHostStack extends cdk.Stack {
 				});
 			}
 
-		private goLambda(id: string, entry: string, environment: Record<string, string>): lambda.Function {
+		private goLambda(
+			id: string,
+			entry: string,
+			environment: Record<string, string>,
+			opts?: { memorySize?: number; timeoutSeconds?: number },
+		): lambda.Function {
 			const repoRoot = this.repoRoot();
 			const buildDir = path.join(repoRoot, 'cdk', '.build', id);
 			fs.mkdirSync(buildDir, { recursive: true });
@@ -1288,8 +1362,8 @@ export class LesserHostStack extends cdk.Stack {
 				code,
 				handler: 'bootstrap',
 				runtime: lambda.Runtime.PROVIDED_AL2023,
-				memorySize: 256,
-				timeout: cdk.Duration.seconds(10),
+				memorySize: opts?.memorySize ?? 256,
+				timeout: cdk.Duration.seconds(opts?.timeoutSeconds ?? 10),
 				environment,
 			});
 		}

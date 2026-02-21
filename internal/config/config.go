@@ -47,6 +47,15 @@ type Config struct {
 	SoulPackBucketName          string
 	SoulPackBucketNameSSMParam  string // optional override; default is /soul/<stage>/packBucketName
 
+	// Soul reputation (v0).
+	SoulReputationTipStartBlock     uint64
+	SoulReputationTipBlockChunkSize uint64
+	SoulReputationTipScale          float64
+	SoulReputationWeightEconomic    float64
+	SoulReputationWeightSocial      float64
+	SoulReputationWeightValidation  float64
+	SoulReputationWeightTrust       float64
+
 	// Managed hosting (M9 provisioning).
 	ManagedProvisioningEnabled        bool
 	ManagedOrgVendingRoleARN          string // optional; assume this role for Organizations + instance-account role assumptions
@@ -88,6 +97,14 @@ func Load() Config {
 	soulTxMode := envLowerStringDefault("SOUL_TX_MODE", "safe")
 	soulCaps := parseCSV(envString("SOUL_SUPPORTED_CAPABILITIES"))
 	soulPackBucketName := envString("SOUL_PACK_BUCKET_NAME")
+
+	soulRepTipStartBlock := envUint64("SOUL_REPUTATION_TIP_START_BLOCK", 0)
+	soulRepTipChunkSize := envUint64Positive("SOUL_REPUTATION_TIP_BLOCK_CHUNK_SIZE", 5000)
+	soulRepTipScale := envFloat64Bounded("SOUL_REPUTATION_TIP_SCALE", 10, 0.000001, 1_000_000)
+	soulRepWeightEconomic := envFloat64Bounded("SOUL_REPUTATION_WEIGHT_ECONOMIC", 1, 0, 1000)
+	soulRepWeightSocial := envFloat64Bounded("SOUL_REPUTATION_WEIGHT_SOCIAL", 0, 0, 1000)
+	soulRepWeightValidation := envFloat64Bounded("SOUL_REPUTATION_WEIGHT_VALIDATION", 0, 0, 1000)
+	soulRepWeightTrust := envFloat64Bounded("SOUL_REPUTATION_WEIGHT_TRUST", 0, 0, 1000)
 
 	managedOn := envBoolOn("MANAGED_PROVISIONING_ENABLED")
 	managedParentDomain := envLowerStringDefault("MANAGED_PARENT_DOMAIN", "greater.website")
@@ -153,6 +170,14 @@ func Load() Config {
 		SoulSupportedCapabilities:   soulCaps,
 		SoulPackBucketName:          soulPackBucketName,
 		SoulPackBucketNameSSMParam:  envString("SOUL_PACK_BUCKET_NAME_SSM_PARAM"),
+
+		SoulReputationTipStartBlock:     soulRepTipStartBlock,
+		SoulReputationTipBlockChunkSize: soulRepTipChunkSize,
+		SoulReputationTipScale:          soulRepTipScale,
+		SoulReputationWeightEconomic:    soulRepWeightEconomic,
+		SoulReputationWeightSocial:      soulRepWeightSocial,
+		SoulReputationWeightValidation:  soulRepWeightValidation,
+		SoulReputationWeightTrust:       soulRepWeightTrust,
 
 		ManagedProvisioningEnabled:        managedOn,
 		ManagedOrgVendingRoleARN:          envString("MANAGED_ORG_VENDING_ROLE_ARN"),

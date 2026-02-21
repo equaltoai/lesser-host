@@ -20,6 +20,8 @@ type SoulAgentReputation struct {
 
 	AgentID string `theorydb:"attr:agentId" json:"agent_id"` // hex-encoded uint256
 
+	BlockRef int64 `theorydb:"attr:blockRef" json:"block_ref,omitempty"`
+
 	Composite  float64 `theorydb:"attr:composite" json:"composite"`
 	Economic   float64 `theorydb:"attr:economic" json:"economic"`
 	Social     float64 `theorydb:"attr:social" json:"social"`
@@ -51,7 +53,9 @@ func (r *SoulAgentReputation) BeforeCreate() error {
 
 // BeforeUpdate updates timestamps and keys before updating SoulAgentReputation.
 func (r *SoulAgentReputation) BeforeUpdate() error {
-	r.UpdatedAt = time.Now().UTC()
+	if r.UpdatedAt.IsZero() {
+		r.UpdatedAt = time.Now().UTC()
+	}
 	return r.UpdateKeys()
 }
 

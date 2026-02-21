@@ -66,6 +66,42 @@ func envUint16Max(key string, fallback uint16, maxValue uint16) uint16 {
 	return uint16(n)
 }
 
+func envUint64(key string, fallback uint64) uint64 {
+	raw := envString(key)
+	if raw == "" {
+		return fallback
+	}
+	n, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		return fallback
+	}
+	return n
+}
+
+func envUint64Positive(key string, fallback uint64) uint64 {
+	raw := envString(key)
+	if raw == "" {
+		return fallback
+	}
+	n, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil || n == 0 {
+		return fallback
+	}
+	return n
+}
+
+func envFloat64Bounded(key string, fallback float64, minValue float64, maxValue float64) float64 {
+	raw := envString(key)
+	if raw == "" {
+		return fallback
+	}
+	n, err := strconv.ParseFloat(raw, 64)
+	if err != nil || n < minValue || n > maxValue {
+		return fallback
+	}
+	return n
+}
+
 func parseCSV(raw string) []string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {

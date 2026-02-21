@@ -49,6 +49,15 @@ Notes:
 Where `<rootHex>` is the on-chain Merkle root (lowercase hex with `0x` prefix) published via
 `ReputationAttestation.publishRoot(...)`.
 
+### Reputation recompute snapshots (pre-root)
+
+- `registry/v1/reputation/snapshots/chain-<chainId>/block-<blockRef>.json`
+
+Notes:
+- Written by the scheduled reputation recomputation job (M6) for audit/debugging before Merkle roots exist.
+- These snapshots are repeatable/deterministic for the same block range + weights configuration; overwrites are
+  acceptable and bucket versioning retains history.
+
 ### Validation snapshot packs (historical, immutable; optional)
 
 - `registry/v1/validation/roots/<rootHex>/snapshot.tgz`
