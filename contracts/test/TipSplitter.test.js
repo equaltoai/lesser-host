@@ -141,6 +141,39 @@ describe("TipSplitter — ERC-8004 agent tips", () => {
     assert.equal(await splitter.pendingETH(actor.address), s.actorShare);
   });
 
+  it("tips ETH to agentId using SoulRegistry (real registry)", async () => {
+    const SoulRegistry = await ethers.getContractFactory("SoulRegistry");
+    const [owner, , , actor] = await ethers.getSigners();
+    const soul = await SoulRegistry.deploy(owner.address, 0n);
+    const soulAddr = await soul.getAddress();
+
+    const {
+      splitter,
+      lesserWallet,
+      hostWallet,
+      tipper,
+      HOST_ID,
+      CONTENT_HASH,
+    } = await deploy({ agentRegistry: soulAddr });
+
+    const agentId = 1n;
+    await soul.mintSoul(actor.address, agentId, "ipfs://registration");
+
+    const amount = ethers.parseEther("1");
+    const s = expectedSplit(amount);
+
+    await splitter
+      .connect(tipper)
+      .tipAgentETH(HOST_ID, agentId, CONTENT_HASH, { value: amount });
+
+    assert.equal(
+      await splitter.pendingETH(lesserWallet.address),
+      s.lesserShare,
+    );
+    assert.equal(await splitter.pendingETH(hostWallet.address), s.hostShare);
+    assert.equal(await splitter.pendingETH(actor.address), s.actorShare);
+  });
+
   it("emits AgentTipSent event", async () => {
     const MockRegistry = await ethers.getContractFactory(
       "MockERC8004IdentityRegistry",
