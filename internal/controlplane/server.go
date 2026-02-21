@@ -149,4 +149,9 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 	app.Post("/api/v1/tip-registry/hosts/{domain}/active", s.handleSetTipRegistryHostActive, apptheory.RequireAuth())
 	app.Post("/api/v1/tip-registry/hosts/{domain}/ensure", s.handleEnsureTipRegistryHost, apptheory.RequireAuth())
 	app.Post("/api/v1/tip-registry/tokens/allowlist", s.handleSetTipRegistryTokenAllowed, apptheory.RequireAuth())
+
+	// Soul registry (public config + portal registration flow).
+	app.Get("/api/v1/soul/config", s.handleSoulConfig)
+	app.Post("/api/v1/soul/agents/register/begin", s.handleSoulAgentRegistrationBegin, apptheory.RequireAuth())
+	app.Post("/api/v1/soul/agents/register/{id}/verify", s.handleSoulAgentRegistrationVerify, apptheory.RequireAuth())
 }

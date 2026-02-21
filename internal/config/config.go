@@ -35,6 +35,14 @@ type Config struct {
 	TipDefaultHostFeeBps        uint16
 	TipTxMode                   string // safe|direct
 
+	// Soul registry (EVM).
+	SoulEnabled                 bool
+	SoulChainID                 int64
+	SoulRegistryContractAddress string
+	SoulAdminSafeAddress        string
+	SoulTxMode                  string // safe|direct
+	SoulSupportedCapabilities   []string
+
 	// Managed hosting (M9 provisioning).
 	ManagedProvisioningEnabled        bool
 	ManagedOrgVendingRoleARN          string // optional; assume this role for Organizations + instance-account role assumptions
@@ -70,6 +78,11 @@ func Load() Config {
 	tipChainID := envInt64Positive("TIP_CHAIN_ID", 0)
 	tipDefaultHostFeeBps := envUint16Max("TIP_DEFAULT_HOST_FEE_BPS", 0, 500)
 	tipTxMode := envLowerStringDefault("TIP_TX_MODE", "safe")
+
+	soulOn := envBoolOn("SOUL_ENABLED")
+	soulChainID := envInt64Positive("SOUL_CHAIN_ID", 0)
+	soulTxMode := envLowerStringDefault("SOUL_TX_MODE", "safe")
+	soulCaps := parseCSV(envString("SOUL_SUPPORTED_CAPABILITIES"))
 
 	managedOn := envBoolOn("MANAGED_PROVISIONING_ENABLED")
 	managedParentDomain := envLowerStringDefault("MANAGED_PARENT_DOMAIN", "greater.website")
@@ -124,6 +137,13 @@ func Load() Config {
 		TipDefaultHostWalletAddress: envString("TIP_DEFAULT_HOST_WALLET_ADDRESS"),
 		TipDefaultHostFeeBps:        tipDefaultHostFeeBps,
 		TipTxMode:                   tipTxMode,
+
+		SoulEnabled:                 soulOn,
+		SoulChainID:                 soulChainID,
+		SoulRegistryContractAddress: envString("SOUL_REGISTRY_CONTRACT_ADDRESS"),
+		SoulAdminSafeAddress:        envString("SOUL_ADMIN_SAFE_ADDRESS"),
+		SoulTxMode:                  soulTxMode,
+		SoulSupportedCapabilities:   soulCaps,
 
 		ManagedProvisioningEnabled:        managedOn,
 		ManagedOrgVendingRoleARN:          envString("MANAGED_ORG_VENDING_ROLE_ARN"),
