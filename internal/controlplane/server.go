@@ -12,6 +12,7 @@ import (
 
 type soulPackStore interface {
 	PutObject(ctx context.Context, key string, body []byte, contentType string, cacheControl string) error
+	GetObject(ctx context.Context, key string, maxBytes int64) ([]byte, string, string, error)
 }
 
 // Server implements the control plane API.
@@ -165,6 +166,11 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 
 	// Soul registry (public config + portal registration flow).
 	app.Get("/api/v1/soul/config", s.handleSoulConfig)
+	app.Get("/api/v1/soul/agents/{agentId}", s.handleSoulPublicGetAgent)
+	app.Get("/api/v1/soul/agents/{agentId}/registration", s.handleSoulPublicGetRegistration)
+	app.Get("/api/v1/soul/agents/{agentId}/reputation", s.handleSoulPublicGetReputation)
+	app.Get("/api/v1/soul/agents/{agentId}/validations", s.handleSoulPublicGetValidations)
+	app.Get("/api/v1/soul/search", s.handleSoulPublicSearch)
 	app.Post("/api/v1/soul/agents/register/begin", s.handleSoulAgentRegistrationBegin, apptheory.RequireAuth())
 	app.Post("/api/v1/soul/agents/register/{id}/verify", s.handleSoulAgentRegistrationVerify, apptheory.RequireAuth())
 	app.Post("/api/v1/soul/agents/{agentId}/rotate-wallet/begin", s.handleSoulAgentRotateWalletBegin, apptheory.RequireAuth())

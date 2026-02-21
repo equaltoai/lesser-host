@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"math/big"
 	"net/http"
 	"strings"
@@ -61,6 +62,10 @@ func (f *fakeSoulPackStore) PutObject(ctx context.Context, key string, body []by
 	f.contentType = contentType
 	f.cacheControl = cacheControl
 	return nil
+}
+
+func (f *fakeSoulPackStore) GetObject(ctx context.Context, key string, maxBytes int64) ([]byte, string, string, error) {
+	return nil, "", "", errors.New("not implemented")
 }
 
 type soulLifecycleTestDB struct {
