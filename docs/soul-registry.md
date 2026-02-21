@@ -3,6 +3,9 @@
 This document covers the on-chain contracts that implement the `lesser-soul` registry anchor described in
 `lesser-soul/SPEC.md`.
 
+For the full soul surface (control-plane APIs, instance integration, and MCP wiring), start with:
+- `docs/soul-surface.md`
+
 ## Contracts
 
 All contracts live in `lesser-host/contracts/contracts/` and are built/tested with Hardhat.
@@ -52,4 +55,3 @@ npm test
 
 This runs `hardhat compile` and contract unit tests (including an integration test proving TipSplitter can tip by
 `agentId` using the real `SoulRegistry` implementation).
-

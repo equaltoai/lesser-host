@@ -13,7 +13,7 @@ var localAgentIDRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{1,62}[a-z0-9]$`)
 
 // NormalizeLocalAgentID normalizes and validates a lesser-soul local agent id.
 //
-// Rules are locked by lesser-soul ADR 0002.
+// Rules are locked by `docs/adr/0002-canonical-identifiers-and-signatures.md`.
 func NormalizeLocalAgentID(raw string) (string, error) {
 	local := strings.TrimSpace(raw)
 	local = strings.TrimPrefix(local, "@")
@@ -35,7 +35,7 @@ func NormalizeLocalAgentID(raw string) (string, error) {
 	return local, nil
 }
 
-// DeriveAgentIDHex derives the deterministic soul agent id per lesser-soul ADR 0002:
+// DeriveAgentIDHex derives the deterministic soul agent id per `docs/adr/0002-canonical-identifiers-and-signatures.md`:
 // uint256(keccak256(utf8("${normalizedDomain}/${normalizedLocalAgentId}"))).
 func DeriveAgentIDHex(normalizedDomain string, normalizedLocalAgentID string) (string, error) {
 	normalizedDomain = strings.ToLower(strings.TrimSpace(normalizedDomain))
@@ -50,4 +50,3 @@ func DeriveAgentIDHex(normalizedDomain string, normalizedLocalAgentID string) (s
 	sum := crypto.Keccak256([]byte(normalizedDomain + "/" + normalizedLocalAgentID))
 	return "0x" + hex.EncodeToString(sum), nil
 }
-

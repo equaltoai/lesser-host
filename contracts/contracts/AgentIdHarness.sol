@@ -5,7 +5,7 @@ pragma solidity ^0.8.24;
  * @title AgentIdHarness
  * @notice Test-only harness for the lesser-soul agentId derivation formula.
  *
- * Per lesser-soul ADR 0002, agentId is derived off-chain as:
+ * Per `docs/adr/0002-canonical-identifiers-and-signatures.md`, agentId is derived off-chain as:
  *   uint256(keccak256(abi.encodePacked(normalizedDomain, "/", normalizedLocalAgentId)))
  *
  * Contracts treat agentId as an opaque uint256 input; this harness exists to
@@ -23,4 +23,3 @@ contract AgentIdHarness {
         return keccak256(abi.encodePacked(normalizedDomain, "/", normalizedLocalAgentId));
     }
 }
-

@@ -40,7 +40,7 @@ Notes:
 - This key always points at the **current** registration file for the agent. Overwrites are allowed; bucket versioning
   retains history.
 - The registration file is expected to carry its wallet signature in the JSON body
-  (`attestations.selfAttestation`), per `lesser-soul` ADR 0002.
+  (`attestations.selfAttestation`), per `docs/adr/0002-canonical-identifiers-and-signatures.md`.
 
 ### Reputation snapshots (historical, immutable)
 
