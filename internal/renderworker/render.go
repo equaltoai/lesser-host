@@ -13,6 +13,11 @@ import (
 	"github.com/chromedp/chromedp"
 )
 
+func allowChromiumRequestURL(raw string) bool {
+	u := strings.ToLower(strings.TrimSpace(raw))
+	return strings.HasPrefix(u, "data:") || strings.HasPrefix(u, "blob:") || strings.HasPrefix(u, "about:")
+}
+
 func renderHTMLWithChrome(ctx context.Context, html []byte) ([]byte, []byte, string, error) {
 	if len(html) == 0 {
 		return nil, nil, "", fmt.Errorf("html is empty")
@@ -46,19 +51,19 @@ func renderHTMLWithChrome(ctx context.Context, html []byte) ([]byte, []byte, str
 	browserCtx, browserCancel := chromedp.NewContext(allocCtx)
 	defer browserCancel()
 
-	// Block all network requests inside the browser to prevent SSRF.
+	// Block all browser requests except for local schemes (prevents SSRF and file:// reads).
 	chromedp.ListenTarget(browserCtx, func(ev any) {
 		e, ok := ev.(*fetch.EventRequestPaused)
 		if !ok || e == nil {
 			return
 		}
 
-		u := strings.ToLower(strings.TrimSpace(e.Request.URL))
-		if strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://") {
-			_ = chromedp.Run(browserCtx, fetch.FailRequest(e.RequestID, network.ErrorReasonBlockedByClient))
+		if allowChromiumRequestURL(e.Request.URL) {
+			_ = chromedp.Run(browserCtx, fetch.ContinueRequest(e.RequestID))
 			return
 		}
-		_ = chromedp.Run(browserCtx, fetch.ContinueRequest(e.RequestID))
+
+		_ = chromedp.Run(browserCtx, fetch.FailRequest(e.RequestID, network.ErrorReasonBlockedByClient))
 	})
 
 	dataURL := "data:text/html;base64," + base64.StdEncoding.EncodeToString(html)

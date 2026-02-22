@@ -297,7 +297,7 @@ const (
 	provisionStepBodyDeployStart    = "body.deploy.start"
 	provisionStepBodyDeployWait     = "body.deploy.wait"
 	provisionStepDeployMcpStart     = "deploy.mcp.start"
-	provisionStepDeployMcpWait      = "deploy.mcp.wait"
+	provisionStepDeployMcpWait      = "deploy.mcp.wait" // #nosec G101 -- step identifier, not a credential
 	provisionStepSoulDeployStart    = "soul.deploy.start"
 	provisionStepSoulDeployWait     = "soul.deploy.wait"
 	provisionStepSoulInitStart      = "soul.init.start"
@@ -1065,8 +1065,8 @@ func effectiveLesserAIContentDetectionEnabled(v *bool) bool {
 }
 
 const (
-	managedInstanceKeySecretTagInstanceSlug = "lesser-host:instance-slug"
-	managedInstanceKeySecretTagKeyID        = "lesser-host:instance-key-id"
+	managedInstanceKeySecretTagInstanceSlug = "lesser-host:instance-slug"   // #nosec G101 -- tag key, not a credential
+	managedInstanceKeySecretTagKeyID        = "lesser-host:instance-key-id" // #nosec G101 -- tag key, not a credential
 	managedInstanceKeySecretTagManaged      = "lesser-host:managed"
 )
 

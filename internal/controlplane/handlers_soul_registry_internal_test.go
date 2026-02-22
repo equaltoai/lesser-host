@@ -194,6 +194,7 @@ func TestHandleSoulAgentRegistrationVerify_UsesExistingProofFlagsAndCreatesOpera
 			SoulRegistryContractAddress: "0x0000000000000000000000000000000000000001",
 			SoulTxMode:                  "safe",
 			SoulAdminSafeAddress:        "0x0000000000000000000000000000000000000002",
+			SoulMintSignerKey:           strings.Repeat("ab", 32),
 			WebAuthnRPID:                "lesser.host",
 		},
 	}
@@ -270,8 +271,8 @@ func TestHandleSoulAgentRegistrationVerify_UsesExistingProofFlagsAndCreatesOpera
 	if out.Operation.OperationID == "" {
 		t.Fatalf("expected operation id")
 	}
-	if out.SafeTx == nil || out.SafeTx.To == "" || !strings.HasPrefix(out.SafeTx.Data, "0x") {
-		t.Fatalf("expected safe tx payload, got %#v", out.SafeTx)
+	if out.MintTx == nil || out.MintTx.To == "" || !strings.HasPrefix(out.MintTx.Data, "0x") {
+		t.Fatalf("expected mint tx payload, got %#v", out.MintTx)
 	}
 }
 

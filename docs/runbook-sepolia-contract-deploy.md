@@ -11,10 +11,18 @@ This runbook assumes:
 ## 0) Contract set
 
 Production contracts in this repo (`lesser-host/contracts/contracts/`):
-- `SoulRegistry.sol`
+- `SoulRegistry.sol` (v2 — burn, transfer tracking, avatar support)
 - `ReputationAttestation.sol`
 - `ValidationAttestation.sol`
 - `TipSplitter.sol` (configured to use `SoulRegistry` for `tipAgent*` calls)
+- `EtherealBlobRenderer.sol` (avatar renderer — style 0)
+- `SacredGeometryRenderer.sol` (avatar renderer — style 1)
+- `SigilRenderer.sol` (avatar renderer — style 2)
+
+Libraries / interfaces (deployed as part of renderers, not standalone):
+- `ISoulAvatarRenderer.sol`
+- `SoulPRNG.sol`
+- `SoulSVGUtils.sol`
 
 Not deployed (test-only):
 - `AgentIdHarness.sol`
@@ -22,7 +30,7 @@ Not deployed (test-only):
 
 ## 1) Preconditions
 
-- Deployer EOA has enough Sepolia ETH for 4 deployments + a buffer.
+- Deployer EOA has enough Sepolia ETH for 7 deployments + a buffer.
 - You have the wallet addresses you will use in the same roles as historical Sepolia:
   - `INITIAL_OWNER` = admin Safe (contract owner)
   - `LESSER_WALLET` = Lesser fee recipient wallet (1% recipient in `TipSplitter`)
@@ -73,11 +81,18 @@ node -e 'import("dotenv/config"); const req=["SEPOLIA_RPC_URL","DEPLOYER_PRIVATE
 
 ## 4) Deploy (correct sequence)
 
-Deploy order is:
-1) `SoulRegistry`
-2) `ReputationAttestation`
-3) `ValidationAttestation`
-4) `TipSplitter` (points `agentIdentityRegistry` at the deployed `SoulRegistry`)
+Two-phase deployment process.
+
+### Phase 1 — contract deployments (single command)
+
+Deploy order:
+1. `SoulRegistry` (v2 — with burn, transfer tracking, avatar support)
+2. `ReputationAttestation`
+3. `ValidationAttestation`
+4. `TipSplitter` (points `agentIdentityRegistry` at the deployed `SoulRegistry`)
+5. `EtherealBlobRenderer`
+6. `SacredGeometryRenderer`
+7. `SigilRenderer`
 
 Command:
 
@@ -87,9 +102,62 @@ npm run deploy:sepolia:all
 ```
 
 Expected output:
-- contract addresses + deployment tx hashes for all 4 contracts
+- contract addresses + deployment tx hashes for all 7 contracts
 - read-only sanity checks (owners, lesserWallet, agentIdentityRegistry)
+- `setRenderer` Safe transaction instructions for Phase 2
 - a JSON snippet with suggested `cdk/cdk.json` context updates
+
+### Phase 2 — Safe multisig transactions (setRenderer)
+
+The deployer EOA is not the contract owner, so renderer registration requires Safe multisig transactions:
+
+- `SoulRegistry.setRenderer(0, <EtherealBlobRenderer>)` — Ethereal Blob
+- `SoulRegistry.setRenderer(1, <SacredGeometryRenderer>)` — Sacred Geometry
+- `SoulRegistry.setRenderer(2, <SigilRenderer>)` — Sigil
+
+Execute these via the Safe web UI or Safe SDK.
+
+### Standalone renderer deployment (optional)
+
+If you need to deploy only the renderers (e.g., against an existing SoulRegistry):
+
+```bash
+cd contracts
+SOUL_REGISTRY_ADDRESS=0x... npm run deploy:sepolia:soul-renderers
+```
+
+### Phase 3 — Mint signer setup
+
+The mint flow uses permit-based minting: the control plane signs EIP-712 permits with a hot key, and users submit transactions themselves (paying gas + mint fee).
+
+1. **Generate keypair:**
+   ```bash
+   bash scripts/generate-mint-signer-key.sh
+   ```
+
+2. **Store private key in SSM:**
+   ```bash
+   aws ssm put-parameter \
+     --name /lesser-host/soul/lab/mint-signer-key \
+     --value <hex-private-key> \
+     --type SecureString
+   ```
+
+3. **Set mint fee via Safe** (0.0005 ETH = 5e14 wei):
+   ```
+   SoulRegistry.setMintFee(500000000000000)
+   ```
+
+4. **Set mint signer via Safe:**
+   ```
+   SoulRegistry.setMintSigner(<address-from-step-1>)
+   ```
+
+5. **Verify:**
+   ```
+   SoulRegistry.mintSigner()  → expected address
+   SoulRegistry.mintFee()     → 500000000000000
+   ```
 
 ## 5) Wire `lesser-host` to the new addresses
 
@@ -109,6 +177,8 @@ Edit `cdk/cdk.json` and update (or add) these keys under `context` for `lab`:
   - `soulReputationAttestationContractAddressLab: "<ReputationAttestation>"`
   - `soulValidationAttestationContractAddressLab: "<ValidationAttestation>"`
   - `soulRpcUrlSsmParamLab: "/lesser-host/api/infura/sepolia"` (or your chosen SSM path)
+
+No new CDK context keys needed for renderer addresses — they are registered on-chain via `setRenderer`, not in the control plane config.
 
 Keep your existing Safe addresses and tx modes:
 - `tipAdminSafeAddress`, `tipTxMode`
@@ -157,8 +227,17 @@ Minimum checks:
 
 Minimum checks:
 - registration begin/verify flow completes (`/api/v1/soul/agents/register/*`)
-- mint operation produces a Safe payload to call `SoulRegistry.mintSoul(...)`
+- verify response returns a `mint_tx` payload (permit-based) with `to`, `value`, `data`, `chain_id`, `deadline`
+- user submits `mintSoul` tx with the permit and mint fee (0.0005 ETH)
 - `TipSplitter.tipAgentETH` works once `SoulRegistry.getAgentWallet(agentId)` is non-zero
+
+### 6.4 Soul registry v2 features
+
+Additional checks for the new features:
+- `burnSoul` reverts when called by non-owner (sanity check)
+- `transferCount(agentId)` returns `0` for a freshly minted token
+- `tokenURI(agentId)` returns the metaURI before renderers are registered, and returns `data:application/json;base64,...` after `setRenderer` is called
+- Each renderer's `renderAvatar(1)` returns valid SVG (call directly on the renderer contract)
 
 ## 7) Roll-forward / re-deploy policy
 

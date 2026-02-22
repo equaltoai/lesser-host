@@ -57,3 +57,30 @@ func TestRenderHTMLWithChrome_FailsFastWhenChromiumMissing(t *testing.T) {
 		t.Fatalf("expected error")
 	}
 }
+
+func TestAllowChromiumRequestURL_AllowsOnlyLocalSchemes(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		url  string
+		want bool
+	}{
+		{name: "data", url: "data:text/html;base64,AA==", want: true},
+		{name: "blob", url: "blob:https://example.com/123", want: true},
+		{name: "about_blank", url: "about:blank", want: true},
+		{name: "http", url: "http://example.com", want: false},
+		{name: "https", url: "https://example.com", want: false},
+		{name: "file", url: "file:///etc/passwd", want: false},
+		{name: "chrome", url: "chrome://version", want: false},
+		{name: "empty", url: " ", want: false},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := allowChromiumRequestURL(tc.url); got != tc.want {
+				t.Fatalf("allowChromiumRequestURL(%q)=%v want %v", tc.url, got, tc.want)
+			}
+		})
+	}
+}

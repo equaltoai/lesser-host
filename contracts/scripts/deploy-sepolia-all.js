@@ -83,6 +83,27 @@ async function main() {
   const tipSplitterAddr = await tipSplitter.getAddress();
   const tipSplitterTx = tipSplitter.deploymentTransaction();
 
+  // 5) EtherealBlobRenderer
+  const EtherealBlobRenderer = await ethers.getContractFactory("EtherealBlobRenderer");
+  const blobRenderer = await EtherealBlobRenderer.deploy();
+  await blobRenderer.waitForDeployment();
+  const blobRendererAddr = await blobRenderer.getAddress();
+  const blobRendererTx = blobRenderer.deploymentTransaction();
+
+  // 6) SacredGeometryRenderer
+  const SacredGeometryRenderer = await ethers.getContractFactory("SacredGeometryRenderer");
+  const sacredRenderer = await SacredGeometryRenderer.deploy();
+  await sacredRenderer.waitForDeployment();
+  const sacredRendererAddr = await sacredRenderer.getAddress();
+  const sacredRendererTx = sacredRenderer.deploymentTransaction();
+
+  // 7) SigilRenderer
+  const SigilRenderer = await ethers.getContractFactory("SigilRenderer");
+  const sigilRenderer = await SigilRenderer.deploy();
+  await sigilRenderer.waitForDeployment();
+  const sigilRendererAddr = await sigilRenderer.getAddress();
+  const sigilRendererTx = sigilRenderer.deploymentTransaction();
+
   console.log("Deployed contracts:");
   console.log(`  SoulRegistry:            ${soulRegistryAddr}`);
   console.log(`    Tx: ${soulRegistryTx ? soulRegistryTx.hash : "unknown"}`);
@@ -92,6 +113,12 @@ async function main() {
   console.log(`    Tx: ${valAttTx ? valAttTx.hash : "unknown"}`);
   console.log(`  TipSplitter:             ${tipSplitterAddr}`);
   console.log(`    Tx: ${tipSplitterTx ? tipSplitterTx.hash : "unknown"}`);
+  console.log(`  EtherealBlobRenderer:    ${blobRendererAddr}`);
+  console.log(`    Tx: ${blobRendererTx ? blobRendererTx.hash : "unknown"}`);
+  console.log(`  SacredGeometryRenderer:  ${sacredRendererAddr}`);
+  console.log(`    Tx: ${sacredRendererTx ? sacredRendererTx.hash : "unknown"}`);
+  console.log(`  SigilRenderer:           ${sigilRendererAddr}`);
+  console.log(`    Tx: ${sigilRendererTx ? sigilRendererTx.hash : "unknown"}`);
   console.log("");
 
   // Basic sanity checks (read-only)
@@ -110,6 +137,12 @@ async function main() {
   console.log(`  SoulRegistry.owner():             ${soulOwner}`);
   console.log(`  ReputationAttestation.owner():     ${repOwner}`);
   console.log(`  ValidationAttestation.owner():     ${valOwner}`);
+  console.log("");
+
+  console.log("Required Safe multisig transactions (Phase 2 — setRenderer):");
+  console.log(`  SoulRegistry.setRenderer(0, ${blobRendererAddr})   // Ethereal Blob`);
+  console.log(`  SoulRegistry.setRenderer(1, ${sacredRendererAddr})  // Sacred Geometry`);
+  console.log(`  SoulRegistry.setRenderer(2, ${sigilRendererAddr})           // Sigil`);
   console.log("");
 
   console.log("Suggested CDK context updates (lab stage):");

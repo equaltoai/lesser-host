@@ -29,6 +29,9 @@
     "soulRegistryContractAddressLive": "",
     "soulRpcUrlSsmParamLive": "",
 
+    "soulMintSignerKeySsmParamLab": "/lesser-host/soul/lab/mint-signer-key",
+    "soulMintSignerKeySsmParamLive": "/lesser-host/soul/live/mint-signer-key",
+
     "soulAdminSafeAddress": "0xfE63333F303D4f7b2354f7E3eca752C812D65907",
     "soulTxMode": "safe",
     "soulSupportedCapabilities": "social,commerce",

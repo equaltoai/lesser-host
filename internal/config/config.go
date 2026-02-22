@@ -53,6 +53,8 @@ type Config struct {
 	SoulSupportedCapabilities                []string
 	SoulPackBucketName                       string
 	SoulPackBucketNameSSMParam               string // optional override; default is /soul/<stage>/packBucketName
+	SoulMintSignerKeySSMParam                string
+	SoulMintSignerKey                        string
 
 	// Soul reputation (v0).
 	SoulReputationTipStartBlock     uint64
@@ -193,6 +195,7 @@ func Load() Config {
 		SoulSupportedCapabilities:                soulCaps,
 		SoulPackBucketName:                       soulPackBucketName,
 		SoulPackBucketNameSSMParam:               envString("SOUL_PACK_BUCKET_NAME_SSM_PARAM"),
+		SoulMintSignerKeySSMParam:                envString("SOUL_MINT_SIGNER_KEY_SSM_PARAM"),
 
 		SoulReputationTipStartBlock:     soulRepTipStartBlock,
 		SoulReputationTipBlockChunkSize: soulRepTipChunkSize,

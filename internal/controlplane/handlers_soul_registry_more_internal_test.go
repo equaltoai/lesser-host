@@ -213,13 +213,15 @@ func TestBuildSoulMintPayload_ErrorsAndSuccess(t *testing.T) {
 	require.NotNil(t, appErr)
 
 	s.cfg.SoulRegistryContractAddress = "0x0000000000000000000000000000000000000001"
-	s.cfg.SoulTxMode = tipTxModeSafe
-	s.cfg.SoulAdminSafeAddress = testNotAnAddress
+	// No mint signer key → conflict.
 	_, _, _, appErr = s.buildSoulMintPayload(&models.SoulAgentRegistration{AgentID: "0x" + strings.Repeat("11", 32), Wallet: "0x0000000000000000000000000000000000000002"})
 	require.NotNil(t, appErr)
 	require.Equal(t, "app.conflict", appErr.Code)
 
-	s.cfg.SoulAdminSafeAddress = testEthAddress3
+	// Use a known test private key (not a real secret).
+	s.cfg.SoulMintSignerKey = strings.Repeat("ab", 32)
+	s.cfg.SoulChainID = 84532
+
 	_, _, _, appErr = s.buildSoulMintPayload(&models.SoulAgentRegistration{AgentID: "", Wallet: "0x0000000000000000000000000000000000000002"})
 	require.NotNil(t, appErr)
 	require.Equal(t, "app.internal", appErr.Code)
@@ -237,6 +239,8 @@ func TestBuildSoulMintPayload_ErrorsAndSuccess(t *testing.T) {
 	require.NotNil(t, payload)
 	require.True(t, strings.HasPrefix(payload.Data, "0x"))
 	require.NotEmpty(t, metaURI)
+	require.True(t, payload.ChainID > 0)
+	require.True(t, payload.Deadline > 0)
 }
 
 func TestCompleteSoulAgentRegistration_UpdateError(t *testing.T) {

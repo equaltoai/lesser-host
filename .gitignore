@@ -1,5 +1,6 @@
 .pai/
 .theory/
+.claude/
 contracts/venv/
 .DS_Store
 .env

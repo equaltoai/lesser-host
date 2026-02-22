@@ -60,7 +60,16 @@ type soulAgentRegistrationVerifyRequest struct {
 type soulAgentRegistrationVerifyResponse struct {
 	Registration models.SoulAgentRegistration `json:"registration"`
 	Operation    models.SoulOperation         `json:"operation"`
-	SafeTx       *safeTxPayload               `json:"safe_tx,omitempty"`
+	MintTx       *soulMintTxPayload           `json:"mint_tx,omitempty"`
+}
+
+type soulMintTxPayload struct {
+	To          string `json:"to"`
+	Value       string `json:"value"`
+	Data        string `json:"data"`
+	ChainID     int64  `json:"chain_id"`
+	Deadline    int64  `json:"deadline"`
+	Description string `json:"description"`
 }
 
 func normalizeSoulCapabilitiesLoose(caps []string) []string {
@@ -628,7 +637,7 @@ func (s *Server) soulMetaURI(agentIDHex string) string {
 	return "https://" + host + "/api/v1/soul/agents/" + url.PathEscape(agentIDHex) + "/registration"
 }
 
-func (s *Server) createSoulMintOperation(ctx context.Context, reg *models.SoulAgentRegistration) (*models.SoulOperation, *safeTxPayload, string, *apptheory.AppError) {
+func (s *Server) createSoulMintOperation(ctx context.Context, reg *models.SoulAgentRegistration) (*models.SoulOperation, *soulMintTxPayload, string, *apptheory.AppError) {
 	if s == nil || s.store == nil || s.store.DB == nil {
 		return nil, nil, "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
@@ -642,7 +651,7 @@ func (s *Server) createSoulMintOperation(ctx context.Context, reg *models.SoulAg
 	}
 
 	opID := soulOpID(models.SoulOperationKindMint, s.cfg.SoulChainID, payload.To, reg.AgentID, reg.Wallet, metaURI)
-	payloadJSON, appErr := marshalJSON(payload, "failed to encode safe tx")
+	payloadJSON, appErr := marshalJSON(payload, "failed to encode mint tx")
 	if appErr != nil {
 		return nil, nil, "", appErr
 	}
@@ -706,7 +715,7 @@ func (s *Server) handleSoulAgentRegistrationVerify(ctx *apptheory.Context) (*app
 		return nil, verifyErr
 	}
 
-	op, safeTx, _, opErr := s.createSoulMintOperation(ctx.Context(), reg)
+	op, mintTx, _, opErr := s.createSoulMintOperation(ctx.Context(), reg)
 	if opErr != nil {
 		return nil, opErr
 	}
@@ -730,18 +739,23 @@ func (s *Server) handleSoulAgentRegistrationVerify(ctx *apptheory.Context) (*app
 	return apptheory.JSON(http.StatusOK, soulAgentRegistrationVerifyResponse{
 		Registration: *update,
 		Operation:    *op,
-		SafeTx:       safeTx,
+		MintTx:       mintTx,
 	})
 }
 
-func (s *Server) buildSoulMintPayload(reg *models.SoulAgentRegistration) (*safeTxPayload, string, time.Time, *apptheory.AppError) {
+func (s *Server) buildSoulMintPayload(reg *models.SoulAgentRegistration) (*soulMintTxPayload, string, time.Time, *apptheory.AppError) {
 	if reg == nil {
 		return nil, "", time.Time{}, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
-	_, txTo, appErr := s.soulRegistryContractAddress()
+	contractAddr, txTo, appErr := s.soulRegistryContractAddress()
 	if appErr != nil {
 		return nil, "", time.Time{}, appErr
+	}
+
+	signerKey := strings.TrimSpace(s.cfg.SoulMintSignerKey)
+	if signerKey == "" {
+		return nil, "", time.Time{}, &apptheory.AppError{Code: "app.conflict", Message: "mint signer key is not configured"}
 	}
 
 	metaURI := s.soulMetaURI(reg.AgentID)
@@ -759,22 +773,30 @@ func (s *Server) buildSoulMintPayload(reg *models.SoulAgentRegistration) (*safeT
 		return nil, "", time.Time{}, &apptheory.AppError{Code: "app.bad_request", Message: "invalid agent_id"}
 	}
 
-	data, err := soul.EncodeMintSoulCall(to, agentInt, metaURI)
+	now := time.Now().UTC()
+	deadlineUnix := now.Add(30 * time.Minute).Unix()
+	deadline := big.NewInt(deadlineUnix)
+
+	permit, err := soul.SignMintPermit(signerKey, s.cfg.SoulChainID, contractAddr, to, agentInt, metaURI, 0, deadline)
+	if err != nil {
+		return nil, "", time.Time{}, &apptheory.AppError{Code: "app.internal", Message: "failed to sign mint permit"}
+	}
+
+	// Default mint fee: 0.0005 ETH = 500000000000000 wei.
+	mintFeeWei := big.NewInt(500000000000000)
+
+	data, err := soul.EncodeMintSoulCall(to, agentInt, metaURI, 0, deadline, permit)
 	if err != nil {
 		return nil, "", time.Time{}, &apptheory.AppError{Code: "app.internal", Message: "failed to encode transaction"}
 	}
 
-	safeAddr, appErr := s.soulRegistrySafeAddress()
-	if appErr != nil {
-		return nil, "", time.Time{}, appErr
-	}
-
-	now := time.Now().UTC()
-	payload := &safeTxPayload{
-		SafeAddress: safeAddr,
+	payload := &soulMintTxPayload{
 		To:          txTo,
-		Value:       "0",
+		Value:       fmt.Sprintf("0x%x", mintFeeWei),
 		Data:        "0x" + hex.EncodeToString(data),
+		ChainID:     s.cfg.SoulChainID,
+		Deadline:    deadlineUnix,
+		Description: "Mint soul token for agent " + strings.TrimSpace(reg.AgentID),
 	}
 
 	return payload, metaURI, now, nil

@@ -157,7 +157,7 @@ describe("TipSplitter — ERC-8004 agent tips", () => {
     } = await deploy({ agentRegistry: soulAddr });
 
     const agentId = 1n;
-    await soul.mintSoul(actor.address, agentId, "ipfs://registration");
+    await soul.mintSoulOwner(actor.address, agentId, "ipfs://registration", 0);
 
     const amount = ethers.parseEther("1");
     const s = expectedSplit(amount);

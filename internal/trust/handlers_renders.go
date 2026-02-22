@@ -467,7 +467,9 @@ func (s *Server) handleGetRenderThumbnail(ctx *apptheory.Context) (*apptheory.Re
 	if resp.Headers == nil {
 		resp.Headers = map[string][]string{}
 	}
-	resp.Headers["cache-control"] = []string{"public, max-age=86400, immutable"}
+	resp.Headers["cache-control"] = []string{"private, max-age=86400, immutable"}
+	resp.Headers["vary"] = []string{"authorization"}
+	resp.Headers["x-content-type-options"] = []string{"nosniff"}
 	if strings.TrimSpace(etag) != "" {
 		resp.Headers["etag"] = []string{etag}
 	}
@@ -517,6 +519,8 @@ func (s *Server) handleGetRenderSnapshot(ctx *apptheory.Context) (*apptheory.Res
 		Headers: map[string][]string{
 			"content-type":  {contentType},
 			"cache-control": {"private, max-age=600"},
+			"vary":          {"authorization"},
+			"x-content-type-options": {"nosniff"},
 		},
 		Body: body,
 	}

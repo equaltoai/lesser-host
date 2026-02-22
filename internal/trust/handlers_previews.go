@@ -355,7 +355,9 @@ func (s *Server) handleGetLinkPreviewImage(ctx *apptheory.Context) (*apptheory.R
 	if resp.Headers == nil {
 		resp.Headers = map[string][]string{}
 	}
-	resp.Headers["cache-control"] = []string{"public, max-age=86400, immutable"}
+	resp.Headers["cache-control"] = []string{"private, max-age=86400, immutable"}
+	resp.Headers["vary"] = []string{"authorization"}
+	resp.Headers["x-content-type-options"] = []string{"nosniff"}
 	if strings.TrimSpace(etag) != "" {
 		resp.Headers["etag"] = []string{etag}
 	}

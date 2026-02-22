@@ -117,7 +117,9 @@ func toUint16(v any) (uint16, error) {
 			return 0, fmt.Errorf("overflow")
 		}
 		u := n.Uint64()
-		//nolint:gosec // bitlen checked (<= 16)
+		if u > 0xFFFF {
+			return 0, fmt.Errorf("overflow")
+		}
 		return uint16(u), nil
 	default:
 		return 0, fmt.Errorf("unsupported type %T", v)

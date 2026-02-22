@@ -222,6 +222,7 @@ export class LesserHostStack extends cdk.Stack {
 		const soulReputationAttestationContractAddress = soulContext('soulReputationAttestationContractAddress');
 		const soulValidationAttestationContractAddress = soulContext('soulValidationAttestationContractAddress');
 		const soulRpcUrlSsmParam = soulContext('soulRpcUrlSsmParam').trim();
+		const soulMintSignerKeySsmParam = soulContext('soulMintSignerKeySsmParam').trim();
 		const soulAdminSafeAddress = soulContext('soulAdminSafeAddress');
 		const soulTxMode = soulContext('soulTxMode');
 		const soulSupportedCapabilities = soulContext('soulSupportedCapabilities');
@@ -725,6 +726,7 @@ export class LesserHostStack extends cdk.Stack {
 			SOUL_ADMIN_SAFE_ADDRESS: soulAdminSafeAddress,
 			SOUL_TX_MODE: soulTxMode,
 			SOUL_SUPPORTED_CAPABILITIES: soulSupportedCapabilities,
+			SOUL_MINT_SIGNER_KEY_SSM_PARAM: soulMintSignerKeySsmParam,
 			PAYMENTS_PROVIDER: paymentsProvider,
 			PAYMENTS_CENTS_PER_1000_CREDITS: paymentsCentsPer1000Credits,
 			PAYMENTS_CHECKOUT_SUCCESS_URL: paymentsCheckoutSuccessUrl,
@@ -1009,6 +1011,16 @@ export class LesserHostStack extends cdk.Stack {
 					actions: ['ssm:GetParameter'],
 					resources: [
 						`arn:aws:ssm:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:parameter/${soulRpcUrlSsmParam.replace(/^\//, '')}`,
+					],
+				}),
+			);
+		}
+		if (soulMintSignerKeySsmParam) {
+			controlPlaneFn.addToRolePolicy(
+				new iam.PolicyStatement({
+					actions: ['ssm:GetParameter'],
+					resources: [
+						`arn:aws:ssm:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:parameter/${soulMintSignerKeySsmParam.replace(/^\//, '')}`,
 					],
 				}),
 			);

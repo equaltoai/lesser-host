@@ -128,6 +128,38 @@ func (s *Server) soulRegistryGetAgentNonce(ctx context.Context, client ethRPCCli
 	return soul.DecodeAgentNoncesResult(ret)
 }
 
+func (s *Server) soulRegistryGetTransferCount(ctx context.Context, client ethRPCClient, contract common.Address, agentID *big.Int) *big.Int {
+	data, err := soul.EncodeTransferCountCall(agentID)
+	if err != nil {
+		return new(big.Int)
+	}
+	ret, err := client.CallContract(ctx, ethereum.CallMsg{To: &contract, Data: data}, nil)
+	if err != nil {
+		return new(big.Int)
+	}
+	result, err := soul.DecodeTransferCountResult(ret)
+	if err != nil {
+		return new(big.Int)
+	}
+	return result
+}
+
+func (s *Server) soulRegistryGetLastTransferredAt(ctx context.Context, client ethRPCClient, contract common.Address, agentID *big.Int) *big.Int {
+	data, err := soul.EncodeLastTransferredAtCall(agentID)
+	if err != nil {
+		return new(big.Int)
+	}
+	ret, err := client.CallContract(ctx, ethereum.CallMsg{To: &contract, Data: data}, nil)
+	if err != nil {
+		return new(big.Int)
+	}
+	result, err := soul.DecodeLastTransferredAtResult(ret)
+	if err != nil {
+		return new(big.Int)
+	}
+	return result
+}
+
 func soulRotationTypedData(chainID int64, verifyingContract string, agentID *big.Int, currentWallet string, newWallet string, nonce *big.Int, deadline int64) (soulWalletRotationTypedData, []byte, *apptheory.AppError) {
 	if agentID == nil || nonce == nil {
 		return soulWalletRotationTypedData{}, nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}

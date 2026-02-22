@@ -24,6 +24,7 @@ func New(opts ...apptheory.Option) *apptheory.App {
 	resolveTipRPCURLFromSSM(&cfg)
 	resolveSoulRPCURLFromSSM(&cfg)
 	resolveSoulPackBucketNameFromSSM(&cfg)
+	resolveSoulMintSignerKeyFromSSM(&cfg)
 
 	db, err := store.LambdaInit()
 	if err != nil {
@@ -129,6 +130,33 @@ func resolveSoulPackBucketNameFromSSM(cfg *config.Config) {
 		return
 	}
 	cfg.SoulPackBucketName = val
+}
+
+func resolveSoulMintSignerKeyFromSSM(cfg *config.Config) {
+	if cfg == nil {
+		return
+	}
+	if strings.TrimSpace(cfg.SoulMintSignerKey) != "" {
+		return
+	}
+	paramName := strings.TrimSpace(cfg.SoulMintSignerKeySSMParam)
+	if paramName == "" {
+		return
+	}
+
+	if os.Getenv("AWS_LAMBDA_FUNCTION_NAME") == "" && os.Getenv("AWS_EXECUTION_ENV") == "" {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	val, err := secrets.GetSSMParameter(ctx, nil, paramName)
+	if err != nil {
+		log.Printf("controlplane: failed to resolve SOUL_MINT_SIGNER_KEY from SSM param %q: %v", paramName, err)
+		return
+	}
+	cfg.SoulMintSignerKey = val
 }
 
 // Register registers control plane routes and hooks with an app.

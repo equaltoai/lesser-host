@@ -302,14 +302,19 @@ func (s *Server) soulOperationSnapshotJSON(ctx context.Context, client ethRPCCli
 		nonce = new(big.Int)
 	}
 
+	transferCnt := s.soulRegistryGetTransferCount(ctx, client, contractAddr, agentInt)
+	lastTransferred := s.soulRegistryGetLastTransferredAt(ctx, client, contractAddr, agentInt)
+
 	now := time.Now().UTC()
 	snap := map[string]any{
-		"agent_id":     agentIDHex,
-		"wallet":       strings.ToLower(wallet.Hex()),
-		"nonce":        nonce.String(),
-		"observed_at":  now.Format(time.RFC3339Nano),
-		"operation_id": strings.TrimSpace(op.OperationID),
-		"kind":         strings.TrimSpace(op.Kind),
+		"agent_id":           agentIDHex,
+		"wallet":             strings.ToLower(wallet.Hex()),
+		"nonce":              nonce.String(),
+		"transfer_count":     transferCnt.String(),
+		"last_transferred_at": lastTransferred.String(),
+		"observed_at":        now.Format(time.RFC3339Nano),
+		"operation_id":       strings.TrimSpace(op.OperationID),
+		"kind":               strings.TrimSpace(op.Kind),
 	}
 	b, _ := json.Marshal(snap)
 	return string(b)
@@ -334,6 +339,8 @@ func (s *Server) applySoulOperationSideEffects(ctx context.Context, client ethRP
 		s.applySoulOperationMintSideEffects(ctx, op, agentID)
 	case models.SoulOperationKindRotateWallet:
 		s.applySoulOperationRotateWalletSideEffects(ctx, client, agentID)
+	case models.SoulOperationKindBurn:
+		s.applySoulOperationBurnSideEffects(ctx, agentID)
 	}
 
 	return nil
@@ -401,5 +408,51 @@ func (s *Server) applySoulOperationRotateWalletSideEffects(ctx context.Context, 
 		wi := &models.SoulWalletAgentIndex{Wallet: newWallet, AgentID: agentID}
 		_ = wi.UpdateKeys()
 		_ = s.store.DB.WithContext(ctx).Model(wi).CreateOrUpdate()
+	}
+}
+
+func (s *Server) applySoulOperationBurnSideEffects(ctx context.Context, agentID string) {
+	identity, err := s.getSoulAgentIdentity(ctx, agentID)
+	if err != nil || identity == nil {
+		return
+	}
+
+	now := time.Now().UTC()
+	oldWallet := strings.ToLower(strings.TrimSpace(identity.Wallet))
+
+	// Transition identity status to burned.
+	update := &models.SoulAgentIdentity{
+		AgentID:   agentID,
+		Status:    "burned",
+		Wallet:    "",
+		UpdatedAt: now,
+	}
+	_ = update.UpdateKeys()
+	_ = s.store.DB.WithContext(ctx).Model(update).IfExists().Update("Status", "Wallet", "UpdatedAt")
+
+	// Clean up wallet→agent index.
+	if oldWallet != "" {
+		del := &models.SoulWalletAgentIndex{Wallet: oldWallet, AgentID: agentID}
+		_ = del.UpdateKeys()
+		_ = s.store.DB.WithContext(ctx).Model(del).Delete()
+	}
+
+	// Clean up domain→agent index.
+	domain := strings.TrimSpace(identity.Domain)
+	if domain != "" {
+		del := &models.SoulDomainAgentIndex{Domain: domain, AgentID: agentID}
+		_ = del.UpdateKeys()
+		_ = s.store.DB.WithContext(ctx).Model(del).Delete()
+	}
+
+	// Clean up capability indexes.
+	for _, cap := range identity.Capabilities {
+		cap = strings.TrimSpace(cap)
+		if cap == "" {
+			continue
+		}
+		del := &models.SoulCapabilityAgentIndex{Capability: cap, AgentID: agentID}
+		_ = del.UpdateKeys()
+		_ = s.store.DB.WithContext(ctx).Model(del).Delete()
 	}
 }

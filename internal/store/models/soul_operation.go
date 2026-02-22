@@ -21,6 +21,7 @@ const (
 	SoulOperationKindPublishReputationRoot = "publish_reputation_root"
 	SoulOperationKindPublishValidationRoot = "publish_validation_root"
 	SoulOperationKindSuspend               = "suspend"
+	SoulOperationKindBurn                  = "burn"
 )
 
 // SoulOperation represents a Safe-first on-chain operation request and its reconciliation metadata.
