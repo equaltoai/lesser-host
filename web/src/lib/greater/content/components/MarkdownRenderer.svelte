@@ -24,17 +24,6 @@ Uses the unified ecosystem (remark + rehype) for ESM-compatible markdown process
 		content: string;
 
 		/**
-		 * Whether to sanitize the HTML output.
-		 * @default true
-		 */
-		sanitize?: boolean;
-
-		/**
-		 * List of allowed HTML tags. If not provided, uses default safe tags.
-		 */
-		allowedTags?: string[];
-
-		/**
 		 * Enable syntax highlighting for code blocks (uses styling class).
 		 * @default true
 		 */
@@ -70,8 +59,6 @@ Uses the unified ecosystem (remark + rehype) for ESM-compatible markdown process
 
 	let {
 		content,
-		sanitize = true,
-		allowedTags,
 		// enableCodeHighlight = true, // Handled by CSS
 		enableLinks = true,
 		openLinksInNewTab = true,
@@ -81,11 +68,11 @@ Uses the unified ecosystem (remark + rehype) for ESM-compatible markdown process
 		...restProps
 	}: Props = $props();
 
-	// Build custom sanitization schema
+	// Build custom sanitization schema (always enabled -- cannot be disabled)
 	function buildSanitizeSchema(): Schema {
 		const schema: Schema = {
 			...defaultSchema,
-			tagNames: allowedTags || [
+			tagNames: [
 				'p',
 				'br',
 				'strong',
@@ -136,9 +123,7 @@ Uses the unified ecosystem (remark + rehype) for ESM-compatible markdown process
 			allowDangerousHtml: false,
 		});
 
-		if (sanitize) {
-			processor.use(rehypeSanitize, buildSanitizeSchema());
-		}
+		processor.use(rehypeSanitize, buildSanitizeSchema());
 
 		processor.use(rehypeStringify);
 

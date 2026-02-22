@@ -37,13 +37,25 @@ func (u *webAuthnUser) WebAuthnCredentials() []webauthn.Credential {
 
 func toWebAuthnCredential(c *models.WebAuthnCredential) *webauthn.Credential {
 	credID, _ := base64.StdEncoding.DecodeString(c.ID)
+
+	// Default to true for backward compatibility with credentials stored before
+	// these flags were persisted.
+	userPresent := true
+	if c.UserPresent != nil {
+		userPresent = *c.UserPresent
+	}
+	userVerified := true
+	if c.UserVerified != nil {
+		userVerified = *c.UserVerified
+	}
+
 	return &webauthn.Credential{
 		ID:              credID,
 		PublicKey:       c.PublicKey,
 		AttestationType: c.AttestationType,
 		Flags: webauthn.CredentialFlags{
-			UserPresent:    true,
-			UserVerified:   true,
+			UserPresent:    userPresent,
+			UserVerified:   userVerified,
 			BackupEligible: c.BackupEligible,
 			BackupState:    c.BackupState,
 		},

@@ -55,3 +55,35 @@ export function jsonRequest<T>(body: T): RequestInit {
 		body: JSON.stringify(body),
 	};
 }
+
+/**
+ * Returns the URL if it uses the https: protocol, otherwise returns undefined.
+ * Prevents javascript:, data:, and other dangerous URI schemes from being used in href attributes.
+ */
+export function safeHref(url: string | undefined | null): string | undefined {
+	if (!url) return undefined;
+	try {
+		const parsed = new URL(url);
+		if (parsed.protocol === 'https:' || parsed.protocol === 'http:') return url;
+		return undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+const ALLOWED_CHECKOUT_HOSTS = ['checkout.stripe.com'];
+
+/**
+ * Validates that a URL is safe for navigation (e.g., checkout redirects).
+ * Only allows HTTPS URLs on explicitly allowed hosts, or same-origin URLs.
+ */
+export function isSafeRedirectUrl(url: string): boolean {
+	try {
+		const parsed = new URL(url, window.location.origin);
+		if (parsed.protocol !== 'https:') return false;
+		if (parsed.origin === window.location.origin) return true;
+		return ALLOWED_CHECKOUT_HOSTS.includes(parsed.hostname);
+	} catch {
+		return false;
+	}
+}

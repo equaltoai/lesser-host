@@ -39,7 +39,7 @@ func (s *Server) aiRateLimitMiddleware() apptheory.Middleware {
 
 	rateLimitMW := apptheory.RateLimitMiddleware(apptheory.RateLimitConfig{
 		Limiter:    limiter,
-		FailClosed: false,
+		FailClosed: true,
 		ExtractIdentifier: func(ctx *apptheory.Context) string {
 			if ctx == nil {
 				return "anonymous"

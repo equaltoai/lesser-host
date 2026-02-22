@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onDestroy, onMount } from 'svelte';
 
-	import type { ApiError } from 'src/lib/api/http';
+	import { type ApiError, safeHref } from 'src/lib/api/http';
 	import type { BudgetMonthResponse, ListBudgetsResponse } from 'src/lib/api/portalUsage';
 	import { portalListBudgets } from 'src/lib/api/portalUsage';
 	import type { DomainResponse, InstanceResponse, ProvisionJobResponse, UpdateJobResponse } from 'src/lib/api/portalInstances';
@@ -511,8 +511,8 @@
 					<DefinitionItem label="Lesser version" monospace>{job?.lesser_version || '—'}</DefinitionItem>
 					<DefinitionItem label="Run id" monospace>{job?.run_id || '—'}</DefinitionItem>
 					<DefinitionItem label="Run url" monospace>
-						{#if job?.run_url}
-							<a href={job.run_url} target="_blank" rel="noopener noreferrer">Open logs</a>
+						{#if safeHref(job?.run_url)}
+							<a href={safeHref(job.run_url)} target="_blank" rel="noopener noreferrer">Open logs</a>
 						{:else}
 							—
 						{/if}

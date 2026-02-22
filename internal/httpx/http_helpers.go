@@ -7,12 +7,18 @@ import (
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 )
 
+// maxRequestBodySize is the maximum allowed JSON request body size (1 MB).
+const maxRequestBodySize = 1 << 20
+
 func ParseJSON(ctx *apptheory.Context, dest any) error {
 	if ctx == nil {
 		return &apptheory.AppError{Code: "app.bad_request", Message: "invalid request"}
 	}
 	if len(ctx.Request.Body) == 0 {
 		return &apptheory.AppError{Code: "app.bad_request", Message: "empty body"}
+	}
+	if len(ctx.Request.Body) > maxRequestBodySize {
+		return &apptheory.AppError{Code: "app.bad_request", Message: "request body too large"}
 	}
 	if err := json.Unmarshal(ctx.Request.Body, dest); err != nil {
 		return &apptheory.AppError{Code: "app.bad_request", Message: "invalid JSON"}

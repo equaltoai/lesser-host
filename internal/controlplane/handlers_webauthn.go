@@ -228,6 +228,8 @@ func (s *Server) handleWebAuthnRegisterFinish(ctx *apptheory.Context) (*apptheor
 		name = fmt.Sprintf("Passkey %d", len(creds)+1)
 	}
 
+	userPresent := credential.Flags.UserPresent
+	userVerified := credential.Flags.UserVerified
 	stored := &models.WebAuthnCredential{
 		ID:              base64.StdEncoding.EncodeToString(credential.ID),
 		UserID:          username,
@@ -236,6 +238,8 @@ func (s *Server) handleWebAuthnRegisterFinish(ctx *apptheory.Context) (*apptheor
 		AAGUID:          credential.Authenticator.AAGUID,
 		SignCount:       credential.Authenticator.SignCount,
 		CloneWarning:    credential.Authenticator.CloneWarning,
+		UserPresent:     &userPresent,
+		UserVerified:    &userVerified,
 		BackupEligible:  credential.Flags.BackupEligible,
 		BackupState:     credential.Flags.BackupState,
 		CreatedAt:       now,
@@ -378,11 +382,15 @@ func (s *Server) handleWebAuthnLoginFinish(ctx *apptheory.Context) (*apptheory.R
 	credID := base64.StdEncoding.EncodeToString(credential.ID)
 	now := time.Now().UTC()
 
+	loginUserPresent := credential.Flags.UserPresent
+	loginUserVerified := credential.Flags.UserVerified
 	update := &models.WebAuthnCredential{
 		ID:             credID,
 		UserID:         username,
 		SignCount:      credential.Authenticator.SignCount,
 		CloneWarning:   credential.Authenticator.CloneWarning,
+		UserPresent:    &loginUserPresent,
+		UserVerified:   &loginUserVerified,
 		BackupEligible: credential.Flags.BackupEligible,
 		BackupState:    credential.Flags.BackupState,
 		LastUsedAt:     now,
@@ -394,6 +402,8 @@ func (s *Server) handleWebAuthnLoginFinish(ctx *apptheory.Context) (*apptheory.R
 	_ = s.store.DB.WithContext(ctx.Context()).Model(update).Update(
 		"SignCount",
 		"CloneWarning",
+		"UserPresent",
+		"UserVerified",
 		"BackupEligible",
 		"BackupState",
 		"LastUsedAt",

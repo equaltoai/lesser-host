@@ -55,9 +55,10 @@ type LinkSafetyBasicResult struct {
 	Links   []LinkSafetyBasicLinkResult `theorydb:"attr:links" json:"links"`
 	Summary LinkSafetyBasicSummary      `theorydb:"attr:summary" json:"summary"`
 
-	CreatedAt time.Time `theorydb:"attr:createdAt" json:"created_at"`
-	ExpiresAt time.Time `theorydb:"attr:expiresAt" json:"expires_at"`
-	RequestID string    `theorydb:"attr:requestId" json:"request_id,omitempty"`
+	CreatedAt    time.Time `theorydb:"attr:createdAt" json:"created_at"`
+	ExpiresAt    time.Time `theorydb:"attr:expiresAt" json:"expires_at"`
+	RequestID    string    `theorydb:"attr:requestId" json:"request_id,omitempty"`
+	InstanceSlug string    `theorydb:"attr:instanceSlug" json:"-"`
 }
 
 // TableName returns the database table name for LinkSafetyBasicResult.

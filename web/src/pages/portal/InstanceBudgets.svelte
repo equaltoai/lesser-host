@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 
-	import type { ApiError } from 'src/lib/api/http';
+	import { type ApiError, isSafeRedirectUrl } from 'src/lib/api/http';
 	import { portalCreateCreditsCheckout } from 'src/lib/api/portalBilling';
 	import type { BudgetMonthResponse, ListBudgetsResponse, UsageSummaryResponse } from 'src/lib/api/portalUsage';
 	import { portalGetBudgetMonth, portalGetUsageSummary, portalListBudgets, portalSetBudgetMonth } from 'src/lib/api/portalUsage';
@@ -134,6 +134,10 @@
 		buyLoading = true;
 		try {
 			const res = await portalCreateCreditsCheckout(token, { instance_slug: slug, credits, month: normalizedMonth });
+			if (!isSafeRedirectUrl(res.checkout_url)) {
+				buyError = 'Invalid checkout URL received from server.';
+				return;
+			}
 			window.location.assign(res.checkout_url);
 		} catch (err) {
 			if ((err as Partial<ApiError>).status === 401) {

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 
-	import type { ApiError } from 'src/lib/api/http';
+	import { type ApiError, isSafeRedirectUrl } from 'src/lib/api/http';
 	import type { ListCreditPurchasesResponse, ListPaymentMethodsResponse } from 'src/lib/api/portalBilling';
 	import {
 		portalCreatePaymentMethodCheckout,
@@ -82,6 +82,10 @@
 		addPaymentMethodLoading = true;
 		try {
 			const res = await portalCreatePaymentMethodCheckout(token);
+			if (!isSafeRedirectUrl(res.checkout_url)) {
+				addPaymentMethodError = 'Invalid checkout URL received from server.';
+				return;
+			}
 			window.location.assign(res.checkout_url);
 		} catch (err) {
 			if ((err as Partial<ApiError>).status === 401) {
@@ -214,7 +218,7 @@
 								</Text>
 								{#if purchase.receipt_url}
 									<Text size="sm" color="secondary">
-										receipt <a class="billing__link" href={purchase.receipt_url} target="_blank" rel="noreferrer">{purchase.receipt_url}</a>
+										receipt <a class="billing__link" href={purchase.receipt_url} target="_blank" rel="noopener noreferrer">{purchase.receipt_url}</a>
 									</Text>
 								{/if}
 								{#if purchase.request_id}

@@ -38,7 +38,7 @@ function isValidSession(value: unknown): value is Session {
 
 function isExpired(expiresAt: string): boolean {
 	const parsed = Date.parse(expiresAt);
-	if (!Number.isFinite(parsed)) return false;
+	if (!Number.isFinite(parsed)) return true;
 	return parsed <= Date.now();
 }
 

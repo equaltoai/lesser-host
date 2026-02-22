@@ -286,12 +286,21 @@ func (s *Server) handleGetPublishJob(ctx *apptheory.Context) (*apptheory.Respons
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid job id"}
 	}
 
+	instanceSlug := strings.TrimSpace(ctx.AuthIdentity)
+	if instanceSlug == "" {
+		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+	}
+
 	item, err := s.store.GetLinkSafetyBasicResult(ctx.Context(), jobID)
 	if theoryErrors.IsNotFound(err) {
 		return nil, &apptheory.AppError{Code: "app.not_found", Message: "job not found"}
 	}
 	if err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
+	if strings.TrimSpace(item.InstanceSlug) != "" && strings.TrimSpace(item.InstanceSlug) != instanceSlug {
+		return nil, &apptheory.AppError{Code: "app.not_found", Message: "job not found"}
 	}
 
 	return apptheory.JSON(http.StatusOK, item)
@@ -327,6 +336,7 @@ func (s *Server) storeLinkSafetyBasicNoLinksResult(
 		CreatedAt:     now,
 		ExpiresAt:     now.Add(7 * 24 * time.Hour),
 		RequestID:     strings.TrimSpace(ctx.RequestID),
+		InstanceSlug:  instanceSlug,
 	}
 	_ = item.UpdateKeys()
 
@@ -722,6 +732,7 @@ func (s *Server) runLinkSafetyBasicJob(
 		CreatedAt:     now,
 		ExpiresAt:     now.Add(7 * 24 * time.Hour),
 		RequestID:     strings.TrimSpace(ctx.RequestID),
+		InstanceSlug:  instanceSlug,
 	}
 	_ = item.UpdateKeys()
 

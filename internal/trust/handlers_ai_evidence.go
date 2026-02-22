@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
@@ -143,10 +144,14 @@ func (s *Server) handleAIEvidenceText(ctx *apptheory.Context) (*apptheory.Respon
 	if text == "" {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "text is required"}
 	}
-	// Comprehend input size guardrail.
+	// Comprehend input size guardrail – truncate at a valid UTF-8 boundary.
 	if len([]byte(text)) > 5000 {
 		b := []byte(text)
-		text = string(b[:5000])
+		b = b[:5000]
+		for len(b) > 0 && !utf8.Valid(b) {
+			b = b[:len(b)-1]
+		}
+		text = string(b)
 	}
 
 	instCfg := s.loadInstanceTrustConfig(ctx.Context(), instanceSlug)

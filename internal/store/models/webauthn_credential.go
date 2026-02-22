@@ -18,6 +18,8 @@ type WebAuthnCredential struct {
 	AAGUID          []byte    `theorydb:"attr:aaguid" json:"aaguid"`
 	SignCount       uint32    `theorydb:"attr:signCount" json:"sign_count"`
 	CloneWarning    bool      `theorydb:"attr:cloneWarning" json:"clone_warning"`
+	UserPresent     *bool     `theorydb:"attr:userPresent,omitempty" json:"user_present,omitempty"`
+	UserVerified    *bool     `theorydb:"attr:userVerified,omitempty" json:"user_verified,omitempty"`
 	BackupEligible  bool      `theorydb:"attr:backupEligible" json:"backup_eligible"`
 	BackupState     bool      `theorydb:"attr:backupState" json:"backup_state"`
 	CreatedAt       time.Time `theorydb:"attr:createdAt" json:"created_at"`

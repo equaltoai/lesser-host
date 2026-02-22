@@ -888,16 +888,16 @@ export class LesserHostStack extends cdk.Stack {
 			);
 		}
 
-		provisionWorkerFn.addToRolePolicy(
-			new iam.PolicyStatement({
-				actions: ['route53:ChangeResourceRecordSets'],
-				resources: [
-					managedParentHostedZoneId.trim()
-						? `arn:aws:route53:::hostedzone/${managedParentHostedZoneId.trim()}`
-						: 'arn:aws:route53:::hostedzone/*',
-				],
-			}),
-		);
+		if (managedParentHostedZoneId.trim()) {
+			provisionWorkerFn.addToRolePolicy(
+				new iam.PolicyStatement({
+					actions: ['route53:ChangeResourceRecordSets'],
+					resources: [
+						`arn:aws:route53:::hostedzone/${managedParentHostedZoneId.trim()}`,
+					],
+				}),
+			);
+		}
 
 		provisionWorkerFn.addToRolePolicy(
 			new iam.PolicyStatement({
@@ -1061,16 +1061,16 @@ export class LesserHostStack extends cdk.Stack {
 				resources: ['*'],
 			}),
 		);
-		controlPlaneFn.addToRolePolicy(
-			new iam.PolicyStatement({
-				actions: ['route53:ChangeResourceRecordSets'],
-				resources: [
-					managedParentHostedZoneId.trim()
-						? `arn:aws:route53:::hostedzone/${managedParentHostedZoneId.trim()}`
-						: 'arn:aws:route53:::hostedzone/*',
-				],
-			}),
-		);
+		if (managedParentHostedZoneId.trim()) {
+			controlPlaneFn.addToRolePolicy(
+				new iam.PolicyStatement({
+					actions: ['route53:ChangeResourceRecordSets'],
+					resources: [
+						`arn:aws:route53:::hostedzone/${managedParentHostedZoneId.trim()}`,
+					],
+				}),
+			);
+		}
 
 		const retentionSweepRule = new events.Rule(this, 'RetentionSweepRule', {
 			ruleName: `${namePrefix}-retention-sweep`,
