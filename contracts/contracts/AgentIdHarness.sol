@@ -12,10 +12,12 @@ pragma solidity ^0.8.24;
  * prove the Solidity implementation matches the published test vectors.
  */
 contract AgentIdHarness {
+    /// @notice Derive the canonical agentId for a normalized domain and local agent identifier.
     function deriveAgentId(string calldata normalizedDomain, string calldata normalizedLocalAgentId) external pure returns (uint256) {
         return uint256(keccak256(abi.encodePacked(normalizedDomain, "/", normalizedLocalAgentId)));
     }
 
+    /// @notice Derive the canonical agentId hash (bytes32) for a normalized domain and local agent identifier.
     function deriveAgentIdBytes32(
         string calldata normalizedDomain,
         string calldata normalizedLocalAgentId

@@ -517,9 +517,9 @@ func (s *Server) handleGetRenderSnapshot(ctx *apptheory.Context) (*apptheory.Res
 	resp := &apptheory.Response{
 		Status: http.StatusOK,
 		Headers: map[string][]string{
-			"content-type":  {contentType},
-			"cache-control": {"private, max-age=600"},
-			"vary":          {"authorization"},
+			"content-type":           {contentType},
+			"cache-control":          {"private, max-age=600"},
+			"vary":                   {"authorization"},
 			"x-content-type-options": {"nosniff"},
 		},
 		Body: body,

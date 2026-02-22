@@ -39,10 +39,12 @@ contract SacredGeometryRenderer is ISoulAvatarRenderer {
         uint256 hasFill;
     }
 
+    /// @notice Renderer style display name.
     function styleName() external pure override returns (string memory) {
         return "Sacred Geometry";
     }
 
+    /// @notice Render an SVG avatar for a given tokenId.
     function renderAvatar(uint256 tokenId) external view override returns (string memory) {
         SoulPRNG.State memory st = SoulPRNG.seed(SoulSVGUtils.toString(tokenId));
 

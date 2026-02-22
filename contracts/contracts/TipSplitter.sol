@@ -8,7 +8,9 @@ import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
+/// @notice Minimal ERC-8004 identity registry interface for resolving agent wallets.
 interface IERC8004IdentityRegistry {
+    /// @notice Resolve the wallet bound to an ERC-8004 agentId.
     function getAgentWallet(uint256 agentId) external view returns (address);
 }
 
@@ -20,13 +22,20 @@ interface IERC8004IdentityRegistry {
 contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
+    /// @notice Lesser org fee in basis points (1%).
     uint256 public constant LESSER_FEE_BPS = 100; // 1%
+    /// @notice Maximum host fee in basis points (5%).
     uint256 public constant MAX_HOST_FEE_BPS = 500; // 5%
+    /// @notice Basis point denominator.
     uint256 public constant BPS_DENOMINATOR = 10_000;
+    /// @notice Default minimum tip amount to ensure non-zero fee splits.
     uint256 public constant MIN_TIP_AMOUNT = 10_000; // minimum to guarantee non-zero fee splits
 
+    /// @notice Address receiving the Lesser org share.
     address public lesserWallet;
+    /// @notice ERC-8004 identity registry address used for agent wallet resolution (optional).
     address public agentIdentityRegistry;
+    /// @notice Whether withdrawals are paused (independent from tips pause).
     bool public withdrawalsPaused;
 
     struct HostConfig {
@@ -35,14 +44,21 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
         bool isActive;
     }
 
+    /// @notice Host registry keyed by hostId.
     mapping(bytes32 => HostConfig) public hosts; // hostId => config
 
+    /// @notice Pending ETH credits per recipient.
     mapping(address => uint256) public pendingETH; // recipient => wei
+    /// @notice Pending token credits per token and recipient.
     mapping(address => mapping(address => uint256)) public pendingToken; // token => recipient => amount
+    /// @notice Total tracked ETH liabilities across all recipients.
     uint256 public totalPendingETH; // total tracked ETH liabilities across all recipients
+    /// @notice Total tracked token liabilities per token.
     mapping(address => uint256) public totalPendingToken; // token => total tracked token liabilities
 
+    /// @notice ERC20 token allowlist (ETH is always allowed).
     mapping(address => bool) public allowedTokens; // ERC20 token allowlist (ETH is always allowed)
+    /// @notice Enumerable list of allowed tokens.
     address[] public allowedTokenList; // enumerable list for allowlist management
     mapping(address => uint256) private _tokenIndex; // token => index in allowedTokenList (1-based)
 
@@ -57,8 +73,10 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
     mapping(address => uint256) public maxTipAmount;
     /// @notice Per-token min tip amount (0 = MIN_TIP_AMOUNT unless hasCustomMinTipAmount is true). Use address(0) key for ETH.
     mapping(address => uint256) public minTipAmount;
+    /// @notice Whether a token has a custom min tip amount configured.
     mapping(address => bool) public hasCustomMinTipAmount;
 
+    /// @notice Emitted when a tip is credited to pending balances.
     event TipSent(
         bytes32 indexed hostId,
         address indexed token,
@@ -71,19 +89,31 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
         bytes32 contentHash
     );
 
+    /// @notice Emitted when a withdrawal is made.
     event Withdrawal(address indexed token, address indexed recipient, uint256 amount);
 
+    /// @notice Emitted when a host is registered.
     event HostRegistered(bytes32 indexed hostId, address indexed wallet, uint16 feeBps);
+    /// @notice Emitted when a host is updated.
     event HostUpdated(bytes32 indexed hostId, address indexed wallet, uint16 feeBps);
+    /// @notice Emitted when a host's active status is changed.
     event HostActiveSet(bytes32 indexed hostId, bool isActive);
 
+    /// @notice Emitted when a token allowlist entry is changed.
     event TokenAllowedSet(address indexed token, bool allowed);
+    /// @notice Emitted when the Lesser wallet is updated.
     event LesserWalletUpdated(address indexed oldWallet, address indexed newWallet);
+    /// @notice Emitted when a token's maximum tip amount is updated.
     event MaxTipAmountSet(address indexed token, uint256 amount);
+    /// @notice Emitted when a token's minimum tip amount is updated.
     event MinTipAmountSet(address indexed token, uint256 oldAmount, uint256 newAmount);
+    /// @notice Emitted when withdrawalsPaused is changed.
     event WithdrawalsPausedSet(bool paused);
+    /// @notice Emitted when untracked funds are swept to the configured destination.
     event StraySwept(address indexed token, address indexed destination, uint256 amount);
+    /// @notice Emitted when the agent identity registry address is updated.
     event AgentIdentityRegistryUpdated(address indexed oldRegistry, address indexed newRegistry);
+    /// @notice Emitted when a tip is sent to an ERC-8004 agent.
     event AgentTipSent(
         bytes32 indexed hostId,
         uint256 indexed agentId,
@@ -104,12 +134,14 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
         agentIdentityRegistry = _agentIdentityRegistry;
     }
 
+    /// @notice Reject direct ETH transfers; use tipETH instead.
     receive() external payable {
         revert("TipSplitter: use tipETH");
     }
 
     // ========= Tips (ETH) =========
 
+    /// @notice Tip an actor in ETH, splitting proceeds between Lesser, host, and actor.
     function tipETH(bytes32 hostId, address actor, bytes32 contentHash)
         external
         payable
@@ -166,6 +198,7 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
 
     // ========= Tips (ERC20) =========
 
+    /// @notice Tip an actor in an ERC-20 token, splitting proceeds between Lesser, host, and actor.
     function tipToken(address token, bytes32 hostId, address actor, uint256 amount, bytes32 contentHash)
         external
         nonReentrant
@@ -247,6 +280,7 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
 
     // ========= Tips (ERC-8004 agents) =========
 
+    /// @notice Tip an ERC-8004 agent in ETH (agent wallet is resolved via the configured identity registry).
     function tipAgentETH(bytes32 hostId, uint256 agentId, bytes32 contentHash)
         external
         payable
@@ -258,6 +292,7 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
         emit AgentTipSent(hostId, agentId, address(0), msg.sender, actor, msg.value, contentHash);
     }
 
+    /// @notice Tip an ERC-8004 agent in an ERC-20 token (agent wallet is resolved via the configured identity registry).
     function tipAgentToken(address token, bytes32 hostId, uint256 agentId, uint256 amount, bytes32 contentHash)
         external
         nonReentrant
@@ -307,6 +342,7 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
 
     // ========= Host Registry (owner) =========
 
+    /// @notice Register a new host (owner only).
     function registerHost(bytes32 hostId, address wallet, uint16 feeBps) external onlyOwner {
         require(wallet != address(0), "TipSplitter: invalid wallet");
         require(wallet != lesserWallet, "TipSplitter: wallet cannot be lesser wallet");
@@ -318,6 +354,7 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
         emit HostRegistered(hostId, wallet, feeBps);
     }
 
+    /// @notice Update a host configuration (owner only).
     function updateHost(bytes32 hostId, address wallet, uint16 feeBps) external onlyOwner {
         require(hosts[hostId].wallet != address(0), "TipSplitter: host missing");
         require(wallet != address(0), "TipSplitter: invalid wallet");
@@ -334,6 +371,7 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
         emit HostUpdated(hostId, wallet, feeBps);
     }
 
+    /// @notice Set whether a host is active (owner only).
     function setHostActive(bytes32 hostId, bool active) external onlyOwner {
         require(hosts[hostId].wallet != address(0), "TipSplitter: host missing");
         hosts[hostId].isActive = active;
@@ -376,6 +414,7 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
 
     // ========= Admin =========
 
+    /// @notice Update the Lesser wallet address (owner only).
     function setLesserWallet(address newWallet) external onlyOwner {
         require(newWallet != address(0), "TipSplitter: invalid wallet");
         require(newWallet != lesserWallet, "TipSplitter: no-op");
@@ -385,6 +424,7 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
         emit LesserWalletUpdated(old, newWallet);
     }
 
+    /// @notice Update the ERC-8004 identity registry address (owner only).
     function setAgentIdentityRegistry(address registry) external onlyOwner {
         if (registry != address(0)) {
             require(registry.code.length > 0, "TipSplitter: invalid agent registry");
@@ -394,10 +434,12 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
         emit AgentIdentityRegistryUpdated(old, registry);
     }
 
+    /// @notice Pause tipping and other state-changing operations (owner only).
     function pause() external onlyOwner {
         _pause();
     }
 
+    /// @notice Unpause tipping and other state-changing operations (owner only).
     function unpause() external onlyOwner {
         _unpause();
     }

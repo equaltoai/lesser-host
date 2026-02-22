@@ -8,10 +8,12 @@ import {SoulSVGUtils} from "./SoulSVGUtils.sol";
 /// @title EtherealBlobRenderer
 /// @notice Generates ethereal blob SVG avatars on-chain from tokenId.
 contract EtherealBlobRenderer is ISoulAvatarRenderer {
+    /// @notice Renderer style display name.
     function styleName() external pure override returns (string memory) {
         return "Ethereal Blob";
     }
 
+    /// @notice Render an SVG avatar for a given tokenId.
     function renderAvatar(uint256 tokenId) external view override returns (string memory) {
         SoulPRNG.State memory st = SoulPRNG.seed(SoulSVGUtils.toString(tokenId));
 

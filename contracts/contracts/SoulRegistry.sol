@@ -24,6 +24,7 @@ import {SoulSVGUtils} from "./SoulSVGUtils.sol";
 contract SoulRegistry is ERC721, Ownable2Step, Pausable, EIP712 {
 
     // Claim window duration (seconds). After this, normal ERC-721 transfers are blocked.
+    /// @notice Claim window duration (seconds). After this, tokens become soulbound.
     uint256 public immutable claimWindowSeconds;
 
     // tokenId (== agentId) -> current wallet
@@ -36,10 +37,13 @@ contract SoulRegistry is ERC721, Ownable2Step, Pausable, EIP712 {
     mapping(uint256 => uint256) private _mintedAt;
 
     // agentId -> replay-protection nonce (used for rotations)
+    /// @notice Replay-protection nonce used for wallet rotations (agentId => nonce).
     mapping(uint256 => uint256) public agentNonces;
 
     // Transfer tracking
+    /// @notice Number of times a token has been transferred (during claim window).
     mapping(uint256 => uint256) public transferCount;
+    /// @notice Timestamp of the last transfer (seconds).
     mapping(uint256 => uint256) public lastTransferredAt;
 
     // Avatar renderer registry
@@ -47,7 +51,9 @@ contract SoulRegistry is ERC721, Ownable2Step, Pausable, EIP712 {
     mapping(uint256 => uint8) private _avatarStyle;
 
     // Permit-based minting
+    /// @notice Address allowed to sign mint permits.
     address public mintSigner;
+    /// @notice Mint fee (wei).
     uint256 public mintFee;
     mapping(bytes32 => bool) private _usedPermits;
 
@@ -57,14 +63,23 @@ contract SoulRegistry is ERC721, Ownable2Step, Pausable, EIP712 {
     bytes32 private constant _MINT_PERMIT_TYPEHASH =
         keccak256("MintPermit(address to,uint256 agentId,string metaURI,uint8 avatarStyle,uint256 deadline)");
 
+    /// @notice Emitted when a new soul is minted.
     event SoulMinted(uint256 indexed agentId, address indexed to, string metaURI);
+    /// @notice Emitted when a soul's metadata URI is updated.
     event MetaURISet(uint256 indexed agentId, string metaURI);
+    /// @notice Emitted when the bound wallet for an agentId is rotated.
     event WalletRotated(uint256 indexed agentId, address indexed oldWallet, address indexed newWallet, uint256 nonce);
+    /// @notice Emitted when a soul is burned.
     event SoulBurned(uint256 indexed agentId, address indexed lastWallet);
+    /// @notice Emitted when a soul is transferred during the claim window.
     event SoulTransferred(uint256 indexed agentId, uint256 transferCount, uint256 timestamp);
+    /// @notice Emitted when a token's avatar style is changed.
     event AvatarStyleChanged(uint256 indexed agentId, uint8 style);
+    /// @notice Emitted when a renderer implementation is updated for a style ID.
     event RendererUpdated(uint8 indexed styleId, address renderer);
+    /// @notice Emitted when the mint signer is updated.
     event MintSignerUpdated(address indexed signer);
+    /// @notice Emitted when the mint fee is updated.
     event MintFeeUpdated(uint256 fee);
 
     constructor(address initialOwner, uint256 claimWindowSeconds_)
@@ -326,10 +341,12 @@ contract SoulRegistry is ERC721, Ownable2Step, Pausable, EIP712 {
 
     // ========= Admin =========
 
+    /// @notice Pause all state-changing operations.
     function pause() external onlyOwner {
         _pause();
     }
 
+    /// @notice Unpause state-changing operations.
     function unpause() external onlyOwner {
         _unpause();
     }

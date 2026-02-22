@@ -307,14 +307,14 @@ func (s *Server) soulOperationSnapshotJSON(ctx context.Context, client ethRPCCli
 
 	now := time.Now().UTC()
 	snap := map[string]any{
-		"agent_id":           agentIDHex,
-		"wallet":             strings.ToLower(wallet.Hex()),
-		"nonce":              nonce.String(),
-		"transfer_count":     transferCnt.String(),
+		"agent_id":            agentIDHex,
+		"wallet":              strings.ToLower(wallet.Hex()),
+		"nonce":               nonce.String(),
+		"transfer_count":      transferCnt.String(),
 		"last_transferred_at": lastTransferred.String(),
-		"observed_at":        now.Format(time.RFC3339Nano),
-		"operation_id":       strings.TrimSpace(op.OperationID),
-		"kind":               strings.TrimSpace(op.Kind),
+		"observed_at":         now.Format(time.RFC3339Nano),
+		"operation_id":        strings.TrimSpace(op.OperationID),
+		"kind":                strings.TrimSpace(op.Kind),
 	}
 	b, _ := json.Marshal(snap)
 	return string(b)

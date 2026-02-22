@@ -16,10 +16,12 @@ contract SigilRenderer is ISoulAvatarRenderer {
         string bg;
     }
 
+    /// @notice Renderer style display name.
     function styleName() external pure override returns (string memory) {
         return "Sigil";
     }
 
+    /// @notice Render an SVG avatar for a given tokenId.
     function renderAvatar(uint256 tokenId) external view override returns (string memory) {
         SoulPRNG.State memory st = SoulPRNG.seed(SoulSVGUtils.toString(tokenId));
 

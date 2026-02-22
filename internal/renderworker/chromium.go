@@ -84,7 +84,7 @@ func inflateBrotliFile(src string, dest string, mode os.FileMode) error {
 		return fmt.Errorf("brotli source is required")
 	}
 
-	in, err := os.Open(src) // #nosec G304 -- src is controlled by Lambda configuration and points to packaged assets.
+	in, err := os.Open(src) //nolint:gosec // src is controlled by Lambda configuration and points to packaged assets.
 	if err != nil {
 		return err
 	}
@@ -185,7 +185,7 @@ func shouldSkipTarInflation(destDir string, kind string) bool {
 }
 
 func openTarSource(src string, kind string) (*os.File, error) {
-	f, err := os.Open(src) // #nosec G304 -- src is controlled by Lambda configuration and points to packaged assets.
+	f, err := os.Open(src) //nolint:gosec // src is controlled by Lambda configuration and points to packaged assets.
 	if err != nil {
 		// swiftshader is optional.
 		if kind == "swiftshader" && errors.Is(err, os.ErrNotExist) {
@@ -275,7 +275,7 @@ func extractTarFile(tr *tar.Reader, hdr *tar.Header, target string, extractedByt
 		return extractedBytes, err
 	}
 
-	f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600) // #nosec G304 -- target is validated to be within destDir.
+	f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600) //nolint:gosec // target is validated to be within destDir.
 	if err != nil {
 		return extractedBytes, err
 	}

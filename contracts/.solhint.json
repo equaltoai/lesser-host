@@ -5,6 +5,22 @@
       "error",
       "^0.8.24"
     ],
+    "quotes": "off",
+    "use-natspec": [
+      "warn",
+      {
+        "title": { "enabled": false },
+        "author": { "enabled": false },
+        "param": { "enabled": false },
+        "return": { "enabled": false }
+      }
+    ],
+    "import-path-check": "off",
+    "max-states-count": "off",
+    "gas-increment-by-one": "off",
+    "gas-small-strings": "off",
+    "gas-strict-inequalities": "off",
+    "gas-indexed-events": "off",
     "avoid-low-level-calls": "off",
     "gas-custom-errors": "off",
     "reason-string": "off",
