@@ -118,6 +118,13 @@ func (s *Server) handleSetupStatus(ctx *apptheory.Context) (*apptheory.Response,
 	}
 
 	bootstrapWallet := strings.TrimSpace(s.cfg.BootstrapWalletAddress)
+	// Only expose the bootstrap wallet address while the control plane is locked
+	// (pre-bootstrap). Once bootstrapped, omit the address to avoid leaking
+	// sensitive configuration to unauthenticated callers.
+	exposedWallet := ""
+	if locked {
+		exposedWallet = bootstrapWallet
+	}
 	resp := setupStatusResponse{
 		ControlPlaneState: func() string {
 			if locked {
@@ -130,7 +137,7 @@ func (s *Server) handleSetupStatus(ctx *apptheory.Context) (*apptheory.Response,
 		BootstrappedAt:  bootstrappedAt,
 
 		BootstrapWalletAddressSet: bootstrapWallet != "",
-		BootstrapWalletAddress:    bootstrapWallet,
+		BootstrapWalletAddress:    exposedWallet,
 
 		PrimaryAdminSet:      primaryAdmin != "",
 		PrimaryAdminUsername: primaryAdmin,

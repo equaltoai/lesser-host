@@ -120,9 +120,9 @@ func TestHandleSetupStatus_LockedAndActive(t *testing.T) {
 	t.Parallel()
 
 	tdb := newSetupTestDB()
-	s := &Server{cfg: config.Config{Stage: "lab"}, store: store.New(tdb.db)}
+	s := &Server{cfg: config.Config{Stage: "lab", BootstrapWalletAddress: "0xBootWallet"}, store: store.New(tdb.db)}
 
-	// Locked when config missing.
+	// Locked when config missing — bootstrap wallet address should be exposed.
 	tdb.qCP.On("First", mock.AnythingOfType("*models.ControlPlaneConfig")).Return(theoryErrors.ErrItemNotFound).Once()
 	resp, err := s.handleSetupStatus(&apptheory.Context{})
 	if err != nil {
@@ -138,8 +138,11 @@ func TestHandleSetupStatus_LockedAndActive(t *testing.T) {
 	if out.ControlPlaneState != "locked" || !out.Locked {
 		t.Fatalf("unexpected locked status: %#v", out)
 	}
+	if !out.BootstrapWalletAddressSet || out.BootstrapWalletAddress != "0xBootWallet" {
+		t.Fatalf("expected bootstrap wallet address to be exposed when locked, got %#v", out)
+	}
 
-	// Active when bootstrapped.
+	// Active when bootstrapped — bootstrap wallet address should be hidden.
 	now := time.Now().UTC()
 	tdb.qCP.On("First", mock.AnythingOfType("*models.ControlPlaneConfig")).Return(nil).Run(func(args mock.Arguments) {
 		destAny := args.Get(0)
@@ -153,6 +156,16 @@ func TestHandleSetupStatus_LockedAndActive(t *testing.T) {
 	resp, err = s.handleSetupStatus(&apptheory.Context{})
 	if err != nil || resp.Status != 200 {
 		t.Fatalf("handleSetupStatus active: resp=%#v err=%v", resp, err)
+	}
+	var active setupStatusResponse
+	if unmarshalErr := json.Unmarshal(resp.Body, &active); unmarshalErr != nil {
+		t.Fatalf("unmarshal active: %v", unmarshalErr)
+	}
+	if !active.BootstrapWalletAddressSet {
+		t.Fatalf("expected BootstrapWalletAddressSet to remain true")
+	}
+	if active.BootstrapWalletAddress != "" {
+		t.Fatalf("expected bootstrap wallet address to be hidden after bootstrap, got %q", active.BootstrapWalletAddress)
 	}
 }
 

@@ -328,7 +328,7 @@ func (s *Server) handlePortalCreateCreditsCheckout(ctx *apptheory.Context) (*app
 		return nil, &apptheory.AppError{Code: "app.conflict", Message: err.Error()}
 	}
 
-	provider := payments.NewProvider(s.cfg.PaymentsProvider)
+	provider := payments.NewProvider(s.cfg.PaymentsProvider, nil)
 	if provider.Name() != paymentsProviderStripeName {
 		return nil, &apptheory.AppError{Code: "app.conflict", Message: "payments provider not configured"}
 	}
@@ -433,7 +433,7 @@ func (s *Server) handlePortalCreatePaymentMethodCheckout(ctx *apptheory.Context)
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
-	provider := payments.NewProvider(s.cfg.PaymentsProvider)
+	provider := payments.NewProvider(s.cfg.PaymentsProvider, nil)
 	if provider.Name() != paymentsProviderStripeName {
 		return nil, &apptheory.AppError{Code: "app.conflict", Message: "payments provider not configured"}
 	}
@@ -547,7 +547,7 @@ func (s *Server) handleStripeWebhook(ctx *apptheory.Context) (*apptheory.Respons
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
-	provider := payments.NewProvider(s.cfg.PaymentsProvider)
+	provider := payments.NewProvider(s.cfg.PaymentsProvider, nil)
 	if provider.Name() != paymentsProviderStripeName {
 		// Ignore webhooks when payments are disabled.
 		return apptheory.JSON(http.StatusOK, map[string]any{"ok": true, "ignored": true})
@@ -556,7 +556,8 @@ func (s *Server) handleStripeWebhook(ctx *apptheory.Context) (*apptheory.Respons
 	ev, err := provider.ParseWebhookEvent(ctx.Context(), ctx.Request.Headers, ctx.Request.Body)
 	if err != nil {
 		// Stripe retries on non-2xx; only fail on signature/parse issues.
-		return apptheory.JSON(http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+		// Return a generic message to avoid leaking internal error details.
+		return apptheory.JSON(http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid webhook payload"})
 	}
 	if ev == nil {
 		return apptheory.JSON(http.StatusOK, map[string]any{"ok": true})

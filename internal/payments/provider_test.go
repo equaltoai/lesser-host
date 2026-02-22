@@ -19,14 +19,14 @@ func TestNormalizeProviderName(t *testing.T) {
 func TestNewProviderAndNoopProvider(t *testing.T) {
 	t.Parallel()
 
-	if got := NewProvider("").Name(); got != "none" {
+	if got := NewProvider("", nil).Name(); got != "none" {
 		t.Fatalf("expected none, got %q", got)
 	}
-	if got := NewProvider("stripe").Name(); got != "stripe" {
+	if got := NewProvider("stripe", nil).Name(); got != "stripe" {
 		t.Fatalf("expected stripe, got %q", got)
 	}
 
-	p := NewProvider("none")
+	p := NewProvider("none", nil)
 	if _, err := p.EnsureCustomer(context.Background(), EnsureCustomerInput{}); err != ErrNotConfigured {
 		t.Fatalf("expected ErrNotConfigured, got %v", err)
 	}
