@@ -9,6 +9,9 @@
   "scripts": {
     "build": "hardhat compile",
     "deploy:sepolia": "hardhat run --network sepolia scripts/deploy-tip-splitter.js",
+    "deploy:sepolia:all": "hardhat run --network sepolia scripts/deploy-sepolia-all.js",
+    "deploy:sepolia:soul-registry": "hardhat run --network sepolia scripts/deploy-soul-registry.js",
+    "deploy:sepolia:soul-attestations": "hardhat run --network sepolia scripts/deploy-soul-attestations.js",
     "lint": "solhint \"contracts/**/*.sol\"",
     "test": "hardhat compile && node --test test/*.test.js"
   },

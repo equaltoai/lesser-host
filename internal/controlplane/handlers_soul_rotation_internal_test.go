@@ -190,11 +190,11 @@ func TestValidateSoulWalletRotationSignatures_SuccessAndMismatch(t *testing.T) {
 	require.NoError(t, err)
 
 	rot := &models.SoulWalletRotationRequest{
-		DigestHex:      typed.DigestHex,
-		CurrentWallet:  strings.ToLower(currentAddr.Hex()),
-		NewWallet:      strings.ToLower(newAddr.Hex()),
-		Nonce:          nonce.String(),
-		Deadline:       deadline,
+		DigestHex:     typed.DigestHex,
+		CurrentWallet: strings.ToLower(currentAddr.Hex()),
+		NewWallet:     strings.ToLower(newAddr.Hex()),
+		Nonce:         nonce.String(),
+		Deadline:      deadline,
 	}
 
 	gotNonce, gotDeadline, currentContract, newContract, sigAppErr := validateSoulWalletRotationSignatures(rot, hexutil.Encode(currentSig), hexutil.Encode(newSig))
