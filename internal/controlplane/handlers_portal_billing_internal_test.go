@@ -260,9 +260,11 @@ func TestStripeWebhookHandlers_PaymentAndSetupAndExpired(t *testing.T) {
 	}).Once()
 	resp, err := s.handleStripePaymentCheckoutCompleted(&apptheory.Context{RequestID: "r1"}, &payments.WebhookEvent{
 		Session: payments.CheckoutSession{
-			Metadata: map[string]string{"purchase_id": "p1"},
-			ID:       "cs_1",
-			Currency: "usd",
+			Metadata:      map[string]string{"purchase_id": "p1"},
+			ID:            "cs_1",
+			Currency:      "usd",
+			Mode:          "payment",
+			PaymentStatus: "paid",
 		},
 	}, now)
 	if err != nil || resp.Status != 200 {
@@ -553,7 +555,11 @@ func TestHandleStripePaymentCheckoutCompleted_Branches(t *testing.T) {
 		tdb.qPurchase.On("First", mock.AnythingOfType("*models.CreditPurchase")).Return(theoryErrors.ErrItemNotFound).Once()
 
 		resp, err := s.handleStripePaymentCheckoutCompleted(&apptheory.Context{}, &payments.WebhookEvent{
-			Session: payments.CheckoutSession{Metadata: map[string]string{"purchase_id": "p1"}},
+			Session: payments.CheckoutSession{
+				Metadata:      map[string]string{"purchase_id": "p1"},
+				Mode:          "payment",
+				PaymentStatus: "paid",
+			},
 		}, now)
 		require.NoError(t, err)
 		require.NotNil(t, resp)
@@ -570,7 +576,11 @@ func TestHandleStripePaymentCheckoutCompleted_Branches(t *testing.T) {
 		}).Once()
 
 		resp, err := s.handleStripePaymentCheckoutCompleted(&apptheory.Context{}, &payments.WebhookEvent{
-			Session: payments.CheckoutSession{Metadata: map[string]string{"purchase_id": "p1"}},
+			Session: payments.CheckoutSession{
+				Metadata:      map[string]string{"purchase_id": "p1"},
+				Mode:          "payment",
+				PaymentStatus: "paid",
+			},
 		}, now)
 		require.NoError(t, err)
 		require.NotNil(t, resp)
@@ -598,7 +608,11 @@ func TestHandleStripePaymentCheckoutCompleted_Branches(t *testing.T) {
 
 		s := &Server{store: store.New(db)}
 		resp, err := s.handleStripePaymentCheckoutCompleted(&apptheory.Context{}, &payments.WebhookEvent{
-			Session: payments.CheckoutSession{Metadata: map[string]string{"purchase_id": "p1"}},
+			Session: payments.CheckoutSession{
+				Metadata:      map[string]string{"purchase_id": "p1"},
+				Mode:          "payment",
+				PaymentStatus: "paid",
+			},
 		}, now)
 		require.NoError(t, err)
 		require.NotNil(t, resp)
@@ -626,7 +640,11 @@ func TestHandleStripePaymentCheckoutCompleted_Branches(t *testing.T) {
 
 		s := &Server{store: store.New(db)}
 		resp, err := s.handleStripePaymentCheckoutCompleted(&apptheory.Context{}, &payments.WebhookEvent{
-			Session: payments.CheckoutSession{Metadata: map[string]string{"purchase_id": "p1"}},
+			Session: payments.CheckoutSession{
+				Metadata:      map[string]string{"purchase_id": "p1"},
+				Mode:          "payment",
+				PaymentStatus: "paid",
+			},
 		}, now)
 		require.NoError(t, err)
 		require.NotNil(t, resp)
@@ -635,6 +653,154 @@ func TestHandleStripePaymentCheckoutCompleted_Branches(t *testing.T) {
 		require.NoError(t, json.Unmarshal(resp.Body, &parsed))
 		require.Equal(t, "failed to apply credits", parsed["error"])
 	})
+}
+
+func TestStripeCheckoutSessionPaymentSettled(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		session payments.CheckoutSession
+		want    bool
+	}{
+		{
+			name: "settled_payment_complete",
+			session: payments.CheckoutSession{
+				Mode:          "payment",
+				PaymentStatus: "paid",
+				Status:        "complete",
+			},
+			want: true,
+		},
+		{
+			name: "settled_payment_without_status",
+			session: payments.CheckoutSession{
+				Mode:          "payment",
+				PaymentStatus: "paid",
+			},
+			want: true,
+		},
+		{
+			name: "reject_non_payment_mode",
+			session: payments.CheckoutSession{
+				Mode:          "setup",
+				PaymentStatus: "paid",
+				Status:        "complete",
+			},
+			want: false,
+		},
+		{
+			name: "reject_unpaid",
+			session: payments.CheckoutSession{
+				Mode:          "payment",
+				PaymentStatus: "unpaid",
+				Status:        "complete",
+			},
+			want: false,
+		},
+		{
+			name: "reject_non_complete_status_when_present",
+			session: payments.CheckoutSession{
+				Mode:          "payment",
+				PaymentStatus: "paid",
+				Status:        "open",
+			},
+			want: false,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, tc.want, stripeCheckoutSessionPaymentSettled(tc.session))
+		})
+	}
+}
+
+func TestValidateStripePaymentCheckoutAgainstPurchase(t *testing.T) {
+	t.Parallel()
+
+	basePurchase := &models.CreditPurchase{
+		ID:                        "p1",
+		ProviderCheckoutSessionID: "cs_expected",
+		ProviderCustomerID:        "cus_expected",
+		Currency:                  "usd",
+		AmountCents:               1000,
+	}
+
+	baseSession := payments.CheckoutSession{
+		ID:          "cs_expected",
+		CustomerID:  "cus_expected",
+		Currency:    "USD",
+		AmountTotal: 1000,
+	}
+
+	tests := []struct {
+		name     string
+		purchase *models.CreditPurchase
+		session  payments.CheckoutSession
+		want     string
+	}{
+		{
+			name:     "purchase_missing",
+			purchase: nil,
+			session:  baseSession,
+			want:     "purchase missing",
+		},
+		{
+			name:     "session_mismatch",
+			purchase: basePurchase,
+			session:  payments.CheckoutSession{ID: "cs_other", CustomerID: "cus_expected", Currency: "usd", AmountTotal: 1000},
+			want:     "checkout session mismatch",
+		},
+		{
+			name:     "customer_mismatch",
+			purchase: basePurchase,
+			session:  payments.CheckoutSession{ID: "cs_expected", CustomerID: "cus_other", Currency: "usd", AmountTotal: 1000},
+			want:     "customer mismatch",
+		},
+		{
+			name:     "currency_mismatch",
+			purchase: basePurchase,
+			session:  payments.CheckoutSession{ID: "cs_expected", CustomerID: "cus_expected", Currency: "eur", AmountTotal: 1000},
+			want:     "currency mismatch",
+		},
+		{
+			name:     "amount_underpayment",
+			purchase: basePurchase,
+			session:  payments.CheckoutSession{ID: "cs_expected", CustomerID: "cus_expected", Currency: "usd", AmountTotal: 999},
+			want:     "amount mismatch",
+		},
+		{
+			name:     "amount_overpayment_ok",
+			purchase: basePurchase,
+			session:  payments.CheckoutSession{ID: "cs_expected", CustomerID: "cus_expected", Currency: "usd", AmountTotal: 1001},
+			want:     "",
+		},
+		{
+			name: "skip_blank_expected_fields",
+			purchase: &models.CreditPurchase{
+				ID:          "p2",
+				AmountCents: 0,
+			},
+			session: payments.CheckoutSession{
+				ID:          "cs_any",
+				CustomerID:  "cus_any",
+				Currency:    "usd",
+				AmountTotal: 1,
+			},
+			want: "",
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, tc.want, validateStripePaymentCheckoutAgainstPurchase(tc.session, tc.purchase))
+		})
+	}
 }
 
 func TestHandleStripeSetupCheckoutCompleted_Branches(t *testing.T) {

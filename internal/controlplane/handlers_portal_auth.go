@@ -134,7 +134,12 @@ func (s *Server) validatePortalWalletLoginChallenge(ctx *apptheory.Context, req 
 	if err := verifyEthereumSignature(address, req.Message, req.Signature); err != nil {
 		return nil, "", "", &apptheory.AppError{Code: "app.unauthorized", Message: "invalid signature"}
 	}
-	_ = s.deleteWalletChallenge(ctx.Context(), req.ChallengeID)
+	if consumeErr := s.consumeWalletChallenge(ctx.Context(), req.ChallengeID); consumeErr != nil {
+		if theoryErrors.IsConditionFailed(consumeErr) || theoryErrors.IsNotFound(consumeErr) {
+			return nil, "", "", &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		}
+		return nil, "", "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
 
 	return challenge, username, address, nil
 }

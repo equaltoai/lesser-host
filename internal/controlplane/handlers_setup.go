@@ -317,7 +317,12 @@ func (s *Server) verifySetupBootstrapChallenge(ctx *apptheory.Context, bootstrap
 	if verifyErr := verifyEthereumSignature(bootstrapWallet, in.Message, in.Signature); verifyErr != nil {
 		return &apptheory.AppError{Code: "app.unauthorized", Message: "invalid signature"}
 	}
-	_ = s.deleteWalletChallenge(ctx.Context(), in.ChallengeID)
+	if consumeErr := s.consumeWalletChallenge(ctx.Context(), in.ChallengeID); consumeErr != nil {
+		if theoryErrors.IsConditionFailed(consumeErr) || theoryErrors.IsNotFound(consumeErr) {
+			return &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		}
+		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
 
 	return nil
 }
@@ -478,7 +483,12 @@ func (s *Server) verifySetupCreateAdminWallet(ctx *apptheory.Context, username s
 	if err := verifyEthereumSignature(adminWalletAddr, wallet.Message, wallet.Signature); err != nil {
 		return "", 0, &apptheory.AppError{Code: "app.unauthorized", Message: "invalid signature"}
 	}
-	_ = s.deleteWalletChallenge(ctx.Context(), wallet.ChallengeID)
+	if consumeErr := s.consumeWalletChallenge(ctx.Context(), wallet.ChallengeID); consumeErr != nil {
+		if theoryErrors.IsConditionFailed(consumeErr) || theoryErrors.IsNotFound(consumeErr) {
+			return "", 0, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+		}
+		return "", 0, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
 
 	return adminWalletAddr, challenge.ChainID, nil
 }

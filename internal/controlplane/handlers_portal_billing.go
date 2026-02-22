@@ -565,7 +565,11 @@ func (s *Server) handleStripeWebhook(ctx *apptheory.Context) (*apptheory.Respons
 	switch strings.TrimSpace(ev.Type) {
 	case stripeWebhookEventCheckoutCompleted:
 		return s.handleStripeCheckoutSessionCompleted(ctx, provider, ev)
+	case stripeWebhookEventCheckoutAsyncPaymentSucceeded:
+		return s.handleStripeCheckoutSessionCompleted(ctx, provider, ev)
 	case stripeWebhookEventCheckoutExpired:
+		return s.handleStripeCheckoutSessionExpired(ctx, ev)
+	case stripeWebhookEventCheckoutAsyncPaymentFailed:
 		return s.handleStripeCheckoutSessionExpired(ctx, ev)
 	default:
 		return apptheory.JSON(http.StatusOK, map[string]any{"ok": true})
@@ -573,10 +577,14 @@ func (s *Server) handleStripeWebhook(ctx *apptheory.Context) (*apptheory.Respons
 }
 
 const (
-	stripeWebhookEventCheckoutCompleted = "checkout.session.completed"
-	stripeWebhookEventCheckoutExpired   = "checkout.session.expired"
-	stripeCheckoutModePayment           = "payment"
-	stripeCheckoutModeSetup             = "setup"
+	stripeWebhookEventCheckoutCompleted             = "checkout.session.completed"
+	stripeWebhookEventCheckoutExpired               = "checkout.session.expired"
+	stripeWebhookEventCheckoutAsyncPaymentSucceeded = "checkout.session.async_payment_succeeded"
+	stripeWebhookEventCheckoutAsyncPaymentFailed    = "checkout.session.async_payment_failed"
+	stripeCheckoutModePayment                       = "payment"
+	stripeCheckoutModeSetup                         = "setup"
+	stripeCheckoutStatusComplete                    = "complete"
+	stripeCheckoutPaymentStatusPaid                 = "paid"
 )
 
 func (s *Server) handleStripeCheckoutSessionCompleted(ctx *apptheory.Context, provider payments.Provider, ev *payments.WebhookEvent) (*apptheory.Response, error) {
@@ -593,10 +601,58 @@ func (s *Server) handleStripeCheckoutSessionCompleted(ctx *apptheory.Context, pr
 	}
 }
 
+func stripeCheckoutSessionPaymentSettled(session payments.CheckoutSession) bool {
+	if strings.ToLower(strings.TrimSpace(session.Mode)) != stripeCheckoutModePayment {
+		return false
+	}
+
+	// For one-time payments, only credit on fully settled sessions.
+	if strings.ToLower(strings.TrimSpace(session.PaymentStatus)) != stripeCheckoutPaymentStatusPaid {
+		return false
+	}
+	status := strings.ToLower(strings.TrimSpace(session.Status))
+	if status != "" && status != stripeCheckoutStatusComplete {
+		return false
+	}
+	return true
+}
+
+func validateStripePaymentCheckoutAgainstPurchase(session payments.CheckoutSession, purchase *models.CreditPurchase) string {
+	if purchase == nil {
+		return "purchase missing"
+	}
+
+	expectedSession := strings.TrimSpace(purchase.ProviderCheckoutSessionID)
+	if expectedSession != "" && strings.TrimSpace(session.ID) != expectedSession {
+		return "checkout session mismatch"
+	}
+
+	expectedCustomer := strings.TrimSpace(purchase.ProviderCustomerID)
+	if expectedCustomer != "" && strings.TrimSpace(session.CustomerID) != expectedCustomer {
+		return "customer mismatch"
+	}
+
+	expectedCurrency := strings.ToLower(strings.TrimSpace(purchase.Currency))
+	gotCurrency := strings.ToLower(strings.TrimSpace(session.Currency))
+	if expectedCurrency != "" && gotCurrency != "" && gotCurrency != expectedCurrency {
+		return "currency mismatch"
+	}
+
+	// Guard against underpayment: only accept settled sessions at or above the expected charge.
+	if purchase.AmountCents > 0 && session.AmountTotal < purchase.AmountCents {
+		return "amount mismatch"
+	}
+
+	return ""
+}
+
 func (s *Server) handleStripePaymentCheckoutCompleted(ctx *apptheory.Context, ev *payments.WebhookEvent, now time.Time) (*apptheory.Response, error) {
 	purchaseID := strings.TrimSpace(ev.Session.Metadata["purchase_id"])
 	if purchaseID == "" {
 		return apptheory.JSON(http.StatusOK, map[string]any{"ok": true, "skipped": "missing purchase_id"})
+	}
+	if !stripeCheckoutSessionPaymentSettled(ev.Session) {
+		return apptheory.JSON(http.StatusOK, map[string]any{"ok": true, "skipped": "payment not settled"})
 	}
 
 	var purchase models.CreditPurchase
@@ -610,6 +666,9 @@ func (s *Server) handleStripePaymentCheckoutCompleted(ctx *apptheory.Context, ev
 	}
 	if strings.TrimSpace(purchase.Status) == models.CreditPurchaseStatusPaid {
 		return apptheory.JSON(http.StatusOK, map[string]any{"ok": true})
+	}
+	if reason := validateStripePaymentCheckoutAgainstPurchase(ev.Session, &purchase); reason != "" {
+		return apptheory.JSON(http.StatusOK, map[string]any{"ok": true, "skipped": reason})
 	}
 
 	updatePurchase := &models.CreditPurchase{ID: purchaseID}

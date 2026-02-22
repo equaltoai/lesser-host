@@ -341,7 +341,10 @@ func TestHandleGetPublishJob_ValidationNotFoundAndSuccess(t *testing.T) {
 	// Not found.
 	tdb.qLSB.On("First", mock.AnythingOfType("*models.LinkSafetyBasicResult")).Return(theoryErrors.ErrItemNotFound).Once()
 	jobID := strings.Repeat("d", 64)
-	if _, err := s.handleGetPublishJob(&apptheory.Context{Params: map[string]string{"jobId": jobID}}); err == nil {
+	if _, err := s.handleGetPublishJob(&apptheory.Context{
+		AuthIdentity: "inst",
+		Params:       map[string]string{"jobId": jobID},
+	}); err == nil {
 		t.Fatalf("expected not found error")
 	}
 
@@ -352,7 +355,10 @@ func TestHandleGetPublishJob_ValidationNotFoundAndSuccess(t *testing.T) {
 		_ = dest.UpdateKeys()
 	}).Once()
 
-	resp, err := s.handleGetPublishJob(&apptheory.Context{Params: map[string]string{"jobId": jobID}})
+	resp, err := s.handleGetPublishJob(&apptheory.Context{
+		AuthIdentity: "inst",
+		Params:       map[string]string{"jobId": jobID},
+	})
 	if err != nil || resp.Status != 200 {
 		t.Fatalf("expected 200, got resp=%#v err=%v", resp, err)
 	}

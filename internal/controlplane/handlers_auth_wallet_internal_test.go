@@ -50,6 +50,7 @@ func newAuthTestDB() authTestDB {
 		q.On("Limit", mock.Anything).Return(q).Maybe()
 		q.On("IfExists").Return(q).Maybe()
 		q.On("IfNotExists").Return(q).Maybe()
+		q.On("WithCondition", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("Create").Return(nil).Maybe()
 		q.On("CreateOrUpdate").Return(nil).Maybe()
 		q.On("Delete").Return(nil).Maybe()
@@ -141,8 +142,6 @@ func TestHandleWalletLogin_Success(t *testing.T) {
 		}
 		_ = dest.UpdateKeys()
 	}).Once()
-	tdb.qWallet.On("Delete").Return(nil).Once()
-
 	tdb.qWalletIndex.On("First", mock.AnythingOfType("*models.WalletIndex")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.WalletIndex](t, args, 0)
 		*dest = models.WalletIndex{Username: testUsernameAlice}
@@ -222,8 +221,6 @@ func TestHandlePortalWalletChallengeAndLogin_CreatesUserWhenMissing(t *testing.T
 		}
 		_ = dest.UpdateKeys()
 	}).Once()
-	tdb.qWallet.On("Delete").Return(nil).Once()
-
 	// Not linked yet.
 	tdb.qWalletIndex.On("First", mock.AnythingOfType("*models.WalletIndex")).Return(theoryErrors.ErrItemNotFound).Once()
 	// User does not exist yet.

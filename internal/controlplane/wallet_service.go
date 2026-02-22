@@ -163,11 +163,36 @@ func (s *Server) getWalletChallenge(ctx context.Context, id string) (*models.Wal
 		_ = s.deleteWalletChallenge(ctx, id)
 		return nil, theoryErrors.ErrItemNotFound
 	}
-	if challenge.Spent {
+	if challenge.Spent || challenge.Used {
 		return nil, theoryErrors.ErrItemNotFound
 	}
 
 	return &challenge, nil
+}
+
+func (s *Server) consumeWalletChallenge(ctx context.Context, id string) error {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return errors.New("store not configured")
+	}
+
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return errors.New("challenge id is required")
+	}
+
+	update := &models.WalletChallenge{
+		ID:    id,
+		Spent: true,
+	}
+	if err := update.UpdateKeys(); err != nil {
+		return err
+	}
+
+	return s.store.DB.WithContext(ctx).
+		Model(update).
+		IfExists().
+		WithCondition("Spent", "=", false).
+		Update("Spent")
 }
 
 func (s *Server) deleteWalletChallenge(ctx context.Context, id string) error {

@@ -96,6 +96,7 @@ func newSetupTestDB() setupTestDB {
 		q.On("Limit", mock.Anything).Return(q).Maybe()
 		q.On("IfNotExists").Return(q).Maybe()
 		q.On("IfExists").Return(q).Maybe()
+		q.On("WithCondition", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("ConsistentRead").Return(q).Maybe()
 		q.On("Create").Return(nil).Maybe()
 		q.On("CreateOrUpdate").Return(nil).Maybe()
@@ -228,7 +229,6 @@ func TestHandleSetupBootstrapVerify_Success(t *testing.T) {
 		}
 		_ = dest.UpdateKeys()
 	}).Once()
-	tdb.qWallet.On("Delete").Return(nil).Once()
 	tdb.qSetup.On("Create").Return(nil).Once()
 
 	body, _ := json.Marshal(setupBootstrapVerifyRequest{
@@ -334,8 +334,6 @@ func TestHandleSetupCreateAdmin_AndFinalize_Success(t *testing.T) {
 		}
 		_ = dest.UpdateKeys()
 	}).Once()
-	tdb.qWallet.On("Delete").Return(nil).Once()
-
 	// Wallet not linked yet.
 	tdb.qWalletIndex.On("First", mock.AnythingOfType("*models.WalletIndex")).Return(theoryErrors.ErrItemNotFound).Once()
 

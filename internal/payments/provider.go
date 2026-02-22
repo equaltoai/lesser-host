@@ -62,6 +62,11 @@ type CheckoutSession struct {
 	URL  string
 	Mode string // payment|setup
 
+	// Stripe checkout session lifecycle status (e.g. open|complete|expired).
+	Status string
+	// Stripe payment status (e.g. paid|unpaid|no_payment_required).
+	PaymentStatus string
+
 	CustomerID      string
 	PaymentIntentID string
 	SetupIntentID   string

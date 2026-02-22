@@ -120,6 +120,8 @@ func (p stripeProvider) CreateCreditsCheckout(ctx context.Context, in CreditsChe
 		ID:              strings.TrimSpace(sess.ID),
 		URL:             strings.TrimSpace(sess.URL),
 		Mode:            string(sess.Mode),
+		Status:          strings.TrimSpace(string(sess.Status)),
+		PaymentStatus:   strings.TrimSpace(string(sess.PaymentStatus)),
 		CustomerID:      strings.TrimSpace(sess.Customer.ID),
 		PaymentIntentID: strings.TrimSpace(sess.PaymentIntent.ID),
 		AmountTotal:     sess.AmountTotal,
@@ -162,6 +164,8 @@ func (p stripeProvider) CreateSetupCheckout(ctx context.Context, in SetupCheckou
 		ID:            strings.TrimSpace(sess.ID),
 		URL:           strings.TrimSpace(sess.URL),
 		Mode:          string(sess.Mode),
+		Status:        strings.TrimSpace(string(sess.Status)),
+		PaymentStatus: strings.TrimSpace(string(sess.PaymentStatus)),
 		CustomerID:    strings.TrimSpace(sess.Customer.ID),
 		SetupIntentID: strings.TrimSpace(sess.SetupIntent.ID),
 		Metadata:      sess.Metadata,
@@ -207,7 +211,7 @@ func (p stripeProvider) ParseWebhookEvent(ctx context.Context, headers map[strin
 	}
 
 	switch event.Type {
-	case "checkout.session.completed", "checkout.session.expired":
+	case "checkout.session.completed", "checkout.session.expired", "checkout.session.async_payment_succeeded", "checkout.session.async_payment_failed":
 	default:
 		// Ignore unsupported event types.
 		return nil, nil
@@ -237,6 +241,8 @@ func (p stripeProvider) ParseWebhookEvent(ctx context.Context, headers map[strin
 			ID:              strings.TrimSpace(sess.ID),
 			URL:             strings.TrimSpace(sess.URL),
 			Mode:            string(sess.Mode),
+			Status:          strings.TrimSpace(string(sess.Status)),
+			PaymentStatus:   strings.TrimSpace(string(sess.PaymentStatus)),
 			CustomerID:      customerID,
 			PaymentIntentID: paymentIntentID,
 			SetupIntentID:   setupIntentID,
