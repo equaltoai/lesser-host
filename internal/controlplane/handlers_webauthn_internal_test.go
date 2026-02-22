@@ -339,13 +339,15 @@ func TestHandleWebAuthnLoginBegin_RequiresCredentialsAndStoresChallenge(t *testi
 	}
 	s := &Server{store: store.New(tdb.db), webAuthn: engine}
 
-	// No credentials => not_found.
+	// No credentials => unauthorized (avoid user enumeration).
 	tdb.qCred.On("All", mock.AnythingOfType("*[]*models.WebAuthnCredential")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.WebAuthnCredential](t, args, 0)
 		*dest = nil
 	}).Once()
 	if _, err := s.handleWebAuthnLoginBegin(&apptheory.Context{Request: apptheory.Request{Body: []byte(`{"username":"alice"}`)}}); err == nil {
-		t.Fatalf("expected not_found")
+		t.Fatalf("expected unauthorized")
+	} else if appErr, ok := err.(*apptheory.AppError); !ok || appErr.Code != "app.unauthorized" {
+		t.Fatalf("expected app.unauthorized, got %T: %v", err, err)
 	}
 
 	tdb.qCred.On("All", mock.AnythingOfType("*[]*models.WebAuthnCredential")).Return(nil).Run(func(args mock.Arguments) {

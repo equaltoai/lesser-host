@@ -1288,6 +1288,11 @@ export class LesserHostStack extends cdk.Stack {
 			},
 		});
 
+		const publicBaseURL = webCert
+			? `https://${webDomainName}`
+			: `https://${webDistribution.distributionDomainName}`;
+		trustFn.addEnvironment('PUBLIC_BASE_URL', publicBaseURL);
+
 		new s3deploy.BucketDeployment(this, 'WebDeployment', {
 			destinationBucket: webBucket,
 			sources: [

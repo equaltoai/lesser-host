@@ -370,7 +370,7 @@ func (s *Server) storeLinkSafetyBasicNoLinksResult(
 					DebitedCredits:   0,
 				},
 				AttestationID:  strings.TrimSpace(attID),
-				AttestationURL: attestationURL(ctx, attID),
+				AttestationURL: attestationURL(ctx, attID, s.cfg.PublicBaseURL),
 				Result:         cached,
 			}
 		}
@@ -405,7 +405,7 @@ func (s *Server) storeLinkSafetyBasicNoLinksResult(
 			DebitedCredits:   0,
 		},
 		AttestationID:  strings.TrimSpace(attID),
-		AttestationURL: attestationURL(ctx, attID),
+		AttestationURL: attestationURL(ctx, attID, s.cfg.PublicBaseURL),
 		Result:         item,
 	}
 }
@@ -664,7 +664,7 @@ func (s *Server) linkSafetyBasicDebitedResponse(
 			Reason:           reason,
 		},
 		AttestationID:  strings.TrimSpace(attID),
-		AttestationURL: attestationURL(ctx, attID),
+		AttestationURL: attestationURL(ctx, attID, s.cfg.PublicBaseURL),
 		Result:         item,
 	}
 }
@@ -881,7 +881,7 @@ func (s *Server) linkSafetyBasicCacheHitResponse(
 			DebitedCredits:   0,
 		},
 		AttestationID:  strings.TrimSpace(attID),
-		AttestationURL: attestationURL(ctx, attID),
+		AttestationURL: attestationURL(ctx, attID, s.cfg.PublicBaseURL),
 		Result:         cached,
 	}
 }

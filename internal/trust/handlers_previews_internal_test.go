@@ -17,22 +17,27 @@ import (
 func TestRequestBaseURL(t *testing.T) {
 	t.Parallel()
 
-	if got := requestBaseURL(nil); got != "" {
+	if got := requestBaseURL(nil, ""); got != "" {
 		t.Fatalf("expected empty, got %q", got)
 	}
 
+	if got := requestBaseURL(&apptheory.Context{}, " https://public.example/some/path "); got != "https://public.example" {
+		t.Fatalf("unexpected configured base URL: %q", got)
+	}
+
+	// Do not trust forwarded host/proto when the base URL is not configured.
 	ctx := &apptheory.Context{Request: apptheory.Request{Headers: map[string][]string{
 		"x-forwarded-host":  {"example.com"},
 		"x-forwarded-proto": {"http"},
 	}}}
-	if got := requestBaseURL(ctx); got != "http://example.com" {
-		t.Fatalf("unexpected base URL: %q", got)
+	if got := requestBaseURL(ctx, ""); got != "" {
+		t.Fatalf("unexpected base URL from forwarded headers: %q", got)
 	}
 
 	ctx = &apptheory.Context{Request: apptheory.Request{Headers: map[string][]string{
 		"host": {"example.com"},
 	}}}
-	if got := requestBaseURL(ctx); got != testURLExampleCom {
+	if got := requestBaseURL(ctx, ""); got != testURLExampleCom {
 		t.Fatalf("unexpected base URL: %q", got)
 	}
 }
@@ -137,17 +142,17 @@ func TestAttestationURL(t *testing.T) {
 	t.Parallel()
 
 	ctx := &apptheory.Context{}
-	if got := attestationURL(ctx, " "); got != "" {
+	if got := attestationURL(ctx, " ", ""); got != "" {
 		t.Fatalf("expected empty, got %q", got)
 	}
 
 	ctx = &apptheory.Context{Request: apptheory.Request{Headers: map[string][]string{"host": {"example.com"}}}}
-	if got := attestationURL(ctx, "id"); got != "https://example.com/attestations/id" {
+	if got := attestationURL(ctx, "id", ""); got != "https://example.com/attestations/id" {
 		t.Fatalf("unexpected url: %q", got)
 	}
 
 	ctx = &apptheory.Context{}
-	if got := attestationURL(ctx, "id"); got != "/attestations/id" {
+	if got := attestationURL(ctx, "id", ""); got != "/attestations/id" {
 		t.Fatalf("unexpected url: %q", got)
 	}
 }

@@ -205,7 +205,7 @@ func (s *Server) handleAIClaimVerify(ctx *apptheory.Context) (*apptheory.Respons
 	attURL := ""
 	if actorURI != "" && objectURI != "" && contentHash != "" {
 		attID = attestations.AttestationID(actorURI, objectURI, contentHash, ai.ClaimVerifyLLMModule, ai.ClaimVerifyLLMPolicyVersion)
-		attURL = attestationURL(ctx, attID)
+		attURL = attestationURL(ctx, attID, s.cfg.PublicBaseURL)
 	}
 
 	out := buildAIClaimVerifyResponse(resp, modelSet, inputsHash, attID, attURL)

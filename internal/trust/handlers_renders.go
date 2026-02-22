@@ -162,7 +162,7 @@ func (s *Server) maybeServeCachedRenderRequest(
 	_ = hit.UpdateKeys()
 	_ = s.store.DB.WithContext(ctx.Context()).Model(hit).IfNotExists().Create()
 
-	resp, err := apptheory.JSON(http.StatusOK, renderArtifactResponseFromModel(ctx, existing, true))
+	resp, err := apptheory.JSON(http.StatusOK, renderArtifactResponseFromModel(ctx, existing, true, s.cfg.PublicBaseURL))
 	if err != nil {
 		return nil, false, err
 	}
@@ -253,7 +253,7 @@ func (s *Server) handleCreateRender(ctx *apptheory.Context) (*apptheory.Response
 		_ = s.store.DB.WithContext(ctx.Context()).Model(auditQueue).Create()
 	}
 
-	return apptheory.JSON(http.StatusOK, renderArtifactResponseFromModel(ctx, artifact, !queued))
+	return apptheory.JSON(http.StatusOK, renderArtifactResponseFromModel(ctx, artifact, !queued, s.cfg.PublicBaseURL))
 }
 
 func (s *Server) debitBudgetForCreateRender(
@@ -423,7 +423,7 @@ func (s *Server) handleGetRender(ctx *apptheory.Context) (*apptheory.Response, e
 		return nil, &apptheory.AppError{Code: "app.not_found", Message: "render not found"}
 	}
 
-	return apptheory.JSON(http.StatusOK, renderArtifactResponseFromModel(ctx, item, true))
+	return apptheory.JSON(http.StatusOK, renderArtifactResponseFromModel(ctx, item, true, s.cfg.PublicBaseURL))
 }
 
 func (s *Server) handleGetRenderThumbnail(ctx *apptheory.Context) (*apptheory.Response, error) {
@@ -526,7 +526,7 @@ func (s *Server) handleGetRenderSnapshot(ctx *apptheory.Context) (*apptheory.Res
 	return resp, nil
 }
 
-func renderArtifactResponseFromModel(ctx *apptheory.Context, item *models.RenderArtifact, cached bool) renderArtifactResponse {
+func renderArtifactResponseFromModel(ctx *apptheory.Context, item *models.RenderArtifact, cached bool, publicBaseURL string) renderArtifactResponse {
 	out := renderArtifactResponse{
 		Cached: cached,
 
@@ -560,7 +560,7 @@ func renderArtifactResponseFromModel(ctx *apptheory.Context, item *models.Render
 		out.Status = statusQueued
 	}
 
-	base := requestBaseURL(ctx)
+	base := requestBaseURL(ctx, publicBaseURL)
 	if out.RenderID != "" {
 		thumbPath := "/api/v1/renders/" + out.RenderID + "/thumbnail"
 		snapPath := "/api/v1/renders/" + out.RenderID + "/snapshot"

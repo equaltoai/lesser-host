@@ -350,7 +350,7 @@ func (s *Server) decideLinkRender(ctx *apptheory.Context, now time.Time, policy 
 			}
 		}
 		s.maybeUpgradeRenderArtifactRetention(ctx, artifact, retentionClass, now, instanceSlug)
-		r := renderArtifactResponseFromModel(ctx, artifact, true)
+		r := renderArtifactResponseFromModel(ctx, artifact, true, s.cfg.PublicBaseURL)
 		linkOut.Render = &r
 		linkOut.Status = r.Status
 		return linkRenderDecision{
@@ -556,7 +556,7 @@ func (s *Server) queueMissingRenders(ctx *apptheory.Context, instanceSlug string
 		}
 
 		if mr.Index >= 0 && mr.Index < len(out.Links) {
-			r := renderArtifactResponseFromModel(ctx, artifact, !queued)
+			r := renderArtifactResponseFromModel(ctx, artifact, !queued, s.cfg.PublicBaseURL)
 			out.Links[mr.Index].Render = &r
 			out.Links[mr.Index].Status = r.Status
 		}

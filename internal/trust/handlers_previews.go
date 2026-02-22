@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -110,7 +111,7 @@ func (s *Server) maybeServeCachedLinkPreview(
 		return nil, false, nil
 	}
 
-	resp := linkPreviewResponseFromModel(ctx, item, true)
+	resp := linkPreviewResponseFromModel(ctx, item, true, s.cfg.PublicBaseURL)
 	if instCfg.RendersEnabled {
 		s.maybeAttachPreviewRender(ctx, instanceSlug, instCfg.RenderPolicy, instCfg.OveragePolicy, normalizedURL, &resp)
 	}
@@ -198,7 +199,7 @@ func (s *Server) handleLinkPreview(ctx *apptheory.Context) (*apptheory.Response,
 		return nil, appErr
 	}
 
-	resp := linkPreviewResponseFromModel(ctx, item, false)
+	resp := linkPreviewResponseFromModel(ctx, item, false, s.cfg.PublicBaseURL)
 	if instCfg.RendersEnabled {
 		s.maybeAttachPreviewRender(ctx, instanceSlug, instCfg.RenderPolicy, instCfg.OveragePolicy, normalized, &resp)
 	}
@@ -315,7 +316,7 @@ func (s *Server) handleGetLinkPreview(ctx *apptheory.Context) (*apptheory.Respon
 	instCfg := s.loadInstanceTrustConfig(ctx.Context(), instanceSlug)
 	renderPolicy := instCfg.RenderPolicy
 
-	resp := linkPreviewResponseFromModel(ctx, item, true)
+	resp := linkPreviewResponseFromModel(ctx, item, true, s.cfg.PublicBaseURL)
 	if instCfg.RendersEnabled {
 		s.maybeAttachPreviewRender(ctx, instanceSlug, renderPolicy, instCfg.OveragePolicy, strings.TrimSpace(item.NormalizedURL), &resp)
 	}
@@ -457,7 +458,7 @@ func (s *Server) attachCachedPreviewRender(ctx *apptheory.Context, instanceSlug 
 	_ = hit.UpdateKeys()
 	_ = s.store.DB.WithContext(ctx.Context()).Model(hit).IfNotExists().Create()
 
-	r := renderArtifactResponseFromModel(ctx, existing, true)
+	r := renderArtifactResponseFromModel(ctx, existing, true, s.cfg.PublicBaseURL)
 	resp.Render = &r
 	return true
 }
@@ -616,11 +617,11 @@ func (s *Server) maybeAttachPreviewRender(ctx *apptheory.Context, instanceSlug s
 		s.auditPreviewRenderQueuedBestEffort(ctx, instanceSlug, artifact, now)
 	}
 
-	r := renderArtifactResponseFromModel(ctx, artifact, !queued)
+	r := renderArtifactResponseFromModel(ctx, artifact, !queued, s.cfg.PublicBaseURL)
 	resp.Render = &r
 }
 
-func linkPreviewResponseFromModel(ctx *apptheory.Context, item *models.LinkPreview, cached bool) linkPreviewResponse {
+func linkPreviewResponseFromModel(ctx *apptheory.Context, item *models.LinkPreview, cached bool, publicBaseURL string) linkPreviewResponse {
 	resp := linkPreviewResponse{
 		Cached: cached,
 
@@ -650,7 +651,7 @@ func linkPreviewResponseFromModel(ctx *apptheory.Context, item *models.LinkPrevi
 	}
 
 	if resp.ImageID != "" {
-		base := requestBaseURL(ctx)
+		base := requestBaseURL(ctx, publicBaseURL)
 		path := "/api/v1/previews/images/" + resp.ImageID
 		if base != "" {
 			resp.ImageURL = base + path
@@ -661,22 +662,58 @@ func linkPreviewResponseFromModel(ctx *apptheory.Context, item *models.LinkPrevi
 	return resp
 }
 
-func requestBaseURL(ctx *apptheory.Context) string {
+func normalizePublicBaseURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+
+	u, err := url.Parse(raw)
+	if err != nil || u == nil {
+		return ""
+	}
+	scheme := strings.ToLower(strings.TrimSpace(u.Scheme))
+	if scheme != "https" && scheme != "http" {
+		return ""
+	}
+	host := strings.TrimSpace(u.Host)
+	if host == "" || !isSafeHostHeaderValue(host) {
+		return ""
+	}
+	return scheme + "://" + host
+}
+
+func isSafeHostHeaderValue(host string) bool {
+	// Conservative: host must not contain any whitespace or path delimiters.
+	// Allow optional port (example.com:443) and IPv6 bracket form.
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return false
+	}
+	if strings.ContainsAny(host, " \t\r\n/\\") {
+		return false
+	}
+	if strings.Contains(host, "@") {
+		return false
+	}
+	return true
+}
+
+func requestBaseURL(ctx *apptheory.Context, publicBaseURL string) string {
+	if base := normalizePublicBaseURL(publicBaseURL); base != "" {
+		return base
+	}
 	if ctx == nil {
 		return ""
 	}
-	host := strings.TrimSpace(httpx.FirstHeaderValue(ctx.Request.Headers, "x-forwarded-host"))
-	if host == "" {
-		host = strings.TrimSpace(httpx.FirstHeaderValue(ctx.Request.Headers, "host"))
-	}
-	if host == "" {
+
+	// Do not trust user-supplied forwarded headers here. CloudFront/API Gateway deployments should
+	// set PUBLIC_BASE_URL explicitly to produce stable absolute URLs.
+	host := strings.TrimSpace(httpx.FirstHeaderValue(ctx.Request.Headers, "host"))
+	if host == "" || !isSafeHostHeaderValue(host) {
 		return ""
 	}
-	proto := strings.TrimSpace(httpx.FirstHeaderValue(ctx.Request.Headers, "x-forwarded-proto"))
-	if proto == "" {
-		proto = "https"
-	}
-	return proto + "://" + host
+	return "https://" + host
 }
 
 func linkPreviewImageObjectKey(instanceSlug, imageID string) string {

@@ -11,6 +11,11 @@ type Config struct {
 
 	StateTableName string
 
+	// PublicBaseURL is the externally reachable origin (scheme + host) for this deployment,
+	// used when generating absolute URLs in API responses. If empty, handlers should prefer
+	// relative URLs or derive a best-effort base from request headers.
+	PublicBaseURL string
+
 	ArtifactBucketName string
 	PreviewQueueURL    string
 	SafetyQueueURL     string
@@ -92,6 +97,7 @@ type Config struct {
 func Load() Config {
 	stage := envStringDefault("STAGE", "lab")
 	stateTableName := envString("STATE_TABLE_NAME")
+	publicBaseURL := envString("PUBLIC_BASE_URL")
 
 	origins := parseCSV(envString("WEBAUTHN_ORIGINS"))
 	publicKeyIDs := parseCSV(envString("ATTESTATION_PUBLIC_KEY_IDS"))
@@ -150,6 +156,7 @@ func Load() Config {
 		Stage:   stage,
 
 		StateTableName: stateTableName,
+		PublicBaseURL:  publicBaseURL,
 
 		ArtifactBucketName: envString("ARTIFACT_BUCKET_NAME"),
 		PreviewQueueURL:    envString("PREVIEW_QUEUE_URL"),

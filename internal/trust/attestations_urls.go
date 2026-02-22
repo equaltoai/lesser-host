@@ -6,12 +6,12 @@ import (
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 )
 
-func attestationURL(ctx *apptheory.Context, id string) string {
+func attestationURL(ctx *apptheory.Context, id string, publicBaseURL string) string {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return ""
 	}
-	base := requestBaseURL(ctx)
+	base := requestBaseURL(ctx, publicBaseURL)
 	path := "/attestations/" + id
 	if base != "" {
 		return base + path

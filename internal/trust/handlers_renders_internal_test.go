@@ -116,7 +116,7 @@ func TestRenderArtifactResponseFromModel_StatusAndURLs(t *testing.T) {
 		ID:            "id",
 		PolicyVersion: rendering.RenderPolicyVersion,
 		NormalizedURL: "https://example.com",
-	}, true)
+	}, true, "")
 	if queued.Status != "queued" || queued.ThumbnailURL == "" || queued.SnapshotURL == "" {
 		t.Fatalf("unexpected queued response: %#v", queued)
 	}
@@ -126,7 +126,7 @@ func TestRenderArtifactResponseFromModel_StatusAndURLs(t *testing.T) {
 		PolicyVersion:      rendering.RenderPolicyVersion,
 		NormalizedURL:      "https://example.com",
 		ThumbnailObjectKey: "thumb",
-	}, true)
+	}, true, "")
 	if okResp.Status != "ok" {
 		t.Fatalf("unexpected ok response: %#v", okResp)
 	}
@@ -136,7 +136,7 @@ func TestRenderArtifactResponseFromModel_StatusAndURLs(t *testing.T) {
 		PolicyVersion: rendering.RenderPolicyVersion,
 		NormalizedURL: "https://example.com",
 		ErrorCode:     "boom",
-	}, true)
+	}, true, "")
 	if errResp.Status != statusError || errResp.ErrorCode != "boom" {
 		t.Fatalf("unexpected error response: %#v", errResp)
 	}

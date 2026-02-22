@@ -289,7 +289,8 @@ func (s *Server) handleWebAuthnLoginBegin(ctx *apptheory.Context) (*apptheory.Re
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 	if len(creds) == 0 {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "no credentials"}
+		// Avoid leaking whether a username exists or has credentials.
+		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
 	}
 
 	user := &webAuthnUser{

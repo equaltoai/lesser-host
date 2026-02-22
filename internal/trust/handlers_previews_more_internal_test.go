@@ -285,30 +285,30 @@ func TestLinkPreviewResponseFromModel_StatusAndImageURL(t *testing.T) {
 	}
 
 	ctx := &apptheory.Context{Request: apptheory.Request{Headers: map[string][]string{"host": {"example.com"}}}}
-	resp := linkPreviewResponseFromModel(ctx, item, true)
+	resp := linkPreviewResponseFromModel(ctx, item, true, "")
 	if resp.Status != "ok" || !resp.Cached || !strings.Contains(resp.ImageURL, "/api/v1/previews/images/") {
 		t.Fatalf("unexpected ok response: %#v", resp)
 	}
 
 	item.ErrorCode = errorCodeBlockedSSRF
-	resp = linkPreviewResponseFromModel(ctx, item, true)
+	resp = linkPreviewResponseFromModel(ctx, item, true, "")
 	if resp.Status != "blocked" {
 		t.Fatalf("expected blocked, got %#v", resp)
 	}
 
 	item.ErrorCode = "disabled"
-	resp = linkPreviewResponseFromModel(ctx, item, true)
+	resp = linkPreviewResponseFromModel(ctx, item, true, "")
 	if resp.Status != "disabled" {
 		t.Fatalf("expected disabled, got %#v", resp)
 	}
 
 	item.ErrorCode = "fetch_failed"
-	resp = linkPreviewResponseFromModel(ctx, item, true)
+	resp = linkPreviewResponseFromModel(ctx, item, true, "")
 	if resp.Status != statusError {
 		t.Fatalf("expected error, got %#v", resp)
 	}
 
-	resp = linkPreviewResponseFromModel(nil, item, true)
+	resp = linkPreviewResponseFromModel(nil, item, true, "")
 	if !strings.HasPrefix(resp.ImageURL, "/api/v1/previews/images/") {
 		t.Fatalf("expected relative image url when base empty, got %#v", resp)
 	}
