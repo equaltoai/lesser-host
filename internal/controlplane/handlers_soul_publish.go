@@ -187,6 +187,9 @@ func (s *Server) handleSoulPublishReputationRoot(ctx *apptheory.Context) (*appth
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to persist manifest"}
 	}
 
+	if blockRef < 0 {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid block_ref"}
+	}
 	data, err := soulattestations.EncodePublishRootCall(root, uint64(blockRef), uint64(len(reps)))
 	if err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to encode publishRoot"}

@@ -12,4 +12,3 @@ func (s *Server) instanceResponseWithDerivedFields(inst *models.Instance) instan
 	}
 	return resp
 }
-

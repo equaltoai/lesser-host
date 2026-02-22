@@ -98,4 +98,3 @@ func TestDeriveAgentIDHex_ConformanceVectors(t *testing.T) {
 		}
 	}
 }
-

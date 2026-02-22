@@ -12,4 +12,3 @@ func (s *Server) provisionJobResponseWithDerivedFields(j *models.ProvisionJob) p
 	}
 	return resp
 }
-

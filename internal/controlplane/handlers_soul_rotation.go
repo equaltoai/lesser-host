@@ -97,25 +97,11 @@ func parseSoulAgentIDHex(agentID string) (string, *big.Int, *apptheory.AppError)
 }
 
 func (s *Server) getSoulWalletRotationRequest(ctx context.Context, agentID string, username string) (*models.SoulWalletRotationRequest, error) {
-	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, errors.New("store not configured")
-	}
-	agentID = strings.ToLower(strings.TrimSpace(agentID))
 	username = strings.TrimSpace(username)
-	if agentID == "" || username == "" {
-		return nil, errors.New("agent id and username are required")
+	if username == "" {
+		return nil, errors.New("username is required")
 	}
-
-	var item models.SoulWalletRotationRequest
-	err := s.store.DB.WithContext(ctx).
-		Model(&models.SoulWalletRotationRequest{}).
-		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentID)).
-		Where("SK", "=", fmt.Sprintf("ROTATION#%s", username)).
-		First(&item)
-	if err != nil {
-		return nil, err
-	}
-	return &item, nil
+	return getSoulAgentItemBySK[models.SoulWalletRotationRequest](s, ctx, agentID, fmt.Sprintf("ROTATION#%s", username))
 }
 
 func (s *Server) soulRegistryGetAgentWallet(ctx context.Context, client ethRPCClient, contract common.Address, agentID *big.Int) (common.Address, error) {

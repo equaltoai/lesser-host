@@ -276,23 +276,9 @@ func (s *Server) handleSoulEvaluateValidationChallenge(ctx *apptheory.Context) (
 }
 
 func (s *Server) getSoulValidationChallenge(ctx context.Context, agentID string, challengeID string) (*models.SoulAgentValidationChallenge, error) {
-	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, fmt.Errorf("store not configured")
-	}
-	agentID = strings.ToLower(strings.TrimSpace(agentID))
 	challengeID = strings.TrimSpace(challengeID)
-	if agentID == "" || challengeID == "" {
-		return nil, fmt.Errorf("agent_id and challenge_id are required")
+	if challengeID == "" {
+		return nil, fmt.Errorf("challenge_id is required")
 	}
-
-	var item models.SoulAgentValidationChallenge
-	err := s.store.DB.WithContext(ctx).
-		Model(&models.SoulAgentValidationChallenge{}).
-		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentID)).
-		Where("SK", "=", fmt.Sprintf("VALIDATIONCHAL#%s", challengeID)).
-		First(&item)
-	if err != nil {
-		return nil, err
-	}
-	return &item, nil
+	return getSoulAgentItemBySK[models.SoulAgentValidationChallenge](s, ctx, agentID, fmt.Sprintf("VALIDATIONCHAL#%s", challengeID))
 }
