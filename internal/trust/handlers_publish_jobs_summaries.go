@@ -360,16 +360,16 @@ func (s *Server) processLinkRenderSummaryLink(
 		return linkOut, nil
 	}
 
-	renderID := rendering.RenderArtifactID(rendering.RenderPolicyVersion, normalized)
+	renderID := rendering.RenderArtifactIDForInstance(rendering.RenderPolicyVersion, instanceSlug, normalized)
 	linkOut.RenderID = renderID
 
-	artifact, status := s.loadRenderArtifactForSummary(ctx, renderID)
+	artifact, status := s.loadRenderArtifactForSummary(ctx, instanceSlug, renderID)
 	if status != "" {
 		linkOut.Status = status
 		return linkOut, nil
 	}
 
-	inputs := buildRenderSummaryInputs(artifact, normalized, risk)
+	inputs := buildRenderSummaryInputs(artifact, instanceSlug, normalized, risk)
 
 	resp, err := s.ai.GetOrQueue(ctx.Context(), ai.Request{
 		InstanceSlug:         instanceSlug,
@@ -423,13 +423,16 @@ func (s *Server) processLinkRenderSummaryLink(
 	}
 }
 
-func (s *Server) loadRenderArtifactForSummary(ctx *apptheory.Context, renderID string) (*models.RenderArtifact, string) {
+func (s *Server) loadRenderArtifactForSummary(ctx *apptheory.Context, instanceSlug string, renderID string) (*models.RenderArtifact, string) {
 	artifact, err := s.store.GetRenderArtifact(ctx.Context(), renderID)
 	if theoryErrors.IsNotFound(err) {
 		return nil, statusQueued
 	}
 	if err != nil {
 		return nil, statusError
+	}
+	if !renderArtifactOwnedByInstance(artifact, instanceSlug) {
+		return nil, statusQueued
 	}
 	if strings.TrimSpace(artifact.ErrorCode) != "" {
 		return nil, statusError
@@ -440,10 +443,10 @@ func (s *Server) loadRenderArtifactForSummary(ctx *apptheory.Context, renderID s
 	return artifact, ""
 }
 
-func buildRenderSummaryInputs(artifact *models.RenderArtifact, normalized, risk string) ai.RenderSummaryInputsV1 {
+func buildRenderSummaryInputs(artifact *models.RenderArtifact, instanceSlug, normalized, risk string) ai.RenderSummaryInputsV1 {
 	if artifact == nil {
 		return ai.RenderSummaryInputsV1{
-			RenderID:      rendering.RenderArtifactID(rendering.RenderPolicyVersion, strings.TrimSpace(normalized)),
+			RenderID:      rendering.RenderArtifactIDForInstance(rendering.RenderPolicyVersion, strings.TrimSpace(instanceSlug), strings.TrimSpace(normalized)),
 			NormalizedURL: strings.TrimSpace(normalized),
 			LinkRisk:      strings.TrimSpace(risk),
 		}

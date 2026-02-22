@@ -87,36 +87,36 @@ func TestLoadRenderArtifactForSummary_Statuses(t *testing.T) {
 	s := &Server{store: store.New(tdb.db)}
 
 	tdb.qRender.On("First", mock.AnythingOfType("*models.RenderArtifact")).Return(theoryErrors.ErrItemNotFound).Once()
-	if art, status := s.loadRenderArtifactForSummary(&apptheory.Context{}, "rid"); art != nil || status != statusQueued {
+	if art, status := s.loadRenderArtifactForSummary(&apptheory.Context{}, "inst", "rid"); art != nil || status != statusQueued {
 		t.Fatalf("expected queued for not found, got art=%#v status=%q", art, status)
 	}
 
 	tdb.qRender.On("First", mock.AnythingOfType("*models.RenderArtifact")).Return(errors.New("boom")).Once()
-	if art, status := s.loadRenderArtifactForSummary(&apptheory.Context{}, "rid"); art != nil || status != statusError {
+	if art, status := s.loadRenderArtifactForSummary(&apptheory.Context{}, "inst", "rid"); art != nil || status != statusError {
 		t.Fatalf("expected error for internal failure, got art=%#v status=%q", art, status)
 	}
 
 	tdb.qRender.On("First", mock.AnythingOfType("*models.RenderArtifact")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.RenderArtifact](t, args, 0)
-		*dest = models.RenderArtifact{ID: "rid", ErrorCode: "x"}
+		*dest = models.RenderArtifact{ID: "rid", RequestedBy: "inst", ErrorCode: "x"}
 	}).Once()
-	if art, status := s.loadRenderArtifactForSummary(&apptheory.Context{}, "rid"); art != nil || status != statusError {
+	if art, status := s.loadRenderArtifactForSummary(&apptheory.Context{}, "inst", "rid"); art != nil || status != statusError {
 		t.Fatalf("expected error for errored artifact, got art=%#v status=%q", art, status)
 	}
 
 	tdb.qRender.On("First", mock.AnythingOfType("*models.RenderArtifact")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.RenderArtifact](t, args, 0)
-		*dest = models.RenderArtifact{ID: "rid", ErrorCode: "", SnapshotObjectKey: ""}
+		*dest = models.RenderArtifact{ID: "rid", RequestedBy: "inst", ErrorCode: "", SnapshotObjectKey: ""}
 	}).Once()
-	if art, status := s.loadRenderArtifactForSummary(&apptheory.Context{}, "rid"); art != nil || status != statusQueued {
+	if art, status := s.loadRenderArtifactForSummary(&apptheory.Context{}, "inst", "rid"); art != nil || status != statusQueued {
 		t.Fatalf("expected queued for missing snapshot, got art=%#v status=%q", art, status)
 	}
 
 	tdb.qRender.On("First", mock.AnythingOfType("*models.RenderArtifact")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.RenderArtifact](t, args, 0)
-		*dest = models.RenderArtifact{ID: "rid", ErrorCode: "", SnapshotObjectKey: "snap"}
+		*dest = models.RenderArtifact{ID: "rid", RequestedBy: "inst", ErrorCode: "", SnapshotObjectKey: "snap"}
 	}).Once()
-	if art, status := s.loadRenderArtifactForSummary(&apptheory.Context{}, "rid"); art == nil || status != "" {
+	if art, status := s.loadRenderArtifactForSummary(&apptheory.Context{}, "inst", "rid"); art == nil || status != "" {
 		t.Fatalf("expected ok artifact, got art=%#v status=%q", art, status)
 	}
 }

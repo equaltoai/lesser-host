@@ -25,6 +25,7 @@ type fakeAIStore struct {
 	mu      sync.Mutex
 	jobs    map[string]*models.AIJob
 	results map[string]*models.AIResult
+	renders map[string]*models.RenderArtifact
 }
 
 func (f *fakeAIStore) GetAIJob(_ context.Context, id string) (*models.AIJob, error) {
@@ -82,6 +83,20 @@ func (f *fakeAIStore) PutAIResult(_ context.Context, item *models.AIResult) erro
 	cp := *item
 	f.results[strings.TrimSpace(item.ID)] = &cp
 	return nil
+}
+
+func (f *fakeAIStore) GetRenderArtifact(_ context.Context, id string) (*models.RenderArtifact, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.renders == nil {
+		return nil, errNotFound
+	}
+	r, ok := f.renders[strings.TrimSpace(id)]
+	if !ok {
+		return nil, errNotFound
+	}
+	cp := *r
+	return &cp, nil
 }
 
 var errNotFound = &testNotFoundError{}

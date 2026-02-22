@@ -46,13 +46,13 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 	// Render artifacts.
 	app.Post("/api/v1/renders", s.handleCreateRender, apptheory.RequireAuth())
 	app.Get("/api/v1/renders/{renderId}", s.handleGetRender, apptheory.RequireAuth())
-	app.Get("/api/v1/renders/{renderId}/thumbnail", s.handleGetRenderThumbnail)
+	app.Get("/api/v1/renders/{renderId}/thumbnail", s.handleGetRenderThumbnail, apptheory.RequireAuth())
 	app.Get("/api/v1/renders/{renderId}/snapshot", s.handleGetRenderSnapshot, apptheory.RequireAuth())
 
 	// Link previews.
 	app.Post("/api/v1/previews", s.handleLinkPreview, apptheory.RequireAuth())
 	app.Get("/api/v1/previews/{id}", s.handleGetLinkPreview, apptheory.RequireAuth())
-	app.Get("/api/v1/previews/images/{imageId}", s.handleGetLinkPreviewImage)
+	app.Get("/api/v1/previews/images/{imageId}", s.handleGetLinkPreviewImage, apptheory.RequireAuth())
 
 	// Publish-triggered jobs (link safety, etc).
 	app.Post("/api/v1/publish/jobs", s.handlePublishJob, apptheory.RequireAuth())

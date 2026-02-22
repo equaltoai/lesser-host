@@ -92,6 +92,7 @@ func TestHandleLinkPreview_CacheHitAndGetPreview(t *testing.T) {
 			Title:         "Example",
 			FetchedAt:     time.Now().UTC(),
 			ExpiresAt:     time.Now().UTC().Add(1 * time.Hour),
+			StoredBy:      "inst",
 		}
 		_ = dest.UpdateKeys()
 	}).Once()
@@ -116,7 +117,7 @@ func TestHandleLinkPreview_CacheHitAndGetPreview(t *testing.T) {
 	}).Once()
 	tdb.qPrev.On("First", mock.AnythingOfType("*models.LinkPreview")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.LinkPreview](t, args, 0)
-		*dest = models.LinkPreview{ID: "ok", PolicyVersion: linkPreviewPolicyVersion, NormalizedURL: "https://example.com/", ExpiresAt: time.Now().UTC().Add(1 * time.Hour)}
+		*dest = models.LinkPreview{ID: "ok", PolicyVersion: linkPreviewPolicyVersion, NormalizedURL: "https://example.com/", ExpiresAt: time.Now().UTC().Add(1 * time.Hour), StoredBy: "inst"}
 		_ = dest.UpdateKeys()
 	}).Once()
 	resp, err = s.handleGetLinkPreview(&apptheory.Context{AuthIdentity: "inst", Params: map[string]string{"id": "ok"}})
@@ -139,6 +140,7 @@ func TestAttachCachedPreviewRenderAndDebitBudget(t *testing.T) {
 			NormalizedURL: "https://example.com/",
 			CreatedAt:     time.Now().UTC(),
 			ExpiresAt:     time.Now().UTC().Add(24 * time.Hour),
+			RequestedBy:   "inst",
 		}
 		_ = dest.UpdateKeys()
 	}).Once()
@@ -159,5 +161,28 @@ func TestAttachCachedPreviewRenderAndDebitBudget(t *testing.T) {
 	now := time.Now().UTC()
 	if ok := s.debitBudgetForPreviewRender(&apptheory.Context{RequestID: "rid"}, "inst", "block", "render1", now); !ok {
 		t.Fatalf("expected debit ok")
+	}
+}
+
+func TestHandleGetLinkPreview_RejectsCrossInstancePreview(t *testing.T) {
+	t.Parallel()
+
+	tdb := newPreviewsFlowTestDB()
+	s := &Server{store: store.New(tdb.db)}
+
+	tdb.qPrev.On("First", mock.AnythingOfType("*models.LinkPreview")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.LinkPreview](t, args, 0)
+		*dest = models.LinkPreview{
+			ID:            "p1",
+			PolicyVersion: linkPreviewPolicyVersion,
+			NormalizedURL: "https://example.com/",
+			StoredBy:      "other",
+			ExpiresAt:     time.Now().UTC().Add(1 * time.Hour),
+		}
+		_ = dest.UpdateKeys()
+	}).Once()
+
+	if _, err := s.handleGetLinkPreview(&apptheory.Context{AuthIdentity: "inst", Params: map[string]string{"id": "p1"}}); err == nil {
+		t.Fatalf("expected not found for cross-instance preview")
 	}
 }

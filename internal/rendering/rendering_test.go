@@ -20,6 +20,24 @@ func TestRenderArtifactID_IsStableWithWhitespace(t *testing.T) {
 	}
 }
 
+func TestRenderArtifactIDForInstance_IsStableAndScoped(t *testing.T) {
+	t.Parallel()
+
+	a := RenderArtifactIDForInstance("v1", " inst ", " https://example.com ")
+	b := RenderArtifactIDForInstance(" v1 ", "inst", "https://example.com")
+	if a == "" || a != b {
+		t.Fatalf("expected deterministic instance-scoped id, got %q vs %q", a, b)
+	}
+	if len(a) != 64 {
+		t.Fatalf("expected sha256 hex length 64, got %d", len(a))
+	}
+
+	unscoped := RenderArtifactID("v1", "https://example.com")
+	if unscoped == a {
+		t.Fatalf("expected scoped id to differ from unscoped id")
+	}
+}
+
 func TestRetentionAndExpiresAt(t *testing.T) {
 	t.Parallel()
 

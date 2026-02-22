@@ -90,15 +90,28 @@ func (s *Server) handlePreviewQueueMessage(ctx *apptheory.EventContext, msg even
 	return s.processRenderJob(ctx.Context(), ctx.RequestID, job)
 }
 
-func normalizeRenderJobID(normalized string, renderID string) string {
+func normalizeRenderJobID(normalized string, requestedBy string, renderID string) string {
 	normalized = strings.TrimSpace(normalized)
+	requestedBy = strings.TrimSpace(requestedBy)
 	renderID = strings.TrimSpace(renderID)
 
-	wantID := rendering.RenderArtifactID(rendering.RenderPolicyVersion, normalized)
-	if renderID == "" || renderID != wantID {
-		return wantID
+	legacyID := rendering.RenderArtifactID(rendering.RenderPolicyVersion, normalized)
+	if requestedBy == "" {
+		if renderID == "" || renderID != legacyID {
+			return legacyID
+		}
+		return renderID
 	}
-	return renderID
+
+	scopedID := rendering.RenderArtifactIDForInstance(rendering.RenderPolicyVersion, requestedBy, normalized)
+	switch renderID {
+	case scopedID, legacyID:
+		return renderID
+	case "":
+		return scopedID
+	default:
+		return scopedID
+	}
 }
 
 func desiredRenderExpiration(now time.Time, retentionClass string, retentionDays int) (int, string, time.Time) {
@@ -190,7 +203,7 @@ func (s *Server) processRenderJob(ctx context.Context, requestID string, job ren
 	now := time.Now().UTC()
 
 	normalized := strings.TrimSpace(job.NormalizedURL)
-	renderID := normalizeRenderJobID(normalized, job.RenderID)
+	renderID := normalizeRenderJobID(normalized, job.RequestedBy, job.RenderID)
 	_, classOut, desiredExpiresAt := desiredRenderExpiration(now, job.RetentionClass, job.RetentionDays)
 
 	done, err := s.maybeShortCircuitExistingRender(ctx, renderID, desiredExpiresAt, classOut, requestID, job.RequestedBy)

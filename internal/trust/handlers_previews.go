@@ -106,6 +106,9 @@ func (s *Server) maybeServeCachedLinkPreview(
 	if !ok || item == nil {
 		return nil, false, nil
 	}
+	if !linkPreviewOwnedByInstance(item, instanceSlug) {
+		return nil, false, nil
+	}
 
 	resp := linkPreviewResponseFromModel(ctx, item, true)
 	if instCfg.RendersEnabled {
@@ -144,7 +147,7 @@ func (s *Server) fetchAndStoreLinkPreview(
 		applyLinkPreviewFetchError(item, fetchErr)
 	} else if strings.TrimSpace(fetched.ImageURL) != "" && s.artifacts != nil {
 		// Fetch and store image if available.
-		imageID, objectKey := s.tryStorePreviewImage(ctx.Context(), fetched.ImageURL)
+		imageID, objectKey := s.tryStorePreviewImage(ctx.Context(), instanceSlug, fetched.ImageURL)
 		if imageID != "" && objectKey != "" {
 			item.ImageID = imageID
 			item.ImageObjectKey = objectKey
@@ -174,7 +177,7 @@ func (s *Server) handleLinkPreview(ctx *apptheory.Context) (*apptheory.Response,
 		return nil, appErr
 	}
 
-	previewID := linkPreviewID(linkPreviewPolicyVersion, normalized)
+	previewID := linkPreviewIDForInstance(linkPreviewPolicyVersion, instanceSlug, normalized)
 
 	// Respect per-instance config toggle (default: enabled).
 	instCfg := s.loadInstanceTrustConfig(ctx.Context(), instanceSlug)
@@ -305,6 +308,9 @@ func (s *Server) handleGetLinkPreview(ctx *apptheory.Context) (*apptheory.Respon
 	if err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
+	if !linkPreviewOwnedByInstance(item, instanceSlug) {
+		return nil, &apptheory.AppError{Code: "app.not_found", Message: "preview not found"}
+	}
 
 	instCfg := s.loadInstanceTrustConfig(ctx.Context(), instanceSlug)
 	renderPolicy := instCfg.RenderPolicy
@@ -325,13 +331,17 @@ func (s *Server) handleGetLinkPreviewImage(ctx *apptheory.Context) (*apptheory.R
 	if ctx == nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
+	instanceSlug := strings.TrimSpace(ctx.AuthIdentity)
+	if instanceSlug == "" {
+		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+	}
 
 	imageID := strings.TrimSpace(ctx.Param("imageId"))
 	if !imageIDRE.MatchString(imageID) {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid image id"}
 	}
 
-	key := linkPreviewImageObjectKey(imageID)
+	key := linkPreviewImageObjectKey(instanceSlug, imageID)
 	body, contentType, etag, err := s.artifacts.GetObject(ctx.Context(), key, linkPreviewMaxImageBytes)
 	if err != nil {
 		return nil, &apptheory.AppError{Code: "app.not_found", Message: "image not found"}
@@ -351,9 +361,13 @@ func (s *Server) handleGetLinkPreviewImage(ctx *apptheory.Context) (*apptheory.R
 	return resp, nil
 }
 
-func (s *Server) tryStorePreviewImage(ctx context.Context, rawImageURL string) (string, string) {
+func (s *Server) tryStorePreviewImage(ctx context.Context, instanceSlug string, rawImageURL string) (string, string) {
 	rawImageURL = strings.TrimSpace(rawImageURL)
 	if rawImageURL == "" || s == nil || s.artifacts == nil {
+		return "", ""
+	}
+	instanceSlug = strings.TrimSpace(instanceSlug)
+	if instanceSlug == "" {
 		return "", ""
 	}
 
@@ -379,7 +393,7 @@ func (s *Server) tryStorePreviewImage(ctx context.Context, rawImageURL string) (
 	}
 
 	imageID := imageIDFromNormalizedURL(imgNormalized)
-	key := linkPreviewImageObjectKey(imageID)
+	key := linkPreviewImageObjectKey(instanceSlug, imageID)
 	if err := s.artifacts.PutObject(ctx, key, body, contentType, "public, max-age=86400, immutable"); err != nil {
 		return "", ""
 	}
@@ -416,6 +430,9 @@ func (s *Server) attachCachedPreviewRender(ctx *apptheory.Context, instanceSlug 
 
 	existing, err := s.store.GetRenderArtifact(ctx.Context(), renderID)
 	if err != nil || existing == nil {
+		return false
+	}
+	if !renderArtifactOwnedByInstance(existing, instanceSlug) {
 		return false
 	}
 
@@ -574,7 +591,7 @@ func (s *Server) maybeAttachPreviewRender(ctx *apptheory.Context, instanceSlug s
 		return
 	}
 
-	renderID := rendering.RenderArtifactID(rendering.RenderPolicyVersion, normalizedURL)
+	renderID := rendering.RenderArtifactIDForInstance(rendering.RenderPolicyVersion, instanceSlug, normalizedURL)
 
 	if s.attachCachedPreviewRender(ctx, instanceSlug, renderID, resp) {
 		return
@@ -662,8 +679,13 @@ func requestBaseURL(ctx *apptheory.Context) string {
 	return proto + "://" + host
 }
 
-func linkPreviewImageObjectKey(imageID string) string {
-	return "link-previews/images/" + strings.TrimSpace(imageID)
+func linkPreviewImageObjectKey(instanceSlug, imageID string) string {
+	instanceSlug = strings.TrimSpace(instanceSlug)
+	imageID = strings.TrimSpace(imageID)
+	if instanceSlug == "" || imageID == "" {
+		return ""
+	}
+	return "link-previews/" + instanceSlug + "/images/" + imageID
 }
 
 func imageIDFromNormalizedURL(normalized string) string {

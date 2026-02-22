@@ -61,12 +61,15 @@ func maybeExtendRenderArtifact(existing *models.RenderArtifact, desiredExpiresAt
 	return true
 }
 
-func (s *Server) getRenderArtifactIfExists(ctx *apptheory.Context, renderID string) (*models.RenderArtifact, bool, *apptheory.AppError) {
+func (s *Server) getRenderArtifactIfExists(ctx *apptheory.Context, renderID string, instanceSlug string) (*models.RenderArtifact, bool, *apptheory.AppError) {
 	if ctx == nil {
 		return nil, false, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 	existing, err := s.store.GetRenderArtifact(ctx.Context(), renderID)
 	if err == nil {
+		if !renderArtifactOwnedByInstance(existing, instanceSlug) {
+			return nil, false, nil
+		}
 		return existing, true, nil
 	}
 	if theoryErrors.IsNotFound(err) {
@@ -115,9 +118,10 @@ func (s *Server) queueRender(ctx *apptheory.Context, normalizedURL string, reten
 
 	now := time.Now().UTC()
 	retentionDays, retentionClass, desiredExpiresAt := desiredQueueRenderRetention(now, retentionClass, retentionDays)
-	renderID := rendering.RenderArtifactID(rendering.RenderPolicyVersion, normalizedURL)
+	instanceSlug := strings.TrimSpace(ctx.AuthIdentity)
+	renderID := rendering.RenderArtifactIDForInstance(rendering.RenderPolicyVersion, instanceSlug, normalizedURL)
 
-	existing, found, getErr := s.getRenderArtifactIfExists(ctx, renderID)
+	existing, found, getErr := s.getRenderArtifactIfExists(ctx, renderID, instanceSlug)
 	if getErr != nil {
 		return nil, false, getErr
 	}

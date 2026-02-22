@@ -104,7 +104,7 @@ func TestHandleCreateRender_DisabledAndCacheHit(t *testing.T) {
 	}).Once()
 
 	normalized := "https://example.com/"
-	renderID := rendering.RenderArtifactID(rendering.RenderPolicyVersion, normalized)
+	renderID := rendering.RenderArtifactIDForInstance(rendering.RenderPolicyVersion, "inst", normalized)
 	tdb.qRender.On("First", mock.AnythingOfType("*models.RenderArtifact")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.RenderArtifact](t, args, 0)
 		*dest = models.RenderArtifact{
@@ -112,6 +112,7 @@ func TestHandleCreateRender_DisabledAndCacheHit(t *testing.T) {
 			PolicyVersion:  rendering.RenderPolicyVersion,
 			NormalizedURL:  normalized,
 			RetentionClass: models.RenderRetentionClassBenign,
+			RequestedBy:    "inst",
 			CreatedAt:      time.Now().UTC(),
 			ExpiresAt:      time.Now().UTC().Add(1 * time.Hour),
 		}
@@ -201,7 +202,7 @@ func TestHandleGetRender_AndArtifactsNotFoundPaths(t *testing.T) {
 		t.Fatalf("expected bad_request for invalid id")
 	}
 
-	renderID := rendering.RenderArtifactID(rendering.RenderPolicyVersion, "https://example.com/")
+	renderID := rendering.RenderArtifactIDForInstance(rendering.RenderPolicyVersion, "inst", "https://example.com/")
 	tdb.qRender.On("First", mock.AnythingOfType("*models.RenderArtifact")).Return(theoryErrors.ErrItemNotFound).Once()
 	if _, err := s.handleGetRender(&apptheory.Context{AuthIdentity: "inst", Params: map[string]string{"renderId": renderID}}); err == nil {
 		t.Fatalf("expected not found")
@@ -209,7 +210,7 @@ func TestHandleGetRender_AndArtifactsNotFoundPaths(t *testing.T) {
 
 	tdb.qRender.On("First", mock.AnythingOfType("*models.RenderArtifact")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.RenderArtifact](t, args, 0)
-		*dest = models.RenderArtifact{ID: renderID, PolicyVersion: rendering.RenderPolicyVersion, NormalizedURL: "https://example.com/"}
+		*dest = models.RenderArtifact{ID: renderID, PolicyVersion: rendering.RenderPolicyVersion, NormalizedURL: "https://example.com/", RequestedBy: "inst"}
 		_ = dest.UpdateKeys()
 	}).Once()
 	resp, err := s.handleGetRender(&apptheory.Context{AuthIdentity: "inst", Request: apptheory.Request{Headers: map[string][]string{"host": {"example.com"}}}, Params: map[string]string{"renderId": renderID}})
@@ -220,30 +221,58 @@ func TestHandleGetRender_AndArtifactsNotFoundPaths(t *testing.T) {
 	// Thumbnail missing key path.
 	tdb.qRender.On("First", mock.AnythingOfType("*models.RenderArtifact")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.RenderArtifact](t, args, 0)
-		*dest = models.RenderArtifact{ID: renderID, ThumbnailObjectKey: ""}
+		*dest = models.RenderArtifact{ID: renderID, ThumbnailObjectKey: "", RequestedBy: "inst"}
 		_ = dest.UpdateKeys()
 	}).Once()
-	if _, err := s.handleGetRenderThumbnail(&apptheory.Context{Params: map[string]string{"renderId": renderID}}); err == nil {
+	if _, err := s.handleGetRenderThumbnail(&apptheory.Context{AuthIdentity: "inst", Params: map[string]string{"renderId": renderID}}); err == nil {
 		t.Fatalf("expected not found for missing key")
 	}
 
 	// Thumbnail GetObject failure returns not found.
 	tdb.qRender.On("First", mock.AnythingOfType("*models.RenderArtifact")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.RenderArtifact](t, args, 0)
-		*dest = models.RenderArtifact{ID: renderID, ThumbnailObjectKey: "thumb"}
+		*dest = models.RenderArtifact{ID: renderID, ThumbnailObjectKey: "thumb", RequestedBy: "inst"}
 		_ = dest.UpdateKeys()
 	}).Once()
-	if _, err := s.handleGetRenderThumbnail(&apptheory.Context{Params: map[string]string{"renderId": renderID}}); err == nil {
+	if _, err := s.handleGetRenderThumbnail(&apptheory.Context{AuthIdentity: "inst", Params: map[string]string{"renderId": renderID}}); err == nil {
 		t.Fatalf("expected not found for missing object")
 	}
 
 	// Snapshot missing key path.
 	tdb.qRender.On("First", mock.AnythingOfType("*models.RenderArtifact")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.RenderArtifact](t, args, 0)
-		*dest = models.RenderArtifact{ID: renderID, SnapshotObjectKey: ""}
+		*dest = models.RenderArtifact{ID: renderID, SnapshotObjectKey: "", RequestedBy: "inst"}
 		_ = dest.UpdateKeys()
 	}).Once()
 	if _, err := s.handleGetRenderSnapshot(&apptheory.Context{AuthIdentity: "inst", Params: map[string]string{"renderId": renderID}}); err == nil {
 		t.Fatalf("expected not found for missing key")
+	}
+}
+
+func TestHandleGetRender_RejectsCrossInstanceArtifact(t *testing.T) {
+	t.Parallel()
+
+	tdb := newRendersFlowTestDB()
+	s := &Server{store: store.New(tdb.db)}
+
+	renderID := rendering.RenderArtifactIDForInstance(rendering.RenderPolicyVersion, "inst", "https://example.com/")
+	tdb.qRender.On("First", mock.AnythingOfType("*models.RenderArtifact")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.RenderArtifact](t, args, 0)
+		*dest = models.RenderArtifact{ID: renderID, PolicyVersion: rendering.RenderPolicyVersion, NormalizedURL: "https://example.com/", RequestedBy: "other"}
+		_ = dest.UpdateKeys()
+	}).Once()
+
+	if _, err := s.handleGetRender(&apptheory.Context{AuthIdentity: "inst", Params: map[string]string{"renderId": renderID}}); err == nil {
+		t.Fatalf("expected not found for cross-instance artifact")
+	}
+}
+
+func TestHandleGetRenderThumbnail_RequiresAuth(t *testing.T) {
+	t.Parallel()
+
+	s := &Server{store: store.New(ttmocks.NewMockExtendedDB()), artifacts: artifacts.New("")}
+	renderID := rendering.RenderArtifactIDForInstance(rendering.RenderPolicyVersion, "inst", "https://example.com/")
+	if _, err := s.handleGetRenderThumbnail(&apptheory.Context{Params: map[string]string{"renderId": renderID}}); err == nil {
+		t.Fatalf("expected unauthorized")
 	}
 }

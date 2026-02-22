@@ -64,6 +64,11 @@ func linkPreviewID(policyVersion, normalizedURL string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+func linkPreviewIDForInstance(policyVersion, instanceSlug, normalizedURL string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(policyVersion) + ":" + strings.TrimSpace(instanceSlug) + ":" + strings.TrimSpace(normalizedURL)))
+	return hex.EncodeToString(sum[:])
+}
+
 func normalizeLinkURL(raw string) (string, *url.URL, error) {
 	u, err := parseRawLinkURL(raw)
 	if err != nil {

@@ -171,10 +171,41 @@ func TestHydrateClaimVerifyEvidenceFromRenders_NoAWS(t *testing.T) {
 			{SourceID: "s2", RenderID: strings.Repeat("a", 64), Text: ""},
 		},
 	}
-	errs := srv.hydrateClaimVerifyEvidenceFromRenders(context.Background(), in)
+	errs := srv.hydrateClaimVerifyEvidenceFromRenders(context.Background(), "inst", in)
 	if len(errs) != 2 {
 		t.Fatalf("expected errs, got %#v", errs)
 	}
+}
+
+func TestHydrateClaimVerifyEvidenceFromRenders_RejectsCrossInstanceRenderID(t *testing.T) {
+	t.Parallel()
+
+	renderID := strings.Repeat("b", 64)
+	srv := NewServer(
+		config.Config{},
+		&fakeAIStore{
+			renders: map[string]*models.RenderArtifact{
+				renderID: {
+					ID:                renderID,
+					RequestedBy:       "other-instance",
+					SnapshotObjectKey: "renders/" + renderID + "/snapshot.txt",
+				},
+			},
+		},
+		artifacts.New(""),
+		fakeComprehend{},
+		fakeRekognition{},
+	)
+	in := &ai.ClaimVerifyInputsV1{
+		Evidence: []ai.ClaimVerifyEvidenceV1{
+			{SourceID: "s1", RenderID: renderID},
+		},
+	}
+
+	errs := srv.hydrateClaimVerifyEvidenceFromRenders(context.Background(), "inst", in)
+	require.Len(t, errs, 1)
+	require.Equal(t, "invalid_inputs", errs[0].Code)
+	require.Empty(t, in.Evidence[0].Text)
 }
 
 func TestHandleSafetyQueueMessage_BatchKind(t *testing.T) {

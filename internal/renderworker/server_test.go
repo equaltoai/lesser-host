@@ -284,15 +284,23 @@ func TestRenderJobHelpers(t *testing.T) {
 	t.Parallel()
 
 	normalized := testBlockedURL
-	wantID := normalizeRenderJobID(normalized, "")
+	wantID := normalizeRenderJobID(normalized, "", "")
 	if wantID == "" {
 		t.Fatalf("expected render id")
 	}
-	if got := normalizeRenderJobID(normalized, "wrong"); got != wantID {
+	if got := normalizeRenderJobID(normalized, "", "wrong"); got != wantID {
 		t.Fatalf("expected computed id, got %q", got)
 	}
-	if got := normalizeRenderJobID(normalized, wantID); got != wantID {
+	if got := normalizeRenderJobID(normalized, "", wantID); got != wantID {
 		t.Fatalf("expected preserved id, got %q", got)
+	}
+
+	wantScopedID := normalizeRenderJobID(normalized, "inst", "")
+	if wantScopedID == "" || wantScopedID == wantID {
+		t.Fatalf("expected non-empty scoped id distinct from legacy id")
+	}
+	if got := normalizeRenderJobID(normalized, "inst", "wrong"); got != wantScopedID {
+		t.Fatalf("expected scoped id, got %q", got)
 	}
 
 	now := time.Date(2026, 2, 7, 0, 0, 0, 0, time.UTC)
@@ -330,7 +338,7 @@ func TestMaybeShortCircuitExistingRender_UpdatesRetentionAndReturnsDone(t *testi
 
 	now := time.Now().UTC()
 	normalized := testBlockedURL
-	renderID := normalizeRenderJobID(normalized, "")
+	renderID := normalizeRenderJobID(normalized, "", "")
 
 	st := &fakeRenderStore{
 		items: map[string]*models.RenderArtifact{
@@ -422,7 +430,7 @@ func TestProcessRenderJob_ShortCircuitsWhenExistingAlreadyRendered(t *testing.T)
 
 	now := time.Now().UTC()
 	normalized := testBlockedURL
-	renderID := normalizeRenderJobID(normalized, "")
+	renderID := normalizeRenderJobID(normalized, "", "")
 
 	st := &fakeRenderStore{
 		items: map[string]*models.RenderArtifact{

@@ -335,9 +335,20 @@ func (s *Server) decideLinkRender(ctx *apptheory.Context, now time.Time, policy 
 	}
 
 	retentionClass := retentionClassForRisk(risk)
-	renderID := rendering.RenderArtifactID(rendering.RenderPolicyVersion, normalized)
+	renderID := rendering.RenderArtifactIDForInstance(rendering.RenderPolicyVersion, instanceSlug, normalized)
 	artifact, err := s.store.GetRenderArtifact(ctx.Context(), renderID)
 	if err == nil && artifact != nil {
+		if !renderArtifactOwnedByInstance(artifact, instanceSlug) {
+			linkOut.Status = statusQueued
+			return linkRenderDecision{
+				link:      linkOut,
+				candidate: true,
+				missing: &missingRenderCandidate{
+					NormalizedURL:  normalized,
+					RetentionClass: retentionClass,
+				},
+			}
+		}
 		s.maybeUpgradeRenderArtifactRetention(ctx, artifact, retentionClass, now, instanceSlug)
 		r := renderArtifactResponseFromModel(ctx, artifact, true)
 		linkOut.Render = &r

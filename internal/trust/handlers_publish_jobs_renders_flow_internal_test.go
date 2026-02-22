@@ -60,7 +60,7 @@ func TestRunLinkRenderJob_CacheHit_WritesUsageAndReturnsOK(t *testing.T) {
 	s := &Server{cfg: config.Config{}, store: store.New(tdb.db)}
 
 	normalized := "https://8.8.8.8/"
-	renderID := rendering.RenderArtifactID(rendering.RenderPolicyVersion, normalized)
+	renderID := rendering.RenderArtifactIDForInstance(rendering.RenderPolicyVersion, "inst", normalized)
 
 	tdb.qRender.On("First", mock.AnythingOfType("*models.RenderArtifact")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.RenderArtifact](t, args, 0)
@@ -69,6 +69,7 @@ func TestRunLinkRenderJob_CacheHit_WritesUsageAndReturnsOK(t *testing.T) {
 			PolicyVersion:      rendering.RenderPolicyVersion,
 			NormalizedURL:      normalized,
 			ThumbnailObjectKey: "renders/" + renderID + "/thumbnail.jpg",
+			RequestedBy:        "inst",
 			CreatedAt:          time.Now().UTC(),
 			RenderedAt:         time.Now().UTC(),
 			ExpiresAt:          time.Now().UTC().Add(24 * time.Hour),

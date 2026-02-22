@@ -100,10 +100,18 @@ func TestHandleLinkPreview_FetchBlockedSSRF_StoresErrorPreview(t *testing.T) {
 func TestHandleGetLinkPreviewImage_InvalidAndNotFound(t *testing.T) {
 	t.Parallel()
 
+	// Missing auth -> unauthorized.
+	{
+		s := &Server{artifacts: artifacts.New("")}
+		if _, err := s.handleGetLinkPreviewImage(&apptheory.Context{Params: map[string]string{"imageId": strings.Repeat("a", 64)}}); err == nil {
+			t.Fatalf("expected unauthorized")
+		}
+	}
+
 	// Invalid image id -> bad_request.
 	{
 		s := &Server{artifacts: artifacts.New("")}
-		if _, err := s.handleGetLinkPreviewImage(&apptheory.Context{Params: map[string]string{"imageId": "bad"}}); err == nil {
+		if _, err := s.handleGetLinkPreviewImage(&apptheory.Context{AuthIdentity: "inst", Params: map[string]string{"imageId": "bad"}}); err == nil {
 			t.Fatalf("expected bad_request")
 		}
 	}
@@ -112,7 +120,7 @@ func TestHandleGetLinkPreviewImage_InvalidAndNotFound(t *testing.T) {
 	{
 		imageID := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 		s := &Server{artifacts: artifacts.New("")}
-		if _, err := s.handleGetLinkPreviewImage(&apptheory.Context{Params: map[string]string{"imageId": imageID}}); err == nil {
+		if _, err := s.handleGetLinkPreviewImage(&apptheory.Context{AuthIdentity: "inst", Params: map[string]string{"imageId": imageID}}); err == nil {
 			t.Fatalf("expected not_found")
 		}
 	}
@@ -124,22 +132,22 @@ func TestTryStorePreviewImage_EarlyReturns(t *testing.T) {
 	ctx := context.Background()
 
 	// Nil artifacts or empty URL.
-	if id, key := (*Server)(nil).tryStorePreviewImage(ctx, "http://127.0.0.1/"); id != "" || key != "" {
+	if id, key := (*Server)(nil).tryStorePreviewImage(ctx, "inst", "http://127.0.0.1/"); id != "" || key != "" {
 		t.Fatalf("expected empty for nil server")
 	}
 
 	s := &Server{artifacts: artifacts.New("")}
-	if id, key := s.tryStorePreviewImage(ctx, " "); id != "" || key != "" {
+	if id, key := s.tryStorePreviewImage(ctx, "inst", " "); id != "" || key != "" {
 		t.Fatalf("expected empty for blank url")
 	}
 
 	// Invalid URL.
-	if id, key := s.tryStorePreviewImage(ctx, "not a url"); id != "" || key != "" {
+	if id, key := s.tryStorePreviewImage(ctx, "inst", "not a url"); id != "" || key != "" {
 		t.Fatalf("expected empty for invalid url")
 	}
 
 	// Blocked by SSRF checks.
-	if id, key := s.tryStorePreviewImage(ctx, "http://127.0.0.1/"); id != "" || key != "" {
+	if id, key := s.tryStorePreviewImage(ctx, "inst", "http://127.0.0.1/"); id != "" || key != "" {
 		t.Fatalf("expected empty for blocked url")
 	}
 }
@@ -212,6 +220,7 @@ func TestMaybeAttachPreviewRender_QueuesOnCreateRace(t *testing.T) {
 			NormalizedURL: normalized,
 			CreatedAt:     time.Now().UTC(),
 			ExpiresAt:     time.Now().UTC().Add(24 * time.Hour),
+			RequestedBy:   "inst",
 		}
 	}).Once()
 
@@ -237,7 +246,7 @@ func TestHandleGetLinkPreviewImage_ServesAndSetsHeaders(t *testing.T) {
 	t.Cleanup(cleanup)
 
 	imageID := strings.Repeat("a", 64)
-	key := linkPreviewImageObjectKey(imageID)
+	key := linkPreviewImageObjectKey("inst", imageID)
 
 	// Store without a content-type so handler falls back to DetectContentType.
 	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00}
@@ -246,7 +255,7 @@ func TestHandleGetLinkPreviewImage_ServesAndSetsHeaders(t *testing.T) {
 	}
 
 	s := &Server{artifacts: art}
-	resp, err := s.handleGetLinkPreviewImage(&apptheory.Context{Params: map[string]string{"imageId": imageID}})
+	resp, err := s.handleGetLinkPreviewImage(&apptheory.Context{AuthIdentity: "inst", Params: map[string]string{"imageId": imageID}})
 	if err != nil || resp == nil || resp.Status != 200 {
 		t.Fatalf("resp=%#v err=%v", resp, err)
 	}

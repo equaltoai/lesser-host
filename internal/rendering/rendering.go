@@ -29,7 +29,16 @@ type RenderJobMessage struct {
 
 // RenderArtifactID deterministically derives a render artifact ID from policy version and normalized URL.
 func RenderArtifactID(policyVersion, normalizedURL string) string {
-	sum := sha256.Sum256([]byte(strings.TrimSpace(policyVersion) + ":" + strings.TrimSpace(normalizedURL)))
+	return sha256Hex(strings.TrimSpace(policyVersion) + ":" + strings.TrimSpace(normalizedURL))
+}
+
+// RenderArtifactIDForInstance deterministically derives a render artifact ID scoped to an instance slug.
+func RenderArtifactIDForInstance(policyVersion, instanceSlug, normalizedURL string) string {
+	return sha256Hex(strings.TrimSpace(policyVersion) + ":" + strings.TrimSpace(instanceSlug) + ":" + strings.TrimSpace(normalizedURL))
+}
+
+func sha256Hex(value string) string {
+	sum := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(sum[:])
 }
 

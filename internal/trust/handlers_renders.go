@@ -125,6 +125,9 @@ func (s *Server) maybeServeCachedRenderRequest(
 	if getErr != nil || existing == nil {
 		return nil, false, nil
 	}
+	if !renderArtifactOwnedByInstance(existing, instanceSlug) {
+		return nil, false, nil
+	}
 
 	if maybeExtendRenderArtifact(existing, desiredExpiresAt, retentionClass, ctx.AuthIdentity, ctx.RequestID) {
 		_ = s.store.PutRenderArtifact(ctx.Context(), existing)
@@ -192,7 +195,7 @@ func (s *Server) handleCreateRender(ctx *apptheory.Context) (*apptheory.Response
 	// Resolve retention request (defaults when omitted).
 	retentionDays, classOut, desiredExpiresAt := resolveCreateRenderRetention(now, req.RetentionClass, req.RetentionDays)
 
-	renderID := rendering.RenderArtifactID(rendering.RenderPolicyVersion, normalized)
+	renderID := rendering.RenderArtifactIDForInstance(rendering.RenderPolicyVersion, instanceSlug, normalized)
 
 	// Cache hit: return existing (best-effort retention upgrade, no budget debit).
 	if resp, ok, cacheErr := s.maybeServeCachedRenderRequest(ctx, instanceSlug, renderID, classOut, desiredExpiresAt, now); cacheErr != nil {
@@ -399,7 +402,8 @@ func (s *Server) handleGetRender(ctx *apptheory.Context) (*apptheory.Response, e
 	if ctx == nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
-	if strings.TrimSpace(ctx.AuthIdentity) == "" {
+	instanceSlug := strings.TrimSpace(ctx.AuthIdentity)
+	if instanceSlug == "" {
 		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
 	}
 
@@ -415,6 +419,9 @@ func (s *Server) handleGetRender(ctx *apptheory.Context) (*apptheory.Response, e
 	if err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
+	if !renderArtifactOwnedByInstance(item, instanceSlug) {
+		return nil, &apptheory.AppError{Code: "app.not_found", Message: "render not found"}
+	}
 
 	return apptheory.JSON(http.StatusOK, renderArtifactResponseFromModel(ctx, item, true))
 }
@@ -426,6 +433,10 @@ func (s *Server) handleGetRenderThumbnail(ctx *apptheory.Context) (*apptheory.Re
 	if ctx == nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
+	instanceSlug := strings.TrimSpace(ctx.AuthIdentity)
+	if instanceSlug == "" {
+		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+	}
 
 	id := strings.TrimSpace(ctx.Param("renderId"))
 	if !renderIDRE.MatchString(id) {
@@ -434,6 +445,9 @@ func (s *Server) handleGetRenderThumbnail(ctx *apptheory.Context) (*apptheory.Re
 
 	item, err := s.store.GetRenderArtifact(ctx.Context(), id)
 	if err != nil {
+		return nil, &apptheory.AppError{Code: "app.not_found", Message: "thumbnail not found"}
+	}
+	if !renderArtifactOwnedByInstance(item, instanceSlug) {
 		return nil, &apptheory.AppError{Code: "app.not_found", Message: "thumbnail not found"}
 	}
 	key := strings.TrimSpace(item.ThumbnailObjectKey)
@@ -468,7 +482,8 @@ func (s *Server) handleGetRenderSnapshot(ctx *apptheory.Context) (*apptheory.Res
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
-	if strings.TrimSpace(ctx.AuthIdentity) == "" {
+	instanceSlug := strings.TrimSpace(ctx.AuthIdentity)
+	if instanceSlug == "" {
 		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
 	}
 
@@ -479,6 +494,9 @@ func (s *Server) handleGetRenderSnapshot(ctx *apptheory.Context) (*apptheory.Res
 
 	item, err := s.store.GetRenderArtifact(ctx.Context(), id)
 	if err != nil {
+		return nil, &apptheory.AppError{Code: "app.not_found", Message: "snapshot not found"}
+	}
+	if !renderArtifactOwnedByInstance(item, instanceSlug) {
 		return nil, &apptheory.AppError{Code: "app.not_found", Message: "snapshot not found"}
 	}
 	key := strings.TrimSpace(item.SnapshotObjectKey)

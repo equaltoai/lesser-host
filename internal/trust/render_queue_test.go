@@ -84,12 +84,12 @@ func TestQueueRender_ExistingAndCreateRaceAndEnqueueFailure(t *testing.T) {
 
 	ctx := &apptheory.Context{AuthIdentity: "inst", RequestID: "rid"}
 	normalized := "https://example.com/"
-	renderID := rendering.RenderArtifactID(rendering.RenderPolicyVersion, normalized)
+	renderID := rendering.RenderArtifactIDForInstance(rendering.RenderPolicyVersion, "inst", normalized)
 
 	// Existing artifact: returned without enqueue.
 	qRender.On("First", mock.AnythingOfType("*models.RenderArtifact")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.RenderArtifact](t, args, 0)
-		*dest = models.RenderArtifact{ID: renderID, PolicyVersion: rendering.RenderPolicyVersion, NormalizedURL: normalized, ExpiresAt: time.Now().UTC().Add(1 * time.Hour)}
+		*dest = models.RenderArtifact{ID: renderID, PolicyVersion: rendering.RenderPolicyVersion, NormalizedURL: normalized, RequestedBy: "inst", ExpiresAt: time.Now().UTC().Add(1 * time.Hour)}
 		_ = dest.UpdateKeys()
 	}).Once()
 	got, queued, err := s.queueRender(ctx, normalized, models.RenderRetentionClassBenign, 1)
@@ -102,7 +102,7 @@ func TestQueueRender_ExistingAndCreateRaceAndEnqueueFailure(t *testing.T) {
 	qRender.On("Create").Return(theoryErrors.ErrConditionFailed).Once()
 	qRender.On("First", mock.AnythingOfType("*models.RenderArtifact")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.RenderArtifact](t, args, 0)
-		*dest = models.RenderArtifact{ID: renderID, PolicyVersion: rendering.RenderPolicyVersion, NormalizedURL: normalized}
+		*dest = models.RenderArtifact{ID: renderID, PolicyVersion: rendering.RenderPolicyVersion, NormalizedURL: normalized, RequestedBy: "inst"}
 		_ = dest.UpdateKeys()
 	}).Once()
 	got, queued, err = s.queueRender(ctx, normalized, models.RenderRetentionClassBenign, 1)

@@ -125,7 +125,7 @@ func TestLinkRenderSummaryStatusCachedReason(t *testing.T) {
 func TestBuildRenderSummaryInputsAndFillFromResult(t *testing.T) {
 	t.Parallel()
 
-	in := buildRenderSummaryInputs(nil, " "+testURLExampleCom+" ", "low")
+	in := buildRenderSummaryInputs(nil, "inst", " "+testURLExampleCom+" ", "low")
 	if in.NormalizedURL != testURLExampleCom || in.RenderID == "" {
 		t.Fatalf("unexpected inputs: %#v", in)
 	}
@@ -137,7 +137,7 @@ func TestBuildRenderSummaryInputsAndFillFromResult(t *testing.T) {
 		ResolvedURL:   "https://example.com/real",
 		TextPreview:   "text",
 		RenderedAt:    renderedAt,
-	}, "https://fallback", "medium")
+	}, "inst", "https://fallback", "medium")
 	if in.RenderID != "rid" || in.NormalizedURL != "https://fallback" || in.ResolvedURL == "" || in.Text != "text" || in.RenderedAt == "" {
 		t.Fatalf("unexpected inputs: %#v", in)
 	}
@@ -299,7 +299,7 @@ func TestAPIKeyEnvShortCircuit(t *testing.T) {
 func TestRenderSummaryPaths_UsesRenderIDFunc(t *testing.T) {
 	t.Parallel()
 
-	id := rendering.RenderArtifactID(rendering.RenderPolicyVersion, testURLExampleCom)
+	id := rendering.RenderArtifactIDForInstance(rendering.RenderPolicyVersion, "inst", testURLExampleCom)
 	if len(id) != 64 {
 		t.Fatalf("expected hex id, got %q", id)
 	}

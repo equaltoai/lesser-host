@@ -122,7 +122,7 @@ func TestHandleLinkPreview_DisabledByConfig(t *testing.T) {
 func TestPreviewHelpers_ImageKeysAndIDs(t *testing.T) {
 	t.Parallel()
 
-	if got := linkPreviewImageObjectKey(" img "); got != "link-previews/images/img" {
+	if got := linkPreviewImageObjectKey("inst", " img "); got != "link-previews/inst/images/img" {
 		t.Fatalf("unexpected object key: %q", got)
 	}
 

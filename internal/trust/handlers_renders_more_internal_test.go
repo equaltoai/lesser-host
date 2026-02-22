@@ -44,7 +44,7 @@ func TestDebitBudgetForCreateRender_Branches(t *testing.T) {
 	t.Parallel()
 
 	now := time.Unix(100, 0).UTC()
-	renderID := rendering.RenderArtifactID(rendering.RenderPolicyVersion, testNormalizedURL)
+	renderID := rendering.RenderArtifactIDForInstance(rendering.RenderPolicyVersion, "inst", testNormalizedURL)
 	normalized := testNormalizedURL
 
 	t.Run("budget_not_configured", func(t *testing.T) {
@@ -184,15 +184,15 @@ func TestHandleGetRenderThumbnail_AndSnapshot_Success(t *testing.T) {
 	tdb := newRendersFlowTestDB()
 	s := &Server{store: store.New(tdb.db), artifacts: art}
 
-	renderID := rendering.RenderArtifactID(rendering.RenderPolicyVersion, "https://example.com/")
+	renderID := rendering.RenderArtifactIDForInstance(rendering.RenderPolicyVersion, "inst", "https://example.com/")
 	tdb.qRender.On("First", mock.AnythingOfType("*models.RenderArtifact")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.RenderArtifact](t, args, 0)
-		*dest = models.RenderArtifact{ID: renderID, ThumbnailObjectKey: "thumbKey", SnapshotObjectKey: "snapKey"}
+		*dest = models.RenderArtifact{ID: renderID, ThumbnailObjectKey: "thumbKey", SnapshotObjectKey: "snapKey", RequestedBy: "inst"}
 		_ = dest.UpdateKeys()
 	}).Twice()
 
 	// Thumbnail: content type is detected when empty.
-	resp, err := s.handleGetRenderThumbnail(&apptheory.Context{Params: map[string]string{"renderId": renderID}})
+	resp, err := s.handleGetRenderThumbnail(&apptheory.Context{AuthIdentity: "inst", Params: map[string]string{"renderId": renderID}})
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 	require.Equal(t, 200, resp.Status)

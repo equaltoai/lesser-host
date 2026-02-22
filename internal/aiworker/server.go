@@ -55,6 +55,10 @@ type aiStore interface {
 	PutAIResult(ctx context.Context, item *models.AIResult) error
 }
 
+type renderArtifactLookup interface {
+	GetRenderArtifact(ctx context.Context, id string) (*models.RenderArtifact, error)
+}
+
 type comprehendAPI interface {
 	DetectDominantLanguage(ctx context.Context, params *comprehend.DetectDominantLanguageInput, optFns ...func(*comprehend.Options)) (*comprehend.DetectDominantLanguageOutput, error)
 	DetectEntities(ctx context.Context, params *comprehend.DetectEntitiesInput, optFns ...func(*comprehend.Options)) (*comprehend.DetectEntitiesOutput, error)
@@ -1321,7 +1325,7 @@ func (s *Server) runClaimVerifyLLMV1(ctx context.Context, job *models.AIJob) (st
 	}
 
 	start := time.Now()
-	hydrationErrs := s.hydrateClaimVerifyEvidenceFromRenders(ctx, &in)
+	hydrationErrs := s.hydrateClaimVerifyEvidenceFromRenders(ctx, strings.TrimSpace(job.InstanceSlug), &in)
 	in.Retrieval = normalizeClaimVerifyRetrievalV1(in.Retrieval)
 	retrievalUsed, retrievalDisclaimer, retrievalUsage, retrievalErrs := s.maybeAddClaimVerifyWebSearchEvidence(ctx, modelSet, &in)
 
@@ -1432,10 +1436,11 @@ func (s *Server) maybeAddClaimVerifyWebSearchEvidence(
 	return true, strings.TrimSpace(disc), u, nil
 }
 
-func (s *Server) hydrateClaimVerifyEvidenceFromRenders(ctx context.Context, in *ai.ClaimVerifyInputsV1) []models.AIError {
+func (s *Server) hydrateClaimVerifyEvidenceFromRenders(ctx context.Context, instanceSlug string, in *ai.ClaimVerifyInputsV1) []models.AIError {
 	if s == nil || s.artifacts == nil || in == nil {
 		return nil
 	}
+	instanceSlug = strings.TrimSpace(instanceSlug)
 
 	errs := []models.AIError{}
 
@@ -1454,6 +1459,22 @@ func (s *Server) hydrateClaimVerifyEvidenceFromRenders(ctx context.Context, in *
 		}
 
 		key := rendering.SnapshotObjectKey(renderID)
+		if lookup, ok := s.store.(renderArtifactLookup); ok && lookup != nil {
+			artifact, err := lookup.GetRenderArtifact(ctx, renderID)
+			if err != nil || artifact == nil {
+				errs = append(errs, models.AIError{Code: "evidence_unavailable", Message: "Evidence snapshot unavailable; continuing with limited evidence", Retryable: true})
+				continue
+			}
+			if strings.TrimSpace(artifact.RequestedBy) != instanceSlug {
+				errs = append(errs, models.AIError{Code: "invalid_inputs", Message: "Invalid evidence render_id", Retryable: false})
+				continue
+			}
+			key = strings.TrimSpace(artifact.SnapshotObjectKey)
+		}
+		if key == "" {
+			errs = append(errs, models.AIError{Code: "evidence_unavailable", Message: "Evidence snapshot unavailable; continuing with limited evidence", Retryable: true})
+			continue
+		}
 		body, _, _, err := s.artifacts.GetObject(ctx, key, claimVerifyEvidenceMaxBytes)
 		if err != nil {
 			errs = append(errs, models.AIError{Code: "evidence_unavailable", Message: "Evidence snapshot unavailable; continuing with limited evidence", Retryable: true})
