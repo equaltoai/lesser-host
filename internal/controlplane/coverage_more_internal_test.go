@@ -31,7 +31,7 @@ func TestCoverage_HelperValidationBranches(t *testing.T) {
 		_, err := normalizeAdminWalletAddress("")
 		require.NotNil(t, err)
 
-		_, err = normalizeAdminWalletAddress("not-an-address")
+		_, err = normalizeAdminWalletAddress(testNotAnAddress)
 		require.NotNil(t, err)
 
 		_, err = normalizeAdminWalletAddress(reservedWalletLesserHostAdmin)

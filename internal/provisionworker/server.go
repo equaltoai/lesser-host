@@ -1385,11 +1385,11 @@ func (s *Server) advanceProvisionReceiptIngest(ctx context.Context, job *models.
 			job.Note = "starting lesser-body deploy runner"
 		} else {
 			job.Step = provisionStepDeployMcpStart
-			job.Note = "starting MCP wiring deploy runner"
+			job.Note = noteStartingMcpWiringDeployRunner
 		}
 	} else if continueToSoul {
 		job.Step = provisionStepSoulDeployStart
-		job.Note = "starting soul deploy runner"
+		job.Note = noteStartingSoulDeployRunner
 		job.RunID = ""
 	} else {
 		job.Step = provisionStepDone
@@ -1473,67 +1473,18 @@ func (s *Server) advanceProvisionBodyDeployStart(ctx context.Context, job *model
 
 	if !job.BodyEnabled {
 		// Skip body + MCP wiring and continue to soul (if configured).
-		continuing := job.SoulEnabled && job.SoulProvisionedAt.IsZero()
-		if continuing {
-			job.Step = provisionStepSoulDeployStart
-			job.Note = "starting soul deploy runner"
-			job.RunID = ""
-		} else {
-			job.Step = provisionStepDone
-			job.Status = models.ProvisionJobStatusOK
-			job.Note = noteProvisioned
-		}
-		if err := s.persistJobAndInstance(ctx, job, requestID, now, func(ub core.UpdateBuilder) error {
-			ub.Set("ProvisionJobID", strings.TrimSpace(job.ID))
-			if continuing {
-				ub.Set("ProvisionStatus", models.ProvisionJobStatusRunning)
-			} else {
-				ub.Set("ProvisionStatus", models.ProvisionJobStatusOK)
-			}
-			return nil
-		}); err != nil {
-			return 0, false, err
-		}
-		return 0, !continuing, nil
+		return s.advanceProvisionContinueToSoulOrDone(ctx, job, requestID, now)
 	}
 
 	if !job.BodyProvisionedAt.IsZero() {
-		job.Step = provisionStepDeployMcpStart
-		job.Note = "starting MCP wiring deploy runner"
-		job.RunID = ""
-		if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
-			return 0, false, err
-		}
-		return 0, false, nil
+		return s.advanceProvisionBodyDeployStartBodyAlreadyProvisioned(ctx, job, requestID, now)
 	}
 
 	if strings.TrimSpace(job.RunID) != "" {
-		job.Step = provisionStepBodyDeployWait
-		job.Note = "lesser-body deploy runner already started"
-		if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
-			return 0, false, err
-		}
-		return provisionDefaultPollDelay, false, nil
+		return s.advanceProvisionBodyDeployStartRunnerAlreadyStarted(ctx, job, requestID, now)
 	}
 
-	runID, err := s.startDeployRunnerWithMode(ctx, job, "lesser-body", s.bodyReceiptS3Key(job))
-	if err != nil {
-		job.Attempts++
-		if job.Attempts >= job.MaxAttempts {
-			return 0, false, s.failJob(ctx, job, requestID, now, "body_deploy_start_failed", "failed to start lesser-body deploy runner: "+err.Error())
-		}
-		job.Note = "failed to start lesser-body deploy runner; retrying: " + compactErr(err)
-		_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
-		return jitteredBackoff(job.Attempts, provisionDefaultShortRetryDelay, 10*time.Minute), false, nil
-	}
-
-	job.RunID = strings.TrimSpace(runID)
-	job.Step = provisionStepBodyDeployWait
-	job.Note = "lesser-body deploy runner in progress"
-	if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
-		return 0, false, err
-	}
-	return provisionDefaultPollDelay, false, nil
+	return s.advanceProvisionBodyDeployStartStartRunner(ctx, job, requestID, now)
 }
 
 func (s *Server) advanceProvisionBodyDeployWait(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {
@@ -1557,7 +1508,7 @@ func (s *Server) advanceProvisionBodyDeployWait(ctx context.Context, job *models
 		job.BodyProvisionedAt = now
 		job.Step = provisionStepDeployMcpStart
 		job.RunID = ""
-		job.Note = "starting MCP wiring deploy runner"
+		job.Note = noteStartingMcpWiringDeployRunner
 		if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
 			return 0, false, err
 		}
@@ -1595,84 +1546,22 @@ func (s *Server) advanceProvisionDeployMcpStart(ctx context.Context, job *models
 
 	if !job.BodyEnabled {
 		// Skip MCP wiring and continue to soul (if configured).
-		continuing := job.SoulEnabled && job.SoulProvisionedAt.IsZero()
-		if continuing {
-			job.Step = provisionStepSoulDeployStart
-			job.Note = "starting soul deploy runner"
-			job.RunID = ""
-		} else {
-			job.Step = provisionStepDone
-			job.Status = models.ProvisionJobStatusOK
-			job.Note = noteProvisioned
-		}
-		if err := s.persistJobAndInstance(ctx, job, requestID, now, func(ub core.UpdateBuilder) error {
-			ub.Set("ProvisionJobID", strings.TrimSpace(job.ID))
-			if continuing {
-				ub.Set("ProvisionStatus", models.ProvisionJobStatusRunning)
-			} else {
-				ub.Set("ProvisionStatus", models.ProvisionJobStatusOK)
-			}
-			return nil
-		}); err != nil {
-			return 0, false, err
-		}
-		return 0, !continuing, nil
+		return s.advanceProvisionContinueToSoulOrDone(ctx, job, requestID, now)
 	}
 
 	if job.BodyProvisionedAt.IsZero() {
-		job.Step = provisionStepBodyDeployStart
-		job.Note = "starting lesser-body deploy runner"
-		job.RunID = ""
-		if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
-			return 0, false, err
-		}
-		return 0, false, nil
+		return s.advanceProvisionDeployMcpStartRewindToBody(ctx, job, requestID, now)
 	}
 
 	if !job.McpWiredAt.IsZero() {
-		continuing := job.SoulEnabled && job.SoulProvisionedAt.IsZero()
-		if continuing {
-			job.Step = provisionStepSoulDeployStart
-			job.Note = "starting soul deploy runner"
-			job.RunID = ""
-		} else {
-			job.Step = provisionStepDone
-			job.Status = models.ProvisionJobStatusOK
-			job.Note = noteProvisioned
-		}
-		if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
-			return 0, false, err
-		}
-		return 0, !continuing, nil
+		return s.advanceProvisionContinueToSoulOrDone(ctx, job, requestID, now)
 	}
 
 	if strings.TrimSpace(job.RunID) != "" {
-		job.Step = provisionStepDeployMcpWait
-		job.Note = "MCP wiring deploy runner already started"
-		if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
-			return 0, false, err
-		}
-		return provisionDefaultPollDelay, false, nil
+		return s.advanceProvisionDeployMcpStartRunnerAlreadyStarted(ctx, job, requestID, now)
 	}
 
-	runID, err := s.startDeployRunnerWithMode(ctx, job, "lesser-mcp", s.mcpReceiptS3Key(job))
-	if err != nil {
-		job.Attempts++
-		if job.Attempts >= job.MaxAttempts {
-			return 0, false, s.failJob(ctx, job, requestID, now, "mcp_deploy_start_failed", "failed to start MCP wiring deploy runner: "+err.Error())
-		}
-		job.Note = "failed to start MCP wiring deploy runner; retrying: " + compactErr(err)
-		_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
-		return jitteredBackoff(job.Attempts, provisionDefaultShortRetryDelay, 10*time.Minute), false, nil
-	}
-
-	job.RunID = strings.TrimSpace(runID)
-	job.Step = provisionStepDeployMcpWait
-	job.Note = "MCP wiring deploy runner in progress"
-	if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
-		return 0, false, err
-	}
-	return provisionDefaultPollDelay, false, nil
+	return s.advanceProvisionDeployMcpStartStartRunner(ctx, job, requestID, now)
 }
 
 func (s *Server) advanceProvisionDeployMcpWait(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {
@@ -1682,65 +1571,23 @@ func (s *Server) advanceProvisionDeployMcpWait(ctx context.Context, job *models.
 
 	status, deepLink, err := s.getDeployRunnerStatus(ctx, strings.TrimSpace(job.RunID))
 	if err != nil {
-		job.Attempts++
-		if job.Attempts >= job.MaxAttempts {
-			return 0, false, s.failJob(ctx, job, requestID, now, "mcp_deploy_status_failed", "failed to poll MCP wiring deploy runner: "+err.Error())
-		}
-		job.Note = "failed to poll MCP wiring deploy runner; retrying: " + compactErr(err)
-		_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
-		return jitteredBackoff(job.Attempts, provisionDefaultPollDelay, 10*time.Minute), false, nil
+		return s.advanceProvisionDeployMcpWaitRetryPollError(ctx, job, requestID, now, err)
 	}
 
 	switch status {
 	case codebuildStatusSucceeded:
 		job.McpWiredAt = now
 		job.RunID = ""
-
-		continueToSoul := job.SoulEnabled && job.SoulProvisionedAt.IsZero()
-		if continueToSoul {
-			job.Step = provisionStepSoulDeployStart
-			job.Note = "starting soul deploy runner"
-		} else {
-			job.Step = provisionStepDone
-			job.Status = models.ProvisionJobStatusOK
-			job.Note = noteProvisioned
-		}
-
-		if err := s.persistJobAndInstance(ctx, job, requestID, now, func(ub core.UpdateBuilder) error {
-			ub.Set("ProvisionJobID", strings.TrimSpace(job.ID))
-			if continueToSoul {
-				ub.Set("ProvisionStatus", models.ProvisionJobStatusRunning)
-			} else {
-				ub.Set("ProvisionStatus", models.ProvisionJobStatusOK)
-			}
-			return nil
-		}); err != nil {
-			return 0, false, err
-		}
-		return 0, !continueToSoul, nil
+		return s.advanceProvisionContinueToSoulOrDone(ctx, job, requestID, now)
 
 	case codebuildStatusInProgress:
-		if !job.CreatedAt.IsZero() && now.Sub(job.CreatedAt) > provisionMaxDeployAge {
-			return 0, false, s.failJob(ctx, job, requestID, now, "mcp_deploy_timeout", "MCP wiring deploy runner timed out")
-		}
-		job.Note = "MCP wiring deploy runner in progress"
-		_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
-		return provisionDefaultPollDelay, false, nil
+		return s.advanceProvisionDeployMcpWaitInProgress(ctx, job, requestID, now)
 
 	case codebuildStatusFailed, codebuildStatusFault, codebuildStatusStopped, codebuildStatusTimedOut:
-		msg := "MCP wiring deploy runner failed"
-		if deepLink != "" {
-			msg = msg + " (CodeBuild: " + deepLink + ")"
-		}
-		return 0, false, s.failJob(ctx, job, requestID, now, "mcp_deploy_failed", msg)
+		return s.advanceProvisionDeployMcpWaitFailed(ctx, job, requestID, now, deepLink)
 
 	default:
-		if !job.CreatedAt.IsZero() && now.Sub(job.CreatedAt) > provisionMaxDeployAge {
-			return 0, false, s.failJob(ctx, job, requestID, now, "mcp_deploy_timeout", "MCP wiring deploy runner timed out")
-		}
-		job.Note = "MCP wiring deploy runner status: " + status
-		_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
-		return provisionDefaultPollDelay, false, nil
+		return s.advanceProvisionDeployMcpWaitUnknownStatus(ctx, job, requestID, now, status)
 	}
 }
 

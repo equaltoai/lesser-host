@@ -1442,56 +1442,71 @@ func (s *Server) hydrateClaimVerifyEvidenceFromRenders(ctx context.Context, inst
 	}
 	instanceSlug = strings.TrimSpace(instanceSlug)
 
-	errs := []models.AIError{}
-
+	errs := make([]models.AIError, 0)
 	for i := range in.Evidence {
-		if strings.TrimSpace(in.Evidence[i].Text) != "" {
-			continue
+		if err := s.hydrateClaimVerifyEvidenceItemFromRender(ctx, instanceSlug, &in.Evidence[i]); err != nil {
+			errs = append(errs, *err)
 		}
+	}
+	return errs
+}
 
-		renderID := strings.TrimSpace(in.Evidence[i].RenderID)
-		if renderID == "" {
-			continue
-		}
-		if !hex64RE.MatchString(renderID) {
-			errs = append(errs, models.AIError{Code: "invalid_inputs", Message: "Invalid evidence render_id", Retryable: false})
-			continue
-		}
-
-		key := rendering.SnapshotObjectKey(renderID)
-		if lookup, ok := s.store.(renderArtifactLookup); ok && lookup != nil {
-			artifact, err := lookup.GetRenderArtifact(ctx, renderID)
-			if err != nil || artifact == nil {
-				errs = append(errs, models.AIError{Code: "evidence_unavailable", Message: "Evidence snapshot unavailable; continuing with limited evidence", Retryable: true})
-				continue
-			}
-			if strings.TrimSpace(artifact.RequestedBy) != instanceSlug {
-				errs = append(errs, models.AIError{Code: "invalid_inputs", Message: "Invalid evidence render_id", Retryable: false})
-				continue
-			}
-			key = strings.TrimSpace(artifact.SnapshotObjectKey)
-		}
-		if key == "" {
-			errs = append(errs, models.AIError{Code: "evidence_unavailable", Message: "Evidence snapshot unavailable; continuing with limited evidence", Retryable: true})
-			continue
-		}
-		body, _, _, err := s.artifacts.GetObject(ctx, key, claimVerifyEvidenceMaxBytes)
-		if err != nil {
-			errs = append(errs, models.AIError{Code: "evidence_unavailable", Message: "Evidence snapshot unavailable; continuing with limited evidence", Retryable: true})
-			continue
-		}
-
-		text := strings.TrimSpace(string(body))
-		if text == "" {
-			continue
-		}
-		if int64(len([]byte(text))) > claimVerifyEvidenceMaxBytes {
-			text = strings.TrimSpace(string([]byte(text)[:claimVerifyEvidenceMaxBytes]))
-		}
-		in.Evidence[i].Text = text
+func (s *Server) hydrateClaimVerifyEvidenceItemFromRender(ctx context.Context, instanceSlug string, ev *ai.ClaimVerifyEvidenceV1) *models.AIError {
+	if s == nil || s.artifacts == nil || ev == nil {
+		return nil
+	}
+	if strings.TrimSpace(ev.Text) != "" {
+		return nil
 	}
 
-	return errs
+	renderID := strings.TrimSpace(ev.RenderID)
+	if renderID == "" {
+		return nil
+	}
+	if !hex64RE.MatchString(renderID) {
+		return &models.AIError{Code: "invalid_inputs", Message: "Invalid evidence render_id", Retryable: false}
+	}
+
+	key, err := s.claimVerifySnapshotKeyForRender(ctx, instanceSlug, renderID)
+	if err != nil {
+		return err
+	}
+
+	body, _, _, getErr := s.artifacts.GetObject(ctx, key, claimVerifyEvidenceMaxBytes)
+	if getErr != nil {
+		return &models.AIError{Code: "evidence_unavailable", Message: "Evidence snapshot unavailable; continuing with limited evidence", Retryable: true}
+	}
+
+	text := strings.TrimSpace(string(body))
+	if text == "" {
+		return nil
+	}
+	if int64(len([]byte(text))) > claimVerifyEvidenceMaxBytes {
+		text = strings.TrimSpace(string([]byte(text)[:claimVerifyEvidenceMaxBytes]))
+	}
+	ev.Text = text
+	return nil
+}
+
+func (s *Server) claimVerifySnapshotKeyForRender(ctx context.Context, instanceSlug string, renderID string) (string, *models.AIError) {
+	key := rendering.SnapshotObjectKey(renderID)
+
+	lookup, ok := s.store.(renderArtifactLookup)
+	if ok && lookup != nil {
+		artifact, err := lookup.GetRenderArtifact(ctx, renderID)
+		if err != nil || artifact == nil {
+			return "", &models.AIError{Code: "evidence_unavailable", Message: "Evidence snapshot unavailable; continuing with limited evidence", Retryable: true}
+		}
+		if strings.TrimSpace(artifact.RequestedBy) != strings.TrimSpace(instanceSlug) {
+			return "", &models.AIError{Code: "invalid_inputs", Message: "Invalid evidence render_id", Retryable: false}
+		}
+		key = strings.TrimSpace(artifact.SnapshotObjectKey)
+	}
+
+	if key == "" {
+		return "", &models.AIError{Code: "evidence_unavailable", Message: "Evidence snapshot unavailable; continuing with limited evidence", Retryable: true}
+	}
+	return key, nil
 }
 
 func normalizeClaimVerifyRetrievalV1(in *ai.ClaimVerifyRetrievalV1) *ai.ClaimVerifyRetrievalV1 {

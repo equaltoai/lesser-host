@@ -75,4 +75,3 @@ func verifyWellKnownHTTPS(ctx context.Context, domainNormalized string, wellKnow
 	}
 	return strings.TrimSpace(string(body)) == proofValue
 }
-

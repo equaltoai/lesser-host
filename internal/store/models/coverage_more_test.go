@@ -198,4 +198,161 @@ func TestModels_KeyAccessorsAndHooks_AreCallable(t *testing.T) {
 		require.NotEmpty(t, c.GetPK())
 		require.NotEmpty(t, c.GetSK())
 	})
+
+	t.Run("SoulWalletRotationRequest", func(t *testing.T) {
+		t.Parallel()
+
+		var nilReq *SoulWalletRotationRequest
+		require.NoError(t, nilReq.UpdateKeys())
+
+		expiresAt := now.Add(10 * time.Minute)
+		req := &SoulWalletRotationRequest{
+			AgentID:       " 0xAA ",
+			Username:      " Alice ",
+			CurrentWallet: " 0x00000000000000000000000000000000000000AA ",
+			NewWallet:     " 0x00000000000000000000000000000000000000BB ",
+			Nonce:         " 123 ",
+			Deadline:      456,
+			DigestHex:     " 0XABCD ",
+			ExpiresAt:     expiresAt,
+			ConfirmedAt:   now,
+		}
+		require.Equal(t, MainTableName(), req.TableName())
+		require.NoError(t, req.BeforeCreate())
+		require.Equal(t, "SOUL#AGENT#0xaa", req.GetPK())
+		require.Equal(t, "ROTATION#Alice", req.GetSK())
+		require.Equal(t, expiresAt.UTC().Unix(), req.TTL)
+		require.Equal(t, "0xabcd", req.DigestHex)
+		require.NoError(t, req.BeforeUpdate())
+		require.NotZero(t, req.UpdatedAt)
+	})
+
+	t.Run("SoulAgentValidationChallenge", func(t *testing.T) {
+		t.Parallel()
+
+		c := &SoulAgentValidationChallenge{
+			AgentID:       " 0xAA ",
+			ChallengeID:   " chal ",
+			ChallengeType: " DNS_TXT ",
+			ValidatorID:   " VALIDATOR ",
+			Request:       " req ",
+			Response:      " resp ",
+			Status:        "",
+			Result:        " PASS ",
+			Score:         0.9,
+			IssuedAt:      time.Time{},
+			RespondedAt:   now,
+			EvaluatedAt:   now,
+			UpdatedAt:     time.Time{},
+		}
+		require.Equal(t, MainTableName(), c.TableName())
+		require.NoError(t, c.BeforeCreate())
+		require.Equal(t, "SOUL#AGENT#0xaa", c.GetPK())
+		require.Equal(t, "VALIDATIONCHAL#chal", c.GetSK())
+		require.NotZero(t, c.TTL)
+		require.Equal(t, SoulValidationChallengeStatusIssued, c.Status)
+		require.Equal(t, "dns_txt", c.ChallengeType)
+		require.Equal(t, "validator", c.ValidatorID)
+		require.Equal(t, "pass", c.Result)
+
+		c2 := &SoulAgentValidationChallenge{AgentID: "0xaa", ChallengeID: "c2"}
+		require.NoError(t, c2.BeforeUpdate())
+	})
+
+	t.Run("SoulAgentRegistration", func(t *testing.T) {
+		t.Parallel()
+
+		r := &SoulAgentRegistration{
+			ID:               " reg1 ",
+			Username:         " Alice ",
+			DomainRaw:        " Example.COM ",
+			DomainNormalized: " Example.COM ",
+			LocalIDRaw:       " @Alice/ ",
+			LocalID:          " @Alice/ ",
+			AgentID:          " 0xAA ",
+			Wallet:           " 0x00000000000000000000000000000000000000AA ",
+			Capabilities:     []string{"  CAP  "},
+			WalletNonce:      " n ",
+			WalletMessage:    " msg ",
+			ProofToken:       " tok ",
+			Status:           "",
+		}
+		require.Equal(t, MainTableName(), r.TableName())
+		require.NoError(t, r.BeforeCreate())
+		require.NotEmpty(t, r.GetPK())
+		require.NotEmpty(t, r.GetSK())
+		require.NotZero(t, r.TTL)
+		require.NotZero(t, r.ExpiresAt)
+		require.Equal(t, SoulAgentRegistrationStatusPending, r.Status)
+		require.Equal(t, "example.com", r.DomainNormalized)
+		require.Equal(t, "alice", r.LocalID)
+
+		require.NoError(t, r.BeforeUpdate())
+		require.NotZero(t, r.UpdatedAt)
+	})
+
+	t.Run("SoulAgentPeerEndorsement", func(t *testing.T) {
+		t.Parallel()
+
+		e := &SoulAgentPeerEndorsement{
+			AgentID:         " 0xAA ",
+			EndorserAgentID: " 0xBB ",
+			Message:         " hello ",
+			Signature:       " 0xSIG ",
+		}
+		require.Equal(t, MainTableName(), e.TableName())
+		require.NoError(t, e.BeforeCreate())
+		require.NotEmpty(t, e.GetPK())
+		require.NotEmpty(t, e.GetSK())
+	})
+
+	t.Run("SoulAgentIdentity", func(t *testing.T) {
+		t.Parallel()
+
+		a := &SoulAgentIdentity{
+			AgentID: " 0xAA ",
+			Domain:  " Example.COM ",
+			LocalID: " @Alice/ ",
+			Wallet:  " 0xWALLET ",
+			Status:  "",
+		}
+		require.Equal(t, MainTableName(), a.TableName())
+		require.NoError(t, a.BeforeCreate())
+		require.NoError(t, a.BeforeUpdate())
+		require.NotEmpty(t, a.GetPK())
+		require.NotEmpty(t, a.GetSK())
+	})
+
+	t.Run("SoulAgentReputation", func(t *testing.T) {
+		t.Parallel()
+
+		r := &SoulAgentReputation{AgentID: " 0xAA "}
+		require.Equal(t, MainTableName(), r.TableName())
+		require.NoError(t, r.BeforeCreate())
+		require.NoError(t, r.BeforeUpdate())
+		require.NotEmpty(t, r.GetPK())
+		require.NotEmpty(t, r.GetSK())
+	})
+
+	t.Run("SoulAgentIndexes", func(t *testing.T) {
+		t.Parallel()
+
+		w := &SoulWalletAgentIndex{Wallet: " 0xWALLET ", AgentID: " 0xAA "}
+		require.Equal(t, MainTableName(), w.TableName())
+		require.NoError(t, w.BeforeCreate())
+		require.NotEmpty(t, w.GetPK())
+		require.NotEmpty(t, w.GetSK())
+
+		d := &SoulDomainAgentIndex{Domain: " Example.COM ", LocalID: " @Alice/ ", AgentID: " 0xAA "}
+		require.Equal(t, MainTableName(), d.TableName())
+		require.NoError(t, d.BeforeCreate())
+		require.NotEmpty(t, d.GetPK())
+		require.NotEmpty(t, d.GetSK())
+
+		c := &SoulCapabilityAgentIndex{Capability: " TTS ", Domain: " Example.COM ", LocalID: " @Alice/ ", AgentID: " 0xAA "}
+		require.Equal(t, MainTableName(), c.TableName())
+		require.NoError(t, c.BeforeCreate())
+		require.NotEmpty(t, c.GetPK())
+		require.NotEmpty(t, c.GetSK())
+	})
 }

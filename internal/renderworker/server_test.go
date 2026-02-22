@@ -280,7 +280,7 @@ func TestSQSQueueNameFromURL(t *testing.T) {
 	}
 }
 
-func TestRenderJobHelpers(t *testing.T) {
+func TestNormalizeRenderJobID(t *testing.T) {
 	t.Parallel()
 
 	normalized := testBlockedURL
@@ -302,6 +302,10 @@ func TestRenderJobHelpers(t *testing.T) {
 	if got := normalizeRenderJobID(normalized, "inst", "wrong"); got != wantScopedID {
 		t.Fatalf("expected scoped id, got %q", got)
 	}
+}
+
+func TestDesiredRenderExpiration(t *testing.T) {
+	t.Parallel()
 
 	now := time.Date(2026, 2, 7, 0, 0, 0, 0, time.UTC)
 	days, classOut, expiresAt := desiredRenderExpiration(now, models.RenderRetentionClassEvidence, 0)
@@ -313,7 +317,12 @@ func TestRenderJobHelpers(t *testing.T) {
 	if days2 != 3 {
 		t.Fatalf("expected override retention days, got %d", days2)
 	}
+}
 
+func TestRenderHelperMisc(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 2, 7, 0, 0, 0, 0, time.UTC)
 	if maxTime(now, now.Add(1*time.Minute)) != now.Add(1*time.Minute) {
 		t.Fatalf("expected maxTime to pick later time")
 	}

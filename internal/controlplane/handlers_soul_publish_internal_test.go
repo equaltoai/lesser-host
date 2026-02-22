@@ -69,151 +69,178 @@ func newSoulPublishTestDB(t *testing.T) soulPublishTestDB {
 	return soulPublishTestDB{db: db, qID: qID, qRep: qRep, qOp: qOp, qAudit: qAudit}
 }
 
-func TestHandleSoulPublishRoots_CreatesArtifactsAndProofs(t *testing.T) {
+func TestHandleSoulPublishReputationRoot_CreatesArtifactsAndProofs(t *testing.T) {
 	t.Parallel()
+
+	runSoulPublishRootArtifactsTest(t, models.SoulOperationKindPublishReputationRoot, "0x0000000000000000000000000000000000000002", func(s *Server, ctx *apptheory.Context) (*apptheory.Response, error) {
+		return s.handleSoulPublishReputationRoot(ctx)
+	}, func(agentID string, repCall int) models.SoulAgentReputation {
+		if repCall == 0 {
+			return models.SoulAgentReputation{AgentID: agentID, BlockRef: 10, Composite: 0.1, Economic: 0.1, UpdatedAt: time.Now().UTC()}
+		}
+		return models.SoulAgentReputation{AgentID: agentID, BlockRef: 10, Composite: 0.2, Economic: 0.2, UpdatedAt: time.Now().UTC()}
+	})
+}
+
+func TestHandleSoulPublishValidationRoot_CreatesArtifactsAndProofs(t *testing.T) {
+	t.Parallel()
+
+	runSoulPublishRootArtifactsTest(t, models.SoulOperationKindPublishValidationRoot, "0x0000000000000000000000000000000000000003", func(s *Server, ctx *apptheory.Context) (*apptheory.Response, error) {
+		return s.handleSoulPublishValidationRoot(ctx)
+	}, func(agentID string, repCall int) models.SoulAgentReputation {
+		if repCall == 0 {
+			return models.SoulAgentReputation{AgentID: agentID, BlockRef: 10, Validation: 0.5, ValidationsPassed: 2, UpdatedAt: time.Now().UTC()}
+		}
+		return models.SoulAgentReputation{AgentID: agentID, BlockRef: 10, Validation: 0.25, ValidationsPassed: 1, UpdatedAt: time.Now().UTC()}
+	})
+}
+
+func runSoulPublishRootArtifactsTest(
+	t *testing.T,
+	opKind string,
+	expectedTo string,
+	call func(s *Server, ctx *apptheory.Context) (*apptheory.Response, error),
+	makeRep func(agentID string, repCall int) models.SoulAgentReputation,
+) {
+	t.Helper()
 
 	agentA := "0x00000000000000000000000000000000000000000000000000000000000000aa"
 	agentB := "0x00000000000000000000000000000000000000000000000000000000000000bb"
 
-	cases := []struct {
-		name       string
-		call       func(s *Server, ctx *apptheory.Context) (*apptheory.Response, error)
-		opKind     string
-		expectedTo string
-		makeRep    func(agentID string, repCall int) models.SoulAgentReputation
-	}{
-		{
-			name: "reputation",
-			call: func(s *Server, ctx *apptheory.Context) (*apptheory.Response, error) {
-				return s.handleSoulPublishReputationRoot(ctx)
-			},
-			opKind:     models.SoulOperationKindPublishReputationRoot,
-			expectedTo: "0x0000000000000000000000000000000000000002",
-			makeRep: func(agentID string, repCall int) models.SoulAgentReputation {
-				switch repCall {
-				case 0:
-					return models.SoulAgentReputation{AgentID: agentID, BlockRef: 10, Composite: 0.1, Economic: 0.1, UpdatedAt: time.Now().UTC()}
-				default:
-					return models.SoulAgentReputation{AgentID: agentID, BlockRef: 10, Composite: 0.2, Economic: 0.2, UpdatedAt: time.Now().UTC()}
-				}
-			},
-		},
-		{
-			name: "validation",
-			call: func(s *Server, ctx *apptheory.Context) (*apptheory.Response, error) {
-				return s.handleSoulPublishValidationRoot(ctx)
-			},
-			opKind:     models.SoulOperationKindPublishValidationRoot,
-			expectedTo: "0x0000000000000000000000000000000000000003",
-			makeRep: func(agentID string, repCall int) models.SoulAgentReputation {
-				switch repCall {
-				case 0:
-					return models.SoulAgentReputation{AgentID: agentID, BlockRef: 10, Validation: 0.5, ValidationsPassed: 2, UpdatedAt: time.Now().UTC()}
-				default:
-					return models.SoulAgentReputation{AgentID: agentID, BlockRef: 10, Validation: 0.25, ValidationsPassed: 1, UpdatedAt: time.Now().UTC()}
-				}
-			},
-		},
+	s, packs := setupSoulPublishServer(t, agentA, agentB, makeRep)
+
+	ctx := &apptheory.Context{RequestID: "r1", AuthIdentity: "op"}
+	ctx.Set(ctxKeyOperatorRole, models.RoleAdmin)
+
+	resp, err := call(s, ctx)
+	if err != nil {
+		t.Fatalf("call: %v", err)
 	}
 
-	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
+	out := decodePublishRootResponse(t, resp)
+	assertPublishRootMetadata(t, out, opKind, expectedTo)
+	assertPublishRootArtifactsExist(t, packs, out)
+	assertPublishRootProofsVerify(t, packs, out)
+}
 
-			tdb := newSoulPublishTestDB(t)
+func setupSoulPublishServer(t *testing.T, agentA string, agentB string, makeRep func(agentID string, repCall int) models.SoulAgentReputation) (*Server, *fakeSoulPackStoreForPublish) {
+	t.Helper()
 
-			tdb.qID.On("All", mock.Anything).Run(func(args mock.Arguments) {
-				dest := testutil.RequireMockArg[*[]*models.SoulAgentIdentity](t, args, 0)
-				*dest = []*models.SoulAgentIdentity{
-					{AgentID: agentA, Status: models.SoulAgentStatusActive},
-					{AgentID: agentB, Status: models.SoulAgentStatusActive},
-				}
-			}).Return(nil).Once()
+	tdb := newSoulPublishTestDB(t)
 
-			repCalls := 0
-			tdb.qRep.On("First", mock.AnythingOfType("*models.SoulAgentReputation")).Run(func(args mock.Arguments) {
-				dest := testutil.RequireMockArg[*models.SoulAgentReputation](t, args, 0)
-				agentID := agentA
-				if repCalls > 0 {
-					agentID = agentB
-				}
-				*dest = tc.makeRep(agentID, repCalls)
-				repCalls++
-			}).Return(nil).Times(2)
+	tdb.qID.On("All", mock.Anything).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulAgentIdentity](t, args, 0)
+		*dest = []*models.SoulAgentIdentity{
+			{AgentID: agentA, Status: models.SoulAgentStatusActive},
+			{AgentID: agentB, Status: models.SoulAgentStatusActive},
+		}
+	}).Return(nil).Once()
 
-			packs := &fakeSoulPackStoreForPublish{}
-			s := &Server{
-				store: store.New(tdb.db),
-				cfg: config.Config{
-					SoulEnabled:                              true,
-					SoulChainID:                              8453,
-					SoulRegistryContractAddress:              "0x0000000000000000000000000000000000000001",
-					SoulReputationAttestationContractAddress: "0x0000000000000000000000000000000000000002",
-					SoulValidationAttestationContractAddress: "0x0000000000000000000000000000000000000003",
-					SoulAdminSafeAddress:                     "0x0000000000000000000000000000000000000004",
-					SoulTxMode:                               "safe",
-				},
-				soulPacks: packs,
-			}
+	repCalls := 0
+	tdb.qRep.On("First", mock.AnythingOfType("*models.SoulAgentReputation")).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentReputation](t, args, 0)
+		agentID := agentA
+		if repCalls > 0 {
+			agentID = agentB
+		}
+		*dest = makeRep(agentID, repCalls)
+		repCalls++
+	}).Return(nil).Times(2)
 
-			ctx := &apptheory.Context{RequestID: "r1", AuthIdentity: "op"}
-			ctx.Set(ctxKeyOperatorRole, models.RoleAdmin)
+	packs := &fakeSoulPackStoreForPublish{}
+	s := &Server{
+		store: store.New(tdb.db),
+		cfg: config.Config{
+			SoulEnabled:                              true,
+			SoulChainID:                              8453,
+			SoulRegistryContractAddress:              "0x0000000000000000000000000000000000000001",
+			SoulReputationAttestationContractAddress: "0x0000000000000000000000000000000000000002",
+			SoulValidationAttestationContractAddress: "0x0000000000000000000000000000000000000003",
+			SoulAdminSafeAddress:                     "0x0000000000000000000000000000000000000004",
+			SoulTxMode:                               "safe",
+		},
+		soulPacks: packs,
+	}
 
-			resp, err := tc.call(s, ctx)
-			if err != nil {
-				t.Fatalf("call: %v", err)
-			}
-			if resp.Status != http.StatusOK {
-				t.Fatalf("expected 200, got %d (body=%q)", resp.Status, string(resp.Body))
-			}
+	return s, packs
+}
 
-			var out publishRootResponse
-			if err := json.Unmarshal(resp.Body, &out); err != nil {
-				t.Fatalf("unmarshal: %v", err)
-			}
+func decodePublishRootResponse(t *testing.T, resp *apptheory.Response) publishRootResponse {
+	t.Helper()
 
-			if out.Operation.Kind != tc.opKind || out.Operation.Status != models.SoulOperationStatusPending {
-				t.Fatalf("unexpected operation: %#v", out.Operation)
-			}
-			if out.BlockRef != 10 || out.Count != 2 {
-				t.Fatalf("unexpected snapshot metadata: %#v", out)
-			}
-			if out.SafeTx == nil || strings.ToLower(out.SafeTx.To) != tc.expectedTo {
-				t.Fatalf("unexpected safe tx: %#v", out.SafeTx)
-			}
+	if resp == nil {
+		t.Fatalf("missing response")
+	}
+	if resp.Status != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body=%q)", resp.Status, string(resp.Body))
+	}
 
-			if _, ok := packs.puts[out.SnapshotKey]; !ok {
-				t.Fatalf("expected snapshot object at %q", out.SnapshotKey)
-			}
-			if _, ok := packs.puts[out.ProofsKey]; !ok {
-				t.Fatalf("expected proofs object at %q", out.ProofsKey)
-			}
-			if _, ok := packs.puts[out.ManifestKey]; !ok {
-				t.Fatalf("expected manifest object at %q", out.ManifestKey)
-			}
+	var out publishRootResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	return out
+}
 
-			var proofsDoc struct {
-				Proofs []merkleProofEntry `json:"proofs"`
-			}
-			if err := json.Unmarshal(packs.puts[out.ProofsKey], &proofsDoc); err != nil {
-				t.Fatalf("unmarshal proofs: %v", err)
-			}
-			if len(proofsDoc.Proofs) != 2 {
-				t.Fatalf("expected 2 proofs, got %#v", proofsDoc.Proofs)
-			}
+func assertPublishRootMetadata(t *testing.T, out publishRootResponse, opKind string, expectedTo string) {
+	t.Helper()
 
-			root := common.HexToHash(out.Root)
-			for _, p := range proofsDoc.Proofs {
-				leaf := common.HexToHash(p.LeafHash)
-				sibs := make([]common.Hash, 0, len(p.Proof))
-				for _, h := range p.Proof {
-					sibs = append(sibs, common.HexToHash(h))
-				}
-				if !merkle.Verify(leaf, p.Index, sibs, root) {
-					t.Fatalf("expected proof to verify: %#v", p)
-				}
-			}
-		})
+	if out.Operation.Kind != opKind || out.Operation.Status != models.SoulOperationStatusPending {
+		t.Fatalf("unexpected operation: %#v", out.Operation)
+	}
+	if out.BlockRef != 10 || out.Count != 2 {
+		t.Fatalf("unexpected snapshot metadata: %#v", out)
+	}
+	if out.SafeTx == nil || strings.ToLower(out.SafeTx.To) != expectedTo {
+		t.Fatalf("unexpected safe tx: %#v", out.SafeTx)
+	}
+}
+
+func assertPublishRootArtifactsExist(t *testing.T, packs *fakeSoulPackStoreForPublish, out publishRootResponse) {
+	t.Helper()
+
+	if packs == nil {
+		t.Fatalf("missing packs")
+	}
+	requirePutsKey(t, packs, out.SnapshotKey)
+	requirePutsKey(t, packs, out.ProofsKey)
+	requirePutsKey(t, packs, out.ManifestKey)
+}
+
+func requirePutsKey(t *testing.T, packs *fakeSoulPackStoreForPublish, key string) []byte {
+	t.Helper()
+
+	body, ok := packs.puts[key]
+	if !ok {
+		t.Fatalf("expected object at %q", key)
+	}
+	return body
+}
+
+func assertPublishRootProofsVerify(t *testing.T, packs *fakeSoulPackStoreForPublish, out publishRootResponse) {
+	t.Helper()
+
+	body := requirePutsKey(t, packs, out.ProofsKey)
+
+	var proofsDoc struct {
+		Proofs []merkleProofEntry `json:"proofs"`
+	}
+	if err := json.Unmarshal(body, &proofsDoc); err != nil {
+		t.Fatalf("unmarshal proofs: %v", err)
+	}
+	if len(proofsDoc.Proofs) != 2 {
+		t.Fatalf("expected 2 proofs, got %#v", proofsDoc.Proofs)
+	}
+
+	root := common.HexToHash(out.Root)
+	for _, p := range proofsDoc.Proofs {
+		leaf := common.HexToHash(p.LeafHash)
+		sibs := make([]common.Hash, 0, len(p.Proof))
+		for _, h := range p.Proof {
+			sibs = append(sibs, common.HexToHash(h))
+		}
+		if !merkle.Verify(leaf, p.Index, sibs, root) {
+			t.Fatalf("expected proof to verify: %#v", p)
+		}
 	}
 }

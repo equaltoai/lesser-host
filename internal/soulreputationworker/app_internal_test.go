@@ -87,4 +87,3 @@ func TestResolveSoulPackBucketNameFromSSM_EarlyReturns(t *testing.T) {
 		t.Fatalf("expected no resolution outside Lambda env")
 	}
 }
-

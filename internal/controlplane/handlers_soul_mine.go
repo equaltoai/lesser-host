@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"sort"
@@ -38,8 +39,37 @@ func (s *Server) handleSoulListMyAgents(ctx *apptheory.Context) (*apptheory.Resp
 		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
 	}
 
+	instanceSlugs, appErr := s.listInstanceSlugsForOwner(ctx.Context(), username)
+	if appErr != nil {
+		return nil, appErr
+	}
+	domainSet, appErr := s.listDomainsForInstances(ctx.Context(), instanceSlugs)
+	if appErr != nil {
+		return nil, appErr
+	}
+	agentIDs, appErr := s.listAgentIDsForDomains(ctx.Context(), domainSet)
+	if appErr != nil {
+		return nil, appErr
+	}
+	out, appErr := s.loadSoulMineAgentItems(ctx.Context(), agentIDs)
+	if appErr != nil {
+		return nil, appErr
+	}
+
+	return apptheory.JSON(http.StatusOK, soulMineAgentsResponse{Agents: out, Count: len(out)})
+}
+
+func (s *Server) listInstanceSlugsForOwner(ctx context.Context, username string) ([]string, *apptheory.AppError) {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return nil, nil
+	}
+
 	var instances []*models.Instance
-	err := s.store.DB.WithContext(ctx.Context()).
+	err := s.store.DB.WithContext(ctx).
 		Model(&models.Instance{}).
 		Index("gsi1").
 		Where("gsi1PK", "=", fmt.Sprintf("OWNER#%s", username)).
@@ -48,7 +78,7 @@ func (s *Server) handleSoulListMyAgents(ctx *apptheory.Context) (*apptheory.Resp
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list instances"}
 	}
 
-	domainSet := map[string]struct{}{}
+	out := make([]string, 0, len(instances))
 	for _, inst := range instances {
 		if inst == nil {
 			continue
@@ -57,9 +87,26 @@ func (s *Server) handleSoulListMyAgents(ctx *apptheory.Context) (*apptheory.Resp
 		if slug == "" {
 			continue
 		}
+		out = append(out, slug)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+func (s *Server) listDomainsForInstances(ctx context.Context, instanceSlugs []string) (map[string]struct{}, *apptheory.AppError) {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
+	domainSet := map[string]struct{}{}
+	for _, slug := range instanceSlugs {
+		slug = strings.ToLower(strings.TrimSpace(slug))
+		if slug == "" {
+			continue
+		}
 
 		var domains []*models.Domain
-		err := s.store.DB.WithContext(ctx.Context()).
+		err := s.store.DB.WithContext(ctx).
 			Model(&models.Domain{}).
 			Index("gsi1").
 			Where("gsi1PK", "=", fmt.Sprintf("INSTANCE_DOMAINS#%s", slug)).
@@ -80,10 +127,18 @@ func (s *Server) handleSoulListMyAgents(ctx *apptheory.Context) (*apptheory.Resp
 		}
 	}
 
+	return domainSet, nil
+}
+
+func (s *Server) listAgentIDsForDomains(ctx context.Context, domainSet map[string]struct{}) ([]string, *apptheory.AppError) {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
 	agentSet := map[string]struct{}{}
 	for domain := range domainSet {
 		var idxItems []*models.SoulDomainAgentIndex
-		err := s.store.DB.WithContext(ctx.Context()).
+		err := s.store.DB.WithContext(ctx).
 			Model(&models.SoulDomainAgentIndex{}).
 			Where("PK", "=", fmt.Sprintf("SOUL#DOMAIN#%s", domain)).
 			All(&idxItems)
@@ -107,10 +162,17 @@ func (s *Server) handleSoulListMyAgents(ctx *apptheory.Context) (*apptheory.Resp
 		agentIDs = append(agentIDs, agentID)
 	}
 	sort.Strings(agentIDs)
+	return agentIDs, nil
+}
+
+func (s *Server) loadSoulMineAgentItems(ctx context.Context, agentIDs []string) ([]soulMineAgentItem, *apptheory.AppError) {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
 
 	out := make([]soulMineAgentItem, 0, len(agentIDs))
 	for _, agentID := range agentIDs {
-		identity, err := s.getSoulAgentIdentity(ctx.Context(), agentID)
+		identity, err := s.getSoulAgentIdentity(ctx, agentID)
 		if theoryErrors.IsNotFound(err) || identity == nil {
 			continue
 		}
@@ -118,7 +180,7 @@ func (s *Server) handleSoulListMyAgents(ctx *apptheory.Context) (*apptheory.Resp
 			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to load agent identity"}
 		}
 
-		rep, repErr := s.getSoulAgentReputation(ctx.Context(), agentID)
+		rep, repErr := s.getSoulAgentReputation(ctx, agentID)
 		if theoryErrors.IsNotFound(repErr) {
 			rep = nil
 		} else if repErr != nil {
@@ -128,5 +190,5 @@ func (s *Server) handleSoulListMyAgents(ctx *apptheory.Context) (*apptheory.Resp
 		out = append(out, soulMineAgentItem{Agent: *identity, Reputation: rep})
 	}
 
-	return apptheory.JSON(http.StatusOK, soulMineAgentsResponse{Agents: out, Count: len(out)})
+	return out, nil
 }

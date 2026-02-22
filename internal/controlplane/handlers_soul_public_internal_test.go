@@ -11,8 +11,8 @@ import (
 
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 	"github.com/theory-cloud/tabletheory/pkg/core"
+	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
@@ -83,7 +83,7 @@ func newSoulPublicTestDB() soulPublicTestDB {
 	}
 }
 
-func TestSoulPublicHelpers(t *testing.T) {
+func TestEnvInt64PositiveFromString(t *testing.T) {
 	t.Parallel()
 
 	if got := envInt64PositiveFromString("", 50); got != 50 {
@@ -101,19 +101,27 @@ func TestSoulPublicHelpers(t *testing.T) {
 	if got := envInt64PositiveFromString(" 15 ", 50); got != 15 {
 		t.Fatalf("unexpected positive: %d", got)
 	}
+}
+
+func TestParseSoulSearchQuery(t *testing.T) {
+	t.Parallel()
 
 	if d, local, err := parseSoulSearchQuery(""); err != nil || d != "" || local != "" {
 		t.Fatalf("unexpected empty: d=%q local=%q err=%v", d, local, err)
 	}
-	if d, local, err := parseSoulSearchQuery("example.com"); err != nil || d != "example.com" || local != "" {
+	if d, local, err := parseSoulSearchQuery(testDomainExampleCom); err != nil || d != testDomainExampleCom || local != "" {
 		t.Fatalf("unexpected domain: d=%q local=%q err=%v", d, local, err)
 	}
-	if d, local, err := parseSoulSearchQuery("example.com/agent-alice"); err != nil || d != "example.com" || local == "" {
+	if d, local, err := parseSoulSearchQuery(testDomainExampleCom + "/agent-alice"); err != nil || d != testDomainExampleCom || local == "" {
 		t.Fatalf("unexpected domain/local: d=%q local=%q err=%v", d, local, err)
 	}
 	if _, _, err := parseSoulSearchQuery("agent-only"); err == nil {
 		t.Fatalf("expected local-only query to fail closed")
 	}
+}
+
+func TestSetSoulPublicHeaders(t *testing.T) {
+	t.Parallel()
 
 	setSoulPublicHeaders(nil, "")
 	resp := &apptheory.Response{}

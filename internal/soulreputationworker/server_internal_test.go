@@ -41,7 +41,11 @@ func (f *fakeTipClient) FilterLogs(ctx context.Context, q ethereum.FilterQuery) 
 		end = q.ToBlock.Uint64()
 	}
 
-	checkAddr := len(q.Addresses) > 0
+	addrSet := map[common.Address]struct{}{}
+	for _, addr := range q.Addresses {
+		addrSet[addr] = struct{}{}
+	}
+
 	checkTopic0 := len(q.Topics) > 0 && len(q.Topics[0]) > 0
 	wantTopic0 := common.Hash{}
 	if checkTopic0 {
@@ -53,15 +57,8 @@ func (f *fakeTipClient) FilterLogs(ctx context.Context, q ethereum.FilterQuery) 
 		if lg.BlockNumber < start || lg.BlockNumber > end {
 			continue
 		}
-		if checkAddr {
-			match := false
-			for _, addr := range q.Addresses {
-				if addr == lg.Address {
-					match = true
-					break
-				}
-			}
-			if !match {
+		if len(addrSet) > 0 {
+			if _, ok := addrSet[lg.Address]; !ok {
 				continue
 			}
 		}
@@ -123,6 +120,41 @@ func TestPutAgentReputation_CreatesWhenMissing(t *testing.T) {
 func TestHandleRecompute_EndToEndFixture(t *testing.T) {
 	t.Parallel()
 
+	fx := newRecomputeFixture(t)
+
+	_, err := fx.srv.handleRecompute(&apptheory.EventContext{RequestID: "r1"}, events.EventBridgeEvent{})
+	if err != nil {
+		t.Fatalf("handleRecompute: %v", err)
+	}
+
+	snap := requireRecomputeSnapshot(t, fx.packs, "registry/v1/reputation/snapshots/chain-111/block-20.json")
+	assertRecomputeSnapshotMetadata(t, snap, fx.fixedNow)
+	assertRecomputeSnapshotReputations(t, snap, fx.agentA, fx.agentC)
+
+	fx.db.AssertExpectations(t)
+	fx.qIdentity.AssertExpectations(t)
+	fx.qRep.AssertExpectations(t)
+	fx.qVal.AssertExpectations(t)
+}
+
+type recomputeFixture struct {
+	agentA   string
+	agentB   string
+	agentC   string
+	fixedNow time.Time
+
+	srv   *Server
+	packs *fakeSoulPackStore
+
+	db        *ttmocks.MockExtendedDB
+	qIdentity *ttmocks.MockQuery
+	qRep      *ttmocks.MockQuery
+	qVal      *ttmocks.MockQuery
+}
+
+func newRecomputeFixture(t *testing.T) recomputeFixture {
+	t.Helper()
+
 	agentA := "0x00000000000000000000000000000000000000000000000000000000000000aa"
 	agentB := "0x00000000000000000000000000000000000000000000000000000000000000bb"
 	agentC := "0x00000000000000000000000000000000000000000000000000000000000000cc"
@@ -177,12 +209,11 @@ func TestHandleRecompute_EndToEndFixture(t *testing.T) {
 		if !ok {
 			t.Fatalf("expected *[]*models.SoulAgentValidationRecord, got %T", args.Get(0))
 		}
-		switch valCalls {
-		case 0:
+		if valCalls == 0 {
 			*dest = []*models.SoulAgentValidationRecord{
 				{AgentID: agentA, ChallengeID: "c1", ChallengeType: "identity_verify", ValidatorID: "system", Result: "pass", Score: 0.2, EvaluatedAt: fixedNow},
 			}
-		default:
+		} else {
 			*dest = nil
 		}
 		valCalls++
@@ -215,16 +246,27 @@ func TestHandleRecompute_EndToEndFixture(t *testing.T) {
 
 	srv.now = func() time.Time { return fixedNow }
 
-	_, err := srv.handleRecompute(&apptheory.EventContext{RequestID: "r1"}, events.EventBridgeEvent{})
-	if err != nil {
-		t.Fatalf("handleRecompute: %v", err)
+	return recomputeFixture{
+		agentA:    agentA,
+		agentB:    agentB,
+		agentC:    agentC,
+		fixedNow:  fixedNow,
+		srv:       srv,
+		packs:     packs,
+		db:        db,
+		qIdentity: qIdentity,
+		qRep:      qRep,
+		qVal:      qVal,
 	}
+}
+
+func requireRecomputeSnapshot(t *testing.T, packs *fakeSoulPackStore, wantKey string) reputationSnapshot {
+	t.Helper()
 
 	if packs.putCalls != 1 {
 		t.Fatalf("expected 1 snapshot write, got %d", packs.putCalls)
 	}
-
-	if packs.key != "registry/v1/reputation/snapshots/chain-111/block-20.json" {
+	if packs.key != wantKey {
 		t.Fatalf("unexpected snapshot key %q", packs.key)
 	}
 
@@ -232,6 +274,11 @@ func TestHandleRecompute_EndToEndFixture(t *testing.T) {
 	if err := json.Unmarshal(packs.body, &snap); err != nil {
 		t.Fatalf("unmarshal snapshot: %v", err)
 	}
+	return snap
+}
+
+func assertRecomputeSnapshotMetadata(t *testing.T, snap reputationSnapshot, fixedNow time.Time) {
+	t.Helper()
 
 	if snap.ToBlock != 20 || snap.FromBlock != 1 || snap.ChainID != 111 {
 		t.Fatalf("unexpected snapshot metadata: %#v", snap)
@@ -242,6 +289,10 @@ func TestHandleRecompute_EndToEndFixture(t *testing.T) {
 	if snap.Weights.Economic != 1 || snap.Weights.Social != 0 || snap.Weights.Validation != 0 || snap.Weights.Trust != 0 {
 		t.Fatalf("unexpected weights: %#v", snap.Weights)
 	}
+}
+
+func assertRecomputeSnapshotReputations(t *testing.T, snap reputationSnapshot, agentA string, agentC string) {
+	t.Helper()
 
 	if len(snap.Reputations) != 2 {
 		t.Fatalf("expected 2 reputations (skip suspended), got %d", len(snap.Reputations))
@@ -252,21 +303,15 @@ func TestHandleRecompute_EndToEndFixture(t *testing.T) {
 
 	wantEconomicA := 1 - math.Exp(-0.3)
 	gotA := snap.Reputations[0]
-	if gotA.TipsReceived != 3 ||
-		gotA.ValidationsPassed != 1 ||
-		math.Abs(gotA.Validation-0.2) > 1e-9 ||
-		math.Abs(gotA.Economic-wantEconomicA) > 1e-9 ||
-		math.Abs(gotA.Composite-wantEconomicA) > 1e-9 {
-		t.Fatalf("unexpected rep A: %#v", gotA)
+	if gotA.TipsReceived != 3 || gotA.ValidationsPassed != 1 {
+		t.Fatalf("unexpected rep A counts: %#v", gotA)
+	}
+	if math.Abs(gotA.Validation-0.2) > 1e-9 || math.Abs(gotA.Economic-wantEconomicA) > 1e-9 || math.Abs(gotA.Composite-wantEconomicA) > 1e-9 {
+		t.Fatalf("unexpected rep A scores: %#v", gotA)
 	}
 
 	gotC := snap.Reputations[1]
 	if gotC.TipsReceived != 0 || gotC.ValidationsPassed != 0 || gotC.Validation != 0 || gotC.Composite != 0 || gotC.Economic != 0 {
 		t.Fatalf("unexpected rep C: %#v", gotC)
 	}
-
-	db.AssertExpectations(t)
-	qIdentity.AssertExpectations(t)
-	qRep.AssertExpectations(t)
-	qVal.AssertExpectations(t)
 }

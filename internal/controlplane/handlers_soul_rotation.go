@@ -258,7 +258,7 @@ func soulRotationOpID(chainID int64, txTo string, agentID string, currentWallet 
 	var sb strings.Builder
 	sb.WriteString(kind)
 	sb.WriteString("|")
-	sb.WriteString(fmt.Sprintf("%d", chainID))
+	sb.WriteString(strconv.FormatInt(chainID, 10))
 	sb.WriteString("|")
 	sb.WriteString(txTo)
 	sb.WriteString("|")
@@ -270,24 +270,15 @@ func soulRotationOpID(chainID int64, txTo string, agentID string, currentWallet 
 	sb.WriteString("|nonce=")
 	sb.WriteString(nonce)
 	sb.WriteString("|deadline=")
-	sb.WriteString(fmt.Sprintf("%d", deadline))
+	sb.WriteString(strconv.FormatInt(deadline, 10))
 
 	sum := sha256.Sum256([]byte(sb.String()))
 	return "soulop_" + hex.EncodeToString(sum[:16])
 }
 
 func (s *Server) handleSoulAgentRotateWalletBegin(ctx *apptheory.Context) (*apptheory.Response, error) {
-	if appErr := s.requireSoulRegistryConfigured(); appErr != nil {
+	if appErr := s.requireSoulWalletRotationPrereqs(ctx); appErr != nil {
 		return nil, appErr
-	}
-	if appErr := s.requireSoulPortalPrereqs(ctx); appErr != nil {
-		return nil, appErr
-	}
-	if appErr := s.requireSoulRPCConfigured(); appErr != nil {
-		return nil, appErr
-	}
-	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
 	agentIDHex, agentInt, appErr := parseSoulAgentIDHex(ctx.Param("agentId"))
@@ -295,45 +286,175 @@ func (s *Server) handleSoulAgentRotateWalletBegin(ctx *apptheory.Context) (*appt
 		return nil, appErr
 	}
 
-	identity, err := s.getSoulAgentIdentity(ctx.Context(), agentIDHex)
-	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "agent not found"}
-	}
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-	if strings.TrimSpace(identity.Status) != models.SoulAgentStatusActive {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "agent is not active"}
-	}
-
-	if _, _, accessErr := s.requireSoulDomainAccess(ctx, strings.TrimSpace(identity.Domain)); accessErr != nil {
-		return nil, accessErr
-	}
-
-	var req soulRotateWalletBeginRequest
-	if err := httpx.ParseJSON(ctx, &req); err != nil {
-		return nil, err
-	}
-	newWallet, appErr := s.normalizeSoulWalletAddress(ctx.Context(), req.NewWalletAddress)
+	identity, appErr := s.requireActiveSoulAgentWithDomainAccess(ctx, agentIDHex)
 	if appErr != nil {
 		return nil, appErr
 	}
-	if strings.EqualFold(newWallet, strings.TrimSpace(identity.Wallet)) {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "new_wallet_address must differ from current wallet"}
+
+	newWallet, appErr := s.normalizeSoulRotateWalletBeginNewWallet(ctx, identity)
+	if appErr != nil {
+		return nil, appErr
 	}
 
+	resp, ok, existingErr := s.existingSoulWalletRotationBeginResponse(ctx, agentIDHex, agentInt, newWallet)
+	if existingErr != nil {
+		return nil, existingErr
+	}
+	if ok {
+		return resp, nil
+	}
+
+	resp, appErr = s.createSoulWalletRotationBeginResponse(ctx, agentIDHex, agentInt, identity, newWallet)
+	if appErr != nil {
+		return nil, appErr
+	}
+	return resp, nil
+}
+
+func (s *Server) requireSoulWalletRotationPrereqs(ctx *apptheory.Context) *apptheory.AppError {
+	if appErr := s.requireSoulRegistryConfigured(); appErr != nil {
+		return appErr
+	}
+	if appErr := s.requireSoulPortalPrereqs(ctx); appErr != nil {
+		return appErr
+	}
+	if appErr := s.requireSoulRPCConfigured(); appErr != nil {
+		return appErr
+	}
+	if appErr := requireStoreDB(s); appErr != nil {
+		return appErr
+	}
+	return nil
+}
+
+func (s *Server) existingSoulWalletRotationBeginResponse(ctx *apptheory.Context, agentIDHex string, agentInt *big.Int, newWallet string) (*apptheory.Response, bool, *apptheory.AppError) {
 	existing, getErr := s.getSoulWalletRotationRequest(ctx.Context(), agentIDHex, strings.TrimSpace(ctx.AuthIdentity))
-	if getErr == nil && existing != nil {
-		now := time.Now().UTC()
-		if !existing.Spent && (existing.ExpiresAt.IsZero() || now.Before(existing.ExpiresAt)) && strings.EqualFold(existing.NewWallet, newWallet) {
-			nonceInt, ok := new(big.Int).SetString(strings.TrimSpace(existing.Nonce), 10)
-			if ok && nonceInt != nil {
-				typed, _, appErr := soulRotationTypedData(s.cfg.SoulChainID, strings.TrimSpace(s.cfg.SoulRegistryContractAddress), agentInt, existing.CurrentWallet, existing.NewWallet, nonceInt, existing.Deadline)
-				if appErr == nil {
-					return apptheory.JSON(http.StatusOK, soulRotateWalletBeginResponse{Rotation: *existing, Typed: typed})
-				}
-			}
+	if getErr != nil || existing == nil {
+		return nil, false, nil
+	}
+
+	now := time.Now().UTC()
+	if existing.Spent || (!existing.ExpiresAt.IsZero() && now.After(existing.ExpiresAt)) {
+		return nil, false, nil
+	}
+	if !strings.EqualFold(existing.NewWallet, newWallet) {
+		return nil, false, nil
+	}
+
+	nonceInt, ok := new(big.Int).SetString(strings.TrimSpace(existing.Nonce), 10)
+	if !ok || nonceInt == nil {
+		return nil, false, nil
+	}
+
+	typed, _, typedErr := soulRotationTypedData(s.cfg.SoulChainID, strings.TrimSpace(s.cfg.SoulRegistryContractAddress), agentInt, existing.CurrentWallet, existing.NewWallet, nonceInt, existing.Deadline)
+	if typedErr != nil {
+		return nil, false, nil
+	}
+
+	resp, err := apptheory.JSON(http.StatusOK, soulRotateWalletBeginResponse{Rotation: *existing, Typed: typed})
+	if err != nil {
+		return nil, false, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	return resp, true, nil
+}
+
+func (s *Server) requireSoulAgentWalletInSync(ctx context.Context, client ethRPCClient, contractAddr common.Address, agentInt *big.Int, expectedWallet string) (common.Address, *apptheory.AppError) {
+	onChainWallet, err := s.soulRegistryGetAgentWallet(ctx, client, contractAddr, agentInt)
+	if err != nil {
+		return common.Address{}, &apptheory.AppError{Code: "app.internal", Message: "failed to read agent wallet"}
+	}
+	if (onChainWallet == common.Address{}) {
+		return common.Address{}, &apptheory.AppError{Code: "app.conflict", Message: "agent is not minted"}
+	}
+	if !strings.EqualFold(onChainWallet.Hex(), strings.TrimSpace(expectedWallet)) {
+		return common.Address{}, &apptheory.AppError{Code: "app.conflict", Message: "agent wallet is out of sync; record operation execution first"}
+	}
+	return onChainWallet, nil
+}
+
+func (s *Server) handleSoulAgentRotateWalletConfirm(ctx *apptheory.Context) (*apptheory.Response, error) {
+	if appErr := s.requireSoulWalletRotationPrereqs(ctx); appErr != nil {
+		return nil, appErr
+	}
+
+	agentIDHex, agentInt, appErr := parseSoulAgentIDHex(ctx.Param("agentId"))
+	if appErr != nil {
+		return nil, appErr
+	}
+
+	if _, agentErr := s.requireActiveSoulAgentWithDomainAccess(ctx, agentIDHex); agentErr != nil {
+		return nil, agentErr
+	}
+
+	currentSigHex, newSigHex, appErr := parseSoulRotateWalletConfirmRequest(ctx)
+	if appErr != nil {
+		return nil, appErr
+	}
+
+	now := time.Now().UTC()
+	rot, appErr := s.loadSoulWalletRotationRequestForConfirm(ctx, agentIDHex)
+	if appErr != nil {
+		return nil, appErr
+	}
+	confirmErr := validateSoulWalletRotationConfirmRequest(rot, now)
+	if confirmErr != nil {
+		return nil, confirmErr
+	}
+
+	nonceInt, deadlineInt, currentSigContract, newSigContract, appErr := validateSoulWalletRotationSignatures(rot, currentSigHex, newSigHex)
+	if appErr != nil {
+		return nil, appErr
+	}
+
+	contractAddr, txTo, appErr := s.soulRegistryContractAddress()
+	if appErr != nil {
+		return nil, appErr
+	}
+
+	client, appErr := s.dialSoulRPCClient(ctx.Context())
+	if appErr != nil {
+		return nil, appErr
+	}
+	defer client.Close()
+
+	onChainErr := s.verifySoulWalletRotationOnChainState(ctx.Context(), client, contractAddr, agentInt, rot, nonceInt)
+	if onChainErr != nil {
+		return nil, onChainErr
+	}
+
+	resp, appErr := s.createSoulWalletRotationConfirmResponse(ctx, agentIDHex, agentInt, txTo, rot, nonceInt, deadlineInt, currentSigContract, newSigContract, now)
+	if appErr != nil {
+		return nil, appErr
+	}
+	return resp, nil
+}
+
+func (s *Server) normalizeSoulRotateWalletBeginNewWallet(ctx *apptheory.Context, identity *models.SoulAgentIdentity) (string, *apptheory.AppError) {
+	if s == nil || ctx == nil || identity == nil {
+		return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
+	var req soulRotateWalletBeginRequest
+	if parseErr := httpx.ParseJSON(ctx, &req); parseErr != nil {
+		if appErr, ok := parseErr.(*apptheory.AppError); ok {
+			return "", appErr
 		}
+		return "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid request"}
+	}
+
+	newWallet, appErr := s.normalizeSoulWalletAddress(ctx.Context(), req.NewWalletAddress)
+	if appErr != nil {
+		return "", appErr
+	}
+	if strings.EqualFold(newWallet, strings.TrimSpace(identity.Wallet)) {
+		return "", &apptheory.AppError{Code: "app.bad_request", Message: "new_wallet_address must differ from current wallet"}
+	}
+	return newWallet, nil
+}
+
+func (s *Server) createSoulWalletRotationBeginResponse(ctx *apptheory.Context, agentIDHex string, agentInt *big.Int, identity *models.SoulAgentIdentity, newWallet string) (*apptheory.Response, *apptheory.AppError) {
+	if s == nil || s.store == nil || s.store.DB == nil || ctx == nil || identity == nil || agentInt == nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
 	contractAddr, verifyingContract, appErr := s.soulRegistryContractAddress()
@@ -341,25 +462,15 @@ func (s *Server) handleSoulAgentRotateWalletBegin(ctx *apptheory.Context) (*appt
 		return nil, appErr
 	}
 
-	dial := s.dialEVM
-	if dial == nil {
-		dial = func(ctx context.Context, rpcURL string) (ethRPCClient, error) { return dialEthClient(ctx, rpcURL) }
-	}
-	client, err := dial(ctx.Context(), s.cfg.SoulRPCURL)
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to connect to rpc"}
+	client, appErr := s.dialSoulRPCClient(ctx.Context())
+	if appErr != nil {
+		return nil, appErr
 	}
 	defer client.Close()
 
-	onChainWallet, err := s.soulRegistryGetAgentWallet(ctx.Context(), client, contractAddr, agentInt)
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to read agent wallet"}
-	}
-	if (onChainWallet == common.Address{}) {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "agent is not minted"}
-	}
-	if !strings.EqualFold(onChainWallet.Hex(), strings.TrimSpace(identity.Wallet)) {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "agent wallet is out of sync; record operation execution first"}
+	onChainWallet, appErr := s.requireSoulAgentWalletInSync(ctx.Context(), client, contractAddr, agentInt, strings.TrimSpace(identity.Wallet))
+	if appErr != nil {
+		return nil, appErr
 	}
 
 	nonce, err := s.soulRegistryGetAgentNonce(ctx.Context(), client, contractAddr, agentInt)
@@ -394,7 +505,7 @@ func (s *Server) handleSoulAgentRotateWalletBegin(ctx *apptheory.Context) (*appt
 	}
 	_ = r.UpdateKeys()
 
-	if err := s.store.DB.WithContext(ctx.Context()).Model(r).CreateOrUpdate(); err != nil {
+	if createErr := s.store.DB.WithContext(ctx.Context()).Model(r).CreateOrUpdate(); createErr != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create rotation request"}
 	}
 
@@ -408,137 +519,27 @@ func (s *Server) handleSoulAgentRotateWalletBegin(ctx *apptheory.Context) (*appt
 	_ = audit.UpdateKeys()
 	_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
 
-	return apptheory.JSON(http.StatusCreated, soulRotateWalletBeginResponse{Rotation: *r, Typed: typed})
+	resp, err := apptheory.JSON(http.StatusCreated, soulRotateWalletBeginResponse{Rotation: *r, Typed: typed})
+	if err != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	return resp, nil
 }
 
-func (s *Server) handleSoulAgentRotateWalletConfirm(ctx *apptheory.Context) (*apptheory.Response, error) {
-	if appErr := s.requireSoulRegistryConfigured(); appErr != nil {
-		return nil, appErr
-	}
-	if appErr := s.requireSoulPortalPrereqs(ctx); appErr != nil {
-		return nil, appErr
-	}
-	if appErr := s.requireSoulRPCConfigured(); appErr != nil {
-		return nil, appErr
-	}
-	if s == nil || s.store == nil || s.store.DB == nil {
+func (s *Server) createSoulWalletRotationConfirmResponse(
+	ctx *apptheory.Context,
+	agentIDHex string,
+	agentInt *big.Int,
+	txTo string,
+	rot *models.SoulWalletRotationRequest,
+	nonceInt *big.Int,
+	deadlineInt *big.Int,
+	currentSigContract []byte,
+	newSigContract []byte,
+	now time.Time,
+) (*apptheory.Response, *apptheory.AppError) {
+	if s == nil || s.store == nil || s.store.DB == nil || ctx == nil || agentInt == nil || rot == nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-
-	agentIDHex, agentInt, appErr := parseSoulAgentIDHex(ctx.Param("agentId"))
-	if appErr != nil {
-		return nil, appErr
-	}
-
-	identity, err := s.getSoulAgentIdentity(ctx.Context(), agentIDHex)
-	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "agent not found"}
-	}
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-	if strings.TrimSpace(identity.Status) != models.SoulAgentStatusActive {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "agent is not active"}
-	}
-
-	if _, _, accessErr := s.requireSoulDomainAccess(ctx, strings.TrimSpace(identity.Domain)); accessErr != nil {
-		return nil, accessErr
-	}
-
-	var req soulRotateWalletConfirmRequest
-	if err := httpx.ParseJSON(ctx, &req); err != nil {
-		return nil, err
-	}
-	currentSigHex := strings.TrimSpace(req.CurrentSignature)
-	newSigHex := strings.TrimSpace(req.NewSignature)
-	if currentSigHex == "" || newSigHex == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "signatures are required"}
-	}
-
-	rot, err := s.getSoulWalletRotationRequest(ctx.Context(), agentIDHex, strings.TrimSpace(ctx.AuthIdentity))
-	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "no pending rotation"}
-	}
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-
-	now := time.Now().UTC()
-	if rot.Spent {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "rotation already confirmed"}
-	}
-	if !rot.ExpiresAt.IsZero() && now.After(rot.ExpiresAt) {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "rotation request expired"}
-	}
-
-	digestBytes, err := hexutil.Decode(strings.TrimSpace(rot.DigestHex))
-	if err != nil || len(digestBytes) != 32 {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "rotation request is invalid"}
-	}
-
-	currentSigRecovery, currentSigContract, appErr := decodeEthSignature(currentSigHex)
-	if appErr != nil {
-		return nil, appErr
-	}
-	newSigRecovery, newSigContract, appErr := decodeEthSignature(newSigHex)
-	if appErr != nil {
-		return nil, appErr
-	}
-
-	recoveredCurrent, err := recoverAddressFromDigest(digestBytes, currentSigRecovery)
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid current_signature"}
-	}
-	recoveredNew, err := recoverAddressFromDigest(digestBytes, newSigRecovery)
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid new_signature"}
-	}
-
-	if !strings.EqualFold(recoveredCurrent.Hex(), strings.TrimSpace(rot.CurrentWallet)) {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "current_signature does not match current wallet"}
-	}
-	if !strings.EqualFold(recoveredNew.Hex(), strings.TrimSpace(rot.NewWallet)) {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "new_signature does not match new wallet"}
-	}
-
-	nonceInt, ok := new(big.Int).SetString(strings.TrimSpace(rot.Nonce), 10)
-	if !ok {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "rotation request is invalid"}
-	}
-	deadlineInt := big.NewInt(rot.Deadline)
-
-	contractAddr, txTo, appErr := s.soulRegistryContractAddress()
-	if appErr != nil {
-		return nil, appErr
-	}
-
-	dial := s.dialEVM
-	if dial == nil {
-		dial = func(ctx context.Context, rpcURL string) (ethRPCClient, error) { return dialEthClient(ctx, rpcURL) }
-	}
-	client, err := dial(ctx.Context(), s.cfg.SoulRPCURL)
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to connect to rpc"}
-	}
-	defer client.Close()
-
-	onChainWallet, err := s.soulRegistryGetAgentWallet(ctx.Context(), client, contractAddr, agentInt)
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to read agent wallet"}
-	}
-	if !strings.EqualFold(onChainWallet.Hex(), strings.TrimSpace(rot.CurrentWallet)) {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "agent wallet changed; begin rotation again"}
-	}
-
-	onChainNonce, err := s.soulRegistryGetAgentNonce(ctx.Context(), client, contractAddr, agentInt)
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to read agent nonce"}
-	}
-	if onChainNonce == nil {
-		onChainNonce = new(big.Int)
-	}
-	if onChainNonce.Cmp(nonceInt) != 0 {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "agent nonce changed; begin rotation again"}
 	}
 
 	newWalletAddr := common.HexToAddress(strings.TrimSpace(rot.NewWallet))
@@ -547,8 +548,6 @@ func (s *Server) handleSoulAgentRotateWalletConfirm(ctx *apptheory.Context) (*ap
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to encode transaction"}
 	}
 
-	txData := "0x" + hex.EncodeToString(data)
-	txValue := "0"
 	safeAddr, appErr := s.soulRegistrySafeAddress()
 	if appErr != nil {
 		return nil, appErr
@@ -558,8 +557,8 @@ func (s *Server) handleSoulAgentRotateWalletConfirm(ctx *apptheory.Context) (*ap
 	payload := &safeTxPayload{
 		SafeAddress: safeAddr,
 		To:          txTo,
-		Value:       txValue,
-		Data:        txData,
+		Value:       "0",
+		Data:        "0x" + hex.EncodeToString(data),
 	}
 	payloadJSON, _ := json.Marshal(payload)
 
@@ -574,8 +573,8 @@ func (s *Server) handleSoulAgentRotateWalletConfirm(ctx *apptheory.Context) (*ap
 	}
 	_ = op.UpdateKeys()
 
-	if err := s.store.DB.WithContext(ctx.Context()).Model(op).IfNotExists().Create(); err != nil {
-		if theoryErrors.IsConditionFailed(err) {
+	if createErr := s.store.DB.WithContext(ctx.Context()).Model(op).IfNotExists().Create(); createErr != nil {
+		if theoryErrors.IsConditionFailed(createErr) {
 			existing, getErr := s.getSoulOperation(ctx.Context(), opID)
 			if getErr == nil && existing != nil {
 				op = existing
@@ -601,5 +600,140 @@ func (s *Server) handleSoulAgentRotateWalletConfirm(ctx *apptheory.Context) (*ap
 	_ = audit.UpdateKeys()
 	_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
 
-	return apptheory.JSON(http.StatusOK, soulRotateWalletConfirmResponse{Operation: *op, SafeTx: payload})
+	resp, err := apptheory.JSON(http.StatusOK, soulRotateWalletConfirmResponse{Operation: *op, SafeTx: payload})
+	if err != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	return resp, nil
+}
+
+func parseSoulRotateWalletConfirmRequest(ctx *apptheory.Context) (currentSigHex string, newSigHex string, appErr *apptheory.AppError) {
+	if ctx == nil {
+		return "", "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
+	var req soulRotateWalletConfirmRequest
+	if parseErr := httpx.ParseJSON(ctx, &req); parseErr != nil {
+		appErr, ok := parseErr.(*apptheory.AppError)
+		if ok {
+			return "", "", appErr
+		}
+		return "", "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid request"}
+	}
+	currentSigHex = strings.TrimSpace(req.CurrentSignature)
+	newSigHex = strings.TrimSpace(req.NewSignature)
+	if currentSigHex == "" || newSigHex == "" {
+		return "", "", &apptheory.AppError{Code: "app.bad_request", Message: "signatures are required"}
+	}
+	return currentSigHex, newSigHex, nil
+}
+
+func (s *Server) loadSoulWalletRotationRequestForConfirm(ctx *apptheory.Context, agentIDHex string) (*models.SoulWalletRotationRequest, *apptheory.AppError) {
+	if s == nil || s.store == nil || s.store.DB == nil || ctx == nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
+	rot, err := s.getSoulWalletRotationRequest(ctx.Context(), agentIDHex, strings.TrimSpace(ctx.AuthIdentity))
+	if theoryErrors.IsNotFound(err) {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "no pending rotation"}
+	}
+	if err != nil || rot == nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	return rot, nil
+}
+
+func validateSoulWalletRotationConfirmRequest(rot *models.SoulWalletRotationRequest, now time.Time) *apptheory.AppError {
+	if rot == nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if rot.Spent {
+		return &apptheory.AppError{Code: "app.conflict", Message: "rotation already confirmed"}
+	}
+	if !rot.ExpiresAt.IsZero() && now.After(rot.ExpiresAt) {
+		return &apptheory.AppError{Code: "app.bad_request", Message: "rotation request expired"}
+	}
+	return nil
+}
+
+func validateSoulWalletRotationSignatures(
+	rot *models.SoulWalletRotationRequest,
+	currentSigHex string,
+	newSigHex string,
+) (nonceInt *big.Int, deadlineInt *big.Int, currentSigContract []byte, newSigContract []byte, appErr *apptheory.AppError) {
+	if rot == nil {
+		return nil, nil, nil, nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
+	digestBytes, err := hexutil.Decode(strings.TrimSpace(rot.DigestHex))
+	if err != nil || len(digestBytes) != 32 {
+		return nil, nil, nil, nil, &apptheory.AppError{Code: "app.internal", Message: "rotation request is invalid"}
+	}
+
+	currentSigRecovery, currentSigContract, appErr := decodeEthSignature(currentSigHex)
+	if appErr != nil {
+		return nil, nil, nil, nil, appErr
+	}
+	newSigRecovery, newSigContract, appErr := decodeEthSignature(newSigHex)
+	if appErr != nil {
+		return nil, nil, nil, nil, appErr
+	}
+
+	recoveredCurrent, err := recoverAddressFromDigest(digestBytes, currentSigRecovery)
+	if err != nil {
+		return nil, nil, nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid current_signature"}
+	}
+	recoveredNew, err := recoverAddressFromDigest(digestBytes, newSigRecovery)
+	if err != nil {
+		return nil, nil, nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid new_signature"}
+	}
+
+	if !strings.EqualFold(recoveredCurrent.Hex(), strings.TrimSpace(rot.CurrentWallet)) {
+		return nil, nil, nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: "current_signature does not match current wallet"}
+	}
+	if !strings.EqualFold(recoveredNew.Hex(), strings.TrimSpace(rot.NewWallet)) {
+		return nil, nil, nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: "new_signature does not match new wallet"}
+	}
+
+	nonceInt, ok := new(big.Int).SetString(strings.TrimSpace(rot.Nonce), 10)
+	if !ok || nonceInt == nil {
+		return nil, nil, nil, nil, &apptheory.AppError{Code: "app.internal", Message: "rotation request is invalid"}
+	}
+	deadlineInt = big.NewInt(rot.Deadline)
+
+	return nonceInt, deadlineInt, currentSigContract, newSigContract, nil
+}
+
+func (s *Server) verifySoulWalletRotationOnChainState(
+	ctx context.Context,
+	client ethRPCClient,
+	contractAddr common.Address,
+	agentInt *big.Int,
+	rot *models.SoulWalletRotationRequest,
+	nonceInt *big.Int,
+) *apptheory.AppError {
+	if s == nil || client == nil || agentInt == nil || rot == nil || nonceInt == nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
+	onChainWallet, err := s.soulRegistryGetAgentWallet(ctx, client, contractAddr, agentInt)
+	if err != nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "failed to read agent wallet"}
+	}
+	if !strings.EqualFold(onChainWallet.Hex(), strings.TrimSpace(rot.CurrentWallet)) {
+		return &apptheory.AppError{Code: "app.conflict", Message: "agent wallet changed; begin rotation again"}
+	}
+
+	onChainNonce, err := s.soulRegistryGetAgentNonce(ctx, client, contractAddr, agentInt)
+	if err != nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "failed to read agent nonce"}
+	}
+	if onChainNonce == nil {
+		onChainNonce = new(big.Int)
+	}
+	if onChainNonce.Cmp(nonceInt) != 0 {
+		return &apptheory.AppError{Code: "app.conflict", Message: "agent nonce changed; begin rotation again"}
+	}
+
+	return nil
 }

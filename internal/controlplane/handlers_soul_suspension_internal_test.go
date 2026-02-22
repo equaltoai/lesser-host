@@ -93,4 +93,3 @@ func TestSoulSuspensionHandlers_SuspendAndReinstate(t *testing.T) {
 		t.Fatalf("reinstate: resp=%#v err=%v", reinstateResp, err)
 	}
 }
-

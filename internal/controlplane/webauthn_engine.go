@@ -29,7 +29,7 @@ func newWebAuthnEngine(cfg config.Config) (webAuthnEngine, error) {
 	}
 
 	wconfig := &webauthn.Config{
-		RPDisplayName: "lesser.host",
+		RPDisplayName: lesserHostDomain,
 		RPID:          rpID,
 		RPOrigins:     origins,
 	}

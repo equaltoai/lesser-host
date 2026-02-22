@@ -48,11 +48,11 @@ func (f *fakeEthClient) TransactionReceipt(ctx context.Context, txHash common.Ha
 func (f *fakeEthClient) Close() {}
 
 type soulOperationsTestDB struct {
-	db          *ttmocks.MockExtendedDB
-	qOp         *ttmocks.MockQuery
-	qID         *ttmocks.MockQuery
+	db           *ttmocks.MockExtendedDB
+	qOp          *ttmocks.MockQuery
+	qID          *ttmocks.MockQuery
 	qWalletAgent *ttmocks.MockQuery
-	qAudit      *ttmocks.MockQuery
+	qAudit       *ttmocks.MockQuery
 }
 
 func newSoulOperationsTestDB() soulOperationsTestDB {
@@ -211,7 +211,7 @@ func TestSoulOperationHelpers_BlockNumberAndReceiptJSON(t *testing.T) {
 	if got := soulBlockNumber(receipt); got != 10 {
 		t.Fatalf("unexpected: %d", got)
 	}
-	if got := soulReceiptSnapshotJSON("0x" + strings.Repeat("ab", 32), receipt); strings.TrimSpace(got) == "" {
+	if got := soulReceiptSnapshotJSON("0x"+strings.Repeat("ab", 32), receipt); strings.TrimSpace(got) == "" {
 		t.Fatalf("expected snapshot json")
 	}
 }
@@ -303,7 +303,7 @@ func TestApplySoulOperationSideEffects_RotateWallet(t *testing.T) {
 	}
 
 	oldWallet := "0x0000000000000000000000000000000000000002"
-	newWallet := "0x0000000000000000000000000000000000000003"
+	newWallet := testEthAddress3
 	walletRet, _ := parsedABI.Methods["getAgentWallet"].Outputs.Pack(common.HexToAddress(newWallet))
 
 	client := &fakeEthClient{callContract: func(ctx context.Context, msg ethereum.CallMsg) ([]byte, error) {

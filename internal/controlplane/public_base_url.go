@@ -9,7 +9,7 @@ func (s *Server) publicBaseURL() string {
 
 	rootDomain := strings.TrimSpace(s.cfg.WebAuthnRPID)
 	if rootDomain == "" {
-		rootDomain = "lesser.host"
+		rootDomain = lesserHostDomain
 	}
 
 	stage := strings.ToLower(strings.TrimSpace(s.cfg.Stage))

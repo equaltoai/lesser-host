@@ -5,15 +5,21 @@ import (
 	"strings"
 )
 
+const (
+	managedStageLive    = "live"
+	managedStageStaging = "staging"
+	managedStageDev     = "dev"
+)
+
 func managedInstanceStageForControlPlane(stage string) string {
 	stage = strings.ToLower(strings.TrimSpace(stage))
 	switch stage {
-	case "live", "prod", "production":
-		return "live"
-	case "staging", "stage":
-		return "staging"
+	case managedStageLive, "prod", "production":
+		return managedStageLive
+	case managedStageStaging, "stage":
+		return managedStageStaging
 	default:
-		return "dev"
+		return managedStageDev
 	}
 }
 
@@ -23,7 +29,7 @@ func managedInstanceStageDomain(controlPlaneStage string, baseDomain string) str
 		return ""
 	}
 	stage := managedInstanceStageForControlPlane(controlPlaneStage)
-	if stage == "live" {
+	if stage == managedStageLive {
 		return base
 	}
 	return fmt.Sprintf("%s.%s", stage, base)

@@ -256,6 +256,12 @@ type soulSearchResponse struct {
 	NextCursor string             `json:"next_cursor,omitempty"`
 }
 
+type soulSearchIndexEntry struct {
+	AgentID string `json:"agent_id"`
+	Domain  string `json:"domain"`
+	LocalID string `json:"local_id"`
+}
+
 func (s *Server) handleSoulPublicSearch(ctx *apptheory.Context) (*apptheory.Response, error) {
 	if s == nil || ctx == nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
@@ -267,10 +273,41 @@ func (s *Server) handleSoulPublicSearch(ctx *apptheory.Context) (*apptheory.Resp
 		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
 	}
 
-	q := strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "q"))
-	cap := strings.ToLower(strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "capability")))
-	cursor := strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "cursor"))
-	limit := int(envInt64PositiveFromString(httpx.FirstQueryValue(ctx.Request.Query, "limit"), 50))
+	q, cap, cursor, limit, appErr := parseSoulPublicSearchParams(ctx)
+	if appErr != nil {
+		return nil, appErr
+	}
+
+	entries, hasMore, nextCursor, appErr := s.querySoulSearchIndexEntries(ctx.Context(), q, cap, cursor, limit)
+	if appErr != nil {
+		return nil, appErr
+	}
+	results := s.filterActiveSoulSearchEntries(ctx.Context(), entries, limit)
+
+	resp, err := apptheory.JSON(http.StatusOK, soulSearchResponse{
+		Version:    "1",
+		Results:    results,
+		Count:      len(results),
+		HasMore:    hasMore,
+		NextCursor: nextCursor,
+	})
+	if err != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	setSoulPublicHeaders(resp, "public, max-age=30")
+	return resp, nil
+}
+
+func parseSoulPublicSearchParams(ctx *apptheory.Context) (q string, cap string, cursor string, limit int, appErr *apptheory.AppError) {
+	if ctx == nil {
+		return "", "", "", 0, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
+	q = strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "q"))
+	cap = strings.ToLower(strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "capability")))
+	cursor = strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "cursor"))
+
+	limit = int(envInt64PositiveFromString(httpx.FirstQueryValue(ctx.Request.Query, "limit"), 50))
 	if limit <= 0 {
 		limit = 50
 	}
@@ -279,129 +316,137 @@ func (s *Server) handleSoulPublicSearch(ctx *apptheory.Context) (*apptheory.Resp
 	}
 
 	if q == "" && cap == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "q or capability is required"}
+		return "", "", "", 0, &apptheory.AppError{Code: "app.bad_request", Message: "q or capability is required"}
 	}
 
-	var idxItems any
-	var resultCursor string
-	var hasMore bool
+	return q, cap, cursor, limit, nil
+}
 
-	if cap != "" {
-		capNorm := normalizeSoulCapabilitiesLoose([]string{cap})
-		if len(capNorm) == 0 {
-			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid capability"}
-		}
-		cap = capNorm[0]
+func (s *Server) querySoulSearchIndexEntries(ctx context.Context, q string, cap string, cursor string, limit int) ([]soulSearchIndexEntry, bool, string, *apptheory.AppError) {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return nil, false, "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
 
-		skPrefix := ""
-		if q != "" {
-			domain, local, appErr := parseSoulSearchQuery(q)
-			if appErr != nil {
-				return nil, appErr
-			}
-			if domain == "" {
-				return nil, &apptheory.AppError{Code: "app.bad_request", Message: "domain is required when filtering by local id"}
-			}
-			skPrefix = fmt.Sprintf("DOMAIN#%s#", domain)
-			if local != "" {
-				skPrefix = fmt.Sprintf("DOMAIN#%s#LOCAL#%s#", domain, local)
-			}
-		}
+	if strings.TrimSpace(cap) != "" {
+		return s.querySoulSearchByCapability(ctx, q, cap, cursor, limit)
+	}
+	return s.querySoulSearchByDomain(ctx, q, cursor, limit)
+}
 
-		var items []*models.SoulCapabilityAgentIndex
-		qb := s.store.DB.WithContext(ctx.Context()).
-			Model(&models.SoulCapabilityAgentIndex{}).
-			Where("PK", "=", fmt.Sprintf("SOUL#CAP#%s", cap)).
-			OrderBy("SK", "ASC").
-			Limit(limit)
-		if cursor != "" {
-			qb = qb.Cursor(cursor)
-		}
-		if skPrefix != "" {
-			qb = qb.Where("SK", "BEGINS_WITH", skPrefix)
-		}
-		paged, err := qb.AllPaginated(&items)
-		if err != nil {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to search"}
-		}
-		idxItems = items
-		if paged != nil {
-			resultCursor = strings.TrimSpace(paged.NextCursor)
-			hasMore = paged.HasMore
-		}
-	} else {
+func (s *Server) querySoulSearchByCapability(ctx context.Context, q string, cap string, cursor string, limit int) ([]soulSearchIndexEntry, bool, string, *apptheory.AppError) {
+	capNorm := normalizeSoulCapabilitiesLoose([]string{cap})
+	if len(capNorm) == 0 {
+		return nil, false, "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid capability"}
+	}
+	cap = capNorm[0]
+
+	skPrefix := ""
+	if strings.TrimSpace(q) != "" {
 		domain, local, appErr := parseSoulSearchQuery(q)
 		if appErr != nil {
-			return nil, appErr
+			return nil, false, "", appErr
 		}
 		if domain == "" {
-			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "q must include a domain"}
+			return nil, false, "", &apptheory.AppError{Code: "app.bad_request", Message: "domain is required when filtering by local id"}
 		}
-
-		var items []*models.SoulDomainAgentIndex
-		qb := s.store.DB.WithContext(ctx.Context()).
-			Model(&models.SoulDomainAgentIndex{}).
-			Where("PK", "=", fmt.Sprintf("SOUL#DOMAIN#%s", domain)).
-			OrderBy("SK", "ASC").
-			Limit(limit)
-		if cursor != "" {
-			qb = qb.Cursor(cursor)
-		}
+		skPrefix = fmt.Sprintf("DOMAIN#%s#", domain)
 		if local != "" {
-			qb = qb.Where("SK", "BEGINS_WITH", fmt.Sprintf("LOCAL#%s#", local))
-		}
-		paged, err := qb.AllPaginated(&items)
-		if err != nil {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to search"}
-		}
-		idxItems = items
-		if paged != nil {
-			resultCursor = strings.TrimSpace(paged.NextCursor)
-			hasMore = paged.HasMore
+			skPrefix = fmt.Sprintf("DOMAIN#%s#LOCAL#%s#", domain, local)
 		}
 	}
 
+	var items []*models.SoulCapabilityAgentIndex
+	qb := s.store.DB.WithContext(ctx).
+		Model(&models.SoulCapabilityAgentIndex{}).
+		Where("PK", "=", fmt.Sprintf("SOUL#CAP#%s", cap)).
+		OrderBy("SK", "ASC").
+		Limit(limit)
+	if cursor != "" {
+		qb = qb.Cursor(cursor)
+	}
+	if skPrefix != "" {
+		qb = qb.Where("SK", "BEGINS_WITH", skPrefix)
+	}
+
+	paged, err := qb.AllPaginated(&items)
+	if err != nil {
+		return nil, false, "", &apptheory.AppError{Code: "app.internal", Message: "failed to search"}
+	}
+
+	out := make([]soulSearchIndexEntry, 0, len(items))
+	for _, item := range items {
+		if item == nil {
+			continue
+		}
+		out = append(out, soulSearchIndexEntry{AgentID: item.AgentID, Domain: item.Domain, LocalID: item.LocalID})
+	}
+
+	nextCursor := ""
+	hasMore := false
+	if paged != nil {
+		nextCursor = strings.TrimSpace(paged.NextCursor)
+		hasMore = paged.HasMore
+	}
+	return out, hasMore, nextCursor, nil
+}
+
+func (s *Server) querySoulSearchByDomain(ctx context.Context, q string, cursor string, limit int) ([]soulSearchIndexEntry, bool, string, *apptheory.AppError) {
+	domain, local, appErr := parseSoulSearchQuery(q)
+	if appErr != nil {
+		return nil, false, "", appErr
+	}
+	if domain == "" {
+		return nil, false, "", &apptheory.AppError{Code: "app.bad_request", Message: "q must include a domain"}
+	}
+
+	var items []*models.SoulDomainAgentIndex
+	qb := s.store.DB.WithContext(ctx).
+		Model(&models.SoulDomainAgentIndex{}).
+		Where("PK", "=", fmt.Sprintf("SOUL#DOMAIN#%s", domain)).
+		OrderBy("SK", "ASC").
+		Limit(limit)
+	if cursor != "" {
+		qb = qb.Cursor(cursor)
+	}
+	if local != "" {
+		qb = qb.Where("SK", "BEGINS_WITH", fmt.Sprintf("LOCAL#%s#", local))
+	}
+
+	paged, err := qb.AllPaginated(&items)
+	if err != nil {
+		return nil, false, "", &apptheory.AppError{Code: "app.internal", Message: "failed to search"}
+	}
+
+	out := make([]soulSearchIndexEntry, 0, len(items))
+	for _, item := range items {
+		if item == nil {
+			continue
+		}
+		out = append(out, soulSearchIndexEntry{AgentID: item.AgentID, Domain: item.Domain, LocalID: item.LocalID})
+	}
+
+	nextCursor := ""
+	hasMore := false
+	if paged != nil {
+		nextCursor = strings.TrimSpace(paged.NextCursor)
+		hasMore = paged.HasMore
+	}
+	return out, hasMore, nextCursor, nil
+}
+
+func (s *Server) filterActiveSoulSearchEntries(ctx context.Context, entries []soulSearchIndexEntry, limit int) []soulSearchResult {
 	results := make([]soulSearchResult, 0, limit)
-	appendIfActive := func(agentID string, domain string, local string) {
-		identity, err := s.getSoulAgentIdentity(ctx.Context(), agentID)
+	for _, entry := range entries {
+		identity, err := s.getSoulAgentIdentity(ctx, entry.AgentID)
 		if err != nil || identity == nil {
-			return
+			continue
 		}
 		if strings.TrimSpace(identity.Status) != models.SoulAgentStatusActive {
-			return
+			continue
 		}
-		results = append(results, soulSearchResult{AgentID: agentID, Domain: domain, LocalID: local})
+		results = append(results, soulSearchResult(entry))
 	}
-
-	switch items := idxItems.(type) {
-	case []*models.SoulDomainAgentIndex:
-		for _, item := range items {
-			if item == nil {
-				continue
-			}
-			appendIfActive(item.AgentID, item.Domain, item.LocalID)
-		}
-	case []*models.SoulCapabilityAgentIndex:
-		for _, item := range items {
-			if item == nil {
-				continue
-			}
-			appendIfActive(item.AgentID, item.Domain, item.LocalID)
-		}
-	}
-
-	resp, err := apptheory.JSON(http.StatusOK, soulSearchResponse{
-		Version:    "1",
-		Results:    results,
-		Count:      len(results),
-		HasMore:    hasMore,
-		NextCursor: resultCursor,
-	})
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-	setSoulPublicHeaders(resp, "public, max-age=30")
-	return resp, nil
+	return results
 }
 
 func parseSoulSearchQuery(q string) (string, string, *apptheory.AppError) {

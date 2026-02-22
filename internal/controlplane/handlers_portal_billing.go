@@ -1,8 +1,10 @@
 package controlplane
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -672,6 +674,29 @@ func (s *Server) handleStripePaymentCheckoutCompleted(ctx *apptheory.Context, ev
 		return apptheory.JSON(http.StatusOK, map[string]any{"ok": true, "skipped": reason})
 	}
 
+	err = s.applyCreditPurchasePaid(ctx.Context(), purchaseID, &purchase, ev.Session, strings.TrimSpace(ctx.RequestID), now)
+	if theoryErrors.IsConditionFailed(err) {
+		return apptheory.JSON(http.StatusOK, map[string]any{"ok": true})
+	}
+	if err != nil {
+		return apptheory.JSON(http.StatusOK, map[string]any{"ok": true, "error": "failed to apply credits"})
+	}
+
+	return apptheory.JSON(http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) applyCreditPurchasePaid(
+	ctx context.Context,
+	purchaseID string,
+	purchase *models.CreditPurchase,
+	session payments.CheckoutSession,
+	requestID string,
+	now time.Time,
+) error {
+	if s == nil || s.store == nil || s.store.DB == nil || purchase == nil {
+		return errors.New("store not configured")
+	}
+
 	updatePurchase := &models.CreditPurchase{ID: purchaseID}
 	_ = updatePurchase.UpdateKeys()
 
@@ -686,33 +711,35 @@ func (s *Server) handleStripePaymentCheckoutCompleted(ctx *apptheory.Context, ev
 		Actor:     paymentsActorStripe,
 		Action:    "billing.credits.purchase.paid",
 		Target:    fmt.Sprintf("credit_purchase:%s", purchaseID),
-		RequestID: strings.TrimSpace(ctx.RequestID),
+		RequestID: requestID,
 		CreatedAt: now,
 	}
 	_ = audit.UpdateKeys()
 
-	err = s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
-		tx.UpdateWithBuilder(updatePurchase, func(ub core.UpdateBuilder) error {
-			ub.Set("Status", models.CreditPurchaseStatusPaid)
-			ub.Set("PaidAt", now)
-			ub.Set("UpdatedAt", now)
-			if strings.TrimSpace(ev.Session.ID) != "" {
-				ub.Set("ProviderCheckoutSessionID", strings.TrimSpace(ev.Session.ID))
-			}
-			if strings.TrimSpace(ev.Session.PaymentIntentID) != "" {
-				ub.Set("ProviderPaymentIntentID", strings.TrimSpace(ev.Session.PaymentIntentID))
-			}
-			if strings.TrimSpace(ev.Session.CustomerID) != "" {
-				ub.Set("ProviderCustomerID", strings.TrimSpace(ev.Session.CustomerID))
-			}
-			if strings.TrimSpace(ev.Session.Currency) != "" {
-				ub.Set("Currency", strings.TrimSpace(ev.Session.Currency))
-			}
-			if ev.Session.AmountTotal > 0 {
-				ub.Set("AmountCents", ev.Session.AmountTotal)
-			}
-			return nil
-		},
+	return s.store.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
+		tx.UpdateWithBuilder(
+			updatePurchase,
+			func(ub core.UpdateBuilder) error {
+				ub.Set("Status", models.CreditPurchaseStatusPaid)
+				ub.Set("PaidAt", now)
+				ub.Set("UpdatedAt", now)
+				if strings.TrimSpace(session.ID) != "" {
+					ub.Set("ProviderCheckoutSessionID", strings.TrimSpace(session.ID))
+				}
+				if strings.TrimSpace(session.PaymentIntentID) != "" {
+					ub.Set("ProviderPaymentIntentID", strings.TrimSpace(session.PaymentIntentID))
+				}
+				if strings.TrimSpace(session.CustomerID) != "" {
+					ub.Set("ProviderCustomerID", strings.TrimSpace(session.CustomerID))
+				}
+				if strings.TrimSpace(session.Currency) != "" {
+					ub.Set("Currency", strings.TrimSpace(session.Currency))
+				}
+				if session.AmountTotal > 0 {
+					ub.Set("AmountCents", session.AmountTotal)
+				}
+				return nil
+			},
 			tabletheory.IfExists(),
 			tabletheory.Condition("Status", "=", models.CreditPurchaseStatusPending),
 		)
@@ -728,14 +755,6 @@ func (s *Server) handleStripePaymentCheckoutCompleted(ctx *apptheory.Context, ev
 		tx.Put(audit)
 		return nil
 	})
-	if theoryErrors.IsConditionFailed(err) {
-		return apptheory.JSON(http.StatusOK, map[string]any{"ok": true})
-	}
-	if err != nil {
-		return apptheory.JSON(http.StatusOK, map[string]any{"ok": true, "error": "failed to apply credits"})
-	}
-
-	return apptheory.JSON(http.StatusOK, map[string]any{"ok": true})
 }
 
 func (s *Server) handleStripeSetupCheckoutCompleted(ctx *apptheory.Context, provider payments.Provider, ev *payments.WebhookEvent, now time.Time) (*apptheory.Response, error) {

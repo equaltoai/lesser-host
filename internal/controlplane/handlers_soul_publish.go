@@ -79,18 +79,25 @@ type publishRootResponse struct {
 	ManifestKey string               `json:"manifest_key"`
 }
 
+func (s *Server) requireSoulPublishPrereqs(ctx *apptheory.Context) *apptheory.AppError {
+	if appErr := s.requireSoulRegistryConfigured(); appErr != nil {
+		return appErr
+	}
+	if appErr := requireStoreDB(s); appErr != nil {
+		return appErr
+	}
+	if s == nil || s.soulPacks == nil {
+		return &apptheory.AppError{Code: "app.conflict", Message: "soul pack bucket not configured"}
+	}
+	return nil
+}
+
 func (s *Server) handleSoulPublishReputationRoot(ctx *apptheory.Context) (*apptheory.Response, error) {
 	if err := requireOperator(ctx); err != nil {
 		return nil, err
 	}
-	if appErr := s.requireSoulRegistryConfigured(); appErr != nil {
+	if appErr := s.requireSoulPublishPrereqs(ctx); appErr != nil {
 		return nil, appErr
-	}
-	if appErr := requireStoreDB(s); appErr != nil {
-		return nil, appErr
-	}
-	if s.soulPacks == nil {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "soul pack bucket not configured"}
 	}
 
 	contractAddr, txTo, appErr := s.soulReputationAttestationContractAddress()
@@ -98,156 +105,20 @@ func (s *Server) handleSoulPublishReputationRoot(ctx *apptheory.Context) (*appth
 		return nil, appErr
 	}
 
-	active, err := s.listSoulActiveAgentIdentities(ctx.Context())
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list agents"}
-	}
-	if len(active) == 0 {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "no active agents"}
-	}
-
-	reps := make([]models.SoulAgentReputation, 0, len(active))
-	for _, id := range active {
-		if id == nil {
-			continue
-		}
-		agentID := strings.ToLower(strings.TrimSpace(id.AgentID))
-		if agentID == "" {
-			continue
-		}
-		rep, repErr := s.getSoulAgentReputation(ctx.Context(), agentID)
-		if theoryErrors.IsNotFound(repErr) {
-			return nil, &apptheory.AppError{Code: "app.conflict", Message: "missing reputation for agent " + agentID}
-		}
-		if repErr != nil || rep == nil {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to read reputation"}
-		}
-		reps = append(reps, *rep)
-	}
-
-	sort.Slice(reps, func(i, j int) bool { return strings.TrimSpace(reps[i].AgentID) < strings.TrimSpace(reps[j].AgentID) })
-
-	blockRef, appErr := requireUniformSoulReputationBlockRef(reps)
+	reps, blockRef, appErr := s.loadSortedSoulReputationsForActiveAgents(ctx.Context())
 	if appErr != nil {
 		return nil, appErr
 	}
 
-	leafCodec := "keccak256(jcs(json(models.SoulAgentReputation)))"
-	treeCodec := "keccak256(left||right), duplicate last"
-
-	leafHashes, proofs, root, err := buildMerkleProofsForReputations(reps, leafCodec, treeCodec)
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to build merkle tree"}
-	}
-
-	rootHex := strings.ToLower(root.Hex())
-	prefix := fmt.Sprintf("registry/v1/reputation/roots/%s/", rootHex)
-	now := time.Now().UTC()
-
-	snap := reputationRootSnapshot{
-		Version:     "1",
-		Kind:        "reputation",
-		Root:        rootHex,
-		BlockRef:    blockRef,
-		Count:       len(reps),
-		ComputedAt:  now,
-		LeafCodec:   leafCodec,
-		TreeCodec:   treeCodec,
-		Reputations: reps,
-	}
-	snapBody, _ := json.Marshal(snap)
-	snapKey := prefix + "snapshot.json"
-
-	proofsBody, _ := json.Marshal(map[string]any{
-		"version":    "1",
-		"root":       rootHex,
-		"block_ref":  blockRef,
-		"count":      len(reps),
-		"leaf_codec": leafCodec,
-		"tree_codec": treeCodec,
-		"proofs":     proofs,
-		"leaves":     leafHashes,
-	})
-	proofsKey := prefix + "proofs.json"
-
-	manifest := buildMerkleManifest(now, rootHex, blockRef, len(reps), map[string][]byte{
-		snapKey:   snapBody,
-		proofsKey: proofsBody,
-	})
-	manifestBody, _ := json.Marshal(manifest)
-	manifestKey := prefix + "manifest.json"
-
-	if err := s.soulPacks.PutObject(ctx.Context(), snapKey, snapBody, "application/json", "no-store"); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to persist snapshot"}
-	}
-	if err := s.soulPacks.PutObject(ctx.Context(), proofsKey, proofsBody, "application/json", "no-store"); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to persist proofs"}
-	}
-	if err := s.soulPacks.PutObject(ctx.Context(), manifestKey, manifestBody, "application/json", "no-store"); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to persist manifest"}
-	}
-
-	if blockRef < 0 {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid block_ref"}
-	}
-	data, err := soulattestations.EncodePublishRootCall(root, uint64(blockRef), uint64(len(reps)))
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to encode publishRoot"}
-	}
-
-	safeAddr, appErr := s.soulRegistrySafeAddress()
+	root, rootHex, snapKey, proofsKey, manifestKey, now, appErr := s.buildAndPersistSoulReputationRootArtifacts(ctx.Context(), reps, blockRef)
 	if appErr != nil {
 		return nil, appErr
 	}
 
-	payload := &safeTxPayload{
-		SafeAddress: safeAddr,
-		To:          txTo,
-		Value:       "0",
-		Data:        hexutil.Encode(data),
+	op, payload, appErr := s.createSoulPublishRootOperation(ctx.Context(), contractAddr, txTo, root, rootHex, blockRef, len(reps), snapKey, proofsKey, manifestKey, models.SoulOperationKindPublishReputationRoot, "soul.reputation.publish", strings.TrimSpace(ctx.AuthIdentity), ctx.RequestID, now)
+	if appErr != nil {
+		return nil, appErr
 	}
-	payloadJSON, _ := json.Marshal(payload)
-
-	opID := soulPublishRootOpID(models.SoulOperationKindPublishReputationRoot, s.cfg.SoulChainID, txTo, rootHex, blockRef, len(reps))
-	opMetaJSON, _ := json.Marshal(map[string]any{
-		"root":         rootHex,
-		"block_ref":    blockRef,
-		"count":        len(reps),
-		"contract":     strings.ToLower(contractAddr.Hex()),
-		"snapshot_key": snapKey,
-		"proofs_key":   proofsKey,
-		"manifest_key": manifestKey,
-	})
-
-	op := &models.SoulOperation{
-		OperationID:     opID,
-		Kind:            models.SoulOperationKindPublishReputationRoot,
-		Status:          models.SoulOperationStatusPending,
-		SafePayloadJSON: strings.TrimSpace(string(payloadJSON)),
-		SnapshotJSON:    strings.TrimSpace(string(opMetaJSON)),
-		CreatedAt:       now,
-		UpdatedAt:       now,
-	}
-	_ = op.UpdateKeys()
-
-	if err := s.store.DB.WithContext(ctx.Context()).Model(op).IfNotExists().Create(); err != nil {
-		if theoryErrors.IsConditionFailed(err) {
-			existing, getErr := s.getSoulOperation(ctx.Context(), opID)
-			if getErr == nil && existing != nil {
-				op = existing
-			}
-		} else {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create operation"}
-		}
-	}
-
-	_ = s.store.DB.WithContext(ctx.Context()).Model(&models.AuditLogEntry{
-		Actor:     strings.TrimSpace(ctx.AuthIdentity),
-		Action:    "soul.reputation.publish",
-		Target:    fmt.Sprintf("soul_operation:%s", opID),
-		RequestID: ctx.RequestID,
-		CreatedAt: now,
-	}).Create()
 
 	return apptheory.JSON(http.StatusOK, publishRootResponse{
 		Operation:   *op,
@@ -265,14 +136,8 @@ func (s *Server) handleSoulPublishValidationRoot(ctx *apptheory.Context) (*appth
 	if err := requireOperator(ctx); err != nil {
 		return nil, err
 	}
-	if appErr := s.requireSoulRegistryConfigured(); appErr != nil {
+	if appErr := s.requireSoulPublishPrereqs(ctx); appErr != nil {
 		return nil, appErr
-	}
-	if appErr := requireStoreDB(s); appErr != nil {
-		return nil, appErr
-	}
-	if s.soulPacks == nil {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "soul pack bucket not configured"}
 	}
 
 	contractAddr, txTo, appErr := s.soulValidationAttestationContractAddress()
@@ -280,169 +145,21 @@ func (s *Server) handleSoulPublishValidationRoot(ctx *apptheory.Context) (*appth
 		return nil, appErr
 	}
 
-	active, err := s.listSoulActiveAgentIdentities(ctx.Context())
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list agents"}
-	}
-	if len(active) == 0 {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "no active agents"}
-	}
-
-	leaves := make([]validationRootLeaf, 0, len(active))
-	blockRef := int64(0)
-
-	for _, id := range active {
-		if id == nil {
-			continue
-		}
-		agentID := strings.ToLower(strings.TrimSpace(id.AgentID))
-		if agentID == "" {
-			continue
-		}
-		rep, repErr := s.getSoulAgentReputation(ctx.Context(), agentID)
-		if theoryErrors.IsNotFound(repErr) {
-			return nil, &apptheory.AppError{Code: "app.conflict", Message: "missing reputation for agent " + agentID}
-		}
-		if repErr != nil || rep == nil {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to read reputation"}
-		}
-		if blockRef == 0 {
-			blockRef = rep.BlockRef
-		} else if rep.BlockRef != blockRef {
-			return nil, &apptheory.AppError{Code: "app.conflict", Message: "reputation block_ref mismatch"}
-		}
-
-		leaves = append(leaves, validationRootLeaf{
-			Version:           "1",
-			AgentID:           agentID,
-			BlockRef:          rep.BlockRef,
-			Validation:        rep.Validation,
-			ValidationsPassed: rep.ValidationsPassed,
-			UpdatedAt:         rep.UpdatedAt,
-		})
-	}
-
-	if blockRef <= 0 {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "missing block_ref for snapshot"}
-	}
-
-	sort.Slice(leaves, func(i, j int) bool {
-		return strings.TrimSpace(leaves[i].AgentID) < strings.TrimSpace(leaves[j].AgentID)
-	})
-
-	leafCodec := "keccak256(jcs(json(validationRootLeaf)))"
-	treeCodec := "keccak256(left||right), duplicate last"
-
-	leafHashes, proofs, root, err := buildMerkleProofsForValidationLeaves(leaves, leafCodec, treeCodec)
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to build merkle tree"}
-	}
-
-	rootHex := strings.ToLower(root.Hex())
-	prefix := fmt.Sprintf("registry/v1/validation/roots/%s/", rootHex)
-	now := time.Now().UTC()
-
-	snap := validationRootSnapshot{
-		Version:    "1",
-		Kind:       "validation",
-		Root:       rootHex,
-		BlockRef:   blockRef,
-		Count:      len(leaves),
-		ComputedAt: now,
-		LeafCodec:  leafCodec,
-		TreeCodec:  treeCodec,
-		Leaves:     leaves,
-	}
-	snapBody, _ := json.Marshal(snap)
-	snapKey := prefix + "snapshot.json"
-
-	proofsBody, _ := json.Marshal(map[string]any{
-		"version":    "1",
-		"root":       rootHex,
-		"block_ref":  blockRef,
-		"count":      len(leaves),
-		"leaf_codec": leafCodec,
-		"tree_codec": treeCodec,
-		"proofs":     proofs,
-		"leaves":     leafHashes,
-	})
-	proofsKey := prefix + "proofs.json"
-
-	manifest := buildMerkleManifest(now, rootHex, blockRef, len(leaves), map[string][]byte{
-		snapKey:   snapBody,
-		proofsKey: proofsBody,
-	})
-	manifestBody, _ := json.Marshal(manifest)
-	manifestKey := prefix + "manifest.json"
-
-	if err := s.soulPacks.PutObject(ctx.Context(), snapKey, snapBody, "application/json", "no-store"); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to persist snapshot"}
-	}
-	if err := s.soulPacks.PutObject(ctx.Context(), proofsKey, proofsBody, "application/json", "no-store"); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to persist proofs"}
-	}
-	if err := s.soulPacks.PutObject(ctx.Context(), manifestKey, manifestBody, "application/json", "no-store"); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to persist manifest"}
-	}
-
-	data, err := soulattestations.EncodePublishRootCall(root, uint64(blockRef), uint64(len(leaves)))
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to encode publishRoot"}
-	}
-
-	safeAddr, appErr := s.soulRegistrySafeAddress()
+	reps, blockRef, appErr := s.loadSortedSoulReputationsForActiveAgents(ctx.Context())
 	if appErr != nil {
 		return nil, appErr
 	}
 
-	payload := &safeTxPayload{
-		SafeAddress: safeAddr,
-		To:          txTo,
-		Value:       "0",
-		Data:        hexutil.Encode(data),
-	}
-	payloadJSON, _ := json.Marshal(payload)
-
-	opID := soulPublishRootOpID(models.SoulOperationKindPublishValidationRoot, s.cfg.SoulChainID, txTo, rootHex, blockRef, len(leaves))
-	opMetaJSON, _ := json.Marshal(map[string]any{
-		"root":         rootHex,
-		"block_ref":    blockRef,
-		"count":        len(leaves),
-		"contract":     strings.ToLower(contractAddr.Hex()),
-		"snapshot_key": snapKey,
-		"proofs_key":   proofsKey,
-		"manifest_key": manifestKey,
-	})
-
-	op := &models.SoulOperation{
-		OperationID:     opID,
-		Kind:            models.SoulOperationKindPublishValidationRoot,
-		Status:          models.SoulOperationStatusPending,
-		SafePayloadJSON: strings.TrimSpace(string(payloadJSON)),
-		SnapshotJSON:    strings.TrimSpace(string(opMetaJSON)),
-		CreatedAt:       now,
-		UpdatedAt:       now,
-	}
-	_ = op.UpdateKeys()
-
-	if err := s.store.DB.WithContext(ctx.Context()).Model(op).IfNotExists().Create(); err != nil {
-		if theoryErrors.IsConditionFailed(err) {
-			existing, getErr := s.getSoulOperation(ctx.Context(), opID)
-			if getErr == nil && existing != nil {
-				op = existing
-			}
-		} else {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create operation"}
-		}
+	leaves := buildValidationLeavesForReputations(reps)
+	root, rootHex, snapKey, proofsKey, manifestKey, now, appErr := s.buildAndPersistSoulValidationRootArtifacts(ctx.Context(), leaves, blockRef)
+	if appErr != nil {
+		return nil, appErr
 	}
 
-	_ = s.store.DB.WithContext(ctx.Context()).Model(&models.AuditLogEntry{
-		Actor:     strings.TrimSpace(ctx.AuthIdentity),
-		Action:    "soul.validation.publish",
-		Target:    fmt.Sprintf("soul_operation:%s", opID),
-		RequestID: ctx.RequestID,
-		CreatedAt: now,
-	}).Create()
+	op, payload, appErr := s.createSoulPublishRootOperation(ctx.Context(), contractAddr, txTo, root, rootHex, blockRef, len(leaves), snapKey, proofsKey, manifestKey, models.SoulOperationKindPublishValidationRoot, "soul.validation.publish", strings.TrimSpace(ctx.AuthIdentity), ctx.RequestID, now)
+	if appErr != nil {
+		return nil, appErr
+	}
 
 	return apptheory.JSON(http.StatusOK, publishRootResponse{
 		Operation:   *op,
@@ -454,6 +171,277 @@ func (s *Server) handleSoulPublishValidationRoot(ctx *apptheory.Context) (*appth
 		ProofsKey:   proofsKey,
 		ManifestKey: manifestKey,
 	})
+}
+
+func (s *Server) requireSoulActiveAgents(ctx context.Context) ([]*models.SoulAgentIdentity, *apptheory.AppError) {
+	active, err := s.listSoulActiveAgentIdentities(ctx)
+	if err != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list agents"}
+	}
+	if len(active) == 0 {
+		return nil, &apptheory.AppError{Code: "app.conflict", Message: "no active agents"}
+	}
+	return active, nil
+}
+
+func (s *Server) loadSoulReputationsForAgentIdentities(ctx context.Context, active []*models.SoulAgentIdentity) ([]models.SoulAgentReputation, *apptheory.AppError) {
+	reps := make([]models.SoulAgentReputation, 0, len(active))
+	for _, id := range active {
+		if id == nil {
+			continue
+		}
+		agentID := strings.ToLower(strings.TrimSpace(id.AgentID))
+		if agentID == "" {
+			continue
+		}
+		rep, repErr := s.getSoulAgentReputation(ctx, agentID)
+		if theoryErrors.IsNotFound(repErr) {
+			return nil, &apptheory.AppError{Code: "app.conflict", Message: "missing reputation for agent " + agentID}
+		}
+		if repErr != nil || rep == nil {
+			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to read reputation"}
+		}
+		reps = append(reps, *rep)
+	}
+
+	sort.Slice(reps, func(i, j int) bool { return strings.TrimSpace(reps[i].AgentID) < strings.TrimSpace(reps[j].AgentID) })
+	return reps, nil
+}
+
+func (s *Server) loadSortedSoulReputationsForActiveAgents(ctx context.Context) ([]models.SoulAgentReputation, int64, *apptheory.AppError) {
+	active, appErr := s.requireSoulActiveAgents(ctx)
+	if appErr != nil {
+		return nil, 0, appErr
+	}
+
+	reps, appErr := s.loadSoulReputationsForAgentIdentities(ctx, active)
+	if appErr != nil {
+		return nil, 0, appErr
+	}
+
+	blockRef, appErr := requireUniformSoulReputationBlockRef(reps)
+	if appErr != nil {
+		return nil, 0, appErr
+	}
+	return reps, blockRef, nil
+}
+
+func buildValidationLeavesForReputations(reps []models.SoulAgentReputation) []validationRootLeaf {
+	leaves := make([]validationRootLeaf, 0, len(reps))
+	for _, rep := range reps {
+		leaves = append(leaves, validationRootLeaf{
+			Version:           "1",
+			AgentID:           strings.ToLower(strings.TrimSpace(rep.AgentID)),
+			BlockRef:          rep.BlockRef,
+			Validation:        rep.Validation,
+			ValidationsPassed: rep.ValidationsPassed,
+			UpdatedAt:         rep.UpdatedAt,
+		})
+	}
+	return leaves
+}
+
+func marshalJSON(v any, msg string) ([]byte, *apptheory.AppError) {
+	body, err := json.Marshal(v)
+	if err != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: msg}
+	}
+	return body, nil
+}
+
+func (s *Server) persistSoulMerkleRootPack(ctx context.Context, prefix string, now time.Time, rootHex string, blockRef int64, count int, snapBody []byte, proofsBody []byte) (snapKey string, proofsKey string, manifestKey string, appErr *apptheory.AppError) {
+	snapKey = prefix + "snapshot.json"
+	proofsKey = prefix + "proofs.json"
+
+	manifest := buildMerkleManifest(now, rootHex, blockRef, count, map[string][]byte{
+		snapKey:   snapBody,
+		proofsKey: proofsBody,
+	})
+	manifestBody, appErr := marshalJSON(manifest, "failed to encode manifest")
+	if appErr != nil {
+		return "", "", "", appErr
+	}
+	manifestKey = prefix + "manifest.json"
+
+	if putErr := s.soulPacks.PutObject(ctx, snapKey, snapBody, "application/json", "no-store"); putErr != nil {
+		return "", "", "", &apptheory.AppError{Code: "app.internal", Message: "failed to persist snapshot"}
+	}
+	if putErr := s.soulPacks.PutObject(ctx, proofsKey, proofsBody, "application/json", "no-store"); putErr != nil {
+		return "", "", "", &apptheory.AppError{Code: "app.internal", Message: "failed to persist proofs"}
+	}
+	if putErr := s.soulPacks.PutObject(ctx, manifestKey, manifestBody, "application/json", "no-store"); putErr != nil {
+		return "", "", "", &apptheory.AppError{Code: "app.internal", Message: "failed to persist manifest"}
+	}
+
+	return snapKey, proofsKey, manifestKey, nil
+}
+
+type soulMerkleProofBuilder func(leafCodec string, treeCodec string) ([]map[string]any, []merkleProofEntry, common.Hash, error)
+
+type soulMerkleSnapshotBuilder func(rootHex string, now time.Time, leafCodec string, treeCodec string) any
+
+func (s *Server) buildAndPersistSoulRootArtifacts(
+	ctx context.Context,
+	kind string,
+	leafCodec string,
+	treeCodec string,
+	blockRef int64,
+	count int,
+	buildProofs soulMerkleProofBuilder,
+	buildSnapshot soulMerkleSnapshotBuilder,
+) (root common.Hash, rootHex string, snapKey string, proofsKey string, manifestKey string, now time.Time, appErr *apptheory.AppError) {
+	leafHashes, proofs, root, err := buildProofs(leafCodec, treeCodec)
+	if err != nil {
+		return common.Hash{}, "", "", "", "", time.Time{}, &apptheory.AppError{Code: "app.internal", Message: "failed to build merkle tree"}
+	}
+
+	rootHex = strings.ToLower(root.Hex())
+	prefix := fmt.Sprintf("registry/v1/%s/roots/%s/", strings.TrimSpace(kind), rootHex)
+	now = time.Now().UTC()
+
+	snapBody, appErr := marshalJSON(buildSnapshot(rootHex, now, leafCodec, treeCodec), "failed to encode snapshot")
+	if appErr != nil {
+		return common.Hash{}, "", "", "", "", time.Time{}, appErr
+	}
+
+	proofsBody, appErr := marshalJSON(map[string]any{
+		"version":    "1",
+		"root":       rootHex,
+		"block_ref":  blockRef,
+		"count":      count,
+		"leaf_codec": leafCodec,
+		"tree_codec": treeCodec,
+		"proofs":     proofs,
+		"leaves":     leafHashes,
+	}, "failed to encode proofs")
+	if appErr != nil {
+		return common.Hash{}, "", "", "", "", time.Time{}, appErr
+	}
+
+	snapKey, proofsKey, manifestKey, appErr = s.persistSoulMerkleRootPack(ctx, prefix, now, rootHex, blockRef, count, snapBody, proofsBody)
+	if appErr != nil {
+		return common.Hash{}, "", "", "", "", time.Time{}, appErr
+	}
+	return root, rootHex, snapKey, proofsKey, manifestKey, now, nil
+}
+
+func (s *Server) buildAndPersistSoulReputationRootArtifacts(ctx context.Context, reps []models.SoulAgentReputation, blockRef int64) (root common.Hash, rootHex string, snapKey string, proofsKey string, manifestKey string, now time.Time, appErr *apptheory.AppError) {
+	leafCodec := "keccak256(jcs(json(models.SoulAgentReputation)))"
+	treeCodec := "keccak256(left||right), duplicate last"
+
+	count := len(reps)
+	return s.buildAndPersistSoulRootArtifacts(ctx, "reputation", leafCodec, treeCodec, blockRef, count, func(leafCodec string, treeCodec string) ([]map[string]any, []merkleProofEntry, common.Hash, error) {
+		return buildMerkleProofsForReputations(reps, leafCodec, treeCodec)
+	}, func(rootHex string, now time.Time, leafCodec string, treeCodec string) any {
+		return reputationRootSnapshot{
+			Version:     "1",
+			Kind:        "reputation",
+			Root:        rootHex,
+			BlockRef:    blockRef,
+			Count:       count,
+			ComputedAt:  now,
+			LeafCodec:   leafCodec,
+			TreeCodec:   treeCodec,
+			Reputations: reps,
+		}
+	})
+}
+
+func (s *Server) buildAndPersistSoulValidationRootArtifacts(ctx context.Context, leaves []validationRootLeaf, blockRef int64) (root common.Hash, rootHex string, snapKey string, proofsKey string, manifestKey string, now time.Time, appErr *apptheory.AppError) {
+	leafCodec := "keccak256(jcs(json(validationRootLeaf)))"
+	treeCodec := "keccak256(left||right), duplicate last"
+
+	count := len(leaves)
+	return s.buildAndPersistSoulRootArtifacts(ctx, "validation", leafCodec, treeCodec, blockRef, count, func(leafCodec string, treeCodec string) ([]map[string]any, []merkleProofEntry, common.Hash, error) {
+		return buildMerkleProofsForValidationLeaves(leaves, leafCodec, treeCodec)
+	}, func(rootHex string, now time.Time, leafCodec string, treeCodec string) any {
+		return validationRootSnapshot{
+			Version:    "1",
+			Kind:       "validation",
+			Root:       rootHex,
+			BlockRef:   blockRef,
+			Count:      count,
+			ComputedAt: now,
+			LeafCodec:  leafCodec,
+			TreeCodec:  treeCodec,
+			Leaves:     leaves,
+		}
+	})
+}
+
+func (s *Server) createSoulPublishRootOperation(ctx context.Context, contractAddr common.Address, txTo string, root common.Hash, rootHex string, blockRef int64, count int, snapKey string, proofsKey string, manifestKey string, kind string, auditAction string, actor string, requestID string, now time.Time) (*models.SoulOperation, *safeTxPayload, *apptheory.AppError) {
+	if blockRef < 0 {
+		return nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid block_ref"}
+	}
+
+	data, err := soulattestations.EncodePublishRootCall(root, blockRef, count)
+	if err != nil {
+		return nil, nil, &apptheory.AppError{Code: "app.internal", Message: "failed to encode publishRoot"}
+	}
+
+	safeAddr, appErr := s.soulRegistrySafeAddress()
+	if appErr != nil {
+		return nil, nil, appErr
+	}
+
+	payload := &safeTxPayload{
+		SafeAddress: safeAddr,
+		To:          txTo,
+		Value:       "0",
+		Data:        hexutil.Encode(data),
+	}
+	payloadJSON, appErr := marshalJSON(payload, "failed to encode safe tx")
+	if appErr != nil {
+		return nil, nil, appErr
+	}
+
+	opID := soulPublishRootOpID(kind, s.cfg.SoulChainID, txTo, rootHex, blockRef, count)
+	opMetaJSON, appErr := marshalJSON(map[string]any{
+		"root":         rootHex,
+		"block_ref":    blockRef,
+		"count":        count,
+		"contract":     strings.ToLower(contractAddr.Hex()),
+		"snapshot_key": snapKey,
+		"proofs_key":   proofsKey,
+		"manifest_key": manifestKey,
+	}, "failed to encode operation metadata")
+	if appErr != nil {
+		return nil, nil, appErr
+	}
+
+	op := &models.SoulOperation{
+		OperationID:     opID,
+		Kind:            kind,
+		Status:          models.SoulOperationStatusPending,
+		SafePayloadJSON: strings.TrimSpace(string(payloadJSON)),
+		SnapshotJSON:    strings.TrimSpace(string(opMetaJSON)),
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	_ = op.UpdateKeys()
+
+	if err := s.store.DB.WithContext(ctx).Model(op).IfNotExists().Create(); err != nil {
+		if theoryErrors.IsConditionFailed(err) {
+			existing, getErr := s.getSoulOperation(ctx, opID)
+			if getErr == nil && existing != nil {
+				op = existing
+			}
+		} else {
+			return nil, nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create operation"}
+		}
+	}
+
+	audit := &models.AuditLogEntry{
+		Actor:     strings.TrimSpace(actor),
+		Action:    strings.TrimSpace(auditAction),
+		Target:    fmt.Sprintf("soul_operation:%s", opID),
+		RequestID: strings.TrimSpace(requestID),
+		CreatedAt: now,
+	}
+	_ = audit.UpdateKeys()
+	_ = s.store.DB.WithContext(ctx).Model(audit).Create()
+
+	return op, payload, nil
 }
 
 func (s *Server) soulReputationAttestationContractAddress() (common.Address, string, *apptheory.AppError) {
@@ -518,23 +506,24 @@ func requireUniformSoulReputationBlockRef(reps []models.SoulAgentReputation) (in
 	return blockRef, nil
 }
 
-func buildMerkleProofsForReputations(reps []models.SoulAgentReputation, leafCodec string, treeCodec string) ([]map[string]any, []merkleProofEntry, common.Hash, error) {
-	type leaf struct {
-		AgentID string `json:"agent_id"`
-		Hash    string `json:"leaf_hash"`
-	}
+func buildMerkleProofs[T any](
+	items []T,
+	leafCodec string,
+	treeCodec string,
+	agentID func(T) string,
+	blockRef func(T) int64,
+) ([]map[string]any, []merkleProofEntry, common.Hash, error) {
+	leaves := make([]common.Hash, 0, len(items))
+	leafOut := make([]map[string]any, 0, len(items))
 
-	leaves := make([]common.Hash, 0, len(reps))
-	leafOut := make([]map[string]any, 0, len(reps))
-
-	for _, rep := range reps {
-		canon, err := canonicalJSON(rep)
+	for _, item := range items {
+		canon, err := canonicalJSON(item)
 		if err != nil {
 			return nil, nil, common.Hash{}, err
 		}
 		h := crypto.Keccak256Hash(canon)
 		leaves = append(leaves, h)
-		leafOut = append(leafOut, map[string]any{"agent_id": rep.AgentID, "leaf_hash": strings.ToLower(h.Hex())})
+		leafOut = append(leafOut, map[string]any{"agent_id": agentID(item), "leaf_hash": strings.ToLower(h.Hex())})
 	}
 
 	tree, err := merkle.Build(leaves)
@@ -544,7 +533,7 @@ func buildMerkleProofsForReputations(reps []models.SoulAgentReputation, leafCode
 	root := tree.Root()
 
 	proofs := make([]merkleProofEntry, 0, len(leaves))
-	for i, rep := range reps {
+	for i, item := range items {
 		p, err := tree.Proof(i)
 		if err != nil {
 			return nil, nil, common.Hash{}, err
@@ -554,12 +543,12 @@ func buildMerkleProofsForReputations(reps []models.SoulAgentReputation, leafCode
 			proofHex = append(proofHex, strings.ToLower(h.Hex()))
 		}
 		proofs = append(proofs, merkleProofEntry{
-			AgentID:   rep.AgentID,
+			AgentID:   agentID(item),
 			Index:     i,
 			LeafHash:  strings.ToLower(leaves[i].Hex()),
 			Proof:     proofHex,
 			Root:      strings.ToLower(root.Hex()),
-			BlockRef:  rep.BlockRef,
+			BlockRef:  blockRef(item),
 			LeafCodec: leafCodec,
 			TreeCodec: treeCodec,
 		})
@@ -568,49 +557,12 @@ func buildMerkleProofsForReputations(reps []models.SoulAgentReputation, leafCode
 	return leafOut, proofs, root, nil
 }
 
+func buildMerkleProofsForReputations(reps []models.SoulAgentReputation, leafCodec string, treeCodec string) ([]map[string]any, []merkleProofEntry, common.Hash, error) {
+	return buildMerkleProofs(reps, leafCodec, treeCodec, func(rep models.SoulAgentReputation) string { return rep.AgentID }, func(rep models.SoulAgentReputation) int64 { return rep.BlockRef })
+}
+
 func buildMerkleProofsForValidationLeaves(leavesIn []validationRootLeaf, leafCodec string, treeCodec string) ([]map[string]any, []merkleProofEntry, common.Hash, error) {
-	leaves := make([]common.Hash, 0, len(leavesIn))
-	leafOut := make([]map[string]any, 0, len(leavesIn))
-
-	for _, leaf := range leavesIn {
-		canon, err := canonicalJSON(leaf)
-		if err != nil {
-			return nil, nil, common.Hash{}, err
-		}
-		h := crypto.Keccak256Hash(canon)
-		leaves = append(leaves, h)
-		leafOut = append(leafOut, map[string]any{"agent_id": leaf.AgentID, "leaf_hash": strings.ToLower(h.Hex())})
-	}
-
-	tree, err := merkle.Build(leaves)
-	if err != nil {
-		return nil, nil, common.Hash{}, err
-	}
-	root := tree.Root()
-
-	proofs := make([]merkleProofEntry, 0, len(leaves))
-	for i, leaf := range leavesIn {
-		p, err := tree.Proof(i)
-		if err != nil {
-			return nil, nil, common.Hash{}, err
-		}
-		proofHex := make([]string, 0, len(p))
-		for _, h := range p {
-			proofHex = append(proofHex, strings.ToLower(h.Hex()))
-		}
-		proofs = append(proofs, merkleProofEntry{
-			AgentID:   leaf.AgentID,
-			Index:     i,
-			LeafHash:  strings.ToLower(leaves[i].Hex()),
-			Proof:     proofHex,
-			Root:      strings.ToLower(root.Hex()),
-			BlockRef:  leaf.BlockRef,
-			LeafCodec: leafCodec,
-			TreeCodec: treeCodec,
-		})
-	}
-
-	return leafOut, proofs, root, nil
+	return buildMerkleProofs(leavesIn, leafCodec, treeCodec, func(leaf validationRootLeaf) string { return leaf.AgentID }, func(leaf validationRootLeaf) int64 { return leaf.BlockRef })
 }
 
 func canonicalJSON(v any) ([]byte, error) {

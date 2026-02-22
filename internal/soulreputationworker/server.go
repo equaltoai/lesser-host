@@ -83,33 +83,14 @@ type reputationSnapshot struct {
 }
 
 func (s *Server) handleRecompute(ctx *apptheory.EventContext, _ events.EventBridgeEvent) (any, error) {
-	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, fmt.Errorf("store not initialized")
-	}
-	if s.packs == nil {
-		return nil, fmt.Errorf("pack store not initialized")
-	}
-	if ctx == nil {
-		return nil, fmt.Errorf("event context is nil")
+	if err := s.requireRecomputePrereqs(ctx); err != nil {
+		return nil, err
 	}
 
-	if !s.cfg.SoulEnabled {
-		return map[string]any{"skipped": "soul_disabled"}, nil
+	rpcURL, contractAddr, skip := s.tipRecomputeConfig()
+	if skip != "" {
+		return map[string]any{"skipped": skip}, nil
 	}
-	if !s.cfg.TipEnabled {
-		return map[string]any{"skipped": "tip_disabled"}, nil
-	}
-
-	rpcURL := strings.TrimSpace(s.cfg.TipRPCURL)
-	if rpcURL == "" {
-		return map[string]any{"skipped": "tip_rpc_not_configured"}, nil
-	}
-
-	contractRaw := strings.TrimSpace(s.cfg.TipContractAddress)
-	if !common.IsHexAddress(contractRaw) {
-		return map[string]any{"skipped": "tip_contract_not_configured"}, nil
-	}
-	contractAddr := common.HexToAddress(contractRaw)
 
 	client, err := s.dialTip(ctx.Context(), rpcURL)
 	if err != nil {
@@ -122,16 +103,7 @@ func (s *Server) handleRecompute(ctx *apptheory.EventContext, _ events.EventBrid
 		return nil, fmt.Errorf("failed to read head block: %w", err)
 	}
 
-	fromBlock := s.cfg.SoulReputationTipStartBlock
-	if fromBlock > blockRef {
-		fromBlock = blockRef
-	}
-
-	chunkSize := s.cfg.SoulReputationTipBlockChunkSize
-	if chunkSize == 0 {
-		chunkSize = 5000
-	}
-
+	fromBlock, chunkSize := s.tipIngestRange(blockRef)
 	tipCounts, err := fetchAgentTipCounts(ctx.Context(), client, contractAddr, fromBlock, blockRef, chunkSize)
 	if err != nil {
 		return nil, fmt.Errorf("failed to ingest tips: %w", err)
@@ -141,78 +113,16 @@ func (s *Server) handleRecompute(ctx *apptheory.EventContext, _ events.EventBrid
 	if err != nil {
 		return nil, fmt.Errorf("failed to list identities: %w", err)
 	}
-	sort.Slice(identities, func(i, j int) bool {
-		ai := ""
-		aj := ""
-		if identities[i] != nil {
-			ai = strings.TrimSpace(identities[i].AgentID)
-		}
-		if identities[j] != nil {
-			aj = strings.TrimSpace(identities[j].AgentID)
-		}
-		return ai < aj
-	})
+	sort.Slice(identities, func(i, j int) bool { return soulIdentitySortKey(identities[i]) < soulIdentitySortKey(identities[j]) })
 
 	now := s.now().UTC()
-	v0cfg := soulreputation.V0Config{
-		TipScale: s.cfg.SoulReputationTipScale,
-		Weights: soulreputation.Weights{
-			Economic:   s.cfg.SoulReputationWeightEconomic,
-			Social:     s.cfg.SoulReputationWeightSocial,
-			Validation: s.cfg.SoulReputationWeightValidation,
-			Trust:      s.cfg.SoulReputationWeightTrust,
-		},
+	v0cfg := s.v0Config()
+
+	reps, updated, skippedSuspended, err := s.computeAndPersistReputations(ctx.Context(), identities, blockRef, now, v0cfg, tipCounts)
+	if err != nil {
+		return nil, err
 	}
-
-	reps := make([]models.SoulAgentReputation, 0, len(identities))
-	updated := 0
-	skippedSuspended := 0
-	totalTipEvents := int64(0)
-	for _, n := range tipCounts {
-		totalTipEvents += n
-	}
-
-	for _, identity := range identities {
-		if identity == nil {
-			continue
-		}
-
-		agentID := strings.ToLower(strings.TrimSpace(identity.AgentID))
-		if agentID == "" {
-			continue
-		}
-
-		if strings.TrimSpace(identity.Status) == models.SoulAgentStatusSuspended {
-			skippedSuspended++
-			continue
-		}
-
-		validationScore, validationsPassed, err := s.computeValidationSignals(ctx.Context(), agentID, now)
-		if err != nil {
-			return nil, fmt.Errorf("failed to compute validation signals for %s: %w", agentID, err)
-		}
-
-		signals := soulreputation.SignalCounts{
-			TipsReceived:      tipCounts[agentID],
-			Interactions:      0,
-			ValidationsPassed: validationsPassed,
-			Endorsements:      0,
-			Flags:             0,
-		}
-
-		scores := soulreputation.SignalScores{
-			Social:     0,
-			Validation: validationScore,
-			Trust:      0,
-		}
-
-		rep := soulreputation.ComputeV0(agentID, blockRef, now, v0cfg, signals, scores)
-		if putErr := s.putAgentReputation(ctx.Context(), &rep); putErr != nil {
-			return nil, fmt.Errorf("failed to persist reputation for %s: %w", agentID, putErr)
-		}
-		reps = append(reps, rep)
-		updated++
-	}
+	totalTipEvents := sumTipEvents(tipCounts)
 
 	snapshot := reputationSnapshot{
 		Version:            "1",
@@ -247,6 +157,132 @@ func (s *Server) handleRecompute(ctx *apptheory.EventContext, _ events.EventBrid
 		"tip_agents_with_tips": len(tipCounts),
 		"tip_events_total":     totalTipEvents,
 	}, nil
+}
+
+func (s *Server) requireRecomputePrereqs(ctx *apptheory.EventContext) error {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return fmt.Errorf("store not initialized")
+	}
+	if s.packs == nil {
+		return fmt.Errorf("pack store not initialized")
+	}
+	if ctx == nil {
+		return fmt.Errorf("event context is nil")
+	}
+	return nil
+}
+
+func (s *Server) tipRecomputeConfig() (rpcURL string, contractAddr common.Address, skipReason string) {
+	if !s.cfg.SoulEnabled {
+		return "", common.Address{}, "soul_disabled"
+	}
+	if !s.cfg.TipEnabled {
+		return "", common.Address{}, "tip_disabled"
+	}
+
+	rpcURL = strings.TrimSpace(s.cfg.TipRPCURL)
+	if rpcURL == "" {
+		return "", common.Address{}, "tip_rpc_not_configured"
+	}
+
+	contractRaw := strings.TrimSpace(s.cfg.TipContractAddress)
+	if !common.IsHexAddress(contractRaw) {
+		return "", common.Address{}, "tip_contract_not_configured"
+	}
+
+	return rpcURL, common.HexToAddress(contractRaw), ""
+}
+
+func (s *Server) tipIngestRange(head uint64) (fromBlock uint64, chunkSize uint64) {
+	fromBlock = s.cfg.SoulReputationTipStartBlock
+	if fromBlock > head {
+		fromBlock = head
+	}
+
+	chunkSize = s.cfg.SoulReputationTipBlockChunkSize
+	if chunkSize == 0 {
+		chunkSize = 5000
+	}
+
+	return fromBlock, chunkSize
+}
+
+func soulIdentitySortKey(identity *models.SoulAgentIdentity) string {
+	if identity == nil {
+		return ""
+	}
+	return strings.TrimSpace(identity.AgentID)
+}
+
+func sumTipEvents(tipCounts map[string]int64) int64 {
+	total := int64(0)
+	for _, n := range tipCounts {
+		total += n
+	}
+	return total
+}
+
+func (s *Server) v0Config() soulreputation.V0Config {
+	return soulreputation.V0Config{
+		TipScale: s.cfg.SoulReputationTipScale,
+		Weights: soulreputation.Weights{
+			Economic:   s.cfg.SoulReputationWeightEconomic,
+			Social:     s.cfg.SoulReputationWeightSocial,
+			Validation: s.cfg.SoulReputationWeightValidation,
+			Trust:      s.cfg.SoulReputationWeightTrust,
+		},
+	}
+}
+
+func (s *Server) computeAndPersistReputations(ctx context.Context, identities []*models.SoulAgentIdentity, blockRef uint64, now time.Time, v0cfg soulreputation.V0Config, tipCounts map[string]int64) ([]models.SoulAgentReputation, int, int, error) {
+	reps := make([]models.SoulAgentReputation, 0, len(identities))
+	updated := 0
+	skippedSuspended := 0
+
+	for _, identity := range identities {
+		if identity == nil {
+			continue
+		}
+
+		agentID := strings.ToLower(strings.TrimSpace(identity.AgentID))
+		if agentID == "" {
+			continue
+		}
+
+		if strings.TrimSpace(identity.Status) == models.SoulAgentStatusSuspended {
+			skippedSuspended++
+			continue
+		}
+
+		validationScore, validationsPassed, err := s.computeValidationSignals(ctx, agentID, now)
+		if err != nil {
+			return nil, 0, 0, fmt.Errorf("failed to compute validation signals for %s: %w", agentID, err)
+		}
+
+		signals := soulreputation.SignalCounts{
+			TipsReceived:      tipCounts[agentID],
+			Interactions:      0,
+			ValidationsPassed: validationsPassed,
+			Endorsements:      0,
+			Flags:             0,
+		}
+
+		scores := soulreputation.SignalScores{
+			Social:     0,
+			Validation: validationScore,
+			Trust:      0,
+		}
+
+		rep := soulreputation.ComputeV0(agentID, blockRef, now, v0cfg, signals, scores)
+		if err := s.putAgentReputation(ctx, &rep); err != nil {
+			return nil, 0, 0, fmt.Errorf("failed to persist reputation for %s: %w", agentID, err)
+		}
+
+		reps = append(reps, rep)
+		updated++
+	}
+
+	return reps, updated, skippedSuspended, nil
 }
 
 func reputationSnapshotS3Key(chainID int64, blockRef uint64) string {

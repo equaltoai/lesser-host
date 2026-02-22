@@ -140,7 +140,7 @@ func TestHandleSoulAgentRegistrationBegin_Success(t *testing.T) {
 	tdb.qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(theoryErrors.ErrItemNotFound).Once()
 
 	body, _ := json.Marshal(soulAgentRegistrationBeginRequest{
-		Domain:       "example.com",
+		Domain:       testDomainExampleCom,
 		LocalID:      "agent-alice",
 		Wallet:       "0x000000000000000000000000000000000000dEaD",
 		Capabilities: []string{"social"},
@@ -162,7 +162,7 @@ func TestHandleSoulAgentRegistrationBegin_Success(t *testing.T) {
 	if out.Registration.ID == "" || out.Wallet.Message == "" || out.Wallet.Nonce == "" {
 		t.Fatalf("unexpected response: %#v", out)
 	}
-	if out.Registration.DomainNormalized != "example.com" {
+	if out.Registration.DomainNormalized != testDomainExampleCom {
 		t.Fatalf("expected normalized domain, got %#v", out.Registration.DomainNormalized)
 	}
 	if out.Registration.LocalID != "agent-alice" {

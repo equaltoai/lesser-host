@@ -104,42 +104,25 @@ func (s *Server) handleRecordSoulOperationExecution(ctx *apptheory.Context) (*ap
 		return nil, appErr
 	}
 
-	id := strings.TrimSpace(ctx.Param("id"))
-	if id == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "id is required"}
+	id, txHash, appErr := parseSoulOperationExecutionInput(ctx)
+	if appErr != nil {
+		return nil, appErr
 	}
 
-	var req recordSoulExecutionRequest
-	if err := httpx.ParseJSON(ctx, &req); err != nil {
-		return nil, err
-	}
-	txHash := strings.TrimSpace(req.ExecTxHash)
-	if !isHexHash32(txHash) {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "exec_tx_hash is required"}
+	op, appErr := s.loadSoulOperationForExecution(ctx.Context(), id)
+	if appErr != nil {
+		return nil, appErr
 	}
 
-	op, err := s.getSoulOperation(ctx.Context(), id)
-	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "operation not found"}
-	}
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-
-	dial := s.dialEVM
-	if dial == nil {
-		dial = func(ctx context.Context, rpcURL string) (ethRPCClient, error) { return dialEthClient(ctx, rpcURL) }
-	}
-
-	client, err := dial(ctx.Context(), s.cfg.SoulRPCURL)
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to connect to rpc"}
+	client, appErr := s.dialSoulRPCClient(ctx.Context())
+	if appErr != nil {
+		return nil, appErr
 	}
 	defer client.Close()
 
-	receipt, err := client.TransactionReceipt(ctx.Context(), common.HexToHash(txHash))
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "receipt not found"}
+	receipt, appErr := getTransactionReceipt(ctx.Context(), client, txHash)
+	if appErr != nil {
+		return nil, appErr
 	}
 
 	now := time.Now().UTC()
@@ -202,6 +185,65 @@ func (s *Server) handleRecordSoulOperationExecution(ctx *apptheory.Context) (*ap
 	_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
 
 	return apptheory.JSON(http.StatusOK, update)
+}
+
+func parseSoulOperationExecutionInput(ctx *apptheory.Context) (id string, txHash string, appErr *apptheory.AppError) {
+	if ctx == nil {
+		return "", "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	id = strings.TrimSpace(ctx.Param("id"))
+	if id == "" {
+		return "", "", &apptheory.AppError{Code: "app.bad_request", Message: "id is required"}
+	}
+
+	var req recordSoulExecutionRequest
+	if err := httpx.ParseJSON(ctx, &req); err != nil {
+		appErr, ok := err.(*apptheory.AppError)
+		if ok {
+			return "", "", appErr
+		}
+		return "", "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid request"}
+	}
+	txHash = strings.TrimSpace(req.ExecTxHash)
+	if !isHexHash32(txHash) {
+		return "", "", &apptheory.AppError{Code: "app.bad_request", Message: "exec_tx_hash is required"}
+	}
+	return id, txHash, nil
+}
+
+func (s *Server) loadSoulOperationForExecution(ctx context.Context, id string) (*models.SoulOperation, *apptheory.AppError) {
+	op, err := s.getSoulOperation(ctx, id)
+	if theoryErrors.IsNotFound(err) {
+		return nil, &apptheory.AppError{Code: "app.not_found", Message: "operation not found"}
+	}
+	if err != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	return op, nil
+}
+
+func (s *Server) dialSoulRPCClient(ctx context.Context) (ethRPCClient, *apptheory.AppError) {
+	dial := s.dialEVM
+	if dial == nil {
+		dial = func(ctx context.Context, rpcURL string) (ethRPCClient, error) { return dialEthClient(ctx, rpcURL) }
+	}
+
+	client, err := dial(ctx, s.cfg.SoulRPCURL)
+	if err != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to connect to rpc"}
+	}
+	return client, nil
+}
+
+func getTransactionReceipt(ctx context.Context, client ethRPCClient, txHash string) (*types.Receipt, *apptheory.AppError) {
+	if client == nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	receipt, err := client.TransactionReceipt(ctx, common.HexToHash(txHash))
+	if err != nil {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "receipt not found"}
+	}
+	return receipt, nil
 }
 
 func soulReceiptSnapshotJSON(txHash string, receipt *types.Receipt) string {
@@ -289,66 +331,75 @@ func (s *Server) applySoulOperationSideEffects(ctx context.Context, client ethRP
 
 	switch kind {
 	case models.SoulOperationKindMint:
-		identity, err := s.getSoulAgentIdentity(ctx, agentID)
-		if err != nil || identity == nil {
-			return nil
-		}
-
-		// Never implicitly reinstate a suspended agent by recording a mint receipt.
-		status := models.SoulAgentStatusActive
-		if strings.TrimSpace(identity.Status) == models.SoulAgentStatusSuspended {
-			status = models.SoulAgentStatusSuspended
-		}
-
-		update := &models.SoulAgentIdentity{
-			AgentID:    agentID,
-			Status:     status,
-			MintTxHash: strings.ToLower(strings.TrimSpace(op.ExecTxHash)),
-			MintedAt:   time.Now().UTC(),
-			UpdatedAt:  time.Now().UTC(),
-		}
-		_ = update.UpdateKeys()
-		_ = s.store.DB.WithContext(ctx).Model(update).IfExists().Update("Status", "MintTxHash", "MintedAt", "UpdatedAt")
+		s.applySoulOperationMintSideEffects(ctx, op, agentID)
 	case models.SoulOperationKindRotateWallet:
-		if client == nil {
-			return nil
-		}
-		agentInt, ok := new(big.Int).SetString(strings.TrimPrefix(agentID, "0x"), 16)
-		if !ok {
-			return nil
-		}
-		contractAddr := common.HexToAddress(strings.TrimSpace(s.cfg.SoulRegistryContractAddress))
-		onChainWallet, err := s.soulRegistryGetAgentWallet(ctx, client, contractAddr, agentInt)
-		if err != nil || (onChainWallet == common.Address{}) {
-			return nil
-		}
-
-		identity, err := s.getSoulAgentIdentity(ctx, agentID)
-		if err != nil || identity == nil {
-			return nil
-		}
-		oldWallet := strings.ToLower(strings.TrimSpace(identity.Wallet))
-		newWallet := strings.ToLower(onChainWallet.Hex())
-
-		now := time.Now().UTC()
-		identity.Wallet = newWallet
-		identity.UpdatedAt = now
-		_ = identity.UpdateKeys()
-
-		_ = s.store.DB.WithContext(ctx).Model(identity).IfExists().Update("Wallet", "UpdatedAt")
-
-		// Wallet → agent index maintenance (best-effort).
-		if oldWallet != "" && !strings.EqualFold(oldWallet, newWallet) {
-			del := &models.SoulWalletAgentIndex{Wallet: oldWallet, AgentID: agentID}
-			_ = del.UpdateKeys()
-			_ = s.store.DB.WithContext(ctx).Model(del).Delete()
-		}
-		if newWallet != "" {
-			wi := &models.SoulWalletAgentIndex{Wallet: newWallet, AgentID: agentID}
-			_ = wi.UpdateKeys()
-			_ = s.store.DB.WithContext(ctx).Model(wi).CreateOrUpdate()
-		}
+		s.applySoulOperationRotateWalletSideEffects(ctx, client, agentID)
 	}
 
 	return nil
+}
+
+func (s *Server) applySoulOperationMintSideEffects(ctx context.Context, op *models.SoulOperation, agentID string) {
+	identity, err := s.getSoulAgentIdentity(ctx, agentID)
+	if err != nil || identity == nil {
+		return
+	}
+
+	// Never implicitly reinstate a suspended agent by recording a mint receipt.
+	status := models.SoulAgentStatusActive
+	if strings.TrimSpace(identity.Status) == models.SoulAgentStatusSuspended {
+		status = models.SoulAgentStatusSuspended
+	}
+
+	now := time.Now().UTC()
+	update := &models.SoulAgentIdentity{
+		AgentID:    agentID,
+		Status:     status,
+		MintTxHash: strings.ToLower(strings.TrimSpace(op.ExecTxHash)),
+		MintedAt:   now,
+		UpdatedAt:  now,
+	}
+	_ = update.UpdateKeys()
+	_ = s.store.DB.WithContext(ctx).Model(update).IfExists().Update("Status", "MintTxHash", "MintedAt", "UpdatedAt")
+}
+
+func (s *Server) applySoulOperationRotateWalletSideEffects(ctx context.Context, client ethRPCClient, agentID string) {
+	if client == nil {
+		return
+	}
+	agentInt, ok := new(big.Int).SetString(strings.TrimPrefix(agentID, "0x"), 16)
+	if !ok {
+		return
+	}
+	contractAddr := common.HexToAddress(strings.TrimSpace(s.cfg.SoulRegistryContractAddress))
+	onChainWallet, err := s.soulRegistryGetAgentWallet(ctx, client, contractAddr, agentInt)
+	if err != nil || (onChainWallet == common.Address{}) {
+		return
+	}
+
+	identity, err := s.getSoulAgentIdentity(ctx, agentID)
+	if err != nil || identity == nil {
+		return
+	}
+	oldWallet := strings.ToLower(strings.TrimSpace(identity.Wallet))
+	newWallet := strings.ToLower(onChainWallet.Hex())
+
+	now := time.Now().UTC()
+	identity.Wallet = newWallet
+	identity.UpdatedAt = now
+	_ = identity.UpdateKeys()
+
+	_ = s.store.DB.WithContext(ctx).Model(identity).IfExists().Update("Wallet", "UpdatedAt")
+
+	// Wallet → agent index maintenance (best-effort).
+	if oldWallet != "" && !strings.EqualFold(oldWallet, newWallet) {
+		del := &models.SoulWalletAgentIndex{Wallet: oldWallet, AgentID: agentID}
+		_ = del.UpdateKeys()
+		_ = s.store.DB.WithContext(ctx).Model(del).Delete()
+	}
+	if newWallet != "" {
+		wi := &models.SoulWalletAgentIndex{Wallet: newWallet, AgentID: agentID}
+		_ = wi.UpdateKeys()
+		_ = s.store.DB.WithContext(ctx).Model(wi).CreateOrUpdate()
+	}
 }

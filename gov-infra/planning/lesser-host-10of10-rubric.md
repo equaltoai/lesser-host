@@ -68,6 +68,8 @@ Enforcement rule (anti-drift):
 | SEC-3 | 2 | Supply-chain verification green | GitHub Actions must be pinned by commit SHA (no `uses: ...@vN`); Node lifecycle hooks scanned with scripts-disabled installs; Go/Python metadata scans (implemented in verifier; see `gov-infra/evidence/SEC-3-output.log`) |
 | SEC-4 | 2 | Domain-specific P0 regression tests (security critical paths) | Run `TestP0_*` regression suite (bootstrap/authz invariants, SSRF defense, instance auth) (implemented in verifier; see `gov-infra/evidence/SEC-4-output.log`). |
 
+SEC-1 note: Slither runs from a repo-local Python venv under `gov-infra/.tools/` (created/managed by the verifier); do not rely on a system-wide Slither install.
+
 **10/10 definition:** SEC-1 through SEC-4 pass.
 
 ## Compliance Readiness (CMP) — auditability and evidence

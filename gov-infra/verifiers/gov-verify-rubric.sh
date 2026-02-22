@@ -49,6 +49,9 @@ fi
 # M1 intent: pin golangci-lint to unblock deterministic lint/config verification.
 PIN_GOLANGCI_LINT_VERSION="v2.10.1"
 PIN_GOVULNCHECK_VERSION="v1.1.4"
+PIN_SLITHER_VERSION="0.11.5"
+PIN_SOLC_SELECT_VERSION="1.2.0"
+PIN_SOLC_VERSION="0.8.24"
 
 # Optional feature flags (opt-in pack features).
 FEATURE_OSS_RELEASE="false"
@@ -1544,24 +1547,45 @@ __GOV_CMD_LOGGING__
 
 CMD_SAST=$(cat <<'__GOV_CMD_SAST__'
 # SAST is implemented via golangci-lint with gosec enabled + Slither for Solidity.
-# This is BLOCKED until golangci-lint is pinned (and slither is installed).
+# Slither and solc-select are installed into a repo-local Python venv (never system-wide).
 
 golangci-lint run --timeout=10m
 
-if ! command -v slither >/dev/null 2>&1; then
-  echo "BLOCKED: slither is required" >&2
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "BLOCKED: python3 is required to run slither" >&2
   exit 2
 fi
 
-if ! command -v solc-select >/dev/null 2>&1; then
-  echo "BLOCKED: solc-select is required for slither" >&2
-  exit 2
+venv_dir="${GOV_TOOLS_DIR}/python/venv-sec-1-slither"
+venv_python="${venv_dir}/bin/python"
+venv_bin="${venv_dir}/bin"
+
+if [[ ! -x "${venv_python}" ]]; then
+  echo "Creating SEC-1 slither venv at ${venv_dir}..."
+  if ! python3 -m venv "${venv_dir}"; then
+    echo "BLOCKED: failed to create python venv (python3 -m venv)" >&2
+    exit 2
+  fi
 fi
 
-solc-select install 0.8.24
-solc-select use 0.8.24
+export PATH="${venv_bin}:${PATH}"
+
+echo "Installing pinned slither/solc-select (SEC-1) into venv..."
+PIP_DISABLE_PIP_VERSION_CHECK=1 "${venv_python}" -m pip install \
+  "slither-analyzer==${PIN_SLITHER_VERSION}" \
+  "solc-select==${PIN_SOLC_SELECT_VERSION}"
+
+sec1_home="${GOV_TOOLS_DIR}/python/home-sec-1"
+mkdir -p "${sec1_home}"
 
 (
+  export HOME="${sec1_home}"
+
+  solc-select install "${PIN_SOLC_VERSION}"
+  solc-select use "${PIN_SOLC_VERSION}"
+
+  export PATH="${HOME}/.solc-select:${PATH}"
+
   cd contracts
   npm ci
   slither contracts/TipSplitter.sol --config-file slither.config.json

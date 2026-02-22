@@ -20,6 +20,20 @@ Notes:
 - Verifier scripts are intentionally safe to commit **without** execute permissions; always run via `bash …`.
 - Missing or unimplemented checks should be recorded as `BLOCKED`, not “fixed” by weakening gates.
 - `SEC-3` (supply-chain) may materialize Node dependencies with scripts disabled and scan `node_modules` lifecycle hooks, plus lightweight scans of `go.mod` and Python dependency files. Use the allowlist only with justification: `gov-infra/planning/lesser-host-supply-chain-allowlist.txt`.
+- `SEC-1` (Slither) runs from a **repo-local Python venv**, created and managed automatically under `gov-infra/.tools/` (do not install Slither globally).
+
+## Solidity SAST (SEC-1): Slither runs in a venv
+
+`SEC-1` uses Slither to scan Solidity under `contracts/`. Slither (and `solc-select`) are installed into a **repo-local**
+Python virtualenv so the verifier is deterministic and doesn’t depend on host machine/global Python packages.
+
+Paths (created automatically by `bash gov-infra/verifiers/gov-verify-rubric.sh`):
+- Slither venv: `gov-infra/.tools/python/venv-sec-1-slither/`
+- `solc-select` home (Solidity compiler installs): `gov-infra/.tools/python/home-sec-1/`
+
+If you need to run Slither manually:
+- `source gov-infra/.tools/python/venv-sec-1-slither/bin/activate`
+- `cd contracts && slither contracts/TipSplitter.sol --config-file slither.config.json`
 
 ## What’s In Here
 

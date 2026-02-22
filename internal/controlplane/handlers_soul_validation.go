@@ -15,6 +15,8 @@ import (
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
+const soulValidatorSystem = "system"
+
 type soulIssueValidationChallengeRequest struct {
 	ChallengeType string `json:"challenge_type"`
 	ValidatorID   string `json:"validator_id,omitempty"` // agentId of validator, or "system"
@@ -41,10 +43,9 @@ func (s *Server) handleSoulIssueValidationChallenge(ctx *apptheory.Context) (*ap
 	if appErr != nil {
 		return nil, appErr
 	}
-	if _, err := s.getSoulAgentIdentity(ctx.Context(), agentIDHex); theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "agent not found"}
-	} else if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	identityErr := s.requireSoulAgentIdentityExists(ctx.Context(), agentIDHex)
+	if identityErr != nil {
+		return nil, identityErr
 	}
 
 	var req soulIssueValidationChallengeRequest
@@ -52,19 +53,13 @@ func (s *Server) handleSoulIssueValidationChallenge(ctx *apptheory.Context) (*ap
 		return nil, err
 	}
 
-	challengeType := strings.ToLower(strings.TrimSpace(req.ChallengeType))
-	if !soulvalidation.IsValidChallengeType(challengeType) {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid challenge_type"}
+	challengeType, appErr := normalizeSoulValidationChallengeType(req.ChallengeType)
+	if appErr != nil {
+		return nil, appErr
 	}
-
-	validatorID := strings.ToLower(strings.TrimSpace(req.ValidatorID))
-	if validatorID == "" {
-		validatorID = "system"
-	}
-	if validatorID != "system" {
-		if _, _, vErr := parseSoulAgentIDHex(validatorID); vErr != nil {
-			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid validator_id"}
-		}
+	validatorID, appErr := normalizeSoulValidationValidatorID(req.ValidatorID)
+	if appErr != nil {
+		return nil, appErr
 	}
 
 	id, err := newToken(16)
@@ -73,13 +68,7 @@ func (s *Server) handleSoulIssueValidationChallenge(ctx *apptheory.Context) (*ap
 	}
 
 	now := time.Now().UTC()
-	ttlSeconds := req.TTLSeconds
-	if ttlSeconds < 0 {
-		ttlSeconds = 0
-	}
-	if ttlSeconds > 0 && ttlSeconds > int64((30*24*time.Hour).Seconds()) {
-		ttlSeconds = int64((30 * 24 * time.Hour).Seconds())
-	}
+	ttlSeconds := normalizeSoulValidationChallengeTTL(req.TTLSeconds)
 
 	chal := &models.SoulAgentValidationChallenge{
 		AgentID:       agentIDHex,
@@ -117,6 +106,53 @@ func (s *Server) handleSoulIssueValidationChallenge(ctx *apptheory.Context) (*ap
 	return apptheory.JSON(http.StatusOK, soulIssueValidationChallengeResponse{Challenge: *chal})
 }
 
+func (s *Server) requireSoulAgentIdentityExists(ctx context.Context, agentIDHex string) *apptheory.AppError {
+	if s == nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	_, err := s.getSoulAgentIdentity(ctx, agentIDHex)
+	if theoryErrors.IsNotFound(err) {
+		return &apptheory.AppError{Code: "app.not_found", Message: "agent not found"}
+	}
+	if err != nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	return nil
+}
+
+func normalizeSoulValidationChallengeType(raw string) (string, *apptheory.AppError) {
+	challengeType := strings.ToLower(strings.TrimSpace(raw))
+	if !soulvalidation.IsValidChallengeType(challengeType) {
+		return "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid challenge_type"}
+	}
+	return challengeType, nil
+}
+
+func normalizeSoulValidationValidatorID(raw string) (string, *apptheory.AppError) {
+	validatorID := strings.ToLower(strings.TrimSpace(raw))
+	if validatorID == "" {
+		return soulValidatorSystem, nil
+	}
+	if validatorID == soulValidatorSystem {
+		return validatorID, nil
+	}
+	if _, _, vErr := parseSoulAgentIDHex(validatorID); vErr != nil {
+		return "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid validator_id"}
+	}
+	return validatorID, nil
+}
+
+func normalizeSoulValidationChallengeTTL(ttlSeconds int64) int64 {
+	if ttlSeconds < 0 {
+		return 0
+	}
+	max := int64((30 * 24 * time.Hour).Seconds())
+	if ttlSeconds > max {
+		return max
+	}
+	return ttlSeconds
+}
+
 type soulRecordValidationResponseRequest struct {
 	Response string `json:"response"`
 }
@@ -145,15 +181,9 @@ func (s *Server) handleSoulRecordValidationResponse(ctx *apptheory.Context) (*ap
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "challenge_id is required"}
 	}
 
-	chal, err := s.getSoulValidationChallenge(ctx.Context(), agentIDHex, challengeID)
-	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "challenge not found"}
-	}
-	if err != nil || chal == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-	if strings.TrimSpace(chal.Status) == models.SoulValidationChallengeStatusEvaluated {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "challenge is already evaluated"}
+	chal, appErr := s.getUnevaluatedSoulValidationChallenge(ctx.Context(), agentIDHex, challengeID)
+	if appErr != nil {
+		return nil, appErr
 	}
 
 	var req soulRecordValidationResponseRequest
@@ -212,15 +242,9 @@ func (s *Server) handleSoulEvaluateValidationChallenge(ctx *apptheory.Context) (
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "challenge_id is required"}
 	}
 
-	chal, err := s.getSoulValidationChallenge(ctx.Context(), agentIDHex, challengeID)
-	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "challenge not found"}
-	}
-	if err != nil || chal == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-	if strings.TrimSpace(chal.Status) == models.SoulValidationChallengeStatusEvaluated {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "challenge is already evaluated"}
+	chal, appErr := s.getUnevaluatedSoulValidationChallenge(ctx.Context(), agentIDHex, challengeID)
+	if appErr != nil {
+		return nil, appErr
 	}
 
 	var req soulEvaluateValidationChallengeRequest
@@ -228,9 +252,9 @@ func (s *Server) handleSoulEvaluateValidationChallenge(ctx *apptheory.Context) (
 		return nil, err
 	}
 
-	result := strings.ToLower(strings.TrimSpace(req.Result))
-	if result != models.SoulValidationResultPass && result != models.SoulValidationResultFail && result != models.SoulValidationResultTimeout {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid result"}
+	result, appErr := normalizeSoulValidationResult(req.Result)
+	if appErr != nil {
+		return nil, appErr
 	}
 
 	score := soulvalidation.ScoreDelta(strings.TrimSpace(chal.ChallengeType), result)
@@ -273,6 +297,30 @@ func (s *Server) handleSoulEvaluateValidationChallenge(ctx *apptheory.Context) (
 	}).Create()
 
 	return apptheory.JSON(http.StatusOK, soulEvaluateValidationChallengeResponse{Challenge: *chal, Record: *rec})
+}
+
+func (s *Server) getUnevaluatedSoulValidationChallenge(ctx context.Context, agentIDHex string, challengeID string) (*models.SoulAgentValidationChallenge, *apptheory.AppError) {
+	chal, err := s.getSoulValidationChallenge(ctx, agentIDHex, challengeID)
+	if theoryErrors.IsNotFound(err) {
+		return nil, &apptheory.AppError{Code: "app.not_found", Message: "challenge not found"}
+	}
+	if err != nil || chal == nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if strings.TrimSpace(chal.Status) == models.SoulValidationChallengeStatusEvaluated {
+		return nil, &apptheory.AppError{Code: "app.conflict", Message: "challenge is already evaluated"}
+	}
+	return chal, nil
+}
+
+func normalizeSoulValidationResult(raw string) (string, *apptheory.AppError) {
+	result := strings.ToLower(strings.TrimSpace(raw))
+	switch result {
+	case models.SoulValidationResultPass, models.SoulValidationResultFail, models.SoulValidationResultTimeout:
+		return result, nil
+	default:
+		return "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid result"}
+	}
 }
 
 func (s *Server) getSoulValidationChallenge(ctx context.Context, agentID string, challengeID string) (*models.SoulAgentValidationChallenge, error) {

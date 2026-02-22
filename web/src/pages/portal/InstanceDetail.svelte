@@ -724,14 +724,15 @@
 					<DefinitionItem label="Step" monospace>{formatStep(job?.step)}</DefinitionItem>
 					<DefinitionItem label="Updated" monospace>{job?.updated_at}</DefinitionItem>
 					<DefinitionItem label="Lesser version" monospace>{job?.lesser_version || '—'}</DefinitionItem>
-					<DefinitionItem label="Run id" monospace>{job?.run_id || '—'}</DefinitionItem>
-					<DefinitionItem label="Run url" monospace>
-						{#if safeHref(job?.run_url)}
-							<a href={safeHref(job.run_url)} target="_blank" rel="noopener noreferrer">Open logs</a>
-						{:else}
-							—
-						{/if}
-					</DefinitionItem>
+						<DefinitionItem label="Run id" monospace>{job?.run_id || '—'}</DefinitionItem>
+						<DefinitionItem label="Run url" monospace>
+							{@const runUrl = safeHref(job?.run_url)}
+							{#if runUrl}
+								<a href={runUrl} target="_blank" rel="noopener noreferrer">Open logs</a>
+							{:else}
+								—
+							{/if}
+						</DefinitionItem>
 					<DefinitionItem label="Verify translation" monospace>
 						{#if job?.verify_translation_ok === true}
 							ok

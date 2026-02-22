@@ -28,8 +28,8 @@ func TestP0_RequireSetupSession_UnauthorizedWithoutBearer(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *apptheory.AppError, got %T: %v", err, err)
 	}
-	if appErr.Code != "app.unauthorized" {
-		t.Fatalf("expected app.unauthorized, got %q", appErr.Code)
+	if appErr.Code != testProvisionConsentCodeUnauthorized {
+		t.Fatalf("expected %s, got %q", testProvisionConsentCodeUnauthorized, appErr.Code)
 	}
 }
 

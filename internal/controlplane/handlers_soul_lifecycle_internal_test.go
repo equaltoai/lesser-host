@@ -32,6 +32,8 @@ import (
 	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
+const soulLifecycleTestAgentIDHex = "0x8db124b1d48e366002db4e61cc1501eeb8561e1ef06fd6f9abf9f984501d13ab"
+
 type fakeEVMClient struct {
 	callContract func(ctx context.Context, msg ethereum.CallMsg) ([]byte, error)
 }
@@ -151,7 +153,7 @@ func TestHandleSoulAgentRotateWalletBegin_CreatesRotationRequest(t *testing.T) {
 		},
 	}
 
-	agentIDHex := "0x8db124b1d48e366002db4e61cc1501eeb8561e1ef06fd6f9abf9f984501d13ab"
+	agentIDHex := soulLifecycleTestAgentIDHex
 	currentWallet := "0x000000000000000000000000000000000000beef"
 
 	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
@@ -249,7 +251,7 @@ func TestHandleSoulAgentRotateWalletConfirm_CreatesOperation(t *testing.T) {
 		},
 	}
 
-	agentIDHex := "0x8db124b1d48e366002db4e61cc1501eeb8561e1ef06fd6f9abf9f984501d13ab"
+	agentIDHex := soulLifecycleTestAgentIDHex
 	_, agentInt, _ := parseSoulAgentIDHex(agentIDHex)
 	nonce := big.NewInt(7)
 	deadline := time.Now().UTC().Add(30 * time.Minute).Unix()
@@ -368,7 +370,7 @@ func TestHandleSoulAgentUpdateRegistration_PublishesToS3(t *testing.T) {
 		},
 	}
 
-	agentIDHex := "0x8db124b1d48e366002db4e61cc1501eeb8561e1ef06fd6f9abf9f984501d13ab"
+	agentIDHex := soulLifecycleTestAgentIDHex
 
 	key, _ := crypto.GenerateKey()
 	wallet := strings.ToLower(crypto.PubkeyToAddress(key.PublicKey).Hex())
@@ -432,8 +434,17 @@ func TestHandleSoulAgentUpdateRegistration_PublishesToS3(t *testing.T) {
 	sigHex := "0x" + hex.EncodeToString(sig)
 
 	reg := map[string]any{}
-	_ = json.Unmarshal(unsignedBytes, &reg)
-	regAtt := reg["attestations"].(map[string]any)
+	if unmarshalErr := json.Unmarshal(unsignedBytes, &reg); unmarshalErr != nil {
+		t.Fatalf("unmarshal unsigned: %v", unmarshalErr)
+	}
+	regAttAny, ok := reg["attestations"]
+	if !ok {
+		t.Fatalf("expected attestations object")
+	}
+	regAtt, ok := regAttAny.(map[string]any)
+	if !ok {
+		t.Fatalf("expected attestations object, got %T", regAttAny)
+	}
 	regAtt["selfAttestation"] = sigHex
 	regBytes, _ := json.Marshal(reg)
 

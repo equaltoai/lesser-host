@@ -80,13 +80,13 @@ func TestSoulValidationHandlers_IssueRespondEvaluate(t *testing.T) {
 		t.Fatalf("issue: resp=%#v err=%v", issueResp, err)
 	}
 	var issueOut soulIssueValidationChallengeResponse
-	if err := json.Unmarshal(issueResp.Body, &issueOut); err != nil {
-		t.Fatalf("unmarshal issue: %v", err)
+	if unmarshalErr := json.Unmarshal(issueResp.Body, &issueOut); unmarshalErr != nil {
+		t.Fatalf("unmarshal issue: %v", unmarshalErr)
 	}
 	if issueOut.Challenge.AgentID != agentID || issueOut.Challenge.ChallengeID == "" || issueOut.Challenge.Status != models.SoulValidationChallengeStatusIssued {
 		t.Fatalf("unexpected challenge: %#v", issueOut.Challenge)
 	}
-	if issueOut.Challenge.ValidatorID != "system" {
+	if issueOut.Challenge.ValidatorID != soulValidatorSystem {
 		t.Fatalf("expected default validator, got %#v", issueOut.Challenge.ValidatorID)
 	}
 
@@ -98,7 +98,7 @@ func TestSoulValidationHandlers_IssueRespondEvaluate(t *testing.T) {
 			AgentID:       agentID,
 			ChallengeID:   chalID,
 			ChallengeType: "identity_verify",
-			ValidatorID:   "system",
+			ValidatorID:   soulValidatorSystem,
 			Request:       "req",
 			Status:        models.SoulValidationChallengeStatusIssued,
 			IssuedAt:      time.Now().Add(-time.Minute).UTC(),
@@ -174,4 +174,3 @@ func TestSoulValidationHandlers_NotFoundAndBadRequest(t *testing.T) {
 		t.Fatalf("expected not_found")
 	}
 }
-

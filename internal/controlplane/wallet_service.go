@@ -114,7 +114,7 @@ func (s *Server) createWalletChallenge(ctx context.Context, address string, chai
 
 	domain := strings.TrimSpace(s.cfg.WebAuthnRPID)
 	if domain == "" {
-		domain = "lesser.host"
+		domain = lesserHostDomain
 	}
 	message := buildWalletAuthMessage(domain, address, chainID, nonce, username, now, expiresAt)
 

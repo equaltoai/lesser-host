@@ -148,116 +148,118 @@ func TestAdvanceProvisionReceiptIngest_ContinuesToSoulWhenEnabled(t *testing.T) 
 	if err != nil || delay != 0 || done {
 		t.Fatalf("expected continue to soul, got delay=%v done=%v err=%v", delay, done, err)
 	}
-	if job.Step != provisionStepSoulDeployStart || !strings.Contains(job.Note, "starting soul deploy runner") || strings.TrimSpace(job.RunID) != "" {
+	if job.Step != provisionStepSoulDeployStart || !strings.Contains(job.Note, noteStartingSoulDeployRunner) || strings.TrimSpace(job.RunID) != "" {
 		t.Fatalf("unexpected job state: %#v", job)
 	}
 }
 
-func TestAdvanceProvisionBodyDeployStart_Branches(t *testing.T) {
+func TestAdvanceProvisionBodyDeployStart_SkipsWhenBodyDisabled(t *testing.T) {
 	t.Parallel()
 
 	now := time.Unix(200, 0).UTC()
+	s := newProvisionServerWithStore(t)
 
-	t.Run("skips_when_body_disabled", func(t *testing.T) {
-		t.Parallel()
+	cases := []struct {
+		name        string
+		soulEnabled bool
+		wantStep    string
+		wantDone    bool
+	}{
+		{name: "no_soul", soulEnabled: false, wantStep: provisionStepDone, wantDone: true},
+		{name: "continue_to_soul", soulEnabled: true, wantStep: provisionStepSoulDeployStart, wantDone: false},
+	}
 
-		s := newProvisionServerWithStore(t)
-		cases := []struct {
-			name        string
-			soulEnabled bool
-			wantStep    string
-			wantDone    bool
-		}{
-			{name: "no_soul", soulEnabled: false, wantStep: provisionStepDone, wantDone: true},
-			{name: "continue_to_soul", soulEnabled: true, wantStep: provisionStepSoulDeployStart, wantDone: false},
-		}
-
-		for _, c := range cases {
-			job := &models.ProvisionJob{
-				ID:                "j1",
-				InstanceSlug:      "demo",
-				Status:            models.ProvisionJobStatusRunning,
-				Step:              provisionStepBodyDeployStart,
-				MaxAttempts:       3,
-				BodyEnabled:       false,
-				SoulEnabled:       c.soulEnabled,
-				SoulProvisionedAt: time.Time{},
-			}
-			delay, done, err := s.advanceProvisionBodyDeployStart(context.Background(), job, "req", now)
-			if err != nil || delay != 0 || done != c.wantDone || job.Step != c.wantStep {
-				t.Fatalf("%s: unexpected: delay=%v done=%v job=%#v err=%v", c.name, delay, done, job, err)
-			}
-			if !c.soulEnabled {
-				if job.Status != models.ProvisionJobStatusOK || job.Note != noteProvisioned {
-					t.Fatalf("%s: expected ok+provisioned, got %#v", c.name, job)
-				}
-			}
-		}
-	})
-
-	t.Run("body_already_provisioned_goes_to_mcp_start", func(t *testing.T) {
-		t.Parallel()
-
-		s := newProvisionServerWithStore(t)
+	for _, c := range cases {
 		job := &models.ProvisionJob{
 			ID:                "j1",
 			InstanceSlug:      "demo",
 			Status:            models.ProvisionJobStatusRunning,
 			Step:              provisionStepBodyDeployStart,
 			MaxAttempts:       3,
-			BodyEnabled:       true,
-			BodyProvisionedAt: now.Add(-1 * time.Minute),
-			RunID:             "run-should-clear",
+			BodyEnabled:       false,
+			SoulEnabled:       c.soulEnabled,
+			SoulProvisionedAt: time.Time{},
 		}
 		delay, done, err := s.advanceProvisionBodyDeployStart(context.Background(), job, "req", now)
-		if err != nil || delay != 0 || done || job.Step != provisionStepDeployMcpStart || strings.TrimSpace(job.RunID) != "" {
-			t.Fatalf("unexpected: delay=%v done=%v job=%#v err=%v", delay, done, job, err)
+		if err != nil || delay != 0 || done != c.wantDone || job.Step != c.wantStep {
+			t.Fatalf("%s: unexpected: delay=%v done=%v job=%#v err=%v", c.name, delay, done, job, err)
 		}
-	})
+		if !c.soulEnabled {
+			if job.Status != models.ProvisionJobStatusOK || job.Note != noteProvisioned {
+				t.Fatalf("%s: expected ok+provisioned, got %#v", c.name, job)
+			}
+		}
+	}
+}
 
-	t.Run("run_already_set_advances_to_wait", func(t *testing.T) {
-		t.Parallel()
+func TestAdvanceProvisionBodyDeployStart_BodyAlreadyProvisioned_GoesToMcpStart(t *testing.T) {
+	t.Parallel()
 
-		s := newProvisionServerWithStore(t)
-		job := &models.ProvisionJob{
-			ID:           "j1",
-			InstanceSlug: "demo",
-			Status:       models.ProvisionJobStatusRunning,
-			Step:         provisionStepBodyDeployStart,
-			MaxAttempts:  3,
-			BodyEnabled:  true,
-			RunID:        "run1",
-		}
-		delay, done, err := s.advanceProvisionBodyDeployStart(context.Background(), job, "req", now)
-		if err != nil || done || delay != provisionDefaultPollDelay || job.Step != provisionStepBodyDeployWait {
-			t.Fatalf("unexpected: delay=%v done=%v job=%#v err=%v", delay, done, job, err)
-		}
-	})
+	now := time.Unix(200, 0).UTC()
 
-	t.Run("start_runner_error_retries_then_fails", func(t *testing.T) {
-		t.Parallel()
+	s := newProvisionServerWithStore(t)
+	job := &models.ProvisionJob{
+		ID:                "j1",
+		InstanceSlug:      "demo",
+		Status:            models.ProvisionJobStatusRunning,
+		Step:              provisionStepBodyDeployStart,
+		MaxAttempts:       3,
+		BodyEnabled:       true,
+		BodyProvisionedAt: now.Add(-1 * time.Minute),
+		RunID:             "run-should-clear",
+	}
+	delay, done, err := s.advanceProvisionBodyDeployStart(context.Background(), job, "req", now)
+	if err != nil || delay != 0 || done || job.Step != provisionStepDeployMcpStart || strings.TrimSpace(job.RunID) != "" {
+		t.Fatalf("unexpected: delay=%v done=%v job=%#v err=%v", delay, done, job, err)
+	}
+}
 
-		s := newProvisionServerWithStore(t)
-		job := &models.ProvisionJob{
-			ID:           "j1",
-			InstanceSlug: "demo",
-			Status:       models.ProvisionJobStatusRunning,
-			Step:         provisionStepBodyDeployStart,
-			MaxAttempts:  3,
-			BodyEnabled:  true,
-			CreatedAt:    now.Add(-1 * time.Minute),
-		}
-		delay, done, err := s.advanceProvisionBodyDeployStart(context.Background(), job, "req", now)
-		if err != nil || done || delay <= 0 || job.Attempts != 1 {
-			t.Fatalf("expected retry, got delay=%v done=%v job=%#v err=%v", delay, done, job, err)
-		}
+func TestAdvanceProvisionBodyDeployStart_RunAlreadySet_AdvancesToWait(t *testing.T) {
+	t.Parallel()
 
-		job.Attempts = job.MaxAttempts - 1
-		delay, done, err = s.advanceProvisionBodyDeployStart(context.Background(), job, "req", now)
-		if err != nil || done || delay != 0 || job.Step != provisionStepFailed || job.ErrorCode != "body_deploy_start_failed" {
-			t.Fatalf("expected fail, got delay=%v done=%v job=%#v err=%v", delay, done, job, err)
-		}
-	})
+	now := time.Unix(200, 0).UTC()
+
+	s := newProvisionServerWithStore(t)
+	job := &models.ProvisionJob{
+		ID:           "j1",
+		InstanceSlug: "demo",
+		Status:       models.ProvisionJobStatusRunning,
+		Step:         provisionStepBodyDeployStart,
+		MaxAttempts:  3,
+		BodyEnabled:  true,
+		RunID:        "run1",
+	}
+	delay, done, err := s.advanceProvisionBodyDeployStart(context.Background(), job, "req", now)
+	if err != nil || done || delay != provisionDefaultPollDelay || job.Step != provisionStepBodyDeployWait {
+		t.Fatalf("unexpected: delay=%v done=%v job=%#v err=%v", delay, done, job, err)
+	}
+}
+
+func TestAdvanceProvisionBodyDeployStart_StartRunnerError_RetriesThenFails(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(200, 0).UTC()
+
+	s := newProvisionServerWithStore(t)
+	job := &models.ProvisionJob{
+		ID:           "j1",
+		InstanceSlug: "demo",
+		Status:       models.ProvisionJobStatusRunning,
+		Step:         provisionStepBodyDeployStart,
+		MaxAttempts:  3,
+		BodyEnabled:  true,
+		CreatedAt:    now.Add(-1 * time.Minute),
+	}
+	delay, done, err := s.advanceProvisionBodyDeployStart(context.Background(), job, "req", now)
+	if err != nil || done || delay <= 0 || job.Attempts != 1 {
+		t.Fatalf("expected retry, got delay=%v done=%v job=%#v err=%v", delay, done, job, err)
+	}
+
+	job.Attempts = job.MaxAttempts - 1
+	delay, done, err = s.advanceProvisionBodyDeployStart(context.Background(), job, "req", now)
+	if err != nil || done || delay != 0 || job.Step != provisionStepFailed || job.ErrorCode != "body_deploy_start_failed" {
+		t.Fatalf("expected fail, got delay=%v done=%v job=%#v err=%v", delay, done, job, err)
+	}
 }
 
 func TestAdvanceProvisionDeployMcpStart_Branches(t *testing.T) {
