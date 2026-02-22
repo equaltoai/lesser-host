@@ -346,6 +346,9 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
     /// @dev DO NOT allow rebasing tokens. This contract defends against fee-on-transfer but cannot handle rebasing shifts.
     function setTokenAllowed(address token, bool allowed) external onlyOwner {
         require(token != address(0), "TipSplitter: token required");
+        if (allowed) {
+            require(token.code.length > 0, "TipSplitter: token has no code");
+        }
 
         if (allowed && !allowedTokens[token]) {
             allowedTokenList.push(token);
@@ -375,6 +378,7 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
 
     function setLesserWallet(address newWallet) external onlyOwner {
         require(newWallet != address(0), "TipSplitter: invalid wallet");
+        require(newWallet != lesserWallet, "TipSplitter: no-op");
         require(_hostWalletRefCount[newWallet] == 0, "TipSplitter: wallet is a host wallet");
         address old = lesserWallet;
         lesserWallet = newWallet;
@@ -406,8 +410,9 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
 
     /// @notice Set the maximum tip amount for a token. Use address(0) for ETH. 0 = unlimited.
     function setMaxTipAmount(address token, uint256 amount) external onlyOwner {
-        if (amount > 0 && hasCustomMinTipAmount[token]) {
-            require(amount >= minTipAmount[token], "TipSplitter: max below min");
+        if (amount > 0) {
+            uint256 effectiveMin = _effectiveMinTipAmount(token);
+            require(amount >= effectiveMin, "TipSplitter: max below min");
         }
         maxTipAmount[token] = amount;
         emit MaxTipAmountSet(token, amount);

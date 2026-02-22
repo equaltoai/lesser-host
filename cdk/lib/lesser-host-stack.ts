@@ -48,6 +48,7 @@ export class LesserHostStack extends cdk.Stack {
 			sortKey: { name: 'SK', type: dynamodb.AttributeType.STRING },
 			billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
 			timeToLiveAttribute: 'ttl',
+			pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
 			removalPolicy,
 		});
 
@@ -73,18 +74,36 @@ export class LesserHostStack extends cdk.Stack {
 			autoDeleteObjects: stage !== 'live',
 		});
 
+		const previewDLQ = new sqs.Queue(this, 'PreviewDLQ', {
+			queueName: `${namePrefix}-preview-dlq`,
+			retentionPeriod: cdk.Duration.days(14),
+		});
+		previewDLQ.applyRemovalPolicy(removalPolicy);
 		const previewQueue = new sqs.Queue(this, 'PreviewQueue', {
 			queueName: `${namePrefix}-preview-queue`,
+			deadLetterQueue: { queue: previewDLQ, maxReceiveCount: 3 },
 		});
 		previewQueue.applyRemovalPolicy(removalPolicy);
 
+		const safetyDLQ = new sqs.Queue(this, 'SafetyDLQ', {
+			queueName: `${namePrefix}-safety-dlq`,
+			retentionPeriod: cdk.Duration.days(14),
+		});
+		safetyDLQ.applyRemovalPolicy(removalPolicy);
 		const safetyQueue = new sqs.Queue(this, 'SafetyQueue', {
 			queueName: `${namePrefix}-safety-queue`,
+			deadLetterQueue: { queue: safetyDLQ, maxReceiveCount: 3 },
 		});
 		safetyQueue.applyRemovalPolicy(removalPolicy);
 
+		const provisionDLQ = new sqs.Queue(this, 'ProvisionDLQ', {
+			queueName: `${namePrefix}-provision-dlq`,
+			retentionPeriod: cdk.Duration.days(14),
+		});
+		provisionDLQ.applyRemovalPolicy(removalPolicy);
 		const provisionQueue = new sqs.Queue(this, 'ProvisionQueue', {
 			queueName: `${namePrefix}-provision-queue`,
+			deadLetterQueue: { queue: provisionDLQ, maxReceiveCount: 3 },
 		});
 		provisionQueue.applyRemovalPolicy(removalPolicy);
 
@@ -1045,7 +1064,11 @@ export class LesserHostStack extends cdk.Stack {
 		controlPlaneFn.addToRolePolicy(
 			new iam.PolicyStatement({
 				actions: ['route53:ChangeResourceRecordSets'],
-				resources: ['arn:aws:route53:::hostedzone/*'],
+				resources: [
+					managedParentHostedZoneId.trim()
+						? `arn:aws:route53:::hostedzone/${managedParentHostedZoneId.trim()}`
+						: 'arn:aws:route53:::hostedzone/*',
+				],
 			}),
 		);
 

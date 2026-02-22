@@ -849,9 +849,11 @@ describe("TipSplitter — Host Registry", () => {
 describe("TipSplitter — Token Allowlist", () => {
   it("adds token to allowlist and enumerable list", async () => {
     const { splitter, owner } = await deploy();
-    await splitter
-      .connect(owner)
-      .setTokenAllowed("0x0000000000000000000000000000000000000042", true);
+    // Deploy a second token contract (must have code to be allowlisted)
+    const MockERC20 = await ethers.getContractFactory("MockERC20");
+    const token2 = await MockERC20.deploy("Token2", "T2", 18);
+    const token2Addr = await token2.getAddress();
+    await splitter.connect(owner).setTokenAllowed(token2Addr, true);
     assert.equal(await splitter.allowedTokenCount(), 2n);
   });
 
@@ -902,6 +904,33 @@ describe("TipSplitter — setLesserWallet", () => {
       /OwnableUnauthorizedAccount/,
     );
   });
+
+  it("reverts if setting same wallet (no-op)", async () => {
+    const { splitter, owner, lesserWallet } = await deploy();
+    await assert.rejects(
+      splitter.connect(owner).setLesserWallet(lesserWallet.address),
+      /no-op/,
+    );
+  });
+});
+
+// ======================================================================
+//  ADMIN — TOKEN ALLOWLIST CODE CHECK
+// ======================================================================
+describe("TipSplitter — setTokenAllowed code check", () => {
+  it("reverts when allowing an EOA (no code)", async () => {
+    const { splitter, owner, actor } = await deploy();
+    await assert.rejects(
+      splitter.connect(owner).setTokenAllowed(actor.address, true),
+      /token has no code/,
+    );
+  });
+
+  it("allows removing a token regardless of code", async () => {
+    const { splitter, owner, tokenAddr } = await deploy();
+    await splitter.connect(owner).setTokenAllowed(tokenAddr, false);
+    assert.equal(await splitter.allowedTokens(tokenAddr), false);
+  });
 });
 
 // ======================================================================
@@ -936,7 +965,7 @@ describe("TipSplitter — setMaxTipAmount", () => {
     const { splitter, owner } = await deploy();
     const tx = await splitter
       .connect(owner)
-      .setMaxTipAmount(ethers.ZeroAddress, 999n);
+      .setMaxTipAmount(ethers.ZeroAddress, ethers.parseEther("100"));
     const receipt = await tx.wait();
     const event = receipt.logs.find(
       (l) => l.fragment && l.fragment.name === "MaxTipAmountSet",
@@ -1141,6 +1170,15 @@ describe("TipSplitter — Fee Split Arithmetic", () => {
 //  MAX/MIN TIP CONSISTENCY
 // ======================================================================
 describe("TipSplitter — Max/Min Tip Consistency", () => {
+  it("setMaxTipAmount reverts if max < default min (no custom min)", async () => {
+    const { splitter, owner } = await deploy();
+    // ETH has no custom min, so effective min = MIN_TIP_AMOUNT (10_000)
+    await assert.rejects(
+      splitter.connect(owner).setMaxTipAmount(ethers.ZeroAddress, 5_000n),
+      /max below min/,
+    );
+  });
+
   it("setMaxTipAmount reverts if max < existing custom min", async () => {
     const { splitter, owner, tokenAddr } = await deploy();
     await splitter.connect(owner).setMinTipAmount(tokenAddr, 500n);
@@ -1166,6 +1204,8 @@ describe("TipSplitter — Max/Min Tip Consistency", () => {
 
   it("setMinTipAmount reverts if min > existing max", async () => {
     const { splitter, owner, tokenAddr } = await deploy();
+    // Set custom min first so we can set max to a low value
+    await splitter.connect(owner).setMinTipAmount(tokenAddr, 100n);
     await splitter.connect(owner).setMaxTipAmount(tokenAddr, 100n);
     await assert.rejects(
       splitter.connect(owner).setMinTipAmount(tokenAddr, 500n),
@@ -1175,6 +1215,8 @@ describe("TipSplitter — Max/Min Tip Consistency", () => {
 
   it("setMinTipAmount allows min <= max", async () => {
     const { splitter, owner, tokenAddr } = await deploy();
+    // Set custom min first so we can set max to a low value
+    await splitter.connect(owner).setMinTipAmount(tokenAddr, 100n);
     await splitter.connect(owner).setMaxTipAmount(tokenAddr, 500n);
     await splitter.connect(owner).setMinTipAmount(tokenAddr, 500n);
     assert.equal(await splitter.minTipAmount(tokenAddr), 500n);
