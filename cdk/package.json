@@ -7,6 +7,7 @@
   },
   "scripts": {
     "build": "tsc",
+    "postinstall": "node scripts/patch-aws-cdk-lib-bundled-minimatch.cjs",
     "synth": "cdk synth",
     "deploy": "cdk deploy --all",
     "destroy": "cdk destroy --all"
@@ -18,6 +19,7 @@
   "devDependencies": {
     "@types/node": "^25.3.2",
     "aws-cdk": "^2.1108.0",
+    "minimatch": "10.2.4",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3"
   }

@@ -53,8 +53,7 @@
     "unified": "^11.0.5"
   },
   "overrides": {
-    "@typescript-eslint/typescript-estree": {
-      "minimatch": "10.2.2"
-    }
+    "minimatch": "10.2.4",
+    "rollup": "4.59.0"
   }
 }
