@@ -29,8 +29,8 @@ require (
 	github.com/openai/openai-go v1.12.0
 	github.com/stretchr/testify v1.11.1
 	github.com/stripe/stripe-go/v79 v79.12.0
-	github.com/theory-cloud/apptheory v0.11.0
-	github.com/theory-cloud/tabletheory v1.4.0
+	github.com/theory-cloud/apptheory v0.15.1
+	github.com/theory-cloud/tabletheory v1.4.1
 	golang.org/x/net v0.50.0
 )
 

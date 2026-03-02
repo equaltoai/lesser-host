@@ -39,6 +39,10 @@ type UpdateJob struct {
 	BaseDomain      string `theorydb:"attr:baseDomain" json:"base_domain,omitempty"`
 
 	LesserVersion string `theorydb:"attr:lesserVersion" json:"lesser_version,omitempty"`
+	// LesserBodyVersion optionally forces a specific lesser-body release tag (example: v0.1.0).
+	// When empty, the deploy runner falls back to MANAGED_LESSER_BODY_DEFAULT_VERSION (if configured)
+	// or resolves releases/latest.
+	LesserBodyVersion string `theorydb:"attr:lesserBodyVersion" json:"lesser_body_version,omitempty"`
 
 	// Desired configuration snapshot (applied during update).
 	LesserHostBaseURL              string `theorydb:"attr:lesserHostBaseUrl" json:"lesser_host_base_url,omitempty"`
@@ -130,6 +134,7 @@ func (j *UpdateJob) UpdateKeys() error {
 	j.Region = strings.TrimSpace(j.Region)
 	j.BaseDomain = strings.ToLower(strings.TrimSpace(j.BaseDomain))
 	j.LesserVersion = strings.TrimSpace(j.LesserVersion)
+	j.LesserBodyVersion = strings.TrimSpace(j.LesserBodyVersion)
 	j.LesserHostBaseURL = strings.TrimSpace(j.LesserHostBaseURL)
 	j.LesserHostAttestationsURL = strings.TrimSpace(j.LesserHostAttestationsURL)
 	j.LesserHostInstanceKeySecretARN = strings.TrimSpace(j.LesserHostInstanceKeySecretARN)

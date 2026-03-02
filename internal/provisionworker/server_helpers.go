@@ -76,7 +76,14 @@ func (s *Server) startDeployRunnerWithMode(ctx context.Context, job *models.Prov
 	}
 	env = append(env, cbtypes.EnvironmentVariable{Name: aws.String("RUN_MODE"), Value: aws.String(mode)})
 	if strings.HasPrefix(mode, "soul") {
-		env = append(env, cbtypes.EnvironmentVariable{Name: aws.String("SOUL_VERSION"), Value: aws.String(strings.TrimSpace(inst.SoulVersion))})
+		soulStage := strings.ToLower(strings.TrimSpace(s.cfg.Stage))
+		if soulStage == "" {
+			soulStage = defaultControlPlaneStage
+		}
+		env = append(env,
+			cbtypes.EnvironmentVariable{Name: aws.String("SOUL_VERSION"), Value: aws.String(strings.TrimSpace(inst.SoulVersion))},
+			cbtypes.EnvironmentVariable{Name: aws.String("SOUL_STAGE"), Value: aws.String(soulStage)},
+		)
 	}
 	tipEnabled := effectiveTipEnabled(inst.TipEnabled)
 	env = append(env,

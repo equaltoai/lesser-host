@@ -367,6 +367,12 @@ func (s *Server) handleGetOperatorProvisionJob(ctx *apptheory.Context) (*apptheo
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
+	if status := strings.ToLower(strings.TrimSpace(job.Status)); status == models.ProvisionJobStatusQueued || status == models.ProvisionJobStatusRunning {
+		if shouldNudgeAsyncJob(time.Now().UTC(), job.UpdatedAt) {
+			s.enqueueProvisionJobBestEffort(ctx, id)
+		}
+	}
+
 	return apptheory.JSON(http.StatusOK, operatorProvisionJobDetailFromModel(job))
 }
 

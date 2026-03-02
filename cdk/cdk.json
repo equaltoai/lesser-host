@@ -53,6 +53,8 @@
     "managedParentHostedZoneId": "Z0830280V8754TDWDDF",
     "managedAccountEmailTemplateLab": "aron+lab-{slug}@equal-to.ai",
     "managedAccountEmailTemplateLive": "aron+{slug}@equal-to.ai",
-    "managedDefaultRegion": "us-east-1"
+    "managedDefaultRegion": "us-east-1",
+    "managedLesserDefaultVersion": "v1.1.20",
+    "managedLesserBodyDefaultVersion": "v.0.1.3"
   }
 }

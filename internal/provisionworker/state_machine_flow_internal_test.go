@@ -113,9 +113,14 @@ type fakeCodebuild struct {
 
 	batchOut *codebuild.BatchGetBuildsOutput
 	batchErr error
+
+	startInputs []*codebuild.StartBuildInput
 }
 
-func (f *fakeCodebuild) StartBuild(_ context.Context, _ *codebuild.StartBuildInput, _ ...func(*codebuild.Options)) (*codebuild.StartBuildOutput, error) {
+func (f *fakeCodebuild) StartBuild(_ context.Context, in *codebuild.StartBuildInput, _ ...func(*codebuild.Options)) (*codebuild.StartBuildOutput, error) {
+	if in != nil {
+		f.startInputs = append(f.startInputs, in)
+	}
 	if f.startErr != nil {
 		return nil, f.startErr
 	}

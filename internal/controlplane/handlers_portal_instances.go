@@ -488,6 +488,12 @@ func (s *Server) handlePortalGetInstanceProvisioning(ctx *apptheory.Context) (*a
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
+	if status := strings.ToLower(strings.TrimSpace(job.Status)); status == models.ProvisionJobStatusQueued || status == models.ProvisionJobStatusRunning {
+		if shouldNudgeAsyncJob(time.Now().UTC(), job.UpdatedAt) {
+			s.enqueueProvisionJobBestEffort(ctx, jobID)
+		}
+	}
+
 	return apptheory.JSON(http.StatusOK, s.provisionJobResponseWithDerivedFields(job))
 }
 

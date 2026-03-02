@@ -1015,6 +1015,13 @@ func effectiveTranslationEnabled(v *bool) bool {
 	return *v
 }
 
+func effectiveBodyEnabled(v *bool) bool {
+	if v == nil {
+		return true
+	}
+	return *v
+}
+
 func effectiveTipEnabled(v *bool) bool {
 	if v == nil {
 		return false
