@@ -143,7 +143,7 @@ func TestHandleSoulAgentRegistrationBegin_Success(t *testing.T) {
 		Domain:       testDomainExampleCom,
 		LocalID:      "agent-alice",
 		Wallet:       "0x000000000000000000000000000000000000dEaD",
-		Capabilities: []string{"social"},
+		Capabilities: []any{"social"},
 	})
 
 	ctx := &apptheory.Context{RequestID: "r1", AuthIdentity: "alice", Request: apptheory.Request{Body: body}}
@@ -179,6 +179,115 @@ func TestHandleSoulAgentRegistrationBegin_Success(t *testing.T) {
 	}
 	if !strings.HasPrefix(out.Proofs[0].DNSName, soulRegistryProofPrefix) {
 		t.Fatalf("unexpected dns name: %#v", out.Proofs[0].DNSName)
+	}
+}
+
+func TestHandleSoulAgentRegistrationBegin_StructuredCapabilities_Success(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulRegistryTestDB()
+	s := &Server{
+		store: store.New(tdb.db),
+		cfg: config.Config{
+			SoulEnabled:                 true,
+			SoulChainID:                 1,
+			SoulRegistryContractAddress: "0x0000000000000000000000000000000000000001",
+			SoulTxMode:                  "safe",
+			SoulAdminSafeAddress:        "0x0000000000000000000000000000000000000002",
+			SoulSupportedCapabilities:   []string{"social", "commerce"},
+		},
+	}
+
+	tdb.qUser.On("First", mock.AnythingOfType("*models.User")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.User](t, args, 0)
+		*dest = models.User{Username: "alice", Role: models.RoleCustomer, ApprovalStatus: models.UserApprovalStatusApproved}
+	}).Once()
+
+	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
+		*dest = models.Domain{Domain: "example.com", InstanceSlug: "inst1", Status: models.DomainStatusVerified}
+	}).Once()
+	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{Slug: "inst1", Owner: "alice"}
+	}).Once()
+
+	tdb.qWalletIdx.On("First", mock.AnythingOfType("*models.WalletIndex")).Return(theoryErrors.ErrItemNotFound).Once()
+	tdb.qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(theoryErrors.ErrItemNotFound).Once()
+
+	body, _ := json.Marshal(soulAgentRegistrationBeginRequest{
+		Domain:  testDomainExampleCom,
+		LocalID: "agent-alice",
+		Wallet:  "0x000000000000000000000000000000000000dEaD",
+		Capabilities: []any{
+			map[string]any{
+				"capability": "social",
+				"scope":      "general",
+				"claimLevel": "self-declared",
+			},
+		},
+	})
+
+	ctx := &apptheory.Context{RequestID: "r1", AuthIdentity: "alice", Request: apptheory.Request{Body: body}}
+	resp, err := s.handleSoulAgentRegistrationBegin(ctx)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if resp.Status != http.StatusCreated {
+		t.Fatalf("expected 201, got %d (body=%q)", resp.Status, string(resp.Body))
+	}
+}
+
+func TestHandleSoulAgentRegistrationBegin_RejectsNonSelfDeclaredClaimLevels(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulRegistryTestDB()
+	s := &Server{
+		store: store.New(tdb.db),
+		cfg: config.Config{
+			SoulEnabled:                 true,
+			SoulChainID:                 1,
+			SoulRegistryContractAddress: "0x0000000000000000000000000000000000000001",
+			SoulTxMode:                  "safe",
+			SoulAdminSafeAddress:        "0x0000000000000000000000000000000000000002",
+			SoulSupportedCapabilities:   []string{"social", "commerce"},
+		},
+	}
+
+	tdb.qUser.On("First", mock.AnythingOfType("*models.User")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.User](t, args, 0)
+		*dest = models.User{Username: "alice", Role: models.RoleCustomer, ApprovalStatus: models.UserApprovalStatusApproved}
+	}).Once()
+
+	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
+		*dest = models.Domain{Domain: "example.com", InstanceSlug: "inst1", Status: models.DomainStatusVerified}
+	}).Once()
+	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{Slug: "inst1", Owner: "alice"}
+	}).Once()
+
+	tdb.qWalletIdx.On("First", mock.AnythingOfType("*models.WalletIndex")).Return(theoryErrors.ErrItemNotFound).Once()
+	tdb.qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(theoryErrors.ErrItemNotFound).Once()
+
+	body, _ := json.Marshal(soulAgentRegistrationBeginRequest{
+		Domain:  testDomainExampleCom,
+		LocalID: "agent-alice",
+		Wallet:  "0x000000000000000000000000000000000000dEaD",
+		Capabilities: []any{
+			map[string]any{
+				"capability":    "social",
+				"claimLevel":    "challenge-passed",
+				"validationRef": "VALIDATION#2026-03-01T00:00:00Z#c1",
+			},
+		},
+	})
+
+	ctx := &apptheory.Context{RequestID: "r1", AuthIdentity: "alice", Request: apptheory.Request{Body: body}}
+	_, err := s.handleSoulAgentRegistrationBegin(ctx)
+	if err == nil {
+		t.Fatalf("expected error")
 	}
 }
 

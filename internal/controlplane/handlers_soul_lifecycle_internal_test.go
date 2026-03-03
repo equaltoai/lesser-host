@@ -435,6 +435,7 @@ func TestHandleSoulAgentUpdateRegistration_PublishesToS3(t *testing.T) {
 		dest := testutil.RequireMockArg[*[]*models.SoulAgentVersion](t, args, 0)
 		*dest = nil
 	}).Once()
+	tdb.qCapIdx.On("First", mock.AnythingOfType("*models.SoulCapabilityAgentIndex")).Return(theoryErrors.ErrItemNotFound).Twice()
 
 	parsedABI, err := abi.JSON(strings.NewReader(soul.SoulRegistryABI))
 	if err != nil {

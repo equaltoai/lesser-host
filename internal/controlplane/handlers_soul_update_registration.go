@@ -417,7 +417,10 @@ func extractCapabilityClaimLevels(reg map[string]any) map[string]string {
 	for _, item := range arr {
 		switch v := item.(type) {
 		case string:
-			out[strings.TrimSpace(v)] = "self-declared"
+			name := strings.ToLower(strings.TrimSpace(v))
+			if name != "" {
+				out[name] = "self-declared"
+			}
 		case map[string]any:
 			if cap, ok := v["capability"].(string); ok {
 				cl, _ := v["claimLevel"].(string)
@@ -427,7 +430,10 @@ func extractCapabilityClaimLevels(reg map[string]any) map[string]string {
 				if cl == "" {
 					cl = "self-declared"
 				}
-				out[strings.TrimSpace(cap)] = strings.ToLower(strings.TrimSpace(cl))
+				name := strings.ToLower(strings.TrimSpace(cap))
+				if name != "" {
+					out[name] = strings.ToLower(strings.TrimSpace(cl))
+				}
 			}
 		}
 	}
@@ -493,6 +499,11 @@ func (s *Server) updateSoulAgentCapabilities(ctx context.Context, identity *mode
 	oldCaps := normalizeSoulCapabilitiesLoose(identity.Capabilities)
 	newCaps := normalizeSoulCapabilitiesLoose(capsNorm)
 
+	// Enforce monotonic claimLevel transitions (except deprecation).
+	if appErr := s.validateCapabilityClaimLevelTransitions(ctx, identity, newCaps, claimLevels); appErr != nil {
+		return appErr
+	}
+
 	identity.Capabilities = newCaps
 	identity.UpdatedAt = now
 	_ = identity.UpdateKeys()
@@ -523,9 +534,113 @@ func (s *Server) updateSoulAgentCapabilities(ctx context.Context, identity *mode
 		if claimLevels != nil {
 			cl = claimLevels[c]
 		}
+		if strings.TrimSpace(cl) == "" {
+			cl = "self-declared"
+		}
 		ci := &models.SoulCapabilityAgentIndex{Capability: c, ClaimLevel: cl, Domain: identity.Domain, LocalID: identity.LocalID, AgentID: identity.AgentID}
 		_ = ci.UpdateKeys()
 		_ = s.store.DB.WithContext(ctx).Model(ci).CreateOrUpdate()
+	}
+
+	return nil
+}
+
+func normalizeCapabilityClaimLevel(raw string) (string, bool) {
+	cl := strings.ToLower(strings.TrimSpace(raw))
+	if cl == "" {
+		cl = "self-declared"
+	}
+	switch cl {
+	case "self-declared", "challenge-passed", "peer-endorsed", "deprecated":
+		return cl, true
+	default:
+		return "", false
+	}
+}
+
+func claimLevelRank(cl string) int {
+	switch cl {
+	case "self-declared":
+		return 1
+	case "challenge-passed":
+		return 2
+	case "peer-endorsed":
+		return 3
+	default:
+		return 0
+	}
+}
+
+func (s *Server) getExistingCapabilityClaimLevel(ctx context.Context, identity *models.SoulAgentIdentity, capability string) (string, *apptheory.AppError) {
+	if s == nil || s.store == nil || s.store.DB == nil || identity == nil {
+		return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
+	idx := &models.SoulCapabilityAgentIndex{
+		Capability: capability,
+		Domain:     identity.Domain,
+		LocalID:    identity.LocalID,
+		AgentID:    identity.AgentID,
+	}
+	_ = idx.UpdateKeys()
+
+	var existing models.SoulCapabilityAgentIndex
+	err := s.store.DB.WithContext(ctx).
+		Model(&models.SoulCapabilityAgentIndex{}).
+		Where("PK", "=", idx.PK).
+		Where("SK", "=", idx.SK).
+		First(&existing)
+	if theoryErrors.IsNotFound(err) {
+		return "self-declared", nil
+	}
+	if err != nil {
+		return "", &apptheory.AppError{Code: "app.internal", Message: "failed to read capability index"}
+	}
+
+	cl := strings.ToLower(strings.TrimSpace(existing.ClaimLevel))
+	if cl == "" {
+		cl = "self-declared"
+	}
+	return cl, nil
+}
+
+func (s *Server) validateCapabilityClaimLevelTransitions(ctx context.Context, identity *models.SoulAgentIdentity, caps []string, claimLevels map[string]string) *apptheory.AppError {
+	if s == nil || identity == nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
+	for _, cap := range caps {
+		newLevel := ""
+		if claimLevels != nil {
+			newLevel = claimLevels[cap]
+		}
+		normNew, ok := normalizeCapabilityClaimLevel(newLevel)
+		if !ok {
+			return &apptheory.AppError{Code: "app.bad_request", Message: "invalid claimLevel for capability: " + cap}
+		}
+
+		oldLevel, appErr := s.getExistingCapabilityClaimLevel(ctx, identity, cap)
+		if appErr != nil {
+			return appErr
+		}
+		normOld, _ := normalizeCapabilityClaimLevel(oldLevel)
+		if normOld == "" {
+			normOld = "self-declared"
+		}
+
+		if normOld == "deprecated" && normNew != "deprecated" {
+			return &apptheory.AppError{Code: "app.bad_request", Message: "cannot un-deprecate capability: " + cap}
+		}
+		if normNew == "deprecated" {
+			continue
+		}
+
+		if claimLevelRank(normNew) < claimLevelRank(normOld) {
+			return &apptheory.AppError{
+				Code:    "app.bad_request",
+				Message: fmt.Sprintf("invalid claimLevel transition for capability %s: %s -> %s", cap, normOld, normNew),
+			}
+		}
 	}
 
 	return nil

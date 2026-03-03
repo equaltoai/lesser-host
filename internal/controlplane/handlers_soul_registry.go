@@ -33,10 +33,10 @@ const (
 )
 
 type soulAgentRegistrationBeginRequest struct {
-	Domain       string   `json:"domain"`
-	LocalID      string   `json:"local_id"`
-	Wallet       string   `json:"wallet_address"`
-	Capabilities []string `json:"capabilities,omitempty"`
+	Domain       string `json:"domain"`
+	LocalID      string `json:"local_id"`
+	Wallet       string `json:"wallet_address"`
+	Capabilities []any  `json:"capabilities,omitempty"`
 }
 
 type soulRegistryProofInstructions struct {
@@ -116,6 +116,43 @@ func normalizeSoulCapabilitiesStrict(supported []string, requested []string) ([]
 			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "unsupported capability: " + c}
 		}
 	}
+	return out, nil
+}
+
+func parseSoulRegistrationBeginCapabilities(raw []any) ([]string, *apptheory.AppError) {
+	if raw == nil {
+		return nil, nil
+	}
+
+	out := make([]string, 0, len(raw))
+	for _, item := range raw {
+		switch v := item.(type) {
+		case string:
+			out = append(out, v)
+		case map[string]any:
+			cap := extractStringField(v, "capability")
+			if cap == "" {
+				return nil, &apptheory.AppError{Code: "app.bad_request", Message: "capability objects must include capability"}
+			}
+
+			claimLevel := extractStringField(v, "claimLevel")
+			if claimLevel == "" {
+				claimLevel = extractStringField(v, "claim_level")
+			}
+			claimLevel = strings.ToLower(strings.TrimSpace(claimLevel))
+			if claimLevel == "" {
+				claimLevel = "self-declared"
+			}
+			if claimLevel != "self-declared" {
+				return nil, &apptheory.AppError{Code: "app.bad_request", Message: "capability claimLevel must be self-declared at registration begin"}
+			}
+
+			out = append(out, cap)
+		default:
+			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "capabilities must be an array of strings or objects"}
+		}
+	}
+
 	return out, nil
 }
 
@@ -256,7 +293,12 @@ func (s *Server) handleSoulAgentRegistrationBegin(ctx *apptheory.Context) (*appt
 		return nil, appErr
 	}
 
-	caps, appErr := normalizeSoulCapabilitiesStrict(s.cfg.SoulSupportedCapabilities, req.Capabilities)
+	capNames, appErr := parseSoulRegistrationBeginCapabilities(req.Capabilities)
+	if appErr != nil {
+		return nil, appErr
+	}
+
+	caps, appErr := normalizeSoulCapabilitiesStrict(s.cfg.SoulSupportedCapabilities, capNames)
 	if appErr != nil {
 		return nil, appErr
 	}
@@ -860,7 +902,13 @@ func (s *Server) upsertSoulAgentIndexes(ctx context.Context, reg *models.SoulAge
 	_ = s.store.DB.WithContext(ctx).Model(di).CreateOrUpdate()
 
 	for _, cap := range normalizeSoulCapabilitiesLoose(reg.Capabilities) {
-		ci := &models.SoulCapabilityAgentIndex{Capability: cap, Domain: reg.DomainNormalized, LocalID: reg.LocalID, AgentID: reg.AgentID}
+		ci := &models.SoulCapabilityAgentIndex{
+			Capability: cap,
+			ClaimLevel: "self-declared",
+			Domain:     reg.DomainNormalized,
+			LocalID:    reg.LocalID,
+			AgentID:    reg.AgentID,
+		}
 		_ = ci.UpdateKeys()
 		_ = s.store.DB.WithContext(ctx).Model(ci).CreateOrUpdate()
 	}

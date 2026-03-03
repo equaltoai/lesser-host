@@ -76,6 +76,7 @@ func TestHandleSoulAgentUpdateRegistration_V2_FirstVersion_AllowsNullPreviousVer
 		dest := testutil.RequireMockArg[*[]*models.SoulAgentVersion](t, args, 0)
 		*dest = nil
 	}).Once()
+	tdb.qCapIdx.On("First", mock.AnythingOfType("*models.SoulCapabilityAgentIndex")).Return(theoryErrors.ErrItemNotFound).Once()
 
 	parsedABI, err := abi.JSON(strings.NewReader(soul.SoulRegistryABI))
 	if err != nil {
@@ -245,6 +246,7 @@ func TestHandleSoulAgentUpdateRegistration_V2_RequiresPreviousVersionURI_ForSubs
 			UpdatedAt:              time.Now().Add(-time.Minute).UTC(),
 		}
 	}).Once()
+	tdb.qCapIdx.On("First", mock.AnythingOfType("*models.SoulCapabilityAgentIndex")).Return(theoryErrors.ErrItemNotFound).Once()
 
 	parsedABI, err := abi.JSON(strings.NewReader(soul.SoulRegistryABI))
 	if err != nil {
@@ -389,5 +391,39 @@ func TestGetNextSoulAgentVersion_IgnoresLexicographicSKOrder(t *testing.T) {
 	}
 	if n != 11 {
 		t.Fatalf("expected 11, got %d", n)
+	}
+}
+
+func TestValidateCapabilityClaimLevelTransitions_RejectsDowngrade(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulLifecycleTestDB()
+	s := &Server{store: store.New(tdb.db)}
+
+	identity := &models.SoulAgentIdentity{
+		AgentID: "0xabc",
+		Domain:  "example.com",
+		LocalID: "agent",
+	}
+
+	tdb.qCapIdx.On("First", mock.AnythingOfType("*models.SoulCapabilityAgentIndex")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulCapabilityAgentIndex](t, args, 0)
+		*dest = models.SoulCapabilityAgentIndex{
+			Capability: "social",
+			ClaimLevel: "challenge-passed",
+			Domain:     identity.Domain,
+			LocalID:    identity.LocalID,
+			AgentID:    identity.AgentID,
+		}
+	}).Once()
+
+	appErr := s.validateCapabilityClaimLevelTransitions(context.Background(), identity, []string{"social"}, map[string]string{
+		"social": "self-declared",
+	})
+	if appErr == nil {
+		t.Fatalf("expected error")
+	}
+	if appErr.Code != "app.bad_request" {
+		t.Fatalf("expected bad_request, got %q", appErr.Code)
 	}
 }
