@@ -18,7 +18,7 @@ import (
 	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
-func TestHandleSoulArchiveAgent_ArchivesAndCreatesFinalContinuityEntry(t *testing.T) {
+func TestHandleSoulArchiveAgent_ArchivesAndWritesAudit(t *testing.T) {
 	t.Parallel()
 
 	tdb := newSoulLifecycleTestDB()
@@ -69,19 +69,7 @@ func TestHandleSoulArchiveAgent_ArchivesAndCreatesFinalContinuityEntry(t *testin
 		if strings.TrimSpace(ident.LifecycleReason) != "done" {
 			t.Fatalf("expected lifecycle reason, got %q", ident.LifecycleReason)
 		}
-	}).Once()
-	tb.On("Create", mock.Anything, mock.Anything).Return(tb).Once().Run(func(args mock.Arguments) {
-		entry := testutil.RequireMockArg[*models.SoulAgentContinuity](t, args, 0)
-		if entry.AgentID != agentIDHex {
-			t.Fatalf("unexpected continuity agent id: %q", entry.AgentID)
-		}
-		if entry.Type != models.SoulContinuityEntryTypeArchived {
-			t.Fatalf("expected archived entry type, got %q", entry.Type)
-		}
-		if !strings.Contains(entry.Summary, "done") {
-			t.Fatalf("expected summary to include reason, got %q", entry.Summary)
-		}
-	}).Once()
+	})
 	tb.On("Put", mock.Anything, mock.Anything).Return(tb).Once()
 
 	ctx := &apptheory.Context{
@@ -172,13 +160,8 @@ func TestHandleSoulDesignateSuccessor_SucceedsAndCreatesEntries(t *testing.T) {
 		if ident.SuccessorAgentId != successorIDHex {
 			t.Fatalf("expected successor agent id %q, got %q", successorIDHex, ident.SuccessorAgentId)
 		}
-	}).Once()
-
-	created := map[string]*models.SoulAgentContinuity{}
-	tb.On("Create", mock.Anything, mock.Anything).Return(tb).Twice().Run(func(args mock.Arguments) {
-		entry := testutil.RequireMockArg[*models.SoulAgentContinuity](t, args, 0)
-		created[entry.AgentID+"|"+entry.Type] = entry
 	})
+
 	tb.On("Put", mock.Anything, mock.Anything).Return(tb).Once()
 
 	ctx := &apptheory.Context{
@@ -199,12 +182,7 @@ func TestHandleSoulDesignateSuccessor_SucceedsAndCreatesEntries(t *testing.T) {
 		t.Fatalf("expected 200, got %d (body=%q)", resp.Status, string(resp.Body))
 	}
 
-	if created[agentIDHex+"|"+models.SoulContinuityEntryTypeSuccessionDeclared] == nil {
-		t.Fatalf("expected succession_declared entry for primary agent")
-	}
-	if created[successorIDHex+"|"+models.SoulContinuityEntryTypeSuccessionReceived] == nil {
-		t.Fatalf("expected succession_received entry for successor agent")
-	}
+	// Continuity entries are wallet-signed and appended via POST /continuity, not system-emitted.
 }
 
 func TestHandleSoulArchiveAgent_RejectsInvalidTransition(t *testing.T) {

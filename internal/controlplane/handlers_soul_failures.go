@@ -107,10 +107,6 @@ func (s *Server) handleSoulRecordFailure(ctx *apptheory.Context) (*apptheory.Res
 		return nil, &apptheory.AppError{Code: "app.conflict", Message: "failure with this ID already exists"}
 	}
 
-	// Create continuity entry.
-	s.appendContinuityEntry(ctx, agentIDHex, models.SoulContinuityEntryTypeSignificantFailure,
-		fmt.Sprintf("Failure recorded: %s - %s", failureType, description))
-
 	// Audit log.
 	s.tryWriteAuditLog(ctx, &models.AuditLogEntry{
 		Actor:     strings.TrimSpace(ctx.AuthIdentity),
@@ -190,10 +186,6 @@ func (s *Server) handleSoulRecordRecovery(ctx *apptheory.Context) (*apptheory.Re
 	if err := s.store.DB.WithContext(ctx.Context()).Model(target).IfExists().Update("Status", "RecoveryRef"); err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to record recovery"}
 	}
-
-	// Create continuity entry.
-	s.appendContinuityEntry(ctx, agentIDHex, models.SoulContinuityEntryTypeRecovery,
-		fmt.Sprintf("Recovery from failure: %s", failureID))
 
 	// Audit log.
 	now := time.Now().UTC()

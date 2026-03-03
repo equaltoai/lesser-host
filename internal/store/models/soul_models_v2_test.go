@@ -153,8 +153,9 @@ func TestSoulAgentContinuity_Keys(t *testing.T) {
 
 func TestSoulAgentContinuity_DefaultTimestamp(t *testing.T) {
 	c := &SoulAgentContinuity{
-		AgentID: "0xabc",
-		Type:    "recovery",
+		AgentID:   "0xabc",
+		Type:      "recovery",
+		Signature: "0xsig",
 	}
 	require.NoError(t, c.BeforeCreate())
 	require.False(t, c.Timestamp.IsZero())

@@ -494,7 +494,7 @@ export interface SoulAgentContinuityEntry {
 	type: string;
 	summary: string;
 	recovery?: string;
-	references?: string;
+	references?: string[];
 	signature?: string;
 	timestamp: string;
 }

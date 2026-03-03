@@ -88,6 +88,7 @@ func (s *Server) handleSoulAppendContinuity(ctx *apptheory.Context) (*apptheory.
 	if parsedTS.Before(now.Add(-10 * 365 * 24 * time.Hour)) {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "timestamp is too far in the past"}
 	}
+	timestampCanonical := parsedTS.UTC().Format(time.RFC3339Nano)
 	summary := strings.TrimSpace(req.Summary)
 	if summary == "" {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "summary is required"}
@@ -99,32 +100,27 @@ func (s *Server) handleSoulAppendContinuity(ctx *apptheory.Context) (*apptheory.
 	if len(recovery) > 8192 {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "recovery is too long"}
 	}
+	references := normalizeContinuityReferences(req.References)
 	signature := strings.TrimSpace(req.Signature)
 	if signature == "" {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "signature is required"}
 	}
 
-	digest, appErr := computeSoulContinuityEntryDigest(entryType, tsRaw, summary, recovery, req.References)
+	digest, appErr := computeSoulContinuityEntryDigest(entryType, timestampCanonical, summary, recovery, references)
 	if appErr != nil {
 		return nil, appErr
 	}
 	if err := verifyEthereumSignatureBytes(identity.Wallet, digest, signature); err != nil {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid continuity signature"}
 	}
-	refsJSON := ""
-	if len(req.References) > 0 {
-		b, _ := json.Marshal(req.References)
-		refsJSON = strings.TrimSpace(string(b))
-	}
 	entry := &models.SoulAgentContinuity{
-		AgentID:        agentIDHex,
-		Type:           entryType,
-		Summary:        summary,
-		Recovery:       recovery,
-		ReferencesJSON: refsJSON,
-		ReferencesV2:   req.References,
-		Signature:      signature,
-		Timestamp:      parsedTS.UTC(),
+		AgentID:      agentIDHex,
+		Type:         entryType,
+		Summary:      summary,
+		Recovery:     recovery,
+		ReferencesV2: references,
+		Signature:    signature,
+		Timestamp:    parsedTS.UTC(),
 	}
 	_ = entry.UpdateKeys()
 
@@ -149,6 +145,7 @@ func computeSoulContinuityEntryDigest(entryType string, timestamp string, summar
 	timestampStr := strings.TrimSpace(timestamp)
 	summary = strings.TrimSpace(summary)
 	recovery = strings.TrimSpace(recovery)
+	references = normalizeContinuityReferences(references)
 
 	unsigned := map[string]any{
 		"type":      entryType,
@@ -171,6 +168,24 @@ func computeSoulContinuityEntryDigest(entryType string, timestamp string, summar
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid continuity JSON"}
 	}
 	return crypto.Keccak256(jcsBytes), nil
+}
+
+func normalizeContinuityReferences(references []string) []string {
+	if len(references) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(references))
+	for _, ref := range references {
+		ref = strings.TrimSpace(ref)
+		if ref == "" {
+			continue
+		}
+		out = append(out, ref)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // handleSoulPublicGetContinuity returns paginated continuity journal entries for an agent.
@@ -290,21 +305,4 @@ func isValidContinuityEntryType(entryType string) bool {
 		return true
 	}
 	return false
-}
-
-// appendContinuityEntry is a shared helper for appending continuity entries from other milestones.
-// It does not require signature verification — the caller is responsible for authorization.
-func (s *Server) appendContinuityEntry(ctx *apptheory.Context, agentIDHex string, entryType string, summary string) {
-	if s == nil || s.store == nil || s.store.DB == nil {
-		return
-	}
-	now := time.Now().UTC()
-	entry := &models.SoulAgentContinuity{
-		AgentID:   agentIDHex,
-		Type:      entryType,
-		Summary:   summary,
-		Timestamp: now,
-	}
-	_ = entry.UpdateKeys()
-	_ = s.store.DB.WithContext(ctx.Context()).Model(entry).Create()
 }

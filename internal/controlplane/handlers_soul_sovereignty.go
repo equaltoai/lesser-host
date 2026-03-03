@@ -70,13 +70,6 @@ func (s *Server) handleSoulSelfSuspend(ctx *apptheory.Context) (*apptheory.Respo
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to self-suspend agent"}
 	}
 
-	// Create continuity entry.
-	summary := "Agent voluntarily self-suspended"
-	if reason != "" {
-		summary = fmt.Sprintf("Agent voluntarily self-suspended: %s", reason)
-	}
-	s.appendContinuityEntry(ctx, agentIDHex, models.SoulContinuityEntryTypeSelfSuspension, summary)
-
 	// Audit log.
 	s.tryWriteAuditLog(ctx, &models.AuditLogEntry{
 		Actor:     strings.TrimSpace(ctx.AuthIdentity),
@@ -313,9 +306,6 @@ func (s *Server) handleSoulCreateDispute(ctx *apptheory.Context) (*apptheory.Res
 	if err := s.store.DB.WithContext(ctx.Context()).Model(dispute).IfNotExists().Create(); err != nil {
 		return nil, &apptheory.AppError{Code: "app.conflict", Message: "dispute with this ID already exists"}
 	}
-
-	// Create continuity entry.
-	s.appendContinuityEntry(ctx, agentIDHex, "dispute", fmt.Sprintf("Dispute filed: %s", signalRef))
 
 	// Audit log.
 	s.tryWriteAuditLog(ctx, &models.AuditLogEntry{

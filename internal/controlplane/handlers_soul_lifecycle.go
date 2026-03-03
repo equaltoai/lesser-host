@@ -28,7 +28,7 @@ type soulDesignateSuccessorRequest struct {
 
 // --- Handlers ---
 
-// handleSoulArchiveAgent archives an agent, making it read-only with a final continuity entry.
+// handleSoulArchiveAgent archives an agent, making it read-only.
 // Only active or self_suspended agents can be archived. This is a one-way transition.
 func (s *Server) handleSoulArchiveAgent(ctx *apptheory.Context) (*apptheory.Response, error) {
 	if appErr := s.requireSoulRegistryConfigured(); appErr != nil {
@@ -71,19 +71,6 @@ func (s *Server) handleSoulArchiveAgent(ctx *apptheory.Context) (*apptheory.Resp
 	identity.UpdatedAt = now
 	_ = identity.UpdateKeys()
 
-	// Final continuity entry.
-	summary := "Agent archived"
-	if reason != "" {
-		summary = fmt.Sprintf("Agent archived: %s", reason)
-	}
-	finalEntry := &models.SoulAgentContinuity{
-		AgentID:   agentIDHex,
-		Type:      models.SoulContinuityEntryTypeArchived,
-		Summary:   summary,
-		Timestamp: now,
-	}
-	_ = finalEntry.UpdateKeys()
-
 	// Audit log.
 	audit := &models.AuditLogEntry{
 		Actor:     strings.TrimSpace(ctx.AuthIdentity),
@@ -96,7 +83,6 @@ func (s *Server) handleSoulArchiveAgent(ctx *apptheory.Context) (*apptheory.Resp
 
 	if err := s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
 		tx.Update(identity, []string{"Status", "LifecycleStatus", "LifecycleReason", "UpdatedAt"}, tabletheory.IfExists())
-		tx.Create(finalEntry)
 		tx.Put(audit)
 		return nil
 	}); err != nil {
@@ -110,7 +96,7 @@ func (s *Server) handleSoulArchiveAgent(ctx *apptheory.Context) (*apptheory.Resp
 }
 
 // handleSoulDesignateSuccessor designates a successor agent and transitions the
-// current agent to "succeeded" status. Creates continuity entries on both agents.
+// current agent to "succeeded" status.
 func (s *Server) handleSoulDesignateSuccessor(ctx *apptheory.Context) (*apptheory.Response, error) {
 	if appErr := s.requireSoulRegistryConfigured(); appErr != nil {
 		return nil, appErr
@@ -170,26 +156,6 @@ func (s *Server) handleSoulDesignateSuccessor(ctx *apptheory.Context) (*apptheor
 	identity.UpdatedAt = now
 	_ = identity.UpdateKeys()
 
-	// Bidirectional continuity entries.
-	declaredSummary := fmt.Sprintf("Succession declared to %s", successorIDHex)
-	if reason != "" {
-		declaredSummary = fmt.Sprintf("Succession declared to %s: %s", successorIDHex, reason)
-	}
-	declaredEntry := &models.SoulAgentContinuity{
-		AgentID:   agentIDHex,
-		Type:      models.SoulContinuityEntryTypeSuccessionDeclared,
-		Summary:   declaredSummary,
-		Timestamp: now,
-	}
-	_ = declaredEntry.UpdateKeys()
-	receivedEntry := &models.SoulAgentContinuity{
-		AgentID:   successorIDHex,
-		Type:      models.SoulContinuityEntryTypeSuccessionReceived,
-		Summary:   fmt.Sprintf("Succession received from %s", agentIDHex),
-		Timestamp: now,
-	}
-	_ = receivedEntry.UpdateKeys()
-
 	// Audit log.
 	audit := &models.AuditLogEntry{
 		Actor:     strings.TrimSpace(ctx.AuthIdentity),
@@ -202,8 +168,6 @@ func (s *Server) handleSoulDesignateSuccessor(ctx *apptheory.Context) (*apptheor
 
 	if err := s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
 		tx.Update(identity, []string{"Status", "LifecycleStatus", "LifecycleReason", "SuccessorAgentId", "UpdatedAt"}, tabletheory.IfExists())
-		tx.Create(declaredEntry)
-		tx.Create(receivedEntry)
 		tx.Put(audit)
 		return nil
 	}); err != nil {

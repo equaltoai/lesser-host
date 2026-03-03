@@ -212,12 +212,6 @@ func (s *Server) handleSoulCreateRelationship(ctx *apptheory.Context) (*apptheor
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create relationship"}
 	}
 
-	// Continuity entries on both agents.
-	s.appendContinuityEntry(ctx, toAgentIDHex, models.SoulContinuityEntryTypeRelationshipFormed,
-		fmt.Sprintf("Relationship %s from %s", relType, fromAgentIDHex))
-	s.appendContinuityEntry(ctx, fromAgentIDHex, models.SoulContinuityEntryTypeRelationshipFormed,
-		fmt.Sprintf("Relationship %s to %s", relType, toAgentIDHex))
-
 	// Audit log.
 	s.tryWriteAuditLog(ctx, &models.AuditLogEntry{
 		Actor:     strings.TrimSpace(ctx.AuthIdentity),
