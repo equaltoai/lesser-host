@@ -13,6 +13,7 @@
 	import { logout } from 'src/lib/auth/logout';
 	import { navigate } from 'src/lib/router';
 	import { getEthereumProvider, personalSign, requestAccounts } from 'src/lib/wallet/ethereum';
+	import { keccak256Utf8Hex } from 'src/lib/wallet/keccak';
 	import {
 		Alert,
 		Button,
@@ -42,6 +43,13 @@
 	let signature = $state('');
 	let signLoading = $state(false);
 	let signError = $state<string | null>(null);
+
+	let principalAddress = $state('');
+	let principalDeclaration = $state("I accept responsibility for this agent's behavior.");
+	let principalSignature = $state('');
+	let principalDeclaredAt = $state('');
+	let principalSignLoading = $state(false);
+	let principalSignError = $state<string | null>(null);
 
 	let verifyLoading = $state(false);
 	let verifyError = $state<string | null>(null);
@@ -325,10 +333,13 @@
 	async function handleBegin() {
 		beginError = null;
 		signError = null;
+		principalSignError = null;
 		verifyError = null;
 		beginResult = null;
 		verifyResult = null;
 		signature = '';
+		principalSignature = '';
+		principalDeclaredAt = '';
 		mintConversationId = '';
 		mintConversation = null;
 		mintMessages = [];
@@ -363,6 +374,8 @@
 				capabilities: parseCapabilities(capabilities),
 			});
 			beginResult = res;
+			principalAddress = nextWallet;
+			principalDeclaration = `I accept responsibility for the lesser-soul agent ${res.registration.domain_normalized}/${res.registration.local_id} (agentId: ${res.registration.agent_id}).`;
 			await loadMintConversationFromStorage(res.registration.id);
 		} catch (err) {
 			if ((err as Partial<ApiError>).status === 401) {
@@ -432,6 +445,47 @@
 		}
 	}
 
+	async function signPrincipal() {
+		principalSignError = null;
+		principalSignature = '';
+
+		const provider = getEthereumProvider();
+		if (!provider) {
+			principalSignError = 'No wallet detected. Install or enable a wallet extension.';
+			return;
+		}
+
+		const addr = principalAddress.trim();
+		if (!addr) {
+			principalSignError = 'Principal address is required.';
+			return;
+		}
+
+		const decl = principalDeclaration.trim();
+		if (!decl) {
+			principalSignError = 'Declaration is required.';
+			return;
+		}
+
+		principalSignLoading = true;
+		try {
+			const accounts = await requestAccounts(provider);
+			const normalized = accounts.map((a) => a.toLowerCase());
+			if (!normalized.includes(addr.toLowerCase())) {
+				principalSignError = 'Connected wallet does not match the principal address above.';
+				return;
+			}
+
+			const digestHex = keccak256Utf8Hex(decl);
+			principalSignature = await personalSign(provider, digestHex, addr);
+			principalDeclaredAt = new Date().toISOString();
+		} catch (err) {
+			principalSignError = formatError(err);
+		} finally {
+			principalSignLoading = false;
+		}
+	}
+
 	async function verifyRegistration() {
 		verifyError = null;
 		verifyResult = null;
@@ -444,10 +498,28 @@
 			verifyError = 'Sign the registration message first.';
 			return;
 		}
+		if (!principalAddress.trim()) {
+			verifyError = 'Principal address is required.';
+			return;
+		}
+		if (!principalDeclaration.trim()) {
+			verifyError = 'Principal declaration is required.';
+			return;
+		}
+		if (!principalSignature.trim()) {
+			verifyError = 'Principal signature is required. Sign the declaration first.';
+			return;
+		}
 
 		verifyLoading = true;
 		try {
-			verifyResult = await soulAgentRegistrationVerify(token, beginResult.registration.id, signature);
+			verifyResult = await soulAgentRegistrationVerify(token, beginResult.registration.id, {
+				signature,
+				principal_address: principalAddress.trim(),
+				principal_declaration: principalDeclaration.trim(),
+				principal_signature: principalSignature.trim(),
+				declared_at: principalDeclaredAt || new Date().toISOString(),
+			});
 		} catch (err) {
 			if ((err as Partial<ApiError>).status === 401) {
 				await logout();
@@ -572,6 +644,9 @@
 				{#if signError}
 					<Alert variant="error" title="Signing failed">{signError}</Alert>
 				{/if}
+				{#if principalSignError}
+					<Alert variant="error" title="Principal signing failed">{principalSignError}</Alert>
+				{/if}
 				{#if verifyError}
 					<Alert variant="error" title="Verification failed">{verifyError}</Alert>
 				{/if}
@@ -598,8 +673,41 @@
 					</Text>
 				{/if}
 
+				<Text size="sm" color="secondary">
+					Sign the responsibility statement with your principal wallet.
+				</Text>
+				<TextField label="Principal wallet" bind:value={principalAddress} placeholder="0x…" />
+				<TextArea label="Principal declaration" bind:value={principalDeclaration} rows={4} />
+				<div class="soul-register__row">
+					<Button variant="outline" onclick={() => void signPrincipal()} disabled={principalSignLoading}>
+						Sign principal
+					</Button>
+					{#if principalSignature}
+						<CopyButton size="sm" text={principalSignature} />
+					{/if}
+				</div>
+
+				{#if principalSignLoading}
+					<div class="soul-register__loading-inline">
+						<Spinner size="sm" />
+						<Text size="sm">Waiting for principal wallet…</Text>
+					</div>
+				{/if}
+
+				{#if principalSignature}
+					<Text size="sm" color="secondary">
+						Principal signature <span class="soul-register__mono">{principalSignature.slice(0, 14)}…</span>
+					</Text>
+				{/if}
+
 				<div class="soul-register__row soul-register__row--verify">
-					<Button variant="solid" onclick={() => void verifyRegistration()} disabled={verifyLoading}>Verify + create mint operation</Button>
+					<Button
+						variant="solid"
+						onclick={() => void verifyRegistration()}
+						disabled={verifyLoading || !signature || !principalSignature}
+					>
+						Verify + create mint operation
+					</Button>
 				</div>
 
 				{#if verifyLoading}

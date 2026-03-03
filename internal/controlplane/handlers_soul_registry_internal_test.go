@@ -357,8 +357,23 @@ func TestHandleSoulAgentRegistrationVerify_UsesExistingProofFlagsAndCreatesOpera
 
 	// No existing identity yet.
 	tdb.qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(theoryErrors.ErrItemNotFound).Twice()
+	tdb.qWalletIdx.On("First", mock.AnythingOfType("*models.WalletIndex")).Return(theoryErrors.ErrItemNotFound).Once()
 
-	body, _ := json.Marshal(soulAgentRegistrationVerifyRequest{Signature: sigHex})
+	principalDeclaration := "I accept responsibility for this agent's behavior."
+	principalDigest := crypto.Keccak256([]byte(principalDeclaration))
+	principalSig, err := crypto.Sign(accounts.TextHash(principalDigest), key)
+	if err != nil {
+		t.Fatalf("principal Sign: %v", err)
+	}
+	principalSigHex := "0x" + hex.EncodeToString(principalSig)
+
+	body, _ := json.Marshal(soulAgentRegistrationVerifyRequest{
+		Signature:            sigHex,
+		PrincipalAddress:     addr,
+		PrincipalDeclaration: principalDeclaration,
+		PrincipalSignature:   principalSigHex,
+		DeclaredAt:           time.Now().UTC().Format(time.RFC3339),
+	})
 	ctx := &apptheory.Context{
 		RequestID:    "r2",
 		AuthIdentity: "alice",
@@ -380,8 +395,8 @@ func TestHandleSoulAgentRegistrationVerify_UsesExistingProofFlagsAndCreatesOpera
 	if out.Operation.OperationID == "" {
 		t.Fatalf("expected operation id")
 	}
-	if out.MintTx == nil || out.MintTx.To == "" || !strings.HasPrefix(out.MintTx.Data, "0x") {
-		t.Fatalf("expected mint tx payload, got %#v", out.MintTx)
+	if out.SafeTx == nil || out.SafeTx.To == "" || !strings.HasPrefix(out.SafeTx.Data, "0x") {
+		t.Fatalf("expected safe tx payload, got %#v", out.SafeTx)
 	}
 }
 

@@ -26,6 +26,17 @@ func EncodeMintSoulOwnerCall(to common.Address, agentID *big.Int, metaURI string
 	return soulRegistryParsedABI.Pack("mintSoulOwner", to, agentID, metaURI, avatarStyle)
 }
 
+// EncodeSelfMintSoulCall returns ABI-encoded call data for SoulRegistry.selfMintSoul(to, agentId, metaURI, avatarStyle, principal, deadline, attestationSig).
+func EncodeSelfMintSoulCall(to common.Address, agentID *big.Int, metaURI string, avatarStyle uint8, principal common.Address, deadline *big.Int, attestationSig []byte) ([]byte, error) {
+	if agentID == nil {
+		agentID = new(big.Int)
+	}
+	if deadline == nil {
+		deadline = new(big.Int)
+	}
+	return soulRegistryParsedABI.Pack("selfMintSoul", to, agentID, metaURI, avatarStyle, principal, deadline, attestationSig)
+}
+
 // EncodeBurnSoulCall returns ABI-encoded call data for SoulRegistry.burnSoul(agentId).
 func EncodeBurnSoulCall(agentID *big.Int) ([]byte, error) {
 	if agentID == nil {
@@ -68,6 +79,30 @@ func DecodeGetAgentWalletResult(ret []byte) (common.Address, error) {
 	addr, ok := out[0].(common.Address)
 	if !ok {
 		return common.Address{}, errors.New("unexpected getAgentWallet result type")
+	}
+	return addr, nil
+}
+
+// EncodePrincipalOfCall returns ABI-encoded call data for SoulRegistry.principalOf(agentId).
+func EncodePrincipalOfCall(agentID *big.Int) ([]byte, error) {
+	if agentID == nil {
+		agentID = new(big.Int)
+	}
+	return soulRegistryParsedABI.Pack("principalOf", agentID)
+}
+
+// DecodePrincipalOfResult decodes the ABI result for SoulRegistry.principalOf(agentId).
+func DecodePrincipalOfResult(ret []byte) (common.Address, error) {
+	out, err := soulRegistryParsedABI.Unpack("principalOf", ret)
+	if err != nil {
+		return common.Address{}, err
+	}
+	if len(out) != 1 {
+		return common.Address{}, errors.New("unexpected principalOf result shape")
+	}
+	addr, ok := out[0].(common.Address)
+	if !ok {
+		return common.Address{}, errors.New("unexpected principalOf result type")
 	}
 	return addr, nil
 }

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
@@ -56,21 +57,17 @@ type soulAgentRegistrationBeginResponse struct {
 
 type soulAgentRegistrationVerifyRequest struct {
 	Signature string `json:"signature"`
+
+	PrincipalAddress     string `json:"principal_address"`
+	PrincipalDeclaration string `json:"principal_declaration"`
+	PrincipalSignature   string `json:"principal_signature"`
+	DeclaredAt           string `json:"declared_at"`
 }
 
 type soulAgentRegistrationVerifyResponse struct {
 	Registration models.SoulAgentRegistration `json:"registration"`
 	Operation    models.SoulOperation         `json:"operation"`
-	MintTx       *soulMintTxPayload           `json:"mint_tx,omitempty"`
-}
-
-type soulMintTxPayload struct {
-	To          string `json:"to"`
-	Value       string `json:"value"`
-	Data        string `json:"data"`
-	ChainID     int64  `json:"chain_id"`
-	Deadline    int64  `json:"deadline"`
-	Description string `json:"description"`
+	SafeTx       *safeTxPayload               `json:"safe_tx,omitempty"`
 }
 
 func normalizeSoulCapabilitiesLoose(caps []string) []string {
@@ -158,21 +155,31 @@ func parseSoulRegistrationBeginCapabilities(raw []any) ([]string, *apptheory.App
 }
 
 func (s *Server) normalizeSoulWalletAddress(ctx context.Context, walletAddr string) (string, *apptheory.AppError) {
-	walletAddr = strings.TrimSpace(walletAddr)
-	if walletAddr == "" {
-		return "", &apptheory.AppError{Code: "app.bad_request", Message: "wallet_address is required"}
+	return s.normalizeSoulEVMAddress(ctx, walletAddr, "wallet_address")
+}
+
+func (s *Server) normalizeSoulEVMAddress(ctx context.Context, addr string, field string) (string, *apptheory.AppError) {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		if field == "" {
+			return "", &apptheory.AppError{Code: "app.bad_request", Message: "address is required"}
+		}
+		return "", &apptheory.AppError{Code: "app.bad_request", Message: field + " is required"}
 	}
-	if !common.IsHexAddress(walletAddr) {
-		return "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid wallet_address"}
+	if !common.IsHexAddress(addr) {
+		if field == "" {
+			return "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid address"}
+		}
+		return "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid " + field}
 	}
-	walletAddr = strings.ToLower(walletAddr)
-	if appErr := validateNotReservedWalletAddress(walletAddr, "wallet_address"); appErr != nil {
+	addr = strings.ToLower(addr)
+	if appErr := validateNotReservedWalletAddress(addr, field); appErr != nil {
 		return "", appErr
 	}
-	if appErr := s.validateNotPrivilegedWalletAddress(ctx, walletTypeEthereum, walletAddr, "wallet_address"); appErr != nil {
+	if appErr := s.validateNotPrivilegedWalletAddress(ctx, walletTypeEthereum, addr, field); appErr != nil {
 		return "", appErr
 	}
-	return walletAddr, nil
+	return addr, nil
 }
 
 func (s *Server) soulRegistryContractAddress() (common.Address, string, *apptheory.AppError) {
@@ -659,12 +666,13 @@ func (s *Server) getSoulOperation(ctx context.Context, id string) (*models.SoulO
 	return &op, nil
 }
 
-func soulOpID(kind string, chainID int64, txTo string, agentID string, wallet string, metaURI string) string {
+func soulOpID(kind string, chainID int64, txTo string, agentID string, wallet string, metaURI string, extra string) string {
 	kind = strings.ToLower(strings.TrimSpace(kind))
 	txTo = strings.ToLower(strings.TrimSpace(txTo))
 	agentID = strings.ToLower(strings.TrimSpace(agentID))
 	wallet = strings.ToLower(strings.TrimSpace(wallet))
 	metaURI = strings.TrimSpace(metaURI)
+	extra = strings.TrimSpace(extra)
 
 	var sb strings.Builder
 	sb.WriteString(kind)
@@ -678,6 +686,10 @@ func soulOpID(kind string, chainID int64, txTo string, agentID string, wallet st
 	sb.WriteString(wallet)
 	sb.WriteString("|")
 	sb.WriteString(metaURI)
+	if extra != "" {
+		sb.WriteString("|")
+		sb.WriteString(extra)
+	}
 
 	sum := sha256.Sum256([]byte(sb.String()))
 	return "soulop_" + hex.EncodeToString(sum[:16])
@@ -695,7 +707,7 @@ func (s *Server) soulMetaURI(agentIDHex string) string {
 	return "https://" + host + "/api/v1/soul/agents/" + url.PathEscape(agentIDHex) + "/registration"
 }
 
-func (s *Server) createSoulMintOperation(ctx context.Context, reg *models.SoulAgentRegistration) (*models.SoulOperation, *soulMintTxPayload, string, *apptheory.AppError) {
+func (s *Server) createSoulMintOperation(ctx context.Context, reg *models.SoulAgentRegistration, principalAddress string, principalSignature string) (*models.SoulOperation, *safeTxPayload, string, *apptheory.AppError) {
 	if s == nil || s.store == nil || s.store.DB == nil {
 		return nil, nil, "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
@@ -703,13 +715,13 @@ func (s *Server) createSoulMintOperation(ctx context.Context, reg *models.SoulAg
 		return nil, nil, "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
-	payload, metaURI, now, appErr := s.buildSoulMintPayload(reg)
+	payload, metaURI, now, appErr := s.buildSoulMintPayload(reg, principalAddress)
 	if appErr != nil {
 		return nil, nil, "", appErr
 	}
 
-	opID := soulOpID(models.SoulOperationKindMint, s.cfg.SoulChainID, payload.To, reg.AgentID, reg.Wallet, metaURI)
-	payloadJSON, appErr := marshalJSON(payload, "failed to encode mint tx")
+	opID := soulOpID(models.SoulOperationKindMint, s.cfg.SoulChainID, payload.To, reg.AgentID, reg.Wallet, metaURI, "selfMintSoul|principal="+strings.ToLower(strings.TrimSpace(principalAddress)))
+	payloadJSON, appErr := marshalJSON(payload, "failed to encode safe tx")
 	if appErr != nil {
 		return nil, nil, "", appErr
 	}
@@ -730,7 +742,7 @@ func (s *Server) createSoulMintOperation(ctx context.Context, reg *models.SoulAg
 		return nil, nil, "", appErr
 	}
 
-	if appErr := s.ensureSoulPendingAgentIdentity(ctx, reg, metaURI, now); appErr != nil {
+	if appErr := s.ensureSoulPendingAgentIdentity(ctx, reg, metaURI, principalAddress, principalSignature, now); appErr != nil {
 		return nil, nil, "", appErr
 	}
 	s.upsertSoulAgentIndexes(ctx, reg)
@@ -746,7 +758,7 @@ func (s *Server) handleSoulAgentRegistrationVerify(ctx *apptheory.Context) (*app
 		return nil, appErr
 	}
 
-	id, sig, err := parseSoulAgentRegistrationVerifyInput(ctx)
+	id, sig, principalAddrRaw, principalDeclarationRaw, principalSigRaw, declaredAtRaw, err := parseSoulAgentRegistrationVerifyInput(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -773,7 +785,39 @@ func (s *Server) handleSoulAgentRegistrationVerify(ctx *apptheory.Context) (*app
 		return nil, verifyErr
 	}
 
-	op, mintTx, _, opErr := s.createSoulMintOperation(ctx.Context(), reg)
+	principalAddr, appErr := s.normalizeSoulEVMAddress(ctx.Context(), principalAddrRaw, "principal_address")
+	if appErr != nil {
+		return nil, appErr
+	}
+
+	principalDeclaration := strings.TrimSpace(principalDeclarationRaw)
+	if principalDeclaration == "" || len(principalDeclaration) < 10 {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "principal_declaration is required"}
+	}
+	if len(principalDeclaration) > 8192 {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "principal_declaration is too long"}
+	}
+
+	declaredAt := strings.TrimSpace(declaredAtRaw)
+	if declaredAt == "" {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "declared_at is required"}
+	}
+	if _, err := time.Parse(time.RFC3339, declaredAt); err != nil {
+		if _, err2 := time.Parse(time.RFC3339Nano, declaredAt); err2 != nil {
+			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "declared_at must be an RFC3339 timestamp"}
+		}
+	}
+
+	principalSig := strings.TrimSpace(principalSigRaw)
+	if principalSig == "" {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "principal_signature is required"}
+	}
+	principalDigest := crypto.Keccak256([]byte(principalDeclaration))
+	if err := verifyEthereumSignatureBytes(principalAddr, principalDigest, principalSig); err != nil {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid principal_signature"}
+	}
+
+	op, safeTx, _, opErr := s.createSoulMintOperation(ctx.Context(), reg, principalAddr, principalSig)
 	if opErr != nil {
 		return nil, opErr
 	}
@@ -796,13 +840,16 @@ func (s *Server) handleSoulAgentRegistrationVerify(ctx *apptheory.Context) (*app
 	return apptheory.JSON(http.StatusOK, soulAgentRegistrationVerifyResponse{
 		Registration: *update,
 		Operation:    *op,
-		MintTx:       mintTx,
+		SafeTx:       safeTx,
 	})
 }
 
-func (s *Server) buildSoulMintPayload(reg *models.SoulAgentRegistration) (*soulMintTxPayload, string, time.Time, *apptheory.AppError) {
+func (s *Server) buildSoulMintPayload(reg *models.SoulAgentRegistration, principalAddress string) (*safeTxPayload, string, time.Time, *apptheory.AppError) {
 	if reg == nil {
 		return nil, "", time.Time{}, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if !common.IsHexAddress(principalAddress) {
+		return nil, "", time.Time{}, &apptheory.AppError{Code: "app.bad_request", Message: "invalid principal_address"}
 	}
 
 	contractAddr, txTo, appErr := s.soulRegistryContractAddress()
@@ -820,10 +867,21 @@ func (s *Server) buildSoulMintPayload(reg *models.SoulAgentRegistration) (*soulM
 		return nil, "", time.Time{}, &apptheory.AppError{Code: "app.internal", Message: "failed to derive meta_uri"}
 	}
 
+	safeAddr, appErr := s.soulRegistrySafeAddress()
+	if appErr != nil {
+		return nil, "", time.Time{}, appErr
+	}
+
 	if !common.IsHexAddress(reg.Wallet) {
 		return nil, "", time.Time{}, &apptheory.AppError{Code: "app.bad_request", Message: "invalid wallet address"}
 	}
 	to := common.HexToAddress(reg.Wallet)
+	principal := common.HexToAddress(principalAddress)
+
+	submitter := to
+	if strings.ToLower(strings.TrimSpace(s.cfg.SoulTxMode)) == tipTxModeSafe {
+		submitter = common.HexToAddress(safeAddr)
+	}
 
 	agentInt, ok := new(big.Int).SetString(strings.TrimPrefix(strings.TrimSpace(reg.AgentID), "0x"), 16)
 	if !ok {
@@ -834,26 +892,24 @@ func (s *Server) buildSoulMintPayload(reg *models.SoulAgentRegistration) (*soulM
 	deadlineUnix := now.Add(30 * time.Minute).Unix()
 	deadline := big.NewInt(deadlineUnix)
 
-	permit, err := soul.SignMintPermit(signerKey, s.cfg.SoulChainID, contractAddr, to, agentInt, metaURI, 0, deadline)
+	attestation, err := soul.SignSelfMintAttestation(signerKey, s.cfg.SoulChainID, contractAddr, to, agentInt, metaURI, 0, principal, deadline, submitter)
 	if err != nil {
-		return nil, "", time.Time{}, &apptheory.AppError{Code: "app.internal", Message: "failed to sign mint permit"}
+		return nil, "", time.Time{}, &apptheory.AppError{Code: "app.internal", Message: "failed to sign mint attestation"}
 	}
 
 	// Default mint fee: 0.0005 ETH = 500000000000000 wei.
 	mintFeeWei := big.NewInt(500000000000000)
 
-	data, err := soul.EncodeMintSoulCall(to, agentInt, metaURI, 0, deadline, permit)
+	data, err := soul.EncodeSelfMintSoulCall(to, agentInt, metaURI, 0, principal, deadline, attestation)
 	if err != nil {
 		return nil, "", time.Time{}, &apptheory.AppError{Code: "app.internal", Message: "failed to encode transaction"}
 	}
 
-	payload := &soulMintTxPayload{
+	payload := &safeTxPayload{
+		SafeAddress: safeAddr,
 		To:          txTo,
-		Value:       fmt.Sprintf("0x%x", mintFeeWei),
+		Value:       mintFeeWei.String(),
 		Data:        "0x" + hex.EncodeToString(data),
-		ChainID:     s.cfg.SoulChainID,
-		Deadline:    deadlineUnix,
-		Description: "Mint soul token for agent " + strings.TrimSpace(reg.AgentID),
 	}
 
 	return payload, metaURI, now, nil
@@ -878,26 +934,72 @@ func (s *Server) createOrLoadSoulOperation(ctx context.Context, op *models.SoulO
 	return op, nil
 }
 
-func (s *Server) ensureSoulPendingAgentIdentity(ctx context.Context, reg *models.SoulAgentRegistration, metaURI string, now time.Time) *apptheory.AppError {
+func (s *Server) ensureSoulPendingAgentIdentity(ctx context.Context, reg *models.SoulAgentRegistration, metaURI string, principalAddress string, principalSignature string, now time.Time) *apptheory.AppError {
 	if s == nil || s.store == nil || s.store.DB == nil || reg == nil {
 		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
 	identity := &models.SoulAgentIdentity{
-		AgentID:      reg.AgentID,
-		Domain:       reg.DomainNormalized,
-		LocalID:      reg.LocalID,
-		Wallet:       reg.Wallet,
-		TokenID:      reg.AgentID,
-		MetaURI:      metaURI,
-		Capabilities: reg.Capabilities,
-		Status:       models.SoulAgentStatusPending,
-		UpdatedAt:    now,
+		AgentID:            reg.AgentID,
+		Domain:             reg.DomainNormalized,
+		LocalID:            reg.LocalID,
+		Wallet:             reg.Wallet,
+		TokenID:            reg.AgentID,
+		MetaURI:            metaURI,
+		Capabilities:       reg.Capabilities,
+		PrincipalAddress:   principalAddress,
+		PrincipalSignature: principalSignature,
+		Status:             models.SoulAgentStatusPending,
+		UpdatedAt:          now,
 	}
 	_ = identity.UpdateKeys()
 
-	if err := s.store.DB.WithContext(ctx).Model(identity).IfNotExists().Create(); err != nil && !theoryErrors.IsConditionFailed(err) {
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to create agent identity"}
+	if err := s.store.DB.WithContext(ctx).Model(identity).IfNotExists().Create(); err != nil {
+		if !theoryErrors.IsConditionFailed(err) {
+			return &apptheory.AppError{Code: "app.internal", Message: "failed to create agent identity"}
+		}
+
+		// Idempotency / upgrade safety: if the identity already exists, ensure principal declaration is persisted.
+		existing, getErr := s.getSoulAgentIdentity(ctx, reg.AgentID)
+		if getErr != nil && !theoryErrors.IsNotFound(getErr) {
+			return &apptheory.AppError{Code: "app.internal", Message: "failed to load agent identity"}
+		}
+		if existing == nil {
+			return nil
+		}
+
+		if strings.TrimSpace(existing.Status) == models.SoulAgentStatusActive {
+			return &apptheory.AppError{Code: "app.conflict", Message: "agent is already registered"}
+		}
+
+		wantPrincipal := strings.ToLower(strings.TrimSpace(principalAddress))
+		havePrincipal := strings.ToLower(strings.TrimSpace(existing.PrincipalAddress))
+		if havePrincipal != "" && wantPrincipal != "" && !strings.EqualFold(havePrincipal, wantPrincipal) {
+			return &apptheory.AppError{Code: "app.conflict", Message: "principal_address mismatch for existing identity"}
+		}
+		if wantPrincipal != "" && strings.TrimSpace(existing.PrincipalAddress) == "" {
+			update := &models.SoulAgentIdentity{
+				AgentID:                reg.AgentID,
+				PrincipalAddress:       principalAddress,
+				PrincipalSignature:     principalSignature,
+				UpdatedAt:              now,
+				Status:                 existing.Status,
+				LifecycleStatus:        existing.LifecycleStatus,
+				Domain:                 existing.Domain,
+				LocalID:                existing.LocalID,
+				Wallet:                 existing.Wallet,
+				TokenID:                existing.TokenID,
+				MetaURI:                existing.MetaURI,
+				Capabilities:           existing.Capabilities,
+				SelfDescriptionVersion: existing.SelfDescriptionVersion,
+				MintTxHash:             existing.MintTxHash,
+				MintedAt:               existing.MintedAt,
+			}
+			_ = update.UpdateKeys()
+			if updErr := s.store.DB.WithContext(ctx).Model(update).IfExists().Update("PrincipalAddress", "PrincipalSignature", "UpdatedAt"); updErr != nil {
+				return &apptheory.AppError{Code: "app.internal", Message: "failed to update agent identity"}
+			}
+		}
 	}
 
 	return nil
@@ -929,25 +1031,30 @@ func (s *Server) upsertSoulAgentIndexes(ctx context.Context, reg *models.SoulAge
 	}
 }
 
-func parseSoulAgentRegistrationVerifyInput(ctx *apptheory.Context) (id string, sig string, err error) {
+func parseSoulAgentRegistrationVerifyInput(ctx *apptheory.Context) (id string, sig string, principalAddr string, principalDeclaration string, principalSig string, declaredAt string, err error) {
 	if ctx == nil {
-		return "", "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return "", "", "", "", "", "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
 	id = strings.TrimSpace(ctx.Param("id"))
 	if id == "" {
-		return "", "", &apptheory.AppError{Code: "app.bad_request", Message: "id is required"}
+		return "", "", "", "", "", "", &apptheory.AppError{Code: "app.bad_request", Message: "id is required"}
 	}
 
 	var req soulAgentRegistrationVerifyRequest
 	if err := httpx.ParseJSON(ctx, &req); err != nil {
-		return "", "", err
+		return "", "", "", "", "", "", err
 	}
 
 	sig = strings.TrimSpace(req.Signature)
 	if sig == "" {
-		return "", "", &apptheory.AppError{Code: "app.bad_request", Message: "signature is required"}
+		return "", "", "", "", "", "", &apptheory.AppError{Code: "app.bad_request", Message: "signature is required"}
 	}
 
-	return id, sig, nil
+	principalAddr = strings.TrimSpace(req.PrincipalAddress)
+	principalDeclaration = strings.TrimSpace(req.PrincipalDeclaration)
+	principalSig = strings.TrimSpace(req.PrincipalSignature)
+	declaredAt = strings.TrimSpace(req.DeclaredAt)
+
+	return id, sig, principalAddr, principalDeclaration, principalSig, declaredAt, nil
 }

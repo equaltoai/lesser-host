@@ -9,7 +9,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/crypto"
 
 	"github.com/equaltoai/lesser-host/internal/domains"
 )
@@ -220,14 +223,24 @@ func (p *PrincipalDeclarationV2) Validate() error {
 	default:
 		return errors.New("type must be \"individual\" or \"organization\"")
 	}
-	if strings.TrimSpace(p.Identifier) == "" {
+	identifier := strings.TrimSpace(p.Identifier)
+	if identifier == "" {
 		return errors.New("identifier is required")
 	}
-	if strings.TrimSpace(p.Declaration) == "" || len(strings.TrimSpace(p.Declaration)) < 10 {
+	if !common.IsHexAddress(identifier) {
+		return errors.New("identifier must be an Ethereum address")
+	}
+	declaration := p.Declaration
+	if strings.TrimSpace(declaration) == "" || len(strings.TrimSpace(declaration)) < 10 {
 		return errors.New("declaration is required")
 	}
-	if !regexHexSig.MatchString(strings.TrimSpace(p.Signature)) {
+	sig := strings.TrimSpace(p.Signature)
+	if !regexHexSig.MatchString(sig) {
 		return errors.New("signature must be hex (0x...)")
+	}
+	declarationDigest := crypto.Keccak256([]byte(declaration))
+	if err := verifyEIP191SignatureOverDigest(identifier, declarationDigest, sig); err != nil {
+		return errors.New("signature is invalid")
 	}
 	if strings.TrimSpace(p.ContactURI) != "" {
 		if _, err := url.ParseRequestURI(strings.TrimSpace(p.ContactURI)); err != nil {
@@ -236,6 +249,37 @@ func (p *PrincipalDeclarationV2) Validate() error {
 	}
 	if err := validateRFC3339(p.DeclaredAt); err != nil {
 		return fmt.Errorf("declaredAt: %w", err)
+	}
+	return nil
+}
+
+func verifyEIP191SignatureOverDigest(address string, digest []byte, signature string) error {
+	address = strings.TrimSpace(address)
+	if !common.IsHexAddress(address) {
+		return errors.New("invalid address")
+	}
+
+	sig, err := hexutil.Decode(signature)
+	if err != nil {
+		return err
+	}
+	if len(sig) != 65 {
+		return errors.New("invalid signature")
+	}
+
+	if sig[64] == 27 || sig[64] == 28 {
+		sig[64] -= 27
+	}
+
+	msgHash := accounts.TextHash(digest)
+	pubKey, err := crypto.SigToPub(msgHash, sig)
+	if err != nil {
+		return err
+	}
+
+	recoveredAddr := crypto.PubkeyToAddress(*pubKey)
+	if !strings.EqualFold(recoveredAddr.Hex(), address) {
+		return errors.New("signature mismatch")
 	}
 	return nil
 }

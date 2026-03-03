@@ -88,6 +88,14 @@ func TestHandleSoulAgentUpdateRegistration_V2_FirstVersion_AllowsNullPreviousVer
 	}}
 	s.dialEVM = func(ctx context.Context, rpcURL string) (ethRPCClient, error) { return client, nil }
 
+	principalDeclaration := "I accept responsibility for this agent's behavior."
+	principalDigest := crypto.Keccak256([]byte(principalDeclaration))
+	principalSig, err := crypto.Sign(accounts.TextHash(principalDigest), key)
+	if err != nil {
+		t.Fatalf("principal Sign: %v", err)
+	}
+	principalSigHex := "0x" + hex.EncodeToString(principalSig)
+
 	unsigned := map[string]any{
 		"version": "2",
 		"agentId": agentIDHex,
@@ -96,11 +104,11 @@ func TestHandleSoulAgentUpdateRegistration_V2_FirstVersion_AllowsNullPreviousVer
 		"wallet":  wallet,
 		"principal": map[string]any{
 			"type":        "individual",
-			"identifier":  "0xHumanWalletAddress",
+			"identifier":  wallet,
 			"displayName": "Alice",
 			"contactUri":  "https://example.com/alice",
-			"declaration": "I accept responsibility for this agent's behavior.",
-			"signature":   "0xabc",
+			"declaration": principalDeclaration,
+			"signature":   principalSigHex,
 			"declaredAt":  "2026-03-01T00:00:00Z",
 		},
 		"selfDescription": map[string]any{
@@ -262,6 +270,14 @@ func TestHandleSoulAgentUpdateRegistration_V2_RequiresPreviousVersionURI_ForSubs
 
 	prevURI := "s3://bucket/" + soulRegistrationVersionedS3Key(agentIDHex, 1)
 
+	principalDeclaration := "I accept responsibility for this agent's behavior."
+	principalDigest := crypto.Keccak256([]byte(principalDeclaration))
+	principalSig, err := crypto.Sign(accounts.TextHash(principalDigest), key)
+	if err != nil {
+		t.Fatalf("principal Sign: %v", err)
+	}
+	principalSigHex := "0x" + hex.EncodeToString(principalSig)
+
 	unsigned := map[string]any{
 		"version": "2",
 		"agentId": agentIDHex,
@@ -270,9 +286,9 @@ func TestHandleSoulAgentUpdateRegistration_V2_RequiresPreviousVersionURI_ForSubs
 		"wallet":  wallet,
 		"principal": map[string]any{
 			"type":        "individual",
-			"identifier":  "0xHumanWalletAddress",
-			"declaration": "I accept responsibility for this agent's behavior.",
-			"signature":   "0xabc",
+			"identifier":  wallet,
+			"declaration": principalDeclaration,
+			"signature":   principalSigHex,
 			"declaredAt":  "2026-03-01T00:00:00Z",
 		},
 		"selfDescription": map[string]any{

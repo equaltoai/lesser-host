@@ -209,8 +209,18 @@ export interface SoulAgentRegistrationVerifyResponse {
 	safe_tx?: SafeTxPayload;
 }
 
-export function soulAgentRegistrationVerify(token: string, id: string, signature: string): Promise<SoulAgentRegistrationVerifyResponse> {
-	const req = jsonRequest({ signature });
+export function soulAgentRegistrationVerify(
+	token: string,
+	id: string,
+	input: {
+		signature: string;
+		principal_address: string;
+		principal_declaration: string;
+		principal_signature: string;
+		declared_at: string;
+	},
+): Promise<SoulAgentRegistrationVerifyResponse> {
+	const req = jsonRequest(input);
 	return fetchJson<SoulAgentRegistrationVerifyResponse>(`/api/v1/soul/agents/register/${encodeURIComponent(id)}/verify`, {
 		method: 'POST',
 		headers: {
