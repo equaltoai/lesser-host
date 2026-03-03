@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/cyberphone/json-canonicalization/go/src/webpki.org/jsoncanonicalizer"
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts"
@@ -20,7 +21,6 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	"github.com/theory-cloud/tabletheory/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
 
@@ -58,6 +58,7 @@ type fakeSoulPackStore struct {
 	contentType  string
 	cacheControl string
 	puts         []fakePut
+	objects      map[string]fakePut
 }
 
 type fakePut struct {
@@ -71,11 +72,25 @@ func (f *fakeSoulPackStore) PutObject(ctx context.Context, key string, body []by
 	f.contentType = contentType
 	f.cacheControl = cacheControl
 	f.puts = append(f.puts, fakePut{key: key, body: append([]byte(nil), body...)})
+	if f.objects == nil {
+		f.objects = map[string]fakePut{}
+	}
+	f.objects[key] = fakePut{key: key, body: append([]byte(nil), body...)}
 	return nil
 }
 
 func (f *fakeSoulPackStore) GetObject(ctx context.Context, key string, maxBytes int64) ([]byte, string, string, error) {
-	return nil, "", "", errors.New("not implemented")
+	if f == nil || f.objects == nil {
+		return nil, "", "", &s3types.NoSuchKey{}
+	}
+	obj, ok := f.objects[key]
+	if !ok {
+		return nil, "", "", &s3types.NoSuchKey{}
+	}
+	if maxBytes > 0 && int64(len(obj.body)) > maxBytes {
+		return nil, "", "", errors.New("object too large")
+	}
+	return append([]byte(nil), obj.body...), f.contentType, "", nil
 }
 
 type soulLifecycleTestDB struct {
@@ -89,6 +104,7 @@ type soulLifecycleTestDB struct {
 	qWalletIdx *ttmocks.MockQuery
 	qCapIdx    *ttmocks.MockQuery
 	qVersion   *ttmocks.MockQuery
+	qBoundary  *ttmocks.MockQuery
 }
 
 func newSoulLifecycleTestDB() soulLifecycleTestDB {
@@ -102,6 +118,7 @@ func newSoulLifecycleTestDB() soulLifecycleTestDB {
 	qWalletIdx := new(ttmocks.MockQuery)
 	qCapIdx := new(ttmocks.MockQuery)
 	qVersion := new(ttmocks.MockQuery)
+	qBoundary := new(ttmocks.MockQuery)
 
 	db.On("WithContext", mock.Anything).Return(db).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.Domain")).Return(qDomain).Maybe()
@@ -113,6 +130,7 @@ func newSoulLifecycleTestDB() soulLifecycleTestDB {
 	db.On("Model", mock.AnythingOfType("*models.WalletIndex")).Return(qWalletIdx).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulCapabilityAgentIndex")).Return(qCapIdx).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentVersion")).Return(qVersion).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentBoundary")).Return(qBoundary).Maybe()
 
 	for _, q := range []*ttmocks.MockQuery{
 		qDomain,
@@ -124,12 +142,12 @@ func newSoulLifecycleTestDB() soulLifecycleTestDB {
 		qWalletIdx,
 		qCapIdx,
 		qVersion,
+		qBoundary,
 	} {
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("Index", mock.Anything).Return(q).Maybe()
 		q.On("Limit", mock.Anything).Return(q).Maybe()
 		q.On("OrderBy", mock.Anything, mock.Anything).Return(q).Maybe()
-		q.On("AllPaginated", mock.Anything).Return((*core.PaginatedResult)(nil), nil).Maybe()
 		q.On("IfExists").Return(q).Maybe()
 		q.On("IfNotExists").Return(q).Maybe()
 		q.On("Create").Return(nil).Maybe()
@@ -150,6 +168,7 @@ func newSoulLifecycleTestDB() soulLifecycleTestDB {
 		qWalletIdx: qWalletIdx,
 		qCapIdx:    qCapIdx,
 		qVersion:   qVersion,
+		qBoundary:  qBoundary,
 	}
 }
 

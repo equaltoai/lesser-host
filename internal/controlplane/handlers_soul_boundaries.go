@@ -102,14 +102,15 @@ func (s *Server) handleSoulAppendBoundary(ctx *apptheory.Context) (*apptheory.Re
 
 	now := time.Now().UTC()
 	boundary := &models.SoulAgentBoundary{
-		AgentID:    agentIDHex,
-		BoundaryID: boundaryID,
-		Category:   category,
-		Statement:  statement,
-		Rationale:  strings.TrimSpace(req.Rationale),
-		Supersedes: supersedes,
-		Signature:  signature,
-		AddedAt:    now,
+		AgentID:        agentIDHex,
+		BoundaryID:     boundaryID,
+		Category:       category,
+		Statement:      statement,
+		Rationale:      strings.TrimSpace(req.Rationale),
+		AddedInVersion: identity.SelfDescriptionVersion,
+		Supersedes:     supersedes,
+		Signature:      signature,
+		AddedAt:        now,
 	}
 	_ = boundary.UpdateKeys()
 
@@ -235,6 +236,7 @@ func (s *Server) republishRegistrationOnBoundaryChange(ctx *apptheory.Context, i
 	if unmarshalErr := json.Unmarshal(regBytes, &reg); unmarshalErr != nil {
 		return nil
 	}
+	isV2 := extractStringField(reg, "version") == "2"
 
 	// Fetch all boundaries from DB.
 	var boundaries []*models.SoulAgentBoundary
@@ -268,8 +270,15 @@ func (s *Server) republishRegistrationOnBoundaryChange(ctx *apptheory.Context, i
 		if b.Supersedes != "" {
 			entry["supersedes"] = b.Supersedes
 		}
-		if b.AddedInVersion > 0 {
-			entry["addedInVersion"] = fmt.Sprintf("%d", b.AddedInVersion)
+		if isV2 {
+			addedInVersion := b.AddedInVersion
+			if addedInVersion <= 0 && identity != nil && identity.SelfDescriptionVersion > 0 {
+				addedInVersion = identity.SelfDescriptionVersion
+			}
+			if addedInVersion <= 0 {
+				addedInVersion = 1
+			}
+			entry["addedInVersion"] = fmt.Sprintf("%d", addedInVersion)
 		}
 		boundariesJSON = append(boundariesJSON, entry)
 	}
