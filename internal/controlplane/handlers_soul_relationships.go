@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -8,6 +9,8 @@ import (
 
 	"github.com/ethereum/go-ethereum/crypto"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
+	"github.com/theory-cloud/tabletheory/pkg/core"
+	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/store/models"
@@ -28,11 +31,11 @@ type soulCreateRelationshipResponse struct {
 }
 
 type soulListRelationshipsResponse struct {
-	Version       string                        `json:"version"`
+	Version       string                         `json:"version"`
 	Relationships []models.SoulAgentRelationship `json:"relationships"`
-	Count         int                           `json:"count"`
-	HasMore       bool                          `json:"has_more"`
-	NextCursor    string                        `json:"next_cursor,omitempty"`
+	Count         int                            `json:"count"`
+	HasMore       bool                           `json:"has_more"`
+	NextCursor    string                         `json:"next_cursor,omitempty"`
 }
 
 // --- Handlers ---
@@ -105,10 +108,6 @@ func (s *Server) handleSoulCreateRelationship(ctx *apptheory.Context) (*apptheor
 	}
 	_ = rel.UpdateKeys()
 
-	if err := s.store.DB.WithContext(ctx.Context()).Model(rel).Create(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create relationship"}
-	}
-
 	// Dual-write: reverse index under "from" agent's partition for outbound queries.
 	fromIdx := &models.SoulRelationshipFromIndex{
 		FromAgentID: fromAgentIDHex,
@@ -117,7 +116,18 @@ func (s *Server) handleSoulCreateRelationship(ctx *apptheory.Context) (*apptheor
 		CreatedAt:   now,
 	}
 	_ = fromIdx.UpdateKeys()
-	_ = s.store.DB.WithContext(ctx.Context()).Model(fromIdx).Create()
+
+	// Write both records in a transaction to ensure dual-write consistency.
+	if err := s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
+		tx.Create(rel)
+		tx.Create(fromIdx)
+		return nil
+	}); err != nil {
+		if theoryErrors.IsConditionFailed(err) {
+			return nil, &apptheory.AppError{Code: "app.conflict", Message: "relationship already exists"}
+		}
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create relationship"}
+	}
 
 	// Continuity entries on both agents.
 	s.appendContinuityEntry(ctx, toAgentIDHex, models.SoulContinuityEntryTypeRelationshipFormed,
@@ -153,6 +163,10 @@ func (s *Server) handleSoulPublicGetRelationships(ctx *apptheory.Context) (*appt
 
 	cursor := strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "cursor"))
 	typeFilter := strings.ToLower(strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "type")))
+	taskTypeFilter := strings.ToLower(strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "taskType")))
+	if taskTypeFilter == "" {
+		taskTypeFilter = strings.ToLower(strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "task_type")))
+	}
 	limit := int(envInt64PositiveFromString(httpx.FirstQueryValue(ctx.Request.Query, "limit"), 50))
 	if limit <= 0 {
 		limit = 50
@@ -186,7 +200,41 @@ func (s *Server) handleSoulPublicGetRelationships(ctx *apptheory.Context) (*appt
 		if typeFilter != "" && strings.ToLower(item.Type) != typeFilter {
 			continue
 		}
+		if taskTypeFilter != "" {
+			if tt := extractRelationshipTaskType(item.Context); tt != taskTypeFilter {
+				continue
+			}
+		}
 		out = append(out, *item)
+	}
+
+	// V1 backward compat: merge peer endorsements into relationship reads (first page only).
+	shouldMergeV1Endorsements := cursor == "" &&
+		taskTypeFilter == "" &&
+		(typeFilter == "" || typeFilter == models.SoulRelationshipTypeEndorsement)
+	if shouldMergeV1Endorsements {
+		var endorsements []*models.SoulAgentPeerEndorsement
+		if err := s.store.DB.WithContext(ctx.Context()).
+			Model(&models.SoulAgentPeerEndorsement{}).
+			Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentIDHex)).
+			Where("SK", "BEGINS_WITH", "ENDORSEMENT#").
+			All(&endorsements); err != nil {
+			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list endorsements"}
+		}
+
+		for _, e := range endorsements {
+			if e == nil {
+				continue
+			}
+			out = append(out, models.SoulAgentRelationship{
+				FromAgentID: e.EndorserAgentID,
+				ToAgentID:   agentIDHex,
+				Type:        models.SoulRelationshipTypeEndorsement,
+				Message:     e.Message,
+				Signature:   e.Signature,
+				CreatedAt:   e.CreatedAt,
+			})
+		}
 	}
 
 	nextCursor := ""
@@ -222,4 +270,20 @@ func isValidRelationshipType(relType string) bool {
 		return true
 	}
 	return false
+}
+
+func extractRelationshipTaskType(contextJSON string) string {
+	contextJSON = strings.TrimSpace(contextJSON)
+	if contextJSON == "" {
+		return ""
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(contextJSON), &m); err != nil {
+		return ""
+	}
+	raw, _ := m["taskType"].(string)
+	if raw == "" {
+		raw, _ = m["task_type"].(string)
+	}
+	return strings.ToLower(strings.TrimSpace(raw))
 }
