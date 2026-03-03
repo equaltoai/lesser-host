@@ -7,6 +7,9 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
+	"github.com/theory-cloud/tabletheory"
+	"github.com/theory-cloud/tabletheory/pkg/core"
+	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/store/models"
@@ -68,25 +71,40 @@ func (s *Server) handleSoulArchiveAgent(ctx *apptheory.Context) (*apptheory.Resp
 	identity.UpdatedAt = now
 	_ = identity.UpdateKeys()
 
-	if err := s.store.DB.WithContext(ctx.Context()).Model(identity).IfExists().Update("Status", "LifecycleStatus", "LifecycleReason", "UpdatedAt"); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to archive agent"}
-	}
-
 	// Final continuity entry.
 	summary := "Agent archived"
 	if reason != "" {
 		summary = fmt.Sprintf("Agent archived: %s", reason)
 	}
-	s.appendContinuityEntry(ctx, agentIDHex, models.SoulContinuityEntryTypeArchived, summary)
+	finalEntry := &models.SoulAgentContinuity{
+		AgentID:   agentIDHex,
+		Type:      models.SoulContinuityEntryTypeArchived,
+		Summary:   summary,
+		Timestamp: now,
+	}
+	_ = finalEntry.UpdateKeys()
 
 	// Audit log.
-	_ = s.store.DB.WithContext(ctx.Context()).Model(&models.AuditLogEntry{
+	audit := &models.AuditLogEntry{
 		Actor:     strings.TrimSpace(ctx.AuthIdentity),
 		Action:    "soul.agent.archive",
 		Target:    fmt.Sprintf("soul_agent_identity:%s", agentIDHex),
 		RequestID: strings.TrimSpace(ctx.RequestID),
 		CreatedAt: now,
-	}).Create()
+	}
+	_ = audit.UpdateKeys()
+
+	if err := s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
+		tx.Update(identity, []string{"Status", "LifecycleStatus", "LifecycleReason", "UpdatedAt"}, tabletheory.IfExists())
+		tx.Create(finalEntry)
+		tx.Put(audit)
+		return nil
+	}); err != nil {
+		if theoryErrors.IsConditionFailed(err) {
+			return nil, &apptheory.AppError{Code: "app.not_found", Message: "agent not found"}
+		}
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to archive agent"}
+	}
 
 	return apptheory.JSON(http.StatusOK, identity)
 }
@@ -152,27 +170,48 @@ func (s *Server) handleSoulDesignateSuccessor(ctx *apptheory.Context) (*apptheor
 	identity.UpdatedAt = now
 	_ = identity.UpdateKeys()
 
-	if err := s.store.DB.WithContext(ctx.Context()).Model(identity).IfExists().Update("Status", "LifecycleStatus", "LifecycleReason", "SuccessorAgentId", "UpdatedAt"); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to designate successor"}
-	}
-
 	// Bidirectional continuity entries.
 	declaredSummary := fmt.Sprintf("Succession declared to %s", successorIDHex)
 	if reason != "" {
 		declaredSummary = fmt.Sprintf("Succession declared to %s: %s", successorIDHex, reason)
 	}
-	s.appendContinuityEntry(ctx, agentIDHex, models.SoulContinuityEntryTypeSuccessionDeclared, declaredSummary)
-	s.appendContinuityEntry(ctx, successorIDHex, models.SoulContinuityEntryTypeSuccessionReceived,
-		fmt.Sprintf("Succession received from %s", agentIDHex))
+	declaredEntry := &models.SoulAgentContinuity{
+		AgentID:   agentIDHex,
+		Type:      models.SoulContinuityEntryTypeSuccessionDeclared,
+		Summary:   declaredSummary,
+		Timestamp: now,
+	}
+	_ = declaredEntry.UpdateKeys()
+	receivedEntry := &models.SoulAgentContinuity{
+		AgentID:   successorIDHex,
+		Type:      models.SoulContinuityEntryTypeSuccessionReceived,
+		Summary:   fmt.Sprintf("Succession received from %s", agentIDHex),
+		Timestamp: now,
+	}
+	_ = receivedEntry.UpdateKeys()
 
 	// Audit log.
-	_ = s.store.DB.WithContext(ctx.Context()).Model(&models.AuditLogEntry{
+	audit := &models.AuditLogEntry{
 		Actor:     strings.TrimSpace(ctx.AuthIdentity),
 		Action:    "soul.agent.designate_successor",
 		Target:    fmt.Sprintf("soul_agent_identity:%s", agentIDHex),
 		RequestID: strings.TrimSpace(ctx.RequestID),
 		CreatedAt: now,
-	}).Create()
+	}
+	_ = audit.UpdateKeys()
+
+	if err := s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
+		tx.Update(identity, []string{"Status", "LifecycleStatus", "LifecycleReason", "SuccessorAgentId", "UpdatedAt"}, tabletheory.IfExists())
+		tx.Create(declaredEntry)
+		tx.Create(receivedEntry)
+		tx.Put(audit)
+		return nil
+	}); err != nil {
+		if theoryErrors.IsConditionFailed(err) {
+			return nil, &apptheory.AppError{Code: "app.not_found", Message: "agent not found"}
+		}
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to designate successor"}
+	}
 
 	return apptheory.JSON(http.StatusOK, identity)
 }
