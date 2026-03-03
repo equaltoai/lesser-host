@@ -583,7 +583,7 @@ export function soulPublicGetVersions(agentId: string, cursor?: string, limit: n
 export interface SoulAgentCapability {
 	capability: string;
 	scope?: string;
-	constraints?: string;
+	constraints?: Record<string, unknown>;
 	claim_level: string;
 	last_validated?: string;
 	validation_ref?: string;

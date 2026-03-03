@@ -679,7 +679,7 @@
 											<Text size="sm" color="secondary">Scope: {cap.scope}</Text>
 										{/if}
 										{#if cap.constraints}
-											<Text size="sm" color="secondary">Constraints: {cap.constraints}</Text>
+											<Text size="sm" color="secondary">Constraints: {prettyJSON(cap.constraints)}</Text>
 										{/if}
 										{#if cap.degrades_to}
 											<Text size="sm" color="secondary">Degrades to: {cap.degrades_to}</Text>
