@@ -37,11 +37,12 @@ type SoulAgentContinuity struct {
 
 	AgentID string `theorydb:"attr:agentId" json:"agent_id"`
 
-	Type       string `theorydb:"attr:type" json:"type"`
-	Summary    string `theorydb:"attr:summary" json:"summary"`
-	Recovery   string `theorydb:"attr:recovery" json:"recovery,omitempty"`
-	References string `theorydb:"attr:references" json:"references,omitempty"` // JSON array of reference IDs
-	Signature  string `theorydb:"attr:signature" json:"signature,omitempty"`
+	Type           string   `theorydb:"attr:type" json:"type"`
+	Summary        string   `theorydb:"attr:summary" json:"summary"`
+	Recovery       string   `theorydb:"attr:recovery" json:"recovery,omitempty"`
+	ReferencesJSON string   `theorydb:"attr:references" json:"-"`                      // legacy: JSON array encoded as string
+	ReferencesV2   []string `theorydb:"attr:referencesV2" json:"references,omitempty"` // typed list
+	Signature      string   `theorydb:"attr:signature" json:"signature,omitempty"`
 
 	Timestamp time.Time `theorydb:"attr:timestamp" json:"timestamp"`
 }
@@ -72,7 +73,18 @@ func (c *SoulAgentContinuity) UpdateKeys() error {
 	c.Type = strings.ToLower(strings.TrimSpace(c.Type))
 	c.Summary = strings.TrimSpace(c.Summary)
 	c.Recovery = strings.TrimSpace(c.Recovery)
-	c.References = strings.TrimSpace(c.References)
+	c.ReferencesJSON = strings.TrimSpace(c.ReferencesJSON)
+	if len(c.ReferencesV2) > 0 {
+		out := make([]string, 0, len(c.ReferencesV2))
+		for _, r := range c.ReferencesV2 {
+			r = strings.TrimSpace(r)
+			if r == "" {
+				continue
+			}
+			out = append(out, r)
+		}
+		c.ReferencesV2 = out
+	}
 	c.Signature = strings.ToLower(strings.TrimSpace(c.Signature))
 
 	ts := c.Timestamp.UTC().Format(time.RFC3339Nano)

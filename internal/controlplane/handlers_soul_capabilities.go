@@ -13,13 +13,13 @@ import (
 // --- Response types ---
 
 type soulCapability struct {
-	Capability    string `json:"capability"`
-	Scope         string `json:"scope,omitempty"`
-	Constraints   string `json:"constraints,omitempty"`
-	ClaimLevel    string `json:"claim_level"`
-	LastValidated string `json:"last_validated,omitempty"`
-	ValidationRef string `json:"validation_ref,omitempty"`
-	DegradesTo    string `json:"degrades_to,omitempty"`
+	Capability    string         `json:"capability"`
+	Scope         string         `json:"scope,omitempty"`
+	Constraints   map[string]any `json:"constraints,omitempty"`
+	ClaimLevel    string         `json:"claim_level"`
+	LastValidated string         `json:"last_validated,omitempty"`
+	ValidationRef string         `json:"validation_ref,omitempty"`
+	DegradesTo    string         `json:"degrades_to,omitempty"`
 }
 
 type soulListCapabilitiesResponse struct {
@@ -67,7 +67,7 @@ func (s *Server) handleSoulPublicGetCapabilities(ctx *apptheory.Context) (*appth
 	caps := extractStructuredCapabilities(reg)
 
 	resp, err := apptheory.JSON(http.StatusOK, soulListCapabilitiesResponse{
-		Version:      "1",
+		Version:      "2",
 		Capabilities: caps,
 		Count:        len(caps),
 	})
@@ -117,7 +117,7 @@ func extractStructuredCapabilities(reg map[string]any) []soulCapability {
 			out = append(out, soulCapability{
 				Capability:    cap,
 				Scope:         extractStringField(v, "scope"),
-				Constraints:   extractStringField(v, "constraints"),
+				Constraints:   extractCapabilityConstraintsObject(v),
 				ClaimLevel:    strings.ToLower(strings.TrimSpace(cl)),
 				LastValidated: extractStringField(v, "lastValidated"),
 				ValidationRef: extractStringField(v, "validationRef"),
@@ -126,4 +126,32 @@ func extractStructuredCapabilities(reg map[string]any) []soulCapability {
 		}
 	}
 	return out
+}
+
+func extractCapabilityConstraintsObject(m map[string]any) map[string]any {
+	if m == nil {
+		return nil
+	}
+	raw, ok := m["constraints"]
+	if !ok || raw == nil {
+		return nil
+	}
+
+	switch v := raw.(type) {
+	case map[string]any:
+		return v
+	case string:
+		// Backward-compatible: sometimes constraints may be encoded as a JSON string.
+		trimmed := strings.TrimSpace(v)
+		if trimmed == "" {
+			return nil
+		}
+		var obj map[string]any
+		if err := json.Unmarshal([]byte(trimmed), &obj); err != nil {
+			return nil
+		}
+		return obj
+	default:
+		return nil
+	}
 }

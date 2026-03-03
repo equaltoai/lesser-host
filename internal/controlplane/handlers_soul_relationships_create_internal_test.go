@@ -217,7 +217,7 @@ func TestHandleSoulCreateRelationship_StrictIntegrity_VerifiesScopedSignature(t 
 
 	message := "delegation for summaries"
 	contextJSON := `{"taskType":"summarization"}`
-	contextMap, appErr := parseRelationshipContextObject(contextJSON)
+	contextMap, _, _, appErr := parseRelationshipContext(json.RawMessage(contextJSON))
 	if appErr != nil {
 		t.Fatalf("parse context: %v", appErr)
 	}

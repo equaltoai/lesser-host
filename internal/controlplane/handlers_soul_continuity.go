@@ -117,13 +117,14 @@ func (s *Server) handleSoulAppendContinuity(ctx *apptheory.Context) (*apptheory.
 		refsJSON = strings.TrimSpace(string(b))
 	}
 	entry := &models.SoulAgentContinuity{
-		AgentID:    agentIDHex,
-		Type:       entryType,
-		Summary:    summary,
-		Recovery:   recovery,
-		References: refsJSON,
-		Signature:  signature,
-		Timestamp:  parsedTS.UTC(),
+		AgentID:        agentIDHex,
+		Type:           entryType,
+		Summary:        summary,
+		Recovery:       recovery,
+		ReferencesJSON: refsJSON,
+		ReferencesV2:   req.References,
+		Signature:      signature,
+		Timestamp:      parsedTS.UTC(),
 	}
 	_ = entry.UpdateKeys()
 
@@ -216,6 +217,12 @@ func (s *Server) handleSoulPublicGetContinuity(ctx *apptheory.Context) (*apptheo
 		if item == nil {
 			continue
 		}
+		if len(item.ReferencesV2) == 0 {
+			refs := parseLegacyContinuityReferences(item.ReferencesJSON)
+			if len(refs) > 0 {
+				item.ReferencesV2 = refs
+			}
+		}
 		out = append(out, *item)
 	}
 
@@ -227,7 +234,7 @@ func (s *Server) handleSoulPublicGetContinuity(ctx *apptheory.Context) (*apptheo
 	}
 
 	resp, err := apptheory.JSON(http.StatusOK, soulListContinuityResponse{
-		Version:    "1",
+		Version:    "2",
 		Entries:    out,
 		Count:      len(out),
 		HasMore:    hasMore,
@@ -238,6 +245,29 @@ func (s *Server) handleSoulPublicGetContinuity(ctx *apptheory.Context) (*apptheo
 	}
 	s.setSoulPublicHeaders(ctx, resp, "public, max-age=60")
 	return resp, nil
+}
+
+func parseLegacyContinuityReferences(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var refs []string
+	if err := json.Unmarshal([]byte(raw), &refs); err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(refs))
+	for _, r := range refs {
+		r = strings.TrimSpace(r)
+		if r == "" {
+			continue
+		}
+		out = append(out, r)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // --- Helpers ---

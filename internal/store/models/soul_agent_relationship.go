@@ -32,8 +32,10 @@ type SoulAgentRelationship struct {
 	FromAgentID string `theorydb:"attr:fromAgentId" json:"from_agent_id"`
 	ToAgentID   string `theorydb:"attr:toAgentId" json:"to_agent_id"`
 
-	Type    string `theorydb:"attr:type" json:"type"`
-	Context string `theorydb:"attr:context" json:"context,omitempty"` // JSON object: taskType, scope, outcome, qualityScore
+	Type        string         `theorydb:"attr:type" json:"type"`
+	ContextJSON string         `theorydb:"attr:context" json:"-"`                   // legacy: JSON object encoded as string
+	ContextV2   map[string]any `theorydb:"attr:contextV2" json:"context,omitempty"` // typed context map
+	TaskType    string         `theorydb:"attr:taskType" json:"-"`                  // extracted for filtering
 
 	Message   string `theorydb:"attr:message" json:"message,omitempty"`
 	Signature string `theorydb:"attr:signature" json:"signature,omitempty"`
@@ -72,7 +74,8 @@ func (r *SoulAgentRelationship) UpdateKeys() error {
 	r.FromAgentID = strings.ToLower(strings.TrimSpace(r.FromAgentID))
 	r.ToAgentID = strings.ToLower(strings.TrimSpace(r.ToAgentID))
 	r.Type = strings.ToLower(strings.TrimSpace(r.Type))
-	r.Context = strings.TrimSpace(r.Context)
+	r.ContextJSON = strings.TrimSpace(r.ContextJSON)
+	r.TaskType = strings.ToLower(strings.TrimSpace(r.TaskType))
 	r.Message = strings.TrimSpace(r.Message)
 	r.Signature = strings.ToLower(strings.TrimSpace(r.Signature))
 

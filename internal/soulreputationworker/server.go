@@ -506,7 +506,7 @@ func (s *Server) computeIntegritySignals(ctx context.Context, agentID string) (i
 		switch strings.ToLower(strings.TrimSpace(r.Type)) {
 		case models.SoulRelationshipTypeDelegation:
 			delegationsTotal++
-			outcome, qualityScore, hasQuality := extractRelationshipOutcomeAndQuality(r.Context)
+			outcome, qualityScore, hasQuality := extractRelationshipOutcomeAndQuality(r)
 			if isDelegationCompletedOutcome(outcome) {
 				delegationsCompleted++
 				quality := 1.0
@@ -654,14 +654,24 @@ func isDelegationCompletedOutcome(outcome string) bool {
 	}
 }
 
-func extractRelationshipOutcomeAndQuality(contextJSON string) (outcome string, qualityScore float64, hasQuality bool) {
-	contextJSON = strings.TrimSpace(contextJSON)
-	if contextJSON == "" {
+func extractRelationshipOutcomeAndQuality(rel *models.SoulAgentRelationship) (outcome string, qualityScore float64, hasQuality bool) {
+	if rel == nil {
 		return "", 0, false
 	}
 
-	var m map[string]any
-	if err := json.Unmarshal([]byte(contextJSON), &m); err != nil {
+	// Dual-read during migration: prefer typed context map, fallback to legacy JSON string.
+	m := rel.ContextV2
+	if m == nil {
+		legacy := strings.TrimSpace(rel.ContextJSON)
+		if legacy != "" {
+			_ = json.Unmarshal([]byte(legacy), &m)
+		}
+	}
+	return extractRelationshipOutcomeAndQualityFromMap(m)
+}
+
+func extractRelationshipOutcomeAndQualityFromMap(m map[string]any) (outcome string, qualityScore float64, hasQuality bool) {
+	if m == nil {
 		return "", 0, false
 	}
 

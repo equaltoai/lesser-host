@@ -211,9 +211,9 @@ func TestComputeIntegritySignals_UsesDelegationOutcomesBoundariesFailuresAndEndo
 			t.Fatalf("expected *[]*models.SoulAgentRelationship, got %T", args.Get(0))
 		}
 		*dest = []*models.SoulAgentRelationship{
-			{FromAgentID: "0xfrom1", ToAgentID: agentID, Type: "delegation", Context: `{"outcome":"completed","qualityScore":0.9}`},
-			{FromAgentID: "0xfrom2", ToAgentID: agentID, Type: "delegation", Context: `{"outcome":"failed","qualityScore":0.2}`},
-			{FromAgentID: "0xendorser2", ToAgentID: agentID, Type: "endorsement", Context: `{}`},
+			{FromAgentID: "0xfrom1", ToAgentID: agentID, Type: "delegation", ContextJSON: `{"outcome":"completed","qualityScore":0.9}`},
+			{FromAgentID: "0xfrom2", ToAgentID: agentID, Type: "delegation", ContextJSON: `{"outcome":"failed","qualityScore":0.2}`},
+			{FromAgentID: "0xendorser2", ToAgentID: agentID, Type: "endorsement", ContextJSON: `{}`},
 		}
 	}).Once()
 

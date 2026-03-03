@@ -59,7 +59,7 @@ func TestHandleSoulPublicGetRelationships_FiltersByTypeAndTaskType(t *testing.T)
 				FromAgentID: "0xfrom1",
 				ToAgentID:   agentIDHex,
 				Type:        models.SoulRelationshipTypeDelegation,
-				Context:     `{"taskType":"summarization"}`,
+				ContextJSON: `{"taskType":"summarization"}`,
 				Message:     "delegation for summaries",
 				CreatedAt:   time.Date(2026, 3, 1, 1, 0, 0, 0, time.UTC),
 			},
@@ -67,7 +67,7 @@ func TestHandleSoulPublicGetRelationships_FiltersByTypeAndTaskType(t *testing.T)
 				FromAgentID: "0xfrom2",
 				ToAgentID:   agentIDHex,
 				Type:        models.SoulRelationshipTypeDelegation,
-				Context:     `{"taskType":"translation"}`,
+				ContextJSON: `{"taskType":"translation"}`,
 				Message:     "delegation for translations",
 				CreatedAt:   time.Date(2026, 3, 1, 2, 0, 0, 0, time.UTC),
 			},
@@ -102,6 +102,9 @@ func TestHandleSoulPublicGetRelationships_FiltersByTypeAndTaskType(t *testing.T)
 	}
 	if out.Relationships[0].FromAgentID != "0xfrom1" {
 		t.Fatalf("unexpected relationship: %#v", out.Relationships[0])
+	}
+	if v, _ := out.Relationships[0].ContextV2["taskType"].(string); strings.TrimSpace(v) != "summarization" {
+		t.Fatalf("expected typed context taskType summarization, got %#v", out.Relationships[0].ContextV2)
 	}
 }
 

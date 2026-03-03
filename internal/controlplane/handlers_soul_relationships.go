@@ -23,12 +23,12 @@ import (
 // --- Request / Response types ---
 
 type soulCreateRelationshipRequest struct {
-	FromAgentID string `json:"from_agent_id"`
-	Type        string `json:"type"`
-	Context     string `json:"context,omitempty"` // JSON object
-	Message     string `json:"message,omitempty"`
-	CreatedAt   string `json:"created_at,omitempty"`
-	Signature   string `json:"signature"`
+	FromAgentID string          `json:"from_agent_id"`
+	Type        string          `json:"type"`
+	Context     json.RawMessage `json:"context,omitempty"` // JSON object (or legacy JSON string)
+	Message     string          `json:"message,omitempty"`
+	CreatedAt   string          `json:"created_at,omitempty"`
+	Signature   string          `json:"signature"`
 }
 
 type soulCreateRelationshipResponse struct {
@@ -81,6 +81,11 @@ func (s *Server) handleSoulCreateRelationship(ctx *apptheory.Context) (*apptheor
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "type must be one of: endorsement, delegation, collaboration, trust_grant, trust_revocation"}
 	}
 
+	contextMap, contextJSON, taskType, appErr := parseRelationshipContext(req.Context)
+	if appErr != nil {
+		return nil, appErr
+	}
+
 	message := strings.TrimSpace(req.Message)
 	signature := strings.TrimSpace(req.Signature)
 	if signature == "" {
@@ -131,10 +136,6 @@ func (s *Server) handleSoulCreateRelationship(ctx *apptheory.Context) (*apptheor
 		}
 		createdAt = parsedTS.UTC()
 
-		contextMap, appErr := parseRelationshipContextObject(req.Context)
-		if appErr != nil {
-			return nil, appErr
-		}
 		digest, appErr := computeSoulRelationshipDigest(fromAgentIDHex, toAgentIDHex, relType, contextMap, message, createdAtRaw)
 		if appErr != nil {
 			return nil, appErr
@@ -172,11 +173,18 @@ func (s *Server) handleSoulCreateRelationship(ctx *apptheory.Context) (*apptheor
 	}
 
 	// Primary record: stored under the "to" agent's partition.
+	if len(contextMap) == 0 {
+		contextMap = nil
+		contextJSON = ""
+		taskType = ""
+	}
 	rel := &models.SoulAgentRelationship{
 		FromAgentID: fromAgentIDHex,
 		ToAgentID:   toAgentIDHex,
 		Type:        relType,
-		Context:     strings.TrimSpace(req.Context),
+		ContextJSON: strings.TrimSpace(contextJSON),
+		ContextV2:   contextMap,
+		TaskType:    taskType,
 		Message:     message,
 		Signature:   signature,
 		CreatedAt:   createdAt,
@@ -298,12 +306,13 @@ func (s *Server) handleSoulPublicGetRelationships(ctx *apptheory.Context) (*appt
 			if item == nil {
 				continue
 			}
+			normalizeRelationshipForPublicRead(item)
 			// Apply type filter client-side if specified.
 			if typeFilter != "" && strings.ToLower(item.Type) != typeFilter {
 				continue
 			}
 			if taskTypeFilter != "" {
-				if tt := extractRelationshipTaskType(item.Context); tt != taskTypeFilter {
+				if tt := strings.ToLower(strings.TrimSpace(item.TaskType)); tt != taskTypeFilter {
 					continue
 				}
 			}
@@ -370,7 +379,7 @@ func (s *Server) handleSoulPublicGetRelationships(ctx *apptheory.Context) (*appt
 	}
 
 	resp, err := apptheory.JSON(http.StatusOK, soulListRelationshipsResponse{
-		Version:       "1",
+		Version:       "2",
 		Relationships: out,
 		Count:         len(out),
 		HasMore:       hasMore,
@@ -397,13 +406,56 @@ func isValidRelationshipType(relType string) bool {
 	return false
 }
 
-func extractRelationshipTaskType(contextJSON string) string {
-	contextJSON = strings.TrimSpace(contextJSON)
-	if contextJSON == "" {
-		return ""
+func parseRelationshipContext(raw json.RawMessage) (contextMap map[string]any, contextJSON string, taskType string, appErr *apptheory.AppError) {
+	rawStr := strings.TrimSpace(string(raw))
+	if rawStr == "" || rawStr == "null" {
+		return map[string]any{}, "", "", nil
 	}
-	var m map[string]any
-	if err := json.Unmarshal([]byte(contextJSON), &m); err != nil {
+
+	// Preferred: context is a JSON object.
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err == nil && obj != nil {
+		return obj, rawStr, extractRelationshipTaskTypeFromMap(obj), nil
+	}
+
+	// Legacy: context is a JSON string containing an object.
+	var legacyStr string
+	if err := json.Unmarshal(raw, &legacyStr); err != nil {
+		return nil, "", "", &apptheory.AppError{Code: "app.bad_request", Message: "context must be a JSON object"}
+	}
+	legacyStr = strings.TrimSpace(legacyStr)
+	if legacyStr == "" {
+		return map[string]any{}, "", "", nil
+	}
+	if err := json.Unmarshal([]byte(legacyStr), &obj); err != nil {
+		return nil, "", "", &apptheory.AppError{Code: "app.bad_request", Message: "context must be a JSON object"}
+	}
+	if obj == nil {
+		obj = map[string]any{}
+	}
+	return obj, legacyStr, extractRelationshipTaskTypeFromMap(obj), nil
+}
+
+func normalizeRelationshipForPublicRead(item *models.SoulAgentRelationship) {
+	if item == nil {
+		return
+	}
+
+	// Prefer the typed map; fallback to legacy string.
+	if item.ContextV2 == nil && strings.TrimSpace(item.ContextJSON) != "" {
+		var obj map[string]any
+		if err := json.Unmarshal([]byte(item.ContextJSON), &obj); err == nil && obj != nil {
+			item.ContextV2 = obj
+		}
+	}
+
+	if strings.TrimSpace(item.TaskType) == "" {
+		item.TaskType = extractRelationshipTaskTypeFromMap(item.ContextV2)
+	}
+}
+
+func extractRelationshipTaskTypeFromMap(m map[string]any) string {
+	if m == nil {
 		return ""
 	}
 	raw, _ := m["taskType"].(string)
@@ -411,21 +463,6 @@ func extractRelationshipTaskType(contextJSON string) string {
 		raw, _ = m["task_type"].(string)
 	}
 	return strings.ToLower(strings.TrimSpace(raw))
-}
-
-func parseRelationshipContextObject(contextJSON string) (map[string]any, *apptheory.AppError) {
-	contextJSON = strings.TrimSpace(contextJSON)
-	if contextJSON == "" {
-		return map[string]any{}, nil
-	}
-	var m map[string]any
-	if err := json.Unmarshal([]byte(contextJSON), &m); err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "context must be a JSON object"}
-	}
-	if m == nil {
-		m = map[string]any{}
-	}
-	return m, nil
 }
 
 func computeSoulRelationshipDigest(fromAgentIDHex string, toAgentIDHex string, relType string, context map[string]any, message string, createdAt string) ([]byte, *apptheory.AppError) {

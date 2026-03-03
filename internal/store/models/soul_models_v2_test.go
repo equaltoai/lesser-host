@@ -184,7 +184,7 @@ func TestSoulAgentRelationship_Keys(t *testing.T) {
 		FromAgentID: " 0xFROM ",
 		ToAgentID:   " 0xTO ",
 		Type:        " DELEGATION ",
-		Context:     ` {"taskType":"summarization"} `,
+		ContextJSON: ` {"taskType":"summarization"} `,
 		Message:     " Great work. ",
 		Signature:   " 0xSIG ",
 		CreatedAt:   ts,
@@ -196,7 +196,7 @@ func TestSoulAgentRelationship_Keys(t *testing.T) {
 	require.Equal(t, "0xfrom", r.FromAgentID)
 	require.Equal(t, "0xto", r.ToAgentID)
 	require.Equal(t, "delegation", r.Type)
-	require.Equal(t, `{"taskType":"summarization"}`, r.Context)
+	require.Equal(t, `{"taskType":"summarization"}`, r.ContextJSON)
 	require.Equal(t, "Great work.", r.Message)
 	require.Equal(t, "0xsig", r.Signature)
 }
