@@ -104,7 +104,7 @@ func (s *Server) handleSoulAgentUpdateRegistration(ctx *apptheory.Context) (*app
 		return nil, appErr
 	}
 
-	regBytes, reg, appErr := parseSoulUpdateRegistrationBody(ctx.Request.Body)
+	regBytes, reg, expectedVersion, appErr := parseSoulUpdateRegistrationBody(ctx.Request.Body)
 	if appErr != nil {
 		return nil, appErr
 	}
@@ -133,66 +133,65 @@ func (s *Server) handleSoulAgentUpdateRegistration(ctx *apptheory.Context) (*app
 		regV2 = parsed
 	}
 
-	// Determine next version number by querying latest VERSION# item.
-	nextVersion, prevRegSHA256, appErr := s.getNextSoulAgentVersion(ctx.Context(), agentIDHex)
-	if appErr != nil {
-		return nil, appErr
-	}
-
 	regSHA256 := func() string {
 		sum := sha256.Sum256(regBytes)
 		return hex.EncodeToString(sum[:])
 	}()
 
-	if isV2 && regV2 != nil {
-		if appErr := s.validateSoulRegistrationPreviousVersionURI(regV2, agentIDHex, nextVersion); appErr != nil {
-			return nil, appErr
-		}
-	}
-
-	// Publish to the versioned S3 path.
-	versionedKey := soulRegistrationVersionedS3Key(agentIDHex, nextVersion)
-	if err := s.soulPacks.PutObject(ctx.Context(), versionedKey, regBytes, "application/json", "private, max-age=0"); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to publish versioned registration"}
-	}
-
-	// Publish to the current S3 path.
-	s3Key := soulRegistrationS3Key(agentIDHex)
-	if err := s.soulPacks.PutObject(ctx.Context(), s3Key, regBytes, "application/json", "private, max-age=0"); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to publish registration"}
-	}
-
 	now := time.Now().UTC()
 	claimLevels := extractCapabilityClaimLevels(reg)
-	if appErr := s.updateSoulAgentCapabilities(ctx.Context(), identity, capsNorm, claimLevels, now); appErr != nil {
-		return nil, appErr
-	}
 
-	// Update SelfDescriptionVersion if v2.
-	if isV2 {
-		identity.SelfDescriptionVersion = nextVersion
-		if err := s.store.DB.WithContext(ctx.Context()).Model(identity).IfExists().Update("SelfDescriptionVersion"); err != nil {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to update identity version"}
+	nextVersion := 0
+	s3Key := soulRegistrationS3Key(agentIDHex)
+	if isV2 && regV2 != nil {
+		changeSummary := extractStringField(reg, "changeSummary")
+		publishedVersion, pubErr := s.publishSoulAgentRegistrationV2(ctx.Context(), agentIDHex, identity, regV2, regBytes, regSHA256, selfSig, changeSummary, capsNorm, claimLevels, expectedVersion, now)
+		if pubErr != nil {
+			return nil, pubErr
 		}
-	}
+		nextVersion = publishedVersion
+	} else {
+		// Legacy (v1) publishing path.
+		// Determine next version number by querying latest VERSION# item.
+		var prevRegSHA256 string
+		nextVersion, prevRegSHA256, appErr = s.getNextSoulAgentVersion(ctx.Context(), agentIDHex)
+		if appErr != nil {
+			return nil, appErr
+		}
 
-	// Create version record.
-	changeSummary := extractStringField(reg, "changeSummary")
-	versionRecord := &models.SoulAgentVersion{
-		AgentID:                    agentIDHex,
-		VersionNumber:              nextVersion,
-		RegistrationUri:            fmt.Sprintf("s3://%s/%s", s.cfg.SoulPackBucketName, versionedKey),
-		RegistrationSHA256:         regSHA256,
-		PreviousRegistrationSHA256: strings.TrimSpace(prevRegSHA256),
-		ChangeSummary:              changeSummary,
-		SelfAttestation:            selfSig,
-		CreatedAt:                  now,
-	}
-	if err := versionRecord.UpdateKeys(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to record version history"}
-	}
-	if err := s.store.DB.WithContext(ctx.Context()).Model(versionRecord).Create(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to record version history"}
+		// Publish to the versioned S3 path.
+		versionedKey := soulRegistrationVersionedS3Key(agentIDHex, nextVersion)
+		if err := s.soulPacks.PutObject(ctx.Context(), versionedKey, regBytes, "application/json", "private, max-age=0"); err != nil {
+			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to publish versioned registration"}
+		}
+
+		// Publish to the current S3 path.
+		if err := s.soulPacks.PutObject(ctx.Context(), s3Key, regBytes, "application/json", "private, max-age=0"); err != nil {
+			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to publish registration"}
+		}
+
+		if appErr := s.updateSoulAgentCapabilities(ctx.Context(), identity, capsNorm, claimLevels, now, false); appErr != nil {
+			return nil, appErr
+		}
+
+		// Create version record.
+		changeSummary := extractStringField(reg, "changeSummary")
+		versionRecord := &models.SoulAgentVersion{
+			AgentID:                    agentIDHex,
+			VersionNumber:              nextVersion,
+			RegistrationUri:            fmt.Sprintf("s3://%s/%s", s.cfg.SoulPackBucketName, versionedKey),
+			RegistrationSHA256:         regSHA256,
+			PreviousRegistrationSHA256: strings.TrimSpace(prevRegSHA256),
+			ChangeSummary:              changeSummary,
+			SelfAttestation:            selfSig,
+			CreatedAt:                  now,
+		}
+		if err := versionRecord.UpdateKeys(); err != nil {
+			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to record version history"}
+		}
+		if err := s.store.DB.WithContext(ctx.Context()).Model(versionRecord).Create(); err != nil {
+			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to record version history"}
+		}
 	}
 
 	audit := &models.AuditLogEntry{
@@ -233,21 +232,29 @@ func (s *Server) requireActiveSoulAgentWithDomainAccess(ctx *apptheory.Context, 
 	return identity, nil
 }
 
-func parseSoulUpdateRegistrationBody(body []byte) ([]byte, map[string]any, *apptheory.AppError) {
+func parseSoulUpdateRegistrationBody(body []byte) ([]byte, map[string]any, *int, *apptheory.AppError) {
 	regBytes := body
 
 	var wrapper struct {
-		Registration json.RawMessage `json:"registration"`
+		Registration        json.RawMessage `json:"registration"`
+		ExpectedVersion     *int            `json:"expected_version,omitempty"`
+		ExpectedVersionAlt  *int            `json:"expectedVersion,omitempty"`
+		ExpectedVersionAlt2 *int            `json:"expected_version_alt,omitempty"` // deprecated; kept for forward compatibility tests/tools
 	}
+	expectedVersion := (*int)(nil)
 	if unmarshalErr := json.Unmarshal(body, &wrapper); unmarshalErr == nil && len(wrapper.Registration) > 0 {
 		regBytes = wrapper.Registration
+		expectedVersion = wrapper.ExpectedVersion
+		if expectedVersion == nil {
+			expectedVersion = wrapper.ExpectedVersionAlt
+		}
 	}
 
 	var reg map[string]any
 	if unmarshalErr := json.Unmarshal(regBytes, &reg); unmarshalErr != nil {
-		return nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid JSON"}
+		return nil, nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid JSON"}
 	}
-	return regBytes, reg, nil
+	return regBytes, reg, expectedVersion, nil
 }
 
 func (s *Server) validateSoulUpdateRegistrationDocument(
@@ -519,7 +526,7 @@ func (s *Server) validateSoulRegistrationPreviousVersionURI(reg *soul.Registrati
 	return nil
 }
 
-func (s *Server) updateSoulAgentCapabilities(ctx context.Context, identity *models.SoulAgentIdentity, capsNorm []string, claimLevels map[string]string, now time.Time) *apptheory.AppError {
+func (s *Server) updateSoulAgentCapabilities(ctx context.Context, identity *models.SoulAgentIdentity, capsNorm []string, claimLevels map[string]string, now time.Time, skipTransitionValidation bool) *apptheory.AppError {
 	if s == nil || s.store == nil || s.store.DB == nil || identity == nil {
 		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
@@ -528,8 +535,10 @@ func (s *Server) updateSoulAgentCapabilities(ctx context.Context, identity *mode
 	newCaps := normalizeSoulCapabilitiesLoose(capsNorm)
 
 	// Enforce monotonic claimLevel transitions (except deprecation).
-	if appErr := s.validateCapabilityClaimLevelTransitions(ctx, identity, newCaps, claimLevels); appErr != nil {
-		return appErr
+	if !skipTransitionValidation {
+		if appErr := s.validateCapabilityClaimLevelTransitions(ctx, identity, newCaps, claimLevels); appErr != nil {
+			return appErr
+		}
 	}
 
 	identity.Capabilities = newCaps

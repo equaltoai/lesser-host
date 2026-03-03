@@ -72,10 +72,7 @@ func TestHandleSoulAgentUpdateRegistration_V2_FirstVersion_AllowsNullPreviousVer
 			UpdatedAt: time.Now().Add(-time.Minute).UTC(),
 		}
 	}).Once()
-	tdb.qVersion.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
-		dest := testutil.RequireMockArg[*[]*models.SoulAgentVersion](t, args, 0)
-		*dest = nil
-	}).Once()
+	tdb.qVersion.On("First", mock.AnythingOfType("*models.SoulAgentVersion")).Return(theoryErrors.ErrItemNotFound).Once()
 	tdb.qCapIdx.On("First", mock.AnythingOfType("*models.SoulCapabilityAgentIndex")).Return(theoryErrors.ErrItemNotFound).Once()
 
 	parsedABI, err := abi.JSON(strings.NewReader(soul.SoulRegistryABI))
@@ -219,10 +216,12 @@ func TestHandleSoulAgentUpdateRegistration_V2_RequiresPreviousVersionURI_ForSubs
 	}
 	wallet := strings.ToLower(crypto.PubkeyToAddress(key.PublicKey).Hex())
 
-	// Pretend we already have version 1 in the DB.
-	tdb.qVersion.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
-		dest := testutil.RequireMockArg[*[]*models.SoulAgentVersion](t, args, 0)
-		*dest = []*models.SoulAgentVersion{{AgentID: agentIDHex, VersionNumber: 1, RegistrationUri: "s3://bucket/x"}}
+	// No existing record for version 2 (target).
+	tdb.qVersion.On("First", mock.AnythingOfType("*models.SoulAgentVersion")).Return(theoryErrors.ErrItemNotFound).Once()
+	// Previous version 1 record exists so we can build the hash chain.
+	tdb.qVersion.On("First", mock.AnythingOfType("*models.SoulAgentVersion")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentVersion](t, args, 0)
+		*dest = models.SoulAgentVersion{AgentID: agentIDHex, VersionNumber: 1, RegistrationUri: "s3://bucket/x", RegistrationSHA256: strings.Repeat("a", 64)}
 	}).Once()
 
 	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
