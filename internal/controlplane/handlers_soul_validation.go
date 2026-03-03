@@ -77,6 +77,7 @@ func (s *Server) handleSoulIssueValidationChallenge(ctx *apptheory.Context) (*ap
 		ValidatorID:   validatorID,
 		Request:       strings.TrimSpace(req.Request),
 		Status:        models.SoulValidationChallengeStatusIssued,
+		OptInStatus:   models.SoulValidationOptInStatusPending,
 		IssuedAt:      now,
 		UpdatedAt:     now,
 		TTL:           0,
@@ -258,8 +259,17 @@ func (s *Server) handleSoulEvaluateValidationChallenge(ctx *apptheory.Context) (
 	}
 
 	score := soulvalidation.ScoreDelta(strings.TrimSpace(chal.ChallengeType), result)
+	if strings.TrimSpace(chal.OptInStatus) == models.SoulValidationOptInStatusDeclined {
+		// Declined challenges carry no score penalty and are recorded distinctly.
+		result = models.SoulValidationResultDeclined
+		score = 0
+	}
 
 	now := time.Now().UTC()
+	optInStatus := strings.TrimSpace(chal.OptInStatus)
+	if optInStatus == "" {
+		optInStatus = models.SoulValidationOptInStatusPending
+	}
 	rec := &models.SoulAgentValidationRecord{
 		AgentID:       agentIDHex,
 		ChallengeID:   strings.TrimSpace(chal.ChallengeID),
@@ -269,6 +279,7 @@ func (s *Server) handleSoulEvaluateValidationChallenge(ctx *apptheory.Context) (
 		Response:      strings.TrimSpace(chal.Response),
 		Result:        result,
 		Score:         score,
+		OptInStatus:   optInStatus,
 		EvaluatedAt:   now,
 	}
 	_ = rec.UpdateKeys()

@@ -8,9 +8,10 @@ import (
 
 // SoulValidationResult* constants describe evaluation outcomes.
 const (
-	SoulValidationResultPass    = "pass"
-	SoulValidationResultFail    = "fail"
-	SoulValidationResultTimeout = "timeout"
+	SoulValidationResultPass     = "pass"
+	SoulValidationResultFail     = "fail"
+	SoulValidationResultTimeout  = "timeout"
+	SoulValidationResultDeclined = "declined"
 )
 
 // SoulValidationOptInStatus* constants describe opt-in states for validation challenges.

@@ -63,6 +63,9 @@ func (c *SoulAgentValidationChallenge) BeforeCreate() error {
 	if strings.TrimSpace(c.Status) == "" {
 		c.Status = SoulValidationChallengeStatusIssued
 	}
+	if strings.TrimSpace(c.OptInStatus) == "" {
+		c.OptInStatus = SoulValidationOptInStatusPending
+	}
 	return c.UpdateKeys()
 }
 
@@ -83,6 +86,7 @@ func (c *SoulAgentValidationChallenge) UpdateKeys() error {
 	c.Request = strings.TrimSpace(c.Request)
 	c.Response = strings.TrimSpace(c.Response)
 	c.Status = strings.ToLower(strings.TrimSpace(c.Status))
+	c.OptInStatus = strings.ToLower(strings.TrimSpace(c.OptInStatus))
 	c.Result = strings.ToLower(strings.TrimSpace(c.Result))
 
 	c.PK = fmt.Sprintf("SOUL#AGENT#%s", c.AgentID)

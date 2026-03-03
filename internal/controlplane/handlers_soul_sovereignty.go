@@ -26,7 +26,9 @@ type soulDisputeRequest struct {
 }
 
 type soulValidationOptInRequest struct {
-	Status string `json:"status"` // "accepted" or "declined"
+	Status   string `json:"status,omitempty"`   // "accepted" or "declined" (legacy)
+	Accepted *bool  `json:"accepted,omitempty"` // true=accepted, false=declined (SPEC)
+	Reason   string `json:"reason,omitempty"`
 }
 
 // --- Handlers ---
@@ -174,7 +176,16 @@ func (s *Server) handleSoulValidationOptIn(ctx *apptheory.Context) (*apptheory.R
 		return nil, err
 	}
 
-	optInStatus := strings.ToLower(strings.TrimSpace(req.Status))
+	optInStatus := ""
+	if req.Accepted != nil {
+		if *req.Accepted {
+			optInStatus = models.SoulValidationOptInStatusAccepted
+		} else {
+			optInStatus = models.SoulValidationOptInStatusDeclined
+		}
+	} else {
+		optInStatus = strings.ToLower(strings.TrimSpace(req.Status))
+	}
 	if optInStatus != models.SoulValidationOptInStatusAccepted && optInStatus != models.SoulValidationOptInStatusDeclined {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "status must be 'accepted' or 'declined'"}
 	}
@@ -190,8 +201,42 @@ func (s *Server) handleSoulValidationOptIn(ctx *apptheory.Context) (*apptheory.R
 		return nil, &apptheory.AppError{Code: "app.conflict", Message: "challenge is not in issued status"}
 	}
 
+	now := time.Now().UTC()
 	challenge.OptInStatus = optInStatus
-	challenge.UpdatedAt = time.Now().UTC()
+
+	// Declines are recorded without score penalty by immediately creating a validation
+	// record with result "declined" and score 0, and marking the challenge evaluated.
+	if optInStatus == models.SoulValidationOptInStatusDeclined {
+		rec := &models.SoulAgentValidationRecord{
+			AgentID:       agentIDHex,
+			ChallengeID:   strings.TrimSpace(challenge.ChallengeID),
+			ChallengeType: strings.TrimSpace(challenge.ChallengeType),
+			ValidatorID:   strings.TrimSpace(challenge.ValidatorID),
+			Request:       strings.TrimSpace(challenge.Request),
+			Response:      "",
+			Result:        models.SoulValidationResultDeclined,
+			Score:         0,
+			OptInStatus:   optInStatus,
+			EvaluatedAt:   now,
+		}
+		_ = rec.UpdateKeys()
+		if err := s.store.DB.WithContext(ctx.Context()).Model(rec).Create(); err != nil {
+			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to record declined validation"}
+		}
+
+		challenge.Status = models.SoulValidationChallengeStatusEvaluated
+		challenge.Result = models.SoulValidationResultDeclined
+		challenge.Score = 0
+		challenge.EvaluatedAt = now
+		challenge.UpdatedAt = now
+		_ = challenge.UpdateKeys()
+		if err := s.store.DB.WithContext(ctx.Context()).Model(challenge).IfExists().Update("OptInStatus", "Status", "Result", "Score", "EvaluatedAt", "UpdatedAt"); err != nil {
+			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to update opt-in status"}
+		}
+		return apptheory.JSON(http.StatusOK, challenge)
+	}
+
+	challenge.UpdatedAt = now
 	_ = challenge.UpdateKeys()
 	if err := s.store.DB.WithContext(ctx.Context()).Model(challenge).IfExists().Update("OptInStatus", "UpdatedAt"); err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to update opt-in status"}
