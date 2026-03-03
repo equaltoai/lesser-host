@@ -3,11 +3,13 @@ package controlplane
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/cyberphone/json-canonicalization/go/src/webpki.org/jsoncanonicalizer"
 	"github.com/ethereum/go-ethereum/crypto"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 	"github.com/theory-cloud/tabletheory/pkg/core"
@@ -25,6 +27,7 @@ type soulCreateRelationshipRequest struct {
 	Type        string `json:"type"`
 	Context     string `json:"context,omitempty"` // JSON object
 	Message     string `json:"message,omitempty"`
+	CreatedAt   string `json:"created_at,omitempty"`
 	Signature   string `json:"signature"`
 }
 
@@ -103,12 +106,70 @@ func (s *Server) handleSoulCreateRelationship(ctx *apptheory.Context) (*apptheor
 	if message == "" {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "message is required"}
 	}
-	messageDigest := crypto.Keccak256([]byte(message))
-	if err := verifyEthereumSignatureBytes(fromIdentity.Wallet, messageDigest, signature); err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid relationship signature"}
-	}
-
 	now := time.Now().UTC()
+	createdAtRaw := strings.TrimSpace(req.CreatedAt)
+
+	// Legacy scheme: signature over keccak256(bytes(message)).
+	// Strict v2 integrity: signature over keccak256(JCS(record_without_signature)) to prevent replay/under-scoping.
+	useScopedSig := createdAtRaw != "" || s.cfg.SoulV2StrictIntegrity
+	var createdAt time.Time
+	if useScopedSig {
+		if createdAtRaw == "" {
+			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "created_at is required"}
+		}
+		parsedTS, parseErr := time.Parse(time.RFC3339, createdAtRaw)
+		if parseErr != nil {
+			if parsedTS, parseErr = time.Parse(time.RFC3339Nano, createdAtRaw); parseErr != nil {
+				return nil, &apptheory.AppError{Code: "app.bad_request", Message: "created_at must be RFC3339"}
+			}
+		}
+		if parsedTS.After(now.Add(5 * time.Minute)) {
+			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "created_at cannot be in the future"}
+		}
+		if parsedTS.Before(now.Add(-10 * 365 * 24 * time.Hour)) {
+			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "created_at is too far in the past"}
+		}
+		createdAt = parsedTS.UTC()
+
+		contextMap, appErr := parseRelationshipContextObject(req.Context)
+		if appErr != nil {
+			return nil, appErr
+		}
+		digest, appErr := computeSoulRelationshipDigest(fromAgentIDHex, toAgentIDHex, relType, contextMap, message, createdAtRaw)
+		if appErr != nil {
+			return nil, appErr
+		}
+		if err := verifyEthereumSignatureBytes(fromIdentity.Wallet, digest, signature); err != nil {
+			log.Printf(
+				"controlplane: soul_integrity invalid_relationship_signature scoped=1 from=%s to=%s type=%s request_id=%s",
+				fromAgentIDHex,
+				toAgentIDHex,
+				relType,
+				strings.TrimSpace(ctx.RequestID),
+			)
+			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid relationship signature"}
+		}
+	} else {
+		messageDigest := crypto.Keccak256([]byte(message))
+		if err := verifyEthereumSignatureBytes(fromIdentity.Wallet, messageDigest, signature); err != nil {
+			log.Printf(
+				"controlplane: soul_integrity invalid_relationship_signature scoped=0 from=%s to=%s type=%s request_id=%s",
+				fromAgentIDHex,
+				toAgentIDHex,
+				relType,
+				strings.TrimSpace(ctx.RequestID),
+			)
+			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid relationship signature"}
+		}
+		createdAt = now
+		log.Printf(
+			"controlplane: soul_integrity legacy_relationship_signature scoped=0 from=%s to=%s type=%s request_id=%s",
+			fromAgentIDHex,
+			toAgentIDHex,
+			relType,
+			strings.TrimSpace(ctx.RequestID),
+		)
+	}
 
 	// Primary record: stored under the "to" agent's partition.
 	rel := &models.SoulAgentRelationship{
@@ -118,7 +179,7 @@ func (s *Server) handleSoulCreateRelationship(ctx *apptheory.Context) (*apptheor
 		Context:     strings.TrimSpace(req.Context),
 		Message:     message,
 		Signature:   signature,
-		CreatedAt:   now,
+		CreatedAt:   createdAt,
 	}
 	_ = rel.UpdateKeys()
 
@@ -127,7 +188,7 @@ func (s *Server) handleSoulCreateRelationship(ctx *apptheory.Context) (*apptheor
 		FromAgentID: fromAgentIDHex,
 		ToAgentID:   toAgentIDHex,
 		Type:        relType,
-		CreatedAt:   now,
+		CreatedAt:   createdAt,
 	}
 	_ = fromIdx.UpdateKeys()
 
@@ -350,4 +411,54 @@ func extractRelationshipTaskType(contextJSON string) string {
 		raw, _ = m["task_type"].(string)
 	}
 	return strings.ToLower(strings.TrimSpace(raw))
+}
+
+func parseRelationshipContextObject(contextJSON string) (map[string]any, *apptheory.AppError) {
+	contextJSON = strings.TrimSpace(contextJSON)
+	if contextJSON == "" {
+		return map[string]any{}, nil
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(contextJSON), &m); err != nil {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "context must be a JSON object"}
+	}
+	if m == nil {
+		m = map[string]any{}
+	}
+	return m, nil
+}
+
+func computeSoulRelationshipDigest(fromAgentIDHex string, toAgentIDHex string, relType string, context map[string]any, message string, createdAt string) ([]byte, *apptheory.AppError) {
+	fromAgentIDHex = strings.ToLower(strings.TrimSpace(fromAgentIDHex))
+	toAgentIDHex = strings.ToLower(strings.TrimSpace(toAgentIDHex))
+	relType = strings.ToLower(strings.TrimSpace(relType))
+	message = strings.TrimSpace(message)
+	createdAt = strings.TrimSpace(createdAt)
+	if fromAgentIDHex == "" || toAgentIDHex == "" || relType == "" || message == "" || createdAt == "" {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid relationship payload"}
+	}
+	if context == nil {
+		context = map[string]any{}
+	}
+
+	unsigned := map[string]any{
+		"kind":        "soul_relationship",
+		"version":     "1",
+		"fromAgentId": fromAgentIDHex,
+		"toAgentId":   toAgentIDHex,
+		"type":        relType,
+		"context":     context,
+		"message":     message,
+		"createdAt":   createdAt,
+	}
+
+	unsignedBytes, err := json.Marshal(unsigned)
+	if err != nil {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid relationship JSON"}
+	}
+	jcsBytes, err := jsoncanonicalizer.Transform(unsignedBytes)
+	if err != nil {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid relationship JSON"}
+	}
+	return crypto.Keccak256(jcsBytes), nil
 }

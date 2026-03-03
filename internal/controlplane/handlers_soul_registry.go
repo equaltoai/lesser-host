@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"math/big"
 	"net"
 	"net/http"
@@ -260,6 +261,22 @@ func (s *Server) getSoulAgentIdentity(ctx context.Context, agentID string) (*mod
 	if err != nil {
 		return nil, err
 	}
+
+	// Backward-compatible read repair: keep lifecycleStatus aligned with status to avoid confusing reads/filters.
+	// (Some legacy writes updated Status but not LifecycleStatus.)
+	status := strings.ToLower(strings.TrimSpace(item.Status))
+	lifecycle := strings.ToLower(strings.TrimSpace(item.LifecycleStatus))
+	if lifecycle == "" && status != "" {
+		item.LifecycleStatus = status
+	} else if status == "" && lifecycle != "" {
+		item.Status = lifecycle
+	} else if status != "" && lifecycle != "" && status != lifecycle {
+		if s.cfg.SoulV2StrictIntegrity {
+			log.Printf("controlplane: soul_integrity lifecycle_mismatch agent=%s status=%s lifecycle=%s", agentID, status, lifecycle)
+		}
+		item.LifecycleStatus = status
+	}
+
 	return &item, nil
 }
 

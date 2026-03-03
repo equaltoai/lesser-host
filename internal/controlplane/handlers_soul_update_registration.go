@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math/big"
 	"net/http"
 	"strings"
@@ -113,6 +114,7 @@ func (s *Server) handleSoulAgentUpdateRegistration(ctx *apptheory.Context) (*app
 		return nil, appErr
 	}
 	if err := verifyEthereumSignatureBytes(walletNorm, digest, selfSig); err != nil {
+		log.Printf("controlplane: soul_integrity invalid_registration_signature agent=%s request_id=%s", agentIDHex, strings.TrimSpace(ctx.RequestID))
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid registration signature"}
 	}
 
@@ -498,6 +500,7 @@ func (s *Server) validateSoulRegistrationPreviousVersionURI(reg *soul.Registrati
 	if nextVersion <= 1 {
 		// First version: previousVersionUri must be empty/null.
 		if reg.PreviousVersionURI != nil && strings.TrimSpace(*reg.PreviousVersionURI) != "" {
+			log.Printf("controlplane: soul_integrity version_chain_violation agent=%s next_version=%d reason=prev_uri_set_on_first", agentIDHex, nextVersion)
 			return &apptheory.AppError{Code: "app.bad_request", Message: "previousVersionUri must be null for the first version"}
 		}
 		return nil
@@ -506,9 +509,11 @@ func (s *Server) validateSoulRegistrationPreviousVersionURI(reg *soul.Registrati
 	prevKey := soulRegistrationVersionedS3Key(agentIDHex, nextVersion-1)
 	expected := fmt.Sprintf("s3://%s/%s", strings.TrimSpace(s.cfg.SoulPackBucketName), prevKey)
 	if reg.PreviousVersionURI == nil || strings.TrimSpace(*reg.PreviousVersionURI) == "" {
+		log.Printf("controlplane: soul_integrity version_chain_violation agent=%s next_version=%d reason=missing_prev_uri", agentIDHex, nextVersion)
 		return &apptheory.AppError{Code: "app.bad_request", Message: "previousVersionUri is required for subsequent versions"}
 	}
 	if strings.TrimSpace(*reg.PreviousVersionURI) != expected {
+		log.Printf("controlplane: soul_integrity version_chain_violation agent=%s next_version=%d reason=prev_uri_mismatch expected=%s got=%s", agentIDHex, nextVersion, expected, strings.TrimSpace(*reg.PreviousVersionURI))
 		return &apptheory.AppError{Code: "app.bad_request", Message: "previousVersionUri does not match the expected previous version"}
 	}
 	return nil

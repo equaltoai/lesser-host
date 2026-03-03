@@ -81,4 +81,15 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.PaymentsCentsPer1000Credits <= 0 {
 		t.Fatalf("expected payments pricing default set")
 	}
+	if cfg.SoulV2StrictIntegrity {
+		t.Fatalf("expected strict integrity default off")
+	}
+}
+
+func TestLoad_SoulV2StrictIntegrity(t *testing.T) {
+	t.Setenv("SOUL_V2_STRICT_INTEGRITY", "true")
+	cfg := Load()
+	if !cfg.SoulV2StrictIntegrity {
+		t.Fatalf("expected strict integrity enabled")
+	}
 }

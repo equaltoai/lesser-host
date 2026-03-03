@@ -56,6 +56,7 @@ type Config struct {
 	SoulMintSignerKeySSMParam                string
 	SoulMintSignerKey                        string
 	SoulPublicCORSOrigins                    []string
+	SoulV2StrictIntegrity                    bool // harden signature + artifact integrity checks
 
 	// Soul reputation (v0).
 	SoulReputationTipStartBlock     uint64
@@ -117,6 +118,7 @@ func Load() Config {
 	soulCaps := parseCSV(envString("SOUL_SUPPORTED_CAPABILITIES"))
 	soulPackBucketName := envString("SOUL_PACK_BUCKET_NAME")
 	soulPublicCORSOrigins := parseCSV(envString("SOUL_PUBLIC_CORS_ORIGINS"))
+	soulV2StrictIntegrity := envBoolOn("SOUL_V2_STRICT_INTEGRITY")
 
 	soulRepTipStartBlock := envUint64("SOUL_REPUTATION_TIP_START_BLOCK", 0)
 	soulRepTipChunkSize := envUint64Positive("SOUL_REPUTATION_TIP_BLOCK_CHUNK_SIZE", 5000)
@@ -201,6 +203,7 @@ func Load() Config {
 		SoulPackBucketNameSSMParam:               envString("SOUL_PACK_BUCKET_NAME_SSM_PARAM"),
 		SoulMintSignerKeySSMParam:                envString("SOUL_MINT_SIGNER_KEY_SSM_PARAM"),
 		SoulPublicCORSOrigins:                    soulPublicCORSOrigins,
+		SoulV2StrictIntegrity:                    soulV2StrictIntegrity,
 
 		SoulReputationTipStartBlock:     soulRepTipStartBlock,
 		SoulReputationTipBlockChunkSize: soulRepTipChunkSize,

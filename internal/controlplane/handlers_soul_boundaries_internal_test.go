@@ -21,7 +21,7 @@ import (
 	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
-func TestHandleSoulAppendBoundary_RepublishesRegistrationWithAddedInVersion(t *testing.T) {
+func TestHandleSoulAppendBoundary_DoesNotPatchRepublishV2Registration(t *testing.T) {
 	t.Parallel()
 
 	tdb := newSoulLifecycleTestDB()
@@ -62,23 +62,6 @@ func TestHandleSoulAppendBoundary_RepublishesRegistrationWithAddedInVersion(t *t
 			Status:                 models.SoulAgentStatusActive,
 			SelfDescriptionVersion: 3,
 			UpdatedAt:              time.Now().Add(-time.Minute).UTC(),
-		}
-	}).Once()
-
-	// Republish boundary query returns one boundary.
-	ts := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
-	tdb.qBoundary.On("AllPaginated", mock.Anything).Return(nil, nil).Run(func(args mock.Arguments) {
-		dest := testutil.RequireMockArg[*[]*models.SoulAgentBoundary](t, args, 0)
-		*dest = []*models.SoulAgentBoundary{
-			{
-				AgentID:        agentIDHex,
-				BoundaryID:     "boundary-001",
-				Category:       models.SoulBoundaryCategoryRefusal,
-				Statement:      "I will not impersonate real people.",
-				Signature:      "0xabc",
-				AddedInVersion: 3,
-				AddedAt:        ts,
-			},
 		}
 	}).Once()
 
@@ -131,25 +114,22 @@ func TestHandleSoulAppendBoundary_RepublishesRegistrationWithAddedInVersion(t *t
 		t.Fatalf("expected 201, got %d (body=%q)", resp.Status, string(resp.Body))
 	}
 
-	// Ensure registration file was republished with boundaries including addedInVersion.
+	// Ensure v2 registration file was not patch-and-republished (it would invalidate self-attestation).
+	if len(packs.puts) != 0 {
+		t.Fatalf("expected no republish puts, got %d", len(packs.puts))
+	}
+
 	obj, ok := packs.objects[s3Key]
 	if !ok || len(obj.body) == 0 {
-		t.Fatalf("expected republished registration at %q", s3Key)
+		t.Fatalf("expected registration at %q", s3Key)
 	}
 	var patched map[string]any
 	if err := json.Unmarshal(obj.body, &patched); err != nil {
 		t.Fatalf("unmarshal patched: %v", err)
 	}
 	boundariesAny, ok := patched["boundaries"].([]any)
-	if !ok || len(boundariesAny) != 1 {
-		t.Fatalf("expected 1 boundary, got %#v", patched["boundaries"])
-	}
-	b0, _ := boundariesAny[0].(map[string]any)
-	if strings.TrimSpace(b0["id"].(string)) != "boundary-001" {
-		t.Fatalf("expected boundary id boundary-001, got %#v", b0["id"])
-	}
-	if strings.TrimSpace(b0["addedInVersion"].(string)) != "3" {
-		t.Fatalf("expected addedInVersion 3, got %#v", b0["addedInVersion"])
+	if !ok || len(boundariesAny) != 0 {
+		t.Fatalf("expected boundaries unchanged, got %#v", patched["boundaries"])
 	}
 }
 

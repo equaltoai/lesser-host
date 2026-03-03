@@ -1,8 +1,8 @@
 package controlplane
 
 import (
-	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -132,8 +132,9 @@ func (s *Server) handleSoulAppendBoundary(ctx *apptheory.Context) (*apptheory.Re
 		return nil, &apptheory.AppError{Code: "app.conflict", Message: "boundary with this ID already exists"}
 	}
 
-	// Re-publish registration file with updated boundaries.
-	_ = s.republishRegistrationOnBoundaryChange(ctx, identity)
+	// NOTE: Do not patch-and-republish registration.json in place; v2 integrity requires a new signed version record.
+	// M2/M4 unify boundary mutations with the registration publishing pipeline.
+	log.Printf("controlplane: soul_integrity boundary_append_no_republish agent=%s boundary=%s request_id=%s", agentIDHex, boundaryID, strings.TrimSpace(ctx.RequestID))
 
 	// Audit log.
 	s.tryWriteAuditLog(ctx, &models.AuditLogEntry{
@@ -226,85 +227,4 @@ func isValidBoundaryCategory(category string) bool {
 		return true
 	}
 	return false
-}
-
-// republishRegistrationOnBoundaryChange re-fetches the current registration file from S3,
-// patches the boundaries array, and re-publishes. This is a best-effort operation;
-// errors are logged but not returned.
-func (s *Server) republishRegistrationOnBoundaryChange(ctx *apptheory.Context, identity *models.SoulAgentIdentity) *apptheory.AppError {
-	if s.soulPacks == nil || identity == nil {
-		return nil
-	}
-
-	agentIDHex := strings.ToLower(strings.TrimSpace(identity.AgentID))
-	s3Key := soulRegistrationS3Key(agentIDHex)
-
-	// Fetch current registration file.
-	regBytes, _, _, err := s.soulPacks.GetObject(ctx.Context(), s3Key, 10*1024*1024)
-	if err != nil || len(regBytes) == 0 {
-		return nil // No existing file yet; nothing to patch.
-	}
-
-	var reg map[string]any
-	if unmarshalErr := json.Unmarshal(regBytes, &reg); unmarshalErr != nil {
-		return nil
-	}
-	isV2 := extractStringField(reg, "version") == "2"
-
-	// Fetch all boundaries from DB.
-	var boundaries []*models.SoulAgentBoundary
-	_, queryErr := s.store.DB.WithContext(ctx.Context()).
-		Model(&models.SoulAgentBoundary{}).
-		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentIDHex)).
-		Where("SK", "BEGINS_WITH", "BOUNDARY#").
-		OrderBy("SK", "ASC").
-		Limit(200).
-		AllPaginated(&boundaries)
-	if queryErr != nil {
-		return nil
-	}
-
-	// Build boundaries array for registration file.
-	boundariesJSON := make([]map[string]any, 0, len(boundaries))
-	for _, b := range boundaries {
-		if b == nil {
-			continue
-		}
-		entry := map[string]any{
-			"id":        b.BoundaryID,
-			"category":  b.Category,
-			"statement": b.Statement,
-			"addedAt":   b.AddedAt.Format(time.RFC3339),
-			"signature": b.Signature,
-		}
-		if b.Rationale != "" {
-			entry["rationale"] = b.Rationale
-		}
-		if b.Supersedes != "" {
-			entry["supersedes"] = b.Supersedes
-		}
-		if isV2 {
-			addedInVersion := b.AddedInVersion
-			if addedInVersion <= 0 && identity != nil && identity.SelfDescriptionVersion > 0 {
-				addedInVersion = identity.SelfDescriptionVersion
-			}
-			if addedInVersion <= 0 {
-				addedInVersion = 1
-			}
-			entry["addedInVersion"] = fmt.Sprintf("%d", addedInVersion)
-		}
-		boundariesJSON = append(boundariesJSON, entry)
-	}
-
-	// Patch the boundaries field and re-publish.
-	reg["boundaries"] = boundariesJSON
-	reg["updated"] = time.Now().UTC().Format(time.RFC3339)
-
-	patchedBytes, marshalErr := json.Marshal(reg)
-	if marshalErr != nil {
-		return nil
-	}
-	_ = s.soulPacks.PutObject(ctx.Context(), s3Key, patchedBytes, "application/json", "private, max-age=0")
-
-	return nil
 }
