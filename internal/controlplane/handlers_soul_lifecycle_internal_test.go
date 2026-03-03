@@ -94,17 +94,18 @@ func (f *fakeSoulPackStore) GetObject(ctx context.Context, key string, maxBytes 
 }
 
 type soulLifecycleTestDB struct {
-	db         *ttmocks.MockExtendedDB
-	qDomain    *ttmocks.MockQuery
-	qInstance  *ttmocks.MockQuery
-	qIdentity  *ttmocks.MockQuery
-	qRotation  *ttmocks.MockQuery
-	qOp        *ttmocks.MockQuery
-	qAudit     *ttmocks.MockQuery
-	qWalletIdx *ttmocks.MockQuery
-	qCapIdx    *ttmocks.MockQuery
-	qVersion   *ttmocks.MockQuery
-	qBoundary  *ttmocks.MockQuery
+	db          *ttmocks.MockExtendedDB
+	qDomain     *ttmocks.MockQuery
+	qInstance   *ttmocks.MockQuery
+	qIdentity   *ttmocks.MockQuery
+	qRotation   *ttmocks.MockQuery
+	qOp         *ttmocks.MockQuery
+	qAudit      *ttmocks.MockQuery
+	qWalletIdx  *ttmocks.MockQuery
+	qCapIdx     *ttmocks.MockQuery
+	qVersion    *ttmocks.MockQuery
+	qBoundary   *ttmocks.MockQuery
+	qContinuity *ttmocks.MockQuery
 }
 
 func newSoulLifecycleTestDB() soulLifecycleTestDB {
@@ -119,6 +120,7 @@ func newSoulLifecycleTestDB() soulLifecycleTestDB {
 	qCapIdx := new(ttmocks.MockQuery)
 	qVersion := new(ttmocks.MockQuery)
 	qBoundary := new(ttmocks.MockQuery)
+	qContinuity := new(ttmocks.MockQuery)
 
 	db.On("WithContext", mock.Anything).Return(db).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.Domain")).Return(qDomain).Maybe()
@@ -131,6 +133,7 @@ func newSoulLifecycleTestDB() soulLifecycleTestDB {
 	db.On("Model", mock.AnythingOfType("*models.SoulCapabilityAgentIndex")).Return(qCapIdx).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentVersion")).Return(qVersion).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentBoundary")).Return(qBoundary).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentContinuity")).Return(qContinuity).Maybe()
 
 	for _, q := range []*ttmocks.MockQuery{
 		qDomain,
@@ -143,6 +146,7 @@ func newSoulLifecycleTestDB() soulLifecycleTestDB {
 		qCapIdx,
 		qVersion,
 		qBoundary,
+		qContinuity,
 	} {
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("Index", mock.Anything).Return(q).Maybe()
@@ -158,17 +162,18 @@ func newSoulLifecycleTestDB() soulLifecycleTestDB {
 	}
 
 	return soulLifecycleTestDB{
-		db:         db,
-		qDomain:    qDomain,
-		qInstance:  qInstance,
-		qIdentity:  qIdentity,
-		qRotation:  qRotation,
-		qOp:        qOp,
-		qAudit:     qAudit,
-		qWalletIdx: qWalletIdx,
-		qCapIdx:    qCapIdx,
-		qVersion:   qVersion,
-		qBoundary:  qBoundary,
+		db:          db,
+		qDomain:     qDomain,
+		qInstance:   qInstance,
+		qIdentity:   qIdentity,
+		qRotation:   qRotation,
+		qOp:         qOp,
+		qAudit:      qAudit,
+		qWalletIdx:  qWalletIdx,
+		qCapIdx:     qCapIdx,
+		qVersion:    qVersion,
+		qBoundary:   qBoundary,
+		qContinuity: qContinuity,
 	}
 }
 

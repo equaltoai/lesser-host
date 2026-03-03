@@ -1,11 +1,13 @@
 package controlplane
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/cyberphone/json-canonicalization/go/src/webpki.org/jsoncanonicalizer"
 	"github.com/ethereum/go-ethereum/crypto"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 
@@ -16,11 +18,12 @@ import (
 // --- Request / Response types ---
 
 type soulAppendContinuityRequest struct {
-	Type       string `json:"type"`
-	Summary    string `json:"summary"`
-	Recovery   string `json:"recovery,omitempty"`
-	References string `json:"references,omitempty"` // JSON array of reference IDs
-	Signature  string `json:"signature"`
+	Type       string   `json:"type"`
+	Timestamp  string   `json:"timestamp"`
+	Summary    string   `json:"summary"`
+	Recovery   string   `json:"recovery,omitempty"`
+	References []string `json:"references,omitempty"`
+	Signature  string   `json:"signature"`
 }
 
 type soulAppendContinuityResponse struct {
@@ -28,11 +31,11 @@ type soulAppendContinuityResponse struct {
 }
 
 type soulListContinuityResponse struct {
-	Version    string                      `json:"version"`
+	Version    string                       `json:"version"`
 	Entries    []models.SoulAgentContinuity `json:"entries"`
-	Count      int                         `json:"count"`
-	HasMore    bool                        `json:"has_more"`
-	NextCursor string                      `json:"next_cursor,omitempty"`
+	Count      int                          `json:"count"`
+	HasMore    bool                         `json:"has_more"`
+	NextCursor string                       `json:"next_cursor,omitempty"`
 }
 
 // --- Handlers ---
@@ -68,6 +71,16 @@ func (s *Server) handleSoulAppendContinuity(ctx *apptheory.Context) (*apptheory.
 	if !isValidContinuityEntryType(entryType) {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid continuity entry type"}
 	}
+	tsRaw := strings.TrimSpace(req.Timestamp)
+	if tsRaw == "" {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "timestamp is required"}
+	}
+	parsedTS, parseErr := time.Parse(time.RFC3339, tsRaw)
+	if parseErr != nil {
+		if parsedTS, parseErr = time.Parse(time.RFC3339Nano, tsRaw); parseErr != nil {
+			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "timestamp must be RFC3339"}
+		}
+	}
 	summary := strings.TrimSpace(req.Summary)
 	if summary == "" {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "summary is required"}
@@ -77,21 +90,28 @@ func (s *Server) handleSoulAppendContinuity(ctx *apptheory.Context) (*apptheory.
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "signature is required"}
 	}
 
-	// Verify EIP-191 signature over keccak256(bytes(summary)).
-	summaryDigest := crypto.Keccak256([]byte(summary))
-	if err := verifyEthereumSignatureBytes(identity.Wallet, summaryDigest, signature); err != nil {
+	digest, appErr := computeSoulContinuityEntryDigest(entryType, tsRaw, summary, strings.TrimSpace(req.Recovery), req.References)
+	if appErr != nil {
+		return nil, appErr
+	}
+	if err := verifyEthereumSignatureBytes(identity.Wallet, digest, signature); err != nil {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid continuity signature"}
 	}
 
 	now := time.Now().UTC()
+	refsJSON := ""
+	if len(req.References) > 0 {
+		b, _ := json.Marshal(req.References)
+		refsJSON = strings.TrimSpace(string(b))
+	}
 	entry := &models.SoulAgentContinuity{
 		AgentID:    agentIDHex,
 		Type:       entryType,
 		Summary:    summary,
 		Recovery:   strings.TrimSpace(req.Recovery),
-		References: strings.TrimSpace(req.References),
+		References: refsJSON,
 		Signature:  signature,
-		Timestamp:  now,
+		Timestamp:  parsedTS.UTC(),
 	}
 	_ = entry.UpdateKeys()
 
@@ -109,6 +129,35 @@ func (s *Server) handleSoulAppendContinuity(ctx *apptheory.Context) (*apptheory.
 	}).Create()
 
 	return apptheory.JSON(http.StatusCreated, soulAppendContinuityResponse{Entry: *entry})
+}
+
+func computeSoulContinuityEntryDigest(entryType string, timestamp string, summary string, recovery string, references []string) ([]byte, *apptheory.AppError) {
+	entryType = strings.ToLower(strings.TrimSpace(entryType))
+	timestampStr := strings.TrimSpace(timestamp)
+	summary = strings.TrimSpace(summary)
+	recovery = strings.TrimSpace(recovery)
+
+	unsigned := map[string]any{
+		"type":      entryType,
+		"timestamp": timestampStr,
+		"summary":   summary,
+	}
+	if recovery != "" {
+		unsigned["recovery"] = recovery
+	}
+	if len(references) > 0 {
+		unsigned["references"] = references
+	}
+
+	unsignedBytes, err := json.Marshal(unsigned)
+	if err != nil {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid continuity JSON"}
+	}
+	jcsBytes, err := jsoncanonicalizer.Transform(unsignedBytes)
+	if err != nil {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid continuity JSON"}
+	}
+	return crypto.Keccak256(jcsBytes), nil
 }
 
 // handleSoulPublicGetContinuity returns paginated continuity journal entries for an agent.
