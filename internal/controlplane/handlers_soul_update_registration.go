@@ -117,11 +117,28 @@ func (s *Server) handleSoulAgentUpdateRegistration(ctx *apptheory.Context) (*app
 	// Determine the schema version from the document.
 	schemaVersion := extractStringField(reg, "version")
 	isV2 := schemaVersion == "2"
+	var regV2 *soul.RegistrationFileV2
+	if isV2 {
+		parsed, err := soul.ParseRegistrationFileV2(regBytes)
+		if err != nil {
+			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid v2 registration schema"}
+		}
+		if err := parsed.Validate(); err != nil {
+			return nil, &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
+		}
+		regV2 = parsed
+	}
 
 	// Determine next version number by querying latest VERSION# item.
 	nextVersion, appErr := s.getNextSoulAgentVersion(ctx.Context(), agentIDHex)
 	if appErr != nil {
 		return nil, appErr
+	}
+
+	if isV2 && regV2 != nil {
+		if appErr := s.validateSoulRegistrationPreviousVersionURI(regV2, agentIDHex, nextVersion); appErr != nil {
+			return nil, appErr
+		}
 	}
 
 	// Publish to the current S3 path.
@@ -420,21 +437,52 @@ func extractCapabilityClaimLevels(reg map[string]any) map[string]string {
 // getNextSoulAgentVersion queries the latest VERSION# item and returns the next version number.
 func (s *Server) getNextSoulAgentVersion(ctx context.Context, agentIDHex string) (int, *apptheory.AppError) {
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return 1, nil
+		return 0, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
 	var items []*models.SoulAgentVersion
-	_, err := s.store.DB.WithContext(ctx).
+	err := s.store.DB.WithContext(ctx).
 		Model(&models.SoulAgentVersion{}).
 		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentIDHex)).
 		Where("SK", "BEGINS_WITH", "VERSION#").
-		OrderBy("SK", "DESC").
-		Limit(1).
-		AllPaginated(&items)
-	if err != nil || len(items) == 0 {
-		return 1, nil
+		All(&items)
+	if err != nil {
+		return 0, &apptheory.AppError{Code: "app.internal", Message: "failed to read version history"}
 	}
-	return items[0].VersionNumber + 1, nil
+
+	max := 0
+	for _, it := range items {
+		if it == nil {
+			continue
+		}
+		if it.VersionNumber > max {
+			max = it.VersionNumber
+		}
+	}
+	return max + 1, nil
+}
+
+func (s *Server) validateSoulRegistrationPreviousVersionURI(reg *soul.RegistrationFileV2, agentIDHex string, nextVersion int) *apptheory.AppError {
+	if s == nil || reg == nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if nextVersion <= 1 {
+		// First version: previousVersionUri must be empty/null.
+		if reg.PreviousVersionURI != nil && strings.TrimSpace(*reg.PreviousVersionURI) != "" {
+			return &apptheory.AppError{Code: "app.bad_request", Message: "previousVersionUri must be null for the first version"}
+		}
+		return nil
+	}
+
+	prevKey := soulRegistrationVersionedS3Key(agentIDHex, nextVersion-1)
+	expected := fmt.Sprintf("s3://%s/%s", strings.TrimSpace(s.cfg.SoulPackBucketName), prevKey)
+	if reg.PreviousVersionURI == nil || strings.TrimSpace(*reg.PreviousVersionURI) == "" {
+		return &apptheory.AppError{Code: "app.bad_request", Message: "previousVersionUri is required for subsequent versions"}
+	}
+	if strings.TrimSpace(*reg.PreviousVersionURI) != expected {
+		return &apptheory.AppError{Code: "app.bad_request", Message: "previousVersionUri does not match the expected previous version"}
+	}
+	return nil
 }
 
 func (s *Server) updateSoulAgentCapabilities(ctx context.Context, identity *models.SoulAgentIdentity, capsNorm []string, claimLevels map[string]string, now time.Time) *apptheory.AppError {

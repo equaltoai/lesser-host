@@ -412,6 +412,10 @@ func TestHandleSoulAgentUpdateRegistration_PublishesToS3(t *testing.T) {
 			UpdatedAt:    time.Now().Add(-time.Minute).UTC(),
 		}
 	}).Once()
+	tdb.qVersion.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulAgentVersion](t, args, 0)
+		*dest = nil
+	}).Once()
 
 	parsedABI, err := abi.JSON(strings.NewReader(soul.SoulRegistryABI))
 	if err != nil {
