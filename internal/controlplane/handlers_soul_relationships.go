@@ -3,7 +3,6 @@ package controlplane
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -81,7 +80,7 @@ func (s *Server) handleSoulCreateRelationship(ctx *apptheory.Context) (*apptheor
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "type must be one of: endorsement, delegation, collaboration, trust_grant, trust_revocation"}
 	}
 
-	contextMap, contextJSON, taskType, appErr := parseRelationshipContext(req.Context)
+	contextMap, _, taskType, appErr := parseRelationshipContext(req.Context)
 	if appErr != nil {
 		return nil, appErr
 	}
@@ -113,76 +112,46 @@ func (s *Server) handleSoulCreateRelationship(ctx *apptheory.Context) (*apptheor
 	}
 	now := time.Now().UTC()
 	createdAtRaw := strings.TrimSpace(req.CreatedAt)
+	if createdAtRaw == "" {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "created_at is required"}
+	}
+	parsedTS, parseErr := time.Parse(time.RFC3339, createdAtRaw)
+	if parseErr != nil {
+		if parsedTS, parseErr = time.Parse(time.RFC3339Nano, createdAtRaw); parseErr != nil {
+			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "created_at must be RFC3339"}
+		}
+	}
+	if parsedTS.After(now.Add(5 * time.Minute)) {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "created_at cannot be in the future"}
+	}
+	if parsedTS.Before(now.Add(-10 * 365 * 24 * time.Hour)) {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "created_at is too far in the past"}
+	}
+	createdAt := parsedTS.UTC()
+	createdAtCanonical := createdAt.Format(time.RFC3339Nano)
 
-	// Legacy scheme: signature over keccak256(bytes(message)).
-	// Strict v2 integrity: signature over keccak256(JCS(record_without_signature)) to prevent replay/under-scoping.
-	useScopedSig := createdAtRaw != "" || s.cfg.SoulV2StrictIntegrity
-	var createdAt time.Time
-	if useScopedSig {
-		if createdAtRaw == "" {
-			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "created_at is required"}
-		}
-		parsedTS, parseErr := time.Parse(time.RFC3339, createdAtRaw)
-		if parseErr != nil {
-			if parsedTS, parseErr = time.Parse(time.RFC3339Nano, createdAtRaw); parseErr != nil {
-				return nil, &apptheory.AppError{Code: "app.bad_request", Message: "created_at must be RFC3339"}
-			}
-		}
-		if parsedTS.After(now.Add(5 * time.Minute)) {
-			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "created_at cannot be in the future"}
-		}
-		if parsedTS.Before(now.Add(-10 * 365 * 24 * time.Hour)) {
-			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "created_at is too far in the past"}
-		}
-		createdAt = parsedTS.UTC()
-
-		digest, appErr := computeSoulRelationshipDigest(fromAgentIDHex, toAgentIDHex, relType, contextMap, message, createdAtRaw)
-		if appErr != nil {
-			return nil, appErr
-		}
-		if err := verifyEthereumSignatureBytes(fromIdentity.Wallet, digest, signature); err != nil {
-			log.Printf(
-				"controlplane: soul_integrity invalid_relationship_signature scoped=1 from=%s to=%s type=%s request_id=%s",
-				fromAgentIDHex,
-				toAgentIDHex,
-				relType,
-				strings.TrimSpace(ctx.RequestID),
-			)
-			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid relationship signature"}
-		}
-	} else {
-		messageDigest := crypto.Keccak256([]byte(message))
-		if err := verifyEthereumSignatureBytes(fromIdentity.Wallet, messageDigest, signature); err != nil {
-			log.Printf(
-				"controlplane: soul_integrity invalid_relationship_signature scoped=0 from=%s to=%s type=%s request_id=%s",
-				fromAgentIDHex,
-				toAgentIDHex,
-				relType,
-				strings.TrimSpace(ctx.RequestID),
-			)
-			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid relationship signature"}
-		}
-		createdAt = now
-		log.Printf(
-			"controlplane: soul_integrity legacy_relationship_signature scoped=0 from=%s to=%s type=%s request_id=%s",
-			fromAgentIDHex,
-			toAgentIDHex,
-			relType,
-			strings.TrimSpace(ctx.RequestID),
-		)
+	contextForDigest := contextMap
+	if len(contextForDigest) == 0 {
+		contextForDigest = nil
+	}
+	digest, appErr := computeSoulRelationshipDigest(fromAgentIDHex, toAgentIDHex, relType, contextForDigest, message, createdAtCanonical)
+	if appErr != nil {
+		return nil, appErr
+	}
+	if err := verifyEthereumSignatureBytesNonMalleable(fromIdentity.Wallet, digest, signature); err != nil {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid relationship signature"}
 	}
 
 	// Primary record: stored under the "to" agent's partition.
 	if len(contextMap) == 0 {
 		contextMap = nil
-		contextJSON = ""
 		taskType = ""
 	}
 	rel := &models.SoulAgentRelationship{
 		FromAgentID: fromAgentIDHex,
 		ToAgentID:   toAgentIDHex,
 		Type:        relType,
-		ContextJSON: strings.TrimSpace(contextJSON),
+		ContextJSON: "",
 		ContextV2:   contextMap,
 		TaskType:    taskType,
 		Message:     message,
@@ -300,16 +269,21 @@ func (s *Server) handleSoulPublicGetRelationships(ctx *apptheory.Context) (*appt
 			if item == nil {
 				continue
 			}
-			normalizeRelationshipForPublicRead(item)
 			// Apply type filter client-side if specified.
-			if typeFilter != "" && strings.ToLower(item.Type) != typeFilter {
+			if typeFilter != "" && strings.ToLower(strings.TrimSpace(item.Type)) != typeFilter {
 				continue
 			}
 			if taskTypeFilter != "" {
-				if tt := strings.ToLower(strings.TrimSpace(item.TaskType)); tt != taskTypeFilter {
+				tt := strings.ToLower(strings.TrimSpace(item.TaskType))
+				if tt == "" {
+					tt = extractRelationshipTaskTypeFromMap(item.ContextV2)
+				}
+				if tt != taskTypeFilter {
 					continue
 				}
+				item.TaskType = tt
 			}
+			normalizeRelationshipForPublicRead(item)
 			out = append(out, *item)
 			if len(out) >= limit {
 				if idx < len(items)-1 {
@@ -468,8 +442,8 @@ func computeSoulRelationshipDigest(fromAgentIDHex string, toAgentIDHex string, r
 	if fromAgentIDHex == "" || toAgentIDHex == "" || relType == "" || message == "" || createdAt == "" {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid relationship payload"}
 	}
-	if context == nil {
-		context = map[string]any{}
+	if len(context) == 0 {
+		context = nil
 	}
 
 	unsigned := map[string]any{
@@ -478,9 +452,11 @@ func computeSoulRelationshipDigest(fromAgentIDHex string, toAgentIDHex string, r
 		"fromAgentId": fromAgentIDHex,
 		"toAgentId":   toAgentIDHex,
 		"type":        relType,
-		"context":     context,
 		"message":     message,
 		"createdAt":   createdAt,
+	}
+	if context != nil {
+		unsigned["context"] = context
 	}
 
 	unsignedBytes, err := json.Marshal(unsigned)

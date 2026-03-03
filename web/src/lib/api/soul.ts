@@ -557,7 +557,7 @@ export interface SoulAgentRelationship {
 	from_agent_id: string;
 	to_agent_id: string;
 	type: string;
-	context?: string;
+	context?: Record<string, unknown>;
 	message?: string;
 	signature?: string;
 	created_at: string;

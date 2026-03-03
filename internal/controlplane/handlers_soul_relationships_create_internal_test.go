@@ -21,7 +21,7 @@ import (
 	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
-func TestHandleSoulCreateRelationship_StrictIntegrity_RequiresCreatedAt(t *testing.T) {
+func TestHandleSoulCreateRelationship_RequiresCreatedAt(t *testing.T) {
 	t.Parallel()
 
 	tdb := newSoulLifecycleTestDB()
@@ -35,7 +35,6 @@ func TestHandleSoulCreateRelationship_StrictIntegrity_RequiresCreatedAt(t *testi
 			SoulEnabled:                 true,
 			SoulChainID:                 1,
 			SoulRegistryContractAddress: "0x0000000000000000000000000000000000000001",
-			SoulV2StrictIntegrity:       true,
 		},
 	}
 

@@ -856,7 +856,7 @@
 											<Text size="sm" color="secondary">{rel.message}</Text>
 										{/if}
 										{#if rel.context}
-											<Text size="sm" color="secondary">Context: {rel.context}</Text>
+											<Text size="sm" color="secondary">Context: {JSON.stringify(rel.context)}</Text>
 										{/if}
 									</div>
 								</div>
