@@ -443,10 +443,41 @@ export interface SoulAppendBoundaryResponse {
 	boundary: SoulAgentBoundary;
 }
 
-export function soulAddBoundary(
+export interface SoulAppendBoundaryBeginResponse {
+	version: string;
+	digest_hex: string;
+	issued_at: string;
+	expected_version: number;
+	next_version: number;
+}
+
+export function soulAddBoundaryBegin(
 	token: string,
 	agentId: string,
 	input: { boundary_id: string; category: string; statement: string; rationale?: string; supersedes?: string; signature?: string },
+): Promise<SoulAppendBoundaryBeginResponse> {
+	const req = jsonRequest(input);
+	return fetchJson<SoulAppendBoundaryBeginResponse>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/boundaries/begin`, {
+		method: 'POST',
+		headers: { authorization: `Bearer ${token}`, ...req.headers },
+		body: req.body,
+	});
+}
+
+export function soulAddBoundary(
+	token: string,
+	agentId: string,
+	input: {
+		boundary_id: string;
+		category: string;
+		statement: string;
+		rationale?: string;
+		supersedes?: string;
+		signature?: string;
+		issued_at: string;
+		expected_version: number;
+		self_attestation: string;
+	},
 ): Promise<SoulAppendBoundaryResponse> {
 	const req = jsonRequest(input);
 	return fetchJson<SoulAppendBoundaryResponse>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/boundaries`, {

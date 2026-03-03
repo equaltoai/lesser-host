@@ -27,6 +27,7 @@
 		soulPublicGetCapabilities,
 		soulPublicGetTransparency,
 		soulPublicGetFailures,
+		soulAddBoundaryBegin,
 		soulAddBoundary,
 		soulSelfSuspend,
 		soulSelfReinstate,
@@ -217,6 +218,35 @@
 
 		boundaryAddLoading = true;
 		try {
+			const begin = await soulAddBoundaryBegin(token, agentId, {
+				boundary_id: id,
+				category,
+				statement,
+				rationale: rationale || undefined,
+				supersedes: supersedes || undefined,
+				signature,
+			});
+
+			const provider = getEthereumProvider();
+			if (!provider) {
+				boundaryAddError = 'No wallet detected.';
+				return;
+			}
+			const wallet = agent?.agent?.wallet?.trim();
+			if (!wallet) {
+				boundaryAddError = 'Agent wallet is not available.';
+				return;
+			}
+
+			const accounts = await requestAccounts(provider);
+			const normalized = accounts.map((a) => a.toLowerCase());
+			if (!normalized.includes(wallet.toLowerCase())) {
+				boundaryAddError = `Connected wallet does not match agent wallet (${wallet}).`;
+				return;
+			}
+
+			const selfAttestation = await personalSign(provider, begin.digest_hex, wallet);
+
 			await soulAddBoundary(token, agentId, {
 				boundary_id: id,
 				category,
@@ -224,6 +254,9 @@
 				rationale: rationale || undefined,
 				supersedes: supersedes || undefined,
 				signature,
+				issued_at: begin.issued_at,
+				expected_version: begin.expected_version,
+				self_attestation: selfAttestation,
 			});
 			boundaryId = '';
 			boundaryStatement = '';

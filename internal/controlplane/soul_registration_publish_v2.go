@@ -22,6 +22,12 @@ import (
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
+// soulRegistrationV2TxHook is the minimal transaction surface used by callers that need to
+// create additional records in the same DynamoDB transaction as the version record.
+type soulRegistrationV2TxHook interface {
+	Create(model any, cond ...core.TransactCondition) core.TransactionBuilder
+}
+
 func (s *Server) publishSoulAgentRegistrationV2(
 	ctx context.Context,
 	agentIDHex string,
@@ -35,6 +41,38 @@ func (s *Server) publishSoulAgentRegistrationV2(
 	claimLevels map[string]string,
 	expectedVersion *int,
 	now time.Time,
+) (versionNumber int, appErr *apptheory.AppError) {
+	return s.publishSoulAgentRegistrationV2WithExtraWrites(
+		ctx,
+		agentIDHex,
+		identity,
+		regV2,
+		regBytes,
+		regSHA256,
+		selfSig,
+		changeSummary,
+		capsNorm,
+		claimLevels,
+		expectedVersion,
+		now,
+		nil,
+	)
+}
+
+func (s *Server) publishSoulAgentRegistrationV2WithExtraWrites(
+	ctx context.Context,
+	agentIDHex string,
+	identity *models.SoulAgentIdentity,
+	regV2 *soul.RegistrationFileV2,
+	regBytes []byte,
+	regSHA256 string,
+	selfSig string,
+	changeSummary string,
+	capsNorm []string,
+	claimLevels map[string]string,
+	expectedVersion *int,
+	now time.Time,
+	extraWrites func(tx soulRegistrationV2TxHook) error,
 ) (versionNumber int, appErr *apptheory.AppError) {
 	if s == nil || identity == nil || regV2 == nil {
 		return 0, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
@@ -136,6 +174,9 @@ func (s *Server) publishSoulAgentRegistrationV2(
 	if err := s.store.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
 		tx.ConditionCheck(identity, soulIdentitySelfDescriptionVersionCondition(prevVersionFromURI)...)
 		tx.Create(versionRecord)
+		if extraWrites != nil {
+			return extraWrites(tx)
+		}
 		return nil
 	}); err != nil {
 		if theoryErrors.IsConditionFailed(err) {
