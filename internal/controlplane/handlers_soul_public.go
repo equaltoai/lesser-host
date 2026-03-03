@@ -277,12 +277,13 @@ func (s *Server) handleSoulPublicSearch(ctx *apptheory.Context) (*apptheory.Resp
 	if appErr != nil {
 		return nil, appErr
 	}
+	statusFilter := strings.ToLower(strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "status")))
 
 	entries, hasMore, nextCursor, appErr := s.querySoulSearchIndexEntries(ctx.Context(), q, cap, cursor, limit)
 	if appErr != nil {
 		return nil, appErr
 	}
-	results := s.filterActiveSoulSearchEntries(ctx.Context(), entries, limit)
+	results := s.filterSoulSearchEntries(ctx.Context(), entries, statusFilter, limit)
 
 	resp, err := apptheory.JSON(http.StatusOK, soulSearchResponse{
 		Version:    "1",
@@ -435,15 +436,27 @@ func (s *Server) querySoulSearchByDomain(ctx context.Context, q string, cursor s
 }
 
 func (s *Server) filterActiveSoulSearchEntries(ctx context.Context, entries []soulSearchIndexEntry, limit int) []soulSearchResult {
+	return s.filterSoulSearchEntries(ctx, entries, "", limit)
+}
+
+func (s *Server) filterSoulSearchEntries(ctx context.Context, entries []soulSearchIndexEntry, statusFilter string, limit int) []soulSearchResult {
 	results := make([]soulSearchResult, 0, limit)
 	for _, entry := range entries {
 		identity, err := s.getSoulAgentIdentity(ctx, entry.AgentID)
 		if err != nil || identity == nil {
 			continue
 		}
-		if strings.TrimSpace(identity.Status) != models.SoulAgentStatusActive {
+		agentStatus := strings.TrimSpace(identity.Status)
+
+		// If no status filter, default to active-only.
+		if statusFilter == "" {
+			if agentStatus != models.SoulAgentStatusActive {
+				continue
+			}
+		} else if statusFilter != agentStatus {
 			continue
 		}
+
 		results = append(results, soulSearchResult(entry))
 	}
 	return results

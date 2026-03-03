@@ -20,6 +20,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
+	"github.com/theory-cloud/tabletheory/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
 
@@ -56,6 +57,12 @@ type fakeSoulPackStore struct {
 	body         []byte
 	contentType  string
 	cacheControl string
+	puts         []fakePut
+}
+
+type fakePut struct {
+	key  string
+	body []byte
 }
 
 func (f *fakeSoulPackStore) PutObject(ctx context.Context, key string, body []byte, contentType string, cacheControl string) error {
@@ -63,6 +70,7 @@ func (f *fakeSoulPackStore) PutObject(ctx context.Context, key string, body []by
 	f.body = append([]byte(nil), body...)
 	f.contentType = contentType
 	f.cacheControl = cacheControl
+	f.puts = append(f.puts, fakePut{key: key, body: append([]byte(nil), body...)})
 	return nil
 }
 
@@ -80,6 +88,7 @@ type soulLifecycleTestDB struct {
 	qAudit     *ttmocks.MockQuery
 	qWalletIdx *ttmocks.MockQuery
 	qCapIdx    *ttmocks.MockQuery
+	qVersion   *ttmocks.MockQuery
 }
 
 func newSoulLifecycleTestDB() soulLifecycleTestDB {
@@ -92,6 +101,7 @@ func newSoulLifecycleTestDB() soulLifecycleTestDB {
 	qAudit := new(ttmocks.MockQuery)
 	qWalletIdx := new(ttmocks.MockQuery)
 	qCapIdx := new(ttmocks.MockQuery)
+	qVersion := new(ttmocks.MockQuery)
 
 	db.On("WithContext", mock.Anything).Return(db).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.Domain")).Return(qDomain).Maybe()
@@ -102,6 +112,7 @@ func newSoulLifecycleTestDB() soulLifecycleTestDB {
 	db.On("Model", mock.AnythingOfType("*models.AuditLogEntry")).Return(qAudit).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.WalletIndex")).Return(qWalletIdx).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulCapabilityAgentIndex")).Return(qCapIdx).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentVersion")).Return(qVersion).Maybe()
 
 	for _, q := range []*ttmocks.MockQuery{
 		qDomain,
@@ -112,15 +123,19 @@ func newSoulLifecycleTestDB() soulLifecycleTestDB {
 		qAudit,
 		qWalletIdx,
 		qCapIdx,
+		qVersion,
 	} {
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("Index", mock.Anything).Return(q).Maybe()
 		q.On("Limit", mock.Anything).Return(q).Maybe()
+		q.On("OrderBy", mock.Anything, mock.Anything).Return(q).Maybe()
+		q.On("AllPaginated", mock.Anything).Return((*core.PaginatedResult)(nil), nil).Maybe()
 		q.On("IfExists").Return(q).Maybe()
 		q.On("IfNotExists").Return(q).Maybe()
 		q.On("Create").Return(nil).Maybe()
 		q.On("CreateOrUpdate").Return(nil).Maybe()
 		q.On("Update", mock.Anything).Return(nil).Maybe()
+		q.On("Update", mock.Anything, mock.Anything).Return(nil).Maybe()
 		q.On("Delete").Return(nil).Maybe()
 	}
 
@@ -134,6 +149,7 @@ func newSoulLifecycleTestDB() soulLifecycleTestDB {
 		qAudit:     qAudit,
 		qWalletIdx: qWalletIdx,
 		qCapIdx:    qCapIdx,
+		qVersion:   qVersion,
 	}
 }
 
@@ -471,11 +487,18 @@ func TestHandleSoulAgentUpdateRegistration_PublishesToS3(t *testing.T) {
 	if out.S3Key != soulRegistrationS3Key(agentIDHex) {
 		t.Fatalf("expected s3 key %q, got %q", soulRegistrationS3Key(agentIDHex), out.S3Key)
 	}
-	if packs.key != out.S3Key {
-		t.Fatalf("expected object written to %q, got %q", out.S3Key, packs.key)
+	// Two puts: current path + versioned path.
+	if len(packs.puts) < 2 {
+		t.Fatalf("expected at least 2 puts, got %d", len(packs.puts))
 	}
-	if !bytes.Equal(packs.body, regBytes) {
-		t.Fatalf("expected put body to match request body")
+	if packs.puts[0].key != out.S3Key {
+		t.Fatalf("expected first put to %q, got %q", out.S3Key, packs.puts[0].key)
+	}
+	if !bytes.Equal(packs.puts[0].body, regBytes) {
+		t.Fatalf("expected first put body to match request body")
+	}
+	if out.Version < 1 {
+		t.Fatalf("expected version >= 1, got %d", out.Version)
 	}
 	if out.Agent.Wallet != wallet {
 		t.Fatalf("expected wallet %q, got %q", wallet, out.Agent.Wallet)

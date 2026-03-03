@@ -8,9 +8,12 @@ import (
 
 // SoulAgentStatus* constants define lifecycle states for a soul agent identity.
 const (
-	SoulAgentStatusPending   = "pending"
-	SoulAgentStatusActive    = "active"
-	SoulAgentStatusSuspended = "suspended"
+	SoulAgentStatusPending       = "pending"
+	SoulAgentStatusActive        = "active"
+	SoulAgentStatusSuspended     = "suspended"
+	SoulAgentStatusSelfSuspended = "self_suspended"
+	SoulAgentStatusArchived      = "archived"
+	SoulAgentStatusSucceeded     = "succeeded"
 )
 
 // SoulAgentIdentity stores the off-chain identity record for a soul agent.
@@ -35,6 +38,16 @@ type SoulAgentIdentity struct {
 	MetaURI string `theorydb:"attr:metaURI" json:"meta_uri,omitempty"`
 
 	Capabilities []string `theorydb:"attr:capabilities" json:"capabilities,omitempty"`
+
+	// v2: principal declaration
+	PrincipalAddress        string `theorydb:"attr:principalAddress" json:"principal_address,omitempty"`
+	PrincipalSignature      string `theorydb:"attr:principalSignature" json:"principal_signature,omitempty"`
+	SelfDescriptionVersion  int    `theorydb:"attr:selfDescriptionVersion" json:"self_description_version,omitempty"`
+
+	// v2: lifecycle (replaces simple Status for richer state machine)
+	LifecycleStatus  string `theorydb:"attr:lifecycleStatus" json:"lifecycle_status,omitempty"`
+	LifecycleReason  string `theorydb:"attr:lifecycleReason" json:"lifecycle_reason,omitempty"`
+	SuccessorAgentId string `theorydb:"attr:successorAgentId" json:"successor_agent_id,omitempty"`
 
 	Status     string    `theorydb:"attr:status" json:"status"`
 	MintTxHash string    `theorydb:"attr:mintTxHash" json:"mint_tx_hash,omitempty"`
@@ -74,6 +87,11 @@ func (a *SoulAgentIdentity) UpdateKeys() error {
 	a.Wallet = strings.ToLower(strings.TrimSpace(a.Wallet))
 	a.TokenID = strings.ToLower(strings.TrimSpace(a.TokenID))
 	a.MetaURI = strings.TrimSpace(a.MetaURI)
+	a.PrincipalAddress = strings.ToLower(strings.TrimSpace(a.PrincipalAddress))
+	a.PrincipalSignature = strings.ToLower(strings.TrimSpace(a.PrincipalSignature))
+	a.LifecycleStatus = strings.ToLower(strings.TrimSpace(a.LifecycleStatus))
+	a.LifecycleReason = strings.TrimSpace(a.LifecycleReason)
+	a.SuccessorAgentId = strings.ToLower(strings.TrimSpace(a.SuccessorAgentId))
 	a.Status = strings.ToLower(strings.TrimSpace(a.Status))
 	a.MintTxHash = strings.ToLower(strings.TrimSpace(a.MintTxHash))
 

@@ -177,11 +177,15 @@ func newRecomputeFixture(t *testing.T) recomputeFixture {
 	qIdentity := new(ttmocks.MockQuery)
 	qRep := new(ttmocks.MockQuery)
 	qVal := new(ttmocks.MockQuery)
+	qRel := new(ttmocks.MockQuery)
+	qFail := new(ttmocks.MockQuery)
 
 	db.On("WithContext", mock.Anything).Return(db).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(qIdentity).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentReputation")).Return(qRep).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentValidationRecord")).Return(qVal).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentRelationship")).Return(qRel).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentFailure")).Return(qFail).Maybe()
 
 	qIdentity.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qIdentity).Maybe()
 	qIdentity.On("All", mock.Anything).Run(func(args mock.Arguments) {
@@ -200,6 +204,12 @@ func newRecomputeFixture(t *testing.T) recomputeFixture {
 	qRep.On("IfNotExists").Return(qRep).Maybe()
 	qRep.On("Update", mock.Anything).Return(theoryErrors.ErrItemNotFound).Times(2)
 	qRep.On("Create").Return(nil).Times(2)
+
+	qRel.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qRel).Maybe()
+	qRel.On("All", mock.Anything).Return(nil).Maybe()
+
+	qFail.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qFail).Maybe()
+	qFail.On("All", mock.Anything).Return(nil).Maybe()
 
 	qVal.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qVal).Maybe()
 	qVal.On("OrderBy", mock.Anything, mock.Anything).Return(qVal).Maybe()

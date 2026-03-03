@@ -230,6 +230,7 @@ func (s *Server) v0Config() soulreputation.V0Config {
 			Social:     s.cfg.SoulReputationWeightSocial,
 			Validation: s.cfg.SoulReputationWeightValidation,
 			Trust:      s.cfg.SoulReputationWeightTrust,
+			Integrity:  s.cfg.SoulReputationWeightIntegrity,
 		},
 	}
 }
@@ -259,18 +260,24 @@ func (s *Server) computeAndPersistReputations(ctx context.Context, identities []
 			return nil, 0, 0, fmt.Errorf("failed to compute validation signals for %s: %w", agentID, err)
 		}
 
+		integritySignals := s.computeIntegritySignals(ctx, agentID)
+
 		signals := soulreputation.SignalCounts{
-			TipsReceived:      tipCounts[agentID],
-			Interactions:      0,
-			ValidationsPassed: validationsPassed,
-			Endorsements:      0,
-			Flags:             0,
+			TipsReceived:         tipCounts[agentID],
+			Interactions:         0,
+			ValidationsPassed:    validationsPassed,
+			Endorsements:         0,
+			Flags:                0,
+			DelegationsCompleted: integritySignals.delegationsCompleted,
+			BoundaryViolations:   integritySignals.boundaryViolations,
+			FailureRecoveries:    integritySignals.failureRecoveries,
 		}
 
 		scores := soulreputation.SignalScores{
 			Social:     0,
 			Validation: validationScore,
 			Trust:      0,
+			Integrity:  integritySignals.score,
 		}
 
 		rep := soulreputation.ComputeV0(agentID, blockRef, now, v0cfg, signals, scores)
@@ -398,6 +405,100 @@ func (s *Server) computeValidationSignals(ctx context.Context, agentID string, n
 	}
 	score, passed := soulvalidation.ComputeProgressiveScore(evs, now, cfg)
 	return score, passed, nil
+}
+
+type integrityResult struct {
+	score                float64
+	delegationsCompleted int64
+	boundaryViolations   int64
+	failureRecoveries    int64
+}
+
+// computeIntegritySignals counts integrity-related signals for an agent.
+// Integrity is based on: boundary violations (negative), failure recoveries (positive),
+// and delegation completions (positive).
+func (s *Server) computeIntegritySignals(ctx context.Context, agentID string) integrityResult {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return integrityResult{score: 1.0} // Default to full integrity if store unavailable.
+	}
+
+	agentID = strings.ToLower(strings.TrimSpace(agentID))
+
+	// Count relationships of type "delegation" where this agent is the "to" (delegatee).
+	var delegationRels []*models.SoulAgentRelationship
+	_ = s.store.DB.WithContext(ctx).
+		Model(&models.SoulAgentRelationship{}).
+		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentID)).
+		Where("SK", "BEGINS_WITH", "RELATIONSHIP#").
+		All(&delegationRels)
+	var delegationsCompleted int64
+	for _, r := range delegationRels {
+		if r != nil && strings.ToLower(r.Type) == models.SoulRelationshipTypeDelegation {
+			delegationsCompleted++
+		}
+	}
+
+	// Count failure records.
+	var failures []*models.SoulAgentFailure
+	_ = s.store.DB.WithContext(ctx).
+		Model(&models.SoulAgentFailure{}).
+		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentID)).
+		Where("SK", "BEGINS_WITH", "FAILURE#").
+		All(&failures)
+	var totalFailures, recoveredFailures int64
+	for _, f := range failures {
+		if f == nil {
+			continue
+		}
+		totalFailures++
+		if strings.ToLower(f.Status) == "recovered" {
+			recoveredFailures++
+		}
+	}
+
+	// Count continuity entries of type "boundary_added" as a positive signal.
+	// Boundary violations would be recorded as separate signals.
+	var boundaryViolations int64
+	// For now, boundary violations are tracked via the failure records with a specific type.
+	for _, f := range failures {
+		if f != nil && strings.Contains(strings.ToLower(f.FailureType), "boundary") {
+			boundaryViolations++
+		}
+	}
+
+	// Compute integrity score.
+	// Start at 1.0, penalize for boundary violations, boost slightly for recoveries and delegations.
+	score := 1.0
+	if boundaryViolations > 0 {
+		score -= float64(boundaryViolations) * 0.1
+	}
+	if recoveredFailures > 0 && totalFailures > 0 {
+		recoveryRatio := float64(recoveredFailures) / float64(totalFailures)
+		score += recoveryRatio * 0.1
+	}
+	if delegationsCompleted > 0 {
+		score += float64(min64(delegationsCompleted, 10)) * 0.02
+	}
+	if score < 0 {
+		score = 0
+	}
+	if score > 1 {
+		score = 1
+	}
+
+	return integrityResult{
+		score:                score,
+		delegationsCompleted: delegationsCompleted,
+		boundaryViolations:   boundaryViolations,
+		failureRecoveries:    recoveredFailures,
+	}
+}
+
+func min64(a, b int64) int64 {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func (s *Server) putAgentReputation(ctx context.Context, rep *models.SoulAgentReputation) error {

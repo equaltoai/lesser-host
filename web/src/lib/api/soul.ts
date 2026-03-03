@@ -9,6 +9,11 @@ export interface SoulAgentIdentity {
 	meta_uri?: string;
 	capabilities?: string[];
 	status: string;
+	lifecycle_status?: string;
+	lifecycle_reason?: string;
+	successor_agent_id?: string;
+	principal_address?: string;
+	self_description_version?: number;
 	mint_tx_hash?: string;
 	minted_at?: string;
 	updated_at?: string;
@@ -22,11 +27,15 @@ export interface SoulAgentReputation {
 	social: number;
 	validation: number;
 	trust: number;
+	integrity?: number;
 	tips_received: number;
 	interactions: number;
 	validations_passed: number;
 	endorsements: number;
 	flags: number;
+	delegations_completed?: number;
+	boundary_violations?: number;
+	failure_recoveries?: number;
 	updated_at?: string;
 }
 
@@ -329,4 +338,329 @@ export function publishSoulValidationRoot(token: string): Promise<PublishRootRes
 			authorization: `Bearer ${token}`,
 		},
 	});
+}
+
+// --- v2: Boundaries ---
+
+export interface SoulAgentBoundary {
+	agent_id: string;
+	boundary_id: string;
+	category: string;
+	statement: string;
+	rationale?: string;
+	supersedes?: string;
+	signature?: string;
+	added_at: string;
+}
+
+export interface SoulPublicBoundariesResponse {
+	version: string;
+	boundaries: SoulAgentBoundary[];
+	count: number;
+	has_more: boolean;
+	next_cursor?: string;
+}
+
+export function soulPublicGetBoundaries(agentId: string, cursor?: string, limit: number = 50): Promise<SoulPublicBoundariesResponse> {
+	const params = new URLSearchParams();
+	if (cursor) params.set('cursor', cursor);
+	params.set('limit', String(limit));
+	const qs = params.toString();
+	return fetchJson<SoulPublicBoundariesResponse>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/boundaries${qs ? `?${qs}` : ''}`);
+}
+
+export function soulAddBoundary(
+	token: string,
+	agentId: string,
+	input: { boundary_id: string; category: string; statement: string; rationale?: string; supersedes?: string; signature?: string },
+): Promise<SoulAgentBoundary> {
+	const req = jsonRequest(input);
+	return fetchJson<SoulAgentBoundary>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/boundaries`, {
+		method: 'POST',
+		headers: { authorization: `Bearer ${token}`, ...req.headers },
+		body: req.body,
+	});
+}
+
+// --- v2: Continuity ---
+
+export interface SoulAgentContinuityEntry {
+	agent_id: string;
+	type: string;
+	summary: string;
+	recovery?: string;
+	signature?: string;
+	timestamp: string;
+}
+
+export interface SoulPublicContinuityResponse {
+	version: string;
+	entries: SoulAgentContinuityEntry[];
+	count: number;
+	has_more: boolean;
+	next_cursor?: string;
+}
+
+export function soulPublicGetContinuity(agentId: string, cursor?: string, limit: number = 50): Promise<SoulPublicContinuityResponse> {
+	const params = new URLSearchParams();
+	if (cursor) params.set('cursor', cursor);
+	params.set('limit', String(limit));
+	const qs = params.toString();
+	return fetchJson<SoulPublicContinuityResponse>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/continuity${qs ? `?${qs}` : ''}`);
+}
+
+// --- v2: Relationships ---
+
+export interface SoulAgentRelationship {
+	from_agent_id: string;
+	to_agent_id: string;
+	type: string;
+	context?: string;
+	message?: string;
+	signature?: string;
+	created_at: string;
+}
+
+export interface SoulPublicRelationshipsResponse {
+	version: string;
+	relationships: SoulAgentRelationship[];
+	count: number;
+	has_more: boolean;
+	next_cursor?: string;
+}
+
+export function soulPublicGetRelationships(agentId: string, type?: string, cursor?: string, limit: number = 50): Promise<SoulPublicRelationshipsResponse> {
+	const params = new URLSearchParams();
+	if (type) params.set('type', type);
+	if (cursor) params.set('cursor', cursor);
+	params.set('limit', String(limit));
+	const qs = params.toString();
+	return fetchJson<SoulPublicRelationshipsResponse>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/relationships${qs ? `?${qs}` : ''}`);
+}
+
+// --- v2: Versions ---
+
+export interface SoulAgentVersion {
+	agent_id: string;
+	version_number: number;
+	registration_uri?: string;
+	change_summary?: string;
+	created_at: string;
+}
+
+export interface SoulPublicVersionsResponse {
+	version: string;
+	versions: SoulAgentVersion[];
+	count: number;
+	has_more: boolean;
+	next_cursor?: string;
+}
+
+export function soulPublicGetVersions(agentId: string, cursor?: string, limit: number = 50): Promise<SoulPublicVersionsResponse> {
+	const params = new URLSearchParams();
+	if (cursor) params.set('cursor', cursor);
+	params.set('limit', String(limit));
+	const qs = params.toString();
+	return fetchJson<SoulPublicVersionsResponse>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/versions${qs ? `?${qs}` : ''}`);
+}
+
+// --- v2: Capabilities (structured) ---
+
+export interface SoulAgentCapability {
+	capability: string;
+	scope?: string;
+	constraints?: string;
+	claim_level: string;
+	last_validated?: string;
+	validation_ref?: string;
+	degrades_to?: string;
+}
+
+export interface SoulPublicCapabilitiesResponse {
+	version: string;
+	capabilities: SoulAgentCapability[];
+	count: number;
+}
+
+export function soulPublicGetCapabilities(agentId: string): Promise<SoulPublicCapabilitiesResponse> {
+	return fetchJson<SoulPublicCapabilitiesResponse>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/capabilities`);
+}
+
+// --- v2: Transparency ---
+
+export function soulPublicGetTransparency(agentId: string): Promise<unknown> {
+	return fetchJson<unknown>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/transparency`);
+}
+
+// --- v2: Failures ---
+
+export interface SoulAgentFailure {
+	agent_id: string;
+	failure_id: string;
+	failure_type: string;
+	description?: string;
+	impact?: string;
+	recovery_ref?: string;
+	status?: string;
+	timestamp: string;
+}
+
+export interface SoulPublicFailuresResponse {
+	version: string;
+	failures: SoulAgentFailure[];
+	count: number;
+	has_more: boolean;
+	next_cursor?: string;
+}
+
+export function soulPublicGetFailures(agentId: string, cursor?: string, limit: number = 50): Promise<SoulPublicFailuresResponse> {
+	const params = new URLSearchParams();
+	if (cursor) params.set('cursor', cursor);
+	params.set('limit', String(limit));
+	const qs = params.toString();
+	return fetchJson<SoulPublicFailuresResponse>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/failures${qs ? `?${qs}` : ''}`);
+}
+
+export function soulRecordFailure(
+	token: string,
+	agentId: string,
+	input: { failure_id: string; failure_type: string; description: string; impact?: string },
+): Promise<SoulAgentFailure> {
+	const req = jsonRequest(input);
+	return fetchJson<SoulAgentFailure>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/failures`, {
+		method: 'POST',
+		headers: { authorization: `Bearer ${token}`, ...req.headers },
+		body: req.body,
+	});
+}
+
+export function soulRecordRecovery(
+	token: string,
+	agentId: string,
+	input: { failure_id: string; recovery_ref?: string },
+): Promise<SoulAgentFailure> {
+	const req = jsonRequest(input);
+	return fetchJson<SoulAgentFailure>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/failures/recover`, {
+		method: 'POST',
+		headers: { authorization: `Bearer ${token}`, ...req.headers },
+		body: req.body,
+	});
+}
+
+// --- v2: Sovereignty (self-suspend, archive, successor) ---
+
+export function soulSelfSuspend(token: string, agentId: string, reason?: string): Promise<SoulAgentIdentity> {
+	const req = jsonRequest({ reason });
+	return fetchJson<SoulAgentIdentity>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/self-suspend`, {
+		method: 'POST',
+		headers: { authorization: `Bearer ${token}`, ...req.headers },
+		body: req.body,
+	});
+}
+
+export function soulSelfReinstate(token: string, agentId: string): Promise<SoulAgentIdentity> {
+	return fetchJson<SoulAgentIdentity>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/self-reinstate`, {
+		method: 'POST',
+		headers: { authorization: `Bearer ${token}` },
+	});
+}
+
+export function soulArchiveAgent(token: string, agentId: string): Promise<SoulAgentIdentity> {
+	return fetchJson<SoulAgentIdentity>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/archive`, {
+		method: 'POST',
+		headers: { authorization: `Bearer ${token}` },
+	});
+}
+
+export function soulDesignateSuccessor(token: string, agentId: string, successorAgentId: string): Promise<SoulAgentIdentity> {
+	const req = jsonRequest({ successor_agent_id: successorAgentId });
+	return fetchJson<SoulAgentIdentity>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/successor`, {
+		method: 'POST',
+		headers: { authorization: `Bearer ${token}`, ...req.headers },
+		body: req.body,
+	});
+}
+
+// --- v2: Minting Conversation ---
+
+export interface SoulMintConversation {
+	agent_id: string;
+	conversation_id: string;
+	model: string;
+	status: string;
+	created_at: string;
+}
+
+export function soulGetMintConversation(token: string, registrationId: string, conversationId: string): Promise<SoulMintConversation> {
+	return fetchJson<SoulMintConversation>(
+		`/api/v1/soul/agents/register/${encodeURIComponent(registrationId)}/mint-conversation/${encodeURIComponent(conversationId)}`,
+		{ headers: { authorization: `Bearer ${token}` } },
+	);
+}
+
+export function soulCompleteMintConversation(token: string, registrationId: string, conversationId: string): Promise<SoulMintConversation> {
+	return fetchJson<SoulMintConversation>(
+		`/api/v1/soul/agents/register/${encodeURIComponent(registrationId)}/mint-conversation/${encodeURIComponent(conversationId)}/complete`,
+		{ method: 'POST', headers: { authorization: `Bearer ${token}` } },
+	);
+}
+
+export interface SoulMintConversationSSEInput {
+	model?: string;
+	conversation_id?: string;
+	message: string;
+}
+
+export function soulStartMintConversationSSE(
+	token: string,
+	registrationId: string,
+	input: SoulMintConversationSSEInput,
+): EventSource | ReadableStream<string> {
+	const url = `/api/v1/soul/agents/register/${encodeURIComponent(registrationId)}/mint-conversation`;
+	const body = JSON.stringify(input);
+
+	const controller = new AbortController();
+	const stream = new ReadableStream<string>({
+		async start(streamController) {
+			try {
+				const res = await fetch(url, {
+					method: 'POST',
+					headers: {
+						authorization: `Bearer ${token}`,
+						'content-type': 'application/json',
+						accept: 'text/event-stream',
+					},
+					body,
+					signal: controller.signal,
+				});
+
+				if (!res.ok || !res.body) {
+					const text = await res.text().catch(() => '');
+					streamController.enqueue(`event: error\ndata: ${JSON.stringify({ message: text || `HTTP ${res.status}` })}\n\n`);
+					streamController.close();
+					return;
+				}
+
+				const reader = res.body.getReader();
+				const decoder = new TextDecoder();
+
+				while (true) {
+					const { done, value } = await reader.read();
+					if (done) break;
+					streamController.enqueue(decoder.decode(value, { stream: true }));
+				}
+			} catch (err) {
+				if (!controller.signal.aborted) {
+					streamController.enqueue(`event: error\ndata: ${JSON.stringify({ message: String(err) })}\n\n`);
+				}
+			} finally {
+				streamController.close();
+			}
+		},
+		cancel() {
+			controller.abort();
+		},
+	});
+
+	return stream;
 }

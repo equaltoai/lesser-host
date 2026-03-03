@@ -183,8 +183,42 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 	app.Get("/api/v1/soul/operations", s.handleListSoulOperations, apptheory.RequireAuth())
 	app.Get("/api/v1/soul/operations/{id}", s.handleGetSoulOperation, apptheory.RequireAuth())
 	app.Post("/api/v1/soul/operations/{id}/record-execution", s.handleRecordSoulOperationExecution, apptheory.RequireAuth())
+	app.Get("/api/v1/soul/agents/{agentId}/capabilities", s.handleSoulPublicGetCapabilities)
+	app.Get("/api/v1/soul/agents/{agentId}/boundaries", s.handleSoulPublicGetBoundaries)
+	app.Post("/api/v1/soul/agents/{agentId}/boundaries", s.handleSoulAppendBoundary, apptheory.RequireAuth())
 	app.Post("/api/v1/soul/agents/{agentId}/suspend", s.handleSuspendSoulAgent, apptheory.RequireAuth())
 	app.Post("/api/v1/soul/agents/{agentId}/reinstate", s.handleReinstateSoulAgent, apptheory.RequireAuth())
+
+	// v2: Continuity journal + version history (public read + portal write).
+	app.Get("/api/v1/soul/agents/{agentId}/continuity", s.handleSoulPublicGetContinuity)
+	app.Post("/api/v1/soul/agents/{agentId}/continuity", s.handleSoulAppendContinuity, apptheory.RequireAuth())
+	app.Get("/api/v1/soul/agents/{agentId}/versions", s.handleSoulPublicGetVersions)
+
+	// v2: Sovereignty (self-suspend, self-reinstate, validation opt-in, disputes).
+	app.Post("/api/v1/soul/agents/{agentId}/self-suspend", s.handleSoulSelfSuspend, apptheory.RequireAuth())
+	app.Post("/api/v1/soul/agents/{agentId}/self-reinstate", s.handleSoulSelfReinstate, apptheory.RequireAuth())
+	app.Post("/api/v1/soul/agents/{agentId}/validations/challenges/{challengeId}/opt-in", s.handleSoulValidationOptIn, apptheory.RequireAuth())
+	app.Post("/api/v1/soul/agents/{agentId}/dispute", s.handleSoulCreateDispute, apptheory.RequireAuth())
+
+	// v2: Relationships (expanded model + trust queries).
+	app.Get("/api/v1/soul/agents/{agentId}/relationships", s.handleSoulPublicGetRelationships)
+	app.Post("/api/v1/soul/agents/{agentId}/relationships", s.handleSoulCreateRelationship, apptheory.RequireAuth())
+
+	// v2: Lifecycle (archive + succession).
+	app.Post("/api/v1/soul/agents/{agentId}/archive", s.handleSoulArchiveAgent, apptheory.RequireAuth())
+	app.Post("/api/v1/soul/agents/{agentId}/successor", s.handleSoulDesignateSuccessor, apptheory.RequireAuth())
+
+	// v2: Minting conversation (LLM-assisted registration).
+	app.Post("/api/v1/soul/agents/register/{id}/mint-conversation", s.handleSoulMintConversation, apptheory.RequireAuth())
+	app.Post("/api/v1/soul/agents/register/{id}/mint-conversation/{conversationId}/complete", s.handleSoulCompleteMintConversation, apptheory.RequireAuth())
+	app.Get("/api/v1/soul/agents/register/{id}/mint-conversation/{conversationId}", s.handleSoulGetMintConversation, apptheory.RequireAuth())
+
+	// v2: Transparency + Failures.
+	app.Get("/api/v1/soul/agents/{agentId}/transparency", s.handleSoulPublicGetTransparency)
+	app.Get("/api/v1/soul/agents/{agentId}/failures", s.handleSoulPublicGetFailures)
+	app.Post("/api/v1/soul/agents/{agentId}/failures", s.handleSoulRecordFailure, apptheory.RequireAuth())
+	app.Post("/api/v1/soul/agents/{agentId}/failures/recover", s.handleSoulRecordRecovery, apptheory.RequireAuth())
+
 	app.Post("/api/v1/soul/reputation/publish", s.handleSoulPublishReputationRoot, apptheory.RequireAuth())
 	app.Post("/api/v1/soul/validation/publish", s.handleSoulPublishValidationRoot, apptheory.RequireAuth())
 }

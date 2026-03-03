@@ -50,6 +50,12 @@ contract SoulRegistry is ERC721, Ownable2Step, Pausable, EIP712 {
     mapping(uint8 => address) private _renderers;
     mapping(uint256 => uint8) private _avatarStyle;
 
+    // v2: Principal registry (set immutably at mint time)
+    mapping(uint256 => address) private _principals;
+
+    // v2: Attestor registry (addresses allowed to sign selfMintSoul attestations)
+    mapping(address => bool) private _attestors;
+
     // Permit-based minting
     /// @notice Address allowed to sign mint permits.
     address public mintSigner;
@@ -62,6 +68,9 @@ contract SoulRegistry is ERC721, Ownable2Step, Pausable, EIP712 {
 
     bytes32 private constant _MINT_PERMIT_TYPEHASH =
         keccak256("MintPermit(address to,uint256 agentId,string metaURI,uint8 avatarStyle,uint256 deadline)");
+
+    bytes32 private constant _SELF_MINT_ATTESTATION_TYPEHASH =
+        keccak256("SelfMintAttestation(address to,uint256 agentId,string metaURI,uint8 avatarStyle,address principal)");
 
     /// @notice Emitted when a new soul is minted.
     event SoulMinted(uint256 indexed agentId, address indexed to, string metaURI);
@@ -81,6 +90,12 @@ contract SoulRegistry is ERC721, Ownable2Step, Pausable, EIP712 {
     event MintSignerUpdated(address indexed signer);
     /// @notice Emitted when the mint fee is updated.
     event MintFeeUpdated(uint256 fee);
+    /// @notice Emitted when a principal is declared for an agent (v2).
+    event PrincipalDeclared(uint256 indexed agentId, address indexed principal);
+    /// @notice Emitted when an attestor is added (v2).
+    event AttestorAdded(address indexed attestor);
+    /// @notice Emitted when an attestor is removed (v2).
+    event AttestorRemoved(address indexed attestor);
 
     constructor(address initialOwner, uint256 claimWindowSeconds_)
         ERC721("LesserSoul", "SOUL")
@@ -130,15 +145,51 @@ contract SoulRegistry is ERC721, Ownable2Step, Pausable, EIP712 {
             revert("SoulRegistry: invalid permit");
         }
 
-        _mintSoulInternal(to, agentId, metaURI, avatarStyle);
+        _mintSoulInternal(to, agentId, metaURI, avatarStyle, address(0));
     }
 
     /// @notice Mint a new soul token directly (owner only, no permit/fee).
     function mintSoulOwner(address to, uint256 agentId, string calldata metaURI, uint8 avatarStyle) external onlyOwner whenNotPaused {
-        _mintSoulInternal(to, agentId, metaURI, avatarStyle);
+        _mintSoulInternal(to, agentId, metaURI, avatarStyle, address(0));
     }
 
-    function _mintSoulInternal(address to, uint256 agentId, string calldata metaURI, uint8 avatarStyle) internal {
+    /// @notice Permissionless self-mint with attestor-signed attestation and principal declaration (v2).
+    function selfMintSoul(
+        address to,
+        uint256 agentId,
+        string calldata metaURI,
+        uint8 avatarStyle,
+        address principal,
+        bytes calldata principalSig
+    ) external payable whenNotPaused {
+        if (msg.value != mintFee) {
+            revert("SoulRegistry: incorrect fee");
+        }
+        if (principal == address(0)) {
+            revert("SoulRegistry: principal required");
+        }
+
+        // Verify attestor signature over the self-mint attestation.
+        bytes32 structHash = keccak256(abi.encode(
+            _SELF_MINT_ATTESTATION_TYPEHASH,
+            to,
+            agentId,
+            keccak256(bytes(metaURI)),
+            avatarStyle,
+            principal
+        ));
+        bytes32 digest = _hashTypedDataV4(structHash);
+
+        // Recover signer and check it is a registered attestor.
+        address signer = _recoverSigner(digest, principalSig);
+        if (!_attestors[signer]) {
+            revert("SoulRegistry: invalid attestation");
+        }
+
+        _mintSoulInternal(to, agentId, metaURI, avatarStyle, principal);
+    }
+
+    function _mintSoulInternal(address to, uint256 agentId, string calldata metaURI, uint8 avatarStyle, address principal) internal {
         if (to == address(0)) {
             revert ERC721InvalidReceiver(address(0));
         }
@@ -152,6 +203,12 @@ contract SoulRegistry is ERC721, Ownable2Step, Pausable, EIP712 {
         _mintedAt[agentId] = block.timestamp;
         _metaURI[agentId] = metaURI;
         _avatarStyle[agentId] = avatarStyle;
+
+        if (principal != address(0)) {
+            _principals[agentId] = principal;
+            emit PrincipalDeclared(agentId, principal);
+        }
+
         _safeMint(to, agentId);
 
         emit SoulMinted(agentId, to, metaURI);
@@ -184,6 +241,31 @@ contract SoulRegistry is ERC721, Ownable2Step, Pausable, EIP712 {
     function agentOfToken(uint256 tokenId) external view returns (uint256) {
         _requireOwned(tokenId);
         return tokenId;
+    }
+
+    /// @notice Returns the principal address declared at mint time for an agent (v2). Returns address(0) if none.
+    function principalOf(uint256 agentId) external view returns (address) {
+        return _principals[agentId];
+    }
+
+    /// @notice Returns whether an address is a registered attestor (v2).
+    function isAttestor(address addr) external view returns (bool) {
+        return _attestors[addr];
+    }
+
+    /// @notice Add an attestor address. Only callable by contract owner (v2).
+    function addAttestor(address attestor) external onlyOwner {
+        if (attestor == address(0)) {
+            revert("SoulRegistry: zero attestor");
+        }
+        _attestors[attestor] = true;
+        emit AttestorAdded(attestor);
+    }
+
+    /// @notice Remove an attestor address. Only callable by contract owner (v2).
+    function removeAttestor(address attestor) external onlyOwner {
+        _attestors[attestor] = false;
+        emit AttestorRemoved(attestor);
     }
 
     /// @notice Check whether a soul is currently soulbound (non-transferable by normal ERC-721 transfers).
@@ -349,6 +431,30 @@ contract SoulRegistry is ERC721, Ownable2Step, Pausable, EIP712 {
     /// @notice Unpause state-changing operations.
     function unpause() external onlyOwner {
         _unpause();
+    }
+
+    // ========= Internal helpers =========
+
+    function _recoverSigner(bytes32 digest, bytes calldata sig) internal pure returns (address) {
+        if (sig.length != 65) {
+            revert("SoulRegistry: invalid sig length");
+        }
+        bytes32 r;
+        bytes32 s;
+        uint8 v;
+        assembly {
+            r := calldataload(sig.offset)
+            s := calldataload(add(sig.offset, 32))
+            v := byte(0, calldataload(add(sig.offset, 64)))
+        }
+        if (v < 27) {
+            v += 27;
+        }
+        address signer = ecrecover(digest, v, r, s);
+        if (signer == address(0)) {
+            revert("SoulRegistry: invalid signature");
+        }
+        return signer;
     }
 
     // ========= Soulbound enforcement =========

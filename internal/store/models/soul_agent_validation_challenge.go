@@ -34,9 +34,10 @@ type SoulAgentValidationChallenge struct {
 	Request  string `theorydb:"attr:request" json:"request,omitempty"`
 	Response string `theorydb:"attr:response" json:"response,omitempty"`
 
-	Status string  `theorydb:"attr:status" json:"status"`
-	Result string  `theorydb:"attr:result" json:"result,omitempty"`
-	Score  float64 `theorydb:"attr:score" json:"score,omitempty"`
+	Status      string  `theorydb:"attr:status" json:"status"`
+	OptInStatus string  `theorydb:"attr:optInStatus" json:"opt_in_status,omitempty"`
+	Result      string  `theorydb:"attr:result" json:"result,omitempty"`
+	Score       float64 `theorydb:"attr:score" json:"score,omitempty"`
 
 	IssuedAt    time.Time `theorydb:"attr:issuedAt" json:"issued_at"`
 	RespondedAt time.Time `theorydb:"attr:respondedAt" json:"responded_at,omitempty"`

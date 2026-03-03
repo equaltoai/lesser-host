@@ -96,6 +96,7 @@ type SoulCapabilityAgentIndex struct {
 	SK string `theorydb:"sk,attr:SK" json:"-"`
 
 	Capability string `theorydb:"attr:capability" json:"capability"`
+	ClaimLevel string `theorydb:"attr:claimLevel" json:"claim_level,omitempty"`
 	Domain     string `theorydb:"attr:domain" json:"domain"`
 	LocalID    string `theorydb:"attr:localId" json:"local_id"`
 	AgentID    string `theorydb:"attr:agentId" json:"agent_id"`
@@ -110,6 +111,7 @@ func (i *SoulCapabilityAgentIndex) BeforeCreate() error { return i.UpdateKeys() 
 // UpdateKeys updates the database keys for SoulCapabilityAgentIndex.
 func (i *SoulCapabilityAgentIndex) UpdateKeys() error {
 	i.Capability = strings.ToLower(strings.TrimSpace(i.Capability))
+	i.ClaimLevel = strings.ToLower(strings.TrimSpace(i.ClaimLevel))
 	i.Domain = strings.ToLower(strings.TrimSpace(i.Domain))
 	i.LocalID = normalizeSoulLocalID(i.LocalID)
 	i.AgentID = strings.ToLower(strings.TrimSpace(i.AgentID))

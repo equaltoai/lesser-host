@@ -21,13 +21,19 @@ import (
 )
 
 type soulUpdateRegistrationResponse struct {
-	Agent models.SoulAgentIdentity `json:"agent"`
-	S3Key string                   `json:"s3_key"`
+	Agent   models.SoulAgentIdentity `json:"agent"`
+	S3Key   string                   `json:"s3_key"`
+	Version int                      `json:"version,omitempty"`
 }
 
 func soulRegistrationS3Key(agentIDHex string) string {
 	agentIDHex = strings.ToLower(strings.TrimSpace(agentIDHex))
 	return fmt.Sprintf("registry/v1/agents/%s/registration.json", agentIDHex)
+}
+
+func soulRegistrationVersionedS3Key(agentIDHex string, version int) string {
+	agentIDHex = strings.ToLower(strings.TrimSpace(agentIDHex))
+	return fmt.Sprintf("registry/v1/agents/%s/versions/%d/registration.json", agentIDHex, version)
 }
 
 func extractStringField(m map[string]any, key string) string {
@@ -108,15 +114,50 @@ func (s *Server) handleSoulAgentUpdateRegistration(ctx *apptheory.Context) (*app
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid registration signature"}
 	}
 
+	// Determine the schema version from the document.
+	schemaVersion := extractStringField(reg, "version")
+	isV2 := schemaVersion == "2"
+
+	// Determine next version number by querying latest VERSION# item.
+	nextVersion, appErr := s.getNextSoulAgentVersion(ctx.Context(), agentIDHex)
+	if appErr != nil {
+		return nil, appErr
+	}
+
+	// Publish to the current S3 path.
 	s3Key := soulRegistrationS3Key(agentIDHex)
 	if err := s.soulPacks.PutObject(ctx.Context(), s3Key, regBytes, "application/json", "private, max-age=0"); err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to publish registration"}
 	}
 
+	// Publish to the versioned S3 path.
+	versionedKey := soulRegistrationVersionedS3Key(agentIDHex, nextVersion)
+	_ = s.soulPacks.PutObject(ctx.Context(), versionedKey, regBytes, "application/json", "private, max-age=0")
+
 	now := time.Now().UTC()
-	if appErr := s.updateSoulAgentCapabilities(ctx.Context(), identity, capsNorm, now); appErr != nil {
+	claimLevels := extractCapabilityClaimLevels(reg)
+	if appErr := s.updateSoulAgentCapabilities(ctx.Context(), identity, capsNorm, claimLevels, now); appErr != nil {
 		return nil, appErr
 	}
+
+	// Update SelfDescriptionVersion if v2.
+	if isV2 {
+		identity.SelfDescriptionVersion = nextVersion
+		_ = s.store.DB.WithContext(ctx.Context()).Model(identity).IfExists().Update("SelfDescriptionVersion")
+	}
+
+	// Create version record.
+	changeSummary := extractStringField(reg, "changeSummary")
+	versionRecord := &models.SoulAgentVersion{
+		AgentID:         agentIDHex,
+		VersionNumber:   nextVersion,
+		RegistrationUri: fmt.Sprintf("s3://%s/%s", s.cfg.SoulPackBucketName, versionedKey),
+		ChangeSummary:   changeSummary,
+		SelfAttestation: selfSig,
+		CreatedAt:       now,
+	}
+	_ = versionRecord.UpdateKeys()
+	_ = s.store.DB.WithContext(ctx.Context()).Model(versionRecord).Create()
 
 	audit := &models.AuditLogEntry{
 		Actor:     strings.TrimSpace(ctx.AuthIdentity),
@@ -128,7 +169,7 @@ func (s *Server) handleSoulAgentUpdateRegistration(ctx *apptheory.Context) (*app
 	_ = audit.UpdateKeys()
 	_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
 
-	return apptheory.JSON(http.StatusOK, soulUpdateRegistrationResponse{Agent: *identity, S3Key: s3Key})
+	return apptheory.JSON(http.StatusOK, soulUpdateRegistrationResponse{Agent: *identity, S3Key: s3Key, Version: nextVersion})
 }
 
 func (s *Server) requireActiveSoulAgentWithDomainAccess(ctx *apptheory.Context, agentIDHex string) (*models.SoulAgentIdentity, *apptheory.AppError) {
@@ -206,7 +247,9 @@ func (s *Server) validateSoulUpdateRegistrationDocument(
 	}
 
 	// Capabilities affect indexing; validate against the allowlist if configured.
-	caps := extractStringSliceField(reg, "capabilities")
+	// v2 uses structured capabilities (array of objects with "capability" field);
+	// v1 uses a flat string array. Extract capability names for both.
+	caps := extractCapabilityNames(reg)
 	capsNorm, appErr = normalizeSoulCapabilitiesStrict(s.cfg.SoulSupportedCapabilities, caps)
 	if appErr != nil {
 		return "", nil, "", nil, appErr
@@ -315,7 +358,86 @@ func (s *Server) verifySoulAgentWalletOnChain(ctx context.Context, agentInt *big
 	return nil
 }
 
-func (s *Server) updateSoulAgentCapabilities(ctx context.Context, identity *models.SoulAgentIdentity, capsNorm []string, now time.Time) *apptheory.AppError {
+// extractCapabilityNames extracts capability name strings from both v1 flat arrays
+// and v2 structured capability objects.
+func extractCapabilityNames(reg map[string]any) []string {
+	raw, ok := reg["capabilities"]
+	if !ok {
+		return nil
+	}
+	arr, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(arr))
+	for _, item := range arr {
+		switch v := item.(type) {
+		case string:
+			// v1: flat string array
+			out = append(out, strings.TrimSpace(v))
+		case map[string]any:
+			// v2: structured object with "capability" field
+			if cap, ok := v["capability"].(string); ok {
+				out = append(out, strings.TrimSpace(cap))
+			}
+		}
+	}
+	return out
+}
+
+// extractCapabilityClaimLevels returns a map of capability name → claimLevel
+// from v2 structured capability objects. V1 flat strings default to "self-declared".
+func extractCapabilityClaimLevels(reg map[string]any) map[string]string {
+	raw, ok := reg["capabilities"]
+	if !ok {
+		return nil
+	}
+	arr, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	out := make(map[string]string, len(arr))
+	for _, item := range arr {
+		switch v := item.(type) {
+		case string:
+			out[strings.TrimSpace(v)] = "self-declared"
+		case map[string]any:
+			if cap, ok := v["capability"].(string); ok {
+				cl, _ := v["claimLevel"].(string)
+				if cl == "" {
+					cl, _ = v["claim_level"].(string)
+				}
+				if cl == "" {
+					cl = "self-declared"
+				}
+				out[strings.TrimSpace(cap)] = strings.ToLower(strings.TrimSpace(cl))
+			}
+		}
+	}
+	return out
+}
+
+// getNextSoulAgentVersion queries the latest VERSION# item and returns the next version number.
+func (s *Server) getNextSoulAgentVersion(ctx context.Context, agentIDHex string) (int, *apptheory.AppError) {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return 1, nil
+	}
+
+	var items []*models.SoulAgentVersion
+	_, err := s.store.DB.WithContext(ctx).
+		Model(&models.SoulAgentVersion{}).
+		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentIDHex)).
+		Where("SK", "BEGINS_WITH", "VERSION#").
+		OrderBy("SK", "DESC").
+		Limit(1).
+		AllPaginated(&items)
+	if err != nil || len(items) == 0 {
+		return 1, nil
+	}
+	return items[0].VersionNumber + 1, nil
+}
+
+func (s *Server) updateSoulAgentCapabilities(ctx context.Context, identity *models.SoulAgentIdentity, capsNorm []string, claimLevels map[string]string, now time.Time) *apptheory.AppError {
 	if s == nil || s.store == nil || s.store.DB == nil || identity == nil {
 		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
@@ -349,10 +471,11 @@ func (s *Server) updateSoulAgentCapabilities(ctx context.Context, identity *mode
 		_ = s.store.DB.WithContext(ctx).Model(ci).Delete()
 	}
 	for c := range newSet {
-		if _, ok := oldSet[c]; ok {
-			continue
+		cl := ""
+		if claimLevels != nil {
+			cl = claimLevels[c]
 		}
-		ci := &models.SoulCapabilityAgentIndex{Capability: c, Domain: identity.Domain, LocalID: identity.LocalID, AgentID: identity.AgentID}
+		ci := &models.SoulCapabilityAgentIndex{Capability: c, ClaimLevel: cl, Domain: identity.Domain, LocalID: identity.LocalID, AgentID: identity.AgentID}
 		_ = ci.UpdateKeys()
 		_ = s.store.DB.WithContext(ctx).Model(ci).CreateOrUpdate()
 	}

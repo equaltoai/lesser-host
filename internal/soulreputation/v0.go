@@ -13,10 +13,11 @@ type Weights struct {
 	Social     float64 `json:"social"`
 	Validation float64 `json:"validation"`
 	Trust      float64 `json:"trust"`
+	Integrity  float64 `json:"integrity"`
 }
 
 func (w Weights) Normalized() Weights {
-	sum := w.Economic + w.Social + w.Validation + w.Trust
+	sum := w.Economic + w.Social + w.Validation + w.Trust + w.Integrity
 	if sum <= 0 {
 		return Weights{Economic: 1}
 	}
@@ -25,21 +26,26 @@ func (w Weights) Normalized() Weights {
 		Social:     w.Social / sum,
 		Validation: w.Validation / sum,
 		Trust:      w.Trust / sum,
+		Integrity:  w.Integrity / sum,
 	}
 }
 
 type SignalCounts struct {
-	TipsReceived      int64 `json:"tips_received"`
-	Interactions      int64 `json:"interactions"`
-	ValidationsPassed int64 `json:"validations_passed"`
-	Endorsements      int64 `json:"endorsements"`
-	Flags             int64 `json:"flags"`
+	TipsReceived         int64 `json:"tips_received"`
+	Interactions         int64 `json:"interactions"`
+	ValidationsPassed    int64 `json:"validations_passed"`
+	Endorsements         int64 `json:"endorsements"`
+	Flags                int64 `json:"flags"`
+	DelegationsCompleted int64 `json:"delegations_completed"`
+	BoundaryViolations   int64 `json:"boundary_violations"`
+	FailureRecoveries    int64 `json:"failure_recoveries"`
 }
 
 type SignalScores struct {
 	Social     float64 `json:"social"`
 	Validation float64 `json:"validation"`
 	Trust      float64 `json:"trust"`
+	Integrity  float64 `json:"integrity"`
 }
 
 type V0Config struct {
@@ -77,12 +83,14 @@ func ComputeV0(agentID string, blockRef uint64, now time.Time, cfg V0Config, sig
 	social := clamp01(scores.Social)
 	validation := clamp01(scores.Validation)
 	trust := clamp01(scores.Trust)
+	integrity := clamp01(scores.Integrity)
 
 	composite := clamp01(
 		weights.Economic*economic +
 			weights.Social*social +
 			weights.Validation*validation +
-			weights.Trust*trust,
+			weights.Trust*trust +
+			weights.Integrity*integrity,
 	)
 
 	const maxInt64 = int64(^uint64(0) >> 1)
@@ -101,12 +109,16 @@ func ComputeV0(agentID string, blockRef uint64, now time.Time, cfg V0Config, sig
 		Social:     social,
 		Validation: validation,
 		Trust:      trust,
+		Integrity:  integrity,
 
-		TipsReceived:      signals.TipsReceived,
-		Interactions:      signals.Interactions,
-		ValidationsPassed: signals.ValidationsPassed,
-		Endorsements:      signals.Endorsements,
-		Flags:             signals.Flags,
+		TipsReceived:         signals.TipsReceived,
+		Interactions:         signals.Interactions,
+		ValidationsPassed:    signals.ValidationsPassed,
+		Endorsements:         signals.Endorsements,
+		Flags:                signals.Flags,
+		DelegationsCompleted: signals.DelegationsCompleted,
+		BoundaryViolations:   signals.BoundaryViolations,
+		FailureRecoveries:    signals.FailureRecoveries,
 
 		UpdatedAt: now.UTC(),
 	}

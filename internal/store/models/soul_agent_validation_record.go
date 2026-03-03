@@ -13,6 +13,13 @@ const (
 	SoulValidationResultTimeout = "timeout"
 )
 
+// SoulValidationOptInStatus* constants describe opt-in states for validation challenges.
+const (
+	SoulValidationOptInStatusAccepted = "accepted"
+	SoulValidationOptInStatusDeclined = "declined"
+	SoulValidationOptInStatusPending  = "pending"
+)
+
 // SoulAgentValidationRecord stores a single validation challenge evaluation record.
 //
 // Keys:
@@ -37,6 +44,8 @@ type SoulAgentValidationRecord struct {
 	Result string  `theorydb:"attr:result" json:"result"`
 	Score  float64 `theorydb:"attr:score" json:"score"`
 
+	OptInStatus string `theorydb:"attr:optInStatus" json:"opt_in_status,omitempty"`
+
 	EvaluatedAt time.Time `theorydb:"attr:evaluatedAt" json:"evaluated_at"`
 }
 
@@ -60,6 +69,7 @@ func (v *SoulAgentValidationRecord) UpdateKeys() error {
 	v.Request = strings.TrimSpace(v.Request)
 	v.Response = strings.TrimSpace(v.Response)
 	v.Result = strings.ToLower(strings.TrimSpace(v.Result))
+	v.OptInStatus = strings.ToLower(strings.TrimSpace(v.OptInStatus))
 
 	v.PK = fmt.Sprintf("SOUL#AGENT#%s", v.AgentID)
 	ts := v.EvaluatedAt.UTC().Format(time.RFC3339Nano)

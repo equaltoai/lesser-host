@@ -64,6 +64,7 @@ type Config struct {
 	SoulReputationWeightSocial      float64
 	SoulReputationWeightValidation  float64
 	SoulReputationWeightTrust       float64
+	SoulReputationWeightIntegrity   float64
 
 	// Soul validation (v0).
 	SoulValidationDecayEpochHours int64
@@ -122,6 +123,7 @@ func Load() Config {
 	soulRepWeightSocial := envFloat64Bounded("SOUL_REPUTATION_WEIGHT_SOCIAL", 0, 0, 1000)
 	soulRepWeightValidation := envFloat64Bounded("SOUL_REPUTATION_WEIGHT_VALIDATION", 0, 0, 1000)
 	soulRepWeightTrust := envFloat64Bounded("SOUL_REPUTATION_WEIGHT_TRUST", 0, 0, 1000)
+	soulRepWeightIntegrity := envFloat64Bounded("SOUL_REPUTATION_WEIGHT_INTEGRITY", 0, 0, 1000)
 
 	soulValEpochHours := envInt64Bounded("SOUL_VALIDATION_DECAY_EPOCH_HOURS", 168, 1, 24*365)
 	soulValDecayRate := envFloat64Bounded("SOUL_VALIDATION_DECAY_RATE", 0.01, 0, 1)
@@ -204,6 +206,7 @@ func Load() Config {
 		SoulReputationWeightSocial:      soulRepWeightSocial,
 		SoulReputationWeightValidation:  soulRepWeightValidation,
 		SoulReputationWeightTrust:       soulRepWeightTrust,
+		SoulReputationWeightIntegrity:   soulRepWeightIntegrity,
 		SoulValidationDecayEpochHours:   soulValEpochHours,
 		SoulValidationDecayRate:         soulValDecayRate,
 
