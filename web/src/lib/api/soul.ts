@@ -815,6 +815,55 @@ export function soulCompleteMintConversation(token: string, registrationId: stri
 	);
 }
 
+export interface SoulMintConversationFinalizeBeginResponse {
+	version: string;
+	digest_hex: string;
+	issued_at: string;
+	expected_version: number;
+	next_version: number;
+	registration_preview?: unknown;
+}
+
+export function soulMintConversationFinalizeBegin(
+	token: string,
+	registrationId: string,
+	conversationId: string,
+	input: { boundary_signatures: Record<string, string> },
+): Promise<SoulMintConversationFinalizeBeginResponse> {
+	const req = jsonRequest(input);
+	return fetchJson<SoulMintConversationFinalizeBeginResponse>(
+		`/api/v1/soul/agents/register/${encodeURIComponent(registrationId)}/mint-conversation/${encodeURIComponent(conversationId)}/finalize/begin`,
+		{
+			method: 'POST',
+			headers: { authorization: `Bearer ${token}`, ...req.headers },
+			body: req.body,
+		},
+	);
+}
+
+export interface SoulMintConversationFinalizeResponse {
+	version: string;
+	agent: SoulAgentIdentity;
+	published_version: number;
+}
+
+export function soulMintConversationFinalize(
+	token: string,
+	registrationId: string,
+	conversationId: string,
+	input: { boundary_signatures: Record<string, string>; issued_at: string; expected_version: number; self_attestation: string },
+): Promise<SoulMintConversationFinalizeResponse> {
+	const req = jsonRequest(input);
+	return fetchJson<SoulMintConversationFinalizeResponse>(
+		`/api/v1/soul/agents/register/${encodeURIComponent(registrationId)}/mint-conversation/${encodeURIComponent(conversationId)}/finalize`,
+		{
+			method: 'POST',
+			headers: { authorization: `Bearer ${token}`, ...req.headers },
+			body: req.body,
+		},
+	);
+}
+
 export interface SoulMintConversationSSEInput {
 	model?: string;
 	conversation_id?: string;

@@ -43,6 +43,8 @@ type SoulAgentIdentity struct {
 	// v2: principal declaration
 	PrincipalAddress       string `theorydb:"attr:principalAddress" json:"principal_address,omitempty"`
 	PrincipalSignature     string `theorydb:"attr:principalSignature" json:"principal_signature,omitempty"`
+	PrincipalDeclaration   string `theorydb:"attr:principalDeclaration" json:"principal_declaration,omitempty"`
+	PrincipalDeclaredAt    string `theorydb:"attr:principalDeclaredAt" json:"principal_declared_at,omitempty"`
 	SelfDescriptionVersion int    `theorydb:"attr:selfDescriptionVersion" json:"self_description_version,omitempty"`
 
 	// v2: lifecycle (replaces simple Status for richer state machine)
@@ -160,6 +162,8 @@ func (a *SoulAgentIdentity) UpdateKeys() error {
 	a.MetaURI = strings.TrimSpace(a.MetaURI)
 	a.PrincipalAddress = strings.ToLower(strings.TrimSpace(a.PrincipalAddress))
 	a.PrincipalSignature = strings.ToLower(strings.TrimSpace(a.PrincipalSignature))
+	a.PrincipalDeclaration = strings.TrimSpace(a.PrincipalDeclaration)
+	a.PrincipalDeclaredAt = strings.TrimSpace(a.PrincipalDeclaredAt)
 	a.LifecycleStatus = strings.ToLower(strings.TrimSpace(a.LifecycleStatus))
 	a.LifecycleReason = strings.TrimSpace(a.LifecycleReason)
 	a.SuccessorAgentId = strings.ToLower(strings.TrimSpace(a.SuccessorAgentId))

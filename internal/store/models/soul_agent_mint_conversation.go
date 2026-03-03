@@ -33,6 +33,9 @@ type SoulAgentMintConversation struct {
 	ProducedDeclarations string `theorydb:"attr:producedDeclarations" json:"produced_declarations,omitempty"` // JSON object of structured output
 	Status               string `theorydb:"attr:status" json:"status"`
 
+	Usage          AIUsage `theorydb:"attr:usage" json:"usage,omitempty"`
+	ChargedCredits int64   `theorydb:"attr:chargedCredits" json:"charged_credits,omitempty"`
+
 	CreatedAt   time.Time `theorydb:"attr:createdAt" json:"created_at"`
 	CompletedAt time.Time `theorydb:"attr:completedAt" json:"completed_at,omitempty"`
 }

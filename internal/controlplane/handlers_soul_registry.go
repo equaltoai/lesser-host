@@ -707,7 +707,7 @@ func (s *Server) soulMetaURI(agentIDHex string) string {
 	return "https://" + host + "/api/v1/soul/agents/" + url.PathEscape(agentIDHex) + "/registration"
 }
 
-func (s *Server) createSoulMintOperation(ctx context.Context, reg *models.SoulAgentRegistration, principalAddress string, principalSignature string) (*models.SoulOperation, *safeTxPayload, string, *apptheory.AppError) {
+func (s *Server) createSoulMintOperation(ctx context.Context, reg *models.SoulAgentRegistration, principalAddress string, principalSignature string, principalDeclaration string, principalDeclaredAt string) (*models.SoulOperation, *safeTxPayload, string, *apptheory.AppError) {
 	if s == nil || s.store == nil || s.store.DB == nil {
 		return nil, nil, "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
@@ -742,7 +742,7 @@ func (s *Server) createSoulMintOperation(ctx context.Context, reg *models.SoulAg
 		return nil, nil, "", appErr
 	}
 
-	if appErr := s.ensureSoulPendingAgentIdentity(ctx, reg, metaURI, principalAddress, principalSignature, now); appErr != nil {
+	if appErr := s.ensureSoulPendingAgentIdentity(ctx, reg, metaURI, principalAddress, principalSignature, principalDeclaration, principalDeclaredAt, now); appErr != nil {
 		return nil, nil, "", appErr
 	}
 	s.upsertSoulAgentIndexes(ctx, reg)
@@ -817,7 +817,7 @@ func (s *Server) handleSoulAgentRegistrationVerify(ctx *apptheory.Context) (*app
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid principal_signature"}
 	}
 
-	op, safeTx, _, opErr := s.createSoulMintOperation(ctx.Context(), reg, principalAddr, principalSig)
+	op, safeTx, _, opErr := s.createSoulMintOperation(ctx.Context(), reg, principalAddr, principalSig, principalDeclaration, declaredAt)
 	if opErr != nil {
 		return nil, opErr
 	}
@@ -934,23 +934,25 @@ func (s *Server) createOrLoadSoulOperation(ctx context.Context, op *models.SoulO
 	return op, nil
 }
 
-func (s *Server) ensureSoulPendingAgentIdentity(ctx context.Context, reg *models.SoulAgentRegistration, metaURI string, principalAddress string, principalSignature string, now time.Time) *apptheory.AppError {
+func (s *Server) ensureSoulPendingAgentIdentity(ctx context.Context, reg *models.SoulAgentRegistration, metaURI string, principalAddress string, principalSignature string, principalDeclaration string, principalDeclaredAt string, now time.Time) *apptheory.AppError {
 	if s == nil || s.store == nil || s.store.DB == nil || reg == nil {
 		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
 	identity := &models.SoulAgentIdentity{
-		AgentID:            reg.AgentID,
-		Domain:             reg.DomainNormalized,
-		LocalID:            reg.LocalID,
-		Wallet:             reg.Wallet,
-		TokenID:            reg.AgentID,
-		MetaURI:            metaURI,
-		Capabilities:       reg.Capabilities,
-		PrincipalAddress:   principalAddress,
-		PrincipalSignature: principalSignature,
-		Status:             models.SoulAgentStatusPending,
-		UpdatedAt:          now,
+		AgentID:              reg.AgentID,
+		Domain:               reg.DomainNormalized,
+		LocalID:              reg.LocalID,
+		Wallet:               reg.Wallet,
+		TokenID:              reg.AgentID,
+		MetaURI:              metaURI,
+		Capabilities:         reg.Capabilities,
+		PrincipalAddress:     principalAddress,
+		PrincipalSignature:   principalSignature,
+		PrincipalDeclaration: principalDeclaration,
+		PrincipalDeclaredAt:  principalDeclaredAt,
+		Status:               models.SoulAgentStatusPending,
+		UpdatedAt:            now,
 	}
 	_ = identity.UpdateKeys()
 
@@ -977,26 +979,33 @@ func (s *Server) ensureSoulPendingAgentIdentity(ctx context.Context, reg *models
 		if havePrincipal != "" && wantPrincipal != "" && !strings.EqualFold(havePrincipal, wantPrincipal) {
 			return &apptheory.AppError{Code: "app.conflict", Message: "principal_address mismatch for existing identity"}
 		}
-		if wantPrincipal != "" && strings.TrimSpace(existing.PrincipalAddress) == "" {
+		wantDecl := strings.TrimSpace(principalDeclaration)
+		haveDecl := strings.TrimSpace(existing.PrincipalDeclaration)
+		if haveDecl != "" && wantDecl != "" && haveDecl != wantDecl {
+			return &apptheory.AppError{Code: "app.conflict", Message: "principal_declaration mismatch for existing identity"}
+		}
+
+		wantDeclaredAt := strings.TrimSpace(principalDeclaredAt)
+		haveDeclaredAt := strings.TrimSpace(existing.PrincipalDeclaredAt)
+		if haveDeclaredAt != "" && wantDeclaredAt != "" && haveDeclaredAt != wantDeclaredAt {
+			return &apptheory.AppError{Code: "app.conflict", Message: "declared_at mismatch for existing identity"}
+		}
+
+		needUpdate := strings.TrimSpace(existing.PrincipalAddress) == "" ||
+			strings.TrimSpace(existing.PrincipalSignature) == "" ||
+			strings.TrimSpace(existing.PrincipalDeclaration) == "" ||
+			strings.TrimSpace(existing.PrincipalDeclaredAt) == ""
+		if wantPrincipal != "" && needUpdate {
 			update := &models.SoulAgentIdentity{
-				AgentID:                reg.AgentID,
-				PrincipalAddress:       principalAddress,
-				PrincipalSignature:     principalSignature,
-				UpdatedAt:              now,
-				Status:                 existing.Status,
-				LifecycleStatus:        existing.LifecycleStatus,
-				Domain:                 existing.Domain,
-				LocalID:                existing.LocalID,
-				Wallet:                 existing.Wallet,
-				TokenID:                existing.TokenID,
-				MetaURI:                existing.MetaURI,
-				Capabilities:           existing.Capabilities,
-				SelfDescriptionVersion: existing.SelfDescriptionVersion,
-				MintTxHash:             existing.MintTxHash,
-				MintedAt:               existing.MintedAt,
+				AgentID:              reg.AgentID,
+				PrincipalAddress:     principalAddress,
+				PrincipalSignature:   principalSignature,
+				PrincipalDeclaration: principalDeclaration,
+				PrincipalDeclaredAt:  principalDeclaredAt,
+				UpdatedAt:            now,
 			}
 			_ = update.UpdateKeys()
-			if updErr := s.store.DB.WithContext(ctx).Model(update).IfExists().Update("PrincipalAddress", "PrincipalSignature", "UpdatedAt"); updErr != nil {
+			if updErr := s.store.DB.WithContext(ctx).Model(update).IfExists().Update("PrincipalAddress", "PrincipalSignature", "PrincipalDeclaration", "PrincipalDeclaredAt", "UpdatedAt"); updErr != nil {
 				return &apptheory.AppError{Code: "app.internal", Message: "failed to update agent identity"}
 			}
 		}

@@ -2,12 +2,20 @@
 	import { onMount } from 'svelte';
 
 	import type { ApiError } from 'src/lib/api/http';
-	import type { SoulAgentRegistrationBeginResponse, SoulAgentRegistrationVerifyResponse, SoulMintConversation } from 'src/lib/api/soul';
+	import type {
+		SoulAgentRegistrationBeginResponse,
+		SoulAgentRegistrationVerifyResponse,
+		SoulMintConversation,
+		SoulMintConversationFinalizeBeginResponse,
+		SoulMintConversationFinalizeResponse,
+	} from 'src/lib/api/soul';
 	import {
 		soulAgentRegistrationBegin,
 		soulAgentRegistrationVerify,
 		soulCompleteMintConversation,
 		soulGetMintConversation,
+		soulMintConversationFinalize,
+		soulMintConversationFinalizeBegin,
 		soulStartMintConversationSSE,
 	} from 'src/lib/api/soul';
 	import { logout } from 'src/lib/auth/logout';
@@ -79,6 +87,11 @@
 	let mintCompleteError = $state<string | null>(null);
 	let mintProducedDeclarations = $state<unknown | null>(null);
 
+	let mintFinalizeLoading = $state(false);
+	let mintFinalizeError = $state<string | null>(null);
+	let mintFinalizeBegin = $state<SoulMintConversationFinalizeBeginResponse | null>(null);
+	let mintFinalizeResult = $state<SoulMintConversationFinalizeResponse | null>(null);
+
 	function mintStorageKey(registrationId: string): string {
 		return `soul_mint_conversation:${registrationId}`;
 	}
@@ -112,9 +125,29 @@
 		}
 	}
 
+	type ProducedBoundary = { id: string; statement: string };
+
+	function extractProducedBoundaries(value: unknown): ProducedBoundary[] {
+		if (!value || typeof value !== 'object') return [];
+		const boundaries = (value as { boundaries?: unknown }).boundaries;
+		if (!Array.isArray(boundaries)) return [];
+
+		const out: ProducedBoundary[] = [];
+		for (const item of boundaries) {
+			if (!item || typeof item !== 'object') continue;
+			const id = String((item as { id?: unknown }).id || '').trim();
+			const statement = String((item as { statement?: unknown }).statement || '').trim();
+			if (id && statement) out.push({ id, statement });
+		}
+		return out;
+	}
+
 	async function loadMintConversationFromStorage(registrationId: string) {
 		mintError = null;
 		mintCompleteError = null;
+		mintFinalizeError = null;
+		mintFinalizeBegin = null;
+		mintFinalizeResult = null;
 		mintProducedDeclarations = null;
 		mintConversation = null;
 		mintMessages = [];
@@ -155,6 +188,9 @@
 		mintAssistantPartial = '';
 		mintError = null;
 		mintCompleteError = null;
+		mintFinalizeError = null;
+		mintFinalizeBegin = null;
+		mintFinalizeResult = null;
 		mintProducedDeclarations = null;
 		try {
 			localStorage.removeItem(mintStorageKey(registrationId));
@@ -295,6 +331,81 @@
 		}
 	}
 
+	async function finalizeMintConversation(registrationId: string) {
+		mintFinalizeError = null;
+		mintFinalizeBegin = null;
+		mintFinalizeResult = null;
+
+		if (!verifyResult) {
+			mintFinalizeError = 'Verify the registration first (Step 3) to create the pending agent identity.';
+			return;
+		}
+		if (!mintConversationId) {
+			mintFinalizeError = 'No completed conversation to finalize.';
+			return;
+		}
+		if (!mintProducedDeclarations) {
+			mintFinalizeError = 'Complete the mint conversation first to produce declarations.';
+			return;
+		}
+
+		const boundaries = extractProducedBoundaries(mintProducedDeclarations);
+		if (!boundaries.length) {
+			mintFinalizeError = 'No boundaries found in produced declarations.';
+			return;
+		}
+
+		const provider = getEthereumProvider();
+		if (!provider) {
+			mintFinalizeError = 'No wallet detected. Install or enable a wallet extension.';
+			return;
+		}
+
+		const wallet = beginResult?.registration?.wallet_address?.trim() || walletAddress.trim();
+		if (!wallet) {
+			mintFinalizeError = 'Agent wallet address is required.';
+			return;
+		}
+
+		mintFinalizeLoading = true;
+		try {
+			const accounts = await requestAccounts(provider);
+			const normalized = accounts.map((a) => a.toLowerCase());
+			if (!normalized.includes(wallet.toLowerCase())) {
+				mintFinalizeError = `Connected wallet does not match agent wallet (${wallet}).`;
+				return;
+			}
+
+			const boundarySignatures: Record<string, string> = {};
+			for (const b of boundaries) {
+				const digestHex = keccak256Utf8Hex(b.statement);
+				boundarySignatures[b.id] = await personalSign(provider, digestHex, wallet);
+			}
+
+			mintFinalizeBegin = await soulMintConversationFinalizeBegin(token, registrationId, mintConversationId, {
+				boundary_signatures: boundarySignatures,
+			});
+
+			const selfAttestation = await personalSign(provider, mintFinalizeBegin.digest_hex, wallet);
+
+			mintFinalizeResult = await soulMintConversationFinalize(token, registrationId, mintConversationId, {
+				boundary_signatures: boundarySignatures,
+				issued_at: mintFinalizeBegin.issued_at,
+				expected_version: mintFinalizeBegin.expected_version,
+				self_attestation: selfAttestation,
+			});
+		} catch (err) {
+			if ((err as Partial<ApiError>).status === 401) {
+				await logout();
+				navigate('/login');
+				return;
+			}
+			mintFinalizeError = formatError(err);
+		} finally {
+			mintFinalizeLoading = false;
+		}
+	}
+
 	function formatError(err: unknown): string {
 		if (!err) return 'unknown error';
 		const maybe = err as Partial<ApiError>;
@@ -346,6 +457,9 @@
 		mintAssistantPartial = '';
 		mintError = null;
 		mintCompleteError = null;
+		mintFinalizeError = null;
+		mintFinalizeBegin = null;
+		mintFinalizeResult = null;
 		mintProducedDeclarations = null;
 
 		const nextDomain = domain.trim();
@@ -860,6 +974,61 @@
 						<Heading level={4} size="lg">Produced declarations</Heading>
 					{/snippet}
 					<TextArea value={prettyJSON(mintProducedDeclarations)} readonly rows={14} />
+				</Card>
+
+				<Card variant="outlined" padding="lg">
+					{#snippet header()}
+						<Heading level={4} size="lg">Finalize + publish (Phase 2)</Heading>
+					{/snippet}
+
+					<Text size="sm" color="secondary">
+						This will prompt you to sign each boundary statement, then sign the full v2 registration self-attestation, and publish version 1 to the registry.
+					</Text>
+
+					{#if !verifyResult}
+						<Alert variant="info" title="Verify first">
+							<Text size="sm">Complete Step 3 (verify) before finalizing, so the pending agent identity exists.</Text>
+						</Alert>
+					{/if}
+
+					{#if mintFinalizeError}
+						<Alert variant="error" title="Finalize + publish">{mintFinalizeError}</Alert>
+					{/if}
+
+					<div class="soul-register__row">
+						<Button
+							variant="solid"
+							onclick={() => void finalizeMintConversation(begin.registration.id)}
+							disabled={!verifyResult || mintFinalizeLoading || mintStreaming || mintCompleteLoading}
+						>
+							Finalize + publish
+						</Button>
+					</div>
+
+					{#if mintFinalizeLoading}
+						<div class="soul-register__loading-inline">
+							<Spinner size="sm" />
+							<Text size="sm">Finalizing…</Text>
+						</div>
+					{/if}
+
+					{#if mintFinalizeBegin}
+						<DefinitionList>
+							<DefinitionItem label="Issued at" monospace>{mintFinalizeBegin.issued_at}</DefinitionItem>
+							<DefinitionItem label="Expected version" monospace>{String(mintFinalizeBegin.expected_version)}</DefinitionItem>
+							<DefinitionItem label="Next version" monospace>{String(mintFinalizeBegin.next_version)}</DefinitionItem>
+							<DefinitionItem label="Digest" monospace>{mintFinalizeBegin.digest_hex}</DefinitionItem>
+						</DefinitionList>
+					{/if}
+
+					{#if mintFinalizeResult}
+						<Alert variant="success" title="Published">
+							<Text size="sm">Published v2 registration version {mintFinalizeResult.published_version}.</Text>
+						</Alert>
+						<div class="soul-register__row">
+							<Button variant="outline" onclick={() => navigate(`/portal/souls/${begin.registration.agent_id}`)}>Open agent</Button>
+						</div>
+					{/if}
 				</Card>
 			{/if}
 		</Card>

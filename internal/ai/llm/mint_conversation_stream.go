@@ -94,10 +94,19 @@ func StreamMintConversationAnthropic(
 	defer stream.Close()
 
 	var full strings.Builder
+	var modelName string
+	var inputTokens int64
+	var outputTokens int64
 
 	for stream.Next() {
 		event := stream.Current()
 		switch delta := event.AsAny().(type) {
+		case anthropic.MessageStartEvent:
+			modelName = strings.TrimSpace(string(delta.Message.Model))
+		case anthropic.MessageDeltaEvent:
+			// message_delta usage is cumulative for the stream; keep the latest snapshot.
+			inputTokens = delta.Usage.InputTokens + delta.Usage.CacheCreationInputTokens + delta.Usage.CacheReadInputTokens
+			outputTokens = delta.Usage.OutputTokens
 		case anthropic.ContentBlockDeltaEvent:
 			textDelta := delta.Delta.AsTextDelta()
 			if textDelta.Text == "" {
@@ -118,12 +127,17 @@ func StreamMintConversationAnthropic(
 		return "", models.AIUsage{}, fmt.Errorf("anthropic: empty response")
 	}
 
+	if modelName == "" {
+		modelName = strings.TrimSpace(string(model))
+	}
 	usage := models.AIUsage{
-		Provider:    "anthropic",
-		Model:       strings.TrimSpace(string(model)),
-		DurationMs:  time.Since(start).Milliseconds(),
-		ToolCalls:   1,
-		InputTokens: 0,
+		Provider:     "anthropic",
+		Model:        modelName,
+		DurationMs:   time.Since(start).Milliseconds(),
+		ToolCalls:    1,
+		InputTokens:  inputTokens,
+		OutputTokens: outputTokens,
+		TotalTokens:  inputTokens + outputTokens,
 	}
 	return out, usage, nil
 }

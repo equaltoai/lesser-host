@@ -220,6 +220,8 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 	// v2: Minting conversation (LLM-assisted registration).
 	app.Post("/api/v1/soul/agents/register/{id}/mint-conversation", s.handleSoulMintConversation, apptheory.RequireAuth())
 	app.Post("/api/v1/soul/agents/register/{id}/mint-conversation/{conversationId}/complete", s.handleSoulCompleteMintConversation, apptheory.RequireAuth())
+	app.Post("/api/v1/soul/agents/register/{id}/mint-conversation/{conversationId}/finalize/begin", s.handleSoulBeginFinalizeMintConversation, apptheory.RequireAuth())
+	app.Post("/api/v1/soul/agents/register/{id}/mint-conversation/{conversationId}/finalize", s.handleSoulFinalizeMintConversation, apptheory.RequireAuth())
 	app.Get("/api/v1/soul/agents/register/{id}/mint-conversation/{conversationId}", s.handleSoulGetMintConversation, apptheory.RequireAuth())
 
 	// v2: Transparency + Failures.
