@@ -257,9 +257,18 @@ type soulSearchResponse struct {
 }
 
 type soulSearchIndexEntry struct {
-	AgentID string `json:"agent_id"`
-	Domain  string `json:"domain"`
-	LocalID string `json:"local_id"`
+	AgentID    string `json:"agent_id"`
+	Domain     string `json:"domain"`
+	LocalID    string `json:"local_id"`
+	ClaimLevel string `json:"claim_level,omitempty"`
+}
+
+func soulSearchResultFromEntry(entry soulSearchIndexEntry) soulSearchResult {
+	return soulSearchResult{
+		AgentID: entry.AgentID,
+		Domain:  entry.Domain,
+		LocalID: entry.LocalID,
+	}
 }
 
 func (s *Server) handleSoulPublicSearch(ctx *apptheory.Context) (*apptheory.Response, error) {
@@ -273,17 +282,15 @@ func (s *Server) handleSoulPublicSearch(ctx *apptheory.Context) (*apptheory.Resp
 		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
 	}
 
-	q, cap, cursor, limit, appErr := parseSoulPublicSearchParams(ctx)
+	params, appErr := parseSoulPublicSearchParams(ctx)
 	if appErr != nil {
 		return nil, appErr
 	}
-	statusFilter := strings.ToLower(strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "status")))
 
-	entries, hasMore, nextCursor, appErr := s.querySoulSearchIndexEntries(ctx.Context(), q, cap, cursor, limit)
+	results, hasMore, nextCursor, appErr := s.searchSoulAgents(ctx.Context(), params)
 	if appErr != nil {
 		return nil, appErr
 	}
-	results := s.filterSoulSearchEntries(ctx.Context(), entries, statusFilter, limit)
 
 	resp, err := apptheory.JSON(http.StatusOK, soulSearchResponse{
 		Version:    "1",
@@ -299,16 +306,32 @@ func (s *Server) handleSoulPublicSearch(ctx *apptheory.Context) (*apptheory.Resp
 	return resp, nil
 }
 
-func parseSoulPublicSearchParams(ctx *apptheory.Context) (q string, cap string, cursor string, limit int, appErr *apptheory.AppError) {
+type soulPublicSearchParams struct {
+	Query      string
+	Capability string
+	ClaimLevel string
+	Boundary   string
+	Status     string
+	Cursor     string
+	Limit      int
+}
+
+func parseSoulPublicSearchParams(ctx *apptheory.Context) (soulPublicSearchParams, *apptheory.AppError) {
 	if ctx == nil {
-		return "", "", "", 0, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return soulPublicSearchParams{}, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
-	q = strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "q"))
-	cap = strings.ToLower(strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "capability")))
-	cursor = strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "cursor"))
+	q := strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "q"))
+	cap := strings.ToLower(strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "capability")))
+	cursor := strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "cursor"))
+	claimLevel := strings.ToLower(strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "claimLevel")))
+	if claimLevel == "" {
+		claimLevel = strings.ToLower(strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "claim_level")))
+	}
+	boundary := strings.ToLower(strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "boundary")))
+	status := strings.ToLower(strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "status")))
 
-	limit = int(envInt64PositiveFromString(httpx.FirstQueryValue(ctx.Request.Query, "limit"), 50))
+	limit := int(envInt64PositiveFromString(httpx.FirstQueryValue(ctx.Request.Query, "limit"), 50))
 	if limit <= 0 {
 		limit = 50
 	}
@@ -317,10 +340,22 @@ func parseSoulPublicSearchParams(ctx *apptheory.Context) (q string, cap string, 
 	}
 
 	if q == "" && cap == "" {
-		return "", "", "", 0, &apptheory.AppError{Code: "app.bad_request", Message: "q or capability is required"}
+		return soulPublicSearchParams{}, &apptheory.AppError{Code: "app.bad_request", Message: "q or capability is required"}
 	}
 
-	return q, cap, cursor, limit, nil
+	if claimLevel != "" && cap == "" {
+		return soulPublicSearchParams{}, &apptheory.AppError{Code: "app.bad_request", Message: "claimLevel requires capability"}
+	}
+
+	return soulPublicSearchParams{
+		Query:      q,
+		Capability: cap,
+		ClaimLevel: claimLevel,
+		Boundary:   boundary,
+		Status:     status,
+		Cursor:     cursor,
+		Limit:      limit,
+	}, nil
 }
 
 func (s *Server) querySoulSearchIndexEntries(ctx context.Context, q string, cap string, cursor string, limit int) ([]soulSearchIndexEntry, bool, string, *apptheory.AppError) {
@@ -379,7 +414,7 @@ func (s *Server) querySoulSearchByCapability(ctx context.Context, q string, cap 
 		if item == nil {
 			continue
 		}
-		out = append(out, soulSearchIndexEntry{AgentID: item.AgentID, Domain: item.Domain, LocalID: item.LocalID})
+		out = append(out, soulSearchIndexEntry{AgentID: item.AgentID, Domain: item.Domain, LocalID: item.LocalID, ClaimLevel: item.ClaimLevel})
 	}
 
 	nextCursor := ""
@@ -435,6 +470,43 @@ func (s *Server) querySoulSearchByDomain(ctx context.Context, q string, cursor s
 	return out, hasMore, nextCursor, nil
 }
 
+func (s *Server) searchSoulAgents(ctx context.Context, params soulPublicSearchParams) ([]soulSearchResult, bool, string, *apptheory.AppError) {
+	cursor := strings.TrimSpace(params.Cursor)
+	remaining := params.Limit
+	results := make([]soulSearchResult, 0, params.Limit)
+
+	hasMore := false
+	nextCursor := ""
+
+	for remaining > 0 {
+		entries, pageHasMore, pageNextCursor, appErr := s.querySoulSearchIndexEntries(ctx, params.Query, params.Capability, cursor, remaining)
+		if appErr != nil {
+			return nil, false, "", appErr
+		}
+
+		for _, entry := range entries {
+			pass, err := s.soulSearchEntryPassesFilters(ctx, entry, params)
+			if err != nil || !pass {
+				continue
+			}
+			results = append(results, soulSearchResultFromEntry(entry))
+			remaining = params.Limit - len(results)
+			if remaining <= 0 {
+				break
+			}
+		}
+
+		hasMore = pageHasMore
+		nextCursor = strings.TrimSpace(pageNextCursor)
+		if remaining <= 0 || !hasMore || nextCursor == "" {
+			break
+		}
+		cursor = nextCursor
+	}
+
+	return results, hasMore, nextCursor, nil
+}
+
 func (s *Server) filterActiveSoulSearchEntries(ctx context.Context, entries []soulSearchIndexEntry, limit int) []soulSearchResult {
 	return s.filterSoulSearchEntries(ctx, entries, "", limit)
 }
@@ -457,9 +529,73 @@ func (s *Server) filterSoulSearchEntries(ctx context.Context, entries []soulSear
 			continue
 		}
 
-		results = append(results, soulSearchResult(entry))
+		results = append(results, soulSearchResultFromEntry(entry))
 	}
 	return results
+}
+
+func (s *Server) soulSearchEntryPassesFilters(ctx context.Context, entry soulSearchIndexEntry, params soulPublicSearchParams) (bool, error) {
+	if params.ClaimLevel != "" && params.Capability != "" {
+		if strings.ToLower(strings.TrimSpace(entry.ClaimLevel)) != params.ClaimLevel {
+			return false, nil
+		}
+	}
+
+	identity, err := s.getSoulAgentIdentity(ctx, entry.AgentID)
+	if err != nil || identity == nil {
+		return false, err
+	}
+
+	agentStatus := strings.TrimSpace(identity.Status)
+	if params.Status == "" {
+		if agentStatus != models.SoulAgentStatusActive {
+			return false, nil
+		}
+	} else if params.Status != agentStatus {
+		return false, nil
+	}
+
+	if params.Boundary != "" {
+		ok, err := s.agentHasBoundaryKeyword(ctx, entry.AgentID, params.Boundary)
+		if err != nil || !ok {
+			return false, err
+		}
+	}
+
+	return true, nil
+}
+
+func (s *Server) agentHasBoundaryKeyword(ctx context.Context, agentIDHex string, keyword string) (bool, error) {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return false, errors.New("store not configured")
+	}
+	agentIDHex = strings.ToLower(strings.TrimSpace(agentIDHex))
+	keyword = strings.ToLower(strings.TrimSpace(keyword))
+	if agentIDHex == "" || keyword == "" {
+		return false, nil
+	}
+
+	var items []*models.SoulAgentBoundary
+	if err := s.store.DB.WithContext(ctx).
+		Model(&models.SoulAgentBoundary{}).
+		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentIDHex)).
+		Where("SK", "BEGINS_WITH", "BOUNDARY#").
+		All(&items); err != nil {
+		return false, err
+	}
+
+	for _, b := range items {
+		if b == nil {
+			continue
+		}
+		if strings.Contains(strings.ToLower(b.Statement), keyword) ||
+			strings.Contains(strings.ToLower(b.Rationale), keyword) ||
+			strings.Contains(strings.ToLower(b.Category), keyword) {
+			return true, nil
+		}
+	}
+
+	return false, nil
 }
 
 func parseSoulSearchQuery(q string) (string, string, *apptheory.AppError) {

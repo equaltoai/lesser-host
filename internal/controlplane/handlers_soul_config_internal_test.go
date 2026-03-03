@@ -121,11 +121,16 @@ func TestHandleSoulConfig_ErrorsAndSuccess(t *testing.T) {
 		t.Parallel()
 
 		s := &Server{cfg: config.Config{
-			SoulEnabled:                 true,
-			SoulChainID:                 5,
-			SoulRegistryContractAddress: testSoulContractAddr,
-			SoulAdminSafeAddress:        testSoulSafeAddr,
-			SoulTxMode:                  "SAFE",
+			SoulEnabled:                    true,
+			SoulChainID:                    5,
+			SoulRegistryContractAddress:    testSoulContractAddr,
+			SoulAdminSafeAddress:           testSoulSafeAddr,
+			SoulTxMode:                     "SAFE",
+			SoulReputationWeightEconomic:   1,
+			SoulReputationWeightSocial:     2,
+			SoulReputationWeightValidation: 3,
+			SoulReputationWeightTrust:      4,
+			SoulReputationWeightIntegrity:  5,
 			SoulSupportedCapabilities: []string{
 				"  B  ",
 				"",
@@ -151,6 +156,12 @@ func TestHandleSoulConfig_ErrorsAndSuccess(t *testing.T) {
 		require.Equal(t, testSoulSafeAddr, parsed.AdminSafeAddress)
 		require.Equal(t, "safe", parsed.TxMode)
 		require.Equal(t, []string{"a", "b"}, parsed.SupportedCapabilities)
+		require.NotNil(t, parsed.ReputationWeights)
+		require.Equal(t, float64(1), parsed.ReputationWeights.Economic)
+		require.Equal(t, float64(2), parsed.ReputationWeights.Social)
+		require.Equal(t, float64(3), parsed.ReputationWeights.Validation)
+		require.Equal(t, float64(4), parsed.ReputationWeights.Trust)
+		require.Equal(t, float64(5), parsed.ReputationWeights.Integrity)
 
 		require.NotNil(t, resp.Headers)
 		require.Equal(t, []string{"public, max-age=3600"}, resp.Headers["cache-control"])

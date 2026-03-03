@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -266,7 +268,7 @@ func (s *Server) computeAndPersistReputations(ctx context.Context, identities []
 			TipsReceived:         tipCounts[agentID],
 			Interactions:         0,
 			ValidationsPassed:    validationsPassed,
-			Endorsements:         0,
+			Endorsements:         integritySignals.endorsements,
 			Flags:                0,
 			DelegationsCompleted: integritySignals.delegationsCompleted,
 			BoundaryViolations:   integritySignals.boundaryViolations,
@@ -409,6 +411,7 @@ func (s *Server) computeValidationSignals(ctx context.Context, agentID string, n
 
 type integrityResult struct {
 	score                float64
+	endorsements         int64
 	delegationsCompleted int64
 	boundaryViolations   int64
 	failureRecoveries    int64
@@ -419,22 +422,42 @@ type integrityResult struct {
 // and delegation completions (positive).
 func (s *Server) computeIntegritySignals(ctx context.Context, agentID string) integrityResult {
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return integrityResult{score: 1.0} // Default to full integrity if store unavailable.
+		return integrityResult{score: 0.5}
 	}
 
 	agentID = strings.ToLower(strings.TrimSpace(agentID))
 
-	// Count relationships of type "delegation" where this agent is the "to" (delegatee).
-	var delegationRels []*models.SoulAgentRelationship
+	// Relationship signals (delegations + endorsements).
+	var rels []*models.SoulAgentRelationship
 	_ = s.store.DB.WithContext(ctx).
 		Model(&models.SoulAgentRelationship{}).
 		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentID)).
 		Where("SK", "BEGINS_WITH", "RELATIONSHIP#").
-		All(&delegationRels)
+		All(&rels)
+
+	var delegationsTotal int64
 	var delegationsCompleted int64
-	for _, r := range delegationRels {
-		if r != nil && strings.ToLower(r.Type) == models.SoulRelationshipTypeDelegation {
-			delegationsCompleted++
+	var delegationQualitySum float64
+	var endorsements int64
+
+	for _, r := range rels {
+		if r == nil {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(r.Type)) {
+		case models.SoulRelationshipTypeDelegation:
+			delegationsTotal++
+			outcome, qualityScore, hasQuality := extractRelationshipOutcomeAndQuality(r.Context)
+			if isDelegationCompletedOutcome(outcome) {
+				delegationsCompleted++
+				quality := 1.0
+				if hasQuality {
+					quality = clamp01(qualityScore)
+				}
+				delegationQualitySum += quality
+			}
+		case models.SoulRelationshipTypeEndorsement:
+			endorsements++
 		}
 	}
 
@@ -456,49 +479,154 @@ func (s *Server) computeIntegritySignals(ctx context.Context, agentID string) in
 		}
 	}
 
-	// Count continuity entries of type "boundary_added" as a positive signal.
-	// Boundary violations would be recorded as separate signals.
 	var boundaryViolations int64
-	// For now, boundary violations are tracked via the failure records with a specific type.
 	for _, f := range failures {
-		if f != nil && strings.Contains(strings.ToLower(f.FailureType), "boundary") {
+		if f == nil {
+			continue
+		}
+		if isBoundaryViolationFailureType(f.FailureType) {
 			boundaryViolations++
 		}
 	}
 
-	// Compute integrity score.
-	// Start at 1.0, penalize for boundary violations, boost slightly for recoveries and delegations.
-	score := 1.0
-	if boundaryViolations > 0 {
-		score -= float64(boundaryViolations) * 0.1
+	// Determine whether the agent has declared any boundaries.
+	var boundaries []*models.SoulAgentBoundary
+	_ = s.store.DB.WithContext(ctx).
+		Model(&models.SoulAgentBoundary{}).
+		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentID)).
+		Where("SK", "BEGINS_WITH", "BOUNDARY#").
+		All(&boundaries)
+	boundariesDeclared := int64(0)
+	for _, b := range boundaries {
+		if b != nil {
+			boundariesDeclared++
+		}
 	}
-	if recoveredFailures > 0 && totalFailures > 0 {
+
+	// Backward-compat endorsements (v1).
+	var v1Endorsements []*models.SoulAgentPeerEndorsement
+	_ = s.store.DB.WithContext(ctx).
+		Model(&models.SoulAgentPeerEndorsement{}).
+		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentID)).
+		Where("SK", "BEGINS_WITH", "ENDORSEMENT#").
+		All(&v1Endorsements)
+	for _, e := range v1Endorsements {
+		if e != nil {
+			endorsements++
+		}
+	}
+
+	// Compute integrity score (heuristic v2).
+	//
+	// Spec guidance:
+	// - Declared boundaries + adherence score higher than no boundaries.
+	// - Failures are informative; recoveries can be positive signals.
+	// - Delegation outcomes (completion + quality) are meaningful trust evidence.
+	score := 0.5
+	if boundariesDeclared > 0 {
+		score += 0.3
+	}
+
+	delegationOutcomeQuality := 0.0
+	if delegationsTotal > 0 {
+		delegationOutcomeQuality = delegationQualitySum / float64(delegationsTotal) // failed/unknown outcomes contribute 0
+	}
+	score += 0.2 * clamp01(delegationOutcomeQuality)
+
+	if totalFailures > 0 {
 		recoveryRatio := float64(recoveredFailures) / float64(totalFailures)
-		score += recoveryRatio * 0.1
+		score -= 0.2 * (1 - clamp01(recoveryRatio))
+		score += 0.1 * clamp01(recoveryRatio)
 	}
-	if delegationsCompleted > 0 {
-		score += float64(min64(delegationsCompleted, 10)) * 0.02
-	}
-	if score < 0 {
-		score = 0
-	}
-	if score > 1 {
-		score = 1
-	}
+	score -= 0.15 * float64(boundaryViolations)
+	score = clamp01(score)
 
 	return integrityResult{
 		score:                score,
+		endorsements:         endorsements,
 		delegationsCompleted: delegationsCompleted,
 		boundaryViolations:   boundaryViolations,
 		failureRecoveries:    recoveredFailures,
 	}
 }
 
-func min64(a, b int64) int64 {
-	if a < b {
-		return a
+func clamp01(v float64) float64 {
+	switch {
+	case math.IsNaN(v) || math.IsInf(v, 0):
+		return 0
+	case v < 0:
+		return 0
+	case v > 1:
+		return 1
+	default:
+		return v
 	}
-	return b
+}
+
+func isBoundaryViolationFailureType(failureType string) bool {
+	ft := strings.ToLower(strings.TrimSpace(failureType))
+	if ft == "" {
+		return false
+	}
+	if ft == "boundary_violation" {
+		return true
+	}
+	return strings.Contains(ft, "boundary")
+}
+
+func isDelegationCompletedOutcome(outcome string) bool {
+	switch strings.ToLower(strings.TrimSpace(outcome)) {
+	case "completed", "complete", "succeeded", "success":
+		return true
+	default:
+		return false
+	}
+}
+
+func extractRelationshipOutcomeAndQuality(contextJSON string) (outcome string, qualityScore float64, hasQuality bool) {
+	contextJSON = strings.TrimSpace(contextJSON)
+	if contextJSON == "" {
+		return "", 0, false
+	}
+
+	var m map[string]any
+	if err := json.Unmarshal([]byte(contextJSON), &m); err != nil {
+		return "", 0, false
+	}
+
+	outcome, _ = m["outcome"].(string)
+	outcome = strings.ToLower(strings.TrimSpace(outcome))
+
+	raw, ok := m["qualityScore"]
+	if !ok {
+		raw, ok = m["quality_score"]
+	}
+	if !ok {
+		return outcome, 0, false
+	}
+
+	switch v := raw.(type) {
+	case float64:
+		return outcome, v, true
+	case int:
+		return outcome, float64(v), true
+	case int64:
+		return outcome, float64(v), true
+	case json.Number:
+		f, err := v.Float64()
+		if err != nil {
+			return outcome, 0, false
+		}
+		return outcome, f, true
+	case string:
+		f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+		if err != nil {
+			return outcome, 0, false
+		}
+		return outcome, f, true
+	default:
+		return outcome, 0, false
+	}
 }
 
 func (s *Server) putAgentReputation(ctx context.Context, rep *models.SoulAgentReputation) error {
@@ -516,11 +644,15 @@ func (s *Server) putAgentReputation(ctx context.Context, rep *models.SoulAgentRe
 		"Social",
 		"Validation",
 		"Trust",
+		"Integrity",
 		"TipsReceived",
 		"Interactions",
 		"ValidationsPassed",
 		"Endorsements",
 		"Flags",
+		"DelegationsCompleted",
+		"BoundaryViolations",
+		"FailureRecoveries",
 		"UpdatedAt",
 	}
 

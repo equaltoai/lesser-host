@@ -103,7 +103,28 @@ func TestPutAgentReputation_CreatesWhenMissing(t *testing.T) {
 
 	qRep.On("IfExists").Return(qRep).Maybe()
 	qRep.On("IfNotExists").Return(qRep).Maybe()
-	qRep.On("Update", mock.Anything).Return(theoryErrors.ErrItemNotFound).Once()
+	qRep.On("Update", mock.Anything).Return(theoryErrors.ErrItemNotFound).Run(func(args mock.Arguments) {
+		fields, ok := args.Get(0).([]string)
+		if !ok {
+			t.Fatalf("expected []string fields, got %T", args.Get(0))
+		}
+
+		want := map[string]struct{}{
+			"Integrity":            {},
+			"DelegationsCompleted": {},
+			"BoundaryViolations":   {},
+			"FailureRecoveries":    {},
+		}
+		have := map[string]struct{}{}
+		for _, f := range fields {
+			have[f] = struct{}{}
+		}
+		for w := range want {
+			if _, ok := have[w]; !ok {
+				t.Fatalf("expected update fields to include %q (fields=%#v)", w, fields)
+			}
+		}
+	}).Once()
 	qRep.On("Create").Return(nil).Once()
 
 	srv := NewServer(config.Config{}, store.New(db), &fakeSoulPackStore{})
@@ -135,6 +156,95 @@ func TestHandleRecompute_EndToEndFixture(t *testing.T) {
 	fx.qIdentity.AssertExpectations(t)
 	fx.qRep.AssertExpectations(t)
 	fx.qVal.AssertExpectations(t)
+}
+
+func TestComputeIntegritySignals_UsesDelegationOutcomesBoundariesFailuresAndEndorsements(t *testing.T) {
+	t.Parallel()
+
+	agentID := "0x00000000000000000000000000000000000000000000000000000000000000aa"
+
+	db := ttmocks.NewMockExtendedDB()
+	qRel := new(ttmocks.MockQuery)
+	qFail := new(ttmocks.MockQuery)
+	qBoundary := new(ttmocks.MockQuery)
+	qV1Endorse := new(ttmocks.MockQuery)
+
+	db.On("WithContext", mock.Anything).Return(db).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentRelationship")).Return(qRel).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentFailure")).Return(qFail).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentBoundary")).Return(qBoundary).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentPeerEndorsement")).Return(qV1Endorse).Maybe()
+
+	for _, q := range []*ttmocks.MockQuery{qRel, qFail, qBoundary, qV1Endorse} {
+		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
+	}
+
+	qRel.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+		dest, ok := args.Get(0).(*[]*models.SoulAgentRelationship)
+		if !ok {
+			t.Fatalf("expected *[]*models.SoulAgentRelationship, got %T", args.Get(0))
+		}
+		*dest = []*models.SoulAgentRelationship{
+			{ToAgentID: agentID, Type: "delegation", Context: `{"outcome":"completed","qualityScore":0.9}`},
+			{ToAgentID: agentID, Type: "delegation", Context: `{"outcome":"failed","qualityScore":0.2}`},
+			{ToAgentID: agentID, Type: "endorsement", Context: `{}`},
+		}
+	}).Once()
+
+	qFail.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+		dest, ok := args.Get(0).(*[]*models.SoulAgentFailure)
+		if !ok {
+			t.Fatalf("expected *[]*models.SoulAgentFailure, got %T", args.Get(0))
+		}
+		*dest = []*models.SoulAgentFailure{
+			{AgentID: agentID, FailureType: "boundary_violation", Status: "open"},
+			{AgentID: agentID, FailureType: "operational", Status: "recovered"},
+		}
+	}).Once()
+
+	qBoundary.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+		dest, ok := args.Get(0).(*[]*models.SoulAgentBoundary)
+		if !ok {
+			t.Fatalf("expected *[]*models.SoulAgentBoundary, got %T", args.Get(0))
+		}
+		*dest = []*models.SoulAgentBoundary{{AgentID: agentID, BoundaryID: "b1", Statement: "no financial advice"}}
+	}).Once()
+
+	qV1Endorse.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+		dest, ok := args.Get(0).(*[]*models.SoulAgentPeerEndorsement)
+		if !ok {
+			t.Fatalf("expected *[]*models.SoulAgentPeerEndorsement, got %T", args.Get(0))
+		}
+		*dest = []*models.SoulAgentPeerEndorsement{{AgentID: agentID, EndorserAgentID: "0xendorser"}}
+	}).Once()
+
+	srv := NewServer(config.Config{}, store.New(db), &fakeSoulPackStore{})
+	got := srv.computeIntegritySignals(context.Background(), agentID)
+
+	if got.endorsements != 2 {
+		t.Fatalf("expected endorsements=2, got %#v", got)
+	}
+	if got.delegationsCompleted != 1 {
+		t.Fatalf("expected delegationsCompleted=1, got %#v", got)
+	}
+	if got.boundaryViolations != 1 || got.failureRecoveries != 1 {
+		t.Fatalf("expected boundaryViolations=1 failureRecoveries=1, got %#v", got)
+	}
+
+	// Expected score:
+	// base 0.5 + boundariesDeclared 0.3 + delegationOutcome (0.9/2)*0.2 = 0.09
+	// + failures: total=2 recovered=1 => -0.2*(1-0.5)= -0.1, +0.1*0.5=+0.05
+	// - boundaryViolations 0.15
+	wantScore := 0.69
+	if math.Abs(got.score-wantScore) > 1e-9 {
+		t.Fatalf("expected score=%f, got %f", wantScore, got.score)
+	}
+
+	db.AssertExpectations(t)
+	qRel.AssertExpectations(t)
+	qFail.AssertExpectations(t)
+	qBoundary.AssertExpectations(t)
+	qV1Endorse.AssertExpectations(t)
 }
 
 type recomputeFixture struct {
@@ -179,6 +289,8 @@ func newRecomputeFixture(t *testing.T) recomputeFixture {
 	qVal := new(ttmocks.MockQuery)
 	qRel := new(ttmocks.MockQuery)
 	qFail := new(ttmocks.MockQuery)
+	qBoundary := new(ttmocks.MockQuery)
+	qV1Endorse := new(ttmocks.MockQuery)
 
 	db.On("WithContext", mock.Anything).Return(db).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(qIdentity).Maybe()
@@ -186,6 +298,8 @@ func newRecomputeFixture(t *testing.T) recomputeFixture {
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentValidationRecord")).Return(qVal).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentRelationship")).Return(qRel).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentFailure")).Return(qFail).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentBoundary")).Return(qBoundary).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentPeerEndorsement")).Return(qV1Endorse).Maybe()
 
 	qIdentity.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qIdentity).Maybe()
 	qIdentity.On("All", mock.Anything).Run(func(args mock.Arguments) {
@@ -210,6 +324,12 @@ func newRecomputeFixture(t *testing.T) recomputeFixture {
 
 	qFail.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qFail).Maybe()
 	qFail.On("All", mock.Anything).Return(nil).Maybe()
+
+	qBoundary.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qBoundary).Maybe()
+	qBoundary.On("All", mock.Anything).Return(nil).Maybe()
+
+	qV1Endorse.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qV1Endorse).Maybe()
+	qV1Endorse.On("All", mock.Anything).Return(nil).Maybe()
 
 	qVal.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qVal).Maybe()
 	qVal.On("OrderBy", mock.Anything, mock.Anything).Return(qVal).Maybe()
