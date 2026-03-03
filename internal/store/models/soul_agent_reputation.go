@@ -29,11 +29,11 @@ type SoulAgentReputation struct {
 	Trust      float64 `theorydb:"attr:trust" json:"trust"`
 	Integrity  float64 `theorydb:"attr:integrity" json:"integrity"`
 
-	TipsReceived        int64 `theorydb:"attr:tipsReceived" json:"tips_received"`
-	Interactions        int64 `theorydb:"attr:interactions" json:"interactions"`
-	ValidationsPassed   int64 `theorydb:"attr:validationsPassed" json:"validations_passed"`
-	Endorsements        int64 `theorydb:"attr:endorsements" json:"endorsements"`
-	Flags               int64 `theorydb:"attr:flags" json:"flags"`
+	TipsReceived         int64 `theorydb:"attr:tipsReceived" json:"tips_received"`
+	Interactions         int64 `theorydb:"attr:interactions" json:"interactions"`
+	ValidationsPassed    int64 `theorydb:"attr:validationsPassed" json:"validations_passed"`
+	Endorsements         int64 `theorydb:"attr:endorsements" json:"endorsements"`
+	Flags                int64 `theorydb:"attr:flags" json:"flags"`
 	DelegationsCompleted int64 `theorydb:"attr:delegationsCompleted" json:"delegations_completed"`
 	BoundaryViolations   int64 `theorydb:"attr:boundaryViolations" json:"boundary_violations"`
 	FailureRecoveries    int64 `theorydb:"attr:failureRecoveries" json:"failure_recoveries"`
@@ -52,6 +52,9 @@ func (r *SoulAgentReputation) BeforeCreate() error {
 	if r.UpdatedAt.IsZero() {
 		r.UpdatedAt = time.Now().UTC()
 	}
+	if err := requireNonEmpty("agentId", r.AgentID); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -60,7 +63,13 @@ func (r *SoulAgentReputation) BeforeUpdate() error {
 	if r.UpdatedAt.IsZero() {
 		r.UpdatedAt = time.Now().UTC()
 	}
-	return r.UpdateKeys()
+	if err := r.UpdateKeys(); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("agentId", r.AgentID); err != nil {
+		return err
+	}
+	return nil
 }
 
 // UpdateKeys updates the database keys for SoulAgentReputation.

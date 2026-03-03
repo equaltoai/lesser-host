@@ -78,13 +78,13 @@ func (s *Server) handleSoulSelfSuspend(ctx *apptheory.Context) (*apptheory.Respo
 	s.appendContinuityEntry(ctx, agentIDHex, models.SoulContinuityEntryTypeSelfSuspension, summary)
 
 	// Audit log.
-	_ = s.store.DB.WithContext(ctx.Context()).Model(&models.AuditLogEntry{
+	s.tryWriteAuditLog(ctx, &models.AuditLogEntry{
 		Actor:     strings.TrimSpace(ctx.AuthIdentity),
 		Action:    "soul.agent.self_suspend",
 		Target:    fmt.Sprintf("soul_agent_identity:%s", agentIDHex),
 		RequestID: strings.TrimSpace(ctx.RequestID),
 		CreatedAt: now,
-	}).Create()
+	})
 
 	return apptheory.JSON(http.StatusOK, identity)
 }
@@ -133,13 +133,13 @@ func (s *Server) handleSoulSelfReinstate(ctx *apptheory.Context) (*apptheory.Res
 	}
 
 	// Audit log.
-	_ = s.store.DB.WithContext(ctx.Context()).Model(&models.AuditLogEntry{
+	s.tryWriteAuditLog(ctx, &models.AuditLogEntry{
 		Actor:     strings.TrimSpace(ctx.AuthIdentity),
 		Action:    "soul.agent.self_reinstate",
 		Target:    fmt.Sprintf("soul_agent_identity:%s", agentIDHex),
 		RequestID: strings.TrimSpace(ctx.RequestID),
 		CreatedAt: now,
-	}).Create()
+	})
 
 	return apptheory.JSON(http.StatusOK, identity)
 }
@@ -276,13 +276,26 @@ func (s *Server) handleSoulCreateDispute(ctx *apptheory.Context) (*apptheory.Res
 	if disputeID == "" {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "dispute_id is required"}
 	}
+	if len(disputeID) > 128 {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "dispute_id is too long"}
+	}
 	signalRef := strings.TrimSpace(req.SignalRef)
 	if signalRef == "" {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "signal_ref is required"}
 	}
+	if len(signalRef) > 1024 {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "signal_ref is too long"}
+	}
+	evidence := strings.TrimSpace(req.Evidence)
+	if len(evidence) > 8192 {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "evidence is too long"}
+	}
 	statement := strings.TrimSpace(req.Statement)
 	if statement == "" {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "statement is required"}
+	}
+	if len(statement) > 4096 {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "statement is too long"}
 	}
 
 	now := time.Now().UTC()
@@ -290,7 +303,7 @@ func (s *Server) handleSoulCreateDispute(ctx *apptheory.Context) (*apptheory.Res
 		AgentID:   agentIDHex,
 		DisputeID: disputeID,
 		SignalRef: signalRef,
-		Evidence:  strings.TrimSpace(req.Evidence),
+		Evidence:  evidence,
 		Statement: statement,
 		Status:    models.SoulDisputeStatusOpen,
 		CreatedAt: now,
@@ -305,13 +318,13 @@ func (s *Server) handleSoulCreateDispute(ctx *apptheory.Context) (*apptheory.Res
 	s.appendContinuityEntry(ctx, agentIDHex, "dispute", fmt.Sprintf("Dispute filed: %s", signalRef))
 
 	// Audit log.
-	_ = s.store.DB.WithContext(ctx.Context()).Model(&models.AuditLogEntry{
+	s.tryWriteAuditLog(ctx, &models.AuditLogEntry{
 		Actor:     strings.TrimSpace(ctx.AuthIdentity),
 		Action:    "soul.dispute.create",
 		Target:    fmt.Sprintf("soul_agent_dispute:%s:%s", agentIDHex, disputeID),
 		RequestID: strings.TrimSpace(ctx.RequestID),
 		CreatedAt: now,
-	}).Create()
+	})
 
 	return apptheory.JSON(http.StatusCreated, dispute)
 }

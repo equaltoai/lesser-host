@@ -58,7 +58,7 @@ func (s *Server) handleSoulPublicGetAgent(ctx *apptheory.Context) (*apptheory.Re
 	if err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
-	setSoulPublicHeaders(resp, "public, max-age=60")
+	s.setSoulPublicHeaders(ctx, resp, "public, max-age=60")
 	return resp, nil
 }
 
@@ -123,7 +123,7 @@ func (s *Server) handleSoulPublicGetRegistration(ctx *apptheory.Context) (*appth
 	if strings.TrimSpace(etag) != "" {
 		resp.Headers["etag"] = []string{strings.TrimSpace(etag)}
 	}
-	setSoulPublicHeaders(resp, "public, max-age=300")
+	s.setSoulPublicHeaders(ctx, resp, "public, max-age=300")
 	return resp, nil
 }
 
@@ -160,7 +160,7 @@ func (s *Server) handleSoulPublicGetReputation(ctx *apptheory.Context) (*apptheo
 	if err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
-	setSoulPublicHeaders(resp, "public, max-age=60")
+	s.setSoulPublicHeaders(ctx, resp, "public, max-age=60")
 	return resp, nil
 }
 
@@ -238,7 +238,7 @@ func (s *Server) handleSoulPublicGetValidations(ctx *apptheory.Context) (*appthe
 	if err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
-	setSoulPublicHeaders(resp, "public, max-age=60")
+	s.setSoulPublicHeaders(ctx, resp, "public, max-age=60")
 	return resp, nil
 }
 
@@ -302,7 +302,7 @@ func (s *Server) handleSoulPublicSearch(ctx *apptheory.Context) (*apptheory.Resp
 	if err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
-	setSoulPublicHeaders(resp, "public, max-age=30")
+	s.setSoulPublicHeaders(ctx, resp, "public, max-age=30")
 	return resp, nil
 }
 
@@ -641,7 +641,7 @@ func envInt64PositiveFromString(raw string, fallback int64) int64 {
 	return n
 }
 
-func setSoulPublicHeaders(resp *apptheory.Response, cacheControl string) {
+func (s *Server) setSoulPublicHeaders(ctx *apptheory.Context, resp *apptheory.Response, cacheControl string) {
 	if resp == nil {
 		return
 	}
@@ -653,5 +653,47 @@ func setSoulPublicHeaders(resp *apptheory.Response, cacheControl string) {
 		cacheControl = "no-store"
 	}
 	resp.Headers["cache-control"] = []string{cacheControl}
-	resp.Headers["access-control-allow-origin"] = []string{"*"}
+
+	allowedOrigins := []string(nil)
+	if s != nil {
+		allowedOrigins = s.cfg.SoulPublicCORSOrigins
+	}
+	for _, allowed := range allowedOrigins {
+		if strings.TrimSpace(allowed) == "*" {
+			resp.Headers["access-control-allow-origin"] = []string{"*"}
+			return
+		}
+	}
+	if len(allowedOrigins) == 0 {
+		resp.Headers["access-control-allow-origin"] = []string{"*"}
+		return
+	}
+
+	reqOrigin := ""
+	if ctx != nil {
+		reqOrigin = strings.TrimSpace(httpx.FirstHeaderValue(ctx.Request.Headers, "origin"))
+	}
+	if reqOrigin == "" {
+		return
+	}
+	for _, allowed := range allowedOrigins {
+		if strings.EqualFold(strings.TrimSpace(allowed), reqOrigin) {
+			resp.Headers["access-control-allow-origin"] = []string{reqOrigin}
+			if vary := resp.Headers["vary"]; len(vary) == 0 {
+				resp.Headers["vary"] = []string{"origin"}
+			} else {
+				hasOrigin := false
+				for _, v := range vary {
+					if strings.EqualFold(strings.TrimSpace(v), "origin") {
+						hasOrigin = true
+						break
+					}
+				}
+				if !hasOrigin {
+					resp.Headers["vary"] = append(vary, "origin")
+				}
+			}
+			return
+		}
+	}
 }

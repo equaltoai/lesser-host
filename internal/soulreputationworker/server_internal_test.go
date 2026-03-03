@@ -101,15 +101,15 @@ func TestPutAgentReputation_CreatesWhenMissing(t *testing.T) {
 	db.On("WithContext", mock.Anything).Return(db).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentReputation")).Return(qRep).Maybe()
 
-	qRep.On("IfExists").Return(qRep).Maybe()
-	qRep.On("IfNotExists").Return(qRep).Maybe()
-	qRep.On("Update", mock.Anything).Return(theoryErrors.ErrItemNotFound).Run(func(args mock.Arguments) {
+	qRep.On("WithConditionExpression", mock.Anything, mock.Anything).Return(qRep).Once()
+	qRep.On("Update", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
 		fields, ok := args.Get(0).([]string)
 		if !ok {
 			t.Fatalf("expected []string fields, got %T", args.Get(0))
 		}
 
 		want := map[string]struct{}{
+			"AgentID":              {},
 			"Integrity":            {},
 			"DelegationsCompleted": {},
 			"BoundaryViolations":   {},
@@ -125,11 +125,37 @@ func TestPutAgentReputation_CreatesWhenMissing(t *testing.T) {
 			}
 		}
 	}).Once()
-	qRep.On("Create").Return(nil).Once()
 
 	srv := NewServer(config.Config{}, store.New(db), &fakeSoulPackStore{})
 
 	rep := models.SoulAgentReputation{AgentID: "0x00000000000000000000000000000000000000000000000000000000000000aa"}
+	if err := srv.putAgentReputation(context.Background(), &rep); err != nil {
+		t.Fatalf("putAgentReputation: %v", err)
+	}
+
+	db.AssertExpectations(t)
+	qRep.AssertExpectations(t)
+}
+
+func TestPutAgentReputation_SkipsWhenConditionFails(t *testing.T) {
+	t.Parallel()
+
+	db := ttmocks.NewMockExtendedDB()
+	qRep := new(ttmocks.MockQuery)
+
+	db.On("WithContext", mock.Anything).Return(db).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentReputation")).Return(qRep).Maybe()
+
+	qRep.On("WithConditionExpression", mock.Anything, mock.Anything).Return(qRep).Once()
+	qRep.On("Update", mock.Anything).Return(theoryErrors.ErrConditionFailed).Once()
+
+	srv := NewServer(config.Config{}, store.New(db), &fakeSoulPackStore{})
+
+	rep := models.SoulAgentReputation{
+		AgentID:   "0x00000000000000000000000000000000000000000000000000000000000000aa",
+		BlockRef:  123,
+		Composite: 0.5,
+	}
 	if err := srv.putAgentReputation(context.Background(), &rep); err != nil {
 		t.Fatalf("putAgentReputation: %v", err)
 	}
@@ -185,9 +211,9 @@ func TestComputeIntegritySignals_UsesDelegationOutcomesBoundariesFailuresAndEndo
 			t.Fatalf("expected *[]*models.SoulAgentRelationship, got %T", args.Get(0))
 		}
 		*dest = []*models.SoulAgentRelationship{
-			{ToAgentID: agentID, Type: "delegation", Context: `{"outcome":"completed","qualityScore":0.9}`},
-			{ToAgentID: agentID, Type: "delegation", Context: `{"outcome":"failed","qualityScore":0.2}`},
-			{ToAgentID: agentID, Type: "endorsement", Context: `{}`},
+			{FromAgentID: "0xfrom1", ToAgentID: agentID, Type: "delegation", Context: `{"outcome":"completed","qualityScore":0.9}`},
+			{FromAgentID: "0xfrom2", ToAgentID: agentID, Type: "delegation", Context: `{"outcome":"failed","qualityScore":0.2}`},
+			{FromAgentID: "0xendorser2", ToAgentID: agentID, Type: "endorsement", Context: `{}`},
 		}
 	}).Once()
 
@@ -219,7 +245,10 @@ func TestComputeIntegritySignals_UsesDelegationOutcomesBoundariesFailuresAndEndo
 	}).Once()
 
 	srv := NewServer(config.Config{}, store.New(db), &fakeSoulPackStore{})
-	got := srv.computeIntegritySignals(context.Background(), agentID)
+	got, err := srv.computeIntegritySignals(context.Background(), agentID)
+	if err != nil {
+		t.Fatalf("computeIntegritySignals: %v", err)
+	}
 
 	if got.endorsements != 2 {
 		t.Fatalf("expected endorsements=2, got %#v", got)
@@ -314,10 +343,8 @@ func newRecomputeFixture(t *testing.T) recomputeFixture {
 		}
 	}).Return(nil).Once()
 
-	qRep.On("IfExists").Return(qRep).Maybe()
-	qRep.On("IfNotExists").Return(qRep).Maybe()
-	qRep.On("Update", mock.Anything).Return(theoryErrors.ErrItemNotFound).Times(2)
-	qRep.On("Create").Return(nil).Times(2)
+	qRep.On("WithConditionExpression", mock.Anything, mock.Anything).Return(qRep).Maybe()
+	qRep.On("Update", mock.Anything).Return(nil).Times(2)
 
 	qRel.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qRel).Maybe()
 	qRel.On("All", mock.Anything).Return(nil).Maybe()

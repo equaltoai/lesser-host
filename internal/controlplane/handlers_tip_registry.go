@@ -222,8 +222,7 @@ func (s *Server) handleTipHostRegistrationBegin(ctx *apptheory.Context) (*appthe
 		RequestID: ctx.RequestID,
 		CreatedAt: now,
 	}
-	_ = audit.UpdateKeys()
-	_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
+	s.tryWriteAuditLog(ctx, audit)
 
 	dnsName := tipRegistryProofPrefix + domainNormalized
 	httpsURL := "https://" + domainNormalized + tipRegistryWellKnown
@@ -473,8 +472,7 @@ func (s *Server) handleTipHostRegistrationVerify(ctx *apptheory.Context) (*appth
 		RequestID: ctx.RequestID,
 		CreatedAt: now,
 	}
-	_ = audit.UpdateKeys()
-	_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
+	s.tryWriteAuditLog(ctx, audit)
 
 	return apptheory.JSON(http.StatusOK, tipHostRegistrationVerifyResponse{
 		Registration: *update,
@@ -1160,8 +1158,7 @@ func (s *Server) handleRecordTipRegistryOperationExecution(ctx *apptheory.Contex
 		RequestID: ctx.RequestID,
 		CreatedAt: now,
 	}
-	_ = audit.UpdateKeys()
-	_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
+	s.tryWriteAuditLog(ctx, audit)
 
 	return apptheory.JSON(http.StatusOK, update)
 }
@@ -1368,8 +1365,7 @@ func (s *Server) handleSetTipRegistryHostActive(ctx *apptheory.Context) (*appthe
 		RequestID: ctx.RequestID,
 		CreatedAt: now,
 	}
-	_ = audit.UpdateKeys()
-	_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
+	s.tryWriteAuditLog(ctx, audit)
 
 	return apptheory.JSON(http.StatusOK, createTipRegistryOperationResponse{
 		Operation: *op,
@@ -1457,8 +1453,7 @@ func (s *Server) handleSetTipRegistryTokenAllowed(ctx *apptheory.Context) (*appt
 		RequestID: ctx.RequestID,
 		CreatedAt: now,
 	}
-	_ = audit.UpdateKeys()
-	_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
+	s.tryWriteAuditLog(ctx, audit)
 
 	return apptheory.JSON(http.StatusOK, createTipRegistryOperationResponse{
 		Operation: *op,
@@ -1591,8 +1586,7 @@ func (s *Server) ensureTipRegistryHostOperation(ctx context.Context, domainNorma
 			RequestID: strings.TrimSpace(requestID),
 			CreatedAt: now,
 		}
-		_ = audit.UpdateKeys()
-		_ = s.store.DB.WithContext(ctx).Model(audit).Create()
+		s.tryWriteAuditLogWithContext(ctx, audit)
 	}
 
 	return op, &safeTxPayload{

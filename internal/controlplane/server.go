@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"context"
+	"log"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 
@@ -28,7 +29,10 @@ type Server struct {
 
 // NewServer constructs a new control plane Server.
 func NewServer(cfg config.Config, st *store.Store) *Server {
-	webAuthn, _ := newWebAuthnEngine(cfg)
+	webAuthn, err := newWebAuthnEngine(cfg)
+	if err != nil {
+		log.Printf("controlplane: webauthn disabled: %v", err)
+	}
 	return &Server{
 		cfg:       cfg,
 		store:     st,

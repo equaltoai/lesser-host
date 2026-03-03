@@ -11,15 +11,15 @@ import (
 
 func TestSoulAgentIdentity_V2Fields(t *testing.T) {
 	a := &SoulAgentIdentity{
-		AgentID:            " 0xABC ",
-		Domain:             " Example.COM ",
-		LocalID:            " @Alice/ ",
-		Wallet:             " 0xDEF ",
-		PrincipalAddress:   " 0x1234ABCD ",
-		PrincipalSignature: " 0xSIG123 ",
-		LifecycleStatus:    " ACTIVE ",
-		LifecycleReason:    " some reason ",
-		SuccessorAgentId:   " 0xSUCC ",
+		AgentID:                " 0xABC ",
+		Domain:                 " Example.COM ",
+		LocalID:                " @Alice/ ",
+		Wallet:                 " 0xDEF ",
+		PrincipalAddress:       " 0x1234ABCD ",
+		PrincipalSignature:     " 0xSIG123 ",
+		LifecycleStatus:        " ACTIVE ",
+		LifecycleReason:        " some reason ",
+		SuccessorAgentId:       " 0xSUCC ",
 		SelfDescriptionVersion: 2,
 	}
 	require.NoError(t, a.BeforeCreate())
@@ -67,9 +67,12 @@ func TestSoulAgentReputation_V2Fields(t *testing.T) {
 
 func TestSoulAgentValidationRecord_OptInStatus(t *testing.T) {
 	v := &SoulAgentValidationRecord{
-		AgentID:     " 0xABC ",
-		ChallengeID: "chal-1",
-		OptInStatus: " ACCEPTED ",
+		AgentID:       " 0xABC ",
+		ChallengeID:   "chal-1",
+		ChallengeType: "capability",
+		ValidatorID:   "validator-1",
+		Result:        SoulValidationResultPass,
+		OptInStatus:   " ACCEPTED ",
 	}
 	require.NoError(t, v.BeforeCreate())
 
@@ -301,8 +304,8 @@ func TestSoulAgentFailure_Keys(t *testing.T) {
 
 func TestSoulAgentFailure_DefaultTimestamp(t *testing.T) {
 	f := &SoulAgentFailure{
-		AgentID:   "0xabc",
-		FailureID: "fail-001",
+		AgentID:     "0xabc",
+		FailureID:   "fail-001",
 		FailureType: "content_quality",
 	}
 	require.NoError(t, f.BeforeCreate())

@@ -48,7 +48,16 @@ func (b *SoulAgentBoundary) BeforeCreate() error {
 	if b.AddedAt.IsZero() {
 		b.AddedAt = time.Now().UTC()
 	}
-	return b.UpdateKeys()
+	if err := b.UpdateKeys(); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("agentId", b.AgentID); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("boundaryId", b.BoundaryID); err != nil {
+		return err
+	}
+	return nil
 }
 
 // UpdateKeys updates the database keys for SoulAgentBoundary.

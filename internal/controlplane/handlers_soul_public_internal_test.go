@@ -127,9 +127,10 @@ func TestParseSoulSearchQuery(t *testing.T) {
 func TestSetSoulPublicHeaders(t *testing.T) {
 	t.Parallel()
 
-	setSoulPublicHeaders(nil, "")
+	s := &Server{cfg: config.Config{SoulEnabled: true}}
+	s.setSoulPublicHeaders(nil, nil, "")
 	resp := &apptheory.Response{}
-	setSoulPublicHeaders(resp, "")
+	s.setSoulPublicHeaders(nil, resp, "")
 	if resp.Headers == nil || len(resp.Headers["cache-control"]) != 1 || resp.Headers["cache-control"][0] != "no-store" {
 		t.Fatalf("unexpected cache header: %#v", resp.Headers)
 	}

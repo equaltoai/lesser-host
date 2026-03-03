@@ -2,6 +2,8 @@ package controlplane
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math/big"
@@ -22,7 +24,7 @@ import (
 
 type soulUpdateRegistrationResponse struct {
 	Agent   models.SoulAgentIdentity `json:"agent"`
-	S3Key   string                   `json:"s3_key"`
+	S3Key   string                   `json:"s3_key,omitempty"`
 	Version int                      `json:"version,omitempty"`
 }
 
@@ -130,10 +132,15 @@ func (s *Server) handleSoulAgentUpdateRegistration(ctx *apptheory.Context) (*app
 	}
 
 	// Determine next version number by querying latest VERSION# item.
-	nextVersion, appErr := s.getNextSoulAgentVersion(ctx.Context(), agentIDHex)
+	nextVersion, prevRegSHA256, appErr := s.getNextSoulAgentVersion(ctx.Context(), agentIDHex)
 	if appErr != nil {
 		return nil, appErr
 	}
+
+	regSHA256 := func() string {
+		sum := sha256.Sum256(regBytes)
+		return hex.EncodeToString(sum[:])
+	}()
 
 	if isV2 && regV2 != nil {
 		if appErr := s.validateSoulRegistrationPreviousVersionURI(regV2, agentIDHex, nextVersion); appErr != nil {
@@ -141,15 +148,17 @@ func (s *Server) handleSoulAgentUpdateRegistration(ctx *apptheory.Context) (*app
 		}
 	}
 
+	// Publish to the versioned S3 path.
+	versionedKey := soulRegistrationVersionedS3Key(agentIDHex, nextVersion)
+	if err := s.soulPacks.PutObject(ctx.Context(), versionedKey, regBytes, "application/json", "private, max-age=0"); err != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to publish versioned registration"}
+	}
+
 	// Publish to the current S3 path.
 	s3Key := soulRegistrationS3Key(agentIDHex)
 	if err := s.soulPacks.PutObject(ctx.Context(), s3Key, regBytes, "application/json", "private, max-age=0"); err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to publish registration"}
 	}
-
-	// Publish to the versioned S3 path.
-	versionedKey := soulRegistrationVersionedS3Key(agentIDHex, nextVersion)
-	_ = s.soulPacks.PutObject(ctx.Context(), versionedKey, regBytes, "application/json", "private, max-age=0")
 
 	now := time.Now().UTC()
 	claimLevels := extractCapabilityClaimLevels(reg)
@@ -160,21 +169,29 @@ func (s *Server) handleSoulAgentUpdateRegistration(ctx *apptheory.Context) (*app
 	// Update SelfDescriptionVersion if v2.
 	if isV2 {
 		identity.SelfDescriptionVersion = nextVersion
-		_ = s.store.DB.WithContext(ctx.Context()).Model(identity).IfExists().Update("SelfDescriptionVersion")
+		if err := s.store.DB.WithContext(ctx.Context()).Model(identity).IfExists().Update("SelfDescriptionVersion"); err != nil {
+			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to update identity version"}
+		}
 	}
 
 	// Create version record.
 	changeSummary := extractStringField(reg, "changeSummary")
 	versionRecord := &models.SoulAgentVersion{
-		AgentID:         agentIDHex,
-		VersionNumber:   nextVersion,
-		RegistrationUri: fmt.Sprintf("s3://%s/%s", s.cfg.SoulPackBucketName, versionedKey),
-		ChangeSummary:   changeSummary,
-		SelfAttestation: selfSig,
-		CreatedAt:       now,
+		AgentID:                    agentIDHex,
+		VersionNumber:              nextVersion,
+		RegistrationUri:            fmt.Sprintf("s3://%s/%s", s.cfg.SoulPackBucketName, versionedKey),
+		RegistrationSHA256:         regSHA256,
+		PreviousRegistrationSHA256: strings.TrimSpace(prevRegSHA256),
+		ChangeSummary:              changeSummary,
+		SelfAttestation:            selfSig,
+		CreatedAt:                  now,
 	}
-	_ = versionRecord.UpdateKeys()
-	_ = s.store.DB.WithContext(ctx.Context()).Model(versionRecord).Create()
+	if err := versionRecord.UpdateKeys(); err != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to record version history"}
+	}
+	if err := s.store.DB.WithContext(ctx.Context()).Model(versionRecord).Create(); err != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to record version history"}
+	}
 
 	audit := &models.AuditLogEntry{
 		Actor:     strings.TrimSpace(ctx.AuthIdentity),
@@ -183,10 +200,13 @@ func (s *Server) handleSoulAgentUpdateRegistration(ctx *apptheory.Context) (*app
 		RequestID: ctx.RequestID,
 		CreatedAt: now,
 	}
-	_ = audit.UpdateKeys()
-	_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
+	s.tryWriteAuditLog(ctx, audit)
 
-	return apptheory.JSON(http.StatusOK, soulUpdateRegistrationResponse{Agent: *identity, S3Key: s3Key, Version: nextVersion})
+	resp := soulUpdateRegistrationResponse{Agent: *identity, Version: nextVersion}
+	if isOperator(ctx) {
+		resp.S3Key = s3Key
+	}
+	return apptheory.JSON(http.StatusOK, resp)
 }
 
 func (s *Server) requireActiveSoulAgentWithDomainAccess(ctx *apptheory.Context, agentIDHex string) (*models.SoulAgentIdentity, *apptheory.AppError) {
@@ -440,10 +460,11 @@ func extractCapabilityClaimLevels(reg map[string]any) map[string]string {
 	return out
 }
 
-// getNextSoulAgentVersion queries the latest VERSION# item and returns the next version number.
-func (s *Server) getNextSoulAgentVersion(ctx context.Context, agentIDHex string) (int, *apptheory.AppError) {
+// getNextSoulAgentVersion returns the next version number, plus the sha256 digest
+// recorded for the current "latest" version (if present) to allow building a tamper-evident chain.
+func (s *Server) getNextSoulAgentVersion(ctx context.Context, agentIDHex string) (nextVersion int, prevRegistrationSHA256 string, appErr *apptheory.AppError) {
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return 0, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return 0, "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
 	var items []*models.SoulAgentVersion
@@ -453,19 +474,21 @@ func (s *Server) getNextSoulAgentVersion(ctx context.Context, agentIDHex string)
 		Where("SK", "BEGINS_WITH", "VERSION#").
 		All(&items)
 	if err != nil {
-		return 0, &apptheory.AppError{Code: "app.internal", Message: "failed to read version history"}
+		return 0, "", &apptheory.AppError{Code: "app.internal", Message: "failed to read version history"}
 	}
 
 	max := 0
+	prevHash := ""
 	for _, it := range items {
 		if it == nil {
 			continue
 		}
 		if it.VersionNumber > max {
 			max = it.VersionNumber
+			prevHash = strings.TrimSpace(it.RegistrationSHA256)
 		}
 	}
-	return max + 1, nil
+	return max + 1, prevHash, nil
 }
 
 func (s *Server) validateSoulRegistrationPreviousVersionURI(reg *soul.RegistrationFileV2, agentIDHex string, nextVersion int) *apptheory.AppError {

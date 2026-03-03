@@ -72,6 +72,9 @@ func (s *Server) handleSoulAppendBoundary(ctx *apptheory.Context) (*apptheory.Re
 	if boundaryID == "" {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "boundary_id is required"}
 	}
+	if len(boundaryID) > 128 {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "boundary_id is too long"}
+	}
 	category := strings.ToLower(strings.TrimSpace(req.Category))
 	if !isValidBoundaryCategory(category) {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "category must be one of: refusal, scope_limit, ethical_commitment, circuit_breaker"}
@@ -79,6 +82,13 @@ func (s *Server) handleSoulAppendBoundary(ctx *apptheory.Context) (*apptheory.Re
 	statement := strings.TrimSpace(req.Statement)
 	if statement == "" {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "statement is required"}
+	}
+	if len(statement) > 4096 {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "statement is too long"}
+	}
+	rationale := strings.TrimSpace(req.Rationale)
+	if len(rationale) > 8192 {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "rationale is too long"}
 	}
 	signature := strings.TrimSpace(req.Signature)
 	if signature == "" {
@@ -94,6 +104,9 @@ func (s *Server) handleSoulAppendBoundary(ctx *apptheory.Context) (*apptheory.Re
 	// If supersedes is set, verify the referenced boundary exists.
 	supersedes := strings.TrimSpace(req.Supersedes)
 	if supersedes != "" {
+		if len(supersedes) > 128 {
+			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "supersedes is too long"}
+		}
 		_, err := getSoulAgentItemBySK[models.SoulAgentBoundary](s, ctx.Context(), agentIDHex, fmt.Sprintf("BOUNDARY#%s", supersedes))
 		if err != nil {
 			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "superseded boundary not found"}
@@ -106,7 +119,7 @@ func (s *Server) handleSoulAppendBoundary(ctx *apptheory.Context) (*apptheory.Re
 		BoundaryID:     boundaryID,
 		Category:       category,
 		Statement:      statement,
-		Rationale:      strings.TrimSpace(req.Rationale),
+		Rationale:      rationale,
 		AddedInVersion: identity.SelfDescriptionVersion,
 		Supersedes:     supersedes,
 		Signature:      signature,
@@ -123,13 +136,13 @@ func (s *Server) handleSoulAppendBoundary(ctx *apptheory.Context) (*apptheory.Re
 	_ = s.republishRegistrationOnBoundaryChange(ctx, identity)
 
 	// Audit log.
-	_ = s.store.DB.WithContext(ctx.Context()).Model(&models.AuditLogEntry{
+	s.tryWriteAuditLog(ctx, &models.AuditLogEntry{
 		Actor:     strings.TrimSpace(ctx.AuthIdentity),
 		Action:    "soul.boundary.append",
 		Target:    fmt.Sprintf("soul_agent_boundary:%s:%s", agentIDHex, boundaryID),
 		RequestID: strings.TrimSpace(ctx.RequestID),
 		CreatedAt: now,
-	}).Create()
+	})
 
 	return apptheory.JSON(http.StatusCreated, soulAppendBoundaryResponse{Boundary: *boundary})
 }
@@ -198,7 +211,7 @@ func (s *Server) handleSoulPublicGetBoundaries(ctx *apptheory.Context) (*apptheo
 	if err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
-	setSoulPublicHeaders(resp, "public, max-age=60")
+	s.setSoulPublicHeaders(ctx, resp, "public, max-age=60")
 	return resp, nil
 }
 

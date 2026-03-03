@@ -66,7 +66,28 @@ func (c *SoulAgentValidationChallenge) BeforeCreate() error {
 	if strings.TrimSpace(c.OptInStatus) == "" {
 		c.OptInStatus = SoulValidationOptInStatusPending
 	}
-	return c.UpdateKeys()
+	if err := c.UpdateKeys(); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("agentId", c.AgentID); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("challengeId", c.ChallengeID); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("challengeType", c.ChallengeType); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("validatorId", c.ValidatorID); err != nil {
+		return err
+	}
+	if err := requireOneOf("status", c.Status, SoulValidationChallengeStatusIssued, SoulValidationChallengeStatusResponded, SoulValidationChallengeStatusEvaluated); err != nil {
+		return err
+	}
+	if err := requireOneOf("optInStatus", c.OptInStatus, SoulValidationOptInStatusAccepted, SoulValidationOptInStatusDeclined, SoulValidationOptInStatusPending); err != nil {
+		return err
+	}
+	return nil
 }
 
 // BeforeUpdate updates timestamps and keys before updating SoulAgentValidationChallenge.
@@ -74,7 +95,28 @@ func (c *SoulAgentValidationChallenge) BeforeUpdate() error {
 	if c.UpdatedAt.IsZero() {
 		c.UpdatedAt = time.Now().UTC()
 	}
-	return c.UpdateKeys()
+	if err := c.UpdateKeys(); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("agentId", c.AgentID); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("challengeId", c.ChallengeID); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("challengeType", c.ChallengeType); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("validatorId", c.ValidatorID); err != nil {
+		return err
+	}
+	if err := requireOneOf("status", c.Status, SoulValidationChallengeStatusIssued, SoulValidationChallengeStatusResponded, SoulValidationChallengeStatusEvaluated); err != nil {
+		return err
+	}
+	if err := requireOneOf("optInStatus", c.OptInStatus, SoulValidationOptInStatusAccepted, SoulValidationOptInStatusDeclined, SoulValidationOptInStatusPending); err != nil {
+		return err
+	}
+	return nil
 }
 
 // UpdateKeys updates the database keys for SoulAgentValidationChallenge.

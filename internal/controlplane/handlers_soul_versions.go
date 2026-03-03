@@ -3,6 +3,8 @@ package controlplane
 import (
 	"fmt"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
@@ -47,34 +49,61 @@ func (s *Server) handleSoulPublicGetVersions(ctx *apptheory.Context) (*apptheory
 	}
 
 	var items []*models.SoulAgentVersion
-	qb := s.store.DB.WithContext(ctx.Context()).
+	err := s.store.DB.WithContext(ctx.Context()).
 		Model(&models.SoulAgentVersion{}).
 		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentIDHex)).
 		Where("SK", "BEGINS_WITH", "VERSION#").
-		OrderBy("SK", "DESC").
-		Limit(limit)
-	if cursor != "" {
-		qb = qb.Cursor(cursor)
-	}
-
-	paged, err := qb.AllPaginated(&items)
+		All(&items)
 	if err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list versions"}
 	}
 
-	out := make([]models.SoulAgentVersion, 0, len(items))
+	versions := make([]models.SoulAgentVersion, 0, len(items))
 	for _, item := range items {
 		if item == nil {
 			continue
 		}
-		out = append(out, *item)
+		versions = append(versions, *item)
 	}
 
+	sort.Slice(versions, func(i, j int) bool {
+		if versions[i].VersionNumber == versions[j].VersionNumber {
+			return versions[i].CreatedAt.After(versions[j].CreatedAt)
+		}
+		return versions[i].VersionNumber > versions[j].VersionNumber
+	})
+
+	afterVersion := 0
+	if cursor != "" {
+		if v, parseErr := strconv.Atoi(cursor); parseErr == nil && v > 0 {
+			afterVersion = v
+		}
+	}
+
+	start := 0
+	if afterVersion > 0 {
+		start = len(versions)
+		for i := range versions {
+			if versions[i].VersionNumber < afterVersion {
+				start = i
+				break
+			}
+		}
+	}
+	if start > len(versions) {
+		start = len(versions)
+	}
+
+	end := start + limit
+	if end > len(versions) {
+		end = len(versions)
+	}
+	out := versions[start:end]
+
+	hasMore := end < len(versions)
 	nextCursor := ""
-	hasMore := false
-	if paged != nil {
-		nextCursor = strings.TrimSpace(paged.NextCursor)
-		hasMore = paged.HasMore
+	if hasMore && len(out) > 0 {
+		nextCursor = strconv.Itoa(out[len(out)-1].VersionNumber)
 	}
 
 	resp, err := apptheory.JSON(http.StatusOK, soulListVersionsResponse{
@@ -87,6 +116,6 @@ func (s *Server) handleSoulPublicGetVersions(ctx *apptheory.Context) (*apptheory
 	if err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
-	setSoulPublicHeaders(resp, "public, max-age=60")
+	s.setSoulPublicHeaders(ctx, resp, "public, max-age=60")
 	return resp, nil
 }

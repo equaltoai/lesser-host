@@ -404,8 +404,7 @@ func (s *Server) handlePortalCreateExternalInstanceRegistration(ctx *apptheory.C
 		RequestID: ctx.RequestID,
 		CreatedAt: now,
 	}
-	_ = audit.UpdateKeys()
-	_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
+	s.tryWriteAuditLog(ctx, audit)
 
 	return apptheory.JSON(http.StatusCreated, externalInstanceRegistrationResponse{Registration: *item})
 }

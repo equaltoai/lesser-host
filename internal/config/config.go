@@ -55,6 +55,7 @@ type Config struct {
 	SoulPackBucketNameSSMParam               string // optional override; default is /soul/<stage>/packBucketName
 	SoulMintSignerKeySSMParam                string
 	SoulMintSignerKey                        string
+	SoulPublicCORSOrigins                    []string
 
 	// Soul reputation (v0).
 	SoulReputationTipStartBlock     uint64
@@ -115,6 +116,7 @@ func Load() Config {
 	soulTxMode := envLowerStringDefault("SOUL_TX_MODE", "safe")
 	soulCaps := parseCSV(envString("SOUL_SUPPORTED_CAPABILITIES"))
 	soulPackBucketName := envString("SOUL_PACK_BUCKET_NAME")
+	soulPublicCORSOrigins := parseCSV(envString("SOUL_PUBLIC_CORS_ORIGINS"))
 
 	soulRepTipStartBlock := envUint64("SOUL_REPUTATION_TIP_START_BLOCK", 0)
 	soulRepTipChunkSize := envUint64Positive("SOUL_REPUTATION_TIP_BLOCK_CHUNK_SIZE", 5000)
@@ -198,6 +200,7 @@ func Load() Config {
 		SoulPackBucketName:                       soulPackBucketName,
 		SoulPackBucketNameSSMParam:               envString("SOUL_PACK_BUCKET_NAME_SSM_PARAM"),
 		SoulMintSignerKeySSMParam:                envString("SOUL_MINT_SIGNER_KEY_SSM_PARAM"),
+		SoulPublicCORSOrigins:                    soulPublicCORSOrigins,
 
 		SoulReputationTipStartBlock:     soulRepTipStartBlock,
 		SoulReputationTipBlockChunkSize: soulRepTipChunkSize,

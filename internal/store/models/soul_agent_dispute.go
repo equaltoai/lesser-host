@@ -49,12 +49,36 @@ func (d *SoulAgentDispute) BeforeCreate() error {
 	if strings.TrimSpace(d.Status) == "" {
 		d.Status = SoulDisputeStatusOpen
 	}
-	return d.UpdateKeys()
+	if err := d.UpdateKeys(); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("agentId", d.AgentID); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("disputeId", d.DisputeID); err != nil {
+		return err
+	}
+	if err := requireOneOf("status", d.Status, SoulDisputeStatusOpen, SoulDisputeStatusResolved, SoulDisputeStatusDismissed); err != nil {
+		return err
+	}
+	return nil
 }
 
 // BeforeUpdate updates keys before updating SoulAgentDispute.
 func (d *SoulAgentDispute) BeforeUpdate() error {
-	return d.UpdateKeys()
+	if err := d.UpdateKeys(); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("agentId", d.AgentID); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("disputeId", d.DisputeID); err != nil {
+		return err
+	}
+	if err := requireOneOf("status", d.Status, SoulDisputeStatusOpen, SoulDisputeStatusResolved, SoulDisputeStatusDismissed); err != nil {
+		return err
+	}
+	return nil
 }
 
 // UpdateKeys updates the database keys for SoulAgentDispute.

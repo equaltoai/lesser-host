@@ -63,7 +63,7 @@ func (s *Server) handleSoulPublicGetTransparency(ctx *apptheory.Context) (*appth
 	if err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
-	setSoulPublicHeaders(resp, "public, max-age=60")
+	s.setSoulPublicHeaders(ctx, resp, "public, max-age=60")
 	return resp, nil
 }
 

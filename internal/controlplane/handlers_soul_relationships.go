@@ -7,10 +7,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 	"github.com/theory-cloud/tabletheory/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	ttquery "github.com/theory-cloud/tabletheory/pkg/query"
 
 	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/store/models"
@@ -67,6 +69,9 @@ func (s *Server) handleSoulCreateRelationship(ctx *apptheory.Context) (*apptheor
 	if fromAgentIDHex == "" {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "from_agent_id is required"}
 	}
+	if fromAgentIDHex == toAgentIDHex {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "cannot create self-relationship"}
+	}
 
 	relType := strings.ToLower(strings.TrimSpace(req.Type))
 	if !isValidRelationshipType(relType) {
@@ -83,6 +88,15 @@ func (s *Server) handleSoulCreateRelationship(ctx *apptheory.Context) (*apptheor
 	fromIdentity, appErr := s.requireActiveSoulAgentWithDomainAccess(ctx, fromAgentIDHex)
 	if appErr != nil {
 		return nil, appErr
+	}
+
+	// Verify the "to" agent exists (no domain access required).
+	_, err := s.getSoulAgentIdentity(ctx.Context(), toAgentIDHex)
+	if theoryErrors.IsNotFound(err) {
+		return nil, &apptheory.AppError{Code: "app.not_found", Message: "agent not found"}
+	}
+	if err != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
 	// Verify EIP-191 signature over keccak256(bytes(message)).
@@ -136,15 +150,29 @@ func (s *Server) handleSoulCreateRelationship(ctx *apptheory.Context) (*apptheor
 		fmt.Sprintf("Relationship %s to %s", relType, toAgentIDHex))
 
 	// Audit log.
-	_ = s.store.DB.WithContext(ctx.Context()).Model(&models.AuditLogEntry{
+	s.tryWriteAuditLog(ctx, &models.AuditLogEntry{
 		Actor:     strings.TrimSpace(ctx.AuthIdentity),
 		Action:    "soul.relationship.create",
 		Target:    fmt.Sprintf("soul_agent_relationship:%s:%s", toAgentIDHex, fromAgentIDHex),
 		RequestID: strings.TrimSpace(ctx.RequestID),
 		CreatedAt: now,
-	}).Create()
+	})
 
 	return apptheory.JSON(http.StatusCreated, soulCreateRelationshipResponse{Relationship: *rel})
+}
+
+func encodeSoulRelationshipCursor(rel *models.SoulAgentRelationship) string {
+	if rel == nil || strings.TrimSpace(rel.PK) == "" || strings.TrimSpace(rel.SK) == "" {
+		return ""
+	}
+	cursor, err := ttquery.EncodeCursor(map[string]types.AttributeValue{
+		"PK": &types.AttributeValueMemberS{Value: rel.PK},
+		"SK": &types.AttributeValueMemberS{Value: rel.SK},
+	}, "", "ASC")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(cursor)
 }
 
 // handleSoulPublicGetRelationships returns paginated relationships for an agent.
@@ -175,37 +203,80 @@ func (s *Server) handleSoulPublicGetRelationships(ctx *apptheory.Context) (*appt
 		limit = 200
 	}
 
-	var items []*models.SoulAgentRelationship
-	qb := s.store.DB.WithContext(ctx.Context()).
-		Model(&models.SoulAgentRelationship{}).
-		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentIDHex)).
-		Where("SK", "BEGINS_WITH", "RELATIONSHIP#").
-		OrderBy("SK", "ASC").
-		Limit(limit)
-	if cursor != "" {
-		qb = qb.Cursor(cursor)
+	out := make([]models.SoulAgentRelationship, 0, limit)
+	nextCursor := ""
+	hasMore := false
+
+	pageCursor := cursor
+	pageLimit := limit
+	if pageLimit < 25 {
+		pageLimit = 25
+	}
+	if pageLimit > 200 {
+		pageLimit = 200
 	}
 
-	paged, err := qb.AllPaginated(&items)
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list relationships"}
-	}
+	for len(out) < limit {
+		var items []*models.SoulAgentRelationship
+		qb := s.store.DB.WithContext(ctx.Context()).
+			Model(&models.SoulAgentRelationship{}).
+			Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentIDHex)).
+			Where("SK", "BEGINS_WITH", "RELATIONSHIP#").
+			OrderBy("SK", "ASC").
+			Limit(pageLimit)
+		if pageCursor != "" {
+			qb = qb.Cursor(pageCursor)
+		}
 
-	out := make([]models.SoulAgentRelationship, 0, len(items))
-	for _, item := range items {
-		if item == nil {
-			continue
+		paged, err := qb.AllPaginated(&items)
+		if err != nil {
+			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list relationships"}
 		}
-		// Apply type filter client-side if specified.
-		if typeFilter != "" && strings.ToLower(item.Type) != typeFilter {
-			continue
-		}
-		if taskTypeFilter != "" {
-			if tt := extractRelationshipTaskType(item.Context); tt != taskTypeFilter {
+
+		for idx, item := range items {
+			if item == nil {
 				continue
 			}
+			// Apply type filter client-side if specified.
+			if typeFilter != "" && strings.ToLower(item.Type) != typeFilter {
+				continue
+			}
+			if taskTypeFilter != "" {
+				if tt := extractRelationshipTaskType(item.Context); tt != taskTypeFilter {
+					continue
+				}
+			}
+			out = append(out, *item)
+			if len(out) >= limit {
+				if idx < len(items)-1 {
+					nextCursor = encodeSoulRelationshipCursor(item)
+					if nextCursor == "" {
+						return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to encode cursor"}
+					}
+					hasMore = true
+				} else if paged != nil && strings.TrimSpace(paged.NextCursor) != "" {
+					nextCursor = strings.TrimSpace(paged.NextCursor)
+					hasMore = true
+				} else {
+					nextCursor = ""
+					hasMore = false
+				}
+				break
+			}
 		}
-		out = append(out, *item)
+
+		if len(out) >= limit {
+			break
+		}
+
+		if paged == nil || strings.TrimSpace(paged.NextCursor) == "" {
+			nextCursor = ""
+			hasMore = false
+			break
+		}
+
+		pageCursor = strings.TrimSpace(paged.NextCursor)
+		hasMore = true
 	}
 
 	// V1 backward compat: merge peer endorsements into relationship reads (first page only).
@@ -237,13 +308,6 @@ func (s *Server) handleSoulPublicGetRelationships(ctx *apptheory.Context) (*appt
 		}
 	}
 
-	nextCursor := ""
-	hasMore := false
-	if paged != nil {
-		nextCursor = strings.TrimSpace(paged.NextCursor)
-		hasMore = paged.HasMore
-	}
-
 	resp, err := apptheory.JSON(http.StatusOK, soulListRelationshipsResponse{
 		Version:       "1",
 		Relationships: out,
@@ -254,7 +318,7 @@ func (s *Server) handleSoulPublicGetRelationships(ctx *apptheory.Context) (*appt
 	if err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
-	setSoulPublicHeaders(resp, "public, max-age=60")
+	s.setSoulPublicHeaders(ctx, resp, "public, max-age=60")
 	return resp, nil
 }
 

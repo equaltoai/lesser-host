@@ -225,8 +225,10 @@ func (s *Server) handleSetupBootstrapVerify(ctx *apptheory.Context) (*apptheory.
 	now := time.Now().UTC()
 	expiresAt := now.Add(1 * time.Hour)
 
+	storedID := sha256HexTrimmed(token)
+
 	session := &models.SetupSession{
-		ID:           token,
+		ID:           storedID,
 		Purpose:      setupPurposeBootstrap,
 		WalletType:   walletTypeEthereum,
 		WalletAddr:   bootstrapWallet,
@@ -341,16 +343,30 @@ func (s *Server) requireSetupSession(ctx *apptheory.Context) (*models.SetupSessi
 	}
 
 	var session models.SetupSession
-	err := s.store.DB.WithContext(ctx.Context()).
-		Model(&models.SetupSession{}).
-		Where("PK", "=", fmt.Sprintf("SETUP_SESSION#%s", token)).
-		Where("SK", "=", "SESSION").
-		First(&session)
-	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+	var err error
+	candidates := []string{sha256HexTrimmed(token), token} // hash lookup first; fallback to legacy plaintext.
+	found := false
+	for _, id := range candidates {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		err = s.store.DB.WithContext(ctx.Context()).
+			Model(&models.SetupSession{}).
+			Where("PK", "=", fmt.Sprintf("SETUP_SESSION#%s", id)).
+			Where("SK", "=", "SESSION").
+			First(&session)
+		if theoryErrors.IsNotFound(err) {
+			continue
+		}
+		if err != nil {
+			return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		}
+		found = true
+		break
 	}
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	if !found {
+		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
 	}
 
 	if !session.ExpiresAt.IsZero() && time.Now().After(session.ExpiresAt) {

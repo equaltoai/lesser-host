@@ -385,7 +385,7 @@ func TestGetNextSoulAgentVersion_IgnoresLexicographicSKOrder(t *testing.T) {
 		}
 	}).Once()
 
-	n, appErr := s.getNextSoulAgentVersion(context.Background(), soulLifecycleTestAgentIDHex)
+	n, _, appErr := s.getNextSoulAgentVersion(context.Background(), soulLifecycleTestAgentIDHex)
 	if appErr != nil {
 		t.Fatalf("unexpected appErr: %v", appErr)
 	}

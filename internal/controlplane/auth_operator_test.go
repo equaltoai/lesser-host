@@ -2,7 +2,6 @@ package controlplane
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
 
@@ -102,9 +101,8 @@ func TestOperatorAuthHook(t *testing.T) {
 		db.On("WithContext", mock.Anything).Return(db)
 		db.On("Model", mock.Anything).Return(q)
 
-		q.On("Where", "PK", "=", fmt.Sprintf(models.KeyPatternSession, "t")).Return(q)
-		q.On("Where", "SK", "=", "SESSION").Return(q)
-		q.On("First", mock.Anything).Return(theoryErrors.ErrItemNotFound)
+		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
+		q.On("First", mock.Anything).Return(theoryErrors.ErrItemNotFound).Twice()
 
 		s := &Server{store: store.New(db)}
 		ctx := &apptheory.Context{Request: apptheory.Request{Headers: map[string][]string{

@@ -58,7 +58,30 @@ func (v *SoulAgentValidationRecord) BeforeCreate() error {
 	if v.EvaluatedAt.IsZero() {
 		v.EvaluatedAt = time.Now().UTC()
 	}
-	return v.UpdateKeys()
+	if err := v.UpdateKeys(); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("agentId", v.AgentID); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("challengeId", v.ChallengeID); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("challengeType", v.ChallengeType); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("validatorId", v.ValidatorID); err != nil {
+		return err
+	}
+	if err := requireOneOf("result", v.Result, SoulValidationResultPass, SoulValidationResultFail, SoulValidationResultTimeout, SoulValidationResultDeclined); err != nil {
+		return err
+	}
+	if strings.TrimSpace(v.OptInStatus) != "" {
+		if err := requireOneOf("optInStatus", v.OptInStatus, SoulValidationOptInStatusAccepted, SoulValidationOptInStatusDeclined, SoulValidationOptInStatusPending); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // UpdateKeys updates the database keys for SoulAgentValidationRecord.

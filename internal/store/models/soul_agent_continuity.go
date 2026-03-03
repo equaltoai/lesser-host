@@ -8,19 +8,19 @@ import (
 
 // SoulContinuityEntryType* constants enumerate continuity entry types.
 const (
-	SoulContinuityEntryTypeCapabilityAcquired  = "capability_acquired"
+	SoulContinuityEntryTypeCapabilityAcquired   = "capability_acquired"
 	SoulContinuityEntryTypeCapabilityDeprecated = "capability_deprecated"
-	SoulContinuityEntryTypeSignificantFailure  = "significant_failure"
-	SoulContinuityEntryTypeRecovery            = "recovery"
-	SoulContinuityEntryTypeBoundaryAdded       = "boundary_added"
-	SoulContinuityEntryTypeMigration           = "migration"
-	SoulContinuityEntryTypeModelChange         = "model_change"
-	SoulContinuityEntryTypeRelationshipFormed  = "relationship_formed"
-	SoulContinuityEntryTypeRelationshipEnded   = "relationship_ended"
-	SoulContinuityEntryTypeSelfSuspension      = "self_suspension"
-	SoulContinuityEntryTypeArchived            = "archived"
-	SoulContinuityEntryTypeSuccessionDeclared  = "succession_declared"
-	SoulContinuityEntryTypeSuccessionReceived  = "succession_received"
+	SoulContinuityEntryTypeSignificantFailure   = "significant_failure"
+	SoulContinuityEntryTypeRecovery             = "recovery"
+	SoulContinuityEntryTypeBoundaryAdded        = "boundary_added"
+	SoulContinuityEntryTypeMigration            = "migration"
+	SoulContinuityEntryTypeModelChange          = "model_change"
+	SoulContinuityEntryTypeRelationshipFormed   = "relationship_formed"
+	SoulContinuityEntryTypeRelationshipEnded    = "relationship_ended"
+	SoulContinuityEntryTypeSelfSuspension       = "self_suspension"
+	SoulContinuityEntryTypeArchived             = "archived"
+	SoulContinuityEntryTypeSuccessionDeclared   = "succession_declared"
+	SoulContinuityEntryTypeSuccessionReceived   = "succession_received"
 )
 
 // SoulAgentContinuity stores a single continuity journal entry for a soul agent.
@@ -37,11 +37,11 @@ type SoulAgentContinuity struct {
 
 	AgentID string `theorydb:"attr:agentId" json:"agent_id"`
 
-	Type      string `theorydb:"attr:type" json:"type"`
-	Summary   string `theorydb:"attr:summary" json:"summary"`
-	Recovery  string `theorydb:"attr:recovery" json:"recovery,omitempty"`
+	Type       string `theorydb:"attr:type" json:"type"`
+	Summary    string `theorydb:"attr:summary" json:"summary"`
+	Recovery   string `theorydb:"attr:recovery" json:"recovery,omitempty"`
 	References string `theorydb:"attr:references" json:"references,omitempty"` // JSON array of reference IDs
-	Signature string `theorydb:"attr:signature" json:"signature,omitempty"`
+	Signature  string `theorydb:"attr:signature" json:"signature,omitempty"`
 
 	Timestamp time.Time `theorydb:"attr:timestamp" json:"timestamp"`
 }
@@ -54,7 +54,16 @@ func (c *SoulAgentContinuity) BeforeCreate() error {
 	if c.Timestamp.IsZero() {
 		c.Timestamp = time.Now().UTC()
 	}
-	return c.UpdateKeys()
+	if err := c.UpdateKeys(); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("agentId", c.AgentID); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("type", c.Type); err != nil {
+		return err
+	}
+	return nil
 }
 
 // UpdateKeys updates the database keys for SoulAgentContinuity.

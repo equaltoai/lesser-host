@@ -472,8 +472,7 @@ func (s *Server) handleRetryOperatorProvisionJob(ctx *apptheory.Context) (*appth
 			RequestID: ctx.RequestID,
 			CreatedAt: now,
 		}
-		_ = audit.UpdateKeys()
-		_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
+		s.tryWriteAuditLog(ctx, audit)
 	}
 
 	// Enqueue the idempotent job message.

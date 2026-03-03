@@ -63,8 +63,7 @@ func (s *Server) handleSuspendSoulAgent(ctx *apptheory.Context) (*apptheory.Resp
 		RequestID: ctx.RequestID,
 		CreatedAt: now,
 	}
-	_ = audit.UpdateKeys()
-	_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
+	s.tryWriteAuditLog(ctx, audit)
 
 	return apptheory.JSON(http.StatusOK, identity)
 }
@@ -114,8 +113,7 @@ func (s *Server) handleReinstateSoulAgent(ctx *apptheory.Context) (*apptheory.Re
 		RequestID: ctx.RequestID,
 		CreatedAt: now,
 	}
-	_ = audit.UpdateKeys()
-	_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
+	s.tryWriteAuditLog(ctx, audit)
 
 	return apptheory.JSON(http.StatusOK, identity)
 }

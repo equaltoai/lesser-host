@@ -46,17 +46,31 @@ func (s *Server) OperatorAuthHook(ctx *apptheory.Context) (string, error) {
 	}
 
 	var session models.OperatorSession
-	pk := fmt.Sprintf(models.KeyPatternSession, token)
-	err := s.store.DB.WithContext(ctx.Context()).
-		Model(&models.OperatorSession{}).
-		Where("PK", "=", pk).
-		Where("SK", "=", "SESSION").
-		First(&session)
-	if theoryErrors.IsNotFound(err) {
-		return "", nil
+	var err error
+	candidates := []string{sha256HexTrimmed(token), token} // hash lookup first; fallback to legacy plaintext.
+	found := false
+	for _, id := range candidates {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		pk := fmt.Sprintf(models.KeyPatternSession, id)
+		err = s.store.DB.WithContext(ctx.Context()).
+			Model(&models.OperatorSession{}).
+			Where("PK", "=", pk).
+			Where("SK", "=", "SESSION").
+			First(&session)
+		if theoryErrors.IsNotFound(err) {
+			continue
+		}
+		if err != nil {
+			return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		}
+		found = true
+		break
 	}
-	if err != nil {
-		return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	if !found {
+		return "", nil
 	}
 
 	if !session.ExpiresAt.IsZero() && time.Now().After(session.ExpiresAt) {

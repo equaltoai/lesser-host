@@ -9,13 +9,7 @@ Uses the unified ecosystem (remark + rehype) for ESM-compatible markdown process
 ```
 -->
 <script lang="ts">
-	import { unified } from 'unified';
-	import remarkParse from 'remark-parse';
-	import remarkGfm from 'remark-gfm';
-	import remarkRehype from 'remark-rehype';
-	import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
-	import rehypeStringify from 'rehype-stringify';
-	import type { Schema } from 'hast-util-sanitize';
+	import { renderMarkdownToHtml } from '../markdown';
 
 	interface Props {
 		/**
@@ -68,108 +62,14 @@ Uses the unified ecosystem (remark + rehype) for ESM-compatible markdown process
 		...restProps
 	}: Props = $props();
 
-	// Build custom sanitization schema (always enabled -- cannot be disabled)
-	function buildSanitizeSchema(): Schema {
-		const schema: Schema = {
-			...defaultSchema,
-			tagNames: [
-				'p',
-				'br',
-				'strong',
-				'b',
-				'em',
-				'i',
-				'code',
-				'pre',
-				'h1',
-				'h2',
-				'h3',
-				'h4',
-				'h5',
-				'h6',
-				'ul',
-				'ol',
-				'li',
-				'a',
-				'blockquote',
-				'table',
-				'thead',
-				'tbody',
-				'tr',
-				'th',
-				'td',
-				'del',
-				'img',
-				'hr',
-				'span',
-				'div',
-			],
-			attributes: {
-				...defaultSchema.attributes,
-				a: enableLinks
-					? ['href', 'title', ...(openLinksInNewTab ? (['target', 'rel'] as const) : [])]
-					: [],
-				img: ['src', 'alt', 'title'],
-				'*': ['className', 'class'],
-			},
-		};
-
-		return schema;
-	}
-
-	// Create the markdown processor
-	function createProcessor() {
-		const processor = unified().use(remarkParse).use(remarkGfm).use(remarkRehype, {
-			allowDangerousHtml: false,
-		});
-
-		processor.use(rehypeSanitize, buildSanitizeSchema());
-
-		processor.use(rehypeStringify);
-
-		return processor;
-	}
-
-	// Post-process HTML to add target="_blank" to links if needed
-	function postProcessHtml(html: string): string {
-		if (!enableLinks) {
-			// Remove link hrefs but keep text
-			return html.replace(/<a[^>]*>([^<]*)<\/a>/g, '$1');
-		}
-
-		if (openLinksInNewTab) {
-			// Add target="_blank" and rel="noopener noreferrer" to all links
-			return html.replace(
-				/<a\s+href="([^"]*)"([^>]*)>/g,
-				'<a href="$1" target="_blank" rel="noopener noreferrer"$2>'
-			);
-		}
-
-		return html;
-	}
-
 	const renderedHtml = $derived.by(() => {
-		try {
-			if (!content) return '';
-
-			const processor = createProcessor();
-			const result = processor.processSync(content);
-			let html = String(result);
-
-			// Apply post-processing for link behavior
-			html = postProcessHtml(html);
-
-			return html;
-		} catch (error: unknown) {
-			if (onError && error instanceof Error) onError(error);
-			// Fallback to escaped text
-			return content
-				.replace(/&/g, '&amp;')
-				.replace(/</g, '&lt;')
-				.replace(/>/g, '&gt;')
-				.replace(/"/g, '&quot;')
-				.replace(/'/g, '&#039;');
-		}
+		return renderMarkdownToHtml(content, {
+			enableLinks,
+			openLinksInNewTab,
+			onError: (error) => {
+				if (onError && error instanceof Error) onError(error);
+			},
+		});
 	});
 
 	$effect(() => {

@@ -81,24 +81,36 @@ func (s *Server) handleSoulAppendContinuity(ctx *apptheory.Context) (*apptheory.
 			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "timestamp must be RFC3339"}
 		}
 	}
+	now := time.Now().UTC()
+	if parsedTS.After(now.Add(5 * time.Minute)) {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "timestamp cannot be in the future"}
+	}
+	if parsedTS.Before(now.Add(-10 * 365 * 24 * time.Hour)) {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "timestamp is too far in the past"}
+	}
 	summary := strings.TrimSpace(req.Summary)
 	if summary == "" {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "summary is required"}
+	}
+	if len(summary) > 4096 {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "summary is too long"}
+	}
+	recovery := strings.TrimSpace(req.Recovery)
+	if len(recovery) > 8192 {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "recovery is too long"}
 	}
 	signature := strings.TrimSpace(req.Signature)
 	if signature == "" {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "signature is required"}
 	}
 
-	digest, appErr := computeSoulContinuityEntryDigest(entryType, tsRaw, summary, strings.TrimSpace(req.Recovery), req.References)
+	digest, appErr := computeSoulContinuityEntryDigest(entryType, tsRaw, summary, recovery, req.References)
 	if appErr != nil {
 		return nil, appErr
 	}
 	if err := verifyEthereumSignatureBytes(identity.Wallet, digest, signature); err != nil {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid continuity signature"}
 	}
-
-	now := time.Now().UTC()
 	refsJSON := ""
 	if len(req.References) > 0 {
 		b, _ := json.Marshal(req.References)
@@ -108,7 +120,7 @@ func (s *Server) handleSoulAppendContinuity(ctx *apptheory.Context) (*apptheory.
 		AgentID:    agentIDHex,
 		Type:       entryType,
 		Summary:    summary,
-		Recovery:   strings.TrimSpace(req.Recovery),
+		Recovery:   recovery,
 		References: refsJSON,
 		Signature:  signature,
 		Timestamp:  parsedTS.UTC(),
@@ -120,13 +132,13 @@ func (s *Server) handleSoulAppendContinuity(ctx *apptheory.Context) (*apptheory.
 	}
 
 	// Audit log.
-	_ = s.store.DB.WithContext(ctx.Context()).Model(&models.AuditLogEntry{
+	s.tryWriteAuditLog(ctx, &models.AuditLogEntry{
 		Actor:     strings.TrimSpace(ctx.AuthIdentity),
 		Action:    "soul.continuity.append",
 		Target:    fmt.Sprintf("soul_agent_continuity:%s:%s", agentIDHex, entryType),
 		RequestID: strings.TrimSpace(ctx.RequestID),
 		CreatedAt: now,
-	}).Create()
+	})
 
 	return apptheory.JSON(http.StatusCreated, soulAppendContinuityResponse{Entry: *entry})
 }
@@ -224,7 +236,7 @@ func (s *Server) handleSoulPublicGetContinuity(ctx *apptheory.Context) (*apptheo
 	if err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
-	setSoulPublicHeaders(resp, "public, max-age=60")
+	s.setSoulPublicHeaders(ctx, resp, "public, max-age=60")
 	return resp, nil
 }
 

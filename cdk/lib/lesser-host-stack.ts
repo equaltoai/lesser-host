@@ -25,6 +25,7 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 		import * as sqs from 'aws-cdk-lib/aws-sqs';
 		import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
 		import * as apigwv2Integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations';
+		import * as wafv2 from 'aws-cdk-lib/aws-wafv2';
 
 export interface LesserHostStackProps extends cdk.StackProps {
 	stage: string;
@@ -77,28 +78,33 @@ export class LesserHostStack extends cdk.Stack {
 		const previewDLQ = new sqs.Queue(this, 'PreviewDLQ', {
 			queueName: `${namePrefix}-preview-dlq`,
 			retentionPeriod: cdk.Duration.days(14),
+			encryption: sqs.QueueEncryption.SQS_MANAGED,
 		});
 		previewDLQ.applyRemovalPolicy(removalPolicy);
 		const previewQueue = new sqs.Queue(this, 'PreviewQueue', {
 			queueName: `${namePrefix}-preview-queue`,
 			deadLetterQueue: { queue: previewDLQ, maxReceiveCount: 3 },
+			encryption: sqs.QueueEncryption.SQS_MANAGED,
 		});
 		previewQueue.applyRemovalPolicy(removalPolicy);
 
 		const safetyDLQ = new sqs.Queue(this, 'SafetyDLQ', {
 			queueName: `${namePrefix}-safety-dlq`,
 			retentionPeriod: cdk.Duration.days(14),
+			encryption: sqs.QueueEncryption.SQS_MANAGED,
 		});
 		safetyDLQ.applyRemovalPolicy(removalPolicy);
 		const safetyQueue = new sqs.Queue(this, 'SafetyQueue', {
 			queueName: `${namePrefix}-safety-queue`,
 			deadLetterQueue: { queue: safetyDLQ, maxReceiveCount: 3 },
+			encryption: sqs.QueueEncryption.SQS_MANAGED,
 		});
 		safetyQueue.applyRemovalPolicy(removalPolicy);
 
 		const provisionDLQ = new sqs.Queue(this, 'ProvisionDLQ', {
 			queueName: `${namePrefix}-provision-dlq`,
 			retentionPeriod: cdk.Duration.days(14),
+			encryption: sqs.QueueEncryption.SQS_MANAGED,
 		});
 		provisionDLQ.applyRemovalPolicy(removalPolicy);
 		const provisionQueue = new sqs.Queue(this, 'ProvisionQueue', {
@@ -107,8 +113,39 @@ export class LesserHostStack extends cdk.Stack {
 			// strand long-running jobs in "running" when a transient worker failure DLQs the next poll.
 			visibilityTimeout: cdk.Duration.minutes(2),
 			deadLetterQueue: { queue: provisionDLQ, maxReceiveCount: 10 },
+			encryption: sqs.QueueEncryption.SQS_MANAGED,
 		});
 		provisionQueue.applyRemovalPolicy(removalPolicy);
+
+		const dlqAlarmPeriod = cdk.Duration.minutes(1);
+		const dlqAlarmThreshold = 0;
+		new cloudwatch.Alarm(this, 'PreviewDLQAlarm', {
+			alarmName: `${namePrefix}-preview-dlq-visible`,
+			metric: previewDLQ.metricApproximateNumberOfMessagesVisible({ period: dlqAlarmPeriod }),
+			threshold: dlqAlarmThreshold,
+			comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+			evaluationPeriods: 1,
+			datapointsToAlarm: 1,
+			treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+		});
+		new cloudwatch.Alarm(this, 'SafetyDLQAlarm', {
+			alarmName: `${namePrefix}-safety-dlq-visible`,
+			metric: safetyDLQ.metricApproximateNumberOfMessagesVisible({ period: dlqAlarmPeriod }),
+			threshold: dlqAlarmThreshold,
+			comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+			evaluationPeriods: 1,
+			datapointsToAlarm: 1,
+			treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+		});
+		new cloudwatch.Alarm(this, 'ProvisionDLQAlarm', {
+			alarmName: `${namePrefix}-provision-dlq-visible`,
+			metric: provisionDLQ.metricApproximateNumberOfMessagesVisible({ period: dlqAlarmPeriod }),
+			threshold: dlqAlarmThreshold,
+			comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+			evaluationPeriods: 1,
+			datapointsToAlarm: 1,
+			treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+		});
 
 			const attestationSigningKey = new kms.Key(this, 'AttestationSigningKey', {
 				description: `${namePrefix} attestation signing`,
@@ -829,6 +866,8 @@ export class LesserHostStack extends cdk.Stack {
 			{
 				STAGE: stage,
 				STATE_TABLE_NAME: stateTable.tableName,
+				ATTESTATION_SIGNING_KEY_ID: attestationSigningKey.keyId,
+				ATTESTATION_PUBLIC_KEY_IDS: attestationSigningKey.keyId,
 				TIP_ENABLED: tipEnabled,
 				TIP_CHAIN_ID: tipChainId,
 				TIP_RPC_URL_SSM_PARAM: tipRpcUrlSsmParam,
@@ -887,6 +926,7 @@ export class LesserHostStack extends cdk.Stack {
 		artifactsBucket.grantReadWrite(provisionRunnerProject);
 		attestationSigningKey.grant(trustFn, 'kms:Sign', 'kms:GetPublicKey');
 		attestationSigningKey.grant(aiWorkerFn, 'kms:Sign', 'kms:GetPublicKey');
+		attestationSigningKey.grant(soulReputationWorkerFn, 'kms:Sign', 'kms:GetPublicKey');
 		previewQueue.grantSendMessages(controlPlaneFn);
 		previewQueue.grantSendMessages(trustFn);
 		previewQueue.grantConsumeMessages(renderWorkerFn);
@@ -1160,6 +1200,84 @@ export class LesserHostStack extends cdk.Stack {
 			),
 		});
 
+		const apiAccessLogRetention =
+			stage === 'live' ? logs.RetentionDays.THREE_MONTHS : logs.RetentionDays.ONE_MONTH;
+		const controlPlaneAccessLogs = new logs.LogGroup(this, 'ControlPlaneApiAccessLogs', {
+			logGroupName: `/aws/apigwv2/${namePrefix}-control-plane`,
+			retention: apiAccessLogRetention,
+			removalPolicy,
+		});
+		const trustAccessLogs = new logs.LogGroup(this, 'TrustApiAccessLogs', {
+			logGroupName: `/aws/apigwv2/${namePrefix}-trust`,
+			retention: apiAccessLogRetention,
+			removalPolicy,
+		});
+
+		new logs.CfnResourcePolicy(this, 'ApiGatewayAccessLogsResourcePolicy', {
+			policyName: `${namePrefix}-apigw-access-logs`,
+			policyDocument: JSON.stringify({
+				Version: '2012-10-17',
+				Statement: [
+					{
+						Sid: 'ApiGatewayAccessLogs',
+						Effect: 'Allow',
+						Principal: { Service: 'apigateway.amazonaws.com' },
+						Action: ['logs:CreateLogStream', 'logs:PutLogEvents'],
+						Resource: [
+							`${controlPlaneAccessLogs.logGroupArn}:*`,
+							`${trustAccessLogs.logGroupArn}:*`,
+						],
+					},
+				],
+			}),
+		});
+
+		const apiThrottle = stage === 'live'
+			? { throttlingRateLimit: 500, throttlingBurstLimit: 1000 }
+			: { throttlingRateLimit: 100, throttlingBurstLimit: 200 };
+
+		const controlPlaneStage = controlPlaneApi.defaultStage?.node.defaultChild as apigwv2.CfnStage | undefined;
+		if (controlPlaneStage) {
+			controlPlaneStage.accessLogSettings = {
+				destinationArn: controlPlaneAccessLogs.logGroupArn,
+				format: JSON.stringify({
+					requestId: '$context.requestId',
+					ip: '$context.http.sourceIp',
+					requestTime: '$context.requestTime',
+					method: '$context.http.method',
+					path: '$context.http.path',
+					protocol: '$context.http.protocol',
+					status: '$context.status',
+					responseLength: '$context.responseLength',
+					routeKey: '$context.routeKey',
+					integrationError: '$context.integrationErrorMessage',
+					userAgent: '$context.http.userAgent',
+				}),
+			};
+			controlPlaneStage.defaultRouteSettings = apiThrottle;
+		}
+
+		const trustStage = trustApi.defaultStage?.node.defaultChild as apigwv2.CfnStage | undefined;
+		if (trustStage) {
+			trustStage.accessLogSettings = {
+				destinationArn: trustAccessLogs.logGroupArn,
+				format: JSON.stringify({
+					requestId: '$context.requestId',
+					ip: '$context.http.sourceIp',
+					requestTime: '$context.requestTime',
+					method: '$context.http.method',
+					path: '$context.http.path',
+					protocol: '$context.http.protocol',
+					status: '$context.status',
+					responseLength: '$context.responseLength',
+					routeKey: '$context.routeKey',
+					integrationError: '$context.integrationErrorMessage',
+					userAgent: '$context.http.userAgent',
+				}),
+			};
+			trustStage.defaultRouteSettings = apiThrottle;
+		}
+
 		const webRootDomain = (this.node.tryGetContext('webRootDomain') as string | undefined) ?? 'lesser.host';
 		const webHostedZoneId = (this.node.tryGetContext('webHostedZoneId') as string | undefined) ?? '';
 		const webHostedZoneName =
@@ -1170,6 +1288,22 @@ export class LesserHostStack extends cdk.Stack {
 			bucketName: `${namePrefix}-${cdk.Aws.ACCOUNT_ID}-${cdk.Aws.REGION}-web`,
 			blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
 			enforceSSL: true,
+			removalPolicy,
+			autoDeleteObjects: stage !== 'live',
+		});
+
+		const accessLogsBucket = new s3.Bucket(this, 'AccessLogsBucket', {
+			bucketName: `${namePrefix}-${cdk.Aws.ACCOUNT_ID}-${cdk.Aws.REGION}-access-logs`,
+			accessControl: s3.BucketAccessControl.LOG_DELIVERY_WRITE,
+			objectOwnership: s3.ObjectOwnership.OBJECT_WRITER,
+			blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+			enforceSSL: true,
+			lifecycleRules: [
+				{
+					id: 'ExpireAccessLogs',
+					expiration: cdk.Duration.days(stage === 'live' ? 180 : 30),
+				},
+			],
 			removalPolicy,
 			autoDeleteObjects: stage !== 'live',
 		});
@@ -1195,6 +1329,34 @@ export class LesserHostStack extends cdk.Stack {
 					contentSecurityPolicy: webCsp,
 					override: true,
 				},
+				contentTypeOptions: { override: true },
+				frameOptions: { frameOption: cloudfront.HeadersFrameOption.DENY, override: true },
+				referrerPolicy: {
+					referrerPolicy: cloudfront.HeadersReferrerPolicy.SAME_ORIGIN,
+					override: true,
+				},
+				strictTransportSecurity: {
+					accessControlMaxAge: cdk.Duration.days(365),
+					includeSubdomains: true,
+					preload: true,
+					override: true,
+				},
+				xssProtection: { protection: true, modeBlock: true, override: true },
+			},
+			customHeadersBehavior: {
+				customHeaders: [
+					{
+						header: 'Permissions-Policy',
+						value: 'camera=(), microphone=(), geolocation=(), interest-cohort=()',
+						override: true,
+					},
+				],
+			},
+		});
+
+		const apiSecurityHeaders = new cloudfront.ResponseHeadersPolicy(this, 'ApiSecurityHeaders', {
+			responseHeadersPolicyName: `${namePrefix}-api-security`,
+			securityHeadersBehavior: {
 				contentTypeOptions: { override: true },
 				frameOptions: { frameOption: cloudfront.HeadersFrameOption.DENY, override: true },
 				referrerPolicy: {
@@ -1287,6 +1449,7 @@ export class LesserHostStack extends cdk.Stack {
 			allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
 			cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
 			originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+			responseHeadersPolicy: apiSecurityHeaders,
 		};
 
 		const trustApiBehavior: cloudfront.BehaviorOptions = {
@@ -1295,6 +1458,7 @@ export class LesserHostStack extends cdk.Stack {
 			allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
 			cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
 			originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+			responseHeadersPolicy: apiSecurityHeaders,
 		};
 
 		const trustBehaviorNoCache: cloudfront.BehaviorOptions = {
@@ -1303,6 +1467,7 @@ export class LesserHostStack extends cdk.Stack {
 			allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
 			cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
 			originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+			responseHeadersPolicy: apiSecurityHeaders,
 		};
 
 		const trustBehaviorCached: cloudfront.BehaviorOptions = {
@@ -1311,12 +1476,79 @@ export class LesserHostStack extends cdk.Stack {
 			allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
 			cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
 			originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+			responseHeadersPolicy: apiSecurityHeaders,
 		};
+
+		const webAcl = new wafv2.CfnWebACL(this, 'WebAcl', {
+			name: `${namePrefix}-web-acl`,
+			description: `${namePrefix} WAF`,
+			scope: 'CLOUDFRONT',
+			defaultAction: { allow: {} },
+			visibilityConfig: {
+				cloudWatchMetricsEnabled: true,
+				metricName: `${namePrefix}-web-acl`,
+				sampledRequestsEnabled: true,
+			},
+			rules: [
+				{
+					name: 'AWSManagedRulesCommonRuleSet',
+					priority: 0,
+					overrideAction: { none: {} },
+					statement: {
+						managedRuleGroupStatement: {
+							vendorName: 'AWS',
+							name: 'AWSManagedRulesCommonRuleSet',
+						},
+					},
+					visibilityConfig: {
+						cloudWatchMetricsEnabled: true,
+						metricName: `${namePrefix}-waf-common`,
+						sampledRequestsEnabled: true,
+					},
+				},
+				{
+					name: 'AWSManagedRulesKnownBadInputsRuleSet',
+					priority: 1,
+					overrideAction: { none: {} },
+					statement: {
+						managedRuleGroupStatement: {
+							vendorName: 'AWS',
+							name: 'AWSManagedRulesKnownBadInputsRuleSet',
+						},
+					},
+					visibilityConfig: {
+						cloudWatchMetricsEnabled: true,
+						metricName: `${namePrefix}-waf-bad-inputs`,
+						sampledRequestsEnabled: true,
+					},
+				},
+				{
+					name: 'IpRateLimit',
+					priority: 2,
+					action: { block: {} },
+					statement: {
+						rateBasedStatement: {
+							limit: stage === 'live' ? 2000 : 5000,
+							aggregateKeyType: 'IP',
+						},
+					},
+					visibilityConfig: {
+						cloudWatchMetricsEnabled: true,
+						metricName: `${namePrefix}-waf-ip-rate-limit`,
+						sampledRequestsEnabled: true,
+					},
+				},
+			],
+		});
 
 		const webDistribution = new cloudfront.Distribution(this, 'WebDistribution', {
 			defaultRootObject: 'index.html',
 			certificate: webCert,
 			domainNames: webCert ? [webDomainName] : undefined,
+			webAclId: webAcl.attrArn,
+			enableLogging: true,
+			logBucket: accessLogsBucket,
+			logFilePrefix: `${namePrefix}/cloudfront/`,
 			defaultBehavior: {
 				origin: new origins.S3Origin(webBucket, { originAccessIdentity: webOai }),
 				viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,

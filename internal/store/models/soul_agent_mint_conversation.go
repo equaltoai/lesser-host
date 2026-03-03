@@ -29,7 +29,7 @@ type SoulAgentMintConversation struct {
 	ConversationID string `theorydb:"attr:conversationId" json:"conversation_id"`
 
 	Model                string `theorydb:"attr:model" json:"model"`
-	Messages             string `theorydb:"attr:messages" json:"messages,omitempty"`               // JSON array of conversation messages
+	Messages             string `theorydb:"attr:messages" json:"messages,omitempty"`                          // JSON array of conversation messages
 	ProducedDeclarations string `theorydb:"attr:producedDeclarations" json:"produced_declarations,omitempty"` // JSON object of structured output
 	Status               string `theorydb:"attr:status" json:"status"`
 
@@ -48,12 +48,36 @@ func (m *SoulAgentMintConversation) BeforeCreate() error {
 	if strings.TrimSpace(m.Status) == "" {
 		m.Status = SoulMintConversationStatusInProgress
 	}
-	return m.UpdateKeys()
+	if err := m.UpdateKeys(); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("agentId", m.AgentID); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("conversationId", m.ConversationID); err != nil {
+		return err
+	}
+	if err := requireOneOf("status", m.Status, SoulMintConversationStatusInProgress, SoulMintConversationStatusCompleted, SoulMintConversationStatusFailed); err != nil {
+		return err
+	}
+	return nil
 }
 
 // BeforeUpdate updates keys before updating SoulAgentMintConversation.
 func (m *SoulAgentMintConversation) BeforeUpdate() error {
-	return m.UpdateKeys()
+	if err := m.UpdateKeys(); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("agentId", m.AgentID); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("conversationId", m.ConversationID); err != nil {
+		return err
+	}
+	if err := requireOneOf("status", m.Status, SoulMintConversationStatusInProgress, SoulMintConversationStatusCompleted, SoulMintConversationStatusFailed); err != nil {
+		return err
+	}
+	return nil
 }
 
 // UpdateKeys updates the database keys for SoulAgentMintConversation.

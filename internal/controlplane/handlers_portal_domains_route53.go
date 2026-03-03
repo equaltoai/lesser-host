@@ -147,9 +147,22 @@ func (s *Server) handlePortalUpsertDomainVerificationRoute53(ctx *apptheory.Cont
 	txtName := domainVerificationRecordPrefix + domain
 	txtValue := domainVerificationValuePrefix + token
 
-	zoneID, err := s.findRoute53HostedZoneID(ctx, domain)
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: err.Error()}
+	zoneID := strings.TrimSpace(s.cfg.ManagedParentHostedZoneID)
+	zoneID = strings.TrimPrefix(zoneID, "/hostedzone/")
+	if zoneID == "" {
+		return nil, &apptheory.AppError{Code: "app.conflict", Message: "Route53 DNS assist is not configured"}
+	}
+
+	parentDomain := strings.TrimSpace(s.cfg.ManagedParentDomain)
+	if parentDomain == "" {
+		parentDomain = defaultManagedParentDomain
+	}
+	if !domainInZone(domain, parentDomain) {
+		return nil, &apptheory.AppError{Code: "app.conflict", Message: "Route53 DNS assist is only available for managed domains"}
+	}
+
+	if s.r53 == nil {
+		return nil, &apptheory.AppError{Code: "app.conflict", Message: "Route53 DNS assist is not configured"}
 	}
 
 	client, err := s.r53.get(ctx.Context())
@@ -180,15 +193,13 @@ func (s *Server) handlePortalUpsertDomainVerificationRoute53(ctx *apptheory.Cont
 	}
 
 	now := time.Now().UTC()
-	audit := &models.AuditLogEntry{
+	s.tryWriteAuditLog(ctx, &models.AuditLogEntry{
 		Actor:     strings.TrimSpace(ctx.AuthIdentity),
 		Action:    "portal.domain.dns_assist.route53",
 		Target:    fmt.Sprintf("domain:%s", domain),
 		RequestID: ctx.RequestID,
 		CreatedAt: now,
-	}
-	_ = audit.UpdateKeys()
-	_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
+	})
 
 	return apptheory.JSON(http.StatusOK, route53AssistResponse{
 		OK:           true,

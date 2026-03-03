@@ -38,7 +38,19 @@ func (f *SoulAgentFailure) BeforeCreate() error {
 	if f.Timestamp.IsZero() {
 		f.Timestamp = time.Now().UTC()
 	}
-	return f.UpdateKeys()
+	if err := f.UpdateKeys(); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("agentId", f.AgentID); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("failureId", f.FailureID); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("failureType", f.FailureType); err != nil {
+		return err
+	}
+	return nil
 }
 
 // UpdateKeys updates the database keys for SoulAgentFailure.

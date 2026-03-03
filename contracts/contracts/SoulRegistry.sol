@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {SignatureChecker} from "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
+import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
@@ -61,7 +62,10 @@ contract SoulRegistry is ERC721, Ownable2Step, Pausable, EIP712 {
     address public mintSigner;
     /// @notice Mint fee (wei).
     uint256 public mintFee;
+    /// @notice Accumulated mint fees (wei) available for withdrawal.
+    uint256 public accumulatedFees;
     mapping(bytes32 => bool) private _usedPermits;
+    mapping(bytes32 => bool) private _usedSelfMintAttestations;
 
     bytes32 private constant _ROTATION_TYPEHASH =
         keccak256("WalletRotationProposal(uint256 agentId,address currentWallet,address newWallet,uint256 nonce,uint256 deadline)");
@@ -70,7 +74,7 @@ contract SoulRegistry is ERC721, Ownable2Step, Pausable, EIP712 {
         keccak256("MintPermit(address to,uint256 agentId,string metaURI,uint8 avatarStyle,uint256 deadline)");
 
     bytes32 private constant _SELF_MINT_ATTESTATION_TYPEHASH =
-        keccak256("SelfMintAttestation(address to,uint256 agentId,string metaURI,uint8 avatarStyle,address principal)");
+        keccak256("SelfMintAttestation(address to,uint256 agentId,string metaURI,uint8 avatarStyle,address principal,uint256 deadline,address submitter)");
 
     /// @notice Emitted when a new soul is minted.
     event SoulMinted(uint256 indexed agentId, address indexed to, string metaURI);
@@ -145,6 +149,7 @@ contract SoulRegistry is ERC721, Ownable2Step, Pausable, EIP712 {
             revert("SoulRegistry: invalid permit");
         }
 
+        accumulatedFees += msg.value;
         _mintSoulInternal(to, agentId, metaURI, avatarStyle, address(0));
     }
 
@@ -160,10 +165,14 @@ contract SoulRegistry is ERC721, Ownable2Step, Pausable, EIP712 {
         string calldata metaURI,
         uint8 avatarStyle,
         address principal,
-        bytes calldata principalSig
+        uint256 deadline,
+        bytes calldata attestationSig
     ) external payable whenNotPaused {
         if (msg.value != mintFee) {
             revert("SoulRegistry: incorrect fee");
+        }
+        if (block.timestamp > deadline) {
+            revert("SoulRegistry: expired");
         }
         if (principal == address(0)) {
             revert("SoulRegistry: principal required");
@@ -176,16 +185,24 @@ contract SoulRegistry is ERC721, Ownable2Step, Pausable, EIP712 {
             agentId,
             keccak256(bytes(metaURI)),
             avatarStyle,
-            principal
+            principal,
+            deadline,
+            msg.sender
         ));
         bytes32 digest = _hashTypedDataV4(structHash);
 
+        if (_usedSelfMintAttestations[digest]) {
+            revert("SoulRegistry: attestation reused");
+        }
+        _usedSelfMintAttestations[digest] = true;
+
         // Recover signer and check it is a registered attestor.
-        address signer = _recoverSigner(digest, principalSig);
+        address signer = ECDSA.recoverCalldata(digest, attestationSig);
         if (!_attestors[signer]) {
             revert("SoulRegistry: invalid attestation");
         }
 
+        accumulatedFees += msg.value;
         _mintSoulInternal(to, agentId, metaURI, avatarStyle, principal);
     }
 
@@ -209,7 +226,7 @@ contract SoulRegistry is ERC721, Ownable2Step, Pausable, EIP712 {
             emit PrincipalDeclared(agentId, principal);
         }
 
-        _safeMint(to, agentId);
+        _mint(to, agentId);
 
         emit SoulMinted(agentId, to, metaURI);
     }
@@ -258,12 +275,21 @@ contract SoulRegistry is ERC721, Ownable2Step, Pausable, EIP712 {
         if (attestor == address(0)) {
             revert("SoulRegistry: zero attestor");
         }
+        if (_attestors[attestor]) {
+            revert("SoulRegistry: already attestor");
+        }
         _attestors[attestor] = true;
         emit AttestorAdded(attestor);
     }
 
     /// @notice Remove an attestor address. Only callable by contract owner (v2).
     function removeAttestor(address attestor) external onlyOwner {
+        if (attestor == address(0)) {
+            revert("SoulRegistry: zero attestor");
+        }
+        if (!_attestors[attestor]) {
+            revert("SoulRegistry: not attestor");
+        }
         _attestors[attestor] = false;
         emit AttestorRemoved(attestor);
     }
@@ -396,6 +422,9 @@ contract SoulRegistry is ERC721, Ownable2Step, Pausable, EIP712 {
 
     /// @notice Set the mint signer address. Only callable by contract owner.
     function setMintSigner(address signer) external onlyOwner {
+        if (signer == address(0)) {
+            revert("SoulRegistry: zero signer");
+        }
         mintSigner = signer;
         emit MintSignerUpdated(signer);
     }
@@ -411,11 +440,16 @@ contract SoulRegistry is ERC721, Ownable2Step, Pausable, EIP712 {
         if (recipient == address(0)) {
             revert("SoulRegistry: zero recipient");
         }
-        uint256 balance = address(this).balance;
-        if (balance == 0) {
-            revert("SoulRegistry: no balance");
+        uint256 amount = accumulatedFees;
+        if (amount == 0) {
+            revert("SoulRegistry: no fees");
         }
-        (bool ok,) = recipient.call{value: balance}("");
+        uint256 balance = address(this).balance;
+        if (amount > balance) {
+            amount = balance;
+        }
+        accumulatedFees -= amount;
+        (bool ok,) = recipient.call{value: amount}("");
         if (!ok) {
             revert("SoulRegistry: transfer failed");
         }
@@ -434,28 +468,6 @@ contract SoulRegistry is ERC721, Ownable2Step, Pausable, EIP712 {
     }
 
     // ========= Internal helpers =========
-
-    function _recoverSigner(bytes32 digest, bytes calldata sig) internal pure returns (address) {
-        if (sig.length != 65) {
-            revert("SoulRegistry: invalid sig length");
-        }
-        bytes32 r;
-        bytes32 s;
-        uint8 v;
-        assembly {
-            r := calldataload(sig.offset)
-            s := calldataload(add(sig.offset, 32))
-            v := byte(0, calldataload(add(sig.offset, 64)))
-        }
-        if (v < 27) {
-            v += 27;
-        }
-        address signer = ecrecover(digest, v, r, s);
-        if (signer == address(0)) {
-            revert("SoulRegistry: invalid signature");
-        }
-        return signer;
-    }
 
     // ========= Soulbound enforcement =========
 

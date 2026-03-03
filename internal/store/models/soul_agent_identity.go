@@ -14,6 +14,7 @@ const (
 	SoulAgentStatusSelfSuspended = "self_suspended"
 	SoulAgentStatusArchived      = "archived"
 	SoulAgentStatusSucceeded     = "succeeded"
+	SoulAgentStatusBurned        = "burned"
 )
 
 // SoulAgentIdentity stores the off-chain identity record for a soul agent.
@@ -40,9 +41,9 @@ type SoulAgentIdentity struct {
 	Capabilities []string `theorydb:"attr:capabilities" json:"capabilities,omitempty"`
 
 	// v2: principal declaration
-	PrincipalAddress        string `theorydb:"attr:principalAddress" json:"principal_address,omitempty"`
-	PrincipalSignature      string `theorydb:"attr:principalSignature" json:"principal_signature,omitempty"`
-	SelfDescriptionVersion  int    `theorydb:"attr:selfDescriptionVersion" json:"self_description_version,omitempty"`
+	PrincipalAddress       string `theorydb:"attr:principalAddress" json:"principal_address,omitempty"`
+	PrincipalSignature     string `theorydb:"attr:principalSignature" json:"principal_signature,omitempty"`
+	SelfDescriptionVersion int    `theorydb:"attr:selfDescriptionVersion" json:"self_description_version,omitempty"`
 
 	// v2: lifecycle (replaces simple Status for richer state machine)
 	LifecycleStatus  string `theorydb:"attr:lifecycleStatus" json:"lifecycle_status,omitempty"`
@@ -60,9 +61,6 @@ func (SoulAgentIdentity) TableName() string { return MainTableName() }
 
 // BeforeCreate sets defaults and keys before creating SoulAgentIdentity.
 func (a *SoulAgentIdentity) BeforeCreate() error {
-	if err := a.UpdateKeys(); err != nil {
-		return err
-	}
 	now := time.Now().UTC()
 	if a.UpdatedAt.IsZero() {
 		a.UpdatedAt = now
@@ -70,13 +68,85 @@ func (a *SoulAgentIdentity) BeforeCreate() error {
 	if strings.TrimSpace(a.Status) == "" {
 		a.Status = SoulAgentStatusPending
 	}
+	if strings.TrimSpace(a.LifecycleStatus) == "" {
+		a.LifecycleStatus = a.Status
+	}
+	if err := a.UpdateKeys(); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("agentId", a.AgentID); err != nil {
+		return err
+	}
+	if err := requireOneOf(
+		"status",
+		a.Status,
+		SoulAgentStatusPending,
+		SoulAgentStatusActive,
+		SoulAgentStatusSuspended,
+		SoulAgentStatusSelfSuspended,
+		SoulAgentStatusArchived,
+		SoulAgentStatusSucceeded,
+		SoulAgentStatusBurned,
+	); err != nil {
+		return err
+	}
+	if err := requireOneOf(
+		"lifecycleStatus",
+		a.LifecycleStatus,
+		SoulAgentStatusPending,
+		SoulAgentStatusActive,
+		SoulAgentStatusSuspended,
+		SoulAgentStatusSelfSuspended,
+		SoulAgentStatusArchived,
+		SoulAgentStatusSucceeded,
+		SoulAgentStatusBurned,
+	); err != nil {
+		return err
+	}
 	return nil
 }
 
 // BeforeUpdate updates timestamps and keys before updating SoulAgentIdentity.
 func (a *SoulAgentIdentity) BeforeUpdate() error {
 	a.UpdatedAt = time.Now().UTC()
-	return a.UpdateKeys()
+	if err := a.UpdateKeys(); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("agentId", a.AgentID); err != nil {
+		return err
+	}
+	if err := requireOneOf(
+		"status",
+		a.Status,
+		SoulAgentStatusPending,
+		SoulAgentStatusActive,
+		SoulAgentStatusSuspended,
+		SoulAgentStatusSelfSuspended,
+		SoulAgentStatusArchived,
+		SoulAgentStatusSucceeded,
+		SoulAgentStatusBurned,
+	); err != nil {
+		return err
+	}
+	if strings.TrimSpace(a.LifecycleStatus) == "" {
+		// Backward-compatible: if lifecycleStatus is absent, treat it as equal to status.
+		a.LifecycleStatus = a.Status
+		_ = a.UpdateKeys()
+	}
+	if err := requireOneOf(
+		"lifecycleStatus",
+		a.LifecycleStatus,
+		SoulAgentStatusPending,
+		SoulAgentStatusActive,
+		SoulAgentStatusSuspended,
+		SoulAgentStatusSelfSuspended,
+		SoulAgentStatusArchived,
+		SoulAgentStatusSucceeded,
+		SoulAgentStatusBurned,
+	); err != nil {
+		return err
+	}
+	return nil
 }
 
 // UpdateKeys updates the database keys for SoulAgentIdentity.

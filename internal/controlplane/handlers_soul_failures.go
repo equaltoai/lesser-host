@@ -29,11 +29,11 @@ type soulRecordRecoveryRequest struct {
 // --- Response types ---
 
 type soulListFailuresResponse struct {
-	Version    string                   `json:"version"`
+	Version    string                    `json:"version"`
 	Failures   []models.SoulAgentFailure `json:"failures"`
-	Count      int                      `json:"count"`
-	HasMore    bool                     `json:"has_more"`
-	NextCursor string                   `json:"next_cursor,omitempty"`
+	Count      int                       `json:"count"`
+	HasMore    bool                      `json:"has_more"`
+	NextCursor string                    `json:"next_cursor,omitempty"`
 }
 
 // --- Handlers ---
@@ -69,13 +69,26 @@ func (s *Server) handleSoulRecordFailure(ctx *apptheory.Context) (*apptheory.Res
 	if failureID == "" {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "failure_id is required"}
 	}
+	if len(failureID) > 128 {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "failure_id is too long"}
+	}
 	failureType := strings.ToLower(strings.TrimSpace(req.FailureType))
 	if failureType == "" {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "failure_type is required"}
 	}
+	if len(failureType) > 64 {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "failure_type is too long"}
+	}
 	description := strings.TrimSpace(req.Description)
 	if description == "" {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "description is required"}
+	}
+	if len(description) > 8192 {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "description is too long"}
+	}
+	impact := strings.TrimSpace(req.Impact)
+	if len(impact) > 8192 {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "impact is too long"}
 	}
 
 	now := time.Now().UTC()
@@ -84,7 +97,7 @@ func (s *Server) handleSoulRecordFailure(ctx *apptheory.Context) (*apptheory.Res
 		FailureID:   failureID,
 		FailureType: failureType,
 		Description: description,
-		Impact:      strings.TrimSpace(req.Impact),
+		Impact:      impact,
 		Status:      "open",
 		Timestamp:   now,
 	}
@@ -99,13 +112,13 @@ func (s *Server) handleSoulRecordFailure(ctx *apptheory.Context) (*apptheory.Res
 		fmt.Sprintf("Failure recorded: %s - %s", failureType, description))
 
 	// Audit log.
-	_ = s.store.DB.WithContext(ctx.Context()).Model(&models.AuditLogEntry{
+	s.tryWriteAuditLog(ctx, &models.AuditLogEntry{
 		Actor:     strings.TrimSpace(ctx.AuthIdentity),
 		Action:    "soul.failure.record",
 		Target:    fmt.Sprintf("soul_agent_failure:%s:%s", agentIDHex, failureID),
 		RequestID: strings.TrimSpace(ctx.RequestID),
 		CreatedAt: now,
-	}).Create()
+	})
 
 	return apptheory.JSON(http.StatusCreated, failure)
 }
@@ -141,6 +154,13 @@ func (s *Server) handleSoulRecordRecovery(ctx *apptheory.Context) (*apptheory.Re
 	if failureID == "" {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "failure_id is required"}
 	}
+	if len(failureID) > 128 {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "failure_id is too long"}
+	}
+	recoveryRef := strings.TrimSpace(req.RecoveryRef)
+	if len(recoveryRef) > 1024 {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "recovery_ref is too long"}
+	}
 
 	// Find the failure record — need to search since SK includes timestamp.
 	var failures []*models.SoulAgentFailure
@@ -165,13 +185,25 @@ func (s *Server) handleSoulRecordRecovery(ctx *apptheory.Context) (*apptheory.Re
 	}
 
 	target.Status = "recovered"
-	target.RecoveryRef = strings.TrimSpace(req.RecoveryRef)
+	target.RecoveryRef = recoveryRef
 	_ = target.UpdateKeys()
-	_ = s.store.DB.WithContext(ctx.Context()).Model(target).IfExists().Update("Status", "RecoveryRef")
+	if err := s.store.DB.WithContext(ctx.Context()).Model(target).IfExists().Update("Status", "RecoveryRef"); err != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to record recovery"}
+	}
 
 	// Create continuity entry.
 	s.appendContinuityEntry(ctx, agentIDHex, models.SoulContinuityEntryTypeRecovery,
 		fmt.Sprintf("Recovery from failure: %s", failureID))
+
+	// Audit log.
+	now := time.Now().UTC()
+	s.tryWriteAuditLog(ctx, &models.AuditLogEntry{
+		Actor:     strings.TrimSpace(ctx.AuthIdentity),
+		Action:    "soul.failure.recover",
+		Target:    fmt.Sprintf("soul_agent_failure:%s:%s", agentIDHex, failureID),
+		RequestID: strings.TrimSpace(ctx.RequestID),
+		CreatedAt: now,
+	})
 
 	return apptheory.JSON(http.StatusOK, target)
 }
@@ -240,6 +272,6 @@ func (s *Server) handleSoulPublicGetFailures(ctx *apptheory.Context) (*apptheory
 	if err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
-	setSoulPublicHeaders(resp, "public, max-age=60")
+	s.setSoulPublicHeaders(ctx, resp, "public, max-age=60")
 	return resp, nil
 }

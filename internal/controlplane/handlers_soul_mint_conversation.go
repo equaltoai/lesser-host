@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -83,6 +84,9 @@ func (s *Server) handleSoulMintConversation(ctx *apptheory.Context) (*apptheory.
 	if err != nil {
 		return nil, &apptheory.AppError{Code: "app.not_found", Message: "registration not found"}
 	}
+	if !isOperator(ctx) && strings.TrimSpace(reg.Username) != strings.TrimSpace(ctx.AuthIdentity) {
+		return nil, &apptheory.AppError{Code: "app.forbidden", Message: "forbidden"}
+	}
 
 	var req soulMintConversationRequest
 	if err := httpx.ParseJSON(ctx, &req); err != nil {
@@ -92,6 +96,9 @@ func (s *Server) handleSoulMintConversation(ctx *apptheory.Context) (*apptheory.
 	message := strings.TrimSpace(req.Message)
 	if message == "" {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "message is required"}
+	}
+	if len(message) > 8192 {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "message is too long"}
 	}
 
 	agentIDHex := strings.ToLower(strings.TrimSpace(reg.AgentID))
@@ -125,7 +132,11 @@ func (s *Server) handleSoulMintConversation(ctx *apptheory.Context) (*apptheory.
 		if modelSet == "" {
 			modelSet = "anthropic:claude-sonnet-4-20250514"
 		}
-		conversationID = fmt.Sprintf("%d", time.Now().UnixNano())
+		token, err := newToken(16)
+		if err != nil {
+			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create conversation id"}
+		}
+		conversationID = token
 		conv := &models.SoulAgentMintConversation{
 			AgentID:        agentIDHex,
 			ConversationID: conversationID,
@@ -301,6 +312,9 @@ func (s *Server) handleSoulCompleteMintConversation(ctx *apptheory.Context) (*ap
 	if err != nil {
 		return nil, &apptheory.AppError{Code: "app.not_found", Message: "registration not found"}
 	}
+	if !isOperator(ctx) && strings.TrimSpace(reg.Username) != strings.TrimSpace(ctx.AuthIdentity) {
+		return nil, &apptheory.AppError{Code: "app.forbidden", Message: "forbidden"}
+	}
 
 	conversationID := strings.TrimSpace(ctx.Param("conversationId"))
 	if conversationID == "" {
@@ -387,6 +401,9 @@ func (s *Server) handleSoulGetMintConversation(ctx *apptheory.Context) (*apptheo
 	if err != nil {
 		return nil, &apptheory.AppError{Code: "app.not_found", Message: "registration not found"}
 	}
+	if !isOperator(ctx) && strings.TrimSpace(reg.Username) != strings.TrimSpace(ctx.AuthIdentity) {
+		return nil, &apptheory.AppError{Code: "app.forbidden", Message: "forbidden"}
+	}
 
 	conversationID := strings.TrimSpace(ctx.Param("conversationId"))
 	if conversationID == "" {
@@ -405,6 +422,37 @@ func (s *Server) handleSoulGetMintConversation(ctx *apptheory.Context) (*apptheo
 // --- Helpers ---
 
 func buildMintConversationSystemPrompt(reg *models.SoulAgentRegistration) string {
+	sanitizeInline := func(raw string, maxLen int) string {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			return ""
+		}
+		// Remove control characters / newlines to reduce prompt injection surface.
+		raw = strings.Map(func(r rune) rune {
+			if r < 0x20 || r == 0x7f {
+				return ' '
+			}
+			return r
+		}, raw)
+		if maxLen > 0 && len(raw) > maxLen {
+			raw = raw[:maxLen]
+		}
+		return raw
+	}
+	formatQuoted := func(raw string) string {
+		raw = sanitizeInline(raw, 256)
+		if raw == "" {
+			return ""
+		}
+		// JSON-string quoting is a simple, robust way to avoid untrusted text being interpreted
+		// as new instructions in the prompt.
+		b, err := json.Marshal(raw)
+		if err != nil {
+			return strconv.Quote(raw)
+		}
+		return string(b)
+	}
+
 	var sb strings.Builder
 	sb.WriteString(`You are a Soul Registry minting assistant. Your role is to help an AI agent define its identity through structured conversation before its soul is minted on-chain.
 
@@ -429,13 +477,21 @@ When you feel the conversation has covered all four areas sufficiently, summariz
 
 	sb.WriteString("Agent registration context:\n")
 	if reg.DomainNormalized != "" {
-		sb.WriteString(fmt.Sprintf("- Domain: %s\n", reg.DomainNormalized))
+		sb.WriteString(fmt.Sprintf("- Domain: %s\n", formatQuoted(reg.DomainNormalized)))
 	}
 	if reg.LocalID != "" {
-		sb.WriteString(fmt.Sprintf("- Local ID: %s\n", reg.LocalID))
+		sb.WriteString(fmt.Sprintf("- Local ID: %s\n", formatQuoted(reg.LocalID)))
 	}
 	if len(reg.Capabilities) > 0 {
-		sb.WriteString(fmt.Sprintf("- Declared capabilities: %s\n", strings.Join(reg.Capabilities, ", ")))
+		caps := make([]string, 0, len(reg.Capabilities))
+		for _, c := range reg.Capabilities {
+			c = sanitizeInline(c, 128)
+			if c != "" {
+				caps = append(caps, c)
+			}
+		}
+		b, _ := json.Marshal(caps)
+		sb.WriteString(fmt.Sprintf("- Declared capabilities: %s\n", string(b)))
 	}
 
 	return sb.String()

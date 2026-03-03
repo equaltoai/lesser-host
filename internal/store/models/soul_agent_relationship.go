@@ -8,10 +8,10 @@ import (
 
 // SoulRelationshipType* constants enumerate relationship types.
 const (
-	SoulRelationshipTypeEndorsement    = "endorsement"
-	SoulRelationshipTypeDelegation     = "delegation"
-	SoulRelationshipTypeCollaboration  = "collaboration"
-	SoulRelationshipTypeTrustGrant     = "trust_grant"
+	SoulRelationshipTypeEndorsement     = "endorsement"
+	SoulRelationshipTypeDelegation      = "delegation"
+	SoulRelationshipTypeCollaboration   = "collaboration"
+	SoulRelationshipTypeTrustGrant      = "trust_grant"
 	SoulRelationshipTypeTrustRevocation = "trust_revocation"
 )
 
@@ -49,7 +49,22 @@ func (r *SoulAgentRelationship) BeforeCreate() error {
 	if r.CreatedAt.IsZero() {
 		r.CreatedAt = time.Now().UTC()
 	}
-	return r.UpdateKeys()
+	if err := r.UpdateKeys(); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("fromAgentId", r.FromAgentID); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("toAgentId", r.ToAgentID); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("type", r.Type); err != nil {
+		return err
+	}
+	if strings.EqualFold(r.FromAgentID, r.ToAgentID) {
+		return fmt.Errorf("fromAgentId and toAgentId must differ")
+	}
+	return nil
 }
 
 // UpdateKeys updates the database keys for SoulAgentRelationship.

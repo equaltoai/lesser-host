@@ -255,7 +255,14 @@ func TestModels_KeyAccessorsAndHooks_AreCallable(t *testing.T) {
 		require.Equal(t, "validator", c.ValidatorID)
 		require.Equal(t, "pass", c.Result)
 
-		c2 := &SoulAgentValidationChallenge{AgentID: "0xaa", ChallengeID: "c2"}
+		c2 := &SoulAgentValidationChallenge{
+			AgentID:       "0xaa",
+			ChallengeID:   "c2",
+			ChallengeType: "dns_txt",
+			ValidatorID:   "validator",
+			Status:        SoulValidationChallengeStatusIssued,
+			OptInStatus:   SoulValidationOptInStatusPending,
+		}
 		require.NoError(t, c2.BeforeUpdate())
 	})
 

@@ -520,11 +520,29 @@ func TestHandleSoulAgentUpdateRegistration_PublishesToS3(t *testing.T) {
 	if len(packs.puts) < 2 {
 		t.Fatalf("expected at least 2 puts, got %d", len(packs.puts))
 	}
-	if packs.puts[0].key != out.S3Key {
-		t.Fatalf("expected first put to %q, got %q", out.S3Key, packs.puts[0].key)
+	currentKey := out.S3Key
+	versionedKey := soulRegistrationVersionedS3Key(agentIDHex, out.Version)
+	foundCurrent := false
+	foundVersioned := false
+	for _, put := range packs.puts {
+		switch put.key {
+		case currentKey:
+			foundCurrent = true
+			if !bytes.Equal(put.body, regBytes) {
+				t.Fatalf("expected current put body to match request body")
+			}
+		case versionedKey:
+			foundVersioned = true
+			if !bytes.Equal(put.body, regBytes) {
+				t.Fatalf("expected versioned put body to match request body")
+			}
+		}
 	}
-	if !bytes.Equal(packs.puts[0].body, regBytes) {
-		t.Fatalf("expected first put body to match request body")
+	if !foundCurrent {
+		t.Fatalf("expected current registration put to %q", currentKey)
+	}
+	if !foundVersioned {
+		t.Fatalf("expected versioned registration put to %q", versionedKey)
 	}
 	if out.Version < 1 {
 		t.Fatalf("expected version >= 1, got %d", out.Version)

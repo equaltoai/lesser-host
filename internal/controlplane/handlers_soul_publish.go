@@ -438,8 +438,7 @@ func (s *Server) createSoulPublishRootOperation(ctx context.Context, contractAdd
 		RequestID: strings.TrimSpace(requestID),
 		CreatedAt: now,
 	}
-	_ = audit.UpdateKeys()
-	_ = s.store.DB.WithContext(ctx).Model(audit).Create()
+	s.tryWriteAuditLogWithContext(ctx, audit)
 
 	return op, payload, nil
 }
