@@ -15,6 +15,7 @@ import (
 	"github.com/equaltoai/lesser-host/internal/domains"
 	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/soul"
+	"github.com/equaltoai/lesser-host/internal/soulsearch"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -263,6 +264,14 @@ type soulSearchIndexEntry struct {
 	ClaimLevel string `json:"claim_level,omitempty"`
 }
 
+type soulSearchPrimaryIndex string
+
+const (
+	soulSearchPrimaryCapability soulSearchPrimaryIndex = "capability"
+	soulSearchPrimaryBoundary   soulSearchPrimaryIndex = "boundary"
+	soulSearchPrimaryDomain     soulSearchPrimaryIndex = "domain"
+)
+
 func soulSearchResultFromEntry(entry soulSearchIndexEntry) soulSearchResult {
 	return soulSearchResult{
 		AgentID: entry.AgentID,
@@ -307,7 +316,9 @@ func (s *Server) handleSoulPublicSearch(ctx *apptheory.Context) (*apptheory.Resp
 }
 
 type soulPublicSearchParams struct {
-	Query      string
+	Domain     string
+	LocalID    string
+	LocalExact bool
 	Capability string
 	ClaimLevel string
 	Boundary   string
@@ -322,13 +333,14 @@ func parseSoulPublicSearchParams(ctx *apptheory.Context) (soulPublicSearchParams
 	}
 
 	q := strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "q"))
+	domainRaw := strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "domain"))
 	cap := strings.ToLower(strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "capability")))
 	cursor := strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "cursor"))
 	claimLevel := strings.ToLower(strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "claimLevel")))
 	if claimLevel == "" {
 		claimLevel = strings.ToLower(strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "claim_level")))
 	}
-	boundary := strings.ToLower(strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "boundary")))
+	boundaryRaw := strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "boundary"))
 	status := strings.ToLower(strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "status")))
 
 	limit := int(envInt64PositiveFromString(httpx.FirstQueryValue(ctx.Request.Query, "limit"), 50))
@@ -339,8 +351,22 @@ func parseSoulPublicSearchParams(ctx *apptheory.Context) (soulPublicSearchParams
 		limit = 100
 	}
 
-	if q == "" && cap == "" {
-		return soulPublicSearchParams{}, &apptheory.AppError{Code: "app.bad_request", Message: "q or capability is required"}
+	domain, localID, localExact, appErr := parseSoulSearchDomainAndLocal(q, domainRaw)
+	if appErr != nil {
+		return soulPublicSearchParams{}, appErr
+	}
+
+	boundary := ""
+	if boundaryRaw != "" {
+		kw, ok := soulsearch.NormalizeBoundaryKeyword(boundaryRaw)
+		if !ok {
+			return soulPublicSearchParams{}, &apptheory.AppError{Code: "app.bad_request", Message: "boundary must be a single keyword"}
+		}
+		boundary = kw
+	}
+
+	if domain == "" && cap == "" && boundary == "" {
+		return soulPublicSearchParams{}, &apptheory.AppError{Code: "app.bad_request", Message: "domain, capability, or boundary is required"}
 	}
 
 	if claimLevel != "" && cap == "" {
@@ -348,7 +374,9 @@ func parseSoulPublicSearchParams(ctx *apptheory.Context) (soulPublicSearchParams
 	}
 
 	return soulPublicSearchParams{
-		Query:      q,
+		Domain:     domain,
+		LocalID:    localID,
+		LocalExact: localExact,
 		Capability: cap,
 		ClaimLevel: claimLevel,
 		Boundary:   boundary,
@@ -358,18 +386,24 @@ func parseSoulPublicSearchParams(ctx *apptheory.Context) (soulPublicSearchParams
 	}, nil
 }
 
-func (s *Server) querySoulSearchIndexEntries(ctx context.Context, q string, cap string, cursor string, limit int) ([]soulSearchIndexEntry, bool, string, *apptheory.AppError) {
+func (s *Server) querySoulSearchIndexEntries(ctx context.Context, primary soulSearchPrimaryIndex, params soulPublicSearchParams, cursor string, limit int) ([]soulSearchIndexEntry, bool, string, *apptheory.AppError) {
 	if s == nil || s.store == nil || s.store.DB == nil {
 		return nil, false, "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
-	if strings.TrimSpace(cap) != "" {
-		return s.querySoulSearchByCapability(ctx, q, cap, cursor, limit)
+	switch primary {
+	case soulSearchPrimaryCapability:
+		return s.querySoulSearchByCapability(ctx, params.Capability, params.Domain, params.LocalID, params.LocalExact, cursor, limit)
+	case soulSearchPrimaryBoundary:
+		return s.querySoulSearchByBoundaryKeyword(ctx, params.Boundary, params.Domain, params.LocalID, params.LocalExact, cursor, limit)
+	case soulSearchPrimaryDomain:
+		return s.querySoulSearchByDomain(ctx, params.Domain, params.LocalID, params.LocalExact, cursor, limit)
+	default:
+		return nil, false, "", &apptheory.AppError{Code: "app.internal", Message: "invalid search index"}
 	}
-	return s.querySoulSearchByDomain(ctx, q, cursor, limit)
 }
 
-func (s *Server) querySoulSearchByCapability(ctx context.Context, q string, cap string, cursor string, limit int) ([]soulSearchIndexEntry, bool, string, *apptheory.AppError) {
+func (s *Server) querySoulSearchByCapability(ctx context.Context, cap string, domain string, localID string, localExact bool, cursor string, limit int) ([]soulSearchIndexEntry, bool, string, *apptheory.AppError) {
 	capNorm := normalizeSoulCapabilitiesLoose([]string{cap})
 	if len(capNorm) == 0 {
 		return nil, false, "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid capability"}
@@ -377,17 +411,13 @@ func (s *Server) querySoulSearchByCapability(ctx context.Context, q string, cap 
 	cap = capNorm[0]
 
 	skPrefix := ""
-	if strings.TrimSpace(q) != "" {
-		domain, local, appErr := parseSoulSearchQuery(q)
-		if appErr != nil {
-			return nil, false, "", appErr
-		}
-		if domain == "" {
-			return nil, false, "", &apptheory.AppError{Code: "app.bad_request", Message: "domain is required when filtering by local id"}
-		}
+	if strings.TrimSpace(domain) != "" {
 		skPrefix = fmt.Sprintf("DOMAIN#%s#", domain)
-		if local != "" {
-			skPrefix = fmt.Sprintf("DOMAIN#%s#LOCAL#%s#", domain, local)
+		if strings.TrimSpace(localID) != "" {
+			skPrefix = fmt.Sprintf("DOMAIN#%s#LOCAL#%s", domain, localID)
+			if localExact {
+				skPrefix += "#"
+			}
 		}
 	}
 
@@ -426,13 +456,62 @@ func (s *Server) querySoulSearchByCapability(ctx context.Context, q string, cap 
 	return out, hasMore, nextCursor, nil
 }
 
-func (s *Server) querySoulSearchByDomain(ctx context.Context, q string, cursor string, limit int) ([]soulSearchIndexEntry, bool, string, *apptheory.AppError) {
-	domain, local, appErr := parseSoulSearchQuery(q)
-	if appErr != nil {
-		return nil, false, "", appErr
+func (s *Server) querySoulSearchByBoundaryKeyword(ctx context.Context, keyword string, domain string, localID string, localExact bool, cursor string, limit int) ([]soulSearchIndexEntry, bool, string, *apptheory.AppError) {
+	keyword = strings.ToLower(strings.TrimSpace(keyword))
+	if keyword == "" {
+		return nil, false, "", &apptheory.AppError{Code: "app.bad_request", Message: "boundary is required"}
 	}
+
+	skPrefix := ""
+	if strings.TrimSpace(domain) != "" {
+		skPrefix = fmt.Sprintf("DOMAIN#%s#", domain)
+		if strings.TrimSpace(localID) != "" {
+			skPrefix = fmt.Sprintf("DOMAIN#%s#LOCAL#%s", domain, localID)
+			if localExact {
+				skPrefix += "#"
+			}
+		}
+	}
+
+	var items []*models.SoulBoundaryKeywordAgentIndex
+	qb := s.store.DB.WithContext(ctx).
+		Model(&models.SoulBoundaryKeywordAgentIndex{}).
+		Where("PK", "=", fmt.Sprintf("SOUL#BOUNDARY#%s", keyword)).
+		OrderBy("SK", "ASC").
+		Limit(limit)
+	if cursor != "" {
+		qb = qb.Cursor(cursor)
+	}
+	if skPrefix != "" {
+		qb = qb.Where("SK", "BEGINS_WITH", skPrefix)
+	}
+
+	paged, err := qb.AllPaginated(&items)
+	if err != nil {
+		return nil, false, "", &apptheory.AppError{Code: "app.internal", Message: "failed to search"}
+	}
+
+	out := make([]soulSearchIndexEntry, 0, len(items))
+	for _, item := range items {
+		if item == nil {
+			continue
+		}
+		out = append(out, soulSearchIndexEntry{AgentID: item.AgentID, Domain: item.Domain, LocalID: item.LocalID})
+	}
+
+	nextCursor := ""
+	hasMore := false
+	if paged != nil {
+		nextCursor = strings.TrimSpace(paged.NextCursor)
+		hasMore = paged.HasMore
+	}
+	return out, hasMore, nextCursor, nil
+}
+
+func (s *Server) querySoulSearchByDomain(ctx context.Context, domain string, localID string, localExact bool, cursor string, limit int) ([]soulSearchIndexEntry, bool, string, *apptheory.AppError) {
+	domain = strings.ToLower(strings.TrimSpace(domain))
 	if domain == "" {
-		return nil, false, "", &apptheory.AppError{Code: "app.bad_request", Message: "q must include a domain"}
+		return nil, false, "", &apptheory.AppError{Code: "app.bad_request", Message: "domain is required"}
 	}
 
 	var items []*models.SoulDomainAgentIndex
@@ -444,8 +523,12 @@ func (s *Server) querySoulSearchByDomain(ctx context.Context, q string, cursor s
 	if cursor != "" {
 		qb = qb.Cursor(cursor)
 	}
-	if local != "" {
-		qb = qb.Where("SK", "BEGINS_WITH", fmt.Sprintf("LOCAL#%s#", local))
+	if strings.TrimSpace(localID) != "" {
+		prefix := fmt.Sprintf("LOCAL#%s", localID)
+		if localExact {
+			prefix += "#"
+		}
+		qb = qb.Where("SK", "BEGINS_WITH", prefix)
 	}
 
 	paged, err := qb.AllPaginated(&items)
@@ -475,17 +558,25 @@ func (s *Server) searchSoulAgents(ctx context.Context, params soulPublicSearchPa
 	remaining := params.Limit
 	results := make([]soulSearchResult, 0, params.Limit)
 
+	primary := soulSearchPrimaryDomain
+	switch {
+	case strings.TrimSpace(params.Capability) != "":
+		primary = soulSearchPrimaryCapability
+	case strings.TrimSpace(params.Boundary) != "":
+		primary = soulSearchPrimaryBoundary
+	}
+
 	hasMore := false
 	nextCursor := ""
 
 	for remaining > 0 {
-		entries, pageHasMore, pageNextCursor, appErr := s.querySoulSearchIndexEntries(ctx, params.Query, params.Capability, cursor, remaining)
+		entries, pageHasMore, pageNextCursor, appErr := s.querySoulSearchIndexEntries(ctx, primary, params, cursor, remaining)
 		if appErr != nil {
 			return nil, false, "", appErr
 		}
 
 		for _, entry := range entries {
-			pass, err := s.soulSearchEntryPassesFilters(ctx, entry, params)
+			pass, err := s.soulSearchEntryPassesFilters(ctx, entry, params, primary)
 			if err != nil || !pass {
 				continue
 			}
@@ -537,7 +628,7 @@ func (s *Server) filterSoulSearchEntries(ctx context.Context, entries []soulSear
 	return results
 }
 
-func (s *Server) soulSearchEntryPassesFilters(ctx context.Context, entry soulSearchIndexEntry, params soulPublicSearchParams) (bool, error) {
+func (s *Server) soulSearchEntryPassesFilters(ctx context.Context, entry soulSearchIndexEntry, params soulPublicSearchParams, primary soulSearchPrimaryIndex) (bool, error) {
 	if params.ClaimLevel != "" && params.Capability != "" {
 		if strings.ToLower(strings.TrimSpace(entry.ClaimLevel)) != params.ClaimLevel {
 			return false, nil
@@ -561,8 +652,8 @@ func (s *Server) soulSearchEntryPassesFilters(ctx context.Context, entry soulSea
 		return false, nil
 	}
 
-	if params.Boundary != "" {
-		ok, err := s.agentHasBoundaryKeyword(ctx, entry.AgentID, params.Boundary)
+	if params.Boundary != "" && primary != soulSearchPrimaryBoundary {
+		ok, err := s.agentHasBoundaryKeywordIndex(ctx, entry.AgentID, entry.Domain, entry.LocalID, params.Boundary)
 		if err != nil || !ok {
 			return false, err
 		}
@@ -571,37 +662,31 @@ func (s *Server) soulSearchEntryPassesFilters(ctx context.Context, entry soulSea
 	return true, nil
 }
 
-func (s *Server) agentHasBoundaryKeyword(ctx context.Context, agentIDHex string, keyword string) (bool, error) {
+func (s *Server) agentHasBoundaryKeywordIndex(ctx context.Context, agentIDHex string, domain string, localID string, keyword string) (bool, error) {
 	if s == nil || s.store == nil || s.store.DB == nil {
 		return false, errors.New("store not configured")
 	}
 	agentIDHex = strings.ToLower(strings.TrimSpace(agentIDHex))
+	domain = strings.ToLower(strings.TrimSpace(domain))
+	localID = strings.ToLower(strings.TrimSpace(localID))
 	keyword = strings.ToLower(strings.TrimSpace(keyword))
-	if agentIDHex == "" || keyword == "" {
+	if agentIDHex == "" || domain == "" || localID == "" || keyword == "" {
 		return false, nil
 	}
 
-	var items []*models.SoulAgentBoundary
-	if err := s.store.DB.WithContext(ctx).
-		Model(&models.SoulAgentBoundary{}).
-		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentIDHex)).
-		Where("SK", "BEGINS_WITH", "BOUNDARY#").
-		All(&items); err != nil {
+	var item models.SoulBoundaryKeywordAgentIndex
+	err := s.store.DB.WithContext(ctx).
+		Model(&models.SoulBoundaryKeywordAgentIndex{}).
+		Where("PK", "=", fmt.Sprintf("SOUL#BOUNDARY#%s", keyword)).
+		Where("SK", "=", fmt.Sprintf("DOMAIN#%s#LOCAL#%s#AGENT#%s", domain, localID, agentIDHex)).
+		First(&item)
+	if theoryErrors.IsNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
 		return false, err
 	}
-
-	for _, b := range items {
-		if b == nil {
-			continue
-		}
-		if strings.Contains(strings.ToLower(b.Statement), keyword) ||
-			strings.Contains(strings.ToLower(b.Rationale), keyword) ||
-			strings.Contains(strings.ToLower(b.Category), keyword) {
-			return true, nil
-		}
-	}
-
-	return false, nil
+	return strings.TrimSpace(item.AgentID) != "", nil
 }
 
 func parseSoulSearchQuery(q string) (string, string, *apptheory.AppError) {
@@ -633,6 +718,56 @@ func parseSoulSearchQuery(q string) (string, string, *apptheory.AppError) {
 
 	// Local-only searches require a scan; fail closed.
 	return "", "", &apptheory.AppError{Code: "app.bad_request", Message: "q must include a domain"}
+}
+
+func parseSoulSearchDomainAndLocal(q string, domainRaw string) (domain string, localID string, localExact bool, appErr *apptheory.AppError) {
+	q = strings.TrimSpace(q)
+	domainRaw = strings.TrimSpace(domainRaw)
+
+	if domainRaw != "" {
+		norm, err := domains.NormalizeDomain(domainRaw)
+		if err != nil {
+			return "", "", false, &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
+		}
+		domain = norm
+	}
+
+	if q == "" {
+		return domain, "", false, nil
+	}
+
+	if strings.Contains(q, "/") {
+		dFromQ, localFromQ, parseErr := parseSoulSearchQuery(q)
+		if parseErr != nil {
+			return "", "", false, parseErr
+		}
+		if domain != "" && dFromQ != "" && domain != dFromQ {
+			return "", "", false, &apptheory.AppError{Code: "app.bad_request", Message: "q domain does not match domain parameter"}
+		}
+		return dFromQ, localFromQ, true, nil
+	}
+
+	if dFromQ, err := domains.NormalizeDomain(q); err == nil {
+		if domain != "" && domain != dFromQ {
+			return "", "", false, &apptheory.AppError{Code: "app.bad_request", Message: "q domain does not match domain parameter"}
+		}
+		return dFromQ, "", false, nil
+	}
+
+	if domain == "" {
+		return "", "", false, &apptheory.AppError{Code: "app.bad_request", Message: "q must include a domain (or provide domain=)"}
+	}
+
+	localID = normalizeSoulSearchLocalQuery(q)
+	return domain, localID, false, nil
+}
+
+func normalizeSoulSearchLocalQuery(raw string) string {
+	raw = strings.TrimSpace(raw)
+	raw = strings.TrimPrefix(raw, "@")
+	raw = strings.TrimSuffix(raw, "/")
+	raw = strings.ToLower(raw)
+	return raw
 }
 
 func envInt64PositiveFromString(raw string, fallback int64) int64 {

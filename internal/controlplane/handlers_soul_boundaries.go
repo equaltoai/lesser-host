@@ -151,15 +151,15 @@ func (s *Server) handleSoulBeginAppendBoundary(ctx *apptheory.Context) (*apptheo
 	nextVersion := expectedVersion + 1
 
 	regMap, _, digest, _, _, appErr := s.buildSoulBoundaryAppendV2Registration(ctx.Context(), baseReg, agentIDHex, identity, soulBoundaryAppendBuildInput{
-		BoundaryID:     boundaryID,
-		Category:       category,
-		Statement:      statement,
-		Rationale:      rationale,
-		Supersedes:     supersedes,
-		Signature:      signature,
-		IssuedAt:       now,
-		ExpectedPrev:   expectedVersion,
-		NextVersion:    nextVersion,
+		BoundaryID:      boundaryID,
+		Category:        category,
+		Statement:       statement,
+		Rationale:       rationale,
+		Supersedes:      supersedes,
+		Signature:       signature,
+		IssuedAt:        now,
+		ExpectedPrev:    expectedVersion,
+		NextVersion:     nextVersion,
 		SelfAttestation: "0x00", // placeholder; digest excludes selfAttestation
 	})
 	if appErr != nil {
@@ -280,15 +280,15 @@ func (s *Server) handleSoulAppendBoundary(ctx *apptheory.Context) (*apptheory.Re
 
 	nextVersion := *expectedVersion + 1
 	regMap, regV2, digest, capsNorm, claimLevels, appErr := s.buildSoulBoundaryAppendV2Registration(ctx.Context(), baseReg, agentIDHex, identity, soulBoundaryAppendBuildInput{
-		BoundaryID:     boundaryID,
-		Category:       category,
-		Statement:      statement,
-		Rationale:      rationale,
-		Supersedes:     supersedes,
-		Signature:      signature,
-		IssuedAt:       issuedAt.UTC(),
-		ExpectedPrev:   *expectedVersion,
-		NextVersion:    nextVersion,
+		BoundaryID:      boundaryID,
+		Category:        category,
+		Statement:       statement,
+		Rationale:       rationale,
+		Supersedes:      supersedes,
+		Signature:       signature,
+		IssuedAt:        issuedAt.UTC(),
+		ExpectedPrev:    *expectedVersion,
+		NextVersion:     nextVersion,
 		SelfAttestation: selfSig,
 	})
 	if appErr != nil {
@@ -344,6 +344,9 @@ func (s *Server) handleSoulAppendBoundary(ctx *apptheory.Context) (*apptheory.Re
 		RequestID: strings.TrimSpace(ctx.RequestID),
 		CreatedAt: now,
 	})
+
+	// Best-effort: maintain boundary keyword index for search.
+	s.tryWriteSoulBoundaryKeywordIndexForBoundary(ctx.Context(), identity, boundary)
 
 	return apptheory.JSON(http.StatusCreated, soulAppendBoundaryResponse{Boundary: *boundary})
 }

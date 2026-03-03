@@ -1038,10 +1038,12 @@ func (s *Server) handleSoulFinalizeMintConversation(ctx *apptheory.Context) (*ap
 		}
 		if err := s.store.DB.WithContext(ctx.Context()).Model(b).IfNotExists().Create(); err != nil {
 			if theoryErrors.IsConditionFailed(err) {
+				s.tryWriteSoulBoundaryKeywordIndexForBoundary(ctx.Context(), identity, b)
 				continue
 			}
 			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to persist boundaries"}
 		}
+		s.tryWriteSoulBoundaryKeywordIndexForBoundary(ctx.Context(), identity, b)
 	}
 
 	s.tryWriteAuditLog(ctx, &models.AuditLogEntry{

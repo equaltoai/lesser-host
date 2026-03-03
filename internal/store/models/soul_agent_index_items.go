@@ -126,3 +126,45 @@ func (i *SoulCapabilityAgentIndex) GetPK() string { return i.PK }
 
 // GetSK returns the sort key for SoulCapabilityAgentIndex.
 func (i *SoulCapabilityAgentIndex) GetSK() string { return i.SK }
+
+// SoulBoundaryKeywordAgentIndex is a materialized index for looking up agents by boundary keyword.
+//
+// Keys:
+//
+//	PK: SOUL#BOUNDARY#{keyword}
+//	SK: DOMAIN#{normalizedDomain}#LOCAL#{normalizedLocalAgentId}#AGENT#{agentId}
+type SoulBoundaryKeywordAgentIndex struct {
+	_ struct{} `theorydb:"naming:camelCase"`
+
+	PK string `theorydb:"pk,attr:PK" json:"-"`
+	SK string `theorydb:"sk,attr:SK" json:"-"`
+
+	Keyword string `theorydb:"attr:keyword" json:"keyword"`
+	Domain  string `theorydb:"attr:domain" json:"domain"`
+	LocalID string `theorydb:"attr:localId" json:"local_id"`
+	AgentID string `theorydb:"attr:agentId" json:"agent_id"`
+}
+
+// TableName returns the database table name for SoulBoundaryKeywordAgentIndex.
+func (SoulBoundaryKeywordAgentIndex) TableName() string { return MainTableName() }
+
+// BeforeCreate sets defaults and keys before creating SoulBoundaryKeywordAgentIndex.
+func (i *SoulBoundaryKeywordAgentIndex) BeforeCreate() error { return i.UpdateKeys() }
+
+// UpdateKeys updates the database keys for SoulBoundaryKeywordAgentIndex.
+func (i *SoulBoundaryKeywordAgentIndex) UpdateKeys() error {
+	i.Keyword = strings.ToLower(strings.TrimSpace(i.Keyword))
+	i.Domain = strings.ToLower(strings.TrimSpace(i.Domain))
+	i.LocalID = normalizeSoulLocalID(i.LocalID)
+	i.AgentID = strings.ToLower(strings.TrimSpace(i.AgentID))
+
+	i.PK = fmt.Sprintf("SOUL#BOUNDARY#%s", i.Keyword)
+	i.SK = fmt.Sprintf("DOMAIN#%s#LOCAL#%s#AGENT#%s", i.Domain, i.LocalID, i.AgentID)
+	return nil
+}
+
+// GetPK returns the partition key for SoulBoundaryKeywordAgentIndex.
+func (i *SoulBoundaryKeywordAgentIndex) GetPK() string { return i.PK }
+
+// GetSK returns the sort key for SoulBoundaryKeywordAgentIndex.
+func (i *SoulBoundaryKeywordAgentIndex) GetSK() string { return i.SK }
