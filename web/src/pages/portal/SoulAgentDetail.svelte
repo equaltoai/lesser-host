@@ -27,6 +27,7 @@
 		soulPublicGetCapabilities,
 		soulPublicGetTransparency,
 		soulPublicGetFailures,
+		soulAddBoundary,
 		soulSelfSuspend,
 		soulSelfReinstate,
 		soulArchiveAgent,
@@ -34,7 +35,8 @@
 	} from 'src/lib/api/soul';
 	import { logout } from 'src/lib/auth/logout';
 	import { navigate } from 'src/lib/router';
-	import { getEthereumProvider, requestAccounts, signTypedDataV4 } from 'src/lib/wallet/ethereum';
+	import { getEthereumProvider, personalSign, requestAccounts, signTypedDataV4 } from 'src/lib/wallet/ethereum';
+	import { keccak256Utf8Hex } from 'src/lib/wallet/keccak';
 	import {
 		Alert,
 		Badge,
@@ -90,6 +92,24 @@
 	let suspendReason = $state('');
 	let successorId = $state('');
 
+	// Boundary creation state
+	let boundaryAddError = $state<string | null>(null);
+	let boundaryAddLoading = $state(false);
+	let boundaryId = $state('');
+	let boundaryCategory = $state('refusal');
+	let boundaryStatement = $state('');
+	let boundaryRationale = $state('');
+	let boundarySupersedes = $state('');
+	let boundarySignature = $state('');
+	let boundarySignLoading = $state(false);
+
+	const boundaryCategoryOptions = [
+		{ value: 'refusal', label: 'Refusal' },
+		{ value: 'scope_limit', label: 'Scope limit' },
+		{ value: 'ethical_commitment', label: 'Ethical commitment' },
+		{ value: 'circuit_breaker', label: 'Circuit breaker' },
+	];
+
 	// Relationship filter
 	let relTypeFilter = $state('');
 	const relTypeOptions = [
@@ -126,6 +146,97 @@
 			return JSON.stringify(value, null, 2);
 		} catch {
 			return String(value);
+		}
+	}
+
+	async function signBoundary() {
+		boundaryAddError = null;
+		boundarySignature = '';
+
+		const stmt = boundaryStatement.trim();
+		if (!stmt) {
+			boundaryAddError = 'Statement is required.';
+			return;
+		}
+
+		const provider = getEthereumProvider();
+		if (!provider) {
+			boundaryAddError = 'No wallet detected.';
+			return;
+		}
+		const wallet = agent?.agent?.wallet?.trim();
+		if (!wallet) {
+			boundaryAddError = 'Agent wallet is not available.';
+			return;
+		}
+
+		boundarySignLoading = true;
+		try {
+			const accounts = await requestAccounts(provider);
+			const normalized = accounts.map((a) => a.toLowerCase());
+			if (!normalized.includes(wallet.toLowerCase())) {
+				boundaryAddError = `Connected wallet does not match agent wallet (${wallet}).`;
+				return;
+			}
+
+			const digestHex = keccak256Utf8Hex(stmt);
+			boundarySignature = await personalSign(provider, digestHex, wallet);
+		} catch (err) {
+			boundaryAddError = formatError(err);
+		} finally {
+			boundarySignLoading = false;
+		}
+	}
+
+	async function submitBoundary() {
+		boundaryAddError = null;
+
+		const id = boundaryId.trim();
+		const category = boundaryCategory.trim();
+		const statement = boundaryStatement.trim();
+		const rationale = boundaryRationale.trim();
+		const supersedes = boundarySupersedes.trim();
+		const signature = boundarySignature.trim();
+
+		if (!id) {
+			boundaryAddError = 'Boundary ID is required.';
+			return;
+		}
+		if (!category) {
+			boundaryAddError = 'Category is required.';
+			return;
+		}
+		if (!statement) {
+			boundaryAddError = 'Statement is required.';
+			return;
+		}
+		if (!signature) {
+			boundaryAddError = 'Signature is required. Sign the statement first.';
+			return;
+		}
+
+		boundaryAddLoading = true;
+		try {
+			await soulAddBoundary(token, agentId, {
+				boundary_id: id,
+				category,
+				statement,
+				rationale: rationale || undefined,
+				supersedes: supersedes || undefined,
+				signature,
+			});
+			boundaryId = '';
+			boundaryStatement = '';
+			boundaryRationale = '';
+			boundarySupersedes = '';
+			boundarySignature = '';
+			boundaries = await soulPublicGetBoundaries(agentId, undefined, 50);
+			activeSection = 'boundaries';
+		} catch (err) {
+			if (await handleAuthError(err)) return;
+			boundaryAddError = formatError(err);
+		} finally {
+			boundaryAddLoading = false;
 		}
 	}
 
@@ -389,6 +500,7 @@
 
 	let lifecycleStatus = $derived(agent?.agent?.lifecycle_status || agent?.agent?.status || '');
 	let isTerminal = $derived(lifecycleStatus === 'archived' || lifecycleStatus === 'succeeded');
+	let publicOrigin = $derived(typeof window !== 'undefined' ? window.location.origin : '');
 
 	onMount(() => {
 		void load();
@@ -452,6 +564,18 @@
 						<DefinitionItem label="Principal" monospace>{current.agent.principal_address}</DefinitionItem>
 					{/if}
 					<DefinitionItem label="Meta URI" monospace>{current.agent.meta_uri || '—'}</DefinitionItem>
+					<DefinitionItem label="Well-known URI" monospace>
+						https://{current.agent.domain}/.well-known/lesser-soul-agent
+					</DefinitionItem>
+					{#if publicOrigin}
+						<DefinitionItem label="Public soul endpoint" monospace>{publicOrigin}/api/v1/soul/agents/{current.agent.agent_id}</DefinitionItem>
+						<DefinitionItem label="Public registration endpoint" monospace>
+							{publicOrigin}/api/v1/soul/agents/{current.agent.agent_id}/registration
+						</DefinitionItem>
+						<DefinitionItem label="MCP soulUri (suggestion)" monospace>
+							{publicOrigin}/api/v1/soul/agents/{current.agent.agent_id}/registration
+						</DefinitionItem>
+					{/if}
 					{#if current.agent.self_description_version}
 						<DefinitionItem label="Version" monospace>v{current.agent.self_description_version}</DefinitionItem>
 					{/if}
@@ -551,6 +675,52 @@
 					<Heading level={3} size="lg">Boundaries</Heading>
 				{/snippet}
 
+				<Card variant="outlined" padding="lg">
+					{#snippet header()}
+						<Heading level={4} size="lg">Add boundary</Heading>
+					{/snippet}
+
+					{#if boundaryAddError}
+						<Alert variant="error" title="Boundary">{boundaryAddError}</Alert>
+					{/if}
+
+					<div class="soul-agent__form">
+						<TextField label="Boundary ID" bind:value={boundaryId} placeholder="boundary-1" />
+						<Select
+							options={boundaryCategoryOptions}
+							value={boundaryCategory}
+							onchange={(value: string) => {
+								boundaryCategory = value;
+							}}
+						/>
+						<TextArea bind:value={boundaryStatement} rows={4} placeholder="Write a concrete refusal or constraint…" />
+						<TextArea bind:value={boundaryRationale} rows={3} placeholder="Rationale (optional) …" />
+						<TextField label="Supersedes (optional)" bind:value={boundarySupersedes} placeholder="boundary-id-to-supersede" />
+
+						<div class="soul-agent__row">
+							<Button variant="outline" onclick={() => void signBoundary()} disabled={boundarySignLoading || boundaryAddLoading}>
+								Sign statement
+							</Button>
+							{#if boundarySignature}
+								<CopyButton size="sm" text={boundarySignature} />
+							{/if}
+						</div>
+
+						<div class="soul-agent__row">
+							<Button variant="solid" onclick={() => void submitBoundary()} disabled={boundaryAddLoading || boundarySignLoading}>
+								Submit boundary
+							</Button>
+						</div>
+
+						{#if boundarySignLoading || boundaryAddLoading}
+							<div class="soul-agent__loading-inline">
+								<Spinner size="sm" />
+								<Text size="sm">{boundarySignLoading ? 'Waiting for wallet…' : 'Submitting…'}</Text>
+							</div>
+						{/if}
+					</div>
+				</Card>
+
 				{#if boundaries?.boundaries?.length}
 					<div class="soul-agent__list">
 						{#each boundaries.boundaries as b (b.boundary_id)}
@@ -566,6 +736,9 @@
 										{/if}
 										{#if b.supersedes}
 											<Text size="sm" color="secondary">Supersedes: {b.supersedes}</Text>
+										{/if}
+										{#if b.added_in_version != null}
+											<Text size="sm" color="secondary">Added in version: v{b.added_in_version}</Text>
 										{/if}
 										<Text size="sm" color="secondary">Added: {b.added_at}</Text>
 									</div>

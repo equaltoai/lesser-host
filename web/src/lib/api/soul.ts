@@ -1,5 +1,64 @@
 import { fetchJson, jsonRequest } from './http';
 
+// --- Public config + search ---
+
+export interface SoulConfigReputationWeights {
+	economic: number;
+	social: number;
+	validation: number;
+	trust: number;
+	integrity: number;
+}
+
+export interface SoulConfigResponse {
+	enabled: boolean;
+	chain_id: number;
+	registry_contract_address: string;
+	admin_safe_address?: string;
+	tx_mode?: string;
+	supported_capabilities?: string[];
+	reputation_weights?: SoulConfigReputationWeights;
+}
+
+export function soulPublicGetConfig(): Promise<SoulConfigResponse> {
+	return fetchJson<SoulConfigResponse>('/api/v1/soul/config');
+}
+
+export interface SoulSearchResult {
+	agent_id: string;
+	domain: string;
+	local_id: string;
+}
+
+export interface SoulSearchResponse {
+	version: string;
+	results: SoulSearchResult[];
+	count: number;
+	has_more: boolean;
+	next_cursor?: string;
+}
+
+export function soulPublicSearch(input: {
+	q?: string;
+	capability?: string;
+	claimLevel?: string;
+	boundary?: string;
+	status?: string;
+	cursor?: string;
+	limit?: number;
+}): Promise<SoulSearchResponse> {
+	const params = new URLSearchParams();
+	if (input.q) params.set('q', input.q);
+	if (input.capability) params.set('capability', input.capability);
+	if (input.claimLevel) params.set('claimLevel', input.claimLevel);
+	if (input.boundary) params.set('boundary', input.boundary);
+	if (input.status) params.set('status', input.status);
+	if (input.cursor) params.set('cursor', input.cursor);
+	if (input.limit != null) params.set('limit', String(input.limit));
+	const qs = params.toString();
+	return fetchJson<SoulSearchResponse>(`/api/v1/soul/search${qs ? `?${qs}` : ''}`);
+}
+
 export interface SoulAgentIdentity {
 	agent_id: string;
 	domain: string;
@@ -348,6 +407,7 @@ export interface SoulAgentBoundary {
 	category: string;
 	statement: string;
 	rationale?: string;
+	added_in_version?: number;
 	supersedes?: string;
 	signature?: string;
 	added_at: string;
@@ -369,13 +429,17 @@ export function soulPublicGetBoundaries(agentId: string, cursor?: string, limit:
 	return fetchJson<SoulPublicBoundariesResponse>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/boundaries${qs ? `?${qs}` : ''}`);
 }
 
+export interface SoulAppendBoundaryResponse {
+	boundary: SoulAgentBoundary;
+}
+
 export function soulAddBoundary(
 	token: string,
 	agentId: string,
 	input: { boundary_id: string; category: string; statement: string; rationale?: string; supersedes?: string; signature?: string },
-): Promise<SoulAgentBoundary> {
+): Promise<SoulAppendBoundaryResponse> {
 	const req = jsonRequest(input);
-	return fetchJson<SoulAgentBoundary>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/boundaries`, {
+	return fetchJson<SoulAppendBoundaryResponse>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/boundaries`, {
 		method: 'POST',
 		headers: { authorization: `Bearer ${token}`, ...req.headers },
 		body: req.body,
@@ -389,6 +453,7 @@ export interface SoulAgentContinuityEntry {
 	type: string;
 	summary: string;
 	recovery?: string;
+	references?: string;
 	signature?: string;
 	timestamp: string;
 }
@@ -429,9 +494,16 @@ export interface SoulPublicRelationshipsResponse {
 	next_cursor?: string;
 }
 
-export function soulPublicGetRelationships(agentId: string, type?: string, cursor?: string, limit: number = 50): Promise<SoulPublicRelationshipsResponse> {
+export function soulPublicGetRelationships(
+	agentId: string,
+	type?: string,
+	cursor?: string,
+	limit: number = 50,
+	taskType?: string,
+): Promise<SoulPublicRelationshipsResponse> {
 	const params = new URLSearchParams();
 	if (type) params.set('type', type);
+	if (taskType) params.set('taskType', taskType);
 	if (cursor) params.set('cursor', cursor);
 	params.set('limit', String(limit));
 	const qs = params.toString();
@@ -445,6 +517,7 @@ export interface SoulAgentVersion {
 	version_number: number;
 	registration_uri?: string;
 	change_summary?: string;
+	self_attestation?: string;
 	created_at: string;
 }
 
@@ -587,8 +660,11 @@ export interface SoulMintConversation {
 	agent_id: string;
 	conversation_id: string;
 	model: string;
+	messages?: string;
+	produced_declarations?: string;
 	status: string;
 	created_at: string;
+	completed_at?: string;
 }
 
 export function soulGetMintConversation(token: string, registrationId: string, conversationId: string): Promise<SoulMintConversation> {

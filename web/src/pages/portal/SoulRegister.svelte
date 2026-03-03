@@ -2,8 +2,14 @@
 	import { onMount } from 'svelte';
 
 	import type { ApiError } from 'src/lib/api/http';
-	import type { SoulAgentRegistrationBeginResponse, SoulAgentRegistrationVerifyResponse } from 'src/lib/api/soul';
-	import { soulAgentRegistrationBegin, soulAgentRegistrationVerify } from 'src/lib/api/soul';
+	import type { SoulAgentRegistrationBeginResponse, SoulAgentRegistrationVerifyResponse, SoulMintConversation } from 'src/lib/api/soul';
+	import {
+		soulAgentRegistrationBegin,
+		soulAgentRegistrationVerify,
+		soulCompleteMintConversation,
+		soulGetMintConversation,
+		soulStartMintConversationSSE,
+	} from 'src/lib/api/soul';
 	import { logout } from 'src/lib/auth/logout';
 	import { navigate } from 'src/lib/router';
 	import { getEthereumProvider, personalSign, requestAccounts } from 'src/lib/wallet/ethereum';
@@ -15,6 +21,7 @@
 		DefinitionItem,
 		DefinitionList,
 		Heading,
+		Select,
 		Spinner,
 		Text,
 		TextArea,
@@ -43,6 +50,243 @@
 	const dnsProof = $derived.by(() => beginResult?.proofs?.find((p) => p.method === 'dns_txt') || null);
 	const httpsProof = $derived.by(() => beginResult?.proofs?.find((p) => p.method === 'https_well_known') || null);
 
+	// --- Minting conversation (Phase 2) ---
+
+	type MintMessage = { role: 'user' | 'assistant'; content: string };
+
+	let mintModel = $state('anthropic:claude-sonnet-4-20250514');
+	const mintModelOptions = [
+		{ value: 'anthropic:claude-sonnet-4-20250514', label: 'Anthropic — Claude Sonnet 4' },
+		{ value: 'openai:gpt-4.1-mini', label: 'OpenAI — GPT-4.1 mini' },
+	];
+
+	let mintConversationId = $state('');
+	let mintConversation = $state<SoulMintConversation | null>(null);
+	let mintMessages = $state<MintMessage[]>([]);
+	let mintUserMessage = $state('');
+	let mintAssistantPartial = $state('');
+	let mintStreaming = $state(false);
+	let mintError = $state<string | null>(null);
+	let mintCompleteLoading = $state(false);
+	let mintCompleteError = $state<string | null>(null);
+	let mintProducedDeclarations = $state<unknown | null>(null);
+
+	function mintStorageKey(registrationId: string): string {
+		return `soul_mint_conversation:${registrationId}`;
+	}
+
+	function parseMintMessages(raw?: string): MintMessage[] {
+		if (!raw) return [];
+		try {
+			const parsed = JSON.parse(raw) as unknown;
+			if (!Array.isArray(parsed)) return [];
+			const out: MintMessage[] = [];
+			for (const item of parsed) {
+				if (!item || typeof item !== 'object') continue;
+				const role = String((item as { role?: unknown }).role || '').toLowerCase();
+				const content = String((item as { content?: unknown }).content || '');
+				if ((role === 'user' || role === 'assistant') && content) {
+					out.push({ role, content });
+				}
+			}
+			return out;
+		} catch {
+			return [];
+		}
+	}
+
+	function parseProducedDeclarations(raw?: string): unknown | null {
+		if (!raw) return null;
+		try {
+			return JSON.parse(raw);
+		} catch {
+			return raw;
+		}
+	}
+
+	async function loadMintConversationFromStorage(registrationId: string) {
+		mintError = null;
+		mintCompleteError = null;
+		mintProducedDeclarations = null;
+		mintConversation = null;
+		mintMessages = [];
+		mintAssistantPartial = '';
+
+		try {
+			const stored = localStorage.getItem(mintStorageKey(registrationId));
+			const cid = (stored || '').trim();
+			if (!cid) return;
+			mintConversationId = cid;
+			await refreshMintConversation(registrationId, cid);
+		} catch {
+			// ignore (e.g. storage disabled)
+		}
+	}
+
+	async function refreshMintConversation(registrationId: string, conversationId: string) {
+		mintError = null;
+		try {
+			mintConversation = await soulGetMintConversation(token, registrationId, conversationId);
+			mintMessages = parseMintMessages(mintConversation.messages);
+			mintProducedDeclarations = parseProducedDeclarations(mintConversation.produced_declarations);
+		} catch (err) {
+			if ((err as Partial<ApiError>).status === 401) {
+				await logout();
+				navigate('/login');
+				return;
+			}
+			mintError = formatError(err);
+		}
+	}
+
+	function resetMintConversation(registrationId: string) {
+		mintConversationId = '';
+		mintConversation = null;
+		mintMessages = [];
+		mintUserMessage = '';
+		mintAssistantPartial = '';
+		mintError = null;
+		mintCompleteError = null;
+		mintProducedDeclarations = null;
+		try {
+			localStorage.removeItem(mintStorageKey(registrationId));
+		} catch {
+			// ignore
+		}
+	}
+
+	function parseSseEvent(raw: string): { event: string; data: unknown } | null {
+		const lines = raw
+			.split('\n')
+			.map((l) => l.trimEnd())
+			.filter(Boolean);
+		let eventName = 'message';
+		const dataLines: string[] = [];
+		for (const line of lines) {
+			if (line.startsWith('event:')) {
+				eventName = line.slice('event:'.length).trim() || 'message';
+				continue;
+			}
+			if (line.startsWith('data:')) {
+				dataLines.push(line.slice('data:'.length).trim());
+			}
+		}
+		const dataStr = dataLines.join('\n').trim();
+		if (!dataStr) return null;
+		try {
+			return { event: eventName, data: JSON.parse(dataStr) as unknown };
+		} catch {
+			return { event: eventName, data: dataStr };
+		}
+	}
+
+	async function sendMintMessage(registrationId: string) {
+		mintError = null;
+		mintCompleteError = null;
+
+		const msg = mintUserMessage.trim();
+		if (!msg) {
+			mintError = 'Message is required.';
+			return;
+		}
+		mintUserMessage = '';
+		mintMessages = [...mintMessages, { role: 'user', content: msg }];
+		mintAssistantPartial = '';
+
+		mintStreaming = true;
+		try {
+			const streamOrSource = soulStartMintConversationSSE(token, registrationId, {
+				model: mintConversationId ? undefined : mintModel,
+				conversation_id: mintConversationId || undefined,
+				message: msg,
+			});
+			if (!streamOrSource || typeof (streamOrSource as ReadableStream<string>).getReader !== 'function') {
+				mintError = 'Streaming not supported in this environment.';
+				return;
+			}
+
+			const reader = (streamOrSource as ReadableStream<string>).getReader();
+			let buffer = '';
+			while (true) {
+				const { done, value } = await reader.read();
+				if (done) break;
+				buffer += value || '';
+
+				while (true) {
+					const idx = buffer.indexOf('\n\n');
+					if (idx === -1) break;
+					const raw = buffer.slice(0, idx);
+					buffer = buffer.slice(idx + 2);
+					const parsed = parseSseEvent(raw);
+					if (!parsed) continue;
+
+					if (parsed.event === 'conversation_start') {
+						const d = parsed.data as { conversation_id?: unknown; model?: unknown };
+						const cid = String(d.conversation_id || '').trim();
+						if (cid) {
+							mintConversationId = cid;
+							try {
+								localStorage.setItem(mintStorageKey(registrationId), cid);
+							} catch {
+								// ignore
+							}
+						}
+					}
+
+					if (parsed.event === 'delta') {
+						const d = parsed.data as { text?: unknown };
+						const t = String(d.text || '');
+						if (t) mintAssistantPartial += t;
+					}
+
+					if (parsed.event === 'conversation_done') {
+						const d = parsed.data as { full_response?: unknown };
+						const full = String(d.full_response || '');
+						const assistantText = full || mintAssistantPartial;
+						if (assistantText) mintMessages = [...mintMessages, { role: 'assistant', content: assistantText }];
+						mintAssistantPartial = '';
+
+						// Sync persisted record for history + produced declarations.
+						if (mintConversationId) {
+							await refreshMintConversation(registrationId, mintConversationId);
+						}
+					}
+
+					if (parsed.event === 'error') {
+						const d = parsed.data as { error?: unknown; message?: unknown };
+						mintError = String(d.error || d.message || 'stream error');
+					}
+				}
+			}
+		} catch (err) {
+			mintError = formatError(err);
+		} finally {
+			mintStreaming = false;
+		}
+	}
+
+	async function completeMintConversation(registrationId: string) {
+		mintCompleteError = null;
+		if (!mintConversationId) {
+			mintCompleteError = 'No conversation in progress.';
+			return;
+		}
+		mintCompleteLoading = true;
+		try {
+			mintConversation = await soulCompleteMintConversation(token, registrationId, mintConversationId);
+			mintProducedDeclarations = parseProducedDeclarations(mintConversation.produced_declarations);
+		} catch (err) {
+			if ((err as Partial<ApiError>).status === 401) {
+				await logout();
+				navigate('/login');
+				return;
+			}
+			mintCompleteError = formatError(err);
+		} finally {
+			mintCompleteLoading = false;
+		}
+	}
+
 	function formatError(err: unknown): string {
 		if (!err) return 'unknown error';
 		const maybe = err as Partial<ApiError>;
@@ -51,6 +295,15 @@
 		}
 		if (err instanceof Error) return err.message;
 		return String(err);
+	}
+
+	function prettyJSON(value: unknown): string {
+		if (value == null) return '';
+		try {
+			return JSON.stringify(value, null, 2);
+		} catch {
+			return String(value);
+		}
 	}
 
 	function parseCapabilities(raw: string): string[] {
@@ -76,6 +329,13 @@
 		beginResult = null;
 		verifyResult = null;
 		signature = '';
+		mintConversationId = '';
+		mintConversation = null;
+		mintMessages = [];
+		mintAssistantPartial = '';
+		mintError = null;
+		mintCompleteError = null;
+		mintProducedDeclarations = null;
 
 		const nextDomain = domain.trim();
 		const nextLocal = localId.trim();
@@ -96,12 +356,14 @@
 
 		beginLoading = true;
 		try {
-			beginResult = await soulAgentRegistrationBegin(token, {
+			const res = await soulAgentRegistrationBegin(token, {
 				domain: nextDomain,
 				local_id: nextLocal,
 				wallet_address: nextWallet,
 				capabilities: parseCapabilities(capabilities),
 			});
+			beginResult = res;
+			await loadMintConversationFromStorage(res.registration.id);
 		} catch (err) {
 			if ((err as Partial<ApiError>).status === 401) {
 				await logout();
@@ -378,6 +640,121 @@
 				{/if}
 			</Card>
 		</div>
+
+		<Card variant="outlined" padding="lg">
+			{#snippet header()}
+				<Heading level={3} size="lg">4. Minting conversation (Phase 2, optional)</Heading>
+			{/snippet}
+
+			<Text size="sm" color="secondary">
+				Stream a guided conversation to produce structured declarations (selfDescription, capabilities, boundaries, transparency). You can complete the conversation to store
+				the produced declarations on the conversation record.
+			</Text>
+
+			{#if mintError}
+				<Alert variant="error" title="Mint conversation">{mintError}</Alert>
+			{/if}
+			{#if mintCompleteError}
+				<Alert variant="error" title="Complete conversation">{mintCompleteError}</Alert>
+			{/if}
+
+			<div class="soul-register__row soul-register__mint-controls">
+				<Select
+					options={mintModelOptions}
+					value={mintModel}
+					disabled={Boolean(mintConversationId)}
+					onchange={(value: string) => {
+						mintModel = value;
+					}}
+				/>
+
+				{#if mintConversationId}
+					<Text size="sm" color="secondary">
+						Conversation <span class="soul-register__mono">{mintConversationId}</span>
+					</Text>
+					<CopyButton size="sm" text={mintConversationId} />
+				{/if}
+			</div>
+
+			<div class="soul-register__row">
+				<Button variant="outline" onclick={() => resetMintConversation(begin.registration.id)} disabled={mintStreaming || mintCompleteLoading}>
+					Start new
+				</Button>
+				<Button
+					variant="outline"
+					onclick={() => void refreshMintConversation(begin.registration.id, mintConversationId)}
+					disabled={!mintConversationId || mintStreaming}
+				>
+					Refresh
+				</Button>
+				<Button
+					variant="solid"
+					onclick={() => void completeMintConversation(begin.registration.id)}
+					disabled={!mintConversationId || mintStreaming || mintCompleteLoading}
+				>
+					Complete
+				</Button>
+			</div>
+
+			{#if mintCompleteLoading}
+				<div class="soul-register__loading-inline">
+					<Spinner size="sm" />
+					<Text size="sm">Completing…</Text>
+				</div>
+			{/if}
+
+			{#if mintConversation?.model}
+				<Text size="sm" color="secondary">
+					Model: <span class="soul-register__mono">{mintConversation.model}</span> ({mintConversation.status})
+				</Text>
+			{/if}
+
+			{#if mintMessages.length || mintAssistantPartial}
+				<div class="soul-register__mint-thread">
+					{#each mintMessages as m, i (i)}
+						<Card variant="outlined" padding="md">
+							<Text size="sm" weight="medium">{m.role}</Text>
+							<Text size="sm" color="secondary" style="white-space: pre-wrap">{m.content}</Text>
+						</Card>
+					{/each}
+					{#if mintAssistantPartial}
+						<Card variant="outlined" padding="md">
+							<Text size="sm" weight="medium">assistant (streaming)</Text>
+							<Text size="sm" color="secondary" style="white-space: pre-wrap">{mintAssistantPartial}</Text>
+						</Card>
+					{/if}
+				</div>
+			{:else}
+				<Alert variant="info" title="No conversation yet">
+					<Text size="sm">Send the first message to start a new conversation.</Text>
+				</Alert>
+			{/if}
+
+			<div class="soul-register__form">
+				<TextArea bind:value={mintUserMessage} rows={3} placeholder="Ask about self-description, capabilities, boundaries, or transparency…" />
+				<div class="soul-register__row">
+					<Button variant="solid" onclick={() => void sendMintMessage(begin.registration.id)} disabled={mintStreaming}>
+						Send
+					</Button>
+				</div>
+
+				{#if mintStreaming}
+					<div class="soul-register__loading-inline">
+						<Spinner size="sm" />
+						<Text size="sm">Streaming…</Text>
+					</div>
+				{/if}
+			</div>
+
+			{#if mintProducedDeclarations}
+				<Card variant="outlined" padding="lg">
+					{#snippet header()}
+						<Heading level={4} size="lg">Produced declarations</Heading>
+					{/snippet}
+					<TextArea value={prettyJSON(mintProducedDeclarations)} readonly rows={14} />
+				</Card>
+			{/if}
+		</Card>
 	{/if}
 </div>
 
@@ -465,5 +842,16 @@
 	.soul-register__mono {
 		font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New',
 			monospace;
+	}
+
+	.soul-register__mint-controls {
+		margin-top: var(--gr-spacing-scale-4);
+	}
+
+	.soul-register__mint-thread {
+		display: flex;
+		flex-direction: column;
+		gap: var(--gr-spacing-scale-3);
+		margin-top: var(--gr-spacing-scale-4);
 	}
 </style>

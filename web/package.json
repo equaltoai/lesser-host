@@ -35,6 +35,7 @@
     "@apollo/client": "^4.1.5",
     "@apollo/client-react-streaming": "^0.14.4",
     "@graphql-typed-document-node/core": "^3.2.0",
+    "@noble/hashes": "^2.0.1",
     "focus-trap": "^8.0.0",
     "graphql": "^16.12.0",
     "graphql-ws": "^6.0.7",
