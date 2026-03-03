@@ -222,7 +222,11 @@ func (s *Server) requireActiveSoulAgentWithDomainAccess(ctx *apptheory.Context, 
 	if err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
-	if strings.TrimSpace(identity.Status) != models.SoulAgentStatusActive {
+	effectiveStatus := strings.TrimSpace(identity.LifecycleStatus)
+	if effectiveStatus == "" {
+		effectiveStatus = strings.TrimSpace(identity.Status)
+	}
+	if effectiveStatus != models.SoulAgentStatusActive {
 		return nil, &apptheory.AppError{Code: "app.conflict", Message: "agent is not active"}
 	}
 

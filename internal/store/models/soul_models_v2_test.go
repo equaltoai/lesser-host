@@ -20,6 +20,7 @@ func TestSoulAgentIdentity_V2Fields(t *testing.T) {
 		LifecycleStatus:        " ACTIVE ",
 		LifecycleReason:        " some reason ",
 		SuccessorAgentId:       " 0xSUCC ",
+		PredecessorAgentId:     " 0xPRED ",
 		SelfDescriptionVersion: 2,
 	}
 	require.NoError(t, a.BeforeCreate())
@@ -34,6 +35,7 @@ func TestSoulAgentIdentity_V2Fields(t *testing.T) {
 	require.Equal(t, "active", a.LifecycleStatus)
 	require.Equal(t, "some reason", a.LifecycleReason)
 	require.Equal(t, "0xsucc", a.SuccessorAgentId)
+	require.Equal(t, "0xpred", a.PredecessorAgentId)
 	require.Equal(t, 2, a.SelfDescriptionVersion)
 }
 

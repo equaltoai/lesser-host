@@ -212,7 +212,9 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 	app.Post("/api/v1/soul/agents/{agentId}/relationships", s.handleSoulCreateRelationship, apptheory.RequireAuth())
 
 	// v2: Lifecycle (archive + succession).
+	app.Post("/api/v1/soul/agents/{agentId}/archive/begin", s.handleSoulArchiveAgentBegin, apptheory.RequireAuth())
 	app.Post("/api/v1/soul/agents/{agentId}/archive", s.handleSoulArchiveAgent, apptheory.RequireAuth())
+	app.Post("/api/v1/soul/agents/{agentId}/successor/begin", s.handleSoulDesignateSuccessorBegin, apptheory.RequireAuth())
 	app.Post("/api/v1/soul/agents/{agentId}/successor", s.handleSoulDesignateSuccessor, apptheory.RequireAuth())
 
 	// v2: Minting conversation (LLM-assisted registration).

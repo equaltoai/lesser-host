@@ -71,6 +71,7 @@ export interface SoulAgentIdentity {
 	lifecycle_status?: string;
 	lifecycle_reason?: string;
 	successor_agent_id?: string;
+	predecessor_agent_id?: string;
 	principal_address?: string;
 	self_description_version?: number;
 	mint_tx_hash?: string;
@@ -715,15 +716,71 @@ export function soulSelfReinstate(token: string, agentId: string): Promise<SoulA
 	});
 }
 
-export function soulArchiveAgent(token: string, agentId: string): Promise<SoulAgentIdentity> {
-	return fetchJson<SoulAgentIdentity>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/archive`, {
+export interface SoulContinuityToSign {
+	agent_id: string;
+	type: string;
+	timestamp: string;
+	summary: string;
+	references?: string[];
+	digest_hex: string;
+}
+
+export interface SoulArchiveBeginResponse {
+	version: string;
+	entry: SoulContinuityToSign;
+}
+
+export function soulArchiveAgentBegin(token: string, agentId: string): Promise<SoulArchiveBeginResponse> {
+	return fetchJson<SoulArchiveBeginResponse>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/archive/begin`, {
 		method: 'POST',
 		headers: { authorization: `Bearer ${token}` },
 	});
 }
 
-export function soulDesignateSuccessor(token: string, agentId: string, successorAgentId: string): Promise<SoulAgentIdentity> {
+export function soulArchiveAgent(
+	token: string,
+	agentId: string,
+	input: { reason?: string; timestamp: string; signature: string },
+): Promise<SoulAgentIdentity> {
+	const req = jsonRequest(input);
+	return fetchJson<SoulAgentIdentity>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/archive`, {
+		method: 'POST',
+		headers: { authorization: `Bearer ${token}`, ...req.headers },
+		body: req.body,
+	});
+}
+
+export interface SoulDesignateSuccessorBeginResponse {
+	version: string;
+	predecessor_entry: SoulContinuityToSign;
+	successor_entry: SoulContinuityToSign;
+}
+
+export function soulDesignateSuccessorBegin(
+	token: string,
+	agentId: string,
+	successorAgentId: string,
+): Promise<SoulDesignateSuccessorBeginResponse> {
 	const req = jsonRequest({ successor_agent_id: successorAgentId });
+	return fetchJson<SoulDesignateSuccessorBeginResponse>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/successor/begin`, {
+		method: 'POST',
+		headers: { authorization: `Bearer ${token}`, ...req.headers },
+		body: req.body,
+	});
+}
+
+export function soulDesignateSuccessor(
+	token: string,
+	agentId: string,
+	input: {
+		successor_agent_id: string;
+		reason?: string;
+		timestamp: string;
+		predecessor_signature: string;
+		successor_signature: string;
+	},
+): Promise<SoulAgentIdentity> {
+	const req = jsonRequest(input);
 	return fetchJson<SoulAgentIdentity>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/successor`, {
 		method: 'POST',
 		headers: { authorization: `Bearer ${token}`, ...req.headers },

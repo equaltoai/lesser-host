@@ -31,7 +31,9 @@
 		soulAddBoundary,
 		soulSelfSuspend,
 		soulSelfReinstate,
+		soulArchiveAgentBegin,
 		soulArchiveAgent,
+		soulDesignateSuccessorBegin,
 		soulDesignateSuccessor,
 	} from 'src/lib/api/soul';
 	import { logout } from 'src/lib/auth/logout';
@@ -485,7 +487,28 @@
 		sovereigntyError = null;
 		sovereigntyLoading = true;
 		try {
-			await soulArchiveAgent(token, agentId);
+			const begin = await soulArchiveAgentBegin(token, agentId);
+
+			const provider = getEthereumProvider();
+			if (!provider) {
+				sovereigntyError = 'No wallet detected.';
+				return;
+			}
+			const wallet = agent?.agent?.wallet?.trim();
+			if (!wallet) {
+				sovereigntyError = 'Agent wallet is not available.';
+				return;
+			}
+
+			const accounts = await requestAccounts(provider);
+			const normalized = accounts.map((a) => a.toLowerCase());
+			if (!normalized.includes(wallet.toLowerCase())) {
+				sovereigntyError = `Connected wallet does not match agent wallet (${wallet}).`;
+				return;
+			}
+
+			const signature = await personalSign(provider, begin.entry.digest_hex, wallet);
+			await soulArchiveAgent(token, agentId, { timestamp: begin.entry.timestamp, signature });
 			await load();
 		} catch (err) {
 			if (await handleAuthError(err)) return;
@@ -504,7 +527,54 @@
 		}
 		sovereigntyLoading = true;
 		try {
-			await soulDesignateSuccessor(token, agentId, sid);
+			const begin = await soulDesignateSuccessorBegin(token, agentId, sid);
+
+			const provider = getEthereumProvider();
+			if (!provider) {
+				sovereigntyError = 'No wallet detected.';
+				return;
+			}
+
+			const predWallet = agent?.agent?.wallet?.trim();
+			if (!predWallet) {
+				sovereigntyError = 'Agent wallet is not available.';
+				return;
+			}
+
+			// Sign predecessor continuity entry with current agent wallet.
+			{
+				const accounts = await requestAccounts(provider);
+				const normalized = accounts.map((a) => a.toLowerCase());
+				if (!normalized.includes(predWallet.toLowerCase())) {
+					sovereigntyError = `Connected wallet does not match agent wallet (${predWallet}).`;
+					return;
+				}
+			}
+			const predecessorSignature = await personalSign(provider, begin.predecessor_entry.digest_hex, predWallet);
+
+			// Sign successor continuity entry with successor agent wallet.
+			const succ = await soulPublicGetAgent(sid);
+			const succWallet = succ?.agent?.wallet?.trim();
+			if (!succWallet) {
+				sovereigntyError = 'Successor agent wallet is not available.';
+				return;
+			}
+			{
+				const accounts = await requestAccounts(provider);
+				const normalized = accounts.map((a) => a.toLowerCase());
+				if (!normalized.includes(succWallet.toLowerCase())) {
+					sovereigntyError = `Connected wallet does not match successor wallet (${succWallet}).`;
+					return;
+				}
+			}
+			const successorSignature = await personalSign(provider, begin.successor_entry.digest_hex, succWallet);
+
+			await soulDesignateSuccessor(token, agentId, {
+				successor_agent_id: sid,
+				timestamp: begin.predecessor_entry.timestamp,
+				predecessor_signature: predecessorSignature,
+				successor_signature: successorSignature,
+			});
 			successorId = '';
 			await load();
 		} catch (err) {
@@ -617,6 +687,9 @@
 					{/if}
 					{#if current.agent.successor_agent_id}
 						<DefinitionItem label="Successor" monospace>{current.agent.successor_agent_id}</DefinitionItem>
+					{/if}
+					{#if current.agent.predecessor_agent_id}
+						<DefinitionItem label="Predecessor" monospace>{current.agent.predecessor_agent_id}</DefinitionItem>
 					{/if}
 					<DefinitionItem label="Updated" monospace>{current.agent.updated_at || '—'}</DefinitionItem>
 				</DefinitionList>
@@ -1038,12 +1111,14 @@
 					</div>
 
 					<div class="soul-agent__form">
-						<Text size="sm" color="secondary">Permanently archive this agent (one-way).</Text>
+						<Text size="sm" color="secondary">Permanently archive this agent (one-way). Requires a wallet signature.</Text>
 						<Button variant="outline" onclick={() => void doArchive()} disabled={sovereigntyLoading}>Archive</Button>
 					</div>
 
 					<div class="soul-agent__form">
-						<Text size="sm" color="secondary">Designate a successor agent (one-way, marks this agent as succeeded).</Text>
+						<Text size="sm" color="secondary">
+							Designate a successor agent (one-way, marks this agent as succeeded). Requires signatures from both wallets.
+						</Text>
 						<TextField label="Successor agent ID" bind:value={successorId} placeholder="0x…" />
 						<Button variant="outline" onclick={() => void doDesignateSuccessor()} disabled={sovereigntyLoading}>Designate successor</Button>
 					</div>

@@ -518,7 +518,10 @@ func (s *Server) filterSoulSearchEntries(ctx context.Context, entries []soulSear
 		if err != nil || identity == nil {
 			continue
 		}
-		agentStatus := strings.TrimSpace(identity.Status)
+		agentStatus := strings.TrimSpace(identity.LifecycleStatus)
+		if agentStatus == "" {
+			agentStatus = strings.TrimSpace(identity.Status)
+		}
 
 		// If no status filter, default to active-only.
 		if statusFilter == "" {
@@ -546,7 +549,10 @@ func (s *Server) soulSearchEntryPassesFilters(ctx context.Context, entry soulSea
 		return false, err
 	}
 
-	agentStatus := strings.TrimSpace(identity.Status)
+	agentStatus := strings.TrimSpace(identity.LifecycleStatus)
+	if agentStatus == "" {
+		agentStatus = strings.TrimSpace(identity.Status)
+	}
 	if params.Status == "" {
 		if agentStatus != models.SoulAgentStatusActive {
 			return false, nil
