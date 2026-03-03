@@ -40,6 +40,7 @@ export interface SoulSearchResponse {
 
 export function soulPublicSearch(input: {
 	q?: string;
+	domain?: string;
 	capability?: string;
 	claimLevel?: string;
 	boundary?: string;
@@ -49,6 +50,7 @@ export function soulPublicSearch(input: {
 }): Promise<SoulSearchResponse> {
 	const params = new URLSearchParams();
 	if (input.q) params.set('q', input.q);
+	if (input.domain) params.set('domain', input.domain);
 	if (input.capability) params.set('capability', input.capability);
 	if (input.claimLevel) params.set('claimLevel', input.claimLevel);
 	if (input.boundary) params.set('boundary', input.boundary);
@@ -294,6 +296,25 @@ export function soulAgentRotateWalletConfirm(
 	});
 }
 
+export interface SoulUpdateRegistrationResponse {
+	agent: SoulAgentIdentity;
+	s3_key?: string;
+	version?: number;
+}
+
+export function soulUpdateRegistration(
+	token: string,
+	agentId: string,
+	input: { registration: unknown; expected_version?: number },
+): Promise<SoulUpdateRegistrationResponse> {
+	const req = jsonRequest(input);
+	return fetchJson<SoulUpdateRegistrationResponse>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/update-registration`, {
+		method: 'POST',
+		headers: { authorization: `Bearer ${token}`, ...req.headers },
+		body: req.body,
+	});
+}
+
 export interface SoulPublicAgentResponse {
 	version: string;
 	agent: SoulAgentIdentity;
@@ -516,6 +537,23 @@ export function soulPublicGetContinuity(agentId: string, cursor?: string, limit:
 	return fetchJson<SoulPublicContinuityResponse>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/continuity${qs ? `?${qs}` : ''}`);
 }
 
+export interface SoulAppendContinuityResponse {
+	entry: SoulAgentContinuityEntry;
+}
+
+export function soulAppendContinuity(
+	token: string,
+	agentId: string,
+	input: { type: string; timestamp: string; summary: string; recovery?: string; references?: string[]; signature: string },
+): Promise<SoulAppendContinuityResponse> {
+	const req = jsonRequest(input);
+	return fetchJson<SoulAppendContinuityResponse>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/continuity`, {
+		method: 'POST',
+		headers: { authorization: `Bearer ${token}`, ...req.headers },
+		body: req.body,
+	});
+}
+
 // --- v2: Disputes ---
 
 export interface SoulAgentDispute {
@@ -586,6 +624,30 @@ export function soulPublicGetRelationships(
 	params.set('limit', String(limit));
 	const qs = params.toString();
 	return fetchJson<SoulPublicRelationshipsResponse>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/relationships${qs ? `?${qs}` : ''}`);
+}
+
+export interface SoulCreateRelationshipResponse {
+	relationship: SoulAgentRelationship;
+}
+
+export function soulCreateRelationship(
+	token: string,
+	toAgentId: string,
+	input: {
+		from_agent_id: string;
+		type: string;
+		context?: Record<string, unknown>;
+		message: string;
+		created_at: string;
+		signature: string;
+	},
+): Promise<SoulCreateRelationshipResponse> {
+	const req = jsonRequest(input);
+	return fetchJson<SoulCreateRelationshipResponse>(`/api/v1/soul/agents/${encodeURIComponent(toAgentId)}/relationships`, {
+		method: 'POST',
+		headers: { authorization: `Bearer ${token}`, ...req.headers },
+		body: req.body,
+	});
 }
 
 // --- v2: Versions ---

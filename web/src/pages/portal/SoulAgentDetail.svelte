@@ -3,6 +3,7 @@
 
 	import type { ApiError } from 'src/lib/api/http';
 	import type {
+		SoulMineAgentItem,
 		SoulPublicAgentResponse,
 		SoulPublicValidationsResponse,
 		SoulPublicBoundariesResponse,
@@ -13,10 +14,14 @@
 		SoulPublicFailuresResponse,
 		SoulRotateWalletBeginResponse,
 		SoulRotateWalletConfirmResponse,
+		SoulUpdateRegistrationResponse,
 	} from 'src/lib/api/soul';
 	import {
 		soulAgentRotateWalletBegin,
 		soulAgentRotateWalletConfirm,
+		soulAppendContinuity,
+		soulCreateRelationship,
+		soulListMyAgents,
 		soulPublicGetAgent,
 		soulPublicGetRegistration,
 		soulPublicGetValidations,
@@ -35,10 +40,12 @@
 		soulArchiveAgent,
 		soulDesignateSuccessorBegin,
 		soulDesignateSuccessor,
+		soulUpdateRegistration,
 	} from 'src/lib/api/soul';
 	import { logout } from 'src/lib/auth/logout';
 	import { navigate } from 'src/lib/router';
 	import { getEthereumProvider, personalSign, requestAccounts, signTypedDataV4 } from 'src/lib/wallet/ethereum';
+	import { jcsCanonicalize } from 'src/lib/wallet/jcs';
 	import { keccak256Utf8Hex } from 'src/lib/wallet/keccak';
 	import {
 		Alert,
@@ -73,6 +80,9 @@
 
 	let activeSection = $state('identity');
 
+	let myAgents = $state<SoulMineAgentItem[]>([]);
+	let myAgentsError = $state<string | null>(null);
+
 	// Wallet rotation state
 	let rotationNewWallet = $state('');
 	let rotationBeginLoading = $state(false);
@@ -106,11 +116,40 @@
 	let boundarySignature = $state('');
 	let boundarySignLoading = $state(false);
 
+	// Continuity append state
+	let continuityAddError = $state<string | null>(null);
+	let continuityAddLoading = $state(false);
+	let continuityType = $state('migration');
+	let continuityTimestamp = $state(new Date().toISOString());
+	let continuitySummary = $state('');
+	let continuityRecovery = $state('');
+	let continuityReferencesRaw = $state('');
+	let continuityCanonical = $state('');
+	let continuityDigestHex = $state('');
+	let continuitySignature = $state('');
+	let continuitySignLoading = $state(false);
+
 	const boundaryCategoryOptions = [
 		{ value: 'refusal', label: 'Refusal' },
 		{ value: 'scope_limit', label: 'Scope limit' },
 		{ value: 'ethical_commitment', label: 'Ethical commitment' },
 		{ value: 'circuit_breaker', label: 'Circuit breaker' },
+	];
+
+	const continuityTypeOptions = [
+		{ value: 'capability_acquired', label: 'Capability acquired' },
+		{ value: 'capability_deprecated', label: 'Capability deprecated' },
+		{ value: 'significant_failure', label: 'Significant failure' },
+		{ value: 'recovery', label: 'Recovery' },
+		{ value: 'boundary_added', label: 'Boundary added' },
+		{ value: 'migration', label: 'Migration' },
+		{ value: 'model_change', label: 'Model change' },
+		{ value: 'relationship_formed', label: 'Relationship formed' },
+		{ value: 'relationship_ended', label: 'Relationship ended' },
+		{ value: 'self_suspension', label: 'Self suspension' },
+		{ value: 'archived', label: 'Archived' },
+		{ value: 'succession_declared', label: 'Succession declared' },
+		{ value: 'succession_received', label: 'Succession received' },
 	];
 
 	// Relationship filter
@@ -123,6 +162,32 @@
 		{ value: 'trust_grant', label: 'Trust grant' },
 		{ value: 'trust_revocation', label: 'Trust revocation' },
 	];
+	const relCreateTypeOptions = relTypeOptions.filter((o) => o.value);
+
+	// Relationship creation state (creates relationship ABOUT this agent, signed by the "from" agent).
+	let relAddError = $state<string | null>(null);
+	let relAddLoading = $state(false);
+	let relFromAgentId = $state('');
+	let relType = $state('endorsement');
+	let relMessage = $state('');
+	let relContextRaw = $state('');
+	let relCreatedAt = $state(new Date().toISOString());
+	let relCanonical = $state('');
+	let relDigestHex = $state('');
+	let relSignature = $state('');
+	let relSignLoading = $state(false);
+
+	// Registration update state
+	let regDraft = $state('');
+	let regUpdateError = $state<string | null>(null);
+	let regUpdateLoading = $state(false);
+	let regCanonical = $state('');
+	let regDigestHex = $state('');
+	let regSignature = $state('');
+	let regSignLoading = $state(false);
+	let regExpectedVersion = $state<number | null>(null);
+	let regFrozenDraft = $state<string>('');
+	let regUpdateResult = $state<SoulUpdateRegistrationResponse | null>(null);
 
 	function formatError(err: unknown): string {
 		if (!err) return 'unknown error';
@@ -275,6 +340,426 @@
 		}
 	}
 
+	function parseReferences(raw: string): string[] {
+		const parts = raw
+			.split(/\r?\n/g)
+			.map((s) => s.trim())
+			.filter(Boolean);
+		return parts.length ? parts : [];
+	}
+
+	function computeContinuityDigest(): { type: string; timestamp: string; summary: string; recovery?: string; references?: string[] } | null {
+		continuityAddError = null;
+		continuityCanonical = '';
+		continuityDigestHex = '';
+
+		const type = continuityType.trim().toLowerCase();
+		const summary = continuitySummary.trim();
+		const recovery = continuityRecovery.trim();
+		const refs = parseReferences(continuityReferencesRaw);
+
+		if (!type) {
+			continuityAddError = 'Type is required.';
+			return null;
+		}
+		if (!summary) {
+			continuityAddError = 'Summary is required.';
+			return null;
+		}
+
+		let ts = continuityTimestamp.trim();
+		if (!ts) {
+			ts = new Date().toISOString();
+			continuityTimestamp = ts;
+		}
+		const parsed = new Date(ts);
+		if (Number.isNaN(parsed.getTime())) {
+			continuityAddError = 'Timestamp must be a valid RFC3339 date-time.';
+			return null;
+		}
+		const timestamp = parsed.toISOString();
+
+		const unsigned: Record<string, unknown> = { type, timestamp, summary };
+		if (recovery) unsigned.recovery = recovery;
+		if (refs.length) unsigned.references = refs;
+
+		try {
+			continuityCanonical = jcsCanonicalize(unsigned);
+		} catch (err) {
+			continuityAddError = formatError(err);
+			return null;
+		}
+		continuityDigestHex = keccak256Utf8Hex(continuityCanonical);
+
+		return {
+			type,
+			timestamp,
+			summary,
+			recovery: recovery || undefined,
+			references: refs.length ? refs : undefined,
+		};
+	}
+
+	async function signContinuity() {
+		continuityAddError = null;
+		continuitySignature = '';
+
+		const prepared = computeContinuityDigest();
+		if (!prepared) return;
+
+		const provider = getEthereumProvider();
+		if (!provider) {
+			continuityAddError = 'No wallet detected.';
+			return;
+		}
+
+		const wallet = agent?.agent?.wallet?.trim();
+		if (!wallet) {
+			continuityAddError = 'Agent wallet is not available.';
+			return;
+		}
+
+		continuitySignLoading = true;
+		try {
+			const accounts = await requestAccounts(provider);
+			const normalized = accounts.map((a) => a.toLowerCase());
+			if (!normalized.includes(wallet.toLowerCase())) {
+				continuityAddError = `Connected wallet does not match agent wallet (${wallet}).`;
+				return;
+			}
+
+			continuitySignature = await personalSign(provider, continuityDigestHex, wallet);
+		} catch (err) {
+			continuityAddError = formatError(err);
+		} finally {
+			continuitySignLoading = false;
+		}
+	}
+
+	async function submitContinuity() {
+		continuityAddError = null;
+
+		const prepared = computeContinuityDigest();
+		if (!prepared) return;
+		if (!continuitySignature.trim()) {
+			continuityAddError = 'Signature is required. Sign the digest first.';
+			return;
+		}
+
+		continuityAddLoading = true;
+		try {
+			await soulAppendContinuity(token, agentId, {
+				...prepared,
+				signature: continuitySignature.trim(),
+			});
+
+			continuityType = 'migration';
+			continuityTimestamp = new Date().toISOString();
+			continuitySummary = '';
+			continuityRecovery = '';
+			continuityReferencesRaw = '';
+			continuityCanonical = '';
+			continuityDigestHex = '';
+			continuitySignature = '';
+
+			continuity = await soulPublicGetContinuity(agentId, undefined, 50);
+			activeSection = 'continuity';
+		} catch (err) {
+			if (await handleAuthError(err)) return;
+			continuityAddError = formatError(err);
+		} finally {
+			continuityAddLoading = false;
+		}
+	}
+
+	function parseContextJSON(raw: string): Record<string, unknown> | undefined {
+		const trimmed = raw.trim();
+		if (!trimmed) return undefined;
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(trimmed) as unknown;
+		} catch {
+			throw new Error('Context must be valid JSON.');
+		}
+		if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+			throw new Error('Context must be a JSON object.');
+		}
+		return parsed as Record<string, unknown>;
+	}
+
+	function computeRelationshipDigest(): { from_agent_id: string; type: string; context?: Record<string, unknown>; message: string; created_at: string } | null {
+		relAddError = null;
+		relCanonical = '';
+		relDigestHex = '';
+
+		const fromAgent = relFromAgentId.trim().toLowerCase();
+		const toAgent = agentId.trim().toLowerCase();
+		const type = relType.trim().toLowerCase();
+		const message = relMessage.trim();
+
+		if (!fromAgent) {
+			relAddError = 'From agent is required.';
+			return null;
+		}
+		if (!type) {
+			relAddError = 'Type is required.';
+			return null;
+		}
+		if (!message) {
+			relAddError = 'Message is required.';
+			return null;
+		}
+
+		const parsed = new Date(relCreatedAt.trim() || new Date().toISOString());
+		if (Number.isNaN(parsed.getTime())) {
+			relAddError = 'created_at must be a valid RFC3339 date-time.';
+			return null;
+		}
+		const created_at = parsed.toISOString();
+		relCreatedAt = created_at;
+
+		let context: Record<string, unknown> | undefined;
+		try {
+			context = parseContextJSON(relContextRaw);
+		} catch (err) {
+			relAddError = formatError(err);
+			return null;
+		}
+
+		const unsigned: Record<string, unknown> = {
+			kind: 'soul_relationship',
+			version: '1',
+			fromAgentId: fromAgent,
+			toAgentId: toAgent,
+			type,
+			message,
+			createdAt: created_at,
+		};
+		if (context) unsigned.context = context;
+
+		try {
+			relCanonical = jcsCanonicalize(unsigned);
+		} catch (err) {
+			relAddError = formatError(err);
+			return null;
+		}
+		relDigestHex = keccak256Utf8Hex(relCanonical);
+
+		return {
+			from_agent_id: fromAgent,
+			type,
+			context,
+			message,
+			created_at,
+		};
+	}
+
+	async function signRelationship() {
+		relAddError = null;
+		relSignature = '';
+
+		const prepared = computeRelationshipDigest();
+		if (!prepared) return;
+
+		const provider = getEthereumProvider();
+		if (!provider) {
+			relAddError = 'No wallet detected.';
+			return;
+		}
+
+		const fromItem = myAgents.find((it) => it.agent.agent_id.toLowerCase() === prepared.from_agent_id.toLowerCase());
+		const wallet = fromItem?.agent?.wallet?.trim();
+		if (!wallet) {
+			relAddError = 'From-agent wallet is not available. Select one of your agents.';
+			return;
+		}
+
+		relSignLoading = true;
+		try {
+			const accounts = await requestAccounts(provider);
+			const normalized = accounts.map((a) => a.toLowerCase());
+			if (!normalized.includes(wallet.toLowerCase())) {
+				relAddError = `Connected wallet does not match from-agent wallet (${wallet}).`;
+				return;
+			}
+
+			relSignature = await personalSign(provider, relDigestHex, wallet);
+		} catch (err) {
+			relAddError = formatError(err);
+		} finally {
+			relSignLoading = false;
+		}
+	}
+
+	async function submitRelationship() {
+		relAddError = null;
+
+		const prepared = computeRelationshipDigest();
+		if (!prepared) return;
+		if (!relSignature.trim()) {
+			relAddError = 'Signature is required. Sign the digest first.';
+			return;
+		}
+
+		relAddLoading = true;
+		try {
+			await soulCreateRelationship(token, agentId, {
+				...prepared,
+				signature: relSignature.trim(),
+			});
+
+			relType = 'endorsement';
+			relFromAgentId = '';
+			relMessage = '';
+			relContextRaw = '';
+			relCreatedAt = new Date().toISOString();
+			relCanonical = '';
+			relDigestHex = '';
+			relSignature = '';
+
+			await loadRelationships();
+			activeSection = 'relationships';
+		} catch (err) {
+			if (await handleAuthError(err)) return;
+			relAddError = formatError(err);
+		} finally {
+			relAddLoading = false;
+		}
+	}
+
+	function loadRegistrationDraft() {
+		regUpdateError = null;
+		regUpdateResult = null;
+		regCanonical = '';
+		regDigestHex = '';
+		regSignature = '';
+		regFrozenDraft = '';
+		regExpectedVersion = agent?.agent?.self_description_version ?? null;
+		regDraft = registration ? prettyJSON(registration) : '';
+	}
+
+	function computeUpdateRegistrationDigest(): { registration: Record<string, unknown>; expected_version?: number } | null {
+		regUpdateError = null;
+		regCanonical = '';
+		regDigestHex = '';
+		regUpdateResult = null;
+
+		const raw = regDraft.trim();
+		if (!raw) {
+			regUpdateError = 'Registration JSON is required.';
+			return null;
+		}
+
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(raw) as unknown;
+		} catch {
+			regUpdateError = 'Registration must be valid JSON.';
+			return null;
+		}
+		if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+			regUpdateError = 'Registration must be a JSON object.';
+			return null;
+		}
+
+		const reg = parsed as Record<string, unknown>;
+		const attAny = reg.attestations as unknown;
+		if (!attAny || typeof attAny !== 'object' || Array.isArray(attAny)) {
+			regUpdateError = 'Registration must include attestations object.';
+			return null;
+		}
+
+		const unsigned = JSON.parse(JSON.stringify(reg)) as Record<string, unknown>;
+		const unsignedAtt = unsigned.attestations as Record<string, unknown>;
+		delete unsignedAtt.selfAttestation;
+
+		try {
+			regCanonical = jcsCanonicalize(unsigned);
+		} catch (err) {
+			regUpdateError = formatError(err);
+			return null;
+		}
+		regDigestHex = keccak256Utf8Hex(regCanonical);
+
+		regFrozenDraft = regDraft;
+		regExpectedVersion = agent?.agent?.self_description_version ?? null;
+
+		return { registration: reg, expected_version: regExpectedVersion ?? undefined };
+	}
+
+	async function signUpdateRegistration() {
+		regUpdateError = null;
+		regSignature = '';
+
+		const prepared = computeUpdateRegistrationDigest();
+		if (!prepared) return;
+
+		const provider = getEthereumProvider();
+		if (!provider) {
+			regUpdateError = 'No wallet detected.';
+			return;
+		}
+
+		const wallet = agent?.agent?.wallet?.trim();
+		if (!wallet) {
+			regUpdateError = 'Agent wallet is not available.';
+			return;
+		}
+
+		regSignLoading = true;
+		try {
+			const accounts = await requestAccounts(provider);
+			const normalized = accounts.map((a) => a.toLowerCase());
+			if (!normalized.includes(wallet.toLowerCase())) {
+				regUpdateError = `Connected wallet does not match agent wallet (${wallet}).`;
+				return;
+			}
+
+			regSignature = await personalSign(provider, regDigestHex, wallet);
+		} catch (err) {
+			regUpdateError = formatError(err);
+		} finally {
+			regSignLoading = false;
+		}
+	}
+
+	async function submitUpdateRegistration() {
+		regUpdateError = null;
+
+		if (regFrozenDraft.trim() && regDraft.trim() !== regFrozenDraft.trim()) {
+			regUpdateError = 'Draft changed after digest computation. Recompute the digest before publishing.';
+			return;
+		}
+
+		const prepared = computeUpdateRegistrationDigest();
+		if (!prepared) return;
+		if (!regSignature.trim()) {
+			regUpdateError = 'Signature is required. Sign the digest first.';
+			return;
+		}
+
+		const registrationObj = prepared.registration;
+		const att = registrationObj.attestations as Record<string, unknown>;
+		att.selfAttestation = regSignature.trim();
+
+		regUpdateLoading = true;
+		try {
+			regUpdateResult = await soulUpdateRegistration(token, agentId, {
+				registration: registrationObj,
+				expected_version: prepared.expected_version,
+			});
+
+			await load();
+			loadRegistrationDraft();
+			activeSection = 'registration';
+		} catch (err) {
+			if (await handleAuthError(err)) return;
+			regUpdateError = formatError(err);
+		} finally {
+			regUpdateLoading = false;
+		}
+	}
+
 	async function handleAuthError(err: unknown): Promise<boolean> {
 		if ((err as Partial<ApiError>).status === 401) {
 			await logout();
@@ -320,6 +805,10 @@
 			capabilities = settled[6].status === 'fulfilled' ? settled[6].value : null;
 			transparency = settled[7].status === 'fulfilled' ? settled[7].value : null;
 			failures = settled[8].status === 'fulfilled' ? settled[8].value : null;
+
+			if (!regDraft.trim() && registration) {
+				loadRegistrationDraft();
+			}
 		} catch (err) {
 			errorMessage = formatError(err);
 		} finally {
@@ -332,6 +821,21 @@
 			relationships = await soulPublicGetRelationships(agentId, relTypeFilter || undefined, undefined, 50);
 		} catch {
 			// ignore
+		}
+	}
+
+	async function loadMyAgents() {
+		myAgentsError = null;
+		try {
+			const res = await soulListMyAgents(token);
+			myAgents = res.agents ?? [];
+			if (!relFromAgentId) {
+				const first = myAgents.find((it) => it?.agent?.agent_id && it.agent.agent_id.toLowerCase() !== agentId.toLowerCase());
+				if (first?.agent?.agent_id) relFromAgentId = first.agent.agent_id;
+			}
+		} catch (err) {
+			if (await handleAuthError(err)) return;
+			myAgentsError = formatError(err);
 		}
 	}
 
@@ -607,6 +1111,7 @@
 
 	onMount(() => {
 		void load();
+		void loadMyAgents();
 	});
 </script>
 
@@ -869,6 +1374,56 @@
 					<Heading level={3} size="lg">Continuity</Heading>
 				{/snippet}
 
+				<Card variant="outlined" padding="md">
+					{#snippet header()}
+						<Heading level={4} size="lg">Append entry</Heading>
+					{/snippet}
+
+					{#if continuityAddError}
+						<Alert variant="error" title="Failed to append continuity entry">{continuityAddError}</Alert>
+					{/if}
+
+					<div class="soul-agent__form">
+						<Select options={continuityTypeOptions} value={continuityType} onchange={(value: string) => (continuityType = value)} />
+						<TextField label="Timestamp (RFC3339)" bind:value={continuityTimestamp} />
+						<TextArea label="Summary" bind:value={continuitySummary} rows={3} />
+						<TextArea label="Recovery (optional)" bind:value={continuityRecovery} rows={3} />
+						<TextArea label="References (one per line, optional)" bind:value={continuityReferencesRaw} rows={3} />
+						<div class="soul-agent__row">
+							<Button
+								variant="outline"
+								onclick={() => void computeContinuityDigest()}
+								disabled={continuityAddLoading || continuitySignLoading}
+							>
+								Compute digest
+							</Button>
+							<Button variant="outline" onclick={() => void signContinuity()} disabled={continuityAddLoading || continuitySignLoading}>
+								Sign
+							</Button>
+							<Button variant="solid" onclick={() => void submitContinuity()} disabled={continuityAddLoading}>Append</Button>
+						</div>
+					</div>
+
+					{#if continuityDigestHex}
+						<DefinitionList>
+							<DefinitionItem label="Digest" monospace>{continuityDigestHex}</DefinitionItem>
+						</DefinitionList>
+					{/if}
+					{#if continuityCanonical}
+						<TextArea label="Canonical payload (JCS)" value={continuityCanonical} readonly rows={6} />
+					{/if}
+					{#if continuitySignature}
+						<TextArea label="Signature" value={continuitySignature} readonly rows={2} />
+					{/if}
+
+					{#if continuityAddLoading}
+						<div class="soul-agent__loading-inline">
+							<Spinner size="sm" />
+							<Text size="sm">Appending…</Text>
+						</div>
+					{/if}
+				</Card>
+
 				{#if continuity?.entries?.length}
 					<div class="soul-agent__list">
 						{#each continuity.entries as entry, i (i)}
@@ -913,6 +1468,63 @@
 						</div>
 					</div>
 				{/snippet}
+
+				{@const fromAgentOptions = myAgents
+					.filter((it) => it?.agent?.agent_id && it.agent.agent_id.toLowerCase() !== agentId.toLowerCase())
+					.map((it) => ({ value: it.agent.agent_id, label: `${it.agent.domain}/${it.agent.local_id}` }))}
+
+				<Card variant="outlined" padding="md">
+					{#snippet header()}
+						<Heading level={4} size="lg">Create relationship</Heading>
+					{/snippet}
+
+					<Text size="sm" color="secondary">
+						Creates a relationship record about this agent (the “to” agent). The signature must come from the “from” agent’s wallet.
+					</Text>
+
+					{#if myAgentsError}
+						<Alert variant="error" title="Failed to load your agents">{myAgentsError}</Alert>
+					{/if}
+					{#if relAddError}
+						<Alert variant="error" title="Failed to create relationship">{relAddError}</Alert>
+					{/if}
+
+					<div class="soul-agent__form">
+						<Select options={fromAgentOptions} value={relFromAgentId} onchange={(value: string) => (relFromAgentId = value)} />
+						<Select options={relCreateTypeOptions} value={relType} onchange={(value: string) => (relType = value)} />
+						<TextArea label="Message" bind:value={relMessage} rows={3} />
+						<TextArea label="Context (JSON object, optional)" bind:value={relContextRaw} rows={4} />
+						<TextField label="created_at (RFC3339)" bind:value={relCreatedAt} />
+						<div class="soul-agent__row">
+							<Button variant="outline" onclick={() => void computeRelationshipDigest()} disabled={relAddLoading || relSignLoading}>
+								Compute digest
+							</Button>
+							<Button variant="outline" onclick={() => void signRelationship()} disabled={relAddLoading || relSignLoading}>
+								Sign
+							</Button>
+							<Button variant="solid" onclick={() => void submitRelationship()} disabled={relAddLoading}>Create</Button>
+						</div>
+					</div>
+
+					{#if relDigestHex}
+						<DefinitionList>
+							<DefinitionItem label="Digest" monospace>{relDigestHex}</DefinitionItem>
+						</DefinitionList>
+					{/if}
+					{#if relCanonical}
+						<TextArea label="Canonical payload (JCS)" value={relCanonical} readonly rows={6} />
+					{/if}
+					{#if relSignature}
+						<TextArea label="Signature" value={relSignature} readonly rows={2} />
+					{/if}
+
+					{#if relAddLoading}
+						<div class="soul-agent__loading-inline">
+							<Spinner size="sm" />
+							<Text size="sm">Creating…</Text>
+						</div>
+					{/if}
+				</Card>
 
 				{#if relationships?.relationships?.length}
 					<div class="soul-agent__list">
@@ -1074,12 +1686,47 @@
 					<Heading level={3} size="lg">Registration</Heading>
 				{/snippet}
 
-				{#if registration}
-					<TextArea value={prettyJSON(registration)} readonly rows={12} />
-				{:else}
-					<Alert variant="info" title="No registration file">
-						<Text size="sm">Registration file not found (yet).</Text>
+				{#if regUpdateError}
+					<Alert variant="error" title="Update failed">{regUpdateError}</Alert>
+				{/if}
+				{#if regUpdateResult?.version}
+					<Alert variant="success" title="Published">
+						<Text size="sm">Published version: v{regUpdateResult.version}</Text>
 					</Alert>
+				{/if}
+
+				<div class="soul-agent__form">
+					<TextArea label="Registration JSON" bind:value={regDraft} rows={16} />
+					<div class="soul-agent__row">
+						<Button variant="outline" onclick={() => loadRegistrationDraft()} disabled={regUpdateLoading}>Load current</Button>
+						<Button variant="outline" onclick={() => void computeUpdateRegistrationDigest()} disabled={regUpdateLoading || regSignLoading}>
+							Compute digest
+						</Button>
+						<Button variant="outline" onclick={() => void signUpdateRegistration()} disabled={regUpdateLoading || regSignLoading}>
+							Sign
+						</Button>
+						<Button variant="solid" onclick={() => void submitUpdateRegistration()} disabled={regUpdateLoading}>Publish</Button>
+					</div>
+				</div>
+
+				{#if regDigestHex}
+					<DefinitionList>
+						<DefinitionItem label="Expected version" monospace>{regExpectedVersion ?? '—'}</DefinitionItem>
+						<DefinitionItem label="Digest" monospace>{regDigestHex}</DefinitionItem>
+					</DefinitionList>
+				{/if}
+				{#if regCanonical}
+					<TextArea label="Canonical payload (JCS, unsigned)" value={regCanonical} readonly rows={8} />
+				{/if}
+				{#if regSignature}
+					<TextArea label="Signature" value={regSignature} readonly rows={2} />
+				{/if}
+
+				{#if regUpdateLoading}
+					<div class="soul-agent__loading-inline">
+						<Spinner size="sm" />
+						<Text size="sm">Publishing…</Text>
+					</div>
 				{/if}
 			</Card>
 		{/if}
