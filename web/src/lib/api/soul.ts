@@ -515,6 +515,42 @@ export function soulPublicGetContinuity(agentId: string, cursor?: string, limit:
 	return fetchJson<SoulPublicContinuityResponse>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/continuity${qs ? `?${qs}` : ''}`);
 }
 
+// --- v2: Disputes ---
+
+export interface SoulAgentDispute {
+	agent_id: string;
+	dispute_id: string;
+	signal_ref?: string;
+	evidence?: string;
+	statement?: string;
+	resolution?: string;
+	status: string;
+	created_at: string;
+	resolved_at?: string;
+}
+
+export interface SoulPublicDisputesResponse {
+	version: string;
+	disputes: SoulAgentDispute[];
+	count: number;
+	has_more: boolean;
+	next_cursor?: string;
+}
+
+export function soulPublicGetDisputes(agentId: string, cursor?: string, limit: number = 50): Promise<SoulPublicDisputesResponse> {
+	const params = new URLSearchParams();
+	if (cursor) params.set('cursor', cursor);
+	params.set('limit', String(limit));
+	const qs = params.toString();
+	return fetchJson<SoulPublicDisputesResponse>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/disputes${qs ? `?${qs}` : ''}`);
+}
+
+export function soulPublicGetDispute(agentId: string, disputeId: string): Promise<SoulAgentDispute> {
+	return fetchJson<SoulAgentDispute>(
+		`/api/v1/soul/agents/${encodeURIComponent(agentId)}/disputes/${encodeURIComponent(disputeId)}`,
+	);
+}
+
 // --- v2: Relationships ---
 
 export interface SoulAgentRelationship {

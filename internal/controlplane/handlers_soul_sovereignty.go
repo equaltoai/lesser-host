@@ -7,6 +7,7 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
+	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/store/models"
@@ -29,6 +30,16 @@ type soulValidationOptInRequest struct {
 	Status   string `json:"status,omitempty"`   // "accepted" or "declined" (legacy)
 	Accepted *bool  `json:"accepted,omitempty"` // true=accepted, false=declined (SPEC)
 	Reason   string `json:"reason,omitempty"`
+}
+
+// --- Response types ---
+
+type soulListDisputesResponse struct {
+	Version    string                    `json:"version"`
+	Disputes   []models.SoulAgentDispute `json:"disputes"`
+	Count      int                       `json:"count"`
+	HasMore    bool                      `json:"has_more"`
+	NextCursor string                    `json:"next_cursor,omitempty"`
 }
 
 // --- Handlers ---
@@ -317,4 +328,99 @@ func (s *Server) handleSoulCreateDispute(ctx *apptheory.Context) (*apptheory.Res
 	})
 
 	return apptheory.JSON(http.StatusCreated, dispute)
+}
+
+// handleSoulPublicGetDisputes returns paginated disputes for an agent.
+func (s *Server) handleSoulPublicGetDisputes(ctx *apptheory.Context) (*apptheory.Response, error) {
+	if appErr := requireStoreDB(s); appErr != nil {
+		return nil, appErr
+	}
+	if !s.cfg.SoulEnabled {
+		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
+	}
+
+	agentIDHex, _, appErr := parseSoulAgentIDHex(ctx.Param("agentId"))
+	if appErr != nil {
+		return nil, appErr
+	}
+
+	cursor := strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "cursor"))
+	limit := int(envInt64PositiveFromString(httpx.FirstQueryValue(ctx.Request.Query, "limit"), 50))
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+
+	var items []*models.SoulAgentDispute
+	qb := s.store.DB.WithContext(ctx.Context()).
+		Model(&models.SoulAgentDispute{}).
+		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentIDHex)).
+		Where("SK", "BEGINS_WITH", "DISPUTE#").
+		OrderBy("SK", "DESC").
+		Limit(limit)
+	if cursor != "" {
+		qb = qb.Cursor(cursor)
+	}
+
+	paged, err := qb.AllPaginated(&items)
+	if err != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list disputes"}
+	}
+
+	out := make([]models.SoulAgentDispute, 0, len(items))
+	for _, item := range items {
+		if item == nil {
+			continue
+		}
+		out = append(out, *item)
+	}
+
+	nextCursor := ""
+	hasMore := false
+	if paged != nil {
+		nextCursor = strings.TrimSpace(paged.NextCursor)
+		hasMore = paged.HasMore
+	}
+
+	resp, err := apptheory.JSON(http.StatusOK, soulListDisputesResponse{
+		Version:    "1",
+		Disputes:   out,
+		Count:      len(out),
+		HasMore:    hasMore,
+		NextCursor: nextCursor,
+	})
+	if err != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	s.setSoulPublicHeaders(ctx, resp, "public, max-age=60")
+	return resp, nil
+}
+
+func (s *Server) handleSoulPublicGetDispute(ctx *apptheory.Context) (*apptheory.Response, error) {
+	if appErr := requireStoreDB(s); appErr != nil {
+		return nil, appErr
+	}
+	if !s.cfg.SoulEnabled {
+		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
+	}
+
+	agentIDHex, _, appErr := parseSoulAgentIDHex(ctx.Param("agentId"))
+	if appErr != nil {
+		return nil, appErr
+	}
+	disputeID := strings.TrimSpace(ctx.Param("disputeId"))
+	if disputeID == "" {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "disputeId is required"}
+	}
+
+	dispute, err := getSoulAgentItemBySK[models.SoulAgentDispute](s, ctx.Context(), agentIDHex, fmt.Sprintf("DISPUTE#%s", disputeID))
+	if theoryErrors.IsNotFound(err) {
+		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
+	}
+	if err != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	return apptheory.JSON(http.StatusOK, dispute)
 }

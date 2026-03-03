@@ -106,6 +106,7 @@ type soulLifecycleTestDB struct {
 	qVersion    *ttmocks.MockQuery
 	qBoundary   *ttmocks.MockQuery
 	qContinuity *ttmocks.MockQuery
+	qDispute    *ttmocks.MockQuery
 }
 
 func newSoulLifecycleTestDB() soulLifecycleTestDB {
@@ -121,6 +122,7 @@ func newSoulLifecycleTestDB() soulLifecycleTestDB {
 	qVersion := new(ttmocks.MockQuery)
 	qBoundary := new(ttmocks.MockQuery)
 	qContinuity := new(ttmocks.MockQuery)
+	qDispute := new(ttmocks.MockQuery)
 
 	db.On("WithContext", mock.Anything).Return(db).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.Domain")).Return(qDomain).Maybe()
@@ -134,6 +136,7 @@ func newSoulLifecycleTestDB() soulLifecycleTestDB {
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentVersion")).Return(qVersion).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentBoundary")).Return(qBoundary).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentContinuity")).Return(qContinuity).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentDispute")).Return(qDispute).Maybe()
 
 	for _, q := range []*ttmocks.MockQuery{
 		qDomain,
@@ -147,6 +150,7 @@ func newSoulLifecycleTestDB() soulLifecycleTestDB {
 		qVersion,
 		qBoundary,
 		qContinuity,
+		qDispute,
 	} {
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("Index", mock.Anything).Return(q).Maybe()
@@ -174,6 +178,7 @@ func newSoulLifecycleTestDB() soulLifecycleTestDB {
 		qVersion:    qVersion,
 		qBoundary:   qBoundary,
 		qContinuity: qContinuity,
+		qDispute:    qDispute,
 	}
 }
 

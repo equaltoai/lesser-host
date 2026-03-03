@@ -200,6 +200,8 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 	app.Get("/api/v1/soul/agents/{agentId}/versions", s.handleSoulPublicGetVersions)
 
 	// v2: Sovereignty (self-suspend, self-reinstate, validation opt-in, disputes).
+	app.Get("/api/v1/soul/agents/{agentId}/disputes", s.handleSoulPublicGetDisputes)
+	app.Get("/api/v1/soul/agents/{agentId}/disputes/{disputeId}", s.handleSoulPublicGetDispute)
 	app.Post("/api/v1/soul/agents/{agentId}/self-suspend", s.handleSoulSelfSuspend, apptheory.RequireAuth())
 	app.Post("/api/v1/soul/agents/{agentId}/self-reinstate", s.handleSoulSelfReinstate, apptheory.RequireAuth())
 	app.Post("/api/v1/soul/agents/{agentId}/validations/challenges/{challengeId}/opt-in", s.handleSoulValidationOptIn, apptheory.RequireAuth())
