@@ -80,3 +80,45 @@ func (i *SoulPhoneAgentIndex) GetPK() string { return i.PK }
 
 // GetSK returns the sort key for SoulPhoneAgentIndex.
 func (i *SoulPhoneAgentIndex) GetSK() string { return i.SK }
+
+// SoulChannelAgentIndex is a materialized index for searching agents by channel type.
+//
+// Keys:
+//
+//	PK: SOUL#CHANNEL#{channelType}
+//	SK: DOMAIN#{normalizedDomain}#LOCAL#{normalizedLocalAgentId}#AGENT#{agentId}
+type SoulChannelAgentIndex struct {
+	_ struct{} `theorydb:"naming:camelCase"`
+
+	PK string `theorydb:"pk,attr:PK" json:"-"`
+	SK string `theorydb:"sk,attr:SK" json:"-"`
+
+	ChannelType string `theorydb:"attr:channelType" json:"channel_type"` // email|phone
+	Domain      string `theorydb:"attr:domain" json:"domain"`
+	LocalID     string `theorydb:"attr:localId" json:"local_id"`
+	AgentID     string `theorydb:"attr:agentId" json:"agent_id"`
+}
+
+// TableName returns the database table name for SoulChannelAgentIndex.
+func (SoulChannelAgentIndex) TableName() string { return MainTableName() }
+
+// BeforeCreate sets defaults and keys before creating SoulChannelAgentIndex.
+func (i *SoulChannelAgentIndex) BeforeCreate() error { return i.UpdateKeys() }
+
+// UpdateKeys updates the database keys for SoulChannelAgentIndex.
+func (i *SoulChannelAgentIndex) UpdateKeys() error {
+	i.ChannelType = strings.ToLower(strings.TrimSpace(i.ChannelType))
+	i.Domain = strings.ToLower(strings.TrimSpace(i.Domain))
+	i.LocalID = normalizeSoulLocalID(i.LocalID)
+	i.AgentID = strings.ToLower(strings.TrimSpace(i.AgentID))
+
+	i.PK = fmt.Sprintf("SOUL#CHANNEL#%s", i.ChannelType)
+	i.SK = fmt.Sprintf("DOMAIN#%s#LOCAL#%s#AGENT#%s", i.Domain, i.LocalID, i.AgentID)
+	return nil
+}
+
+// GetPK returns the partition key for SoulChannelAgentIndex.
+func (i *SoulChannelAgentIndex) GetPK() string { return i.PK }
+
+// GetSK returns the sort key for SoulChannelAgentIndex.
+func (i *SoulChannelAgentIndex) GetSK() string { return i.SK }

@@ -54,6 +54,24 @@ func TestSoulPhoneAgentIndex_Keys(t *testing.T) {
 	require.Equal(t, "0xabc", i.AgentID)
 }
 
+func TestSoulChannelAgentIndex_Keys(t *testing.T) {
+	t.Parallel()
+
+	i := &SoulChannelAgentIndex{
+		ChannelType: " Email ",
+		Domain:      " Example.COM ",
+		LocalID:     " @Bob/ ",
+		AgentID:     " 0xABC ",
+	}
+	require.NoError(t, i.BeforeCreate())
+	require.Equal(t, "SOUL#CHANNEL#email", i.PK)
+	require.Equal(t, "DOMAIN#example.com#LOCAL#bob#AGENT#0xabc", i.SK)
+	require.Equal(t, "email", i.ChannelType)
+	require.Equal(t, "example.com", i.Domain)
+	require.Equal(t, "bob", i.LocalID)
+	require.Equal(t, "0xabc", i.AgentID)
+}
+
 func TestSoulAgentContactPreferences_Keys(t *testing.T) {
 	t.Parallel()
 

@@ -310,6 +310,16 @@ func (s *Server) syncSoulV3StateFromRegistration(ctx context.Context, agentIDHex
 			if existing != nil {
 				_ = s.store.DB.WithContext(ctx).Model(existing).Delete()
 			}
+			if (channelType == models.SoulChannelTypeEmail || channelType == models.SoulChannelTypePhone) && strings.TrimSpace(identity.Domain) != "" && strings.TrimSpace(identity.LocalID) != "" {
+				idx := &models.SoulChannelAgentIndex{
+					ChannelType: channelType,
+					Domain:      strings.TrimSpace(identity.Domain),
+					LocalID:     strings.TrimSpace(identity.LocalID),
+					AgentID:     agentIDHex,
+				}
+				_ = idx.UpdateKeys()
+				_ = s.store.DB.WithContext(ctx).Model(idx).Delete()
+			}
 			return nil
 		}
 
@@ -333,6 +343,18 @@ func (s *Server) syncSoulV3StateFromRegistration(ctx context.Context, agentIDHex
 			_ = desiredENS.UpdateKeys()
 			if err := s.store.DB.WithContext(ctx).Model(desiredENS).CreateOrUpdate(); err != nil {
 				return &apptheory.AppError{Code: "app.internal", Message: "failed to update ens resolution"}
+			}
+		}
+		if (channelType == models.SoulChannelTypeEmail || channelType == models.SoulChannelTypePhone) && strings.TrimSpace(identity.Domain) != "" && strings.TrimSpace(identity.LocalID) != "" {
+			idx := &models.SoulChannelAgentIndex{
+				ChannelType: channelType,
+				Domain:      strings.TrimSpace(identity.Domain),
+				LocalID:     strings.TrimSpace(identity.LocalID),
+				AgentID:     agentIDHex,
+			}
+			_ = idx.UpdateKeys()
+			if err := s.store.DB.WithContext(ctx).Model(idx).CreateOrUpdate(); err != nil {
+				return &apptheory.AppError{Code: "app.internal", Message: "failed to update channel index"}
 			}
 		}
 		return nil
