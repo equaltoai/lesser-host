@@ -4,8 +4,8 @@ You are the implementation agent for the `lesser-host` repo. Follow this plan ex
 
 Constraints and facts:
 - Reserved wallets that must never be used as instance wallets:
-- `0x80189edb676d51b2fb2257b2ad38e018b20ca46e` (lesser.host admin wallet)
-- `0x1e14865a53a994b01b9ccfef42669dc0bfe98805` (Safe + 1% recipient, `TipSplitter.lesserWallet`)
+- `<LESSER_HOST_ADMIN_WALLET>` (lesser.host admin wallet)
+- `<TIP_SPLITTER_LESSER_WALLET>` (Safe + 1% recipient, `TipSplitter.lesserWallet`)
 - Provisioning is blocked until a user is approved by an admin.
 - Provisioning flow: user submits slug + optional admin username (default exactly to slug), then wallet signature to consent, then provisioning job is created.
 - Stage behavior: lab provisions lab instance, live provisions live instance.

@@ -162,12 +162,12 @@ account. This repo now ships a small **org bootstrap CDK app** that creates/upda
 **Deploy once in the org account:**
 
 ```bash
-cd cdk
-AWS_PROFILE=<org-admin-profile> npx cdk deploy --app "npx ts-node --prefer-ts-exts bin/org-bootstrap.ts" \
-  -c orgBootstrapControlPlaneAccountId=693925625407 \
-  -c managedOrgVendingRoleName=lesser-host-org-vending \
-  -c orgBootstrapStackName=lesser-host-org-bootstrap
-```
+	cd cdk
+	AWS_PROFILE=<org-admin-profile> npx cdk deploy --app "npx ts-node --prefer-ts-exts bin/org-bootstrap.ts" \
+	  -c orgBootstrapControlPlaneAccountId=<CONTROL_PLANE_ACCOUNT_ID> \
+	  -c managedOrgVendingRoleName=lesser-host-org-vending \
+	  -c orgBootstrapStackName=lesser-host-org-bootstrap
+	```
 
 This stack creates the `lesser-host-org-vending` role with permissions for:
 - `organizations:CreateAccount`

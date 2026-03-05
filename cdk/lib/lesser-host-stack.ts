@@ -635,15 +635,15 @@ export class LesserHostStack extends cdk.Stack {
 		});
 
 		const repoRoot = this.repoRoot();
-		const renderWorkerFn = new lambda.DockerImageFunction(this, 'RenderWorker', {
-			functionName: `${namePrefix}-render-worker`,
-			code: lambda.DockerImageCode.fromImageAsset(repoRoot, {
-				file: 'cmd/render-worker/Dockerfile',
-				exclude: ['cdk/cdk.out/**', 'cdk/node_modules/**', 'cdk/.build/**', '.git/**'],
-			}),
-			memorySize: 1536,
-			timeout: cdk.Duration.seconds(30),
-			environment: {
+			const renderWorkerFn = new lambda.DockerImageFunction(this, 'RenderWorker', {
+				functionName: `${namePrefix}-render-worker`,
+				code: lambda.DockerImageCode.fromImageAsset(repoRoot, {
+					file: 'cmd/render-worker/Dockerfile',
+					exclude: ['cdk/cdk.out/**', 'cdk/node_modules/**', 'cdk/.build/**', '.git/**', '**/.env'],
+				}),
+				memorySize: 1536,
+				timeout: cdk.Duration.seconds(30),
+				environment: {
 				STAGE: stage,
 				STATE_TABLE_NAME: stateTable.tableName,
 				ARTIFACT_BUCKET_NAME: artifactsBucket.bucketName,

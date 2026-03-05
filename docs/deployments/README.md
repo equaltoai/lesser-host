@@ -1,6 +1,9 @@
 # Deployments
 
-This directory is the canonical, in-repo place to track **latest on-chain contract deployments** and the **required post-deploy admin calls** (Safe-ready calldata).
+This directory is the canonical place to track **latest on-chain contract deployments** and the **required post-deploy admin calls** (Safe-ready calldata).
+
+In the public repo, deployment manifests are gitignored by default (see `.gitignore`) because they often include
+environment-specific operational details.
 
 Conventions:
 
@@ -10,6 +13,6 @@ Conventions:
 - Keep `latest.json` free of secrets (SSM parameter *names* are OK; values are not).
 - When deploying new contracts:
   1. Deploy contracts (Hardhat scripts in `contracts/`).
-  2. Update `docs/deployments/<network>/latest.json` with addresses + tx hashes + required Safe calls.
-  3. Update `cdk/cdk.json` context keys to point `lesser-host` at the new addresses.
+  2. Update your local `docs/deployments/<network>/latest.json` with addresses + tx hashes + required Safe calls.
+  3. Update `cdk/cdk.context.local.json` (not committed) to point `lesser-host` at the new addresses.
   4. Deploy `lesser-host` for the relevant stage.

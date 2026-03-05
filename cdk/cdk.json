@@ -4,14 +4,14 @@
     "@aws-cdk/core:newStyleStackSynthesis": true,
 
     "webRootDomain": "lesser.host",
-    "webHostedZoneId": "Z0051991INEKM5CN2M42",
+    "webHostedZoneId": "<YOUR_HOSTED_ZONE_ID>",
     "webHostedZoneName": "lesser.host",
 
-    "bootstrapWalletAddress": "0x80189edB676D51b2FB2257B2AD38e018B20CA46E",
+    "bootstrapWalletAddress": "<YOUR_BOOTSTRAP_WALLET_ADDRESS>",
 
     "tipEnabledLab": "true",
     "tipChainIdLab": "11155111",
-    "tipContractAddressLab": "0x9bbD1A446F957b1f648145a23904Cb37F568C8B9",
+    "tipContractAddressLab": "<YOUR_TIP_CONTRACT_ADDRESS_LAB>",
     "tipRpcUrlSsmParamLab": "/lesser-host/api/infura/sepolia",
 
     "tipEnabledLive": "false",
@@ -21,9 +21,9 @@
 
     "soulEnabledLab": "true",
     "soulChainIdLab": "11155111",
-    "soulRegistryContractAddressLab": "0xA1F0e8d99E1d970CbA65ac2DB689e4dfe448b5BB",
-    "soulReputationAttestationContractAddressLab": "0xad7A3db418fda93E33DcFe21E1217B001D2909F2",
-    "soulValidationAttestationContractAddressLab": "0x41E48F21B95a54f9a4bfAC5515739cE8F6E3eA4c",
+    "soulRegistryContractAddressLab": "<YOUR_SOUL_REGISTRY_CONTRACT_ADDRESS_LAB>",
+    "soulReputationAttestationContractAddressLab": "<YOUR_SOUL_REPUTATION_ATTESTATION_CONTRACT_ADDRESS_LAB>",
+    "soulValidationAttestationContractAddressLab": "<YOUR_SOUL_VALIDATION_ATTESTATION_CONTRACT_ADDRESS_LAB>",
     "soulRpcUrlSsmParamLab": "/lesser-host/api/infura/sepolia",
 
     "soulEnabledLive": "false",
@@ -34,12 +34,12 @@
     "soulMintSignerKeySsmParamLab": "/lesser-host/soul/lab/mint-signer-key",
     "soulMintSignerKeySsmParamLive": "/lesser-host/soul/live/mint-signer-key",
 
-    "soulAdminSafeAddress": "0xfE63333F303D4f7b2354f7E3eca752C812D65907",
+    "soulAdminSafeAddress": "<YOUR_SOUL_ADMIN_SAFE_ADDRESS>",
     "soulTxMode": "safe",
     "soulSupportedCapabilities": "social,commerce",
 
-    "tipAdminSafeAddress": "0xfE63333F303D4f7b2354f7E3eca752C812D65907",
-    "tipDefaultHostWalletAddress": "0x5B38Da6a701c568545dCfcB03FcB875f56beddC4",
+    "tipAdminSafeAddress": "<YOUR_TIP_ADMIN_SAFE_ADDRESS>",
+    "tipDefaultHostWalletAddress": "<YOUR_TIP_DEFAULT_HOST_WALLET_ADDRESS>",
     "tipDefaultHostFeeBps": "500",
     "tipTxMode": "safe",
 
@@ -47,14 +47,14 @@
     "webauthnOrigins": "https://lab.lesser.host,https://lesser.host",
 
     "managedProvisioningEnabled": "true",
-    "managedOrgVendingRoleArn": "arn:aws:iam::902552026581:role/lesser-host-org-vending",
+    "managedOrgVendingRoleArn": "arn:aws:iam::<YOUR_ORG_ACCOUNT_ID>:role/lesser-host-org-vending",
     "managedOrgVendingRoleName": "lesser-host-org-vending",
-    "orgBootstrapControlPlaneAccountId": "693925625407",
+    "orgBootstrapControlPlaneAccountId": "<YOUR_CONTROL_PLANE_ACCOUNT_ID>",
     "orgBootstrapStackName": "lesser-host-org-bootstrap",
     "managedParentDomain": "greater.website",
-    "managedParentHostedZoneId": "Z0830280V8754TDWDDF",
-    "managedAccountEmailTemplateLab": "aron+lab-{slug}@equal-to.ai",
-    "managedAccountEmailTemplateLive": "aron+{slug}@equal-to.ai",
+    "managedParentHostedZoneId": "<YOUR_MANAGED_PARENT_HOSTED_ZONE_ID>",
+    "managedAccountEmailTemplateLab": "<YOUR_EMAIL>+lab-{slug}@<YOUR_DOMAIN>",
+    "managedAccountEmailTemplateLive": "<YOUR_EMAIL>+{slug}@<YOUR_DOMAIN>",
     "managedDefaultRegion": "us-east-1",
     "managedLesserDefaultVersion": "v1.1.20",
     "managedLesserBodyDefaultVersion": "v.0.1.3"
