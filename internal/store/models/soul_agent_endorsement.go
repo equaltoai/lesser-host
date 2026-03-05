@@ -35,7 +35,19 @@ func (e *SoulAgentPeerEndorsement) BeforeCreate() error {
 	if e.CreatedAt.IsZero() {
 		e.CreatedAt = time.Now().UTC()
 	}
-	return e.UpdateKeys()
+	if err := e.UpdateKeys(); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("agentId", e.AgentID); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("endorserAgentId", e.EndorserAgentID); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("signature", e.Signature); err != nil {
+		return err
+	}
+	return nil
 }
 
 // UpdateKeys updates the database keys for SoulAgentPeerEndorsement.

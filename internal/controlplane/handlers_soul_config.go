@@ -8,13 +8,23 @@ import (
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 )
 
+type soulConfigReputationWeights struct {
+	Economic       float64 `json:"economic"`
+	Social         float64 `json:"social"`
+	Validation     float64 `json:"validation"`
+	Trust          float64 `json:"trust"`
+	Integrity      float64 `json:"integrity"`
+	Communication  float64 `json:"communication"`
+}
+
 type soulConfigResponse struct {
-	Enabled                 bool     `json:"enabled"`
-	ChainID                 int64    `json:"chain_id"`
-	RegistryContractAddress string   `json:"registry_contract_address"`
-	AdminSafeAddress        string   `json:"admin_safe_address,omitempty"`
-	TxMode                  string   `json:"tx_mode,omitempty"`
-	SupportedCapabilities   []string `json:"supported_capabilities,omitempty"`
+	Enabled                 bool                        `json:"enabled"`
+	ChainID                 int64                       `json:"chain_id"`
+	RegistryContractAddress string                      `json:"registry_contract_address"`
+	AdminSafeAddress        string                      `json:"admin_safe_address,omitempty"`
+	TxMode                  string                      `json:"tx_mode,omitempty"`
+	SupportedCapabilities   []string                    `json:"supported_capabilities,omitempty"`
+	ReputationWeights       *soulConfigReputationWeights `json:"reputation_weights,omitempty"`
 }
 
 func (s *Server) requireSoulRegistryConfigured() *apptheory.AppError {
@@ -59,6 +69,14 @@ func (s *Server) handleSoulConfig(ctx *apptheory.Context) (*apptheory.Response, 
 		AdminSafeAddress:        strings.ToLower(strings.TrimSpace(s.cfg.SoulAdminSafeAddress)),
 		TxMode:                  strings.ToLower(strings.TrimSpace(s.cfg.SoulTxMode)),
 		SupportedCapabilities:   caps,
+		ReputationWeights: &soulConfigReputationWeights{
+			Economic:      s.cfg.SoulReputationWeightEconomic,
+			Social:        s.cfg.SoulReputationWeightSocial,
+			Validation:    s.cfg.SoulReputationWeightValidation,
+			Trust:         s.cfg.SoulReputationWeightTrust,
+			Integrity:     s.cfg.SoulReputationWeightIntegrity,
+			Communication: s.cfg.SoulReputationWeightCommunication,
+		},
 	})
 	if err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}

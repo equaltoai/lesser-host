@@ -33,8 +33,7 @@ type operatorProvisionJobListItem struct {
 	ErrorMessage string `json:"error_message,omitempty"`
 	RequestID    string `json:"request_id,omitempty"`
 
-	HasReceipt     bool `json:"has_receipt"`
-	HasSoulReceipt bool `json:"has_soul_receipt"`
+	HasReceipt bool `json:"has_receipt"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -58,8 +57,7 @@ type operatorProvisionJobDetail struct {
 	ChildHostedZoneID  string   `json:"child_hosted_zone_id,omitempty"`
 	ChildNameServers   []string `json:"child_name_servers,omitempty"`
 
-	ReceiptJSON     string `json:"receipt_json,omitempty"`
-	SoulReceiptJSON string `json:"soul_receipt_json,omitempty"`
+	ReceiptJSON string `json:"receipt_json,omitempty"`
 }
 
 type listOperatorProvisionJobsResponse struct {
@@ -82,23 +80,21 @@ func operatorProvisionJobListItemFromModel(j *models.ProvisionJob) operatorProvi
 		return operatorProvisionJobListItem{}
 	}
 	receipt := strings.TrimSpace(j.ReceiptJSON)
-	soulReceipt := strings.TrimSpace(j.SoulReceiptJSON)
 	return operatorProvisionJobListItem{
-		ID:             strings.TrimSpace(j.ID),
-		InstanceSlug:   strings.TrimSpace(j.InstanceSlug),
-		Status:         strings.TrimSpace(j.Status),
-		Step:           strings.TrimSpace(j.Step),
-		Note:           strings.TrimSpace(j.Note),
-		RunID:          strings.TrimSpace(j.RunID),
-		Attempts:       j.Attempts,
-		MaxAttempts:    j.MaxAttempts,
-		ErrorCode:      strings.TrimSpace(j.ErrorCode),
-		ErrorMessage:   strings.TrimSpace(j.ErrorMessage),
-		RequestID:      strings.TrimSpace(j.RequestID),
-		HasReceipt:     receipt != "",
-		HasSoulReceipt: soulReceipt != "",
-		CreatedAt:      j.CreatedAt,
-		UpdatedAt:      j.UpdatedAt,
+		ID:           strings.TrimSpace(j.ID),
+		InstanceSlug: strings.TrimSpace(j.InstanceSlug),
+		Status:       strings.TrimSpace(j.Status),
+		Step:         strings.TrimSpace(j.Step),
+		Note:         strings.TrimSpace(j.Note),
+		RunID:        strings.TrimSpace(j.RunID),
+		Attempts:     j.Attempts,
+		MaxAttempts:  j.MaxAttempts,
+		ErrorCode:    strings.TrimSpace(j.ErrorCode),
+		ErrorMessage: strings.TrimSpace(j.ErrorMessage),
+		RequestID:    strings.TrimSpace(j.RequestID),
+		HasReceipt:   receipt != "",
+		CreatedAt:    j.CreatedAt,
+		UpdatedAt:    j.UpdatedAt,
 	}
 }
 
@@ -122,7 +118,6 @@ func operatorProvisionJobDetailFromModel(j *models.ProvisionJob) operatorProvisi
 		ChildHostedZoneID:            strings.TrimSpace(j.ChildHostedZoneID),
 		ChildNameServers:             append([]string(nil), j.ChildNameServers...),
 		ReceiptJSON:                  strings.TrimSpace(j.ReceiptJSON),
-		SoulReceiptJSON:              strings.TrimSpace(j.SoulReceiptJSON),
 	}
 }
 
@@ -367,6 +362,12 @@ func (s *Server) handleGetOperatorProvisionJob(ctx *apptheory.Context) (*apptheo
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
+	if status := strings.ToLower(strings.TrimSpace(job.Status)); status == models.ProvisionJobStatusQueued || status == models.ProvisionJobStatusRunning {
+		if shouldNudgeAsyncJob(time.Now().UTC(), job.UpdatedAt) {
+			s.enqueueProvisionJobBestEffort(ctx, id)
+		}
+	}
+
 	return apptheory.JSON(http.StatusOK, operatorProvisionJobDetailFromModel(job))
 }
 
@@ -466,8 +467,7 @@ func (s *Server) handleRetryOperatorProvisionJob(ctx *apptheory.Context) (*appth
 			RequestID: ctx.RequestID,
 			CreatedAt: now,
 		}
-		_ = audit.UpdateKeys()
-		_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
+		s.tryWriteAuditLog(ctx, audit)
 	}
 
 	// Enqueue the idempotent job message.

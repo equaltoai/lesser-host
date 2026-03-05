@@ -492,6 +492,15 @@ func TestAdvanceUpdateReceiptIngest_SuccessMovesToVerify(t *testing.T) {
 	t.Parallel()
 
 	db := ttmocks.NewMockExtendedDB()
+	qInst := new(ttmocks.MockQuery)
+	db.On("WithContext", mock.Anything).Return(db).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.Instance")).Return(qInst).Maybe()
+	qInst.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qInst).Maybe()
+	qInst.On("ConsistentRead").Return(qInst).Maybe()
+	qInst.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{Slug: "slug"}
+	}).Once()
 	st := store.New(db)
 
 	s3Client := &fakeS3{out: &s3.GetObjectOutput{Body: io.NopCloser(strings.NewReader(`{"app":"x","base_domain":"d"}`))}}

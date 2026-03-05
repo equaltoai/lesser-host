@@ -24,6 +24,7 @@ func TestSoulRegistryCalls_EncodeMethodIDs(t *testing.T) {
 	t.Parallel()
 
 	to := common.HexToAddress("0x0000000000000000000000000000000000000001")
+	principal := common.HexToAddress("0x0000000000000000000000000000000000000009")
 	newWallet := common.HexToAddress("0x0000000000000000000000000000000000000002")
 
 	cases := []struct {
@@ -46,6 +47,13 @@ func TestSoulRegistryCalls_EncodeMethodIDs(t *testing.T) {
 			},
 		},
 		{
+			name:   "selfMintSoul",
+			method: "selfMintSoul",
+			call: func() ([]byte, error) {
+				return EncodeSelfMintSoulCall(to, nil, "https://example.com/meta", 0, principal, big.NewInt(99), []byte("sig"))
+			},
+		},
+		{
 			name:   "burnSoul",
 			method: "burnSoul",
 			call: func() ([]byte, error) {
@@ -64,6 +72,13 @@ func TestSoulRegistryCalls_EncodeMethodIDs(t *testing.T) {
 			method: "getAgentWallet",
 			call: func() ([]byte, error) {
 				return EncodeGetAgentWalletCall(nil)
+			},
+		},
+		{
+			name:   "principalOf",
+			method: "principalOf",
+			call: func() ([]byte, error) {
+				return EncodePrincipalOfCall(nil)
 			},
 		},
 		{
@@ -133,6 +148,32 @@ func TestDecodeGetAgentWalletResult_RoundTrip(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("got=%s want=%s", got.Hex(), want.Hex())
+	}
+}
+
+func TestDecodePrincipalOfResult_RoundTrip(t *testing.T) {
+	t.Parallel()
+
+	want := common.HexToAddress("0x0000000000000000000000000000000000000004")
+	ret, err := soulRegistryParsedABI.Methods["principalOf"].Outputs.Pack(want)
+	if err != nil {
+		t.Fatalf("pack outputs: %v", err)
+	}
+
+	got, err := DecodePrincipalOfResult(ret)
+	if err != nil {
+		t.Fatalf("DecodePrincipalOfResult: %v", err)
+	}
+	if got != want {
+		t.Fatalf("got=%s want=%s", got.Hex(), want.Hex())
+	}
+}
+
+func TestDecodePrincipalOfResult_InvalidBytes(t *testing.T) {
+	t.Parallel()
+
+	if _, err := DecodePrincipalOfResult([]byte{0x01}); err == nil {
+		t.Fatalf("expected error")
 	}
 }
 

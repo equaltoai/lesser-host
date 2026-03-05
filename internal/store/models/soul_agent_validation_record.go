@@ -8,9 +8,17 @@ import (
 
 // SoulValidationResult* constants describe evaluation outcomes.
 const (
-	SoulValidationResultPass    = "pass"
-	SoulValidationResultFail    = "fail"
-	SoulValidationResultTimeout = "timeout"
+	SoulValidationResultPass     = "pass"
+	SoulValidationResultFail     = "fail"
+	SoulValidationResultTimeout  = "timeout"
+	SoulValidationResultDeclined = "declined"
+)
+
+// SoulValidationOptInStatus* constants describe opt-in states for validation challenges.
+const (
+	SoulValidationOptInStatusAccepted = "accepted"
+	SoulValidationOptInStatusDeclined = "declined"
+	SoulValidationOptInStatusPending  = "pending"
 )
 
 // SoulAgentValidationRecord stores a single validation challenge evaluation record.
@@ -37,6 +45,8 @@ type SoulAgentValidationRecord struct {
 	Result string  `theorydb:"attr:result" json:"result"`
 	Score  float64 `theorydb:"attr:score" json:"score"`
 
+	OptInStatus string `theorydb:"attr:optInStatus" json:"opt_in_status,omitempty"`
+
 	EvaluatedAt time.Time `theorydb:"attr:evaluatedAt" json:"evaluated_at"`
 }
 
@@ -48,7 +58,30 @@ func (v *SoulAgentValidationRecord) BeforeCreate() error {
 	if v.EvaluatedAt.IsZero() {
 		v.EvaluatedAt = time.Now().UTC()
 	}
-	return v.UpdateKeys()
+	if err := v.UpdateKeys(); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("agentId", v.AgentID); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("challengeId", v.ChallengeID); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("challengeType", v.ChallengeType); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("validatorId", v.ValidatorID); err != nil {
+		return err
+	}
+	if err := requireOneOf("result", v.Result, SoulValidationResultPass, SoulValidationResultFail, SoulValidationResultTimeout, SoulValidationResultDeclined); err != nil {
+		return err
+	}
+	if strings.TrimSpace(v.OptInStatus) != "" {
+		if err := requireOneOf("optInStatus", v.OptInStatus, SoulValidationOptInStatusAccepted, SoulValidationOptInStatusDeclined, SoulValidationOptInStatusPending); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // UpdateKeys updates the database keys for SoulAgentValidationRecord.
@@ -60,6 +93,7 @@ func (v *SoulAgentValidationRecord) UpdateKeys() error {
 	v.Request = strings.TrimSpace(v.Request)
 	v.Response = strings.TrimSpace(v.Response)
 	v.Result = strings.ToLower(strings.TrimSpace(v.Result))
+	v.OptInStatus = strings.ToLower(strings.TrimSpace(v.OptInStatus))
 
 	v.PK = fmt.Sprintf("SOUL#AGENT#%s", v.AgentID)
 	ts := v.EvaluatedAt.UTC().Format(time.RFC3339Nano)

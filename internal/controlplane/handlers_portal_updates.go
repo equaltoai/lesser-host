@@ -18,6 +18,7 @@ import (
 
 type createUpdateJobRequest struct {
 	LesserVersion     string `json:"lesser_version,omitempty"`
+	LesserBodyVersion string `json:"lesser_body_version,omitempty"`
 	RotateInstanceKey bool   `json:"rotate_instance_key,omitempty"`
 }
 
@@ -36,7 +37,8 @@ type updateJobResponse struct {
 	Region          string `json:"region,omitempty"`
 	BaseDomain      string `json:"base_domain,omitempty"`
 
-	LesserVersion string `json:"lesser_version,omitempty"`
+	LesserVersion     string `json:"lesser_version,omitempty"`
+	LesserBodyVersion string `json:"lesser_body_version,omitempty"`
 
 	LesserHostBaseURL              string `json:"lesser_host_base_url,omitempty"`
 	LesserHostAttestationsURL      string `json:"lesser_host_attestations_url,omitempty"`
@@ -96,6 +98,7 @@ func updateJobResponseFromModel(j *models.UpdateJob) updateJobResponse {
 		Region:                         strings.TrimSpace(j.Region),
 		BaseDomain:                     strings.TrimSpace(j.BaseDomain),
 		LesserVersion:                  strings.TrimSpace(j.LesserVersion),
+		LesserBodyVersion:              strings.TrimSpace(j.LesserBodyVersion),
 		LesserHostBaseURL:              strings.TrimSpace(j.LesserHostBaseURL),
 		LesserHostAttestationsURL:      strings.TrimSpace(j.LesserHostAttestationsURL),
 		LesserHostInstanceKeySecretARN: strings.TrimSpace(j.LesserHostInstanceKeySecretARN),
@@ -224,6 +227,21 @@ func (s *Server) handlePortalCreateInstanceUpdateJob(ctx *apptheory.Context) (*a
 		lesserVersion = tag
 	}
 
+	lesserBodyVersion := strings.TrimSpace(req.LesserBodyVersion)
+	if strings.EqualFold(lesserBodyVersion, "latest") {
+		tag, err := resolveLatestGitHubReleaseTag(ctx.Context(), s.cfg.ManagedLesserBodyGitHubOwner, s.cfg.ManagedLesserBodyGitHubRepo)
+		if err != nil {
+			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to resolve latest lesser-body release"}
+		}
+		lesserBodyVersion = tag
+	}
+	if lesserBodyVersion != "" && !effectiveBodyEnabled(inst.BodyEnabled) {
+		return nil, &apptheory.AppError{Code: "app.conflict", Message: "lesser-body update requested but body is disabled for this instance"}
+	}
+	if lesserBodyVersion == "" && effectiveBodyEnabled(inst.BodyEnabled) {
+		lesserBodyVersion = strings.TrimSpace(s.cfg.ManagedLesserBodyDefaultVersion)
+	}
+
 	translationEnabled := true
 	if inst.TranslationEnabled != nil {
 		translationEnabled = *inst.TranslationEnabled
@@ -248,6 +266,7 @@ func (s *Server) handlePortalCreateInstanceUpdateJob(ctx *apptheory.Context) (*a
 		Region:                         strings.TrimSpace(inst.HostedRegion),
 		BaseDomain:                     strings.TrimSpace(inst.HostedBaseDomain),
 		LesserVersion:                  strings.TrimSpace(lesserVersion),
+		LesserBodyVersion:              strings.TrimSpace(lesserBodyVersion),
 		LesserHostBaseURL:              baseURL,
 		LesserHostAttestationsURL:      attestationsURL,
 		LesserHostInstanceKeySecretARN: strings.TrimSpace(inst.LesserHostInstanceKeySecretARN),
@@ -308,6 +327,24 @@ func (s *Server) handlePortalListInstanceUpdateJobs(ctx *apptheory.Context) (*ap
 	items, err := s.store.ListUpdateJobsByInstance(ctx.Context(), strings.TrimSpace(inst.Slug), limit)
 	if err != nil && !theoryErrors.IsNotFound(err) {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list update jobs"}
+	}
+
+	if status := strings.ToLower(strings.TrimSpace(inst.UpdateStatus)); status == models.UpdateJobStatusQueued || status == models.UpdateJobStatusRunning {
+		target := strings.TrimSpace(inst.UpdateJobID)
+		if target != "" {
+			now := time.Now().UTC()
+			for _, it := range items {
+				if it == nil {
+					continue
+				}
+				if strings.EqualFold(strings.TrimSpace(it.ID), target) {
+					if shouldNudgeAsyncJob(now, it.UpdatedAt) {
+						s.enqueueUpdateJobBestEffort(ctx, it.ID)
+					}
+					break
+				}
+			}
+		}
 	}
 
 	out := make([]updateJobResponse, 0, len(items))

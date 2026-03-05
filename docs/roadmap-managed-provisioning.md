@@ -23,8 +23,8 @@ This tracks the managed provisioning redesign in `lesser-host`: approval gating,
 
 ## Reserved Wallet Rules (Implemented)
 Reserved wallets must never be used as instance admin wallets or tip host wallets:
-- `0x80189edb676d51b2fb2257b2ad38e018b20ca46e` (lesser.host admin wallet)
-- `0x1e14865a53a994b01b9ccfef42669dc0bfe98805` (Safe + 1% recipient, `TipSplitter.lesserWallet`)
+- `<LESSER_HOST_ADMIN_WALLET>` (lesser.host admin wallet)
+- `<TIP_SPLITTER_LESSER_WALLET>` (Safe + 1% recipient, `TipSplitter.lesserWallet`)
 
 ## Milestones (Implemented)
 1. Centralize reserved-wallet validation and enforce in provisioning + tip registry.

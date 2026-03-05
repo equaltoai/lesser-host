@@ -25,25 +25,11 @@ type lesserUpReceipt struct {
 	} `json:"hosted_zone"`
 }
 
-type soulReceipt struct {
-	Version        int    `json:"version"`
-	App            string `json:"app"`
-	InstanceDomain string `json:"instance_domain"`
-	SoulVersion    string `json:"soul_version,omitempty"`
-}
-
 func (s *Server) receiptS3Key(job *models.ProvisionJob) string {
 	if job == nil {
 		return ""
 	}
 	return fmt.Sprintf("managed/provisioning/%s/%s/state.json", strings.TrimSpace(job.InstanceSlug), strings.TrimSpace(job.ID))
-}
-
-func (s *Server) soulReceiptS3Key(job *models.ProvisionJob) string {
-	if job == nil {
-		return ""
-	}
-	return fmt.Sprintf("managed/provisioning/%s/%s/soul-state.json", strings.TrimSpace(job.InstanceSlug), strings.TrimSpace(job.ID))
 }
 
 func (s *Server) bodyReceiptS3Key(job *models.ProvisionJob) string {
@@ -108,22 +94,6 @@ func (s *Server) loadReceiptFromS3(ctx context.Context, bucket string, key strin
 		return raw, nil, err
 	}
 	if strings.TrimSpace(parsed.BaseDomain) == "" || strings.TrimSpace(parsed.App) == "" {
-		return raw, &parsed, fmt.Errorf("receipt is missing required fields")
-	}
-	return raw, &parsed, nil
-}
-
-func (s *Server) loadSoulReceiptFromS3(ctx context.Context, bucket string, key string) (string, *soulReceipt, error) {
-	raw, err := s.loadS3ObjectString(ctx, bucket, key)
-	if err != nil {
-		return "", nil, err
-	}
-
-	var parsed soulReceipt
-	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
-		return raw, nil, err
-	}
-	if strings.TrimSpace(parsed.App) == "" || strings.TrimSpace(parsed.InstanceDomain) == "" {
 		return raw, &parsed, fmt.Errorf("receipt is missing required fields")
 	}
 	return raw, &parsed, nil

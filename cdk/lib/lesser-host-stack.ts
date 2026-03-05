@@ -25,6 +25,7 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 		import * as sqs from 'aws-cdk-lib/aws-sqs';
 		import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
 		import * as apigwv2Integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations';
+		import * as wafv2 from 'aws-cdk-lib/aws-wafv2';
 
 export interface LesserHostStackProps extends cdk.StackProps {
 	stage: string;
@@ -77,84 +78,137 @@ export class LesserHostStack extends cdk.Stack {
 		const previewDLQ = new sqs.Queue(this, 'PreviewDLQ', {
 			queueName: `${namePrefix}-preview-dlq`,
 			retentionPeriod: cdk.Duration.days(14),
+			encryption: sqs.QueueEncryption.SQS_MANAGED,
 		});
 		previewDLQ.applyRemovalPolicy(removalPolicy);
 		const previewQueue = new sqs.Queue(this, 'PreviewQueue', {
 			queueName: `${namePrefix}-preview-queue`,
 			deadLetterQueue: { queue: previewDLQ, maxReceiveCount: 3 },
+			encryption: sqs.QueueEncryption.SQS_MANAGED,
 		});
 		previewQueue.applyRemovalPolicy(removalPolicy);
 
 		const safetyDLQ = new sqs.Queue(this, 'SafetyDLQ', {
 			queueName: `${namePrefix}-safety-dlq`,
 			retentionPeriod: cdk.Duration.days(14),
+			encryption: sqs.QueueEncryption.SQS_MANAGED,
 		});
 		safetyDLQ.applyRemovalPolicy(removalPolicy);
 		const safetyQueue = new sqs.Queue(this, 'SafetyQueue', {
 			queueName: `${namePrefix}-safety-queue`,
 			deadLetterQueue: { queue: safetyDLQ, maxReceiveCount: 3 },
+			encryption: sqs.QueueEncryption.SQS_MANAGED,
 		});
 		safetyQueue.applyRemovalPolicy(removalPolicy);
 
 		const provisionDLQ = new sqs.Queue(this, 'ProvisionDLQ', {
 			queueName: `${namePrefix}-provision-dlq`,
 			retentionPeriod: cdk.Duration.days(14),
+			encryption: sqs.QueueEncryption.SQS_MANAGED,
 		});
 		provisionDLQ.applyRemovalPolicy(removalPolicy);
 		const provisionQueue = new sqs.Queue(this, 'ProvisionQueue', {
 			queueName: `${namePrefix}-provision-queue`,
-			deadLetterQueue: { queue: provisionDLQ, maxReceiveCount: 3 },
+			// This queue backs managed provisioning + update orchestration. A low maxReceiveCount can
+			// strand long-running jobs in "running" when a transient worker failure DLQs the next poll.
+			visibilityTimeout: cdk.Duration.minutes(2),
+			deadLetterQueue: { queue: provisionDLQ, maxReceiveCount: 10 },
+			encryption: sqs.QueueEncryption.SQS_MANAGED,
 		});
 		provisionQueue.applyRemovalPolicy(removalPolicy);
 
-			const attestationSigningKey = new kms.Key(this, 'AttestationSigningKey', {
-				description: `${namePrefix} attestation signing`,
-				keySpec: kms.KeySpec.RSA_2048,
-				keyUsage: kms.KeyUsage.SIGN_VERIFY,
-				removalPolicy,
-			});
-			attestationSigningKey.addAlias(`alias/${namePrefix}-attestation-signing`);
+		const commDLQ = new sqs.Queue(this, 'CommDLQ', {
+			queueName: `${namePrefix}-comm-dlq`,
+			retentionPeriod: cdk.Duration.days(14),
+			encryption: sqs.QueueEncryption.SQS_MANAGED,
+		});
+		commDLQ.applyRemovalPolicy(removalPolicy);
+		const commQueue = new sqs.Queue(this, 'CommQueue', {
+			queueName: `${namePrefix}-comm-queue`,
+			visibilityTimeout: cdk.Duration.minutes(1),
+			deadLetterQueue: { queue: commDLQ, maxReceiveCount: 3 },
+			encryption: sqs.QueueEncryption.SQS_MANAGED,
+		});
+		commQueue.applyRemovalPolicy(removalPolicy);
 
-			const soulPackBucket = new s3.Bucket(this, 'SoulPackBucket', {
-				bucketName: `${namePrefix}-${cdk.Aws.ACCOUNT_ID}-${cdk.Aws.REGION}-soul-packs`,
-				blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-				enforceSSL: true,
-				versioned: true,
+		const dlqAlarmPeriod = cdk.Duration.minutes(1);
+		const dlqAlarmThreshold = 0;
+		new cloudwatch.Alarm(this, 'PreviewDLQAlarm', {
+			alarmName: `${namePrefix}-preview-dlq-visible`,
+			metric: previewDLQ.metricApproximateNumberOfMessagesVisible({ period: dlqAlarmPeriod }),
+			threshold: dlqAlarmThreshold,
+			comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+			evaluationPeriods: 1,
+			datapointsToAlarm: 1,
+			treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+		});
+		new cloudwatch.Alarm(this, 'SafetyDLQAlarm', {
+			alarmName: `${namePrefix}-safety-dlq-visible`,
+			metric: safetyDLQ.metricApproximateNumberOfMessagesVisible({ period: dlqAlarmPeriod }),
+			threshold: dlqAlarmThreshold,
+			comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+			evaluationPeriods: 1,
+			datapointsToAlarm: 1,
+			treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+		});
+		new cloudwatch.Alarm(this, 'ProvisionDLQAlarm', {
+			alarmName: `${namePrefix}-provision-dlq-visible`,
+			metric: provisionDLQ.metricApproximateNumberOfMessagesVisible({ period: dlqAlarmPeriod }),
+			threshold: dlqAlarmThreshold,
+			comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+			evaluationPeriods: 1,
+			datapointsToAlarm: 1,
+			treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+		});
+		new cloudwatch.Alarm(this, 'CommDLQAlarm', {
+			alarmName: `${namePrefix}-comm-dlq-visible`,
+			metric: commDLQ.metricApproximateNumberOfMessagesVisible({ period: dlqAlarmPeriod }),
+			threshold: dlqAlarmThreshold,
+			comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+			evaluationPeriods: 1,
+			datapointsToAlarm: 1,
+			treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+		});
+
+				const attestationSigningKey = new kms.Key(this, 'AttestationSigningKey', {
+					description: `${namePrefix} attestation signing`,
+					keySpec: kms.KeySpec.RSA_2048,
+					keyUsage: kms.KeyUsage.SIGN_VERIFY,
+					removalPolicy,
+				});
+				attestationSigningKey.addAlias(`alias/${namePrefix}-attestation-signing`);
+
+				const ensGatewaySigningKey = new kms.Key(this, 'ENSGatewaySigningKey', {
+					description: `${namePrefix} ENS gateway signing`,
+					keySpec: kms.KeySpec.ECC_SECG_P256K1,
+					keyUsage: kms.KeyUsage.SIGN_VERIFY,
+					removalPolicy,
+				});
+				ensGatewaySigningKey.addAlias(`alias/${namePrefix}-ens-gateway-signing`);
+
+				const soulPackBucket = new s3.Bucket(this, 'SoulPackBucket', {
+					bucketName: `${namePrefix}-${cdk.Aws.ACCOUNT_ID}-${cdk.Aws.REGION}-soul-packs`,
+					blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+					enforceSSL: true,
+					versioned: true,
 				removalPolicy,
 				autoDeleteObjects: stage !== 'live',
 			});
 
-			const soulPackSigningKey = new kms.Key(this, 'SoulPackSigningKey', {
-				description: `${namePrefix} lesser-soul pack signing`,
-				keySpec: kms.KeySpec.RSA_2048,
-				keyUsage: kms.KeyUsage.SIGN_VERIFY,
-				removalPolicy,
-			});
-			soulPackSigningKey.addAlias(`alias/${namePrefix}-soul-pack-signing`);
-
 			new ssm.StringParameter(this, 'SoulPackBucketNameParam', {
 				parameterName: `/soul/${stage}/packBucketName`,
 				stringValue: soulPackBucket.bucketName,
-				description: `lesser-soul pack bucket name (${stage})`,
-				tier: ssm.ParameterTier.STANDARD,
-			});
-			new ssm.StringParameter(this, 'SoulPackSigningKeyArnParam', {
-				parameterName: `/soul/${stage}/signingKeyArn`,
-				stringValue: soulPackSigningKey.keyArn,
-				description: `lesser-soul pack signing key ARN (${stage})`,
-				tier: ssm.ParameterTier.STANDARD,
-			});
-			new ssm.StringParameter(this, 'SoulPackVersionParam', {
-				parameterName: `/soul/${stage}/packVersion`,
-				stringValue: 'unset',
-				description: `lesser-soul stage pack version pointer (${stage})`,
+				description: `lesser-soul registry artifacts bucket name (${stage})`,
 				tier: ssm.ParameterTier.STANDARD,
 			});
 
 		const bootstrapWalletAddress =
 			(this.node.tryGetContext('bootstrapWalletAddress') as string | undefined) ?? '';
-		const webAuthnRPID = (this.node.tryGetContext('webauthnRpId') as string | undefined) ?? '';
-		const webAuthnOrigins = (this.node.tryGetContext('webauthnOrigins') as string | undefined) ?? '';
+			const webAuthnRPID = (this.node.tryGetContext('webauthnRpId') as string | undefined) ?? '';
+			const webAuthnOrigins = (this.node.tryGetContext('webauthnOrigins') as string | undefined) ?? '';
+			const ensGatewayResolverAddress =
+				(this.node.tryGetContext('ensGatewayResolverAddress') as string | undefined) ?? '';
+			const ensGatewayTTLSeconds = (this.node.tryGetContext('ensGatewayTtlSeconds') as string | undefined) ?? '';
 
 		const managedProvisioningEnabled =
 			(this.node.tryGetContext('managedProvisioningEnabled') as string | undefined) ?? '';
@@ -268,52 +322,38 @@ export class LesserHostStack extends cdk.Stack {
 			'aws sts get-caller-identity --profile managed',
 		].join('\n');
 
-			const provisionRunnerBuild = [
-				'set -euo pipefail',
-				'RUN_MODE="${RUN_MODE:-lesser}"',
-				'OWNER="${GITHUB_OWNER:-equaltoai}"',
-				'REPO="${GITHUB_REPO:-lesser}"',
-				'TOKEN="${GITHUB_TOKEN:-}"',
-			'TAG="${LESSER_VERSION:-}"',
-			'if [ -z "$TAG" ]; then',
-			'  echo "Resolving latest Lesser release..."',
-			'  if [ -n "$TOKEN" ]; then',
-			'    TAG=$(curl -sSfL -H "Accept: application/vnd.github+json" -H "Authorization: Bearer $TOKEN" "https://api.github.com/repos/$OWNER/$REPO/releases/latest" | jq -r .tag_name)',
-			'  else',
-			'    TAG=$(curl -sSfL -H "Accept: application/vnd.github+json" "https://api.github.com/repos/$OWNER/$REPO/releases/latest" | jq -r .tag_name)',
-			'  fi',
-			'fi',
-			'test -n "$TAG"',
-			'test "$TAG" != "null"',
-			'echo "Using Lesser release: $TAG"',
-			'if [ -n "$TOKEN" ]; then',
-			'  curl -sSfL -H "Accept: application/vnd.github+json" -H "Authorization: Bearer $TOKEN" -o lesser-src.tgz "https://api.github.com/repos/$OWNER/$REPO/tarball/$TAG"',
-			'  RELEASE_JSON=$(curl -sSfL -H "Accept: application/vnd.github+json" -H "Authorization: Bearer $TOKEN" "https://api.github.com/repos/$OWNER/$REPO/releases/tags/$TAG")',
-			'else',
-			'  curl -sSfL -H "Accept: application/vnd.github+json" -o lesser-src.tgz "https://api.github.com/repos/$OWNER/$REPO/tarball/$TAG"',
-			'  RELEASE_JSON=$(curl -sSfL -H "Accept: application/vnd.github+json" "https://api.github.com/repos/$OWNER/$REPO/releases/tags/$TAG")',
-			'fi',
-			'mkdir -p lesser-src && tar -xzf lesser-src.tgz --strip-components=1 -C lesser-src',
-			'ARCH=$(uname -m)',
-			'if [ "$ARCH" = "x86_64" ] || [ "$ARCH" = "amd64" ]; then BIN_NAME="lesser-linux-amd64"; fi',
-			'if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then BIN_NAME="lesser-linux-arm64"; fi',
-			'test -n "${BIN_NAME:-}"',
-			'BIN_ID=$(echo "$RELEASE_JSON" | jq -r --arg name "$BIN_NAME" \'.assets[] | select(.name==$name) | .id\' | head -n 1)',
-			'CHK_ID=$(echo "$RELEASE_JSON" | jq -r \'.assets[] | select(.name=="checksums.txt") | .id\' | head -n 1)',
-			'test -n "$BIN_ID" && test "$BIN_ID" != "null"',
-			'test -n "$CHK_ID" && test "$CHK_ID" != "null"',
-			'if [ -n "$TOKEN" ]; then',
-			'  curl -sSfL -H "Authorization: Bearer $TOKEN" -H "Accept: application/octet-stream" -o lesser-src/lesser "https://api.github.com/repos/$OWNER/$REPO/releases/assets/$BIN_ID"',
-			'  curl -sSfL -H "Authorization: Bearer $TOKEN" -H "Accept: application/octet-stream" -o checksums.txt "https://api.github.com/repos/$OWNER/$REPO/releases/assets/$CHK_ID"',
-			'else',
-			'  curl -sSfL -H "Accept: application/octet-stream" -o lesser-src/lesser "https://api.github.com/repos/$OWNER/$REPO/releases/assets/$BIN_ID"',
-			'  curl -sSfL -H "Accept: application/octet-stream" -o checksums.txt "https://api.github.com/repos/$OWNER/$REPO/releases/assets/$CHK_ID"',
-			'fi',
-			'EXPECTED=$(grep -E "(\\\\s|\\\\*)$BIN_NAME$" checksums.txt | awk \'{print $1}\' | head -n 1)',
-			'test -n "$EXPECTED"',
-			'ACTUAL=$(sha256sum lesser-src/lesser | awk \'{print $1}\')',
-			'test "$EXPECTED" = "$ACTUAL"',
-			'chmod +x lesser-src/lesser',
+				const provisionRunnerBuild = [
+					'set -euo pipefail',
+					'RUN_MODE="${RUN_MODE:-lesser}"',
+					'OWNER="${GITHUB_OWNER:-equaltoai}"',
+					'REPO="${GITHUB_REPO:-lesser}"',
+					'TAG="${LESSER_VERSION:-}"',
+					'resolve_latest_release_tag() {',
+					'  o="$1"',
+					'  r="$2"',
+					'  url=$(curl -sSfL -o /dev/null -w "%{url_effective}" "https://github.com/$o/$r/releases/latest")',
+					'  echo "${url##*/}"',
+					'}',
+					'if [ -z "$TAG" ]; then',
+					'  echo "Resolving latest Lesser release..."',
+					'  TAG=$(resolve_latest_release_tag "$OWNER" "$REPO")',
+					'fi',
+				'test -n "$TAG"',
+				'test "$TAG" != "null"',
+				'echo "Using Lesser release: $TAG"',
+					'curl -sSfL -o lesser-src.tgz "https://github.com/$OWNER/$REPO/archive/refs/tags/$TAG.tar.gz"',
+				'mkdir -p lesser-src && tar -xzf lesser-src.tgz --strip-components=1 -C lesser-src',
+				'ARCH=$(uname -m)',
+				'if [ "$ARCH" = "x86_64" ] || [ "$ARCH" = "amd64" ]; then BIN_NAME="lesser-linux-amd64"; fi',
+				'if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then BIN_NAME="lesser-linux-arm64"; fi',
+				'test -n "${BIN_NAME:-}"',
+					'curl -sSfL -o lesser-src/lesser "https://github.com/$OWNER/$REPO/releases/download/$TAG/$BIN_NAME"',
+					'curl -sSfL -o checksums.txt "https://github.com/$OWNER/$REPO/releases/download/$TAG/checksums.txt"',
+				'EXPECTED=$(grep -E "(\\\\s|\\\\*)$BIN_NAME$" checksums.txt | awk \'{print $1}\' | head -n 1)',
+				'test -n "$EXPECTED"',
+				'ACTUAL=$(sha256sum lesser-src/lesser | awk \'{print $1}\')',
+				'test "$EXPECTED" = "$ACTUAL"',
+				'chmod +x lesser-src/lesser',
 			'cd lesser-src',
 			'GO_TOOLCHAIN=$(grep "^toolchain " go.mod | awk \'{print $2}\' || true)',
 			'GO_VERSION="${GO_TOOLCHAIN#go}"',
@@ -350,6 +390,54 @@ export class LesserHostStack extends cdk.Stack {
 			'  v=$(printf "%s" "$1" | tr "[:upper:]" "[:lower:]")',
 			'  case "$v" in true|1|yes|on) return 0 ;; *) return 1 ;; esac',
 			'}',
+			'enable_agents() {',
+			'  echo "Ensuring agents are enabled..."',
+			'  STACK_NAME="$APP_SLUG-$STAGE"',
+			'  API_FN="$APP_SLUG-$STAGE-api"',
+			'  GRAPHQL_FN="$APP_SLUG-$STAGE-graphql"',
+			'  GRAPHQL_WS_FN="$APP_SLUG-$STAGE-graphql-ws"',
+			'',
+			'  update_lambda_env() {',
+			'    FN="$1"',
+			'    echo "Setting agent env vars on Lambda: $FN"',
+			'    CUR=$(aws lambda get-function-configuration --profile managed --function-name "$FN" --output json | jq -c \'.Environment.Variables // {}\')',
+			'    NEXT=$(printf "%s" "$CUR" | jq -c \'. + {"ALLOW_AGENTS":"true","ALLOW_AGENT_REGISTRATION":"true"}\')',
+			'    ENV=$(jq -nc --argjson vars "$NEXT" \'{Variables:$vars}\')',
+			'    aws lambda update-function-configuration --profile managed --function-name "$FN" --environment "$ENV" >/dev/null',
+			'  }',
+			'',
+			'  wait_lambda_update() {',
+			'    FN="$1"',
+			'    for i in $(seq 1 60); do',
+			'      STATUS=$(aws lambda get-function-configuration --profile managed --function-name "$FN" --query "LastUpdateStatus" --output text)',
+			'      case "$STATUS" in',
+			'        Successful) return 0 ;;',
+			'        Failed) fail "Lambda update failed: $FN" ;;',
+			'      esac',
+			'      sleep 2',
+			'    done',
+			'    fail "Lambda update timed out: $FN"',
+			'  }',
+			'',
+			'  update_lambda_env "$API_FN"',
+			'  update_lambda_env "$GRAPHQL_FN"',
+			'  update_lambda_env "$GRAPHQL_WS_FN"',
+			'',
+			'  wait_lambda_update "$API_FN"',
+			'  wait_lambda_update "$GRAPHQL_FN"',
+			'  wait_lambda_update "$GRAPHQL_WS_FN"',
+			'',
+			'  TABLE_NAME=$(aws cloudformation describe-stacks --profile managed --stack-name "$STACK_NAME" --output json | jq -r \'.Stacks[0].Outputs[] | select(.OutputKey=="TableName") | .OutputValue\' | head -n 1)',
+			'  test -n "$TABLE_NAME" && test "$TABLE_NAME" != "null"',
+			'',
+			'  NOW=$(date -u +"%Y-%m-%dT%H:%M:%S.%NZ")',
+			'  aws dynamodb update-item --profile managed --region "$TARGET_REGION" --table-name "$TABLE_NAME" \\',
+			'    --key \'{"PK":{"S":"INSTANCE#CONFIG"},"SK":{"S":"AGENT_CONFIG"}}\' \\',
+			'    --update-expression \'SET allowAgents=:t, allowAgentRegistration=:t, defaultQuarantineDays=:dq, maxAgentsPerOwner=:mao, allowRemoteAgents=:ar, remoteQuarantineDays=:rdq, blockedAgentDomains=:empty, trustedAgentDomains=:empty, agentMaxPostsPerHour=:ampph, verifiedAgentMaxPostsPerHour=:vampph, agentMaxFollowsPerHour=:amfph, verifiedAgentMaxFollowsPerHour=:vamfph, hybridRetrievalEnabled=:hre, hybridRetrievalMaxCandidates=:hrmc, updatedAt=:now\' \\',
+			'    --expression-attribute-values \'{":t":{"BOOL":true},":dq":{"N":"7"},":mao":{"N":"3"},":ar":{"BOOL":true},":rdq":{"N":"7"},":empty":{"L":[]},":ampph":{"N":"50"},":vampph":{"N":"200"},":amfph":{"N":"20"},":vamfph":{"N":"100"},":hre":{"BOOL":false},":hrmc":{"N":"200"},":now":{"S":"\'"$NOW"\'"}}\' \\',
+			'    --return-values NONE >/dev/null',
+			'  echo "Agents enabled."',
+			'}',
 			'if bool_on "${TIP_ENABLED:-}"; then',
 			'  if [ -z "${TIP_CHAIN_ID:-}" ]; then fail "TIP_CHAIN_ID is required when TIP_ENABLED=true"; fi',
 			'  case "$TIP_CHAIN_ID" in *[!0-9]*|"") fail "TIP_CHAIN_ID must be a positive integer when TIP_ENABLED=true";; 0) fail "TIP_CHAIN_ID must be > 0 when TIP_ENABLED=true";; esac',
@@ -358,75 +446,31 @@ export class LesserHostStack extends cdk.Stack {
 				'jq -n --arg slug "$APP_SLUG" --arg stage "$STAGE" --arg admin_wallet_address "$ADMIN_WALLET_ADDRESS" --arg admin_username "$ADMIN_USERNAME" --arg admin_wallet_chain_id "${ADMIN_WALLET_CHAIN_ID:-}" --arg consent_message "$CONSENT_MESSAGE" --arg consent_signature "${CONSENT_SIGNATURE:-}" --arg lesser_host_url "${LESSER_HOST_URL:-}" --arg lesser_host_attestations_url "${LESSER_HOST_ATTESTATIONS_URL:-}" --arg lesser_host_instance_key_arn "${LESSER_HOST_INSTANCE_KEY_ARN:-}" --arg translation_enabled "${TRANSLATION_ENABLED:-}" --arg tip_enabled "${TIP_ENABLED:-}" --arg tip_chain_id "${TIP_CHAIN_ID:-}" --arg tip_contract_address "${TIP_CONTRACT_ADDRESS:-}" --arg ai_enabled "${AI_ENABLED:-}" --arg ai_moderation_enabled "${AI_MODERATION_ENABLED:-}" --arg ai_nsfw_detection_enabled "${AI_NSFW_DETECTION_ENABLED:-}" --arg ai_spam_detection_enabled "${AI_SPAM_DETECTION_ENABLED:-}" --arg ai_pii_detection_enabled "${AI_PII_DETECTION_ENABLED:-}" --arg ai_content_detection_enabled "${AI_CONTENT_DETECTION_ENABLED:-}" \'def bool($v): ($v|ascii_downcase) as $x | ($x=="true" or $x=="1" or $x=="yes" or $x=="on"); {"schema":1,"slug":$slug,"stage":$stage,"admin_wallet_address":$admin_wallet_address,"admin_username":$admin_username} | if $admin_wallet_chain_id != "" then .admin_wallet_chain_id = ($admin_wallet_chain_id|tonumber) else . end | if $consent_message != "" then .consent_message = $consent_message else . end | if $consent_signature != "" then .consent_signature = $consent_signature else . end | if $lesser_host_url != "" then .lesser_host_url = $lesser_host_url else . end | if $lesser_host_attestations_url != "" then .lesser_host_attestations_url = $lesser_host_attestations_url elif $lesser_host_url != "" then .lesser_host_attestations_url = $lesser_host_url else . end | if $lesser_host_instance_key_arn != "" then .lesser_host_instance_key_arn = $lesser_host_instance_key_arn else . end | if $translation_enabled != "" then .translation_enabled = bool($translation_enabled) else . end | if $tip_enabled != "" then .tip_enabled = bool($tip_enabled) else . end | if $tip_chain_id != "" then .tip_chain_id = ($tip_chain_id|tonumber) else . end | if $tip_contract_address != "" then .tip_contract_address = $tip_contract_address else . end | if $ai_enabled != "" then .ai_enabled = bool($ai_enabled) else . end | if $ai_moderation_enabled != "" then .ai_moderation_enabled = bool($ai_moderation_enabled) else . end | if $ai_nsfw_detection_enabled != "" then .ai_nsfw_detection_enabled = bool($ai_nsfw_detection_enabled) else . end | if $ai_spam_detection_enabled != "" then .ai_spam_detection_enabled = bool($ai_spam_detection_enabled) else . end | if $ai_pii_detection_enabled != "" then .ai_pii_detection_enabled = bool($ai_pii_detection_enabled) else . end | if $ai_content_detection_enabled != "" then .ai_content_detection_enabled = bool($ai_content_detection_enabled) else . end\' > "$PROVISION_INPUT"',
 				'STAGE_DOMAIN="$BASE_DOMAIN"',
 				'if [ "$STAGE" != "live" ]; then STAGE_DOMAIN="$STAGE.$BASE_DOMAIN"; fi',
-					'SOUL_STAGE="lab"',
-					'if [ "$STAGE" = "live" ]; then SOUL_STAGE="live"; fi',
-					'SOUL_INSTANCE_DOMAIN="$STAGE_DOMAIN"',
-					'fetch_and_verify_soul_pack() {',
-					'  VERSION="${SOUL_VERSION:-}"',
-					'  if [ -z "$VERSION" ]; then',
-					'    VERSION=$(aws ssm get-parameter --name "/soul/$SOUL_STAGE/packVersion" --query "Parameter.Value" --output text)',
-					'  fi',
-					'  test -n "$VERSION" && test "$VERSION" != "null" && test "$VERSION" != "unset"',
-					'  PACK_BUCKET=$(aws ssm get-parameter --name "/soul/$SOUL_STAGE/packBucketName" --query "Parameter.Value" --output text)',
-					'  SIGNING_KEY_ARN=$(aws ssm get-parameter --name "/soul/$SOUL_STAGE/signingKeyArn" --query "Parameter.Value" --output text)',
-					'  test -n "$PACK_BUCKET" && test "$PACK_BUCKET" != "null"',
-					'  test -n "$SIGNING_KEY_ARN" && test "$SIGNING_KEY_ARN" != "null"',
-					'  PACK_TGZ="soul-pack-${VERSION}.tgz"',
-					'  MANIFEST="soul-pack-${VERSION}.manifest.json"',
-					'  SIG="soul-pack-${VERSION}.manifest.sig"',
-					'  aws s3 cp "s3://$PACK_BUCKET/$PACK_TGZ" "/tmp/$PACK_TGZ"',
-					'  aws s3 cp "s3://$PACK_BUCKET/$MANIFEST" "/tmp/$MANIFEST"',
-					'  aws s3 cp "s3://$PACK_BUCKET/$SIG" "/tmp/$SIG"',
-					'  openssl dgst -sha256 -binary "/tmp/$MANIFEST" > "/tmp/$MANIFEST.sha256"',
-					'  VERIFY_JSON=$(aws kms verify --key-id "$SIGNING_KEY_ARN" --message-type DIGEST --message "fileb:///tmp/$MANIFEST.sha256" --signature "fileb:///tmp/$SIG" --signing-algorithm RSASSA_PSS_SHA_256)',
-					'  if [ "$(echo "$VERIFY_JSON" | jq -r ".SignatureValid")" != "true" ]; then fail "soul pack manifest signature invalid: $VERSION"; fi',
-					'  if tar -tzf "/tmp/$PACK_TGZ" | grep -E "(^/|\\.\\./|/\\.\\./)" >/dev/null; then fail "soul pack contains unsafe paths"; fi',
-					'  rm -rf /tmp/soul-pack && mkdir -p /tmp/soul-pack',
-					'  tar -xzf "/tmp/$PACK_TGZ" -C /tmp/soul-pack',
-					'  jq -r \'.files[] | "\\(.sha256)  \\(.path)"\' "/tmp/$MANIFEST" > /tmp/soul-pack.checksums',
-					'  (cd /tmp/soul-pack && sha256sum -c /tmp/soul-pack.checksums)',
-					'  jq -r \'.files[].path\' "/tmp/$MANIFEST" | sort > /tmp/soul-pack.expected',
-					'  (cd /tmp/soul-pack && find . -type f -print | sed "s|^./||" | sort > /tmp/soul-pack.actual)',
-					'  if ! diff -u /tmp/soul-pack.expected /tmp/soul-pack.actual >/dev/null; then',
-					'    echo "ERROR: soul pack file set mismatch ($VERSION)" >&2',
-					'    diff -u /tmp/soul-pack.expected /tmp/soul-pack.actual || true',
-					'    exit 1',
-					'  fi',
-					'  SOUL_PACK_DIR="/tmp/soul-pack"',
-					'  SOUL_PACK_VERSION="$VERSION"',
-					'}',
 					'if [ "$RUN_MODE" = "lesser" ]; then',
 				'  ./lesser up --app "$APP_SLUG" --base-domain "$BASE_DOMAIN" --aws-profile managed --provisioning-input "$PROVISION_INPUT"',
 				'  if [ -n "${CONSENT_MESSAGE_B64:-}" ] && [ -n "${CONSENT_SIGNATURE:-}" ]; then ./lesser init-admin --base-domain "$BASE_DOMAIN" --aws-profile managed --provisioning-input "$PROVISION_INPUT"; else echo "Skipping init-admin (missing consent message/signature)."; fi',
+				'  enable_agents',
 						'  RECEIPT_PATH="$STATE_DIR/state.json"',
 						'  test -f "$RECEIPT_PATH"',
 						'  aws s3 cp "$RECEIPT_PATH" "s3://$ARTIFACT_BUCKET/$RECEIPT_S3_KEY"',
 						'  if [ -f /tmp/bootstrap.json ]; then aws s3 cp /tmp/bootstrap.json "s3://$ARTIFACT_BUCKET/$BOOTSTRAP_S3_KEY"; fi',
 						'elif [ "$RUN_MODE" = "lesser-body" ]; then',
-						'  echo "Deploying lesser-body (AgentCore MCP)..."',
-						'  BODY_OWNER="${LESSER_BODY_GITHUB_OWNER:-equaltoai}"',
-						'  BODY_REPO="${LESSER_BODY_GITHUB_REPO:-lesser-body}"',
-						'  BODY_TAG="${LESSER_BODY_VERSION:-}"',
-						'  if [ -z "$BODY_TAG" ]; then',
-						'    echo "Resolving latest lesser-body release..."',
-						'    if [ -n "$TOKEN" ]; then',
-						'      BODY_TAG=$(curl -sSfL -H "Accept: application/vnd.github+json" -H "Authorization: Bearer $TOKEN" "https://api.github.com/repos/$BODY_OWNER/$BODY_REPO/releases/latest" | jq -r .tag_name)',
-						'    else',
-						'      BODY_TAG=$(curl -sSfL -H "Accept: application/vnd.github+json" "https://api.github.com/repos/$BODY_OWNER/$BODY_REPO/releases/latest" | jq -r .tag_name)',
-						'    fi',
-						'  fi',
-						'  test -n "$BODY_TAG" && test "$BODY_TAG" != "null"',
-						'  echo "Using lesser-body release: $BODY_TAG"',
-						'  if [ -n "$TOKEN" ]; then',
-						'    curl -sSfL -H "Accept: application/vnd.github+json" -H "Authorization: Bearer $TOKEN" -o lesser-body-src.tgz "https://api.github.com/repos/$BODY_OWNER/$BODY_REPO/tarball/$BODY_TAG"',
-						'  else',
-						'    curl -sSfL -H "Accept: application/vnd.github+json" -o lesser-body-src.tgz "https://api.github.com/repos/$BODY_OWNER/$BODY_REPO/tarball/$BODY_TAG"',
-						'  fi',
-						'  rm -rf lesser-body-src && mkdir -p lesser-body-src && tar -xzf lesser-body-src.tgz --strip-components=1 -C lesser-body-src',
-						'  cd lesser-body-src/cdk',
-						'  npm ci',
-						'  AWS_PROFILE=managed npx cdk deploy --all --require-approval never -c app="$APP_SLUG" -c stage="$STAGE" -c baseDomain="$BASE_DOMAIN"',
-						'  cd - >/dev/null',
+							'  echo "Deploying lesser-body (AgentCore MCP)..."',
+							'  BODY_OWNER="${LESSER_BODY_GITHUB_OWNER:-equaltoai}"',
+							'  BODY_REPO="${LESSER_BODY_GITHUB_REPO:-lesser-body}"',
+							'  BODY_TAG="${LESSER_BODY_VERSION:-}"',
+							'  if [ -z "$BODY_TAG" ]; then',
+							'    echo "Resolving latest lesser-body release..."',
+							'    BODY_TAG=$(resolve_latest_release_tag "$BODY_OWNER" "$BODY_REPO")',
+							'  fi',
+							'  test -n "$BODY_TAG" && test "$BODY_TAG" != "null"',
+							'  echo "Using lesser-body release: $BODY_TAG"',
+							'  curl -sSfL -o lesser-body-src.tgz "https://github.com/$BODY_OWNER/$BODY_REPO/archive/refs/tags/$BODY_TAG.tar.gz"',
+							'  rm -rf lesser-body-src && mkdir -p lesser-body-src && tar -xzf lesser-body-src.tgz --strip-components=1 -C lesser-body-src',
+							'  cd lesser-body-src/cdk',
+							'  npm ci',
+							'  AWS_PROFILE=managed npx cdk deploy --all --require-approval never -c app="$APP_SLUG" -c stage="$STAGE" -c baseDomain="$BASE_DOMAIN"',
+							'  cd - >/dev/null',
 						'  BODY_PARAM="/$APP_SLUG/$STAGE/lesser-body/exports/v1/mcp_lambda_arn"',
 						'  BODY_LAMBDA_ARN=$(aws ssm get-parameter --profile managed --name "$BODY_PARAM" --query "Parameter.Value" --output text)',
 						'  test -n "$BODY_LAMBDA_ARN" && test "$BODY_LAMBDA_ARN" != "null"',
@@ -435,191 +479,75 @@ export class LesserHostStack extends cdk.Stack {
 						'  aws s3 cp "$BODY_RECEIPT_PATH" "s3://$ARTIFACT_BUCKET/$RECEIPT_S3_KEY"',
 						'elif [ "$RUN_MODE" = "lesser-mcp" ]; then',
 						'  echo "Wiring POST /mcp on existing Lesser API domain..."',
+						'  echo "Building Lesser lambda artifacts (bin/*.zip)..."',
+						'  ./lesser build lambdas',
 						'  HOSTED_ZONE_NAME="${BASE_DOMAIN%.}."',
 						'  HOSTED_ZONE_ID=$(aws route53 list-hosted-zones-by-name --profile managed --dns-name "$HOSTED_ZONE_NAME" --output json | jq -r --arg name "$HOSTED_ZONE_NAME" \'.HostedZones[] | select(.Name==$name and (.Config.PrivateZone|not)) | .Id\' | head -n 1)',
 						'  test -n "$HOSTED_ZONE_ID" && test "$HOSTED_ZONE_ID" != "null"',
 						'  HOSTED_ZONE_ID="${HOSTED_ZONE_ID#/hostedzone/}"',
 						'  cd infra/cdk',
-						'  AWS_PROFILE=managed cdk deploy "$APP_SLUG-$STAGE" --require-approval never -c app="$APP_SLUG" -c baseDomain="$BASE_DOMAIN" -c hostedZoneId="$HOSTED_ZONE_ID" -c stage="$STAGE" -c soulEnabled=true -c lesserHostUrl="$LESSER_HOST_URL" -c lesserHostAttestationsUrl="$LESSER_HOST_ATTESTATIONS_URL" -c lesserHostInstanceKeyArn="$LESSER_HOST_INSTANCE_KEY_ARN" -c translationEnabled="$TRANSLATION_ENABLED" -c tipEnabled="$TIP_ENABLED" -c tipChainId="${TIP_CHAIN_ID:-}" -c tipContractAddress="${TIP_CONTRACT_ADDRESS:-}"',
+						'  AWS_PROFILE=managed cdk deploy "$APP_SLUG-$STAGE" --require-approval never -c app="$APP_SLUG" -c baseDomain="$BASE_DOMAIN" -c hostedZoneId="$HOSTED_ZONE_ID" -c stage="$STAGE" -c bodyEnabled=true -c soulEnabled=true -c lesserHostUrl="$LESSER_HOST_URL" -c lesserHostAttestationsUrl="$LESSER_HOST_ATTESTATIONS_URL" -c lesserHostInstanceKeyArn="$LESSER_HOST_INSTANCE_KEY_ARN" -c translationEnabled="$TRANSLATION_ENABLED" -c tipEnabled="$TIP_ENABLED" -c tipChainId="${TIP_CHAIN_ID:-}" -c tipContractAddress="${TIP_CONTRACT_ADDRESS:-}"',
 						'  cd - >/dev/null',
+						'  enable_agents',
 						'  MCP_RECEIPT_PATH="$STATE_DIR/mcp-state.json"',
 						'  jq -n --arg stage "$STAGE" --arg base_domain "$BASE_DOMAIN" --arg mcp_url "https://api.$STAGE_DOMAIN/mcp" \'{version:1,stage:$stage,base_domain:$base_domain,mcp_url:$mcp_url}\' > "$MCP_RECEIPT_PATH"',
 						'  aws s3 cp "$MCP_RECEIPT_PATH" "s3://$ARTIFACT_BUCKET/$RECEIPT_S3_KEY"',
-						'elif [ "$RUN_MODE" = "soul-deploy" ]; then',
-						'  echo "Deploying lesser-soul pack..."',
-						'  fetch_and_verify_soul_pack',
-						'  echo "Deploying lesser-soul version: $SOUL_PACK_VERSION"',
-					'  cd "$SOUL_PACK_DIR/infra/cdk"',
-					'  npm ci',
-					'  AWS_PROFILE=managed npx cdk deploy --all --require-approval never -c stage="$SOUL_STAGE" -c instanceDomain="$SOUL_INSTANCE_DOMAIN"',
-					'  cd - >/dev/null',
-					'elif [ "$RUN_MODE" = "soul-init" ]; then',
-					'  echo "Bootstrapping lesser-soul from signed pack..."',
-					'  fetch_and_verify_soul_pack',
-					'  echo "Bootstrapping lesser-soul version: $SOUL_PACK_VERSION"',
-					'  if [ ! -f "$STATE_DIR/bootstrap.json" ]; then fail "bootstrap key material missing: $STATE_DIR/bootstrap.json"; fi',
-				'  BOOTSTRAP_ADDR=$(jq -r ".wallet.address" "$STATE_DIR/bootstrap.json")',
-				'  BOOTSTRAP_MNEMONIC=$(jq -r ".wallet.mnemonic" "$STATE_DIR/bootstrap.json")',
-				'  BOOTSTRAP_PATH=$(jq -r ".wallet.derivation_path" "$STATE_DIR/bootstrap.json")',
-				'  BOOTSTRAP_CHAIN_ID=$(jq -r ".wallet.chain_id" "$STATE_DIR/bootstrap.json")',
-				'  test -n "$BOOTSTRAP_ADDR" && test "$BOOTSTRAP_ADDR" != "null"',
-				'  test -n "$BOOTSTRAP_MNEMONIC" && test "$BOOTSTRAP_MNEMONIC" != "null"',
-				'  test -n "$BOOTSTRAP_PATH" && test "$BOOTSTRAP_PATH" != "null"',
-				'  test -n "$BOOTSTRAP_CHAIN_ID" && test "$BOOTSTRAP_CHAIN_ID" != "null"',
-				'  CHALLENGE_BODY=$(jq -nc --arg username "bootstrap" --arg address "$BOOTSTRAP_ADDR" --argjson chainId "$BOOTSTRAP_CHAIN_ID" "{username:$username,address:$address,chainId:$chainId}")',
-				'  CHALLENGE_JSON=$(curl -sSfL -X POST "https://$STAGE_DOMAIN/auth/wallet/challenge" -H "Content-Type: application/json" -d "$CHALLENGE_BODY")',
-				'  CHALLENGE_ID=$(echo "$CHALLENGE_JSON" | jq -r ".id")',
-				'  CHALLENGE_MESSAGE=$(echo "$CHALLENGE_JSON" | jq -r ".message")',
-				'  test -n "$CHALLENGE_ID" && test "$CHALLENGE_ID" != "null"',
-				'  test -n "$CHALLENGE_MESSAGE" && test "$CHALLENGE_MESSAGE" != "null"',
-				'  SIGNER_PATH="sign_wallet_message.go"',
-				'  cat > "$SIGNER_PATH" <<EOF',
-				'package main',
-				'',
-				'import (',
-				'  "encoding/hex"',
-				'  "encoding/json"',
-				'  "fmt"',
-				'  "io"',
-				'  "os"',
-				'  "strings"',
-				'',
-				'  "github.com/ethereum/go-ethereum/accounts"',
-				'  "github.com/ethereum/go-ethereum/crypto"',
-				'  "github.com/tyler-smith/go-bip32"',
-				'  "github.com/tyler-smith/go-bip39"',
-				')',
-				'',
-				'type bootstrapWallet struct {',
-				'  Address string `json:"address"`',
-				'  Mnemonic string `json:"mnemonic"`',
-				'  DerivationPath string `json:"derivation_path"`',
-				'}',
-				'',
-				'type payload struct { Wallet bootstrapWallet `json:"wallet"` }',
-				'',
-				'func main() {',
-				'  if len(os.Args) != 2 {',
-				'    fmt.Fprintln(os.Stderr, "usage: sign_wallet_message <bootstrap.json> (message via stdin)")',
-				'    os.Exit(2)',
-				'  }',
-				'  raw, err := os.ReadFile(strings.TrimSpace(os.Args[1]))',
-				'  if err != nil {',
-				'    fmt.Fprintln(os.Stderr, err)',
-				'    os.Exit(1)',
-				'  }',
-				'  var p payload',
-				'  if err := json.Unmarshal(raw, &p); err != nil {',
-				'    fmt.Fprintln(os.Stderr, err)',
-				'    os.Exit(1)',
-				'  }',
-				'  msgBytes, err := io.ReadAll(os.Stdin)',
-				'  if err != nil {',
-				'    fmt.Fprintln(os.Stderr, err)',
-				'    os.Exit(1)',
-				'  }',
-				'  msg := string(msgBytes)',
-				'',
-				'  mnemonic := strings.TrimSpace(p.Wallet.Mnemonic)',
-				'  if mnemonic == "" {',
-				'    fmt.Fprintln(os.Stderr, "missing mnemonic")',
-				'    os.Exit(1)',
-				'  }',
-				'  path := strings.TrimSpace(p.Wallet.DerivationPath)',
-				'  if path == "" {',
-				'    path = "m/44\\x27/60\\x27/0\\x27/0/0"',
-				'  }',
-				'  seed := bip39.NewSeed(mnemonic, "")',
-				'  derivation, err := accounts.ParseDerivationPath(path)',
-				'  if err != nil {',
-				'    fmt.Fprintln(os.Stderr, err)',
-				'    os.Exit(1)',
-				'  }',
-				'',
-				'  masterKey, err := bip32.NewMasterKey(seed)',
-				'  if err != nil {',
-				'    fmt.Fprintln(os.Stderr, err)',
-				'    os.Exit(1)',
-				'  }',
-				'  key := masterKey',
-				'  for _, c := range derivation {',
-				'    key, err = key.NewChildKey(c)',
-				'    if err != nil {',
-				'      fmt.Fprintln(os.Stderr, err)',
-				'      os.Exit(1)',
-				'    }',
-				'  }',
-				'',
-				'  privBytes := key.Key',
-				'  if len(privBytes) == 33 && privBytes[0] == 0x00 {',
-				'    privBytes = privBytes[1:]',
-				'  }',
-				'  if len(privBytes) != 32 {',
-				'    fmt.Fprintln(os.Stderr, "unexpected derived private key length")',
-				'    os.Exit(1)',
-				'  }',
-				'  priv, err := crypto.ToECDSA(privBytes)',
-				'  if err != nil {',
-				'    fmt.Fprintln(os.Stderr, err)',
-				'    os.Exit(1)',
-				'  }',
-				'',
-				'  hash := accounts.TextHash([]byte(msg))',
-				'  sig, err := crypto.Sign(hash, priv)',
-				'  if err != nil {',
-				'    fmt.Fprintln(os.Stderr, err)',
-				'    os.Exit(1)',
-				'  }',
-				'  fmt.Printf("0x%s\\n", hex.EncodeToString(sig))',
-				'}',
-				'EOF',
-				'  SIG=$(printf "%s" "$CHALLENGE_MESSAGE" | go run "$SIGNER_PATH" "$STATE_DIR/bootstrap.json")',
-				'  test -n "$SIG"',
-				'  LOGIN_BODY=$(jq -nc --arg address "$BOOTSTRAP_ADDR" --arg challengeId "$CHALLENGE_ID" --arg message "$CHALLENGE_MESSAGE" --arg signature "$SIG" "{address:$address,challengeId:$challengeId,message:$message,signature:$signature}")',
-					'  AUTH_JSON=$(curl -sSfL -X POST "https://$STAGE_DOMAIN/auth/wallet/login" -H "Content-Type: application/json" -d "$LOGIN_BODY")',
-					'  ACCESS_TOKEN=$(echo "$AUTH_JSON" | jq -r ".access_token")',
-					'  test -n "$ACCESS_TOKEN" && test "$ACCESS_TOKEN" != "null"',
-					'  export AWS_PROFILE=managed',
-					'  export SOUL_STAGE="$SOUL_STAGE"',
-					'  export SOUL_INSTANCE_DOMAIN="$SOUL_INSTANCE_DOMAIN"',
-					'  export LESSER_TOKEN="$ACCESS_TOKEN"',
-					'  export LESSER_ADMIN_TOKEN="$ACCESS_TOKEN"',
-					'  (cd "$SOUL_PACK_DIR" && GOTOOLCHAIN=auto go run ./cmd/soul-cli bootstrap)',
-					'  SOUL_RECEIPT_PATH="$STATE_DIR/soul-state.json"',
-					'  SOUL_TABLE_NAME="soul-$SOUL_STAGE"',
-					'  QUEUE_BASE="https://sqs.$TARGET_REGION.amazonaws.com/$TARGET_ACCOUNT_ID"',
-					'  RESEARCHER_QUEUE_URL="$QUEUE_BASE/soul-researcher"',
-					'  ASSISTANT_QUEUE_URL="$QUEUE_BASE/soul-assistant"',
-					'  CURATOR_QUEUE_URL="$QUEUE_BASE/soul-curator"',
-					'  BRIDGE_QUEUE_URL="$QUEUE_BASE/soul-bridge"',
-					'  CUSTOM_CODER_QUEUE_URL="$QUEUE_BASE/soul-custom-coder"',
-					'  CUSTOM_SUMMARIZER_QUEUE_URL="$QUEUE_BASE/soul-custom-summarizer"',
-					'  RESULTS_QUEUE_URL="$QUEUE_BASE/soul-results"',
-					'  RESEARCHER_TOKEN_PATH="/soul/$SOUL_INSTANCE_DOMAIN/agents/researcher/token"',
-					'  RESEARCHER_REFRESH_PATH="/soul/$SOUL_INSTANCE_DOMAIN/agents/researcher/refresh"',
-					'  ASSISTANT_TOKEN_PATH="/soul/$SOUL_INSTANCE_DOMAIN/agents/assistant/token"',
-						'  ASSISTANT_REFRESH_PATH="/soul/$SOUL_INSTANCE_DOMAIN/agents/assistant/refresh"',
-						'  CURATOR_TOKEN_PATH="/soul/$SOUL_INSTANCE_DOMAIN/agents/curator/token"',
-						'  CURATOR_REFRESH_PATH="/soul/$SOUL_INSTANCE_DOMAIN/agents/curator/refresh"',
-						'  CUSTOM_CODER_TOKEN_PATH="/soul/$SOUL_INSTANCE_DOMAIN/agents/custom-coder/token"',
-						'  CUSTOM_CODER_REFRESH_PATH="/soul/$SOUL_INSTANCE_DOMAIN/agents/custom-coder/refresh"',
-						'  CUSTOM_SUMMARIZER_TOKEN_PATH="/soul/$SOUL_INSTANCE_DOMAIN/agents/custom-summarizer/token"',
-						'  CUSTOM_SUMMARIZER_REFRESH_PATH="/soul/$SOUL_INSTANCE_DOMAIN/agents/custom-summarizer/refresh"',
-						'  jq -n --arg app "lesser-soul" --arg stage "$SOUL_STAGE" --arg instance_domain "$SOUL_INSTANCE_DOMAIN" --arg soul_version "$SOUL_PACK_VERSION" --arg soul_table_name "$SOUL_TABLE_NAME" --arg researcher_queue_url "$RESEARCHER_QUEUE_URL" --arg assistant_queue_url "$ASSISTANT_QUEUE_URL" --arg curator_queue_url "$CURATOR_QUEUE_URL" --arg bridge_queue_url "$BRIDGE_QUEUE_URL" --arg custom_coder_queue_url "$CUSTOM_CODER_QUEUE_URL" --arg custom_summarizer_queue_url "$CUSTOM_SUMMARIZER_QUEUE_URL" --arg results_queue_url "$RESULTS_QUEUE_URL" --arg researcher_token_path "$RESEARCHER_TOKEN_PATH" --arg researcher_refresh_path "$RESEARCHER_REFRESH_PATH" --arg assistant_token_path "$ASSISTANT_TOKEN_PATH" --arg assistant_refresh_path "$ASSISTANT_REFRESH_PATH" --arg curator_token_path "$CURATOR_TOKEN_PATH" --arg curator_refresh_path "$CURATOR_REFRESH_PATH" --arg custom_coder_token_path "$CUSTOM_CODER_TOKEN_PATH" --arg custom_coder_refresh_path "$CUSTOM_CODER_REFRESH_PATH" --arg custom_summarizer_token_path "$CUSTOM_SUMMARIZER_TOKEN_PATH" --arg custom_summarizer_refresh_path "$CUSTOM_SUMMARIZER_REFRESH_PATH" \'{version:2,app:$app,stage:$stage,instance_domain:$instance_domain,soul_version:$soul_version,soul_table_name:$soul_table_name,queue_urls:{researcher:$researcher_queue_url,assistant:$assistant_queue_url,curator:$curator_queue_url,bridge:$bridge_queue_url,custom_coder:$custom_coder_queue_url,custom_summarizer:$custom_summarizer_queue_url,results:$results_queue_url},agents:{researcher:{username:"soul-researcher",token_ssm_path:$researcher_token_path,refresh_ssm_path:$researcher_refresh_path},assistant:{username:"soul-assistant",token_ssm_path:$assistant_token_path,refresh_ssm_path:$assistant_refresh_path},curator:{username:"soul-curator",token_ssm_path:$curator_token_path,refresh_ssm_path:$curator_refresh_path},custom_coder:{username:"soul-coder",token_ssm_path:$custom_coder_token_path,refresh_ssm_path:$custom_coder_refresh_path},custom_summarizer:{username:"soul-summarizer",token_ssm_path:$custom_summarizer_token_path,refresh_ssm_path:$custom_summarizer_refresh_path}}}\' > "$SOUL_RECEIPT_PATH"',
-					'  aws s3 cp "$SOUL_RECEIPT_PATH" "s3://$ARTIFACT_BUCKET/$RECEIPT_S3_KEY"',
-					'else',
+						'else',
 					'  fail "unknown RUN_MODE: $RUN_MODE"',
 					'fi',
-			].join('\n');
+				].join('\n');
 
-			const provisionRunnerProject = new codebuild.Project(this, 'ProvisionRunnerProject', {
-				projectName: provisionRunnerProjectName,
-				timeout: cdk.Duration.hours(3),
-				environment: {
-					buildImage: codebuild.LinuxBuildImage.STANDARD_7_0,
-				computeType: codebuild.ComputeType.SMALL,
-			},
-				environmentVariables: {
+				// This buildspec is too large to inline into the CodeBuild project due to the 25,600 char limit.
+				// Store it as an S3 asset and reference it by ARN to keep deployments reliable and future-proof.
+				const provisionRunnerBuildSpecObject = {
+					version: '0.2',
+					env: {
+						shell: 'bash',
+					},
+					phases: {
+						install: {
+							commands: [
+								'set -euo pipefail',
+								'echo "Installing runner tools..."',
+								'if command -v yum >/dev/null 2>&1; then yum install -y jq tar gzip unzip openssl; fi',
+								'if command -v apt-get >/dev/null 2>&1; then apt-get update -y && apt-get install -y jq tar gzip unzip openssl; fi',
+								'node -v || true',
+								'npm -v || true',
+								'if ! command -v n >/dev/null 2>&1; then npm install -g n; fi',
+								'n 24',
+								'hash -r',
+								'node -v',
+								'npm install -g aws-cdk@2',
+								'npm install -g pnpm@9',
+								'cdk --version',
+								'pnpm --version',
+							],
+						},
+						pre_build: {
+							commands: [provisionRunnerPreBuild],
+						},
+						build: {
+							commands: [provisionRunnerBuild],
+						},
+					},
+				};
+				const provisionRunnerBuildSpecPath = path.join(
+					this.repoRoot(),
+					'cdk',
+					'.build',
+					'provision-runner-buildspec.json',
+				);
+				fs.mkdirSync(path.dirname(provisionRunnerBuildSpecPath), { recursive: true });
+				fs.writeFileSync(provisionRunnerBuildSpecPath, JSON.stringify(provisionRunnerBuildSpecObject), 'utf8');
+
+				const provisionRunnerProject = new codebuild.Project(this, 'ProvisionRunnerProject', {
+					projectName: provisionRunnerProjectName,
+					timeout: cdk.Duration.hours(3),
+					environment: {
+						buildImage: codebuild.LinuxBuildImage.STANDARD_7_0,
+					computeType: codebuild.ComputeType.SMALL,
+				},
+					environmentVariables: {
 					GITHUB_OWNER: { value: lesserGitHubOwner },
 					GITHUB_REPO: { value: lesserGitHubRepo },
 					LESSER_BODY_GITHUB_OWNER: { value: lesserBodyGitHubOwner },
@@ -627,61 +555,18 @@ export class LesserHostStack extends cdk.Stack {
 					LESSER_BODY_VERSION: { value: managedLesserBodyDefaultVersion.trim() },
 					...(managedLesserGitHubTokenSsmParam.trim()
 						? {
-								GITHUB_TOKEN: {
-									value: managedLesserGitHubTokenSsmParam.trim(),
-								type: codebuild.BuildEnvironmentVariableType.PARAMETER_STORE,
-							},
-						}
-					: {}),
-			},
-			buildSpec: codebuild.BuildSpec.fromObject({
-				version: '0.2',
-				env: {
-					shell: 'bash',
+									GITHUB_TOKEN: {
+										value: managedLesserGitHubTokenSsmParam.trim(),
+									type: codebuild.BuildEnvironmentVariableType.PARAMETER_STORE,
+								},
+							}
+						: {}),
 				},
-				phases: {
-						install: {
-							commands: [
-								'set -euo pipefail',
-								'echo \"Installing runner tools...\"',
-								'if command -v yum >/dev/null 2>&1; then yum install -y jq tar gzip unzip openssl; fi',
-								'if command -v apt-get >/dev/null 2>&1; then apt-get update -y && apt-get install -y jq tar gzip unzip openssl; fi',
-								'node -v || true',
-								'npm -v || true',
-								'if ! command -v n >/dev/null 2>&1; then npm install -g n; fi',
-								'n 24',
-							'hash -r',
-							'node -v',
-							'npm install -g aws-cdk@2',
-							'npm install -g pnpm@9',
-							'cdk --version',
-							'pnpm --version',
-						],
-					},
-					pre_build: {
-						commands: [provisionRunnerPreBuild],
-					},
-					build: {
-						commands: [provisionRunnerBuild],
-					},
-				},
-				}),
-			});
+					buildSpec: codebuild.BuildSpec.fromAsset(provisionRunnerBuildSpecPath),
+				});
 
-			soulPackBucket.grantRead(provisionRunnerProject);
-			soulPackSigningKey.grant(provisionRunnerProject, 'kms:Verify');
-			provisionRunnerProject.addToRolePolicy(
-				new iam.PolicyStatement({
-					actions: ['ssm:GetParameter', 'ssm:GetParameters'],
-					resources: [
-						cdk.Stack.of(this).formatArn({
-							service: 'ssm',
-							resource: 'parameter',
-							resourceName: `soul/${stage}/*`,
-						}),
-					],
-				}),
-			);
+			// Note: soul registry artifacts live in the soul bucket, but the managed provisioning runner does not
+			// fetch or write soul artifacts.
 
 			const controlPlaneFn = this.goLambda('ControlPlaneApi', './cmd/control-plane-api', {
 				STAGE: stage,
@@ -690,6 +575,7 @@ export class LesserHostStack extends cdk.Stack {
 			PREVIEW_QUEUE_URL: previewQueue.queueUrl,
 			SAFETY_QUEUE_URL: safetyQueue.queueUrl,
 			PROVISION_QUEUE_URL: provisionQueue.queueUrl,
+			COMM_QUEUE_URL: commQueue.queueUrl,
 			BOOTSTRAP_WALLET_ADDRESS: bootstrapWalletAddress,
 			WEBAUTHN_RP_ID: webAuthnRPID,
 			WEBAUTHN_ORIGINS: webAuthnOrigins,
@@ -739,6 +625,9 @@ export class LesserHostStack extends cdk.Stack {
 			ARTIFACT_BUCKET_NAME: artifactsBucket.bucketName,
 			PREVIEW_QUEUE_URL: previewQueue.queueUrl,
 			SAFETY_QUEUE_URL: safetyQueue.queueUrl,
+			ENS_GATEWAY_SIGNING_KEY_ID: ensGatewaySigningKey.keyId,
+			ENS_GATEWAY_RESOLVER_ADDRESS: ensGatewayResolverAddress.trim(),
+			ENS_GATEWAY_TTL_SECONDS: ensGatewayTTLSeconds.trim(),
 			ATTESTATION_SIGNING_KEY_ID: attestationSigningKey.keyId,
 			ATTESTATION_PUBLIC_KEY_IDS: attestationSigningKey.keyId,
 			WEBAUTHN_RP_ID: webAuthnRPID,
@@ -746,15 +635,15 @@ export class LesserHostStack extends cdk.Stack {
 		});
 
 		const repoRoot = this.repoRoot();
-		const renderWorkerFn = new lambda.DockerImageFunction(this, 'RenderWorker', {
-			functionName: `${namePrefix}-render-worker`,
-			code: lambda.DockerImageCode.fromImageAsset(repoRoot, {
-				file: 'cmd/render-worker/Dockerfile',
-				exclude: ['cdk/cdk.out/**', 'cdk/node_modules/**', 'cdk/.build/**', '.git/**'],
-			}),
-			memorySize: 1536,
-			timeout: cdk.Duration.seconds(30),
-			environment: {
+			const renderWorkerFn = new lambda.DockerImageFunction(this, 'RenderWorker', {
+				functionName: `${namePrefix}-render-worker`,
+				code: lambda.DockerImageCode.fromImageAsset(repoRoot, {
+					file: 'cmd/render-worker/Dockerfile',
+					exclude: ['cdk/cdk.out/**', 'cdk/node_modules/**', 'cdk/.build/**', '.git/**', '**/.env'],
+				}),
+				memorySize: 1536,
+				timeout: cdk.Duration.seconds(30),
+				environment: {
 				STAGE: stage,
 				STATE_TABLE_NAME: stateTable.tableName,
 				ARTIFACT_BUCKET_NAME: artifactsBucket.bucketName,
@@ -779,6 +668,8 @@ export class LesserHostStack extends cdk.Stack {
 			{
 				STAGE: stage,
 				STATE_TABLE_NAME: stateTable.tableName,
+				ATTESTATION_SIGNING_KEY_ID: attestationSigningKey.keyId,
+				ATTESTATION_PUBLIC_KEY_IDS: attestationSigningKey.keyId,
 				TIP_ENABLED: tipEnabled,
 				TIP_CHAIN_ID: tipChainId,
 				TIP_RPC_URL_SSM_PARAM: tipRpcUrlSsmParam,
@@ -821,12 +712,23 @@ export class LesserHostStack extends cdk.Stack {
 				MANAGED_LESSER_BODY_GITHUB_REPO: lesserBodyGitHubRepo,
 			});
 
+		const commWorkerFn = this.goLambda('CommWorker', './cmd/comm-worker', {
+			STAGE: stage,
+			STATE_TABLE_NAME: stateTable.tableName,
+			COMM_QUEUE_URL: commQueue.queueUrl,
+			SOUL_ENABLED: soulEnabled,
+			MANAGED_ORG_VENDING_ROLE_ARN: managedOrgVendingRoleArn,
+			MANAGED_INSTANCE_ROLE_NAME: managedInstanceRoleName,
+			MANAGED_DEFAULT_REGION: managedDefaultRegion,
+		});
+
 		stateTable.grantReadWriteData(controlPlaneFn);
 		stateTable.grantReadWriteData(trustFn);
 		stateTable.grantReadWriteData(renderWorkerFn);
 		stateTable.grantReadWriteData(aiWorkerFn);
 		stateTable.grantReadWriteData(soulReputationWorkerFn);
 		stateTable.grantReadWriteData(provisionWorkerFn);
+		stateTable.grantReadWriteData(commWorkerFn);
 		artifactsBucket.grantReadWrite(controlPlaneFn);
 		soulPackBucket.grantReadWrite(controlPlaneFn);
 		soulPackBucket.grantReadWrite(soulReputationWorkerFn);
@@ -836,7 +738,9 @@ export class LesserHostStack extends cdk.Stack {
 		artifactsBucket.grantRead(provisionWorkerFn);
 		artifactsBucket.grantReadWrite(provisionRunnerProject);
 		attestationSigningKey.grant(trustFn, 'kms:Sign', 'kms:GetPublicKey');
+		ensGatewaySigningKey.grant(trustFn, 'kms:Sign', 'kms:GetPublicKey');
 		attestationSigningKey.grant(aiWorkerFn, 'kms:Sign', 'kms:GetPublicKey');
+		attestationSigningKey.grant(soulReputationWorkerFn, 'kms:Sign', 'kms:GetPublicKey');
 		previewQueue.grantSendMessages(controlPlaneFn);
 		previewQueue.grantSendMessages(trustFn);
 		previewQueue.grantConsumeMessages(renderWorkerFn);
@@ -846,6 +750,8 @@ export class LesserHostStack extends cdk.Stack {
 		provisionQueue.grantSendMessages(controlPlaneFn);
 		provisionQueue.grantConsumeMessages(provisionWorkerFn);
 		provisionQueue.grantSendMessages(provisionWorkerFn);
+		commQueue.grantSendMessages(controlPlaneFn);
+		commQueue.grantConsumeMessages(commWorkerFn);
 
 		provisionRunnerProject.addToRolePolicy(
 			new iam.PolicyStatement({
@@ -883,6 +789,21 @@ export class LesserHostStack extends cdk.Stack {
 		);
 		if (managedOrgVendingRoleArn.trim()) {
 			provisionWorkerFn.addToRolePolicy(
+				new iam.PolicyStatement({
+					actions: ['sts:AssumeRole'],
+					resources: [managedOrgVendingRoleArn.trim()],
+				}),
+			);
+		}
+
+		commWorkerFn.addToRolePolicy(
+			new iam.PolicyStatement({
+				actions: ['sts:AssumeRole'],
+				resources: [`arn:aws:iam::*:role/${managedInstanceRoleName.trim() || 'OrganizationAccountAccessRole'}`],
+			}),
+		);
+		if (managedOrgVendingRoleArn.trim()) {
+			commWorkerFn.addToRolePolicy(
 				new iam.PolicyStatement({
 					actions: ['sts:AssumeRole'],
 					resources: [managedOrgVendingRoleArn.trim()],
@@ -937,6 +858,7 @@ export class LesserHostStack extends cdk.Stack {
 		renderWorkerFn.addEventSource(new lambdaEventSources.SqsEventSource(previewQueue, { batchSize: 1 }));
 		aiWorkerFn.addEventSource(new lambdaEventSources.SqsEventSource(safetyQueue, { batchSize: 5 }));
 		provisionWorkerFn.addEventSource(new lambdaEventSources.SqsEventSource(provisionQueue, { batchSize: 1 }));
+		commWorkerFn.addEventSource(new lambdaEventSources.SqsEventSource(commQueue, { batchSize: 1 }));
 
 		aiWorkerFn.addToRolePolicy(
 			new iam.PolicyStatement({
@@ -1005,6 +927,34 @@ export class LesserHostStack extends cdk.Stack {
 				],
 			}),
 		);
+		const migaduSsmParamArns = [
+			`arn:aws:ssm:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:parameter/lesser-host/migadu`,
+		];
+		const soulCommSsmParamArns = [
+			cdk.Stack.of(this).formatArn({
+				service: 'ssm',
+				resource: 'parameter',
+				resourceName: `lesser-host/soul/${stage}/*`,
+			}),
+		];
+		controlPlaneFn.addToRolePolicy(
+			new iam.PolicyStatement({
+				actions: ['ssm:GetParameter', 'ssm:GetParameters'],
+				resources: migaduSsmParamArns,
+			}),
+		);
+		controlPlaneFn.addToRolePolicy(
+			new iam.PolicyStatement({
+				actions: ['ssm:GetParameter', 'ssm:GetParameters', 'ssm:PutParameter'],
+				resources: soulCommSsmParamArns,
+			}),
+		);
+		commWorkerFn.addToRolePolicy(
+			new iam.PolicyStatement({
+				actions: ['ssm:GetParameter', 'ssm:GetParameters'],
+				resources: soulCommSsmParamArns,
+			}),
+		);
 		if (soulRpcUrlSsmParam) {
 			controlPlaneFn.addToRolePolicy(
 				new iam.PolicyStatement({
@@ -1026,6 +976,15 @@ export class LesserHostStack extends cdk.Stack {
 			);
 		}
 		controlPlaneFn.addToRolePolicy(
+			new iam.PolicyStatement({
+				actions: ['kms:Decrypt'],
+				resources: ['*'],
+				conditions: {
+					StringEquals: { 'kms:ViaService': `ssm.${cdk.Aws.REGION}.amazonaws.com` },
+				},
+			}),
+		);
+		commWorkerFn.addToRolePolicy(
 			new iam.PolicyStatement({
 				actions: ['kms:Decrypt'],
 				resources: ['*'],
@@ -1110,6 +1069,84 @@ export class LesserHostStack extends cdk.Stack {
 			),
 		});
 
+		const apiAccessLogRetention =
+			stage === 'live' ? logs.RetentionDays.THREE_MONTHS : logs.RetentionDays.ONE_MONTH;
+		const controlPlaneAccessLogs = new logs.LogGroup(this, 'ControlPlaneApiAccessLogs', {
+			logGroupName: `/aws/apigwv2/${namePrefix}-control-plane`,
+			retention: apiAccessLogRetention,
+			removalPolicy,
+		});
+		const trustAccessLogs = new logs.LogGroup(this, 'TrustApiAccessLogs', {
+			logGroupName: `/aws/apigwv2/${namePrefix}-trust`,
+			retention: apiAccessLogRetention,
+			removalPolicy,
+		});
+
+		new logs.CfnResourcePolicy(this, 'ApiGatewayAccessLogsResourcePolicy', {
+			policyName: `${namePrefix}-apigw-access-logs`,
+			policyDocument: JSON.stringify({
+				Version: '2012-10-17',
+				Statement: [
+					{
+						Sid: 'ApiGatewayAccessLogs',
+						Effect: 'Allow',
+						Principal: { Service: 'apigateway.amazonaws.com' },
+						Action: ['logs:CreateLogStream', 'logs:PutLogEvents'],
+						Resource: [
+							`${controlPlaneAccessLogs.logGroupArn}:*`,
+							`${trustAccessLogs.logGroupArn}:*`,
+						],
+					},
+				],
+			}),
+		});
+
+		const apiThrottle = stage === 'live'
+			? { throttlingRateLimit: 500, throttlingBurstLimit: 1000 }
+			: { throttlingRateLimit: 100, throttlingBurstLimit: 200 };
+
+		const controlPlaneStage = controlPlaneApi.defaultStage?.node.defaultChild as apigwv2.CfnStage | undefined;
+		if (controlPlaneStage) {
+			controlPlaneStage.accessLogSettings = {
+				destinationArn: controlPlaneAccessLogs.logGroupArn,
+				format: JSON.stringify({
+					requestId: '$context.requestId',
+					ip: '$context.identity.sourceIp',
+					requestTime: '$context.requestTime',
+					method: '$context.httpMethod',
+					path: '$context.path',
+					protocol: '$context.protocol',
+					status: '$context.status',
+					responseLength: '$context.responseLength',
+					routeKey: '$context.routeKey',
+					integrationError: '$context.integrationErrorMessage',
+					userAgent: '$context.identity.userAgent',
+				}),
+			};
+			controlPlaneStage.defaultRouteSettings = apiThrottle;
+		}
+
+		const trustStage = trustApi.defaultStage?.node.defaultChild as apigwv2.CfnStage | undefined;
+		if (trustStage) {
+			trustStage.accessLogSettings = {
+				destinationArn: trustAccessLogs.logGroupArn,
+				format: JSON.stringify({
+					requestId: '$context.requestId',
+					ip: '$context.identity.sourceIp',
+					requestTime: '$context.requestTime',
+					method: '$context.httpMethod',
+					path: '$context.path',
+					protocol: '$context.protocol',
+					status: '$context.status',
+					responseLength: '$context.responseLength',
+					routeKey: '$context.routeKey',
+					integrationError: '$context.integrationErrorMessage',
+					userAgent: '$context.identity.userAgent',
+				}),
+			};
+			trustStage.defaultRouteSettings = apiThrottle;
+		}
+
 		const webRootDomain = (this.node.tryGetContext('webRootDomain') as string | undefined) ?? 'lesser.host';
 		const webHostedZoneId = (this.node.tryGetContext('webHostedZoneId') as string | undefined) ?? '';
 		const webHostedZoneName =
@@ -1120,6 +1157,22 @@ export class LesserHostStack extends cdk.Stack {
 			bucketName: `${namePrefix}-${cdk.Aws.ACCOUNT_ID}-${cdk.Aws.REGION}-web`,
 			blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
 			enforceSSL: true,
+			removalPolicy,
+			autoDeleteObjects: stage !== 'live',
+		});
+
+		const accessLogsBucket = new s3.Bucket(this, 'AccessLogsBucket', {
+			bucketName: `${namePrefix}-${cdk.Aws.ACCOUNT_ID}-${cdk.Aws.REGION}-access-logs`,
+			accessControl: s3.BucketAccessControl.LOG_DELIVERY_WRITE,
+			objectOwnership: s3.ObjectOwnership.OBJECT_WRITER,
+			blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+			enforceSSL: true,
+			lifecycleRules: [
+				{
+					id: 'ExpireAccessLogs',
+					expiration: cdk.Duration.days(stage === 'live' ? 180 : 30),
+				},
+			],
 			removalPolicy,
 			autoDeleteObjects: stage !== 'live',
 		});
@@ -1170,6 +1223,34 @@ export class LesserHostStack extends cdk.Stack {
 			},
 		});
 
+		const apiSecurityHeaders = new cloudfront.ResponseHeadersPolicy(this, 'ApiSecurityHeaders', {
+			responseHeadersPolicyName: `${namePrefix}-api-security`,
+			securityHeadersBehavior: {
+				contentTypeOptions: { override: true },
+				frameOptions: { frameOption: cloudfront.HeadersFrameOption.DENY, override: true },
+				referrerPolicy: {
+					referrerPolicy: cloudfront.HeadersReferrerPolicy.SAME_ORIGIN,
+					override: true,
+				},
+				strictTransportSecurity: {
+					accessControlMaxAge: cdk.Duration.days(365),
+					includeSubdomains: true,
+					preload: true,
+					override: true,
+				},
+				xssProtection: { protection: true, modeBlock: true, override: true },
+			},
+			customHeadersBehavior: {
+				customHeaders: [
+					{
+						header: 'Permissions-Policy',
+						value: 'camera=(), microphone=(), geolocation=(), interest-cohort=()',
+						override: true,
+					},
+				],
+			},
+		});
+
 		const webSpaRewriteFn = new cloudfront.Function(this, 'WebSpaRewriteFn', {
 			functionName: `${namePrefix}-web-spa-rewrite`,
 			code: cloudfront.FunctionCode.fromInline(`function handler(event) {
@@ -1186,6 +1267,9 @@ export class LesserHostStack extends cdk.Stack {
   if (
     uri.startsWith("/api/") ||
     uri.startsWith("/auth/") ||
+    uri.startsWith("/webhooks/") ||
+    uri.startsWith("/resolve") ||
+    uri.startsWith("/health") ||
     isSetupApi ||
     uri.startsWith("/.well-known/") ||
     uri.startsWith("/attestations")
@@ -1237,6 +1321,7 @@ export class LesserHostStack extends cdk.Stack {
 			allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
 			cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
 			originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+			responseHeadersPolicy: apiSecurityHeaders,
 		};
 
 		const trustApiBehavior: cloudfront.BehaviorOptions = {
@@ -1245,6 +1330,7 @@ export class LesserHostStack extends cdk.Stack {
 			allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
 			cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
 			originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+			responseHeadersPolicy: apiSecurityHeaders,
 		};
 
 		const trustBehaviorNoCache: cloudfront.BehaviorOptions = {
@@ -1253,6 +1339,7 @@ export class LesserHostStack extends cdk.Stack {
 			allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
 			cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
 			originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+			responseHeadersPolicy: apiSecurityHeaders,
 		};
 
 		const trustBehaviorCached: cloudfront.BehaviorOptions = {
@@ -1261,12 +1348,79 @@ export class LesserHostStack extends cdk.Stack {
 			allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
 			cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
 			originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+			responseHeadersPolicy: apiSecurityHeaders,
 		};
+
+		const webAcl = new wafv2.CfnWebACL(this, 'WebAcl', {
+			name: `${namePrefix}-web-acl`,
+			description: `${namePrefix} WAF`,
+			scope: 'CLOUDFRONT',
+			defaultAction: { allow: {} },
+			visibilityConfig: {
+				cloudWatchMetricsEnabled: true,
+				metricName: `${namePrefix}-web-acl`,
+				sampledRequestsEnabled: true,
+			},
+			rules: [
+				{
+					name: 'AWSManagedRulesCommonRuleSet',
+					priority: 0,
+					overrideAction: { none: {} },
+					statement: {
+						managedRuleGroupStatement: {
+							vendorName: 'AWS',
+							name: 'AWSManagedRulesCommonRuleSet',
+						},
+					},
+					visibilityConfig: {
+						cloudWatchMetricsEnabled: true,
+						metricName: `${namePrefix}-waf-common`,
+						sampledRequestsEnabled: true,
+					},
+				},
+				{
+					name: 'AWSManagedRulesKnownBadInputsRuleSet',
+					priority: 1,
+					overrideAction: { none: {} },
+					statement: {
+						managedRuleGroupStatement: {
+							vendorName: 'AWS',
+							name: 'AWSManagedRulesKnownBadInputsRuleSet',
+						},
+					},
+					visibilityConfig: {
+						cloudWatchMetricsEnabled: true,
+						metricName: `${namePrefix}-waf-bad-inputs`,
+						sampledRequestsEnabled: true,
+					},
+				},
+				{
+					name: 'IpRateLimit',
+					priority: 2,
+					action: { block: {} },
+					statement: {
+						rateBasedStatement: {
+							limit: stage === 'live' ? 2000 : 5000,
+							aggregateKeyType: 'IP',
+						},
+					},
+					visibilityConfig: {
+						cloudWatchMetricsEnabled: true,
+						metricName: `${namePrefix}-waf-ip-rate-limit`,
+						sampledRequestsEnabled: true,
+					},
+				},
+			],
+		});
 
 		const webDistribution = new cloudfront.Distribution(this, 'WebDistribution', {
 			defaultRootObject: 'index.html',
 			certificate: webCert,
 			domainNames: webCert ? [webDomainName] : undefined,
+			webAclId: webAcl.attrArn,
+			enableLogging: true,
+			logBucket: accessLogsBucket,
+			logFilePrefix: `${namePrefix}/cloudfront/`,
 			defaultBehavior: {
 				origin: new origins.S3Origin(webBucket, { originAccessIdentity: webOai }),
 				viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
@@ -1281,6 +1435,8 @@ export class LesserHostStack extends cdk.Stack {
 				],
 			},
 			additionalBehaviors: {
+				'resolve*': trustBehaviorNoCache,
+				'health*': trustBehaviorNoCache,
 				'api/v1/previews*': trustApiBehavior,
 				'api/v1/renders*': trustApiBehavior,
 				'api/v1/publish/jobs*': trustApiBehavior,
@@ -1289,6 +1445,7 @@ export class LesserHostStack extends cdk.Stack {
 
 				'api/*': apiBehavior,
 				'auth/*': apiBehavior,
+				'webhooks/*': apiBehavior,
 				'setup/status': apiBehavior,
 				'setup/bootstrap/*': apiBehavior,
 				'setup/admin': apiBehavior,
@@ -1442,10 +1599,10 @@ export class LesserHostStack extends cdk.Stack {
 					}),
 				);
 
-				new cloudwatch.Alarm(this, 'TrustProxy503Alarm', {
-					alarmName: `${namePrefix}-trust-proxy-503`,
-					metric: new cloudwatch.Metric({
-						namespace: 'lesser-host',
+					new cloudwatch.Alarm(this, 'TrustProxy503Alarm', {
+						alarmName: `${namePrefix}-trust-proxy-503`,
+						metric: new cloudwatch.Metric({
+							namespace: 'lesser-host',
 						metricName: 'TrustProxy503',
 						dimensionsMap: { Stage: stage, Service: 'trust-api' },
 						statistic: 'Sum',
@@ -1453,13 +1610,97 @@ export class LesserHostStack extends cdk.Stack {
 					}),
 					threshold: 1,
 					evaluationPeriods: 1,
-					datapointsToAlarm: 1,
-					treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-				});
-			}
+						datapointsToAlarm: 1,
+						treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+					});
 
-		private goLambda(
-			id: string,
+					const commDashboard = new cloudwatch.Dashboard(this, 'CommDashboard', {
+						dashboardName: `${namePrefix}-comm`,
+					});
+
+					const commWebhook5xx = new cloudwatch.MathExpression({
+						expression: `SUM(SEARCH('{lesser-host,Stage,Service,Provider,Channel} MetricName="CommWebhook5xx" AND Stage="${stage}" AND Service="control-plane-api"', 'Sum', 300))`,
+						period: cdk.Duration.minutes(5),
+					});
+					const commOutboundProviderRejected = new cloudwatch.MathExpression({
+						expression: `SUM(SEARCH('{lesser-host,Stage,Service,Instance,Channel,Provider,Status} MetricName="CommOutboundRequests" AND Stage="${stage}" AND Service="control-plane-api" AND Status="provider_rejected"', 'Sum', 300))`,
+						period: cdk.Duration.minutes(5),
+					});
+
+					commDashboard.addWidgets(
+						new cloudwatch.GraphWidget({
+							title: 'Comm Queue Depth',
+							left: [commQueue.metricApproximateNumberOfMessagesVisible({ period: cdk.Duration.minutes(5) })],
+							width: 12,
+						}),
+						new cloudwatch.GraphWidget({
+							title: 'Comm Queue Oldest Message (s)',
+							left: [commQueue.metricApproximateAgeOfOldestMessage({ period: cdk.Duration.minutes(5) })],
+							width: 12,
+						}),
+						new cloudwatch.GraphWidget({
+							title: 'Comm DLQ Visible',
+							left: [commDLQ.metricApproximateNumberOfMessagesVisible({ period: cdk.Duration.minutes(5) })],
+							width: 12,
+						}),
+						new cloudwatch.GraphWidget({
+							title: 'Comm Webhook 5xx (Total)',
+							left: [commWebhook5xx],
+							width: 12,
+						}),
+						new cloudwatch.GraphWidget({
+							title: 'Comm Outbound Provider Rejected (Total)',
+							left: [commOutboundProviderRejected],
+							width: 24,
+						}),
+					);
+
+					const controlPlaneLogGroupName = `/aws/lambda/${controlPlaneFn.functionName}`;
+					logs.LogGroup.fromLogGroupName(this, 'ControlPlaneApiLogGroup', controlPlaneLogGroupName);
+
+					commDashboard.addWidgets(
+						new cloudwatch.LogQueryWidget({
+							title: 'Comm Webhook Failures',
+							width: 24,
+							height: 6,
+							logGroupNames: [controlPlaneLogGroupName],
+							queryString: [
+								'fields @timestamp, path, status, error_code, request_id',
+								'| filter path like /webhooks/comm/ and status >= 400',
+								'| sort @timestamp desc',
+								'| limit 50',
+							].join('\n'),
+						}),
+					);
+
+					new cloudwatch.Alarm(this, 'CommWebhook5xxAlarm', {
+						alarmName: `${namePrefix}-comm-webhooks-5xx`,
+						metric: commWebhook5xx,
+						threshold: 1,
+						evaluationPeriods: 1,
+						datapointsToAlarm: 1,
+						treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+					});
+					new cloudwatch.Alarm(this, 'CommQueueOldestAgeAlarm', {
+						alarmName: `${namePrefix}-comm-queue-oldest-age`,
+						metric: commQueue.metricApproximateAgeOfOldestMessage({ period: cdk.Duration.minutes(5) }),
+						threshold: 300,
+						evaluationPeriods: 1,
+						datapointsToAlarm: 1,
+						treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+					});
+					new cloudwatch.Alarm(this, 'CommOutboundProviderRejectedAlarm', {
+						alarmName: `${namePrefix}-comm-outbound-provider-rejected`,
+						metric: commOutboundProviderRejected,
+						threshold: 10,
+						evaluationPeriods: 1,
+						datapointsToAlarm: 1,
+						treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+					});
+				}
+
+			private goLambda(
+				id: string,
 			entry: string,
 			environment: Record<string, string>,
 			opts?: { memorySize?: number; timeoutSeconds?: number },

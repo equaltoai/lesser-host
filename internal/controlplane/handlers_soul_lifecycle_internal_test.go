@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/cyberphone/json-canonicalization/go/src/webpki.org/jsoncanonicalizer"
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts"
@@ -56,6 +57,13 @@ type fakeSoulPackStore struct {
 	body         []byte
 	contentType  string
 	cacheControl string
+	puts         []fakePut
+	objects      map[string]fakePut
+}
+
+type fakePut struct {
+	key  string
+	body []byte
 }
 
 func (f *fakeSoulPackStore) PutObject(ctx context.Context, key string, body []byte, contentType string, cacheControl string) error {
@@ -63,23 +71,49 @@ func (f *fakeSoulPackStore) PutObject(ctx context.Context, key string, body []by
 	f.body = append([]byte(nil), body...)
 	f.contentType = contentType
 	f.cacheControl = cacheControl
+	f.puts = append(f.puts, fakePut{key: key, body: append([]byte(nil), body...)})
+	if f.objects == nil {
+		f.objects = map[string]fakePut{}
+	}
+	f.objects[key] = fakePut{key: key, body: append([]byte(nil), body...)}
 	return nil
 }
 
 func (f *fakeSoulPackStore) GetObject(ctx context.Context, key string, maxBytes int64) ([]byte, string, string, error) {
-	return nil, "", "", errors.New("not implemented")
+	if f == nil || f.objects == nil {
+		return nil, "", "", &s3types.NoSuchKey{}
+	}
+	obj, ok := f.objects[key]
+	if !ok {
+		return nil, "", "", &s3types.NoSuchKey{}
+	}
+	if maxBytes > 0 && int64(len(obj.body)) > maxBytes {
+		return nil, "", "", errors.New("object too large")
+	}
+	return append([]byte(nil), obj.body...), f.contentType, "", nil
 }
 
 type soulLifecycleTestDB struct {
-	db         *ttmocks.MockExtendedDB
-	qDomain    *ttmocks.MockQuery
-	qInstance  *ttmocks.MockQuery
-	qIdentity  *ttmocks.MockQuery
-	qRotation  *ttmocks.MockQuery
-	qOp        *ttmocks.MockQuery
-	qAudit     *ttmocks.MockQuery
-	qWalletIdx *ttmocks.MockQuery
-	qCapIdx    *ttmocks.MockQuery
+	db          *ttmocks.MockExtendedDB
+	qDomain     *ttmocks.MockQuery
+	qInstance   *ttmocks.MockQuery
+	qIdentity   *ttmocks.MockQuery
+	qRotation   *ttmocks.MockQuery
+	qOp         *ttmocks.MockQuery
+	qAudit      *ttmocks.MockQuery
+	qWalletIdx  *ttmocks.MockQuery
+	qCapIdx     *ttmocks.MockQuery
+	qVersion    *ttmocks.MockQuery
+	qBoundary   *ttmocks.MockQuery
+	qBoundIdx   *ttmocks.MockQuery
+	qChannel    *ttmocks.MockQuery
+	qPrefs      *ttmocks.MockQuery
+	qEmailIdx   *ttmocks.MockQuery
+	qPhoneIdx   *ttmocks.MockQuery
+	qChannelIdx *ttmocks.MockQuery
+	qENS        *ttmocks.MockQuery
+	qContinuity *ttmocks.MockQuery
+	qDispute    *ttmocks.MockQuery
 }
 
 func newSoulLifecycleTestDB() soulLifecycleTestDB {
@@ -92,6 +126,17 @@ func newSoulLifecycleTestDB() soulLifecycleTestDB {
 	qAudit := new(ttmocks.MockQuery)
 	qWalletIdx := new(ttmocks.MockQuery)
 	qCapIdx := new(ttmocks.MockQuery)
+	qVersion := new(ttmocks.MockQuery)
+	qBoundary := new(ttmocks.MockQuery)
+	qBoundIdx := new(ttmocks.MockQuery)
+	qChannel := new(ttmocks.MockQuery)
+	qContactPrefs := new(ttmocks.MockQuery)
+	qEmailIdx := new(ttmocks.MockQuery)
+	qPhoneIdx := new(ttmocks.MockQuery)
+	qChannelTypeIdx := new(ttmocks.MockQuery)
+	qENSResolution := new(ttmocks.MockQuery)
+	qContinuity := new(ttmocks.MockQuery)
+	qDispute := new(ttmocks.MockQuery)
 
 	db.On("WithContext", mock.Anything).Return(db).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.Domain")).Return(qDomain).Maybe()
@@ -102,6 +147,17 @@ func newSoulLifecycleTestDB() soulLifecycleTestDB {
 	db.On("Model", mock.AnythingOfType("*models.AuditLogEntry")).Return(qAudit).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.WalletIndex")).Return(qWalletIdx).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulCapabilityAgentIndex")).Return(qCapIdx).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentVersion")).Return(qVersion).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentBoundary")).Return(qBoundary).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulBoundaryKeywordAgentIndex")).Return(qBoundIdx).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentChannel")).Return(qChannel).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentContactPreferences")).Return(qContactPrefs).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulEmailAgentIndex")).Return(qEmailIdx).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulPhoneAgentIndex")).Return(qPhoneIdx).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulChannelAgentIndex")).Return(qChannelTypeIdx).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(qENSResolution).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentContinuity")).Return(qContinuity).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentDispute")).Return(qDispute).Maybe()
 
 	for _, q := range []*ttmocks.MockQuery{
 		qDomain,
@@ -112,28 +168,52 @@ func newSoulLifecycleTestDB() soulLifecycleTestDB {
 		qAudit,
 		qWalletIdx,
 		qCapIdx,
+		qVersion,
+		qBoundary,
+		qBoundIdx,
+		qChannel,
+		qContactPrefs,
+		qEmailIdx,
+		qPhoneIdx,
+		qChannelTypeIdx,
+		qENSResolution,
+		qContinuity,
+		qDispute,
 	} {
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("Index", mock.Anything).Return(q).Maybe()
 		q.On("Limit", mock.Anything).Return(q).Maybe()
+		q.On("OrderBy", mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("IfExists").Return(q).Maybe()
 		q.On("IfNotExists").Return(q).Maybe()
 		q.On("Create").Return(nil).Maybe()
 		q.On("CreateOrUpdate").Return(nil).Maybe()
 		q.On("Update", mock.Anything).Return(nil).Maybe()
+		q.On("Update", mock.Anything, mock.Anything).Return(nil).Maybe()
 		q.On("Delete").Return(nil).Maybe()
 	}
 
 	return soulLifecycleTestDB{
-		db:         db,
-		qDomain:    qDomain,
-		qInstance:  qInstance,
-		qIdentity:  qIdentity,
-		qRotation:  qRotation,
-		qOp:        qOp,
-		qAudit:     qAudit,
-		qWalletIdx: qWalletIdx,
-		qCapIdx:    qCapIdx,
+		db:          db,
+		qDomain:     qDomain,
+		qInstance:   qInstance,
+		qIdentity:   qIdentity,
+		qRotation:   qRotation,
+		qOp:         qOp,
+		qAudit:      qAudit,
+		qWalletIdx:  qWalletIdx,
+		qCapIdx:     qCapIdx,
+		qVersion:    qVersion,
+		qBoundary:   qBoundary,
+		qBoundIdx:   qBoundIdx,
+		qChannel:    qChannel,
+		qPrefs:      qContactPrefs,
+		qEmailIdx:   qEmailIdx,
+		qPhoneIdx:   qPhoneIdx,
+		qChannelIdx: qChannelTypeIdx,
+		qENS:        qENSResolution,
+		qContinuity: qContinuity,
+		qDispute:    qDispute,
 	}
 }
 
@@ -396,6 +476,11 @@ func TestHandleSoulAgentUpdateRegistration_PublishesToS3(t *testing.T) {
 			UpdatedAt:    time.Now().Add(-time.Minute).UTC(),
 		}
 	}).Once()
+	tdb.qVersion.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulAgentVersion](t, args, 0)
+		*dest = nil
+	}).Once()
+	tdb.qCapIdx.On("First", mock.AnythingOfType("*models.SoulCapabilityAgentIndex")).Return(theoryErrors.ErrItemNotFound).Twice()
 
 	parsedABI, err := abi.JSON(strings.NewReader(soul.SoulRegistryABI))
 	if err != nil {
@@ -471,11 +556,36 @@ func TestHandleSoulAgentUpdateRegistration_PublishesToS3(t *testing.T) {
 	if out.S3Key != soulRegistrationS3Key(agentIDHex) {
 		t.Fatalf("expected s3 key %q, got %q", soulRegistrationS3Key(agentIDHex), out.S3Key)
 	}
-	if packs.key != out.S3Key {
-		t.Fatalf("expected object written to %q, got %q", out.S3Key, packs.key)
+	// Two puts: current path + versioned path.
+	if len(packs.puts) < 2 {
+		t.Fatalf("expected at least 2 puts, got %d", len(packs.puts))
 	}
-	if !bytes.Equal(packs.body, regBytes) {
-		t.Fatalf("expected put body to match request body")
+	currentKey := out.S3Key
+	versionedKey := soulRegistrationVersionedS3Key(agentIDHex, out.Version)
+	foundCurrent := false
+	foundVersioned := false
+	for _, put := range packs.puts {
+		switch put.key {
+		case currentKey:
+			foundCurrent = true
+			if !bytes.Equal(put.body, regBytes) {
+				t.Fatalf("expected current put body to match request body")
+			}
+		case versionedKey:
+			foundVersioned = true
+			if !bytes.Equal(put.body, regBytes) {
+				t.Fatalf("expected versioned put body to match request body")
+			}
+		}
+	}
+	if !foundCurrent {
+		t.Fatalf("expected current registration put to %q", currentKey)
+	}
+	if !foundVersioned {
+		t.Fatalf("expected versioned registration put to %q", versionedKey)
+	}
+	if out.Version < 1 {
+		t.Fatalf("expected version >= 1, got %d", out.Version)
 	}
 	if out.Agent.Wallet != wallet {
 		t.Fatalf("expected wallet %q, got %q", wallet, out.Agent.Wallet)

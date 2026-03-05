@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {SignatureChecker} from "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
+import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
@@ -50,18 +51,30 @@ contract SoulRegistry is ERC721, Ownable2Step, Pausable, EIP712 {
     mapping(uint8 => address) private _renderers;
     mapping(uint256 => uint8) private _avatarStyle;
 
+    // v2: Principal registry (set immutably at mint time)
+    mapping(uint256 => address) private _principals;
+
+    // v2: Attestor registry (addresses allowed to sign selfMintSoul attestations)
+    mapping(address => bool) private _attestors;
+
     // Permit-based minting
     /// @notice Address allowed to sign mint permits.
     address public mintSigner;
     /// @notice Mint fee (wei).
     uint256 public mintFee;
+    /// @notice Accumulated mint fees (wei) available for withdrawal.
+    uint256 public accumulatedFees;
     mapping(bytes32 => bool) private _usedPermits;
+    mapping(bytes32 => bool) private _usedSelfMintAttestations;
 
     bytes32 private constant _ROTATION_TYPEHASH =
         keccak256("WalletRotationProposal(uint256 agentId,address currentWallet,address newWallet,uint256 nonce,uint256 deadline)");
 
     bytes32 private constant _MINT_PERMIT_TYPEHASH =
         keccak256("MintPermit(address to,uint256 agentId,string metaURI,uint8 avatarStyle,uint256 deadline)");
+
+    bytes32 private constant _SELF_MINT_ATTESTATION_TYPEHASH =
+        keccak256("SelfMintAttestation(address to,uint256 agentId,string metaURI,uint8 avatarStyle,address principal,uint256 deadline,address submitter)");
 
     /// @notice Emitted when a new soul is minted.
     event SoulMinted(uint256 indexed agentId, address indexed to, string metaURI);
@@ -81,6 +94,12 @@ contract SoulRegistry is ERC721, Ownable2Step, Pausable, EIP712 {
     event MintSignerUpdated(address indexed signer);
     /// @notice Emitted when the mint fee is updated.
     event MintFeeUpdated(uint256 fee);
+    /// @notice Emitted when a principal is declared for an agent (v2).
+    event PrincipalDeclared(uint256 indexed agentId, address indexed principal);
+    /// @notice Emitted when an attestor is added (v2).
+    event AttestorAdded(address indexed attestor);
+    /// @notice Emitted when an attestor is removed (v2).
+    event AttestorRemoved(address indexed attestor);
 
     constructor(address initialOwner, uint256 claimWindowSeconds_)
         ERC721("LesserSoul", "SOUL")
@@ -130,15 +149,64 @@ contract SoulRegistry is ERC721, Ownable2Step, Pausable, EIP712 {
             revert("SoulRegistry: invalid permit");
         }
 
-        _mintSoulInternal(to, agentId, metaURI, avatarStyle);
+        accumulatedFees += msg.value;
+        _mintSoulInternal(to, agentId, metaURI, avatarStyle, address(0));
     }
 
     /// @notice Mint a new soul token directly (owner only, no permit/fee).
     function mintSoulOwner(address to, uint256 agentId, string calldata metaURI, uint8 avatarStyle) external onlyOwner whenNotPaused {
-        _mintSoulInternal(to, agentId, metaURI, avatarStyle);
+        _mintSoulInternal(to, agentId, metaURI, avatarStyle, address(0));
     }
 
-    function _mintSoulInternal(address to, uint256 agentId, string calldata metaURI, uint8 avatarStyle) internal {
+    /// @notice Permissionless self-mint with attestor-signed attestation and principal declaration (v2).
+    function selfMintSoul(
+        address to,
+        uint256 agentId,
+        string calldata metaURI,
+        uint8 avatarStyle,
+        address principal,
+        uint256 deadline,
+        bytes calldata attestationSig
+    ) external payable whenNotPaused {
+        if (msg.value != mintFee) {
+            revert("SoulRegistry: incorrect fee");
+        }
+        if (block.timestamp > deadline) {
+            revert("SoulRegistry: expired");
+        }
+        if (principal == address(0)) {
+            revert("SoulRegistry: principal required");
+        }
+
+        // Verify attestor signature over the self-mint attestation.
+        bytes32 structHash = keccak256(abi.encode(
+            _SELF_MINT_ATTESTATION_TYPEHASH,
+            to,
+            agentId,
+            keccak256(bytes(metaURI)),
+            avatarStyle,
+            principal,
+            deadline,
+            msg.sender
+        ));
+        bytes32 digest = _hashTypedDataV4(structHash);
+
+        if (_usedSelfMintAttestations[digest]) {
+            revert("SoulRegistry: attestation reused");
+        }
+        _usedSelfMintAttestations[digest] = true;
+
+        // Recover signer and check it is a registered attestor.
+        address signer = ECDSA.recoverCalldata(digest, attestationSig);
+        if (!_attestors[signer]) {
+            revert("SoulRegistry: invalid attestation");
+        }
+
+        accumulatedFees += msg.value;
+        _mintSoulInternal(to, agentId, metaURI, avatarStyle, principal);
+    }
+
+    function _mintSoulInternal(address to, uint256 agentId, string calldata metaURI, uint8 avatarStyle, address principal) internal {
         if (to == address(0)) {
             revert ERC721InvalidReceiver(address(0));
         }
@@ -152,7 +220,13 @@ contract SoulRegistry is ERC721, Ownable2Step, Pausable, EIP712 {
         _mintedAt[agentId] = block.timestamp;
         _metaURI[agentId] = metaURI;
         _avatarStyle[agentId] = avatarStyle;
-        _safeMint(to, agentId);
+
+        if (principal != address(0)) {
+            _principals[agentId] = principal;
+            emit PrincipalDeclared(agentId, principal);
+        }
+
+        _mint(to, agentId);
 
         emit SoulMinted(agentId, to, metaURI);
     }
@@ -184,6 +258,40 @@ contract SoulRegistry is ERC721, Ownable2Step, Pausable, EIP712 {
     function agentOfToken(uint256 tokenId) external view returns (uint256) {
         _requireOwned(tokenId);
         return tokenId;
+    }
+
+    /// @notice Returns the principal address declared at mint time for an agent (v2). Returns address(0) if none.
+    function principalOf(uint256 agentId) external view returns (address) {
+        return _principals[agentId];
+    }
+
+    /// @notice Returns whether an address is a registered attestor (v2).
+    function isAttestor(address addr) external view returns (bool) {
+        return _attestors[addr];
+    }
+
+    /// @notice Add an attestor address. Only callable by contract owner (v2).
+    function addAttestor(address attestor) external onlyOwner {
+        if (attestor == address(0)) {
+            revert("SoulRegistry: zero attestor");
+        }
+        if (_attestors[attestor]) {
+            revert("SoulRegistry: already attestor");
+        }
+        _attestors[attestor] = true;
+        emit AttestorAdded(attestor);
+    }
+
+    /// @notice Remove an attestor address. Only callable by contract owner (v2).
+    function removeAttestor(address attestor) external onlyOwner {
+        if (attestor == address(0)) {
+            revert("SoulRegistry: zero attestor");
+        }
+        if (!_attestors[attestor]) {
+            revert("SoulRegistry: not attestor");
+        }
+        _attestors[attestor] = false;
+        emit AttestorRemoved(attestor);
     }
 
     /// @notice Check whether a soul is currently soulbound (non-transferable by normal ERC-721 transfers).
@@ -314,6 +422,9 @@ contract SoulRegistry is ERC721, Ownable2Step, Pausable, EIP712 {
 
     /// @notice Set the mint signer address. Only callable by contract owner.
     function setMintSigner(address signer) external onlyOwner {
+        if (signer == address(0)) {
+            revert("SoulRegistry: zero signer");
+        }
         mintSigner = signer;
         emit MintSignerUpdated(signer);
     }
@@ -329,11 +440,16 @@ contract SoulRegistry is ERC721, Ownable2Step, Pausable, EIP712 {
         if (recipient == address(0)) {
             revert("SoulRegistry: zero recipient");
         }
-        uint256 balance = address(this).balance;
-        if (balance == 0) {
-            revert("SoulRegistry: no balance");
+        uint256 amount = accumulatedFees;
+        if (amount == 0) {
+            revert("SoulRegistry: no fees");
         }
-        (bool ok,) = recipient.call{value: balance}("");
+        uint256 balance = address(this).balance;
+        if (amount > balance) {
+            amount = balance;
+        }
+        accumulatedFees -= amount;
+        (bool ok,) = recipient.call{value: amount}("");
         if (!ok) {
             revert("SoulRegistry: transfer failed");
         }
@@ -350,6 +466,8 @@ contract SoulRegistry is ERC721, Ownable2Step, Pausable, EIP712 {
     function unpause() external onlyOwner {
         _unpause();
     }
+
+    // ========= Internal helpers =========
 
     // ========= Soulbound enforcement =========
 

@@ -2,12 +2,15 @@ package soulreputationworker
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,6 +24,7 @@ import (
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
+	"github.com/equaltoai/lesser-host/internal/attestations"
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/soulreputation"
 	"github.com/equaltoai/lesser-host/internal/soulvalidation"
@@ -47,6 +51,7 @@ type Server struct {
 	packs   soulPackStore
 	dialTip tipLogDialer
 	now     func() time.Time
+	attest  *attestations.KMSService
 }
 
 // NewServer constructs a soul reputation worker Server.
@@ -57,6 +62,7 @@ func NewServer(cfg config.Config, st *store.Store, packs soulPackStore) *Server 
 		packs:   packs,
 		dialTip: dialTipLogClient,
 		now:     time.Now,
+		attest:  attestations.NewKMSService(cfg.AttestationSigningKeyID, cfg.AttestationPublicKeyIDs),
 	}
 }
 
@@ -80,6 +86,15 @@ type reputationSnapshot struct {
 	Weights            soulreputation.Weights       `json:"weights"`
 	TipScale           float64                      `json:"tip_scale"`
 	Reputations        []models.SoulAgentReputation `json:"reputations"`
+}
+
+type reputationSnapshotSignaturePayload struct {
+	Version        string    `json:"version"`
+	SnapshotKey    string    `json:"snapshot_key"`
+	SnapshotSHA256 string    `json:"snapshot_sha256"`
+	ChainID        int64     `json:"chain_id"`
+	BlockRef       uint64    `json:"block_ref"`
+	ComputedAt     time.Time `json:"computed_at"`
 }
 
 func (s *Server) handleRecompute(ctx *apptheory.EventContext, _ events.EventBridgeEvent) (any, error) {
@@ -146,6 +161,32 @@ func (s *Server) handleRecompute(ctx *apptheory.EventContext, _ events.EventBrid
 		return nil, fmt.Errorf("failed to write snapshot: %w", err)
 	}
 
+	sigKey := ""
+	if s.attest != nil && s.attest.Enabled() {
+		sum := sha256.Sum256(body)
+		payloadBytes, err := json.Marshal(reputationSnapshotSignaturePayload{
+			Version:        "1",
+			SnapshotKey:    key,
+			SnapshotSHA256: hex.EncodeToString(sum[:]),
+			ChainID:        s.cfg.TipChainID,
+			BlockRef:       blockRef,
+			ComputedAt:     now,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal snapshot signature payload: %w", err)
+		}
+
+		jws, _, err := s.attest.SignPayloadJWS(ctx.Context(), payloadBytes)
+		if err != nil {
+			return nil, fmt.Errorf("failed to sign snapshot signature payload: %w", err)
+		}
+
+		sigKey = reputationSnapshotSignatureS3Key(key)
+		if err := s.packs.PutObject(ctx.Context(), sigKey, []byte(jws), "application/jose", "no-store"); err != nil {
+			return nil, fmt.Errorf("failed to write snapshot signature: %w", err)
+		}
+	}
+
 	return map[string]any{
 		"block_ref":            blockRef,
 		"from_block":           fromBlock,
@@ -154,6 +195,7 @@ func (s *Server) handleRecompute(ctx *apptheory.EventContext, _ events.EventBrid
 		"agents_updated":       updated,
 		"agents_suspended":     skippedSuspended,
 		"snapshot_key":         key,
+		"snapshot_sig_key":     sigKey,
 		"tip_agents_with_tips": len(tipCounts),
 		"tip_events_total":     totalTipEvents,
 	}, nil
@@ -226,10 +268,12 @@ func (s *Server) v0Config() soulreputation.V0Config {
 	return soulreputation.V0Config{
 		TipScale: s.cfg.SoulReputationTipScale,
 		Weights: soulreputation.Weights{
-			Economic:   s.cfg.SoulReputationWeightEconomic,
-			Social:     s.cfg.SoulReputationWeightSocial,
-			Validation: s.cfg.SoulReputationWeightValidation,
-			Trust:      s.cfg.SoulReputationWeightTrust,
+			Economic:      s.cfg.SoulReputationWeightEconomic,
+			Social:        s.cfg.SoulReputationWeightSocial,
+			Validation:    s.cfg.SoulReputationWeightValidation,
+			Trust:         s.cfg.SoulReputationWeightTrust,
+			Integrity:     s.cfg.SoulReputationWeightIntegrity,
+			Communication: s.cfg.SoulReputationWeightCommunication,
 		},
 	}
 }
@@ -259,18 +303,44 @@ func (s *Server) computeAndPersistReputations(ctx context.Context, identities []
 			return nil, 0, 0, fmt.Errorf("failed to compute validation signals for %s: %w", agentID, err)
 		}
 
+		integritySignals, err := s.computeIntegritySignals(ctx, agentID)
+		if err != nil {
+			return nil, 0, 0, fmt.Errorf("failed to compute integrity signals for %s: %w", agentID, err)
+		}
+
+		commSignals, err := s.computeCommunicationSignals(ctx, agentID, now)
+		if err != nil {
+			return nil, 0, 0, fmt.Errorf("failed to compute communication signals for %s: %w", agentID, err)
+		}
+
 		signals := soulreputation.SignalCounts{
-			TipsReceived:      tipCounts[agentID],
-			Interactions:      0,
-			ValidationsPassed: validationsPassed,
-			Endorsements:      0,
-			Flags:             0,
+			TipsReceived:         tipCounts[agentID],
+			Interactions:         0,
+			ValidationsPassed:    validationsPassed,
+			Endorsements:         integritySignals.endorsements,
+			Flags:                0,
+			DelegationsCompleted: integritySignals.delegationsCompleted,
+			BoundaryViolations:   integritySignals.boundaryViolations,
+			FailureRecoveries:    integritySignals.failureRecoveries,
+
+			EmailsSent:                      commSignals.emailsSent,
+			EmailsReceived:                  commSignals.emailsReceived,
+			SMSSent:                         commSignals.smsSent,
+			SMSReceived:                     commSignals.smsReceived,
+			CallsMade:                       commSignals.callsMade,
+			CallsReceived:                   commSignals.callsReceived,
+			CommunicationBoundaryViolations: commSignals.boundaryViolations,
+			SpamReports:                     commSignals.spamReports,
+			ResponseRate:                    commSignals.responseRate,
+			AvgResponseTimeMinutes:          commSignals.avgResponseTimeMinutes,
 		}
 
 		scores := soulreputation.SignalScores{
 			Social:     0,
 			Validation: validationScore,
 			Trust:      0,
+			Integrity:  integritySignals.score,
+			Communication: commSignals.score,
 		}
 
 		rep := soulreputation.ComputeV0(agentID, blockRef, now, v0cfg, signals, scores)
@@ -290,6 +360,14 @@ func reputationSnapshotS3Key(chainID int64, blockRef uint64) string {
 		return fmt.Sprintf("registry/v1/reputation/snapshots/block-%d.json", blockRef)
 	}
 	return fmt.Sprintf("registry/v1/reputation/snapshots/chain-%d/block-%d.json", chainID, blockRef)
+}
+
+func reputationSnapshotSignatureS3Key(snapshotKey string) string {
+	snapshotKey = strings.TrimSpace(snapshotKey)
+	if snapshotKey == "" {
+		return ""
+	}
+	return snapshotKey + ".sig.jws"
 }
 
 var agentTipSentTopic0 = crypto.Keccak256Hash([]byte("AgentTipSent(bytes32,uint256,address,address,address,uint256,bytes32)"))
@@ -400,6 +478,439 @@ func (s *Server) computeValidationSignals(ctx context.Context, agentID string, n
 	return score, passed, nil
 }
 
+type communicationResult struct {
+	score float64
+
+	emailsSent     int64
+	emailsReceived int64
+	smsSent        int64
+	smsReceived    int64
+	callsMade      int64
+	callsReceived  int64
+
+	boundaryViolations int64
+	spamReports        int64
+
+	responseRate           float64
+	avgResponseTimeMinutes float64
+}
+
+func (s *Server) computeCommunicationSignals(ctx context.Context, agentID string, now time.Time) (communicationResult, error) {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return communicationResult{}, errors.New("store not initialized")
+	}
+
+	agentID = strings.ToLower(strings.TrimSpace(agentID))
+	if agentID == "" {
+		return communicationResult{}, errors.New("agent id is required")
+	}
+
+	cutoff := now.UTC().Add(-30 * 24 * time.Hour)
+
+	var items []*models.SoulAgentCommActivity
+	err := s.store.DB.WithContext(ctx).
+		Model(&models.SoulAgentCommActivity{}).
+		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentID)).
+		Where("SK", "BEGINS_WITH", "COMM#").
+		OrderBy("SK", "DESC").
+		Limit(1000).
+		All(&items)
+	if err != nil {
+		return communicationResult{}, err
+	}
+
+	result := communicationResult{}
+
+	// First pass: count inbound receives + index inbound timestamps by message id.
+	inboundAt := map[string]time.Time{}
+	for _, it := range items {
+		if it == nil {
+			continue
+		}
+		if it.Timestamp.Before(cutoff) {
+			continue
+		}
+
+		if strings.ToLower(strings.TrimSpace(it.Direction)) != models.SoulCommDirectionInbound {
+			continue
+		}
+		if strings.ToLower(strings.TrimSpace(it.Action)) != "receive" {
+			continue
+		}
+
+		switch strings.ToLower(strings.TrimSpace(it.ChannelType)) {
+		case "email":
+			result.emailsReceived++
+		case "sms":
+			result.smsReceived++
+		case "voice":
+			result.callsReceived++
+		}
+
+		msgID := strings.TrimSpace(it.MessageID)
+		if msgID == "" {
+			continue
+		}
+		if existing, ok := inboundAt[msgID]; !ok || it.Timestamp.Before(existing) {
+			inboundAt[msgID] = it.Timestamp
+		}
+	}
+
+	// Second pass: count outbound sends + boundary violations + response stats.
+	responded := map[string]struct{}{}
+	responseDurations := make([]time.Duration, 0, 32)
+	for _, it := range items {
+		if it == nil {
+			continue
+		}
+		if it.Timestamp.Before(cutoff) {
+			continue
+		}
+
+		if strings.ToLower(strings.TrimSpace(it.Direction)) != models.SoulCommDirectionOutbound {
+			continue
+		}
+		if strings.ToLower(strings.TrimSpace(it.Action)) != "send" {
+			continue
+		}
+
+		switch strings.ToLower(strings.TrimSpace(it.ChannelType)) {
+		case "email":
+			result.emailsSent++
+		case "sms":
+			result.smsSent++
+		case "voice":
+			result.callsMade++
+		}
+
+		if strings.ToLower(strings.TrimSpace(it.BoundaryCheck)) == models.SoulCommBoundaryCheckViolated {
+			result.boundaryViolations++
+		}
+
+		replyTo := strings.TrimSpace(it.InReplyTo)
+		if replyTo == "" {
+			continue
+		}
+		start, ok := inboundAt[replyTo]
+		if !ok {
+			continue
+		}
+		if !it.Timestamp.After(start) {
+			continue
+		}
+		if _, ok := responded[replyTo]; ok {
+			continue
+		}
+		responded[replyTo] = struct{}{}
+		responseDurations = append(responseDurations, it.Timestamp.Sub(start))
+	}
+
+	totalInbound := result.emailsReceived + result.smsReceived + result.callsReceived
+	if totalInbound > 0 {
+		result.responseRate = float64(len(responded)) / float64(totalInbound)
+	}
+
+	if len(responseDurations) > 0 {
+		sum := time.Duration(0)
+		for _, d := range responseDurations {
+			sum += d
+		}
+		result.avgResponseTimeMinutes = sum.Minutes() / float64(len(responseDurations))
+	}
+
+	// Heuristic score: prioritize response rate + responsiveness; penalize boundary violations.
+	score := 0.5
+	if totalInbound > 0 {
+		score += 0.4 * clamp01(result.responseRate)
+		timeScore := 1.0
+		if result.avgResponseTimeMinutes > 0 {
+			timeScore = math.Exp(-result.avgResponseTimeMinutes / 60.0)
+		}
+		score += 0.3 * clamp01(timeScore)
+	}
+	score -= 0.1 * float64(result.boundaryViolations)
+	result.score = clamp01(score)
+
+	// Spam reports/bounce rates not yet captured in v0.
+	result.spamReports = 0
+
+	return result, nil
+}
+
+type integrityResult struct {
+	score                float64
+	endorsements         int64
+	delegationsCompleted int64
+	boundaryViolations   int64
+	failureRecoveries    int64
+}
+
+// computeIntegritySignals counts integrity-related signals for an agent.
+// Integrity is based on: boundary violations (negative), failure recoveries (positive),
+// and delegation completions (positive).
+func (s *Server) computeIntegritySignals(ctx context.Context, agentID string) (integrityResult, error) {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return integrityResult{}, errors.New("store not initialized")
+	}
+
+	agentID = strings.ToLower(strings.TrimSpace(agentID))
+	if agentID == "" {
+		return integrityResult{}, errors.New("agent id is required")
+	}
+
+	// Relationship signals (delegations + endorsements).
+	var rels []*models.SoulAgentRelationship
+	if err := s.store.DB.WithContext(ctx).
+		Model(&models.SoulAgentRelationship{}).
+		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentID)).
+		Where("SK", "BEGINS_WITH", "RELATIONSHIP#").
+		All(&rels); err != nil {
+		return integrityResult{}, err
+	}
+
+	var delegationsTotal int64
+	var delegationsCompleted int64
+	var delegationQualitySum float64
+	endorsers := map[string]struct{}{}
+
+	for _, r := range rels {
+		if r == nil {
+			continue
+		}
+		if strings.ToLower(strings.TrimSpace(r.FromAgentID)) == agentID {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(r.Type)) {
+		case models.SoulRelationshipTypeDelegation:
+			delegationsTotal++
+			outcome, qualityScore, hasQuality := extractRelationshipOutcomeAndQuality(r)
+			if isDelegationCompletedOutcome(outcome) {
+				delegationsCompleted++
+				quality := 1.0
+				if hasQuality {
+					quality = clamp01(qualityScore)
+				}
+				delegationQualitySum += quality
+			}
+		case models.SoulRelationshipTypeEndorsement:
+			from := strings.ToLower(strings.TrimSpace(r.FromAgentID))
+			if from == "" || from == agentID {
+				continue
+			}
+			endorsers[from] = struct{}{}
+		}
+	}
+
+	// Count failure records.
+	var failures []*models.SoulAgentFailure
+	if err := s.store.DB.WithContext(ctx).
+		Model(&models.SoulAgentFailure{}).
+		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentID)).
+		Where("SK", "BEGINS_WITH", "FAILURE#").
+		All(&failures); err != nil {
+		return integrityResult{}, err
+	}
+	var totalFailures, recoveredFailures int64
+	for _, f := range failures {
+		if f == nil {
+			continue
+		}
+		totalFailures++
+		if strings.ToLower(f.Status) == "recovered" {
+			recoveredFailures++
+		}
+	}
+
+	var boundaryViolations int64
+	for _, f := range failures {
+		if f == nil {
+			continue
+		}
+		if isBoundaryViolationFailureType(f.FailureType) {
+			boundaryViolations++
+		}
+	}
+
+	// Communication boundary violations are counted from recent comm activity logs.
+	var commActs []*models.SoulAgentCommActivity
+	if err := s.store.DB.WithContext(ctx).
+		Model(&models.SoulAgentCommActivity{}).
+		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentID)).
+		Where("SK", "BEGINS_WITH", "COMM#").
+		OrderBy("SK", "DESC").
+		Limit(1000).
+		All(&commActs); err != nil {
+		return integrityResult{}, err
+	}
+	for _, act := range commActs {
+		if act == nil {
+			continue
+		}
+		if strings.ToLower(strings.TrimSpace(act.Direction)) != models.SoulCommDirectionOutbound {
+			continue
+		}
+		if strings.ToLower(strings.TrimSpace(act.BoundaryCheck)) != models.SoulCommBoundaryCheckViolated {
+			continue
+		}
+		boundaryViolations++
+	}
+
+	// Determine whether the agent has declared any boundaries.
+	var boundaries []*models.SoulAgentBoundary
+	if err := s.store.DB.WithContext(ctx).
+		Model(&models.SoulAgentBoundary{}).
+		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentID)).
+		Where("SK", "BEGINS_WITH", "BOUNDARY#").
+		All(&boundaries); err != nil {
+		return integrityResult{}, err
+	}
+	boundariesDeclared := int64(0)
+	for _, b := range boundaries {
+		if b != nil {
+			boundariesDeclared++
+		}
+	}
+
+	// Backward-compat endorsements (v1).
+	var v1Endorsements []*models.SoulAgentPeerEndorsement
+	if err := s.store.DB.WithContext(ctx).
+		Model(&models.SoulAgentPeerEndorsement{}).
+		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentID)).
+		Where("SK", "BEGINS_WITH", "ENDORSEMENT#").
+		All(&v1Endorsements); err != nil {
+		return integrityResult{}, err
+	}
+	for _, e := range v1Endorsements {
+		if e == nil {
+			continue
+		}
+		from := strings.ToLower(strings.TrimSpace(e.EndorserAgentID))
+		if from == "" || from == agentID {
+			continue
+		}
+		endorsers[from] = struct{}{}
+	}
+
+	// Compute integrity score (heuristic v2).
+	//
+	// Spec guidance:
+	// - Declared boundaries + adherence score higher than no boundaries.
+	// - Failures are informative; recoveries can be positive signals.
+	// - Delegation outcomes (completion + quality) are meaningful trust evidence.
+	score := 0.5
+	if boundariesDeclared > 0 {
+		score += 0.3
+	}
+
+	delegationOutcomeQuality := 0.0
+	if delegationsTotal > 0 {
+		delegationOutcomeQuality = delegationQualitySum / float64(delegationsTotal) // failed/unknown outcomes contribute 0
+	}
+	score += 0.2 * clamp01(delegationOutcomeQuality)
+
+	if totalFailures > 0 {
+		recoveryRatio := float64(recoveredFailures) / float64(totalFailures)
+		score -= 0.2 * (1 - clamp01(recoveryRatio))
+		score += 0.1 * clamp01(recoveryRatio)
+	}
+	score -= 0.15 * float64(boundaryViolations)
+	score = clamp01(score)
+
+	return integrityResult{
+		score:                score,
+		endorsements:         int64(len(endorsers)),
+		delegationsCompleted: delegationsCompleted,
+		boundaryViolations:   boundaryViolations,
+		failureRecoveries:    recoveredFailures,
+	}, nil
+}
+
+func clamp01(v float64) float64 {
+	switch {
+	case math.IsNaN(v) || math.IsInf(v, 0):
+		return 0
+	case v < 0:
+		return 0
+	case v > 1:
+		return 1
+	default:
+		return v
+	}
+}
+
+func isBoundaryViolationFailureType(failureType string) bool {
+	ft := strings.ToLower(strings.TrimSpace(failureType))
+	if ft == "" {
+		return false
+	}
+	return ft == "boundary_violation"
+}
+
+func isDelegationCompletedOutcome(outcome string) bool {
+	switch strings.ToLower(strings.TrimSpace(outcome)) {
+	case "completed", "complete", "succeeded", "success":
+		return true
+	default:
+		return false
+	}
+}
+
+func extractRelationshipOutcomeAndQuality(rel *models.SoulAgentRelationship) (outcome string, qualityScore float64, hasQuality bool) {
+	if rel == nil {
+		return "", 0, false
+	}
+
+	// Dual-read during migration: prefer typed context map, fallback to legacy JSON string.
+	m := rel.ContextV2
+	if m == nil {
+		legacy := strings.TrimSpace(rel.ContextJSON)
+		if legacy != "" {
+			_ = json.Unmarshal([]byte(legacy), &m)
+		}
+	}
+	return extractRelationshipOutcomeAndQualityFromMap(m)
+}
+
+func extractRelationshipOutcomeAndQualityFromMap(m map[string]any) (outcome string, qualityScore float64, hasQuality bool) {
+	if m == nil {
+		return "", 0, false
+	}
+
+	outcome, _ = m["outcome"].(string)
+	outcome = strings.ToLower(strings.TrimSpace(outcome))
+
+	raw, ok := m["qualityScore"]
+	if !ok {
+		raw, ok = m["quality_score"]
+	}
+	if !ok {
+		return outcome, 0, false
+	}
+
+	switch v := raw.(type) {
+	case float64:
+		return outcome, v, true
+	case int:
+		return outcome, float64(v), true
+	case int64:
+		return outcome, float64(v), true
+	case json.Number:
+		f, err := v.Float64()
+		if err != nil {
+			return outcome, 0, false
+		}
+		return outcome, f, true
+	case string:
+		f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+		if err != nil {
+			return outcome, 0, false
+		}
+		return outcome, f, true
+	default:
+		return outcome, 0, false
+	}
+}
+
 func (s *Server) putAgentReputation(ctx context.Context, rep *models.SoulAgentReputation) error {
 	if s == nil || s.store == nil || s.store.DB == nil {
 		return errors.New("store not initialized")
@@ -409,26 +920,44 @@ func (s *Server) putAgentReputation(ctx context.Context, rep *models.SoulAgentRe
 	}
 
 	fields := []string{
+		"AgentID",
 		"BlockRef",
 		"Composite",
 		"Economic",
 		"Social",
 		"Validation",
 		"Trust",
+		"Integrity",
+		"Communication",
 		"TipsReceived",
 		"Interactions",
 		"ValidationsPassed",
 		"Endorsements",
 		"Flags",
+		"DelegationsCompleted",
+		"BoundaryViolations",
+		"FailureRecoveries",
+		"EmailsSent",
+		"EmailsReceived",
+		"SMSSent",
+		"SMSReceived",
+		"CallsMade",
+		"CallsReceived",
+		"CommunicationBoundaryViolations",
+		"SpamReports",
+		"ResponseRate",
+		"AvgResponseTimeMinutes",
 		"UpdatedAt",
 	}
 
-	err := s.store.DB.WithContext(ctx).Model(rep).IfExists().Update(fields...)
-	if err == nil {
+	err := s.store.DB.WithContext(ctx).
+		Model(rep).
+		WithConditionExpression("attribute_not_exists(blockRef) OR blockRef <= :newBlockRef", map[string]any{
+			"newBlockRef": rep.BlockRef,
+		}).
+		Update(fields...)
+	if err == nil || theoryErrors.IsConditionFailed(err) {
 		return nil
-	}
-	if theoryErrors.IsNotFound(err) {
-		return s.store.DB.WithContext(ctx).Model(rep).IfNotExists().Create()
 	}
 	return err
 }

@@ -97,7 +97,7 @@ func TestAdvanceProvisionReceiptIngest_LoadError_RetriesThenFails(t *testing.T) 
 	}
 }
 
-func TestAdvanceProvisionReceiptIngest_SetsDoneWhenNoBodyNoSoul(t *testing.T) {
+func TestAdvanceProvisionReceiptIngest_SetsDoneWhenBodyDisabled(t *testing.T) {
 	t.Parallel()
 
 	s := newProvisionServerWithStore(t)
@@ -113,7 +113,7 @@ func TestAdvanceProvisionReceiptIngest_SetsDoneWhenNoBodyNoSoul(t *testing.T) {
 		MaxAttempts:  3,
 		CreatedAt:    now.Add(-1 * time.Minute),
 		BodyEnabled:  false,
-		SoulEnabled:  false,
+		SoulEnabled:  true,
 	}
 
 	delay, done, err := s.advanceProvisionReceiptIngest(context.Background(), job, "req", now)
@@ -125,70 +125,24 @@ func TestAdvanceProvisionReceiptIngest_SetsDoneWhenNoBodyNoSoul(t *testing.T) {
 	}
 }
 
-func TestAdvanceProvisionReceiptIngest_ContinuesToSoulWhenEnabled(t *testing.T) {
-	t.Parallel()
-
-	s := newProvisionServerWithStore(t)
-	s.cfg = config.Config{ArtifactBucketName: "bucket"}
-	s.s3 = &fakeS3{out: &s3.GetObjectOutput{Body: io.NopCloser(strings.NewReader(`{"app":"x","base_domain":"d","account_id":"123456789012","region":"us-east-1","hosted_zone":{"id":"/hostedzone/Z1","name":"d."}}`))}}
-
-	now := time.Unix(120, 0).UTC()
-	job := &models.ProvisionJob{
-		ID:           "j1",
-		InstanceSlug: "demo",
-		Status:       models.ProvisionJobStatusRunning,
-		Step:         provisionStepReceiptIngest,
-		MaxAttempts:  3,
-		CreatedAt:    now.Add(-1 * time.Minute),
-		BodyEnabled:  false,
-		SoulEnabled:  true,
-	}
-
-	delay, done, err := s.advanceProvisionReceiptIngest(context.Background(), job, "req", now)
-	if err != nil || delay != 0 || done {
-		t.Fatalf("expected continue to soul, got delay=%v done=%v err=%v", delay, done, err)
-	}
-	if job.Step != provisionStepSoulDeployStart || !strings.Contains(job.Note, noteStartingSoulDeployRunner) || strings.TrimSpace(job.RunID) != "" {
-		t.Fatalf("unexpected job state: %#v", job)
-	}
-}
-
 func TestAdvanceProvisionBodyDeployStart_SkipsWhenBodyDisabled(t *testing.T) {
 	t.Parallel()
 
 	now := time.Unix(200, 0).UTC()
 	s := newProvisionServerWithStore(t)
 
-	cases := []struct {
-		name        string
-		soulEnabled bool
-		wantStep    string
-		wantDone    bool
-	}{
-		{name: "no_soul", soulEnabled: false, wantStep: provisionStepDone, wantDone: true},
-		{name: "continue_to_soul", soulEnabled: true, wantStep: provisionStepSoulDeployStart, wantDone: false},
+	job := &models.ProvisionJob{
+		ID:           "j1",
+		InstanceSlug: "demo",
+		Status:       models.ProvisionJobStatusRunning,
+		Step:         provisionStepBodyDeployStart,
+		MaxAttempts:  3,
+		BodyEnabled:  false,
+		SoulEnabled:  true,
 	}
-
-	for _, c := range cases {
-		job := &models.ProvisionJob{
-			ID:                "j1",
-			InstanceSlug:      "demo",
-			Status:            models.ProvisionJobStatusRunning,
-			Step:              provisionStepBodyDeployStart,
-			MaxAttempts:       3,
-			BodyEnabled:       false,
-			SoulEnabled:       c.soulEnabled,
-			SoulProvisionedAt: time.Time{},
-		}
-		delay, done, err := s.advanceProvisionBodyDeployStart(context.Background(), job, "req", now)
-		if err != nil || delay != 0 || done != c.wantDone || job.Step != c.wantStep {
-			t.Fatalf("%s: unexpected: delay=%v done=%v job=%#v err=%v", c.name, delay, done, job, err)
-		}
-		if !c.soulEnabled {
-			if job.Status != models.ProvisionJobStatusOK || job.Note != noteProvisioned {
-				t.Fatalf("%s: expected ok+provisioned, got %#v", c.name, job)
-			}
-		}
+	delay, done, err := s.advanceProvisionBodyDeployStart(context.Background(), job, "req", now)
+	if err != nil || delay != 0 || !done || job.Step != provisionStepDone || job.Status != models.ProvisionJobStatusOK || job.Note != noteProvisioned {
+		t.Fatalf("unexpected: delay=%v done=%v job=%#v err=%v", delay, done, job, err)
 	}
 }
 
@@ -278,7 +232,7 @@ func TestAdvanceProvisionDeployMcpStart_Branches(t *testing.T) {
 		wantNoteSubstr string
 	}{
 		{
-			name: "skip_when_body_disabled_no_soul",
+			name: "skip_when_body_disabled",
 			job: models.ProvisionJob{
 				ID:           "j1",
 				InstanceSlug: "demo",
@@ -286,7 +240,7 @@ func TestAdvanceProvisionDeployMcpStart_Branches(t *testing.T) {
 				Step:         provisionStepDeployMcpStart,
 				MaxAttempts:  3,
 				BodyEnabled:  false,
-				SoulEnabled:  false,
+				SoulEnabled:  true,
 			},
 			wantDelay:      0,
 			wantDone:       true,
@@ -310,26 +264,7 @@ func TestAdvanceProvisionDeployMcpStart_Branches(t *testing.T) {
 			wantNoteSubstr: "starting lesser-body deploy runner",
 		},
 		{
-			name: "mcp_already_wired_completes_when_no_soul",
-			job: models.ProvisionJob{
-				ID:                "j1",
-				InstanceSlug:      "demo",
-				Status:            models.ProvisionJobStatusRunning,
-				Step:              provisionStepDeployMcpStart,
-				MaxAttempts:       3,
-				BodyEnabled:       true,
-				BodyProvisionedAt: now.Add(-2 * time.Minute),
-				McpWiredAt:        now.Add(-1 * time.Minute),
-				SoulEnabled:       false,
-			},
-			wantDelay:      0,
-			wantDone:       true,
-			wantStep:       provisionStepDone,
-			wantStatusOK:   true,
-			wantNoteSubstr: noteProvisioned,
-		},
-		{
-			name: "mcp_already_wired_continues_to_soul",
+			name: "mcp_already_wired_completes",
 			job: models.ProvisionJob{
 				ID:                "j1",
 				InstanceSlug:      "demo",
@@ -342,9 +277,10 @@ func TestAdvanceProvisionDeployMcpStart_Branches(t *testing.T) {
 				SoulEnabled:       true,
 			},
 			wantDelay:      0,
-			wantDone:       false,
-			wantStep:       provisionStepSoulDeployStart,
-			wantNoteSubstr: "starting soul deploy runner",
+			wantDone:       true,
+			wantStep:       provisionStepDone,
+			wantStatusOK:   true,
+			wantNoteSubstr: noteProvisioned,
 		},
 		{
 			name: "run_already_set_advances_to_wait",
@@ -374,7 +310,7 @@ func TestAdvanceProvisionDeployMcpStart_Branches(t *testing.T) {
 	}
 }
 
-func TestAdvanceProvisionDeployMcpWait_SucceededContinuesToSoul(t *testing.T) {
+func TestAdvanceProvisionDeployMcpWait_SucceededCompletes(t *testing.T) {
 	t.Parallel()
 
 	s := newProvisionServerWithStore(t)
@@ -394,75 +330,8 @@ func TestAdvanceProvisionDeployMcpWait_SucceededContinuesToSoul(t *testing.T) {
 	}
 
 	delay, done, err := s.advanceProvisionDeployMcpWait(context.Background(), job, "req", now)
-	if err != nil || delay != 0 || done || job.Step != provisionStepSoulDeployStart || job.McpWiredAt.IsZero() || strings.TrimSpace(job.RunID) != "" {
-		t.Fatalf("expected continue to soul, got delay=%v done=%v job=%#v err=%v", delay, done, job, err)
-	}
-}
-
-func TestAdvanceProvisionSoulDeployStart_Branches(t *testing.T) {
-	t.Parallel()
-
-	now := time.Unix(500, 0).UTC()
-	s := newProvisionServerWithStore(t)
-
-	t.Run("disabled_marks_done", func(t *testing.T) {
-		t.Parallel()
-
-		job := &models.ProvisionJob{
-			ID:           "j1",
-			InstanceSlug: "demo",
-			Status:       models.ProvisionJobStatusRunning,
-			Step:         provisionStepSoulDeployStart,
-			MaxAttempts:  3,
-			SoulEnabled:  false,
-		}
-		delay, done, err := s.advanceProvisionSoulDeployStart(context.Background(), job, "req", now)
-		if err != nil || delay != 0 || !done || job.Step != provisionStepDone || job.Status != models.ProvisionJobStatusOK || job.Note != noteProvisioned {
-			t.Fatalf("unexpected: delay=%v done=%v job=%#v err=%v", delay, done, job, err)
-		}
-	})
-
-	t.Run("run_already_set_advances_to_wait", func(t *testing.T) {
-		t.Parallel()
-
-		job := &models.ProvisionJob{
-			ID:           "j1",
-			InstanceSlug: "demo",
-			Status:       models.ProvisionJobStatusRunning,
-			Step:         provisionStepSoulDeployStart,
-			MaxAttempts:  3,
-			SoulEnabled:  true,
-			RunID:        "run1",
-		}
-		delay, done, err := s.advanceProvisionSoulDeployStart(context.Background(), job, "req", now)
-		if err != nil || done || delay != provisionDefaultPollDelay || job.Step != provisionStepSoulDeployWait {
-			t.Fatalf("unexpected: delay=%v done=%v job=%#v err=%v", delay, done, job, err)
-		}
-	})
-}
-
-func TestAdvanceProvisionSoulDeployWait_SucceededAdvancesToInit(t *testing.T) {
-	t.Parallel()
-
-	s := newProvisionServerWithStore(t)
-	s.cb = &fakeCodebuild{
-		batchOut: &codebuild.BatchGetBuildsOutput{Builds: []cbtypes.Build{{BuildStatus: cbtypes.StatusTypeSucceeded}}},
-	}
-
-	now := time.Unix(520, 0).UTC()
-	job := &models.ProvisionJob{
-		ID:           "j1",
-		InstanceSlug: "demo",
-		Status:       models.ProvisionJobStatusRunning,
-		Step:         provisionStepSoulDeployWait,
-		MaxAttempts:  3,
-		RunID:        "run1",
-		SoulEnabled:  true,
-	}
-
-	delay, done, err := s.advanceProvisionSoulDeployWait(context.Background(), job, "req", now)
-	if err != nil || delay != 0 || done || job.Step != provisionStepSoulInitStart || strings.TrimSpace(job.RunID) != "" {
-		t.Fatalf("expected advance to soul init, got delay=%v done=%v job=%#v err=%v", delay, done, job, err)
+	if err != nil || delay != 0 || !done || job.Step != provisionStepDone || job.Status != models.ProvisionJobStatusOK || job.McpWiredAt.IsZero() || strings.TrimSpace(job.RunID) != "" {
+		t.Fatalf("expected done, got delay=%v done=%v job=%#v err=%v", delay, done, job, err)
 	}
 }
 
@@ -546,33 +415,6 @@ func TestAdvanceProvisionStartRunnerErrors_RetryThenFail(t *testing.T) {
 			},
 			wantErrCode: "mcp_deploy_start_failed",
 		},
-		{
-			name: "soul_deploy_start",
-			fn:   (*Server).advanceProvisionSoulDeployStart,
-			job: models.ProvisionJob{
-				ID:           "j1",
-				InstanceSlug: "demo",
-				Status:       models.ProvisionJobStatusRunning,
-				Step:         provisionStepSoulDeployStart,
-				MaxAttempts:  3,
-				CreatedAt:    now.Add(-1 * time.Minute),
-				SoulEnabled:  true,
-			},
-			wantErrCode: "soul_deploy_start_failed",
-		},
-		{
-			name: "soul_init_start",
-			fn:   (*Server).advanceProvisionSoulInitStart,
-			job: models.ProvisionJob{
-				ID:           "j1",
-				InstanceSlug: "demo",
-				Status:       models.ProvisionJobStatusRunning,
-				Step:         provisionStepSoulInitStart,
-				MaxAttempts:  3,
-				CreatedAt:    now.Add(-1 * time.Minute),
-			},
-			wantErrCode: "soul_init_start_failed",
-		},
 	}
 
 	for _, c := range cases {
@@ -606,8 +448,6 @@ func TestAdvanceProvisionWaitTimeoutsAndFailures(t *testing.T) {
 		}{
 			{name: "body_wait", fn: (*Server).advanceProvisionBodyDeployWait, step: provisionStepBodyDeployWait, wantErrCode: "body_deploy_timeout"},
 			{name: "mcp_wait", fn: (*Server).advanceProvisionDeployMcpWait, step: provisionStepDeployMcpWait, wantErrCode: "mcp_deploy_timeout"},
-			{name: "soul_deploy_wait", fn: (*Server).advanceProvisionSoulDeployWait, step: provisionStepSoulDeployWait, wantErrCode: "soul_deploy_timeout"},
-			{name: "soul_init_wait", fn: (*Server).advanceProvisionSoulInitWait, step: provisionStepSoulInitWait, wantErrCode: "soul_init_timeout"},
 		}
 
 		for _, c := range cases {
@@ -630,8 +470,6 @@ func TestAdvanceProvisionWaitTimeoutsAndFailures(t *testing.T) {
 		}{
 			{name: "body_wait", fn: (*Server).advanceProvisionBodyDeployWait, step: provisionStepBodyDeployWait, wantErrCode: "body_deploy_failed"},
 			{name: "mcp_wait", fn: (*Server).advanceProvisionDeployMcpWait, step: provisionStepDeployMcpWait, wantErrCode: "mcp_deploy_failed"},
-			{name: "soul_deploy_wait", fn: (*Server).advanceProvisionSoulDeployWait, step: provisionStepSoulDeployWait, wantErrCode: "soul_deploy_failed"},
-			{name: "soul_init_wait", fn: (*Server).advanceProvisionSoulInitWait, step: provisionStepSoulInitWait, wantErrCode: "soul_init_failed"},
 		}
 
 		for _, c := range cases {

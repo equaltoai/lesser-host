@@ -22,26 +22,19 @@ func provisionStatusUpdate(jobID string, continuing bool) func(core.UpdateBuilde
 	}
 }
 
-func (s *Server) advanceProvisionContinueToSoulOrDone(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {
+func (s *Server) advanceProvisionDone(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {
 	if job == nil {
 		return 0, true, nil
 	}
 
-	continuing := job.SoulEnabled && job.SoulProvisionedAt.IsZero()
-	if continuing {
-		job.Step = provisionStepSoulDeployStart
-		job.Note = noteStartingSoulDeployRunner
-		job.RunID = ""
-	} else {
-		job.Step = provisionStepDone
-		job.Status = models.ProvisionJobStatusOK
-		job.Note = noteProvisioned
-	}
+	job.Step = provisionStepDone
+	job.Status = models.ProvisionJobStatusOK
+	job.Note = noteProvisioned
 
-	if err := s.persistJobAndInstance(ctx, job, requestID, now, provisionStatusUpdate(job.ID, continuing)); err != nil {
+	if err := s.persistJobAndInstance(ctx, job, requestID, now, provisionStatusUpdate(job.ID, false)); err != nil {
 		return 0, false, err
 	}
-	return 0, !continuing, nil
+	return 0, true, nil
 }
 
 func (s *Server) advanceProvisionBodyDeployStartRunnerAlreadyStarted(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {

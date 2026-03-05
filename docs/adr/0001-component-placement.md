@@ -1,7 +1,7 @@
 # ADR 0001: Component Placement (Contracts vs APIs vs Instance Routing)
 
-- Status: Accepted
-- Date: 2026-02-21
+- Status: Accepted (amended 2026-03-04)
+- Date: 2026-02-21 (amended 2026-03-04)
 
 ## Context
 
@@ -38,18 +38,18 @@ source-of-truth.
 - **All off-chain durable state MUST be stored using TableTheory models** in the existing state table (no raw DynamoDB
   client usage for app state).
 
-### 3) Instance routing (`/soul/*`) and instance-side services
+### 3) Instance integration (proofs + optional MCP)
 
-**Location:** `lesser/infra/cdk` (routing) + `lesser-body` (optional MCP runtime) + Soul pack (instance-side services)
+**Location:** `lesser` (well-known proof surface) + `lesser-body` (optional MCP runtime)
 
-- Instance routing (`/soul` and `/soul/*`) is a **path-routing concern** that proxies to an origin discovered via SSM.
-- `/soul/*` routing MUST remain stateless and MUST NOT mutate registry state.
-- The registry API (`/api/v1/soul/*`) remains hosted in `lesser-host`; instance routing is distinct and must not be
-  conflated with registry read/write APIs.
+- Instances MUST expose the soul proof surface used during registration (DNS TXT + HTTPS well-known).
+- MCP runtime is provided by `lesser-body` (managed default) and is intentionally decoupled from the soul registry.
+- The registry API (`/api/v1/soul/*`) remains hosted in `lesser-host`.
 
 ## Consequences
 
 - One canonical implementation of normalization + `agentId` derivation exists in the control plane (and is reused in
   tests/fixtures).
 - Contracts stay simple and chain-agnostic; string normalization and proof checks stay off-chain.
-- Instance-side routing can evolve independently without changing the registry API location or persistence model.
+- Instance-side services (e.g., MCP) can evolve independently without changing the registry API location or persistence
+  model.

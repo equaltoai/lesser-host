@@ -183,8 +183,7 @@ func (s *Server) handleAddInstanceDomain(ctx *apptheory.Context) (*apptheory.Res
 		RequestID: ctx.RequestID,
 		CreatedAt: now,
 	}
-	_ = audit.UpdateKeys()
-	_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
+	s.tryWriteAuditLog(ctx, audit)
 
 	txtName := domainVerificationRecordPrefix + domain
 	txtValue := domainVerificationValuePrefix + token
@@ -316,8 +315,7 @@ func (s *Server) handleVerifyInstanceDomain(ctx *apptheory.Context) (*apptheory.
 		RequestID: ctx.RequestID,
 		CreatedAt: now,
 	}
-	_ = audit.UpdateKeys()
-	_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
+	s.tryWriteAuditLog(ctx, audit)
 
 	item.Status = models.DomainStatusVerified
 	item.VerificationMethod = domainVerificationMethodDNSTXT
@@ -391,8 +389,7 @@ func (s *Server) handleDeleteInstanceDomain(ctx *apptheory.Context) (*apptheory.
 		RequestID: ctx.RequestID,
 		CreatedAt: now,
 	}
-	_ = audit.UpdateKeys()
-	_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
+	s.tryWriteAuditLog(ctx, audit)
 
 	return apptheory.JSON(http.StatusOK, map[string]any{
 		"deleted": true,

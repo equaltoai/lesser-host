@@ -77,6 +77,7 @@ func (s *Server) handleSoulIssueValidationChallenge(ctx *apptheory.Context) (*ap
 		ValidatorID:   validatorID,
 		Request:       strings.TrimSpace(req.Request),
 		Status:        models.SoulValidationChallengeStatusIssued,
+		OptInStatus:   models.SoulValidationOptInStatusPending,
 		IssuedAt:      now,
 		UpdatedAt:     now,
 		TTL:           0,
@@ -95,13 +96,13 @@ func (s *Server) handleSoulIssueValidationChallenge(ctx *apptheory.Context) (*ap
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create challenge"}
 	}
 
-	_ = s.store.DB.WithContext(ctx.Context()).Model(&models.AuditLogEntry{
+	s.tryWriteAuditLog(ctx, &models.AuditLogEntry{
 		Actor:     strings.TrimSpace(ctx.AuthIdentity),
 		Action:    "soul.validation.challenge.issue",
 		Target:    fmt.Sprintf("soul_agent_validation_challenge:%s:%s", agentIDHex, id),
 		RequestID: strings.TrimSpace(ctx.RequestID),
 		CreatedAt: now,
-	}).Create()
+	})
 
 	return apptheory.JSON(http.StatusOK, soulIssueValidationChallengeResponse{Challenge: *chal})
 }
@@ -202,13 +203,13 @@ func (s *Server) handleSoulRecordValidationResponse(ctx *apptheory.Context) (*ap
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to update challenge"}
 	}
 
-	_ = s.store.DB.WithContext(ctx.Context()).Model(&models.AuditLogEntry{
+	s.tryWriteAuditLog(ctx, &models.AuditLogEntry{
 		Actor:     strings.TrimSpace(ctx.AuthIdentity),
 		Action:    "soul.validation.challenge.response",
 		Target:    fmt.Sprintf("soul_agent_validation_challenge:%s:%s", agentIDHex, challengeID),
 		RequestID: strings.TrimSpace(ctx.RequestID),
 		CreatedAt: now,
-	}).Create()
+	})
 
 	return apptheory.JSON(http.StatusOK, soulRecordValidationResponseResponse{Challenge: *chal})
 }
@@ -258,8 +259,17 @@ func (s *Server) handleSoulEvaluateValidationChallenge(ctx *apptheory.Context) (
 	}
 
 	score := soulvalidation.ScoreDelta(strings.TrimSpace(chal.ChallengeType), result)
+	if strings.TrimSpace(chal.OptInStatus) == models.SoulValidationOptInStatusDeclined {
+		// Declined challenges carry no score penalty and are recorded distinctly.
+		result = models.SoulValidationResultDeclined
+		score = 0
+	}
 
 	now := time.Now().UTC()
+	optInStatus := strings.TrimSpace(chal.OptInStatus)
+	if optInStatus == "" {
+		optInStatus = models.SoulValidationOptInStatusPending
+	}
 	rec := &models.SoulAgentValidationRecord{
 		AgentID:       agentIDHex,
 		ChallengeID:   strings.TrimSpace(chal.ChallengeID),
@@ -269,6 +279,7 @@ func (s *Server) handleSoulEvaluateValidationChallenge(ctx *apptheory.Context) (
 		Response:      strings.TrimSpace(chal.Response),
 		Result:        result,
 		Score:         score,
+		OptInStatus:   optInStatus,
 		EvaluatedAt:   now,
 	}
 	_ = rec.UpdateKeys()
@@ -288,13 +299,13 @@ func (s *Server) handleSoulEvaluateValidationChallenge(ctx *apptheory.Context) (
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to update challenge"}
 	}
 
-	_ = s.store.DB.WithContext(ctx.Context()).Model(&models.AuditLogEntry{
+	s.tryWriteAuditLog(ctx, &models.AuditLogEntry{
 		Actor:     strings.TrimSpace(ctx.AuthIdentity),
 		Action:    "soul.validation.challenge.evaluate",
 		Target:    fmt.Sprintf("soul_agent_validation_challenge:%s:%s", agentIDHex, challengeID),
 		RequestID: strings.TrimSpace(ctx.RequestID),
 		CreatedAt: now,
-	}).Create()
+	})
 
 	return apptheory.JSON(http.StatusOK, soulEvaluateValidationChallengeResponse{Challenge: *chal, Record: *rec})
 }

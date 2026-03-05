@@ -713,6 +713,14 @@ describe("SoulRegistry — Mint signer admin", () => {
     assert.equal(await registry.mintSigner(), alice.address);
   });
 
+  it("setMintSigner reverts for zero address", async () => {
+    const { registry, owner } = await deployRegistry();
+    await assert.rejects(
+      registry.connect(owner).setMintSigner(ethers.ZeroAddress),
+      /zero signer/,
+    );
+  });
+
   it("setMintFee access control: only owner", async () => {
     const { registry, alice } = await deployRegistry();
 
@@ -760,6 +768,7 @@ describe("SoulRegistry — Mint signer admin", () => {
 
     const contractBalance = await ethers.provider.getBalance(await registry.getAddress());
     assert.equal(contractBalance, MINT_FEE);
+    assert.equal(await registry.accumulatedFees(), MINT_FEE);
 
     const balBefore = await ethers.provider.getBalance(bob.address);
     await registry.connect(owner).withdrawFees(bob.address);
@@ -768,6 +777,7 @@ describe("SoulRegistry — Mint signer admin", () => {
 
     const contractBalanceAfter = await ethers.provider.getBalance(await registry.getAddress());
     assert.equal(contractBalanceAfter, 0n);
+    assert.equal(await registry.accumulatedFees(), 0n);
   });
 
   it("withdrawFees reverts for non-owner", async () => {
@@ -777,5 +787,425 @@ describe("SoulRegistry — Mint signer admin", () => {
       registry.connect(alice).withdrawFees(alice.address),
       /OwnableUnauthorizedAccount/,
     );
+  });
+});
+
+// ========= v2: Attestor registry + selfMintSoul + principalOf =========
+
+async function deployRegistryWithAttestor({ claimWindowSeconds = 3600n } = {}) {
+  const [owner, alice, bob, other] = await ethers.getSigners();
+  const attestor = ethers.Wallet.createRandom().connect(ethers.provider);
+  const SoulRegistry = await ethers.getContractFactory("SoulRegistry");
+  const registry = await SoulRegistry.deploy(owner.address, claimWindowSeconds);
+  await registry.connect(owner).addAttestor(attestor.address);
+  await registry.connect(owner).setMintFee(MINT_FEE);
+  return { registry, owner, alice, bob, other, attestor };
+}
+
+async function signSelfMintAttestation(attestor, registry, { to, agentId, metaURI, avatarStyle, principal, deadline, submitter }) {
+  const chainId = (await ethers.provider.getNetwork()).chainId;
+  const verifyingContract = await registry.getAddress();
+  const domain = {
+    name: "LesserSoul",
+    version: "1",
+    chainId,
+    verifyingContract,
+  };
+  const types = {
+    SelfMintAttestation: [
+      { name: "to", type: "address" },
+      { name: "agentId", type: "uint256" },
+      { name: "metaURI", type: "string" },
+      { name: "avatarStyle", type: "uint8" },
+      { name: "principal", type: "address" },
+      { name: "deadline", type: "uint256" },
+      { name: "submitter", type: "address" },
+    ],
+  };
+  const message = { to, agentId, metaURI, avatarStyle, principal, deadline, submitter };
+  return attestor.signTypedData(domain, types, message);
+}
+
+describe("SoulRegistry — Attestor registry (v2)", () => {
+  it("addAttestor sets attestor and emits event", async () => {
+    const { registry, owner, alice } = await deployRegistry();
+
+    const tx = await registry.connect(owner).addAttestor(alice.address);
+    const receipt = await tx.wait();
+
+    assert.equal(await registry.isAttestor(alice.address), true);
+
+    const ev = receipt.logs.find((l) => {
+      try {
+        return registry.interface.parseLog(l)?.name === "AttestorAdded";
+      } catch {
+        return false;
+      }
+    });
+    assert.ok(ev, "AttestorAdded event should be emitted");
+  });
+
+  it("removeAttestor clears attestor and emits event", async () => {
+    const { registry, owner, alice } = await deployRegistry();
+
+    await registry.connect(owner).addAttestor(alice.address);
+    assert.equal(await registry.isAttestor(alice.address), true);
+
+    const tx = await registry.connect(owner).removeAttestor(alice.address);
+    const receipt = await tx.wait();
+
+    assert.equal(await registry.isAttestor(alice.address), false);
+
+    const ev = receipt.logs.find((l) => {
+      try {
+        return registry.interface.parseLog(l)?.name === "AttestorRemoved";
+      } catch {
+        return false;
+      }
+    });
+    assert.ok(ev, "AttestorRemoved event should be emitted");
+  });
+
+  it("addAttestor reverts for zero address", async () => {
+    const { registry, owner } = await deployRegistry();
+
+    await assert.rejects(
+      registry.connect(owner).addAttestor(ethers.ZeroAddress),
+      /zero attestor/,
+    );
+  });
+
+  it("addAttestor reverts for non-owner", async () => {
+    const { registry, alice } = await deployRegistry();
+
+    await assert.rejects(
+      registry.connect(alice).addAttestor(alice.address),
+      /OwnableUnauthorizedAccount/,
+    );
+  });
+
+  it("removeAttestor reverts for non-owner", async () => {
+    const { registry, owner, alice } = await deployRegistry();
+    await registry.connect(owner).addAttestor(alice.address);
+
+    await assert.rejects(
+      registry.connect(alice).removeAttestor(alice.address),
+      /OwnableUnauthorizedAccount/,
+    );
+  });
+
+  it("isAttestor returns false for non-attestor", async () => {
+    const { registry, alice } = await deployRegistry();
+    assert.equal(await registry.isAttestor(alice.address), false);
+  });
+
+  it("addAttestor reverts if already attestor", async () => {
+    const { registry, owner, alice } = await deployRegistry();
+    await registry.connect(owner).addAttestor(alice.address);
+    await assert.rejects(
+      registry.connect(owner).addAttestor(alice.address),
+      /already attestor/,
+    );
+  });
+
+  it("removeAttestor reverts if not attestor", async () => {
+    const { registry, owner, alice } = await deployRegistry();
+    await assert.rejects(
+      registry.connect(owner).removeAttestor(alice.address),
+      /not attestor/,
+    );
+  });
+});
+
+describe("SoulRegistry — selfMintSoul (v2)", () => {
+  it("selfMintSoul with valid attestation succeeds", async () => {
+    const { registry, attestor, alice } = await deployRegistryWithAttestor();
+    const agentId = 700n;
+    const metaURI = "https://example.com/self-mint.json";
+    const now = (await ethers.provider.getBlock("latest")).timestamp;
+    const deadline = BigInt(now + 3600);
+
+    const principalSig = await signSelfMintAttestation(attestor, registry, {
+      to: alice.address,
+      agentId,
+      metaURI,
+      avatarStyle: 0,
+      principal: alice.address,
+      deadline,
+      submitter: alice.address,
+    });
+
+    const tx = await registry
+      .connect(alice)
+      .selfMintSoul(alice.address, agentId, metaURI, 0, alice.address, deadline, principalSig, {
+        value: MINT_FEE,
+      });
+    const receipt = await tx.wait();
+
+    assert.equal(await registry.ownerOf(agentId), alice.address);
+    assert.equal(await registry.getAgentWallet(agentId), alice.address);
+    assert.equal(await registry.principalOf(agentId), alice.address);
+
+    const mintEvent = receipt.logs.find((l) => {
+      try {
+        return registry.interface.parseLog(l)?.name === "SoulMinted";
+      } catch {
+        return false;
+      }
+    });
+    assert.ok(mintEvent, "SoulMinted event should be emitted");
+
+    const principalEvent = receipt.logs.find((l) => {
+      try {
+        return registry.interface.parseLog(l)?.name === "PrincipalDeclared";
+      } catch {
+        return false;
+      }
+    });
+    assert.ok(principalEvent, "PrincipalDeclared event should be emitted");
+  });
+
+  it("selfMintSoul with different principal and recipient succeeds", async () => {
+    const { registry, attestor, alice, bob } = await deployRegistryWithAttestor();
+    const agentId = 701n;
+    const now = (await ethers.provider.getBlock("latest")).timestamp;
+    const deadline = BigInt(now + 3600);
+
+    const principalSig = await signSelfMintAttestation(attestor, registry, {
+      to: alice.address,
+      agentId,
+      metaURI: "ipfs://m",
+      avatarStyle: 0,
+      principal: bob.address,
+      deadline,
+      submitter: alice.address,
+    });
+
+    await registry
+      .connect(alice)
+      .selfMintSoul(alice.address, agentId, "ipfs://m", 0, bob.address, deadline, principalSig, {
+        value: MINT_FEE,
+      });
+
+    assert.equal(await registry.ownerOf(agentId), alice.address);
+    assert.equal(await registry.principalOf(agentId), bob.address);
+  });
+
+  it("selfMintSoul reverts with zero principal", async () => {
+    const { registry, attestor, alice } = await deployRegistryWithAttestor();
+    const now = (await ethers.provider.getBlock("latest")).timestamp;
+    const deadline = BigInt(now + 3600);
+
+    const principalSig = await signSelfMintAttestation(attestor, registry, {
+      to: alice.address,
+      agentId: 702n,
+      metaURI: "ipfs://m",
+      avatarStyle: 0,
+      principal: ethers.ZeroAddress,
+      deadline,
+      submitter: alice.address,
+    });
+
+    await assert.rejects(
+      registry
+        .connect(alice)
+        .selfMintSoul(alice.address, 702n, "ipfs://m", 0, ethers.ZeroAddress, deadline, principalSig, {
+          value: MINT_FEE,
+        }),
+      /principal required/,
+    );
+  });
+
+  it("selfMintSoul reverts with incorrect fee", async () => {
+    const { registry, attestor, alice } = await deployRegistryWithAttestor();
+    const now = (await ethers.provider.getBlock("latest")).timestamp;
+    const deadline = BigInt(now + 3600);
+
+    const principalSig = await signSelfMintAttestation(attestor, registry, {
+      to: alice.address,
+      agentId: 703n,
+      metaURI: "ipfs://m",
+      avatarStyle: 0,
+      principal: alice.address,
+      deadline,
+      submitter: alice.address,
+    });
+
+    await assert.rejects(
+      registry
+        .connect(alice)
+        .selfMintSoul(alice.address, 703n, "ipfs://m", 0, alice.address, deadline, principalSig, {
+          value: MINT_FEE - 1n,
+        }),
+      /incorrect fee/,
+    );
+  });
+
+  it("selfMintSoul reverts when deadline is expired", async () => {
+    const { registry, attestor, alice } = await deployRegistryWithAttestor();
+    const now = (await ethers.provider.getBlock("latest")).timestamp;
+    const deadline = BigInt(now - 1);
+
+    const principalSig = await signSelfMintAttestation(attestor, registry, {
+      to: alice.address,
+      agentId: 706n,
+      metaURI: "ipfs://m",
+      avatarStyle: 0,
+      principal: alice.address,
+      deadline,
+      submitter: alice.address,
+    });
+
+    await assert.rejects(
+      registry
+        .connect(alice)
+        .selfMintSoul(alice.address, 706n, "ipfs://m", 0, alice.address, deadline, principalSig, {
+          value: MINT_FEE,
+        }),
+      /expired/,
+    );
+  });
+
+  it("selfMintSoul reverts if called by a different submitter than signed", async () => {
+    const { registry, attestor, alice, bob } = await deployRegistryWithAttestor();
+    const now = (await ethers.provider.getBlock("latest")).timestamp;
+    const deadline = BigInt(now + 3600);
+
+    const principalSig = await signSelfMintAttestation(attestor, registry, {
+      to: alice.address,
+      agentId: 707n,
+      metaURI: "ipfs://m",
+      avatarStyle: 0,
+      principal: alice.address,
+      deadline,
+      submitter: alice.address,
+    });
+
+    await assert.rejects(
+      registry
+        .connect(bob)
+        .selfMintSoul(alice.address, 707n, "ipfs://m", 0, alice.address, deadline, principalSig, {
+          value: MINT_FEE,
+        }),
+      /invalid attestation/,
+    );
+  });
+
+  it("selfMintSoul reverts with non-attestor signer", async () => {
+    const { registry, alice } = await deployRegistryWithAttestor();
+    const now = (await ethers.provider.getBlock("latest")).timestamp;
+    const deadline = BigInt(now + 3600);
+
+    // Sign with a random wallet that is NOT a registered attestor
+    const fakeAttestor = ethers.Wallet.createRandom().connect(ethers.provider);
+    const principalSig = await signSelfMintAttestation(fakeAttestor, registry, {
+      to: alice.address,
+      agentId: 704n,
+      metaURI: "ipfs://m",
+      avatarStyle: 0,
+      principal: alice.address,
+      deadline,
+      submitter: alice.address,
+    });
+
+    await assert.rejects(
+      registry
+        .connect(alice)
+        .selfMintSoul(alice.address, 704n, "ipfs://m", 0, alice.address, deadline, principalSig, {
+          value: MINT_FEE,
+        }),
+      /invalid attestation/,
+    );
+  });
+
+  it("selfMintSoul reverts after attestor is removed", async () => {
+    const { registry, owner, attestor, alice } = await deployRegistryWithAttestor();
+    const now = (await ethers.provider.getBlock("latest")).timestamp;
+    const deadline = BigInt(now + 3600);
+
+    // Remove the attestor
+    await registry.connect(owner).removeAttestor(attestor.address);
+
+    const principalSig = await signSelfMintAttestation(attestor, registry, {
+      to: alice.address,
+      agentId: 705n,
+      metaURI: "ipfs://m",
+      avatarStyle: 0,
+      principal: alice.address,
+      deadline,
+      submitter: alice.address,
+    });
+
+    await assert.rejects(
+      registry
+        .connect(alice)
+        .selfMintSoul(alice.address, 705n, "ipfs://m", 0, alice.address, deadline, principalSig, {
+          value: MINT_FEE,
+        }),
+      /invalid attestation/,
+    );
+  });
+});
+
+describe("SoulRegistry — principalOf (v2)", () => {
+  it("principalOf returns address(0) for mintSoulOwner (no principal)", async () => {
+    const { registry, owner, alice } = await deployRegistry();
+    const agentId = 800n;
+
+    await registry.connect(owner).mintSoulOwner(alice.address, agentId, "ipfs://m", 0);
+    assert.equal(await registry.principalOf(agentId), ethers.ZeroAddress);
+  });
+
+  it("principalOf returns address(0) for permit-based mintSoul (no principal)", async () => {
+    const { registry, signer, alice } = await deployRegistryWithSigner();
+    const agentId = 801n;
+    const now = (await ethers.provider.getBlock("latest")).timestamp;
+    const deadline = BigInt(now + 3600);
+
+    const permit = await signMintPermit(signer, registry, {
+      to: alice.address,
+      agentId,
+      metaURI: "ipfs://m",
+      avatarStyle: 0,
+      deadline,
+    });
+
+    await registry
+      .connect(alice)
+      .mintSoul(alice.address, agentId, "ipfs://m", 0, deadline, permit, {
+        value: MINT_FEE,
+      });
+
+    assert.equal(await registry.principalOf(agentId), ethers.ZeroAddress);
+  });
+
+  it("principalOf returns correct address for selfMintSoul", async () => {
+    const { registry, attestor, alice, bob } = await deployRegistryWithAttestor();
+    const agentId = 802n;
+    const now = (await ethers.provider.getBlock("latest")).timestamp;
+    const deadline = BigInt(now + 3600);
+
+    const principalSig = await signSelfMintAttestation(attestor, registry, {
+      to: alice.address,
+      agentId,
+      metaURI: "ipfs://m",
+      avatarStyle: 0,
+      principal: bob.address,
+      deadline,
+      submitter: alice.address,
+    });
+
+    await registry
+      .connect(alice)
+      .selfMintSoul(alice.address, agentId, "ipfs://m", 0, bob.address, deadline, principalSig, {
+        value: MINT_FEE,
+      });
+
+    assert.equal(await registry.principalOf(agentId), bob.address);
+  });
+
+  it("principalOf returns address(0) for unminted agentId", async () => {
+    const { registry } = await deployRegistry();
+    assert.equal(await registry.principalOf(999n), ethers.ZeroAddress);
   });
 });

@@ -15,6 +15,7 @@ contracts/node_modules/
 contracts/artifacts/
 contracts/cache/
 cdk/cdk.out/
+cdk/cdk.context.local.json
 cdk/dist/
 cdk/.build/
 web/dist/
@@ -27,3 +28,8 @@ gov-infra/evidence/gov-rubric-report.json
 
 # Local command transcripts may contain bearer tokens; keep them out of git.
 **/*local-command-caveatcaveat*
+
+# Deployment manifests and operational logs (environment-specific)
+docs/deployments/*
+!docs/deployments/README.md
+docs/testing-plan.md

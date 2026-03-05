@@ -181,8 +181,7 @@ func (s *Server) handleRecordSoulOperationExecution(ctx *apptheory.Context) (*ap
 		RequestID: ctx.RequestID,
 		CreatedAt: now,
 	}
-	_ = audit.UpdateKeys()
-	_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
+	s.tryWriteAuditLog(ctx, audit)
 
 	return apptheory.JSON(http.StatusOK, update)
 }
@@ -352,22 +351,32 @@ func (s *Server) applySoulOperationMintSideEffects(ctx context.Context, op *mode
 		return
 	}
 
-	// Never implicitly reinstate a suspended agent by recording a mint receipt.
+	// Never implicitly reinstate a non-active agent by recording a mint receipt.
 	status := models.SoulAgentStatusActive
-	if strings.TrimSpace(identity.Status) == models.SoulAgentStatusSuspended {
-		status = models.SoulAgentStatusSuspended
+	current := strings.TrimSpace(identity.LifecycleStatus)
+	if current == "" {
+		current = strings.TrimSpace(identity.Status)
+	}
+	switch current {
+	case models.SoulAgentStatusSuspended,
+		models.SoulAgentStatusSelfSuspended,
+		models.SoulAgentStatusArchived,
+		models.SoulAgentStatusSucceeded,
+		models.SoulAgentStatusBurned:
+		status = current
 	}
 
 	now := time.Now().UTC()
 	update := &models.SoulAgentIdentity{
-		AgentID:    agentID,
-		Status:     status,
-		MintTxHash: strings.ToLower(strings.TrimSpace(op.ExecTxHash)),
-		MintedAt:   now,
-		UpdatedAt:  now,
+		AgentID:         agentID,
+		Status:          status,
+		LifecycleStatus: status,
+		MintTxHash:      strings.ToLower(strings.TrimSpace(op.ExecTxHash)),
+		MintedAt:        now,
+		UpdatedAt:       now,
 	}
 	_ = update.UpdateKeys()
-	_ = s.store.DB.WithContext(ctx).Model(update).IfExists().Update("Status", "MintTxHash", "MintedAt", "UpdatedAt")
+	_ = s.store.DB.WithContext(ctx).Model(update).IfExists().Update("Status", "LifecycleStatus", "MintTxHash", "MintedAt", "UpdatedAt")
 }
 
 func (s *Server) applySoulOperationRotateWalletSideEffects(ctx context.Context, client ethRPCClient, agentID string) {
@@ -422,13 +431,14 @@ func (s *Server) applySoulOperationBurnSideEffects(ctx context.Context, agentID 
 
 	// Transition identity status to burned.
 	update := &models.SoulAgentIdentity{
-		AgentID:   agentID,
-		Status:    "burned",
-		Wallet:    "",
-		UpdatedAt: now,
+		AgentID:         agentID,
+		Status:          models.SoulAgentStatusBurned,
+		LifecycleStatus: models.SoulAgentStatusBurned,
+		Wallet:          "",
+		UpdatedAt:       now,
 	}
 	_ = update.UpdateKeys()
-	_ = s.store.DB.WithContext(ctx).Model(update).IfExists().Update("Status", "Wallet", "UpdatedAt")
+	_ = s.store.DB.WithContext(ctx).Model(update).IfExists().Update("Status", "LifecycleStatus", "Wallet", "UpdatedAt")
 
 	// Clean up wallet→agent index.
 	if oldWallet != "" {

@@ -34,9 +34,10 @@ type SoulAgentValidationChallenge struct {
 	Request  string `theorydb:"attr:request" json:"request,omitempty"`
 	Response string `theorydb:"attr:response" json:"response,omitempty"`
 
-	Status string  `theorydb:"attr:status" json:"status"`
-	Result string  `theorydb:"attr:result" json:"result,omitempty"`
-	Score  float64 `theorydb:"attr:score" json:"score,omitempty"`
+	Status      string  `theorydb:"attr:status" json:"status"`
+	OptInStatus string  `theorydb:"attr:optInStatus" json:"opt_in_status,omitempty"`
+	Result      string  `theorydb:"attr:result" json:"result,omitempty"`
+	Score       float64 `theorydb:"attr:score" json:"score,omitempty"`
 
 	IssuedAt    time.Time `theorydb:"attr:issuedAt" json:"issued_at"`
 	RespondedAt time.Time `theorydb:"attr:respondedAt" json:"responded_at,omitempty"`
@@ -62,7 +63,31 @@ func (c *SoulAgentValidationChallenge) BeforeCreate() error {
 	if strings.TrimSpace(c.Status) == "" {
 		c.Status = SoulValidationChallengeStatusIssued
 	}
-	return c.UpdateKeys()
+	if strings.TrimSpace(c.OptInStatus) == "" {
+		c.OptInStatus = SoulValidationOptInStatusPending
+	}
+	if err := c.UpdateKeys(); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("agentId", c.AgentID); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("challengeId", c.ChallengeID); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("challengeType", c.ChallengeType); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("validatorId", c.ValidatorID); err != nil {
+		return err
+	}
+	if err := requireOneOf("status", c.Status, SoulValidationChallengeStatusIssued, SoulValidationChallengeStatusResponded, SoulValidationChallengeStatusEvaluated); err != nil {
+		return err
+	}
+	if err := requireOneOf("optInStatus", c.OptInStatus, SoulValidationOptInStatusAccepted, SoulValidationOptInStatusDeclined, SoulValidationOptInStatusPending); err != nil {
+		return err
+	}
+	return nil
 }
 
 // BeforeUpdate updates timestamps and keys before updating SoulAgentValidationChallenge.
@@ -70,7 +95,28 @@ func (c *SoulAgentValidationChallenge) BeforeUpdate() error {
 	if c.UpdatedAt.IsZero() {
 		c.UpdatedAt = time.Now().UTC()
 	}
-	return c.UpdateKeys()
+	if err := c.UpdateKeys(); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("agentId", c.AgentID); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("challengeId", c.ChallengeID); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("challengeType", c.ChallengeType); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("validatorId", c.ValidatorID); err != nil {
+		return err
+	}
+	if err := requireOneOf("status", c.Status, SoulValidationChallengeStatusIssued, SoulValidationChallengeStatusResponded, SoulValidationChallengeStatusEvaluated); err != nil {
+		return err
+	}
+	if err := requireOneOf("optInStatus", c.OptInStatus, SoulValidationOptInStatusAccepted, SoulValidationOptInStatusDeclined, SoulValidationOptInStatusPending); err != nil {
+		return err
+	}
+	return nil
 }
 
 // UpdateKeys updates the database keys for SoulAgentValidationChallenge.
@@ -82,6 +128,7 @@ func (c *SoulAgentValidationChallenge) UpdateKeys() error {
 	c.Request = strings.TrimSpace(c.Request)
 	c.Response = strings.TrimSpace(c.Response)
 	c.Status = strings.ToLower(strings.TrimSpace(c.Status))
+	c.OptInStatus = strings.ToLower(strings.TrimSpace(c.OptInStatus))
 	c.Result = strings.ToLower(strings.TrimSpace(c.Result))
 
 	c.PK = fmt.Sprintf("SOUL#AGENT#%s", c.AgentID)

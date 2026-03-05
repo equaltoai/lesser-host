@@ -24,14 +24,18 @@ import (
 )
 
 const (
-	updateStepQueued         = "queued"
-	updateStepInstanceConfig = "instance.config"
-	updateStepDeployStart    = "deploy.start"
-	updateStepDeployWait     = "deploy.wait"
-	updateStepReceiptIngest  = "receipt.ingest"
-	updateStepVerify         = "verify"
-	updateStepDone           = "done"
-	updateStepFailed         = "failed"
+	updateStepQueued          = "queued"
+	updateStepInstanceConfig  = "instance.config"
+	updateStepDeployStart     = "deploy.start"
+	updateStepDeployWait      = "deploy.wait"
+	updateStepReceiptIngest   = "receipt.ingest"
+	updateStepBodyDeployStart = "body.deploy.start"
+	updateStepBodyDeployWait  = "body.deploy.wait"
+	updateStepDeployMcpStart  = "deploy.mcp.start"
+	updateStepDeployMcpWait   = "deploy.mcp.wait" // #nosec G101 -- step identifier, not a credential
+	updateStepVerify          = "verify"
+	updateStepDone            = "done"
+	updateStepFailed          = "failed"
 
 	updateMaxTransitionsPerRun = 6
 )
@@ -39,13 +43,17 @@ const (
 type updateStepHandler func(*Server, context.Context, *models.UpdateJob, string, time.Time) (time.Duration, bool, error)
 
 var managedUpdateStepHandlers = map[string]updateStepHandler{
-	updateStepQueued:         (*Server).advanceUpdateQueued,
-	updateStepInstanceConfig: (*Server).advanceUpdateInstanceConfig,
-	updateStepDeployStart:    (*Server).advanceUpdateDeployStart,
-	updateStepDeployWait:     (*Server).advanceUpdateDeployWait,
-	updateStepReceiptIngest:  (*Server).advanceUpdateReceiptIngest,
-	updateStepVerify:         (*Server).advanceUpdateVerify,
-	updateStepDone:           (*Server).advanceUpdateDone,
+	updateStepQueued:          (*Server).advanceUpdateQueued,
+	updateStepInstanceConfig:  (*Server).advanceUpdateInstanceConfig,
+	updateStepDeployStart:     (*Server).advanceUpdateDeployStart,
+	updateStepDeployWait:      (*Server).advanceUpdateDeployWait,
+	updateStepReceiptIngest:   (*Server).advanceUpdateReceiptIngest,
+	updateStepBodyDeployStart: (*Server).advanceUpdateBodyDeployStart,
+	updateStepBodyDeployWait:  (*Server).advanceUpdateBodyDeployWait,
+	updateStepDeployMcpStart:  (*Server).advanceUpdateDeployMcpStart,
+	updateStepDeployMcpWait:   (*Server).advanceUpdateDeployMcpWait,
+	updateStepVerify:          (*Server).advanceUpdateVerify,
+	updateStepDone:            (*Server).advanceUpdateDone,
 }
 
 func updateJobProcessable(job *models.UpdateJob) bool {
@@ -431,6 +439,12 @@ func (s *Server) advanceUpdateInstanceConfig(ctx context.Context, job *models.Up
 	job.LesserHostBaseURL = publicBaseURL
 	job.LesserHostAttestationsURL = attestationsURL
 	job.LesserHostInstanceKeySecretARN = strings.TrimSpace(secretArn)
+	if effectiveBodyEnabled(inst.BodyEnabled) && strings.TrimSpace(job.LesserBodyVersion) == "" {
+		job.LesserBodyVersion = strings.TrimSpace(s.cfg.ManagedLesserBodyDefaultVersion)
+	}
+	if !effectiveBodyEnabled(inst.BodyEnabled) {
+		job.LesserBodyVersion = ""
+	}
 	job.TipEnabled = effectiveTipEnabled(inst.TipEnabled)
 	job.TipChainID = inst.TipChainID
 	job.TipContractAddress = strings.TrimSpace(inst.TipContractAddress)
@@ -454,6 +468,20 @@ func (s *Server) updateReceiptS3Key(job *models.UpdateJob) string {
 		return ""
 	}
 	return fmt.Sprintf("managed/updates/%s/%s/state.json", strings.TrimSpace(job.InstanceSlug), strings.TrimSpace(job.ID))
+}
+
+func (s *Server) updateBodyReceiptS3Key(job *models.UpdateJob) string {
+	if job == nil {
+		return ""
+	}
+	return fmt.Sprintf("managed/updates/%s/%s/body-state.json", strings.TrimSpace(job.InstanceSlug), strings.TrimSpace(job.ID))
+}
+
+func (s *Server) updateMcpReceiptS3Key(job *models.UpdateJob) string {
+	if job == nil {
+		return ""
+	}
+	return fmt.Sprintf("managed/updates/%s/%s/mcp-state.json", strings.TrimSpace(job.InstanceSlug), strings.TrimSpace(job.ID))
 }
 
 func (s *Server) updateBootstrapS3Key(slug string) string {
@@ -547,6 +575,10 @@ func (s *Server) buildUpdateDeployRunnerEnv(job *models.UpdateJob, inputs update
 	}
 
 	tipEnabled := job.TipEnabled
+	lesserBodyVersion := strings.TrimSpace(job.LesserBodyVersion)
+	if lesserBodyVersion == "" {
+		lesserBodyVersion = strings.TrimSpace(s.cfg.ManagedLesserBodyDefaultVersion)
+	}
 	env := []cbtypes.EnvironmentVariable{
 		{Name: aws.String("JOB_ID"), Value: aws.String(strings.TrimSpace(job.ID))},
 		{Name: aws.String("APP_SLUG"), Value: aws.String(strings.TrimSpace(job.InstanceSlug))},
@@ -563,6 +595,8 @@ func (s *Server) buildUpdateDeployRunnerEnv(job *models.UpdateJob, inputs update
 		{Name: aws.String("BOOTSTRAP_S3_KEY"), Value: aws.String(inputs.bootstrapKey)},
 		{Name: aws.String("GITHUB_OWNER"), Value: aws.String(strings.TrimSpace(s.cfg.ManagedLesserGitHubOwner))},
 		{Name: aws.String("GITHUB_REPO"), Value: aws.String(strings.TrimSpace(s.cfg.ManagedLesserGitHubRepo))},
+		{Name: aws.String("LESSER_BODY_GITHUB_OWNER"), Value: aws.String(strings.TrimSpace(s.cfg.ManagedLesserBodyGitHubOwner))},
+		{Name: aws.String("LESSER_BODY_GITHUB_REPO"), Value: aws.String(strings.TrimSpace(s.cfg.ManagedLesserBodyGitHubRepo))},
 
 		{Name: aws.String("LESSER_HOST_URL"), Value: aws.String(inputs.lesserHostURL)},
 		{Name: aws.String("LESSER_HOST_ATTESTATIONS_URL"), Value: aws.String(inputs.lesserHostAttestationsURL)},
@@ -575,6 +609,9 @@ func (s *Server) buildUpdateDeployRunnerEnv(job *models.UpdateJob, inputs update
 		{Name: aws.String("AI_SPAM_DETECTION_ENABLED"), Value: aws.String(fmt.Sprintf("%t", job.AISpamDetectionEnabled))},
 		{Name: aws.String("AI_PII_DETECTION_ENABLED"), Value: aws.String(fmt.Sprintf("%t", job.AIPiiDetectionEnabled))},
 		{Name: aws.String("AI_CONTENT_DETECTION_ENABLED"), Value: aws.String(fmt.Sprintf("%t", job.AIContentDetectionEnabled))},
+	}
+	if lesserBodyVersion != "" {
+		env = append(env, cbtypes.EnvironmentVariable{Name: aws.String("LESSER_BODY_VERSION"), Value: aws.String(lesserBodyVersion)})
 	}
 	if tipEnabled {
 		env = append(env,
@@ -593,7 +630,7 @@ func (s *Server) buildUpdateDeployRunnerEnv(job *models.UpdateJob, inputs update
 	return env
 }
 
-func (s *Server) startUpdateDeployRunner(ctx context.Context, job *models.UpdateJob, inst *models.Instance) (string, error) {
+func (s *Server) startUpdateDeployRunnerWithMode(ctx context.Context, job *models.UpdateJob, inst *models.Instance, mode string, receiptKey string) (string, error) {
 	if s == nil || s.cb == nil {
 		return "", fmt.Errorf("codebuild client not initialized")
 	}
@@ -613,16 +650,42 @@ func (s *Server) startUpdateDeployRunner(ctx context.Context, job *models.Update
 	if err != nil {
 		return "", err
 	}
+	if strings.TrimSpace(receiptKey) != "" {
+		inputs.receiptKey = strings.TrimSpace(receiptKey)
+	}
 	env := s.buildUpdateDeployRunnerEnv(job, inputs)
 
-	out, err := s.cb.StartBuild(ctx, &codebuild.StartBuildInput{
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "" {
+		mode = "lesser"
+	}
+	env = append(env, cbtypes.EnvironmentVariable{Name: aws.String("RUN_MODE"), Value: aws.String(mode)})
+
+	idempotencyToken := codebuildIdempotencyToken(
+		projectName,
+		inputs.stage,
+		strings.TrimSpace(job.InstanceSlug),
+		strings.TrimSpace(job.ID),
+		mode,
+		strings.TrimSpace(inputs.receiptKey),
+	)
+	startIn := &codebuild.StartBuildInput{
 		ProjectName:                  aws.String(projectName),
 		EnvironmentVariablesOverride: env,
-	})
+	}
+	if idempotencyToken != "" {
+		startIn.IdempotencyToken = aws.String(idempotencyToken)
+	}
+
+	out, err := s.cb.StartBuild(ctx, startIn)
 	if err != nil {
 		return "", err
 	}
 	return codebuildBuildID(out)
+}
+
+func (s *Server) startUpdateDeployRunner(ctx context.Context, job *models.UpdateJob, inst *models.Instance) (string, error) {
+	return s.startUpdateDeployRunnerWithMode(ctx, job, inst, "lesser", "")
 }
 
 func (s *Server) advanceUpdateDeployStart(ctx context.Context, job *models.UpdateJob, requestID string, now time.Time) (time.Duration, bool, error) {
@@ -753,12 +816,229 @@ func (s *Server) advanceUpdateReceiptIngest(ctx context.Context, job *models.Upd
 	}
 
 	job.ReceiptJSON = strings.TrimSpace(receiptJSON)
-	job.Step = updateStepVerify
-	job.Note = "verifying deployment"
+	job.RunID = ""
+
+	if strings.TrimSpace(job.LesserBodyVersion) != "" {
+		job.Step = updateStepBodyDeployStart
+		job.Note = "starting lesser-body deploy runner"
+	} else {
+		job.Step = updateStepVerify
+		job.Note = "verifying deployment"
+	}
 	if err := s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil); err != nil {
 		return 0, false, err
 	}
 	return 0, false, nil
+}
+
+func (s *Server) advanceUpdateBodyDeployStart(ctx context.Context, job *models.UpdateJob, requestID string, now time.Time) (time.Duration, bool, error) {
+	if job == nil {
+		return 0, true, nil
+	}
+
+	if strings.TrimSpace(job.LesserBodyVersion) == "" {
+		job.Step = updateStepVerify
+		job.Note = "verifying deployment"
+		job.RunID = ""
+		if err := s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil); err != nil {
+			return 0, false, err
+		}
+		return 0, false, nil
+	}
+
+	if strings.TrimSpace(job.RunID) != "" {
+		job.Step = updateStepBodyDeployWait
+		job.Note = "lesser-body deploy runner already started"
+		if err := s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil); err != nil {
+			return 0, false, err
+		}
+		return provisionDefaultPollDelay, false, nil
+	}
+
+	inst, err := s.loadInstance(ctx, strings.TrimSpace(job.InstanceSlug))
+	if err != nil {
+		return s.retryUpdateJobOrFail(ctx, job, requestID, now, "instance_load_failed", "failed to load instance: "+err.Error(), provisionDefaultShortRetryDelay, 2*time.Minute)
+	}
+	if inst == nil {
+		return 0, false, s.failUpdateJob(ctx, job, requestID, now, "instance_not_found", "instance record not found")
+	}
+
+	runID, err := s.startUpdateDeployRunnerWithMode(ctx, job, inst, "lesser-body", s.updateBodyReceiptS3Key(job))
+	if err != nil {
+		job.Attempts++
+		if job.Attempts >= job.MaxAttempts {
+			return 0, false, s.failUpdateJob(ctx, job, requestID, now, "body_deploy_start_failed", "failed to start lesser-body deploy runner: "+err.Error())
+		}
+		job.Note = "failed to start lesser-body deploy runner; retrying: " + compactErr(err)
+		_ = s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil)
+		return jitteredBackoff(job.Attempts, provisionDefaultShortRetryDelay, 10*time.Minute), false, nil
+	}
+
+	job.RunID = strings.TrimSpace(runID)
+	job.RunURL = ""
+	job.Step = updateStepBodyDeployWait
+	job.Note = "lesser-body deploy runner in progress"
+	if err := s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil); err != nil {
+		return 0, false, err
+	}
+	return provisionDefaultPollDelay, false, nil
+}
+
+func (s *Server) advanceUpdateBodyDeployWait(ctx context.Context, job *models.UpdateJob, requestID string, now time.Time) (time.Duration, bool, error) {
+	if job == nil {
+		return 0, true, nil
+	}
+
+	status, deepLink, err := s.getDeployRunnerStatus(ctx, strings.TrimSpace(job.RunID))
+	if err != nil {
+		job.Attempts++
+		if job.Attempts >= job.MaxAttempts {
+			return 0, false, s.failUpdateJob(ctx, job, requestID, now, "body_deploy_status_failed", "failed to poll lesser-body deploy runner: "+err.Error())
+		}
+		job.Note = "failed to poll lesser-body deploy runner; retrying: " + compactErr(err)
+		_ = s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil)
+		return jitteredBackoff(job.Attempts, provisionDefaultPollDelay, 10*time.Minute), false, nil
+	}
+
+	if deepLink != "" && strings.TrimSpace(job.RunURL) == "" {
+		job.RunURL = deepLink
+	}
+
+	switch status {
+	case codebuildStatusSucceeded:
+		job.RunID = ""
+		job.Step = updateStepDeployMcpStart
+		job.Note = noteStartingMcpWiringDeployRunner
+		if err := s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil); err != nil {
+			return 0, false, err
+		}
+		return 0, false, nil
+
+	case codebuildStatusInProgress:
+		if !job.CreatedAt.IsZero() && now.Sub(job.CreatedAt) > provisionMaxDeployAge {
+			return 0, false, s.failUpdateJob(ctx, job, requestID, now, "body_deploy_timeout", "lesser-body deploy runner timed out")
+		}
+		job.Note = "lesser-body deploy runner in progress"
+		_ = s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil)
+		return provisionDefaultPollDelay, false, nil
+
+	case codebuildStatusFailed, codebuildStatusFault, codebuildStatusStopped, codebuildStatusTimedOut:
+		msg := "lesser-body deploy runner failed"
+		if deepLink != "" {
+			job.RunURL = deepLink
+			msg = msg + " (CodeBuild: " + deepLink + ")"
+		}
+		_ = s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil)
+		return 0, false, s.failUpdateJob(ctx, job, requestID, now, "body_deploy_failed", msg)
+
+	default:
+		if !job.CreatedAt.IsZero() && now.Sub(job.CreatedAt) > provisionMaxDeployAge {
+			return 0, false, s.failUpdateJob(ctx, job, requestID, now, "body_deploy_timeout", "lesser-body deploy runner timed out")
+		}
+		job.Note = "lesser-body deploy runner status: " + status
+		_ = s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil)
+		return provisionDefaultPollDelay, false, nil
+	}
+}
+
+func (s *Server) advanceUpdateDeployMcpStart(ctx context.Context, job *models.UpdateJob, requestID string, now time.Time) (time.Duration, bool, error) {
+	if job == nil {
+		return 0, true, nil
+	}
+
+	if strings.TrimSpace(job.RunID) != "" {
+		job.Step = updateStepDeployMcpWait
+		job.Note = "MCP wiring deploy runner already started"
+		if err := s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil); err != nil {
+			return 0, false, err
+		}
+		return provisionDefaultPollDelay, false, nil
+	}
+
+	inst, err := s.loadInstance(ctx, strings.TrimSpace(job.InstanceSlug))
+	if err != nil {
+		return s.retryUpdateJobOrFail(ctx, job, requestID, now, "instance_load_failed", "failed to load instance: "+err.Error(), provisionDefaultShortRetryDelay, 2*time.Minute)
+	}
+	if inst == nil {
+		return 0, false, s.failUpdateJob(ctx, job, requestID, now, "instance_not_found", "instance record not found")
+	}
+
+	runID, err := s.startUpdateDeployRunnerWithMode(ctx, job, inst, "lesser-mcp", s.updateMcpReceiptS3Key(job))
+	if err != nil {
+		job.Attempts++
+		if job.Attempts >= job.MaxAttempts {
+			return 0, false, s.failUpdateJob(ctx, job, requestID, now, "mcp_deploy_start_failed", "failed to start MCP wiring deploy runner: "+err.Error())
+		}
+		job.Note = "failed to start MCP wiring deploy runner; retrying: " + compactErr(err)
+		_ = s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil)
+		return jitteredBackoff(job.Attempts, provisionDefaultShortRetryDelay, 10*time.Minute), false, nil
+	}
+
+	job.RunID = strings.TrimSpace(runID)
+	job.RunURL = ""
+	job.Step = updateStepDeployMcpWait
+	job.Note = "MCP wiring deploy runner in progress"
+	if err := s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil); err != nil {
+		return 0, false, err
+	}
+	return provisionDefaultPollDelay, false, nil
+}
+
+func (s *Server) advanceUpdateDeployMcpWait(ctx context.Context, job *models.UpdateJob, requestID string, now time.Time) (time.Duration, bool, error) {
+	if job == nil {
+		return 0, true, nil
+	}
+
+	status, deepLink, err := s.getDeployRunnerStatus(ctx, strings.TrimSpace(job.RunID))
+	if err != nil {
+		job.Attempts++
+		if job.Attempts >= job.MaxAttempts {
+			return 0, false, s.failUpdateJob(ctx, job, requestID, now, "mcp_deploy_status_failed", "failed to poll MCP wiring deploy runner: "+err.Error())
+		}
+		job.Note = "failed to poll MCP wiring deploy runner; retrying: " + compactErr(err)
+		_ = s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil)
+		return jitteredBackoff(job.Attempts, provisionDefaultPollDelay, 10*time.Minute), false, nil
+	}
+
+	if deepLink != "" && strings.TrimSpace(job.RunURL) == "" {
+		job.RunURL = deepLink
+	}
+
+	switch status {
+	case codebuildStatusSucceeded:
+		job.RunID = ""
+		job.Step = updateStepVerify
+		job.Note = "verifying deployment"
+		if err := s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil); err != nil {
+			return 0, false, err
+		}
+		return 0, false, nil
+
+	case codebuildStatusInProgress:
+		if !job.CreatedAt.IsZero() && now.Sub(job.CreatedAt) > provisionMaxDeployAge {
+			return 0, false, s.failUpdateJob(ctx, job, requestID, now, "mcp_deploy_timeout", "MCP wiring deploy runner timed out")
+		}
+		job.Note = "MCP wiring deploy runner in progress"
+		_ = s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil)
+		return provisionDefaultPollDelay, false, nil
+
+	case codebuildStatusFailed, codebuildStatusFault, codebuildStatusStopped, codebuildStatusTimedOut:
+		msg := "MCP wiring deploy runner failed"
+		if deepLink != "" {
+			job.RunURL = deepLink
+			msg = msg + " (CodeBuild: " + deepLink + ")"
+		}
+		_ = s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil)
+		return 0, false, s.failUpdateJob(ctx, job, requestID, now, "mcp_deploy_failed", msg)
+
+	default:
+		if !job.CreatedAt.IsZero() && now.Sub(job.CreatedAt) > provisionMaxDeployAge {
+			return 0, false, s.failUpdateJob(ctx, job, requestID, now, "mcp_deploy_timeout", "MCP wiring deploy runner timed out")
+		}
+		job.Note = "MCP wiring deploy runner status: " + status
+		_ = s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil)
+		return provisionDefaultPollDelay, false, nil
+	}
 }
 
 type instanceV2Response struct {

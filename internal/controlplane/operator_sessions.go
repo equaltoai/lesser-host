@@ -18,8 +18,10 @@ func (s *Server) createOperatorSession(ctx context.Context, username, role, meth
 	now := time.Now().UTC()
 	expiresAt = now.Add(operatorSessionDuration)
 
+	storedID := sha256HexTrimmed(token)
+
 	session := &models.OperatorSession{
-		ID:        token,
+		ID:        storedID,
 		Username:  username,
 		Role:      role,
 		Method:    method,

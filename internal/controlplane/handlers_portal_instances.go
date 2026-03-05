@@ -358,8 +358,7 @@ func (s *Server) handlePortalUpdateInstanceConfig(ctx *apptheory.Context) (*appt
 		RequestID: ctx.RequestID,
 		CreatedAt: now,
 	}
-	_ = audit.UpdateKeys()
-	_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
+	s.tryWriteAuditLog(ctx, audit)
 
 	updated, err := s.getInstance(ctx, slug)
 	if err != nil {
@@ -486,6 +485,12 @@ func (s *Server) handlePortalGetInstanceProvisioning(ctx *apptheory.Context) (*a
 	}
 	if err != nil || job == nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
+	if status := strings.ToLower(strings.TrimSpace(job.Status)); status == models.ProvisionJobStatusQueued || status == models.ProvisionJobStatusRunning {
+		if shouldNudgeAsyncJob(time.Now().UTC(), job.UpdatedAt) {
+			s.enqueueProvisionJobBestEffort(ctx, jobID)
+		}
 	}
 
 	return apptheory.JSON(http.StatusOK, s.provisionJobResponseWithDerivedFields(job))
@@ -627,8 +632,7 @@ func (s *Server) handlePortalSetInstanceBudgetMonth(ctx *apptheory.Context) (*ap
 		RequestID: ctx.RequestID,
 		CreatedAt: now,
 	}
-	_ = audit.UpdateKeys()
-	_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
+	s.tryWriteAuditLog(ctx, audit)
 
 	return apptheory.JSON(http.StatusOK, budgetMonthResponse{
 		InstanceSlug:    slug,
@@ -844,8 +848,7 @@ func (s *Server) handlePortalAddInstanceDomain(ctx *apptheory.Context) (*apptheo
 		RequestID: ctx.RequestID,
 		CreatedAt: now,
 	}
-	_ = audit.UpdateKeys()
-	_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
+	s.tryWriteAuditLog(ctx, audit)
 
 	txtName := domainVerificationRecordPrefix + domain
 	txtValue := domainVerificationValuePrefix + token
@@ -927,8 +930,7 @@ func (s *Server) handlePortalVerifyInstanceDomain(ctx *apptheory.Context) (*appt
 		RequestID: ctx.RequestID,
 		CreatedAt: now,
 	}
-	_ = audit.UpdateKeys()
-	_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
+	s.tryWriteAuditLog(ctx, audit)
 
 	item.Status = models.DomainStatusVerified
 	item.VerificationMethod = domainVerificationMethodDNSTXT
@@ -1087,8 +1089,7 @@ func (s *Server) handlePortalRotateInstanceDomain(ctx *apptheory.Context) (*appt
 		RequestID: ctx.RequestID,
 		CreatedAt: now,
 	}
-	_ = audit.UpdateKeys()
-	_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
+	s.tryWriteAuditLog(ctx, audit)
 
 	txtName := domainVerificationRecordPrefix + domain
 	txtValue := domainVerificationValuePrefix + token
@@ -1164,8 +1165,7 @@ func (s *Server) handlePortalDisableInstanceDomain(ctx *apptheory.Context) (*app
 		RequestID: ctx.RequestID,
 		CreatedAt: now,
 	}
-	_ = audit.UpdateKeys()
-	_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
+	s.tryWriteAuditLog(ctx, audit)
 
 	item.Status = models.DomainStatusDisabled
 	item.UpdatedAt = now
@@ -1221,8 +1221,7 @@ func (s *Server) handlePortalDeleteInstanceDomain(ctx *apptheory.Context) (*appt
 		RequestID: ctx.RequestID,
 		CreatedAt: now,
 	}
-	_ = audit.UpdateKeys()
-	_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
+	s.tryWriteAuditLog(ctx, audit)
 
 	return apptheory.JSON(http.StatusOK, map[string]any{
 		"deleted": true,

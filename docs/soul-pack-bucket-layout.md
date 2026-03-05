@@ -1,36 +1,22 @@
-# SoulPackBucket S3 key layout
+# Soul registry bucket S3 key layout
 
 Each `lesser-host` stage provisions a private, versioned S3 bucket named:
 
 `lesser-host-<stage>-<account>-<region>-soul-packs`
 
-The bucket stores:
+Despite the historical `soul-packs` name, this bucket is **not** used to distribute signed deployment “packs”.
 
-- **Immutable** signed Soul packs (used for managed deployments).
-- **Soul Registry artifacts** (registration + attestations), under a dedicated prefix.
+It stores **Soul Registry artifacts** under a dedicated prefix: `registry/v1/`.
 
-## Signed Soul packs (bucket root)
+## Stage pointer (SSM)
 
-A pack version is identified by `<version>` and consists of exactly three objects at the bucket root:
+The control plane stores a per-stage pointer in the central account:
 
-- `soul-pack-<version>.tgz` — tarball containing the pack contents
-- `soul-pack-<version>.manifest.json` — manifest listing every file path + sha256 in the tarball
-- `soul-pack-<version>.manifest.sig` — KMS signature over the sha256 digest of the manifest JSON
-
-`lesser-host` provisioning fetches these exact keys when `RUN_MODE` is `soul-deploy` or `soul-init` in the managed
-runner.
-
-## Stage pointers (SSM)
-
-The control plane stores per-stage pointers in the central account:
-
-- `/soul/<stage>/packBucketName` — the SoulPackBucket name
-- `/soul/<stage>/signingKeyArn` — KMS key used to verify `*.manifest.sig`
-- `/soul/<stage>/packVersion` — current `<version>` pointer (or an instance may pin a specific version)
+- `/soul/<stage>/packBucketName` — the bucket name (historical name; stable contract)
 
 ## Soul Registry artifacts (`registry/v1/`)
 
-All registry artifacts live under `registry/v1/` to avoid collisions with Soul pack objects at the bucket root.
+All registry artifacts live under `registry/v1/`.
 
 ### Agent registration (current)
 
@@ -72,7 +58,7 @@ Where `<rootHex>` is the on-chain Merkle root published via `ValidationAttestati
 
 Current root publications include a `manifest.json` with sha256 sums, but do not yet write a KMS signature.
 
-When a snapshot is distributed as a pack, use the same pattern as Soul packs for integrity:
+When distributing a snapshot bundle, use the manifest + KMS signature pattern for integrity:
 
 - `registry/v1/<type>/roots/<rootHex>/manifest.json`
 - `registry/v1/<type>/roots/<rootHex>/manifest.sig`

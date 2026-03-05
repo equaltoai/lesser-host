@@ -22,6 +22,11 @@ const (
 	SoulOperationKindPublishValidationRoot = "publish_validation_root"
 	SoulOperationKindSuspend               = "suspend"
 	SoulOperationKindBurn                  = "burn"
+	SoulOperationKindArchive               = "archive"
+	SoulOperationKindSelfSuspend           = "self_suspend"
+	SoulOperationKindSelfReinstate         = "self_reinstate"
+	SoulOperationKindDesignateSuccessor    = "designate_successor"
+	SoulOperationKindDispute               = "dispute"
 )
 
 // SoulOperation represents a Safe-first on-chain operation request and its reconciliation metadata.
@@ -65,9 +70,6 @@ func (SoulOperation) TableName() string { return MainTableName() }
 
 // BeforeCreate sets defaults and keys before creating SoulOperation.
 func (o *SoulOperation) BeforeCreate() error {
-	if err := o.UpdateKeys(); err != nil {
-		return err
-	}
 	now := time.Now().UTC()
 	if o.CreatedAt.IsZero() {
 		o.CreatedAt = now
@@ -76,15 +78,31 @@ func (o *SoulOperation) BeforeCreate() error {
 	if strings.TrimSpace(o.Status) == "" {
 		o.Status = SoulOperationStatusPending
 	}
-	o.updateGSI1()
+	if err := o.UpdateKeys(); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("operationId", o.OperationID); err != nil {
+		return err
+	}
+	if err := requireOneOf("status", o.Status, SoulOperationStatusPending, SoulOperationStatusProposed, SoulOperationStatusExecuted, SoulOperationStatusFailed); err != nil {
+		return err
+	}
 	return nil
 }
 
 // BeforeUpdate updates timestamps before updating SoulOperation.
 func (o *SoulOperation) BeforeUpdate() error {
 	o.UpdatedAt = time.Now().UTC()
-	o.updateGSI1()
-	return o.UpdateKeys()
+	if err := o.UpdateKeys(); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("operationId", o.OperationID); err != nil {
+		return err
+	}
+	if err := requireOneOf("status", o.Status, SoulOperationStatusPending, SoulOperationStatusProposed, SoulOperationStatusExecuted, SoulOperationStatusFailed); err != nil {
+		return err
+	}
+	return nil
 }
 
 // UpdateKeys updates the database keys for SoulOperation.

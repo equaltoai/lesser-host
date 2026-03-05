@@ -292,8 +292,7 @@ func (s *Server) handlePortalCreateInstanceKey(ctx *apptheory.Context) (*apptheo
 		RequestID: ctx.RequestID,
 		CreatedAt: now,
 	}
-	_ = audit.UpdateKeys()
-	_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
+	s.tryWriteAuditLog(ctx, audit)
 
 	return apptheory.JSON(http.StatusCreated, createInstanceKeyResponse{
 		InstanceSlug: slug,
@@ -375,8 +374,7 @@ func (s *Server) handlePortalCreateCreditsCheckout(ctx *apptheory.Context) (*app
 		RequestID: ctx.RequestID,
 		CreatedAt: now,
 	}
-	_ = audit.UpdateKeys()
-	_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
+	s.tryWriteAuditLog(ctx, audit)
 
 	// Reload purchase for response.
 	var latest models.CreditPurchase
@@ -492,8 +490,7 @@ func (s *Server) handlePortalCreatePaymentMethodCheckout(ctx *apptheory.Context)
 		RequestID: ctx.RequestID,
 		CreatedAt: now,
 	}
-	_ = audit.UpdateKeys()
-	_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
+	s.tryWriteAuditLog(ctx, audit)
 
 	return apptheory.JSON(http.StatusOK, portalPaymentMethodCheckoutResponse{
 		CheckoutURL: session.URL,

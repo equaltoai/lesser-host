@@ -42,12 +42,19 @@ func (f *fakeSoulPublicPacks) GetObject(ctx context.Context, key string, maxByte
 }
 
 type soulPublicTestDB struct {
-	db      *ttmocks.MockExtendedDB
-	qID     *ttmocks.MockQuery
-	qRep    *ttmocks.MockQuery
-	qVal    *ttmocks.MockQuery
-	qDomIdx *ttmocks.MockQuery
-	qCapIdx *ttmocks.MockQuery
+	db        *ttmocks.MockExtendedDB
+	qID       *ttmocks.MockQuery
+	qRep      *ttmocks.MockQuery
+	qVal      *ttmocks.MockQuery
+	qDomIdx   *ttmocks.MockQuery
+	qCapIdx   *ttmocks.MockQuery
+	qBoundIdx *ttmocks.MockQuery
+	qChannel  *ttmocks.MockQuery
+	qPrefs    *ttmocks.MockQuery
+	qEmailIdx *ttmocks.MockQuery
+	qPhoneIdx *ttmocks.MockQuery
+	qENS      *ttmocks.MockQuery
+	qChanIdx  *ttmocks.MockQuery
 }
 
 func newSoulPublicTestDB() soulPublicTestDB {
@@ -57,6 +64,13 @@ func newSoulPublicTestDB() soulPublicTestDB {
 	qVal := new(ttmocks.MockQuery)
 	qDomIdx := new(ttmocks.MockQuery)
 	qCapIdx := new(ttmocks.MockQuery)
+	qBoundIdx := new(ttmocks.MockQuery)
+	qChannel := new(ttmocks.MockQuery)
+	qPrefs := new(ttmocks.MockQuery)
+	qEmailIdx := new(ttmocks.MockQuery)
+	qPhoneIdx := new(ttmocks.MockQuery)
+	qENS := new(ttmocks.MockQuery)
+	qChanIdx := new(ttmocks.MockQuery)
 
 	db.On("WithContext", mock.Anything).Return(db).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(qID).Maybe()
@@ -64,8 +78,15 @@ func newSoulPublicTestDB() soulPublicTestDB {
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentValidationRecord")).Return(qVal).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulDomainAgentIndex")).Return(qDomIdx).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulCapabilityAgentIndex")).Return(qCapIdx).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulBoundaryKeywordAgentIndex")).Return(qBoundIdx).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentChannel")).Return(qChannel).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentContactPreferences")).Return(qPrefs).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulEmailAgentIndex")).Return(qEmailIdx).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulPhoneAgentIndex")).Return(qPhoneIdx).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(qENS).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulChannelAgentIndex")).Return(qChanIdx).Maybe()
 
-	for _, q := range []*ttmocks.MockQuery{qID, qRep, qVal, qDomIdx, qCapIdx} {
+	for _, q := range []*ttmocks.MockQuery{qID, qRep, qVal, qDomIdx, qCapIdx, qBoundIdx, qChannel, qPrefs, qEmailIdx, qPhoneIdx, qENS, qChanIdx} {
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("OrderBy", mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("Limit", mock.Anything).Return(q).Maybe()
@@ -74,12 +95,19 @@ func newSoulPublicTestDB() soulPublicTestDB {
 	}
 
 	return soulPublicTestDB{
-		db:      db,
-		qID:     qID,
-		qRep:    qRep,
-		qVal:    qVal,
-		qDomIdx: qDomIdx,
-		qCapIdx: qCapIdx,
+		db:        db,
+		qID:       qID,
+		qRep:      qRep,
+		qVal:      qVal,
+		qDomIdx:   qDomIdx,
+		qCapIdx:   qCapIdx,
+		qBoundIdx: qBoundIdx,
+		qChannel:  qChannel,
+		qPrefs:    qPrefs,
+		qEmailIdx: qEmailIdx,
+		qPhoneIdx: qPhoneIdx,
+		qENS:      qENS,
+		qChanIdx:  qChanIdx,
 	}
 }
 
@@ -123,9 +151,10 @@ func TestParseSoulSearchQuery(t *testing.T) {
 func TestSetSoulPublicHeaders(t *testing.T) {
 	t.Parallel()
 
-	setSoulPublicHeaders(nil, "")
+	s := &Server{cfg: config.Config{SoulEnabled: true}}
+	s.setSoulPublicHeaders(nil, nil, "")
 	resp := &apptheory.Response{}
-	setSoulPublicHeaders(resp, "")
+	s.setSoulPublicHeaders(nil, resp, "")
 	if resp.Headers == nil || len(resp.Headers["cache-control"]) != 1 || resp.Headers["cache-control"][0] != "no-store" {
 		t.Fatalf("unexpected cache header: %#v", resp.Headers)
 	}
@@ -301,7 +330,7 @@ func TestHandleSoulPublicSearch_CapabilityAndDomainBranches(t *testing.T) {
 		tdb := newSoulPublicTestDB()
 		s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true}}
 
-		tdb.qCapIdx.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{NextCursor: "c2", HasMore: true}, nil).Run(func(args mock.Arguments) {
+		tdb.qCapIdx.On("AllPaginated", mock.Anything).Return((*core.PaginatedResult)(nil), nil).Run(func(args mock.Arguments) {
 			dest := testutil.RequireMockArg[*[]*models.SoulCapabilityAgentIndex](t, args, 0)
 			*dest = []*models.SoulCapabilityAgentIndex{
 				{AgentID: agentA, Domain: "example.com", LocalID: "a"},
@@ -336,7 +365,7 @@ func TestHandleSoulPublicSearch_CapabilityAndDomainBranches(t *testing.T) {
 		if err := json.Unmarshal(resp.Body, &out); err != nil {
 			t.Fatalf("unmarshal: %v", err)
 		}
-		if out.Count != 1 || len(out.Results) != 1 || out.Results[0].AgentID != agentA || out.NextCursor != "c2" || !out.HasMore {
+		if out.Count != 1 || len(out.Results) != 1 || out.Results[0].AgentID != agentA || out.NextCursor != "" || out.HasMore {
 			t.Fatalf("unexpected response: %#v", out)
 		}
 	})
@@ -360,6 +389,34 @@ func TestHandleSoulPublicSearch_CapabilityAndDomainBranches(t *testing.T) {
 		}).Once()
 
 		ctx := &apptheory.Context{Request: apptheory.Request{Query: map[string][]string{"q": {"example.com/agent-a"}}}}
+		resp, err := s.handleSoulPublicSearch(ctx)
+		if err != nil || resp.Status != http.StatusOK {
+			t.Fatalf("unexpected: resp=%#v err=%v", resp, err)
+		}
+	})
+
+	t.Run("domain_param_and_local_q", func(t *testing.T) {
+		t.Parallel()
+
+		tdb := newSoulPublicTestDB()
+		s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true}}
+
+		tdb.qDomIdx.On("AllPaginated", mock.Anything).Return((*core.PaginatedResult)(nil), nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*[]*models.SoulDomainAgentIndex](t, args, 0)
+			*dest = []*models.SoulDomainAgentIndex{
+				{AgentID: agentA, Domain: "example.com", LocalID: "agent-alice"},
+			}
+		}).Once()
+
+		tdb.qID.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
+			*dest = models.SoulAgentIdentity{AgentID: agentA, Status: models.SoulAgentStatusActive}
+		}).Once()
+
+		ctx := &apptheory.Context{Request: apptheory.Request{Query: map[string][]string{
+			"domain": {"example.com"},
+			"q":      {"agent-a"},
+		}}}
 		resp, err := s.handleSoulPublicSearch(ctx)
 		if err != nil || resp.Status != http.StatusOK {
 			t.Fatalf("unexpected: resp=%#v err=%v", resp, err)
@@ -402,4 +459,349 @@ func TestHandleSoulPublicSearch_CapabilityAndDomainBranches(t *testing.T) {
 			t.Fatalf("expected internal error")
 		}
 	})
+}
+
+func TestHandleSoulPublicSearch_Filters(t *testing.T) {
+	t.Parallel()
+
+	agentA := "0x" + strings.Repeat("aa", 32)
+	agentB := "0x" + strings.Repeat("bb", 32)
+
+	t.Run("claimLevel_requires_capability", func(t *testing.T) {
+		t.Parallel()
+
+		tdb := newSoulPublicTestDB()
+		s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true}}
+
+		ctx := &apptheory.Context{Request: apptheory.Request{Query: map[string][]string{
+			"q":          {"example.com"},
+			"claimLevel": {"challenge-passed"},
+		}}}
+		if _, err := s.handleSoulPublicSearch(ctx); err == nil {
+			t.Fatalf("expected bad_request")
+		}
+	})
+
+	t.Run("claimLevel_filters_capability_results", func(t *testing.T) {
+		t.Parallel()
+
+		tdb := newSoulPublicTestDB()
+		s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true}}
+
+		tdb.qCapIdx.On("AllPaginated", mock.Anything).Return((*core.PaginatedResult)(nil), nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*[]*models.SoulCapabilityAgentIndex](t, args, 0)
+			*dest = []*models.SoulCapabilityAgentIndex{
+				{AgentID: agentA, Domain: "example.com", LocalID: "a", ClaimLevel: "self-declared"},
+				{AgentID: agentB, Domain: "example.com", LocalID: "b", ClaimLevel: "challenge-passed"},
+			}
+		}).Once()
+
+		tdb.qID.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
+			*dest = models.SoulAgentIdentity{Status: models.SoulAgentStatusActive}
+		}).Maybe()
+
+		ctx := &apptheory.Context{Request: apptheory.Request{Query: map[string][]string{
+			"capability": {"social"},
+			"q":          {"example.com"},
+			"claimLevel": {"challenge-passed"},
+		}}}
+
+		resp, err := s.handleSoulPublicSearch(ctx)
+		if err != nil || resp.Status != http.StatusOK {
+			t.Fatalf("unexpected: resp=%#v err=%v", resp, err)
+		}
+
+		var out soulSearchResponse
+		if err := json.Unmarshal(resp.Body, &out); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if out.Count != 1 || len(out.Results) != 1 || out.Results[0].AgentID != agentB {
+			t.Fatalf("unexpected response: %#v", out)
+		}
+	})
+
+	t.Run("boundary_filters_domain_results", func(t *testing.T) {
+		t.Parallel()
+
+		tdb := newSoulPublicTestDB()
+		s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true}}
+
+		tdb.qBoundIdx.On("AllPaginated", mock.Anything).Return((*core.PaginatedResult)(nil), nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*[]*models.SoulBoundaryKeywordAgentIndex](t, args, 0)
+			*dest = []*models.SoulBoundaryKeywordAgentIndex{
+				{AgentID: agentA, Domain: "example.com", LocalID: "a", Keyword: "finance"},
+				{AgentID: agentB, Domain: "example.com", LocalID: "b", Keyword: "finance"},
+			}
+		}).Once()
+
+		firstCalls := 0
+		tdb.qID.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
+			status := models.SoulAgentStatusActive
+			if firstCalls > 0 {
+				status = models.SoulAgentStatusSuspended
+			}
+			*dest = models.SoulAgentIdentity{Status: status}
+			firstCalls++
+		}).Times(2)
+
+		ctx := &apptheory.Context{Request: apptheory.Request{Query: map[string][]string{
+			"q":        {"example.com"},
+			"boundary": {"finance"},
+		}}}
+		resp, err := s.handleSoulPublicSearch(ctx)
+		if err != nil || resp.Status != http.StatusOK {
+			t.Fatalf("unexpected: resp=%#v err=%v", resp, err)
+		}
+
+		var out soulSearchResponse
+		if err := json.Unmarshal(resp.Body, &out); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if out.Count != 1 || len(out.Results) != 1 || out.Results[0].AgentID != agentA {
+			t.Fatalf("unexpected response: %#v", out)
+		}
+	})
+
+	t.Run("claimLevel_boundary_status_combination", func(t *testing.T) {
+		t.Parallel()
+
+		tdb := newSoulPublicTestDB()
+		s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true}}
+
+		tdb.qCapIdx.On("AllPaginated", mock.Anything).Return((*core.PaginatedResult)(nil), nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*[]*models.SoulCapabilityAgentIndex](t, args, 0)
+			*dest = []*models.SoulCapabilityAgentIndex{
+				{AgentID: agentA, Domain: "example.com", LocalID: "a", ClaimLevel: "challenge-passed"},
+				{AgentID: agentB, Domain: "example.com", LocalID: "b", ClaimLevel: "challenge-passed"},
+			}
+		}).Once()
+
+		firstCalls := 0
+		tdb.qID.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
+			status := models.SoulAgentStatusActive
+			if firstCalls > 0 {
+				status = models.SoulAgentStatusSuspended
+			}
+			*dest = models.SoulAgentIdentity{Status: status}
+			firstCalls++
+		}).Times(2)
+
+		tdb.qBoundIdx.On("First", mock.AnythingOfType("*models.SoulBoundaryKeywordAgentIndex")).Return(nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*models.SoulBoundaryKeywordAgentIndex](t, args, 0)
+			*dest = models.SoulBoundaryKeywordAgentIndex{AgentID: agentA, Domain: "example.com", LocalID: "a", Keyword: "finance"}
+		}).Once()
+
+		ctx := &apptheory.Context{Request: apptheory.Request{Query: map[string][]string{
+			"capability": {"social"},
+			"q":          {"example.com"},
+			"claimLevel": {"challenge-passed"},
+			"boundary":   {"finance"},
+			"status":     {"active"},
+		}}}
+		resp, err := s.handleSoulPublicSearch(ctx)
+		if err != nil || resp.Status != http.StatusOK {
+			t.Fatalf("unexpected: resp=%#v err=%v", resp, err)
+		}
+
+		var out soulSearchResponse
+		if err := json.Unmarshal(resp.Body, &out); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if out.Count != 1 || len(out.Results) != 1 || out.Results[0].AgentID != agentA {
+			t.Fatalf("unexpected response: %#v", out)
+		}
+	})
+}
+
+func TestHandleSoulPublicGetAgentChannels_Success(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulPublicTestDB()
+	s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true}}
+
+	agentID := "0x" + strings.Repeat("11", 32)
+	identityUpdated := time.Date(2026, 3, 4, 0, 0, 0, 0, time.UTC)
+	prefsUpdated := identityUpdated.Add(2 * time.Hour)
+	emailUpdated := identityUpdated.Add(3 * time.Hour)
+	verifiedAt := identityUpdated.Add(30 * time.Minute)
+
+	tdb.qID.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
+		*dest = models.SoulAgentIdentity{
+			AgentID:   agentID,
+			Domain:    "example.com",
+			LocalID:   "agent-bob",
+			Status:    models.SoulAgentStatusActive,
+			UpdatedAt: identityUpdated,
+		}
+	}).Once()
+
+	tdb.qPrefs.On("First", mock.AnythingOfType("*models.SoulAgentContactPreferences")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentContactPreferences](t, args, 0)
+		*dest = models.SoulAgentContactPreferences{
+			AgentID:              agentID,
+			Preferred:            "email",
+			AvailabilitySchedule: "always",
+			ResponseTarget:       "PT4H",
+			ResponseGuarantee:    "best-effort",
+			Languages:            []string{"en"},
+			UpdatedAt:            prefsUpdated,
+		}
+	}).Once()
+
+	// ENS: not configured.
+	tdb.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(theoryErrors.ErrItemNotFound).Once()
+	// Email: configured.
+	tdb.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentChannel](t, args, 0)
+		*dest = models.SoulAgentChannel{
+			AgentID:      agentID,
+			ChannelType:  models.SoulChannelTypeEmail,
+			Identifier:   "agent-bob@lessersoul.ai",
+			Capabilities: []string{"receive", "send"},
+			Protocols:    []string{"smtp"},
+			Verified:     true,
+			VerifiedAt:   verifiedAt,
+			Status:       models.SoulChannelStatusActive,
+			UpdatedAt:    emailUpdated,
+		}
+	}).Once()
+	// Phone: not configured.
+	tdb.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(theoryErrors.ErrItemNotFound).Once()
+
+	ctx := &apptheory.Context{Params: map[string]string{"agentId": agentID}}
+	resp, err := s.handleSoulPublicGetAgentChannels(ctx)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if resp.Status != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body=%q)", resp.Status, string(resp.Body))
+	}
+	if resp.Headers == nil || len(resp.Headers["cache-control"]) != 1 || resp.Headers["cache-control"][0] != "public, max-age=60" {
+		t.Fatalf("unexpected headers: %#v", resp.Headers)
+	}
+
+	var out soulPublicAgentChannelsResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.AgentID != agentID {
+		t.Fatalf("expected agentId %q, got %q", agentID, out.AgentID)
+	}
+	if out.Channels.ENS != nil || out.Channels.Phone != nil || out.Channels.Email == nil {
+		t.Fatalf("unexpected channels: %#v", out.Channels)
+	}
+	if out.Channels.Email.Address != "agent-bob@lessersoul.ai" || !out.Channels.Email.Verified || out.Channels.Email.VerifiedAt == "" {
+		t.Fatalf("unexpected email channel: %#v", out.Channels.Email)
+	}
+	if out.ContactPreferences == nil || out.ContactPreferences.Preferred != "email" || len(out.ContactPreferences.Languages) != 1 {
+		t.Fatalf("unexpected prefs: %#v", out.ContactPreferences)
+	}
+	if out.UpdatedAt != emailUpdated.UTC().Format(time.RFC3339Nano) {
+		t.Fatalf("expected updatedAt %q, got %q", emailUpdated.UTC().Format(time.RFC3339Nano), out.UpdatedAt)
+	}
+}
+
+func TestHandleSoulPublicResolveEmail_Success(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulPublicTestDB()
+	s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true}}
+
+	agentID := "0x" + strings.Repeat("22", 32)
+
+	tdb.qEmailIdx.On("First", mock.AnythingOfType("*models.SoulEmailAgentIndex")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulEmailAgentIndex](t, args, 0)
+		*dest = models.SoulEmailAgentIndex{Email: "agent-bob@lessersoul.ai", AgentID: agentID}
+	}).Once()
+
+	tdb.qID.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
+		*dest = models.SoulAgentIdentity{AgentID: agentID, Status: models.SoulAgentStatusActive}
+	}).Once()
+
+	ctx := &apptheory.Context{Params: map[string]string{"emailAddress": "agent-bob@lessersoul.ai"}}
+	resp, err := s.handleSoulPublicResolveEmail(ctx)
+	if err != nil || resp.Status != http.StatusOK {
+		t.Fatalf("unexpected: resp=%#v err=%v", resp, err)
+	}
+
+	var out soulPublicAgentResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Agent.AgentID != agentID {
+		t.Fatalf("expected agent_id %q, got %#v", agentID, out)
+	}
+}
+
+func TestHandleSoulPublicSearch_ChannelFilter(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulPublicTestDB()
+	s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true}}
+
+	agentID := "0x" + strings.Repeat("aa", 32)
+
+	tdb.qChanIdx.On("AllPaginated", mock.Anything).Return((*core.PaginatedResult)(nil), nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulChannelAgentIndex](t, args, 0)
+		*dest = []*models.SoulChannelAgentIndex{
+			{AgentID: agentID, Domain: "example.com", LocalID: "agent-a", ChannelType: "email"},
+		}
+	}).Once()
+
+	tdb.qID.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
+		*dest = models.SoulAgentIdentity{AgentID: agentID, Status: models.SoulAgentStatusActive}
+	}).Once()
+
+	ctx := &apptheory.Context{Request: apptheory.Request{Query: map[string][]string{"channel": {"email"}}}}
+	resp, err := s.handleSoulPublicSearch(ctx)
+	if err != nil || resp.Status != http.StatusOK {
+		t.Fatalf("unexpected: resp=%#v err=%v", resp, err)
+	}
+
+	var out soulSearchResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Count != 1 || len(out.Results) != 1 || out.Results[0].AgentID != agentID {
+		t.Fatalf("unexpected response: %#v", out)
+	}
+}
+
+func TestHandleSoulPublicSearch_ENS(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulPublicTestDB()
+	s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true}}
+
+	agentID := "0x" + strings.Repeat("bb", 32)
+
+	tdb.qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentENSResolution](t, args, 0)
+		*dest = models.SoulAgentENSResolution{ENSName: "agent-bob.lessersoul.eth", AgentID: agentID}
+	}).Once()
+
+	tdb.qID.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
+		*dest = models.SoulAgentIdentity{AgentID: agentID, Domain: "example.com", LocalID: "agent-bob", Status: models.SoulAgentStatusActive}
+	}).Once()
+
+	ctx := &apptheory.Context{Request: apptheory.Request{Query: map[string][]string{"ens": {"agent-bob.lessersoul.eth"}}}}
+	resp, err := s.handleSoulPublicSearch(ctx)
+	if err != nil || resp.Status != http.StatusOK {
+		t.Fatalf("unexpected: resp=%#v err=%v", resp, err)
+	}
+
+	var out soulSearchResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Count != 1 || len(out.Results) != 1 || out.Results[0].AgentID != agentID {
+		t.Fatalf("unexpected response: %#v", out)
+	}
 }

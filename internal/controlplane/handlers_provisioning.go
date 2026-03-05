@@ -19,6 +19,18 @@ import (
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
+const asyncJobNudgeStaleAfter = 2 * time.Minute
+
+func shouldNudgeAsyncJob(now time.Time, updatedAt time.Time) bool {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	if updatedAt.IsZero() {
+		return true
+	}
+	return now.Sub(updatedAt) > asyncJobNudgeStaleAfter
+}
+
 type startInstanceProvisionRequest struct {
 	LesserVersion      string `json:"lesser_version,omitempty"`
 	Region             string `json:"region,omitempty"`
@@ -416,6 +428,12 @@ func (s *Server) handleGetInstanceProvisioning(ctx *apptheory.Context) (*apptheo
 	}
 	if err != nil || job == nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
+	if status := strings.ToLower(strings.TrimSpace(job.Status)); status == models.ProvisionJobStatusQueued || status == models.ProvisionJobStatusRunning {
+		if shouldNudgeAsyncJob(time.Now().UTC(), job.UpdatedAt) {
+			s.enqueueProvisionJobBestEffort(ctx, jobID)
+		}
 	}
 
 	return apptheory.JSON(http.StatusOK, s.provisionJobResponseWithDerivedFields(job))

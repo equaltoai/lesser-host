@@ -14,5 +14,5 @@ If you are an automated agent making follow-up changes, start with:
   - lesser-host `lab` provisions lesser `lab`
   - lesser-host `live` provisions lesser `live`
 - Reserved wallets must never be used as instance admin wallets or tip host wallets:
-  - `0x80189edb676d51b2fb2257b2ad38e018b20ca46e` (lesser.host admin wallet)
-  - `0x1e14865a53a994b01b9ccfef42669dc0bfe98805` (Safe + 1% recipient, `TipSplitter.lesserWallet`)
+  - `<LESSER_HOST_ADMIN_WALLET>` (lesser.host admin wallet)
+  - `<TIP_SPLITTER_LESSER_WALLET>` (Safe + 1% recipient, `TipSplitter.lesserWallet`)

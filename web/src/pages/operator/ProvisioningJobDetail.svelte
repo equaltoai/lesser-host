@@ -46,7 +46,6 @@
 		let adoptError = $state<string | null>(null);
 
 		let showReceipt = $state(false);
-		let showSoulReceipt = $state(false);
 
 	const statusBadge = $derived.by(() => badgeForStatus(job?.status ?? ''));
 	const stalledMinutes = $derived.by(() => {
@@ -345,33 +344,6 @@
 
 				{#if showReceipt && job?.receipt_json}
 					<TextArea value={job.receipt_json} readonly rows={10} />
-				{/if}
-			</Card>
-
-			<Card variant="outlined" padding="lg">
-				{#snippet header()}
-					<Heading level={3} size="lg">Soul receipt</Heading>
-				{/snippet}
-
-				<Text size="sm" color="secondary">
-					Soul receipt JSON may be large. Only display when needed.
-				</Text>
-
-				<div class="op-job__row">
-					<Button
-						variant="outline"
-						onclick={() => (showSoulReceipt = !showSoulReceipt)}
-						disabled={!job?.has_soul_receipt}
-					>
-						{showSoulReceipt ? 'Hide soul receipt' : 'Show soul receipt'}
-					</Button>
-					{#if !job?.has_soul_receipt}
-						<Text size="sm" color="secondary">No soul receipt stored.</Text>
-					{/if}
-				</div>
-
-				{#if showSoulReceipt && job?.soul_receipt_json}
-					<TextArea value={job.soul_receipt_json} readonly rows={10} />
 				{/if}
 			</Card>
 		{:else}

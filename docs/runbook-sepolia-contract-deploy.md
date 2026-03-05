@@ -128,7 +128,7 @@ SOUL_REGISTRY_ADDRESS=0x... npm run deploy:sepolia:soul-renderers
 
 ### Phase 3 — Mint signer setup
 
-The mint flow uses permit-based minting: the control plane signs EIP-712 permits with a hot key, and users submit transactions themselves (paying gas + mint fee).
+The portal mint flow uses `selfMintSoul`: the control plane signs an EIP-712 self-mint attestation with a hot key (stored in SSM), and the Safe (or user) submits the transaction (paying gas + mint fee).
 
 1. **Generate keypair:**
    ```bash
@@ -143,21 +143,35 @@ The mint flow uses permit-based minting: the control plane signs EIP-712 permits
      --type SecureString
    ```
 
-3. **Set mint fee via Safe** (0.0005 ETH = 5e14 wei):
+3. **Add attestor via Safe** (required for `selfMintSoul`):
+   ```
+   SoulRegistry.addAttestor(<address-from-step-1>)
+   ```
+
+4. **Set mint fee via Safe** (0.0005 ETH = 5e14 wei; must match control plane default unless you change it):
    ```
    SoulRegistry.setMintFee(500000000000000)
    ```
 
-4. **Set mint signer via Safe:**
+5. **Optional: set permit mint signer via Safe** (only needed if you use `mintSoul`, not `selfMintSoul`):
    ```
    SoulRegistry.setMintSigner(<address-from-step-1>)
    ```
 
-5. **Verify:**
+6. **Verify:**
    ```
-   SoulRegistry.mintSigner()  → expected address
-   SoulRegistry.mintFee()     → 500000000000000
+   SoulRegistry.isAttestor(<address-from-step-1>) → true
+   SoulRegistry.mintFee()                        → 500000000000000
+   SoulRegistry.mintSigner()                     → expected address (only if step 5 was done)
    ```
+
+### Record the deployment in-repo
+
+Update the canonical record at `docs/deployments/sepolia/latest.json` with:
+
+- deployed contract addresses + tx hashes
+- the SSM parameter names used by `lesser-host` (no secrets)
+- required Safe admin calls (renderers, mint fee, attestor)
 
 ## 5) Wire `lesser-host` to the new addresses
 

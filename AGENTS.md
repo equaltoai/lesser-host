@@ -52,6 +52,7 @@ References:
 - **Web UI (SPA):** `web/` (Svelte 5 + Vite + TypeScript)
 - **Specs/contracts:** `contracts/`
 - **Docs:** `docs/`
+- **Deployment records:** `docs/deployments/` (latest on-chain addresses + required Safe admin calls; Sepolia: `docs/deployments/sepolia/latest.json` + `docs/deployments/sepolia/safe-tx-builder-post-deploy.json`)
 
 ## HTTP routing model (single-origin)
 
@@ -239,4 +240,3 @@ CDK:
 - **Strict CSP:** keep UI CSP-safe; prefer first-party redirects (e.g., Stripe Checkout redirect) instead of embedding
   third-party scripts.
 - **No secrets in git:** only commit parameter *names* (paths), never values.
-

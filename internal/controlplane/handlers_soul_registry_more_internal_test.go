@@ -188,17 +188,17 @@ func TestVerifySoulAgentRegistrationWallet_InvalidSignature(t *testing.T) {
 func TestParseSoulAgentRegistrationVerifyInput_BadRequests(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := parseSoulAgentRegistrationVerifyInput(nil)
+	_, _, _, _, _, _, err := parseSoulAgentRegistrationVerifyInput(nil)
 	require.NotNil(t, err)
 
-	_, _, err = parseSoulAgentRegistrationVerifyInput(&apptheory.Context{})
+	_, _, _, _, _, _, err = parseSoulAgentRegistrationVerifyInput(&apptheory.Context{})
 	require.NotNil(t, err)
 
 	ctxMissingSig := &apptheory.Context{
 		Params:  map[string]string{"id": "r1"},
 		Request: apptheory.Request{Body: []byte(`{"signature":""}`)},
 	}
-	_, _, err = parseSoulAgentRegistrationVerifyInput(ctxMissingSig)
+	_, _, _, _, _, _, err = parseSoulAgentRegistrationVerifyInput(ctxMissingSig)
 	require.NotNil(t, err)
 	if appErr, ok := err.(*apptheory.AppError); ok {
 		require.Equal(t, "app.bad_request", appErr.Code)
@@ -209,12 +209,13 @@ func TestBuildSoulMintPayload_ErrorsAndSuccess(t *testing.T) {
 	t.Parallel()
 
 	s := &Server{cfg: config.Config{}}
-	_, _, _, appErr := s.buildSoulMintPayload(nil)
+	_, _, _, appErr := s.buildSoulMintPayload(nil, "")
 	require.NotNil(t, appErr)
 
 	s.cfg.SoulRegistryContractAddress = "0x0000000000000000000000000000000000000001"
+	principal := "0x0000000000000000000000000000000000000002"
 	// No mint signer key → conflict.
-	_, _, _, appErr = s.buildSoulMintPayload(&models.SoulAgentRegistration{AgentID: "0x" + strings.Repeat("11", 32), Wallet: "0x0000000000000000000000000000000000000002"})
+	_, _, _, appErr = s.buildSoulMintPayload(&models.SoulAgentRegistration{AgentID: "0x" + strings.Repeat("11", 32), Wallet: principal}, principal)
 	require.NotNil(t, appErr)
 	require.Equal(t, "app.conflict", appErr.Code)
 
@@ -222,25 +223,25 @@ func TestBuildSoulMintPayload_ErrorsAndSuccess(t *testing.T) {
 	s.cfg.SoulMintSignerKey = strings.Repeat("ab", 32)
 	s.cfg.SoulChainID = 84532
 
-	_, _, _, appErr = s.buildSoulMintPayload(&models.SoulAgentRegistration{AgentID: "", Wallet: "0x0000000000000000000000000000000000000002"})
+	_, _, _, appErr = s.buildSoulMintPayload(&models.SoulAgentRegistration{AgentID: "", Wallet: principal}, principal)
 	require.NotNil(t, appErr)
 	require.Equal(t, "app.internal", appErr.Code)
 
-	_, _, _, appErr = s.buildSoulMintPayload(&models.SoulAgentRegistration{AgentID: "0x" + strings.Repeat("11", 32), Wallet: "not-a-wallet"})
+	_, _, _, appErr = s.buildSoulMintPayload(&models.SoulAgentRegistration{AgentID: "0x" + strings.Repeat("11", 32), Wallet: "not-a-wallet"}, principal)
 	require.NotNil(t, appErr)
 	require.Equal(t, "app.bad_request", appErr.Code)
 
-	_, _, _, appErr = s.buildSoulMintPayload(&models.SoulAgentRegistration{AgentID: "0xzz", Wallet: "0x0000000000000000000000000000000000000002"})
+	_, _, _, appErr = s.buildSoulMintPayload(&models.SoulAgentRegistration{AgentID: "0xzz", Wallet: principal}, principal)
 	require.NotNil(t, appErr)
 	require.Equal(t, "app.bad_request", appErr.Code)
 
-	payload, metaURI, _, appErr := s.buildSoulMintPayload(&models.SoulAgentRegistration{AgentID: "0x" + strings.Repeat("11", 32), Wallet: "0x0000000000000000000000000000000000000002"})
+	payload, metaURI, _, appErr := s.buildSoulMintPayload(&models.SoulAgentRegistration{AgentID: "0x" + strings.Repeat("11", 32), Wallet: principal}, principal)
 	require.Nil(t, appErr)
 	require.NotNil(t, payload)
 	require.True(t, strings.HasPrefix(payload.Data, "0x"))
 	require.NotEmpty(t, metaURI)
-	require.True(t, payload.ChainID > 0)
-	require.True(t, payload.Deadline > 0)
+	require.NotEmpty(t, payload.To)
+	require.NotEmpty(t, payload.Value)
 }
 
 func TestCompleteSoulAgentRegistration_UpdateError(t *testing.T) {

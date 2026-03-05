@@ -47,9 +47,11 @@ func (s *Server) handleSuspendSoulAgent(ctx *apptheory.Context) (*apptheory.Resp
 	now := time.Now().UTC()
 	if strings.TrimSpace(identity.Status) != models.SoulAgentStatusSuspended {
 		identity.Status = models.SoulAgentStatusSuspended
+		identity.LifecycleStatus = models.SoulAgentStatusSuspended
+		identity.LifecycleReason = strings.TrimSpace(req.Reason)
 		identity.UpdatedAt = now
 		_ = identity.UpdateKeys()
-		if err := s.store.DB.WithContext(ctx.Context()).Model(identity).IfExists().Update("Status", "UpdatedAt"); err != nil {
+		if err := s.store.DB.WithContext(ctx.Context()).Model(identity).IfExists().Update("Status", "LifecycleStatus", "LifecycleReason", "UpdatedAt"); err != nil {
 			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to suspend agent"}
 		}
 	}
@@ -61,8 +63,7 @@ func (s *Server) handleSuspendSoulAgent(ctx *apptheory.Context) (*apptheory.Resp
 		RequestID: ctx.RequestID,
 		CreatedAt: now,
 	}
-	_ = audit.UpdateKeys()
-	_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
+	s.tryWriteAuditLog(ctx, audit)
 
 	return apptheory.JSON(http.StatusOK, identity)
 }
@@ -97,9 +98,11 @@ func (s *Server) handleReinstateSoulAgent(ctx *apptheory.Context) (*apptheory.Re
 	}
 
 	identity.Status = models.SoulAgentStatusActive
+	identity.LifecycleStatus = models.SoulAgentStatusActive
+	identity.LifecycleReason = ""
 	identity.UpdatedAt = now
 	_ = identity.UpdateKeys()
-	if err := s.store.DB.WithContext(ctx.Context()).Model(identity).IfExists().Update("Status", "UpdatedAt"); err != nil {
+	if err := s.store.DB.WithContext(ctx.Context()).Model(identity).IfExists().Update("Status", "LifecycleStatus", "LifecycleReason", "UpdatedAt"); err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to reinstate agent"}
 	}
 
@@ -110,8 +113,7 @@ func (s *Server) handleReinstateSoulAgent(ctx *apptheory.Context) (*apptheory.Re
 		RequestID: ctx.RequestID,
 		CreatedAt: now,
 	}
-	_ = audit.UpdateKeys()
-	_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
+	s.tryWriteAuditLog(ctx, audit)
 
 	return apptheory.JSON(http.StatusOK, identity)
 }

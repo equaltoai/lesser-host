@@ -75,9 +75,6 @@ func (s *Server) startDeployRunnerWithMode(ctx context.Context, job *models.Prov
 		mode = "lesser"
 	}
 	env = append(env, cbtypes.EnvironmentVariable{Name: aws.String("RUN_MODE"), Value: aws.String(mode)})
-	if strings.HasPrefix(mode, "soul") {
-		env = append(env, cbtypes.EnvironmentVariable{Name: aws.String("SOUL_VERSION"), Value: aws.String(strings.TrimSpace(inst.SoulVersion))})
-	}
 	tipEnabled := effectiveTipEnabled(inst.TipEnabled)
 	env = append(env,
 		cbtypes.EnvironmentVariable{Name: aws.String("LESSER_HOST_URL"), Value: aws.String(lesserHostURL)},
@@ -99,10 +96,23 @@ func (s *Server) startDeployRunnerWithMode(ctx context.Context, job *models.Prov
 		)
 	}
 
-	out, err := s.cb.StartBuild(ctx, &codebuild.StartBuildInput{
+	idempotencyToken := codebuildIdempotencyToken(
+		projectName,
+		stage,
+		strings.TrimSpace(job.InstanceSlug),
+		strings.TrimSpace(job.ID),
+		mode,
+		strings.TrimSpace(receiptKey),
+	)
+	startIn := &codebuild.StartBuildInput{
 		ProjectName:                  aws.String(projectName),
 		EnvironmentVariablesOverride: env,
-	})
+	}
+	if idempotencyToken != "" {
+		startIn.IdempotencyToken = aws.String(idempotencyToken)
+	}
+
+	out, err := s.cb.StartBuild(ctx, startIn)
 	if err != nil {
 		return "", err
 	}

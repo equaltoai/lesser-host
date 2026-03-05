@@ -548,8 +548,7 @@ func (s *Server) createSoulWalletRotationBeginResponse(ctx *apptheory.Context, a
 		RequestID: ctx.RequestID,
 		CreatedAt: now,
 	}
-	_ = audit.UpdateKeys()
-	_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
+	s.tryWriteAuditLog(ctx, audit)
 
 	resp, err := apptheory.JSON(http.StatusCreated, soulRotateWalletBeginResponse{Rotation: *r, Typed: typed})
 	if err != nil {
@@ -629,8 +628,7 @@ func (s *Server) createSoulWalletRotationConfirmResponse(
 		RequestID: ctx.RequestID,
 		CreatedAt: now,
 	}
-	_ = audit.UpdateKeys()
-	_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
+	s.tryWriteAuditLog(ctx, audit)
 
 	resp, err := apptheory.JSON(http.StatusOK, soulRotateWalletConfirmResponse{Operation: *op, SafeTx: payload})
 	if err != nil {

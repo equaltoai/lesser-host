@@ -2,11 +2,26 @@
 	import { onMount } from 'svelte';
 
 	import type { ApiError } from 'src/lib/api/http';
-	import type { SoulAgentRegistrationBeginResponse, SoulAgentRegistrationVerifyResponse } from 'src/lib/api/soul';
-	import { soulAgentRegistrationBegin, soulAgentRegistrationVerify } from 'src/lib/api/soul';
+	import type {
+		SoulAgentRegistrationBeginResponse,
+		SoulAgentRegistrationVerifyResponse,
+		SoulMintConversation,
+		SoulMintConversationFinalizeBeginResponse,
+		SoulMintConversationFinalizeResponse,
+	} from 'src/lib/api/soul';
+	import {
+		soulAgentRegistrationBegin,
+		soulAgentRegistrationVerify,
+		soulCompleteMintConversation,
+		soulGetMintConversation,
+		soulMintConversationFinalize,
+		soulMintConversationFinalizeBegin,
+		soulStartMintConversationSSE,
+	} from 'src/lib/api/soul';
 	import { logout } from 'src/lib/auth/logout';
 	import { navigate } from 'src/lib/router';
 	import { getEthereumProvider, personalSign, requestAccounts } from 'src/lib/wallet/ethereum';
+	import { keccak256Utf8Hex } from 'src/lib/wallet/keccak';
 	import {
 		Alert,
 		Button,
@@ -15,6 +30,7 @@
 		DefinitionItem,
 		DefinitionList,
 		Heading,
+		Select,
 		Spinner,
 		Text,
 		TextArea,
@@ -36,12 +52,359 @@
 	let signLoading = $state(false);
 	let signError = $state<string | null>(null);
 
+	let principalAddress = $state('');
+	let principalDeclaration = $state("I accept responsibility for this agent's behavior.");
+	let principalSignature = $state('');
+	let principalDeclaredAt = $state('');
+	let principalSignLoading = $state(false);
+	let principalSignError = $state<string | null>(null);
+
 	let verifyLoading = $state(false);
 	let verifyError = $state<string | null>(null);
 	let verifyResult = $state<SoulAgentRegistrationVerifyResponse | null>(null);
 
 	const dnsProof = $derived.by(() => beginResult?.proofs?.find((p) => p.method === 'dns_txt') || null);
 	const httpsProof = $derived.by(() => beginResult?.proofs?.find((p) => p.method === 'https_well_known') || null);
+
+	// --- Minting conversation (Phase 2) ---
+
+	type MintMessage = { role: 'user' | 'assistant'; content: string };
+
+	let mintModel = $state('anthropic:claude-sonnet-4-20250514');
+	const mintModelOptions = [
+		{ value: 'anthropic:claude-sonnet-4-20250514', label: 'Anthropic — Claude Sonnet 4' },
+		{ value: 'openai:gpt-4.1-mini', label: 'OpenAI — GPT-4.1 mini' },
+	];
+
+	let mintConversationId = $state('');
+	let mintConversation = $state<SoulMintConversation | null>(null);
+	let mintMessages = $state<MintMessage[]>([]);
+	let mintUserMessage = $state('');
+	let mintAssistantPartial = $state('');
+	let mintStreaming = $state(false);
+	let mintError = $state<string | null>(null);
+	let mintCompleteLoading = $state(false);
+	let mintCompleteError = $state<string | null>(null);
+	let mintProducedDeclarations = $state<unknown | null>(null);
+
+	let mintFinalizeLoading = $state(false);
+	let mintFinalizeError = $state<string | null>(null);
+	let mintFinalizeBegin = $state<SoulMintConversationFinalizeBeginResponse | null>(null);
+	let mintFinalizeResult = $state<SoulMintConversationFinalizeResponse | null>(null);
+
+	function mintStorageKey(registrationId: string): string {
+		return `soul_mint_conversation:${registrationId}`;
+	}
+
+	function parseMintMessages(raw?: string): MintMessage[] {
+		if (!raw) return [];
+		try {
+			const parsed = JSON.parse(raw) as unknown;
+			if (!Array.isArray(parsed)) return [];
+			const out: MintMessage[] = [];
+			for (const item of parsed) {
+				if (!item || typeof item !== 'object') continue;
+				const role = String((item as { role?: unknown }).role || '').toLowerCase();
+				const content = String((item as { content?: unknown }).content || '');
+				if ((role === 'user' || role === 'assistant') && content) {
+					out.push({ role, content });
+				}
+			}
+			return out;
+		} catch {
+			return [];
+		}
+	}
+
+	function parseProducedDeclarations(raw?: string): unknown | null {
+		if (!raw) return null;
+		try {
+			return JSON.parse(raw);
+		} catch {
+			return raw;
+		}
+	}
+
+	type ProducedBoundary = { id: string; statement: string };
+
+	function extractProducedBoundaries(value: unknown): ProducedBoundary[] {
+		if (!value || typeof value !== 'object') return [];
+		const boundaries = (value as { boundaries?: unknown }).boundaries;
+		if (!Array.isArray(boundaries)) return [];
+
+		const out: ProducedBoundary[] = [];
+		for (const item of boundaries) {
+			if (!item || typeof item !== 'object') continue;
+			const id = String((item as { id?: unknown }).id || '').trim();
+			const statement = String((item as { statement?: unknown }).statement || '').trim();
+			if (id && statement) out.push({ id, statement });
+		}
+		return out;
+	}
+
+	async function loadMintConversationFromStorage(registrationId: string) {
+		mintError = null;
+		mintCompleteError = null;
+		mintFinalizeError = null;
+		mintFinalizeBegin = null;
+		mintFinalizeResult = null;
+		mintProducedDeclarations = null;
+		mintConversation = null;
+		mintMessages = [];
+		mintAssistantPartial = '';
+
+		try {
+			const stored = localStorage.getItem(mintStorageKey(registrationId));
+			const cid = (stored || '').trim();
+			if (!cid) return;
+			mintConversationId = cid;
+			await refreshMintConversation(registrationId, cid);
+		} catch {
+			// ignore (e.g. storage disabled)
+		}
+	}
+
+	async function refreshMintConversation(registrationId: string, conversationId: string) {
+		mintError = null;
+		try {
+			mintConversation = await soulGetMintConversation(token, registrationId, conversationId);
+			mintMessages = parseMintMessages(mintConversation.messages);
+			mintProducedDeclarations = parseProducedDeclarations(mintConversation.produced_declarations);
+		} catch (err) {
+			if ((err as Partial<ApiError>).status === 401) {
+				await logout();
+				navigate('/login');
+				return;
+			}
+			mintError = formatError(err);
+		}
+	}
+
+	function resetMintConversation(registrationId: string) {
+		mintConversationId = '';
+		mintConversation = null;
+		mintMessages = [];
+		mintUserMessage = '';
+		mintAssistantPartial = '';
+		mintError = null;
+		mintCompleteError = null;
+		mintFinalizeError = null;
+		mintFinalizeBegin = null;
+		mintFinalizeResult = null;
+		mintProducedDeclarations = null;
+		try {
+			localStorage.removeItem(mintStorageKey(registrationId));
+		} catch {
+			// ignore
+		}
+	}
+
+	function parseSseEvent(raw: string): { event: string; data: unknown } | null {
+		const lines = raw
+			.split('\n')
+			.map((l) => l.trimEnd())
+			.filter(Boolean);
+		let eventName = 'message';
+		const dataLines: string[] = [];
+		for (const line of lines) {
+			if (line.startsWith('event:')) {
+				eventName = line.slice('event:'.length).trim() || 'message';
+				continue;
+			}
+			if (line.startsWith('data:')) {
+				dataLines.push(line.slice('data:'.length).trim());
+			}
+		}
+		const dataStr = dataLines.join('\n').trim();
+		if (!dataStr) return null;
+		try {
+			return { event: eventName, data: JSON.parse(dataStr) as unknown };
+		} catch {
+			return { event: eventName, data: dataStr };
+		}
+	}
+
+	async function sendMintMessage(registrationId: string) {
+		mintError = null;
+		mintCompleteError = null;
+
+		const msg = mintUserMessage.trim();
+		if (!msg) {
+			mintError = 'Message is required.';
+			return;
+		}
+		mintUserMessage = '';
+		mintMessages = [...mintMessages, { role: 'user', content: msg }];
+		mintAssistantPartial = '';
+
+		mintStreaming = true;
+		try {
+			const streamOrSource = soulStartMintConversationSSE(token, registrationId, {
+				model: mintConversationId ? undefined : mintModel,
+				conversation_id: mintConversationId || undefined,
+				message: msg,
+			});
+			if (!streamOrSource || typeof (streamOrSource as ReadableStream<string>).getReader !== 'function') {
+				mintError = 'Streaming not supported in this environment.';
+				return;
+			}
+
+			const reader = (streamOrSource as ReadableStream<string>).getReader();
+			let buffer = '';
+			while (true) {
+				const { done, value } = await reader.read();
+				if (done) break;
+				buffer += value || '';
+
+				while (true) {
+					const idx = buffer.indexOf('\n\n');
+					if (idx === -1) break;
+					const raw = buffer.slice(0, idx);
+					buffer = buffer.slice(idx + 2);
+					const parsed = parseSseEvent(raw);
+					if (!parsed) continue;
+
+					if (parsed.event === 'conversation_start') {
+						const d = parsed.data as { conversation_id?: unknown; model?: unknown };
+						const cid = String(d.conversation_id || '').trim();
+						if (cid) {
+							mintConversationId = cid;
+							try {
+								localStorage.setItem(mintStorageKey(registrationId), cid);
+							} catch {
+								// ignore
+							}
+						}
+					}
+
+					if (parsed.event === 'delta') {
+						const d = parsed.data as { text?: unknown };
+						const t = String(d.text || '');
+						if (t) mintAssistantPartial += t;
+					}
+
+					if (parsed.event === 'conversation_done') {
+						const d = parsed.data as { full_response?: unknown };
+						const full = String(d.full_response || '');
+						const assistantText = full || mintAssistantPartial;
+						if (assistantText) mintMessages = [...mintMessages, { role: 'assistant', content: assistantText }];
+						mintAssistantPartial = '';
+
+						// Sync persisted record for history + produced declarations.
+						if (mintConversationId) {
+							await refreshMintConversation(registrationId, mintConversationId);
+						}
+					}
+
+					if (parsed.event === 'error') {
+						const d = parsed.data as { error?: unknown; message?: unknown };
+						mintError = String(d.error || d.message || 'stream error');
+					}
+				}
+			}
+		} catch (err) {
+			mintError = formatError(err);
+		} finally {
+			mintStreaming = false;
+		}
+	}
+
+	async function completeMintConversation(registrationId: string) {
+		mintCompleteError = null;
+		if (!mintConversationId) {
+			mintCompleteError = 'No conversation in progress.';
+			return;
+		}
+		mintCompleteLoading = true;
+		try {
+			mintConversation = await soulCompleteMintConversation(token, registrationId, mintConversationId);
+			mintProducedDeclarations = parseProducedDeclarations(mintConversation.produced_declarations);
+		} catch (err) {
+			if ((err as Partial<ApiError>).status === 401) {
+				await logout();
+				navigate('/login');
+				return;
+			}
+			mintCompleteError = formatError(err);
+		} finally {
+			mintCompleteLoading = false;
+		}
+	}
+
+	async function finalizeMintConversation(registrationId: string) {
+		mintFinalizeError = null;
+		mintFinalizeBegin = null;
+		mintFinalizeResult = null;
+
+		if (!verifyResult) {
+			mintFinalizeError = 'Verify the registration first (Step 3) to create the pending agent identity.';
+			return;
+		}
+		if (!mintConversationId) {
+			mintFinalizeError = 'No completed conversation to finalize.';
+			return;
+		}
+		if (!mintProducedDeclarations) {
+			mintFinalizeError = 'Complete the mint conversation first to produce declarations.';
+			return;
+		}
+
+		const boundaries = extractProducedBoundaries(mintProducedDeclarations);
+		if (!boundaries.length) {
+			mintFinalizeError = 'No boundaries found in produced declarations.';
+			return;
+		}
+
+		const provider = getEthereumProvider();
+		if (!provider) {
+			mintFinalizeError = 'No wallet detected. Install or enable a wallet extension.';
+			return;
+		}
+
+		const wallet = beginResult?.registration?.wallet_address?.trim() || walletAddress.trim();
+		if (!wallet) {
+			mintFinalizeError = 'Agent wallet address is required.';
+			return;
+		}
+
+		mintFinalizeLoading = true;
+		try {
+			const accounts = await requestAccounts(provider);
+			const normalized = accounts.map((a) => a.toLowerCase());
+			if (!normalized.includes(wallet.toLowerCase())) {
+				mintFinalizeError = `Connected wallet does not match agent wallet (${wallet}).`;
+				return;
+			}
+
+			const boundarySignatures: Record<string, string> = {};
+			for (const b of boundaries) {
+				const digestHex = keccak256Utf8Hex(b.statement);
+				boundarySignatures[b.id] = await personalSign(provider, digestHex, wallet);
+			}
+
+			mintFinalizeBegin = await soulMintConversationFinalizeBegin(token, registrationId, mintConversationId, {
+				boundary_signatures: boundarySignatures,
+			});
+
+			const selfAttestation = await personalSign(provider, mintFinalizeBegin.digest_hex, wallet);
+
+			mintFinalizeResult = await soulMintConversationFinalize(token, registrationId, mintConversationId, {
+				boundary_signatures: boundarySignatures,
+				issued_at: mintFinalizeBegin.issued_at,
+				expected_version: mintFinalizeBegin.expected_version,
+				self_attestation: selfAttestation,
+			});
+		} catch (err) {
+			if ((err as Partial<ApiError>).status === 401) {
+				await logout();
+				navigate('/login');
+				return;
+			}
+			mintFinalizeError = formatError(err);
+		} finally {
+			mintFinalizeLoading = false;
+		}
+	}
 
 	function formatError(err: unknown): string {
 		if (!err) return 'unknown error';
@@ -51,6 +414,15 @@
 		}
 		if (err instanceof Error) return err.message;
 		return String(err);
+	}
+
+	function prettyJSON(value: unknown): string {
+		if (value == null) return '';
+		try {
+			return JSON.stringify(value, null, 2);
+		} catch {
+			return String(value);
+		}
 	}
 
 	function parseCapabilities(raw: string): string[] {
@@ -72,10 +444,23 @@
 	async function handleBegin() {
 		beginError = null;
 		signError = null;
+		principalSignError = null;
 		verifyError = null;
 		beginResult = null;
 		verifyResult = null;
 		signature = '';
+		principalSignature = '';
+		principalDeclaredAt = '';
+		mintConversationId = '';
+		mintConversation = null;
+		mintMessages = [];
+		mintAssistantPartial = '';
+		mintError = null;
+		mintCompleteError = null;
+		mintFinalizeError = null;
+		mintFinalizeBegin = null;
+		mintFinalizeResult = null;
+		mintProducedDeclarations = null;
 
 		const nextDomain = domain.trim();
 		const nextLocal = localId.trim();
@@ -96,12 +481,16 @@
 
 		beginLoading = true;
 		try {
-			beginResult = await soulAgentRegistrationBegin(token, {
+			const res = await soulAgentRegistrationBegin(token, {
 				domain: nextDomain,
 				local_id: nextLocal,
 				wallet_address: nextWallet,
 				capabilities: parseCapabilities(capabilities),
 			});
+			beginResult = res;
+			principalAddress = nextWallet;
+			principalDeclaration = `I accept responsibility for the lesser-soul agent ${res.registration.domain_normalized}/${res.registration.local_id} (agentId: ${res.registration.agent_id}).`;
+			await loadMintConversationFromStorage(res.registration.id);
 		} catch (err) {
 			if ((err as Partial<ApiError>).status === 401) {
 				await logout();
@@ -170,6 +559,47 @@
 		}
 	}
 
+	async function signPrincipal() {
+		principalSignError = null;
+		principalSignature = '';
+
+		const provider = getEthereumProvider();
+		if (!provider) {
+			principalSignError = 'No wallet detected. Install or enable a wallet extension.';
+			return;
+		}
+
+		const addr = principalAddress.trim();
+		if (!addr) {
+			principalSignError = 'Principal address is required.';
+			return;
+		}
+
+		const decl = principalDeclaration.trim();
+		if (!decl) {
+			principalSignError = 'Declaration is required.';
+			return;
+		}
+
+		principalSignLoading = true;
+		try {
+			const accounts = await requestAccounts(provider);
+			const normalized = accounts.map((a) => a.toLowerCase());
+			if (!normalized.includes(addr.toLowerCase())) {
+				principalSignError = 'Connected wallet does not match the principal address above.';
+				return;
+			}
+
+			const digestHex = keccak256Utf8Hex(decl);
+			principalSignature = await personalSign(provider, digestHex, addr);
+			principalDeclaredAt = new Date().toISOString();
+		} catch (err) {
+			principalSignError = formatError(err);
+		} finally {
+			principalSignLoading = false;
+		}
+	}
+
 	async function verifyRegistration() {
 		verifyError = null;
 		verifyResult = null;
@@ -182,10 +612,28 @@
 			verifyError = 'Sign the registration message first.';
 			return;
 		}
+		if (!principalAddress.trim()) {
+			verifyError = 'Principal address is required.';
+			return;
+		}
+		if (!principalDeclaration.trim()) {
+			verifyError = 'Principal declaration is required.';
+			return;
+		}
+		if (!principalSignature.trim()) {
+			verifyError = 'Principal signature is required. Sign the declaration first.';
+			return;
+		}
 
 		verifyLoading = true;
 		try {
-			verifyResult = await soulAgentRegistrationVerify(token, beginResult.registration.id, signature);
+			verifyResult = await soulAgentRegistrationVerify(token, beginResult.registration.id, {
+				signature,
+				principal_address: principalAddress.trim(),
+				principal_declaration: principalDeclaration.trim(),
+				principal_signature: principalSignature.trim(),
+				declared_at: principalDeclaredAt || new Date().toISOString(),
+			});
 		} catch (err) {
 			if ((err as Partial<ApiError>).status === 401) {
 				await logout();
@@ -310,6 +758,9 @@
 				{#if signError}
 					<Alert variant="error" title="Signing failed">{signError}</Alert>
 				{/if}
+				{#if principalSignError}
+					<Alert variant="error" title="Principal signing failed">{principalSignError}</Alert>
+				{/if}
 				{#if verifyError}
 					<Alert variant="error" title="Verification failed">{verifyError}</Alert>
 				{/if}
@@ -336,8 +787,41 @@
 					</Text>
 				{/if}
 
+				<Text size="sm" color="secondary">
+					Sign the responsibility statement with your principal wallet.
+				</Text>
+				<TextField label="Principal wallet" bind:value={principalAddress} placeholder="0x…" />
+				<TextArea label="Principal declaration" bind:value={principalDeclaration} rows={4} />
+				<div class="soul-register__row">
+					<Button variant="outline" onclick={() => void signPrincipal()} disabled={principalSignLoading}>
+						Sign principal
+					</Button>
+					{#if principalSignature}
+						<CopyButton size="sm" text={principalSignature} />
+					{/if}
+				</div>
+
+				{#if principalSignLoading}
+					<div class="soul-register__loading-inline">
+						<Spinner size="sm" />
+						<Text size="sm">Waiting for principal wallet…</Text>
+					</div>
+				{/if}
+
+				{#if principalSignature}
+					<Text size="sm" color="secondary">
+						Principal signature <span class="soul-register__mono">{principalSignature.slice(0, 14)}…</span>
+					</Text>
+				{/if}
+
 				<div class="soul-register__row soul-register__row--verify">
-					<Button variant="solid" onclick={() => void verifyRegistration()} disabled={verifyLoading}>Verify + create mint operation</Button>
+					<Button
+						variant="solid"
+						onclick={() => void verifyRegistration()}
+						disabled={verifyLoading || !signature || !principalSignature}
+					>
+						Verify + create mint operation
+					</Button>
 				</div>
 
 				{#if verifyLoading}
@@ -378,6 +862,176 @@
 				{/if}
 			</Card>
 		</div>
+
+		<Card variant="outlined" padding="lg">
+			{#snippet header()}
+				<Heading level={3} size="lg">4. Minting conversation (Phase 2, optional)</Heading>
+			{/snippet}
+
+			<Text size="sm" color="secondary">
+				Stream a guided conversation to produce structured declarations (selfDescription, capabilities, boundaries, transparency). You can complete the conversation to store
+				the produced declarations on the conversation record.
+			</Text>
+
+			{#if mintError}
+				<Alert variant="error" title="Mint conversation">{mintError}</Alert>
+			{/if}
+			{#if mintCompleteError}
+				<Alert variant="error" title="Complete conversation">{mintCompleteError}</Alert>
+			{/if}
+
+			<div class="soul-register__row soul-register__mint-controls">
+				<Select
+					options={mintModelOptions}
+					value={mintModel}
+					disabled={Boolean(mintConversationId)}
+					onchange={(value: string) => {
+						mintModel = value;
+					}}
+				/>
+
+				{#if mintConversationId}
+					<Text size="sm" color="secondary">
+						Conversation <span class="soul-register__mono">{mintConversationId}</span>
+					</Text>
+					<CopyButton size="sm" text={mintConversationId} />
+				{/if}
+			</div>
+
+			<div class="soul-register__row">
+				<Button variant="outline" onclick={() => resetMintConversation(begin.registration.id)} disabled={mintStreaming || mintCompleteLoading}>
+					Start new
+				</Button>
+				<Button
+					variant="outline"
+					onclick={() => void refreshMintConversation(begin.registration.id, mintConversationId)}
+					disabled={!mintConversationId || mintStreaming}
+				>
+					Refresh
+				</Button>
+				<Button
+					variant="solid"
+					onclick={() => void completeMintConversation(begin.registration.id)}
+					disabled={!mintConversationId || mintStreaming || mintCompleteLoading}
+				>
+					Complete
+				</Button>
+			</div>
+
+			{#if mintCompleteLoading}
+				<div class="soul-register__loading-inline">
+					<Spinner size="sm" />
+					<Text size="sm">Completing…</Text>
+				</div>
+			{/if}
+
+			{#if mintConversation?.model}
+				<Text size="sm" color="secondary">
+					Model: <span class="soul-register__mono">{mintConversation.model}</span> ({mintConversation.status})
+				</Text>
+			{/if}
+
+			{#if mintMessages.length || mintAssistantPartial}
+				<div class="soul-register__mint-thread">
+					{#each mintMessages as m, i (i)}
+						<Card variant="outlined" padding="md">
+							<Text size="sm" weight="medium">{m.role}</Text>
+							<Text size="sm" color="secondary" style="white-space: pre-wrap">{m.content}</Text>
+						</Card>
+					{/each}
+					{#if mintAssistantPartial}
+						<Card variant="outlined" padding="md">
+							<Text size="sm" weight="medium">assistant (streaming)</Text>
+							<Text size="sm" color="secondary" style="white-space: pre-wrap">{mintAssistantPartial}</Text>
+						</Card>
+					{/if}
+				</div>
+			{:else}
+				<Alert variant="info" title="No conversation yet">
+					<Text size="sm">Send the first message to start a new conversation.</Text>
+				</Alert>
+			{/if}
+
+			<div class="soul-register__form">
+				<TextArea bind:value={mintUserMessage} rows={3} placeholder="Ask about self-description, capabilities, boundaries, or transparency…" />
+				<div class="soul-register__row">
+					<Button variant="solid" onclick={() => void sendMintMessage(begin.registration.id)} disabled={mintStreaming}>
+						Send
+					</Button>
+				</div>
+
+				{#if mintStreaming}
+					<div class="soul-register__loading-inline">
+						<Spinner size="sm" />
+						<Text size="sm">Streaming…</Text>
+					</div>
+				{/if}
+			</div>
+
+			{#if mintProducedDeclarations}
+				<Card variant="outlined" padding="lg">
+					{#snippet header()}
+						<Heading level={4} size="lg">Produced declarations</Heading>
+					{/snippet}
+					<TextArea value={prettyJSON(mintProducedDeclarations)} readonly rows={14} />
+				</Card>
+
+				<Card variant="outlined" padding="lg">
+					{#snippet header()}
+						<Heading level={4} size="lg">Finalize + publish (Phase 2)</Heading>
+					{/snippet}
+
+					<Text size="sm" color="secondary">
+						This will prompt you to sign each boundary statement, then sign the full v2 registration self-attestation, and publish version 1 to the registry.
+					</Text>
+
+					{#if !verifyResult}
+						<Alert variant="info" title="Verify first">
+							<Text size="sm">Complete Step 3 (verify) before finalizing, so the pending agent identity exists.</Text>
+						</Alert>
+					{/if}
+
+					{#if mintFinalizeError}
+						<Alert variant="error" title="Finalize + publish">{mintFinalizeError}</Alert>
+					{/if}
+
+					<div class="soul-register__row">
+						<Button
+							variant="solid"
+							onclick={() => void finalizeMintConversation(begin.registration.id)}
+							disabled={!verifyResult || mintFinalizeLoading || mintStreaming || mintCompleteLoading}
+						>
+							Finalize + publish
+						</Button>
+					</div>
+
+					{#if mintFinalizeLoading}
+						<div class="soul-register__loading-inline">
+							<Spinner size="sm" />
+							<Text size="sm">Finalizing…</Text>
+						</div>
+					{/if}
+
+					{#if mintFinalizeBegin}
+						<DefinitionList>
+							<DefinitionItem label="Issued at" monospace>{mintFinalizeBegin.issued_at}</DefinitionItem>
+							<DefinitionItem label="Expected version" monospace>{String(mintFinalizeBegin.expected_version)}</DefinitionItem>
+							<DefinitionItem label="Next version" monospace>{String(mintFinalizeBegin.next_version)}</DefinitionItem>
+							<DefinitionItem label="Digest" monospace>{mintFinalizeBegin.digest_hex}</DefinitionItem>
+						</DefinitionList>
+					{/if}
+
+					{#if mintFinalizeResult}
+						<Alert variant="success" title="Published">
+							<Text size="sm">Published v2 registration version {mintFinalizeResult.published_version}.</Text>
+						</Alert>
+						<div class="soul-register__row">
+							<Button variant="outline" onclick={() => navigate(`/portal/souls/${begin.registration.agent_id}`)}>Open agent</Button>
+						</div>
+					{/if}
+				</Card>
+			{/if}
+		</Card>
 	{/if}
 </div>
 
@@ -465,5 +1119,16 @@
 	.soul-register__mono {
 		font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New',
 			monospace;
+	}
+
+	.soul-register__mint-controls {
+		margin-top: var(--gr-spacing-scale-4);
+	}
+
+	.soul-register__mint-thread {
+		display: flex;
+		flex-direction: column;
+		gap: var(--gr-spacing-scale-3);
+		margin-top: var(--gr-spacing-scale-4);
 	}
 </style>

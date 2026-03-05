@@ -298,11 +298,6 @@ const (
 	provisionStepBodyDeployWait     = "body.deploy.wait"
 	provisionStepDeployMcpStart     = "deploy.mcp.start"
 	provisionStepDeployMcpWait      = "deploy.mcp.wait" // #nosec G101 -- step identifier, not a credential
-	provisionStepSoulDeployStart    = "soul.deploy.start"
-	provisionStepSoulDeployWait     = "soul.deploy.wait"
-	provisionStepSoulInitStart      = "soul.init.start"
-	provisionStepSoulInitWait       = "soul.init.wait"
-	provisionStepSoulReceiptIngest  = "soul.receipt.ingest"
 	provisionStepDone               = "done"
 	provisionStepFailed             = "failed"
 	provisionMaxTransitionsPerRun   = 6
@@ -468,11 +463,6 @@ var managedProvisionStepHandlers = map[string]managedProvisionStepHandler{
 	provisionStepBodyDeployWait:    (*Server).advanceProvisionBodyDeployWait,
 	provisionStepDeployMcpStart:    (*Server).advanceProvisionDeployMcpStart,
 	provisionStepDeployMcpWait:     (*Server).advanceProvisionDeployMcpWait,
-	provisionStepSoulDeployStart:   (*Server).advanceProvisionSoulDeployStart,
-	provisionStepSoulDeployWait:    (*Server).advanceProvisionSoulDeployWait,
-	provisionStepSoulInitStart:     (*Server).advanceProvisionSoulInitStart,
-	provisionStepSoulInitWait:      (*Server).advanceProvisionSoulInitWait,
-	provisionStepSoulReceiptIngest: (*Server).advanceProvisionSoulReceiptIngest,
 }
 
 func (s *Server) advanceManagedProvisioning(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {
@@ -1015,6 +1005,13 @@ func effectiveTranslationEnabled(v *bool) bool {
 	return *v
 }
 
+func effectiveBodyEnabled(v *bool) bool {
+	if v == nil {
+		return true
+	}
+	return *v
+}
+
 func effectiveTipEnabled(v *bool) bool {
 	if v == nil {
 		return false
@@ -1376,7 +1373,6 @@ func (s *Server) advanceProvisionReceiptIngest(ctx context.Context, job *models.
 	applyLesserUpReceipt(job, receiptJSON, receipt)
 
 	continueToBody := job.BodyEnabled && job.McpWiredAt.IsZero()
-	continueToSoul := job.SoulEnabled && job.SoulProvisionedAt.IsZero()
 
 	if continueToBody {
 		job.RunID = ""
@@ -1387,17 +1383,13 @@ func (s *Server) advanceProvisionReceiptIngest(ctx context.Context, job *models.
 			job.Step = provisionStepDeployMcpStart
 			job.Note = noteStartingMcpWiringDeployRunner
 		}
-	} else if continueToSoul {
-		job.Step = provisionStepSoulDeployStart
-		job.Note = noteStartingSoulDeployRunner
-		job.RunID = ""
 	} else {
 		job.Step = provisionStepDone
 		job.Status = models.ProvisionJobStatusOK
 		job.Note = noteProvisioned
 	}
 
-	continuing := continueToBody || continueToSoul
+	continuing := continueToBody
 	if err := s.persistJobAndInstance(ctx, job, requestID, now, provisionReceiptIngestInstanceUpdate(job, continuing)); err != nil {
 		return 0, false, err
 	}
@@ -1472,8 +1464,8 @@ func (s *Server) advanceProvisionBodyDeployStart(ctx context.Context, job *model
 	}
 
 	if !job.BodyEnabled {
-		// Skip body + MCP wiring and continue to soul (if configured).
-		return s.advanceProvisionContinueToSoulOrDone(ctx, job, requestID, now)
+		// Skip body + MCP wiring.
+		return s.advanceProvisionDone(ctx, job, requestID, now)
 	}
 
 	if !job.BodyProvisionedAt.IsZero() {
@@ -1545,8 +1537,8 @@ func (s *Server) advanceProvisionDeployMcpStart(ctx context.Context, job *models
 	}
 
 	if !job.BodyEnabled {
-		// Skip MCP wiring and continue to soul (if configured).
-		return s.advanceProvisionContinueToSoulOrDone(ctx, job, requestID, now)
+		// Skip MCP wiring.
+		return s.advanceProvisionDone(ctx, job, requestID, now)
 	}
 
 	if job.BodyProvisionedAt.IsZero() {
@@ -1554,7 +1546,7 @@ func (s *Server) advanceProvisionDeployMcpStart(ctx context.Context, job *models
 	}
 
 	if !job.McpWiredAt.IsZero() {
-		return s.advanceProvisionContinueToSoulOrDone(ctx, job, requestID, now)
+		return s.advanceProvisionDone(ctx, job, requestID, now)
 	}
 
 	if strings.TrimSpace(job.RunID) != "" {
@@ -1578,7 +1570,7 @@ func (s *Server) advanceProvisionDeployMcpWait(ctx context.Context, job *models.
 	case codebuildStatusSucceeded:
 		job.McpWiredAt = now
 		job.RunID = ""
-		return s.advanceProvisionContinueToSoulOrDone(ctx, job, requestID, now)
+		return s.advanceProvisionDone(ctx, job, requestID, now)
 
 	case codebuildStatusInProgress:
 		return s.advanceProvisionDeployMcpWaitInProgress(ctx, job, requestID, now)
@@ -1589,244 +1581,6 @@ func (s *Server) advanceProvisionDeployMcpWait(ctx context.Context, job *models.
 	default:
 		return s.advanceProvisionDeployMcpWaitUnknownStatus(ctx, job, requestID, now, status)
 	}
-}
-
-func (s *Server) advanceProvisionSoulDeployStart(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {
-	if job == nil {
-		return 0, true, nil
-	}
-	if !job.SoulEnabled {
-		job.Step = provisionStepDone
-		job.Status = models.ProvisionJobStatusOK
-		job.Note = noteProvisioned
-		if err := s.persistJobAndInstance(ctx, job, requestID, now, func(ub core.UpdateBuilder) error {
-			ub.Set("ProvisionStatus", models.ProvisionJobStatusOK)
-			ub.Set("ProvisionJobID", strings.TrimSpace(job.ID))
-			return nil
-		}); err != nil {
-			return 0, false, err
-		}
-		return 0, true, nil
-	}
-
-	if strings.TrimSpace(job.RunID) != "" {
-		job.Step = provisionStepSoulDeployWait
-		job.Note = "soul deploy runner already started"
-		if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
-			return 0, false, err
-		}
-		return provisionDefaultPollDelay, false, nil
-	}
-
-	runID, err := s.startDeployRunnerWithMode(ctx, job, "soul-deploy", s.soulReceiptS3Key(job))
-	if err != nil {
-		job.Attempts++
-		if job.Attempts >= job.MaxAttempts {
-			return 0, false, s.failJob(ctx, job, requestID, now, "soul_deploy_start_failed", "failed to start soul deploy runner: "+err.Error())
-		}
-		job.Note = "failed to start soul deploy runner; retrying: " + compactErr(err)
-		_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
-		return jitteredBackoff(job.Attempts, provisionDefaultShortRetryDelay, 10*time.Minute), false, nil
-	}
-
-	job.RunID = strings.TrimSpace(runID)
-	job.Step = provisionStepSoulDeployWait
-	job.Note = "soul deploy runner in progress"
-	if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
-		return 0, false, err
-	}
-	return provisionDefaultPollDelay, false, nil
-}
-
-func (s *Server) advanceProvisionSoulDeployWait(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {
-	if job == nil {
-		return 0, true, nil
-	}
-
-	status, deepLink, err := s.getDeployRunnerStatus(ctx, strings.TrimSpace(job.RunID))
-	if err != nil {
-		job.Attempts++
-		if job.Attempts >= job.MaxAttempts {
-			return 0, false, s.failJob(ctx, job, requestID, now, "soul_deploy_status_failed", "failed to poll soul deploy runner: "+err.Error())
-		}
-		job.Note = "failed to poll soul deploy runner; retrying: " + compactErr(err)
-		_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
-		return jitteredBackoff(job.Attempts, provisionDefaultPollDelay, 10*time.Minute), false, nil
-	}
-
-	switch status {
-	case codebuildStatusSucceeded:
-		job.Step = provisionStepSoulInitStart
-		job.RunID = ""
-		job.Note = "starting soul init runner"
-		if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
-			return 0, false, err
-		}
-		return 0, false, nil
-
-	case codebuildStatusInProgress:
-		if !job.CreatedAt.IsZero() && now.Sub(job.CreatedAt) > provisionMaxDeployAge {
-			return 0, false, s.failJob(ctx, job, requestID, now, "soul_deploy_timeout", "soul deploy runner timed out")
-		}
-		job.Note = "soul deploy runner in progress"
-		_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
-		return provisionDefaultPollDelay, false, nil
-
-	case codebuildStatusFailed, codebuildStatusFault, codebuildStatusStopped, codebuildStatusTimedOut:
-		msg := "soul deploy runner failed"
-		if deepLink != "" {
-			msg = msg + " (CodeBuild: " + deepLink + ")"
-		}
-		return 0, false, s.failJob(ctx, job, requestID, now, "soul_deploy_failed", msg)
-
-	default:
-		if !job.CreatedAt.IsZero() && now.Sub(job.CreatedAt) > provisionMaxDeployAge {
-			return 0, false, s.failJob(ctx, job, requestID, now, "soul_deploy_timeout", "soul deploy runner timed out")
-		}
-		job.Note = "soul deploy runner status: " + status
-		_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
-		return provisionDefaultPollDelay, false, nil
-	}
-}
-
-func (s *Server) advanceProvisionSoulInitStart(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {
-	if job == nil {
-		return 0, true, nil
-	}
-	if strings.TrimSpace(job.RunID) != "" {
-		job.Step = provisionStepSoulInitWait
-		job.Note = "soul init runner already started"
-		if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
-			return 0, false, err
-		}
-		return provisionDefaultPollDelay, false, nil
-	}
-
-	runID, err := s.startDeployRunnerWithMode(ctx, job, "soul-init", s.soulReceiptS3Key(job))
-	if err != nil {
-		job.Attempts++
-		if job.Attempts >= job.MaxAttempts {
-			return 0, false, s.failJob(ctx, job, requestID, now, "soul_init_start_failed", "failed to start soul init runner: "+err.Error())
-		}
-		job.Note = "failed to start soul init runner; retrying: " + compactErr(err)
-		_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
-		return jitteredBackoff(job.Attempts, provisionDefaultShortRetryDelay, 10*time.Minute), false, nil
-	}
-
-	job.RunID = strings.TrimSpace(runID)
-	job.Step = provisionStepSoulInitWait
-	job.Note = "soul init runner in progress"
-	if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
-		return 0, false, err
-	}
-	return provisionDefaultPollDelay, false, nil
-}
-
-func (s *Server) advanceProvisionSoulInitWait(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {
-	if job == nil {
-		return 0, true, nil
-	}
-
-	status, deepLink, err := s.getDeployRunnerStatus(ctx, strings.TrimSpace(job.RunID))
-	if err != nil {
-		job.Attempts++
-		if job.Attempts >= job.MaxAttempts {
-			return 0, false, s.failJob(ctx, job, requestID, now, "soul_init_status_failed", "failed to poll soul init runner: "+err.Error())
-		}
-		job.Note = "failed to poll soul init runner; retrying: " + compactErr(err)
-		_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
-		return jitteredBackoff(job.Attempts, provisionDefaultPollDelay, 10*time.Minute), false, nil
-	}
-
-	switch status {
-	case codebuildStatusSucceeded:
-		job.Step = provisionStepSoulReceiptIngest
-		job.Note = "ingesting soul receipt"
-		if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
-			return 0, false, err
-		}
-		return 0, false, nil
-
-	case codebuildStatusInProgress:
-		if !job.CreatedAt.IsZero() && now.Sub(job.CreatedAt) > provisionMaxDeployAge {
-			return 0, false, s.failJob(ctx, job, requestID, now, "soul_init_timeout", "soul init runner timed out")
-		}
-		job.Note = "soul init runner in progress"
-		_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
-		return provisionDefaultPollDelay, false, nil
-
-	case codebuildStatusFailed, codebuildStatusFault, codebuildStatusStopped, codebuildStatusTimedOut:
-		msg := "soul init runner failed"
-		if deepLink != "" {
-			msg = msg + " (CodeBuild: " + deepLink + ")"
-		}
-		return 0, false, s.failJob(ctx, job, requestID, now, "soul_init_failed", msg)
-
-	default:
-		if !job.CreatedAt.IsZero() && now.Sub(job.CreatedAt) > provisionMaxDeployAge {
-			return 0, false, s.failJob(ctx, job, requestID, now, "soul_init_timeout", "soul init runner timed out")
-		}
-		job.Note = "soul init runner status: " + status
-		_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
-		return provisionDefaultPollDelay, false, nil
-	}
-}
-
-func (s *Server) advanceProvisionSoulReceiptIngest(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {
-	if job == nil {
-		return 0, true, nil
-	}
-
-	receiptKey := s.soulReceiptS3Key(job)
-	receiptJSON, receipt, err := s.loadSoulReceiptFromS3(ctx, strings.TrimSpace(s.cfg.ArtifactBucketName), receiptKey)
-	if err != nil {
-		job.Attempts++
-		if job.Attempts >= job.MaxAttempts {
-			return 0, false, s.failJob(ctx, job, requestID, now, "soul_receipt_load_failed", "failed to load soul receipt: "+err.Error())
-		}
-		job.Note = "failed to load soul receipt; retrying: " + compactErr(err)
-		_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
-		return jitteredBackoff(job.Attempts, provisionDefaultShortRetryDelay, 5*time.Minute), false, nil
-	}
-
-	job.SoulReceiptJSON = strings.TrimSpace(receiptJSON)
-	job.SoulProvisionedAt = now
-	job.Step = provisionStepDone
-	job.Status = models.ProvisionJobStatusOK
-	job.Note = noteProvisioned
-	job.ErrorCode = ""
-	job.ErrorMessage = ""
-
-	soulVersion := ""
-	if receipt != nil {
-		soulVersion = strings.TrimSpace(receipt.SoulVersion)
-	}
-
-	if err := s.persistJobAndInstance(ctx, job, requestID, now, func(ub core.UpdateBuilder) error {
-		ub.Set("ProvisionStatus", models.ProvisionJobStatusOK)
-		ub.Set("ProvisionJobID", strings.TrimSpace(job.ID))
-		if strings.TrimSpace(job.AccountID) != "" {
-			ub.Set("HostedAccountID", strings.TrimSpace(job.AccountID))
-		}
-		if strings.TrimSpace(job.Region) != "" {
-			ub.Set("HostedRegion", strings.TrimSpace(job.Region))
-		}
-		if strings.TrimSpace(job.BaseDomain) != "" {
-			ub.Set("HostedBaseDomain", strings.TrimSpace(job.BaseDomain))
-		}
-		if strings.TrimSpace(job.ChildHostedZoneID) != "" {
-			ub.Set("HostedZoneID", strings.TrimSpace(job.ChildHostedZoneID))
-		}
-
-		ub.Set("SoulProvisionedAt", job.SoulProvisionedAt)
-		if soulVersion != "" {
-			ub.Set("SoulVersion", soulVersion)
-		}
-		return nil
-	}); err != nil {
-		return 0, false, err
-	}
-	return 0, true, nil
 }
 
 func (s *Server) persistModelAndInstance(ctx context.Context, model any, instanceSlug string, instanceUpdate func(core.UpdateBuilder) error) error {

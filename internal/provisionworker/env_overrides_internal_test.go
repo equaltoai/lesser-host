@@ -104,6 +104,10 @@ func TestStartDeployRunner_AppendsTipAndAIEnv(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "run1", runID)
 	require.NotNil(t, cb.lastStart)
+	require.Equal(t,
+		codebuildIdempotencyToken("proj", s.deployRunnerStage(job), job.InstanceSlug, job.ID, "lesser", s.receiptS3Key(job)),
+		aws.ToString(cb.lastStart.IdempotencyToken),
+	)
 
 	env := envOverrideMap(cb.lastStart.EnvironmentVariablesOverride)
 	require.Equal(t, "true", env["TIP_ENABLED"])
@@ -170,6 +174,10 @@ func TestStartDeployRunner_OmitsTipChainAndContractWhenDisabled(t *testing.T) {
 	_, err := s.startDeployRunner(context.Background(), job)
 	require.NoError(t, err)
 	require.NotNil(t, cb.lastStart)
+	require.Equal(t,
+		codebuildIdempotencyToken("proj", s.deployRunnerStage(job), job.InstanceSlug, job.ID, "lesser", s.receiptS3Key(job)),
+		aws.ToString(cb.lastStart.IdempotencyToken),
+	)
 
 	env := envOverrideMap(cb.lastStart.EnvironmentVariablesOverride)
 	require.Equal(t, "false", env["TIP_ENABLED"])
@@ -228,6 +236,10 @@ func TestStartUpdateDeployRunner_AppendsTipAndAIEnv(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "run1", runID)
 	require.NotNil(t, cb.lastStart)
+	require.Equal(t,
+		codebuildIdempotencyToken("proj", normalizeManagedLesserStage(s.cfg.Stage), job.InstanceSlug, job.ID, "lesser", s.updateReceiptS3Key(job)),
+		aws.ToString(cb.lastStart.IdempotencyToken),
+	)
 
 	env := envOverrideMap(cb.lastStart.EnvironmentVariablesOverride)
 	require.Equal(t, "true", env["TIP_ENABLED"])
@@ -288,6 +300,10 @@ func TestStartUpdateDeployRunner_OmitsTipChainAndContractWhenDisabled(t *testing
 	_, err := s.startUpdateDeployRunner(context.Background(), job, inst)
 	require.NoError(t, err)
 	require.NotNil(t, cb.lastStart)
+	require.Equal(t,
+		codebuildIdempotencyToken("proj", normalizeManagedLesserStage(s.cfg.Stage), job.InstanceSlug, job.ID, "lesser", s.updateReceiptS3Key(job)),
+		aws.ToString(cb.lastStart.IdempotencyToken),
+	)
 
 	env := envOverrideMap(cb.lastStart.EnvironmentVariablesOverride)
 	require.Equal(t, "false", env["TIP_ENABLED"])

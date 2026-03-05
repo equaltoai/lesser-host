@@ -36,6 +36,9 @@ func New(opts ...apptheory.Option) *apptheory.App {
 	opts = append(opts, apptheory.WithAuthHook(srv.OperatorAuthHook))
 
 	app := apptheory.New(opts...)
+	if mw := srv.mintConversationRateLimitMiddleware(); mw != nil {
+		app.Use(mw)
+	}
 	Register(app, srv)
 	return app
 }

@@ -16,10 +16,17 @@ type Config struct {
 	// relative URLs or derive a best-effort base from request headers.
 	PublicBaseURL string
 
+	// ENS gateway (CCIP-Read) configuration.
+	ENSGatewayResolverAddress     string
+	ENSGatewaySigningKeyID        string
+	ENSGatewaySigningPrivateKey   string
+	ENSGatewaySignatureTTLSeconds int64
+
 	ArtifactBucketName string
 	PreviewQueueURL    string
 	SafetyQueueURL     string
 	ProvisionQueueURL  string
+	CommQueueURL       string
 
 	BootstrapWalletAddress string
 
@@ -55,6 +62,8 @@ type Config struct {
 	SoulPackBucketNameSSMParam               string // optional override; default is /soul/<stage>/packBucketName
 	SoulMintSignerKeySSMParam                string
 	SoulMintSignerKey                        string
+	SoulPublicCORSOrigins                    []string
+	SoulV2StrictIntegrity                    bool // harden signature + artifact integrity checks
 
 	// Soul reputation (v0).
 	SoulReputationTipStartBlock     uint64
@@ -64,6 +73,8 @@ type Config struct {
 	SoulReputationWeightSocial      float64
 	SoulReputationWeightValidation  float64
 	SoulReputationWeightTrust       float64
+	SoulReputationWeightIntegrity   float64
+	SoulReputationWeightCommunication float64
 
 	// Soul validation (v0).
 	SoulValidationDecayEpochHours int64
@@ -101,6 +112,8 @@ func Load() Config {
 	stateTableName := envString("STATE_TABLE_NAME")
 	publicBaseURL := envString("PUBLIC_BASE_URL")
 
+	ensGatewayTTL := envInt64Bounded("ENS_GATEWAY_TTL_SECONDS", 300, 30, 24*60*60)
+
 	origins := parseCSV(envString("WEBAUTHN_ORIGINS"))
 	publicKeyIDs := parseCSV(envString("ATTESTATION_PUBLIC_KEY_IDS"))
 
@@ -114,6 +127,8 @@ func Load() Config {
 	soulTxMode := envLowerStringDefault("SOUL_TX_MODE", "safe")
 	soulCaps := parseCSV(envString("SOUL_SUPPORTED_CAPABILITIES"))
 	soulPackBucketName := envString("SOUL_PACK_BUCKET_NAME")
+	soulPublicCORSOrigins := parseCSV(envString("SOUL_PUBLIC_CORS_ORIGINS"))
+	soulV2StrictIntegrity := envBoolOn("SOUL_V2_STRICT_INTEGRITY")
 
 	soulRepTipStartBlock := envUint64("SOUL_REPUTATION_TIP_START_BLOCK", 0)
 	soulRepTipChunkSize := envUint64Positive("SOUL_REPUTATION_TIP_BLOCK_CHUNK_SIZE", 5000)
@@ -122,6 +137,8 @@ func Load() Config {
 	soulRepWeightSocial := envFloat64Bounded("SOUL_REPUTATION_WEIGHT_SOCIAL", 0, 0, 1000)
 	soulRepWeightValidation := envFloat64Bounded("SOUL_REPUTATION_WEIGHT_VALIDATION", 0, 0, 1000)
 	soulRepWeightTrust := envFloat64Bounded("SOUL_REPUTATION_WEIGHT_TRUST", 0, 0, 1000)
+	soulRepWeightIntegrity := envFloat64Bounded("SOUL_REPUTATION_WEIGHT_INTEGRITY", 0, 0, 1000)
+	soulRepWeightCommunication := envFloat64Bounded("SOUL_REPUTATION_WEIGHT_COMMUNICATION", 0.1, 0, 1000)
 
 	soulValEpochHours := envInt64Bounded("SOUL_VALIDATION_DECAY_EPOCH_HOURS", 168, 1, 24*365)
 	soulValDecayRate := envFloat64Bounded("SOUL_VALIDATION_DECAY_RATE", 0.01, 0, 1)
@@ -160,10 +177,16 @@ func Load() Config {
 		StateTableName: stateTableName,
 		PublicBaseURL:  publicBaseURL,
 
+		ENSGatewayResolverAddress:     envString("ENS_GATEWAY_RESOLVER_ADDRESS"),
+		ENSGatewaySigningKeyID:        envString("ENS_GATEWAY_SIGNING_KEY_ID"),
+		ENSGatewaySigningPrivateKey:   envString("ENS_GATEWAY_SIGNING_PRIVATE_KEY"),
+		ENSGatewaySignatureTTLSeconds: ensGatewayTTL,
+
 		ArtifactBucketName: envString("ARTIFACT_BUCKET_NAME"),
 		PreviewQueueURL:    envString("PREVIEW_QUEUE_URL"),
 		SafetyQueueURL:     envString("SAFETY_QUEUE_URL"),
 		ProvisionQueueURL:  envString("PROVISION_QUEUE_URL"),
+		CommQueueURL:       envString("COMM_QUEUE_URL"),
 
 		BootstrapWalletAddress: envString("BOOTSTRAP_WALLET_ADDRESS"),
 
@@ -196,6 +219,8 @@ func Load() Config {
 		SoulPackBucketName:                       soulPackBucketName,
 		SoulPackBucketNameSSMParam:               envString("SOUL_PACK_BUCKET_NAME_SSM_PARAM"),
 		SoulMintSignerKeySSMParam:                envString("SOUL_MINT_SIGNER_KEY_SSM_PARAM"),
+		SoulPublicCORSOrigins:                    soulPublicCORSOrigins,
+		SoulV2StrictIntegrity:                    soulV2StrictIntegrity,
 
 		SoulReputationTipStartBlock:     soulRepTipStartBlock,
 		SoulReputationTipBlockChunkSize: soulRepTipChunkSize,
@@ -204,6 +229,8 @@ func Load() Config {
 		SoulReputationWeightSocial:      soulRepWeightSocial,
 		SoulReputationWeightValidation:  soulRepWeightValidation,
 		SoulReputationWeightTrust:       soulRepWeightTrust,
+		SoulReputationWeightIntegrity:   soulRepWeightIntegrity,
+		SoulReputationWeightCommunication: soulRepWeightCommunication,
 		SoulValidationDecayEpochHours:   soulValEpochHours,
 		SoulValidationDecayRate:         soulValDecayRate,
 

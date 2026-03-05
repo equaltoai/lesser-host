@@ -51,13 +51,34 @@ func (r *SoulWalletRotationRequest) BeforeCreate() error {
 		r.CreatedAt = now
 	}
 	r.UpdatedAt = now
+	if err := requireNonEmpty("agentId", r.AgentID); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("username", r.Username); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("digestHex", r.DigestHex); err != nil {
+		return err
+	}
 	return nil
 }
 
 // BeforeUpdate updates timestamps and keys before updating SoulWalletRotationRequest.
 func (r *SoulWalletRotationRequest) BeforeUpdate() error {
 	r.UpdatedAt = time.Now().UTC()
-	return r.UpdateKeys()
+	if err := r.UpdateKeys(); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("agentId", r.AgentID); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("username", r.Username); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("digestHex", r.DigestHex); err != nil {
+		return err
+	}
+	return nil
 }
 
 // UpdateKeys updates the database keys and TTL for SoulWalletRotationRequest.
