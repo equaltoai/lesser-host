@@ -29,6 +29,7 @@ type Server struct {
 	ssmGetParameter   func(ctx context.Context, name string) (string, error)
 	ssmPutSecureValue func(ctx context.Context, name string, value string, overwrite bool) error
 	migaduCreateEmail func(ctx context.Context, localPart string, name string, password string) error
+	migaduSendSMTP    func(ctx context.Context, username string, password string, from string, recipients []string, data []byte) error
 }
 
 // NewServer constructs a new control plane Server.
@@ -50,6 +51,7 @@ func NewServer(cfg config.Config, st *store.Store) *Server {
 		ssmGetParameter:   defaultSSMGetParameter,
 		ssmPutSecureValue: defaultSSMPutSecureString,
 		migaduCreateEmail: defaultMigaduCreateMailbox,
+		migaduSendSMTP:    defaultMigaduSendSMTP,
 	}
 }
 
@@ -191,6 +193,8 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 	app.Get("/api/v1/soul/resolve/email/{emailAddress}", s.handleSoulPublicResolveEmail)
 	app.Get("/api/v1/soul/resolve/phone/{phoneNumber}", s.handleSoulPublicResolvePhone)
 	app.Get("/api/v1/soul/search", s.handleSoulPublicSearch)
+	app.Post("/api/v1/soul/comm/send", s.handleSoulCommSend)
+	app.Get("/api/v1/soul/comm/status/{messageId}", s.handleSoulCommStatus)
 	app.Post("/api/v1/soul/agents/register/begin", s.handleSoulAgentRegistrationBegin, apptheory.RequireAuth())
 	app.Post("/api/v1/soul/agents/register/{id}/verify", s.handleSoulAgentRegistrationVerify, apptheory.RequireAuth())
 	app.Post("/api/v1/soul/agents/{agentId}/rotate-wallet/begin", s.handleSoulAgentRotateWalletBegin, apptheory.RequireAuth())

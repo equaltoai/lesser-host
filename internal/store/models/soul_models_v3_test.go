@@ -142,6 +142,34 @@ func TestSoulAgentCommQueue_TTLAndKeys(t *testing.T) {
 	require.Equal(t, "Hello", q.Body)
 }
 
+func TestSoulCommMessageStatus_TTLAndKeys(t *testing.T) {
+	t.Parallel()
+
+	created := time.Date(2026, 3, 4, 12, 0, 0, 0, time.UTC)
+	m := &SoulCommMessageStatus{
+		MessageID:    " comm-msg-1 ",
+		AgentID:      " 0xABC ",
+		ChannelType:  " Email ",
+		To:           " alice@example.com ",
+		Status:       " SENT ",
+		CreatedAt:    created,
+		Provider:     " Migadu ",
+		ErrorMessage: "  ",
+	}
+	require.NoError(t, m.BeforeCreate())
+
+	require.Equal(t, "COMM#MSG#comm-msg-1", m.PK)
+	require.Equal(t, "STATUS", m.SK)
+	require.Equal(t, "comm-msg-1", m.MessageID)
+	require.Equal(t, "0xabc", m.AgentID)
+	require.Equal(t, "email", m.ChannelType)
+	require.Equal(t, "alice@example.com", m.To)
+	require.Equal(t, "sent", m.Status)
+	require.Equal(t, "migadu", m.Provider)
+	require.Equal(t, created.Add(90*24*time.Hour).Unix(), m.TTL)
+	require.False(t, m.UpdatedAt.IsZero())
+}
+
 func TestSoulAgentENSResolution_Keys(t *testing.T) {
 	t.Parallel()
 
