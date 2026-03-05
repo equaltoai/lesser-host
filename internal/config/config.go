@@ -16,6 +16,12 @@ type Config struct {
 	// relative URLs or derive a best-effort base from request headers.
 	PublicBaseURL string
 
+	// ENS gateway (CCIP-Read) configuration.
+	ENSGatewayResolverAddress     string
+	ENSGatewaySigningKeyID        string
+	ENSGatewaySigningPrivateKey   string
+	ENSGatewaySignatureTTLSeconds int64
+
 	ArtifactBucketName string
 	PreviewQueueURL    string
 	SafetyQueueURL     string
@@ -105,6 +111,8 @@ func Load() Config {
 	stateTableName := envString("STATE_TABLE_NAME")
 	publicBaseURL := envString("PUBLIC_BASE_URL")
 
+	ensGatewayTTL := envInt64Bounded("ENS_GATEWAY_TTL_SECONDS", 300, 30, 24*60*60)
+
 	origins := parseCSV(envString("WEBAUTHN_ORIGINS"))
 	publicKeyIDs := parseCSV(envString("ATTESTATION_PUBLIC_KEY_IDS"))
 
@@ -166,6 +174,11 @@ func Load() Config {
 
 		StateTableName: stateTableName,
 		PublicBaseURL:  publicBaseURL,
+
+		ENSGatewayResolverAddress:     envString("ENS_GATEWAY_RESOLVER_ADDRESS"),
+		ENSGatewaySigningKeyID:        envString("ENS_GATEWAY_SIGNING_KEY_ID"),
+		ENSGatewaySigningPrivateKey:   envString("ENS_GATEWAY_SIGNING_PRIVATE_KEY"),
+		ENSGatewaySignatureTTLSeconds: ensGatewayTTL,
 
 		ArtifactBucketName: envString("ARTIFACT_BUCKET_NAME"),
 		PreviewQueueURL:    envString("PREVIEW_QUEUE_URL"),

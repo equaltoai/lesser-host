@@ -8,6 +8,7 @@ import (
 	"github.com/equaltoai/lesser-host/internal/attestations"
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/store"
+	"sync"
 )
 
 // Server implements the trust API.
@@ -18,6 +19,11 @@ type Server struct {
 	queues    *queueClient
 	attest    *attestations.KMSService
 	ai        *ai.Service
+
+	ensSignerOnce sync.Once
+	ensSigner     ensGatewaySigner
+	ensSignerErr  error
+	ensCache      *ensGatewayCache
 }
 
 // NewServer constructs a new trust Server.
@@ -29,6 +35,7 @@ func NewServer(cfg config.Config, st *store.Store) *Server {
 		queues:    newQueueClient(cfg.PreviewQueueURL, cfg.SafetyQueueURL),
 		attest:    attestations.NewKMSService(cfg.AttestationSigningKeyID, cfg.AttestationPublicKeyIDs),
 		ai:        ai.NewService(st),
+		ensCache:  &ensGatewayCache{},
 	}
 }
 
@@ -37,6 +44,10 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 	if app == nil || s == nil {
 		return
 	}
+
+	// ENS gateway (public, CCIP-Read).
+	app.Get("/health", s.handleENSGatewayHealth)
+	app.Get("/resolve", s.handleENSGatewayResolve)
 
 	// Attestations (public, cacheable).
 	app.Get("/.well-known/jwks.json", s.handleWellKnownJWKS)

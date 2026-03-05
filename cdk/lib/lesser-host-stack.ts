@@ -170,19 +170,27 @@ export class LesserHostStack extends cdk.Stack {
 			treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
 		});
 
-			const attestationSigningKey = new kms.Key(this, 'AttestationSigningKey', {
-				description: `${namePrefix} attestation signing`,
-				keySpec: kms.KeySpec.RSA_2048,
-				keyUsage: kms.KeyUsage.SIGN_VERIFY,
-				removalPolicy,
-			});
-			attestationSigningKey.addAlias(`alias/${namePrefix}-attestation-signing`);
+				const attestationSigningKey = new kms.Key(this, 'AttestationSigningKey', {
+					description: `${namePrefix} attestation signing`,
+					keySpec: kms.KeySpec.RSA_2048,
+					keyUsage: kms.KeyUsage.SIGN_VERIFY,
+					removalPolicy,
+				});
+				attestationSigningKey.addAlias(`alias/${namePrefix}-attestation-signing`);
 
-			const soulPackBucket = new s3.Bucket(this, 'SoulPackBucket', {
-				bucketName: `${namePrefix}-${cdk.Aws.ACCOUNT_ID}-${cdk.Aws.REGION}-soul-packs`,
-				blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-				enforceSSL: true,
-				versioned: true,
+				const ensGatewaySigningKey = new kms.Key(this, 'ENSGatewaySigningKey', {
+					description: `${namePrefix} ENS gateway signing`,
+					keySpec: kms.KeySpec.ECC_SECG_P256K1,
+					keyUsage: kms.KeyUsage.SIGN_VERIFY,
+					removalPolicy,
+				});
+				ensGatewaySigningKey.addAlias(`alias/${namePrefix}-ens-gateway-signing`);
+
+				const soulPackBucket = new s3.Bucket(this, 'SoulPackBucket', {
+					bucketName: `${namePrefix}-${cdk.Aws.ACCOUNT_ID}-${cdk.Aws.REGION}-soul-packs`,
+					blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+					enforceSSL: true,
+					versioned: true,
 				removalPolicy,
 				autoDeleteObjects: stage !== 'live',
 			});
@@ -196,8 +204,11 @@ export class LesserHostStack extends cdk.Stack {
 
 		const bootstrapWalletAddress =
 			(this.node.tryGetContext('bootstrapWalletAddress') as string | undefined) ?? '';
-		const webAuthnRPID = (this.node.tryGetContext('webauthnRpId') as string | undefined) ?? '';
-		const webAuthnOrigins = (this.node.tryGetContext('webauthnOrigins') as string | undefined) ?? '';
+			const webAuthnRPID = (this.node.tryGetContext('webauthnRpId') as string | undefined) ?? '';
+			const webAuthnOrigins = (this.node.tryGetContext('webauthnOrigins') as string | undefined) ?? '';
+			const ensGatewayResolverAddress =
+				(this.node.tryGetContext('ensGatewayResolverAddress') as string | undefined) ?? '';
+			const ensGatewayTTLSeconds = (this.node.tryGetContext('ensGatewayTtlSeconds') as string | undefined) ?? '';
 
 		const managedProvisioningEnabled =
 			(this.node.tryGetContext('managedProvisioningEnabled') as string | undefined) ?? '';
@@ -614,6 +625,9 @@ export class LesserHostStack extends cdk.Stack {
 			ARTIFACT_BUCKET_NAME: artifactsBucket.bucketName,
 			PREVIEW_QUEUE_URL: previewQueue.queueUrl,
 			SAFETY_QUEUE_URL: safetyQueue.queueUrl,
+			ENS_GATEWAY_SIGNING_KEY_ID: ensGatewaySigningKey.keyId,
+			ENS_GATEWAY_RESOLVER_ADDRESS: ensGatewayResolverAddress.trim(),
+			ENS_GATEWAY_TTL_SECONDS: ensGatewayTTLSeconds.trim(),
 			ATTESTATION_SIGNING_KEY_ID: attestationSigningKey.keyId,
 			ATTESTATION_PUBLIC_KEY_IDS: attestationSigningKey.keyId,
 			WEBAUTHN_RP_ID: webAuthnRPID,
@@ -724,6 +738,7 @@ export class LesserHostStack extends cdk.Stack {
 		artifactsBucket.grantRead(provisionWorkerFn);
 		artifactsBucket.grantReadWrite(provisionRunnerProject);
 		attestationSigningKey.grant(trustFn, 'kms:Sign', 'kms:GetPublicKey');
+		ensGatewaySigningKey.grant(trustFn, 'kms:Sign', 'kms:GetPublicKey');
 		attestationSigningKey.grant(aiWorkerFn, 'kms:Sign', 'kms:GetPublicKey');
 		attestationSigningKey.grant(soulReputationWorkerFn, 'kms:Sign', 'kms:GetPublicKey');
 		previewQueue.grantSendMessages(controlPlaneFn);
@@ -1253,6 +1268,8 @@ export class LesserHostStack extends cdk.Stack {
     uri.startsWith("/api/") ||
     uri.startsWith("/auth/") ||
     uri.startsWith("/webhooks/") ||
+    uri.startsWith("/resolve") ||
+    uri.startsWith("/health") ||
     isSetupApi ||
     uri.startsWith("/.well-known/") ||
     uri.startsWith("/attestations")
@@ -1418,6 +1435,8 @@ export class LesserHostStack extends cdk.Stack {
 				],
 			},
 			additionalBehaviors: {
+				'resolve*': trustBehaviorNoCache,
+				'health*': trustBehaviorNoCache,
 				'api/v1/previews*': trustApiBehavior,
 				'api/v1/renders*': trustApiBehavior,
 				'api/v1/publish/jobs*': trustApiBehavior,
