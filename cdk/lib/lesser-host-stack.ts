@@ -117,6 +117,20 @@ export class LesserHostStack extends cdk.Stack {
 		});
 		provisionQueue.applyRemovalPolicy(removalPolicy);
 
+		const commDLQ = new sqs.Queue(this, 'CommDLQ', {
+			queueName: `${namePrefix}-comm-dlq`,
+			retentionPeriod: cdk.Duration.days(14),
+			encryption: sqs.QueueEncryption.SQS_MANAGED,
+		});
+		commDLQ.applyRemovalPolicy(removalPolicy);
+		const commQueue = new sqs.Queue(this, 'CommQueue', {
+			queueName: `${namePrefix}-comm-queue`,
+			visibilityTimeout: cdk.Duration.minutes(1),
+			deadLetterQueue: { queue: commDLQ, maxReceiveCount: 3 },
+			encryption: sqs.QueueEncryption.SQS_MANAGED,
+		});
+		commQueue.applyRemovalPolicy(removalPolicy);
+
 		const dlqAlarmPeriod = cdk.Duration.minutes(1);
 		const dlqAlarmThreshold = 0;
 		new cloudwatch.Alarm(this, 'PreviewDLQAlarm', {
@@ -140,6 +154,15 @@ export class LesserHostStack extends cdk.Stack {
 		new cloudwatch.Alarm(this, 'ProvisionDLQAlarm', {
 			alarmName: `${namePrefix}-provision-dlq-visible`,
 			metric: provisionDLQ.metricApproximateNumberOfMessagesVisible({ period: dlqAlarmPeriod }),
+			threshold: dlqAlarmThreshold,
+			comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+			evaluationPeriods: 1,
+			datapointsToAlarm: 1,
+			treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+		});
+		new cloudwatch.Alarm(this, 'CommDLQAlarm', {
+			alarmName: `${namePrefix}-comm-dlq-visible`,
+			metric: commDLQ.metricApproximateNumberOfMessagesVisible({ period: dlqAlarmPeriod }),
 			threshold: dlqAlarmThreshold,
 			comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
 			evaluationPeriods: 1,
@@ -541,6 +564,7 @@ export class LesserHostStack extends cdk.Stack {
 			PREVIEW_QUEUE_URL: previewQueue.queueUrl,
 			SAFETY_QUEUE_URL: safetyQueue.queueUrl,
 			PROVISION_QUEUE_URL: provisionQueue.queueUrl,
+			COMM_QUEUE_URL: commQueue.queueUrl,
 			BOOTSTRAP_WALLET_ADDRESS: bootstrapWalletAddress,
 			WEBAUTHN_RP_ID: webAuthnRPID,
 			WEBAUTHN_ORIGINS: webAuthnOrigins,
@@ -674,12 +698,23 @@ export class LesserHostStack extends cdk.Stack {
 				MANAGED_LESSER_BODY_GITHUB_REPO: lesserBodyGitHubRepo,
 			});
 
+		const commWorkerFn = this.goLambda('CommWorker', './cmd/comm-worker', {
+			STAGE: stage,
+			STATE_TABLE_NAME: stateTable.tableName,
+			COMM_QUEUE_URL: commQueue.queueUrl,
+			SOUL_ENABLED: soulEnabled,
+			MANAGED_ORG_VENDING_ROLE_ARN: managedOrgVendingRoleArn,
+			MANAGED_INSTANCE_ROLE_NAME: managedInstanceRoleName,
+			MANAGED_DEFAULT_REGION: managedDefaultRegion,
+		});
+
 		stateTable.grantReadWriteData(controlPlaneFn);
 		stateTable.grantReadWriteData(trustFn);
 		stateTable.grantReadWriteData(renderWorkerFn);
 		stateTable.grantReadWriteData(aiWorkerFn);
 		stateTable.grantReadWriteData(soulReputationWorkerFn);
 		stateTable.grantReadWriteData(provisionWorkerFn);
+		stateTable.grantReadWriteData(commWorkerFn);
 		artifactsBucket.grantReadWrite(controlPlaneFn);
 		soulPackBucket.grantReadWrite(controlPlaneFn);
 		soulPackBucket.grantReadWrite(soulReputationWorkerFn);
@@ -700,6 +735,8 @@ export class LesserHostStack extends cdk.Stack {
 		provisionQueue.grantSendMessages(controlPlaneFn);
 		provisionQueue.grantConsumeMessages(provisionWorkerFn);
 		provisionQueue.grantSendMessages(provisionWorkerFn);
+		commQueue.grantSendMessages(controlPlaneFn);
+		commQueue.grantConsumeMessages(commWorkerFn);
 
 		provisionRunnerProject.addToRolePolicy(
 			new iam.PolicyStatement({
@@ -737,6 +774,21 @@ export class LesserHostStack extends cdk.Stack {
 		);
 		if (managedOrgVendingRoleArn.trim()) {
 			provisionWorkerFn.addToRolePolicy(
+				new iam.PolicyStatement({
+					actions: ['sts:AssumeRole'],
+					resources: [managedOrgVendingRoleArn.trim()],
+				}),
+			);
+		}
+
+		commWorkerFn.addToRolePolicy(
+			new iam.PolicyStatement({
+				actions: ['sts:AssumeRole'],
+				resources: [`arn:aws:iam::*:role/${managedInstanceRoleName.trim() || 'OrganizationAccountAccessRole'}`],
+			}),
+		);
+		if (managedOrgVendingRoleArn.trim()) {
+			commWorkerFn.addToRolePolicy(
 				new iam.PolicyStatement({
 					actions: ['sts:AssumeRole'],
 					resources: [managedOrgVendingRoleArn.trim()],
@@ -791,6 +843,7 @@ export class LesserHostStack extends cdk.Stack {
 		renderWorkerFn.addEventSource(new lambdaEventSources.SqsEventSource(previewQueue, { batchSize: 1 }));
 		aiWorkerFn.addEventSource(new lambdaEventSources.SqsEventSource(safetyQueue, { batchSize: 5 }));
 		provisionWorkerFn.addEventSource(new lambdaEventSources.SqsEventSource(provisionQueue, { batchSize: 1 }));
+		commWorkerFn.addEventSource(new lambdaEventSources.SqsEventSource(commQueue, { batchSize: 1 }));
 
 		aiWorkerFn.addToRolePolicy(
 			new iam.PolicyStatement({
@@ -859,6 +912,34 @@ export class LesserHostStack extends cdk.Stack {
 				],
 			}),
 		);
+		const migaduSsmParamArns = [
+			`arn:aws:ssm:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:parameter/lesser-host/migadu`,
+		];
+		const soulCommSsmParamArns = [
+			cdk.Stack.of(this).formatArn({
+				service: 'ssm',
+				resource: 'parameter',
+				resourceName: `lesser-host/soul/${stage}/*`,
+			}),
+		];
+		controlPlaneFn.addToRolePolicy(
+			new iam.PolicyStatement({
+				actions: ['ssm:GetParameter', 'ssm:GetParameters'],
+				resources: migaduSsmParamArns,
+			}),
+		);
+		controlPlaneFn.addToRolePolicy(
+			new iam.PolicyStatement({
+				actions: ['ssm:GetParameter', 'ssm:GetParameters', 'ssm:PutParameter'],
+				resources: soulCommSsmParamArns,
+			}),
+		);
+		commWorkerFn.addToRolePolicy(
+			new iam.PolicyStatement({
+				actions: ['ssm:GetParameter', 'ssm:GetParameters'],
+				resources: soulCommSsmParamArns,
+			}),
+		);
 		if (soulRpcUrlSsmParam) {
 			controlPlaneFn.addToRolePolicy(
 				new iam.PolicyStatement({
@@ -880,6 +961,15 @@ export class LesserHostStack extends cdk.Stack {
 			);
 		}
 		controlPlaneFn.addToRolePolicy(
+			new iam.PolicyStatement({
+				actions: ['kms:Decrypt'],
+				resources: ['*'],
+				conditions: {
+					StringEquals: { 'kms:ViaService': `ssm.${cdk.Aws.REGION}.amazonaws.com` },
+				},
+			}),
+		);
+		commWorkerFn.addToRolePolicy(
 			new iam.PolicyStatement({
 				actions: ['kms:Decrypt'],
 				resources: ['*'],
@@ -1162,6 +1252,7 @@ export class LesserHostStack extends cdk.Stack {
   if (
     uri.startsWith("/api/") ||
     uri.startsWith("/auth/") ||
+    uri.startsWith("/webhooks/") ||
     isSetupApi ||
     uri.startsWith("/.well-known/") ||
     uri.startsWith("/attestations")
@@ -1335,6 +1426,7 @@ export class LesserHostStack extends cdk.Stack {
 
 				'api/*': apiBehavior,
 				'auth/*': apiBehavior,
+				'webhooks/*': apiBehavior,
 				'setup/status': apiBehavior,
 				'setup/bootstrap/*': apiBehavior,
 				'setup/admin': apiBehavior,

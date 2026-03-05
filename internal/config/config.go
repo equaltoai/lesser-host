@@ -20,6 +20,7 @@ type Config struct {
 	PreviewQueueURL    string
 	SafetyQueueURL     string
 	ProvisionQueueURL  string
+	CommQueueURL       string
 
 	BootstrapWalletAddress string
 
@@ -170,6 +171,7 @@ func Load() Config {
 		PreviewQueueURL:    envString("PREVIEW_QUEUE_URL"),
 		SafetyQueueURL:     envString("SAFETY_QUEUE_URL"),
 		ProvisionQueueURL:  envString("PROVISION_QUEUE_URL"),
+		CommQueueURL:       envString("COMM_QUEUE_URL"),
 
 		BootstrapWalletAddress: envString("BOOTSTRAP_WALLET_ADDRESS"),
 

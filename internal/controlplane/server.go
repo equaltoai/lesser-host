@@ -7,6 +7,7 @@ import (
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 
 	"github.com/equaltoai/lesser-host/internal/artifacts"
+	"github.com/equaltoai/lesser-host/internal/commworker"
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/store"
 )
@@ -30,6 +31,8 @@ type Server struct {
 	ssmPutSecureValue func(ctx context.Context, name string, value string, overwrite bool) error
 	migaduCreateEmail func(ctx context.Context, localPart string, name string, password string) error
 	migaduSendSMTP    func(ctx context.Context, username string, password string, from string, recipients []string, data []byte) error
+
+	enqueueCommMessage func(ctx context.Context, msg commworker.QueueMessage) error
 }
 
 // NewServer constructs a new control plane Server.
@@ -38,11 +41,11 @@ func NewServer(cfg config.Config, st *store.Store) *Server {
 	if err != nil {
 		log.Printf("controlplane: webauthn disabled: %v", err)
 	}
-	return &Server{
+	srv := &Server{
 		cfg:       cfg,
 		store:     st,
 		webAuthn:  webAuthn,
-		queues:    newQueueClient(cfg.ProvisionQueueURL),
+		queues:    newQueueClient(cfg.ProvisionQueueURL, cfg.CommQueueURL),
 		r53:       newRoute53Client(),
 		soulPacks: artifacts.New(cfg.SoulPackBucketName),
 		dialEVM: func(ctx context.Context, rpcURL string) (ethRPCClient, error) {
@@ -53,6 +56,8 @@ func NewServer(cfg config.Config, st *store.Store) *Server {
 		migaduCreateEmail: defaultMigaduCreateMailbox,
 		migaduSendSMTP:    defaultMigaduSendSMTP,
 	}
+	srv.enqueueCommMessage = srv.queues.enqueueCommMessage
+	return srv
 }
 
 // RegisterRoutes registers HTTP routes for the control plane API.
@@ -149,6 +154,12 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 
 	// Payments webhooks (public).
 	app.Post("/api/v1/payments/stripe/webhook", s.handleStripeWebhook)
+
+	// Communication provider webhooks (public).
+	app.Post("/webhooks/comm/email/inbound", s.handleCommEmailInboundWebhook)
+	app.Post("/webhooks/comm/sms/inbound", s.handleCommSMSInboundWebhook)
+	app.Post("/webhooks/comm/voice/inbound", s.handleCommVoiceInboundWebhook)
+	app.Post("/webhooks/comm/voice/status", s.handleCommVoiceStatusWebhook)
 
 	// Instance registry + billing primitives (admin-only).
 	app.Post("/api/v1/instances", s.handleCreateInstance, apptheory.RequireAuth())
