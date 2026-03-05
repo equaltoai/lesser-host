@@ -288,6 +288,22 @@ func (s *Server) syncSoulV3StateFromRegistration(ctx context.Context, agentIDHex
 			return &apptheory.AppError{Code: "app.internal", Message: "failed to read channel"}
 		}
 
+		// Preserve host-managed channel metadata when syncing from a signed registration file.
+		if desired != nil && existing != nil {
+			if strings.TrimSpace(desired.Provider) == "" {
+				desired.Provider = strings.TrimSpace(existing.Provider)
+			}
+			if strings.TrimSpace(desired.SecretRef) == "" {
+				desired.SecretRef = strings.TrimSpace(existing.SecretRef)
+			}
+			if desired.ProvisionedAt.IsZero() && !existing.ProvisionedAt.IsZero() {
+				desired.ProvisionedAt = existing.ProvisionedAt
+			}
+			if desired.DeprovisionedAt.IsZero() && !existing.DeprovisionedAt.IsZero() {
+				desired.DeprovisionedAt = existing.DeprovisionedAt
+			}
+		}
+
 		// If identifier changed or channel removed, clean up old reverse indexes.
 		if existing != nil && strings.TrimSpace(existing.Identifier) != "" && (desired == nil || !strings.EqualFold(strings.TrimSpace(existing.Identifier), strings.TrimSpace(desired.Identifier))) {
 			switch channelType {

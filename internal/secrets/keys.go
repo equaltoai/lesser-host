@@ -17,6 +17,8 @@ const (
 	StripeSecretKeySSMParameterName = "/lesser-host/api/stripe/secret"
 	// #nosec G101 -- SSM parameter path, not a hardcoded credential.
 	StripeWebhookSecretSSMParameterName = "/lesser-host/api/stripe/webhook"
+	// #nosec G101 -- SSM parameter path, not a hardcoded credential.
+	MigaduAPITokenSSMParameterName = "/lesser-host/migadu"
 )
 
 // OpenAIServiceKey loads the OpenAI service API key from SSM.
@@ -49,6 +51,15 @@ func StripeSecretKey(ctx context.Context, client SSMAPI) (string, error) {
 // StripeWebhookSecret loads the Stripe webhook signing secret from SSM.
 func StripeWebhookSecret(ctx context.Context, client SSMAPI) (string, error) {
 	raw, err := loadFirstSSMParameterCached(ctx, client, stripeWebhookSecretCandidates(), 10*time.Minute)
+	if err != nil {
+		return "", err
+	}
+	return parseAPIKeyValue(raw)
+}
+
+// MigaduAPIToken loads the Migadu API token from SSM.
+func MigaduAPIToken(ctx context.Context, client SSMAPI) (string, error) {
+	raw, err := GetSSMParameterCached(ctx, client, MigaduAPITokenSSMParameterName, 10*time.Minute)
 	if err != nil {
 		return "", err
 	}
