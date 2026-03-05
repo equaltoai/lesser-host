@@ -39,6 +39,9 @@ type SoulAgentChannel struct {
 	Capabilities []string `theorydb:"attr:capabilities" json:"capabilities,omitempty"`
 	Protocols    []string `theorydb:"attr:protocols" json:"protocols,omitempty"` // email: smtp|imap
 
+	ENSResolverAddress string `theorydb:"attr:ensResolverAddress" json:"ens_resolver_address,omitempty"`
+	ENSChain           string `theorydb:"attr:ensChain" json:"ens_chain,omitempty"`
+
 	Provider string `theorydb:"attr:provider" json:"provider,omitempty"`
 
 	Verified   bool      `theorydb:"attr:verified" json:"verified"`
@@ -116,6 +119,8 @@ func (c *SoulAgentChannel) UpdateKeys() error {
 	c.Provider = strings.ToLower(strings.TrimSpace(c.Provider))
 	c.Status = strings.ToLower(strings.TrimSpace(c.Status))
 	c.SecretRef = strings.TrimSpace(c.SecretRef)
+	c.ENSResolverAddress = strings.ToLower(strings.TrimSpace(c.ENSResolverAddress))
+	c.ENSChain = strings.ToLower(strings.TrimSpace(c.ENSChain))
 
 	switch c.ChannelType {
 	case SoulChannelTypeEmail:

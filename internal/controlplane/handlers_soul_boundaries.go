@@ -137,8 +137,8 @@ func (s *Server) handleSoulBeginAppendBoundary(ctx *apptheory.Context) (*apptheo
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to check boundary"}
 	}
 
-	// Load the current v2 registration as the base document.
-	baseReg, appErr := s.loadSoulAgentV2RegistrationMap(ctx.Context(), agentIDHex, identity)
+	// Load the current registration as the base document (v2 or v3).
+	baseReg, baseVersion, appErr := s.loadSoulAgentRegistrationMap(ctx.Context(), agentIDHex, identity)
 	if appErr != nil {
 		return nil, appErr
 	}
@@ -150,7 +150,7 @@ func (s *Server) handleSoulBeginAppendBoundary(ctx *apptheory.Context) (*apptheo
 	expectedVersion := identity.SelfDescriptionVersion
 	nextVersion := expectedVersion + 1
 
-	regMap, _, digest, _, _, appErr := s.buildSoulBoundaryAppendV2Registration(ctx.Context(), baseReg, agentIDHex, identity, soulBoundaryAppendBuildInput{
+	regMap, _, _, digest, _, _, appErr := s.buildSoulBoundaryAppendRegistration(ctx.Context(), baseReg, baseVersion, agentIDHex, identity, soulBoundaryAppendBuildInput{
 		BoundaryID:      boundaryID,
 		Category:        category,
 		Statement:       statement,
@@ -269,8 +269,8 @@ func (s *Server) handleSoulAppendBoundary(ctx *apptheory.Context) (*apptheory.Re
 		}
 	}
 
-	// Load the current v2 registration as the base document.
-	baseReg, appErr := s.loadSoulAgentV2RegistrationMap(ctx.Context(), agentIDHex, identity)
+	// Load the current registration as the base document (v2 or v3).
+	baseReg, baseVersion, appErr := s.loadSoulAgentRegistrationMap(ctx.Context(), agentIDHex, identity)
 	if appErr != nil {
 		return nil, appErr
 	}
@@ -279,7 +279,7 @@ func (s *Server) handleSoulAppendBoundary(ctx *apptheory.Context) (*apptheory.Re
 	}
 
 	nextVersion := *expectedVersion + 1
-	regMap, regV2, digest, capsNorm, claimLevels, appErr := s.buildSoulBoundaryAppendV2Registration(ctx.Context(), baseReg, agentIDHex, identity, soulBoundaryAppendBuildInput{
+	regMap, regV2, regV3, digest, capsNorm, claimLevels, appErr := s.buildSoulBoundaryAppendRegistration(ctx.Context(), baseReg, baseVersion, agentIDHex, identity, soulBoundaryAppendBuildInput{
 		BoundaryID:      boundaryID,
 		Category:        category,
 		Statement:       statement,
@@ -325,13 +325,26 @@ func (s *Server) handleSoulAppendBoundary(ctx *apptheory.Context) (*apptheory.Re
 	}
 	_ = boundary.UpdateKeys()
 
-	// Publish a new v2 registration version and append the boundary record atomically in DynamoDB.
-	_, pubErr := s.publishSoulAgentRegistrationV2WithExtraWrites(ctx.Context(), agentIDHex, identity, regV2, regBytes, regSHA256, selfSig, changeSummary, capsNorm, claimLevels, expectedVersion, now, func(tx soulRegistrationV2TxHook) error {
-		tx.Create(boundary)
-		return nil
-	})
-	if pubErr != nil {
-		return nil, pubErr
+	if strings.TrimSpace(baseVersion) == "3" {
+		// Publish a new v3 registration version and append the boundary record atomically in DynamoDB.
+		_, pubErr := s.publishSoulAgentRegistrationV3WithExtraWrites(ctx.Context(), agentIDHex, identity, regV3, regBytes, regSHA256, selfSig, changeSummary, capsNorm, claimLevels, expectedVersion, now, func(tx soulRegistrationV3TxHook) error {
+			tx.Create(boundary)
+			return nil
+		})
+		if pubErr != nil {
+			return nil, pubErr
+		}
+		// Best-effort: keep v3 channel/preferences state in sync.
+		_ = s.syncSoulV3StateFromRegistration(ctx.Context(), agentIDHex, identity, regV3, now)
+	} else {
+		// Publish a new v2 registration version and append the boundary record atomically in DynamoDB.
+		_, pubErr := s.publishSoulAgentRegistrationV2WithExtraWrites(ctx.Context(), agentIDHex, identity, regV2, regBytes, regSHA256, selfSig, changeSummary, capsNorm, claimLevels, expectedVersion, now, func(tx soulRegistrationV2TxHook) error {
+			tx.Create(boundary)
+			return nil
+		})
+		if pubErr != nil {
+			return nil, pubErr
+		}
 	}
 
 	log.Printf("controlplane: soul_integrity boundary_append_published agent=%s boundary=%s request_id=%s", agentIDHex, boundaryID, strings.TrimSpace(ctx.RequestID))
@@ -515,15 +528,15 @@ func soulRegistrationMapHasBoundaryID(reg map[string]any, boundaryID string) boo
 	return false
 }
 
-func (s *Server) loadSoulAgentV2RegistrationMap(ctx context.Context, agentIDHex string, identity *models.SoulAgentIdentity) (map[string]any, *apptheory.AppError) {
+func (s *Server) loadSoulAgentRegistrationMap(ctx context.Context, agentIDHex string, identity *models.SoulAgentIdentity) (reg map[string]any, schemaVersion string, appErr *apptheory.AppError) {
 	if s == nil || identity == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 	if s.soulPacks == nil {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "soul registry bucket is not configured"}
+		return nil, "", &apptheory.AppError{Code: "app.conflict", Message: "soul registry bucket is not configured"}
 	}
 	if strings.TrimSpace(s.cfg.SoulPackBucketName) == "" {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "soul registry bucket is not configured"}
+		return nil, "", &apptheory.AppError{Code: "app.conflict", Message: "soul registry bucket is not configured"}
 	}
 
 	key := soulRegistrationS3Key(agentIDHex)
@@ -531,27 +544,27 @@ func (s *Server) loadSoulAgentV2RegistrationMap(ctx context.Context, agentIDHex 
 	if err != nil {
 		var nsk *s3types.NoSuchKey
 		if errors.As(err, &nsk) {
-			return nil, &apptheory.AppError{Code: "app.conflict", Message: "registration is not yet published; update registration first"}
+			return nil, "", &apptheory.AppError{Code: "app.conflict", Message: "registration is not yet published; update registration first"}
 		}
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to fetch registration"}
+		return nil, "", &apptheory.AppError{Code: "app.internal", Message: "failed to fetch registration"}
 	}
 
-	var reg map[string]any
 	if err := json.Unmarshal(body, &reg); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to parse registration"}
+		return nil, "", &apptheory.AppError{Code: "app.internal", Message: "failed to parse registration"}
 	}
-	if strings.TrimSpace(extractStringField(reg, "version")) != "2" {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "registration is not v2; update registration first"}
+	schemaVersion = strings.TrimSpace(extractStringField(reg, "version"))
+	if schemaVersion != "2" && schemaVersion != "3" {
+		return nil, "", &apptheory.AppError{Code: "app.conflict", Message: "registration version is unsupported; update registration first"}
 	}
 
 	if validateErr := validateSoulUpdateRegistrationIdentityFields(reg, agentIDHex, identity); validateErr != nil {
-		return nil, validateErr
+		return nil, "", validateErr
 	}
 	if wallet := extractStringField(reg, "wallet"); wallet != "" && !strings.EqualFold(wallet, strings.TrimSpace(identity.Wallet)) {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "agent wallet is out of sync; update registration first"}
+		return nil, "", &apptheory.AppError{Code: "app.conflict", Message: "agent wallet is out of sync; update registration first"}
 	}
 
-	return reg, nil
+	return reg, schemaVersion, nil
 }
 
 func computeSoulRegistrationSelfAttestationDigest(reg map[string]any) ([]byte, *apptheory.AppError) {
@@ -581,18 +594,19 @@ func computeSoulRegistrationSelfAttestationDigest(reg map[string]any) ([]byte, *
 	return computeSoulUpdateRegistrationDigest(regCopy, attCopy)
 }
 
-func (s *Server) buildSoulBoundaryAppendV2Registration(ctx context.Context, base map[string]any, agentIDHex string, identity *models.SoulAgentIdentity, input soulBoundaryAppendBuildInput) (reg map[string]any, regV2 *soul.RegistrationFileV2, digest []byte, capsNorm []string, claimLevels map[string]string, appErr *apptheory.AppError) {
+func (s *Server) buildSoulBoundaryAppendRegistration(ctx context.Context, base map[string]any, baseVersion string, agentIDHex string, identity *models.SoulAgentIdentity, input soulBoundaryAppendBuildInput) (reg map[string]any, regV2 *soul.RegistrationFileV2, regV3 *soul.RegistrationFileV3, digest []byte, capsNorm []string, claimLevels map[string]string, appErr *apptheory.AppError) {
 	if s == nil || identity == nil {
-		return nil, nil, nil, nil, nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, nil, nil, nil, nil, nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 	if base == nil {
-		return nil, nil, nil, nil, nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, nil, nil, nil, nil, nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
-	if strings.TrimSpace(extractStringField(base, "version")) != "2" {
-		return nil, nil, nil, nil, nil, &apptheory.AppError{Code: "app.conflict", Message: "registration is not v2; update registration first"}
+	baseVersion = strings.TrimSpace(baseVersion)
+	if baseVersion != "2" && baseVersion != "3" {
+		return nil, nil, nil, nil, nil, nil, &apptheory.AppError{Code: "app.conflict", Message: "registration version is unsupported; update registration first"}
 	}
 	if input.ExpectedPrev < 0 || input.NextVersion <= 0 || input.NextVersion != input.ExpectedPrev+1 {
-		return nil, nil, nil, nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid expected_version"}
+		return nil, nil, nil, nil, nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid expected_version"}
 	}
 
 	// Shallow copy base map so we can mutate fields for the new version.
@@ -641,13 +655,13 @@ func (s *Server) buildSoulBoundaryAppendV2Registration(ctx context.Context, base
 		}
 	}
 	if _, ok := existingIDs[input.BoundaryID]; ok {
-		return nil, nil, nil, nil, nil, &apptheory.AppError{Code: "app.conflict", Message: "boundary with this ID already exists in registration"}
+		return nil, nil, nil, nil, nil, nil, &apptheory.AppError{Code: "app.conflict", Message: "boundary with this ID already exists in registration"}
 	}
 
 	// If DB has additional boundaries (e.g., from old append flows), append them before the new one.
 	dbBounds, listErr := s.listSoulAgentBoundariesNoTruncation(ctx, agentIDHex)
 	if listErr != nil {
-		return nil, nil, nil, nil, nil, listErr
+		return nil, nil, nil, nil, nil, nil, listErr
 	}
 	missing := make([]*models.SoulAgentBoundary, 0, len(dbBounds))
 	for _, b := range dbBounds {
@@ -655,7 +669,7 @@ func (s *Server) buildSoulBoundaryAppendV2Registration(ctx context.Context, base
 			continue
 		}
 		if strings.TrimSpace(b.BoundaryID) == input.BoundaryID {
-			return nil, nil, nil, nil, nil, &apptheory.AppError{Code: "app.conflict", Message: "boundary with this ID already exists"}
+			return nil, nil, nil, nil, nil, nil, &apptheory.AppError{Code: "app.conflict", Message: "boundary with this ID already exists"}
 		}
 		if _, ok := existingIDs[strings.TrimSpace(b.BoundaryID)]; ok {
 			continue
@@ -687,30 +701,42 @@ func (s *Server) buildSoulBoundaryAppendV2Registration(ctx context.Context, base
 
 	regBytes, err := json.Marshal(reg)
 	if err != nil {
-		return nil, nil, nil, nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid registration JSON"}
+		return nil, nil, nil, nil, nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid registration JSON"}
 	}
-	parsed, err := soul.ParseRegistrationFileV2(regBytes)
-	if err != nil {
-		return nil, nil, nil, nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid v2 registration schema"}
-	}
-	if err := parsed.Validate(); err != nil {
-		return nil, nil, nil, nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
+	if baseVersion == "2" {
+		parsed, err := soul.ParseRegistrationFileV2(regBytes)
+		if err != nil {
+			return nil, nil, nil, nil, nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid v2 registration schema"}
+		}
+		if err := parsed.Validate(); err != nil {
+			return nil, nil, nil, nil, nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
+		}
+		regV2 = parsed
+	} else {
+		parsed, err := soul.ParseRegistrationFileV3(regBytes)
+		if err != nil {
+			return nil, nil, nil, nil, nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid v3 registration schema"}
+		}
+		if err := parsed.Validate(); err != nil {
+			return nil, nil, nil, nil, nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
+		}
+		regV3 = parsed
 	}
 
 	digest, appErr = computeSoulRegistrationSelfAttestationDigest(reg)
 	if appErr != nil {
-		return nil, nil, nil, nil, nil, appErr
+		return nil, nil, nil, nil, nil, nil, appErr
 	}
 
 	// Capability indexing inputs.
 	caps := extractCapabilityNames(reg)
 	capsNorm, appErr = normalizeSoulCapabilitiesStrict(s.cfg.SoulSupportedCapabilities, caps)
 	if appErr != nil {
-		return nil, nil, nil, nil, nil, appErr
+		return nil, nil, nil, nil, nil, nil, appErr
 	}
 	claimLevels = extractCapabilityClaimLevels(reg)
 
-	return reg, parsed, digest, capsNorm, claimLevels, nil
+	return reg, regV2, regV3, digest, capsNorm, claimLevels, nil
 }
 
 func (s *Server) listSoulAgentBoundariesNoTruncation(ctx context.Context, agentIDHex string) ([]*models.SoulAgentBoundary, *apptheory.AppError) {

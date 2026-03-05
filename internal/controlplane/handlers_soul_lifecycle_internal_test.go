@@ -106,6 +106,11 @@ type soulLifecycleTestDB struct {
 	qVersion    *ttmocks.MockQuery
 	qBoundary   *ttmocks.MockQuery
 	qBoundIdx   *ttmocks.MockQuery
+	qChannel    *ttmocks.MockQuery
+	qPrefs      *ttmocks.MockQuery
+	qEmailIdx   *ttmocks.MockQuery
+	qPhoneIdx   *ttmocks.MockQuery
+	qENS        *ttmocks.MockQuery
 	qContinuity *ttmocks.MockQuery
 	qDispute    *ttmocks.MockQuery
 }
@@ -123,6 +128,11 @@ func newSoulLifecycleTestDB() soulLifecycleTestDB {
 	qVersion := new(ttmocks.MockQuery)
 	qBoundary := new(ttmocks.MockQuery)
 	qBoundIdx := new(ttmocks.MockQuery)
+	qChannel := new(ttmocks.MockQuery)
+	qContactPrefs := new(ttmocks.MockQuery)
+	qEmailIdx := new(ttmocks.MockQuery)
+	qPhoneIdx := new(ttmocks.MockQuery)
+	qENSResolution := new(ttmocks.MockQuery)
 	qContinuity := new(ttmocks.MockQuery)
 	qDispute := new(ttmocks.MockQuery)
 
@@ -138,6 +148,11 @@ func newSoulLifecycleTestDB() soulLifecycleTestDB {
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentVersion")).Return(qVersion).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentBoundary")).Return(qBoundary).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulBoundaryKeywordAgentIndex")).Return(qBoundIdx).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentChannel")).Return(qChannel).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentContactPreferences")).Return(qContactPrefs).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulEmailAgentIndex")).Return(qEmailIdx).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulPhoneAgentIndex")).Return(qPhoneIdx).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(qENSResolution).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentContinuity")).Return(qContinuity).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentDispute")).Return(qDispute).Maybe()
 
@@ -153,6 +168,11 @@ func newSoulLifecycleTestDB() soulLifecycleTestDB {
 		qVersion,
 		qBoundary,
 		qBoundIdx,
+		qChannel,
+		qContactPrefs,
+		qEmailIdx,
+		qPhoneIdx,
+		qENSResolution,
 		qContinuity,
 		qDispute,
 	} {
@@ -182,6 +202,11 @@ func newSoulLifecycleTestDB() soulLifecycleTestDB {
 		qVersion:    qVersion,
 		qBoundary:   qBoundary,
 		qBoundIdx:   qBoundIdx,
+		qChannel:    qChannel,
+		qPrefs:      qContactPrefs,
+		qEmailIdx:   qEmailIdx,
+		qPhoneIdx:   qPhoneIdx,
+		qENS:        qENSResolution,
 		qContinuity: qContinuity,
 		qDispute:    qDispute,
 	}

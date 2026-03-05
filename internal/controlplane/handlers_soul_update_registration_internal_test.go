@@ -200,6 +200,197 @@ func TestHandleSoulAgentUpdateRegistration_V2_FirstVersion_AllowsNullPreviousVer
 	}
 }
 
+func TestHandleSoulAgentUpdateRegistration_V3_FirstVersion_AllowsNullPreviousVersionURI(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulLifecycleTestDB()
+	packs := &fakeSoulPackStore{}
+	s := &Server{
+		store: store.New(tdb.db),
+		cfg: config.Config{
+			SoulEnabled:                 true,
+			SoulChainID:                 1,
+			SoulRPCURL:                  "http://rpc.local",
+			SoulRegistryContractAddress: "0x0000000000000000000000000000000000000001",
+			SoulPackBucketName:          "bucket",
+			WebAuthnRPID:                "lesser.host",
+		},
+		soulPacks: packs,
+	}
+
+	agentIDHex := soulLifecycleTestAgentIDHex
+	key, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	wallet := strings.ToLower(crypto.PubkeyToAddress(key.PublicKey).Hex())
+
+	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
+		*dest = models.Domain{Domain: "example.com", InstanceSlug: "inst1", Status: models.DomainStatusVerified}
+	}).Once()
+	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{Slug: "inst1", Owner: "alice"}
+	}).Once()
+	tdb.qWalletIdx.On("First", mock.AnythingOfType("*models.WalletIndex")).Return(theoryErrors.ErrItemNotFound).Once()
+	tdb.qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
+		*dest = models.SoulAgentIdentity{
+			AgentID:   agentIDHex,
+			Domain:    "example.com",
+			LocalID:   "agent-alice",
+			Wallet:    wallet,
+			Status:    models.SoulAgentStatusActive,
+			UpdatedAt: time.Now().Add(-time.Minute).UTC(),
+		}
+	}).Once()
+	tdb.qVersion.On("First", mock.AnythingOfType("*models.SoulAgentVersion")).Return(theoryErrors.ErrItemNotFound).Once()
+	tdb.qCapIdx.On("First", mock.AnythingOfType("*models.SoulCapabilityAgentIndex")).Return(theoryErrors.ErrItemNotFound).Once()
+
+	// v3 sync reads existing channel records by SK.
+	tdb.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(theoryErrors.ErrItemNotFound).Times(3)
+
+	parsedABI, err := abi.JSON(strings.NewReader(soul.SoulRegistryABI))
+	if err != nil {
+		t.Fatalf("parse abi: %v", err)
+	}
+	walletRet, _ := parsedABI.Methods["getAgentWallet"].Outputs.Pack(common.HexToAddress(wallet))
+	client := &fakeEVMClient{callContract: func(ctx context.Context, msg ethereum.CallMsg) ([]byte, error) {
+		if bytes.HasPrefix(msg.Data, parsedABI.Methods["getAgentWallet"].ID) {
+			return walletRet, nil
+		}
+		return nil, ethereum.NotFound
+	}}
+	s.dialEVM = func(ctx context.Context, rpcURL string) (ethRPCClient, error) { return client, nil }
+
+	principalDeclaration := "I accept responsibility for this agent's behavior."
+	principalDigest := crypto.Keccak256([]byte(principalDeclaration))
+	principalSig, err := crypto.Sign(accounts.TextHash(principalDigest), key)
+	if err != nil {
+		t.Fatalf("principal Sign: %v", err)
+	}
+	principalSigHex := "0x" + hex.EncodeToString(principalSig)
+
+	unsigned := map[string]any{
+		"version": "3",
+		"agentId": agentIDHex,
+		"domain":  "example.com",
+		"localId": "agent-alice",
+		"wallet":  wallet,
+		"principal": map[string]any{
+			"type":        "individual",
+			"identifier":  wallet,
+			"displayName": "Alice",
+			"contactUri":  "https://example.com/alice",
+			"declaration": principalDeclaration,
+			"signature":   principalSigHex,
+			"declaredAt":  "2026-03-01T00:00:00Z",
+		},
+		"selfDescription": map[string]any{
+			"purpose":    "I summarize documents for humans.",
+			"authoredBy": "agent",
+		},
+		"capabilities": []any{
+			map[string]any{
+				"capability": "text-summarization",
+				"scope":      "general",
+				"constraints": map[string]any{
+					"maxTokens": 4096,
+				},
+				"claimLevel": "self-declared",
+			},
+		},
+		"boundaries": []any{
+			map[string]any{
+				"id":             "boundary-001",
+				"category":       "refusal",
+				"statement":      "I will not impersonate real people.",
+				"addedAt":        "2026-03-01T00:00:00Z",
+				"addedInVersion": "1",
+				"signature":      "0xabc",
+			},
+		},
+		"channels": map[string]any{
+			"ens": map[string]any{
+				"name":            "agent-alice.lessersoul.eth",
+				"resolverAddress": "0x0000000000000000000000000000000000000002",
+				"chain":           "mainnet",
+			},
+			"email": map[string]any{
+				"address":      "agent-alice@lessersoul.ai",
+				"capabilities": []any{"receive", "send"},
+				"protocols":    []any{"smtp"},
+				"verified":     true,
+				"verifiedAt":   "2026-03-01T00:00:00Z",
+			},
+		},
+		"contactPreferences": map[string]any{
+			"preferred": "email",
+			"availability": map[string]any{
+				"schedule": "always",
+				"timezone": "UTC",
+				"windows":  nil,
+			},
+			"responseExpectation": map[string]any{
+				"target":    "PT4H",
+				"guarantee": "best-effort",
+			},
+			"languages": []any{"en"},
+		},
+		"transparency": map[string]any{
+			"modelFamily": "unknown",
+		},
+		"endpoints": map[string]any{
+			"mcp": "https://example.com/soul/mcp",
+		},
+		"lifecycle": map[string]any{
+			"status":           "active",
+			"statusChangedAt":  "2026-03-01T00:00:00Z",
+			"reason":           nil,
+			"successorAgentId": nil,
+		},
+		"previousVersionUri": nil,
+		"changeSummary":      nil,
+		"attestations":       map[string]any{},
+		"created":            "2026-03-01T00:00:00Z",
+		"updated":            "2026-03-01T00:00:00Z",
+	}
+
+	unsignedBytes, _ := json.Marshal(unsigned)
+	jcsBytes, err := jsoncanonicalizer.Transform(unsignedBytes)
+	if err != nil {
+		t.Fatalf("canonicalize: %v", err)
+	}
+	digest := crypto.Keccak256(jcsBytes)
+	sig, _ := crypto.Sign(accounts.TextHash(digest), key)
+	sigHex := "0x" + hex.EncodeToString(sig)
+
+	reg := map[string]any{}
+	if err := json.Unmarshal(unsignedBytes, &reg); err != nil {
+		t.Fatalf("unmarshal unsigned: %v", err)
+	}
+	regAtt := reg["attestations"].(map[string]any)
+	regAtt["selfAttestation"] = sigHex
+	regBytes, _ := json.Marshal(reg)
+
+	ctx := &apptheory.Context{
+		RequestID:    "r-v3-1",
+		AuthIdentity: "admin",
+		Params:       map[string]string{"agentId": agentIDHex},
+		Request:      apptheory.Request{Body: regBytes},
+	}
+	ctx.Set(ctxKeyOperatorRole, models.RoleAdmin)
+
+	resp, err := s.handleSoulAgentUpdateRegistration(ctx)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if resp.Status != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body=%q)", resp.Status, string(resp.Body))
+	}
+}
+
 func TestHandleSoulAgentUpdateRegistration_V2_RequiresPreviousVersionURI_ForSubsequentVersions(t *testing.T) {
 	t.Parallel()
 
