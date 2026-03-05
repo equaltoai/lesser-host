@@ -83,7 +83,7 @@ func (s *Server) handleSoulBeginAppendBoundary(ctx *apptheory.Context) (*apptheo
 		return nil, appErr
 	}
 	if s == nil || s.soulPacks == nil {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "soul pack bucket is not configured"}
+		return nil, &apptheory.AppError{Code: "app.conflict", Message: "soul registry bucket is not configured"}
 	}
 
 	agentIDHex, _, appErr := parseSoulAgentIDHex(ctx.Param("agentId"))
@@ -189,7 +189,7 @@ func (s *Server) handleSoulAppendBoundary(ctx *apptheory.Context) (*apptheory.Re
 		return nil, appErr
 	}
 	if s == nil || s.soulPacks == nil {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "soul pack bucket is not configured"}
+		return nil, &apptheory.AppError{Code: "app.conflict", Message: "soul registry bucket is not configured"}
 	}
 
 	agentIDHex, _, appErr := parseSoulAgentIDHex(ctx.Param("agentId"))
@@ -520,10 +520,10 @@ func (s *Server) loadSoulAgentV2RegistrationMap(ctx context.Context, agentIDHex 
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 	if s.soulPacks == nil {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "soul pack bucket is not configured"}
+		return nil, &apptheory.AppError{Code: "app.conflict", Message: "soul registry bucket is not configured"}
 	}
 	if strings.TrimSpace(s.cfg.SoulPackBucketName) == "" {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "soul pack bucket is not configured"}
+		return nil, &apptheory.AppError{Code: "app.conflict", Message: "soul registry bucket is not configured"}
 	}
 
 	key := soulRegistrationS3Key(agentIDHex)

@@ -84,10 +84,10 @@ func (s *Server) publishSoulAgentRegistrationV2WithExtraWrites(
 		return 0, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 	if s.soulPacks == nil {
-		return 0, &apptheory.AppError{Code: "app.conflict", Message: "soul pack bucket is not configured"}
+		return 0, &apptheory.AppError{Code: "app.conflict", Message: "soul registry bucket is not configured"}
 	}
 	if strings.TrimSpace(s.cfg.SoulPackBucketName) == "" {
-		return 0, &apptheory.AppError{Code: "app.conflict", Message: "soul pack bucket is not configured"}
+		return 0, &apptheory.AppError{Code: "app.conflict", Message: "soul registry bucket is not configured"}
 	}
 	if strings.TrimSpace(regSHA256) == "" || len(strings.TrimSpace(regSHA256)) != 64 {
 		return 0, &apptheory.AppError{Code: "app.bad_request", Message: "invalid registration sha256"}

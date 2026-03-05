@@ -16,7 +16,7 @@ This document is the **implementation roadmap for `lesser-host`** to fully imple
 
 **Constraints (non-negotiables)**
 - Use **TableTheory** for DynamoDB access and **AppTheory** for HTTP handlers (no raw DynamoDB usage).
-- No new databases (use the existing DynamoDB state table + S3 soul pack bucket).
+- No new databases (use the existing DynamoDB state table + S3 soul registry bucket).
 - Preserve the single-origin / strict CSP posture in `lesser-host/web`.
 
 **Non-goals**

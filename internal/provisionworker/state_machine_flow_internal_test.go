@@ -520,10 +520,8 @@ func TestProvisionStateMachine_SoulEnabled_SuccessPathAcrossSteps(t *testing.T) 
 	}
 
 	lesserReceipt := `{"app":"x","base_domain":"d","account_id":"123456789012","region":"us-east-1","hosted_zone":{"id":"/hostedzone/Z1","name":"d."}}`
-	soulReceipt := `{"version":1,"app":"lesser-soul","instance_domain":"dev.demo.example.com","soul_version":"main"}`
 	s3Client := &fakeS3{byKey: map[string]*s3.GetObjectOutput{
-		"managed/provisioning/demo/j1/state.json":      {Body: io.NopCloser(strings.NewReader(lesserReceipt))},
-		"managed/provisioning/demo/j1/soul-state.json": {Body: io.NopCloser(strings.NewReader(soulReceipt))},
+		"managed/provisioning/demo/j1/state.json": {Body: io.NopCloser(strings.NewReader(lesserReceipt))},
 	}}
 
 	sm := &fakeSecretsManager{
@@ -667,38 +665,10 @@ func TestProvisionStateMachine_SoulEnabled_SuccessPathAcrossSteps(t *testing.T) 
 	delay, done, err = s.advanceProvisionDeployMcpWait(context.Background(), job, "req", now)
 	require.NoError(t, err)
 	require.Zero(t, delay)
-	require.False(t, done)
-	require.Equal(t, provisionStepSoulDeployStart, job.Step)
-	require.Equal(t, now, job.McpWiredAt)
-
-	delay, _, err = s.advanceProvisionSoulDeployStart(context.Background(), job, "req", now)
-	require.NoError(t, err)
-	require.Equal(t, provisionDefaultPollDelay, delay)
-	require.Equal(t, provisionStepSoulDeployWait, job.Step)
-
-	delay, _, err = s.advanceProvisionSoulDeployWait(context.Background(), job, "req", now)
-	require.NoError(t, err)
-	require.Zero(t, delay)
-	require.Equal(t, provisionStepSoulInitStart, job.Step)
-
-	delay, _, err = s.advanceProvisionSoulInitStart(context.Background(), job, "req", now)
-	require.NoError(t, err)
-	require.Equal(t, provisionDefaultPollDelay, delay)
-	require.Equal(t, provisionStepSoulInitWait, job.Step)
-
-	delay, _, err = s.advanceProvisionSoulInitWait(context.Background(), job, "req", now)
-	require.NoError(t, err)
-	require.Zero(t, delay)
-	require.Equal(t, provisionStepSoulReceiptIngest, job.Step)
-
-	delay, done, err = s.advanceProvisionSoulReceiptIngest(context.Background(), job, "req", now)
-	require.NoError(t, err)
-	require.Zero(t, delay)
 	require.True(t, done)
 	require.Equal(t, provisionStepDone, job.Step)
 	require.Equal(t, models.ProvisionJobStatusOK, job.Status)
-	require.Equal(t, now, job.SoulProvisionedAt)
-	require.Equal(t, soulReceipt, job.SoulReceiptJSON)
+	require.Equal(t, now, job.McpWiredAt)
 
 	// upsertParentNSDelegation handles trim + dedupe.
 	require.NoError(t, s.upsertParentNSDelegation(context.Background(), "ZPARENT", "demo.example.com", []string{" ns-1 ", "", "ns-1"}))

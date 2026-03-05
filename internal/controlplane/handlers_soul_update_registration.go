@@ -91,7 +91,7 @@ func (s *Server) handleSoulAgentUpdateRegistration(ctx *apptheory.Context) (*app
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 	if s.soulPacks == nil {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "soul pack bucket is not configured"}
+		return nil, &apptheory.AppError{Code: "app.conflict", Message: "soul registry bucket is not configured"}
 	}
 
 	agentIDHex, agentInt, appErr := parseSoulAgentIDHex(ctx.Param("agentId"))

@@ -11,11 +11,11 @@ import (
 	"time"
 )
 
-func verifyWellKnownHTTPS(ctx context.Context, domainNormalized string, wellKnownPath string, proofValue string) bool {
+func fetchWellKnownHTTPSBody(ctx context.Context, domainNormalized string, wellKnownPath string) (int, string, error) {
 	domainNormalized = strings.TrimSpace(domainNormalized)
-	proofValue = strings.TrimSpace(proofValue)
-	if domainNormalized == "" || proofValue == "" {
-		return false
+	wellKnownPath = strings.TrimSpace(wellKnownPath)
+	if domainNormalized == "" || wellKnownPath == "" {
+		return 0, "", errors.New("domain and path are required")
 	}
 
 	lookupCtx := ctx
@@ -25,7 +25,7 @@ func verifyWellKnownHTTPS(ctx context.Context, domainNormalized string, wellKnow
 	rc, cancel := context.WithTimeout(lookupCtx, 4*time.Second)
 	defer cancel()
 	if err := validateOutboundHost(rc, domainNormalized); err != nil {
-		return false
+		return 0, "", err
 	}
 
 	u := &url.URL{
@@ -40,7 +40,7 @@ func verifyWellKnownHTTPS(ctx context.Context, domainNormalized string, wellKnow
 	}
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, u.String(), nil)
 	if err != nil {
-		return false
+		return 0, "", err
 	}
 
 	transport := http.DefaultTransport
@@ -61,17 +61,29 @@ func verifyWellKnownHTTPS(ctx context.Context, domainNormalized string, wellKnow
 
 	resp, err := client.Do(req) //nolint:gosec // SSRF mitigated by validateOutboundHost + custom DialContext + redirects disabled.
 	if err != nil {
-		return false
+		return 0, "", err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode != http.StatusOK {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1024))
+	if err != nil {
+		return resp.StatusCode, "", err
+	}
+	return resp.StatusCode, strings.TrimSpace(string(body)), nil
+}
+
+func verifyWellKnownHTTPS(ctx context.Context, domainNormalized string, wellKnownPath string, proofValue string) bool {
+	proofValue = strings.TrimSpace(proofValue)
+	if strings.TrimSpace(domainNormalized) == "" || proofValue == "" {
 		return false
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1024))
+	status, body, err := fetchWellKnownHTTPSBody(ctx, domainNormalized, wellKnownPath)
 	if err != nil {
 		return false
 	}
-	return strings.TrimSpace(string(body)) == proofValue
+	if status != http.StatusOK {
+		return false
+	}
+	return body == proofValue
 }

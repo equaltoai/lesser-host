@@ -11,7 +11,7 @@
 
     "tipEnabledLab": "true",
     "tipChainIdLab": "11155111",
-    "tipContractAddressLab": "0xf5Fecc44276dBc1Bf45c40dC7f3cCb1aAfb2AAfe",
+    "tipContractAddressLab": "0x9bbD1A446F957b1f648145a23904Cb37F568C8B9",
     "tipRpcUrlSsmParamLab": "/lesser-host/api/infura/sepolia",
 
     "tipEnabledLive": "false",
@@ -19,10 +19,12 @@
     "tipContractAddressLive": "",
     "tipRpcUrlSsmParamLive": "/lesser-host/api/infura/mainnet",
 
-    "soulEnabledLab": "false",
-    "soulChainIdLab": "84532",
-    "soulRegistryContractAddressLab": "",
-    "soulRpcUrlSsmParamLab": "",
+    "soulEnabledLab": "true",
+    "soulChainIdLab": "11155111",
+    "soulRegistryContractAddressLab": "0xA1F0e8d99E1d970CbA65ac2DB689e4dfe448b5BB",
+    "soulReputationAttestationContractAddressLab": "0xad7A3db418fda93E33DcFe21E1217B001D2909F2",
+    "soulValidationAttestationContractAddressLab": "0x41E48F21B95a54f9a4bfAC5515739cE8F6E3eA4c",
+    "soulRpcUrlSsmParamLab": "/lesser-host/api/infura/sepolia",
 
     "soulEnabledLive": "false",
     "soulChainIdLive": "8453",

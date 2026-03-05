@@ -174,8 +174,26 @@ func TestHandleSoulAgentRegistrationBegin_Success(t *testing.T) {
 	if len(out.Proofs) != 2 {
 		t.Fatalf("expected 2 proof instructions, got %#v", out.Proofs)
 	}
-	if out.Proofs[0].DNSValue == "" || out.Proofs[0].DNSValue != out.Proofs[1].HTTPSBody {
-		t.Fatalf("expected shared proof value, got %#v", out.Proofs)
+
+	dnsProof := out.Proofs[0]
+	httpsProof := out.Proofs[1]
+	if strings.TrimSpace(dnsProof.DNSValue) == "" {
+		t.Fatalf("expected DNS proof value, got %#v", out.Proofs)
+	}
+	if !strings.HasPrefix(dnsProof.DNSValue, soulRegistryProofValue) {
+		t.Fatalf("expected DNS proof to start with %q, got %#v", soulRegistryProofValue, dnsProof.DNSValue)
+	}
+	token := strings.TrimPrefix(dnsProof.DNSValue, soulRegistryProofValue)
+	if strings.TrimSpace(token) == "" {
+		t.Fatalf("expected non-empty proof token, got %#v", dnsProof.DNSValue)
+	}
+
+	var httpsBody map[string]any
+	if err := json.Unmarshal([]byte(httpsProof.HTTPSBody), &httpsBody); err != nil {
+		t.Fatalf("expected HTTPS proof body to be JSON, got %q (err=%v)", httpsProof.HTTPSBody, err)
+	}
+	if got, _ := httpsBody["lesser-soul-agent"].(string); got != token {
+		t.Fatalf("expected HTTPS proof token %q, got %#v", token, httpsBody)
 	}
 	if !strings.HasPrefix(out.Proofs[0].DNSName, soulRegistryProofPrefix) {
 		t.Fatalf("unexpected dns name: %#v", out.Proofs[0].DNSName)

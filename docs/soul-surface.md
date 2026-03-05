@@ -1,9 +1,9 @@
-# Soul surface (registry + instance integration) + AgentCore MCP (lesser-body)
+# Soul surface (registry + instance proofs) + AgentCore MCP (lesser-body)
 
 This doc is an overview of the **“soul” surfaces** in the EqualtoAI stack, and the integration contract between:
 
 - `lesser-host` (control plane / registry + governance)
-- `lesser` (per-instance deployment, path routing)
+- `lesser` (per-instance deployment + domain proof endpoints)
 - `lesser-body` (optional-but-default AgentCore-compatible MCP runtime for managed instances)
 
 ## What “soul” means (two distinct surfaces)
@@ -18,10 +18,11 @@ This doc is an overview of the **“soul” surfaces** in the EqualtoAI stack, a
      - registration artifacts (S3, versioned)
      - operations (Safe-ready payloads + execution recording)
 
-2) **Instance-side routing (`/soul/*`)**
+2) **Instance proof surface**
    - Hosted by `lesser` (per-instance).
-   - A **path-routing** feature (CloudFront/APIGW) that proxies `/soul/*` to an origin discovered via SSM.
-   - Does **not** mutate registry state; it’s instance-local execution/routing.
+   - Exposes proof material used by soul registration flows:
+     - DNS TXT: `_lesser-soul-agent.<domain>` = `lesser-soul-agent=<token>`
+     - HTTPS well-known: `https://<domain>/.well-known/lesser-soul-agent` = `{"lesser-soul-agent":"<token>"}` (JSON)
 
 These two surfaces are related, but intentionally not the same thing. See `docs/adr/0001-component-placement.md`.
 
@@ -111,10 +112,11 @@ Key constraints:
 
 ### Instance flags
 
-- `soul_enabled`: controls the Soul pack deploy/bootstrap steps (instance-side `/soul/*` runtime).
 - `body_enabled`: controls the `lesser-body` + MCP wiring steps.
+- `soul_enabled`: enables soul registry features for the instance (portal/UI + proof workflows); it does **not** deploy
+  any instance-side “soul runtime”.
 
-`body_enabled` defaults to `true` for managed instances and is intentionally **not coupled** to `soul_enabled`.
+`body_enabled` defaults to `true` for managed instances.
 
 ### Control-plane config knobs (managed lesser-body)
 
@@ -133,10 +135,6 @@ After the initial Lesser deploy and receipt ingest:
 
 1) `body.deploy.*` — CodeBuild runner `RUN_MODE=lesser-body`
 2) `deploy.mcp.*` — CodeBuild runner `RUN_MODE=lesser-mcp` (re-deploy Lesser stage stack to attach `/mcp`)
-3) Optional Soul steps (when `soul_enabled=true`):
-   - `soul.deploy.*`
-   - `soul.init.*`
-   - `soul.receipt.ingest`
 
 ### Receipts (debuggable artifacts)
 
@@ -181,9 +179,12 @@ When `body_enabled=true`, `mcp_url` is included in:
 
 ### Smoke test (MCP initialize)
 
+`/mcp` is authenticated. Use a Lesser OAuth access token (JWT) or a managed instance key (when configured).
+
 ```bash
 curl -sSfL -X POST "https://api.<stageDomain>/mcp" \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <token>" \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}'
 ```
 

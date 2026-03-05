@@ -16,7 +16,7 @@ This directory contains maintainer documentation for `lesser-host` (the `lesser.
 - Suspension policy: `docs/adr/0003-suspension-policy.md`
 - Agent ID test vectors: `docs/spec/agent-id-test-vectors.md`
 - On-chain contracts: `docs/soul-registry.md`
-- S3 layouts (packs + registry artifacts): `docs/soul-pack-bucket-layout.md`
+- S3 registry artifact layouts: `docs/soul-pack-bucket-layout.md`
 
 ## Managed provisioning
 

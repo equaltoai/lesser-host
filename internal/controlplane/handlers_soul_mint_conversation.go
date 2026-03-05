@@ -744,10 +744,10 @@ func (s *Server) handleSoulBeginFinalizeMintConversation(ctx *apptheory.Context)
 		return nil, appErr
 	}
 	if s == nil || s.soulPacks == nil {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "soul pack bucket is not configured"}
+		return nil, &apptheory.AppError{Code: "app.conflict", Message: "soul registry bucket is not configured"}
 	}
 	if strings.TrimSpace(s.cfg.SoulPackBucketName) == "" {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "soul pack bucket is not configured"}
+		return nil, &apptheory.AppError{Code: "app.conflict", Message: "soul registry bucket is not configured"}
 	}
 
 	regID := strings.TrimSpace(ctx.Param("id"))
@@ -863,10 +863,10 @@ func (s *Server) handleSoulFinalizeMintConversation(ctx *apptheory.Context) (*ap
 		return nil, appErr
 	}
 	if s == nil || s.soulPacks == nil {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "soul pack bucket is not configured"}
+		return nil, &apptheory.AppError{Code: "app.conflict", Message: "soul registry bucket is not configured"}
 	}
 	if strings.TrimSpace(s.cfg.SoulPackBucketName) == "" {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "soul pack bucket is not configured"}
+		return nil, &apptheory.AppError{Code: "app.conflict", Message: "soul registry bucket is not configured"}
 	}
 
 	regID := strings.TrimSpace(ctx.Param("id"))

@@ -1,0 +1,128 @@
+{
+  "version": "1.0",
+  "chainId": "11155111",
+  "createdAt": 1772628919474,
+  "meta": {
+    "name": "lesser-host sepolia post-deploy (2026-03-04)",
+    "description": "SoulRegistry admin calls: setRenderer(0..2), setMintFee, addAttestor.",
+    "txBuilderVersion": "1.0.0",
+    "createdFromSafeAddress": "0xfE63333F303D4f7b2354f7E3eca752C812D65907",
+    "createdFromOwnerAddress": ""
+  },
+  "transactions": [
+    {
+      "to": "0xA1F0e8d99E1d970CbA65ac2DB689e4dfe448b5BB",
+      "value": "0",
+      "data": "0xce993c79000000000000000000000000000000000000000000000000000000000000000000000000000000000000000080f48bed91176ab2056e42ad22fbf4eea7d63a32",
+      "contractMethod": {
+        "inputs": [
+          {
+            "internalType": "uint8",
+            "name": "styleId",
+            "type": "uint8"
+          },
+          {
+            "internalType": "address",
+            "name": "renderer",
+            "type": "address"
+          }
+        ],
+        "name": "setRenderer",
+        "payable": false
+      },
+      "contractInputsValues": {
+        "styleId": "0",
+        "renderer": "0x80F48BeD91176aB2056e42aD22FBF4Eea7d63a32"
+      }
+    },
+    {
+      "to": "0xA1F0e8d99E1d970CbA65ac2DB689e4dfe448b5BB",
+      "value": "0",
+      "data": "0xce993c790000000000000000000000000000000000000000000000000000000000000001000000000000000000000000b01f22e687a08cffd67f2c8dd6af3cbc1de0fa05",
+      "contractMethod": {
+        "inputs": [
+          {
+            "internalType": "uint8",
+            "name": "styleId",
+            "type": "uint8"
+          },
+          {
+            "internalType": "address",
+            "name": "renderer",
+            "type": "address"
+          }
+        ],
+        "name": "setRenderer",
+        "payable": false
+      },
+      "contractInputsValues": {
+        "styleId": "1",
+        "renderer": "0xB01f22E687A08cfFd67F2C8dd6AF3cBC1de0fA05"
+      }
+    },
+    {
+      "to": "0xA1F0e8d99E1d970CbA65ac2DB689e4dfe448b5BB",
+      "value": "0",
+      "data": "0xce993c790000000000000000000000000000000000000000000000000000000000000002000000000000000000000000f95fc9019b99147e7469b31b70e2e42daa1875b1",
+      "contractMethod": {
+        "inputs": [
+          {
+            "internalType": "uint8",
+            "name": "styleId",
+            "type": "uint8"
+          },
+          {
+            "internalType": "address",
+            "name": "renderer",
+            "type": "address"
+          }
+        ],
+        "name": "setRenderer",
+        "payable": false
+      },
+      "contractInputsValues": {
+        "styleId": "2",
+        "renderer": "0xF95fC9019B99147e7469B31B70E2e42DaA1875b1"
+      }
+    },
+    {
+      "to": "0xA1F0e8d99E1d970CbA65ac2DB689e4dfe448b5BB",
+      "value": "0",
+      "data": "0xeddd0d9c0000000000000000000000000000000000000000000000000001c6bf52634000",
+      "contractMethod": {
+        "inputs": [
+          {
+            "internalType": "uint256",
+            "name": "fee",
+            "type": "uint256"
+          }
+        ],
+        "name": "setMintFee",
+        "payable": false
+      },
+      "contractInputsValues": {
+        "fee": "500000000000000"
+      }
+    },
+    {
+      "to": "0xA1F0e8d99E1d970CbA65ac2DB689e4dfe448b5BB",
+      "value": "0",
+      "data": "0xe0cae635000000000000000000000000ab6bdbb285bc4e517f679bb7728e254fd097e58f",
+      "contractMethod": {
+        "inputs": [
+          {
+            "internalType": "address",
+            "name": "attestor",
+            "type": "address"
+          }
+        ],
+        "name": "addAttestor",
+        "payable": false
+      },
+      "contractInputsValues": {
+        "attestor": "0xAB6BDbb285bc4e517f679BB7728e254FD097e58f"
+      }
+    }
+  ]
+}
+

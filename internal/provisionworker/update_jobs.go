@@ -661,10 +661,23 @@ func (s *Server) startUpdateDeployRunnerWithMode(ctx context.Context, job *model
 	}
 	env = append(env, cbtypes.EnvironmentVariable{Name: aws.String("RUN_MODE"), Value: aws.String(mode)})
 
-	out, err := s.cb.StartBuild(ctx, &codebuild.StartBuildInput{
+	idempotencyToken := codebuildIdempotencyToken(
+		projectName,
+		inputs.stage,
+		strings.TrimSpace(job.InstanceSlug),
+		strings.TrimSpace(job.ID),
+		mode,
+		strings.TrimSpace(inputs.receiptKey),
+	)
+	startIn := &codebuild.StartBuildInput{
 		ProjectName:                  aws.String(projectName),
 		EnvironmentVariablesOverride: env,
-	})
+	}
+	if idempotencyToken != "" {
+		startIn.IdempotencyToken = aws.String(idempotencyToken)
+	}
+
+	out, err := s.cb.StartBuild(ctx, startIn)
 	if err != nil {
 		return "", err
 	}

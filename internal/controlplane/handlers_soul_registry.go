@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -380,6 +381,7 @@ func (s *Server) handleSoulAgentRegistrationBegin(ctx *apptheory.Context) (*appt
 
 	dnsName := soulRegistryProofPrefix + domainNormalized
 	httpsURL := "https://" + domainNormalized + path.Clean(soulRegistryWellKnown)
+	httpsBody, _ := json.Marshal(map[string]string{"lesser-soul-agent": proofToken})
 
 	return apptheory.JSON(http.StatusCreated, soulAgentRegistrationBeginResponse{
 		Registration: *reg,
@@ -395,7 +397,7 @@ func (s *Server) handleSoulAgentRegistrationBegin(ctx *apptheory.Context) (*appt
 		},
 		Proofs: []soulRegistryProofInstructions{
 			{Method: "dns_txt", DNSName: dnsName, DNSValue: proofValue},
-			{Method: "https_well_known", HTTPSURL: httpsURL, HTTPSBody: proofValue},
+			{Method: "https_well_known", HTTPSURL: httpsURL, HTTPSBody: string(httpsBody)},
 		},
 	})
 }
@@ -558,8 +560,31 @@ func verifySoulRegistryDNS(ctx context.Context, domainNormalized, proofValue str
 	return false
 }
 
-func verifySoulRegistryHTTPS(ctx context.Context, domainNormalized, proofValue string) bool {
-	return verifyWellKnownHTTPS(ctx, domainNormalized, soulRegistryWellKnown, proofValue)
+func verifySoulRegistryHTTPS(ctx context.Context, domainNormalized, proofToken string) bool {
+	proofToken = strings.TrimSpace(proofToken)
+	if strings.TrimSpace(domainNormalized) == "" || proofToken == "" {
+		return false
+	}
+
+	expectedLegacy := soulRegistryProofValue + proofToken
+
+	status, body, err := fetchWellKnownHTTPSBody(ctx, domainNormalized, soulRegistryWellKnown)
+	if err != nil {
+		return false
+	}
+	if status != http.StatusOK {
+		return false
+	}
+	if body == expectedLegacy {
+		return true
+	}
+
+	var parsed map[string]string
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		return false
+	}
+	v := strings.TrimSpace(parsed["lesser-soul-agent"])
+	return v == proofToken || v == expectedLegacy
 }
 
 func verifySoulAgentRegistrationWallet(reg *models.SoulAgentRegistration, signature string) *apptheory.AppError {
@@ -577,7 +602,8 @@ func verifySoulAgentRegistrationProofs(ctx context.Context, reg *models.SoulAgen
 		return false, false, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
-	proofValue := soulRegistryProofValue + strings.TrimSpace(reg.ProofToken)
+	proofToken := strings.TrimSpace(reg.ProofToken)
+	proofValue := soulRegistryProofValue + proofToken
 	verifiedDNS := reg.DNSVerified
 	verifiedHTTPS := reg.HTTPSVerified
 
@@ -588,7 +614,7 @@ func verifySoulAgentRegistrationProofs(ctx context.Context, reg *models.SoulAgen
 		verifiedDNS = true
 	}
 	if !verifiedHTTPS {
-		if ok := verifySoulRegistryHTTPS(ctx, reg.DomainNormalized, proofValue); !ok {
+		if ok := verifySoulRegistryHTTPS(ctx, reg.DomainNormalized, proofToken); !ok {
 			return false, false, &apptheory.AppError{Code: "app.bad_request", Message: "https proof not found"}
 		}
 		verifiedHTTPS = true

@@ -87,7 +87,7 @@ func (s *Server) requireSoulPublishPrereqs(ctx *apptheory.Context) *apptheory.Ap
 		return appErr
 	}
 	if s == nil || s.soulPacks == nil {
-		return &apptheory.AppError{Code: "app.conflict", Message: "soul pack bucket not configured"}
+		return &apptheory.AppError{Code: "app.conflict", Message: "soul registry bucket is not configured"}
 	}
 	return nil
 }
