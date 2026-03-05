@@ -6,6 +6,7 @@ const sepoliaUrl = process.env.SEPOLIA_RPC_URL;
 const sepoliaAccounts = process.env.DEPLOYER_PRIVATE_KEY
   ? [process.env.DEPLOYER_PRIVATE_KEY]
   : [];
+const mainnetUrl = process.env.MAINNET_RPC_URL;
 
 const networks = {
   hardhat: {
@@ -18,6 +19,15 @@ if (sepoliaUrl) {
     type: "http",
     chainId: 11155111,
     url: sepoliaUrl,
+    accounts: sepoliaAccounts,
+  };
+}
+
+if (mainnetUrl) {
+  networks.mainnet = {
+    type: "http",
+    chainId: 1,
+    url: mainnetUrl,
     accounts: sepoliaAccounts,
   };
 }
