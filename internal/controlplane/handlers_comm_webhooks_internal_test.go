@@ -154,3 +154,51 @@ func TestHandleCommSMSInboundWebhook_EnqueuesTelnyxPayload(t *testing.T) {
 	}
 }
 
+func TestHandleCommVoiceInboundWebhook_EnqueuesTelnyxPayload(t *testing.T) {
+	t.Parallel()
+
+	var got *commworker.QueueMessage
+	s := &Server{
+		cfg: config.Config{SoulEnabled: true},
+		enqueueCommMessage: func(_ context.Context, msg commworker.QueueMessage) error {
+			cp := msg
+			got = &cp
+			return nil
+		},
+	}
+
+	body, _ := json.Marshal(map[string]any{
+		"data": map[string]any{
+			"event_type":  "call.hangup",
+			"occurred_at": "2026-03-04T12:00:00Z",
+			"payload": map[string]any{
+				"call_leg_id": "telnyx-call-1",
+				"from":        map[string]any{"phone_number": "+15550142"},
+				"to":          map[string]any{"phone_number": "+15550143"},
+				"duration":    30,
+			},
+		},
+	})
+
+	ctx := &apptheory.Context{
+		RequestID: "r-webhook-voice-1",
+		Request:   apptheory.Request{Body: body},
+	}
+
+	resp, err := s.handleCommVoiceInboundWebhook(ctx)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if resp.Status != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body=%q)", resp.Status, string(resp.Body))
+	}
+	if got == nil || got.Provider != "telnyx" || got.Kind != commworker.QueueMessageKindInbound {
+		t.Fatalf("expected telnyx comm.inbound message, got %#v", got)
+	}
+	if got.Notification.Channel != "voice" || got.Notification.MessageID != "telnyx-call-1" {
+		t.Fatalf("unexpected notification: %#v", got.Notification)
+	}
+	if got.Notification.To == nil || got.Notification.To.Number != "+15550143" {
+		t.Fatalf("unexpected to: %#v", got.Notification.To)
+	}
+}

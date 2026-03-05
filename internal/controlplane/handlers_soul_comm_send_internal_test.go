@@ -236,6 +236,275 @@ func TestHandleSoulCommSend_SendsEmailAndRecordsStatus(t *testing.T) {
 	}
 }
 
+func TestHandleSoulCommSend_SendsSMSAndDebitsCredits(t *testing.T) {
+	t.Parallel()
+
+	db := ttmocks.NewMockExtendedDB()
+	qKey := new(ttmocks.MockQuery)
+	qDomain := new(ttmocks.MockQuery)
+	qIdentity := new(ttmocks.MockQuery)
+	qChannel := new(ttmocks.MockQuery)
+	qCommActivity := new(ttmocks.MockQuery)
+	qStatus := new(ttmocks.MockQuery)
+	qInstance := new(ttmocks.MockQuery)
+	qBudget := new(ttmocks.MockQuery)
+
+	db.On("WithContext", mock.Anything).Return(db).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.InstanceKey")).Return(qKey).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.Domain")).Return(qDomain).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(qIdentity).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentChannel")).Return(qChannel).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentCommActivity")).Return(qCommActivity).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulCommMessageStatus")).Return(qStatus).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.Instance")).Return(qInstance).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(qBudget).Maybe()
+
+	for _, q := range []*ttmocks.MockQuery{qKey, qDomain, qIdentity, qChannel, qCommActivity, qStatus, qInstance, qBudget} {
+		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
+		q.On("OrderBy", mock.Anything, mock.Anything).Return(q).Maybe()
+		q.On("Limit", mock.Anything).Return(q).Maybe()
+		q.On("IfExists").Return(q).Maybe()
+		q.On("ConsistentRead").Return(q).Maybe()
+		q.On("Update", mock.Anything).Return(nil).Maybe()
+		q.On("Create").Return(nil).Maybe()
+		q.On("All", mock.Anything).Return(nil).Maybe()
+	}
+
+	db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Once()
+
+	qKey.On("First", mock.AnythingOfType("*models.InstanceKey")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.InstanceKey](t, args, 0)
+		*dest = models.InstanceKey{ID: "k1", InstanceSlug: "inst1", CreatedAt: time.Now().Add(-time.Hour).UTC()}
+	}).Once()
+
+	agentID := "0x8db124b1d48e366002db4e61cc1501eeb8561e1ef06fd6f9abf9f984501d13ab"
+
+	qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
+		*dest = models.SoulAgentIdentity{
+			AgentID:         agentID,
+			Domain:          "example.com",
+			LocalID:         "agent-alice",
+			Status:          models.SoulAgentStatusActive,
+			LifecycleStatus: models.SoulAgentStatusActive,
+			UpdatedAt:       time.Now().UTC(),
+		}
+	}).Once()
+
+	qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
+		*dest = models.Domain{Domain: "example.com", InstanceSlug: "inst1", Status: models.DomainStatusVerified}
+	}).Once()
+
+	qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentChannel](t, args, 0)
+		*dest = models.SoulAgentChannel{
+			AgentID:       agentID,
+			ChannelType:   models.SoulChannelTypePhone,
+			Identifier:    "+15550142",
+			Verified:      true,
+			ProvisionedAt: time.Now().Add(-time.Hour).UTC(),
+			Status:        models.SoulChannelStatusActive,
+			UpdatedAt:     time.Now().UTC(),
+		}
+	}).Once()
+
+	qCommActivity.On("All", mock.AnythingOfType("*[]*models.SoulAgentCommActivity")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulAgentCommActivity](t, args, 0)
+		*dest = []*models.SoulAgentCommActivity{}
+	}).Twice()
+
+	qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{Slug: "inst1", OveragePolicy: "block"}
+	}).Once()
+
+	qBudget.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.InstanceBudgetMonth](t, args, 0)
+		*dest = models.InstanceBudgetMonth{InstanceSlug: "inst1", Month: time.Now().UTC().Format("2006-01"), IncludedCredits: 1000, UsedCredits: 0, UpdatedAt: time.Now().UTC()}
+	}).Once()
+
+	var sendCalled bool
+	s := &Server{
+		store: store.New(db),
+		cfg:   config.Config{SoulEnabled: true, Stage: "lab"},
+		telnyxSendSMS: func(ctx context.Context, from string, to string, text string) (string, error) {
+			sendCalled = true
+			if from != "+15550142" || to != "+15550143" || text != "Test" {
+				t.Fatalf("unexpected sms args from=%q to=%q text=%q", from, to, text)
+			}
+			return "telnyx-out-1", nil
+		},
+	}
+
+	body, _ := json.Marshal(map[string]any{
+		"channel":   "sms",
+		"agentId":   agentID,
+		"to":        "+15550143",
+		"body":      "Test",
+		"inReplyTo": "telnyx-msg-1",
+	})
+
+	ctx := &apptheory.Context{
+		RequestID: "r-comm-send-sms",
+		Request: apptheory.Request{
+			Body: body,
+			Headers: map[string][]string{
+				"authorization": {"Bearer k1"},
+			},
+		},
+	}
+
+	resp, err := s.handleSoulCommSend(ctx)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if resp.Status != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body=%q)", resp.Status, string(resp.Body))
+	}
+	if !sendCalled {
+		t.Fatalf("expected telnyx send called")
+	}
+
+	var out soulCommSendResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Status != "sent" || out.Provider != "telnyx" || out.Channel != "sms" {
+		t.Fatalf("unexpected response: %#v", out)
+	}
+	if out.ProviderMessageID != "telnyx-out-1" {
+		t.Fatalf("expected provider message id, got %q", out.ProviderMessageID)
+	}
+}
+
+func TestHandleSoulCommSend_SMSInsufficientCreditsBlocksSend(t *testing.T) {
+	t.Parallel()
+
+	db := ttmocks.NewMockExtendedDB()
+	qKey := new(ttmocks.MockQuery)
+	qDomain := new(ttmocks.MockQuery)
+	qIdentity := new(ttmocks.MockQuery)
+	qChannel := new(ttmocks.MockQuery)
+	qCommActivity := new(ttmocks.MockQuery)
+	qInstance := new(ttmocks.MockQuery)
+	qBudget := new(ttmocks.MockQuery)
+
+	db.On("WithContext", mock.Anything).Return(db).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.InstanceKey")).Return(qKey).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.Domain")).Return(qDomain).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(qIdentity).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentChannel")).Return(qChannel).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentCommActivity")).Return(qCommActivity).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.Instance")).Return(qInstance).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(qBudget).Maybe()
+
+	for _, q := range []*ttmocks.MockQuery{qKey, qDomain, qIdentity, qChannel, qCommActivity, qInstance, qBudget} {
+		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
+		q.On("OrderBy", mock.Anything, mock.Anything).Return(q).Maybe()
+		q.On("Limit", mock.Anything).Return(q).Maybe()
+		q.On("IfExists").Return(q).Maybe()
+		q.On("ConsistentRead").Return(q).Maybe()
+		q.On("Update", mock.Anything).Return(nil).Maybe()
+		q.On("All", mock.Anything).Return(nil).Maybe()
+	}
+
+	qKey.On("First", mock.AnythingOfType("*models.InstanceKey")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.InstanceKey](t, args, 0)
+		*dest = models.InstanceKey{ID: "k1", InstanceSlug: "inst1", CreatedAt: time.Now().Add(-time.Hour).UTC()}
+	}).Once()
+
+	agentID := "0x8db124b1d48e366002db4e61cc1501eeb8561e1ef06fd6f9abf9f984501d13ab"
+
+	qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
+		*dest = models.SoulAgentIdentity{
+			AgentID:         agentID,
+			Domain:          "example.com",
+			LocalID:         "agent-alice",
+			Status:          models.SoulAgentStatusActive,
+			LifecycleStatus: models.SoulAgentStatusActive,
+			UpdatedAt:       time.Now().UTC(),
+		}
+	}).Once()
+
+	qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
+		*dest = models.Domain{Domain: "example.com", InstanceSlug: "inst1", Status: models.DomainStatusVerified}
+	}).Once()
+
+	qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentChannel](t, args, 0)
+		*dest = models.SoulAgentChannel{
+			AgentID:       agentID,
+			ChannelType:   models.SoulChannelTypePhone,
+			Identifier:    "+15550142",
+			Verified:      true,
+			ProvisionedAt: time.Now().Add(-time.Hour).UTC(),
+			Status:        models.SoulChannelStatusActive,
+			UpdatedAt:     time.Now().UTC(),
+		}
+	}).Once()
+
+	qCommActivity.On("All", mock.AnythingOfType("*[]*models.SoulAgentCommActivity")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulAgentCommActivity](t, args, 0)
+		*dest = []*models.SoulAgentCommActivity{}
+	}).Twice()
+
+	qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{Slug: "inst1", OveragePolicy: "block"}
+	}).Once()
+
+	qBudget.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.InstanceBudgetMonth](t, args, 0)
+		*dest = models.InstanceBudgetMonth{InstanceSlug: "inst1", Month: time.Now().UTC().Format("2006-01"), IncludedCredits: 0, UsedCredits: 0, UpdatedAt: time.Now().UTC()}
+	}).Once()
+
+	var sendCalled bool
+	s := &Server{
+		store: store.New(db),
+		cfg:   config.Config{SoulEnabled: true, Stage: "lab"},
+		telnyxSendSMS: func(ctx context.Context, from string, to string, text string) (string, error) {
+			sendCalled = true
+			return "telnyx-out-1", nil
+		},
+	}
+
+	body, _ := json.Marshal(map[string]any{
+		"channel":   "sms",
+		"agentId":   agentID,
+		"to":        "+15550143",
+		"body":      "Test",
+		"inReplyTo": "telnyx-msg-1",
+	})
+
+	ctx := &apptheory.Context{
+		RequestID: "r-comm-send-sms-credits",
+		Request: apptheory.Request{
+			Body: body,
+			Headers: map[string][]string{
+				"authorization": {"Bearer k1"},
+			},
+		},
+	}
+
+	_, err := s.handleSoulCommSend(ctx)
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	appErr, ok := err.(*apptheory.AppTheoryError)
+	if !ok {
+		t.Fatalf("expected AppTheoryError, got %T", err)
+	}
+	if appErr.Code != "comm.insufficient_credits" || appErr.StatusCode != http.StatusConflict {
+		t.Fatalf("expected comm.insufficient_credits/409, got %q/%d", appErr.Code, appErr.StatusCode)
+	}
+	if sendCalled {
+		t.Fatalf("expected telnyx send not called")
+	}
+}
+
 func TestHandleSoulCommStatus_ReturnsStatusRecord(t *testing.T) {
 	t.Parallel()
 

@@ -31,6 +31,10 @@ type Server struct {
 	ssmPutSecureValue func(ctx context.Context, name string, value string, overwrite bool) error
 	migaduCreateEmail func(ctx context.Context, localPart string, name string, password string) error
 	migaduSendSMTP    func(ctx context.Context, username string, password string, from string, recipients []string, data []byte) error
+	telnyxSearchNums  func(ctx context.Context, countryCode string, limit int) ([]string, error)
+	telnyxOrderNumber func(ctx context.Context, phoneNumber string) (string, error)
+	telnyxRelease     func(ctx context.Context, phoneNumber string) error
+	telnyxSendSMS     func(ctx context.Context, from string, to string, text string) (string, error)
 
 	enqueueCommMessage func(ctx context.Context, msg commworker.QueueMessage) error
 }
@@ -55,6 +59,10 @@ func NewServer(cfg config.Config, st *store.Store) *Server {
 		ssmPutSecureValue: defaultSSMPutSecureString,
 		migaduCreateEmail: defaultMigaduCreateMailbox,
 		migaduSendSMTP:    defaultMigaduSendSMTP,
+		telnyxSearchNums:  defaultTelnyxSearchAvailablePhoneNumbers,
+		telnyxOrderNumber: defaultTelnyxOrderPhoneNumber,
+		telnyxRelease:     defaultTelnyxReleasePhoneNumber,
+		telnyxSendSMS:     defaultTelnyxSendSMS,
 	}
 	srv.enqueueCommMessage = srv.queues.enqueueCommMessage
 	return srv
@@ -213,6 +221,9 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 	app.Post("/api/v1/soul/agents/{agentId}/update-registration", s.handleSoulAgentUpdateRegistration, apptheory.RequireAuth())
 	app.Post("/api/v1/soul/agents/{agentId}/channels/email/provision/begin", s.handleSoulBeginProvisionEmailChannel, apptheory.RequireAuth())
 	app.Post("/api/v1/soul/agents/{agentId}/channels/email/provision", s.handleSoulProvisionEmailChannel, apptheory.RequireAuth())
+	app.Post("/api/v1/soul/agents/{agentId}/channels/phone/provision/begin", s.handleSoulBeginProvisionPhoneChannel, apptheory.RequireAuth())
+	app.Post("/api/v1/soul/agents/{agentId}/channels/phone/provision", s.handleSoulProvisionPhoneChannel, apptheory.RequireAuth())
+	app.Delete("/api/v1/soul/agents/{agentId}/channels/phone", s.handleSoulDeprovisionPhoneChannel, apptheory.RequireAuth())
 	app.Get("/api/v1/soul/operations", s.handleListSoulOperations, apptheory.RequireAuth())
 	app.Get("/api/v1/soul/operations/{id}", s.handleGetSoulOperation, apptheory.RequireAuth())
 	app.Post("/api/v1/soul/operations/{id}/record-execution", s.handleRecordSoulOperationExecution, apptheory.RequireAuth())

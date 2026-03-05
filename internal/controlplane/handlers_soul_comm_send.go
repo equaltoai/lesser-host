@@ -13,10 +13,17 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
+	"github.com/theory-cloud/tabletheory"
+	"github.com/theory-cloud/tabletheory/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
+	"github.com/equaltoai/lesser-host/internal/billing"
 	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/store/models"
+)
+
+const (
+	commSMSSendCreditCost int64 = 4 // 1000 credits = $1.00 (default). Telnyx SMS is ~$0.004.
 )
 
 type soulCommSendRequest struct {
@@ -93,24 +100,24 @@ func (s *Server) handleSoulCommSend(ctx *apptheory.Context) (*apptheory.Response
 		if subject == "" {
 			return nil, apptheory.NewAppTheoryError("comm.invalid_request", "subject is required for email").WithStatusCode(http.StatusBadRequest)
 		}
+	} else {
+		to = normalizeCommPhoneE164(to)
+		if !soulE164Regex.MatchString(to) {
+			return nil, apptheory.NewAppTheoryError("comm.invalid_request", "to must be an E.164 phone number").WithStatusCode(http.StatusBadRequest)
+		}
 	}
 	body := strings.TrimSpace(req.Body)
 	if body == "" {
 		return nil, apptheory.NewAppTheoryError("comm.invalid_request", "body is required").WithStatusCode(http.StatusBadRequest)
 	}
 
-	// M5 MVP: email only.
-	if req.Channel != "email" {
-		return nil, apptheory.NewAppTheoryError("comm.provider_unavailable", "channel not supported").WithStatusCode(http.StatusServiceUnavailable)
-	}
-
-	// Minimal boundary enforcement MVP: require inReplyTo for outbound email.
+	// Minimal boundary enforcement MVP: require inReplyTo for outbound communication.
 	inReplyTo := ""
 	if req.InReplyTo != nil {
 		inReplyTo = strings.TrimSpace(*req.InReplyTo)
 	}
 	if inReplyTo == "" {
-		return nil, apptheory.NewAppTheoryError("comm.boundary_violation", "unsolicited outbound email is not allowed; inReplyTo is required").WithStatusCode(http.StatusForbidden)
+		return nil, apptheory.NewAppTheoryError("comm.boundary_violation", "unsolicited outbound communication is not allowed; inReplyTo is required").WithStatusCode(http.StatusForbidden)
 	}
 
 	identity, err := s.getSoulAgentIdentity(ctx.Context(), agentIDHex)
@@ -132,7 +139,12 @@ func (s *Server) handleSoulCommSend(ctx *apptheory.Context) (*apptheory.Response
 		return nil, appErr
 	}
 
-	ch, chErr := getSoulAgentItemBySK[models.SoulAgentChannel](s, ctx.Context(), agentIDHex, "CHANNEL#email")
+	channelSK := "CHANNEL#email"
+	if req.Channel == "sms" || req.Channel == "voice" {
+		channelSK = "CHANNEL#phone"
+	}
+
+	ch, chErr := getSoulAgentItemBySK[models.SoulAgentChannel](s, ctx.Context(), agentIDHex, channelSK)
 	if chErr != nil {
 		if theoryErrors.IsNotFound(chErr) {
 			return nil, apptheory.NewAppTheoryError("comm.channel_not_provisioned", "channel is not provisioned").WithStatusCode(http.StatusConflict)
@@ -148,24 +160,20 @@ func (s *Server) handleSoulCommSend(ctx *apptheory.Context) (*apptheory.Response
 
 	// Basic outbound rate limiting MVP.
 	now := time.Now().UTC()
-	hourCount, countErr := s.countSoulOutboundCommSince(ctx.Context(), agentIDHex, "email", now.Add(-1*time.Hour), 250)
+	hourCount, countErr := s.countSoulOutboundCommSince(ctx.Context(), agentIDHex, req.Channel, now.Add(-1*time.Hour), 250)
 	if countErr != nil {
 		return nil, apptheory.NewAppTheoryError("comm.internal", "internal error").WithStatusCode(http.StatusInternalServerError)
 	}
-	dayCount, countErr := s.countSoulOutboundCommSince(ctx.Context(), agentIDHex, "email", now.Add(-24*time.Hour), 500)
+	dayCount, countErr := s.countSoulOutboundCommSince(ctx.Context(), agentIDHex, req.Channel, now.Add(-24*time.Hour), 500)
 	if countErr != nil {
 		return nil, apptheory.NewAppTheoryError("comm.internal", "internal error").WithStatusCode(http.StatusInternalServerError)
 	}
-	if hourCount >= 50 || dayCount >= 500 {
+	maxHour, maxDay := 50, 500
+	if req.Channel == "sms" {
+		maxHour, maxDay = 20, 200
+	}
+	if hourCount >= maxHour || dayCount >= maxDay {
 		return nil, apptheory.NewAppTheoryError("comm.rate_limited", "rate limited").WithStatusCode(http.StatusTooManyRequests)
-	}
-	if s.ssmGetParameter == nil || s.migaduSendSMTP == nil {
-		return nil, apptheory.NewAppTheoryError("comm.provider_unavailable", "provider not configured").WithStatusCode(http.StatusServiceUnavailable)
-	}
-
-	password, err := s.ssmGetParameter(ctx.Context(), s.soulAgentEmailPasswordSSMParam(agentIDHex))
-	if err != nil || strings.TrimSpace(password) == "" {
-		return nil, apptheory.NewAppTheoryError("comm.provider_unavailable", "channel credentials not available").WithStatusCode(http.StatusServiceUnavailable)
 	}
 
 	messageIDToken, err := generateRandomSecret(12)
@@ -173,38 +181,170 @@ func (s *Server) handleSoulCommSend(ctx *apptheory.Context) (*apptheory.Response
 		return nil, apptheory.NewAppTheoryError("comm.internal", "internal error").WithStatusCode(http.StatusInternalServerError)
 	}
 	messageID := "comm-msg-" + messageIDToken
-	// RFC 5322 Message-ID uses angle brackets.
-	providerMessageID := fmt.Sprintf("<%s@lessersoul.ai>", messageID)
 
-	emailRaw, recipients, buildErr := buildOutboundEmailRFC5322(outboundEmailRFC5322Input{
-		From:               strings.TrimSpace(ch.Identifier),
-		To:                 to,
-		CC:                 req.CC,
-		BCC:                req.BCC,
-		ReplyTo:            strings.TrimSpace(req.ReplyTo),
-		Subject:            strings.TrimSpace(req.Subject),
-		Body:               body,
-		MessageID:          providerMessageID,
-		InReplyToMessageID: inReplyTo,
-		SentAt:             now,
-	})
-	if buildErr != nil {
-		return nil, buildErr
-	}
+	provider := ""
+	providerMessageID := ""
 
-	if err := s.migaduSendSMTP(ctx.Context(), strings.TrimSpace(ch.Identifier), strings.TrimSpace(password), strings.TrimSpace(ch.Identifier), recipients, emailRaw); err != nil {
-		if isCommProviderUnavailable(err) {
-			return nil, apptheory.NewAppTheoryError("comm.provider_unavailable", "provider unavailable").WithStatusCode(http.StatusServiceUnavailable)
+	switch req.Channel {
+	case "email":
+		if s.ssmGetParameter == nil || s.migaduSendSMTP == nil {
+			return nil, apptheory.NewAppTheoryError("comm.provider_unavailable", "provider not configured").WithStatusCode(http.StatusServiceUnavailable)
 		}
-		return nil, apptheory.NewAppTheoryError("comm.provider_rejected", "provider rejected message").WithStatusCode(http.StatusBadGateway)
+
+		password, err := s.ssmGetParameter(ctx.Context(), s.soulAgentEmailPasswordSSMParam(agentIDHex))
+		if err != nil || strings.TrimSpace(password) == "" {
+			return nil, apptheory.NewAppTheoryError("comm.provider_unavailable", "channel credentials not available").WithStatusCode(http.StatusServiceUnavailable)
+		}
+
+		// RFC 5322 Message-ID uses angle brackets.
+		providerMessageID = fmt.Sprintf("<%s@lessersoul.ai>", messageID)
+
+		emailRaw, recipients, buildErr := buildOutboundEmailRFC5322(outboundEmailRFC5322Input{
+			From:               strings.TrimSpace(ch.Identifier),
+			To:                 to,
+			CC:                 req.CC,
+			BCC:                req.BCC,
+			ReplyTo:            strings.TrimSpace(req.ReplyTo),
+			Subject:            strings.TrimSpace(req.Subject),
+			Body:               body,
+			MessageID:          providerMessageID,
+			InReplyToMessageID: inReplyTo,
+			SentAt:             now,
+		})
+		if buildErr != nil {
+			return nil, buildErr
+		}
+
+		if err := s.migaduSendSMTP(ctx.Context(), strings.TrimSpace(ch.Identifier), strings.TrimSpace(password), strings.TrimSpace(ch.Identifier), recipients, emailRaw); err != nil {
+			if isCommProviderUnavailable(err) {
+				return nil, apptheory.NewAppTheoryError("comm.provider_unavailable", "provider unavailable").WithStatusCode(http.StatusServiceUnavailable)
+			}
+			return nil, apptheory.NewAppTheoryError("comm.provider_rejected", "provider rejected message").WithStatusCode(http.StatusBadGateway)
+		}
+		provider = "migadu"
+
+	case "sms":
+		if s.telnyxSendSMS == nil {
+			return nil, apptheory.NewAppTheoryError("comm.provider_unavailable", "provider not configured").WithStatusCode(http.StatusServiceUnavailable)
+		}
+
+		instanceSlug := strings.TrimSpace(key.InstanceSlug)
+		if instanceSlug == "" {
+			return nil, apptheory.NewAppTheoryError("comm.internal", "internal error").WithStatusCode(http.StatusInternalServerError)
+		}
+
+		var inst models.Instance
+		err := s.store.DB.WithContext(ctx.Context()).
+			Model(&models.Instance{}).
+			Where("PK", "=", fmt.Sprintf("INSTANCE#%s", instanceSlug)).
+			Where("SK", "=", models.SKMetadata).
+			First(&inst)
+		if err != nil && !theoryErrors.IsNotFound(err) {
+			return nil, apptheory.NewAppTheoryError("comm.internal", "failed to load instance").WithStatusCode(http.StatusInternalServerError)
+		}
+		allowOverage := strings.EqualFold(strings.TrimSpace(inst.OveragePolicy), "allow")
+
+		month := now.UTC().Format("2006-01")
+		pk := fmt.Sprintf("INSTANCE#%s", instanceSlug)
+		sk := fmt.Sprintf("BUDGET#%s", month)
+		var budget models.InstanceBudgetMonth
+		if err := s.store.DB.WithContext(ctx.Context()).
+			Model(&models.InstanceBudgetMonth{}).
+			Where("PK", "=", pk).
+			Where("SK", "=", sk).
+			ConsistentRead().
+			First(&budget); err != nil {
+			if theoryErrors.IsNotFound(err) {
+				return nil, apptheory.NewAppTheoryError("comm.insufficient_credits", "credits are not configured; purchase credits first").WithStatusCode(http.StatusConflict)
+			}
+			return nil, apptheory.NewAppTheoryError("comm.internal", "failed to load credits budget").WithStatusCode(http.StatusInternalServerError)
+		}
+
+		remaining := budget.IncludedCredits - budget.UsedCredits
+		if remaining < commSMSSendCreditCost && !allowOverage {
+			return nil, apptheory.NewAppTheoryError("comm.insufficient_credits", "insufficient credits").WithStatusCode(http.StatusConflict)
+		}
+
+		includedDebited, overageDebited := billing.PartsForDebit(budget.IncludedCredits, budget.UsedCredits, commSMSSendCreditCost)
+		billingType := billing.TypeFromParts(includedDebited, overageDebited)
+
+		ledger := &models.UsageLedgerEntry{
+			ID:                     billing.UsageLedgerEntryID(instanceSlug, month, messageID, "comm.sms.send", messageID, commSMSSendCreditCost),
+			InstanceSlug:           instanceSlug,
+			Month:                  month,
+			Module:                 "comm.sms.send",
+			Target:                 messageID,
+			Cached:                 false,
+			Reason:                 billingType,
+			RequestID:              messageID,
+			RequestedCredits:       commSMSSendCreditCost,
+			ListCredits:            commSMSSendCreditCost,
+			PricingMultiplierBps:   10000,
+			DebitedCredits:         commSMSSendCreditCost,
+			IncludedDebitedCredits: includedDebited,
+			OverageDebitedCredits:  overageDebited,
+			BillingType:            billingType,
+			ActorURI:               fmt.Sprintf("soul_agent:%s", agentIDHex),
+			CreatedAt:              now.UTC(),
+		}
+		_ = ledger.UpdateKeys()
+
+		updateBudget := &models.InstanceBudgetMonth{
+			InstanceSlug: instanceSlug,
+			Month:        month,
+			UpdatedAt:    now.UTC(),
+		}
+		_ = updateBudget.UpdateKeys()
+
+		maxUsed := budget.IncludedCredits - commSMSSendCreditCost
+		err = s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
+			tx.Put(ledger)
+			if allowOverage {
+				tx.UpdateWithBuilder(updateBudget, func(ub core.UpdateBuilder) error {
+					ub.Add("UsedCredits", commSMSSendCreditCost)
+					ub.Set("UpdatedAt", now.UTC())
+					return nil
+				}, tabletheory.IfExists())
+				return nil
+			}
+			tx.UpdateWithBuilder(updateBudget, func(ub core.UpdateBuilder) error {
+				ub.Add("UsedCredits", commSMSSendCreditCost)
+				ub.Set("UpdatedAt", now.UTC())
+				return nil
+			},
+				tabletheory.IfExists(),
+				tabletheory.ConditionExpression(
+					"attribute_not_exists(usedCredits) OR usedCredits <= :max",
+					map[string]any{
+						":max": maxUsed,
+					},
+				),
+			)
+			return nil
+		})
+		if theoryErrors.IsConditionFailed(err) {
+			return nil, apptheory.NewAppTheoryError("comm.insufficient_credits", "insufficient credits").WithStatusCode(http.StatusConflict)
+		}
+		if err != nil {
+			return nil, apptheory.NewAppTheoryError("comm.internal", "failed to debit credits").WithStatusCode(http.StatusInternalServerError)
+		}
+
+		providerMessageID, err = s.telnyxSendSMS(ctx.Context(), strings.TrimSpace(ch.Identifier), to, body)
+		if err != nil {
+			return nil, apptheory.NewAppTheoryError("comm.provider_rejected", "provider rejected message").WithStatusCode(http.StatusBadGateway)
+		}
+		provider = "telnyx"
+
+	case "voice":
+		return nil, apptheory.NewAppTheoryError("comm.provider_unavailable", "channel not supported").WithStatusCode(http.StatusServiceUnavailable)
 	}
 
 	status := &models.SoulCommMessageStatus{
 		MessageID:         messageID,
 		AgentID:           agentIDHex,
-		ChannelType:       "email",
+		ChannelType:       req.Channel,
 		To:                to,
-		Provider:          "migadu",
+		Provider:          provider,
 		ProviderMessageID: providerMessageID,
 		Status:            models.SoulCommMessageStatusSent,
 		CreatedAt:         now,
@@ -218,7 +358,7 @@ func (s *Server) handleSoulCommSend(ctx *apptheory.Context) (*apptheory.Response
 	activity := &models.SoulAgentCommActivity{
 		AgentID:       agentIDHex,
 		ActivityID:    messageID,
-		ChannelType:   "email",
+		ChannelType:   req.Channel,
 		Direction:     models.SoulCommDirectionOutbound,
 		Counterparty:  to,
 		Action:        "send",
@@ -235,10 +375,10 @@ func (s *Server) handleSoulCommSend(ctx *apptheory.Context) (*apptheory.Response
 	resp, err := apptheory.JSON(http.StatusOK, soulCommSendResponse{
 		MessageID:         messageID,
 		Status:            models.SoulCommMessageStatusSent,
-		Channel:           "email",
+		Channel:           req.Channel,
 		AgentID:           agentIDHex,
 		To:                to,
-		Provider:          "migadu",
+		Provider:          provider,
 		ProviderMessageID: providerMessageID,
 		CreatedAt:         now.Format(time.RFC3339Nano),
 	})
@@ -246,6 +386,16 @@ func (s *Server) handleSoulCommSend(ctx *apptheory.Context) (*apptheory.Response
 		return nil, apptheory.NewAppTheoryError("comm.internal", "internal error").WithStatusCode(http.StatusInternalServerError)
 	}
 	return resp, nil
+}
+
+func normalizeCommPhoneE164(raw string) string {
+	raw = strings.TrimSpace(raw)
+	raw = strings.ReplaceAll(raw, " ", "")
+	raw = strings.ReplaceAll(raw, "-", "")
+	raw = strings.ReplaceAll(raw, "(", "")
+	raw = strings.ReplaceAll(raw, ")", "")
+	raw = strings.ReplaceAll(raw, ".", "")
+	return raw
 }
 
 func (s *Server) handleSoulCommStatus(ctx *apptheory.Context) (*apptheory.Response, error) {

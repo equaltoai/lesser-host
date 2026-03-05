@@ -19,6 +19,8 @@ const (
 	StripeWebhookSecretSSMParameterName = "/lesser-host/api/stripe/webhook"
 	// #nosec G101 -- SSM parameter path, not a hardcoded credential.
 	MigaduAPITokenSSMParameterName = "/lesser-host/migadu"
+	// #nosec G101 -- SSM parameter path, not a hardcoded credential.
+	TelnyxAPITokenSSMParameterName = "/lesser-host/telnyx"
 )
 
 // OpenAIServiceKey loads the OpenAI service API key from SSM.
@@ -64,6 +66,71 @@ func MigaduAPIToken(ctx context.Context, client SSMAPI) (string, error) {
 		return "", err
 	}
 	return parseAPIKeyValue(raw)
+}
+
+type TelnyxCredentials struct {
+	APIKey             string
+	MessagingProfileID string
+	ConnectionID       string
+}
+
+// TelnyxCreds loads the Telnyx platform credentials from SSM.
+// The parameter may be either a raw API key string or a JSON object including:
+// - api_key (required)
+// - messaging_profile_id (optional)
+// - connection_id (optional)
+func TelnyxCreds(ctx context.Context, client SSMAPI) (TelnyxCredentials, error) {
+	raw, err := GetSSMParameterCached(ctx, client, TelnyxAPITokenSSMParameterName, 10*time.Minute)
+	if err != nil {
+		return TelnyxCredentials{}, err
+	}
+	return parseTelnyxCredentials(raw)
+}
+
+func parseTelnyxCredentials(raw string) (TelnyxCredentials, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return TelnyxCredentials{}, fmt.Errorf("telnyx credentials are empty")
+	}
+
+	if !looksLikeJSONObject(raw) {
+		return TelnyxCredentials{APIKey: raw}, nil
+	}
+
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(raw), &obj); err != nil {
+		return TelnyxCredentials{}, fmt.Errorf("telnyx credentials invalid JSON: %w", err)
+	}
+
+	readString := func(keys ...string) string {
+		for _, key := range keys {
+			v, ok := obj[key]
+			if !ok {
+				continue
+			}
+			s, ok := v.(string)
+			if !ok {
+				continue
+			}
+			s = strings.TrimSpace(s)
+			if s == "" {
+				continue
+			}
+			return s
+		}
+		return ""
+	}
+
+	apiKey := readString("api_key", "apiKey", "key", "token", "value")
+	if apiKey == "" {
+		return TelnyxCredentials{}, fmt.Errorf("telnyx api_key is missing")
+	}
+
+	return TelnyxCredentials{
+		APIKey:             apiKey,
+		MessagingProfileID: readString("messaging_profile_id", "messagingProfileId"),
+		ConnectionID:       readString("connection_id", "connectionId"),
+	}, nil
 }
 
 func stripeStage() string {
