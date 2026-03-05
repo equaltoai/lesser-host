@@ -50,17 +50,68 @@ func TestHandleSoulCommSend_BoundaryViolationRequiresInReplyTo(t *testing.T) {
 
 	db := ttmocks.NewMockExtendedDB()
 	qKey := new(ttmocks.MockQuery)
+	qDomain := new(ttmocks.MockQuery)
+	qIdentity := new(ttmocks.MockQuery)
+	qChannel := new(ttmocks.MockQuery)
+	qCommActivity := new(ttmocks.MockQuery)
 	db.On("WithContext", mock.Anything).Return(db).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.InstanceKey")).Return(qKey).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.Domain")).Return(qDomain).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(qIdentity).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentChannel")).Return(qChannel).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentCommActivity")).Return(qCommActivity).Maybe()
 
-	qKey.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qKey).Maybe()
-	qKey.On("ConsistentRead").Return(qKey).Maybe()
-	qKey.On("IfExists").Return(qKey).Maybe()
-	qKey.On("Update", mock.Anything).Return(nil).Maybe()
+	for _, q := range []*ttmocks.MockQuery{qKey, qDomain, qIdentity, qChannel, qCommActivity} {
+		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
+		q.On("ConsistentRead").Return(q).Maybe()
+		q.On("IfExists").Return(q).Maybe()
+		q.On("Update", mock.Anything).Return(nil).Maybe()
+		q.On("OrderBy", mock.Anything, mock.Anything).Return(q).Maybe()
+		q.On("Limit", mock.Anything).Return(q).Maybe()
+		q.On("All", mock.Anything).Return(nil).Maybe()
+		q.On("Create").Return(nil).Maybe()
+	}
 	qKey.On("First", mock.AnythingOfType("*models.InstanceKey")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.InstanceKey](t, args, 0)
 		*dest = models.InstanceKey{ID: "k1", InstanceSlug: "inst1", CreatedAt: time.Now().Add(-time.Hour).UTC()}
 	}).Once()
+
+	agentID := "0x8db124b1d48e366002db4e61cc1501eeb8561e1ef06fd6f9abf9f984501d13ab"
+
+	qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
+		*dest = models.SoulAgentIdentity{
+			AgentID:         agentID,
+			Domain:          "example.com",
+			LocalID:         "agent-alice",
+			Status:          models.SoulAgentStatusActive,
+			LifecycleStatus: models.SoulAgentStatusActive,
+			UpdatedAt:       time.Now().UTC(),
+		}
+	}).Once()
+
+	qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
+		*dest = models.Domain{Domain: "example.com", InstanceSlug: "inst1", Status: models.DomainStatusVerified}
+	}).Once()
+
+	qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentChannel](t, args, 0)
+		*dest = models.SoulAgentChannel{
+			AgentID:       agentID,
+			ChannelType:   models.SoulChannelTypeEmail,
+			Identifier:    "agent-alice@lessersoul.ai",
+			Verified:      true,
+			ProvisionedAt: time.Now().Add(-time.Hour).UTC(),
+			Status:        models.SoulChannelStatusActive,
+			UpdatedAt:     time.Now().UTC(),
+		}
+	}).Once()
+
+	qCommActivity.On("All", mock.AnythingOfType("*[]*models.SoulAgentCommActivity")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulAgentCommActivity](t, args, 0)
+		*dest = []*models.SoulAgentCommActivity{}
+	}).Twice()
 
 	s := &Server{
 		store: store.New(db),
@@ -69,7 +120,7 @@ func TestHandleSoulCommSend_BoundaryViolationRequiresInReplyTo(t *testing.T) {
 
 	body, _ := json.Marshal(map[string]any{
 		"channel": "email",
-		"agentId": "0x8db124b1d48e366002db4e61cc1501eeb8561e1ef06fd6f9abf9f984501d13ab",
+		"agentId": agentID,
 		"to":      "alice@example.com",
 		"subject": "Hello",
 		"body":    "Test",

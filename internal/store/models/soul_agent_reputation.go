@@ -28,6 +28,7 @@ type SoulAgentReputation struct {
 	Validation float64 `theorydb:"attr:validation" json:"validation"`
 	Trust      float64 `theorydb:"attr:trust" json:"trust"`
 	Integrity  float64 `theorydb:"attr:integrity" json:"integrity"`
+	Communication float64 `theorydb:"attr:communication" json:"communication"`
 
 	TipsReceived         int64 `theorydb:"attr:tipsReceived" json:"tips_received"`
 	Interactions         int64 `theorydb:"attr:interactions" json:"interactions"`
@@ -37,6 +38,17 @@ type SoulAgentReputation struct {
 	DelegationsCompleted int64 `theorydb:"attr:delegationsCompleted" json:"delegations_completed"`
 	BoundaryViolations   int64 `theorydb:"attr:boundaryViolations" json:"boundary_violations"`
 	FailureRecoveries    int64 `theorydb:"attr:failureRecoveries" json:"failure_recoveries"`
+
+	EmailsSent                      int64   `theorydb:"attr:emailsSent" json:"emails_sent"`
+	EmailsReceived                  int64   `theorydb:"attr:emailsReceived" json:"emails_received"`
+	SMSSent                         int64   `theorydb:"attr:smsSent" json:"sms_sent"`
+	SMSReceived                     int64   `theorydb:"attr:smsReceived" json:"sms_received"`
+	CallsMade                       int64   `theorydb:"attr:callsMade" json:"calls_made"`
+	CallsReceived                   int64   `theorydb:"attr:callsReceived" json:"calls_received"`
+	CommunicationBoundaryViolations int64   `theorydb:"attr:communicationBoundaryViolations" json:"communication_boundary_violations"`
+	SpamReports                     int64   `theorydb:"attr:spamReports" json:"spam_reports"`
+	ResponseRate                    float64 `theorydb:"attr:responseRate" json:"response_rate"`
+	AvgResponseTimeMinutes          float64 `theorydb:"attr:avgResponseTimeMinutes" json:"avg_response_time_minutes"`
 
 	UpdatedAt time.Time `theorydb:"attr:updatedAt" json:"updated_at,omitempty"`
 }

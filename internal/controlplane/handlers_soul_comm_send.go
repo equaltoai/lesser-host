@@ -116,9 +116,6 @@ func (s *Server) handleSoulCommSend(ctx *apptheory.Context) (*apptheory.Response
 	if req.InReplyTo != nil {
 		inReplyTo = strings.TrimSpace(*req.InReplyTo)
 	}
-	if inReplyTo == "" {
-		return nil, apptheory.NewAppTheoryError("comm.boundary_violation", "unsolicited outbound communication is not allowed; inReplyTo is required").WithStatusCode(http.StatusForbidden)
-	}
 
 	identity, err := s.getSoulAgentIdentity(ctx.Context(), agentIDHex)
 	if theoryErrors.IsNotFound(err) {
@@ -174,6 +171,31 @@ func (s *Server) handleSoulCommSend(ctx *apptheory.Context) (*apptheory.Response
 	}
 	if hourCount >= maxHour || dayCount >= maxDay {
 		return nil, apptheory.NewAppTheoryError("comm.rate_limited", "rate limited").WithStatusCode(http.StatusTooManyRequests)
+	}
+
+	if inReplyTo == "" {
+		violationID := strings.TrimSpace(ctx.RequestID)
+		if violationID == "" {
+			if token, err := generateRandomSecret(8); err == nil {
+				violationID = token
+			}
+		}
+		activity := &models.SoulAgentCommActivity{
+			AgentID:       agentIDHex,
+			ActivityID:    "comm-violation-" + violationID,
+			ChannelType:   req.Channel,
+			Direction:     models.SoulCommDirectionOutbound,
+			Counterparty:  to,
+			Action:        "send",
+			MessageID:     "",
+			InReplyTo:     "",
+			BoundaryCheck: models.SoulCommBoundaryCheckViolated,
+			Timestamp:     now,
+		}
+		_ = activity.UpdateKeys()
+		_ = s.store.DB.WithContext(ctx.Context()).Model(activity).Create()
+
+		return nil, apptheory.NewAppTheoryError("comm.boundary_violation", "unsolicited outbound communication is not allowed; inReplyTo is required").WithStatusCode(http.StatusForbidden)
 	}
 
 	messageIDToken, err := generateRandomSecret(12)

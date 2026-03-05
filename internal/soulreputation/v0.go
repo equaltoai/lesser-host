@@ -9,24 +9,26 @@ import (
 )
 
 type Weights struct {
-	Economic   float64 `json:"economic"`
-	Social     float64 `json:"social"`
-	Validation float64 `json:"validation"`
-	Trust      float64 `json:"trust"`
-	Integrity  float64 `json:"integrity"`
+	Economic       float64 `json:"economic"`
+	Social         float64 `json:"social"`
+	Validation     float64 `json:"validation"`
+	Trust          float64 `json:"trust"`
+	Integrity      float64 `json:"integrity"`
+	Communication  float64 `json:"communication"`
 }
 
 func (w Weights) Normalized() Weights {
-	sum := w.Economic + w.Social + w.Validation + w.Trust + w.Integrity
+	sum := w.Economic + w.Social + w.Validation + w.Trust + w.Integrity + w.Communication
 	if sum <= 0 {
 		return Weights{Economic: 1}
 	}
 	return Weights{
-		Economic:   w.Economic / sum,
-		Social:     w.Social / sum,
-		Validation: w.Validation / sum,
-		Trust:      w.Trust / sum,
-		Integrity:  w.Integrity / sum,
+		Economic:      w.Economic / sum,
+		Social:        w.Social / sum,
+		Validation:    w.Validation / sum,
+		Trust:         w.Trust / sum,
+		Integrity:     w.Integrity / sum,
+		Communication: w.Communication / sum,
 	}
 }
 
@@ -39,6 +41,17 @@ type SignalCounts struct {
 	DelegationsCompleted int64 `json:"delegations_completed"`
 	BoundaryViolations   int64 `json:"boundary_violations"`
 	FailureRecoveries    int64 `json:"failure_recoveries"`
+
+	EmailsSent                      int64   `json:"emails_sent"`
+	EmailsReceived                  int64   `json:"emails_received"`
+	SMSSent                         int64   `json:"sms_sent"`
+	SMSReceived                     int64   `json:"sms_received"`
+	CallsMade                       int64   `json:"calls_made"`
+	CallsReceived                   int64   `json:"calls_received"`
+	CommunicationBoundaryViolations int64   `json:"communication_boundary_violations"`
+	SpamReports                     int64   `json:"spam_reports"`
+	ResponseRate                    float64 `json:"response_rate"`
+	AvgResponseTimeMinutes          float64 `json:"avg_response_time_minutes"`
 }
 
 type SignalScores struct {
@@ -46,6 +59,7 @@ type SignalScores struct {
 	Validation float64 `json:"validation"`
 	Trust      float64 `json:"trust"`
 	Integrity  float64 `json:"integrity"`
+	Communication float64 `json:"communication"`
 }
 
 type V0Config struct {
@@ -84,13 +98,15 @@ func ComputeV0(agentID string, blockRef uint64, now time.Time, cfg V0Config, sig
 	validation := clamp01(scores.Validation)
 	trust := clamp01(scores.Trust)
 	integrity := clamp01(scores.Integrity)
+	communication := clamp01(scores.Communication)
 
 	composite := clamp01(
 		weights.Economic*economic +
 			weights.Social*social +
 			weights.Validation*validation +
 			weights.Trust*trust +
-			weights.Integrity*integrity,
+			weights.Integrity*integrity +
+			weights.Communication*communication,
 	)
 
 	const maxInt64 = int64(^uint64(0) >> 1)
@@ -110,6 +126,7 @@ func ComputeV0(agentID string, blockRef uint64, now time.Time, cfg V0Config, sig
 		Validation: validation,
 		Trust:      trust,
 		Integrity:  integrity,
+		Communication: communication,
 
 		TipsReceived:         signals.TipsReceived,
 		Interactions:         signals.Interactions,
@@ -119,6 +136,17 @@ func ComputeV0(agentID string, blockRef uint64, now time.Time, cfg V0Config, sig
 		DelegationsCompleted: signals.DelegationsCompleted,
 		BoundaryViolations:   signals.BoundaryViolations,
 		FailureRecoveries:    signals.FailureRecoveries,
+
+		EmailsSent:                      signals.EmailsSent,
+		EmailsReceived:                  signals.EmailsReceived,
+		SMSSent:                         signals.SMSSent,
+		SMSReceived:                     signals.SMSReceived,
+		CallsMade:                       signals.CallsMade,
+		CallsReceived:                   signals.CallsReceived,
+		CommunicationBoundaryViolations: signals.CommunicationBoundaryViolations,
+		SpamReports:                     signals.SpamReports,
+		ResponseRate:                    signals.ResponseRate,
+		AvgResponseTimeMinutes:          signals.AvgResponseTimeMinutes,
 
 		UpdatedAt: now.UTC(),
 	}

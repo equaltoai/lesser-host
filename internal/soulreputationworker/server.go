@@ -268,11 +268,12 @@ func (s *Server) v0Config() soulreputation.V0Config {
 	return soulreputation.V0Config{
 		TipScale: s.cfg.SoulReputationTipScale,
 		Weights: soulreputation.Weights{
-			Economic:   s.cfg.SoulReputationWeightEconomic,
-			Social:     s.cfg.SoulReputationWeightSocial,
-			Validation: s.cfg.SoulReputationWeightValidation,
-			Trust:      s.cfg.SoulReputationWeightTrust,
-			Integrity:  s.cfg.SoulReputationWeightIntegrity,
+			Economic:      s.cfg.SoulReputationWeightEconomic,
+			Social:        s.cfg.SoulReputationWeightSocial,
+			Validation:    s.cfg.SoulReputationWeightValidation,
+			Trust:         s.cfg.SoulReputationWeightTrust,
+			Integrity:     s.cfg.SoulReputationWeightIntegrity,
+			Communication: s.cfg.SoulReputationWeightCommunication,
 		},
 	}
 }
@@ -307,6 +308,11 @@ func (s *Server) computeAndPersistReputations(ctx context.Context, identities []
 			return nil, 0, 0, fmt.Errorf("failed to compute integrity signals for %s: %w", agentID, err)
 		}
 
+		commSignals, err := s.computeCommunicationSignals(ctx, agentID, now)
+		if err != nil {
+			return nil, 0, 0, fmt.Errorf("failed to compute communication signals for %s: %w", agentID, err)
+		}
+
 		signals := soulreputation.SignalCounts{
 			TipsReceived:         tipCounts[agentID],
 			Interactions:         0,
@@ -316,6 +322,17 @@ func (s *Server) computeAndPersistReputations(ctx context.Context, identities []
 			DelegationsCompleted: integritySignals.delegationsCompleted,
 			BoundaryViolations:   integritySignals.boundaryViolations,
 			FailureRecoveries:    integritySignals.failureRecoveries,
+
+			EmailsSent:                      commSignals.emailsSent,
+			EmailsReceived:                  commSignals.emailsReceived,
+			SMSSent:                         commSignals.smsSent,
+			SMSReceived:                     commSignals.smsReceived,
+			CallsMade:                       commSignals.callsMade,
+			CallsReceived:                   commSignals.callsReceived,
+			CommunicationBoundaryViolations: commSignals.boundaryViolations,
+			SpamReports:                     commSignals.spamReports,
+			ResponseRate:                    commSignals.responseRate,
+			AvgResponseTimeMinutes:          commSignals.avgResponseTimeMinutes,
 		}
 
 		scores := soulreputation.SignalScores{
@@ -323,6 +340,7 @@ func (s *Server) computeAndPersistReputations(ctx context.Context, identities []
 			Validation: validationScore,
 			Trust:      0,
 			Integrity:  integritySignals.score,
+			Communication: commSignals.score,
 		}
 
 		rep := soulreputation.ComputeV0(agentID, blockRef, now, v0cfg, signals, scores)
@@ -460,6 +478,165 @@ func (s *Server) computeValidationSignals(ctx context.Context, agentID string, n
 	return score, passed, nil
 }
 
+type communicationResult struct {
+	score float64
+
+	emailsSent     int64
+	emailsReceived int64
+	smsSent        int64
+	smsReceived    int64
+	callsMade      int64
+	callsReceived  int64
+
+	boundaryViolations int64
+	spamReports        int64
+
+	responseRate           float64
+	avgResponseTimeMinutes float64
+}
+
+func (s *Server) computeCommunicationSignals(ctx context.Context, agentID string, now time.Time) (communicationResult, error) {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return communicationResult{}, errors.New("store not initialized")
+	}
+
+	agentID = strings.ToLower(strings.TrimSpace(agentID))
+	if agentID == "" {
+		return communicationResult{}, errors.New("agent id is required")
+	}
+
+	cutoff := now.UTC().Add(-30 * 24 * time.Hour)
+
+	var items []*models.SoulAgentCommActivity
+	err := s.store.DB.WithContext(ctx).
+		Model(&models.SoulAgentCommActivity{}).
+		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentID)).
+		Where("SK", "BEGINS_WITH", "COMM#").
+		OrderBy("SK", "DESC").
+		Limit(1000).
+		All(&items)
+	if err != nil {
+		return communicationResult{}, err
+	}
+
+	result := communicationResult{}
+
+	// First pass: count inbound receives + index inbound timestamps by message id.
+	inboundAt := map[string]time.Time{}
+	for _, it := range items {
+		if it == nil {
+			continue
+		}
+		if it.Timestamp.Before(cutoff) {
+			continue
+		}
+
+		if strings.ToLower(strings.TrimSpace(it.Direction)) != models.SoulCommDirectionInbound {
+			continue
+		}
+		if strings.ToLower(strings.TrimSpace(it.Action)) != "receive" {
+			continue
+		}
+
+		switch strings.ToLower(strings.TrimSpace(it.ChannelType)) {
+		case "email":
+			result.emailsReceived++
+		case "sms":
+			result.smsReceived++
+		case "voice":
+			result.callsReceived++
+		}
+
+		msgID := strings.TrimSpace(it.MessageID)
+		if msgID == "" {
+			continue
+		}
+		if existing, ok := inboundAt[msgID]; !ok || it.Timestamp.Before(existing) {
+			inboundAt[msgID] = it.Timestamp
+		}
+	}
+
+	// Second pass: count outbound sends + boundary violations + response stats.
+	responded := map[string]struct{}{}
+	responseDurations := make([]time.Duration, 0, 32)
+	for _, it := range items {
+		if it == nil {
+			continue
+		}
+		if it.Timestamp.Before(cutoff) {
+			continue
+		}
+
+		if strings.ToLower(strings.TrimSpace(it.Direction)) != models.SoulCommDirectionOutbound {
+			continue
+		}
+		if strings.ToLower(strings.TrimSpace(it.Action)) != "send" {
+			continue
+		}
+
+		switch strings.ToLower(strings.TrimSpace(it.ChannelType)) {
+		case "email":
+			result.emailsSent++
+		case "sms":
+			result.smsSent++
+		case "voice":
+			result.callsMade++
+		}
+
+		if strings.ToLower(strings.TrimSpace(it.BoundaryCheck)) == models.SoulCommBoundaryCheckViolated {
+			result.boundaryViolations++
+		}
+
+		replyTo := strings.TrimSpace(it.InReplyTo)
+		if replyTo == "" {
+			continue
+		}
+		start, ok := inboundAt[replyTo]
+		if !ok {
+			continue
+		}
+		if !it.Timestamp.After(start) {
+			continue
+		}
+		if _, ok := responded[replyTo]; ok {
+			continue
+		}
+		responded[replyTo] = struct{}{}
+		responseDurations = append(responseDurations, it.Timestamp.Sub(start))
+	}
+
+	totalInbound := result.emailsReceived + result.smsReceived + result.callsReceived
+	if totalInbound > 0 {
+		result.responseRate = float64(len(responded)) / float64(totalInbound)
+	}
+
+	if len(responseDurations) > 0 {
+		sum := time.Duration(0)
+		for _, d := range responseDurations {
+			sum += d
+		}
+		result.avgResponseTimeMinutes = sum.Minutes() / float64(len(responseDurations))
+	}
+
+	// Heuristic score: prioritize response rate + responsiveness; penalize boundary violations.
+	score := 0.5
+	if totalInbound > 0 {
+		score += 0.4 * clamp01(result.responseRate)
+		timeScore := 1.0
+		if result.avgResponseTimeMinutes > 0 {
+			timeScore = math.Exp(-result.avgResponseTimeMinutes / 60.0)
+		}
+		score += 0.3 * clamp01(timeScore)
+	}
+	score -= 0.1 * float64(result.boundaryViolations)
+	result.score = clamp01(score)
+
+	// Spam reports/bounce rates not yet captured in v0.
+	result.spamReports = 0
+
+	return result, nil
+}
+
 type integrityResult struct {
 	score                float64
 	endorsements         int64
@@ -552,6 +729,30 @@ func (s *Server) computeIntegritySignals(ctx context.Context, agentID string) (i
 		if isBoundaryViolationFailureType(f.FailureType) {
 			boundaryViolations++
 		}
+	}
+
+	// Communication boundary violations are counted from recent comm activity logs.
+	var commActs []*models.SoulAgentCommActivity
+	if err := s.store.DB.WithContext(ctx).
+		Model(&models.SoulAgentCommActivity{}).
+		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentID)).
+		Where("SK", "BEGINS_WITH", "COMM#").
+		OrderBy("SK", "DESC").
+		Limit(1000).
+		All(&commActs); err != nil {
+		return integrityResult{}, err
+	}
+	for _, act := range commActs {
+		if act == nil {
+			continue
+		}
+		if strings.ToLower(strings.TrimSpace(act.Direction)) != models.SoulCommDirectionOutbound {
+			continue
+		}
+		if strings.ToLower(strings.TrimSpace(act.BoundaryCheck)) != models.SoulCommBoundaryCheckViolated {
+			continue
+		}
+		boundaryViolations++
 	}
 
 	// Determine whether the agent has declared any boundaries.
@@ -727,6 +928,7 @@ func (s *Server) putAgentReputation(ctx context.Context, rep *models.SoulAgentRe
 		"Validation",
 		"Trust",
 		"Integrity",
+		"Communication",
 		"TipsReceived",
 		"Interactions",
 		"ValidationsPassed",
@@ -735,6 +937,16 @@ func (s *Server) putAgentReputation(ctx context.Context, rep *models.SoulAgentRe
 		"DelegationsCompleted",
 		"BoundaryViolations",
 		"FailureRecoveries",
+		"EmailsSent",
+		"EmailsReceived",
+		"SMSSent",
+		"SMSReceived",
+		"CallsMade",
+		"CallsReceived",
+		"CommunicationBoundaryViolations",
+		"SpamReports",
+		"ResponseRate",
+		"AvgResponseTimeMinutes",
 		"UpdatedAt",
 	}
 

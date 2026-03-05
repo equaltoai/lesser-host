@@ -192,18 +192,22 @@ func TestComputeIntegritySignals_UsesDelegationOutcomesBoundariesFailuresAndEndo
 	db := ttmocks.NewMockExtendedDB()
 	qRel := new(ttmocks.MockQuery)
 	qFail := new(ttmocks.MockQuery)
+	qComm := new(ttmocks.MockQuery)
 	qBoundary := new(ttmocks.MockQuery)
 	qV1Endorse := new(ttmocks.MockQuery)
 
 	db.On("WithContext", mock.Anything).Return(db).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentRelationship")).Return(qRel).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentFailure")).Return(qFail).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentCommActivity")).Return(qComm).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentBoundary")).Return(qBoundary).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentPeerEndorsement")).Return(qV1Endorse).Maybe()
 
-	for _, q := range []*ttmocks.MockQuery{qRel, qFail, qBoundary, qV1Endorse} {
+	for _, q := range []*ttmocks.MockQuery{qRel, qFail, qComm, qBoundary, qV1Endorse} {
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 	}
+	qComm.On("OrderBy", mock.Anything, mock.Anything).Return(qComm).Maybe()
+	qComm.On("Limit", mock.Anything).Return(qComm).Maybe()
 
 	qRel.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
 		dest, ok := args.Get(0).(*[]*models.SoulAgentRelationship)
@@ -242,6 +246,14 @@ func TestComputeIntegritySignals_UsesDelegationOutcomesBoundariesFailuresAndEndo
 			t.Fatalf("expected *[]*models.SoulAgentPeerEndorsement, got %T", args.Get(0))
 		}
 		*dest = []*models.SoulAgentPeerEndorsement{{AgentID: agentID, EndorserAgentID: "0xendorser"}}
+	}).Once()
+
+	qComm.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+		dest, ok := args.Get(0).(*[]*models.SoulAgentCommActivity)
+		if !ok {
+			t.Fatalf("expected *[]*models.SoulAgentCommActivity, got %T", args.Get(0))
+		}
+		*dest = []*models.SoulAgentCommActivity{}
 	}).Once()
 
 	srv := NewServer(config.Config{}, store.New(db), &fakeSoulPackStore{})
@@ -318,6 +330,7 @@ func newRecomputeFixture(t *testing.T) recomputeFixture {
 	qVal := new(ttmocks.MockQuery)
 	qRel := new(ttmocks.MockQuery)
 	qFail := new(ttmocks.MockQuery)
+	qComm := new(ttmocks.MockQuery)
 	qBoundary := new(ttmocks.MockQuery)
 	qV1Endorse := new(ttmocks.MockQuery)
 
@@ -327,6 +340,7 @@ func newRecomputeFixture(t *testing.T) recomputeFixture {
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentValidationRecord")).Return(qVal).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentRelationship")).Return(qRel).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentFailure")).Return(qFail).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentCommActivity")).Return(qComm).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentBoundary")).Return(qBoundary).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentPeerEndorsement")).Return(qV1Endorse).Maybe()
 
@@ -351,6 +365,17 @@ func newRecomputeFixture(t *testing.T) recomputeFixture {
 
 	qFail.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qFail).Maybe()
 	qFail.On("All", mock.Anything).Return(nil).Maybe()
+
+	qComm.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qComm).Maybe()
+	qComm.On("OrderBy", mock.Anything, mock.Anything).Return(qComm).Maybe()
+	qComm.On("Limit", mock.Anything).Return(qComm).Maybe()
+	qComm.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+		dest, ok := args.Get(0).(*[]*models.SoulAgentCommActivity)
+		if !ok {
+			t.Fatalf("expected *[]*models.SoulAgentCommActivity, got %T", args.Get(0))
+		}
+		*dest = []*models.SoulAgentCommActivity{}
+	}).Maybe()
 
 	qBoundary.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qBoundary).Maybe()
 	qBoundary.On("All", mock.Anything).Return(nil).Maybe()

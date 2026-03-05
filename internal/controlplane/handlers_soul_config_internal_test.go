@@ -131,6 +131,7 @@ func TestHandleSoulConfig_ErrorsAndSuccess(t *testing.T) {
 			SoulReputationWeightValidation: 3,
 			SoulReputationWeightTrust:      4,
 			SoulReputationWeightIntegrity:  5,
+			SoulReputationWeightCommunication: 6,
 			SoulSupportedCapabilities: []string{
 				"  B  ",
 				"",
@@ -162,6 +163,7 @@ func TestHandleSoulConfig_ErrorsAndSuccess(t *testing.T) {
 		require.Equal(t, float64(3), parsed.ReputationWeights.Validation)
 		require.Equal(t, float64(4), parsed.ReputationWeights.Trust)
 		require.Equal(t, float64(5), parsed.ReputationWeights.Integrity)
+		require.Equal(t, float64(6), parsed.ReputationWeights.Communication)
 
 		require.NotNil(t, resp.Headers)
 		require.Equal(t, []string{"public, max-age=3600"}, resp.Headers["cache-control"])
