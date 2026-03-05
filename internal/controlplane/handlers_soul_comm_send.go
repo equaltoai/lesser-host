@@ -321,14 +321,29 @@ func (s *Server) requireCommInstanceKey(ctx *apptheory.Context) (*models.Instanc
 	if token == "" {
 		return nil, apptheory.NewAppTheoryError("comm.unauthorized", "unauthorized").WithStatusCode(http.StatusUnauthorized)
 	}
-	key, err := s.store.GetInstanceKey(ctx.Context(), token)
-	if theoryErrors.IsNotFound(err) || key == nil {
-		return nil, apptheory.NewAppTheoryError("comm.unauthorized", "unauthorized").WithStatusCode(http.StatusUnauthorized)
+
+	var key *models.InstanceKey
+	candidates := []string{sha256HexTrimmed(token), strings.TrimSpace(token)}
+	for _, id := range candidates {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+
+		item, err := s.store.GetInstanceKey(ctx.Context(), id)
+		if theoryErrors.IsNotFound(err) || item == nil {
+			continue
+		}
+		if err != nil {
+			return nil, apptheory.NewAppTheoryError("comm.internal", "internal error").WithStatusCode(http.StatusInternalServerError)
+		}
+		if !item.RevokedAt.IsZero() {
+			continue
+		}
+		key = item
+		break
 	}
-	if err != nil {
-		return nil, apptheory.NewAppTheoryError("comm.internal", "internal error").WithStatusCode(http.StatusInternalServerError)
-	}
-	if !key.RevokedAt.IsZero() {
+	if key == nil {
 		return nil, apptheory.NewAppTheoryError("comm.unauthorized", "unauthorized").WithStatusCode(http.StatusUnauthorized)
 	}
 
