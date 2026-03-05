@@ -8,6 +8,7 @@ export interface SoulConfigReputationWeights {
 	validation: number;
 	trust: number;
 	integrity: number;
+	communication: number;
 }
 
 export interface SoulConfigResponse {
@@ -22,6 +23,154 @@ export interface SoulConfigResponse {
 
 export function soulPublicGetConfig(): Promise<SoulConfigResponse> {
 	return fetchJson<SoulConfigResponse>('/api/v1/soul/config');
+}
+
+// --- v3 channels + preferences ---
+
+export interface SoulContactPreferencesV3 {
+	preferred: string;
+	fallback?: string;
+	availability: {
+		schedule: string;
+		timezone?: string;
+		windows?: Array<{ days: string[]; startTime: string; endTime: string }>;
+	};
+	responseExpectation: { target: string; guarantee: string };
+	rateLimits?: Record<string, unknown>;
+	languages: string[];
+	contentTypes?: string[];
+	firstContact?: {
+		requireSoul?: boolean;
+		requireReputation?: number | null;
+		introductionExpected?: boolean;
+	};
+}
+
+export interface SoulPublicENSChannel {
+	name: string;
+	resolverAddress?: string;
+	chain?: string;
+}
+
+export interface SoulPublicEmailChannel {
+	address: string;
+	capabilities: string[];
+	protocols?: string[];
+	verified: boolean;
+	verifiedAt?: string;
+	status?: string;
+}
+
+export interface SoulPublicPhoneChannel {
+	number: string;
+	capabilities: string[];
+	provider?: string;
+	verified: boolean;
+	verifiedAt?: string;
+	status?: string;
+}
+
+export interface SoulPublicAgentChannelsResponse {
+	agentId: string;
+	channels: {
+		ens: SoulPublicENSChannel | null;
+		email: SoulPublicEmailChannel | null;
+		phone: SoulPublicPhoneChannel | null;
+	};
+	contactPreferences: SoulContactPreferencesV3 | null;
+	updatedAt: string;
+}
+
+export function soulPublicGetAgentChannels(agentId: string): Promise<SoulPublicAgentChannelsResponse> {
+	return fetchJson<SoulPublicAgentChannelsResponse>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/channels`);
+}
+
+export interface SoulProvisionEmailBeginResponse {
+	version: string;
+	address: string;
+	ens_name: string;
+	digest_hex: string;
+	issued_at: string;
+	expected_version: number;
+	next_version: number;
+	registration: unknown;
+}
+
+export interface SoulProvisionEmailConfirmResponse {
+	version: string;
+	address: string;
+	registration_version: number;
+}
+
+export function soulProvisionEmailBegin(token: string, agentId: string, input: { local_part?: string }): Promise<SoulProvisionEmailBeginResponse> {
+	const req = jsonRequest(input);
+	return fetchJson<SoulProvisionEmailBeginResponse>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/channels/email/provision/begin`, {
+		method: 'POST',
+		headers: { authorization: `Bearer ${token}`, ...req.headers },
+		body: req.body,
+	});
+}
+
+export function soulProvisionEmailConfirm(
+	token: string,
+	agentId: string,
+	input: { local_part?: string; issued_at: string; expected_version: number; self_attestation: string },
+): Promise<SoulProvisionEmailConfirmResponse> {
+	const req = jsonRequest(input);
+	return fetchJson<SoulProvisionEmailConfirmResponse>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/channels/email/provision`, {
+		method: 'POST',
+		headers: { authorization: `Bearer ${token}`, ...req.headers },
+		body: req.body,
+	});
+}
+
+export interface SoulProvisionPhoneBeginResponse {
+	version: string;
+	number: string;
+	digest_hex: string;
+	issued_at: string;
+	expected_version: number;
+	next_version: number;
+	registration: unknown;
+}
+
+export interface SoulProvisionPhoneConfirmResponse {
+	version: string;
+	number: string;
+	registration_version: number;
+}
+
+export function soulProvisionPhoneBegin(
+	token: string,
+	agentId: string,
+	input: { country_code?: string; number?: string },
+): Promise<SoulProvisionPhoneBeginResponse> {
+	const req = jsonRequest(input);
+	return fetchJson<SoulProvisionPhoneBeginResponse>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/channels/phone/provision/begin`, {
+		method: 'POST',
+		headers: { authorization: `Bearer ${token}`, ...req.headers },
+		body: req.body,
+	});
+}
+
+export function soulProvisionPhoneConfirm(
+	token: string,
+	agentId: string,
+	input: { number: string; issued_at: string; expected_version: number; self_attestation: string },
+): Promise<SoulProvisionPhoneConfirmResponse> {
+	const req = jsonRequest(input);
+	return fetchJson<SoulProvisionPhoneConfirmResponse>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/channels/phone/provision`, {
+		method: 'POST',
+		headers: { authorization: `Bearer ${token}`, ...req.headers },
+		body: req.body,
+	});
+}
+
+export function soulDeprovisionPhone(token: string, agentId: string): Promise<{ ok: boolean }> {
+	return fetchJson<{ ok: boolean }>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/channels/phone`, {
+		method: 'DELETE',
+		headers: { authorization: `Bearer ${token}` },
+	});
 }
 
 export interface SoulSearchResult {
@@ -312,6 +461,88 @@ export function soulUpdateRegistration(
 		method: 'POST',
 		headers: { authorization: `Bearer ${token}`, ...req.headers },
 		body: req.body,
+	});
+}
+
+// --- Communication (portal) ---
+
+export interface SoulAgentCommActivity {
+	agent_id: string;
+	activity_id: string;
+	channel_type: string;
+	direction: string;
+	counterparty?: string;
+	action?: string;
+	message_id?: string;
+	in_reply_to?: string;
+	boundary_check?: string;
+	preference_respected?: boolean;
+	timestamp: string;
+}
+
+export interface SoulAgentCommActivityResponse {
+	version: string;
+	activities: SoulAgentCommActivity[];
+	count: number;
+}
+
+export interface SoulAgentCommQueueItem {
+	agent_id: string;
+	message_id: string;
+	channel_type: string;
+	from_address?: string;
+	from_number?: string;
+	from_soul_agent_id?: string;
+	from_display_name?: string;
+	subject?: string;
+	body: string;
+	in_reply_to?: string;
+	received_at: string;
+	scheduled_delivery_time: string;
+	status: string;
+}
+
+export interface SoulAgentCommQueueResponse {
+	version: string;
+	items: SoulAgentCommQueueItem[];
+	count: number;
+}
+
+export interface SoulCommStatusResponse {
+	messageId: string;
+	status: string;
+	channel: string;
+	agentId: string;
+	to: string;
+	provider?: string;
+	providerMessageId?: string;
+	errorCode?: string;
+	errorMessage?: string;
+	createdAt: string;
+	updatedAt?: string;
+}
+
+export function soulAgentListCommActivity(token: string, agentId: string, limit: number = 50): Promise<SoulAgentCommActivityResponse> {
+	const params = new URLSearchParams();
+	params.set('limit', String(limit));
+	const qs = params.toString();
+	return fetchJson<SoulAgentCommActivityResponse>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/comm/activity?${qs}`, {
+		headers: { authorization: `Bearer ${token}` },
+	});
+}
+
+export function soulAgentListCommQueue(token: string, agentId: string, limit: number = 50): Promise<SoulAgentCommQueueResponse> {
+	const params = new URLSearchParams();
+	params.set('limit', String(limit));
+	const qs = params.toString();
+	return fetchJson<SoulAgentCommQueueResponse>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/comm/queue?${qs}`, {
+		headers: { authorization: `Bearer ${token}` },
+	});
+}
+
+export function soulAgentGetCommStatus(token: string, agentId: string, messageId: string): Promise<SoulCommStatusResponse> {
+	return fetchJson<SoulCommStatusResponse>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/comm/status/${encodeURIComponent(messageId)}`, {
+		headers: { authorization: `Bearer ${token}` },
 	});
 }
 

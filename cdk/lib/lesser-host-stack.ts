@@ -1599,10 +1599,10 @@ export class LesserHostStack extends cdk.Stack {
 					}),
 				);
 
-				new cloudwatch.Alarm(this, 'TrustProxy503Alarm', {
-					alarmName: `${namePrefix}-trust-proxy-503`,
-					metric: new cloudwatch.Metric({
-						namespace: 'lesser-host',
+					new cloudwatch.Alarm(this, 'TrustProxy503Alarm', {
+						alarmName: `${namePrefix}-trust-proxy-503`,
+						metric: new cloudwatch.Metric({
+							namespace: 'lesser-host',
 						metricName: 'TrustProxy503',
 						dimensionsMap: { Stage: stage, Service: 'trust-api' },
 						statistic: 'Sum',
@@ -1610,13 +1610,97 @@ export class LesserHostStack extends cdk.Stack {
 					}),
 					threshold: 1,
 					evaluationPeriods: 1,
-					datapointsToAlarm: 1,
-					treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-				});
-			}
+						datapointsToAlarm: 1,
+						treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+					});
 
-		private goLambda(
-			id: string,
+					const commDashboard = new cloudwatch.Dashboard(this, 'CommDashboard', {
+						dashboardName: `${namePrefix}-comm`,
+					});
+
+					const commWebhook5xx = new cloudwatch.MathExpression({
+						expression: `SUM(SEARCH('{lesser-host,Stage,Service,Provider,Channel} MetricName="CommWebhook5xx" AND Stage="${stage}" AND Service="control-plane-api"', 'Sum', 300))`,
+						period: cdk.Duration.minutes(5),
+					});
+					const commOutboundProviderRejected = new cloudwatch.MathExpression({
+						expression: `SUM(SEARCH('{lesser-host,Stage,Service,Instance,Channel,Provider,Status} MetricName="CommOutboundRequests" AND Stage="${stage}" AND Service="control-plane-api" AND Status="provider_rejected"', 'Sum', 300))`,
+						period: cdk.Duration.minutes(5),
+					});
+
+					commDashboard.addWidgets(
+						new cloudwatch.GraphWidget({
+							title: 'Comm Queue Depth',
+							left: [commQueue.metricApproximateNumberOfMessagesVisible({ period: cdk.Duration.minutes(5) })],
+							width: 12,
+						}),
+						new cloudwatch.GraphWidget({
+							title: 'Comm Queue Oldest Message (s)',
+							left: [commQueue.metricApproximateAgeOfOldestMessage({ period: cdk.Duration.minutes(5) })],
+							width: 12,
+						}),
+						new cloudwatch.GraphWidget({
+							title: 'Comm DLQ Visible',
+							left: [commDLQ.metricApproximateNumberOfMessagesVisible({ period: cdk.Duration.minutes(5) })],
+							width: 12,
+						}),
+						new cloudwatch.GraphWidget({
+							title: 'Comm Webhook 5xx (Total)',
+							left: [commWebhook5xx],
+							width: 12,
+						}),
+						new cloudwatch.GraphWidget({
+							title: 'Comm Outbound Provider Rejected (Total)',
+							left: [commOutboundProviderRejected],
+							width: 24,
+						}),
+					);
+
+					const controlPlaneLogGroupName = `/aws/lambda/${controlPlaneFn.functionName}`;
+					logs.LogGroup.fromLogGroupName(this, 'ControlPlaneApiLogGroup', controlPlaneLogGroupName);
+
+					commDashboard.addWidgets(
+						new cloudwatch.LogQueryWidget({
+							title: 'Comm Webhook Failures',
+							width: 24,
+							height: 6,
+							logGroupNames: [controlPlaneLogGroupName],
+							queryString: [
+								'fields @timestamp, path, status, error_code, request_id',
+								'| filter path like /webhooks/comm/ and status >= 400',
+								'| sort @timestamp desc',
+								'| limit 50',
+							].join('\n'),
+						}),
+					);
+
+					new cloudwatch.Alarm(this, 'CommWebhook5xxAlarm', {
+						alarmName: `${namePrefix}-comm-webhooks-5xx`,
+						metric: commWebhook5xx,
+						threshold: 1,
+						evaluationPeriods: 1,
+						datapointsToAlarm: 1,
+						treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+					});
+					new cloudwatch.Alarm(this, 'CommQueueOldestAgeAlarm', {
+						alarmName: `${namePrefix}-comm-queue-oldest-age`,
+						metric: commQueue.metricApproximateAgeOfOldestMessage({ period: cdk.Duration.minutes(5) }),
+						threshold: 300,
+						evaluationPeriods: 1,
+						datapointsToAlarm: 1,
+						treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+					});
+					new cloudwatch.Alarm(this, 'CommOutboundProviderRejectedAlarm', {
+						alarmName: `${namePrefix}-comm-outbound-provider-rejected`,
+						metric: commOutboundProviderRejected,
+						threshold: 10,
+						evaluationPeriods: 1,
+						datapointsToAlarm: 1,
+						treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+					});
+				}
+
+			private goLambda(
+				id: string,
 			entry: string,
 			environment: Record<string, string>,
 			opts?: { memorySize?: number; timeoutSeconds?: number },

@@ -20,6 +20,7 @@ func New(service string) apptheory.ObservabilityHooks {
 	return apptheory.ObservabilityHooks{
 		Log: func(rec apptheory.LogRecord) {
 			emitTrustProxy503BestEffort(service, rec)
+			emitCommWebhookMetricsBestEffort(service, rec)
 
 			level := slog.LevelInfo
 			switch rec.Level {
@@ -92,4 +93,62 @@ func emitTrustProxy503BestEffort(service string, rec apptheory.LogRecord) {
 		"method": strings.TrimSpace(rec.Method),
 		"path":   strings.TrimSpace(rec.Path),
 	})
+}
+
+func emitCommWebhookMetricsBestEffort(service string, rec apptheory.LogRecord) {
+	if strings.TrimSpace(service) != "control-plane-api" {
+		return
+	}
+
+	path := strings.TrimSpace(rec.Path)
+	if !strings.HasPrefix(path, "/webhooks/comm/") {
+		return
+	}
+
+	stage := strings.TrimSpace(os.Getenv("STAGE"))
+	if stage == "" {
+		stage = "lab"
+	}
+
+	provider, channel := commWebhookProviderAndChannel(path)
+	if provider == "" {
+		provider = "unknown"
+	}
+	if channel == "" {
+		channel = "unknown"
+	}
+
+	ms := []hostmetrics.Metric{
+		{Name: "CommWebhookRequests", Unit: hostmetrics.UnitCount, Value: 1},
+	}
+	if rec.Status >= 400 && rec.Status < 500 {
+		ms = append(ms, hostmetrics.Metric{Name: "CommWebhook4xx", Unit: hostmetrics.UnitCount, Value: 1})
+	}
+	if rec.Status >= 500 {
+		ms = append(ms, hostmetrics.Metric{Name: "CommWebhook5xx", Unit: hostmetrics.UnitCount, Value: 1})
+	}
+
+	hostmetrics.Emit("lesser-host", map[string]string{
+		"Stage":    stage,
+		"Service":  strings.TrimSpace(service),
+		"Provider": provider,
+		"Channel":  channel,
+	}, ms, map[string]any{
+		"path":   path,
+		"status": rec.Status,
+	})
+}
+
+func commWebhookProviderAndChannel(path string) (provider string, channel string) {
+	path = strings.TrimSpace(path)
+	switch path {
+	case "/webhooks/comm/email/inbound":
+		return "migadu", "email"
+	case "/webhooks/comm/sms/inbound":
+		return "telnyx", "sms"
+	case "/webhooks/comm/voice/inbound", "/webhooks/comm/voice/status":
+		return "telnyx", "voice"
+	default:
+		return "", ""
+	}
 }

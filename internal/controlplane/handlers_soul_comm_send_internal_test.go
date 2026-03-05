@@ -160,6 +160,7 @@ func TestHandleSoulCommSend_SendsEmailAndRecordsStatus(t *testing.T) {
 	qChannel := new(ttmocks.MockQuery)
 	qCommActivity := new(ttmocks.MockQuery)
 	qStatus := new(ttmocks.MockQuery)
+	qAudit := new(ttmocks.MockQuery)
 
 	db.On("WithContext", mock.Anything).Return(db).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.InstanceKey")).Return(qKey).Maybe()
@@ -168,8 +169,9 @@ func TestHandleSoulCommSend_SendsEmailAndRecordsStatus(t *testing.T) {
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentChannel")).Return(qChannel).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentCommActivity")).Return(qCommActivity).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulCommMessageStatus")).Return(qStatus).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.AuditLogEntry")).Return(qAudit).Maybe()
 
-	for _, q := range []*ttmocks.MockQuery{qKey, qDomain, qIdentity, qChannel, qCommActivity, qStatus} {
+	for _, q := range []*ttmocks.MockQuery{qKey, qDomain, qIdentity, qChannel, qCommActivity, qStatus, qAudit} {
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("OrderBy", mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("Limit", mock.Anything).Return(q).Maybe()
@@ -299,6 +301,7 @@ func TestHandleSoulCommSend_SendsSMSAndDebitsCredits(t *testing.T) {
 	qStatus := new(ttmocks.MockQuery)
 	qInstance := new(ttmocks.MockQuery)
 	qBudget := new(ttmocks.MockQuery)
+	qAudit := new(ttmocks.MockQuery)
 
 	db.On("WithContext", mock.Anything).Return(db).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.InstanceKey")).Return(qKey).Maybe()
@@ -309,8 +312,9 @@ func TestHandleSoulCommSend_SendsSMSAndDebitsCredits(t *testing.T) {
 	db.On("Model", mock.AnythingOfType("*models.SoulCommMessageStatus")).Return(qStatus).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.Instance")).Return(qInstance).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(qBudget).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.AuditLogEntry")).Return(qAudit).Maybe()
 
-	for _, q := range []*ttmocks.MockQuery{qKey, qDomain, qIdentity, qChannel, qCommActivity, qStatus, qInstance, qBudget} {
+	for _, q := range []*ttmocks.MockQuery{qKey, qDomain, qIdentity, qChannel, qCommActivity, qStatus, qInstance, qBudget, qAudit} {
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("OrderBy", mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("Limit", mock.Anything).Return(q).Maybe()

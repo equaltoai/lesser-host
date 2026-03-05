@@ -5,6 +5,7 @@
 	import type {
 		SoulMineAgentItem,
 		SoulPublicAgentResponse,
+		SoulPublicAgentChannelsResponse,
 		SoulPublicValidationsResponse,
 		SoulPublicBoundariesResponse,
 		SoulPublicContinuityResponse,
@@ -15,6 +16,13 @@
 		SoulRotateWalletBeginResponse,
 		SoulRotateWalletConfirmResponse,
 		SoulUpdateRegistrationResponse,
+		SoulProvisionEmailBeginResponse,
+		SoulProvisionEmailConfirmResponse,
+		SoulProvisionPhoneBeginResponse,
+		SoulProvisionPhoneConfirmResponse,
+		SoulAgentCommActivityResponse,
+		SoulAgentCommQueueResponse,
+		SoulCommStatusResponse,
 	} from 'src/lib/api/soul';
 	import {
 		soulAgentRotateWalletBegin,
@@ -32,6 +40,15 @@
 		soulPublicGetCapabilities,
 		soulPublicGetTransparency,
 		soulPublicGetFailures,
+		soulPublicGetAgentChannels,
+		soulProvisionEmailBegin,
+		soulProvisionEmailConfirm,
+		soulProvisionPhoneBegin,
+		soulProvisionPhoneConfirm,
+		soulDeprovisionPhone,
+		soulAgentListCommActivity,
+		soulAgentListCommQueue,
+		soulAgentGetCommStatus,
 		soulAddBoundaryBegin,
 		soulAddBoundary,
 		soulSelfSuspend,
@@ -77,6 +94,47 @@
 	let capabilities = $state<SoulPublicCapabilitiesResponse | null>(null);
 	let transparency = $state<unknown | null>(null);
 	let failures = $state<SoulPublicFailuresResponse | null>(null);
+	let channels = $state<SoulPublicAgentChannelsResponse | null>(null);
+
+	// Channel provisioning state
+	let emailLocalPart = $state('');
+	let emailProvisionBegin = $state<SoulProvisionEmailBeginResponse | null>(null);
+	let emailProvisionSignature = $state('');
+	let emailProvisionError = $state<string | null>(null);
+	let emailProvisionBeginLoading = $state(false);
+	let emailProvisionSignLoading = $state(false);
+	let emailProvisionConfirmLoading = $state(false);
+	let emailProvisionResult = $state<SoulProvisionEmailConfirmResponse | null>(null);
+
+	let phoneCountryCode = $state('');
+	let phoneDesiredNumber = $state('');
+	let phoneProvisionBegin = $state<SoulProvisionPhoneBeginResponse | null>(null);
+	let phoneProvisionSignature = $state('');
+	let phoneProvisionError = $state<string | null>(null);
+	let phoneProvisionBeginLoading = $state(false);
+	let phoneProvisionSignLoading = $state(false);
+	let phoneProvisionConfirmLoading = $state(false);
+	let phoneProvisionResult = $state<SoulProvisionPhoneConfirmResponse | null>(null);
+	let phoneDeprovisionLoading = $state(false);
+
+	// Contact preferences update state (patches the registration file)
+	let prefsDraft = $state('');
+	let prefsUpdateError = $state<string | null>(null);
+	let prefsUpdateLoading = $state(false);
+	let prefsCanonical = $state('');
+	let prefsDigestHex = $state('');
+	let prefsSignature = $state('');
+	let prefsSignLoading = $state(false);
+	let prefsExpectedVersion = $state<number | null>(null);
+	let prefsFrozenDraft = $state<string>('');
+	let prefsUpdateResult = $state<SoulUpdateRegistrationResponse | null>(null);
+
+	// Communication debug state
+	let commActivity = $state<SoulAgentCommActivityResponse | null>(null);
+	let commQueue = $state<SoulAgentCommQueueResponse | null>(null);
+	let commError = $state<string | null>(null);
+	let commStatusLoadingId = $state<string | null>(null);
+	let commStatuses = $state<Record<string, SoulCommStatusResponse | null>>({});
 
 	let activeSection = $state('identity');
 
@@ -760,6 +818,359 @@
 		}
 	}
 
+	// --- Channels + preferences ---
+
+	async function beginEmailProvision() {
+		emailProvisionError = null;
+		emailProvisionResult = null;
+		emailProvisionSignature = '';
+		emailProvisionBegin = null;
+
+		emailProvisionBeginLoading = true;
+		try {
+			emailProvisionBegin = await soulProvisionEmailBegin(token, agentId, {
+				local_part: emailLocalPart.trim() || undefined,
+			});
+		} catch (err) {
+			if (await handleAuthError(err)) return;
+			emailProvisionError = formatError(err);
+		} finally {
+			emailProvisionBeginLoading = false;
+		}
+	}
+
+	async function signEmailProvision() {
+		emailProvisionError = null;
+		emailProvisionSignature = '';
+
+		if (!emailProvisionBegin) {
+			emailProvisionError = 'Begin provisioning first.';
+			return;
+		}
+
+		const provider = getEthereumProvider();
+		if (!provider) {
+			emailProvisionError = 'No wallet detected.';
+			return;
+		}
+
+		const wallet = agent?.agent?.wallet?.trim();
+		if (!wallet) {
+			emailProvisionError = 'Agent wallet is not available.';
+			return;
+		}
+
+		emailProvisionSignLoading = true;
+		try {
+			const accounts = await requestAccounts(provider);
+			const normalized = accounts.map((a) => a.toLowerCase());
+			if (!normalized.includes(wallet.toLowerCase())) {
+				emailProvisionError = `Connected wallet does not match agent wallet (${wallet}).`;
+				return;
+			}
+
+			emailProvisionSignature = await personalSign(provider, emailProvisionBegin.digest_hex, wallet);
+		} catch (err) {
+			emailProvisionError = formatError(err);
+		} finally {
+			emailProvisionSignLoading = false;
+		}
+	}
+
+	async function confirmEmailProvision() {
+		emailProvisionError = null;
+		emailProvisionResult = null;
+
+		if (!emailProvisionBegin) {
+			emailProvisionError = 'Begin provisioning first.';
+			return;
+		}
+		if (!emailProvisionSignature.trim()) {
+			emailProvisionError = 'Signature is required.';
+			return;
+		}
+
+		emailProvisionConfirmLoading = true;
+		try {
+			emailProvisionResult = await soulProvisionEmailConfirm(token, agentId, {
+				local_part: emailLocalPart.trim() || undefined,
+				issued_at: emailProvisionBegin.issued_at,
+				expected_version: emailProvisionBegin.expected_version,
+				self_attestation: emailProvisionSignature.trim(),
+			});
+			emailLocalPart = '';
+			emailProvisionSignature = '';
+			emailProvisionBegin = null;
+			await load();
+			activeSection = 'channels';
+		} catch (err) {
+			if (await handleAuthError(err)) return;
+			emailProvisionError = formatError(err);
+		} finally {
+			emailProvisionConfirmLoading = false;
+		}
+	}
+
+	async function beginPhoneProvision() {
+		phoneProvisionError = null;
+		phoneProvisionResult = null;
+		phoneProvisionSignature = '';
+		phoneProvisionBegin = null;
+
+		phoneProvisionBeginLoading = true;
+		try {
+			phoneProvisionBegin = await soulProvisionPhoneBegin(token, agentId, {
+				country_code: phoneCountryCode.trim() || undefined,
+				number: phoneDesiredNumber.trim() || undefined,
+			});
+			phoneDesiredNumber = phoneProvisionBegin.number;
+		} catch (err) {
+			if (await handleAuthError(err)) return;
+			phoneProvisionError = formatError(err);
+		} finally {
+			phoneProvisionBeginLoading = false;
+		}
+	}
+
+	async function signPhoneProvision() {
+		phoneProvisionError = null;
+		phoneProvisionSignature = '';
+
+		if (!phoneProvisionBegin) {
+			phoneProvisionError = 'Begin provisioning first.';
+			return;
+		}
+
+		const provider = getEthereumProvider();
+		if (!provider) {
+			phoneProvisionError = 'No wallet detected.';
+			return;
+		}
+
+		const wallet = agent?.agent?.wallet?.trim();
+		if (!wallet) {
+			phoneProvisionError = 'Agent wallet is not available.';
+			return;
+		}
+
+		phoneProvisionSignLoading = true;
+		try {
+			const accounts = await requestAccounts(provider);
+			const normalized = accounts.map((a) => a.toLowerCase());
+			if (!normalized.includes(wallet.toLowerCase())) {
+				phoneProvisionError = `Connected wallet does not match agent wallet (${wallet}).`;
+				return;
+			}
+
+			phoneProvisionSignature = await personalSign(provider, phoneProvisionBegin.digest_hex, wallet);
+		} catch (err) {
+			phoneProvisionError = formatError(err);
+		} finally {
+			phoneProvisionSignLoading = false;
+		}
+	}
+
+	async function confirmPhoneProvision() {
+		phoneProvisionError = null;
+		phoneProvisionResult = null;
+
+		if (!phoneProvisionBegin) {
+			phoneProvisionError = 'Begin provisioning first.';
+			return;
+		}
+		if (!phoneProvisionSignature.trim()) {
+			phoneProvisionError = 'Signature is required.';
+			return;
+		}
+
+		phoneProvisionConfirmLoading = true;
+		try {
+			phoneProvisionResult = await soulProvisionPhoneConfirm(token, agentId, {
+				number: phoneDesiredNumber.trim() || phoneProvisionBegin.number,
+				issued_at: phoneProvisionBegin.issued_at,
+				expected_version: phoneProvisionBegin.expected_version,
+				self_attestation: phoneProvisionSignature.trim(),
+			});
+			phoneProvisionSignature = '';
+			phoneProvisionBegin = null;
+			await load();
+			activeSection = 'channels';
+		} catch (err) {
+			if (await handleAuthError(err)) return;
+			phoneProvisionError = formatError(err);
+		} finally {
+			phoneProvisionConfirmLoading = false;
+		}
+	}
+
+	async function doPhoneDeprovision() {
+		phoneProvisionError = null;
+		phoneDeprovisionLoading = true;
+		try {
+			await soulDeprovisionPhone(token, agentId);
+			await load();
+		} catch (err) {
+			if (await handleAuthError(err)) return;
+			phoneProvisionError = formatError(err);
+		} finally {
+			phoneDeprovisionLoading = false;
+		}
+	}
+
+	function loadPreferencesDraft() {
+		prefsUpdateError = null;
+		prefsUpdateResult = null;
+		prefsCanonical = '';
+		prefsDigestHex = '';
+		prefsSignature = '';
+		prefsFrozenDraft = '';
+		prefsExpectedVersion = agent?.agent?.self_description_version ?? null;
+
+		const current = channels?.contactPreferences;
+		prefsDraft = current ? prettyJSON(current) : '';
+	}
+
+	function computeUpdatePreferencesDigest(): { registration: Record<string, unknown>; expected_version?: number } | null {
+		prefsUpdateError = null;
+		prefsCanonical = '';
+		prefsDigestHex = '';
+		prefsUpdateResult = null;
+
+		if (!registration || typeof registration !== 'object' || Array.isArray(registration)) {
+			prefsUpdateError = 'Registration is not loaded yet.';
+			return null;
+		}
+
+		const prefsRaw = prefsDraft.trim();
+		let prefsObj: unknown = null;
+		if (prefsRaw) {
+			try {
+				prefsObj = JSON.parse(prefsRaw) as unknown;
+			} catch {
+				prefsUpdateError = 'Contact preferences must be valid JSON.';
+				return null;
+			}
+			if (!prefsObj || typeof prefsObj !== 'object' || Array.isArray(prefsObj)) {
+				prefsUpdateError = 'Contact preferences must be a JSON object.';
+				return null;
+			}
+		}
+
+		const reg = JSON.parse(JSON.stringify(registration)) as Record<string, unknown>;
+		const attAny = reg.attestations as unknown;
+		if (!attAny || typeof attAny !== 'object' || Array.isArray(attAny)) {
+			prefsUpdateError = 'Registration must include attestations object.';
+			return null;
+		}
+
+		reg.version = '3';
+		if (prefsObj) reg.contactPreferences = prefsObj as Record<string, unknown>;
+		else delete reg.contactPreferences;
+
+		const unsigned = JSON.parse(JSON.stringify(reg)) as Record<string, unknown>;
+		const unsignedAtt = unsigned.attestations as Record<string, unknown>;
+		delete unsignedAtt.selfAttestation;
+
+		try {
+			prefsCanonical = jcsCanonicalize(unsigned);
+		} catch (err) {
+			prefsUpdateError = formatError(err);
+			return null;
+		}
+		prefsDigestHex = keccak256Utf8Hex(prefsCanonical);
+
+		prefsFrozenDraft = prefsDraft;
+		prefsExpectedVersion = agent?.agent?.self_description_version ?? null;
+
+		return { registration: reg, expected_version: prefsExpectedVersion ?? undefined };
+	}
+
+	async function signUpdatePreferences() {
+		prefsUpdateError = null;
+		prefsSignature = '';
+
+		const prepared = computeUpdatePreferencesDigest();
+		if (!prepared) return;
+
+		const provider = getEthereumProvider();
+		if (!provider) {
+			prefsUpdateError = 'No wallet detected.';
+			return;
+		}
+
+		const wallet = agent?.agent?.wallet?.trim();
+		if (!wallet) {
+			prefsUpdateError = 'Agent wallet is not available.';
+			return;
+		}
+
+		prefsSignLoading = true;
+		try {
+			const accounts = await requestAccounts(provider);
+			const normalized = accounts.map((a) => a.toLowerCase());
+			if (!normalized.includes(wallet.toLowerCase())) {
+				prefsUpdateError = `Connected wallet does not match agent wallet (${wallet}).`;
+				return;
+			}
+
+			prefsSignature = await personalSign(provider, prefsDigestHex, wallet);
+		} catch (err) {
+			prefsUpdateError = formatError(err);
+		} finally {
+			prefsSignLoading = false;
+		}
+	}
+
+	async function submitUpdatePreferences() {
+		prefsUpdateError = null;
+
+		if (prefsFrozenDraft.trim() && prefsDraft.trim() !== prefsFrozenDraft.trim()) {
+			prefsUpdateError = 'Draft changed after digest computation. Recompute the digest before publishing.';
+			return;
+		}
+
+		const prepared = computeUpdatePreferencesDigest();
+		if (!prepared) return;
+		if (!prefsSignature.trim()) {
+			prefsUpdateError = 'Signature is required. Sign the digest first.';
+			return;
+		}
+
+		const registrationObj = prepared.registration;
+		const att = registrationObj.attestations as Record<string, unknown>;
+		att.selfAttestation = prefsSignature.trim();
+
+		prefsUpdateLoading = true;
+		try {
+			prefsUpdateResult = await soulUpdateRegistration(token, agentId, {
+				registration: registrationObj,
+				expected_version: prepared.expected_version,
+			});
+			await load();
+			loadPreferencesDraft();
+			activeSection = 'channels';
+		} catch (err) {
+			if (await handleAuthError(err)) return;
+			prefsUpdateError = formatError(err);
+		} finally {
+			prefsUpdateLoading = false;
+		}
+	}
+
+	async function fetchCommStatus(messageId: string) {
+		commError = null;
+		commStatusLoadingId = messageId;
+		try {
+			const status = await soulAgentGetCommStatus(token, agentId, messageId);
+			commStatuses = { ...commStatuses, [messageId]: status };
+		} catch (err) {
+			if (await handleAuthError(err)) return;
+			commError = formatError(err);
+		} finally {
+			commStatusLoadingId = null;
+		}
+	}
+
 	async function handleAuthError(err: unknown): Promise<boolean> {
 		if ((err as Partial<ApiError>).status === 401) {
 			await logout();
@@ -781,6 +1192,10 @@
 		capabilities = null;
 		transparency = null;
 		failures = null;
+		channels = null;
+		commActivity = null;
+		commQueue = null;
+		commError = null;
 
 		loading = true;
 		try {
@@ -795,7 +1210,15 @@
 				soulPublicGetCapabilities(agentId),
 				soulPublicGetTransparency(agentId),
 				soulPublicGetFailures(agentId, undefined, 50),
+				soulPublicGetAgentChannels(agentId),
+				soulAgentListCommActivity(token, agentId, 50),
+				soulAgentListCommQueue(token, agentId, 50),
 			]);
+			for (const result of settled) {
+				if (result.status === 'rejected') {
+					if (await handleAuthError(result.reason)) return;
+				}
+			}
 			registration = settled[0].status === 'fulfilled' ? settled[0].value : null;
 			validations = settled[1].status === 'fulfilled' ? settled[1].value : null;
 			boundaries = settled[2].status === 'fulfilled' ? settled[2].value : null;
@@ -805,9 +1228,17 @@
 			capabilities = settled[6].status === 'fulfilled' ? settled[6].value : null;
 			transparency = settled[7].status === 'fulfilled' ? settled[7].value : null;
 			failures = settled[8].status === 'fulfilled' ? settled[8].value : null;
+			channels = settled[9].status === 'fulfilled' ? settled[9].value : null;
+			commActivity = settled[10].status === 'fulfilled' ? settled[10].value : null;
+			commQueue = settled[11].status === 'fulfilled' ? settled[11].value : null;
+			if (settled[10].status === 'rejected') commError = formatError(settled[10].reason);
+			if (!commError && settled[11].status === 'rejected') commError = formatError(settled[11].reason);
 
 			if (!regDraft.trim() && registration) {
 				loadRegistrationDraft();
+			}
+			if (!prefsDraft.trim() && channels?.contactPreferences) {
+				prefsDraft = prettyJSON(channels.contactPreferences);
 			}
 		} catch (err) {
 			errorMessage = formatError(err);
@@ -1091,6 +1522,8 @@
 
 	const sections = [
 		{ id: 'identity', label: 'Identity' },
+		{ id: 'channels', label: 'Channels' },
+		{ id: 'communication', label: 'Communication' },
 		{ id: 'reputation', label: 'Reputation' },
 		{ id: 'capabilities', label: 'Capabilities' },
 		{ id: 'boundaries', label: 'Boundaries' },
@@ -1198,6 +1631,327 @@
 					{/if}
 					<DefinitionItem label="Updated" monospace>{current.agent.updated_at || '—'}</DefinitionItem>
 				</DefinitionList>
+			</Card>
+		{/if}
+
+		{#if activeSection === 'channels'}
+			<Card variant="outlined" padding="lg">
+				{#snippet header()}
+					<Heading level={3} size="lg">Channels</Heading>
+				{/snippet}
+
+				{#if channels}
+					<DefinitionList>
+						<DefinitionItem label="ENS" monospace>{channels.channels.ens?.name || '—'}</DefinitionItem>
+						<DefinitionItem label="Email" monospace>{channels.channels.email?.address || '—'}</DefinitionItem>
+						<DefinitionItem label="Email verified" monospace>
+							{channels.channels.email ? (channels.channels.email.verified ? 'yes' : 'no') : '—'}
+						</DefinitionItem>
+						<DefinitionItem label="Phone" monospace>{channels.channels.phone?.number || '—'}</DefinitionItem>
+						<DefinitionItem label="Phone verified" monospace>
+							{channels.channels.phone ? (channels.channels.phone.verified ? 'yes' : 'no') : '—'}
+						</DefinitionItem>
+						<DefinitionItem label="Updated" monospace>{channels.updatedAt}</DefinitionItem>
+					</DefinitionList>
+				{:else}
+					<Alert variant="info" title="Channels">
+						<Text size="sm">No channel data loaded.</Text>
+					</Alert>
+				{/if}
+
+				<div class="soul-agent__divider"></div>
+
+				<Heading level={4} size="base">Provision email</Heading>
+				<Text size="sm" color="secondary">Creates a managed mailbox on <span class="soul-agent__mono">lessersoul.ai</span>.</Text>
+
+				{#if emailProvisionError}
+					<Alert variant="error" title="Email provisioning">{emailProvisionError}</Alert>
+				{/if}
+				{#if emailProvisionResult?.registration_version}
+					<Alert variant="success" title="Email provisioned">
+						<Text size="sm">Published version: v{emailProvisionResult.registration_version}</Text>
+					</Alert>
+				{/if}
+
+				<div class="soul-agent__form">
+					<TextField label="Local part (optional)" bind:value={emailLocalPart} placeholder="local-id" />
+					<div class="soul-agent__row">
+						<Button
+							variant="outline"
+							onclick={() => void beginEmailProvision()}
+							disabled={emailProvisionBeginLoading || emailProvisionConfirmLoading}
+						>
+							Begin
+						</Button>
+						<Button
+							variant="outline"
+							onclick={() => void signEmailProvision()}
+							disabled={!emailProvisionBegin || emailProvisionSignLoading || emailProvisionConfirmLoading}
+						>
+							Sign
+						</Button>
+						<Button
+							variant="solid"
+							onclick={() => void confirmEmailProvision()}
+							disabled={!emailProvisionBegin || !emailProvisionSignature.trim() || emailProvisionConfirmLoading}
+						>
+							Confirm
+						</Button>
+					</div>
+				</div>
+
+				{#if emailProvisionBegin}
+					<DefinitionList>
+						<DefinitionItem label="Address" monospace>{emailProvisionBegin.address}</DefinitionItem>
+						<DefinitionItem label="ENS name" monospace>{emailProvisionBegin.ens_name}</DefinitionItem>
+						<DefinitionItem label="Expected version" monospace>{emailProvisionBegin.expected_version}</DefinitionItem>
+						<DefinitionItem label="Digest" monospace>{emailProvisionBegin.digest_hex}</DefinitionItem>
+					</DefinitionList>
+				{/if}
+				{#if emailProvisionSignature}
+					<TextArea label="Signature" value={emailProvisionSignature} readonly rows={2} />
+				{/if}
+				{#if emailProvisionBeginLoading || emailProvisionConfirmLoading}
+					<div class="soul-agent__loading-inline">
+						<Spinner size="sm" />
+						<Text size="sm">{emailProvisionBeginLoading ? 'Preparing…' : 'Provisioning…'}</Text>
+					</div>
+				{/if}
+
+				<div class="soul-agent__divider"></div>
+
+				<Heading level={4} size="base">Provision phone</Heading>
+				<Text size="sm" color="secondary">Orders a Telnyx number and publishes it to the v3 registration file.</Text>
+
+				{#if phoneProvisionError}
+					<Alert variant="error" title="Phone provisioning">{phoneProvisionError}</Alert>
+				{/if}
+				{#if phoneProvisionResult?.registration_version}
+					<Alert variant="success" title="Phone provisioned">
+						<Text size="sm">Published version: v{phoneProvisionResult.registration_version}</Text>
+					</Alert>
+				{/if}
+
+				<div class="soul-agent__form">
+					<div class="soul-agent__row soul-agent__row--stretch">
+						<TextField label="Country code (optional)" bind:value={phoneCountryCode} placeholder="US" />
+						<TextField label="Number (optional)" bind:value={phoneDesiredNumber} placeholder="+1…" />
+					</div>
+					<div class="soul-agent__row">
+						<Button
+							variant="outline"
+							onclick={() => void beginPhoneProvision()}
+							disabled={phoneProvisionBeginLoading || phoneProvisionConfirmLoading}
+						>
+							Begin
+						</Button>
+						<Button
+							variant="outline"
+							onclick={() => void signPhoneProvision()}
+							disabled={!phoneProvisionBegin || phoneProvisionSignLoading || phoneProvisionConfirmLoading}
+						>
+							Sign
+						</Button>
+						<Button
+							variant="solid"
+							onclick={() => void confirmPhoneProvision()}
+							disabled={!phoneProvisionBegin || !phoneProvisionSignature.trim() || phoneProvisionConfirmLoading}
+						>
+							Confirm
+						</Button>
+						{#if channels?.channels?.phone?.number}
+							<Button variant="outline" onclick={() => void doPhoneDeprovision()} disabled={phoneDeprovisionLoading}>
+								Deprovision
+							</Button>
+						{/if}
+					</div>
+				</div>
+
+				{#if phoneProvisionBegin}
+					<DefinitionList>
+						<DefinitionItem label="Number" monospace>{phoneProvisionBegin.number}</DefinitionItem>
+						<DefinitionItem label="Expected version" monospace>{phoneProvisionBegin.expected_version}</DefinitionItem>
+						<DefinitionItem label="Digest" monospace>{phoneProvisionBegin.digest_hex}</DefinitionItem>
+					</DefinitionList>
+				{/if}
+				{#if phoneProvisionSignature}
+					<TextArea label="Signature" value={phoneProvisionSignature} readonly rows={2} />
+				{/if}
+				{#if phoneProvisionBeginLoading || phoneProvisionConfirmLoading || phoneDeprovisionLoading}
+					<div class="soul-agent__loading-inline">
+						<Spinner size="sm" />
+						<Text size="sm">
+							{phoneProvisionBeginLoading ? 'Preparing…' : phoneDeprovisionLoading ? 'Deprovisioning…' : 'Provisioning…'}
+						</Text>
+					</div>
+				{/if}
+			</Card>
+
+			<Card variant="outlined" padding="lg">
+				{#snippet header()}
+					<div class="soul-agent__row">
+						<div class="soul-agent__row-left">
+							<Heading level={3} size="lg">Contact preferences</Heading>
+						</div>
+						<div class="soul-agent__row-right">
+							<Button variant="outline" onclick={() => loadPreferencesDraft()} disabled={prefsUpdateLoading}>
+								Load current
+							</Button>
+						</div>
+					</div>
+				{/snippet}
+
+				{#if prefsUpdateError}
+					<Alert variant="error" title="Update failed">{prefsUpdateError}</Alert>
+				{/if}
+				{#if prefsUpdateResult?.version}
+					<Alert variant="success" title="Published">
+						<Text size="sm">Published version: v{prefsUpdateResult.version}</Text>
+					</Alert>
+				{/if}
+
+				<div class="soul-agent__form">
+					<TextArea label="Contact preferences JSON" bind:value={prefsDraft} rows={14} />
+					<div class="soul-agent__row">
+						<Button variant="outline" onclick={() => void computeUpdatePreferencesDigest()} disabled={prefsUpdateLoading || prefsSignLoading}>
+							Compute digest
+						</Button>
+						<Button variant="outline" onclick={() => void signUpdatePreferences()} disabled={prefsUpdateLoading || prefsSignLoading}>
+							Sign
+						</Button>
+						<Button variant="solid" onclick={() => void submitUpdatePreferences()} disabled={prefsUpdateLoading}>Publish</Button>
+					</div>
+				</div>
+
+				{#if prefsDigestHex}
+					<DefinitionList>
+						<DefinitionItem label="Expected version" monospace>{prefsExpectedVersion ?? '—'}</DefinitionItem>
+						<DefinitionItem label="Digest" monospace>{prefsDigestHex}</DefinitionItem>
+					</DefinitionList>
+				{/if}
+				{#if prefsCanonical}
+					<TextArea label="Canonical payload (JCS, unsigned)" value={prefsCanonical} readonly rows={8} />
+				{/if}
+				{#if prefsSignature}
+					<TextArea label="Signature" value={prefsSignature} readonly rows={2} />
+				{/if}
+
+				{#if prefsUpdateLoading}
+					<div class="soul-agent__loading-inline">
+						<Spinner size="sm" />
+						<Text size="sm">Publishing…</Text>
+					</div>
+				{/if}
+			</Card>
+		{/if}
+
+		{#if activeSection === 'communication'}
+			<Card variant="outlined" padding="lg">
+				{#snippet header()}
+					<Heading level={3} size="lg">Communication</Heading>
+				{/snippet}
+
+				{#if commError}
+					<Alert variant="error" title="Communication">{commError}</Alert>
+				{/if}
+
+				<Heading level={4} size="base">Recent activity</Heading>
+				{#if commActivity?.activities?.length}
+					<div class="soul-agent__list">
+						{#each commActivity.activities as act (act.activity_id + act.timestamp)}
+							<Card variant="outlined" padding="md">
+								<div class="soul-agent__item">
+									<div class="soul-agent__item-left">
+										<Text size="sm" weight="medium">{act.direction} · {act.channel_type} · {act.action || '—'}</Text>
+										<Text size="sm" color="secondary">
+											<span class="soul-agent__mono">{act.timestamp}</span>
+											{#if act.counterparty}
+												· <span class="soul-agent__mono">{act.counterparty}</span>
+											{/if}
+										</Text>
+										{#if act.message_id}
+											<Text size="sm" color="secondary">
+												message <span class="soul-agent__mono">{act.message_id}</span>
+											</Text>
+										{/if}
+										{#if act.in_reply_to}
+											<Text size="sm" color="secondary">
+												inReplyTo <span class="soul-agent__mono">{act.in_reply_to}</span>
+											</Text>
+										{/if}
+										{#if act.boundary_check}
+											<Text size="sm" color="secondary">boundary {act.boundary_check}</Text>
+										{/if}
+										{#if act.preference_respected != null}
+											<Text size="sm" color="secondary">prefs {act.preference_respected ? 'respected' : 'ignored'}</Text>
+										{/if}
+									</div>
+									<div class="soul-agent__item-right">
+										{#if act.direction === 'outbound' && act.message_id}
+											<Button
+												size="sm"
+												variant="outline"
+												onclick={() => void fetchCommStatus(act.message_id as string)}
+												disabled={commStatusLoadingId === act.message_id}
+											>
+												{commStatusLoadingId === act.message_id ? 'Loading…' : 'Status'}
+											</Button>
+										{/if}
+									</div>
+								</div>
+
+								{#if act.message_id && commStatuses[act.message_id]}
+									{@const st = commStatuses[act.message_id] as SoulCommStatusResponse}
+									<DefinitionList>
+										<DefinitionItem label="Status" monospace>{st.status}</DefinitionItem>
+										<DefinitionItem label="Provider" monospace>{st.provider || '—'}</DefinitionItem>
+										<DefinitionItem label="Provider msg ID" monospace>{st.providerMessageId || '—'}</DefinitionItem>
+										{#if st.errorCode}
+											<DefinitionItem label="Error code" monospace>{st.errorCode}</DefinitionItem>
+										{/if}
+										{#if st.errorMessage}
+											<DefinitionItem label="Error message">{st.errorMessage}</DefinitionItem>
+										{/if}
+										<DefinitionItem label="Created" monospace>{st.createdAt}</DefinitionItem>
+										<DefinitionItem label="Updated" monospace>{st.updatedAt || '—'}</DefinitionItem>
+									</DefinitionList>
+								{/if}
+							</Card>
+						{/each}
+					</div>
+				{:else}
+					<Text size="sm" color="secondary">No communication activity recorded yet.</Text>
+				{/if}
+
+				<div class="soul-agent__divider"></div>
+
+				<Heading level={4} size="base">Queued inbound</Heading>
+				{#if commQueue?.items?.length}
+					<div class="soul-agent__list">
+						{#each commQueue.items as item (item.message_id + item.scheduled_delivery_time)}
+							<Card variant="outlined" padding="md">
+								<div class="soul-agent__item">
+									<div class="soul-agent__item-left">
+										<Text size="sm" weight="medium">{item.channel_type} · {item.status}</Text>
+										<Text size="sm" color="secondary">
+											received <span class="soul-agent__mono">{item.received_at}</span> · scheduled <span class="soul-agent__mono">{item.scheduled_delivery_time}</span>
+										</Text>
+										{#if item.from_address || item.from_number}
+											<Text size="sm" color="secondary">
+												from <span class="soul-agent__mono">{item.from_address || item.from_number}</span>
+											</Text>
+										{/if}
+										{#if item.subject}
+											<Text size="sm" color="secondary">subject {item.subject}</Text>
+										{/if}
+									</div>
+								</div>
+							</Card>
+						{/each}
+					</div>
+				{:else}
+					<Text size="sm" color="secondary">No queued inbound messages.</Text>
+				{/if}
 			</Card>
 		{/if}
 
@@ -1957,6 +2711,15 @@
 		margin-top: var(--gr-spacing-scale-3);
 	}
 
+	.soul-agent__row--stretch {
+		justify-content: flex-start;
+	}
+
+	.soul-agent__row--stretch > :global(*) {
+		flex: 1;
+		min-width: 220px;
+	}
+
 	.soul-agent__row--sign {
 		justify-content: flex-start;
 	}
@@ -1983,6 +2746,12 @@
 		flex-direction: column;
 		gap: var(--gr-spacing-scale-3);
 		margin-top: var(--gr-spacing-scale-4);
+	}
+
+	.soul-agent__divider {
+		height: 1px;
+		background: var(--gr-color-border-secondary, #e0e0e0);
+		margin-top: var(--gr-spacing-scale-5);
 	}
 
 	.soul-agent__loading-inline {

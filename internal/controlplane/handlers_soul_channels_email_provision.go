@@ -300,6 +300,12 @@ func (s *Server) handleSoulProvisionEmailChannel(ctx *apptheory.Context) (*appth
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to record email channel"}
 	}
 
+	s.tryWriteAuditLog(ctx, &models.AuditLogEntry{
+		Action:    "soul.channel.email.provision",
+		Target:    fmt.Sprintf("soul_agent:%s:channel:email", agentIDHex),
+		CreatedAt: now,
+	})
+
 	return apptheory.JSON(http.StatusCreated, soulProvisionEmailConfirmResponse{
 		Version:             "1",
 		Address:             address,
