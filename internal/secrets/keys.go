@@ -69,6 +69,7 @@ func MigaduAPIToken(ctx context.Context, client SSMAPI) (string, error) {
 }
 
 type TelnyxCredentials struct {
+	// #nosec G101,G117 -- runtime-loaded credential value; the field name is part of the stable internal API.
 	APIKey             string
 	MessagingProfileID string
 	ConnectionID       string

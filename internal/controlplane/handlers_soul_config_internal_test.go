@@ -121,16 +121,16 @@ func TestHandleSoulConfig_ErrorsAndSuccess(t *testing.T) {
 		t.Parallel()
 
 		s := &Server{cfg: config.Config{
-			SoulEnabled:                    true,
-			SoulChainID:                    5,
-			SoulRegistryContractAddress:    testSoulContractAddr,
-			SoulAdminSafeAddress:           testSoulSafeAddr,
-			SoulTxMode:                     "SAFE",
-			SoulReputationWeightEconomic:   1,
-			SoulReputationWeightSocial:     2,
-			SoulReputationWeightValidation: 3,
-			SoulReputationWeightTrust:      4,
-			SoulReputationWeightIntegrity:  5,
+			SoulEnabled:                       true,
+			SoulChainID:                       5,
+			SoulRegistryContractAddress:       testSoulContractAddr,
+			SoulAdminSafeAddress:              testSoulSafeAddr,
+			SoulTxMode:                        "SAFE",
+			SoulReputationWeightEconomic:      1,
+			SoulReputationWeightSocial:        2,
+			SoulReputationWeightValidation:    3,
+			SoulReputationWeightTrust:         4,
+			SoulReputationWeightIntegrity:     5,
 			SoulReputationWeightCommunication: 6,
 			SoulSupportedCapabilities: []string{
 				"  B  ",

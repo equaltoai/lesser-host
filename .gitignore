@@ -8,6 +8,7 @@ contracts/venv/
 !.env.example
 tmp/
 bin/
+dist/
 !cdk/bin/
 !cdk/bin/**
 node_modules/

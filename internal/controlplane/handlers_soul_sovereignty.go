@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -175,67 +176,20 @@ func (s *Server) handleSoulValidationOptIn(ctx *apptheory.Context) (*apptheory.R
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "challengeId is required"}
 	}
 
-	var req soulValidationOptInRequest
-	if err := httpx.ParseJSON(ctx, &req); err != nil {
-		return nil, err
+	optInStatus, appErr := parseSoulValidationOptInStatus(ctx)
+	if appErr != nil {
+		return nil, appErr
 	}
-
-	optInStatus := ""
-	if req.Accepted != nil {
-		if *req.Accepted {
-			optInStatus = models.SoulValidationOptInStatusAccepted
-		} else {
-			optInStatus = models.SoulValidationOptInStatusDeclined
-		}
-	} else {
-		optInStatus = strings.ToLower(strings.TrimSpace(req.Status))
+	challenge, appErr := s.loadSoulValidationChallengeForOptIn(ctx.Context(), agentIDHex, challengeID)
+	if appErr != nil {
+		return nil, appErr
 	}
-	if optInStatus != models.SoulValidationOptInStatusAccepted && optInStatus != models.SoulValidationOptInStatusDeclined {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "status must be 'accepted' or 'declined'"}
-	}
-
-	// Load the validation challenge.
-	challenge, err := getSoulAgentItemBySK[models.SoulAgentValidationChallenge](s, ctx.Context(), agentIDHex, fmt.Sprintf("VALIDATIONCHAL#%s", challengeID))
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "challenge not found"}
-	}
-
-	// Only challenges in "issued" status can be opted in/out.
-	if strings.TrimSpace(challenge.Status) != models.SoulValidationChallengeStatusIssued {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "challenge is not in issued status"}
-	}
-
 	now := time.Now().UTC()
 	challenge.OptInStatus = optInStatus
 
-	// Declines are recorded without score penalty by immediately creating a validation
-	// record with result "declined" and score 0, and marking the challenge evaluated.
 	if optInStatus == models.SoulValidationOptInStatusDeclined {
-		rec := &models.SoulAgentValidationRecord{
-			AgentID:       agentIDHex,
-			ChallengeID:   strings.TrimSpace(challenge.ChallengeID),
-			ChallengeType: strings.TrimSpace(challenge.ChallengeType),
-			ValidatorID:   strings.TrimSpace(challenge.ValidatorID),
-			Request:       strings.TrimSpace(challenge.Request),
-			Response:      "",
-			Result:        models.SoulValidationResultDeclined,
-			Score:         0,
-			OptInStatus:   optInStatus,
-			EvaluatedAt:   now,
-		}
-		_ = rec.UpdateKeys()
-		if err := s.store.DB.WithContext(ctx.Context()).Model(rec).Create(); err != nil {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to record declined validation"}
-		}
-
-		challenge.Status = models.SoulValidationChallengeStatusEvaluated
-		challenge.Result = models.SoulValidationResultDeclined
-		challenge.Score = 0
-		challenge.EvaluatedAt = now
-		challenge.UpdatedAt = now
-		_ = challenge.UpdateKeys()
-		if err := s.store.DB.WithContext(ctx.Context()).Model(challenge).IfExists().Update("OptInStatus", "Status", "Result", "Score", "EvaluatedAt", "UpdatedAt"); err != nil {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to update opt-in status"}
+		if appErr := s.recordDeclinedSoulValidation(ctx.Context(), agentIDHex, challenge, optInStatus, now); appErr != nil {
+			return nil, appErr
 		}
 		return apptheory.JSON(http.StatusOK, challenge)
 	}
@@ -247,6 +201,68 @@ func (s *Server) handleSoulValidationOptIn(ctx *apptheory.Context) (*apptheory.R
 	}
 
 	return apptheory.JSON(http.StatusOK, challenge)
+}
+
+func parseSoulValidationOptInStatus(ctx *apptheory.Context) (string, *apptheory.AppError) {
+	var req soulValidationOptInRequest
+	if parseErr := httpx.ParseJSON(ctx, &req); parseErr != nil {
+		appErr, ok := parseErr.(*apptheory.AppError)
+		if !ok {
+			return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		}
+		return "", appErr
+	}
+	if req.Accepted != nil {
+		if *req.Accepted {
+			return models.SoulValidationOptInStatusAccepted, nil
+		}
+		return models.SoulValidationOptInStatusDeclined, nil
+	}
+	status := strings.ToLower(strings.TrimSpace(req.Status))
+	if status != models.SoulValidationOptInStatusAccepted && status != models.SoulValidationOptInStatusDeclined {
+		return "", &apptheory.AppError{Code: "app.bad_request", Message: "status must be 'accepted' or 'declined'"}
+	}
+	return status, nil
+}
+
+func (s *Server) loadSoulValidationChallengeForOptIn(ctx context.Context, agentIDHex string, challengeID string) (*models.SoulAgentValidationChallenge, *apptheory.AppError) {
+	challenge, err := getSoulAgentItemBySK[models.SoulAgentValidationChallenge](s, ctx, agentIDHex, fmt.Sprintf("VALIDATIONCHAL#%s", challengeID))
+	if err != nil {
+		return nil, &apptheory.AppError{Code: "app.not_found", Message: "challenge not found"}
+	}
+	if strings.TrimSpace(challenge.Status) != models.SoulValidationChallengeStatusIssued {
+		return nil, &apptheory.AppError{Code: "app.conflict", Message: "challenge is not in issued status"}
+	}
+	return challenge, nil
+}
+
+func (s *Server) recordDeclinedSoulValidation(ctx context.Context, agentIDHex string, challenge *models.SoulAgentValidationChallenge, optInStatus string, now time.Time) *apptheory.AppError {
+	rec := &models.SoulAgentValidationRecord{
+		AgentID:       agentIDHex,
+		ChallengeID:   strings.TrimSpace(challenge.ChallengeID),
+		ChallengeType: strings.TrimSpace(challenge.ChallengeType),
+		ValidatorID:   strings.TrimSpace(challenge.ValidatorID),
+		Request:       strings.TrimSpace(challenge.Request),
+		Response:      "",
+		Result:        models.SoulValidationResultDeclined,
+		Score:         0,
+		OptInStatus:   optInStatus,
+		EvaluatedAt:   now,
+	}
+	_ = rec.UpdateKeys()
+	if err := s.store.DB.WithContext(ctx).Model(rec).Create(); err != nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "failed to record declined validation"}
+	}
+	challenge.Status = models.SoulValidationChallengeStatusEvaluated
+	challenge.Result = models.SoulValidationResultDeclined
+	challenge.Score = 0
+	challenge.EvaluatedAt = now
+	challenge.UpdatedAt = now
+	_ = challenge.UpdateKeys()
+	if err := s.store.DB.WithContext(ctx).Model(challenge).IfExists().Update("OptInStatus", "Status", "Result", "Score", "EvaluatedAt", "UpdatedAt"); err != nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "failed to update opt-in status"}
+	}
+	return nil
 }
 
 // handleSoulCreateDispute creates a dispute record for an agent.
@@ -332,56 +348,15 @@ func (s *Server) handleSoulCreateDispute(ctx *apptheory.Context) (*apptheory.Res
 
 // handleSoulPublicGetDisputes returns paginated disputes for an agent.
 func (s *Server) handleSoulPublicGetDisputes(ctx *apptheory.Context) (*apptheory.Response, error) {
-	if appErr := requireStoreDB(s); appErr != nil {
-		return nil, appErr
-	}
-	if !s.cfg.SoulEnabled {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
-	}
-
-	agentIDHex, _, appErr := parseSoulAgentIDHex(ctx.Param("agentId"))
+	out, hasMore, nextCursor, appErr := listSoulPublicAgentItems[models.SoulAgentDispute](
+		s,
+		ctx,
+		&models.SoulAgentDispute{},
+		"DISPUTE#",
+		"failed to list disputes",
+	)
 	if appErr != nil {
 		return nil, appErr
-	}
-
-	cursor := strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "cursor"))
-	limit := int(envInt64PositiveFromString(httpx.FirstQueryValue(ctx.Request.Query, "limit"), 50))
-	if limit <= 0 {
-		limit = 50
-	}
-	if limit > 200 {
-		limit = 200
-	}
-
-	var items []*models.SoulAgentDispute
-	qb := s.store.DB.WithContext(ctx.Context()).
-		Model(&models.SoulAgentDispute{}).
-		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentIDHex)).
-		Where("SK", "BEGINS_WITH", "DISPUTE#").
-		OrderBy("SK", "DESC").
-		Limit(limit)
-	if cursor != "" {
-		qb = qb.Cursor(cursor)
-	}
-
-	paged, err := qb.AllPaginated(&items)
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list disputes"}
-	}
-
-	out := make([]models.SoulAgentDispute, 0, len(items))
-	for _, item := range items {
-		if item == nil {
-			continue
-		}
-		out = append(out, *item)
-	}
-
-	nextCursor := ""
-	hasMore := false
-	if paged != nil {
-		nextCursor = strings.TrimSpace(paged.NextCursor)
-		hasMore = paged.HasMore
 	}
 
 	resp, err := apptheory.JSON(http.StatusOK, soulListDisputesResponse{

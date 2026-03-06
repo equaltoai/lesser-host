@@ -27,46 +27,15 @@ func TestHandleSoulArchiveAgent_ArchivesAndWritesAudit(t *testing.T) {
 
 	tdb := newSoulLifecycleTestDB()
 
-	tb := new(ttmocks.MockTransactionBuilder)
-	tdb.db.TransactWriteBuilder = tb
-	tdb.db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Once()
-
 	key, err := crypto.GenerateKey()
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
 	}
 	wallet := strings.ToLower(crypto.PubkeyToAddress(key.PublicKey).Hex())
-
-	s := &Server{
-		store: store.New(tdb.db),
-		cfg: config.Config{
-			SoulEnabled:                 true,
-			SoulChainID:                 1,
-			SoulRegistryContractAddress: "0x0000000000000000000000000000000000000001",
-		},
-	}
+	tb := prepareSoulLifecycleTransitionServer(t, tdb)
 
 	agentIDHex := soulLifecycleTestAgentIDHex
-
-	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
-		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
-		*dest = models.Domain{Domain: "example.com", InstanceSlug: "inst1", Status: models.DomainStatusVerified}
-	}).Once()
-	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
-		*dest = models.Instance{Slug: "inst1", Owner: "alice"}
-	}).Once()
-
-	tdb.qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
-		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
-		*dest = models.SoulAgentIdentity{
-			AgentID: agentIDHex,
-			Domain:  "example.com",
-			LocalID: "agent-alice",
-			Wallet:  wallet,
-			Status:  models.SoulAgentStatusActive,
-		}
-	}).Once()
+	seedSoulLifecycleTransitionAccess(t, tdb, agentIDHex, wallet)
 
 	timestamp := time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
 	digest, appErr := computeSoulContinuityEntryDigest(
@@ -85,36 +54,8 @@ func TestHandleSoulArchiveAgent_ArchivesAndWritesAudit(t *testing.T) {
 	}
 	sigHex := "0x" + hex.EncodeToString(sig)
 
-	tb.On("Update", mock.Anything, mock.Anything, mock.Anything).Return(tb).Once().Run(func(args mock.Arguments) {
-		ident := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
-		if ident.Status != models.SoulAgentStatusArchived {
-			t.Fatalf("expected status archived, got %q", ident.Status)
-		}
-		if ident.LifecycleStatus != models.SoulAgentStatusArchived {
-			t.Fatalf("expected lifecycle status archived, got %q", ident.LifecycleStatus)
-		}
-		if strings.TrimSpace(ident.LifecycleReason) != "done" {
-			t.Fatalf("expected lifecycle reason, got %q", ident.LifecycleReason)
-		}
-	})
-	tb.On("Create", mock.Anything, mock.Anything).Return(tb).Once().Run(func(args mock.Arguments) {
-		entry := testutil.RequireMockArg[*models.SoulAgentContinuity](t, args, 0)
-		if entry.AgentID != agentIDHex {
-			t.Fatalf("expected agent id %q, got %q", agentIDHex, entry.AgentID)
-		}
-		if entry.Type != models.SoulContinuityEntryTypeArchived {
-			t.Fatalf("expected type %q, got %q", models.SoulContinuityEntryTypeArchived, entry.Type)
-		}
-		if entry.Summary != "Archived" {
-			t.Fatalf("expected summary %q, got %q", "Archived", entry.Summary)
-		}
-		if entry.Signature != strings.ToLower(sigHex) {
-			t.Fatalf("expected signature %q, got %q", strings.ToLower(sigHex), entry.Signature)
-		}
-		if entry.Timestamp.UTC().Format(time.RFC3339) != timestamp {
-			t.Fatalf("expected timestamp %q, got %q", timestamp, entry.Timestamp.UTC().Format(time.RFC3339))
-		}
-	})
+	expectArchiveIdentityUpdate(t, tb)
+	expectArchiveContinuityCreate(t, tb, agentIDHex, sigHex, timestamp)
 	tb.On("Put", mock.Anything, mock.Anything).Return(tb).Once()
 
 	ctx := &apptheory.Context{
@@ -127,7 +68,7 @@ func TestHandleSoulArchiveAgent_ArchivesAndWritesAudit(t *testing.T) {
 	}
 	ctx.Set(ctxKeyOperatorRole, models.RoleOperator)
 
-	resp, err := s.handleSoulArchiveAgent(ctx)
+	resp, err := newSoulLifecycleTransitionServer(tdb).handleSoulArchiveAgent(ctx)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -149,10 +90,6 @@ func TestHandleSoulDesignateSuccessor_SucceedsAndCreatesEntries(t *testing.T) {
 
 	tdb := newSoulLifecycleTestDB()
 
-	tb := new(ttmocks.MockTransactionBuilder)
-	tdb.db.TransactWriteBuilder = tb
-	tdb.db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Once()
-
 	keyPred, err := crypto.GenerateKey()
 	if err != nil {
 		t.Fatalf("generate predecessor key: %v", err)
@@ -164,50 +101,12 @@ func TestHandleSoulDesignateSuccessor_SucceedsAndCreatesEntries(t *testing.T) {
 		t.Fatalf("generate successor key: %v", err)
 	}
 	walletSucc := strings.ToLower(crypto.PubkeyToAddress(keySucc.PublicKey).Hex())
-
-	s := &Server{
-		store: store.New(tdb.db),
-		cfg: config.Config{
-			SoulEnabled:                 true,
-			SoulChainID:                 1,
-			SoulRegistryContractAddress: "0x0000000000000000000000000000000000000001",
-		},
-	}
+	tb := prepareSoulLifecycleTransitionServer(t, tdb)
 
 	agentIDHex := soulLifecycleTestAgentIDHex
 	successorIDHex := "0x" + strings.Repeat("22", 32)
-
-	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
-		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
-		*dest = models.Domain{Domain: "example.com", InstanceSlug: "inst1", Status: models.DomainStatusVerified}
-	}).Once()
-	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
-		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
-		*dest = models.Instance{Slug: "inst1", Owner: "alice"}
-	}).Once()
-
-	// First identity read: the current agent.
-	tdb.qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
-		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
-		*dest = models.SoulAgentIdentity{
-			AgentID: agentIDHex,
-			Domain:  "example.com",
-			LocalID: "agent-alice",
-			Wallet:  walletPred,
-			Status:  models.SoulAgentStatusActive,
-		}
-	}).Once()
-	// Second identity read: the successor.
-	tdb.qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
-		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
-		*dest = models.SoulAgentIdentity{
-			AgentID: successorIDHex,
-			Domain:  "example.com",
-			LocalID: "agent-bob",
-			Wallet:  walletSucc,
-			Status:  models.SoulAgentStatusActive,
-		}
-	}).Once()
+	seedSoulLifecycleTransitionAccess(t, tdb, agentIDHex, walletPred)
+	seedSoulSuccessorIdentity(t, tdb, successorIDHex, walletSucc)
 
 	timestamp := time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
 	declaredDigest, appErr := computeSoulContinuityEntryDigest(
@@ -242,6 +141,129 @@ func TestHandleSoulDesignateSuccessor_SucceedsAndCreatesEntries(t *testing.T) {
 	}
 	receivedSigHex := "0x" + hex.EncodeToString(receivedSigBytes)
 
+	expectSuccessorUpdates(t, tb, agentIDHex, successorIDHex)
+	createKinds := expectSuccessorContinuityCreates(t, tb, agentIDHex, successorIDHex, declaredSigHex, receivedSigHex, timestamp)
+
+	tb.On("Put", mock.Anything, mock.Anything).Return(tb).Once()
+
+	ctx := &apptheory.Context{
+		RequestID:    "r1",
+		AuthIdentity: "alice",
+		Params:       map[string]string{"agentId": agentIDHex},
+		Request: apptheory.Request{
+			Body: []byte(`{"successor_agent_id":"` + successorIDHex + `","reason":"upgrade","timestamp":"` + timestamp + `","predecessor_signature":"` + declaredSigHex + `","successor_signature":"` + receivedSigHex + `"}`),
+		},
+	}
+	ctx.Set(ctxKeyOperatorRole, models.RoleOperator)
+
+	resp, err := newSoulLifecycleTransitionServer(tdb).handleSoulDesignateSuccessor(ctx)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if resp.Status != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body=%q)", resp.Status, string(resp.Body))
+	}
+
+	if !createKinds["declared"] || !createKinds["received"] {
+		t.Fatalf("expected both continuity entries to be created, got %#v", createKinds)
+	}
+}
+
+func newSoulLifecycleTransitionServer(tdb soulLifecycleTestDB) *Server {
+	return &Server{
+		store: store.New(tdb.db),
+		cfg: config.Config{
+			SoulEnabled:                 true,
+			SoulChainID:                 1,
+			SoulRegistryContractAddress: "0x0000000000000000000000000000000000000001",
+		},
+	}
+}
+
+func prepareSoulLifecycleTransitionServer(t *testing.T, tdb soulLifecycleTestDB) *ttmocks.MockTransactionBuilder {
+	t.Helper()
+	tb := new(ttmocks.MockTransactionBuilder)
+	tdb.db.TransactWriteBuilder = tb
+	tdb.db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Once()
+	return tb
+}
+
+func seedSoulLifecycleTransitionAccess(t *testing.T, tdb soulLifecycleTestDB, agentIDHex string, wallet string) {
+	t.Helper()
+	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
+		*dest = models.Domain{Domain: "example.com", InstanceSlug: "inst1", Status: models.DomainStatusVerified}
+	}).Once()
+	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{Slug: "inst1", Owner: "alice"}
+	}).Once()
+	tdb.qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
+		*dest = models.SoulAgentIdentity{
+			AgentID: agentIDHex,
+			Domain:  "example.com",
+			LocalID: "agent-alice",
+			Wallet:  wallet,
+			Status:  models.SoulAgentStatusActive,
+		}
+	}).Once()
+}
+
+func seedSoulSuccessorIdentity(t *testing.T, tdb soulLifecycleTestDB, successorIDHex string, wallet string) {
+	t.Helper()
+	tdb.qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
+		*dest = models.SoulAgentIdentity{
+			AgentID: successorIDHex,
+			Domain:  "example.com",
+			LocalID: "agent-bob",
+			Wallet:  wallet,
+			Status:  models.SoulAgentStatusActive,
+		}
+	}).Once()
+}
+
+func expectArchiveIdentityUpdate(t *testing.T, tb *ttmocks.MockTransactionBuilder) {
+	t.Helper()
+	tb.On("Update", mock.Anything, mock.Anything, mock.Anything).Return(tb).Once().Run(func(args mock.Arguments) {
+		ident := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
+		if ident.Status != models.SoulAgentStatusArchived {
+			t.Fatalf("expected status archived, got %q", ident.Status)
+		}
+		if ident.LifecycleStatus != models.SoulAgentStatusArchived {
+			t.Fatalf("expected lifecycle status archived, got %q", ident.LifecycleStatus)
+		}
+		if strings.TrimSpace(ident.LifecycleReason) != "done" {
+			t.Fatalf("expected lifecycle reason, got %q", ident.LifecycleReason)
+		}
+	})
+}
+
+func expectArchiveContinuityCreate(t *testing.T, tb *ttmocks.MockTransactionBuilder, agentIDHex string, sigHex string, timestamp string) {
+	t.Helper()
+	tb.On("Create", mock.Anything, mock.Anything).Return(tb).Once().Run(func(args mock.Arguments) {
+		entry := testutil.RequireMockArg[*models.SoulAgentContinuity](t, args, 0)
+		if entry.AgentID != agentIDHex {
+			t.Fatalf("expected agent id %q, got %q", agentIDHex, entry.AgentID)
+		}
+		if entry.Type != models.SoulContinuityEntryTypeArchived {
+			t.Fatalf("expected type %q, got %q", models.SoulContinuityEntryTypeArchived, entry.Type)
+		}
+		if entry.Summary != "Archived" {
+			t.Fatalf("expected summary %q, got %q", "Archived", entry.Summary)
+		}
+		if entry.Signature != strings.ToLower(sigHex) {
+			t.Fatalf("expected signature %q, got %q", strings.ToLower(sigHex), entry.Signature)
+		}
+		if entry.Timestamp.UTC().Format(time.RFC3339) != timestamp {
+			t.Fatalf("expected timestamp %q, got %q", timestamp, entry.Timestamp.UTC().Format(time.RFC3339))
+		}
+	})
+}
+
+func expectSuccessorUpdates(t *testing.T, tb *ttmocks.MockTransactionBuilder, agentIDHex string, successorIDHex string) {
+	t.Helper()
 	updateCalls := 0
 	tb.On("Update", mock.Anything, mock.Anything, mock.Anything).Return(tb).Twice().Run(func(args mock.Arguments) {
 		ident := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
@@ -249,20 +271,23 @@ func TestHandleSoulDesignateSuccessor_SucceedsAndCreatesEntries(t *testing.T) {
 			if ident.Status != models.SoulAgentStatusSucceeded {
 				t.Fatalf("expected status succeeded, got %q", ident.Status)
 			}
-			if ident.SuccessorAgentId != successorIDHex {
-				t.Fatalf("expected successor agent id %q, got %q", successorIDHex, ident.SuccessorAgentId)
+			if ident.SuccessorAgentID != successorIDHex {
+				t.Fatalf("expected successor agent id %q, got %q", successorIDHex, ident.SuccessorAgentID)
 			}
 		} else {
 			if ident.AgentID != successorIDHex {
 				t.Fatalf("expected successor agent id %q, got %q", successorIDHex, ident.AgentID)
 			}
-			if ident.PredecessorAgentId != agentIDHex {
-				t.Fatalf("expected predecessor agent id %q, got %q", agentIDHex, ident.PredecessorAgentId)
+			if ident.PredecessorAgentID != agentIDHex {
+				t.Fatalf("expected predecessor agent id %q, got %q", agentIDHex, ident.PredecessorAgentID)
 			}
 		}
 		updateCalls++
 	})
+}
 
+func expectSuccessorContinuityCreates(t *testing.T, tb *ttmocks.MockTransactionBuilder, agentIDHex string, successorIDHex string, declaredSigHex string, receivedSigHex string, timestamp string) map[string]bool {
+	t.Helper()
 	createKinds := map[string]bool{}
 	tb.On("Create", mock.Anything, mock.Anything).Return(tb).Twice().Run(func(args mock.Arguments) {
 		entry := testutil.RequireMockArg[*models.SoulAgentContinuity](t, args, 0)
@@ -290,30 +315,7 @@ func TestHandleSoulDesignateSuccessor_SucceedsAndCreatesEntries(t *testing.T) {
 			t.Fatalf("expected timestamp %q, got %q", timestamp, entry.Timestamp.UTC().Format(time.RFC3339))
 		}
 	})
-
-	tb.On("Put", mock.Anything, mock.Anything).Return(tb).Once()
-
-	ctx := &apptheory.Context{
-		RequestID:    "r1",
-		AuthIdentity: "alice",
-		Params:       map[string]string{"agentId": agentIDHex},
-		Request: apptheory.Request{
-			Body: []byte(`{"successor_agent_id":"` + successorIDHex + `","reason":"upgrade","timestamp":"` + timestamp + `","predecessor_signature":"` + declaredSigHex + `","successor_signature":"` + receivedSigHex + `"}`),
-		},
-	}
-	ctx.Set(ctxKeyOperatorRole, models.RoleOperator)
-
-	resp, err := s.handleSoulDesignateSuccessor(ctx)
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	if resp.Status != http.StatusOK {
-		t.Fatalf("expected 200, got %d (body=%q)", resp.Status, string(resp.Body))
-	}
-
-	if !createKinds["declared"] || !createKinds["received"] {
-		t.Fatalf("expected both continuity entries to be created, got %#v", createKinds)
-	}
+	return createKinds
 }
 
 func TestHandleSoulArchiveAgent_RejectsInvalidTransition(t *testing.T) {
@@ -365,8 +367,8 @@ func TestHandleSoulArchiveAgent_RejectsInvalidTransition(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected AppError, got %T", err)
 	}
-	if appErr.Code != "app.conflict" {
-		t.Fatalf("expected app.conflict, got %s", appErr.Code)
+	if appErr.Code != appErrCodeConflict {
+		t.Fatalf("expected %s, got %s", appErrCodeConflict, appErr.Code)
 	}
 }
 
@@ -416,8 +418,8 @@ func TestHandleSoulAgentUpdateRegistration_ArchivedAgentRejected(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected AppError, got %T", err)
 	}
-	if appErr.Code != "app.conflict" {
-		t.Fatalf("expected app.conflict, got %s", appErr.Code)
+	if appErr.Code != appErrCodeConflict {
+		t.Fatalf("expected %s, got %s", appErrCodeConflict, appErr.Code)
 	}
 }
 
@@ -501,7 +503,7 @@ func TestHandleSoulArchiveAgent_TransactionFailureReturnsInternalError(t *testin
 	if !ok {
 		t.Fatalf("expected AppError, got %T", callErr)
 	}
-	if appErr.Code != "app.internal" {
-		t.Fatalf("expected app.internal, got %s", appErr.Code)
+	if appErr.Code != appErrCodeInternal {
+		t.Fatalf("expected %s, got %s", appErrCodeInternal, appErr.Code)
 	}
 }

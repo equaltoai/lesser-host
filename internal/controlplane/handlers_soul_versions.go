@@ -39,15 +39,39 @@ func (s *Server) handleSoulPublicGetVersions(ctx *apptheory.Context) (*apptheory
 		return nil, appErr
 	}
 
-	cursor := strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "cursor"))
+	limit := soulVersionsPageLimit(ctx)
+	versions, appErr := s.loadSoulAgentVersions(ctx, agentIDHex)
+	if appErr != nil {
+		return nil, appErr
+	}
+	out, hasMore, nextCursor := paginateSoulAgentVersions(versions, strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "cursor")), limit)
+
+	resp, err := apptheory.JSON(http.StatusOK, soulListVersionsResponse{
+		Version:    "1",
+		Versions:   out,
+		Count:      len(out),
+		HasMore:    hasMore,
+		NextCursor: nextCursor,
+	})
+	if err != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	s.setSoulPublicHeaders(ctx, resp, "public, max-age=60")
+	return resp, nil
+}
+
+func soulVersionsPageLimit(ctx *apptheory.Context) int {
 	limit := int(envInt64PositiveFromString(httpx.FirstQueryValue(ctx.Request.Query, "limit"), 50))
 	if limit <= 0 {
-		limit = 50
+		return 50
 	}
 	if limit > 200 {
-		limit = 200
+		return 200
 	}
+	return limit
+}
 
+func (s *Server) loadSoulAgentVersions(ctx *apptheory.Context, agentIDHex string) ([]models.SoulAgentVersion, *apptheory.AppError) {
 	var items []*models.SoulAgentVersion
 	err := s.store.DB.WithContext(ctx.Context()).
 		Model(&models.SoulAgentVersion{}).
@@ -60,10 +84,9 @@ func (s *Server) handleSoulPublicGetVersions(ctx *apptheory.Context) (*apptheory
 
 	versions := make([]models.SoulAgentVersion, 0, len(items))
 	for _, item := range items {
-		if item == nil {
-			continue
+		if item != nil {
+			versions = append(versions, *item)
 		}
-		versions = append(versions, *item)
 	}
 
 	sort.Slice(versions, func(i, j int) bool {
@@ -72,7 +95,10 @@ func (s *Server) handleSoulPublicGetVersions(ctx *apptheory.Context) (*apptheory
 		}
 		return versions[i].VersionNumber > versions[j].VersionNumber
 	})
+	return versions, nil
+}
 
+func paginateSoulAgentVersions(versions []models.SoulAgentVersion, cursor string, limit int) ([]models.SoulAgentVersion, bool, string) {
 	afterVersion := 0
 	if cursor != "" {
 		if v, parseErr := strconv.Atoi(cursor); parseErr == nil && v > 0 {
@@ -98,24 +124,12 @@ func (s *Server) handleSoulPublicGetVersions(ctx *apptheory.Context) (*apptheory
 	if end > len(versions) {
 		end = len(versions)
 	}
-	out := versions[start:end]
 
+	out := versions[start:end]
 	hasMore := end < len(versions)
 	nextCursor := ""
 	if hasMore && len(out) > 0 {
 		nextCursor = strconv.Itoa(out[len(out)-1].VersionNumber)
 	}
-
-	resp, err := apptheory.JSON(http.StatusOK, soulListVersionsResponse{
-		Version:    "1",
-		Versions:   out,
-		Count:      len(out),
-		HasMore:    hasMore,
-		NextCursor: nextCursor,
-	})
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-	s.setSoulPublicHeaders(ctx, resp, "public, max-age=60")
-	return resp, nil
+	return out, hasMore, nextCursor
 }

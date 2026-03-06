@@ -88,7 +88,7 @@ func TestHandleSoulAgentUpdateRegistration_V2_FirstVersion_AllowsNullPreviousVer
 	}}
 	s.dialEVM = func(ctx context.Context, rpcURL string) (ethRPCClient, error) { return client, nil }
 
-	principalDeclaration := "I accept responsibility for this agent's behavior."
+	principalDeclaration := boundaryTestPrincipalDeclaration
 	principalDigest := crypto.Keccak256([]byte(principalDeclaration))
 	principalSig, err := crypto.Sign(accounts.TextHash(principalDigest), key)
 	if err != nil {
@@ -154,7 +154,10 @@ func TestHandleSoulAgentUpdateRegistration_V2_FirstVersion_AllowsNullPreviousVer
 		"updated":            "2026-03-01T00:00:00Z",
 	}
 
-	unsignedBytes, _ := json.Marshal(unsigned)
+	unsignedBytes, err := json.Marshal(unsigned)
+	if err != nil {
+		t.Fatalf("marshal unsigned: %v", err)
+	}
 	jcsBytes, err := jsoncanonicalizer.Transform(unsignedBytes)
 	if err != nil {
 		t.Fatalf("canonicalize: %v", err)
@@ -163,13 +166,16 @@ func TestHandleSoulAgentUpdateRegistration_V2_FirstVersion_AllowsNullPreviousVer
 	sig, _ := crypto.Sign(accounts.TextHash(digest), key)
 	sigHex := "0x" + hex.EncodeToString(sig)
 
-	reg := map[string]any{}
-	if err := json.Unmarshal(unsignedBytes, &reg); err != nil {
-		t.Fatalf("unmarshal unsigned: %v", err)
+	reg := mustUnmarshalJSON[map[string]any](t, unsignedBytes)
+	regAttestations, ok := reg["attestations"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected attestations map, got %#v", reg["attestations"])
 	}
-	regAtt := reg["attestations"].(map[string]any)
-	regAtt["selfAttestation"] = sigHex
-	regBytes, _ := json.Marshal(reg)
+	regAttestations["selfAttestation"] = sigHex
+	regBytes, err := json.Marshal(reg)
+	if err != nil {
+		t.Fatalf("marshal registration: %v", err)
+	}
 
 	ctx := &apptheory.Context{
 		RequestID:    "r-v2-1",
@@ -264,7 +270,7 @@ func TestHandleSoulAgentUpdateRegistration_V3_FirstVersion_AllowsNullPreviousVer
 	}}
 	s.dialEVM = func(ctx context.Context, rpcURL string) (ethRPCClient, error) { return client, nil }
 
-	principalDeclaration := "I accept responsibility for this agent's behavior."
+	principalDeclaration := boundaryTestPrincipalDeclaration
 	principalDigest := crypto.Keccak256([]byte(principalDeclaration))
 	principalSig, err := crypto.Sign(accounts.TextHash(principalDigest), key)
 	if err != nil {
@@ -357,7 +363,10 @@ func TestHandleSoulAgentUpdateRegistration_V3_FirstVersion_AllowsNullPreviousVer
 		"updated":            "2026-03-01T00:00:00Z",
 	}
 
-	unsignedBytes, _ := json.Marshal(unsigned)
+	unsignedBytes, err := json.Marshal(unsigned)
+	if err != nil {
+		t.Fatalf("marshal unsigned: %v", err)
+	}
 	jcsBytes, err := jsoncanonicalizer.Transform(unsignedBytes)
 	if err != nil {
 		t.Fatalf("canonicalize: %v", err)
@@ -366,13 +375,16 @@ func TestHandleSoulAgentUpdateRegistration_V3_FirstVersion_AllowsNullPreviousVer
 	sig, _ := crypto.Sign(accounts.TextHash(digest), key)
 	sigHex := "0x" + hex.EncodeToString(sig)
 
-	reg := map[string]any{}
-	if err := json.Unmarshal(unsignedBytes, &reg); err != nil {
-		t.Fatalf("unmarshal unsigned: %v", err)
+	reg := mustUnmarshalJSON[map[string]any](t, unsignedBytes)
+	regAttestations, ok := reg["attestations"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected attestations map, got %#v", reg["attestations"])
 	}
-	regAtt := reg["attestations"].(map[string]any)
-	regAtt["selfAttestation"] = sigHex
-	regBytes, _ := json.Marshal(reg)
+	regAttestations["selfAttestation"] = sigHex
+	regBytes, err := json.Marshal(reg)
+	if err != nil {
+		t.Fatalf("marshal registration: %v", err)
+	}
 
 	ctx := &apptheory.Context{
 		RequestID:    "r-v3-1",
@@ -420,7 +432,7 @@ func TestHandleSoulAgentUpdateRegistration_V2_RequiresPreviousVersionURI_ForSubs
 	// Previous version 1 record exists so we can build the hash chain.
 	tdb.qVersion.On("First", mock.AnythingOfType("*models.SoulAgentVersion")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentVersion](t, args, 0)
-		*dest = models.SoulAgentVersion{AgentID: agentIDHex, VersionNumber: 1, RegistrationUri: "s3://bucket/x", RegistrationSHA256: strings.Repeat("a", 64)}
+		*dest = models.SoulAgentVersion{AgentID: agentIDHex, VersionNumber: 1, RegistrationURI: "s3://bucket/x", RegistrationSHA256: strings.Repeat("a", 64)}
 	}).Once()
 
 	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
@@ -461,7 +473,7 @@ func TestHandleSoulAgentUpdateRegistration_V2_RequiresPreviousVersionURI_ForSubs
 
 	prevURI := "s3://bucket/" + soulRegistrationVersionedS3Key(agentIDHex, 1)
 
-	principalDeclaration := "I accept responsibility for this agent's behavior."
+	principalDeclaration := boundaryTestPrincipalDeclaration
 	principalDigest := crypto.Keccak256([]byte(principalDeclaration))
 	principalSig, err := crypto.Sign(accounts.TextHash(principalDigest), key)
 	if err != nil {
@@ -516,7 +528,10 @@ func TestHandleSoulAgentUpdateRegistration_V2_RequiresPreviousVersionURI_ForSubs
 		"updated":            "2026-03-02T00:00:00Z",
 	}
 
-	unsignedBytes, _ := json.Marshal(unsigned)
+	unsignedBytes, err := json.Marshal(unsigned)
+	if err != nil {
+		t.Fatalf("marshal unsigned: %v", err)
+	}
 	jcsBytes, err := jsoncanonicalizer.Transform(unsignedBytes)
 	if err != nil {
 		t.Fatalf("canonicalize: %v", err)
@@ -525,13 +540,16 @@ func TestHandleSoulAgentUpdateRegistration_V2_RequiresPreviousVersionURI_ForSubs
 	sig, _ := crypto.Sign(accounts.TextHash(digest), key)
 	sigHex := "0x" + hex.EncodeToString(sig)
 
-	reg := map[string]any{}
-	if err := json.Unmarshal(unsignedBytes, &reg); err != nil {
-		t.Fatalf("unmarshal unsigned: %v", err)
+	reg := mustUnmarshalJSON[map[string]any](t, unsignedBytes)
+	regAttestations, ok := reg["attestations"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected attestations map, got %#v", reg["attestations"])
 	}
-	regAtt := reg["attestations"].(map[string]any)
-	regAtt["selfAttestation"] = sigHex
-	regBytes, _ := json.Marshal(reg)
+	regAttestations["selfAttestation"] = sigHex
+	regBytes, err := json.Marshal(reg)
+	if err != nil {
+		t.Fatalf("marshal registration: %v", err)
+	}
 
 	ctx := &apptheory.Context{
 		RequestID:    "r-v2-2",
@@ -629,7 +647,7 @@ func TestValidateCapabilityClaimLevelTransitions_RejectsDowngrade(t *testing.T) 
 	if appErr == nil {
 		t.Fatalf("expected error")
 	}
-	if appErr.Code != "app.bad_request" {
+	if appErr.Code != appErrCodeBadRequest {
 		t.Fatalf("expected bad_request, got %q", appErr.Code)
 	}
 }

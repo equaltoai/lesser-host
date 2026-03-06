@@ -50,8 +50,8 @@ type SoulAgentIdentity struct {
 	// v2: lifecycle (replaces simple Status for richer state machine)
 	LifecycleStatus    string `theorydb:"attr:lifecycleStatus" json:"lifecycle_status,omitempty"`
 	LifecycleReason    string `theorydb:"attr:lifecycleReason" json:"lifecycle_reason,omitempty"`
-	SuccessorAgentId   string `theorydb:"attr:successorAgentId" json:"successor_agent_id,omitempty"`
-	PredecessorAgentId string `theorydb:"attr:predecessorAgentId" json:"predecessor_agent_id,omitempty"`
+	SuccessorAgentID   string `theorydb:"attr:successorAgentId" json:"successor_agent_id,omitempty"`
+	PredecessorAgentID string `theorydb:"attr:predecessorAgentId" json:"predecessor_agent_id,omitempty"`
 
 	Status     string    `theorydb:"attr:status" json:"status"`
 	MintTxHash string    `theorydb:"attr:mintTxHash" json:"mint_tx_hash,omitempty"`
@@ -166,8 +166,8 @@ func (a *SoulAgentIdentity) UpdateKeys() error {
 	a.PrincipalDeclaredAt = strings.TrimSpace(a.PrincipalDeclaredAt)
 	a.LifecycleStatus = strings.ToLower(strings.TrimSpace(a.LifecycleStatus))
 	a.LifecycleReason = strings.TrimSpace(a.LifecycleReason)
-	a.SuccessorAgentId = strings.ToLower(strings.TrimSpace(a.SuccessorAgentId))
-	a.PredecessorAgentId = strings.ToLower(strings.TrimSpace(a.PredecessorAgentId))
+	a.SuccessorAgentID = strings.ToLower(strings.TrimSpace(a.SuccessorAgentID))
+	a.PredecessorAgentID = strings.ToLower(strings.TrimSpace(a.PredecessorAgentID))
 	a.Status = strings.ToLower(strings.TrimSpace(a.Status))
 	a.MintTxHash = strings.ToLower(strings.TrimSpace(a.MintTxHash))
 

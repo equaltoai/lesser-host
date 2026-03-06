@@ -110,79 +110,113 @@ func backfillBoundaryIndex(ctx context.Context, st *store.Store, identity *model
 	seenKeywords := map[string]struct{}{}
 
 	for {
-		var items []*models.SoulAgentBoundary
-		qb := st.DB.WithContext(ctx).
-			Model(&models.SoulAgentBoundary{}).
-			Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentID)).
-			Where("SK", "BEGINS_WITH", "BOUNDARY#").
-			OrderBy("SK", "ASC").
-			Limit(pageSize)
-		if cursor != "" {
-			qb = qb.Cursor(cursor)
-		}
-
-		paged, err := qb.AllPaginated(&items)
+		items, nextCursor, hasMore, err := queryBoundaryPage(ctx, st, agentID, pageSize, cursor)
 		if err != nil {
 			die("query boundaries: %v", err)
 		}
 
+		stop := false
 		for _, b := range items {
-			if b == nil {
-				continue
-			}
-			scanned++
-
-			keywords := soulsearch.ExtractBoundaryKeywords(b.Category, b.Statement, b.Rationale)
-			for _, kw := range keywords {
-				if strings.TrimSpace(kw) == "" {
-					continue
-				}
-				if _, ok := seenKeywords[kw]; ok {
-					continue
-				}
-				seenKeywords[kw] = struct{}{}
-
-				if maxCreates > 0 && created >= maxCreates {
-					return created, existing, scanned, errs
-				}
-
-				item := &models.SoulBoundaryKeywordAgentIndex{
-					Keyword: kw,
-					Domain:  domain,
-					LocalID: localID,
-					AgentID: agentID,
-				}
-				_ = item.UpdateKeys()
-
-				if apply {
-					if err := st.DB.WithContext(ctx).Model(item).IfNotExists().Create(); err != nil {
-						if theoryErrors.IsConditionFailed(err) {
-							existing++
-							continue
-						}
-						errs++
-						fmt.Printf("warn index create failed agent=%s keyword=%s err=%v\n", agentID, kw, err)
-						continue
-					}
-					created++
-				} else {
-					fmt.Printf("dry-run index would create agent=%s keyword=%s\n", agentID, kw)
-					created++
-				}
+			created, existing, scanned, errs, stop = processBoundaryItem(ctx, st, b, agentID, domain, localID, maxCreates, apply, seenKeywords, created, existing, scanned, errs)
+			if stop {
+				return created, existing, scanned, errs
 			}
 		}
 
-		nextCursor := ""
-		hasMore := false
-		if paged != nil {
-			nextCursor = strings.TrimSpace(paged.NextCursor)
-			hasMore = paged.HasMore
-		}
 		if !hasMore || nextCursor == "" {
 			return created, existing, scanned, errs
 		}
 		cursor = nextCursor
 	}
+}
+
+func queryBoundaryPage(ctx context.Context, st *store.Store, agentID string, pageSize int, cursor string) ([]*models.SoulAgentBoundary, string, bool, error) {
+	var items []*models.SoulAgentBoundary
+	qb := st.DB.WithContext(ctx).
+		Model(&models.SoulAgentBoundary{}).
+		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentID)).
+		Where("SK", "BEGINS_WITH", "BOUNDARY#").
+		OrderBy("SK", "ASC").
+		Limit(pageSize)
+	if cursor != "" {
+		qb = qb.Cursor(cursor)
+	}
+	paged, err := qb.AllPaginated(&items)
+	if err != nil {
+		return nil, "", false, err
+	}
+	nextCursor := ""
+	hasMore := false
+	if paged != nil {
+		nextCursor = strings.TrimSpace(paged.NextCursor)
+		hasMore = paged.HasMore
+	}
+	return items, nextCursor, hasMore, nil
+}
+
+func processBoundaryItem(ctx context.Context, st *store.Store, boundary *models.SoulAgentBoundary, agentID string, domain string, localID string, maxCreates int, apply bool, seenKeywords map[string]struct{}, created int, existing int, scanned int, errs int) (int, int, int, int, bool) {
+	if boundary == nil {
+		return created, existing, scanned, errs, false
+	}
+	scanned++
+	for _, kw := range soulsearch.ExtractBoundaryKeywords(boundary.Category, boundary.Statement, boundary.Rationale) {
+		if !shouldCreateBoundaryKeyword(kw, seenKeywords) {
+			continue
+		}
+		if maxCreates > 0 && created >= maxCreates {
+			return created, existing, scanned, errs, true
+		}
+		var createdNow bool
+		var existed bool
+		var err error
+		createdNow, existed, err = createBoundaryKeywordIndex(ctx, st, agentID, domain, localID, kw, apply)
+		if err != nil {
+			errs++
+			fmt.Printf("warn index create failed agent=%s keyword=%s err=%v\n", agentID, kw, err)
+			continue
+		}
+		if existed {
+			existing++
+			continue
+		}
+		if createdNow {
+			created++
+		}
+	}
+	return created, existing, scanned, errs, false
+}
+
+func shouldCreateBoundaryKeyword(keyword string, seenKeywords map[string]struct{}) bool {
+	keyword = strings.TrimSpace(keyword)
+	if keyword == "" {
+		return false
+	}
+	if _, ok := seenKeywords[keyword]; ok {
+		return false
+	}
+	seenKeywords[keyword] = struct{}{}
+	return true
+}
+
+func createBoundaryKeywordIndex(ctx context.Context, st *store.Store, agentID string, domain string, localID string, keyword string, apply bool) (bool, bool, error) {
+	item := &models.SoulBoundaryKeywordAgentIndex{
+		Keyword: keyword,
+		Domain:  domain,
+		LocalID: localID,
+		AgentID: agentID,
+	}
+	_ = item.UpdateKeys()
+	if !apply {
+		fmt.Printf("dry-run index would create agent=%s keyword=%s\n", agentID, keyword)
+		return true, false, nil
+	}
+	if err := st.DB.WithContext(ctx).Model(item).IfNotExists().Create(); err != nil {
+		if theoryErrors.IsConditionFailed(err) {
+			return false, true, nil
+		}
+		return false, false, err
+	}
+	return true, false, nil
 }
 
 func die(msg string, args ...any) {

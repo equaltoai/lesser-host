@@ -336,10 +336,10 @@ func (s *Server) computeAndPersistReputations(ctx context.Context, identities []
 		}
 
 		scores := soulreputation.SignalScores{
-			Social:     0,
-			Validation: validationScore,
-			Trust:      0,
-			Integrity:  integritySignals.score,
+			Social:        0,
+			Validation:    validationScore,
+			Trust:         0,
+			Integrity:     integritySignals.score,
 			Communication: commSignals.score,
 		}
 
@@ -506,135 +506,14 @@ func (s *Server) computeCommunicationSignals(ctx context.Context, agentID string
 	}
 
 	cutoff := now.UTC().Add(-30 * 24 * time.Hour)
-
-	var items []*models.SoulAgentCommActivity
-	err := s.store.DB.WithContext(ctx).
-		Model(&models.SoulAgentCommActivity{}).
-		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentID)).
-		Where("SK", "BEGINS_WITH", "COMM#").
-		OrderBy("SK", "DESC").
-		Limit(1000).
-		All(&items)
+	items, err := s.listRecentCommunicationActivities(ctx, agentID)
 	if err != nil {
 		return communicationResult{}, err
 	}
 
-	result := communicationResult{}
-
-	// First pass: count inbound receives + index inbound timestamps by message id.
-	inboundAt := map[string]time.Time{}
-	for _, it := range items {
-		if it == nil {
-			continue
-		}
-		if it.Timestamp.Before(cutoff) {
-			continue
-		}
-
-		if strings.ToLower(strings.TrimSpace(it.Direction)) != models.SoulCommDirectionInbound {
-			continue
-		}
-		if strings.ToLower(strings.TrimSpace(it.Action)) != "receive" {
-			continue
-		}
-
-		switch strings.ToLower(strings.TrimSpace(it.ChannelType)) {
-		case "email":
-			result.emailsReceived++
-		case "sms":
-			result.smsReceived++
-		case "voice":
-			result.callsReceived++
-		}
-
-		msgID := strings.TrimSpace(it.MessageID)
-		if msgID == "" {
-			continue
-		}
-		if existing, ok := inboundAt[msgID]; !ok || it.Timestamp.Before(existing) {
-			inboundAt[msgID] = it.Timestamp
-		}
-	}
-
-	// Second pass: count outbound sends + boundary violations + response stats.
-	responded := map[string]struct{}{}
-	responseDurations := make([]time.Duration, 0, 32)
-	for _, it := range items {
-		if it == nil {
-			continue
-		}
-		if it.Timestamp.Before(cutoff) {
-			continue
-		}
-
-		if strings.ToLower(strings.TrimSpace(it.Direction)) != models.SoulCommDirectionOutbound {
-			continue
-		}
-		if strings.ToLower(strings.TrimSpace(it.Action)) != "send" {
-			continue
-		}
-
-		switch strings.ToLower(strings.TrimSpace(it.ChannelType)) {
-		case "email":
-			result.emailsSent++
-		case "sms":
-			result.smsSent++
-		case "voice":
-			result.callsMade++
-		}
-
-		if strings.ToLower(strings.TrimSpace(it.BoundaryCheck)) == models.SoulCommBoundaryCheckViolated {
-			result.boundaryViolations++
-		}
-
-		replyTo := strings.TrimSpace(it.InReplyTo)
-		if replyTo == "" {
-			continue
-		}
-		start, ok := inboundAt[replyTo]
-		if !ok {
-			continue
-		}
-		if !it.Timestamp.After(start) {
-			continue
-		}
-		if _, ok := responded[replyTo]; ok {
-			continue
-		}
-		responded[replyTo] = struct{}{}
-		responseDurations = append(responseDurations, it.Timestamp.Sub(start))
-	}
-
-	totalInbound := result.emailsReceived + result.smsReceived + result.callsReceived
-	if totalInbound > 0 {
-		result.responseRate = float64(len(responded)) / float64(totalInbound)
-	}
-
-	if len(responseDurations) > 0 {
-		sum := time.Duration(0)
-		for _, d := range responseDurations {
-			sum += d
-		}
-		result.avgResponseTimeMinutes = sum.Minutes() / float64(len(responseDurations))
-	}
-
-	// Heuristic score: prioritize response rate + responsiveness; penalize boundary violations.
-	score := 0.5
-	if totalInbound > 0 {
-		score += 0.4 * clamp01(result.responseRate)
-		timeScore := 1.0
-		if result.avgResponseTimeMinutes > 0 {
-			timeScore = math.Exp(-result.avgResponseTimeMinutes / 60.0)
-		}
-		score += 0.3 * clamp01(timeScore)
-	}
-	score -= 0.1 * float64(result.boundaryViolations)
-	result.score = clamp01(score)
-
-	// Spam reports/bounce rates not yet captured in v0.
-	result.spamReports = 0
-
-	return result, nil
+	result, inboundAt := summarizeInboundCommunication(items, cutoff)
+	result, responded, responseDurations := summarizeOutboundCommunication(items, cutoff, result, inboundAt)
+	return finalizeCommunicationResult(result, responded, responseDurations), nil
 }
 
 type integrityResult struct {
@@ -658,59 +537,254 @@ func (s *Server) computeIntegritySignals(ctx context.Context, agentID string) (i
 		return integrityResult{}, errors.New("agent id is required")
 	}
 
-	// Relationship signals (delegations + endorsements).
+	rels, err := s.listSoulRelationships(ctx, agentID)
+	if err != nil {
+		return integrityResult{}, err
+	}
+	delegationsTotal, delegationsCompleted, delegationQualitySum, endorsers := summarizeRelationshipIntegrity(agentID, rels)
+
+	failures, err := s.listSoulAgentFailures(ctx, agentID)
+	if err != nil {
+		return integrityResult{}, err
+	}
+	totalFailures, recoveredFailures, boundaryViolations := summarizeFailureIntegrity(failures)
+
+	commActs, err := s.listRecentCommunicationActivities(ctx, agentID)
+	if err != nil {
+		return integrityResult{}, err
+	}
+	boundaryViolations += countCommunicationBoundaryViolations(commActs)
+
+	boundariesDeclared, err := s.countDeclaredBoundaries(ctx, agentID)
+	if err != nil {
+		return integrityResult{}, err
+	}
+	if err := s.addLegacyEndorsers(ctx, agentID, endorsers); err != nil {
+		return integrityResult{}, err
+	}
+
+	return finalizeIntegrityResult(boundariesDeclared, delegationsTotal, delegationsCompleted, delegationQualitySum, totalFailures, recoveredFailures, boundaryViolations, endorsers), nil
+}
+
+func (s *Server) listRecentCommunicationActivities(ctx context.Context, agentID string) ([]*models.SoulAgentCommActivity, error) {
+	var items []*models.SoulAgentCommActivity
+	err := s.store.DB.WithContext(ctx).
+		Model(&models.SoulAgentCommActivity{}).
+		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentID)).
+		Where("SK", "BEGINS_WITH", "COMM#").
+		OrderBy("SK", "DESC").
+		Limit(1000).
+		All(&items)
+	if err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+func summarizeInboundCommunication(items []*models.SoulAgentCommActivity, cutoff time.Time) (communicationResult, map[string]time.Time) {
+	result := communicationResult{}
+	inboundAt := map[string]time.Time{}
+	for _, it := range items {
+		if !isInboundReceiveActivity(it, cutoff) {
+			continue
+		}
+		incrementInboundCommunication(&result, it.ChannelType)
+		recordInboundTimestamp(inboundAt, strings.TrimSpace(it.MessageID), it.Timestamp)
+	}
+	return result, inboundAt
+}
+
+func summarizeOutboundCommunication(items []*models.SoulAgentCommActivity, cutoff time.Time, result communicationResult, inboundAt map[string]time.Time) (communicationResult, map[string]struct{}, []time.Duration) {
+	responded := map[string]struct{}{}
+	responseDurations := make([]time.Duration, 0, 32)
+	for _, it := range items {
+		if !isOutboundSendActivity(it, cutoff) {
+			continue
+		}
+		incrementOutboundCommunication(&result, it.ChannelType)
+		if strings.ToLower(strings.TrimSpace(it.BoundaryCheck)) == models.SoulCommBoundaryCheckViolated {
+			result.boundaryViolations++
+		}
+		if duration, ok := responseDurationForActivity(it, inboundAt, responded); ok {
+			responseDurations = append(responseDurations, duration)
+		}
+	}
+	return result, responded, responseDurations
+}
+
+func finalizeCommunicationResult(result communicationResult, responded map[string]struct{}, responseDurations []time.Duration) communicationResult {
+	totalInbound := result.emailsReceived + result.smsReceived + result.callsReceived
+	if totalInbound > 0 {
+		result.responseRate = float64(len(responded)) / float64(totalInbound)
+	}
+	result.avgResponseTimeMinutes = averageResponseMinutes(responseDurations)
+	result.score = scoreCommunicationResult(result, totalInbound)
+	result.spamReports = 0
+	return result
+}
+
+func isInboundReceiveActivity(it *models.SoulAgentCommActivity, cutoff time.Time) bool {
+	if it == nil || it.Timestamp.Before(cutoff) {
+		return false
+	}
+	return strings.ToLower(strings.TrimSpace(it.Direction)) == models.SoulCommDirectionInbound &&
+		strings.ToLower(strings.TrimSpace(it.Action)) == "receive"
+}
+
+func isOutboundSendActivity(it *models.SoulAgentCommActivity, cutoff time.Time) bool {
+	if it == nil || it.Timestamp.Before(cutoff) {
+		return false
+	}
+	return strings.ToLower(strings.TrimSpace(it.Direction)) == models.SoulCommDirectionOutbound &&
+		strings.ToLower(strings.TrimSpace(it.Action)) == "send"
+}
+
+func incrementInboundCommunication(result *communicationResult, channel string) {
+	switch strings.ToLower(strings.TrimSpace(channel)) {
+	case "email":
+		result.emailsReceived++
+	case "sms":
+		result.smsReceived++
+	case "voice":
+		result.callsReceived++
+	}
+}
+
+func incrementOutboundCommunication(result *communicationResult, channel string) {
+	switch strings.ToLower(strings.TrimSpace(channel)) {
+	case "email":
+		result.emailsSent++
+	case "sms":
+		result.smsSent++
+	case "voice":
+		result.callsMade++
+	}
+}
+
+func recordInboundTimestamp(inboundAt map[string]time.Time, messageID string, ts time.Time) {
+	if messageID == "" {
+		return
+	}
+	if existing, ok := inboundAt[messageID]; !ok || ts.Before(existing) {
+		inboundAt[messageID] = ts
+	}
+}
+
+func responseDurationForActivity(it *models.SoulAgentCommActivity, inboundAt map[string]time.Time, responded map[string]struct{}) (time.Duration, bool) {
+	replyTo := strings.TrimSpace(it.InReplyTo)
+	if replyTo == "" {
+		return 0, false
+	}
+	start, ok := inboundAt[replyTo]
+	if !ok || !it.Timestamp.After(start) {
+		return 0, false
+	}
+	if _, seen := responded[replyTo]; seen {
+		return 0, false
+	}
+	responded[replyTo] = struct{}{}
+	return it.Timestamp.Sub(start), true
+}
+
+func averageResponseMinutes(durations []time.Duration) float64 {
+	if len(durations) == 0 {
+		return 0
+	}
+	sum := time.Duration(0)
+	for _, d := range durations {
+		sum += d
+	}
+	return sum.Minutes() / float64(len(durations))
+}
+
+func scoreCommunicationResult(result communicationResult, totalInbound int64) float64 {
+	score := 0.5
+	if totalInbound > 0 {
+		score += 0.4 * clamp01(result.responseRate)
+		timeScore := 1.0
+		if result.avgResponseTimeMinutes > 0 {
+			timeScore = math.Exp(-result.avgResponseTimeMinutes / 60.0)
+		}
+		score += 0.3 * clamp01(timeScore)
+	}
+	score -= 0.1 * float64(result.boundaryViolations)
+	return clamp01(score)
+}
+
+func (s *Server) listSoulRelationships(ctx context.Context, agentID string) ([]*models.SoulAgentRelationship, error) {
 	var rels []*models.SoulAgentRelationship
 	if err := s.store.DB.WithContext(ctx).
 		Model(&models.SoulAgentRelationship{}).
 		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentID)).
 		Where("SK", "BEGINS_WITH", "RELATIONSHIP#").
 		All(&rels); err != nil {
-		return integrityResult{}, err
+		return nil, err
 	}
+	return rels, nil
+}
 
+func summarizeRelationshipIntegrity(agentID string, rels []*models.SoulAgentRelationship) (int64, int64, float64, map[string]struct{}) {
 	var delegationsTotal int64
 	var delegationsCompleted int64
 	var delegationQualitySum float64
 	endorsers := map[string]struct{}{}
-
 	for _, r := range rels {
-		if r == nil {
-			continue
-		}
-		if strings.ToLower(strings.TrimSpace(r.FromAgentID)) == agentID {
+		if shouldSkipRelationshipIntegrity(agentID, r) {
 			continue
 		}
 		switch strings.ToLower(strings.TrimSpace(r.Type)) {
 		case models.SoulRelationshipTypeDelegation:
 			delegationsTotal++
-			outcome, qualityScore, hasQuality := extractRelationshipOutcomeAndQuality(r)
-			if isDelegationCompletedOutcome(outcome) {
+			if quality, ok := completedDelegationQuality(r); ok {
 				delegationsCompleted++
-				quality := 1.0
-				if hasQuality {
-					quality = clamp01(qualityScore)
-				}
 				delegationQualitySum += quality
 			}
 		case models.SoulRelationshipTypeEndorsement:
-			from := strings.ToLower(strings.TrimSpace(r.FromAgentID))
-			if from == "" || from == agentID {
-				continue
-			}
-			endorsers[from] = struct{}{}
+			recordEndorser(endorsers, agentID, r.FromAgentID)
 		}
 	}
+	return delegationsTotal, delegationsCompleted, delegationQualitySum, endorsers
+}
 
-	// Count failure records.
+func shouldSkipRelationshipIntegrity(agentID string, rel *models.SoulAgentRelationship) bool {
+	return rel == nil || strings.ToLower(strings.TrimSpace(rel.FromAgentID)) == agentID
+}
+
+func completedDelegationQuality(rel *models.SoulAgentRelationship) (float64, bool) {
+	outcome, qualityScore, hasQuality := extractRelationshipOutcomeAndQuality(rel)
+	if !isDelegationCompletedOutcome(outcome) {
+		return 0, false
+	}
+	if hasQuality {
+		return clamp01(qualityScore), true
+	}
+	return 1.0, true
+}
+
+func recordEndorser(endorsers map[string]struct{}, agentID string, fromAgentID string) {
+	from := strings.ToLower(strings.TrimSpace(fromAgentID))
+	if from == "" || from == agentID {
+		return
+	}
+	endorsers[from] = struct{}{}
+}
+
+func (s *Server) listSoulAgentFailures(ctx context.Context, agentID string) ([]*models.SoulAgentFailure, error) {
 	var failures []*models.SoulAgentFailure
 	if err := s.store.DB.WithContext(ctx).
 		Model(&models.SoulAgentFailure{}).
 		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentID)).
 		Where("SK", "BEGINS_WITH", "FAILURE#").
 		All(&failures); err != nil {
-		return integrityResult{}, err
+		return nil, err
 	}
-	var totalFailures, recoveredFailures int64
+	return failures, nil
+}
+
+func summarizeFailureIntegrity(failures []*models.SoulAgentFailure) (int64, int64, int64) {
+	var totalFailures int64
+	var recoveredFailures int64
+	var boundaryViolations int64
 	for _, f := range failures {
 		if f == nil {
 			continue
@@ -719,29 +793,15 @@ func (s *Server) computeIntegritySignals(ctx context.Context, agentID string) (i
 		if strings.ToLower(f.Status) == "recovered" {
 			recoveredFailures++
 		}
-	}
-
-	var boundaryViolations int64
-	for _, f := range failures {
-		if f == nil {
-			continue
-		}
 		if isBoundaryViolationFailureType(f.FailureType) {
 			boundaryViolations++
 		}
 	}
+	return totalFailures, recoveredFailures, boundaryViolations
+}
 
-	// Communication boundary violations are counted from recent comm activity logs.
-	var commActs []*models.SoulAgentCommActivity
-	if err := s.store.DB.WithContext(ctx).
-		Model(&models.SoulAgentCommActivity{}).
-		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentID)).
-		Where("SK", "BEGINS_WITH", "COMM#").
-		OrderBy("SK", "DESC").
-		Limit(1000).
-		All(&commActs); err != nil {
-		return integrityResult{}, err
-	}
+func countCommunicationBoundaryViolations(commActs []*models.SoulAgentCommActivity) int64 {
+	var violations int64
 	for _, act := range commActs {
 		if act == nil {
 			continue
@@ -749,80 +809,74 @@ func (s *Server) computeIntegritySignals(ctx context.Context, agentID string) (i
 		if strings.ToLower(strings.TrimSpace(act.Direction)) != models.SoulCommDirectionOutbound {
 			continue
 		}
-		if strings.ToLower(strings.TrimSpace(act.BoundaryCheck)) != models.SoulCommBoundaryCheckViolated {
-			continue
+		if strings.ToLower(strings.TrimSpace(act.BoundaryCheck)) == models.SoulCommBoundaryCheckViolated {
+			violations++
 		}
-		boundaryViolations++
 	}
+	return violations
+}
 
-	// Determine whether the agent has declared any boundaries.
+func (s *Server) countDeclaredBoundaries(ctx context.Context, agentID string) (int64, error) {
 	var boundaries []*models.SoulAgentBoundary
 	if err := s.store.DB.WithContext(ctx).
 		Model(&models.SoulAgentBoundary{}).
 		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentID)).
 		Where("SK", "BEGINS_WITH", "BOUNDARY#").
 		All(&boundaries); err != nil {
-		return integrityResult{}, err
+		return 0, err
 	}
-	boundariesDeclared := int64(0)
+	var declared int64
 	for _, b := range boundaries {
 		if b != nil {
-			boundariesDeclared++
+			declared++
 		}
 	}
+	return declared, nil
+}
 
-	// Backward-compat endorsements (v1).
+func (s *Server) addLegacyEndorsers(ctx context.Context, agentID string, endorsers map[string]struct{}) error {
 	var v1Endorsements []*models.SoulAgentPeerEndorsement
 	if err := s.store.DB.WithContext(ctx).
 		Model(&models.SoulAgentPeerEndorsement{}).
 		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentID)).
 		Where("SK", "BEGINS_WITH", "ENDORSEMENT#").
 		All(&v1Endorsements); err != nil {
-		return integrityResult{}, err
+		return err
 	}
 	for _, e := range v1Endorsements {
-		if e == nil {
-			continue
+		if e != nil {
+			recordEndorser(endorsers, agentID, e.EndorserAgentID)
 		}
-		from := strings.ToLower(strings.TrimSpace(e.EndorserAgentID))
-		if from == "" || from == agentID {
-			continue
-		}
-		endorsers[from] = struct{}{}
 	}
+	return nil
+}
 
-	// Compute integrity score (heuristic v2).
-	//
-	// Spec guidance:
-	// - Declared boundaries + adherence score higher than no boundaries.
-	// - Failures are informative; recoveries can be positive signals.
-	// - Delegation outcomes (completion + quality) are meaningful trust evidence.
+func finalizeIntegrityResult(boundariesDeclared int64, delegationsTotal int64, delegationsCompleted int64, delegationQualitySum float64, totalFailures int64, recoveredFailures int64, boundaryViolations int64, endorsers map[string]struct{}) integrityResult {
 	score := 0.5
 	if boundariesDeclared > 0 {
 		score += 0.3
 	}
-
-	delegationOutcomeQuality := 0.0
-	if delegationsTotal > 0 {
-		delegationOutcomeQuality = delegationQualitySum / float64(delegationsTotal) // failed/unknown outcomes contribute 0
-	}
-	score += 0.2 * clamp01(delegationOutcomeQuality)
-
+	score += 0.2 * clamp01(delegationOutcomeQuality(delegationsTotal, delegationQualitySum))
 	if totalFailures > 0 {
 		recoveryRatio := float64(recoveredFailures) / float64(totalFailures)
 		score -= 0.2 * (1 - clamp01(recoveryRatio))
 		score += 0.1 * clamp01(recoveryRatio)
 	}
 	score -= 0.15 * float64(boundaryViolations)
-	score = clamp01(score)
-
 	return integrityResult{
-		score:                score,
+		score:                clamp01(score),
 		endorsements:         int64(len(endorsers)),
 		delegationsCompleted: delegationsCompleted,
 		boundaryViolations:   boundaryViolations,
 		failureRecoveries:    recoveredFailures,
-	}, nil
+	}
+}
+
+func delegationOutcomeQuality(delegationsTotal int64, delegationQualitySum float64) float64 {
+	if delegationsTotal <= 0 {
+		return 0
+	}
+	return delegationQualitySum / float64(delegationsTotal)
 }
 
 func clamp01(v float64) float64 {

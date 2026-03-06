@@ -461,7 +461,7 @@ func TestCreateSetupAdminUser_ConflictAndInternal(t *testing.T) {
 	}
 
 	s = makeServer(errors.New("boom"))
-	if appErr := s.createSetupAdminUser(ctx, "bob", "", time.Now().UTC()); appErr == nil || appErr.Code != "app.internal" {
+	if appErr := s.createSetupAdminUser(ctx, "bob", "", time.Now().UTC()); appErr == nil || appErr.Code != appErrCodeInternal {
 		t.Fatalf("expected internal error, got %#v", appErr)
 	}
 }

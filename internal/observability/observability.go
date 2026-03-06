@@ -11,6 +11,8 @@ import (
 	"github.com/equaltoai/lesser-host/internal/hostmetrics"
 )
 
+const observabilityUnknownValue = "unknown"
+
 // New constructs observability hooks for apptheory services.
 func New(service string) apptheory.ObservabilityHooks {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
@@ -69,7 +71,7 @@ func emitTrustProxy503BestEffort(service string, rec apptheory.LogRecord) {
 
 	instanceSlug := strings.TrimSpace(rec.TenantID)
 	if instanceSlug == "" {
-		instanceSlug = "unknown"
+		instanceSlug = observabilityUnknownValue
 	}
 
 	hostmetrics.Emit("lesser-host", map[string]string{
@@ -112,10 +114,10 @@ func emitCommWebhookMetricsBestEffort(service string, rec apptheory.LogRecord) {
 
 	provider, channel := commWebhookProviderAndChannel(path)
 	if provider == "" {
-		provider = "unknown"
+		provider = observabilityUnknownValue
 	}
 	if channel == "" {
-		channel = "unknown"
+		channel = observabilityUnknownValue
 	}
 
 	ms := []hostmetrics.Metric{

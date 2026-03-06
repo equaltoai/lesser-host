@@ -66,61 +66,26 @@ func (s *Server) handleSoulAppendContinuity(ctx *apptheory.Context) (*apptheory.
 	if err := httpx.ParseJSON(ctx, &req); err != nil {
 		return nil, err
 	}
-
-	entryType := strings.ToLower(strings.TrimSpace(req.Type))
-	if !isValidContinuityEntryType(entryType) {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid continuity entry type"}
-	}
-	tsRaw := strings.TrimSpace(req.Timestamp)
-	if tsRaw == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "timestamp is required"}
-	}
-	parsedTS, parseErr := time.Parse(time.RFC3339, tsRaw)
-	if parseErr != nil {
-		if parsedTS, parseErr = time.Parse(time.RFC3339Nano, tsRaw); parseErr != nil {
-			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "timestamp must be RFC3339"}
-		}
-	}
-	now := time.Now().UTC()
-	if parsedTS.After(now.Add(5 * time.Minute)) {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "timestamp cannot be in the future"}
-	}
-	if parsedTS.Before(now.Add(-10 * 365 * 24 * time.Hour)) {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "timestamp is too far in the past"}
-	}
-	timestampCanonical := parsedTS.UTC().Format(time.RFC3339Nano)
-	summary := strings.TrimSpace(req.Summary)
-	if summary == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "summary is required"}
-	}
-	if len(summary) > 4096 {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "summary is too long"}
-	}
-	recovery := strings.TrimSpace(req.Recovery)
-	if len(recovery) > 8192 {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "recovery is too long"}
-	}
-	references := normalizeContinuityReferences(req.References)
-	signature := strings.TrimSpace(req.Signature)
-	if signature == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "signature is required"}
-	}
-
-	digest, appErr := computeSoulContinuityEntryDigest(entryType, timestampCanonical, summary, recovery, references)
+	entryData, appErr := parseSoulAppendContinuityData(req, time.Now().UTC())
 	if appErr != nil {
 		return nil, appErr
 	}
-	if err := verifyEthereumSignatureBytes(identity.Wallet, digest, signature); err != nil {
+
+	digest, appErr := computeSoulContinuityEntryDigest(entryData.entryType, entryData.timestampCanonical, entryData.summary, entryData.recovery, entryData.references)
+	if appErr != nil {
+		return nil, appErr
+	}
+	if err := verifyEthereumSignatureBytes(identity.Wallet, digest, entryData.signature); err != nil {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid continuity signature"}
 	}
 	entry := &models.SoulAgentContinuity{
 		AgentID:      agentIDHex,
-		Type:         entryType,
-		Summary:      summary,
-		Recovery:     recovery,
-		ReferencesV2: references,
-		Signature:    signature,
-		Timestamp:    parsedTS.UTC(),
+		Type:         entryData.entryType,
+		Summary:      entryData.summary,
+		Recovery:     entryData.recovery,
+		ReferencesV2: entryData.references,
+		Signature:    entryData.signature,
+		Timestamp:    entryData.parsedTS.UTC(),
 	}
 	_ = entry.UpdateKeys()
 
@@ -132,12 +97,86 @@ func (s *Server) handleSoulAppendContinuity(ctx *apptheory.Context) (*apptheory.
 	s.tryWriteAuditLog(ctx, &models.AuditLogEntry{
 		Actor:     strings.TrimSpace(ctx.AuthIdentity),
 		Action:    "soul.continuity.append",
-		Target:    fmt.Sprintf("soul_agent_continuity:%s:%s", agentIDHex, entryType),
+		Target:    fmt.Sprintf("soul_agent_continuity:%s:%s", agentIDHex, entryData.entryType),
 		RequestID: strings.TrimSpace(ctx.RequestID),
-		CreatedAt: now,
+		CreatedAt: entryData.now,
 	})
 
 	return apptheory.JSON(http.StatusCreated, soulAppendContinuityResponse{Entry: *entry})
+}
+
+type soulAppendContinuityData struct {
+	entryType          string
+	parsedTS           time.Time
+	timestampCanonical string
+	summary            string
+	recovery           string
+	references         []string
+	signature          string
+	now                time.Time
+}
+
+func parseSoulAppendContinuityData(req soulAppendContinuityRequest, now time.Time) (soulAppendContinuityData, *apptheory.AppError) {
+	entryType := strings.ToLower(strings.TrimSpace(req.Type))
+	if !isValidContinuityEntryType(entryType) {
+		return soulAppendContinuityData{}, &apptheory.AppError{Code: "app.bad_request", Message: "invalid continuity entry type"}
+	}
+
+	parsedTS, appErr := parseSoulContinuityTimestamp(strings.TrimSpace(req.Timestamp), now)
+	if appErr != nil {
+		return soulAppendContinuityData{}, appErr
+	}
+
+	summary := strings.TrimSpace(req.Summary)
+	if summary == "" {
+		return soulAppendContinuityData{}, &apptheory.AppError{Code: "app.bad_request", Message: "summary is required"}
+	}
+	if len(summary) > 4096 {
+		return soulAppendContinuityData{}, &apptheory.AppError{Code: "app.bad_request", Message: "summary is too long"}
+	}
+
+	recovery := strings.TrimSpace(req.Recovery)
+	if len(recovery) > 8192 {
+		return soulAppendContinuityData{}, &apptheory.AppError{Code: "app.bad_request", Message: "recovery is too long"}
+	}
+
+	signature := strings.TrimSpace(req.Signature)
+	if signature == "" {
+		return soulAppendContinuityData{}, &apptheory.AppError{Code: "app.bad_request", Message: "signature is required"}
+	}
+
+	return soulAppendContinuityData{
+		entryType:          entryType,
+		parsedTS:           parsedTS,
+		timestampCanonical: parsedTS.UTC().Format(time.RFC3339Nano),
+		summary:            summary,
+		recovery:           recovery,
+		references:         normalizeContinuityReferences(req.References),
+		signature:          signature,
+		now:                now,
+	}, nil
+}
+
+func parseSoulContinuityTimestamp(raw string, now time.Time) (time.Time, *apptheory.AppError) {
+	if raw == "" {
+		return time.Time{}, &apptheory.AppError{Code: "app.bad_request", Message: "timestamp is required"}
+	}
+	parsedTS, parseErr := time.Parse(time.RFC3339, raw)
+	if parseErr != nil {
+		var parsedNano time.Time
+		parsedNano, parseErr = time.Parse(time.RFC3339Nano, raw)
+		if parseErr != nil {
+			return time.Time{}, &apptheory.AppError{Code: "app.bad_request", Message: "timestamp must be RFC3339"}
+		}
+		parsedTS = parsedNano
+	}
+	if parsedTS.After(now.Add(5 * time.Minute)) {
+		return time.Time{}, &apptheory.AppError{Code: "app.bad_request", Message: "timestamp cannot be in the future"}
+	}
+	if parsedTS.Before(now.Add(-10 * 365 * 24 * time.Hour)) {
+		return time.Time{}, &apptheory.AppError{Code: "app.bad_request", Message: "timestamp is too far in the past"}
+	}
+	return parsedTS.UTC(), nil
 }
 
 func computeSoulContinuityEntryDigest(entryType string, timestamp string, summary string, recovery string, references []string) ([]byte, *apptheory.AppError) {

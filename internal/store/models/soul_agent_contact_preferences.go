@@ -98,48 +98,9 @@ func (p *SoulAgentContactPreferences) UpdateKeys() error {
 	p.ResponseTarget = strings.TrimSpace(p.ResponseTarget)
 	p.ResponseGuarantee = strings.ToLower(strings.TrimSpace(p.ResponseGuarantee))
 
-	if len(p.AvailabilityWindows) > 0 {
-		out := make([]SoulContactAvailabilityWindow, 0, len(p.AvailabilityWindows))
-		for _, w := range p.AvailabilityWindows {
-			days := make([]string, 0, len(w.Days))
-			for _, d := range w.Days {
-				d = strings.ToLower(strings.TrimSpace(d))
-				if d == "" {
-					continue
-				}
-				days = append(days, d)
-			}
-			out = append(out, SoulContactAvailabilityWindow{
-				Days:      days,
-				StartTime: strings.TrimSpace(w.StartTime),
-				EndTime:   strings.TrimSpace(w.EndTime),
-			})
-		}
-		p.AvailabilityWindows = out
-	}
-
-	if len(p.Languages) > 0 {
-		out := make([]string, 0, len(p.Languages))
-		for _, l := range p.Languages {
-			l = strings.ToLower(strings.TrimSpace(l))
-			if l == "" {
-				continue
-			}
-			out = append(out, l)
-		}
-		p.Languages = out
-	}
-	if len(p.ContentTypes) > 0 {
-		out := make([]string, 0, len(p.ContentTypes))
-		for _, ct := range p.ContentTypes {
-			ct = strings.ToLower(strings.TrimSpace(ct))
-			if ct == "" {
-				continue
-			}
-			out = append(out, ct)
-		}
-		p.ContentTypes = out
-	}
+	p.AvailabilityWindows = normalizeContactAvailabilityWindows(p.AvailabilityWindows)
+	p.Languages = normalizeLowerTrimmedStrings(p.Languages)
+	p.ContentTypes = normalizeLowerTrimmedStrings(p.ContentTypes)
 
 	if p.FirstContactRequireReputation != nil {
 		if *p.FirstContactRequireReputation < 0 || *p.FirstContactRequireReputation > 1 {
@@ -157,3 +118,35 @@ func (p *SoulAgentContactPreferences) GetPK() string { return p.PK }
 
 // GetSK returns the sort key for SoulAgentContactPreferences.
 func (p *SoulAgentContactPreferences) GetSK() string { return p.SK }
+
+func normalizeContactAvailabilityWindows(windows []SoulContactAvailabilityWindow) []SoulContactAvailabilityWindow {
+	if len(windows) == 0 {
+		return nil
+	}
+
+	out := make([]SoulContactAvailabilityWindow, 0, len(windows))
+	for _, window := range windows {
+		out = append(out, SoulContactAvailabilityWindow{
+			Days:      normalizeLowerTrimmedStrings(window.Days),
+			StartTime: strings.TrimSpace(window.StartTime),
+			EndTime:   strings.TrimSpace(window.EndTime),
+		})
+	}
+	return out
+}
+
+func normalizeLowerTrimmedStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value == "" {
+			continue
+		}
+		out = append(out, value)
+	}
+	return out
+}

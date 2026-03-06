@@ -158,21 +158,7 @@ func (s *Server) handleSoulRecordRecovery(ctx *apptheory.Context) (*apptheory.Re
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "recovery_ref is too long"}
 	}
 
-	// Find the failure record — need to search since SK includes timestamp.
-	var failures []*models.SoulAgentFailure
-	_ = s.store.DB.WithContext(ctx.Context()).
-		Model(&models.SoulAgentFailure{}).
-		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentIDHex)).
-		Where("SK", "BEGINS_WITH", "FAILURE#").
-		All(&failures)
-
-	var target *models.SoulAgentFailure
-	for _, f := range failures {
-		if f != nil && strings.TrimSpace(f.FailureID) == failureID {
-			target = f
-			break
-		}
-	}
+	target := s.findSoulFailureByID(ctx, agentIDHex, failureID)
 	if target == nil {
 		return nil, &apptheory.AppError{Code: "app.not_found", Message: "failure not found"}
 	}
@@ -200,58 +186,33 @@ func (s *Server) handleSoulRecordRecovery(ctx *apptheory.Context) (*apptheory.Re
 	return apptheory.JSON(http.StatusOK, target)
 }
 
-// handleSoulPublicGetFailures returns paginated failure history for an agent.
-func (s *Server) handleSoulPublicGetFailures(ctx *apptheory.Context) (*apptheory.Response, error) {
-	if appErr := requireStoreDB(s); appErr != nil {
-		return nil, appErr
-	}
-	if !s.cfg.SoulEnabled {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
-	}
-
-	agentIDHex, _, appErr := parseSoulAgentIDHex(ctx.Param("agentId"))
-	if appErr != nil {
-		return nil, appErr
-	}
-
-	cursor := strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "cursor"))
-	limit := int(envInt64PositiveFromString(httpx.FirstQueryValue(ctx.Request.Query, "limit"), 50))
-	if limit <= 0 {
-		limit = 50
-	}
-	if limit > 200 {
-		limit = 200
-	}
-
-	var items []*models.SoulAgentFailure
-	qb := s.store.DB.WithContext(ctx.Context()).
+func (s *Server) findSoulFailureByID(ctx *apptheory.Context, agentIDHex string, failureID string) *models.SoulAgentFailure {
+	var failures []*models.SoulAgentFailure
+	_ = s.store.DB.WithContext(ctx.Context()).
 		Model(&models.SoulAgentFailure{}).
 		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentIDHex)).
 		Where("SK", "BEGINS_WITH", "FAILURE#").
-		OrderBy("SK", "DESC").
-		Limit(limit)
-	if cursor != "" {
-		qb = qb.Cursor(cursor)
-	}
+		All(&failures)
 
-	paged, err := qb.AllPaginated(&items)
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list failures"}
-	}
-
-	out := make([]models.SoulAgentFailure, 0, len(items))
-	for _, item := range items {
-		if item == nil {
-			continue
+	for _, failure := range failures {
+		if failure != nil && strings.TrimSpace(failure.FailureID) == failureID {
+			return failure
 		}
-		out = append(out, *item)
 	}
+	return nil
+}
 
-	nextCursor := ""
-	hasMore := false
-	if paged != nil {
-		nextCursor = strings.TrimSpace(paged.NextCursor)
-		hasMore = paged.HasMore
+// handleSoulPublicGetFailures returns paginated failure history for an agent.
+func (s *Server) handleSoulPublicGetFailures(ctx *apptheory.Context) (*apptheory.Response, error) {
+	out, hasMore, nextCursor, appErr := listSoulPublicAgentItems[models.SoulAgentFailure](
+		s,
+		ctx,
+		&models.SoulAgentFailure{},
+		"FAILURE#",
+		"failed to list failures",
+	)
+	if appErr != nil {
+		return nil, appErr
 	}
 
 	resp, err := apptheory.JSON(http.StatusOK, soulListFailuresResponse{

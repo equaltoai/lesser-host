@@ -9,12 +9,12 @@ import (
 )
 
 type Weights struct {
-	Economic       float64 `json:"economic"`
-	Social         float64 `json:"social"`
-	Validation     float64 `json:"validation"`
-	Trust          float64 `json:"trust"`
-	Integrity      float64 `json:"integrity"`
-	Communication  float64 `json:"communication"`
+	Economic      float64 `json:"economic"`
+	Social        float64 `json:"social"`
+	Validation    float64 `json:"validation"`
+	Trust         float64 `json:"trust"`
+	Integrity     float64 `json:"integrity"`
+	Communication float64 `json:"communication"`
 }
 
 func (w Weights) Normalized() Weights {
@@ -55,10 +55,10 @@ type SignalCounts struct {
 }
 
 type SignalScores struct {
-	Social     float64 `json:"social"`
-	Validation float64 `json:"validation"`
-	Trust      float64 `json:"trust"`
-	Integrity  float64 `json:"integrity"`
+	Social        float64 `json:"social"`
+	Validation    float64 `json:"validation"`
+	Trust         float64 `json:"trust"`
+	Integrity     float64 `json:"integrity"`
 	Communication float64 `json:"communication"`
 }
 
@@ -120,12 +120,12 @@ func ComputeV0(agentID string, blockRef uint64, now time.Time, cfg V0Config, sig
 			return int64(blockRef)
 		}(),
 
-		Composite:  composite,
-		Economic:   economic,
-		Social:     social,
-		Validation: validation,
-		Trust:      trust,
-		Integrity:  integrity,
+		Composite:     composite,
+		Economic:      economic,
+		Social:        social,
+		Validation:    validation,
+		Trust:         trust,
+		Integrity:     integrity,
 		Communication: communication,
 
 		TipsReceived:         signals.TipsReceived,

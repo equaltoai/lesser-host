@@ -66,14 +66,14 @@ type Config struct {
 	SoulV2StrictIntegrity                    bool // harden signature + artifact integrity checks
 
 	// Soul reputation (v0).
-	SoulReputationTipStartBlock     uint64
-	SoulReputationTipBlockChunkSize uint64
-	SoulReputationTipScale          float64
-	SoulReputationWeightEconomic    float64
-	SoulReputationWeightSocial      float64
-	SoulReputationWeightValidation  float64
-	SoulReputationWeightTrust       float64
-	SoulReputationWeightIntegrity   float64
+	SoulReputationTipStartBlock       uint64
+	SoulReputationTipBlockChunkSize   uint64
+	SoulReputationTipScale            float64
+	SoulReputationWeightEconomic      float64
+	SoulReputationWeightSocial        float64
+	SoulReputationWeightValidation    float64
+	SoulReputationWeightTrust         float64
+	SoulReputationWeightIntegrity     float64
 	SoulReputationWeightCommunication float64
 
 	// Soul validation (v0).
@@ -222,17 +222,17 @@ func Load() Config {
 		SoulPublicCORSOrigins:                    soulPublicCORSOrigins,
 		SoulV2StrictIntegrity:                    soulV2StrictIntegrity,
 
-		SoulReputationTipStartBlock:     soulRepTipStartBlock,
-		SoulReputationTipBlockChunkSize: soulRepTipChunkSize,
-		SoulReputationTipScale:          soulRepTipScale,
-		SoulReputationWeightEconomic:    soulRepWeightEconomic,
-		SoulReputationWeightSocial:      soulRepWeightSocial,
-		SoulReputationWeightValidation:  soulRepWeightValidation,
-		SoulReputationWeightTrust:       soulRepWeightTrust,
-		SoulReputationWeightIntegrity:   soulRepWeightIntegrity,
+		SoulReputationTipStartBlock:       soulRepTipStartBlock,
+		SoulReputationTipBlockChunkSize:   soulRepTipChunkSize,
+		SoulReputationTipScale:            soulRepTipScale,
+		SoulReputationWeightEconomic:      soulRepWeightEconomic,
+		SoulReputationWeightSocial:        soulRepWeightSocial,
+		SoulReputationWeightValidation:    soulRepWeightValidation,
+		SoulReputationWeightTrust:         soulRepWeightTrust,
+		SoulReputationWeightIntegrity:     soulRepWeightIntegrity,
 		SoulReputationWeightCommunication: soulRepWeightCommunication,
-		SoulValidationDecayEpochHours:   soulValEpochHours,
-		SoulValidationDecayRate:         soulValDecayRate,
+		SoulValidationDecayEpochHours:     soulValEpochHours,
+		SoulValidationDecayRate:           soulValDecayRate,
 
 		ManagedProvisioningEnabled:        managedOn,
 		ManagedOrgVendingRoleARN:          envString("MANAGED_ORG_VENDING_ROLE_ARN"),

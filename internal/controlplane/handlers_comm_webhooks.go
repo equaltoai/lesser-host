@@ -1,8 +1,8 @@
 package controlplane
 
 import (
-	"fmt"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -18,16 +18,16 @@ import (
 )
 
 type legacyInboundEmailWebhookRequest struct {
-	To          string  `json:"to"`
-	From        string  `json:"from"`
-	FromName    string  `json:"fromName,omitempty"`
-	Subject     string  `json:"subject"`
-	Body        string  `json:"body"`
-	BodyMimeType string `json:"bodyMimeType,omitempty"`
-	ReceivedAt  string  `json:"receivedAt,omitempty"`
-	MessageID   string  `json:"messageId"`
-	InReplyTo   *string `json:"inReplyTo,omitempty"`
-	Attachments []commworker.InboundAttachment `json:"attachments,omitempty"`
+	To           string                         `json:"to"`
+	From         string                         `json:"from"`
+	FromName     string                         `json:"fromName,omitempty"`
+	Subject      string                         `json:"subject"`
+	Body         string                         `json:"body"`
+	BodyMimeType string                         `json:"bodyMimeType,omitempty"`
+	ReceivedAt   string                         `json:"receivedAt,omitempty"`
+	MessageID    string                         `json:"messageId"`
+	InReplyTo    *string                        `json:"inReplyTo,omitempty"`
+	Attachments  []commworker.InboundAttachment `json:"attachments,omitempty"`
 }
 
 type telnyxInboundWebhook struct {
@@ -66,10 +66,10 @@ func (s *Server) handleCommEmailInboundWebhook(ctx *apptheory.Context) (*apptheo
 	// Prefer the stable communication:inbound payload shape.
 	var notif commworker.InboundNotification
 	if err := httpx.ParseJSON(ctx, &notif); err == nil && strings.TrimSpace(notif.Type) != "" {
-		notif.Channel = "email"
+		notif.Channel = commChannelEmail
 		msg := commworker.QueueMessage{
 			Kind:         commworker.QueueMessageKindInbound,
-			Provider:     "migadu",
+			Provider:     commDeliveryProviderMigadu,
 			Notification: notif,
 		}
 		if err := msg.Validate(); err != nil {
@@ -98,10 +98,10 @@ func (s *Server) handleCommEmailInboundWebhook(ctx *apptheory.Context) (*apptheo
 
 	msg := commworker.QueueMessage{
 		Kind:     commworker.QueueMessageKindInbound,
-		Provider: "migadu",
+		Provider: commDeliveryProviderMigadu,
 		Notification: commworker.InboundNotification{
 			Type:         "communication:inbound",
-			Channel:      "email",
+			Channel:      commChannelEmail,
 			From:         commworker.InboundParty{Address: legacy.From, DisplayName: strings.TrimSpace(legacy.FromName)},
 			To:           &commworker.InboundParty{Address: legacy.To},
 			Subject:      legacy.Subject,
@@ -133,10 +133,10 @@ func (s *Server) handleCommSMSInboundWebhook(ctx *apptheory.Context) (*apptheory
 	// Accept already-normalized communication:inbound payloads.
 	var notif commworker.InboundNotification
 	if err := httpx.ParseJSON(ctx, &notif); err == nil && strings.TrimSpace(notif.Type) != "" {
-		notif.Channel = "sms"
+		notif.Channel = commChannelSMS
 		msg := commworker.QueueMessage{
 			Kind:         commworker.QueueMessageKindInbound,
-			Provider:     "telnyx",
+			Provider:     commDeliveryProviderTelnyx,
 			Notification: notif,
 		}
 		if err := msg.Validate(); err != nil {
@@ -168,10 +168,10 @@ func (s *Server) handleCommSMSInboundWebhook(ctx *apptheory.Context) (*apptheory
 
 	msg := commworker.QueueMessage{
 		Kind:     commworker.QueueMessageKindInbound,
-		Provider: "telnyx",
+		Provider: commDeliveryProviderTelnyx,
 		Notification: commworker.InboundNotification{
 			Type:       "communication:inbound",
-			Channel:    "sms",
+			Channel:    commChannelSMS,
 			From:       commworker.InboundParty{Number: from},
 			To:         &commworker.InboundParty{Number: to},
 			Body:       body,
@@ -199,10 +199,10 @@ func (s *Server) handleCommVoiceInboundWebhook(ctx *apptheory.Context) (*apptheo
 	// Accept already-normalized communication:inbound payloads.
 	var notif commworker.InboundNotification
 	if err := httpx.ParseJSON(ctx, &notif); err == nil && strings.TrimSpace(notif.Type) != "" {
-		notif.Channel = "voice"
+		notif.Channel = commChannelVoice
 		msg := commworker.QueueMessage{
 			Kind:         commworker.QueueMessageKindInbound,
-			Provider:     "telnyx",
+			Provider:     commDeliveryProviderTelnyx,
 			Notification: notif,
 		}
 		if err := msg.Validate(); err != nil {
@@ -220,37 +220,17 @@ func (s *Server) handleCommVoiceInboundWebhook(ctx *apptheory.Context) (*apptheo
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid webhook payload"}
 	}
 
-	from, to, callID, occurredAt, durationSeconds := extractTelnyxVoiceFields(&tel)
-	if occurredAt == "" {
-		occurredAt = time.Now().UTC().Format(time.RFC3339Nano)
-	}
-	if callID == "" {
-		callID = fmt.Sprintf("telnyx-voice-%d", time.Now().UTC().UnixNano())
-	}
+	notif, to, callID, durationSeconds := buildTelnyxVoiceNotification(ctx.Request.Body, &tel)
 
 	// Best-effort billing: meter call usage on status-like events with duration.
 	if durationSeconds > 0 {
 		_ = s.meterTelnyxVoiceCall(ctx, to, callID, durationSeconds)
 	}
 
-	body := strings.TrimSpace(string(ctx.Request.Body))
-	if body == "" {
-		body = strings.TrimSpace(tel.Data.EventType)
-	}
-
 	msg := commworker.QueueMessage{
-		Kind:     commworker.QueueMessageKindInbound,
-		Provider: "telnyx",
-		Notification: commworker.InboundNotification{
-			Type:         "communication:inbound",
-			Channel:      "voice",
-			From:         commworker.InboundParty{Number: from},
-			To:           &commworker.InboundParty{Number: to},
-			Body:         body,
-			BodyMimeType: "application/json",
-			ReceivedAt:   occurredAt,
-			MessageID:    callID,
-		},
+		Kind:         commworker.QueueMessageKindInbound,
+		Provider:     commDeliveryProviderTelnyx,
+		Notification: notif,
 	}
 	if err := msg.Validate(); err != nil {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid webhook payload"}
@@ -278,83 +258,114 @@ func extractTelnyxVoiceFields(tel *telnyxVoiceWebhook) (from string, to string, 
 
 	occurredAt = strings.TrimSpace(tel.Data.OccurredAt)
 	payload := tel.Data.Payload
-
-	readString := func(keys ...string) string {
-		for _, key := range keys {
-			raw, ok := payload[key]
-			if !ok {
-				continue
-			}
-			s, ok := raw.(string)
-			if !ok {
-				continue
-			}
-			s = strings.TrimSpace(s)
-			if s == "" {
-				continue
-			}
-			return s
-		}
-		return ""
-	}
-
-	readNumber := func(raw any) string {
-		switch v := raw.(type) {
-		case string:
-			return strings.TrimSpace(v)
-		case map[string]any:
-			for _, key := range []string{"phone_number", "phoneNumber", "number"} {
-				if s, ok := v[key].(string); ok && strings.TrimSpace(s) != "" {
-					return strings.TrimSpace(s)
-				}
-			}
-			return ""
-		default:
-			return ""
-		}
-	}
-
-	if raw, ok := payload["from"]; ok {
-		from = readNumber(raw)
-	}
-	if raw, ok := payload["to"]; ok {
-		to = readNumber(raw)
-	}
-
-	callID = readString("call_leg_id", "call_leg", "call_control_id", "call_control", "call_session_id", "call_session", "id")
+	from = readTelnyxPhonePayload(payload, "from")
+	to = readTelnyxPhonePayload(payload, "to")
+	callID = readTelnyxStringPayload(payload, "call_leg_id", "call_leg", "call_control_id", "call_control", "call_session_id", "call_session", "id")
 	if callID == "" {
 		callID = strings.TrimSpace(tel.Data.EventType)
 	}
-
-	readInt64 := func(keys ...string) int64 {
-		for _, key := range keys {
-			raw, ok := payload[key]
-			if !ok {
-				continue
-			}
-			switch n := raw.(type) {
-			case int:
-				return int64(n)
-			case int64:
-				return n
-			case float64:
-				return int64(n)
-			case json.Number:
-				if v, err := n.Int64(); err == nil {
-					return v
-				}
-			case string:
-				if v, err := json.Number(strings.TrimSpace(n)).Int64(); err == nil {
-					return v
-				}
-			}
-		}
-		return 0
-	}
-
-	durationSeconds = readInt64("duration", "duration_seconds", "durationSeconds", "call_duration", "call_duration_seconds", "callDurationSeconds")
+	durationSeconds = readTelnyxInt64Payload(payload, "duration", "duration_seconds", "durationSeconds", "call_duration", "call_duration_seconds", "callDurationSeconds")
 
 	return from, to, callID, occurredAt, durationSeconds
+}
+
+func buildTelnyxVoiceNotification(body []byte, tel *telnyxVoiceWebhook) (commworker.InboundNotification, string, string, int64) {
+	from, to, callID, occurredAt, durationSeconds := extractTelnyxVoiceFields(tel)
+	if occurredAt == "" {
+		occurredAt = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	if callID == "" {
+		callID = fmt.Sprintf("telnyx-voice-%d", time.Now().UTC().UnixNano())
+	}
+
+	text := strings.TrimSpace(string(body))
+	if text == "" && tel != nil {
+		text = strings.TrimSpace(tel.Data.EventType)
+	}
+
+	return commworker.InboundNotification{
+		Type:         "communication:inbound",
+		Channel:      commChannelVoice,
+		From:         commworker.InboundParty{Number: from},
+		To:           &commworker.InboundParty{Number: to},
+		Body:         text,
+		BodyMimeType: "application/json",
+		ReceivedAt:   occurredAt,
+		MessageID:    callID,
+	}, to, callID, durationSeconds
+}
+
+func readTelnyxStringPayload(payload map[string]any, keys ...string) string {
+	for _, key := range keys {
+		raw, ok := payload[key]
+		if !ok {
+			continue
+		}
+		value, ok := raw.(string)
+		if !ok {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func readTelnyxPhonePayload(payload map[string]any, key string) string {
+	raw, ok := payload[key]
+	if !ok {
+		return ""
+	}
+	return readTelnyxPhoneValue(raw)
+}
+
+func readTelnyxPhoneValue(raw any) string {
+	switch v := raw.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	case map[string]any:
+		for _, key := range []string{"phone_number", "phoneNumber", "number"} {
+			value, ok := v[key].(string)
+			if ok && strings.TrimSpace(value) != "" {
+				return strings.TrimSpace(value)
+			}
+		}
+	}
+	return ""
+}
+
+func readTelnyxInt64Payload(payload map[string]any, keys ...string) int64 {
+	for _, key := range keys {
+		raw, ok := payload[key]
+		if !ok {
+			continue
+		}
+		if value, ok := coerceTelnyxInt64(raw); ok {
+			return value
+		}
+	}
+	return 0
+}
+
+func coerceTelnyxInt64(raw any) (int64, bool) {
+	switch n := raw.(type) {
+	case int:
+		return int64(n), true
+	case int64:
+		return n, true
+	case float64:
+		return int64(n), true
+	case json.Number:
+		value, err := n.Int64()
+		return value, err == nil
+	case string:
+		value, err := json.Number(strings.TrimSpace(n)).Int64()
+		return value, err == nil
+	default:
+		return 0, false
+	}
 }
 
 func (s *Server) meterTelnyxVoiceCall(ctx *apptheory.Context, toNumber string, callID string, durationSeconds int64) error {
@@ -366,54 +377,11 @@ func (s *Server) meterTelnyxVoiceCall(ctx *apptheory.Context, toNumber string, c
 		return nil
 	}
 
-	// Resolve agent -> domain -> instance.
-	idx := &models.SoulPhoneAgentIndex{Phone: toNumber}
-	_ = idx.UpdateKeys()
-	var phoneIdx models.SoulPhoneAgentIndex
-	err := s.store.DB.WithContext(ctx.Context()).
-		Model(&models.SoulPhoneAgentIndex{}).
-		Where("PK", "=", idx.PK).
-		Where("SK", "=", idx.SK).
-		First(&phoneIdx)
+	agentID, instanceSlug, budget, now, err := s.resolveTelnyxVoiceBudget(ctx, toNumber)
 	if err != nil {
 		return nil
 	}
-	agentID := strings.ToLower(strings.TrimSpace(phoneIdx.AgentID))
-	if agentID == "" {
-		return nil
-	}
-
-	identity, err := s.getSoulAgentIdentity(ctx.Context(), agentID)
-	if err != nil || identity == nil {
-		return nil
-	}
-
-	var d models.Domain
-	if err := s.store.DB.WithContext(ctx.Context()).
-		Model(&models.Domain{}).
-		Where("PK", "=", fmt.Sprintf("DOMAIN#%s", strings.ToLower(strings.TrimSpace(identity.Domain)))).
-		Where("SK", "=", models.SKMetadata).
-		First(&d); err != nil {
-		return nil
-	}
-	instanceSlug := strings.TrimSpace(d.InstanceSlug)
-	if instanceSlug == "" {
-		return nil
-	}
-
-	now := time.Now().UTC()
 	month := now.Format("2006-01")
-	pk := fmt.Sprintf("INSTANCE#%s", instanceSlug)
-	sk := fmt.Sprintf("BUDGET#%s", month)
-	var budget models.InstanceBudgetMonth
-	if err := s.store.DB.WithContext(ctx.Context()).
-		Model(&models.InstanceBudgetMonth{}).
-		Where("PK", "=", pk).
-		Where("SK", "=", sk).
-		ConsistentRead().
-		First(&budget); err != nil {
-		return nil
-	}
 
 	minutes := (durationSeconds + 59) / 60
 	if minutes <= 0 {
@@ -463,4 +431,62 @@ func (s *Server) meterTelnyxVoiceCall(ctx *apptheory.Context, toNumber string, c
 		}, tabletheory.IfExists())
 		return nil
 	})
+}
+
+func (s *Server) resolveTelnyxVoiceBudget(ctx *apptheory.Context, toNumber string) (string, string, models.InstanceBudgetMonth, time.Time, error) {
+	var budget models.InstanceBudgetMonth
+	now := time.Now().UTC()
+
+	idx := &models.SoulPhoneAgentIndex{Phone: toNumber}
+	_ = idx.UpdateKeys()
+	var phoneIdx models.SoulPhoneAgentIndex
+	if err := s.store.DB.WithContext(ctx.Context()).
+		Model(&models.SoulPhoneAgentIndex{}).
+		Where("PK", "=", idx.PK).
+		Where("SK", "=", idx.SK).
+		First(&phoneIdx); err != nil {
+		return "", "", budget, now, err
+	}
+
+	agentID := strings.ToLower(strings.TrimSpace(phoneIdx.AgentID))
+	if agentID == "" {
+		return "", "", budget, now, fmt.Errorf("phone index missing agent")
+	}
+
+	identity, err := s.getSoulAgentIdentity(ctx.Context(), agentID)
+	if err != nil || identity == nil {
+		return "", "", budget, now, fmt.Errorf("agent identity not found")
+	}
+
+	instanceSlug, err := s.loadTelnyxVoiceInstanceSlug(ctx, identity)
+	if err != nil {
+		return "", "", budget, now, err
+	}
+
+	if err := s.store.DB.WithContext(ctx.Context()).
+		Model(&models.InstanceBudgetMonth{}).
+		Where("PK", "=", fmt.Sprintf("INSTANCE#%s", instanceSlug)).
+		Where("SK", "=", fmt.Sprintf("BUDGET#%s", now.Format("2006-01"))).
+		ConsistentRead().
+		First(&budget); err != nil {
+		return "", "", budget, now, err
+	}
+
+	return agentID, instanceSlug, budget, now, nil
+}
+
+func (s *Server) loadTelnyxVoiceInstanceSlug(ctx *apptheory.Context, identity *models.SoulAgentIdentity) (string, error) {
+	var d models.Domain
+	if err := s.store.DB.WithContext(ctx.Context()).
+		Model(&models.Domain{}).
+		Where("PK", "=", fmt.Sprintf("DOMAIN#%s", strings.ToLower(strings.TrimSpace(identity.Domain)))).
+		Where("SK", "=", models.SKMetadata).
+		First(&d); err != nil {
+		return "", err
+	}
+	instanceSlug := strings.TrimSpace(d.InstanceSlug)
+	if instanceSlug == "" {
+		return "", fmt.Errorf("domain missing instance slug")
+	}
+	return instanceSlug, nil
 }

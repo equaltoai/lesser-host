@@ -58,8 +58,45 @@ func (s *Server) handleENSGatewayResolve(ctx *apptheory.Context) (*apptheory.Res
 		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
 	}
 
-	query := ctx.Request.Query
+	target, callData, ensName, innerData, err := s.parseENSGatewayResolveQuery(ctx)
+	if err != nil {
+		return nil, err
+	}
+	node := ensNameHash(ensName)
 
+	result, err := s.answerENSQuery(ctx.Context(), ensName, node, innerData)
+	if err != nil {
+		return nil, err
+	}
+
+	return buildENSGatewayResolveResponse(ctx.Context(), signer, target, callData, result, ensGatewayTTLSeconds(s.cfg.ENSGatewaySignatureTTLSeconds))
+}
+
+func (s *Server) parseENSGatewayResolveQuery(ctx *apptheory.Context) (common.Address, []byte, string, []byte, error) {
+	query := ctx.Request.Query
+	target, err := s.resolveENSGatewayTarget(query)
+	if err != nil {
+		return common.Address{}, nil, "", nil, err
+	}
+
+	dataRaw := strings.TrimSpace(httpx.FirstQueryValue(query, "data"))
+	if dataRaw == "" {
+		return common.Address{}, nil, "", nil, apptheory.NewAppTheoryError("ccip.bad_request", "data is required").WithStatusCode(http.StatusBadRequest)
+	}
+	nameRaw := strings.TrimSpace(httpx.FirstQueryValue(query, "name"))
+	callData, encodedName, innerData, err := parseENSGatewayRequest(nameRaw, dataRaw)
+	if err != nil {
+		return common.Address{}, nil, "", nil, err
+	}
+
+	ensName, err := decodeDNSName(encodedName)
+	if err != nil {
+		return common.Address{}, nil, "", nil, apptheory.NewAppTheoryError("ccip.bad_request", "invalid name").WithStatusCode(http.StatusBadRequest)
+	}
+	return target, callData, ensName, innerData, nil
+}
+
+func (s *Server) resolveENSGatewayTarget(query map[string][]string) (common.Address, error) {
 	targetRaw := strings.TrimSpace(httpx.FirstQueryValue(query, "sender"))
 	if targetRaw == "" {
 		targetRaw = strings.TrimSpace(httpx.FirstQueryValue(query, "to"))
@@ -68,51 +105,31 @@ func (s *Server) handleENSGatewayResolve(ctx *apptheory.Context) (*apptheory.Res
 		targetRaw = strings.TrimSpace(s.cfg.ENSGatewayResolverAddress)
 	}
 	if targetRaw == "" {
-		return nil, apptheory.NewAppTheoryError("ccip.bad_request", "sender is required").WithStatusCode(http.StatusBadRequest)
+		return common.Address{}, apptheory.NewAppTheoryError("ccip.bad_request", "sender is required").WithStatusCode(http.StatusBadRequest)
 	}
-	if strings.TrimSpace(s.cfg.ENSGatewayResolverAddress) != "" && !strings.EqualFold(targetRaw, s.cfg.ENSGatewayResolverAddress) {
-		// Per EIP-3668, return 404 when the sender is not supported.
-		return nil, apptheory.NewAppTheoryError("ccip.sender_unsupported", "sender not supported").WithStatusCode(http.StatusNotFound)
+
+	resolverAddress := strings.TrimSpace(s.cfg.ENSGatewayResolverAddress)
+	if resolverAddress != "" && !strings.EqualFold(targetRaw, resolverAddress) {
+		return common.Address{}, apptheory.NewAppTheoryError("ccip.sender_unsupported", "sender not supported").WithStatusCode(http.StatusNotFound)
 	}
 	if !common.IsHexAddress(targetRaw) {
-		return nil, apptheory.NewAppTheoryError("ccip.bad_request", "invalid sender").WithStatusCode(http.StatusBadRequest)
+		return common.Address{}, apptheory.NewAppTheoryError("ccip.bad_request", "invalid sender").WithStatusCode(http.StatusBadRequest)
 	}
-	target := common.HexToAddress(targetRaw)
+	return common.HexToAddress(targetRaw), nil
+}
 
-	dataRaw := strings.TrimSpace(httpx.FirstQueryValue(query, "data"))
-	if dataRaw == "" {
-		return nil, apptheory.NewAppTheoryError("ccip.bad_request", "data is required").WithStatusCode(http.StatusBadRequest)
+func buildENSGatewayResolveResponse(ctx context.Context, signer ensGatewaySigner, target common.Address, callData []byte, result []byte, ttlSeconds int64) (*apptheory.Response, error) {
+	validUntilUnix := time.Now().UTC().Add(time.Duration(ttlSeconds) * time.Second).Unix()
+	validUntil, validUntilErr := checkedUnixUint64(validUntilUnix)
+	if validUntilErr != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
-	nameRaw := strings.TrimSpace(httpx.FirstQueryValue(query, "name"))
-
-	callData, encodedName, innerData, err := parseENSGatewayRequest(nameRaw, dataRaw)
-	if err != nil {
-		return nil, err
-	}
-
-	ensName, err := decodeDNSName(encodedName)
-	if err != nil {
-		return nil, apptheory.NewAppTheoryError("ccip.bad_request", "invalid name").WithStatusCode(http.StatusBadRequest)
-	}
-
-	node := ensNameHash(ensName)
-
-	result, err := s.answerENSQuery(ctx.Context(), ensName, node, innerData)
-	if err != nil {
-		return nil, err
-	}
-
-	ttlSeconds := int64(300)
-	if s.cfg.ENSGatewaySignatureTTLSeconds > 0 {
-		ttlSeconds = s.cfg.ENSGatewaySignatureTTLSeconds
-	}
-	validUntil := uint64(time.Now().UTC().Add(time.Duration(ttlSeconds) * time.Second).Unix())
 
 	sigHash := makeENSSignatureHash(target, validUntil, callData, result)
 	var digest [32]byte
 	copy(digest[:], sigHash)
 
-	sigCompact, err := signer.SignDigest(ctx.Context(), digest)
+	sigCompact, err := signer.SignDigest(ctx, digest)
 	if err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
@@ -134,6 +151,13 @@ func (s *Server) handleENSGatewayResolve(ctx *apptheory.Context) (*apptheory.Res
 	return resp, nil
 }
 
+func ensGatewayTTLSeconds(configured int64) int64 {
+	if configured > 0 {
+		return configured
+	}
+	return 300
+}
+
 func (s *Server) answerENSQuery(ctx context.Context, ensName string, node common.Hash, innerData []byte) ([]byte, error) {
 	if len(innerData) < 4 {
 		return nil, apptheory.NewAppTheoryError("ccip.bad_request", "invalid inner resolver data").WithStatusCode(http.StatusBadRequest)
@@ -144,120 +168,128 @@ func (s *Server) answerENSQuery(ctx context.Context, ensName string, node common
 
 	switch {
 	case bytesEqual(selector, ensAddrSelector):
-		decoded, err := ensAddrInputs.Unpack(args)
-		if err != nil || len(decoded) != 1 {
-			return nil, apptheory.NewAppTheoryError("ccip.bad_request", "invalid addr query").WithStatusCode(http.StatusBadRequest)
-		}
-		qNode, ok := decoded[0].([32]byte)
-		if !ok || common.BytesToHash(qNode[:]) != node {
-			return nil, apptheory.NewAppTheoryError("ccip.bad_request", "node mismatch").WithStatusCode(http.StatusBadRequest)
-		}
-
-		material, ok, err := s.loadENSGatewayMaterial(ctx, ensName)
-		if err != nil {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-		}
-		if !ok || !common.IsHexAddress(material.Wallet) {
-			out, packErr := ensAddrOutputs.Pack(common.Address{})
-			if packErr != nil {
-				return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-			}
-			return out, nil
-		}
-
-		out, packErr := ensAddrOutputs.Pack(common.HexToAddress(material.Wallet))
-		if packErr != nil {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-		}
-		return out, nil
+		return s.answerENSAddrQuery(ctx, ensName, node, args)
 
 	case bytesEqual(selector, ensAddrCoinSelector):
-		decoded, err := ensAddrCoinInputs.Unpack(args)
-		if err != nil || len(decoded) != 2 {
-			return nil, apptheory.NewAppTheoryError("ccip.bad_request", "invalid addr query").WithStatusCode(http.StatusBadRequest)
-		}
-		qNode, ok := decoded[0].([32]byte)
-		if !ok || common.BytesToHash(qNode[:]) != node {
-			return nil, apptheory.NewAppTheoryError("ccip.bad_request", "node mismatch").WithStatusCode(http.StatusBadRequest)
-		}
-		coinType, ok := decoded[1].(*big.Int)
-		if !ok || coinType == nil {
-			return nil, apptheory.NewAppTheoryError("ccip.bad_request", "invalid coinType").WithStatusCode(http.StatusBadRequest)
-		}
-
-		// ETH = 60 (SLIP-0044). Return empty for other coin types.
-		if coinType.Sign() < 0 || coinType.Uint64() != 60 {
-			out, packErr := ensBytesOutputs.Pack([]byte(nil))
-			if packErr != nil {
-				return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-			}
-			return out, nil
-		}
-
-		material, ok, err := s.loadENSGatewayMaterial(ctx, ensName)
-		if err != nil {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-		}
-		if !ok || !common.IsHexAddress(material.Wallet) {
-			out, packErr := ensBytesOutputs.Pack([]byte(nil))
-			if packErr != nil {
-				return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-			}
-			return out, nil
-		}
-		addr := common.HexToAddress(material.Wallet)
-		out, packErr := ensBytesOutputs.Pack(addr.Bytes())
-		if packErr != nil {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-		}
-		return out, nil
+		return s.answerENSAddrCoinQuery(ctx, ensName, node, args)
 
 	case bytesEqual(selector, ensTextSelector):
-		decoded, err := ensTextInputs.Unpack(args)
-		if err != nil || len(decoded) != 2 {
-			return nil, apptheory.NewAppTheoryError("ccip.bad_request", "invalid text query").WithStatusCode(http.StatusBadRequest)
-		}
-		qNode, ok := decoded[0].([32]byte)
-		if !ok || common.BytesToHash(qNode[:]) != node {
-			return nil, apptheory.NewAppTheoryError("ccip.bad_request", "node mismatch").WithStatusCode(http.StatusBadRequest)
-		}
-		key, ok := decoded[1].(string)
-		if !ok {
-			return nil, apptheory.NewAppTheoryError("ccip.bad_request", "invalid text key").WithStatusCode(http.StatusBadRequest)
-		}
-
-		material, ok, err := s.loadENSGatewayMaterial(ctx, ensName)
-		if err != nil {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-		}
-		val := ""
-		if ok {
-			val = ensTextValue(material, strings.TrimSpace(key), ctx)
-		}
-		out, packErr := ensStringOutputs.Pack(val)
-		if packErr != nil {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-		}
-		return out, nil
+		return s.answerENSTextQuery(ctx, ensName, node, args)
 
 	case bytesEqual(selector, ensContenthashSelector):
-		decoded, err := ensContenthashInputs.Unpack(args)
-		if err != nil || len(decoded) != 1 {
-			return nil, apptheory.NewAppTheoryError("ccip.bad_request", "invalid contenthash query").WithStatusCode(http.StatusBadRequest)
-		}
-		qNode, ok := decoded[0].([32]byte)
-		if !ok || common.BytesToHash(qNode[:]) != node {
-			return nil, apptheory.NewAppTheoryError("ccip.bad_request", "node mismatch").WithStatusCode(http.StatusBadRequest)
-		}
-		out, packErr := ensBytesOutputs.Pack([]byte(nil))
-		if packErr != nil {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-		}
-		return out, nil
+		return answerENSContenthashQuery(node, args)
 
 	default:
 		return nil, apptheory.NewAppTheoryError("ccip.unsupported", "unsupported query").WithStatusCode(http.StatusBadRequest)
 	}
+}
+
+func (s *Server) answerENSAddrQuery(ctx context.Context, ensName string, node common.Hash, args []byte) ([]byte, error) {
+	decoded, err := ensAddrInputs.Unpack(args)
+	if err != nil || len(decoded) != 1 {
+		return nil, apptheory.NewAppTheoryError("ccip.bad_request", "invalid addr query").WithStatusCode(http.StatusBadRequest)
+	}
+	qNode, ok := decoded[0].([32]byte)
+	if !ok || common.BytesToHash(qNode[:]) != node {
+		return nil, apptheory.NewAppTheoryError("ccip.bad_request", "node mismatch").WithStatusCode(http.StatusBadRequest)
+	}
+
+	material, ok, err := s.loadENSGatewayMaterial(ctx, ensName)
+	if err != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if !ok || !common.IsHexAddress(material.Wallet) {
+		return packENSAddress(common.Address{})
+	}
+	return packENSAddress(common.HexToAddress(material.Wallet))
+}
+
+func (s *Server) answerENSAddrCoinQuery(ctx context.Context, ensName string, node common.Hash, args []byte) ([]byte, error) {
+	decoded, err := ensAddrCoinInputs.Unpack(args)
+	if err != nil || len(decoded) != 2 {
+		return nil, apptheory.NewAppTheoryError("ccip.bad_request", "invalid addr query").WithStatusCode(http.StatusBadRequest)
+	}
+	qNode, ok := decoded[0].([32]byte)
+	if !ok || common.BytesToHash(qNode[:]) != node {
+		return nil, apptheory.NewAppTheoryError("ccip.bad_request", "node mismatch").WithStatusCode(http.StatusBadRequest)
+	}
+	coinType, ok := decoded[1].(*big.Int)
+	if !ok || coinType == nil {
+		return nil, apptheory.NewAppTheoryError("ccip.bad_request", "invalid coinType").WithStatusCode(http.StatusBadRequest)
+	}
+	if coinType.Sign() < 0 || coinType.Uint64() != 60 {
+		return packENSBytes(nil)
+	}
+
+	material, ok, err := s.loadENSGatewayMaterial(ctx, ensName)
+	if err != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if !ok || !common.IsHexAddress(material.Wallet) {
+		return packENSBytes(nil)
+	}
+	return packENSBytes(common.HexToAddress(material.Wallet).Bytes())
+}
+
+func (s *Server) answerENSTextQuery(ctx context.Context, ensName string, node common.Hash, args []byte) ([]byte, error) {
+	decoded, err := ensTextInputs.Unpack(args)
+	if err != nil || len(decoded) != 2 {
+		return nil, apptheory.NewAppTheoryError("ccip.bad_request", "invalid text query").WithStatusCode(http.StatusBadRequest)
+	}
+	qNode, ok := decoded[0].([32]byte)
+	if !ok || common.BytesToHash(qNode[:]) != node {
+		return nil, apptheory.NewAppTheoryError("ccip.bad_request", "node mismatch").WithStatusCode(http.StatusBadRequest)
+	}
+	key, ok := decoded[1].(string)
+	if !ok {
+		return nil, apptheory.NewAppTheoryError("ccip.bad_request", "invalid text key").WithStatusCode(http.StatusBadRequest)
+	}
+
+	material, ok, err := s.loadENSGatewayMaterial(ctx, ensName)
+	if err != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	value := ""
+	if ok {
+		value = ensTextValue(material, strings.TrimSpace(key), ctx)
+	}
+	return packENSString(value)
+}
+
+func answerENSContenthashQuery(node common.Hash, args []byte) ([]byte, error) {
+	decoded, err := ensContenthashInputs.Unpack(args)
+	if err != nil || len(decoded) != 1 {
+		return nil, apptheory.NewAppTheoryError("ccip.bad_request", "invalid contenthash query").WithStatusCode(http.StatusBadRequest)
+	}
+	qNode, ok := decoded[0].([32]byte)
+	if !ok || common.BytesToHash(qNode[:]) != node {
+		return nil, apptheory.NewAppTheoryError("ccip.bad_request", "node mismatch").WithStatusCode(http.StatusBadRequest)
+	}
+	return packENSBytes(nil)
+}
+
+func packENSAddress(addr common.Address) ([]byte, error) {
+	out, packErr := ensAddrOutputs.Pack(addr)
+	if packErr != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	return out, nil
+}
+
+func packENSBytes(value []byte) ([]byte, error) {
+	out, packErr := ensBytesOutputs.Pack(value)
+	if packErr != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	return out, nil
+}
+
+func packENSString(value string) ([]byte, error) {
+	out, packErr := ensStringOutputs.Pack(value)
+	if packErr != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	return out, nil
 }
 
 func ensTextValue(material ensGatewayMaterial, key string, ctx context.Context) string {
@@ -417,7 +449,7 @@ func (s *Server) loadENSGatewayMaterial(ctx context.Context, ensName string) (en
 		AgentID:          agentID,
 		Wallet:           strings.TrimSpace(identity.Wallet),
 		Status:           strings.TrimSpace(status),
-		SuccessorAgentID: strings.TrimSpace(identity.SuccessorAgentId),
+		SuccessorAgentID: strings.TrimSpace(identity.SuccessorAgentID),
 
 		RegistrationURI: strings.TrimSpace(res.SoulRegistrationURI),
 		MCPEndpoint:     strings.TrimSpace(res.MCPEndpoint),
@@ -482,12 +514,12 @@ func parseENSGatewayRequest(nameParam string, dataParam string) (callData []byte
 
 	// Primary mode: EIP-3668 {data} substitution sends callData for resolve(bytes,bytes).
 	if bytesEqual(data[:4], ensResolveSelector) {
-		decoded, err := ensResolveInputs.Unpack(data[4:])
-		if err != nil || len(decoded) != 2 {
+		decodedInputs, unpackErr := ensResolveInputs.Unpack(data[4:])
+		if unpackErr != nil || len(decodedInputs) != 2 {
 			return nil, nil, nil, apptheory.NewAppTheoryError("ccip.bad_request", "invalid calldata").WithStatusCode(http.StatusBadRequest)
 		}
-		nameBytes, ok1 := decoded[0].([]byte)
-		dataBytes, ok2 := decoded[1].([]byte)
+		nameBytes, ok1 := decodedInputs[0].([]byte)
+		dataBytes, ok2 := decodedInputs[1].([]byte)
 		if !ok1 || !ok2 {
 			return nil, nil, nil, apptheory.NewAppTheoryError("ccip.bad_request", "invalid calldata").WithStatusCode(http.StatusBadRequest)
 		}
@@ -563,14 +595,33 @@ func encodeDNSName(name string) ([]byte, error) {
 		if label == "" {
 			return nil, fmt.Errorf("dns name: empty label")
 		}
-		if len(label) > 63 {
+		labelLen := len(label)
+		if labelLen > 63 {
 			return nil, fmt.Errorf("dns name: label too long")
 		}
-		out = append(out, byte(len(label)))
+		labelLenByte, err := checkedByteLen(labelLen)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, labelLenByte)
 		out = append(out, []byte(label)...)
 	}
 	out = append(out, 0)
 	return out, nil
+}
+
+func checkedUnixUint64(ts int64) (uint64, error) {
+	if ts < 0 {
+		return 0, fmt.Errorf("unix timestamp must be non-negative")
+	}
+	return uint64(ts), nil
+}
+
+func checkedByteLen(n int) (byte, error) {
+	if n < 0 || n > 255 {
+		return 0, fmt.Errorf("dns name: label length out of range")
+	}
+	return byte(n), nil
 }
 
 func ensNameHash(name string) common.Hash {
@@ -643,7 +694,6 @@ func truncateUTF8(s string, max int) string {
 
 var (
 	ensABIsOnce sync.Once
-	ensABIsErr  error
 
 	ensResolveSelector     []byte
 	ensAddrSelector        []byte
@@ -663,44 +713,18 @@ var (
 
 func initENSABIs() {
 	ensABIsOnce.Do(func() {
-		var err error
-
 		ensResolveSelector = crypto.Keccak256([]byte("resolve(bytes,bytes)"))[:4]
 		ensAddrSelector = crypto.Keccak256([]byte("addr(bytes32)"))[:4]
 		ensAddrCoinSelector = crypto.Keccak256([]byte("addr(bytes32,uint256)"))[:4]
 		ensTextSelector = crypto.Keccak256([]byte("text(bytes32,string)"))[:4]
 		ensContenthashSelector = crypto.Keccak256([]byte("contenthash(bytes32)"))[:4]
 
-		bytesT, err := abi.NewType("bytes", "", nil)
-		if err != nil {
-			ensABIsErr = err
-			return
-		}
-		bytes32T, err := abi.NewType("bytes32", "", nil)
-		if err != nil {
-			ensABIsErr = err
-			return
-		}
-		uint256T, err := abi.NewType("uint256", "", nil)
-		if err != nil {
-			ensABIsErr = err
-			return
-		}
-		uint64T, err := abi.NewType("uint64", "", nil)
-		if err != nil {
-			ensABIsErr = err
-			return
-		}
-		stringT, err := abi.NewType("string", "", nil)
-		if err != nil {
-			ensABIsErr = err
-			return
-		}
-		addressT, err := abi.NewType("address", "", nil)
-		if err != nil {
-			ensABIsErr = err
-			return
-		}
+		bytesT := mustENSABIType("bytes")
+		bytes32T := mustENSABIType("bytes32")
+		uint256T := mustENSABIType("uint256")
+		uint64T := mustENSABIType("uint64")
+		stringT := mustENSABIType("string")
+		addressT := mustENSABIType("address")
 
 		ensResolveInputs = abi.Arguments{{Type: bytesT}, {Type: bytesT}}
 
@@ -717,6 +741,14 @@ func initENSABIs() {
 
 		ensGatewayResponseABI = abi.Arguments{{Type: bytesT}, {Type: uint64T}, {Type: bytesT}}
 	})
+}
+
+func mustENSABIType(typeName string) abi.Type {
+	abiType, err := abi.NewType(typeName, "", nil)
+	if err != nil {
+		panic(fmt.Errorf("trust: init ens abi %s: %w", typeName, err))
+	}
+	return abiType
 }
 
 func init() {

@@ -69,4 +69,3 @@ func Register(app *apptheory.App, srv *Server) *apptheory.App {
 	}
 	return app
 }
-

@@ -39,17 +39,8 @@ func main() {
 	flag.Parse()
 
 	agentID = strings.ToLower(strings.TrimSpace(agentID))
-	if agentID == "" && !allActive {
-		die("must provide --agent-id or --all-active")
-	}
-	if strings.TrimSpace(os.Getenv("STATE_TABLE_NAME")) == "" {
-		die("STATE_TABLE_NAME is required")
-	}
-
 	bucket := strings.TrimSpace(os.Getenv("SOUL_PACK_BUCKET_NAME"))
-	if bucket == "" {
-		die("SOUL_PACK_BUCKET_NAME is required")
-	}
+	validateIntegrityScanInputs(agentID, allActive, bucket)
 
 	mode := "dry-run"
 	if apply {
@@ -67,20 +58,7 @@ func main() {
 	st := store.New(db)
 	packs := artifacts.New(bucket)
 
-	idents := make([]*models.SoulAgentIdentity, 0, 1)
-	if agentID != "" {
-		id, err := loadIdentity(ctx, st, agentID)
-		if err != nil {
-			die("load identity: %v", err)
-		}
-		idents = append(idents, id)
-	} else if allActive {
-		items, err := listActiveIdentities(ctx, st)
-		if err != nil {
-			die("list identities: %v", err)
-		}
-		idents = items
-	}
+	idents := loadIntegrityScanTargets(ctx, st, agentID, allActive)
 
 	scannedAgents := 0
 	issueAgents := 0
@@ -99,23 +77,9 @@ func main() {
 		if err != nil {
 			die("scan agent %s: %v", strings.TrimSpace(id.AgentID), err)
 		}
-
-		if len(issues) == 0 {
-			fmt.Printf("agent=%s ok\n", strings.TrimSpace(id.AgentID))
-			continue
-		}
-
-		issueAgents++
-		totalIssues += len(issues)
-		fmt.Printf("agent=%s needs_reattestation=true issues=%d\n", strings.TrimSpace(id.AgentID), len(issues))
-		for _, issue := range issues {
-			fmt.Printf("  - %s\n", issue)
-		}
-
-		if apply {
-			if err := writeReattestationAuditFlag(ctx, st, strings.TrimSpace(id.AgentID), issues); err != nil {
-				die("write audit flag: %v", err)
-			}
+		if reportIntegrityScanIssues(ctx, st, strings.TrimSpace(id.AgentID), issues, apply) {
+			issueAgents++
+			totalIssues += len(issues)
 		}
 	}
 
@@ -141,8 +105,6 @@ func scanAgentRegistrationIntegrity(ctx context.Context, st *store.Store, packs 
 		maxBytes = 512 * 1024
 	}
 
-	issues := make([]string, 0, 8)
-
 	versions, err := listVersionRecords(ctx, st, agentID)
 	if err != nil {
 		return nil, err
@@ -154,6 +116,65 @@ func scanAgentRegistrationIntegrity(ctx context.Context, st *store.Store, packs 
 		return versions[i].VersionNumber < versions[j].VersionNumber
 	})
 
+	maxVersion, shaSet, byVersion := indexVersionRecords(versions)
+	issues := make([]string, 0, 8)
+	issues = appendIdentityVersionIssue(issues, identity, maxVersion)
+	issues, err = appendVersionObjectIssues(ctx, packs, bucket, agentID, maxBytes, versions, issues)
+	if err != nil {
+		return nil, err
+	}
+	issues = appendHashChainIssues(versions, byVersion, issues)
+	return appendCurrentRegistrationIssues(ctx, packs, agentID, maxBytes, identity, maxVersion, shaSet, byVersion, issues)
+}
+
+func validateIntegrityScanInputs(agentID string, allActive bool, bucket string) {
+	if agentID == "" && !allActive {
+		die("must provide --agent-id or --all-active")
+	}
+	if strings.TrimSpace(os.Getenv("STATE_TABLE_NAME")) == "" {
+		die("STATE_TABLE_NAME is required")
+	}
+	if bucket == "" {
+		die("SOUL_PACK_BUCKET_NAME is required")
+	}
+}
+
+func loadIntegrityScanTargets(ctx context.Context, st *store.Store, agentID string, allActive bool) []*models.SoulAgentIdentity {
+	if agentID != "" {
+		id, err := loadIdentity(ctx, st, agentID)
+		if err != nil {
+			die("load identity: %v", err)
+		}
+		return []*models.SoulAgentIdentity{id}
+	}
+	if allActive {
+		items, err := listActiveIdentities(ctx, st)
+		if err != nil {
+			die("list identities: %v", err)
+		}
+		return items
+	}
+	return nil
+}
+
+func reportIntegrityScanIssues(ctx context.Context, st *store.Store, agentID string, issues []string, apply bool) bool {
+	if len(issues) == 0 {
+		fmt.Printf("agent=%s ok\n", agentID)
+		return false
+	}
+	fmt.Printf("agent=%s needs_reattestation=true issues=%d\n", agentID, len(issues))
+	for _, issue := range issues {
+		fmt.Printf("  - %s\n", issue)
+	}
+	if apply {
+		if err := writeReattestationAuditFlag(ctx, st, agentID, issues); err != nil {
+			die("write audit flag: %v", err)
+		}
+	}
+	return true
+}
+
+func indexVersionRecords(versions []*models.SoulAgentVersion) (int, map[string]struct{}, map[int]*models.SoulAgentVersion) {
 	maxVersion := 0
 	shaSet := map[string]struct{}{}
 	byVersion := map[int]*models.SoulAgentVersion{}
@@ -169,55 +190,61 @@ func scanAgentRegistrationIntegrity(ctx context.Context, st *store.Store, packs 
 		}
 		byVersion[v.VersionNumber] = v
 	}
+	return maxVersion, shaSet, byVersion
+}
 
-	// Check identity-version alignment.
+func appendIdentityVersionIssue(issues []string, identity *models.SoulAgentIdentity, maxVersion int) []string {
 	if maxVersion > 0 && identity.SelfDescriptionVersion != maxVersion {
-		issues = append(issues, fmt.Sprintf("identity self_description_version=%d does not match latest version=%d", identity.SelfDescriptionVersion, maxVersion))
+		return append(issues, fmt.Sprintf("identity self_description_version=%d does not match latest version=%d", identity.SelfDescriptionVersion, maxVersion))
 	}
+	return issues
+}
 
-	// Verify S3 sha for each version record.
+func appendVersionObjectIssues(ctx context.Context, packs *artifacts.Store, bucket string, agentID string, maxBytes int64, versions []*models.SoulAgentVersion, issues []string) ([]string, error) {
 	for _, v := range versions {
-		if v == nil {
-			continue
-		}
-		sha := strings.ToLower(strings.TrimSpace(v.RegistrationSHA256))
-		if sha == "" {
-			issues = append(issues, fmt.Sprintf("version %d missing registration_sha256", v.VersionNumber))
-			continue
-		}
-		if len(sha) != 64 {
-			issues = append(issues, fmt.Sprintf("version %d invalid registration_sha256=%q", v.VersionNumber, sha))
-			continue
-		}
-
-		key := deriveS3KeyFromRegistrationURI(bucket, v.RegistrationUri)
-		if key == "" {
-			key = versionedS3Key(agentID, v.VersionNumber)
-		}
-
-		body, _, _, getErr := packs.GetObject(ctx, key, maxBytes)
-		if getErr != nil {
-			var nsk *s3types.NoSuchKey
-			if errors.As(getErr, &nsk) {
-				issues = append(issues, fmt.Sprintf("s3 missing versioned object for version %d key=%s", v.VersionNumber, key))
-				continue
-			}
-			return nil, fmt.Errorf("s3 get version %d: %w", v.VersionNumber, getErr)
-		}
-
-		sum := sha256.Sum256(body)
-		got := hex.EncodeToString(sum[:])
-		if got != sha {
-			issues = append(issues, fmt.Sprintf("sha mismatch version %d key=%s record=%s s3=%s", v.VersionNumber, key, sha, got))
+		var err error
+		issues, err = appendVersionObjectIssue(ctx, packs, bucket, agentID, maxBytes, v, issues)
+		if err != nil {
+			return nil, err
 		}
 	}
+	return issues, nil
+}
 
-	// Verify previous hash chain (best-effort).
-	for _, v := range versions {
-		if v == nil {
-			continue
+func appendVersionObjectIssue(ctx context.Context, packs *artifacts.Store, bucket string, agentID string, maxBytes int64, v *models.SoulAgentVersion, issues []string) ([]string, error) {
+	if v == nil {
+		return issues, nil
+	}
+	sha := strings.ToLower(strings.TrimSpace(v.RegistrationSHA256))
+	if sha == "" {
+		return append(issues, fmt.Sprintf("version %d missing registration_sha256", v.VersionNumber)), nil
+	}
+	if len(sha) != 64 {
+		return append(issues, fmt.Sprintf("version %d invalid registration_sha256=%q", v.VersionNumber, sha)), nil
+	}
+	key := deriveS3KeyFromRegistrationURI(bucket, v.RegistrationURI)
+	if key == "" {
+		key = versionedS3Key(agentID, v.VersionNumber)
+	}
+	body, _, _, getErr := packs.GetObject(ctx, key, maxBytes)
+	if getErr != nil {
+		var nsk *s3types.NoSuchKey
+		if errors.As(getErr, &nsk) {
+			return append(issues, fmt.Sprintf("s3 missing versioned object for version %d key=%s", v.VersionNumber, key)), nil
 		}
-		if v.VersionNumber <= 1 {
+		return nil, fmt.Errorf("s3 get version %d: %w", v.VersionNumber, getErr)
+	}
+	sum := sha256.Sum256(body)
+	got := hex.EncodeToString(sum[:])
+	if got != sha {
+		issues = append(issues, fmt.Sprintf("sha mismatch version %d key=%s record=%s s3=%s", v.VersionNumber, key, sha, got))
+	}
+	return issues, nil
+}
+
+func appendHashChainIssues(versions []*models.SoulAgentVersion, byVersion map[int]*models.SoulAgentVersion, issues []string) []string {
+	for _, v := range versions {
+		if v == nil || v.VersionNumber <= 1 {
 			continue
 		}
 		prev := byVersion[v.VersionNumber-1]
@@ -231,8 +258,10 @@ func scanAgentRegistrationIntegrity(ctx context.Context, st *store.Store, packs 
 			issues = append(issues, fmt.Sprintf("hash chain mismatch at version %d prev_record=%s prev_field=%s", v.VersionNumber, wantPrev, gotPrev))
 		}
 	}
+	return issues
+}
 
-	// Verify current registration matches some version sha (or report it as orphaned).
+func appendCurrentRegistrationIssues(ctx context.Context, packs *artifacts.Store, agentID string, maxBytes int64, identity *models.SoulAgentIdentity, maxVersion int, shaSet map[string]struct{}, byVersion map[int]*models.SoulAgentVersion, issues []string) ([]string, error) {
 	currentKey := currentS3Key(agentID)
 	currentBody, _, _, curErr := packs.GetObject(ctx, currentKey, maxBytes)
 	if curErr != nil {
@@ -241,29 +270,27 @@ func scanAgentRegistrationIntegrity(ctx context.Context, st *store.Store, packs 
 			if maxVersion > 0 {
 				issues = append(issues, "s3 missing current registration.json")
 			}
-		} else {
-			return nil, fmt.Errorf("s3 get current: %w", curErr)
+			return issues, nil
 		}
-	} else {
-		sum := sha256.Sum256(currentBody)
-		curSHA := hex.EncodeToString(sum[:])
-		if _, ok := shaSet[curSHA]; !ok && maxVersion > 0 {
-			issues = append(issues, fmt.Sprintf("current registration sha not found in version history sha=%s", curSHA))
-		}
-
-		// If identity claims a latest version, ensure current matches that version's sha.
-		if identity.SelfDescriptionVersion > 0 {
-			if rec := byVersion[identity.SelfDescriptionVersion]; rec == nil {
-				issues = append(issues, fmt.Sprintf("missing version record for identity self_description_version=%d", identity.SelfDescriptionVersion))
-			} else if strings.TrimSpace(rec.RegistrationSHA256) != "" {
-				want := strings.ToLower(strings.TrimSpace(rec.RegistrationSHA256))
-				if curSHA != want {
-					issues = append(issues, fmt.Sprintf("current registration sha does not match identity version=%d record=%s current=%s", identity.SelfDescriptionVersion, want, curSHA))
-				}
-			}
-		}
+		return nil, fmt.Errorf("s3 get current: %w", curErr)
 	}
 
+	sum := sha256.Sum256(currentBody)
+	curSHA := hex.EncodeToString(sum[:])
+	if _, ok := shaSet[curSHA]; !ok && maxVersion > 0 {
+		issues = append(issues, fmt.Sprintf("current registration sha not found in version history sha=%s", curSHA))
+	}
+	if identity.SelfDescriptionVersion <= 0 {
+		return issues, nil
+	}
+	rec := byVersion[identity.SelfDescriptionVersion]
+	if rec == nil {
+		return append(issues, fmt.Sprintf("missing version record for identity self_description_version=%d", identity.SelfDescriptionVersion)), nil
+	}
+	want := strings.ToLower(strings.TrimSpace(rec.RegistrationSHA256))
+	if want != "" && curSHA != want {
+		issues = append(issues, fmt.Sprintf("current registration sha does not match identity version=%d record=%s current=%s", identity.SelfDescriptionVersion, want, curSHA))
+	}
 	return issues, nil
 }
 

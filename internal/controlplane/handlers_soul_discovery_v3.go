@@ -79,58 +79,11 @@ func (s *Server) handleSoulPublicGetAgentChannels(ctx *apptheory.Context) (*appt
 		return nil, appErr
 	}
 
-	identity, err := s.getSoulAgentIdentity(ctx.Context(), agentIDHex)
-	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
+	identity, prefs, ens, email, phone, appErr := s.loadSoulPublicAgentChannels(ctx, agentIDHex)
+	if appErr != nil {
+		return nil, appErr
 	}
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-
-	prefs, err := getSoulAgentItemBySK[models.SoulAgentContactPreferences](s, ctx.Context(), agentIDHex, "CONTACT_PREFERENCES")
-	if theoryErrors.IsNotFound(err) {
-		prefs = nil
-	} else if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-
-	ens, err := getSoulAgentItemBySK[models.SoulAgentChannel](s, ctx.Context(), agentIDHex, "CHANNEL#ens")
-	if theoryErrors.IsNotFound(err) {
-		ens = nil
-	} else if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-
-	email, err := getSoulAgentItemBySK[models.SoulAgentChannel](s, ctx.Context(), agentIDHex, "CHANNEL#email")
-	if theoryErrors.IsNotFound(err) {
-		email = nil
-	} else if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-
-	phone, err := getSoulAgentItemBySK[models.SoulAgentChannel](s, ctx.Context(), agentIDHex, "CHANNEL#phone")
-	if theoryErrors.IsNotFound(err) {
-		phone = nil
-	} else if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-
-	updatedAt := identity.UpdatedAt
-	if prefs != nil && prefs.UpdatedAt.After(updatedAt) {
-		updatedAt = prefs.UpdatedAt
-	}
-	if ens != nil && ens.UpdatedAt.After(updatedAt) {
-		updatedAt = ens.UpdatedAt
-	}
-	if email != nil && email.UpdatedAt.After(updatedAt) {
-		updatedAt = email.UpdatedAt
-	}
-	if phone != nil && phone.UpdatedAt.After(updatedAt) {
-		updatedAt = phone.UpdatedAt
-	}
-	if updatedAt.IsZero() {
-		updatedAt = time.Now().UTC()
-	}
+	updatedAt := latestSoulChannelUpdate(identity.UpdatedAt, prefs, ens, email, phone)
 
 	out := soulPublicAgentChannelsResponse{
 		AgentID: agentIDHex,
@@ -149,6 +102,93 @@ func (s *Server) handleSoulPublicGetAgentChannels(ctx *apptheory.Context) (*appt
 	}
 	s.setSoulPublicHeaders(ctx, resp, "public, max-age=60")
 	return resp, nil
+}
+
+func (s *Server) loadSoulPublicAgentChannels(
+	ctx *apptheory.Context,
+	agentIDHex string,
+) (
+	identity *models.SoulAgentIdentity,
+	prefs *models.SoulAgentContactPreferences,
+	ens *models.SoulAgentChannel,
+	email *models.SoulAgentChannel,
+	phone *models.SoulAgentChannel,
+	appErr *apptheory.AppError,
+) {
+	identity, err := s.getSoulAgentIdentity(ctx.Context(), agentIDHex)
+	if theoryErrors.IsNotFound(err) {
+		return nil, nil, nil, nil, nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
+	}
+	if err != nil {
+		return nil, nil, nil, nil, nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
+	prefs, appErr = loadSoulOptionalItem[models.SoulAgentContactPreferences](s, ctx, agentIDHex, "CONTACT_PREFERENCES")
+	if appErr != nil {
+		return nil, nil, nil, nil, nil, appErr
+	}
+	ens, appErr = loadSoulOptionalItem[models.SoulAgentChannel](s, ctx, agentIDHex, "CHANNEL#ens")
+	if appErr != nil {
+		return nil, nil, nil, nil, nil, appErr
+	}
+	email, appErr = loadSoulOptionalItem[models.SoulAgentChannel](s, ctx, agentIDHex, "CHANNEL#email")
+	if appErr != nil {
+		return nil, nil, nil, nil, nil, appErr
+	}
+	phone, appErr = loadSoulOptionalItem[models.SoulAgentChannel](s, ctx, agentIDHex, "CHANNEL#phone")
+	if appErr != nil {
+		return nil, nil, nil, nil, nil, appErr
+	}
+	return identity, prefs, ens, email, phone, nil
+}
+
+func loadSoulOptionalItem[T any](s *Server, ctx *apptheory.Context, agentIDHex string, sk string) (*T, *apptheory.AppError) {
+	item, err := getSoulAgentItemBySK[T](s, ctx.Context(), agentIDHex, sk)
+	if theoryErrors.IsNotFound(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	return item, nil
+}
+
+func latestSoulChannelUpdate(
+	base time.Time,
+	prefs *models.SoulAgentContactPreferences,
+	ens *models.SoulAgentChannel,
+	email *models.SoulAgentChannel,
+	phone *models.SoulAgentChannel,
+) time.Time {
+	updatedAt := base
+	for _, ts := range []time.Time{
+		soulOptionalUpdatedAt(prefs),
+		soulOptionalUpdatedAt(ens),
+		soulOptionalUpdatedAt(email),
+		soulOptionalUpdatedAt(phone),
+	} {
+		if ts.After(updatedAt) {
+			updatedAt = ts
+		}
+	}
+	if updatedAt.IsZero() {
+		return time.Now().UTC()
+	}
+	return updatedAt
+}
+
+func soulOptionalUpdatedAt(item any) time.Time {
+	switch value := item.(type) {
+	case *models.SoulAgentContactPreferences:
+		if value != nil {
+			return value.UpdatedAt
+		}
+	case *models.SoulAgentChannel:
+		if value != nil {
+			return value.UpdatedAt
+		}
+	}
+	return time.Time{}
 }
 
 func soulPublicENSChannelFromModel(c *models.SoulAgentChannel) *soulPublicENSChannel {

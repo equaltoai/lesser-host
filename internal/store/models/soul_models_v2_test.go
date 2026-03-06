@@ -19,8 +19,8 @@ func TestSoulAgentIdentity_V2Fields(t *testing.T) {
 		PrincipalSignature:     " 0xSIG123 ",
 		LifecycleStatus:        " ACTIVE ",
 		LifecycleReason:        " some reason ",
-		SuccessorAgentId:       " 0xSUCC ",
-		PredecessorAgentId:     " 0xPRED ",
+		SuccessorAgentID:       " 0xSUCC ",
+		PredecessorAgentID:     " 0xPRED ",
 		SelfDescriptionVersion: 2,
 	}
 	require.NoError(t, a.BeforeCreate())
@@ -34,8 +34,8 @@ func TestSoulAgentIdentity_V2Fields(t *testing.T) {
 	require.Equal(t, "0xsig123", a.PrincipalSignature)
 	require.Equal(t, "active", a.LifecycleStatus)
 	require.Equal(t, "some reason", a.LifecycleReason)
-	require.Equal(t, "0xsucc", a.SuccessorAgentId)
-	require.Equal(t, "0xpred", a.PredecessorAgentId)
+	require.Equal(t, "0xsucc", a.SuccessorAgentID)
+	require.Equal(t, "0xpred", a.PredecessorAgentID)
 	require.Equal(t, 2, a.SelfDescriptionVersion)
 }
 
@@ -218,7 +218,7 @@ func TestSoulAgentVersion_Keys(t *testing.T) {
 	v := &SoulAgentVersion{
 		AgentID:         " 0xABC ",
 		VersionNumber:   3,
-		RegistrationUri: " s3://bucket/path ",
+		RegistrationURI: " s3://bucket/path ",
 		ChangeSummary:   " Added new capabilities. ",
 		SelfAttestation: " 0xATTEST ",
 	}
@@ -228,7 +228,7 @@ func TestSoulAgentVersion_Keys(t *testing.T) {
 	require.Equal(t, "VERSION#3", v.SK)
 	require.Equal(t, "0xabc", v.AgentID)
 	require.Equal(t, 3, v.VersionNumber)
-	require.Equal(t, "s3://bucket/path", v.RegistrationUri)
+	require.Equal(t, "s3://bucket/path", v.RegistrationURI)
 	require.Equal(t, "Added new capabilities.", v.ChangeSummary)
 	require.False(t, v.CreatedAt.IsZero())
 }

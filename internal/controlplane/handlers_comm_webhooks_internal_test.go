@@ -51,10 +51,10 @@ func TestHandleCommEmailInboundWebhook_EnqueuesNormalizedPayload(t *testing.T) {
 	if resp.Status != http.StatusOK {
 		t.Fatalf("expected 200, got %d (body=%q)", resp.Status, string(resp.Body))
 	}
-	if got == nil || got.Provider != "migadu" || got.Kind != commworker.QueueMessageKindInbound {
+	if got == nil || got.Provider != commDeliveryProviderMigadu || got.Kind != commworker.QueueMessageKindInbound {
 		t.Fatalf("expected migadu comm.inbound message, got %#v", got)
 	}
-	if got.Notification.Channel != "email" || got.Notification.Type != "communication:inbound" {
+	if got.Notification.Channel != commChannelEmail || got.Notification.Type != "communication:inbound" {
 		t.Fatalf("unexpected notification shape: %#v", got.Notification)
 	}
 }
@@ -73,13 +73,13 @@ func TestHandleCommEmailInboundWebhook_EnqueuesLegacyFlatPayload(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(map[string]any{
-		"to":        "agent-bob@lessersoul.ai",
-		"from":      "alice@example.com",
-		"fromName":  "Alice",
-		"subject":   "Hello",
-		"body":      "Test",
+		"to":         "agent-bob@lessersoul.ai",
+		"from":       "alice@example.com",
+		"fromName":   "Alice",
+		"subject":    "Hello",
+		"body":       "Test",
 		"receivedAt": "2026-03-04T12:00:00Z",
-		"messageId": "comm-msg-001",
+		"messageId":  "comm-msg-001",
 	})
 
 	ctx := &apptheory.Context{
@@ -94,7 +94,7 @@ func TestHandleCommEmailInboundWebhook_EnqueuesLegacyFlatPayload(t *testing.T) {
 	if resp.Status != http.StatusOK {
 		t.Fatalf("expected 200, got %d (body=%q)", resp.Status, string(resp.Body))
 	}
-	if got == nil || got.Provider != "migadu" || got.Kind != commworker.QueueMessageKindInbound {
+	if got == nil || got.Provider != commDeliveryProviderMigadu || got.Kind != commworker.QueueMessageKindInbound {
 		t.Fatalf("expected migadu comm.inbound message, got %#v", got)
 	}
 	if got.Notification.To == nil || got.Notification.To.Address != "agent-bob@lessersoul.ai" {
@@ -143,10 +143,10 @@ func TestHandleCommSMSInboundWebhook_EnqueuesTelnyxPayload(t *testing.T) {
 	if resp.Status != http.StatusOK {
 		t.Fatalf("expected 200, got %d (body=%q)", resp.Status, string(resp.Body))
 	}
-	if got == nil || got.Provider != "telnyx" || got.Kind != commworker.QueueMessageKindInbound {
+	if got == nil || got.Provider != commDeliveryProviderTelnyx || got.Kind != commworker.QueueMessageKindInbound {
 		t.Fatalf("expected telnyx comm.inbound message, got %#v", got)
 	}
-	if got.Notification.Channel != "sms" || got.Notification.MessageID != "telnyx-msg-1" {
+	if got.Notification.Channel != commChannelSMS || got.Notification.MessageID != "telnyx-msg-1" {
 		t.Fatalf("unexpected notification: %#v", got.Notification)
 	}
 	if got.Notification.To == nil || got.Notification.To.Number != "+15550143" {
@@ -192,10 +192,10 @@ func TestHandleCommVoiceInboundWebhook_EnqueuesTelnyxPayload(t *testing.T) {
 	if resp.Status != http.StatusOK {
 		t.Fatalf("expected 200, got %d (body=%q)", resp.Status, string(resp.Body))
 	}
-	if got == nil || got.Provider != "telnyx" || got.Kind != commworker.QueueMessageKindInbound {
+	if got == nil || got.Provider != commDeliveryProviderTelnyx || got.Kind != commworker.QueueMessageKindInbound {
 		t.Fatalf("expected telnyx comm.inbound message, got %#v", got)
 	}
-	if got.Notification.Channel != "voice" || got.Notification.MessageID != "telnyx-call-1" {
+	if got.Notification.Channel != commChannelVoice || got.Notification.MessageID != "telnyx-call-1" {
 		t.Fatalf("unexpected notification: %#v", got.Notification)
 	}
 	if got.Notification.To == nil || got.Notification.To.Number != "+15550143" {

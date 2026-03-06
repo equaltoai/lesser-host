@@ -820,10 +820,10 @@ func (s *Server) advanceUpdateReceiptIngest(ctx context.Context, job *models.Upd
 
 	if strings.TrimSpace(job.LesserBodyVersion) != "" {
 		job.Step = updateStepBodyDeployStart
-		job.Note = "starting lesser-body deploy runner"
+		job.Note = noteStartingLesserBodyDeployRunner
 	} else {
 		job.Step = updateStepVerify
-		job.Note = "verifying deployment"
+		job.Note = noteVerifyingDeployment
 	}
 	if err := s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil); err != nil {
 		return 0, false, err
@@ -838,7 +838,7 @@ func (s *Server) advanceUpdateBodyDeployStart(ctx context.Context, job *models.U
 
 	if strings.TrimSpace(job.LesserBodyVersion) == "" {
 		job.Step = updateStepVerify
-		job.Note = "verifying deployment"
+		job.Note = noteVerifyingDeployment
 		job.RunID = ""
 		if err := s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil); err != nil {
 			return 0, false, err
@@ -877,14 +877,33 @@ func (s *Server) advanceUpdateBodyDeployStart(ctx context.Context, job *models.U
 	job.RunID = strings.TrimSpace(runID)
 	job.RunURL = ""
 	job.Step = updateStepBodyDeployWait
-	job.Note = "lesser-body deploy runner in progress"
+	job.Note = noteLesserBodyDeployRunnerInProgress
 	if err := s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil); err != nil {
 		return 0, false, err
 	}
 	return provisionDefaultPollDelay, false, nil
 }
 
-func (s *Server) advanceUpdateBodyDeployWait(ctx context.Context, job *models.UpdateJob, requestID string, now time.Time) (time.Duration, bool, error) {
+type updateRunnerWaitSpec struct {
+	pollFailureCode    string
+	pollFailureMessage string
+	successStep        string
+	successNote        string
+	inProgressNote     string
+	timeoutCode        string
+	timeoutMessage     string
+	failedCode         string
+	failedMessage      string
+	statusPrefix       string
+}
+
+func (s *Server) advanceUpdateRunnerWait(
+	ctx context.Context,
+	job *models.UpdateJob,
+	requestID string,
+	now time.Time,
+	spec updateRunnerWaitSpec,
+) (time.Duration, bool, error) {
 	if job == nil {
 		return 0, true, nil
 	}
@@ -893,9 +912,9 @@ func (s *Server) advanceUpdateBodyDeployWait(ctx context.Context, job *models.Up
 	if err != nil {
 		job.Attempts++
 		if job.Attempts >= job.MaxAttempts {
-			return 0, false, s.failUpdateJob(ctx, job, requestID, now, "body_deploy_status_failed", "failed to poll lesser-body deploy runner: "+err.Error())
+			return 0, false, s.failUpdateJob(ctx, job, requestID, now, spec.pollFailureCode, spec.pollFailureMessage+err.Error())
 		}
-		job.Note = "failed to poll lesser-body deploy runner; retrying: " + compactErr(err)
+		job.Note = spec.pollFailureMessage + compactErr(err)
 		_ = s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil)
 		return jitteredBackoff(job.Attempts, provisionDefaultPollDelay, 10*time.Minute), false, nil
 	}
@@ -907,8 +926,8 @@ func (s *Server) advanceUpdateBodyDeployWait(ctx context.Context, job *models.Up
 	switch status {
 	case codebuildStatusSucceeded:
 		job.RunID = ""
-		job.Step = updateStepDeployMcpStart
-		job.Note = noteStartingMcpWiringDeployRunner
+		job.Step = spec.successStep
+		job.Note = spec.successNote
 		if err := s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil); err != nil {
 			return 0, false, err
 		}
@@ -916,29 +935,44 @@ func (s *Server) advanceUpdateBodyDeployWait(ctx context.Context, job *models.Up
 
 	case codebuildStatusInProgress:
 		if !job.CreatedAt.IsZero() && now.Sub(job.CreatedAt) > provisionMaxDeployAge {
-			return 0, false, s.failUpdateJob(ctx, job, requestID, now, "body_deploy_timeout", "lesser-body deploy runner timed out")
+			return 0, false, s.failUpdateJob(ctx, job, requestID, now, spec.timeoutCode, spec.timeoutMessage)
 		}
-		job.Note = "lesser-body deploy runner in progress"
+		job.Note = spec.inProgressNote
 		_ = s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil)
 		return provisionDefaultPollDelay, false, nil
 
 	case codebuildStatusFailed, codebuildStatusFault, codebuildStatusStopped, codebuildStatusTimedOut:
-		msg := "lesser-body deploy runner failed"
+		msg := spec.failedMessage
 		if deepLink != "" {
 			job.RunURL = deepLink
-			msg = msg + " (CodeBuild: " + deepLink + ")"
+			msg += " (CodeBuild: " + deepLink + ")"
 		}
 		_ = s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil)
-		return 0, false, s.failUpdateJob(ctx, job, requestID, now, "body_deploy_failed", msg)
+		return 0, false, s.failUpdateJob(ctx, job, requestID, now, spec.failedCode, msg)
 
 	default:
 		if !job.CreatedAt.IsZero() && now.Sub(job.CreatedAt) > provisionMaxDeployAge {
-			return 0, false, s.failUpdateJob(ctx, job, requestID, now, "body_deploy_timeout", "lesser-body deploy runner timed out")
+			return 0, false, s.failUpdateJob(ctx, job, requestID, now, spec.timeoutCode, spec.timeoutMessage)
 		}
-		job.Note = "lesser-body deploy runner status: " + status
+		job.Note = spec.statusPrefix + status
 		_ = s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil)
 		return provisionDefaultPollDelay, false, nil
 	}
+}
+
+func (s *Server) advanceUpdateBodyDeployWait(ctx context.Context, job *models.UpdateJob, requestID string, now time.Time) (time.Duration, bool, error) {
+	return s.advanceUpdateRunnerWait(ctx, job, requestID, now, updateRunnerWaitSpec{
+		pollFailureCode:    "body_deploy_status_failed",
+		pollFailureMessage: "failed to poll lesser-body deploy runner: ",
+		successStep:        updateStepDeployMcpStart,
+		successNote:        noteStartingMcpWiringDeployRunner,
+		inProgressNote:     noteLesserBodyDeployRunnerInProgress,
+		timeoutCode:        "body_deploy_timeout",
+		timeoutMessage:     "lesser-body deploy runner timed out",
+		failedCode:         "body_deploy_failed",
+		failedMessage:      "lesser-body deploy runner failed",
+		statusPrefix:       "lesser-body deploy runner status: ",
+	})
 }
 
 func (s *Server) advanceUpdateDeployMcpStart(ctx context.Context, job *models.UpdateJob, requestID string, now time.Time) (time.Duration, bool, error) {
@@ -977,7 +1011,7 @@ func (s *Server) advanceUpdateDeployMcpStart(ctx context.Context, job *models.Up
 	job.RunID = strings.TrimSpace(runID)
 	job.RunURL = ""
 	job.Step = updateStepDeployMcpWait
-	job.Note = "MCP wiring deploy runner in progress"
+	job.Note = noteMCPDeployRunnerInProgress
 	if err := s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil); err != nil {
 		return 0, false, err
 	}
@@ -985,60 +1019,18 @@ func (s *Server) advanceUpdateDeployMcpStart(ctx context.Context, job *models.Up
 }
 
 func (s *Server) advanceUpdateDeployMcpWait(ctx context.Context, job *models.UpdateJob, requestID string, now time.Time) (time.Duration, bool, error) {
-	if job == nil {
-		return 0, true, nil
-	}
-
-	status, deepLink, err := s.getDeployRunnerStatus(ctx, strings.TrimSpace(job.RunID))
-	if err != nil {
-		job.Attempts++
-		if job.Attempts >= job.MaxAttempts {
-			return 0, false, s.failUpdateJob(ctx, job, requestID, now, "mcp_deploy_status_failed", "failed to poll MCP wiring deploy runner: "+err.Error())
-		}
-		job.Note = "failed to poll MCP wiring deploy runner; retrying: " + compactErr(err)
-		_ = s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil)
-		return jitteredBackoff(job.Attempts, provisionDefaultPollDelay, 10*time.Minute), false, nil
-	}
-
-	if deepLink != "" && strings.TrimSpace(job.RunURL) == "" {
-		job.RunURL = deepLink
-	}
-
-	switch status {
-	case codebuildStatusSucceeded:
-		job.RunID = ""
-		job.Step = updateStepVerify
-		job.Note = "verifying deployment"
-		if err := s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil); err != nil {
-			return 0, false, err
-		}
-		return 0, false, nil
-
-	case codebuildStatusInProgress:
-		if !job.CreatedAt.IsZero() && now.Sub(job.CreatedAt) > provisionMaxDeployAge {
-			return 0, false, s.failUpdateJob(ctx, job, requestID, now, "mcp_deploy_timeout", "MCP wiring deploy runner timed out")
-		}
-		job.Note = "MCP wiring deploy runner in progress"
-		_ = s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil)
-		return provisionDefaultPollDelay, false, nil
-
-	case codebuildStatusFailed, codebuildStatusFault, codebuildStatusStopped, codebuildStatusTimedOut:
-		msg := "MCP wiring deploy runner failed"
-		if deepLink != "" {
-			job.RunURL = deepLink
-			msg = msg + " (CodeBuild: " + deepLink + ")"
-		}
-		_ = s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil)
-		return 0, false, s.failUpdateJob(ctx, job, requestID, now, "mcp_deploy_failed", msg)
-
-	default:
-		if !job.CreatedAt.IsZero() && now.Sub(job.CreatedAt) > provisionMaxDeployAge {
-			return 0, false, s.failUpdateJob(ctx, job, requestID, now, "mcp_deploy_timeout", "MCP wiring deploy runner timed out")
-		}
-		job.Note = "MCP wiring deploy runner status: " + status
-		_ = s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil)
-		return provisionDefaultPollDelay, false, nil
-	}
+	return s.advanceUpdateRunnerWait(ctx, job, requestID, now, updateRunnerWaitSpec{
+		pollFailureCode:    "mcp_deploy_status_failed",
+		pollFailureMessage: "failed to poll MCP wiring deploy runner: ",
+		successStep:        updateStepVerify,
+		successNote:        noteVerifyingDeployment,
+		inProgressNote:     noteMCPDeployRunnerInProgress,
+		timeoutCode:        "mcp_deploy_timeout",
+		timeoutMessage:     "MCP wiring deploy runner timed out",
+		failedCode:         "mcp_deploy_failed",
+		failedMessage:      "MCP wiring deploy runner failed",
+		statusPrefix:       "MCP wiring deploy runner status: ",
+	})
 }
 
 type instanceV2Response struct {

@@ -9,6 +9,11 @@ import (
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
+const (
+	testAgentBobEmail  = "agent-bob@lessersoul.ai"
+	testInstanceAPIKey = "lhk_test"
+)
+
 type fakeStore struct {
 	emailIndex map[string]string
 	phoneIndex map[string]string
@@ -17,8 +22,8 @@ type fakeStore struct {
 	channels   map[string]*models.SoulAgentChannel
 	prefs      map[string]*models.SoulAgentContactPreferences
 
-	domains    map[string]*models.Domain
-	instances  map[string]*models.Instance
+	domains   map[string]*models.Domain
+	instances map[string]*models.Instance
 
 	activities map[string][]*models.SoulAgentCommActivity
 	queued     []*models.SoulAgentCommQueue
@@ -117,8 +122,8 @@ func TestProcessInbound_QueuesOutsideAvailabilityWindow(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 3, 2, 8, 0, 0, 0, time.UTC) // Monday
-	agentID := "0xagent"
-	to := "agent-bob@lessersoul.ai"
+	agentID := commStoreTestAgentID
+	to := testAgentBobEmail
 
 	fs := &fakeStore{
 		emailIndex: map[string]string{to: agentID},
@@ -190,8 +195,8 @@ func TestProcessInbound_BouncesWhenRateLimited(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 3, 2, 10, 0, 0, 0, time.UTC)
-	agentID := "0xagent"
-	to := "agent-bob@lessersoul.ai"
+	agentID := commStoreTestAgentID
+	to := testAgentBobEmail
 
 	fs := &fakeStore{
 		emailIndex: map[string]string{to: agentID},
@@ -262,8 +267,8 @@ func TestProcessInbound_DeliversToInstance(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 3, 2, 12, 0, 0, 0, time.UTC)
-	agentID := "0xagent"
-	to := "agent-bob@lessersoul.ai"
+	agentID := commStoreTestAgentID
+	to := testAgentBobEmail
 
 	fs := &fakeStore{
 		emailIndex: map[string]string{to: agentID},
@@ -288,7 +293,7 @@ func TestProcessInbound_DeliversToInstance(t *testing.T) {
 	var gotKey string
 	s := NewServer(config.Config{Stage: "lab"}, fs, nil, nil)
 	s.now = func() time.Time { return now }
-	s.fetchInstanceKeyPlaintext = func(context.Context, *models.Instance) (string, error) { return "lhk_test", nil }
+	s.fetchInstanceKeyPlaintext = func(context.Context, *models.Instance) (string, error) { return testInstanceAPIKey, nil }
 	s.deliverNotification = func(_ context.Context, deliverURL string, apiKey string, _ InboundNotification) error {
 		gotURL = deliverURL
 		gotKey = apiKey
@@ -313,11 +318,10 @@ func TestProcessInbound_DeliversToInstance(t *testing.T) {
 	if err := s.processInbound(context.Background(), "req", msg); err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if gotKey != "lhk_test" {
+	if gotKey != testInstanceAPIKey {
 		t.Fatalf("expected api key, got %q", gotKey)
 	}
 	if gotURL != "https://api.dev.demo.greater.website/api/v1/notifications/deliver" {
 		t.Fatalf("unexpected deliver url: %q", gotURL)
 	}
 }
-

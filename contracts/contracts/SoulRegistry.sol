@@ -197,7 +197,7 @@ contract SoulRegistry is ERC721, Ownable2Step, Pausable, EIP712 {
         _usedSelfMintAttestations[digest] = true;
 
         // Recover signer and check it is a registered attestor.
-        address signer = ECDSA.recoverCalldata(digest, attestationSig);
+        address signer = ECDSA.recover(digest, attestationSig);
         if (!_attestors[signer]) {
             revert("SoulRegistry: invalid attestation");
         }

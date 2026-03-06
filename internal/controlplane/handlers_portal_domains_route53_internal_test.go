@@ -140,8 +140,8 @@ func TestHandlePortalUpsertDomainVerificationRoute53_NotFoundWhenDomainMissing(t
 	}
 	if _, err := s.handlePortalUpsertDomainVerificationRoute53(ctx); err == nil {
 		t.Fatalf("expected not_found")
-	} else if appErr, ok := err.(*apptheory.AppError); !ok || appErr.Code != "app.not_found" {
-		t.Fatalf("expected app.not_found, got %#v", err)
+	} else if appErr, ok := err.(*apptheory.AppError); !ok || appErr.Code != appErrCodeNotFound {
+		t.Fatalf("expected %s, got %#v", appErrCodeNotFound, err)
 	}
 }
 

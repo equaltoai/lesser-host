@@ -20,7 +20,7 @@ type SoulAgentVersion struct {
 
 	AgentID                    string `theorydb:"attr:agentId" json:"agent_id"`
 	VersionNumber              int    `theorydb:"attr:versionNumber" json:"version_number"`
-	RegistrationUri            string `theorydb:"attr:registrationUri" json:"registration_uri"`
+	RegistrationURI            string `theorydb:"attr:registrationUri" json:"registration_uri"`
 	RegistrationSHA256         string `theorydb:"attr:registrationSha256" json:"registration_sha256,omitempty"`
 	PreviousRegistrationSHA256 string `theorydb:"attr:previousRegistrationSha256" json:"previous_registration_sha256,omitempty"`
 	ChangeSummary              string `theorydb:"attr:changeSummary" json:"change_summary,omitempty"`
@@ -46,7 +46,7 @@ func (v *SoulAgentVersion) BeforeCreate() error {
 	if err := requirePositiveInt("versionNumber", v.VersionNumber); err != nil {
 		return err
 	}
-	if err := requireNonEmpty("registrationUri", v.RegistrationUri); err != nil {
+	if err := requireNonEmpty("registrationUri", v.RegistrationURI); err != nil {
 		return err
 	}
 	if strings.TrimSpace(v.RegistrationSHA256) != "" {
@@ -66,7 +66,7 @@ func (v *SoulAgentVersion) BeforeCreate() error {
 // UpdateKeys updates the database keys for SoulAgentVersion.
 func (v *SoulAgentVersion) UpdateKeys() error {
 	v.AgentID = strings.ToLower(strings.TrimSpace(v.AgentID))
-	v.RegistrationUri = strings.TrimSpace(v.RegistrationUri)
+	v.RegistrationURI = strings.TrimSpace(v.RegistrationURI)
 	v.RegistrationSHA256 = strings.ToLower(strings.TrimSpace(v.RegistrationSHA256))
 	v.PreviousRegistrationSHA256 = strings.ToLower(strings.TrimSpace(v.PreviousRegistrationSHA256))
 	v.ChangeSummary = strings.TrimSpace(v.ChangeSummary)

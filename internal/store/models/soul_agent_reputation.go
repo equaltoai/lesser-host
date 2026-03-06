@@ -22,12 +22,12 @@ type SoulAgentReputation struct {
 
 	BlockRef int64 `theorydb:"attr:blockRef" json:"block_ref,omitempty"`
 
-	Composite  float64 `theorydb:"attr:composite" json:"composite"`
-	Economic   float64 `theorydb:"attr:economic" json:"economic"`
-	Social     float64 `theorydb:"attr:social" json:"social"`
-	Validation float64 `theorydb:"attr:validation" json:"validation"`
-	Trust      float64 `theorydb:"attr:trust" json:"trust"`
-	Integrity  float64 `theorydb:"attr:integrity" json:"integrity"`
+	Composite     float64 `theorydb:"attr:composite" json:"composite"`
+	Economic      float64 `theorydb:"attr:economic" json:"economic"`
+	Social        float64 `theorydb:"attr:social" json:"social"`
+	Validation    float64 `theorydb:"attr:validation" json:"validation"`
+	Trust         float64 `theorydb:"attr:trust" json:"trust"`
+	Integrity     float64 `theorydb:"attr:integrity" json:"integrity"`
 	Communication float64 `theorydb:"attr:communication" json:"communication"`
 
 	TipsReceived         int64 `theorydb:"attr:tipsReceived" json:"tips_received"`

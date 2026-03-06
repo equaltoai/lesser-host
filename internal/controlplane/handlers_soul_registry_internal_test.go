@@ -155,8 +155,14 @@ func TestHandleSoulAgentRegistrationBegin_Success(t *testing.T) {
 		t.Fatalf("expected 201, got %d (body=%q)", resp.Status, string(resp.Body))
 	}
 
+	assertSoulAgentRegistrationBeginResponse(t, resp.Body)
+}
+
+func assertSoulAgentRegistrationBeginResponse(t *testing.T, body []byte) {
+	t.Helper()
+
 	var out soulAgentRegistrationBeginResponse
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
+	if err := json.Unmarshal(body, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if out.Registration.ID == "" || out.Wallet.Message == "" || out.Wallet.Nonce == "" {
@@ -171,14 +177,18 @@ func TestHandleSoulAgentRegistrationBegin_Success(t *testing.T) {
 	if out.Wallet.Address != strings.ToLower("0x000000000000000000000000000000000000dEaD") {
 		t.Fatalf("expected wallet lowercased, got %#v", out.Wallet.Address)
 	}
-	if len(out.Proofs) != 2 {
-		t.Fatalf("expected 2 proof instructions, got %#v", out.Proofs)
-	}
+	token := assertSoulAgentRegistrationProofs(t, out.Proofs)
+	assertSoulAgentRegistrationHTTPSProof(t, out.Proofs[1].HTTPSBody, token)
+}
 
-	dnsProof := out.Proofs[0]
-	httpsProof := out.Proofs[1]
+func assertSoulAgentRegistrationProofs(t *testing.T, proofs []soulRegistryProofInstructions) string {
+	t.Helper()
+	if len(proofs) != 2 {
+		t.Fatalf("expected 2 proof instructions, got %#v", proofs)
+	}
+	dnsProof := proofs[0]
 	if strings.TrimSpace(dnsProof.DNSValue) == "" {
-		t.Fatalf("expected DNS proof value, got %#v", out.Proofs)
+		t.Fatalf("expected DNS proof value, got %#v", proofs)
 	}
 	if !strings.HasPrefix(dnsProof.DNSValue, soulRegistryProofValue) {
 		t.Fatalf("expected DNS proof to start with %q, got %#v", soulRegistryProofValue, dnsProof.DNSValue)
@@ -187,16 +197,20 @@ func TestHandleSoulAgentRegistrationBegin_Success(t *testing.T) {
 	if strings.TrimSpace(token) == "" {
 		t.Fatalf("expected non-empty proof token, got %#v", dnsProof.DNSValue)
 	}
+	if !strings.HasPrefix(dnsProof.DNSName, soulRegistryProofPrefix) {
+		t.Fatalf("unexpected dns name: %#v", dnsProof.DNSName)
+	}
+	return token
+}
 
+func assertSoulAgentRegistrationHTTPSProof(t *testing.T, httpsBodyRaw string, token string) {
+	t.Helper()
 	var httpsBody map[string]any
-	if err := json.Unmarshal([]byte(httpsProof.HTTPSBody), &httpsBody); err != nil {
-		t.Fatalf("expected HTTPS proof body to be JSON, got %q (err=%v)", httpsProof.HTTPSBody, err)
+	if err := json.Unmarshal([]byte(httpsBodyRaw), &httpsBody); err != nil {
+		t.Fatalf("expected HTTPS proof body to be JSON, got %q (err=%v)", httpsBodyRaw, err)
 	}
 	if got, _ := httpsBody["lesser-soul-agent"].(string); got != token {
 		t.Fatalf("expected HTTPS proof token %q, got %#v", token, httpsBody)
-	}
-	if !strings.HasPrefix(out.Proofs[0].DNSName, soulRegistryProofPrefix) {
-		t.Fatalf("unexpected dns name: %#v", out.Proofs[0].DNSName)
 	}
 }
 
@@ -377,7 +391,7 @@ func TestHandleSoulAgentRegistrationVerify_UsesExistingProofFlagsAndCreatesOpera
 	tdb.qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(theoryErrors.ErrItemNotFound).Twice()
 	tdb.qWalletIdx.On("First", mock.AnythingOfType("*models.WalletIndex")).Return(theoryErrors.ErrItemNotFound).Once()
 
-	principalDeclaration := "I accept responsibility for this agent's behavior."
+	principalDeclaration := boundaryTestPrincipalDeclaration
 	principalDigest := crypto.Keccak256([]byte(principalDeclaration))
 	principalSig, err := crypto.Sign(accounts.TextHash(principalDigest), key)
 	if err != nil {

@@ -5,13 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"net/mail"
-	"net/url"
 	"regexp"
 	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
-
-	"github.com/equaltoai/lesser-host/internal/domains"
 )
 
 var (
@@ -127,51 +124,33 @@ func (r *RegistrationFileV3) Validate() error {
 	if r == nil {
 		return errRegistrationNil
 	}
-	if strings.TrimSpace(r.Version) != "3" {
-		return errors.New("version must be \"3\"")
+	if err := validateRegistrationVersion(r.Version, "3"); err != nil {
+		return err
 	}
-
-	agentID := strings.ToLower(strings.TrimSpace(r.AgentID))
-	if !regexAgentIDHex64.MatchString(agentID) {
-		return errors.New("agentId must be a 0x-prefixed 32-byte hex string")
+	if err := validateRegistrationIdentity(r.AgentID, r.Domain, r.LocalID, r.Wallet); err != nil {
+		return err
 	}
-
-	domain, err := domains.NormalizeDomain(r.Domain)
-	if err != nil || domain == "" {
-		return errors.New("domain is invalid")
+	if err := r.validateCoreSections(); err != nil {
+		return err
 	}
-
-	local, err := NormalizeLocalAgentID(r.LocalID)
-	if err != nil || local == "" {
-		return errors.New("localId is invalid")
+	if err := r.Attestations.Validate(); err != nil {
+		return fmt.Errorf("attestations: %w", err)
 	}
+	return validateRegistrationTimestamps(r.Created, r.Updated)
+}
 
-	wallet := strings.TrimSpace(r.Wallet)
-	if !common.IsHexAddress(wallet) {
-		return errors.New("wallet is invalid")
-	}
-
+func (r *RegistrationFileV3) validateCoreSections() error {
 	if err := r.Principal.Validate(); err != nil {
 		return fmt.Errorf("principal: %w", err)
 	}
 	if err := r.SelfDescription.Validate(); err != nil {
 		return fmt.Errorf("selfDescription: %w", err)
 	}
-	if len(r.Capabilities) == 0 {
-		return errors.New("capabilities must be a non-empty array")
+	if err := validateCapabilitiesV2(r.Capabilities); err != nil {
+		return err
 	}
-	for i := range r.Capabilities {
-		if err := r.Capabilities[i].Validate(); err != nil {
-			return fmt.Errorf("capabilities[%d]: %w", i, err)
-		}
-	}
-	if len(r.Boundaries) == 0 {
-		return errors.New("boundaries must be a non-empty array")
-	}
-	for i := range r.Boundaries {
-		if err := r.Boundaries[i].Validate(); err != nil {
-			return fmt.Errorf("boundaries[%d]: %w", i, err)
-		}
+	if err := validateBoundariesV2(r.Boundaries); err != nil {
+		return err
 	}
 	if r.Transparency == nil {
 		return errors.New("transparency is required")
@@ -182,12 +161,16 @@ func (r *RegistrationFileV3) Validate() error {
 	if err := r.Lifecycle.Validate(); err != nil {
 		return fmt.Errorf("lifecycle: %w", err)
 	}
-	if r.PreviousVersionURI != nil && strings.TrimSpace(*r.PreviousVersionURI) != "" {
-		if _, err := url.ParseRequestURI(strings.TrimSpace(*r.PreviousVersionURI)); err != nil {
-			return errors.New("previousVersionUri is invalid")
-		}
+	if err := validateOptionalPreviousVersionURI(r.PreviousVersionURI); err != nil {
+		return err
 	}
+	if err := r.validateOptionalV3Sections(); err != nil {
+		return err
+	}
+	return nil
+}
 
+func (r *RegistrationFileV3) validateOptionalV3Sections() error {
 	if r.Channels != nil {
 		if err := r.Channels.Validate(); err != nil {
 			return fmt.Errorf("channels: %w", err)
@@ -198,19 +181,6 @@ func (r *RegistrationFileV3) Validate() error {
 			return fmt.Errorf("contactPreferences: %w", err)
 		}
 	}
-
-	if err := r.Attestations.Validate(); err != nil {
-		return fmt.Errorf("attestations: %w", err)
-	}
-	if err := validateRFC3339(r.Created); err != nil {
-		return fmt.Errorf("created: %w", err)
-	}
-	if err := validateRFC3339(r.Updated); err != nil {
-		return fmt.Errorf("updated: %w", err)
-	}
-
-	_ = domain
-	_ = local
 	return nil
 }
 

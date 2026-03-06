@@ -24,6 +24,11 @@ type soulAgentCommQueueResponse struct {
 	Count   int                          `json:"count"`
 }
 
+type soulAgentCommListContext struct {
+	AgentIDHex string
+	Limit      int
+}
+
 func (s *Server) requireSoulAgentWithDomainAccess(ctx *apptheory.Context, agentIDHex string) (*models.SoulAgentIdentity, *apptheory.AppError) {
 	if s == nil || ctx == nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
@@ -43,28 +48,33 @@ func (s *Server) requireSoulAgentWithDomainAccess(ctx *apptheory.Context, agentI
 	return identity, nil
 }
 
-func (s *Server) handleSoulAgentCommActivity(ctx *apptheory.Context) (*apptheory.Response, error) {
+func (s *Server) loadSoulAgentCommListContext(ctx *apptheory.Context) (soulAgentCommListContext, *apptheory.AppError) {
 	if appErr := s.requireSoulRegistryConfigured(); appErr != nil {
-		return nil, appErr
+		return soulAgentCommListContext{}, appErr
 	}
 	if appErr := s.requireSoulPortalPrereqs(ctx); appErr != nil {
-		return nil, appErr
+		return soulAgentCommListContext{}, appErr
 	}
 	if appErr := requireStoreDB(s); appErr != nil {
-		return nil, appErr
+		return soulAgentCommListContext{}, appErr
 	}
 
 	agentIDHex, _, appErr := parseSoulAgentIDHex(ctx.Param("agentId"))
 	if appErr != nil {
-		return nil, appErr
+		return soulAgentCommListContext{}, appErr
 	}
 
 	if _, appErr := s.requireSoulAgentWithDomainAccess(ctx, agentIDHex); appErr != nil {
-		return nil, appErr
+		return soulAgentCommListContext{}, appErr
 	}
 
-	limit := parseLimit(queryFirst(ctx, "limit"), 50, 1, 200)
+	return soulAgentCommListContext{
+		AgentIDHex: agentIDHex,
+		Limit:      parseLimit(queryFirst(ctx, "limit"), 50, 1, 200),
+	}, nil
+}
 
+func (s *Server) listSoulAgentCommActivities(ctx *apptheory.Context, agentIDHex string, limit int) ([]*models.SoulAgentCommActivity, *apptheory.AppError) {
 	var items []*models.SoulAgentCommActivity
 	if err := s.store.DB.WithContext(ctx.Context()).
 		Model(&models.SoulAgentCommActivity{}).
@@ -75,36 +85,10 @@ func (s *Server) handleSoulAgentCommActivity(ctx *apptheory.Context) (*apptheory
 		All(&items); err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list communication activity"}
 	}
-
-	return apptheory.JSON(http.StatusOK, soulAgentCommActivityResponse{
-		Version:    "1",
-		Activities: items,
-		Count:      len(items),
-	})
+	return items, nil
 }
 
-func (s *Server) handleSoulAgentCommQueue(ctx *apptheory.Context) (*apptheory.Response, error) {
-	if appErr := s.requireSoulRegistryConfigured(); appErr != nil {
-		return nil, appErr
-	}
-	if appErr := s.requireSoulPortalPrereqs(ctx); appErr != nil {
-		return nil, appErr
-	}
-	if appErr := requireStoreDB(s); appErr != nil {
-		return nil, appErr
-	}
-
-	agentIDHex, _, appErr := parseSoulAgentIDHex(ctx.Param("agentId"))
-	if appErr != nil {
-		return nil, appErr
-	}
-
-	if _, appErr := s.requireSoulAgentWithDomainAccess(ctx, agentIDHex); appErr != nil {
-		return nil, appErr
-	}
-
-	limit := parseLimit(queryFirst(ctx, "limit"), 50, 1, 200)
-
+func (s *Server) listSoulAgentCommQueueItems(ctx *apptheory.Context, agentIDHex string, limit int) ([]*models.SoulAgentCommQueue, *apptheory.AppError) {
 	var items []*models.SoulAgentCommQueue
 	if err := s.store.DB.WithContext(ctx.Context()).
 		Model(&models.SoulAgentCommQueue{}).
@@ -114,6 +98,37 @@ func (s *Server) handleSoulAgentCommQueue(ctx *apptheory.Context) (*apptheory.Re
 		Limit(limit).
 		All(&items); err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list queued messages"}
+	}
+	return items, nil
+}
+
+func (s *Server) handleSoulAgentCommActivity(ctx *apptheory.Context) (*apptheory.Response, error) {
+	listCtx, appErr := s.loadSoulAgentCommListContext(ctx)
+	if appErr != nil {
+		return nil, appErr
+	}
+
+	items, appErr := s.listSoulAgentCommActivities(ctx, listCtx.AgentIDHex, listCtx.Limit)
+	if appErr != nil {
+		return nil, appErr
+	}
+
+	return apptheory.JSON(http.StatusOK, soulAgentCommActivityResponse{
+		Version:    "1",
+		Activities: items,
+		Count:      len(items),
+	})
+}
+
+func (s *Server) handleSoulAgentCommQueue(ctx *apptheory.Context) (*apptheory.Response, error) {
+	listCtx, appErr := s.loadSoulAgentCommListContext(ctx)
+	if appErr != nil {
+		return nil, appErr
+	}
+
+	items, appErr := s.listSoulAgentCommQueueItems(ctx, listCtx.AgentIDHex, listCtx.Limit)
+	if appErr != nil {
+		return nil, appErr
 	}
 
 	return apptheory.JSON(http.StatusOK, soulAgentCommQueueResponse{

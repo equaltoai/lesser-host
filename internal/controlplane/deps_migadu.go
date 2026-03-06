@@ -27,9 +27,10 @@ func defaultSSMPutSecureString(ctx context.Context, name string, value string, o
 }
 
 type migaduCreateMailboxRequest struct {
-	Name                  string `json:"name"`
-	LocalPart             string `json:"local_part"`
-	Password              string `json:"password"`
+	Name      string `json:"name"`
+	LocalPart string `json:"local_part"`
+	//nolint:gosec // This field is required by Migadu's mailbox-create API payload and is not persisted in code.
+	Credential            string `json:"password"`
 	PasswordRecoveryEmail any    `json:"password_recovery_email"`
 }
 
@@ -52,7 +53,7 @@ func defaultMigaduCreateMailbox(ctx context.Context, localPart string, name stri
 	body, err := json.Marshal(migaduCreateMailboxRequest{
 		Name:                  name,
 		LocalPart:             localPart,
-		Password:              password,
+		Credential:            password,
 		PasswordRecoveryEmail: nil,
 	})
 	if err != nil {
@@ -68,6 +69,7 @@ func defaultMigaduCreateMailbox(ctx context.Context, localPart string, name stri
 	req.SetBasicAuth("api", token)
 
 	client := &http.Client{Timeout: 10 * time.Second}
+	//nolint:gosec // Request target is the fixed Migadu HTTPS API host.
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("migadu create mailbox: %w", err)

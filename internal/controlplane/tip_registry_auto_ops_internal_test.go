@@ -18,7 +18,7 @@ import (
 func TestValidateTipRegistryConfigForAutoOps(t *testing.T) {
 	t.Parallel()
 
-	if appErr := (*Server)(nil).validateTipRegistryConfigForAutoOps(); appErr == nil || appErr.Code != "app.internal" {
+	if appErr := (*Server)(nil).validateTipRegistryConfigForAutoOps(); appErr == nil || appErr.Code != appErrCodeInternal {
 		t.Fatalf("expected internal error, got %#v", appErr)
 	}
 

@@ -409,25 +409,9 @@ func (s *Server) handleGetInstanceProvisioning(ctx *apptheory.Context) (*apptheo
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "slug is required"}
 	}
 
-	inst, err := s.getInstance(ctx, slug)
-	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "instance not found"}
-	}
-	if err != nil || inst == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-
-	jobID := strings.TrimSpace(inst.ProvisionJobID)
-	if jobID == "" {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "no provisioning job"}
-	}
-
-	job, err := s.store.GetProvisionJob(ctx.Context(), jobID)
-	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "provisioning job not found"}
-	}
-	if err != nil || job == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	job, jobID, appErr := s.loadInstanceProvisioningJob(ctx, slug)
+	if appErr != nil {
+		return nil, appErr
 	}
 
 	if status := strings.ToLower(strings.TrimSpace(job.Status)); status == models.ProvisionJobStatusQueued || status == models.ProvisionJobStatusRunning {
@@ -437,4 +421,28 @@ func (s *Server) handleGetInstanceProvisioning(ctx *apptheory.Context) (*apptheo
 	}
 
 	return apptheory.JSON(http.StatusOK, s.provisionJobResponseWithDerivedFields(job))
+}
+
+func (s *Server) loadInstanceProvisioningJob(ctx *apptheory.Context, slug string) (*models.ProvisionJob, string, *apptheory.AppError) {
+	inst, err := s.getInstance(ctx, slug)
+	if theoryErrors.IsNotFound(err) {
+		return nil, "", &apptheory.AppError{Code: "app.not_found", Message: "instance not found"}
+	}
+	if err != nil || inst == nil {
+		return nil, "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
+	jobID := strings.TrimSpace(inst.ProvisionJobID)
+	if jobID == "" {
+		return nil, "", &apptheory.AppError{Code: "app.not_found", Message: "no provisioning job"}
+	}
+
+	job, err := s.store.GetProvisionJob(ctx.Context(), jobID)
+	if theoryErrors.IsNotFound(err) {
+		return nil, "", &apptheory.AppError{Code: "app.not_found", Message: "provisioning job not found"}
+	}
+	if err != nil || job == nil {
+		return nil, "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	return job, jobID, nil
 }
