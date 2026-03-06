@@ -24,36 +24,43 @@ import (
 )
 
 const (
-	updateStepQueued          = "queued"
-	updateStepInstanceConfig  = "instance.config"
-	updateStepDeployStart     = "deploy.start"
-	updateStepDeployWait      = "deploy.wait"
-	updateStepReceiptIngest   = "receipt.ingest"
-	updateStepBodyDeployStart = "body.deploy.start"
-	updateStepBodyDeployWait  = "body.deploy.wait"
-	updateStepDeployMcpStart  = "deploy.mcp.start"
-	updateStepDeployMcpWait   = "deploy.mcp.wait" // #nosec G101 -- step identifier, not a credential
-	updateStepVerify          = "verify"
-	updateStepDone            = "done"
-	updateStepFailed          = "failed"
+	updateStepQueued            = "queued"
+	updateStepInstanceConfig    = "instance.config"
+	updateStepDeployStart       = "deploy.start"
+	updateStepDeployClaimed     = "deploy.start.claimed"
+	updateStepDeployWait        = "deploy.wait"
+	updateStepReceiptIngest     = "receipt.ingest"
+	updateStepBodyDeployStart   = "body.deploy.start"
+	updateStepBodyDeployClaimed = "body.deploy.start.claimed"
+	updateStepBodyDeployWait    = "body.deploy.wait"
+	updateStepDeployMcpStart    = "deploy.mcp.start"
+	updateStepDeployMcpClaimed  = "deploy.mcp.start.claimed"
+	updateStepDeployMcpWait     = "deploy.mcp.wait" // #nosec G101 -- step identifier, not a credential
+	updateStepVerify            = "verify"
+	updateStepDone              = "done"
+	updateStepFailed            = "failed"
 
-	updateMaxTransitionsPerRun = 6
+	updateMaxTransitionsPerRun   = 6
+	updateRunnerStartClaimMaxAge = 2 * time.Minute
 )
 
 type updateStepHandler func(*Server, context.Context, *models.UpdateJob, string, time.Time) (time.Duration, bool, error)
 
 var managedUpdateStepHandlers = map[string]updateStepHandler{
-	updateStepQueued:          (*Server).advanceUpdateQueued,
-	updateStepInstanceConfig:  (*Server).advanceUpdateInstanceConfig,
-	updateStepDeployStart:     (*Server).advanceUpdateDeployStart,
-	updateStepDeployWait:      (*Server).advanceUpdateDeployWait,
-	updateStepReceiptIngest:   (*Server).advanceUpdateReceiptIngest,
-	updateStepBodyDeployStart: (*Server).advanceUpdateBodyDeployStart,
-	updateStepBodyDeployWait:  (*Server).advanceUpdateBodyDeployWait,
-	updateStepDeployMcpStart:  (*Server).advanceUpdateDeployMcpStart,
-	updateStepDeployMcpWait:   (*Server).advanceUpdateDeployMcpWait,
-	updateStepVerify:          (*Server).advanceUpdateVerify,
-	updateStepDone:            (*Server).advanceUpdateDone,
+	updateStepQueued:            (*Server).advanceUpdateQueued,
+	updateStepInstanceConfig:    (*Server).advanceUpdateInstanceConfig,
+	updateStepDeployStart:       (*Server).advanceUpdateDeployStart,
+	updateStepDeployClaimed:     (*Server).advanceUpdateDeployClaimed,
+	updateStepDeployWait:        (*Server).advanceUpdateDeployWait,
+	updateStepReceiptIngest:     (*Server).advanceUpdateReceiptIngest,
+	updateStepBodyDeployStart:   (*Server).advanceUpdateBodyDeployStart,
+	updateStepBodyDeployClaimed: (*Server).advanceUpdateBodyDeployClaimed,
+	updateStepBodyDeployWait:    (*Server).advanceUpdateBodyDeployWait,
+	updateStepDeployMcpStart:    (*Server).advanceUpdateDeployMcpStart,
+	updateStepDeployMcpClaimed:  (*Server).advanceUpdateDeployMcpClaimed,
+	updateStepDeployMcpWait:     (*Server).advanceUpdateDeployMcpWait,
+	updateStepVerify:            (*Server).advanceUpdateVerify,
+	updateStepDone:              (*Server).advanceUpdateDone,
 }
 
 func updateJobProcessable(job *models.UpdateJob) bool {
@@ -688,6 +695,260 @@ func (s *Server) startUpdateDeployRunner(ctx context.Context, job *models.Update
 	return s.startUpdateDeployRunnerWithMode(ctx, job, inst, "lesser", "")
 }
 
+func updateJobKey(jobID string) *models.UpdateJob {
+	jobKey := &models.UpdateJob{ID: strings.TrimSpace(jobID)}
+	_ = jobKey.UpdateKeys()
+	return jobKey
+}
+
+func updateRunnerRunIDUnsetCondition() core.TransactCondition {
+	return tabletheory.ConditionExpression(
+		"attribute_not_exists(runId) OR runId = :empty",
+		map[string]any{":empty": ""},
+	)
+}
+
+func updateRunnerClaimExpired(job *models.UpdateJob, now time.Time) bool {
+	if job == nil {
+		return false
+	}
+	claimedAt := job.UpdatedAt
+	if claimedAt.IsZero() {
+		claimedAt = job.CreatedAt
+	}
+	if claimedAt.IsZero() {
+		return true
+	}
+	return now.Sub(claimedAt) > updateRunnerStartClaimMaxAge
+}
+
+func (s *Server) claimUpdateRunnerStart(
+	ctx context.Context,
+	job *models.UpdateJob,
+	requestID string,
+	now time.Time,
+	expectedStep string,
+	claimedStep string,
+	claimedNote string,
+) (bool, error) {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return false, fmt.Errorf("store not initialized")
+	}
+	if job == nil {
+		return false, fmt.Errorf("job is nil")
+	}
+
+	err := s.store.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
+		tx.UpdateWithBuilder(updateJobKey(job.ID), func(ub core.UpdateBuilder) error {
+			ub.Set("Step", strings.TrimSpace(claimedStep))
+			ub.Set("Note", strings.TrimSpace(claimedNote))
+			ub.Set("RequestID", strings.TrimSpace(requestID))
+			ub.Set("UpdatedAt", now)
+			return nil
+		},
+			tabletheory.IfExists(),
+			tabletheory.Condition("Status", "=", models.UpdateJobStatusRunning),
+			tabletheory.Condition("Step", "=", strings.TrimSpace(expectedStep)),
+			updateRunnerRunIDUnsetCondition(),
+		)
+		return nil
+	})
+	if theoryErrors.IsConditionFailed(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+
+	job.Step = strings.TrimSpace(claimedStep)
+	job.Note = strings.TrimSpace(claimedNote)
+	job.RequestID = strings.TrimSpace(requestID)
+	job.UpdatedAt = now
+	return true, nil
+}
+
+func (s *Server) releaseClaimedUpdateRunnerStartForRetry(
+	ctx context.Context,
+	job *models.UpdateJob,
+	requestID string,
+	now time.Time,
+	claimedStep string,
+	retryStep string,
+	retryNote string,
+	attempts int64,
+) error {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return fmt.Errorf("store not initialized")
+	}
+	if job == nil {
+		return fmt.Errorf("job is nil")
+	}
+
+	err := s.store.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
+		tx.UpdateWithBuilder(updateJobKey(job.ID), func(ub core.UpdateBuilder) error {
+			ub.Set("Step", strings.TrimSpace(retryStep))
+			ub.Set("Note", strings.TrimSpace(retryNote))
+			ub.Set("Attempts", attempts)
+			ub.Set("RequestID", strings.TrimSpace(requestID))
+			ub.Set("UpdatedAt", now)
+			ub.Remove("RunID")
+			ub.Remove("RunURL")
+			return nil
+		},
+			tabletheory.IfExists(),
+			tabletheory.Condition("Status", "=", models.UpdateJobStatusRunning),
+			tabletheory.Condition("Step", "=", strings.TrimSpace(claimedStep)),
+		)
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	job.Step = strings.TrimSpace(retryStep)
+	job.Note = strings.TrimSpace(retryNote)
+	job.Attempts = attempts
+	job.RequestID = strings.TrimSpace(requestID)
+	job.UpdatedAt = now
+	job.RunID = ""
+	job.RunURL = ""
+	return nil
+}
+
+func (s *Server) completeClaimedUpdateRunnerStart(
+	ctx context.Context,
+	job *models.UpdateJob,
+	requestID string,
+	now time.Time,
+	claimedStep string,
+	waitStep string,
+	runID string,
+	inProgressNote string,
+) error {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return fmt.Errorf("store not initialized")
+	}
+	if job == nil {
+		return fmt.Errorf("job is nil")
+	}
+
+	runID = strings.TrimSpace(runID)
+	err := s.store.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
+		tx.UpdateWithBuilder(updateJobKey(job.ID), func(ub core.UpdateBuilder) error {
+			ub.Set("Step", strings.TrimSpace(waitStep))
+			ub.Set("RunID", runID)
+			ub.Set("Note", strings.TrimSpace(inProgressNote))
+			ub.Set("RequestID", strings.TrimSpace(requestID))
+			ub.Set("UpdatedAt", now)
+			ub.Remove("RunURL")
+			return nil
+		},
+			tabletheory.IfExists(),
+			tabletheory.Condition("Status", "=", models.UpdateJobStatusRunning),
+			tabletheory.Condition("Step", "=", strings.TrimSpace(claimedStep)),
+		)
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	job.Step = strings.TrimSpace(waitStep)
+	job.RunID = runID
+	job.RunURL = ""
+	job.Note = strings.TrimSpace(inProgressNote)
+	job.RequestID = strings.TrimSpace(requestID)
+	job.UpdatedAt = now
+	return nil
+}
+
+func (s *Server) failClaimedUpdateJob(
+	ctx context.Context,
+	job *models.UpdateJob,
+	requestID string,
+	now time.Time,
+	claimedStep string,
+	code string,
+	msg string,
+) error {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return fmt.Errorf("store not initialized")
+	}
+	if job == nil {
+		return nil
+	}
+
+	updateInst := &models.Instance{Slug: strings.TrimSpace(job.InstanceSlug)}
+	_ = updateInst.UpdateKeys()
+
+	err := s.store.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
+		tx.UpdateWithBuilder(updateJobKey(job.ID), func(ub core.UpdateBuilder) error {
+			ub.Set("Status", models.UpdateJobStatusError)
+			ub.Set("Step", updateStepFailed)
+			ub.Set("ErrorCode", strings.TrimSpace(code))
+			ub.Set("ErrorMessage", strings.TrimSpace(msg))
+			ub.Set("RequestID", strings.TrimSpace(requestID))
+			ub.Set("UpdatedAt", now)
+			ub.Remove("RunID")
+			ub.Remove("RunURL")
+			return nil
+		},
+			tabletheory.IfExists(),
+			tabletheory.Condition("Status", "=", models.UpdateJobStatusRunning),
+			tabletheory.Condition("Step", "=", strings.TrimSpace(claimedStep)),
+		)
+		tx.UpdateWithBuilder(updateInst, func(ub core.UpdateBuilder) error {
+			ub.Set("UpdateStatus", models.UpdateJobStatusError)
+			ub.Set("UpdateJobID", strings.TrimSpace(job.ID))
+			return nil
+		}, tabletheory.IfExists())
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	job.Status = models.UpdateJobStatusError
+	job.Step = updateStepFailed
+	job.ErrorCode = strings.TrimSpace(code)
+	job.ErrorMessage = strings.TrimSpace(msg)
+	job.RequestID = strings.TrimSpace(requestID)
+	job.UpdatedAt = now
+	job.RunID = ""
+	job.RunURL = ""
+	return nil
+}
+
+type updateRunnerClaimSpec struct {
+	claimedStep  string
+	staleCode    string
+	staleMessage string
+}
+
+func (s *Server) advanceUpdateRunnerClaimed(
+	ctx context.Context,
+	job *models.UpdateJob,
+	requestID string,
+	now time.Time,
+	spec updateRunnerClaimSpec,
+) (time.Duration, bool, error) {
+	if job == nil {
+		return 0, true, nil
+	}
+	if !updateRunnerClaimExpired(job, now) {
+		return provisionDefaultShortRetryDelay, false, nil
+	}
+
+	err := s.failClaimedUpdateJob(ctx, job, requestID, now, spec.claimedStep, spec.staleCode, spec.staleMessage)
+	if theoryErrors.IsConditionFailed(err) {
+		return provisionDefaultShortRetryDelay, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return 0, false, nil
+}
+
 func (s *Server) advanceUpdateDeployStart(ctx context.Context, job *models.UpdateJob, requestID string, now time.Time) (time.Duration, bool, error) {
 	if job == nil {
 		return 0, true, nil
@@ -722,24 +983,47 @@ func (s *Server) advanceUpdateDeployStart(ctx context.Context, job *models.Updat
 		job.LesserHostInstanceKeySecretARN = strings.TrimSpace(inst.LesserHostInstanceKeySecretARN)
 	}
 
+	claimed, err := s.claimUpdateRunnerStart(ctx, job, requestID, now, updateStepDeployStart, updateStepDeployClaimed, noteStartingDeployRunner)
+	if err != nil {
+		return 0, false, err
+	}
+	if !claimed {
+		return provisionDefaultShortRetryDelay, false, nil
+	}
+
 	runID, err := s.startUpdateDeployRunner(ctx, job, inst)
 	if err != nil {
-		job.Attempts++
-		if job.Attempts >= job.MaxAttempts {
-			return 0, false, s.failUpdateJob(ctx, job, requestID, now, "deploy_start_failed", "failed to start deploy runner: "+err.Error())
+		nextAttempts := job.Attempts + 1
+		if nextAttempts >= job.MaxAttempts {
+			failErr := s.failClaimedUpdateJob(ctx, job, requestID, now, updateStepDeployClaimed, "deploy_start_failed", "failed to start deploy runner: "+err.Error())
+			if theoryErrors.IsConditionFailed(failErr) {
+				return provisionDefaultShortRetryDelay, false, nil
+			}
+			return 0, false, failErr
 		}
-		job.Note = "failed to start deploy runner; retrying: " + compactErr(err)
-		_ = s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil)
+		retryNote := "failed to start deploy runner; retrying: " + compactErr(err)
+		releaseErr := s.releaseClaimedUpdateRunnerStartForRetry(ctx, job, requestID, now, updateStepDeployClaimed, updateStepDeployStart, retryNote, nextAttempts)
+		if theoryErrors.IsConditionFailed(releaseErr) {
+			return provisionDefaultShortRetryDelay, false, nil
+		}
+		if releaseErr != nil {
+			return 0, false, releaseErr
+		}
 		return jitteredBackoff(job.Attempts, provisionDefaultShortRetryDelay, 10*time.Minute), false, nil
 	}
 
-	job.RunID = strings.TrimSpace(runID)
-	job.Step = updateStepDeployWait
-	job.Note = noteDeployRunnerInProgress
-	if err := s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil); err != nil {
+	if err := s.completeClaimedUpdateRunnerStart(ctx, job, requestID, now, updateStepDeployClaimed, updateStepDeployWait, runID, noteDeployRunnerInProgress); err != nil {
 		return 0, false, err
 	}
 	return provisionDefaultPollDelay, false, nil
+}
+
+func (s *Server) advanceUpdateDeployClaimed(ctx context.Context, job *models.UpdateJob, requestID string, now time.Time) (time.Duration, bool, error) {
+	return s.advanceUpdateRunnerClaimed(ctx, job, requestID, now, updateRunnerClaimSpec{
+		claimedStep:  updateStepDeployClaimed,
+		staleCode:    "deploy_start_claim_stale",
+		staleMessage: "deploy runner start claim expired before a run ID was recorded; refusing to launch a duplicate deploy runner automatically",
+	})
 }
 
 func (s *Server) advanceUpdateDeployWait(ctx context.Context, job *models.UpdateJob, requestID string, now time.Time) (time.Duration, bool, error) {
@@ -863,25 +1147,47 @@ func (s *Server) advanceUpdateBodyDeployStart(ctx context.Context, job *models.U
 		return 0, false, s.failUpdateJob(ctx, job, requestID, now, "instance_not_found", "instance record not found")
 	}
 
+	claimed, err := s.claimUpdateRunnerStart(ctx, job, requestID, now, updateStepBodyDeployStart, updateStepBodyDeployClaimed, noteStartingLesserBodyDeployRunner)
+	if err != nil {
+		return 0, false, err
+	}
+	if !claimed {
+		return provisionDefaultShortRetryDelay, false, nil
+	}
+
 	runID, err := s.startUpdateDeployRunnerWithMode(ctx, job, inst, "lesser-body", s.updateBodyReceiptS3Key(job))
 	if err != nil {
-		job.Attempts++
-		if job.Attempts >= job.MaxAttempts {
-			return 0, false, s.failUpdateJob(ctx, job, requestID, now, "body_deploy_start_failed", "failed to start lesser-body deploy runner: "+err.Error())
+		nextAttempts := job.Attempts + 1
+		if nextAttempts >= job.MaxAttempts {
+			failErr := s.failClaimedUpdateJob(ctx, job, requestID, now, updateStepBodyDeployClaimed, "body_deploy_start_failed", "failed to start lesser-body deploy runner: "+err.Error())
+			if theoryErrors.IsConditionFailed(failErr) {
+				return provisionDefaultShortRetryDelay, false, nil
+			}
+			return 0, false, failErr
 		}
-		job.Note = "failed to start lesser-body deploy runner; retrying: " + compactErr(err)
-		_ = s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil)
+		retryNote := "failed to start lesser-body deploy runner; retrying: " + compactErr(err)
+		releaseErr := s.releaseClaimedUpdateRunnerStartForRetry(ctx, job, requestID, now, updateStepBodyDeployClaimed, updateStepBodyDeployStart, retryNote, nextAttempts)
+		if theoryErrors.IsConditionFailed(releaseErr) {
+			return provisionDefaultShortRetryDelay, false, nil
+		}
+		if releaseErr != nil {
+			return 0, false, releaseErr
+		}
 		return jitteredBackoff(job.Attempts, provisionDefaultShortRetryDelay, 10*time.Minute), false, nil
 	}
 
-	job.RunID = strings.TrimSpace(runID)
-	job.RunURL = ""
-	job.Step = updateStepBodyDeployWait
-	job.Note = noteLesserBodyDeployRunnerInProgress
-	if err := s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil); err != nil {
+	if err := s.completeClaimedUpdateRunnerStart(ctx, job, requestID, now, updateStepBodyDeployClaimed, updateStepBodyDeployWait, runID, noteLesserBodyDeployRunnerInProgress); err != nil {
 		return 0, false, err
 	}
 	return provisionDefaultPollDelay, false, nil
+}
+
+func (s *Server) advanceUpdateBodyDeployClaimed(ctx context.Context, job *models.UpdateJob, requestID string, now time.Time) (time.Duration, bool, error) {
+	return s.advanceUpdateRunnerClaimed(ctx, job, requestID, now, updateRunnerClaimSpec{
+		claimedStep:  updateStepBodyDeployClaimed,
+		staleCode:    "body_deploy_start_claim_stale",
+		staleMessage: "lesser-body deploy runner start claim expired before a run ID was recorded; refusing to launch a duplicate lesser-body deploy runner automatically",
+	})
 }
 
 type updateRunnerWaitSpec struct {
@@ -997,25 +1303,47 @@ func (s *Server) advanceUpdateDeployMcpStart(ctx context.Context, job *models.Up
 		return 0, false, s.failUpdateJob(ctx, job, requestID, now, "instance_not_found", "instance record not found")
 	}
 
+	claimed, err := s.claimUpdateRunnerStart(ctx, job, requestID, now, updateStepDeployMcpStart, updateStepDeployMcpClaimed, noteStartingMcpWiringDeployRunner)
+	if err != nil {
+		return 0, false, err
+	}
+	if !claimed {
+		return provisionDefaultShortRetryDelay, false, nil
+	}
+
 	runID, err := s.startUpdateDeployRunnerWithMode(ctx, job, inst, "lesser-mcp", s.updateMcpReceiptS3Key(job))
 	if err != nil {
-		job.Attempts++
-		if job.Attempts >= job.MaxAttempts {
-			return 0, false, s.failUpdateJob(ctx, job, requestID, now, "mcp_deploy_start_failed", "failed to start MCP wiring deploy runner: "+err.Error())
+		nextAttempts := job.Attempts + 1
+		if nextAttempts >= job.MaxAttempts {
+			failErr := s.failClaimedUpdateJob(ctx, job, requestID, now, updateStepDeployMcpClaimed, "mcp_deploy_start_failed", "failed to start MCP wiring deploy runner: "+err.Error())
+			if theoryErrors.IsConditionFailed(failErr) {
+				return provisionDefaultShortRetryDelay, false, nil
+			}
+			return 0, false, failErr
 		}
-		job.Note = "failed to start MCP wiring deploy runner; retrying: " + compactErr(err)
-		_ = s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil)
+		retryNote := "failed to start MCP wiring deploy runner; retrying: " + compactErr(err)
+		releaseErr := s.releaseClaimedUpdateRunnerStartForRetry(ctx, job, requestID, now, updateStepDeployMcpClaimed, updateStepDeployMcpStart, retryNote, nextAttempts)
+		if theoryErrors.IsConditionFailed(releaseErr) {
+			return provisionDefaultShortRetryDelay, false, nil
+		}
+		if releaseErr != nil {
+			return 0, false, releaseErr
+		}
 		return jitteredBackoff(job.Attempts, provisionDefaultShortRetryDelay, 10*time.Minute), false, nil
 	}
 
-	job.RunID = strings.TrimSpace(runID)
-	job.RunURL = ""
-	job.Step = updateStepDeployMcpWait
-	job.Note = noteMCPDeployRunnerInProgress
-	if err := s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil); err != nil {
+	if err := s.completeClaimedUpdateRunnerStart(ctx, job, requestID, now, updateStepDeployMcpClaimed, updateStepDeployMcpWait, runID, noteMCPDeployRunnerInProgress); err != nil {
 		return 0, false, err
 	}
 	return provisionDefaultPollDelay, false, nil
+}
+
+func (s *Server) advanceUpdateDeployMcpClaimed(ctx context.Context, job *models.UpdateJob, requestID string, now time.Time) (time.Duration, bool, error) {
+	return s.advanceUpdateRunnerClaimed(ctx, job, requestID, now, updateRunnerClaimSpec{
+		claimedStep:  updateStepDeployMcpClaimed,
+		staleCode:    "mcp_deploy_start_claim_stale",
+		staleMessage: "MCP wiring deploy runner start claim expired before a run ID was recorded; refusing to launch a duplicate MCP wiring deploy runner automatically",
+	})
 }
 
 func (s *Server) advanceUpdateDeployMcpWait(ctx context.Context, job *models.UpdateJob, requestID string, now time.Time) (time.Duration, bool, error) {

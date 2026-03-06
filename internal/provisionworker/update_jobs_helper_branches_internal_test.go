@@ -11,6 +11,7 @@ import (
 	cbtypes "github.com/aws/aws-sdk-go-v2/service/codebuild/types"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
 
 	"github.com/equaltoai/lesser-host/internal/config"
@@ -269,6 +270,28 @@ func TestAdvanceUpdateBodyDeployStart_Branches(t *testing.T) {
 		require.Equal(t, "lesser-body deploy runner already started", job.Note)
 	})
 
+	t.Run("another worker claim retries without starting codebuild", func(t *testing.T) {
+		db := ttmocks.NewMockExtendedDBStrict()
+		db.On("WithContext", mock.Anything).Return(db).Maybe()
+		st := store.New(db)
+		db.On("TransactWrite", mock.Anything, mock.Anything).Return(theoryErrors.ErrConditionFailed).Once()
+		mockBranchInstanceLookup(t, db, managedUpdateRunnerInstance(), nil)
+		cb := &fakeCodebuild{}
+		srv := &Server{
+			cfg:   config.Config{ManagedProvisionRunnerProjectName: "project", Stage: "lab"},
+			store: st,
+			cb:    cb,
+		}
+		job := managedUpdateRunnerJob(updateStepBodyDeployStart)
+
+		delay, done, err := srv.advanceUpdateBodyDeployStart(context.Background(), job, "req", now)
+		require.NoError(t, err)
+		require.False(t, done)
+		require.Equal(t, provisionDefaultShortRetryDelay, delay)
+		require.Equal(t, updateStepBodyDeployStart, job.Step)
+		require.Empty(t, cb.startInputs)
+	})
+
 	t.Run("instance load error retries", func(t *testing.T) {
 		st, db := newBranchTestStore()
 		mockBranchInstanceLookup(t, db, nil, errors.New("boom"))
@@ -295,6 +318,42 @@ func TestAdvanceUpdateBodyDeployStart_Branches(t *testing.T) {
 			"failed to start lesser-body deploy runner; retrying",
 			"body_deploy_start_failed",
 		)
+	})
+}
+
+func TestAdvanceUpdateRunnerClaimed_Branches(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(650, 0).UTC()
+
+	t.Run("recent claim backs off without mutating the job", func(t *testing.T) {
+		st, _ := newBranchTestStore()
+		srv := &Server{store: st}
+		job := managedUpdateRunnerJob(updateStepDeployClaimed)
+		job.UpdatedAt = now.Add(-time.Minute)
+
+		delay, done, err := srv.advanceUpdateDeployClaimed(context.Background(), job, "req", now)
+		require.NoError(t, err)
+		require.False(t, done)
+		require.Equal(t, provisionDefaultShortRetryDelay, delay)
+		require.Equal(t, models.UpdateJobStatusRunning, job.Status)
+		require.Equal(t, updateStepDeployClaimed, job.Step)
+	})
+
+	t.Run("stale claim fails loudly instead of relaunching", func(t *testing.T) {
+		st, _ := newBranchTestStore()
+		srv := &Server{store: st}
+		job := managedUpdateRunnerJob(updateStepDeployClaimed)
+		job.UpdatedAt = now.Add(-(updateRunnerStartClaimMaxAge + time.Second))
+
+		delay, done, err := srv.advanceUpdateDeployClaimed(context.Background(), job, "req", now)
+		require.NoError(t, err)
+		require.False(t, done)
+		require.Zero(t, delay)
+		require.Equal(t, models.UpdateJobStatusError, job.Status)
+		require.Equal(t, updateStepFailed, job.Step)
+		require.Equal(t, "deploy_start_claim_stale", job.ErrorCode)
+		require.Contains(t, job.ErrorMessage, "refusing to launch a duplicate deploy runner")
 	})
 }
 
