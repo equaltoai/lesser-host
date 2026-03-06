@@ -17,7 +17,7 @@ Modal component - Accessible dialog with focus management, backdrop handling, an
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 	import { tick } from 'svelte';
-	import { useStableId } from '@equaltoai/greater-components-utils';
+	import { useStableId } from 'src/lib/greater/utils';
 
 	/**
 	 * Modal component props interface.

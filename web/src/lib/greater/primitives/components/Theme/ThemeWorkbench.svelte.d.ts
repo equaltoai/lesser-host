@@ -1,4 +1,4 @@
-import { type ThemeTokens } from '@equaltoai/greater-components-utils';
+import { type ThemeTokens } from 'src/lib/greater/utils';
 interface Props {
 	initialColor?: string;
 	onSave?: (theme: ThemeTokens) => void;

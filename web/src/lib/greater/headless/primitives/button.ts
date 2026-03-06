@@ -7,7 +7,7 @@
  * @example
  * ```svelte
  * <script>
- *   import { createButton } from '@equaltoai/greater-components-headless/button';
+ *   import { createButton } from 'src/lib/greater/headless/button';
  *
  *   const button = createButton({
  *     onClick: () => console.log('clicked'),

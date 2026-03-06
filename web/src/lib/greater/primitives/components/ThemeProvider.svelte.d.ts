@@ -1,6 +1,6 @@
 import type { Snippet } from 'svelte';
 import { type ColorScheme } from '../stores/preferences';
-import type { PalettePreset, FontPreset } from '@equaltoai/greater-components-tokens';
+import type { PalettePreset, FontPreset } from 'src/lib/greater/tokens';
 interface Props {
 	/** Color scheme: 'light', 'dark', 'high-contrast', or 'auto' */
 	theme?: ColorScheme;

@@ -8,7 +8,7 @@ CodeBlock component - Syntax highlighting code block with copy button.
 ```
 -->
 <script lang="ts">
-	import { CopyButton } from '@equaltoai/greater-components-primitives';
+	import { CopyButton } from 'src/lib/greater/primitives';
 	import type { Highlighter } from 'shiki';
 	import type { HTMLAttributes } from 'svelte/elements';
 

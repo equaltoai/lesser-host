@@ -1,4 +1,4 @@
-import { type CopyResult } from '@equaltoai/greater-components-utils';
+import { type CopyResult } from 'src/lib/greater/utils';
 interface Props {
 	/**
 	 * The text to copy to the clipboard.

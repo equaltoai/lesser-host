@@ -10,7 +10,7 @@
 		generateTheme,
 		type ThemeTokens,
 		type ColorHarmony,
-	} from '@equaltoai/greater-components-utils';
+	} from 'src/lib/greater/utils';
 	import Button from '../Button.svelte';
 	import Card from '../Card.svelte';
 	import SettingsSection from '../Settings/SettingsSection.svelte';

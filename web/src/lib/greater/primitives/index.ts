@@ -23,7 +23,7 @@ export type {
 	ColorScale,
 	ColorShade,
 	FontPreset,
-} from '@equaltoai/greater-components-tokens';
+} from 'src/lib/greater/tokens';
 
 // Preset types for strict-CSP-safe APIs
 export type { WidthPreset, HeightPreset } from './components/Skeleton.svelte';

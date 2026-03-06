@@ -52,7 +52,8 @@
     "remark-rehype": "^11.1.2",
     "shiki": "^3.22.0",
     "tabbable": "^6.4.0",
-    "unified": "^11.0.5"
+    "unified": "^11.0.5",
+    "viem": "^2.47.0"
   },
   "overrides": {
     "@typescript-eslint/typescript-estree": {
