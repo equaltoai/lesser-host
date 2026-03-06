@@ -49,30 +49,9 @@ type soulProvisionEmailConfirmResponse struct {
 }
 
 func (s *Server) handleSoulBeginProvisionEmailChannel(ctx *apptheory.Context) (*apptheory.Response, error) {
-	if appErr := s.requireSoulRegistryConfigured(); appErr != nil {
-		return nil, appErr
-	}
-	if appErr := s.requireSoulPortalPrereqs(ctx); appErr != nil {
-		return nil, appErr
-	}
-	if appErr := requireStoreDB(s); appErr != nil {
-		return nil, appErr
-	}
-	if s == nil || s.soulPacks == nil || strings.TrimSpace(s.cfg.SoulPackBucketName) == "" {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "soul registry bucket is not configured"}
-	}
-
-	agentIDHex, _, appErr := parseSoulAgentIDHex(ctx.Param("agentId"))
+	agentIDHex, identity, appErr := s.requireSoulProvisionIdentity(ctx)
 	if appErr != nil {
 		return nil, appErr
-	}
-
-	identity, appErr := s.requireActiveSoulAgentWithDomainAccess(ctx, agentIDHex)
-	if appErr != nil {
-		return nil, appErr
-	}
-	if identity.SelfDescriptionVersion <= 0 {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "registration is not yet published; update registration first"}
 	}
 
 	var req soulProvisionEmailBeginRequest
@@ -82,17 +61,10 @@ func (s *Server) handleSoulBeginProvisionEmailChannel(ctx *apptheory.Context) (*
 		}
 	}
 
-	localPart := strings.TrimSpace(req.LocalPart)
-	if localPart == "" {
-		localPart = strings.TrimSpace(identity.LocalID)
+	localNorm, address, ensName, appErr := resolveSoulProvisionEmailAddress(identity, req.LocalPart)
+	if appErr != nil {
+		return nil, appErr
 	}
-	localNorm, err := soul.NormalizeLocalAgentID(localPart)
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "localPart is invalid"}
-	}
-
-	ensName := strings.TrimSpace(identity.LocalID) + ".lessersoul.eth"
-	address := localNorm + "@lessersoul.ai"
 
 	// Load the current registration as the base document (v2 or v3).
 	baseReg, baseVersion, appErr := s.loadSoulAgentRegistrationMap(ctx.Context(), agentIDHex, identity)
@@ -131,88 +103,32 @@ func (s *Server) handleSoulBeginProvisionEmailChannel(ctx *apptheory.Context) (*
 }
 
 func (s *Server) handleSoulProvisionEmailChannel(ctx *apptheory.Context) (*apptheory.Response, error) {
-	if appErr := s.requireSoulRegistryConfigured(); appErr != nil {
-		return nil, appErr
-	}
-	if appErr := s.requireSoulPortalPrereqs(ctx); appErr != nil {
-		return nil, appErr
-	}
-	if appErr := requireStoreDB(s); appErr != nil {
-		return nil, appErr
-	}
-	if s == nil || s.soulPacks == nil || strings.TrimSpace(s.cfg.SoulPackBucketName) == "" {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "soul registry bucket is not configured"}
-	}
-
-	agentIDHex, _, appErr := parseSoulAgentIDHex(ctx.Param("agentId"))
+	agentIDHex, identity, appErr := s.requireSoulProvisionIdentity(ctx)
 	if appErr != nil {
 		return nil, appErr
-	}
-
-	identity, appErr := s.requireActiveSoulAgentWithDomainAccess(ctx, agentIDHex)
-	if appErr != nil {
-		return nil, appErr
-	}
-	if identity.SelfDescriptionVersion <= 0 {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "registration is not yet published; update registration first"}
 	}
 
 	var req soulProvisionEmailConfirmRequest
 	if err := httpx.ParseJSON(ctx, &req); err != nil {
 		return nil, err
 	}
-
-	if req.ExpectedVersion == nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "expected_version is required"}
-	}
-	expectedVersion := *req.ExpectedVersion
-	if expectedVersion < 0 {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "expected_version is invalid"}
-	}
-
-	issuedAtRaw := strings.TrimSpace(req.IssuedAt)
-	if issuedAtRaw == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "issued_at is required"}
-	}
-	issuedAt, err := time.Parse(time.RFC3339Nano, issuedAtRaw)
-	if err != nil {
-		issuedAt, err = time.Parse(time.RFC3339, issuedAtRaw)
-	}
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "issued_at must be an RFC3339 timestamp"}
-	}
-
-	selfSig := strings.TrimSpace(req.SelfAttestation)
-	if selfSig == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "self_attestation is required"}
+	expectedVersion, issuedAt, selfSig, appErr := parseSoulProvisionConfirm(req.ExpectedVersion, req.IssuedAt, req.SelfAttestation)
+	if appErr != nil {
+		return nil, appErr
 	}
 
 	// Retry-friendly: if the agent has already advanced and the email channel exists, treat as idempotent success.
-	if expectedVersion < identity.SelfDescriptionVersion {
-		if ch, err := getSoulAgentItemBySK[models.SoulAgentChannel](s, ctx.Context(), agentIDHex, "CHANNEL#email"); err == nil && ch != nil && strings.TrimSpace(ch.Identifier) != "" {
-			return apptheory.JSON(http.StatusOK, soulProvisionEmailConfirmResponse{
-				Version:             "1",
-				Address:             strings.TrimSpace(ch.Identifier),
-				RegistrationVersion: identity.SelfDescriptionVersion,
-			})
-		}
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "version conflict; reload and try again"}
+	if resp, ok, err := s.maybeRespondWithExistingEmailProvision(ctx, agentIDHex, identity.SelfDescriptionVersion, expectedVersion); ok || err != nil {
+		return resp, err
 	}
 	if expectedVersion != identity.SelfDescriptionVersion {
 		return nil, &apptheory.AppError{Code: "app.conflict", Message: "version conflict; reload and try again"}
 	}
 
-	localPart := strings.TrimSpace(req.LocalPart)
-	if localPart == "" {
-		localPart = strings.TrimSpace(identity.LocalID)
+	localNorm, address, ensName, appErr := resolveSoulProvisionEmailAddress(identity, req.LocalPart)
+	if appErr != nil {
+		return nil, appErr
 	}
-	localNorm, err := soul.NormalizeLocalAgentID(localPart)
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "localPart is invalid"}
-	}
-
-	ensName := strings.TrimSpace(identity.LocalID) + ".lessersoul.eth"
-	address := localNorm + "@lessersoul.ai"
 
 	// Load the current registration as the base document (v2 or v3).
 	baseReg, baseVersion, appErr := s.loadSoulAgentRegistrationMap(ctx.Context(), agentIDHex, identity)
@@ -235,18 +151,62 @@ func (s *Server) handleSoulProvisionEmailChannel(ctx *apptheory.Context) (*appth
 		return nil, appErr
 	}
 
-	if err := verifyEthereumSignatureBytes(identity.Wallet, digest, selfSig); err != nil {
+	if verifyErr := verifyEthereumSignatureBytes(identity.Wallet, digest, selfSig); verifyErr != nil {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid registration signature"}
 	}
+	return s.finalizeSoulProvisionEmailChannel(ctx, agentIDHex, identity, expectedVersion, localNorm, address, regMap, regV3, selfSig)
+}
 
-	// Capability indexing inputs.
+func parseSoulProvisionConfirm(expectedVersion *int, issuedAtRaw string, selfAttestation string) (int, time.Time, string, *apptheory.AppError) {
+	if expectedVersion == nil {
+		return 0, time.Time{}, "", &apptheory.AppError{Code: "app.bad_request", Message: "expected_version is required"}
+	}
+	if *expectedVersion < 0 {
+		return 0, time.Time{}, "", &apptheory.AppError{Code: "app.bad_request", Message: "expected_version is invalid"}
+	}
+	issuedAt, issuedAtErr := parseSoulProvisionIssuedAt(issuedAtRaw)
+	if issuedAtErr != nil {
+		return 0, time.Time{}, "", issuedAtErr
+	}
+	selfSig := strings.TrimSpace(selfAttestation)
+	if selfSig == "" {
+		return 0, time.Time{}, "", &apptheory.AppError{Code: "app.bad_request", Message: "self_attestation is required"}
+	}
+	return *expectedVersion, issuedAt, selfSig, nil
+}
+
+func (s *Server) maybeRespondWithExistingEmailProvision(ctx *apptheory.Context, agentIDHex string, currentVersion int, expectedVersion int) (*apptheory.Response, bool, error) {
+	if expectedVersion >= currentVersion {
+		return nil, false, nil
+	}
+	if identifier := lookupProvisionedChannelIdentifier(ctx.Context(), s, agentIDHex, "CHANNEL#email"); identifier != "" {
+		resp, err := apptheory.JSON(http.StatusOK, soulProvisionEmailConfirmResponse{
+			Version:             "1",
+			Address:             identifier,
+			RegistrationVersion: currentVersion,
+		})
+		return resp, true, err
+	}
+	return nil, true, &apptheory.AppError{Code: "app.conflict", Message: "version conflict; reload and try again"}
+}
+
+func (s *Server) finalizeSoulProvisionEmailChannel(
+	ctx *apptheory.Context,
+	agentIDHex string,
+	identity *models.SoulAgentIdentity,
+	expectedVersion int,
+	localNorm string,
+	address string,
+	regMap map[string]any,
+	regV3 *soul.RegistrationFileV3,
+	selfSig string,
+) (*apptheory.Response, error) {
 	caps := extractCapabilityNames(regMap)
 	capsNorm, appErr := normalizeSoulCapabilitiesStrict(s.cfg.SoulSupportedCapabilities, caps)
 	if appErr != nil {
 		return nil, appErr
 	}
 
-	// Provision the Migadu mailbox (idempotent) and store the mailbox password in SSM.
 	passParamName := s.soulAgentEmailPasswordSSMParam(agentIDHex)
 	password, passErr := s.ensureSoulAgentEmailPassword(ctx.Context(), passParamName)
 	if passErr != nil {
@@ -255,32 +215,47 @@ func (s *Server) handleSoulProvisionEmailChannel(ctx *apptheory.Context) (*appth
 	if s.migaduCreateEmail == nil {
 		return nil, &apptheory.AppError{Code: "app.conflict", Message: "email provider is not configured"}
 	}
-	if err := s.migaduCreateEmail(ctx.Context(), localNorm, identity.LocalID, password); err != nil {
+	if provisionErr := s.migaduCreateEmail(ctx.Context(), localNorm, identity.LocalID, password); provisionErr != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to provision email"}
 	}
 
-	regBytes, err := json.Marshal(regMap)
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid registration JSON"}
+	regBytes, regSHA256, claimLevels, changeSummary, appErr := buildProvisionRegistrationPayload(regMap)
+	if appErr != nil {
+		return nil, appErr
 	}
-	regSHA256 := func() string {
-		sum := sha256.Sum256(regBytes)
-		return hex.EncodeToString(sum[:])
-	}()
-
-	claimLevels := extractCapabilityClaimLevels(regMap)
 	now := time.Now().UTC()
-	changeSummary := extractStringField(regMap, "changeSummary")
-
 	publishedVersion, pubErr := s.publishSoulAgentRegistrationV3(ctx.Context(), agentIDHex, identity, regV3, regBytes, regSHA256, selfSig, changeSummary, capsNorm, claimLevels, &expectedVersion, now)
 	if pubErr != nil {
 		return nil, pubErr
 	}
 
-	// Best-effort: keep v3 channel/preferences state in sync.
 	_ = s.syncSoulV3StateFromRegistration(ctx.Context(), agentIDHex, identity, regV3, now)
+	if appErr := upsertProvisionedEmailChannel(ctx.Context(), s, agentIDHex, address, passParamName, now); appErr != nil {
+		return nil, appErr
+	}
 
-	// Record host-managed mailbox metadata on the channel record.
+	s.tryWriteAuditLog(ctx, &models.AuditLogEntry{
+		Action:    "soul.channel.email.provision",
+		Target:    fmt.Sprintf("soul_agent:%s:channel:email", agentIDHex),
+		CreatedAt: now,
+	})
+	return apptheory.JSON(http.StatusCreated, soulProvisionEmailConfirmResponse{
+		Version:             "1",
+		Address:             address,
+		RegistrationVersion: publishedVersion,
+	})
+}
+
+func buildProvisionRegistrationPayload(regMap map[string]any) ([]byte, string, map[string]string, string, *apptheory.AppError) {
+	regBytes, err := json.Marshal(regMap)
+	if err != nil {
+		return nil, "", nil, "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid registration JSON"}
+	}
+	sum := sha256.Sum256(regBytes)
+	return regBytes, hex.EncodeToString(sum[:]), extractCapabilityClaimLevels(regMap), extractStringField(regMap, "changeSummary"), nil
+}
+
+func upsertProvisionedEmailChannel(ctx context.Context, s *Server, agentIDHex string, address string, passParamName string, now time.Time) *apptheory.AppError {
 	channel := &models.SoulAgentChannel{
 		AgentID:       agentIDHex,
 		ChannelType:   models.SoulChannelTypeEmail,
@@ -296,21 +271,10 @@ func (s *Server) handleSoulProvisionEmailChannel(ctx *apptheory.Context) (*appth
 		UpdatedAt:     now,
 	}
 	_ = channel.UpdateKeys()
-	if err := s.store.DB.WithContext(ctx.Context()).Model(channel).CreateOrUpdate(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to record email channel"}
+	if createErr := s.store.DB.WithContext(ctx).Model(channel).CreateOrUpdate(); createErr != nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "failed to record email channel"}
 	}
-
-	s.tryWriteAuditLog(ctx, &models.AuditLogEntry{
-		Action:    "soul.channel.email.provision",
-		Target:    fmt.Sprintf("soul_agent:%s:channel:email", agentIDHex),
-		CreatedAt: now,
-	})
-
-	return apptheory.JSON(http.StatusCreated, soulProvisionEmailConfirmResponse{
-		Version:             "1",
-		Address:             address,
-		RegistrationVersion: publishedVersion,
-	})
+	return nil
 }
 
 type soulProvisionEmailBuildInput struct {
@@ -324,64 +288,20 @@ type soulProvisionEmailBuildInput struct {
 }
 
 func (s *Server) buildSoulProvisionEmailRegistration(ctx context.Context, base map[string]any, baseVersion string, agentIDHex string, identity *models.SoulAgentIdentity, input soulProvisionEmailBuildInput) (reg map[string]any, regV3 *soul.RegistrationFileV3, digest []byte, appErr *apptheory.AppError) {
+	_ = ctx
 	if s == nil || identity == nil {
 		return nil, nil, nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
-	if base == nil {
-		return nil, nil, nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	reg, appErr = prepareSoulProvisionRegistrationBase(s, base, baseVersion, agentIDHex, input.ExpectedPrev, input.NextVersion)
+	if appErr != nil {
+		return nil, nil, nil, appErr
 	}
-	baseVersion = strings.TrimSpace(baseVersion)
-	if baseVersion != "2" && baseVersion != "3" {
-		return nil, nil, nil, &apptheory.AppError{Code: "app.conflict", Message: "registration version is unsupported; update registration first"}
-	}
-	if input.ExpectedPrev < 0 || input.NextVersion <= 0 || input.NextVersion != input.ExpectedPrev+1 {
-		return nil, nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid expected_version"}
-	}
-
-	// Shallow copy base map so we can mutate fields for the new version.
-	reg = make(map[string]any, len(base))
-	for k, v := range base {
-		reg[k] = v
-	}
-
-	// Upgrade to v3 and set version chain.
-	reg["version"] = "3"
-	if input.NextVersion <= 1 {
-		delete(reg, "previousVersionUri")
-	} else {
-		prevKey := soulRegistrationVersionedS3Key(agentIDHex, input.NextVersion-1)
-		reg["previousVersionUri"] = fmt.Sprintf("s3://%s/%s", strings.TrimSpace(s.cfg.SoulPackBucketName), prevKey)
-	}
-
 	issuedAt := input.IssuedAt.UTC().Format(time.RFC3339Nano)
 	reg["updated"] = issuedAt
 	reg["changeSummary"] = "Provision email channel"
-
-	// Ensure attestations object exists and set selfAttestation signature (confirm only).
-	attAny, ok := reg["attestations"]
-	att, ok2 := attAny.(map[string]any)
-	if !ok || !ok2 || att == nil {
-		att = map[string]any{}
-	}
-	selfSig := strings.TrimSpace(input.SelfAttestationHex)
-	if selfSig == "" {
-		selfSig = "0x00" // placeholder; digest excludes selfAttestation
-	}
-	att["selfAttestation"] = selfSig
-	reg["attestations"] = att
-
-	// Upsert channels object.
-	chAny, _ := reg["channels"].(map[string]any)
-	ch := map[string]any{}
-	for k, v := range chAny {
-		ch[k] = v
-	}
-	if _, ok := ch["ens"]; !ok && strings.TrimSpace(input.ENSName) != "" {
-		ch["ens"] = map[string]any{
-			"name":  strings.TrimSpace(input.ENSName),
-			"chain": "mainnet",
-		}
-	}
+	setProvisionSelfAttestation(reg, input.SelfAttestationHex)
+	ch := cloneProvisionChannels(reg)
+	ensureProvisionENSChannel(ch, input.ENSName)
 	ch["email"] = map[string]any{
 		"address":      strings.TrimSpace(input.EmailAddress),
 		"capabilities": []any{"receive", "send"},
@@ -395,20 +315,150 @@ func (s *Server) buildSoulProvisionEmailRegistration(ctx context.Context, base m
 	if appErr != nil {
 		return nil, nil, nil, appErr
 	}
+	regV3, appErr = parseSoulProvisionRegistrationV3(reg)
+	if appErr != nil {
+		return nil, nil, nil, appErr
+	}
+	return reg, regV3, digest, nil
+}
 
+func prepareSoulProvisionRegistrationBase(s *Server, base map[string]any, baseVersion string, agentIDHex string, expectedPrev int, nextVersion int) (map[string]any, *apptheory.AppError) {
+	if base == nil || s == nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	baseVersion = strings.TrimSpace(baseVersion)
+	if baseVersion != "2" && baseVersion != "3" {
+		return nil, &apptheory.AppError{Code: "app.conflict", Message: "registration version is unsupported; update registration first"}
+	}
+	if expectedPrev < 0 || nextVersion <= 0 || nextVersion != expectedPrev+1 {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid expected_version"}
+	}
+
+	reg := make(map[string]any, len(base))
+	for k, v := range base {
+		reg[k] = v
+	}
+	reg["version"] = "3"
+	if nextVersion <= 1 {
+		delete(reg, "previousVersionUri")
+		return reg, nil
+	}
+	prevKey := soulRegistrationVersionedS3Key(agentIDHex, nextVersion-1)
+	reg["previousVersionUri"] = fmt.Sprintf("s3://%s/%s", strings.TrimSpace(s.cfg.SoulPackBucketName), prevKey)
+	return reg, nil
+}
+
+func setProvisionSelfAttestation(reg map[string]any, selfAttestationHex string) {
+	attAny, _ := reg["attestations"].(map[string]any)
+	att := map[string]any{}
+	for k, v := range attAny {
+		att[k] = v
+	}
+	selfSig := strings.TrimSpace(selfAttestationHex)
+	if selfSig == "" {
+		selfSig = "0x00"
+	}
+	att["selfAttestation"] = selfSig
+	reg["attestations"] = att
+}
+
+func cloneProvisionChannels(reg map[string]any) map[string]any {
+	src, _ := reg["channels"].(map[string]any)
+	out := map[string]any{}
+	for k, v := range src {
+		out[k] = v
+	}
+	return out
+}
+
+func ensureProvisionENSChannel(channels map[string]any, ensName string) {
+	if _, ok := channels["ens"]; ok || strings.TrimSpace(ensName) == "" {
+		return
+	}
+	channels["ens"] = map[string]any{
+		"name":  strings.TrimSpace(ensName),
+		"chain": "mainnet",
+	}
+}
+
+func parseSoulProvisionRegistrationV3(reg map[string]any) (*soul.RegistrationFileV3, *apptheory.AppError) {
 	regBytes, err := json.Marshal(reg)
 	if err != nil {
-		return nil, nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid registration JSON"}
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid registration JSON"}
 	}
 	parsed, err := soul.ParseRegistrationFileV3(regBytes)
 	if err != nil {
-		return nil, nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid v3 registration schema"}
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid v3 registration schema"}
 	}
 	if err := parsed.Validate(); err != nil {
-		return nil, nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
+	}
+	return parsed, nil
+}
+
+func parseSoulProvisionIssuedAt(raw string) (time.Time, *apptheory.AppError) {
+	issuedAtRaw := strings.TrimSpace(raw)
+	if issuedAtRaw == "" {
+		return time.Time{}, &apptheory.AppError{Code: "app.bad_request", Message: "issued_at is required"}
+	}
+	issuedAt, err := time.Parse(time.RFC3339Nano, issuedAtRaw)
+	if err == nil {
+		return issuedAt, nil
+	}
+	issuedAt, err = time.Parse(time.RFC3339, issuedAtRaw)
+	if err != nil {
+		return time.Time{}, &apptheory.AppError{Code: "app.bad_request", Message: "issued_at must be an RFC3339 timestamp"}
+	}
+	return issuedAt, nil
+}
+
+func lookupProvisionedChannelIdentifier(ctx context.Context, s *Server, agentIDHex string, channelKey string) string {
+	channel, channelErr := getSoulAgentItemBySK[models.SoulAgentChannel](s, ctx, agentIDHex, channelKey)
+	if channelErr != nil || channel == nil {
+		return ""
+	}
+	return strings.TrimSpace(channel.Identifier)
+}
+
+func (s *Server) requireSoulProvisionIdentity(ctx *apptheory.Context) (string, *models.SoulAgentIdentity, *apptheory.AppError) {
+	if appErr := s.requireSoulRegistryConfigured(); appErr != nil {
+		return "", nil, appErr
+	}
+	if appErr := s.requireSoulPortalPrereqs(ctx); appErr != nil {
+		return "", nil, appErr
+	}
+	if appErr := requireStoreDB(s); appErr != nil {
+		return "", nil, appErr
+	}
+	if s == nil || s.soulPacks == nil || strings.TrimSpace(s.cfg.SoulPackBucketName) == "" {
+		return "", nil, &apptheory.AppError{Code: "app.conflict", Message: "soul registry bucket is not configured"}
 	}
 
-	return reg, parsed, digest, nil
+	agentIDHex, _, appErr := parseSoulAgentIDHex(ctx.Param("agentId"))
+	if appErr != nil {
+		return "", nil, appErr
+	}
+	identity, appErr := s.requireActiveSoulAgentWithDomainAccess(ctx, agentIDHex)
+	if appErr != nil {
+		return "", nil, appErr
+	}
+	if identity.SelfDescriptionVersion <= 0 {
+		return "", nil, &apptheory.AppError{Code: "app.conflict", Message: "registration is not yet published; update registration first"}
+	}
+	return agentIDHex, identity, nil
+}
+
+func resolveSoulProvisionEmailAddress(identity *models.SoulAgentIdentity, requestedLocalPart string) (string, string, string, *apptheory.AppError) {
+	localPart := strings.TrimSpace(requestedLocalPart)
+	if localPart == "" {
+		localPart = strings.TrimSpace(identity.LocalID)
+	}
+	localNorm, err := soul.NormalizeLocalAgentID(localPart)
+	if err != nil {
+		return "", "", "", &apptheory.AppError{Code: "app.bad_request", Message: "localPart is invalid"}
+	}
+	ensName := strings.TrimSpace(identity.LocalID) + ".lessersoul.eth"
+	return localNorm, localNorm + "@lessersoul.ai", ensName, nil
 }
 
 func (s *Server) soulAgentEmailPasswordSSMParam(agentIDHex string) string {

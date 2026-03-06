@@ -49,7 +49,8 @@ func (s *Server) handleSoulPublicGetTransparency(ctx *apptheory.Context) (*appth
 	}
 
 	var reg map[string]any
-	if err := json.Unmarshal(body, &reg); err != nil {
+	unmarshalErr := json.Unmarshal(body, &reg)
+	if unmarshalErr != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to parse registration"}
 	}
 

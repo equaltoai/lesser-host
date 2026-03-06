@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -199,52 +200,17 @@ func (s *Server) handlePortalCreateInstanceUpdateJob(ctx *apptheory.Context) (*a
 	if job, ok := s.getExistingUpdateJobAndNudge(ctx, inst); ok {
 		return apptheory.JSON(http.StatusOK, updateJobResponseFromModel(job))
 	}
-
-	if strings.TrimSpace(inst.HostedAccountID) == "" ||
-		strings.TrimSpace(inst.HostedRegion) == "" ||
-		strings.TrimSpace(inst.HostedBaseDomain) == "" {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "instance is not a managed provisioned instance"}
+	if appErr := requireManagedUpdateInstance(inst); appErr != nil {
+		return nil, appErr
 	}
 
 	req, err := parseCreateUpdateJobRequest(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	lesserVersion := strings.TrimSpace(req.LesserVersion)
-	if lesserVersion == "" {
-		lesserVersion = strings.TrimSpace(inst.LesserVersion)
-	}
-	if lesserVersion == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "lesser_version is required"}
-	}
-
-	if strings.EqualFold(lesserVersion, "latest") {
-		tag, err := resolveLatestGitHubReleaseTag(ctx.Context(), s.cfg.ManagedLesserGitHubOwner, s.cfg.ManagedLesserGitHubRepo)
-		if err != nil {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to resolve latest Lesser release"}
-		}
-		lesserVersion = tag
-	}
-
-	lesserBodyVersion := strings.TrimSpace(req.LesserBodyVersion)
-	if strings.EqualFold(lesserBodyVersion, "latest") {
-		tag, err := resolveLatestGitHubReleaseTag(ctx.Context(), s.cfg.ManagedLesserBodyGitHubOwner, s.cfg.ManagedLesserBodyGitHubRepo)
-		if err != nil {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to resolve latest lesser-body release"}
-		}
-		lesserBodyVersion = tag
-	}
-	if lesserBodyVersion != "" && !effectiveBodyEnabled(inst.BodyEnabled) {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "lesser-body update requested but body is disabled for this instance"}
-	}
-	if lesserBodyVersion == "" && effectiveBodyEnabled(inst.BodyEnabled) {
-		lesserBodyVersion = strings.TrimSpace(s.cfg.ManagedLesserBodyDefaultVersion)
-	}
-
-	translationEnabled := true
-	if inst.TranslationEnabled != nil {
-		translationEnabled = *inst.TranslationEnabled
+	lesserVersion, lesserBodyVersion, appErr := s.resolveManagedUpdateVersions(ctx.Context(), inst, req)
+	if appErr != nil {
+		return nil, appErr
 	}
 
 	now := time.Now().UTC()
@@ -256,35 +222,7 @@ func (s *Server) handlePortalCreateInstanceUpdateJob(ctx *apptheory.Context) (*a
 	baseURL := strings.TrimSpace(s.publicBaseURL())
 	attestationsURL := strings.TrimSpace(baseURL)
 
-	job := &models.UpdateJob{
-		ID:                             id,
-		InstanceSlug:                   slug,
-		Status:                         models.UpdateJobStatusQueued,
-		Step:                           "queued",
-		AccountID:                      strings.TrimSpace(inst.HostedAccountID),
-		AccountRoleName:                strings.TrimSpace(s.cfg.ManagedInstanceRoleName),
-		Region:                         strings.TrimSpace(inst.HostedRegion),
-		BaseDomain:                     strings.TrimSpace(inst.HostedBaseDomain),
-		LesserVersion:                  strings.TrimSpace(lesserVersion),
-		LesserBodyVersion:              strings.TrimSpace(lesserBodyVersion),
-		LesserHostBaseURL:              baseURL,
-		LesserHostAttestationsURL:      attestationsURL,
-		LesserHostInstanceKeySecretARN: strings.TrimSpace(inst.LesserHostInstanceKeySecretARN),
-		TranslationEnabled:             translationEnabled,
-		TipEnabled:                     effectiveTipEnabled(inst.TipEnabled),
-		TipChainID:                     effectiveTipChainID(inst.TipChainID),
-		TipContractAddress:             strings.TrimSpace(inst.TipContractAddress),
-		AIEnabled:                      effectiveLesserAIEnabled(inst.LesserAIEnabled),
-		AIModerationEnabled:            effectiveLesserAIModerationEnabled(inst.LesserAIModerationEnabled),
-		AINsfwDetectionEnabled:         effectiveLesserAINsfwDetectionEnabled(inst.LesserAINsfwDetectionEnabled),
-		AISpamDetectionEnabled:         effectiveLesserAISpamDetectionEnabled(inst.LesserAISpamDetectionEnabled),
-		AIPiiDetectionEnabled:          effectiveLesserAIPiiDetectionEnabled(inst.LesserAIPiiDetectionEnabled),
-		AIContentDetectionEnabled:      effectiveLesserAIContentDetectionEnabled(inst.LesserAIContentDetectionEnabled),
-		RotateInstanceKey:              req.RotateInstanceKey,
-		CreatedAt:                      now,
-		ExpiresAt:                      now.Add(30 * 24 * time.Hour),
-		RequestID:                      strings.TrimSpace(ctx.RequestID),
-	}
+	job := s.buildManagedUpdateJob(ctx, inst, req, id, slug, lesserVersion, lesserBodyVersion, baseURL, attestationsURL, now)
 	_ = job.UpdateKeys()
 
 	updateInst := &models.Instance{Slug: slug}
@@ -329,23 +267,7 @@ func (s *Server) handlePortalListInstanceUpdateJobs(ctx *apptheory.Context) (*ap
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list update jobs"}
 	}
 
-	if status := strings.ToLower(strings.TrimSpace(inst.UpdateStatus)); status == models.UpdateJobStatusQueued || status == models.UpdateJobStatusRunning {
-		target := strings.TrimSpace(inst.UpdateJobID)
-		if target != "" {
-			now := time.Now().UTC()
-			for _, it := range items {
-				if it == nil {
-					continue
-				}
-				if strings.EqualFold(strings.TrimSpace(it.ID), target) {
-					if shouldNudgeAsyncJob(now, it.UpdatedAt) {
-						s.enqueueUpdateJobBestEffort(ctx, it.ID)
-					}
-					break
-				}
-			}
-		}
-	}
+	s.nudgeActiveUpdateJobIfNeeded(ctx, inst, items)
 
 	out := make([]updateJobResponse, 0, len(items))
 	for _, it := range items {
@@ -353,4 +275,127 @@ func (s *Server) handlePortalListInstanceUpdateJobs(ctx *apptheory.Context) (*ap
 	}
 
 	return apptheory.JSON(http.StatusOK, listUpdateJobsResponse{Jobs: out, Count: len(out)})
+}
+
+func requireManagedUpdateInstance(inst *models.Instance) *apptheory.AppError {
+	if inst == nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if strings.TrimSpace(inst.HostedAccountID) == "" ||
+		strings.TrimSpace(inst.HostedRegion) == "" ||
+		strings.TrimSpace(inst.HostedBaseDomain) == "" {
+		return &apptheory.AppError{Code: "app.conflict", Message: "instance is not a managed provisioned instance"}
+	}
+	return nil
+}
+
+func (s *Server) resolveManagedUpdateVersions(ctx context.Context, inst *models.Instance, req createUpdateJobRequest) (string, string, *apptheory.AppError) {
+	lesserVersion := strings.TrimSpace(req.LesserVersion)
+	if lesserVersion == "" {
+		lesserVersion = strings.TrimSpace(inst.LesserVersion)
+	}
+	if lesserVersion == "" {
+		return "", "", &apptheory.AppError{Code: "app.bad_request", Message: "lesser_version is required"}
+	}
+	lesserVersion, appErr := s.resolveManagedReleaseVersion(ctx, lesserVersion, s.cfg.ManagedLesserGitHubOwner, s.cfg.ManagedLesserGitHubRepo, "failed to resolve latest Lesser release")
+	if appErr != nil {
+		return "", "", appErr
+	}
+
+	lesserBodyVersion := strings.TrimSpace(req.LesserBodyVersion)
+	lesserBodyVersion, appErr = s.resolveManagedReleaseVersion(ctx, lesserBodyVersion, s.cfg.ManagedLesserBodyGitHubOwner, s.cfg.ManagedLesserBodyGitHubRepo, "failed to resolve latest lesser-body release")
+	if appErr != nil {
+		return "", "", appErr
+	}
+	if lesserBodyVersion != "" && !effectiveBodyEnabled(inst.BodyEnabled) {
+		return "", "", &apptheory.AppError{Code: "app.conflict", Message: "lesser-body update requested but body is disabled for this instance"}
+	}
+	if lesserBodyVersion == "" && effectiveBodyEnabled(inst.BodyEnabled) {
+		lesserBodyVersion = strings.TrimSpace(s.cfg.ManagedLesserBodyDefaultVersion)
+	}
+
+	return lesserVersion, lesserBodyVersion, nil
+}
+
+func (s *Server) resolveManagedReleaseVersion(ctx context.Context, version string, owner string, repo string, failureMessage string) (string, *apptheory.AppError) {
+	version = strings.TrimSpace(version)
+	if !strings.EqualFold(version, "latest") {
+		return version, nil
+	}
+	tag, err := resolveLatestGitHubReleaseTag(ctx, owner, repo)
+	if err != nil {
+		return "", &apptheory.AppError{Code: "app.internal", Message: failureMessage}
+	}
+	return tag, nil
+}
+
+func (s *Server) buildManagedUpdateJob(
+	ctx *apptheory.Context,
+	inst *models.Instance,
+	req createUpdateJobRequest,
+	id string,
+	slug string,
+	lesserVersion string,
+	lesserBodyVersion string,
+	baseURL string,
+	attestationsURL string,
+	now time.Time,
+) *models.UpdateJob {
+	return &models.UpdateJob{
+		ID:                             id,
+		InstanceSlug:                   slug,
+		Status:                         models.UpdateJobStatusQueued,
+		Step:                           "queued",
+		AccountID:                      strings.TrimSpace(inst.HostedAccountID),
+		AccountRoleName:                strings.TrimSpace(s.cfg.ManagedInstanceRoleName),
+		Region:                         strings.TrimSpace(inst.HostedRegion),
+		BaseDomain:                     strings.TrimSpace(inst.HostedBaseDomain),
+		LesserVersion:                  strings.TrimSpace(lesserVersion),
+		LesserBodyVersion:              strings.TrimSpace(lesserBodyVersion),
+		LesserHostBaseURL:              baseURL,
+		LesserHostAttestationsURL:      attestationsURL,
+		LesserHostInstanceKeySecretARN: strings.TrimSpace(inst.LesserHostInstanceKeySecretARN),
+		TranslationEnabled:             effectiveUpdateTranslationEnabled(inst),
+		TipEnabled:                     effectiveTipEnabled(inst.TipEnabled),
+		TipChainID:                     effectiveTipChainID(inst.TipChainID),
+		TipContractAddress:             strings.TrimSpace(inst.TipContractAddress),
+		AIEnabled:                      effectiveLesserAIEnabled(inst.LesserAIEnabled),
+		AIModerationEnabled:            effectiveLesserAIModerationEnabled(inst.LesserAIModerationEnabled),
+		AINsfwDetectionEnabled:         effectiveLesserAINsfwDetectionEnabled(inst.LesserAINsfwDetectionEnabled),
+		AISpamDetectionEnabled:         effectiveLesserAISpamDetectionEnabled(inst.LesserAISpamDetectionEnabled),
+		AIPiiDetectionEnabled:          effectiveLesserAIPiiDetectionEnabled(inst.LesserAIPiiDetectionEnabled),
+		AIContentDetectionEnabled:      effectiveLesserAIContentDetectionEnabled(inst.LesserAIContentDetectionEnabled),
+		RotateInstanceKey:              req.RotateInstanceKey,
+		CreatedAt:                      now,
+		ExpiresAt:                      now.Add(30 * 24 * time.Hour),
+		RequestID:                      strings.TrimSpace(ctx.RequestID),
+	}
+}
+
+func effectiveUpdateTranslationEnabled(inst *models.Instance) bool {
+	if inst == nil || inst.TranslationEnabled == nil {
+		return true
+	}
+	return *inst.TranslationEnabled
+}
+
+func (s *Server) nudgeActiveUpdateJobIfNeeded(ctx *apptheory.Context, inst *models.Instance, items []*models.UpdateJob) {
+	status := strings.ToLower(strings.TrimSpace(inst.UpdateStatus))
+	if status != models.UpdateJobStatusQueued && status != models.UpdateJobStatusRunning {
+		return
+	}
+	target := strings.TrimSpace(inst.UpdateJobID)
+	if target == "" {
+		return
+	}
+	now := time.Now().UTC()
+	for _, it := range items {
+		if it == nil || !strings.EqualFold(strings.TrimSpace(it.ID), target) {
+			continue
+		}
+		if shouldNudgeAsyncJob(now, it.UpdatedAt) {
+			s.enqueueUpdateJobBestEffort(ctx, it.ID)
+		}
+		return
+	}
 }

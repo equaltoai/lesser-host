@@ -88,12 +88,12 @@ func mustCompileSchema(t *testing.T, schemaPath string) *jsonschema.Schema {
 	compiler.DefaultDraft(jsonschema.Draft2020)
 	compiler.AssertFormat()
 
-	if err := compiler.AddResource(schemaPath, doc); err != nil {
-		t.Fatalf("add schema resource %s: %v", schemaPath, err)
+	if addErr := compiler.AddResource(schemaPath, doc); addErr != nil {
+		t.Fatalf("add schema resource %s: %v", schemaPath, addErr)
 	}
-	schema, err := compiler.Compile(schemaPath)
-	if err != nil {
-		t.Fatalf("compile schema %s: %v", schemaPath, err)
+	schema, compileErr := compiler.Compile(schemaPath)
+	if compileErr != nil {
+		t.Fatalf("compile schema %s: %v", schemaPath, compileErr)
 	}
 	return schema
 }

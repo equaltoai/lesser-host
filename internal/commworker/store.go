@@ -46,18 +46,9 @@ func (s *dynamoStore) LookupAgentByEmail(ctx context.Context, email string) (str
 	_ = idx.UpdateKeys()
 
 	var item models.SoulEmailAgentIndex
-	err := s.db.WithContext(ctx).
-		Model(&models.SoulEmailAgentIndex{}).
-		Where("PK", "=", idx.GetPK()).
-		Where("SK", "=", idx.GetSK()).
-		First(&item)
-	if theoryErrors.IsNotFound(err) {
-		return "", false, nil
-	}
-	if err != nil {
-		return "", false, err
-	}
-	return strings.ToLower(strings.TrimSpace(item.AgentID)), strings.TrimSpace(item.AgentID) != "", nil
+	return s.lookupAgentIndex(ctx, &models.SoulEmailAgentIndex{}, idx.GetPK(), idx.GetSK(), &item, func() string {
+		return item.AgentID
+	})
 }
 
 func (s *dynamoStore) LookupAgentByPhone(ctx context.Context, phone string) (string, bool, error) {
@@ -68,18 +59,25 @@ func (s *dynamoStore) LookupAgentByPhone(ctx context.Context, phone string) (str
 	_ = idx.UpdateKeys()
 
 	var item models.SoulPhoneAgentIndex
+	return s.lookupAgentIndex(ctx, &models.SoulPhoneAgentIndex{}, idx.GetPK(), idx.GetSK(), &item, func() string {
+		return item.AgentID
+	})
+}
+
+func (s *dynamoStore) lookupAgentIndex(ctx context.Context, model any, pk string, sk string, dest any, agentID func() string) (string, bool, error) {
 	err := s.db.WithContext(ctx).
-		Model(&models.SoulPhoneAgentIndex{}).
-		Where("PK", "=", idx.GetPK()).
-		Where("SK", "=", idx.GetSK()).
-		First(&item)
+		Model(model).
+		Where("PK", "=", pk).
+		Where("SK", "=", sk).
+		First(dest)
 	if theoryErrors.IsNotFound(err) {
 		return "", false, nil
 	}
 	if err != nil {
 		return "", false, err
 	}
-	return strings.ToLower(strings.TrimSpace(item.AgentID)), strings.TrimSpace(item.AgentID) != "", nil
+	normalized := strings.ToLower(strings.TrimSpace(agentID()))
+	return normalized, normalized != "", nil
 }
 
 func (s *dynamoStore) GetSoulAgentIdentity(ctx context.Context, agentID string) (*models.SoulAgentIdentity, bool, error) {
@@ -249,4 +247,3 @@ func (s *dynamoStore) GetInstance(ctx context.Context, slug string) (*models.Ins
 	}
 	return &item, true, nil
 }
-

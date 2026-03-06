@@ -10,6 +10,13 @@ import (
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
+const (
+	noteStartingLesserBodyDeployRunner   = "starting lesser-body deploy runner"
+	noteVerifyingDeployment              = "verifying deployment"
+	noteLesserBodyDeployRunnerInProgress = "lesser-body deploy runner in progress"
+	noteMCPDeployRunnerInProgress        = "MCP wiring deploy runner in progress"
+)
+
 func provisionStatusUpdate(jobID string, continuing bool) func(core.UpdateBuilder) error {
 	return func(ub core.UpdateBuilder) error {
 		ub.Set("ProvisionJobID", strings.TrimSpace(jobID))
@@ -101,13 +108,13 @@ func (s *Server) advanceProvisionBodyDeployStartStartRunner(ctx context.Context,
 		"body_deploy_start_failed",
 		"failed to start lesser-body deploy runner: ",
 		"failed to start lesser-body deploy runner; retrying: ",
-		"lesser-body deploy runner in progress",
+		noteLesserBodyDeployRunnerInProgress,
 	)
 }
 
 func (s *Server) advanceProvisionDeployMcpStartRewindToBody(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {
 	job.Step = provisionStepBodyDeployStart
-	job.Note = "starting lesser-body deploy runner"
+	job.Note = noteStartingLesserBodyDeployRunner
 	job.RunID = ""
 	if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
 		return 0, false, err
@@ -136,7 +143,7 @@ func (s *Server) advanceProvisionDeployMcpStartStartRunner(ctx context.Context, 
 		"mcp_deploy_start_failed",
 		"failed to start MCP wiring deploy runner: ",
 		"failed to start MCP wiring deploy runner; retrying: ",
-		"MCP wiring deploy runner in progress",
+		noteMCPDeployRunnerInProgress,
 	)
 }
 
@@ -154,7 +161,7 @@ func (s *Server) advanceProvisionDeployMcpWaitInProgress(ctx context.Context, jo
 	if !job.CreatedAt.IsZero() && now.Sub(job.CreatedAt) > provisionMaxDeployAge {
 		return 0, false, s.failJob(ctx, job, requestID, now, "mcp_deploy_timeout", "MCP wiring deploy runner timed out")
 	}
-	job.Note = "MCP wiring deploy runner in progress"
+	job.Note = noteMCPDeployRunnerInProgress
 	_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
 	return provisionDefaultPollDelay, false, nil
 }

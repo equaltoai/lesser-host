@@ -63,6 +63,7 @@ func defaultTelnyxSearchAvailablePhoneNumbers(ctx context.Context, countryCode s
 	req.Header.Set("authorization", "Bearer "+strings.TrimSpace(creds.APIKey))
 
 	client := &http.Client{Timeout: 10 * time.Second}
+	//nolint:gosec // Request target is the fixed Telnyx HTTPS API host.
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("telnyx available numbers: %w", err)
@@ -141,6 +142,7 @@ func defaultTelnyxOrderPhoneNumber(ctx context.Context, phoneNumber string) (str
 	req.Header.Set("authorization", "Bearer "+strings.TrimSpace(creds.APIKey))
 
 	client := &http.Client{Timeout: 10 * time.Second}
+	//nolint:gosec // Request target is the fixed Telnyx HTTPS API host.
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("telnyx number order: %w", err)
@@ -202,6 +204,7 @@ func defaultTelnyxLookupPhoneNumberID(ctx context.Context, phoneNumber string) (
 	req.Header.Set("authorization", "Bearer "+strings.TrimSpace(creds.APIKey))
 
 	client := &http.Client{Timeout: 10 * time.Second}
+	//nolint:gosec // Request target is the fixed Telnyx HTTPS API host.
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", false, fmt.Errorf("telnyx phone number lookup: %w", err)
@@ -248,6 +251,7 @@ func defaultTelnyxReleasePhoneNumber(ctx context.Context, phoneNumber string) er
 	req.Header.Set("authorization", "Bearer "+strings.TrimSpace(creds.APIKey))
 
 	client := &http.Client{Timeout: 10 * time.Second}
+	//nolint:gosec // Request target is the fixed Telnyx HTTPS API host.
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("telnyx phone number delete: %w", err)
@@ -311,6 +315,7 @@ func defaultTelnyxSendSMS(ctx context.Context, from string, to string, text stri
 	req.Header.Set("authorization", "Bearer "+strings.TrimSpace(creds.APIKey))
 
 	client := &http.Client{Timeout: 10 * time.Second}
+	//nolint:gosec // Request target is the fixed Telnyx HTTPS API host.
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("telnyx sms send: %w", err)

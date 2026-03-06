@@ -60,7 +60,8 @@ func (s *Server) handleSoulPublicGetCapabilities(ctx *apptheory.Context) (*appth
 	}
 
 	var reg map[string]any
-	if err := json.Unmarshal(body, &reg); err != nil {
+	unmarshalErr := json.Unmarshal(body, &reg)
+	if unmarshalErr != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to parse registration"}
 	}
 
@@ -79,7 +80,7 @@ func (s *Server) handleSoulPublicGetCapabilities(ctx *apptheory.Context) (*appth
 }
 
 // extractStructuredCapabilities extracts capabilities from a registration file,
-// promoting v1 flat strings to structured format with claimLevel "self-declared".
+// promoting v1 flat strings to structured format with the default self-declared claim level.
 func extractStructuredCapabilities(reg map[string]any) []soulCapability {
 	raw, ok := reg["capabilities"]
 	if !ok {
@@ -94,12 +95,12 @@ func extractStructuredCapabilities(reg map[string]any) []soulCapability {
 	for _, item := range arr {
 		switch v := item.(type) {
 		case string:
-			// v1: flat string → promote to structured with self-declared.
+			// v1: flat string -> promote to structured with the default claim level.
 			name := strings.TrimSpace(v)
 			if name != "" {
 				out = append(out, soulCapability{
 					Capability: name,
-					ClaimLevel: "self-declared",
+					ClaimLevel: soulClaimLevelSelfDeclared,
 				})
 			}
 		case map[string]any:
@@ -112,7 +113,7 @@ func extractStructuredCapabilities(reg map[string]any) []soulCapability {
 				cl = extractStringField(v, "claim_level")
 			}
 			if cl == "" {
-				cl = "self-declared"
+				cl = soulClaimLevelSelfDeclared
 			}
 			out = append(out, soulCapability{
 				Capability:    cap,

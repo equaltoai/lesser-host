@@ -2,9 +2,7 @@ package controlplane
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -48,30 +46,9 @@ type soulProvisionPhoneConfirmResponse struct {
 }
 
 func (s *Server) handleSoulBeginProvisionPhoneChannel(ctx *apptheory.Context) (*apptheory.Response, error) {
-	if appErr := s.requireSoulRegistryConfigured(); appErr != nil {
-		return nil, appErr
-	}
-	if appErr := s.requireSoulPortalPrereqs(ctx); appErr != nil {
-		return nil, appErr
-	}
-	if appErr := requireStoreDB(s); appErr != nil {
-		return nil, appErr
-	}
-	if s == nil || s.soulPacks == nil || strings.TrimSpace(s.cfg.SoulPackBucketName) == "" {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "soul registry bucket is not configured"}
-	}
-
-	agentIDHex, _, appErr := parseSoulAgentIDHex(ctx.Param("agentId"))
+	agentIDHex, identity, appErr := s.requireSoulProvisionIdentity(ctx)
 	if appErr != nil {
 		return nil, appErr
-	}
-
-	identity, appErr := s.requireActiveSoulAgentWithDomainAccess(ctx, agentIDHex)
-	if appErr != nil {
-		return nil, appErr
-	}
-	if identity.SelfDescriptionVersion <= 0 {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "registration is not yet published; update registration first"}
 	}
 
 	var req soulProvisionPhoneBeginRequest
@@ -104,11 +81,11 @@ func (s *Server) handleSoulBeginProvisionPhoneChannel(ctx *apptheory.Context) (*
 	nextVersion := expectedVersion + 1
 
 	regMap, _, digest, appErr := s.buildSoulProvisionPhoneRegistration(ctx.Context(), baseReg, baseVersion, agentIDHex, identity, soulProvisionPhoneBuildInput{
-		PhoneNumber:       desired,
-		ENSName:           strings.TrimSpace(identity.LocalID) + ".lessersoul.eth",
-		IssuedAt:          now,
-		ExpectedPrev:      expectedVersion,
-		NextVersion:       nextVersion,
+		PhoneNumber:        desired,
+		ENSName:            strings.TrimSpace(identity.LocalID) + ".lessersoul.eth",
+		IssuedAt:           now,
+		ExpectedPrev:       expectedVersion,
+		NextVersion:        nextVersion,
 		SelfAttestationHex: "",
 	})
 	if appErr != nil {
@@ -127,71 +104,23 @@ func (s *Server) handleSoulBeginProvisionPhoneChannel(ctx *apptheory.Context) (*
 }
 
 func (s *Server) handleSoulProvisionPhoneChannel(ctx *apptheory.Context) (*apptheory.Response, error) {
-	if appErr := s.requireSoulRegistryConfigured(); appErr != nil {
-		return nil, appErr
-	}
-	if appErr := s.requireSoulPortalPrereqs(ctx); appErr != nil {
-		return nil, appErr
-	}
-	if appErr := requireStoreDB(s); appErr != nil {
-		return nil, appErr
-	}
-	if s == nil || s.soulPacks == nil || strings.TrimSpace(s.cfg.SoulPackBucketName) == "" {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "soul registry bucket is not configured"}
-	}
-
-	agentIDHex, _, appErr := parseSoulAgentIDHex(ctx.Param("agentId"))
+	agentIDHex, identity, appErr := s.requireSoulProvisionIdentity(ctx)
 	if appErr != nil {
 		return nil, appErr
-	}
-
-	identity, appErr := s.requireActiveSoulAgentWithDomainAccess(ctx, agentIDHex)
-	if appErr != nil {
-		return nil, appErr
-	}
-	if identity.SelfDescriptionVersion <= 0 {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "registration is not yet published; update registration first"}
 	}
 
 	var req soulProvisionPhoneConfirmRequest
 	if err := httpx.ParseJSON(ctx, &req); err != nil {
 		return nil, err
 	}
-	if req.ExpectedVersion == nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "expected_version is required"}
-	}
-	expectedVersion := *req.ExpectedVersion
-	if expectedVersion < 0 {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "expected_version is invalid"}
-	}
-
-	issuedAtRaw := strings.TrimSpace(req.IssuedAt)
-	if issuedAtRaw == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "issued_at is required"}
-	}
-	issuedAt, err := time.Parse(time.RFC3339Nano, issuedAtRaw)
-	if err != nil {
-		issuedAt, err = time.Parse(time.RFC3339, issuedAtRaw)
-	}
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "issued_at must be an RFC3339 timestamp"}
-	}
-
-	selfSig := strings.TrimSpace(req.SelfAttestation)
-	if selfSig == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "self_attestation is required"}
+	expectedVersion, issuedAt, selfSig, appErr := parseSoulProvisionConfirm(req.ExpectedVersion, req.IssuedAt, req.SelfAttestation)
+	if appErr != nil {
+		return nil, appErr
 	}
 
 	// Retry-friendly: if the agent has already advanced and the phone channel exists, treat as idempotent success.
-	if expectedVersion < identity.SelfDescriptionVersion {
-		if ch, err := getSoulAgentItemBySK[models.SoulAgentChannel](s, ctx.Context(), agentIDHex, "CHANNEL#phone"); err == nil && ch != nil && strings.TrimSpace(ch.Identifier) != "" {
-			return apptheory.JSON(http.StatusOK, soulProvisionPhoneConfirmResponse{
-				Version:             "1",
-				Number:              strings.TrimSpace(ch.Identifier),
-				RegistrationVersion: identity.SelfDescriptionVersion,
-			})
-		}
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "version conflict; reload and try again"}
+	if resp, ok, err := s.maybeRespondWithExistingPhoneProvision(ctx, agentIDHex, identity.SelfDescriptionVersion, expectedVersion); ok || err != nil {
+		return resp, err
 	}
 	if expectedVersion != identity.SelfDescriptionVersion {
 		return nil, &apptheory.AppError{Code: "app.conflict", Message: "version conflict; reload and try again"}
@@ -201,96 +130,119 @@ func (s *Server) handleSoulProvisionPhoneChannel(ctx *apptheory.Context) (*appth
 	if number == "" {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "number is required"}
 	}
+	phoneAppErr := s.validateSoulProvisionPhoneNumberAvailability(ctx.Context(), agentIDHex, number)
+	if phoneAppErr != nil {
+		return nil, phoneAppErr
+	}
 
-	// Ensure the number is not already mapped to another agent.
+	regMap, regV3, appErr := s.prepareSoulProvisionPhoneChannel(ctx.Context(), agentIDHex, identity, expectedVersion, issuedAt, number, selfSig)
+	if appErr != nil {
+		return nil, appErr
+	}
+	return s.finalizeSoulProvisionPhoneChannel(ctx, agentIDHex, identity, expectedVersion, number, regMap, regV3, selfSig)
+}
+
+func (s *Server) validateSoulProvisionPhoneNumberAvailability(ctx context.Context, agentIDHex string, number string) *apptheory.AppError {
 	phoneIdx := &models.SoulPhoneAgentIndex{Phone: number}
 	_ = phoneIdx.UpdateKeys()
+
 	var existingIdx models.SoulPhoneAgentIndex
-	err = s.store.DB.WithContext(ctx.Context()).
+	lookupErr := s.store.DB.WithContext(ctx).
 		Model(&models.SoulPhoneAgentIndex{}).
 		Where("PK", "=", phoneIdx.PK).
 		Where("SK", "=", phoneIdx.SK).
 		First(&existingIdx)
-	if err == nil && strings.TrimSpace(existingIdx.AgentID) != "" && !strings.EqualFold(strings.TrimSpace(existingIdx.AgentID), agentIDHex) {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "phone number is already provisioned"}
+	if lookupErr == nil && strings.TrimSpace(existingIdx.AgentID) != "" && !strings.EqualFold(strings.TrimSpace(existingIdx.AgentID), agentIDHex) {
+		return &apptheory.AppError{Code: "app.conflict", Message: "phone number is already provisioned"}
 	}
-	if err != nil && !theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to validate phone mapping"}
+	if lookupErr != nil && !theoryErrors.IsNotFound(lookupErr) {
+		return &apptheory.AppError{Code: "app.internal", Message: "failed to validate phone mapping"}
 	}
+	return nil
+}
 
-	// Load the current registration as the base document (v2 or v3).
-	baseReg, baseVersion, appErr := s.loadSoulAgentRegistrationMap(ctx.Context(), agentIDHex, identity)
+func (s *Server) prepareSoulProvisionPhoneChannel(
+	ctx context.Context,
+	agentIDHex string,
+	identity *models.SoulAgentIdentity,
+	expectedVersion int,
+	issuedAt time.Time,
+	number string,
+	selfSig string,
+) (map[string]any, *soul.RegistrationFileV3, *apptheory.AppError) {
+	baseReg, baseVersion, appErr := s.loadSoulAgentRegistrationMap(ctx, agentIDHex, identity)
 	if appErr != nil {
-		return nil, appErr
+		return nil, nil, appErr
 	}
 
-	nextVersion := expectedVersion + 1
-
-	regMap, regV3, digest, appErr := s.buildSoulProvisionPhoneRegistration(ctx.Context(), baseReg, baseVersion, agentIDHex, identity, soulProvisionPhoneBuildInput{
-		PhoneNumber:       number,
-		ENSName:           strings.TrimSpace(identity.LocalID) + ".lessersoul.eth",
-		IssuedAt:          issuedAt.UTC(),
-		ExpectedPrev:      expectedVersion,
-		NextVersion:       nextVersion,
+	regMap, regV3, digest, appErr := s.buildSoulProvisionPhoneRegistration(ctx, baseReg, baseVersion, agentIDHex, identity, soulProvisionPhoneBuildInput{
+		PhoneNumber:        number,
+		ENSName:            strings.TrimSpace(identity.LocalID) + ".lessersoul.eth",
+		IssuedAt:           issuedAt.UTC(),
+		ExpectedPrev:       expectedVersion,
+		NextVersion:        expectedVersion + 1,
 		SelfAttestationHex: selfSig,
 	})
 	if appErr != nil {
-		return nil, appErr
+		return nil, nil, appErr
 	}
-
-	if err := verifyEthereumSignatureBytes(identity.Wallet, digest, selfSig); err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid registration signature"}
+	if verifyErr := verifyEthereumSignatureBytes(identity.Wallet, digest, selfSig); verifyErr != nil {
+		return nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid registration signature"}
 	}
+	return regMap, regV3, nil
+}
 
+func (s *Server) maybeRespondWithExistingPhoneProvision(ctx *apptheory.Context, agentIDHex string, currentVersion int, expectedVersion int) (*apptheory.Response, bool, error) {
+	if expectedVersion >= currentVersion {
+		return nil, false, nil
+	}
+	if identifier := lookupProvisionedChannelIdentifier(ctx.Context(), s, agentIDHex, "CHANNEL#phone"); identifier != "" {
+		resp, err := apptheory.JSON(http.StatusOK, soulProvisionPhoneConfirmResponse{
+			Version:             "1",
+			Number:              identifier,
+			RegistrationVersion: currentVersion,
+		})
+		return resp, true, err
+	}
+	return nil, true, &apptheory.AppError{Code: "app.conflict", Message: "version conflict; reload and try again"}
+}
+
+func (s *Server) finalizeSoulProvisionPhoneChannel(
+	ctx *apptheory.Context,
+	agentIDHex string,
+	identity *models.SoulAgentIdentity,
+	expectedVersion int,
+	number string,
+	regMap map[string]any,
+	regV3 *soul.RegistrationFileV3,
+	selfSig string,
+) (*apptheory.Response, error) {
 	if s.telnyxOrderNumber == nil {
 		return nil, &apptheory.AppError{Code: "app.conflict", Message: "phone provider is not configured"}
 	}
-	if _, err := s.telnyxOrderNumber(ctx.Context(), number); err != nil {
+	if _, orderErr := s.telnyxOrderNumber(ctx.Context(), number); orderErr != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to provision phone number"}
 	}
 
-	regBytes, err := json.Marshal(regMap)
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid registration JSON"}
-	}
-	regSHA256 := func() string {
-		sum := sha256.Sum256(regBytes)
-		return hex.EncodeToString(sum[:])
-	}()
-
-	// Capability indexing inputs.
 	caps := extractCapabilityNames(regMap)
 	capsNorm, appErr := normalizeSoulCapabilitiesStrict(s.cfg.SoulSupportedCapabilities, caps)
 	if appErr != nil {
 		return nil, appErr
 	}
-	claimLevels := extractCapabilityClaimLevels(regMap)
-	changeSummary := extractStringField(regMap, "changeSummary")
-	now := time.Now().UTC()
 
+	regBytes, regSHA256, claimLevels, changeSummary, appErr := buildProvisionRegistrationPayload(regMap)
+	if appErr != nil {
+		return nil, appErr
+	}
+	now := time.Now().UTC()
 	publishedVersion, pubErr := s.publishSoulAgentRegistrationV3(ctx.Context(), agentIDHex, identity, regV3, regBytes, regSHA256, selfSig, changeSummary, capsNorm, claimLevels, &expectedVersion, now)
 	if pubErr != nil {
 		return nil, pubErr
 	}
 
-	// Best-effort: keep v3 channel/preferences state in sync.
 	_ = s.syncSoulV3StateFromRegistration(ctx.Context(), agentIDHex, identity, regV3, now)
-
-	channel := &models.SoulAgentChannel{
-		AgentID:       agentIDHex,
-		ChannelType:   models.SoulChannelTypePhone,
-		Identifier:    number,
-		Provider:      "telnyx",
-		Verified:      true,
-		VerifiedAt:    now,
-		Status:        models.SoulChannelStatusActive,
-		ProvisionedAt: now,
-		Capabilities:  []string{"sms-receive", "sms-send", "voice-receive"},
-		UpdatedAt:     now,
-	}
-	_ = channel.UpdateKeys()
-	if err := s.store.DB.WithContext(ctx.Context()).Model(channel).CreateOrUpdate(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to record phone channel"}
+	if appErr := upsertProvisionedPhoneChannel(ctx.Context(), s, agentIDHex, number, now); appErr != nil {
+		return nil, appErr
 	}
 
 	_ = s.store.DB.WithContext(ctx.Context()).Model(&models.AuditLogEntry{
@@ -306,6 +258,26 @@ func (s *Server) handleSoulProvisionPhoneChannel(ctx *apptheory.Context) (*appth
 		Number:              number,
 		RegistrationVersion: publishedVersion,
 	})
+}
+
+func upsertProvisionedPhoneChannel(ctx context.Context, s *Server, agentIDHex string, number string, now time.Time) *apptheory.AppError {
+	channel := &models.SoulAgentChannel{
+		AgentID:       agentIDHex,
+		ChannelType:   models.SoulChannelTypePhone,
+		Identifier:    number,
+		Provider:      "telnyx",
+		Verified:      true,
+		VerifiedAt:    now,
+		Status:        models.SoulChannelStatusActive,
+		ProvisionedAt: now,
+		Capabilities:  []string{"sms-receive", "sms-send", "voice-receive"},
+		UpdatedAt:     now,
+	}
+	_ = channel.UpdateKeys()
+	if createErr := s.store.DB.WithContext(ctx).Model(channel).CreateOrUpdate(); createErr != nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "failed to record phone channel"}
+	}
+	return nil
 }
 
 func (s *Server) handleSoulDeprovisionPhoneChannel(ctx *apptheory.Context) (*apptheory.Response, error) {
@@ -367,11 +339,12 @@ func (s *Server) handleSoulDeprovisionPhoneChannel(ctx *apptheory.Context) (*app
 	res := &models.SoulAgentENSResolution{ENSName: ensName}
 	_ = res.UpdateKeys()
 	var existing models.SoulAgentENSResolution
-	if err := s.store.DB.WithContext(ctx.Context()).
+	loadResolutionErr := s.store.DB.WithContext(ctx.Context()).
 		Model(&models.SoulAgentENSResolution{}).
 		Where("PK", "=", res.PK).
 		Where("SK", "=", res.SK).
-		First(&existing); err == nil {
+		First(&existing)
+	if loadResolutionErr == nil {
 		existing.Phone = ""
 		existing.UpdatedAt = now
 		_ = existing.UpdateKeys()
@@ -390,73 +363,29 @@ func (s *Server) handleSoulDeprovisionPhoneChannel(ctx *apptheory.Context) (*app
 }
 
 type soulProvisionPhoneBuildInput struct {
-	PhoneNumber       string
-	ENSName           string
-	IssuedAt          time.Time
-	ExpectedPrev      int
-	NextVersion       int
+	PhoneNumber        string
+	ENSName            string
+	IssuedAt           time.Time
+	ExpectedPrev       int
+	NextVersion        int
 	SelfAttestationHex string
 }
 
 func (s *Server) buildSoulProvisionPhoneRegistration(ctx context.Context, base map[string]any, baseVersion string, agentIDHex string, identity *models.SoulAgentIdentity, input soulProvisionPhoneBuildInput) (reg map[string]any, regV3 *soul.RegistrationFileV3, digest []byte, appErr *apptheory.AppError) {
+	_ = ctx
 	if s == nil || identity == nil {
 		return nil, nil, nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
-	if base == nil {
-		return nil, nil, nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	reg, appErr = prepareSoulProvisionRegistrationBase(s, base, baseVersion, agentIDHex, input.ExpectedPrev, input.NextVersion)
+	if appErr != nil {
+		return nil, nil, nil, appErr
 	}
-	baseVersion = strings.TrimSpace(baseVersion)
-	if baseVersion != "2" && baseVersion != "3" {
-		return nil, nil, nil, &apptheory.AppError{Code: "app.conflict", Message: "registration version is unsupported; update registration first"}
-	}
-	if input.ExpectedPrev < 0 || input.NextVersion <= 0 || input.NextVersion != input.ExpectedPrev+1 {
-		return nil, nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid expected_version"}
-	}
-
-	// Shallow copy base map so we can mutate fields for the new version.
-	reg = make(map[string]any, len(base))
-	for k, v := range base {
-		reg[k] = v
-	}
-
-	// Upgrade to v3 and set version chain.
-	reg["version"] = "3"
-	if input.NextVersion <= 1 {
-		delete(reg, "previousVersionUri")
-	} else {
-		prevKey := soulRegistrationVersionedS3Key(agentIDHex, input.NextVersion-1)
-		reg["previousVersionUri"] = fmt.Sprintf("s3://%s/%s", strings.TrimSpace(s.cfg.SoulPackBucketName), prevKey)
-	}
-
 	issuedAt := input.IssuedAt.UTC().Format(time.RFC3339Nano)
 	reg["updated"] = issuedAt
 	reg["changeSummary"] = "Provision phone channel"
-
-	// Ensure attestations object exists and set selfAttestation signature (confirm only).
-	attAny, ok := reg["attestations"]
-	att, ok2 := attAny.(map[string]any)
-	if !ok || !ok2 || att == nil {
-		att = map[string]any{}
-	}
-	selfSig := strings.TrimSpace(input.SelfAttestationHex)
-	if selfSig == "" {
-		selfSig = "0x00" // placeholder; digest excludes selfAttestation
-	}
-	att["selfAttestation"] = selfSig
-	reg["attestations"] = att
-
-	// Upsert channels object.
-	chAny, _ := reg["channels"].(map[string]any)
-	ch := map[string]any{}
-	for k, v := range chAny {
-		ch[k] = v
-	}
-	if _, ok := ch["ens"]; !ok && strings.TrimSpace(input.ENSName) != "" {
-		ch["ens"] = map[string]any{
-			"name":  strings.TrimSpace(input.ENSName),
-			"chain": "mainnet",
-		}
-	}
+	setProvisionSelfAttestation(reg, input.SelfAttestationHex)
+	ch := cloneProvisionChannels(reg)
+	ensureProvisionENSChannel(ch, input.ENSName)
 	ch["phone"] = map[string]any{
 		"number":       strings.TrimSpace(input.PhoneNumber),
 		"provider":     "telnyx",
@@ -470,18 +399,9 @@ func (s *Server) buildSoulProvisionPhoneRegistration(ctx context.Context, base m
 	if appErr != nil {
 		return nil, nil, nil, appErr
 	}
-
-	regBytes, err := json.Marshal(reg)
-	if err != nil {
-		return nil, nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid registration JSON"}
+	regV3, appErr = parseSoulProvisionRegistrationV3(reg)
+	if appErr != nil {
+		return nil, nil, nil, appErr
 	}
-	parsed, err := soul.ParseRegistrationFileV3(regBytes)
-	if err != nil {
-		return nil, nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid v3 registration schema"}
-	}
-	if err := parsed.Validate(); err != nil {
-		return nil, nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
-	}
-
-	return reg, parsed, digest, nil
+	return reg, regV3, digest, nil
 }

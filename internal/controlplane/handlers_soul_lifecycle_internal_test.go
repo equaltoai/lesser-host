@@ -549,6 +549,12 @@ func TestHandleSoulAgentUpdateRegistration_PublishesToS3(t *testing.T) {
 		t.Fatalf("expected 200, got %d (body=%q)", resp.Status, string(resp.Body))
 	}
 
+	out := assertSoulUpdateRegistrationResponse(t, resp, agentIDHex, wallet)
+	assertSoulUpdateRegistrationPuts(t, packs, regBytes, out.S3Key, soulRegistrationVersionedS3Key(agentIDHex, out.Version))
+}
+
+func assertSoulUpdateRegistrationResponse(t *testing.T, resp *apptheory.Response, agentIDHex string, wallet string) soulUpdateRegistrationResponse {
+	t.Helper()
 	var out soulUpdateRegistrationResponse
 	if err := json.Unmarshal(resp.Body, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -556,12 +562,20 @@ func TestHandleSoulAgentUpdateRegistration_PublishesToS3(t *testing.T) {
 	if out.S3Key != soulRegistrationS3Key(agentIDHex) {
 		t.Fatalf("expected s3 key %q, got %q", soulRegistrationS3Key(agentIDHex), out.S3Key)
 	}
-	// Two puts: current path + versioned path.
+	if out.Version < 1 {
+		t.Fatalf("expected version >= 1, got %d", out.Version)
+	}
+	if out.Agent.Wallet != wallet {
+		t.Fatalf("expected wallet %q, got %q", wallet, out.Agent.Wallet)
+	}
+	return out
+}
+
+func assertSoulUpdateRegistrationPuts(t *testing.T, packs *fakeSoulPackStore, regBytes []byte, currentKey string, versionedKey string) {
+	t.Helper()
 	if len(packs.puts) < 2 {
 		t.Fatalf("expected at least 2 puts, got %d", len(packs.puts))
 	}
-	currentKey := out.S3Key
-	versionedKey := soulRegistrationVersionedS3Key(agentIDHex, out.Version)
 	foundCurrent := false
 	foundVersioned := false
 	for _, put := range packs.puts {
@@ -583,11 +597,5 @@ func TestHandleSoulAgentUpdateRegistration_PublishesToS3(t *testing.T) {
 	}
 	if !foundVersioned {
 		t.Fatalf("expected versioned registration put to %q", versionedKey)
-	}
-	if out.Version < 1 {
-		t.Fatalf("expected version >= 1, got %d", out.Version)
-	}
-	if out.Agent.Wallet != wallet {
-		t.Fatalf("expected wallet %q, got %q", wallet, out.Agent.Wallet)
 	}
 }

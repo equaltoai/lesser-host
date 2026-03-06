@@ -9,6 +9,10 @@ import (
 // QueueMessageKind* constants define comm-worker SQS message kinds.
 const (
 	QueueMessageKindInbound = "comm.inbound"
+	inboundNotificationType = "communication:inbound"
+	inboundChannelEmail     = "email"
+	inboundChannelSMS       = "sms"
+	inboundChannelVoice     = "voice"
 )
 
 // QueueMessage is the SQS payload processed by comm-worker.
@@ -62,13 +66,13 @@ func (n *InboundNotification) Validate() error {
 	if n == nil {
 		return fmt.Errorf("notification is nil")
 	}
-	if strings.TrimSpace(n.Type) != "communication:inbound" {
+	if strings.TrimSpace(n.Type) != inboundNotificationType {
 		return fmt.Errorf("invalid notification type")
 	}
 
 	channel := strings.ToLower(strings.TrimSpace(n.Channel))
 	switch channel {
-	case "email", "sms", "voice":
+	case inboundChannelEmail, inboundChannelSMS, inboundChannelVoice:
 	default:
 		return fmt.Errorf("invalid channel")
 	}
@@ -93,7 +97,7 @@ func (n *InboundNotification) Validate() error {
 		return fmt.Errorf("messageId is required")
 	}
 
-	if channel == "email" && strings.TrimSpace(n.Subject) == "" {
+	if channel == inboundChannelEmail && strings.TrimSpace(n.Subject) == "" {
 		return fmt.Errorf("subject is required for email")
 	}
 
@@ -115,4 +119,3 @@ func (p *InboundParty) Validate() error {
 	// Number shape validation is handled deeper in the pipeline (normalization + index lookups).
 	return nil
 }
-

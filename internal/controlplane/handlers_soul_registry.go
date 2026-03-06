@@ -140,9 +140,9 @@ func parseSoulRegistrationBeginCapabilities(raw []any) ([]string, *apptheory.App
 			}
 			claimLevel = strings.ToLower(strings.TrimSpace(claimLevel))
 			if claimLevel == "" {
-				claimLevel = "self-declared"
+				claimLevel = soulClaimLevelSelfDeclared
 			}
-			if claimLevel != "self-declared" {
+			if claimLevel != soulClaimLevelSelfDeclared {
 				return nil, &apptheory.AppError{Code: "app.bad_request", Message: "capability claimLevel must be self-declared at registration begin"}
 			}
 
@@ -811,36 +811,15 @@ func (s *Server) handleSoulAgentRegistrationVerify(ctx *apptheory.Context) (*app
 		return nil, verifyErr
 	}
 
-	principalAddr, appErr := s.normalizeSoulEVMAddress(ctx.Context(), principalAddrRaw, "principal_address")
+	principalAddr, principalDeclaration, principalSig, declaredAt, appErr := s.validateSoulRegistrationVerifyPrincipalInputs(
+		ctx.Context(),
+		principalAddrRaw,
+		principalDeclarationRaw,
+		principalSigRaw,
+		declaredAtRaw,
+	)
 	if appErr != nil {
 		return nil, appErr
-	}
-
-	principalDeclaration := strings.TrimSpace(principalDeclarationRaw)
-	if principalDeclaration == "" || len(principalDeclaration) < 10 {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "principal_declaration is required"}
-	}
-	if len(principalDeclaration) > 8192 {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "principal_declaration is too long"}
-	}
-
-	declaredAt := strings.TrimSpace(declaredAtRaw)
-	if declaredAt == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "declared_at is required"}
-	}
-	if _, err := time.Parse(time.RFC3339, declaredAt); err != nil {
-		if _, err2 := time.Parse(time.RFC3339Nano, declaredAt); err2 != nil {
-			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "declared_at must be an RFC3339 timestamp"}
-		}
-	}
-
-	principalSig := strings.TrimSpace(principalSigRaw)
-	if principalSig == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "principal_signature is required"}
-	}
-	principalDigest := crypto.Keccak256([]byte(principalDeclaration))
-	if err := verifyEthereumSignatureBytes(principalAddr, principalDigest, principalSig); err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid principal_signature"}
 	}
 
 	op, safeTx, _, opErr := s.createSoulMintOperation(ctx.Context(), reg, principalAddr, principalSig, principalDeclaration, declaredAt)
@@ -965,7 +944,31 @@ func (s *Server) ensureSoulPendingAgentIdentity(ctx context.Context, reg *models
 		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
-	identity := &models.SoulAgentIdentity{
+	identity := buildSoulPendingAgentIdentity(reg, metaURI, principalAddress, principalSignature, principalDeclaration, principalDeclaredAt, now)
+	_ = identity.UpdateKeys()
+
+	if err := s.store.DB.WithContext(ctx).Model(identity).IfNotExists().Create(); err != nil {
+		if !theoryErrors.IsConditionFailed(err) {
+			return &apptheory.AppError{Code: "app.internal", Message: "failed to create agent identity"}
+		}
+		if appErr := s.reconcileSoulPendingIdentity(ctx, reg.AgentID, principalAddress, principalSignature, principalDeclaration, principalDeclaredAt, now); appErr != nil {
+			return appErr
+		}
+	}
+
+	return nil
+}
+
+func buildSoulPendingAgentIdentity(
+	reg *models.SoulAgentRegistration,
+	metaURI string,
+	principalAddress string,
+	principalSignature string,
+	principalDeclaration string,
+	principalDeclaredAt string,
+	now time.Time,
+) *models.SoulAgentIdentity {
+	return &models.SoulAgentIdentity{
 		AgentID:              reg.AgentID,
 		Domain:               reg.DomainNormalized,
 		LocalID:              reg.LocalID,
@@ -980,64 +983,113 @@ func (s *Server) ensureSoulPendingAgentIdentity(ctx context.Context, reg *models
 		Status:               models.SoulAgentStatusPending,
 		UpdatedAt:            now,
 	}
-	_ = identity.UpdateKeys()
+}
 
-	if err := s.store.DB.WithContext(ctx).Model(identity).IfNotExists().Create(); err != nil {
-		if !theoryErrors.IsConditionFailed(err) {
-			return &apptheory.AppError{Code: "app.internal", Message: "failed to create agent identity"}
-		}
-
-		// Idempotency / upgrade safety: if the identity already exists, ensure principal declaration is persisted.
-		existing, getErr := s.getSoulAgentIdentity(ctx, reg.AgentID)
-		if getErr != nil && !theoryErrors.IsNotFound(getErr) {
-			return &apptheory.AppError{Code: "app.internal", Message: "failed to load agent identity"}
-		}
-		if existing == nil {
-			return nil
-		}
-
-		if strings.TrimSpace(existing.Status) == models.SoulAgentStatusActive {
-			return &apptheory.AppError{Code: "app.conflict", Message: "agent is already registered"}
-		}
-
-		wantPrincipal := strings.ToLower(strings.TrimSpace(principalAddress))
-		havePrincipal := strings.ToLower(strings.TrimSpace(existing.PrincipalAddress))
-		if havePrincipal != "" && wantPrincipal != "" && !strings.EqualFold(havePrincipal, wantPrincipal) {
-			return &apptheory.AppError{Code: "app.conflict", Message: "principal_address mismatch for existing identity"}
-		}
-		wantDecl := strings.TrimSpace(principalDeclaration)
-		haveDecl := strings.TrimSpace(existing.PrincipalDeclaration)
-		if haveDecl != "" && wantDecl != "" && haveDecl != wantDecl {
-			return &apptheory.AppError{Code: "app.conflict", Message: "principal_declaration mismatch for existing identity"}
-		}
-
-		wantDeclaredAt := strings.TrimSpace(principalDeclaredAt)
-		haveDeclaredAt := strings.TrimSpace(existing.PrincipalDeclaredAt)
-		if haveDeclaredAt != "" && wantDeclaredAt != "" && haveDeclaredAt != wantDeclaredAt {
-			return &apptheory.AppError{Code: "app.conflict", Message: "declared_at mismatch for existing identity"}
-		}
-
-		needUpdate := strings.TrimSpace(existing.PrincipalAddress) == "" ||
-			strings.TrimSpace(existing.PrincipalSignature) == "" ||
-			strings.TrimSpace(existing.PrincipalDeclaration) == "" ||
-			strings.TrimSpace(existing.PrincipalDeclaredAt) == ""
-		if wantPrincipal != "" && needUpdate {
-			update := &models.SoulAgentIdentity{
-				AgentID:              reg.AgentID,
-				PrincipalAddress:     principalAddress,
-				PrincipalSignature:   principalSignature,
-				PrincipalDeclaration: principalDeclaration,
-				PrincipalDeclaredAt:  principalDeclaredAt,
-				UpdatedAt:            now,
-			}
-			_ = update.UpdateKeys()
-			if updErr := s.store.DB.WithContext(ctx).Model(update).IfExists().Update("PrincipalAddress", "PrincipalSignature", "PrincipalDeclaration", "PrincipalDeclaredAt", "UpdatedAt"); updErr != nil {
-				return &apptheory.AppError{Code: "app.internal", Message: "failed to update agent identity"}
-			}
-		}
+func (s *Server) reconcileSoulPendingIdentity(
+	ctx context.Context,
+	agentID string,
+	principalAddress string,
+	principalSignature string,
+	principalDeclaration string,
+	principalDeclaredAt string,
+	now time.Time,
+) *apptheory.AppError {
+	existing, getErr := s.getSoulAgentIdentity(ctx, agentID)
+	if getErr != nil && !theoryErrors.IsNotFound(getErr) {
+		return &apptheory.AppError{Code: "app.internal", Message: "failed to load agent identity"}
+	}
+	if existing == nil {
+		return nil
+	}
+	if strings.TrimSpace(existing.Status) == models.SoulAgentStatusActive {
+		return &apptheory.AppError{Code: "app.conflict", Message: "agent is already registered"}
+	}
+	if appErr := validateExistingSoulPendingIdentity(existing, principalAddress, principalDeclaration, principalDeclaredAt); appErr != nil {
+		return appErr
+	}
+	if !needsSoulPendingIdentityPrincipalUpdate(existing, principalAddress) {
+		return nil
 	}
 
+	update := &models.SoulAgentIdentity{
+		AgentID:              agentID,
+		PrincipalAddress:     principalAddress,
+		PrincipalSignature:   principalSignature,
+		PrincipalDeclaration: principalDeclaration,
+		PrincipalDeclaredAt:  principalDeclaredAt,
+		UpdatedAt:            now,
+	}
+	_ = update.UpdateKeys()
+	if updErr := s.store.DB.WithContext(ctx).Model(update).IfExists().Update("PrincipalAddress", "PrincipalSignature", "PrincipalDeclaration", "PrincipalDeclaredAt", "UpdatedAt"); updErr != nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "failed to update agent identity"}
+	}
 	return nil
+}
+
+func validateExistingSoulPendingIdentity(existing *models.SoulAgentIdentity, principalAddress string, principalDeclaration string, principalDeclaredAt string) *apptheory.AppError {
+	wantPrincipal := strings.ToLower(strings.TrimSpace(principalAddress))
+	havePrincipal := strings.ToLower(strings.TrimSpace(existing.PrincipalAddress))
+	if havePrincipal != "" && wantPrincipal != "" && !strings.EqualFold(havePrincipal, wantPrincipal) {
+		return &apptheory.AppError{Code: "app.conflict", Message: "principal_address mismatch for existing identity"}
+	}
+	wantDecl := strings.TrimSpace(principalDeclaration)
+	haveDecl := strings.TrimSpace(existing.PrincipalDeclaration)
+	if haveDecl != "" && wantDecl != "" && haveDecl != wantDecl {
+		return &apptheory.AppError{Code: "app.conflict", Message: "principal_declaration mismatch for existing identity"}
+	}
+	wantDeclaredAt := strings.TrimSpace(principalDeclaredAt)
+	haveDeclaredAt := strings.TrimSpace(existing.PrincipalDeclaredAt)
+	if haveDeclaredAt != "" && wantDeclaredAt != "" && haveDeclaredAt != wantDeclaredAt {
+		return &apptheory.AppError{Code: "app.conflict", Message: "declared_at mismatch for existing identity"}
+	}
+	return nil
+}
+
+func needsSoulPendingIdentityPrincipalUpdate(existing *models.SoulAgentIdentity, principalAddress string) bool {
+	wantPrincipal := strings.ToLower(strings.TrimSpace(principalAddress))
+	needUpdate := strings.TrimSpace(existing.PrincipalAddress) == "" ||
+		strings.TrimSpace(existing.PrincipalSignature) == "" ||
+		strings.TrimSpace(existing.PrincipalDeclaration) == "" ||
+		strings.TrimSpace(existing.PrincipalDeclaredAt) == ""
+	return wantPrincipal != "" && needUpdate
+}
+
+func (s *Server) validateSoulRegistrationVerifyPrincipalInputs(
+	ctx context.Context,
+	principalAddrRaw string,
+	principalDeclarationRaw string,
+	principalSigRaw string,
+	declaredAtRaw string,
+) (string, string, string, string, *apptheory.AppError) {
+	principalAddr, appErr := s.normalizeSoulEVMAddress(ctx, principalAddrRaw, "principal_address")
+	if appErr != nil {
+		return "", "", "", "", appErr
+	}
+	principalDeclaration := strings.TrimSpace(principalDeclarationRaw)
+	if principalDeclaration == "" || len(principalDeclaration) < 10 {
+		return "", "", "", "", &apptheory.AppError{Code: "app.bad_request", Message: "principal_declaration is required"}
+	}
+	if len(principalDeclaration) > 8192 {
+		return "", "", "", "", &apptheory.AppError{Code: "app.bad_request", Message: "principal_declaration is too long"}
+	}
+	declaredAt := strings.TrimSpace(declaredAtRaw)
+	if declaredAt == "" {
+		return "", "", "", "", &apptheory.AppError{Code: "app.bad_request", Message: "declared_at is required"}
+	}
+	if _, err := time.Parse(time.RFC3339, declaredAt); err != nil {
+		if _, err2 := time.Parse(time.RFC3339Nano, declaredAt); err2 != nil {
+			return "", "", "", "", &apptheory.AppError{Code: "app.bad_request", Message: "declared_at must be an RFC3339 timestamp"}
+		}
+	}
+	principalSig := strings.TrimSpace(principalSigRaw)
+	if principalSig == "" {
+		return "", "", "", "", &apptheory.AppError{Code: "app.bad_request", Message: "principal_signature is required"}
+	}
+	principalDigest := crypto.Keccak256([]byte(principalDeclaration))
+	if err := verifyEthereumSignatureBytes(principalAddr, principalDigest, principalSig); err != nil {
+		return "", "", "", "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid principal_signature"}
+	}
+	return principalAddr, principalDeclaration, principalSig, declaredAt, nil
 }
 
 func (s *Server) upsertSoulAgentIndexes(ctx context.Context, reg *models.SoulAgentRegistration) {
@@ -1056,7 +1108,7 @@ func (s *Server) upsertSoulAgentIndexes(ctx context.Context, reg *models.SoulAge
 	for _, cap := range normalizeSoulCapabilitiesLoose(reg.Capabilities) {
 		ci := &models.SoulCapabilityAgentIndex{
 			Capability: cap,
-			ClaimLevel: "self-declared",
+			ClaimLevel: soulClaimLevelSelfDeclared,
 			Domain:     reg.DomainNormalized,
 			LocalID:    reg.LocalID,
 			AgentID:    reg.AgentID,

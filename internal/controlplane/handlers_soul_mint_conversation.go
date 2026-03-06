@@ -33,6 +33,7 @@ const (
 
 	soulMintConversationStreamModule  = "soul.mint_conversation.stream"
 	soulMintConversationExtractModule = "soul.mint_conversation.extract"
+	defaultSoulMintConversationModel  = "anthropic:claude-sonnet-4-20250514"
 )
 
 // --- Request / Response types ---
@@ -100,6 +101,179 @@ type soulMintConversationFinalizeResponse struct {
 	PublishedVersion int                      `json:"published_version"`
 }
 
+type mintConversationSession struct {
+	conversationID   string
+	modelSet         string
+	existingMessages []soulMintConversationMessage
+	existingUsage    models.AIUsage
+	isNew            bool
+}
+
+type mintConversationRegistrationContext struct {
+	reg        *models.SoulAgentRegistration
+	inst       *models.Instance
+	agentIDHex string
+}
+
+type mintConversationFinalizeContext struct {
+	reg            *models.SoulAgentRegistration
+	inst           *models.Instance
+	identity       *models.SoulAgentIdentity
+	conv           *models.SoulAgentMintConversation
+	agentIDHex     string
+	conversationID string
+}
+
+type mintConversationDebitParams struct {
+	instanceSlug string
+	module       string
+	target       string
+	requestID    string
+}
+
+func (s *Server) requireMintConversationRegistrationContext(ctx *apptheory.Context, requirePacks bool) (mintConversationRegistrationContext, *apptheory.AppError) {
+	if appErr := s.requireSoulRegistryConfigured(); appErr != nil {
+		return mintConversationRegistrationContext{}, appErr
+	}
+	if appErr := s.requireSoulPortalPrereqs(ctx); appErr != nil {
+		return mintConversationRegistrationContext{}, appErr
+	}
+	if appErr := requireStoreDB(s); appErr != nil {
+		return mintConversationRegistrationContext{}, appErr
+	}
+	if requirePacks && (s == nil || s.soulPacks == nil || strings.TrimSpace(s.cfg.SoulPackBucketName) == "") {
+		return mintConversationRegistrationContext{}, &apptheory.AppError{Code: "app.conflict", Message: "soul registry bucket is not configured"}
+	}
+
+	regID := strings.TrimSpace(ctx.Param("id"))
+	if regID == "" {
+		return mintConversationRegistrationContext{}, &apptheory.AppError{Code: "app.bad_request", Message: "registration id is required"}
+	}
+	reg, err := s.getSoulAgentRegistration(ctx.Context(), regID)
+	if err != nil {
+		return mintConversationRegistrationContext{}, &apptheory.AppError{Code: "app.not_found", Message: "registration not found"}
+	}
+	if !isOperator(ctx) && strings.TrimSpace(reg.Username) != strings.TrimSpace(ctx.AuthIdentity) {
+		return mintConversationRegistrationContext{}, &apptheory.AppError{Code: "app.forbidden", Message: "forbidden"}
+	}
+
+	_, inst, accessErr := s.requireSoulDomainAccess(ctx, strings.TrimSpace(reg.DomainNormalized))
+	if accessErr != nil {
+		return mintConversationRegistrationContext{}, accessErr
+	}
+	return mintConversationRegistrationContext{
+		reg:        reg,
+		inst:       inst,
+		agentIDHex: strings.ToLower(strings.TrimSpace(reg.AgentID)),
+	}, nil
+}
+
+func (s *Server) requireMintConversationRegistration(ctx *apptheory.Context) (*models.SoulAgentRegistration, string, *apptheory.AppError) {
+	if appErr := s.requireSoulRegistryConfigured(); appErr != nil {
+		return nil, "", appErr
+	}
+	if appErr := s.requireSoulPortalPrereqs(ctx); appErr != nil {
+		return nil, "", appErr
+	}
+	if appErr := requireStoreDB(s); appErr != nil {
+		return nil, "", appErr
+	}
+
+	regID := strings.TrimSpace(ctx.Param("id"))
+	if regID == "" {
+		return nil, "", &apptheory.AppError{Code: "app.bad_request", Message: "registration id is required"}
+	}
+	reg, err := s.getSoulAgentRegistration(ctx.Context(), regID)
+	if err != nil {
+		return nil, "", &apptheory.AppError{Code: "app.not_found", Message: "registration not found"}
+	}
+	if !isOperator(ctx) && strings.TrimSpace(reg.Username) != strings.TrimSpace(ctx.AuthIdentity) {
+		return nil, "", &apptheory.AppError{Code: "app.forbidden", Message: "forbidden"}
+	}
+	return reg, strings.ToLower(strings.TrimSpace(reg.AgentID)), nil
+}
+
+func (s *Server) requireMintConversationInstance(ctx *apptheory.Context, reg *models.SoulAgentRegistration) (*models.Instance, *apptheory.AppError) {
+	_, inst, accessErr := s.requireSoulDomainAccess(ctx, strings.TrimSpace(reg.DomainNormalized))
+	if accessErr != nil {
+		return nil, accessErr
+	}
+	return inst, nil
+}
+
+func requireMintConversationMessage(ctx *apptheory.Context) (soulMintConversationRequest, string, error) {
+	var req soulMintConversationRequest
+	if parseErr := httpx.ParseJSON(ctx, &req); parseErr != nil {
+		return req, "", parseErr
+	}
+	message := strings.TrimSpace(req.Message)
+	if message == "" {
+		return req, "", &apptheory.AppError{Code: "app.bad_request", Message: "message is required"}
+	}
+	if len(message) > 8192 {
+		return req, "", &apptheory.AppError{Code: "app.bad_request", Message: "message is too long"}
+	}
+	return req, message, nil
+}
+
+func requireMintConversationID(ctx *apptheory.Context) (string, *apptheory.AppError) {
+	conversationID := strings.TrimSpace(ctx.Param("conversationId"))
+	if conversationID == "" {
+		return "", &apptheory.AppError{Code: "app.bad_request", Message: "conversationId is required"}
+	}
+	return conversationID, nil
+}
+
+func (s *Server) loadMintConversationByStatus(ctx context.Context, agentIDHex string, conversationID string, expectedStatus string, statusMessage string, emptyDeclMessage string) (*models.SoulAgentMintConversation, *apptheory.AppError) {
+	conv, err := getSoulAgentItemBySK[models.SoulAgentMintConversation](s, ctx, agentIDHex, fmt.Sprintf("MINT_CONVERSATION#%s", conversationID))
+	if err != nil {
+		return nil, &apptheory.AppError{Code: "app.not_found", Message: "conversation not found"}
+	}
+	if conv.Status != expectedStatus {
+		return nil, &apptheory.AppError{Code: "app.conflict", Message: statusMessage}
+	}
+	if emptyDeclMessage != "" && strings.TrimSpace(conv.ProducedDeclarations) == "" {
+		return nil, &apptheory.AppError{Code: "app.conflict", Message: emptyDeclMessage}
+	}
+	return conv, nil
+}
+
+func (s *Server) loadMintConversationFinalizeContext(ctx *apptheory.Context) (mintConversationFinalizeContext, *apptheory.AppError) {
+	regCtx, appErr := s.requireMintConversationRegistrationContext(ctx, true)
+	if appErr != nil {
+		return mintConversationFinalizeContext{}, appErr
+	}
+	conversationID, appErr := requireMintConversationID(ctx)
+	if appErr != nil {
+		return mintConversationFinalizeContext{}, appErr
+	}
+	conv, appErr := s.loadMintConversationByStatus(ctx.Context(), regCtx.agentIDHex, conversationID, models.SoulMintConversationStatusCompleted, "conversation is not completed", "conversation has no produced declarations")
+	if appErr != nil {
+		return mintConversationFinalizeContext{}, appErr
+	}
+	identity, err := s.getSoulAgentIdentity(ctx.Context(), regCtx.agentIDHex)
+	if theoryErrors.IsNotFound(err) {
+		return mintConversationFinalizeContext{}, &apptheory.AppError{Code: "app.conflict", Message: "registration is not yet verified"}
+	}
+	if err != nil {
+		return mintConversationFinalizeContext{}, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if strings.TrimSpace(identity.PrincipalAddress) == "" ||
+		strings.TrimSpace(identity.PrincipalSignature) == "" ||
+		strings.TrimSpace(identity.PrincipalDeclaration) == "" ||
+		strings.TrimSpace(identity.PrincipalDeclaredAt) == "" {
+		return mintConversationFinalizeContext{}, &apptheory.AppError{Code: "app.conflict", Message: "principal declaration is missing; re-verify registration"}
+	}
+	return mintConversationFinalizeContext{
+		reg:            regCtx.reg,
+		inst:           regCtx.inst,
+		identity:       identity,
+		conv:           conv,
+		agentIDHex:     regCtx.agentIDHex,
+		conversationID: conversationID,
+	}, nil
+}
+
 func (s *Server) debitSoulMintConversationCredits(
 	ctx context.Context,
 	inst *models.Instance,
@@ -110,26 +284,9 @@ func (s *Server) debitSoulMintConversationCredits(
 	now time.Time,
 	extraWrites func(tx core.TransactionBuilder, creditsRequested int64) error,
 ) (creditsRequested int64, appErr *apptheory.AppError) {
-	if s == nil || s.store == nil || s.store.DB == nil {
-		return 0, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-	if inst == nil {
-		return 0, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-
-	instanceSlug := strings.ToLower(strings.TrimSpace(inst.Slug))
-	if instanceSlug == "" {
-		return 0, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-
-	module = strings.ToLower(strings.TrimSpace(module))
-	if module == "" {
-		return 0, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-	target = strings.TrimSpace(target)
-	requestID = strings.TrimSpace(requestID)
-	if requestID == "" {
-		requestID = target
+	params, appErr := validateMintConversationDebitParams(s, inst, module, target, requestID)
+	if appErr != nil {
+		return 0, appErr
 	}
 
 	pricingMultiplierBps := effectiveAIPricingMultiplierBps(inst.AIPricingMultiplierBps)
@@ -139,25 +296,13 @@ func (s *Server) debitSoulMintConversationCredits(
 	}
 
 	month := now.UTC().Format("2006-01")
-
-	pk := fmt.Sprintf("INSTANCE#%s", instanceSlug)
-	sk := fmt.Sprintf("BUDGET#%s", month)
-	var budget models.InstanceBudgetMonth
-	if err := s.store.DB.WithContext(ctx).
-		Model(&models.InstanceBudgetMonth{}).
-		Where("PK", "=", pk).
-		Where("SK", "=", sk).
-		ConsistentRead().
-		First(&budget); err != nil {
-		if theoryErrors.IsNotFound(err) {
-			return 0, &apptheory.AppError{Code: "app.conflict", Message: "credits are not configured for this instance; purchase credits first"}
-		}
-		return 0, &apptheory.AppError{Code: "app.internal", Message: "failed to load credits budget"}
+	budget, appErr := s.loadMintConversationBudget(ctx, params.instanceSlug, month)
+	if appErr != nil {
+		return 0, appErr
 	}
 
 	allowOverage := strings.EqualFold(strings.TrimSpace(inst.OveragePolicy), "allow")
-	remaining := budget.IncludedCredits - budget.UsedCredits
-	if remaining < creditsRequested && !allowOverage {
+	if mintConversationCreditsInsufficient(budget, creditsRequested, allowOverage) {
 		return 0, &apptheory.AppError{Code: "app.conflict", Message: "insufficient credits"}
 	}
 
@@ -165,14 +310,14 @@ func (s *Server) debitSoulMintConversationCredits(
 	billingType := billing.TypeFromParts(includedDebited, overageDebited)
 
 	entry := &models.UsageLedgerEntry{
-		ID:                     billing.UsageLedgerEntryID(instanceSlug, month, requestID, module, target, creditsRequested),
-		InstanceSlug:           instanceSlug,
+		ID:                     billing.UsageLedgerEntryID(params.instanceSlug, month, params.requestID, params.module, params.target, creditsRequested),
+		InstanceSlug:           params.instanceSlug,
 		Month:                  month,
-		Module:                 module,
-		Target:                 target,
+		Module:                 params.module,
+		Target:                 params.target,
 		Cached:                 false,
 		Reason:                 billingType,
-		RequestID:              requestID,
+		RequestID:              params.requestID,
 		RequestedCredits:       creditsRequested,
 		ListCredits:            listCredits,
 		PricingMultiplierBps:   pricingMultiplierBps,
@@ -183,46 +328,7 @@ func (s *Server) debitSoulMintConversationCredits(
 		CreatedAt:              now.UTC(),
 	}
 	_ = entry.UpdateKeys()
-
-	updateBudget := &models.InstanceBudgetMonth{
-		InstanceSlug: instanceSlug,
-		Month:        month,
-		UpdatedAt:    now.UTC(),
-	}
-	_ = updateBudget.UpdateKeys()
-
-	maxUsed := budget.IncludedCredits - creditsRequested
-
-	err := s.store.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
-		tx.Put(entry)
-		if extraWrites != nil {
-			if err := extraWrites(tx, creditsRequested); err != nil {
-				return err
-			}
-		}
-		if allowOverage {
-			tx.UpdateWithBuilder(updateBudget, func(ub core.UpdateBuilder) error {
-				ub.Add("UsedCredits", creditsRequested)
-				ub.Set("UpdatedAt", now.UTC())
-				return nil
-			}, tabletheory.IfExists())
-			return nil
-		}
-		tx.UpdateWithBuilder(updateBudget, func(ub core.UpdateBuilder) error {
-			ub.Add("UsedCredits", creditsRequested)
-			ub.Set("UpdatedAt", now.UTC())
-			return nil
-		},
-			tabletheory.IfExists(),
-			tabletheory.ConditionExpression(
-				"attribute_not_exists(usedCredits) OR usedCredits <= :max",
-				map[string]any{
-					":max": maxUsed,
-				},
-			),
-		)
-		return nil
-	})
+	err := s.applyMintConversationCreditDebit(ctx, budget, entry, creditsRequested, allowOverage, now, extraWrites)
 	if theoryErrors.IsConditionFailed(err) {
 		return 0, &apptheory.AppError{Code: "app.conflict", Message: "insufficient credits"}
 	}
@@ -233,159 +339,140 @@ func (s *Server) debitSoulMintConversationCredits(
 	return creditsRequested, nil
 }
 
+func validateMintConversationDebitParams(s *Server, inst *models.Instance, module string, target string, requestID string) (mintConversationDebitParams, *apptheory.AppError) {
+	if s == nil || s.store == nil || s.store.DB == nil || inst == nil {
+		return mintConversationDebitParams{}, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	instanceSlug := strings.ToLower(strings.TrimSpace(inst.Slug))
+	module = strings.ToLower(strings.TrimSpace(module))
+	if instanceSlug == "" || module == "" {
+		return mintConversationDebitParams{}, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	target = strings.TrimSpace(target)
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		requestID = target
+	}
+	return mintConversationDebitParams{
+		instanceSlug: instanceSlug,
+		module:       module,
+		target:       target,
+		requestID:    requestID,
+	}, nil
+}
+
+func (s *Server) loadMintConversationBudget(ctx context.Context, instanceSlug string, month string) (models.InstanceBudgetMonth, *apptheory.AppError) {
+	pk := fmt.Sprintf("INSTANCE#%s", instanceSlug)
+	sk := fmt.Sprintf("BUDGET#%s", month)
+	var budget models.InstanceBudgetMonth
+	if err := s.store.DB.WithContext(ctx).
+		Model(&models.InstanceBudgetMonth{}).
+		Where("PK", "=", pk).
+		Where("SK", "=", sk).
+		ConsistentRead().
+		First(&budget); err != nil {
+		if theoryErrors.IsNotFound(err) {
+			return models.InstanceBudgetMonth{}, &apptheory.AppError{Code: "app.conflict", Message: "credits are not configured for this instance; purchase credits first"}
+		}
+		return models.InstanceBudgetMonth{}, &apptheory.AppError{Code: "app.internal", Message: "failed to load credits budget"}
+	}
+	return budget, nil
+}
+
+func mintConversationCreditsInsufficient(budget models.InstanceBudgetMonth, creditsRequested int64, allowOverage bool) bool {
+	remaining := budget.IncludedCredits - budget.UsedCredits
+	return remaining < creditsRequested && !allowOverage
+}
+
+func (s *Server) applyMintConversationCreditDebit(
+	ctx context.Context,
+	budget models.InstanceBudgetMonth,
+	entry *models.UsageLedgerEntry,
+	creditsRequested int64,
+	allowOverage bool,
+	now time.Time,
+	extraWrites func(tx core.TransactionBuilder, creditsRequested int64) error,
+) error {
+	updateBudget := &models.InstanceBudgetMonth{
+		InstanceSlug: budget.InstanceSlug,
+		Month:        budget.Month,
+		UpdatedAt:    now.UTC(),
+	}
+	_ = updateBudget.UpdateKeys()
+	maxUsed := budget.IncludedCredits - creditsRequested
+
+	return s.store.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
+		tx.Put(entry)
+		if extraWrites != nil {
+			if err := extraWrites(tx, creditsRequested); err != nil {
+				return err
+			}
+		}
+		return applyMintConversationBudgetUpdate(tx, updateBudget, creditsRequested, allowOverage, now, maxUsed)
+	})
+}
+
+func applyMintConversationBudgetUpdate(tx core.TransactionBuilder, updateBudget *models.InstanceBudgetMonth, creditsRequested int64, allowOverage bool, now time.Time, maxUsed int64) error {
+	builder := func(ub core.UpdateBuilder) error {
+		ub.Add("UsedCredits", creditsRequested)
+		ub.Set("UpdatedAt", now.UTC())
+		return nil
+	}
+	if allowOverage {
+		tx.UpdateWithBuilder(updateBudget, builder, tabletheory.IfExists())
+		return nil
+	}
+	tx.UpdateWithBuilder(updateBudget, builder,
+		tabletheory.IfExists(),
+		tabletheory.ConditionExpression(
+			"attribute_not_exists(usedCredits) OR usedCredits <= :max",
+			map[string]any{":max": maxUsed},
+		),
+	)
+	return nil
+}
+
 // --- Handler ---
 
 // handleSoulMintConversation conducts a streaming LLM-assisted minting conversation.
 // Each call sends one user message and streams the assistant response via SSE.
 func (s *Server) handleSoulMintConversation(ctx *apptheory.Context) (*apptheory.Response, error) {
-	if appErr := s.requireSoulRegistryConfigured(); appErr != nil {
+	reg, agentIDHex, appErr := s.requireMintConversationRegistration(ctx)
+	if appErr != nil {
 		return nil, appErr
 	}
-	if appErr := s.requireSoulPortalPrereqs(ctx); appErr != nil {
-		return nil, appErr
-	}
-	if appErr := requireStoreDB(s); appErr != nil {
-		return nil, appErr
-	}
-
-	regID := strings.TrimSpace(ctx.Param("id"))
-	if regID == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "registration id is required"}
-	}
-
-	// Load the registration to provide context to the LLM.
-	reg, err := s.getSoulAgentRegistration(ctx.Context(), regID)
+	req, message, err := requireMintConversationMessage(ctx)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "registration not found"}
-	}
-	if !isOperator(ctx) && strings.TrimSpace(reg.Username) != strings.TrimSpace(ctx.AuthIdentity) {
-		return nil, &apptheory.AppError{Code: "app.forbidden", Message: "forbidden"}
-	}
-
-	var req soulMintConversationRequest
-	if err := httpx.ParseJSON(ctx, &req); err != nil {
 		return nil, err
 	}
-
-	message := strings.TrimSpace(req.Message)
-	if message == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "message is required"}
-	}
-	if len(message) > 8192 {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "message is too long"}
-	}
-
-	agentIDHex := strings.ToLower(strings.TrimSpace(reg.AgentID))
-
-	// Determine instance config for billing/metering.
-	_, inst, accessErr := s.requireSoulDomainAccess(ctx, strings.TrimSpace(reg.DomainNormalized))
-	if accessErr != nil {
-		return nil, accessErr
+	inst, appErr := s.requireMintConversationInstance(ctx, reg)
+	if appErr != nil {
+		return nil, appErr
 	}
 
 	now := time.Now().UTC()
 
 	// Load or create conversation record.
-	conversationID := strings.TrimSpace(req.ConversationID)
-	modelSet := strings.TrimSpace(req.Model)
-	var existingMessages []soulMintConversationMessage
-	var existingUsage models.AIUsage
-	if conversationID != "" {
-		conv, err := getSoulAgentItemBySK[models.SoulAgentMintConversation](s, ctx.Context(), agentIDHex, fmt.Sprintf("MINT_CONVERSATION#%s", conversationID))
-		if err != nil {
-			return nil, &apptheory.AppError{Code: "app.not_found", Message: "conversation not found"}
-		}
-		if conv.Status != models.SoulMintConversationStatusInProgress {
-			return nil, &apptheory.AppError{Code: "app.conflict", Message: "conversation is not in progress"}
-		}
-
-		// Prevent model switching mid-conversation: use the stored model.
-		storedModel := strings.TrimSpace(conv.Model)
-		if storedModel != "" {
-			if modelSet != "" && !strings.EqualFold(storedModel, modelSet) {
-				return nil, &apptheory.AppError{Code: "app.conflict", Message: "cannot change model for an existing conversation"}
-			}
-			modelSet = storedModel
-		}
-
-		if strings.TrimSpace(conv.Messages) != "" {
-			_ = json.Unmarshal([]byte(conv.Messages), &existingMessages)
-		}
-		existingUsage = conv.Usage
-	} else {
-		if modelSet == "" {
-			modelSet = "anthropic:claude-sonnet-4-20250514"
-		}
-		token, err := newToken(16)
-		if err != nil {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create conversation id"}
-		}
-		conversationID = token
+	session, appErr := s.loadMintConversationSession(ctx.Context(), agentIDHex, req.ConversationID, req.Model)
+	if appErr != nil {
+		return nil, appErr
 	}
 
-	if modelSet == "" {
+	if session.modelSet == "" {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "model is required"}
 	}
-	apiKey, appErr := s.apiKeyForMintConversationModel(ctx.Context(), modelSet)
+	apiKey, appErr := s.apiKeyForMintConversationModel(ctx.Context(), session.modelSet)
 	if appErr != nil {
 		return nil, appErr
 	}
 
 	// Debit credits for this LLM call (fail closed if insufficient credits).
-	if strings.TrimSpace(req.ConversationID) == "" {
-		conv := &models.SoulAgentMintConversation{
-			AgentID:        agentIDHex,
-			ConversationID: conversationID,
-			Model:          modelSet,
-			Status:         models.SoulMintConversationStatusInProgress,
-			CreatedAt:      now,
-		}
-		_ = conv.UpdateKeys()
-
-		if _, appErr := s.debitSoulMintConversationCredits(
-			ctx.Context(),
-			inst,
-			soulMintConversationStreamModule,
-			conversationID,
-			strings.TrimSpace(ctx.RequestID),
-			soulMintConversationStreamBaseCredits,
-			now,
-			func(tx core.TransactionBuilder, creditsRequested int64) error {
-				conv.ChargedCredits = creditsRequested
-				tx.Create(conv)
-				return nil
-			},
-		); appErr != nil {
-			return nil, appErr
-		}
-	} else {
-		if _, appErr := s.debitSoulMintConversationCredits(
-			ctx.Context(),
-			inst,
-			soulMintConversationStreamModule,
-			conversationID,
-			strings.TrimSpace(ctx.RequestID),
-			soulMintConversationStreamBaseCredits,
-			now,
-			func(tx core.TransactionBuilder, creditsRequested int64) error {
-				update := &models.SoulAgentMintConversation{
-					AgentID:        agentIDHex,
-					ConversationID: conversationID,
-				}
-				_ = update.UpdateKeys()
-				tx.UpdateWithBuilder(update, func(ub core.UpdateBuilder) error {
-					ub.Add("ChargedCredits", creditsRequested)
-					return nil
-				}, tabletheory.IfExists())
-				return nil
-			},
-		); appErr != nil {
-			return nil, appErr
-		}
+	if appErr := s.debitMintConversationStreamCredits(ctx.Context(), inst, agentIDHex, session, strings.TrimSpace(ctx.RequestID), now); appErr != nil {
+		return nil, appErr
 	}
 
 	// Build provider messages from conversation history + new user message.
-	existingMessages = append(existingMessages, soulMintConversationMessage{Role: "user", Content: message})
+	existingMessages := append(session.existingMessages, soulMintConversationMessage{Role: "user", Content: message})
 	systemPrompt := buildMintConversationSystemPrompt(reg)
 
 	// Create SSE event channel and start streaming.
@@ -393,15 +480,98 @@ func (s *Server) handleSoulMintConversation(ctx *apptheory.Context) (*apptheory.
 
 	go s.streamMintConversation(ctx.Context(), eventCh, streamMintConversationParams{
 		apiKey:           apiKey,
-		modelSet:         modelSet,
+		modelSet:         session.modelSet,
 		systemPrompt:     systemPrompt,
 		existingMessages: existingMessages,
-		existingUsage:    existingUsage,
+		existingUsage:    session.existingUsage,
 		agentIDHex:       agentIDHex,
-		conversationID:   conversationID,
+		conversationID:   session.conversationID,
 	})
 
 	return apptheory.SSEStreamResponse(ctx.Context(), http.StatusOK, eventCh)
+}
+
+func (s *Server) loadMintConversationSession(ctx context.Context, agentIDHex string, requestedConversationID string, requestedModel string) (mintConversationSession, *apptheory.AppError) {
+	session := mintConversationSession{
+		conversationID: strings.TrimSpace(requestedConversationID),
+		modelSet:       strings.TrimSpace(requestedModel),
+	}
+	if session.conversationID == "" {
+		if session.modelSet == "" {
+			session.modelSet = defaultSoulMintConversationModel
+		}
+		token, err := newToken(16)
+		if err != nil {
+			return mintConversationSession{}, &apptheory.AppError{Code: "app.internal", Message: "failed to create conversation id"}
+		}
+		session.conversationID = token
+		session.isNew = true
+		return session, nil
+	}
+
+	conv, err := getSoulAgentItemBySK[models.SoulAgentMintConversation](s, ctx, agentIDHex, fmt.Sprintf("MINT_CONVERSATION#%s", session.conversationID))
+	if err != nil {
+		return mintConversationSession{}, &apptheory.AppError{Code: "app.not_found", Message: "conversation not found"}
+	}
+	if conv.Status != models.SoulMintConversationStatusInProgress {
+		return mintConversationSession{}, &apptheory.AppError{Code: "app.conflict", Message: "conversation is not in progress"}
+	}
+
+	storedModel := strings.TrimSpace(conv.Model)
+	if storedModel != "" {
+		if session.modelSet != "" && !strings.EqualFold(storedModel, session.modelSet) {
+			return mintConversationSession{}, &apptheory.AppError{Code: "app.conflict", Message: "cannot change model for an existing conversation"}
+		}
+		session.modelSet = storedModel
+	}
+	if strings.TrimSpace(conv.Messages) != "" {
+		_ = json.Unmarshal([]byte(conv.Messages), &session.existingMessages)
+	}
+	session.existingUsage = conv.Usage
+	return session, nil
+}
+
+func (s *Server) debitMintConversationStreamCredits(ctx context.Context, inst *models.Instance, agentIDHex string, session mintConversationSession, requestID string, now time.Time) *apptheory.AppError {
+	extraWrites := func(tx core.TransactionBuilder, creditsRequested int64) error {
+		if session.isNew {
+			conv := &models.SoulAgentMintConversation{
+				AgentID:        agentIDHex,
+				ConversationID: session.conversationID,
+				Model:          session.modelSet,
+				Status:         models.SoulMintConversationStatusInProgress,
+				CreatedAt:      now,
+				ChargedCredits: creditsRequested,
+			}
+			_ = conv.UpdateKeys()
+			tx.Create(conv)
+			return nil
+		}
+
+		update := &models.SoulAgentMintConversation{
+			AgentID:        agentIDHex,
+			ConversationID: session.conversationID,
+		}
+		_ = update.UpdateKeys()
+		tx.UpdateWithBuilder(update, func(ub core.UpdateBuilder) error {
+			ub.Add("ChargedCredits", creditsRequested)
+			return nil
+		}, tabletheory.IfExists())
+		return nil
+	}
+
+	if _, appErr := s.debitSoulMintConversationCredits(
+		ctx,
+		inst,
+		soulMintConversationStreamModule,
+		session.conversationID,
+		requestID,
+		soulMintConversationStreamBaseCredits,
+		now,
+		extraWrites,
+	); appErr != nil {
+		return appErr
+	}
+	return nil
 }
 
 type streamMintConversationParams struct {
@@ -565,127 +735,25 @@ func (s *Server) updateMintConversationStatus(ctx context.Context, agentIDHex st
 
 // handleSoulCompleteMintConversation marks a conversation as completed and extracts declarations.
 func (s *Server) handleSoulCompleteMintConversation(ctx *apptheory.Context) (*apptheory.Response, error) {
-	if appErr := s.requireSoulRegistryConfigured(); appErr != nil {
+	regCtx, appErr := s.requireMintConversationRegistrationContext(ctx, false)
+	if appErr != nil {
 		return nil, appErr
 	}
-	if appErr := s.requireSoulPortalPrereqs(ctx); appErr != nil {
+	conversationID, appErr := requireMintConversationID(ctx)
+	if appErr != nil {
 		return nil, appErr
 	}
-	if appErr := requireStoreDB(s); appErr != nil {
+	conv, appErr := s.loadMintConversationByStatus(ctx.Context(), regCtx.agentIDHex, conversationID, models.SoulMintConversationStatusInProgress, "conversation is not in progress", "")
+	if appErr != nil {
 		return nil, appErr
-	}
-
-	regID := strings.TrimSpace(ctx.Param("id"))
-	if regID == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "registration id is required"}
-	}
-
-	reg, err := s.getSoulAgentRegistration(ctx.Context(), regID)
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "registration not found"}
-	}
-	if !isOperator(ctx) && strings.TrimSpace(reg.Username) != strings.TrimSpace(ctx.AuthIdentity) {
-		return nil, &apptheory.AppError{Code: "app.forbidden", Message: "forbidden"}
-	}
-
-	// Determine instance config for billing/metering.
-	_, inst, accessErr := s.requireSoulDomainAccess(ctx, strings.TrimSpace(reg.DomainNormalized))
-	if accessErr != nil {
-		return nil, accessErr
-	}
-
-	conversationID := strings.TrimSpace(ctx.Param("conversationId"))
-	if conversationID == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "conversationId is required"}
-	}
-
-	agentIDHex := strings.ToLower(strings.TrimSpace(reg.AgentID))
-	conv, err := getSoulAgentItemBySK[models.SoulAgentMintConversation](s, ctx.Context(), agentIDHex, fmt.Sprintf("MINT_CONVERSATION#%s", conversationID))
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "conversation not found"}
-	}
-	if conv.Status != models.SoulMintConversationStatusInProgress {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "conversation is not in progress"}
 	}
 
 	now := time.Now().UTC()
-
-	// Optional: accept produced declarations (either as a JSON string or as a raw JSON object).
-	var reqBody struct {
-		Declarations json.RawMessage `json:"declarations,omitempty"`
+	declarationsJSON, extractUsage, appErr := s.resolveMintConversationCompletion(ctx, regCtx, conv, conversationID, now)
+	if appErr != nil {
+		return nil, appErr
 	}
-	_ = httpx.ParseJSON(ctx, &reqBody)
-
-	declarationsJSON := ""
-	raw := bytes.TrimSpace(reqBody.Declarations)
-	if len(raw) > 0 {
-		if raw[0] == '"' {
-			// JSON string wrapper.
-			var s string
-			if err := json.Unmarshal(raw, &s); err == nil {
-				declarationsJSON = strings.TrimSpace(s)
-			}
-		} else {
-			declarationsJSON = strings.TrimSpace(string(raw))
-		}
-	}
-
-	// If declarations were not provided, extract + validate them from the transcript using the configured model.
-	var extractUsage models.AIUsage
-	if declarationsJSON == "" {
-		// Debit credits for the extraction call (fail closed if insufficient credits).
-		creditsDebited, appErr := s.debitSoulMintConversationCredits(
-			ctx.Context(),
-			inst,
-			soulMintConversationExtractModule,
-			conversationID,
-			strings.TrimSpace(ctx.RequestID),
-			soulMintConversationExtractBaseCredits,
-			now,
-			func(tx core.TransactionBuilder, creditsRequested int64) error {
-				update := &models.SoulAgentMintConversation{
-					AgentID:        agentIDHex,
-					ConversationID: conversationID,
-				}
-				_ = update.UpdateKeys()
-				tx.UpdateWithBuilder(update, func(ub core.UpdateBuilder) error {
-					ub.Add("ChargedCredits", creditsRequested)
-					return nil
-				}, tabletheory.IfExists())
-				return nil
-			},
-		)
-		if appErr != nil {
-			return nil, appErr
-		}
-		conv.ChargedCredits += creditsDebited
-
-		decl, usage, appErr := s.extractMintConversationDeclarations(ctx.Context(), reg, conv, now)
-		if appErr != nil {
-			return nil, appErr
-		}
-		extractUsage = usage
-		b, err := json.Marshal(decl)
-		if err != nil {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to serialize declarations"}
-		}
-		declarationsJSON = strings.TrimSpace(string(b))
-	} else {
-		if _, appErr := parseAndValidateMintConversationDeclarations(declarationsJSON); appErr != nil {
-			return nil, appErr
-		}
-	}
-
-	// Persist total usage (streaming turns + extraction) on the conversation record.
-	if extractUsage != (models.AIUsage{}) {
-		conv.Usage = addAIUsage(conv.Usage, extractUsage)
-	}
-
-	conv.Status = models.SoulMintConversationStatusCompleted
-	conv.ProducedDeclarations = declarationsJSON
-	conv.CompletedAt = now
-	_ = conv.UpdateKeys()
-	if err := s.store.DB.WithContext(ctx.Context()).Model(conv).IfExists().Update("Status", "ProducedDeclarations", "CompletedAt", "Usage"); err != nil {
+	if appErr := s.persistCompletedMintConversation(ctx.Context(), conv, declarationsJSON, extractUsage, now); appErr != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to complete conversation"}
 	}
 
@@ -734,109 +802,31 @@ func (s *Server) handleSoulGetMintConversation(ctx *apptheory.Context) (*apptheo
 // handleSoulBeginFinalizeMintConversation prepares a mint conversation output to be published as a v2 registration
 // by verifying boundary signatures and returning the v2 self-attestation digest for the full document.
 func (s *Server) handleSoulBeginFinalizeMintConversation(ctx *apptheory.Context) (*apptheory.Response, error) {
-	if appErr := s.requireSoulRegistryConfigured(); appErr != nil {
-		return nil, appErr
-	}
-	if appErr := s.requireSoulPortalPrereqs(ctx); appErr != nil {
-		return nil, appErr
-	}
-	if appErr := requireStoreDB(s); appErr != nil {
-		return nil, appErr
-	}
-	if s == nil || s.soulPacks == nil {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "soul registry bucket is not configured"}
-	}
-	if strings.TrimSpace(s.cfg.SoulPackBucketName) == "" {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "soul registry bucket is not configured"}
-	}
-
-	regID := strings.TrimSpace(ctx.Param("id"))
-	if regID == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "registration id is required"}
-	}
-
-	reg, err := s.getSoulAgentRegistration(ctx.Context(), regID)
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "registration not found"}
-	}
-	if !isOperator(ctx) && strings.TrimSpace(reg.Username) != strings.TrimSpace(ctx.AuthIdentity) {
-		return nil, &apptheory.AppError{Code: "app.forbidden", Message: "forbidden"}
-	}
-
-	// Enforce domain ownership (instance access).
-	if _, _, accessErr := s.requireSoulDomainAccess(ctx, strings.TrimSpace(reg.DomainNormalized)); accessErr != nil {
-		return nil, accessErr
-	}
-
-	conversationID := strings.TrimSpace(ctx.Param("conversationId"))
-	if conversationID == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "conversationId is required"}
-	}
-
-	var req soulMintConversationFinalizeBeginRequest
-	if err := httpx.ParseJSON(ctx, &req); err != nil {
-		return nil, err
-	}
-	if len(req.BoundarySignatures) == 0 {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "boundary_signatures is required"}
-	}
-
-	agentIDHex := strings.ToLower(strings.TrimSpace(reg.AgentID))
-	conv, err := getSoulAgentItemBySK[models.SoulAgentMintConversation](s, ctx.Context(), agentIDHex, fmt.Sprintf("MINT_CONVERSATION#%s", conversationID))
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "conversation not found"}
-	}
-	if conv.Status != models.SoulMintConversationStatusCompleted {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "conversation is not completed"}
-	}
-	if strings.TrimSpace(conv.ProducedDeclarations) == "" {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "conversation has no produced declarations"}
-	}
-
-	identity, err := s.getSoulAgentIdentity(ctx.Context(), agentIDHex)
-	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "registration is not yet verified"}
-	}
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-
-	// Only allow the initial publish via mint conversation.
-	if identity.SelfDescriptionVersion > 0 {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "registration is already published"}
-	}
-
-	// Require principal declaration metadata to build a valid v2 registration.
-	if strings.TrimSpace(identity.PrincipalAddress) == "" ||
-		strings.TrimSpace(identity.PrincipalSignature) == "" ||
-		strings.TrimSpace(identity.PrincipalDeclaration) == "" ||
-		strings.TrimSpace(identity.PrincipalDeclaredAt) == "" {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "principal declaration is missing; re-verify registration"}
-	}
-
-	decl, appErr := parseAndValidateMintConversationDeclarations(conv.ProducedDeclarations)
+	finalizeCtx, appErr := s.loadMintConversationFinalizeContext(ctx)
 	if appErr != nil {
 		return nil, appErr
 	}
+	if finalizeCtx.identity.SelfDescriptionVersion > 0 {
+		return nil, &apptheory.AppError{Code: "app.conflict", Message: "registration is already published"}
+	}
+	req, err := parseMintConversationFinalizeBeginRequestBody(ctx)
+	if err != nil {
+		return nil, err
+	}
 
-	// Verify all boundary signatures (EIP-191 over keccak256(bytes(statement))).
-	for i := range decl.Boundaries {
-		b := decl.Boundaries[i]
-		sig := strings.TrimSpace(req.BoundarySignatures[strings.TrimSpace(b.ID)])
-		if sig == "" {
-			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "missing boundary signature for " + strings.TrimSpace(b.ID)}
-		}
-		statementDigest := crypto.Keccak256([]byte(strings.TrimSpace(b.Statement)))
-		if err := verifyEthereumSignatureBytes(identity.Wallet, statementDigest, sig); err != nil {
-			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid boundary signature for " + strings.TrimSpace(b.ID)}
-		}
+	decl, appErr := parseAndValidateMintConversationDeclarations(finalizeCtx.conv.ProducedDeclarations)
+	if appErr != nil {
+		return nil, appErr
+	}
+	if verifyErr := verifyMintConversationBoundarySignatures(finalizeCtx.identity.Wallet, decl.Boundaries, req.BoundarySignatures); verifyErr != nil {
+		return nil, verifyErr
 	}
 
 	now := time.Now().UTC()
-	expectedVersion := identity.SelfDescriptionVersion
+	expectedVersion := finalizeCtx.identity.SelfDescriptionVersion
 	nextVersion := expectedVersion + 1
 
-	regMap, _, digest, _, _, appErr := s.buildMintConversationFinalizeV2Registration(agentIDHex, identity, decl, req.BoundarySignatures, now, nextVersion, "0x00")
+	regMap, _, digest, _, _, appErr := s.buildMintConversationFinalizeV2Registration(finalizeCtx.agentIDHex, finalizeCtx.identity, decl, req.BoundarySignatures, now, nextVersion, "0x00")
 	if appErr != nil {
 		return nil, appErr
 	}
@@ -853,164 +843,236 @@ func (s *Server) handleSoulBeginFinalizeMintConversation(ctx *apptheory.Context)
 
 // handleSoulFinalizeMintConversation publishes the v2 registration version derived from a completed mint conversation.
 func (s *Server) handleSoulFinalizeMintConversation(ctx *apptheory.Context) (*apptheory.Response, error) {
-	if appErr := s.requireSoulRegistryConfigured(); appErr != nil {
+	finalizeCtx, appErr := s.loadMintConversationFinalizeContext(ctx)
+	if appErr != nil {
 		return nil, appErr
 	}
-	if appErr := s.requireSoulPortalPrereqs(ctx); appErr != nil {
-		return nil, appErr
-	}
-	if appErr := requireStoreDB(s); appErr != nil {
-		return nil, appErr
-	}
-	if s == nil || s.soulPacks == nil {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "soul registry bucket is not configured"}
-	}
-	if strings.TrimSpace(s.cfg.SoulPackBucketName) == "" {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "soul registry bucket is not configured"}
-	}
-
-	regID := strings.TrimSpace(ctx.Param("id"))
-	if regID == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "registration id is required"}
-	}
-
-	reg, err := s.getSoulAgentRegistration(ctx.Context(), regID)
+	req, issuedAt, expectedVersion, selfSig, err := parseMintConversationFinalizeRequestBody(ctx)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "registration not found"}
-	}
-	if !isOperator(ctx) && strings.TrimSpace(reg.Username) != strings.TrimSpace(ctx.AuthIdentity) {
-		return nil, &apptheory.AppError{Code: "app.forbidden", Message: "forbidden"}
-	}
-
-	// Enforce domain ownership (instance access).
-	if _, _, accessErr := s.requireSoulDomainAccess(ctx, strings.TrimSpace(reg.DomainNormalized)); accessErr != nil {
-		return nil, accessErr
-	}
-
-	conversationID := strings.TrimSpace(ctx.Param("conversationId"))
-	if conversationID == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "conversationId is required"}
-	}
-
-	var req soulMintConversationFinalizeRequest
-	if err := httpx.ParseJSON(ctx, &req); err != nil {
 		return nil, err
 	}
-	if len(req.BoundarySignatures) == 0 {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "boundary_signatures is required"}
+
+	nextVersion := *expectedVersion + 1
+	if finalizeCtx.identity.SelfDescriptionVersion > nextVersion {
+		return nil, &apptheory.AppError{Code: "app.conflict", Message: "agent has advanced beyond this version"}
+	}
+	if finalizeCtx.identity.SelfDescriptionVersion < *expectedVersion {
+		return nil, &apptheory.AppError{Code: "app.conflict", Message: "version conflict; reload and try again"}
+	}
+	decl, appErr := parseAndValidateMintConversationDeclarations(finalizeCtx.conv.ProducedDeclarations)
+	if appErr != nil {
+		return nil, appErr
+	}
+	if verifyErr := verifyMintConversationBoundarySignatures(finalizeCtx.identity.Wallet, decl.Boundaries, req.BoundarySignatures); verifyErr != nil {
+		return nil, verifyErr
 	}
 
+	regMap, regV2, digest, capsNorm, claimLevels, appErr := s.buildMintConversationFinalizeV2Registration(finalizeCtx.agentIDHex, finalizeCtx.identity, decl, req.BoundarySignatures, issuedAt.UTC(), nextVersion, selfSig)
+	if appErr != nil {
+		return nil, appErr
+	}
+	if sigErr := verifyEthereumSignatureBytes(finalizeCtx.identity.Wallet, digest, selfSig); sigErr != nil {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid registration signature"}
+	}
+	return s.finalizeMintConversationPublish(ctx, finalizeCtx, regV2, regMap, decl, req.BoundarySignatures, capsNorm, claimLevels, issuedAt, expectedVersion, selfSig)
+}
+
+// --- Helpers ---
+
+func parseMintConversationCompleteDeclarations(ctx *apptheory.Context) string {
+	var reqBody struct {
+		Declarations json.RawMessage `json:"declarations,omitempty"`
+	}
+	_ = httpx.ParseJSON(ctx, &reqBody)
+
+	raw := bytes.TrimSpace(reqBody.Declarations)
+	if len(raw) == 0 {
+		return ""
+	}
+	if raw[0] != '"' {
+		return strings.TrimSpace(string(raw))
+	}
+
+	var wrapped string
+	if decodeErr := json.Unmarshal(raw, &wrapped); decodeErr != nil {
+		return ""
+	}
+	return strings.TrimSpace(wrapped)
+}
+
+func (s *Server) resolveMintConversationCompletion(
+	ctx *apptheory.Context,
+	regCtx mintConversationRegistrationContext,
+	conv *models.SoulAgentMintConversation,
+	conversationID string,
+	now time.Time,
+) (string, models.AIUsage, *apptheory.AppError) {
+	declarationsJSON := parseMintConversationCompleteDeclarations(ctx)
+	if declarationsJSON != "" {
+		if _, appErr := parseAndValidateMintConversationDeclarations(declarationsJSON); appErr != nil {
+			return "", models.AIUsage{}, appErr
+		}
+		return declarationsJSON, models.AIUsage{}, nil
+	}
+
+	creditsDebited, appErr := s.debitSoulMintConversationCredits(
+		ctx.Context(),
+		regCtx.inst,
+		soulMintConversationExtractModule,
+		conversationID,
+		strings.TrimSpace(ctx.RequestID),
+		soulMintConversationExtractBaseCredits,
+		now,
+		func(tx core.TransactionBuilder, creditsRequested int64) error {
+			update := &models.SoulAgentMintConversation{AgentID: regCtx.agentIDHex, ConversationID: conversationID}
+			_ = update.UpdateKeys()
+			tx.UpdateWithBuilder(update, func(ub core.UpdateBuilder) error {
+				ub.Add("ChargedCredits", creditsRequested)
+				return nil
+			}, tabletheory.IfExists())
+			return nil
+		},
+	)
+	if appErr != nil {
+		return "", models.AIUsage{}, appErr
+	}
+	conv.ChargedCredits += creditsDebited
+
+	decl, usage, appErr := s.extractMintConversationDeclarations(ctx.Context(), regCtx.reg, conv, now)
+	if appErr != nil {
+		return "", models.AIUsage{}, appErr
+	}
+	b, err := json.Marshal(decl)
+	if err != nil {
+		return "", models.AIUsage{}, &apptheory.AppError{Code: "app.internal", Message: "failed to serialize declarations"}
+	}
+	return strings.TrimSpace(string(b)), usage, nil
+}
+
+func (s *Server) persistCompletedMintConversation(ctx context.Context, conv *models.SoulAgentMintConversation, declarationsJSON string, extractUsage models.AIUsage, now time.Time) *apptheory.AppError {
+	if extractUsage != (models.AIUsage{}) {
+		conv.Usage = addAIUsage(conv.Usage, extractUsage)
+	}
+	conv.Status = models.SoulMintConversationStatusCompleted
+	conv.ProducedDeclarations = declarationsJSON
+	conv.CompletedAt = now
+	_ = conv.UpdateKeys()
+	if err := s.store.DB.WithContext(ctx).Model(conv).IfExists().Update("Status", "ProducedDeclarations", "CompletedAt", "Usage"); err != nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "failed to complete conversation"}
+	}
+	return nil
+}
+
+func parseMintConversationFinalizeBeginRequestBody(ctx *apptheory.Context) (soulMintConversationFinalizeBeginRequest, error) {
+	var req soulMintConversationFinalizeBeginRequest
+	if parseErr := httpx.ParseJSON(ctx, &req); parseErr != nil {
+		return req, parseErr
+	}
+	if len(req.BoundarySignatures) == 0 {
+		return req, &apptheory.AppError{Code: "app.bad_request", Message: "boundary_signatures is required"}
+	}
+	return req, nil
+}
+
+func parseMintConversationFinalizeRequestBody(ctx *apptheory.Context) (soulMintConversationFinalizeRequest, time.Time, *int, string, error) {
+	var req soulMintConversationFinalizeRequest
+	if parseErr := httpx.ParseJSON(ctx, &req); parseErr != nil {
+		return req, time.Time{}, nil, "", parseErr
+	}
+	if len(req.BoundarySignatures) == 0 {
+		return req, time.Time{}, nil, "", &apptheory.AppError{Code: "app.bad_request", Message: "boundary_signatures is required"}
+	}
 	issuedAtRaw := strings.TrimSpace(req.IssuedAt)
 	if issuedAtRaw == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "issued_at is required"}
+		return req, time.Time{}, nil, "", &apptheory.AppError{Code: "app.bad_request", Message: "issued_at is required"}
 	}
 	issuedAt, err := time.Parse(time.RFC3339Nano, issuedAtRaw)
 	if err != nil {
 		issuedAt, err = time.Parse(time.RFC3339, issuedAtRaw)
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "issued_at must be an RFC3339 timestamp"}
+		return req, time.Time{}, nil, "", &apptheory.AppError{Code: "app.bad_request", Message: "issued_at must be an RFC3339 timestamp"}
 	}
-
-	expectedVersion := req.ExpectedVersion
-	if expectedVersion == nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "expected_version is required"}
+	if req.ExpectedVersion == nil {
+		return req, time.Time{}, nil, "", &apptheory.AppError{Code: "app.bad_request", Message: "expected_version is required"}
 	}
-	if *expectedVersion < 0 {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "expected_version is invalid"}
+	if *req.ExpectedVersion < 0 {
+		return req, time.Time{}, nil, "", &apptheory.AppError{Code: "app.bad_request", Message: "expected_version is invalid"}
 	}
-
 	selfSig := strings.TrimSpace(req.SelfAttestation)
 	if selfSig == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "self_attestation is required"}
+		return req, time.Time{}, nil, "", &apptheory.AppError{Code: "app.bad_request", Message: "self_attestation is required"}
 	}
+	return req, issuedAt, req.ExpectedVersion, selfSig, nil
+}
 
-	agentIDHex := strings.ToLower(strings.TrimSpace(reg.AgentID))
-	conv, err := getSoulAgentItemBySK[models.SoulAgentMintConversation](s, ctx.Context(), agentIDHex, fmt.Sprintf("MINT_CONVERSATION#%s", conversationID))
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "conversation not found"}
-	}
-	if conv.Status != models.SoulMintConversationStatusCompleted {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "conversation is not completed"}
-	}
-	if strings.TrimSpace(conv.ProducedDeclarations) == "" {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "conversation has no produced declarations"}
-	}
-
-	identity, err := s.getSoulAgentIdentity(ctx.Context(), agentIDHex)
-	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "registration is not yet verified"}
-	}
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-
-	nextVersion := *expectedVersion + 1
-	if identity.SelfDescriptionVersion > nextVersion {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "agent has advanced beyond this version"}
-	}
-	if identity.SelfDescriptionVersion < *expectedVersion {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "version conflict; reload and try again"}
-	}
-	// Allow idempotent retries:
-	// - first-time publish: identity.SelfDescriptionVersion == expectedVersion
-	// - retry after publish: identity.SelfDescriptionVersion == nextVersion
-
-	// Require principal declaration metadata to build a valid v2 registration.
-	if strings.TrimSpace(identity.PrincipalAddress) == "" ||
-		strings.TrimSpace(identity.PrincipalSignature) == "" ||
-		strings.TrimSpace(identity.PrincipalDeclaration) == "" ||
-		strings.TrimSpace(identity.PrincipalDeclaredAt) == "" {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "principal declaration is missing; re-verify registration"}
-	}
-
-	decl, appErr := parseAndValidateMintConversationDeclarations(conv.ProducedDeclarations)
-	if appErr != nil {
-		return nil, appErr
-	}
-
-	// Verify all boundary signatures (EIP-191 over keccak256(bytes(statement))).
-	for i := range decl.Boundaries {
-		b := decl.Boundaries[i]
-		sig := strings.TrimSpace(req.BoundarySignatures[strings.TrimSpace(b.ID)])
+func verifyMintConversationBoundarySignatures(wallet string, boundaries []soul.BoundaryV2, signatures map[string]string) *apptheory.AppError {
+	for i := range boundaries {
+		b := boundaries[i]
+		sig := strings.TrimSpace(signatures[strings.TrimSpace(b.ID)])
 		if sig == "" {
-			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "missing boundary signature for " + strings.TrimSpace(b.ID)}
+			return &apptheory.AppError{Code: "app.bad_request", Message: "missing boundary signature for " + strings.TrimSpace(b.ID)}
 		}
 		statementDigest := crypto.Keccak256([]byte(strings.TrimSpace(b.Statement)))
-		if err := verifyEthereumSignatureBytes(identity.Wallet, statementDigest, sig); err != nil {
-			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid boundary signature for " + strings.TrimSpace(b.ID)}
+		if sigErr := verifyEthereumSignatureBytes(wallet, statementDigest, sig); sigErr != nil {
+			return &apptheory.AppError{Code: "app.bad_request", Message: "invalid boundary signature for " + strings.TrimSpace(b.ID)}
 		}
 	}
+	return nil
+}
 
-	regMap, regV2, digest, capsNorm, claimLevels, appErr := s.buildMintConversationFinalizeV2Registration(agentIDHex, identity, decl, req.BoundarySignatures, issuedAt.UTC(), nextVersion, selfSig)
-	if appErr != nil {
-		return nil, appErr
-	}
-	if err := verifyEthereumSignatureBytes(identity.Wallet, digest, selfSig); err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid registration signature"}
-	}
-
+func (s *Server) finalizeMintConversationPublish(
+	ctx *apptheory.Context,
+	finalizeCtx mintConversationFinalizeContext,
+	regV2 *soul.RegistrationFileV2,
+	regMap map[string]any,
+	decl soulMintConversationProducedDeclarations,
+	boundarySignatures map[string]string,
+	capsNorm []string,
+	claimLevels map[string]string,
+	issuedAt time.Time,
+	expectedVersion *int,
+	selfSig string,
+) (*apptheory.Response, error) {
 	regBytes, err := json.Marshal(regMap)
 	if err != nil {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid registration JSON"}
 	}
-	regSHA256 := func() string {
-		sum := sha256.Sum256(regBytes)
-		return hex.EncodeToString(sum[:])
-	}()
+	sum := sha256.Sum256(regBytes)
+	regSHA256 := hex.EncodeToString(sum[:])
 	changeSummary := extractStringField(regMap, "changeSummary")
+	bounds := buildMintConversationBoundaryModels(finalizeCtx.agentIDHex, decl.Boundaries, boundarySignatures, issuedAt, *expectedVersion+1)
 
-	// Persist boundary records for boundary reads.
-	bounds := make([]*models.SoulAgentBoundary, 0, len(decl.Boundaries))
-	for i := range decl.Boundaries {
-		b := decl.Boundaries[i]
-		sig := strings.TrimSpace(req.BoundarySignatures[strings.TrimSpace(b.ID)])
+	now := time.Now().UTC()
+	publishedVersion, pubErr := s.publishSoulAgentRegistrationV2(ctx.Context(), finalizeCtx.agentIDHex, finalizeCtx.identity, regV2, regBytes, regSHA256, selfSig, changeSummary, capsNorm, claimLevels, expectedVersion, now)
+	if pubErr != nil {
+		return nil, pubErr
+	}
+	if appErr := s.persistMintConversationBoundaries(ctx.Context(), finalizeCtx.identity, bounds); appErr != nil {
+		return nil, appErr
+	}
+	s.tryWriteAuditLog(ctx, &models.AuditLogEntry{
+		Actor:     strings.TrimSpace(ctx.AuthIdentity),
+		Action:    "soul.mint_conversation.finalize",
+		Target:    fmt.Sprintf("soul_agent_identity:%s", finalizeCtx.agentIDHex),
+		RequestID: strings.TrimSpace(ctx.RequestID),
+		CreatedAt: now,
+	})
+	return apptheory.JSON(http.StatusOK, soulMintConversationFinalizeResponse{
+		Version:          "1",
+		Agent:            *finalizeCtx.identity,
+		PublishedVersion: publishedVersion,
+	})
+}
 
+func buildMintConversationBoundaryModels(agentIDHex string, boundaries []soul.BoundaryV2, boundarySignatures map[string]string, issuedAt time.Time, nextVersion int) []*models.SoulAgentBoundary {
+	out := make([]*models.SoulAgentBoundary, 0, len(boundaries))
+	for i := range boundaries {
+		b := boundaries[i]
 		supersedes := ""
 		if b.Supersedes != nil {
 			supersedes = strings.TrimSpace(*b.Supersedes)
 		}
-
 		m := &models.SoulAgentBoundary{
 			AgentID:        agentIDHex,
 			BoundaryID:     strings.TrimSpace(b.ID),
@@ -1019,49 +1081,31 @@ func (s *Server) handleSoulFinalizeMintConversation(ctx *apptheory.Context) (*ap
 			Rationale:      strings.TrimSpace(b.Rationale),
 			AddedInVersion: nextVersion,
 			Supersedes:     supersedes,
-			Signature:      sig,
+			Signature:      strings.TrimSpace(boundarySignatures[strings.TrimSpace(b.ID)]),
 			AddedAt:        issuedAt.UTC(),
 		}
 		_ = m.UpdateKeys()
-		bounds = append(bounds, m)
+		out = append(out, m)
 	}
+	return out
+}
 
-	now := time.Now().UTC()
-	publishedVersion, pubErr := s.publishSoulAgentRegistrationV2(ctx.Context(), agentIDHex, identity, regV2, regBytes, regSHA256, selfSig, changeSummary, capsNorm, claimLevels, expectedVersion, now)
-	if pubErr != nil {
-		return nil, pubErr
-	}
-
+func (s *Server) persistMintConversationBoundaries(ctx context.Context, identity *models.SoulAgentIdentity, bounds []*models.SoulAgentBoundary) *apptheory.AppError {
 	for _, b := range bounds {
 		if b == nil {
 			continue
 		}
-		if err := s.store.DB.WithContext(ctx.Context()).Model(b).IfNotExists().Create(); err != nil {
+		if err := s.store.DB.WithContext(ctx).Model(b).IfNotExists().Create(); err != nil {
 			if theoryErrors.IsConditionFailed(err) {
-				s.tryWriteSoulBoundaryKeywordIndexForBoundary(ctx.Context(), identity, b)
+				s.tryWriteSoulBoundaryKeywordIndexForBoundary(ctx, identity, b)
 				continue
 			}
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to persist boundaries"}
+			return &apptheory.AppError{Code: "app.internal", Message: "failed to persist boundaries"}
 		}
-		s.tryWriteSoulBoundaryKeywordIndexForBoundary(ctx.Context(), identity, b)
+		s.tryWriteSoulBoundaryKeywordIndexForBoundary(ctx, identity, b)
 	}
-
-	s.tryWriteAuditLog(ctx, &models.AuditLogEntry{
-		Actor:     strings.TrimSpace(ctx.AuthIdentity),
-		Action:    "soul.mint_conversation.finalize",
-		Target:    fmt.Sprintf("soul_agent_identity:%s", agentIDHex),
-		RequestID: strings.TrimSpace(ctx.RequestID),
-		CreatedAt: now,
-	})
-
-	return apptheory.JSON(http.StatusOK, soulMintConversationFinalizeResponse{
-		Version:          "1",
-		Agent:            *identity,
-		PublishedVersion: publishedVersion,
-	})
+	return nil
 }
-
-// --- Helpers ---
 
 func (s *Server) buildMintConversationFinalizeV2Registration(
 	agentIDHex string,
@@ -1085,89 +1129,13 @@ func (s *Server) buildMintConversationFinalizeV2Registration(
 
 	issuedAt = issuedAt.UTC()
 	issuedAtStr := issuedAt.Format(time.RFC3339Nano)
-
-	// Map pending -> active for v2 lifecycle (spec has no "pending").
-	lifecycleStatus := strings.ToLower(strings.TrimSpace(identity.LifecycleStatus))
-	if lifecycleStatus == "" {
-		lifecycleStatus = strings.ToLower(strings.TrimSpace(identity.Status))
-	}
-	if lifecycleStatus == models.SoulAgentStatusPending {
-		lifecycleStatus = models.SoulAgentStatusActive
-	}
-	if lifecycleStatus == "" {
-		lifecycleStatus = models.SoulAgentStatusActive
-	}
-
-	principal := map[string]any{
-		"type":        "individual",
-		"identifier":  strings.TrimSpace(identity.PrincipalAddress),
-		"declaration": strings.TrimSpace(identity.PrincipalDeclaration),
-		"signature":   strings.TrimSpace(identity.PrincipalSignature),
-		"declaredAt":  strings.TrimSpace(identity.PrincipalDeclaredAt),
-	}
-
-	selfDesc := map[string]any{
-		"purpose":    strings.TrimSpace(decl.SelfDescription.Purpose),
-		"authoredBy": strings.ToLower(strings.TrimSpace(decl.SelfDescription.AuthoredBy)),
-	}
-	if strings.TrimSpace(decl.SelfDescription.Constraints) != "" {
-		selfDesc["constraints"] = strings.TrimSpace(decl.SelfDescription.Constraints)
-	}
-	if strings.TrimSpace(decl.SelfDescription.Commitments) != "" {
-		selfDesc["commitments"] = strings.TrimSpace(decl.SelfDescription.Commitments)
-	}
-	if strings.TrimSpace(decl.SelfDescription.Limitations) != "" {
-		selfDesc["limitations"] = strings.TrimSpace(decl.SelfDescription.Limitations)
-	}
-	if strings.TrimSpace(decl.SelfDescription.MintingModel) != "" {
-		selfDesc["mintingModel"] = strings.TrimSpace(decl.SelfDescription.MintingModel)
-	}
-
-	capsAny := make([]any, 0, len(decl.Capabilities))
-	for i := range decl.Capabilities {
-		c := decl.Capabilities[i]
-		item := map[string]any{
-			"capability": strings.TrimSpace(c.Capability),
-			"scope":      strings.TrimSpace(c.Scope),
-			"claimLevel": strings.ToLower(strings.TrimSpace(c.ClaimLevel)),
-		}
-		if c.Constraints != nil && len(c.Constraints) > 0 {
-			item["constraints"] = c.Constraints
-		}
-		if strings.TrimSpace(c.LastValidated) != "" {
-			item["lastValidated"] = strings.TrimSpace(c.LastValidated)
-		}
-		if strings.TrimSpace(c.ValidationRef) != "" {
-			item["validationRef"] = strings.TrimSpace(c.ValidationRef)
-		}
-		if strings.TrimSpace(c.DegradesTo) != "" {
-			item["degradesTo"] = strings.TrimSpace(c.DegradesTo)
-		}
-		capsAny = append(capsAny, item)
-	}
-
-	boundsAny := make([]any, 0, len(decl.Boundaries))
-	for i := range decl.Boundaries {
-		b := decl.Boundaries[i]
-		sig := strings.TrimSpace(boundarySignatures[strings.TrimSpace(b.ID)])
-		item := map[string]any{
-			"id":             strings.TrimSpace(b.ID),
-			"category":       strings.ToLower(strings.TrimSpace(b.Category)),
-			"statement":      strings.TrimSpace(b.Statement),
-			"addedAt":        issuedAtStr,
-			"addedInVersion": strconv.Itoa(nextVersion),
-			"signature":      sig,
-		}
-		if strings.TrimSpace(b.Rationale) != "" {
-			item["rationale"] = strings.TrimSpace(b.Rationale)
-		}
-		if b.Supersedes != nil && strings.TrimSpace(*b.Supersedes) != "" {
-			item["supersedes"] = strings.TrimSpace(*b.Supersedes)
-		}
-		boundsAny = append(boundsAny, item)
-	}
-
+	lifecycleStatus := mintConversationFinalizeLifecycleStatus(identity)
+	principal := buildMintConversationFinalizePrincipal(identity)
+	selfDesc := buildMintConversationFinalizeSelfDescription(decl.SelfDescription)
+	capsAny := buildMintConversationFinalizeCapabilities(decl.Capabilities)
+	boundsAny := buildMintConversationFinalizeBoundaries(decl.Boundaries, boundarySignatures, issuedAtStr, nextVersion)
 	changeSummary := fmt.Sprintf("Publish mint conversation declarations (v%d)", nextVersion)
+	transparency := nonNilMintConversationTransparency(decl.Transparency)
 
 	reg = map[string]any{
 		"version":         "2",
@@ -1179,7 +1147,7 @@ func (s *Server) buildMintConversationFinalizeV2Registration(
 		"selfDescription": selfDesc,
 		"capabilities":    capsAny,
 		"boundaries":      boundsAny,
-		"transparency":    decl.Transparency,
+		"transparency":    transparency,
 		"endpoints":       map[string]any{},
 		"lifecycle": map[string]any{
 			"status":          lifecycleStatus,
@@ -1197,20 +1165,13 @@ func (s *Server) buildMintConversationFinalizeV2Registration(
 		reg["previousVersionUri"] = fmt.Sprintf("s3://%s/%s", strings.TrimSpace(s.cfg.SoulPackBucketName), prevKey)
 	}
 
-	if reg["transparency"] == nil {
-		reg["transparency"] = map[string]any{}
-	}
-
 	regBytes, err := json.Marshal(reg)
 	if err != nil {
 		return nil, nil, nil, nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid registration JSON"}
 	}
-	parsed, err := soul.ParseRegistrationFileV2(regBytes)
-	if err != nil {
-		return nil, nil, nil, nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid v2 registration schema"}
-	}
-	if err := parsed.Validate(); err != nil {
-		return nil, nil, nil, nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
+	parsed, appErr := parseMintConversationFinalizeV2Registration(regBytes)
+	if appErr != nil {
+		return nil, nil, nil, nil, nil, appErr
 	}
 
 	digest, appErr = computeSoulRegistrationSelfAttestationDigest(reg)
@@ -1229,38 +1190,115 @@ func (s *Server) buildMintConversationFinalizeV2Registration(
 	return reg, parsed, digest, capsNorm, claimLevels, nil
 }
 
-func buildMintConversationSystemPrompt(reg *models.SoulAgentRegistration) string {
-	sanitizeInline := func(raw string, maxLen int) string {
-		raw = strings.TrimSpace(raw)
-		if raw == "" {
-			return ""
-		}
-		// Remove control characters / newlines to reduce prompt injection surface.
-		raw = strings.Map(func(r rune) rune {
-			if r < 0x20 || r == 0x7f {
-				return ' '
-			}
-			return r
-		}, raw)
-		if maxLen > 0 && len(raw) > maxLen {
-			raw = raw[:maxLen]
-		}
-		return raw
+func mintConversationFinalizeLifecycleStatus(identity *models.SoulAgentIdentity) string {
+	lifecycleStatus := strings.ToLower(strings.TrimSpace(identity.LifecycleStatus))
+	if lifecycleStatus == "" {
+		lifecycleStatus = strings.ToLower(strings.TrimSpace(identity.Status))
 	}
-	formatQuoted := func(raw string) string {
-		raw = sanitizeInline(raw, 256)
-		if raw == "" {
-			return ""
-		}
-		// JSON-string quoting is a simple, robust way to avoid untrusted text being interpreted
-		// as new instructions in the prompt.
-		b, err := json.Marshal(raw)
-		if err != nil {
-			return strconv.Quote(raw)
-		}
-		return string(b)
+	if lifecycleStatus == models.SoulAgentStatusPending || lifecycleStatus == "" {
+		return models.SoulAgentStatusActive
 	}
+	return lifecycleStatus
+}
 
+func buildMintConversationFinalizePrincipal(identity *models.SoulAgentIdentity) map[string]any {
+	return map[string]any{
+		"type":        "individual",
+		"identifier":  strings.TrimSpace(identity.PrincipalAddress),
+		"declaration": strings.TrimSpace(identity.PrincipalDeclaration),
+		"signature":   strings.TrimSpace(identity.PrincipalSignature),
+		"declaredAt":  strings.TrimSpace(identity.PrincipalDeclaredAt),
+	}
+}
+
+func buildMintConversationFinalizeSelfDescription(selfDesc soul.SelfDescriptionV2) map[string]any {
+	out := map[string]any{
+		"purpose":    strings.TrimSpace(selfDesc.Purpose),
+		"authoredBy": strings.ToLower(strings.TrimSpace(selfDesc.AuthoredBy)),
+	}
+	if strings.TrimSpace(selfDesc.Constraints) != "" {
+		out["constraints"] = strings.TrimSpace(selfDesc.Constraints)
+	}
+	if strings.TrimSpace(selfDesc.Commitments) != "" {
+		out["commitments"] = strings.TrimSpace(selfDesc.Commitments)
+	}
+	if strings.TrimSpace(selfDesc.Limitations) != "" {
+		out["limitations"] = strings.TrimSpace(selfDesc.Limitations)
+	}
+	if strings.TrimSpace(selfDesc.MintingModel) != "" {
+		out["mintingModel"] = strings.TrimSpace(selfDesc.MintingModel)
+	}
+	return out
+}
+
+func buildMintConversationFinalizeCapabilities(capabilities []soul.CapabilityV2) []any {
+	out := make([]any, 0, len(capabilities))
+	for i := range capabilities {
+		c := capabilities[i]
+		item := map[string]any{
+			"capability": strings.TrimSpace(c.Capability),
+			"scope":      strings.TrimSpace(c.Scope),
+			"claimLevel": strings.ToLower(strings.TrimSpace(c.ClaimLevel)),
+		}
+		if len(c.Constraints) > 0 {
+			item["constraints"] = c.Constraints
+		}
+		if strings.TrimSpace(c.LastValidated) != "" {
+			item["lastValidated"] = strings.TrimSpace(c.LastValidated)
+		}
+		if strings.TrimSpace(c.ValidationRef) != "" {
+			item["validationRef"] = strings.TrimSpace(c.ValidationRef)
+		}
+		if strings.TrimSpace(c.DegradesTo) != "" {
+			item["degradesTo"] = strings.TrimSpace(c.DegradesTo)
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func buildMintConversationFinalizeBoundaries(boundaries []soul.BoundaryV2, boundarySignatures map[string]string, issuedAt string, nextVersion int) []any {
+	out := make([]any, 0, len(boundaries))
+	for i := range boundaries {
+		b := boundaries[i]
+		item := map[string]any{
+			"id":             strings.TrimSpace(b.ID),
+			"category":       strings.ToLower(strings.TrimSpace(b.Category)),
+			"statement":      strings.TrimSpace(b.Statement),
+			"addedAt":        issuedAt,
+			"addedInVersion": strconv.Itoa(nextVersion),
+			"signature":      strings.TrimSpace(boundarySignatures[strings.TrimSpace(b.ID)]),
+		}
+		if strings.TrimSpace(b.Rationale) != "" {
+			item["rationale"] = strings.TrimSpace(b.Rationale)
+		}
+		if b.Supersedes != nil && strings.TrimSpace(*b.Supersedes) != "" {
+			item["supersedes"] = strings.TrimSpace(*b.Supersedes)
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func nonNilMintConversationTransparency(transparency map[string]any) map[string]any {
+	if transparency == nil {
+		return map[string]any{}
+	}
+	return transparency
+}
+
+func parseMintConversationFinalizeV2Registration(regBytes []byte) (*soul.RegistrationFileV2, *apptheory.AppError) {
+	parsed, err := soul.ParseRegistrationFileV2(regBytes)
+	if err != nil {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid v2 registration schema"}
+	}
+	if err := parsed.Validate(); err != nil {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
+	}
+	return parsed, nil
+}
+
+func buildMintConversationSystemPrompt(reg *models.SoulAgentRegistration) string {
 	var sb strings.Builder
 	sb.WriteString(`You are a Soul Registry minting assistant. Your role is to help an AI agent define its identity through structured conversation before its soul is minted on-chain.
 
@@ -1285,24 +1323,53 @@ When you feel the conversation has covered all four areas sufficiently, summariz
 
 	sb.WriteString("Agent registration context:\n")
 	if reg.DomainNormalized != "" {
-		sb.WriteString(fmt.Sprintf("- Domain: %s\n", formatQuoted(reg.DomainNormalized)))
+		fmt.Fprintf(&sb, "- Domain: %s\n", quoteMintConversationPromptValue(reg.DomainNormalized))
 	}
 	if reg.LocalID != "" {
-		sb.WriteString(fmt.Sprintf("- Local ID: %s\n", formatQuoted(reg.LocalID)))
+		fmt.Fprintf(&sb, "- Local ID: %s\n", quoteMintConversationPromptValue(reg.LocalID))
 	}
 	if len(reg.Capabilities) > 0 {
 		caps := make([]string, 0, len(reg.Capabilities))
 		for _, c := range reg.Capabilities {
-			c = sanitizeInline(c, 128)
+			c = sanitizeMintConversationPromptInline(c, 128)
 			if c != "" {
 				caps = append(caps, c)
 			}
 		}
 		b, _ := json.Marshal(caps)
-		sb.WriteString(fmt.Sprintf("- Declared capabilities: %s\n", string(b)))
+		fmt.Fprintf(&sb, "- Declared capabilities: %s\n", string(b))
 	}
 
 	return sb.String()
+}
+
+func sanitizeMintConversationPromptInline(raw string, maxLen int) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	raw = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, raw)
+	if maxLen > 0 && len(raw) > maxLen {
+		raw = raw[:maxLen]
+	}
+	return raw
+}
+
+func quoteMintConversationPromptValue(raw string) string {
+	raw = sanitizeMintConversationPromptInline(raw, 256)
+	if raw == "" {
+		return ""
+	}
+	b, err := json.Marshal(raw)
+	if err != nil {
+		return strconv.Quote(raw)
+	}
+	return string(b)
 }
 
 func (s *Server) apiKeyForMintConversationModel(ctx context.Context, modelSet string) (string, *apptheory.AppError) {
@@ -1417,7 +1484,7 @@ func buildMintConversationProducedDeclarations(draft llm.MintConversationDeclara
 
 	caps := make([]soul.CapabilityV2, 0, len(draft.Capabilities))
 	for _, c := range draft.Capabilities {
-		c.ClaimLevel = "self-declared"
+		c.ClaimLevel = soulClaimLevelSelfDeclared
 		if strings.TrimSpace(c.Capability) == "" || strings.TrimSpace(c.Scope) == "" {
 			continue
 		}

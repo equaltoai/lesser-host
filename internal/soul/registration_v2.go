@@ -131,51 +131,64 @@ func (r *RegistrationFileV2) Validate() error {
 	if r == nil {
 		return errRegistrationNil
 	}
-	if strings.TrimSpace(r.Version) != "2" {
-		return errors.New("version must be \"2\"")
+	if err := validateRegistrationVersion(r.Version, "2"); err != nil {
+		return err
 	}
+	if err := validateRegistrationIdentity(r.AgentID, r.Domain, r.LocalID, r.Wallet); err != nil {
+		return err
+	}
+	if err := r.validateCoreSections(); err != nil {
+		return err
+	}
+	if err := validateOptionalPreviousVersionURI(r.PreviousVersionURI); err != nil {
+		return err
+	}
+	if err := r.Attestations.Validate(); err != nil {
+		return fmt.Errorf("attestations: %w", err)
+	}
+	return validateRegistrationTimestamps(r.Created, r.Updated)
+}
 
-	agentID := strings.ToLower(strings.TrimSpace(r.AgentID))
-	if !regexAgentIDHex64.MatchString(agentID) {
+func validateRegistrationVersion(version string, expected string) error {
+	if strings.TrimSpace(version) != expected {
+		return fmt.Errorf("version must be %q", expected)
+	}
+	return nil
+}
+
+func validateRegistrationIdentity(agentID string, domain string, localID string, wallet string) error {
+	if !regexAgentIDHex64.MatchString(strings.ToLower(strings.TrimSpace(agentID))) {
 		return errors.New("agentId must be a 0x-prefixed 32-byte hex string")
 	}
 
-	domain, err := domains.NormalizeDomain(r.Domain)
-	if err != nil || domain == "" {
+	normalizedDomain, err := domains.NormalizeDomain(domain)
+	if err != nil || normalizedDomain == "" {
 		return errors.New("domain is invalid")
 	}
 
-	local, err := NormalizeLocalAgentID(r.LocalID)
-	if err != nil || local == "" {
+	normalizedLocalID, err := NormalizeLocalAgentID(localID)
+	if err != nil || normalizedLocalID == "" {
 		return errors.New("localId is invalid")
 	}
 
-	wallet := strings.TrimSpace(r.Wallet)
-	if !common.IsHexAddress(wallet) {
+	if !common.IsHexAddress(strings.TrimSpace(wallet)) {
 		return errors.New("wallet is invalid")
 	}
+	return nil
+}
 
+func (r *RegistrationFileV2) validateCoreSections() error {
 	if err := r.Principal.Validate(); err != nil {
 		return fmt.Errorf("principal: %w", err)
 	}
 	if err := r.SelfDescription.Validate(); err != nil {
 		return fmt.Errorf("selfDescription: %w", err)
 	}
-	if len(r.Capabilities) == 0 {
-		return errors.New("capabilities must be a non-empty array")
+	if err := validateCapabilitiesV2(r.Capabilities); err != nil {
+		return err
 	}
-	for i := range r.Capabilities {
-		if err := r.Capabilities[i].Validate(); err != nil {
-			return fmt.Errorf("capabilities[%d]: %w", i, err)
-		}
-	}
-	if len(r.Boundaries) == 0 {
-		return errors.New("boundaries must be a non-empty array")
-	}
-	for i := range r.Boundaries {
-		if err := r.Boundaries[i].Validate(); err != nil {
-			return fmt.Errorf("boundaries[%d]: %w", i, err)
-		}
+	if err := validateBoundariesV2(r.Boundaries); err != nil {
+		return err
 	}
 	if r.Transparency == nil {
 		return errors.New("transparency is required")
@@ -186,30 +199,54 @@ func (r *RegistrationFileV2) Validate() error {
 	if err := r.Lifecycle.Validate(); err != nil {
 		return fmt.Errorf("lifecycle: %w", err)
 	}
-	if r.PreviousVersionURI != nil && strings.TrimSpace(*r.PreviousVersionURI) != "" {
-		if _, err := url.ParseRequestURI(strings.TrimSpace(*r.PreviousVersionURI)); err != nil {
-			return errors.New("previousVersionUri is invalid")
+	return nil
+}
+
+func validateCapabilitiesV2(capabilities []CapabilityV2) error {
+	if len(capabilities) == 0 {
+		return errors.New("capabilities must be a non-empty array")
+	}
+	for i := range capabilities {
+		if err := capabilities[i].Validate(); err != nil {
+			return fmt.Errorf("capabilities[%d]: %w", i, err)
 		}
 	}
-	if err := r.Attestations.Validate(); err != nil {
-		return fmt.Errorf("attestations: %w", err)
+	return nil
+}
+
+func validateBoundariesV2(boundaries []BoundaryV2) error {
+	if len(boundaries) == 0 {
+		return errors.New("boundaries must be a non-empty array")
 	}
-	if err := validateRFC3339(r.Created); err != nil {
+	for i := range boundaries {
+		if err := boundaries[i].Validate(); err != nil {
+			return fmt.Errorf("boundaries[%d]: %w", i, err)
+		}
+	}
+	return nil
+}
+
+func validateOptionalPreviousVersionURI(previousVersionURI *string) error {
+	if previousVersionURI == nil {
+		return nil
+	}
+	uri := strings.TrimSpace(*previousVersionURI)
+	if uri == "" {
+		return nil
+	}
+	if _, err := url.ParseRequestURI(uri); err != nil {
+		return errors.New("previousVersionUri is invalid")
+	}
+	return nil
+}
+
+func validateRegistrationTimestamps(created string, updated string) error {
+	if err := validateRFC3339(created); err != nil {
 		return fmt.Errorf("created: %w", err)
 	}
-	if err := validateRFC3339(r.Updated); err != nil {
+	if err := validateRFC3339(updated); err != nil {
 		return fmt.Errorf("updated: %w", err)
 	}
-
-	// Enforce normalized identity fields.
-	if !strings.EqualFold(domain, strings.TrimSpace(r.Domain)) {
-		// Allow either normalized or original; but require it normalizes to same.
-		// (No-op: already validated via NormalizeDomain.)
-	}
-	if !strings.EqualFold(local, strings.TrimSpace(r.LocalID)) {
-		// Same note as domain.
-	}
-
 	return nil
 }
 

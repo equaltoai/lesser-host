@@ -19,6 +19,42 @@ import (
 	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
+const (
+	commSendTelnyxMessageID    = "telnyx-out-1"
+	commSendTestEmailRecipient = "alice@example.com"
+)
+
+func allowCommQueryOps(queries ...*ttmocks.MockQuery) {
+	for _, q := range queries {
+		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
+		q.On("ConsistentRead").Return(q).Maybe()
+		q.On("IfExists").Return(q).Maybe()
+		q.On("Update", mock.Anything).Return(nil).Maybe()
+		q.On("OrderBy", mock.Anything, mock.Anything).Return(q).Maybe()
+		q.On("Limit", mock.Anything).Return(q).Maybe()
+		q.On("All", mock.Anything).Return(nil).Maybe()
+		q.On("Create").Return(nil).Maybe()
+	}
+}
+
+func assertSoulCommSendResponse(t *testing.T, resp *apptheory.Response, wantStatus string, wantProvider string, wantChannel string, wantProviderMessageID string) {
+	t.Helper()
+	if resp.Status != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body=%q)", resp.Status, string(resp.Body))
+	}
+
+	var out soulCommSendResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Status != wantStatus || out.Provider != wantProvider || out.Channel != wantChannel {
+		t.Fatalf("unexpected response: %#v", out)
+	}
+	if wantProviderMessageID != "" && out.ProviderMessageID != wantProviderMessageID {
+		t.Fatalf("expected provider message id %q, got %q", wantProviderMessageID, out.ProviderMessageID)
+	}
+}
+
 func TestHandleSoulCommSend_UnauthorizedWithoutBearer(t *testing.T) {
 	t.Parallel()
 
@@ -40,8 +76,8 @@ func TestHandleSoulCommSend_UnauthorizedWithoutBearer(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected AppTheoryError, got %T", err)
 	}
-	if appErr.Code != "comm.unauthorized" || appErr.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("expected comm.unauthorized/401, got %q/%d", appErr.Code, appErr.StatusCode)
+	if appErr.Code != commCodeUnauthorized || appErr.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected %s/401, got %q/%d", commCodeUnauthorized, appErr.Code, appErr.StatusCode)
 	}
 }
 
@@ -61,22 +97,13 @@ func TestHandleSoulCommSend_BoundaryViolationRequiresInReplyTo(t *testing.T) {
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentChannel")).Return(qChannel).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentCommActivity")).Return(qCommActivity).Maybe()
 
-	for _, q := range []*ttmocks.MockQuery{qKey, qDomain, qIdentity, qChannel, qCommActivity} {
-		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
-		q.On("ConsistentRead").Return(q).Maybe()
-		q.On("IfExists").Return(q).Maybe()
-		q.On("Update", mock.Anything).Return(nil).Maybe()
-		q.On("OrderBy", mock.Anything, mock.Anything).Return(q).Maybe()
-		q.On("Limit", mock.Anything).Return(q).Maybe()
-		q.On("All", mock.Anything).Return(nil).Maybe()
-		q.On("Create").Return(nil).Maybe()
-	}
+	allowCommQueryOps(qKey, qDomain, qIdentity, qChannel, qCommActivity)
 	qKey.On("First", mock.AnythingOfType("*models.InstanceKey")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.InstanceKey](t, args, 0)
 		*dest = models.InstanceKey{ID: "k1", InstanceSlug: "inst1", CreatedAt: time.Now().Add(-time.Hour).UTC()}
 	}).Once()
 
-	agentID := "0x8db124b1d48e366002db4e61cc1501eeb8561e1ef06fd6f9abf9f984501d13ab"
+	agentID := soulLifecycleTestAgentIDHex
 
 	qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
@@ -100,7 +127,7 @@ func TestHandleSoulCommSend_BoundaryViolationRequiresInReplyTo(t *testing.T) {
 		*dest = models.SoulAgentChannel{
 			AgentID:       agentID,
 			ChannelType:   models.SoulChannelTypeEmail,
-			Identifier:    "agent-alice@lessersoul.ai",
+			Identifier:    provisionTestEmailAddress,
 			Verified:      true,
 			ProvisionedAt: time.Now().Add(-time.Hour).UTC(),
 			Status:        models.SoulChannelStatusActive,
@@ -171,23 +198,14 @@ func TestHandleSoulCommSend_SendsEmailAndRecordsStatus(t *testing.T) {
 	db.On("Model", mock.AnythingOfType("*models.SoulCommMessageStatus")).Return(qStatus).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.AuditLogEntry")).Return(qAudit).Maybe()
 
-	for _, q := range []*ttmocks.MockQuery{qKey, qDomain, qIdentity, qChannel, qCommActivity, qStatus, qAudit} {
-		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
-		q.On("OrderBy", mock.Anything, mock.Anything).Return(q).Maybe()
-		q.On("Limit", mock.Anything).Return(q).Maybe()
-		q.On("IfExists").Return(q).Maybe()
-		q.On("ConsistentRead").Return(q).Maybe()
-		q.On("Update", mock.Anything).Return(nil).Maybe()
-		q.On("Create").Return(nil).Maybe()
-		q.On("All", mock.Anything).Return(nil).Maybe()
-	}
+	allowCommQueryOps(qKey, qDomain, qIdentity, qChannel, qCommActivity, qStatus, qAudit)
 
 	qKey.On("First", mock.AnythingOfType("*models.InstanceKey")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.InstanceKey](t, args, 0)
 		*dest = models.InstanceKey{ID: "k1", InstanceSlug: "inst1", CreatedAt: time.Now().Add(-time.Hour).UTC()}
 	}).Once()
 
-	agentID := "0x8db124b1d48e366002db4e61cc1501eeb8561e1ef06fd6f9abf9f984501d13ab"
+	agentID := soulLifecycleTestAgentIDHex
 
 	qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
@@ -211,7 +229,7 @@ func TestHandleSoulCommSend_SendsEmailAndRecordsStatus(t *testing.T) {
 		*dest = models.SoulAgentChannel{
 			AgentID:       agentID,
 			ChannelType:   models.SoulChannelTypeEmail,
-			Identifier:    "agent-alice@lessersoul.ai",
+			Identifier:    provisionTestEmailAddress,
 			Verified:      true,
 			ProvisionedAt: time.Now().Add(-time.Hour).UTC(),
 			Status:        models.SoulChannelStatusActive,
@@ -234,10 +252,10 @@ func TestHandleSoulCommSend_SendsEmailAndRecordsStatus(t *testing.T) {
 		},
 		migaduSendSMTP: func(ctx context.Context, username string, password string, from string, recipients []string, data []byte) error {
 			sendCalled = true
-			if username != "agent-alice@lessersoul.ai" || password != "pw" || from != "agent-alice@lessersoul.ai" {
+			if username != provisionTestEmailAddress || password != "pw" || from != provisionTestEmailAddress {
 				t.Fatalf("unexpected smtp args username=%q password=%q from=%q", username, password, from)
 			}
-			if len(recipients) != 1 || recipients[0] != "alice@example.com" {
+			if len(recipients) != 1 || recipients[0] != commSendTestEmailRecipient {
 				t.Fatalf("unexpected recipients: %#v", recipients)
 			}
 			if !strings.Contains(string(data), "Subject: Hello") {
@@ -250,7 +268,7 @@ func TestHandleSoulCommSend_SendsEmailAndRecordsStatus(t *testing.T) {
 	body, _ := json.Marshal(map[string]any{
 		"channel":   "email",
 		"agentId":   agentID,
-		"to":        "alice@example.com",
+		"to":        commSendTestEmailRecipient,
 		"subject":   "Hello",
 		"body":      "Test",
 		"inReplyTo": "comm-msg-xyz",
@@ -270,19 +288,14 @@ func TestHandleSoulCommSend_SendsEmailAndRecordsStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if resp.Status != http.StatusOK {
-		t.Fatalf("expected 200, got %d (body=%q)", resp.Status, string(resp.Body))
-	}
 	if !sendCalled {
 		t.Fatalf("expected smtp send called")
 	}
+	assertSoulCommSendResponse(t, resp, commMetricSent, commDeliveryProviderMigadu, commChannelEmail, "")
 
 	var out soulCommSendResponse
 	if err := json.Unmarshal(resp.Body, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
-	}
-	if out.Status != "sent" || out.Provider != "migadu" || out.Channel != "email" {
-		t.Fatalf("unexpected response: %#v", out)
 	}
 	if !strings.HasPrefix(out.MessageID, "comm-msg-") {
 		t.Fatalf("expected comm message id, got %q", out.MessageID)
@@ -314,16 +327,7 @@ func TestHandleSoulCommSend_SendsSMSAndDebitsCredits(t *testing.T) {
 	db.On("Model", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(qBudget).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.AuditLogEntry")).Return(qAudit).Maybe()
 
-	for _, q := range []*ttmocks.MockQuery{qKey, qDomain, qIdentity, qChannel, qCommActivity, qStatus, qInstance, qBudget, qAudit} {
-		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
-		q.On("OrderBy", mock.Anything, mock.Anything).Return(q).Maybe()
-		q.On("Limit", mock.Anything).Return(q).Maybe()
-		q.On("IfExists").Return(q).Maybe()
-		q.On("ConsistentRead").Return(q).Maybe()
-		q.On("Update", mock.Anything).Return(nil).Maybe()
-		q.On("Create").Return(nil).Maybe()
-		q.On("All", mock.Anything).Return(nil).Maybe()
-	}
+	allowCommQueryOps(qKey, qDomain, qIdentity, qChannel, qCommActivity, qStatus, qInstance, qBudget, qAudit)
 
 	db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Once()
 
@@ -332,7 +336,7 @@ func TestHandleSoulCommSend_SendsSMSAndDebitsCredits(t *testing.T) {
 		*dest = models.InstanceKey{ID: "k1", InstanceSlug: "inst1", CreatedAt: time.Now().Add(-time.Hour).UTC()}
 	}).Once()
 
-	agentID := "0x8db124b1d48e366002db4e61cc1501eeb8561e1ef06fd6f9abf9f984501d13ab"
+	agentID := soulLifecycleTestAgentIDHex
 
 	qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
@@ -388,7 +392,7 @@ func TestHandleSoulCommSend_SendsSMSAndDebitsCredits(t *testing.T) {
 			if from != "+15550142" || to != "+15550143" || text != "Test" {
 				t.Fatalf("unexpected sms args from=%q to=%q text=%q", from, to, text)
 			}
-			return "telnyx-out-1", nil
+			return commSendTelnyxMessageID, nil
 		},
 	}
 
@@ -414,23 +418,10 @@ func TestHandleSoulCommSend_SendsSMSAndDebitsCredits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if resp.Status != http.StatusOK {
-		t.Fatalf("expected 200, got %d (body=%q)", resp.Status, string(resp.Body))
-	}
 	if !sendCalled {
 		t.Fatalf("expected telnyx send called")
 	}
-
-	var out soulCommSendResponse
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if out.Status != "sent" || out.Provider != "telnyx" || out.Channel != "sms" {
-		t.Fatalf("unexpected response: %#v", out)
-	}
-	if out.ProviderMessageID != "telnyx-out-1" {
-		t.Fatalf("expected provider message id, got %q", out.ProviderMessageID)
-	}
+	assertSoulCommSendResponse(t, resp, commMetricSent, commDeliveryProviderTelnyx, commChannelSMS, commSendTelnyxMessageID)
 }
 
 func TestHandleSoulCommSend_SMSInsufficientCreditsBlocksSend(t *testing.T) {
@@ -469,7 +460,7 @@ func TestHandleSoulCommSend_SMSInsufficientCreditsBlocksSend(t *testing.T) {
 		*dest = models.InstanceKey{ID: "k1", InstanceSlug: "inst1", CreatedAt: time.Now().Add(-time.Hour).UTC()}
 	}).Once()
 
-	agentID := "0x8db124b1d48e366002db4e61cc1501eeb8561e1ef06fd6f9abf9f984501d13ab"
+	agentID := soulLifecycleTestAgentIDHex
 
 	qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
@@ -522,7 +513,7 @@ func TestHandleSoulCommSend_SMSInsufficientCreditsBlocksSend(t *testing.T) {
 		cfg:   config.Config{SoulEnabled: true, Stage: "lab"},
 		telnyxSendSMS: func(ctx context.Context, from string, to string, text string) (string, error) {
 			sendCalled = true
-			return "telnyx-out-1", nil
+			return commSendTelnyxMessageID, nil
 		},
 	}
 
@@ -587,7 +578,7 @@ func TestHandleSoulCommStatus_ReturnsStatusRecord(t *testing.T) {
 		*dest = models.InstanceKey{ID: "k1", InstanceSlug: "inst1", CreatedAt: time.Now().Add(-time.Hour).UTC()}
 	}).Once()
 
-	agentID := "0x8db124b1d48e366002db4e61cc1501eeb8561e1ef06fd6f9abf9f984501d13ab"
+	agentID := soulLifecycleTestAgentIDHex
 	messageID := "comm-msg-test"
 
 	qStatus.On("First", mock.AnythingOfType("*models.SoulCommMessageStatus")).Return(nil).Run(func(args mock.Arguments) {
@@ -646,7 +637,7 @@ func TestHandleSoulCommStatus_ReturnsStatusRecord(t *testing.T) {
 	if err := json.Unmarshal(resp.Body, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if out.MessageID != messageID || out.Status != "sent" || out.AgentID != strings.ToLower(agentID) {
+	if out.MessageID != messageID || out.Status != commMetricSent || out.AgentID != strings.ToLower(agentID) {
 		t.Fatalf("unexpected response: %#v", out)
 	}
 }

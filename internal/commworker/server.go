@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/tls"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -30,8 +30,12 @@ import (
 )
 
 const (
-	migaduSMTPHost = "smtp.migadu.com"
-	migaduSMTPPort = "587"
+	migaduSMTPHost    = "smtp.migadu.com"
+	migaduSMTPPort    = "587"
+	instanceStageLive = "live"
+	instanceStageDev  = "dev"
+
+	instanceStageStaging = "staging"
 )
 
 type stsAPI interface {
@@ -72,7 +76,7 @@ func NewServer(cfg config.Config, st commStore, stsClient stsAPI, secretsClient 
 		ssmGetParameter: func(ctx context.Context, name string) (string, error) {
 			return hostsecrets.GetSSMParameter(ctx, nil, name)
 		},
-		migaduSendSMTP:  defaultMigaduSendSMTP,
+		migaduSendSMTP: defaultMigaduSendSMTP,
 	}
 	s.fetchInstanceKeyPlaintext = s.defaultFetchInstanceKeyPlaintext
 	s.deliverNotification = defaultDeliverNotification
@@ -113,7 +117,7 @@ func (s *Server) handleCommQueueMessage(ctx *apptheory.EventContext, msg events.
 	return s.processInbound(ctx.Context(), ctx.RequestID, job)
 }
 
-func (s *Server) processInbound(ctx context.Context, requestID string, msg QueueMessage) error {
+func (s *Server) processInbound(ctx context.Context, _ string, msg QueueMessage) error {
 	if s == nil || s.store == nil {
 		return fmt.Errorf("store not initialized")
 	}
@@ -121,77 +125,145 @@ func (s *Server) processInbound(ctx context.Context, requestID string, msg Queue
 	notif := msg.Notification
 	channel := strings.ToLower(strings.TrimSpace(notif.Channel))
 
-	agentID, ok, err := s.resolveRecipient(ctx, channel, notif.To)
+	agentID, identity, ok, err := s.resolveInboundIdentity(ctx, channel, notif.To)
 	if err != nil {
 		return err
 	}
-	if !ok || agentID == "" {
+	if !ok {
 		return nil
+	}
+
+	if s.handleInactiveInbound(ctx, agentID, channel, notif, identity) {
+		return nil
+	}
+
+	prefs, ok, err := s.loadInboundPreferences(ctx, agentID, channel, notif.To)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
+
+	handled, err := s.handleDeferredInbound(ctx, agentID, channel, notif, prefs)
+	if err != nil {
+		return err
+	}
+	if handled {
+		return nil
+	}
+
+	return s.deliverResolvedInbound(ctx, agentID, channel, notif, identity)
+}
+
+func (s *Server) resolveInboundIdentity(ctx context.Context, channel string, to *InboundParty) (string, *models.SoulAgentIdentity, bool, error) {
+	agentID, ok, err := s.resolveRecipient(ctx, channel, to)
+	if err != nil || !ok || agentID == "" {
+		return "", nil, ok, err
 	}
 
 	identity, ok, err := s.store.GetSoulAgentIdentity(ctx, agentID)
 	if err != nil {
-		return err
+		return "", nil, false, err
 	}
 	if !ok || identity == nil {
-		return nil
+		return "", nil, false, nil
 	}
 
+	return agentID, identity, true, nil
+}
+
+func soulLifecycleStatus(identity *models.SoulAgentIdentity) string {
+	if identity == nil {
+		return ""
+	}
 	status := strings.TrimSpace(identity.LifecycleStatus)
-	if status == "" {
-		status = strings.TrimSpace(identity.Status)
+	if status != "" {
+		return status
 	}
-	if status != models.SoulAgentStatusActive {
-		_ = s.recordInboundActivity(ctx, identity.AgentID, channel, notif, "bounce", false)
-		_ = s.maybeBounceEmail(ctx, identity.AgentID, status, channel, notif, 0, 0, 0, 0)
-		return nil
+	return strings.TrimSpace(identity.Status)
+}
+
+func (s *Server) handleInactiveInbound(ctx context.Context, agentID string, channel string, notif InboundNotification, identity *models.SoulAgentIdentity) bool {
+	status := soulLifecycleStatus(identity)
+	if status == models.SoulAgentStatusActive {
+		return false
 	}
 
+	_ = s.recordInboundActivity(ctx, agentID, channel, notif, "bounce", false)
+	_ = s.maybeBounceEmail(ctx, agentID, status, channel, notif, 0, 0, 0, 0)
+	return true
+}
+
+func (s *Server) loadInboundPreferences(ctx context.Context, agentID string, channel string, to *InboundParty) (*models.SoulAgentContactPreferences, bool, error) {
 	channelType := channelRecordType(channel)
 	ch, ok, err := s.store.GetSoulAgentChannel(ctx, agentID, channelType)
 	if err != nil {
-		return err
+		return nil, false, err
 	}
-	if !ok || ch == nil || !s.channelMatchesNotification(ch, channel, notif.To) {
-		return nil
-	}
-	if ch.ProvisionedAt.IsZero() || !ch.DeprovisionedAt.IsZero() || strings.TrimSpace(ch.Status) != models.SoulChannelStatusActive || !ch.Verified {
-		return nil
+	if !ok || ch == nil || !s.channelMatchesNotification(ch, channel, to) || !channelReadyForInbound(ch) {
+		return nil, false, nil
 	}
 
 	prefs, ok, err := s.store.GetSoulAgentContactPreferences(ctx, agentID)
 	if err != nil {
-		return err
+		return nil, false, err
 	}
 	if !ok || prefs == nil {
-		prefs = defaultContactPreferences(agentID, channel)
+		return defaultContactPreferences(agentID, channel), true, nil
 	}
+	return prefs, true, nil
+}
 
+func channelReadyForInbound(ch *models.SoulAgentChannel) bool {
+	if ch == nil {
+		return false
+	}
+	if ch.ProvisionedAt.IsZero() || !ch.DeprovisionedAt.IsZero() {
+		return false
+	}
+	return strings.TrimSpace(ch.Status) == models.SoulChannelStatusActive && ch.Verified
+}
+
+func (s *Server) handleDeferredInbound(ctx context.Context, agentID string, channel string, notif InboundNotification, prefs *models.SoulAgentContactPreferences) (bool, error) {
 	now := s.now()
-	maxHour, maxDay := inboundRateLimits(prefs, channel)
-	hourCount, err := s.countInboundReceivesSince(ctx, agentID, channel, now.Add(-1*time.Hour), 250)
-	if err != nil {
-		return err
-	}
-	dayCount, err := s.countInboundReceivesSince(ctx, agentID, channel, now.Add(-24*time.Hour), 500)
-	if err != nil {
-		return err
-	}
-	if (maxHour > 0 && hourCount >= maxHour) || (maxDay > 0 && dayCount >= maxDay) {
-		_ = s.recordInboundActivity(ctx, agentID, channel, notif, "bounce", false)
-		_ = s.maybeBounceEmail(ctx, agentID, "rate_limited", channel, notif, maxHour, maxDay, hourCount, dayCount)
-		return nil
+
+	rateLimited, err := s.handleRateLimitedInbound(ctx, agentID, channel, notif, prefs, now)
+	if err != nil || rateLimited {
+		return rateLimited, err
 	}
 
 	available, nextDelivery := availabilityDecision(now, prefs)
-	if !available {
-		if err := s.queueInbound(ctx, agentID, channel, notif, nextDelivery); err != nil {
-			return err
-		}
-		_ = s.recordInboundActivity(ctx, agentID, channel, notif, "receive", true)
-		return nil
+	if available {
+		return false, nil
+	}
+	if err := s.queueInbound(ctx, agentID, channel, notif, nextDelivery); err != nil {
+		return false, err
+	}
+	_ = s.recordInboundActivity(ctx, agentID, channel, notif, "receive", true)
+	return true, nil
+}
+
+func (s *Server) handleRateLimitedInbound(ctx context.Context, agentID string, channel string, notif InboundNotification, prefs *models.SoulAgentContactPreferences, now time.Time) (bool, error) {
+	maxHour, maxDay := inboundRateLimits(prefs, channel)
+	hourCount, err := s.countInboundReceivesSince(ctx, agentID, channel, now.Add(-1*time.Hour), 250)
+	if err != nil {
+		return false, err
+	}
+	dayCount, err := s.countInboundReceivesSince(ctx, agentID, channel, now.Add(-24*time.Hour), 500)
+	if err != nil {
+		return false, err
+	}
+	if (maxHour <= 0 || hourCount < maxHour) && (maxDay <= 0 || dayCount < maxDay) {
+		return false, nil
 	}
 
+	_ = s.recordInboundActivity(ctx, agentID, channel, notif, "bounce", false)
+	_ = s.maybeBounceEmail(ctx, agentID, "rate_limited", channel, notif, maxHour, maxDay, hourCount, dayCount)
+	return true, nil
+}
+
+func (s *Server) deliverResolvedInbound(ctx context.Context, agentID string, channel string, notif InboundNotification, identity *models.SoulAgentIdentity) error {
 	// Best-effort: annotate soul-to-soul sender identity.
 	s.maybeAnnotateSenderSoul(ctx, &notif)
 
@@ -229,13 +301,13 @@ func (s *Server) resolveRecipient(ctx context.Context, channel string, to *Inbou
 	}
 
 	switch strings.ToLower(strings.TrimSpace(channel)) {
-	case "email":
+	case inboundChannelEmail:
 		addr := strings.ToLower(strings.TrimSpace(to.Address))
 		if addr == "" {
 			return "", false, nil
 		}
 		return s.store.LookupAgentByEmail(ctx, addr)
-	case "sms", "voice":
+	case inboundChannelSMS, inboundChannelVoice:
 		num := normalizePhone(to.Number)
 		if num == "" {
 			return "", false, nil
@@ -249,7 +321,7 @@ func (s *Server) resolveRecipient(ctx context.Context, channel string, to *Inbou
 func channelRecordType(channel string) string {
 	channel = strings.ToLower(strings.TrimSpace(channel))
 	switch channel {
-	case "sms", "voice":
+	case inboundChannelSMS, inboundChannelVoice:
 		return "phone"
 	default:
 		return channel
@@ -262,9 +334,9 @@ func (s *Server) channelMatchesNotification(ch *models.SoulAgentChannel, channel
 	}
 	channel = strings.ToLower(strings.TrimSpace(channel))
 	switch channel {
-	case "email":
+	case inboundChannelEmail:
 		return strings.EqualFold(strings.TrimSpace(ch.Identifier), strings.ToLower(strings.TrimSpace(to.Address)))
-	case "sms", "voice":
+	case inboundChannelSMS, inboundChannelVoice:
 		return strings.TrimSpace(ch.Identifier) == normalizePhone(to.Number)
 	default:
 		return false
@@ -353,17 +425,17 @@ func (s *Server) recordInboundActivity(ctx context.Context, agentID string, chan
 
 	pref := preferenceRespected
 	act := &models.SoulAgentCommActivity{
-		AgentID:            strings.ToLower(strings.TrimSpace(agentID)),
-		ActivityID:         fmt.Sprintf("%s#%s", strings.TrimSpace(notif.MessageID), strings.ToLower(strings.TrimSpace(action))),
-		ChannelType:        strings.ToLower(strings.TrimSpace(channel)),
-		Direction:          models.SoulCommDirectionInbound,
-		Counterparty:       counterparty,
-		Action:             strings.ToLower(strings.TrimSpace(action)),
-		MessageID:          strings.TrimSpace(notif.MessageID),
-		InReplyTo:          inReplyTo,
-		BoundaryCheck:      models.SoulCommBoundaryCheckSkipped,
+		AgentID:             strings.ToLower(strings.TrimSpace(agentID)),
+		ActivityID:          fmt.Sprintf("%s#%s", strings.TrimSpace(notif.MessageID), strings.ToLower(strings.TrimSpace(action))),
+		ChannelType:         strings.ToLower(strings.TrimSpace(channel)),
+		Direction:           models.SoulCommDirectionInbound,
+		Counterparty:        counterparty,
+		Action:              strings.ToLower(strings.TrimSpace(action)),
+		MessageID:           strings.TrimSpace(notif.MessageID),
+		InReplyTo:           inReplyTo,
+		BoundaryCheck:       models.SoulCommBoundaryCheckSkipped,
 		PreferenceRespected: &pref,
-		Timestamp:          receivedAt,
+		Timestamp:           receivedAt,
 	}
 	_ = act.UpdateKeys()
 	return s.store.PutCommActivity(ctx, act)
@@ -381,18 +453,18 @@ func (s *Server) queueInbound(ctx context.Context, agentID string, channel strin
 	}
 
 	item := &models.SoulAgentCommQueue{
-		AgentID:              strings.ToLower(strings.TrimSpace(agentID)),
-		MessageID:            strings.TrimSpace(notif.MessageID),
-		ChannelType:          strings.ToLower(strings.TrimSpace(channel)),
-		FromAddress:          strings.TrimSpace(notif.From.Address),
-		FromNumber:           strings.TrimSpace(notif.From.Number),
-		FromDisplayName:      strings.TrimSpace(notif.From.DisplayName),
-		Subject:              strings.TrimSpace(notif.Subject),
-		Body:                 strings.TrimSpace(notif.Body),
-		InReplyTo:            inReplyTo,
-		ReceivedAt:           receivedAt,
+		AgentID:               strings.ToLower(strings.TrimSpace(agentID)),
+		MessageID:             strings.TrimSpace(notif.MessageID),
+		ChannelType:           strings.ToLower(strings.TrimSpace(channel)),
+		FromAddress:           strings.TrimSpace(notif.From.Address),
+		FromNumber:            strings.TrimSpace(notif.From.Number),
+		FromDisplayName:       strings.TrimSpace(notif.From.DisplayName),
+		Subject:               strings.TrimSpace(notif.Subject),
+		Body:                  strings.TrimSpace(notif.Body),
+		InReplyTo:             inReplyTo,
+		ReceivedAt:            receivedAt,
 		ScheduledDeliveryTime: scheduled,
-		Status:               models.SoulCommQueueStatusQueued,
+		Status:                models.SoulCommQueueStatusQueued,
 	}
 	if notif.From.SoulAgentID != nil {
 		item.FromSoulAgentID = strings.TrimSpace(*notif.From.SoulAgentID)
@@ -404,20 +476,20 @@ func (s *Server) queueInbound(ctx context.Context, agentID string, channel strin
 func defaultContactPreferences(agentID string, channel string) *models.SoulAgentContactPreferences {
 	agentID = strings.ToLower(strings.TrimSpace(agentID))
 	channel = strings.ToLower(strings.TrimSpace(channel))
-	preferred := "email"
-	if channel == "sms" || channel == "voice" {
-		preferred = "sms"
+	preferred := inboundChannelEmail
+	if channel == inboundChannelSMS || channel == inboundChannelVoice {
+		preferred = inboundChannelSMS
 	}
 	return &models.SoulAgentContactPreferences{
-		AgentID:               agentID,
-		Preferred:             preferred,
-		AvailabilitySchedule:  "always",
-		AvailabilityTimezone:  "UTC",
-		AvailabilityWindows:   nil,
-		RateLimits:            nil,
-		Languages:             []string{"en"},
-		ContentTypes:          []string{"text/plain"},
-		UpdatedAt:             time.Now().UTC(),
+		AgentID:              agentID,
+		Preferred:            preferred,
+		AvailabilitySchedule: "always",
+		AvailabilityTimezone: "UTC",
+		AvailabilityWindows:  nil,
+		RateLimits:           nil,
+		Languages:            []string{"en"},
+		ContentTypes:         []string{"text/plain"},
+		UpdatedAt:            time.Now().UTC(),
 	}
 }
 
@@ -655,37 +727,44 @@ func (s *Server) maybeAnnotateSenderSoul(ctx context.Context, notif *InboundNoti
 		return
 	}
 
+	if senderSoulAgentID := s.lookupSenderSoulAgentID(ctx, notif); senderSoulAgentID != "" {
+		notif.From.SoulAgentID = &senderSoulAgentID
+	}
+}
+
+func (s *Server) lookupSenderSoulAgentID(ctx context.Context, notif *InboundNotification) string {
 	switch strings.ToLower(strings.TrimSpace(notif.Channel)) {
-	case "email":
-		addr := strings.ToLower(strings.TrimSpace(notif.From.Address))
-		if addr == "" {
-			return
+	case inboundChannelEmail:
+		address := strings.ToLower(strings.TrimSpace(notif.From.Address))
+		if address == "" {
+			return ""
 		}
-		id, ok, err := s.store.LookupAgentByEmail(ctx, addr)
-		if err == nil && ok && id != "" {
-			notif.From.SoulAgentID = &id
+		agentID, ok, err := s.store.LookupAgentByEmail(ctx, address)
+		if err == nil && ok {
+			return strings.TrimSpace(agentID)
 		}
-	case "sms", "voice":
-		num := normalizePhone(notif.From.Number)
-		if num == "" {
-			return
+	case inboundChannelSMS, inboundChannelVoice:
+		number := normalizePhone(notif.From.Number)
+		if number == "" {
+			return ""
 		}
-		id, ok, err := s.store.LookupAgentByPhone(ctx, num)
-		if err == nil && ok && id != "" {
-			notif.From.SoulAgentID = &id
+		agentID, ok, err := s.store.LookupAgentByPhone(ctx, number)
+		if err == nil && ok {
+			return strings.TrimSpace(agentID)
 		}
 	}
+	return ""
 }
 
 func instanceStageForControlPlane(stage string) string {
 	stage = strings.ToLower(strings.TrimSpace(stage))
 	switch stage {
-	case "live", "prod", "production":
-		return "live"
-	case "staging", "stage":
-		return "staging"
+	case instanceStageLive, "prod", "production":
+		return instanceStageLive
+	case instanceStageStaging, "stage":
+		return instanceStageStaging
 	default:
-		return "dev"
+		return instanceStageDev
 	}
 }
 
@@ -820,13 +899,17 @@ func defaultDeliverNotification(ctx context.Context, deliverURL string, apiKey s
 	if deliverURL == "" || apiKey == "" {
 		return fmt.Errorf("deliverURL and apiKey are required")
 	}
+	validatedURL, err := validateDeliverNotificationURL(deliverURL)
+	if err != nil {
+		return err
+	}
 
 	body, err := json.Marshal(notif)
 	if err != nil {
 		return fmt.Errorf("encode notification: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, deliverURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, validatedURL.String(), bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("build request: %w", err)
 	}
@@ -834,6 +917,7 @@ func defaultDeliverNotification(ctx context.Context, deliverURL string, apiKey s
 	req.Header.Set("authorization", "Bearer "+apiKey)
 
 	client := &http.Client{Timeout: 8 * time.Second}
+	//nolint:gosec // deliverURL is parsed and validated above before the request is sent.
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("deliver: %w", err)
@@ -847,11 +931,37 @@ func defaultDeliverNotification(ctx context.Context, deliverURL string, apiKey s
 	return fmt.Errorf("deliver: status=%d body=%q", resp.StatusCode, strings.TrimSpace(string(msg)))
 }
 
+func validateDeliverNotificationURL(raw string) (*url.URL, error) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return nil, fmt.Errorf("invalid deliverURL: %w", err)
+	}
+	if u == nil || u.Host == "" || u.User != nil {
+		return nil, fmt.Errorf("invalid deliverURL")
+	}
+	host := strings.ToLower(strings.TrimSpace(u.Hostname()))
+	if host == "" {
+		return nil, fmt.Errorf("invalid deliverURL host")
+	}
+	if u.Scheme != "https" {
+		if u.Scheme != "http" || host != "localhost" && host != "127.0.0.1" && host != "::1" {
+			return nil, fmt.Errorf("invalid deliverURL scheme")
+		}
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return nil, fmt.Errorf("invalid deliverURL")
+	}
+	if ip := net.ParseIP(host); ip != nil && !ip.IsLoopback() {
+		return nil, fmt.Errorf("invalid deliverURL host")
+	}
+	return u, nil
+}
+
 func (s *Server) maybeBounceEmail(ctx context.Context, agentID string, reason string, channel string, notif InboundNotification, maxHour int, maxDay int, hourCount int, dayCount int) error {
 	if s == nil || s.store == nil {
 		return fmt.Errorf("store not initialized")
 	}
-	if strings.ToLower(strings.TrimSpace(channel)) != "email" {
+	if strings.ToLower(strings.TrimSpace(channel)) != inboundChannelEmail {
 		return nil
 	}
 
@@ -914,10 +1024,10 @@ func buildBounceBody(reason string, to string, maxHour int, maxDay int, hourCoun
 	if maxHour > 0 || maxDay > 0 {
 		b.WriteString("\nRate limits:\n")
 		if maxHour > 0 {
-			b.WriteString(fmt.Sprintf("- maxInboundPerHour: %d (current=%d)\n", maxHour, hourCount))
+			_, _ = fmt.Fprintf(&b, "- maxInboundPerHour: %d (current=%d)\n", maxHour, hourCount)
 		}
 		if maxDay > 0 {
-			b.WriteString(fmt.Sprintf("- maxInboundPerDay: %d (current=%d)\n", maxDay, dayCount))
+			_, _ = fmt.Fprintf(&b, "- maxInboundPerDay: %d (current=%d)\n", maxDay, dayCount)
 		}
 		b.WriteString("\nPlease try again later.\n")
 	}
@@ -991,6 +1101,10 @@ func newToken(nBytes int) (string, error) {
 }
 
 func defaultMigaduSendSMTP(ctx context.Context, username string, password string, from string, recipients []string, data []byte) error {
+	return defaultMigaduSendSMTPWithAddr(ctx, username, password, from, recipients, data, net.JoinHostPort(migaduSMTPHost, migaduSMTPPort))
+}
+
+func defaultMigaduSendSMTPWithAddr(ctx context.Context, username string, password string, from string, recipients []string, data []byte, addr string) error {
 	username = strings.TrimSpace(username)
 	password = strings.TrimSpace(password)
 	from = strings.TrimSpace(from)
@@ -1004,7 +1118,10 @@ func defaultMigaduSendSMTP(ctx context.Context, username string, password string
 		return fmt.Errorf("smtp data required")
 	}
 
-	addr := net.JoinHostPort(migaduSMTPHost, migaduSMTPPort)
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		addr = net.JoinHostPort(migaduSMTPHost, migaduSMTPPort)
+	}
 	dialer := &net.Dialer{Timeout: 10 * time.Second}
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
@@ -1018,49 +1135,90 @@ func defaultMigaduSendSMTP(ctx context.Context, username string, password string
 	}
 	defer c.Close()
 
-	if ok, _ := c.Extension("STARTTLS"); ok {
-		tlsCfg := &tls.Config{
-			ServerName: migaduSMTPHost,
-			MinVersion: tls.VersionTLS12,
-		}
-		if err := c.StartTLS(tlsCfg); err != nil {
-			return fmt.Errorf("smtp starttls: %w", err)
-		}
+	if err := startTLSIfAvailable(c, migaduSMTPHost); err != nil {
+		return err
+	}
+	if err := authenticateSMTP(c, username, password, migaduSMTPHost); err != nil {
+		return err
+	}
+	if err := sendSMTPMailFrom(c, from); err != nil {
+		return err
+	}
+	if err := sendSMTPRecipients(c, recipients); err != nil {
+		return err
+	}
+	if err := writeSMTPBody(c, data); err != nil {
+		return err
+	}
+	if err := c.Quit(); err != nil {
+		return fmt.Errorf("smtp quit: %w", err)
+	}
+	return nil
+}
+
+func startTLSIfAvailable(c *smtp.Client, host string) error {
+	if ok, _ := c.Extension("STARTTLS"); !ok {
+		return nil
 	}
 
-	if ok, _ := c.Extension("AUTH"); ok {
-		auth := smtp.PlainAuth("", username, password, migaduSMTPHost)
-		if err := c.Auth(auth); err != nil {
-			return fmt.Errorf("smtp auth: %w", err)
-		}
+	tlsCfg := &tls.Config{
+		ServerName: host,
+		MinVersion: tls.VersionTLS12,
+	}
+	startTLSErr := c.StartTLS(tlsCfg)
+	if startTLSErr != nil {
+		return fmt.Errorf("smtp starttls: %w", startTLSErr)
+	}
+	return nil
+}
+
+func authenticateSMTP(c *smtp.Client, username string, password string, host string) error {
+	if ok, _ := c.Extension("AUTH"); !ok {
+		return nil
 	}
 
-	if err := c.Mail(from); err != nil {
-		return fmt.Errorf("smtp mail from: %w", err)
+	auth := smtp.PlainAuth("", username, password, host)
+	authErr := c.Auth(auth)
+	if authErr != nil {
+		return fmt.Errorf("smtp auth: %w", authErr)
 	}
+	return nil
+}
+
+func sendSMTPMailFrom(c *smtp.Client, from string) error {
+	mailErr := c.Mail(from)
+	if mailErr != nil {
+		return fmt.Errorf("smtp mail from: %w", mailErr)
+	}
+	return nil
+}
+
+func sendSMTPRecipients(c *smtp.Client, recipients []string) error {
 	for _, rcpt := range recipients {
 		rcpt = strings.TrimSpace(rcpt)
 		if rcpt == "" {
 			continue
 		}
-		if err := c.Rcpt(rcpt); err != nil {
-			return fmt.Errorf("smtp rcpt %q: %w", rcpt, err)
+		rcptErr := c.Rcpt(rcpt)
+		if rcptErr != nil {
+			return fmt.Errorf("smtp rcpt %q: %w", rcpt, rcptErr)
 		}
 	}
+	return nil
+}
 
+func writeSMTPBody(c *smtp.Client, data []byte) error {
 	w, err := c.Data()
 	if err != nil {
 		return fmt.Errorf("smtp data: %w", err)
 	}
-	if _, err := w.Write(data); err != nil {
+	if _, writeErr := w.Write(data); writeErr != nil {
 		_ = w.Close()
-		return fmt.Errorf("smtp write: %w", err)
+		return fmt.Errorf("smtp write: %w", writeErr)
 	}
-	if err := w.Close(); err != nil {
-		return fmt.Errorf("smtp close data: %w", err)
-	}
-	if err := c.Quit(); err != nil {
-		return fmt.Errorf("smtp quit: %w", err)
+	closeErr := w.Close()
+	if closeErr != nil {
+		return fmt.Errorf("smtp close data: %w", closeErr)
 	}
 	return nil
 }
