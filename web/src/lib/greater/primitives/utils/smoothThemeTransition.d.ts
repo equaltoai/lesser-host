@@ -6,7 +6,7 @@
  *
  * @example
  * ```typescript
- * import { smoothThemeTransition } from '@equaltoai/greater-components-primitives/utils';
+ * import { smoothThemeTransition } from 'src/lib/greater/primitives/utils';
  *
  * function toggleTheme() {
  *   smoothThemeTransition(() => {

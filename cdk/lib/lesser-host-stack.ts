@@ -1626,6 +1626,20 @@ export class LesserHostStack extends cdk.Stack {
 						expression: `SUM(SEARCH('{lesser-host,Stage,Service,Instance,Channel,Provider,Status} MetricName="CommOutboundRequests" AND Stage="${stage}" AND Service="control-plane-api" AND Status="provider_rejected"', 'Sum', 300))`,
 						period: cdk.Duration.minutes(5),
 					});
+					const commWebhook5xxAlarmMetric = new cloudwatch.Metric({
+						namespace: 'lesser-host',
+						metricName: 'CommWebhook5xx',
+						dimensionsMap: { Stage: stage, Service: 'control-plane-api' },
+						statistic: 'Sum',
+						period: cdk.Duration.minutes(5),
+					});
+					const commOutboundProviderRejectedAlarmMetric = new cloudwatch.Metric({
+						namespace: 'lesser-host',
+						metricName: 'CommOutboundRequests',
+						dimensionsMap: { Stage: stage, Service: 'control-plane-api', Status: 'provider_rejected' },
+						statistic: 'Sum',
+						period: cdk.Duration.minutes(5),
+					});
 
 					commDashboard.addWidgets(
 						new cloudwatch.GraphWidget({
@@ -1675,7 +1689,7 @@ export class LesserHostStack extends cdk.Stack {
 
 					new cloudwatch.Alarm(this, 'CommWebhook5xxAlarm', {
 						alarmName: `${namePrefix}-comm-webhooks-5xx`,
-						metric: commWebhook5xx,
+						metric: commWebhook5xxAlarmMetric,
 						threshold: 1,
 						evaluationPeriods: 1,
 						datapointsToAlarm: 1,
@@ -1691,7 +1705,7 @@ export class LesserHostStack extends cdk.Stack {
 					});
 					new cloudwatch.Alarm(this, 'CommOutboundProviderRejectedAlarm', {
 						alarmName: `${namePrefix}-comm-outbound-provider-rejected`,
-						metric: commOutboundProviderRejected,
+						metric: commOutboundProviderRejectedAlarmMetric,
 						threshold: 10,
 						evaluationPeriods: 1,
 						datapointsToAlarm: 1,

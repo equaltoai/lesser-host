@@ -188,7 +188,7 @@ export interface Spinner {
  * @example
  * ```svelte
  * <script>
- *   import { createSpinner } from '@equaltoai/greater-components-headless';
+ *   import { createSpinner } from 'src/lib/greater/headless';
  *
  *   const spinner = createSpinner({
  *     size: 'md',

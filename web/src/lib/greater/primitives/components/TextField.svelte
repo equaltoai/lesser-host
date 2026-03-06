@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { HTMLInputAttributes } from 'svelte/elements';
 	import type { Snippet } from 'svelte';
-	import { useStableId } from '@equaltoai/greater-components-utils';
+	import { useStableId } from 'src/lib/greater/utils';
 
 	interface Props extends Omit<HTMLInputAttributes, 'type' | 'value' | 'prefix'> {
 		label?: string;

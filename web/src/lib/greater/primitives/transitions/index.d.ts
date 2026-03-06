@@ -7,7 +7,7 @@
  * @example
  * ```svelte
  * <script>
- *   import { fadeUp, scaleIn } from '@equaltoai/greater-components-primitives/transitions';
+ *   import { fadeUp, scaleIn } from 'src/lib/greater/primitives/transitions';
  * </script>
  *
  * <div transition:fadeUp={{ duration: 300 }}>

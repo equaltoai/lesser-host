@@ -126,6 +126,7 @@ func emitCommWebhookMetricsBestEffort(service string, rec apptheory.LogRecord) {
 	if rec.Status >= 400 && rec.Status < 500 {
 		ms = append(ms, hostmetrics.Metric{Name: "CommWebhook4xx", Unit: hostmetrics.UnitCount, Value: 1})
 	}
+	webhook5xx := rec.Status >= 500
 	if rec.Status >= 500 {
 		ms = append(ms, hostmetrics.Metric{Name: "CommWebhook5xx", Unit: hostmetrics.UnitCount, Value: 1})
 	}
@@ -139,6 +140,19 @@ func emitCommWebhookMetricsBestEffort(service string, rec apptheory.LogRecord) {
 		"path":   path,
 		"status": rec.Status,
 	})
+
+	// Emit an alarm-friendly rollup because CloudWatch metric alarms cannot target SEARCH expressions.
+	if webhook5xx {
+		hostmetrics.Emit("lesser-host", map[string]string{
+			"Stage":   stage,
+			"Service": strings.TrimSpace(service),
+		}, []hostmetrics.Metric{
+			{Name: "CommWebhook5xx", Unit: hostmetrics.UnitCount, Value: 1},
+		}, map[string]any{
+			"path":   path,
+			"status": rec.Status,
+		})
+	}
 }
 
 func commWebhookProviderAndChannel(path string) (provider string, channel string) {
