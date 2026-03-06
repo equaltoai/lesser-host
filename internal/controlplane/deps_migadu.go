@@ -27,8 +27,8 @@ func defaultSSMPutSecureString(ctx context.Context, name string, value string, o
 }
 
 type migaduCreateMailboxRequest struct {
-	Name                  string `json:"name"`
-	LocalPart             string `json:"local_part"`
+	Name      string `json:"name"`
+	LocalPart string `json:"local_part"`
 	//nolint:gosec // This field is required by Migadu's mailbox-create API payload and is not persisted in code.
 	Credential            string `json:"password"`
 	PasswordRecoveryEmail any    `json:"password_recovery_email"`

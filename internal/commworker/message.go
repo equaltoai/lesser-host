@@ -24,16 +24,16 @@ type QueueMessage struct {
 
 // InboundNotification matches the communication:inbound notification payload contract.
 type InboundNotification struct {
-	Type         string             `json:"type"`
-	Channel      string             `json:"channel"` // email|sms|voice
-	From         InboundParty       `json:"from"`
-	To           *InboundParty      `json:"to,omitempty"` // required for routing; schema allows omitting
-	Subject      string             `json:"subject,omitempty"`
-	Body         string             `json:"body"`
-	BodyMimeType string             `json:"bodyMimeType,omitempty"`
-	ReceivedAt   string             `json:"receivedAt"`
-	MessageID    string             `json:"messageId"`
-	InReplyTo    *string            `json:"inReplyTo,omitempty"`
+	Type         string              `json:"type"`
+	Channel      string              `json:"channel"` // email|sms|voice
+	From         InboundParty        `json:"from"`
+	To           *InboundParty       `json:"to,omitempty"` // required for routing; schema allows omitting
+	Subject      string              `json:"subject,omitempty"`
+	Body         string              `json:"body"`
+	BodyMimeType string              `json:"bodyMimeType,omitempty"`
+	ReceivedAt   string              `json:"receivedAt"`
+	MessageID    string              `json:"messageId"`
+	InReplyTo    *string             `json:"inReplyTo,omitempty"`
 	Attachments  []InboundAttachment `json:"attachments,omitempty"`
 }
 

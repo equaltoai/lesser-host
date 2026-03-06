@@ -15,4 +15,3 @@ func main() {
 	)
 	lambda.Start(app.HandleLambda)
 }
-

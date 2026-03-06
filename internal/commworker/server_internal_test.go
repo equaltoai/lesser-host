@@ -22,8 +22,8 @@ type fakeStore struct {
 	channels   map[string]*models.SoulAgentChannel
 	prefs      map[string]*models.SoulAgentContactPreferences
 
-	domains    map[string]*models.Domain
-	instances  map[string]*models.Instance
+	domains   map[string]*models.Domain
+	instances map[string]*models.Instance
 
 	activities map[string][]*models.SoulAgentCommActivity
 	queued     []*models.SoulAgentCommQueue

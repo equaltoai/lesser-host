@@ -218,6 +218,26 @@ The SPA lives in `web/` and is deployed as static assets behind CloudFront.
 
 Important: CSP is enforced at CloudFront (`script-src 'self'`, `style-src 'self'`). Do not add inline scripts/styles.
 
+## Governance standards (`gov-infra`)
+
+The `gov-infra/` system is a core part of how this application is built and maintained. It is not optional process
+overhead or “cleanup later” work. The rubric, controls matrix, threat model, evidence plan, and verifier together define
+what “up to standard” means for `lesser-host` across quality, consistency, security, compliance, and maintainability.
+
+- Canonical full standards entrypoint: `bash gov-infra/verifiers/gov-verify-rubric.sh`
+- Canonical planning docs:
+  - `gov-infra/planning/lesser-host-10of10-rubric.md`
+  - `gov-infra/planning/lesser-host-controls-matrix.md`
+  - `gov-infra/planning/lesser-host-evidence-plan.md`
+  - `gov-infra/planning/lesser-host-threat-model.md`
+- Canonical evidence output: `gov-infra/evidence/`
+
+If you change behavior that affects controls, threat coverage, evidence, CI enforcement, supply-chain policy, lint/tool
+pins, or verification scope, update the corresponding `gov-infra` docs and/or verifier logic in the same change.
+
+Do not weaken standards silently just to get green checks. If a verifier or rubric requirement needs to change, treat
+that as a policy change: update the rubric/docs/evidence surface intentionally and keep the change explicit.
+
 ## Testing and linting
 
 Go:
@@ -230,6 +250,9 @@ Web:
 
 CDK:
 - `cd cdk && npm run synth`
+
+Governance:
+- `bash gov-infra/verifiers/gov-verify-rubric.sh`
 
 ## Common pitfalls
 
