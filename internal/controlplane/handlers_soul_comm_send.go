@@ -37,6 +37,7 @@ const (
 	commMetricInvalidRequest      = "invalid_request"
 	commMetricInternalError       = "internal_error"
 	commMetricProviderUnavailable = "provider_unavailable"
+	commMetricProviderRejected    = "provider_rejected"
 	commMetricInsufficientCredits = "insufficient_credits"
 	commMetricSent                = "sent"
 
@@ -133,16 +134,34 @@ func newSoulCommSendMetrics(stage string, instance string) *soulCommSendMetrics 
 }
 
 func (m *soulCommSendMetrics) emit() {
+	stage := strings.TrimSpace(m.stage)
+	service := strings.TrimSpace(ServiceName)
+	instance := strings.TrimSpace(m.instance)
+	channel := strings.TrimSpace(m.channel)
+	provider := strings.TrimSpace(m.provider)
+	status := strings.TrimSpace(m.status)
+
 	hostmetrics.Emit("lesser-host", map[string]string{
-		"Stage":    strings.TrimSpace(m.stage),
-		"Service":  ServiceName,
-		"Instance": strings.TrimSpace(m.instance),
-		"Channel":  strings.TrimSpace(m.channel),
-		"Provider": strings.TrimSpace(m.provider),
-		"Status":   strings.TrimSpace(m.status),
+		"Stage":    stage,
+		"Service":  service,
+		"Instance": instance,
+		"Channel":  channel,
+		"Provider": provider,
+		"Status":   status,
 	}, []hostmetrics.Metric{
 		{Name: "CommOutboundRequests", Unit: hostmetrics.UnitCount, Value: 1},
 	}, nil)
+
+	// Emit an alarm-friendly rollup because CloudWatch metric alarms cannot target SEARCH expressions.
+	if status == commMetricProviderRejected {
+		hostmetrics.Emit("lesser-host", map[string]string{
+			"Stage":   stage,
+			"Service": service,
+			"Status":  status,
+		}, []hostmetrics.Metric{
+			{Name: "CommOutboundRequests", Unit: hostmetrics.UnitCount, Value: 1},
+		}, nil)
+	}
 }
 
 func (s *Server) handleSoulCommSend(ctx *apptheory.Context) (*apptheory.Response, error) {
@@ -438,7 +457,7 @@ func (s *Server) sendSoulCommEmail(ctx *apptheory.Context, req validatedSoulComm
 			metrics.status = commMetricProviderUnavailable
 			return soulCommSendDelivery{}, apptheory.NewAppTheoryError(commCodeProviderUnavailable, "provider unavailable").WithStatusCode(http.StatusServiceUnavailable)
 		}
-		metrics.status = "provider_rejected"
+		metrics.status = commMetricProviderRejected
 		return soulCommSendDelivery{}, apptheory.NewAppTheoryError("comm.provider_rejected", "provider rejected message").WithStatusCode(http.StatusBadGateway)
 	}
 
@@ -467,7 +486,7 @@ func (s *Server) sendSoulCommSMS(ctx *apptheory.Context, key *models.InstanceKey
 	providerMessageID, err := s.telnyxSendSMS(ctx.Context(), strings.TrimSpace(channel.Identifier), req.to, req.body)
 	if err != nil {
 		metrics.provider = commDeliveryProviderTelnyx
-		metrics.status = "provider_rejected"
+		metrics.status = commMetricProviderRejected
 		return soulCommSendDelivery{}, apptheory.NewAppTheoryError("comm.provider_rejected", "provider rejected message").WithStatusCode(http.StatusBadGateway)
 	}
 
