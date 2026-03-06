@@ -203,6 +203,7 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 	app.Get("/api/v1/soul/agents/{agentId}/registration", s.handleSoulPublicGetRegistration)
 	app.Get("/api/v1/soul/agents/{agentId}/channels", s.handleSoulPublicGetAgentChannels)
 	app.Get("/api/v1/soul/agents/{agentId}/channels/preferences", s.handleSoulPublicGetAgentChannelPreferences)
+	app.Put("/api/v1/soul/agents/{agentId}/channels/preferences", s.handleSoulUpdateAgentChannelPreferences, apptheory.RequireAuth())
 	app.Get("/api/v1/soul/agents/{agentId}/reputation", s.handleSoulPublicGetReputation)
 	app.Get("/api/v1/soul/agents/{agentId}/validations", s.handleSoulPublicGetValidations)
 	app.Post("/api/v1/soul/agents/{agentId}/validations/challenges", s.handleSoulIssueValidationChallenge, apptheory.RequireAuth())

@@ -278,6 +278,26 @@ func soulPublicContactPreferencesFromModel(p *models.SoulAgentContactPreferences
 	return cp
 }
 
+func soulAgentContactPreferencesResponse(
+	agentID string,
+	baseUpdatedAt time.Time,
+	prefs *models.SoulAgentContactPreferences,
+) soulPublicAgentContactPreferencesResponse {
+	updatedAt := baseUpdatedAt
+	if prefs != nil && prefs.UpdatedAt.After(updatedAt) {
+		updatedAt = prefs.UpdatedAt
+	}
+	if updatedAt.IsZero() {
+		updatedAt = time.Now().UTC()
+	}
+
+	return soulPublicAgentContactPreferencesResponse{
+		AgentID:            agentID,
+		ContactPreferences: soulPublicContactPreferencesFromModel(prefs),
+		UpdatedAt:          updatedAt.UTC().Format(time.RFC3339Nano),
+	}
+}
+
 func (s *Server) handleSoulPublicGetAgentChannelPreferences(ctx *apptheory.Context) (*apptheory.Response, error) {
 	if s == nil || ctx == nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
@@ -309,19 +329,7 @@ func (s *Server) handleSoulPublicGetAgentChannelPreferences(ctx *apptheory.Conte
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
-	updatedAt := identity.UpdatedAt
-	if prefs != nil && prefs.UpdatedAt.After(updatedAt) {
-		updatedAt = prefs.UpdatedAt
-	}
-	if updatedAt.IsZero() {
-		updatedAt = time.Now().UTC()
-	}
-
-	out := soulPublicAgentContactPreferencesResponse{
-		AgentID:            agentIDHex,
-		ContactPreferences: soulPublicContactPreferencesFromModel(prefs),
-		UpdatedAt:          updatedAt.UTC().Format(time.RFC3339Nano),
-	}
+	out := soulAgentContactPreferencesResponse(agentIDHex, identity.UpdatedAt, prefs)
 
 	resp, err := apptheory.JSON(http.StatusOK, out)
 	if err != nil {
