@@ -919,6 +919,113 @@ func (s *Server) failClaimedUpdateJob(
 	return nil
 }
 
+type updateRunnerStartSpec struct {
+	expectedStep     string
+	claimedStep      string
+	waitStep         string
+	claimedNote      string
+	inProgressNote   string
+	runnerLabel      string
+	startFailureCode string
+	startRunner      func(context.Context, *models.UpdateJob, *models.Instance) (string, error)
+}
+
+func (s *Server) retryClaimedUpdateRunnerStart(
+	ctx context.Context,
+	job *models.UpdateJob,
+	requestID string,
+	now time.Time,
+	spec updateRunnerStartSpec,
+	startErr error,
+) (time.Duration, bool, error) {
+	nextAttempts := job.Attempts + 1
+	if nextAttempts >= job.MaxAttempts {
+		failErr := s.failClaimedUpdateJob(
+			ctx,
+			job,
+			requestID,
+			now,
+			spec.claimedStep,
+			spec.startFailureCode,
+			"failed to start "+spec.runnerLabel+": "+startErr.Error(),
+		)
+		if theoryErrors.IsConditionFailed(failErr) {
+			return provisionDefaultShortRetryDelay, false, nil
+		}
+		return 0, false, failErr
+	}
+
+	retryNote := "failed to start " + spec.runnerLabel + "; retrying: " + compactErr(startErr)
+	releaseErr := s.releaseClaimedUpdateRunnerStartForRetry(
+		ctx,
+		job,
+		requestID,
+		now,
+		spec.claimedStep,
+		spec.expectedStep,
+		retryNote,
+		nextAttempts,
+	)
+	if theoryErrors.IsConditionFailed(releaseErr) {
+		return provisionDefaultShortRetryDelay, false, nil
+	}
+	if releaseErr != nil {
+		return 0, false, releaseErr
+	}
+	return jitteredBackoff(job.Attempts, provisionDefaultShortRetryDelay, 10*time.Minute), false, nil
+}
+
+func (s *Server) advanceUpdateRunnerAlreadyStarted(
+	ctx context.Context,
+	job *models.UpdateJob,
+	requestID string,
+	now time.Time,
+	waitStep string,
+	note string,
+) (time.Duration, bool, error) {
+	if job == nil {
+		return 0, true, nil
+	}
+
+	job.Step = strings.TrimSpace(waitStep)
+	job.Note = strings.TrimSpace(note)
+	if err := s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil); err != nil {
+		return 0, false, err
+	}
+	return provisionDefaultPollDelay, false, nil
+}
+
+func (s *Server) advanceUpdateRunnerStartWithInstance(
+	ctx context.Context,
+	job *models.UpdateJob,
+	requestID string,
+	now time.Time,
+	inst *models.Instance,
+	spec updateRunnerStartSpec,
+) (time.Duration, bool, error) {
+	if job == nil {
+		return 0, true, nil
+	}
+
+	claimed, err := s.claimUpdateRunnerStart(ctx, job, requestID, now, spec.expectedStep, spec.claimedStep, spec.claimedNote)
+	if err != nil {
+		return 0, false, err
+	}
+	if !claimed {
+		return provisionDefaultShortRetryDelay, false, nil
+	}
+
+	runID, err := spec.startRunner(ctx, job, inst)
+	if err != nil {
+		return s.retryClaimedUpdateRunnerStart(ctx, job, requestID, now, spec, err)
+	}
+
+	if err := s.completeClaimedUpdateRunnerStart(ctx, job, requestID, now, spec.claimedStep, spec.waitStep, runID, spec.inProgressNote); err != nil {
+		return 0, false, err
+	}
+	return provisionDefaultPollDelay, false, nil
+}
+
 type updateRunnerClaimSpec struct {
 	claimedStep  string
 	staleCode    string
@@ -953,14 +1060,8 @@ func (s *Server) advanceUpdateDeployStart(ctx context.Context, job *models.Updat
 	if job == nil {
 		return 0, true, nil
 	}
-
 	if strings.TrimSpace(job.RunID) != "" {
-		job.Step = updateStepDeployWait
-		job.Note = "deploy runner already started"
-		if err := s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil); err != nil {
-			return 0, false, err
-		}
-		return provisionDefaultPollDelay, false, nil
+		return s.advanceUpdateRunnerAlreadyStarted(ctx, job, requestID, now, updateStepDeployWait, "deploy runner already started")
 	}
 
 	inst, err := s.loadInstance(ctx, strings.TrimSpace(job.InstanceSlug))
@@ -983,39 +1084,16 @@ func (s *Server) advanceUpdateDeployStart(ctx context.Context, job *models.Updat
 		job.LesserHostInstanceKeySecretARN = strings.TrimSpace(inst.LesserHostInstanceKeySecretARN)
 	}
 
-	claimed, err := s.claimUpdateRunnerStart(ctx, job, requestID, now, updateStepDeployStart, updateStepDeployClaimed, noteStartingDeployRunner)
-	if err != nil {
-		return 0, false, err
-	}
-	if !claimed {
-		return provisionDefaultShortRetryDelay, false, nil
-	}
-
-	runID, err := s.startUpdateDeployRunner(ctx, job, inst)
-	if err != nil {
-		nextAttempts := job.Attempts + 1
-		if nextAttempts >= job.MaxAttempts {
-			failErr := s.failClaimedUpdateJob(ctx, job, requestID, now, updateStepDeployClaimed, "deploy_start_failed", "failed to start deploy runner: "+err.Error())
-			if theoryErrors.IsConditionFailed(failErr) {
-				return provisionDefaultShortRetryDelay, false, nil
-			}
-			return 0, false, failErr
-		}
-		retryNote := "failed to start deploy runner; retrying: " + compactErr(err)
-		releaseErr := s.releaseClaimedUpdateRunnerStartForRetry(ctx, job, requestID, now, updateStepDeployClaimed, updateStepDeployStart, retryNote, nextAttempts)
-		if theoryErrors.IsConditionFailed(releaseErr) {
-			return provisionDefaultShortRetryDelay, false, nil
-		}
-		if releaseErr != nil {
-			return 0, false, releaseErr
-		}
-		return jitteredBackoff(job.Attempts, provisionDefaultShortRetryDelay, 10*time.Minute), false, nil
-	}
-
-	if err := s.completeClaimedUpdateRunnerStart(ctx, job, requestID, now, updateStepDeployClaimed, updateStepDeployWait, runID, noteDeployRunnerInProgress); err != nil {
-		return 0, false, err
-	}
-	return provisionDefaultPollDelay, false, nil
+	return s.advanceUpdateRunnerStartWithInstance(ctx, job, requestID, now, inst, updateRunnerStartSpec{
+		expectedStep:     updateStepDeployStart,
+		claimedStep:      updateStepDeployClaimed,
+		waitStep:         updateStepDeployWait,
+		claimedNote:      noteStartingDeployRunner,
+		inProgressNote:   noteDeployRunnerInProgress,
+		runnerLabel:      "deploy runner",
+		startFailureCode: "deploy_start_failed",
+		startRunner:      s.startUpdateDeployRunner,
+	})
 }
 
 func (s *Server) advanceUpdateDeployClaimed(ctx context.Context, job *models.UpdateJob, requestID string, now time.Time) (time.Duration, bool, error) {
@@ -1131,12 +1209,7 @@ func (s *Server) advanceUpdateBodyDeployStart(ctx context.Context, job *models.U
 	}
 
 	if strings.TrimSpace(job.RunID) != "" {
-		job.Step = updateStepBodyDeployWait
-		job.Note = "lesser-body deploy runner already started"
-		if err := s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil); err != nil {
-			return 0, false, err
-		}
-		return provisionDefaultPollDelay, false, nil
+		return s.advanceUpdateRunnerAlreadyStarted(ctx, job, requestID, now, updateStepBodyDeployWait, "lesser-body deploy runner already started")
 	}
 
 	inst, err := s.loadInstance(ctx, strings.TrimSpace(job.InstanceSlug))
@@ -1147,39 +1220,18 @@ func (s *Server) advanceUpdateBodyDeployStart(ctx context.Context, job *models.U
 		return 0, false, s.failUpdateJob(ctx, job, requestID, now, "instance_not_found", "instance record not found")
 	}
 
-	claimed, err := s.claimUpdateRunnerStart(ctx, job, requestID, now, updateStepBodyDeployStart, updateStepBodyDeployClaimed, noteStartingLesserBodyDeployRunner)
-	if err != nil {
-		return 0, false, err
-	}
-	if !claimed {
-		return provisionDefaultShortRetryDelay, false, nil
-	}
-
-	runID, err := s.startUpdateDeployRunnerWithMode(ctx, job, inst, "lesser-body", s.updateBodyReceiptS3Key(job))
-	if err != nil {
-		nextAttempts := job.Attempts + 1
-		if nextAttempts >= job.MaxAttempts {
-			failErr := s.failClaimedUpdateJob(ctx, job, requestID, now, updateStepBodyDeployClaimed, "body_deploy_start_failed", "failed to start lesser-body deploy runner: "+err.Error())
-			if theoryErrors.IsConditionFailed(failErr) {
-				return provisionDefaultShortRetryDelay, false, nil
-			}
-			return 0, false, failErr
-		}
-		retryNote := "failed to start lesser-body deploy runner; retrying: " + compactErr(err)
-		releaseErr := s.releaseClaimedUpdateRunnerStartForRetry(ctx, job, requestID, now, updateStepBodyDeployClaimed, updateStepBodyDeployStart, retryNote, nextAttempts)
-		if theoryErrors.IsConditionFailed(releaseErr) {
-			return provisionDefaultShortRetryDelay, false, nil
-		}
-		if releaseErr != nil {
-			return 0, false, releaseErr
-		}
-		return jitteredBackoff(job.Attempts, provisionDefaultShortRetryDelay, 10*time.Minute), false, nil
-	}
-
-	if err := s.completeClaimedUpdateRunnerStart(ctx, job, requestID, now, updateStepBodyDeployClaimed, updateStepBodyDeployWait, runID, noteLesserBodyDeployRunnerInProgress); err != nil {
-		return 0, false, err
-	}
-	return provisionDefaultPollDelay, false, nil
+	return s.advanceUpdateRunnerStartWithInstance(ctx, job, requestID, now, inst, updateRunnerStartSpec{
+		expectedStep:     updateStepBodyDeployStart,
+		claimedStep:      updateStepBodyDeployClaimed,
+		waitStep:         updateStepBodyDeployWait,
+		claimedNote:      noteStartingLesserBodyDeployRunner,
+		inProgressNote:   noteLesserBodyDeployRunnerInProgress,
+		runnerLabel:      "lesser-body deploy runner",
+		startFailureCode: "body_deploy_start_failed",
+		startRunner: func(ctx context.Context, job *models.UpdateJob, inst *models.Instance) (string, error) {
+			return s.startUpdateDeployRunnerWithMode(ctx, job, inst, "lesser-body", s.updateBodyReceiptS3Key(job))
+		},
+	})
 }
 
 func (s *Server) advanceUpdateBodyDeployClaimed(ctx context.Context, job *models.UpdateJob, requestID string, now time.Time) (time.Duration, bool, error) {
@@ -1285,14 +1337,8 @@ func (s *Server) advanceUpdateDeployMcpStart(ctx context.Context, job *models.Up
 	if job == nil {
 		return 0, true, nil
 	}
-
 	if strings.TrimSpace(job.RunID) != "" {
-		job.Step = updateStepDeployMcpWait
-		job.Note = "MCP wiring deploy runner already started"
-		if err := s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil); err != nil {
-			return 0, false, err
-		}
-		return provisionDefaultPollDelay, false, nil
+		return s.advanceUpdateRunnerAlreadyStarted(ctx, job, requestID, now, updateStepDeployMcpWait, "MCP wiring deploy runner already started")
 	}
 
 	inst, err := s.loadInstance(ctx, strings.TrimSpace(job.InstanceSlug))
@@ -1303,39 +1349,18 @@ func (s *Server) advanceUpdateDeployMcpStart(ctx context.Context, job *models.Up
 		return 0, false, s.failUpdateJob(ctx, job, requestID, now, "instance_not_found", "instance record not found")
 	}
 
-	claimed, err := s.claimUpdateRunnerStart(ctx, job, requestID, now, updateStepDeployMcpStart, updateStepDeployMcpClaimed, noteStartingMcpWiringDeployRunner)
-	if err != nil {
-		return 0, false, err
-	}
-	if !claimed {
-		return provisionDefaultShortRetryDelay, false, nil
-	}
-
-	runID, err := s.startUpdateDeployRunnerWithMode(ctx, job, inst, "lesser-mcp", s.updateMcpReceiptS3Key(job))
-	if err != nil {
-		nextAttempts := job.Attempts + 1
-		if nextAttempts >= job.MaxAttempts {
-			failErr := s.failClaimedUpdateJob(ctx, job, requestID, now, updateStepDeployMcpClaimed, "mcp_deploy_start_failed", "failed to start MCP wiring deploy runner: "+err.Error())
-			if theoryErrors.IsConditionFailed(failErr) {
-				return provisionDefaultShortRetryDelay, false, nil
-			}
-			return 0, false, failErr
-		}
-		retryNote := "failed to start MCP wiring deploy runner; retrying: " + compactErr(err)
-		releaseErr := s.releaseClaimedUpdateRunnerStartForRetry(ctx, job, requestID, now, updateStepDeployMcpClaimed, updateStepDeployMcpStart, retryNote, nextAttempts)
-		if theoryErrors.IsConditionFailed(releaseErr) {
-			return provisionDefaultShortRetryDelay, false, nil
-		}
-		if releaseErr != nil {
-			return 0, false, releaseErr
-		}
-		return jitteredBackoff(job.Attempts, provisionDefaultShortRetryDelay, 10*time.Minute), false, nil
-	}
-
-	if err := s.completeClaimedUpdateRunnerStart(ctx, job, requestID, now, updateStepDeployMcpClaimed, updateStepDeployMcpWait, runID, noteMCPDeployRunnerInProgress); err != nil {
-		return 0, false, err
-	}
-	return provisionDefaultPollDelay, false, nil
+	return s.advanceUpdateRunnerStartWithInstance(ctx, job, requestID, now, inst, updateRunnerStartSpec{
+		expectedStep:     updateStepDeployMcpStart,
+		claimedStep:      updateStepDeployMcpClaimed,
+		waitStep:         updateStepDeployMcpWait,
+		claimedNote:      noteStartingMcpWiringDeployRunner,
+		inProgressNote:   noteMCPDeployRunnerInProgress,
+		runnerLabel:      "MCP wiring deploy runner",
+		startFailureCode: "mcp_deploy_start_failed",
+		startRunner: func(ctx context.Context, job *models.UpdateJob, inst *models.Instance) (string, error) {
+			return s.startUpdateDeployRunnerWithMode(ctx, job, inst, "lesser-mcp", s.updateMcpReceiptS3Key(job))
+		},
+	})
 }
 
 func (s *Server) advanceUpdateDeployMcpClaimed(ctx context.Context, job *models.UpdateJob, requestID string, now time.Time) (time.Duration, bool, error) {

@@ -10,6 +10,7 @@ import (
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/store"
@@ -79,45 +80,33 @@ func TestHandleSoulUpdateAgentChannelPreferences_Success(t *testing.T) {
 	}`)
 
 	resp, err := s.handleSoulUpdateAgentChannelPreferences(ctx)
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	if resp.Status != http.StatusOK {
-		t.Fatalf("expected 200, got %d (body=%q)", resp.Status, string(resp.Body))
-	}
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.Status, "body=%q", string(resp.Body))
 
 	var out soulPublicAgentContactPreferencesResponse
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if out.AgentID != agentID || out.ContactPreferences == nil {
-		t.Fatalf("unexpected response: %#v", out)
-	}
-	if out.ContactPreferences.Preferred != commChannelEmail || out.ContactPreferences.Fallback != "sms" {
-		t.Fatalf("expected normalized channel preferences, got %#v", out.ContactPreferences)
-	}
-	if out.ContactPreferences.Availability.Schedule != "custom" || out.ContactPreferences.Availability.Timezone != "America/New_York" {
-		t.Fatalf("expected normalized availability, got %#v", out.ContactPreferences.Availability)
-	}
-	if len(out.ContactPreferences.Availability.Windows) != 1 || out.ContactPreferences.Availability.Windows[0].Days[0] != "mon" || out.ContactPreferences.Availability.Windows[0].Days[1] != "tue" {
-		t.Fatalf("expected normalized availability windows, got %#v", out.ContactPreferences.Availability.Windows)
-	}
-	if out.ContactPreferences.ResponseExpectation.Guarantee != "best-effort" {
-		t.Fatalf("expected normalized response expectation, got %#v", out.ContactPreferences.ResponseExpectation)
-	}
-	if len(out.ContactPreferences.Languages) != 2 || out.ContactPreferences.Languages[0] != "en" || out.ContactPreferences.ContentTypes[0] != "text/plain" {
-		t.Fatalf("expected normalized language/content types, got %#v", out.ContactPreferences)
-	}
-	if out.ContactPreferences.FirstContact == nil || out.ContactPreferences.FirstContact.RequireReputation == nil || *out.ContactPreferences.FirstContact.RequireReputation != 0.5 {
-		t.Fatalf("expected first contact preferences in response, got %#v", out.ContactPreferences.FirstContact)
-	}
+	require.NoError(t, json.Unmarshal(resp.Body, &out))
+	require.Equal(t, agentID, out.AgentID)
+	require.NotNil(t, out.ContactPreferences)
+	require.Equal(t, commChannelEmail, out.ContactPreferences.Preferred)
+	require.Equal(t, "sms", out.ContactPreferences.Fallback)
+	require.Equal(t, "custom", out.ContactPreferences.Availability.Schedule)
+	require.Equal(t, "America/New_York", out.ContactPreferences.Availability.Timezone)
+	require.Len(t, out.ContactPreferences.Availability.Windows, 1)
+	require.Len(t, out.ContactPreferences.Availability.Windows[0].Days, 2)
+	require.Equal(t, "mon", out.ContactPreferences.Availability.Windows[0].Days[0])
+	require.Equal(t, "tue", out.ContactPreferences.Availability.Windows[0].Days[1])
+	require.Equal(t, "best-effort", out.ContactPreferences.ResponseExpectation.Guarantee)
+	require.Len(t, out.ContactPreferences.Languages, 2)
+	require.Equal(t, "en", out.ContactPreferences.Languages[0])
+	require.NotEmpty(t, out.ContactPreferences.ContentTypes)
+	require.Equal(t, "text/plain", out.ContactPreferences.ContentTypes[0])
+	require.NotNil(t, out.ContactPreferences.FirstContact)
+	require.NotNil(t, out.ContactPreferences.FirstContact.RequireReputation)
+	require.Equal(t, 0.5, *out.ContactPreferences.FirstContact.RequireReputation)
+
 	updatedAt, parseErr := time.Parse(time.RFC3339Nano, out.UpdatedAt)
-	if parseErr != nil {
-		t.Fatalf("expected RFC3339 updatedAt, got %q", out.UpdatedAt)
-	}
-	if updatedAt.Before(identityUpdatedAt) {
-		t.Fatalf("expected updatedAt to move forward from identity timestamp, got %q", out.UpdatedAt)
-	}
+	require.NoError(t, parseErr, "expected RFC3339 updatedAt, got %q", out.UpdatedAt)
+	require.False(t, updatedAt.Before(identityUpdatedAt), "expected updatedAt to move forward from identity timestamp, got %q", out.UpdatedAt)
 
 	tdb.qPrefs.AssertNumberOfCalls(t, "CreateOrUpdate", 1)
 	tdb.qAudit.AssertNumberOfCalls(t, "Create", 1)
