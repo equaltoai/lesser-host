@@ -1,7 +1,9 @@
 package controlplane
 
 import (
+	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"math/big"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/cyberphone/json-canonicalization/go/src/webpki.org/jsoncanonicalizer"
 	"github.com/ethereum/go-ethereum"
+	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -309,6 +312,246 @@ func TestRequireActiveSoulAgentWithDomainAccess_ReturnsExpectedErrors(t *testing
 			t.Fatalf("expected domain access error, got %v", appErr)
 		}
 	})
+}
+
+func TestRequireActiveSoulAgentForInstance_VerifiesOwnership(t *testing.T) {
+	t.Parallel()
+
+	t.Run("success", func(t *testing.T) {
+		tdb := newSoulLifecycleTestDB()
+		s := &Server{store: store.New(tdb.db)}
+		tdb.qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
+			*dest = models.SoulAgentIdentity{
+				AgentID:         soulLifecycleTestAgentIDHex,
+				Domain:          "example.com",
+				LocalID:         "agent-alice",
+				LifecycleStatus: models.SoulAgentStatusActive,
+			}
+		}).Once()
+		tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
+			*dest = models.Domain{Domain: "example.com", InstanceSlug: "inst1", Status: models.DomainStatusVerified}
+		}).Once()
+
+		identity, appErr := s.requireActiveSoulAgentForInstance(context.Background(), soulLifecycleTestAgentIDHex, "inst1")
+		if appErr != nil {
+			t.Fatalf("expected success, got %v", appErr)
+		}
+		if identity == nil || identity.AgentID != soulLifecycleTestAgentIDHex {
+			t.Fatalf("unexpected identity: %+v", identity)
+		}
+	})
+
+	t.Run("other instance forbidden", func(t *testing.T) {
+		tdb := newSoulLifecycleTestDB()
+		s := &Server{store: store.New(tdb.db)}
+		tdb.qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
+			*dest = models.SoulAgentIdentity{
+				AgentID:         soulLifecycleTestAgentIDHex,
+				Domain:          "example.com",
+				LocalID:         "agent-alice",
+				LifecycleStatus: models.SoulAgentStatusActive,
+			}
+		}).Once()
+		tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
+			*dest = models.Domain{Domain: "example.com", InstanceSlug: "inst2", Status: models.DomainStatusVerified}
+		}).Once()
+
+		_, appErr := s.requireActiveSoulAgentForInstance(context.Background(), soulLifecycleTestAgentIDHex, "inst1")
+		if appErr == nil || appErr.Code != "app.unauthorized" || appErr.Message != "unauthorized" {
+			t.Fatalf("expected unauthorized, got %v", appErr)
+		}
+	})
+}
+
+func TestUpdateSoulAgentRegistrationForInstance_V3_SyncsENSWithoutS3Key(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulLifecycleTestDB()
+	packs := &fakeSoulPackStore{}
+	s := &Server{
+		store: store.New(tdb.db),
+		cfg: config.Config{
+			SoulEnabled:                 true,
+			SoulChainID:                 1,
+			SoulRPCURL:                  "http://rpc.local",
+			SoulRegistryContractAddress: "0x0000000000000000000000000000000000000001",
+			SoulPackBucketName:          "bucket",
+			WebAuthnRPID:                "lesser.host",
+		},
+		soulPacks: packs,
+	}
+
+	agentIDHex := soulLifecycleTestAgentIDHex
+	key, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	wallet := strings.ToLower(crypto.PubkeyToAddress(key.PublicKey).Hex())
+
+	tdb.qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
+		*dest = models.SoulAgentIdentity{
+			AgentID:   agentIDHex,
+			Domain:    "example.com",
+			LocalID:   "agent-alice",
+			Wallet:    wallet,
+			Status:    models.SoulAgentStatusActive,
+			UpdatedAt: time.Now().Add(-time.Minute).UTC(),
+		}
+	}).Once()
+	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
+		*dest = models.Domain{Domain: "example.com", InstanceSlug: "inst1", Status: models.DomainStatusVerified}
+	}).Once()
+	tdb.qWalletIdx.On("First", mock.AnythingOfType("*models.WalletIndex")).Return(theoryErrors.ErrItemNotFound).Once()
+	tdb.qVersion.On("First", mock.AnythingOfType("*models.SoulAgentVersion")).Return(theoryErrors.ErrItemNotFound).Once()
+	tdb.qCapIdx.On("First", mock.AnythingOfType("*models.SoulCapabilityAgentIndex")).Return(theoryErrors.ErrItemNotFound).Once()
+	tdb.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(theoryErrors.ErrItemNotFound).Times(3)
+
+	parsedABI, err := abi.JSON(strings.NewReader(soul.SoulRegistryABI))
+	if err != nil {
+		t.Fatalf("parse abi: %v", err)
+	}
+	walletRet, _ := parsedABI.Methods["getAgentWallet"].Outputs.Pack(common.HexToAddress(wallet))
+	client := &fakeEVMClient{callContract: func(ctx context.Context, msg ethereum.CallMsg) ([]byte, error) {
+		if bytes.HasPrefix(msg.Data, parsedABI.Methods["getAgentWallet"].ID) {
+			return walletRet, nil
+		}
+		return nil, ethereum.NotFound
+	}}
+	s.dialEVM = func(ctx context.Context, rpcURL string) (ethRPCClient, error) { return client, nil }
+
+	principalDeclaration := boundaryTestPrincipalDeclaration
+	principalDigest := crypto.Keccak256([]byte(principalDeclaration))
+	principalSig, err := crypto.Sign(accounts.TextHash(principalDigest), key)
+	if err != nil {
+		t.Fatalf("principal sign: %v", err)
+	}
+
+	unsigned := map[string]any{
+		"version": "3",
+		"agentId": agentIDHex,
+		"domain":  "example.com",
+		"localId": "agent-alice",
+		"wallet":  wallet,
+		"principal": map[string]any{
+			"type":        "individual",
+			"identifier":  wallet,
+			"displayName": "Alice",
+			"contactUri":  "https://example.com/alice",
+			"declaration": principalDeclaration,
+			"signature":   "0x" + hex.EncodeToString(principalSig),
+			"declaredAt":  "2026-03-01T00:00:00Z",
+		},
+		"selfDescription": map[string]any{
+			"purpose":    "I summarize documents for humans.",
+			"authoredBy": "agent",
+		},
+		"capabilities": []any{
+			map[string]any{
+				"capability": "text-summarization",
+				"scope":      "general",
+				"claimLevel": "self-declared",
+			},
+		},
+		"boundaries": []any{
+			map[string]any{
+				"id":             "boundary-001",
+				"category":       "refusal",
+				"statement":      "I will not impersonate real people.",
+				"addedAt":        "2026-03-01T00:00:00Z",
+				"addedInVersion": "1",
+				"signature":      "0xabc",
+			},
+		},
+		"channels": map[string]any{
+			"ens": map[string]any{
+				"name":            "agent-alice.lessersoul.eth",
+				"resolverAddress": "0x0000000000000000000000000000000000000002",
+				"chain":           "mainnet",
+			},
+			"email": map[string]any{
+				"address":      "agent-alice@lessersoul.ai",
+				"capabilities": []any{"receive", "send"},
+				"protocols":    []any{"smtp"},
+				"verified":     true,
+				"verifiedAt":   "2026-03-01T00:00:00Z",
+			},
+		},
+		"contactPreferences": map[string]any{
+			"preferred": "email",
+			"availability": map[string]any{
+				"schedule": "always",
+				"timezone": "UTC",
+			},
+			"responseExpectation": map[string]any{
+				"target":    "PT4H",
+				"guarantee": "best-effort",
+			},
+			"languages": []any{"en"},
+		},
+		"transparency": map[string]any{
+			"modelFamily": "unknown",
+		},
+		"endpoints": map[string]any{
+			"mcp": "https://example.com/soul/mcp",
+		},
+		"lifecycle": map[string]any{
+			"status":          "active",
+			"statusChangedAt": "2026-03-01T00:00:00Z",
+		},
+		"attestations": map[string]any{},
+		"created":      "2026-03-01T00:00:00Z",
+		"updated":      "2026-03-01T00:00:00Z",
+	}
+
+	unsignedBytes, err := json.Marshal(unsigned)
+	if err != nil {
+		t.Fatalf("marshal unsigned: %v", err)
+	}
+	jcsBytes, err := jsoncanonicalizer.Transform(unsignedBytes)
+	if err != nil {
+		t.Fatalf("canonicalize: %v", err)
+	}
+	digest := crypto.Keccak256(jcsBytes)
+	sig, err := crypto.Sign(accounts.TextHash(digest), key)
+	if err != nil {
+		t.Fatalf("sign registration: %v", err)
+	}
+
+	reg := mustUnmarshalJSON[map[string]any](t, unsignedBytes)
+	regAttestations, ok := reg["attestations"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected attestations map, got %#v", reg["attestations"])
+	}
+	regAttestations["selfAttestation"] = "0x" + hex.EncodeToString(sig)
+	regBytes, err := json.Marshal(reg)
+	if err != nil {
+		t.Fatalf("marshal signed registration: %v", err)
+	}
+
+	resp, appErr := s.UpdateSoulAgentRegistrationForInstance(context.Background(), "inst1", "rid-v3-instance", agentIDHex, regBytes)
+	if appErr != nil {
+		t.Fatalf("unexpected appErr: %v", appErr)
+	}
+	if resp.Version != 1 {
+		t.Fatalf("expected version 1, got %d", resp.Version)
+	}
+	if resp.S3Key != "" {
+		t.Fatalf("expected instance-auth response to omit s3 key, got %q", resp.S3Key)
+	}
+	if len(packs.puts) < 2 {
+		t.Fatalf("expected registration objects to be published, got %d puts", len(packs.puts))
+	}
+
+	summary := collectSyncV3StateModels(tdb.db.Calls, agentIDHex)
+	if !summary.ensNames["agent-alice.lessersoul.eth"] {
+		t.Fatalf("expected ENS resolution sync, got %v", summary.ensNames)
+	}
 }
 
 func TestVerifySoulAgentWalletOnChain_ReturnsExpectedErrors(t *testing.T) {

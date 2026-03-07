@@ -65,8 +65,9 @@ func withStripeMockServer(t *testing.T, fn func(baseURL string)) {
 			return
 
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/checkout/sessions":
+			r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 			_ = r.ParseForm()
-			mode := strings.TrimSpace(r.FormValue("mode"))
+			mode := strings.TrimSpace(r.PostForm.Get("mode"))
 
 			w.Header().Set("Content-Type", "application/json")
 			switch mode {

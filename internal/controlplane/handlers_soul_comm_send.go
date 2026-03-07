@@ -35,6 +35,7 @@ const (
 
 	commMetricUnknown             = "unknown"
 	commMetricInvalidRequest      = "invalid_request"
+	commMetricUnauthorized        = "unauthorized"
 	commMetricInternalError       = "internal_error"
 	commMetricProviderUnavailable = "provider_unavailable"
 	commMetricProviderRejected    = "provider_rejected"
@@ -303,7 +304,7 @@ func (s *Server) loadSoulCommSendRoute(ctx context.Context, key *models.Instance
 func (s *Server) loadSoulCommSendIdentity(ctx context.Context, key *models.InstanceKey, agentIDHex string, metrics *soulCommSendMetrics) (*models.SoulAgentIdentity, *apptheory.AppTheoryError) {
 	identity, err := s.getSoulAgentIdentity(ctx, agentIDHex)
 	if theoryErrors.IsNotFound(err) {
-		metrics.status = "unauthorized"
+		metrics.status = commMetricUnauthorized
 		return nil, apptheory.NewAppTheoryError(commCodeUnauthorized, "unauthorized").WithStatusCode(http.StatusUnauthorized)
 	}
 	if err != nil {
@@ -321,7 +322,7 @@ func (s *Server) loadSoulCommSendIdentity(ctx context.Context, key *models.Insta
 	}
 	accessErr := s.requireCommAgentInstanceAccess(ctx, key, identity)
 	if accessErr != nil {
-		metrics.status = "unauthorized"
+		metrics.status = commMetricUnauthorized
 		return nil, accessErr
 	}
 	return identity, nil

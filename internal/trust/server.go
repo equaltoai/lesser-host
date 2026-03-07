@@ -1,15 +1,28 @@
 package trust
 
 import (
+	"context"
+	"sync"
+
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 
 	"github.com/equaltoai/lesser-host/internal/ai"
 	"github.com/equaltoai/lesser-host/internal/artifacts"
 	"github.com/equaltoai/lesser-host/internal/attestations"
 	"github.com/equaltoai/lesser-host/internal/config"
+	"github.com/equaltoai/lesser-host/internal/controlplane"
 	"github.com/equaltoai/lesser-host/internal/store"
-	"sync"
 )
+
+type soulRegistrationUpdater interface {
+	UpdateSoulAgentRegistrationForInstance(
+		ctx context.Context,
+		instanceSlug string,
+		requestID string,
+		agentID string,
+		body []byte,
+	) (*controlplane.SoulAgentUpdateRegistrationResult, *apptheory.AppError)
+}
 
 // Server implements the trust API.
 type Server struct {
@@ -19,6 +32,7 @@ type Server struct {
 	queues    *queueClient
 	attest    *attestations.KMSService
 	ai        *ai.Service
+	soul      soulRegistrationUpdater
 
 	ensSignerOnce sync.Once
 	ensSigner     ensGatewaySigner
@@ -35,6 +49,7 @@ func NewServer(cfg config.Config, st *store.Store) *Server {
 		queues:    newQueueClient(cfg.PreviewQueueURL, cfg.SafetyQueueURL),
 		attest:    attestations.NewKMSService(cfg.AttestationSigningKeyID, cfg.AttestationPublicKeyIDs),
 		ai:        ai.NewService(st),
+		soul:      controlplane.NewServer(cfg, st),
 		ensCache:  &ensGatewayCache{},
 	}
 }
@@ -68,6 +83,7 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 	// Publish-triggered jobs (link safety, etc).
 	app.Post("/api/v1/publish/jobs", s.handlePublishJob, apptheory.RequireAuth())
 	app.Get("/api/v1/publish/jobs/{jobId}", s.handleGetPublishJob, apptheory.RequireAuth())
+	app.Post("/api/v1/soul/agents/{agentId}/update-registration", s.handleSoulAgentUpdateRegistration, apptheory.RequireAuth())
 
 	// AI tool evidence (cheap, cached).
 	app.Post("/api/v1/ai/evidence/text", s.handleAIEvidenceText, apptheory.RequireAuth())
