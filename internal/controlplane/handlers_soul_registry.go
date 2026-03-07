@@ -214,14 +214,17 @@ func (s *Server) requireSoulPortalPrereqs(ctx *apptheory.Context) *apptheory.App
 	return nil
 }
 
-func (s *Server) requireSoulDomainAccess(ctx *apptheory.Context, normalizedDomain string) (*models.Domain, *models.Instance, *apptheory.AppError) {
+func (s *Server) resolveSoulDomainAccess(
+	ctx *apptheory.Context,
+	normalizedDomain string,
+) (*models.Domain, *models.Instance, bool, *apptheory.AppError) {
 	if s == nil || s.store == nil || s.store.DB == nil || ctx == nil {
-		return nil, nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, nil, false, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
 	normalizedDomain = strings.ToLower(strings.TrimSpace(normalizedDomain))
 	if normalizedDomain == "" {
-		return nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: "domain is required"}
+		return nil, nil, false, &apptheory.AppError{Code: "app.bad_request", Message: "domain is required"}
 	}
 
 	var d models.Domain
@@ -230,25 +233,90 @@ func (s *Server) requireSoulDomainAccess(ctx *apptheory.Context, normalizedDomai
 		Where("PK", "=", fmt.Sprintf("DOMAIN#%s", normalizedDomain)).
 		Where("SK", "=", models.SKMetadata).
 		First(&d)
-	if theoryErrors.IsNotFound(err) {
-		return nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: "domain is not registered"}
+	if err == nil {
+		if !domainIsVerifiedOrActive(d.Status) {
+			return nil, nil, false, &apptheory.AppError{Code: "app.bad_request", Message: "domain is not verified"}
+		}
+
+		inst, instErr := s.requireInstanceAccess(ctx, strings.TrimSpace(d.InstanceSlug))
+		if instErr != nil {
+			if appErr, ok := instErr.(*apptheory.AppError); ok {
+				return nil, nil, false, appErr
+			}
+			return nil, nil, false, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		}
+
+		return &d, inst, false, nil
 	}
+	if err != nil && !theoryErrors.IsNotFound(err) {
+		return nil, nil, false, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
+	managedAccess := s.resolveManagedSoulStageDomainAccess(ctx, normalizedDomain)
+	if managedAccess != nil {
+		return managedAccess.domain, managedAccess.instance, true, nil
+	}
+
+	return nil, nil, false, &apptheory.AppError{Code: "app.bad_request", Message: "domain is not registered"}
+}
+
+func (s *Server) requireSoulDomainAccess(ctx *apptheory.Context, normalizedDomain string) (*models.Domain, *models.Instance, *apptheory.AppError) {
+	d, inst, _, appErr := s.resolveSoulDomainAccess(ctx, normalizedDomain)
+	return d, inst, appErr
+}
+
+type managedSoulDomainAccess struct {
+	domain   *models.Domain
+	instance *models.Instance
+}
+
+func (s *Server) resolveManagedSoulStageDomainAccess(ctx *apptheory.Context, normalizedDomain string) *managedSoulDomainAccess {
+	if s == nil || s.store == nil || s.store.DB == nil || ctx == nil {
+		return nil
+	}
+
+	stagePrefix := managedInstanceStageForControlPlane(s.cfg.Stage)
+	if stagePrefix == managedStageLive {
+		return nil
+	}
+
+	prefix := stagePrefix + "."
+	if !strings.HasPrefix(normalizedDomain, prefix) {
+		return nil
+	}
+
+	baseDomain := strings.TrimSpace(strings.TrimPrefix(normalizedDomain, prefix))
+	if baseDomain == "" || managedInstanceStageDomain(s.cfg.Stage, baseDomain) != normalizedDomain {
+		return nil
+	}
+
+	var d models.Domain
+	err := s.store.DB.WithContext(ctx.Context()).
+		Model(&models.Domain{}).
+		Where("PK", "=", fmt.Sprintf("DOMAIN#%s", baseDomain)).
+		Where("SK", "=", models.SKMetadata).
+		First(&d)
 	if err != nil {
-		return nil, nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil
 	}
-	if !domainIsVerifiedOrActive(d.Status) {
-		return nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: "domain is not verified"}
+	if !domainIsVerifiedOrActive(d.Status) ||
+		strings.TrimSpace(d.Type) != models.DomainTypePrimary ||
+		!strings.EqualFold(strings.TrimSpace(d.VerificationMethod), "managed") {
+		return nil
 	}
 
 	inst, instErr := s.requireInstanceAccess(ctx, strings.TrimSpace(d.InstanceSlug))
 	if instErr != nil {
-		if appErr, ok := instErr.(*apptheory.AppError); ok {
-			return nil, nil, appErr
-		}
-		return nil, nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(inst.HostedBaseDomain), baseDomain) {
+		return nil
 	}
 
-	return &d, inst, nil
+	return &managedSoulDomainAccess{
+		domain:   &d,
+		instance: inst,
+	}
 }
 
 func (s *Server) getSoulAgentIdentity(ctx context.Context, agentID string) (*models.SoulAgentIdentity, error) {
@@ -302,7 +370,7 @@ func (s *Server) handleSoulAgentRegistrationBegin(ctx *apptheory.Context) (*appt
 	}
 
 	rawDomain := strings.TrimSpace(req.Domain)
-	domainNormalized, appErr := s.normalizeSoulRegistrationBeginDomain(ctx, rawDomain)
+	domainNormalized, domainAccessAutoVerified, appErr := s.normalizeSoulRegistrationBeginDomain(ctx, rawDomain)
 	if appErr != nil {
 		return nil, appErr
 	}
@@ -361,6 +429,8 @@ func (s *Server) handleSoulAgentRegistrationBegin(ctx *apptheory.Context) (*appt
 		WalletNonce:      nonce,
 		WalletMessage:    msg,
 		ProofToken:       proofToken,
+		DNSVerified:      domainAccessAutoVerified,
+		HTTPSVerified:    domainAccessAutoVerified,
 		Status:           models.SoulAgentRegistrationStatusPending,
 		CreatedAt:        now,
 		UpdatedAt:        now,
@@ -382,6 +452,13 @@ func (s *Server) handleSoulAgentRegistrationBegin(ctx *apptheory.Context) (*appt
 	dnsName := soulRegistryProofPrefix + domainNormalized
 	httpsURL := "https://" + domainNormalized + path.Clean(soulRegistryWellKnown)
 	httpsBody, _ := json.Marshal(map[string]string{"lesser-soul-agent": proofToken})
+	proofs := []soulRegistryProofInstructions{
+		{Method: "dns_txt", DNSName: dnsName, DNSValue: proofValue},
+		{Method: "https_well_known", HTTPSURL: httpsURL, HTTPSBody: string(httpsBody)},
+	}
+	if domainAccessAutoVerified {
+		proofs = nil
+	}
 
 	return apptheory.JSON(http.StatusCreated, soulAgentRegistrationBeginResponse{
 		Registration: *reg,
@@ -395,23 +472,21 @@ func (s *Server) handleSoulAgentRegistrationBegin(ctx *apptheory.Context) (*appt
 			IssuedAt:  now,
 			ExpiresAt: expiresAt,
 		},
-		Proofs: []soulRegistryProofInstructions{
-			{Method: "dns_txt", DNSName: dnsName, DNSValue: proofValue},
-			{Method: "https_well_known", HTTPSURL: httpsURL, HTTPSBody: string(httpsBody)},
-		},
+		Proofs: proofs,
 	})
 }
 
-func (s *Server) normalizeSoulRegistrationBeginDomain(ctx *apptheory.Context, rawDomain string) (string, *apptheory.AppError) {
+func (s *Server) normalizeSoulRegistrationBeginDomain(ctx *apptheory.Context, rawDomain string) (string, bool, *apptheory.AppError) {
 	rawDomain = strings.TrimSpace(rawDomain)
 	domainNormalized, err := domains.NormalizeDomain(rawDomain)
 	if err != nil {
-		return "", &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
+		return "", false, &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
 	}
-	if _, _, accessErr := s.requireSoulDomainAccess(ctx, domainNormalized); accessErr != nil {
-		return "", accessErr
+	_, _, autoVerified, accessErr := s.resolveSoulDomainAccess(ctx, domainNormalized)
+	if accessErr != nil {
+		return "", false, accessErr
 	}
-	return domainNormalized, nil
+	return domainNormalized, autoVerified, nil
 }
 
 func normalizeSoulRegistrationBeginLocalID(rawLocal string) (string, *apptheory.AppError) {

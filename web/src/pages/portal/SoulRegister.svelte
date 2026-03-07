@@ -2,6 +2,9 @@
 	import { onMount } from 'svelte';
 
 	import type { ApiError } from 'src/lib/api/http';
+	import { getPortalMe } from 'src/lib/api/portal';
+	import { portalListInstances } from 'src/lib/api/portalInstances';
+	import type { InstanceResponse } from 'src/lib/api/portalInstances';
 	import type {
 		SoulAgentRegistrationBeginResponse,
 		SoulAgentRegistrationVerifyResponse,
@@ -43,6 +46,12 @@
 	let localId = $state('');
 	let walletAddress = $state('');
 	let capabilities = $state('');
+	let portalUsername = $state('');
+
+	let instances = $state<InstanceResponse[]>([]);
+	let instancesLoading = $state(false);
+	let instancesError = $state<string | null>(null);
+	let selectedInstanceSlug = $state('');
 
 	let beginLoading = $state(false);
 	let beginError = $state<string | null>(null);
@@ -91,6 +100,22 @@
 	let mintFinalizeError = $state<string | null>(null);
 	let mintFinalizeBegin = $state<SoulMintConversationFinalizeBeginResponse | null>(null);
 	let mintFinalizeResult = $state<SoulMintConversationFinalizeResponse | null>(null);
+
+	const selectedInstance = $derived.by(
+		() => instances.find((instance) => instance.slug === selectedInstanceSlug) || null
+	);
+	const instanceOptions = $derived.by(() =>
+		instances.map((instance) => {
+			const managedDomain = instance.managed_lesser_domain?.trim() || instance.hosted_base_domain?.trim() || '';
+			return {
+				value: instance.slug,
+				label: managedDomain ? `${instance.slug} (${managedDomain})` : instance.slug,
+			};
+		})
+	);
+	const managedProofsSatisfied = $derived.by(
+		() => Boolean(beginResult?.registration?.dns_verified && beginResult?.registration?.https_verified)
+	);
 
 	function mintStorageKey(registrationId: string): string {
 		return `soul_mint_conversation:${registrationId}`;
@@ -441,6 +466,100 @@
 		return out;
 	}
 
+	function preferredDomainForInstance(instance: InstanceResponse | null | undefined): string {
+		if (!instance) return '';
+		return instance.managed_lesser_domain?.trim() || instance.hosted_base_domain?.trim() || '';
+	}
+
+	function applySelectedInstance(slug: string) {
+		selectedInstanceSlug = slug;
+		const instance = instances.find((item) => item.slug === slug);
+		const preferredDomain = preferredDomainForInstance(instance);
+		if (preferredDomain) {
+			domain = preferredDomain;
+		}
+	}
+
+	function inferWalletAddressFromUsername(username: string): string {
+		const normalized = username.trim().toLowerCase();
+		if (!normalized.startsWith('wallet-')) return '';
+
+		const hex = normalized.slice('wallet-'.length);
+		return /^0x[0-9a-f]{40}$/.test(hex) ? hex : '';
+	}
+
+	async function populateWalletAddress() {
+		const provider = getEthereumProvider();
+		if (provider) {
+			try {
+				const accounts = (await provider.request({ method: 'eth_accounts' })) as unknown;
+				if (Array.isArray(accounts) && accounts.length > 0) {
+					walletAddress = String(accounts[0]);
+					return;
+				}
+			} catch {
+				// Ignore silent wallet probes and fall back to the portal username.
+			}
+		}
+
+		const inferred = inferWalletAddressFromUsername(portalUsername);
+		if (inferred) {
+			walletAddress = inferred;
+		}
+	}
+
+	async function loadRegistrationDefaults() {
+		instancesLoading = true;
+		instancesError = null;
+
+		try {
+			const [me, list] = await Promise.all([getPortalMe(token), portalListInstances(token)]);
+			portalUsername = me.username || '';
+			instances = list.instances || [];
+
+			const params = new URLSearchParams(window.location.search);
+			const presetSlug = params.get('slug')?.trim() || '';
+			const presetDomain = params.get('domain')?.trim() || '';
+			const presetLocal = params.get('local_id') || params.get('localId') || '';
+
+			if (presetLocal) {
+				localId = presetLocal;
+			} else if (!localId.trim()) {
+				localId = 'agent-0';
+			}
+
+			if (presetDomain) {
+				domain = presetDomain;
+			}
+
+			let selected =
+				(presetSlug && instances.find((instance) => instance.slug === presetSlug)) ||
+				(presetDomain &&
+					instances.find((instance) => preferredDomainForInstance(instance).toLowerCase() === presetDomain.toLowerCase())) ||
+				(instances.length === 1 ? instances[0] : null);
+
+			if (selected) {
+				applySelectedInstance(selected.slug);
+			}
+
+			if (!walletAddress.trim()) {
+				await populateWalletAddress();
+			}
+			if (!capabilities.trim()) {
+				capabilities = 'social';
+			}
+		} catch (err) {
+			if ((err as Partial<ApiError>).status === 401) {
+				await logout();
+				navigate('/login');
+				return;
+			}
+			instancesError = formatError(err);
+		} finally {
+			instancesLoading = false;
+		}
+	}
+
 	async function handleBegin() {
 		beginError = null;
 		signError = null;
@@ -647,11 +766,7 @@
 	}
 
 	onMount(() => {
-		const params = new URLSearchParams(window.location.search);
-		const presetDomain = params.get('domain');
-		const presetLocal = params.get('local_id') || params.get('localId');
-		if (presetDomain) domain = presetDomain;
-		if (presetLocal) localId = presetLocal;
+		void loadRegistrationDefaults();
 	});
 </script>
 
@@ -659,7 +774,9 @@
 	<header class="soul-register__header">
 		<div class="soul-register__title">
 			<Heading level={2} size="xl">Register agent</Heading>
-			<Text color="secondary">Publish DNS + HTTPS proofs, sign the challenge, and create the Safe-ready mint operation.</Text>
+			<Text color="secondary">
+				Choose your managed instance, confirm the wallet, and create the Safe-ready mint operation.
+			</Text>
 		</div>
 		<div class="soul-register__actions">
 			<Button variant="ghost" onclick={() => navigate('/portal/souls')}>Back</Button>
@@ -668,28 +785,42 @@
 
 	<Card variant="outlined" padding="lg">
 		{#snippet header()}
-			<Heading level={3} size="lg">1. Generate proof</Heading>
+			<Heading level={3} size="lg">1. Start registration</Heading>
 		{/snippet}
 
 		{#if beginError}
 			<Alert variant="error" title="Registration start failed">{beginError}</Alert>
 		{/if}
+		{#if instancesError}
+			<Alert variant="error" title="Failed to load instance defaults">{instancesError}</Alert>
+		{/if}
 
 		<div class="soul-register__form">
+			{#if instances.length > 0}
+				<div class="soul-register__field">
+					<Text size="sm">Instance</Text>
+					<Select options={instanceOptions} value={selectedInstanceSlug} onchange={(value: string) => applySelectedInstance(value)} />
+					{#if selectedInstance}
+						<Text size="sm" color="secondary">
+							Using {preferredDomainForInstance(selectedInstance)} for this {selectedInstance.status} managed instance.
+						</Text>
+					{/if}
+				</div>
+			{/if}
 			<TextField label="Domain" bind:value={domain} placeholder="example.com" />
 			<TextField label="Local ID" bind:value={localId} placeholder="agent-alice" />
 			<TextField label="Wallet" bind:value={walletAddress} placeholder="0x…" />
 			<TextField label="Capabilities (comma-separated)" bind:value={capabilities} placeholder="social, commerce" />
 			<div class="soul-register__row">
-				<Button variant="solid" onclick={() => void handleBegin()} disabled={beginLoading}>Generate proof</Button>
+				<Button variant="solid" onclick={() => void handleBegin()} disabled={beginLoading || instancesLoading}>Start registration</Button>
 				<Button variant="outline" onclick={() => void useConnectedWallet()} disabled={beginLoading}>Use connected wallet</Button>
 			</div>
 		</div>
 
-		{#if beginLoading}
+		{#if instancesLoading || beginLoading}
 			<div class="soul-register__loading-inline">
 				<Spinner size="sm" />
-				<Text size="sm">Creating registration…</Text>
+				<Text size="sm">{instancesLoading ? 'Loading your instance…' : 'Creating registration…'}</Text>
 			</div>
 		{/if}
 
@@ -711,11 +842,18 @@
 		<div class="soul-register__grid">
 			<Card variant="outlined" padding="lg">
 				{#snippet header()}
-					<Heading level={3} size="lg">2. Publish proofs</Heading>
+					<Heading level={3} size="lg">2. Domain ownership</Heading>
 				{/snippet}
-				<Text size="sm" color="secondary">
-					Both DNS TXT and HTTPS well-known proofs must be published before verification will succeed.
-				</Text>
+				{#if managedProofsSatisfied}
+					<Alert variant="success" title="Managed instance ownership already verified">
+						This agent is using your provisioned managed instance domain, so lesser-host already trusts the DNS and HTTPS surface.
+						No manual proof publishing is required for this registration.
+					</Alert>
+				{:else}
+					<Text size="sm" color="secondary">
+						Both DNS TXT and HTTPS well-known proofs must be published before verification will succeed.
+					</Text>
+				{/if}
 
 				{#if dnsProof}
 					<div class="soul-register__proof">
@@ -1067,6 +1205,12 @@
 		flex-direction: column;
 		gap: var(--gr-spacing-scale-3);
 		margin-top: var(--gr-spacing-scale-4);
+	}
+
+	.soul-register__field {
+		display: flex;
+		flex-direction: column;
+		gap: var(--gr-spacing-scale-2);
 	}
 
 	.soul-register__row {

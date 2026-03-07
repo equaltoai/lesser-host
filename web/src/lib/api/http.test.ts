@@ -43,6 +43,30 @@ describe('fetchJson', () => {
 			code: 'app.bad_request',
 		});
 	});
+
+	it('parses nested JSON error body message + code', async () => {
+		globalThis.fetch = vi.fn(async () => {
+			return new Response(
+				JSON.stringify({
+					error: {
+						message: 'domain is not registered',
+						code: 'app.bad_request',
+					},
+				}),
+				{
+					status: 400,
+					headers: { 'content-type': 'application/json' },
+				},
+			);
+		}) as unknown as typeof fetch;
+
+		await expect(fetchJson('/test')).rejects.toMatchObject({
+			name: 'ApiError',
+			message: 'domain is not registered',
+			status: 400,
+			code: 'app.bad_request',
+		});
+	});
 });
 
 describe('jsonRequest', () => {
@@ -52,4 +76,3 @@ describe('jsonRequest', () => {
 		expect(req.body).toBe(JSON.stringify({ hello: 'world' }));
 	});
 });
-
