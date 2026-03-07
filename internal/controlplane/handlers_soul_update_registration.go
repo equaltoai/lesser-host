@@ -23,11 +23,13 @@ import (
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
-type soulUpdateRegistrationResponse struct {
+type SoulAgentUpdateRegistrationResult struct {
 	Agent   models.SoulAgentIdentity `json:"agent"`
 	S3Key   string                   `json:"s3_key,omitempty"`
 	Version int                      `json:"version,omitempty"`
 }
+
+type soulUpdateRegistrationResponse = SoulAgentUpdateRegistrationResult
 
 const (
 	soulClaimLevelSelfDeclared    = "self-declared"
@@ -98,17 +100,76 @@ func (s *Server) handleSoulAgentUpdateRegistration(ctx *apptheory.Context) (*app
 		return nil, appErr
 	}
 
-	regBytes, reg, expectedVersion, appErr := parseSoulUpdateRegistrationBody(ctx.Request.Body)
+	resp, appErr := s.completeSoulAgentRegistrationUpdate(
+		ctx.Context(),
+		strings.TrimSpace(ctx.AuthIdentity),
+		ctx.RequestID,
+		agentIDHex,
+		agentInt,
+		identity,
+		ctx.Request.Body,
+		isOperator(ctx),
+	)
+	if appErr != nil {
+		return nil, appErr
+	}
+	return apptheory.JSON(http.StatusOK, resp)
+}
+
+func (s *Server) UpdateSoulAgentRegistrationForInstance(
+	ctx context.Context,
+	instanceSlug string,
+	requestID string,
+	agentID string,
+	body []byte,
+) (*SoulAgentUpdateRegistrationResult, *apptheory.AppError) {
+	if appErr := s.requireSoulUpdateRegistrationInstancePrereqs(instanceSlug); appErr != nil {
+		return nil, appErr
+	}
+
+	agentIDHex, agentInt, appErr := parseSoulAgentIDHex(agentID)
 	if appErr != nil {
 		return nil, appErr
 	}
 
-	walletNorm, capsNorm, selfSig, digest, appErr := s.validateSoulUpdateRegistrationDocument(ctx.Context(), reg, agentIDHex, agentInt, identity)
+	identity, appErr := s.requireActiveSoulAgentForInstance(ctx, agentIDHex, instanceSlug)
+	if appErr != nil {
+		return nil, appErr
+	}
+
+	return s.completeSoulAgentRegistrationUpdate(
+		ctx,
+		fmt.Sprintf("instance:%s", strings.TrimSpace(instanceSlug)),
+		requestID,
+		agentIDHex,
+		agentInt,
+		identity,
+		body,
+		false,
+	)
+}
+
+func (s *Server) completeSoulAgentRegistrationUpdate(
+	ctx context.Context,
+	actor string,
+	requestID string,
+	agentIDHex string,
+	agentInt *big.Int,
+	identity *models.SoulAgentIdentity,
+	body []byte,
+	includeS3Key bool,
+) (*SoulAgentUpdateRegistrationResult, *apptheory.AppError) {
+	regBytes, reg, expectedVersion, appErr := parseSoulUpdateRegistrationBody(body)
+	if appErr != nil {
+		return nil, appErr
+	}
+
+	walletNorm, capsNorm, selfSig, digest, appErr := s.validateSoulUpdateRegistrationDocument(ctx, reg, agentIDHex, agentInt, identity)
 	if appErr != nil {
 		return nil, appErr
 	}
 	if err := verifyEthereumSignatureBytes(walletNorm, digest, selfSig); err != nil {
-		log.Printf("controlplane: soul_integrity invalid_registration_signature agent=%s request_id=%s", agentIDHex, strings.TrimSpace(ctx.RequestID))
+		log.Printf("controlplane: soul_integrity invalid_registration_signature agent=%s request_id=%s", agentIDHex, strings.TrimSpace(requestID))
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid registration signature"}
 	}
 
@@ -116,10 +177,11 @@ func (s *Server) handleSoulAgentUpdateRegistration(ctx *apptheory.Context) (*app
 	if appErr != nil {
 		return nil, appErr
 	}
+
 	now := time.Now().UTC()
 	claimLevels := extractCapabilityClaimLevels(reg)
 	nextVersion, s3Key, appErr := s.publishSoulUpdateRegistration(
-		ctx.Context(),
+		ctx,
 		agentIDHex,
 		identity,
 		schemaVersion,
@@ -139,19 +201,19 @@ func (s *Server) handleSoulAgentUpdateRegistration(ctx *apptheory.Context) (*app
 	}
 
 	audit := &models.AuditLogEntry{
-		Actor:     strings.TrimSpace(ctx.AuthIdentity),
+		Actor:     strings.TrimSpace(actor),
 		Action:    "soul.registration.update",
 		Target:    fmt.Sprintf("soul_agent_identity:%s", agentIDHex),
-		RequestID: ctx.RequestID,
+		RequestID: requestID,
 		CreatedAt: now,
 	}
-	s.tryWriteAuditLog(ctx, audit)
+	s.tryWriteAuditLogWithContext(ctx, audit)
 
-	resp := soulUpdateRegistrationResponse{Agent: *identity, Version: nextVersion}
-	if isOperator(ctx) {
+	resp := &SoulAgentUpdateRegistrationResult{Agent: *identity, Version: nextVersion}
+	if includeS3Key {
 		resp.S3Key = s3Key
 	}
-	return apptheory.JSON(http.StatusOK, resp)
+	return resp, nil
 }
 
 func (s *Server) requireSoulUpdateRegistrationPrereqs(ctx *apptheory.Context) *apptheory.AppError {
@@ -159,6 +221,25 @@ func (s *Server) requireSoulUpdateRegistrationPrereqs(ctx *apptheory.Context) *a
 		return appErr
 	}
 	if appErr := s.requireSoulPortalPrereqs(ctx); appErr != nil {
+		return appErr
+	}
+	if appErr := s.requireSoulRPCConfigured(); appErr != nil {
+		return appErr
+	}
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if s.soulPacks == nil {
+		return &apptheory.AppError{Code: "app.conflict", Message: "soul registry bucket is not configured"}
+	}
+	return nil
+}
+
+func (s *Server) requireSoulUpdateRegistrationInstancePrereqs(instanceSlug string) *apptheory.AppError {
+	if strings.TrimSpace(instanceSlug) == "" {
+		return &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+	}
+	if appErr := s.requireSoulRegistryConfigured(); appErr != nil {
 		return appErr
 	}
 	if appErr := s.requireSoulRPCConfigured(); appErr != nil {
@@ -657,6 +738,69 @@ func (s *Server) requireActiveSoulAgentWithDomainAccess(ctx *apptheory.Context, 
 		return nil, accessErr
 	}
 	return identity, nil
+}
+
+func (s *Server) requireActiveSoulAgentForInstance(ctx context.Context, agentIDHex string, instanceSlug string) (*models.SoulAgentIdentity, *apptheory.AppError) {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
+	identity, err := s.getSoulAgentIdentity(ctx, agentIDHex)
+	if theoryErrors.IsNotFound(err) {
+		return nil, &apptheory.AppError{Code: "app.not_found", Message: "agent not found"}
+	}
+	if err != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
+	effectiveStatus := strings.TrimSpace(identity.LifecycleStatus)
+	if effectiveStatus == "" {
+		effectiveStatus = strings.TrimSpace(identity.Status)
+	}
+	if effectiveStatus != models.SoulAgentStatusActive {
+		return nil, &apptheory.AppError{Code: "app.conflict", Message: "agent is not active"}
+	}
+
+	if appErr := s.requireSoulAgentInstanceAccess(ctx, instanceSlug, identity); appErr != nil {
+		return nil, appErr
+	}
+
+	return identity, nil
+}
+
+func (s *Server) requireSoulAgentInstanceAccess(ctx context.Context, instanceSlug string, identity *models.SoulAgentIdentity) *apptheory.AppError {
+	if s == nil || s.store == nil || s.store.DB == nil || identity == nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	instanceSlug = strings.TrimSpace(instanceSlug)
+	if instanceSlug == "" {
+		return &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+	}
+
+	normalizedDomain := strings.ToLower(strings.TrimSpace(identity.Domain))
+	if normalizedDomain == "" {
+		return &apptheory.AppError{Code: "app.conflict", Message: "agent domain is invalid"}
+	}
+
+	var d models.Domain
+	err := s.store.DB.WithContext(ctx).
+		Model(&models.Domain{}).
+		Where("PK", "=", fmt.Sprintf("DOMAIN#%s", normalizedDomain)).
+		Where("SK", "=", models.SKMetadata).
+		First(&d)
+	if theoryErrors.IsNotFound(err) {
+		return &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+	}
+	if err != nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if !domainIsVerifiedOrActive(d.Status) {
+		return &apptheory.AppError{Code: "app.conflict", Message: "agent domain is not verified"}
+	}
+	if !strings.EqualFold(strings.TrimSpace(d.InstanceSlug), instanceSlug) {
+		return &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+	}
+	return nil
 }
 
 func parseSoulUpdateRegistrationBody(body []byte) ([]byte, map[string]any, *int, *apptheory.AppError) {

@@ -625,6 +625,7 @@ export class LesserHostStack extends cdk.Stack {
 			ARTIFACT_BUCKET_NAME: artifactsBucket.bucketName,
 			PREVIEW_QUEUE_URL: previewQueue.queueUrl,
 			SAFETY_QUEUE_URL: safetyQueue.queueUrl,
+			SOUL_ENABLED: soulEnabled,
 			ENS_GATEWAY_SIGNING_KEY_ID: ensGatewaySigningKey.keyId,
 			ENS_GATEWAY_RESOLVER_ADDRESS: ensGatewayResolverAddress.trim(),
 			ENS_GATEWAY_TTL_SECONDS: ensGatewayTTLSeconds.trim(),
@@ -1440,6 +1441,7 @@ export class LesserHostStack extends cdk.Stack {
 				'api/v1/previews*': trustApiBehavior,
 				'api/v1/renders*': trustApiBehavior,
 				'api/v1/publish/jobs*': trustApiBehavior,
+				'api/v1/soul/agents/*/update-registration': trustApiBehavior,
 				'api/v1/ai/*': trustApiBehavior,
 				'api/v1/budget/debit': trustApiBehavior,
 

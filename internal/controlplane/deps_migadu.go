@@ -50,6 +50,7 @@ func defaultMigaduCreateMailbox(ctx context.Context, localPart string, name stri
 		return err
 	}
 
+	//nolint:gosec // Password must be sent in the outbound Migadu mailbox creation request body.
 	body, err := json.Marshal(migaduCreateMailboxRequest{
 		Name:                  name,
 		LocalPart:             localPart,

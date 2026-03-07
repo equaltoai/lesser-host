@@ -437,7 +437,7 @@ func TestValidateSetupCreateAdminState_ConflictsAndUnauthorized(t *testing.T) {
 
 	// Missing setup session token => unauthorized.
 	tdb.qCP.On("First", mock.AnythingOfType("*models.ControlPlaneConfig")).Return(theoryErrors.ErrItemNotFound).Once()
-	if _, appErr := s.validateSetupCreateAdminState(&apptheory.Context{}); appErr == nil || appErr.Code != "app.unauthorized" {
+	if _, appErr := s.validateSetupCreateAdminState(&apptheory.Context{}); appErr == nil || appErr.Code != testProvisionConsentCodeUnauthorized {
 		t.Fatalf("expected unauthorized for missing setup session, got %#v", appErr)
 	}
 }

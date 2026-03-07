@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/rand"
 	"encoding/asn1"
+	"encoding/base64"
 	"math/big"
 	"testing"
 
@@ -104,6 +105,24 @@ func TestKMSAndServerSignerGuards(t *testing.T) {
 	signer, err = s.ensureENSGatewaySigner(context.Background())
 	if err != nil || signer == nil {
 		t.Fatalf("expected local signer, got signer=%#v err=%v", signer, err)
+	}
+}
+
+func TestParseENSGatewayPublicKey_Secp256k1SPKI(t *testing.T) {
+	der, err := base64.StdEncoding.DecodeString("MFYwEAYHKoZIzj0CAQYFK4EEAAoDQgAEHwo2cCum7SQHk2xNugV8uDmUbjszh8lFKA35vFCg2Rk8v+Dv7Km6LDGSuIrElqAuHaQbhZk6PAbSNVoN9Jz3/A==")
+	if err != nil {
+		t.Fatalf("DecodeString: %v", err)
+	}
+
+	pub, err := parseENSGatewayPublicKey(der)
+	if err != nil {
+		t.Fatalf("parseENSGatewayPublicKey: %v", err)
+	}
+
+	got := crypto.PubkeyToAddress(*pub)
+	want := common.HexToAddress("0xFD4450A49cA55Cc155075dA46E07fAd2e383429B")
+	if got != want {
+		t.Fatalf("unexpected address: got %s want %s", got, want)
 	}
 }
 
