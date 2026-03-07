@@ -7,6 +7,8 @@
     "managedAccountEmailTemplateLab": "<YOUR_EMAIL>+lab-{slug}@<YOUR_DOMAIN>",
     "managedAccountEmailTemplateLive": "<YOUR_EMAIL>+{slug}@<YOUR_DOMAIN>",
     "bootstrapWalletAddress": "<YOUR_BOOTSTRAP_WALLET_ADDRESS>",
+    "ensGatewayResolverAddress": "<YOUR_ENS_GATEWAY_RESOLVER_ADDRESS>",
+    "ensGatewayTtlSeconds": "300",
     "tipContractAddressLab": "<YOUR_TIP_CONTRACT_ADDRESS_LAB>",
     "soulRegistryContractAddressLab": "<YOUR_SOUL_REGISTRY_CONTRACT_ADDRESS_LAB>",
     "soulReputationAttestationContractAddressLab": "<YOUR_SOUL_REPUTATION_ATTESTATION_CONTRACT_ADDRESS_LAB>",

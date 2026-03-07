@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/asn1"
 	"fmt"
 	"math/big"
@@ -71,6 +72,40 @@ type kmsENSGatewaySigner struct {
 	address common.Address
 }
 
+type ensGatewaySubjectPublicKeyInfo struct {
+	Algorithm        pkix.AlgorithmIdentifier
+	SubjectPublicKey asn1.BitString
+}
+
+func parseENSGatewayPublicKey(der []byte) (*ecdsa.PublicKey, error) {
+	if len(der) == 0 {
+		return nil, fmt.Errorf("ens gateway signer: empty public key")
+	}
+
+	parsed, err := x509.ParsePKIXPublicKey(der)
+	if err == nil {
+		pub, ok := parsed.(*ecdsa.PublicKey)
+		if !ok || pub == nil {
+			return nil, fmt.Errorf("ens gateway signer: unsupported public key type %T", parsed)
+		}
+		return pub, nil
+	}
+
+	var spki ensGatewaySubjectPublicKeyInfo
+	if _, unmarshalErr := asn1.Unmarshal(der, &spki); unmarshalErr != nil {
+		return nil, fmt.Errorf("ens gateway signer: parse public key: %w", err)
+	}
+	if len(spki.SubjectPublicKey.Bytes) == 0 {
+		return nil, fmt.Errorf("ens gateway signer: empty subject public key")
+	}
+
+	pub, unmarshalErr := crypto.UnmarshalPubkey(spki.SubjectPublicKey.Bytes)
+	if unmarshalErr != nil {
+		return nil, fmt.Errorf("ens gateway signer: parse public key: %w", err)
+	}
+	return pub, nil
+}
+
 func newKMSENSGatewaySigner(ctx context.Context, keyID string) (*kmsENSGatewaySigner, error) {
 	keyID = strings.TrimSpace(keyID)
 	if keyID == "" {
@@ -91,13 +126,9 @@ func newKMSENSGatewaySigner(ctx context.Context, keyID string) (*kmsENSGatewaySi
 		return nil, fmt.Errorf("ens gateway signer: empty public key")
 	}
 
-	parsed, err := x509.ParsePKIXPublicKey(pubOut.PublicKey)
+	pub, err := parseENSGatewayPublicKey(pubOut.PublicKey)
 	if err != nil {
-		return nil, fmt.Errorf("ens gateway signer: parse public key: %w", err)
-	}
-	pub, ok := parsed.(*ecdsa.PublicKey)
-	if !ok || pub == nil {
-		return nil, fmt.Errorf("ens gateway signer: unsupported public key type %T", parsed)
+		return nil, err
 	}
 
 	return &kmsENSGatewaySigner{

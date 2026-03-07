@@ -625,6 +625,7 @@ export class LesserHostStack extends cdk.Stack {
 			ARTIFACT_BUCKET_NAME: artifactsBucket.bucketName,
 			PREVIEW_QUEUE_URL: previewQueue.queueUrl,
 			SAFETY_QUEUE_URL: safetyQueue.queueUrl,
+			SOUL_ENABLED: soulEnabled,
 			ENS_GATEWAY_SIGNING_KEY_ID: ensGatewaySigningKey.keyId,
 			ENS_GATEWAY_RESOLVER_ADDRESS: ensGatewayResolverAddress.trim(),
 			ENS_GATEWAY_TTL_SECONDS: ensGatewayTTLSeconds.trim(),
