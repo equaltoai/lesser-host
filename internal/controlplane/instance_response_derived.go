@@ -7,6 +7,7 @@ func (s *Server) instanceResponseWithDerivedFields(inst *models.Instance) instan
 	if s == nil || inst == nil {
 		return resp
 	}
+	resp.ManagedLesserDomain = managedInstanceStageDomain(s.cfg.Stage, resp.HostedBaseDomain)
 	if resp.BodyEnabled {
 		resp.McpURL = managedInstanceMcpURL(s.cfg.Stage, resp.HostedBaseDomain)
 	}

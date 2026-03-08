@@ -1,11 +1,13 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { get } from 'svelte/store';
 
 	import type { ApiError } from 'src/lib/api/http';
 	import type { SoulOperation, SafeTxPayload } from 'src/lib/api/soul';
-	import { getSoulOperation, recordSoulOperationExecution } from 'src/lib/api/soul';
+	import { getSoulOperation, recordSoulOperationExecution, soulPublicGetConfig } from 'src/lib/api/soul';
 	import { logout } from 'src/lib/auth/logout';
-	import { navigate } from 'src/lib/router';
+	import { navigate, safeAppRootUrl, stageSafeAppTarget } from 'src/lib/router';
+	import { session, stageSafeAppSessionHandoff } from 'src/lib/session';
 	import {
 		Alert,
 		Badge,
@@ -20,6 +22,18 @@
 		TextArea,
 		TextField,
 	} from 'src/lib/ui';
+	import {
+		buildSafeWalletAppUrl,
+		clearPendingSafeAppTxHash,
+		detectSafeAppContext,
+		getSafeAppTransaction,
+		loadPendingSafeAppTxHash,
+		savePendingSafeAppTxHash,
+		submitSafeAppTransaction,
+		summarizeSafeAppExecution,
+		type SafeAppContext,
+		type SafeAppExecutionStatus,
+	} from 'src/lib/wallet/safeApp';
 
 	let { token, id } = $props<{ token: string; id: string }>();
 
@@ -33,6 +47,16 @@
 
 	let showReceipt = $state(false);
 	let showSnapshot = $state(false);
+
+	let safeAppLoading = $state(false);
+	let safeAppSubmitting = $state(false);
+	let safeAppError = $state<string | null>(null);
+	let safeAppNotice = $state<string | null>(null);
+	let safeAppContext = $state<SafeAppContext | null>(null);
+	let safeAppTxHash = $state('');
+	let safeAppStatus = $state<SafeAppExecutionStatus | null>(null);
+	let safeChainId = $state<number | null>(null);
+	let safeAppPollTimer = 0;
 
 	function formatError(err: unknown): string {
 		if (!err) return 'unknown error';
@@ -55,7 +79,8 @@
 	function parseSafePayload(raw?: string): SafeTxPayload | null {
 		if (!raw) return null;
 		try {
-			return JSON.parse(raw) as SafeTxPayload;
+			const parsed = JSON.parse(raw) as SafeTxPayload;
+			return parsed.safe_address?.trim() ? parsed : null;
 		} catch {
 			return null;
 		}
@@ -63,15 +88,41 @@
 
 	const statusBadge = $derived.by(() => badgeForStatus(op?.status ?? ''));
 	const safePayload = $derived.by(() => parseSafePayload(op?.safe_payload));
+	const safeAppUrl = $derived.by(() => safeAppRootUrl());
+	const safeWalletUrl = $derived.by(() => {
+		if (!safePayload || !safeChainId) return '';
+		return (
+			buildSafeWalletAppUrl({
+				appUrl: safeAppUrl,
+				safeAddress: safePayload.safe_address,
+				chainId: safeChainId,
+			}) || ''
+		);
+	});
+	const safeAppSafeMatches = $derived.by(() => {
+		if (!safeAppContext || !safePayload) return false;
+		return safeAppContext.info.safeAddress.toLowerCase() === safePayload.safe_address.toLowerCase();
+	});
+
+	function stopSafeAppPolling() {
+		if (safeAppPollTimer) {
+			window.clearInterval(safeAppPollTimer);
+			safeAppPollTimer = 0;
+		}
+	}
 
 	async function load() {
 		errorMessage = null;
 		recordError = null;
-		op = null;
 
 		loading = true;
 		try {
 			op = await getSoulOperation(token, id);
+			if (op?.exec_tx_hash) {
+				clearPendingSafeAppTxHash(id);
+				stopSafeAppPolling();
+				safeAppTxHash = '';
+			}
 		} catch (err) {
 			if ((err as Partial<ApiError>).status === 401) {
 				await logout();
@@ -84,6 +135,33 @@
 		}
 	}
 
+	async function recordExecutionHash(txHash: string, source: 'manual' | 'safe'): Promise<void> {
+		recordLoading = true;
+		try {
+			op = await recordSoulOperationExecution(token, id, txHash);
+			execTxHash = '';
+			if (source === 'safe') {
+				clearPendingSafeAppTxHash(id);
+				safeAppNotice = 'Execution was mined and reconciled back into lesser-host.';
+				safeAppError = null;
+				stopSafeAppPolling();
+			}
+		} catch (err) {
+			if ((err as Partial<ApiError>).status === 401) {
+				await logout();
+				navigate('/login');
+				return;
+			}
+			if (source === 'safe') {
+				safeAppError = formatError(err);
+			} else {
+				recordError = formatError(err);
+			}
+		} finally {
+			recordLoading = false;
+		}
+	}
+
 	async function recordExecution() {
 		recordError = null;
 		const trimmed = execTxHash.trim();
@@ -91,24 +169,150 @@
 			recordError = 'exec_tx_hash is required.';
 			return;
 		}
-		recordLoading = true;
+		await recordExecutionHash(trimmed, 'manual');
+	}
+
+	async function pollSafeExecution(safeTxHash: string) {
+		if (!safeAppContext) return;
 		try {
-			op = await recordSoulOperationExecution(token, id, trimmed);
-			execTxHash = '';
-		} catch (err) {
-			if ((err as Partial<ApiError>).status === 401) {
-				await logout();
-				navigate('/login');
-				return;
+			const details = await getSafeAppTransaction(safeAppContext, safeTxHash);
+			safeAppStatus = summarizeSafeAppExecution(details);
+			safeAppError = null;
+			if (safeAppStatus.txHash && safeAppStatus.txHash !== op?.exec_tx_hash) {
+				await recordExecutionHash(safeAppStatus.txHash, 'safe');
 			}
-			recordError = formatError(err);
+		} catch (err) {
+			safeAppError = formatError(err);
+		}
+	}
+
+	function startSafeAppPolling(safeTxHash: string) {
+		stopSafeAppPolling();
+		void pollSafeExecution(safeTxHash);
+		safeAppPollTimer = window.setInterval(() => {
+			void pollSafeExecution(safeTxHash);
+		}, 5000);
+	}
+
+	async function initSafeApp() {
+		safeAppLoading = true;
+		try {
+			safeAppContext = await detectSafeAppContext();
+			safeAppTxHash = loadPendingSafeAppTxHash(id);
+			if (safeAppContext && safeAppTxHash) {
+				startSafeAppPolling(safeAppTxHash);
+			}
 		} finally {
-			recordLoading = false;
+			safeAppLoading = false;
+		}
+	}
+
+	async function loadConfig() {
+		try {
+			const cfg = await soulPublicGetConfig();
+			safeChainId = typeof cfg.chain_id === 'number' ? cfg.chain_id : null;
+		} catch {
+			safeChainId = null;
+		}
+	}
+
+	function stageSafeAppLaunch(): boolean {
+		const currentSession = get(session);
+		if (!currentSession) {
+			safeAppError = 'No operator session is available to hand off into Safe.';
+			return false;
+		}
+		if (!stageSafeAppSessionHandoff(currentSession)) {
+			safeAppError = 'Failed to stage a short-lived operator session for Safe.';
+			return false;
+		}
+		stageSafeAppTarget(`/operator/soul/operations/${id}`);
+		return true;
+	}
+
+	async function openSafeWallet() {
+		safeAppError = null;
+		safeAppNotice = null;
+		if (!stageSafeAppLaunch()) {
+			return;
+		}
+		const url = safeWalletUrl;
+		if (!url) {
+			safeAppError = 'Could not build a Safe Wallet launch URL for this chain yet.';
+			safeAppNotice = `As a fallback, add lesser-host as a custom app with ${safeAppUrl}.`;
+			return;
+		}
+		try {
+			await navigator.clipboard.writeText(url);
+		} catch {
+			// Clipboard is just a convenience here.
+		}
+		const popup = window.open(url, '_blank', 'noopener,noreferrer');
+		if (popup) {
+			safeAppNotice = 'Safe Wallet was opened in a new tab and the launch URL was copied as a fallback.';
+		} else {
+			safeAppNotice = `Safe Wallet launch URL copied. Open ${url} if a new tab did not appear.`;
+		}
+	}
+
+	async function copySafeWalletUrl() {
+		safeAppError = null;
+		safeAppNotice = null;
+		if (!stageSafeAppLaunch()) {
+			return;
+		}
+		const url = safeWalletUrl;
+		if (!url) {
+			safeAppError = 'Could not build a Safe Wallet launch URL for this chain yet.';
+			return;
+		}
+		try {
+			await navigator.clipboard.writeText(url);
+			safeAppNotice = 'Copied the full Safe Wallet launch URL for this operation.';
+		} catch (err) {
+			safeAppError = formatError(err);
+		}
+	}
+
+	async function submitViaSafe() {
+		safeAppError = null;
+		safeAppNotice = null;
+		if (!safeAppContext || !safePayload) {
+			safeAppError = 'Open this page inside the matching Safe app first.';
+			return;
+		}
+		if (!safeAppSafeMatches) {
+			safeAppError = 'The currently opened Safe does not match this operation.';
+			return;
+		}
+		if (safeAppContext.info.isReadOnly) {
+			safeAppError = 'This Safe view is read-only and cannot submit transactions.';
+			return;
+		}
+
+		safeAppSubmitting = true;
+		try {
+			const txHash = await submitSafeAppTransaction(safeAppContext, {
+				to: safePayload.to,
+				value: safePayload.value,
+				data: safePayload.data,
+			});
+			safeAppTxHash = txHash;
+			savePendingSafeAppTxHash(id, txHash);
+			safeAppNotice = 'Submitted to Safe. Waiting for confirmation/execution status.';
+			startSafeAppPolling(txHash);
+		} catch (err) {
+			safeAppError = formatError(err);
+		} finally {
+			safeAppSubmitting = false;
 		}
 	}
 
 	onMount(() => {
+		void initSafeApp();
+		void loadConfig();
 		void load();
+		return () => stopSafeAppPolling();
 	});
 </script>
 
@@ -185,6 +389,82 @@
 				{/if}
 			{/if}
 		</Card>
+
+		{#if safePayload && !current.exec_tx_hash}
+			<Card variant="outlined" padding="lg">
+				{#snippet header()}
+					<Heading level={3} size="lg">Execute With Safe</Heading>
+				{/snippet}
+
+				<div class="op-soul-op__stack">
+					{#if safeAppLoading}
+						<div class="op-soul-op__loading-inline">
+							<Spinner size="sm" />
+							<Text size="sm">Checking for Safe app context…</Text>
+						</div>
+					{:else if safeAppContext}
+						<DefinitionList>
+							<DefinitionItem label="Opened safe" monospace>{safeAppContext.info.safeAddress}</DefinitionItem>
+							<DefinitionItem label="Threshold" monospace>{String(safeAppContext.info.threshold)}</DefinitionItem>
+							<DefinitionItem label="Read only" monospace>{String(safeAppContext.info.isReadOnly)}</DefinitionItem>
+						</DefinitionList>
+
+						{#if !safeAppSafeMatches}
+							<Alert variant="warning" title="Wrong Safe">
+								This operation targets <span class="op-soul-op__mono">{safePayload.safe_address}</span>, but the current
+								Safe app is opened on <span class="op-soul-op__mono">{safeAppContext.info.safeAddress}</span>.
+							</Alert>
+						{:else if safeAppContext.info.isReadOnly}
+							<Alert variant="warning" title="Read-only Safe">
+								This Safe context is read-only. Open the writable Safe and try again.
+							</Alert>
+						{:else}
+							<Button variant="solid" onclick={() => void submitViaSafe()} disabled={safeAppSubmitting || recordLoading}>
+								{safeAppSubmitting ? 'Submitting to Safe…' : 'Submit via Safe'}
+							</Button>
+						{/if}
+					{:else}
+						<Text size="sm" color="secondary">
+							Open this operation directly in Safe Wallet. The staged operator session lets the Safe app land on this
+							operation without manual navigation.
+						</Text>
+						<div class="op-soul-op__row">
+							<Button variant="solid" onclick={() => void openSafeWallet()} disabled={!safeWalletUrl}>Open in Safe</Button>
+							<Button variant="outline" onclick={() => void copySafeWalletUrl()} disabled={!safeWalletUrl}>
+								Copy Safe Wallet URL
+							</Button>
+						</div>
+						<Text size="sm" color="secondary">
+							{#if safeWalletUrl}
+								If Safe asks for the custom app root, use <span class="op-soul-op__mono">{safeAppUrl}</span> once.
+							{:else}
+								Waiting for chain configuration before building the Safe Wallet launch URL.
+							{/if}
+						</Text>
+					{/if}
+
+					{#if safeAppNotice}
+						<Alert variant="info" title="Safe app">{safeAppNotice}</Alert>
+					{/if}
+					{#if safeAppError}
+						<Alert variant="error" title="Safe app">{safeAppError}</Alert>
+					{/if}
+
+					{#if safeAppTxHash || safeAppStatus}
+						<DefinitionList>
+							<DefinitionItem label="Safe tx hash" monospace>{safeAppTxHash || '—'}</DefinitionItem>
+							<DefinitionItem label="Safe tx status" monospace>{safeAppStatus?.txStatus || '—'}</DefinitionItem>
+							<DefinitionItem label="Execution tx hash" monospace>{safeAppStatus?.txHash || current.exec_tx_hash || '—'}</DefinitionItem>
+							<DefinitionItem label="Confirmations" monospace>
+								{safeAppStatus?.confirmationsSubmitted != null && safeAppStatus?.confirmationsRequired != null
+									? `${safeAppStatus.confirmationsSubmitted}/${safeAppStatus.confirmationsRequired}`
+									: '—'}
+							</DefinitionItem>
+						</DefinitionList>
+					{/if}
+				</div>
+			</Card>
+		{/if}
 
 		<Card variant="outlined" padding="lg">
 			{#snippet header()}
@@ -304,6 +584,12 @@
 		display: flex;
 		gap: var(--gr-spacing-scale-2);
 		align-items: center;
+	}
+
+	.op-soul-op__stack {
+		display: flex;
+		flex-direction: column;
+		gap: var(--gr-spacing-scale-4);
 	}
 
 	.op-soul-op__form {

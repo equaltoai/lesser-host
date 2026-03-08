@@ -10,6 +10,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 
+	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -170,6 +171,23 @@ func TestInstanceAndDomainResponsesApplyDefaults(t *testing.T) {
 	dresp := domainResponseFromModel(&models.Domain{Domain: " d ", InstanceSlug: " s "})
 	if dresp.Domain != "d" || dresp.InstanceSlug != "s" {
 		t.Fatalf("expected trimmed domain fields, got %#v", dresp)
+	}
+}
+
+func TestInstanceResponseWithDerivedFields_ComputesManagedDomains(t *testing.T) {
+	t.Parallel()
+
+	bodyEnabled := true
+	s := &Server{cfg: config.Config{Stage: "lab"}}
+	resp := s.instanceResponseWithDerivedFields(&models.Instance{
+		HostedBaseDomain: "simulacrum.greater.website",
+		BodyEnabled:      &bodyEnabled,
+	})
+	if resp.ManagedLesserDomain != "dev.simulacrum.greater.website" {
+		t.Fatalf("expected managed lesser domain, got %#v", resp.ManagedLesserDomain)
+	}
+	if resp.McpURL != "https://api.dev.simulacrum.greater.website/mcp" {
+		t.Fatalf("expected derived mcp url, got %#v", resp.McpURL)
 	}
 }
 

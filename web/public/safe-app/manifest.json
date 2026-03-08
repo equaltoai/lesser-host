@@ -1,0 +1,12 @@
+{
+  "name": "lesser-host Operator",
+  "short_name": "lesser-host",
+  "description": "Execute lesser-host operator Safe transactions directly from the operator portal.",
+  "icons": [
+    {
+      "src": "/safe-app/icon.svg",
+      "type": "image/svg+xml",
+      "sizes": "any"
+    }
+  ]
+}

@@ -270,6 +270,79 @@ func TestHandleSoulAgentRegistrationBegin_StructuredCapabilities_Success(t *test
 	}
 }
 
+func TestHandleSoulAgentRegistrationBegin_ManagedStageDomainAutoVerifiesProofs(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulRegistryTestDB()
+	s := &Server{
+		store: store.New(tdb.db),
+		cfg: config.Config{
+			Stage:                       "lab",
+			SoulEnabled:                 true,
+			SoulChainID:                 1,
+			SoulRegistryContractAddress: "0x0000000000000000000000000000000000000001",
+			SoulTxMode:                  "safe",
+			SoulAdminSafeAddress:        "0x0000000000000000000000000000000000000002",
+			SoulSupportedCapabilities:   []string{"social", "commerce"},
+		},
+	}
+
+	tdb.qUser.On("First", mock.AnythingOfType("*models.User")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.User](t, args, 0)
+		*dest = models.User{Username: "alice", Role: models.RoleCustomer, ApprovalStatus: models.UserApprovalStatusApproved}
+	}).Once()
+
+	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(theoryErrors.ErrItemNotFound).Once()
+	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
+		*dest = models.Domain{
+			Domain:             "simulacrum.greater.website",
+			InstanceSlug:       "simulacrum",
+			Type:               models.DomainTypePrimary,
+			Status:             models.DomainStatusVerified,
+			VerificationMethod: "managed",
+		}
+	}).Once()
+	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{
+			Slug:             "simulacrum",
+			Owner:            "alice",
+			HostedBaseDomain: "simulacrum.greater.website",
+		}
+	}).Once()
+
+	tdb.qWalletIdx.On("First", mock.AnythingOfType("*models.WalletIndex")).Return(theoryErrors.ErrItemNotFound).Once()
+	tdb.qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(theoryErrors.ErrItemNotFound).Once()
+
+	body, _ := json.Marshal(soulAgentRegistrationBeginRequest{
+		Domain:       "dev.simulacrum.greater.website",
+		LocalID:      "agent-zero",
+		Wallet:       "0x000000000000000000000000000000000000dEaD",
+		Capabilities: []any{"social"},
+	})
+
+	ctx := &apptheory.Context{RequestID: "r-managed", AuthIdentity: "alice", Request: apptheory.Request{Body: body}}
+	resp, err := s.handleSoulAgentRegistrationBegin(ctx)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if resp.Status != http.StatusCreated {
+		t.Fatalf("expected 201, got %d (body=%q)", resp.Status, string(resp.Body))
+	}
+
+	var out soulAgentRegistrationBeginResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !out.Registration.DNSVerified || !out.Registration.HTTPSVerified {
+		t.Fatalf("expected managed stage domain proofs to be auto-verified, got %#v", out.Registration)
+	}
+	if len(out.Proofs) != 0 {
+		t.Fatalf("expected no manual proofs, got %#v", out.Proofs)
+	}
+}
+
 func TestHandleSoulAgentRegistrationBegin_RejectsNonSelfDeclaredClaimLevels(t *testing.T) {
 	t.Parallel()
 
@@ -429,6 +502,9 @@ func TestHandleSoulAgentRegistrationVerify_UsesExistingProofFlagsAndCreatesOpera
 	}
 	if out.SafeTx == nil || out.SafeTx.To == "" || !strings.HasPrefix(out.SafeTx.Data, "0x") {
 		t.Fatalf("expected safe tx payload, got %#v", out.SafeTx)
+	}
+	if out.SafeTx.SafeAddress != "" {
+		t.Fatalf("expected direct mint payload, got safe_address=%q", out.SafeTx.SafeAddress)
 	}
 }
 

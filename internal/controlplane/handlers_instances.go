@@ -53,6 +53,7 @@ type instanceResponse struct {
 	HostedAccountID           string    `json:"hosted_account_id,omitempty"`
 	HostedRegion              string    `json:"hosted_region,omitempty"`
 	HostedBaseDomain          string    `json:"hosted_base_domain,omitempty"`
+	ManagedLesserDomain       string    `json:"managed_lesser_domain,omitempty"`
 	HostedZoneID              string    `json:"hosted_zone_id,omitempty"`
 	LesserVersion             string    `json:"lesser_version,omitempty"`
 	SoulEnabled               bool      `json:"soul_enabled"`

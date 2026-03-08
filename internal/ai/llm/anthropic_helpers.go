@@ -24,6 +24,13 @@ type anthropicToolBatchConfig struct {
 	MaxTokens       int64
 }
 
+type anthropicJSONTextBatchConfig struct {
+	Schema       map[string]any
+	SystemPrompt string
+	Temperature  float64
+	MaxTokens    int64
+}
+
 var anthropicHTTPClient option.HTTPClient
 
 func anthropicModelFromSet(modelSet string) (anthropic.Model, error) {
@@ -62,6 +69,7 @@ func anthropicToolInputSchemaFromJSONSchema(schema map[string]any) anthropic.Too
 	if schema == nil {
 		return out
 	}
+	schema = sanitizeAnthropicToolSchemaMap(schema)
 
 	if props, ok := schema["properties"]; ok {
 		out.Properties = props
@@ -99,6 +107,42 @@ func anthropicToolInputSchemaFromJSONSchema(schema map[string]any) anthropic.Too
 	}
 
 	return out
+}
+
+func sanitizeAnthropicToolSchemaMap(schema map[string]any) map[string]any {
+	if len(schema) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(schema))
+	objType, _ := schema["type"].(string)
+	for k, v := range schema {
+		if k == "additionalProperties" && strings.EqualFold(strings.TrimSpace(objType), "object") {
+			continue
+		}
+		out[k] = sanitizeAnthropicToolSchemaValue(v)
+	}
+	if strings.EqualFold(strings.TrimSpace(objType), "object") {
+		if _, ok := out["properties"]; !ok {
+			out["properties"] = map[string]any{}
+		}
+		out["additionalProperties"] = false
+	}
+	return out
+}
+
+func sanitizeAnthropicToolSchemaValue(v any) any {
+	switch typed := v.(type) {
+	case map[string]any:
+		return sanitizeAnthropicToolSchemaMap(typed)
+	case []any:
+		out := make([]any, len(typed))
+		for i := range typed {
+			out[i] = sanitizeAnthropicToolSchemaValue(typed[i])
+		}
+		return out
+	default:
+		return v
+	}
 }
 
 func anthropicToolUseInput(message *anthropic.Message, toolName string) (json.RawMessage, error) {
@@ -145,6 +189,47 @@ func anthropicUsageFromMessage(message *anthropic.Message, start time.Time) mode
 		DurationMs:   time.Since(start).Milliseconds(),
 		ToolCalls:    1,
 	}
+}
+
+func anthropicTextOutput(message *anthropic.Message) (string, error) {
+	if message == nil {
+		return "", fmt.Errorf("anthropic: nil message")
+	}
+
+	var sb strings.Builder
+	for _, block := range message.Content {
+		switch block := block.AsAny().(type) {
+		case anthropic.TextBlock:
+			sb.WriteString(block.Text)
+		}
+	}
+
+	raw := strings.TrimSpace(sb.String())
+	if raw == "" {
+		return "", fmt.Errorf("anthropic: empty response")
+	}
+	return raw, nil
+}
+
+func extractJSONObjectFromText(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if strings.HasPrefix(raw, "```") {
+		trimmed := strings.TrimPrefix(raw, "```json")
+		if trimmed == raw {
+			trimmed = strings.TrimPrefix(raw, "```")
+		}
+		trimmed = strings.TrimSuffix(strings.TrimSpace(trimmed), "```")
+		raw = strings.TrimSpace(trimmed)
+	}
+	start := strings.Index(raw, "{")
+	end := strings.LastIndex(raw, "}")
+	if start >= 0 && end >= start {
+		return strings.TrimSpace(raw[start : end+1])
+	}
+	return raw
 }
 
 func anthropicToolBatch[Prompt any, Parsed any, Out any](
@@ -207,6 +292,67 @@ func anthropicToolBatch[Prompt any, Parsed any, Out any](
 	}
 
 	parsed, err := parse(string(raw))
+	if err != nil {
+		return zero, models.AIUsage{}, err
+	}
+
+	out := normalize(parsed)
+	return out, anthropicUsageFromMessage(message, start), nil
+}
+
+func anthropicJSONTextBatch[Prompt any, Parsed any, Out any](
+	ctx context.Context,
+	apiKey string,
+	modelSet string,
+	prompt Prompt,
+	cfg anthropicJSONTextBatchConfig,
+	parse func(string) (Parsed, error),
+	normalize func(Parsed) Out,
+) (Out, models.AIUsage, error) {
+	var zero Out
+
+	model, err := anthropicModelFromSet(modelSet)
+	if err != nil {
+		return zero, models.AIUsage{}, err
+	}
+
+	payload, err := json.Marshal(prompt)
+	if err != nil {
+		return zero, models.AIUsage{}, err
+	}
+
+	if cfg.MaxTokens <= 0 {
+		cfg.MaxTokens = 4096
+	}
+
+	systemPrompt := strings.TrimSpace(cfg.SystemPrompt)
+	if len(cfg.Schema) > 0 {
+		schemaJSON, schemaErr := json.Marshal(cfg.Schema)
+		if schemaErr != nil {
+			return zero, models.AIUsage{}, schemaErr
+		}
+		systemPrompt = strings.TrimSpace(systemPrompt + "\n\nReturn only valid JSON matching this schema exactly:\n" + string(schemaJSON))
+	}
+
+	client := anthropicClientForKey(apiKey)
+	start := time.Now()
+	message, err := client.Messages.New(ctx, anthropic.MessageNewParams{
+		Model:       model,
+		MaxTokens:   cfg.MaxTokens,
+		System:      []anthropic.TextBlockParam{{Text: systemPrompt}},
+		Messages:    []anthropic.MessageParam{anthropic.NewUserMessage(anthropic.NewTextBlock(string(payload)))},
+		Temperature: anthropic.Float(cfg.Temperature),
+	})
+	if err != nil {
+		return zero, models.AIUsage{}, err
+	}
+
+	raw, err := anthropicTextOutput(message)
+	if err != nil {
+		return zero, models.AIUsage{}, err
+	}
+
+	parsed, err := parse(extractJSONObjectFromText(raw))
 	if err != nil {
 		return zero, models.AIUsage{}, err
 	}

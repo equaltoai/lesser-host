@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/ethereum/go-ethereum/common"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
@@ -327,6 +328,7 @@ type soulPublicSearchParams struct {
 	Boundary   string
 	Channels   []string
 	ENSName    string
+	Principal  string
 	Status     string
 	Cursor     string
 	Limit      int
@@ -341,17 +343,7 @@ func parseSoulPublicSearchParams(ctx *apptheory.Context) (soulPublicSearchParams
 	domainRaw := strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "domain"))
 	cap := strings.ToLower(strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "capability")))
 	cursor := strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "cursor"))
-	claimLevel := parseSoulSearchClaimLevel(ctx)
-	ensName := strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "ens"))
-	boundary, appErr := parseSoulSearchBoundary(httpx.FirstQueryValue(ctx.Request.Query, "boundary"))
-	if appErr != nil {
-		return soulPublicSearchParams{}, appErr
-	}
-	channels, appErr := parseSoulSearchChannels(soulAllQueryValues(ctx.Request.Query, "channel"))
-	if appErr != nil {
-		return soulPublicSearchParams{}, appErr
-	}
-	status, appErr := parseSoulSearchStatus(httpx.FirstQueryValue(ctx.Request.Query, "status"))
+	claimLevel, ensName, principal, boundary, channels, status, appErr := parseSoulPublicSearchFilterParams(ctx)
 	if appErr != nil {
 		return soulPublicSearchParams{}, appErr
 	}
@@ -386,10 +378,37 @@ func parseSoulPublicSearchParams(ctx *apptheory.Context) (soulPublicSearchParams
 		Boundary:   boundary,
 		Channels:   channels,
 		ENSName:    strings.TrimSpace(ensName),
+		Principal:  principal,
 		Status:     status,
 		Cursor:     cursor,
 		Limit:      limit,
 	}, nil
+}
+
+func parseSoulPublicSearchFilterParams(ctx *apptheory.Context) (claimLevel string, ensName string, principal string, boundary string, channels []string, status string, appErr *apptheory.AppError) {
+	if ctx == nil {
+		return "", "", "", "", nil, "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
+	claimLevel = parseSoulSearchClaimLevel(ctx)
+	ensName = strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "ens"))
+	principal, appErr = parseSoulSearchPrincipal(httpx.FirstQueryValue(ctx.Request.Query, "principal"))
+	if appErr != nil {
+		return "", "", "", "", nil, "", appErr
+	}
+	boundary, appErr = parseSoulSearchBoundary(httpx.FirstQueryValue(ctx.Request.Query, "boundary"))
+	if appErr != nil {
+		return "", "", "", "", nil, "", appErr
+	}
+	channels, appErr = parseSoulSearchChannels(soulAllQueryValues(ctx.Request.Query, "channel"))
+	if appErr != nil {
+		return "", "", "", "", nil, "", appErr
+	}
+	status, appErr = parseSoulSearchStatus(httpx.FirstQueryValue(ctx.Request.Query, "status"))
+	if appErr != nil {
+		return "", "", "", "", nil, "", appErr
+	}
+	return claimLevel, ensName, principal, boundary, channels, status, nil
 }
 
 func parseSoulSearchClaimLevel(ctx *apptheory.Context) string {
@@ -410,6 +429,17 @@ func parseSoulSearchBoundary(raw string) (string, *apptheory.AppError) {
 		return "", &apptheory.AppError{Code: "app.bad_request", Message: "boundary must be a single keyword"}
 	}
 	return keyword, nil
+}
+
+func parseSoulSearchPrincipal(raw string) (string, *apptheory.AppError) {
+	principal := strings.ToLower(strings.TrimSpace(raw))
+	if principal == "" {
+		return "", nil
+	}
+	if !common.IsHexAddress(principal) {
+		return "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid principal"}
+	}
+	return principal, nil
 }
 
 func parseSoulSearchChannels(channelsRaw []string) ([]string, *apptheory.AppError) {
@@ -921,6 +951,9 @@ func (s *Server) soulSearchEntryPassesFilters(ctx context.Context, entry soulSea
 }
 
 func (s *Server) agentPassesSearchParams(ctx context.Context, agentIDHex string, identity *models.SoulAgentIdentity, params soulPublicSearchParams) (bool, error) {
+	if !soulSearchPrincipalMatches(params.Principal, identity) {
+		return false, nil
+	}
 	if !soulSearchStatusMatches(params.Status, soulIdentityStatus(identity)) {
 		return false, nil
 	}
@@ -943,6 +976,9 @@ func (s *Server) entryPassesSoulSearchFilters(
 	params soulPublicSearchParams,
 	primary soulSearchPrimaryIndex,
 ) (bool, error) {
+	if !soulSearchPrincipalMatches(params.Principal, identity) {
+		return false, nil
+	}
 	if !soulSearchStatusMatches(params.Status, soulIdentityStatus(identity)) {
 		return false, nil
 	}
@@ -979,6 +1015,21 @@ func soulIdentityStatus(identity *models.SoulAgentIdentity) string {
 		return status
 	}
 	return strings.TrimSpace(identity.Status)
+}
+
+func soulSearchPrincipalMatches(filter string, identity *models.SoulAgentIdentity) bool {
+	filter = strings.ToLower(strings.TrimSpace(filter))
+	if filter == "" {
+		return true
+	}
+	if identity == nil {
+		return false
+	}
+	principal := strings.ToLower(strings.TrimSpace(identity.PrincipalAddress))
+	if principal == "" {
+		principal = strings.ToLower(strings.TrimSpace(identity.Wallet))
+	}
+	return principal != "" && principal == filter
 }
 
 func soulSearchStatusMatches(filter string, status string) bool {

@@ -1006,6 +1006,45 @@ func TestHandleSoulPublicSearch_UsesENSBranch(t *testing.T) {
 	}
 }
 
+func TestHandleSoulPublicSearch_ENSBranchRespectsPrincipalFilter(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulPublicTestDB()
+	s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true}}
+
+	agentID := "0x" + strings.Repeat("aa", 32)
+	tdb.qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentENSResolution](t, args, 0)
+		*dest = models.SoulAgentENSResolution{ENSName: "agent.lessersoul.eth", AgentID: agentID}
+	}).Once()
+	tdb.qID.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
+		*dest = models.SoulAgentIdentity{
+			AgentID:          agentID,
+			Domain:           "example.com",
+			LocalID:          "agent-a",
+			PrincipalAddress: "0x00000000000000000000000000000000000000aa",
+			Status:           models.SoulAgentStatusActive,
+		}
+	}).Once()
+
+	ctx := &apptheory.Context{Request: apptheory.Request{Query: map[string][]string{
+		"ens":       {"agent.lessersoul.eth"},
+		"principal": {"0x00000000000000000000000000000000000000bb"},
+	}}}
+	resp, err := s.handleSoulPublicSearch(ctx)
+	if err != nil || resp.Status != http.StatusOK {
+		t.Fatalf("unexpected: resp=%#v err=%v", resp, err)
+	}
+	var out soulSearchResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Count != 0 {
+		t.Fatalf("expected principal filter to exclude ENS result, got %#v", out)
+	}
+}
+
 func TestHandleSoulPublicSearch_StatusFilterExcludesInactive(t *testing.T) {
 	t.Parallel()
 

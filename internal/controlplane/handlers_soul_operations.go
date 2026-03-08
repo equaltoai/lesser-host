@@ -114,13 +114,29 @@ func (s *Server) handleRecordSoulOperationExecution(ctx *apptheory.Context) (*ap
 		return nil, appErr
 	}
 
-	client, appErr := s.dialSoulRPCClient(ctx.Context())
+	updated, appErr := s.recordSoulOperationExecution(ctx.Context(), strings.TrimSpace(ctx.AuthIdentity), ctx.RequestID, op, txHash)
+	if appErr != nil {
+		return nil, appErr
+	}
+	return apptheory.JSON(http.StatusOK, updated)
+}
+
+func (s *Server) recordSoulOperationExecution(ctx context.Context, actor string, requestID string, op *models.SoulOperation, txHash string) (*models.SoulOperation, *apptheory.AppError) {
+	if op == nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	txHash = strings.TrimSpace(txHash)
+	if !isHexHash32(txHash) {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "exec_tx_hash is required"}
+	}
+
+	client, appErr := s.dialSoulRPCClient(ctx)
 	if appErr != nil {
 		return nil, appErr
 	}
 	defer client.Close()
 
-	receipt, appErr := getTransactionReceipt(ctx.Context(), client, txHash)
+	receipt, appErr := getTransactionReceipt(ctx, client, txHash)
 	if appErr != nil {
 		return nil, appErr
 	}
@@ -130,7 +146,7 @@ func (s *Server) handleRecordSoulOperationExecution(ctx *apptheory.Context) (*ap
 	blockNum := soulBlockNumber(receipt)
 	receiptJSON := soulReceiptSnapshotJSON(txHash, receipt)
 	snapshotJSON := strings.TrimSpace(op.SnapshotJSON)
-	chainSnapshotJSON := s.soulOperationSnapshotJSON(ctx.Context(), client, op)
+	chainSnapshotJSON := s.soulOperationSnapshotJSON(ctx, client, op)
 	if strings.TrimSpace(chainSnapshotJSON) != "" {
 		snapshotJSON = chainSnapshotJSON
 	}
@@ -157,7 +173,7 @@ func (s *Server) handleRecordSoulOperationExecution(ctx *apptheory.Context) (*ap
 	}
 	_ = update.UpdateKeys()
 
-	if err := s.store.DB.WithContext(ctx.Context()).Model(update).IfExists().Update(
+	if err := s.store.DB.WithContext(ctx).Model(update).IfExists().Update(
 		"ExecTxHash",
 		"ExecBlockNumber",
 		"ExecSuccess",
@@ -171,19 +187,19 @@ func (s *Server) handleRecordSoulOperationExecution(ctx *apptheory.Context) (*ap
 	}
 
 	if success {
-		_ = s.applySoulOperationSideEffects(ctx.Context(), client, update)
+		_ = s.applySoulOperationSideEffects(ctx, client, update)
 	}
 
 	audit := &models.AuditLogEntry{
-		Actor:     strings.TrimSpace(ctx.AuthIdentity),
+		Actor:     strings.TrimSpace(actor),
 		Action:    "soul.operation.record_execution",
 		Target:    fmt.Sprintf("soul_operation:%s", op.OperationID),
-		RequestID: ctx.RequestID,
+		RequestID: strings.TrimSpace(requestID),
 		CreatedAt: now,
 	}
-	s.tryWriteAuditLog(ctx, audit)
+	s.tryWriteAuditLogWithContext(ctx, audit)
 
-	return apptheory.JSON(http.StatusOK, update)
+	return update, nil
 }
 
 func parseSoulOperationExecutionInput(ctx *apptheory.Context) (id string, txHash string, appErr *apptheory.AppError) {
@@ -195,19 +211,30 @@ func parseSoulOperationExecutionInput(ctx *apptheory.Context) (id string, txHash
 		return "", "", &apptheory.AppError{Code: "app.bad_request", Message: "id is required"}
 	}
 
+	txHash, appErr = parseSoulOperationExecutionTxHash(ctx)
+	if appErr != nil {
+		return "", "", appErr
+	}
+	return id, txHash, nil
+}
+
+func parseSoulOperationExecutionTxHash(ctx *apptheory.Context) (string, *apptheory.AppError) {
+	if ctx == nil {
+		return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
 	var req recordSoulExecutionRequest
 	if err := httpx.ParseJSON(ctx, &req); err != nil {
 		appErr, ok := err.(*apptheory.AppError)
 		if ok {
-			return "", "", appErr
+			return "", appErr
 		}
-		return "", "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid request"}
+		return "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid request"}
 	}
-	txHash = strings.TrimSpace(req.ExecTxHash)
+	txHash := strings.TrimSpace(req.ExecTxHash)
 	if !isHexHash32(txHash) {
-		return "", "", &apptheory.AppError{Code: "app.bad_request", Message: "exec_tx_hash is required"}
+		return "", &apptheory.AppError{Code: "app.bad_request", Message: "exec_tx_hash is required"}
 	}
-	return id, txHash, nil
+	return txHash, nil
 }
 
 func (s *Server) loadSoulOperationForExecution(ctx context.Context, id string) (*models.SoulOperation, *apptheory.AppError) {

@@ -242,6 +242,7 @@ func TestBuildSoulMintPayload_ErrorsAndSuccess(t *testing.T) {
 	require.NotEmpty(t, metaURI)
 	require.NotEmpty(t, payload.To)
 	require.NotEmpty(t, payload.Value)
+	require.Empty(t, payload.SafeAddress)
 }
 
 func TestCompleteSoulAgentRegistration_UpdateError(t *testing.T) {

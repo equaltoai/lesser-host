@@ -14,7 +14,7 @@ func TestBuildMintConversationProducedDeclarations_FillsBoundaryMetadata(t *test
 	t.Parallel()
 
 	now := time.Date(2026, 3, 3, 12, 0, 0, 0, time.UTC)
-	modelSet := "openai:gpt-4o-mini"
+	modelSet := "openai:gpt-5.4"
 
 	draft := llm.MintConversationDeclarationsDraft{
 		SelfDescription: soul.SelfDescriptionV2{

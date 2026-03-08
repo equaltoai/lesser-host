@@ -18,6 +18,7 @@
 	import InstanceUsage from 'src/pages/portal/InstanceUsage.svelte';
 	import Instances from 'src/pages/portal/Instances.svelte';
 	import SoulAgentDetail from 'src/pages/portal/SoulAgentDetail.svelte';
+	import SoulMintConversation from 'src/pages/portal/SoulMintConversation.svelte';
 	import SoulRegister from 'src/pages/portal/SoulRegister.svelte';
 	import Souls from 'src/pages/portal/Souls.svelte';
 
@@ -35,6 +36,7 @@
 		| { kind: 'instanceKeys'; slug: string }
 		| { kind: 'souls' }
 		| { kind: 'soulRegister' }
+		| { kind: 'soulMint'; agentId: string }
 		| { kind: 'soulAgent'; agentId: string }
 		| { kind: 'billing' }
 		| { kind: 'notFound' };
@@ -66,6 +68,7 @@
 		if (parts[0] === 'souls') {
 			if (parts.length === 1) return { kind: 'souls' };
 			if (parts[1] === 'register') return { kind: 'soulRegister' };
+			if (parts[1] && parts[2] === 'mint') return { kind: 'soulMint', agentId: parts[1] };
 			if (parts[1]) return { kind: 'soulAgent', agentId: parts[1] };
 			return { kind: 'notFound' };
 		}
@@ -183,6 +186,8 @@
 				<Souls token={$session.token} />
 			{:else if portalRoute.kind === 'soulRegister'}
 				<SoulRegister token={$session.token} />
+			{:else if portalRoute.kind === 'soulMint'}
+				<SoulMintConversation token={$session.token} agentId={portalRoute.agentId} />
 			{:else if portalRoute.kind === 'soulAgent'}
 				<SoulAgentDetail token={$session.token} agentId={portalRoute.agentId} />
 			{:else if portalRoute.kind === 'billing'}

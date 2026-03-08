@@ -1,4 +1,5 @@
 import { derived, writable } from 'svelte/store';
+import { isSafeAppPath } from './router';
 
 export interface Session {
 	tokenType: string;
@@ -12,6 +13,13 @@ export interface Session {
 
 const SESSION_STORAGE_KEY = 'lesser-host:session:v1';
 const SESSION_EXPIRED_AT_KEY = 'lesser-host:session:v1:expiredAt';
+const SAFE_APP_HANDOFF_KEY = 'lesser-host:session:v1:safeAppHandoff';
+
+interface SafeAppSessionHandoff {
+	session: Session;
+	expiresAt: string;
+	stagedAt: string;
+}
 
 export function consumeSessionExpiredAt(): string | null {
 	try {
@@ -42,25 +50,67 @@ function isExpired(expiresAt: string): boolean {
 	return parsed <= Date.now();
 }
 
-function loadInitialSession(): Session | null {
-	const raw = sessionStorage.getItem(SESSION_STORAGE_KEY);
-	if (!raw) return null;
+function isValidSafeAppSessionHandoff(value: unknown): value is SafeAppSessionHandoff {
+	if (!value || typeof value !== 'object') return false;
+	const record = value as Record<string, unknown>;
+	return isValidSession(record.session) && typeof record.expiresAt === 'string' && typeof record.stagedAt === 'string';
+}
+
+function removeSafeAppSessionHandoff(): void {
+	try {
+		localStorage.removeItem(SAFE_APP_HANDOFF_KEY);
+	} catch {
+		// ignore
+	}
+}
+
+function loadSafeAppSessionHandoff(): Session | null {
+	if (!isSafeAppPath()) return null;
 
 	try {
+		const raw = localStorage.getItem(SAFE_APP_HANDOFF_KEY);
+		if (!raw) return null;
 		const parsed = JSON.parse(raw) as unknown;
-		if (!isValidSession(parsed)) return null;
-		if (isExpired(parsed.expiresAt)) {
-			try {
-				sessionStorage.setItem(SESSION_EXPIRED_AT_KEY, parsed.expiresAt);
-			} catch {
-				// ignore
-			}
+		if (!isValidSafeAppSessionHandoff(parsed)) {
+			removeSafeAppSessionHandoff();
 			return null;
 		}
-		return parsed;
+		if (isExpired(parsed.expiresAt) || isExpired(parsed.session.expiresAt)) {
+			removeSafeAppSessionHandoff();
+			return null;
+		}
+		return parsed.session;
 	} catch {
+		removeSafeAppSessionHandoff();
 		return null;
 	}
+}
+
+function loadInitialSession(): Session | null {
+	const raw = sessionStorage.getItem(SESSION_STORAGE_KEY);
+	if (raw) {
+		try {
+			const parsed = JSON.parse(raw) as unknown;
+			if (isValidSession(parsed) && !isExpired(parsed.expiresAt)) {
+				return parsed;
+			}
+			if (isValidSession(parsed) && isExpired(parsed.expiresAt)) {
+				try {
+					sessionStorage.setItem(SESSION_EXPIRED_AT_KEY, parsed.expiresAt);
+				} catch {
+					// ignore
+				}
+			}
+		} catch {
+			// fall through to cleanup + handoff fallback
+		}
+	}
+	try {
+		sessionStorage.removeItem(SESSION_STORAGE_KEY);
+	} catch {
+		// ignore
+	}
+	return loadSafeAppSessionHandoff();
 }
 
 export const session = writable<Session | null>(loadInitialSession());
@@ -68,6 +118,7 @@ export const session = writable<Session | null>(loadInitialSession());
 session.subscribe((value) => {
 	if (!value) {
 		sessionStorage.removeItem(SESSION_STORAGE_KEY);
+		removeSafeAppSessionHandoff();
 		return;
 	}
 
@@ -78,12 +129,40 @@ session.subscribe((value) => {
 			// ignore
 		}
 		sessionStorage.removeItem(SESSION_STORAGE_KEY);
+		removeSafeAppSessionHandoff();
 		session.set(null);
 		return;
 	}
 
 	sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(value));
 });
+
+export function stageSafeAppSessionHandoff(value: Session | null, maxAgeMs: number = 10 * 60 * 1000): boolean {
+	if (!value || isExpired(value.expiresAt)) {
+		removeSafeAppSessionHandoff();
+		return false;
+	}
+
+	const sessionExpiry = Date.parse(value.expiresAt);
+	if (!Number.isFinite(sessionExpiry)) {
+		removeSafeAppSessionHandoff();
+		return false;
+	}
+
+	const handoffExpiry = new Date(Math.min(sessionExpiry, Date.now() + maxAgeMs)).toISOString();
+	const payload: SafeAppSessionHandoff = {
+		session: value,
+		expiresAt: handoffExpiry,
+		stagedAt: new Date().toISOString(),
+	};
+
+	try {
+		localStorage.setItem(SAFE_APP_HANDOFF_KEY, JSON.stringify(payload));
+		return true;
+	} catch {
+		return false;
+	}
+}
 
 export function setSession(value: Session | null): void {
 	session.set(value);

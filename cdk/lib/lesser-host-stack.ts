@@ -21,11 +21,12 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 		import * as route53Targets from 'aws-cdk-lib/aws-route53-targets';
 		import * as s3 from 'aws-cdk-lib/aws-s3';
 		import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
-		import * as ssm from 'aws-cdk-lib/aws-ssm';
-		import * as sqs from 'aws-cdk-lib/aws-sqs';
-		import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
-		import * as apigwv2Integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations';
-		import * as wafv2 from 'aws-cdk-lib/aws-wafv2';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
+import * as apigw from 'aws-cdk-lib/aws-apigateway';
+import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
+import * as apigwv2Integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations';
+import * as wafv2 from 'aws-cdk-lib/aws-wafv2';
 
 export interface LesserHostStackProps extends cdk.StackProps {
 	stage: string;
@@ -617,7 +618,7 @@ export class LesserHostStack extends cdk.Stack {
 			PAYMENTS_CENTS_PER_1000_CREDITS: paymentsCentsPer1000Credits,
 			PAYMENTS_CHECKOUT_SUCCESS_URL: paymentsCheckoutSuccessUrl,
 			PAYMENTS_CHECKOUT_CANCEL_URL: paymentsCheckoutCancelUrl,
-		});
+		}, { timeoutSeconds: 120 });
 
 		const trustFn = this.goLambda('TrustApi', './cmd/trust-api', {
 			STAGE: stage,
@@ -878,7 +879,7 @@ export class LesserHostStack extends cdk.Stack {
 			`arn:aws:ssm:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:parameter/lesser-host/api/openai/service`,
 			`arn:aws:ssm:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:parameter/lesser-host/api/claude`,
 		];
-		for (const fn of [trustFn, aiWorkerFn]) {
+		for (const fn of [controlPlaneFn, trustFn, aiWorkerFn]) {
 			fn.addToRolePolicy(
 				new iam.PolicyStatement({
 					actions: ['ssm:GetParameter', 'ssm:GetParameters'],
@@ -1056,20 +1057,6 @@ export class LesserHostStack extends cdk.Stack {
 		});
 		soulReputationRecomputeRule.addTarget(new targets.LambdaFunction(soulReputationWorkerFn));
 
-		const controlPlaneApi = new apigwv2.HttpApi(this, 'ControlPlaneHttpApi', {
-			apiName: `${namePrefix}-control-plane`,
-			defaultIntegration: new apigwv2Integrations.HttpLambdaIntegration(
-				'ControlPlaneIntegration', controlPlaneFn,
-			),
-		});
-
-		const trustApi = new apigwv2.HttpApi(this, 'TrustHttpApi', {
-			apiName: `${namePrefix}-trust`,
-			defaultIntegration: new apigwv2Integrations.HttpLambdaIntegration(
-				'TrustIntegration', trustFn,
-			),
-		});
-
 		const apiAccessLogRetention =
 			stage === 'live' ? logs.RetentionDays.THREE_MONTHS : logs.RetentionDays.ONE_MONTH;
 		const controlPlaneAccessLogs = new logs.LogGroup(this, 'ControlPlaneApiAccessLogs', {
@@ -1077,10 +1064,63 @@ export class LesserHostStack extends cdk.Stack {
 			retention: apiAccessLogRetention,
 			removalPolicy,
 		});
+		const controlPlaneSseAccessLogs = new logs.LogGroup(this, 'ControlPlaneSseApiAccessLogs', {
+			logGroupName: `/aws/apigw/${namePrefix}-control-plane-sse`,
+			retention: apiAccessLogRetention,
+			removalPolicy,
+		});
 		const trustAccessLogs = new logs.LogGroup(this, 'TrustApiAccessLogs', {
 			logGroupName: `/aws/apigwv2/${namePrefix}-trust`,
 			retention: apiAccessLogRetention,
 			removalPolicy,
+		});
+		const apiThrottle = stage === 'live'
+			? { throttlingRateLimit: 500, throttlingBurstLimit: 1000 }
+			: { throttlingRateLimit: 100, throttlingBurstLimit: 200 };
+
+		const controlPlaneApi = new apigwv2.HttpApi(this, 'ControlPlaneHttpApi', {
+			apiName: `${namePrefix}-control-plane`,
+			defaultIntegration: new apigwv2Integrations.HttpLambdaIntegration(
+				'ControlPlaneIntegration', controlPlaneFn,
+			),
+		});
+		// AppTheory can stream SSE correctly through API Gateway REST proxy responses, but not via HttpApi.
+		// Keep the main control plane on HttpApi and route only the soul mint conversation subtree to REST.
+		const controlPlaneSseApi = new apigw.LambdaRestApi(this, 'ControlPlaneSseRestApi', {
+			restApiName: `${namePrefix}-control-plane-sse`,
+			handler: controlPlaneFn,
+			proxy: true,
+			cloudWatchRole: true,
+			endpointConfiguration: {
+				types: [apigw.EndpointType.REGIONAL],
+			},
+			deployOptions: {
+				stageName: stage,
+				loggingLevel: apigw.MethodLoggingLevel.ERROR,
+				metricsEnabled: true,
+				throttlingRateLimit: apiThrottle.throttlingRateLimit,
+				throttlingBurstLimit: apiThrottle.throttlingBurstLimit,
+				accessLogDestination: new apigw.LogGroupLogDestination(controlPlaneSseAccessLogs),
+				accessLogFormat: apigw.AccessLogFormat.custom(JSON.stringify({
+					requestId: apigw.AccessLogField.contextRequestId(),
+					ip: apigw.AccessLogField.contextIdentitySourceIp(),
+					requestTime: apigw.AccessLogField.contextRequestTime(),
+					method: apigw.AccessLogField.contextHttpMethod(),
+					path: apigw.AccessLogField.contextResourcePath(),
+					protocol: apigw.AccessLogField.contextProtocol(),
+					status: apigw.AccessLogField.contextStatus(),
+					responseLength: apigw.AccessLogField.contextResponseLength(),
+					integrationError: apigw.AccessLogField.contextIntegrationErrorMessage(),
+					userAgent: apigw.AccessLogField.contextIdentityUserAgent(),
+				})),
+			},
+		});
+
+		const trustApi = new apigwv2.HttpApi(this, 'TrustHttpApi', {
+			apiName: `${namePrefix}-trust`,
+			defaultIntegration: new apigwv2Integrations.HttpLambdaIntegration(
+				'TrustIntegration', trustFn,
+			),
 		});
 
 		new logs.CfnResourcePolicy(this, 'ApiGatewayAccessLogsResourcePolicy', {
@@ -1095,16 +1135,13 @@ export class LesserHostStack extends cdk.Stack {
 						Action: ['logs:CreateLogStream', 'logs:PutLogEvents'],
 						Resource: [
 							`${controlPlaneAccessLogs.logGroupArn}:*`,
+							`${controlPlaneSseAccessLogs.logGroupArn}:*`,
 							`${trustAccessLogs.logGroupArn}:*`,
 						],
 					},
 				],
 			}),
 		});
-
-		const apiThrottle = stage === 'live'
-			? { throttlingRateLimit: 500, throttlingBurstLimit: 1000 }
-			: { throttlingRateLimit: 100, throttlingBurstLimit: 200 };
 
 		const controlPlaneStage = controlPlaneApi.defaultStage?.node.defaultChild as apigwv2.CfnStage | undefined;
 		if (controlPlaneStage) {
@@ -1191,6 +1228,19 @@ export class LesserHostStack extends cdk.Stack {
 			"connect-src 'self'",
 			"manifest-src 'self'",
 		].join('; ');
+		const safeAppCsp = [
+			"default-src 'none'",
+			"base-uri 'none'",
+			"object-src 'none'",
+			"frame-ancestors https://safe.global https://*.safe.global",
+			"form-action 'self'",
+			"img-src 'self' data: blob:",
+			"font-src 'self'",
+			"style-src 'self'",
+			"script-src 'self'",
+			"connect-src 'self'",
+			"manifest-src 'self'",
+		].join('; ');
 
 		const webSecurityHeaders = new cloudfront.ResponseHeadersPolicy(this, 'WebSecurityHeaders', {
 			responseHeadersPolicyName: `${namePrefix}-web-security`,
@@ -1201,6 +1251,44 @@ export class LesserHostStack extends cdk.Stack {
 				},
 				contentTypeOptions: { override: true },
 				frameOptions: { frameOption: cloudfront.HeadersFrameOption.DENY, override: true },
+				referrerPolicy: {
+					referrerPolicy: cloudfront.HeadersReferrerPolicy.SAME_ORIGIN,
+					override: true,
+				},
+				strictTransportSecurity: {
+					accessControlMaxAge: cdk.Duration.days(365),
+					includeSubdomains: true,
+					preload: true,
+					override: true,
+				},
+				xssProtection: { protection: true, modeBlock: true, override: true },
+			},
+			customHeadersBehavior: {
+				customHeaders: [
+					{
+						header: 'Permissions-Policy',
+						value: 'camera=(), microphone=(), geolocation=(), interest-cohort=()',
+						override: true,
+					},
+				],
+			},
+		});
+		const safeAppSecurityHeaders = new cloudfront.ResponseHeadersPolicy(this, 'SafeAppSecurityHeaders', {
+			responseHeadersPolicyName: `${namePrefix}-safe-app-security`,
+			corsBehavior: {
+				accessControlAllowCredentials: false,
+				accessControlAllowHeaders: ['Authorization', 'Content-Type', 'X-Requested-With'],
+				accessControlAllowMethods: ['GET', 'HEAD', 'OPTIONS'],
+				accessControlAllowOrigins: ['*'],
+				accessControlMaxAge: cdk.Duration.minutes(10),
+				originOverride: true,
+			},
+			securityHeadersBehavior: {
+				contentSecurityPolicy: {
+					contentSecurityPolicy: safeAppCsp,
+					override: true,
+				},
+				contentTypeOptions: { override: true },
 				referrerPolicy: {
 					referrerPolicy: cloudfront.HeadersReferrerPolicy.SAME_ORIGIN,
 					override: true,
@@ -1312,12 +1400,24 @@ export class LesserHostStack extends cdk.Stack {
 		const controlPlaneOrigin = new origins.HttpOrigin(controlPlaneDomain, {
 			protocolPolicy: cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
 		});
+		const controlPlaneSseOrigin = new origins.RestApiOrigin(controlPlaneSseApi, {
+			readTimeout: cdk.Duration.seconds(120),
+			responseCompletionTimeout: cdk.Duration.seconds(180),
+		});
 		const trustOrigin = new origins.HttpOrigin(trustDomain, {
 			protocolPolicy: cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
 		});
 
 		const apiBehavior: cloudfront.BehaviorOptions = {
 			origin: controlPlaneOrigin,
+			viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+			allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
+			cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
+			originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+			responseHeadersPolicy: apiSecurityHeaders,
+		};
+		const apiSseBehavior: cloudfront.BehaviorOptions = {
+			origin: controlPlaneSseOrigin,
 			viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
 			allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
 			cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
@@ -1436,6 +1536,19 @@ export class LesserHostStack extends cdk.Stack {
 				],
 			},
 			additionalBehaviors: {
+				'safe-app*': {
+					origin: new origins.S3Origin(webBucket, { originAccessIdentity: webOai }),
+					viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+					allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
+					cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
+					responseHeadersPolicy: safeAppSecurityHeaders,
+					functionAssociations: [
+						{
+							function: webSpaRewriteFn,
+							eventType: cloudfront.FunctionEventType.VIEWER_REQUEST,
+						},
+					],
+				},
 				'resolve*': trustBehaviorNoCache,
 				'health*': trustBehaviorNoCache,
 				'api/v1/previews*': trustApiBehavior,
@@ -1444,6 +1557,8 @@ export class LesserHostStack extends cdk.Stack {
 				'api/v1/soul/agents/*/update-registration': trustApiBehavior,
 				'api/v1/ai/*': trustApiBehavior,
 				'api/v1/budget/debit': trustApiBehavior,
+				'api/v1/soul/agents/register/*/mint-conversation*': apiSseBehavior,
+				'api/v1/soul/agents/*/mint-conversation*': apiSseBehavior,
 
 				'api/*': apiBehavior,
 				'auth/*': apiBehavior,

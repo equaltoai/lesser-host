@@ -355,6 +355,11 @@ export interface SoulOperation {
 	executed_at?: string;
 }
 
+export interface SoulAgentMintOperationResponse {
+	operation: SoulOperation;
+	safe_tx?: SafeTxPayload;
+}
+
 export interface SoulAgentRegistrationVerifyResponse {
 	registration: SoulAgentRegistration;
 	operation: SoulOperation;
@@ -624,6 +629,26 @@ export function getSoulOperation(token: string, id: string): Promise<SoulOperati
 export function recordSoulOperationExecution(token: string, id: string, execTxHash: string): Promise<SoulOperation> {
 	const req = jsonRequest({ exec_tx_hash: execTxHash });
 	return fetchJson<SoulOperation>(`/api/v1/soul/operations/${encodeURIComponent(id)}/record-execution`, {
+		method: 'POST',
+		headers: {
+			authorization: `Bearer ${token}`,
+			...req.headers,
+		},
+		body: req.body,
+	});
+}
+
+export function soulGetAgentMintOperation(token: string, agentId: string): Promise<SoulAgentMintOperationResponse> {
+	return fetchJson<SoulAgentMintOperationResponse>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/mint-operation`, {
+		headers: {
+			authorization: `Bearer ${token}`,
+		},
+	});
+}
+
+export function soulRecordAgentMintExecution(token: string, agentId: string, execTxHash: string): Promise<SoulAgentMintOperationResponse> {
+	const req = jsonRequest({ exec_tx_hash: execTxHash });
+	return fetchJson<SoulAgentMintOperationResponse>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/mint-operation/record-execution`, {
 		method: 'POST',
 		headers: {
 			authorization: `Bearer ${token}`,
@@ -1094,6 +1119,12 @@ export interface SoulMintConversation {
 	completed_at?: string;
 }
 
+export interface SoulAgentMintConversationsResponse {
+	version: string;
+	conversations: SoulMintConversation[];
+	count: number;
+}
+
 export function soulGetMintConversation(token: string, registrationId: string, conversationId: string): Promise<SoulMintConversation> {
 	return fetchJson<SoulMintConversation>(
 		`/api/v1/soul/agents/register/${encodeURIComponent(registrationId)}/mint-conversation/${encodeURIComponent(conversationId)}`,
@@ -1104,6 +1135,30 @@ export function soulGetMintConversation(token: string, registrationId: string, c
 export function soulCompleteMintConversation(token: string, registrationId: string, conversationId: string): Promise<SoulMintConversation> {
 	return fetchJson<SoulMintConversation>(
 		`/api/v1/soul/agents/register/${encodeURIComponent(registrationId)}/mint-conversation/${encodeURIComponent(conversationId)}/complete`,
+		{ method: 'POST', headers: { authorization: `Bearer ${token}` } },
+	);
+}
+
+export function soulAgentListMintConversations(token: string, agentId: string, limit?: number): Promise<SoulAgentMintConversationsResponse> {
+	const params = new URLSearchParams();
+	if (limit != null) params.set('limit', String(limit));
+	const qs = params.toString();
+	return fetchJson<SoulAgentMintConversationsResponse>(
+		`/api/v1/soul/agents/${encodeURIComponent(agentId)}/mint-conversations${qs ? `?${qs}` : ''}`,
+		{ headers: { authorization: `Bearer ${token}` } },
+	);
+}
+
+export function soulAgentGetMintConversation(token: string, agentId: string, conversationId: string): Promise<SoulMintConversation> {
+	return fetchJson<SoulMintConversation>(
+		`/api/v1/soul/agents/${encodeURIComponent(agentId)}/mint-conversation/${encodeURIComponent(conversationId)}`,
+		{ headers: { authorization: `Bearer ${token}` } },
+	);
+}
+
+export function soulAgentCompleteMintConversation(token: string, agentId: string, conversationId: string): Promise<SoulMintConversation> {
+	return fetchJson<SoulMintConversation>(
+		`/api/v1/soul/agents/${encodeURIComponent(agentId)}/mint-conversation/${encodeURIComponent(conversationId)}/complete`,
 		{ method: 'POST', headers: { authorization: `Bearer ${token}` } },
 	);
 }
@@ -1126,6 +1181,23 @@ export function soulMintConversationFinalizeBegin(
 	const req = jsonRequest(input);
 	return fetchJson<SoulMintConversationFinalizeBeginResponse>(
 		`/api/v1/soul/agents/register/${encodeURIComponent(registrationId)}/mint-conversation/${encodeURIComponent(conversationId)}/finalize/begin`,
+		{
+			method: 'POST',
+			headers: { authorization: `Bearer ${token}`, ...req.headers },
+			body: req.body,
+		},
+	);
+}
+
+export function soulAgentMintConversationFinalizeBegin(
+	token: string,
+	agentId: string,
+	conversationId: string,
+	input: { boundary_signatures: Record<string, string> },
+): Promise<SoulMintConversationFinalizeBeginResponse> {
+	const req = jsonRequest(input);
+	return fetchJson<SoulMintConversationFinalizeBeginResponse>(
+		`/api/v1/soul/agents/${encodeURIComponent(agentId)}/mint-conversation/${encodeURIComponent(conversationId)}/finalize/begin`,
 		{
 			method: 'POST',
 			headers: { authorization: `Bearer ${token}`, ...req.headers },
@@ -1157,6 +1229,23 @@ export function soulMintConversationFinalize(
 	);
 }
 
+export function soulAgentMintConversationFinalize(
+	token: string,
+	agentId: string,
+	conversationId: string,
+	input: { boundary_signatures: Record<string, string>; issued_at: string; expected_version: number; self_attestation: string },
+): Promise<SoulMintConversationFinalizeResponse> {
+	const req = jsonRequest(input);
+	return fetchJson<SoulMintConversationFinalizeResponse>(
+		`/api/v1/soul/agents/${encodeURIComponent(agentId)}/mint-conversation/${encodeURIComponent(conversationId)}/finalize`,
+		{
+			method: 'POST',
+			headers: { authorization: `Bearer ${token}`, ...req.headers },
+			body: req.body,
+		},
+	);
+}
+
 export interface SoulMintConversationSSEInput {
 	model?: string;
 	conversation_id?: string;
@@ -1171,6 +1260,48 @@ export function soulStartMintConversationSSE(
 	const url = `/api/v1/soul/agents/register/${encodeURIComponent(registrationId)}/mint-conversation`;
 	const body = JSON.stringify(input);
 
+	return soulMintConversationSSERequest(token, url, body);
+}
+
+export function soulStartAgentMintConversationSSE(
+	token: string,
+	agentId: string,
+	input: SoulMintConversationSSEInput,
+): EventSource | ReadableStream<string> {
+	const url = `/api/v1/soul/agents/${encodeURIComponent(agentId)}/mint-conversation`;
+	const body = JSON.stringify(input);
+
+	return soulMintConversationSSERequest(token, url, body);
+}
+
+function soulSseErrorMessage(value: unknown, fallback: string): string {
+	if (typeof value === 'string') {
+		const trimmed = value.trim();
+		return trimmed || fallback;
+	}
+	if (value == null) return fallback;
+	if (typeof value !== 'object') {
+		const asString = String(value).trim();
+		return asString || fallback;
+	}
+
+	const record = value as Record<string, unknown>;
+	for (const key of ['message', 'error', 'detail']) {
+		const nested = soulSseErrorMessage(record[key], '');
+		if (nested) return nested;
+	}
+
+	if (typeof record.code === 'string' && record.code.trim()) return record.code.trim();
+
+	try {
+		const json = JSON.stringify(value);
+		return json && json !== '{}' ? json : fallback;
+	} catch {
+		return fallback;
+	}
+}
+
+function soulMintConversationSSERequest(token: string, url: string, body: string): EventSource | ReadableStream<string> {
 	const controller = new AbortController();
 	const stream = new ReadableStream<string>({
 		async start(streamController) {
@@ -1188,7 +1319,13 @@ export function soulStartMintConversationSSE(
 
 				if (!res.ok || !res.body) {
 					const text = await res.text().catch(() => '');
-					streamController.enqueue(`event: error\ndata: ${JSON.stringify({ message: text || `HTTP ${res.status}` })}\n\n`);
+					let message = soulSseErrorMessage(text, `HTTP ${res.status}`);
+					try {
+						message = soulSseErrorMessage(JSON.parse(text) as unknown, message);
+					} catch {
+						// Ignore non-JSON error bodies and fall back to the raw text.
+					}
+					streamController.enqueue(`event: error\ndata: ${JSON.stringify({ message })}\n\n`);
 					streamController.close();
 					return;
 				}

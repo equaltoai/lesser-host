@@ -4,8 +4,10 @@
 	import type { ApiError } from 'src/lib/api/http';
 	import type {
 		SoulMineAgentItem,
+		SoulAgentMintOperationResponse,
 		SoulPublicAgentResponse,
 		SoulPublicAgentChannelsResponse,
+		SoulConfigResponse,
 		SoulPublicValidationsResponse,
 		SoulPublicBoundariesResponse,
 		SoulPublicContinuityResponse,
@@ -27,9 +29,11 @@
 	import {
 		soulAgentRotateWalletBegin,
 		soulAgentRotateWalletConfirm,
+		soulGetAgentMintOperation,
 		soulAppendContinuity,
 		soulCreateRelationship,
 		soulListMyAgents,
+		soulPublicGetConfig,
 		soulPublicGetAgent,
 		soulPublicGetRegistration,
 		soulPublicGetValidations,
@@ -45,6 +49,7 @@
 		soulProvisionEmailConfirm,
 		soulProvisionPhoneBegin,
 		soulProvisionPhoneConfirm,
+		soulRecordAgentMintExecution,
 		soulDeprovisionPhone,
 		soulAgentListCommActivity,
 		soulAgentListCommQueue,
@@ -61,7 +66,17 @@
 	} from 'src/lib/api/soul';
 	import { logout } from 'src/lib/auth/logout';
 	import { navigate } from 'src/lib/router';
-	import { getEthereumProvider, personalSign, requestAccounts, signTypedDataV4 } from 'src/lib/wallet/ethereum';
+	import {
+		ensureAccounts,
+		getChainId,
+		getEthereumProvider,
+		personalSign,
+		requestAccounts,
+		sendEthereumTransaction,
+		signTypedDataV4,
+		switchEthereumChain,
+		waitForEthereumTransactionReceipt,
+	} from 'src/lib/wallet/ethereum';
 	import { jcsCanonicalize } from 'src/lib/wallet/jcs';
 	import { keccak256Utf8Hex } from 'src/lib/wallet/keccak';
 	import {
@@ -95,6 +110,18 @@
 	let transparency = $state<unknown | null>(null);
 	let failures = $state<SoulPublicFailuresResponse | null>(null);
 	let channels = $state<SoulPublicAgentChannelsResponse | null>(null);
+	let mintOperation = $state<SoulAgentMintOperationResponse | null>(null);
+	let mintOperationLoading = $state(false);
+	let mintOperationError = $state<string | null>(null);
+	let mintExecTxHash = $state('');
+	let mintRecordLoading = $state(false);
+	let mintRecordError = $state<string | null>(null);
+	let showMintSafePayload = $state(false);
+	let soulConfig = $state<SoulConfigResponse | null>(null);
+	let mintDirectLoading = $state(false);
+	let mintDirectError = $state<string | null>(null);
+	let mintDirectNotice = $state<string | null>(null);
+	let mintDirectTxHash = $state('');
 
 	// Channel provisioning state
 	let emailLocalPart = $state('');
@@ -1171,6 +1198,131 @@
 		}
 	}
 
+	async function loadMintOperation() {
+		mintOperation = null;
+		mintOperationError = null;
+		showMintSafePayload = false;
+
+		const status = (agent?.agent?.lifecycle_status || agent?.agent?.status || '').toLowerCase();
+		if (status !== 'pending' || agent?.agent?.mint_tx_hash) return;
+
+		mintOperationLoading = true;
+		try {
+			mintOperation = await soulGetAgentMintOperation(token, agentId);
+		} catch (err) {
+			if (await handleAuthError(err)) return;
+			mintOperationError = formatError(err);
+		} finally {
+			mintOperationLoading = false;
+		}
+	}
+
+	async function recordMintExecutionHash(txHash: string): Promise<void> {
+		mintOperation = await soulRecordAgentMintExecution(token, agentId, txHash);
+		mintExecTxHash = '';
+		await load();
+	}
+
+	async function recordMintExecution() {
+		mintRecordError = null;
+		const txHash = mintExecTxHash.trim();
+		if (!txHash) {
+			mintRecordError = 'Execution tx hash is required.';
+			return;
+		}
+
+		mintRecordLoading = true;
+		try {
+			await recordMintExecutionHash(txHash);
+		} catch (err) {
+			if (await handleAuthError(err)) return;
+			mintRecordError = formatError(err);
+		} finally {
+			mintRecordLoading = false;
+		}
+	}
+
+	async function loadSoulConfig() {
+		try {
+			soulConfig = await soulPublicGetConfig();
+		} catch {
+			soulConfig = null;
+		}
+	}
+
+	async function executeDirectMint() {
+		mintDirectError = null;
+		mintDirectNotice = null;
+
+		const payload = mintOperation?.safe_tx;
+		if (!payload) {
+			mintDirectError = 'No mint transaction payload is available.';
+			return;
+		}
+		if (payload.safe_address?.trim()) {
+			mintDirectError = 'This mint still requires Safe execution.';
+			return;
+		}
+
+		const provider = getEthereumProvider();
+		if (!provider) {
+			mintDirectError = 'No wallet detected.';
+			return;
+		}
+
+		const wallet = agent?.agent?.wallet?.trim();
+		if (!wallet) {
+			mintDirectError = 'Agent wallet is not available.';
+			return;
+		}
+
+		mintDirectLoading = true;
+		mintRecordError = null;
+		let txHash = '';
+		try {
+			const accounts = await ensureAccounts(provider);
+			const normalized = accounts.map((account) => account.toLowerCase());
+			if (!normalized.includes(wallet.toLowerCase())) {
+				mintDirectError = `Connected wallet does not match agent wallet (${wallet}).`;
+				return;
+			}
+
+			const expectedChainId = soulConfig?.chain_id;
+			if (expectedChainId) {
+				const currentChainId = await getChainId(provider);
+				if (currentChainId !== expectedChainId) {
+					mintDirectNotice = `Switching wallet to chain ${expectedChainId}…`;
+					await switchEthereumChain(provider, expectedChainId);
+				}
+			}
+
+			mintDirectNotice = 'Sending mint transaction from the connected wallet…';
+			txHash = await sendEthereumTransaction(provider, {
+				from: wallet,
+				to: payload.to,
+				value: payload.value,
+				data: payload.data,
+			});
+			mintDirectTxHash = txHash;
+			mintExecTxHash = txHash;
+
+			mintDirectNotice = 'Transaction submitted. Waiting for Sepolia confirmation…';
+			await waitForEthereumTransactionReceipt(provider, txHash, 10 * 60 * 1000, 3000);
+
+			mintDirectNotice = 'Transaction confirmed. Recording execution in lesser-host…';
+			await recordMintExecutionHash(txHash);
+			mintDirectNotice = 'Mint confirmed onchain and recorded.';
+		} catch (err) {
+			if (await handleAuthError(err)) return;
+			const base = formatError(err);
+			mintDirectError = txHash
+				? `${base}. Transaction sent as ${txHash}. You can still record it manually below if needed.`
+				: base;
+		} finally {
+			mintDirectLoading = false;
+		}
+	}
+
 	async function handleAuthError(err: unknown): Promise<boolean> {
 		if ((err as Partial<ApiError>).status === 401) {
 			await logout();
@@ -1193,6 +1345,10 @@
 		transparency = null;
 		failures = null;
 		channels = null;
+		mintOperation = null;
+		mintOperationError = null;
+		mintRecordError = null;
+		showMintSafePayload = false;
 		commActivity = null;
 		commQueue = null;
 		commError = null;
@@ -1240,6 +1396,7 @@
 			if (!prefsDraft.trim() && channels?.contactPreferences) {
 				prefsDraft = prettyJSON(channels.contactPreferences);
 			}
+			await loadMintOperation();
 		} catch (err) {
 			errorMessage = formatError(err);
 		} finally {
@@ -1541,10 +1698,13 @@
 	let lifecycleStatus = $derived(agent?.agent?.lifecycle_status || agent?.agent?.status || '');
 	let isTerminal = $derived(lifecycleStatus === 'archived' || lifecycleStatus === 'succeeded');
 	let publicOrigin = $derived(typeof window !== 'undefined' ? window.location.origin : '');
+	let needsMintRecovery = $derived(lifecycleStatus === 'pending' && !agent?.agent?.mint_tx_hash);
+	let mintUsesSafe = $derived(Boolean(mintOperation?.safe_tx?.safe_address?.trim()));
 
 	onMount(() => {
 		void load();
 		void loadMyAgents();
+		void loadSoulConfig();
 	});
 </script>
 
@@ -1592,6 +1752,11 @@
 							<Badge variant={statusBadge.variant} color={statusBadge.color} size="sm">{lifecycleStatus || current.agent.status}</Badge>
 						</div>
 						<div class="soul-agent__row-right">
+							{#if !current.agent.self_description_version}
+								<Button variant="solid" onclick={() => navigate(`/portal/souls/${current.agent.agent_id}/mint`)}>
+									Complete profile
+								</Button>
+							{/if}
 							<CopyButton size="sm" text={current.agent.agent_id} />
 						</div>
 					</div>
@@ -1631,6 +1796,131 @@
 					{/if}
 					<DefinitionItem label="Updated" monospace>{current.agent.updated_at || '—'}</DefinitionItem>
 				</DefinitionList>
+
+				{#if needsMintRecovery}
+					<div class="soul-agent__identity-followup">
+						<Alert variant="warning" title={mintUsesSafe ? 'Mint still needs execution' : 'Mint still needs wallet confirmation'}>
+							<Text size="sm">
+								{#if mintUsesSafe}
+									The profile can be finished before minting, but this soul stays pending until the mint transaction is
+									executed onchain and the execution tx hash is recorded here.
+								{:else}
+									The profile can be finished before minting, but this soul stays pending until the connected agent
+									wallet submits the mint transaction and lesser-host records the confirmed execution.
+								{/if}
+							</Text>
+
+							{#if mintOperationLoading}
+								<div class="soul-agent__loading-inline">
+									<Spinner size="sm" />
+									<Text size="sm">Loading mint operation…</Text>
+								</div>
+							{:else if mintOperationError}
+								<Alert variant="error" title="Pending mint">{mintOperationError}</Alert>
+							{:else if mintOperation}
+								<DefinitionList>
+									<DefinitionItem label="Operation" monospace>{mintOperation.operation.operation_id}</DefinitionItem>
+									<DefinitionItem label="Status" monospace>{mintOperation.operation.status}</DefinitionItem>
+								</DefinitionList>
+
+								{#if mintUsesSafe}
+									<div class="soul-agent__steps">
+										<Text size="sm">1. Execute the Safe transaction below in your Safe workflow.</Text>
+										<Text size="sm">2. Wait for the transaction to mine on Sepolia.</Text>
+										<Text size="sm">3. Paste the execution tx hash here to activate the soul.</Text>
+									</div>
+								{:else}
+									<div class="soul-agent__steps">
+										<Text size="sm">1. Submit the mint transaction from the connected agent wallet.</Text>
+										<Text size="sm">2. Keep this page open while lesser-host waits for Sepolia confirmation.</Text>
+										<Text size="sm">3. Use the manual tx hash field only if automatic recording does not finish.</Text>
+									</div>
+								{/if}
+
+								{#if mintDirectNotice}
+									<Alert variant="info" title="Direct mint">{mintDirectNotice}</Alert>
+								{/if}
+								{#if mintDirectError}
+									<Alert variant="error" title="Direct mint">{mintDirectError}</Alert>
+								{/if}
+
+								<div class="soul-agent__row">
+									{#if !mintUsesSafe && mintOperation.safe_tx}
+										<Button variant="solid" onclick={() => void executeDirectMint()} disabled={mintDirectLoading || mintRecordLoading}>
+											{mintDirectLoading ? 'Minting…' : 'Mint now with connected wallet'}
+										</Button>
+									{/if}
+									{#if mintOperation.safe_tx}
+										<Button variant="outline" onclick={() => (showMintSafePayload = !showMintSafePayload)}>
+											{showMintSafePayload ? 'Hide transaction data' : 'Show transaction data'}
+										</Button>
+										<CopyButton size="sm" text={prettyJSON(mintOperation.safe_tx)} />
+									{/if}
+									<CopyButton size="sm" text={mintOperation.operation.operation_id} />
+								</div>
+
+								{#if mintDirectLoading}
+									<div class="soul-agent__loading-inline">
+										<Spinner size="sm" />
+										<Text size="sm">Waiting for wallet confirmation and chain settlement…</Text>
+									</div>
+								{/if}
+								{#if mintDirectTxHash}
+									<div class="soul-agent__row">
+										<Text size="sm" color="secondary">
+											Execution tx <span class="soul-agent__mono">{mintDirectTxHash}</span>
+										</Text>
+										<CopyButton size="sm" text={mintDirectTxHash} />
+									</div>
+								{/if}
+
+								{#if mintOperation.safe_tx && showMintSafePayload}
+									<DefinitionList>
+										<DefinitionItem label="To" monospace>{mintOperation.safe_tx.to}</DefinitionItem>
+										<DefinitionItem label="Value" monospace>{mintOperation.safe_tx.value}</DefinitionItem>
+										{#if mintOperation.safe_tx.safe_address}
+											<DefinitionItem label="Safe" monospace>{mintOperation.safe_tx.safe_address}</DefinitionItem>
+										{/if}
+									</DefinitionList>
+									<TextArea readonly rows={6} label="Transaction data" value={mintOperation.safe_tx.data} />
+								{/if}
+
+								<div class="soul-agent__form">
+									<TextField label="Execution tx hash" bind:value={mintExecTxHash} placeholder="0x…" />
+									<Button variant="solid" onclick={() => void recordMintExecution()} disabled={mintRecordLoading}>
+										Record execution
+									</Button>
+								</div>
+
+								{#if mintRecordLoading}
+									<div class="soul-agent__loading-inline">
+										<Spinner size="sm" />
+										<Text size="sm">Recording execution…</Text>
+									</div>
+								{/if}
+								{#if mintRecordError}
+									<Alert variant="error" title="Record execution">{mintRecordError}</Alert>
+								{/if}
+							{/if}
+						</Alert>
+					</div>
+				{/if}
+
+				{#if !current.agent.self_description_version}
+					<div class="soul-agent__identity-followup">
+						<Alert variant="info" title="Profile setup still needs one step">
+							<Text size="sm">
+								The agent has already been created. The remaining step is the profile conversation that drafts and
+								publishes the self-description, capabilities, boundaries, and transparency record.
+							</Text>
+							<div class="soul-agent__row">
+								<Button variant="solid" onclick={() => navigate(`/portal/souls/${current.agent.agent_id}/mint`)}>
+									Complete profile
+								</Button>
+							</div>
+						</Alert>
+					</div>
+				{/if}
 			</Card>
 		{/if}
 
@@ -2758,6 +3048,13 @@
 		display: flex;
 		gap: var(--gr-spacing-scale-2);
 		align-items: center;
+		margin-top: var(--gr-spacing-scale-3);
+	}
+
+	.soul-agent__steps {
+		display: flex;
+		flex-direction: column;
+		gap: var(--gr-spacing-scale-1);
 		margin-top: var(--gr-spacing-scale-3);
 	}
 

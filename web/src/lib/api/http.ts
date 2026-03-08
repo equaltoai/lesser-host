@@ -16,6 +16,22 @@ function isJsonObject(value: unknown): value is JsonObject {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function extractApiError(body: unknown): { message?: string; code?: string } {
+	if (!isJsonObject(body)) return {};
+
+	const topMessage = typeof body.message === 'string' ? body.message : undefined;
+	const topCode = typeof body.code === 'string' ? body.code : undefined;
+
+	const nested = isJsonObject(body.error) ? body.error : undefined;
+	const nestedMessage = nested && typeof nested.message === 'string' ? nested.message : undefined;
+	const nestedCode = nested && typeof nested.code === 'string' ? nested.code : undefined;
+
+	return {
+		message: topMessage || nestedMessage,
+		code: topCode || nestedCode,
+	};
+}
+
 export async function fetchJson<T>(input: RequestInfo | URL, init?: RequestInit): Promise<T> {
 	const res = await fetch(input, init);
 
@@ -34,14 +50,11 @@ export async function fetchJson<T>(input: RequestInfo | URL, init?: RequestInit)
 
 	if (isJson) {
 		const body = (await res.json().catch(() => null)) as unknown;
-		if (isJsonObject(body)) {
-			const bodyMessage = typeof body.message === 'string' ? body.message : undefined;
-			const bodyCode = typeof body.code === 'string' ? body.code : undefined;
-			if (bodyMessage) {
-				message = bodyMessage;
-			}
-			code = bodyCode;
+		const extracted = extractApiError(body);
+		if (extracted.message) {
+			message = extracted.message;
 		}
+		code = extracted.code;
 	}
 
 	throw new ApiError(message, res.status, code);

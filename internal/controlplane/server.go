@@ -223,6 +223,8 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 	app.Post("/api/v1/soul/agents/{agentId}/rotate-wallet/begin", s.handleSoulAgentRotateWalletBegin, apptheory.RequireAuth())
 	app.Post("/api/v1/soul/agents/{agentId}/rotate-wallet/confirm", s.handleSoulAgentRotateWalletConfirm, apptheory.RequireAuth())
 	app.Post("/api/v1/soul/agents/{agentId}/update-registration", s.handleSoulAgentUpdateRegistration, apptheory.RequireAuth())
+	app.Get("/api/v1/soul/agents/{agentId}/mint-operation", s.handleSoulAgentGetMintOperation, apptheory.RequireAuth())
+	app.Post("/api/v1/soul/agents/{agentId}/mint-operation/record-execution", s.handleSoulAgentRecordMintOperationExecution, apptheory.RequireAuth())
 	app.Post("/api/v1/soul/agents/{agentId}/channels/email/provision/begin", s.handleSoulBeginProvisionEmailChannel, apptheory.RequireAuth())
 	app.Post("/api/v1/soul/agents/{agentId}/channels/email/provision", s.handleSoulProvisionEmailChannel, apptheory.RequireAuth())
 	app.Post("/api/v1/soul/agents/{agentId}/channels/phone/provision/begin", s.handleSoulBeginProvisionPhoneChannel, apptheory.RequireAuth())
@@ -267,6 +269,12 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 	app.Post("/api/v1/soul/agents/register/{id}/mint-conversation/{conversationId}/finalize/begin", s.handleSoulBeginFinalizeMintConversation, apptheory.RequireAuth())
 	app.Post("/api/v1/soul/agents/register/{id}/mint-conversation/{conversationId}/finalize", s.handleSoulFinalizeMintConversation, apptheory.RequireAuth())
 	app.Get("/api/v1/soul/agents/register/{id}/mint-conversation/{conversationId}", s.handleSoulGetMintConversation, apptheory.RequireAuth())
+	app.Get("/api/v1/soul/agents/{agentId}/mint-conversations", s.handleSoulAgentListMintConversations, apptheory.RequireAuth())
+	app.Post("/api/v1/soul/agents/{agentId}/mint-conversation", s.handleSoulAgentMintConversation, apptheory.RequireAuth())
+	app.Post("/api/v1/soul/agents/{agentId}/mint-conversation/{conversationId}/complete", s.handleSoulAgentCompleteMintConversation, apptheory.RequireAuth())
+	app.Post("/api/v1/soul/agents/{agentId}/mint-conversation/{conversationId}/finalize/begin", s.handleSoulAgentBeginFinalizeMintConversation, apptheory.RequireAuth())
+	app.Post("/api/v1/soul/agents/{agentId}/mint-conversation/{conversationId}/finalize", s.handleSoulAgentFinalizeMintConversation, apptheory.RequireAuth())
+	app.Get("/api/v1/soul/agents/{agentId}/mint-conversation/{conversationId}", s.handleSoulAgentGetMintConversation, apptheory.RequireAuth())
 
 	// v2: Transparency + Failures.
 	app.Get("/api/v1/soul/agents/{agentId}/transparency", s.handleSoulPublicGetTransparency)
