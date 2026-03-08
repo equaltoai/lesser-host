@@ -215,7 +215,7 @@ func extractTar(tr *tar.Reader, destDir string, limits tarExtractLimits) error {
 
 		name, ok := sanitizeTarName(hdr.Name)
 		if !ok {
-			continue
+			return fmt.Errorf("invalid tar path: %q", hdr.Name)
 		}
 
 		target, err := validateTarTarget(destDir, name, hdr.Name)
@@ -267,7 +267,7 @@ func sanitizeTarName(raw string) (string, bool) {
 
 func validateTarTarget(destDir string, name string, rawName string) (string, error) {
 	cleanDestDir := filepath.Clean(destDir)
-	if !filepath.IsLocal(name) {
+	if strings.Contains(name, "\\") || !filepath.IsLocal(name) {
 		return "", fmt.Errorf("invalid tar path: %q", rawName)
 	}
 	target := filepath.Join(cleanDestDir, name)
