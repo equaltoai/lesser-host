@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	slashpath "path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -242,20 +243,40 @@ func extractTar(tr *tar.Reader, destDir string, limits tarExtractLimits) error {
 }
 
 func sanitizeTarName(raw string) (string, bool) {
-	name := filepath.Clean(raw)
-	name = strings.TrimPrefix(name, "/")
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", false
+	}
+	if strings.Contains(raw, "\\") {
+		return "", false
+	}
+
+	name := slashpath.Clean(raw)
+	if slashpath.IsAbs(name) {
+		return "", false
+	}
+	if name == "." || name == ".." || strings.HasPrefix(name, "../") {
+		return "", false
+	}
+	name = strings.TrimPrefix(name, "./")
 	if name == "" || name == "." {
 		return "", false
 	}
-	return name, true
+	return filepath.FromSlash(name), true
 }
 
 func validateTarTarget(destDir string, name string, rawName string) (string, error) {
-	target := filepath.Join(destDir, name)
-	if !strings.HasPrefix(target, destDir+string(os.PathSeparator)) && target != destDir {
+	cleanDestDir := filepath.Clean(destDir)
+	if !filepath.IsLocal(name) {
 		return "", fmt.Errorf("invalid tar path: %q", rawName)
 	}
-	return target, nil
+	target := filepath.Join(cleanDestDir, name)
+	cleanTarget := filepath.Clean(target)
+	targetPrefix := cleanDestDir + string(os.PathSeparator)
+	if cleanTarget != cleanDestDir && !strings.HasPrefix(cleanTarget, targetPrefix) {
+		return "", fmt.Errorf("invalid tar path: %q", rawName)
+	}
+	return cleanTarget, nil
 }
 
 func extractTarFile(tr *tar.Reader, hdr *tar.Header, target string, extractedBytes int64, limits tarExtractLimits) (int64, error) {

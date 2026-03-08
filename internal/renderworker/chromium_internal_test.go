@@ -23,8 +23,17 @@ func TestSanitizeTarName(t *testing.T) {
 	if _, ok := sanitizeTarName("."); ok {
 		t.Fatalf("expected dot to be rejected")
 	}
+	if _, ok := sanitizeTarName("../evil.txt"); ok {
+		t.Fatalf("expected traversal to be rejected")
+	}
+	if _, ok := sanitizeTarName("/etc/passwd"); ok {
+		t.Fatalf("expected absolute path to be rejected")
+	}
+	if _, ok := sanitizeTarName("dir\\evil.txt"); ok {
+		t.Fatalf("expected backslash path to be rejected")
+	}
 
-	name, ok := sanitizeTarName("/a/b/../c.txt")
+	name, ok := sanitizeTarName("a/b/../c.txt")
 	if !ok || name != "a/c.txt" {
 		t.Fatalf("unexpected sanitize: ok=%v name=%q", ok, name)
 	}
@@ -36,6 +45,9 @@ func TestValidateTarTarget_PreventsTraversal(t *testing.T) {
 	dest := t.TempDir()
 	if _, err := validateTarTarget(dest, "../evil.txt", "../evil.txt"); err == nil {
 		t.Fatalf("expected traversal error")
+	}
+	if _, err := validateTarTarget(dest, "dir\\evil.txt", "dir\\\\evil.txt"); err == nil {
+		t.Fatalf("expected invalid local path error")
 	}
 }
 
