@@ -1,6 +1,9 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
+	import { get } from 'svelte/store';
+
 	import { IdProvider } from 'src/lib/greater/utils';
-	import { currentPath } from 'src/lib/router';
+	import { consumeSafeAppTarget, currentPath, isSafeAppPath, navigate } from 'src/lib/router';
 
 	import PortalLayout from 'src/lib/components/PortalLayout.svelte';
 	import OperatorLayout from 'src/lib/components/OperatorLayout.svelte';
@@ -23,6 +26,14 @@
 		$currentPath === '/tip-registry' || $currentPath === '/tip-registry/register' ||
 		$currentPath === '/account'
 	);
+
+	onMount(() => {
+		if (!isSafeAppPath() || get(currentPath) !== '/') return;
+		const target = consumeSafeAppTarget();
+		if (target && target !== '/') {
+			navigate(target);
+		}
+	});
 </script>
 
 <IdProvider>

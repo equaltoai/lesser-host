@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"encoding/hex"
 	"encoding/json"
@@ -35,6 +36,7 @@ type mintConversationTestDB struct {
 	qInstance *ttmocks.MockQuery
 	qConv     *ttmocks.MockQuery
 	qIdentity *ttmocks.MockQuery
+	qUser     *ttmocks.MockQuery
 
 	convModels []*models.SoulAgentMintConversation
 }
@@ -48,6 +50,7 @@ func newMintConversationTestDB() *mintConversationTestDB {
 		qInstance: new(ttmocks.MockQuery),
 		qConv:     new(ttmocks.MockQuery),
 		qIdentity: new(ttmocks.MockQuery),
+		qUser:     new(ttmocks.MockQuery),
 	}
 
 	db.On("WithContext", mock.Anything).Return(db).Maybe()
@@ -61,8 +64,9 @@ func newMintConversationTestDB() *mintConversationTestDB {
 		}
 	})
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(tdb.qIdentity).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.User")).Return(tdb.qUser).Maybe()
 
-	for _, q := range []*ttmocks.MockQuery{tdb.qReg, tdb.qDomain, tdb.qInstance, tdb.qConv, tdb.qIdentity} {
+	for _, q := range []*ttmocks.MockQuery{tdb.qReg, tdb.qDomain, tdb.qInstance, tdb.qConv, tdb.qIdentity, tdb.qUser} {
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("Index", mock.Anything).Return(q).Maybe()
 		q.On("Limit", mock.Anything).Return(q).Maybe()
@@ -72,7 +76,22 @@ func newMintConversationTestDB() *mintConversationTestDB {
 		q.On("Create").Return(nil).Maybe()
 		q.On("CreateOrUpdate").Return(nil).Maybe()
 		q.On("Delete").Return(nil).Maybe()
+		if q != tdb.qConv {
+			q.On("All", mock.Anything).Return(nil).Maybe()
+		}
 	}
+	tdb.qUser.On("First", mock.AnythingOfType("*models.User")).Return(nil).Maybe().Run(func(args mock.Arguments) {
+		dest, ok := args.Get(0).(*models.User)
+		if !ok || dest == nil {
+			return
+		}
+		*dest = models.User{
+			Username:       "alice",
+			Role:           models.RoleCustomer,
+			Approved:       true,
+			ApprovalStatus: models.UserApprovalStatusApproved,
+		}
+	})
 
 	return tdb
 }
@@ -134,7 +153,7 @@ func testMintConversationDecl() soulMintConversationProducedDeclarations {
 		SelfDescription: soul.SelfDescriptionV2{
 			Purpose:      "Help users plan travel with explicit limitations.",
 			AuthoredBy:   "agent",
-			MintingModel: "openai:gpt-4o-mini",
+			MintingModel: "openai:gpt-5.4",
 		},
 		Capabilities: []soul.CapabilityV2{
 			{Capability: "travel_planning", Scope: "Draft itineraries.", ClaimLevel: "self-declared"},
@@ -209,6 +228,14 @@ func TestMintConversationHelperCoverage(t *testing.T) {
 	t.Run("stream unsupported model emits error", func(t *testing.T) {
 		testMintConversationStreamUnsupportedModel(t)
 	})
+
+	t.Run("detached stream context ignores request cancellation", func(t *testing.T) {
+		testMintConversationDetachedContext(t)
+	})
+
+	t.Run("emit event never blocks when stream is unavailable", func(t *testing.T) {
+		testMintConversationEmitEvent(t)
+	})
 }
 
 func testMintConversationProducedDeclarationsBranches(t *testing.T, now time.Time) {
@@ -216,14 +243,14 @@ func testMintConversationProducedDeclarationsBranches(t *testing.T, now time.Tim
 
 	if _, appErr := buildMintConversationProducedDeclarations(llm.MintConversationDeclarationsDraft{
 		SelfDescription: soul.SelfDescriptionV2{Purpose: "short", AuthoredBy: "agent"},
-	}, now, "openai:gpt-4o-mini"); appErr == nil || appErr.Message != "invalid extracted selfDescription" {
+	}, now, "openai:gpt-5.4"); appErr == nil || appErr.Message != "invalid extracted selfDescription" {
 		t.Fatalf("expected selfDescription error, got %#v", appErr)
 	}
 	if _, appErr := buildMintConversationProducedDeclarations(llm.MintConversationDeclarationsDraft{
 		SelfDescription: soul.SelfDescriptionV2{Purpose: "A sufficiently long purpose string.", AuthoredBy: "agent"},
 		Capabilities:    []soul.CapabilityV2{{Capability: "", Scope: "skip"}},
 		Boundaries:      []llm.MintConversationBoundaryDraft{{Category: "refusal", Statement: "I will not impersonate humans."}},
-	}, now, "openai:gpt-4o-mini"); appErr == nil || appErr.Message != "invalid extracted capabilities" {
+	}, now, "openai:gpt-5.4"); appErr == nil || appErr.Message != "invalid extracted capabilities" {
 		t.Fatalf("expected capabilities error, got %#v", appErr)
 	}
 
@@ -231,7 +258,7 @@ func testMintConversationProducedDeclarationsBranches(t *testing.T, now time.Tim
 		SelfDescription: soul.SelfDescriptionV2{Purpose: "A sufficiently long purpose string.", AuthoredBy: "agent"},
 		Capabilities:    []soul.CapabilityV2{{Capability: "travel_planning", Scope: "Draft itineraries."}},
 		Boundaries:      []llm.MintConversationBoundaryDraft{{Category: "", Statement: "skip"}},
-	}, now, "openai:gpt-4o-mini")
+	}, now, "openai:gpt-5.4")
 	if appErr == nil || appErr.Message != "invalid extracted boundaries" {
 		t.Fatalf("expected boundaries error, got %#v / %#v", decl, appErr)
 	}
@@ -240,7 +267,7 @@ func testMintConversationProducedDeclarationsBranches(t *testing.T, now time.Tim
 		SelfDescription: soul.SelfDescriptionV2{Purpose: "A sufficiently long purpose string.", AuthoredBy: "agent"},
 		Capabilities:    []soul.CapabilityV2{{Capability: "travel_planning", Scope: "Draft itineraries."}},
 		Boundaries:      []llm.MintConversationBoundaryDraft{{Category: "refusal", Statement: "I will not impersonate humans."}},
-	}, now, "openai:gpt-4o-mini")
+	}, now, "openai:gpt-5.4")
 	if appErr != nil {
 		t.Fatalf("unexpected error: %v", appErr)
 	}
@@ -272,8 +299,8 @@ func testMintConversationParseDeclarationsBranches(t *testing.T) {
 func testMintConversationAddAIUsage(t *testing.T) {
 	t.Helper()
 
-	got := addAIUsage(models.AIUsage{}, models.AIUsage{Provider: "openai", Model: "gpt-4o-mini", InputTokens: 10, OutputTokens: 5, DurationMs: 25, ToolCalls: 1})
-	if got.Provider != "openai" || got.Model != "gpt-4o-mini" || got.TotalTokens != 15 {
+	got := addAIUsage(models.AIUsage{}, models.AIUsage{Provider: "openai", Model: "gpt-5.4", InputTokens: 10, OutputTokens: 5, DurationMs: 25, ToolCalls: 1})
+	if got.Provider != "openai" || got.Model != "gpt-5.4" || got.TotalTokens != 15 {
 		t.Fatalf("unexpected usage: %#v", got)
 	}
 	got = addAIUsage(models.AIUsage{Provider: "anthropic", Model: "claude", TotalTokens: 1}, models.AIUsage{Provider: "openai", Model: "gpt", TotalTokens: 3})
@@ -303,7 +330,7 @@ func testMintConversationPromptAndAPIKeys(t *testing.T) {
 
 	s := &Server{}
 	t.Setenv("OPENAI_API_KEY", "openai-env")
-	if got, appErr := s.apiKeyForMintConversationModel(t.Context(), "openai:gpt-4o-mini"); appErr != nil || got != "openai-env" {
+	if got, appErr := s.apiKeyForMintConversationModel(t.Context(), "openai:gpt-5.4"); appErr != nil || got != "openai-env" {
 		t.Fatalf("unexpected openai api key: %q %#v", got, appErr)
 	}
 	t.Setenv("OPENAI_API_KEY", "")
@@ -338,7 +365,7 @@ func testMintConversationExtractDeclarationsGuards(t *testing.T, now time.Time) 
 		t.Fatalf("expected missing model error, got %#v", appErr)
 	}
 
-	conv.Model = "openai:gpt-4o-mini"
+	conv.Model = "openai:gpt-5.4"
 	if _, _, appErr := s.extractMintConversationDeclarations(t.Context(), reg, conv, now); appErr == nil || appErr.Message != "conversation has no messages" {
 		t.Fatalf("expected missing messages error, got %#v", appErr)
 	}
@@ -390,6 +417,61 @@ func testMintConversationStreamUnsupportedModel(t *testing.T) {
 	}
 }
 
+func testMintConversationDetachedContext(t *testing.T) {
+	t.Helper()
+
+	type ctxKey string
+
+	parent, cancel := context.WithCancel(context.WithValue(context.Background(), ctxKey("trace"), "abc123"))
+	cancel()
+
+	runCtx, runCancel := context.WithTimeout(detachedMintConversationContext(parent), mintConversationRunTimeout)
+	defer runCancel()
+
+	if got := runCtx.Value(ctxKey("trace")); got != "abc123" {
+		t.Fatalf("expected context value to be preserved, got %#v", got)
+	}
+
+	select {
+	case <-runCtx.Done():
+		t.Fatalf("detached context should not be canceled when request context is canceled")
+	default:
+	}
+}
+
+func testMintConversationEmitEvent(t *testing.T) {
+	t.Helper()
+
+	buffered := make(chan apptheory.SSEEvent, 1)
+	if ok := emitMintConversationEvent(context.Background(), buffered, apptheory.SSEEvent{Event: "conversation_start"}); !ok {
+		t.Fatalf("expected buffered event send to succeed")
+	}
+	if event := <-buffered; event.Event != "conversation_start" {
+		t.Fatalf("unexpected event %#v", event)
+	}
+
+	blocked := make(chan apptheory.SSEEvent)
+	done := make(chan bool, 1)
+	go func() {
+		done <- emitMintConversationEvent(context.Background(), blocked, apptheory.SSEEvent{Event: "delta"})
+	}()
+
+	select {
+	case ok := <-done:
+		if ok {
+			t.Fatalf("expected blocked event send to be dropped")
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatalf("emitMintConversationEvent blocked on an unavailable consumer")
+	}
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if ok := emitMintConversationEvent(canceled, blocked, apptheory.SSEEvent{Event: "error"}); ok {
+		t.Fatalf("expected canceled context send to return false")
+	}
+}
+
 func TestMintConversationPersistenceHelpers_UpdateStoredFields(t *testing.T) {
 	t.Parallel()
 
@@ -404,19 +486,19 @@ func TestMintConversationPersistenceHelpers_UpdateStoredFields(t *testing.T) {
 	s.updateMintConversationTurn(t.Context(), " 0xABC ", " "+mintConversationTestConversationID+" ", []soulMintConversationMessage{
 		{Role: "user", Content: "hello"},
 		{Role: "assistant", Content: "hi"},
-	}, models.AIUsage{Provider: "openai", Model: "gpt-4o-mini", TotalTokens: 12})
+	}, models.AIUsage{Provider: "openai", Model: "gpt-5.4", TotalTokens: 12})
 	s.updateMintConversationStatus(t.Context(), " 0xABC ", " "+mintConversationTestConversationID+" ", " Completed ", []soulMintConversationMessage{{Role: "assistant", Content: "done"}}, ` {"ok":true} `)
 
 	if len(tdb.convModels) != 3 {
 		t.Fatalf("expected 3 captured models, got %d", len(tdb.convModels))
 	}
-	if tdb.convModels[0].AgentID != "0xabc" || tdb.convModels[0].ConversationID != mintConversationTestConversationID || !strings.Contains(tdb.convModels[0].Messages, `"content":"hello"`) {
+	if tdb.convModels[0].AgentID != "0xabc" || tdb.convModels[0].ConversationID != mintConversationTestConversationID || !strings.Contains(decodeMintConversationBlob(tdb.convModels[0].Messages), `"content":"hello"`) || tdb.convModels[0].Status != models.SoulMintConversationStatusInProgress {
 		t.Fatalf("unexpected messages update model: %#v", tdb.convModels[0])
 	}
-	if tdb.convModels[1].Usage.TotalTokens != 12 || !strings.Contains(tdb.convModels[1].Messages, `"assistant"`) {
+	if tdb.convModels[1].Usage.TotalTokens != 12 || !strings.Contains(decodeMintConversationBlob(tdb.convModels[1].Messages), `"assistant"`) || tdb.convModels[1].Status != models.SoulMintConversationStatusInProgress {
 		t.Fatalf("unexpected turn update model: %#v", tdb.convModels[1])
 	}
-	if tdb.convModels[2].Status != models.SoulMintConversationStatusCompleted || tdb.convModels[2].CompletedAt.IsZero() || tdb.convModels[2].ProducedDeclarations != `{"ok":true}` {
+	if tdb.convModels[2].Status != models.SoulMintConversationStatusCompleted || tdb.convModels[2].CompletedAt.IsZero() || decodeMintConversationBlob(tdb.convModels[2].ProducedDeclarations) != `{"ok":true}` {
 		t.Fatalf("unexpected status update model: %#v", tdb.convModels[2])
 	}
 }
@@ -544,11 +626,11 @@ func testMintConversationHandleRejectsModelChangeForExistingConversation(t *test
 		*dest = models.SoulAgentMintConversation{
 			AgentID:        reg.AgentID,
 			ConversationID: mintConversationTestConversationID,
-			Model:          "anthropic:claude-sonnet-4-20250514",
+			Model:          "anthropic:claude-sonnet-4-6",
 			Status:         models.SoulMintConversationStatusInProgress,
 		}
 	}).Once()
-	body := mustMarshalJSON(t, soulMintConversationRequest{ConversationID: mintConversationTestConversationID, Model: "openai:gpt-4o-mini", Message: "hello"})
+	body := mustMarshalJSON(t, soulMintConversationRequest{ConversationID: mintConversationTestConversationID, Model: "openai:gpt-5.4", Message: "hello"})
 	ctx := adminCtx()
 	ctx.Params = map[string]string{"id": reg.ID}
 	ctx.Request.Body = body

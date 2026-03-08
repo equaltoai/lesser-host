@@ -6,6 +6,7 @@
 	import { portalListInstances } from 'src/lib/api/portalInstances';
 	import type { InstanceResponse } from 'src/lib/api/portalInstances';
 	import type {
+		SoulConfigResponse,
 		SoulAgentRegistrationBeginResponse,
 		SoulAgentRegistrationVerifyResponse,
 		SoulMintConversation,
@@ -19,11 +20,23 @@
 		soulGetMintConversation,
 		soulMintConversationFinalize,
 		soulMintConversationFinalizeBegin,
+		soulPublicGetConfig,
+		soulRecordAgentMintExecution,
 		soulStartMintConversationSSE,
 	} from 'src/lib/api/soul';
 	import { logout } from 'src/lib/auth/logout';
+	import { MarkdownRenderer } from 'src/lib/greater/content';
 	import { navigate } from 'src/lib/router';
-	import { getEthereumProvider, personalSign, requestAccounts } from 'src/lib/wallet/ethereum';
+	import {
+		ensureAccounts,
+		getChainId,
+		getEthereumProvider,
+		personalSign,
+		requestAccounts,
+		sendEthereumTransaction,
+		switchEthereumChain,
+		waitForEthereumTransactionReceipt,
+	} from 'src/lib/wallet/ethereum';
 	import { keccak256Utf8Hex } from 'src/lib/wallet/keccak';
 	import {
 		Alert,
@@ -71,18 +84,26 @@
 	let verifyLoading = $state(false);
 	let verifyError = $state<string | null>(null);
 	let verifyResult = $state<SoulAgentRegistrationVerifyResponse | null>(null);
+	let showVerifySafePayload = $state(false);
+	let soulConfig = $state<SoulConfigResponse | null>(null);
+	let mintDirectLoading = $state(false);
+	let mintDirectError = $state<string | null>(null);
+	let mintDirectNotice = $state<string | null>(null);
+	let mintDirectTxHash = $state('');
 
 	const dnsProof = $derived.by(() => beginResult?.proofs?.find((p) => p.method === 'dns_txt') || null);
 	const httpsProof = $derived.by(() => beginResult?.proofs?.find((p) => p.method === 'https_well_known') || null);
+	const verifyUsesSafe = $derived.by(() => Boolean(verifyResult?.safe_tx?.safe_address?.trim()));
+	const verifyMintExecuted = $derived.by(() => (verifyResult?.operation?.status || '').toLowerCase() === 'executed');
 
 	// --- Minting conversation (Phase 2) ---
 
 	type MintMessage = { role: 'user' | 'assistant'; content: string };
 
-	let mintModel = $state('anthropic:claude-sonnet-4-20250514');
+	let mintModel = $state('anthropic:claude-sonnet-4-6');
 	const mintModelOptions = [
-		{ value: 'anthropic:claude-sonnet-4-20250514', label: 'Anthropic — Claude Sonnet 4' },
-		{ value: 'openai:gpt-4.1-mini', label: 'OpenAI — GPT-4.1 mini' },
+		{ value: 'anthropic:claude-sonnet-4-6', label: 'Anthropic — Claude Sonnet 4.6' },
+		{ value: 'openai:gpt-5.4', label: 'OpenAI — GPT-5.4' },
 	];
 
 	let mintConversationId = $state('');
@@ -100,6 +121,8 @@
 	let mintFinalizeError = $state<string | null>(null);
 	let mintFinalizeBegin = $state<SoulMintConversationFinalizeBeginResponse | null>(null);
 	let mintFinalizeResult = $state<SoulMintConversationFinalizeResponse | null>(null);
+	const mintBoundaryCount = $derived(extractProducedBoundaries(mintProducedDeclarations).length);
+	const mintFinalizePromptCount = $derived(mintBoundaryCount > 0 ? mintBoundaryCount + 1 : 0);
 
 	const selectedInstance = $derived.by(
 		() => instances.find((instance) => instance.slug === selectedInstanceSlug) || null
@@ -249,6 +272,32 @@
 		}
 	}
 
+	function parseSseErrorMessage(value: unknown): string {
+		if (typeof value === 'string') {
+			const trimmed = value.trim();
+			return trimmed || 'stream error';
+		}
+		if (value == null) return 'stream error';
+		if (typeof value !== 'object') {
+			const asString = String(value).trim();
+			return asString || 'stream error';
+		}
+
+		const record = value as Record<string, unknown>;
+		for (const key of ['message', 'error', 'detail']) {
+			const nested = parseSseErrorMessage(record[key]);
+			if (nested !== 'stream error') return nested;
+		}
+		if (typeof record.code === 'string' && record.code.trim()) return record.code.trim();
+
+		try {
+			const json = JSON.stringify(value);
+			return json && json !== '{}' ? json : 'stream error';
+		} catch {
+			return 'stream error';
+		}
+	}
+
 	async function sendMintMessage(registrationId: string) {
 		mintError = null;
 		mintCompleteError = null;
@@ -322,8 +371,7 @@
 					}
 
 					if (parsed.event === 'error') {
-						const d = parsed.data as { error?: unknown; message?: unknown };
-						mintError = String(d.error || d.message || 'stream error');
+						mintError = parseSseErrorMessage(parsed.data);
 					}
 				}
 			}
@@ -394,7 +442,7 @@
 
 		mintFinalizeLoading = true;
 		try {
-			const accounts = await requestAccounts(provider);
+			const accounts = await ensureAccounts(provider);
 			const normalized = accounts.map((a) => a.toLowerCase());
 			if (!normalized.includes(wallet.toLowerCase())) {
 				mintFinalizeError = `Connected wallet does not match agent wallet (${wallet}).`;
@@ -560,6 +608,96 @@
 		}
 	}
 
+	async function loadSoulConfig() {
+		try {
+			soulConfig = await soulPublicGetConfig();
+		} catch {
+			soulConfig = null;
+		}
+	}
+
+	async function executeDirectMint(agentId: string) {
+		mintDirectError = null;
+		mintDirectNotice = null;
+
+		const payload = verifyResult?.safe_tx;
+		if (!payload) {
+			mintDirectError = 'No mint transaction payload is available yet.';
+			return;
+		}
+		if (payload.safe_address?.trim()) {
+			mintDirectError = 'This mint still requires Safe execution.';
+			return;
+		}
+
+		const provider = getEthereumProvider();
+		if (!provider) {
+			mintDirectError = 'No wallet detected. Install or enable a wallet extension.';
+			return;
+		}
+
+		const wallet = beginResult?.registration?.wallet_address?.trim() || walletAddress.trim();
+		if (!wallet) {
+			mintDirectError = 'Agent wallet address is required.';
+			return;
+		}
+
+		mintDirectLoading = true;
+		let txHash = '';
+		try {
+			const accounts = await ensureAccounts(provider);
+			const normalized = accounts.map((account) => account.toLowerCase());
+			if (!normalized.includes(wallet.toLowerCase())) {
+				mintDirectError = `Connected wallet does not match agent wallet (${wallet}).`;
+				return;
+			}
+
+			const expectedChainId = soulConfig?.chain_id;
+			if (expectedChainId) {
+				const currentChainId = await getChainId(provider);
+				if (currentChainId !== expectedChainId) {
+					mintDirectNotice = `Switching wallet to chain ${expectedChainId}…`;
+					await switchEthereumChain(provider, expectedChainId);
+				}
+			}
+
+			mintDirectNotice = 'Sending mint transaction from the connected wallet…';
+			txHash = await sendEthereumTransaction(provider, {
+				from: wallet,
+				to: payload.to,
+				value: payload.value,
+				data: payload.data,
+			});
+			mintDirectTxHash = txHash;
+
+			mintDirectNotice = 'Transaction submitted. Waiting for Sepolia confirmation…';
+			await waitForEthereumTransactionReceipt(provider, txHash, 10 * 60 * 1000, 3000);
+
+			mintDirectNotice = 'Transaction confirmed. Recording execution in lesser-host…';
+			const updated = await soulRecordAgentMintExecution(token, agentId, txHash);
+			if (verifyResult) {
+				verifyResult = {
+					...verifyResult,
+					operation: updated.operation,
+					safe_tx: updated.safe_tx ?? verifyResult.safe_tx,
+				};
+			}
+			mintDirectNotice = 'Mint confirmed onchain and recorded. You can continue the profile conversation now.';
+		} catch (err) {
+			if ((err as Partial<ApiError>).status === 401) {
+				await logout();
+				navigate('/login');
+				return;
+			}
+			const base = formatError(err);
+			mintDirectError = txHash
+				? `${base}. Transaction sent as ${txHash}. You can recover it from the agent detail page if needed.`
+				: base;
+		} finally {
+			mintDirectLoading = false;
+		}
+	}
+
 	async function handleBegin() {
 		beginError = null;
 		signError = null;
@@ -580,6 +718,9 @@
 		mintFinalizeBegin = null;
 		mintFinalizeResult = null;
 		mintProducedDeclarations = null;
+		mintDirectError = null;
+		mintDirectNotice = null;
+		mintDirectTxHash = '';
 
 		const nextDomain = domain.trim();
 		const nextLocal = localId.trim();
@@ -722,6 +863,10 @@
 	async function verifyRegistration() {
 		verifyError = null;
 		verifyResult = null;
+		showVerifySafePayload = false;
+		mintDirectError = null;
+		mintDirectNotice = null;
+		mintDirectTxHash = '';
 
 		if (!beginResult?.registration?.id) {
 			verifyError = 'Generate a registration challenge first.';
@@ -767,6 +912,7 @@
 
 	onMount(() => {
 		void loadRegistrationDefaults();
+		void loadSoulConfig();
 	});
 </script>
 
@@ -775,7 +921,7 @@
 		<div class="soul-register__title">
 			<Heading level={2} size="xl">Register agent</Heading>
 			<Text color="secondary">
-				Choose your managed instance, confirm the wallet, and create the Safe-ready mint operation.
+				Choose your managed instance, confirm the wallet, and prepare the onchain mint from your connected wallet.
 			</Text>
 		</div>
 		<div class="soul-register__actions">
@@ -958,7 +1104,7 @@
 						onclick={() => void verifyRegistration()}
 						disabled={verifyLoading || !signature || !principalSignature}
 					>
-						Verify + create mint operation
+						Verify + prepare mint
 					</Button>
 				</div>
 
@@ -972,29 +1118,105 @@
 				{#if verifyResult}
 					<Card variant="outlined" padding="lg">
 						{#snippet header()}
-							<Heading level={4} size="lg">Result</Heading>
+							<Heading level={4} size="lg">{verifyMintExecuted ? 'Mint completed' : 'Mint transaction ready'}</Heading>
 						{/snippet}
 
-						<Text size="sm" color="secondary">
-							Operation <span class="soul-register__mono">{verifyResult.operation.operation_id}</span>
-						</Text>
+						{#if verifyMintExecuted}
+							<Alert variant="success" title="Soul mint recorded">
+								<Text size="sm">
+									The mint transaction has been confirmed onchain and recorded in lesser-host. You can continue the
+									profile conversation now or open the agent page to review the live identity.
+								</Text>
+							</Alert>
+						{:else if verifyUsesSafe}
+							<Alert variant="warning" title="One more step is still required">
+								<Text size="sm">
+									This environment still expects Safe execution. Execute the mint transaction, wait for it to land
+									onchain, then record the execution tx hash from the agent page to activate it.
+								</Text>
+							</Alert>
+						{:else}
+							<Alert variant="info" title="Ready to mint from your wallet">
+								<Text size="sm">
+									The agent is verified and the mint transaction is ready. Send it from the connected agent wallet
+									below, and lesser-host will record the execution after it confirms onchain.
+								</Text>
+							</Alert>
+						{/if}
+
+						<DefinitionList>
+							<DefinitionItem label="Operation" monospace>{verifyResult.operation.operation_id}</DefinitionItem>
+							<DefinitionItem label="Status" monospace>{verifyResult.operation.status}</DefinitionItem>
+						</DefinitionList>
+
+						{#if verifyUsesSafe}
+							<div class="soul-register__steps">
+								<Text size="sm">1. Open the agent detail page.</Text>
+								<Text size="sm">2. Execute the Safe transaction there or in your Safe workflow.</Text>
+								<Text size="sm">3. Paste the mined tx hash back into the pending mint panel to activate the soul.</Text>
+							</div>
+						{:else if !verifyMintExecuted}
+							<div class="soul-register__steps">
+								<Text size="sm">1. Use the connected agent wallet to submit the mint transaction.</Text>
+								<Text size="sm">2. Keep this page open while lesser-host waits for Sepolia confirmation.</Text>
+								<Text size="sm">3. If needed, recover the tx later from the agent detail page.</Text>
+							</div>
+						{/if}
+
+						{#if mintDirectNotice}
+							<Alert variant="info" title="Direct mint">{mintDirectNotice}</Alert>
+						{/if}
+						{#if mintDirectError}
+							<Alert variant="error" title="Direct mint">{mintDirectError}</Alert>
+						{/if}
+
 						<div class="soul-register__row">
-								<Button
-									variant="outline"
-									onclick={() => navigate(`/portal/souls/${begin.registration.agent_id}`)}
-								>
-									Open agent
+							{#if !verifyUsesSafe && !verifyMintExecuted && verifyResult.safe_tx}
+								<Button variant="solid" onclick={() => void executeDirectMint(begin.registration.agent_id)} disabled={mintDirectLoading}>
+									{mintDirectLoading ? 'Minting…' : 'Mint now with connected wallet'}
 								</Button>
+							{/if}
+							<Button variant="solid" onclick={() => navigate(`/portal/souls/${begin.registration.agent_id}`)}>
+								{verifyUsesSafe || !verifyMintExecuted ? 'Open mint recovery' : 'Open agent'}
+							</Button>
+							<Button variant="outline" onclick={() => navigate(`/portal/souls/${begin.registration.agent_id}/mint`)}>
+								Complete profile
+							</Button>
 							<CopyButton size="sm" text={verifyResult.operation.operation_id} />
 						</div>
 
+						{#if mintDirectLoading}
+							<div class="soul-register__loading-inline">
+								<Spinner size="sm" />
+								<Text size="sm">Waiting for wallet confirmation and chain settlement…</Text>
+							</div>
+						{/if}
+						{#if mintDirectTxHash}
+							<div class="soul-register__row">
+								<Text size="sm" color="secondary">
+									Execution tx <span class="soul-register__mono">{mintDirectTxHash}</span>
+								</Text>
+								<CopyButton size="sm" text={mintDirectTxHash} />
+							</div>
+						{/if}
+
 						{#if verifyResult.safe_tx}
-							<DefinitionList>
-								<DefinitionItem label="Safe" monospace>{verifyResult.safe_tx.safe_address}</DefinitionItem>
-								<DefinitionItem label="To" monospace>{verifyResult.safe_tx.to}</DefinitionItem>
-								<DefinitionItem label="Value" monospace>{verifyResult.safe_tx.value}</DefinitionItem>
-								<DefinitionItem label="Data" monospace>{verifyResult.safe_tx.data}</DefinitionItem>
-							</DefinitionList>
+							<div class="soul-register__row">
+								<Button variant="outline" onclick={() => (showVerifySafePayload = !showVerifySafePayload)}>
+									{showVerifySafePayload ? 'Hide transaction data' : 'Show transaction data'}
+								</Button>
+								<CopyButton size="sm" text={prettyJSON(verifyResult.safe_tx)} />
+							</div>
+							{#if showVerifySafePayload}
+								<DefinitionList>
+									<DefinitionItem label="To" monospace>{verifyResult.safe_tx.to}</DefinitionItem>
+									<DefinitionItem label="Value" monospace>{verifyResult.safe_tx.value}</DefinitionItem>
+									{#if verifyResult.safe_tx.safe_address}
+										<DefinitionItem label="Safe" monospace>{verifyResult.safe_tx.safe_address}</DefinitionItem>
+									{/if}
+								</DefinitionList>
+								<TextArea readonly rows={6} value={verifyResult.safe_tx.data} label="Transaction data" />
+							{/if}
 						{/if}
 					</Card>
 				{/if}
@@ -1003,16 +1225,17 @@
 
 		<Card variant="outlined" padding="lg">
 			{#snippet header()}
-				<Heading level={3} size="lg">4. Minting conversation (Phase 2, optional)</Heading>
+				<Heading level={3} size="lg">4. Profile conversation (after mint, optional)</Heading>
 			{/snippet}
 
 			<Text size="sm" color="secondary">
-				Stream a guided conversation to produce structured declarations (selfDescription, capabilities, boundaries, transparency). You can complete the conversation to store
-				the produced declarations on the conversation record.
+				After the mint operation is created, use this guided conversation to draft the published profile:
+				selfDescription, capabilities, boundaries, and transparency. Completing the conversation stores the produced
+				declarations on the conversation record.
 			</Text>
 
 			{#if mintError}
-				<Alert variant="error" title="Mint conversation">{mintError}</Alert>
+				<Alert variant="error" title="Profile conversation">{mintError}</Alert>
 			{/if}
 			{#if mintCompleteError}
 				<Alert variant="error" title="Complete conversation">{mintCompleteError}</Alert>
@@ -1038,7 +1261,7 @@
 
 			<div class="soul-register__row">
 				<Button variant="outline" onclick={() => resetMintConversation(begin.registration.id)} disabled={mintStreaming || mintCompleteLoading}>
-					Start new
+					Start fresh
 				</Button>
 				<Button
 					variant="outline"
@@ -1074,19 +1297,27 @@
 					{#each mintMessages as m, i (i)}
 						<Card variant="outlined" padding="md">
 							<Text size="sm" weight="medium">{m.role}</Text>
-							<Text size="sm" color="secondary" style="white-space: pre-wrap">{m.content}</Text>
+							{#if m.role === 'assistant'}
+								<div class="soul-register__markdown">
+									<MarkdownRenderer content={m.content} />
+								</div>
+							{:else}
+								<div class="soul-register__plain">{m.content}</div>
+							{/if}
 						</Card>
 					{/each}
 					{#if mintAssistantPartial}
 						<Card variant="outlined" padding="md">
 							<Text size="sm" weight="medium">assistant (streaming)</Text>
-							<Text size="sm" color="secondary" style="white-space: pre-wrap">{mintAssistantPartial}</Text>
+							<div class="soul-register__markdown">
+								<MarkdownRenderer content={mintAssistantPartial} />
+							</div>
 						</Card>
 					{/if}
 				</div>
 			{:else}
 				<Alert variant="info" title="No conversation yet">
-					<Text size="sm">Send the first message to start a new conversation.</Text>
+					<Text size="sm">Send the first message to start the profile conversation.</Text>
 				</Alert>
 			{/if}
 
@@ -1109,19 +1340,25 @@
 			{#if mintProducedDeclarations}
 				<Card variant="outlined" padding="lg">
 					{#snippet header()}
-						<Heading level={4} size="lg">Produced declarations</Heading>
+						<Heading level={4} size="lg">Drafted profile</Heading>
 					{/snippet}
 					<TextArea value={prettyJSON(mintProducedDeclarations)} readonly rows={14} />
 				</Card>
 
 				<Card variant="outlined" padding="lg">
 					{#snippet header()}
-						<Heading level={4} size="lg">Finalize + publish (Phase 2)</Heading>
+						<Heading level={4} size="lg">Publish profile</Heading>
 					{/snippet}
 
 					<Text size="sm" color="secondary">
-						This will prompt you to sign each boundary statement, then sign the full v2 registration self-attestation, and publish version 1 to the registry.
+						This signs each boundary statement, then signs the full v2 registration self-attestation and publishes
+						the first profile version to the registry.
 					</Text>
+					{#if mintFinalizePromptCount > 0}
+						<Text size="sm" color="secondary">
+							Current draft: {mintBoundaryCount} boundary signatures + 1 final publication signature = {mintFinalizePromptCount} wallet prompts.
+						</Text>
+					{/if}
 
 					{#if !verifyResult}
 						<Alert variant="info" title="Verify first">
@@ -1130,7 +1367,7 @@
 					{/if}
 
 					{#if mintFinalizeError}
-						<Alert variant="error" title="Finalize + publish">{mintFinalizeError}</Alert>
+						<Alert variant="error" title="Publish profile">{mintFinalizeError}</Alert>
 					{/if}
 
 					<div class="soul-register__row">
@@ -1139,7 +1376,7 @@
 							onclick={() => void finalizeMintConversation(begin.registration.id)}
 							disabled={!verifyResult || mintFinalizeLoading || mintStreaming || mintCompleteLoading}
 						>
-							Finalize + publish
+							Publish profile
 						</Button>
 					</div>
 
@@ -1165,6 +1402,9 @@
 						</Alert>
 						<div class="soul-register__row">
 							<Button variant="outline" onclick={() => navigate(`/portal/souls/${begin.registration.agent_id}`)}>Open agent</Button>
+							<Button variant="solid" onclick={() => navigate(`/portal/souls/${begin.registration.agent_id}/mint`)}>
+								Review profile
+							</Button>
 						</div>
 					{/if}
 				</Card>
@@ -1238,6 +1478,13 @@
 		margin-top: var(--gr-spacing-scale-3);
 	}
 
+	.soul-register__steps {
+		display: flex;
+		flex-direction: column;
+		gap: var(--gr-spacing-scale-1);
+		margin-top: var(--gr-spacing-scale-3);
+	}
+
 	.soul-register__grid {
 		display: grid;
 		grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
@@ -1263,6 +1510,33 @@
 	.soul-register__mono {
 		font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New',
 			monospace;
+	}
+
+	.soul-register__plain {
+		white-space: pre-wrap;
+		color: var(--gr-semantic-foreground-primary);
+		font: inherit;
+		line-height: 1.5;
+	}
+
+	.soul-register__markdown {
+		color: var(--gr-semantic-foreground-primary);
+	}
+
+	.soul-register__markdown :global(p:first-child),
+	.soul-register__markdown :global(ul:first-child),
+	.soul-register__markdown :global(ol:first-child),
+	.soul-register__markdown :global(blockquote:first-child),
+	.soul-register__markdown :global(pre:first-child) {
+		margin-top: 0;
+	}
+
+	.soul-register__markdown :global(p:last-child),
+	.soul-register__markdown :global(ul:last-child),
+	.soul-register__markdown :global(ol:last-child),
+	.soul-register__markdown :global(blockquote:last-child),
+	.soul-register__markdown :global(pre:last-child) {
+		margin-bottom: 0;
 	}
 
 	.soul-register__mint-controls {

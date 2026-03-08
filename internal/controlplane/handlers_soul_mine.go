@@ -39,11 +39,11 @@ func (s *Server) handleSoulListMyAgents(ctx *apptheory.Context) (*apptheory.Resp
 		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
 	}
 
-	instanceSlugs, appErr := s.listInstanceSlugsForOwner(ctx.Context(), username)
+	instances, appErr := s.listOwnedInstances(ctx.Context(), username)
 	if appErr != nil {
 		return nil, appErr
 	}
-	domainSet, appErr := s.listDomainsForInstances(ctx.Context(), instanceSlugs)
+	domainSet, appErr := s.listDomainsForInstances(ctx.Context(), instances)
 	if appErr != nil {
 		return nil, appErr
 	}
@@ -59,7 +59,7 @@ func (s *Server) handleSoulListMyAgents(ctx *apptheory.Context) (*apptheory.Resp
 	return apptheory.JSON(http.StatusOK, soulMineAgentsResponse{Agents: out, Count: len(out)})
 }
 
-func (s *Server) listInstanceSlugsForOwner(ctx context.Context, username string) ([]string, *apptheory.AppError) {
+func (s *Server) listOwnedInstances(ctx context.Context, username string) ([]*models.Instance, *apptheory.AppError) {
 	if s == nil || s.store == nil || s.store.DB == nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
@@ -78,7 +78,8 @@ func (s *Server) listInstanceSlugsForOwner(ctx context.Context, username string)
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list instances"}
 	}
 
-	out := make([]string, 0, len(instances))
+	out := make([]*models.Instance, 0, len(instances))
+	seen := make(map[string]struct{}, len(instances))
 	for _, inst := range instances {
 		if inst == nil {
 			continue
@@ -87,20 +88,29 @@ func (s *Server) listInstanceSlugsForOwner(ctx context.Context, username string)
 		if slug == "" {
 			continue
 		}
-		out = append(out, slug)
+		if _, ok := seen[slug]; ok {
+			continue
+		}
+		seen[slug] = struct{}{}
+		out = append(out, inst)
 	}
-	sort.Strings(out)
+	sort.Slice(out, func(i, j int) bool {
+		return strings.ToLower(strings.TrimSpace(out[i].Slug)) < strings.ToLower(strings.TrimSpace(out[j].Slug))
+	})
 	return out, nil
 }
 
-func (s *Server) listDomainsForInstances(ctx context.Context, instanceSlugs []string) (map[string]struct{}, *apptheory.AppError) {
+func (s *Server) listDomainsForInstances(ctx context.Context, instances []*models.Instance) (map[string]struct{}, *apptheory.AppError) {
 	if s == nil || s.store == nil || s.store.DB == nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
 	domainSet := map[string]struct{}{}
-	for _, slug := range instanceSlugs {
-		slug = strings.ToLower(strings.TrimSpace(slug))
+	for _, inst := range instances {
+		if inst == nil {
+			continue
+		}
+		slug := strings.ToLower(strings.TrimSpace(inst.Slug))
 		if slug == "" {
 			continue
 		}
@@ -124,6 +134,11 @@ func (s *Server) listDomainsForInstances(ctx context.Context, instanceSlugs []st
 				continue
 			}
 			domainSet[domain] = struct{}{}
+		}
+
+		managedDomain := managedInstanceStageDomain(s.cfg.Stage, strings.TrimSpace(inst.HostedBaseDomain))
+		if managedDomain != "" {
+			domainSet[strings.ToLower(strings.TrimSpace(managedDomain))] = struct{}{}
 		}
 	}
 

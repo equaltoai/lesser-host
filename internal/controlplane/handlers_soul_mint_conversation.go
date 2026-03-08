@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -33,14 +36,15 @@ const (
 
 	soulMintConversationStreamModule  = "soul.mint_conversation.stream"
 	soulMintConversationExtractModule = "soul.mint_conversation.extract"
-	defaultSoulMintConversationModel  = "anthropic:claude-sonnet-4-20250514"
+	defaultSoulMintConversationModel  = "anthropic:claude-sonnet-4-6"
+	mintConversationBlobPrefix        = "b64:"
 )
 
 // --- Request / Response types ---
 
 type soulMintConversationRequest struct {
 	ConversationID string `json:"conversation_id,omitempty"` // Empty = start new conversation.
-	Model          string `json:"model,omitempty"`           // e.g. "anthropic:claude-sonnet-4-20250514"
+	Model          string `json:"model,omitempty"`           // e.g. "anthropic:claude-sonnet-4-6"
 	Message        string `json:"message"`                   // User's message for this turn.
 }
 
@@ -101,6 +105,12 @@ type soulMintConversationFinalizeResponse struct {
 	PublishedVersion int                      `json:"published_version"`
 }
 
+type soulAgentMintConversationsResponse struct {
+	Version       string                              `json:"version"`
+	Conversations []*models.SoulAgentMintConversation `json:"conversations"`
+	Count         int                                 `json:"count"`
+}
+
 type mintConversationSession struct {
 	conversationID   string
 	modelSet         string
@@ -112,6 +122,13 @@ type mintConversationSession struct {
 type mintConversationRegistrationContext struct {
 	reg        *models.SoulAgentRegistration
 	inst       *models.Instance
+	agentIDHex string
+}
+
+type mintConversationAgentContext struct {
+	reg        *models.SoulAgentRegistration
+	inst       *models.Instance
+	identity   *models.SoulAgentIdentity
 	agentIDHex string
 }
 
@@ -165,6 +182,59 @@ func (s *Server) requireMintConversationRegistrationContext(ctx *apptheory.Conte
 		reg:        reg,
 		inst:       inst,
 		agentIDHex: strings.ToLower(strings.TrimSpace(reg.AgentID)),
+	}, nil
+}
+
+func mintConversationRegistrationFromIdentity(identity *models.SoulAgentIdentity) *models.SoulAgentRegistration {
+	if identity == nil {
+		return nil
+	}
+	return &models.SoulAgentRegistration{
+		DomainNormalized: strings.TrimSpace(identity.Domain),
+		LocalID:          strings.TrimSpace(identity.LocalID),
+		AgentID:          strings.TrimSpace(identity.AgentID),
+		Wallet:           strings.TrimSpace(identity.Wallet),
+		Capabilities:     append([]string(nil), identity.Capabilities...),
+	}
+}
+
+func (s *Server) requireMintConversationAgentContext(ctx *apptheory.Context, requirePacks bool) (mintConversationAgentContext, *apptheory.AppError) {
+	if appErr := s.requireSoulRegistryConfigured(); appErr != nil {
+		return mintConversationAgentContext{}, appErr
+	}
+	if appErr := s.requireSoulPortalPrereqs(ctx); appErr != nil {
+		return mintConversationAgentContext{}, appErr
+	}
+	if appErr := requireStoreDB(s); appErr != nil {
+		return mintConversationAgentContext{}, appErr
+	}
+	if requirePacks && (s == nil || s.soulPacks == nil || strings.TrimSpace(s.cfg.SoulPackBucketName) == "") {
+		return mintConversationAgentContext{}, &apptheory.AppError{Code: "app.conflict", Message: "soul registry bucket is not configured"}
+	}
+
+	agentIDHex, _, appErr := parseSoulAgentIDHex(ctx.Param("agentId"))
+	if appErr != nil {
+		return mintConversationAgentContext{}, appErr
+	}
+
+	identity, err := s.getSoulAgentIdentity(ctx.Context(), agentIDHex)
+	if theoryErrors.IsNotFound(err) {
+		return mintConversationAgentContext{}, &apptheory.AppError{Code: "app.not_found", Message: "agent not found"}
+	}
+	if err != nil {
+		return mintConversationAgentContext{}, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
+	_, inst, accessErr := s.requireSoulDomainAccess(ctx, strings.TrimSpace(identity.Domain))
+	if accessErr != nil {
+		return mintConversationAgentContext{}, accessErr
+	}
+
+	return mintConversationAgentContext{
+		reg:        mintConversationRegistrationFromIdentity(identity),
+		inst:       inst,
+		identity:   identity,
+		agentIDHex: agentIDHex,
 	}, nil
 }
 
@@ -224,11 +294,47 @@ func requireMintConversationID(ctx *apptheory.Context) (string, *apptheory.AppEr
 	return conversationID, nil
 }
 
+func (s *Server) listSoulAgentMintConversations(ctx context.Context, agentIDHex string, limit int) ([]*models.SoulAgentMintConversation, *apptheory.AppError) {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
+	var items []*models.SoulAgentMintConversation
+	if err := s.store.DB.WithContext(ctx).
+		Model(&models.SoulAgentMintConversation{}).
+		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentIDHex)).
+		Where("SK", "BEGINS_WITH", "MINT_CONVERSATION#").
+		All(&items); err != nil && !theoryErrors.IsNotFound(err) {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list mint conversations"}
+	}
+
+	sort.Slice(items, func(i, j int) bool {
+		left := items[i]
+		right := items[j]
+		if left == nil || right == nil {
+			return right == nil
+		}
+		if left.CreatedAt.Equal(right.CreatedAt) {
+			return strings.TrimSpace(left.ConversationID) > strings.TrimSpace(right.ConversationID)
+		}
+		return left.CreatedAt.After(right.CreatedAt)
+	})
+
+	if limit > 0 && len(items) > limit {
+		items = items[:limit]
+	}
+	for _, item := range items {
+		decodeMintConversationFields(item)
+	}
+	return items, nil
+}
+
 func (s *Server) loadMintConversationByStatus(ctx context.Context, agentIDHex string, conversationID string, expectedStatus string, statusMessage string, emptyDeclMessage string) (*models.SoulAgentMintConversation, *apptheory.AppError) {
 	conv, err := getSoulAgentItemBySK[models.SoulAgentMintConversation](s, ctx, agentIDHex, fmt.Sprintf("MINT_CONVERSATION#%s", conversationID))
 	if err != nil {
 		return nil, &apptheory.AppError{Code: "app.not_found", Message: "conversation not found"}
 	}
+	decodeMintConversationFields(conv)
 	if conv.Status != expectedStatus {
 		return nil, &apptheory.AppError{Code: "app.conflict", Message: statusMessage}
 	}
@@ -434,6 +540,24 @@ func applyMintConversationBudgetUpdate(tx core.TransactionBuilder, updateBudget 
 
 // --- Handler ---
 
+func (s *Server) handleSoulAgentListMintConversations(ctx *apptheory.Context) (*apptheory.Response, error) {
+	agentCtx, appErr := s.requireMintConversationAgentContext(ctx, false)
+	if appErr != nil {
+		return nil, appErr
+	}
+
+	items, appErr := s.listSoulAgentMintConversations(ctx.Context(), agentCtx.agentIDHex, parseLimit(queryFirst(ctx, "limit"), 20, 1, 100))
+	if appErr != nil {
+		return nil, appErr
+	}
+
+	return apptheory.JSON(http.StatusOK, soulAgentMintConversationsResponse{
+		Version:       "1",
+		Conversations: items,
+		Count:         len(items),
+	})
+}
+
 // handleSoulMintConversation conducts a streaming LLM-assisted minting conversation.
 // Each call sends one user message and streams the assistant response via SSE.
 func (s *Server) handleSoulMintConversation(ctx *apptheory.Context) (*apptheory.Response, error) {
@@ -491,6 +615,53 @@ func (s *Server) handleSoulMintConversation(ctx *apptheory.Context) (*apptheory.
 	return apptheory.SSEStreamResponse(ctx.Context(), http.StatusOK, eventCh)
 }
 
+func (s *Server) handleSoulAgentMintConversation(ctx *apptheory.Context) (*apptheory.Response, error) {
+	agentCtx, appErr := s.requireMintConversationAgentContext(ctx, false)
+	if appErr != nil {
+		return nil, appErr
+	}
+	if agentCtx.identity != nil && agentCtx.identity.SelfDescriptionVersion > 0 {
+		return nil, &apptheory.AppError{Code: "app.conflict", Message: "registration is already published"}
+	}
+
+	req, message, err := requireMintConversationMessage(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	now := time.Now().UTC()
+	session, appErr := s.loadMintConversationSession(ctx.Context(), agentCtx.agentIDHex, req.ConversationID, req.Model)
+	if appErr != nil {
+		return nil, appErr
+	}
+	if session.modelSet == "" {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "model is required"}
+	}
+	apiKey, appErr := s.apiKeyForMintConversationModel(ctx.Context(), session.modelSet)
+	if appErr != nil {
+		return nil, appErr
+	}
+	if appErr := s.debitMintConversationStreamCredits(ctx.Context(), agentCtx.inst, agentCtx.agentIDHex, session, strings.TrimSpace(ctx.RequestID), now); appErr != nil {
+		return nil, appErr
+	}
+
+	existingMessages := append(session.existingMessages, soulMintConversationMessage{Role: "user", Content: message})
+	systemPrompt := buildMintConversationSystemPrompt(agentCtx.reg)
+	eventCh := make(chan apptheory.SSEEvent, 16)
+
+	go s.streamMintConversation(ctx.Context(), eventCh, streamMintConversationParams{
+		apiKey:           apiKey,
+		modelSet:         session.modelSet,
+		systemPrompt:     systemPrompt,
+		existingMessages: existingMessages,
+		existingUsage:    session.existingUsage,
+		agentIDHex:       agentCtx.agentIDHex,
+		conversationID:   session.conversationID,
+	})
+
+	return apptheory.SSEStreamResponse(ctx.Context(), http.StatusOK, eventCh)
+}
+
 func (s *Server) loadMintConversationSession(ctx context.Context, agentIDHex string, requestedConversationID string, requestedModel string) (mintConversationSession, *apptheory.AppError) {
 	session := mintConversationSession{
 		conversationID: strings.TrimSpace(requestedConversationID),
@@ -513,6 +684,7 @@ func (s *Server) loadMintConversationSession(ctx context.Context, agentIDHex str
 	if err != nil {
 		return mintConversationSession{}, &apptheory.AppError{Code: "app.not_found", Message: "conversation not found"}
 	}
+	decodeMintConversationFields(conv)
 	if conv.Status != models.SoulMintConversationStatusInProgress {
 		return mintConversationSession{}, &apptheory.AppError{Code: "app.conflict", Message: "conversation is not in progress"}
 	}
@@ -584,17 +756,46 @@ type streamMintConversationParams struct {
 	conversationID   string
 }
 
+const mintConversationRunTimeout = 2 * time.Minute
+
+func detachedMintConversationContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithoutCancel(ctx)
+}
+
+func emitMintConversationEvent(ctx context.Context, eventCh chan<- apptheory.SSEEvent, event apptheory.SSEEvent) bool {
+	if eventCh == nil {
+		return false
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	select {
+	case eventCh <- event:
+		return true
+	case <-ctx.Done():
+		return false
+	default:
+		return false
+	}
+}
+
 func (s *Server) streamMintConversation(ctx context.Context, eventCh chan<- apptheory.SSEEvent, p streamMintConversationParams) {
 	defer close(eventCh)
+	runCtx, cancel := context.WithTimeout(detachedMintConversationContext(ctx), mintConversationRunTimeout)
+	defer cancel()
 
 	// Emit start event.
-	eventCh <- apptheory.SSEEvent{
+	emitMintConversationEvent(ctx, eventCh, apptheory.SSEEvent{
 		Event: "conversation_start",
 		Data: soulMintConversationStartEvent{
 			ConversationID: p.conversationID,
 			Model:          p.modelSet,
 		},
-	}
+	})
 
 	// Stream from provider via internal/ai adapters.
 	var fullResponse string
@@ -610,49 +811,47 @@ func (s *Server) streamMintConversation(ctx context.Context, eventCh chan<- appt
 	}
 
 	onDelta := func(delta string) {
-		eventCh <- apptheory.SSEEvent{
+		emitMintConversationEvent(ctx, eventCh, apptheory.SSEEvent{
 			Event: "delta",
 			Data: soulMintConversationDeltaEvent{
 				Text: delta,
 			},
-		}
+		})
 	}
 
 	switch {
 	case strings.HasPrefix(strings.ToLower(strings.TrimSpace(p.modelSet)), "openai:"):
-		fullResponse, llmUsage, err = llm.StreamMintConversationOpenAI(ctx, p.apiKey, p.modelSet, p.systemPrompt, llmMessages, onDelta)
+		fullResponse, llmUsage, err = llm.StreamMintConversationOpenAI(runCtx, p.apiKey, p.modelSet, p.systemPrompt, llmMessages, onDelta)
 	case strings.HasPrefix(strings.ToLower(strings.TrimSpace(p.modelSet)), "anthropic:"):
-		fullResponse, llmUsage, err = llm.StreamMintConversationAnthropic(ctx, p.apiKey, p.modelSet, p.systemPrompt, llmMessages, onDelta)
+		fullResponse, llmUsage, err = llm.StreamMintConversationAnthropic(runCtx, p.apiKey, p.modelSet, p.systemPrompt, llmMessages, onDelta)
 	default:
 		err = fmt.Errorf("unsupported model set %q", p.modelSet)
 	}
 
-	_ = llmUsage
-
 	if err != nil {
-		eventCh <- apptheory.SSEEvent{
+		emitMintConversationEvent(ctx, eventCh, apptheory.SSEEvent{
 			Event: "error",
 			Data: soulMintConversationErrorEvent{
 				Error: "failed to generate response",
 			},
-		}
+		})
 		// Update conversation status to failed.
-		s.updateMintConversationStatus(ctx, p.agentIDHex, p.conversationID, models.SoulMintConversationStatusFailed, p.existingMessages, "")
+		s.updateMintConversationStatus(runCtx, p.agentIDHex, p.conversationID, models.SoulMintConversationStatusFailed, p.existingMessages, "")
 		return
 	}
 
 	// Append assistant response to messages and persist.
 	updatedMessages := append(p.existingMessages, soulMintConversationMessage{Role: "assistant", Content: fullResponse})
-	s.updateMintConversationTurn(ctx, p.agentIDHex, p.conversationID, updatedMessages, addAIUsage(p.existingUsage, llmUsage))
+	s.updateMintConversationTurn(runCtx, p.agentIDHex, p.conversationID, updatedMessages, addAIUsage(p.existingUsage, llmUsage))
 
 	// Emit done event.
-	eventCh <- apptheory.SSEEvent{
+	emitMintConversationEvent(ctx, eventCh, apptheory.SSEEvent{
 		Event: "conversation_done",
 		Data: soulMintConversationDoneEvent{
 			ConversationID: p.conversationID,
 			FullResponse:   fullResponse,
 		},
-	}
+	})
 }
 
 func (s *Server) updateMintConversationMessages(ctx context.Context, agentIDHex string, conversationID string, messages []soulMintConversationMessage) {
@@ -666,10 +865,13 @@ func (s *Server) updateMintConversationMessages(ctx context.Context, agentIDHex 
 	conv := &models.SoulAgentMintConversation{
 		AgentID:        agentIDHex,
 		ConversationID: conversationID,
-		Messages:       string(messagesJSON),
+		Messages:       encodeMintConversationBlob(string(messagesJSON)),
+		Status:         models.SoulMintConversationStatusInProgress,
 	}
 	_ = conv.UpdateKeys()
-	_ = s.store.DB.WithContext(ctx).Model(conv).IfExists().Update("Messages")
+	if err := s.store.DB.WithContext(ctx).Model(conv).IfExists().Update("Messages"); err != nil {
+		log.Printf("controlplane: update mint conversation messages failed: agent=%s conversation=%s err=%v", conv.AgentID, conv.ConversationID, err)
+	}
 }
 
 func addAIUsage(existing models.AIUsage, delta models.AIUsage) models.AIUsage {
@@ -708,11 +910,14 @@ func (s *Server) updateMintConversationTurn(ctx context.Context, agentIDHex stri
 	conv := &models.SoulAgentMintConversation{
 		AgentID:        agentIDHex,
 		ConversationID: conversationID,
-		Messages:       string(messagesJSON),
+		Messages:       encodeMintConversationBlob(string(messagesJSON)),
 		Usage:          usage,
+		Status:         models.SoulMintConversationStatusInProgress,
 	}
 	_ = conv.UpdateKeys()
-	_ = s.store.DB.WithContext(ctx).Model(conv).IfExists().Update("Messages", "Usage")
+	if err := s.store.DB.WithContext(ctx).Model(conv).IfExists().Update("Messages", "Usage"); err != nil {
+		log.Printf("controlplane: update mint conversation turn failed: agent=%s conversation=%s err=%v", conv.AgentID, conv.ConversationID, err)
+	}
 }
 
 func (s *Server) updateMintConversationStatus(ctx context.Context, agentIDHex string, conversationID string, status string, messages []soulMintConversationMessage, declarations string) {
@@ -724,13 +929,15 @@ func (s *Server) updateMintConversationStatus(ctx context.Context, agentIDHex st
 	conv := &models.SoulAgentMintConversation{
 		AgentID:              agentIDHex,
 		ConversationID:       conversationID,
-		Messages:             string(messagesJSON),
-		ProducedDeclarations: declarations,
+		Messages:             encodeMintConversationBlob(string(messagesJSON)),
+		ProducedDeclarations: encodeMintConversationBlob(declarations),
 		Status:               status,
 		CompletedAt:          now,
 	}
 	_ = conv.UpdateKeys()
-	_ = s.store.DB.WithContext(ctx).Model(conv).IfExists().Update("Messages", "ProducedDeclarations", "Status", "CompletedAt")
+	if err := s.store.DB.WithContext(ctx).Model(conv).IfExists().Update("Messages", "ProducedDeclarations", "Status", "CompletedAt"); err != nil {
+		log.Printf("controlplane: update mint conversation status failed: agent=%s conversation=%s status=%s err=%v", conv.AgentID, conv.ConversationID, conv.Status, err)
+	}
 }
 
 // handleSoulCompleteMintConversation marks a conversation as completed and extracts declarations.
@@ -750,6 +957,36 @@ func (s *Server) handleSoulCompleteMintConversation(ctx *apptheory.Context) (*ap
 
 	now := time.Now().UTC()
 	declarationsJSON, extractUsage, appErr := s.resolveMintConversationCompletion(ctx, regCtx, conv, conversationID, now)
+	if appErr != nil {
+		return nil, appErr
+	}
+	if appErr := s.persistCompletedMintConversation(ctx.Context(), conv, declarationsJSON, extractUsage, now); appErr != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to complete conversation"}
+	}
+
+	return apptheory.JSON(http.StatusOK, conv)
+}
+
+func (s *Server) handleSoulAgentCompleteMintConversation(ctx *apptheory.Context) (*apptheory.Response, error) {
+	agentCtx, appErr := s.requireMintConversationAgentContext(ctx, false)
+	if appErr != nil {
+		return nil, appErr
+	}
+	conversationID, appErr := requireMintConversationID(ctx)
+	if appErr != nil {
+		return nil, appErr
+	}
+	conv, appErr := s.loadMintConversationByStatus(ctx.Context(), agentCtx.agentIDHex, conversationID, models.SoulMintConversationStatusInProgress, "conversation is not in progress", "")
+	if appErr != nil {
+		return nil, appErr
+	}
+
+	now := time.Now().UTC()
+	declarationsJSON, extractUsage, appErr := s.resolveMintConversationCompletion(ctx, mintConversationRegistrationContext{
+		reg:        agentCtx.reg,
+		inst:       agentCtx.inst,
+		agentIDHex: agentCtx.agentIDHex,
+	}, conv, conversationID, now)
 	if appErr != nil {
 		return nil, appErr
 	}
@@ -795,6 +1032,26 @@ func (s *Server) handleSoulGetMintConversation(ctx *apptheory.Context) (*apptheo
 	if err != nil {
 		return nil, &apptheory.AppError{Code: "app.not_found", Message: "conversation not found"}
 	}
+	decodeMintConversationFields(conv)
+
+	return apptheory.JSON(http.StatusOK, conv)
+}
+
+func (s *Server) handleSoulAgentGetMintConversation(ctx *apptheory.Context) (*apptheory.Response, error) {
+	agentCtx, appErr := s.requireMintConversationAgentContext(ctx, false)
+	if appErr != nil {
+		return nil, appErr
+	}
+	conversationID, appErr := requireMintConversationID(ctx)
+	if appErr != nil {
+		return nil, appErr
+	}
+
+	conv, err := getSoulAgentItemBySK[models.SoulAgentMintConversation](s, ctx.Context(), agentCtx.agentIDHex, fmt.Sprintf("MINT_CONVERSATION#%s", conversationID))
+	if err != nil {
+		return nil, &apptheory.AppError{Code: "app.not_found", Message: "conversation not found"}
+	}
+	decodeMintConversationFields(conv)
 
 	return apptheory.JSON(http.StatusOK, conv)
 }
@@ -841,6 +1098,59 @@ func (s *Server) handleSoulBeginFinalizeMintConversation(ctx *apptheory.Context)
 	})
 }
 
+func (s *Server) handleSoulAgentBeginFinalizeMintConversation(ctx *apptheory.Context) (*apptheory.Response, error) {
+	agentCtx, appErr := s.requireMintConversationAgentContext(ctx, true)
+	if appErr != nil {
+		return nil, appErr
+	}
+	conversationID, appErr := requireMintConversationID(ctx)
+	if appErr != nil {
+		return nil, appErr
+	}
+	conv, appErr := s.loadMintConversationByStatus(ctx.Context(), agentCtx.agentIDHex, conversationID, models.SoulMintConversationStatusCompleted, "conversation is not completed", "conversation has no produced declarations")
+	if appErr != nil {
+		return nil, appErr
+	}
+	if agentCtx.identity.SelfDescriptionVersion > 0 {
+		return nil, &apptheory.AppError{Code: "app.conflict", Message: "registration is already published"}
+	}
+	if strings.TrimSpace(agentCtx.identity.PrincipalAddress) == "" ||
+		strings.TrimSpace(agentCtx.identity.PrincipalSignature) == "" ||
+		strings.TrimSpace(agentCtx.identity.PrincipalDeclaration) == "" ||
+		strings.TrimSpace(agentCtx.identity.PrincipalDeclaredAt) == "" {
+		return nil, &apptheory.AppError{Code: "app.conflict", Message: "principal declaration is missing; re-verify registration"}
+	}
+
+	req, err := parseMintConversationFinalizeBeginRequestBody(ctx)
+	if err != nil {
+		return nil, err
+	}
+	decl, appErr := parseAndValidateMintConversationDeclarations(conv.ProducedDeclarations)
+	if appErr != nil {
+		return nil, appErr
+	}
+	if verifyErr := verifyMintConversationBoundarySignatures(agentCtx.identity.Wallet, decl.Boundaries, req.BoundarySignatures); verifyErr != nil {
+		return nil, verifyErr
+	}
+
+	now := time.Now().UTC()
+	expectedVersion := agentCtx.identity.SelfDescriptionVersion
+	nextVersion := expectedVersion + 1
+	regMap, _, digest, _, _, appErr := s.buildMintConversationFinalizeV2Registration(agentCtx.agentIDHex, agentCtx.identity, decl, req.BoundarySignatures, now, nextVersion, "0x00")
+	if appErr != nil {
+		return nil, appErr
+	}
+
+	return apptheory.JSON(http.StatusOK, soulMintConversationFinalizeBeginResponse{
+		Version:             "1",
+		DigestHex:           "0x" + hex.EncodeToString(digest),
+		IssuedAt:            now.Format(time.RFC3339Nano),
+		ExpectedVersion:     expectedVersion,
+		NextVersion:         nextVersion,
+		RegistrationPreview: regMap,
+	})
+}
+
 // handleSoulFinalizeMintConversation publishes the v2 registration version derived from a completed mint conversation.
 func (s *Server) handleSoulFinalizeMintConversation(ctx *apptheory.Context) (*apptheory.Response, error) {
 	finalizeCtx, appErr := s.loadMintConversationFinalizeContext(ctx)
@@ -859,6 +1169,66 @@ func (s *Server) handleSoulFinalizeMintConversation(ctx *apptheory.Context) (*ap
 	if finalizeCtx.identity.SelfDescriptionVersion < *expectedVersion {
 		return nil, &apptheory.AppError{Code: "app.conflict", Message: "version conflict; reload and try again"}
 	}
+	decl, appErr := parseAndValidateMintConversationDeclarations(finalizeCtx.conv.ProducedDeclarations)
+	if appErr != nil {
+		return nil, appErr
+	}
+	if verifyErr := verifyMintConversationBoundarySignatures(finalizeCtx.identity.Wallet, decl.Boundaries, req.BoundarySignatures); verifyErr != nil {
+		return nil, verifyErr
+	}
+
+	regMap, regV2, digest, capsNorm, claimLevels, appErr := s.buildMintConversationFinalizeV2Registration(finalizeCtx.agentIDHex, finalizeCtx.identity, decl, req.BoundarySignatures, issuedAt.UTC(), nextVersion, selfSig)
+	if appErr != nil {
+		return nil, appErr
+	}
+	if sigErr := verifyEthereumSignatureBytes(finalizeCtx.identity.Wallet, digest, selfSig); sigErr != nil {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid registration signature"}
+	}
+	return s.finalizeMintConversationPublish(ctx, finalizeCtx, regV2, regMap, decl, req.BoundarySignatures, capsNorm, claimLevels, issuedAt, expectedVersion, selfSig)
+}
+
+func (s *Server) handleSoulAgentFinalizeMintConversation(ctx *apptheory.Context) (*apptheory.Response, error) {
+	agentCtx, appErr := s.requireMintConversationAgentContext(ctx, true)
+	if appErr != nil {
+		return nil, appErr
+	}
+	conversationID, appErr := requireMintConversationID(ctx)
+	if appErr != nil {
+		return nil, appErr
+	}
+	conv, appErr := s.loadMintConversationByStatus(ctx.Context(), agentCtx.agentIDHex, conversationID, models.SoulMintConversationStatusCompleted, "conversation is not completed", "conversation has no produced declarations")
+	if appErr != nil {
+		return nil, appErr
+	}
+	if strings.TrimSpace(agentCtx.identity.PrincipalAddress) == "" ||
+		strings.TrimSpace(agentCtx.identity.PrincipalSignature) == "" ||
+		strings.TrimSpace(agentCtx.identity.PrincipalDeclaration) == "" ||
+		strings.TrimSpace(agentCtx.identity.PrincipalDeclaredAt) == "" {
+		return nil, &apptheory.AppError{Code: "app.conflict", Message: "principal declaration is missing; re-verify registration"}
+	}
+
+	req, issuedAt, expectedVersion, selfSig, err := parseMintConversationFinalizeRequestBody(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	finalizeCtx := mintConversationFinalizeContext{
+		reg:            agentCtx.reg,
+		inst:           agentCtx.inst,
+		identity:       agentCtx.identity,
+		conv:           conv,
+		agentIDHex:     agentCtx.agentIDHex,
+		conversationID: conversationID,
+	}
+
+	nextVersion := *expectedVersion + 1
+	if finalizeCtx.identity.SelfDescriptionVersion > nextVersion {
+		return nil, &apptheory.AppError{Code: "app.conflict", Message: "agent has advanced beyond this version"}
+	}
+	if finalizeCtx.identity.SelfDescriptionVersion < *expectedVersion {
+		return nil, &apptheory.AppError{Code: "app.conflict", Message: "version conflict; reload and try again"}
+	}
+
 	decl, appErr := parseAndValidateMintConversationDeclarations(finalizeCtx.conv.ProducedDeclarations)
 	if appErr != nil {
 		return nil, appErr
@@ -956,11 +1326,47 @@ func (s *Server) persistCompletedMintConversation(ctx context.Context, conv *mod
 	conv.Status = models.SoulMintConversationStatusCompleted
 	conv.ProducedDeclarations = declarationsJSON
 	conv.CompletedAt = now
-	_ = conv.UpdateKeys()
-	if err := s.store.DB.WithContext(ctx).Model(conv).IfExists().Update("Status", "ProducedDeclarations", "CompletedAt", "Usage"); err != nil {
+	update := &models.SoulAgentMintConversation{
+		AgentID:              conv.AgentID,
+		ConversationID:       conv.ConversationID,
+		Status:               conv.Status,
+		ProducedDeclarations: encodeMintConversationBlob(declarationsJSON),
+		CompletedAt:          conv.CompletedAt,
+		Usage:                conv.Usage,
+	}
+	_ = update.UpdateKeys()
+	if err := s.store.DB.WithContext(ctx).Model(update).IfExists().Update("Status", "ProducedDeclarations", "CompletedAt", "Usage"); err != nil {
 		return &apptheory.AppError{Code: "app.internal", Message: "failed to complete conversation"}
 	}
 	return nil
+}
+
+func encodeMintConversationBlob(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	return mintConversationBlobPrefix + base64.StdEncoding.EncodeToString([]byte(trimmed))
+}
+
+func decodeMintConversationBlob(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || !strings.HasPrefix(trimmed, mintConversationBlobPrefix) {
+		return trimmed
+	}
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(trimmed, mintConversationBlobPrefix))
+	if err != nil {
+		return trimmed
+	}
+	return strings.TrimSpace(string(decoded))
+}
+
+func decodeMintConversationFields(conv *models.SoulAgentMintConversation) {
+	if conv == nil {
+		return
+	}
+	conv.Messages = decodeMintConversationBlob(conv.Messages)
+	conv.ProducedDeclarations = decodeMintConversationBlob(conv.ProducedDeclarations)
 }
 
 func parseMintConversationFinalizeBeginRequestBody(ctx *apptheory.Context) (soulMintConversationFinalizeBeginRequest, error) {
@@ -1446,6 +1852,7 @@ func (s *Server) extractMintConversationDeclarations(ctx context.Context, reg *m
 	case strings.HasPrefix(strings.ToLower(modelSet), "openai:"):
 		out, u, err := llm.MintConversationDeclarationsOpenAI(ctx, apiKey, modelSet, in)
 		if err != nil {
+			log.Printf("controlplane: mint conversation declaration extraction failed: provider=openai model=%s err=%v", modelSet, err)
 			return soulMintConversationProducedDeclarations{}, models.AIUsage{}, &apptheory.AppError{Code: "app.internal", Message: "failed to extract declarations"}
 		}
 		draft = out
@@ -1453,6 +1860,7 @@ func (s *Server) extractMintConversationDeclarations(ctx context.Context, reg *m
 	case strings.HasPrefix(strings.ToLower(modelSet), "anthropic:"):
 		out, u, err := llm.MintConversationDeclarationsAnthropic(ctx, apiKey, modelSet, in)
 		if err != nil {
+			log.Printf("controlplane: mint conversation declaration extraction failed: provider=anthropic model=%s err=%v", modelSet, err)
 			return soulMintConversationProducedDeclarations{}, models.AIUsage{}, &apptheory.AppError{Code: "app.internal", Message: "failed to extract declarations"}
 		}
 		draft = out

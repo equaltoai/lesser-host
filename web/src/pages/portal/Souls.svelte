@@ -93,6 +93,7 @@
 		<div class="souls__list">
 			{#each agents as item (item.agent.agent_id)}
 				{@const statusBadge = badgeForStatus(item.agent.status)}
+				{@const needsProfile = !item.agent.self_description_version}
 				<Card variant="outlined" padding="md">
 					<div class="souls__item">
 						<div class="souls__item-meta">
@@ -108,6 +109,11 @@
 							<Text size="sm" color="secondary">
 								Wallet: <span class="souls__mono">{shortHex(item.agent.wallet)}</span>
 							</Text>
+							{#if needsProfile}
+								<Text size="sm" color="secondary">Profile status: setup not finished</Text>
+							{:else}
+								<Text size="sm" color="secondary">Profile status: published v{item.agent.self_description_version}</Text>
+							{/if}
 							{#if item.reputation}
 								<Text size="sm" color="secondary">
 									Reputation: <span class="souls__mono">{item.reputation.composite.toFixed(3)}</span>
@@ -118,6 +124,11 @@
 							{/if}
 						</div>
 						<div class="souls__item-actions">
+							{#if needsProfile}
+								<Button variant="solid" onclick={() => navigate(`/portal/souls/${item.agent.agent_id}/mint`)}>
+									Complete profile
+								</Button>
+							{/if}
 							<Button variant="outline" onclick={() => navigate(`/portal/souls/${item.agent.agent_id}`)}>
 								Open
 							</Button>
@@ -208,4 +219,3 @@
 			monospace;
 	}
 </style>
-

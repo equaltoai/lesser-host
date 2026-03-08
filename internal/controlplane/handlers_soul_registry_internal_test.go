@@ -503,6 +503,9 @@ func TestHandleSoulAgentRegistrationVerify_UsesExistingProofFlagsAndCreatesOpera
 	if out.SafeTx == nil || out.SafeTx.To == "" || !strings.HasPrefix(out.SafeTx.Data, "0x") {
 		t.Fatalf("expected safe tx payload, got %#v", out.SafeTx)
 	}
+	if out.SafeTx.SafeAddress != "" {
+		t.Fatalf("expected direct mint payload, got safe_address=%q", out.SafeTx.SafeAddress)
+	}
 }
 
 func TestNormalizeSoulCapabilitiesStrict_EnforcesSupportedList(t *testing.T) {

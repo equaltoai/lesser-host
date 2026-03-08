@@ -44,6 +44,8 @@ type MintConversationBoundaryDraft struct {
 	Rationale string `json:"rationale,omitempty"`
 }
 
+const maxMintConversationBoundaryDrafts = 4
+
 // MintConversationDeclarationsOpenAI extracts declarations using OpenAI JSON schema output.
 func MintConversationDeclarationsOpenAI(ctx context.Context, apiKey string, modelSet string, in MintConversationDeclarationsInput) (MintConversationDeclarationsDraft, models.AIUsage, error) {
 	return openAIJSONSchemaBatch(
@@ -63,20 +65,18 @@ func MintConversationDeclarationsOpenAI(ctx context.Context, apiKey string, mode
 	)
 }
 
-// MintConversationDeclarationsAnthropic extracts declarations using Anthropic tool calling.
+// MintConversationDeclarationsAnthropic extracts declarations using Anthropic JSON text output.
 func MintConversationDeclarationsAnthropic(ctx context.Context, apiKey string, modelSet string, in MintConversationDeclarationsInput) (MintConversationDeclarationsDraft, models.AIUsage, error) {
-	return anthropicToolBatch(
+	return anthropicJSONTextBatch(
 		ctx,
 		apiKey,
 		modelSet,
 		in,
-		anthropicToolBatchConfig{
-			ToolName:        "soul_mint_conversation_declarations",
-			ToolDescription: "Extract v2 Soul Registration declarations from a minting conversation transcript.",
-			Schema:          mintConversationDeclarationsJSONSchemaV1(),
-			SystemPrompt:    mintConversationDeclarationsSystemPromptV1(),
-			Temperature:     0.2,
-			MaxTokens:       2048,
+		anthropicJSONTextBatchConfig{
+			Schema:       mintConversationDeclarationsJSONSchemaV1(),
+			SystemPrompt: mintConversationDeclarationsSystemPromptV1(),
+			Temperature:  0.2,
+			MaxTokens:    4096,
 		},
 		parseMintConversationDeclarationsDraft,
 		normalizeMintConversationDeclarationsDraft,
@@ -129,7 +129,7 @@ func normalizeMintConversationDeclarationsDraft(parsed MintConversationDeclarati
 			continue
 		}
 		bounds = append(bounds, b)
-		if len(bounds) >= 25 {
+		if len(bounds) >= maxMintConversationBoundaryDrafts {
 			break
 		}
 	}
@@ -154,6 +154,8 @@ Guidance:
 - Self-description should be honest and specific (purpose, constraints, commitments, limitations).
 - Capabilities must be concrete: what the agent can do, with explicit scope. Use claimLevel "self-declared".
 - Boundaries must be concrete refusals/scope limits/ethical commitments/circuit breakers.
+- Prefer the smallest durable set of high-signal boundaries. Return 2-4 boundaries unless the transcript clearly supports fewer.
+- Do not emit redundant or near-duplicate boundaries that would force extra wallet signatures later.
 - Transparency should describe the agent's model/provider uncertainty and any relevant operational notes.
 `)
 }
@@ -203,6 +205,7 @@ func mintConversationDeclarationsJSONSchemaV1() map[string]any {
 			"boundaries": map[string]any{
 				"type":     "array",
 				"minItems": 1,
+				"maxItems": maxMintConversationBoundaryDrafts,
 				"items": map[string]any{
 					"type":                 "object",
 					"additionalProperties": false,

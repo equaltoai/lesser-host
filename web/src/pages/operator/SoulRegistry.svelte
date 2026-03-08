@@ -1,11 +1,13 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { get } from 'svelte/store';
 
 	import type { ApiError } from 'src/lib/api/http';
 	import type { ListSoulOperationsResponse, PublishRootResponse, SoulOperation } from 'src/lib/api/soul';
-	import { listSoulOperations, publishSoulReputationRoot, publishSoulValidationRoot } from 'src/lib/api/soul';
+	import { listSoulOperations, publishSoulReputationRoot, publishSoulValidationRoot, soulPublicGetConfig } from 'src/lib/api/soul';
 	import { logout } from 'src/lib/auth/logout';
-	import { navigate } from 'src/lib/router';
+	import { navigate, safeAppRootUrl, stageSafeAppTarget } from 'src/lib/router';
+	import { session, stageSafeAppSessionHandoff } from 'src/lib/session';
 	import {
 		Alert,
 		Badge,
@@ -19,6 +21,7 @@
 		Spinner,
 		Text,
 	} from 'src/lib/ui';
+	import { buildSafeWalletAppUrl } from 'src/lib/wallet/safeApp';
 
 	let { token } = $props<{ token: string }>();
 
@@ -30,6 +33,9 @@
 	let createError = $state<string | null>(null);
 	let createResult = $state<PublishRootResponse | null>(null);
 	let creating = $state(false);
+	let safeChainId = $state<number | null>(null);
+	let safeLaunchError = $state<string | null>(null);
+	let safeLaunchNotice = $state<string | null>(null);
 
 	function formatError(err: unknown): string {
 		if (!err) return 'unknown error';
@@ -52,9 +58,69 @@
 	function parseSafePayload(op: SoulOperation): { safe_address: string; to: string; value: string; data: string } | null {
 		if (!op.safe_payload) return null;
 		try {
-			return JSON.parse(op.safe_payload) as { safe_address: string; to: string; value: string; data: string };
+			const parsed = JSON.parse(op.safe_payload) as { safe_address?: string; to: string; value: string; data: string };
+			return parsed.safe_address?.trim()
+				? { safe_address: parsed.safe_address, to: parsed.to, value: parsed.value, data: parsed.data }
+				: null;
 		} catch {
 			return null;
+		}
+	}
+
+	async function loadConfig() {
+		try {
+			const cfg = await soulPublicGetConfig();
+			safeChainId = typeof cfg.chain_id === 'number' ? cfg.chain_id : null;
+		} catch {
+			safeChainId = null;
+		}
+	}
+
+	async function openOperationInSafe(op: SoulOperation) {
+		safeLaunchError = null;
+		safeLaunchNotice = null;
+
+		const safePayload = parseSafePayload(op);
+		if (!safePayload) {
+			safeLaunchError = 'This operation does not contain a Safe payload.';
+			return;
+		}
+
+		const currentSession = get(session);
+		if (!currentSession) {
+			safeLaunchError = 'No operator session is available to hand off into Safe.';
+			return;
+		}
+		if (!stageSafeAppSessionHandoff(currentSession)) {
+			safeLaunchError = 'Failed to stage a short-lived operator session for Safe.';
+			return;
+		}
+		stageSafeAppTarget(`/operator/soul/operations/${op.operation_id}`);
+
+		const url =
+			safeChainId != null
+				? buildSafeWalletAppUrl({
+						appUrl: safeAppRootUrl(),
+						safeAddress: safePayload.safe_address,
+						chainId: safeChainId,
+					})
+				: null;
+		if (!url) {
+			safeLaunchError = 'Could not build a Safe Wallet launch URL for this chain yet.';
+			return;
+		}
+
+		try {
+			await navigator.clipboard.writeText(url);
+		} catch {
+			// Clipboard is just a convenience here.
+		}
+
+		const popup = window.open(url, '_blank', 'noopener,noreferrer');
+		if (popup) {
+			safeLaunchNotice = 'Safe Wallet was opened in a new tab for the selected operation.';
+		} else {
+			safeLaunchNotice = `Safe Wallet launch URL copied. Open ${url} if a new tab did not appear.`;
 		}
 	}
 
@@ -116,6 +182,7 @@
 	}
 
 	onMount(() => {
+		void loadConfig();
 		void load();
 	});
 </script>
@@ -124,7 +191,7 @@
 	<header class="op-soul__header">
 		<div class="op-soul__title">
 			<Heading level={2} size="xl">Soul registry</Heading>
-			<Text color="secondary">Safe-first operations (mints, rotations, publishes).</Text>
+			<Text color="secondary">Safe-mediated operations for publishes and governed registry changes.</Text>
 		</div>
 		<div class="op-soul__actions">
 			<Button variant="outline" onclick={() => void load()} disabled={loading}>Refresh</Button>
@@ -140,6 +207,12 @@
 
 		{#if createError}
 			<Alert variant="error" title="Create failed">{createError}</Alert>
+		{/if}
+		{#if safeLaunchNotice}
+			<Alert variant="info" title="Safe launch">{safeLaunchNotice}</Alert>
+		{/if}
+		{#if safeLaunchError}
+			<Alert variant="error" title="Safe launch">{safeLaunchError}</Alert>
 		{/if}
 
 		<div class="op-soul__create">
@@ -253,6 +326,11 @@
 								<Text size="sm" color="secondary">Created: {op.created_at}</Text>
 							</div>
 							<div class="op-soul__item-actions">
+								{#if safePayload}
+									<Button variant="solid" onclick={() => void openOperationInSafe(op)} disabled={safeChainId == null}>
+										Open in Safe
+									</Button>
+								{/if}
 								<Button variant="outline" onclick={() => navigate(`/operator/soul/operations/${op.operation_id}`)}>
 									Open
 								</Button>

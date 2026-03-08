@@ -46,5 +46,16 @@ function applyLocalContextOverrides(app: cdk.App): void {
 applyLocalContextOverrides(app);
 
 const stage = (app.node.tryGetContext('stage') as string | undefined) ?? 'lab';
+const account =
+	process.env.CDK_DEFAULT_ACCOUNT ||
+	process.env.CDK_DEPLOY_ACCOUNT ||
+	process.env.AWS_ACCOUNT_ID ||
+	undefined;
+const region =
+	process.env.CDK_DEFAULT_REGION ||
+	process.env.CDK_DEPLOY_REGION ||
+	process.env.AWS_REGION ||
+	undefined;
+const env = account || region ? { account, region } : undefined;
 
-new LesserHostStack(app, `lesser-host-${stage}`, { stage });
+new LesserHostStack(app, `lesser-host-${stage}`, { stage, env });

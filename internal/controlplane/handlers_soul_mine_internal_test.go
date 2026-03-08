@@ -133,3 +133,77 @@ func TestHandleSoulListMyAgents_ReturnsOwnedAgents(t *testing.T) {
 		t.Fatalf("expected no reputation for agentB, got %#v", out.Agents[1].Reputation)
 	}
 }
+
+func TestHandleSoulListMyAgents_IncludesManagedStageDomainAgents(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulMineTestDB()
+	s := &Server{
+		store: store.New(tdb.db),
+		cfg: config.Config{
+			Stage:                       "lab",
+			SoulEnabled:                 true,
+			SoulChainID:                 1,
+			SoulRegistryContractAddress: "0x0000000000000000000000000000000000000001",
+		},
+	}
+
+	agentID := "0xaf87d423717e3aecbb2fc829d6224ea2acb66e7475f88c920d1a53e0789f313d"
+
+	tdb.qInst.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.Instance](t, args, 0)
+		*dest = []*models.Instance{{Slug: "simulacrum", HostedBaseDomain: "simulacrum.greater.website"}}
+	}).Once()
+
+	tdb.qDomain.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.Domain](t, args, 0)
+		*dest = []*models.Domain{{Domain: "simulacrum.greater.website", InstanceSlug: "simulacrum"}}
+	}).Once()
+
+	tdb.qIdx.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulDomainAgentIndex](t, args, 0)
+		*dest = []*models.SoulDomainAgentIndex{{
+			Domain:  "dev.simulacrum.greater.website",
+			LocalID: "agent-0",
+			AgentID: agentID,
+		}}
+	}).Twice()
+
+	tdb.qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
+		*dest = models.SoulAgentIdentity{
+			AgentID:   agentID,
+			Domain:    "dev.simulacrum.greater.website",
+			LocalID:   "agent-0",
+			Wallet:    "0xf7c8c15eefb7a907ceee47ae26f3243dd3bcf59f",
+			Status:    models.SoulAgentStatusPending,
+			UpdatedAt: time.Now().UTC(),
+		}
+	}).Once()
+	tdb.qRep.On("First", mock.AnythingOfType("*models.SoulAgentReputation")).Return(theoryErrors.ErrItemNotFound).Once()
+
+	ctx := &apptheory.Context{RequestID: "r1", AuthIdentity: "alice"}
+	ctx.Set(ctxKeyOperatorRole, models.RoleAdmin)
+
+	resp, err := s.handleSoulListMyAgents(ctx)
+	if err != nil {
+		t.Fatalf("handleSoulListMyAgents: %v", err)
+	}
+	if resp.Status != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body=%q)", resp.Status, string(resp.Body))
+	}
+
+	var out soulMineAgentsResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Count != 1 || len(out.Agents) != 1 {
+		t.Fatalf("unexpected response: %#v", out)
+	}
+	if out.Agents[0].Agent.AgentID != agentID {
+		t.Fatalf("expected agent %q, got %q", agentID, out.Agents[0].Agent.AgentID)
+	}
+	if out.Agents[0].Agent.Domain != "dev.simulacrum.greater.website" {
+		t.Fatalf("expected managed stage domain, got %#v", out.Agents[0].Agent.Domain)
+	}
+}

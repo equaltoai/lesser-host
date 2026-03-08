@@ -947,21 +947,14 @@ func (s *Server) buildSoulMintPayload(reg *models.SoulAgentRegistration, princip
 		return nil, "", time.Time{}, &apptheory.AppError{Code: "app.internal", Message: "failed to derive meta_uri"}
 	}
 
-	safeAddr, appErr := s.soulRegistrySafeAddress()
-	if appErr != nil {
-		return nil, "", time.Time{}, appErr
-	}
-
 	if !common.IsHexAddress(reg.Wallet) {
 		return nil, "", time.Time{}, &apptheory.AppError{Code: "app.bad_request", Message: "invalid wallet address"}
 	}
 	to := common.HexToAddress(reg.Wallet)
 	principal := common.HexToAddress(principalAddress)
 
+	// Minting is intentionally direct-wallet even when other soul operations stay Safe-mediated.
 	submitter := to
-	if strings.ToLower(strings.TrimSpace(s.cfg.SoulTxMode)) == tipTxModeSafe {
-		submitter = common.HexToAddress(safeAddr)
-	}
 
 	agentInt, ok := new(big.Int).SetString(strings.TrimPrefix(strings.TrimSpace(reg.AgentID), "0x"), 16)
 	if !ok {
@@ -986,7 +979,7 @@ func (s *Server) buildSoulMintPayload(reg *models.SoulAgentRegistration, princip
 	}
 
 	payload := &safeTxPayload{
-		SafeAddress: safeAddr,
+		SafeAddress: "",
 		To:          txTo,
 		Value:       mintFeeWei.String(),
 		Data:        "0x" + hex.EncodeToString(data),
