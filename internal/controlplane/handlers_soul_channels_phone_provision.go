@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -64,6 +65,9 @@ func (s *Server) handleSoulBeginProvisionPhoneChannel(ctx *apptheory.Context) (*
 			return nil, &apptheory.AppError{Code: "app.conflict", Message: "phone provider is not configured"}
 		}
 		nums, err := s.telnyxSearchNums(ctx.Context(), strings.TrimSpace(req.CountryCode), 5)
+		if err != nil {
+			log.Printf("controlplane: soul phone search failed agent=%s country=%s: %v", agentIDHex, strings.TrimSpace(req.CountryCode), err)
+		}
 		if err != nil || len(nums) == 0 {
 			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to find available phone numbers"}
 		}
@@ -221,6 +225,7 @@ func (s *Server) finalizeSoulProvisionPhoneChannel(
 		return nil, &apptheory.AppError{Code: "app.conflict", Message: "phone provider is not configured"}
 	}
 	if _, orderErr := s.telnyxOrderNumber(ctx.Context(), number); orderErr != nil {
+		log.Printf("controlplane: soul phone provision failed agent=%s number=%s: %v", agentIDHex, number, orderErr)
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to provision phone number"}
 	}
 

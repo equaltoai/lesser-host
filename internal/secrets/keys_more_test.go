@@ -10,6 +10,8 @@ import (
 	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
 )
 
+const migaduTestUsername = "aron@equal-to.ai"
+
 func TestParseTelnyxCredentials(t *testing.T) {
 	t.Parallel()
 
@@ -55,6 +57,42 @@ func TestParseTelnyxCredentials(t *testing.T) {
 	})
 }
 
+func TestParseMigaduCredentials(t *testing.T) {
+	t.Run("plain key uses env username", func(t *testing.T) {
+		t.Setenv("MIGADU_USERNAME", "  "+migaduTestUsername+" ")
+		got, err := parseMigaduCredentials("  migadu-key  ")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got.Username != migaduTestUsername || got.APIToken != "migadu-key" {
+			t.Fatalf("unexpected creds: %#v", got)
+		}
+	})
+
+	t.Run("json payload", func(t *testing.T) {
+		t.Parallel()
+
+		got, err := parseMigaduCredentials(`{"username":" ` + migaduTestUsername + ` ","token":" key "}`)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got.Username != migaduTestUsername || got.APIToken != "key" {
+			t.Fatalf("unexpected creds: %#v", got)
+		}
+	})
+
+	t.Run("errors", func(t *testing.T) {
+		t.Parallel()
+
+		if _, err := parseMigaduCredentials(" "); err == nil {
+			t.Fatalf("expected empty credentials error")
+		}
+		if _, err := parseMigaduCredentials(`{"username":"a@example.com"}`); err == nil {
+			t.Fatalf("expected missing api key error")
+		}
+	})
+}
+
 func TestMigaduAndTelnyxLoaders(t *testing.T) {
 	t.Parallel()
 
@@ -64,7 +102,7 @@ func TestMigaduAndTelnyxLoaders(t *testing.T) {
 		getParameter: func(_ context.Context, params *ssm.GetParameterInput) (*ssm.GetParameterOutput, error) {
 			switch aws.ToString(params.Name) {
 			case MigaduAPITokenSSMParameterName:
-				return &ssm.GetParameterOutput{Parameter: &ssmtypes.Parameter{Value: aws.String(`{"token":" migadu-token "}`)}}, nil
+				return &ssm.GetParameterOutput{Parameter: &ssmtypes.Parameter{Value: aws.String(`{"username":" ` + migaduTestUsername + ` ","token":" migadu-token "}`)}}, nil
 			case TelnyxAPITokenSSMParameterName:
 				return &ssm.GetParameterOutput{Parameter: &ssmtypes.Parameter{Value: aws.String(`{"apiKey":" telnyx-token ","messagingProfileId":" mp-1 "}`)}}, nil
 			default:
@@ -77,6 +115,13 @@ func TestMigaduAndTelnyxLoaders(t *testing.T) {
 	got, err := MigaduAPIToken(context.Background(), client)
 	if err != nil || got != "migadu-token" {
 		t.Fatalf("MigaduAPIToken: got=%q err=%v", got, err)
+	}
+	migaduCreds, err := MigaduCreds(context.Background(), client)
+	if err != nil {
+		t.Fatalf("MigaduCreds: %v", err)
+	}
+	if migaduCreds.Username != migaduTestUsername || migaduCreds.APIToken != "migadu-token" {
+		t.Fatalf("unexpected migadu creds: %#v", migaduCreds)
 	}
 
 	creds, err := TelnyxCreds(context.Background(), client)
