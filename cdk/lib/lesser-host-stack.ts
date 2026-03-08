@@ -932,6 +932,9 @@ export class LesserHostStack extends cdk.Stack {
 		const migaduSsmParamArns = [
 			`arn:aws:ssm:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:parameter/lesser-host/migadu`,
 		];
+		const telnyxSsmParamArns = [
+			`arn:aws:ssm:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:parameter/lesser-host/telnyx`,
+		];
 		const soulCommSsmParamArns = [
 			cdk.Stack.of(this).formatArn({
 				service: 'ssm',
@@ -943,6 +946,12 @@ export class LesserHostStack extends cdk.Stack {
 			new iam.PolicyStatement({
 				actions: ['ssm:GetParameter', 'ssm:GetParameters'],
 				resources: migaduSsmParamArns,
+			}),
+		);
+		controlPlaneFn.addToRolePolicy(
+			new iam.PolicyStatement({
+				actions: ['ssm:GetParameter', 'ssm:GetParameters'],
+				resources: telnyxSsmParamArns,
 			}),
 		);
 		controlPlaneFn.addToRolePolicy(

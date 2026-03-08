@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -216,6 +217,7 @@ func (s *Server) finalizeSoulProvisionEmailChannel(
 		return nil, &apptheory.AppError{Code: "app.conflict", Message: "email provider is not configured"}
 	}
 	if provisionErr := s.migaduCreateEmail(ctx.Context(), localNorm, identity.LocalID, password); provisionErr != nil {
+		log.Printf("controlplane: soul email provision failed agent=%s address=%s: %v", agentIDHex, address, provisionErr)
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to provision email"}
 	}
 

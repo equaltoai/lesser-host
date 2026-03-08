@@ -45,9 +45,15 @@ func defaultMigaduCreateMailbox(ctx context.Context, localPart string, name stri
 		name = localPart
 	}
 
-	token, err := secrets.MigaduAPIToken(ctx, nil)
+	creds, err := secrets.MigaduCreds(ctx, nil)
 	if err != nil {
 		return err
+	}
+	if strings.TrimSpace(creds.APIToken) == "" {
+		return fmt.Errorf("migadu api key missing")
+	}
+	if strings.TrimSpace(creds.Username) == "" {
+		return fmt.Errorf("migadu username missing")
 	}
 
 	//nolint:gosec // Password must be sent in the outbound Migadu mailbox creation request body.
@@ -67,7 +73,7 @@ func defaultMigaduCreateMailbox(ctx context.Context, localPart string, name stri
 		return fmt.Errorf("migadu request build: %w", err)
 	}
 	req.Header.Set("content-type", "application/json")
-	req.SetBasicAuth("api", token)
+	req.SetBasicAuth(strings.TrimSpace(creds.Username), strings.TrimSpace(creds.APIToken))
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	//nolint:gosec // Request target is the fixed Migadu HTTPS API host.

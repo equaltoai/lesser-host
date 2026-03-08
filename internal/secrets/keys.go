@@ -61,11 +61,32 @@ func StripeWebhookSecret(ctx context.Context, client SSMAPI) (string, error) {
 
 // MigaduAPIToken loads the Migadu API token from SSM.
 func MigaduAPIToken(ctx context.Context, client SSMAPI) (string, error) {
-	raw, err := GetSSMParameterCached(ctx, client, MigaduAPITokenSSMParameterName, 10*time.Minute)
+	creds, err := MigaduCreds(ctx, client)
 	if err != nil {
 		return "", err
 	}
-	return parseAPIKeyValue(raw)
+	return creds.APIToken, nil
+}
+
+type MigaduCredentials struct {
+	// #nosec G101,G117 -- runtime-loaded credential value; the field name is part of the stable internal API.
+	Username string
+	// #nosec G101,G117 -- runtime-loaded credential value; the field name is part of the stable internal API.
+	APIToken string
+}
+
+// MigaduCreds loads the Migadu API credentials from SSM.
+// The parameter may be either:
+// - a raw API key string (legacy; username must come from env), or
+// - a JSON object including:
+//   - username/email/user (required unless MIGADU_USERNAME is set)
+//   - token/api_key/apiKey/key/value (required)
+func MigaduCreds(ctx context.Context, client SSMAPI) (MigaduCredentials, error) {
+	raw, err := GetSSMParameterCached(ctx, client, MigaduAPITokenSSMParameterName, 10*time.Minute)
+	if err != nil {
+		return MigaduCredentials{}, err
+	}
+	return parseMigaduCredentials(raw)
 }
 
 type TelnyxCredentials struct {
@@ -73,6 +94,68 @@ type TelnyxCredentials struct {
 	APIKey             string
 	MessagingProfileID string
 	ConnectionID       string
+}
+
+func parseMigaduCredentials(raw string) (MigaduCredentials, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return MigaduCredentials{}, fmt.Errorf("migadu credentials are empty")
+	}
+
+	if !looksLikeJSONObject(raw) {
+		return MigaduCredentials{
+			Username: migaduUsernameFromEnv(),
+			APIToken: raw,
+		}, nil
+	}
+
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(raw), &obj); err != nil {
+		return MigaduCredentials{}, fmt.Errorf("migadu credentials invalid JSON: %w", err)
+	}
+
+	readString := func(keys ...string) string {
+		for _, key := range keys {
+			v, ok := obj[key]
+			if !ok {
+				continue
+			}
+			s, ok := v.(string)
+			if !ok {
+				continue
+			}
+			s = strings.TrimSpace(s)
+			if s == "" {
+				continue
+			}
+			return s
+		}
+		return ""
+	}
+
+	apiToken := readString("api_key", "apiKey", "key", "token", "value")
+	if apiToken == "" {
+		return MigaduCredentials{}, fmt.Errorf("migadu api_key is missing")
+	}
+
+	username := readString("username", "user", "email", "account_email")
+	if username == "" {
+		username = migaduUsernameFromEnv()
+	}
+
+	return MigaduCredentials{
+		Username: username,
+		APIToken: apiToken,
+	}, nil
+}
+
+func migaduUsernameFromEnv() string {
+	for _, key := range []string{"MIGADU_USERNAME", "MIGADU_API_USERNAME"} {
+		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // TelnyxCreds loads the Telnyx platform credentials from SSM.

@@ -327,7 +327,7 @@ func TestDefaultTelnyxSendSMS(t *testing.T) {
 }
 
 func TestDefaultMigaduCreateMailbox_SuccessConflictAndErrors(t *testing.T) {
-	seedControlplaneSSMParam(t, secrets.MigaduAPITokenSSMParameterName, `{"token":"migadu-token"}`)
+	seedControlplaneSSMParam(t, secrets.MigaduAPITokenSSMParameterName, `{"username":"aron@equal-to.ai","token":"migadu-token"}`)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/domains/lessersoul.ai/mailboxes" {
@@ -335,7 +335,7 @@ func TestDefaultMigaduCreateMailbox_SuccessConflictAndErrors(t *testing.T) {
 			return
 		}
 		user, pass, ok := r.BasicAuth()
-		if !ok || user != "api" || pass != "migadu-token" {
+		if !ok || user != "aron@equal-to.ai" || pass != "migadu-token" {
 			t.Fatalf("unexpected basic auth: user=%q ok=%v", user, ok)
 		}
 
