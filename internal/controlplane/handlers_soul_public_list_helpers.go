@@ -18,13 +18,7 @@ func listSoulPublicItems[T any](
 	listFailureMessage string,
 ) (itemsOut []T, hasMore bool, nextCursor string, appErr *apptheory.AppError) {
 	cursor := strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "cursor"))
-	limit := int(envInt64PositiveFromString(httpx.FirstQueryValue(ctx.Request.Query, "limit"), 50))
-	if limit <= 0 {
-		limit = 50
-	}
-	if limit > 200 {
-		limit = 200
-	}
+	limit := envIntPositiveClampedFromString(httpx.FirstQueryValue(ctx.Request.Query, "limit"), 50, 200)
 
 	var items []*T
 	qb := s.store.DB.WithContext(ctx.Context()).

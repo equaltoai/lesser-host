@@ -393,13 +393,7 @@ func (s *Server) loadSoulBoundaryAppendBase(ctx context.Context, agentIDHex stri
 
 func soulPublicCursorAndLimit(ctx *apptheory.Context) (string, int) {
 	cursor := strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "cursor"))
-	limit := int(envInt64PositiveFromString(httpx.FirstQueryValue(ctx.Request.Query, "limit"), 50))
-	if limit <= 0 {
-		limit = 50
-	}
-	if limit > 200 {
-		limit = 200
-	}
+	limit := envIntPositiveClampedFromString(httpx.FirstQueryValue(ctx.Request.Query, "limit"), 50, 200)
 	return cursor, limit
 }
 

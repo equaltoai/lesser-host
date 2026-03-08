@@ -1,5 +1,5 @@
 import * as path from 'node:path';
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 
 import * as cdk from 'aws-cdk-lib';
@@ -1593,8 +1593,8 @@ export class LesserHostStack extends cdk.Stack {
 
 								const webDir = path.join(repoRoot, 'web');
 								try {
-									execSync('npm ci', { cwd: webDir, stdio: 'inherit' });
-									execSync('npm run build', { cwd: webDir, stdio: 'inherit' });
+									execFileSync('npm', ['ci'], { cwd: webDir, stdio: 'inherit' });
+									execFileSync('npm', ['run', 'build'], { cwd: webDir, stdio: 'inherit' });
 									fs.cpSync(path.join(webDir, 'dist'), outputDir, { recursive: true });
 									return true;
 								} catch (err) {
@@ -1840,7 +1840,7 @@ export class LesserHostStack extends cdk.Stack {
 			const buildDir = path.join(repoRoot, 'cdk', '.build', id);
 			fs.mkdirSync(buildDir, { recursive: true });
 			// AWS Lambda's legacy `go1.x` runtime has been deprecated; use the AL2023 custom runtime with a `bootstrap` binary.
-			execSync('go build -o ' + path.join(buildDir, 'bootstrap') + ' ' + entry, {
+			execFileSync('go', ['build', '-o', path.join(buildDir, 'bootstrap'), entry], {
 				cwd: repoRoot,
 				stdio: 'inherit',
 				env: {

@@ -242,13 +242,7 @@ func (s *Server) handleSoulPublicGetContinuity(ctx *apptheory.Context) (*apptheo
 	}
 
 	cursor := strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "cursor"))
-	limit := int(envInt64PositiveFromString(httpx.FirstQueryValue(ctx.Request.Query, "limit"), 50))
-	if limit <= 0 {
-		limit = 50
-	}
-	if limit > 200 {
-		limit = 200
-	}
+	limit := envIntPositiveClampedFromString(httpx.FirstQueryValue(ctx.Request.Query, "limit"), 50, 200)
 
 	var items []*models.SoulAgentContinuity
 	qb := s.store.DB.WithContext(ctx.Context()).

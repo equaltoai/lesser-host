@@ -111,23 +111,37 @@ func newSoulPublicTestDB() soulPublicTestDB {
 	}
 }
 
-func TestEnvInt64PositiveFromString(t *testing.T) {
+func TestEnvIntPositiveFromString(t *testing.T) {
 	t.Parallel()
 
-	if got := envInt64PositiveFromString("", 50); got != 50 {
+	if got := envIntPositiveFromString("", 50); got != 50 {
 		t.Fatalf("unexpected default: %d", got)
 	}
-	if got := envInt64PositiveFromString("nope", 50); got != 50 {
+	if got := envIntPositiveFromString("nope", 50); got != 50 {
 		t.Fatalf("unexpected invalid: %d", got)
 	}
-	if got := envInt64PositiveFromString("-1", 50); got != 50 {
+	if got := envIntPositiveFromString("-1", 50); got != 50 {
 		t.Fatalf("unexpected negative: %d", got)
 	}
-	if got := envInt64PositiveFromString("0", 50); got != 50 {
+	if got := envIntPositiveFromString("0", 50); got != 50 {
 		t.Fatalf("unexpected zero: %d", got)
 	}
-	if got := envInt64PositiveFromString(" 15 ", 50); got != 15 {
+	if got := envIntPositiveFromString(" 15 ", 50); got != 15 {
 		t.Fatalf("unexpected positive: %d", got)
+	}
+	if got := envIntPositiveFromString("999999999999999999999999", 50); got != 50 {
+		t.Fatalf("unexpected overflow fallback: %d", got)
+	}
+}
+
+func TestEnvIntPositiveClampedFromString(t *testing.T) {
+	t.Parallel()
+
+	if got := envIntPositiveClampedFromString("500", 50, 200); got != 200 {
+		t.Fatalf("unexpected clamped value: %d", got)
+	}
+	if got := envIntPositiveClampedFromString("25", 50, 200); got != 25 {
+		t.Fatalf("unexpected unclamped value: %d", got)
 	}
 }
 

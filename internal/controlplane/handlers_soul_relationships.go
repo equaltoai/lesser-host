@@ -314,13 +314,7 @@ type soulRelationshipListParams struct {
 }
 
 func parseSoulRelationshipListParams(ctx *apptheory.Context) soulRelationshipListParams {
-	limit := int(envInt64PositiveFromString(httpx.FirstQueryValue(ctx.Request.Query, "limit"), 50))
-	if limit <= 0 {
-		limit = 50
-	}
-	if limit > 200 {
-		limit = 200
-	}
+	limit := envIntPositiveClampedFromString(httpx.FirstQueryValue(ctx.Request.Query, "limit"), 50, 200)
 
 	pageLimit := limit
 	if pageLimit < 25 {
