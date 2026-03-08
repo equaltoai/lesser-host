@@ -193,13 +193,7 @@ func (s *Server) handleSoulPublicGetValidations(ctx *apptheory.Context) (*appthe
 	}
 
 	cursor := strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "cursor"))
-	limit := int(envInt64PositiveFromString(httpx.FirstQueryValue(ctx.Request.Query, "limit"), 50))
-	if limit <= 0 {
-		limit = 50
-	}
-	if limit > 200 {
-		limit = 200
-	}
+	limit := envIntPositiveClampedFromString(httpx.FirstQueryValue(ctx.Request.Query, "limit"), 50, 200)
 
 	var items []*models.SoulAgentValidationRecord
 	qb := s.store.DB.WithContext(ctx.Context()).
@@ -348,13 +342,7 @@ func parseSoulPublicSearchParams(ctx *apptheory.Context) (soulPublicSearchParams
 		return soulPublicSearchParams{}, appErr
 	}
 
-	limit := int(envInt64PositiveFromString(httpx.FirstQueryValue(ctx.Request.Query, "limit"), 50))
-	if limit <= 0 {
-		limit = 50
-	}
-	if limit > 100 {
-		limit = 100
-	}
+	limit := envIntPositiveClampedFromString(httpx.FirstQueryValue(ctx.Request.Query, "limit"), 50, 100)
 
 	domain, localID, localExact, appErr := parseSoulSearchDomainAndLocal(q, domainRaw)
 	if appErr != nil {
@@ -1180,16 +1168,24 @@ func normalizeSoulSearchLocalQuery(raw string) string {
 	return raw
 }
 
-func envInt64PositiveFromString(raw string, fallback int64) int64 {
+func envIntPositiveFromString(raw string, fallback int) int {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return fallback
 	}
-	n, err := strconv.ParseInt(raw, 10, 64)
+	n, err := strconv.ParseInt(raw, 10, strconv.IntSize)
 	if err != nil || n <= 0 {
 		return fallback
 	}
-	return n
+	return int(n)
+}
+
+func envIntPositiveClampedFromString(raw string, fallback int, max int) int {
+	limit := envIntPositiveFromString(raw, fallback)
+	if max > 0 && limit > max {
+		return max
+	}
+	return limit
 }
 
 func (s *Server) setSoulPublicHeaders(ctx *apptheory.Context, resp *apptheory.Response, cacheControl string) {

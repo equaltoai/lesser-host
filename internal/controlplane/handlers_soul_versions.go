@@ -61,14 +61,7 @@ func (s *Server) handleSoulPublicGetVersions(ctx *apptheory.Context) (*apptheory
 }
 
 func soulVersionsPageLimit(ctx *apptheory.Context) int {
-	limit := int(envInt64PositiveFromString(httpx.FirstQueryValue(ctx.Request.Query, "limit"), 50))
-	if limit <= 0 {
-		return 50
-	}
-	if limit > 200 {
-		return 200
-	}
-	return limit
+	return envIntPositiveClampedFromString(httpx.FirstQueryValue(ctx.Request.Query, "limit"), 50, 200)
 }
 
 func (s *Server) loadSoulAgentVersions(ctx *apptheory.Context, agentIDHex string) ([]models.SoulAgentVersion, *apptheory.AppError) {
