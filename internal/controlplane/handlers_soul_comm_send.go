@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/mail"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -73,17 +74,21 @@ type soulCommSendResponse struct {
 }
 
 type soulCommStatusResponse struct {
-	MessageID         string `json:"messageId"`
-	Status            string `json:"status"`
-	Channel           string `json:"channel"`
-	AgentID           string `json:"agentId"`
-	To                string `json:"to"`
-	Provider          string `json:"provider,omitempty"`
-	ProviderMessageID string `json:"providerMessageId,omitempty"`
-	ErrorCode         string `json:"errorCode,omitempty"`
-	ErrorMessage      string `json:"errorMessage,omitempty"`
-	CreatedAt         string `json:"createdAt"`
-	UpdatedAt         string `json:"updatedAt,omitempty"`
+	MessageID         string   `json:"messageId"`
+	Status            string   `json:"status"`
+	Channel           string   `json:"channel"`
+	AgentID           string   `json:"agentId"`
+	To                string   `json:"to"`
+	Provider          string   `json:"provider,omitempty"`
+	ProviderMessageID string   `json:"providerMessageId,omitempty"`
+	ErrorCode         string   `json:"errorCode,omitempty"`
+	ErrorMessage      string   `json:"errorMessage,omitempty"`
+	ReplyMessageID    string   `json:"replyMessageId,omitempty"`
+	ReplyBody         string   `json:"replyBody,omitempty"`
+	ReplyConfidence   *float64 `json:"replyConfidence,omitempty"`
+	ReplyReceivedAt   string   `json:"replyReceivedAt,omitempty"`
+	CreatedAt         string   `json:"createdAt"`
+	UpdatedAt         string   `json:"updatedAt,omitempty"`
 }
 
 type soulCommSendMetrics struct {
@@ -114,6 +119,7 @@ type soulCommSendRoute struct {
 type soulCommSendDelivery struct {
 	provider          string
 	providerMessageID string
+	initialStatus     string
 }
 
 func newSoulCommSendMetrics(stage string, instance string) *soulCommSendMetrics {
@@ -415,6 +421,8 @@ func (s *Server) dispatchSoulCommSend(ctx *apptheory.Context, key *models.Instan
 		return s.sendSoulCommEmail(ctx, req, channel, now, messageID, metrics)
 	case commChannelSMS:
 		return s.sendSoulCommSMS(ctx, key, req, channel, now, messageID, metrics)
+	case commChannelVoice:
+		return s.sendSoulCommVoice(ctx, key, req, channel, now, messageID, metrics)
 	default:
 		metrics.status = commMetricProviderUnavailable
 		return soulCommSendDelivery{}, apptheory.NewAppTheoryError(commCodeProviderUnavailable, "channel not supported").WithStatusCode(http.StatusServiceUnavailable)
@@ -465,6 +473,7 @@ func (s *Server) sendSoulCommEmail(ctx *apptheory.Context, req validatedSoulComm
 	return soulCommSendDelivery{
 		provider:          commDeliveryProviderMigadu,
 		providerMessageID: providerMessageID,
+		initialStatus:     models.SoulCommMessageStatusSent,
 	}, nil
 }
 
@@ -494,6 +503,54 @@ func (s *Server) sendSoulCommSMS(ctx *apptheory.Context, key *models.InstanceKey
 	return soulCommSendDelivery{
 		provider:          commDeliveryProviderTelnyx,
 		providerMessageID: providerMessageID,
+		initialStatus:     models.SoulCommMessageStatusSent,
+	}, nil
+}
+
+func (s *Server) sendSoulCommVoice(ctx *apptheory.Context, key *models.InstanceKey, req validatedSoulCommSendRequest, channel *models.SoulAgentChannel, now time.Time, messageID string, metrics *soulCommSendMetrics) (soulCommSendDelivery, *apptheory.AppTheoryError) {
+	if s.telnyxCallVoice == nil {
+		metrics.status = commMetricProviderUnavailable
+		return soulCommSendDelivery{}, apptheory.NewAppTheoryError(commCodeProviderUnavailable, "provider not configured").WithStatusCode(http.StatusServiceUnavailable)
+	}
+
+	voiceInstruction := &models.SoulCommVoiceInstruction{
+		MessageID: messageID,
+		AgentID:   req.agentIDHex,
+		From:      strings.TrimSpace(channel.Identifier),
+		To:        req.to,
+		Body:      req.body,
+		Voice:     telnyxDefaultOutboundVoice,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := voiceInstruction.UpdateKeys(); err != nil {
+		metrics.status = commMetricInternalError
+		return soulCommSendDelivery{}, apptheory.NewAppTheoryError(commCodeInternal, "internal error").WithStatusCode(http.StatusInternalServerError)
+	}
+	if err := s.store.DB.WithContext(ctx.Context()).Model(voiceInstruction).Create(); err != nil {
+		metrics.status = commMetricInternalError
+		return soulCommSendDelivery{}, apptheory.NewAppTheoryError(commCodeInternal, "failed to store voice instruction").WithStatusCode(http.StatusInternalServerError)
+	}
+
+	baseURL := soulCommRequestBaseURL(ctx, s.cfg.PublicBaseURL)
+	if baseURL == "" {
+		metrics.status = commMetricInternalError
+		return soulCommSendDelivery{}, apptheory.NewAppTheoryError(commCodeInternal, "public base url is unavailable").WithStatusCode(http.StatusInternalServerError)
+	}
+	texmlURL := baseURL + "/webhooks/comm/voice/texml/" + url.PathEscape(messageID)
+	statusCallbackURL := baseURL + "/webhooks/comm/voice/status/" + url.PathEscape(messageID)
+
+	providerMessageID, err := s.telnyxCallVoice(ctx.Context(), strings.TrimSpace(channel.Identifier), req.to, texmlURL, statusCallbackURL)
+	if err != nil {
+		metrics.provider = commDeliveryProviderTelnyx
+		metrics.status = commMetricProviderRejected
+		return soulCommSendDelivery{}, apptheory.NewAppTheoryError("comm.provider_rejected", "provider rejected call").WithStatusCode(http.StatusBadGateway)
+	}
+
+	return soulCommSendDelivery{
+		provider:          commDeliveryProviderTelnyx,
+		providerMessageID: providerMessageID,
+		initialStatus:     models.SoulCommMessageStatusAccepted,
 	}, nil
 }
 
@@ -605,6 +662,10 @@ func (s *Server) debitSoulSMSCredits(ctx context.Context, instanceSlug string, a
 }
 
 func (s *Server) recordSoulCommSend(ctx *apptheory.Context, key *models.InstanceKey, req validatedSoulCommSendRequest, messageID string, delivery soulCommSendDelivery, now time.Time, metrics *soulCommSendMetrics) *apptheory.AppTheoryError {
+	statusValue := strings.TrimSpace(delivery.initialStatus)
+	if statusValue == "" {
+		statusValue = models.SoulCommMessageStatusSent
+	}
 	status := &models.SoulCommMessageStatus{
 		MessageID:         messageID,
 		AgentID:           req.agentIDHex,
@@ -612,7 +673,7 @@ func (s *Server) recordSoulCommSend(ctx *apptheory.Context, key *models.Instance
 		To:                req.to,
 		Provider:          delivery.provider,
 		ProviderMessageID: delivery.providerMessageID,
-		Status:            models.SoulCommMessageStatusSent,
+		Status:            statusValue,
 		CreatedAt:         now,
 		UpdatedAt:         now,
 	}
@@ -652,9 +713,13 @@ func (s *Server) recordSoulCommSend(ctx *apptheory.Context, key *models.Instance
 }
 
 func soulCommSendJSON(messageID string, req validatedSoulCommSendRequest, delivery soulCommSendDelivery, now time.Time) (*apptheory.Response, *apptheory.AppTheoryError) {
+	statusValue := strings.TrimSpace(delivery.initialStatus)
+	if statusValue == "" {
+		statusValue = models.SoulCommMessageStatusSent
+	}
 	resp, err := apptheory.JSON(http.StatusOK, soulCommSendResponse{
 		MessageID:         messageID,
-		Status:            models.SoulCommMessageStatusSent,
+		Status:            statusValue,
 		Channel:           req.channel,
 		AgentID:           req.agentIDHex,
 		To:                req.to,
@@ -666,6 +731,31 @@ func soulCommSendJSON(messageID string, req validatedSoulCommSendRequest, delive
 		return nil, apptheory.NewAppTheoryError(commCodeInternal, "internal error").WithStatusCode(http.StatusInternalServerError)
 	}
 	return resp, nil
+}
+
+func soulCommStatusJSON(item models.SoulCommMessageStatus) soulCommStatusResponse {
+	out := soulCommStatusResponse{
+		MessageID:         strings.TrimSpace(item.MessageID),
+		Status:            strings.TrimSpace(item.Status),
+		Channel:           strings.TrimSpace(item.ChannelType),
+		AgentID:           strings.ToLower(strings.TrimSpace(item.AgentID)),
+		To:                strings.TrimSpace(item.To),
+		Provider:          strings.TrimSpace(item.Provider),
+		ProviderMessageID: strings.TrimSpace(item.ProviderMessageID),
+		ErrorCode:         strings.TrimSpace(item.ErrorCode),
+		ErrorMessage:      strings.TrimSpace(item.ErrorMessage),
+		ReplyMessageID:    strings.TrimSpace(item.ReplyMessageID),
+		ReplyBody:         strings.TrimSpace(item.ReplyBody),
+		ReplyConfidence:   item.ReplyConfidence,
+		CreatedAt:         item.CreatedAt.UTC().Format(time.RFC3339Nano),
+	}
+	if !item.ReplyReceivedAt.IsZero() {
+		out.ReplyReceivedAt = item.ReplyReceivedAt.UTC().Format(time.RFC3339Nano)
+	}
+	if !item.UpdatedAt.IsZero() {
+		out.UpdatedAt = item.UpdatedAt.UTC().Format(time.RFC3339Nano)
+	}
+	return out
 }
 
 func normalizeCommPhoneE164(raw string) string {
@@ -722,23 +812,7 @@ func (s *Server) handleSoulCommStatus(ctx *apptheory.Context) (*apptheory.Respon
 		return nil, appErr
 	}
 
-	out := soulCommStatusResponse{
-		MessageID:         strings.TrimSpace(item.MessageID),
-		Status:            strings.TrimSpace(item.Status),
-		Channel:           strings.TrimSpace(item.ChannelType),
-		AgentID:           strings.ToLower(strings.TrimSpace(item.AgentID)),
-		To:                strings.TrimSpace(item.To),
-		Provider:          strings.TrimSpace(item.Provider),
-		ProviderMessageID: strings.TrimSpace(item.ProviderMessageID),
-		ErrorCode:         strings.TrimSpace(item.ErrorCode),
-		ErrorMessage:      strings.TrimSpace(item.ErrorMessage),
-		CreatedAt:         item.CreatedAt.UTC().Format(time.RFC3339Nano),
-	}
-	if !item.UpdatedAt.IsZero() {
-		out.UpdatedAt = item.UpdatedAt.UTC().Format(time.RFC3339Nano)
-	}
-
-	resp, err := apptheory.JSON(http.StatusOK, out)
+	resp, err := apptheory.JSON(http.StatusOK, soulCommStatusJSON(item))
 	if err != nil {
 		return nil, apptheory.NewAppTheoryError("comm.internal", "internal error").WithStatusCode(http.StatusInternalServerError)
 	}

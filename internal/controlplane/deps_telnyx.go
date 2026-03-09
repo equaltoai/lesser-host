@@ -280,6 +280,23 @@ type telnyxSendMessageResponse struct {
 	} `json:"data"`
 }
 
+type telnyxCreateVoiceCallResponse struct {
+	Data struct {
+		ID            string `json:"id"`
+		CallControlID string `json:"call_control_id"`
+		CallLegID     string `json:"call_leg_id"`
+		CallSessionID string `json:"call_session_id"`
+		SID           string `json:"sid"`
+		CallSID       string `json:"call_sid"`
+	} `json:"data"`
+	ID            string `json:"id"`
+	CallControlID string `json:"call_control_id"`
+	CallLegID     string `json:"call_leg_id"`
+	CallSessionID string `json:"call_session_id"`
+	SID           string `json:"sid"`
+	CallSID       string `json:"call_sid"`
+}
+
 func defaultTelnyxSendSMS(ctx context.Context, from string, to string, text string) (string, error) {
 	from = strings.TrimSpace(from)
 	to = strings.TrimSpace(to)
@@ -335,4 +352,83 @@ func defaultTelnyxSendSMS(ctx context.Context, from string, to string, text stri
 		return "", fmt.Errorf("telnyx sms send: decode: %w", err)
 	}
 	return strings.TrimSpace(parsed.Data.ID), nil
+}
+
+func defaultTelnyxCreateVoiceCall(ctx context.Context, from string, to string, texmlURL string, statusCallbackURL string) (string, error) {
+	from = strings.TrimSpace(from)
+	to = strings.TrimSpace(to)
+	texmlURL = strings.TrimSpace(texmlURL)
+	statusCallbackURL = strings.TrimSpace(statusCallbackURL)
+	if from == "" || to == "" || texmlURL == "" || statusCallbackURL == "" {
+		return "", fmt.Errorf("telnyx voice call requires from, to, texmlURL, and statusCallbackURL")
+	}
+
+	creds, err := secrets.TelnyxCreds(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(creds.APIKey) == "" {
+		return "", fmt.Errorf("telnyx api key missing")
+	}
+	if strings.TrimSpace(creds.ConnectionID) == "" {
+		return "", fmt.Errorf("telnyx connection_id missing")
+	}
+
+	form := url.Values{}
+	form.Set("From", from)
+	form.Set("To", to)
+	form.Set("Url", texmlURL)
+	form.Set("StatusCallback", statusCallbackURL)
+
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		telnyxBaseURL+"/texml/calls/"+url.PathEscape(strings.TrimSpace(creds.ConnectionID)),
+		strings.NewReader(form.Encode()),
+	)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("accept", "application/json")
+	req.Header.Set("content-type", "application/x-www-form-urlencoded")
+	req.Header.Set("authorization", "Bearer "+strings.TrimSpace(creds.APIKey))
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	//nolint:gosec // Request target is the fixed Telnyx HTTPS API host.
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("telnyx voice call: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	switch resp.StatusCode {
+	case http.StatusOK, http.StatusCreated, http.StatusAccepted:
+		// ok
+	default:
+		return "", fmt.Errorf("telnyx voice call: status=%d body=%q", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var parsed telnyxCreateVoiceCallResponse
+	if err := json.Unmarshal(body, &parsed); err == nil {
+		for _, candidate := range []string{
+			strings.TrimSpace(parsed.Data.CallControlID),
+			strings.TrimSpace(parsed.Data.CallLegID),
+			strings.TrimSpace(parsed.Data.CallSessionID),
+			strings.TrimSpace(parsed.Data.CallSID),
+			strings.TrimSpace(parsed.Data.SID),
+			strings.TrimSpace(parsed.Data.ID),
+			strings.TrimSpace(parsed.CallControlID),
+			strings.TrimSpace(parsed.CallLegID),
+			strings.TrimSpace(parsed.CallSessionID),
+			strings.TrimSpace(parsed.CallSID),
+			strings.TrimSpace(parsed.SID),
+			strings.TrimSpace(parsed.ID),
+		} {
+			if candidate != "" {
+				return candidate, nil
+			}
+		}
+	}
+	return "", nil
 }

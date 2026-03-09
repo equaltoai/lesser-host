@@ -35,6 +35,7 @@ type Server struct {
 	telnyxOrderNumber func(ctx context.Context, phoneNumber string) (string, error)
 	telnyxRelease     func(ctx context.Context, phoneNumber string) error
 	telnyxSendSMS     func(ctx context.Context, from string, to string, text string) (string, error)
+	telnyxCallVoice   func(ctx context.Context, from string, to string, texmlURL string, statusCallbackURL string) (string, error)
 
 	enqueueCommMessage func(ctx context.Context, msg commworker.QueueMessage) error
 }
@@ -63,6 +64,7 @@ func NewServer(cfg config.Config, st *store.Store) *Server {
 		telnyxOrderNumber: defaultTelnyxOrderPhoneNumber,
 		telnyxRelease:     defaultTelnyxReleasePhoneNumber,
 		telnyxSendSMS:     defaultTelnyxSendSMS,
+		telnyxCallVoice:   defaultTelnyxCreateVoiceCall,
 	}
 	srv.enqueueCommMessage = srv.queues.enqueueCommMessage
 	return srv
@@ -168,6 +170,11 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 	app.Post("/webhooks/comm/sms/inbound", s.handleCommSMSInboundWebhook)
 	app.Post("/webhooks/comm/voice/inbound", s.handleCommVoiceInboundWebhook)
 	app.Post("/webhooks/comm/voice/status", s.handleCommVoiceStatusWebhook)
+	app.Post("/webhooks/comm/voice/status/{messageId}", s.handleCommVoiceStatusWebhook)
+	app.Get("/webhooks/comm/voice/gather/{messageId}", s.handleCommVoiceGatherWebhook)
+	app.Post("/webhooks/comm/voice/gather/{messageId}", s.handleCommVoiceGatherWebhook)
+	app.Get("/webhooks/comm/voice/texml/{messageId}", s.handleCommVoiceTeXML)
+	app.Post("/webhooks/comm/voice/texml/{messageId}", s.handleCommVoiceTeXML)
 
 	// Instance registry + billing primitives (admin-only).
 	app.Post("/api/v1/instances", s.handleCreateInstance, apptheory.RequireAuth())

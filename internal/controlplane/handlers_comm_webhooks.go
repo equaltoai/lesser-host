@@ -248,6 +248,9 @@ func (s *Server) handleCommVoiceStatusWebhook(ctx *apptheory.Context) (*apptheor
 	if !s.cfg.SoulEnabled {
 		return apptheory.JSON(http.StatusNotFound, map[string]any{"ok": false})
 	}
+	if resp, handled, err := s.maybeHandleOutboundVoiceStatusWebhook(ctx); handled || err != nil {
+		return resp, err
+	}
 	return s.handleCommVoiceInboundWebhook(ctx)
 }
 

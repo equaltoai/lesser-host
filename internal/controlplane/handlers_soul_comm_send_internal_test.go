@@ -424,6 +424,120 @@ func TestHandleSoulCommSend_SendsSMSAndDebitsCredits(t *testing.T) {
 	assertSoulCommSendResponse(t, resp, commMetricSent, commDeliveryProviderTelnyx, commChannelSMS, commSendTelnyxMessageID)
 }
 
+func TestHandleSoulCommSend_StartsVoiceCallAndStoresInstruction(t *testing.T) {
+	t.Parallel()
+
+	db := ttmocks.NewMockExtendedDB()
+	qKey := new(ttmocks.MockQuery)
+	qDomain := new(ttmocks.MockQuery)
+	qIdentity := new(ttmocks.MockQuery)
+	qChannel := new(ttmocks.MockQuery)
+	qCommActivity := new(ttmocks.MockQuery)
+	qStatus := new(ttmocks.MockQuery)
+	qVoice := new(ttmocks.MockQuery)
+	qAudit := new(ttmocks.MockQuery)
+
+	db.On("WithContext", mock.Anything).Return(db).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.InstanceKey")).Return(qKey).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.Domain")).Return(qDomain).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(qIdentity).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentChannel")).Return(qChannel).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentCommActivity")).Return(qCommActivity).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulCommMessageStatus")).Return(qStatus).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulCommVoiceInstruction")).Return(qVoice).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.AuditLogEntry")).Return(qAudit).Maybe()
+
+	allowCommQueryOps(qKey, qDomain, qIdentity, qChannel, qCommActivity, qStatus, qVoice, qAudit)
+
+	qKey.On("First", mock.AnythingOfType("*models.InstanceKey")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.InstanceKey](t, args, 0)
+		*dest = models.InstanceKey{ID: "k1", InstanceSlug: "inst1", CreatedAt: time.Now().Add(-time.Hour).UTC()}
+	}).Once()
+
+	agentID := soulLifecycleTestAgentIDHex
+
+	qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
+		*dest = models.SoulAgentIdentity{
+			AgentID:         agentID,
+			Domain:          "example.com",
+			LocalID:         "agent-alice",
+			Status:          models.SoulAgentStatusActive,
+			LifecycleStatus: models.SoulAgentStatusActive,
+			UpdatedAt:       time.Now().UTC(),
+		}
+	}).Once()
+
+	qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
+		*dest = models.Domain{Domain: "example.com", InstanceSlug: "inst1", Status: models.DomainStatusVerified}
+	}).Once()
+
+	qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentChannel](t, args, 0)
+		*dest = models.SoulAgentChannel{
+			AgentID:       agentID,
+			ChannelType:   models.SoulChannelTypePhone,
+			Identifier:    "+15550142",
+			Verified:      true,
+			ProvisionedAt: time.Now().Add(-time.Hour).UTC(),
+			Status:        models.SoulChannelStatusActive,
+			UpdatedAt:     time.Now().UTC(),
+		}
+	}).Once()
+
+	qCommActivity.On("All", mock.AnythingOfType("*[]*models.SoulAgentCommActivity")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulAgentCommActivity](t, args, 0)
+		*dest = []*models.SoulAgentCommActivity{}
+	}).Twice()
+
+	var voiceCalled bool
+	s := &Server{
+		store: store.New(db),
+		cfg:   config.Config{SoulEnabled: true, Stage: "lab", PublicBaseURL: "https://lab.lesser.host"},
+		telnyxCallVoice: func(ctx context.Context, from string, to string, texmlURL string, statusCallbackURL string) (string, error) {
+			voiceCalled = true
+			if from != "+15550142" || to != "+15550143" {
+				t.Fatalf("unexpected voice args from=%q to=%q", from, to)
+			}
+			if !strings.HasPrefix(texmlURL, "https://lab.lesser.host/webhooks/comm/voice/texml/comm-msg-") {
+				t.Fatalf("unexpected texmlURL: %q", texmlURL)
+			}
+			if !strings.HasPrefix(statusCallbackURL, "https://lab.lesser.host/webhooks/comm/voice/status/comm-msg-") {
+				t.Fatalf("unexpected statusCallbackURL: %q", statusCallbackURL)
+			}
+			return "call-control-1", nil
+		},
+	}
+
+	body, _ := json.Marshal(map[string]any{
+		"channel":   "voice",
+		"agentId":   agentID,
+		"to":        "+15550143",
+		"body":      "Test by voice",
+		"inReplyTo": "call-back-1",
+	})
+
+	ctx := &apptheory.Context{
+		RequestID: "r-comm-send-voice",
+		Request: apptheory.Request{
+			Body: body,
+			Headers: map[string][]string{
+				"authorization": {"Bearer k1"},
+			},
+		},
+	}
+
+	resp, err := s.handleSoulCommSend(ctx)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if !voiceCalled {
+		t.Fatalf("expected telnyx voice call")
+	}
+	assertSoulCommSendResponse(t, resp, models.SoulCommMessageStatusAccepted, commDeliveryProviderTelnyx, commChannelVoice, "call-control-1")
+}
+
 func TestHandleSoulCommSend_SMSInsufficientCreditsBlocksSend(t *testing.T) {
 	t.Parallel()
 
@@ -583,15 +697,21 @@ func TestHandleSoulCommStatus_ReturnsStatusRecord(t *testing.T) {
 
 	qStatus.On("First", mock.AnythingOfType("*models.SoulCommMessageStatus")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulCommMessageStatus](t, args, 0)
+		confidence := 0.91
 		*dest = models.SoulCommMessageStatus{
-			MessageID:   messageID,
-			AgentID:     agentID,
-			ChannelType: "email",
-			To:          "alice@example.com",
-			Provider:    "migadu",
-			Status:      models.SoulCommMessageStatusSent,
-			CreatedAt:   time.Date(2026, 3, 4, 12, 0, 0, 0, time.UTC),
-			UpdatedAt:   time.Date(2026, 3, 4, 12, 0, 1, 0, time.UTC),
+			MessageID:         messageID,
+			AgentID:           agentID,
+			ChannelType:       "voice",
+			To:                "+15550143",
+			Provider:          "telnyx",
+			ProviderMessageID: "call-1",
+			Status:            models.SoulCommMessageStatusSent,
+			ReplyMessageID:    "comm-msg-test-reply-call-1",
+			ReplyBody:         commVoiceReplyBody,
+			ReplyConfidence:   &confidence,
+			ReplyReceivedAt:   time.Date(2026, 3, 4, 12, 0, 30, 0, time.UTC),
+			CreatedAt:         time.Date(2026, 3, 4, 12, 0, 0, 0, time.UTC),
+			UpdatedAt:         time.Date(2026, 3, 4, 12, 0, 31, 0, time.UTC),
 		}
 	}).Once()
 
@@ -639,5 +759,11 @@ func TestHandleSoulCommStatus_ReturnsStatusRecord(t *testing.T) {
 	}
 	if out.MessageID != messageID || out.Status != commMetricSent || out.AgentID != strings.ToLower(agentID) {
 		t.Fatalf("unexpected response: %#v", out)
+	}
+	if out.ReplyBody != commVoiceReplyBody || out.ReplyMessageID != "comm-msg-test-reply-call-1" || out.ReplyReceivedAt == "" {
+		t.Fatalf("expected reply metadata, got %#v", out)
+	}
+	if out.ReplyConfidence == nil || *out.ReplyConfidence != 0.91 {
+		t.Fatalf("expected reply confidence, got %#v", out.ReplyConfidence)
 	}
 }

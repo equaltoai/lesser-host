@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
@@ -180,23 +179,7 @@ func (s *Server) handleSoulAgentCommStatus(ctx *apptheory.Context) (*apptheory.R
 		return nil, &apptheory.AppError{Code: "app.not_found", Message: "message not found"}
 	}
 
-	out := soulCommStatusResponse{
-		MessageID:         strings.TrimSpace(item.MessageID),
-		Status:            strings.TrimSpace(item.Status),
-		Channel:           strings.TrimSpace(item.ChannelType),
-		AgentID:           strings.ToLower(strings.TrimSpace(item.AgentID)),
-		To:                strings.TrimSpace(item.To),
-		Provider:          strings.TrimSpace(item.Provider),
-		ProviderMessageID: strings.TrimSpace(item.ProviderMessageID),
-		ErrorCode:         strings.TrimSpace(item.ErrorCode),
-		ErrorMessage:      strings.TrimSpace(item.ErrorMessage),
-		CreatedAt:         item.CreatedAt.UTC().Format(time.RFC3339Nano),
-	}
-	if !item.UpdatedAt.IsZero() {
-		out.UpdatedAt = item.UpdatedAt.UTC().Format(time.RFC3339Nano)
-	}
-
-	resp, err := apptheory.JSON(http.StatusOK, out)
+	resp, err := apptheory.JSON(http.StatusOK, soulCommStatusJSON(item))
 	if err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}

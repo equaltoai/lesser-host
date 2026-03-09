@@ -2202,6 +2202,18 @@
 										{#if st.errorMessage}
 											<DefinitionItem label="Error message">{st.errorMessage}</DefinitionItem>
 										{/if}
+										{#if st.replyBody}
+											<DefinitionItem label="Reply transcript">{st.replyBody}</DefinitionItem>
+										{/if}
+										{#if st.replyConfidence != null}
+											<DefinitionItem label="Reply confidence" monospace>{st.replyConfidence}</DefinitionItem>
+										{/if}
+										{#if st.replyMessageId}
+											<DefinitionItem label="Reply msg ID" monospace>{st.replyMessageId}</DefinitionItem>
+										{/if}
+										{#if st.replyReceivedAt}
+											<DefinitionItem label="Reply received" monospace>{st.replyReceivedAt}</DefinitionItem>
+										{/if}
 										<DefinitionItem label="Created" monospace>{st.createdAt}</DefinitionItem>
 										<DefinitionItem label="Updated" monospace>{st.updatedAt || '—'}</DefinitionItem>
 									</DefinitionList>

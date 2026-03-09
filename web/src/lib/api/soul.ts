@@ -1,3 +1,4 @@
+import type { components } from '../greater/adapters/rest/generated/lesser-host-api.js';
 import { fetchJson, jsonRequest } from './http';
 
 // --- Public config + search ---
@@ -471,61 +472,20 @@ export function soulUpdateRegistration(
 
 // --- Communication (portal) ---
 
-export interface SoulAgentCommActivity {
-	agent_id: string;
-	activity_id: string;
-	channel_type: string;
-	direction: string;
-	counterparty?: string;
-	action?: string;
-	message_id?: string;
-	in_reply_to?: string;
-	boundary_check?: string;
-	preference_respected?: boolean;
-	timestamp: string;
-}
+export type SoulAgentCommActivity =
+	components['schemas']['SoulAgentCommActivityItem'];
 
-export interface SoulAgentCommActivityResponse {
-	version: string;
-	activities: SoulAgentCommActivity[];
-	count: number;
-}
+export type SoulAgentCommActivityResponse =
+	components['schemas']['SoulAgentCommActivityResponse'];
 
-export interface SoulAgentCommQueueItem {
-	agent_id: string;
-	message_id: string;
-	channel_type: string;
-	from_address?: string;
-	from_number?: string;
-	from_soul_agent_id?: string;
-	from_display_name?: string;
-	subject?: string;
-	body: string;
-	in_reply_to?: string;
-	received_at: string;
-	scheduled_delivery_time: string;
-	status: string;
-}
+export type SoulAgentCommQueueItem =
+	components['schemas']['SoulAgentCommQueueItem'];
 
-export interface SoulAgentCommQueueResponse {
-	version: string;
-	items: SoulAgentCommQueueItem[];
-	count: number;
-}
+export type SoulAgentCommQueueResponse =
+	components['schemas']['SoulAgentCommQueueResponse'];
 
-export interface SoulCommStatusResponse {
-	messageId: string;
-	status: string;
-	channel: string;
-	agentId: string;
-	to: string;
-	provider?: string;
-	providerMessageId?: string;
-	errorCode?: string;
-	errorMessage?: string;
-	createdAt: string;
-	updatedAt?: string;
-}
+export type SoulCommStatusResponse =
+	components['schemas']['SoulCommStatusResponse'];
 
 export function soulAgentListCommActivity(token: string, agentId: string, limit: number = 50): Promise<SoulAgentCommActivityResponse> {
 	const params = new URLSearchParams();

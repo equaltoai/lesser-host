@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -99,6 +100,8 @@ func newTelnyxHTTPTestServer(t *testing.T) (*httptest.Server, *telnyxHTTPTestSta
 			w.WriteHeader(http.StatusNoContent)
 		case r.Method == http.MethodPost && r.URL.Path == "/v2/messages":
 			handleTelnyxMessageRequest(t, w, r)
+		case r.Method == http.MethodPost && r.URL.Path == "/v2/texml/calls/conn-1":
+			handleTelnyxVoiceCallRequest(t, w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -155,6 +158,38 @@ func handleTelnyxMessageRequest(t *testing.T, w http.ResponseWriter, r *http.Req
 	}
 	w.WriteHeader(http.StatusAccepted)
 	_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"id": "msg-1"}})
+}
+
+func handleTelnyxVoiceCallRequest(t *testing.T, w http.ResponseWriter, r *http.Request) {
+	t.Helper()
+	if got := r.Header.Get("authorization"); got != "Bearer telnyx-key" {
+		t.Fatalf("unexpected auth header: %q", got)
+	}
+	if got := r.Header.Get("content-type"); !strings.Contains(got, "application/x-www-form-urlencoded") {
+		t.Fatalf("unexpected content-type: %q", got)
+	}
+	raw, err := io.ReadAll(io.LimitReader(r.Body, 8192))
+	if err != nil {
+		t.Fatalf("read voice form: %v", err)
+	}
+	form, err := url.ParseQuery(string(raw))
+	if err != nil {
+		t.Fatalf("parse voice form: %v", err)
+	}
+	if got := form.Get("From"); got != "+15551234567" {
+		t.Fatalf("unexpected From: %q", got)
+	}
+	if got := form.Get("To"); got != "+15557654321" {
+		t.Fatalf("unexpected To: %q", got)
+	}
+	if got := form.Get("Url"); got != "https://lab.lesser.host/webhooks/comm/voice/texml/comm-msg-1" {
+		t.Fatalf("unexpected Url: %q", got)
+	}
+	if got := form.Get("StatusCallback"); got != "https://lab.lesser.host/webhooks/comm/voice/status/comm-msg-1" {
+		t.Fatalf("unexpected StatusCallback: %q", got)
+	}
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"call_control_id": "call-control-1"}})
 }
 
 type smtpCapture struct {
@@ -323,6 +358,23 @@ func TestDefaultTelnyxSendSMS(t *testing.T) {
 	msgID, err := defaultTelnyxSendSMS(context.Background(), "+15551234567", "+15557654321", " hello there ")
 	if err != nil || msgID != "msg-1" {
 		t.Fatalf("send sms: id=%q err=%v", msgID, err)
+	}
+}
+
+func TestDefaultTelnyxCreateVoiceCall(t *testing.T) {
+	seedControlplaneSSMParam(t, secrets.TelnyxAPITokenSSMParameterName, `{"api_key":"telnyx-key","messaging_profile_id":"profile-1","connection_id":"conn-1"}`)
+
+	server, _ := newTelnyxHTTPTestServer(t)
+	defer server.Close()
+
+	rewriteDefaultTransport(t, "api.telnyx.com", server.URL)
+
+	if _, err := defaultTelnyxCreateVoiceCall(context.Background(), "", "+15557654321", "https://lab.lesser.host/webhooks/comm/voice/texml/comm-msg-1", "https://lab.lesser.host/webhooks/comm/voice/status/comm-msg-1"); err == nil {
+		t.Fatalf("expected validation error for empty sender")
+	}
+	callID, err := defaultTelnyxCreateVoiceCall(context.Background(), "+15551234567", "+15557654321", "https://lab.lesser.host/webhooks/comm/voice/texml/comm-msg-1", "https://lab.lesser.host/webhooks/comm/voice/status/comm-msg-1")
+	if err != nil || callID != "call-control-1" {
+		t.Fatalf("create voice call: id=%q err=%v", callID, err)
 	}
 }
 
