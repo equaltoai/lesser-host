@@ -342,7 +342,7 @@ func TestExtractTelnyxVoiceFields_CoversAlternateShapes(t *testing.T) {
 
 	t.Run("fallback event type and string duration", func(t *testing.T) {
 		tel := &telnyxVoiceWebhook{}
-		tel.Data.EventType = "call.hangup"
+		tel.Data.EventType = commWebhookCallHangup
 		tel.Data.Payload = map[string]any{
 			"from":     map[string]any{"number": "+15550144"},
 			"to":       map[string]any{"phone_number": "+15550145"},

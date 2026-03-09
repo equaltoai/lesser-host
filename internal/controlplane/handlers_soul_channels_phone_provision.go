@@ -275,7 +275,7 @@ func upsertProvisionedPhoneChannel(ctx context.Context, s *Server, agentIDHex st
 		VerifiedAt:    now,
 		Status:        models.SoulChannelStatusActive,
 		ProvisionedAt: now,
-		Capabilities:  []string{"sms-receive", "sms-send", "voice-receive"},
+		Capabilities:  []string{"sms-receive", "sms-send", "voice-receive", "voice-send"},
 		UpdatedAt:     now,
 	}
 	_ = channel.UpdateKeys()
@@ -394,7 +394,7 @@ func (s *Server) buildSoulProvisionPhoneRegistration(ctx context.Context, base m
 	ch["phone"] = map[string]any{
 		"number":       strings.TrimSpace(input.PhoneNumber),
 		"provider":     "telnyx",
-		"capabilities": []any{"sms-receive", "sms-send", "voice-receive"},
+		"capabilities": []any{"sms-receive", "sms-send", "voice-receive", "voice-send"},
 		"verified":     true,
 		"verifiedAt":   issuedAt,
 	}

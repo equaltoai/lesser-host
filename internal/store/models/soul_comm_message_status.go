@@ -35,9 +35,13 @@ type SoulCommMessageStatus struct {
 	Provider          string `theorydb:"attr:provider" json:"provider,omitempty"`
 	ProviderMessageID string `theorydb:"attr:providerMessageId" json:"provider_message_id,omitempty"`
 
-	Status       string `theorydb:"attr:status" json:"status"` // accepted|sent|failed
-	ErrorCode    string `theorydb:"attr:errorCode" json:"error_code,omitempty"`
-	ErrorMessage string `theorydb:"attr:errorMessage" json:"error_message,omitempty"`
+	Status          string    `theorydb:"attr:status" json:"status"` // accepted|sent|failed
+	ErrorCode       string    `theorydb:"attr:errorCode" json:"error_code,omitempty"`
+	ErrorMessage    string    `theorydb:"attr:errorMessage" json:"error_message,omitempty"`
+	ReplyMessageID  string    `theorydb:"attr:replyMessageId" json:"reply_message_id,omitempty"`
+	ReplyBody       string    `theorydb:"attr:replyBody" json:"reply_body,omitempty"`
+	ReplyConfidence *float64  `theorydb:"attr:replyConfidence" json:"reply_confidence,omitempty"`
+	ReplyReceivedAt time.Time `theorydb:"attr:replyReceivedAt" json:"reply_received_at,omitempty"`
 
 	CreatedAt time.Time `theorydb:"attr:createdAt" json:"created_at"`
 	UpdatedAt time.Time `theorydb:"attr:updatedAt" json:"updated_at,omitempty"`
@@ -105,6 +109,8 @@ func (m *SoulCommMessageStatus) UpdateKeys() error {
 	m.Status = strings.ToLower(strings.TrimSpace(m.Status))
 	m.ErrorCode = strings.TrimSpace(m.ErrorCode)
 	m.ErrorMessage = strings.TrimSpace(m.ErrorMessage)
+	m.ReplyMessageID = strings.TrimSpace(m.ReplyMessageID)
+	m.ReplyBody = strings.TrimSpace(m.ReplyBody)
 
 	m.PK = fmt.Sprintf("COMM#MSG#%s", m.MessageID)
 	m.SK = "STATUS"
