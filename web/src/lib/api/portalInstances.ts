@@ -185,6 +185,8 @@ export interface UpdateJobResponse {
 	region?: string;
 	base_domain?: string;
 	lesser_version?: string;
+	lesser_body_version?: string;
+	body_only?: boolean;
 	lesser_host_base_url?: string;
 	lesser_host_attestations_url?: string;
 	lesser_host_instance_key_secret_arn?: string;
@@ -311,7 +313,9 @@ export function portalCreateUpdateJob(
 	slug: string,
 	input?: {
 		lesser_version?: string;
+		lesser_body_version?: string;
 		rotate_instance_key?: boolean;
+		body_only?: boolean;
 	},
 ): Promise<UpdateJobResponse> {
 	const req = jsonRequest(input ?? {});

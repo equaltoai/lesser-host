@@ -164,6 +164,116 @@ func TestHandlePortalCreateInstanceUpdateJob_DefaultsLesserBodyVersion(t *testin
 	require.Equal(t, "v.0.1.3", parsed.LesserBodyVersion)
 }
 
+func TestHandlePortalCreateInstanceUpdateJob_BodyOnlyUsesBodyVersion(t *testing.T) {
+	t.Parallel()
+
+	tdb := newPortalTestDB()
+	qUpdate := new(ttmocks.MockQuery)
+	tdb.db.On("Model", mock.AnythingOfType("*models.UpdateJob")).Return(qUpdate).Maybe()
+	addStandardMockQueryStubs(qUpdate)
+
+	s := &Server{
+		cfg: config.Config{
+			Stage:                   "lab",
+			WebAuthnRPID:            "example.com",
+			ManagedInstanceRoleName: "role",
+		},
+		store: store.New(tdb.db),
+	}
+
+	ctx := &apptheory.Context{AuthIdentity: "alice", RequestID: "rid"}
+	ctx.Params = map[string]string{"slug": testPortalInstanceSlugDemo}
+	body, _ := json.Marshal(createUpdateJobRequest{LesserBodyVersion: "v0.2.0", BodyOnly: true})
+	ctx.Request.Body = body
+
+	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{
+			Slug:             testPortalInstanceSlugDemo,
+			Owner:            "alice",
+			HostedAccountID:  "123",
+			HostedRegion:     "us-east-1",
+			HostedBaseDomain: "demo.example.com",
+			LesserVersion:    "v1.2.3",
+			UpdateStatus:     models.UpdateJobStatusOK,
+			UpdateJobID:      "",
+			BodyEnabled:      nil,
+		}
+	}).Once()
+
+	resp, err := s.handlePortalCreateInstanceUpdateJob(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 202, resp.Status)
+
+	var parsed updateJobResponse
+	require.NoError(t, json.Unmarshal(resp.Body, &parsed))
+	require.Equal(t, "v1.2.3", parsed.LesserVersion)
+	require.Equal(t, "v0.2.0", parsed.LesserBodyVersion)
+	require.True(t, parsed.BodyOnly)
+}
+
+func TestHandlePortalCreateInstanceUpdateJob_BodyOnlyRejectsRotateInstanceKey(t *testing.T) {
+	t.Parallel()
+
+	tdb := newPortalTestDB()
+	s := &Server{store: store.New(tdb.db)}
+
+	ctx := &apptheory.Context{AuthIdentity: "alice", RequestID: "rid"}
+	ctx.Params = map[string]string{"slug": testPortalInstanceSlugDemo}
+	body, _ := json.Marshal(createUpdateJobRequest{LesserBodyVersion: "v0.2.0", BodyOnly: true, RotateInstanceKey: true})
+	ctx.Request.Body = body
+
+	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{
+			Slug:             testPortalInstanceSlugDemo,
+			Owner:            "alice",
+			HostedAccountID:  "123",
+			HostedRegion:     "us-east-1",
+			HostedBaseDomain: "demo.example.com",
+			LesserVersion:    "v1.2.3",
+			BodyEnabled:      nil,
+		}
+	}).Once()
+
+	_, err := s.handlePortalCreateInstanceUpdateJob(ctx)
+	require.Error(t, err)
+	appErr, ok := err.(*apptheory.AppError)
+	require.True(t, ok)
+	require.Equal(t, "app.bad_request", appErr.Code)
+}
+
+func TestHandlePortalCreateInstanceUpdateJob_BodyOnlyRequiresBodyVersionWhenNoDefault(t *testing.T) {
+	t.Parallel()
+
+	tdb := newPortalTestDB()
+	s := &Server{store: store.New(tdb.db)}
+
+	ctx := &apptheory.Context{AuthIdentity: "alice", RequestID: "rid"}
+	ctx.Params = map[string]string{"slug": testPortalInstanceSlugDemo}
+	body, _ := json.Marshal(createUpdateJobRequest{BodyOnly: true})
+	ctx.Request.Body = body
+
+	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{
+			Slug:             testPortalInstanceSlugDemo,
+			Owner:            "alice",
+			HostedAccountID:  "123",
+			HostedRegion:     "us-east-1",
+			HostedBaseDomain: "demo.example.com",
+			LesserVersion:    "v1.2.3",
+			BodyEnabled:      nil,
+		}
+	}).Once()
+
+	_, err := s.handlePortalCreateInstanceUpdateJob(ctx)
+	require.Error(t, err)
+	appErr, ok := err.(*apptheory.AppError)
+	require.True(t, ok)
+	require.Equal(t, "app.bad_request", appErr.Code)
+}
+
 func TestHandlePortalCreateInstanceUpdateJob_TransactWriteFailureReturnsInternalError(t *testing.T) {
 	t.Parallel()
 

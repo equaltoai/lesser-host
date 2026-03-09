@@ -43,6 +43,7 @@ type UpdateJob struct {
 	// When empty, the deploy runner falls back to MANAGED_LESSER_BODY_DEFAULT_VERSION (if configured)
 	// or resolves releases/latest.
 	LesserBodyVersion string `theorydb:"attr:lesserBodyVersion" json:"lesser_body_version,omitempty"`
+	BodyOnly          bool   `theorydb:"attr:bodyOnly" json:"body_only,omitempty"`
 
 	// Desired configuration snapshot (applied during update).
 	LesserHostBaseURL              string `theorydb:"attr:lesserHostBaseUrl" json:"lesser_host_base_url,omitempty"`
