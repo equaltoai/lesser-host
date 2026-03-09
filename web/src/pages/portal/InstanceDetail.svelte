@@ -49,6 +49,7 @@
 	let updatesPolling = $state(false);
 	let updateCreating = $state(false);
 	let updateLesserVersion = $state('');
+	let updateLesserBodyVersion = $state('');
 
 	let provisionRegion = $state('');
 	let provisionLesserVersion = $state('');
@@ -255,16 +256,29 @@
 		}
 	}
 
-	async function startUpdateJob(lesserVersion?: string, rotateInstanceKey?: boolean) {
+	async function startUpdateJob(options?: {
+		lesserVersion?: string;
+		lesserBodyVersion?: string;
+		rotateInstanceKey?: boolean;
+		bodyOnly?: boolean;
+	}) {
 		updatesError = null;
 
-		const version = (lesserVersion || '').trim();
+		const version = (options?.lesserVersion || '').trim();
+		const bodyVersion = (options?.lesserBodyVersion || '').trim();
 
 		updateCreating = true;
 		try {
-			const input: { lesser_version?: string; rotate_instance_key?: boolean } = {};
+			const input: {
+				lesser_version?: string;
+				lesser_body_version?: string;
+				rotate_instance_key?: boolean;
+				body_only?: boolean;
+			} = {};
 			if (version) input.lesser_version = version;
-			if (rotateInstanceKey) input.rotate_instance_key = true;
+			if (bodyVersion) input.lesser_body_version = bodyVersion;
+			if (options?.rotateInstanceKey) input.rotate_instance_key = true;
+			if (options?.bodyOnly) input.body_only = true;
 
 			const job = await portalCreateUpdateJob(token, slug, input);
 			updateJobs = [job, ...updateJobs.filter((j) => j.id !== job.id)];
@@ -679,7 +693,7 @@
 			<div class="instance-detail__row">
 				<Button
 					variant="outline"
-					onclick={() => void startUpdateJob(undefined, true)}
+					onclick={() => void startUpdateJob({ rotateInstanceKey: true })}
 					disabled={updateCreating || updatesPolling || updatesLoading || updateInProgress() || !managed}
 				>
 					Rotate instance key
@@ -696,7 +710,7 @@
 			<div class="instance-detail__row">
 				<Button
 					variant="outline"
-					onclick={() => void startUpdateJob(updateLesserVersion)}
+					onclick={() => void startUpdateJob({ lesserVersion: updateLesserVersion })}
 					disabled={
 						updateCreating ||
 						updatesPolling ||
@@ -708,6 +722,29 @@
 				>
 					Start version update
 				</Button>
+				<Text size="sm" color="secondary">
+					Re-runs <span class="instance-detail__mono">lesser up</span> at the requested Lesser release.
+				</Text>
+			</div>
+
+			<div class="instance-detail__form">
+				<TextField
+					label="Update Lesser Body version"
+					bind:value={updateLesserBodyVersion}
+					placeholder="vX.Y.Z, latest, or blank for configured default"
+				/>
+			</div>
+			<div class="instance-detail__row">
+				<Button
+					variant="outline"
+					onclick={() => void startUpdateJob({ lesserBodyVersion: updateLesserBodyVersion, bodyOnly: true })}
+					disabled={updateCreating || updatesPolling || updatesLoading || updateInProgress() || !managed}
+				>
+					Update lesser-body only
+				</Button>
+				<Text size="sm" color="secondary">
+					Skips <span class="instance-detail__mono">lesser up</span> and only redeploys <span class="instance-detail__mono">lesser-body</span> plus MCP wiring.
+				</Text>
 			</div>
 
 			{#if updatesPolling && updateInProgress()}
@@ -724,6 +761,8 @@
 					<DefinitionItem label="Step" monospace>{formatStep(job?.step)}</DefinitionItem>
 					<DefinitionItem label="Updated" monospace>{job?.updated_at}</DefinitionItem>
 					<DefinitionItem label="Lesser version" monospace>{job?.lesser_version || '—'}</DefinitionItem>
+					<DefinitionItem label="Lesser Body version" monospace>{job?.lesser_body_version || '—'}</DefinitionItem>
+					<DefinitionItem label="Body-only" monospace>{job?.body_only ? 'yes' : 'no'}</DefinitionItem>
 						<DefinitionItem label="Run id" monospace>{job?.run_id || '—'}</DefinitionItem>
 						<DefinitionItem label="Run url" monospace>
 							{@const runUrl = safeHref(job?.run_url)}

@@ -21,6 +21,7 @@ type createUpdateJobRequest struct {
 	LesserVersion     string `json:"lesser_version,omitempty"`
 	LesserBodyVersion string `json:"lesser_body_version,omitempty"`
 	RotateInstanceKey bool   `json:"rotate_instance_key,omitempty"`
+	BodyOnly          bool   `json:"body_only,omitempty"`
 }
 
 type updateJobResponse struct {
@@ -40,6 +41,7 @@ type updateJobResponse struct {
 
 	LesserVersion     string `json:"lesser_version,omitempty"`
 	LesserBodyVersion string `json:"lesser_body_version,omitempty"`
+	BodyOnly          bool   `json:"body_only,omitempty"`
 
 	LesserHostBaseURL              string `json:"lesser_host_base_url,omitempty"`
 	LesserHostAttestationsURL      string `json:"lesser_host_attestations_url,omitempty"`
@@ -100,6 +102,7 @@ func updateJobResponseFromModel(j *models.UpdateJob) updateJobResponse {
 		BaseDomain:                     strings.TrimSpace(j.BaseDomain),
 		LesserVersion:                  strings.TrimSpace(j.LesserVersion),
 		LesserBodyVersion:              strings.TrimSpace(j.LesserBodyVersion),
+		BodyOnly:                       j.BodyOnly,
 		LesserHostBaseURL:              strings.TrimSpace(j.LesserHostBaseURL),
 		LesserHostAttestationsURL:      strings.TrimSpace(j.LesserHostAttestationsURL),
 		LesserHostInstanceKeySecretARN: strings.TrimSpace(j.LesserHostInstanceKeySecretARN),
@@ -208,6 +211,9 @@ func (s *Server) handlePortalCreateInstanceUpdateJob(ctx *apptheory.Context) (*a
 	if err != nil {
 		return nil, err
 	}
+	if req.BodyOnly && req.RotateInstanceKey {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "body_only updates cannot rotate the instance key"}
+	}
 	lesserVersion, lesserBodyVersion, appErr := s.resolveManagedUpdateVersions(ctx.Context(), inst, req)
 	if appErr != nil {
 		return nil, appErr
@@ -313,6 +319,14 @@ func (s *Server) resolveManagedUpdateVersions(ctx context.Context, inst *models.
 	if lesserBodyVersion == "" && effectiveBodyEnabled(inst.BodyEnabled) {
 		lesserBodyVersion = strings.TrimSpace(s.cfg.ManagedLesserBodyDefaultVersion)
 	}
+	if req.BodyOnly {
+		if !effectiveBodyEnabled(inst.BodyEnabled) {
+			return "", "", &apptheory.AppError{Code: "app.conflict", Message: "lesser-body updates are disabled for this instance"}
+		}
+		if lesserBodyVersion == "" {
+			return "", "", &apptheory.AppError{Code: "app.bad_request", Message: "lesser_body_version is required for body_only updates when no default lesser-body version is configured"}
+		}
+	}
 
 	return lesserVersion, lesserBodyVersion, nil
 }
@@ -352,6 +366,7 @@ func (s *Server) buildManagedUpdateJob(
 		BaseDomain:                     strings.TrimSpace(inst.HostedBaseDomain),
 		LesserVersion:                  strings.TrimSpace(lesserVersion),
 		LesserBodyVersion:              strings.TrimSpace(lesserBodyVersion),
+		BodyOnly:                       req.BodyOnly,
 		LesserHostBaseURL:              baseURL,
 		LesserHostAttestationsURL:      attestationsURL,
 		LesserHostInstanceKeySecretARN: strings.TrimSpace(inst.LesserHostInstanceKeySecretARN),

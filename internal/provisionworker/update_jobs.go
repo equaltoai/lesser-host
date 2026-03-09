@@ -228,7 +228,11 @@ func (s *Server) startManagedUpdateJobIfQueued(ctx context.Context, job *models.
 	}
 
 	job.Status = models.UpdateJobStatusRunning
-	job.Note = "starting update"
+	if job.BodyOnly {
+		job.Note = "starting lesser-body update"
+	} else {
+		job.Note = "starting update"
+	}
 	if strings.TrimSpace(job.Step) == "" {
 		job.Step = updateStepQueued
 	}
@@ -461,8 +465,13 @@ func (s *Server) advanceUpdateInstanceConfig(ctx context.Context, job *models.Up
 	job.AISpamDetectionEnabled = effectiveLesserAISpamDetectionEnabled(inst.LesserAISpamDetectionEnabled)
 	job.AIPiiDetectionEnabled = effectiveLesserAIPiiDetectionEnabled(inst.LesserAIPiiDetectionEnabled)
 	job.AIContentDetectionEnabled = effectiveLesserAIContentDetectionEnabled(inst.LesserAIContentDetectionEnabled)
-	job.Step = updateStepDeployStart
-	job.Note = "starting update deploy runner"
+	if job.BodyOnly {
+		job.Step = updateStepBodyDeployStart
+		job.Note = noteStartingLesserBodyDeployRunner
+	} else {
+		job.Step = updateStepDeployStart
+		job.Note = "starting update deploy runner"
+	}
 
 	if err := s.persistUpdateJobAndInstance(ctx, job, requestID, now, updateInstanceConfigInstanceUpdate(publicBaseURL, attestationsURL, secretArn, job)); err != nil {
 		return 0, false, err
