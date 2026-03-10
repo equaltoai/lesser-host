@@ -14,6 +14,9 @@ export interface InstanceResponse {
 	managed_lesser_domain?: string;
 	hosted_zone_id?: string;
 	lesser_version?: string;
+	lesser_body_version?: string;
+	body_provisioned_at?: string;
+	mcp_wired_at?: string;
 	lesser_host_base_url?: string;
 	lesser_host_attestations_url?: string;
 	translation_enabled: boolean;
@@ -175,6 +178,7 @@ export interface UpdateInstanceConfigRequest {
 export interface UpdateJobResponse {
 	id: string;
 	instance_slug: string;
+	kind?: string;
 	status: string;
 	step?: string;
 	note?: string;
@@ -187,6 +191,21 @@ export interface UpdateJobResponse {
 	lesser_version?: string;
 	lesser_body_version?: string;
 	body_only?: boolean;
+	mcp_only?: boolean;
+	active_phase?: string;
+	failed_phase?: string;
+	deploy_status?: string;
+	deploy_run_id?: string;
+	deploy_run_url?: string;
+	deploy_error?: string;
+	body_status?: string;
+	body_run_id?: string;
+	body_run_url?: string;
+	body_error?: string;
+	mcp_status?: string;
+	mcp_run_id?: string;
+	mcp_run_url?: string;
+	mcp_error?: string;
 	lesser_host_base_url?: string;
 	lesser_host_attestations_url?: string;
 	lesser_host_instance_key_secret_arn?: string;
@@ -316,6 +335,7 @@ export function portalCreateUpdateJob(
 		lesser_body_version?: string;
 		rotate_instance_key?: boolean;
 		body_only?: boolean;
+		mcp_only?: boolean;
 	},
 ): Promise<UpdateJobResponse> {
 	const req = jsonRequest(input ?? {});

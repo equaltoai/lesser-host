@@ -33,6 +33,24 @@ type UpdateJob struct {
 	RunID  string `theorydb:"attr:runId" json:"run_id,omitempty"`   // external runner id (e.g. CodeBuild)
 	RunURL string `theorydb:"attr:runUrl" json:"run_url,omitempty"` // external runner deep link (e.g. CodeBuild logs)
 
+	ActivePhase string `theorydb:"attr:activePhase" json:"active_phase,omitempty"`
+	FailedPhase string `theorydb:"attr:failedPhase" json:"failed_phase,omitempty"`
+
+	DeployStatus string `theorydb:"attr:deployStatus" json:"deploy_status,omitempty"`
+	DeployRunID  string `theorydb:"attr:deployRunId" json:"deploy_run_id,omitempty"`
+	DeployRunURL string `theorydb:"attr:deployRunUrl" json:"deploy_run_url,omitempty"`
+	DeployError  string `theorydb:"attr:deployError" json:"deploy_error,omitempty"`
+
+	BodyStatus string `theorydb:"attr:bodyStatus" json:"body_status,omitempty"`
+	BodyRunID  string `theorydb:"attr:bodyRunId" json:"body_run_id,omitempty"`
+	BodyRunURL string `theorydb:"attr:bodyRunUrl" json:"body_run_url,omitempty"`
+	BodyError  string `theorydb:"attr:bodyError" json:"body_error,omitempty"`
+
+	MCPStatus string `theorydb:"attr:mcpStatus" json:"mcp_status,omitempty"`
+	MCPRunID  string `theorydb:"attr:mcpRunId" json:"mcp_run_id,omitempty"`
+	MCPRunURL string `theorydb:"attr:mcpRunUrl" json:"mcp_run_url,omitempty"`
+	MCPError  string `theorydb:"attr:mcpError" json:"mcp_error,omitempty"`
+
 	AccountID       string `theorydb:"attr:accountId" json:"account_id,omitempty"`
 	AccountRoleName string `theorydb:"attr:accountRoleName" json:"account_role_name,omitempty"`
 	Region          string `theorydb:"attr:region" json:"region,omitempty"`
@@ -44,6 +62,7 @@ type UpdateJob struct {
 	// or resolves releases/latest.
 	LesserBodyVersion string `theorydb:"attr:lesserBodyVersion" json:"lesser_body_version,omitempty"`
 	BodyOnly          bool   `theorydb:"attr:bodyOnly" json:"body_only,omitempty"`
+	MCPOnly           bool   `theorydb:"attr:mcpOnly" json:"mcp_only,omitempty"`
 
 	// Desired configuration snapshot (applied during update).
 	LesserHostBaseURL              string `theorydb:"attr:lesserHostBaseUrl" json:"lesser_host_base_url,omitempty"`
@@ -130,6 +149,20 @@ func (j *UpdateJob) UpdateKeys() error {
 	j.Note = strings.TrimSpace(j.Note)
 	j.RunID = strings.TrimSpace(j.RunID)
 	j.RunURL = strings.TrimSpace(j.RunURL)
+	j.ActivePhase = strings.TrimSpace(j.ActivePhase)
+	j.FailedPhase = strings.TrimSpace(j.FailedPhase)
+	j.DeployStatus = strings.TrimSpace(j.DeployStatus)
+	j.DeployRunID = strings.TrimSpace(j.DeployRunID)
+	j.DeployRunURL = strings.TrimSpace(j.DeployRunURL)
+	j.DeployError = strings.TrimSpace(j.DeployError)
+	j.BodyStatus = strings.TrimSpace(j.BodyStatus)
+	j.BodyRunID = strings.TrimSpace(j.BodyRunID)
+	j.BodyRunURL = strings.TrimSpace(j.BodyRunURL)
+	j.BodyError = strings.TrimSpace(j.BodyError)
+	j.MCPStatus = strings.TrimSpace(j.MCPStatus)
+	j.MCPRunID = strings.TrimSpace(j.MCPRunID)
+	j.MCPRunURL = strings.TrimSpace(j.MCPRunURL)
+	j.MCPError = strings.TrimSpace(j.MCPError)
 	j.AccountID = strings.TrimSpace(j.AccountID)
 	j.AccountRoleName = strings.TrimSpace(j.AccountRoleName)
 	j.Region = strings.TrimSpace(j.Region)

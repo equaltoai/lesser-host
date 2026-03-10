@@ -782,19 +782,14 @@ func (s *Server) requireSoulAgentInstanceAccess(ctx context.Context, instanceSlu
 		return &apptheory.AppError{Code: "app.conflict", Message: "agent domain is invalid"}
 	}
 
-	var d models.Domain
-	err := s.store.DB.WithContext(ctx).
-		Model(&models.Domain{}).
-		Where("PK", "=", fmt.Sprintf("DOMAIN#%s", normalizedDomain)).
-		Where("SK", "=", models.SKMetadata).
-		First(&d)
+	d, err := s.loadManagedStageAwareDomain(ctx, normalizedDomain)
 	if theoryErrors.IsNotFound(err) {
 		return &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
 	}
 	if err != nil {
 		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
-	if !domainIsVerifiedOrActive(d.Status) {
+	if d == nil || !domainIsVerifiedOrActive(d.Status) {
 		return &apptheory.AppError{Code: "app.conflict", Message: "agent domain is not verified"}
 	}
 	if !strings.EqualFold(strings.TrimSpace(d.InstanceSlug), instanceSlug) {

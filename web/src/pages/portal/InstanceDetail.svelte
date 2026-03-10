@@ -89,6 +89,13 @@
 		return parts.map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join(' ');
 	}
 
+	function formatPhaseState(status?: string, err?: string): string {
+		const raw = (status || '').trim();
+		if (!raw) return '—';
+		if (raw === 'failed' && err?.trim()) return `failed: ${err.trim()}`;
+		return raw;
+	}
+
 	function abortPolling() {
 		if (pollController) {
 			pollController.abort();
@@ -193,6 +200,34 @@
 		return updateJobs.length > 0 ? updateJobs[0] : null;
 	}
 
+	function jobKind(job?: UpdateJobResponse | null): string {
+		if (!job) return 'lesser';
+		const kind = job.kind?.trim();
+		if (kind) return kind;
+		if (job.mcp_only) return 'mcp';
+		if (job.body_only) return 'lesser-body';
+		return 'lesser';
+	}
+
+	function jobKindLabel(job?: UpdateJobResponse | null): string {
+		switch (jobKind(job)) {
+			case 'lesser-body':
+				return 'lesser-body';
+			case 'mcp':
+				return 'MCP';
+			default:
+				return 'Lesser';
+		}
+	}
+
+	function latestUpdateJobForKind(kind: string): UpdateJobResponse | null {
+		return updateJobs.find((job) => jobKind(job) === kind) ?? null;
+	}
+
+	function activeUpdateJobs(): UpdateJobResponse[] {
+		return updateJobs.filter((job) => !isUpdateTerminal(job));
+	}
+
 	function isUpdateTerminal(job: UpdateJobResponse | null): boolean {
 		if (!job) return true;
 		return job.status === 'ok' || job.status === 'error';
@@ -261,6 +296,7 @@
 		lesserBodyVersion?: string;
 		rotateInstanceKey?: boolean;
 		bodyOnly?: boolean;
+		mcpOnly?: boolean;
 	}) {
 		updatesError = null;
 
@@ -274,11 +310,13 @@
 				lesser_body_version?: string;
 				rotate_instance_key?: boolean;
 				body_only?: boolean;
+				mcp_only?: boolean;
 			} = {};
 			if (version) input.lesser_version = version;
 			if (bodyVersion) input.lesser_body_version = bodyVersion;
 			if (options?.rotateInstanceKey) input.rotate_instance_key = true;
 			if (options?.bodyOnly) input.body_only = true;
+			if (options?.mcpOnly) input.mcp_only = true;
 
 			const job = await portalCreateUpdateJob(token, slug, input);
 			updateJobs = [job, ...updateJobs.filter((j) => j.id !== job.id)];
@@ -296,13 +334,11 @@
 	}
 
 	function updateInProgress(): boolean {
-		const j = latestUpdateJob();
-		if (!j) return false;
-		return j.status === 'queued' || j.status === 'running';
+		return activeUpdateJobs().length > 0;
 	}
 
 	function trustHealthLabel(): string {
-		const job = latestUpdateJob();
+		const job = latestUpdateJobForKind('lesser');
 		if (!job) return 'unverified';
 		if (job.verify_trust_ok === true) return 'ok';
 		if (job.verify_trust_ok === false) return `fail${job.verify_trust_err ? `: ${job.verify_trust_err}` : ''}`;
@@ -310,7 +346,7 @@
 	}
 
 	function translationHealthLabel(): string {
-		const job = latestUpdateJob();
+		const job = latestUpdateJobForKind('lesser');
 		if (!job) return 'unverified';
 		if (job.verify_translation_ok === true) return 'ok';
 		if (job.verify_translation_ok === false) {
@@ -320,7 +356,7 @@
 	}
 
 	function tipsHealthLabel(): string {
-		const job = latestUpdateJob();
+		const job = latestUpdateJobForKind('lesser');
 		if (!job) return 'unverified';
 		if (job.verify_tips_ok === true) return 'ok';
 		if (job.verify_tips_ok === false) return `fail${job.verify_tips_err ? `: ${job.verify_tips_err}` : ''}`;
@@ -328,7 +364,7 @@
 	}
 
 	function aiHealthLabel(): string {
-		const job = latestUpdateJob();
+		const job = latestUpdateJobForKind('lesser');
 		if (!job) return 'unverified';
 		if (job.verify_ai_ok === true) return 'ok';
 		if (job.verify_ai_ok === false) return `fail${job.verify_ai_err ? `: ${job.verify_ai_err}` : ''}`;
@@ -453,9 +489,9 @@
 		abortUpdatesPolling();
 		await Promise.all([loadInstance(), loadDomains(), loadProvisioning(), loadUpdates()]);
 		void pollProvisioning();
-		const latest = latestUpdateJob();
-		if (latest && !isUpdateTerminal(latest)) {
-			void pollUpdateJob(latest.id);
+		const active = activeUpdateJobs()[0] ?? latestUpdateJob();
+		if (active && !isUpdateTerminal(active)) {
+			void pollUpdateJob(active.id);
 		}
 	}
 
@@ -524,6 +560,10 @@
 				<DefinitionItem label="Primary domain" monospace>{primaryDomain()?.domain || '—'}</DefinitionItem>
 				<DefinitionItem label="Hosted account" monospace>{instance.hosted_account_id || '—'}</DefinitionItem>
 				<DefinitionItem label="Hosted region" monospace>{instance.hosted_region || '—'}</DefinitionItem>
+				<DefinitionItem label="Current Lesser version" monospace>{instance.lesser_version || '—'}</DefinitionItem>
+				<DefinitionItem label="Current lesser-body version" monospace>{instance.lesser_body_version || '—'}</DefinitionItem>
+				<DefinitionItem label="Body provisioned" monospace>{instance.body_provisioned_at || '—'}</DefinitionItem>
+				<DefinitionItem label="MCP wired" monospace>{instance.mcp_wired_at || '—'}</DefinitionItem>
 			</DefinitionList>
 
 			{#if domainsError}
@@ -686,7 +726,7 @@
 					Apply configuration
 				</Button>
 				<Text size="sm" color="secondary">
-					Re-runs <span class="instance-detail__mono">lesser up</span> to apply stored trust/translation/tips/AI config.
+					Re-runs <span class="instance-detail__mono">lesser up</span> only to apply stored trust/translation/tips/AI config.
 				</Text>
 			</div>
 
@@ -723,7 +763,7 @@
 					Start version update
 				</Button>
 				<Text size="sm" color="secondary">
-					Re-runs <span class="instance-detail__mono">lesser up</span> at the requested Lesser release.
+					Updates <span class="instance-detail__mono">lesser</span> only at the requested Lesser release.
 				</Text>
 			</div>
 
@@ -743,7 +783,20 @@
 					Update lesser-body only
 				</Button>
 				<Text size="sm" color="secondary">
-					Skips <span class="instance-detail__mono">lesser up</span> and only redeploys <span class="instance-detail__mono">lesser-body</span> plus MCP wiring.
+					Updates <span class="instance-detail__mono">lesser-body</span> only. MCP wiring is separate.
+				</Text>
+			</div>
+
+			<div class="instance-detail__row">
+				<Button
+					variant="outline"
+					onclick={() => void startUpdateJob({ mcpOnly: true })}
+					disabled={updateCreating || updatesPolling || updatesLoading || updateInProgress() || !managed}
+				>
+					Update MCP only
+				</Button>
+				<Text size="sm" color="secondary">
+					Re-runs only the <span class="instance-detail__mono">/mcp</span> wiring step against the currently deployed instance and lesser-body runtime.
 				</Text>
 			</div>
 
@@ -754,81 +807,204 @@
 				</div>
 			{/if}
 
-			{#if latestUpdateJob()}
-				{@const job = latestUpdateJob()}
-				<DefinitionList>
-					<DefinitionItem label="Status" monospace>{job?.status}</DefinitionItem>
-					<DefinitionItem label="Step" monospace>{formatStep(job?.step)}</DefinitionItem>
-					<DefinitionItem label="Updated" monospace>{job?.updated_at}</DefinitionItem>
-					<DefinitionItem label="Lesser version" monospace>{job?.lesser_version || '—'}</DefinitionItem>
-					<DefinitionItem label="Lesser Body version" monospace>{job?.lesser_body_version || '—'}</DefinitionItem>
-					<DefinitionItem label="Body-only" monospace>{job?.body_only ? 'yes' : 'no'}</DefinitionItem>
-						<DefinitionItem label="Run id" monospace>{job?.run_id || '—'}</DefinitionItem>
-						<DefinitionItem label="Run url" monospace>
-							{@const runUrl = safeHref(job?.run_url)}
-							{#if runUrl}
-								<a href={runUrl} target="_blank" rel="noopener noreferrer">Open logs</a>
-							{:else}
-								—
-							{/if}
-						</DefinitionItem>
-					<DefinitionItem label="Verify translation" monospace>
-						{#if job?.verify_translation_ok === true}
-							ok
-						{:else if job?.verify_translation_ok === false}
-							fail{job.verify_translation_err ? `: ${job.verify_translation_err}` : ''}
-						{:else}
-							—
-						{/if}
-					</DefinitionItem>
-					<DefinitionItem label="Verify trust" monospace>
-						{#if job?.verify_trust_ok === true}
-							ok
-						{:else if job?.verify_trust_ok === false}
-							fail{job.verify_trust_err ? `: ${job.verify_trust_err}` : ''}
-						{:else}
-							—
-						{/if}
-					</DefinitionItem>
-					<DefinitionItem label="Verify tips" monospace>
-						{#if job?.verify_tips_ok === true}
-							ok
-						{:else if job?.verify_tips_ok === false}
-							fail{job.verify_tips_err ? `: ${job.verify_tips_err}` : ''}
-						{:else}
-							—
-						{/if}
-					</DefinitionItem>
-					<DefinitionItem label="Verify AI" monospace>
-						{#if job?.verify_ai_ok === true}
-							ok
-						{:else if job?.verify_ai_ok === false}
-							fail{job.verify_ai_err ? `: ${job.verify_ai_err}` : ''}
-						{:else}
-							—
-						{/if}
-					</DefinitionItem>
-				</DefinitionList>
-
-				{#if job?.status === 'error'}
-					<Alert variant="error" title="Update failed">
+			{@const activeJobs = activeUpdateJobs()}
+			{#if activeJobs.length > 0}
+				<Alert variant="info" title="Active updates">
+					{#each activeJobs as job (job.id)}
 						<Text size="sm">
-							Error: <span class="instance-detail__mono">{job.error_code || 'unknown'}</span>
+							<span class="instance-detail__mono">{jobKindLabel(job)}</span> ·
+							<span class="instance-detail__mono">{job.id}</span> ·
+							{job.note || formatStep(job.step)}
 						</Text>
-						{#if job.error_message}
-							<Text size="sm">{job.error_message}</Text>
-						{/if}
-						{#if job.note}
-							<Text size="sm" color="secondary">{job.note}</Text>
-						{/if}
-						<Text size="sm" color="secondary">
-							Contact support with job id <span class="instance-detail__mono">{job.id}</span>
-							{#if job.request_id}
-								and request id <span class="instance-detail__mono">{job.request_id}</span>.
+					{/each}
+				</Alert>
+			{/if}
+
+			{@const lesserJob = latestUpdateJobForKind('lesser')}
+			{@const bodyJob = latestUpdateJobForKind('lesser-body')}
+			{@const mcpJob = latestUpdateJobForKind('mcp')}
+			{#if lesserJob || bodyJob || mcpJob}
+				<div class="instance-detail__update-sections">
+					<div class="instance-detail__update-section">
+						<Heading level={4} size="lg">Latest Lesser update</Heading>
+						{#if lesserJob}
+							<DefinitionList>
+								<DefinitionItem label="Job id" monospace>{lesserJob.id}</DefinitionItem>
+								<DefinitionItem label="Status" monospace>{lesserJob.status}</DefinitionItem>
+								<DefinitionItem label="Step" monospace>{formatStep(lesserJob.step)}</DefinitionItem>
+								<DefinitionItem label="Updated" monospace>{lesserJob.updated_at}</DefinitionItem>
+								<DefinitionItem label="Lesser version" monospace>{lesserJob.lesser_version || '—'}</DefinitionItem>
+								<DefinitionItem label="Active phase" monospace>{lesserJob.active_phase || '—'}</DefinitionItem>
+								<DefinitionItem label="Failed phase" monospace>{lesserJob.failed_phase || '—'}</DefinitionItem>
+								<DefinitionItem label="Run id" monospace>{lesserJob.run_id || '—'}</DefinitionItem>
+								<DefinitionItem label="Run url" monospace>
+									{@const lesserRunUrl = safeHref(lesserJob.run_url)}
+									{#if lesserRunUrl}
+										<a href={lesserRunUrl} target="_blank" rel="noopener noreferrer">Open logs</a>
+									{:else}
+										—
+									{/if}
+								</DefinitionItem>
+								<DefinitionItem label="Deploy phase" monospace>{formatPhaseState(lesserJob.deploy_status, lesserJob.deploy_error)}</DefinitionItem>
+								<DefinitionItem label="Deploy logs" monospace>
+									{@const lesserDeployRunUrl = safeHref(lesserJob.deploy_run_url)}
+									{#if lesserDeployRunUrl}
+										<a href={lesserDeployRunUrl} target="_blank" rel="noopener noreferrer">Open deploy logs</a>
+									{:else}
+										—
+									{/if}
+								</DefinitionItem>
+								<DefinitionItem label="Verify translation" monospace>
+									{#if lesserJob.verify_translation_ok === true}
+										ok
+									{:else if lesserJob.verify_translation_ok === false}
+										fail{lesserJob.verify_translation_err ? `: ${lesserJob.verify_translation_err}` : ''}
+									{:else}
+										—
+									{/if}
+								</DefinitionItem>
+								<DefinitionItem label="Verify trust" monospace>
+									{#if lesserJob.verify_trust_ok === true}
+										ok
+									{:else if lesserJob.verify_trust_ok === false}
+										fail{lesserJob.verify_trust_err ? `: ${lesserJob.verify_trust_err}` : ''}
+									{:else}
+										—
+									{/if}
+								</DefinitionItem>
+								<DefinitionItem label="Verify tips" monospace>
+									{#if lesserJob.verify_tips_ok === true}
+										ok
+									{:else if lesserJob.verify_tips_ok === false}
+										fail{lesserJob.verify_tips_err ? `: ${lesserJob.verify_tips_err}` : ''}
+									{:else}
+										—
+									{/if}
+								</DefinitionItem>
+								<DefinitionItem label="Verify AI" monospace>
+									{#if lesserJob.verify_ai_ok === true}
+										ok
+									{:else if lesserJob.verify_ai_ok === false}
+										fail{lesserJob.verify_ai_err ? `: ${lesserJob.verify_ai_err}` : ''}
+									{:else}
+										—
+									{/if}
+								</DefinitionItem>
+							</DefinitionList>
+							{#if lesserJob.status === 'error'}
+								<Alert variant="error" title="Lesser update failed">
+									<Text size="sm">Error: <span class="instance-detail__mono">{lesserJob.error_code || 'unknown'}</span></Text>
+									{#if lesserJob.error_message}
+										<Text size="sm">{lesserJob.error_message}</Text>
+									{/if}
+									{#if lesserJob.note}
+										<Text size="sm" color="secondary">{lesserJob.note}</Text>
+									{/if}
+								</Alert>
 							{/if}
-						</Text>
-					</Alert>
-				{/if}
+						{:else}
+							<Alert variant="info" title="No Lesser updates">
+								<Text size="sm">No Lesser update jobs have run yet.</Text>
+							</Alert>
+						{/if}
+					</div>
+
+					<div class="instance-detail__update-section">
+						<Heading level={4} size="lg">Latest lesser-body update</Heading>
+						{#if bodyJob}
+							<DefinitionList>
+								<DefinitionItem label="Job id" monospace>{bodyJob.id}</DefinitionItem>
+								<DefinitionItem label="Status" monospace>{bodyJob.status}</DefinitionItem>
+								<DefinitionItem label="Step" monospace>{formatStep(bodyJob.step)}</DefinitionItem>
+								<DefinitionItem label="Updated" monospace>{bodyJob.updated_at}</DefinitionItem>
+								<DefinitionItem label="Body version" monospace>{bodyJob.lesser_body_version || '—'}</DefinitionItem>
+								<DefinitionItem label="Active phase" monospace>{bodyJob.active_phase || '—'}</DefinitionItem>
+								<DefinitionItem label="Failed phase" monospace>{bodyJob.failed_phase || '—'}</DefinitionItem>
+								<DefinitionItem label="Run id" monospace>{bodyJob.run_id || '—'}</DefinitionItem>
+								<DefinitionItem label="Run url" monospace>
+									{@const bodyRunUrl = safeHref(bodyJob.run_url)}
+									{#if bodyRunUrl}
+										<a href={bodyRunUrl} target="_blank" rel="noopener noreferrer">Open logs</a>
+									{:else}
+										—
+									{/if}
+								</DefinitionItem>
+								<DefinitionItem label="Body phase" monospace>{formatPhaseState(bodyJob.body_status, bodyJob.body_error)}</DefinitionItem>
+								<DefinitionItem label="Body logs" monospace>
+									{@const bodyPhaseRunUrl = safeHref(bodyJob.body_run_url)}
+									{#if bodyPhaseRunUrl}
+										<a href={bodyPhaseRunUrl} target="_blank" rel="noopener noreferrer">Open body logs</a>
+									{:else}
+										—
+									{/if}
+								</DefinitionItem>
+							</DefinitionList>
+							{#if bodyJob.status === 'error'}
+								<Alert variant="error" title="lesser-body update failed">
+									<Text size="sm">Error: <span class="instance-detail__mono">{bodyJob.error_code || 'unknown'}</span></Text>
+									{#if bodyJob.error_message}
+										<Text size="sm">{bodyJob.error_message}</Text>
+									{/if}
+									{#if bodyJob.note}
+										<Text size="sm" color="secondary">{bodyJob.note}</Text>
+									{/if}
+								</Alert>
+							{/if}
+						{:else}
+							<Alert variant="info" title="No lesser-body updates">
+								<Text size="sm">No lesser-body update jobs have run yet.</Text>
+							</Alert>
+						{/if}
+					</div>
+
+					<div class="instance-detail__update-section">
+						<Heading level={4} size="lg">Latest MCP update</Heading>
+						{#if mcpJob}
+							<DefinitionList>
+								<DefinitionItem label="Job id" monospace>{mcpJob.id}</DefinitionItem>
+								<DefinitionItem label="Status" monospace>{mcpJob.status}</DefinitionItem>
+								<DefinitionItem label="Step" monospace>{formatStep(mcpJob.step)}</DefinitionItem>
+								<DefinitionItem label="Updated" monospace>{mcpJob.updated_at}</DefinitionItem>
+								<DefinitionItem label="Body version" monospace>{mcpJob.lesser_body_version || '—'}</DefinitionItem>
+								<DefinitionItem label="Active phase" monospace>{mcpJob.active_phase || '—'}</DefinitionItem>
+								<DefinitionItem label="Failed phase" monospace>{mcpJob.failed_phase || '—'}</DefinitionItem>
+								<DefinitionItem label="Run id" monospace>{mcpJob.run_id || '—'}</DefinitionItem>
+								<DefinitionItem label="Run url" monospace>
+									{@const mcpRunUrl = safeHref(mcpJob.run_url)}
+									{#if mcpRunUrl}
+										<a href={mcpRunUrl} target="_blank" rel="noopener noreferrer">Open logs</a>
+									{:else}
+										—
+									{/if}
+								</DefinitionItem>
+								<DefinitionItem label="MCP phase" monospace>{formatPhaseState(mcpJob.mcp_status, mcpJob.mcp_error)}</DefinitionItem>
+								<DefinitionItem label="MCP logs" monospace>
+									{@const mcpPhaseRunUrl = safeHref(mcpJob.mcp_run_url)}
+									{#if mcpPhaseRunUrl}
+										<a href={mcpPhaseRunUrl} target="_blank" rel="noopener noreferrer">Open MCP logs</a>
+									{:else}
+										—
+									{/if}
+								</DefinitionItem>
+							</DefinitionList>
+							{#if mcpJob.status === 'error'}
+								<Alert variant="error" title="MCP update failed">
+									<Text size="sm">Error: <span class="instance-detail__mono">{mcpJob.error_code || 'unknown'}</span></Text>
+									{#if mcpJob.error_message}
+										<Text size="sm">{mcpJob.error_message}</Text>
+									{/if}
+									{#if mcpJob.note}
+										<Text size="sm" color="secondary">{mcpJob.note}</Text>
+									{/if}
+								</Alert>
+							{/if}
+						{:else}
+							<Alert variant="info" title="No MCP updates">
+								<Text size="sm">No MCP update jobs have run yet.</Text>
+							</Alert>
+						{/if}
+					</div>
+				</div>
 			{:else}
 				<Alert variant="info" title="No update jobs">
 					<Text size="sm">No updates have been run yet.</Text>
@@ -842,6 +1018,7 @@
 				<ul class="instance-detail__list">
 					{#each updateJobs.slice(0, 10) as j (j.id)}
 						<li class="instance-detail__list-item">
+							<span class="instance-detail__mono">{jobKindLabel(j)}</span> ·
 							<span class="instance-detail__mono">{j.id}</span> — {j.status} ({formatStep(j.step)})
 						</li>
 					{/each}
@@ -920,5 +1097,20 @@
 
 	.instance-detail__list-item {
 		margin: var(--gr-spacing-scale-1) 0;
+	}
+
+	.instance-detail__update-sections {
+		display: grid;
+		gap: var(--gr-spacing-scale-4);
+		margin-top: var(--gr-spacing-scale-4);
+	}
+
+	.instance-detail__update-section {
+		display: flex;
+		flex-direction: column;
+		gap: var(--gr-spacing-scale-3);
+		padding: var(--gr-spacing-scale-4);
+		border: 1px solid var(--gr-color-border-subtle, #d9d9d9);
+		border-radius: var(--gr-radius-md, 12px);
 	}
 </style>

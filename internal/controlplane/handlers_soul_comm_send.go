@@ -873,19 +873,14 @@ func (s *Server) requireCommAgentInstanceAccess(ctx context.Context, key *models
 		return apptheory.NewAppTheoryError("comm.invalid_request", "agent domain is invalid").WithStatusCode(http.StatusBadRequest)
 	}
 
-	var d models.Domain
-	err := s.store.DB.WithContext(ctx).
-		Model(&models.Domain{}).
-		Where("PK", "=", fmt.Sprintf("DOMAIN#%s", normalizedDomain)).
-		Where("SK", "=", models.SKMetadata).
-		First(&d)
+	d, err := s.loadManagedStageAwareDomain(ctx, normalizedDomain)
 	if theoryErrors.IsNotFound(err) {
 		return apptheory.NewAppTheoryError("comm.unauthorized", "unauthorized").WithStatusCode(http.StatusUnauthorized)
 	}
 	if err != nil {
 		return apptheory.NewAppTheoryError("comm.internal", "internal error").WithStatusCode(http.StatusInternalServerError)
 	}
-	if !strings.EqualFold(strings.TrimSpace(d.InstanceSlug), strings.TrimSpace(key.InstanceSlug)) {
+	if d == nil || !strings.EqualFold(strings.TrimSpace(d.InstanceSlug), strings.TrimSpace(key.InstanceSlug)) {
 		return apptheory.NewAppTheoryError("comm.unauthorized", "unauthorized").WithStatusCode(http.StatusUnauthorized)
 	}
 	return nil

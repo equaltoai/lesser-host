@@ -24,7 +24,7 @@ jobs:
       RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version || github.ref_name }}
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           fetch-depth: 0
 
@@ -60,11 +60,20 @@ jobs:
         run: bash scripts/build_release_assets.sh "${RELEASE_VERSION}" dist/release
 
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2
-        with:
-          tag_name: ${{ env.RELEASE_VERSION }}
-          files: |
-            dist/release/openapi.yaml
-            dist/release/lesser-host-contracts-v3.tgz
-            dist/release/LESSER_HOST_REF.txt
-            dist/release/checksums.txt
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          if ! gh release view "${RELEASE_VERSION}" >/dev/null 2>&1; then
+            gh release create "${RELEASE_VERSION}" \
+              --title "${RELEASE_VERSION}" \
+              --notes ""
+          fi
+
+          gh release upload "${RELEASE_VERSION}" \
+            dist/release/openapi.yaml \
+            dist/release/lesser-host-contracts-v3.tgz \
+            dist/release/LESSER_HOST_REF.txt \
+            dist/release/checksums.txt \
+            --clobber

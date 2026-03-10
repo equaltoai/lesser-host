@@ -75,6 +75,94 @@ func managedUpdateRunnerInstance() *models.Instance {
 	}
 }
 
+func assertUpdateRunnerWaitBranches(
+	t *testing.T,
+	now time.Time,
+	step string,
+	fn func(*Server, context.Context, *models.UpdateJob, string, time.Time) (time.Duration, bool, error),
+	successRunURL string,
+	successStep string,
+	successNote string,
+	timeoutCode string,
+	failedRunURL string,
+	failedCode string,
+) {
+	t.Helper()
+
+	t.Run("succeeded advances to next step", func(t *testing.T) {
+		st, _ := newBranchTestStore()
+		srv := &Server{
+			store: st,
+			cb: &fakeCodebuild{
+				batchOut: &codebuild.BatchGetBuildsOutput{
+					Builds: []cbtypes.Build{{
+						BuildStatus: cbtypes.StatusTypeSucceeded,
+						Logs:        &cbtypes.LogsLocation{DeepLink: aws.String(" " + successRunURL + " ")},
+					}},
+				},
+			},
+		}
+		job := managedUpdateRunnerJob(step)
+		job.RunID = branchTestRunID
+
+		delay, done, err := fn(srv, context.Background(), job, "req", now)
+		require.NoError(t, err)
+		require.False(t, done)
+		require.Zero(t, delay)
+		require.Equal(t, successStep, job.Step)
+		require.Equal(t, successNote, job.Note)
+		require.Empty(t, job.RunID)
+		require.Equal(t, successRunURL, job.RunURL)
+	})
+
+	t.Run("timed out in progress fails", func(t *testing.T) {
+		st, _ := newBranchTestStore()
+		srv := &Server{
+			store: st,
+			cb: &fakeCodebuild{
+				batchOut: &codebuild.BatchGetBuildsOutput{
+					Builds: []cbtypes.Build{{BuildStatus: cbtypes.StatusTypeInProgress}},
+				},
+			},
+		}
+		job := managedUpdateRunnerJob(step)
+		job.RunID = branchTestRunID
+		job.CreatedAt = now.Add(-(provisionMaxDeployAge + time.Minute))
+
+		delay, done, err := fn(srv, context.Background(), job, "req", now)
+		require.NoError(t, err)
+		require.False(t, done)
+		require.Zero(t, delay)
+		require.Equal(t, models.UpdateJobStatusError, job.Status)
+		require.Equal(t, timeoutCode, job.ErrorCode)
+	})
+
+	t.Run("failed status captures run url and fails", func(t *testing.T) {
+		st, _ := newBranchTestStore()
+		srv := &Server{
+			store: st,
+			cb: &fakeCodebuild{
+				batchOut: &codebuild.BatchGetBuildsOutput{
+					Builds: []cbtypes.Build{{
+						BuildStatus: cbtypes.StatusTypeFailed,
+						Logs:        &cbtypes.LogsLocation{DeepLink: aws.String(failedRunURL)},
+					}},
+				},
+			},
+		}
+		job := managedUpdateRunnerJob(step)
+		job.RunID = branchTestRunID
+
+		delay, done, err := fn(srv, context.Background(), job, "req", now)
+		require.NoError(t, err)
+		require.False(t, done)
+		require.Zero(t, delay)
+		require.Equal(t, models.UpdateJobStatusError, job.Status)
+		require.Equal(t, failedCode, job.ErrorCode)
+		require.Equal(t, failedRunURL, job.RunURL)
+	})
+}
+
 func TestRunManagedUpdateStateMachine_HelperBranches(t *testing.T) {
 	t.Parallel()
 
@@ -360,80 +448,18 @@ func TestAdvanceUpdateRunnerClaimed_Branches(t *testing.T) {
 func TestAdvanceUpdateBodyDeployWait_Branches(t *testing.T) {
 	t.Parallel()
 
-	now := time.Unix(500, 0).UTC()
-
-	t.Run("succeeded advances to mcp start", func(t *testing.T) {
-		st, _ := newBranchTestStore()
-		srv := &Server{
-			store: st,
-			cb: &fakeCodebuild{
-				batchOut: &codebuild.BatchGetBuildsOutput{
-					Builds: []cbtypes.Build{{
-						BuildStatus: cbtypes.StatusTypeSucceeded,
-						Logs:        &cbtypes.LogsLocation{DeepLink: aws.String(" https://logs.example/body ")},
-					}},
-				},
-			},
-		}
-		job := managedUpdateRunnerJob(updateStepBodyDeployWait)
-		job.RunID = branchTestRunID
-
-		delay, done, err := srv.advanceUpdateBodyDeployWait(context.Background(), job, "req", now)
-		require.NoError(t, err)
-		require.False(t, done)
-		require.Zero(t, delay)
-		require.Equal(t, updateStepDeployMcpStart, job.Step)
-		require.Equal(t, noteStartingMcpWiringDeployRunner, job.Note)
-		require.Empty(t, job.RunID)
-		require.Equal(t, "https://logs.example/body", job.RunURL)
-	})
-
-	t.Run("timed out in progress fails", func(t *testing.T) {
-		st, _ := newBranchTestStore()
-		srv := &Server{
-			store: st,
-			cb: &fakeCodebuild{
-				batchOut: &codebuild.BatchGetBuildsOutput{
-					Builds: []cbtypes.Build{{BuildStatus: cbtypes.StatusTypeInProgress}},
-				},
-			},
-		}
-		job := managedUpdateRunnerJob(updateStepBodyDeployWait)
-		job.RunID = branchTestRunID
-		job.CreatedAt = now.Add(-(provisionMaxDeployAge + time.Minute))
-
-		delay, done, err := srv.advanceUpdateBodyDeployWait(context.Background(), job, "req", now)
-		require.NoError(t, err)
-		require.False(t, done)
-		require.Zero(t, delay)
-		require.Equal(t, models.UpdateJobStatusError, job.Status)
-		require.Equal(t, "body_deploy_timeout", job.ErrorCode)
-	})
-
-	t.Run("failed status captures run url and fails", func(t *testing.T) {
-		st, _ := newBranchTestStore()
-		srv := &Server{
-			store: st,
-			cb: &fakeCodebuild{
-				batchOut: &codebuild.BatchGetBuildsOutput{
-					Builds: []cbtypes.Build{{
-						BuildStatus: cbtypes.StatusTypeFailed,
-						Logs:        &cbtypes.LogsLocation{DeepLink: aws.String("https://logs.example/body-fail")},
-					}},
-				},
-			},
-		}
-		job := managedUpdateRunnerJob(updateStepBodyDeployWait)
-		job.RunID = branchTestRunID
-
-		delay, done, err := srv.advanceUpdateBodyDeployWait(context.Background(), job, "req", now)
-		require.NoError(t, err)
-		require.False(t, done)
-		require.Zero(t, delay)
-		require.Equal(t, models.UpdateJobStatusError, job.Status)
-		require.Equal(t, "body_deploy_failed", job.ErrorCode)
-		require.Equal(t, "https://logs.example/body-fail", job.RunURL)
-	})
+	assertUpdateRunnerWaitBranches(
+		t,
+		time.Unix(500, 0).UTC(),
+		updateStepBodyDeployWait,
+		(*Server).advanceUpdateBodyDeployWait,
+		"https://logs.example/body",
+		updateStepBodyReceiptIngest,
+		"ingesting lesser-body receipt",
+		"body_deploy_timeout",
+		"https://logs.example/body-fail",
+		"body_deploy_failed",
+	)
 }
 
 func TestAdvanceUpdateDeployMcpStart_Branches(t *testing.T) {
@@ -472,80 +498,18 @@ func TestAdvanceUpdateDeployMcpStart_Branches(t *testing.T) {
 func TestAdvanceUpdateDeployMcpWait_Branches(t *testing.T) {
 	t.Parallel()
 
-	now := time.Unix(700, 0).UTC()
-
-	t.Run("succeeded advances to verify", func(t *testing.T) {
-		st, _ := newBranchTestStore()
-		srv := &Server{
-			store: st,
-			cb: &fakeCodebuild{
-				batchOut: &codebuild.BatchGetBuildsOutput{
-					Builds: []cbtypes.Build{{
-						BuildStatus: cbtypes.StatusTypeSucceeded,
-						Logs:        &cbtypes.LogsLocation{DeepLink: aws.String("https://logs.example/mcp")},
-					}},
-				},
-			},
-		}
-		job := managedUpdateRunnerJob(updateStepDeployMcpWait)
-		job.RunID = branchTestRunID
-
-		delay, done, err := srv.advanceUpdateDeployMcpWait(context.Background(), job, "req", now)
-		require.NoError(t, err)
-		require.False(t, done)
-		require.Zero(t, delay)
-		require.Equal(t, updateStepVerify, job.Step)
-		require.Equal(t, "verifying deployment", job.Note)
-		require.Empty(t, job.RunID)
-		require.Equal(t, "https://logs.example/mcp", job.RunURL)
-	})
-
-	t.Run("timed out in progress fails", func(t *testing.T) {
-		st, _ := newBranchTestStore()
-		srv := &Server{
-			store: st,
-			cb: &fakeCodebuild{
-				batchOut: &codebuild.BatchGetBuildsOutput{
-					Builds: []cbtypes.Build{{BuildStatus: cbtypes.StatusTypeInProgress}},
-				},
-			},
-		}
-		job := managedUpdateRunnerJob(updateStepDeployMcpWait)
-		job.RunID = branchTestRunID
-		job.CreatedAt = now.Add(-(provisionMaxDeployAge + time.Minute))
-
-		delay, done, err := srv.advanceUpdateDeployMcpWait(context.Background(), job, "req", now)
-		require.NoError(t, err)
-		require.False(t, done)
-		require.Zero(t, delay)
-		require.Equal(t, models.UpdateJobStatusError, job.Status)
-		require.Equal(t, "mcp_deploy_timeout", job.ErrorCode)
-	})
-
-	t.Run("failed status captures run url and fails", func(t *testing.T) {
-		st, _ := newBranchTestStore()
-		srv := &Server{
-			store: st,
-			cb: &fakeCodebuild{
-				batchOut: &codebuild.BatchGetBuildsOutput{
-					Builds: []cbtypes.Build{{
-						BuildStatus: cbtypes.StatusTypeFailed,
-						Logs:        &cbtypes.LogsLocation{DeepLink: aws.String("https://logs.example/mcp-fail")},
-					}},
-				},
-			},
-		}
-		job := managedUpdateRunnerJob(updateStepDeployMcpWait)
-		job.RunID = branchTestRunID
-
-		delay, done, err := srv.advanceUpdateDeployMcpWait(context.Background(), job, "req", now)
-		require.NoError(t, err)
-		require.False(t, done)
-		require.Zero(t, delay)
-		require.Equal(t, models.UpdateJobStatusError, job.Status)
-		require.Equal(t, "mcp_deploy_failed", job.ErrorCode)
-		require.Equal(t, "https://logs.example/mcp-fail", job.RunURL)
-	})
+	assertUpdateRunnerWaitBranches(
+		t,
+		time.Unix(700, 0).UTC(),
+		updateStepDeployMcpWait,
+		(*Server).advanceUpdateDeployMcpWait,
+		"https://logs.example/mcp",
+		updateStepMCPReceiptIngest,
+		"ingesting MCP wiring receipt",
+		"mcp_deploy_timeout",
+		"https://logs.example/mcp-fail",
+		"mcp_deploy_failed",
+	)
 }
 
 func assertUpdateRunnerStartRetriesThenFails(

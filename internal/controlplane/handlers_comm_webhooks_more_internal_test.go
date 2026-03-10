@@ -26,6 +26,7 @@ type commWebhookTestDB struct {
 	qPhone    *ttmocks.MockQuery
 	qIdentity *ttmocks.MockQuery
 	qDomain   *ttmocks.MockQuery
+	qInstance *ttmocks.MockQuery
 	qBudget   *ttmocks.MockQuery
 }
 
@@ -34,6 +35,7 @@ func newCommWebhookTestDB() commWebhookTestDB {
 		"*models.SoulPhoneAgentIndex",
 		"*models.SoulAgentIdentity",
 		"*models.Domain",
+		"*models.Instance",
 		"*models.InstanceBudgetMonth",
 	)
 	return commWebhookTestDB{
@@ -41,7 +43,8 @@ func newCommWebhookTestDB() commWebhookTestDB {
 		qPhone:    queries[0],
 		qIdentity: queries[1],
 		qDomain:   queries[2],
-		qBudget:   queries[3],
+		qInstance: queries[3],
+		qBudget:   queries[4],
 	}
 }
 
@@ -451,6 +454,36 @@ func TestMeterTelnyxVoiceCall_BudgetMissing(t *testing.T) {
 	tdb.qBudget.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(assertNotFound()).Once()
 	if err := s.meterTelnyxVoiceCall(&apptheory.Context{}, "+15550142", "call-1", 60); err != nil {
 		t.Fatalf("expected nil when budget missing, got %v", err)
+	}
+}
+
+func TestLoadTelnyxVoiceInstanceSlug_AllowsManagedStageAlias(t *testing.T) {
+	t.Parallel()
+
+	tdb := newCommWebhookTestDB()
+	s := &Server{store: store.New(tdb.db), cfg: config.Config{Stage: "lab"}}
+	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(assertNotFound()).Once()
+	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
+		*dest = models.Domain{
+			Domain:             "example.com",
+			InstanceSlug:       commWebhookTestInstanceSlug,
+			Type:               models.DomainTypePrimary,
+			Status:             models.DomainStatusVerified,
+			VerificationMethod: "managed",
+		}
+	}).Once()
+	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{Slug: commWebhookTestInstanceSlug, HostedBaseDomain: "example.com"}
+	}).Once()
+
+	instanceSlug, err := s.loadTelnyxVoiceInstanceSlug(&apptheory.Context{}, &models.SoulAgentIdentity{Domain: "dev.example.com"})
+	if err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+	if instanceSlug != commWebhookTestInstanceSlug {
+		t.Fatalf("unexpected instance slug: %q", instanceSlug)
 	}
 }
 

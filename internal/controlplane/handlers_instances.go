@@ -56,6 +56,9 @@ type instanceResponse struct {
 	ManagedLesserDomain       string    `json:"managed_lesser_domain,omitempty"`
 	HostedZoneID              string    `json:"hosted_zone_id,omitempty"`
 	LesserVersion             string    `json:"lesser_version,omitempty"`
+	LesserBodyVersion         string    `json:"lesser_body_version,omitempty"`
+	BodyProvisionedAt         time.Time `json:"body_provisioned_at,omitempty"`
+	McpWiredAt                time.Time `json:"mcp_wired_at,omitempty"`
 	SoulEnabled               bool      `json:"soul_enabled"`
 	BodyEnabled               bool      `json:"body_enabled"`
 	SoulVersion               string    `json:"soul_version,omitempty"`
@@ -164,6 +167,9 @@ func instanceResponseFromModel(inst *models.Instance) instanceResponse {
 		HostedBaseDomain:          strings.TrimSpace(inst.HostedBaseDomain),
 		HostedZoneID:              strings.TrimSpace(inst.HostedZoneID),
 		LesserVersion:             strings.TrimSpace(inst.LesserVersion),
+		LesserBodyVersion:         strings.TrimSpace(inst.LesserBodyVersion),
+		BodyProvisionedAt:         inst.BodyProvisionedAt,
+		McpWiredAt:                inst.McpWiredAt,
 		SoulEnabled:               effectiveSoulEnabled(inst.SoulEnabled),
 		BodyEnabled:               effectiveBodyEnabled(inst.BodyEnabled),
 		SoulVersion:               strings.TrimSpace(inst.SoulVersion),

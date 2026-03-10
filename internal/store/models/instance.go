@@ -34,6 +34,9 @@ type Instance struct {
 	HostedBaseDomain               string    `theorydb:"attr:hostedBaseDomain" json:"hosted_base_domain,omitempty"`
 	HostedZoneID                   string    `theorydb:"attr:hostedZoneId" json:"hosted_zone_id,omitempty"`
 	LesserVersion                  string    `theorydb:"attr:lesserVersion" json:"lesser_version,omitempty"`
+	LesserBodyVersion              string    `theorydb:"attr:lesserBodyVersion" json:"lesser_body_version,omitempty"`
+	BodyProvisionedAt              time.Time `theorydb:"attr:bodyProvisionedAt" json:"body_provisioned_at,omitempty"`
+	McpWiredAt                     time.Time `theorydb:"attr:mcpWiredAt" json:"mcp_wired_at,omitempty"`
 	SoulEnabled                    *bool     `theorydb:"attr:soulEnabled" json:"soul_enabled,omitempty"`
 	BodyEnabled                    *bool     `theorydb:"attr:bodyEnabled" json:"body_enabled,omitempty"`
 	SoulVersion                    string    `theorydb:"attr:soulVersion" json:"soul_version,omitempty"`

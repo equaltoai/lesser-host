@@ -30,8 +30,10 @@ import (
 )
 
 const (
-	testManagedUpdateTrustBaseURL = "https://example.test"
-	testManagedUpdateReceiptJSON  = `{"app":"x","base_domain":"d"}`
+	testManagedUpdateTrustBaseURL    = "https://example.test"
+	testManagedUpdateReceiptJSON     = `{"app":"x","base_domain":"d"}`
+	testManagedUpdateBodyReceiptJSON = `{"version":1,"stage":"dev","base_domain":"d","lesser_body_version":"v.0.1.3"}`
+	testManagedUpdateMCPReceiptJSON  = `{"version":1,"stage":"dev","base_domain":"d","lesser_body_version":"v.0.1.3","mcp_url":"https://api.dev.example.test/mcp","mcp_lambda_arn":"arn:aws:lambda:us-east-1:123:function:mcp"}`
 )
 
 func TestRunManagedUpdateStateMachine_HappyPath(t *testing.T) {
@@ -203,44 +205,8 @@ func TestRunManagedUpdateStateMachine_HappyPath(t *testing.T) {
 	require.True(t, job.VerifyAIOK != nil && *job.VerifyAIOK, "ai verify failed: %s", job.VerifyAIErr)
 }
 
-func TestRunManagedUpdateStateMachine_DeploysLesserBodyWithDefaultVersion(t *testing.T) {
+func TestRunManagedUpdateStateMachine_BodyOnlyCompletesIndependently(t *testing.T) {
 	t.Parallel()
-
-	trustBaseURL := ""
-	handler := http.NewServeMux()
-	handler.HandleFunc("/api/v2/instance", func(w http.ResponseWriter, _ *http.Request) {
-		baseURL := trustBaseURL
-		if strings.TrimSpace(baseURL) == "" {
-			baseURL = testManagedUpdateTrustBaseURL
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"configuration": map[string]any{
-				"translation": map[string]any{"enabled": true},
-				"trust": map[string]any{
-					"enabled":  true,
-					"base_url": baseURL,
-				},
-				"tips": map[string]any{
-					"enabled":          true,
-					"chain_id":         8453,
-					"contract_address": "0xabc",
-				},
-			},
-		})
-	})
-	handler.HandleFunc("/api/v1/instance/translation_languages", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-	handler.HandleFunc("/api/v1/trust/jwks.json", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-	handler.HandleFunc("/api/v1/ai/jobs/", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-	})
-	ts := httptest.NewTLSServer(handler)
-	t.Cleanup(ts.Close)
-	trustBaseURL = ts.URL
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	t.Cleanup(cancel)
@@ -270,7 +236,7 @@ func TestRunManagedUpdateStateMachine_DeploysLesserBodyWithDefaultVersion(t *tes
 		Owner:                           "wallet-deadbeef",
 		HostedAccountID:                 "123",
 		HostedRegion:                    "us-east-1",
-		HostedBaseDomain:                ts.URL,
+		HostedBaseDomain:                "slug.example.com",
 		LesserHostInstanceKeySecretARN:  "",
 		TranslationEnabled:              &translationEnabled,
 		TipEnabled:                      &tipEnabled,
@@ -308,7 +274,9 @@ func TestRunManagedUpdateStateMachine_DeploysLesserBodyWithDefaultVersion(t *tes
 	}
 
 	s3Client := &fakeS3{
-		out: &s3.GetObjectOutput{Body: io.NopCloser(strings.NewReader(testManagedUpdateReceiptJSON))},
+		byKey: map[string]*s3.GetObjectOutput{
+			"managed/updates/slug/job1/body-state.json": {Body: io.NopCloser(strings.NewReader(testManagedUpdateBodyReceiptJSON))},
+		},
 	}
 
 	cfg := config.Config{
@@ -327,7 +295,6 @@ func TestRunManagedUpdateStateMachine_DeploysLesserBodyWithDefaultVersion(t *tes
 	st := store.New(db)
 	sqsClient := &fakeSQS{}
 	srv := NewServer(cfg, st, nil, nil, nil, sqsClient, cb, s3Client)
-	srv.httpClient = ts.Client()
 
 	fsm := &fakeSecretsManager{
 		describeErr: &smtypes.ResourceNotFoundException{},
@@ -347,9 +314,10 @@ func TestRunManagedUpdateStateMachine_DeploysLesserBodyWithDefaultVersion(t *tes
 		InstanceSlug:              "slug",
 		Status:                    models.UpdateJobStatusQueued,
 		LesserVersion:             "v1.2.3",
-		RotateInstanceKey:         true,
-		LesserHostBaseURL:         ts.URL,
-		LesserHostAttestationsURL: ts.URL,
+		LesserBodyVersion:         "v.0.1.3",
+		BodyOnly:                  true,
+		LesserHostBaseURL:         "https://lab.example.com",
+		LesserHostAttestationsURL: "https://lab.example.com",
 		TranslationEnabled:        true,
 		MaxAttempts:               3,
 	}
@@ -368,80 +336,28 @@ func TestRunManagedUpdateStateMachine_DeploysLesserBodyWithDefaultVersion(t *tes
 		return ""
 	}
 
-	// First run starts the main Lesser deploy.
+	// First run skips Lesser and starts the lesser-body deploy.
 	require.NoError(t, srv.runManagedUpdateStateMachine(ctx, job, "req", now))
-	require.Equal(t, updateStepDeployWait, job.Step)
+	require.Equal(t, updateStepBodyDeployWait, job.Step)
 	require.Equal(t, models.UpdateJobStatusRunning, job.Status)
 	require.NotEmpty(t, job.RunID)
 	require.Len(t, sqsClient.inputs, 1)
 
-	// Second run ingests receipt and starts lesser-body deploy.
+	// Second run ingests the lesser-body receipt and completes the body-only job.
 	require.NoError(t, srv.runManagedUpdateStateMachine(ctx, job, "req", now.Add(1*time.Minute)))
-	require.Equal(t, updateStepBodyDeployWait, job.Step)
-	require.Equal(t, models.UpdateJobStatusRunning, job.Status)
-	require.Equal(t, "v.0.1.3", job.LesserBodyVersion)
-	require.NotEmpty(t, job.RunID)
-	require.Len(t, sqsClient.inputs, 2)
-
-	// Third run completes lesser-body deploy and starts MCP wiring deploy.
-	require.NoError(t, srv.runManagedUpdateStateMachine(ctx, job, "req", now.Add(2*time.Minute)))
-	require.Equal(t, updateStepDeployMcpWait, job.Step)
-	require.Equal(t, models.UpdateJobStatusRunning, job.Status)
-	require.NotEmpty(t, job.RunID)
-	require.Len(t, sqsClient.inputs, 3)
-
-	// Fourth run completes MCP wiring and verifies deployment.
-	require.NoError(t, srv.runManagedUpdateStateMachine(ctx, job, "req", now.Add(3*time.Minute)))
 	require.Equal(t, updateStepDone, job.Step)
 	require.Equal(t, models.UpdateJobStatusOK, job.Status)
-	require.NotEmpty(t, job.RunURL)
+	require.Equal(t, "v.0.1.3", job.LesserBodyVersion)
+	require.Equal(t, updatePhaseStatusSucceeded, job.BodyStatus)
+	require.Equal(t, updatePhaseStatusSkipped, job.MCPStatus)
 
-	require.Len(t, cb.startInputs, 3)
-	require.Equal(t, "lesser", envValue(cb.startInputs[0], "RUN_MODE"))
-	require.Equal(t, "lesser-body", envValue(cb.startInputs[1], "RUN_MODE"))
-	require.Equal(t, "lesser-mcp", envValue(cb.startInputs[2], "RUN_MODE"))
-	require.Equal(t, "v.0.1.3", envValue(cb.startInputs[1], "LESSER_BODY_VERSION"))
-	require.Equal(t, "v.0.1.3", envValue(cb.startInputs[2], "LESSER_BODY_VERSION"))
+	require.Len(t, cb.startInputs, 1)
+	require.Equal(t, "lesser-body", envValue(cb.startInputs[0], "RUN_MODE"))
+	require.Equal(t, "v.0.1.3", envValue(cb.startInputs[0], "LESSER_BODY_VERSION"))
 }
 
-func TestRunManagedUpdateStateMachine_BodyOnlySkipsLesserDeploy(t *testing.T) {
+func TestRunManagedUpdateStateMachine_MCPOnlySkipsLesserAndBodyDeploy(t *testing.T) {
 	t.Parallel()
-
-	trustBaseURL := ""
-	handler := http.NewServeMux()
-	handler.HandleFunc("/api/v2/instance", func(w http.ResponseWriter, _ *http.Request) {
-		baseURL := trustBaseURL
-		if strings.TrimSpace(baseURL) == "" {
-			baseURL = testManagedUpdateTrustBaseURL
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"configuration": map[string]any{
-				"translation": map[string]any{"enabled": true},
-				"trust": map[string]any{
-					"enabled":  true,
-					"base_url": baseURL,
-				},
-				"tips": map[string]any{
-					"enabled":          true,
-					"chain_id":         8453,
-					"contract_address": "0xabc",
-				},
-			},
-		})
-	})
-	handler.HandleFunc("/api/v1/instance/translation_languages", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-	handler.HandleFunc("/api/v1/trust/jwks.json", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-	handler.HandleFunc("/api/v1/ai/jobs/", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-	})
-	ts := httptest.NewTLSServer(handler)
-	t.Cleanup(ts.Close)
-	trustBaseURL = ts.URL
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	t.Cleanup(cancel)
@@ -471,7 +387,7 @@ func TestRunManagedUpdateStateMachine_BodyOnlySkipsLesserDeploy(t *testing.T) {
 		Owner:                           "wallet-deadbeef",
 		HostedAccountID:                 "123",
 		HostedRegion:                    "us-east-1",
-		HostedBaseDomain:                ts.URL,
+		HostedBaseDomain:                "slug.example.com",
 		LesserHostInstanceKeySecretARN:  "",
 		LesserVersion:                   "v1.2.3",
 		TranslationEnabled:              &translationEnabled,
@@ -510,7 +426,9 @@ func TestRunManagedUpdateStateMachine_BodyOnlySkipsLesserDeploy(t *testing.T) {
 	}
 
 	s3Client := &fakeS3{
-		out: &s3.GetObjectOutput{Body: io.NopCloser(strings.NewReader(testManagedUpdateReceiptJSON))},
+		byKey: map[string]*s3.GetObjectOutput{
+			"managed/updates/slug/job1/mcp-state.json": {Body: io.NopCloser(strings.NewReader(testManagedUpdateMCPReceiptJSON))},
+		},
 	}
 
 	cfg := config.Config{
@@ -529,7 +447,6 @@ func TestRunManagedUpdateStateMachine_BodyOnlySkipsLesserDeploy(t *testing.T) {
 	st := store.New(db)
 	sqsClient := &fakeSQS{}
 	srv := NewServer(cfg, st, nil, nil, nil, sqsClient, cb, s3Client)
-	srv.httpClient = ts.Client()
 
 	fsm := &fakeSecretsManager{
 		describeErr: &smtypes.ResourceNotFoundException{},
@@ -550,9 +467,9 @@ func TestRunManagedUpdateStateMachine_BodyOnlySkipsLesserDeploy(t *testing.T) {
 		Status:                    models.UpdateJobStatusQueued,
 		LesserVersion:             "v1.2.3",
 		LesserBodyVersion:         "v.0.1.3",
-		BodyOnly:                  true,
-		LesserHostBaseURL:         ts.URL,
-		LesserHostAttestationsURL: ts.URL,
+		MCPOnly:                   true,
+		LesserHostBaseURL:         "https://lab.example.com",
+		LesserHostAttestationsURL: "https://lab.example.com",
 		TranslationEnabled:        true,
 		MaxAttempts:               3,
 	}
@@ -572,27 +489,21 @@ func TestRunManagedUpdateStateMachine_BodyOnlySkipsLesserDeploy(t *testing.T) {
 	}
 
 	require.NoError(t, srv.runManagedUpdateStateMachine(ctx, job, "req", now))
-	require.Equal(t, updateStepBodyDeployWait, job.Step)
+	require.Equal(t, updateStepDeployMcpWait, job.Step)
 	require.Equal(t, models.UpdateJobStatusRunning, job.Status)
 	require.NotEmpty(t, job.RunID)
 	require.Len(t, sqsClient.inputs, 1)
 
 	require.NoError(t, srv.runManagedUpdateStateMachine(ctx, job, "req", now.Add(1*time.Minute)))
-	require.Equal(t, updateStepDeployMcpWait, job.Step)
-	require.Equal(t, models.UpdateJobStatusRunning, job.Status)
-	require.NotEmpty(t, job.RunID)
-	require.Len(t, sqsClient.inputs, 2)
-
-	require.NoError(t, srv.runManagedUpdateStateMachine(ctx, job, "req", now.Add(2*time.Minute)))
 	require.Equal(t, updateStepDone, job.Step)
 	require.Equal(t, models.UpdateJobStatusOK, job.Status)
-	require.NotEmpty(t, job.RunURL)
+	require.Equal(t, updatePhaseStatusSkipped, job.DeployStatus)
+	require.Equal(t, updatePhaseStatusSkipped, job.BodyStatus)
+	require.Equal(t, updatePhaseStatusSucceeded, job.MCPStatus)
 
-	require.Len(t, cb.startInputs, 2)
-	require.Equal(t, "lesser-body", envValue(cb.startInputs[0], "RUN_MODE"))
-	require.Equal(t, "lesser-mcp", envValue(cb.startInputs[1], "RUN_MODE"))
+	require.Len(t, cb.startInputs, 1)
+	require.Equal(t, "lesser-mcp", envValue(cb.startInputs[0], "RUN_MODE"))
 	require.Equal(t, "v.0.1.3", envValue(cb.startInputs[0], "LESSER_BODY_VERSION"))
-	require.Equal(t, "v.0.1.3", envValue(cb.startInputs[1], "LESSER_BODY_VERSION"))
 }
 
 func TestUpdateJob_ProcessableAndMissingConfig(t *testing.T) {
