@@ -275,33 +275,8 @@ func (s *Server) resolveManagedSoulStageDomainAccess(ctx *apptheory.Context, nor
 		return nil
 	}
 
-	stagePrefix := managedInstanceStageForControlPlane(s.cfg.Stage)
-	if stagePrefix == managedStageLive {
-		return nil
-	}
-
-	prefix := stagePrefix + "."
-	if !strings.HasPrefix(normalizedDomain, prefix) {
-		return nil
-	}
-
-	baseDomain := strings.TrimSpace(strings.TrimPrefix(normalizedDomain, prefix))
-	if baseDomain == "" || managedInstanceStageDomain(s.cfg.Stage, baseDomain) != normalizedDomain {
-		return nil
-	}
-
-	var d models.Domain
-	err := s.store.DB.WithContext(ctx.Context()).
-		Model(&models.Domain{}).
-		Where("PK", "=", fmt.Sprintf("DOMAIN#%s", baseDomain)).
-		Where("SK", "=", models.SKMetadata).
-		First(&d)
-	if err != nil {
-		return nil
-	}
-	if !domainIsVerifiedOrActive(d.Status) ||
-		strings.TrimSpace(d.Type) != models.DomainTypePrimary ||
-		!strings.EqualFold(strings.TrimSpace(d.VerificationMethod), "managed") {
+	d, err := s.loadManagedStageAliasPrimaryDomain(ctx.Context(), normalizedDomain)
+	if err != nil || d == nil {
 		return nil
 	}
 
@@ -309,12 +284,12 @@ func (s *Server) resolveManagedSoulStageDomainAccess(ctx *apptheory.Context, nor
 	if instErr != nil {
 		return nil
 	}
-	if !strings.EqualFold(strings.TrimSpace(inst.HostedBaseDomain), baseDomain) {
+	if !strings.EqualFold(strings.TrimSpace(inst.HostedBaseDomain), strings.TrimSpace(d.Domain)) {
 		return nil
 	}
 
 	return &managedSoulDomainAccess{
-		domain:   &d,
+		domain:   d,
 		instance: inst,
 	}
 }

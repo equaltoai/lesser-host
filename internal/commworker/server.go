@@ -25,17 +25,14 @@ import (
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 
 	"github.com/equaltoai/lesser-host/internal/config"
+	"github.com/equaltoai/lesser-host/internal/manageddomain"
 	hostsecrets "github.com/equaltoai/lesser-host/internal/secrets"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
 const (
-	migaduSMTPHost    = "smtp.migadu.com"
-	migaduSMTPPort    = "587"
-	instanceStageLive = "live"
-	instanceStageDev  = "dev"
-
-	instanceStageStaging = "staging"
+	migaduSMTPHost = "smtp.migadu.com"
+	migaduSMTPPort = "587"
 )
 
 type stsAPI interface {
@@ -355,7 +352,7 @@ func (s *Server) resolveAgentInstance(ctx context.Context, identity *models.Soul
 	if domain == "" {
 		return nil, false, nil
 	}
-	d, ok, err := s.store.GetDomain(ctx, domain)
+	d, ok, err := s.getManagedStageAwareDomain(ctx, domain)
 	if err != nil {
 		return nil, false, err
 	}
@@ -368,6 +365,50 @@ func (s *Server) resolveAgentInstance(ctx context.Context, identity *models.Soul
 		return nil, false, err
 	}
 	return inst, ok && inst != nil, nil
+}
+
+func (s *Server) getManagedStageAwareDomain(ctx context.Context, domain string) (*models.Domain, bool, error) {
+	if s == nil || s.store == nil {
+		return nil, false, fmt.Errorf("store not initialized")
+	}
+
+	domain = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), ".")
+	if domain == "" {
+		return nil, false, nil
+	}
+
+	d, ok, err := s.store.GetDomain(ctx, domain)
+	if err != nil || ok {
+		return d, ok, err
+	}
+	return s.getManagedStageAliasDomain(ctx, domain)
+}
+
+func (s *Server) getManagedStageAliasDomain(ctx context.Context, domain string) (*models.Domain, bool, error) {
+	baseDomain, aliasOK := manageddomain.BaseDomainFromStageDomain(s.cfg.Stage, domain)
+	if !aliasOK {
+		return nil, false, nil
+	}
+
+	baseRecord, ok, err := s.store.GetDomain(ctx, baseDomain)
+	if err != nil || !ok || baseRecord == nil {
+		return nil, false, err
+	}
+	if !commDomainIsVerifiedOrActive(baseRecord.Status) ||
+		strings.TrimSpace(baseRecord.Type) != models.DomainTypePrimary ||
+		!strings.EqualFold(strings.TrimSpace(baseRecord.VerificationMethod), "managed") ||
+		strings.TrimSpace(baseRecord.InstanceSlug) == "" {
+		return nil, false, nil
+	}
+
+	inst, ok, err := s.store.GetInstance(ctx, strings.TrimSpace(baseRecord.InstanceSlug))
+	if err != nil {
+		return nil, false, err
+	}
+	if !ok || inst == nil || !strings.EqualFold(strings.TrimSpace(inst.HostedBaseDomain), baseDomain) {
+		return nil, false, nil
+	}
+	return baseRecord, true, nil
 }
 
 func (s *Server) countInboundReceivesSince(ctx context.Context, agentID string, channel string, since time.Time, scanLimit int) (int, error) {
@@ -757,27 +798,11 @@ func (s *Server) lookupSenderSoulAgentID(ctx context.Context, notif *InboundNoti
 }
 
 func instanceStageForControlPlane(stage string) string {
-	stage = strings.ToLower(strings.TrimSpace(stage))
-	switch stage {
-	case instanceStageLive, "prod", "production":
-		return instanceStageLive
-	case instanceStageStaging, "stage":
-		return instanceStageStaging
-	default:
-		return instanceStageDev
-	}
+	return manageddomain.StageForControlPlane(stage)
 }
 
 func instanceStageDomain(controlPlaneStage string, baseDomain string) string {
-	base := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(baseDomain)), ".")
-	if base == "" {
-		return ""
-	}
-	stage := instanceStageForControlPlane(controlPlaneStage)
-	if stage == "live" {
-		return base
-	}
-	return fmt.Sprintf("%s.%s", stage, base)
+	return manageddomain.StageDomain(controlPlaneStage, baseDomain)
 }
 
 func instanceNotificationsDeliverURL(controlPlaneStage string, baseDomain string) string {
@@ -786,6 +811,15 @@ func instanceNotificationsDeliverURL(controlPlaneStage string, baseDomain string
 		return ""
 	}
 	return fmt.Sprintf("https://api.%s/api/v1/notifications/deliver", stageDomain)
+}
+
+func commDomainIsVerifiedOrActive(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case models.DomainStatusVerified, models.DomainStatusActive:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Server) defaultFetchInstanceKeyPlaintext(ctx context.Context, inst *models.Instance) (string, error) {

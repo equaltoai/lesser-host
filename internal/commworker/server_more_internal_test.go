@@ -427,6 +427,63 @@ func TestResolveRecipientAndResolveAgentInstance_Branches(t *testing.T) {
 	}
 }
 
+func TestResolveAgentInstance_AllowsManagedStageAlias(t *testing.T) {
+	t.Parallel()
+
+	s := &Server{
+		cfg: config.Config{Stage: "lab"},
+		store: &fakeStore{
+			domains: map[string]*models.Domain{
+				"example.com": {
+					Domain:             "example.com",
+					InstanceSlug:       "demo",
+					Type:               models.DomainTypePrimary,
+					Status:             models.DomainStatusVerified,
+					VerificationMethod: "managed",
+				},
+			},
+			instances: map[string]*models.Instance{
+				"demo": {Slug: "demo", HostedBaseDomain: "example.com"},
+			},
+		},
+	}
+
+	inst, ok, err := s.resolveAgentInstance(context.Background(), &models.SoulAgentIdentity{Domain: "dev.example.com"})
+	if err != nil || !ok || inst == nil || inst.Slug != "demo" {
+		t.Fatalf("unexpected alias resolution: %#v %v %v", inst, ok, err)
+	}
+}
+
+func TestResolveAgentInstance_RejectsInvalidManagedStageAlias(t *testing.T) {
+	t.Parallel()
+
+	s := &Server{
+		cfg: config.Config{Stage: "lab"},
+		store: &fakeStore{
+			domains: map[string]*models.Domain{
+				"example.com": {
+					Domain:             "example.com",
+					InstanceSlug:       "demo",
+					Type:               models.DomainTypeVanity,
+					Status:             models.DomainStatusVerified,
+					VerificationMethod: "managed",
+				},
+			},
+			instances: map[string]*models.Instance{
+				"demo": {Slug: "demo", HostedBaseDomain: "example.com"},
+			},
+		},
+	}
+
+	inst, ok, err := s.resolveAgentInstance(context.Background(), &models.SoulAgentIdentity{Domain: "dev.example.com"})
+	if err != nil {
+		t.Fatalf("expected invalid alias to miss without error, got %v", err)
+	}
+	if ok || inst != nil {
+		t.Fatalf("expected invalid alias to miss, got %#v %v", inst, ok)
+	}
+}
+
 func TestMaybeAnnotateSenderSoul_Branches(t *testing.T) {
 	t.Parallel()
 

@@ -539,6 +539,47 @@ func TestRequireCommAgentInstanceAccess_ErrorsAndSuccess(t *testing.T) {
 	})
 }
 
+func TestRequireCommAgentInstanceAccess_ManagedStageDomain(t *testing.T) {
+	t.Parallel()
+
+	key := &models.InstanceKey{ID: "k1", InstanceSlug: "inst1"}
+
+	t.Run("success", func(t *testing.T) {
+		tdb := newSoulCommSendMoreTestDB()
+		tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(theoryErrors.ErrItemNotFound).Once()
+		expectCommDomain(t, tdb.qDomain, models.Domain{
+			Domain:             "example.com",
+			InstanceSlug:       "inst1",
+			Type:               models.DomainTypePrimary,
+			Status:             models.DomainStatusVerified,
+			VerificationMethod: "managed",
+		})
+		expectCommInstance(t, tdb.qInstance, models.Instance{Slug: "inst1", HostedBaseDomain: "example.com"})
+		s := &Server{store: store.New(tdb.db), cfg: config.Config{Stage: "lab"}}
+		if appErr := s.requireCommAgentInstanceAccess(context.Background(), key, &models.SoulAgentIdentity{Domain: "dev.example.com"}); appErr != nil {
+			t.Fatalf("expected success, got %v", appErr)
+		}
+	})
+
+	t.Run("foreign instance unauthorized", func(t *testing.T) {
+		tdb := newSoulCommSendMoreTestDB()
+		tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(theoryErrors.ErrItemNotFound).Once()
+		expectCommDomain(t, tdb.qDomain, models.Domain{
+			Domain:             "example.com",
+			InstanceSlug:       "other",
+			Type:               models.DomainTypePrimary,
+			Status:             models.DomainStatusVerified,
+			VerificationMethod: "managed",
+		})
+		expectCommInstance(t, tdb.qInstance, models.Instance{Slug: "other", HostedBaseDomain: "example.com"})
+		s := &Server{store: store.New(tdb.db), cfg: config.Config{Stage: "lab"}}
+		appErr := s.requireCommAgentInstanceAccess(context.Background(), key, &models.SoulAgentIdentity{Domain: "dev.example.com"})
+		if appErr.Code != "comm.unauthorized" || appErr.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("expected unauthorized/401, got %q/%d", appErr.Code, appErr.StatusCode)
+		}
+	})
+}
+
 func TestCountSoulOutboundCommSince_FiltersOutboundByChannelAndTime(t *testing.T) {
 	t.Parallel()
 
@@ -723,6 +764,14 @@ func expectCommDomain(t *testing.T, q *ttmocks.MockQuery, domain models.Domain) 
 	q.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
 		*dest = domain
+	}).Once()
+}
+
+func expectCommInstance(t *testing.T, q *ttmocks.MockQuery, inst models.Instance) {
+	t.Helper()
+	q.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = inst
 	}).Once()
 }
 

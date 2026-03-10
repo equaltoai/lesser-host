@@ -479,13 +479,12 @@ func (s *Server) resolveTelnyxVoiceBudget(ctx *apptheory.Context, toNumber strin
 }
 
 func (s *Server) loadTelnyxVoiceInstanceSlug(ctx *apptheory.Context, identity *models.SoulAgentIdentity) (string, error) {
-	var d models.Domain
-	if err := s.store.DB.WithContext(ctx.Context()).
-		Model(&models.Domain{}).
-		Where("PK", "=", fmt.Sprintf("DOMAIN#%s", strings.ToLower(strings.TrimSpace(identity.Domain)))).
-		Where("SK", "=", models.SKMetadata).
-		First(&d); err != nil {
+	d, err := s.loadManagedStageAwareDomain(ctx.Context(), strings.ToLower(strings.TrimSpace(identity.Domain)))
+	if err != nil {
 		return "", err
+	}
+	if d == nil {
+		return "", fmt.Errorf("domain missing instance slug")
 	}
 	instanceSlug := strings.TrimSpace(d.InstanceSlug)
 	if instanceSlug == "" {
