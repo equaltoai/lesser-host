@@ -548,8 +548,9 @@ export class LesserHostStack extends cdk.Stack {
 					timeout: cdk.Duration.hours(3),
 					environment: {
 						buildImage: codebuild.LinuxBuildImage.STANDARD_7_0,
-					computeType: codebuild.ComputeType.SMALL,
-				},
+						// Newer Lesser releases can exhaust SMALL during api lambda compilation in lesser-mcp/body-only flows.
+						computeType: codebuild.ComputeType.LARGE,
+					},
 					environmentVariables: {
 					GITHUB_OWNER: { value: lesserGitHubOwner },
 					GITHUB_REPO: { value: lesserGitHubRepo },
