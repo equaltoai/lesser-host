@@ -29,6 +29,14 @@ func TestUpdateJobResponseFromModel_TrimsFields(t *testing.T) {
 	require.Equal(t, "note", out.Note)
 }
 
+func expectEmptyUpdateJobHistory(t *testing.T, qUpdate *ttmocks.MockQuery) {
+	t.Helper()
+	qUpdate.On("All", mock.AnythingOfType("*[]*models.UpdateJob")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.UpdateJob](t, args, 0)
+		*dest = []*models.UpdateJob{}
+	}).Once()
+}
+
 func TestHandlePortalCreateInstanceUpdateJob_ReturnsExistingJobWhenQueued(t *testing.T) {
 	t.Parallel()
 
@@ -51,6 +59,7 @@ func TestHandlePortalCreateInstanceUpdateJob_ReturnsExistingJobWhenQueued(t *tes
 			UpdateJobID:  "job1",
 		}
 	}).Once()
+	expectEmptyUpdateJobHistory(t, qUpdate)
 
 	qUpdate.On("First", mock.AnythingOfType("*models.UpdateJob")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.UpdateJob](t, args, 0)
@@ -103,6 +112,7 @@ func TestHandlePortalCreateInstanceUpdateJob_CreatesNewJob(t *testing.T) {
 			LesserAIPiiDetectionEnabled: nil,
 		}
 	}).Once()
+	expectEmptyUpdateJobHistory(t, qUpdate)
 
 	resp, err := s.handlePortalCreateInstanceUpdateJob(ctx)
 	require.NoError(t, err)
@@ -117,7 +127,7 @@ func TestHandlePortalCreateInstanceUpdateJob_CreatesNewJob(t *testing.T) {
 	require.True(t, parsed.RotateInstanceKey)
 }
 
-func TestHandlePortalCreateInstanceUpdateJob_DefaultsLesserBodyVersion(t *testing.T) {
+func TestHandlePortalCreateInstanceUpdateJob_DoesNotDefaultLesserBodyVersionForLesserUpdates(t *testing.T) {
 	t.Parallel()
 
 	tdb := newPortalTestDB()
@@ -154,6 +164,7 @@ func TestHandlePortalCreateInstanceUpdateJob_DefaultsLesserBodyVersion(t *testin
 			BodyEnabled:      nil, // nil defaults to enabled
 		}
 	}).Once()
+	expectEmptyUpdateJobHistory(t, qUpdate)
 
 	resp, err := s.handlePortalCreateInstanceUpdateJob(ctx)
 	require.NoError(t, err)
@@ -161,7 +172,54 @@ func TestHandlePortalCreateInstanceUpdateJob_DefaultsLesserBodyVersion(t *testin
 
 	var parsed updateJobResponse
 	require.NoError(t, json.Unmarshal(resp.Body, &parsed))
-	require.Equal(t, "v.0.1.3", parsed.LesserBodyVersion)
+	require.Equal(t, "", parsed.LesserBodyVersion)
+}
+
+func TestHandlePortalCreateInstanceUpdateJob_BodyOnlyDefaultsLesserBodyVersion(t *testing.T) {
+	t.Parallel()
+
+	tdb := newPortalTestDB()
+	qUpdate := new(ttmocks.MockQuery)
+	tdb.db.On("Model", mock.AnythingOfType("*models.UpdateJob")).Return(qUpdate).Maybe()
+	addStandardMockQueryStubs(qUpdate)
+
+	s := &Server{
+		cfg: config.Config{
+			Stage:                           "lab",
+			WebAuthnRPID:                    "example.com",
+			ManagedInstanceRoleName:         "role",
+			ManagedLesserBodyDefaultVersion: "v0.1.12",
+		},
+		store: store.New(tdb.db),
+	}
+
+	ctx := &apptheory.Context{AuthIdentity: "alice", RequestID: "rid"}
+	ctx.Params = map[string]string{"slug": testPortalInstanceSlugDemo}
+	body, _ := json.Marshal(createUpdateJobRequest{BodyOnly: true})
+	ctx.Request.Body = body
+
+	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{
+			Slug:             testPortalInstanceSlugDemo,
+			Owner:            "alice",
+			HostedAccountID:  "123",
+			HostedRegion:     "us-east-1",
+			HostedBaseDomain: "demo.example.com",
+			LesserVersion:    "v1.2.3",
+			BodyEnabled:      nil,
+		}
+	}).Once()
+	expectEmptyUpdateJobHistory(t, qUpdate)
+
+	resp, err := s.handlePortalCreateInstanceUpdateJob(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 202, resp.Status)
+
+	var parsed updateJobResponse
+	require.NoError(t, json.Unmarshal(resp.Body, &parsed))
+	require.Equal(t, "v0.1.12", parsed.LesserBodyVersion)
+	require.True(t, parsed.BodyOnly)
 }
 
 func TestHandlePortalCreateInstanceUpdateJob_BodyOnlyUsesBodyVersion(t *testing.T) {
@@ -200,6 +258,7 @@ func TestHandlePortalCreateInstanceUpdateJob_BodyOnlyUsesBodyVersion(t *testing.
 			BodyEnabled:      nil,
 		}
 	}).Once()
+	expectEmptyUpdateJobHistory(t, qUpdate)
 
 	resp, err := s.handlePortalCreateInstanceUpdateJob(ctx)
 	require.NoError(t, err)
@@ -216,6 +275,9 @@ func TestHandlePortalCreateInstanceUpdateJob_BodyOnlyRejectsRotateInstanceKey(t 
 	t.Parallel()
 
 	tdb := newPortalTestDB()
+	qUpdate := new(ttmocks.MockQuery)
+	tdb.db.On("Model", mock.AnythingOfType("*models.UpdateJob")).Return(qUpdate).Maybe()
+	addStandardMockQueryStubs(qUpdate)
 	s := &Server{store: store.New(tdb.db)}
 
 	ctx := &apptheory.Context{AuthIdentity: "alice", RequestID: "rid"}
@@ -235,6 +297,7 @@ func TestHandlePortalCreateInstanceUpdateJob_BodyOnlyRejectsRotateInstanceKey(t 
 			BodyEnabled:      nil,
 		}
 	}).Once()
+	expectEmptyUpdateJobHistory(t, qUpdate)
 
 	_, err := s.handlePortalCreateInstanceUpdateJob(ctx)
 	require.Error(t, err)
@@ -247,6 +310,9 @@ func TestHandlePortalCreateInstanceUpdateJob_BodyOnlyRequiresBodyVersionWhenNoDe
 	t.Parallel()
 
 	tdb := newPortalTestDB()
+	qUpdate := new(ttmocks.MockQuery)
+	tdb.db.On("Model", mock.AnythingOfType("*models.UpdateJob")).Return(qUpdate).Maybe()
+	addStandardMockQueryStubs(qUpdate)
 	s := &Server{store: store.New(tdb.db)}
 
 	ctx := &apptheory.Context{AuthIdentity: "alice", RequestID: "rid"}
@@ -266,6 +332,7 @@ func TestHandlePortalCreateInstanceUpdateJob_BodyOnlyRequiresBodyVersionWhenNoDe
 			BodyEnabled:      nil,
 		}
 	}).Once()
+	expectEmptyUpdateJobHistory(t, qUpdate)
 
 	_, err := s.handlePortalCreateInstanceUpdateJob(ctx)
 	require.Error(t, err)
@@ -274,15 +341,113 @@ func TestHandlePortalCreateInstanceUpdateJob_BodyOnlyRequiresBodyVersionWhenNoDe
 	require.Equal(t, "app.bad_request", appErr.Code)
 }
 
+func TestHandlePortalCreateInstanceUpdateJob_ReturnsActiveJobFromInstanceHistory(t *testing.T) {
+	t.Parallel()
+
+	tdb := newPortalTestDB()
+	qUpdate := new(ttmocks.MockQuery)
+	tdb.db.On("Model", mock.AnythingOfType("*models.UpdateJob")).Return(qUpdate).Maybe()
+	addStandardMockQueryStubs(qUpdate)
+
+	s := &Server{store: store.New(tdb.db)}
+
+	ctx := &apptheory.Context{AuthIdentity: "alice", RequestID: "rid"}
+	ctx.Params = map[string]string{"slug": testPortalInstanceSlugDemo}
+
+	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{
+			Slug:             testPortalInstanceSlugDemo,
+			Owner:            "alice",
+			HostedAccountID:  "123",
+			HostedRegion:     "us-east-1",
+			HostedBaseDomain: "demo.example.com",
+			LesserVersion:    "v1.2.3",
+			UpdateStatus:     models.UpdateJobStatusOK,
+		}
+	}).Once()
+
+	now := time.Unix(20, 0).UTC()
+	qUpdate.On("All", mock.AnythingOfType("*[]*models.UpdateJob")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.UpdateJob](t, args, 0)
+		*dest = []*models.UpdateJob{
+			{ID: "job-active", InstanceSlug: testPortalInstanceSlugDemo, Status: models.UpdateJobStatusRunning, CreatedAt: now},
+		}
+	}).Once()
+
+	resp, err := s.handlePortalCreateInstanceUpdateJob(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 200, resp.Status)
+
+	var parsed updateJobResponse
+	require.NoError(t, json.Unmarshal(resp.Body, &parsed))
+	require.Equal(t, "job-active", parsed.ID)
+	require.Equal(t, models.UpdateJobStatusRunning, parsed.Status)
+}
+
+func TestHandlePortalCreateInstanceUpdateJob_MCPOOnlyCreatesIndependentJob(t *testing.T) {
+	t.Parallel()
+
+	tdb := newPortalTestDB()
+	qUpdate := new(ttmocks.MockQuery)
+	tdb.db.On("Model", mock.AnythingOfType("*models.UpdateJob")).Return(qUpdate).Maybe()
+	addStandardMockQueryStubs(qUpdate)
+
+	s := &Server{
+		cfg: config.Config{
+			Stage:                   "lab",
+			WebAuthnRPID:            "example.com",
+			ManagedInstanceRoleName: "role",
+		},
+		store: store.New(tdb.db),
+	}
+
+	ctx := &apptheory.Context{AuthIdentity: "alice", RequestID: "rid"}
+	ctx.Params = map[string]string{"slug": testPortalInstanceSlugDemo}
+	body, _ := json.Marshal(createUpdateJobRequest{MCPOnly: true})
+	ctx.Request.Body = body
+
+	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{
+			Slug:             testPortalInstanceSlugDemo,
+			Owner:            "alice",
+			HostedAccountID:  "123",
+			HostedRegion:     "us-east-1",
+			HostedBaseDomain: "demo.example.com",
+			LesserVersion:    "v1.2.3",
+			BodyEnabled:      nil,
+		}
+	}).Once()
+
+	qUpdate.On("All", mock.AnythingOfType("*[]*models.UpdateJob")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.UpdateJob](t, args, 0)
+		*dest = []*models.UpdateJob{}
+	}).Once()
+
+	resp, err := s.handlePortalCreateInstanceUpdateJob(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 202, resp.Status)
+
+	var parsed updateJobResponse
+	require.NoError(t, json.Unmarshal(resp.Body, &parsed))
+	require.True(t, parsed.MCPOnly)
+	require.False(t, parsed.BodyOnly)
+	require.Equal(t, "", parsed.LesserBodyVersion)
+}
+
 func TestHandlePortalCreateInstanceUpdateJob_TransactWriteFailureReturnsInternalError(t *testing.T) {
 	t.Parallel()
 
 	db := ttmocks.NewMockExtendedDBStrict()
 	qInstance := new(ttmocks.MockQuery)
+	qUpdate := new(ttmocks.MockQuery)
 
 	db.On("WithContext", mock.Anything).Return(db).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.Instance")).Return(qInstance).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.UpdateJob")).Return(qUpdate).Maybe()
 	addStandardMockQueryStubs(qInstance)
+	addStandardMockQueryStubs(qUpdate)
 	db.On("TransactWrite", mock.Anything, mock.Anything).Return(errors.New("fail")).Once()
 
 	s := &Server{
@@ -306,6 +471,7 @@ func TestHandlePortalCreateInstanceUpdateJob_TransactWriteFailureReturnsInternal
 			LesserVersion:    "v1",
 		}
 	}).Once()
+	expectEmptyUpdateJobHistory(t, qUpdate)
 
 	_, err := s.handlePortalCreateInstanceUpdateJob(ctx)
 	require.Error(t, err)

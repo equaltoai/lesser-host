@@ -25,6 +25,22 @@ type lesserUpReceipt struct {
 	} `json:"hosted_zone"`
 }
 
+type lesserBodyReceipt struct {
+	Version           int    `json:"version"`
+	Stage             string `json:"stage"`
+	BaseDomain        string `json:"base_domain"`
+	LesserBodyVersion string `json:"lesser_body_version"`
+}
+
+type mcpWiringReceipt struct {
+	Version           int    `json:"version"`
+	Stage             string `json:"stage"`
+	BaseDomain        string `json:"base_domain"`
+	LesserBodyVersion string `json:"lesser_body_version"`
+	McpURL            string `json:"mcp_url"`
+	McpLambdaARN      string `json:"mcp_lambda_arn"`
+}
+
 func (s *Server) receiptS3Key(job *models.ProvisionJob) string {
 	if job == nil {
 		return ""
@@ -95,6 +111,32 @@ func (s *Server) loadReceiptFromS3(ctx context.Context, bucket string, key strin
 	}
 	if strings.TrimSpace(parsed.BaseDomain) == "" || strings.TrimSpace(parsed.App) == "" {
 		return raw, &parsed, fmt.Errorf("receipt is missing required fields")
+	}
+	return raw, &parsed, nil
+}
+
+func (s *Server) loadBodyReceiptFromS3(ctx context.Context, bucket string, key string) (string, *lesserBodyReceipt, error) {
+	raw, err := s.loadS3ObjectString(ctx, bucket, key)
+	if err != nil {
+		return "", nil, err
+	}
+
+	var parsed lesserBodyReceipt
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return raw, nil, err
+	}
+	return raw, &parsed, nil
+}
+
+func (s *Server) loadMCPReceiptFromS3(ctx context.Context, bucket string, key string) (string, *mcpWiringReceipt, error) {
+	raw, err := s.loadS3ObjectString(ctx, bucket, key)
+	if err != nil {
+		return "", nil, err
+	}
+
+	var parsed mcpWiringReceipt
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return raw, nil, err
 	}
 	return raw, &parsed, nil
 }

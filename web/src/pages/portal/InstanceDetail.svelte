@@ -89,6 +89,13 @@
 		return parts.map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join(' ');
 	}
 
+	function formatPhaseState(status?: string, err?: string): string {
+		const raw = (status || '').trim();
+		if (!raw) return '—';
+		if (raw === 'failed' && err?.trim()) return `failed: ${err.trim()}`;
+		return raw;
+	}
+
 	function abortPolling() {
 		if (pollController) {
 			pollController.abort();
@@ -261,6 +268,7 @@
 		lesserBodyVersion?: string;
 		rotateInstanceKey?: boolean;
 		bodyOnly?: boolean;
+		mcpOnly?: boolean;
 	}) {
 		updatesError = null;
 
@@ -274,11 +282,13 @@
 				lesser_body_version?: string;
 				rotate_instance_key?: boolean;
 				body_only?: boolean;
+				mcp_only?: boolean;
 			} = {};
 			if (version) input.lesser_version = version;
 			if (bodyVersion) input.lesser_body_version = bodyVersion;
 			if (options?.rotateInstanceKey) input.rotate_instance_key = true;
 			if (options?.bodyOnly) input.body_only = true;
+			if (options?.mcpOnly) input.mcp_only = true;
 
 			const job = await portalCreateUpdateJob(token, slug, input);
 			updateJobs = [job, ...updateJobs.filter((j) => j.id !== job.id)];
@@ -524,6 +534,10 @@
 				<DefinitionItem label="Primary domain" monospace>{primaryDomain()?.domain || '—'}</DefinitionItem>
 				<DefinitionItem label="Hosted account" monospace>{instance.hosted_account_id || '—'}</DefinitionItem>
 				<DefinitionItem label="Hosted region" monospace>{instance.hosted_region || '—'}</DefinitionItem>
+				<DefinitionItem label="Current Lesser version" monospace>{instance.lesser_version || '—'}</DefinitionItem>
+				<DefinitionItem label="Current lesser-body version" monospace>{instance.lesser_body_version || '—'}</DefinitionItem>
+				<DefinitionItem label="Body provisioned" monospace>{instance.body_provisioned_at || '—'}</DefinitionItem>
+				<DefinitionItem label="MCP wired" monospace>{instance.mcp_wired_at || '—'}</DefinitionItem>
 			</DefinitionList>
 
 			{#if domainsError}
@@ -686,7 +700,7 @@
 					Apply configuration
 				</Button>
 				<Text size="sm" color="secondary">
-					Re-runs <span class="instance-detail__mono">lesser up</span> to apply stored trust/translation/tips/AI config.
+					Re-runs <span class="instance-detail__mono">lesser up</span> only to apply stored trust/translation/tips/AI config.
 				</Text>
 			</div>
 
@@ -723,7 +737,7 @@
 					Start version update
 				</Button>
 				<Text size="sm" color="secondary">
-					Re-runs <span class="instance-detail__mono">lesser up</span> at the requested Lesser release.
+					Updates <span class="instance-detail__mono">lesser</span> only at the requested Lesser release.
 				</Text>
 			</div>
 
@@ -743,7 +757,20 @@
 					Update lesser-body only
 				</Button>
 				<Text size="sm" color="secondary">
-					Skips <span class="instance-detail__mono">lesser up</span> and only redeploys <span class="instance-detail__mono">lesser-body</span> plus MCP wiring.
+					Updates <span class="instance-detail__mono">lesser-body</span> only. MCP wiring is separate.
+				</Text>
+			</div>
+
+			<div class="instance-detail__row">
+				<Button
+					variant="outline"
+					onclick={() => void startUpdateJob({ mcpOnly: true })}
+					disabled={updateCreating || updatesPolling || updatesLoading || updateInProgress() || !managed}
+				>
+					Update MCP only
+				</Button>
+				<Text size="sm" color="secondary">
+					Re-runs only the <span class="instance-detail__mono">/mcp</span> wiring step against the currently deployed instance and lesser-body runtime.
 				</Text>
 			</div>
 
@@ -763,6 +790,9 @@
 					<DefinitionItem label="Lesser version" monospace>{job?.lesser_version || '—'}</DefinitionItem>
 					<DefinitionItem label="Lesser Body version" monospace>{job?.lesser_body_version || '—'}</DefinitionItem>
 					<DefinitionItem label="Body-only" monospace>{job?.body_only ? 'yes' : 'no'}</DefinitionItem>
+					<DefinitionItem label="MCP-only" monospace>{job?.mcp_only ? 'yes' : 'no'}</DefinitionItem>
+					<DefinitionItem label="Active phase" monospace>{job?.active_phase || '—'}</DefinitionItem>
+					<DefinitionItem label="Failed phase" monospace>{job?.failed_phase || '—'}</DefinitionItem>
 						<DefinitionItem label="Run id" monospace>{job?.run_id || '—'}</DefinitionItem>
 						<DefinitionItem label="Run url" monospace>
 							{@const runUrl = safeHref(job?.run_url)}
@@ -772,6 +802,33 @@
 								—
 							{/if}
 						</DefinitionItem>
+					<DefinitionItem label="Deploy phase" monospace>{formatPhaseState(job?.deploy_status, job?.deploy_error)}</DefinitionItem>
+					<DefinitionItem label="Deploy logs" monospace>
+						{@const deployRunUrl = safeHref(job?.deploy_run_url)}
+						{#if deployRunUrl}
+							<a href={deployRunUrl} target="_blank" rel="noopener noreferrer">Open deploy logs</a>
+						{:else}
+							—
+						{/if}
+					</DefinitionItem>
+					<DefinitionItem label="Body phase" monospace>{formatPhaseState(job?.body_status, job?.body_error)}</DefinitionItem>
+					<DefinitionItem label="Body logs" monospace>
+						{@const bodyRunUrl = safeHref(job?.body_run_url)}
+						{#if bodyRunUrl}
+							<a href={bodyRunUrl} target="_blank" rel="noopener noreferrer">Open body logs</a>
+						{:else}
+							—
+						{/if}
+					</DefinitionItem>
+					<DefinitionItem label="MCP phase" monospace>{formatPhaseState(job?.mcp_status, job?.mcp_error)}</DefinitionItem>
+					<DefinitionItem label="MCP logs" monospace>
+						{@const mcpRunUrl = safeHref(job?.mcp_run_url)}
+						{#if mcpRunUrl}
+							<a href={mcpRunUrl} target="_blank" rel="noopener noreferrer">Open MCP logs</a>
+						{:else}
+							—
+						{/if}
+					</DefinitionItem>
 					<DefinitionItem label="Verify translation" monospace>
 						{#if job?.verify_translation_ok === true}
 							ok

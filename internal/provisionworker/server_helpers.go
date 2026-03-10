@@ -120,25 +120,38 @@ func (s *Server) startDeployRunnerWithMode(ctx context.Context, job *models.Prov
 }
 
 func (s *Server) getDeployRunnerStatus(ctx context.Context, runID string) (string, string, error) {
+	info, err := s.getDeployRunnerInfo(ctx, runID)
+	if err != nil {
+		return "", "", err
+	}
+	return info.Status, info.DeepLink, nil
+}
+
+func (s *Server) getDeployRunnerInfo(ctx context.Context, runID string) (deployRunnerInfo, error) {
 	if s == nil || s.cb == nil {
-		return "", "", fmt.Errorf("codebuild client not initialized")
+		return deployRunnerInfo{}, fmt.Errorf("codebuild client not initialized")
 	}
 	runID = strings.TrimSpace(runID)
 	if runID == "" {
-		return "", "", fmt.Errorf("runID is required")
+		return deployRunnerInfo{}, fmt.Errorf("runID is required")
 	}
 
 	out, err := s.cb.BatchGetBuilds(ctx, &codebuild.BatchGetBuildsInput{
 		Ids: []string{runID},
 	})
 	if err != nil {
-		return "", "", err
+		return deployRunnerInfo{}, err
 	}
 	if out == nil || len(out.Builds) == 0 {
-		return "", "", fmt.Errorf("build not found")
+		return deployRunnerInfo{}, fmt.Errorf("build not found")
 	}
 	build := out.Builds[0]
-	return normalizeCodebuildStatus(build.BuildStatus), codebuildBuildDeepLink(build), nil
+	return deployRunnerInfo{
+		Status:        normalizeCodebuildStatus(build.BuildStatus),
+		DeepLink:      codebuildBuildDeepLink(build),
+		CurrentPhase:  strings.TrimSpace(aws.ToString(build.CurrentPhase)),
+		FailureDetail: codebuildFailureDetail(build),
+	}, nil
 }
 
 func codebuildBuildDeepLink(build cbtypes.Build) string {
@@ -169,6 +182,24 @@ func normalizeCodebuildStatus(st cbtypes.StatusType) string {
 		}
 		return status
 	}
+}
+
+func codebuildFailureDetail(build cbtypes.Build) string {
+	for _, phase := range build.Phases {
+		if strings.TrimSpace(string(phase.PhaseStatus)) != string(cbtypes.StatusTypeFailed) {
+			continue
+		}
+		if phase.Contexts == nil {
+			continue
+		}
+		for _, ctx := range phase.Contexts {
+			msg := strings.TrimSpace(aws.ToString(ctx.Message))
+			if msg != "" {
+				return msg
+			}
+		}
+	}
+	return ""
 }
 
 func ensureTrailingDot(name string) string {

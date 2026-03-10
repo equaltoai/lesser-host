@@ -22,6 +22,7 @@ type createUpdateJobRequest struct {
 	LesserBodyVersion string `json:"lesser_body_version,omitempty"`
 	RotateInstanceKey bool   `json:"rotate_instance_key,omitempty"`
 	BodyOnly          bool   `json:"body_only,omitempty"`
+	MCPOnly           bool   `json:"mcp_only,omitempty"`
 }
 
 type updateJobResponse struct {
@@ -34,6 +35,24 @@ type updateJobResponse struct {
 	RunID  string `json:"run_id,omitempty"`
 	RunURL string `json:"run_url,omitempty"`
 
+	ActivePhase string `json:"active_phase,omitempty"`
+	FailedPhase string `json:"failed_phase,omitempty"`
+
+	DeployStatus string `json:"deploy_status,omitempty"`
+	DeployRunID  string `json:"deploy_run_id,omitempty"`
+	DeployRunURL string `json:"deploy_run_url,omitempty"`
+	DeployError  string `json:"deploy_error,omitempty"`
+
+	BodyStatus string `json:"body_status,omitempty"`
+	BodyRunID  string `json:"body_run_id,omitempty"`
+	BodyRunURL string `json:"body_run_url,omitempty"`
+	BodyError  string `json:"body_error,omitempty"`
+
+	MCPStatus string `json:"mcp_status,omitempty"`
+	MCPRunID  string `json:"mcp_run_id,omitempty"`
+	MCPRunURL string `json:"mcp_run_url,omitempty"`
+	MCPError  string `json:"mcp_error,omitempty"`
+
 	AccountID       string `json:"account_id,omitempty"`
 	AccountRoleName string `json:"account_role_name,omitempty"`
 	Region          string `json:"region,omitempty"`
@@ -42,6 +61,7 @@ type updateJobResponse struct {
 	LesserVersion     string `json:"lesser_version,omitempty"`
 	LesserBodyVersion string `json:"lesser_body_version,omitempty"`
 	BodyOnly          bool   `json:"body_only,omitempty"`
+	MCPOnly           bool   `json:"mcp_only,omitempty"`
 
 	LesserHostBaseURL              string `json:"lesser_host_base_url,omitempty"`
 	LesserHostAttestationsURL      string `json:"lesser_host_attestations_url,omitempty"`
@@ -84,6 +104,11 @@ type listUpdateJobsResponse struct {
 	Count int                 `json:"count"`
 }
 
+const (
+	updateJobPhaseStatusPending = "pending"
+	updateJobPhaseStatusSkipped = "skipped"
+)
+
 func updateJobResponseFromModel(j *models.UpdateJob) updateJobResponse {
 	if j == nil {
 		return updateJobResponse{}
@@ -96,6 +121,20 @@ func updateJobResponseFromModel(j *models.UpdateJob) updateJobResponse {
 		Note:                           strings.TrimSpace(j.Note),
 		RunID:                          strings.TrimSpace(j.RunID),
 		RunURL:                         strings.TrimSpace(j.RunURL),
+		ActivePhase:                    strings.TrimSpace(j.ActivePhase),
+		FailedPhase:                    strings.TrimSpace(j.FailedPhase),
+		DeployStatus:                   strings.TrimSpace(j.DeployStatus),
+		DeployRunID:                    strings.TrimSpace(j.DeployRunID),
+		DeployRunURL:                   strings.TrimSpace(j.DeployRunURL),
+		DeployError:                    strings.TrimSpace(j.DeployError),
+		BodyStatus:                     strings.TrimSpace(j.BodyStatus),
+		BodyRunID:                      strings.TrimSpace(j.BodyRunID),
+		BodyRunURL:                     strings.TrimSpace(j.BodyRunURL),
+		BodyError:                      strings.TrimSpace(j.BodyError),
+		MCPStatus:                      strings.TrimSpace(j.MCPStatus),
+		MCPRunID:                       strings.TrimSpace(j.MCPRunID),
+		MCPRunURL:                      strings.TrimSpace(j.MCPRunURL),
+		MCPError:                       strings.TrimSpace(j.MCPError),
 		AccountID:                      strings.TrimSpace(j.AccountID),
 		AccountRoleName:                strings.TrimSpace(j.AccountRoleName),
 		Region:                         strings.TrimSpace(j.Region),
@@ -103,6 +142,7 @@ func updateJobResponseFromModel(j *models.UpdateJob) updateJobResponse {
 		LesserVersion:                  strings.TrimSpace(j.LesserVersion),
 		LesserBodyVersion:              strings.TrimSpace(j.LesserBodyVersion),
 		BodyOnly:                       j.BodyOnly,
+		MCPOnly:                        j.MCPOnly,
 		LesserHostBaseURL:              strings.TrimSpace(j.LesserHostBaseURL),
 		LesserHostAttestationsURL:      strings.TrimSpace(j.LesserHostAttestationsURL),
 		LesserHostInstanceKeySecretARN: strings.TrimSpace(j.LesserHostInstanceKeySecretARN),
@@ -189,6 +229,127 @@ func (s *Server) getExistingUpdateJobAndNudge(ctx *apptheory.Context, inst *mode
 	return job, true
 }
 
+func updateJobIsActive(job *models.UpdateJob) bool {
+	if job == nil {
+		return false
+	}
+	status := strings.ToLower(strings.TrimSpace(job.Status))
+	return status == models.UpdateJobStatusQueued || status == models.UpdateJobStatusRunning
+}
+
+func (s *Server) findActiveUpdateJobByInstance(ctx context.Context, slug string) (*models.UpdateJob, error) {
+	if s == nil || s.store == nil {
+		return nil, fmt.Errorf("store not initialized")
+	}
+	items, err := s.store.ListUpdateJobsByInstance(ctx, slug, 20)
+	if err != nil && !theoryErrors.IsNotFound(err) {
+		return nil, err
+	}
+	for _, item := range items {
+		if updateJobIsActive(item) {
+			return item, nil
+		}
+	}
+	return nil, nil
+}
+
+func (s *Server) repairStaleInstanceUpdateMarker(ctx context.Context, inst *models.Instance) error {
+	if s == nil || s.store == nil || s.store.DB == nil || inst == nil {
+		return nil
+	}
+	status := strings.ToLower(strings.TrimSpace(inst.UpdateStatus))
+	if status != models.UpdateJobStatusQueued && status != models.UpdateJobStatusRunning {
+		return nil
+	}
+	jobID := strings.TrimSpace(inst.UpdateJobID)
+	if jobID == "" {
+		return nil
+	}
+
+	updateInst := &models.Instance{Slug: strings.TrimSpace(inst.Slug)}
+	_ = updateInst.UpdateKeys()
+	return s.store.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
+		tx.UpdateWithBuilder(updateInst, func(ub core.UpdateBuilder) error {
+			ub.Set("UpdateStatus", models.UpdateJobStatusError)
+			return nil
+		},
+			tabletheory.IfExists(),
+			tabletheory.ConditionExpression(
+				"updateJobId = :jobId AND updateStatus = :status",
+				map[string]any{
+					":jobId":  jobID,
+					":status": status,
+				},
+			),
+		)
+		return nil
+	})
+}
+
+func updateInstanceNoActiveUpdateCondition() core.TransactCondition {
+	return tabletheory.ConditionExpression(
+		"attribute_not_exists(updateStatus) OR (updateStatus <> :queued AND updateStatus <> :running)",
+		map[string]any{
+			":queued":  models.UpdateJobStatusQueued,
+			":running": models.UpdateJobStatusRunning,
+		},
+	)
+}
+
+func validateCreateUpdateJobRequest(req createUpdateJobRequest) *apptheory.AppError {
+	if req.BodyOnly && req.MCPOnly {
+		return &apptheory.AppError{Code: "app.bad_request", Message: "choose either body_only or mcp_only, not both"}
+	}
+	if (req.BodyOnly || req.MCPOnly) && req.RotateInstanceKey {
+		return &apptheory.AppError{Code: "app.bad_request", Message: "body_only and mcp_only updates cannot rotate the instance key"}
+	}
+	return nil
+}
+
+func (s *Server) findExistingManagedUpdateJob(ctx *apptheory.Context, inst *models.Instance, slug string) (*models.UpdateJob, *apptheory.AppError) {
+	if activeJob, activeErr := s.findActiveUpdateJobByInstance(ctx.Context(), slug); activeErr != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to inspect active update jobs"}
+	} else if activeJob != nil {
+		s.enqueueUpdateJobBestEffort(ctx, activeJob.ID)
+		return activeJob, nil
+	}
+
+	if job, ok := s.getExistingUpdateJobAndNudge(ctx, inst); ok {
+		return job, nil
+	}
+
+	repairErr := s.repairStaleInstanceUpdateMarker(ctx.Context(), inst)
+	if repairErr != nil && !theoryErrors.IsConditionFailed(repairErr) {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to repair stale update state"}
+	}
+	return nil, nil
+}
+
+func (s *Server) newManagedUpdateJob(
+	ctx *apptheory.Context,
+	inst *models.Instance,
+	req createUpdateJobRequest,
+	slug string,
+	now time.Time,
+) (*models.UpdateJob, *apptheory.AppError) {
+	lesserVersion, lesserBodyVersion, appErr := s.resolveManagedUpdateVersions(ctx.Context(), inst, req)
+	if appErr != nil {
+		return nil, appErr
+	}
+
+	id, tokenErr := newToken(16)
+	if tokenErr != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create update job"}
+	}
+
+	baseURL := strings.TrimSpace(s.publicBaseURL())
+	attestationsURL := strings.TrimSpace(baseURL)
+
+	job := s.buildManagedUpdateJob(ctx, inst, req, id, slug, lesserVersion, lesserBodyVersion, baseURL, attestationsURL, now)
+	_ = job.UpdateKeys()
+	return job, nil
+}
+
 func (s *Server) handlePortalCreateInstanceUpdateJob(ctx *apptheory.Context) (*apptheory.Response, error) {
 	if appErr := s.requirePortalApproved(ctx); appErr != nil {
 		return nil, appErr
@@ -200,8 +361,12 @@ func (s *Server) handlePortalCreateInstanceUpdateJob(ctx *apptheory.Context) (*a
 	}
 
 	slug := strings.ToLower(strings.TrimSpace(inst.Slug))
-	if job, ok := s.getExistingUpdateJobAndNudge(ctx, inst); ok {
-		return apptheory.JSON(http.StatusOK, updateJobResponseFromModel(job))
+	existingJob, existingErr := s.findExistingManagedUpdateJob(ctx, inst, slug)
+	if existingErr != nil {
+		return nil, existingErr
+	}
+	if existingJob != nil {
+		return apptheory.JSON(http.StatusOK, updateJobResponseFromModel(existingJob))
 	}
 	if appErr := requireManagedUpdateInstance(inst); appErr != nil {
 		return nil, appErr
@@ -211,25 +376,15 @@ func (s *Server) handlePortalCreateInstanceUpdateJob(ctx *apptheory.Context) (*a
 	if err != nil {
 		return nil, err
 	}
-	if req.BodyOnly && req.RotateInstanceKey {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "body_only updates cannot rotate the instance key"}
-	}
-	lesserVersion, lesserBodyVersion, appErr := s.resolveManagedUpdateVersions(ctx.Context(), inst, req)
-	if appErr != nil {
+	if appErr := validateCreateUpdateJobRequest(req); appErr != nil {
 		return nil, appErr
 	}
 
 	now := time.Now().UTC()
-	id, tokenErr := newToken(16)
-	if tokenErr != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create update job"}
+	job, appErr := s.newManagedUpdateJob(ctx, inst, req, slug, now)
+	if appErr != nil {
+		return nil, appErr
 	}
-
-	baseURL := strings.TrimSpace(s.publicBaseURL())
-	attestationsURL := strings.TrimSpace(baseURL)
-
-	job := s.buildManagedUpdateJob(ctx, inst, req, id, slug, lesserVersion, lesserBodyVersion, baseURL, attestationsURL, now)
-	_ = job.UpdateKeys()
 
 	updateInst := &models.Instance{Slug: slug}
 	_ = updateInst.UpdateKeys()
@@ -249,10 +404,18 @@ func (s *Server) handlePortalCreateInstanceUpdateJob(ctx *apptheory.Context) (*a
 			ub.Set("UpdateStatus", models.UpdateJobStatusQueued)
 			ub.Set("UpdateJobID", strings.TrimSpace(job.ID))
 			return nil
-		}, tabletheory.IfExists())
+		}, tabletheory.IfExists(), updateInstanceNoActiveUpdateCondition())
 		tx.Put(audit)
 		return nil
 	}); err != nil {
+		if theoryErrors.IsConditionFailed(err) {
+			activeJob, activeErr := s.findActiveUpdateJobByInstance(ctx.Context(), slug)
+			if activeErr == nil && activeJob != nil {
+				s.enqueueUpdateJobBestEffort(ctx, activeJob.ID)
+				return apptheory.JSON(http.StatusOK, updateJobResponseFromModel(activeJob))
+			}
+			return nil, &apptheory.AppError{Code: "app.conflict", Message: "an update is already in progress for this instance"}
+		}
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to create update job"}
 	}
 
@@ -295,39 +458,51 @@ func requireManagedUpdateInstance(inst *models.Instance) *apptheory.AppError {
 	return nil
 }
 
-func (s *Server) resolveManagedUpdateVersions(ctx context.Context, inst *models.Instance, req createUpdateJobRequest) (string, string, *apptheory.AppError) {
+func (s *Server) resolveManagedLesserUpdateVersion(ctx context.Context, inst *models.Instance, req createUpdateJobRequest) (string, *apptheory.AppError) {
 	lesserVersion := strings.TrimSpace(req.LesserVersion)
 	if lesserVersion == "" {
 		lesserVersion = strings.TrimSpace(inst.LesserVersion)
 	}
 	if lesserVersion == "" {
-		return "", "", &apptheory.AppError{Code: "app.bad_request", Message: "lesser_version is required"}
+		return "", &apptheory.AppError{Code: "app.bad_request", Message: "lesser_version is required"}
 	}
-	lesserVersion, appErr := s.resolveManagedReleaseVersion(ctx, lesserVersion, s.cfg.ManagedLesserGitHubOwner, s.cfg.ManagedLesserGitHubRepo, "failed to resolve latest Lesser release")
-	if appErr != nil {
-		return "", "", appErr
-	}
+	return s.resolveManagedReleaseVersion(ctx, lesserVersion, s.cfg.ManagedLesserGitHubOwner, s.cfg.ManagedLesserGitHubRepo, "failed to resolve latest Lesser release")
+}
 
+func (s *Server) resolveManagedBodyUpdateVersion(ctx context.Context, inst *models.Instance, req createUpdateJobRequest) (string, *apptheory.AppError) {
 	lesserBodyVersion := strings.TrimSpace(req.LesserBodyVersion)
-	lesserBodyVersion, appErr = s.resolveManagedReleaseVersion(ctx, lesserBodyVersion, s.cfg.ManagedLesserBodyGitHubOwner, s.cfg.ManagedLesserBodyGitHubRepo, "failed to resolve latest lesser-body release")
-	if appErr != nil {
-		return "", "", appErr
+	if !req.BodyOnly && !req.MCPOnly {
+		if lesserBodyVersion != "" {
+			return "", &apptheory.AppError{Code: "app.bad_request", Message: "use body_only for lesser-body updates"}
+		}
+		return "", nil
 	}
-	if lesserBodyVersion != "" && !effectiveBodyEnabled(inst.BodyEnabled) {
-		return "", "", &apptheory.AppError{Code: "app.conflict", Message: "lesser-body update requested but body is disabled for this instance"}
-	}
-	if lesserBodyVersion == "" && effectiveBodyEnabled(inst.BodyEnabled) {
-		lesserBodyVersion = strings.TrimSpace(s.cfg.ManagedLesserBodyDefaultVersion)
+	if !effectiveBodyEnabled(inst.BodyEnabled) {
+		return "", &apptheory.AppError{Code: "app.conflict", Message: "lesser-body updates are disabled for this instance"}
 	}
 	if req.BodyOnly {
-		if !effectiveBodyEnabled(inst.BodyEnabled) {
-			return "", "", &apptheory.AppError{Code: "app.conflict", Message: "lesser-body updates are disabled for this instance"}
+		if lesserBodyVersion == "" {
+			lesserBodyVersion = strings.TrimSpace(s.cfg.ManagedLesserBodyDefaultVersion)
 		}
 		if lesserBodyVersion == "" {
-			return "", "", &apptheory.AppError{Code: "app.bad_request", Message: "lesser_body_version is required for body_only updates when no default lesser-body version is configured"}
+			return "", &apptheory.AppError{Code: "app.bad_request", Message: "lesser_body_version is required for body_only updates when no default lesser-body version is configured"}
 		}
 	}
+	if lesserBodyVersion == "" {
+		return "", nil
+	}
+	return s.resolveManagedReleaseVersion(ctx, lesserBodyVersion, s.cfg.ManagedLesserBodyGitHubOwner, s.cfg.ManagedLesserBodyGitHubRepo, "failed to resolve latest lesser-body release")
+}
 
+func (s *Server) resolveManagedUpdateVersions(ctx context.Context, inst *models.Instance, req createUpdateJobRequest) (string, string, *apptheory.AppError) {
+	lesserVersion, appErr := s.resolveManagedLesserUpdateVersion(ctx, inst, req)
+	if appErr != nil {
+		return "", "", appErr
+	}
+	lesserBodyVersion, appErr := s.resolveManagedBodyUpdateVersion(ctx, inst, req)
+	if appErr != nil {
+		return "", "", appErr
+	}
 	return lesserVersion, lesserBodyVersion, nil
 }
 
@@ -355,7 +530,7 @@ func (s *Server) buildManagedUpdateJob(
 	attestationsURL string,
 	now time.Time,
 ) *models.UpdateJob {
-	return &models.UpdateJob{
+	job := &models.UpdateJob{
 		ID:                             id,
 		InstanceSlug:                   slug,
 		Status:                         models.UpdateJobStatusQueued,
@@ -367,6 +542,7 @@ func (s *Server) buildManagedUpdateJob(
 		LesserVersion:                  strings.TrimSpace(lesserVersion),
 		LesserBodyVersion:              strings.TrimSpace(lesserBodyVersion),
 		BodyOnly:                       req.BodyOnly,
+		MCPOnly:                        req.MCPOnly,
 		LesserHostBaseURL:              baseURL,
 		LesserHostAttestationsURL:      attestationsURL,
 		LesserHostInstanceKeySecretARN: strings.TrimSpace(inst.LesserHostInstanceKeySecretARN),
@@ -385,6 +561,21 @@ func (s *Server) buildManagedUpdateJob(
 		ExpiresAt:                      now.Add(30 * 24 * time.Hour),
 		RequestID:                      strings.TrimSpace(ctx.RequestID),
 	}
+	switch {
+	case req.MCPOnly:
+		job.DeployStatus = updateJobPhaseStatusSkipped
+		job.BodyStatus = updateJobPhaseStatusSkipped
+		job.MCPStatus = updateJobPhaseStatusPending
+	case req.BodyOnly:
+		job.DeployStatus = updateJobPhaseStatusSkipped
+		job.BodyStatus = updateJobPhaseStatusPending
+		job.MCPStatus = updateJobPhaseStatusSkipped
+	default:
+		job.DeployStatus = updateJobPhaseStatusPending
+		job.BodyStatus = updateJobPhaseStatusSkipped
+		job.MCPStatus = updateJobPhaseStatusSkipped
+	}
+	return job
 }
 
 func effectiveUpdateTranslationEnabled(inst *models.Instance) bool {
