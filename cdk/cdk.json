@@ -56,7 +56,7 @@
     "managedAccountEmailTemplateLab": "<YOUR_EMAIL>+lab-{slug}@<YOUR_DOMAIN>",
     "managedAccountEmailTemplateLive": "<YOUR_EMAIL>+{slug}@<YOUR_DOMAIN>",
     "managedDefaultRegion": "us-east-1",
-    "managedLesserDefaultVersion": "v1.1.20",
-    "managedLesserBodyDefaultVersion": "v.0.1.3"
+    "managedLesserDefaultVersion": "latest",
+    "managedLesserBodyDefaultVersion": "latest"
   }
 }

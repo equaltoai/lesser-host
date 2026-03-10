@@ -122,7 +122,7 @@ Key constraints:
 
 `lesser-host` exposes these stage-scoped env vars for managed provisioning:
 
-- `MANAGED_LESSER_BODY_DEFAULT_VERSION` (optional semver tag; used when a request doesn’t specify a version)
+- `MANAGED_LESSER_BODY_DEFAULT_VERSION` (optional release tag or `latest`; used when a request doesn’t specify a version)
 - `MANAGED_LESSER_BODY_GITHUB_OWNER` (default `equaltoai`)
 - `MANAGED_LESSER_BODY_GITHUB_REPO` (default `lesser-body`)
 

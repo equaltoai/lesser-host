@@ -90,12 +90,12 @@ type Config struct {
 	ManagedAccountEmailTemplate       string // e.g. "lesser+{slug}@example.com"
 	ManagedAccountNamePrefix          string // e.g. "lesser-"
 	ManagedDefaultRegion              string // e.g. us-east-1
-	ManagedLesserDefaultVersion       string // semver tag, optional
+	ManagedLesserDefaultVersion       string // release tag or "latest", optional
 	ManagedProvisionRunnerProjectName string // CodeBuild project name used to run lesser up
 	ManagedLesserGitHubOwner          string // GitHub org/user for the lesser repo
 	ManagedLesserGitHubRepo           string // GitHub repo name for lesser
 	ManagedLesserGitHubTokenSSMParam  string // optional SSM param name for a GitHub token (CodeBuild)
-	ManagedLesserBodyDefaultVersion   string // semver tag, optional
+	ManagedLesserBodyDefaultVersion   string // release tag or "latest", optional
 	ManagedLesserBodyGitHubOwner      string // GitHub org/user for the lesser-body repo
 	ManagedLesserBodyGitHubRepo       string // GitHub repo name for lesser-body
 
