@@ -178,6 +178,7 @@ export interface UpdateInstanceConfigRequest {
 export interface UpdateJobResponse {
 	id: string;
 	instance_slug: string;
+	kind?: string;
 	status: string;
 	step?: string;
 	note?: string;

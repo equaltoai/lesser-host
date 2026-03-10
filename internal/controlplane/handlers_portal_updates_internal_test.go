@@ -25,6 +25,7 @@ func TestUpdateJobResponseFromModel_TrimsFields(t *testing.T) {
 	out := updateJobResponseFromModel(j)
 	require.Equal(t, "id", out.ID)
 	require.Equal(t, "slug", out.InstanceSlug)
+	require.Equal(t, updateJobKindLesser, out.Kind)
 	require.Equal(t, "queued", out.Status)
 	require.Equal(t, "note", out.Note)
 }
@@ -35,6 +36,44 @@ func expectEmptyUpdateJobHistory(t *testing.T, qUpdate *ttmocks.MockQuery) {
 		dest := testutil.RequireMockArg[*[]*models.UpdateJob](t, args, 0)
 		*dest = []*models.UpdateJob{}
 	}).Once()
+}
+
+func setupActiveManagedUpdateConflictCase(t *testing.T, body []byte) (*Server, *apptheory.Context) {
+	t.Helper()
+
+	tdb := newPortalTestDB()
+	qUpdate := new(ttmocks.MockQuery)
+	tdb.db.On("Model", mock.AnythingOfType("*models.UpdateJob")).Return(qUpdate).Maybe()
+	addStandardMockQueryStubs(qUpdate)
+
+	s := &Server{store: store.New(tdb.db)}
+
+	ctx := &apptheory.Context{AuthIdentity: "alice", RequestID: "rid"}
+	ctx.Params = map[string]string{"slug": testPortalInstanceSlugDemo}
+	ctx.Request.Body = body
+
+	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{
+			Slug:             testPortalInstanceSlugDemo,
+			Owner:            "alice",
+			HostedAccountID:  "123",
+			HostedRegion:     "us-east-1",
+			HostedBaseDomain: "demo.example.com",
+			LesserVersion:    "v1.2.3",
+			BodyEnabled:      nil,
+		}
+	}).Once()
+
+	now := time.Unix(20, 0).UTC()
+	qUpdate.On("All", mock.AnythingOfType("*[]*models.UpdateJob")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.UpdateJob](t, args, 0)
+		*dest = []*models.UpdateJob{
+			{ID: "job-body", InstanceSlug: testPortalInstanceSlugDemo, Status: models.UpdateJobStatusRunning, BodyOnly: true, LesserBodyVersion: "v0.1.11", CreatedAt: now},
+		}
+	}).Once()
+
+	return s, ctx
 }
 
 func TestHandlePortalCreateInstanceUpdateJob_ReturnsExistingJobWhenQueued(t *testing.T) {
@@ -53,17 +92,26 @@ func TestHandlePortalCreateInstanceUpdateJob_ReturnsExistingJobWhenQueued(t *tes
 	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
 		*dest = models.Instance{
-			Slug:         testPortalInstanceSlugDemo,
-			Owner:        "alice",
-			UpdateStatus: models.UpdateJobStatusRunning,
-			UpdateJobID:  "job1",
+			Slug:             testPortalInstanceSlugDemo,
+			Owner:            "alice",
+			HostedAccountID:  "123",
+			HostedRegion:     "us-east-1",
+			HostedBaseDomain: "demo.example.com",
+			LesserVersion:    "v1.2.3",
+			UpdateStatus:     models.UpdateJobStatusRunning,
+			UpdateJobID:      "job1",
 		}
 	}).Once()
 	expectEmptyUpdateJobHistory(t, qUpdate)
 
 	qUpdate.On("First", mock.AnythingOfType("*models.UpdateJob")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.UpdateJob](t, args, 0)
-		*dest = models.UpdateJob{ID: "job1", InstanceSlug: testPortalInstanceSlugDemo, Status: models.UpdateJobStatusRunning}
+		*dest = models.UpdateJob{
+			ID:            "job1",
+			InstanceSlug:  testPortalInstanceSlugDemo,
+			Status:        models.UpdateJobStatusRunning,
+			LesserVersion: "v1.2.3",
+		}
 		_ = dest.UpdateKeys()
 	}).Once()
 
@@ -371,7 +419,7 @@ func TestHandlePortalCreateInstanceUpdateJob_ReturnsActiveJobFromInstanceHistory
 	qUpdate.On("All", mock.AnythingOfType("*[]*models.UpdateJob")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.UpdateJob](t, args, 0)
 		*dest = []*models.UpdateJob{
-			{ID: "job-active", InstanceSlug: testPortalInstanceSlugDemo, Status: models.UpdateJobStatusRunning, CreatedAt: now},
+			{ID: "job-active", InstanceSlug: testPortalInstanceSlugDemo, Status: models.UpdateJobStatusRunning, LesserVersion: "v1.2.3", CreatedAt: now},
 		}
 	}).Once()
 
@@ -410,13 +458,14 @@ func TestHandlePortalCreateInstanceUpdateJob_MCPOOnlyCreatesIndependentJob(t *te
 	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
 		*dest = models.Instance{
-			Slug:             testPortalInstanceSlugDemo,
-			Owner:            "alice",
-			HostedAccountID:  "123",
-			HostedRegion:     "us-east-1",
-			HostedBaseDomain: "demo.example.com",
-			LesserVersion:    "v1.2.3",
-			BodyEnabled:      nil,
+			Slug:              testPortalInstanceSlugDemo,
+			Owner:             "alice",
+			HostedAccountID:   "123",
+			HostedRegion:      "us-east-1",
+			HostedBaseDomain:  "demo.example.com",
+			LesserVersion:     "v1.2.3",
+			LesserBodyVersion: "v0.1.11",
+			BodyEnabled:       nil,
 		}
 	}).Once()
 
@@ -431,9 +480,38 @@ func TestHandlePortalCreateInstanceUpdateJob_MCPOOnlyCreatesIndependentJob(t *te
 
 	var parsed updateJobResponse
 	require.NoError(t, json.Unmarshal(resp.Body, &parsed))
+	require.Equal(t, updateJobKindMCP, parsed.Kind)
 	require.True(t, parsed.MCPOnly)
 	require.False(t, parsed.BodyOnly)
-	require.Equal(t, "", parsed.LesserBodyVersion)
+	require.Equal(t, "v0.1.11", parsed.LesserBodyVersion)
+}
+
+func TestHandlePortalCreateInstanceUpdateJob_ConflictsWhenDifferentActiveKindExists(t *testing.T) {
+	t.Parallel()
+
+	s, ctx := setupActiveManagedUpdateConflictCase(t, []byte(`{"lesser_version":"v1.2.3"}`))
+
+	_, err := s.handlePortalCreateInstanceUpdateJob(ctx)
+	require.Error(t, err)
+	appErr, ok := err.(*apptheory.AppError)
+	require.True(t, ok)
+	require.Equal(t, "app.conflict", appErr.Code)
+	require.Contains(t, appErr.Message, "cannot start Lesser update to v1.2.3")
+	require.Contains(t, appErr.Message, "lesser-body update to v0.1.11")
+}
+
+func TestHandlePortalCreateInstanceUpdateJob_ConflictsWhenSameKindVersionDiffers(t *testing.T) {
+	t.Parallel()
+
+	s, ctx := setupActiveManagedUpdateConflictCase(t, []byte(`{"body_only":true,"lesser_body_version":"v0.1.12"}`))
+
+	_, err := s.handlePortalCreateInstanceUpdateJob(ctx)
+	require.Error(t, err)
+	appErr, ok := err.(*apptheory.AppError)
+	require.True(t, ok)
+	require.Equal(t, "app.conflict", appErr.Code)
+	require.Contains(t, appErr.Message, "cannot start lesser-body update to v0.1.12")
+	require.Contains(t, appErr.Message, "lesser-body update to v0.1.11")
 }
 
 func TestHandlePortalCreateInstanceUpdateJob_TransactWriteFailureReturnsInternalError(t *testing.T) {
