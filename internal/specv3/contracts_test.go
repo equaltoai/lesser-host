@@ -47,7 +47,7 @@ func TestV3ContractFixturesValidate(t *testing.T) {
 		{
 			name:     "soul_comm_send_error",
 			schema:   filepath.Join(schemasDir, "soul-comm-send.error.schema.json"),
-			fixtures: []string{filepath.Join(fixturesDir, "soul-comm-send.error.boundary-violation.example.json")},
+			fixtures: []string{filepath.Join(fixturesDir, "soul-comm-send.error.preference-violation.example.json")},
 		},
 		{
 			name:     "soul_agent_channels_response",

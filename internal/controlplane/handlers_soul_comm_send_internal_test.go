@@ -9,6 +9,7 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
+	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
@@ -81,7 +82,7 @@ func TestHandleSoulCommSend_UnauthorizedWithoutBearer(t *testing.T) {
 	}
 }
 
-func TestHandleSoulCommSend_BoundaryViolationRequiresInReplyTo(t *testing.T) {
+func TestEnforceSoulCommSendGuards_AllowsFirstContactToExternalRecipient(t *testing.T) {
 	t.Parallel()
 
 	db := ttmocks.NewMockExtendedDB()
@@ -90,18 +91,16 @@ func TestHandleSoulCommSend_BoundaryViolationRequiresInReplyTo(t *testing.T) {
 	qIdentity := new(ttmocks.MockQuery)
 	qChannel := new(ttmocks.MockQuery)
 	qCommActivity := new(ttmocks.MockQuery)
+	qEmailIdx := new(ttmocks.MockQuery)
 	db.On("WithContext", mock.Anything).Return(db).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.InstanceKey")).Return(qKey).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.Domain")).Return(qDomain).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(qIdentity).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentChannel")).Return(qChannel).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentCommActivity")).Return(qCommActivity).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulEmailAgentIndex")).Return(qEmailIdx).Maybe()
 
-	allowCommQueryOps(qKey, qDomain, qIdentity, qChannel, qCommActivity)
-	qKey.On("First", mock.AnythingOfType("*models.InstanceKey")).Return(nil).Run(func(args mock.Arguments) {
-		dest := testutil.RequireMockArg[*models.InstanceKey](t, args, 0)
-		*dest = models.InstanceKey{ID: "k1", InstanceSlug: "inst1", CreatedAt: time.Now().Add(-time.Hour).UTC()}
-	}).Once()
+	allowCommQueryOps(qKey, qDomain, qIdentity, qChannel, qCommActivity, qEmailIdx)
 
 	agentID := soulLifecycleTestAgentIDHex
 
@@ -139,41 +138,28 @@ func TestHandleSoulCommSend_BoundaryViolationRequiresInReplyTo(t *testing.T) {
 		dest := testutil.RequireMockArg[*[]*models.SoulAgentCommActivity](t, args, 0)
 		*dest = []*models.SoulAgentCommActivity{}
 	}).Twice()
+	qEmailIdx.On("First", mock.AnythingOfType("*models.SoulEmailAgentIndex")).Return(theoryErrors.ErrItemNotFound).Once()
 
 	s := &Server{
 		store: store.New(db),
 		cfg:   config.Config{SoulEnabled: true},
 	}
 
-	body, _ := json.Marshal(map[string]any{
-		"channel": "email",
-		"agentId": agentID,
-		"to":      "alice@example.com",
-		"subject": "Hello",
-		"body":    "Test",
-	})
-
-	ctx := &apptheory.Context{
-		RequestID:    "r-comm-boundary",
-		AuthIdentity: "",
-		Request: apptheory.Request{
-			Body: body,
-			Headers: map[string][]string{
-				"authorization": {"Bearer k1"},
-			},
-		},
+	decision, err := s.enforceSoulCommSendGuards(&apptheory.Context{RequestID: "r-comm-first-contact"}, &models.SoulAgentIdentity{
+		AgentID: agentID,
+		Domain:  "example.com",
+	}, validatedSoulCommSendRequest{
+		channel:    commChannelEmail,
+		agentIDHex: agentID,
+		to:         commSendTestEmailRecipient,
+		subject:    "Hello",
+		body:       "Test",
+	}, time.Now().UTC(), newSoulCommSendMetrics("lab", "inst1"))
+	if err != nil {
+		t.Fatalf("expected unsolicited external first contact to be allowed, got %v", err)
 	}
-
-	_, err := s.handleSoulCommSend(ctx)
-	if err == nil {
-		t.Fatalf("expected error")
-	}
-	appErr, ok := err.(*apptheory.AppTheoryError)
-	if !ok {
-		t.Fatalf("expected AppTheoryError, got %T", err)
-	}
-	if appErr.Code != "comm.boundary_violation" || appErr.StatusCode != http.StatusForbidden {
-		t.Fatalf("expected comm.boundary_violation/403, got %q/%d", appErr.Code, appErr.StatusCode)
+	if decision.preferenceRespected != nil {
+		t.Fatalf("expected nil preferenceRespected for external recipient, got %#v", decision.preferenceRespected)
 	}
 }
 

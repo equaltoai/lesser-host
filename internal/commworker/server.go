@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/smtp"
@@ -269,6 +270,8 @@ func (s *Server) deliverResolvedInbound(ctx context.Context, agentID string, cha
 		return err
 	}
 	if !ok || inst == nil {
+		log.Printf("commworker: inbound delivery dropped missing_instance agent=%s domain=%s channel=%s message=%s", strings.ToLower(strings.TrimSpace(agentID)), strings.ToLower(strings.TrimSpace(identity.Domain)), strings.ToLower(strings.TrimSpace(channel)), strings.TrimSpace(notif.MessageID))
+		_ = s.recordInboundActivity(ctx, agentID, channel, notif, "drop", false)
 		return nil
 	}
 

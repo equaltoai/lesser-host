@@ -28,6 +28,10 @@ type soulCommSendMoreTestDB struct {
 	qDomain       *ttmocks.MockQuery
 	qIdentity     *ttmocks.MockQuery
 	qChannel      *ttmocks.MockQuery
+	qEmailIdx     *ttmocks.MockQuery
+	qPhoneIdx     *ttmocks.MockQuery
+	qPrefs        *ttmocks.MockQuery
+	qReputation   *ttmocks.MockQuery
 	qCommActivity *ttmocks.MockQuery
 	qStatus       *ttmocks.MockQuery
 	qInstance     *ttmocks.MockQuery
@@ -41,6 +45,10 @@ func newSoulCommSendMoreTestDB() soulCommSendMoreTestDB {
 	qDomain := new(ttmocks.MockQuery)
 	qIdentity := new(ttmocks.MockQuery)
 	qChannel := new(ttmocks.MockQuery)
+	qEmailIdx := new(ttmocks.MockQuery)
+	qPhoneIdx := new(ttmocks.MockQuery)
+	qPrefs := new(ttmocks.MockQuery)
+	qReputation := new(ttmocks.MockQuery)
 	qCommActivity := new(ttmocks.MockQuery)
 	qStatus := new(ttmocks.MockQuery)
 	qInstance := new(ttmocks.MockQuery)
@@ -52,13 +60,17 @@ func newSoulCommSendMoreTestDB() soulCommSendMoreTestDB {
 	db.On("Model", mock.AnythingOfType("*models.Domain")).Return(qDomain).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(qIdentity).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentChannel")).Return(qChannel).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulEmailAgentIndex")).Return(qEmailIdx).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulPhoneAgentIndex")).Return(qPhoneIdx).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentContactPreferences")).Return(qPrefs).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentReputation")).Return(qReputation).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentCommActivity")).Return(qCommActivity).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulCommMessageStatus")).Return(qStatus).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.Instance")).Return(qInstance).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(qBudget).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.AuditLogEntry")).Return(qAudit).Maybe()
 
-	for _, q := range []*ttmocks.MockQuery{qKey, qDomain, qIdentity, qChannel, qCommActivity, qStatus, qInstance, qBudget, qAudit} {
+	for _, q := range []*ttmocks.MockQuery{qKey, qDomain, qIdentity, qChannel, qEmailIdx, qPhoneIdx, qPrefs, qReputation, qCommActivity, qStatus, qInstance, qBudget, qAudit} {
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("OrderBy", mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("Limit", mock.Anything).Return(q).Maybe()
@@ -74,6 +86,10 @@ func newSoulCommSendMoreTestDB() soulCommSendMoreTestDB {
 		qDomain:       qDomain,
 		qIdentity:     qIdentity,
 		qChannel:      qChannel,
+		qEmailIdx:     qEmailIdx,
+		qPhoneIdx:     qPhoneIdx,
+		qPrefs:        qPrefs,
+		qReputation:   qReputation,
 		qCommActivity: qCommActivity,
 		qStatus:       qStatus,
 		qInstance:     qInstance,
@@ -423,7 +439,7 @@ func TestRequireCommInstanceKey_FallbackAndErrors(t *testing.T) {
 	t.Run("falls back to raw token when hash miss", func(t *testing.T) {
 		tdb := newSoulCommSendMoreTestDB()
 		tdb.qKey.On("First", mock.AnythingOfType("*models.InstanceKey")).Return(theoryErrors.ErrItemNotFound).Once()
-		expectCommInstanceKey(t, tdb.qKey, models.InstanceKey{ID: "plain-token", InstanceSlug: "inst1", CreatedAt: time.Now().Add(-time.Hour).UTC()})
+		expectCommInstanceKey(t, tdb.qKey, models.InstanceKey{ID: "plain-token", InstanceSlug: commWebhookTestInstanceSlug, CreatedAt: time.Now().Add(-time.Hour).UTC()})
 		s := &Server{store: store.New(tdb.db)}
 
 		key, err := s.requireCommInstanceKey(&apptheory.Context{
@@ -432,7 +448,7 @@ func TestRequireCommInstanceKey_FallbackAndErrors(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected err: %v", err)
 		}
-		if key == nil || key.ID != "plain-token" || strings.TrimSpace(key.InstanceSlug) != "inst1" {
+		if key == nil || key.ID != "plain-token" || strings.TrimSpace(key.InstanceSlug) != commWebhookTestInstanceSlug {
 			t.Fatalf("unexpected key: %#v", key)
 		}
 		if key.LastUsedAt.IsZero() {
@@ -447,7 +463,7 @@ func TestRequireCommInstanceKey_FallbackAndErrors(t *testing.T) {
 			dest := testutil.RequireMockArg[*models.InstanceKey](t, args, 0)
 			*dest = models.InstanceKey{
 				ID:           "plain-token",
-				InstanceSlug: "inst1",
+				InstanceSlug: commWebhookTestInstanceSlug,
 				CreatedAt:    time.Now().Add(-time.Hour).UTC(),
 				RevokedAt:    time.Now().UTC(),
 			}
@@ -537,6 +553,128 @@ func TestRequireCommAgentInstanceAccess_ErrorsAndSuccess(t *testing.T) {
 			t.Fatalf("expected success, got %v", appErr)
 		}
 	})
+
+	t.Run("managed stage alias resolves through base domain", func(t *testing.T) {
+		tdb := newSoulCommSendMoreTestDB()
+		tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(theoryErrors.ErrItemNotFound).Once()
+		expectCommDomain(t, tdb.qDomain, models.Domain{
+			Domain:             "simulacrum.greater.website",
+			InstanceSlug:       "inst1",
+			Status:             models.DomainStatusVerified,
+			Type:               models.DomainTypePrimary,
+			VerificationMethod: "managed",
+		})
+		tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+			*dest = models.Instance{Slug: "inst1", HostedBaseDomain: "simulacrum.greater.website"}
+		}).Once()
+		s := &Server{store: store.New(tdb.db), cfg: config.Config{Stage: "lab"}}
+		if appErr := s.requireCommAgentInstanceAccess(context.Background(), key, &models.SoulAgentIdentity{Domain: "dev.simulacrum.greater.website"}); appErr != nil {
+			t.Fatalf("expected managed alias success, got %v", appErr)
+		}
+	})
+}
+
+func TestEnforceSoulCommSendGuards_RecipientFirstContactPreferences(t *testing.T) {
+	t.Parallel()
+
+	agentID := soulLifecycleTestAgentIDHex
+
+	t.Run("recipient reputation requirement blocks first contact", func(t *testing.T) {
+		tdb := newSoulCommSendMoreTestDB()
+		tdb.qCommActivity.On("All", mock.AnythingOfType("*[]*models.SoulAgentCommActivity")).Return(nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*[]*models.SoulAgentCommActivity](t, args, 0)
+			*dest = []*models.SoulAgentCommActivity{}
+		}).Twice()
+		expectCommEmailIdx(t, tdb.qEmailIdx, "recipient@lessersoul.ai", "0xrecipient")
+		minRep := 0.9
+		expectCommPrefs(t, tdb.qPrefs, models.SoulAgentContactPreferences{
+			AgentID:                       "0xrecipient",
+			FirstContactRequireReputation: &minRep,
+			UpdatedAt:                     time.Now().UTC(),
+		})
+		tdb.qReputation.On("First", mock.AnythingOfType("*models.SoulAgentReputation")).Return(theoryErrors.ErrItemNotFound).Once()
+
+		s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true}}
+		decision, appErr := s.enforceSoulCommSendGuards(
+			&apptheory.Context{RequestID: "req-pref-deny"},
+			&models.SoulAgentIdentity{AgentID: agentID, Domain: "example.com"},
+			validatedSoulCommSendRequest{
+				channel:    commChannelEmail,
+				agentIDHex: agentID,
+				to:         "recipient@lessersoul.ai",
+				subject:    "Hello",
+				body:       "First contact",
+			},
+			time.Now().UTC(),
+			newSoulCommSendMetrics("lab", "inst1"),
+		)
+		if appErr == nil {
+			t.Fatalf("expected preference violation")
+		}
+		if appErr.Code != commCodePreferenceViolation || appErr.StatusCode != http.StatusForbidden {
+			t.Fatalf("expected %s/403, got %q/%d", commCodePreferenceViolation, appErr.Code, appErr.StatusCode)
+		}
+		if decision.preferenceRespected == nil || *decision.preferenceRespected {
+			t.Fatalf("expected preferenceRespected=false, got %#v", decision.preferenceRespected)
+		}
+	})
+
+	t.Run("recipient requireSoul is satisfied for a soul sender", func(t *testing.T) {
+		tdb := newSoulCommSendMoreTestDB()
+		tdb.qCommActivity.On("All", mock.AnythingOfType("*[]*models.SoulAgentCommActivity")).Return(nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*[]*models.SoulAgentCommActivity](t, args, 0)
+			*dest = []*models.SoulAgentCommActivity{}
+		}).Twice()
+		expectCommEmailIdx(t, tdb.qEmailIdx, "recipient@lessersoul.ai", "0xrecipient")
+		expectCommPrefs(t, tdb.qPrefs, models.SoulAgentContactPreferences{
+			AgentID:                 "0xrecipient",
+			FirstContactRequireSoul: true,
+			UpdatedAt:               time.Now().UTC(),
+		})
+
+		s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true}}
+		decision, appErr := s.enforceSoulCommSendGuards(
+			&apptheory.Context{RequestID: "req-pref-allow"},
+			&models.SoulAgentIdentity{AgentID: agentID, Domain: "example.com"},
+			validatedSoulCommSendRequest{
+				channel:    commChannelEmail,
+				agentIDHex: agentID,
+				to:         "recipient@lessersoul.ai",
+				subject:    "Hello",
+				body:       "First contact",
+			},
+			time.Now().UTC(),
+			newSoulCommSendMetrics("lab", "inst1"),
+		)
+		if appErr != nil {
+			t.Fatalf("expected allowed first contact, got %v", appErr)
+		}
+		if decision.preferenceRespected == nil || !*decision.preferenceRespected {
+			t.Fatalf("expected preferenceRespected=true, got %#v", decision.preferenceRespected)
+		}
+	})
+}
+
+func TestLookupSoulCommRecipientAgentID_PhoneAndUnsupported(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulCommSendMoreTestDB()
+	tdb.qPhoneIdx.On("First", mock.AnythingOfType("*models.SoulPhoneAgentIndex")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulPhoneAgentIndex](t, args, 0)
+		*dest = models.SoulPhoneAgentIndex{Phone: "+15551234567", AgentID: "0xphone"}
+	}).Once()
+
+	s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true}}
+	agentID, found, err := s.lookupSoulCommRecipientAgentID(context.Background(), commChannelSMS, "+15551234567")
+	if err != nil || !found || agentID != "0xphone" {
+		t.Fatalf("expected phone lookup hit, got agent=%q found=%v err=%v", agentID, found, err)
+	}
+
+	agentID, found, err = s.lookupSoulCommRecipientAgentID(context.Background(), "pager", "whatever")
+	if err != nil || found || agentID != "" {
+		t.Fatalf("expected unsupported channel miss, got agent=%q found=%v err=%v", agentID, found, err)
+	}
 }
 
 func TestRequireCommAgentInstanceAccess_ManagedStageDomain(t *testing.T) {
@@ -780,6 +918,22 @@ func expectCommChannel(t *testing.T, q *ttmocks.MockQuery, ch models.SoulAgentCh
 	q.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentChannel](t, args, 0)
 		*dest = ch
+	}).Once()
+}
+
+func expectCommEmailIdx(t *testing.T, q *ttmocks.MockQuery, email string, agentID string) {
+	t.Helper()
+	q.On("First", mock.AnythingOfType("*models.SoulEmailAgentIndex")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulEmailAgentIndex](t, args, 0)
+		*dest = models.SoulEmailAgentIndex{Email: email, AgentID: agentID}
+	}).Once()
+}
+
+func expectCommPrefs(t *testing.T, q *ttmocks.MockQuery, prefs models.SoulAgentContactPreferences) {
+	t.Helper()
+	q.On("First", mock.AnythingOfType("*models.SoulAgentContactPreferences")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentContactPreferences](t, args, 0)
+		*dest = prefs
 	}).Once()
 }
 

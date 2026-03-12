@@ -841,3 +841,60 @@ func TestDefaultMigaduSendSMTPWithAddr_SMTPFlow(t *testing.T) {
 		}
 	})
 }
+
+func TestProcessInbound_RecordsDropWhenInstanceResolutionMisses(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 3, 12, 0, 5, 0, 0, time.UTC)
+	agentID := commStoreTestAgentID
+	to := "+19347321081"
+
+	fs := &fakeStore{
+		phoneIndex: map[string]string{normalizePhone(to): agentID},
+		identities: map[string]*models.SoulAgentIdentity{
+			agentID: {
+				AgentID:         agentID,
+				Domain:          "dev.simulacrum.greater.website",
+				LifecycleStatus: models.SoulAgentStatusActive,
+				Status:          models.SoulAgentStatusActive,
+			},
+		},
+		channels: map[string]*models.SoulAgentChannel{
+			agentID + "#phone": {
+				AgentID:       agentID,
+				ChannelType:   models.SoulChannelTypePhone,
+				Identifier:    to,
+				Status:        models.SoulChannelStatusActive,
+				Verified:      true,
+				ProvisionedAt: now.Add(-time.Hour),
+			},
+		},
+		activities: map[string][]*models.SoulAgentCommActivity{},
+	}
+
+	s := NewServer(config.Config{Stage: "lab"}, fs, nil, nil)
+	s.now = func() time.Time { return now }
+	s.fetchInstanceKeyPlaintext = func(context.Context, *models.Instance) (string, error) {
+		t.Fatal("instance key fetch should not be called when resolution misses")
+		return "", nil
+	}
+	s.deliverNotification = func(context.Context, string, string, InboundNotification) error {
+		t.Fatal("delivery should not be called when resolution misses")
+		return nil
+	}
+
+	if err := s.processInbound(context.Background(), "req-drop", newInboundSMSMessage(now, to, "+15551234567")); err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+
+	acts := fs.activities[agentID]
+	if len(acts) != 1 {
+		t.Fatalf("expected 1 recorded activity, got %#v", acts)
+	}
+	if acts[0].Action != "drop" || acts[0].ChannelType != inboundChannelSMS || acts[0].Direction != models.SoulCommDirectionInbound {
+		t.Fatalf("unexpected drop activity: %#v", acts[0])
+	}
+	if acts[0].PreferenceRespected == nil || *acts[0].PreferenceRespected {
+		t.Fatalf("expected preference respected=false on drop, got %#v", acts[0].PreferenceRespected)
+	}
+}

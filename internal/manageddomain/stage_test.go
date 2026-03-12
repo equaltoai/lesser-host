@@ -22,11 +22,11 @@ func TestStageHelpers(t *testing.T) {
 		t.Fatalf("unexpected dev domain: %q", got)
 	}
 
-	if base, ok := BaseDomainFromStageDomain("lab", "DEV.Example.com."); !ok || base != "example.com" {
-		t.Fatalf("expected dev alias to resolve, got %q %v", base, ok)
-	}
 	if _, ok := BaseDomainFromStageDomain("prod", "example.com"); ok {
 		t.Fatal("expected live domain not to be treated as alias")
+	}
+	if base, ok := BaseDomainFromStageDomain("lab", "dev.simulacrum.greater.website"); !ok || base != "simulacrum.greater.website" {
+		t.Fatalf("expected managed alias to resolve, got %q %v", base, ok)
 	}
 	if _, ok := BaseDomainFromStageDomain("lab", "example.com"); ok {
 		t.Fatal("expected base domain not to be treated as alias")
