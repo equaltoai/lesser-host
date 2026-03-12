@@ -267,6 +267,27 @@ func testResolveAgentInstanceAndInboundCounts(t *testing.T, s *Server, now time.
 	if err != nil || !ok || inst == nil || inst.Slug != "inst-1" {
 		t.Fatalf("unexpected instance resolution: %#v %v %v", inst, ok, err)
 	}
+	aliasServer := &Server{
+		cfg: config.Config{Stage: "lab"},
+		store: &fakeStore{
+			domains: map[string]*models.Domain{
+				"simulacrum.greater.website": {
+					Domain:             "simulacrum.greater.website",
+					InstanceSlug:       "simulacrum",
+					Status:             models.DomainStatusVerified,
+					Type:               models.DomainTypePrimary,
+					VerificationMethod: "managed",
+				},
+			},
+			instances: map[string]*models.Instance{
+				"simulacrum": {Slug: "simulacrum", HostedBaseDomain: "simulacrum.greater.website"},
+			},
+		},
+	}
+	aliasInst, aliasOK, aliasErr := aliasServer.resolveAgentInstance(context.Background(), &models.SoulAgentIdentity{Domain: "dev.simulacrum.greater.website"})
+	if aliasErr != nil || !aliasOK || aliasInst == nil || aliasInst.Slug != "simulacrum" {
+		t.Fatalf("unexpected managed alias resolution: %#v %v %v", aliasInst, aliasOK, aliasErr)
+	}
 	if _, instanceOK, instanceErr := s.resolveAgentInstance(context.Background(), &models.SoulAgentIdentity{}); instanceErr != nil || instanceOK {
 		t.Fatalf("expected empty domain to miss")
 	}

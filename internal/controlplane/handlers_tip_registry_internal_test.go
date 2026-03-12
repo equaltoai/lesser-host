@@ -108,7 +108,7 @@ func TestHandleTipHostRegistrationBegin_Success(t *testing.T) {
 	if out.Registration.ID == "" || out.Wallet.Message == "" || out.Wallet.Nonce == "" {
 		t.Fatalf("unexpected response: %#v", out)
 	}
-	if out.Registration.DomainNormalized != "example.com" {
+	if out.Registration.DomainNormalized != testDomainExampleCom {
 		t.Fatalf("expected normalized domain, got %#v", out.Registration.DomainNormalized)
 	}
 	if out.Wallet.Address != strings.ToLower("0x000000000000000000000000000000000000dEaD") {

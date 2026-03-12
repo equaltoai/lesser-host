@@ -41,6 +41,7 @@ const (
 	commMetricProviderUnavailable = "provider_unavailable"
 	commMetricProviderRejected    = "provider_rejected"
 	commMetricInsufficientCredits = "insufficient_credits"
+	commMetricPreferenceViolation = "preference_violation"
 	commMetricSent                = "sent"
 
 	commCodeInvalidRequest      = "comm.invalid_request"
@@ -48,6 +49,7 @@ const (
 	commCodeInternal            = "comm.internal"
 	commCodeProviderUnavailable = "comm.provider_unavailable"
 	commCodeInsufficientCredits = "comm.insufficient_credits"
+	commCodePreferenceViolation = "comm.preference_violation"
 )
 
 type soulCommSendRequest struct {
@@ -120,6 +122,10 @@ type soulCommSendDelivery struct {
 	provider          string
 	providerMessageID string
 	initialStatus     string
+}
+
+type soulCommSendGuardDecision struct {
+	preferenceRespected *bool
 }
 
 func newSoulCommSendMetrics(stage string, instance string) *soulCommSendMetrics {
@@ -197,7 +203,7 @@ func (s *Server) handleSoulCommSend(ctx *apptheory.Context) (*apptheory.Response
 	}
 
 	now := time.Now().UTC()
-	guardErr := s.enforceSoulCommSendGuards(ctx, req, now, metrics)
+	guardDecision, guardErr := s.enforceSoulCommSendGuards(ctx, route.identity, req, now, metrics)
 	if guardErr != nil {
 		return nil, guardErr
 	}
@@ -212,7 +218,7 @@ func (s *Server) handleSoulCommSend(ctx *apptheory.Context) (*apptheory.Response
 	if appErr != nil {
 		return nil, appErr
 	}
-	recordErr := s.recordSoulCommSend(ctx, key, req, messageID, delivery, now, metrics)
+	recordErr := s.recordSoulCommSend(ctx, key, req, messageID, delivery, guardDecision, now, metrics)
 	if recordErr != nil {
 		return nil, recordErr
 	}
@@ -359,16 +365,16 @@ func (s *Server) loadSoulCommSendChannel(ctx context.Context, req validatedSoulC
 	return channel, nil
 }
 
-func (s *Server) enforceSoulCommSendGuards(ctx *apptheory.Context, req validatedSoulCommSendRequest, now time.Time, metrics *soulCommSendMetrics) *apptheory.AppTheoryError {
+func (s *Server) enforceSoulCommSendGuards(ctx *apptheory.Context, identity *models.SoulAgentIdentity, req validatedSoulCommSendRequest, now time.Time, metrics *soulCommSendMetrics) (soulCommSendGuardDecision, *apptheory.AppTheoryError) {
 	hourCount, err := s.countSoulOutboundCommSince(ctx.Context(), req.agentIDHex, req.channel, now.Add(-1*time.Hour), 250)
 	if err != nil {
 		metrics.status = commMetricInternalError
-		return apptheory.NewAppTheoryError(commCodeInternal, "internal error").WithStatusCode(http.StatusInternalServerError)
+		return soulCommSendGuardDecision{}, apptheory.NewAppTheoryError(commCodeInternal, "internal error").WithStatusCode(http.StatusInternalServerError)
 	}
 	dayCount, err := s.countSoulOutboundCommSince(ctx.Context(), req.agentIDHex, req.channel, now.Add(-24*time.Hour), 500)
 	if err != nil {
 		metrics.status = commMetricInternalError
-		return apptheory.NewAppTheoryError(commCodeInternal, "internal error").WithStatusCode(http.StatusInternalServerError)
+		return soulCommSendGuardDecision{}, apptheory.NewAppTheoryError(commCodeInternal, "internal error").WithStatusCode(http.StatusInternalServerError)
 	}
 
 	maxHour, maxDay := 50, 500
@@ -377,34 +383,153 @@ func (s *Server) enforceSoulCommSendGuards(ctx *apptheory.Context, req validated
 	}
 	if hourCount >= maxHour || dayCount >= maxDay {
 		metrics.status = "rate_limited"
-		return apptheory.NewAppTheoryError("comm.rate_limited", "rate limited").WithStatusCode(http.StatusTooManyRequests)
+		return soulCommSendGuardDecision{}, apptheory.NewAppTheoryError("comm.rate_limited", "rate limited").WithStatusCode(http.StatusTooManyRequests)
 	}
 	if req.inReplyTo != "" {
-		return nil
+		return soulCommSendGuardDecision{}, nil
+	}
+	return s.enforceSoulCommFirstContactPolicy(ctx, identity, req, now, metrics)
+}
+
+func (s *Server) enforceSoulCommFirstContactPolicy(ctx *apptheory.Context, identity *models.SoulAgentIdentity, req validatedSoulCommSendRequest, now time.Time, metrics *soulCommSendMetrics) (soulCommSendGuardDecision, *apptheory.AppTheoryError) {
+	recipientAgentID, prefs, appErr := s.loadSoulCommFirstContactRecipient(ctx.Context(), req)
+	if appErr != nil {
+		return soulCommSendGuardDecision{}, appErr
+	}
+	if recipientAgentID == "" || prefs == nil {
+		return soulCommSendGuardDecision{}, nil
 	}
 
-	metrics.status = "boundary_violation"
+	enforced := false
+	if prefs.FirstContactRequireSoul {
+		enforced = true
+		if identity == nil || strings.TrimSpace(identity.AgentID) == "" {
+			return soulCommSendGuardDecision{preferenceRespected: boolPtr(false)}, s.denySoulCommFirstContact(ctx, req, now, metrics, "recipient first-contact policy requires a soul sender")
+		}
+	}
+
+	if prefs.FirstContactRequireReputation != nil {
+		enforced = true
+		rep, err := s.getSoulAgentReputation(ctx.Context(), req.agentIDHex)
+		if err != nil && !theoryErrors.IsNotFound(err) {
+			metrics.status = commMetricInternalError
+			return soulCommSendGuardDecision{}, apptheory.NewAppTheoryError(commCodeInternal, "internal error").WithStatusCode(http.StatusInternalServerError)
+		}
+		score := 0.0
+		if rep != nil {
+			score = rep.Composite
+		}
+		if rep == nil || score < *prefs.FirstContactRequireReputation {
+			return soulCommSendGuardDecision{preferenceRespected: boolPtr(false)}, s.denySoulCommFirstContact(
+				ctx,
+				req,
+				now,
+				metrics,
+				fmt.Sprintf("recipient first-contact policy requires soul reputation >= %.2f", *prefs.FirstContactRequireReputation),
+			)
+		}
+	}
+
+	// `introductionExpected` is currently advisory because the send contract does not yet
+	// include a structured introduction field to validate against.
+	if prefs.FirstContactIntroductionExpected {
+		enforced = true
+	}
+	if enforced {
+		return soulCommSendGuardDecision{preferenceRespected: boolPtr(true)}, nil
+	}
+	return soulCommSendGuardDecision{}, nil
+}
+
+func (s *Server) loadSoulCommFirstContactRecipient(ctx context.Context, req validatedSoulCommSendRequest) (string, *models.SoulAgentContactPreferences, *apptheory.AppTheoryError) {
+	agentID, found, err := s.lookupSoulCommRecipientAgentID(ctx, req.channel, req.to)
+	if err != nil {
+		return "", nil, apptheory.NewAppTheoryError(commCodeInternal, "internal error").WithStatusCode(http.StatusInternalServerError)
+	}
+	if !found || agentID == "" {
+		return "", nil, nil
+	}
+
+	prefs, err := getSoulAgentItemBySK[models.SoulAgentContactPreferences](s, ctx, agentID, "CONTACT_PREFERENCES")
+	if theoryErrors.IsNotFound(err) {
+		return agentID, nil, nil
+	}
+	if err != nil {
+		return "", nil, apptheory.NewAppTheoryError(commCodeInternal, "internal error").WithStatusCode(http.StatusInternalServerError)
+	}
+	return agentID, prefs, nil
+}
+
+func (s *Server) lookupSoulCommRecipientAgentID(ctx context.Context, channel string, to string) (string, bool, error) {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return "", false, errors.New("store not configured")
+	}
+
+	switch strings.ToLower(strings.TrimSpace(channel)) {
+	case commChannelEmail:
+		idx := &models.SoulEmailAgentIndex{Email: strings.TrimSpace(to)}
+		_ = idx.UpdateKeys()
+		var item models.SoulEmailAgentIndex
+		err := s.store.DB.WithContext(ctx).
+			Model(&models.SoulEmailAgentIndex{}).
+			Where("PK", "=", idx.PK).
+			Where("SK", "=", "AGENT").
+			First(&item)
+		if theoryErrors.IsNotFound(err) {
+			return "", false, nil
+		}
+		if err != nil {
+			return "", false, err
+		}
+		agentID := strings.ToLower(strings.TrimSpace(item.AgentID))
+		return agentID, agentID != "", nil
+	case commChannelSMS, commChannelVoice:
+		idx := &models.SoulPhoneAgentIndex{Phone: strings.TrimSpace(to)}
+		_ = idx.UpdateKeys()
+		var item models.SoulPhoneAgentIndex
+		err := s.store.DB.WithContext(ctx).
+			Model(&models.SoulPhoneAgentIndex{}).
+			Where("PK", "=", idx.PK).
+			Where("SK", "=", "AGENT").
+			First(&item)
+		if theoryErrors.IsNotFound(err) {
+			return "", false, nil
+		}
+		if err != nil {
+			return "", false, err
+		}
+		agentID := strings.ToLower(strings.TrimSpace(item.AgentID))
+		return agentID, agentID != "", nil
+	default:
+		return "", false, nil
+	}
+}
+
+func (s *Server) denySoulCommFirstContact(ctx *apptheory.Context, req validatedSoulCommSendRequest, now time.Time, metrics *soulCommSendMetrics, message string) *apptheory.AppTheoryError {
+	metrics.status = commMetricPreferenceViolation
 	violationID := strings.TrimSpace(ctx.RequestID)
 	if violationID == "" {
 		if token, tokenErr := generateRandomSecret(8); tokenErr == nil {
 			violationID = token
 		}
 	}
+	preferenceRespected := false
 	activity := &models.SoulAgentCommActivity{
-		AgentID:       req.agentIDHex,
-		ActivityID:    "comm-violation-" + violationID,
-		ChannelType:   req.channel,
-		Direction:     models.SoulCommDirectionOutbound,
-		Counterparty:  req.to,
-		Action:        "send",
-		MessageID:     "",
-		InReplyTo:     "",
-		BoundaryCheck: models.SoulCommBoundaryCheckViolated,
-		Timestamp:     now,
+		AgentID:             req.agentIDHex,
+		ActivityID:          "comm-pref-deny-" + violationID,
+		ChannelType:         req.channel,
+		Direction:           models.SoulCommDirectionOutbound,
+		Counterparty:        req.to,
+		Action:              "send",
+		MessageID:           "",
+		InReplyTo:           "",
+		BoundaryCheck:       models.SoulCommBoundaryCheckSkipped,
+		PreferenceRespected: &preferenceRespected,
+		Timestamp:           now,
 	}
 	_ = activity.UpdateKeys()
 	_ = s.store.DB.WithContext(ctx.Context()).Model(activity).Create()
-	return apptheory.NewAppTheoryError("comm.boundary_violation", "unsolicited outbound communication is not allowed; inReplyTo is required").WithStatusCode(http.StatusForbidden)
+	return apptheory.NewAppTheoryError(commCodePreferenceViolation, message).WithStatusCode(http.StatusForbidden)
 }
 
 func newSoulCommSendMessageID() (string, *apptheory.AppTheoryError) {
@@ -661,7 +786,7 @@ func (s *Server) debitSoulSMSCredits(ctx context.Context, instanceSlug string, a
 	return nil
 }
 
-func (s *Server) recordSoulCommSend(ctx *apptheory.Context, key *models.InstanceKey, req validatedSoulCommSendRequest, messageID string, delivery soulCommSendDelivery, now time.Time, metrics *soulCommSendMetrics) *apptheory.AppTheoryError {
+func (s *Server) recordSoulCommSend(ctx *apptheory.Context, key *models.InstanceKey, req validatedSoulCommSendRequest, messageID string, delivery soulCommSendDelivery, decision soulCommSendGuardDecision, now time.Time, metrics *soulCommSendMetrics) *apptheory.AppTheoryError {
 	statusValue := strings.TrimSpace(delivery.initialStatus)
 	if statusValue == "" {
 		statusValue = models.SoulCommMessageStatusSent
@@ -685,16 +810,17 @@ func (s *Server) recordSoulCommSend(ctx *apptheory.Context, key *models.Instance
 	}
 
 	activity := &models.SoulAgentCommActivity{
-		AgentID:       req.agentIDHex,
-		ActivityID:    messageID,
-		ChannelType:   req.channel,
-		Direction:     models.SoulCommDirectionOutbound,
-		Counterparty:  req.to,
-		Action:        "send",
-		MessageID:     messageID,
-		InReplyTo:     req.inReplyTo,
-		BoundaryCheck: models.SoulCommBoundaryCheckPassed,
-		Timestamp:     now,
+		AgentID:             req.agentIDHex,
+		ActivityID:          messageID,
+		ChannelType:         req.channel,
+		Direction:           models.SoulCommDirectionOutbound,
+		Counterparty:        req.to,
+		Action:              "send",
+		MessageID:           messageID,
+		InReplyTo:           req.inReplyTo,
+		BoundaryCheck:       models.SoulCommBoundaryCheckPassed,
+		PreferenceRespected: decision.preferenceRespected,
+		Timestamp:           now,
 	}
 	_ = activity.UpdateKeys()
 	createActivityErr := s.store.DB.WithContext(ctx.Context()).Model(activity).Create()
@@ -1065,3 +1191,5 @@ func isCommProviderUnavailable(err error) bool {
 	var netErr net.Error
 	return errors.As(err, &netErr)
 }
+
+func boolPtr(v bool) *bool { return &v }
