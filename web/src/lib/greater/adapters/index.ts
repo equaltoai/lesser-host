@@ -38,8 +38,12 @@ export type {
 	LesserGraphQLAdapterConfig,
 	TimelineVariables,
 	CreateNoteVariables,
+	ConversationMessagesVariables,
+	CreateConversationVariables,
 	CreateQuoteNoteMutationVariables,
 	SearchVariables,
+	SendMessageVariables,
+	UpdateMediaVariables,
 	Visibility,
 	NotificationLevel,
 	ObjectFieldsFragment,
@@ -54,6 +58,19 @@ export type {
 	UploadMediaPayload,
 } from './graphql';
 
+// Soul inventory (Lesser REST)
+export { LesserSoulClient, LesserSoulClientError, createLesserSoulClient } from './lesser/index.js';
+export type {
+	LesserFetchLike,
+	LesserSoulAgentIdentity,
+	LesserSoulAgentBinding,
+	LesserSoulBodyBinding,
+	LesserSoulClientConfig,
+	LesserSoulIncorporateResponse,
+	LesserSoulInventoryItem,
+	LesserSoulsMineResponse,
+} from './lesser/index.js';
+
 // Soul (lesser-host REST)
 export {
 	LesserHostSoulClient,
@@ -65,9 +82,25 @@ export type {
 	ErrorEnvelope as LesserHostErrorEnvelope,
 	LesserHostSoulClientConfig,
 	ResolveEnsOptions,
+	SoulAgentCommActivityItem,
+	SoulAgentCommActivityQuery,
+	SoulAgentCommActivityResponse,
 	SoulAgentChannelsResponse,
+	SoulAgentChannelPreferencesRequest,
 	SoulAgentChannelPreferencesResponse,
+	SoulAgentCommQueueItem,
+	SoulAgentCommQueueQuery,
+	SoulAgentCommQueueResponse,
+	SoulAgentIdentity,
+	SoulCommSendErrorEnvelope,
+	SoulCommSendRequest,
+	SoulCommSendResponse,
+	SoulCommStatusErrorEnvelope,
+	SoulCommStatusResponse,
 	SoulResolveResponse,
+	SoulSearchQuery,
+	SoulSearchResponse,
+	SoulSearchResult,
 } from './soul/index.js';
 
 // Messaging handlers (Lesser → shared/messaging)
