@@ -5,7 +5,7 @@ This is the frontend for `lesser.host` (repo: `lesser-host`).
 ## Stack
 
 - Vite + Svelte 5 + TypeScript
-- `greater-components` (vendored via `greater` CLI, pinned to `greater-v0.1.14`)
+- `greater-components` (vendored via `greater` CLI, pinned to `greater-v0.4.2`)
 
 ## Local dev
 

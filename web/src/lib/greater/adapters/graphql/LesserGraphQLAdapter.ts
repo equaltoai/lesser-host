@@ -36,13 +36,28 @@ import type {
 	CreateListMutationVariables,
 	UpdateListMutationVariables,
 	ConversationsQueryVariables,
+	ConversationMessagesQueryVariables,
+	CreateConversationMutationVariables,
+	SendMessageMutationVariables,
+	AcceptMessageRequestMutationVariables,
+	DeclineMessageRequestMutationVariables,
+	DeleteMessageMutationVariables,
 	UpdateRelationshipMutationVariables,
 	AgentsQueryVariables,
 	AgentActivityQueryVariables,
+	AgentAccessLeasesQueryVariables,
 	AgentMemorySearchQueryVariables,
 	RegisterAgentMutationVariables,
 	UpdateAgentMutationVariables,
 	DelegateToAgentMutationVariables,
+	CreateAgentAccessLeasePrincipalChallengeMutationVariables,
+	CreateAgentAccessLeaseAgentChallengeMutationVariables,
+	CreateAgentAccessLeaseMutationVariables,
+	RevokeAgentAccessLeaseMutationVariables,
+	CreateAgentAccessLeaseSessionKeyChallengeMutationVariables,
+	AuthorizeAgentAccessLeaseSessionKeyMutationVariables,
+	CreateAgentAccessLeaseRenewChallengeMutationVariables,
+	ExchangeAgentAccessLeaseTokenMutationVariables,
 	UpdateAdminAgentPolicyMutationVariables,
 	AdminVerifyAgentMutationVariables,
 	AdminUnverifyAgentMutationVariables,
@@ -96,6 +111,7 @@ import type {
 	UploadMediaInput,
 	UploadMediaMutation,
 	UploadMediaMutationVariables,
+	UpdateMediaMutationVariables,
 	Actor,
 } from './generated/types.js';
 
@@ -111,7 +127,9 @@ import {
 	AgentByUsernameDocument,
 	AgentsDocument,
 	MyAgentsDocument,
+	MySoulsDocument,
 	AgentActivityDocument,
+	AgentAccessLeasesDocument,
 	AdminAgentPolicyDocument,
 	UpdateAdminAgentPolicyDocument,
 	AgentMemorySearchDocument,
@@ -138,10 +156,18 @@ import {
 	AddAccountsToListDocument,
 	RemoveAccountsFromListDocument,
 	UploadMediaDocument,
+	MediaDocument,
+	UpdateMediaDocument,
 	ConversationsDocument,
 	ConversationDocument,
+	ConversationMessagesDocument,
+	CreateConversationDocument,
+	SendMessageDocument,
+	AcceptMessageRequestDocument,
+	DeclineMessageRequestDocument,
 	MarkConversationReadDocument,
 	DeleteConversationDocument,
+	DeleteMessageDocument,
 	RelationshipDocument,
 	RelationshipsDocument,
 	FollowActorDocument,
@@ -179,6 +205,7 @@ import {
 	AiCapabilitiesDocument,
 	TrustGraphDocument,
 	CostBreakdownDocument,
+	InstanceDocument,
 	InstanceBudgetsDocument,
 	SetInstanceBudgetDocument,
 	OptimizeFederationCostsDocument,
@@ -218,9 +245,18 @@ import {
 	DeleteAgentDocument,
 	DelegateToAgentDocument,
 	RevokeAgentTokenDocument,
+	CreateAgentAccessLeasePrincipalChallengeDocument,
+	CreateAgentAccessLeaseAgentChallengeDocument,
+	CreateAgentAccessLeaseDocument,
+	RevokeAgentAccessLeaseDocument,
+	CreateAgentAccessLeaseSessionKeyChallengeDocument,
+	AuthorizeAgentAccessLeaseSessionKeyDocument,
+	CreateAgentAccessLeaseRenewChallengeDocument,
+	ExchangeAgentAccessLeaseTokenDocument,
 	AdminVerifyAgentDocument,
 	AdminUnverifyAgentDocument,
 	AdminSuspendAgentDocument,
+	IncorporateSoulDocument,
 	AgentActivityUpdatesDocument,
 } from './generated/types.js';
 
@@ -391,6 +427,10 @@ export type LesserGraphQLAdapterConfig = GraphQLClientConfig;
 export type TimelineVariables = TimelineQueryVariables;
 export type SearchVariables = SearchQueryVariables;
 export type CreateNoteVariables = CreateNoteMutationVariables;
+export type ConversationMessagesVariables = ConversationMessagesQueryVariables;
+export type CreateConversationVariables = CreateConversationMutationVariables;
+export type SendMessageVariables = SendMessageMutationVariables;
+export type UpdateMediaVariables = UpdateMediaMutationVariables;
 
 export class LesserGraphQLAdapter {
 	private readonly client: GraphQLClientInstance;
@@ -692,6 +732,11 @@ export class LesserGraphQLAdapter {
 		return data.actor;
 	}
 
+	async getInstance() {
+		const data = await this.query(InstanceDocument);
+		return data.instance;
+	}
+
 	// ============================================================================
 	// AGENTS
 	// ============================================================================
@@ -711,9 +756,19 @@ export class LesserGraphQLAdapter {
 		return data.myAgents;
 	}
 
+	async getMySouls() {
+		const data = await this.query(MySoulsDocument);
+		return data.mySouls;
+	}
+
 	async getAgentActivity(variables: AgentActivityQueryVariables) {
 		const data = await this.query(AgentActivityDocument, variables);
 		return data.agentActivity;
+	}
+
+	async getAgentAccessLeases(variables: AgentAccessLeasesQueryVariables) {
+		const data = await this.query(AgentAccessLeasesDocument, variables);
+		return data.agentAccessLeases;
 	}
 
 	async getAdminAgentPolicy() {
@@ -756,6 +811,96 @@ export class LesserGraphQLAdapter {
 		return data.revokeAgentToken;
 	}
 
+	async createAgentAccessLeasePrincipalChallenge(
+		username: string,
+		input: CreateAgentAccessLeasePrincipalChallengeMutationVariables['input']
+	) {
+		const data = await this.mutate(CreateAgentAccessLeasePrincipalChallengeDocument, {
+			username,
+			input,
+		});
+		return data.createAgentAccessLeasePrincipalChallenge;
+	}
+
+	async createAgentAccessLeaseAgentChallenge(
+		username: string,
+		input: CreateAgentAccessLeaseAgentChallengeMutationVariables['input']
+	) {
+		const data = await this.mutate(CreateAgentAccessLeaseAgentChallengeDocument, {
+			username,
+			input,
+		});
+		return data.createAgentAccessLeaseAgentChallenge;
+	}
+
+	async createAgentAccessLease(
+		username: string,
+		input: CreateAgentAccessLeaseMutationVariables['input']
+	) {
+		const data = await this.mutate(CreateAgentAccessLeaseDocument, { username, input });
+		return data.createAgentAccessLease;
+	}
+
+	async revokeAgentAccessLease(
+		username: string,
+		leaseID: string,
+		input?: RevokeAgentAccessLeaseMutationVariables['input']
+	) {
+		const data = await this.mutate(RevokeAgentAccessLeaseDocument, {
+			username,
+			leaseID,
+			input,
+		});
+		return data.revokeAgentAccessLease;
+	}
+
+	async createAgentAccessLeaseSessionKeyChallenge(
+		username: string,
+		leaseID: string,
+		input: CreateAgentAccessLeaseSessionKeyChallengeMutationVariables['input']
+	) {
+		const data = await this.mutate(CreateAgentAccessLeaseSessionKeyChallengeDocument, {
+			username,
+			leaseID,
+			input,
+		});
+		return data.createAgentAccessLeaseSessionKeyChallenge;
+	}
+
+	async authorizeAgentAccessLeaseSessionKey(
+		username: string,
+		leaseID: string,
+		input: AuthorizeAgentAccessLeaseSessionKeyMutationVariables['input']
+	) {
+		const data = await this.mutate(AuthorizeAgentAccessLeaseSessionKeyDocument, {
+			username,
+			leaseID,
+			input,
+		});
+		return data.authorizeAgentAccessLeaseSessionKey;
+	}
+
+	async createAgentAccessLeaseRenewChallenge(username: string, leaseID: string) {
+		const data = await this.mutate(CreateAgentAccessLeaseRenewChallengeDocument, {
+			username,
+			leaseID,
+		});
+		return data.createAgentAccessLeaseRenewChallenge;
+	}
+
+	async exchangeAgentAccessLeaseToken(
+		username: string,
+		leaseID: string,
+		input: ExchangeAgentAccessLeaseTokenMutationVariables['input']
+	) {
+		const data = await this.mutate(ExchangeAgentAccessLeaseTokenDocument, {
+			username,
+			leaseID,
+			input,
+		});
+		return data.exchangeAgentAccessLeaseToken;
+	}
+
 	async adminVerifyAgent(username: string, input?: AdminVerifyAgentMutationVariables['input']) {
 		const data = await this.mutate(AdminVerifyAgentDocument, { username, input });
 		return data.adminVerifyAgent;
@@ -769,6 +914,23 @@ export class LesserGraphQLAdapter {
 	async adminSuspendAgent(username: string) {
 		const data = await this.mutate(AdminSuspendAgentDocument, { username });
 		return data.adminSuspendAgent;
+	}
+
+	async incorporateSoul(agentId: string, targetAgentUsername: string) {
+		const id = agentId.trim();
+		if (!id) {
+			throw new Error('agentId is required');
+		}
+		const targetUsername = targetAgentUsername.trim();
+		if (!targetUsername) {
+			throw new Error('targetAgentUsername is required');
+		}
+
+		const data = await this.mutate(IncorporateSoulDocument, {
+			agentId: id,
+			targetAgentUsername: targetUsername,
+		});
+		return data.incorporateSoul;
 	}
 
 	async search(variables: SearchQueryVariables) {
@@ -802,6 +964,39 @@ export class LesserGraphQLAdapter {
 		return data.conversation;
 	}
 
+	async getConversationMessages(variables: ConversationMessagesQueryVariables) {
+		const data = await this.query(ConversationMessagesDocument, variables);
+		return data.conversationMessages;
+	}
+
+	async createConversation(participantId: string) {
+		const data = await this.mutate(CreateConversationDocument, { participantId });
+		return data.createConversation;
+	}
+
+	async sendMessage(conversationId: string, content: string, mediaIds?: string[]) {
+		const data = await this.mutate(SendMessageDocument, {
+			conversationId,
+			content,
+			mediaIds,
+		});
+		return data.sendMessage;
+	}
+
+	async acceptMessageRequest(
+		conversationId: AcceptMessageRequestMutationVariables['conversationId']
+	) {
+		const data = await this.mutate(AcceptMessageRequestDocument, { conversationId });
+		return data.acceptMessageRequest;
+	}
+
+	async declineMessageRequest(
+		conversationId: DeclineMessageRequestMutationVariables['conversationId']
+	) {
+		const data = await this.mutate(DeclineMessageRequestDocument, { conversationId });
+		return data.declineMessageRequest;
+	}
+
 	async markConversationAsRead(id: string) {
 		const data = await this.mutate(MarkConversationReadDocument, { id });
 		return data.markConversationAsRead;
@@ -810,6 +1005,11 @@ export class LesserGraphQLAdapter {
 	async deleteConversation(conversationId: string) {
 		const data = await this.mutate(DeleteConversationDocument, { conversationId });
 		return data.deleteConversation;
+	}
+
+	async deleteMessage(messageId: DeleteMessageMutationVariables['messageId']) {
+		const data = await this.mutate(DeleteMessageDocument, { messageId });
+		return data.deleteMessage;
 	}
 
 	async getLists() {
@@ -906,6 +1106,16 @@ export class LesserGraphQLAdapter {
 		}
 
 		return payload;
+	}
+
+	async getMedia(id: string) {
+		const data = await this.query(MediaDocument, { id });
+		return data.media;
+	}
+
+	async updateMedia(id: string, input: UpdateMediaMutationVariables['input']) {
+		const data = await this.mutate(UpdateMediaDocument, { id, input });
+		return data.updateMedia;
 	}
 
 	async createNote(input: CreateNoteMutationVariables['input']) {
