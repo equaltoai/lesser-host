@@ -1604,20 +1604,31 @@ export class LesserHostStack extends cdk.Stack {
 								}
 
 								const webDir = path.join(repoRoot, 'web');
+								const tempDir = fs.mkdtempSync(path.join(path.join(repoRoot, 'cdk', '.build'), 'web-bundle-'));
 								try {
-									execFileSync('npm', ['ci'], { cwd: webDir, stdio: 'inherit' });
-									execFileSync('npm', ['run', 'build'], { cwd: webDir, stdio: 'inherit' });
-									fs.cpSync(path.join(webDir, 'dist'), outputDir, { recursive: true });
+									fs.cpSync(webDir, tempDir, {
+										recursive: true,
+										filter: (src) => {
+											const rel = path.relative(webDir, src);
+											if (rel === '') return true;
+											return !rel.startsWith('node_modules') && !rel.startsWith('dist');
+										},
+									});
+									execFileSync('npm', ['ci'], { cwd: tempDir, stdio: 'inherit' });
+									execFileSync('npm', ['run', 'build'], { cwd: tempDir, stdio: 'inherit' });
+									fs.cpSync(path.join(tempDir, 'dist'), outputDir, { recursive: true });
 									return true;
-								} catch (err) {
+								} catch {
 									return false;
+								} finally {
+									fs.rmSync(tempDir, { recursive: true, force: true });
 								}
 							},
 						},
 						command: [
 							'bash',
 							'-c',
-							'npm ci && npm run build && cp -r dist/* /asset-output/',
+							'rm -rf /tmp/webbuild && mkdir -p /tmp/webbuild && cp -R /asset-input/. /tmp/webbuild && cd /tmp/webbuild && rm -rf node_modules dist && npm ci && npm run build && cp -r dist/* /asset-output/',
 						],
 					},
 				}),
@@ -1876,7 +1887,21 @@ export class LesserHostStack extends cdk.Stack {
 		}
 
 	private repoRoot(): string {
-		// This file lives at cdk/lib/*.ts; repo root is two levels up.
-		return path.resolve(__dirname, '../..');
+		let current = __dirname;
+		for (;;) {
+			const candidate = path.resolve(current, '..');
+			if (
+				fs.existsSync(path.join(candidate, 'cdk')) &&
+				fs.existsSync(path.join(candidate, 'cmd')) &&
+				fs.existsSync(path.join(candidate, 'web'))
+			) {
+				return candidate;
+			}
+			const parent = path.dirname(candidate);
+			if (parent === candidate) {
+				throw new Error(`Failed to locate lesser-host repo root from ${__dirname}`);
+			}
+			current = candidate;
+		}
 	}
 }

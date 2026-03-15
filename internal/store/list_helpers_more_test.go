@@ -88,6 +88,7 @@ func TestListByInstanceGSI1_ErrorsAndSorts(t *testing.T) {
 
 		q.On("Index", mock.Anything).Return(q)
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q)
+		q.On("OrderBy", "gsi1SK", "DESC").Return(q)
 		q.On("Limit", mock.Anything).Return(q)
 		q.On("All", mock.Anything).Return(errors.New("boom")).Once()
 
@@ -111,6 +112,7 @@ func TestListByInstanceGSI1_ErrorsAndSorts(t *testing.T) {
 
 		q.On("Index", "gsi1").Return(q).Once()
 		q.On("Where", "gsi1PK", "=", "X#slug").Return(q).Once()
+		q.On("OrderBy", "gsi1SK", "DESC").Return(q).Once()
 		q.On("Limit", 200).Return(q).Once()
 		q.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
 			destAny := args.Get(0)

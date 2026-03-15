@@ -564,6 +564,16 @@
 				<DefinitionItem label="Current lesser-body version" monospace>{instance.lesser_body_version || '—'}</DefinitionItem>
 				<DefinitionItem label="Body provisioned" monospace>{instance.body_provisioned_at || '—'}</DefinitionItem>
 				<DefinitionItem label="MCP wired" monospace>{instance.mcp_wired_at || '—'}</DefinitionItem>
+				<DefinitionItem label="Lesser update state" monospace>{instance.lesser_update_status || '—'}</DefinitionItem>
+				<DefinitionItem label="Lesser update job" monospace>{instance.lesser_update_job_id || '—'}</DefinitionItem>
+				<DefinitionItem label="Lesser updated" monospace>{instance.lesser_update_at || '—'}</DefinitionItem>
+				<DefinitionItem label="lesser-body update state" monospace>{instance.lesser_body_update_status || '—'}</DefinitionItem>
+				<DefinitionItem label="lesser-body update job" monospace>{instance.lesser_body_update_job_id || '—'}</DefinitionItem>
+				<DefinitionItem label="lesser-body updated" monospace>{instance.lesser_body_update_at || '—'}</DefinitionItem>
+				<DefinitionItem label="MCP update state" monospace>{instance.mcp_update_status || '—'}</DefinitionItem>
+				<DefinitionItem label="MCP update job" monospace>{instance.mcp_update_job_id || '—'}</DefinitionItem>
+				<DefinitionItem label="MCP updated" monospace>{instance.mcp_update_at || '—'}</DefinitionItem>
+				<DefinitionItem label="Instance updated" monospace>{instance.updated_at || '—'}</DefinitionItem>
 			</DefinitionList>
 
 			{#if domainsError}

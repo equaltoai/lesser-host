@@ -320,13 +320,85 @@ func (s *Server) enqueueUpdateJobBestEffort(ctx *apptheory.Context, jobID string
 	})
 }
 
-func (s *Server) getExistingUpdateJobFromInstanceState(ctx *apptheory.Context, inst *models.Instance) (*models.UpdateJob, bool) {
+func updateJobProcessingLeaseActive(job *models.UpdateJob, now time.Time) bool {
+	if job == nil {
+		return false
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	return !job.ProcessingLeaseUntil.IsZero() && job.ProcessingLeaseUntil.After(now)
+}
+
+func (s *Server) maybeNudgeActiveUpdateJob(ctx *apptheory.Context, job *models.UpdateJob, now time.Time) {
+	if s == nil || ctx == nil || job == nil || !updateJobIsActive(job) {
+		return
+	}
+	if updateJobProcessingLeaseActive(job, now) {
+		return
+	}
+	if shouldNudgeAsyncJob(now, job.UpdatedAt) {
+		s.enqueueUpdateJobBestEffort(ctx, job.ID)
+	}
+}
+
+func managedUpdateMarkerForRequest(inst *models.Instance, req createUpdateJobRequest) (string, string) {
+	if inst == nil {
+		return "", ""
+	}
+	switch updateJobKindFromRequest(req) {
+	case updateJobKindBody:
+		return strings.ToLower(strings.TrimSpace(inst.LesserBodyUpdateStatus)), strings.TrimSpace(inst.LesserBodyUpdateJobID)
+	case updateJobKindMCP:
+		return strings.ToLower(strings.TrimSpace(inst.MCPUpdateStatus)), strings.TrimSpace(inst.MCPUpdateJobID)
+	default:
+		return strings.ToLower(strings.TrimSpace(inst.LesserUpdateStatus)), strings.TrimSpace(inst.LesserUpdateJobID)
+	}
+}
+
+func setManagedUpdateInstanceMarker(ub core.UpdateBuilder, job *models.UpdateJob, status string, at time.Time) {
+	if job == nil {
+		return
+	}
+	status = strings.TrimSpace(status)
+	jobID := strings.TrimSpace(job.ID)
+	ub.Set("UpdateStatus", status)
+	ub.Set("UpdateJobID", jobID)
+	if !at.IsZero() {
+		ub.Set("UpdatedAt", at)
+	}
+	switch updateJobKind(job) {
+	case updateJobKindBody:
+		ub.Set("LesserBodyUpdateStatus", status)
+		ub.Set("LesserBodyUpdateJobID", jobID)
+		if !at.IsZero() {
+			ub.Set("LesserBodyUpdateAt", at)
+		}
+	case updateJobKindMCP:
+		ub.Set("MCPUpdateStatus", status)
+		ub.Set("MCPUpdateJobID", jobID)
+		if !at.IsZero() {
+			ub.Set("MCPUpdateAt", at)
+		}
+	default:
+		ub.Set("LesserUpdateStatus", status)
+		ub.Set("LesserUpdateJobID", jobID)
+		if !at.IsZero() {
+			ub.Set("LesserUpdateAt", at)
+		}
+	}
+}
+
+func (s *Server) getExistingUpdateJobFromInstanceState(ctx *apptheory.Context, inst *models.Instance, req createUpdateJobRequest) (*models.UpdateJob, bool) {
 	if s == nil || s.store == nil || ctx == nil || inst == nil {
 		return nil, false
 	}
 
-	status := strings.ToLower(strings.TrimSpace(inst.UpdateStatus))
-	jobID := strings.TrimSpace(inst.UpdateJobID)
+	status, jobID := managedUpdateMarkerForRequest(inst, req)
+	if jobID == "" {
+		status = strings.ToLower(strings.TrimSpace(inst.UpdateStatus))
+		jobID = strings.TrimSpace(inst.UpdateJobID)
+	}
 	if jobID == "" {
 		return nil, false
 	}
@@ -384,6 +456,10 @@ func (s *Server) repairStaleInstanceUpdateMarker(ctx context.Context, inst *mode
 	return s.store.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
 		tx.UpdateWithBuilder(updateInst, func(ub core.UpdateBuilder) error {
 			ub.Set("UpdateStatus", models.UpdateJobStatusError)
+			ub.Set("UpdatedAt", time.Now().UTC())
+			markStaleManagedUpdateMarker(ub, jobID, inst.LesserUpdateJobID, inst.LesserUpdateStatus, "LesserUpdateStatus")
+			markStaleManagedUpdateMarker(ub, jobID, inst.LesserBodyUpdateJobID, inst.LesserBodyUpdateStatus, "LesserBodyUpdateStatus")
+			markStaleManagedUpdateMarker(ub, jobID, inst.MCPUpdateJobID, inst.MCPUpdateStatus, "MCPUpdateStatus")
 			return nil
 		},
 			tabletheory.IfExists(),
@@ -409,6 +485,23 @@ func updateInstanceNoActiveUpdateCondition() core.TransactCondition {
 	)
 }
 
+func markStaleManagedUpdateMarker(
+	ub core.UpdateBuilder,
+	jobID string,
+	markerJobID string,
+	markerStatus string,
+	statusField string,
+) {
+	if !strings.EqualFold(strings.TrimSpace(markerJobID), strings.TrimSpace(jobID)) {
+		return
+	}
+	status := strings.ToLower(strings.TrimSpace(markerStatus))
+	if status != models.UpdateJobStatusQueued && status != models.UpdateJobStatusRunning {
+		return
+	}
+	ub.Set(statusField, models.UpdateJobStatusError)
+}
+
 func validateCreateUpdateJobRequest(req createUpdateJobRequest) *apptheory.AppError {
 	if req.BodyOnly && req.MCPOnly {
 		return &apptheory.AppError{Code: "app.bad_request", Message: "choose either body_only or mcp_only, not both"}
@@ -427,13 +520,14 @@ func (s *Server) findExistingManagedUpdateJob(
 	lesserVersion string,
 	lesserBodyVersion string,
 ) (*models.UpdateJob, *apptheory.AppError) {
+	now := time.Now().UTC()
 	if activeJobs, activeErr := s.findActiveUpdateJobsByInstance(ctx.Context(), slug); activeErr != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to inspect active update jobs"}
 	} else if len(activeJobs) > 0 {
 		var sameKindActive *models.UpdateJob
 		for _, activeJob := range activeJobs {
 			if sameManagedUpdateRequest(activeJob, req, lesserVersion, lesserBodyVersion) {
-				s.enqueueUpdateJobBestEffort(ctx, activeJob.ID)
+				s.maybeNudgeActiveUpdateJob(ctx, activeJob, now)
 				return activeJob, nil
 			}
 			if sameKindActive == nil && updateJobKind(activeJob) == updateJobKindFromRequest(req) {
@@ -446,9 +540,9 @@ func (s *Server) findExistingManagedUpdateJob(
 		return nil, managedUpdateConflictError(activeJobs[0], req, lesserVersion, lesserBodyVersion)
 	}
 
-	if job, ok := s.getExistingUpdateJobFromInstanceState(ctx, inst); ok {
+	if job, ok := s.getExistingUpdateJobFromInstanceState(ctx, inst, req); ok {
 		if sameManagedUpdateRequest(job, req, lesserVersion, lesserBodyVersion) {
-			s.enqueueUpdateJobBestEffort(ctx, job.ID)
+			s.maybeNudgeActiveUpdateJob(ctx, job, now)
 			return job, nil
 		}
 		if updateJobIsActive(job) {
@@ -513,11 +607,12 @@ func (s *Server) handleManagedUpdateCreateConflict(
 	lesserVersion string,
 	lesserBodyVersion string,
 ) (*apptheory.Response, error) {
+	now := time.Now().UTC()
 	activeJobs, activeErr := s.findActiveUpdateJobsByInstance(ctx.Context(), slug)
 	if activeErr == nil && len(activeJobs) > 0 {
 		for _, activeJob := range activeJobs {
 			if sameManagedUpdateRequest(activeJob, req, lesserVersion, lesserBodyVersion) {
-				s.enqueueUpdateJobBestEffort(ctx, activeJob.ID)
+				s.maybeNudgeActiveUpdateJob(ctx, activeJob, now)
 				return apptheory.JSON(http.StatusOK, updateJobResponseFromModel(activeJob))
 			}
 		}
@@ -574,8 +669,7 @@ func (s *Server) handlePortalCreateInstanceUpdateJob(ctx *apptheory.Context) (*a
 	if err := s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
 		tx.Create(job)
 		tx.UpdateWithBuilder(updateInst, func(ub core.UpdateBuilder) error {
-			ub.Set("UpdateStatus", models.UpdateJobStatusQueued)
-			ub.Set("UpdateJobID", strings.TrimSpace(job.ID))
+			setManagedUpdateInstanceMarker(ub, job, models.UpdateJobStatusQueued, now)
 			return nil
 		}, tabletheory.IfExists(), updateInstanceNoActiveUpdateCondition())
 		tx.Put(audit)
@@ -756,22 +850,27 @@ func effectiveUpdateTranslationEnabled(inst *models.Instance) bool {
 }
 
 func (s *Server) nudgeActiveUpdateJobIfNeeded(ctx *apptheory.Context, inst *models.Instance, items []*models.UpdateJob) {
+	if s == nil || ctx == nil {
+		return
+	}
+	now := time.Now().UTC()
+	seenActive := false
+	for _, it := range items {
+		if it == nil || !updateJobIsActive(it) {
+			continue
+		}
+		seenActive = true
+		s.maybeNudgeActiveUpdateJob(ctx, it, now)
+	}
+	if seenActive {
+		return
+	}
+
 	status := strings.ToLower(strings.TrimSpace(inst.UpdateStatus))
 	if status != models.UpdateJobStatusQueued && status != models.UpdateJobStatusRunning {
 		return
 	}
-	target := strings.TrimSpace(inst.UpdateJobID)
-	if target == "" {
-		return
-	}
-	now := time.Now().UTC()
-	for _, it := range items {
-		if it == nil || !strings.EqualFold(strings.TrimSpace(it.ID), target) {
-			continue
-		}
-		if shouldNudgeAsyncJob(now, it.UpdatedAt) {
-			s.enqueueUpdateJobBestEffort(ctx, it.ID)
-		}
+	if err := s.repairStaleInstanceUpdateMarker(ctx.Context(), inst); err != nil && !theoryErrors.IsConditionFailed(err) {
 		return
 	}
 }

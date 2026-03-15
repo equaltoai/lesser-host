@@ -3,12 +3,15 @@ package provisionworker
 import (
 	"context"
 	"errors"
+	"io"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/codebuild"
 	cbtypes "github.com/aws/aws-sdk-go-v2/service/codebuild/types"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
@@ -460,6 +463,32 @@ func TestAdvanceUpdateBodyDeployWait_Branches(t *testing.T) {
 		"https://logs.example/body-fail",
 		"body_deploy_failed",
 	)
+}
+
+func TestAdvanceUpdateBodyDeployWait_UsesReceiptWhenTrackedRunIsStale(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(550, 0).UTC()
+	st, _ := newBranchTestStore()
+	srv := &Server{
+		cfg:   config.Config{ArtifactBucketName: "artifacts"},
+		store: st,
+		s3: &fakeS3{byKey: map[string]*s3.GetObjectOutput{
+			"managed/updates/slug/job-1/body-state.json": {
+				Body: io.NopCloser(strings.NewReader(`{"version":1,"stage":"dev","base_domain":"slug.example.com","lesser_body_version":"v0.1.14"}`)),
+			},
+		}},
+	}
+	job := managedUpdateRunnerJob(updateStepBodyDeployWait)
+	job.RunID = branchTestRunID
+
+	delay, done, err := srv.advanceUpdateBodyDeployWait(context.Background(), job, "req", now)
+	require.NoError(t, err)
+	require.True(t, done)
+	require.Zero(t, delay)
+	require.Equal(t, updateStepDone, job.Step)
+	require.Equal(t, "lesser-body updated", job.Note)
+	require.Empty(t, job.RunID)
 }
 
 func TestAdvanceUpdateDeployMcpStart_Branches(t *testing.T) {

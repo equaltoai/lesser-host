@@ -8,6 +8,15 @@ export interface InstanceResponse {
 	provision_job_id?: string;
 	update_status?: string;
 	update_job_id?: string;
+	lesser_update_status?: string;
+	lesser_update_job_id?: string;
+	lesser_update_at?: string;
+	lesser_body_update_status?: string;
+	lesser_body_update_job_id?: string;
+	lesser_body_update_at?: string;
+	mcp_update_status?: string;
+	mcp_update_job_id?: string;
+	mcp_update_at?: string;
 	hosted_account_id?: string;
 	hosted_region?: string;
 	hosted_base_domain?: string;
@@ -36,6 +45,7 @@ export interface InstanceResponse {
 	ai_pricing_multiplier_bps: number;
 	ai_max_inflight_jobs: number;
 	created_at: string;
+	updated_at?: string;
 }
 
 export interface ListInstancesResponse {

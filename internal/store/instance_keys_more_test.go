@@ -31,6 +31,7 @@ func TestStore_InstanceKeysQueries(t *testing.T) {
 
 	qKey.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qKey).Maybe()
 	qKey.On("Index", mock.Anything).Return(qKey).Maybe()
+	qKey.On("OrderBy", "gsi1SK", "DESC").Return(qKey).Maybe()
 	qKey.On("Limit", mock.Anything).Return(qKey).Maybe()
 	qKey.On("ConsistentRead").Return(qKey).Maybe()
 	qKey.On("First", mock.AnythingOfType("*models.InstanceKey")).Return(nil).Run(func(args mock.Arguments) {

@@ -293,6 +293,13 @@ func TestHandlePortalUpdateInstanceConfig(t *testing.T) {
 
 	tdb := newPortalTestDB()
 	s := &Server{store: store.New(tdb.db)}
+	qUpdate := new(ttmocks.MockQuery)
+	tdb.db.On("Model", mock.AnythingOfType("*models.UpdateJob")).Return(qUpdate).Maybe()
+	addStandardMockQueryStubs(qUpdate)
+	qUpdate.On("All", mock.AnythingOfType("*[]*models.UpdateJob")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.UpdateJob](t, args, 0)
+		*dest = []*models.UpdateJob{}
+	}).Maybe()
 
 	// requireInstanceAccess -> getInstance
 	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
@@ -348,6 +355,13 @@ func TestHandlePortalListInstanceBudgets_Success(t *testing.T) {
 
 	tdb := newPortalTestDB()
 	s := &Server{store: store.New(tdb.db)}
+	qUpdate := new(ttmocks.MockQuery)
+	tdb.db.On("Model", mock.AnythingOfType("*models.UpdateJob")).Return(qUpdate).Maybe()
+	addStandardMockQueryStubs(qUpdate)
+	qUpdate.On("All", mock.AnythingOfType("*[]*models.UpdateJob")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.UpdateJob](t, args, 0)
+		*dest = []*models.UpdateJob{}
+	}).Maybe()
 
 	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
@@ -373,6 +387,13 @@ func TestHandlePortalGetInstanceBudgetMonth_NotFound(t *testing.T) {
 
 	tdb := newPortalTestDB()
 	s := &Server{store: store.New(tdb.db)}
+	qUpdate := new(ttmocks.MockQuery)
+	tdb.db.On("Model", mock.AnythingOfType("*models.UpdateJob")).Return(qUpdate).Maybe()
+	addStandardMockQueryStubs(qUpdate)
+	qUpdate.On("All", mock.AnythingOfType("*[]*models.UpdateJob")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.UpdateJob](t, args, 0)
+		*dest = []*models.UpdateJob{}
+	}).Maybe()
 
 	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
@@ -537,6 +558,13 @@ func TestHandlePortalGetInstanceBudgetMonth_ValidatesMonth(t *testing.T) {
 
 	tdb := newPortalTestDB()
 	s := &Server{store: store.New(tdb.db)}
+	qUpdate := new(ttmocks.MockQuery)
+	tdb.db.On("Model", mock.AnythingOfType("*models.UpdateJob")).Return(qUpdate).Maybe()
+	addStandardMockQueryStubs(qUpdate)
+	qUpdate.On("All", mock.AnythingOfType("*[]*models.UpdateJob")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.UpdateJob](t, args, 0)
+		*dest = []*models.UpdateJob{}
+	}).Maybe()
 
 	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
 		destAny := args.Get(0)
@@ -891,6 +919,13 @@ func TestHandlePortalGetInstance(t *testing.T) {
 
 	tdb := newPortalTestDB()
 	s := &Server{store: store.New(tdb.db)}
+	qUpdate := new(ttmocks.MockQuery)
+	tdb.db.On("Model", mock.AnythingOfType("*models.UpdateJob")).Return(qUpdate).Maybe()
+	addStandardMockQueryStubs(qUpdate)
+	qUpdate.On("All", mock.AnythingOfType("*[]*models.UpdateJob")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.UpdateJob](t, args, 0)
+		*dest = []*models.UpdateJob{}
+	}).Maybe()
 
 	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
 		destAny := args.Get(0)

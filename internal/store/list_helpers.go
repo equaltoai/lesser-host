@@ -54,6 +54,7 @@ func listByInstanceGSI1[T any](
 		Model(model).
 		Index("gsi1").
 		Where("gsi1PK", "=", fmt.Sprintf(gsi1PKFormat, slug)).
+		OrderBy("gsi1SK", "DESC").
 		Limit(limit).
 		All(&items)
 	if err != nil {

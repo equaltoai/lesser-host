@@ -321,7 +321,7 @@ func (s *Server) handlePortalGetInstance(ctx *apptheory.Context) (*apptheory.Res
 	if err != nil {
 		return nil, err
 	}
-	return apptheory.JSON(http.StatusOK, s.portalInstanceResponseFromModel(inst))
+	return apptheory.JSON(http.StatusOK, s.portalInstanceDetailResponse(ctx, inst))
 }
 
 func (s *Server) handlePortalUpdateInstanceConfig(ctx *apptheory.Context) (*apptheory.Response, error) {
@@ -365,7 +365,7 @@ func (s *Server) handlePortalUpdateInstanceConfig(ctx *apptheory.Context) (*appt
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
-	return apptheory.JSON(http.StatusOK, s.portalInstanceResponseFromModel(updated))
+	return apptheory.JSON(http.StatusOK, s.portalInstanceDetailResponse(ctx, updated))
 }
 
 func (s *Server) verifyPortalStartProvisionConsent(ctx *apptheory.Context, slug string, req startInstanceProvisionRequest) (startInstanceProvisionRequest, *apptheory.AppError) {

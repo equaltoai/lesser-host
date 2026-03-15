@@ -50,6 +50,15 @@ type instanceResponse struct {
 	ProvisionJobID            string    `json:"provision_job_id,omitempty"`
 	UpdateStatus              string    `json:"update_status,omitempty"`
 	UpdateJobID               string    `json:"update_job_id,omitempty"`
+	LesserUpdateStatus        string    `json:"lesser_update_status,omitempty"`
+	LesserUpdateJobID         string    `json:"lesser_update_job_id,omitempty"`
+	LesserUpdateAt            time.Time `json:"lesser_update_at,omitempty"`
+	LesserBodyUpdateStatus    string    `json:"lesser_body_update_status,omitempty"`
+	LesserBodyUpdateJobID     string    `json:"lesser_body_update_job_id,omitempty"`
+	LesserBodyUpdateAt        time.Time `json:"lesser_body_update_at,omitempty"`
+	MCPUpdateStatus           string    `json:"mcp_update_status,omitempty"`
+	MCPUpdateJobID            string    `json:"mcp_update_job_id,omitempty"`
+	MCPUpdateAt               time.Time `json:"mcp_update_at,omitempty"`
 	HostedAccountID           string    `json:"hosted_account_id,omitempty"`
 	HostedRegion              string    `json:"hosted_region,omitempty"`
 	HostedBaseDomain          string    `json:"hosted_base_domain,omitempty"`
@@ -92,6 +101,7 @@ type instanceResponse struct {
 	AIPricingMultiplierBps    int64     `json:"ai_pricing_multiplier_bps"`
 	AIMaxInflightJobs         int64     `json:"ai_max_inflight_jobs"`
 	CreatedAt                 time.Time `json:"created_at"`
+	UpdatedAt                 time.Time `json:"updated_at,omitempty"`
 }
 
 type listInstancesResponse struct {
@@ -162,6 +172,15 @@ func instanceResponseFromModel(inst *models.Instance) instanceResponse {
 		ProvisionJobID:            strings.TrimSpace(inst.ProvisionJobID),
 		UpdateStatus:              strings.TrimSpace(inst.UpdateStatus),
 		UpdateJobID:               strings.TrimSpace(inst.UpdateJobID),
+		LesserUpdateStatus:        strings.TrimSpace(inst.LesserUpdateStatus),
+		LesserUpdateJobID:         strings.TrimSpace(inst.LesserUpdateJobID),
+		LesserUpdateAt:            inst.LesserUpdateAt,
+		LesserBodyUpdateStatus:    strings.TrimSpace(inst.LesserBodyUpdateStatus),
+		LesserBodyUpdateJobID:     strings.TrimSpace(inst.LesserBodyUpdateJobID),
+		LesserBodyUpdateAt:        inst.LesserBodyUpdateAt,
+		MCPUpdateStatus:           strings.TrimSpace(inst.MCPUpdateStatus),
+		MCPUpdateJobID:            strings.TrimSpace(inst.MCPUpdateJobID),
+		MCPUpdateAt:               inst.MCPUpdateAt,
 		HostedAccountID:           strings.TrimSpace(inst.HostedAccountID),
 		HostedRegion:              strings.TrimSpace(inst.HostedRegion),
 		HostedBaseDomain:          strings.TrimSpace(inst.HostedBaseDomain),
@@ -202,6 +221,7 @@ func instanceResponseFromModel(inst *models.Instance) instanceResponse {
 		AIPricingMultiplierBps:    effectiveAIPricingMultiplierBps(inst.AIPricingMultiplierBps),
 		AIMaxInflightJobs:         effectiveAIMaxInflightJobs(inst.AIMaxInflightJobs),
 		CreatedAt:                 inst.CreatedAt,
+		UpdatedAt:                 inst.UpdatedAt,
 	}
 }
 
@@ -737,6 +757,8 @@ func buildInstanceConfigUpdate(slug string, req updateInstanceConfigRequest) (*m
 	if len(fields) == 0 {
 		return nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: "no config fields provided"}
 	}
+	update.UpdatedAt = time.Now().UTC()
+	fields = append(fields, "UpdatedAt")
 	return update, fields, nil
 }
 
