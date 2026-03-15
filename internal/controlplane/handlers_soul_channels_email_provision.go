@@ -203,10 +203,7 @@ func (s *Server) finalizeSoulProvisionEmailChannel(
 	selfSig string,
 ) (*apptheory.Response, error) {
 	caps := extractCapabilityNames(regMap)
-	capsNorm, appErr := normalizeSoulCapabilitiesStrict(s.cfg.SoulSupportedCapabilities, caps)
-	if appErr != nil {
-		return nil, appErr
-	}
+	capsNorm := normalizeSoulCapabilitiesLoose(caps)
 
 	passParamName := s.soulAgentEmailPasswordSSMParam(agentIDHex)
 	password, passErr := s.ensureSoulAgentEmailPassword(ctx.Context(), passParamName)

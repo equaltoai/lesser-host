@@ -158,6 +158,64 @@ func TestHandleSoulAgentRegistrationBegin_Success(t *testing.T) {
 	assertSoulAgentRegistrationBeginResponse(t, resp.Body)
 }
 
+func TestHandleSoulAgentRegistrationBegin_AllowsUnknownCapabilities(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulRegistryTestDB()
+	s := &Server{
+		store: store.New(tdb.db),
+		cfg: config.Config{
+			SoulEnabled:                 true,
+			SoulChainID:                 1,
+			SoulRegistryContractAddress: "0x0000000000000000000000000000000000000001",
+			SoulTxMode:                  "safe",
+			SoulAdminSafeAddress:        "0x0000000000000000000000000000000000000002",
+			SoulSupportedCapabilities:   []string{"social"},
+		},
+	}
+
+	tdb.qUser.On("First", mock.AnythingOfType("*models.User")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.User](t, args, 0)
+		*dest = models.User{Username: "alice", Role: models.RoleCustomer, ApprovalStatus: models.UserApprovalStatusApproved}
+	}).Once()
+
+	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
+		*dest = models.Domain{Domain: "example.com", InstanceSlug: "inst1", Status: models.DomainStatusVerified}
+	}).Once()
+	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{Slug: "inst1", Owner: "alice"}
+	}).Once()
+
+	tdb.qWalletIdx.On("First", mock.AnythingOfType("*models.WalletIndex")).Return(theoryErrors.ErrItemNotFound).Once()
+	tdb.qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(theoryErrors.ErrItemNotFound).Once()
+
+	body, _ := json.Marshal(soulAgentRegistrationBeginRequest{
+		Domain:       testDomainExampleCom,
+		LocalID:      "agent-alice",
+		Wallet:       "0x000000000000000000000000000000000000dEaD",
+		Capabilities: []any{"cross_agent_integration"},
+	})
+
+	ctx := &apptheory.Context{RequestID: "r1x", AuthIdentity: "alice", Request: apptheory.Request{Body: body}}
+	resp, err := s.handleSoulAgentRegistrationBegin(ctx)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if resp.Status != http.StatusCreated {
+		t.Fatalf("expected 201, got %d (body=%q)", resp.Status, string(resp.Body))
+	}
+
+	var out soulAgentRegistrationBeginResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(out.Registration.Capabilities) != 1 || out.Registration.Capabilities[0] != "cross_agent_integration" {
+		t.Fatalf("expected unknown capability to persist, got %#v", out.Registration.Capabilities)
+	}
+}
+
 func assertSoulAgentRegistrationBeginResponse(t *testing.T, body []byte) {
 	t.Helper()
 
@@ -508,19 +566,11 @@ func TestHandleSoulAgentRegistrationVerify_UsesExistingProofFlagsAndCreatesOpera
 	}
 }
 
-func TestNormalizeSoulCapabilitiesStrict_EnforcesSupportedList(t *testing.T) {
+func TestNormalizeSoulCapabilitiesLoose_NormalizesWithoutAllowlist(t *testing.T) {
 	t.Parallel()
 
-	got, err := normalizeSoulCapabilitiesStrict([]string{"social"}, []string{" social ", "SOCIAL", "commerce"})
-	if err == nil {
-		t.Fatalf("expected error for unsupported capability, got=%v", got)
-	}
-
-	got, err = normalizeSoulCapabilitiesStrict([]string{"social"}, []string{" social ", "SOCIAL"})
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	if len(got) != 1 || got[0] != "social" {
+	got := normalizeSoulCapabilitiesLoose([]string{" social ", "SOCIAL", "commerce", "cross_agent_integration"})
+	if len(got) != 3 || got[0] != "commerce" || got[1] != "cross_agent_integration" || got[2] != "social" {
 		t.Fatalf("unexpected caps: %#v", got)
 	}
 }

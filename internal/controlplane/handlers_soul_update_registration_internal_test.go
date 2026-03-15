@@ -41,6 +41,7 @@ func TestHandleSoulAgentUpdateRegistration_V2_FirstVersion_AllowsNullPreviousVer
 			SoulRPCURL:                  "http://rpc.local",
 			SoulRegistryContractAddress: "0x0000000000000000000000000000000000000001",
 			SoulPackBucketName:          "bucket",
+			SoulSupportedCapabilities:   []string{"social"},
 		},
 		soulPacks: packs,
 	}

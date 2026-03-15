@@ -1587,10 +1587,7 @@ func (s *Server) buildMintConversationFinalizeV2Registration(
 
 	// Capability indexing inputs.
 	caps := extractCapabilityNames(reg)
-	capsNorm, appErr = normalizeSoulCapabilitiesStrict(s.cfg.SoulSupportedCapabilities, caps)
-	if appErr != nil {
-		return nil, nil, nil, nil, nil, appErr
-	}
+	capsNorm = normalizeSoulCapabilitiesLoose(caps)
 	claimLevels = extractCapabilityClaimLevels(reg)
 
 	return reg, parsed, digest, capsNorm, claimLevels, nil
