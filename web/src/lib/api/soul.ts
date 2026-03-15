@@ -434,6 +434,11 @@ export interface SoulRotateWalletConfirmResponse {
 	safe_tx?: SafeTxPayload;
 }
 
+export interface SoulAgentRotationOperationResponse {
+	operation: SoulOperation;
+	safe_tx?: SafeTxPayload;
+}
+
 export function soulAgentRotateWalletConfirm(
 	token: string,
 	agentId: string,
@@ -449,6 +454,33 @@ export function soulAgentRotateWalletConfirm(
 		},
 		body: req.body,
 	});
+}
+
+export function soulGetAgentRotationOperation(token: string, agentId: string): Promise<SoulAgentRotationOperationResponse> {
+	return fetchJson<SoulAgentRotationOperationResponse>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/rotate-wallet/operation`, {
+		headers: {
+			authorization: `Bearer ${token}`,
+		},
+	});
+}
+
+export function soulRecordAgentRotationExecution(
+	token: string,
+	agentId: string,
+	execTxHash: string,
+): Promise<SoulAgentRotationOperationResponse> {
+	const req = jsonRequest({ exec_tx_hash: execTxHash });
+	return fetchJson<SoulAgentRotationOperationResponse>(
+		`/api/v1/soul/agents/${encodeURIComponent(agentId)}/rotate-wallet/operation/record-execution`,
+		{
+			method: 'POST',
+			headers: {
+				authorization: `Bearer ${token}`,
+				...req.headers,
+			},
+			body: req.body,
+		},
+	);
 }
 
 export interface SoulUpdateRegistrationResponse {

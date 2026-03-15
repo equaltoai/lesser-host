@@ -586,10 +586,13 @@ func (s *Server) createSoulWalletRotationConfirmResponse(
 
 	opID := soulRotationOpID(s.cfg.SoulChainID, txTo, agentIDHex, rot.CurrentWallet, rot.NewWallet, rot.Nonce, rot.Deadline)
 	payload := &safeTxPayload{
-		SafeAddress: safeAddr,
+		SafeAddress: "",
 		To:          txTo,
 		Value:       "0",
 		Data:        "0x" + hex.EncodeToString(data),
+	}
+	if strings.ToLower(strings.TrimSpace(s.cfg.SoulTxMode)) == tipTxModeSafe {
+		payload.SafeAddress = safeAddr
 	}
 	payloadJSON, _ := json.Marshal(payload)
 

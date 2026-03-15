@@ -229,6 +229,8 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 	app.Post("/api/v1/soul/agents/register/{id}/verify", s.handleSoulAgentRegistrationVerify, apptheory.RequireAuth())
 	app.Post("/api/v1/soul/agents/{agentId}/rotate-wallet/begin", s.handleSoulAgentRotateWalletBegin, apptheory.RequireAuth())
 	app.Post("/api/v1/soul/agents/{agentId}/rotate-wallet/confirm", s.handleSoulAgentRotateWalletConfirm, apptheory.RequireAuth())
+	app.Get("/api/v1/soul/agents/{agentId}/rotate-wallet/operation", s.handleSoulAgentGetRotationOperation, apptheory.RequireAuth())
+	app.Post("/api/v1/soul/agents/{agentId}/rotate-wallet/operation/record-execution", s.handleSoulAgentRecordRotationOperationExecution, apptheory.RequireAuth())
 	app.Post("/api/v1/soul/agents/{agentId}/update-registration", s.handleSoulAgentUpdateRegistration, apptheory.RequireAuth())
 	app.Get("/api/v1/soul/agents/{agentId}/mint-operation", s.handleSoulAgentGetMintOperation, apptheory.RequireAuth())
 	app.Post("/api/v1/soul/agents/{agentId}/mint-operation/record-execution", s.handleSoulAgentRecordMintOperationExecution, apptheory.RequireAuth())
