@@ -58,6 +58,7 @@ func newBoundaryAppendPublishFixture(t *testing.T) *boundaryAppendPublishFixture
 			SoulChainID:                 1,
 			SoulRegistryContractAddress: "0x0000000000000000000000000000000000000001",
 			SoulPackBucketName:          "bucket",
+			SoulSupportedCapabilities:   []string{"social"},
 		},
 		soulPacks: packs,
 	}

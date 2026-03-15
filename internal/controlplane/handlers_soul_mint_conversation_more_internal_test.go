@@ -380,7 +380,7 @@ func testMintConversationExtractDeclarationsGuards(t *testing.T, now time.Time) 
 func testMintConversationFinalizeRegistrationHelper(t *testing.T, now time.Time) {
 	t.Helper()
 
-	s := &Server{cfg: config.Config{SoulPackBucketName: "bucket", SoulSupportedCapabilities: []string{"travel_planning"}}}
+	s := &Server{cfg: config.Config{SoulPackBucketName: "bucket", SoulSupportedCapabilities: []string{"social"}}}
 	identity := testMintConversationIdentity()
 	decl := testMintConversationDecl()
 

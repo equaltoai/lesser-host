@@ -162,6 +162,7 @@ func newProvisionEmailE2EFixture(t *testing.T) *provisionEmailE2EFixture {
 			SoulChainID:                 1,
 			SoulRegistryContractAddress: "0x0000000000000000000000000000000000000001",
 			SoulPackBucketName:          "bucket",
+			SoulSupportedCapabilities:   []string{"social"},
 			Stage:                       "lab",
 		},
 		soulPacks: fixture.packs,

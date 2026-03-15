@@ -858,14 +858,11 @@ func (s *Server) validateSoulUpdateRegistrationDocument(
 		return "", nil, "", nil, appErr
 	}
 
-	// Capabilities affect indexing; validate against the allowlist if configured.
+	// Capabilities affect indexing; the host config list is informational only.
 	// v2 uses structured capabilities (array of objects with "capability" field);
 	// v1 uses a flat string array. Extract capability names for both.
 	caps := extractCapabilityNames(reg)
-	capsNorm, appErr = normalizeSoulCapabilitiesStrict(s.cfg.SoulSupportedCapabilities, caps)
-	if appErr != nil {
-		return "", nil, "", nil, appErr
-	}
+	capsNorm = normalizeSoulCapabilitiesLoose(caps)
 
 	return walletNorm, capsNorm, selfSig, digest, nil
 }

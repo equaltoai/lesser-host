@@ -375,9 +375,9 @@ func TestBuildSoulBoundaryAppendRegistration_MoreCoverage(t *testing.T) {
 		t.Parallel()
 		testBoundaryAppendRegistrationSuccessV3MergesMissingBoundaries(t, key, wallet, identity, input)
 	})
-	t.Run("unsupported_capability", func(t *testing.T) {
+	t.Run("unknown_capability_allowed", func(t *testing.T) {
 		t.Parallel()
-		testBoundaryAppendRegistrationUnsupportedCapability(t, key, wallet, identity, input)
+		testBoundaryAppendRegistrationUnknownCapabilityAllowed(t, key, wallet, identity, input)
 	})
 }
 
@@ -493,7 +493,7 @@ func testBoundaryAppendRegistrationSuccessV3MergesMissingBoundaries(t *testing.T
 	}
 }
 
-func testBoundaryAppendRegistrationUnsupportedCapability(t *testing.T, key *ecdsa.PrivateKey, wallet string, identity *models.SoulAgentIdentity, input soulBoundaryAppendBuildInput) {
+func testBoundaryAppendRegistrationUnknownCapabilityAllowed(t *testing.T, key *ecdsa.PrivateKey, wallet string, identity *models.SoulAgentIdentity, input soulBoundaryAppendBuildInput) {
 	t.Helper()
 	tdb := newSoulLifecycleTestDB()
 	s := &Server{
@@ -508,8 +508,12 @@ func testBoundaryAppendRegistrationUnsupportedCapability(t *testing.T, key *ecds
 		dest := testutil.RequireMockArg[*[]*models.SoulAgentBoundary](t, args, 0)
 		*dest = []*models.SoulAgentBoundary{}
 	}).Once()
-	if _, _, _, _, _, _, appErr := s.buildSoulBoundaryAppendRegistration(t.Context(), base, "2", soulLifecycleTestAgentIDHex, identity, input); appErr == nil || appErr.Code != appErrCodeBadRequest {
-		t.Fatalf("expected bad_request, got %#v", appErr)
+	_, _, _, _, capsNorm, _, appErr := s.buildSoulBoundaryAppendRegistration(t.Context(), base, "2", soulLifecycleTestAgentIDHex, identity, input)
+	if appErr != nil {
+		t.Fatalf("unexpected err: %#v", appErr)
+	}
+	if len(capsNorm) != 1 || capsNorm[0] != "text-summarization" {
+		t.Fatalf("expected normalized capabilities, got %#v", capsNorm)
 	}
 }
 

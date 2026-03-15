@@ -95,29 +95,6 @@ func normalizeSoulCapabilitiesLoose(caps []string) []string {
 	return out
 }
 
-func normalizeSoulCapabilitiesStrict(supported []string, requested []string) ([]string, *apptheory.AppError) {
-	out := normalizeSoulCapabilitiesLoose(requested)
-	if len(out) == 0 {
-		return nil, nil
-	}
-
-	allowed := normalizeSoulCapabilitiesLoose(supported)
-	if len(allowed) == 0 {
-		return out, nil
-	}
-
-	allowedSet := make(map[string]struct{}, len(allowed))
-	for _, c := range allowed {
-		allowedSet[c] = struct{}{}
-	}
-	for _, c := range out {
-		if _, ok := allowedSet[c]; !ok {
-			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "unsupported capability: " + c}
-		}
-	}
-	return out, nil
-}
-
 func parseSoulRegistrationBeginCapabilities(raw []any) ([]string, *apptheory.AppError) {
 	if raw == nil {
 		return nil, nil
@@ -366,10 +343,7 @@ func (s *Server) handleSoulAgentRegistrationBegin(ctx *apptheory.Context) (*appt
 		return nil, appErr
 	}
 
-	caps, appErr := normalizeSoulCapabilitiesStrict(s.cfg.SoulSupportedCapabilities, capNames)
-	if appErr != nil {
-		return nil, appErr
-	}
+	caps := normalizeSoulCapabilitiesLoose(capNames)
 
 	agentIDHex, err := soul.DeriveAgentIDHex(domainNormalized, local)
 	if err != nil {

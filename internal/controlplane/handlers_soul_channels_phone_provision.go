@@ -230,10 +230,7 @@ func (s *Server) finalizeSoulProvisionPhoneChannel(
 	}
 
 	caps := extractCapabilityNames(regMap)
-	capsNorm, appErr := normalizeSoulCapabilitiesStrict(s.cfg.SoulSupportedCapabilities, caps)
-	if appErr != nil {
-		return nil, appErr
-	}
+	capsNorm := normalizeSoulCapabilitiesLoose(caps)
 
 	regBytes, regSHA256, claimLevels, changeSummary, appErr := buildProvisionRegistrationPayload(regMap)
 	if appErr != nil {

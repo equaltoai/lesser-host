@@ -717,10 +717,7 @@ func (s *Server) finalizeSoulBoundaryAppendRegistration(reg map[string]any, base
 	if appErr != nil {
 		return nil, nil, nil, nil, nil, appErr
 	}
-	capsNorm, appErr := normalizeSoulCapabilitiesStrict(s.cfg.SoulSupportedCapabilities, extractCapabilityNames(reg))
-	if appErr != nil {
-		return nil, nil, nil, nil, nil, appErr
-	}
+	capsNorm := normalizeSoulCapabilitiesLoose(extractCapabilityNames(reg))
 	return regV2, regV3, digest, capsNorm, extractCapabilityClaimLevels(reg), nil
 }
 
