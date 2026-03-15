@@ -8,9 +8,9 @@
   },
   "scripts": {
     "build": "tsc",
-    "synth": "cdk synth",
-    "deploy": "cdk deploy --all",
-    "destroy": "cdk destroy --all"
+    "synth": "npm run build && cdk synth",
+    "deploy": "npm run build && cdk deploy --all",
+    "destroy": "npm run build && cdk destroy --all"
   },
   "dependencies": {
     "aws-cdk-lib": "^2.243.0",
