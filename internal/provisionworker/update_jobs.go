@@ -44,6 +44,7 @@ const (
 
 	updateMaxTransitionsPerRun   = 6
 	updateRunnerStartClaimMaxAge = 2 * time.Minute
+	updateProcessingLeaseTTL     = 90 * time.Second
 )
 
 const (
@@ -268,6 +269,113 @@ func setUpdateJobPhaseFieldsOnBuilder(ub core.UpdateBuilder, phase string, statu
 	}
 }
 
+func setOptionalUpdateJobStringField(ub core.UpdateBuilder, field string, value string) {
+	if ub == nil {
+		return
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		ub.Remove(field)
+		return
+	}
+	ub.Set(field, value)
+}
+
+func setOptionalUpdateJobBoolPtrField(ub core.UpdateBuilder, field string, value *bool) {
+	if ub == nil {
+		return
+	}
+	if value == nil {
+		ub.Remove(field)
+		return
+	}
+	ub.Set(field, *value)
+}
+
+func setUpdateJobFieldsOnBuilder(ub core.UpdateBuilder, job *models.UpdateJob) {
+	if ub == nil || job == nil {
+		return
+	}
+
+	ub.Set("Status", strings.TrimSpace(job.Status))
+	ub.Set("Step", strings.TrimSpace(job.Step))
+	setOptionalUpdateJobStringField(ub, "Note", job.Note)
+	setOptionalUpdateJobStringField(ub, "RunID", job.RunID)
+	setOptionalUpdateJobStringField(ub, "RunURL", job.RunURL)
+	setOptionalUpdateJobStringField(ub, "ActivePhase", job.ActivePhase)
+	setOptionalUpdateJobStringField(ub, "FailedPhase", job.FailedPhase)
+
+	setOptionalUpdateJobStringField(ub, "DeployStatus", job.DeployStatus)
+	setOptionalUpdateJobStringField(ub, "DeployRunID", job.DeployRunID)
+	setOptionalUpdateJobStringField(ub, "DeployRunURL", job.DeployRunURL)
+	setOptionalUpdateJobStringField(ub, "DeployError", job.DeployError)
+
+	setOptionalUpdateJobStringField(ub, "BodyStatus", job.BodyStatus)
+	setOptionalUpdateJobStringField(ub, "BodyRunID", job.BodyRunID)
+	setOptionalUpdateJobStringField(ub, "BodyRunURL", job.BodyRunURL)
+	setOptionalUpdateJobStringField(ub, "BodyError", job.BodyError)
+
+	setOptionalUpdateJobStringField(ub, "MCPStatus", job.MCPStatus)
+	setOptionalUpdateJobStringField(ub, "MCPRunID", job.MCPRunID)
+	setOptionalUpdateJobStringField(ub, "MCPRunURL", job.MCPRunURL)
+	setOptionalUpdateJobStringField(ub, "MCPError", job.MCPError)
+
+	setOptionalUpdateJobStringField(ub, "AccountID", job.AccountID)
+	setOptionalUpdateJobStringField(ub, "AccountRoleName", job.AccountRoleName)
+	setOptionalUpdateJobStringField(ub, "Region", job.Region)
+	setOptionalUpdateJobStringField(ub, "BaseDomain", job.BaseDomain)
+	setOptionalUpdateJobStringField(ub, "LesserVersion", job.LesserVersion)
+	setOptionalUpdateJobStringField(ub, "LesserBodyVersion", job.LesserBodyVersion)
+
+	ub.Set("BodyOnly", job.BodyOnly)
+	ub.Set("MCPOnly", job.MCPOnly)
+
+	setOptionalUpdateJobStringField(ub, "LesserHostBaseURL", job.LesserHostBaseURL)
+	setOptionalUpdateJobStringField(ub, "LesserHostAttestationsURL", job.LesserHostAttestationsURL)
+	setOptionalUpdateJobStringField(ub, "LesserHostInstanceKeySecretARN", job.LesserHostInstanceKeySecretARN)
+	ub.Set("TranslationEnabled", job.TranslationEnabled)
+
+	ub.Set("TipEnabled", job.TipEnabled)
+	ub.Set("TipChainID", job.TipChainID)
+	setOptionalUpdateJobStringField(ub, "TipContractAddress", job.TipContractAddress)
+
+	ub.Set("AIEnabled", job.AIEnabled)
+	ub.Set("AIModerationEnabled", job.AIModerationEnabled)
+	ub.Set("AINsfwDetectionEnabled", job.AINsfwDetectionEnabled)
+	ub.Set("AISpamDetectionEnabled", job.AISpamDetectionEnabled)
+	ub.Set("AIPiiDetectionEnabled", job.AIPiiDetectionEnabled)
+	ub.Set("AIContentDetectionEnabled", job.AIContentDetectionEnabled)
+
+	ub.Set("RotateInstanceKey", job.RotateInstanceKey)
+	setOptionalUpdateJobStringField(ub, "RotatedInstanceKeyID", job.RotatedInstanceKeyID)
+
+	setOptionalUpdateJobBoolPtrField(ub, "VerifyTranslationOK", job.VerifyTranslationOK)
+	setOptionalUpdateJobBoolPtrField(ub, "VerifyTrustOK", job.VerifyTrustOK)
+	setOptionalUpdateJobBoolPtrField(ub, "VerifyTipsOK", job.VerifyTipsOK)
+	setOptionalUpdateJobBoolPtrField(ub, "VerifyAIOK", job.VerifyAIOK)
+	setOptionalUpdateJobStringField(ub, "VerifyTranslationErr", job.VerifyTranslationErr)
+	setOptionalUpdateJobStringField(ub, "VerifyTrustErr", job.VerifyTrustErr)
+	setOptionalUpdateJobStringField(ub, "VerifyTipsErr", job.VerifyTipsErr)
+	setOptionalUpdateJobStringField(ub, "VerifyAIErr", job.VerifyAIErr)
+
+	setOptionalUpdateJobStringField(ub, "ReceiptJSON", job.ReceiptJSON)
+	setOptionalUpdateJobStringField(ub, "ProcessingLeaseOwner", job.ProcessingLeaseOwner)
+	if job.ProcessingLeaseUntil.IsZero() {
+		ub.Remove("ProcessingLeaseUntil")
+	} else {
+		ub.Set("ProcessingLeaseUntil", job.ProcessingLeaseUntil)
+	}
+	ub.Set("Attempts", job.Attempts)
+	ub.Set("MaxAttempts", job.MaxAttempts)
+	setOptionalUpdateJobStringField(ub, "ErrorCode", job.ErrorCode)
+	setOptionalUpdateJobStringField(ub, "ErrorMessage", job.ErrorMessage)
+	ub.Set("CreatedAt", job.CreatedAt)
+	ub.Set("UpdatedAt", job.UpdatedAt)
+	ub.Set("ExpiresAt", job.ExpiresAt)
+	ub.Set("TTL", job.TTL)
+	setOptionalUpdateJobStringField(ub, "RequestID", job.RequestID)
+}
+
 func (s *Server) processUpdateJob(ctx context.Context, requestID string, jobID string) error {
 	if s == nil || s.store == nil {
 		return fmt.Errorf("store not initialized")
@@ -282,6 +390,17 @@ func (s *Server) processUpdateJob(ctx context.Context, requestID string, jobID s
 	}
 
 	now := time.Now().UTC()
+	leased, err := s.acquireUpdateJobProcessingLease(ctx, job, requestID, now)
+	if err != nil {
+		if theoryErrors.IsConditionFailed(err) {
+			return nil
+		}
+		return err
+	}
+	if !leased {
+		return nil
+	}
+	defer s.releaseUpdateJobProcessingLease(context.Background(), job, requestID)
 
 	if !s.cfg.ManagedProvisioningEnabled {
 		return s.failUpdateJob(ctx, job, requestID, now, "disabled", "managed provisioning is disabled (set MANAGED_PROVISIONING_ENABLED=true)")
@@ -291,7 +410,87 @@ func (s *Server) processUpdateJob(ctx context.Context, requestID string, jobID s
 		return s.failUpdateJob(ctx, job, requestID, now, "missing_config", "missing required config: "+strings.Join(missing, ", "))
 	}
 
-	return s.runManagedUpdateStateMachine(ctx, job, requestID, now)
+	if err := s.runManagedUpdateStateMachine(ctx, job, requestID, now); err != nil {
+		if theoryErrors.IsConditionFailed(err) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *Server) acquireUpdateJobProcessingLease(ctx context.Context, job *models.UpdateJob, requestID string, now time.Time) (bool, error) {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return false, fmt.Errorf("store not initialized")
+	}
+	if job == nil {
+		return false, fmt.Errorf("job is nil")
+	}
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		requestID = "lease"
+	}
+	leaseUntil := now.Add(updateProcessingLeaseTTL)
+
+	err := s.store.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
+		conditions := []core.TransactCondition{
+			tabletheory.IfExists(),
+			tabletheory.ConditionExpression(
+				"attribute_not_exists(processingLeaseUntil) OR processingLeaseUntil <= :now OR processingLeaseOwner = :owner",
+				map[string]any{
+					":now":   now,
+					":owner": requestID,
+				},
+			),
+		}
+		if !job.UpdatedAt.IsZero() {
+			conditions = append(conditions, tabletheory.Condition("UpdatedAt", "=", job.UpdatedAt))
+		}
+		tx.UpdateWithBuilder(updateJobKey(job.ID), func(ub core.UpdateBuilder) error {
+			ub.Set("ProcessingLeaseOwner", requestID)
+			ub.Set("ProcessingLeaseUntil", leaseUntil)
+			return nil
+		}, conditions...)
+		return nil
+	})
+	if theoryErrors.IsConditionFailed(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+
+	job.ProcessingLeaseOwner = requestID
+	job.ProcessingLeaseUntil = leaseUntil
+	return true, nil
+}
+
+func (s *Server) releaseUpdateJobProcessingLease(ctx context.Context, job *models.UpdateJob, requestID string) {
+	if s == nil || s.store == nil || s.store.DB == nil || job == nil {
+		return
+	}
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return
+	}
+
+	_ = s.store.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
+		tx.UpdateWithBuilder(updateJobKey(job.ID), func(ub core.UpdateBuilder) error {
+			ub.Remove("ProcessingLeaseOwner")
+			ub.Remove("ProcessingLeaseUntil")
+			return nil
+		},
+			tabletheory.IfExists(),
+			tabletheory.ConditionExpression(
+				"processingLeaseOwner = :owner",
+				map[string]any{":owner": requestID},
+			),
+		)
+		return nil
+	})
+
+	job.ProcessingLeaseOwner = ""
+	job.ProcessingLeaseUntil = time.Time{}
 }
 
 func (s *Server) loadUpdateJob(ctx context.Context, jobID string) (*models.UpdateJob, error) {
@@ -337,6 +536,7 @@ func (s *Server) failUpdateJob(ctx context.Context, job *models.UpdateJob, reque
 	if job == nil {
 		return nil
 	}
+	expectedUpdatedAt := job.UpdatedAt
 
 	job.Status = models.UpdateJobStatusError
 	job.Step = updateStepFailed
@@ -354,10 +554,16 @@ func (s *Server) failUpdateJob(ctx context.Context, job *models.UpdateJob, reque
 	_ = updateInst.UpdateKeys()
 
 	return s.store.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
-		tx.Put(job)
+		updateJobConditions := []core.TransactCondition{tabletheory.IfExists()}
+		if !expectedUpdatedAt.IsZero() {
+			updateJobConditions = append(updateJobConditions, tabletheory.Condition("UpdatedAt", "=", expectedUpdatedAt))
+		}
+		tx.UpdateWithBuilder(updateJobKey(job.ID), func(ub core.UpdateBuilder) error {
+			setUpdateJobFieldsOnBuilder(ub, job)
+			return nil
+		}, updateJobConditions...)
 		tx.UpdateWithBuilder(updateInst, func(ub core.UpdateBuilder) error {
-			ub.Set("UpdateStatus", models.UpdateJobStatusError)
-			ub.Set("UpdateJobID", strings.TrimSpace(job.ID))
+			setManagedUpdateInstanceMarker(ub, job, models.UpdateJobStatusError, now)
 			return nil
 		}, tabletheory.IfExists())
 		return nil
@@ -371,12 +577,29 @@ func (s *Server) persistUpdateJobAndInstance(ctx context.Context, job *models.Up
 	if job == nil {
 		return fmt.Errorf("job is nil")
 	}
+	expectedUpdatedAt := job.UpdatedAt
 
 	job.RequestID = strings.TrimSpace(requestID)
 	job.UpdatedAt = now
 	_ = job.UpdateKeys()
 
-	return s.persistModelAndInstance(ctx, job, strings.TrimSpace(job.InstanceSlug), instanceUpdate)
+	updateInst := &models.Instance{Slug: strings.TrimSpace(job.InstanceSlug)}
+	_ = updateInst.UpdateKeys()
+
+	return s.store.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
+		updateJobConditions := []core.TransactCondition{tabletheory.IfExists()}
+		if !expectedUpdatedAt.IsZero() {
+			updateJobConditions = append(updateJobConditions, tabletheory.Condition("UpdatedAt", "=", expectedUpdatedAt))
+		}
+		tx.UpdateWithBuilder(updateJobKey(job.ID), func(ub core.UpdateBuilder) error {
+			setUpdateJobFieldsOnBuilder(ub, job)
+			return nil
+		}, updateJobConditions...)
+		if instanceUpdate != nil {
+			tx.UpdateWithBuilder(updateInst, instanceUpdate, tabletheory.IfExists())
+		}
+		return nil
+	})
 }
 
 func (s *Server) requeueUpdateJob(ctx context.Context, jobID string, delay time.Duration) error {
@@ -441,8 +664,7 @@ func (s *Server) startManagedUpdateJobIfQueued(ctx context.Context, job *models.
 		job.Step = updateStepQueued
 	}
 	return s.persistUpdateJobAndInstance(ctx, job, requestID, now, func(ub core.UpdateBuilder) error {
-		ub.Set("UpdateStatus", models.UpdateJobStatusRunning)
-		ub.Set("UpdateJobID", strings.TrimSpace(job.ID))
+		setManagedUpdateInstanceMarker(ub, job, models.UpdateJobStatusRunning, now)
 		return nil
 	})
 }
@@ -581,6 +803,39 @@ func shouldRotateUpdateInstanceKey(job *models.UpdateJob) bool {
 	return strings.TrimSpace(job.RotatedInstanceKeyID) == ""
 }
 
+func setManagedUpdateInstanceMarker(ub core.UpdateBuilder, job *models.UpdateJob, status string, at time.Time) {
+	if ub == nil || job == nil {
+		return
+	}
+	status = strings.TrimSpace(status)
+	jobID := strings.TrimSpace(job.ID)
+	ub.Set("UpdateStatus", status)
+	ub.Set("UpdateJobID", jobID)
+	if !at.IsZero() {
+		ub.Set("UpdatedAt", at)
+	}
+	switch {
+	case job.MCPOnly:
+		ub.Set("MCPUpdateStatus", status)
+		ub.Set("MCPUpdateJobID", jobID)
+		if !at.IsZero() {
+			ub.Set("MCPUpdateAt", at)
+		}
+	case job.BodyOnly:
+		ub.Set("LesserBodyUpdateStatus", status)
+		ub.Set("LesserBodyUpdateJobID", jobID)
+		if !at.IsZero() {
+			ub.Set("LesserBodyUpdateAt", at)
+		}
+	default:
+		ub.Set("LesserUpdateStatus", status)
+		ub.Set("LesserUpdateJobID", jobID)
+		if !at.IsZero() {
+			ub.Set("LesserUpdateAt", at)
+		}
+	}
+}
+
 func updateInstanceConfigInstanceUpdate(publicBaseURL, attestationsURL, secretArn string, job *models.UpdateJob) func(core.UpdateBuilder) error {
 	return func(ub core.UpdateBuilder) error {
 		if strings.TrimSpace(publicBaseURL) != "" {
@@ -600,6 +855,7 @@ func updateInstanceConfigInstanceUpdate(publicBaseURL, attestationsURL, secretAr
 		ub.Set("LesserAISpamDetectionEnabled", job.AISpamDetectionEnabled)
 		ub.Set("LesserAIPiiDetectionEnabled", job.AIPiiDetectionEnabled)
 		ub.Set("LesserAIContentDetectionEnabled", job.AIContentDetectionEnabled)
+		setManagedUpdateInstanceMarker(ub, job, strings.TrimSpace(job.Status), job.UpdatedAt)
 		return nil
 	}
 }
@@ -954,6 +1210,15 @@ func (s *Server) claimUpdateRunnerStart(
 	}
 
 	err := s.store.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
+		conditions := []core.TransactCondition{
+			tabletheory.IfExists(),
+			tabletheory.Condition("Status", "=", models.UpdateJobStatusRunning),
+			tabletheory.Condition("Step", "=", strings.TrimSpace(expectedStep)),
+			updateRunnerRunIDUnsetCondition(),
+		}
+		if !job.UpdatedAt.IsZero() {
+			conditions = append(conditions, tabletheory.Condition("UpdatedAt", "=", job.UpdatedAt))
+		}
 		tx.UpdateWithBuilder(updateJobKey(job.ID), func(ub core.UpdateBuilder) error {
 			ub.Set("Step", strings.TrimSpace(claimedStep))
 			ub.Set("Note", strings.TrimSpace(claimedNote))
@@ -961,12 +1226,7 @@ func (s *Server) claimUpdateRunnerStart(
 			ub.Set("RequestID", strings.TrimSpace(requestID))
 			ub.Set("UpdatedAt", now)
 			return nil
-		},
-			tabletheory.IfExists(),
-			tabletheory.Condition("Status", "=", models.UpdateJobStatusRunning),
-			tabletheory.Condition("Step", "=", strings.TrimSpace(expectedStep)),
-			updateRunnerRunIDUnsetCondition(),
-		)
+		}, conditions...)
 		return nil
 	})
 	if theoryErrors.IsConditionFailed(err) {
@@ -1003,6 +1263,14 @@ func (s *Server) releaseClaimedUpdateRunnerStartForRetry(
 	}
 
 	err := s.store.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
+		conditions := []core.TransactCondition{
+			tabletheory.IfExists(),
+			tabletheory.Condition("Status", "=", models.UpdateJobStatusRunning),
+			tabletheory.Condition("Step", "=", strings.TrimSpace(claimedStep)),
+		}
+		if !job.UpdatedAt.IsZero() {
+			conditions = append(conditions, tabletheory.Condition("UpdatedAt", "=", job.UpdatedAt))
+		}
 		tx.UpdateWithBuilder(updateJobKey(job.ID), func(ub core.UpdateBuilder) error {
 			ub.Set("Step", strings.TrimSpace(retryStep))
 			ub.Set("Note", strings.TrimSpace(retryNote))
@@ -1014,11 +1282,7 @@ func (s *Server) releaseClaimedUpdateRunnerStartForRetry(
 			ub.Remove("RunURL")
 			setUpdateJobPhaseFieldsOnBuilder(ub, phase, updatePhaseStatusPending, "", "", "")
 			return nil
-		},
-			tabletheory.IfExists(),
-			tabletheory.Condition("Status", "=", models.UpdateJobStatusRunning),
-			tabletheory.Condition("Step", "=", strings.TrimSpace(claimedStep)),
-		)
+		}, conditions...)
 		return nil
 	})
 	if err != nil {
@@ -1057,6 +1321,14 @@ func (s *Server) completeClaimedUpdateRunnerStart(
 
 	runID = strings.TrimSpace(runID)
 	err := s.store.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
+		conditions := []core.TransactCondition{
+			tabletheory.IfExists(),
+			tabletheory.Condition("Status", "=", models.UpdateJobStatusRunning),
+			tabletheory.Condition("Step", "=", strings.TrimSpace(claimedStep)),
+		}
+		if !job.UpdatedAt.IsZero() {
+			conditions = append(conditions, tabletheory.Condition("UpdatedAt", "=", job.UpdatedAt))
+		}
 		tx.UpdateWithBuilder(updateJobKey(job.ID), func(ub core.UpdateBuilder) error {
 			ub.Set("Step", strings.TrimSpace(waitStep))
 			ub.Set("RunID", runID)
@@ -1067,11 +1339,7 @@ func (s *Server) completeClaimedUpdateRunnerStart(
 			ub.Remove("RunURL")
 			setUpdateJobPhaseFieldsOnBuilder(ub, phase, updatePhaseStatusRunning, runID, "", "")
 			return nil
-		},
-			tabletheory.IfExists(),
-			tabletheory.Condition("Status", "=", models.UpdateJobStatusRunning),
-			tabletheory.Condition("Step", "=", strings.TrimSpace(claimedStep)),
-		)
+		}, conditions...)
 		return nil
 	})
 	if err != nil {
@@ -1109,6 +1377,14 @@ func (s *Server) failClaimedUpdateJob(
 	_ = updateInst.UpdateKeys()
 
 	err := s.store.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
+		conditions := []core.TransactCondition{
+			tabletheory.IfExists(),
+			tabletheory.Condition("Status", "=", models.UpdateJobStatusRunning),
+			tabletheory.Condition("Step", "=", strings.TrimSpace(claimedStep)),
+		}
+		if !job.UpdatedAt.IsZero() {
+			conditions = append(conditions, tabletheory.Condition("UpdatedAt", "=", job.UpdatedAt))
+		}
 		tx.UpdateWithBuilder(updateJobKey(job.ID), func(ub core.UpdateBuilder) error {
 			ub.Set("Status", models.UpdateJobStatusError)
 			ub.Set("Step", updateStepFailed)
@@ -1122,14 +1398,9 @@ func (s *Server) failClaimedUpdateJob(
 			ub.Remove("ActivePhase")
 			setUpdateJobPhaseFieldsOnBuilder(ub, phase, updatePhaseStatusFailed, "", "", msg)
 			return nil
-		},
-			tabletheory.IfExists(),
-			tabletheory.Condition("Status", "=", models.UpdateJobStatusRunning),
-			tabletheory.Condition("Step", "=", strings.TrimSpace(claimedStep)),
-		)
+		}, conditions...)
 		tx.UpdateWithBuilder(updateInst, func(ub core.UpdateBuilder) error {
-			ub.Set("UpdateStatus", models.UpdateJobStatusError)
-			ub.Set("UpdateJobID", strings.TrimSpace(job.ID))
+			setManagedUpdateInstanceMarker(ub, job, models.UpdateJobStatusError, now)
 			return nil
 		}, tabletheory.IfExists())
 		return nil
@@ -1344,6 +1615,27 @@ func (s *Server) advanceUpdateDeployClaimed(ctx context.Context, job *models.Upd
 }
 
 func (s *Server) advanceUpdateDeployWait(ctx context.Context, job *models.UpdateJob, requestID string, now time.Time) (time.Duration, bool, error) {
+	if s != nil && job != nil {
+		receiptKey := s.updateReceiptS3Key(job)
+		if receiptJSON, _, err := s.loadReceiptFromS3(ctx, strings.TrimSpace(s.cfg.ArtifactBucketName), receiptKey); err == nil {
+			if strings.TrimSpace(job.RunID) != "" {
+				if info, infoErr := s.getDeployRunnerInfo(ctx, strings.TrimSpace(job.RunID)); infoErr == nil && strings.TrimSpace(info.DeepLink) != "" {
+					job.RunURL = strings.TrimSpace(info.DeepLink)
+					setUpdateJobPhaseRunURL(job, updatePhaseDeploy, info.DeepLink)
+				}
+			}
+			job.RunID = ""
+			job.ReceiptJSON = strings.TrimSpace(receiptJSON)
+			setUpdateJobPhaseSucceeded(job, updatePhaseDeploy)
+			job.Step = updateStepVerify
+			job.Note = noteVerifyingDeployment
+			setUpdateJobActivePhase(job, updatePhaseVerify)
+			if err := s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil); err != nil {
+				return 0, false, err
+			}
+			return s.advanceUpdateVerify(ctx, job, requestID, now)
+		}
+	}
 	return s.advanceUpdateRunnerWait(ctx, job, requestID, now, updateRunnerWaitSpec{
 		phase:              updatePhaseDeploy,
 		pollFailureCode:    "deploy_status_failed",
@@ -1387,92 +1679,6 @@ func (s *Server) advanceUpdateReceiptIngest(ctx context.Context, job *models.Upd
 		return 0, false, err
 	}
 	return 0, false, nil
-}
-
-func updateBodyReceiptIngestInstanceUpdate(job *models.UpdateJob, bodyProvisionedAt time.Time) func(core.UpdateBuilder) error {
-	return func(ub core.UpdateBuilder) error {
-		if job == nil {
-			return nil
-		}
-		ub.Set("UpdateStatus", models.UpdateJobStatusOK)
-		ub.Set("UpdateJobID", strings.TrimSpace(job.ID))
-		if strings.TrimSpace(job.LesserBodyVersion) != "" {
-			ub.Set("LesserBodyVersion", strings.TrimSpace(job.LesserBodyVersion))
-		}
-		if !bodyProvisionedAt.IsZero() {
-			ub.Set("BodyProvisionedAt", bodyProvisionedAt)
-		}
-		return nil
-	}
-}
-
-func updateMCPReceiptIngestInstanceUpdate(job *models.UpdateJob, mcpWiredAt time.Time) func(core.UpdateBuilder) error {
-	return func(ub core.UpdateBuilder) error {
-		if job == nil {
-			return nil
-		}
-		ub.Set("UpdateStatus", models.UpdateJobStatusOK)
-		ub.Set("UpdateJobID", strings.TrimSpace(job.ID))
-		if strings.TrimSpace(job.LesserBodyVersion) != "" {
-			ub.Set("LesserBodyVersion", strings.TrimSpace(job.LesserBodyVersion))
-		}
-		if !mcpWiredAt.IsZero() {
-			ub.Set("McpWiredAt", mcpWiredAt)
-		}
-		return nil
-	}
-}
-
-type updatePhaseReceiptIngestSpec struct {
-	phase              string
-	receiptKey         string
-	phaseLabel         string
-	failureCode        string
-	successNote        string
-	loadReceiptVersion func(context.Context, string) (string, string, error)
-	instanceUpdate     func(*models.UpdateJob, time.Time) func(core.UpdateBuilder) error
-}
-
-func (s *Server) advanceUpdatePhaseReceiptIngest(
-	ctx context.Context,
-	job *models.UpdateJob,
-	requestID string,
-	now time.Time,
-	spec updatePhaseReceiptIngestSpec,
-) (time.Duration, bool, error) {
-	if job == nil {
-		return 0, true, nil
-	}
-
-	receiptJSON, bodyVersion, err := spec.loadReceiptVersion(ctx, strings.TrimSpace(spec.receiptKey))
-	if err != nil {
-		msg := "failed to load " + strings.TrimSpace(spec.phaseLabel) + " receipt: " + err.Error()
-		job.Attempts++
-		if job.Attempts >= job.MaxAttempts {
-			setUpdateJobPhaseFailed(job, spec.phase, msg)
-			return 0, false, s.failUpdateJob(ctx, job, requestID, now, spec.failureCode, msg)
-		}
-		job.Note = "failed to load " + strings.TrimSpace(spec.phaseLabel) + " receipt; retrying: " + compactErr(err)
-		setUpdateJobActivePhase(job, spec.phase)
-		_ = s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil)
-		return jitteredBackoff(job.Attempts, provisionDefaultShortRetryDelay, 5*time.Minute), false, nil
-	}
-
-	job.RunID = ""
-	if strings.TrimSpace(bodyVersion) != "" {
-		job.LesserBodyVersion = strings.TrimSpace(bodyVersion)
-	}
-	job.ReceiptJSON = strings.TrimSpace(receiptJSON)
-	job.Step = updateStepDone
-	job.Status = models.UpdateJobStatusOK
-	job.Note = strings.TrimSpace(spec.successNote)
-	job.ErrorCode = ""
-	job.ErrorMessage = ""
-	setUpdateJobPhaseSucceeded(job, spec.phase)
-	if err := s.persistUpdateJobAndInstance(ctx, job, requestID, now, spec.instanceUpdate(job, now)); err != nil {
-		return 0, false, err
-	}
-	return 0, true, nil
 }
 
 func (s *Server) advanceUpdateBodyReceiptIngest(ctx context.Context, job *models.UpdateJob, requestID string, now time.Time) (time.Duration, bool, error) {
@@ -1695,19 +1901,36 @@ func (s *Server) advanceUpdateRunnerWait(
 }
 
 func (s *Server) advanceUpdateBodyDeployWait(ctx context.Context, job *models.UpdateJob, requestID string, now time.Time) (time.Duration, bool, error) {
-	return s.advanceUpdateRunnerWait(ctx, job, requestID, now, updateRunnerWaitSpec{
-		phase:              updatePhaseBody,
-		pollFailureCode:    "body_deploy_status_failed",
-		pollFailureMessage: "failed to poll lesser-body deploy runner: ",
-		successStep:        updateStepBodyReceiptIngest,
-		successNote:        "ingesting lesser-body receipt",
-		inProgressNote:     noteLesserBodyDeployRunnerInProgress,
-		timeoutCode:        "body_deploy_timeout",
-		timeoutMessage:     "lesser-body deploy runner timed out",
-		failedCode:         "body_deploy_failed",
-		failedMessage:      "lesser-body deploy runner failed",
-		statusPrefix:       "lesser-body deploy runner status: ",
-	})
+	return s.advanceUpdateOptionalPhaseDeployWait(
+		ctx, job, requestID, now,
+		updatePhaseBody,
+		s.updateBodyReceiptS3Key(job),
+		"lesser-body",
+		"body_deploy_status_failed",
+		"failed to poll lesser-body deploy runner: ",
+		updateStepBodyReceiptIngest,
+		"ingesting lesser-body receipt",
+		noteLesserBodyDeployRunnerInProgress,
+		"body_deploy_timeout",
+		"lesser-body deploy runner timed out",
+		"body_deploy_failed",
+		"lesser-body deploy runner failed",
+		"lesser-body deploy runner status: ",
+		"body_receipt_load_failed",
+		"lesser-body updated",
+		updateBodyReceiptIngestInstanceUpdate,
+		func(ctx context.Context, key string) (string, string, error) {
+			raw, receipt, err := s.loadBodyReceiptFromS3(ctx, strings.TrimSpace(s.cfg.ArtifactBucketName), key)
+			if err != nil {
+				return "", "", err
+			}
+			bodyVersion := ""
+			if receipt != nil {
+				bodyVersion = strings.TrimSpace(receipt.LesserBodyVersion)
+			}
+			return raw, bodyVersion, nil
+		},
+	)
 }
 
 func (s *Server) advanceUpdateDeployMcpStart(ctx context.Context, job *models.UpdateJob, requestID string, now time.Time) (time.Duration, bool, error) {
@@ -1751,19 +1974,36 @@ func (s *Server) advanceUpdateDeployMcpClaimed(ctx context.Context, job *models.
 }
 
 func (s *Server) advanceUpdateDeployMcpWait(ctx context.Context, job *models.UpdateJob, requestID string, now time.Time) (time.Duration, bool, error) {
-	return s.advanceUpdateRunnerWait(ctx, job, requestID, now, updateRunnerWaitSpec{
-		phase:              updatePhaseMCP,
-		pollFailureCode:    "mcp_deploy_status_failed",
-		pollFailureMessage: "failed to poll MCP wiring deploy runner: ",
-		successStep:        updateStepMCPReceiptIngest,
-		successNote:        "ingesting MCP wiring receipt",
-		inProgressNote:     noteMCPDeployRunnerInProgress,
-		timeoutCode:        "mcp_deploy_timeout",
-		timeoutMessage:     "MCP wiring deploy runner timed out",
-		failedCode:         "mcp_deploy_failed",
-		failedMessage:      "MCP wiring deploy runner failed",
-		statusPrefix:       "MCP wiring deploy runner status: ",
-	})
+	return s.advanceUpdateOptionalPhaseDeployWait(
+		ctx, job, requestID, now,
+		updatePhaseMCP,
+		s.updateMcpReceiptS3Key(job),
+		"MCP wiring",
+		"mcp_deploy_status_failed",
+		"failed to poll MCP wiring deploy runner: ",
+		updateStepMCPReceiptIngest,
+		"ingesting MCP wiring receipt",
+		noteMCPDeployRunnerInProgress,
+		"mcp_deploy_timeout",
+		"MCP wiring deploy runner timed out",
+		"mcp_deploy_failed",
+		"MCP wiring deploy runner failed",
+		"MCP wiring deploy runner status: ",
+		"mcp_receipt_load_failed",
+		"MCP wiring updated",
+		updateMCPReceiptIngestInstanceUpdate,
+		func(ctx context.Context, key string) (string, string, error) {
+			raw, receipt, err := s.loadMCPReceiptFromS3(ctx, strings.TrimSpace(s.cfg.ArtifactBucketName), key)
+			if err != nil {
+				return "", "", err
+			}
+			bodyVersion := ""
+			if receipt != nil {
+				bodyVersion = strings.TrimSpace(receipt.LesserBodyVersion)
+			}
+			return raw, bodyVersion, nil
+		},
+	)
 }
 
 func (s *Server) advanceUpdateMCPReceiptIngest(ctx context.Context, job *models.UpdateJob, requestID string, now time.Time) (time.Duration, bool, error) {
@@ -2098,8 +2338,7 @@ func updateVerifyInstanceUpdate(job *models.UpdateJob) func(core.UpdateBuilder) 
 		if job == nil {
 			return nil
 		}
-		ub.Set("UpdateStatus", models.UpdateJobStatusOK)
-		ub.Set("UpdateJobID", strings.TrimSpace(job.ID))
+		setManagedUpdateInstanceMarker(ub, job, models.UpdateJobStatusOK, job.UpdatedAt)
 		if strings.TrimSpace(job.LesserVersion) != "" {
 			ub.Set("LesserVersion", strings.TrimSpace(job.LesserVersion))
 		}

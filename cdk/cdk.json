@@ -1,5 +1,5 @@
 {
-  "app": "npx ts-node --prefer-ts-exts bin/lesser-host.ts",
+  "app": "node dist/bin/lesser-host.js",
   "context": {
     "@aws-cdk/core:newStyleStackSynthesis": true,
 

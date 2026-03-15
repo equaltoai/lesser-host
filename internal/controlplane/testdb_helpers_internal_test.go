@@ -26,6 +26,7 @@ func addStandardMockQueryStubs(q *ttmocks.MockQuery) {
 	q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 	q.On("Filter", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 	q.On("Index", mock.Anything).Return(q).Maybe()
+	q.On("OrderBy", mock.Anything, mock.Anything).Return(q).Maybe()
 	q.On("Limit", mock.Anything).Return(q).Maybe()
 	q.On("IfExists").Return(q).Maybe()
 	q.On("IfNotExists").Return(q).Maybe()

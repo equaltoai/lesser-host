@@ -97,6 +97,9 @@ type UpdateJob struct {
 
 	ReceiptJSON string `theorydb:"attr:receiptJson" json:"receipt_json,omitempty"`
 
+	ProcessingLeaseOwner string    `theorydb:"attr:processingLeaseOwner" json:"processing_lease_owner,omitempty"`
+	ProcessingLeaseUntil time.Time `theorydb:"attr:processingLeaseUntil" json:"processing_lease_until,omitempty"`
+
 	Attempts    int64 `theorydb:"attr:attempts" json:"attempts"`
 	MaxAttempts int64 `theorydb:"attr:maxAttempts" json:"max_attempts,omitempty"`
 
@@ -179,6 +182,7 @@ func (j *UpdateJob) UpdateKeys() error {
 	j.VerifyTipsErr = strings.TrimSpace(j.VerifyTipsErr)
 	j.VerifyAIErr = strings.TrimSpace(j.VerifyAIErr)
 	j.ReceiptJSON = strings.TrimSpace(j.ReceiptJSON)
+	j.ProcessingLeaseOwner = strings.TrimSpace(j.ProcessingLeaseOwner)
 	j.ErrorCode = strings.TrimSpace(j.ErrorCode)
 	j.ErrorMessage = strings.TrimSpace(j.ErrorMessage)
 	j.RequestID = strings.TrimSpace(j.RequestID)

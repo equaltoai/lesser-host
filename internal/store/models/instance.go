@@ -29,6 +29,15 @@ type Instance struct {
 	ProvisionJobID                 string    `theorydb:"attr:provisionJobId" json:"provision_job_id,omitempty"`
 	UpdateStatus                   string    `theorydb:"attr:updateStatus" json:"update_status,omitempty"` // queued|running|ok|error
 	UpdateJobID                    string    `theorydb:"attr:updateJobId" json:"update_job_id,omitempty"`
+	LesserUpdateStatus             string    `theorydb:"attr:lesserUpdateStatus" json:"lesser_update_status,omitempty"`
+	LesserUpdateJobID              string    `theorydb:"attr:lesserUpdateJobId" json:"lesser_update_job_id,omitempty"`
+	LesserUpdateAt                 time.Time `theorydb:"attr:lesserUpdateAt" json:"lesser_update_at,omitempty"`
+	LesserBodyUpdateStatus         string    `theorydb:"attr:lesserBodyUpdateStatus" json:"lesser_body_update_status,omitempty"`
+	LesserBodyUpdateJobID          string    `theorydb:"attr:lesserBodyUpdateJobId" json:"lesser_body_update_job_id,omitempty"`
+	LesserBodyUpdateAt             time.Time `theorydb:"attr:lesserBodyUpdateAt" json:"lesser_body_update_at,omitempty"`
+	MCPUpdateStatus                string    `theorydb:"attr:mcpUpdateStatus" json:"mcp_update_status,omitempty"`
+	MCPUpdateJobID                 string    `theorydb:"attr:mcpUpdateJobId" json:"mcp_update_job_id,omitempty"`
+	MCPUpdateAt                    time.Time `theorydb:"attr:mcpUpdateAt" json:"mcp_update_at,omitempty"`
 	HostedAccountID                string    `theorydb:"attr:hostedAccountId" json:"hosted_account_id,omitempty"`
 	HostedRegion                   string    `theorydb:"attr:hostedRegion" json:"hosted_region,omitempty"`
 	HostedBaseDomain               string    `theorydb:"attr:hostedBaseDomain" json:"hosted_base_domain,omitempty"`
@@ -75,6 +84,7 @@ type Instance struct {
 	AIPricingMultiplierBps *int64    `theorydb:"attr:aiPricingMultiplierBps" json:"ai_pricing_multiplier_bps,omitempty"`
 	AIMaxInflightJobs      *int64    `theorydb:"attr:aiMaxInflightJobs" json:"ai_max_inflight_jobs,omitempty"`
 	CreatedAt              time.Time `theorydb:"attr:createdAt" json:"created_at"`
+	UpdatedAt              time.Time `theorydb:"attr:updatedAt" json:"updated_at,omitempty"`
 }
 
 // TableName returns the database table name for Instance.
@@ -98,6 +108,9 @@ func (i *Instance) ensureCoreDefaults() {
 	}
 	if i.CreatedAt.IsZero() {
 		i.CreatedAt = time.Now().UTC()
+	}
+	if i.UpdatedAt.IsZero() {
+		i.UpdatedAt = i.CreatedAt
 	}
 	if strings.TrimSpace(i.Status) == "" {
 		i.Status = InstanceStatusActive

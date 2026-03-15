@@ -7,8 +7,24 @@ import { LesserHostStack } from '../lib/lesser-host-stack';
 
 const app = new cdk.App();
 
+function findUpward(startDir: string, predicate: (dir: string) => boolean): string {
+	let current = startDir;
+	for (;;) {
+		if (predicate(current)) return current;
+		const parent = path.dirname(current);
+		if (parent === current) {
+			throw new Error(`Failed to locate expected CDK directory from ${startDir}`);
+		}
+		current = parent;
+	}
+}
+
+function cdkDir(): string {
+	return findUpward(__dirname, (dir) => fs.existsSync(path.join(dir, 'cdk.json')));
+}
+
 function applyLocalContextOverrides(app: cdk.App): void {
-	const localContextPath = path.resolve(__dirname, '../cdk.context.local.json');
+	const localContextPath = path.join(cdkDir(), 'cdk.context.local.json');
 	if (!fs.existsSync(localContextPath)) return;
 
 	let raw: string;

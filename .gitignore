@@ -19,6 +19,7 @@ cdk/cdk.out/
 cdk/cdk.context.local.json
 cdk/dist/
 cdk/.build/
+cdk/**/.build/
 web/dist/
 gov-infra/.tools/
 gov-infra/evidence/*-output.log
