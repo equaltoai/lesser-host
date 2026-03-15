@@ -5,6 +5,7 @@
 	import type {
 		SoulMineAgentItem,
 		SoulAgentMintOperationResponse,
+		SoulAgentRotationOperationResponse,
 		SoulPublicAgentResponse,
 		SoulPublicAgentChannelsResponse,
 		SoulConfigResponse,
@@ -29,6 +30,7 @@
 	import {
 		soulAgentRotateWalletBegin,
 		soulAgentRotateWalletConfirm,
+		soulGetAgentRotationOperation,
 		soulGetAgentMintOperation,
 		soulAppendContinuity,
 		soulCreateRelationship,
@@ -49,6 +51,7 @@
 		soulProvisionEmailConfirm,
 		soulProvisionPhoneBegin,
 		soulProvisionPhoneConfirm,
+		soulRecordAgentRotationExecution,
 		soulRecordAgentMintExecution,
 		soulDeprovisionPhone,
 		soulAgentListCommActivity,
@@ -183,6 +186,17 @@
 	let rotationConfirmLoading = $state(false);
 	let rotationConfirmError = $state<string | null>(null);
 	let rotationConfirmResult = $state<SoulRotateWalletConfirmResponse | null>(null);
+	let rotationOperation = $state<SoulAgentRotationOperationResponse | null>(null);
+	let rotationOperationLoading = $state(false);
+	let rotationOperationError = $state<string | null>(null);
+	let rotationExecTxHash = $state('');
+	let rotationRecordLoading = $state(false);
+	let rotationRecordError = $state<string | null>(null);
+	let showRotationSafePayload = $state(false);
+	let rotationDirectLoading = $state(false);
+	let rotationDirectError = $state<string | null>(null);
+	let rotationDirectNotice = $state<string | null>(null);
+	let rotationDirectTxHash = $state('');
 
 	// Sovereignty state
 	let sovereigntyLoading = $state(false);
@@ -1217,9 +1231,33 @@
 		}
 	}
 
+	async function loadRotationOperation() {
+		rotationOperation = null;
+		rotationOperationError = null;
+		showRotationSafePayload = false;
+
+		rotationOperationLoading = true;
+		try {
+			rotationOperation = await soulGetAgentRotationOperation(token, agentId);
+		} catch (err) {
+			if (await handleAuthError(err)) return;
+			if ((err as Partial<ApiError>).status !== 404) {
+				rotationOperationError = formatError(err);
+			}
+		} finally {
+			rotationOperationLoading = false;
+		}
+	}
+
 	async function recordMintExecutionHash(txHash: string): Promise<void> {
 		mintOperation = await soulRecordAgentMintExecution(token, agentId, txHash);
 		mintExecTxHash = '';
+		await load();
+	}
+
+	async function recordRotationExecutionHash(txHash: string): Promise<void> {
+		rotationOperation = await soulRecordAgentRotationExecution(token, agentId, txHash);
+		rotationExecTxHash = '';
 		await load();
 	}
 
@@ -1239,6 +1277,25 @@
 			mintRecordError = formatError(err);
 		} finally {
 			mintRecordLoading = false;
+		}
+	}
+
+	async function recordRotationExecution() {
+		rotationRecordError = null;
+		const txHash = rotationExecTxHash.trim();
+		if (!txHash) {
+			rotationRecordError = 'Execution tx hash is required.';
+			return;
+		}
+
+		rotationRecordLoading = true;
+		try {
+			await recordRotationExecutionHash(txHash);
+		} catch (err) {
+			if (await handleAuthError(err)) return;
+			rotationRecordError = formatError(err);
+		} finally {
+			rotationRecordLoading = false;
 		}
 	}
 
@@ -1323,6 +1380,73 @@
 		}
 	}
 
+	async function executeDirectRotation() {
+		rotationDirectError = null;
+		rotationDirectNotice = null;
+
+		const payload = rotationOperation?.safe_tx;
+		if (!payload) {
+			rotationDirectError = 'No wallet rotation transaction payload is available.';
+			return;
+		}
+		if (payload.safe_address?.trim()) {
+			rotationDirectError = 'This wallet rotation still requires Safe execution.';
+			return;
+		}
+
+		const provider = getEthereumProvider();
+		if (!provider) {
+			rotationDirectError = 'No wallet detected.';
+			return;
+		}
+
+		rotationDirectLoading = true;
+		rotationRecordError = null;
+		let txHash = '';
+		try {
+			const accounts = await ensureAccounts(provider);
+			const from = accounts[0]?.trim();
+			if (!from) {
+				rotationDirectError = 'Connect a wallet to send the rotation transaction.';
+				return;
+			}
+
+			const expectedChainId = soulConfig?.chain_id;
+			if (expectedChainId) {
+				const currentChainId = await getChainId(provider);
+				if (currentChainId !== expectedChainId) {
+					rotationDirectNotice = `Switching wallet to chain ${expectedChainId}…`;
+					await switchEthereumChain(provider, expectedChainId);
+				}
+			}
+
+			rotationDirectNotice = 'Sending wallet rotation transaction from the connected wallet…';
+			txHash = await sendEthereumTransaction(provider, {
+				from,
+				to: payload.to,
+				value: payload.value,
+				data: payload.data,
+			});
+			rotationDirectTxHash = txHash;
+			rotationExecTxHash = txHash;
+
+			rotationDirectNotice = 'Transaction submitted. Waiting for Sepolia confirmation…';
+			await waitForEthereumTransactionReceipt(provider, txHash, 10 * 60 * 1000, 3000);
+
+			rotationDirectNotice = 'Transaction confirmed. Recording execution in lesser-host…';
+			await recordRotationExecutionHash(txHash);
+			rotationDirectNotice = 'Wallet rotation confirmed onchain and recorded.';
+		} catch (err) {
+			if (await handleAuthError(err)) return;
+			const base = formatError(err);
+			rotationDirectError = txHash
+				? `${base}. Transaction sent as ${txHash}. You can still record it manually below if needed.`
+				: base;
+		} finally {
+			rotationDirectLoading = false;
+		}
+	}
+
 	async function handleAuthError(err: unknown): Promise<boolean> {
 		if ((err as Partial<ApiError>).status === 401) {
 			await logout();
@@ -1349,6 +1473,10 @@
 		mintOperationError = null;
 		mintRecordError = null;
 		showMintSafePayload = false;
+		rotationOperation = null;
+		rotationOperationError = null;
+		rotationRecordError = null;
+		showRotationSafePayload = false;
 		commActivity = null;
 		commQueue = null;
 		commError = null;
@@ -1397,6 +1525,7 @@
 				prefsDraft = prettyJSON(channels.contactPreferences);
 			}
 			await loadMintOperation();
+			await loadRotationOperation();
 		} catch (err) {
 			errorMessage = formatError(err);
 		} finally {
@@ -1700,6 +1829,8 @@
 	let publicOrigin = $derived(typeof window !== 'undefined' ? window.location.origin : '');
 	let needsMintRecovery = $derived(lifecycleStatus === 'pending' && !agent?.agent?.mint_tx_hash);
 	let mintUsesSafe = $derived(Boolean(mintOperation?.safe_tx?.safe_address?.trim()));
+	let pendingRotationOperation = $derived(rotationOperation && !rotationOperation.operation.exec_tx_hash ? rotationOperation : null);
+	let rotationUsesSafe = $derived(Boolean(rotationOperation?.safe_tx?.safe_address?.trim()));
 
 	onMount(() => {
 		void load();
@@ -2855,6 +2986,9 @@
 				{#if rotationConfirmError}
 					<Alert variant="error" title="Confirm rotation failed">{rotationConfirmError}</Alert>
 				{/if}
+				{#if rotationOperationError}
+					<Alert variant="error" title="Pending rotation">{rotationOperationError}</Alert>
+				{/if}
 
 				<div class="soul-agent__form">
 					<TextField label="New wallet" bind:value={rotationNewWallet} placeholder="0x…" />
@@ -2913,23 +3047,124 @@
 									<Heading level={5} size="lg">Operation</Heading>
 								{/snippet}
 								<Text size="sm" color="secondary">
-									Operation <span class="soul-agent__mono">{rotationConfirmResult.operation.operation_id}</span>
+									Operation <span class="soul-agent__mono">{rotationConfirmResult.operation.operation_id}</span> was created.
+									Use the recovery panel below to execute it and record the final tx hash back into lesser-host.
 								</Text>
 								<div class="soul-agent__row">
 									<CopyButton size="sm" text={rotationConfirmResult.operation.operation_id} />
 								</div>
-
-								{#if rotationConfirmResult.safe_tx}
-									<DefinitionList>
-										<DefinitionItem label="Safe" monospace>{rotationConfirmResult.safe_tx.safe_address}</DefinitionItem>
-										<DefinitionItem label="To" monospace>{rotationConfirmResult.safe_tx.to}</DefinitionItem>
-										<DefinitionItem label="Value" monospace>{rotationConfirmResult.safe_tx.value}</DefinitionItem>
-										<DefinitionItem label="Data" monospace>{rotationConfirmResult.safe_tx.data}</DefinitionItem>
-									</DefinitionList>
-								{/if}
 							</Card>
 						{/if}
 					</Card>
+				{/if}
+
+				{#if rotationOperationLoading}
+					<div class="soul-agent__loading-inline">
+						<Spinner size="sm" />
+						<Text size="sm">Loading wallet rotation operation…</Text>
+					</div>
+				{/if}
+
+				{#if pendingRotationOperation}
+					<Alert variant="warning" title={rotationUsesSafe ? 'Wallet rotation still needs execution' : 'Wallet rotation still needs wallet confirmation'}>
+						<Text size="sm">
+							{#if rotationUsesSafe}
+								The signatures are complete, but the wallet change will not appear here until the Safe transaction is
+								executed onchain and its execution tx hash is recorded below.
+							{:else}
+								The signatures are complete, but the wallet change will not appear here until the connected wallet
+								submits the rotation transaction and lesser-host records the confirmed execution.
+							{/if}
+						</Text>
+
+						<DefinitionList>
+							<DefinitionItem label="Operation" monospace>{pendingRotationOperation.operation.operation_id}</DefinitionItem>
+							<DefinitionItem label="Status" monospace>{pendingRotationOperation.operation.status}</DefinitionItem>
+						</DefinitionList>
+
+						{#if rotationUsesSafe}
+							<div class="soul-agent__steps">
+								<Text size="sm">1. Execute the Safe transaction below in your Safe workflow.</Text>
+								<Text size="sm">2. Wait for the transaction to mine on Sepolia.</Text>
+								<Text size="sm">3. Paste the execution tx hash here to reconcile the new wallet.</Text>
+							</div>
+						{:else}
+							<div class="soul-agent__steps">
+								<Text size="sm">1. Submit the rotation transaction from any connected wallet.</Text>
+								<Text size="sm">2. Keep this page open while lesser-host waits for Sepolia confirmation.</Text>
+								<Text size="sm">3. Use the manual tx hash field only if automatic recording does not finish.</Text>
+							</div>
+						{/if}
+
+						{#if rotationDirectNotice}
+							<Alert variant="info" title="Direct rotation">{rotationDirectNotice}</Alert>
+						{/if}
+						{#if rotationDirectError}
+							<Alert variant="error" title="Direct rotation">{rotationDirectError}</Alert>
+						{/if}
+
+						<div class="soul-agent__row">
+							{#if !rotationUsesSafe && rotationOperation?.safe_tx}
+								<Button
+									variant="solid"
+									onclick={() => void executeDirectRotation()}
+									disabled={rotationDirectLoading || rotationRecordLoading}
+								>
+									{rotationDirectLoading ? 'Rotating…' : 'Rotate now with connected wallet'}
+								</Button>
+							{/if}
+							{#if rotationOperation?.safe_tx}
+								<Button variant="outline" onclick={() => (showRotationSafePayload = !showRotationSafePayload)}>
+									{showRotationSafePayload ? 'Hide transaction data' : 'Show transaction data'}
+								</Button>
+								<CopyButton size="sm" text={prettyJSON(rotationOperation.safe_tx)} />
+							{/if}
+							<CopyButton size="sm" text={pendingRotationOperation.operation.operation_id} />
+						</div>
+
+						{#if rotationDirectLoading}
+							<div class="soul-agent__loading-inline">
+								<Spinner size="sm" />
+								<Text size="sm">Waiting for wallet confirmation and chain settlement…</Text>
+							</div>
+						{/if}
+						{#if rotationDirectTxHash}
+							<div class="soul-agent__row">
+								<Text size="sm" color="secondary">
+									Execution tx <span class="soul-agent__mono">{rotationDirectTxHash}</span>
+								</Text>
+								<CopyButton size="sm" text={rotationDirectTxHash} />
+							</div>
+						{/if}
+
+						{#if rotationOperation?.safe_tx && showRotationSafePayload}
+							<DefinitionList>
+								<DefinitionItem label="To" monospace>{rotationOperation.safe_tx.to}</DefinitionItem>
+								<DefinitionItem label="Value" monospace>{rotationOperation.safe_tx.value}</DefinitionItem>
+								{#if rotationOperation.safe_tx.safe_address}
+									<DefinitionItem label="Safe" monospace>{rotationOperation.safe_tx.safe_address}</DefinitionItem>
+								{/if}
+							</DefinitionList>
+							<TextArea readonly rows={6} label="Transaction data" value={rotationOperation.safe_tx.data} />
+						{/if}
+
+						<div class="soul-agent__form">
+							<TextField label="Execution tx hash" bind:value={rotationExecTxHash} placeholder="0x…" />
+							<Button variant="solid" onclick={() => void recordRotationExecution()} disabled={rotationRecordLoading}>
+								Record execution
+							</Button>
+						</div>
+
+						{#if rotationRecordLoading}
+							<div class="soul-agent__loading-inline">
+								<Spinner size="sm" />
+								<Text size="sm">Recording execution…</Text>
+							</div>
+						{/if}
+						{#if rotationRecordError}
+							<Alert variant="error" title="Record execution">{rotationRecordError}</Alert>
+						{/if}
+					</Alert>
 				{/if}
 			</Card>
 		{/if}

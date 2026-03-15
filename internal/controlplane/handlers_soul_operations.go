@@ -445,6 +445,41 @@ func (s *Server) applySoulOperationRotateWalletSideEffects(ctx context.Context, 
 		_ = wi.UpdateKeys()
 		_ = s.store.DB.WithContext(ctx).Model(wi).CreateOrUpdate()
 	}
+
+	ensChannel, err := getSoulAgentItemBySK[models.SoulAgentChannel](s, ctx, agentID, "CHANNEL#ens")
+	if err != nil || ensChannel == nil || strings.TrimSpace(ensChannel.Identifier) == "" {
+		return
+	}
+
+	resolution := &models.SoulAgentENSResolution{
+		ENSName:   ensChannel.Identifier,
+		AgentID:   agentID,
+		Wallet:    newWallet,
+		LocalID:   identity.LocalID,
+		Domain:    identity.Domain,
+		Status:    identity.Status,
+		UpdatedAt: now,
+	}
+	_ = resolution.UpdateKeys()
+
+	var existing models.SoulAgentENSResolution
+	err = s.store.DB.WithContext(ctx).
+		Model(&models.SoulAgentENSResolution{}).
+		Where("PK", "=", resolution.GetPK()).
+		Where("SK", "=", resolution.GetSK()).
+		First(&existing)
+	if err == nil {
+		if !strings.EqualFold(strings.TrimSpace(existing.AgentID), agentID) {
+			return
+		}
+		existing.Wallet = newWallet
+		existing.UpdatedAt = now
+		_ = existing.UpdateKeys()
+		_ = s.store.DB.WithContext(ctx).Model(&existing).Update("Wallet", "UpdatedAt")
+		return
+	}
+
+	_ = s.store.DB.WithContext(ctx).Model(resolution).CreateOrUpdate()
 }
 
 func (s *Server) applySoulOperationBurnSideEffects(ctx context.Context, agentID string) {

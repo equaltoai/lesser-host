@@ -52,6 +52,8 @@ type soulOperationsTestDB struct {
 	qOp          *ttmocks.MockQuery
 	qID          *ttmocks.MockQuery
 	qWalletAgent *ttmocks.MockQuery
+	qChannel     *ttmocks.MockQuery
+	qENS         *ttmocks.MockQuery
 	qAudit       *ttmocks.MockQuery
 }
 
@@ -60,25 +62,38 @@ func newSoulOperationsTestDB() soulOperationsTestDB {
 	qOp := new(ttmocks.MockQuery)
 	qID := new(ttmocks.MockQuery)
 	qWalletAgent := new(ttmocks.MockQuery)
+	qChannel := new(ttmocks.MockQuery)
+	qENS := new(ttmocks.MockQuery)
 	qAudit := new(ttmocks.MockQuery)
 
 	db.On("WithContext", mock.Anything).Return(db).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulOperation")).Return(qOp).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(qID).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulWalletAgentIndex")).Return(qWalletAgent).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentChannel")).Return(qChannel).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(qENS).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.AuditLogEntry")).Return(qAudit).Maybe()
 
-	for _, q := range []*ttmocks.MockQuery{qOp, qID, qWalletAgent, qAudit} {
+	for _, q := range []*ttmocks.MockQuery{qOp, qID, qWalletAgent, qChannel, qENS, qAudit} {
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("Index", mock.Anything).Return(q).Maybe()
 		q.On("IfExists").Return(q).Maybe()
 		q.On("Update", mock.Anything).Return(nil).Maybe()
+		q.On("Update", mock.Anything, mock.Anything).Return(nil).Maybe()
 		q.On("Create").Return(nil).Maybe()
 		q.On("CreateOrUpdate").Return(nil).Maybe()
 		q.On("Delete").Return(nil).Maybe()
 	}
 
-	return soulOperationsTestDB{db: db, qOp: qOp, qID: qID, qWalletAgent: qWalletAgent, qAudit: qAudit}
+	return soulOperationsTestDB{
+		db:           db,
+		qOp:          qOp,
+		qID:          qID,
+		qWalletAgent: qWalletAgent,
+		qChannel:     qChannel,
+		qENS:         qENS,
+		qAudit:       qAudit,
+	}
 }
 
 func opCtx() *apptheory.Context {
@@ -316,11 +331,36 @@ func TestApplySoulOperationSideEffects_RotateWallet(t *testing.T) {
 	agentID := "0x" + strings.Repeat("11", 32)
 	tdb.qID.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
-		*dest = models.SoulAgentIdentity{AgentID: agentID, Wallet: oldWallet, Status: models.SoulAgentStatusActive}
+		*dest = models.SoulAgentIdentity{
+			AgentID: agentID,
+			Wallet:  oldWallet,
+			LocalID: "ops",
+			Domain:  "dev.simulacrum.greater.website",
+			Status:  models.SoulAgentStatusActive,
+		}
+	}).Once()
+	tdb.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentChannel](t, args, 0)
+		*dest = models.SoulAgentChannel{
+			AgentID:     agentID,
+			ChannelType: models.SoulChannelTypeENS,
+			Identifier:  "ops.lessersoul.eth",
+			Status:      models.SoulChannelStatusActive,
+			UpdatedAt:   time.Now().UTC(),
+		}
+	}).Once()
+	tdb.qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentENSResolution](t, args, 0)
+		*dest = models.SoulAgentENSResolution{
+			ENSName: "ops.lessersoul.eth",
+			AgentID: agentID,
+			Wallet:  oldWallet,
+		}
 	}).Once()
 
 	tdb.qWalletAgent.On("Delete").Return(nil).Once()
 	tdb.qWalletAgent.On("CreateOrUpdate").Return(nil).Once()
+	tdb.qENS.On("Update", "Wallet", "UpdatedAt").Return(nil).Once()
 
 	op := &models.SoulOperation{
 		Kind:    models.SoulOperationKindRotateWallet,

@@ -508,3 +508,62 @@ func TestCreateSoulWalletRotationConfirmResponse_CreateErrorFails(t *testing.T) 
 	require.Nil(t, appResp)
 	require.Equal(t, "app.internal", appErr.Code)
 }
+
+func TestCreateSoulWalletRotationConfirmResponse_DirectModeOmitsSafeAddress(t *testing.T) {
+	t.Parallel()
+
+	db := ttmocks.NewMockExtendedDB()
+	qOp := new(ttmocks.MockQuery)
+	qRot := new(ttmocks.MockQuery)
+	qAudit := new(ttmocks.MockQuery)
+
+	db.On("WithContext", mock.Anything).Return(db).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulOperation")).Return(qOp).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulWalletRotationRequest")).Return(qRot).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.AuditLogEntry")).Return(qAudit).Maybe()
+
+	qOp.On("IfNotExists").Return(qOp).Maybe()
+	qOp.On("Create").Return(nil).Once()
+	qRot.On("IfExists").Return(qRot).Maybe()
+	qRot.On("Update", mock.Anything).Return(nil).Maybe()
+	qAudit.On("Create").Return(nil).Maybe()
+
+	s := &Server{
+		store: store.New(db),
+		cfg: config.Config{
+			SoulChainID: 1,
+			SoulTxMode:  "direct",
+		},
+	}
+
+	ctx := &apptheory.Context{AuthIdentity: "alice", RequestID: "r1"}
+	rot := &models.SoulWalletRotationRequest{
+		AgentID:       "0x" + strings.Repeat("11", 32),
+		Username:      "alice",
+		CurrentWallet: "0x00000000000000000000000000000000000000aa",
+		NewWallet:     "0x00000000000000000000000000000000000000bb",
+		Nonce:         "7",
+		Deadline:      1700000000,
+	}
+	_ = rot.UpdateKeys()
+
+	resp, appErr := s.createSoulWalletRotationConfirmResponse(
+		ctx,
+		rot.AgentID,
+		big.NewInt(1),
+		"0x0000000000000000000000000000000000000001",
+		rot,
+		big.NewInt(7),
+		big.NewInt(1700000000),
+		make([]byte, 65),
+		make([]byte, 65),
+		time.Now().UTC(),
+	)
+	require.Nil(t, appErr)
+	require.NotNil(t, resp)
+
+	var out soulRotateWalletConfirmResponse
+	require.NoError(t, json.Unmarshal(resp.Body, &out))
+	require.NotNil(t, out.SafeTx)
+	require.Empty(t, out.SafeTx.SafeAddress)
+}
