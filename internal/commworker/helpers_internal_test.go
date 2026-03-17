@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -414,6 +415,22 @@ func testDefaultFetchInstanceKeyPlaintext(t *testing.T) {
 	if got, err := srv.defaultFetchInstanceKeyPlaintext(context.Background(), &models.Instance{LesserHostInstanceKeySecretARN: "arn:secret"}); err != nil || got != "child" {
 		t.Fatalf("unexpected same-account fetch: %q %v", got, err)
 	}
+
+	var logs []string
+	srv = NewServer(config.Config{Stage: "lab"}, &fakeStore{}, nil, sm)
+	srv.logf = func(format string, args ...any) {
+		logs = append(logs, fmt.Sprintf(format, args...))
+	}
+	if got, err := srv.defaultFetchInstanceKeyPlaintext(context.Background(), &models.Instance{
+		Slug:                           "demo",
+		HostedAccountID:                "123456789012",
+		LesserHostInstanceKeySecretARN: "arn:secret",
+	}); err != nil || got != "child" {
+		t.Fatalf("unexpected same-account fallback fetch: %q %v", got, err)
+	}
+	if len(logs) != 1 || !strings.Contains(logs[0], "falling back to same-account secret access") || !strings.Contains(logs[0], "role_name_present=false") || !strings.Contains(logs[0], "sts_ready=false") {
+		t.Fatalf("unexpected fallback log: %#v", logs)
+	}
 }
 
 func testDeliveryAndBounceHelpers(t *testing.T) {
@@ -539,6 +556,60 @@ func TestCommWorkerHandleQueueAndBounce(t *testing.T) {
 	}
 	if err := s.maybeBounceEmail(context.Background(), "0xabc", "rate_limited", "sms", InboundNotification{}, 0, 0, 0, 0); err != nil {
 		t.Fatalf("expected sms bounce skip to be nil, got %v", err)
+	}
+}
+
+func TestHandleCommQueueMessage_LogsDropReasons(t *testing.T) {
+	var logs []string
+	logf := func(format string, args ...any) {
+		logs = append(logs, fmt.Sprintf(format, args...))
+	}
+
+	s := NewServer(config.Config{}, &fakeStore{}, nil, nil)
+	s.logf = logf
+	ctx := &apptheory.EventContext{RequestID: "req-drop-log"}
+
+	if err := s.handleCommQueueMessage(ctx, events.SQSMessage{MessageId: "sqs-invalid-json", Body: "{"}); err != nil {
+		t.Fatalf("expected invalid json to be dropped, got %v", err)
+	}
+
+	otherBody, err := json.Marshal(QueueMessage{Kind: "other"})
+	if err != nil {
+		t.Fatalf("marshal unsupported kind: %v", err)
+	}
+	if err := s.handleCommQueueMessage(ctx, events.SQSMessage{MessageId: "sqs-unsupported", Body: string(otherBody)}); err != nil {
+		t.Fatalf("expected unsupported kind to be dropped, got %v", err)
+	}
+
+	invalidBody, err := json.Marshal(QueueMessage{
+		Kind: QueueMessageKindInbound,
+		Notification: InboundNotification{
+			Type:       "communication:inbound",
+			Channel:    "email",
+			From:       InboundParty{Address: "sender@example.com"},
+			Body:       "missing required fields",
+			ReceivedAt: "2026-03-05T12:00:00Z",
+			MessageID:  "msg-invalid",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal invalid payload: %v", err)
+	}
+	if err := s.handleCommQueueMessage(ctx, events.SQSMessage{MessageId: "sqs-invalid-payload", Body: string(invalidBody)}); err != nil {
+		t.Fatalf("expected invalid payload to be dropped, got %v", err)
+	}
+
+	if len(logs) != 3 {
+		t.Fatalf("expected 3 log lines, got %d: %#v", len(logs), logs)
+	}
+	if !strings.Contains(logs[0], "reason=invalid_json") || !strings.Contains(logs[0], "request=req-drop-log") || !strings.Contains(logs[0], "sqs_message=sqs-invalid-json") {
+		t.Fatalf("unexpected invalid json log: %q", logs[0])
+	}
+	if !strings.Contains(logs[1], "reason=unsupported_kind") || !strings.Contains(logs[1], "kind=other") || !strings.Contains(logs[1], "sqs_message=sqs-unsupported") {
+		t.Fatalf("unexpected unsupported kind log: %q", logs[1])
+	}
+	if !strings.Contains(logs[2], "reason=invalid_payload") || !strings.Contains(logs[2], "channel=email") || !strings.Contains(logs[2], "message=msg-invalid") {
+		t.Fatalf("unexpected invalid payload log: %q", logs[2])
 	}
 }
 

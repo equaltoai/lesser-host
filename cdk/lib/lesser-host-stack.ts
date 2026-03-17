@@ -32,6 +32,8 @@ export interface LesserHostStackProps extends cdk.StackProps {
 	stage: string;
 }
 
+const defaultManagedInstanceRoleName = 'OrganizationAccountAccessRole';
+
 export class LesserHostStack extends cdk.Stack {
 	private readonly namePrefix: string;
 
@@ -219,7 +221,7 @@ export class LesserHostStack extends cdk.Stack {
 		const managedParentHostedZoneId =
 			(this.node.tryGetContext('managedParentHostedZoneId') as string | undefined) ?? '';
 		const managedInstanceRoleName =
-			(this.node.tryGetContext('managedInstanceRoleName') as string | undefined) ?? '';
+			(this.node.tryGetContext('managedInstanceRoleName') as string | undefined) ?? defaultManagedInstanceRoleName;
 		const managedTargetOuId = (this.node.tryGetContext('managedTargetOuId') as string | undefined) ?? '';
 		const managedAccountEmailTemplateLab =
 			(this.node.tryGetContext('managedAccountEmailTemplateLab') as string | undefined) ?? '';
@@ -761,7 +763,7 @@ export class LesserHostStack extends cdk.Stack {
 		provisionRunnerProject.addToRolePolicy(
 			new iam.PolicyStatement({
 				actions: ['sts:AssumeRole'],
-				resources: [`arn:aws:iam::*:role/${managedInstanceRoleName.trim() || 'OrganizationAccountAccessRole'}`],
+				resources: [`arn:aws:iam::*:role/${managedInstanceRoleName.trim() || defaultManagedInstanceRoleName}`],
 			}),
 		);
 		if (managedOrgVendingRoleArn.trim()) {
@@ -789,7 +791,7 @@ export class LesserHostStack extends cdk.Stack {
 		provisionWorkerFn.addToRolePolicy(
 			new iam.PolicyStatement({
 				actions: ['sts:AssumeRole'],
-				resources: [`arn:aws:iam::*:role/${managedInstanceRoleName.trim() || 'OrganizationAccountAccessRole'}`],
+				resources: [`arn:aws:iam::*:role/${managedInstanceRoleName.trim() || defaultManagedInstanceRoleName}`],
 			}),
 		);
 		if (managedOrgVendingRoleArn.trim()) {
@@ -804,7 +806,7 @@ export class LesserHostStack extends cdk.Stack {
 		commWorkerFn.addToRolePolicy(
 			new iam.PolicyStatement({
 				actions: ['sts:AssumeRole'],
-				resources: [`arn:aws:iam::*:role/${managedInstanceRoleName.trim() || 'OrganizationAccountAccessRole'}`],
+				resources: [`arn:aws:iam::*:role/${managedInstanceRoleName.trim() || defaultManagedInstanceRoleName}`],
 			}),
 		);
 		if (managedOrgVendingRoleArn.trim()) {
