@@ -10,6 +10,7 @@ import (
 	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/store"
@@ -81,7 +82,7 @@ func TestStartAndGetInstanceProvisioning(t *testing.T) {
 
 	body, _ := json.Marshal(startInstanceProvisionRequest{
 		Region:             "us-west-2",
-		LesserVersion:      "v1",
+		LesserVersion:      "v1.0.0",
 		AdminWalletType:    "ethereum",
 		AdminWalletAddress: "0x0000000000000000000000000000000000000003",
 		AdminWalletChainID: 1,
@@ -166,4 +167,41 @@ func TestStartAndGetInstanceProvisioning(t *testing.T) {
 	if _, err := s.handleGetInstanceProvisioning(ctxMissing); err == nil {
 		t.Fatalf("expected not found for missing job")
 	}
+}
+
+func TestHandleStartInstanceProvisioning_RejectsMalformedReleaseTag(t *testing.T) {
+	t.Parallel()
+
+	tdb := newProvisioningTestDB()
+	s := &Server{
+		cfg: config.Config{
+			ManagedParentDomain:         "lesser.host",
+			ManagedDefaultRegion:        "us-east-1",
+			ManagedLesserDefaultVersion: "v0.0.0",
+		},
+		store: store.New(tdb.db),
+	}
+
+	tdb.qInst.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{Slug: "demo", Status: models.InstanceStatusActive}
+		_ = dest.UpdateKeys()
+	}).Once()
+
+	body, _ := json.Marshal(startInstanceProvisionRequest{
+		LesserVersion:      "v.1.2.3",
+		AdminWalletType:    "ethereum",
+		AdminWalletAddress: "0x0000000000000000000000000000000000000003",
+		AdminWalletChainID: 1,
+	})
+	ctx := adminCtx()
+	ctx.Params = map[string]string{"slug": "demo"}
+	ctx.Request.Body = body
+
+	_, err := s.handleStartInstanceProvisioning(ctx)
+	require.Error(t, err)
+	appErr, ok := err.(*apptheory.AppError)
+	require.True(t, ok)
+	require.Equal(t, "app.bad_request", appErr.Code)
+	require.Contains(t, appErr.Message, "lesser_version must be \"latest\" or a tag like v1.2.3")
 }

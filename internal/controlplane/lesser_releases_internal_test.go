@@ -108,3 +108,35 @@ func TestResolveLatestGitHubReleaseTag_SuccessTrimsTagAndSetsHeaders(t *testing.
 	require.NotNil(t, gotReq.URL)
 	require.True(t, strings.Contains(gotReq.URL.Path, "/repos/owner/repo/releases/latest"))
 }
+
+func TestValidateManagedReleaseVersion(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		version string
+		wantErr bool
+	}{
+		{name: "empty", version: "", wantErr: false},
+		{name: "latest", version: "latest", wantErr: false},
+		{name: "plain semver tag", version: "v1.2.3", wantErr: false},
+		{name: "prerelease tag", version: "v1.2.3-rc.1", wantErr: false},
+		{name: "build metadata tag", version: "v1.2.3+build.5", wantErr: false},
+		{name: "leading typo", version: "v.1.2.3", wantErr: true},
+		{name: "missing v", version: "1.2.3", wantErr: true},
+		{name: "short tag", version: "v1.2", wantErr: true},
+		{name: "spaces", version: "v1.2.3 beta", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			appErr := validateManagedReleaseVersion(tt.version, "lesser_version")
+			if tt.wantErr {
+				require.NotNil(t, appErr)
+				require.Equal(t, "app.bad_request", appErr.Code)
+				return
+			}
+			require.Nil(t, appErr)
+		})
+	}
+}

@@ -728,7 +728,7 @@ func (s *Server) resolveManagedLesserUpdateVersion(ctx context.Context, inst *mo
 	if lesserVersion == "" {
 		return "", &apptheory.AppError{Code: "app.bad_request", Message: "lesser_version is required"}
 	}
-	return s.resolveManagedReleaseVersion(ctx, lesserVersion, s.cfg.ManagedLesserGitHubOwner, s.cfg.ManagedLesserGitHubRepo, "failed to resolve latest Lesser release")
+	return s.resolveManagedReleaseVersion(ctx, lesserVersion, "lesser_version", s.cfg.ManagedLesserGitHubOwner, s.cfg.ManagedLesserGitHubRepo, "failed to resolve latest Lesser release")
 }
 
 func (s *Server) resolveManagedBodyUpdateVersion(ctx context.Context, inst *models.Instance, req createUpdateJobRequest) (string, *apptheory.AppError) {
@@ -755,7 +755,7 @@ func (s *Server) resolveManagedBodyUpdateVersion(ctx context.Context, inst *mode
 	if lesserBodyVersion == "" {
 		return "", nil
 	}
-	return s.resolveManagedReleaseVersion(ctx, lesserBodyVersion, s.cfg.ManagedLesserBodyGitHubOwner, s.cfg.ManagedLesserBodyGitHubRepo, "failed to resolve latest lesser-body release")
+	return s.resolveManagedReleaseVersion(ctx, lesserBodyVersion, "lesser_body_version", s.cfg.ManagedLesserBodyGitHubOwner, s.cfg.ManagedLesserBodyGitHubRepo, "failed to resolve latest lesser-body release")
 }
 
 func (s *Server) resolveManagedUpdateVersions(ctx context.Context, inst *models.Instance, req createUpdateJobRequest) (string, string, *apptheory.AppError) {
@@ -770,8 +770,11 @@ func (s *Server) resolveManagedUpdateVersions(ctx context.Context, inst *models.
 	return lesserVersion, lesserBodyVersion, nil
 }
 
-func (s *Server) resolveManagedReleaseVersion(ctx context.Context, version string, owner string, repo string, failureMessage string) (string, *apptheory.AppError) {
+func (s *Server) resolveManagedReleaseVersion(ctx context.Context, version string, field string, owner string, repo string, failureMessage string) (string, *apptheory.AppError) {
 	version = strings.TrimSpace(version)
+	if appErr := validateManagedReleaseVersion(version, field); appErr != nil {
+		return "", appErr
+	}
 	if !strings.EqualFold(version, "latest") {
 		return version, nil
 	}
