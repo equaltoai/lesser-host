@@ -258,6 +258,9 @@ func (s *Server) buildManagedProvisionJob(slug string, req startInstanceProvisio
 	if lesserVersion == "" {
 		lesserVersion = strings.TrimSpace(s.cfg.ManagedLesserDefaultVersion)
 	}
+	if appErr := validateManagedReleaseVersion(lesserVersion, "lesser_version"); appErr != nil {
+		return nil, "", "", appErr
+	}
 
 	accountEmail := strings.TrimSpace(expandManagedAccountEmailTemplate(s.cfg.ManagedAccountEmailTemplate, slug))
 

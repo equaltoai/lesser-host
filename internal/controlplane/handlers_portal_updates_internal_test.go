@@ -188,7 +188,7 @@ func TestHandlePortalCreateInstanceUpdateJob_DoesNotDefaultLesserBodyVersionForL
 			Stage:                           "lab",
 			WebAuthnRPID:                    "example.com",
 			ManagedInstanceRoleName:         "role",
-			ManagedLesserBodyDefaultVersion: "v.0.1.3",
+			ManagedLesserBodyDefaultVersion: "v0.1.3",
 		},
 		store: store.New(tdb.db),
 	}
@@ -221,6 +221,62 @@ func TestHandlePortalCreateInstanceUpdateJob_DoesNotDefaultLesserBodyVersionForL
 	var parsed updateJobResponse
 	require.NoError(t, json.Unmarshal(resp.Body, &parsed))
 	require.Equal(t, "", parsed.LesserBodyVersion)
+}
+
+func TestHandlePortalCreateInstanceUpdateJob_RejectsMalformedReleaseTags(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "lesser version", body: `{"lesser_version":"v.1.2.3"}`},
+		{name: "lesser body version", body: `{"body_only":true,"lesser_body_version":"v.0.1.3"}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tdb := newPortalTestDB()
+			qUpdate := new(ttmocks.MockQuery)
+			tdb.db.On("Model", mock.AnythingOfType("*models.UpdateJob")).Return(qUpdate).Maybe()
+			addStandardMockQueryStubs(qUpdate)
+
+			s := &Server{
+				cfg: config.Config{
+					Stage:                   "lab",
+					WebAuthnRPID:            "example.com",
+					ManagedInstanceRoleName: "role",
+				},
+				store: store.New(tdb.db),
+			}
+
+			ctx := &apptheory.Context{AuthIdentity: "alice", RequestID: "rid"}
+			ctx.Params = map[string]string{"slug": testPortalInstanceSlugDemo}
+			ctx.Request.Body = []byte(tt.body)
+
+			tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+				dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+				*dest = models.Instance{
+					Slug:              testPortalInstanceSlugDemo,
+					Owner:             "alice",
+					HostedAccountID:   "123",
+					HostedRegion:      "us-east-1",
+					HostedBaseDomain:  "demo.example.com",
+					LesserVersion:     "v1.2.3",
+					LesserBodyVersion: "v0.1.15",
+					UpdateStatus:      models.UpdateJobStatusOK,
+				}
+			}).Once()
+			expectEmptyUpdateJobHistory(t, qUpdate)
+
+			_, err := s.handlePortalCreateInstanceUpdateJob(ctx)
+			require.Error(t, err)
+			appErr, ok := err.(*apptheory.AppError)
+			require.True(t, ok)
+			require.Equal(t, "app.bad_request", appErr.Code)
+			require.Contains(t, appErr.Message, "must be \"latest\" or a tag like v1.2.3")
+		})
+	}
 }
 
 func TestHandlePortalCreateInstanceUpdateJob_BodyOnlyDefaultsLesserBodyVersion(t *testing.T) {
@@ -536,7 +592,7 @@ func TestHandlePortalCreateInstanceUpdateJob_TransactWriteFailureReturnsInternal
 	ctx := &apptheory.Context{AuthIdentity: "alice", RequestID: "rid"}
 	ctx.Set(ctxKeyOperatorRole, models.RoleAdmin)
 	ctx.Params = map[string]string{"slug": testPortalInstanceSlugDemo}
-	ctx.Request.Body = []byte(`{"lesser_version":"v1"}`)
+	ctx.Request.Body = []byte(`{"lesser_version":"v1.0.0"}`)
 
 	qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
@@ -546,7 +602,7 @@ func TestHandlePortalCreateInstanceUpdateJob_TransactWriteFailureReturnsInternal
 			HostedAccountID:  "123",
 			HostedRegion:     "us-east-1",
 			HostedBaseDomain: "demo.example.com",
-			LesserVersion:    "v1",
+			LesserVersion:    "v1.0.0",
 		}
 	}).Once()
 	expectEmptyUpdateJobHistory(t, qUpdate)

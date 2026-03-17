@@ -15,6 +15,7 @@
 	import { logout } from 'src/lib/auth/logout';
 	import { pollUntil } from 'src/lib/polling';
 	import { navigate } from 'src/lib/router';
+	import { validateManagedReleaseTag } from 'src/lib/utils/versionTags';
 	import { getEthereumProvider, personalSign, requestAccounts } from 'src/lib/wallet/ethereum';
 	import {
 		Alert,
@@ -302,6 +303,17 @@
 
 		const version = (options?.lesserVersion || '').trim();
 		const bodyVersion = (options?.lesserBodyVersion || '').trim();
+		const versionErr =
+			!options?.bodyOnly && !options?.mcpOnly
+				? validateManagedReleaseTag(version, { label: 'Lesser version' })
+				: null;
+		const bodyVersionErr = options?.bodyOnly
+			? validateManagedReleaseTag(bodyVersion, { allowBlank: true, label: 'lesser-body version' })
+			: null;
+		if (versionErr || bodyVersionErr) {
+			updatesError = versionErr || bodyVersionErr;
+			return;
+		}
 
 		updateCreating = true;
 		try {
@@ -419,6 +431,14 @@
 
 		const region = provisionRegion.trim();
 		const lesserVersion = provisionLesserVersion.trim();
+		const lesserVersionErr = validateManagedReleaseTag(lesserVersion, {
+			allowBlank: true,
+			label: 'Lesser version',
+		});
+		if (lesserVersionErr) {
+			provisioningError = lesserVersionErr;
+			return;
+		}
 		const adminUsernameRaw = provisionAdminUsername.trim().toLowerCase();
 		const adminUsername = adminUsernameRaw || slug.trim().toLowerCase();
 		if (!slugRE.test(adminUsername)) {
@@ -657,7 +677,7 @@
 
 					<div class="instance-detail__form">
 						<TextField label="Region (optional)" bind:value={provisionRegion} placeholder="us-east-1" />
-						<TextField label="Lesser version (optional)" bind:value={provisionLesserVersion} placeholder="vX.Y.Z" />
+						<TextField label="Lesser version (optional)" bind:value={provisionLesserVersion} placeholder="v1.2.3 or latest" />
 					</div>
 
 					<div class="instance-detail__row">
@@ -694,7 +714,7 @@
 				<div class="instance-detail__form">
 					<TextField label="Admin username" bind:value={provisionAdminUsername} placeholder={slug} />
 					<TextField label="Region (optional)" bind:value={provisionRegion} placeholder="us-east-1" />
-					<TextField label="Lesser version (optional)" bind:value={provisionLesserVersion} placeholder="vX.Y.Z" />
+					<TextField label="Lesser version (optional)" bind:value={provisionLesserVersion} placeholder="v1.2.3 or latest" />
 				</div>
 
 				<div class="instance-detail__row">
@@ -755,7 +775,7 @@
 			</div>
 
 			<div class="instance-detail__form">
-				<TextField label="Update Lesser version" bind:value={updateLesserVersion} placeholder="vX.Y.Z or latest" />
+				<TextField label="Update Lesser version" bind:value={updateLesserVersion} placeholder="v1.2.3 or latest" />
 			</div>
 			<div class="instance-detail__row">
 				<Button
@@ -781,7 +801,7 @@
 				<TextField
 					label="Update Lesser Body version"
 					bind:value={updateLesserBodyVersion}
-					placeholder="vX.Y.Z, latest, or blank for configured default"
+					placeholder="v1.2.3, latest, or blank for configured default"
 				/>
 			</div>
 			<div class="instance-detail__row">

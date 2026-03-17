@@ -6,13 +6,18 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
+
+	apptheory "github.com/theory-cloud/apptheory/runtime"
 )
 
 type githubLatestRelease struct {
 	TagName string `json:"tag_name"`
 }
+
+var managedReleaseTagRE = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$`)
 
 func resolveLatestGitHubReleaseTag(ctx context.Context, owner string, repo string) (string, error) {
 	owner = strings.TrimSpace(owner)
@@ -75,4 +80,23 @@ func isValidGitHubRepoSegment(s string) bool {
 		}
 	}
 	return true
+}
+
+func validateManagedReleaseVersion(version string, field string) *apptheory.AppError {
+	version = strings.TrimSpace(version)
+	field = strings.TrimSpace(field)
+	if version == "" {
+		return nil
+	}
+	if strings.EqualFold(version, "latest") {
+		return nil
+	}
+	if managedReleaseTagRE.MatchString(version) {
+		return nil
+	}
+	message := "release version must be \"latest\" or a tag like v1.2.3"
+	if field != "" {
+		message = field + " must be \"latest\" or a tag like v1.2.3"
+	}
+	return &apptheory.AppError{Code: "app.bad_request", Message: message}
 }
