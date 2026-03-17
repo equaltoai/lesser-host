@@ -836,41 +836,12 @@ func commDomainIsVerifiedOrActive(status string) bool {
 }
 
 func (s *Server) defaultFetchInstanceKeyPlaintext(ctx context.Context, inst *models.Instance) (string, error) {
-	if s == nil {
-		return "", fmt.Errorf("server not initialized")
+	secretArn, accountID, roleName, region, err := s.instanceSecretFetchInputs(inst)
+	if err != nil {
+		return "", err
 	}
-	if inst == nil {
-		return "", fmt.Errorf("instance is nil")
-	}
-	secretArn := strings.TrimSpace(inst.LesserHostInstanceKeySecretARN)
-	if secretArn == "" {
-		return "", fmt.Errorf("instance api key secret arn is not configured")
-	}
-	if s.secrets == nil {
-		return "", fmt.Errorf("secrets manager client not initialized")
-	}
-
-	accountID := strings.TrimSpace(inst.HostedAccountID)
-	roleName := strings.TrimSpace(s.cfg.ManagedInstanceRoleName)
-	region := strings.TrimSpace(inst.HostedRegion)
-	if region == "" {
-		region = strings.TrimSpace(s.cfg.ManagedDefaultRegion)
-	}
-	if region == "" {
-		region = "us-east-1"
-	}
-
-	// If the instance account details are missing, fall back to same-account access.
-	if accountID == "" || roleName == "" || s.sts == nil {
-		if accountID != "" && (roleName == "" || s.sts == nil) {
-			s.logfMessage(
-				"commworker: falling back to same-account secret access slug=%s account=%s role_name_present=%t sts_ready=%t",
-				strings.ToLower(strings.TrimSpace(inst.Slug)),
-				accountID,
-				roleName != "",
-				s.sts != nil,
-			)
-		}
+	if s.shouldUseSameAccountSecretAccess(accountID, roleName) {
+		s.logSameAccountSecretFallback(inst, accountID, roleName)
 		return getSecretsManagerSecretPlaintext(ctx, s.secrets, secretArn)
 	}
 
@@ -903,6 +874,64 @@ func (s *Server) defaultFetchInstanceKeyPlaintext(ctx context.Context, inst *mod
 	})
 
 	return getSecretsManagerSecretPlaintext(ctx, child, secretArn)
+}
+
+func (s *Server) instanceSecretFetchInputs(inst *models.Instance) (secretArn string, accountID string, roleName string, region string, err error) {
+	if s == nil {
+		return "", "", "", "", fmt.Errorf("server not initialized")
+	}
+	if inst == nil {
+		return "", "", "", "", fmt.Errorf("instance is nil")
+	}
+	secretArn = strings.TrimSpace(inst.LesserHostInstanceKeySecretARN)
+	if secretArn == "" {
+		return "", "", "", "", fmt.Errorf("instance api key secret arn is not configured")
+	}
+	if s.secrets == nil {
+		return "", "", "", "", fmt.Errorf("secrets manager client not initialized")
+	}
+	accountID = strings.TrimSpace(inst.HostedAccountID)
+	roleName = strings.TrimSpace(s.cfg.ManagedInstanceRoleName)
+	region = resolvedInstanceRegion(inst, s.cfg.ManagedDefaultRegion)
+	return secretArn, accountID, roleName, region, nil
+}
+
+func resolvedInstanceRegion(inst *models.Instance, fallback string) string {
+	region := ""
+	if inst != nil {
+		region = strings.TrimSpace(inst.HostedRegion)
+	}
+	if region != "" {
+		return region
+	}
+	if fallback = strings.TrimSpace(fallback); fallback != "" {
+		return fallback
+	}
+	return "us-east-1"
+}
+
+func (s *Server) shouldUseSameAccountSecretAccess(accountID string, roleName string) bool {
+	return strings.TrimSpace(accountID) == "" || strings.TrimSpace(roleName) == "" || s == nil || s.sts == nil
+}
+
+func (s *Server) logSameAccountSecretFallback(inst *models.Instance, accountID string, roleName string) {
+	if strings.TrimSpace(accountID) == "" || (roleName != "" && s != nil && s.sts != nil) {
+		return
+	}
+	s.logfMessage(
+		"commworker: falling back to same-account secret access slug=%s account=%s role_name_present=%t sts_ready=%t",
+		strings.ToLower(strings.TrimSpace(instanceSlug(inst))),
+		strings.TrimSpace(accountID),
+		strings.TrimSpace(roleName) != "",
+		s != nil && s.sts != nil,
+	)
+}
+
+func instanceSlug(inst *models.Instance) string {
+	if inst == nil {
+		return ""
+	}
+	return inst.Slug
 }
 
 func requestIDFromEventContext(ctx *apptheory.EventContext) string {
