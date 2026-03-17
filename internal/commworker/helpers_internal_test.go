@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -23,6 +24,7 @@ const (
 	commTestAgentEmail   = "agent@example.com"
 	commTestSMTPPassword = "smtp-pass"
 	commTestSenderSoulID = "0xsender"
+	commTestSecretValue  = "child"
 )
 
 type stubSecretsManager struct {
@@ -381,7 +383,7 @@ func testGetSecretsManagerSecretPlaintext(t *testing.T) {
 			return &secretsmanager.GetSecretValueOutput{SecretBinary: []byte(`{"secret":" child "}`)}, nil
 		},
 	}
-	if got, err := getSecretsManagerSecretPlaintext(context.Background(), sm, "arn:secret"); err != nil || got != "child" {
+	if got, err := getSecretsManagerSecretPlaintext(context.Background(), sm, "arn:secret"); err != nil || got != commTestSecretValue {
 		t.Fatalf("unexpected secret plaintext: %q %v", got, err)
 	}
 }
@@ -411,8 +413,24 @@ func testDefaultFetchInstanceKeyPlaintext(t *testing.T) {
 	if _, err := (&Server{}).defaultFetchInstanceKeyPlaintext(context.Background(), &models.Instance{LesserHostInstanceKeySecretARN: "arn"}); err == nil {
 		t.Fatalf("expected missing secrets manager error")
 	}
-	if got, err := srv.defaultFetchInstanceKeyPlaintext(context.Background(), &models.Instance{LesserHostInstanceKeySecretARN: "arn:secret"}); err != nil || got != "child" {
+	if got, err := srv.defaultFetchInstanceKeyPlaintext(context.Background(), &models.Instance{LesserHostInstanceKeySecretARN: "arn:secret"}); err != nil || got != commTestSecretValue {
 		t.Fatalf("unexpected same-account fetch: %q %v", got, err)
+	}
+
+	var logs []string
+	srv = NewServer(config.Config{Stage: "lab"}, &fakeStore{}, nil, sm)
+	srv.logf = func(format string, args ...any) {
+		logs = append(logs, fmt.Sprintf(format, args...))
+	}
+	if got, err := srv.defaultFetchInstanceKeyPlaintext(context.Background(), &models.Instance{
+		Slug:                           "demo",
+		HostedAccountID:                "123456789012",
+		LesserHostInstanceKeySecretARN: "arn:secret",
+	}); err != nil || got != commTestSecretValue {
+		t.Fatalf("unexpected same-account fallback fetch: %q %v", got, err)
+	}
+	if len(logs) != 1 || !strings.Contains(logs[0], "falling back to same-account secret access") || !strings.Contains(logs[0], "role_name_present=false") || !strings.Contains(logs[0], "sts_ready=false") {
+		t.Fatalf("unexpected fallback log: %#v", logs)
 	}
 }
 
@@ -539,6 +557,91 @@ func TestCommWorkerHandleQueueAndBounce(t *testing.T) {
 	}
 	if err := s.maybeBounceEmail(context.Background(), "0xabc", "rate_limited", "sms", InboundNotification{}, 0, 0, 0, 0); err != nil {
 		t.Fatalf("expected sms bounce skip to be nil, got %v", err)
+	}
+}
+
+func TestHandleCommQueueMessage_LogsDropReasons(t *testing.T) {
+	type logCase struct {
+		name         string
+		message      events.SQSMessage
+		expectedBits []string
+	}
+
+	makeInvalidPayloadBody := func(t *testing.T) string {
+		t.Helper()
+		body, marshalErr := json.Marshal(QueueMessage{
+			Kind: QueueMessageKindInbound,
+			Notification: InboundNotification{
+				Type:       "communication:inbound",
+				Channel:    "email",
+				From:       InboundParty{Address: "sender@example.com"},
+				Body:       "missing required fields",
+				ReceivedAt: "2026-03-05T12:00:00Z",
+				MessageID:  "msg-invalid",
+			},
+		})
+		if marshalErr != nil {
+			t.Fatalf("marshal invalid payload: %v", marshalErr)
+		}
+		return string(body)
+	}
+
+	otherBody, marshalErr := json.Marshal(QueueMessage{Kind: "other"})
+	if marshalErr != nil {
+		t.Fatalf("marshal unsupported kind: %v", marshalErr)
+	}
+
+	cases := []logCase{
+		{
+			name:    "invalid json",
+			message: events.SQSMessage{MessageId: "sqs-invalid-json", Body: "{"},
+			expectedBits: []string{
+				"reason=invalid_json",
+				"request=req-drop-log",
+				"sqs_message=sqs-invalid-json",
+			},
+		},
+		{
+			name:    "unsupported kind",
+			message: events.SQSMessage{MessageId: "sqs-unsupported", Body: string(otherBody)},
+			expectedBits: []string{
+				"reason=unsupported_kind",
+				"kind=other",
+				"sqs_message=sqs-unsupported",
+			},
+		},
+		{
+			name:    "invalid payload",
+			message: events.SQSMessage{MessageId: "sqs-invalid-payload", Body: makeInvalidPayloadBody(t)},
+			expectedBits: []string{
+				"reason=invalid_payload",
+				"channel=email",
+				"message=msg-invalid",
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var logs []string
+			s := NewServer(config.Config{}, &fakeStore{}, nil, nil)
+			s.logf = func(format string, args ...any) {
+				logs = append(logs, fmt.Sprintf(format, args...))
+			}
+			ctx := &apptheory.EventContext{RequestID: "req-drop-log"}
+
+			if err := s.handleCommQueueMessage(ctx, tc.message); err != nil {
+				t.Fatalf("expected message to be dropped without error, got %v", err)
+			}
+			if len(logs) != 1 {
+				t.Fatalf("expected 1 log line, got %d: %#v", len(logs), logs)
+			}
+			for _, bit := range tc.expectedBits {
+				if !strings.Contains(logs[0], bit) {
+					t.Fatalf("expected log %q to contain %q", logs[0], bit)
+				}
+			}
+		})
 	}
 }
 

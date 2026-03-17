@@ -51,6 +51,7 @@ type Server struct {
 
 	sts     stsAPI
 	secrets secretsManagerAPI
+	logf    func(format string, args ...any)
 
 	ssmGetParameter func(ctx context.Context, name string) (string, error)
 	migaduSendSMTP  func(ctx context.Context, username string, password string, from string, recipients []string, data []byte) error
@@ -68,6 +69,7 @@ func NewServer(cfg config.Config, st commStore, stsClient stsAPI, secretsClient 
 		store:   st,
 		sts:     stsClient,
 		secrets: secretsClient,
+		logf:    log.Printf,
 		now: func() time.Time {
 			return time.Now().UTC()
 		},
@@ -103,12 +105,16 @@ func (s *Server) handleCommQueueMessage(ctx *apptheory.EventContext, msg events.
 
 	var job QueueMessage
 	if err := json.Unmarshal([]byte(msg.Body), &job); err != nil {
+		s.logInboundDrop("invalid_json", requestIDFromEventContext(ctx), msg.MessageId, "", "", "", err)
 		return nil // drop invalid
 	}
 	if strings.TrimSpace(job.Kind) != QueueMessageKindInbound {
+		s.logInboundDrop("unsupported_kind", requestIDFromEventContext(ctx), msg.MessageId, strings.TrimSpace(job.Kind), "", "", nil)
 		return nil
 	}
 	if err := job.Validate(); err != nil {
+		notif := job.Notification
+		s.logInboundDrop("invalid_payload", requestIDFromEventContext(ctx), msg.MessageId, strings.TrimSpace(job.Kind), strings.TrimSpace(notif.Channel), strings.TrimSpace(notif.MessageID), err)
 		return nil // drop invalid
 	}
 
@@ -128,10 +134,12 @@ func (s *Server) processInbound(ctx context.Context, _ string, msg QueueMessage)
 		return err
 	}
 	if !ok {
+		s.logInboundDrop("unresolved_recipient", "", "", msg.Kind, channel, strings.TrimSpace(notif.MessageID), nil)
 		return nil
 	}
 
 	if s.handleInactiveInbound(ctx, agentID, channel, notif, identity) {
+		s.logInboundDrop("inactive_identity", "", "", msg.Kind, channel, strings.TrimSpace(notif.MessageID), nil)
 		return nil
 	}
 
@@ -140,6 +148,7 @@ func (s *Server) processInbound(ctx context.Context, _ string, msg QueueMessage)
 		return err
 	}
 	if !ok {
+		s.logInboundDrop("unroutable_channel", "", "", msg.Kind, channel, strings.TrimSpace(notif.MessageID), nil)
 		return nil
 	}
 
@@ -148,6 +157,7 @@ func (s *Server) processInbound(ctx context.Context, _ string, msg QueueMessage)
 		return err
 	}
 	if handled {
+		s.logInboundDrop("deferred_or_rate_limited", "", "", msg.Kind, channel, strings.TrimSpace(notif.MessageID), nil)
 		return nil
 	}
 
@@ -270,7 +280,7 @@ func (s *Server) deliverResolvedInbound(ctx context.Context, agentID string, cha
 		return err
 	}
 	if !ok || inst == nil {
-		log.Printf("commworker: inbound delivery dropped missing_instance agent=%s domain=%s channel=%s message=%s", strings.ToLower(strings.TrimSpace(agentID)), strings.ToLower(strings.TrimSpace(identity.Domain)), strings.ToLower(strings.TrimSpace(channel)), strings.TrimSpace(notif.MessageID))
+		s.logfMessage("commworker: inbound delivery dropped missing_instance agent=%s domain=%s channel=%s message=%s", strings.ToLower(strings.TrimSpace(agentID)), strings.ToLower(strings.TrimSpace(identity.Domain)), strings.ToLower(strings.TrimSpace(channel)), strings.TrimSpace(notif.MessageID))
 		_ = s.recordInboundActivity(ctx, agentID, channel, notif, "drop", false)
 		return nil
 	}
@@ -826,32 +836,12 @@ func commDomainIsVerifiedOrActive(status string) bool {
 }
 
 func (s *Server) defaultFetchInstanceKeyPlaintext(ctx context.Context, inst *models.Instance) (string, error) {
-	if s == nil {
-		return "", fmt.Errorf("server not initialized")
+	secretArn, accountID, roleName, region, err := s.instanceSecretFetchInputs(inst)
+	if err != nil {
+		return "", err
 	}
-	if inst == nil {
-		return "", fmt.Errorf("instance is nil")
-	}
-	secretArn := strings.TrimSpace(inst.LesserHostInstanceKeySecretARN)
-	if secretArn == "" {
-		return "", fmt.Errorf("instance api key secret arn is not configured")
-	}
-	if s.secrets == nil {
-		return "", fmt.Errorf("secrets manager client not initialized")
-	}
-
-	accountID := strings.TrimSpace(inst.HostedAccountID)
-	roleName := strings.TrimSpace(s.cfg.ManagedInstanceRoleName)
-	region := strings.TrimSpace(inst.HostedRegion)
-	if region == "" {
-		region = strings.TrimSpace(s.cfg.ManagedDefaultRegion)
-	}
-	if region == "" {
-		region = "us-east-1"
-	}
-
-	// If the instance account details are missing, fall back to same-account access.
-	if accountID == "" || roleName == "" || s.sts == nil {
+	if s.shouldUseSameAccountSecretAccess(accountID, roleName) {
+		s.logSameAccountSecretFallback(inst, accountID, roleName)
 		return getSecretsManagerSecretPlaintext(ctx, s.secrets, secretArn)
 	}
 
@@ -884,6 +874,94 @@ func (s *Server) defaultFetchInstanceKeyPlaintext(ctx context.Context, inst *mod
 	})
 
 	return getSecretsManagerSecretPlaintext(ctx, child, secretArn)
+}
+
+func (s *Server) instanceSecretFetchInputs(inst *models.Instance) (secretArn string, accountID string, roleName string, region string, err error) {
+	if s == nil {
+		return "", "", "", "", fmt.Errorf("server not initialized")
+	}
+	if inst == nil {
+		return "", "", "", "", fmt.Errorf("instance is nil")
+	}
+	secretArn = strings.TrimSpace(inst.LesserHostInstanceKeySecretARN)
+	if secretArn == "" {
+		return "", "", "", "", fmt.Errorf("instance api key secret arn is not configured")
+	}
+	if s.secrets == nil {
+		return "", "", "", "", fmt.Errorf("secrets manager client not initialized")
+	}
+	accountID = strings.TrimSpace(inst.HostedAccountID)
+	roleName = strings.TrimSpace(s.cfg.ManagedInstanceRoleName)
+	region = resolvedInstanceRegion(inst, s.cfg.ManagedDefaultRegion)
+	return secretArn, accountID, roleName, region, nil
+}
+
+func resolvedInstanceRegion(inst *models.Instance, fallback string) string {
+	region := ""
+	if inst != nil {
+		region = strings.TrimSpace(inst.HostedRegion)
+	}
+	if region != "" {
+		return region
+	}
+	if fallback = strings.TrimSpace(fallback); fallback != "" {
+		return fallback
+	}
+	return "us-east-1"
+}
+
+func (s *Server) shouldUseSameAccountSecretAccess(accountID string, roleName string) bool {
+	return strings.TrimSpace(accountID) == "" || strings.TrimSpace(roleName) == "" || s == nil || s.sts == nil
+}
+
+func (s *Server) logSameAccountSecretFallback(inst *models.Instance, accountID string, roleName string) {
+	if strings.TrimSpace(accountID) == "" || (roleName != "" && s != nil && s.sts != nil) {
+		return
+	}
+	s.logfMessage(
+		"commworker: falling back to same-account secret access slug=%s account=%s role_name_present=%t sts_ready=%t",
+		strings.ToLower(strings.TrimSpace(instanceSlug(inst))),
+		strings.TrimSpace(accountID),
+		strings.TrimSpace(roleName) != "",
+		s != nil && s.sts != nil,
+	)
+}
+
+func instanceSlug(inst *models.Instance) string {
+	if inst == nil {
+		return ""
+	}
+	return inst.Slug
+}
+
+func requestIDFromEventContext(ctx *apptheory.EventContext) string {
+	if ctx == nil {
+		return ""
+	}
+	return strings.TrimSpace(ctx.RequestID)
+}
+
+func (s *Server) logfMessage(format string, args ...any) {
+	if s == nil || s.logf == nil {
+		return
+	}
+	s.logf(format, args...)
+}
+
+func (s *Server) logInboundDrop(reason string, requestID string, sqsMessageID string, kind string, channel string, messageID string, err error) {
+	msg := fmt.Sprintf(
+		"commworker: inbound message dropped reason=%s request=%s sqs_message=%s kind=%s channel=%s message=%s",
+		strings.TrimSpace(reason),
+		strings.TrimSpace(requestID),
+		strings.TrimSpace(sqsMessageID),
+		strings.TrimSpace(kind),
+		strings.ToLower(strings.TrimSpace(channel)),
+		strings.TrimSpace(messageID),
+	)
+	if err != nil {
+		msg += fmt.Sprintf(" err=%v", err)
+	}
+	s.logfMessage("%s", msg)
 }
 
 func getSecretsManagerSecretPlaintext(ctx context.Context, sm secretsManagerAPI, secretArn string) (string, error) {

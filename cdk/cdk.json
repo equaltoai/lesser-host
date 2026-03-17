@@ -53,6 +53,7 @@
     "orgBootstrapStackName": "lesser-host-org-bootstrap",
     "managedParentDomain": "greater.website",
     "managedParentHostedZoneId": "<YOUR_MANAGED_PARENT_HOSTED_ZONE_ID>",
+    "managedInstanceRoleName": "OrganizationAccountAccessRole",
     "managedAccountEmailTemplateLab": "<YOUR_EMAIL>+lab-{slug}@<YOUR_DOMAIN>",
     "managedAccountEmailTemplateLive": "<YOUR_EMAIL>+{slug}@<YOUR_DOMAIN>",
     "managedDefaultRegion": "us-east-1",
