@@ -509,34 +509,9 @@ func TestHandleSoulProvisionPhoneChannel_SuccessPublishesRegistrationAndRecordsP
 	if resp.Status != http.StatusCreated {
 		t.Fatalf("expected 201, got %d (body=%q)", resp.Status, string(resp.Body))
 	}
-	if len(ordered) != 1 || ordered[0] != "+15551234567" {
-		t.Fatalf("unexpected telnyx orders: %#v", ordered)
-	}
-	if len(configured) != 1 || configured[0] != "https://lab.lesser.host/webhooks/comm/sms/inbound" {
-		t.Fatalf("unexpected telnyx webhook config: %#v", configured)
-	}
-
-	out := mustUnmarshalJSON[soulProvisionPhoneConfirmResponse](t, resp.Body)
-	if out.Number != "+15551234567" || out.RegistrationVersion != 4 {
-		t.Fatalf("unexpected response: %#v", out)
-	}
-
-	obj, ok := packs.objects[soulRegistrationS3Key(identity.AgentID)]
-	if !ok || len(obj.body) == 0 {
-		t.Fatalf("expected published registration at %q", soulRegistrationS3Key(identity.AgentID))
-	}
-	published := mustUnmarshalJSON[map[string]any](t, obj.body)
-	if got := strings.TrimSpace(extractStringField(published, "version")); got != "3" {
-		t.Fatalf("expected published version 3, got %q", got)
-	}
-	channels, ok := published["channels"].(map[string]any)
-	if !ok || channels["phone"] == nil {
-		t.Fatalf("expected published phone channel: %#v", published)
-	}
-	phone, ok := channels["phone"].(map[string]any)
-	if !ok || strings.TrimSpace(extractStringField(phone, "number")) != "+15551234567" {
-		t.Fatalf("expected published phone number, got %#v", channels["phone"])
-	}
+	assertProvisionPhoneProviderCalls(t, ordered, configured)
+	assertProvisionPhoneConfirmResponse(t, resp.Body)
+	assertProvisionPhonePublishedRegistration(t, packs, identity.AgentID)
 }
 
 func TestHandleSoulProvisionPhoneChannel_WebhookConfigFailureStopsPublish(t *testing.T) {
@@ -579,15 +554,48 @@ func TestHandleSoulProvisionPhoneChannel_WebhookConfigFailureStopsPublish(t *tes
 	if appErr.Code != appErrCodeInternal || appErr.Message != "failed to provision phone number" {
 		t.Fatalf("unexpected app error: %#v", appErr)
 	}
-	if len(ordered) != 1 || ordered[0] != "+15551234567" {
-		t.Fatalf("unexpected telnyx orders: %#v", ordered)
-	}
-	if len(configured) != 1 || configured[0] != "https://lab.lesser.host/webhooks/comm/sms/inbound" {
-		t.Fatalf("unexpected telnyx webhook config: %#v", configured)
-	}
+	assertProvisionPhoneProviderCalls(t, ordered, configured)
 	published := mustUnmarshalJSON[map[string]any](t, packs.objects[soulRegistrationS3Key(identity.AgentID)].body)
 	if got := strings.TrimSpace(extractStringField(published, "version")); got != "2" {
 		t.Fatalf("expected registration version to remain 2 after webhook config failure, got %q", got)
+	}
+}
+
+func assertProvisionPhoneProviderCalls(t *testing.T, ordered []string, configured []string) {
+	t.Helper()
+	if len(ordered) != 1 || ordered[0] != "+15551234567" {
+		t.Fatalf("unexpected telnyx orders: %#v", ordered)
+	}
+	if len(configured) != 1 || configured[0] != telnyxSMSInboundWebhookURL {
+		t.Fatalf("unexpected telnyx webhook config: %#v", configured)
+	}
+}
+
+func assertProvisionPhoneConfirmResponse(t *testing.T, body []byte) {
+	t.Helper()
+	out := mustUnmarshalJSON[soulProvisionPhoneConfirmResponse](t, body)
+	if out.Number != "+15551234567" || out.RegistrationVersion != 4 {
+		t.Fatalf("unexpected response: %#v", out)
+	}
+}
+
+func assertProvisionPhonePublishedRegistration(t *testing.T, packs *fakeSoulPackStore, agentID string) {
+	t.Helper()
+	obj, ok := packs.objects[soulRegistrationS3Key(agentID)]
+	if !ok || len(obj.body) == 0 {
+		t.Fatalf("expected published registration at %q", soulRegistrationS3Key(agentID))
+	}
+	published := mustUnmarshalJSON[map[string]any](t, obj.body)
+	if got := strings.TrimSpace(extractStringField(published, "version")); got != "3" {
+		t.Fatalf("expected published version 3, got %q", got)
+	}
+	channels, ok := published["channels"].(map[string]any)
+	if !ok || channels["phone"] == nil {
+		t.Fatalf("expected published phone channel: %#v", published)
+	}
+	phone, ok := channels["phone"].(map[string]any)
+	if !ok || strings.TrimSpace(extractStringField(phone, "number")) != "+15551234567" {
+		t.Fatalf("expected published phone number, got %#v", channels["phone"])
 	}
 }
 

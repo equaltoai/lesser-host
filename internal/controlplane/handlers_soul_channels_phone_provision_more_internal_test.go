@@ -27,6 +27,7 @@ type provisionPhoneE2EFixture struct {
 	packs                *fakeSoulPackStore
 	searched             []string
 	ordered              []string
+	configured           []string
 	server               *Server
 	agentIDHex           string
 	signingKey           *ecdsa.PrivateKey
@@ -75,6 +76,7 @@ func newProvisionPhoneE2EFixture(t *testing.T) *provisionPhoneE2EFixture {
 			SoulChainID:                 1,
 			SoulRegistryContractAddress: "0x0000000000000000000000000000000000000001",
 			SoulPackBucketName:          "bucket",
+			PublicBaseURL:               "https://lab.lesser.host",
 			Stage:                       "lab",
 		},
 		soulPacks: fixture.packs,
@@ -85,6 +87,10 @@ func newProvisionPhoneE2EFixture(t *testing.T) *provisionPhoneE2EFixture {
 		telnyxOrderNumber: func(ctx context.Context, phoneNumber string) (string, error) {
 			fixture.ordered = append(fixture.ordered, strings.TrimSpace(phoneNumber))
 			return "order-1", nil
+		},
+		telnyxUpdateProfile: func(ctx context.Context, webhookURL string) error {
+			fixture.configured = append(fixture.configured, strings.TrimSpace(webhookURL))
+			return nil
 		},
 	}
 
@@ -214,6 +220,9 @@ func assertProvisionPhoneConfirmCreated(t *testing.T, fixture *provisionPhoneE2E
 	if len(fixture.ordered) != 1 || fixture.ordered[0] != "+15551234567" {
 		t.Fatalf("expected telnyx order call, got %#v", fixture.ordered)
 	}
+	if len(fixture.configured) != 1 || fixture.configured[0] != "https://lab.lesser.host/webhooks/comm/sms/inbound" {
+		t.Fatalf("expected telnyx webhook config call, got %#v", fixture.configured)
+	}
 }
 
 func assertProvisionPhonePublished(t *testing.T, fixture *provisionPhoneE2EFixture) {
@@ -257,6 +266,9 @@ func assertProvisionPhoneIdempotent(t *testing.T, fixture *provisionPhoneE2EFixt
 	}
 	if len(fixture.ordered) != 1 {
 		t.Fatalf("expected telnyx not called again; got %#v", fixture.ordered)
+	}
+	if len(fixture.configured) != 1 {
+		t.Fatalf("expected webhook config not called again; got %#v", fixture.configured)
 	}
 }
 

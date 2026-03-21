@@ -24,7 +24,11 @@ import (
 	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
-const provisionTestEmailAddress = "agent-alice@lessersoul.ai"
+const (
+	provisionTestEmailLocalPart = "agent-alice"
+	provisionTestEmailAddress   = provisionTestEmailLocalPart + "@lessersoul.ai"
+	provisionTestEmailENSName   = provisionTestEmailLocalPart + ".lessersoul.eth"
+)
 
 func mustMarshalJSON(t testing.TB, v any) []byte {
 	t.Helper()
@@ -50,7 +54,7 @@ func testProvisionManagedChannelBaseRegistration(agentIDHex string, wallet strin
 		"version": "2",
 		"agentId": agentIDHex,
 		"domain":  "example.com",
-		"localId": "agent-alice",
+		"localId": provisionTestEmailLocalPart,
 		"wallet":  wallet,
 		"principal": map[string]any{
 			"type":        "individual",
@@ -235,7 +239,7 @@ func seedProvisionEmailE2EAccess(t *testing.T, fixture *provisionEmailE2EFixture
 		*dest = models.SoulAgentIdentity{
 			AgentID:                fixture.agentIDHex,
 			Domain:                 "example.com",
-			LocalID:                "agent-alice",
+			LocalID:                provisionTestEmailLocalPart,
 			Wallet:                 fixture.wallet,
 			Status:                 models.SoulAgentStatusActive,
 			LifecycleStatus:        models.SoulAgentStatusActive,
@@ -285,8 +289,8 @@ func runProvisionEmailBegin(t *testing.T, fixture *provisionEmailE2EFixture) sou
 	if beginOut.Address != provisionTestEmailAddress {
 		t.Fatalf("begin expected address %s, got %q", provisionTestEmailAddress, beginOut.Address)
 	}
-	if beginOut.ENSName != "agent-alice.lessersoul.eth" {
-		t.Fatalf("begin expected ens agent-alice.lessersoul.eth, got %q", beginOut.ENSName)
+	if beginOut.ENSName != provisionTestEmailENSName {
+		t.Fatalf("begin expected ens %s, got %q", provisionTestEmailENSName, beginOut.ENSName)
 	}
 	return beginOut
 }
@@ -328,14 +332,14 @@ func assertProvisionEmailConfirmCreated(t *testing.T, fixture *provisionEmailE2E
 	if len(fixture.migaduCalls) != 1 {
 		t.Fatalf("expected 1 migadu call, got %d", len(fixture.migaduCalls))
 	}
-	if fixture.migaduCalls[0].localPart != "agent-alice" {
-		t.Fatalf("expected migadu localPart agent-alice, got %q", fixture.migaduCalls[0].localPart)
+	if fixture.migaduCalls[0].localPart != provisionTestEmailLocalPart {
+		t.Fatalf("expected migadu localPart %s, got %q", provisionTestEmailLocalPart, fixture.migaduCalls[0].localPart)
 	}
 	if len(fixture.forwardingCalls) != 1 {
 		t.Fatalf("expected 1 forwarding call, got %d", len(fixture.forwardingCalls))
 	}
-	if fixture.forwardingCalls[0].localPart != "agent-alice" {
-		t.Fatalf("expected forwarding localPart agent-alice, got %q", fixture.forwardingCalls[0].localPart)
+	if fixture.forwardingCalls[0].localPart != provisionTestEmailLocalPart {
+		t.Fatalf("expected forwarding localPart %s, got %q", provisionTestEmailLocalPart, fixture.forwardingCalls[0].localPart)
 	}
 	if fixture.forwardingCalls[0].address != "https://lab.lesser.host/webhooks/comm/email/inbound" {
 		t.Fatalf("unexpected forwarding address: %q", fixture.forwardingCalls[0].address)
@@ -413,8 +417,8 @@ func TestHandleSoulProvisionEmail_ForwardingFailureRollsBackMailboxAndStopsPubli
 	confirmCtx.Set(ctxKeyOperatorRole, models.RoleAdmin)
 
 	_, err := fixture.server.handleSoulProvisionEmailChannel(confirmCtx)
-	appErr := err.(*apptheory.AppError)
-	if appErr.Code != "app.internal" || appErr.Message != "failed to provision email" {
+	appErr := requireProvisionEmailAppErr(t, err)
+	if appErr.Code != appErrCodeInternal || appErr.Message != "failed to provision email" {
 		t.Fatalf("unexpected app error: %#v", appErr)
 	}
 	if len(fixture.migaduCalls) != 1 {
@@ -423,8 +427,8 @@ func TestHandleSoulProvisionEmail_ForwardingFailureRollsBackMailboxAndStopsPubli
 	if len(fixture.forwardingCalls) != 1 {
 		t.Fatalf("expected forwarding attempt, got %d calls", len(fixture.forwardingCalls))
 	}
-	if len(fixture.deleteMailboxCalls) != 1 || fixture.deleteMailboxCalls[0] != "agent-alice" {
-		t.Fatalf("expected mailbox rollback for agent-alice, got %#v", fixture.deleteMailboxCalls)
+	if len(fixture.deleteMailboxCalls) != 1 || fixture.deleteMailboxCalls[0] != provisionTestEmailLocalPart {
+		t.Fatalf("expected mailbox rollback for %s, got %#v", provisionTestEmailLocalPart, fixture.deleteMailboxCalls)
 	}
 	if len(fixture.packs.objects[fixture.s3Key].body) == 0 {
 		t.Fatalf("expected seed registration to remain present")
@@ -433,4 +437,16 @@ func TestHandleSoulProvisionEmail_ForwardingFailureRollsBackMailboxAndStopsPubli
 	if got := strings.TrimSpace(extractStringField(published, "version")); got != "2" {
 		t.Fatalf("expected registration version to remain 2 after rollback, got %q", got)
 	}
+}
+
+func requireProvisionEmailAppErr(t *testing.T, err error) *apptheory.AppError {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	appErr, ok := err.(*apptheory.AppError)
+	if !ok {
+		t.Fatalf("expected AppError, got %T", err)
+	}
+	return appErr
 }
