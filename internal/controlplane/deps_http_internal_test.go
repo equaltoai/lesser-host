@@ -72,8 +72,9 @@ func rewriteDefaultTransport(t *testing.T, host string, target string) {
 }
 
 type telnyxHTTPTestState struct {
-	sawSearch bool
-	sawDelete bool
+	sawSearch        bool
+	sawDelete        bool
+	sawUpdateProfile bool
 }
 
 func newTelnyxHTTPTestServer(t *testing.T) (*httptest.Server, *telnyxHTTPTestState) {
@@ -93,6 +94,9 @@ func newTelnyxHTTPTestServer(t *testing.T) (*httptest.Server, *telnyxHTTPTestSta
 			})
 		case r.Method == http.MethodPost && r.URL.Path == "/v2/number_orders":
 			handleTelnyxNumberOrderRequest(t, w, r)
+		case r.Method == http.MethodPatch && r.URL.Path == "/v2/messaging_profiles/profile-1":
+			state.sawUpdateProfile = true
+			handleTelnyxUpdateMessagingProfileRequest(t, w, r)
 		case r.Method == http.MethodGet && r.URL.Path == "/v2/phone_numbers":
 			handleTelnyxPhoneLookupRequest(w, r)
 		case r.Method == http.MethodDelete && r.URL.Path == "/v2/phone_numbers/num-1":
@@ -145,6 +149,22 @@ func handleTelnyxPhoneLookupRequest(w http.ResponseWriter, r *http.Request) {
 	default:
 		w.WriteHeader(http.StatusInternalServerError)
 	}
+}
+
+func handleTelnyxUpdateMessagingProfileRequest(t *testing.T, w http.ResponseWriter, r *http.Request) {
+	t.Helper()
+	if got := r.Header.Get("authorization"); got != "Bearer telnyx-key" {
+		t.Fatalf("unexpected auth header: %q", got)
+	}
+	var body telnyxUpdateMessagingProfileRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		t.Fatalf("decode messaging profile update: %v", err)
+	}
+	if body.WebhookURL != "https://lab.lesser.host/webhooks/comm/sms/inbound" {
+		t.Fatalf("unexpected webhook_url: %q", body.WebhookURL)
+	}
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"id": "profile-1"}})
 }
 
 func handleTelnyxMessageRequest(t *testing.T, w http.ResponseWriter, r *http.Request) {
@@ -311,6 +331,12 @@ func TestDefaultTelnyxSearchAndOrderPhoneNumber(t *testing.T) {
 	orderID, err = defaultTelnyxOrderPhoneNumber(context.Background(), "+15550000000")
 	if err != nil || orderID != "" {
 		t.Fatalf("expected conflict to be treated as success, got id=%q err=%v", orderID, err)
+	}
+	if err := defaultTelnyxUpdateMessagingProfile(context.Background(), "https://lab.lesser.host/webhooks/comm/sms/inbound"); err != nil {
+		t.Fatalf("update messaging profile: %v", err)
+	}
+	if !state.sawUpdateProfile {
+		t.Fatalf("expected messaging profile update call")
 	}
 }
 
