@@ -15,5 +15,5 @@ func managedInstanceMcpURL(controlPlaneStage string, baseDomain string) string {
 	if stageDomain == "" {
 		return ""
 	}
-	return fmt.Sprintf("https://api.%s/mcp", stageDomain)
+	return fmt.Sprintf("https://api.%s/mcp/{actor}", stageDomain)
 }

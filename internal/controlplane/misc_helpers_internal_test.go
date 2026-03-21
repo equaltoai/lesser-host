@@ -186,7 +186,7 @@ func TestInstanceResponseWithDerivedFields_ComputesManagedDomains(t *testing.T) 
 	if resp.ManagedLesserDomain != "dev.simulacrum.greater.website" {
 		t.Fatalf("expected managed lesser domain, got %#v", resp.ManagedLesserDomain)
 	}
-	if resp.McpURL != "https://api.dev.simulacrum.greater.website/mcp" {
+	if resp.McpURL != "https://api.dev.simulacrum.greater.website/mcp/{actor}" {
 		t.Fatalf("expected derived mcp url, got %#v", resp.McpURL)
 	}
 }

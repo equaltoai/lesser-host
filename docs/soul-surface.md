@@ -97,12 +97,12 @@ and stored as part of the registration object.
 
 Storage layout details are in `docs/soul-pack-bucket-layout.md`.
 
-## Managed provisioning: lesser-body deploy + `POST /mcp` wiring
+## Managed provisioning: lesser-body deploy + `POST /mcp/{actor}` wiring
 
 Managed instances can optionally deploy `lesser-body` (AgentCore MCP runtime) into the **instance account** and expose it
 at a **path** on the instance API domain:
 
-- MCP URL: `POST https://api.<stageDomain>/mcp`
+- MCP URL: `POST https://api.<stageDomain>/mcp/{actor}`
 - Well-known: `GET https://api.<stageDomain>/.well-known/mcp.json`
 
 Key constraints:
@@ -134,7 +134,7 @@ These are passed into the CodeBuild runner as `LESSER_BODY_GITHUB_OWNER`, `LESSE
 After the initial Lesser deploy and receipt ingest:
 
 1) `body.deploy.*` — CodeBuild runner `RUN_MODE=lesser-body`
-2) `deploy.mcp.*` — CodeBuild runner `RUN_MODE=lesser-mcp` (re-deploy Lesser stage stack to attach `/mcp`)
+2) `deploy.mcp.*` — CodeBuild runner `RUN_MODE=lesser-mcp` (re-deploy Lesser stage stack to attach `/mcp/{actor}`)
 
 ### Receipts (debuggable artifacts)
 
@@ -152,7 +152,7 @@ From Lesser (inputs for `lesser-body`):
 - `/${app}/${stage}/lesser/exports/v1/table_name`
 - `/${app}/${stage}/lesser/exports/v1/domain`
 
-From `lesser-body` (inputs for Lesser `/mcp` wiring):
+From `lesser-body` (inputs for Lesser `/mcp/{actor}` wiring):
 - `/${app}/${stage}/lesser-body/exports/v1/mcp_lambda_arn`
 
 ### What `lesser-body` must provide
@@ -163,15 +163,15 @@ In managed mode, `lesser-body` is expected to:
 - publish the MCP Lambda ARN to:
   - `/${app}/${stage}/lesser-body/exports/v1/mcp_lambda_arn`
 
-The managed runner treats this parameter as the contract boundary used to attach `POST /mcp` to the instance API gateway.
+The managed runner treats this parameter as the contract boundary used to attach `POST /mcp/{actor}` to the instance API gateway.
 
 ### MCP URL derivation
 
 `lesser-host` derives the MCP URL from the instance base domain + control-plane stage mapping:
 
-- `dev`: `https://api.dev.<baseDomain>/mcp`
-- `staging`: `https://api.staging.<baseDomain>/mcp`
-- `live`: `https://api.<baseDomain>/mcp`
+- `dev`: `https://api.dev.<baseDomain>/mcp/{actor}`
+- `staging`: `https://api.staging.<baseDomain>/mcp/{actor}`
+- `live`: `https://api.<baseDomain>/mcp/{actor}`
 
 When `body_enabled=true`, `mcp_url` is included in:
 - portal instance responses
@@ -179,10 +179,10 @@ When `body_enabled=true`, `mcp_url` is included in:
 
 ### Smoke test (MCP initialize)
 
-`/mcp` is authenticated. Use a Lesser OAuth access token (JWT) or a managed instance key (when configured).
+`/mcp/{actor}` is authenticated. Use a Lesser OAuth access token (JWT) or a managed instance key (when configured).
 
 ```bash
-curl -sSfL -X POST "https://api.<stageDomain>/mcp" \
+curl -sSfL -X POST "https://api.<stageDomain>/mcp/<actor>" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <token>" \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}'

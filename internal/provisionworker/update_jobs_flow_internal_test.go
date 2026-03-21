@@ -33,7 +33,7 @@ const (
 	testManagedUpdateTrustBaseURL    = "https://example.test"
 	testManagedUpdateReceiptJSON     = `{"app":"x","base_domain":"d"}`
 	testManagedUpdateBodyReceiptJSON = `{"version":1,"stage":"dev","base_domain":"d","lesser_body_version":"v.0.1.3"}`
-	testManagedUpdateMCPReceiptJSON  = `{"version":1,"stage":"dev","base_domain":"d","lesser_body_version":"v.0.1.3","mcp_url":"https://api.dev.example.test/mcp","mcp_lambda_arn":"arn:aws:lambda:us-east-1:123:function:mcp"}`
+	testManagedUpdateMCPReceiptJSON  = `{"version":1,"stage":"dev","base_domain":"d","lesser_body_version":"v.0.1.3","mcp_url":"https://api.dev.example.test/mcp/{actor}","mcp_lambda_arn":"arn:aws:lambda:us-east-1:123:function:mcp"}`
 )
 
 func TestRunManagedUpdateStateMachine_HappyPath(t *testing.T) {
