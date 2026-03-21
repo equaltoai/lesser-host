@@ -16,7 +16,7 @@
 ## Key surfaces
 
 - Portal + operator APIs: `docs/portal.md`
-- Managed instance provisioning (incl. lesser-body + `POST /mcp`): `docs/managed-instance-provisioning.md`
+- Managed instance provisioning (incl. lesser-body + `POST /mcp/{actor}`): `docs/managed-instance-provisioning.md`
 - Soul registry surface + instance integration: `docs/soul-surface.md`
 - Soul registry contracts: `docs/soul-registry.md`
 

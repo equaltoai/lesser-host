@@ -48,12 +48,12 @@ It assumes:
      - `lesser init-admin --base-domain <slug.greater.website> --aws-profile <temp-profile> --provisioning-input <path>`
    - read the deployment receipt `~/.lesser/<app>/<base-domain>/state.json`.
 
-6) **(Optional, default-on) Deploy lesser-body (AgentCore MCP) + wire `POST /mcp`**
+6) **(Optional, default-on) Deploy lesser-body (AgentCore MCP) + wire `POST /mcp/{actor}`**
    - deploy `lesser-body` (AgentCore-compatible MCP runtime) into the instance account/stage.
    - ensure `lesser-body` writes SSM exports in the instance account:
      - `/${app}/${stage}/lesser-body/exports/v1/mcp_lambda_arn`
    - re-run the Lesser stage deploy with the MCP wiring feature enabled so the instance’s API Gateway exposes:
-     - `POST https://api.<stageDomain>/mcp`
+     - `POST https://api.<stageDomain>/mcp/{actor}`
      - `GET  https://api.<stageDomain>/.well-known/mcp.json`
 
 7) **Register with lesser.host**
@@ -135,7 +135,7 @@ From Lesser (inputs for `lesser-body`):
 - `/${app}/${stage}/lesser/exports/v1/table_name`
 - `/${app}/${stage}/lesser/exports/v1/domain`
 
-From `lesser-body` (inputs for Lesser API Gateway `/mcp` wiring):
+From `lesser-body` (inputs for Lesser API Gateway `/mcp/{actor}` wiring):
 - `/${app}/${stage}/lesser-body/exports/v1/mcp_lambda_arn`
 
 ## Smoke test (MCP)
@@ -144,7 +144,7 @@ Once provisioning completes with `body_enabled=true`, validate the instance MCP 
 
 1) Initialize (JSON-RPC):
 ```bash
-curl -sSfL -X POST "https://api.<stageDomain>/mcp" \
+curl -sSfL -X POST "https://api.<stageDomain>/mcp/<actor>" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}'
 ```
