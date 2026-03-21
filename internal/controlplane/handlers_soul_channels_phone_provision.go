@@ -221,11 +221,24 @@ func (s *Server) finalizeSoulProvisionPhoneChannel(
 	regV3 *soul.RegistrationFileV3,
 	selfSig string,
 ) (*apptheory.Response, error) {
+	baseURL := soulCommRequestBaseURL(ctx, s.cfg.PublicBaseURL)
+	if baseURL == "" {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	webhookURL := baseURL + "/webhooks/comm/sms/inbound"
+
 	if s.telnyxOrderNumber == nil {
 		return nil, &apptheory.AppError{Code: "app.conflict", Message: "phone provider is not configured"}
 	}
+	if s.telnyxUpdateProfile == nil {
+		return nil, &apptheory.AppError{Code: "app.conflict", Message: "phone provider webhook configuration is not configured"}
+	}
 	if _, orderErr := s.telnyxOrderNumber(ctx.Context(), number); orderErr != nil {
 		log.Printf("controlplane: soul phone provision failed agent=%s number=%s: %v", agentIDHex, number, orderErr)
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to provision phone number"}
+	}
+	if updateErr := s.telnyxUpdateProfile(ctx.Context(), webhookURL); updateErr != nil {
+		log.Printf("controlplane: soul phone webhook config failed agent=%s number=%s: %v", agentIDHex, number, updateErr)
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to provision phone number"}
 	}
 

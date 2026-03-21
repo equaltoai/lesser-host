@@ -95,6 +95,7 @@ func newProvisionPhoneServer(tdb soulLifecycleTestDB, packs soulPackStore) *Serv
 			SoulRegistryContractAddress: "0x0000000000000000000000000000000000000001",
 			SoulPackBucketName:          "bucket",
 			SoulSupportedCapabilities:   []string{"social"},
+			PublicBaseURL:               "https://lab.lesser.host",
 			Stage:                       "lab",
 		},
 	}
@@ -477,10 +478,15 @@ func TestHandleSoulProvisionPhoneChannel_SuccessPublishesRegistrationAndRecordsP
 	tdb.db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Once()
 
 	var ordered []string
+	var configured []string
 	s := newProvisionPhoneServer(tdb, packs)
 	s.telnyxOrderNumber = func(ctx context.Context, phoneNumber string) (string, error) {
 		ordered = append(ordered, phoneNumber)
 		return "ord-1", nil
+	}
+	s.telnyxUpdateProfile = func(ctx context.Context, webhookURL string) error {
+		configured = append(configured, webhookURL)
+		return nil
 	}
 
 	issuedAt := time.Date(2026, 3, 5, 12, 0, 0, 0, time.UTC)
@@ -503,18 +509,81 @@ func TestHandleSoulProvisionPhoneChannel_SuccessPublishesRegistrationAndRecordsP
 	if resp.Status != http.StatusCreated {
 		t.Fatalf("expected 201, got %d (body=%q)", resp.Status, string(resp.Body))
 	}
+	assertProvisionPhoneProviderCalls(t, ordered, configured)
+	assertProvisionPhoneConfirmResponse(t, resp.Body)
+	assertProvisionPhonePublishedRegistration(t, packs, identity.AgentID)
+}
+
+func TestHandleSoulProvisionPhoneChannel_WebhookConfigFailureStopsPublish(t *testing.T) {
+	tdb := newSoulLifecycleTestDB()
+	key, identity := newProvisionPhoneSigningIdentity(t, 3)
+	seedProvisionPhoneAccess(t, tdb, identity)
+
+	packs := &fakeSoulPackStore{}
+	seedProvisionPhoneRegistration(t, packs, identity)
+
+	tdb.qPhoneIdx.On("First", mock.AnythingOfType("*models.SoulPhoneAgentIndex")).Return(theoryErrors.ErrItemNotFound).Once()
+
+	var ordered []string
+	var configured []string
+	s := newProvisionPhoneServer(tdb, packs)
+	s.telnyxOrderNumber = func(ctx context.Context, phoneNumber string) (string, error) {
+		ordered = append(ordered, phoneNumber)
+		return "ord-1", nil
+	}
+	s.telnyxUpdateProfile = func(ctx context.Context, webhookURL string) error {
+		configured = append(configured, webhookURL)
+		return errors.New("boom")
+	}
+
+	issuedAt := time.Date(2026, 3, 5, 12, 0, 0, 0, time.UTC)
+	selfSig := signProvisionPhoneRequest(t, s, key, identity, "+15551234567", issuedAt)
+	body := mustMarshalJSON(t, map[string]any{
+		"number":           "+15551234567",
+		"issued_at":        issuedAt.Format(time.RFC3339Nano),
+		"expected_version": 3,
+		"self_attestation": selfSig,
+	})
+
+	ctx := adminCtx()
+	ctx.Params = map[string]string{"agentId": identity.AgentID}
+	ctx.Request = apptheory.Request{Body: body}
+
+	_, err := s.handleSoulProvisionPhoneChannel(ctx)
+	appErr := requireProvisionPhoneAppErr(t, err)
+	if appErr.Code != appErrCodeInternal || appErr.Message != "failed to provision phone number" {
+		t.Fatalf("unexpected app error: %#v", appErr)
+	}
+	assertProvisionPhoneProviderCalls(t, ordered, configured)
+	published := mustUnmarshalJSON[map[string]any](t, packs.objects[soulRegistrationS3Key(identity.AgentID)].body)
+	if got := strings.TrimSpace(extractStringField(published, "version")); got != "2" {
+		t.Fatalf("expected registration version to remain 2 after webhook config failure, got %q", got)
+	}
+}
+
+func assertProvisionPhoneProviderCalls(t *testing.T, ordered []string, configured []string) {
+	t.Helper()
 	if len(ordered) != 1 || ordered[0] != "+15551234567" {
 		t.Fatalf("unexpected telnyx orders: %#v", ordered)
 	}
+	if len(configured) != 1 || configured[0] != telnyxSMSInboundWebhookURL {
+		t.Fatalf("unexpected telnyx webhook config: %#v", configured)
+	}
+}
 
-	out := mustUnmarshalJSON[soulProvisionPhoneConfirmResponse](t, resp.Body)
+func assertProvisionPhoneConfirmResponse(t *testing.T, body []byte) {
+	t.Helper()
+	out := mustUnmarshalJSON[soulProvisionPhoneConfirmResponse](t, body)
 	if out.Number != "+15551234567" || out.RegistrationVersion != 4 {
 		t.Fatalf("unexpected response: %#v", out)
 	}
+}
 
-	obj, ok := packs.objects[soulRegistrationS3Key(identity.AgentID)]
+func assertProvisionPhonePublishedRegistration(t *testing.T, packs *fakeSoulPackStore, agentID string) {
+	t.Helper()
+	obj, ok := packs.objects[soulRegistrationS3Key(agentID)]
 	if !ok || len(obj.body) == 0 {
-		t.Fatalf("expected published registration at %q", soulRegistrationS3Key(identity.AgentID))
+		t.Fatalf("expected published registration at %q", soulRegistrationS3Key(agentID))
 	}
 	published := mustUnmarshalJSON[map[string]any](t, obj.body)
 	if got := strings.TrimSpace(extractStringField(published, "version")); got != "3" {

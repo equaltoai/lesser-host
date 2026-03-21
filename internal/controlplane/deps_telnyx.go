@@ -105,6 +105,10 @@ type telnyxCreateNumberOrderResponse struct {
 	} `json:"data"`
 }
 
+type telnyxUpdateMessagingProfileRequest struct {
+	WebhookURL string `json:"webhook_url"`
+}
+
 func defaultTelnyxOrderPhoneNumber(ctx context.Context, phoneNumber string) (string, error) {
 	phoneNumber = strings.TrimSpace(phoneNumber)
 	if phoneNumber == "" {
@@ -165,6 +169,58 @@ func defaultTelnyxOrderPhoneNumber(ctx context.Context, phoneNumber string) (str
 		return "", fmt.Errorf("telnyx number order: decode: %w", err)
 	}
 	return strings.TrimSpace(parsed.Data.ID), nil
+}
+
+func defaultTelnyxUpdateMessagingProfile(ctx context.Context, webhookURL string) error {
+	webhookURL = strings.TrimSpace(webhookURL)
+	if webhookURL == "" {
+		return fmt.Errorf("telnyx webhookURL is required")
+	}
+
+	creds, err := secrets.TelnyxCreds(ctx, nil)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(creds.APIKey) == "" {
+		return fmt.Errorf("telnyx api key missing")
+	}
+	if strings.TrimSpace(creds.MessagingProfileID) == "" {
+		return fmt.Errorf("telnyx messaging_profile_id missing")
+	}
+
+	reqBody, err := json.Marshal(telnyxUpdateMessagingProfileRequest{WebhookURL: webhookURL})
+	if err != nil {
+		return fmt.Errorf("telnyx messaging profile encode: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPatch,
+		telnyxBaseURL+"/messaging_profiles/"+url.PathEscape(strings.TrimSpace(creds.MessagingProfileID)),
+		bytes.NewReader(reqBody),
+	)
+	if err != nil {
+		return fmt.Errorf("telnyx messaging profile build: %w", err)
+	}
+	req.Header.Set("accept", "application/json")
+	req.Header.Set("content-type", "application/json")
+	req.Header.Set("authorization", "Bearer "+strings.TrimSpace(creds.APIKey))
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	//nolint:gosec // Request target is the fixed Telnyx HTTPS API host.
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("telnyx messaging profile update: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	switch resp.StatusCode {
+	case http.StatusOK, http.StatusAccepted:
+		return nil
+	default:
+		return fmt.Errorf("telnyx messaging profile update: status=%d body=%q", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
 }
 
 type telnyxListPhoneNumbersResponse struct {

@@ -27,15 +27,18 @@ type Server struct {
 	soulPacks soulPackStore
 	dialEVM   ethRPCDialer
 
-	ssmGetParameter   func(ctx context.Context, name string) (string, error)
-	ssmPutSecureValue func(ctx context.Context, name string, value string, overwrite bool) error
-	migaduCreateEmail func(ctx context.Context, localPart string, name string, password string) error
-	migaduSendSMTP    func(ctx context.Context, username string, password string, from string, recipients []string, data []byte) error
-	telnyxSearchNums  func(ctx context.Context, countryCode string, limit int) ([]string, error)
-	telnyxOrderNumber func(ctx context.Context, phoneNumber string) (string, error)
-	telnyxRelease     func(ctx context.Context, phoneNumber string) error
-	telnyxSendSMS     func(ctx context.Context, from string, to string, text string) (string, error)
-	telnyxCallVoice   func(ctx context.Context, from string, to string, texmlURL string, statusCallbackURL string) (string, error)
+	ssmGetParameter     func(ctx context.Context, name string) (string, error)
+	ssmPutSecureValue   func(ctx context.Context, name string, value string, overwrite bool) error
+	migaduCreateEmail   func(ctx context.Context, localPart string, name string, password string) error
+	migaduForwarding    func(ctx context.Context, localPart string, address string) error
+	migaduDeleteEmail   func(ctx context.Context, localPart string) error
+	migaduSendSMTP      func(ctx context.Context, username string, password string, from string, recipients []string, data []byte) error
+	telnyxSearchNums    func(ctx context.Context, countryCode string, limit int) ([]string, error)
+	telnyxOrderNumber   func(ctx context.Context, phoneNumber string) (string, error)
+	telnyxUpdateProfile func(ctx context.Context, webhookURL string) error
+	telnyxRelease       func(ctx context.Context, phoneNumber string) error
+	telnyxSendSMS       func(ctx context.Context, from string, to string, text string) (string, error)
+	telnyxCallVoice     func(ctx context.Context, from string, to string, texmlURL string, statusCallbackURL string) (string, error)
 
 	enqueueCommMessage func(ctx context.Context, msg commworker.QueueMessage) error
 }
@@ -56,15 +59,18 @@ func NewServer(cfg config.Config, st *store.Store) *Server {
 		dialEVM: func(ctx context.Context, rpcURL string) (ethRPCClient, error) {
 			return dialEthClient(ctx, rpcURL)
 		},
-		ssmGetParameter:   defaultSSMGetParameter,
-		ssmPutSecureValue: defaultSSMPutSecureString,
-		migaduCreateEmail: defaultMigaduCreateMailbox,
-		migaduSendSMTP:    defaultMigaduSendSMTP,
-		telnyxSearchNums:  defaultTelnyxSearchAvailablePhoneNumbers,
-		telnyxOrderNumber: defaultTelnyxOrderPhoneNumber,
-		telnyxRelease:     defaultTelnyxReleasePhoneNumber,
-		telnyxSendSMS:     defaultTelnyxSendSMS,
-		telnyxCallVoice:   defaultTelnyxCreateVoiceCall,
+		ssmGetParameter:     defaultSSMGetParameter,
+		ssmPutSecureValue:   defaultSSMPutSecureString,
+		migaduCreateEmail:   defaultMigaduCreateMailbox,
+		migaduForwarding:    defaultMigaduCreateForwarding,
+		migaduDeleteEmail:   defaultMigaduDeleteMailbox,
+		migaduSendSMTP:      defaultMigaduSendSMTP,
+		telnyxSearchNums:    defaultTelnyxSearchAvailablePhoneNumbers,
+		telnyxOrderNumber:   defaultTelnyxOrderPhoneNumber,
+		telnyxUpdateProfile: defaultTelnyxUpdateMessagingProfile,
+		telnyxRelease:       defaultTelnyxReleasePhoneNumber,
+		telnyxSendSMS:       defaultTelnyxSendSMS,
+		telnyxCallVoice:     defaultTelnyxCreateVoiceCall,
 	}
 	srv.enqueueCommMessage = srv.queues.enqueueCommMessage
 	return srv

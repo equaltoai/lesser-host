@@ -34,6 +34,10 @@ type migaduCreateMailboxRequest struct {
 	PasswordRecoveryEmail any    `json:"password_recovery_email"`
 }
 
+type migaduCreateForwardingRequest struct {
+	Address string `json:"address"`
+}
+
 func defaultMigaduCreateMailbox(ctx context.Context, localPart string, name string, password string) error {
 	localPart = strings.TrimSpace(localPart)
 	name = strings.TrimSpace(name)
@@ -91,4 +95,93 @@ func defaultMigaduCreateMailbox(ctx context.Context, localPart string, name stri
 
 	msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	return fmt.Errorf("migadu create mailbox: status=%d body=%q", resp.StatusCode, strings.TrimSpace(string(msg)))
+}
+
+func defaultMigaduCreateForwarding(ctx context.Context, localPart string, address string) error {
+	localPart = strings.TrimSpace(localPart)
+	address = strings.TrimSpace(address)
+	if localPart == "" || address == "" {
+		return fmt.Errorf("migadu forwarding localPart and address are required")
+	}
+
+	creds, err := secrets.MigaduCreds(ctx, nil)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(creds.APIToken) == "" {
+		return fmt.Errorf("migadu api key missing")
+	}
+	if strings.TrimSpace(creds.Username) == "" {
+		return fmt.Errorf("migadu username missing")
+	}
+
+	body, err := json.Marshal(migaduCreateForwardingRequest{Address: address})
+	if err != nil {
+		return fmt.Errorf("migadu forwarding encode: %w", err)
+	}
+
+	u := migaduBaseURL + "/domains/" + migaduEmailDomain + "/mailboxes/" + localPart + "/forwardings"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("migadu forwarding build: %w", err)
+	}
+	req.Header.Set("content-type", "application/json")
+	req.SetBasicAuth(strings.TrimSpace(creds.Username), strings.TrimSpace(creds.APIToken))
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	//nolint:gosec // Request target is the fixed Migadu HTTPS API host.
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("migadu forwarding: %w", err)
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusOK, http.StatusCreated, http.StatusConflict:
+		return nil
+	}
+
+	msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	return fmt.Errorf("migadu forwarding: status=%d body=%q", resp.StatusCode, strings.TrimSpace(string(msg)))
+}
+
+func defaultMigaduDeleteMailbox(ctx context.Context, localPart string) error {
+	localPart = strings.TrimSpace(localPart)
+	if localPart == "" {
+		return fmt.Errorf("migadu mailbox localPart is required")
+	}
+
+	creds, err := secrets.MigaduCreds(ctx, nil)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(creds.APIToken) == "" {
+		return fmt.Errorf("migadu api key missing")
+	}
+	if strings.TrimSpace(creds.Username) == "" {
+		return fmt.Errorf("migadu username missing")
+	}
+
+	u := migaduBaseURL + "/domains/" + migaduEmailDomain + "/mailboxes/" + localPart
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, u, nil)
+	if err != nil {
+		return fmt.Errorf("migadu delete mailbox build: %w", err)
+	}
+	req.SetBasicAuth(strings.TrimSpace(creds.Username), strings.TrimSpace(creds.APIToken))
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	//nolint:gosec // Request target is the fixed Migadu HTTPS API host.
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("migadu delete mailbox: %w", err)
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusOK, http.StatusNoContent, http.StatusNotFound:
+		return nil
+	}
+
+	msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	return fmt.Errorf("migadu delete mailbox: status=%d body=%q", resp.StatusCode, strings.TrimSpace(string(msg)))
 }
