@@ -202,6 +202,12 @@ func (s *Server) finalizeSoulProvisionEmailChannel(
 	regV3 *soul.RegistrationFileV3,
 	selfSig string,
 ) (*apptheory.Response, error) {
+	baseURL := soulCommRequestBaseURL(ctx, s.cfg.PublicBaseURL)
+	if baseURL == "" {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	forwardingAddress := baseURL + "/webhooks/comm/email/inbound"
+
 	caps := extractCapabilityNames(regMap)
 	capsNorm := normalizeSoulCapabilitiesLoose(caps)
 
@@ -213,8 +219,20 @@ func (s *Server) finalizeSoulProvisionEmailChannel(
 	if s.migaduCreateEmail == nil {
 		return nil, &apptheory.AppError{Code: "app.conflict", Message: "email provider is not configured"}
 	}
+	if s.migaduForwarding == nil {
+		return nil, &apptheory.AppError{Code: "app.conflict", Message: "email provider forwarding is not configured"}
+	}
 	if provisionErr := s.migaduCreateEmail(ctx.Context(), localNorm, identity.LocalID, password); provisionErr != nil {
 		log.Printf("controlplane: soul email provision failed agent=%s address=%s: %v", agentIDHex, address, provisionErr)
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to provision email"}
+	}
+	if forwardErr := s.migaduForwarding(ctx.Context(), localNorm, forwardingAddress); forwardErr != nil {
+		if s.migaduDeleteEmail != nil {
+			if rollbackErr := s.migaduDeleteEmail(ctx.Context(), localNorm); rollbackErr != nil {
+				log.Printf("controlplane: soul email rollback failed agent=%s address=%s: %v", agentIDHex, address, rollbackErr)
+			}
+		}
+		log.Printf("controlplane: soul email forwarding provision failed agent=%s address=%s: %v", agentIDHex, address, forwardErr)
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to provision email"}
 	}
 

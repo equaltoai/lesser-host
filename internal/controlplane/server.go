@@ -30,6 +30,8 @@ type Server struct {
 	ssmGetParameter   func(ctx context.Context, name string) (string, error)
 	ssmPutSecureValue func(ctx context.Context, name string, value string, overwrite bool) error
 	migaduCreateEmail func(ctx context.Context, localPart string, name string, password string) error
+	migaduForwarding  func(ctx context.Context, localPart string, address string) error
+	migaduDeleteEmail func(ctx context.Context, localPart string) error
 	migaduSendSMTP    func(ctx context.Context, username string, password string, from string, recipients []string, data []byte) error
 	telnyxSearchNums  func(ctx context.Context, countryCode string, limit int) ([]string, error)
 	telnyxOrderNumber func(ctx context.Context, phoneNumber string) (string, error)
@@ -59,6 +61,8 @@ func NewServer(cfg config.Config, st *store.Store) *Server {
 		ssmGetParameter:   defaultSSMGetParameter,
 		ssmPutSecureValue: defaultSSMPutSecureString,
 		migaduCreateEmail: defaultMigaduCreateMailbox,
+		migaduForwarding:  defaultMigaduCreateForwarding,
+		migaduDeleteEmail: defaultMigaduDeleteMailbox,
 		migaduSendSMTP:    defaultMigaduSendSMTP,
 		telnyxSearchNums:  defaultTelnyxSearchAvailablePhoneNumbers,
 		telnyxOrderNumber: defaultTelnyxOrderPhoneNumber,

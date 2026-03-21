@@ -381,28 +381,43 @@ func TestDefaultTelnyxCreateVoiceCall(t *testing.T) {
 func TestDefaultMigaduCreateMailbox_SuccessConflictAndErrors(t *testing.T) {
 	seedControlplaneSSMParam(t, secrets.MigaduAPITokenSSMParameterName, `{"username":"aron@equal-to.ai","token":"migadu-token"}`)
 
+	var sawForwarding bool
+	var sawDelete bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/domains/lessersoul.ai/mailboxes" {
-			http.NotFound(w, r)
-			return
-		}
 		user, pass, ok := r.BasicAuth()
 		if !ok || user != "aron@equal-to.ai" || pass != "migadu-token" {
 			t.Fatalf("unexpected basic auth: user=%q ok=%v", user, ok)
 		}
-
-		var body migaduCreateMailboxRequest
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatalf("decode mailbox request: %v", err)
-		}
-		switch body.LocalPart {
-		case "exists":
-			w.WriteHeader(http.StatusConflict)
-		case "broken":
-			w.WriteHeader(http.StatusInternalServerError)
-			_, _ = w.Write([]byte("nope"))
-		default:
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/domains/lessersoul.ai/mailboxes":
+			var body migaduCreateMailboxRequest
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode mailbox request: %v", err)
+			}
+			switch body.LocalPart {
+			case "exists":
+				w.WriteHeader(http.StatusConflict)
+			case "broken":
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte("nope"))
+			default:
+				w.WriteHeader(http.StatusCreated)
+			}
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/domains/lessersoul.ai/mailboxes/agent/forwardings":
+			sawForwarding = true
+			var body migaduCreateForwardingRequest
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode forwarding request: %v", err)
+			}
+			if body.Address != "https://lab.lesser.host/webhooks/comm/email/inbound" {
+				t.Fatalf("unexpected forwarding address: %q", body.Address)
+			}
 			w.WriteHeader(http.StatusCreated)
+		case r.Method == http.MethodDelete && r.URL.Path == "/v1/domains/lessersoul.ai/mailboxes/agent":
+			sawDelete = true
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
 		}
 	}))
 	defer server.Close()
@@ -420,6 +435,18 @@ func TestDefaultMigaduCreateMailbox_SuccessConflictAndErrors(t *testing.T) {
 	}
 	if err := defaultMigaduCreateMailbox(context.Background(), "broken", "Agent", "pw"); err == nil {
 		t.Fatalf("expected server error")
+	}
+	if err := defaultMigaduCreateForwarding(context.Background(), "agent", "https://lab.lesser.host/webhooks/comm/email/inbound"); err != nil {
+		t.Fatalf("create forwarding: %v", err)
+	}
+	if !sawForwarding {
+		t.Fatalf("expected forwarding call")
+	}
+	if err := defaultMigaduDeleteMailbox(context.Background(), "agent"); err != nil {
+		t.Fatalf("delete mailbox: %v", err)
+	}
+	if !sawDelete {
+		t.Fatalf("expected delete mailbox call")
 	}
 }
 

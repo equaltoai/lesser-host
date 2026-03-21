@@ -108,11 +108,18 @@ type provisionEmailMigaduCall struct {
 	password  string
 }
 
+type provisionEmailForwardingCall struct {
+	localPart string
+	address   string
+}
+
 type provisionEmailE2EFixture struct {
 	tdb                  soulLifecycleTestDB
 	packs                *fakeSoulPackStore
 	ssm                  map[string]string
 	migaduCalls          []provisionEmailMigaduCall
+	forwardingCalls      []provisionEmailForwardingCall
+	deleteMailboxCalls   []string
 	server               *Server
 	agentIDHex           string
 	signingKey           *ecdsa.PrivateKey
@@ -163,6 +170,7 @@ func newProvisionEmailE2EFixture(t *testing.T) *provisionEmailE2EFixture {
 			SoulRegistryContractAddress: "0x0000000000000000000000000000000000000001",
 			SoulPackBucketName:          "bucket",
 			SoulSupportedCapabilities:   []string{"social"},
+			PublicBaseURL:               "https://lab.lesser.host",
 			Stage:                       "lab",
 		},
 		soulPacks: fixture.packs,
@@ -184,6 +192,14 @@ func newProvisionEmailE2EFixture(t *testing.T) *provisionEmailE2EFixture {
 		},
 		migaduCreateEmail: func(ctx context.Context, localPart string, name string, password string) error {
 			fixture.migaduCalls = append(fixture.migaduCalls, provisionEmailMigaduCall{localPart: localPart, name: name, password: password})
+			return nil
+		},
+		migaduForwarding: func(ctx context.Context, localPart string, address string) error {
+			fixture.forwardingCalls = append(fixture.forwardingCalls, provisionEmailForwardingCall{localPart: localPart, address: address})
+			return nil
+		},
+		migaduDeleteEmail: func(ctx context.Context, localPart string) error {
+			fixture.deleteMailboxCalls = append(fixture.deleteMailboxCalls, localPart)
 			return nil
 		},
 	}
@@ -315,6 +331,15 @@ func assertProvisionEmailConfirmCreated(t *testing.T, fixture *provisionEmailE2E
 	if fixture.migaduCalls[0].localPart != "agent-alice" {
 		t.Fatalf("expected migadu localPart agent-alice, got %q", fixture.migaduCalls[0].localPart)
 	}
+	if len(fixture.forwardingCalls) != 1 {
+		t.Fatalf("expected 1 forwarding call, got %d", len(fixture.forwardingCalls))
+	}
+	if fixture.forwardingCalls[0].localPart != "agent-alice" {
+		t.Fatalf("expected forwarding localPart agent-alice, got %q", fixture.forwardingCalls[0].localPart)
+	}
+	if fixture.forwardingCalls[0].address != "https://lab.lesser.host/webhooks/comm/email/inbound" {
+		t.Fatalf("unexpected forwarding address: %q", fixture.forwardingCalls[0].address)
+	}
 }
 
 func assertProvisionEmailPublished(t *testing.T, fixture *provisionEmailE2EFixture) {
@@ -361,5 +386,51 @@ func assertProvisionEmailIdempotent(t *testing.T, fixture *provisionEmailE2EFixt
 	}
 	if len(fixture.migaduCalls) != 1 {
 		t.Fatalf("expected migadu not called again; got %d calls", len(fixture.migaduCalls))
+	}
+	if len(fixture.forwardingCalls) != 1 {
+		t.Fatalf("expected forwarding not called again; got %d calls", len(fixture.forwardingCalls))
+	}
+}
+
+func TestHandleSoulProvisionEmail_ForwardingFailureRollsBackMailboxAndStopsPublish(t *testing.T) {
+	t.Parallel()
+
+	fixture := newProvisionEmailE2EFixture(t)
+	fixture.server.migaduForwarding = func(ctx context.Context, localPart string, address string) error {
+		fixture.forwardingCalls = append(fixture.forwardingCalls, provisionEmailForwardingCall{localPart: localPart, address: address})
+		return fmt.Errorf("boom")
+	}
+
+	beginOut := runProvisionEmailBegin(t, fixture)
+	confirmBody := buildProvisionEmailConfirmBody(t, fixture, beginOut)
+
+	confirmCtx := &apptheory.Context{
+		RequestID:    "r-email-confirm-fail-1",
+		AuthIdentity: "admin",
+		Params:       map[string]string{"agentId": fixture.agentIDHex},
+		Request:      apptheory.Request{Body: confirmBody},
+	}
+	confirmCtx.Set(ctxKeyOperatorRole, models.RoleAdmin)
+
+	_, err := fixture.server.handleSoulProvisionEmailChannel(confirmCtx)
+	appErr := err.(*apptheory.AppError)
+	if appErr.Code != "app.internal" || appErr.Message != "failed to provision email" {
+		t.Fatalf("unexpected app error: %#v", appErr)
+	}
+	if len(fixture.migaduCalls) != 1 {
+		t.Fatalf("expected mailbox create before rollback, got %d create calls", len(fixture.migaduCalls))
+	}
+	if len(fixture.forwardingCalls) != 1 {
+		t.Fatalf("expected forwarding attempt, got %d calls", len(fixture.forwardingCalls))
+	}
+	if len(fixture.deleteMailboxCalls) != 1 || fixture.deleteMailboxCalls[0] != "agent-alice" {
+		t.Fatalf("expected mailbox rollback for agent-alice, got %#v", fixture.deleteMailboxCalls)
+	}
+	if len(fixture.packs.objects[fixture.s3Key].body) == 0 {
+		t.Fatalf("expected seed registration to remain present")
+	}
+	published := mustUnmarshalJSON[map[string]any](t, fixture.packs.objects[fixture.s3Key].body)
+	if got := strings.TrimSpace(extractStringField(published, "version")); got != "2" {
+		t.Fatalf("expected registration version to remain 2 after rollback, got %q", got)
 	}
 }
