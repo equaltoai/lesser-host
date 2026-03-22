@@ -650,7 +650,7 @@ func TestProcessInbound_SMSAnnotatesSenderBeforeDelivery(t *testing.T) {
 	}
 }
 
-func TestProcessInbound_PhoneDeliveryIncludesForwardingAddress(t *testing.T) {
+func TestProcessInbound_PhoneDeliveryIncludesCanonicalRecipientAddress(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 3, 5, 12, 0, 0, 0, time.UTC)
@@ -709,8 +709,8 @@ func TestProcessInbound_PhoneDeliveryIncludesForwardingAddress(t *testing.T) {
 			if delivered.To.Number != "+15551234567" {
 				t.Fatalf("expected phone recipient to be preserved, got %#v", delivered.To)
 			}
-			if delivered.To.Address != "agent-bob@inbound.lessersoul.ai" {
-				t.Fatalf("expected forwarding address, got %#v", delivered.To)
+			if delivered.To.Address != testAgentBobEmail {
+				t.Fatalf("expected canonical recipient address, got %#v", delivered.To)
 			}
 		})
 	}
