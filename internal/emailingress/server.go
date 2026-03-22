@@ -127,7 +127,7 @@ func (s *Server) handleRecord(ctx context.Context, record events.SimpleEmailReco
 		receivedAt = s.now()
 	}
 
-	for _, destination := range record.SES.Mail.Destination {
+	for _, destination := range sesEnvelopeRecipients(record) {
 		toAddress, ok := normalizeInboundRecipient(destination, inboundDomain)
 		if !ok {
 			s.logf("emailingress: skipping non-bridge recipient %q", strings.TrimSpace(destination))
@@ -157,6 +157,13 @@ func (s *Server) handleRecord(ctx context.Context, record events.SimpleEmailReco
 		}
 	}
 	return nil
+}
+
+func sesEnvelopeRecipients(record events.SimpleEmailRecord) []string {
+	if len(record.SES.Receipt.Recipients) > 0 {
+		return record.SES.Receipt.Recipients
+	}
+	return record.SES.Mail.Destination
 }
 
 func (s *Server) loadRawEmail(ctx context.Context, messageID string) ([]byte, error) {
