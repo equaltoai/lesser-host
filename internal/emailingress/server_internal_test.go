@@ -21,14 +21,18 @@ import (
 const inboundBridgeAddress = "medic@inbound.lessersoul.ai"
 
 type fakeS3 struct {
-	bodyByKey map[string]string
-	errByKey  map[string]error
+	bodyByKey  map[string]string
+	bytesByKey map[string][]byte
+	errByKey   map[string]error
 }
 
 func (f *fakeS3) GetObject(_ context.Context, in *s3.GetObjectInput, _ ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
 	key := aws.ToString(in.Key)
 	if err := f.errByKey[key]; err != nil {
 		return nil, err
+	}
+	if body, ok := f.bytesByKey[key]; ok {
+		return &s3.GetObjectOutput{Body: io.NopCloser(strings.NewReader(string(body)))}, nil
 	}
 	return &s3.GetObjectOutput{Body: io.NopCloser(strings.NewReader(f.bodyByKey[key]))}, nil
 }
@@ -398,6 +402,122 @@ func TestHandleSESEvent_PropagatesQueueError(t *testing.T) {
 	err := srv.HandleSESEvent(context.Background(), event)
 	if err == nil || !strings.Contains(err.Error(), "enqueue inbound email") {
 		t.Fatalf("expected enqueue error, got %v", err)
+	}
+}
+
+func TestHandleSESEvent_EnqueuesEachBridgeRecipient(t *testing.T) {
+	t.Parallel()
+
+	raw := strings.Join([]string{
+		"From: Alice <alice@example.com>",
+		"To: medic@inbound.lessersoul.ai, surgeon@inbound.lessersoul.ai",
+		"Subject: Hello",
+		"Message-ID: <msg-multi@example.com>",
+		"Content-Type: text/plain; charset=utf-8",
+		"",
+		"Email body",
+		"",
+	}, "\r\n")
+
+	s3Client := &fakeS3{
+		bodyByKey: map[string]string{
+			"ses/inbound/ses-msg-multi": raw,
+		},
+	}
+	sqsClient := &fakeSQS{}
+	logs := make([]string, 0, 1)
+	srv := &Server{
+		cfg: config.Config{
+			CommQueueURL:           "https://sqs.us-east-1.amazonaws.com/123456789012/lesser-host-lab-comm-queue",
+			SoulEmailInboundDomain: "inbound.lessersoul.ai",
+			InboundEmailBucketName: "bucket",
+			InboundEmailS3Prefix:   "ses/inbound/",
+		},
+		s3:  s3Client,
+		sqs: sqsClient,
+		now: time.Now,
+		logf: func(format string, args ...any) {
+			logs = append(logs, format)
+		},
+	}
+
+	event := events.SimpleEmailEvent{
+		Records: []events.SimpleEmailRecord{
+			{
+				SES: events.SimpleEmailService{
+					Mail: events.SimpleEmailMessage{
+						Source:      "alice@example.com",
+						MessageID:   "ses-msg-multi",
+						Destination: []string{"medic@inbound.lessersoul.ai", "surgeon@inbound.lessersoul.ai", "bad@example.com"},
+					},
+				},
+			},
+		},
+	}
+
+	if err := srv.HandleSESEvent(context.Background(), event); err != nil {
+		t.Fatalf("HandleSESEvent: %v", err)
+	}
+	if len(sqsClient.bodies) != 2 {
+		t.Fatalf("expected 2 queued messages, got %d", len(sqsClient.bodies))
+	}
+
+	var queued []commworker.QueueMessage
+	for _, body := range sqsClient.bodies {
+		var msg commworker.QueueMessage
+		if err := json.Unmarshal([]byte(body), &msg); err != nil {
+			t.Fatalf("unmarshal queued body: %v", err)
+		}
+		queued = append(queued, msg)
+	}
+	if queued[0].Notification.To == nil || queued[0].Notification.To.Address != "medic@lessersoul.ai" {
+		t.Fatalf("unexpected first bridged recipient: %#v", queued[0].Notification.To)
+	}
+	if queued[1].Notification.To == nil || queued[1].Notification.To.Address != "surgeon@lessersoul.ai" {
+		t.Fatalf("unexpected second bridged recipient: %#v", queued[1].Notification.To)
+	}
+	if len(logs) != 1 || !strings.Contains(logs[0], "skipping non-bridge recipient") {
+		t.Fatalf("unexpected skip logs: %#v", logs)
+	}
+}
+
+func TestHandleSESEvent_RejectsOversizedInboundEmail(t *testing.T) {
+	t.Parallel()
+
+	oversized := strings.Repeat("a", maxInboundEmailBytes+1)
+	srv := &Server{
+		cfg: config.Config{
+			CommQueueURL:           "https://sqs.us-east-1.amazonaws.com/123456789012/lesser-host-lab-comm-queue",
+			SoulEmailInboundDomain: "inbound.lessersoul.ai",
+			InboundEmailBucketName: "bucket",
+			InboundEmailS3Prefix:   "ses/inbound/",
+		},
+		s3: &fakeS3{
+			bytesByKey: map[string][]byte{
+				"ses/inbound/ses-msg-big": []byte(oversized),
+			},
+		},
+		sqs:  &fakeSQS{},
+		now:  time.Now,
+		logf: func(string, ...any) {},
+	}
+
+	event := events.SimpleEmailEvent{
+		Records: []events.SimpleEmailRecord{
+			{
+				SES: events.SimpleEmailService{
+					Mail: events.SimpleEmailMessage{
+						MessageID:   "ses-msg-big",
+						Destination: []string{inboundBridgeAddress},
+					},
+				},
+			},
+		},
+	}
+
+	err := srv.HandleSESEvent(context.Background(), event)
+	if err == nil || !strings.Contains(err.Error(), `read inbound email "ses/inbound/ses-msg-big": payload too large`) {
+		t.Fatalf("expected oversized payload error, got %v", err)
 	}
 }
 

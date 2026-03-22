@@ -34,6 +34,7 @@ const (
 	soulCanonicalEmailDomain = "lessersoul.ai"
 	bodyMimeTypePlainText    = "text/plain"
 	bodyMimeTypeHTML         = "text/html"
+	maxInboundEmailBytes     = 1024 * 1024
 )
 
 type s3API interface {
@@ -172,9 +173,24 @@ func (s *Server) loadRawEmail(ctx context.Context, messageID string) ([]byte, er
 	}
 	defer out.Body.Close()
 
-	body, err := io.ReadAll(io.LimitReader(out.Body, 1024*1024))
+	body, err := readAllUpTo(out.Body, maxInboundEmailBytes)
 	if err != nil {
 		return nil, fmt.Errorf("read inbound email %q: %w", key, err)
+	}
+	return body, nil
+}
+
+func readAllUpTo(r io.Reader, maxBytes int64) ([]byte, error) {
+	if maxBytes <= 0 {
+		return io.ReadAll(r)
+	}
+	lr := &io.LimitedReader{R: r, N: maxBytes + 1}
+	body, err := io.ReadAll(lr)
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > maxBytes {
+		return nil, fmt.Errorf("payload too large")
 	}
 	return body, nil
 }

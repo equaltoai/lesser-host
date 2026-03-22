@@ -440,6 +440,36 @@ func TestHandleSoulProvisionEmail_ForwardingFailureRollsBackMailboxAndStopsPubli
 	}
 }
 
+func TestHandleSoulProvisionEmail_RequiresInboundBridgeDomain(t *testing.T) {
+	t.Parallel()
+
+	fixture := newProvisionEmailE2EFixture(t)
+	fixture.server.cfg.SoulEmailInboundDomain = ""
+
+	beginOut := runProvisionEmailBegin(t, fixture)
+	confirmBody := buildProvisionEmailConfirmBody(t, fixture, beginOut)
+
+	confirmCtx := &apptheory.Context{
+		RequestID:    "r-email-confirm-nobridge-1",
+		AuthIdentity: "admin",
+		Params:       map[string]string{"agentId": fixture.agentIDHex},
+		Request:      apptheory.Request{Body: confirmBody},
+	}
+	confirmCtx.Set(ctxKeyOperatorRole, models.RoleAdmin)
+
+	_, err := fixture.server.handleSoulProvisionEmailChannel(confirmCtx)
+	appErr := requireProvisionEmailAppErr(t, err)
+	if appErr.Code != appErrCodeConflict || appErr.Message != "email inbound bridge is not configured" {
+		t.Fatalf("unexpected app error: %#v", appErr)
+	}
+	if len(fixture.migaduCalls) != 0 {
+		t.Fatalf("expected mailbox provisioning to be skipped, got %d calls", len(fixture.migaduCalls))
+	}
+	if len(fixture.forwardingCalls) != 0 {
+		t.Fatalf("expected forwarding provisioning to be skipped, got %d calls", len(fixture.forwardingCalls))
+	}
+}
+
 func requireProvisionEmailAppErr(t *testing.T, err error) *apptheory.AppError {
 	t.Helper()
 	if err == nil {
