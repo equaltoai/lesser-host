@@ -316,12 +316,12 @@ func (s *Server) maybeAnnotateRecipientAddress(ctx context.Context, agentID stri
 		return
 	}
 
-	if address := s.lookupRecipientForwardingAddress(ctx, agentID); address != "" {
+	if address := s.lookupRecipientCanonicalAddress(ctx, agentID); address != "" {
 		to.Address = address
 	}
 }
 
-func (s *Server) lookupRecipientForwardingAddress(ctx context.Context, agentID string) string {
+func (s *Server) lookupRecipientCanonicalAddress(ctx context.Context, agentID string) string {
 	if s == nil || s.store == nil {
 		return ""
 	}
@@ -335,17 +335,7 @@ func (s *Server) lookupRecipientForwardingAddress(ctx context.Context, agentID s
 	if emailAddress == "" {
 		return ""
 	}
-
-	localPart, _, hasDomain := strings.Cut(emailAddress, "@")
-	if !hasDomain || strings.TrimSpace(localPart) == "" {
-		return emailAddress
-	}
-
-	inboundDomain := strings.ToLower(strings.TrimSpace(s.cfg.SoulEmailInboundDomain))
-	if inboundDomain == "" {
-		return emailAddress
-	}
-	return localPart + "@" + inboundDomain
+	return emailAddress
 }
 
 func (s *Server) resolveRecipient(ctx context.Context, channel string, to *InboundParty) (string, bool, error) {
