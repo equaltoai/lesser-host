@@ -18,7 +18,10 @@ import (
 	"github.com/equaltoai/lesser-host/internal/config"
 )
 
-const inboundBridgeAddress = "medic@inbound.lessersoul.ai"
+const (
+	inboundBridgeAddress  = "medic@inbound.lessersoul.ai"
+	canonicalMedicAddress = "medic@lessersoul.ai"
+)
 
 type fakeS3 struct {
 	bodyByKey  map[string]string
@@ -470,7 +473,7 @@ func TestHandleSESEvent_EnqueuesEachBridgeRecipient(t *testing.T) {
 		}
 		queued = append(queued, msg)
 	}
-	if queued[0].Notification.To == nil || queued[0].Notification.To.Address != "medic@lessersoul.ai" {
+	if queued[0].Notification.To == nil || queued[0].Notification.To.Address != canonicalMedicAddress {
 		t.Fatalf("unexpected first bridged recipient: %#v", queued[0].Notification.To)
 	}
 	if queued[1].Notification.To == nil || queued[1].Notification.To.Address != "surgeon@lessersoul.ai" {
@@ -478,6 +481,98 @@ func TestHandleSESEvent_EnqueuesEachBridgeRecipient(t *testing.T) {
 	}
 	if len(logs) != 1 || !strings.Contains(logs[0], "skipping non-bridge recipient") {
 		t.Fatalf("unexpected skip logs: %#v", logs)
+	}
+}
+
+func TestHandleSESEvent_PrefersSESReceiptRecipientsForForwardedMail(t *testing.T) {
+	t.Parallel()
+
+	raw := strings.Join([]string{
+		"From: Alice <alice@example.com>",
+		"To: " + canonicalMedicAddress,
+		"Subject: Hello",
+		"Message-ID: <msg-forwarded@example.com>",
+		"Content-Type: text/plain; charset=utf-8",
+		"",
+		"Forwarded email body",
+		"",
+	}, "\r\n")
+
+	s3Client := &fakeS3{
+		bodyByKey: map[string]string{
+			"ses/inbound/ses-msg-forwarded": raw,
+		},
+	}
+	sqsClient := &fakeSQS{}
+	logs := make([]string, 0, 1)
+	srv := &Server{
+		cfg: config.Config{
+			CommQueueURL:           "https://sqs.us-east-1.amazonaws.com/123456789012/lesser-host-lab-comm-queue",
+			SoulEmailInboundDomain: "inbound.lessersoul.ai",
+			InboundEmailBucketName: "bucket",
+			InboundEmailS3Prefix:   "ses/inbound/",
+		},
+		s3:  s3Client,
+		sqs: sqsClient,
+		now: time.Now,
+		logf: func(format string, args ...any) {
+			logs = append(logs, format)
+		},
+	}
+
+	event := events.SimpleEmailEvent{
+		Records: []events.SimpleEmailRecord{
+			{
+				SES: events.SimpleEmailService{
+					Mail: events.SimpleEmailMessage{
+						Source:      "alice@example.com",
+						MessageID:   "ses-msg-forwarded",
+						Destination: []string{canonicalMedicAddress},
+					},
+					Receipt: events.SimpleEmailReceipt{
+						Recipients: []string{inboundBridgeAddress},
+					},
+				},
+			},
+		},
+	}
+
+	if err := srv.HandleSESEvent(context.Background(), event); err != nil {
+		t.Fatalf("HandleSESEvent: %v", err)
+	}
+	if len(sqsClient.bodies) != 1 {
+		t.Fatalf("expected 1 queued message, got %d", len(sqsClient.bodies))
+	}
+	if len(logs) != 0 {
+		t.Fatalf("expected no skip logs, got %#v", logs)
+	}
+
+	var msg commworker.QueueMessage
+	if err := json.Unmarshal([]byte(sqsClient.bodies[0]), &msg); err != nil {
+		t.Fatalf("unmarshal queued body: %v", err)
+	}
+	if msg.Notification.To == nil || msg.Notification.To.Address != canonicalMedicAddress {
+		t.Fatalf("unexpected bridged destination: %#v", msg.Notification.To)
+	}
+	if msg.Notification.Body != "Forwarded email body" {
+		t.Fatalf("unexpected forwarded body: %#v", msg.Notification)
+	}
+}
+
+func TestSESEnvelopeRecipients_FallsBackToMailDestination(t *testing.T) {
+	t.Parallel()
+
+	record := events.SimpleEmailRecord{
+		SES: events.SimpleEmailService{
+			Mail: events.SimpleEmailMessage{
+				Destination: []string{inboundBridgeAddress},
+			},
+		},
+	}
+
+	recipients := sesEnvelopeRecipients(record)
+	if len(recipients) != 1 || recipients[0] != inboundBridgeAddress {
+		t.Fatalf("unexpected fallback recipients: %#v", recipients)
 	}
 }
 
@@ -681,7 +776,7 @@ func TestHandleSESEvent_EnqueuesCanonicalEmailNotification(t *testing.T) {
 	if msg.Provider != "migadu" || msg.Notification.Channel != "email" {
 		t.Fatalf("unexpected queued message: %#v", msg)
 	}
-	if msg.Notification.To == nil || msg.Notification.To.Address != "medic@lessersoul.ai" {
+	if msg.Notification.To == nil || msg.Notification.To.Address != canonicalMedicAddress {
 		t.Fatalf("unexpected destination: %#v", msg.Notification.To)
 	}
 	if msg.Notification.Body != "Email body" || msg.Notification.Subject != "Hello" {
