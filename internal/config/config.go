@@ -16,6 +16,16 @@ type Config struct {
 	// relative URLs or derive a best-effort base from request headers.
 	PublicBaseURL string
 
+	// SoulEmailInboundDomain is the SES-backed bridge domain that receives inbound mail
+	// for soul email channels before it is normalized into comm-worker notifications.
+	SoulEmailInboundDomain string
+
+	// InboundEmailBucketName stores raw SES-received messages for the email ingress Lambda.
+	InboundEmailBucketName string
+
+	// InboundEmailS3Prefix is the prefix under InboundEmailBucketName where SES stores raw mail.
+	InboundEmailS3Prefix string
+
 	// ENS gateway (CCIP-Read) configuration.
 	ENSGatewayResolverAddress     string
 	ENSGatewaySigningKeyID        string
@@ -174,8 +184,11 @@ func Load() Config {
 		AppName: "lesser-host",
 		Stage:   stage,
 
-		StateTableName: stateTableName,
-		PublicBaseURL:  publicBaseURL,
+		StateTableName:         stateTableName,
+		PublicBaseURL:          publicBaseURL,
+		SoulEmailInboundDomain: envString("SOUL_EMAIL_INBOUND_DOMAIN"),
+		InboundEmailBucketName: envString("INBOUND_EMAIL_BUCKET_NAME"),
+		InboundEmailS3Prefix:   envStringDefault("INBOUND_EMAIL_S3_PREFIX", "ses/inbound/"),
 
 		ENSGatewayResolverAddress:     envString("ENS_GATEWAY_RESOLVER_ADDRESS"),
 		ENSGatewaySigningKeyID:        envString("ENS_GATEWAY_SIGNING_KEY_ID"),

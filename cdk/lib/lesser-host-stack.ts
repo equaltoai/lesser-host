@@ -17,10 +17,12 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 	import * as lambda from 'aws-cdk-lib/aws-lambda';
 	import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
 	import * as logs from 'aws-cdk-lib/aws-logs';
-	import * as route53 from 'aws-cdk-lib/aws-route53';
+import * as route53 from 'aws-cdk-lib/aws-route53';
 		import * as route53Targets from 'aws-cdk-lib/aws-route53-targets';
 		import * as s3 from 'aws-cdk-lib/aws-s3';
 		import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
+import * as ses from 'aws-cdk-lib/aws-ses';
+import * as sesActions from 'aws-cdk-lib/aws-ses-actions';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as apigw from 'aws-cdk-lib/aws-apigateway';
@@ -72,6 +74,21 @@ export class LesserHostStack extends cdk.Stack {
 					id: 'ExpireModerationInputs',
 					prefix: 'moderation/',
 					expiration: cdk.Duration.days(30),
+				},
+			],
+			removalPolicy,
+			autoDeleteObjects: stage !== 'live',
+		});
+
+		const inboundEmailBucket = new s3.Bucket(this, 'InboundEmailBucket', {
+			bucketName: `${namePrefix}-${cdk.Aws.ACCOUNT_ID}-${cdk.Aws.REGION}-inbound-email`,
+			blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+			enforceSSL: true,
+			lifecycleRules: [
+				{
+					id: 'ExpireInboundEmail',
+					prefix: 'ses/inbound/',
+					expiration: cdk.Duration.days(14),
 				},
 			],
 			removalPolicy,
@@ -292,6 +309,9 @@ export class LesserHostStack extends cdk.Stack {
 		const soulReputationWeightTrust = soulContext('soulReputationWeightTrust');
 		const soulValidationDecayEpochHours = soulContext('soulValidationDecayEpochHours');
 		const soulValidationDecayRate = soulContext('soulValidationDecayRate');
+		const soulEmailInboundDomain =
+			((this.node.tryGetContext('soulEmailInboundDomain') as string | undefined) ?? 'inbound.lessersoul.ai').trim();
+		const inboundEmailS3Prefix = 'ses/inbound/';
 
 		const paymentsProvider = (this.node.tryGetContext('paymentsProvider') as string | undefined) ?? '';
 		const paymentsCentsPer1000Credits =
@@ -728,6 +748,18 @@ export class LesserHostStack extends cdk.Stack {
 			MANAGED_INSTANCE_ROLE_NAME: managedInstanceRoleName,
 			MANAGED_DEFAULT_REGION: managedDefaultRegion,
 		});
+		const emailIngressFn = this.goLambda(
+			'EmailIngress',
+			'./cmd/email-ingress',
+			{
+				STAGE: stage,
+				COMM_QUEUE_URL: commQueue.queueUrl,
+				SOUL_EMAIL_INBOUND_DOMAIN: soulEmailInboundDomain,
+				INBOUND_EMAIL_BUCKET_NAME: inboundEmailBucket.bucketName,
+				INBOUND_EMAIL_S3_PREFIX: inboundEmailS3Prefix,
+			},
+			{ memorySize: 512, timeoutSeconds: 30 },
+		);
 
 		stateTable.grantReadWriteData(controlPlaneFn);
 		stateTable.grantReadWriteData(trustFn);
@@ -744,6 +776,7 @@ export class LesserHostStack extends cdk.Stack {
 		artifactsBucket.grantRead(aiWorkerFn);
 		artifactsBucket.grantRead(provisionWorkerFn);
 		artifactsBucket.grantReadWrite(provisionRunnerProject);
+		inboundEmailBucket.grantRead(emailIngressFn);
 		attestationSigningKey.grant(trustFn, 'kms:Sign', 'kms:GetPublicKey');
 		ensGatewaySigningKey.grant(trustFn, 'kms:Sign', 'kms:GetPublicKey');
 		attestationSigningKey.grant(aiWorkerFn, 'kms:Sign', 'kms:GetPublicKey');
@@ -759,6 +792,34 @@ export class LesserHostStack extends cdk.Stack {
 		provisionQueue.grantSendMessages(provisionWorkerFn);
 		commQueue.grantSendMessages(controlPlaneFn);
 		commQueue.grantConsumeMessages(commWorkerFn);
+		commQueue.grantSendMessages(emailIngressFn);
+
+		const inboundEmailIdentity = new ses.CfnEmailIdentity(this, 'InboundEmailIdentity', {
+			emailIdentity: soulEmailInboundDomain,
+			dkimSigningAttributes: {
+				nextSigningKeyLength: 'RSA_2048_BIT',
+			},
+		});
+		const inboundEmailRuleSet = new ses.ReceiptRuleSet(this, 'InboundEmailRuleSet', {
+			receiptRuleSetName: `${namePrefix}-inbound-email`,
+		});
+		const inboundEmailRule = inboundEmailRuleSet.addRule('Ingress', {
+			enabled: true,
+			recipients: [soulEmailInboundDomain],
+			scanEnabled: true,
+			actions: [
+				new sesActions.S3({
+					bucket: inboundEmailBucket,
+					objectKeyPrefix: inboundEmailS3Prefix,
+				}),
+				new sesActions.Lambda({
+					function: emailIngressFn,
+					invocationType: sesActions.LambdaInvocationType.EVENT,
+				}),
+			],
+			tlsPolicy: ses.TlsPolicy.REQUIRE,
+		});
+		inboundEmailRule.node.addDependency(inboundEmailIdentity);
 
 		provisionRunnerProject.addToRolePolicy(
 			new iam.PolicyStatement({
@@ -1591,6 +1652,8 @@ export class LesserHostStack extends cdk.Stack {
 		const publicBaseURL = webCert
 			? `https://${webDomainName}`
 			: `https://${webDistribution.distributionDomainName}`;
+		controlPlaneFn.addEnvironment('PUBLIC_BASE_URL', publicBaseURL);
+		controlPlaneFn.addEnvironment('SOUL_EMAIL_INBOUND_DOMAIN', soulEmailInboundDomain);
 		trustFn.addEnvironment('PUBLIC_BASE_URL', publicBaseURL);
 
 		new s3deploy.BucketDeployment(this, 'WebDeployment', {
@@ -1661,6 +1724,17 @@ export class LesserHostStack extends cdk.Stack {
 		});
 		new cdk.CfnOutput(this, 'StateTableName', { value: stateTable.tableName });
 			new cdk.CfnOutput(this, 'ArtifactsBucketName', { value: artifactsBucket.bucketName });
+			new cdk.CfnOutput(this, 'InboundEmailBucketName', { value: inboundEmailBucket.bucketName });
+			new cdk.CfnOutput(this, 'SoulEmailInboundDomain', { value: soulEmailInboundDomain });
+			new cdk.CfnOutput(this, 'InboundEmailMXRecord', {
+				value: `10 inbound-smtp.${cdk.Aws.REGION}.amazonaws.com`,
+			});
+			new cdk.CfnOutput(this, 'InboundEmailDkimRecordName1', { value: inboundEmailIdentity.attrDkimDnsTokenName1 });
+			new cdk.CfnOutput(this, 'InboundEmailDkimRecordValue1', { value: inboundEmailIdentity.attrDkimDnsTokenValue1 });
+			new cdk.CfnOutput(this, 'InboundEmailDkimRecordName2', { value: inboundEmailIdentity.attrDkimDnsTokenName2 });
+			new cdk.CfnOutput(this, 'InboundEmailDkimRecordValue2', { value: inboundEmailIdentity.attrDkimDnsTokenValue2 });
+			new cdk.CfnOutput(this, 'InboundEmailDkimRecordName3', { value: inboundEmailIdentity.attrDkimDnsTokenName3 });
+			new cdk.CfnOutput(this, 'InboundEmailDkimRecordValue3', { value: inboundEmailIdentity.attrDkimDnsTokenValue3 });
 			new cdk.CfnOutput(this, 'AttestationSigningKeyId', { value: attestationSigningKey.keyId });
 			new cdk.CfnOutput(this, 'PreviewQueueUrl', { value: previewQueue.queueUrl });
 			new cdk.CfnOutput(this, 'SafetyQueueUrl', { value: safetyQueue.queueUrl });
@@ -1668,6 +1742,7 @@ export class LesserHostStack extends cdk.Stack {
 			new cdk.CfnOutput(this, 'RenderWorkerFunctionName', { value: renderWorkerFn.functionName });
 			new cdk.CfnOutput(this, 'AiWorkerFunctionName', { value: aiWorkerFn.functionName });
 			new cdk.CfnOutput(this, 'ProvisionWorkerFunctionName', { value: provisionWorkerFn.functionName });
+			new cdk.CfnOutput(this, 'EmailIngressFunctionName', { value: emailIngressFn.functionName });
 			new cdk.CfnOutput(this, 'RetentionSweepRuleName', { value: retentionSweepRule.ruleName });
 
 			const aiDashboard = new cloudwatch.Dashboard(this, 'AiDashboard', {

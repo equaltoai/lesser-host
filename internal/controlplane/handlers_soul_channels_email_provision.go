@@ -202,11 +202,10 @@ func (s *Server) finalizeSoulProvisionEmailChannel(
 	regV3 *soul.RegistrationFileV3,
 	selfSig string,
 ) (*apptheory.Response, error) {
-	baseURL := soulCommRequestBaseURL(ctx, s.cfg.PublicBaseURL)
-	if baseURL == "" {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	forwardingAddress := soulEmailInboundForwardingAddress(localNorm, s.cfg.SoulEmailInboundDomain)
+	if forwardingAddress == "" {
+		return nil, &apptheory.AppError{Code: "app.conflict", Message: "email inbound bridge is not configured"}
 	}
-	forwardingAddress := baseURL + "/webhooks/comm/email/inbound"
 
 	caps := extractCapabilityNames(regMap)
 	capsNorm := normalizeSoulCapabilitiesLoose(caps)
@@ -261,6 +260,15 @@ func (s *Server) finalizeSoulProvisionEmailChannel(
 		Address:             address,
 		RegistrationVersion: publishedVersion,
 	})
+}
+
+func soulEmailInboundForwardingAddress(localPart string, inboundDomain string) string {
+	localPart = strings.ToLower(strings.TrimSpace(localPart))
+	inboundDomain = strings.ToLower(strings.TrimSpace(inboundDomain))
+	if localPart == "" || inboundDomain == "" {
+		return ""
+	}
+	return localPart + "@" + inboundDomain
 }
 
 func buildProvisionRegistrationPayload(regMap map[string]any) ([]byte, string, map[string]string, string, *apptheory.AppError) {

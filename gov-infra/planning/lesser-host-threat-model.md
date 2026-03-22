@@ -5,9 +5,9 @@ to controls in `gov-infra/planning/lesser-host-controls-matrix.md`.
 
 ## Scope (must be explicit)
 - **System:** AWS-backed multi-service control plane for hosted Lesser instance provisioning + governance + trust/safety services (Go Lambdas, Svelte web UI, AWS CDK infra, Solidity contracts).
-- **In-scope data:** authentication/session tokens, wallet addresses, instance API keys (hashed), Stripe billing identifiers, AI provider prompts/outputs (may contain sensitive user content), operational telemetry, deploy receipts/artifacts, secrets in AWS SSM/KMS.
+- **In-scope data:** authentication/session tokens, wallet addresses, instance API keys (hashed), Stripe billing identifiers, AI provider prompts/outputs (may contain sensitive user content), inbound email bodies/headers stored temporarily for routing, operational telemetry, deploy receipts/artifacts, secrets in AWS SSM/KMS.
 - **Environments:** `lab`, `staging`, `prod` (define “prod-like”: internet-reachable and/or connected to real third-party services).
-- **Third parties:** AWS, Stripe, Anthropic, OpenAI, Ethereum JSON-RPC providers, GitHub Actions.
+- **Third parties:** AWS, Migadu, Telnyx, Stripe, Anthropic, OpenAI, Ethereum JSON-RPC providers, GitHub Actions.
 - **Out of scope:** per-tenant `lesser` application internals (except where the control plane ingests deploy receipts); end-user device security.
 - **Assurance target:** audit-ready hardening for security-critical paths with deterministic, CI-enforced verifiers.
 
@@ -18,12 +18,14 @@ to controls in `gov-infra/planning/lesser-host-controls-matrix.md`.
   - Instance registration state (domains, wallets, instance keys)
   - Attestation signing key material (KMS-backed)
   - AI moderation/evidence pipelines (messages, outputs)
+  - Inbound email bridge artifacts (SES receipt events + raw S3 objects)
   - Provisioning runner permissions (Organizations + CodeBuild)
   - Deploy receipts + artifact buckets
 - **Trust boundaries:**
   - Public internet → CloudFront → API Lambda Function URLs
   - Control plane → AWS APIs (DynamoDB/S3/SQS/KMS/Route53/Organizations)
-  - Control plane → third parties (Stripe, AI providers, RPC)
+  - Control plane → third parties (Migadu, Telnyx, Stripe, AI providers, RPC)
+  - SES inbound pipeline → S3/Lambda/SQS (raw email receipt and normalization)
   - Operator browser (web UI) → API endpoints
   - Managed provisioning worker → external releases/artifacts (supply chain)
 - **Entry points:**

@@ -76,6 +76,26 @@ All write endpoints require `Authorization: Bearer <session>`. Sessions are shar
   - `POST /api/v1/soul/reputation/publish`
   - `POST /api/v1/soul/validation/publish`
 
+## Inbound email bridge (`inbound.lessersoul.ai`)
+
+Inbound soul email delivery uses a bridge domain instead of direct HTTP forwarding from Migadu:
+
+```text
+Sender -> Migadu mailbox -> agent@inbound.lessersoul.ai -> SES receipt rule -> email-ingress Lambda -> comm-worker
+```
+
+- Migadu remains the mailbox and outbound SMTP provider for `@lessersoul.ai`.
+- New provisioning and operational backfills set Migadu forwarding targets to `<localPart>@inbound.lessersoul.ai`.
+- Amazon SES receives mail for `inbound.lessersoul.ai`, stores the raw message in S3, and invokes `cmd/email-ingress`.
+- `cmd/email-ingress` parses the raw RFC 5322 message and enqueues the existing `communication:inbound` payload shape for `comm-worker`.
+- `comm-worker` continues to resolve the final recipient against the canonical `@lessersoul.ai` address, so downstream routing and delivery semantics stay unchanged.
+
+Operational notes:
+
+- SES receiving is region-bound; `lesser-host` deploys the bridge only in an SES-inbound-capable region.
+- DNS for `inbound.lessersoul.ai` is managed outside Route53 today, so the stack outputs the DKIM verification CNAMEs and MX target for manual GoDaddy entry.
+- Raw inbound mail is retained briefly in a dedicated S3 bucket with lifecycle expiration to support debugging without keeping message bodies indefinitely.
+
 ### `update-registration` contract (lesser-body / MCP endpoint compatible)
 
 `POST /api/v1/soul/agents/{agentId}/update-registration` publishes the **current** registration JSON to S3 at:

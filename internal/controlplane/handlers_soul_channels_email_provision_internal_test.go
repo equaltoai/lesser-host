@@ -175,6 +175,7 @@ func newProvisionEmailE2EFixture(t *testing.T) *provisionEmailE2EFixture {
 			SoulPackBucketName:          "bucket",
 			SoulSupportedCapabilities:   []string{"social"},
 			PublicBaseURL:               "https://lab.lesser.host",
+			SoulEmailInboundDomain:      "inbound.lessersoul.ai",
 			Stage:                       "lab",
 		},
 		soulPacks: fixture.packs,
@@ -341,7 +342,7 @@ func assertProvisionEmailConfirmCreated(t *testing.T, fixture *provisionEmailE2E
 	if fixture.forwardingCalls[0].localPart != provisionTestEmailLocalPart {
 		t.Fatalf("expected forwarding localPart %s, got %q", provisionTestEmailLocalPart, fixture.forwardingCalls[0].localPart)
 	}
-	if fixture.forwardingCalls[0].address != "https://lab.lesser.host/webhooks/comm/email/inbound" {
+	if fixture.forwardingCalls[0].address != "agent-alice@inbound.lessersoul.ai" {
 		t.Fatalf("unexpected forwarding address: %q", fixture.forwardingCalls[0].address)
 	}
 }
@@ -436,6 +437,36 @@ func TestHandleSoulProvisionEmail_ForwardingFailureRollsBackMailboxAndStopsPubli
 	published := mustUnmarshalJSON[map[string]any](t, fixture.packs.objects[fixture.s3Key].body)
 	if got := strings.TrimSpace(extractStringField(published, "version")); got != "2" {
 		t.Fatalf("expected registration version to remain 2 after rollback, got %q", got)
+	}
+}
+
+func TestHandleSoulProvisionEmail_RequiresInboundBridgeDomain(t *testing.T) {
+	t.Parallel()
+
+	fixture := newProvisionEmailE2EFixture(t)
+	fixture.server.cfg.SoulEmailInboundDomain = ""
+
+	beginOut := runProvisionEmailBegin(t, fixture)
+	confirmBody := buildProvisionEmailConfirmBody(t, fixture, beginOut)
+
+	confirmCtx := &apptheory.Context{
+		RequestID:    "r-email-confirm-nobridge-1",
+		AuthIdentity: "admin",
+		Params:       map[string]string{"agentId": fixture.agentIDHex},
+		Request:      apptheory.Request{Body: confirmBody},
+	}
+	confirmCtx.Set(ctxKeyOperatorRole, models.RoleAdmin)
+
+	_, err := fixture.server.handleSoulProvisionEmailChannel(confirmCtx)
+	appErr := requireProvisionEmailAppErr(t, err)
+	if appErr.Code != appErrCodeConflict || appErr.Message != "email inbound bridge is not configured" {
+		t.Fatalf("unexpected app error: %#v", appErr)
+	}
+	if len(fixture.migaduCalls) != 0 {
+		t.Fatalf("expected mailbox provisioning to be skipped, got %d calls", len(fixture.migaduCalls))
+	}
+	if len(fixture.forwardingCalls) != 0 {
+		t.Fatalf("expected forwarding provisioning to be skipped, got %d calls", len(fixture.forwardingCalls))
 	}
 }
 
