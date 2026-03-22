@@ -7,6 +7,7 @@
 
 - Control plane API (AppTheory HTTP): `cmd/control-plane-api`
 - Trust API (AppTheory HTTP): `cmd/trust-api`
+- Inbound email bridge (SES -> comm-worker): `cmd/email-ingress`
 - Managed provisioning worker (SQS): `cmd/provision-worker`
 - Other workers: `cmd/*-worker`
 - Web app (portal + operator console): `web/`

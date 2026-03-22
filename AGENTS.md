@@ -40,6 +40,7 @@ References:
 - **Go services (Lambda entrypoints):** `cmd/`
   - `cmd/control-plane-api` — control plane HTTP API
   - `cmd/trust-api` — public trust endpoints + instance-scoped trust services
+  - `cmd/email-ingress` — SES inbound email bridge that normalizes raw mail into comm-worker events
   - `cmd/provision-worker` — managed provisioning worker (SQS)
   - `cmd/render-worker` — render/retention worker (SQS + scheduled sweep)
   - `cmd/ai-worker` — AI jobs worker (SQS)

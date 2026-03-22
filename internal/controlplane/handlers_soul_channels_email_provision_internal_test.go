@@ -175,6 +175,7 @@ func newProvisionEmailE2EFixture(t *testing.T) *provisionEmailE2EFixture {
 			SoulPackBucketName:          "bucket",
 			SoulSupportedCapabilities:   []string{"social"},
 			PublicBaseURL:               "https://lab.lesser.host",
+			SoulEmailInboundDomain:      "inbound.lessersoul.ai",
 			Stage:                       "lab",
 		},
 		soulPacks: fixture.packs,
@@ -341,7 +342,7 @@ func assertProvisionEmailConfirmCreated(t *testing.T, fixture *provisionEmailE2E
 	if fixture.forwardingCalls[0].localPart != provisionTestEmailLocalPart {
 		t.Fatalf("expected forwarding localPart %s, got %q", provisionTestEmailLocalPart, fixture.forwardingCalls[0].localPart)
 	}
-	if fixture.forwardingCalls[0].address != "https://lab.lesser.host/webhooks/comm/email/inbound" {
+	if fixture.forwardingCalls[0].address != "agent-alice@inbound.lessersoul.ai" {
 		t.Fatalf("unexpected forwarding address: %q", fixture.forwardingCalls[0].address)
 	}
 }

@@ -1610,6 +1610,7 @@ mkdir -p "${tmp_bin_dir}"
 bins=(
   "ai-worker=./cmd/ai-worker"
   "control-plane-api=./cmd/control-plane-api"
+  "email-ingress=./cmd/email-ingress"
   "provision-worker=./cmd/provision-worker"
   "render-worker=./cmd/render-worker"
   "trust-api=./cmd/trust-api"
