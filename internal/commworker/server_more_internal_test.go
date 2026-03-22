@@ -163,6 +163,21 @@ func newInboundSMSMessage(now time.Time, to string, from string) QueueMessage {
 	}
 }
 
+func newInboundVoiceMessage(now time.Time, to string, from string) QueueMessage {
+	return QueueMessage{
+		Kind: QueueMessageKindInbound,
+		Notification: InboundNotification{
+			Type:       "communication:inbound",
+			Channel:    "voice",
+			From:       InboundParty{Number: from},
+			To:         &InboundParty{Number: to},
+			Body:       "Voice transcript",
+			ReceivedAt: now.Format(time.RFC3339Nano),
+			MessageID:  "msg-voice-1",
+		},
+	}
+}
+
 func newActiveInboundStore(now time.Time, agentID string, channel string, identifier string) *fakeStore {
 	channelType := channelRecordType(channel)
 	fs := &fakeStore{
@@ -632,6 +647,72 @@ func TestProcessInbound_SMSAnnotatesSenderBeforeDelivery(t *testing.T) {
 	}
 	if len(fs.activities[agentID]) != 1 || fs.activities[agentID][0].Action != "receive" {
 		t.Fatalf("expected recorded receive activity, got %#v", fs.activities[agentID])
+	}
+}
+
+func TestProcessInbound_PhoneDeliveryIncludesForwardingAddress(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 3, 5, 12, 0, 0, 0, time.UTC)
+	agentID := commStoreTestAgentID
+
+	tests := []struct {
+		name    string
+		channel string
+		build   func(time.Time, string, string) QueueMessage
+	}{
+		{
+			name:    "sms",
+			channel: inboundChannelSMS,
+			build:   newInboundSMSMessage,
+		},
+		{
+			name:    "voice",
+			channel: inboundChannelVoice,
+			build:   newInboundVoiceMessage,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			fs := newActiveInboundStore(now, agentID, tc.channel, "+15551234567")
+			fs.channels[agentID+"#"+models.SoulChannelTypeEmail] = &models.SoulAgentChannel{
+				AgentID:       agentID,
+				ChannelType:   models.SoulChannelTypeEmail,
+				Identifier:    testAgentBobEmail,
+				Status:        models.SoulChannelStatusActive,
+				Verified:      true,
+				ProvisionedAt: now.Add(-time.Hour),
+			}
+
+			var delivered InboundNotification
+			s := NewServer(config.Config{Stage: "lab", SoulEmailInboundDomain: "inbound.lessersoul.ai"}, fs, nil, nil)
+			s.now = func() time.Time { return now }
+			s.fetchInstanceKeyPlaintext = func(context.Context, *models.Instance) (string, error) { return testInstanceAPIKey, nil }
+			s.deliverNotification = func(_ context.Context, _ string, apiKey string, notif InboundNotification) error {
+				if apiKey != testInstanceAPIKey {
+					t.Fatalf("unexpected api key: %q", apiKey)
+				}
+				delivered = notif
+				return nil
+			}
+
+			if err := s.processInbound(context.Background(), "req-phone", tc.build(now, "+15551234567", "+15557654321")); err != nil {
+				t.Fatalf("unexpected err: %v", err)
+			}
+			if delivered.To == nil {
+				t.Fatal("expected recipient payload")
+			}
+			if delivered.To.Number != "+15551234567" {
+				t.Fatalf("expected phone recipient to be preserved, got %#v", delivered.To)
+			}
+			if delivered.To.Address != "agent-bob@inbound.lessersoul.ai" {
+				t.Fatalf("expected forwarding address, got %#v", delivered.To)
+			}
+		})
 	}
 }
 

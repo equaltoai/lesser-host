@@ -274,6 +274,7 @@ func (s *Server) handleRateLimitedInbound(ctx context.Context, agentID string, c
 func (s *Server) deliverResolvedInbound(ctx context.Context, agentID string, channel string, notif InboundNotification, identity *models.SoulAgentIdentity) error {
 	// Best-effort: annotate soul-to-soul sender identity.
 	s.maybeAnnotateSenderSoul(ctx, &notif)
+	s.maybeAnnotateRecipientAddress(ctx, agentID, channel, notif.To)
 
 	inst, ok, err := s.resolveAgentInstance(ctx, identity)
 	if err != nil {
@@ -300,6 +301,51 @@ func (s *Server) deliverResolvedInbound(ctx context.Context, agentID string, cha
 
 	_ = s.recordInboundActivity(ctx, agentID, channel, notif, "receive", true)
 	return nil
+}
+
+func (s *Server) maybeAnnotateRecipientAddress(ctx context.Context, agentID string, channel string, to *InboundParty) {
+	if s == nil || s.store == nil || to == nil {
+		return
+	}
+	if strings.TrimSpace(to.Address) != "" {
+		return
+	}
+	switch strings.ToLower(strings.TrimSpace(channel)) {
+	case inboundChannelSMS, inboundChannelVoice:
+	default:
+		return
+	}
+
+	if address := s.lookupRecipientForwardingAddress(ctx, agentID); address != "" {
+		to.Address = address
+	}
+}
+
+func (s *Server) lookupRecipientForwardingAddress(ctx context.Context, agentID string) string {
+	if s == nil || s.store == nil {
+		return ""
+	}
+
+	ch, ok, err := s.store.GetSoulAgentChannel(ctx, agentID, models.SoulChannelTypeEmail)
+	if err != nil || !ok || ch == nil {
+		return ""
+	}
+
+	emailAddress := strings.ToLower(strings.TrimSpace(ch.Identifier))
+	if emailAddress == "" {
+		return ""
+	}
+
+	localPart, _, hasDomain := strings.Cut(emailAddress, "@")
+	if !hasDomain || strings.TrimSpace(localPart) == "" {
+		return emailAddress
+	}
+
+	inboundDomain := strings.ToLower(strings.TrimSpace(s.cfg.SoulEmailInboundDomain))
+	if inboundDomain == "" {
+		return emailAddress
+	}
+	return localPart + "@" + inboundDomain
 }
 
 func (s *Server) resolveRecipient(ctx context.Context, channel string, to *InboundParty) (string, bool, error) {
