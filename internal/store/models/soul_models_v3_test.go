@@ -147,24 +147,65 @@ func TestSoulCommMessageStatus_TTLAndKeys(t *testing.T) {
 
 	created := time.Date(2026, 3, 4, 12, 0, 0, 0, time.UTC)
 	m := &SoulCommMessageStatus{
-		MessageID:    " comm-msg-1 ",
-		AgentID:      " 0xABC ",
-		ChannelType:  " Email ",
-		To:           " alice@example.com ",
-		Status:       " SENT ",
-		CreatedAt:    created,
-		Provider:     " Migadu ",
-		ErrorMessage: "  ",
+		MessageID:      " comm-msg-1 ",
+		InstanceSlug:   " Lab-Inst ",
+		AgentID:        " 0xABC ",
+		IdempotencyKey: " retry-1 ",
+		ChannelType:    " Email ",
+		To:             " alice@example.com ",
+		Status:         " SENT ",
+		CreatedAt:      created,
+		Provider:       " Migadu ",
+		ErrorMessage:   "  ",
 	}
 	require.NoError(t, m.BeforeCreate())
 
 	require.Equal(t, "COMM#MSG#comm-msg-1", m.PK)
 	require.Equal(t, "STATUS", m.SK)
+	require.Equal(t, "COMM#IDEMPOTENCY#lab-inst#0xabc#retry-1", m.GSI1PK)
+	require.Equal(t, "2026-03-04T12:00:00Z#comm-msg-1", m.GSI1SK)
 	require.Equal(t, "comm-msg-1", m.MessageID)
+	require.Equal(t, "lab-inst", m.InstanceSlug)
 	require.Equal(t, "0xabc", m.AgentID)
+	require.Equal(t, "retry-1", m.IdempotencyKey)
 	require.Equal(t, "email", m.ChannelType)
 	require.Equal(t, "alice@example.com", m.To)
 	require.Equal(t, "sent", m.Status)
+	require.Equal(t, "migadu", m.Provider)
+	require.Equal(t, created.Add(90*24*time.Hour).Unix(), m.TTL)
+	require.False(t, m.UpdatedAt.IsZero())
+}
+
+func TestSoulCommSendIdempotency_TTLAndKeys(t *testing.T) {
+	t.Parallel()
+
+	created := time.Date(2026, 3, 4, 12, 0, 0, 0, time.UTC)
+	m := &SoulCommSendIdempotency{
+		InstanceSlug:   " Lab-Inst ",
+		AgentID:        " 0xABC ",
+		IdempotencyKey: " retry-1 ",
+		RequestHash:    " hash-1 ",
+		MessageID:      " comm-msg-1 ",
+		ChannelType:    " Email ",
+		To:             " alice@example.com ",
+		Status:         " Succeeded ",
+		ResponseStatus: " SENT ",
+		Provider:       " Migadu ",
+		CreatedAt:      created,
+	}
+	require.NoError(t, m.BeforeCreate())
+
+	require.Equal(t, SoulCommSendIdempotencyPK("lab-inst", "0xabc", "retry-1"), m.PK)
+	require.Equal(t, "STATE", m.SK)
+	require.Equal(t, "lab-inst", m.InstanceSlug)
+	require.Equal(t, "0xabc", m.AgentID)
+	require.Equal(t, "retry-1", m.IdempotencyKey)
+	require.Equal(t, "hash-1", m.RequestHash)
+	require.Equal(t, "comm-msg-1", m.MessageID)
+	require.Equal(t, "email", m.ChannelType)
+	require.Equal(t, "alice@example.com", m.To)
+	require.Equal(t, SoulCommSendIdempotencyStatusSucceeded, m.Status)
+	require.Equal(t, SoulCommMessageStatusSent, m.ResponseStatus)
 	require.Equal(t, "migadu", m.Provider)
 	require.Equal(t, created.Add(90*24*time.Hour).Unix(), m.TTL)
 	require.False(t, m.UpdatedAt.IsZero())

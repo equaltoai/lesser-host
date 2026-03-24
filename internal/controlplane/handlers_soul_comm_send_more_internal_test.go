@@ -33,6 +33,7 @@ type soulCommSendMoreTestDB struct {
 	qPrefs        *ttmocks.MockQuery
 	qReputation   *ttmocks.MockQuery
 	qCommActivity *ttmocks.MockQuery
+	qIdem         *ttmocks.MockQuery
 	qStatus       *ttmocks.MockQuery
 	qInstance     *ttmocks.MockQuery
 	qBudget       *ttmocks.MockQuery
@@ -50,6 +51,7 @@ func newSoulCommSendMoreTestDB() soulCommSendMoreTestDB {
 	qPrefs := new(ttmocks.MockQuery)
 	qReputation := new(ttmocks.MockQuery)
 	qCommActivity := new(ttmocks.MockQuery)
+	qIdem := new(ttmocks.MockQuery)
 	qStatus := new(ttmocks.MockQuery)
 	qInstance := new(ttmocks.MockQuery)
 	qBudget := new(ttmocks.MockQuery)
@@ -65,16 +67,19 @@ func newSoulCommSendMoreTestDB() soulCommSendMoreTestDB {
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentContactPreferences")).Return(qPrefs).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentReputation")).Return(qReputation).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentCommActivity")).Return(qCommActivity).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulCommSendIdempotency")).Return(qIdem).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulCommMessageStatus")).Return(qStatus).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.Instance")).Return(qInstance).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(qBudget).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.AuditLogEntry")).Return(qAudit).Maybe()
 
-	for _, q := range []*ttmocks.MockQuery{qKey, qDomain, qIdentity, qChannel, qEmailIdx, qPhoneIdx, qPrefs, qReputation, qCommActivity, qStatus, qInstance, qBudget, qAudit} {
+	for _, q := range []*ttmocks.MockQuery{qKey, qDomain, qIdentity, qChannel, qEmailIdx, qPhoneIdx, qPrefs, qReputation, qCommActivity, qIdem, qStatus, qInstance, qBudget, qAudit} {
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
+		q.On("Index", mock.Anything).Return(q).Maybe()
 		q.On("OrderBy", mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("Limit", mock.Anything).Return(q).Maybe()
 		q.On("IfExists").Return(q).Maybe()
+		q.On("IfNotExists").Return(q).Maybe()
 		q.On("ConsistentRead").Return(q).Maybe()
 		q.On("Update", mock.Anything).Return(nil).Maybe()
 		q.On("Create").Return(nil).Maybe()
@@ -91,6 +96,7 @@ func newSoulCommSendMoreTestDB() soulCommSendMoreTestDB {
 		qPrefs:        qPrefs,
 		qReputation:   qReputation,
 		qCommActivity: qCommActivity,
+		qIdem:         qIdem,
 		qStatus:       qStatus,
 		qInstance:     qInstance,
 		qBudget:       qBudget,
@@ -366,6 +372,367 @@ func TestHandleSoulCommSend_EmailProviderAndVoiceErrors(t *testing.T) {
 		})
 		_, err := s.handleSoulCommSend(newCommSendCtx(body, strPtr("comm-msg-prev")))
 		assertCommTheoryErrorCode(t, err, commCodeProviderUnavailable, http.StatusServiceUnavailable)
+	})
+}
+
+func TestHandleSoulCommSend_IdempotencyBehavior(t *testing.T) {
+	t.Parallel()
+
+	agentID := soulLifecycleTestAgentIDHex
+	body := map[string]any{
+		"channel":        "email",
+		"agentId":        agentID,
+		"to":             "alice@example.com",
+		"subject":        "Hello",
+		"body":           "hello",
+		"idempotencyKey": "dup-key",
+	}
+	expectedHash := soulCommSendRequestHash("inst1", validatedSoulCommSendRequest{
+		channel:        commChannelEmail,
+		agentIDHex:     agentID,
+		to:             "alice@example.com",
+		subject:        "Hello",
+		body:           "hello",
+		idempotencyKey: "dup-key",
+	})
+
+	t.Run("returns original success without redispatch", func(t *testing.T) {
+		tdb := newSoulCommSendMoreTestDB()
+		expectCommInstanceKey(t, tdb.qKey, models.InstanceKey{ID: "k1", InstanceSlug: "inst1", CreatedAt: time.Now().Add(-time.Hour).UTC()})
+		expectActiveCommRoute(t, tdb, agentID, "email")
+		tdb.qEmailIdx.On("First", mock.AnythingOfType("*models.SoulEmailAgentIndex")).Return(theoryErrors.ErrItemNotFound).Once()
+		resetCommMockQueryChain(tdb.qIdem)
+		resetCommMockQueryChain(tdb.qStatus)
+		tdb.qIdem.On("Create").Return(theoryErrors.ErrConditionFailed).Once()
+		tdb.qIdem.On("First", mock.AnythingOfType("*models.SoulCommSendIdempotency")).Return(nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*models.SoulCommSendIdempotency](t, args, 0)
+			*dest = models.SoulCommSendIdempotency{
+				InstanceSlug:   "inst1",
+				AgentID:        agentID,
+				IdempotencyKey: "dup-key",
+				RequestHash:    expectedHash,
+				MessageID:      "comm-msg-existing",
+				ChannelType:    commChannelEmail,
+				To:             "alice@example.com",
+				Status:         models.SoulCommSendIdempotencyStatusSucceeded,
+				ResponseStatus: models.SoulCommMessageStatusSent,
+				CreatedAt:      time.Date(2026, 3, 4, 12, 0, 0, 0, time.UTC),
+			}
+		}).Once()
+		tdb.qStatus.On("All", mock.AnythingOfType("*[]*models.SoulCommMessageStatus")).Return(nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*[]*models.SoulCommMessageStatus](t, args, 0)
+			*dest = []*models.SoulCommMessageStatus{{
+				MessageID:         "comm-msg-existing",
+				InstanceSlug:      "inst1",
+				AgentID:           agentID,
+				IdempotencyKey:    "dup-key",
+				ChannelType:       commChannelEmail,
+				To:                "alice@example.com",
+				Provider:          commDeliveryProviderMigadu,
+				ProviderMessageID: "<comm-msg-existing@lessersoul.ai>",
+				Status:            models.SoulCommMessageStatusSent,
+				CreatedAt:         time.Date(2026, 3, 4, 12, 0, 0, 0, time.UTC),
+			}}
+		}).Once()
+
+		s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true}}
+		resp, err := s.handleSoulCommSend(newCommSendCtx(mustMarshalCommSendBody(t, body), nil))
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		assertSoulCommSendResponse(t, resp, models.SoulCommMessageStatusSent, commDeliveryProviderMigadu, commChannelEmail, "<comm-msg-existing@lessersoul.ai>")
+
+		var out soulCommSendResponse
+		if err := json.Unmarshal(resp.Body, &out); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if out.MessageID != "comm-msg-existing" {
+			t.Fatalf("expected existing message id, got %#v", out)
+		}
+	})
+
+	t.Run("returns accepted while original request is still processing", func(t *testing.T) {
+		tdb := newSoulCommSendMoreTestDB()
+		expectCommInstanceKey(t, tdb.qKey, models.InstanceKey{ID: "k1", InstanceSlug: "inst1", CreatedAt: time.Now().Add(-time.Hour).UTC()})
+		expectActiveCommRoute(t, tdb, agentID, "email")
+		tdb.qEmailIdx.On("First", mock.AnythingOfType("*models.SoulEmailAgentIndex")).Return(theoryErrors.ErrItemNotFound).Once()
+		resetCommMockQueryChain(tdb.qIdem)
+		resetCommMockQueryChain(tdb.qStatus)
+		tdb.qIdem.On("Create").Return(theoryErrors.ErrConditionFailed).Once()
+		tdb.qIdem.On("First", mock.AnythingOfType("*models.SoulCommSendIdempotency")).Return(nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*models.SoulCommSendIdempotency](t, args, 0)
+			*dest = models.SoulCommSendIdempotency{
+				InstanceSlug:   "inst1",
+				AgentID:        agentID,
+				IdempotencyKey: "dup-key",
+				RequestHash:    expectedHash,
+				MessageID:      "comm-msg-existing",
+				ChannelType:    commChannelEmail,
+				To:             "alice@example.com",
+				Status:         models.SoulCommSendIdempotencyStatusProcessing,
+				ResponseStatus: models.SoulCommMessageStatusAccepted,
+				CreatedAt:      time.Date(2026, 3, 4, 12, 0, 0, 0, time.UTC),
+			}
+		}).Once()
+		tdb.qStatus.On("All", mock.AnythingOfType("*[]*models.SoulCommMessageStatus")).Return(nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*[]*models.SoulCommMessageStatus](t, args, 0)
+			*dest = []*models.SoulCommMessageStatus{}
+		}).Once()
+
+		s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true}}
+		resp, err := s.handleSoulCommSend(newCommSendCtx(mustMarshalCommSendBody(t, body), nil))
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		assertSoulCommSendResponse(t, resp, models.SoulCommMessageStatusAccepted, "", commChannelEmail, "")
+
+		var out soulCommSendResponse
+		if err := json.Unmarshal(resp.Body, &out); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if out.MessageID != "comm-msg-existing" {
+			t.Fatalf("expected in-flight message id, got %#v", out)
+		}
+	})
+
+	t.Run("rejects same key for different payload", func(t *testing.T) {
+		tdb := newSoulCommSendMoreTestDB()
+		expectCommInstanceKey(t, tdb.qKey, models.InstanceKey{ID: "k1", InstanceSlug: "inst1", CreatedAt: time.Now().Add(-time.Hour).UTC()})
+		expectActiveCommRoute(t, tdb, agentID, "email")
+		tdb.qEmailIdx.On("First", mock.AnythingOfType("*models.SoulEmailAgentIndex")).Return(theoryErrors.ErrItemNotFound).Once()
+		resetCommMockQueryChain(tdb.qIdem)
+		tdb.qIdem.On("Create").Return(theoryErrors.ErrConditionFailed).Once()
+		tdb.qIdem.On("First", mock.AnythingOfType("*models.SoulCommSendIdempotency")).Return(nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*models.SoulCommSendIdempotency](t, args, 0)
+			*dest = models.SoulCommSendIdempotency{
+				InstanceSlug:   "inst1",
+				AgentID:        agentID,
+				IdempotencyKey: "dup-key",
+				RequestHash:    "different-hash",
+				MessageID:      "comm-msg-existing",
+				ChannelType:    commChannelEmail,
+				To:             "alice@example.com",
+				Status:         models.SoulCommSendIdempotencyStatusSucceeded,
+				ResponseStatus: models.SoulCommMessageStatusSent,
+				CreatedAt:      time.Date(2026, 3, 4, 12, 0, 0, 0, time.UTC),
+			}
+		}).Once()
+
+		s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true}}
+		_, err := s.handleSoulCommSend(newCommSendCtx(mustMarshalCommSendBody(t, body), nil))
+		assertCommTheoryErrorCode(t, err, commCodeIdempotencyConflict, http.StatusConflict)
+	})
+}
+
+func testSoulCommSendBaseIdempotencyItem() *models.SoulCommSendIdempotency {
+	return &models.SoulCommSendIdempotency{
+		InstanceSlug:   "inst1",
+		AgentID:        soulLifecycleTestAgentIDHex,
+		IdempotencyKey: "dup-key",
+		RequestHash:    "hash-1",
+		MessageID:      "comm-msg-1",
+		ChannelType:    commChannelEmail,
+		To:             "alice@example.com",
+		CreatedAt:      time.Date(2026, 3, 4, 12, 0, 0, 0, time.UTC),
+	}
+}
+
+func TestSoulCommSendIdempotencyCompleteHelpers(t *testing.T) {
+	t.Parallel()
+
+	baseItem := testSoulCommSendBaseIdempotencyItem()
+
+	t.Run("success updates provider fields", func(t *testing.T) {
+		tdb := newSoulCommSendMoreTestDB()
+		resetCommMockQueryChain(tdb.qIdem)
+		tdb.qIdem.On("Update", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+			got := testutil.RequireMockArg[[]string](t, args, 0)
+			if strings.Join(got, ",") != "Status,ResponseStatus,Provider,ProviderMessageID,UpdatedAt" {
+				t.Fatalf("unexpected update fields: %#v", got)
+			}
+		}).Once()
+
+		s := &Server{store: store.New(tdb.db)}
+		if err := s.completeSoulCommSendIdempotencySuccess(context.Background(), baseItem, soulCommSendDelivery{
+			provider:          commDeliveryProviderMigadu,
+			providerMessageID: "<comm-msg-1@lessersoul.ai>",
+			initialStatus:     models.SoulCommMessageStatusSent,
+		}); err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+	})
+
+	t.Run("failure stores original error", func(t *testing.T) {
+		tdb := newSoulCommSendMoreTestDB()
+		resetCommMockQueryChain(tdb.qIdem)
+		tdb.qIdem.On("Update", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+			got := testutil.RequireMockArg[[]string](t, args, 0)
+			if strings.Join(got, ",") != "Status,ResponseStatus,ErrorCode,ErrorMessage,ErrorStatusCode,UpdatedAt" {
+				t.Fatalf("unexpected update fields: %#v", got)
+			}
+		}).Once()
+
+		s := &Server{store: store.New(tdb.db)}
+		appErr := apptheory.NewAppTheoryError(commCodeProviderUnavailable, "provider unavailable").WithStatusCode(http.StatusServiceUnavailable)
+		if err := s.completeSoulCommSendIdempotencyFailure(context.Background(), baseItem, appErr); err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+	})
+}
+
+func TestFinalizeSoulCommSendIdempotency(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulCommSendMoreTestDB()
+	resetCommMockQueryChain(tdb.qIdem)
+	tdb.qIdem.On("Update", mock.Anything).Return(nil).Once()
+	tdb.qIdem.On("Update", mock.Anything).Return(nil).Once()
+
+	s := &Server{store: store.New(tdb.db)}
+	baseItem := testSoulCommSendBaseIdempotencyItem()
+	s.finalizeSoulCommSendIdempotency(context.Background(), baseItem, soulCommSendDelivery{
+		provider:          commDeliveryProviderMigadu,
+		providerMessageID: "<comm-msg-1@lessersoul.ai>",
+		initialStatus:     models.SoulCommMessageStatusSent,
+	}, nil)
+	s.finalizeSoulCommSendIdempotency(context.Background(), baseItem, soulCommSendDelivery{}, apptheory.NewAppTheoryError(commCodeInternal, "internal error").WithStatusCode(http.StatusInternalServerError))
+	s.finalizeSoulCommSendIdempotency(context.Background(), nil, soulCommSendDelivery{}, nil)
+}
+
+func TestRespondFromSoulCommSendIdempotency(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil item returns internal", func(t *testing.T) {
+		tdb := newSoulCommSendMoreTestDB()
+		s := &Server{store: store.New(tdb.db)}
+		_, appErr := s.respondFromSoulCommSendIdempotency(context.Background(), nil, newSoulCommSendMetrics("lab", "inst1"))
+		if appErr == nil || appErr.Code != commCodeInternal || appErr.StatusCode != http.StatusInternalServerError {
+			t.Fatalf("expected internal error, got %#v", appErr)
+		}
+	})
+
+	t.Run("failed item returns original error", func(t *testing.T) {
+		tdb := newSoulCommSendMoreTestDB()
+		resetCommMockQueryChain(tdb.qStatus)
+		tdb.qStatus.On("All", mock.AnythingOfType("*[]*models.SoulCommMessageStatus")).Return(nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*[]*models.SoulCommMessageStatus](t, args, 0)
+			*dest = []*models.SoulCommMessageStatus{}
+		}).Once()
+
+		s := &Server{store: store.New(tdb.db)}
+		_, appErr := s.respondFromSoulCommSendIdempotency(context.Background(), &models.SoulCommSendIdempotency{
+			InstanceSlug:    "inst1",
+			AgentID:         soulLifecycleTestAgentIDHex,
+			IdempotencyKey:  "dup-key",
+			MessageID:       "comm-msg-1",
+			ChannelType:     commChannelEmail,
+			To:              "alice@example.com",
+			Status:          models.SoulCommSendIdempotencyStatusFailed,
+			ResponseStatus:  models.SoulCommMessageStatusFailed,
+			ErrorCode:       commCodeProviderUnavailable,
+			ErrorMessage:    "provider unavailable",
+			ErrorStatusCode: http.StatusServiceUnavailable,
+			CreatedAt:       testSoulCommSendBaseIdempotencyItem().CreatedAt,
+		}, newSoulCommSendMetrics("lab", "inst1"))
+		if appErr == nil || appErr.Code != commCodeProviderUnavailable || appErr.StatusCode != http.StatusServiceUnavailable {
+			t.Fatalf("expected provider unavailable, got %#v", appErr)
+		}
+	})
+
+	t.Run("processing item returns accepted response", func(t *testing.T) {
+		tdb := newSoulCommSendMoreTestDB()
+		resetCommMockQueryChain(tdb.qStatus)
+		tdb.qStatus.On("All", mock.AnythingOfType("*[]*models.SoulCommMessageStatus")).Return(nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*[]*models.SoulCommMessageStatus](t, args, 0)
+			*dest = []*models.SoulCommMessageStatus{}
+		}).Once()
+
+		s := &Server{store: store.New(tdb.db)}
+		resp, appErr := s.respondFromSoulCommSendIdempotency(context.Background(), &models.SoulCommSendIdempotency{
+			InstanceSlug:   "inst1",
+			AgentID:        soulLifecycleTestAgentIDHex,
+			IdempotencyKey: "dup-key",
+			MessageID:      "comm-msg-1",
+			ChannelType:    commChannelEmail,
+			To:             "alice@example.com",
+			Status:         models.SoulCommSendIdempotencyStatusProcessing,
+			ResponseStatus: models.SoulCommMessageStatusAccepted,
+			CreatedAt:      testSoulCommSendBaseIdempotencyItem().CreatedAt,
+		}, newSoulCommSendMetrics("lab", "inst1"))
+		if appErr != nil {
+			t.Fatalf("unexpected appErr: %v", appErr)
+		}
+		assertSoulCommSendResponse(t, resp, models.SoulCommMessageStatusAccepted, "", commChannelEmail, "")
+	})
+}
+
+func TestClaimSoulCommSendIdempotency_Branches(t *testing.T) {
+	t.Parallel()
+
+	req := validatedSoulCommSendRequest{
+		channel:        commChannelEmail,
+		agentIDHex:     soulLifecycleTestAgentIDHex,
+		to:             "alice@example.com",
+		subject:        "Hello",
+		body:           "hello",
+		idempotencyKey: "dup-key",
+	}
+	createdAt := testSoulCommSendBaseIdempotencyItem().CreatedAt
+
+	t.Run("non-condition create error returns internal", func(t *testing.T) {
+		tdb := newSoulCommSendMoreTestDB()
+		resetCommMockQueryChain(tdb.qIdem)
+		tdb.qIdem.On("Create").Return(errors.New("boom")).Once()
+		s := &Server{store: store.New(tdb.db)}
+
+		_, _, appErr := s.claimSoulCommSendIdempotency(
+			&apptheory.Context{Request: apptheory.Request{}},
+			&models.InstanceKey{InstanceSlug: "inst1"},
+			req,
+			"comm-msg-1",
+			createdAt,
+			newSoulCommSendMetrics("lab", "inst1"),
+		)
+		if appErr == nil || appErr.Code != commCodeInternal || appErr.StatusCode != http.StatusInternalServerError {
+			t.Fatalf("expected internal error, got %#v", appErr)
+		}
+	})
+
+	t.Run("status fallback returns original response", func(t *testing.T) {
+		tdb := newSoulCommSendMoreTestDB()
+		resetCommMockQueryChain(tdb.qIdem)
+		resetCommMockQueryChain(tdb.qStatus)
+		tdb.qIdem.On("Create").Return(theoryErrors.ErrConditionFailed).Once()
+		tdb.qIdem.On("First", mock.AnythingOfType("*models.SoulCommSendIdempotency")).Return(errors.New("boom")).Once()
+		tdb.qStatus.On("All", mock.AnythingOfType("*[]*models.SoulCommMessageStatus")).Return(nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*[]*models.SoulCommMessageStatus](t, args, 0)
+			*dest = []*models.SoulCommMessageStatus{{
+				MessageID:         "comm-msg-existing",
+				InstanceSlug:      "inst1",
+				AgentID:           soulLifecycleTestAgentIDHex,
+				IdempotencyKey:    "dup-key",
+				ChannelType:       commChannelEmail,
+				To:                "alice@example.com",
+				Provider:          commDeliveryProviderMigadu,
+				ProviderMessageID: "<comm-msg-existing@lessersoul.ai>",
+				Status:            models.SoulCommMessageStatusSent,
+				CreatedAt:         createdAt,
+			}}
+		}).Once()
+
+		s := &Server{store: store.New(tdb.db)}
+		_, resp, appErr := s.claimSoulCommSendIdempotency(
+			&apptheory.Context{Request: apptheory.Request{}},
+			&models.InstanceKey{InstanceSlug: "inst1"},
+			req,
+			"comm-msg-1",
+			createdAt,
+			newSoulCommSendMetrics("lab", "inst1"),
+		)
+		if appErr != nil {
+			t.Fatalf("unexpected appErr: %v", appErr)
+		}
+		assertSoulCommSendResponse(t, resp, models.SoulCommMessageStatusSent, commDeliveryProviderMigadu, commChannelEmail, "<comm-msg-existing@lessersoul.ai>")
 	})
 }
 
@@ -967,6 +1334,18 @@ func expectActiveCommRoute(t *testing.T, tdb soulCommSendMoreTestDB, agentID str
 		dest := testutil.RequireMockArg[*[]*models.SoulAgentCommActivity](t, args, 0)
 		*dest = []*models.SoulAgentCommActivity{}
 	}).Twice()
+}
+
+func resetCommMockQueryChain(q *ttmocks.MockQuery) {
+	q.ExpectedCalls = nil
+	q.Calls = nil
+	q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
+	q.On("Index", mock.Anything).Return(q).Maybe()
+	q.On("OrderBy", mock.Anything, mock.Anything).Return(q).Maybe()
+	q.On("Limit", mock.Anything).Return(q).Maybe()
+	q.On("IfExists").Return(q).Maybe()
+	q.On("IfNotExists").Return(q).Maybe()
+	q.On("ConsistentRead").Return(q).Maybe()
 }
 
 func requireCommTheoryError(t *testing.T, err error) *apptheory.AppTheoryError {

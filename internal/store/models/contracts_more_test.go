@@ -44,6 +44,7 @@ func TestModelContracts_TableNameAndKeyAccessors(t *testing.T) {
 		ProvisionJob{},
 		RenderArtifact{},
 		SetupSession{},
+		SoulCommSendIdempotency{},
 		TipHostRegistration{},
 		TipHostState{},
 		TipRegistryOperation{},
@@ -111,6 +112,19 @@ func TestModelContracts_TableNameAndKeyAccessors(t *testing.T) {
 	require.NoError(t, th.BeforeCreate())
 	require.NotEmpty(t, th.GetPK())
 	require.NotEmpty(t, th.GetSK())
+
+	idem := &SoulCommSendIdempotency{
+		InstanceSlug:   "slug",
+		AgentID:        "0xabc",
+		IdempotencyKey: "retry-1",
+		RequestHash:    "hash-1",
+		MessageID:      "comm-msg-1",
+		ChannelType:    "email",
+		To:             "alice@example.com",
+	}
+	require.NoError(t, idem.BeforeCreate())
+	require.NotEmpty(t, idem.GetPK())
+	require.NotEmpty(t, idem.GetSK())
 }
 
 func TestModelContracts_BeforeUpdate_MaintainsKeys(t *testing.T) {
