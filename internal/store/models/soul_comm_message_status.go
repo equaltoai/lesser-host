@@ -26,8 +26,13 @@ type SoulCommMessageStatus struct {
 	SK  string `theorydb:"sk,attr:SK" json:"-"`
 	TTL int64  `theorydb:"ttl,attr:ttl" json:"-"`
 
-	MessageID string `theorydb:"attr:messageId" json:"message_id"`
-	AgentID   string `theorydb:"attr:agentId" json:"agent_id"`
+	GSI1PK string `theorydb:"index:gsi1,pk,attr:gsi1PK,omitempty" json:"-"`
+	GSI1SK string `theorydb:"index:gsi1,sk,attr:gsi1SK,omitempty" json:"-"`
+
+	MessageID      string `theorydb:"attr:messageId" json:"message_id"`
+	InstanceSlug   string `theorydb:"attr:instanceSlug" json:"instance_slug,omitempty"`
+	AgentID        string `theorydb:"attr:agentId" json:"agent_id"`
+	IdempotencyKey string `theorydb:"attr:idempotencyKey" json:"idempotency_key,omitempty"`
 
 	ChannelType string `theorydb:"attr:channelType" json:"channel_type"` // email|sms|voice
 	To          string `theorydb:"attr:to" json:"to"`
@@ -68,6 +73,11 @@ func (m *SoulCommMessageStatus) BeforeCreate() error {
 	if err := requireNonEmpty("messageId", m.MessageID); err != nil {
 		return err
 	}
+	if strings.TrimSpace(m.IdempotencyKey) != "" {
+		if err := requireNonEmpty("instanceSlug", m.InstanceSlug); err != nil {
+			return err
+		}
+	}
 	if err := requireNonEmpty("agentId", m.AgentID); err != nil {
 		return err
 	}
@@ -101,7 +111,9 @@ func (m *SoulCommMessageStatus) BeforeUpdate() error {
 // UpdateKeys updates the database keys for SoulCommMessageStatus.
 func (m *SoulCommMessageStatus) UpdateKeys() error {
 	m.MessageID = strings.TrimSpace(m.MessageID)
+	m.InstanceSlug = strings.ToLower(strings.TrimSpace(m.InstanceSlug))
 	m.AgentID = strings.ToLower(strings.TrimSpace(m.AgentID))
+	m.IdempotencyKey = strings.TrimSpace(m.IdempotencyKey)
 	m.ChannelType = strings.ToLower(strings.TrimSpace(m.ChannelType))
 	m.To = strings.TrimSpace(m.To)
 	m.Provider = strings.ToLower(strings.TrimSpace(m.Provider))
@@ -114,6 +126,13 @@ func (m *SoulCommMessageStatus) UpdateKeys() error {
 
 	m.PK = fmt.Sprintf("COMM#MSG#%s", m.MessageID)
 	m.SK = "STATUS"
+	if m.InstanceSlug != "" && m.IdempotencyKey != "" && m.AgentID != "" {
+		m.GSI1PK = SoulCommMessageStatusIdempotencyIndexPK(m.InstanceSlug, m.AgentID, m.IdempotencyKey)
+		m.GSI1SK = fmt.Sprintf("%s#%s", m.CreatedAt.UTC().Format(time.RFC3339Nano), m.MessageID)
+	} else {
+		m.GSI1PK = ""
+		m.GSI1SK = ""
+	}
 	m.TTL = m.CreatedAt.UTC().Add(90 * 24 * time.Hour).Unix()
 	return nil
 }

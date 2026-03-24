@@ -2,7 +2,9 @@ package controlplane
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -50,18 +52,20 @@ const (
 	commCodeProviderUnavailable = "comm.provider_unavailable"
 	commCodeInsufficientCredits = "comm.insufficient_credits"
 	commCodePreferenceViolation = "comm.preference_violation"
+	commCodeIdempotencyConflict = "comm.idempotency_conflict"
 )
 
 type soulCommSendRequest struct {
-	Channel   string   `json:"channel"`
-	AgentID   string   `json:"agentId"`
-	To        string   `json:"to"`
-	CC        []string `json:"cc,omitempty"`
-	BCC       []string `json:"bcc,omitempty"`
-	ReplyTo   string   `json:"replyTo,omitempty"`
-	Subject   string   `json:"subject,omitempty"`
-	Body      string   `json:"body"`
-	InReplyTo *string  `json:"inReplyTo,omitempty"`
+	Channel        string   `json:"channel"`
+	AgentID        string   `json:"agentId"`
+	To             string   `json:"to"`
+	CC             []string `json:"cc,omitempty"`
+	BCC            []string `json:"bcc,omitempty"`
+	ReplyTo        string   `json:"replyTo,omitempty"`
+	Subject        string   `json:"subject,omitempty"`
+	Body           string   `json:"body"`
+	InReplyTo      *string  `json:"inReplyTo,omitempty"`
+	IdempotencyKey string   `json:"idempotencyKey,omitempty"`
 }
 
 type soulCommSendResponse struct {
@@ -102,15 +106,16 @@ type soulCommSendMetrics struct {
 }
 
 type validatedSoulCommSendRequest struct {
-	channel    string
-	agentIDHex string
-	to         string
-	cc         []string
-	bcc        []string
-	replyTo    string
-	subject    string
-	body       string
-	inReplyTo  string
+	channel        string
+	agentIDHex     string
+	to             string
+	cc             []string
+	bcc            []string
+	replyTo        string
+	subject        string
+	body           string
+	inReplyTo      string
+	idempotencyKey string
 }
 
 type soulCommSendRoute struct {
@@ -214,7 +219,16 @@ func (s *Server) handleSoulCommSend(ctx *apptheory.Context) (*apptheory.Response
 		return nil, appErr
 	}
 
+	idem, existingResp, appErr := s.prepareSoulCommSendIdempotency(ctx, key, req, messageID, now, metrics)
+	if appErr != nil {
+		return nil, appErr
+	}
+	if existingResp != nil {
+		return existingResp, nil
+	}
+
 	delivery, appErr := s.dispatchSoulCommSend(ctx, key, req, route.channel, now, messageID, metrics)
+	s.finalizeSoulCommSendIdempotency(ctx.Context(), idem, delivery, appErr)
 	if appErr != nil {
 		return nil, appErr
 	}
@@ -287,17 +301,23 @@ func parseSoulCommSendRequest(ctx *apptheory.Context, metrics *soulCommSendMetri
 	if req.InReplyTo != nil {
 		inReplyTo = strings.TrimSpace(*req.InReplyTo)
 	}
+	idempotencyKey := strings.TrimSpace(req.IdempotencyKey)
+	if len(idempotencyKey) > 256 {
+		metrics.status = commMetricInvalidRequest
+		return validatedSoulCommSendRequest{}, apptheory.NewAppTheoryError(commCodeInvalidRequest, "idempotencyKey is invalid").WithStatusCode(http.StatusBadRequest)
+	}
 
 	return validatedSoulCommSendRequest{
-		channel:    channel,
-		agentIDHex: agentIDHex,
-		to:         to,
-		cc:         req.CC,
-		bcc:        req.BCC,
-		replyTo:    strings.TrimSpace(req.ReplyTo),
-		subject:    subject,
-		body:       body,
-		inReplyTo:  inReplyTo,
+		channel:        channel,
+		agentIDHex:     agentIDHex,
+		to:             to,
+		cc:             req.CC,
+		bcc:            req.BCC,
+		replyTo:        strings.TrimSpace(req.ReplyTo),
+		subject:        subject,
+		body:           body,
+		inReplyTo:      inReplyTo,
+		idempotencyKey: idempotencyKey,
 	}, nil
 }
 
@@ -538,6 +558,244 @@ func newSoulCommSendMessageID() (string, *apptheory.AppTheoryError) {
 		return "", apptheory.NewAppTheoryError(commCodeInternal, "internal error").WithStatusCode(http.StatusInternalServerError)
 	}
 	return "comm-msg-" + messageIDToken, nil
+}
+
+func normalizeCommIdempotencyEmail(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func normalizeCommIdempotencyEmails(items []string) []string {
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		item = normalizeCommIdempotencyEmail(item)
+		if item != "" {
+			out = append(out, item)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func soulCommSendRequestHash(instanceSlug string, req validatedSoulCommSendRequest) string {
+	payload := struct {
+		InstanceSlug string   `json:"instanceSlug"`
+		Channel      string   `json:"channel"`
+		AgentID      string   `json:"agentId"`
+		To           string   `json:"to"`
+		CC           []string `json:"cc,omitempty"`
+		BCC          []string `json:"bcc,omitempty"`
+		ReplyTo      string   `json:"replyTo,omitempty"`
+		Subject      string   `json:"subject,omitempty"`
+		Body         string   `json:"body"`
+		InReplyTo    string   `json:"inReplyTo,omitempty"`
+	}{
+		InstanceSlug: strings.ToLower(strings.TrimSpace(instanceSlug)),
+		Channel:      strings.ToLower(strings.TrimSpace(req.channel)),
+		AgentID:      strings.ToLower(strings.TrimSpace(req.agentIDHex)),
+		To:           strings.TrimSpace(req.to),
+		CC:           normalizeCommIdempotencyEmails(req.cc),
+		BCC:          normalizeCommIdempotencyEmails(req.bcc),
+		ReplyTo:      normalizeCommIdempotencyEmail(req.replyTo),
+		Subject:      strings.TrimSpace(req.subject),
+		Body:         strings.TrimSpace(req.body),
+		InReplyTo:    strings.TrimSpace(req.inReplyTo),
+	}
+	if payload.Channel == commChannelEmail {
+		payload.To = normalizeCommIdempotencyEmail(payload.To)
+	}
+	raw, _ := json.Marshal(payload)
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
+}
+
+func (s *Server) claimSoulCommSendIdempotency(ctx *apptheory.Context, key *models.InstanceKey, req validatedSoulCommSendRequest, messageID string, now time.Time, metrics *soulCommSendMetrics) (*models.SoulCommSendIdempotency, *apptheory.Response, *apptheory.AppTheoryError) {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		metrics.status = commMetricInternalError
+		return nil, nil, apptheory.NewAppTheoryError(commCodeInternal, "internal error").WithStatusCode(http.StatusInternalServerError)
+	}
+	instanceSlug := strings.ToLower(strings.TrimSpace(key.InstanceSlug))
+	if instanceSlug == "" {
+		metrics.status = commMetricUnauthorized
+		return nil, nil, apptheory.NewAppTheoryError(commCodeUnauthorized, "unauthorized").WithStatusCode(http.StatusUnauthorized)
+	}
+
+	item := &models.SoulCommSendIdempotency{
+		InstanceSlug:   instanceSlug,
+		AgentID:        req.agentIDHex,
+		IdempotencyKey: req.idempotencyKey,
+		RequestHash:    soulCommSendRequestHash(instanceSlug, req),
+		MessageID:      messageID,
+		ChannelType:    req.channel,
+		To:             req.to,
+		Status:         models.SoulCommSendIdempotencyStatusProcessing,
+		ResponseStatus: models.SoulCommMessageStatusAccepted,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	_ = item.UpdateKeys()
+	if err := s.store.DB.WithContext(ctx.Context()).Model(item).IfNotExists().Create(); err == nil {
+		return item, nil, nil
+	} else if !theoryErrors.IsConditionFailed(err) {
+		metrics.status = commMetricInternalError
+		return nil, nil, apptheory.NewAppTheoryError(commCodeInternal, "failed to reserve idempotency key").WithStatusCode(http.StatusInternalServerError)
+	}
+
+	existing, err := s.getSoulCommSendIdempotency(ctx.Context(), instanceSlug, req.agentIDHex, req.idempotencyKey)
+	if err != nil {
+		if status, statusErr := s.lookupSoulCommStatusByIdempotencyKey(ctx.Context(), instanceSlug, req.agentIDHex, req.idempotencyKey); statusErr == nil && status != nil {
+			metrics.provider = strings.TrimSpace(status.Provider)
+			metrics.status = commMetricSent
+			resp, appErr := soulCommSendJSONFromStatusItem(*status)
+			return nil, resp, appErr
+		}
+		metrics.status = commMetricInternalError
+		return nil, nil, apptheory.NewAppTheoryError(commCodeInternal, "failed to load idempotent response").WithStatusCode(http.StatusInternalServerError)
+	}
+	if strings.TrimSpace(existing.RequestHash) != strings.TrimSpace(item.RequestHash) {
+		metrics.status = commMetricInvalidRequest
+		return nil, nil, apptheory.NewAppTheoryError(commCodeIdempotencyConflict, "idempotency key already used for a different request").WithStatusCode(http.StatusConflict)
+	}
+	resp, appErr := s.respondFromSoulCommSendIdempotency(ctx.Context(), existing, metrics)
+	return existing, resp, appErr
+}
+
+func (s *Server) prepareSoulCommSendIdempotency(ctx *apptheory.Context, key *models.InstanceKey, req validatedSoulCommSendRequest, messageID string, now time.Time, metrics *soulCommSendMetrics) (*models.SoulCommSendIdempotency, *apptheory.Response, *apptheory.AppTheoryError) {
+	if req.idempotencyKey == "" {
+		return nil, nil, nil
+	}
+	return s.claimSoulCommSendIdempotency(ctx, key, req, messageID, now, metrics)
+}
+
+func (s *Server) getSoulCommSendIdempotency(ctx context.Context, instanceSlug string, agentIDHex string, idempotencyKey string) (*models.SoulCommSendIdempotency, error) {
+	rec := &models.SoulCommSendIdempotency{
+		InstanceSlug:   instanceSlug,
+		AgentID:        agentIDHex,
+		IdempotencyKey: idempotencyKey,
+	}
+	_ = rec.UpdateKeys()
+	var item models.SoulCommSendIdempotency
+	err := s.store.DB.WithContext(ctx).
+		Model(&models.SoulCommSendIdempotency{}).
+		Where("PK", "=", rec.PK).
+		Where("SK", "=", rec.SK).
+		First(&item)
+	if err != nil {
+		return nil, err
+	}
+	return &item, nil
+}
+
+func (s *Server) lookupSoulCommStatusByIdempotencyKey(ctx context.Context, instanceSlug string, agentIDHex string, idempotencyKey string) (*models.SoulCommMessageStatus, error) {
+	var items []*models.SoulCommMessageStatus
+	err := s.store.DB.WithContext(ctx).
+		Model(&models.SoulCommMessageStatus{}).
+		Index("gsi1").
+		Where("gsi1PK", "=", models.SoulCommMessageStatusIdempotencyIndexPK(instanceSlug, agentIDHex, idempotencyKey)).
+		OrderBy("gsi1SK", "DESC").
+		Limit(1).
+		All(&items)
+	if err != nil {
+		return nil, err
+	}
+	for _, item := range items {
+		if item != nil {
+			return item, nil
+		}
+	}
+	return nil, theoryErrors.ErrItemNotFound
+}
+
+func (s *Server) respondFromSoulCommSendIdempotency(ctx context.Context, item *models.SoulCommSendIdempotency, metrics *soulCommSendMetrics) (*apptheory.Response, *apptheory.AppTheoryError) {
+	if item == nil {
+		metrics.status = commMetricInternalError
+		return nil, apptheory.NewAppTheoryError(commCodeInternal, "internal error").WithStatusCode(http.StatusInternalServerError)
+	}
+	if status, err := s.lookupSoulCommStatusByIdempotencyKey(ctx, item.InstanceSlug, item.AgentID, item.IdempotencyKey); err == nil && status != nil {
+		metrics.provider = strings.TrimSpace(status.Provider)
+		metrics.status = commMetricSent
+		return soulCommSendJSONFromStatusItem(*status)
+	}
+
+	switch strings.TrimSpace(item.Status) {
+	case models.SoulCommSendIdempotencyStatusFailed:
+		metrics.provider = strings.TrimSpace(item.Provider)
+		metrics.status = commMetricProviderRejected
+		statusCode := item.ErrorStatusCode
+		if statusCode == 0 {
+			statusCode = http.StatusInternalServerError
+		}
+		code := strings.TrimSpace(item.ErrorCode)
+		if code == "" {
+			code = commCodeInternal
+		}
+		message := strings.TrimSpace(item.ErrorMessage)
+		if message == "" {
+			message = "internal error"
+		}
+		return nil, apptheory.NewAppTheoryError(code, message).WithStatusCode(statusCode)
+	default:
+		metrics.provider = strings.TrimSpace(item.Provider)
+		metrics.status = commMetricSent
+		return soulCommSendJSONFromIdempotencyItem(*item)
+	}
+}
+
+func (s *Server) completeSoulCommSendIdempotencySuccess(ctx context.Context, item *models.SoulCommSendIdempotency, delivery soulCommSendDelivery) error {
+	if s == nil || s.store == nil || s.store.DB == nil || item == nil {
+		return nil
+	}
+	update := &models.SoulCommSendIdempotency{
+		InstanceSlug:      item.InstanceSlug,
+		AgentID:           item.AgentID,
+		IdempotencyKey:    item.IdempotencyKey,
+		RequestHash:       item.RequestHash,
+		MessageID:         item.MessageID,
+		ChannelType:       item.ChannelType,
+		To:                item.To,
+		Status:            models.SoulCommSendIdempotencyStatusSucceeded,
+		ResponseStatus:    soulCommSendResultStatus(delivery.initialStatus),
+		Provider:          delivery.provider,
+		ProviderMessageID: delivery.providerMessageID,
+		CreatedAt:         item.CreatedAt,
+		UpdatedAt:         time.Now().UTC(),
+	}
+	_ = update.UpdateKeys()
+	return s.store.DB.WithContext(ctx).Model(update).IfExists().Update("Status", "ResponseStatus", "Provider", "ProviderMessageID", "UpdatedAt")
+}
+
+func (s *Server) completeSoulCommSendIdempotencyFailure(ctx context.Context, item *models.SoulCommSendIdempotency, appErr *apptheory.AppTheoryError) error {
+	if s == nil || s.store == nil || s.store.DB == nil || item == nil || appErr == nil {
+		return nil
+	}
+	update := &models.SoulCommSendIdempotency{
+		InstanceSlug:    item.InstanceSlug,
+		AgentID:         item.AgentID,
+		IdempotencyKey:  item.IdempotencyKey,
+		RequestHash:     item.RequestHash,
+		MessageID:       item.MessageID,
+		ChannelType:     item.ChannelType,
+		To:              item.To,
+		Status:          models.SoulCommSendIdempotencyStatusFailed,
+		ResponseStatus:  models.SoulCommMessageStatusFailed,
+		ErrorCode:       appErr.Code,
+		ErrorMessage:    appErr.Message,
+		ErrorStatusCode: appErr.StatusCode,
+		CreatedAt:       item.CreatedAt,
+		UpdatedAt:       time.Now().UTC(),
+	}
+	_ = update.UpdateKeys()
+	return s.store.DB.WithContext(ctx).Model(update).IfExists().Update("Status", "ResponseStatus", "ErrorCode", "ErrorMessage", "ErrorStatusCode", "UpdatedAt")
+}
+
+func (s *Server) finalizeSoulCommSendIdempotency(ctx context.Context, item *models.SoulCommSendIdempotency, delivery soulCommSendDelivery, appErr *apptheory.AppTheoryError) {
+	if item == nil {
+		return
+	}
+	if appErr != nil {
+		_ = s.completeSoulCommSendIdempotencyFailure(ctx, item, appErr)
+		return
+	}
+	_ = s.completeSoulCommSendIdempotencySuccess(ctx, item, delivery)
 }
 
 func (s *Server) dispatchSoulCommSend(ctx *apptheory.Context, key *models.InstanceKey, req validatedSoulCommSendRequest, channel *models.SoulAgentChannel, now time.Time, messageID string, metrics *soulCommSendMetrics) (soulCommSendDelivery, *apptheory.AppTheoryError) {
@@ -787,13 +1045,12 @@ func (s *Server) debitSoulSMSCredits(ctx context.Context, instanceSlug string, a
 }
 
 func (s *Server) recordSoulCommSend(ctx *apptheory.Context, key *models.InstanceKey, req validatedSoulCommSendRequest, messageID string, delivery soulCommSendDelivery, decision soulCommSendGuardDecision, now time.Time, metrics *soulCommSendMetrics) *apptheory.AppTheoryError {
-	statusValue := strings.TrimSpace(delivery.initialStatus)
-	if statusValue == "" {
-		statusValue = models.SoulCommMessageStatusSent
-	}
+	statusValue := soulCommSendResultStatus(delivery.initialStatus)
 	status := &models.SoulCommMessageStatus{
 		MessageID:         messageID,
+		InstanceSlug:      strings.TrimSpace(key.InstanceSlug),
 		AgentID:           req.agentIDHex,
+		IdempotencyKey:    req.idempotencyKey,
 		ChannelType:       req.channel,
 		To:                req.to,
 		Provider:          delivery.provider,
@@ -839,24 +1096,40 @@ func (s *Server) recordSoulCommSend(ctx *apptheory.Context, key *models.Instance
 }
 
 func soulCommSendJSON(messageID string, req validatedSoulCommSendRequest, delivery soulCommSendDelivery, now time.Time) (*apptheory.Response, *apptheory.AppTheoryError) {
-	statusValue := strings.TrimSpace(delivery.initialStatus)
+	return soulCommSendJSONFields(messageID, soulCommSendResultStatus(delivery.initialStatus), req.channel, req.agentIDHex, req.to, delivery.provider, delivery.providerMessageID, now)
+}
+
+func soulCommSendResultStatus(initialStatus string) string {
+	statusValue := strings.TrimSpace(initialStatus)
 	if statusValue == "" {
 		statusValue = models.SoulCommMessageStatusSent
 	}
+	return statusValue
+}
+
+func soulCommSendJSONFields(messageID string, status string, channel string, agentID string, to string, provider string, providerMessageID string, createdAt time.Time) (*apptheory.Response, *apptheory.AppTheoryError) {
 	resp, err := apptheory.JSON(http.StatusOK, soulCommSendResponse{
-		MessageID:         messageID,
-		Status:            statusValue,
-		Channel:           req.channel,
-		AgentID:           req.agentIDHex,
-		To:                req.to,
-		Provider:          delivery.provider,
-		ProviderMessageID: delivery.providerMessageID,
-		CreatedAt:         now.Format(time.RFC3339Nano),
+		MessageID:         strings.TrimSpace(messageID),
+		Status:            strings.TrimSpace(status),
+		Channel:           strings.TrimSpace(channel),
+		AgentID:           strings.ToLower(strings.TrimSpace(agentID)),
+		To:                strings.TrimSpace(to),
+		Provider:          strings.TrimSpace(provider),
+		ProviderMessageID: strings.TrimSpace(providerMessageID),
+		CreatedAt:         createdAt.UTC().Format(time.RFC3339Nano),
 	})
 	if err != nil {
 		return nil, apptheory.NewAppTheoryError(commCodeInternal, "internal error").WithStatusCode(http.StatusInternalServerError)
 	}
 	return resp, nil
+}
+
+func soulCommSendJSONFromStatusItem(item models.SoulCommMessageStatus) (*apptheory.Response, *apptheory.AppTheoryError) {
+	return soulCommSendJSONFields(item.MessageID, item.Status, item.ChannelType, item.AgentID, item.To, item.Provider, item.ProviderMessageID, item.CreatedAt)
+}
+
+func soulCommSendJSONFromIdempotencyItem(item models.SoulCommSendIdempotency) (*apptheory.Response, *apptheory.AppTheoryError) {
+	return soulCommSendJSONFields(item.MessageID, item.ResponseStatus, item.ChannelType, item.AgentID, item.To, item.Provider, item.ProviderMessageID, item.CreatedAt)
 }
 
 func soulCommStatusJSON(item models.SoulCommMessageStatus) soulCommStatusResponse {

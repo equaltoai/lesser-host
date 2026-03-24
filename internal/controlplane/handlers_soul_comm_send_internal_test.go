@@ -28,8 +28,10 @@ const (
 func allowCommQueryOps(queries ...*ttmocks.MockQuery) {
 	for _, q := range queries {
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
+		q.On("Index", mock.Anything).Return(q).Maybe()
 		q.On("ConsistentRead").Return(q).Maybe()
 		q.On("IfExists").Return(q).Maybe()
+		q.On("IfNotExists").Return(q).Maybe()
 		q.On("Update", mock.Anything).Return(nil).Maybe()
 		q.On("OrderBy", mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("Limit", mock.Anything).Return(q).Maybe()
