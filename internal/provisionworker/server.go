@@ -1068,15 +1068,11 @@ const (
 )
 
 func managedInstanceKeySecretName(controlPlaneStage, slug string) string {
-	stage := strings.ToLower(strings.TrimSpace(controlPlaneStage))
-	if stage == "" {
-		stage = defaultControlPlaneStage
-	}
 	slug = strings.ToLower(strings.TrimSpace(slug))
 	if slug == "" {
 		return ""
 	}
-	return fmt.Sprintf("lesser-host/%s/instances/%s/instance-key", stage, slug)
+	return fmt.Sprintf("%s/instance-key", slug)
 }
 
 func secretsManagerTagValue(tags []smtypes.Tag, key string) string {
