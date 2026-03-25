@@ -161,7 +161,7 @@ func TestRunManagedUpdateStateMachine_HappyPath(t *testing.T) {
 	fsm := &fakeSecretsManager{
 		describeErr: &smtypes.ResourceNotFoundException{},
 		createOut: &secretsmanager.CreateSecretOutput{
-			ARN: aws.String("arn:aws:secretsmanager:us-east-1:000000000000:secret:lesser-host/live/instances/slug/instance-key"),
+			ARN: aws.String("arn:aws:secretsmanager:us-east-1:000000000000:secret:slug/instance-key"),
 		},
 		getOut: &secretsmanager.GetSecretValueOutput{
 			SecretString: aws.String(`{"secret":"lhk_test"}`),
@@ -299,7 +299,7 @@ func TestRunManagedUpdateStateMachine_BodyOnlyCompletesIndependently(t *testing.
 	fsm := &fakeSecretsManager{
 		describeErr: &smtypes.ResourceNotFoundException{},
 		createOut: &secretsmanager.CreateSecretOutput{
-			ARN: aws.String("arn:aws:secretsmanager:us-east-1:000000000000:secret:lesser-host/live/instances/slug/instance-key"),
+			ARN: aws.String("arn:aws:secretsmanager:us-east-1:000000000000:secret:slug/instance-key"),
 		},
 		getOut: &secretsmanager.GetSecretValueOutput{
 			SecretString: aws.String(`{"secret":"lhk_test"}`),
@@ -451,7 +451,7 @@ func TestRunManagedUpdateStateMachine_MCPOnlySkipsLesserAndBodyDeploy(t *testing
 	fsm := &fakeSecretsManager{
 		describeErr: &smtypes.ResourceNotFoundException{},
 		createOut: &secretsmanager.CreateSecretOutput{
-			ARN: aws.String("arn:aws:secretsmanager:us-east-1:000000000000:secret:lesser-host/live/instances/slug/instance-key"),
+			ARN: aws.String("arn:aws:secretsmanager:us-east-1:000000000000:secret:slug/instance-key"),
 		},
 		getOut: &secretsmanager.GetSecretValueOutput{
 			SecretString: aws.String(`{"secret":"lhk_test"}`),
