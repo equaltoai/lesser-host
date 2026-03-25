@@ -188,6 +188,37 @@ func TestHandleCommSMSInboundWebhook_EnqueueFailureReturnsInternal(t *testing.T)
 	requireWebhookAppError(t, err, appErrCodeInternal, commWebhookFailedToEnqueue)
 }
 
+func TestHandleCommSMSInboundWebhook_SkipsNonInboundTelnyxEvents(t *testing.T) {
+	t.Parallel()
+
+	s := newCommWebhookServer(func(_ context.Context, msg commworker.QueueMessage) error {
+		t.Fatalf("enqueue should not be called for non-inbound Telnyx events: %#v", msg)
+		return nil
+	})
+	body := marshalCommWebhookBody(t, map[string]any{
+		"data": map[string]any{
+			"event_type": "message.sent",
+			"payload": map[string]any{
+				"id":   "telnyx-msg-2",
+				"text": "Hello",
+				"from": map[string]any{"phone_number": "+15550142"},
+				"to":   []map[string]any{{"phone_number": "+15550143"}},
+			},
+		},
+	})
+
+	resp, err := s.handleCommSMSInboundWebhook(&apptheory.Context{Request: apptheory.Request{Body: body}})
+	requireCommWebhookOK(t, resp, err)
+
+	var got map[string]any
+	if err := json.Unmarshal(resp.Body, &got); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if got["skipped"] != "message.sent" {
+		t.Fatalf("expected skipped event type, got %#v", got)
+	}
+}
+
 func TestHandleCommVoiceInboundWebhook_NormalizesPayload(t *testing.T) {
 	t.Parallel()
 

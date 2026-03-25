@@ -153,6 +153,10 @@ func (s *Server) handleCommSMSInboundWebhook(ctx *apptheory.Context) (*apptheory
 	if err := json.Unmarshal(ctx.Request.Body, &tel); err != nil {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid webhook payload"}
 	}
+	eventType := strings.TrimSpace(tel.Data.EventType)
+	if eventType != "message.received" {
+		return apptheory.JSON(http.StatusOK, map[string]any{"ok": true, "skipped": eventType})
+	}
 
 	from := strings.TrimSpace(tel.Data.Payload.From.PhoneNumber)
 	to := ""
