@@ -370,6 +370,25 @@ export interface SoulAgentPromotionListResponse {
 	next_cursor?: string;
 }
 
+export interface SoulAgentPromotionLifecycleEvent {
+	event_id: string;
+	event_type: string;
+	summary?: string;
+	occurred_at: string;
+	request_id?: string;
+	operation_id?: string;
+	conversation_id?: string;
+	promotion: SoulAgentPromotion;
+}
+
+export interface SoulAgentPromotionLifecycleEventListResponse {
+	version: string;
+	events: SoulAgentPromotionLifecycleEvent[];
+	count: number;
+	has_more: boolean;
+	next_cursor?: string;
+}
+
 export interface SoulAgentRegistrationBeginResponse {
 	registration: SoulAgentRegistration;
 	wallet: WalletChallengeResponse;
@@ -463,6 +482,34 @@ export function soulListMyPromotions(token: string, input?: { limit?: number; cu
 	if (input?.cursor) params.set('cursor', input.cursor);
 	const qs = params.toString();
 	return fetchJson<SoulAgentPromotionListResponse>(`/api/v1/soul/promotions/mine${qs ? `?${qs}` : ''}`, {
+		headers: {
+			authorization: `Bearer ${token}`,
+		},
+	});
+}
+
+export function soulListMyPromotionLifecycleEvents(token: string, input?: { limit?: number; cursor?: string }): Promise<SoulAgentPromotionLifecycleEventListResponse> {
+	const params = new URLSearchParams();
+	if (input?.limit != null) params.set('limit', String(input.limit));
+	if (input?.cursor) params.set('cursor', input.cursor);
+	const qs = params.toString();
+	return fetchJson<SoulAgentPromotionLifecycleEventListResponse>(`/api/v1/soul/promotions/mine/events${qs ? `?${qs}` : ''}`, {
+		headers: {
+			authorization: `Bearer ${token}`,
+		},
+	});
+}
+
+export function soulListAgentPromotionLifecycleEvents(
+	token: string,
+	agentId: string,
+	input?: { limit?: number; cursor?: string },
+): Promise<SoulAgentPromotionLifecycleEventListResponse> {
+	const params = new URLSearchParams();
+	if (input?.limit != null) params.set('limit', String(input.limit));
+	if (input?.cursor) params.set('cursor', input.cursor);
+	const qs = params.toString();
+	return fetchJson<SoulAgentPromotionLifecycleEventListResponse>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/promotion/events${qs ? `?${qs}` : ''}`, {
 		headers: {
 			authorization: `Bearer ${token}`,
 		},

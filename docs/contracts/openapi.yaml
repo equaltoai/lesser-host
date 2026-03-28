@@ -610,6 +610,56 @@ components:
         next_cursor:
           type: string
 
+    SoulAgentPromotionLifecycleEvent:
+      type: object
+      additionalProperties: false
+      required: [event_id, event_type, occurred_at, promotion]
+      properties:
+        event_id:
+          type: string
+        event_type:
+          type: string
+          enum:
+            - request_created
+            - request_approved
+            - mint_executed
+            - review_started
+            - finalize_ready
+            - graduated
+        summary:
+          type: string
+        occurred_at:
+          type: string
+          format: date-time
+        request_id:
+          type: string
+        operation_id:
+          type: string
+        conversation_id:
+          type: string
+        promotion:
+          $ref: "#/components/schemas/SoulAgentPromotion"
+
+    SoulAgentPromotionLifecycleEventListResponse:
+      type: object
+      additionalProperties: false
+      required: [version, events, count, has_more]
+      properties:
+        version:
+          type: string
+          enum: ["1"]
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/SoulAgentPromotionLifecycleEvent"
+        count:
+          type: integer
+          minimum: 0
+        has_more:
+          type: boolean
+        next_cursor:
+          type: string
+
     SoulAgentRegistrationBeginRequest:
       type: object
       additionalProperties: false
@@ -1519,6 +1569,51 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorEnvelope"
 
+  /api/v1/soul/promotions/mine/events:
+    get:
+      operationId: soulListMyPromotionLifecycleEvents
+      summary: List structured promotion lifecycle events for the authenticated requester
+      security:
+        - sessionAuth: []
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SoulAgentPromotionLifecycleEventListResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+
   /api/v1/soul/agents/{agentId}/promotion:
     get:
       operationId: soulGetPromotion
@@ -1616,6 +1711,63 @@ paths:
                 $ref: "#/components/schemas/ErrorEnvelope"
         "409":
           description: Conflict
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+
+  /api/v1/soul/agents/{agentId}/promotion/events:
+    get:
+      operationId: soulListAgentPromotionLifecycleEvents
+      summary: List structured lifecycle events for a single agent promotion workflow
+      security:
+        - sessionAuth: []
+      parameters:
+        - name: agentId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: "^0x[0-9a-fA-F]{64}$"
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SoulAgentPromotionLifecycleEventListResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "404":
+          description: Not found
           content:
             application/json:
               schema:

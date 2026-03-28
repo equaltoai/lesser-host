@@ -15,6 +15,11 @@ import (
 	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
+const (
+	testSoulPromotionActionBeginFinalize = "begin_finalize"
+	testSoulPaginationNextCursor         = "next"
+)
+
 func TestSoulAgentPromotionLifecycleTransitions(t *testing.T) {
 	promotion, _ := readyForFinalizePromotion(t)
 	if promotion.Stage != models.SoulAgentPromotionStageReadyToFinalize {
@@ -44,7 +49,7 @@ func TestSoulAgentPromotionViewShowsFinalizePrereqs(t *testing.T) {
 		!view.Prerequisites.ReadyForFinalize {
 		t.Fatalf("unexpected prerequisites before graduation: %#v", view.Prerequisites)
 	}
-	if len(view.NextActions) != 1 || view.NextActions[0] != "begin_finalize" {
+	if len(view.NextActions) != 1 || view.NextActions[0] != testSoulPromotionActionBeginFinalize {
 		t.Fatalf("unexpected next actions: %#v", view.NextActions)
 	}
 	if view.LatestBoundaryCount != 1 || view.LatestCapabilityCount != 1 {
@@ -197,7 +202,7 @@ func TestHandleSoulListMyPromotions_ReturnsPagedViews(t *testing.T) {
 	if err := json.Unmarshal(resp.Body, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if out.Count != 1 || len(out.Promotions) != 1 || !out.HasMore || out.NextCursor != "next" {
+	if out.Count != 1 || len(out.Promotions) != 1 || !out.HasMore || out.NextCursor != testSoulPaginationNextCursor {
 		t.Fatalf("unexpected list response: %#v", out)
 	}
 	if out.Promotions[0].NextActions == nil || out.Promotions[0].NextActions[0] != "complete_review_conversation" {

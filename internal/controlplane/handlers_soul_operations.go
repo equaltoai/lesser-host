@@ -189,17 +189,8 @@ func (s *Server) recordSoulOperationExecution(ctx context.Context, actor string,
 	if success {
 		_ = s.applySoulOperationSideEffects(ctx, client, update)
 	}
-	if strings.EqualFold(strings.TrimSpace(update.Kind), models.SoulOperationKindMint) {
-		if promotion, err := s.getSoulAgentPromotion(ctx, strings.TrimSpace(update.AgentID)); err == nil && promotion != nil {
-			promotion.MintOperationID = strings.TrimSpace(update.OperationID)
-			promotion.MintOperationStatus = strings.ToLower(strings.TrimSpace(update.Status))
-			if success {
-				promotion = updateSoulAgentPromotionForMintExecution(promotion, update, now)
-			} else {
-				promotion.UpdatedAt = now
-			}
-			_ = s.saveSoulAgentPromotion(ctx, promotion)
-		}
+	if appErr := s.syncMintPromotionAfterOperationExecution(ctx, update, requestID, now, success); appErr != nil {
+		return nil, appErr
 	}
 
 	audit := &models.AuditLogEntry{
@@ -212,6 +203,40 @@ func (s *Server) recordSoulOperationExecution(ctx context.Context, actor string,
 	s.tryWriteAuditLogWithContext(ctx, audit)
 
 	return update, nil
+}
+
+func (s *Server) syncMintPromotionAfterOperationExecution(ctx context.Context, update *models.SoulOperation, requestID string, now time.Time, success bool) *apptheory.AppError {
+	if !strings.EqualFold(strings.TrimSpace(update.Kind), models.SoulOperationKindMint) {
+		return nil
+	}
+
+	promotion, err := s.getSoulAgentPromotion(ctx, strings.TrimSpace(update.AgentID))
+	if err != nil || promotion == nil {
+		return nil
+	}
+
+	previous := cloneSoulAgentPromotion(promotion)
+	promotion.MintOperationID = strings.TrimSpace(update.OperationID)
+	promotion.MintOperationStatus = strings.ToLower(strings.TrimSpace(update.Status))
+	if success {
+		promotion = updateSoulAgentPromotionForMintExecution(promotion, update, now)
+	} else {
+		promotion.UpdatedAt = now
+	}
+	if appErr := s.saveSoulAgentPromotion(ctx, promotion); appErr != nil {
+		return appErr
+	}
+	if success && (previous == nil || !strings.EqualFold(strings.TrimSpace(previous.ReadinessStatus), models.SoulAgentPromotionReadinessReadyForConversation)) {
+		if appErr := s.saveSoulAgentPromotionLifecycleEvent(ctx, buildSoulAgentPromotionLifecycleEvent(promotion, soulAgentPromotionLifecycleEventInput{
+			EventType:   models.SoulAgentPromotionEventTypeMintExecuted,
+			RequestID:   strings.TrimSpace(requestID),
+			OperationID: update.OperationID,
+			OccurredAt:  now,
+		})); appErr != nil {
+			return appErr
+		}
+	}
+	return nil
 }
 
 func parseSoulOperationExecutionInput(ctx *apptheory.Context) (id string, txHash string, appErr *apptheory.AppError) {

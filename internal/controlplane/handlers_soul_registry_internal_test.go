@@ -34,6 +34,7 @@ type soulRegistryTestDB struct {
 	qInstance    *ttmocks.MockQuery
 	qIdentity    *ttmocks.MockQuery
 	qPromotion   *ttmocks.MockQuery
+	qLifecycle   *ttmocks.MockQuery
 	qWalletAgent *ttmocks.MockQuery
 	qDomainAgent *ttmocks.MockQuery
 	qCapAgent    *ttmocks.MockQuery
@@ -41,46 +42,52 @@ type soulRegistryTestDB struct {
 
 func newSoulRegistryTestDB() soulRegistryTestDB {
 	db := ttmocks.NewMockExtendedDB()
-	qReg := new(ttmocks.MockQuery)
-	qOp := new(ttmocks.MockQuery)
-	qAudit := new(ttmocks.MockQuery)
-	qWalletIdx := new(ttmocks.MockQuery)
-	qUser := new(ttmocks.MockQuery)
-	qDomain := new(ttmocks.MockQuery)
-	qInstance := new(ttmocks.MockQuery)
-	qIdentity := new(ttmocks.MockQuery)
-	qPromotion := new(ttmocks.MockQuery)
-	qWalletAgent := new(ttmocks.MockQuery)
-	qDomainAgent := new(ttmocks.MockQuery)
-	qCapAgent := new(ttmocks.MockQuery)
+	tdb := soulRegistryTestDB{
+		db:           db,
+		qReg:         new(ttmocks.MockQuery),
+		qOp:          new(ttmocks.MockQuery),
+		qAudit:       new(ttmocks.MockQuery),
+		qWalletIdx:   new(ttmocks.MockQuery),
+		qUser:        new(ttmocks.MockQuery),
+		qDomain:      new(ttmocks.MockQuery),
+		qInstance:    new(ttmocks.MockQuery),
+		qIdentity:    new(ttmocks.MockQuery),
+		qPromotion:   new(ttmocks.MockQuery),
+		qLifecycle:   new(ttmocks.MockQuery),
+		qWalletAgent: new(ttmocks.MockQuery),
+		qDomainAgent: new(ttmocks.MockQuery),
+		qCapAgent:    new(ttmocks.MockQuery),
+	}
 
 	db.On("WithContext", mock.Anything).Return(db).Maybe()
-	db.On("Model", mock.AnythingOfType("*models.SoulAgentRegistration")).Return(qReg).Maybe()
-	db.On("Model", mock.AnythingOfType("*models.SoulOperation")).Return(qOp).Maybe()
-	db.On("Model", mock.AnythingOfType("*models.AuditLogEntry")).Return(qAudit).Maybe()
-	db.On("Model", mock.AnythingOfType("*models.WalletIndex")).Return(qWalletIdx).Maybe()
-	db.On("Model", mock.AnythingOfType("*models.User")).Return(qUser).Maybe()
-	db.On("Model", mock.AnythingOfType("*models.Domain")).Return(qDomain).Maybe()
-	db.On("Model", mock.AnythingOfType("*models.Instance")).Return(qInstance).Maybe()
-	db.On("Model", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(qIdentity).Maybe()
-	db.On("Model", mock.AnythingOfType("*models.SoulAgentPromotion")).Return(qPromotion).Maybe()
-	db.On("Model", mock.AnythingOfType("*models.SoulWalletAgentIndex")).Return(qWalletAgent).Maybe()
-	db.On("Model", mock.AnythingOfType("*models.SoulDomainAgentIndex")).Return(qDomainAgent).Maybe()
-	db.On("Model", mock.AnythingOfType("*models.SoulCapabilityAgentIndex")).Return(qCapAgent).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentRegistration")).Return(tdb.qReg).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulOperation")).Return(tdb.qOp).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.AuditLogEntry")).Return(tdb.qAudit).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.WalletIndex")).Return(tdb.qWalletIdx).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.User")).Return(tdb.qUser).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.Domain")).Return(tdb.qDomain).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.Instance")).Return(tdb.qInstance).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(tdb.qIdentity).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentPromotion")).Return(tdb.qPromotion).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentPromotionLifecycleEvent")).Return(tdb.qLifecycle).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulWalletAgentIndex")).Return(tdb.qWalletAgent).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulDomainAgentIndex")).Return(tdb.qDomainAgent).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulCapabilityAgentIndex")).Return(tdb.qCapAgent).Maybe()
 
 	for _, q := range []*ttmocks.MockQuery{
-		qReg,
-		qOp,
-		qAudit,
-		qWalletIdx,
-		qUser,
-		qDomain,
-		qInstance,
-		qIdentity,
-		qPromotion,
-		qWalletAgent,
-		qDomainAgent,
-		qCapAgent,
+		tdb.qReg,
+		tdb.qOp,
+		tdb.qAudit,
+		tdb.qWalletIdx,
+		tdb.qUser,
+		tdb.qDomain,
+		tdb.qInstance,
+		tdb.qIdentity,
+		tdb.qPromotion,
+		tdb.qLifecycle,
+		tdb.qWalletAgent,
+		tdb.qDomainAgent,
+		tdb.qCapAgent,
 	} {
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("Index", mock.Anything).Return(q).Maybe()
@@ -96,21 +103,7 @@ func newSoulRegistryTestDB() soulRegistryTestDB {
 		q.On("All", mock.Anything).Return(nil).Maybe()
 	}
 
-	return soulRegistryTestDB{
-		db:           db,
-		qReg:         qReg,
-		qOp:          qOp,
-		qAudit:       qAudit,
-		qWalletIdx:   qWalletIdx,
-		qUser:        qUser,
-		qDomain:      qDomain,
-		qInstance:    qInstance,
-		qIdentity:    qIdentity,
-		qPromotion:   qPromotion,
-		qWalletAgent: qWalletAgent,
-		qDomainAgent: qDomainAgent,
-		qCapAgent:    qCapAgent,
-	}
+	return tdb
 }
 
 func TestHandleSoulAgentRegistrationBegin_Success(t *testing.T) {

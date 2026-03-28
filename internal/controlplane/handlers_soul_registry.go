@@ -394,6 +394,13 @@ func (s *Server) handleSoulAgentRegistrationBegin(ctx *apptheory.Context) (*appt
 	if appErr := s.saveSoulAgentPromotion(ctx.Context(), promotion); appErr != nil {
 		return nil, appErr
 	}
+	if appErr := s.saveSoulAgentPromotionLifecycleEvent(ctx.Context(), buildSoulAgentPromotionLifecycleEvent(promotion, soulAgentPromotionLifecycleEventInput{
+		EventType:  models.SoulAgentPromotionEventTypeRequestCreated,
+		RequestID:  strings.TrimSpace(ctx.RequestID),
+		OccurredAt: now,
+	})); appErr != nil {
+		return nil, appErr
+	}
 
 	audit := &models.AuditLogEntry{
 		Actor:     strings.TrimSpace(ctx.AuthIdentity),
@@ -866,6 +873,14 @@ func (s *Server) handleSoulAgentRegistrationVerify(ctx *apptheory.Context) (*app
 	promotion, _ := s.getSoulAgentPromotion(ctx.Context(), reg.AgentID)
 	promotion = updateSoulAgentPromotionForVerification(promotion, reg, op, principalAddr, now)
 	if appErr := s.saveSoulAgentPromotion(ctx.Context(), promotion); appErr != nil {
+		return nil, appErr
+	}
+	if appErr := s.saveSoulAgentPromotionLifecycleEvent(ctx.Context(), buildSoulAgentPromotionLifecycleEvent(promotion, soulAgentPromotionLifecycleEventInput{
+		EventType:   models.SoulAgentPromotionEventTypeRequestApproved,
+		RequestID:   strings.TrimSpace(ctx.RequestID),
+		OperationID: op.OperationID,
+		OccurredAt:  now,
+	})); appErr != nil {
 		return nil, appErr
 	}
 

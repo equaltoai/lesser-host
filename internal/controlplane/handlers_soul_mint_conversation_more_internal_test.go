@@ -37,6 +37,7 @@ type mintConversationTestDB struct {
 	qConv      *ttmocks.MockQuery
 	qIdentity  *ttmocks.MockQuery
 	qPromotion *ttmocks.MockQuery
+	qLifecycle *ttmocks.MockQuery
 	qUser      *ttmocks.MockQuery
 
 	convModels []*models.SoulAgentMintConversation
@@ -52,6 +53,7 @@ func newMintConversationTestDB() *mintConversationTestDB {
 		qConv:      new(ttmocks.MockQuery),
 		qIdentity:  new(ttmocks.MockQuery),
 		qPromotion: new(ttmocks.MockQuery),
+		qLifecycle: new(ttmocks.MockQuery),
 		qUser:      new(ttmocks.MockQuery),
 	}
 
@@ -67,9 +69,10 @@ func newMintConversationTestDB() *mintConversationTestDB {
 	})
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(tdb.qIdentity).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentPromotion")).Return(tdb.qPromotion).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentPromotionLifecycleEvent")).Return(tdb.qLifecycle).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.User")).Return(tdb.qUser).Maybe()
 
-	for _, q := range []*ttmocks.MockQuery{tdb.qReg, tdb.qDomain, tdb.qInstance, tdb.qConv, tdb.qIdentity, tdb.qPromotion, tdb.qUser} {
+	for _, q := range []*ttmocks.MockQuery{tdb.qReg, tdb.qDomain, tdb.qInstance, tdb.qConv, tdb.qIdentity, tdb.qPromotion, tdb.qLifecycle, tdb.qUser} {
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("Index", mock.Anything).Return(q).Maybe()
 		q.On("Limit", mock.Anything).Return(q).Maybe()
