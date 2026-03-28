@@ -590,6 +590,26 @@ components:
         promotion:
           $ref: "#/components/schemas/SoulAgentPromotion"
 
+    SoulAgentPromotionListResponse:
+      type: object
+      additionalProperties: false
+      required: [version, promotions, count, has_more]
+      properties:
+        version:
+          type: string
+          enum: ["1"]
+        promotions:
+          type: array
+          items:
+            $ref: "#/components/schemas/SoulAgentPromotion"
+        count:
+          type: integer
+          minimum: 0
+        has_more:
+          type: boolean
+        next_cursor:
+          type: string
+
     SoulAgentRegistrationBeginRequest:
       type: object
       additionalProperties: false
@@ -1449,6 +1469,51 @@ paths:
                 $ref: "#/components/schemas/ErrorEnvelope"
         "409":
           description: Conflict
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+
+  /api/v1/soul/promotions/mine:
+    get:
+      operationId: soulListMyPromotions
+      summary: List durable promotion workflows for the authenticated requester
+      security:
+        - sessionAuth: []
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SoulAgentPromotionListResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          description: Forbidden
           content:
             application/json:
               schema:

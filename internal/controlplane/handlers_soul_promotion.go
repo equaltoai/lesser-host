@@ -73,6 +73,14 @@ type soulAgentPromotionResponse struct {
 	Promotion soulAgentPromotionView `json:"promotion"`
 }
 
+type soulAgentPromotionListResponse struct {
+	Version    string                   `json:"version"`
+	Promotions []soulAgentPromotionView `json:"promotions"`
+	Count      int                      `json:"count"`
+	HasMore    bool                     `json:"has_more"`
+	NextCursor string                   `json:"next_cursor,omitempty"`
+}
+
 func ptrTo[T any](v T) *T { return &v }
 
 func (s *Server) getSoulAgentPromotion(ctx context.Context, agentIDHex string) (*models.SoulAgentPromotion, error) {
@@ -343,6 +351,56 @@ func (s *Server) handleSoulAgentGetPromotion(ctx *apptheory.Context) (*apptheory
 	return apptheory.JSON(http.StatusOK, soulAgentPromotionResponse{
 		Version:   "1",
 		Promotion: s.buildSoulAgentPromotionView(promotion),
+	})
+}
+
+func (s *Server) handleSoulListMyPromotions(ctx *apptheory.Context) (*apptheory.Response, error) {
+	if appErr := s.requireSoulRegistryConfigured(); appErr != nil {
+		return nil, appErr
+	}
+	if appErr := s.requireSoulPortalPrereqs(ctx); appErr != nil {
+		return nil, appErr
+	}
+	if appErr := requireStoreDB(s); appErr != nil {
+		return nil, appErr
+	}
+
+	requestedBy := strings.TrimSpace(ctx.AuthIdentity)
+	if requestedBy == "" {
+		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+	}
+
+	cursor, limit := soulPublicCursorAndLimit(ctx)
+	var promotions []*models.SoulAgentPromotion
+	qb := s.store.DB.WithContext(ctx.Context()).
+		Model(&models.SoulAgentPromotion{}).
+		Index("gsi2").
+		Where("GSI2PK", "=", "SOUL_PROMOTION_REQUESTER#"+requestedBy).
+		OrderBy("GSI2SK", "DESC").
+		Limit(limit)
+	if cursor != "" {
+		qb = qb.Cursor(cursor)
+	}
+
+	paged, err := qb.AllPaginated(&promotions)
+	if err != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list promotions"}
+	}
+
+	items := make([]soulAgentPromotionView, 0, len(promotions))
+	for _, promotion := range promotions {
+		if promotion == nil {
+			continue
+		}
+		items = append(items, s.buildSoulAgentPromotionView(promotion))
+	}
+	nextCursor, hasMore := soulPaginatedResultMeta(paged)
+	return apptheory.JSON(http.StatusOK, soulAgentPromotionListResponse{
+		Version:    "1",
+		Promotions: items,
+		Count:      len(items),
+		HasMore:    hasMore,
+		NextCursor: nextCursor,
 	})
 }
 

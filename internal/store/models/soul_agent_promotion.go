@@ -57,6 +57,8 @@ type SoulAgentPromotion struct {
 
 	GSI1PK string `theorydb:"index:gsi1,pk,attr:gsi1PK" json:"-"`
 	GSI1SK string `theorydb:"index:gsi1,sk,attr:gsi1SK" json:"-"`
+	GSI2PK string `theorydb:"index:gsi2,pk,attr:gsi2PK" json:"-"`
+	GSI2SK string `theorydb:"index:gsi2,sk,attr:gsi2SK" json:"-"`
 
 	AgentID string `theorydb:"attr:agentId" json:"agent_id"`
 
@@ -156,6 +158,7 @@ func (p *SoulAgentPromotion) UpdateKeys() error {
 	p.PK = fmt.Sprintf("SOUL#AGENT#%s", p.AgentID)
 	p.SK = "PROMOTION"
 	p.updateGSI1()
+	p.updateGSI2()
 	return nil
 }
 
@@ -179,4 +182,22 @@ func (p *SoulAgentPromotion) updateGSI1() {
 	}
 	p.GSI1PK = fmt.Sprintf("SOUL_PROMOTION_STAGE#%s", stage)
 	p.GSI1SK = fmt.Sprintf("%s#%s", requestedAt.UTC().Format(time.RFC3339Nano), strings.TrimSpace(p.AgentID))
+}
+
+func (p *SoulAgentPromotion) updateGSI2() {
+	if p == nil {
+		return
+	}
+	requestedBy := strings.TrimSpace(p.RequestedBy)
+	if requestedBy == "" {
+		p.GSI2PK = ""
+		p.GSI2SK = ""
+		return
+	}
+	requestedAt := p.RequestedAt
+	if requestedAt.IsZero() {
+		requestedAt = time.Now().UTC()
+	}
+	p.GSI2PK = fmt.Sprintf("SOUL_PROMOTION_REQUESTER#%s", requestedBy)
+	p.GSI2SK = fmt.Sprintf("%s#%s", requestedAt.UTC().Format(time.RFC3339Nano), strings.TrimSpace(p.AgentID))
 }

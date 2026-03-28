@@ -33,6 +33,9 @@ func TestSoulAgentPromotionBeforeCreateSetsDefaults(t *testing.T) {
 	if promotion.GSI1PK != "SOUL_PROMOTION_STAGE#requested" {
 		t.Fatalf("unexpected gsi1 pk: %q", promotion.GSI1PK)
 	}
+	if promotion.GSI2PK != "" || promotion.GSI2SK != "" {
+		t.Fatalf("expected empty requester index for blank requested_by, got %q %q", promotion.GSI2PK, promotion.GSI2SK)
+	}
 }
 
 func TestSoulAgentPromotionUpdateKeysNormalizesIdentityFields(t *testing.T) {
@@ -71,6 +74,9 @@ func TestSoulAgentPromotionUpdateKeysNormalizesStatusFields(t *testing.T) {
 	}
 	if promotion.GSI1PK != "SOUL_PROMOTION_STAGE#ready_to_finalize" {
 		t.Fatalf("unexpected gsi1 pk after update: %q", promotion.GSI1PK)
+	}
+	if promotion.GSI2PK != "SOUL_PROMOTION_REQUESTER#alice" {
+		t.Fatalf("unexpected gsi2 pk after update: %q", promotion.GSI2PK)
 	}
 }
 

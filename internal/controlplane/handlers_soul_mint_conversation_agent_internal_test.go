@@ -44,7 +44,7 @@ func TestHandleSoulAgentListMintConversations_SortsNewestFirst(t *testing.T) {
 	}).Once()
 
 	ctx := adminCtx()
-	ctx.AuthIdentity = "alice"
+	ctx.AuthIdentity = testUsernameAlice
 	ctx.Params = map[string]string{"agentId": identity.AgentID}
 	ctx.Request.Query = map[string][]string{"limit": {"10"}}
 
@@ -86,7 +86,7 @@ func TestHandleSoulAgentGetMintConversation_AllowsPendingAgent(t *testing.T) {
 	})
 
 	ctx := &apptheory.Context{
-		AuthIdentity: "alice",
+		AuthIdentity: testUsernameAlice,
 		Params: map[string]string{
 			"agentId":        identity.AgentID,
 			"conversationId": mintConversationTestConversationID,

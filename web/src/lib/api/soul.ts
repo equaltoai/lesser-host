@@ -362,6 +362,14 @@ export interface SoulAgentPromotionResponse {
 	promotion: SoulAgentPromotion;
 }
 
+export interface SoulAgentPromotionListResponse {
+	version: string;
+	promotions: SoulAgentPromotion[];
+	count: number;
+	has_more: boolean;
+	next_cursor?: string;
+}
+
 export interface SoulAgentRegistrationBeginResponse {
 	registration: SoulAgentRegistration;
 	wallet: WalletChallengeResponse;
@@ -443,6 +451,18 @@ export function soulAgentRegistrationVerify(
 
 export function soulGetAgentPromotion(token: string, agentId: string): Promise<SoulAgentPromotionResponse> {
 	return fetchJson<SoulAgentPromotionResponse>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/promotion`, {
+		headers: {
+			authorization: `Bearer ${token}`,
+		},
+	});
+}
+
+export function soulListMyPromotions(token: string, input?: { limit?: number; cursor?: string }): Promise<SoulAgentPromotionListResponse> {
+	const params = new URLSearchParams();
+	if (input?.limit != null) params.set('limit', String(input.limit));
+	if (input?.cursor) params.set('cursor', input.cursor);
+	const qs = params.toString();
+	return fetchJson<SoulAgentPromotionListResponse>(`/api/v1/soul/promotions/mine${qs ? `?${qs}` : ''}`, {
 		headers: {
 			authorization: `Bearer ${token}`,
 		},

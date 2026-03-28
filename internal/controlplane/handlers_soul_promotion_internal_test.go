@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/mock"
+	"github.com/theory-cloud/tabletheory/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/config"
@@ -143,6 +144,64 @@ func TestHandleSoulAgentPromotionVerify_ConflictWithoutRegistration(t *testing.T
 	ctx.Params = map[string]string{"agentId": soulLifecycleTestAgentIDHex}
 	if _, err := s.handleSoulAgentPromotionVerify(ctx); err == nil {
 		t.Fatalf("expected conflict")
+	}
+}
+
+func TestHandleSoulListMyPromotions_ReturnsPagedViews(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulRegistryTestDB()
+	s := &Server{
+		store: store.New(tdb.db),
+		cfg: config.Config{
+			SoulEnabled:                 true,
+			SoulChainID:                 1,
+			SoulRegistryContractAddress: "0x0000000000000000000000000000000000000001",
+		},
+	}
+
+	tdb.qPromotion.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulAgentPromotion")).Return(&core.PaginatedResult{
+		HasMore:    true,
+		NextCursor: " next ",
+	}, nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulAgentPromotion](t, args, 0)
+		*dest = []*models.SoulAgentPromotion{
+			{
+				AgentID:         soulLifecycleTestAgentIDHex,
+				RegistrationID:  "reg-1",
+				RequestedBy:     "alice",
+				Domain:          "example.com",
+				LocalID:         "agent-bot",
+				Wallet:          "0x00000000000000000000000000000000000000aa",
+				Stage:           models.SoulAgentPromotionStageReviewing,
+				RequestStatus:   models.SoulAgentPromotionRequestStatusMinted,
+				ReviewStatus:    models.SoulAgentPromotionReviewStatusConversationInProgress,
+				ApprovalStatus:  models.SoulAgentPromotionApprovalStatusApproved,
+				ReadinessStatus: models.SoulAgentPromotionReadinessReadyForConversation,
+				CreatedAt:       time.Date(2026, 3, 5, 12, 0, 0, 0, time.UTC),
+				UpdatedAt:       time.Date(2026, 3, 5, 12, 5, 0, 0, time.UTC),
+			},
+		}
+	}).Once()
+
+	ctx := adminCtx()
+	ctx.AuthIdentity = "alice"
+	ctx.Request.Query = map[string][]string{"limit": {"10"}, "cursor": {" cursor "}}
+
+	resp, err := s.handleSoulListMyPromotions(ctx)
+	if err != nil || resp.Status != 200 {
+		t.Fatalf("unexpected response: %#v err=%v", resp, err)
+	}
+
+	var out soulAgentPromotionListResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Count != 1 || len(out.Promotions) != 1 || !out.HasMore || out.NextCursor != "next" {
+		t.Fatalf("unexpected list response: %#v", out)
+	}
+	if out.Promotions[0].NextActions == nil || out.Promotions[0].NextActions[0] != "complete_review_conversation" {
+		t.Fatalf("expected promotion next action, got %#v", out.Promotions[0])
 	}
 }
 
