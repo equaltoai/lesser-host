@@ -54,6 +54,7 @@ type soulAgentRegistrationBeginResponse struct {
 	Registration models.SoulAgentRegistration    `json:"registration"`
 	Wallet       walletChallengeResponse         `json:"wallet"`
 	Proofs       []soulRegistryProofInstructions `json:"proofs"`
+	Promotion    *soulAgentPromotionView         `json:"promotion,omitempty"`
 }
 
 type soulAgentRegistrationVerifyRequest struct {
@@ -69,6 +70,7 @@ type soulAgentRegistrationVerifyResponse struct {
 	Registration models.SoulAgentRegistration `json:"registration"`
 	Operation    models.SoulOperation         `json:"operation"`
 	SafeTx       *safeTxPayload               `json:"safe_tx,omitempty"`
+	Promotion    *soulAgentPromotionView      `json:"promotion,omitempty"`
 }
 
 func normalizeSoulCapabilitiesLoose(caps []string) []string {
@@ -388,6 +390,10 @@ func (s *Server) handleSoulAgentRegistrationBegin(ctx *apptheory.Context) (*appt
 	if appErr := s.createSoulAgentRegistration(ctx.Context(), reg); appErr != nil {
 		return nil, appErr
 	}
+	promotion := buildSoulAgentPromotionFromRegistration(reg, strings.TrimSpace(ctx.AuthIdentity), now)
+	if appErr := s.saveSoulAgentPromotion(ctx.Context(), promotion); appErr != nil {
+		return nil, appErr
+	}
 
 	audit := &models.AuditLogEntry{
 		Actor:     strings.TrimSpace(ctx.AuthIdentity),
@@ -421,7 +427,8 @@ func (s *Server) handleSoulAgentRegistrationBegin(ctx *apptheory.Context) (*appt
 			IssuedAt:  now,
 			ExpiresAt: expiresAt,
 		},
-		Proofs: proofs,
+		Proofs:    proofs,
+		Promotion: ptrTo(s.buildSoulAgentPromotionView(promotion)),
 	})
 }
 
@@ -856,6 +863,11 @@ func (s *Server) handleSoulAgentRegistrationVerify(ctx *apptheory.Context) (*app
 	if compErr != nil {
 		return nil, compErr
 	}
+	promotion, _ := s.getSoulAgentPromotion(ctx.Context(), reg.AgentID)
+	promotion = updateSoulAgentPromotionForVerification(promotion, reg, op, principalAddr, now)
+	if appErr := s.saveSoulAgentPromotion(ctx.Context(), promotion); appErr != nil {
+		return nil, appErr
+	}
 
 	audit := &models.AuditLogEntry{
 		Actor:     strings.TrimSpace(ctx.AuthIdentity),
@@ -870,6 +882,7 @@ func (s *Server) handleSoulAgentRegistrationVerify(ctx *apptheory.Context) (*app
 		Registration: *update,
 		Operation:    *op,
 		SafeTx:       safeTx,
+		Promotion:    ptrTo(s.buildSoulAgentPromotionView(promotion)),
 	})
 }
 

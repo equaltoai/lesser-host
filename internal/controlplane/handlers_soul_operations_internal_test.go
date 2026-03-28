@@ -51,6 +51,7 @@ type soulOperationsTestDB struct {
 	db           *ttmocks.MockExtendedDB
 	qOp          *ttmocks.MockQuery
 	qID          *ttmocks.MockQuery
+	qPromotion   *ttmocks.MockQuery
 	qWalletAgent *ttmocks.MockQuery
 	qChannel     *ttmocks.MockQuery
 	qENS         *ttmocks.MockQuery
@@ -61,6 +62,7 @@ func newSoulOperationsTestDB() soulOperationsTestDB {
 	db := ttmocks.NewMockExtendedDB()
 	qOp := new(ttmocks.MockQuery)
 	qID := new(ttmocks.MockQuery)
+	qPromotion := new(ttmocks.MockQuery)
 	qWalletAgent := new(ttmocks.MockQuery)
 	qChannel := new(ttmocks.MockQuery)
 	qENS := new(ttmocks.MockQuery)
@@ -69,12 +71,13 @@ func newSoulOperationsTestDB() soulOperationsTestDB {
 	db.On("WithContext", mock.Anything).Return(db).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulOperation")).Return(qOp).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(qID).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentPromotion")).Return(qPromotion).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulWalletAgentIndex")).Return(qWalletAgent).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentChannel")).Return(qChannel).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(qENS).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.AuditLogEntry")).Return(qAudit).Maybe()
 
-	for _, q := range []*ttmocks.MockQuery{qOp, qID, qWalletAgent, qChannel, qENS, qAudit} {
+	for _, q := range []*ttmocks.MockQuery{qOp, qID, qPromotion, qWalletAgent, qChannel, qENS, qAudit} {
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("Index", mock.Anything).Return(q).Maybe()
 		q.On("IfExists").Return(q).Maybe()
@@ -89,6 +92,7 @@ func newSoulOperationsTestDB() soulOperationsTestDB {
 		db:           db,
 		qOp:          qOp,
 		qID:          qID,
+		qPromotion:   qPromotion,
 		qWalletAgent: qWalletAgent,
 		qChannel:     qChannel,
 		qENS:         qENS,
@@ -173,6 +177,21 @@ func TestHandleRecordSoulOperationExecution_SuccessMint(t *testing.T) {
 		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
 		*dest = models.SoulAgentIdentity{AgentID: agentID, Status: models.SoulAgentStatusActive, Wallet: "0x0000000000000000000000000000000000000002"}
 	}).Once()
+	tdb.qPromotion.On("First", mock.AnythingOfType("*models.SoulAgentPromotion")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentPromotion](t, args, 0)
+		*dest = models.SoulAgentPromotion{
+			AgentID:         agentID,
+			RegistrationID:  "reg1",
+			Stage:           models.SoulAgentPromotionStageApproved,
+			RequestStatus:   models.SoulAgentPromotionRequestStatusVerified,
+			ApprovalStatus:  models.SoulAgentPromotionApprovalStatusApproved,
+			ReadinessStatus: models.SoulAgentPromotionReadinessAwaitingMint,
+			CreatedAt:       time.Now().Add(-time.Minute).UTC(),
+			UpdatedAt:       time.Now().Add(-time.Minute).UTC(),
+		}
+	}).Once()
+
+	tdb.qPromotion.On("CreateOrUpdate").Return(nil).Once()
 
 	s.dialEVM = func(ctx context.Context, rpcURL string) (ethRPCClient, error) {
 		return &fakeEthClient{

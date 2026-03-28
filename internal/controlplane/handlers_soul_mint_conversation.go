@@ -594,6 +594,11 @@ func (s *Server) handleSoulMintConversation(ctx *apptheory.Context) (*apptheory.
 	if appErr := s.debitMintConversationStreamCredits(ctx.Context(), inst, agentIDHex, session, strings.TrimSpace(ctx.RequestID), now); appErr != nil {
 		return nil, appErr
 	}
+	promotion := s.loadOrFallbackSoulAgentPromotion(ctx.Context(), agentIDHex, buildSoulAgentPromotionFromRegistration(reg, strings.TrimSpace(ctx.AuthIdentity), now))
+	promotion = updateSoulAgentPromotionForConversation(promotion, session.conversationID, models.SoulMintConversationStatusInProgress, now)
+	if appErr := s.saveSoulAgentPromotion(ctx.Context(), promotion); appErr != nil {
+		return nil, appErr
+	}
 
 	// Build provider messages from conversation history + new user message.
 	existingMessages := append(session.existingMessages, soulMintConversationMessage{Role: "user", Content: message})
@@ -642,6 +647,11 @@ func (s *Server) handleSoulAgentMintConversation(ctx *apptheory.Context) (*appth
 		return nil, appErr
 	}
 	if appErr := s.debitMintConversationStreamCredits(ctx.Context(), agentCtx.inst, agentCtx.agentIDHex, session, strings.TrimSpace(ctx.RequestID), now); appErr != nil {
+		return nil, appErr
+	}
+	promotion := s.loadOrFallbackSoulAgentPromotion(ctx.Context(), agentCtx.agentIDHex, buildSoulAgentPromotionFromRegistration(agentCtx.reg, strings.TrimSpace(ctx.AuthIdentity), now))
+	promotion = updateSoulAgentPromotionForConversation(promotion, session.conversationID, models.SoulMintConversationStatusInProgress, now)
+	if appErr := s.saveSoulAgentPromotion(ctx.Context(), promotion); appErr != nil {
 		return nil, appErr
 	}
 
@@ -963,6 +973,12 @@ func (s *Server) handleSoulCompleteMintConversation(ctx *apptheory.Context) (*ap
 	if appErr := s.persistCompletedMintConversation(ctx.Context(), conv, declarationsJSON, extractUsage, now); appErr != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to complete conversation"}
 	}
+	promotion := s.loadOrFallbackSoulAgentPromotion(ctx.Context(), regCtx.agentIDHex, buildSoulAgentPromotionFromRegistration(regCtx.reg, strings.TrimSpace(ctx.AuthIdentity), now))
+	promotion = updateSoulAgentPromotionForConversation(promotion, conversationID, models.SoulMintConversationStatusCompleted, now)
+	promotion = updateSoulAgentPromotionReviewDigest(promotion, declarationsJSON)
+	if appErr := s.saveSoulAgentPromotion(ctx.Context(), promotion); appErr != nil {
+		return nil, appErr
+	}
 
 	return apptheory.JSON(http.StatusOK, conv)
 }
@@ -992,6 +1008,12 @@ func (s *Server) handleSoulAgentCompleteMintConversation(ctx *apptheory.Context)
 	}
 	if appErr := s.persistCompletedMintConversation(ctx.Context(), conv, declarationsJSON, extractUsage, now); appErr != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to complete conversation"}
+	}
+	promotion := s.loadOrFallbackSoulAgentPromotion(ctx.Context(), agentCtx.agentIDHex, buildSoulAgentPromotionFromRegistration(agentCtx.reg, strings.TrimSpace(ctx.AuthIdentity), now))
+	promotion = updateSoulAgentPromotionForConversation(promotion, conversationID, models.SoulMintConversationStatusCompleted, now)
+	promotion = updateSoulAgentPromotionReviewDigest(promotion, declarationsJSON)
+	if appErr := s.saveSoulAgentPromotion(ctx.Context(), promotion); appErr != nil {
+		return nil, appErr
 	}
 
 	return apptheory.JSON(http.StatusOK, conv)
@@ -1464,6 +1486,12 @@ func (s *Server) finalizeMintConversationPublish(
 		RequestID: strings.TrimSpace(ctx.RequestID),
 		CreatedAt: now,
 	})
+	promotion := s.loadOrFallbackSoulAgentPromotion(ctx.Context(), finalizeCtx.agentIDHex, buildSoulAgentPromotionFromRegistration(finalizeCtx.reg, strings.TrimSpace(ctx.AuthIdentity), now))
+	promotion = updateSoulAgentPromotionForConversation(promotion, finalizeCtx.conversationID, models.SoulMintConversationStatusCompleted, now)
+	promotion = updateSoulAgentPromotionForGraduation(promotion, publishedVersion, now)
+	if appErr := s.saveSoulAgentPromotion(ctx.Context(), promotion); appErr != nil {
+		return nil, appErr
+	}
 	return apptheory.JSON(http.StatusOK, soulMintConversationFinalizeResponse{
 		Version:          "1",
 		Agent:            *finalizeCtx.identity,

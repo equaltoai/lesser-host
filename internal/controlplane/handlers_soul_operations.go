@@ -189,6 +189,18 @@ func (s *Server) recordSoulOperationExecution(ctx context.Context, actor string,
 	if success {
 		_ = s.applySoulOperationSideEffects(ctx, client, update)
 	}
+	if strings.EqualFold(strings.TrimSpace(update.Kind), models.SoulOperationKindMint) {
+		if promotion, err := s.getSoulAgentPromotion(ctx, strings.TrimSpace(update.AgentID)); err == nil && promotion != nil {
+			promotion.MintOperationID = strings.TrimSpace(update.OperationID)
+			promotion.MintOperationStatus = strings.ToLower(strings.TrimSpace(update.Status))
+			if success {
+				promotion = updateSoulAgentPromotionForMintExecution(promotion, update, now)
+			} else {
+				promotion.UpdatedAt = now
+			}
+			_ = s.saveSoulAgentPromotion(ctx, promotion)
+		}
+	}
 
 	audit := &models.AuditLogEntry{
 		Actor:     strings.TrimSpace(actor),

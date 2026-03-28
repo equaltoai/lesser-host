@@ -30,13 +30,14 @@ import (
 const mintConversationTestConversationID = "conv-1"
 
 type mintConversationTestDB struct {
-	db        *ttmocks.MockExtendedDB
-	qReg      *ttmocks.MockQuery
-	qDomain   *ttmocks.MockQuery
-	qInstance *ttmocks.MockQuery
-	qConv     *ttmocks.MockQuery
-	qIdentity *ttmocks.MockQuery
-	qUser     *ttmocks.MockQuery
+	db         *ttmocks.MockExtendedDB
+	qReg       *ttmocks.MockQuery
+	qDomain    *ttmocks.MockQuery
+	qInstance  *ttmocks.MockQuery
+	qConv      *ttmocks.MockQuery
+	qIdentity  *ttmocks.MockQuery
+	qPromotion *ttmocks.MockQuery
+	qUser      *ttmocks.MockQuery
 
 	convModels []*models.SoulAgentMintConversation
 }
@@ -44,13 +45,14 @@ type mintConversationTestDB struct {
 func newMintConversationTestDB() *mintConversationTestDB {
 	db := ttmocks.NewMockExtendedDB()
 	tdb := &mintConversationTestDB{
-		db:        db,
-		qReg:      new(ttmocks.MockQuery),
-		qDomain:   new(ttmocks.MockQuery),
-		qInstance: new(ttmocks.MockQuery),
-		qConv:     new(ttmocks.MockQuery),
-		qIdentity: new(ttmocks.MockQuery),
-		qUser:     new(ttmocks.MockQuery),
+		db:         db,
+		qReg:       new(ttmocks.MockQuery),
+		qDomain:    new(ttmocks.MockQuery),
+		qInstance:  new(ttmocks.MockQuery),
+		qConv:      new(ttmocks.MockQuery),
+		qIdentity:  new(ttmocks.MockQuery),
+		qPromotion: new(ttmocks.MockQuery),
+		qUser:      new(ttmocks.MockQuery),
 	}
 
 	db.On("WithContext", mock.Anything).Return(db).Maybe()
@@ -64,9 +66,10 @@ func newMintConversationTestDB() *mintConversationTestDB {
 		}
 	})
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(tdb.qIdentity).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentPromotion")).Return(tdb.qPromotion).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.User")).Return(tdb.qUser).Maybe()
 
-	for _, q := range []*ttmocks.MockQuery{tdb.qReg, tdb.qDomain, tdb.qInstance, tdb.qConv, tdb.qIdentity, tdb.qUser} {
+	for _, q := range []*ttmocks.MockQuery{tdb.qReg, tdb.qDomain, tdb.qInstance, tdb.qConv, tdb.qIdentity, tdb.qPromotion, tdb.qUser} {
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("Index", mock.Anything).Return(q).Maybe()
 		q.On("Limit", mock.Anything).Return(q).Maybe()
@@ -80,6 +83,7 @@ func newMintConversationTestDB() *mintConversationTestDB {
 			q.On("All", mock.Anything).Return(nil).Maybe()
 		}
 	}
+	tdb.qPromotion.On("First", mock.AnythingOfType("*models.SoulAgentPromotion")).Return(theoryErrors.ErrItemNotFound).Maybe()
 	tdb.qUser.On("First", mock.AnythingOfType("*models.User")).Return(nil).Maybe().Run(func(args mock.Arguments) {
 		dest, ok := args.Get(0).(*models.User)
 		if !ok || dest == nil {

@@ -33,6 +33,7 @@ type soulRegistryTestDB struct {
 	qDomain      *ttmocks.MockQuery
 	qInstance    *ttmocks.MockQuery
 	qIdentity    *ttmocks.MockQuery
+	qPromotion   *ttmocks.MockQuery
 	qWalletAgent *ttmocks.MockQuery
 	qDomainAgent *ttmocks.MockQuery
 	qCapAgent    *ttmocks.MockQuery
@@ -48,6 +49,7 @@ func newSoulRegistryTestDB() soulRegistryTestDB {
 	qDomain := new(ttmocks.MockQuery)
 	qInstance := new(ttmocks.MockQuery)
 	qIdentity := new(ttmocks.MockQuery)
+	qPromotion := new(ttmocks.MockQuery)
 	qWalletAgent := new(ttmocks.MockQuery)
 	qDomainAgent := new(ttmocks.MockQuery)
 	qCapAgent := new(ttmocks.MockQuery)
@@ -61,6 +63,7 @@ func newSoulRegistryTestDB() soulRegistryTestDB {
 	db.On("Model", mock.AnythingOfType("*models.Domain")).Return(qDomain).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.Instance")).Return(qInstance).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(qIdentity).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentPromotion")).Return(qPromotion).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulWalletAgentIndex")).Return(qWalletAgent).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulDomainAgentIndex")).Return(qDomainAgent).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulCapabilityAgentIndex")).Return(qCapAgent).Maybe()
@@ -74,6 +77,7 @@ func newSoulRegistryTestDB() soulRegistryTestDB {
 		qDomain,
 		qInstance,
 		qIdentity,
+		qPromotion,
 		qWalletAgent,
 		qDomainAgent,
 		qCapAgent,
@@ -100,6 +104,7 @@ func newSoulRegistryTestDB() soulRegistryTestDB {
 		qDomain:      qDomain,
 		qInstance:    qInstance,
 		qIdentity:    qIdentity,
+		qPromotion:   qPromotion,
 		qWalletAgent: qWalletAgent,
 		qDomainAgent: qDomainAgent,
 		qCapAgent:    qCapAgent,
@@ -125,12 +130,12 @@ func TestHandleSoulAgentRegistrationBegin_Success(t *testing.T) {
 	tdb.qUser.On("First", mock.AnythingOfType("*models.User")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.User](t, args, 0)
 		*dest = models.User{Username: "alice", Role: models.RoleCustomer, ApprovalStatus: models.UserApprovalStatusApproved}
-	}).Once()
+	}).Twice()
 
 	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
 		*dest = models.Domain{Domain: "example.com", InstanceSlug: "inst1", Status: models.DomainStatusVerified}
-	}).Once()
+	}).Twice()
 	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
 		*dest = models.Instance{Slug: "inst1", Owner: "alice"}
@@ -231,6 +236,12 @@ func assertSoulAgentRegistrationBeginResponse(t *testing.T, body []byte) {
 	}
 	if out.Registration.LocalID != "agent-alice" {
 		t.Fatalf("expected normalized local id, got %#v", out.Registration.LocalID)
+	}
+	if out.Promotion == nil || out.Promotion.AgentID != out.Registration.AgentID {
+		t.Fatalf("expected promotion snapshot, got %#v", out.Promotion)
+	}
+	if out.Promotion.Stage != models.SoulAgentPromotionStageRequested || out.Promotion.ReadinessStatus != models.SoulAgentPromotionReadinessAwaitingVerification {
+		t.Fatalf("unexpected promotion state: %#v", out.Promotion)
 	}
 	if out.Wallet.Address != strings.ToLower("0x000000000000000000000000000000000000dEaD") {
 		t.Fatalf("expected wallet lowercased, got %#v", out.Wallet.Address)
@@ -520,6 +531,7 @@ func TestHandleSoulAgentRegistrationVerify_UsesExistingProofFlagsAndCreatesOpera
 
 	// No existing identity yet.
 	tdb.qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(theoryErrors.ErrItemNotFound).Twice()
+	tdb.qPromotion.On("First", mock.AnythingOfType("*models.SoulAgentPromotion")).Return(theoryErrors.ErrItemNotFound).Once()
 	tdb.qWalletIdx.On("First", mock.AnythingOfType("*models.WalletIndex")).Return(theoryErrors.ErrItemNotFound).Once()
 
 	principalDeclaration := boundaryTestPrincipalDeclaration
@@ -563,6 +575,209 @@ func TestHandleSoulAgentRegistrationVerify_UsesExistingProofFlagsAndCreatesOpera
 	}
 	if out.SafeTx.SafeAddress != "" {
 		t.Fatalf("expected direct mint payload, got safe_address=%q", out.SafeTx.SafeAddress)
+	}
+	if out.Promotion == nil || out.Promotion.RequestStatus != models.SoulAgentPromotionRequestStatusVerified {
+		t.Fatalf("expected verified promotion state, got %#v", out.Promotion)
+	}
+	if out.Promotion.MintOperationID != out.Operation.OperationID {
+		t.Fatalf("expected promotion to track mint operation, got %#v", out.Promotion)
+	}
+}
+
+func TestHandleSoulAgentGetPromotion_ReturnsNormalizedSnapshot(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulRegistryTestDB()
+	s := &Server{
+		store: store.New(tdb.db),
+		cfg: config.Config{
+			SoulEnabled:                 true,
+			SoulChainID:                 1,
+			SoulRegistryContractAddress: "0x0000000000000000000000000000000000000001",
+		},
+	}
+
+	tdb.qUser.On("First", mock.AnythingOfType("*models.User")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.User](t, args, 0)
+		*dest = models.User{Username: "alice", Role: models.RoleCustomer, ApprovalStatus: models.UserApprovalStatusApproved}
+	}).Twice()
+	tdb.qPromotion.On("First", mock.AnythingOfType("*models.SoulAgentPromotion")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentPromotion](t, args, 0)
+		*dest = models.SoulAgentPromotion{
+			AgentID:                  "0x8db124b1d48e366002db4e61cc1501eeb8561e1ef06fd6f9abf9f984501d13ab",
+			RegistrationID:           "reg1",
+			RequestedBy:              "alice",
+			Domain:                   "example.com",
+			LocalID:                  "agent-alice",
+			Wallet:                   "0x000000000000000000000000000000000000dead",
+			Stage:                    models.SoulAgentPromotionStageReadyToFinalize,
+			RequestStatus:            models.SoulAgentPromotionRequestStatusMinted,
+			ReviewStatus:             models.SoulAgentPromotionReviewStatusDraftReady,
+			ApprovalStatus:           models.SoulAgentPromotionApprovalStatusApproved,
+			ReadinessStatus:          models.SoulAgentPromotionReadinessReadyForFinalize,
+			MintOperationID:          "op1",
+			MintOperationStatus:      models.SoulOperationStatusExecuted,
+			PrincipalAddress:         "0x000000000000000000000000000000000000dead",
+			LatestConversationID:     "conv-1",
+			LatestConversationStatus: models.SoulMintConversationStatusCompleted,
+			LatestReviewSHA256:       strings.Repeat("a", 64),
+			LatestBoundaryCount:      2,
+			LatestCapabilityCount:    3,
+			RequestedAt:              time.Date(2026, 3, 7, 10, 0, 0, 0, time.UTC),
+			CreatedAt:                time.Date(2026, 3, 7, 10, 0, 0, 0, time.UTC),
+			UpdatedAt:                time.Date(2026, 3, 7, 10, 5, 0, 0, time.UTC),
+		}
+	}).Once()
+	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
+		*dest = models.Domain{Domain: "example.com", InstanceSlug: "inst1", Status: models.DomainStatusVerified}
+	}).Once()
+	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{Slug: "inst1", Owner: "alice"}
+	}).Once()
+
+	ctx := &apptheory.Context{AuthIdentity: "alice", Params: map[string]string{"agentId": "0x8db124b1d48e366002db4e61cc1501eeb8561e1ef06fd6f9abf9f984501d13ab"}}
+	resp, err := s.handleSoulAgentGetPromotion(ctx)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if resp.Status != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.Status)
+	}
+
+	var out soulAgentPromotionResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Promotion.AgentID == "" || out.Promotion.Stage != models.SoulAgentPromotionStageReadyToFinalize {
+		t.Fatalf("unexpected promotion response: %#v", out)
+	}
+	if !out.Promotion.Prerequisites.ReadyForFinalize || len(out.Promotion.NextActions) != 1 || out.Promotion.NextActions[0] != "begin_finalize" {
+		t.Fatalf("unexpected prerequisites/actions: %#v", out.Promotion)
+	}
+}
+
+func TestHandleSoulAgentPromotionVerify_UsesPromotionRegistrationID(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulRegistryTestDB()
+	s := &Server{
+		store: store.New(tdb.db),
+		cfg: config.Config{
+			SoulEnabled:                 true,
+			SoulChainID:                 1,
+			SoulRegistryContractAddress: "0x0000000000000000000000000000000000000001",
+			SoulTxMode:                  "safe",
+			SoulAdminSafeAddress:        "0x0000000000000000000000000000000000000002",
+			SoulMintSignerKey:           strings.Repeat("ab", 32),
+			WebAuthnRPID:                "lesser.host",
+		},
+	}
+
+	tdb.qUser.On("First", mock.AnythingOfType("*models.User")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.User](t, args, 0)
+		*dest = models.User{Username: "alice", Role: models.RoleCustomer, ApprovalStatus: models.UserApprovalStatusApproved}
+	}).Twice()
+
+	tdb.qPromotion.On("First", mock.AnythingOfType("*models.SoulAgentPromotion")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentPromotion](t, args, 0)
+		*dest = models.SoulAgentPromotion{
+			AgentID:         "0x8db124b1d48e366002db4e61cc1501eeb8561e1ef06fd6f9abf9f984501d13ab",
+			RegistrationID:  "reg1",
+			RequestedBy:     "alice",
+			Domain:          "example.com",
+			LocalID:         "agent-alice",
+			Wallet:          "0x000000000000000000000000000000000000dead",
+			Stage:           models.SoulAgentPromotionStageRequested,
+			RequestStatus:   models.SoulAgentPromotionRequestStatusRequested,
+			ReviewStatus:    models.SoulAgentPromotionReviewStatusNotStarted,
+			ApprovalStatus:  models.SoulAgentPromotionApprovalStatusPending,
+			ReadinessStatus: models.SoulAgentPromotionReadinessAwaitingVerification,
+			RequestedAt:     time.Now().Add(-time.Minute).UTC(),
+			CreatedAt:       time.Now().Add(-time.Minute).UTC(),
+			UpdatedAt:       time.Now().Add(-time.Minute).UTC(),
+		}
+	}).Twice()
+	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
+		*dest = models.Domain{Domain: "example.com", InstanceSlug: "inst1", Status: models.DomainStatusVerified}
+	}).Twice()
+	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{Slug: "inst1", Owner: "alice"}
+	}).Twice()
+
+	key, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	addr := strings.ToLower(crypto.PubkeyToAddress(key.PublicKey).Hex())
+	message := "soul test message"
+	sig, err := crypto.Sign(accounts.TextHash([]byte(message)), key)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	sigHex := "0x" + hex.EncodeToString(sig)
+
+	tdb.qReg.On("First", mock.AnythingOfType("*models.SoulAgentRegistration")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentRegistration](t, args, 0)
+		*dest = models.SoulAgentRegistration{
+			ID:               "reg1",
+			Username:         "alice",
+			DomainNormalized: "example.com",
+			LocalID:          "agent-alice",
+			AgentID:          "0x8db124b1d48e366002db4e61cc1501eeb8561e1ef06fd6f9abf9f984501d13ab",
+			Wallet:           addr,
+			WalletMessage:    message,
+			ProofToken:       "t1",
+			DNSVerified:      true,
+			HTTPSVerified:    true,
+			Status:           models.SoulAgentRegistrationStatusPending,
+			CreatedAt:        time.Now().Add(-time.Minute).UTC(),
+			UpdatedAt:        time.Now().Add(-time.Minute).UTC(),
+			ExpiresAt:        time.Now().Add(time.Minute).UTC(),
+		}
+	}).Once()
+	tdb.qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(theoryErrors.ErrItemNotFound).Twice()
+	tdb.qWalletIdx.On("First", mock.AnythingOfType("*models.WalletIndex")).Return(theoryErrors.ErrItemNotFound).Once()
+
+	principalDeclaration := boundaryTestPrincipalDeclaration
+	principalDigest := crypto.Keccak256([]byte(principalDeclaration))
+	principalSig, err := crypto.Sign(accounts.TextHash(principalDigest), key)
+	if err != nil {
+		t.Fatalf("principal Sign: %v", err)
+	}
+	principalSigHex := "0x" + hex.EncodeToString(principalSig)
+
+	body, _ := json.Marshal(soulAgentRegistrationVerifyRequest{
+		Signature:            sigHex,
+		PrincipalAddress:     addr,
+		PrincipalDeclaration: principalDeclaration,
+		PrincipalSignature:   principalSigHex,
+		DeclaredAt:           time.Now().UTC().Format(time.RFC3339),
+	})
+	ctx := &apptheory.Context{
+		RequestID:    "r-promo-verify",
+		AuthIdentity: "alice",
+		Params:       map[string]string{"agentId": "0x8db124b1d48e366002db4e61cc1501eeb8561e1ef06fd6f9abf9f984501d13ab"},
+		Request:      apptheory.Request{Body: body},
+	}
+
+	resp, err := s.handleSoulAgentPromotionVerify(ctx)
+	if err != nil {
+		t.Fatalf("verify err: %v", err)
+	}
+	if resp.Status != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body=%q)", resp.Status, string(resp.Body))
+	}
+
+	var out soulAgentRegistrationVerifyResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Registration.ID != "reg1" || out.Promotion == nil || out.Promotion.RegistrationID != "reg1" {
+		t.Fatalf("unexpected promotion verify response: %#v", out)
 	}
 }
 

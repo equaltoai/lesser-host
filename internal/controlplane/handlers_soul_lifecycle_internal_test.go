@@ -103,6 +103,7 @@ type soulLifecycleTestDB struct {
 	qAudit      *ttmocks.MockQuery
 	qWalletIdx  *ttmocks.MockQuery
 	qCapIdx     *ttmocks.MockQuery
+	qPromotion  *ttmocks.MockQuery
 	qVersion    *ttmocks.MockQuery
 	qBoundary   *ttmocks.MockQuery
 	qBoundIdx   *ttmocks.MockQuery
@@ -126,6 +127,7 @@ func newSoulLifecycleTestDB() soulLifecycleTestDB {
 	qAudit := new(ttmocks.MockQuery)
 	qWalletIdx := new(ttmocks.MockQuery)
 	qCapIdx := new(ttmocks.MockQuery)
+	qPromotion := new(ttmocks.MockQuery)
 	qVersion := new(ttmocks.MockQuery)
 	qBoundary := new(ttmocks.MockQuery)
 	qBoundIdx := new(ttmocks.MockQuery)
@@ -147,6 +149,7 @@ func newSoulLifecycleTestDB() soulLifecycleTestDB {
 	db.On("Model", mock.AnythingOfType("*models.AuditLogEntry")).Return(qAudit).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.WalletIndex")).Return(qWalletIdx).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulCapabilityAgentIndex")).Return(qCapIdx).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentPromotion")).Return(qPromotion).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentVersion")).Return(qVersion).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentBoundary")).Return(qBoundary).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulBoundaryKeywordAgentIndex")).Return(qBoundIdx).Maybe()
@@ -168,6 +171,7 @@ func newSoulLifecycleTestDB() soulLifecycleTestDB {
 		qAudit,
 		qWalletIdx,
 		qCapIdx,
+		qPromotion,
 		qVersion,
 		qBoundary,
 		qBoundIdx,
@@ -192,6 +196,7 @@ func newSoulLifecycleTestDB() soulLifecycleTestDB {
 		q.On("Update", mock.Anything, mock.Anything).Return(nil).Maybe()
 		q.On("Delete").Return(nil).Maybe()
 	}
+	qPromotion.On("First", mock.AnythingOfType("*models.SoulAgentPromotion")).Return(theoryErrors.ErrItemNotFound).Maybe()
 
 	return soulLifecycleTestDB{
 		db:          db,
@@ -203,6 +208,7 @@ func newSoulLifecycleTestDB() soulLifecycleTestDB {
 		qAudit:      qAudit,
 		qWalletIdx:  qWalletIdx,
 		qCapIdx:     qCapIdx,
+		qPromotion:  qPromotion,
 		qVersion:    qVersion,
 		qBoundary:   qBoundary,
 		qBoundIdx:   qBoundIdx,
