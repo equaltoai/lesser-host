@@ -46,6 +46,7 @@ func stubMintConversationIdentity(t *testing.T, tdb *mintConversationTestDB, ide
 func TestMintConversationBeginFinalizeCoverage(t *testing.T) {
 	t.Parallel()
 	testMintConversationBeginFinalizeReturnsPreviewAndDigest(t)
+	testMintConversationFinalizePreflightAliasReturnsPreviewAndDigest(t)
 	testMintConversationBeginFinalizeRejectsPublishedRegistrations(t)
 	testMintConversationBeginFinalizeRequiresBoundarySignatures(t)
 	testMintConversationFinalizeRequiresExpectedVersion(t)
@@ -97,6 +98,37 @@ func (f mintConversationFinalizeCoverageFixture) makeConv(status string) models.
 
 func testMintConversationBeginFinalizeReturnsPreviewAndDigest(t *testing.T) {
 	t.Helper()
+	out := beginFinalizeCoverageResponse(t, false)
+	if out.ExpectedVersion != 0 || out.NextVersion != 1 || !strings.HasPrefix(out.DigestHex, "0x") {
+		t.Fatalf("unexpected begin finalize response: %#v", out)
+	}
+	if out.RegistrationPreview == nil || out.RegistrationPreview["version"] != "2" {
+		t.Fatalf("expected v2 registration preview, got %#v", out.RegistrationPreview)
+	}
+	if out.DeclarationsPreview.SelfDescription.Purpose == "" || len(out.BoundaryRequirements) != 1 {
+		t.Fatalf("expected declaration and boundary preview, got %#v", out)
+	}
+	if out.BoundaryRequirements[0].BoundaryID != "b1" || out.BoundaryRequirements[0].SignatureHex == "" || !strings.HasPrefix(out.BoundaryRequirements[0].DigestHex, "0x") {
+		t.Fatalf("unexpected boundary requirement: %#v", out.BoundaryRequirements)
+	}
+	if out.SelfAttestationSigning.CanonicalJSON == "" || out.SelfAttestationSigning.MessageHex != out.DigestHex {
+		t.Fatalf("unexpected self attestation signing input: %#v", out.SelfAttestationSigning)
+	}
+	if out.FinalizeRequestTemplate.ExpectedVersion != out.ExpectedVersion || out.FinalizeRequestTemplate.IssuedAt != out.IssuedAt {
+		t.Fatalf("unexpected finalize request template: %#v", out.FinalizeRequestTemplate)
+	}
+}
+
+func testMintConversationFinalizePreflightAliasReturnsPreviewAndDigest(t *testing.T) {
+	t.Helper()
+	out := beginFinalizeCoverageResponse(t, true)
+	if out.DigestHex == "" || out.SelfAttestationSigning.CanonicalJSON == "" {
+		t.Fatalf("expected alias preflight response, got %#v", out)
+	}
+}
+
+func beginFinalizeCoverageResponse(t *testing.T, usePreflightAlias bool) soulMintConversationFinalizeBeginResponse {
+	t.Helper()
 	f := newMintConversationFinalizeCoverageFixture(t)
 	tdb := newMintConversationTestDB()
 	s := newMintConversationServer(tdb)
@@ -114,20 +146,24 @@ func testMintConversationBeginFinalizeReturnsPreviewAndDigest(t *testing.T) {
 	}
 	body := mustMarshalJSON(t, soulMintConversationFinalizeBeginRequest{BoundarySignatures: map[string]string{"b1": "0x" + hex.EncodeToString(boundarySig)}})
 
-	resp, err := s.handleSoulBeginFinalizeMintConversation(f.makeCtx(body))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	var (
+		resp    *apptheory.Response
+		callErr error
+	)
+	if usePreflightAlias {
+		resp, callErr = s.handleSoulFinalizeMintConversationPreflight(f.makeCtx(body))
+	} else {
+		resp, callErr = s.handleSoulBeginFinalizeMintConversation(f.makeCtx(body))
 	}
+	if callErr != nil {
+		t.Fatalf("unexpected error: %v", callErr)
+	}
+
 	var out soulMintConversationFinalizeBeginResponse
 	if err := json.Unmarshal(resp.Body, &out); err != nil {
 		t.Fatalf("Unmarshal response: %v", err)
 	}
-	if out.ExpectedVersion != 0 || out.NextVersion != 1 || !strings.HasPrefix(out.DigestHex, "0x") {
-		t.Fatalf("unexpected begin finalize response: %#v", out)
-	}
-	if out.RegistrationPreview == nil || out.RegistrationPreview["version"] != "2" {
-		t.Fatalf("expected v2 registration preview, got %#v", out.RegistrationPreview)
-	}
+	return out
 }
 
 func testMintConversationBeginFinalizeRejectsPublishedRegistrations(t *testing.T) {

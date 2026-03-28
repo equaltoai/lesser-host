@@ -83,13 +83,47 @@ type soulMintConversationFinalizeBeginRequest struct {
 	BoundarySignatures map[string]string `json:"boundary_signatures"`
 }
 
+type soulMintConversationFinalizeBoundaryRequirement struct {
+	BoundaryID      string `json:"boundary_id"`
+	Category        string `json:"category"`
+	Statement       string `json:"statement"`
+	Rationale       string `json:"rationale,omitempty"`
+	Supersedes      string `json:"supersedes,omitempty"`
+	SignatureHex    string `json:"signature_hex,omitempty"`
+	SignerWallet    string `json:"signer_wallet"`
+	SigningMethod   string `json:"signing_method"`
+	MessageEncoding string `json:"message_encoding"`
+	Message         string `json:"message"`
+	DigestHex       string `json:"digest_hex"`
+}
+
+type soulMintConversationFinalizeSigningInput struct {
+	SignerWallet    string `json:"signer_wallet"`
+	SigningMethod   string `json:"signing_method"`
+	MessageEncoding string `json:"message_encoding"`
+	MessageHex      string `json:"message_hex"`
+	DigestHex       string `json:"digest_hex"`
+	CanonicalJSON   string `json:"canonical_json"`
+}
+
+type soulMintConversationFinalizeRequestTemplate struct {
+	BoundarySignatures map[string]string `json:"boundary_signatures"`
+	IssuedAt           string            `json:"issued_at"`
+	ExpectedVersion    int               `json:"expected_version"`
+	SelfAttestation    string            `json:"self_attestation"`
+}
+
 type soulMintConversationFinalizeBeginResponse struct {
-	Version             string         `json:"version"`
-	DigestHex           string         `json:"digest_hex"`
-	IssuedAt            string         `json:"issued_at"`
-	ExpectedVersion     int            `json:"expected_version"`
-	NextVersion         int            `json:"next_version"`
-	RegistrationPreview map[string]any `json:"registration_preview,omitempty"`
+	Version                 string                                            `json:"version"`
+	DigestHex               string                                            `json:"digest_hex"`
+	IssuedAt                string                                            `json:"issued_at"`
+	ExpectedVersion         int                                               `json:"expected_version"`
+	NextVersion             int                                               `json:"next_version"`
+	DeclarationsPreview     soulMintConversationProducedDeclarations          `json:"declarations_preview"`
+	BoundaryRequirements    []soulMintConversationFinalizeBoundaryRequirement `json:"boundary_requirements,omitempty"`
+	SelfAttestationSigning  soulMintConversationFinalizeSigningInput          `json:"self_attestation_signing"`
+	FinalizeRequestTemplate soulMintConversationFinalizeRequestTemplate       `json:"finalize_request_template"`
+	RegistrationPreview     map[string]any                                    `json:"registration_preview,omitempty"`
 }
 
 type soulMintConversationFinalizeRequest struct {
@@ -1109,15 +1143,7 @@ func (s *Server) handleSoulBeginFinalizeMintConversation(ctx *apptheory.Context)
 	if appErr != nil {
 		return nil, appErr
 	}
-
-	return apptheory.JSON(http.StatusOK, soulMintConversationFinalizeBeginResponse{
-		Version:             "1",
-		DigestHex:           "0x" + hex.EncodeToString(digest),
-		IssuedAt:            now.Format(time.RFC3339Nano),
-		ExpectedVersion:     expectedVersion,
-		NextVersion:         nextVersion,
-		RegistrationPreview: regMap,
-	})
+	return s.respondMintConversationFinalizePreflight(finalizeCtx.identity, decl, req.BoundarySignatures, regMap, digest, now, expectedVersion, nextVersion)
 }
 
 func (s *Server) handleSoulAgentBeginFinalizeMintConversation(ctx *apptheory.Context) (*apptheory.Response, error) {
@@ -1162,15 +1188,15 @@ func (s *Server) handleSoulAgentBeginFinalizeMintConversation(ctx *apptheory.Con
 	if appErr != nil {
 		return nil, appErr
 	}
+	return s.respondMintConversationFinalizePreflight(agentCtx.identity, decl, req.BoundarySignatures, regMap, digest, now, expectedVersion, nextVersion)
+}
 
-	return apptheory.JSON(http.StatusOK, soulMintConversationFinalizeBeginResponse{
-		Version:             "1",
-		DigestHex:           "0x" + hex.EncodeToString(digest),
-		IssuedAt:            now.Format(time.RFC3339Nano),
-		ExpectedVersion:     expectedVersion,
-		NextVersion:         nextVersion,
-		RegistrationPreview: regMap,
-	})
+func (s *Server) handleSoulFinalizeMintConversationPreflight(ctx *apptheory.Context) (*apptheory.Response, error) {
+	return s.handleSoulBeginFinalizeMintConversation(ctx)
+}
+
+func (s *Server) handleSoulAgentFinalizeMintConversationPreflight(ctx *apptheory.Context) (*apptheory.Response, error) {
+	return s.handleSoulAgentBeginFinalizeMintConversation(ctx)
 }
 
 // handleSoulFinalizeMintConversation publishes the v2 registration version derived from a completed mint conversation.
@@ -1270,6 +1296,114 @@ func (s *Server) handleSoulAgentFinalizeMintConversation(ctx *apptheory.Context)
 }
 
 // --- Helpers ---
+
+func (s *Server) respondMintConversationFinalizePreflight(
+	identity *models.SoulAgentIdentity,
+	decl soulMintConversationProducedDeclarations,
+	boundarySignatures map[string]string,
+	regMap map[string]any,
+	digest []byte,
+	issuedAt time.Time,
+	expectedVersion int,
+	nextVersion int,
+) (*apptheory.Response, error) {
+	canonicalJSON, appErr := buildMintConversationFinalizeCanonicalJSON(regMap)
+	if appErr != nil {
+		return nil, appErr
+	}
+
+	issuedAtStr := issuedAt.UTC().Format(time.RFC3339Nano)
+	digestHex := "0x" + hex.EncodeToString(digest)
+	return apptheory.JSON(http.StatusOK, soulMintConversationFinalizeBeginResponse{
+		Version:             "1",
+		DigestHex:           digestHex,
+		IssuedAt:            issuedAtStr,
+		ExpectedVersion:     expectedVersion,
+		NextVersion:         nextVersion,
+		DeclarationsPreview: decl,
+		BoundaryRequirements: buildMintConversationFinalizeBoundaryRequirements(
+			strings.TrimSpace(identity.Wallet),
+			decl.Boundaries,
+			boundarySignatures,
+		),
+		SelfAttestationSigning: soulMintConversationFinalizeSigningInput{
+			SignerWallet:    strings.TrimSpace(identity.Wallet),
+			SigningMethod:   "eip191_personal_sign",
+			MessageEncoding: "hex_bytes",
+			MessageHex:      digestHex,
+			DigestHex:       digestHex,
+			CanonicalJSON:   canonicalJSON,
+		},
+		FinalizeRequestTemplate: soulMintConversationFinalizeRequestTemplate{
+			BoundarySignatures: copyMintConversationBoundarySignatures(boundarySignatures),
+			IssuedAt:           issuedAtStr,
+			ExpectedVersion:    expectedVersion,
+			SelfAttestation:    "",
+		},
+		RegistrationPreview: regMap,
+	})
+}
+
+func buildMintConversationFinalizeBoundaryRequirements(
+	wallet string,
+	boundaries []soul.BoundaryV2,
+	boundarySignatures map[string]string,
+) []soulMintConversationFinalizeBoundaryRequirement {
+	out := make([]soulMintConversationFinalizeBoundaryRequirement, 0, len(boundaries))
+	for i := range boundaries {
+		b := boundaries[i]
+		requirement := soulMintConversationFinalizeBoundaryRequirement{
+			BoundaryID:      strings.TrimSpace(b.ID),
+			Category:        strings.ToLower(strings.TrimSpace(b.Category)),
+			Statement:       strings.TrimSpace(b.Statement),
+			SignatureHex:    strings.TrimSpace(boundarySignatures[strings.TrimSpace(b.ID)]),
+			SignerWallet:    strings.TrimSpace(wallet),
+			SigningMethod:   "eip191_personal_sign",
+			MessageEncoding: "utf8",
+			Message:         strings.TrimSpace(b.Statement),
+			DigestHex:       "0x" + hex.EncodeToString(crypto.Keccak256([]byte(strings.TrimSpace(b.Statement)))),
+		}
+		if strings.TrimSpace(b.Rationale) != "" {
+			requirement.Rationale = strings.TrimSpace(b.Rationale)
+		}
+		if b.Supersedes != nil && strings.TrimSpace(*b.Supersedes) != "" {
+			requirement.Supersedes = strings.TrimSpace(*b.Supersedes)
+		}
+		out = append(out, requirement)
+	}
+	return out
+}
+
+func buildMintConversationFinalizeCanonicalJSON(regMap map[string]any) (string, *apptheory.AppError) {
+	unsigned := cloneSoulRegistrationMap(regMap)
+	att := map[string]any{}
+	if attAny, ok := regMap["attestations"].(map[string]any); ok {
+		for key, value := range attAny {
+			if strings.TrimSpace(key) == "selfAttestation" {
+				continue
+			}
+			att[key] = value
+		}
+	}
+	unsigned["attestations"] = att
+
+	canonical, err := canonicalJSON(unsigned)
+	if err != nil {
+		return "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid registration JSON"}
+	}
+	return string(canonical), nil
+}
+
+func copyMintConversationBoundarySignatures(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return map[string]string{}
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[strings.TrimSpace(key)] = strings.TrimSpace(value)
+	}
+	return out
+}
 
 func parseMintConversationCompleteDeclarations(ctx *apptheory.Context) string {
 	var reqBody struct {

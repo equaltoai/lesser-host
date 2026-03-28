@@ -1243,7 +1243,57 @@ export interface SoulMintConversationFinalizeBeginResponse {
 	issued_at: string;
 	expected_version: number;
 	next_version: number;
+	declarations_preview: {
+		selfDescription: Record<string, unknown>;
+		capabilities: Array<Record<string, unknown>>;
+		boundaries: Array<Record<string, unknown>>;
+		transparency: Record<string, unknown>;
+	};
+	boundary_requirements: Array<{
+		boundary_id: string;
+		category: string;
+		statement: string;
+		rationale?: string;
+		supersedes?: string;
+		signature_hex?: string;
+		signer_wallet: string;
+		signing_method: string;
+		message_encoding: string;
+		message: string;
+		digest_hex: string;
+	}>;
+	self_attestation_signing: {
+		signer_wallet: string;
+		signing_method: string;
+		message_encoding: string;
+		message_hex: string;
+		digest_hex: string;
+		canonical_json: string;
+	};
+	finalize_request_template: {
+		boundary_signatures: Record<string, string>;
+		issued_at: string;
+		expected_version: number;
+		self_attestation: string;
+	};
 	registration_preview?: unknown;
+}
+
+export function soulMintConversationFinalizePreflight(
+	token: string,
+	registrationId: string,
+	conversationId: string,
+	input: { boundary_signatures: Record<string, string> },
+): Promise<SoulMintConversationFinalizeBeginResponse> {
+	const req = jsonRequest(input);
+	return fetchJson<SoulMintConversationFinalizeBeginResponse>(
+		`/api/v1/soul/agents/register/${encodeURIComponent(registrationId)}/mint-conversation/${encodeURIComponent(conversationId)}/finalize/preflight`,
+		{
+			method: 'POST',
+			headers: { authorization: `Bearer ${token}`, ...req.headers },
+			body: req.body,
+		},
+	);
 }
 
 export function soulMintConversationFinalizeBegin(
@@ -1255,6 +1305,23 @@ export function soulMintConversationFinalizeBegin(
 	const req = jsonRequest(input);
 	return fetchJson<SoulMintConversationFinalizeBeginResponse>(
 		`/api/v1/soul/agents/register/${encodeURIComponent(registrationId)}/mint-conversation/${encodeURIComponent(conversationId)}/finalize/begin`,
+		{
+			method: 'POST',
+			headers: { authorization: `Bearer ${token}`, ...req.headers },
+			body: req.body,
+		},
+	);
+}
+
+export function soulAgentMintConversationFinalizePreflight(
+	token: string,
+	agentId: string,
+	conversationId: string,
+	input: { boundary_signatures: Record<string, string> },
+): Promise<SoulMintConversationFinalizeBeginResponse> {
+	const req = jsonRequest(input);
+	return fetchJson<SoulMintConversationFinalizeBeginResponse>(
+		`/api/v1/soul/agents/${encodeURIComponent(agentId)}/mint-conversation/${encodeURIComponent(conversationId)}/finalize/preflight`,
 		{
 			method: 'POST',
 			headers: { authorization: `Bearer ${token}`, ...req.headers },
