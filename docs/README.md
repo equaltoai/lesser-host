@@ -14,6 +14,7 @@ This directory contains maintainer documentation for `lesser-host` (the `lesser.
 - Architecture + component placement: `docs/adr/0001-component-placement.md`
 - Canonical IDs + signatures: `docs/adr/0002-canonical-identifiers-and-signatures.md`
 - Suspension policy: `docs/adr/0003-suspension-policy.md`
+- Agent-first client workflow contract: `docs/soul-agent-first-client-contract.md`
 - Agent ID test vectors: `docs/spec/agent-id-test-vectors.md`
 - On-chain contracts: `docs/soul-registry.md`
 - S3 registry artifact layouts: `docs/soul-pack-bucket-layout.md`
