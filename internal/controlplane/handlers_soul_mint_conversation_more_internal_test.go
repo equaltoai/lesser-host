@@ -515,6 +515,7 @@ func TestMintConversationHandleGuardsAndModelBranches(t *testing.T) {
 	testMintConversationHandleRequiresRegistrationID(t)
 	testMintConversationHandleRequiresMessage(t)
 	testMintConversationHandleRejectsLongMessage(t)
+	testMintConversationHandleRejectsPublishedRegistration(t)
 	testMintConversationHandleRejectsUnsupportedModel(t)
 	testMintConversationHandleRejectsModelChangeForExistingConversation(t)
 }
@@ -523,8 +524,10 @@ func TestMintConversationGetCompleteAndFinalizeGuards(t *testing.T) {
 	t.Parallel()
 	testMintConversationGetRequiresConversationID(t)
 	testMintConversationGetConversationSuccess(t)
+	testMintConversationGetRequiresDomainOwnership(t)
 	testMintConversationCompleteRequiresConversationID(t)
 	testMintConversationCompleteRejectsConversationNotInProgress(t)
+	testMintConversationCompleteRejectsPublishedRegistration(t)
 	testMintConversationCompleteAcceptsStringDeclarations(t)
 	testMintConversationCompleteAcceptsObjectDeclarations(t)
 	testMintConversationBeginFinalizeRequiresBucketConfiguration(t)
@@ -566,6 +569,8 @@ func testMintConversationHandleRequiresMessage(t *testing.T) {
 	tdb := newMintConversationTestDB()
 	s := newMintConversationServer(tdb)
 	stubMintConversationRegistration(t, tdb, reg)
+	stubMintConversationDomainAccess(t, tdb, reg.DomainNormalized)
+	stubMintConversationIdentity(t, tdb, nil, theoryErrors.ErrItemNotFound)
 	ctx := adminCtx()
 	ctx.Params = map[string]string{"id": reg.ID}
 	ctx.Request.Body = []byte(`{}`)
@@ -582,6 +587,8 @@ func testMintConversationHandleRejectsLongMessage(t *testing.T) {
 	tdb := newMintConversationTestDB()
 	s := newMintConversationServer(tdb)
 	stubMintConversationRegistration(t, tdb, reg)
+	stubMintConversationDomainAccess(t, tdb, reg.DomainNormalized)
+	stubMintConversationIdentity(t, tdb, nil, theoryErrors.ErrItemNotFound)
 	body, _ := json.Marshal(soulMintConversationRequest{Message: strings.Repeat("x", 8193)})
 	ctx := adminCtx()
 	ctx.Params = map[string]string{"id": reg.ID}
@@ -593,6 +600,30 @@ func testMintConversationHandleRejectsLongMessage(t *testing.T) {
 	}
 }
 
+func testMintConversationHandleRejectsPublishedRegistration(t *testing.T) {
+	t.Helper()
+	reg := mintConversationHandleReg()
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	identity := testMintConversationIdentity()
+	identity.AgentID = reg.AgentID
+	identity.SelfDescriptionVersion = 1
+
+	stubMintConversationRegistration(t, tdb, reg)
+	stubMintConversationDomainAccess(t, tdb, reg.DomainNormalized)
+	stubMintConversationIdentity(t, tdb, identity, nil)
+
+	ctx := adminCtx()
+	ctx.Params = map[string]string{"id": reg.ID}
+	ctx.Request.Body = mustMarshalJSON(t, soulMintConversationRequest{Message: "hello"})
+
+	_, err := s.handleSoulMintConversation(ctx)
+	appErr, ok := err.(*apptheory.AppError)
+	if !ok || appErr.Message != soulMintConversationAlreadyPublishedMessage {
+		t.Fatalf("expected published registration conflict, got %#v", err)
+	}
+}
+
 func testMintConversationHandleRejectsUnsupportedModel(t *testing.T) {
 	t.Helper()
 	reg := mintConversationHandleReg()
@@ -600,6 +631,7 @@ func testMintConversationHandleRejectsUnsupportedModel(t *testing.T) {
 	s := newMintConversationServer(tdb)
 	stubMintConversationRegistration(t, tdb, reg)
 	stubMintConversationDomainAccess(t, tdb, reg.DomainNormalized)
+	stubMintConversationIdentity(t, tdb, nil, theoryErrors.ErrItemNotFound)
 	tdb.qConv.On("First", mock.AnythingOfType("*models.SoulAgentMintConversation")).Return(nil).Run(func(args mock.Arguments) {
 		dest, ok := args.Get(0).(*models.SoulAgentMintConversation)
 		if !ok || dest == nil {
@@ -625,6 +657,7 @@ func testMintConversationHandleRejectsModelChangeForExistingConversation(t *test
 	s := newMintConversationServer(tdb)
 	stubMintConversationRegistration(t, tdb, reg)
 	stubMintConversationDomainAccess(t, tdb, reg.DomainNormalized)
+	stubMintConversationIdentity(t, tdb, nil, theoryErrors.ErrItemNotFound)
 	tdb.qConv.On("First", mock.AnythingOfType("*models.SoulAgentMintConversation")).Return(nil).Run(func(args mock.Arguments) {
 		dest, ok := args.Get(0).(*models.SoulAgentMintConversation)
 		if !ok || dest == nil {
@@ -654,6 +687,7 @@ func testMintConversationGetRequiresConversationID(t *testing.T) {
 	tdb := newMintConversationTestDB()
 	s := newMintConversationServer(tdb)
 	stubMintConversationRegistration(t, tdb, reg)
+	stubMintConversationDomainAccess(t, tdb, reg.DomainNormalized)
 	ctx := adminCtx()
 	ctx.Params = map[string]string{"id": reg.ID}
 	_, err := s.handleSoulGetMintConversation(ctx)
@@ -669,6 +703,7 @@ func testMintConversationGetConversationSuccess(t *testing.T) {
 	tdb := newMintConversationTestDB()
 	s := newMintConversationServer(tdb)
 	stubMintConversationRegistration(t, tdb, reg)
+	stubMintConversationDomainAccess(t, tdb, reg.DomainNormalized)
 	tdb.qConv.On("First", mock.AnythingOfType("*models.SoulAgentMintConversation")).Return(nil).Run(func(args mock.Arguments) {
 		dest, ok := args.Get(0).(*models.SoulAgentMintConversation)
 		if !ok || dest == nil {
@@ -691,6 +726,49 @@ func testMintConversationGetConversationSuccess(t *testing.T) {
 	}
 }
 
+func testMintConversationGetRequiresDomainOwnership(t *testing.T) {
+	t.Helper()
+	reg := mintConversationGuardReg()
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	stubMintConversationRegistration(t, tdb, reg)
+	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
+		dest, ok := args.Get(0).(*models.Domain)
+		if !ok || dest == nil {
+			t.Fatalf("expected *models.Domain, got %#v", args.Get(0))
+		}
+		*dest = models.Domain{
+			Domain:       reg.DomainNormalized,
+			InstanceSlug: "inst1",
+			Status:       models.DomainStatusVerified,
+		}
+	}).Once()
+	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest, ok := args.Get(0).(*models.Instance)
+		if !ok || dest == nil {
+			t.Fatalf("expected *models.Instance, got %#v", args.Get(0))
+		}
+		*dest = models.Instance{
+			Slug:  "inst1",
+			Owner: "bob",
+		}
+	}).Once()
+
+	ctx := &apptheory.Context{
+		AuthIdentity: reg.Username,
+		Params: map[string]string{
+			"id":             reg.ID,
+			"conversationId": mintConversationTestConversationID,
+		},
+	}
+
+	_, err := s.handleSoulGetMintConversation(ctx)
+	appErr, ok := err.(*apptheory.AppError)
+	if !ok || appErr.Code != "app.forbidden" {
+		t.Fatalf("expected domain ownership failure, got %#v", err)
+	}
+}
+
 func testMintConversationCompleteRequiresConversationID(t *testing.T) {
 	t.Helper()
 	reg := mintConversationGuardReg()
@@ -698,6 +776,7 @@ func testMintConversationCompleteRequiresConversationID(t *testing.T) {
 	s := newMintConversationServer(tdb)
 	stubMintConversationRegistration(t, tdb, reg)
 	stubMintConversationDomainAccess(t, tdb, reg.DomainNormalized)
+	stubMintConversationIdentity(t, tdb, nil, theoryErrors.ErrItemNotFound)
 	ctx := adminCtx()
 	ctx.Params = map[string]string{"id": reg.ID}
 	_, err := s.handleSoulCompleteMintConversation(ctx)
@@ -714,6 +793,7 @@ func testMintConversationCompleteRejectsConversationNotInProgress(t *testing.T) 
 	s := newMintConversationServer(tdb)
 	stubMintConversationRegistration(t, tdb, reg)
 	stubMintConversationDomainAccess(t, tdb, reg.DomainNormalized)
+	stubMintConversationIdentity(t, tdb, nil, theoryErrors.ErrItemNotFound)
 	tdb.qConv.On("First", mock.AnythingOfType("*models.SoulAgentMintConversation")).Return(nil).Run(func(args mock.Arguments) {
 		dest, ok := args.Get(0).(*models.SoulAgentMintConversation)
 		if !ok || dest == nil {
@@ -730,6 +810,29 @@ func testMintConversationCompleteRejectsConversationNotInProgress(t *testing.T) 
 	}
 }
 
+func testMintConversationCompleteRejectsPublishedRegistration(t *testing.T) {
+	t.Helper()
+	reg := mintConversationGuardReg()
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	identity := testMintConversationIdentity()
+	identity.AgentID = reg.AgentID
+	identity.SelfDescriptionVersion = 1
+
+	stubMintConversationRegistration(t, tdb, reg)
+	stubMintConversationDomainAccess(t, tdb, reg.DomainNormalized)
+	stubMintConversationIdentity(t, tdb, identity, nil)
+
+	ctx := adminCtx()
+	ctx.Params = map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID}
+
+	_, err := s.handleSoulCompleteMintConversation(ctx)
+	appErr, ok := err.(*apptheory.AppError)
+	if !ok || appErr.Message != soulMintConversationAlreadyPublishedMessage {
+		t.Fatalf("expected published registration conflict, got %#v", err)
+	}
+}
+
 func testMintConversationCompleteAcceptsStringDeclarations(t *testing.T) {
 	t.Helper()
 	reg := mintConversationGuardReg()
@@ -737,6 +840,7 @@ func testMintConversationCompleteAcceptsStringDeclarations(t *testing.T) {
 	s := newMintConversationServer(tdb)
 	stubMintConversationRegistration(t, tdb, reg)
 	stubMintConversationDomainAccess(t, tdb, reg.DomainNormalized)
+	stubMintConversationIdentity(t, tdb, nil, theoryErrors.ErrItemNotFound)
 	tdb.qConv.On("First", mock.AnythingOfType("*models.SoulAgentMintConversation")).Return(nil).Run(func(args mock.Arguments) {
 		dest, ok := args.Get(0).(*models.SoulAgentMintConversation)
 		if !ok || dest == nil {
@@ -770,6 +874,7 @@ func testMintConversationCompleteAcceptsObjectDeclarations(t *testing.T) {
 	s := newMintConversationServer(tdb)
 	stubMintConversationRegistration(t, tdb, reg)
 	stubMintConversationDomainAccess(t, tdb, reg.DomainNormalized)
+	stubMintConversationIdentity(t, tdb, nil, theoryErrors.ErrItemNotFound)
 	tdb.qConv.On("First", mock.AnythingOfType("*models.SoulAgentMintConversation")).Return(nil).Run(func(args mock.Arguments) {
 		dest, ok := args.Get(0).(*models.SoulAgentMintConversation)
 		if !ok || dest == nil {

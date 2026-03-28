@@ -123,6 +123,30 @@ func TestHandleSoulAgentMintConversation_ConflictsForPublishedAgent(t *testing.T
 	}
 }
 
+func TestHandleSoulAgentCompleteMintConversation_ConflictsForPublishedAgent(t *testing.T) {
+	t.Parallel()
+
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	identity := testMintConversationIdentity()
+	identity.SelfDescriptionVersion = 1
+
+	stubMintConversationIdentity(t, tdb, identity, nil)
+	stubMintConversationDomainAccess(t, tdb, identity.Domain)
+
+	ctx := &apptheory.Context{
+		AuthIdentity: testUsernameAlice,
+		Params: map[string]string{
+			"agentId":        identity.AgentID,
+			"conversationId": mintConversationTestConversationID,
+		},
+	}
+
+	if _, err := s.handleSoulAgentCompleteMintConversation(ctx); err == nil {
+		t.Fatalf("expected published-agent conflict")
+	}
+}
+
 func TestHandleSoulAgentAliasRoutes_RequireConversationID(t *testing.T) {
 	t.Parallel()
 

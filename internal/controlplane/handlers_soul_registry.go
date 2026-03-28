@@ -390,7 +390,7 @@ func (s *Server) handleSoulAgentRegistrationBegin(ctx *apptheory.Context) (*appt
 	if appErr := s.createSoulAgentRegistration(ctx.Context(), reg); appErr != nil {
 		return nil, appErr
 	}
-	promotion := buildSoulAgentPromotionFromRegistration(reg, strings.TrimSpace(ctx.AuthIdentity), now)
+	promotion := buildSoulAgentPromotionFromRegistration(reg, now)
 	if appErr := s.saveSoulAgentPromotion(ctx.Context(), promotion); appErr != nil {
 		return nil, appErr
 	}

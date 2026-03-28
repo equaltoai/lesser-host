@@ -106,14 +106,14 @@ func (s *Server) loadOrFallbackSoulAgentPromotion(ctx context.Context, agentIDHe
 	return fallback
 }
 
-func buildSoulAgentPromotionFromRegistration(reg *models.SoulAgentRegistration, requestedBy string, now time.Time) *models.SoulAgentPromotion {
+func buildSoulAgentPromotionFromRegistration(reg *models.SoulAgentRegistration, now time.Time) *models.SoulAgentPromotion {
 	if reg == nil {
 		return nil
 	}
 	return &models.SoulAgentPromotion{
 		AgentID:         reg.AgentID,
 		RegistrationID:  reg.ID,
-		RequestedBy:     strings.TrimSpace(requestedBy),
+		RequestedBy:     strings.TrimSpace(reg.Username),
 		Domain:          reg.DomainNormalized,
 		LocalID:         reg.LocalID,
 		Wallet:          reg.Wallet,

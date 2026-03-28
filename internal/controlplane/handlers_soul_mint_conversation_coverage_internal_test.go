@@ -183,7 +183,7 @@ func testMintConversationBeginFinalizeRejectsPublishedRegistrations(t *testing.T
 	body := mustMarshalJSON(t, soulMintConversationFinalizeBeginRequest{BoundarySignatures: map[string]string{"b1": "0x00"}})
 	_, err := s.handleSoulBeginFinalizeMintConversation(f.makeCtx(body))
 	appErr, ok := err.(*apptheory.AppError)
-	if !ok || appErr.Message != "registration is already published" {
+	if !ok || appErr.Message != soulMintConversationAlreadyPublishedMessage {
 		t.Fatalf("expected already published error, got %#v", err)
 	}
 }

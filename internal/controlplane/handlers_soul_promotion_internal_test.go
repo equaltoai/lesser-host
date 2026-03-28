@@ -98,6 +98,28 @@ func TestSoulAgentPromotionHelperBranches(t *testing.T) {
 	if promotion.LatestBoundaryCount != 0 || promotion.LatestCapabilityCount != 0 {
 		t.Fatalf("expected invalid JSON to leave zero counts, got %#v", promotion)
 	}
+
+	regPromotion := buildSoulAgentPromotionFromRegistration(&models.SoulAgentRegistration{
+		ID:               "reg-req",
+		Username:         testUsernameAlice,
+		DomainNormalized: "example.com",
+		LocalID:          "agent-bot",
+		AgentID:          soulLifecycleTestAgentIDHex,
+		Wallet:           "0x00000000000000000000000000000000000000aa",
+	}, time.Date(2026, 3, 5, 12, 0, 0, 0, time.UTC))
+	if regPromotion.RequestedBy != testUsernameAlice {
+		t.Fatalf("expected requester from registration, got %#v", regPromotion)
+	}
+
+	identityFallbackPromotion := buildSoulAgentPromotionFromRegistration(&models.SoulAgentRegistration{
+		DomainNormalized: "example.com",
+		LocalID:          "agent-bot",
+		AgentID:          soulLifecycleTestAgentIDHex,
+		Wallet:           "0x00000000000000000000000000000000000000aa",
+	}, time.Date(2026, 3, 5, 12, 1, 0, 0, time.UTC))
+	if identityFallbackPromotion.RequestedBy != "" {
+		t.Fatalf("expected empty requester without registration owner, got %#v", identityFallbackPromotion)
+	}
 }
 
 func TestHandleSoulAgentGetPromotion_NotFound(t *testing.T) {
@@ -222,7 +244,7 @@ func readyForFinalizePromotion(t *testing.T) (*models.SoulAgentPromotion, time.T
 		AgentID:          soulLifecycleTestAgentIDHex,
 		Wallet:           "0x00000000000000000000000000000000000000aa",
 	}
-	promotion := buildSoulAgentPromotionFromRegistration(reg, "alice", now)
+	promotion := buildSoulAgentPromotionFromRegistration(reg, now)
 	op := &models.SoulOperation{
 		OperationID: "op-1",
 		Status:      models.SoulOperationStatusExecuted,

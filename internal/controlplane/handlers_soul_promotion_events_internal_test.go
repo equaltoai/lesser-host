@@ -189,13 +189,15 @@ func TestHandleSoulAgentListPromotionLifecycleEvents_ReturnsAgentFeed(t *testing
 func readyForFinalizePromotionSnapshot(now time.Time) *models.SoulAgentPromotion {
 	promotion := buildSoulAgentPromotionFromRegistration(&models.SoulAgentRegistration{
 		ID:               "reg-1",
+		Username:         testUsernameAlice,
 		AgentID:          soulLifecycleTestAgentIDHex,
 		DomainNormalized: "example.com",
 		LocalID:          "agent-bot",
 		Wallet:           "0x00000000000000000000000000000000000000aa",
-	}, testUsernameAlice, now.Add(-4*time.Minute))
+	}, now.Add(-4*time.Minute))
 	promotion = updateSoulAgentPromotionForVerification(promotion, &models.SoulAgentRegistration{
 		ID:               "reg-1",
+		Username:         testUsernameAlice,
 		AgentID:          soulLifecycleTestAgentIDHex,
 		DomainNormalized: "example.com",
 		LocalID:          "agent-bot",
