@@ -13,7 +13,7 @@
     "destroy": "npm run build && cdk destroy --all"
   },
   "dependencies": {
-    "aws-cdk-lib": "^2.245.0",
+    "aws-cdk-lib": "file:vendor/aws-cdk-lib-2.245.0-brace-expansion-5.0.5.tgz",
     "constructs": "^10.5.1"
   },
   "devDependencies": {
