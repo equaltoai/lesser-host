@@ -337,7 +337,7 @@ func TestHandleSoulFailures_PublicList(t *testing.T) {
 	if err := json.Unmarshal(resp.Body, &out); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
-	if out.Count != 1 || !out.HasMore || out.NextCursor != "next" {
+	if out.Count != 1 || !out.HasMore || out.NextCursor != testSoulPaginationNextCursor {
 		t.Fatalf("unexpected failures response: %#v", out)
 	}
 }

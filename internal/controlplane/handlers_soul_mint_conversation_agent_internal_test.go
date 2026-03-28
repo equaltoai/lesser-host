@@ -44,7 +44,7 @@ func TestHandleSoulAgentListMintConversations_SortsNewestFirst(t *testing.T) {
 	}).Once()
 
 	ctx := adminCtx()
-	ctx.AuthIdentity = "alice"
+	ctx.AuthIdentity = testUsernameAlice
 	ctx.Params = map[string]string{"agentId": identity.AgentID}
 	ctx.Request.Query = map[string][]string{"limit": {"10"}}
 
@@ -86,7 +86,7 @@ func TestHandleSoulAgentGetMintConversation_AllowsPendingAgent(t *testing.T) {
 	})
 
 	ctx := &apptheory.Context{
-		AuthIdentity: "alice",
+		AuthIdentity: testUsernameAlice,
 		Params: map[string]string{
 			"agentId":        identity.AgentID,
 			"conversationId": mintConversationTestConversationID,
@@ -100,4 +100,94 @@ func TestHandleSoulAgentGetMintConversation_AllowsPendingAgent(t *testing.T) {
 	if resp.Status != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.Status)
 	}
+}
+
+func TestHandleSoulAgentMintConversation_ConflictsForPublishedAgent(t *testing.T) {
+	t.Parallel()
+
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	identity := testMintConversationIdentity()
+	identity.SelfDescriptionVersion = 1
+
+	stubMintConversationIdentity(t, tdb, identity, nil)
+	stubMintConversationDomainAccess(t, tdb, identity.Domain)
+
+	ctx := &apptheory.Context{
+		AuthIdentity: testUsernameAlice,
+		Params:       map[string]string{"agentId": identity.AgentID},
+	}
+
+	if _, err := s.handleSoulAgentMintConversation(ctx); err == nil {
+		t.Fatalf("expected published-agent conflict")
+	}
+}
+
+func TestHandleSoulAgentCompleteMintConversation_ConflictsForPublishedAgent(t *testing.T) {
+	t.Parallel()
+
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	identity := testMintConversationIdentity()
+	identity.SelfDescriptionVersion = 1
+
+	stubMintConversationIdentity(t, tdb, identity, nil)
+	stubMintConversationDomainAccess(t, tdb, identity.Domain)
+
+	ctx := &apptheory.Context{
+		AuthIdentity: testUsernameAlice,
+		Params: map[string]string{
+			"agentId":        identity.AgentID,
+			"conversationId": mintConversationTestConversationID,
+		},
+	}
+
+	if _, err := s.handleSoulAgentCompleteMintConversation(ctx); err == nil {
+		t.Fatalf("expected published-agent conflict")
+	}
+}
+
+func TestHandleSoulAgentAliasRoutes_RequireConversationID(t *testing.T) {
+	t.Parallel()
+
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	identity := testMintConversationIdentity()
+
+	baseCtx := &apptheory.Context{
+		AuthIdentity: testUsernameAlice,
+		Params:       map[string]string{"agentId": identity.AgentID},
+	}
+
+	t.Run("complete", func(t *testing.T) {
+		stubMintConversationIdentity(t, tdb, identity, nil)
+		stubMintConversationDomainAccess(t, tdb, identity.Domain)
+		if _, err := s.handleSoulAgentCompleteMintConversation(baseCtx); err == nil {
+			t.Fatalf("expected missing conversationId error")
+		}
+	})
+
+	t.Run("begin_finalize", func(t *testing.T) {
+		stubMintConversationIdentity(t, tdb, identity, nil)
+		stubMintConversationDomainAccess(t, tdb, identity.Domain)
+		if _, err := s.handleSoulAgentBeginFinalizeMintConversation(baseCtx); err == nil {
+			t.Fatalf("expected missing conversationId error")
+		}
+	})
+
+	t.Run("preflight", func(t *testing.T) {
+		stubMintConversationIdentity(t, tdb, identity, nil)
+		stubMintConversationDomainAccess(t, tdb, identity.Domain)
+		if _, err := s.handleSoulAgentFinalizeMintConversationPreflight(baseCtx); err == nil {
+			t.Fatalf("expected missing conversationId error")
+		}
+	})
+
+	t.Run("finalize", func(t *testing.T) {
+		stubMintConversationIdentity(t, tdb, identity, nil)
+		stubMintConversationDomainAccess(t, tdb, identity.Domain)
+		if _, err := s.handleSoulAgentFinalizeMintConversation(baseCtx); err == nil {
+			t.Fatalf("expected missing conversationId error")
+		}
+	})
 }

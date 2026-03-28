@@ -51,6 +51,8 @@ type soulOperationsTestDB struct {
 	db           *ttmocks.MockExtendedDB
 	qOp          *ttmocks.MockQuery
 	qID          *ttmocks.MockQuery
+	qPromotion   *ttmocks.MockQuery
+	qLifecycle   *ttmocks.MockQuery
 	qWalletAgent *ttmocks.MockQuery
 	qChannel     *ttmocks.MockQuery
 	qENS         *ttmocks.MockQuery
@@ -61,6 +63,8 @@ func newSoulOperationsTestDB() soulOperationsTestDB {
 	db := ttmocks.NewMockExtendedDB()
 	qOp := new(ttmocks.MockQuery)
 	qID := new(ttmocks.MockQuery)
+	qPromotion := new(ttmocks.MockQuery)
+	qLifecycle := new(ttmocks.MockQuery)
 	qWalletAgent := new(ttmocks.MockQuery)
 	qChannel := new(ttmocks.MockQuery)
 	qENS := new(ttmocks.MockQuery)
@@ -69,12 +73,14 @@ func newSoulOperationsTestDB() soulOperationsTestDB {
 	db.On("WithContext", mock.Anything).Return(db).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulOperation")).Return(qOp).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(qID).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentPromotion")).Return(qPromotion).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentPromotionLifecycleEvent")).Return(qLifecycle).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulWalletAgentIndex")).Return(qWalletAgent).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentChannel")).Return(qChannel).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(qENS).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.AuditLogEntry")).Return(qAudit).Maybe()
 
-	for _, q := range []*ttmocks.MockQuery{qOp, qID, qWalletAgent, qChannel, qENS, qAudit} {
+	for _, q := range []*ttmocks.MockQuery{qOp, qID, qPromotion, qLifecycle, qWalletAgent, qChannel, qENS, qAudit} {
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("Index", mock.Anything).Return(q).Maybe()
 		q.On("IfExists").Return(q).Maybe()
@@ -89,6 +95,8 @@ func newSoulOperationsTestDB() soulOperationsTestDB {
 		db:           db,
 		qOp:          qOp,
 		qID:          qID,
+		qPromotion:   qPromotion,
+		qLifecycle:   qLifecycle,
 		qWalletAgent: qWalletAgent,
 		qChannel:     qChannel,
 		qENS:         qENS,
@@ -100,6 +108,25 @@ func opCtx() *apptheory.Context {
 	ctx := &apptheory.Context{AuthIdentity: "op", RequestID: "rid"}
 	ctx.Set(ctxKeyOperatorRole, models.RoleAdmin)
 	return ctx
+}
+
+func latestPromotionLifecycleEventModelCall(t *testing.T, db *ttmocks.MockExtendedDB) *models.SoulAgentPromotionLifecycleEvent {
+	t.Helper()
+
+	for i := len(db.Calls) - 1; i >= 0; i-- {
+		call := db.Calls[i]
+		if call.Method != "Model" || len(call.Arguments) == 0 {
+			continue
+		}
+		event, ok := call.Arguments.Get(0).(*models.SoulAgentPromotionLifecycleEvent)
+		if !ok || event == nil || strings.TrimSpace(event.EventType) == "" {
+			continue
+		}
+		copy := *event
+		return &copy
+	}
+	t.Fatalf("expected lifecycle event model call")
+	return nil
 }
 
 func TestHandleListSoulOperations_DefaultStatusAndInvalidStatus(t *testing.T) {
@@ -134,6 +161,56 @@ func TestHandleListSoulOperations_DefaultStatusAndInvalidStatus(t *testing.T) {
 	ctxBad.Request.Query = map[string][]string{"status": {"nope"}}
 	if _, err := s.handleListSoulOperations(ctxBad); err == nil {
 		t.Fatalf("expected invalid status error")
+	}
+}
+
+func TestSyncMintPromotionAfterOperationExecution_EmitsLifecycleEvent(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulOperationsTestDB()
+	s := &Server{store: store.New(tdb.db)}
+
+	agentID := "0x" + strings.Repeat("33", 32)
+	tdb.qPromotion.On("First", mock.AnythingOfType("*models.SoulAgentPromotion")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentPromotion](t, args, 0)
+		*dest = models.SoulAgentPromotion{
+			AgentID:         agentID,
+			RegistrationID:  "reg-1",
+			RequestedBy:     testUsernameAlice,
+			Domain:          "example.com",
+			LocalID:         "agent-bot",
+			Wallet:          "0x00000000000000000000000000000000000000aa",
+			Stage:           models.SoulAgentPromotionStageApproved,
+			RequestStatus:   models.SoulAgentPromotionRequestStatusVerified,
+			ApprovalStatus:  models.SoulAgentPromotionApprovalStatusApproved,
+			ReadinessStatus: models.SoulAgentPromotionReadinessAwaitingMint,
+			CreatedAt:       time.Date(2026, 3, 28, 18, 0, 0, 0, time.UTC),
+			UpdatedAt:       time.Date(2026, 3, 28, 18, 0, 0, 0, time.UTC),
+		}
+	}).Once()
+	tdb.qPromotion.On("CreateOrUpdate").Return(nil).Once()
+	tdb.qLifecycle.On("Create").Return(nil).Once()
+
+	now := time.Date(2026, 3, 28, 18, 5, 0, 0, time.UTC)
+	appErr := s.syncMintPromotionAfterOperationExecution(context.Background(), &models.SoulOperation{
+		OperationID: "op-1",
+		Kind:        models.SoulOperationKindMint,
+		AgentID:     agentID,
+		Status:      models.SoulOperationStatusExecuted,
+	}, "rid-1", now, true)
+	if appErr != nil {
+		t.Fatalf("unexpected appErr: %#v", appErr)
+	}
+
+	event := latestPromotionLifecycleEventModelCall(t, tdb.db)
+	if event.EventType != models.SoulAgentPromotionEventTypeMintExecuted {
+		t.Fatalf("unexpected event: %#v", event)
+	}
+	if event.OperationID != "op-1" || event.RequestID != "rid-1" {
+		t.Fatalf("unexpected event linkage: %#v", event)
+	}
+	if event.ReadinessStatus != models.SoulAgentPromotionReadinessReadyForConversation {
+		t.Fatalf("expected ready-for-conversation snapshot, got %#v", event)
 	}
 }
 
@@ -173,6 +250,21 @@ func TestHandleRecordSoulOperationExecution_SuccessMint(t *testing.T) {
 		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
 		*dest = models.SoulAgentIdentity{AgentID: agentID, Status: models.SoulAgentStatusActive, Wallet: "0x0000000000000000000000000000000000000002"}
 	}).Once()
+	tdb.qPromotion.On("First", mock.AnythingOfType("*models.SoulAgentPromotion")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentPromotion](t, args, 0)
+		*dest = models.SoulAgentPromotion{
+			AgentID:         agentID,
+			RegistrationID:  "reg1",
+			Stage:           models.SoulAgentPromotionStageApproved,
+			RequestStatus:   models.SoulAgentPromotionRequestStatusVerified,
+			ApprovalStatus:  models.SoulAgentPromotionApprovalStatusApproved,
+			ReadinessStatus: models.SoulAgentPromotionReadinessAwaitingMint,
+			CreatedAt:       time.Now().Add(-time.Minute).UTC(),
+			UpdatedAt:       time.Now().Add(-time.Minute).UTC(),
+		}
+	}).Once()
+
+	tdb.qPromotion.On("CreateOrUpdate").Return(nil).Once()
 
 	s.dialEVM = func(ctx context.Context, rpcURL string) (ethRPCClient, error) {
 		return &fakeEthClient{

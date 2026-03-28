@@ -114,8 +114,8 @@ func TestHandlePortalUpsertDomainVerificationRoute53_ForbiddenWhenNotOwner(t *te
 	}
 	if _, err := s.handlePortalUpsertDomainVerificationRoute53(ctx); err == nil {
 		t.Fatalf("expected forbidden")
-	} else if appErr, ok := err.(*apptheory.AppError); !ok || appErr.Code != "app.forbidden" {
-		t.Fatalf("expected app.forbidden, got %#v", err)
+	} else if appErr, ok := err.(*apptheory.AppError); !ok || appErr.Code != appErrCodeForbidden {
+		t.Fatalf("expected %s, got %#v", appErrCodeForbidden, err)
 	}
 }
 

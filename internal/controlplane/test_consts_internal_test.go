@@ -3,6 +3,7 @@ package controlplane
 const (
 	appErrCodeConflict   = "app.conflict"
 	appErrCodeBadRequest = "app.bad_request"
+	appErrCodeForbidden  = "app.forbidden"
 
 	testNope         = "nope"
 	testNotAnAddress = "not-an-address"

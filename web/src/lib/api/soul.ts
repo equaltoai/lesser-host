@@ -312,10 +312,88 @@ export interface SoulAgentRegistration {
 	completed_at?: string;
 }
 
+export interface SoulAgentPromotionPrerequisites {
+	principal_declaration_recorded: boolean;
+	mint_operation_created: boolean;
+	mint_executed: boolean;
+	conversation_started: boolean;
+	conversation_completed: boolean;
+	review_draft_ready: boolean;
+	ready_for_finalize: boolean;
+	graduated: boolean;
+}
+
+export interface SoulAgentPromotion {
+	agent_id: string;
+	registration_id?: string;
+	requested_by?: string;
+	domain: string;
+	local_id: string;
+	wallet: string;
+	stage: string;
+	request_status: string;
+	review_status: string;
+	approval_status: string;
+	readiness_status: string;
+	mint_operation_id?: string;
+	mint_operation_status?: string;
+	principal_address?: string;
+	latest_conversation_id?: string;
+	latest_conversation_status?: string;
+	latest_review_sha256?: string;
+	latest_boundary_count?: number;
+	latest_capability_count?: number;
+	published_version?: number;
+	requested_at?: string;
+	verified_at?: string;
+	approved_at?: string;
+	minted_at?: string;
+	review_started_at?: string;
+	review_ready_at?: string;
+	graduated_at?: string;
+	created_at: string;
+	updated_at: string;
+	prerequisites: SoulAgentPromotionPrerequisites;
+	next_actions?: string[];
+}
+
+export interface SoulAgentPromotionResponse {
+	version: string;
+	promotion: SoulAgentPromotion;
+}
+
+export interface SoulAgentPromotionListResponse {
+	version: string;
+	promotions: SoulAgentPromotion[];
+	count: number;
+	has_more: boolean;
+	next_cursor?: string;
+}
+
+export interface SoulAgentPromotionLifecycleEvent {
+	event_id: string;
+	event_type: string;
+	summary?: string;
+	occurred_at: string;
+	request_id?: string;
+	operation_id?: string;
+	conversation_id?: string;
+	promotion: SoulAgentPromotion;
+}
+
+export interface SoulAgentPromotionLifecycleEventListResponse {
+	version: string;
+	events: SoulAgentPromotionLifecycleEvent[];
+	count: number;
+	has_more: boolean;
+	next_cursor?: string;
+}
+
 export interface SoulAgentRegistrationBeginResponse {
 	registration: SoulAgentRegistration;
 	wallet: WalletChallengeResponse;
 	proofs: SoulRegistryProofInstructions[];
+	promotion?: SoulAgentPromotion;
 }
 
 export function soulAgentRegistrationBegin(
@@ -365,6 +443,7 @@ export interface SoulAgentRegistrationVerifyResponse {
 	registration: SoulAgentRegistration;
 	operation: SoulOperation;
 	safe_tx?: SafeTxPayload;
+	promotion?: SoulAgentPromotion;
 }
 
 export function soulAgentRegistrationVerify(
@@ -380,6 +459,76 @@ export function soulAgentRegistrationVerify(
 ): Promise<SoulAgentRegistrationVerifyResponse> {
 	const req = jsonRequest(input);
 	return fetchJson<SoulAgentRegistrationVerifyResponse>(`/api/v1/soul/agents/register/${encodeURIComponent(id)}/verify`, {
+		method: 'POST',
+		headers: {
+			authorization: `Bearer ${token}`,
+			...req.headers,
+		},
+		body: req.body,
+	});
+}
+
+export function soulGetAgentPromotion(token: string, agentId: string): Promise<SoulAgentPromotionResponse> {
+	return fetchJson<SoulAgentPromotionResponse>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/promotion`, {
+		headers: {
+			authorization: `Bearer ${token}`,
+		},
+	});
+}
+
+export function soulListMyPromotions(token: string, input?: { limit?: number; cursor?: string }): Promise<SoulAgentPromotionListResponse> {
+	const params = new URLSearchParams();
+	if (input?.limit != null) params.set('limit', String(input.limit));
+	if (input?.cursor) params.set('cursor', input.cursor);
+	const qs = params.toString();
+	return fetchJson<SoulAgentPromotionListResponse>(`/api/v1/soul/promotions/mine${qs ? `?${qs}` : ''}`, {
+		headers: {
+			authorization: `Bearer ${token}`,
+		},
+	});
+}
+
+export function soulListMyPromotionLifecycleEvents(token: string, input?: { limit?: number; cursor?: string }): Promise<SoulAgentPromotionLifecycleEventListResponse> {
+	const params = new URLSearchParams();
+	if (input?.limit != null) params.set('limit', String(input.limit));
+	if (input?.cursor) params.set('cursor', input.cursor);
+	const qs = params.toString();
+	return fetchJson<SoulAgentPromotionLifecycleEventListResponse>(`/api/v1/soul/promotions/mine/events${qs ? `?${qs}` : ''}`, {
+		headers: {
+			authorization: `Bearer ${token}`,
+		},
+	});
+}
+
+export function soulListAgentPromotionLifecycleEvents(
+	token: string,
+	agentId: string,
+	input?: { limit?: number; cursor?: string },
+): Promise<SoulAgentPromotionLifecycleEventListResponse> {
+	const params = new URLSearchParams();
+	if (input?.limit != null) params.set('limit', String(input.limit));
+	if (input?.cursor) params.set('cursor', input.cursor);
+	const qs = params.toString();
+	return fetchJson<SoulAgentPromotionLifecycleEventListResponse>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/promotion/events${qs ? `?${qs}` : ''}`, {
+		headers: {
+			authorization: `Bearer ${token}`,
+		},
+	});
+}
+
+export function soulVerifyAgentPromotion(
+	token: string,
+	agentId: string,
+	input: {
+		signature: string;
+		principal_address: string;
+		principal_declaration: string;
+		principal_signature: string;
+		declared_at: string;
+	},
+): Promise<SoulAgentRegistrationVerifyResponse> {
+	const req = jsonRequest(input);
+	return fetchJson<SoulAgentRegistrationVerifyResponse>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/promotion/verify`, {
 		method: 'POST',
 		headers: {
 			authorization: `Bearer ${token}`,
@@ -1161,7 +1310,57 @@ export interface SoulMintConversationFinalizeBeginResponse {
 	issued_at: string;
 	expected_version: number;
 	next_version: number;
+	declarations_preview: {
+		selfDescription: Record<string, unknown>;
+		capabilities: Array<Record<string, unknown>>;
+		boundaries: Array<Record<string, unknown>>;
+		transparency: Record<string, unknown>;
+	};
+	boundary_requirements: Array<{
+		boundary_id: string;
+		category: string;
+		statement: string;
+		rationale?: string;
+		supersedes?: string;
+		signature_hex?: string;
+		signer_wallet: string;
+		signing_method: string;
+		message_encoding: string;
+		message: string;
+		digest_hex: string;
+	}>;
+	self_attestation_signing: {
+		signer_wallet: string;
+		signing_method: string;
+		message_encoding: string;
+		message_hex: string;
+		digest_hex: string;
+		canonical_json: string;
+	};
+	finalize_request_template: {
+		boundary_signatures: Record<string, string>;
+		issued_at: string;
+		expected_version: number;
+		self_attestation: string;
+	};
 	registration_preview?: unknown;
+}
+
+export function soulMintConversationFinalizePreflight(
+	token: string,
+	registrationId: string,
+	conversationId: string,
+	input: { boundary_signatures: Record<string, string> },
+): Promise<SoulMintConversationFinalizeBeginResponse> {
+	const req = jsonRequest(input);
+	return fetchJson<SoulMintConversationFinalizeBeginResponse>(
+		`/api/v1/soul/agents/register/${encodeURIComponent(registrationId)}/mint-conversation/${encodeURIComponent(conversationId)}/finalize/preflight`,
+		{
+			method: 'POST',
+			headers: { authorization: `Bearer ${token}`, ...req.headers },
+			body: req.body,
+		},
+	);
 }
 
 export function soulMintConversationFinalizeBegin(
@@ -1173,6 +1372,23 @@ export function soulMintConversationFinalizeBegin(
 	const req = jsonRequest(input);
 	return fetchJson<SoulMintConversationFinalizeBeginResponse>(
 		`/api/v1/soul/agents/register/${encodeURIComponent(registrationId)}/mint-conversation/${encodeURIComponent(conversationId)}/finalize/begin`,
+		{
+			method: 'POST',
+			headers: { authorization: `Bearer ${token}`, ...req.headers },
+			body: req.body,
+		},
+	);
+}
+
+export function soulAgentMintConversationFinalizePreflight(
+	token: string,
+	agentId: string,
+	conversationId: string,
+	input: { boundary_signatures: Record<string, string> },
+): Promise<SoulMintConversationFinalizeBeginResponse> {
+	const req = jsonRequest(input);
+	return fetchJson<SoulMintConversationFinalizeBeginResponse>(
+		`/api/v1/soul/agents/${encodeURIComponent(agentId)}/mint-conversation/${encodeURIComponent(conversationId)}/finalize/preflight`,
 		{
 			method: 'POST',
 			headers: { authorization: `Bearer ${token}`, ...req.headers },
