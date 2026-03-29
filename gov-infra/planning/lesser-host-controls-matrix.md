@@ -1,4 +1,4 @@
-# lesser-host Controls Matrix (custom — v0.1.1)
+# lesser-host Controls Matrix (custom — v0.1.2)
 
 This matrix is the “requirements → controls → verifiers → evidence” backbone for lesser-host. It is intentionally
 engineering-focused: it does not claim compliance, but it makes security/quality assertions traceable and repeatable.
@@ -31,7 +31,7 @@ This table is the canonical mapping used by the rubric/roadmap/evidence plan.
 | Quality | THR-1 THR-4 THR-9 | QUA-3 | Coverage threshold is enforced (no dilution) | Measure and enforce Go coverage ≥ 80% as a floor; add JS coverage once configured. | `bash gov-infra/verifiers/gov-verify-rubric.sh` (QUA-3) | `gov-infra/evidence/QUA-3-output.log` + `gov-infra/evidence/coverage.out` |
 | Consistency | — | CON-1 | Formatting is clean (no diffs) | Enforce `gofmt` cleanliness for all Go sources in-repo. | `bash gov-infra/verifiers/gov-verify-rubric.sh` (CON-1) | `gov-infra/evidence/CON-1-output.log` |
 | Consistency | THR-1 THR-5 THR-7 THR-10 | CON-2 | Lint/static analysis is enforced (pinned toolchain) | Enforce Go lint (golangci-lint + gosec), Solidity lint (solhint), and TS lint/typecheck in web/cdk with pinned toolchain versions (no “whatever is installed”). | `bash gov-infra/verifiers/gov-verify-rubric.sh` (CON-2) | `gov-infra/evidence/CON-2-output.log` |
-| Consistency | THR-2 THR-4 | CON-3 | Public boundary contract parity (if applicable) | Define and enforce contract parity for public boundaries (e.g., deploy receipt schema, attestations schema, API boundary invariants). | `bash gov-infra/verifiers/gov-verify-rubric.sh` (CON-3) | `gov-infra/evidence/CON-3-output.log` |
+| Consistency | THR-2 THR-4 | CON-3 | Public boundary contract parity (if applicable) | Define and enforce contract parity for public boundaries (e.g., deploy receipt schema, attestations schema, and agent-first REST/SSE API invariants). | `bash gov-infra/verifiers/gov-verify-rubric.sh` (CON-3) | `gov-infra/evidence/CON-3-output.log` |
 | Completeness | THR-1 THR-5 | COM-1 | All modules compile (no “mystery meat”) | Ensure all Go modules compile from a clean checkout (root + nested modules like `cdk/`). | `bash gov-infra/verifiers/gov-verify-rubric.sh` (COM-1) | `gov-infra/evidence/COM-1-output.log` |
 | Completeness | THR-5 THR-10 | COM-2 | Toolchain pins align to repo expectations | Ensure Go and Node versions match the repo’s declared constraints (go.mod, CI, package engines); ensure security tools are pinned before they are trusted. | `bash gov-infra/verifiers/gov-verify-rubric.sh` (COM-2) | `gov-infra/evidence/COM-2-output.log` |
 | Completeness | THR-5 | COM-3 | Lint config schema-valid (no silent skip) | Validate that lint configs are parseable and supported by the pinned toolchain (avoid “silent ignore”). | `bash gov-infra/verifiers/gov-verify-rubric.sh` (COM-3) | `gov-infra/evidence/COM-3-output.log` |

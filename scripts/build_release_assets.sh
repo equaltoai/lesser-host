@@ -24,10 +24,15 @@ fi
 mkdir -p "${OUT_DIR}"
 
 OPENAPI_SRC="docs/contracts/openapi.yaml"
+SSE_CONTRACT_SRC="docs/contracts/soul-mint-conversation-sse.json"
 SPEC_SRC_DIR="docs/spec/v3"
 
 if [[ ! -f "${OPENAPI_SRC}" ]]; then
   echo "missing ${OPENAPI_SRC}" >&2
+  exit 1
+fi
+if [[ ! -f "${SSE_CONTRACT_SRC}" ]]; then
+  echo "missing ${SSE_CONTRACT_SRC}" >&2
   exit 1
 fi
 if [[ ! -d "${SPEC_SRC_DIR}/schemas" ]]; then
@@ -43,6 +48,7 @@ GIT_SHA="$(git rev-parse --verify HEAD)"
 
 # Publish a release-local OpenAPI file whose refs resolve against the packaged `spec/v3/*` bundle.
 sed 's#\.\./spec/v3/#spec/v3/#g' "${OPENAPI_SRC}" > "${OUT_DIR}/openapi.yaml"
+cp "${SSE_CONTRACT_SRC}" "${OUT_DIR}/soul-mint-conversation-sse.json"
 
 tar -czf "${OUT_DIR}/lesser-host-contracts-v3.tgz" \
   -C docs \
@@ -57,7 +63,7 @@ TXT
 
 (
   cd "${OUT_DIR}"
-  sha256sum openapi.yaml lesser-host-contracts-v3.tgz LESSER_HOST_REF.txt > checksums.txt
+  sha256sum openapi.yaml soul-mint-conversation-sse.json lesser-host-contracts-v3.tgz LESSER_HOST_REF.txt > checksums.txt
 )
 
 echo "Wrote contract release assets to ${OUT_DIR}"

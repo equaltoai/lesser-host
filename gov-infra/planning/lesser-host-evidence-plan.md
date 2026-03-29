@@ -1,4 +1,4 @@
-# lesser-host: Evidence Plan (Rubric v0.1.3)
+# lesser-host: Evidence Plan (Rubric v0.1.4)
 
 This document defines the **evidence surface** for the lesser-host governance rubric.
 
@@ -49,7 +49,7 @@ Legend:
 | Quality | QUA-3 | Coverage measurement is produced and threshold enforced (≥ 80%) | `gov-infra/evidence/QUA-3-output.log`, `gov-infra/evidence/coverage.out` |
 | Consistency | CON-1 | Go formatting is clean (no gofmt diffs) | `gov-infra/evidence/CON-1-output.log` |
 | Consistency | CON-2 | Lint/static analysis gates run with pinned toolchain (Go + web + CDK + Solidity) | `gov-infra/evidence/CON-2-output.log` |
-| Consistency | CON-3 | Public boundary contract parity checks run | `gov-infra/evidence/CON-3-output.log` |
+| Consistency | CON-3 | Public boundary contract parity checks run for TipSplitter ABI and lesser-host REST/SSE contract artifacts | `gov-infra/evidence/CON-3-output.log` |
 | Completeness | COM-1 | All Go modules compile from a clean checkout | `gov-infra/evidence/COM-1-output.log` |
 | Completeness | COM-2 | Toolchain pins and CI expectations align (Go/Node/tooling) | `gov-infra/evidence/COM-2-output.log` |
 | Completeness | COM-3 | Lint configuration is schema-valid for the pinned linter | `gov-infra/evidence/COM-3-output.log` |

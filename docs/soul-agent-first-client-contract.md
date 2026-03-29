@@ -10,6 +10,7 @@ without reverse-engineering Go handlers.
 For machine-readable schemas, also use:
 
 - `docs/contracts/openapi.yaml`
+- `docs/contracts/soul-mint-conversation-sse.json`
 - `web/src/lib/api/soul.ts`
 
 ## Scope

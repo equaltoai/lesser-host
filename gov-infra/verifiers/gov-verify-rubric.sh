@@ -1289,6 +1289,10 @@ if (missing.length > 0) {
 
 console.log('PASS: contract parity (TipSplitter ABI subset)');
 __GOV_NODE_CONTRACT__
+
+# REST contract parity: required lesser-host contract artifacts must stay complete and
+# the checked-in generated adapter must match a fresh regeneration.
+( cd web && npm ci && npm run verify:lesser-host-contracts )
 __GOV_CMD_CONTRACT__
 )
 

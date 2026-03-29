@@ -1249,22 +1249,14 @@ export function soulDesignateSuccessor(
 
 // --- v2: Minting Conversation ---
 
-export interface SoulMintConversation {
-	agent_id: string;
-	conversation_id: string;
-	model: string;
-	messages?: string;
-	produced_declarations?: string;
-	status: string;
-	created_at: string;
-	completed_at?: string;
-}
+export type SoulMintConversation =
+	components['schemas']['SoulMintConversation'];
 
-export interface SoulAgentMintConversationsResponse {
-	version: string;
-	conversations: SoulMintConversation[];
-	count: number;
-}
+export type SoulMintConversationCompleteRequest =
+	components['schemas']['SoulMintConversationCompleteRequest'];
+
+export type SoulAgentMintConversationsResponse =
+	components['schemas']['SoulAgentMintConversationsResponse'];
 
 export function soulGetMintConversation(token: string, registrationId: string, conversationId: string): Promise<SoulMintConversation> {
 	return fetchJson<SoulMintConversation>(
@@ -1273,10 +1265,20 @@ export function soulGetMintConversation(token: string, registrationId: string, c
 	);
 }
 
-export function soulCompleteMintConversation(token: string, registrationId: string, conversationId: string): Promise<SoulMintConversation> {
+export function soulCompleteMintConversation(
+	token: string,
+	registrationId: string,
+	conversationId: string,
+	input?: SoulMintConversationCompleteRequest,
+): Promise<SoulMintConversation> {
+	const req = input ? jsonRequest(input) : null;
 	return fetchJson<SoulMintConversation>(
 		`/api/v1/soul/agents/register/${encodeURIComponent(registrationId)}/mint-conversation/${encodeURIComponent(conversationId)}/complete`,
-		{ method: 'POST', headers: { authorization: `Bearer ${token}` } },
+		{
+			method: 'POST',
+			headers: { authorization: `Bearer ${token}`, ...(req?.headers ?? {}) },
+			body: req?.body,
+		},
 	);
 }
 
@@ -1297,60 +1299,34 @@ export function soulAgentGetMintConversation(token: string, agentId: string, con
 	);
 }
 
-export function soulAgentCompleteMintConversation(token: string, agentId: string, conversationId: string): Promise<SoulMintConversation> {
+export function soulAgentCompleteMintConversation(
+	token: string,
+	agentId: string,
+	conversationId: string,
+	input?: SoulMintConversationCompleteRequest,
+): Promise<SoulMintConversation> {
+	const req = input ? jsonRequest(input) : null;
 	return fetchJson<SoulMintConversation>(
 		`/api/v1/soul/agents/${encodeURIComponent(agentId)}/mint-conversation/${encodeURIComponent(conversationId)}/complete`,
-		{ method: 'POST', headers: { authorization: `Bearer ${token}` } },
+		{
+			method: 'POST',
+			headers: { authorization: `Bearer ${token}`, ...(req?.headers ?? {}) },
+			body: req?.body,
+		},
 	);
 }
 
-export interface SoulMintConversationFinalizeBeginResponse {
-	version: string;
-	digest_hex: string;
-	issued_at: string;
-	expected_version: number;
-	next_version: number;
-	declarations_preview: {
-		selfDescription: Record<string, unknown>;
-		capabilities: Array<Record<string, unknown>>;
-		boundaries: Array<Record<string, unknown>>;
-		transparency: Record<string, unknown>;
-	};
-	boundary_requirements: Array<{
-		boundary_id: string;
-		category: string;
-		statement: string;
-		rationale?: string;
-		supersedes?: string;
-		signature_hex?: string;
-		signer_wallet: string;
-		signing_method: string;
-		message_encoding: string;
-		message: string;
-		digest_hex: string;
-	}>;
-	self_attestation_signing: {
-		signer_wallet: string;
-		signing_method: string;
-		message_encoding: string;
-		message_hex: string;
-		digest_hex: string;
-		canonical_json: string;
-	};
-	finalize_request_template: {
-		boundary_signatures: Record<string, string>;
-		issued_at: string;
-		expected_version: number;
-		self_attestation: string;
-	};
-	registration_preview?: unknown;
-}
+export type SoulMintConversationFinalizeBeginResponse =
+	components['schemas']['SoulMintConversationFinalizePreflightResponse'];
+
+export type SoulMintConversationFinalizeBeginRequest =
+	components['schemas']['SoulMintConversationFinalizeBeginRequest'];
 
 export function soulMintConversationFinalizePreflight(
 	token: string,
 	registrationId: string,
 	conversationId: string,
-	input: { boundary_signatures: Record<string, string> },
+	input: SoulMintConversationFinalizeBeginRequest,
 ): Promise<SoulMintConversationFinalizeBeginResponse> {
 	const req = jsonRequest(input);
 	return fetchJson<SoulMintConversationFinalizeBeginResponse>(
@@ -1367,7 +1343,7 @@ export function soulMintConversationFinalizeBegin(
 	token: string,
 	registrationId: string,
 	conversationId: string,
-	input: { boundary_signatures: Record<string, string> },
+	input: SoulMintConversationFinalizeBeginRequest,
 ): Promise<SoulMintConversationFinalizeBeginResponse> {
 	const req = jsonRequest(input);
 	return fetchJson<SoulMintConversationFinalizeBeginResponse>(
@@ -1384,7 +1360,7 @@ export function soulAgentMintConversationFinalizePreflight(
 	token: string,
 	agentId: string,
 	conversationId: string,
-	input: { boundary_signatures: Record<string, string> },
+	input: SoulMintConversationFinalizeBeginRequest,
 ): Promise<SoulMintConversationFinalizeBeginResponse> {
 	const req = jsonRequest(input);
 	return fetchJson<SoulMintConversationFinalizeBeginResponse>(
@@ -1401,7 +1377,7 @@ export function soulAgentMintConversationFinalizeBegin(
 	token: string,
 	agentId: string,
 	conversationId: string,
-	input: { boundary_signatures: Record<string, string> },
+	input: SoulMintConversationFinalizeBeginRequest,
 ): Promise<SoulMintConversationFinalizeBeginResponse> {
 	const req = jsonRequest(input);
 	return fetchJson<SoulMintConversationFinalizeBeginResponse>(
@@ -1414,17 +1390,17 @@ export function soulAgentMintConversationFinalizeBegin(
 	);
 }
 
-export interface SoulMintConversationFinalizeResponse {
-	version: string;
-	agent: SoulAgentIdentity;
-	published_version: number;
-}
+export type SoulMintConversationFinalizeRequest =
+	components['schemas']['SoulMintConversationFinalizeRequest'];
+
+export type SoulMintConversationFinalizeResponse =
+	components['schemas']['SoulMintConversationFinalizeResponse'];
 
 export function soulMintConversationFinalize(
 	token: string,
 	registrationId: string,
 	conversationId: string,
-	input: { boundary_signatures: Record<string, string>; issued_at: string; expected_version: number; self_attestation: string },
+	input: SoulMintConversationFinalizeRequest,
 ): Promise<SoulMintConversationFinalizeResponse> {
 	const req = jsonRequest(input);
 	return fetchJson<SoulMintConversationFinalizeResponse>(
@@ -1441,7 +1417,7 @@ export function soulAgentMintConversationFinalize(
 	token: string,
 	agentId: string,
 	conversationId: string,
-	input: { boundary_signatures: Record<string, string>; issued_at: string; expected_version: number; self_attestation: string },
+	input: SoulMintConversationFinalizeRequest,
 ): Promise<SoulMintConversationFinalizeResponse> {
 	const req = jsonRequest(input);
 	return fetchJson<SoulMintConversationFinalizeResponse>(
@@ -1454,11 +1430,8 @@ export function soulAgentMintConversationFinalize(
 	);
 }
 
-export interface SoulMintConversationSSEInput {
-	model?: string;
-	conversation_id?: string;
-	message: string;
-}
+export type SoulMintConversationSSEInput =
+	components['schemas']['SoulMintConversationSSEInput'];
 
 export function soulStartMintConversationSSE(
 	token: string,
