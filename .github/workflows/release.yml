@@ -73,6 +73,7 @@ jobs:
 
           gh release upload "${RELEASE_VERSION}" \
             dist/release/openapi.yaml \
+            dist/release/soul-mint-conversation-sse.json \
             dist/release/lesser-host-contracts-v3.tgz \
             dist/release/LESSER_HOST_REF.txt \
             dist/release/checksums.txt \

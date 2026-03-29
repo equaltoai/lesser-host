@@ -4,11 +4,12 @@ This rubric defines what “10/10” means and how category grades are computed.
 “green by dilution” by making scoring **versioned, measurable, and repeatable**.
 
 ## Versioning (no moving goalposts)
-- **Rubric version:** `v0.1.3` (2026-02-07)
+- **Rubric version:** `v0.1.4` (2026-03-29)
 - **Comparability rule:** grades are comparable only within the same version.
 - **Change rule:** bump the version + changelog entry for any rubric change (what changed + why).
 
 ### Changelog
+- `v0.1.4`: Extend CON-3 to include lesser-host REST contract parity for the soul mint-conversation surface and the generated adapter/SSE companion artifacts.
 - `v0.1.3`: Extend CON-2 to include Solidity lint (solhint) and SEC-1 to include Solidity SAST (Slither) via the rubric verifier.
 - `v0.1.2`: Implement remaining planned verifiers for CON-3/COM-6/SEC-4/MAI-1/MAI-3 and update rubric text to reference the verifier evidence logs (requirements unchanged).
 - `v0.1.1`: Update SEC-2 verification to use `govulncheck -mode=binary` on shipped binaries due to an SSA panic in `govulncheck ./...` symbol scanning for a generic + variadic edge case (requirement unchanged).
@@ -44,7 +45,7 @@ Enforcement rule (anti-drift):
 | --- | ---: | --- | --- |
 | CON-1 | 3 | gofmt clean (no diffs) | `test -z "$(gofmt -l . | sed '/^$/d')"` |
 | CON-2 | 5 | Lint/static analysis green (pinned version) | `golangci-lint run --timeout=10m` + `web` lint/typecheck + `cdk` build + `contracts` solhint (implemented in verifier; see `gov-infra/evidence/CON-2-output.log`). |
-| CON-3 | 2 | Public boundary contract parity (if applicable) | TipSplitter ABI parity: Go `TipSplitterABI` entries must exist in the Hardhat artifact ABI (implemented in verifier; see `gov-infra/evidence/CON-3-output.log`). |
+| CON-3 | 2 | Public boundary contract parity (if applicable) | TipSplitter ABI parity must hold, and the lesser-host soul mint-conversation REST contract must stay complete across `docs/contracts/openapi.yaml`, `docs/contracts/soul-mint-conversation-sse.json`, and the checked-in generated adapter (implemented in verifier; see `gov-infra/evidence/CON-3-output.log`). |
 
 **10/10 definition:** CON-1 through CON-3 pass (or document why CON-3 is N/A and remove it with a version bump).
 
