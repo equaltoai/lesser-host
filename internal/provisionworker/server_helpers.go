@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/codebuild"
@@ -18,6 +20,28 @@ import (
 const deployRunnerModeLesser = "lesser"
 
 var errDeployRunnerNotFound = errors.New("deploy runner not found")
+
+var (
+	operatorVisibleFailureWhitespaceRE = regexp.MustCompile(`\s+`)
+	codebuildFailureReasonRE           = regexp.MustCompile(`(?i)\breason:\s*(.+)$`)
+	codebuildExitStatusRE              = regexp.MustCompile(`(?i)\bexit status \d+\b`)
+	operatorVisibleFailureReplacer     = strings.NewReplacer(
+		"--", "- -",
+		"/*", "/ *",
+		"*/", "* /",
+		"<script", "< script",
+		"</script", "< /script",
+		"eval(", "eval (",
+		"expression(", "expression (",
+		"import(", "import (",
+		"require(", "require (",
+		"javascript:", "javascript :",
+		"vbscript:", "vbscript :",
+		"onload=", "onload =",
+		"onerror=", "onerror =",
+		"onclick=", "onclick =",
+	)
+)
 
 func codebuildBuildID(out *codebuild.StartBuildOutput) (string, error) {
 	if out == nil || out.Build == nil {
@@ -254,6 +278,60 @@ func compactErr(err error) string {
 		msg = msg[:maxLen] + "…"
 	}
 	return msg
+}
+
+func sanitizeOperatorVisibleFailureDetail(raw string) string {
+	raw = sanitizeOperatorVisibleFailureSnippet(raw, 220)
+	if raw == "" {
+		return ""
+	}
+	lower := strings.ToLower(raw)
+	if strings.Contains(lower, "error while executing command:") || strings.Contains(lower, "command_execution_error") {
+		if reason := extractCodebuildCommandFailureReason(raw); reason != "" {
+			return "command execution failed (" + reason + ")"
+		}
+		return "command execution failed"
+	}
+	return raw
+}
+
+func extractCodebuildCommandFailureReason(raw string) string {
+	if match := codebuildFailureReasonRE.FindStringSubmatch(raw); len(match) == 2 {
+		return sanitizeOperatorVisibleFailureSnippet(match[1], 120)
+	}
+	if match := codebuildExitStatusRE.FindString(raw); strings.TrimSpace(match) != "" {
+		return strings.TrimSpace(match)
+	}
+	return ""
+}
+
+func sanitizeOperatorVisibleFailureSnippet(raw string, maxLen int) string {
+	raw = normalizeOperatorVisibleFailureWhitespace(raw)
+	if raw == "" {
+		return ""
+	}
+	raw = operatorVisibleFailureReplacer.Replace(raw)
+	raw = strings.Trim(raw, " .;:")
+	if maxLen > 0 && len(raw) > maxLen {
+		raw = raw[:maxLen] + "…"
+	}
+	return raw
+}
+
+func normalizeOperatorVisibleFailureWhitespace(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(raw))
+	for _, r := range raw {
+		if unicode.IsControl(r) {
+			b.WriteRune(' ')
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return operatorVisibleFailureWhitespaceRE.ReplaceAllString(strings.TrimSpace(b.String()), " ")
 }
 
 func jitteredBackoff(attempt int64, minDelay time.Duration, maxDelay time.Duration) time.Duration {

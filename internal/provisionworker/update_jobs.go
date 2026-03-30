@@ -130,8 +130,8 @@ func initializeManagedUpdatePhaseState(job *models.UpdateJob) {
 }
 
 func updateJobPhaseDetail(phase string, currentPhase string, failureDetail string) string {
-	currentPhase = strings.TrimSpace(currentPhase)
-	failureDetail = strings.TrimSpace(failureDetail)
+	currentPhase = normalizeOperatorVisibleFailureWhitespace(currentPhase)
+	failureDetail = sanitizeOperatorVisibleFailureDetail(failureDetail)
 	if currentPhase != "" && failureDetail != "" {
 		return currentPhase + ": " + failureDetail
 	}
