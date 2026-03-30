@@ -14,31 +14,60 @@ import (
 )
 
 type lesserUpReceipt struct {
-	Version    int    `json:"version"`
-	App        string `json:"app"`
-	BaseDomain string `json:"base_domain"`
-	AccountID  string `json:"account_id"`
-	Region     string `json:"region"`
-	HostedZone struct {
+	Version                int                            `json:"version"`
+	App                    string                         `json:"app"`
+	BaseDomain             string                         `json:"base_domain"`
+	AccountID              string                         `json:"account_id"`
+	Region                 string                         `json:"region"`
+	ManagedDeployArtifacts *managedDeployArtifactsReceipt `json:"managed_deploy_artifacts,omitempty"`
+	HostedZone             struct {
 		ID   string `json:"id"`
 		Name string `json:"name"`
 	} `json:"hosted_zone"`
 }
 
 type lesserBodyReceipt struct {
-	Version           int    `json:"version"`
-	Stage             string `json:"stage"`
-	BaseDomain        string `json:"base_domain"`
-	LesserBodyVersion string `json:"lesser_body_version"`
+	Version                int                            `json:"version"`
+	Stage                  string                         `json:"stage"`
+	BaseDomain             string                         `json:"base_domain"`
+	LesserBodyVersion      string                         `json:"lesser_body_version"`
+	ManagedDeployArtifacts *managedDeployArtifactsReceipt `json:"managed_deploy_artifacts,omitempty"`
 }
 
 type mcpWiringReceipt struct {
-	Version           int    `json:"version"`
-	Stage             string `json:"stage"`
-	BaseDomain        string `json:"base_domain"`
-	LesserBodyVersion string `json:"lesser_body_version"`
-	McpURL            string `json:"mcp_url"`
-	McpLambdaARN      string `json:"mcp_lambda_arn"`
+	Version                int                            `json:"version"`
+	Stage                  string                         `json:"stage"`
+	BaseDomain             string                         `json:"base_domain"`
+	LesserBodyVersion      string                         `json:"lesser_body_version"`
+	McpURL                 string                         `json:"mcp_url"`
+	McpLambdaARN           string                         `json:"mcp_lambda_arn"`
+	ManagedDeployArtifacts *managedDeployArtifactsReceipt `json:"managed_deploy_artifacts,omitempty"`
+}
+
+type managedDeployArtifactsReceipt struct {
+	Mode                string                             `json:"mode"`
+	ChecksumsPath       string                             `json:"checksums_path,omitempty"`
+	ReleaseManifestPath string                             `json:"release_manifest_path,omitempty"`
+	Release             managedDeployReleaseReceipt        `json:"release"`
+	DeployArtifact      managedDeployArtifactDetailReceipt `json:"deploy_artifact"`
+}
+
+type managedDeployReleaseReceipt struct {
+	Name                   string `json:"name,omitempty"`
+	Version                string `json:"version,omitempty"`
+	GitSHA                 string `json:"git_sha,omitempty"`
+	SourceCheckoutRequired *bool  `json:"source_checkout_required,omitempty"`
+	NPMInstallRequired     *bool  `json:"npm_install_required,omitempty"`
+}
+
+type managedDeployArtifactDetailReceipt struct {
+	Kind         string   `json:"kind,omitempty"`
+	Path         string   `json:"path,omitempty"`
+	ManifestPath string   `json:"manifest_path,omitempty"`
+	ScriptPath   string   `json:"script_path,omitempty"`
+	TemplatePath string   `json:"template_path,omitempty"`
+	Files        []string `json:"files,omitempty"`
+	PreparedAt   string   `json:"prepared_at,omitempty"`
 }
 
 func (s *Server) receiptS3Key(job *models.ProvisionJob) string {

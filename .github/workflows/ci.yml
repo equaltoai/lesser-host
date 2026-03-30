@@ -48,6 +48,8 @@ jobs:
           cache-dependency-path: cdk/package-lock.json
       - run: npm ci
         working-directory: cdk
+      - run: npm test
+        working-directory: cdk
       - run: npm run synth -- -c stage=lab
         working-directory: cdk
 

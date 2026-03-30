@@ -8,6 +8,7 @@
   },
   "scripts": {
     "build": "tsc",
+    "test": "npm run build && node --test dist/test/**/*.test.js",
     "synth": "npm run build && cdk synth",
     "deploy": "npm run build && cdk deploy --all",
     "destroy": "npm run build && cdk destroy --all"

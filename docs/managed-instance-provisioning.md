@@ -33,6 +33,11 @@ It assumes:
 
 5) **Deploy Lesser + seed admin**
    - select a Lesser release (see `docs/lesser-release-contract.md`).
+   - download and verify the managed Lesser release assets:
+     - `checksums.txt`
+     - `lesser-release.json`
+     - `lesser-lambda-bundle.tar.gz`
+     - `lesser-lambda-bundle.json`
    - build a managed provisioning input file that includes:
      - `slug`
      - `stage`
@@ -44,15 +49,25 @@ It assumes:
      - `--base-domain <slug.greater.website>`
      - `--aws-profile <temp-profile>` (static session creds)
      - `--provisioning-input <path>`
+     - `--release-dir <verified-release-dir>`
    - immediately seed the admin wallet and unlock the instance:
      - `lesser init-admin --base-domain <slug.greater.website> --aws-profile <temp-profile> --provisioning-input <path>`
    - read the deployment receipt `~/.lesser/<app>/<base-domain>/state.json`.
 
 6) **(Optional, default-on) Deploy lesser-body (AgentCore MCP) + wire `POST /mcp/{actor}`**
-   - deploy `lesser-body` (AgentCore-compatible MCP runtime) into the instance account/stage.
+   - download and verify the managed `lesser-body` release assets:
+     - `checksums.txt`
+     - `lesser-body-release.json`
+     - `lesser-body-deploy.json`
+     - `lesser-body.zip`
+     - `deploy-lesser-body-from-release.sh`
+     - `lesser-body-managed-<stage>.template.json`
+   - deploy `lesser-body` (AgentCore-compatible MCP runtime) into the instance account/stage using the
+     release-produced helper script and the target account's bootstrapped CDK asset bucket.
    - ensure `lesser-body` writes SSM exports in the instance account:
      - `/${app}/${stage}/lesser-body/exports/v1/mcp_lambda_arn`
-   - re-run the Lesser stage deploy with the MCP wiring feature enabled so the instance’s API Gateway exposes:
+   - re-run the Lesser stage deploy with the MCP wiring feature enabled, using the verified Lesser Lambda bundle as the
+     `lambdaAssetRoot`, so the instance’s API Gateway exposes:
      - `POST https://api.<stageDomain>/mcp/{actor}`
      - `GET  https://api.<stageDomain>/.well-known/mcp.json`
 
@@ -123,6 +138,31 @@ The deploy runner writes the Lesser receipt to S3 so the provisioning worker can
 Notes:
 - Managed provisioning now seeds the admin wallet via `init-admin`, so a bootstrap mnemonic should not be generated.
 - If a legacy bootstrap file exists, treat it as sensitive and rotate/delete it after migration.
+- The S3-managed receipts preserve the native Lesser/body/MCP fields and add host-side artifact provenance at
+  `managed_deploy_artifacts`.
+
+### Managed receipt provenance
+
+Artifact-driven managed receipts add:
+
+- `managed_deploy_artifacts.mode`
+- `managed_deploy_artifacts.checksums_path`
+- `managed_deploy_artifacts.release_manifest_path`
+- `managed_deploy_artifacts.release.{name,version,git_sha}`
+- `managed_deploy_artifacts.deploy_artifact.kind`
+- `managed_deploy_artifacts.deploy_artifact.path`
+- `managed_deploy_artifacts.deploy_artifact.manifest_path`
+
+Mode-specific additions:
+
+- Lesser + MCP receipts:
+  - `managed_deploy_artifacts.deploy_artifact.files`
+  - `managed_deploy_artifacts.deploy_artifact.prepared_at`
+- lesser-body receipts:
+  - `managed_deploy_artifacts.release.source_checkout_required=false`
+  - `managed_deploy_artifacts.release.npm_install_required=false`
+  - `managed_deploy_artifacts.deploy_artifact.script_path`
+  - `managed_deploy_artifacts.deploy_artifact.template_path`
 
 ## SSM contract (instance account)
 

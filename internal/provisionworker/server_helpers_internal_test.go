@@ -180,9 +180,47 @@ func TestLoadReceiptFromS3_ValidatesAndParses(t *testing.T) {
 		t.Fatalf("expected missing fields error")
 	}
 
-	s = &Server{s3: &fakeS3{out: &s3.GetObjectOutput{Body: io.NopCloser(strings.NewReader(`{"app":"x","base_domain":"d"}`))}}}
-	if _, rec, err := s.loadReceiptFromS3(context.Background(), "b", "k"); err != nil || rec == nil || rec.App != "x" {
+	s = &Server{s3: &fakeS3{out: &s3.GetObjectOutput{Body: io.NopCloser(strings.NewReader(`{"app":"x","base_domain":"d","managed_deploy_artifacts":{"mode":"release","release":{"name":"lesser","version":"v1.2.4","git_sha":"abc123"},"deploy_artifact":{"kind":"lambda_bundle","manifest_path":"lesser-lambda-bundle.json"}}}`))}}}
+	_, rec, err := s.loadReceiptFromS3(context.Background(), "b", "k")
+	if err != nil || rec == nil || rec.App != "x" {
 		t.Fatalf("expected success, rec=%#v err=%v", rec, err)
+	}
+	if rec.ManagedDeployArtifacts == nil || rec.ManagedDeployArtifacts.Release.Version != "v1.2.4" {
+		t.Fatalf("expected managed deploy artifacts to parse, got %#v", rec.ManagedDeployArtifacts)
+	}
+}
+
+func TestLoadBodyAndMCPReceipts_ParseManagedDeployArtifacts(t *testing.T) {
+	t.Parallel()
+
+	bodyJSON := `{"version":1,"stage":"dev","base_domain":"demo.example.com","lesser_body_version":"v0.2.2","managed_deploy_artifacts":{"mode":"release","checksums_path":"checksums.txt","release_manifest_path":"lesser-body-release.json","release":{"name":"lesser-body","version":"v0.2.2","git_sha":"bodysha","source_checkout_required":false,"npm_install_required":false},"deploy_artifact":{"kind":"lesser_body_managed_deploy","path":"lesser-body.zip","manifest_path":"lesser-body-deploy.json","script_path":"deploy-lesser-body-from-release.sh","template_path":"lesser-body-managed-dev.template.json"}}}`
+	mcpJSON := `{"version":1,"stage":"dev","base_domain":"demo.example.com","lesser_body_version":"v0.2.2","mcp_url":"https://api.dev.example.com/mcp/{actor}","mcp_lambda_arn":"arn:aws:lambda:us-east-1:123:function:mcp","managed_deploy_artifacts":{"mode":"release","checksums_path":"checksums.txt","release_manifest_path":"lesser-release.json","release":{"name":"lesser","version":"v1.2.4","git_sha":"lessersha"},"deploy_artifact":{"kind":"lambda_bundle","path":"lesser-lambda-bundle.tar.gz","manifest_path":"lesser-lambda-bundle.json","files":["bin/api.zip"],"prepared_at":"2026-03-30T01:00:00Z"}}}`
+
+	s := &Server{s3: &fakeS3{byKey: map[string]*s3.GetObjectOutput{
+		"body": {Body: io.NopCloser(strings.NewReader(bodyJSON))},
+		"mcp":  {Body: io.NopCloser(strings.NewReader(mcpJSON))},
+	}}}
+
+	_, bodyReceipt, err := s.loadBodyReceiptFromS3(context.Background(), "b", "body")
+	if err != nil || bodyReceipt == nil {
+		t.Fatalf("expected lesser-body receipt success, got receipt=%#v err=%v", bodyReceipt, err)
+	}
+	if bodyReceipt.ManagedDeployArtifacts == nil || bodyReceipt.ManagedDeployArtifacts.DeployArtifact.TemplatePath != "lesser-body-managed-dev.template.json" {
+		t.Fatalf("expected parsed lesser-body managed deploy artifacts, got %#v", bodyReceipt.ManagedDeployArtifacts)
+	}
+	if bodyReceipt.ManagedDeployArtifacts.Release.SourceCheckoutRequired == nil || *bodyReceipt.ManagedDeployArtifacts.Release.SourceCheckoutRequired {
+		t.Fatalf("expected lesser-body source_checkout_required=false, got %#v", bodyReceipt.ManagedDeployArtifacts.Release.SourceCheckoutRequired)
+	}
+
+	_, mcpReceipt, err := s.loadMCPReceiptFromS3(context.Background(), "b", "mcp")
+	if err != nil || mcpReceipt == nil {
+		t.Fatalf("expected mcp receipt success, got receipt=%#v err=%v", mcpReceipt, err)
+	}
+	if mcpReceipt.ManagedDeployArtifacts == nil || len(mcpReceipt.ManagedDeployArtifacts.DeployArtifact.Files) != 1 {
+		t.Fatalf("expected parsed mcp managed deploy artifacts, got %#v", mcpReceipt.ManagedDeployArtifacts)
+	}
+	if mcpReceipt.McpLambdaARN == "" {
+		t.Fatalf("expected mcp lambda arn to remain available, got %#v", mcpReceipt)
 	}
 }
 
