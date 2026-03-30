@@ -66,6 +66,12 @@ export class LesserHostStack extends cdk.Stack {
 			sortKey: { name: 'gsi1SK', type: dynamodb.AttributeType.STRING },
 			projectionType: dynamodb.ProjectionType.ALL,
 		});
+		stateTable.addGlobalSecondaryIndex({
+			indexName: 'gsi2',
+			partitionKey: { name: 'gsi2PK', type: dynamodb.AttributeType.STRING },
+			sortKey: { name: 'gsi2SK', type: dynamodb.AttributeType.STRING },
+			projectionType: dynamodb.ProjectionType.ALL,
+		});
 
 		const artifactsBucket = new s3.Bucket(this, 'ArtifactsBucket', {
 			bucketName: `${namePrefix}-${cdk.Aws.ACCOUNT_ID}-${cdk.Aws.REGION}-artifacts`,
@@ -941,6 +947,12 @@ export class LesserHostStack extends cdk.Stack {
 			schedule: events.Schedule.rate(cdk.Duration.hours(1)),
 		});
 		soulReputationRecomputeRule.addTarget(new targets.LambdaFunction(soulReputationWorkerFn));
+
+		const updateSweepRule = new events.Rule(this, 'UpdateSweepRule', {
+			ruleName: `${namePrefix}-update-sweep`,
+			schedule: events.Schedule.rate(cdk.Duration.minutes(5)),
+		});
+		updateSweepRule.addTarget(new targets.LambdaFunction(provisionWorkerFn));
 
 		const apiAccessLogRetention =
 			stage === 'live' ? logs.RetentionDays.THREE_MONTHS : logs.RetentionDays.ONE_MONTH;

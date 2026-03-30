@@ -126,6 +126,9 @@ func (s *Server) Register(app *apptheory.App) {
 	if queueName != "" {
 		app.SQS(queueName, s.handleProvisionQueueMessage)
 	}
+
+	ruleName := fmt.Sprintf("%s-%s-update-sweep", s.cfg.AppName, s.cfg.Stage)
+	app.EventBridge(apptheory.EventBridgeRule(ruleName), s.handleUpdateSweep)
 }
 
 func (s *Server) handleProvisionQueueMessage(ctx *apptheory.EventContext, msg events.SQSMessage) error {
@@ -153,6 +156,16 @@ func (s *Server) handleProvisionQueueMessage(ctx *apptheory.EventContext, msg ev
 	default:
 		return nil
 	}
+}
+
+func (s *Server) handleUpdateSweep(ctx *apptheory.EventContext, _ events.EventBridgeEvent) (any, error) {
+	if s == nil || s.store == nil {
+		return nil, fmt.Errorf("store not initialized")
+	}
+	if ctx == nil {
+		return nil, fmt.Errorf("event context is nil")
+	}
+	return s.processActiveUpdateSweep(ctx.Context(), ctx.RequestID, time.Now().UTC())
 }
 
 func (s *Server) processProvisionJob(ctx context.Context, requestID string, jobID string) error {

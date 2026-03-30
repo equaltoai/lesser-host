@@ -53,3 +53,24 @@ func (s *Store) ListUpdateJobsByInstance(ctx context.Context, slug string, limit
 		func(item *models.UpdateJob) time.Time { return item.CreatedAt },
 	)
 }
+
+func (s *Store) ListActiveUpdateJobs(ctx context.Context, limit int) ([]*models.UpdateJob, error) {
+	if s == nil || s.DB == nil {
+		return nil, fmt.Errorf("store not initialized")
+	}
+
+	limit = clampListLimit(limit)
+
+	var items []*models.UpdateJob
+	err := s.DB.WithContext(ctx).
+		Model(&models.UpdateJob{}).
+		Index("gsi2").
+		Where("gsi2PK", "=", "UPDATE_ACTIVE").
+		OrderBy("gsi2SK", "ASC").
+		Limit(limit).
+		All(&items)
+	if err != nil {
+		return nil, err
+	}
+	return items, nil
+}

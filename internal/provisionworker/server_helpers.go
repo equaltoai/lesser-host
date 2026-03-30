@@ -2,6 +2,7 @@ package provisionworker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -15,6 +16,8 @@ import (
 )
 
 const deployRunnerModeLesser = "lesser"
+
+var errDeployRunnerNotFound = errors.New("deploy runner not found")
 
 func codebuildBuildID(out *codebuild.StartBuildOutput) (string, error) {
 	if out == nil || out.Build == nil {
@@ -145,7 +148,7 @@ func (s *Server) getDeployRunnerInfo(ctx context.Context, runID string) (deployR
 		return deployRunnerInfo{}, err
 	}
 	if out == nil || len(out.Builds) == 0 {
-		return deployRunnerInfo{}, fmt.Errorf("build not found")
+		return deployRunnerInfo{}, errDeployRunnerNotFound
 	}
 	build := out.Builds[0]
 	return deployRunnerInfo{

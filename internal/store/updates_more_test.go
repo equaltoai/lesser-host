@@ -33,6 +33,7 @@ func TestStore_UpdateJobsQueries(t *testing.T) {
 	qJob.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qJob).Maybe()
 	qJob.On("Index", mock.Anything).Return(qJob).Maybe()
 	qJob.On("OrderBy", "gsi1SK", "DESC").Return(qJob).Maybe()
+	qJob.On("OrderBy", "gsi2SK", "ASC").Return(qJob).Maybe()
 	qJob.On("Limit", mock.Anything).Return(qJob).Maybe()
 	qJob.On("ConsistentRead").Return(qJob).Maybe()
 	qJob.On("First", mock.AnythingOfType("*models.UpdateJob")).Return(nil).Run(func(args mock.Arguments) {
@@ -66,4 +67,8 @@ func TestStore_UpdateJobsQueries(t *testing.T) {
 	require.Len(t, jobs, 2)
 	require.Equal(t, "new", jobs[0].ID)
 	require.Equal(t, "old", jobs[1].ID)
+
+	active, err := st.ListActiveUpdateJobs(ctx, 2)
+	require.NoError(t, err)
+	require.Len(t, active, 2)
 }

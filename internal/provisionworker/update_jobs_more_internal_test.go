@@ -248,6 +248,115 @@ func TestAdvanceUpdateReceiptIngest_RetriesAndFails(t *testing.T) {
 	require.Equal(t, "receipt_load_failed", job.ErrorCode)
 }
 
+func TestAdvanceUpdateDeployWait_MissingRunnerPastGraceFails(t *testing.T) {
+	t.Parallel()
+
+	db := ttmocks.NewMockExtendedDB()
+	st := store.New(db)
+	srv := &Server{
+		store: st,
+		cb: &fakeCodebuild{
+			batchOut: &codebuild.BatchGetBuildsOutput{Builds: nil},
+		},
+	}
+
+	now := time.Unix(5000, 0).UTC()
+	job := &models.UpdateJob{
+		ID:           "j1",
+		InstanceSlug: "slug",
+		Status:       models.UpdateJobStatusRunning,
+		Step:         updateStepDeployWait,
+		RunID:        "run",
+		RunURL:       "https://logs.example/deploy",
+		UpdatedAt:    now.Add(-(updateRunnerMissingMaxAge + time.Minute)),
+		MaxAttempts:  3,
+	}
+
+	delay, done, err := srv.advanceUpdateDeployWait(context.Background(), job, "req", now)
+	require.NoError(t, err)
+	require.False(t, done)
+	require.Zero(t, delay)
+	require.Equal(t, models.UpdateJobStatusError, job.Status)
+	require.Equal(t, "deploy_runner_missing", job.ErrorCode)
+	require.Equal(t, updatePhaseDeploy, job.FailedPhase)
+	require.Equal(t, job.ErrorMessage, job.Note)
+	require.Contains(t, job.ErrorMessage, "disappeared from CodeBuild")
+	require.Contains(t, job.ErrorMessage, "https://logs.example/deploy")
+}
+
+func TestProcessActiveUpdateSweep_ReconcilesTerminalRunnerFailure(t *testing.T) {
+	t.Parallel()
+
+	db := ttmocks.NewMockExtendedDB()
+	qJob := new(ttmocks.MockQuery)
+
+	db.On("WithContext", mock.Anything).Return(db).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.UpdateJob")).Return(qJob).Maybe()
+	qJob.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qJob).Maybe()
+	qJob.On("Index", "gsi2").Return(qJob).Maybe()
+	qJob.On("OrderBy", "gsi2SK", "ASC").Return(qJob).Maybe()
+	qJob.On("Limit", mock.Anything).Return(qJob).Maybe()
+	qJob.On("ConsistentRead").Return(qJob).Maybe()
+
+	sweepJob := &models.UpdateJob{
+		ID:           "job-sweep",
+		InstanceSlug: "slug",
+		Status:       models.UpdateJobStatusRunning,
+		Step:         updateStepDeployWait,
+		RunID:        "run-1",
+		CreatedAt:    time.Unix(100, 0).UTC(),
+		UpdatedAt:    time.Unix(101, 0).UTC(),
+		ExpiresAt:    time.Now().UTC().Add(time.Hour),
+		MaxAttempts:  10,
+	}
+
+	qJob.On("All", mock.AnythingOfType("*[]*models.UpdateJob")).Return(nil).Once().Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.UpdateJob](t, args, 0)
+		*dest = []*models.UpdateJob{{ID: sweepJob.ID, InstanceSlug: sweepJob.InstanceSlug, Status: sweepJob.Status, Step: sweepJob.Step, UpdatedAt: sweepJob.UpdatedAt}}
+	})
+
+	var loaded *models.UpdateJob
+	qJob.On("First", mock.AnythingOfType("*models.UpdateJob")).Return(nil).Once().Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.UpdateJob](t, args, 0)
+		*dest = *sweepJob
+		loaded = dest
+	})
+
+	db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Maybe()
+
+	srv := NewServer(config.Config{
+		ManagedProvisioningEnabled:        true,
+		ManagedInstanceRoleName:           "role",
+		ManagedProvisionRunnerProjectName: "project",
+		ArtifactBucketName:                "artifacts",
+		ManagedLesserGitHubOwner:          "equaltoai",
+		ManagedLesserGitHubRepo:           "lesser",
+	}, store.New(db), nil, nil, nil, nil, &fakeCodebuild{
+		batchOut: &codebuild.BatchGetBuildsOutput{
+			Builds: []cbtypes.Build{{
+				BuildStatus:  cbtypes.StatusTypeFailed,
+				CurrentPhase: aws.String("BUILD"),
+				Phases: []cbtypes.BuildPhase{{
+					PhaseType:   cbtypes.BuildPhaseType("BUILD"),
+					PhaseStatus: cbtypes.StatusTypeFailed,
+					Contexts:    []cbtypes.PhaseContext{{Message: aws.String("bundle mismatch")}},
+				}},
+			}},
+		},
+	}, nil)
+
+	out, err := srv.processActiveUpdateSweep(context.Background(), "req-sweep", time.Unix(300, 0).UTC())
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	require.Equal(t, 1, out["active_jobs"])
+	require.Equal(t, 1, out["processed"])
+	require.Equal(t, 0, out["errors"])
+	require.NotNil(t, loaded)
+	require.Equal(t, models.UpdateJobStatusError, loaded.Status)
+	require.Equal(t, "deploy_failed", loaded.ErrorCode)
+	require.Contains(t, loaded.ErrorMessage, "bundle mismatch")
+}
+
 func TestGetSecretsManagerSecretPlaintext_ParsesJSONAndBinary(t *testing.T) {
 	t.Parallel()
 

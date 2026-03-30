@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -45,6 +46,8 @@ const (
 	updateMaxTransitionsPerRun   = 6
 	updateRunnerStartClaimMaxAge = 2 * time.Minute
 	updateProcessingLeaseTTL     = 90 * time.Second
+	updateRunnerMissingMaxAge    = 10 * time.Minute
+	updateSweepLimit             = 100
 )
 
 const (
@@ -374,6 +377,25 @@ func setUpdateJobFieldsOnBuilder(ub core.UpdateBuilder, job *models.UpdateJob) {
 	ub.Set("ExpiresAt", job.ExpiresAt)
 	ub.Set("TTL", job.TTL)
 	setOptionalUpdateJobStringField(ub, "RequestID", job.RequestID)
+	setOptionalUpdateJobStringField(ub, "gsi2PK", job.GSI2PK)
+	setOptionalUpdateJobStringField(ub, "gsi2SK", job.GSI2SK)
+}
+
+func setUpdateJobActiveIndexFieldsOnBuilder(ub core.UpdateBuilder, status string, updatedAt time.Time, jobID string) {
+	if ub == nil {
+		return
+	}
+	status = strings.ToLower(strings.TrimSpace(status))
+	if status != models.UpdateJobStatusQueued && status != models.UpdateJobStatusRunning {
+		ub.Remove("gsi2PK")
+		ub.Remove("gsi2SK")
+		return
+	}
+	if updatedAt.IsZero() {
+		updatedAt = time.Now().UTC()
+	}
+	ub.Set("gsi2PK", "UPDATE_ACTIVE")
+	ub.Set("gsi2SK", fmt.Sprintf("%s#%s", updatedAt.UTC().Format(time.RFC3339Nano), strings.TrimSpace(jobID)))
 }
 
 func (s *Server) processUpdateJob(ctx context.Context, requestID string, jobID string) error {
@@ -1232,6 +1254,7 @@ func (s *Server) claimUpdateRunnerStart(
 			ub.Set("ActivePhase", strings.TrimSpace(phase))
 			ub.Set("RequestID", strings.TrimSpace(requestID))
 			ub.Set("UpdatedAt", now)
+			setUpdateJobActiveIndexFieldsOnBuilder(ub, models.UpdateJobStatusRunning, now, job.ID)
 			return nil
 		}, conditions...)
 		return nil
@@ -1287,6 +1310,7 @@ func (s *Server) releaseClaimedUpdateRunnerStartForRetry(
 			ub.Set("UpdatedAt", now)
 			ub.Remove("RunID")
 			ub.Remove("RunURL")
+			setUpdateJobActiveIndexFieldsOnBuilder(ub, models.UpdateJobStatusRunning, now, job.ID)
 			setUpdateJobPhaseFieldsOnBuilder(ub, phase, updatePhaseStatusPending, "", "", "")
 			return nil
 		}, conditions...)
@@ -1344,6 +1368,7 @@ func (s *Server) completeClaimedUpdateRunnerStart(
 			ub.Set("RequestID", strings.TrimSpace(requestID))
 			ub.Set("UpdatedAt", now)
 			ub.Remove("RunURL")
+			setUpdateJobActiveIndexFieldsOnBuilder(ub, models.UpdateJobStatusRunning, now, job.ID)
 			setUpdateJobPhaseFieldsOnBuilder(ub, phase, updatePhaseStatusRunning, runID, "", "")
 			return nil
 		}, conditions...)
@@ -1404,6 +1429,7 @@ func (s *Server) failClaimedUpdateJob(
 			ub.Remove("RunID")
 			ub.Remove("RunURL")
 			ub.Remove("ActivePhase")
+			setUpdateJobActiveIndexFieldsOnBuilder(ub, models.UpdateJobStatusError, now, job.ID)
 			setUpdateJobPhaseFieldsOnBuilder(ub, phase, updatePhaseStatusFailed, "", "", msg)
 			return nil
 		}, conditions...)
@@ -1674,6 +1700,8 @@ func (s *Server) advanceUpdateDeployWait(ctx context.Context, job *models.Update
 		timeoutMessage:     "deploy runner timed out",
 		failedCode:         "deploy_failed",
 		failedMessage:      "deploy runner failed",
+		missingCode:        "deploy_runner_missing",
+		missingMessage:     "deploy runner disappeared from CodeBuild before the update could reconcile its terminal state",
 		statusPrefix:       "deploy runner status: ",
 	})
 }
@@ -1790,6 +1818,8 @@ type updateRunnerWaitSpec struct {
 	timeoutMessage         string
 	failedCode             string
 	failedMessage          string
+	missingCode            string
+	missingMessage         string
 	statusPrefix           string
 }
 
@@ -1904,6 +1934,9 @@ func (s *Server) advanceUpdateRunnerWait(
 
 	info, err := s.getDeployRunnerInfo(ctx, strings.TrimSpace(job.RunID))
 	if err != nil {
+		if errors.Is(err, errDeployRunnerNotFound) && updateRunnerMissingExpired(job, now) {
+			return s.failMissingUpdateRunnerWait(ctx, job, requestID, now, spec)
+		}
 		return s.retryUpdateRunnerPollError(ctx, job, requestID, now, spec, err)
 	}
 
