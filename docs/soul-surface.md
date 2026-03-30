@@ -164,6 +164,9 @@ The runner uploads receipts to the artifacts bucket for inspection:
 - Lesser-body receipt: `managed/provisioning/<slug>/<jobId>/body-state.json`
 - MCP wiring receipt: `managed/provisioning/<slug>/<jobId>/mcp-state.json`
 
+In artifact mode, those managed copies retain the runtime fields the control plane already ingests and add
+`managed_deploy_artifacts` so operators can see which verified Lesser or `lesser-body` release assets were used.
+
 ### SSM contract inside the instance account
 
 Required parameters (well-known names; `${app}` = instance slug, `${stage}` = `dev|staging|live`):
