@@ -5,6 +5,8 @@ This document defines the Lesser release surface that `lesser-host` consumes for
 It is intentionally narrower than Lesser's full repo-local deploy contract: this doc is about the release assets and
 receipt expectations that the managed runner depends on.
 
+Managed rollout decisions for those releases are gated separately by `docs/managed-release-certification.md`.
+
 ## Required Lesser release assets
 
 Every managed-consumable Lesser release must publish:

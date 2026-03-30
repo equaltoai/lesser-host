@@ -22,6 +22,7 @@ This directory contains maintainer documentation for `lesser-host` (the `lesser.
 ## Managed provisioning
 
 - Lesser release contract: `docs/lesser-release-contract.md`
+- Managed release certification gate: `docs/managed-release-certification.md`
 - Managed update recovery contract: `docs/managed-update-recovery.md`
 - Managed provisioning roadmap: `docs/roadmap-managed-provisioning.md`
 - Recovery runbooks: `docs/recovery.md`, `docs/provisioning-recovery-plan.md`
