@@ -10,6 +10,12 @@ test('RUN_MODE=lesser uses verified Lesser release assets', () => {
 	assert.match(buildCommands, /--release-dir "\$LESSER_RELEASE_DIR"/);
 	assert.match(buildCommands, /lesser-lambda-bundle\.tar\.gz/);
 	assert.match(buildCommands, /lesser-lambda-bundle\.json/);
+
+	const prepareIndex = buildCommands.indexOf('prepare_lesser_release_dir "$LESSER_RELEASE_DIR"');
+	const upIndex = buildCommands.indexOf('./lesser up --app "$APP_SLUG" --base-domain "$BASE_DOMAIN" --aws-profile managed --provisioning-input "$PROVISION_INPUT" --release-dir "$LESSER_RELEASE_DIR"');
+	assert.ok(prepareIndex >= 0, 'expected Lesser release preparation command');
+	assert.ok(upIndex >= 0, 'expected lesser up command');
+	assert.ok(prepareIndex < upIndex, 'expected release preparation before lesser up');
 });
 
 test('RUN_MODE=lesser-body uses the release helper instead of a source checkout', () => {
