@@ -37,35 +37,35 @@
   "jobs": [
     {
       "kind": "lesser",
-      "job_id": "job-lesser-1",
+      "job_id": "job-update-1",
       "status": "ok",
       "step": "done",
       "note": "updated",
-      "run_url": "https://console.aws.amazon.com/codebuild/home?#/builds/job-lesser-1/view/new",
-      "deploy_run_url": "https://console.aws.amazon.com/codebuild/home?#/builds/job-lesser-1/view/new",
-      "receipt_key": "managed/updates/simulacrum/job-lesser-1/state.json",
+      "run_url": "https://console.aws.amazon.com/codebuild/home?#/builds/job-update-1-deploy/view/new",
+      "deploy_run_url": "https://console.aws.amazon.com/codebuild/home?#/builds/job-update-1-deploy/view/new",
+      "receipt_key": "managed/updates/simulacrum/job-update-1/state.json",
       "requested_version": "v1.2.6"
     },
     {
       "kind": "lesser-body",
-      "job_id": "job-body-1",
+      "job_id": "job-update-1",
       "status": "ok",
       "step": "done",
       "note": "lesser-body updated",
-      "run_url": "https://console.aws.amazon.com/codebuild/home?#/builds/job-body-1/view/new",
-      "body_run_url": "https://console.aws.amazon.com/codebuild/home?#/builds/job-body-1/view/new",
-      "receipt_key": "managed/updates/simulacrum/job-body-1/body-state.json",
+      "run_url": "https://console.aws.amazon.com/codebuild/home?#/builds/job-update-1-body/view/new",
+      "body_run_url": "https://console.aws.amazon.com/codebuild/home?#/builds/job-update-1-body/view/new",
+      "receipt_key": "managed/updates/simulacrum/job-update-1/body-state.json",
       "requested_version": "v0.2.2"
     },
     {
       "kind": "mcp",
-      "job_id": "job-mcp-1",
+      "job_id": "job-update-1",
       "status": "ok",
       "step": "done",
       "note": "MCP updated",
-      "run_url": "https://console.aws.amazon.com/codebuild/home?#/builds/job-mcp-1/view/new",
-      "mcp_run_url": "https://console.aws.amazon.com/codebuild/home?#/builds/job-mcp-1/view/new",
-      "receipt_key": "managed/updates/simulacrum/job-mcp-1/mcp-state.json",
+      "run_url": "https://console.aws.amazon.com/codebuild/home?#/builds/job-update-1-mcp/view/new",
+      "mcp_run_url": "https://console.aws.amazon.com/codebuild/home?#/builds/job-update-1-mcp/view/new",
+      "receipt_key": "managed/updates/simulacrum/job-update-1/mcp-state.json",
       "requested_version": "v0.2.2"
     }
   ],

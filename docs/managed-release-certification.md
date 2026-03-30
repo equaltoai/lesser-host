@@ -12,7 +12,7 @@ Managed release certification covers the real hosted workflow:
 1. trigger a managed Lesser update from a published Lesser release tag
 2. observe the update through `lesser-host`
 3. record runner visibility, receipts, and terminal status
-4. optionally extend the same run through `lesser-body` deploy and MCP follow-on wiring
+4. when the managed instance enables them, certify the same run through `lesser-body` deploy and MCP follow-on wiring
 5. derive a rollout-readiness result from the recorded evidence
 
 This is the boundary that `M9` uses for project and rollout decisions.
@@ -79,7 +79,7 @@ The report records:
 - requested Lesser and `lesser-body` versions
 - target `lesser-host` base URL and managed instance slug
 - every certification check and its pass/fail status
-- job-level evidence for Lesser, `lesser-body`, and MCP phases
+- phase-level evidence for Lesser, `lesser-body`, and MCP, even when those phases share one managed update job id
 - canonical managed receipt keys
 - rollout summary (`overall_status`)
 

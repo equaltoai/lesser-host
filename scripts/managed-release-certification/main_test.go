@@ -15,7 +15,58 @@ import (
 
 const (
 	portalUpdatesPath = "/api/v1/portal/instances/simulacrum/updates"
+	jobUpdateID       = "job-update-1"
 )
+
+func requireCheckStatus(t *testing.T, report *certificationReport, checkID string, want string) {
+	t.Helper()
+
+	for _, check := range report.Checks {
+		if check.ID == checkID {
+			if check.Status != want {
+				t.Fatalf("expected %s to be %s, got %#v", checkID, want, check)
+			}
+			return
+		}
+	}
+	t.Fatalf("missing check %q in %#v", checkID, report.Checks)
+}
+
+func newManagedCertificationServer(t *testing.T, postResponse string, getResponses []string, requestBody *createUpdateJobRequest) *httptest.Server {
+	t.Helper()
+
+	var (
+		mu        sync.Mutex
+		listCalls int
+	)
+
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == portalUpdatesPath:
+			if requestBody != nil {
+				if err := json.NewDecoder(r.Body).Decode(requestBody); err != nil {
+					t.Fatalf("decode request body: %v", err)
+				}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(postResponse))
+		case r.Method == http.MethodGet && r.URL.Path == portalUpdatesPath:
+			mu.Lock()
+			listCalls++
+			call := listCalls
+			mu.Unlock()
+
+			index := call - 1
+			if index >= len(getResponses) {
+				index = len(getResponses) - 1
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(getResponses[index]))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+}
 
 func TestRunCertification_LesserUpdatePasses(t *testing.T) {
 	t.Parallel()
@@ -85,6 +136,56 @@ func TestRunCertification_LesserUpdatePasses(t *testing.T) {
 	}
 }
 
+func TestRunCertification_FullManagedFlowPasses(t *testing.T) {
+	t.Parallel()
+
+	var requestBody createUpdateJobRequest
+	server := newManagedCertificationServer(
+		t,
+		`{"id":"job-update-1","kind":"lesser","status":"queued","step":"queued","lesser_version":"v1.2.6","lesser_body_version":"v0.2.2"}`,
+		[]string{
+			`{"jobs":[{"id":"job-update-1","kind":"lesser","status":"running","step":"deploy.wait","active_phase":"deploy","deploy_status":"running","body_status":"pending","mcp_status":"pending","lesser_version":"v1.2.6","lesser_body_version":"v0.2.2"}]}`,
+			`{"jobs":[{"id":"job-update-1","kind":"lesser","status":"ok","step":"done","note":"updated","run_url":"https://example.com/builds/update","deploy_status":"succeeded","deploy_run_url":"https://example.com/builds/deploy","body_status":"succeeded","body_run_url":"https://example.com/builds/body","mcp_status":"succeeded","mcp_run_url":"https://example.com/builds/mcp","lesser_version":"v1.2.6","lesser_body_version":"v0.2.2"}]}`,
+		},
+		&requestBody,
+	)
+	defer server.Close()
+
+	cfg := cliConfig{
+		BaseURL:           server.URL,
+		Token:             "token",
+		InstanceSlug:      "simulacrum",
+		LesserVersion:     "v1.2.6",
+		LesserBodyVersion: "v0.2.2",
+		RequireLesserBody: true,
+		RequireMCP:        true,
+		PollInterval:      5 * time.Millisecond,
+		Timeout:           2 * time.Second,
+		OutDir:            t.TempDir(),
+	}
+
+	report, err := runCertification(context.Background(), cfg, server.Client())
+	if err != nil {
+		t.Fatalf("runCertification: %v", err)
+	}
+	if report.OverallStatus != statusPass {
+		t.Fatalf("expected pass report, got %#v", report)
+	}
+	if requestBody.LesserVersion != "v1.2.6" || requestBody.LesserBodyVersion != "v0.2.2" {
+		t.Fatalf("unexpected update request: %#v", requestBody)
+	}
+	if len(report.Jobs) != 3 {
+		t.Fatalf("expected three phase jobs, got %#v", report.Jobs)
+	}
+	if report.Jobs[0].JobID != jobUpdateID || report.Jobs[1].JobID != jobUpdateID || report.Jobs[2].JobID != jobUpdateID {
+		t.Fatalf("expected shared managed update id across phase evidence, got %#v", report.Jobs)
+	}
+
+	for _, expectedID := range []string{"lesser_body_completed", "lesser_body_receipt_key_defined", "mcp_wiring_completed", "mcp_receipt_key_defined"} {
+		requireCheckStatus(t, report, expectedID, statusPass)
+	}
+}
+
 func TestRunCertification_LesserUpdateFailurePreservesRetryVisibility(t *testing.T) {
 	t.Parallel()
 
@@ -135,6 +236,45 @@ func TestRunCertification_LesserUpdateFailurePreservesRetryVisibility(t *testing
 	}
 	if len(report.Jobs) != 1 || report.Jobs[0].ErrorCode != "deploy_failed" {
 		t.Fatalf("expected preserved failure evidence, got %#v", report.Jobs)
+	}
+}
+
+func TestRunCertification_RequiredFollowOnPhasesFailWhenSkipped(t *testing.T) {
+	t.Parallel()
+
+	server := newManagedCertificationServer(
+		t,
+		`{"id":"job-update-2","kind":"lesser","status":"queued","step":"queued","lesser_version":"v1.2.6","lesser_body_version":"v0.2.2"}`,
+		[]string{
+			`{"jobs":[{"id":"job-update-2","kind":"lesser","status":"ok","step":"done","note":"updated","run_url":"https://example.com/builds/update","deploy_status":"succeeded","deploy_run_url":"https://example.com/builds/deploy","body_status":"skipped","mcp_status":"skipped","lesser_version":"v1.2.6","lesser_body_version":"v0.2.2"}]}`,
+		},
+		nil,
+	)
+	defer server.Close()
+
+	cfg := cliConfig{
+		BaseURL:           server.URL,
+		Token:             "token",
+		InstanceSlug:      "simulacrum",
+		LesserVersion:     "v1.2.6",
+		LesserBodyVersion: "v0.2.2",
+		RequireLesserBody: true,
+		RequireMCP:        true,
+		PollInterval:      5 * time.Millisecond,
+		Timeout:           2 * time.Second,
+		OutDir:            t.TempDir(),
+	}
+
+	report, err := runCertification(context.Background(), cfg, server.Client())
+	if err != nil {
+		t.Fatalf("runCertification: %v", err)
+	}
+	if report.OverallStatus != statusFail {
+		t.Fatalf("expected fail report, got %#v", report)
+	}
+
+	for _, expectedID := range []string{"lesser_body_completed", "mcp_wiring_completed"} {
+		requireCheckStatus(t, report, expectedID, statusFail)
 	}
 }
 
@@ -239,6 +379,21 @@ func TestParseCLI_ValidatesArgs(t *testing.T) {
 	}
 	if cfg.Timeout != 30*time.Minute {
 		t.Fatalf("unexpected timeout: %s", cfg.Timeout)
+	}
+	if cfg.RequireLesserBody || cfg.RequireMCP {
+		t.Fatalf("expected optional follow-on requirements to default false, got %#v", cfg)
+	}
+
+	cfg, err = parseCLI(append(validArgs(),
+		"--lesser-body-version", "v0.2.2",
+		"--require-lesser-body",
+		"--require-mcp",
+	))
+	if err != nil {
+		t.Fatalf("parseCLI optional args: %v", err)
+	}
+	if cfg.LesserBodyVersion != "v0.2.2" || !cfg.RequireLesserBody || !cfg.RequireMCP {
+		t.Fatalf("expected follow-on args to parse, got %#v", cfg)
 	}
 }
 

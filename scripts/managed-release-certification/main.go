@@ -23,16 +23,38 @@ const (
 	statusPass    = "pass"
 	statusFail    = "fail"
 	statusSkipped = "skipped"
+
+	updateJobStatusQueued  = "queued"
+	updateJobStatusRunning = "running"
+	updateJobStatusOK      = "ok"
+	updateJobStatusError   = "error"
+
+	updatePhaseStatusPending   = "pending"
+	updatePhaseStatusRunning   = "running"
+	updatePhaseStatusSucceeded = "succeeded"
+	updatePhaseStatusFailed    = "failed"
+	updatePhaseStatusSkipped   = "skipped"
+
+	updatePhaseDeploy = "deploy"
+	updatePhaseBody   = "body"
+	updatePhaseMCP    = "mcp"
+
+	updateJobKindLesser = "lesser"
+	updateJobKindBody   = "lesser-body"
+	updateJobKindMCP    = "mcp"
 )
 
 type cliConfig struct {
-	BaseURL       string
-	Token         string
-	InstanceSlug  string
-	LesserVersion string
-	PollInterval  time.Duration
-	Timeout       time.Duration
-	OutDir        string
+	BaseURL           string
+	Token             string
+	InstanceSlug      string
+	LesserVersion     string
+	LesserBodyVersion string
+	RequireLesserBody bool
+	RequireMCP        bool
+	PollInterval      time.Duration
+	Timeout           time.Duration
+	OutDir            string
 }
 
 type certificationReport struct {
@@ -87,13 +109,20 @@ type updateJobResponse struct {
 	Status            string `json:"status"`
 	Step              string `json:"step"`
 	Note              string `json:"note"`
+	ActivePhase       string `json:"active_phase"`
 	FailedPhase       string `json:"failed_phase"`
 	ErrorCode         string `json:"error_code"`
 	ErrorMessage      string `json:"error_message"`
 	RunURL            string `json:"run_url"`
+	DeployStatus      string `json:"deploy_status"`
 	DeployRunURL      string `json:"deploy_run_url"`
+	DeployError       string `json:"deploy_error"`
+	BodyStatus        string `json:"body_status"`
 	BodyRunURL        string `json:"body_run_url"`
+	BodyError         string `json:"body_error"`
+	MCPStatus         string `json:"mcp_status"`
 	MCPRunURL         string `json:"mcp_run_url"`
+	MCPError          string `json:"mcp_error"`
 	LesserVersion     string `json:"lesser_version"`
 	LesserBodyVersion string `json:"lesser_body_version"`
 }
@@ -103,7 +132,8 @@ type listUpdateJobsResponse struct {
 }
 
 type createUpdateJobRequest struct {
-	LesserVersion string `json:"lesser_version,omitempty"`
+	LesserVersion     string `json:"lesser_version,omitempty"`
+	LesserBodyVersion string `json:"lesser_body_version,omitempty"`
 }
 
 type certificationClient struct {
@@ -130,7 +160,7 @@ func main() {
 		failf("write certification outputs: %v", err)
 	}
 
-	if report.OverallStatus != "pass" {
+	if report.OverallStatus != statusPass {
 		failf("managed release certification failed")
 	}
 }
@@ -144,6 +174,9 @@ func parseCLI(args []string) (cliConfig, error) {
 	fs.StringVar(&cfg.Token, "token", "", "bearer token with access to the managed instance")
 	fs.StringVar(&cfg.InstanceSlug, "instance-slug", "", "managed instance slug to update")
 	fs.StringVar(&cfg.LesserVersion, "lesser-version", "", "published Lesser release tag to certify")
+	fs.StringVar(&cfg.LesserBodyVersion, "lesser-body-version", "", "optional lesser-body release tag to require for follow-on deploy certification")
+	fs.BoolVar(&cfg.RequireLesserBody, "require-lesser-body", false, "require lesser-body follow-on deploy to succeed in the certification run")
+	fs.BoolVar(&cfg.RequireMCP, "require-mcp", false, "require MCP follow-on wiring to succeed in the certification run")
 	fs.DurationVar(&cfg.PollInterval, "poll-interval", 10*time.Second, "poll interval for update status")
 	fs.DurationVar(&cfg.Timeout, "timeout", 30*time.Minute, "overall certification timeout")
 	fs.StringVar(&cfg.OutDir, "out-dir", "gov-infra/evidence/managed-release-certification", "output directory for certification evidence")
@@ -177,6 +210,7 @@ func parseCLI(args []string) (cliConfig, error) {
 	cfg.Token = strings.TrimSpace(cfg.Token)
 	cfg.InstanceSlug = strings.TrimSpace(cfg.InstanceSlug)
 	cfg.LesserVersion = strings.TrimSpace(cfg.LesserVersion)
+	cfg.LesserBodyVersion = strings.TrimSpace(cfg.LesserBodyVersion)
 	cfg.OutDir = strings.TrimSpace(cfg.OutDir)
 
 	parsedBaseURL, err := url.Parse(cfg.BaseURL)
@@ -210,14 +244,15 @@ func runCertification(ctx context.Context, cfg cliConfig, httpClient *http.Clien
 			InstanceSlug: cfg.InstanceSlug,
 		},
 		RequestedRelease: certificationRequested{
-			LesserVersion: cfg.LesserVersion,
-			RunLesser:     true,
-			RunLesserBody: false,
-			RunMCP:        false,
+			LesserVersion:     cfg.LesserVersion,
+			LesserBodyVersion: cfg.LesserBodyVersion,
+			RunLesser:         true,
+			RunLesserBody:     cfg.RequireLesserBody,
+			RunMCP:            cfg.RequireMCP,
 		},
 	}
 
-	startedJob, err := client.createLesserUpdate(ctx, cfg.InstanceSlug, cfg.LesserVersion)
+	startedJob, err := client.createLesserUpdate(ctx, cfg.InstanceSlug, cfg.LesserVersion, cfg.LesserBodyVersion)
 	if err != nil {
 		report.Checks = append(report.Checks, certificationCheck{
 			ID:     "hosted_update_started",
@@ -245,18 +280,19 @@ func runCertification(ctx context.Context, cfg cliConfig, httpClient *http.Clien
 		return report, nil
 	}
 
-	jobEvidence := certificationJobFromResponse(finalJob, cfg.InstanceSlug)
-	report.Jobs = append(report.Jobs, jobEvidence)
-	report.Checks = append(report.Checks, certificationChecksForLesserJob(finalJob, jobEvidence)...)
+	jobEvidence := certificationJobsFromUpdate(finalJob, cfg.InstanceSlug, cfg)
+	report.Jobs = append(report.Jobs, jobEvidence...)
+	report.Checks = append(report.Checks, certificationChecksForManagedUpdate(finalJob, jobEvidence, cfg)...)
 	report.OverallStatus = overallStatus(report.Checks)
 	return report, nil
 }
 
-func certificationChecksForLesserJob(job updateJobResponse, evidence certificationJob) []certificationCheck {
+func certificationChecksForManagedUpdate(job updateJobResponse, evidence []certificationJob, cfg cliConfig) []certificationCheck {
+	lesserEvidence := findCertificationJob(evidence, updateJobKindLesser)
 	checks := []certificationCheck{{
 		ID:     "receipt_key_defined",
-		Status: statusPass,
-		Detail: evidence.ReceiptKey,
+		Status: checkStatusForReceiptKey(lesserEvidence),
+		Detail: receiptDetail(lesserEvidence, "Lesser"),
 	}}
 
 	if hasRunnerVisibility(job) {
@@ -273,7 +309,7 @@ func certificationChecksForLesserJob(job updateJobResponse, evidence certificati
 		})
 	}
 
-	if strings.EqualFold(strings.TrimSpace(job.Status), "ok") {
+	if strings.EqualFold(strings.TrimSpace(job.Status), updateJobStatusOK) {
 		checks = append(checks, certificationCheck{
 			ID:     "hosted_update_completed",
 			Status: statusPass,
@@ -284,27 +320,58 @@ func certificationChecksForLesserJob(job updateJobResponse, evidence certificati
 			Status: statusSkipped,
 			Detail: "retry visibility is only required for failed certification runs",
 		})
-		return checks
-	}
-
-	checks = append(checks, certificationCheck{
-		ID:     "hosted_update_completed",
-		Status: statusFail,
-		Detail: fmt.Sprintf("managed Lesser update ended with status=%s step=%s", strings.TrimSpace(job.Status), strings.TrimSpace(job.Step)),
-	})
-
-	if hasFailureVisibility(job) {
-		checks = append(checks, certificationCheck{
-			ID:     "retry_visibility_present",
-			Status: statusPass,
-			Detail: "failed update preserved failure code, message, phase, and runner visibility",
-		})
 	} else {
 		checks = append(checks, certificationCheck{
-			ID:     "retry_visibility_present",
+			ID:     "hosted_update_completed",
 			Status: statusFail,
-			Detail: "failed update did not preserve complete retry visibility fields",
+			Detail: fmt.Sprintf("managed Lesser update ended with status=%s step=%s", strings.TrimSpace(job.Status), strings.TrimSpace(job.Step)),
 		})
+
+		if hasFailureVisibility(job) {
+			checks = append(checks, certificationCheck{
+				ID:     "retry_visibility_present",
+				Status: statusPass,
+				Detail: "failed update preserved failure code, message, phase, and runner visibility",
+			})
+		} else {
+			checks = append(checks, certificationCheck{
+				ID:     "retry_visibility_present",
+				Status: statusFail,
+				Detail: "failed update did not preserve complete retry visibility fields",
+			})
+		}
+	}
+
+	if cfg.RequireLesserBody {
+		bodyEvidence := findCertificationJob(evidence, updateJobKindBody)
+		checks = append(checks,
+			certificationCheck{
+				ID:     "lesser_body_completed",
+				Status: checkStatusForPhase(bodyEvidence),
+				Detail: phaseCompletionDetail(updateJobKindBody, bodyEvidence),
+			},
+			certificationCheck{
+				ID:     "lesser_body_receipt_key_defined",
+				Status: checkStatusForReceiptKey(bodyEvidence),
+				Detail: receiptDetail(bodyEvidence, "lesser-body"),
+			},
+		)
+	}
+
+	if cfg.RequireMCP {
+		mcpEvidence := findCertificationJob(evidence, updateJobKindMCP)
+		checks = append(checks,
+			certificationCheck{
+				ID:     "mcp_wiring_completed",
+				Status: checkStatusForPhase(mcpEvidence),
+				Detail: phaseCompletionDetail(updateJobKindMCP, mcpEvidence),
+			},
+			certificationCheck{
+				ID:     "mcp_receipt_key_defined",
+				Status: checkStatusForReceiptKey(mcpEvidence),
+				Detail: receiptDetail(mcpEvidence, "MCP"),
+			},
+		)
 	}
 	return checks
 }
@@ -315,7 +382,7 @@ func certificationJobFromResponse(job updateJobResponse, slug string) certificat
 		version = strings.TrimSpace(job.LesserBodyVersion)
 	}
 	return certificationJob{
-		Kind:             firstNonEmpty(strings.TrimSpace(job.Kind), "lesser"),
+		Kind:             firstNonEmpty(strings.TrimSpace(job.Kind), updateJobKindLesser),
 		JobID:            strings.TrimSpace(job.ID),
 		Status:           strings.TrimSpace(job.Status),
 		Step:             strings.TrimSpace(job.Step),
@@ -327,9 +394,218 @@ func certificationJobFromResponse(job updateJobResponse, slug string) certificat
 		DeployRunURL:     strings.TrimSpace(job.DeployRunURL),
 		BodyRunURL:       strings.TrimSpace(job.BodyRunURL),
 		MCPRunURL:        strings.TrimSpace(job.MCPRunURL),
-		ReceiptKey:       deriveReceiptKey(firstNonEmpty(strings.TrimSpace(job.Kind), "lesser"), slug, job.ID),
+		ReceiptKey:       deriveReceiptKey(firstNonEmpty(strings.TrimSpace(job.Kind), updateJobKindLesser), slug, job.ID),
 		RequestedVersion: version,
 	}
+}
+
+func certificationJobsFromUpdate(job updateJobResponse, slug string, cfg cliConfig) []certificationJob {
+	jobs := []certificationJob{
+		certificationJobForPhase(job, slug, updateJobKindLesser),
+	}
+	if shouldIncludeOptionalPhase(job.BodyStatus, cfg.RequireLesserBody) {
+		jobs = append(jobs, certificationJobForPhase(job, slug, updateJobKindBody))
+	}
+	if shouldIncludeOptionalPhase(job.MCPStatus, cfg.RequireMCP) {
+		jobs = append(jobs, certificationJobForPhase(job, slug, updateJobKindMCP))
+	}
+	return jobs
+}
+
+func certificationJobForPhase(job updateJobResponse, slug string, kind string) certificationJob {
+	jobID := strings.TrimSpace(job.ID)
+	step := strings.TrimSpace(job.Step)
+	if step == "" {
+		step = firstNonEmpty(strings.TrimSpace(job.ActivePhase), updateStepForKind(kind))
+	}
+
+	evidence := certificationJob{
+		Kind:        kind,
+		JobID:       jobID,
+		Status:      statusForPhase(kind, job),
+		Step:        step,
+		FailedPhase: failedPhaseForKind(kind, job),
+		Note:        strings.TrimSpace(job.Note),
+		ReceiptKey:  deriveReceiptKey(kind, slug, jobID),
+	}
+
+	switch kind {
+	case updateJobKindBody:
+		evidence.RequestedVersion = strings.TrimSpace(job.LesserBodyVersion)
+		evidence.RunURL = firstNonEmpty(job.BodyRunURL, job.RunURL)
+		evidence.BodyRunURL = strings.TrimSpace(job.BodyRunURL)
+		evidence.ErrorCode = errorCodeForKind(kind, job)
+		evidence.ErrorMessage = errorMessageForKind(kind, job)
+	case updateJobKindMCP:
+		evidence.RequestedVersion = strings.TrimSpace(job.LesserBodyVersion)
+		evidence.RunURL = firstNonEmpty(job.MCPRunURL, job.RunURL)
+		evidence.MCPRunURL = strings.TrimSpace(job.MCPRunURL)
+		evidence.ErrorCode = errorCodeForKind(kind, job)
+		evidence.ErrorMessage = errorMessageForKind(kind, job)
+	default:
+		evidence.RequestedVersion = strings.TrimSpace(job.LesserVersion)
+		evidence.RunURL = firstNonEmpty(job.DeployRunURL, job.RunURL)
+		evidence.DeployRunURL = strings.TrimSpace(job.DeployRunURL)
+		evidence.ErrorCode = errorCodeForKind(kind, job)
+		evidence.ErrorMessage = errorMessageForKind(kind, job)
+	}
+	return evidence
+}
+
+func shouldIncludeOptionalPhase(phaseStatus string, required bool) bool {
+	if required {
+		return true
+	}
+	trimmed := strings.TrimSpace(phaseStatus)
+	return trimmed != "" && trimmed != updatePhaseStatusSkipped
+}
+
+func findCertificationJob(jobs []certificationJob, kind string) certificationJob {
+	for _, job := range jobs {
+		if strings.TrimSpace(job.Kind) == kind {
+			return job
+		}
+	}
+	return certificationJob{Kind: kind}
+}
+
+func checkStatusForPhase(job certificationJob) string {
+	if strings.TrimSpace(job.JobID) == "" {
+		return statusFail
+	}
+	if strings.TrimSpace(job.Status) == updateJobStatusOK {
+		return statusPass
+	}
+	return statusFail
+}
+
+func checkStatusForReceiptKey(job certificationJob) string {
+	if strings.TrimSpace(job.ReceiptKey) == "" {
+		return statusFail
+	}
+	return statusPass
+}
+
+func receiptDetail(job certificationJob, label string) string {
+	if strings.TrimSpace(job.ReceiptKey) != "" {
+		return job.ReceiptKey
+	}
+	return label + " receipt key could not be derived from the managed update job"
+}
+
+func phaseCompletionDetail(kind string, job certificationJob) string {
+	name := kind
+	switch kind {
+	case updateJobKindBody:
+		name = "lesser-body"
+	case updateJobKindMCP:
+		name = "MCP"
+	case updateJobKindLesser:
+		name = "Lesser"
+	}
+	if strings.TrimSpace(job.JobID) == "" {
+		return name + " phase evidence was not present in the managed update response"
+	}
+	if strings.TrimSpace(job.Status) == updateJobStatusOK {
+		return name + " managed phase completed successfully"
+	}
+	if strings.TrimSpace(job.ErrorMessage) != "" {
+		return job.ErrorMessage
+	}
+	return fmt.Sprintf("%s phase ended with status=%s step=%s", name, strings.TrimSpace(job.Status), strings.TrimSpace(job.Step))
+}
+
+func statusForPhase(kind string, job updateJobResponse) string {
+	switch kind {
+	case updateJobKindBody:
+		return mapPhaseStatusToJobStatus(job.BodyStatus, job.Status)
+	case updateJobKindMCP:
+		return mapPhaseStatusToJobStatus(job.MCPStatus, job.Status)
+	default:
+		return mapPhaseStatusToJobStatus(job.DeployStatus, job.Status)
+	}
+}
+
+func mapPhaseStatusToJobStatus(phaseStatus string, fallback string) string {
+	switch strings.TrimSpace(phaseStatus) {
+	case updatePhaseStatusSucceeded:
+		return updateJobStatusOK
+	case updatePhaseStatusFailed:
+		return updateJobStatusError
+	case updatePhaseStatusRunning:
+		return updateJobStatusRunning
+	case updatePhaseStatusPending:
+		return updateJobStatusQueued
+	case updatePhaseStatusSkipped:
+		return updateJobStatusError
+	default:
+		return firstNonEmpty(strings.TrimSpace(fallback), updateJobStatusError)
+	}
+}
+
+func updateStepForKind(kind string) string {
+	switch kind {
+	case updateJobKindBody:
+		return "body"
+	case updateJobKindMCP:
+		return "mcp"
+	default:
+		return "deploy"
+	}
+}
+
+func failedPhaseForKind(kind string, job updateJobResponse) string {
+	switch kind {
+	case updateJobKindBody:
+		if strings.TrimSpace(job.FailedPhase) == updatePhaseBody {
+			return updatePhaseBody
+		}
+	case updateJobKindMCP:
+		if strings.TrimSpace(job.FailedPhase) == updatePhaseMCP {
+			return updatePhaseMCP
+		}
+	default:
+		if strings.TrimSpace(job.FailedPhase) == "" || strings.TrimSpace(job.FailedPhase) == updatePhaseDeploy {
+			return strings.TrimSpace(job.FailedPhase)
+		}
+	}
+	return ""
+}
+
+func errorCodeForKind(kind string, job updateJobResponse) string {
+	switch kind {
+	case updateJobKindBody:
+		if strings.TrimSpace(job.FailedPhase) == updatePhaseBody {
+			return strings.TrimSpace(job.ErrorCode)
+		}
+	case updateJobKindMCP:
+		if strings.TrimSpace(job.FailedPhase) == updatePhaseMCP {
+			return strings.TrimSpace(job.ErrorCode)
+		}
+	default:
+		if strings.TrimSpace(job.FailedPhase) == "" || strings.TrimSpace(job.FailedPhase) == updatePhaseDeploy {
+			return strings.TrimSpace(job.ErrorCode)
+		}
+	}
+	return ""
+}
+
+func errorMessageForKind(kind string, job updateJobResponse) string {
+	switch kind {
+	case updateJobKindBody:
+		return firstNonEmpty(job.BodyError, phaseFallbackError(updatePhaseBody, job))
+	case updateJobKindMCP:
+		return firstNonEmpty(job.MCPError, phaseFallbackError(updatePhaseMCP, job))
+	default:
+		return firstNonEmpty(job.DeployError, phaseFallbackError(updatePhaseDeploy, job))
+	}
+}
+
+func phaseFallbackError(phase string, job updateJobResponse) string {
+	if strings.TrimSpace(job.FailedPhase) == phase {
+		return strings.TrimSpace(job.ErrorMessage)
+	}
+	return ""
 }
 
 func deriveReceiptKey(kind string, slug string, jobID string) string {
@@ -339,9 +615,9 @@ func deriveReceiptKey(kind string, slug string, jobID string) string {
 		return ""
 	}
 	switch strings.TrimSpace(kind) {
-	case "lesser-body":
+	case updateJobKindBody:
 		return fmt.Sprintf("managed/updates/%s/%s/body-state.json", slug, jobID)
-	case "mcp":
+	case updateJobKindMCP:
 		return fmt.Sprintf("managed/updates/%s/%s/mcp-state.json", slug, jobID)
 	default:
 		return fmt.Sprintf("managed/updates/%s/%s/state.json", slug, jobID)
@@ -409,51 +685,87 @@ func writeCertificationOutputs(outDir string, report *certificationReport) error
 
 func renderMarkdownSummary(report *certificationReport) string {
 	var b strings.Builder
-	b.WriteString("# Managed release certification\n\n")
-	b.WriteString("- Generated at: `" + safeMarkdownText(report.GeneratedAt) + "`\n")
-	b.WriteString("- Base URL: `" + safeMarkdownText(report.LesserHost.BaseURL) + "`\n")
-	b.WriteString("- Instance slug: `" + safeMarkdownText(report.LesserHost.InstanceSlug) + "`\n")
-	b.WriteString("- Lesser version: `" + safeMarkdownText(report.RequestedRelease.LesserVersion) + "`\n")
-	b.WriteString("- Overall status: `" + safeMarkdownText(report.OverallStatus) + "`\n\n")
+	writeMarkdownHeader(&b, report)
+	writeMarkdownChecks(&b, report.Checks)
+	writeMarkdownJobs(&b, report.Jobs)
+	return b.String()
+}
 
+func writeMarkdownHeader(b *strings.Builder, report *certificationReport) {
+	b.WriteString("# Managed release certification\n\n")
+	writeMarkdownBullet(b, "Generated at", report.GeneratedAt)
+	writeMarkdownBullet(b, "Base URL", report.LesserHost.BaseURL)
+	writeMarkdownBullet(b, "Instance slug", report.LesserHost.InstanceSlug)
+	writeMarkdownBullet(b, "Lesser version", report.RequestedRelease.LesserVersion)
+	if strings.TrimSpace(report.RequestedRelease.LesserBodyVersion) != "" {
+		writeMarkdownBullet(b, "lesser-body version", report.RequestedRelease.LesserBodyVersion)
+	}
+	writeMarkdownBullet(b, "Require lesser-body", fmt.Sprintf("%t", report.RequestedRelease.RunLesserBody))
+	writeMarkdownBullet(b, "Require MCP", fmt.Sprintf("%t", report.RequestedRelease.RunMCP))
+	writeMarkdownBullet(b, "Overall status", report.OverallStatus)
+	b.WriteString("\n")
+}
+
+func writeMarkdownChecks(b *strings.Builder, checks []certificationCheck) {
 	b.WriteString("## Checks\n\n")
-	for _, check := range report.Checks {
+	for _, check := range checks {
 		b.WriteString("- `" + safeMarkdownText(check.ID) + "`: `" + safeMarkdownText(check.Status) + "`")
 		if strings.TrimSpace(check.Detail) != "" {
 			b.WriteString(" - " + safeMarkdownText(check.Detail))
 		}
 		b.WriteString("\n")
 	}
+	b.WriteString("\n")
+}
 
-	b.WriteString("\n## Jobs\n\n")
-	for _, job := range report.Jobs {
-		b.WriteString(
-			"- `" + safeMarkdownText(job.Kind) +
-				"` `" + safeMarkdownText(job.JobID) +
-				"`: status=`" + safeMarkdownText(job.Status) +
-				"` step=`" + safeMarkdownText(job.Step) + "`",
-		)
-		if job.RequestedVersion != "" {
-			b.WriteString(" version=`" + safeMarkdownText(job.RequestedVersion) + "`")
-		}
-		if job.ReceiptKey != "" {
-			b.WriteString(" receipt=`" + safeMarkdownText(job.ReceiptKey) + "`")
-		}
-		b.WriteString("\n")
-		if job.RunURL != "" {
-			b.WriteString("  run_url: " + safeMarkdownText(job.RunURL) + "\n")
-		}
-		if job.DeployRunURL != "" && job.DeployRunURL != job.RunURL {
-			b.WriteString("  deploy_run_url: " + safeMarkdownText(job.DeployRunURL) + "\n")
-		}
-		if job.Note != "" {
-			b.WriteString("  note: " + safeMarkdownText(job.Note) + "\n")
-		}
-		if job.ErrorCode != "" || job.ErrorMessage != "" {
-			b.WriteString("  failure: " + safeMarkdownText(strings.TrimSpace(job.ErrorCode)) + " " + safeMarkdownText(strings.TrimSpace(job.ErrorMessage)) + "\n")
-		}
+func writeMarkdownJobs(b *strings.Builder, jobs []certificationJob) {
+	b.WriteString("## Jobs\n\n")
+	for _, job := range jobs {
+		writeMarkdownJob(b, job)
 	}
-	return b.String()
+}
+
+func writeMarkdownJob(b *strings.Builder, job certificationJob) {
+	b.WriteString(
+		"- `" + safeMarkdownText(job.Kind) +
+			"` `" + safeMarkdownText(job.JobID) +
+			"`: status=`" + safeMarkdownText(job.Status) +
+			"` step=`" + safeMarkdownText(job.Step) + "`",
+	)
+	if job.RequestedVersion != "" {
+		b.WriteString(" version=`" + safeMarkdownText(job.RequestedVersion) + "`")
+	}
+	if job.ReceiptKey != "" {
+		b.WriteString(" receipt=`" + safeMarkdownText(job.ReceiptKey) + "`")
+	}
+	b.WriteString("\n")
+
+	writeMarkdownField(b, "run_url", job.RunURL)
+	writeMarkdownDistinctField(b, "deploy_run_url", job.DeployRunURL, job.RunURL)
+	writeMarkdownDistinctField(b, "body_run_url", job.BodyRunURL, job.RunURL)
+	writeMarkdownDistinctField(b, "mcp_run_url", job.MCPRunURL, job.RunURL)
+	writeMarkdownField(b, "note", job.Note)
+	if job.ErrorCode != "" || job.ErrorMessage != "" {
+		writeMarkdownField(b, "failure", strings.TrimSpace(job.ErrorCode)+" "+strings.TrimSpace(job.ErrorMessage))
+	}
+}
+
+func writeMarkdownBullet(b *strings.Builder, label string, value string) {
+	b.WriteString("- " + label + ": `" + safeMarkdownText(value) + "`\n")
+}
+
+func writeMarkdownField(b *strings.Builder, label string, value string) {
+	if strings.TrimSpace(value) == "" {
+		return
+	}
+	b.WriteString("  " + label + ": " + safeMarkdownText(value) + "\n")
+}
+
+func writeMarkdownDistinctField(b *strings.Builder, label string, value string, primary string) {
+	if strings.TrimSpace(value) == "" || strings.TrimSpace(value) == strings.TrimSpace(primary) {
+		return
+	}
+	writeMarkdownField(b, label, value)
 }
 
 func safeMarkdownText(value string) string {
@@ -464,8 +776,11 @@ func safeMarkdownText(value string) string {
 	return escaped
 }
 
-func (c *certificationClient) createLesserUpdate(ctx context.Context, slug string, lesserVersion string) (updateJobResponse, error) {
-	return c.createUpdate(ctx, slug, createUpdateJobRequest{LesserVersion: strings.TrimSpace(lesserVersion)})
+func (c *certificationClient) createLesserUpdate(ctx context.Context, slug string, lesserVersion string, lesserBodyVersion string) (updateJobResponse, error) {
+	return c.createUpdate(ctx, slug, createUpdateJobRequest{
+		LesserVersion:     strings.TrimSpace(lesserVersion),
+		LesserBodyVersion: strings.TrimSpace(lesserBodyVersion),
+	})
 }
 
 func (c *certificationClient) createUpdate(ctx context.Context, slug string, reqBody createUpdateJobRequest) (updateJobResponse, error) {
@@ -520,7 +835,7 @@ func (c *certificationClient) waitForJob(ctx context.Context, slug string, jobID
 				continue
 			}
 			status := strings.TrimSpace(job.Status)
-			if status == "ok" || status == "error" {
+			if status == updateJobStatusOK || status == updateJobStatusError {
 				return job, nil
 			}
 			break

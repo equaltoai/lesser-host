@@ -7,6 +7,21 @@ on:
         description: Published Lesser release tag to certify
         required: true
         type: string
+      lesser_body_version:
+        description: Optional lesser-body release tag to require for the managed follow-on phases
+        required: false
+        default: ""
+        type: string
+      require_lesser_body:
+        description: Require the lesser-body follow-on phase to succeed
+        required: true
+        default: true
+        type: boolean
+      require_mcp:
+        description: Require the MCP follow-on wiring phase to succeed
+        required: true
+        default: true
+        type: boolean
       control_plane_base_url:
         description: lesser-host base URL
         required: true
@@ -21,6 +36,15 @@ on:
       lesser_version:
         required: true
         type: string
+      lesser_body_version:
+        required: false
+        type: string
+      require_lesser_body:
+        required: true
+        type: boolean
+      require_mcp:
+        required: true
+        type: boolean
       control_plane_base_url:
         required: true
         type: string
@@ -61,6 +85,9 @@ jobs:
             --token "${MANAGED_RELEASE_CANARY_TOKEN}" \
             --instance-slug "${{ inputs.instance_slug }}" \
             --lesser-version "${{ inputs.lesser_version }}" \
+            --lesser-body-version "${{ inputs.lesser_body_version }}" \
+            --require-lesser-body="${{ inputs.require_lesser_body }}" \
+            --require-mcp="${{ inputs.require_mcp }}" \
             --out-dir "${CANARY_OUT_DIR}"
 
       - name: Publish step summary
