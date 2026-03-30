@@ -1096,8 +1096,8 @@ CMD_INTEGRATION=$(cat <<'__GOV_CMD_INTEGRATION__'
 # Solidity contract compile (Hardhat)
 ( cd contracts && npm ci && npm test )
 
-# CDK build + synth (no AWS creds required for synth)
-( cd cdk && npm ci && npm run build && npx cdk synth -c stage=lab )
+# CDK runner contract tests + synth (no AWS creds required for synth)
+( cd cdk && npm ci && npm test && npx cdk synth -c stage=lab )
 __GOV_CMD_INTEGRATION__
 )
 
