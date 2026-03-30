@@ -22,6 +22,11 @@ on:
         required: true
         default: true
         type: boolean
+      project_readiness_targets:
+        description: Comma-separated parent issues to reflect project 17 readiness
+        required: true
+        default: equaltoai/lesser-host#96,equaltoai/lesser#658,equaltoai/lesser-body#91
+        type: string
       control_plane_base_url:
         description: lesser-host base URL
         required: true
@@ -45,6 +50,9 @@ on:
       require_mcp:
         required: true
         type: boolean
+      project_readiness_targets:
+        required: true
+        type: string
       control_plane_base_url:
         required: true
         type: string
@@ -54,9 +62,12 @@ on:
     secrets:
       MANAGED_RELEASE_CANARY_TOKEN:
         required: true
+      MANAGED_RELEASE_PROJECT_TOKEN:
+        required: false
 
 permissions:
   contents: read
+  issues: write
 
 jobs:
   lesser-canary:
@@ -96,6 +107,33 @@ jobs:
           set -euo pipefail
           if [[ -f "${CANARY_OUT_DIR}/managed-release-certification.md" ]]; then
             cat "${CANARY_OUT_DIR}/managed-release-certification.md" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
+      - name: Derive managed release readiness
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.MANAGED_RELEASE_PROJECT_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          args=(
+            --report "${CANARY_OUT_DIR}/managed-release-certification.json"
+            --out-dir "${CANARY_OUT_DIR}"
+          )
+
+          if [[ -n "${GH_TOKEN:-}" ]]; then
+            args+=(--issue-targets "${{ inputs.project_readiness_targets }}")
+          fi
+
+          GOTOOLCHAIN=auto go run ./scripts/managed-release-readiness "${args[@]}"
+
+      - name: Publish readiness summary
+        if: always()
+        run: |
+          set -euo pipefail
+          if [[ -f "${CANARY_OUT_DIR}/managed-release-readiness.md" ]]; then
+            printf '\n' >> "${GITHUB_STEP_SUMMARY}"
+            cat "${CANARY_OUT_DIR}/managed-release-readiness.md" >> "${GITHUB_STEP_SUMMARY}"
           fi
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

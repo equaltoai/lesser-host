@@ -17,6 +17,8 @@ Managed release certification covers the real hosted workflow:
 
 This is the boundary that `M9` uses for project and rollout decisions.
 
+The downstream project-readiness sync lives in `docs/managed-release-readiness.md`.
+
 ## Certification checklist
 
 The managed release is only certified when every required check passes.
