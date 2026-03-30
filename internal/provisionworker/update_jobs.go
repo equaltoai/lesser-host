@@ -552,6 +552,7 @@ func (s *Server) failUpdateJob(ctx context.Context, job *models.UpdateJob, reque
 	job.ActivePhase = updatePhaseNone
 	job.ErrorCode = strings.TrimSpace(code)
 	job.ErrorMessage = strings.TrimSpace(msg)
+	job.Note = strings.TrimSpace(msg)
 	job.RequestID = strings.TrimSpace(requestID)
 	job.UpdatedAt = now
 	_ = job.UpdateKeys()
@@ -1397,6 +1398,7 @@ func (s *Server) failClaimedUpdateJob(
 			ub.Set("FailedPhase", strings.TrimSpace(phase))
 			ub.Set("ErrorCode", strings.TrimSpace(code))
 			ub.Set("ErrorMessage", strings.TrimSpace(msg))
+			setOptionalUpdateJobStringField(ub, "Note", msg)
 			ub.Set("RequestID", strings.TrimSpace(requestID))
 			ub.Set("UpdatedAt", now)
 			ub.Remove("RunID")
@@ -1419,6 +1421,7 @@ func (s *Server) failClaimedUpdateJob(
 	job.Step = updateStepFailed
 	job.ErrorCode = strings.TrimSpace(code)
 	job.ErrorMessage = strings.TrimSpace(msg)
+	job.Note = strings.TrimSpace(msg)
 	setUpdateJobPhaseFailed(job, phase, msg)
 	job.RequestID = strings.TrimSpace(requestID)
 	job.UpdatedAt = now
@@ -1864,10 +1867,10 @@ func (s *Server) failCompletedUpdateRunnerWait(
 	}
 	if info.DeepLink != "" {
 		job.RunURL = info.DeepLink
+		setUpdateJobPhaseRunURL(job, spec.phase, info.DeepLink)
 		msg += " (CodeBuild: " + info.DeepLink + ")"
 	}
 	setUpdateJobPhaseFailed(job, spec.phase, msg)
-	_ = s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil)
 	return 0, false, s.failUpdateJob(ctx, job, requestID, now, spec.failedCode, msg)
 }
 

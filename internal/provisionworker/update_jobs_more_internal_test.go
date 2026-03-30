@@ -138,7 +138,16 @@ func TestAdvanceUpdateDeployWait_StatusVariants(t *testing.T) {
 
 		cb := &fakeCodebuild{
 			batchOut: &codebuild.BatchGetBuildsOutput{
-				Builds: []cbtypes.Build{{BuildStatus: cbtypes.StatusTypeFailed, Logs: &cbtypes.LogsLocation{DeepLink: aws.String(" https://deep ")}}},
+				Builds: []cbtypes.Build{{
+					BuildStatus:  cbtypes.StatusTypeFailed,
+					CurrentPhase: aws.String("BUILD"),
+					Logs:         &cbtypes.LogsLocation{DeepLink: aws.String(" https://deep ")},
+					Phases: []cbtypes.BuildPhase{{
+						PhaseType:   cbtypes.BuildPhaseType("BUILD"),
+						PhaseStatus: cbtypes.StatusTypeFailed,
+						Contexts:    []cbtypes.PhaseContext{{Message: aws.String("unit tests failed")}},
+					}},
+				}},
 			},
 		}
 		srv := &Server{store: st, cb: cb}
@@ -157,7 +166,11 @@ func TestAdvanceUpdateDeployWait_StatusVariants(t *testing.T) {
 		require.Equal(t, time.Duration(0), delay)
 		require.Equal(t, models.UpdateJobStatusError, job.Status)
 		require.Equal(t, "deploy_failed", job.ErrorCode)
+		require.Equal(t, updatePhaseDeploy, job.FailedPhase)
+		require.Contains(t, job.ErrorMessage, "BUILD: unit tests failed")
+		require.Equal(t, job.ErrorMessage, job.Note)
 		require.Equal(t, "https://deep", strings.TrimSpace(job.RunURL))
+		require.Contains(t, job.DeployError, "unit tests failed")
 	})
 
 	t.Run("unknown status requeues", func(t *testing.T) {

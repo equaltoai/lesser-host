@@ -580,4 +580,5 @@ func assertUpdateRunnerStartRetriesThenFails(
 	require.Equal(t, models.UpdateJobStatusError, job.Status)
 	require.Equal(t, updateStepFailed, job.Step)
 	require.Equal(t, wantErrorCode, job.ErrorCode)
+	require.Equal(t, job.ErrorMessage, job.Note)
 }
