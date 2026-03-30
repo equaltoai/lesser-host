@@ -554,9 +554,15 @@ func assertUpdateRunnerStartRetriesThenFails(
 	st, db := newBranchTestStore()
 	mockBranchInstanceLookup(t, db, managedUpdateRunnerInstance(), nil)
 	srv := &Server{
-		cfg:   config.Config{ManagedProvisionRunnerProjectName: "project", Stage: "lab"},
-		store: st,
-		cb:    &fakeCodebuild{startErr: errors.New("boom")},
+		cfg: config.Config{
+			ManagedProvisionRunnerProjectName: "project",
+			ManagedLesserGitHubOwner:          "equaltoai",
+			ManagedLesserGitHubRepo:           "lesser",
+			Stage:                             "lab",
+		},
+		store:             st,
+		releaseHTTPClient: newHappyManagedLesserReleaseClient(t, "v1.2.3"),
+		cb:                &fakeCodebuild{startErr: errors.New("boom")},
 	}
 	job := managedUpdateRunnerJob(step)
 

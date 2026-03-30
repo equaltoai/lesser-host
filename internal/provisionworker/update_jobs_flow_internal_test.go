@@ -151,12 +151,15 @@ func TestRunManagedUpdateStateMachine_HappyPath(t *testing.T) {
 		ArtifactBucketName:                "artifact-bucket",
 		ProvisionQueueURL:                 "https://example.com/queue",
 		ManagedOrgVendingRoleARN:          "arn:aws:iam::123:role/vending",
+		ManagedLesserGitHubOwner:          "equaltoai",
+		ManagedLesserGitHubRepo:           "lesser",
 	}
 
 	st := store.New(db)
 	sqsClient := &fakeSQS{}
 	srv := NewServer(cfg, st, nil, nil, nil, sqsClient, cb, s3Client)
 	srv.httpClient = ts.Client()
+	srv.releaseHTTPClient = newHappyManagedLesserReleaseClient(t)
 
 	fsm := &fakeSecretsManager{
 		describeErr: &smtypes.ResourceNotFoundException{},
@@ -287,6 +290,8 @@ func TestRunManagedUpdateStateMachine_BodyOnlyCompletesIndependently(t *testing.
 		ArtifactBucketName:                "artifact-bucket",
 		ProvisionQueueURL:                 "https://example.com/queue",
 		ManagedOrgVendingRoleARN:          "arn:aws:iam::123:role/vending",
+		ManagedLesserGitHubOwner:          "equaltoai",
+		ManagedLesserGitHubRepo:           "lesser",
 		ManagedLesserBodyDefaultVersion:   "v.0.1.3",
 		ManagedLesserBodyGitHubOwner:      "equaltoai",
 		ManagedLesserBodyGitHubRepo:       "lesser-body",
@@ -295,6 +300,7 @@ func TestRunManagedUpdateStateMachine_BodyOnlyCompletesIndependently(t *testing.
 	st := store.New(db)
 	sqsClient := &fakeSQS{}
 	srv := NewServer(cfg, st, nil, nil, nil, sqsClient, cb, s3Client)
+	srv.releaseHTTPClient = newHappyManagedLesserReleaseClient(t)
 
 	fsm := &fakeSecretsManager{
 		describeErr: &smtypes.ResourceNotFoundException{},
@@ -439,6 +445,8 @@ func TestRunManagedUpdateStateMachine_MCPOnlySkipsLesserAndBodyDeploy(t *testing
 		ArtifactBucketName:                "artifact-bucket",
 		ProvisionQueueURL:                 "https://example.com/queue",
 		ManagedOrgVendingRoleARN:          "arn:aws:iam::123:role/vending",
+		ManagedLesserGitHubOwner:          "equaltoai",
+		ManagedLesserGitHubRepo:           "lesser",
 		ManagedLesserBodyDefaultVersion:   "v.0.1.3",
 		ManagedLesserBodyGitHubOwner:      "equaltoai",
 		ManagedLesserBodyGitHubRepo:       "lesser-body",
@@ -447,6 +455,7 @@ func TestRunManagedUpdateStateMachine_MCPOnlySkipsLesserAndBodyDeploy(t *testing
 	st := store.New(db)
 	sqsClient := &fakeSQS{}
 	srv := NewServer(cfg, st, nil, nil, nil, sqsClient, cb, s3Client)
+	srv.releaseHTTPClient = newHappyManagedLesserReleaseClient(t)
 
 	fsm := &fakeSecretsManager{
 		describeErr: &smtypes.ResourceNotFoundException{},

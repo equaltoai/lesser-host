@@ -88,7 +88,8 @@ type Server struct {
 
 	store *store.Store
 
-	httpClient *http.Client
+	httpClient        *http.Client
+	releaseHTTPClient *http.Client
 
 	org organizationsAPI
 	r53 route53API

@@ -147,6 +147,8 @@ func TestProcessUpdateJob_IgnoresConditionFailureFromStaleWriter(t *testing.T) {
 		ManagedInstanceRoleName:           "role",
 		ManagedProvisionRunnerProjectName: "project",
 		ArtifactBucketName:                "artifacts",
+		ManagedLesserGitHubOwner:          "equaltoai",
+		ManagedLesserGitHubRepo:           "lesser",
 	}, st, nil, nil, nil, nil, nil, nil)
 
 	require.NoError(t, srv.processUpdateJob(context.Background(), "req", "job1"))

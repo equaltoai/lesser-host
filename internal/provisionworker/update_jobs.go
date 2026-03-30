@@ -526,6 +526,12 @@ func (s *Server) missingManagedUpdateConfig() []string {
 	if strings.TrimSpace(s.cfg.ArtifactBucketName) == "" {
 		missing = append(missing, "ARTIFACT_BUCKET_NAME")
 	}
+	if strings.TrimSpace(s.cfg.ManagedLesserGitHubOwner) == "" {
+		missing = append(missing, "MANAGED_LESSER_GITHUB_OWNER")
+	}
+	if strings.TrimSpace(s.cfg.ManagedLesserGitHubRepo) == "" {
+		missing = append(missing, "MANAGED_LESSER_GITHUB_REPO")
+	}
 	return missing
 }
 
@@ -1564,6 +1570,21 @@ func (s *Server) advanceUpdateRunnerClaimed(
 	return 0, false, nil
 }
 
+func (s *Server) failManagedLesserReleasePreflight(
+	ctx context.Context,
+	job *models.UpdateJob,
+	requestID string,
+	now time.Time,
+	code string,
+	err error,
+) error {
+	if err == nil {
+		return nil
+	}
+	msg := "Lesser release preflight failed: " + compactErr(err)
+	return s.failUpdateJob(ctx, job, requestID, now, strings.TrimSpace(code), msg)
+}
+
 func (s *Server) advanceUpdateDeployStart(ctx context.Context, job *models.UpdateJob, requestID string, now time.Time) (time.Duration, bool, error) {
 	if job == nil {
 		return 0, true, nil
@@ -1590,6 +1611,9 @@ func (s *Server) advanceUpdateDeployStart(ctx context.Context, job *models.Updat
 	}
 	if strings.TrimSpace(job.LesserHostInstanceKeySecretARN) == "" {
 		job.LesserHostInstanceKeySecretARN = strings.TrimSpace(inst.LesserHostInstanceKeySecretARN)
+	}
+	if err := s.preflightManagedLesserRelease(ctx, strings.TrimSpace(job.LesserVersion)); err != nil {
+		return 0, false, s.failManagedLesserReleasePreflight(ctx, job, requestID, now, "deploy_release_preflight_failed", err)
 	}
 
 	return s.advanceUpdateRunnerStartWithInstance(ctx, job, requestID, now, inst, updateRunnerStartSpec{
@@ -1947,6 +1971,9 @@ func (s *Server) advanceUpdateDeployMcpStart(ctx context.Context, job *models.Up
 	}
 	if inst == nil {
 		return 0, false, s.failUpdateJob(ctx, job, requestID, now, "instance_not_found", "instance record not found")
+	}
+	if err := s.preflightManagedLesserRelease(ctx, strings.TrimSpace(job.LesserVersion)); err != nil {
+		return 0, false, s.failManagedLesserReleasePreflight(ctx, job, requestID, now, "mcp_release_preflight_failed", err)
 	}
 
 	return s.advanceUpdateRunnerStartWithInstance(ctx, job, requestID, now, inst, updateRunnerStartSpec{
