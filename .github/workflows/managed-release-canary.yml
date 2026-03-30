@@ -1,0 +1,78 @@
+name: managed-release-canary
+
+on:
+  workflow_dispatch:
+    inputs:
+      lesser_version:
+        description: Published Lesser release tag to certify
+        required: true
+        type: string
+      control_plane_base_url:
+        description: lesser-host base URL
+        required: true
+        default: https://lab.lesser.host
+        type: string
+      instance_slug:
+        description: Managed lab instance slug
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      lesser_version:
+        required: true
+        type: string
+      control_plane_base_url:
+        required: true
+        type: string
+      instance_slug:
+        required: true
+        type: string
+    secrets:
+      MANAGED_RELEASE_CANARY_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  lesser-canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CANARY_OUT_DIR: gov-infra/evidence/managed-release-certification
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
+        with:
+          go-version-file: go.mod
+      - name: Run managed Lesser canary
+        env:
+          MANAGED_RELEASE_CANARY_TOKEN: ${{ secrets.MANAGED_RELEASE_CANARY_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          test -n "${MANAGED_RELEASE_CANARY_TOKEN:-}" || {
+            echo "MANAGED_RELEASE_CANARY_TOKEN secret is required" >&2
+            exit 1
+          }
+
+          GOTOOLCHAIN=auto go run ./scripts/managed-release-certification \
+            --base-url "${{ inputs.control_plane_base_url }}" \
+            --token "${MANAGED_RELEASE_CANARY_TOKEN}" \
+            --instance-slug "${{ inputs.instance_slug }}" \
+            --lesser-version "${{ inputs.lesser_version }}" \
+            --out-dir "${CANARY_OUT_DIR}"
+
+      - name: Publish step summary
+        if: always()
+        run: |
+          set -euo pipefail
+          if [[ -f "${CANARY_OUT_DIR}/managed-release-certification.md" ]]; then
+            cat "${CANARY_OUT_DIR}/managed-release-certification.md" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: managed-release-certification
+          path: ${{ env.CANARY_OUT_DIR }}/
