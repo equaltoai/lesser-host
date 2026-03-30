@@ -24,7 +24,7 @@ The managed release is only certified when every required check passes.
 ### Core checks
 
 - `compatibility_contract_valid`
-  - the requested Lesser release matches the published `lesser-host` compatibility contract before rollout
+  - the requested Lesser release matches `docs/spec/lesser-managed-compatibility.json` before rollout
 - `hosted_update_started`
   - `lesser-host` accepted the update request and returned a concrete job id
 - `hosted_update_completed`

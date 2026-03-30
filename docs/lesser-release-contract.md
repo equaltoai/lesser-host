@@ -7,6 +7,20 @@ receipt expectations that the managed runner depends on.
 
 Managed rollout decisions for those releases are gated separately by `docs/managed-release-certification.md`.
 
+## Supported managed compatibility contract
+
+The canonical machine-readable compatibility boundary that `lesser-host` supports today lives at:
+
+- `docs/spec/lesser-managed-compatibility.json`
+
+This contract is intentionally explicit:
+
+- the earliest Lesser release tag supported for managed updates is `v1.2.6`
+- the release must still satisfy the published release-manifest and lambda-bundle shape described there
+
+That file is verified in CI against the same constants the managed release preflight uses, so operators and rollout
+automation can check support before starting a managed update.
+
 ## Required Lesser release assets
 
 Every managed-consumable Lesser release must publish:

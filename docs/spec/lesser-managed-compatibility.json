@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "release_name": "lesser",
+  "minimum_release_version": "v1.2.6",
+  "release_manifest_asset": "lesser-release.json",
+  "release_manifest_schema": 1,
+  "minimum_receipt_schema_version": 2,
+  "deploy_artifacts_schema_version": 1,
+  "lambda_bundle": {
+    "path": "lesser-lambda-bundle.tar.gz",
+    "manifest_path": "lesser-lambda-bundle.json",
+    "manifest_kind": "lesser.lambda_bundle_manifest",
+    "manifest_schema_version": 1
+  }
+}
