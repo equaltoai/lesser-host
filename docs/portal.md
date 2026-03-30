@@ -61,6 +61,21 @@ Config includes (subject to roadmap evolution):
 
 Managed provisioning is described in `docs/managed-instance-provisioning.md`.
 
+### Managed updates
+
+- `POST /api/v1/portal/instances/{slug}/updates`
+- `GET /api/v1/portal/instances/{slug}/updates`
+
+Update jobs return the failure and recovery fields operators need directly from the API surface, including:
+
+- `status`, `step`, `note`, `active_phase`, `failed_phase`
+- `error_code`, `error_message`
+- `run_url`, `deploy_run_url`, `body_run_url`, `mcp_run_url`
+- `deploy_status`, `deploy_error`, `body_status`, `body_error`, `mcp_status`, `mcp_error`
+
+The canonical retry/recovery contract for failed release-driven managed updates is documented in
+`docs/managed-update-recovery.md`.
+
 ### Budgets
 
 - `GET /api/v1/portal/instances/{slug}/budgets` (list)

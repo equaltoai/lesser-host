@@ -172,6 +172,8 @@ func (s *Server) advanceUpdateOptionalPhaseDeployWait(
 		timeoutMessage:     strings.TrimSpace(timeoutMessage),
 		failedCode:         strings.TrimSpace(failedCode),
 		failedMessage:      strings.TrimSpace(failedMessage),
+		missingCode:        strings.TrimSpace(phase) + "_deploy_runner_missing",
+		missingMessage:     strings.TrimSpace(phaseLabel) + " deploy runner disappeared from CodeBuild before the update could reconcile its terminal state",
 		statusPrefix:       strings.TrimSpace(statusPrefix),
 	}
 	return s.advanceUpdateComponentDeployWait(ctx, job, requestID, now, ingestStep, ingestNote, waitSpec, receiptSpec, loadReceipt)

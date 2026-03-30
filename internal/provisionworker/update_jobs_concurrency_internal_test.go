@@ -6,6 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/codebuild"
+	cbtypes "github.com/aws/aws-sdk-go-v2/service/codebuild/types"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"github.com/theory-cloud/tabletheory/pkg/core"
@@ -147,6 +150,8 @@ func TestProcessUpdateJob_IgnoresConditionFailureFromStaleWriter(t *testing.T) {
 		ManagedInstanceRoleName:           "role",
 		ManagedProvisionRunnerProjectName: "project",
 		ArtifactBucketName:                "artifacts",
+		ManagedLesserGitHubOwner:          "equaltoai",
+		ManagedLesserGitHubRepo:           "lesser",
 	}, st, nil, nil, nil, nil, nil, nil)
 
 	require.NoError(t, srv.processUpdateJob(context.Background(), "req", "job1"))
@@ -244,6 +249,60 @@ func TestAcquireUpdateJobProcessingLease_UsesLeaseAndUpdatedAtConditions(t *test
 		}
 		return false
 	}, "expected processing lease condition on lease acquire")
+}
+
+func TestAdvanceUpdateDeployWait_TerminalFailureUsesSingleConditionalWrite(t *testing.T) {
+	t.Parallel()
+
+	db := ttmocks.NewMockExtendedDBStrict()
+	builder := &recordingTransactionBuilder{}
+	db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Once().Run(func(args mock.Arguments) {
+		fn := testutil.RequireMockArg[func(core.TransactionBuilder) error](t, args, 1)
+		require.NoError(t, fn(builder))
+	})
+
+	st := store.New(db)
+	srv := &Server{
+		store: st,
+		cb: &fakeCodebuild{
+			batchOut: &codebuild.BatchGetBuildsOutput{
+				Builds: []cbtypes.Build{{
+					BuildStatus:  cbtypes.StatusTypeFailed,
+					CurrentPhase: aws.String("BUILD"),
+					Logs:         &cbtypes.LogsLocation{DeepLink: aws.String("https://logs.example/deploy")},
+					Phases: []cbtypes.BuildPhase{{
+						PhaseType:   cbtypes.BuildPhaseType("BUILD"),
+						PhaseStatus: cbtypes.StatusTypeFailed,
+						Contexts:    []cbtypes.PhaseContext{{Message: aws.String("build exploded")}},
+					}},
+				}},
+			},
+		},
+	}
+
+	updatedAt := time.Unix(100, 0).UTC()
+	job := &models.UpdateJob{
+		ID:           "job1",
+		InstanceSlug: "slug",
+		Status:       models.UpdateJobStatusRunning,
+		Step:         updateStepDeployWait,
+		RunID:        "run-1",
+		CreatedAt:    updatedAt.Add(-time.Minute),
+		UpdatedAt:    updatedAt,
+		ExpiresAt:    updatedAt.Add(time.Hour),
+		MaxAttempts:  3,
+	}
+
+	delay, done, err := srv.advanceUpdateDeployWait(context.Background(), job, "req", updatedAt.Add(time.Minute))
+	require.NoError(t, err)
+	require.False(t, done)
+	require.Zero(t, delay)
+	require.Equal(t, models.UpdateJobStatusError, job.Status)
+	require.Equal(t, updateStepFailed, job.Step)
+	require.Equal(t, "deploy_failed", job.ErrorCode)
+	require.Equal(t, job.ErrorMessage, job.Note)
+	require.Contains(t, job.ErrorMessage, "build exploded")
+	require.Len(t, builder.updateWithBuilderCalls, 2, "expected one transaction touching job and instance")
 }
 
 func TestReleaseUpdateJobProcessingLease_RequiresLeaseOwner(t *testing.T) {

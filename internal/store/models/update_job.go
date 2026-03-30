@@ -23,6 +23,8 @@ type UpdateJob struct {
 
 	GSI1PK string `theorydb:"index:gsi1,pk,attr:gsi1PK" json:"-"`
 	GSI1SK string `theorydb:"index:gsi1,sk,attr:gsi1SK" json:"-"`
+	GSI2PK string `theorydb:"index:gsi2,pk,attr:gsi2PK" json:"-"`
+	GSI2SK string `theorydb:"index:gsi2,sk,attr:gsi2SK" json:"-"`
 
 	ID           string `theorydb:"attr:id" json:"id"`
 	InstanceSlug string `theorydb:"attr:instanceSlug" json:"instance_slug"`
@@ -134,6 +136,7 @@ func (j *UpdateJob) BeforeCreate() error {
 		j.MaxAttempts = 10
 	}
 	j.updateGSI1()
+	j.updateGSI2()
 	return nil
 }
 
@@ -141,6 +144,7 @@ func (j *UpdateJob) BeforeUpdate() error {
 	j.UpdatedAt = time.Now().UTC()
 	j.TTL = j.ExpiresAt.Unix()
 	j.updateGSI1()
+	j.updateGSI2()
 	return nil
 }
 
@@ -195,6 +199,7 @@ func (j *UpdateJob) UpdateKeys() error {
 	j.SK = SKJob
 	j.TTL = j.ExpiresAt.Unix()
 	j.updateGSI1()
+	j.updateGSI2()
 	return nil
 }
 
@@ -218,4 +223,24 @@ func (j *UpdateJob) updateGSI1() {
 	}
 	j.GSI1PK = fmt.Sprintf("UPDATE_INSTANCE#%s", instanceSlug)
 	j.GSI1SK = fmt.Sprintf("%s#%s", createdAt.UTC().Format(time.RFC3339Nano), strings.TrimSpace(j.ID))
+}
+
+func (j *UpdateJob) updateGSI2() {
+	if j == nil {
+		return
+	}
+
+	status := strings.ToLower(strings.TrimSpace(j.Status))
+	if status != UpdateJobStatusQueued && status != UpdateJobStatusRunning {
+		j.GSI2PK = ""
+		j.GSI2SK = ""
+		return
+	}
+
+	updatedAt := j.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = time.Now().UTC()
+	}
+	j.GSI2PK = "UPDATE_ACTIVE"
+	j.GSI2SK = fmt.Sprintf("%s#%s", updatedAt.UTC().Format(time.RFC3339Nano), strings.TrimSpace(j.ID))
 }

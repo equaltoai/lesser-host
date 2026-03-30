@@ -2,6 +2,7 @@ package provisionworker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -13,6 +14,10 @@ import (
 
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
+
+const deployRunnerModeLesser = "lesser"
+
+var errDeployRunnerNotFound = errors.New("deploy runner not found")
 
 func codebuildBuildID(out *codebuild.StartBuildOutput) (string, error) {
 	if out == nil || out.Build == nil {
@@ -28,7 +33,7 @@ func codebuildBuildID(out *codebuild.StartBuildOutput) (string, error) {
 }
 
 func (s *Server) startDeployRunner(ctx context.Context, job *models.ProvisionJob) (string, error) {
-	return s.startDeployRunnerWithMode(ctx, job, "lesser", s.receiptS3Key(job))
+	return s.startDeployRunnerWithMode(ctx, job, deployRunnerModeLesser, s.receiptS3Key(job))
 }
 
 func (s *Server) startDeployRunnerWithMode(ctx context.Context, job *models.ProvisionJob, mode string, receiptKey string) (string, error) {
@@ -72,7 +77,7 @@ func (s *Server) startDeployRunnerWithMode(ctx context.Context, job *models.Prov
 	env := s.buildDeployRunnerEnv(job, stage, receiptKey, bootstrapKey)
 	mode = strings.ToLower(strings.TrimSpace(mode))
 	if mode == "" {
-		mode = "lesser"
+		mode = deployRunnerModeLesser
 	}
 	env = append(env, cbtypes.EnvironmentVariable{Name: aws.String("RUN_MODE"), Value: aws.String(mode)})
 	tipEnabled := effectiveTipEnabled(inst.TipEnabled)
@@ -143,7 +148,7 @@ func (s *Server) getDeployRunnerInfo(ctx context.Context, runID string) (deployR
 		return deployRunnerInfo{}, err
 	}
 	if out == nil || len(out.Builds) == 0 {
-		return deployRunnerInfo{}, fmt.Errorf("build not found")
+		return deployRunnerInfo{}, errDeployRunnerNotFound
 	}
 	build := out.Builds[0]
 	return deployRunnerInfo{
