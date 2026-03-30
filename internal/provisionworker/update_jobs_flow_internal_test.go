@@ -300,7 +300,7 @@ func TestRunManagedUpdateStateMachine_BodyOnlyCompletesIndependently(t *testing.
 	st := store.New(db)
 	sqsClient := &fakeSQS{}
 	srv := NewServer(cfg, st, nil, nil, nil, sqsClient, cb, s3Client)
-	srv.releaseHTTPClient = newHappyManagedLesserReleaseClient(t)
+	srv.releaseHTTPClient = newHappyManagedLesserBodyReleaseClient(t, managedStageLive, "v.0.1.3")
 
 	fsm := &fakeSecretsManager{
 		describeErr: &smtypes.ResourceNotFoundException{},
