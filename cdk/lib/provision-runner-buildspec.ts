@@ -170,7 +170,7 @@ export function renderProvisionRunnerBuildCommands(): string {
 		'echo "Using Lesser release: $TAG"',
 		'LESSER_RELEASE_DIR="$(pwd)/lesser-release"',
 		'prepare_lesser_release_dir "$LESSER_RELEASE_DIR"',
-		'download_github_tag_archive "$OWNER" "$REPO" "$TAG" lesser-src.tgz"',
+		'download_github_tag_archive "$OWNER" "$REPO" "$TAG" lesser-src.tgz',
 		'rm -rf lesser-src && mkdir -p lesser-src && tar -xzf lesser-src.tgz --strip-components=1 -C lesser-src',
 		'ARCH=$(uname -m)',
 		'if [ "$ARCH" = "x86_64" ] || [ "$ARCH" = "amd64" ]; then BIN_NAME="lesser-linux-amd64"; fi',
