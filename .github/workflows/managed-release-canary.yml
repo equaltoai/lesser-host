@@ -1,0 +1,143 @@
+name: managed-release-canary
+
+on:
+  workflow_dispatch:
+    inputs:
+      lesser_version:
+        description: Published Lesser release tag to certify
+        required: true
+        type: string
+      lesser_body_version:
+        description: Optional lesser-body release tag to require for the managed follow-on phases
+        required: false
+        default: ""
+        type: string
+      require_lesser_body:
+        description: Require the lesser-body follow-on phase to succeed
+        required: true
+        default: true
+        type: boolean
+      require_mcp:
+        description: Require the MCP follow-on wiring phase to succeed
+        required: true
+        default: true
+        type: boolean
+      project_readiness_targets:
+        description: Comma-separated parent issues to reflect project 17 readiness
+        required: true
+        default: equaltoai/lesser-host#96,equaltoai/lesser#658,equaltoai/lesser-body#91
+        type: string
+      control_plane_base_url:
+        description: lesser-host base URL
+        required: true
+        default: https://lab.lesser.host
+        type: string
+      instance_slug:
+        description: Managed lab instance slug
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      lesser_version:
+        required: true
+        type: string
+      lesser_body_version:
+        required: false
+        type: string
+      require_lesser_body:
+        required: true
+        type: boolean
+      require_mcp:
+        required: true
+        type: boolean
+      project_readiness_targets:
+        required: true
+        type: string
+      control_plane_base_url:
+        required: true
+        type: string
+      instance_slug:
+        required: true
+        type: string
+    secrets:
+      MANAGED_RELEASE_CANARY_TOKEN:
+        required: true
+      MANAGED_RELEASE_PROJECT_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  lesser-canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CANARY_OUT_DIR: gov-infra/evidence/managed-release-certification
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6
+        with:
+          go-version-file: go.mod
+      - name: Run managed Lesser canary
+        env:
+          MANAGED_RELEASE_CANARY_TOKEN: ${{ secrets.MANAGED_RELEASE_CANARY_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          test -n "${MANAGED_RELEASE_CANARY_TOKEN:-}" || {
+            echo "MANAGED_RELEASE_CANARY_TOKEN secret is required" >&2
+            exit 1
+          }
+
+          GOTOOLCHAIN=auto go run ./scripts/managed-release-certification \
+            --base-url "${{ inputs.control_plane_base_url }}" \
+            --token "${MANAGED_RELEASE_CANARY_TOKEN}" \
+            --instance-slug "${{ inputs.instance_slug }}" \
+            --lesser-version "${{ inputs.lesser_version }}" \
+            --lesser-body-version "${{ inputs.lesser_body_version }}" \
+            --require-lesser-body="${{ inputs.require_lesser_body }}" \
+            --require-mcp="${{ inputs.require_mcp }}" \
+            --out-dir "${CANARY_OUT_DIR}"
+
+      - name: Publish step summary
+        if: always()
+        run: |
+          set -euo pipefail
+          if [[ -f "${CANARY_OUT_DIR}/managed-release-certification.md" ]]; then
+            cat "${CANARY_OUT_DIR}/managed-release-certification.md" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
+      - name: Derive managed release readiness
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.MANAGED_RELEASE_PROJECT_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          args=(
+            --report "${CANARY_OUT_DIR}/managed-release-certification.json"
+            --out-dir "${CANARY_OUT_DIR}"
+          )
+
+          if [[ -n "${GH_TOKEN:-}" ]]; then
+            args+=(--issue-targets "${{ inputs.project_readiness_targets }}")
+          fi
+
+          GOTOOLCHAIN=auto go run ./scripts/managed-release-readiness "${args[@]}"
+
+      - name: Publish readiness summary
+        if: always()
+        run: |
+          set -euo pipefail
+          if [[ -f "${CANARY_OUT_DIR}/managed-release-readiness.md" ]]; then
+            printf '\n' >> "${GITHUB_STEP_SUMMARY}"
+            cat "${CANARY_OUT_DIR}/managed-release-readiness.md" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: managed-release-certification
+          path: ${{ env.CANARY_OUT_DIR }}/

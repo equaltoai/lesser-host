@@ -63,7 +63,7 @@ func managedUpdateRunnerJob(step string) *models.UpdateJob {
 		AccountRoleName:                "lesser-host-instance",
 		Region:                         "us-east-1",
 		BaseDomain:                     "slug.example.com",
-		LesserVersion:                  "v1.2.3",
+		LesserVersion:                  "v1.2.6",
 		LesserBodyVersion:              "body-v1.2.3",
 		LesserHostBaseURL:              "https://lab.example.com",
 		LesserHostAttestationsURL:      "https://lab.example.com",
@@ -561,7 +561,7 @@ func assertUpdateRunnerStartRetriesThenFails(
 			Stage:                             "lab",
 		},
 		store:             st,
-		releaseHTTPClient: newHappyManagedLesserReleaseClient(t, "v1.2.3"),
+		releaseHTTPClient: newHappyManagedLesserReleaseClient(t, "v1.2.6"),
 		cb:                &fakeCodebuild{startErr: errors.New("boom")},
 	}
 	job := managedUpdateRunnerJob(step)

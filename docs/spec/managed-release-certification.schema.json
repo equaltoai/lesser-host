@@ -1,0 +1,184 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://equalto.ai/schemas/lesser-host/managed-release-certification.schema.json",
+  "title": "Managed Release Certification Report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "generated_at",
+    "lesser_host",
+    "requested_release",
+    "checks",
+    "jobs",
+    "overall_status"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "lesser_host": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "base_url",
+        "instance_slug"
+      ],
+      "properties": {
+        "base_url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "instance_slug": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "requested_release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lesser_version",
+        "run_lesser",
+        "run_lesser_body",
+        "run_mcp"
+      ],
+      "properties": {
+        "lesser_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "lesser_body_version": {
+          "type": "string"
+        },
+        "run_lesser": {
+          "type": "boolean"
+        },
+        "run_lesser_body": {
+          "type": "boolean"
+        },
+        "run_mcp": {
+          "type": "boolean"
+        }
+      }
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/check"
+      }
+    },
+    "jobs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/job"
+      }
+    },
+    "overall_status": {
+      "type": "string",
+      "enum": [
+        "pass",
+        "fail"
+      ]
+    }
+  },
+  "$defs": {
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "status"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "pass",
+            "fail",
+            "skipped"
+          ]
+        },
+        "detail": {
+          "type": "string"
+        }
+      }
+    },
+    "job": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "job_id",
+        "status",
+        "step"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "lesser",
+            "lesser-body",
+            "mcp"
+          ]
+        },
+        "job_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "queued",
+            "running",
+            "ok",
+            "error"
+          ]
+        },
+        "step": {
+          "type": "string",
+          "minLength": 1
+        },
+        "failed_phase": {
+          "type": "string"
+        },
+        "note": {
+          "type": "string"
+        },
+        "error_code": {
+          "type": "string"
+        },
+        "error_message": {
+          "type": "string"
+        },
+        "run_url": {
+          "type": "string"
+        },
+        "deploy_run_url": {
+          "type": "string"
+        },
+        "body_run_url": {
+          "type": "string"
+        },
+        "mcp_run_url": {
+          "type": "string"
+        },
+        "receipt_key": {
+          "type": "string"
+        },
+        "requested_version": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

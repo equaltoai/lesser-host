@@ -14,6 +14,7 @@ import (
 
 	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/provisioning"
+	"github.com/equaltoai/lesser-host/internal/provisionworker"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -728,7 +729,14 @@ func (s *Server) resolveManagedLesserUpdateVersion(ctx context.Context, inst *mo
 	if lesserVersion == "" {
 		return "", &apptheory.AppError{Code: "app.bad_request", Message: "lesser_version is required"}
 	}
-	return s.resolveManagedReleaseVersion(ctx, lesserVersion, "lesser_version", s.cfg.ManagedLesserGitHubOwner, s.cfg.ManagedLesserGitHubRepo, "failed to resolve latest Lesser release")
+	resolvedVersion, appErr := s.resolveManagedReleaseVersion(ctx, lesserVersion, "lesser_version", s.cfg.ManagedLesserGitHubOwner, s.cfg.ManagedLesserGitHubRepo, "failed to resolve latest Lesser release")
+	if appErr != nil {
+		return "", appErr
+	}
+	if err := provisionworker.ValidateManagedLesserReleaseVersionSupported(resolvedVersion); err != nil {
+		return "", &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
+	}
+	return resolvedVersion, nil
 }
 
 func (s *Server) resolveManagedBodyUpdateVersion(ctx context.Context, inst *models.Instance, req createUpdateJobRequest) (string, *apptheory.AppError) {

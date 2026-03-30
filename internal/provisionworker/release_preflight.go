@@ -244,40 +244,11 @@ func (s *Server) preflightManagedLesserRelease(ctx context.Context, version stri
 	if version == "" {
 		return fmt.Errorf("lesser version is required")
 	}
-
-	raw, err := fetchManagedGitHubReleaseAsset(
+	return ValidateManagedLesserReleaseCompatibility(
 		ctx,
 		managedReleasePreflightHTTPClient(s),
 		strings.TrimSpace(s.cfg.ManagedLesserGitHubOwner),
 		strings.TrimSpace(s.cfg.ManagedLesserGitHubRepo),
 		version,
-		managedLesserReleaseManifestAsset,
 	)
-	if err != nil {
-		return err
-	}
-	parsed, err := parseManagedLesserReleaseManifest(raw)
-	if err != nil {
-		return err
-	}
-	if manifestErr := validateManagedLesserReleaseManifest(parsed, version); manifestErr != nil {
-		return manifestErr
-	}
-
-	bundleRaw, err := fetchManagedGitHubReleaseAsset(
-		ctx,
-		managedReleasePreflightHTTPClient(s),
-		strings.TrimSpace(s.cfg.ManagedLesserGitHubOwner),
-		strings.TrimSpace(s.cfg.ManagedLesserGitHubRepo),
-		version,
-		requiredLesserBundleManifestPath,
-	)
-	if err != nil {
-		return err
-	}
-	bundleManifest, err := parseManagedLesserLambdaBundleManifest(bundleRaw)
-	if err != nil {
-		return err
-	}
-	return validateManagedLesserLambdaBundleManifest(bundleManifest)
 }
