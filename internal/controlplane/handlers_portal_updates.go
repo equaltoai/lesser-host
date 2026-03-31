@@ -19,11 +19,12 @@ import (
 )
 
 type createUpdateJobRequest struct {
-	LesserVersion     string `json:"lesser_version,omitempty"`
-	LesserBodyVersion string `json:"lesser_body_version,omitempty"`
-	RotateInstanceKey bool   `json:"rotate_instance_key,omitempty"`
-	BodyOnly          bool   `json:"body_only,omitempty"`
-	MCPOnly           bool   `json:"mcp_only,omitempty"`
+	LesserVersion       string `json:"lesser_version,omitempty"`
+	LesserBodyVersion   string `json:"lesser_body_version,omitempty"`
+	RotateInstanceKey   bool   `json:"rotate_instance_key,omitempty"`
+	BodyOnly            bool   `json:"body_only,omitempty"`
+	MCPOnly             bool   `json:"mcp_only,omitempty"`
+	BodyTemplateCertify bool   `json:"body_template_certify,omitempty"`
 }
 
 type updateJobResponse struct {
@@ -60,10 +61,11 @@ type updateJobResponse struct {
 	Region          string `json:"region,omitempty"`
 	BaseDomain      string `json:"base_domain,omitempty"`
 
-	LesserVersion     string `json:"lesser_version,omitempty"`
-	LesserBodyVersion string `json:"lesser_body_version,omitempty"`
-	BodyOnly          bool   `json:"body_only,omitempty"`
-	MCPOnly           bool   `json:"mcp_only,omitempty"`
+	LesserVersion       string `json:"lesser_version,omitempty"`
+	LesserBodyVersion   string `json:"lesser_body_version,omitempty"`
+	BodyOnly            bool   `json:"body_only,omitempty"`
+	MCPOnly             bool   `json:"mcp_only,omitempty"`
+	BodyTemplateCertify bool   `json:"body_template_certify,omitempty"`
 
 	LesserHostBaseURL              string `json:"lesser_host_base_url,omitempty"`
 	LesserHostAttestationsURL      string `json:"lesser_host_attestations_url,omitempty"`
@@ -150,6 +152,7 @@ func updateJobResponseFromModel(j *models.UpdateJob) updateJobResponse {
 		LesserBodyVersion:              strings.TrimSpace(j.LesserBodyVersion),
 		BodyOnly:                       j.BodyOnly,
 		MCPOnly:                        j.MCPOnly,
+		BodyTemplateCertify:            j.BodyTemplateCertify,
 		LesserHostBaseURL:              strings.TrimSpace(j.LesserHostBaseURL),
 		LesserHostAttestationsURL:      strings.TrimSpace(j.LesserHostAttestationsURL),
 		LesserHostInstanceKeySecretARN: strings.TrimSpace(j.LesserHostInstanceKeySecretARN),
@@ -266,7 +269,8 @@ func sameManagedUpdateRequest(job *models.UpdateJob, req createUpdateJobRequest,
 	}
 	switch updateJobKind(job) {
 	case updateJobKindBody:
-		return strings.EqualFold(strings.TrimSpace(job.LesserBodyVersion), strings.TrimSpace(lesserBodyVersion))
+		return strings.EqualFold(strings.TrimSpace(job.LesserBodyVersion), strings.TrimSpace(lesserBodyVersion)) &&
+			job.BodyTemplateCertify == req.BodyTemplateCertify
 	case updateJobKindMCP:
 		return strings.EqualFold(strings.TrimSpace(job.LesserBodyVersion), strings.TrimSpace(lesserBodyVersion))
 	default:
@@ -503,12 +507,20 @@ func markStaleManagedUpdateMarker(
 	ub.Set(statusField, models.UpdateJobStatusError)
 }
 
-func validateCreateUpdateJobRequest(req createUpdateJobRequest) *apptheory.AppError {
+func validateCreateUpdateJobRequest(ctx *apptheory.Context, req createUpdateJobRequest) *apptheory.AppError {
 	if req.BodyOnly && req.MCPOnly {
 		return &apptheory.AppError{Code: "app.bad_request", Message: "choose either body_only or mcp_only, not both"}
 	}
 	if (req.BodyOnly || req.MCPOnly) && req.RotateInstanceKey {
 		return &apptheory.AppError{Code: "app.bad_request", Message: "body_only and mcp_only updates cannot rotate the instance key"}
+	}
+	if req.BodyTemplateCertify {
+		if !req.BodyOnly {
+			return &apptheory.AppError{Code: "app.bad_request", Message: "body_template_certify is only supported for body_only updates"}
+		}
+		if ctx == nil || !isOperator(ctx) {
+			return &apptheory.AppError{Code: "app.forbidden", Message: "forbidden"}
+		}
 	}
 	return nil
 }
@@ -591,7 +603,7 @@ func (s *Server) resolveManagedUpdateCreateRequest(
 		}
 		return createUpdateJobRequest{}, "", "", &apptheory.AppError{Code: "app.internal", Message: "failed to parse update request"}
 	}
-	if appErr := validateCreateUpdateJobRequest(req); appErr != nil {
+	if appErr := validateCreateUpdateJobRequest(ctx, req); appErr != nil {
 		return createUpdateJobRequest{}, "", "", appErr
 	}
 	lesserVersion, lesserBodyVersion, appErr := s.resolveManagedUpdateVersions(ctx.Context(), inst, req)
@@ -818,6 +830,7 @@ func (s *Server) buildManagedUpdateJob(
 		LesserBodyVersion:              strings.TrimSpace(lesserBodyVersion),
 		BodyOnly:                       req.BodyOnly,
 		MCPOnly:                        req.MCPOnly,
+		BodyTemplateCertify:            req.BodyTemplateCertify,
 		LesserHostBaseURL:              baseURL,
 		LesserHostAttestationsURL:      attestationsURL,
 		LesserHostInstanceKeySecretARN: strings.TrimSpace(inst.LesserHostInstanceKeySecretARN),

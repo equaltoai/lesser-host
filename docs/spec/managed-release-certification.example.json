@@ -34,76 +34,96 @@
       "detail": "published template lesser-body-managed-dev.template.json passed lesser-host managed body template preflight"
     },
     {
-      "id": "lesser_body_template_changeset_valid",
+      "id": "hosted_update_started",
       "status": "pass",
-      "detail": "published template lesser-body-managed-dev.template.json passed cloudformation_deploy_no_execute_changeset and is recorded at managed/updates/simulacrum/job-update-1/body-template-certification.json"
-    },
-    {
-      "id": "hosted_update_completed",
-      "status": "pass",
-      "detail": "Lesser update job completed through lesser-host"
+      "detail": "lesser-host accepted the managed Lesser update request"
     },
     {
       "id": "receipt_key_defined",
       "status": "pass",
-      "detail": "managed/updates/simulacrum/job-update-1/state.json"
+      "detail": "managed/updates/simulacrum/job-lesser-1/state.json"
     },
     {
       "id": "runner_visibility_present",
       "status": "pass",
-      "detail": "https://console.aws.amazon.com/codebuild/home?#/builds/job-update-1-deploy/view/new"
+      "detail": "https://console.aws.amazon.com/codebuild/home?#/builds/job-lesser-1-deploy/view/new"
+    },
+    {
+      "id": "hosted_update_completed",
+      "status": "pass",
+      "detail": "managed Lesser update completed successfully"
+    },
+    {
+      "id": "retry_visibility_present",
+      "status": "skipped",
+      "detail": "retry visibility is only required for failed certification runs"
+    },
+    {
+      "id": "lesser_body_template_changeset_valid",
+      "status": "pass",
+      "detail": "published template lesser-body-managed-dev.template.json passed cloudformation_deploy_no_execute_changeset and is recorded at managed/updates/simulacrum/job-body-1/body-template-certification.json"
     },
     {
       "id": "lesser_body_completed",
       "status": "pass",
-      "detail": "lesser-body managed deploy completed"
+      "detail": "lesser-body managed phase completed successfully"
     },
     {
       "id": "lesser_body_runner_visibility_present",
       "status": "pass",
-      "detail": "https://console.aws.amazon.com/codebuild/home?#/builds/job-update-1-body/view/new"
+      "detail": "https://console.aws.amazon.com/codebuild/home?#/builds/job-body-1-body/view/new"
+    },
+    {
+      "id": "lesser_body_receipt_key_defined",
+      "status": "pass",
+      "detail": "managed/updates/simulacrum/job-body-1/body-state.json"
     },
     {
       "id": "mcp_wiring_completed",
       "status": "pass",
-      "detail": "MCP follow-on wiring completed"
+      "detail": "MCP managed phase completed successfully"
+    },
+    {
+      "id": "mcp_receipt_key_defined",
+      "status": "pass",
+      "detail": "managed/updates/simulacrum/job-mcp-1/mcp-state.json"
     }
   ],
   "jobs": [
     {
       "kind": "lesser",
-      "job_id": "job-update-1",
+      "job_id": "job-lesser-1",
       "status": "ok",
       "step": "done",
       "note": "updated",
-      "run_url": "https://console.aws.amazon.com/codebuild/home?#/builds/job-update-1-deploy/view/new",
-      "deploy_run_url": "https://console.aws.amazon.com/codebuild/home?#/builds/job-update-1-deploy/view/new",
-      "receipt_key": "managed/updates/simulacrum/job-update-1/state.json",
+      "run_url": "https://console.aws.amazon.com/codebuild/home?#/builds/job-lesser-1-deploy/view/new",
+      "deploy_run_url": "https://console.aws.amazon.com/codebuild/home?#/builds/job-lesser-1-deploy/view/new",
+      "receipt_key": "managed/updates/simulacrum/job-lesser-1/state.json",
       "requested_version": "v1.2.6"
     },
     {
       "kind": "lesser-body",
-      "job_id": "job-update-1",
+      "job_id": "job-body-1",
       "status": "ok",
       "step": "done",
       "note": "lesser-body updated",
-      "run_url": "https://console.aws.amazon.com/codebuild/home?#/builds/job-update-1-body/view/new",
-      "body_run_url": "https://console.aws.amazon.com/codebuild/home?#/builds/job-update-1-body/view/new",
-      "receipt_key": "managed/updates/simulacrum/job-update-1/body-state.json",
+      "run_url": "https://console.aws.amazon.com/codebuild/home?#/builds/job-body-1-body/view/new",
+      "body_run_url": "https://console.aws.amazon.com/codebuild/home?#/builds/job-body-1-body/view/new",
+      "receipt_key": "managed/updates/simulacrum/job-body-1/body-state.json",
       "requested_version": "v0.2.3",
       "template_path": "lesser-body-managed-dev.template.json",
-      "template_certification_key": "managed/updates/simulacrum/job-update-1/body-template-certification.json",
+      "template_certification_key": "managed/updates/simulacrum/job-body-1/body-template-certification.json",
       "template_verification_mode": "cloudformation_deploy_no_execute_changeset"
     },
     {
       "kind": "mcp",
-      "job_id": "job-update-1",
+      "job_id": "job-mcp-1",
       "status": "ok",
       "step": "done",
       "note": "MCP updated",
-      "run_url": "https://console.aws.amazon.com/codebuild/home?#/builds/job-update-1-mcp/view/new",
-      "mcp_run_url": "https://console.aws.amazon.com/codebuild/home?#/builds/job-update-1-mcp/view/new",
-      "receipt_key": "managed/updates/simulacrum/job-update-1/mcp-state.json",
+      "run_url": "https://console.aws.amazon.com/codebuild/home?#/builds/job-mcp-1-mcp/view/new",
+      "mcp_run_url": "https://console.aws.amazon.com/codebuild/home?#/builds/job-mcp-1-mcp/view/new",
+      "receipt_key": "managed/updates/simulacrum/job-mcp-1/mcp-state.json",
       "requested_version": "v0.2.3"
     }
   ],

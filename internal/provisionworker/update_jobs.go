@@ -320,6 +320,7 @@ func setUpdateJobFieldsOnBuilder(ub core.UpdateBuilder, job *models.UpdateJob) {
 
 	ub.Set("BodyOnly", job.BodyOnly)
 	ub.Set("MCPOnly", job.MCPOnly)
+	ub.Set("BodyTemplateCertify", job.BodyTemplateCertify)
 
 	setOptionalUpdateJobStringField(ub, "LesserHostBaseURL", job.LesserHostBaseURL)
 	setOptionalUpdateJobStringField(ub, "LesserHostAttestationsURL", job.LesserHostAttestationsURL)
@@ -1156,6 +1157,9 @@ func (s *Server) startUpdateDeployRunnerWithMode(ctx context.Context, job *model
 		mode = "lesser"
 	}
 	env = append(env, cbtypes.EnvironmentVariable{Name: aws.String("RUN_MODE"), Value: aws.String(mode)})
+	if mode == "lesser-body" && job.BodyTemplateCertify {
+		env = append(env, cbtypes.EnvironmentVariable{Name: aws.String("BODY_TEMPLATE_CERTIFY"), Value: aws.String("true")})
+	}
 
 	idempotencyToken := codebuildIdempotencyToken(
 		projectName,

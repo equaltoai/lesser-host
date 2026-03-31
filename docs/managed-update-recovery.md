@@ -45,7 +45,7 @@ Each job response includes the fields needed to diagnose and safely retry:
 - failure details: `error_code`, `error_message`
 - deep links: `run_url`, `deploy_run_url`, `body_run_url`, `mcp_run_url`
 - phase detail: `deploy_status`, `deploy_error`, `body_status`, `body_error`, `mcp_status`, `mcp_error`
-- deploy intent: `lesser_version`, `lesser_body_version`, `body_only`, `mcp_only`, `rotate_instance_key`
+- deploy intent: `lesser_version`, `lesser_body_version`, `body_only`, `mcp_only`, `rotate_instance_key`, `body_template_certify` (operator-only)
 
 Portal and operator UIs should surface those fields directly instead of inferring recovery state from raw DynamoDB
 records.

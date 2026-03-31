@@ -12,7 +12,7 @@ Managed release certification covers the real hosted workflow:
 1. trigger a managed Lesser update from a published Lesser release tag
 2. observe the update through `lesser-host`
 3. record runner visibility, receipts, and terminal status
-4. when the managed instance enables them, certify the same run through `lesser-body` deploy and MCP follow-on wiring
+4. when requested, certify follow-on jobs through `lesser-body` deploy (`body_only`) and MCP wiring (`mcp_only`)
 5. derive a rollout-readiness result from the recorded evidence
 
 This is the boundary that `M9` uses for project and rollout decisions.
@@ -53,6 +53,7 @@ The managed release is only certified when every required check passes.
 - `lesser_body_template_changeset_valid`
   - required when the certification run includes `lesser-body`
   - the body runner must prove the published template passed `deploy-lesser-body-from-release.sh --no-execute-changeset`
+  - certification runs request this via `body_template_certify=true` on the body-only update job (operator-only), which maps to `BODY_TEMPLATE_CERTIFY=true` in the deploy runner
 - `lesser_body_completed`
   - required when the certification run includes `lesser-body`
 - `lesser_body_runner_visibility_present`
@@ -113,7 +114,7 @@ The report records:
 - the explicit lesser-body template path that passed preflight and the real consumer-path change-set check
 - target `lesser-host` base URL and managed instance slug
 - every certification check and its pass/fail status
-- phase-level evidence for Lesser, `lesser-body`, and MCP, even when those phases share one managed update job id
+- phase-level evidence for Lesser, `lesser-body`, and MCP, even when those are separate update jobs in one certification session
 - canonical managed receipt keys
 - lesser-body template certification pointers (`template_path`, `template_certification_key`, `template_verification_mode`) in the body job evidence
 - rollout summary (`overall_status`)
@@ -121,6 +122,8 @@ The report records:
 ## Canonical managed receipt keys
 
 Certification reports record canonical receipt keys under the managed update prefix:
+
+Each managed update job has its own `jobId`:
 
 - Lesser: `managed/updates/<slug>/<jobId>/state.json`
 - `lesser-body`: `managed/updates/<slug>/<jobId>/body-state.json`

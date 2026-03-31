@@ -40,16 +40,6 @@ const (
 	updateJobStatusOK      = "ok"
 	updateJobStatusError   = "error"
 
-	updatePhaseStatusPending   = "pending"
-	updatePhaseStatusRunning   = "running"
-	updatePhaseStatusSucceeded = "succeeded"
-	updatePhaseStatusFailed    = "failed"
-	updatePhaseStatusSkipped   = "skipped"
-
-	updatePhaseDeploy = "deploy"
-	updatePhaseBody   = "body"
-	updatePhaseMCP    = "mcp"
-
 	updateJobKindLesser = "lesser"
 	updateJobKindBody   = "lesser-body"
 	updateJobKindMCP    = "mcp"
@@ -161,8 +151,11 @@ type listUpdateJobsResponse struct {
 }
 
 type createUpdateJobRequest struct {
-	LesserVersion     string `json:"lesser_version,omitempty"`
-	LesserBodyVersion string `json:"lesser_body_version,omitempty"`
+	LesserVersion       string `json:"lesser_version,omitempty"`
+	LesserBodyVersion   string `json:"lesser_body_version,omitempty"`
+	BodyOnly            bool   `json:"body_only,omitempty"`
+	MCPOnly             bool   `json:"mcp_only,omitempty"`
+	BodyTemplateCertify bool   `json:"body_template_certify,omitempty"`
 }
 
 type certificationClient struct {
@@ -295,16 +288,44 @@ func validateParsedCLIConfig(cfg cliConfig) (cliConfig, error) {
 }
 
 func runCertification(ctx context.Context, cfg cliConfig, httpClient *http.Client) (*certificationReport, error) {
+	client := newCertificationClient(cfg, httpClient)
+	report := newCertificationReport(cfg)
+
+	lesserBodyTemplatePath, ok := runCompatibilityChecks(ctx, cfg, report)
+	if !ok {
+		return report, nil
+	}
+
+	allowFollowOns, ok := runLesserUpdate(ctx, client, cfg, report, lesserBodyTemplatePath)
+	if !ok {
+		return report, nil
+	}
+
+	if cfg.RequireLesserBody {
+		appendLesserBodyEvidenceAndChecks(ctx, client, cfg, report, lesserBodyTemplatePath, allowFollowOns)
+	}
+
+	if cfg.RequireMCP {
+		appendMCPEvidenceAndChecks(ctx, client, cfg, report, allowFollowOns)
+	}
+
+	report.OverallStatus = overallStatus(report.Checks)
+	return report, nil
+}
+
+func newCertificationClient(cfg cliConfig, httpClient *http.Client) *certificationClient {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 30 * time.Second}
 	}
-	client := &certificationClient{
+	return &certificationClient{
 		baseURL: cfg.BaseURL,
 		token:   cfg.Token,
 		client:  httpClient,
 	}
+}
 
-	report := &certificationReport{
+func newCertificationReport(cfg cliConfig) *certificationReport {
+	return &certificationReport{
 		SchemaVersion: certificationSchemaVersion,
 		GeneratedAt:   time.Now().UTC().Format(time.RFC3339),
 		LesserHost: certificationTarget{
@@ -319,9 +340,9 @@ func runCertification(ctx context.Context, cfg cliConfig, httpClient *http.Clien
 			RunMCP:            cfg.RequireMCP,
 		},
 	}
+}
 
-	lesserBodyTemplatePath := ""
-
+func runCompatibilityChecks(ctx context.Context, cfg cliConfig, report *certificationReport) (string, bool) {
 	if err := validateManagedLesserCompatibility(ctx, &http.Client{Timeout: 30 * time.Second}, cfg.LesserGitHubOwner, cfg.LesserGitHubRepo, cfg.LesserVersion); err != nil {
 		report.Checks = append(report.Checks, certificationCheck{
 			ID:     "compatibility_contract_valid",
@@ -329,7 +350,7 @@ func runCertification(ctx context.Context, cfg cliConfig, httpClient *http.Clien
 			Detail: err.Error(),
 		})
 		report.OverallStatus = statusFail
-		return report, nil
+		return "", false
 	}
 	report.Checks = append(report.Checks, certificationCheck{
 		ID:     "compatibility_contract_valid",
@@ -337,69 +358,78 @@ func runCertification(ctx context.Context, cfg cliConfig, httpClient *http.Clien
 		Detail: "requested release matches the published lesser-host managed compatibility contract",
 	})
 
-	if cfg.RequireLesserBody || cfg.RequireMCP {
-		if strings.TrimSpace(cfg.LesserBodyVersion) == "" {
-			report.Checks = append(report.Checks, certificationCheck{
-				ID:     "lesser_body_version_selected",
-				Status: statusFail,
-				Detail: "--lesser-body-version is required when lesser-body or MCP certification is requested",
-			})
-			report.OverallStatus = statusFail
-			return report, nil
-		}
-		report.Checks = append(report.Checks, certificationCheck{
-			ID:     "lesser_body_version_selected",
-			Status: statusPass,
-			Detail: "requested lesser-body release " + cfg.LesserBodyVersion + " will be validated for managed certification",
-		})
-
-		if err := validateManagedLesserBodyCompatibility(
-			ctx,
-			&http.Client{Timeout: 30 * time.Second},
-			cfg.LesserBodyGitHubOwner,
-			cfg.LesserBodyGitHubRepo,
-			cfg.LesserBodyVersion,
-			cfg.ManagedStage,
-		); err != nil {
-			report.Checks = append(report.Checks, certificationCheck{
-				ID:     "lesser_body_compatibility_contract_valid",
-				Status: statusFail,
-				Detail: err.Error(),
-			})
-			report.OverallStatus = statusFail
-			return report, nil
-		}
-		report.Checks = append(report.Checks, certificationCheck{
-			ID:     "lesser_body_compatibility_contract_valid",
-			Status: statusPass,
-			Detail: "requested lesser-body release matches the published lesser-host managed compatibility contract",
-		})
-		templatePath, err := validateManagedLesserBodyTemplatePreflight(
-			ctx,
-			&http.Client{Timeout: 30 * time.Second},
-			cfg.LesserBodyGitHubOwner,
-			cfg.LesserBodyGitHubRepo,
-			cfg.LesserBodyVersion,
-			cfg.ManagedStage,
-		)
-		if err != nil {
-			report.Checks = append(report.Checks, certificationCheck{
-				ID:     "lesser_body_template_preflight_valid",
-				Status: statusFail,
-				Detail: err.Error(),
-			})
-			report.OverallStatus = statusFail
-			return report, nil
-		}
-		report.Checks = append(report.Checks, certificationCheck{
-			ID:     "lesser_body_template_preflight_valid",
-			Status: statusPass,
-			Detail: "published template " + templatePath + " passed lesser-host managed body template preflight",
-		})
-		lesserBodyTemplatePath = templatePath
+	if !cfg.RequireLesserBody && !cfg.RequireMCP {
+		return "", true
 	}
 
-	startedJob, err := client.createLesserUpdate(ctx, cfg.InstanceSlug, cfg.LesserVersion, cfg.LesserBodyVersion)
+	if strings.TrimSpace(cfg.LesserBodyVersion) == "" {
+		report.Checks = append(report.Checks, certificationCheck{
+			ID:     "lesser_body_version_selected",
+			Status: statusFail,
+			Detail: "--lesser-body-version is required when lesser-body or MCP certification is requested",
+		})
+		report.OverallStatus = statusFail
+		return "", false
+	}
+
+	report.Checks = append(report.Checks, certificationCheck{
+		ID:     "lesser_body_version_selected",
+		Status: statusPass,
+		Detail: "requested lesser-body release " + cfg.LesserBodyVersion + " will be validated for managed certification",
+	})
+
+	if err := validateManagedLesserBodyCompatibility(
+		ctx,
+		&http.Client{Timeout: 30 * time.Second},
+		cfg.LesserBodyGitHubOwner,
+		cfg.LesserBodyGitHubRepo,
+		cfg.LesserBodyVersion,
+		cfg.ManagedStage,
+	); err != nil {
+		report.Checks = append(report.Checks, certificationCheck{
+			ID:     "lesser_body_compatibility_contract_valid",
+			Status: statusFail,
+			Detail: err.Error(),
+		})
+		report.OverallStatus = statusFail
+		return "", false
+	}
+
+	report.Checks = append(report.Checks, certificationCheck{
+		ID:     "lesser_body_compatibility_contract_valid",
+		Status: statusPass,
+		Detail: "requested lesser-body release matches the published lesser-host managed compatibility contract",
+	})
+
+	templatePath, err := validateManagedLesserBodyTemplatePreflight(
+		ctx,
+		&http.Client{Timeout: 30 * time.Second},
+		cfg.LesserBodyGitHubOwner,
+		cfg.LesserBodyGitHubRepo,
+		cfg.LesserBodyVersion,
+		cfg.ManagedStage,
+	)
+	if err != nil {
+		report.Checks = append(report.Checks, certificationCheck{
+			ID:     "lesser_body_template_preflight_valid",
+			Status: statusFail,
+			Detail: err.Error(),
+		})
+		report.OverallStatus = statusFail
+		return "", false
+	}
+
+	report.Checks = append(report.Checks, certificationCheck{
+		ID:     "lesser_body_template_preflight_valid",
+		Status: statusPass,
+		Detail: "published template " + templatePath + " passed lesser-host managed body template preflight",
+	})
+
+	return templatePath, true
+}
+
+func runLesserUpdate(ctx context.Context, client *certificationClient, cfg cliConfig, report *certificationReport, lesserBodyTemplatePath string) (bool, bool) {
+	startedJob, err := client.createLesserUpdate(ctx, cfg.InstanceSlug, cfg.LesserVersion)
 	if err != nil {
 		report.Checks = append(report.Checks, certificationCheck{
 			ID:     "hosted_update_started",
@@ -407,8 +437,9 @@ func runCertification(ctx context.Context, cfg cliConfig, httpClient *http.Clien
 			Detail: err.Error(),
 		})
 		report.OverallStatus = statusFail
-		return report, nil
+		return false, false
 	}
+
 	report.Checks = append(report.Checks, certificationCheck{
 		ID:     "hosted_update_started",
 		Status: statusPass,
@@ -424,14 +455,171 @@ func runCertification(ctx context.Context, cfg cliConfig, httpClient *http.Clien
 		})
 		report.Jobs = append(report.Jobs, certificationJobFromResponse(startedJob, cfg.InstanceSlug))
 		report.OverallStatus = statusFail
-		return report, nil
+		return false, false
 	}
 
-	jobEvidence := certificationJobsFromUpdate(finalJob, cfg.InstanceSlug, cfg, lesserBodyTemplatePath)
-	report.Jobs = append(report.Jobs, jobEvidence...)
-	report.Checks = append(report.Checks, certificationChecksForManagedUpdate(finalJob, jobEvidence, cfg, lesserBodyTemplatePath)...)
-	report.OverallStatus = overallStatus(report.Checks)
-	return report, nil
+	lesserEvidence := certificationJobFromResponse(finalJob, cfg.InstanceSlug)
+	report.Jobs = append(report.Jobs, lesserEvidence)
+	coreCfg := cfg
+	coreCfg.RequireLesserBody = false
+	coreCfg.RequireMCP = false
+	report.Checks = append(report.Checks, certificationChecksForManagedUpdate(finalJob, []certificationJob{lesserEvidence}, coreCfg, lesserBodyTemplatePath)...)
+
+	allowFollowOns := strings.EqualFold(strings.TrimSpace(finalJob.Status), updateJobStatusOK)
+	return allowFollowOns, true
+}
+
+func appendLesserBodyEvidenceAndChecks(
+	ctx context.Context,
+	client *certificationClient,
+	cfg cliConfig,
+	report *certificationReport,
+	lesserBodyTemplatePath string,
+	allowFollowOns bool,
+) {
+	templatePath := strings.TrimSpace(firstNonEmpty(lesserBodyTemplatePath, expectedLesserBodyTemplatePath(cfg.ManagedStage)))
+
+	if !allowFollowOns {
+		report.Checks = append(report.Checks,
+			certificationCheck{
+				ID:     "lesser_body_template_changeset_valid",
+				Status: statusFail,
+				Detail: "lesser-body deploy was blocked by the failed Lesser update",
+			},
+			certificationCheck{
+				ID:     "lesser_body_completed",
+				Status: statusFail,
+				Detail: "lesser-body deploy was blocked by the failed Lesser update",
+			},
+			certificationCheck{
+				ID:     "lesser_body_runner_visibility_present",
+				Status: statusFail,
+				Detail: "lesser-body deploy was not started",
+			},
+			certificationCheck{
+				ID:     "lesser_body_receipt_key_defined",
+				Status: statusFail,
+				Detail: "lesser-body receipt key could not be derived from the managed update job",
+			},
+		)
+		return
+	}
+
+	startedBodyJob, err := client.createLesserBodyUpdate(ctx, cfg.InstanceSlug, cfg.LesserBodyVersion, true)
+	if err != nil {
+		report.Checks = append(report.Checks,
+			certificationCheck{ID: "lesser_body_template_changeset_valid", Status: statusFail, Detail: err.Error()},
+			certificationCheck{ID: "lesser_body_completed", Status: statusFail, Detail: err.Error()},
+			certificationCheck{ID: "lesser_body_runner_visibility_present", Status: statusFail, Detail: err.Error()},
+			certificationCheck{ID: "lesser_body_receipt_key_defined", Status: statusFail, Detail: err.Error()},
+		)
+		return
+	}
+
+	finalBodyJob, err := client.waitForJob(ctx, cfg.InstanceSlug, startedBodyJob.ID, cfg.PollInterval)
+	if err != nil {
+		bodyEvidence := certificationJobFromResponse(startedBodyJob, cfg.InstanceSlug)
+		bodyEvidence.TemplatePath = templatePath
+		bodyEvidence.TemplateCertificationKey = deriveBodyTemplateCertificationKey(cfg.InstanceSlug, startedBodyJob.ID)
+		bodyEvidence.TemplateVerificationMode = lesserBodyTemplateVerificationMode
+		report.Jobs = append(report.Jobs, bodyEvidence)
+		report.Checks = append(report.Checks,
+			certificationCheck{ID: "lesser_body_template_changeset_valid", Status: statusFail, Detail: err.Error()},
+			certificationCheck{ID: "lesser_body_completed", Status: statusFail, Detail: err.Error()},
+			certificationCheck{ID: "lesser_body_runner_visibility_present", Status: statusFail, Detail: err.Error()},
+			certificationCheck{ID: "lesser_body_receipt_key_defined", Status: statusFail, Detail: err.Error()},
+		)
+		return
+	}
+
+	bodyEvidence := certificationJobFromResponse(finalBodyJob, cfg.InstanceSlug)
+	bodyEvidence.TemplatePath = templatePath
+	bodyEvidence.TemplateCertificationKey = deriveBodyTemplateCertificationKey(cfg.InstanceSlug, finalBodyJob.ID)
+	bodyEvidence.TemplateVerificationMode = lesserBodyTemplateVerificationMode
+	report.Jobs = append(report.Jobs, bodyEvidence)
+
+	report.Checks = append(report.Checks,
+		certificationCheck{
+			ID:     "lesser_body_template_changeset_valid",
+			Status: checkStatusForBodyTemplateCertification(bodyEvidence),
+			Detail: templateCertificationDetail(bodyEvidence, lesserBodyTemplatePath),
+		},
+		certificationCheck{
+			ID:     "lesser_body_completed",
+			Status: checkStatusForPhase(bodyEvidence),
+			Detail: phaseCompletionDetail(updateJobKindBody, bodyEvidence),
+		},
+		certificationCheck{
+			ID:     "lesser_body_runner_visibility_present",
+			Status: checkStatusForValue(firstNonEmpty(bodyEvidence.BodyRunURL, bodyEvidence.RunURL)),
+			Detail: valueDetail(firstNonEmpty(bodyEvidence.BodyRunURL, bodyEvidence.RunURL), "lesser-body run link was not preserved in the managed update evidence"),
+		},
+		certificationCheck{
+			ID:     "lesser_body_receipt_key_defined",
+			Status: checkStatusForReceiptKey(bodyEvidence),
+			Detail: receiptDetail(bodyEvidence, "lesser-body"),
+		},
+	)
+}
+
+func appendMCPEvidenceAndChecks(
+	ctx context.Context,
+	client *certificationClient,
+	cfg cliConfig,
+	report *certificationReport,
+	allowFollowOns bool,
+) {
+	if !allowFollowOns {
+		report.Checks = append(report.Checks,
+			certificationCheck{
+				ID:     "mcp_wiring_completed",
+				Status: statusFail,
+				Detail: "MCP wiring was blocked by the failed Lesser update",
+			},
+			certificationCheck{
+				ID:     "mcp_receipt_key_defined",
+				Status: statusFail,
+				Detail: "MCP receipt key could not be derived from the managed update job",
+			},
+		)
+		return
+	}
+
+	startedMCPJob, err := client.createMCPUpdate(ctx, cfg.InstanceSlug, cfg.LesserBodyVersion)
+	if err != nil {
+		report.Checks = append(report.Checks,
+			certificationCheck{ID: "mcp_wiring_completed", Status: statusFail, Detail: err.Error()},
+			certificationCheck{ID: "mcp_receipt_key_defined", Status: statusFail, Detail: err.Error()},
+		)
+		return
+	}
+
+	finalMCPJob, err := client.waitForJob(ctx, cfg.InstanceSlug, startedMCPJob.ID, cfg.PollInterval)
+	if err != nil {
+		mcpEvidence := certificationJobFromResponse(startedMCPJob, cfg.InstanceSlug)
+		report.Jobs = append(report.Jobs, mcpEvidence)
+		report.Checks = append(report.Checks,
+			certificationCheck{ID: "mcp_wiring_completed", Status: statusFail, Detail: err.Error()},
+			certificationCheck{ID: "mcp_receipt_key_defined", Status: statusFail, Detail: err.Error()},
+		)
+		return
+	}
+
+	mcpEvidence := certificationJobFromResponse(finalMCPJob, cfg.InstanceSlug)
+	report.Jobs = append(report.Jobs, mcpEvidence)
+
+	report.Checks = append(report.Checks,
+		certificationCheck{
+			ID:     "mcp_wiring_completed",
+			Status: checkStatusForPhase(mcpEvidence),
+			Detail: phaseCompletionDetail(updateJobKindMCP, mcpEvidence),
+		},
+		certificationCheck{
+			ID:     "mcp_receipt_key_defined",
+			Status: checkStatusForReceiptKey(mcpEvidence),
+			Detail: receiptDetail(mcpEvidence, "MCP"),
+		},
+	)
 }
 
 func certificationChecksForManagedUpdate(job updateJobResponse, evidence []certificationJob, cfg cliConfig, lesserBodyTemplatePath string) []certificationCheck {
@@ -554,71 +742,6 @@ func certificationJobFromResponse(job updateJobResponse, slug string) certificat
 		ReceiptKey:       deriveReceiptKey(firstNonEmpty(strings.TrimSpace(job.Kind), updateJobKindLesser), slug, job.ID),
 		RequestedVersion: version,
 	}
-}
-
-func certificationJobsFromUpdate(job updateJobResponse, slug string, cfg cliConfig, lesserBodyTemplatePath string) []certificationJob {
-	lesserBodyTemplatePath = firstNonEmpty(lesserBodyTemplatePath, expectedLesserBodyTemplatePath(cfg.ManagedStage))
-	jobs := []certificationJob{
-		certificationJobForPhase(job, slug, updateJobKindLesser, ""),
-	}
-	if shouldIncludeOptionalPhase(job.BodyStatus, cfg.RequireLesserBody) {
-		jobs = append(jobs, certificationJobForPhase(job, slug, updateJobKindBody, lesserBodyTemplatePath))
-	}
-	if shouldIncludeOptionalPhase(job.MCPStatus, cfg.RequireMCP) {
-		jobs = append(jobs, certificationJobForPhase(job, slug, updateJobKindMCP, ""))
-	}
-	return jobs
-}
-
-func certificationJobForPhase(job updateJobResponse, slug string, kind string, lesserBodyTemplatePath string) certificationJob {
-	jobID := strings.TrimSpace(job.ID)
-	step := strings.TrimSpace(job.Step)
-	if step == "" {
-		step = firstNonEmpty(strings.TrimSpace(job.ActivePhase), updateStepForKind(kind))
-	}
-
-	evidence := certificationJob{
-		Kind:        kind,
-		JobID:       jobID,
-		Status:      statusForPhase(kind, job),
-		Step:        step,
-		FailedPhase: failedPhaseForKind(kind, job),
-		Note:        strings.TrimSpace(job.Note),
-		ReceiptKey:  deriveReceiptKey(kind, slug, jobID),
-	}
-
-	switch kind {
-	case updateJobKindBody:
-		evidence.RequestedVersion = strings.TrimSpace(job.LesserBodyVersion)
-		evidence.RunURL = firstNonEmpty(job.BodyRunURL, job.RunURL)
-		evidence.BodyRunURL = strings.TrimSpace(job.BodyRunURL)
-		evidence.ErrorCode = errorCodeForKind(kind, job)
-		evidence.ErrorMessage = errorMessageForKind(kind, job)
-		evidence.TemplatePath = strings.TrimSpace(lesserBodyTemplatePath)
-		evidence.TemplateCertificationKey = deriveBodyTemplateCertificationKey(slug, jobID)
-		evidence.TemplateVerificationMode = lesserBodyTemplateVerificationMode
-	case updateJobKindMCP:
-		evidence.RequestedVersion = strings.TrimSpace(job.LesserBodyVersion)
-		evidence.RunURL = firstNonEmpty(job.MCPRunURL, job.RunURL)
-		evidence.MCPRunURL = strings.TrimSpace(job.MCPRunURL)
-		evidence.ErrorCode = errorCodeForKind(kind, job)
-		evidence.ErrorMessage = errorMessageForKind(kind, job)
-	default:
-		evidence.RequestedVersion = strings.TrimSpace(job.LesserVersion)
-		evidence.RunURL = firstNonEmpty(job.DeployRunURL, job.RunURL)
-		evidence.DeployRunURL = strings.TrimSpace(job.DeployRunURL)
-		evidence.ErrorCode = errorCodeForKind(kind, job)
-		evidence.ErrorMessage = errorMessageForKind(kind, job)
-	}
-	return evidence
-}
-
-func shouldIncludeOptionalPhase(phaseStatus string, required bool) bool {
-	if required {
-		return true
-	}
-	trimmed := strings.TrimSpace(phaseStatus)
-	return trimmed != "" && trimmed != updatePhaseStatusSkipped
 }
 
 func findCertificationJob(jobs []certificationJob, kind string) certificationJob {
@@ -755,99 +878,6 @@ func templateCertificationDetail(job certificationJob, templatePath string) stri
 		return job.ErrorMessage
 	}
 	return fmt.Sprintf("lesser-body template certification ended with status=%s step=%s", strings.TrimSpace(job.Status), strings.TrimSpace(job.Step))
-}
-
-func statusForPhase(kind string, job updateJobResponse) string {
-	switch kind {
-	case updateJobKindBody:
-		return mapPhaseStatusToJobStatus(job.BodyStatus, job.Status)
-	case updateJobKindMCP:
-		return mapPhaseStatusToJobStatus(job.MCPStatus, job.Status)
-	default:
-		return mapPhaseStatusToJobStatus(job.DeployStatus, job.Status)
-	}
-}
-
-func mapPhaseStatusToJobStatus(phaseStatus string, fallback string) string {
-	switch strings.TrimSpace(phaseStatus) {
-	case updatePhaseStatusSucceeded:
-		return updateJobStatusOK
-	case updatePhaseStatusFailed:
-		return updateJobStatusError
-	case updatePhaseStatusRunning:
-		return updateJobStatusRunning
-	case updatePhaseStatusPending:
-		return updateJobStatusQueued
-	case updatePhaseStatusSkipped:
-		return updateJobStatusError
-	default:
-		return firstNonEmpty(strings.TrimSpace(fallback), updateJobStatusError)
-	}
-}
-
-func updateStepForKind(kind string) string {
-	switch kind {
-	case updateJobKindBody:
-		return "body"
-	case updateJobKindMCP:
-		return "mcp"
-	default:
-		return "deploy"
-	}
-}
-
-func failedPhaseForKind(kind string, job updateJobResponse) string {
-	switch kind {
-	case updateJobKindBody:
-		if strings.TrimSpace(job.FailedPhase) == updatePhaseBody {
-			return updatePhaseBody
-		}
-	case updateJobKindMCP:
-		if strings.TrimSpace(job.FailedPhase) == updatePhaseMCP {
-			return updatePhaseMCP
-		}
-	default:
-		if strings.TrimSpace(job.FailedPhase) == "" || strings.TrimSpace(job.FailedPhase) == updatePhaseDeploy {
-			return strings.TrimSpace(job.FailedPhase)
-		}
-	}
-	return ""
-}
-
-func errorCodeForKind(kind string, job updateJobResponse) string {
-	switch kind {
-	case updateJobKindBody:
-		if strings.TrimSpace(job.FailedPhase) == updatePhaseBody {
-			return strings.TrimSpace(job.ErrorCode)
-		}
-	case updateJobKindMCP:
-		if strings.TrimSpace(job.FailedPhase) == updatePhaseMCP {
-			return strings.TrimSpace(job.ErrorCode)
-		}
-	default:
-		if strings.TrimSpace(job.FailedPhase) == "" || strings.TrimSpace(job.FailedPhase) == updatePhaseDeploy {
-			return strings.TrimSpace(job.ErrorCode)
-		}
-	}
-	return ""
-}
-
-func errorMessageForKind(kind string, job updateJobResponse) string {
-	switch kind {
-	case updateJobKindBody:
-		return firstNonEmpty(job.BodyError, phaseFallbackError(updatePhaseBody, job))
-	case updateJobKindMCP:
-		return firstNonEmpty(job.MCPError, phaseFallbackError(updatePhaseMCP, job))
-	default:
-		return firstNonEmpty(job.DeployError, phaseFallbackError(updatePhaseDeploy, job))
-	}
-}
-
-func phaseFallbackError(phase string, job updateJobResponse) string {
-	if strings.TrimSpace(job.FailedPhase) == phase {
-		return strings.TrimSpace(job.ErrorMessage)
-	}
-	return ""
 }
 
 func deriveReceiptKey(kind string, slug string, jobID string) string {
@@ -1149,10 +1179,24 @@ func removeIfExists(path string) error {
 	return err
 }
 
-func (c *certificationClient) createLesserUpdate(ctx context.Context, slug string, lesserVersion string, lesserBodyVersion string) (updateJobResponse, error) {
+func (c *certificationClient) createLesserUpdate(ctx context.Context, slug string, lesserVersion string) (updateJobResponse, error) {
 	return c.createUpdate(ctx, slug, createUpdateJobRequest{
-		LesserVersion:     strings.TrimSpace(lesserVersion),
+		LesserVersion: strings.TrimSpace(lesserVersion),
+	})
+}
+
+func (c *certificationClient) createLesserBodyUpdate(ctx context.Context, slug string, lesserBodyVersion string, templateCertify bool) (updateJobResponse, error) {
+	return c.createUpdate(ctx, slug, createUpdateJobRequest{
+		LesserBodyVersion:   strings.TrimSpace(lesserBodyVersion),
+		BodyOnly:            true,
+		BodyTemplateCertify: templateCertify,
+	})
+}
+
+func (c *certificationClient) createMCPUpdate(ctx context.Context, slug string, lesserBodyVersion string) (updateJobResponse, error) {
+	return c.createUpdate(ctx, slug, createUpdateJobRequest{
 		LesserBodyVersion: strings.TrimSpace(lesserBodyVersion),
+		MCPOnly:           true,
 	})
 }
 

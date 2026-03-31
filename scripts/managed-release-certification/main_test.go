@@ -18,9 +18,11 @@ import (
 
 const (
 	portalUpdatesPath                = "/api/v1/portal/instances/simulacrum/updates"
-	jobUpdateID                      = "job-update-1"
+	jobLesserUpdateID                = "job-lesser-1"
+	jobBodyUpdateID                  = "job-body-1"
+	jobMCPUpdateID                   = "job-mcp-1"
 	testBodyTemplate                 = "lesser-body-managed-dev.template.json"
-	testBodyTemplateCertificationKey = "managed/updates/simulacrum/job-update-1/body-template-certification.json"
+	testBodyTemplateCertificationKey = "managed/updates/simulacrum/" + jobBodyUpdateID + "/body-template-certification.json"
 )
 
 var managedLesserCompatibilityValidatorMu sync.Mutex
@@ -75,42 +77,6 @@ func requireCheckStatus(t *testing.T, report *certificationReport, checkID strin
 		}
 	}
 	t.Fatalf("missing check %q in %#v", checkID, report.Checks)
-}
-
-func newManagedCertificationServer(t *testing.T, postResponse string, getResponses []string, requestBody *createUpdateJobRequest) *httptest.Server {
-	t.Helper()
-
-	var (
-		mu        sync.Mutex
-		listCalls int
-	)
-
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodPost && r.URL.Path == portalUpdatesPath:
-			if requestBody != nil {
-				if err := json.NewDecoder(r.Body).Decode(requestBody); err != nil {
-					t.Fatalf("decode request body: %v", err)
-				}
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(postResponse))
-		case r.Method == http.MethodGet && r.URL.Path == portalUpdatesPath:
-			mu.Lock()
-			listCalls++
-			call := listCalls
-			mu.Unlock()
-
-			index := call - 1
-			if index >= len(getResponses) {
-				index = len(getResponses) - 1
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(getResponses[index]))
-		default:
-			http.NotFound(w, r)
-		}
-	}))
 }
 
 func TestRunCertification_LesserUpdatePasses(t *testing.T) {
@@ -197,16 +163,56 @@ func TestRunCertification_FullManagedFlowPasses(t *testing.T) {
 		return testBodyTemplate, nil
 	})
 
-	var requestBody createUpdateJobRequest
-	server := newManagedCertificationServer(
-		t,
-		`{"id":"job-update-1","kind":"lesser","status":"queued","step":"queued","lesser_version":"v1.2.6","lesser_body_version":"v0.2.3"}`,
-		[]string{
-			`{"jobs":[{"id":"job-update-1","kind":"lesser","status":"running","step":"deploy.wait","active_phase":"deploy","deploy_status":"running","body_status":"pending","mcp_status":"pending","lesser_version":"v1.2.6","lesser_body_version":"v0.2.3"}]}`,
-			`{"jobs":[{"id":"job-update-1","kind":"lesser","status":"ok","step":"done","note":"updated","run_url":"https://example.com/builds/update","deploy_status":"succeeded","deploy_run_url":"https://example.com/builds/deploy","body_status":"succeeded","body_run_url":"https://example.com/builds/body","mcp_status":"succeeded","mcp_run_url":"https://example.com/builds/mcp","lesser_version":"v1.2.6","lesser_body_version":"v0.2.3"}]}`,
-		},
-		&requestBody,
+	var (
+		mu       sync.Mutex
+		requests []createUpdateJobRequest
 	)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == portalUpdatesPath:
+			var req createUpdateJobRequest
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+
+			mu.Lock()
+			requests = append(requests, req)
+			call := len(requests)
+			mu.Unlock()
+
+			w.Header().Set("Content-Type", "application/json")
+			switch call {
+			case 1:
+				_, _ = w.Write([]byte(`{"id":"` + jobLesserUpdateID + `","kind":"lesser","status":"queued","step":"queued","lesser_version":"v1.2.6"}`))
+			case 2:
+				_, _ = w.Write([]byte(`{"id":"` + jobBodyUpdateID + `","kind":"lesser-body","status":"queued","step":"queued","body_only":true,"lesser_body_version":"v0.2.3"}`))
+			case 3:
+				_, _ = w.Write([]byte(`{"id":"` + jobMCPUpdateID + `","kind":"mcp","status":"queued","step":"queued","mcp_only":true,"lesser_body_version":"v0.2.3"}`))
+			default:
+				t.Fatalf("unexpected create update call: %d", call)
+			}
+			return
+
+		case r.Method == http.MethodGet && r.URL.Path == portalUpdatesPath:
+			mu.Lock()
+			postCalls := len(requests)
+			mu.Unlock()
+
+			w.Header().Set("Content-Type", "application/json")
+			switch postCalls {
+			case 0:
+				_, _ = w.Write([]byte(`{"jobs":[]}`))
+			case 1:
+				_, _ = w.Write([]byte(`{"jobs":[{"id":"` + jobLesserUpdateID + `","kind":"lesser","status":"ok","step":"done","note":"updated","run_url":"https://example.com/builds/lesser","deploy_run_url":"https://example.com/builds/lesser","lesser_version":"v1.2.6"}]}`))
+			case 2:
+				_, _ = w.Write([]byte(`{"jobs":[{"id":"` + jobBodyUpdateID + `","kind":"lesser-body","status":"ok","step":"done","note":"lesser-body updated","run_url":"https://example.com/builds/body","body_run_url":"https://example.com/builds/body","lesser_body_version":"v0.2.3"}]}`))
+			default:
+				_, _ = w.Write([]byte(`{"jobs":[{"id":"` + jobMCPUpdateID + `","kind":"mcp","status":"ok","step":"done","note":"MCP updated","run_url":"https://example.com/builds/mcp","mcp_run_url":"https://example.com/builds/mcp","lesser_body_version":"v0.2.3"}]}`))
+			}
+			return
+		default:
+			http.NotFound(w, r)
+		}
+	}))
 	defer server.Close()
 
 	cfg := cliConfig{
@@ -231,15 +237,18 @@ func TestRunCertification_FullManagedFlowPasses(t *testing.T) {
 		t.Fatalf("expected pass report, got %#v", report)
 	}
 	requireCheckStatus(t, report, "compatibility_contract_valid", statusPass)
-	if requestBody.LesserVersion != "v1.2.6" || requestBody.LesserBodyVersion != "v0.2.3" {
-		t.Fatalf("unexpected update request: %#v", requestBody)
-	}
-	if len(report.Jobs) != 3 {
-		t.Fatalf("expected three phase jobs, got %#v", report.Jobs)
-	}
-	if report.Jobs[0].JobID != jobUpdateID || report.Jobs[1].JobID != jobUpdateID || report.Jobs[2].JobID != jobUpdateID {
-		t.Fatalf("expected shared managed update id across phase evidence, got %#v", report.Jobs)
-	}
+
+	mu.Lock()
+	require.Len(t, requests, 3)
+	require.Equal(t, createUpdateJobRequest{LesserVersion: "v1.2.6"}, requests[0])
+	require.Equal(t, createUpdateJobRequest{BodyOnly: true, LesserBodyVersion: "v0.2.3", BodyTemplateCertify: true}, requests[1])
+	require.Equal(t, createUpdateJobRequest{MCPOnly: true, LesserBodyVersion: "v0.2.3"}, requests[2])
+	mu.Unlock()
+
+	require.Len(t, report.Jobs, 3)
+	require.Equal(t, jobLesserUpdateID, report.Jobs[0].JobID)
+	require.Equal(t, jobBodyUpdateID, report.Jobs[1].JobID)
+	require.Equal(t, jobMCPUpdateID, report.Jobs[2].JobID)
 
 	for _, expectedID := range []string{"lesser_body_version_selected", "lesser_body_compatibility_contract_valid", "lesser_body_template_preflight_valid", "lesser_body_template_changeset_valid", "lesser_body_completed", "lesser_body_runner_visibility_present", "lesser_body_receipt_key_defined", "mcp_wiring_completed", "mcp_receipt_key_defined"} {
 		requireCheckStatus(t, report, expectedID, statusPass)
@@ -274,17 +283,17 @@ func TestWriteCertificationOutputs_WritesLesserBodyEvidenceBundle(t *testing.T) 
 			{ID: "lesser_body_template_changeset_valid", Status: statusPass, Detail: "published template " + testBodyTemplate + " passed cloudformation_deploy_no_execute_changeset and is recorded at " + testBodyTemplateCertificationKey},
 			{ID: "lesser_body_completed", Status: statusPass, Detail: "lesser-body managed deploy completed"},
 			{ID: "lesser_body_runner_visibility_present", Status: statusPass, Detail: "https://example.com/builds/body"},
-			{ID: "lesser_body_receipt_key_defined", Status: statusPass, Detail: "managed/updates/simulacrum/job-update-1/body-state.json"},
+			{ID: "lesser_body_receipt_key_defined", Status: statusPass, Detail: "managed/updates/simulacrum/" + jobBodyUpdateID + "/body-state.json"},
 		},
 		Jobs: []certificationJob{
 			{
 				Kind:                     updateJobKindBody,
-				JobID:                    "job-update-1",
+				JobID:                    jobBodyUpdateID,
 				Status:                   updateJobStatusOK,
 				Step:                     "done",
 				RunURL:                   "https://example.com/builds/body",
 				BodyRunURL:               "https://example.com/builds/body",
-				ReceiptKey:               "managed/updates/simulacrum/job-update-1/body-state.json",
+				ReceiptKey:               "managed/updates/simulacrum/" + jobBodyUpdateID + "/body-state.json",
 				RequestedVersion:         "v0.2.3",
 				TemplatePath:             testBodyTemplate,
 				TemplateCertificationKey: testBodyTemplateCertificationKey,
@@ -410,14 +419,34 @@ func TestRunCertification_RequiredFollowOnPhasesFailWhenSkipped(t *testing.T) {
 		return testBodyTemplate, nil
 	})
 
-	server := newManagedCertificationServer(
-		t,
-		`{"id":"job-update-2","kind":"lesser","status":"queued","step":"queued","lesser_version":"v1.2.6","lesser_body_version":"v0.2.3"}`,
-		[]string{
-			`{"jobs":[{"id":"job-update-2","kind":"lesser","status":"ok","step":"done","note":"updated","run_url":"https://example.com/builds/update","deploy_status":"succeeded","deploy_run_url":"https://example.com/builds/deploy","body_status":"skipped","mcp_status":"skipped","lesser_version":"v1.2.6","lesser_body_version":"v0.2.3"}]}`,
-		},
-		nil,
-	)
+	var mu sync.Mutex
+	postCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == portalUpdatesPath:
+			mu.Lock()
+			postCalls++
+			call := postCalls
+			mu.Unlock()
+
+			switch call {
+			case 1:
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"id":"` + jobLesserUpdateID + `","kind":"lesser","status":"queued","step":"queued","lesser_version":"v1.2.6"}`))
+			case 2:
+				http.Error(w, "forbidden", http.StatusForbidden)
+			default:
+				http.Error(w, "forbidden", http.StatusForbidden)
+			}
+			return
+		case r.Method == http.MethodGet && r.URL.Path == portalUpdatesPath:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"jobs":[{"id":"` + jobLesserUpdateID + `","kind":"lesser","status":"ok","step":"done","note":"updated","run_url":"https://example.com/builds/lesser","deploy_run_url":"https://example.com/builds/lesser","lesser_version":"v1.2.6"}]}`))
+			return
+		default:
+			http.NotFound(w, r)
+		}
+	}))
 	defer server.Close()
 
 	cfg := cliConfig{
@@ -983,4 +1012,82 @@ func TestRenderMarkdownSummary_EscapesInput(t *testing.T) {
 	if !strings.Contains(rendered, "bad 'state'") {
 		t.Fatalf("expected sanitized error message, got %q", rendered)
 	}
+}
+
+func TestRunCertification_FollowOnsBlockedWhenLesserUpdateFails(t *testing.T) {
+	t.Parallel()
+	useStubManagedLesserCompatibilityValidator(t, func(context.Context, *http.Client, string, string, string) error { return nil })
+	useStubManagedLesserBodyCompatibilityValidator(t, func(context.Context, *http.Client, string, string, string, string) error { return nil })
+	useStubManagedLesserBodyTemplatePreflightValidator(t, func(context.Context, *http.Client, string, string, string, string) (string, error) {
+		return testBodyTemplate, nil
+	})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == portalUpdatesPath:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"` + jobLesserUpdateID + `","kind":"lesser","status":"queued","step":"queued","lesser_version":"v1.2.6"}`))
+		case r.Method == http.MethodGet && r.URL.Path == portalUpdatesPath:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"jobs":[{"id":"` + jobLesserUpdateID + `","kind":"lesser","status":"error","step":"failed","failed_phase":"deploy","error_code":"deploy_failed","error_message":"deploy failed","note":"deploy failed","run_url":"https://example.com/builds/fail","deploy_run_url":"https://example.com/builds/fail","lesser_version":"v1.2.6"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	cfg := cliConfig{
+		BaseURL:           server.URL,
+		Token:             "token",
+		InstanceSlug:      "simulacrum",
+		LesserVersion:     "v1.2.6",
+		LesserBodyVersion: "v0.2.3",
+		RequireLesserBody: true,
+		RequireMCP:        true,
+		ManagedStage:      "dev",
+		PollInterval:      5 * time.Millisecond,
+		Timeout:           2 * time.Second,
+		OutDir:            t.TempDir(),
+	}
+
+	report, err := runCertification(context.Background(), cfg, nil)
+	require.NoError(t, err)
+	require.Equal(t, statusFail, report.OverallStatus)
+	require.Len(t, report.Jobs, 1)
+
+	for _, expectedID := range []string{"lesser_body_template_changeset_valid", "lesser_body_completed", "lesser_body_runner_visibility_present", "lesser_body_receipt_key_defined", "mcp_wiring_completed", "mcp_receipt_key_defined"} {
+		requireCheckStatus(t, report, expectedID, statusFail)
+	}
+}
+
+func TestBuildLesserBodyCertificationReport_UsesFirstFailingCheckWhenJobMissing(t *testing.T) {
+	t.Parallel()
+
+	report := &certificationReport{
+		SchemaVersion: certificationSchemaVersion,
+		GeneratedAt:   "2026-03-31T00:00:00Z",
+		LesserHost: certificationTarget{
+			BaseURL:      "https://lab.lesser.host",
+			InstanceSlug: "simulacrum",
+		},
+		RequestedRelease: certificationRequested{
+			LesserVersion:     "v1.2.6",
+			LesserBodyVersion: "v0.2.3",
+			RunLesser:         true,
+			RunLesserBody:     true,
+		},
+		Checks: []certificationCheck{
+			{ID: "lesser_body_completed", Status: statusFail, Detail: "lesser-body blocked"},
+		},
+		Jobs:          []certificationJob{},
+		OverallStatus: statusFail,
+	}
+
+	bodyReport := buildLesserBodyCertificationReport(report)
+	require.NotNil(t, bodyReport)
+	require.Equal(t, statusFail, bodyReport.OverallStatus)
+	require.Equal(t, "preflight.failed", bodyReport.Job.Step)
+	require.Equal(t, "lesser_body_certification_failed", bodyReport.Job.ErrorCode)
+	require.Equal(t, "lesser-body blocked", bodyReport.Job.ErrorMessage)
+	require.Equal(t, updateJobKindBody, bodyReport.Job.Kind)
 }

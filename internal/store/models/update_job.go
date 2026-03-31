@@ -62,9 +62,10 @@ type UpdateJob struct {
 	// LesserBodyVersion optionally forces a specific lesser-body release tag (example: v0.1.0).
 	// When empty, the deploy runner falls back to MANAGED_LESSER_BODY_DEFAULT_VERSION (if configured)
 	// or resolves releases/latest.
-	LesserBodyVersion string `theorydb:"attr:lesserBodyVersion" json:"lesser_body_version,omitempty"`
-	BodyOnly          bool   `theorydb:"attr:bodyOnly" json:"body_only,omitempty"`
-	MCPOnly           bool   `theorydb:"attr:mcpOnly" json:"mcp_only,omitempty"`
+	LesserBodyVersion   string `theorydb:"attr:lesserBodyVersion" json:"lesser_body_version,omitempty"`
+	BodyOnly            bool   `theorydb:"attr:bodyOnly" json:"body_only,omitempty"`
+	MCPOnly             bool   `theorydb:"attr:mcpOnly" json:"mcp_only,omitempty"`
+	BodyTemplateCertify bool   `theorydb:"attr:bodyTemplateCertify" json:"body_template_certify,omitempty"`
 
 	// Desired configuration snapshot (applied during update).
 	LesserHostBaseURL              string `theorydb:"attr:lesserHostBaseUrl" json:"lesser_host_base_url,omitempty"`
