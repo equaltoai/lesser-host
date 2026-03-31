@@ -38,3 +38,16 @@ test('runner emits explicit asset-contract failure messages', () => {
 	assert.match(buildCommands, /lesser-body release unexpectedly requires a source checkout/);
 	assert.match(buildCommands, /unexpected lesser-body deploy manifest path/);
 });
+
+test('RUN_MODE=lesser-body handles boolean false manifest flags without jq fallback drift', () => {
+	assert.doesNotMatch(buildCommands, /\.deploy\.source_checkout_required \/\/ empty/);
+	assert.doesNotMatch(buildCommands, /\.deploy\.npm_install_required \/\/ empty/);
+	assert.match(
+		buildCommands,
+		/if \.deploy\.source_checkout_required == false then "false" elif \.deploy\.source_checkout_required == true then "true" else empty end/,
+	);
+	assert.match(
+		buildCommands,
+		/if \.deploy\.npm_install_required == false then "false" elif \.deploy\.npm_install_required == true then "true" else empty end/,
+	);
+});
