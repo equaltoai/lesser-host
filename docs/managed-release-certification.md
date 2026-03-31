@@ -19,6 +19,10 @@ This is the boundary that `M9` uses for project and rollout decisions.
 
 The downstream project-readiness sync lives in `docs/managed-release-readiness.md`.
 
+When body-enabled or MCP-enabled certification is requested, the certification input must include a concrete
+`lesser-body` release tag. The body release being validated is part of the certification evidence, not an implied host
+default.
+
 ## Certification checklist
 
 The managed release is only certified when every required check passes.
@@ -40,7 +44,13 @@ The managed release is only certified when every required check passes.
 
 ### Optional follow-on checks
 
+- `lesser_body_version_selected`
+  - required when the certification run includes `lesser-body` or MCP follow-on wiring
+- `lesser_body_compatibility_contract_valid`
+  - required when the certification run includes `lesser-body` or MCP follow-on wiring
 - `lesser_body_completed`
+  - required when the certification run includes `lesser-body`
+- `lesser_body_runner_visibility_present`
   - required when the certification run includes `lesser-body`
 - `lesser_body_receipt_key_defined`
   - required when the certification run includes `lesser-body`
@@ -79,6 +89,7 @@ An example report lives at:
 The report records:
 
 - requested Lesser and `lesser-body` versions
+- the explicit `lesser-body` release-selection and compatibility result for body-enabled certification runs
 - target `lesser-host` base URL and managed instance slug
 - every certification check and its pass/fail status
 - phase-level evidence for Lesser, `lesser-body`, and MCP, even when those phases share one managed update job id

@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 const (
@@ -20,6 +22,7 @@ const (
 )
 
 var managedLesserCompatibilityValidatorMu sync.Mutex
+var managedLesserBodyCompatibilityValidatorMu sync.Mutex
 
 func useStubManagedLesserCompatibilityValidator(t *testing.T, fn func(context.Context, *http.Client, string, string, string) error) {
 	t.Helper()
@@ -30,6 +33,18 @@ func useStubManagedLesserCompatibilityValidator(t *testing.T, fn func(context.Co
 	t.Cleanup(func() {
 		validateManagedLesserCompatibility = previous
 		managedLesserCompatibilityValidatorMu.Unlock()
+	})
+}
+
+func useStubManagedLesserBodyCompatibilityValidator(t *testing.T, fn func(context.Context, *http.Client, string, string, string, string) error) {
+	t.Helper()
+
+	managedLesserBodyCompatibilityValidatorMu.Lock()
+	previous := validateManagedLesserBodyCompatibility
+	validateManagedLesserBodyCompatibility = fn
+	t.Cleanup(func() {
+		validateManagedLesserBodyCompatibility = previous
+		managedLesserBodyCompatibilityValidatorMu.Unlock()
 	})
 }
 
@@ -86,6 +101,7 @@ func newManagedCertificationServer(t *testing.T, postResponse string, getRespons
 func TestRunCertification_LesserUpdatePasses(t *testing.T) {
 	t.Parallel()
 	useStubManagedLesserCompatibilityValidator(t, func(context.Context, *http.Client, string, string, string) error { return nil })
+	useStubManagedLesserBodyCompatibilityValidator(t, func(context.Context, *http.Client, string, string, string, string) error { return nil })
 
 	var mu sync.Mutex
 	listCalls := 0
@@ -155,14 +171,15 @@ func TestRunCertification_LesserUpdatePasses(t *testing.T) {
 func TestRunCertification_FullManagedFlowPasses(t *testing.T) {
 	t.Parallel()
 	useStubManagedLesserCompatibilityValidator(t, func(context.Context, *http.Client, string, string, string) error { return nil })
+	useStubManagedLesserBodyCompatibilityValidator(t, func(context.Context, *http.Client, string, string, string, string) error { return nil })
 
 	var requestBody createUpdateJobRequest
 	server := newManagedCertificationServer(
 		t,
-		`{"id":"job-update-1","kind":"lesser","status":"queued","step":"queued","lesser_version":"v1.2.6","lesser_body_version":"v0.2.2"}`,
+		`{"id":"job-update-1","kind":"lesser","status":"queued","step":"queued","lesser_version":"v1.2.6","lesser_body_version":"v0.2.3"}`,
 		[]string{
-			`{"jobs":[{"id":"job-update-1","kind":"lesser","status":"running","step":"deploy.wait","active_phase":"deploy","deploy_status":"running","body_status":"pending","mcp_status":"pending","lesser_version":"v1.2.6","lesser_body_version":"v0.2.2"}]}`,
-			`{"jobs":[{"id":"job-update-1","kind":"lesser","status":"ok","step":"done","note":"updated","run_url":"https://example.com/builds/update","deploy_status":"succeeded","deploy_run_url":"https://example.com/builds/deploy","body_status":"succeeded","body_run_url":"https://example.com/builds/body","mcp_status":"succeeded","mcp_run_url":"https://example.com/builds/mcp","lesser_version":"v1.2.6","lesser_body_version":"v0.2.2"}]}`,
+			`{"jobs":[{"id":"job-update-1","kind":"lesser","status":"running","step":"deploy.wait","active_phase":"deploy","deploy_status":"running","body_status":"pending","mcp_status":"pending","lesser_version":"v1.2.6","lesser_body_version":"v0.2.3"}]}`,
+			`{"jobs":[{"id":"job-update-1","kind":"lesser","status":"ok","step":"done","note":"updated","run_url":"https://example.com/builds/update","deploy_status":"succeeded","deploy_run_url":"https://example.com/builds/deploy","body_status":"succeeded","body_run_url":"https://example.com/builds/body","mcp_status":"succeeded","mcp_run_url":"https://example.com/builds/mcp","lesser_version":"v1.2.6","lesser_body_version":"v0.2.3"}]}`,
 		},
 		&requestBody,
 	)
@@ -173,9 +190,10 @@ func TestRunCertification_FullManagedFlowPasses(t *testing.T) {
 		Token:             "token",
 		InstanceSlug:      "simulacrum",
 		LesserVersion:     "v1.2.6",
-		LesserBodyVersion: "v0.2.2",
+		LesserBodyVersion: "v0.2.3",
 		RequireLesserBody: true,
 		RequireMCP:        true,
+		ManagedStage:      "dev",
 		PollInterval:      5 * time.Millisecond,
 		Timeout:           2 * time.Second,
 		OutDir:            t.TempDir(),
@@ -189,7 +207,7 @@ func TestRunCertification_FullManagedFlowPasses(t *testing.T) {
 		t.Fatalf("expected pass report, got %#v", report)
 	}
 	requireCheckStatus(t, report, "compatibility_contract_valid", statusPass)
-	if requestBody.LesserVersion != "v1.2.6" || requestBody.LesserBodyVersion != "v0.2.2" {
+	if requestBody.LesserVersion != "v1.2.6" || requestBody.LesserBodyVersion != "v0.2.3" {
 		t.Fatalf("unexpected update request: %#v", requestBody)
 	}
 	if len(report.Jobs) != 3 {
@@ -199,7 +217,7 @@ func TestRunCertification_FullManagedFlowPasses(t *testing.T) {
 		t.Fatalf("expected shared managed update id across phase evidence, got %#v", report.Jobs)
 	}
 
-	for _, expectedID := range []string{"lesser_body_completed", "lesser_body_receipt_key_defined", "mcp_wiring_completed", "mcp_receipt_key_defined"} {
+	for _, expectedID := range []string{"lesser_body_version_selected", "lesser_body_compatibility_contract_valid", "lesser_body_completed", "lesser_body_runner_visibility_present", "lesser_body_receipt_key_defined", "mcp_wiring_completed", "mcp_receipt_key_defined"} {
 		requireCheckStatus(t, report, expectedID, statusPass)
 	}
 }
@@ -207,6 +225,7 @@ func TestRunCertification_FullManagedFlowPasses(t *testing.T) {
 func TestRunCertification_LesserUpdateFailurePreservesRetryVisibility(t *testing.T) {
 	t.Parallel()
 	useStubManagedLesserCompatibilityValidator(t, func(context.Context, *http.Client, string, string, string) error { return nil })
+	useStubManagedLesserBodyCompatibilityValidator(t, func(context.Context, *http.Client, string, string, string, string) error { return nil })
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -261,12 +280,13 @@ func TestRunCertification_LesserUpdateFailurePreservesRetryVisibility(t *testing
 func TestRunCertification_RequiredFollowOnPhasesFailWhenSkipped(t *testing.T) {
 	t.Parallel()
 	useStubManagedLesserCompatibilityValidator(t, func(context.Context, *http.Client, string, string, string) error { return nil })
+	useStubManagedLesserBodyCompatibilityValidator(t, func(context.Context, *http.Client, string, string, string, string) error { return nil })
 
 	server := newManagedCertificationServer(
 		t,
-		`{"id":"job-update-2","kind":"lesser","status":"queued","step":"queued","lesser_version":"v1.2.6","lesser_body_version":"v0.2.2"}`,
+		`{"id":"job-update-2","kind":"lesser","status":"queued","step":"queued","lesser_version":"v1.2.6","lesser_body_version":"v0.2.3"}`,
 		[]string{
-			`{"jobs":[{"id":"job-update-2","kind":"lesser","status":"ok","step":"done","note":"updated","run_url":"https://example.com/builds/update","deploy_status":"succeeded","deploy_run_url":"https://example.com/builds/deploy","body_status":"skipped","mcp_status":"skipped","lesser_version":"v1.2.6","lesser_body_version":"v0.2.2"}]}`,
+			`{"jobs":[{"id":"job-update-2","kind":"lesser","status":"ok","step":"done","note":"updated","run_url":"https://example.com/builds/update","deploy_status":"succeeded","deploy_run_url":"https://example.com/builds/deploy","body_status":"skipped","mcp_status":"skipped","lesser_version":"v1.2.6","lesser_body_version":"v0.2.3"}]}`,
 		},
 		nil,
 	)
@@ -277,9 +297,10 @@ func TestRunCertification_RequiredFollowOnPhasesFailWhenSkipped(t *testing.T) {
 		Token:             "token",
 		InstanceSlug:      "simulacrum",
 		LesserVersion:     "v1.2.6",
-		LesserBodyVersion: "v0.2.2",
+		LesserBodyVersion: "v0.2.3",
 		RequireLesserBody: true,
 		RequireMCP:        true,
+		ManagedStage:      "dev",
 		PollInterval:      5 * time.Millisecond,
 		Timeout:           2 * time.Second,
 		OutDir:            t.TempDir(),
@@ -293,7 +314,7 @@ func TestRunCertification_RequiredFollowOnPhasesFailWhenSkipped(t *testing.T) {
 		t.Fatalf("expected fail report, got %#v", report)
 	}
 
-	for _, expectedID := range []string{"lesser_body_completed", "mcp_wiring_completed"} {
+	for _, expectedID := range []string{"lesser_body_completed", "lesser_body_runner_visibility_present", "mcp_wiring_completed"} {
 		requireCheckStatus(t, report, expectedID, statusFail)
 	}
 }
@@ -384,6 +405,21 @@ func TestParseCLI_RejectsInvalidArgs(t *testing.T) {
 			args:    []string{"--base-url", "https://lab.lesser.host", "--token", "token", "--instance-slug", "simulacrum", "--lesser-version", "v1.2.6", "--lesser-github-repo", "   "},
 			wantErr: "--lesser-github-repo is required",
 		},
+		{
+			name:    "missing lesser-body github owner",
+			args:    []string{"--base-url", "https://lab.lesser.host", "--token", "token", "--instance-slug", "simulacrum", "--lesser-version", "v1.2.6", "--lesser-body-github-owner", "   "},
+			wantErr: "--lesser-body-github-owner is required",
+		},
+		{
+			name:    "missing lesser-body github repo",
+			args:    []string{"--base-url", "https://lab.lesser.host", "--token", "token", "--instance-slug", "simulacrum", "--lesser-version", "v1.2.6", "--lesser-body-github-repo", "   "},
+			wantErr: "--lesser-body-github-repo is required",
+		},
+		{
+			name:    "missing managed stage",
+			args:    []string{"--base-url", "https://lab.lesser.host", "--token", "token", "--instance-slug", "simulacrum", "--lesser-version", "v1.2.6", "--managed-stage", "   "},
+			wantErr: "--managed-stage is required",
+		},
 	}
 
 	for _, tt := range tests {
@@ -422,14 +458,15 @@ func TestParseCLI_ParsesValidArgsAndDefaults(t *testing.T) {
 	}
 
 	cfg, err = parseCLI(append(validCLIArgs(),
-		"--lesser-body-version", "v0.2.2",
+		"--lesser-body-version", "v0.2.3",
 		"--require-lesser-body",
 		"--require-mcp",
+		"--managed-stage", "live",
 	))
 	if err != nil {
 		t.Fatalf("parseCLI optional args: %v", err)
 	}
-	if cfg.LesserBodyVersion != "v0.2.2" || !cfg.RequireLesserBody || !cfg.RequireMCP {
+	if cfg.LesserBodyVersion != "v0.2.3" || !cfg.RequireLesserBody || !cfg.RequireMCP || cfg.ManagedStage != "live" {
 		t.Fatalf("expected follow-on args to parse, got %#v", cfg)
 	}
 }
@@ -474,6 +511,7 @@ func TestRunCertification_CompatibilityFailureBlocksManagedUpdate(t *testing.T) 
 	useStubManagedLesserCompatibilityValidator(t, func(context.Context, *http.Client, string, string, string) error {
 		return errors.New("managed Lesser releases before v1.2.6 are not supported by this lesser-host build")
 	})
+	useStubManagedLesserBodyCompatibilityValidator(t, func(context.Context, *http.Client, string, string, string, string) error { return nil })
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatalf("did not expect hosted update request after compatibility failure: %s %s", r.Method, r.URL.Path)
@@ -501,6 +539,80 @@ func TestRunCertification_CompatibilityFailureBlocksManagedUpdate(t *testing.T) 
 	if len(report.Jobs) != 0 {
 		t.Fatalf("expected no job evidence when compatibility fails early, got %#v", report.Jobs)
 	}
+}
+
+func TestRunCertification_BodyVerificationRequiresExplicitVersion(t *testing.T) {
+	t.Parallel()
+
+	useStubManagedLesserCompatibilityValidator(t, func(context.Context, *http.Client, string, string, string) error { return nil })
+	useStubManagedLesserBodyCompatibilityValidator(t, func(context.Context, *http.Client, string, string, string, string) error {
+		t.Fatal("did not expect lesser-body compatibility validation without an explicit version")
+		return nil
+	})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("did not expect hosted update request after missing lesser-body version: %s %s", r.Method, r.URL.Path)
+	}))
+	defer server.Close()
+
+	cfg := cliConfig{
+		BaseURL:           server.URL,
+		Token:             "token",
+		InstanceSlug:      "simulacrum",
+		LesserVersion:     "v1.2.6",
+		RequireLesserBody: true,
+		PollInterval:      5 * time.Millisecond,
+		Timeout:           2 * time.Second,
+		OutDir:            t.TempDir(),
+	}
+
+	report, err := runCertification(context.Background(), cfg, server.Client())
+	if err != nil {
+		t.Fatalf("runCertification: %v", err)
+	}
+	requireCheckStatus(t, report, "lesser_body_version_selected", statusFail)
+	if report.OverallStatus != statusFail {
+		t.Fatalf("expected fail report, got %#v", report)
+	}
+	require.Empty(t, report.Jobs)
+}
+
+func TestRunCertification_BodyCompatibilityFailureBlocksManagedUpdate(t *testing.T) {
+	t.Parallel()
+
+	useStubManagedLesserCompatibilityValidator(t, func(context.Context, *http.Client, string, string, string) error { return nil })
+	useStubManagedLesserBodyCompatibilityValidator(t, func(context.Context, *http.Client, string, string, string, string) error {
+		return errors.New("managed lesser-body releases before v0.2.3 are not supported by this lesser-host build")
+	})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("did not expect hosted update request after lesser-body compatibility failure: %s %s", r.Method, r.URL.Path)
+	}))
+	defer server.Close()
+
+	cfg := cliConfig{
+		BaseURL:           server.URL,
+		Token:             "token",
+		InstanceSlug:      "simulacrum",
+		LesserVersion:     "v1.2.6",
+		LesserBodyVersion: "v0.2.2",
+		RequireLesserBody: true,
+		ManagedStage:      "dev",
+		PollInterval:      5 * time.Millisecond,
+		Timeout:           2 * time.Second,
+		OutDir:            t.TempDir(),
+	}
+
+	report, err := runCertification(context.Background(), cfg, server.Client())
+	if err != nil {
+		t.Fatalf("runCertification: %v", err)
+	}
+	requireCheckStatus(t, report, "lesser_body_version_selected", statusPass)
+	requireCheckStatus(t, report, "lesser_body_compatibility_contract_valid", statusFail)
+	if report.OverallStatus != statusFail {
+		t.Fatalf("expected fail report, got %#v", report)
+	}
+	require.Empty(t, report.Jobs)
 }
 
 func TestCreateUpdate_ErrorResponses(t *testing.T) {

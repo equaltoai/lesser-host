@@ -47,18 +47,21 @@ const (
 )
 
 type cliConfig struct {
-	BaseURL           string
-	Token             string
-	InstanceSlug      string
-	LesserVersion     string
-	LesserBodyVersion string
-	LesserGitHubOwner string
-	LesserGitHubRepo  string
-	RequireLesserBody bool
-	RequireMCP        bool
-	PollInterval      time.Duration
-	Timeout           time.Duration
-	OutDir            string
+	BaseURL               string
+	Token                 string
+	InstanceSlug          string
+	LesserVersion         string
+	LesserBodyVersion     string
+	LesserGitHubOwner     string
+	LesserGitHubRepo      string
+	LesserBodyGitHubOwner string
+	LesserBodyGitHubRepo  string
+	ManagedStage          string
+	RequireLesserBody     bool
+	RequireMCP            bool
+	PollInterval          time.Duration
+	Timeout               time.Duration
+	OutDir                string
 }
 
 type certificationReport struct {
@@ -147,6 +150,7 @@ type certificationClient struct {
 }
 
 var validateManagedLesserCompatibility = provisionworker.ValidateManagedLesserReleaseCompatibility
+var validateManagedLesserBodyCompatibility = provisionworker.ValidateManagedLesserBodyReleaseCompatibility
 
 func main() {
 	cfg, err := parseCLI(os.Args[1:])
@@ -183,6 +187,9 @@ func parseCLI(args []string) (cliConfig, error) {
 	fs.StringVar(&cfg.LesserBodyVersion, "lesser-body-version", "", "optional lesser-body release tag to require for follow-on deploy certification")
 	fs.StringVar(&cfg.LesserGitHubOwner, "lesser-github-owner", "equaltoai", "GitHub owner for Lesser release compatibility checks")
 	fs.StringVar(&cfg.LesserGitHubRepo, "lesser-github-repo", "lesser", "GitHub repo for Lesser release compatibility checks")
+	fs.StringVar(&cfg.LesserBodyGitHubOwner, "lesser-body-github-owner", "equaltoai", "GitHub owner for lesser-body release compatibility checks")
+	fs.StringVar(&cfg.LesserBodyGitHubRepo, "lesser-body-github-repo", "lesser-body", "GitHub repo for lesser-body release compatibility checks")
+	fs.StringVar(&cfg.ManagedStage, "managed-stage", "dev", "managed instance stage to use for stage-scoped lesser-body compatibility checks")
 	fs.BoolVar(&cfg.RequireLesserBody, "require-lesser-body", false, "require lesser-body follow-on deploy to succeed in the certification run")
 	fs.BoolVar(&cfg.RequireMCP, "require-mcp", false, "require MCP follow-on wiring to succeed in the certification run")
 	fs.DurationVar(&cfg.PollInterval, "poll-interval", 10*time.Second, "poll interval for update status")
@@ -221,25 +228,47 @@ func parseCLI(args []string) (cliConfig, error) {
 	cfg.LesserBodyVersion = strings.TrimSpace(cfg.LesserBodyVersion)
 	cfg.LesserGitHubOwner = strings.TrimSpace(cfg.LesserGitHubOwner)
 	cfg.LesserGitHubRepo = strings.TrimSpace(cfg.LesserGitHubRepo)
+	cfg.LesserBodyGitHubOwner = strings.TrimSpace(cfg.LesserBodyGitHubOwner)
+	cfg.LesserBodyGitHubRepo = strings.TrimSpace(cfg.LesserBodyGitHubRepo)
+	cfg.ManagedStage = strings.TrimSpace(cfg.ManagedStage)
 	cfg.OutDir = strings.TrimSpace(cfg.OutDir)
 
+	if err := validateRequiredCLIFields(cfg); err != nil {
+		return cliConfig{}, err
+	}
+
+	return validateParsedCLIConfig(cfg)
+}
+
+func validateRequiredCLIFields(cfg cliConfig) error {
 	parsedBaseURL, err := url.Parse(cfg.BaseURL)
 	if err != nil {
-		return cliConfig{}, fmt.Errorf("--base-url is invalid: %w", err)
+		return fmt.Errorf("--base-url is invalid: %w", err)
 	}
 	if parsedBaseURL.Host == "" {
-		return cliConfig{}, errors.New("--base-url must include a host")
+		return errors.New("--base-url must include a host")
 	}
 	if parsedBaseURL.Scheme != "https" && parsedBaseURL.Scheme != "http" {
-		return cliConfig{}, errors.New("--base-url must use http or https")
+		return errors.New("--base-url must use http or https")
 	}
-	if cfg.LesserGitHubOwner == "" {
+	return nil
+}
+
+func validateParsedCLIConfig(cfg cliConfig) (cliConfig, error) {
+	switch {
+	case cfg.LesserGitHubOwner == "":
 		return cliConfig{}, errors.New("--lesser-github-owner is required")
-	}
-	if cfg.LesserGitHubRepo == "" {
+	case cfg.LesserGitHubRepo == "":
 		return cliConfig{}, errors.New("--lesser-github-repo is required")
+	case cfg.LesserBodyGitHubOwner == "":
+		return cliConfig{}, errors.New("--lesser-body-github-owner is required")
+	case cfg.LesserBodyGitHubRepo == "":
+		return cliConfig{}, errors.New("--lesser-body-github-repo is required")
+	case cfg.ManagedStage == "":
+		return cliConfig{}, errors.New("--managed-stage is required")
+	default:
+		return cfg, nil
 	}
-	return cfg, nil
 }
 
 func runCertification(ctx context.Context, cfg cliConfig, httpClient *http.Client) (*certificationReport, error) {
@@ -282,6 +311,45 @@ func runCertification(ctx context.Context, cfg cliConfig, httpClient *http.Clien
 		Status: statusPass,
 		Detail: "requested release matches the published lesser-host managed compatibility contract",
 	})
+
+	if cfg.RequireLesserBody || cfg.RequireMCP {
+		if strings.TrimSpace(cfg.LesserBodyVersion) == "" {
+			report.Checks = append(report.Checks, certificationCheck{
+				ID:     "lesser_body_version_selected",
+				Status: statusFail,
+				Detail: "--lesser-body-version is required when lesser-body or MCP certification is requested",
+			})
+			report.OverallStatus = statusFail
+			return report, nil
+		}
+		report.Checks = append(report.Checks, certificationCheck{
+			ID:     "lesser_body_version_selected",
+			Status: statusPass,
+			Detail: "requested lesser-body release " + cfg.LesserBodyVersion + " will be validated for managed certification",
+		})
+
+		if err := validateManagedLesserBodyCompatibility(
+			ctx,
+			&http.Client{Timeout: 30 * time.Second},
+			cfg.LesserBodyGitHubOwner,
+			cfg.LesserBodyGitHubRepo,
+			cfg.LesserBodyVersion,
+			cfg.ManagedStage,
+		); err != nil {
+			report.Checks = append(report.Checks, certificationCheck{
+				ID:     "lesser_body_compatibility_contract_valid",
+				Status: statusFail,
+				Detail: err.Error(),
+			})
+			report.OverallStatus = statusFail
+			return report, nil
+		}
+		report.Checks = append(report.Checks, certificationCheck{
+			ID:     "lesser_body_compatibility_contract_valid",
+			Status: statusPass,
+			Detail: "requested lesser-body release matches the published lesser-host managed compatibility contract",
+		})
+	}
 
 	startedJob, err := client.createLesserUpdate(ctx, cfg.InstanceSlug, cfg.LesserVersion, cfg.LesserBodyVersion)
 	if err != nil {
@@ -380,6 +448,11 @@ func certificationChecksForManagedUpdate(job updateJobResponse, evidence []certi
 				ID:     "lesser_body_completed",
 				Status: checkStatusForPhase(bodyEvidence),
 				Detail: phaseCompletionDetail(updateJobKindBody, bodyEvidence),
+			},
+			certificationCheck{
+				ID:     "lesser_body_runner_visibility_present",
+				Status: checkStatusForValue(bodyEvidence.BodyRunURL),
+				Detail: valueDetail(bodyEvidence.BodyRunURL, "lesser-body run link was not preserved in the managed update evidence"),
 			},
 			certificationCheck{
 				ID:     "lesser_body_receipt_key_defined",
@@ -517,11 +590,25 @@ func checkStatusForReceiptKey(job certificationJob) string {
 	return statusPass
 }
 
+func checkStatusForValue(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return statusFail
+	}
+	return statusPass
+}
+
 func receiptDetail(job certificationJob, label string) string {
 	if strings.TrimSpace(job.ReceiptKey) != "" {
 		return job.ReceiptKey
 	}
 	return label + " receipt key could not be derived from the managed update job"
+}
+
+func valueDetail(value string, fallback string) string {
+	if strings.TrimSpace(value) != "" {
+		return strings.TrimSpace(value)
+	}
+	return fallback
 }
 
 func phaseCompletionDetail(kind string, job certificationJob) string {

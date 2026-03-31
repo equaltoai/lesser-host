@@ -8,19 +8,19 @@ on:
         required: true
         type: string
       lesser_body_version:
-        description: Optional lesser-body release tag to require for the managed follow-on phases
+        description: lesser-body release tag to require for the managed follow-on phases; required when body or MCP checks are enabled
         required: false
         default: ""
         type: string
       require_lesser_body:
         description: Require the lesser-body follow-on phase to succeed
         required: true
-        default: true
+        default: false
         type: boolean
       require_mcp:
         description: Require the MCP follow-on wiring phase to succeed
         required: true
-        default: true
+        default: false
         type: boolean
       project_readiness_targets:
         description: Comma-separated parent issues to reflect project 17 readiness
