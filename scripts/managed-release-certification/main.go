@@ -20,6 +20,14 @@ import (
 )
 
 const certificationSchemaVersion = 1
+const lesserBodyCertificationSchemaVersion = 1
+
+const (
+	certificationJSONFileName               = "managed-release-certification.json"
+	certificationMarkdownFileName           = "managed-release-certification.md"
+	lesserBodyCertificationJSONFileName     = "managed-release-certification-lesser-body.json"
+	lesserBodyCertificationMarkdownFileName = "managed-release-certification-lesser-body.md"
+)
 
 const (
 	statusPass    = "pass"
@@ -71,6 +79,16 @@ type certificationReport struct {
 	RequestedRelease certificationRequested `json:"requested_release"`
 	Checks           []certificationCheck   `json:"checks"`
 	Jobs             []certificationJob     `json:"jobs"`
+	OverallStatus    string                 `json:"overall_status"`
+}
+
+type lesserBodyCertificationReport struct {
+	SchemaVersion    int                    `json:"schema_version"`
+	GeneratedAt      string                 `json:"generated_at"`
+	LesserHost       certificationTarget    `json:"lesser_host"`
+	RequestedRelease certificationRequested `json:"requested_release"`
+	Checks           []certificationCheck   `json:"checks"`
+	Job              certificationJob       `json:"job"`
 	OverallStatus    string                 `json:"overall_status"`
 }
 
@@ -784,19 +802,100 @@ func writeCertificationOutputs(outDir string, report *certificationReport) error
 		return err
 	}
 
-	jsonPath := filepath.Join(cleanedOutDir, "managed-release-certification.json")
+	jsonPath := filepath.Join(cleanedOutDir, certificationJSONFileName)
 	jsonBytes, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
 		return err
 	}
 	jsonBytes = append(jsonBytes, '\n')
-	if err := os.WriteFile(jsonPath, jsonBytes, 0o600); err != nil { //nolint:gosec // Evidence files are written only to the operator-selected local certification output directory.
-		return err
+	writeErr := os.WriteFile(jsonPath, jsonBytes, 0o600) //nolint:gosec // Evidence files are written only to the operator-selected local certification output directory.
+	if writeErr != nil {
+		return writeErr
 	}
 
-	markdownPath := filepath.Join(cleanedOutDir, "managed-release-certification.md")
-	if err := os.WriteFile(markdownPath, []byte(renderMarkdownSummary(report)), 0o600); err != nil { //nolint:gosec // Evidence files are written only to the operator-selected local certification output directory.
+	markdownPath := filepath.Join(cleanedOutDir, certificationMarkdownFileName)
+	writeErr = os.WriteFile(markdownPath, []byte(renderMarkdownSummary(report)), 0o600) //nolint:gosec // Evidence files are written only to the operator-selected local certification output directory.
+	if writeErr != nil {
+		return writeErr
+	}
+
+	bodyReport := buildLesserBodyCertificationReport(report)
+	if bodyReport == nil {
+		removeErr := removeIfExists(filepath.Join(cleanedOutDir, lesserBodyCertificationJSONFileName))
+		if removeErr != nil {
+			return removeErr
+		}
+		return removeIfExists(filepath.Join(cleanedOutDir, lesserBodyCertificationMarkdownFileName))
+	}
+
+	bodyJSONBytes, err := json.MarshalIndent(bodyReport, "", "  ")
+	if err != nil {
 		return err
+	}
+	bodyJSONBytes = append(bodyJSONBytes, '\n')
+	writeErr = os.WriteFile(filepath.Join(cleanedOutDir, lesserBodyCertificationJSONFileName), bodyJSONBytes, 0o600) //nolint:gosec // Evidence files are written only to the operator-selected local certification output directory.
+	if writeErr != nil {
+		return writeErr
+	}
+	writeErr = os.WriteFile(filepath.Join(cleanedOutDir, lesserBodyCertificationMarkdownFileName), []byte(renderLesserBodyMarkdownSummary(bodyReport)), 0o600) //nolint:gosec // Evidence files are written only to the operator-selected local certification output directory.
+	if writeErr != nil {
+		return writeErr
+	}
+	return nil
+}
+
+func buildLesserBodyCertificationReport(report *certificationReport) *lesserBodyCertificationReport {
+	if report == nil || !report.RequestedRelease.RunLesserBody {
+		return nil
+	}
+
+	bodyChecks := make([]certificationCheck, 0, len(report.Checks))
+	for _, check := range report.Checks {
+		if strings.HasPrefix(strings.TrimSpace(check.ID), "lesser_body_") {
+			bodyChecks = append(bodyChecks, check)
+		}
+	}
+	if len(bodyChecks) == 0 {
+		bodyChecks = append(bodyChecks, certificationCheck{
+			ID:     "lesser_body_evidence_present",
+			Status: statusFail,
+			Detail: "body-enabled certification did not emit lesser-body checks",
+		})
+	}
+
+	bodyJob := findCertificationJob(report.Jobs, updateJobKindBody)
+	if strings.TrimSpace(bodyJob.JobID) == "" {
+		bodyJob = certificationJob{
+			Kind:             updateJobKindBody,
+			Status:           updateJobStatusError,
+			Step:             "evidence.missing",
+			ErrorCode:        "lesser_body_evidence_missing",
+			ErrorMessage:     "lesser-body phase evidence was not present in the managed certification report",
+			RequestedVersion: strings.TrimSpace(report.RequestedRelease.LesserBodyVersion),
+		}
+		if failedCheck := firstFailingCheck(bodyChecks); failedCheck != nil {
+			bodyJob.Step = "preflight.failed"
+			bodyJob.ErrorCode = "lesser_body_certification_failed"
+			bodyJob.ErrorMessage = strings.TrimSpace(failedCheck.Detail)
+		}
+	}
+
+	return &lesserBodyCertificationReport{
+		SchemaVersion:    lesserBodyCertificationSchemaVersion,
+		GeneratedAt:      report.GeneratedAt,
+		LesserHost:       report.LesserHost,
+		RequestedRelease: report.RequestedRelease,
+		Checks:           bodyChecks,
+		Job:              bodyJob,
+		OverallStatus:    overallStatus(bodyChecks),
+	}
+}
+
+func firstFailingCheck(checks []certificationCheck) *certificationCheck {
+	for i := range checks {
+		if strings.TrimSpace(checks[i].Status) == statusFail {
+			return &checks[i]
+		}
 	}
 	return nil
 }
@@ -806,6 +905,28 @@ func renderMarkdownSummary(report *certificationReport) string {
 	writeMarkdownHeader(&b, report)
 	writeMarkdownChecks(&b, report.Checks)
 	writeMarkdownJobs(&b, report.Jobs)
+	return b.String()
+}
+
+func renderLesserBodyMarkdownSummary(report *lesserBodyCertificationReport) string {
+	var b strings.Builder
+	b.WriteString("# lesser-body managed certification\n\n")
+	writeMarkdownBullet(&b, "Generated at", report.GeneratedAt)
+	writeMarkdownBullet(&b, "Base URL", report.LesserHost.BaseURL)
+	writeMarkdownBullet(&b, "Instance slug", report.LesserHost.InstanceSlug)
+	writeMarkdownBullet(&b, "Lesser version", report.RequestedRelease.LesserVersion)
+	writeMarkdownBullet(&b, "lesser-body version", report.RequestedRelease.LesserBodyVersion)
+	writeMarkdownBullet(&b, "Overall status", report.OverallStatus)
+	b.WriteString("\n## Checks\n\n")
+	for _, check := range report.Checks {
+		b.WriteString("- `" + safeMarkdownText(check.ID) + "`: `" + safeMarkdownText(check.Status) + "`")
+		if strings.TrimSpace(check.Detail) != "" {
+			b.WriteString(" - " + safeMarkdownText(check.Detail))
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString("\n## Job\n\n")
+	writeMarkdownJob(&b, report.Job)
 	return b.String()
 }
 
@@ -892,6 +1013,14 @@ func safeMarkdownText(value string) string {
 	escaped = strings.ReplaceAll(escaped, "\r", " ")
 	escaped = strings.ReplaceAll(escaped, "\n", " ")
 	return escaped
+}
+
+func removeIfExists(path string) error {
+	err := os.Remove(path) //nolint:gosec // Evidence files are removed only from the operator-selected local output directory.
+	if err == nil || errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
 }
 
 func (c *certificationClient) createLesserUpdate(ctx context.Context, slug string, lesserVersion string, lesserBodyVersion string) (updateJobResponse, error) {

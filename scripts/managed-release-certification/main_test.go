@@ -166,6 +166,9 @@ func TestRunCertification_LesserUpdatePasses(t *testing.T) {
 	if parsed.OverallStatus != statusPass {
 		t.Fatalf("expected written pass report, got %#v", parsed)
 	}
+	if _, err := os.Stat(filepath.Join(cfg.OutDir, lesserBodyCertificationJSONFileName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("did not expect lesser-body evidence file for a Lesser-only certification run: %v", err)
+	}
 }
 
 func TestRunCertification_FullManagedFlowPasses(t *testing.T) {
@@ -220,6 +223,94 @@ func TestRunCertification_FullManagedFlowPasses(t *testing.T) {
 	for _, expectedID := range []string{"lesser_body_version_selected", "lesser_body_compatibility_contract_valid", "lesser_body_completed", "lesser_body_runner_visibility_present", "lesser_body_receipt_key_defined", "mcp_wiring_completed", "mcp_receipt_key_defined"} {
 		requireCheckStatus(t, report, expectedID, statusPass)
 	}
+}
+
+func TestWriteCertificationOutputs_WritesLesserBodyEvidenceBundle(t *testing.T) {
+	t.Parallel()
+
+	report := &certificationReport{
+		SchemaVersion: certificationSchemaVersion,
+		GeneratedAt:   "2026-03-30T16:45:00Z",
+		LesserHost: certificationTarget{
+			BaseURL:      "https://lab.lesser.host",
+			InstanceSlug: "simulacrum",
+		},
+		RequestedRelease: certificationRequested{
+			LesserVersion:     "v1.2.6",
+			LesserBodyVersion: "v0.2.3",
+			RunLesser:         true,
+			RunLesserBody:     true,
+			RunMCP:            true,
+		},
+		Checks: []certificationCheck{
+			{ID: "compatibility_contract_valid", Status: statusPass},
+			{ID: "lesser_body_version_selected", Status: statusPass, Detail: "requested lesser-body release v0.2.3 will be validated for managed certification"},
+			{ID: "lesser_body_compatibility_contract_valid", Status: statusPass, Detail: "requested lesser-body release matches the published lesser-host managed compatibility contract"},
+			{ID: "lesser_body_completed", Status: statusPass, Detail: "lesser-body managed deploy completed"},
+			{ID: "lesser_body_runner_visibility_present", Status: statusPass, Detail: "https://example.com/builds/body"},
+			{ID: "lesser_body_receipt_key_defined", Status: statusPass, Detail: "managed/updates/simulacrum/job-update-1/body-state.json"},
+		},
+		Jobs: []certificationJob{
+			{
+				Kind:             updateJobKindBody,
+				JobID:            "job-update-1",
+				Status:           updateJobStatusOK,
+				Step:             "done",
+				RunURL:           "https://example.com/builds/body",
+				BodyRunURL:       "https://example.com/builds/body",
+				ReceiptKey:       "managed/updates/simulacrum/job-update-1/body-state.json",
+				RequestedVersion: "v0.2.3",
+			},
+		},
+		OverallStatus: statusPass,
+	}
+
+	outDir := t.TempDir()
+	require.NoError(t, writeCertificationOutputs(outDir, report))
+
+	raw, err := os.ReadFile(filepath.Join(outDir, lesserBodyCertificationJSONFileName))
+	require.NoError(t, err)
+
+	var parsed lesserBodyCertificationReport
+	require.NoError(t, json.Unmarshal(raw, &parsed))
+	require.Equal(t, statusPass, parsed.OverallStatus)
+	require.Equal(t, "v0.2.3", parsed.RequestedRelease.LesserBodyVersion)
+	require.Equal(t, updateJobKindBody, parsed.Job.Kind)
+	require.Len(t, parsed.Checks, 5)
+
+	markdownBytes, err := os.ReadFile(filepath.Join(outDir, lesserBodyCertificationMarkdownFileName))
+	require.NoError(t, err)
+	require.Contains(t, string(markdownBytes), "# lesser-body managed certification")
+	require.Contains(t, string(markdownBytes), "lesser-body version")
+}
+
+func TestWriteCertificationOutputs_RemovesStaleLesserBodyEvidenceWhenNotRequired(t *testing.T) {
+	t.Parallel()
+
+	outDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(outDir, lesserBodyCertificationJSONFileName), []byte("{}\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(outDir, lesserBodyCertificationMarkdownFileName), []byte("# stale\n"), 0o600))
+
+	report := &certificationReport{
+		SchemaVersion: certificationSchemaVersion,
+		GeneratedAt:   "2026-03-30T16:45:00Z",
+		LesserHost: certificationTarget{
+			BaseURL:      "https://lab.lesser.host",
+			InstanceSlug: "simulacrum",
+		},
+		RequestedRelease: certificationRequested{
+			LesserVersion: "v1.2.6",
+			RunLesser:     true,
+		},
+		Checks:        []certificationCheck{{ID: "compatibility_contract_valid", Status: statusPass}},
+		OverallStatus: statusPass,
+	}
+
+	require.NoError(t, writeCertificationOutputs(outDir, report))
+	_, jsonErr := os.Stat(filepath.Join(outDir, lesserBodyCertificationJSONFileName))
+	require.ErrorIs(t, jsonErr, os.ErrNotExist)
+	_, markdownErr := os.Stat(filepath.Join(outDir, lesserBodyCertificationMarkdownFileName))
+	require.ErrorIs(t, markdownErr, os.ErrNotExist)
 }
 
 func TestRunCertification_LesserUpdateFailurePreservesRetryVisibility(t *testing.T) {

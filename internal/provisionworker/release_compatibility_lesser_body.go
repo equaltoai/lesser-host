@@ -13,18 +13,18 @@ const (
 )
 
 type ManagedLesserBodyCompatibilityContract struct {
-	SchemaVersion         int                                       `json:"schema_version"`
-	ReleaseName           string                                    `json:"release_name"`
-	MinimumReleaseVersion string                                    `json:"minimum_release_version"`
-	ReleaseManifestAsset  string                                    `json:"release_manifest_asset"`
-	ReleaseManifestSchema int                                       `json:"release_manifest_schema"`
-	Checksums             ManagedReleaseChecksumsContract            `json:"checksums"`
-	DeployManifest        ManagedLesserBodyDeployManifestContract    `json:"deploy_manifest"`
-	Deploy                ManagedLesserBodyDeployContract            `json:"deploy"`
-	LambdaZip             ManagedLesserBodyPathContract              `json:"lambda_zip"`
-	DeployScript          ManagedLesserBodyPathContract              `json:"deploy_script"`
-	SupportedStages       []string                                  `json:"supported_stages"`
-	DeployTemplates       ManagedLesserBodyDeployTemplatesContract   `json:"deploy_templates"`
+	SchemaVersion         int                                      `json:"schema_version"`
+	ReleaseName           string                                   `json:"release_name"`
+	MinimumReleaseVersion string                                   `json:"minimum_release_version"`
+	ReleaseManifestAsset  string                                   `json:"release_manifest_asset"`
+	ReleaseManifestSchema int                                      `json:"release_manifest_schema"`
+	Checksums             ManagedReleaseChecksumsContract          `json:"checksums"`
+	DeployManifest        ManagedLesserBodyDeployManifestContract  `json:"deploy_manifest"`
+	Deploy                ManagedLesserBodyDeployContract          `json:"deploy"`
+	LambdaZip             ManagedLesserBodyPathContract            `json:"lambda_zip"`
+	DeployScript          ManagedLesserBodyPathContract            `json:"deploy_script"`
+	SupportedStages       []string                                 `json:"supported_stages"`
+	DeployTemplates       ManagedLesserBodyDeployTemplatesContract `json:"deploy_templates"`
 }
 
 type ManagedReleaseChecksumsContract struct {

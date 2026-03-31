@@ -70,6 +70,13 @@ Required files:
 - `managed-release-certification.md`
   - operator-readable summary for release and project decisions
 
+Required when the certification run includes `lesser-body`:
+
+- `managed-release-certification-lesser-body.json`
+  - machine-readable lesser-body certification evidence extracted from the canonical body-enabled run
+- `managed-release-certification-lesser-body.md`
+  - operator-readable lesser-body certification summary
+
 Recommended companion artifacts:
 
 - raw API request/response captures if needed for debugging
@@ -85,6 +92,14 @@ The canonical report schema lives at:
 An example report lives at:
 
 - `docs/spec/managed-release-certification.example.json`
+
+The body-enabled companion evidence schema lives at:
+
+- `docs/spec/managed-release-body-certification.schema.json`
+
+An example body-enabled companion report lives at:
+
+- `docs/spec/managed-release-body-certification.example.json`
 
 The report records:
 

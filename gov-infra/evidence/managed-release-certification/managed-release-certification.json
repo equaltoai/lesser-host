@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-03-30T16:45:00Z",
+  "lesser_host": {
+    "base_url": "https://lab.lesser.host",
+    "instance_slug": "simulacrum"
+  },
+  "requested_release": {
+    "lesser_version": "v1.2.6",
+    "lesser_body_version": "v0.2.3",
+    "run_lesser": true,
+    "run_lesser_body": true,
+    "run_mcp": true
+  },
+  "checks": [
+    {
+      "id": "compatibility_contract_valid",
+      "status": "pass",
+      "detail": "requested release matches the lesser-host managed compatibility contract"
+    },
+    {
+      "id": "lesser_body_version_selected",
+      "status": "pass",
+      "detail": "requested lesser-body release v0.2.3 will be validated for managed certification"
+    },
+    {
+      "id": "lesser_body_compatibility_contract_valid",
+      "status": "pass",
+      "detail": "requested lesser-body release matches the published lesser-host managed compatibility contract"
+    },
+    {
+      "id": "hosted_update_completed",
+      "status": "pass",
+      "detail": "Lesser update job completed through lesser-host"
+    },
+    {
+      "id": "lesser_body_completed",
+      "status": "pass",
+      "detail": "lesser-body managed deploy completed"
+    },
+    {
+      "id": "lesser_body_runner_visibility_present",
+      "status": "pass",
+      "detail": "https://console.aws.amazon.com/codebuild/home?#/builds/job-update-1-body/view/new"
+    },
+    {
+      "id": "mcp_wiring_completed",
+      "status": "pass",
+      "detail": "MCP follow-on wiring completed"
+    }
+  ],
+  "jobs": [
+    {
+      "kind": "lesser",
+      "job_id": "job-update-1",
+      "status": "ok",
+      "step": "done",
+      "note": "updated",
+      "run_url": "https://console.aws.amazon.com/codebuild/home?#/builds/job-update-1-deploy/view/new",
+      "deploy_run_url": "https://console.aws.amazon.com/codebuild/home?#/builds/job-update-1-deploy/view/new",
+      "receipt_key": "managed/updates/simulacrum/job-update-1/state.json",
+      "requested_version": "v1.2.6"
+    },
+    {
+      "kind": "lesser-body",
+      "job_id": "job-update-1",
+      "status": "ok",
+      "step": "done",
+      "note": "lesser-body updated",
+      "run_url": "https://console.aws.amazon.com/codebuild/home?#/builds/job-update-1-body/view/new",
+      "body_run_url": "https://console.aws.amazon.com/codebuild/home?#/builds/job-update-1-body/view/new",
+      "receipt_key": "managed/updates/simulacrum/job-update-1/body-state.json",
+      "requested_version": "v0.2.3"
+    },
+    {
+      "kind": "mcp",
+      "job_id": "job-update-1",
+      "status": "ok",
+      "step": "done",
+      "note": "MCP updated",
+      "run_url": "https://console.aws.amazon.com/codebuild/home?#/builds/job-update-1-mcp/view/new",
+      "mcp_run_url": "https://console.aws.amazon.com/codebuild/home?#/builds/job-update-1-mcp/view/new",
+      "receipt_key": "managed/updates/simulacrum/job-update-1/mcp-state.json",
+      "requested_version": "v0.2.3"
+    }
+  ],
+  "overall_status": "pass"
+}

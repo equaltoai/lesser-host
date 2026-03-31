@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://equalto.ai/schemas/lesser-host/managed-release-body-certification.schema.json",
+  "title": "Managed Release lesser-body Certification Report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "generated_at",
+    "lesser_host",
+    "requested_release",
+    "checks",
+    "job",
+    "overall_status"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "lesser_host": {
+      "$ref": "managed-release-certification.schema.json#/$defs/target"
+    },
+    "requested_release": {
+      "$ref": "managed-release-certification.schema.json#/$defs/requested_release"
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "$ref": "managed-release-certification.schema.json#/$defs/check"
+      }
+    },
+    "job": {
+      "$ref": "managed-release-certification.schema.json#/$defs/job"
+    },
+    "overall_status": {
+      "type": "string",
+      "enum": [
+        "pass",
+        "fail"
+      ]
+    }
+  }
+}
