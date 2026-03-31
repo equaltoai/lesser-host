@@ -76,6 +76,19 @@ Update jobs return the failure and recovery fields operators need directly from 
 The canonical retry/recovery contract for failed release-driven managed updates is documented in
 `docs/managed-update-recovery.md`.
 
+For `body_only` updates, portal and operator surfaces should present the `error_code` distinctions directly:
+
+- `body_release_preflight_failed`: the requested `lesser-body` release was rejected before CodeBuild started. Expect
+  `failed_phase=body`, `body_status=failed`, and usually no `body_run_url`.
+- `body_deploy_failed`: the `lesser-body` runner reached a terminal CodeBuild failure. Expect `failed_phase=body`,
+  `body_status=failed`, and a preserved `body_run_url` / `run_url` when the runner deep link was observed.
+- `body_receipt_load_failed`: the body runner may have completed, but receipt ingest failed afterward. Expect
+  `failed_phase=body`, `body_status=failed`, and a `body_error` / `error_message` that names receipt loading.
+
+Portal and operator UIs should use those fields to explain recovery steps instead of asking operators to inspect raw
+table state. Once the latest job is terminal `error`, the supported recovery path is simply to correct the underlying
+release or receipt problem and submit a fresh `POST /api/v1/portal/instances/{slug}/updates` request.
+
 ### Budgets
 
 - `GET /api/v1/portal/instances/{slug}/budgets` (list)
