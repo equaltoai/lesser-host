@@ -1902,7 +1902,11 @@ func (s *Server) failCompletedUpdateRunnerWait(
 	info deployRunnerInfo,
 ) (time.Duration, bool, error) {
 	msg := spec.failedMessage
-	if detail := updateJobPhaseDetail(spec.phase, info.CurrentPhase, info.FailureDetail); detail != "" {
+	failureDetail := info.FailureDetail
+	if strings.TrimSpace(spec.phase) == updatePhaseBody {
+		failureDetail = s.bestUpdateBodyFailureDetail(ctx, job, failureDetail)
+	}
+	if detail := updateJobPhaseDetail(spec.phase, info.CurrentPhase, failureDetail); detail != "" {
 		msg += " (" + detail + ")"
 	}
 	deepLink := strings.TrimSpace(info.DeepLink)

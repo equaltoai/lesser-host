@@ -44,6 +44,17 @@ type mcpWiringReceipt struct {
 	ManagedDeployArtifacts *managedDeployArtifactsReceipt `json:"managed_deploy_artifacts,omitempty"`
 }
 
+type managedLesserBodyTemplateArtifact struct {
+	Version           int    `json:"version"`
+	Status            string `json:"status"`
+	LesserBodyVersion string `json:"lesser_body_version,omitempty"`
+	TemplatePath      string `json:"template_path,omitempty"`
+	StackName         string `json:"stack_name,omitempty"`
+	VerificationMode  string `json:"verification_mode,omitempty"`
+	Detail            string `json:"detail,omitempty"`
+	VerifiedAt        string `json:"verified_at,omitempty"`
+}
+
 type managedDeployArtifactsReceipt struct {
 	Mode                string                             `json:"mode"`
 	ChecksumsPath       string                             `json:"checksums_path,omitempty"`
@@ -164,6 +175,19 @@ func (s *Server) loadMCPReceiptFromS3(ctx context.Context, bucket string, key st
 	}
 
 	var parsed mcpWiringReceipt
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return raw, nil, err
+	}
+	return raw, &parsed, nil
+}
+
+func (s *Server) loadManagedLesserBodyTemplateArtifactFromS3(ctx context.Context, bucket string, key string) (string, *managedLesserBodyTemplateArtifact, error) {
+	raw, err := s.loadS3ObjectString(ctx, bucket, key)
+	if err != nil {
+		return "", nil, err
+	}
+
+	var parsed managedLesserBodyTemplateArtifact
 	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
 		return raw, nil, err
 	}

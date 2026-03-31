@@ -81,7 +81,9 @@ For `body_only` updates, portal and operator surfaces should present the `error_
 - `body_release_preflight_failed`: the requested `lesser-body` release was rejected before CodeBuild started. Expect
   `failed_phase=body`, `body_status=failed`, and usually no `body_run_url`.
 - `body_deploy_failed`: the `lesser-body` runner reached a terminal CodeBuild failure. Expect `failed_phase=body`,
-  `body_status=failed`, and a preserved `body_run_url` / `run_url` when the runner deep link was observed.
+  `body_status=failed`, a preserved `body_run_url` / `run_url` when the runner deep link was observed, and
+  `body_error` / `error_message` that keep the underlying helper or CloudFormation validation detail when the runner
+  uploaded it.
 - `body_receipt_load_failed`: the body runner may have completed, but receipt ingest failed afterward. Expect
   `failed_phase=body`, `body_status=failed`, and a `body_error` / `error_message` that names receipt loading.
 

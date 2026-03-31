@@ -71,7 +71,8 @@ of trying to infer failure type from free-form text.
   - Expected evidence:
     - `failed_phase=body`
     - `body_status=failed`
-    - `body_error` and `error_message` describe the sanitized terminal runner failure
+    - `body_error` and `error_message` preserve the best available sanitized helper or CloudFormation failure detail;
+      template-validation failures should remain visible instead of collapsing to only `exit status 1`
     - `body_run_url` and `run_url` preserve the CodeBuild deep link when one was observed
   - Recovery: inspect the preserved CodeBuild link, fix the release or configuration problem, and submit a new update
     job. No DynamoDB edits are required.

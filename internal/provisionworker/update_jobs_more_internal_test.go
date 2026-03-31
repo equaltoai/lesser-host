@@ -297,6 +297,61 @@ func TestAdvanceUpdateReceiptIngest_RetriesAndFails(t *testing.T) {
 	require.Equal(t, "receipt_load_failed", job.ErrorCode)
 }
 
+func TestAdvanceUpdateBodyDeployWait_UsesUploadedBodyFailureArtifact(t *testing.T) {
+	t.Parallel()
+
+	db := ttmocks.NewMockExtendedDB()
+	st := store.New(db)
+	srv := &Server{
+		cfg:   config.Config{ArtifactBucketName: "artifacts"},
+		store: st,
+		s3: &fakeS3{byKey: map[string]*s3.GetObjectOutput{
+			"managed/updates/slug/j-body-artifact/body-failure.json": {
+				Body: io.NopCloser(strings.NewReader(`{"version":1,"status":"failed","lesser_body_version":"v0.2.4","template_path":"lesser-body-managed-dev.template.json","stack_name":"slug-dev-lesser-body","verification_mode":"cloudformation_deploy_no_execute_changeset","detail":"Template format error: Every Default member must be a string."}`)),
+			},
+			"managed/updates/slug/j-body-artifact/body-state.json": {
+				Body: io.NopCloser(strings.NewReader(" ")),
+			},
+		}},
+		cb: &fakeCodebuild{
+			batchOut: &codebuild.BatchGetBuildsOutput{
+				Builds: []cbtypes.Build{{
+					BuildStatus:  cbtypes.StatusTypeFailed,
+					CurrentPhase: aws.String("BUILD"),
+					Logs:         &cbtypes.LogsLocation{DeepLink: aws.String("https://logs.example/body-artifact")},
+					Phases: []cbtypes.BuildPhase{{
+						PhaseType:   cbtypes.BuildPhaseType("BUILD"),
+						PhaseStatus: cbtypes.StatusTypeFailed,
+						Contexts: []cbtypes.PhaseContext{{
+							Message: aws.String("COMMAND_EXECUTION_ERROR: Error while executing command: bash ./deploy-lesser-body-from-release.sh Reason: exit status 1"),
+						}},
+					}},
+				}},
+			},
+		},
+	}
+
+	job := &models.UpdateJob{
+		ID:           "j-body-artifact",
+		InstanceSlug: "slug",
+		Status:       models.UpdateJobStatusRunning,
+		Step:         updateStepBodyDeployWait,
+		RunID:        "run-body-artifact",
+		MaxAttempts:  3,
+	}
+
+	delay, done, err := srv.advanceUpdateBodyDeployWait(context.Background(), job, "req", time.Unix(2, 0).UTC())
+	require.NoError(t, err)
+	require.False(t, done)
+	require.Zero(t, delay)
+	require.Equal(t, models.UpdateJobStatusError, job.Status)
+	require.Equal(t, "body_deploy_failed", job.ErrorCode)
+	require.Contains(t, job.ErrorMessage, "cloudformation_deploy_no_execute_changeset lesser-body-managed-dev.template.json: Template format error: Every Default member must be a string")
+	require.Contains(t, job.ErrorMessage, "CodeBuild: https://logs.example/body-artifact")
+	require.NotContains(t, job.ErrorMessage, "command execution failed (exit status 1)")
+	require.Contains(t, job.BodyError, "Template format error: Every Default member must be a string")
+}
+
 func TestAdvanceUpdateDeployWait_MissingRunnerPastGraceFails(t *testing.T) {
 	t.Parallel()
 
