@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 )
 
@@ -225,6 +226,97 @@ func validateManagedLesserBodyReleaseDeployMetadata(parsed *managedLesserBodyRel
 	return nil
 }
 
+func validateManagedLesserBodyTemplateJSON(raw []byte, templatePath string) error {
+	raw = []byte(strings.TrimSpace(string(raw)))
+	templatePath = strings.TrimSpace(templatePath)
+	if len(raw) == 0 {
+		return managedTemplatePathErrorf(templatePath, "is empty")
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return managedTemplatePathErrorf(templatePath, "is not valid JSON: %v", err)
+	}
+
+	parameters, ok, err := managedTemplateParameters(parsed, templatePath)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
+	for name, rawParam := range parameters {
+		param, ok := rawParam.(map[string]any)
+		if !ok {
+			return managedTemplateParameterErrorf(templatePath, name, "must be an object")
+		}
+		if err := validateManagedTemplateParameterDefault(templatePath, name, param); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func managedTemplateParameters(parsed map[string]any, templatePath string) (map[string]any, bool, error) {
+	parametersRaw, ok := parsed["Parameters"]
+	if !ok || parametersRaw == nil {
+		return nil, false, nil
+	}
+	parameters, ok := parametersRaw.(map[string]any)
+	if !ok {
+		return nil, false, managedTemplatePathErrorf(templatePath, "Parameters must be an object")
+	}
+	return parameters, true, nil
+}
+
+func validateManagedTemplateParameterDefault(templatePath string, name string, param map[string]any) error {
+	defaultValue, ok := param["Default"]
+	if !ok || defaultValue == nil {
+		return nil
+	}
+	if _, ok := defaultValue.(string); ok {
+		return nil
+	}
+	return managedTemplateParameterErrorf(
+		templatePath,
+		name,
+		"has non-string Default (%s); CloudFormation requires every Default member to be a string",
+		managedTemplateValueType(defaultValue),
+	)
+}
+
+func managedTemplateValueType(value any) string {
+	switch value.(type) {
+	case bool:
+		return "boolean"
+	case float64:
+		return "number"
+	case []any:
+		return "array"
+	case map[string]any:
+		return "object"
+	default:
+		return "unknown"
+	}
+}
+
+func managedTemplatePathErrorf(templatePath string, format string, args ...any) error {
+	templatePath = strings.TrimSpace(templatePath)
+	if templatePath == "" {
+		return fmt.Errorf("managed template "+format, args...)
+	}
+	return fmt.Errorf("managed template %s "+format, append([]any{templatePath}, args...)...)
+}
+
+func managedTemplateParameterErrorf(templatePath string, name string, format string, args ...any) error {
+	templatePath = strings.TrimSpace(templatePath)
+	name = strings.TrimSpace(name)
+	if templatePath == "" {
+		return fmt.Errorf("managed template parameter %s "+format, append([]any{name}, args...)...)
+	}
+	return fmt.Errorf("managed template %s parameter %s "+format, append([]any{templatePath, name}, args...)...)
+}
+
 func buildManagedLesserBodyChecksumRequirements(parsed *managedLesserBodyReleaseManifest, stage string) map[string]string {
 	required := map[string]string{
 		managedLesserBodyReleaseManifestAsset:                      "",
@@ -234,6 +326,90 @@ func buildManagedLesserBodyChecksumRequirements(parsed *managedLesserBodyRelease
 		fmt.Sprintf("lesser-body-managed-%s.template.json", stage): strings.TrimSpace(parsed.Artifacts.DeployTemplates[stage].SHA256),
 	}
 	return required
+}
+
+func validateManagedLesserBodyReleaseTemplatePreflight(
+	ctx context.Context,
+	client *http.Client,
+	owner string,
+	repo string,
+	version string,
+	stage string,
+) (string, error) {
+	version = strings.TrimSpace(version)
+	stage = normalizeManagedLesserStage(stage)
+	if stage == "" {
+		stage = managedStageDev
+	}
+
+	raw, err := fetchManagedGitHubReleaseAsset(
+		ctx,
+		client,
+		owner,
+		repo,
+		version,
+		managedLesserBodyReleaseManifestAsset,
+	)
+	if err != nil {
+		return "", err
+	}
+	parsed, err := parseManagedLesserBodyReleaseManifest(raw)
+	if err != nil {
+		return "", err
+	}
+	if validateErr := validateManagedLesserBodyReleaseManifest(parsed, version, stage); validateErr != nil {
+		return "", validateErr
+	}
+
+	checksumsRaw, err := fetchManagedGitHubReleaseAsset(
+		ctx,
+		client,
+		owner,
+		repo,
+		version,
+		requiredLesserBodyChecksumsPath,
+	)
+	if err != nil {
+		return "", err
+	}
+	checksums, parseErr := parseManagedReleaseChecksums(checksumsRaw)
+	if parseErr != nil {
+		return "", parseErr
+	}
+	if checksumErr := validateManagedReleaseChecksumEntries(checksums, buildManagedLesserBodyChecksumRequirements(parsed, stage)); checksumErr != nil {
+		return "", checksumErr
+	}
+
+	templatePath := strings.TrimSpace(parsed.Artifacts.DeployTemplates[stage].Path)
+	templateRaw, err := fetchManagedGitHubReleaseAsset(
+		ctx,
+		client,
+		owner,
+		repo,
+		version,
+		templatePath,
+	)
+	if err != nil {
+		return templatePath, err
+	}
+	if err := validateManagedLesserBodyTemplateJSON(templateRaw, templatePath); err != nil {
+		return templatePath, err
+	}
+	return templatePath, nil
+}
+
+func ValidateManagedLesserBodyReleaseTemplatePreflight(
+	ctx context.Context,
+	client *http.Client,
+	owner string,
+	repo string,
+	version string,
+	stage string,
+) (string, error) {
+	if err := ValidateManagedLesserBodyReleaseVersionSupported(version); err != nil {
+		return "", err
+	}
+	return validateManagedLesserBodyReleaseTemplatePreflight(ctx, client, owner, repo, version, stage)
 }
 
 func (s *Server) preflightManagedLesserBodyRelease(ctx context.Context, version string, stage string) error {
@@ -249,7 +425,17 @@ func (s *Server) preflightManagedLesserBodyRelease(ctx context.Context, version 
 	if owner == "" || repo == "" {
 		return fmt.Errorf("lesser-body github release source is not configured")
 	}
-	return ValidateManagedLesserBodyReleaseCompatibility(
+	if err := ValidateManagedLesserBodyReleaseCompatibility(
+		ctx,
+		managedReleasePreflightHTTPClient(s),
+		owner,
+		repo,
+		version,
+		stage,
+	); err != nil {
+		return err
+	}
+	_, err := ValidateManagedLesserBodyReleaseTemplatePreflight(
 		ctx,
 		managedReleasePreflightHTTPClient(s),
 		owner,
@@ -257,4 +443,5 @@ func (s *Server) preflightManagedLesserBodyRelease(ctx context.Context, version 
 		version,
 		stage,
 	)
+	return err
 }
