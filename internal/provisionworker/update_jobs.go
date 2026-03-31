@@ -129,18 +129,6 @@ func initializeManagedUpdatePhaseState(job *models.UpdateJob) {
 	}
 }
 
-func updateJobPhaseDetail(phase string, currentPhase string, failureDetail string) string {
-	currentPhase = strings.TrimSpace(currentPhase)
-	failureDetail = strings.TrimSpace(failureDetail)
-	if currentPhase != "" && failureDetail != "" {
-		return currentPhase + ": " + failureDetail
-	}
-	if currentPhase != "" {
-		return currentPhase
-	}
-	return failureDetail
-}
-
 func setUpdateJobActivePhase(job *models.UpdateJob, phase string) {
 	if job == nil {
 		return
@@ -1604,13 +1592,30 @@ func (s *Server) failManagedLesserReleasePreflight(
 	job *models.UpdateJob,
 	requestID string,
 	now time.Time,
+	phase string,
 	code string,
+	err error,
+) error {
+	return s.failManagedReleasePreflight(ctx, job, requestID, now, phase, code, "Lesser", err)
+}
+
+func (s *Server) failManagedReleasePreflight(
+	ctx context.Context,
+	job *models.UpdateJob,
+	requestID string,
+	now time.Time,
+	phase string,
+	code string,
+	releaseName string,
 	err error,
 ) error {
 	if err == nil {
 		return nil
 	}
-	msg := "Lesser release preflight failed: " + compactErr(err)
+	msg := strings.TrimSpace(releaseName) + " release preflight failed: " + compactErr(err)
+	if job != nil && strings.TrimSpace(phase) != "" {
+		setUpdateJobPhaseFailed(job, phase, msg)
+	}
 	return s.failUpdateJob(ctx, job, requestID, now, strings.TrimSpace(code), msg)
 }
 
@@ -1642,7 +1647,7 @@ func (s *Server) advanceUpdateDeployStart(ctx context.Context, job *models.Updat
 		job.LesserHostInstanceKeySecretARN = strings.TrimSpace(inst.LesserHostInstanceKeySecretARN)
 	}
 	if err := s.preflightManagedLesserRelease(ctx, strings.TrimSpace(job.LesserVersion)); err != nil {
-		return 0, false, s.failManagedLesserReleasePreflight(ctx, job, requestID, now, "deploy_release_preflight_failed", err)
+		return 0, false, s.failManagedLesserReleasePreflight(ctx, job, requestID, now, updatePhaseDeploy, "deploy_release_preflight_failed", err)
 	}
 
 	return s.advanceUpdateRunnerStartWithInstance(ctx, job, requestID, now, inst, updateRunnerStartSpec{
@@ -1781,6 +1786,9 @@ func (s *Server) advanceUpdateBodyDeployStart(ctx context.Context, job *models.U
 	if inst == nil {
 		return 0, false, s.failUpdateJob(ctx, job, requestID, now, "instance_not_found", "instance record not found")
 	}
+	if err := s.preflightManagedLesserBodyRelease(ctx, strings.TrimSpace(job.LesserBodyVersion), normalizeManagedLesserStage(strings.TrimSpace(s.cfg.Stage))); err != nil {
+		return 0, false, s.failManagedReleasePreflight(ctx, job, requestID, now, updatePhaseBody, "body_release_preflight_failed", "lesser-body", err)
+	}
 
 	return s.advanceUpdateRunnerStartWithInstance(ctx, job, requestID, now, inst, updateRunnerStartSpec{
 		phase:            updatePhaseBody,
@@ -1895,10 +1903,17 @@ func (s *Server) failCompletedUpdateRunnerWait(
 	if detail := updateJobPhaseDetail(spec.phase, info.CurrentPhase, info.FailureDetail); detail != "" {
 		msg += " (" + detail + ")"
 	}
-	if info.DeepLink != "" {
-		job.RunURL = info.DeepLink
-		setUpdateJobPhaseRunURL(job, spec.phase, info.DeepLink)
-		msg += " (CodeBuild: " + info.DeepLink + ")"
+	deepLink := strings.TrimSpace(info.DeepLink)
+	if deepLink == "" {
+		deepLink = strings.TrimSpace(job.RunURL)
+	}
+	if deepLink == "" {
+		deepLink = updateJobPhaseRunURL(job, spec.phase)
+	}
+	if deepLink != "" {
+		job.RunURL = deepLink
+		setUpdateJobPhaseRunURL(job, spec.phase, deepLink)
+		msg += " (CodeBuild: " + deepLink + ")"
 	}
 	setUpdateJobPhaseFailed(job, spec.phase, msg)
 	return 0, false, s.failUpdateJob(ctx, job, requestID, now, spec.failedCode, msg)
@@ -2009,7 +2024,7 @@ func (s *Server) advanceUpdateDeployMcpStart(ctx context.Context, job *models.Up
 		return 0, false, s.failUpdateJob(ctx, job, requestID, now, "instance_not_found", "instance record not found")
 	}
 	if err := s.preflightManagedLesserRelease(ctx, strings.TrimSpace(job.LesserVersion)); err != nil {
-		return 0, false, s.failManagedLesserReleasePreflight(ctx, job, requestID, now, "mcp_release_preflight_failed", err)
+		return 0, false, s.failManagedLesserReleasePreflight(ctx, job, requestID, now, updatePhaseMCP, "mcp_release_preflight_failed", err)
 	}
 
 	return s.advanceUpdateRunnerStartWithInstance(ctx, job, requestID, now, inst, updateRunnerStartSpec{

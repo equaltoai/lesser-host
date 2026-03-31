@@ -50,6 +50,50 @@ Each job response includes the fields needed to diagnose and safely retry:
 Portal and operator UIs should surface those fields directly instead of inferring recovery state from raw DynamoDB
 records.
 
+## Body update failure classes
+
+For `body_only` update jobs, portal and operator surfaces should treat `error_code` as the canonical classifier instead
+of trying to infer failure type from free-form text.
+
+- `body_release_preflight_failed`
+  - Meaning: the requested `lesser-body` release was rejected before a CodeBuild runner started. Typical causes are
+    missing release assets, checksum coverage gaps, or manifest-contract mismatches.
+  - Expected evidence:
+    - `failed_phase=body`
+    - `body_status=failed`
+    - `body_error` and `error_message` begin with `lesser-body release preflight failed:`
+    - `run_id`, `run_url`, and `body_run_url` are usually empty because no runner was launched
+  - Recovery: publish or select a release whose assets satisfy the managed consumer contract, then submit a fresh
+    `POST /api/v1/portal/instances/{slug}/updates` request.
+
+- `body_deploy_failed`
+  - Meaning: the `RUN_MODE=lesser-body` CodeBuild runner started and reached a terminal failure state.
+  - Expected evidence:
+    - `failed_phase=body`
+    - `body_status=failed`
+    - `body_error` and `error_message` describe the sanitized terminal runner failure
+    - `body_run_url` and `run_url` preserve the CodeBuild deep link when one was observed
+  - Recovery: inspect the preserved CodeBuild link, fix the release or configuration problem, and submit a new update
+    job. No DynamoDB edits are required.
+
+- `body_receipt_load_failed`
+  - Meaning: the body phase reached receipt ingest, but `lesser-host` could not load the expected
+    `managed/updates/<slug>/<jobId>/body-state.json` receipt after exhausting retries.
+  - Expected evidence:
+    - `failed_phase=body`
+    - `body_status=failed`
+    - `body_error` and `error_message` begin with `failed to load lesser-body receipt:`
+    - `body_run_url` and `run_url` may still be present because the runner itself can have completed successfully before
+      receipt ingestion failed
+  - Recovery: restore the missing or malformed receipt condition, then submit a fresh retry through the normal portal
+    update API.
+
+These distinctions are intentional:
+
+- preflight rejection means the release contract was blocked before AWS-side execution
+- deploy failure means the runner itself failed and CodeBuild evidence should exist
+- receipt-ingest failure means the runner may have succeeded, but durable deploy evidence could not be loaded afterward
+
 ## Canonical retry workflow
 
 1. Inspect the most recent update job with `GET /api/v1/portal/instances/{slug}/updates`.
@@ -76,6 +120,8 @@ Retry safety rules:
   that stale marker back to `error`.
 - If a CodeBuild runner disappears before the worker records a terminal result, the update worker now reconciles that as a
   terminal error instead of leaving the job permanently in `deploy.wait`.
+- The same sweep path reconciles terminal `body.deploy.wait` failures and preserves the best available CodeBuild deep
+  link in `run_url` and `body_run_url`.
 
 The supported recovery path is therefore:
 

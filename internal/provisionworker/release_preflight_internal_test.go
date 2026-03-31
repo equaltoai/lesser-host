@@ -81,6 +81,44 @@ func newHappyManagedLesserReleaseClient(t *testing.T, versions ...string) *http.
 	}))
 }
 
+func newHappyManagedLesserBodyReleaseClient(t *testing.T, stage string, versions ...string) *http.Client {
+	t.Helper()
+
+	if len(versions) == 0 {
+		versions = []string{"v0.2.3"}
+	}
+	stage = normalizeManagedLesserStage(stage)
+	if stage == "" {
+		stage = managedStageDev
+	}
+
+	responses := map[string][]byte{}
+	for _, version := range versions {
+		version = strings.TrimSpace(version)
+		if version == "" {
+			continue
+		}
+		releasePath := fmt.Sprintf("/equaltoai/lesser-body/releases/download/%s/lesser-body-release.json", version)
+		checksumsPath := fmt.Sprintf("/equaltoai/lesser-body/releases/download/%s/checksums.txt", version)
+		responses[releasePath] = lesserBodyReleaseManifestJSON(t, version, stage)
+		responses[checksumsPath] = lesserBodyChecksumsTXT(stage, true)
+	}
+
+	return newManagedReleaseTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, ok := responses[r.URL.Path]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, ".json") {
+			w.Header().Set("Content-Type", "application/json")
+		} else {
+			w.Header().Set("Content-Type", "text/plain")
+		}
+		_, _ = w.Write(body)
+	}))
+}
+
 func lesserReleaseManifestJSON(t *testing.T, version string) []byte {
 	t.Helper()
 
@@ -125,6 +163,73 @@ func lesserBundleManifestJSON(t *testing.T) []byte {
 	return raw
 }
 
+func lesserBodyReleaseManifestJSON(t *testing.T, version string, stage string) []byte {
+	t.Helper()
+
+	if strings.TrimSpace(stage) == "" {
+		stage = managedStageDev
+	}
+	templatePath := fmt.Sprintf("lesser-body-managed-%s.template.json", stage)
+	raw, err := json.Marshal(map[string]any{
+		"schema":  1,
+		"name":    "lesser-body",
+		"version": version,
+		"git_sha": "bodysha",
+		"artifacts": map[string]any{
+			"checksums": map[string]any{
+				"path":      "checksums.txt",
+				"algorithm": "sha256",
+			},
+			"lambda_zip": map[string]any{
+				"path":   "lesser-body.zip",
+				"sha256": "zip-sha",
+			},
+			"deploy_manifest": map[string]any{
+				"path":   "lesser-body-deploy.json",
+				"sha256": "manifest-sha",
+				"schema": 1,
+			},
+			"deploy_templates": map[string]any{
+				stage: map[string]any{
+					"path":   templatePath,
+					"sha256": "template-sha",
+					"format": "cloudformation-json",
+				},
+			},
+			"deploy_script": map[string]any{
+				"path":   "deploy-lesser-body-from-release.sh",
+				"sha256": "script-sha",
+			},
+		},
+		"deploy": map[string]any{
+			"schema":                   1,
+			"manifest_path":            "lesser-body-deploy.json",
+			"template_selection":       "by_stage",
+			"source_checkout_required": false,
+			"npm_install_required":     false,
+		},
+	})
+	require.NoError(t, err)
+	return raw
+}
+
+func lesserBodyChecksumsTXT(stage string, includeReleaseChecksum bool) []byte {
+	if strings.TrimSpace(stage) == "" {
+		stage = managedStageDev
+	}
+	templatePath := fmt.Sprintf("lesser-body-managed-%s.template.json", stage)
+	lines := []string{
+		"zip-sha  lesser-body.zip",
+		"manifest-sha  lesser-body-deploy.json",
+		fmt.Sprintf("template-sha  %s", templatePath),
+		"script-sha  deploy-lesser-body-from-release.sh",
+	}
+	if includeReleaseChecksum {
+		lines = append(lines, "release-sha  lesser-body-release.json")
+	}
+	return []byte(strings.Join(lines, "\n") + "\n")
+}
+
 func TestPreflightManagedLesserRelease_ValidatesReleaseAndBundleManifest(t *testing.T) {
 	t.Parallel()
 
@@ -148,6 +253,33 @@ func TestPreflightManagedLesserRelease_ValidatesReleaseAndBundleManifest(t *test
 	}
 
 	require.NoError(t, srv.preflightManagedLesserRelease(context.Background(), version))
+}
+
+func TestPreflightManagedLesserBodyRelease_ValidatesReleaseManifestAndChecksums(t *testing.T) {
+	t.Parallel()
+
+	const version = "v0.2.3"
+	const stage = managedStageDev
+	handler := http.NewServeMux()
+	handler.HandleFunc("/equaltoai/lesser-body/releases/download/"+version+"/lesser-body-release.json", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(lesserBodyReleaseManifestJSON(t, version, stage))
+	})
+	handler.HandleFunc("/equaltoai/lesser-body/releases/download/"+version+"/checksums.txt", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write(lesserBodyChecksumsTXT(stage, true))
+	})
+
+	srv := &Server{
+		cfg: config.Config{
+			Stage:                        "lab",
+			ManagedLesserBodyGitHubOwner: "equaltoai",
+			ManagedLesserBodyGitHubRepo:  "lesser-body",
+		},
+		releaseHTTPClient: newManagedReleaseTestClient(t, handler),
+	}
+
+	require.NoError(t, srv.preflightManagedLesserBodyRelease(context.Background(), version, stage))
 }
 
 func TestAdvanceUpdateDeployReleasePreflightFailureFailsBeforeRunnerStarts(t *testing.T) {
@@ -209,6 +341,56 @@ func TestAdvanceUpdateDeployReleasePreflightFailureFailsBeforeRunnerStarts(t *te
 			require.Empty(t, fakeCB.startInputs)
 		})
 	}
+}
+
+func TestAdvanceUpdateBodyReleasePreflightFailureFailsBeforeRunnerStarts(t *testing.T) {
+	t.Parallel()
+
+	st, db := newBranchTestStore()
+	mockBranchInstanceLookup(t, db, managedUpdateRunnerInstance(), nil)
+
+	fakeCB := &fakeCodebuild{
+		startOut: &codebuild.StartBuildOutput{
+			Build: &cbtypes.Build{Id: aws.String("run-should-not-start")},
+		},
+	}
+	const version = "v0.2.2"
+	handler := http.NewServeMux()
+	handler.HandleFunc("/equaltoai/lesser-body/releases/download/"+version+"/lesser-body-release.json", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(lesserBodyReleaseManifestJSON(t, version, managedStageDev))
+	})
+	handler.HandleFunc("/equaltoai/lesser-body/releases/download/"+version+"/checksums.txt", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write(lesserBodyChecksumsTXT(managedStageDev, false))
+	})
+
+	srv := &Server{
+		cfg: config.Config{
+			Stage:                        "lab",
+			ManagedLesserBodyGitHubOwner: "equaltoai",
+			ManagedLesserBodyGitHubRepo:  "lesser-body",
+		},
+		store:             st,
+		releaseHTTPClient: newManagedReleaseTestClient(t, handler),
+		cb:                fakeCB,
+	}
+
+	job := managedUpdateRunnerJob(updateStepBodyDeployStart)
+	job.LesserBodyVersion = version
+	delay, done, err := srv.advanceUpdateBodyDeployStart(context.Background(), job, "req", time.Unix(1, 0).UTC())
+	require.NoError(t, err)
+	require.False(t, done)
+	require.Zero(t, delay)
+	require.Equal(t, models.UpdateJobStatusError, job.Status)
+	require.Equal(t, updateStepFailed, job.Step)
+	require.Equal(t, "body_release_preflight_failed", job.ErrorCode)
+	require.Equal(t, updatePhaseBody, job.FailedPhase)
+	require.Equal(t, updatePhaseStatusFailed, job.BodyStatus)
+	require.Contains(t, job.ErrorMessage, "lesser-body release preflight failed")
+	require.Contains(t, job.BodyError, "checksum entry missing for lesser-body-release.json")
+	require.Empty(t, job.RunID)
+	require.Empty(t, fakeCB.startInputs)
 }
 
 func TestValidateManagedLesserLambdaBundleManifest_RequiresFileInventory(t *testing.T) {

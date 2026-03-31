@@ -64,7 +64,7 @@ func managedUpdateRunnerJob(step string) *models.UpdateJob {
 		Region:                         "us-east-1",
 		BaseDomain:                     "slug.example.com",
 		LesserVersion:                  "v1.2.6",
-		LesserBodyVersion:              "body-v1.2.3",
+		LesserBodyVersion:              "v0.2.3",
 		LesserHostBaseURL:              "https://lab.example.com",
 		LesserHostAttestationsURL:      "https://lab.example.com",
 		LesserHostInstanceKeySecretARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:key",
@@ -369,9 +369,15 @@ func TestAdvanceUpdateBodyDeployStart_Branches(t *testing.T) {
 		mockBranchInstanceLookup(t, db, managedUpdateRunnerInstance(), nil)
 		cb := &fakeCodebuild{}
 		srv := &Server{
-			cfg:   config.Config{ManagedProvisionRunnerProjectName: "project", Stage: "lab"},
-			store: st,
-			cb:    cb,
+			cfg: config.Config{
+				ManagedProvisionRunnerProjectName: "project",
+				ManagedLesserBodyGitHubOwner:      "equaltoai",
+				ManagedLesserBodyGitHubRepo:       "lesser-body",
+				Stage:                             "lab",
+			},
+			store:             st,
+			releaseHTTPClient: newHappyManagedLesserBodyReleaseClient(t, managedStageDev, "v0.2.3"),
+			cb:                cb,
 		}
 		job := managedUpdateRunnerJob(updateStepBodyDeployStart)
 
@@ -558,11 +564,16 @@ func assertUpdateRunnerStartRetriesThenFails(
 			ManagedProvisionRunnerProjectName: "project",
 			ManagedLesserGitHubOwner:          "equaltoai",
 			ManagedLesserGitHubRepo:           "lesser",
+			ManagedLesserBodyGitHubOwner:      "equaltoai",
+			ManagedLesserBodyGitHubRepo:       "lesser-body",
 			Stage:                             "lab",
 		},
 		store:             st,
 		releaseHTTPClient: newHappyManagedLesserReleaseClient(t, "v1.2.6"),
 		cb:                &fakeCodebuild{startErr: errors.New("boom")},
+	}
+	if step == updateStepBodyDeployStart {
+		srv.releaseHTTPClient = newHappyManagedLesserBodyReleaseClient(t, managedStageDev, "v0.2.3")
 	}
 	job := managedUpdateRunnerJob(step)
 

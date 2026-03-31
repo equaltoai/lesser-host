@@ -213,3 +213,97 @@ func TestUpdateSweepEventBridge_ReconcilesActiveJob(t *testing.T) {
 	require.Equal(t, "deploy_failed", loaded.ErrorCode)
 	require.Contains(t, loaded.ErrorMessage, "release contract mismatch")
 }
+
+func TestUpdateSweepEventBridge_ReconcilesActiveBodyJob(t *testing.T) {
+	t.Parallel()
+
+	db := ttmocks.NewMockExtendedDB()
+	qJob := new(ttmocks.MockQuery)
+
+	db.On("WithContext", mock.Anything).Return(db).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.UpdateJob")).Return(qJob).Maybe()
+	qJob.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qJob).Maybe()
+	qJob.On("Index", "gsi2").Return(qJob).Maybe()
+	qJob.On("OrderBy", "gsi2SK", "ASC").Return(qJob).Maybe()
+	qJob.On("Limit", mock.Anything).Return(qJob).Maybe()
+	qJob.On("ConsistentRead").Return(qJob).Maybe()
+
+	activeJob := &models.UpdateJob{
+		ID:           "job-body-sweep-eventbridge",
+		InstanceSlug: "slug",
+		Status:       models.UpdateJobStatusRunning,
+		Step:         updateStepBodyDeployWait,
+		RunID:        "run-body-1",
+		RunURL:       "https://logs.example/body",
+		BodyRunURL:   "https://logs.example/body",
+		CreatedAt:    time.Unix(100, 0).UTC(),
+		UpdatedAt:    time.Unix(101, 0).UTC(),
+		ExpiresAt:    time.Now().UTC().Add(time.Hour),
+		MaxAttempts:  10,
+	}
+
+	qJob.On("All", mock.AnythingOfType("*[]*models.UpdateJob")).Return(nil).Once().Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.UpdateJob](t, args, 0)
+		*dest = []*models.UpdateJob{{ID: activeJob.ID, InstanceSlug: activeJob.InstanceSlug, Status: activeJob.Status, Step: activeJob.Step, UpdatedAt: activeJob.UpdatedAt}}
+	})
+
+	var loaded *models.UpdateJob
+	qJob.On("First", mock.AnythingOfType("*models.UpdateJob")).Return(nil).Once().Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.UpdateJob](t, args, 0)
+		*dest = *activeJob
+		loaded = dest
+	})
+
+	db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Maybe()
+
+	srv := NewServer(config.Config{
+		AppName:                           "lesser-host",
+		Stage:                             "lab",
+		ManagedProvisioningEnabled:        true,
+		ManagedInstanceRoleName:           "role",
+		ManagedProvisionRunnerProjectName: "project",
+		ArtifactBucketName:                "artifacts",
+		ManagedLesserGitHubOwner:          "equaltoai",
+		ManagedLesserGitHubRepo:           "lesser",
+	}, store.New(db), nil, nil, nil, nil, &fakeCodebuild{
+		batchOut: &codebuild.BatchGetBuildsOutput{
+			Builds: []cbtypes.Build{{
+				BuildStatus:  cbtypes.StatusTypeFailed,
+				CurrentPhase: aws.String("BUILD"),
+				Phases: []cbtypes.BuildPhase{{
+					PhaseType:   cbtypes.BuildPhaseType("BUILD"),
+					PhaseStatus: cbtypes.StatusTypeFailed,
+					Contexts: []cbtypes.PhaseContext{{
+						Message: aws.String("COMMAND_EXECUTION_ERROR: Error while executing command: bash ./deploy-lesser-body-from-release.sh --stack-name demo Reason: exit status 1"),
+					}},
+				}},
+			}},
+		},
+	}, nil)
+
+	env := testkit.New()
+	app := env.App()
+	Register(app, srv)
+
+	ruleName := fmt.Sprintf("%s-%s-update-sweep", srv.cfg.AppName, srv.cfg.Stage)
+	event := testkit.EventBridgeEvent(testkit.EventBridgeEventOptions{
+		Resources: []string{
+			fmt.Sprintf("arn:aws:events:us-east-1:123456789012:rule/%s", ruleName),
+		},
+	})
+
+	out, err := env.InvokeEventBridge(context.Background(), app, event)
+	require.NoError(t, err)
+
+	result, ok := out.(map[string]any)
+	require.True(t, ok)
+	require.EqualValues(t, 1, result["active_jobs"])
+	require.EqualValues(t, 1, result["processed"])
+	require.EqualValues(t, 0, result["errors"])
+	require.NotNil(t, loaded)
+	require.Equal(t, models.UpdateJobStatusError, loaded.Status)
+	require.Equal(t, "body_deploy_failed", loaded.ErrorCode)
+	require.Contains(t, loaded.ErrorMessage, "command execution failed (exit status 1)")
+	require.Contains(t, loaded.ErrorMessage, "CodeBuild: https://logs.example/body")
+	require.NotContains(t, loaded.ErrorMessage, "--stack-name")
+}

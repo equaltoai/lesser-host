@@ -245,6 +245,12 @@ func TestStringHelpersAndBackoff(t *testing.T) {
 	if got := compactErr(errors.New(strings.Repeat("x", 400))); len(got) <= 350 {
 		t.Fatalf("expected truncation, got len=%d", len(got))
 	}
+	if got := sanitizeOperatorVisibleFailureDetail("COMMAND_EXECUTION_ERROR: Error while executing command: bash ./deploy-lesser-body-from-release.sh --stack-name demo Reason: exit status 1"); got != "command execution failed (exit status 1)" {
+		t.Fatalf("unexpected sanitized command failure: %q", got)
+	}
+	if got := sanitizeOperatorVisibleFailureDetail("BUILD -- failed\nwith /*comment*/ scripts"); strings.Contains(got, "--") || strings.Contains(got, "/*") || strings.Contains(got, "*/") {
+		t.Fatalf("expected dangerous patterns sanitized, got %q", got)
+	}
 
 	if got := jitteredBackoff(0, 1*time.Second, 10*time.Second); got != 1*time.Second {
 		t.Fatalf("unexpected: %v", got)
