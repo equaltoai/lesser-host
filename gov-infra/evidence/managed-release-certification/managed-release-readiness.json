@@ -20,7 +20,7 @@
   "lesser_body_evidence_path": "gov-infra/evidence/managed-release-certification/managed-release-certification-lesser-body.json",
   "lesser_body_certification_status": "certified",
   "lesser_body_template_path": "lesser-body-managed-dev.template.json",
-  "lesser_body_template_evidence_key": "managed/updates/simulacrum/job-update-1/body-template-certification.json",
+  "lesser_body_template_evidence_key": "managed/updates/simulacrum/job-body-1/body-template-certification.json",
   "certification_status": "certified",
   "rollout_readiness": "ready",
   "issue_targets": [

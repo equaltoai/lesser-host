@@ -7,7 +7,7 @@
 - lesser-body certification: `certified`
 - lesser-body version: `v0.2.3`
 - lesser-body template: `lesser-body-managed-dev.template.json`
-- lesser-body template evidence: `managed/updates/simulacrum/job-update-1/body-template-certification.json`
+- lesser-body template evidence: `managed/updates/simulacrum/job-body-1/body-template-certification.json`
 - Blocking checks: none
 
 ## Synced issues

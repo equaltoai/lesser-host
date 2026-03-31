@@ -54,7 +54,7 @@ That makes the project distinguish:
 
 ## Cross-repo rollout blocking
 
-The managed release canary workflow can target multiple parent issues, for example:
+The managed release readiness sync can target multiple parent issues, for example:
 
 - `equaltoai/lesser#658`
 - `equaltoai/lesser-body#106`

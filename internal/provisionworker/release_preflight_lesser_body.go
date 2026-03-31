@@ -395,6 +395,24 @@ func validateManagedLesserBodyReleaseTemplatePreflight(
 	if err := validateManagedLesserBodyTemplateJSON(templateRaw, templatePath); err != nil {
 		return templatePath, err
 	}
+
+	if len(templateRaw) > 51200 {
+		scriptPath := strings.TrimSpace(parsed.Artifacts.DeployScript.Path)
+		scriptRaw, err := fetchManagedGitHubReleaseAsset(
+			ctx,
+			client,
+			owner,
+			repo,
+			version,
+			scriptPath,
+		)
+		if err != nil {
+			return templatePath, err
+		}
+		if !strings.Contains(string(scriptRaw), "--s3-bucket") {
+			return templatePath, managedTemplatePathErrorf(templatePath, "exceeds 51200 bytes but %s does not support --s3-bucket", scriptPath)
+		}
+	}
 	return templatePath, nil
 }
 
