@@ -25,7 +25,7 @@ on:
       project_readiness_targets:
         description: Comma-separated parent issues to reflect project 17 readiness
         required: true
-        default: equaltoai/lesser#658,equaltoai/lesser-body#98,equaltoai/lesser-host#109,equaltoai/lesser-host#110
+        default: equaltoai/lesser#658,equaltoai/lesser-body#106,equaltoai/lesser-host#129
         type: string
       control_plane_base_url:
         description: lesser-host base URL

@@ -126,9 +126,17 @@ func TestBuildReadinessReport_BlocksWhenBodyEvidenceFails(t *testing.T) {
 			RunLesserBody:     true,
 		},
 		Checks: []certificationCheck{
+			{ID: "lesser_body_template_changeset_valid", Status: certificationStatusPass},
 			{ID: "lesser_body_completed", Status: certificationStatusFail},
 		},
-		Job:           certificationJob{Kind: "lesser-body", JobID: "job-update-1", Status: "error", Step: "failed"},
+		Job: certificationJob{
+			Kind:                     "lesser-body",
+			JobID:                    "job-update-1",
+			Status:                   "error",
+			Step:                     "failed",
+			TemplatePath:             "lesser-body-managed-dev.template.json",
+			TemplateCertificationKey: "managed/updates/simulacrum/job-update-1/body-template-certification.json",
+		},
 		OverallStatus: certificationStatusFail,
 	}
 
@@ -156,6 +164,60 @@ func TestBuildReadinessReport_BlocksWhenBodyEvidenceFails(t *testing.T) {
 	}
 	if len(report.BlockingChecks) != 1 || report.BlockingChecks[0] != "lesser_body_completed" {
 		t.Fatalf("expected body completion blocking check, got %#v", report.BlockingChecks)
+	}
+}
+
+func TestBuildReadinessReport_BlocksWhenBodyTemplateEvidenceMissing(t *testing.T) {
+	t.Parallel()
+
+	bodyReport := &lesserBodyCertificationReport{
+		SchemaVersion: 1,
+		LesserHost: certificationTarget{
+			BaseURL:      testBaseURL,
+			InstanceSlug: testInstanceSlug,
+		},
+		RequestedRelease: certificationRequested{
+			LesserVersion:     testLesserVersion,
+			LesserBodyVersion: testLesserBodyVersion,
+			RunLesser:         true,
+			RunLesserBody:     true,
+		},
+		Checks: []certificationCheck{
+			{ID: "lesser_body_completed", Status: certificationStatusPass},
+		},
+		Job: certificationJob{
+			Kind:   "lesser-body",
+			JobID:  "job-update-1",
+			Status: "ok",
+			Step:   "done",
+		},
+		OverallStatus: certificationStatusPass,
+	}
+
+	report, err := buildReadinessReport(&certificationReport{
+		LesserHost: certificationTarget{
+			BaseURL:      testBaseURL,
+			InstanceSlug: testInstanceSlug,
+		},
+		RequestedRelease: certificationRequested{
+			LesserVersion:     testLesserVersion,
+			LesserBodyVersion: testLesserBodyVersion,
+			RunLesser:         true,
+			RunLesserBody:     true,
+		},
+		Checks: []certificationCheck{
+			{ID: "compatibility_contract_valid", Status: certificationStatusPass},
+		},
+		OverallStatus: certificationStatusPass,
+	}, bodyReport, filepath.Join(t.TempDir(), testBodyCertificationReport), nil, cliConfig{ProjectOrg: testProjectOrg, ProjectNumber: testProjectNumber, ReportPath: testCertificationReport})
+	if err != nil {
+		t.Fatalf("buildReadinessReport: %v", err)
+	}
+	if report.LesserBodyCertificationStatus != readinessStatusBlocked {
+		t.Fatalf("expected blocked body status, got %#v", report)
+	}
+	if len(report.BlockingChecks) != 1 || report.BlockingChecks[0] != "lesser_body_template_path_defined" {
+		t.Fatalf("expected body template evidence blocking check, got %#v", report.BlockingChecks)
 	}
 }
 
@@ -226,6 +288,8 @@ func TestRenderIssueComment_IncludesBlockingChecksAndBodyVersion(t *testing.T) {
 		RequestedRelease:              certificationRequested{LesserVersion: testLesserVersion, LesserBodyVersion: testLesserBodyVersion},
 		LesserBodyCertificationStatus: readinessStatusBlocked,
 		LesserBodyEvidencePath:        filepath.Join(t.TempDir(), testBodyCertificationReport),
+		LesserBodyTemplatePath:        "lesser-body-managed-dev.template.json",
+		LesserBodyTemplateEvidenceKey: "managed/updates/simulacrum/job-update-1/body-template-certification.json",
 		CertificationStatus:           readinessStatusBlocked,
 		RolloutReadiness:              rolloutReadinessBlocked,
 		BlockingChecks:                []string{"compatibility_contract_valid", "hosted_update_completed"},
@@ -235,6 +299,12 @@ func TestRenderIssueComment_IncludesBlockingChecksAndBodyVersion(t *testing.T) {
 	}
 	if !strings.Contains(comment, "lesser-body certification: `blocked`") {
 		t.Fatalf("expected lesser-body certification status in comment, got %q", comment)
+	}
+	if !strings.Contains(comment, "lesser-body template: `lesser-body-managed-dev.template.json`") {
+		t.Fatalf("expected lesser-body template path in comment, got %q", comment)
+	}
+	if !strings.Contains(comment, "lesser-body template evidence: `managed/updates/simulacrum/job-update-1/body-template-certification.json`") {
+		t.Fatalf("expected lesser-body template evidence key in comment, got %q", comment)
 	}
 	if !strings.Contains(comment, "Blocking checks: `compatibility_contract_valid`, `hosted_update_completed`") {
 		t.Fatalf("expected blocking checks in comment, got %q", comment)
@@ -565,15 +635,20 @@ func writeTestCertificationReport(t *testing.T, dir string, overallStatus string
 			RunMCP:            true,
 		},
 		Checks: []certificationCheck{{
+			ID:     "lesser_body_template_changeset_valid",
+			Status: checkStatus,
+		}, {
 			ID:     "lesser_body_completed",
 			Status: checkStatus,
 		}},
 		Job: certificationJob{
-			Kind:             "lesser-body",
-			JobID:            "job-update-1",
-			Status:           map[string]string{certificationStatusPass: "ok", certificationStatusFail: "error"}[checkStatus],
-			Step:             "done",
-			RequestedVersion: testLesserBodyVersion,
+			Kind:                     "lesser-body",
+			JobID:                    "job-update-1",
+			Status:                   map[string]string{certificationStatusPass: "ok", certificationStatusFail: "error"}[checkStatus],
+			Step:                     "done",
+			RequestedVersion:         testLesserBodyVersion,
+			TemplatePath:             "lesser-body-managed-dev.template.json",
+			TemplateCertificationKey: "managed/updates/simulacrum/job-update-1/body-template-certification.json",
 		},
 		OverallStatus: overallStatus,
 	})

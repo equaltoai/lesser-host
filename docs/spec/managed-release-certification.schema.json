@@ -177,6 +177,15 @@
         },
         "requested_version": {
           "type": "string"
+        },
+        "template_path": {
+          "type": "string"
+        },
+        "template_certification_key": {
+          "type": "string"
+        },
+        "template_verification_mode": {
+          "type": "string"
         }
       }
     }

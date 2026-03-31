@@ -67,9 +67,11 @@ The runner:
 
 1. downloads the published `lesser-body` release assets into a clean release directory
 2. verifies the release manifest, deploy manifest path, stage template path, and checksum coverage
-3. executes `deploy-lesser-body-from-release.sh` against the managed instance account
-4. reads the instance-scoped SSM export `/${app}/${stage}/lesser-body/exports/v1/mcp_lambda_arn`
-5. writes the managed receipt and uploads it back to the host artifacts bucket
+3. runs `deploy-lesser-body-from-release.sh --no-execute-changeset` against the managed instance account to certify the
+   published stage template through the real CloudFormation consumer path
+4. executes `deploy-lesser-body-from-release.sh` for the actual managed body deploy
+5. reads the instance-scoped SSM export `/${app}/${stage}/lesser-body/exports/v1/mcp_lambda_arn`
+6. writes the managed receipt and uploads it back to the host artifacts bucket
 
 The managed runner does not require a `lesser-body` source checkout or `npm install` in the happy path.
 

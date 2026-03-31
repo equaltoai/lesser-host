@@ -27,6 +27,7 @@ const (
 	certificationMarkdownFileName           = "managed-release-certification.md"
 	lesserBodyCertificationJSONFileName     = "managed-release-certification-lesser-body.json"
 	lesserBodyCertificationMarkdownFileName = "managed-release-certification-lesser-body.md"
+	lesserBodyTemplateVerificationMode      = "cloudformation_deploy_no_execute_changeset"
 )
 
 const (
@@ -112,20 +113,23 @@ type certificationCheck struct {
 }
 
 type certificationJob struct {
-	Kind             string `json:"kind"`
-	JobID            string `json:"job_id"`
-	Status           string `json:"status"`
-	Step             string `json:"step"`
-	FailedPhase      string `json:"failed_phase,omitempty"`
-	Note             string `json:"note,omitempty"`
-	ErrorCode        string `json:"error_code,omitempty"`
-	ErrorMessage     string `json:"error_message,omitempty"`
-	RunURL           string `json:"run_url,omitempty"`
-	DeployRunURL     string `json:"deploy_run_url,omitempty"`
-	BodyRunURL       string `json:"body_run_url,omitempty"`
-	MCPRunURL        string `json:"mcp_run_url,omitempty"`
-	ReceiptKey       string `json:"receipt_key,omitempty"`
-	RequestedVersion string `json:"requested_version,omitempty"`
+	Kind                     string `json:"kind"`
+	JobID                    string `json:"job_id"`
+	Status                   string `json:"status"`
+	Step                     string `json:"step"`
+	FailedPhase              string `json:"failed_phase,omitempty"`
+	Note                     string `json:"note,omitempty"`
+	ErrorCode                string `json:"error_code,omitempty"`
+	ErrorMessage             string `json:"error_message,omitempty"`
+	RunURL                   string `json:"run_url,omitempty"`
+	DeployRunURL             string `json:"deploy_run_url,omitempty"`
+	BodyRunURL               string `json:"body_run_url,omitempty"`
+	MCPRunURL                string `json:"mcp_run_url,omitempty"`
+	ReceiptKey               string `json:"receipt_key,omitempty"`
+	RequestedVersion         string `json:"requested_version,omitempty"`
+	TemplatePath             string `json:"template_path,omitempty"`
+	TemplateCertificationKey string `json:"template_certification_key,omitempty"`
+	TemplateVerificationMode string `json:"template_verification_mode,omitempty"`
 }
 
 type updateJobResponse struct {
@@ -169,6 +173,7 @@ type certificationClient struct {
 
 var validateManagedLesserCompatibility = provisionworker.ValidateManagedLesserReleaseCompatibility
 var validateManagedLesserBodyCompatibility = provisionworker.ValidateManagedLesserBodyReleaseCompatibility
+var validateManagedLesserBodyTemplatePreflight = provisionworker.ValidateManagedLesserBodyReleaseTemplatePreflight
 
 func main() {
 	cfg, err := parseCLI(os.Args[1:])
@@ -315,6 +320,8 @@ func runCertification(ctx context.Context, cfg cliConfig, httpClient *http.Clien
 		},
 	}
 
+	lesserBodyTemplatePath := ""
+
 	if err := validateManagedLesserCompatibility(ctx, &http.Client{Timeout: 30 * time.Second}, cfg.LesserGitHubOwner, cfg.LesserGitHubRepo, cfg.LesserVersion); err != nil {
 		report.Checks = append(report.Checks, certificationCheck{
 			ID:     "compatibility_contract_valid",
@@ -367,6 +374,29 @@ func runCertification(ctx context.Context, cfg cliConfig, httpClient *http.Clien
 			Status: statusPass,
 			Detail: "requested lesser-body release matches the published lesser-host managed compatibility contract",
 		})
+		templatePath, err := validateManagedLesserBodyTemplatePreflight(
+			ctx,
+			&http.Client{Timeout: 30 * time.Second},
+			cfg.LesserBodyGitHubOwner,
+			cfg.LesserBodyGitHubRepo,
+			cfg.LesserBodyVersion,
+			cfg.ManagedStage,
+		)
+		if err != nil {
+			report.Checks = append(report.Checks, certificationCheck{
+				ID:     "lesser_body_template_preflight_valid",
+				Status: statusFail,
+				Detail: err.Error(),
+			})
+			report.OverallStatus = statusFail
+			return report, nil
+		}
+		report.Checks = append(report.Checks, certificationCheck{
+			ID:     "lesser_body_template_preflight_valid",
+			Status: statusPass,
+			Detail: "published template " + templatePath + " passed lesser-host managed body template preflight",
+		})
+		lesserBodyTemplatePath = templatePath
 	}
 
 	startedJob, err := client.createLesserUpdate(ctx, cfg.InstanceSlug, cfg.LesserVersion, cfg.LesserBodyVersion)
@@ -397,14 +427,14 @@ func runCertification(ctx context.Context, cfg cliConfig, httpClient *http.Clien
 		return report, nil
 	}
 
-	jobEvidence := certificationJobsFromUpdate(finalJob, cfg.InstanceSlug, cfg)
+	jobEvidence := certificationJobsFromUpdate(finalJob, cfg.InstanceSlug, cfg, lesserBodyTemplatePath)
 	report.Jobs = append(report.Jobs, jobEvidence...)
-	report.Checks = append(report.Checks, certificationChecksForManagedUpdate(finalJob, jobEvidence, cfg)...)
+	report.Checks = append(report.Checks, certificationChecksForManagedUpdate(finalJob, jobEvidence, cfg, lesserBodyTemplatePath)...)
 	report.OverallStatus = overallStatus(report.Checks)
 	return report, nil
 }
 
-func certificationChecksForManagedUpdate(job updateJobResponse, evidence []certificationJob, cfg cliConfig) []certificationCheck {
+func certificationChecksForManagedUpdate(job updateJobResponse, evidence []certificationJob, cfg cliConfig, lesserBodyTemplatePath string) []certificationCheck {
 	lesserEvidence := findCertificationJob(evidence, updateJobKindLesser)
 	checks := []certificationCheck{{
 		ID:     "receipt_key_defined",
@@ -462,6 +492,11 @@ func certificationChecksForManagedUpdate(job updateJobResponse, evidence []certi
 	if cfg.RequireLesserBody {
 		bodyEvidence := findCertificationJob(evidence, updateJobKindBody)
 		checks = append(checks,
+			certificationCheck{
+				ID:     "lesser_body_template_changeset_valid",
+				Status: checkStatusForBodyTemplateCertification(bodyEvidence),
+				Detail: templateCertificationDetail(bodyEvidence, lesserBodyTemplatePath),
+			},
 			certificationCheck{
 				ID:     "lesser_body_completed",
 				Status: checkStatusForPhase(bodyEvidence),
@@ -521,20 +556,21 @@ func certificationJobFromResponse(job updateJobResponse, slug string) certificat
 	}
 }
 
-func certificationJobsFromUpdate(job updateJobResponse, slug string, cfg cliConfig) []certificationJob {
+func certificationJobsFromUpdate(job updateJobResponse, slug string, cfg cliConfig, lesserBodyTemplatePath string) []certificationJob {
+	lesserBodyTemplatePath = firstNonEmpty(lesserBodyTemplatePath, expectedLesserBodyTemplatePath(cfg.ManagedStage))
 	jobs := []certificationJob{
-		certificationJobForPhase(job, slug, updateJobKindLesser),
+		certificationJobForPhase(job, slug, updateJobKindLesser, ""),
 	}
 	if shouldIncludeOptionalPhase(job.BodyStatus, cfg.RequireLesserBody) {
-		jobs = append(jobs, certificationJobForPhase(job, slug, updateJobKindBody))
+		jobs = append(jobs, certificationJobForPhase(job, slug, updateJobKindBody, lesserBodyTemplatePath))
 	}
 	if shouldIncludeOptionalPhase(job.MCPStatus, cfg.RequireMCP) {
-		jobs = append(jobs, certificationJobForPhase(job, slug, updateJobKindMCP))
+		jobs = append(jobs, certificationJobForPhase(job, slug, updateJobKindMCP, ""))
 	}
 	return jobs
 }
 
-func certificationJobForPhase(job updateJobResponse, slug string, kind string) certificationJob {
+func certificationJobForPhase(job updateJobResponse, slug string, kind string, lesserBodyTemplatePath string) certificationJob {
 	jobID := strings.TrimSpace(job.ID)
 	step := strings.TrimSpace(job.Step)
 	if step == "" {
@@ -558,6 +594,9 @@ func certificationJobForPhase(job updateJobResponse, slug string, kind string) c
 		evidence.BodyRunURL = strings.TrimSpace(job.BodyRunURL)
 		evidence.ErrorCode = errorCodeForKind(kind, job)
 		evidence.ErrorMessage = errorMessageForKind(kind, job)
+		evidence.TemplatePath = strings.TrimSpace(lesserBodyTemplatePath)
+		evidence.TemplateCertificationKey = deriveBodyTemplateCertificationKey(slug, jobID)
+		evidence.TemplateVerificationMode = lesserBodyTemplateVerificationMode
 	case updateJobKindMCP:
 		evidence.RequestedVersion = strings.TrimSpace(job.LesserBodyVersion)
 		evidence.RunURL = firstNonEmpty(job.MCPRunURL, job.RunURL)
@@ -615,6 +654,40 @@ func checkStatusForValue(value string) string {
 	return statusPass
 }
 
+func checkStatusForBodyTemplateCertification(job certificationJob) string {
+	if strings.TrimSpace(job.JobID) == "" {
+		return statusFail
+	}
+	if strings.TrimSpace(job.TemplatePath) == "" {
+		return statusFail
+	}
+	if strings.TrimSpace(job.TemplateCertificationKey) == "" {
+		return statusFail
+	}
+	if strings.TrimSpace(job.TemplateVerificationMode) == "" {
+		return statusFail
+	}
+	if bodyTemplateCertificationFailed(job) {
+		return statusFail
+	}
+	status := strings.TrimSpace(job.Status)
+	if status == updateJobStatusOK {
+		return statusPass
+	}
+	if status == updateJobStatusError && strings.TrimSpace(job.ErrorMessage) != "" {
+		return statusPass
+	}
+	return statusFail
+}
+
+func bodyTemplateCertificationFailed(job certificationJob) bool {
+	errorMessage := strings.TrimSpace(job.ErrorMessage)
+	if errorMessage == "" {
+		return false
+	}
+	return strings.Contains(errorMessage, lesserBodyTemplateVerificationMode)
+}
+
 func receiptDetail(job certificationJob, label string) string {
 	if strings.TrimSpace(job.ReceiptKey) != "" {
 		return job.ReceiptKey
@@ -649,6 +722,39 @@ func phaseCompletionDetail(kind string, job certificationJob) string {
 		return job.ErrorMessage
 	}
 	return fmt.Sprintf("%s phase ended with status=%s step=%s", name, strings.TrimSpace(job.Status), strings.TrimSpace(job.Step))
+}
+
+func templateCertificationDetail(job certificationJob, templatePath string) string {
+	templatePath = firstNonEmpty(job.TemplatePath, templatePath)
+	if strings.TrimSpace(job.JobID) == "" {
+		if templatePath == "" {
+			return "lesser-body template certification evidence was not present in the managed update response"
+		}
+		return "lesser-body template certification evidence was not present for " + templatePath
+	}
+	if strings.TrimSpace(job.Status) != updateJobStatusOK && strings.TrimSpace(job.ErrorMessage) == "" {
+		return fmt.Sprintf("lesser-body template certification evidence for %s did not preserve a terminal outcome", templatePath)
+	}
+	if !bodyTemplateCertificationFailed(job) {
+		if strings.TrimSpace(job.Status) == updateJobStatusOK {
+			return fmt.Sprintf(
+				"published template %s passed %s and is recorded at %s",
+				templatePath,
+				firstNonEmpty(job.TemplateVerificationMode, lesserBodyTemplateVerificationMode),
+				job.TemplateCertificationKey,
+			)
+		}
+		return fmt.Sprintf(
+			"published template %s passed %s and is recorded at %s before the later lesser-body phase outcome",
+			templatePath,
+			firstNonEmpty(job.TemplateVerificationMode, lesserBodyTemplateVerificationMode),
+			job.TemplateCertificationKey,
+		)
+	}
+	if strings.TrimSpace(job.ErrorMessage) != "" {
+		return job.ErrorMessage
+	}
+	return fmt.Sprintf("lesser-body template certification ended with status=%s step=%s", strings.TrimSpace(job.Status), strings.TrimSpace(job.Step))
 }
 
 func statusForPhase(kind string, job updateJobResponse) string {
@@ -758,6 +864,23 @@ func deriveReceiptKey(kind string, slug string, jobID string) string {
 	default:
 		return fmt.Sprintf("managed/updates/%s/%s/state.json", slug, jobID)
 	}
+}
+
+func deriveBodyTemplateCertificationKey(slug string, jobID string) string {
+	slug = strings.TrimSpace(slug)
+	jobID = strings.TrimSpace(jobID)
+	if slug == "" || jobID == "" {
+		return ""
+	}
+	return fmt.Sprintf("managed/updates/%s/%s/body-template-certification.json", slug, jobID)
+}
+
+func expectedLesserBodyTemplatePath(stage string) string {
+	stage = strings.TrimSpace(stage)
+	if stage == "" {
+		stage = "dev"
+	}
+	return fmt.Sprintf("lesser-body-managed-%s.template.json", stage)
 }
 
 func overallStatus(checks []certificationCheck) string {
@@ -983,6 +1106,9 @@ func writeMarkdownJob(b *strings.Builder, job certificationJob) {
 	writeMarkdownDistinctField(b, "deploy_run_url", job.DeployRunURL, job.RunURL)
 	writeMarkdownDistinctField(b, "body_run_url", job.BodyRunURL, job.RunURL)
 	writeMarkdownDistinctField(b, "mcp_run_url", job.MCPRunURL, job.RunURL)
+	writeMarkdownField(b, "template_path", job.TemplatePath)
+	writeMarkdownField(b, "template_certification_key", job.TemplateCertificationKey)
+	writeMarkdownField(b, "template_verification_mode", job.TemplateVerificationMode)
 	writeMarkdownField(b, "note", job.Note)
 	if job.ErrorCode != "" || job.ErrorMessage != "" {
 		writeMarkdownField(b, "failure", strings.TrimSpace(job.ErrorCode)+" "+strings.TrimSpace(job.ErrorMessage))

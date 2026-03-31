@@ -17,12 +17,15 @@ import (
 )
 
 const (
-	portalUpdatesPath = "/api/v1/portal/instances/simulacrum/updates"
-	jobUpdateID       = "job-update-1"
+	portalUpdatesPath                = "/api/v1/portal/instances/simulacrum/updates"
+	jobUpdateID                      = "job-update-1"
+	testBodyTemplate                 = "lesser-body-managed-dev.template.json"
+	testBodyTemplateCertificationKey = "managed/updates/simulacrum/job-update-1/body-template-certification.json"
 )
 
 var managedLesserCompatibilityValidatorMu sync.Mutex
 var managedLesserBodyCompatibilityValidatorMu sync.Mutex
+var managedLesserBodyTemplatePreflightValidatorMu sync.Mutex
 
 func useStubManagedLesserCompatibilityValidator(t *testing.T, fn func(context.Context, *http.Client, string, string, string) error) {
 	t.Helper()
@@ -45,6 +48,18 @@ func useStubManagedLesserBodyCompatibilityValidator(t *testing.T, fn func(contex
 	t.Cleanup(func() {
 		validateManagedLesserBodyCompatibility = previous
 		managedLesserBodyCompatibilityValidatorMu.Unlock()
+	})
+}
+
+func useStubManagedLesserBodyTemplatePreflightValidator(t *testing.T, fn func(context.Context, *http.Client, string, string, string, string) (string, error)) {
+	t.Helper()
+
+	managedLesserBodyTemplatePreflightValidatorMu.Lock()
+	previous := validateManagedLesserBodyTemplatePreflight
+	validateManagedLesserBodyTemplatePreflight = fn
+	t.Cleanup(func() {
+		validateManagedLesserBodyTemplatePreflight = previous
+		managedLesserBodyTemplatePreflightValidatorMu.Unlock()
 	})
 }
 
@@ -102,6 +117,9 @@ func TestRunCertification_LesserUpdatePasses(t *testing.T) {
 	t.Parallel()
 	useStubManagedLesserCompatibilityValidator(t, func(context.Context, *http.Client, string, string, string) error { return nil })
 	useStubManagedLesserBodyCompatibilityValidator(t, func(context.Context, *http.Client, string, string, string, string) error { return nil })
+	useStubManagedLesserBodyTemplatePreflightValidator(t, func(context.Context, *http.Client, string, string, string, string) (string, error) {
+		return testBodyTemplate, nil
+	})
 
 	var mu sync.Mutex
 	listCalls := 0
@@ -175,6 +193,9 @@ func TestRunCertification_FullManagedFlowPasses(t *testing.T) {
 	t.Parallel()
 	useStubManagedLesserCompatibilityValidator(t, func(context.Context, *http.Client, string, string, string) error { return nil })
 	useStubManagedLesserBodyCompatibilityValidator(t, func(context.Context, *http.Client, string, string, string, string) error { return nil })
+	useStubManagedLesserBodyTemplatePreflightValidator(t, func(context.Context, *http.Client, string, string, string, string) (string, error) {
+		return testBodyTemplate, nil
+	})
 
 	var requestBody createUpdateJobRequest
 	server := newManagedCertificationServer(
@@ -220,9 +241,12 @@ func TestRunCertification_FullManagedFlowPasses(t *testing.T) {
 		t.Fatalf("expected shared managed update id across phase evidence, got %#v", report.Jobs)
 	}
 
-	for _, expectedID := range []string{"lesser_body_version_selected", "lesser_body_compatibility_contract_valid", "lesser_body_completed", "lesser_body_runner_visibility_present", "lesser_body_receipt_key_defined", "mcp_wiring_completed", "mcp_receipt_key_defined"} {
+	for _, expectedID := range []string{"lesser_body_version_selected", "lesser_body_compatibility_contract_valid", "lesser_body_template_preflight_valid", "lesser_body_template_changeset_valid", "lesser_body_completed", "lesser_body_runner_visibility_present", "lesser_body_receipt_key_defined", "mcp_wiring_completed", "mcp_receipt_key_defined"} {
 		requireCheckStatus(t, report, expectedID, statusPass)
 	}
+	require.Equal(t, testBodyTemplate, report.Jobs[1].TemplatePath)
+	require.Equal(t, testBodyTemplateCertificationKey, report.Jobs[1].TemplateCertificationKey)
+	require.Equal(t, lesserBodyTemplateVerificationMode, report.Jobs[1].TemplateVerificationMode)
 }
 
 func TestWriteCertificationOutputs_WritesLesserBodyEvidenceBundle(t *testing.T) {
@@ -246,20 +270,25 @@ func TestWriteCertificationOutputs_WritesLesserBodyEvidenceBundle(t *testing.T) 
 			{ID: "compatibility_contract_valid", Status: statusPass},
 			{ID: "lesser_body_version_selected", Status: statusPass, Detail: "requested lesser-body release v0.2.3 will be validated for managed certification"},
 			{ID: "lesser_body_compatibility_contract_valid", Status: statusPass, Detail: "requested lesser-body release matches the published lesser-host managed compatibility contract"},
+			{ID: "lesser_body_template_preflight_valid", Status: statusPass, Detail: "published template " + testBodyTemplate + " passed lesser-host managed body template preflight"},
+			{ID: "lesser_body_template_changeset_valid", Status: statusPass, Detail: "published template " + testBodyTemplate + " passed cloudformation_deploy_no_execute_changeset and is recorded at " + testBodyTemplateCertificationKey},
 			{ID: "lesser_body_completed", Status: statusPass, Detail: "lesser-body managed deploy completed"},
 			{ID: "lesser_body_runner_visibility_present", Status: statusPass, Detail: "https://example.com/builds/body"},
 			{ID: "lesser_body_receipt_key_defined", Status: statusPass, Detail: "managed/updates/simulacrum/job-update-1/body-state.json"},
 		},
 		Jobs: []certificationJob{
 			{
-				Kind:             updateJobKindBody,
-				JobID:            "job-update-1",
-				Status:           updateJobStatusOK,
-				Step:             "done",
-				RunURL:           "https://example.com/builds/body",
-				BodyRunURL:       "https://example.com/builds/body",
-				ReceiptKey:       "managed/updates/simulacrum/job-update-1/body-state.json",
-				RequestedVersion: "v0.2.3",
+				Kind:                     updateJobKindBody,
+				JobID:                    "job-update-1",
+				Status:                   updateJobStatusOK,
+				Step:                     "done",
+				RunURL:                   "https://example.com/builds/body",
+				BodyRunURL:               "https://example.com/builds/body",
+				ReceiptKey:               "managed/updates/simulacrum/job-update-1/body-state.json",
+				RequestedVersion:         "v0.2.3",
+				TemplatePath:             testBodyTemplate,
+				TemplateCertificationKey: testBodyTemplateCertificationKey,
+				TemplateVerificationMode: lesserBodyTemplateVerificationMode,
 			},
 		},
 		OverallStatus: statusPass,
@@ -276,7 +305,9 @@ func TestWriteCertificationOutputs_WritesLesserBodyEvidenceBundle(t *testing.T) 
 	require.Equal(t, statusPass, parsed.OverallStatus)
 	require.Equal(t, "v0.2.3", parsed.RequestedRelease.LesserBodyVersion)
 	require.Equal(t, updateJobKindBody, parsed.Job.Kind)
-	require.Len(t, parsed.Checks, 5)
+	require.Equal(t, testBodyTemplate, parsed.Job.TemplatePath)
+	require.Equal(t, testBodyTemplateCertificationKey, parsed.Job.TemplateCertificationKey)
+	require.Len(t, parsed.Checks, 7)
 
 	markdownBytes, err := os.ReadFile(filepath.Join(outDir, lesserBodyCertificationMarkdownFileName))
 	require.NoError(t, err)
@@ -317,6 +348,9 @@ func TestRunCertification_LesserUpdateFailurePreservesRetryVisibility(t *testing
 	t.Parallel()
 	useStubManagedLesserCompatibilityValidator(t, func(context.Context, *http.Client, string, string, string) error { return nil })
 	useStubManagedLesserBodyCompatibilityValidator(t, func(context.Context, *http.Client, string, string, string, string) error { return nil })
+	useStubManagedLesserBodyTemplatePreflightValidator(t, func(context.Context, *http.Client, string, string, string, string) (string, error) {
+		return testBodyTemplate, nil
+	})
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -372,6 +406,9 @@ func TestRunCertification_RequiredFollowOnPhasesFailWhenSkipped(t *testing.T) {
 	t.Parallel()
 	useStubManagedLesserCompatibilityValidator(t, func(context.Context, *http.Client, string, string, string) error { return nil })
 	useStubManagedLesserBodyCompatibilityValidator(t, func(context.Context, *http.Client, string, string, string, string) error { return nil })
+	useStubManagedLesserBodyTemplatePreflightValidator(t, func(context.Context, *http.Client, string, string, string, string) (string, error) {
+		return testBodyTemplate, nil
+	})
 
 	server := newManagedCertificationServer(
 		t,
@@ -408,6 +445,7 @@ func TestRunCertification_RequiredFollowOnPhasesFailWhenSkipped(t *testing.T) {
 	for _, expectedID := range []string{"lesser_body_completed", "lesser_body_runner_visibility_present", "mcp_wiring_completed"} {
 		requireCheckStatus(t, report, expectedID, statusFail)
 	}
+	requireCheckStatus(t, report, "lesser_body_template_changeset_valid", statusFail)
 }
 
 func TestDeriveReceiptKey(t *testing.T) {
@@ -421,6 +459,9 @@ func TestDeriveReceiptKey(t *testing.T) {
 	}
 	if got := deriveReceiptKey("mcp", "slug", "job1"); got != "managed/updates/slug/job1/mcp-state.json" {
 		t.Fatalf("unexpected mcp receipt key: %q", got)
+	}
+	if got := deriveBodyTemplateCertificationKey("slug", "job1"); got != "managed/updates/slug/job1/body-template-certification.json" {
+		t.Fatalf("unexpected lesser-body template certification key: %q", got)
 	}
 }
 
@@ -603,6 +644,9 @@ func TestRunCertification_CompatibilityFailureBlocksManagedUpdate(t *testing.T) 
 		return errors.New("managed Lesser releases before v1.2.6 are not supported by this lesser-host build")
 	})
 	useStubManagedLesserBodyCompatibilityValidator(t, func(context.Context, *http.Client, string, string, string, string) error { return nil })
+	useStubManagedLesserBodyTemplatePreflightValidator(t, func(context.Context, *http.Client, string, string, string, string) (string, error) {
+		return testBodyTemplate, nil
+	})
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatalf("did not expect hosted update request after compatibility failure: %s %s", r.Method, r.URL.Path)
@@ -640,6 +684,10 @@ func TestRunCertification_BodyVerificationRequiresExplicitVersion(t *testing.T) 
 		t.Fatal("did not expect lesser-body compatibility validation without an explicit version")
 		return nil
 	})
+	useStubManagedLesserBodyTemplatePreflightValidator(t, func(context.Context, *http.Client, string, string, string, string) (string, error) {
+		t.Fatal("did not expect lesser-body template preflight without an explicit version")
+		return "", nil
+	})
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatalf("did not expect hosted update request after missing lesser-body version: %s %s", r.Method, r.URL.Path)
@@ -675,6 +723,10 @@ func TestRunCertification_BodyCompatibilityFailureBlocksManagedUpdate(t *testing
 	useStubManagedLesserBodyCompatibilityValidator(t, func(context.Context, *http.Client, string, string, string, string) error {
 		return errors.New("managed lesser-body releases before v0.2.3 are not supported by this lesser-host build")
 	})
+	useStubManagedLesserBodyTemplatePreflightValidator(t, func(context.Context, *http.Client, string, string, string, string) (string, error) {
+		t.Fatal("did not expect template preflight after lesser-body compatibility failure")
+		return "", nil
+	})
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatalf("did not expect hosted update request after lesser-body compatibility failure: %s %s", r.Method, r.URL.Path)
@@ -703,6 +755,44 @@ func TestRunCertification_BodyCompatibilityFailureBlocksManagedUpdate(t *testing
 	if report.OverallStatus != statusFail {
 		t.Fatalf("expected fail report, got %#v", report)
 	}
+	require.Empty(t, report.Jobs)
+}
+
+func TestRunCertification_BodyTemplatePreflightFailureBlocksManagedUpdate(t *testing.T) {
+	t.Parallel()
+
+	useStubManagedLesserCompatibilityValidator(t, func(context.Context, *http.Client, string, string, string) error { return nil })
+	useStubManagedLesserBodyCompatibilityValidator(t, func(context.Context, *http.Client, string, string, string, string) error { return nil })
+	useStubManagedLesserBodyTemplatePreflightValidator(t, func(context.Context, *http.Client, string, string, string, string) (string, error) {
+		return testBodyTemplate, errors.New("managed template " + testBodyTemplate + " parameter LesserStageDomainParamLookupParameter has non-string Default (object); CloudFormation requires every Default member to be a string")
+	})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("did not expect hosted update request after lesser-body template preflight failure: %s %s", r.Method, r.URL.Path)
+	}))
+	defer server.Close()
+
+	cfg := cliConfig{
+		BaseURL:           server.URL,
+		Token:             "token",
+		InstanceSlug:      "simulacrum",
+		LesserVersion:     "v1.2.6",
+		LesserBodyVersion: "v0.2.3",
+		RequireLesserBody: true,
+		ManagedStage:      "dev",
+		PollInterval:      5 * time.Millisecond,
+		Timeout:           2 * time.Second,
+		OutDir:            t.TempDir(),
+	}
+
+	report, err := runCertification(context.Background(), cfg, server.Client())
+	if err != nil {
+		t.Fatalf("runCertification: %v", err)
+	}
+	requireCheckStatus(t, report, "lesser_body_version_selected", statusPass)
+	requireCheckStatus(t, report, "lesser_body_compatibility_contract_valid", statusPass)
+	requireCheckStatus(t, report, "lesser_body_template_preflight_valid", statusFail)
+	require.Equal(t, statusFail, report.OverallStatus)
 	require.Empty(t, report.Jobs)
 }
 
