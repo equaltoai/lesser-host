@@ -12,19 +12,20 @@ import (
 )
 
 const (
-	testProjectOrg          = "equaltoai"
-	testProjectNumber       = 17
-	testReadinessRepo       = "equaltoai/lesser-host"
-	testReadinessIssue      = 96
-	testReadinessTarget     = "equaltoai/lesser-host#96"
-	testBaseURL             = "https://lab.lesser.host"
-	testInstanceSlug        = "simulacrum"
-	testLesserVersion       = "v1.2.6"
-	testLesserBodyVersion   = "v0.2.2"
-	testCertificationReport = "managed-release-certification.json"
-	testLabelsPath          = "/repos/equaltoai/lesser-host/labels"
-	testIssueLabelsPath     = "/repos/equaltoai/lesser-host/issues/96/labels"
-	testIssueCommentsPath   = "/repos/equaltoai/lesser-host/issues/96/comments"
+	testProjectOrg              = "equaltoai"
+	testProjectNumber           = 17
+	testReadinessRepo           = "equaltoai/lesser-host"
+	testReadinessIssue          = 96
+	testReadinessTarget         = "equaltoai/lesser-host#96"
+	testBaseURL                 = "https://lab.lesser.host"
+	testInstanceSlug            = "simulacrum"
+	testLesserVersion           = "v1.2.6"
+	testLesserBodyVersion       = "v0.2.3"
+	testCertificationReport     = "managed-release-certification.json"
+	testBodyCertificationReport = "managed-release-certification-lesser-body.json"
+	testLabelsPath              = "/repos/equaltoai/lesser-host/labels"
+	testIssueLabelsPath         = "/repos/equaltoai/lesser-host/issues/96/labels"
+	testIssueCommentsPath       = "/repos/equaltoai/lesser-host/issues/96/comments"
 )
 
 func TestBuildReadinessReport_Certified(t *testing.T) {
@@ -43,7 +44,7 @@ func TestBuildReadinessReport_Certified(t *testing.T) {
 			{ID: "hosted_update_completed", Status: certificationStatusPass},
 		},
 		OverallStatus: certificationStatusPass,
-	}, cliConfig{ProjectOrg: testProjectOrg, ProjectNumber: testProjectNumber, ReportPath: testCertificationReport})
+	}, nil, "", nil, cliConfig{ProjectOrg: testProjectOrg, ProjectNumber: testProjectNumber, ReportPath: testCertificationReport})
 	if err != nil {
 		t.Fatalf("buildReadinessReport: %v", err)
 	}
@@ -52,6 +53,9 @@ func TestBuildReadinessReport_Certified(t *testing.T) {
 	}
 	if len(report.BlockingChecks) != 0 {
 		t.Fatalf("expected no blocking checks, got %#v", report.BlockingChecks)
+	}
+	if report.LesserBodyCertificationStatus != readinessStatusNotRequired {
+		t.Fatalf("expected not_required body status, got %#v", report)
 	}
 }
 
@@ -64,7 +68,7 @@ func TestBuildReadinessReport_Blocked(t *testing.T) {
 			{ID: "hosted_update_completed", Status: certificationStatusPass},
 		},
 		OverallStatus: certificationStatusFail,
-	}, cliConfig{ProjectOrg: testProjectOrg, ProjectNumber: testProjectNumber, ReportPath: testCertificationReport})
+	}, nil, "", nil, cliConfig{ProjectOrg: testProjectOrg, ProjectNumber: testProjectNumber, ReportPath: testCertificationReport})
 	if err != nil {
 		t.Fatalf("buildReadinessReport: %v", err)
 	}
@@ -73,6 +77,85 @@ func TestBuildReadinessReport_Blocked(t *testing.T) {
 	}
 	if len(report.BlockingChecks) != 1 || report.BlockingChecks[0] != "compatibility_contract_valid" {
 		t.Fatalf("expected blocking check, got %#v", report.BlockingChecks)
+	}
+}
+
+func TestBuildReadinessReport_BlocksWhenBodyEvidenceMissing(t *testing.T) {
+	t.Parallel()
+
+	report, err := buildReadinessReport(&certificationReport{
+		LesserHost: certificationTarget{
+			BaseURL:      testBaseURL,
+			InstanceSlug: testInstanceSlug,
+		},
+		RequestedRelease: certificationRequested{
+			LesserVersion:     testLesserVersion,
+			LesserBodyVersion: testLesserBodyVersion,
+			RunLesser:         true,
+			RunLesserBody:     true,
+		},
+		Checks: []certificationCheck{
+			{ID: "compatibility_contract_valid", Status: certificationStatusPass},
+		},
+		OverallStatus: certificationStatusPass,
+	}, nil, filepath.Join(t.TempDir(), testBodyCertificationReport), os.ErrNotExist, cliConfig{ProjectOrg: testProjectOrg, ProjectNumber: testProjectNumber, ReportPath: testCertificationReport})
+	if err != nil {
+		t.Fatalf("buildReadinessReport: %v", err)
+	}
+	if report.CertificationStatus != readinessStatusBlocked || report.LesserBodyCertificationStatus != readinessStatusBlocked {
+		t.Fatalf("expected blocked readiness, got %#v", report)
+	}
+	if len(report.BlockingChecks) != 1 || report.BlockingChecks[0] != "lesser_body_certification_evidence_present" {
+		t.Fatalf("expected body evidence blocking check, got %#v", report.BlockingChecks)
+	}
+}
+
+func TestBuildReadinessReport_BlocksWhenBodyEvidenceFails(t *testing.T) {
+	t.Parallel()
+
+	bodyReport := &lesserBodyCertificationReport{
+		SchemaVersion: 1,
+		LesserHost: certificationTarget{
+			BaseURL:      testBaseURL,
+			InstanceSlug: testInstanceSlug,
+		},
+		RequestedRelease: certificationRequested{
+			LesserVersion:     testLesserVersion,
+			LesserBodyVersion: testLesserBodyVersion,
+			RunLesser:         true,
+			RunLesserBody:     true,
+		},
+		Checks: []certificationCheck{
+			{ID: "lesser_body_completed", Status: certificationStatusFail},
+		},
+		Job:           certificationJob{Kind: "lesser-body", JobID: "job-update-1", Status: "error", Step: "failed"},
+		OverallStatus: certificationStatusFail,
+	}
+
+	report, err := buildReadinessReport(&certificationReport{
+		LesserHost: certificationTarget{
+			BaseURL:      testBaseURL,
+			InstanceSlug: testInstanceSlug,
+		},
+		RequestedRelease: certificationRequested{
+			LesserVersion:     testLesserVersion,
+			LesserBodyVersion: testLesserBodyVersion,
+			RunLesser:         true,
+			RunLesserBody:     true,
+		},
+		Checks: []certificationCheck{
+			{ID: "compatibility_contract_valid", Status: certificationStatusPass},
+		},
+		OverallStatus: certificationStatusPass,
+	}, bodyReport, filepath.Join(t.TempDir(), testBodyCertificationReport), nil, cliConfig{ProjectOrg: testProjectOrg, ProjectNumber: testProjectNumber, ReportPath: testCertificationReport})
+	if err != nil {
+		t.Fatalf("buildReadinessReport: %v", err)
+	}
+	if report.LesserBodyCertificationStatus != readinessStatusBlocked {
+		t.Fatalf("expected blocked body status, got %#v", report)
+	}
+	if len(report.BlockingChecks) != 1 || report.BlockingChecks[0] != "lesser_body_completed" {
+		t.Fatalf("expected body completion blocking check, got %#v", report.BlockingChecks)
 	}
 }
 
@@ -138,15 +221,20 @@ func TestRenderIssueComment_IncludesBlockingChecksAndBodyVersion(t *testing.T) {
 	t.Parallel()
 
 	comment := renderIssueComment(&readinessReport{
-		Project:             readinessProject{Org: testProjectOrg, Number: testProjectNumber},
-		LesserHost:          certificationTarget{InstanceSlug: testInstanceSlug},
-		RequestedRelease:    certificationRequested{LesserVersion: testLesserVersion, LesserBodyVersion: testLesserBodyVersion},
-		CertificationStatus: readinessStatusBlocked,
-		RolloutReadiness:    rolloutReadinessBlocked,
-		BlockingChecks:      []string{"compatibility_contract_valid", "hosted_update_completed"},
+		Project:                       readinessProject{Org: testProjectOrg, Number: testProjectNumber},
+		LesserHost:                    certificationTarget{InstanceSlug: testInstanceSlug},
+		RequestedRelease:              certificationRequested{LesserVersion: testLesserVersion, LesserBodyVersion: testLesserBodyVersion},
+		LesserBodyCertificationStatus: readinessStatusBlocked,
+		LesserBodyEvidencePath:        filepath.Join(t.TempDir(), testBodyCertificationReport),
+		CertificationStatus:           readinessStatusBlocked,
+		RolloutReadiness:              rolloutReadinessBlocked,
+		BlockingChecks:                []string{"compatibility_contract_valid", "hosted_update_completed"},
 	})
 	if !strings.Contains(comment, "lesser-body version: `"+testLesserBodyVersion+"`") {
 		t.Fatalf("expected lesser-body version in comment, got %q", comment)
+	}
+	if !strings.Contains(comment, "lesser-body certification: `blocked`") {
+		t.Fatalf("expected lesser-body certification status in comment, got %q", comment)
 	}
 	if !strings.Contains(comment, "Blocking checks: `compatibility_contract_valid`, `hosted_update_completed`") {
 		t.Fatalf("expected blocking checks in comment, got %q", comment)
@@ -158,14 +246,15 @@ func TestWriteReadinessOutputs_WritesJSONAndMarkdown(t *testing.T) {
 
 	outDir := t.TempDir()
 	report := &readinessReport{
-		SchemaVersion:       readinessSchemaVersion,
-		GeneratedAt:         "2026-03-30T00:00:00Z",
-		Project:             readinessProject{Org: testProjectOrg, Number: testProjectNumber},
-		LesserHost:          certificationTarget{BaseURL: testBaseURL, InstanceSlug: testInstanceSlug},
-		RequestedRelease:    certificationRequested{LesserVersion: testLesserVersion},
-		SourceReportPath:    testCertificationReport,
-		CertificationStatus: readinessStatusCertified,
-		RolloutReadiness:    rolloutReadinessReady,
+		SchemaVersion:                 readinessSchemaVersion,
+		GeneratedAt:                   "2026-03-30T00:00:00Z",
+		Project:                       readinessProject{Org: testProjectOrg, Number: testProjectNumber},
+		LesserHost:                    certificationTarget{BaseURL: testBaseURL, InstanceSlug: testInstanceSlug},
+		RequestedRelease:              certificationRequested{LesserVersion: testLesserVersion},
+		SourceReportPath:              testCertificationReport,
+		LesserBodyCertificationStatus: readinessStatusNotRequired,
+		CertificationStatus:           readinessStatusCertified,
+		RolloutReadiness:              rolloutReadinessReady,
 		IssueTargets: []readinessIssueTarget{{
 			RepoFullName: testReadinessRepo,
 			IssueNumber:  testReadinessIssue,
@@ -455,8 +544,45 @@ func writeTestCertificationReport(t *testing.T, dir string, overallStatus string
 	if err != nil {
 		t.Fatalf("marshal report: %v", err)
 	}
-	if err := os.WriteFile(path, raw, 0o600); err != nil {
-		t.Fatalf("write certification report: %v", err)
+	writeErr := os.WriteFile(path, raw, 0o600)
+	if writeErr != nil {
+		t.Fatalf("write certification report: %v", writeErr)
+	}
+
+	bodyPath := filepath.Join(dir, testBodyCertificationReport)
+	bodyRaw, err := json.Marshal(lesserBodyCertificationReport{
+		SchemaVersion: 1,
+		GeneratedAt:   "2026-03-30T00:00:00Z",
+		LesserHost: certificationTarget{
+			BaseURL:      testBaseURL,
+			InstanceSlug: testInstanceSlug,
+		},
+		RequestedRelease: certificationRequested{
+			LesserVersion:     testLesserVersion,
+			LesserBodyVersion: testLesserBodyVersion,
+			RunLesser:         true,
+			RunLesserBody:     true,
+			RunMCP:            true,
+		},
+		Checks: []certificationCheck{{
+			ID:     "lesser_body_completed",
+			Status: checkStatus,
+		}},
+		Job: certificationJob{
+			Kind:             "lesser-body",
+			JobID:            "job-update-1",
+			Status:           map[string]string{certificationStatusPass: "ok", certificationStatusFail: "error"}[checkStatus],
+			Step:             "done",
+			RequestedVersion: testLesserBodyVersion,
+		},
+		OverallStatus: overallStatus,
+	})
+	if err != nil {
+		t.Fatalf("marshal body report: %v", err)
+	}
+	writeErr = os.WriteFile(bodyPath, bodyRaw, 0o600)
+	if writeErr != nil {
+		t.Fatalf("write body certification report: %v", writeErr)
 	}
 	return path
 }

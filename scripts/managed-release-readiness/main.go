@@ -33,6 +33,8 @@ const (
 	defaultGitHubAPIBaseURL    = "https://api.github.com"
 	defaultCertificationReport = "gov-infra/evidence/managed-release-certification/managed-release-certification.json"
 	defaultReadinessOutDir     = "gov-infra/evidence/managed-release-certification"
+	defaultLesserBodyEvidence  = "managed-release-certification-lesser-body.json"
+	readinessStatusNotRequired = "not_required"
 )
 
 type cliConfig struct {
@@ -46,16 +48,18 @@ type cliConfig struct {
 }
 
 type readinessReport struct {
-	SchemaVersion       int                    `json:"schema_version"`
-	GeneratedAt         string                 `json:"generated_at"`
-	Project             readinessProject       `json:"project"`
-	LesserHost          certificationTarget    `json:"lesser_host"`
-	RequestedRelease    certificationRequested `json:"requested_release"`
-	SourceReportPath    string                 `json:"source_report_path"`
-	CertificationStatus string                 `json:"certification_status"`
-	RolloutReadiness    string                 `json:"rollout_readiness"`
-	BlockingChecks      []string               `json:"blocking_checks,omitempty"`
-	IssueTargets        []readinessIssueTarget `json:"issue_targets,omitempty"`
+	SchemaVersion                 int                    `json:"schema_version"`
+	GeneratedAt                   string                 `json:"generated_at"`
+	Project                       readinessProject       `json:"project"`
+	LesserHost                    certificationTarget    `json:"lesser_host"`
+	RequestedRelease              certificationRequested `json:"requested_release"`
+	SourceReportPath              string                 `json:"source_report_path"`
+	LesserBodyEvidencePath        string                 `json:"lesser_body_evidence_path,omitempty"`
+	LesserBodyCertificationStatus string                 `json:"lesser_body_certification_status,omitempty"`
+	CertificationStatus           string                 `json:"certification_status"`
+	RolloutReadiness              string                 `json:"rollout_readiness"`
+	BlockingChecks                []string               `json:"blocking_checks,omitempty"`
+	IssueTargets                  []readinessIssueTarget `json:"issue_targets,omitempty"`
 }
 
 type readinessProject struct {
@@ -96,6 +100,24 @@ type certificationRequested struct {
 type certificationCheck struct {
 	ID     string `json:"id"`
 	Status string `json:"status"`
+}
+
+type lesserBodyCertificationReport struct {
+	SchemaVersion    int                    `json:"schema_version"`
+	GeneratedAt      string                 `json:"generated_at"`
+	LesserHost       certificationTarget    `json:"lesser_host"`
+	RequestedRelease certificationRequested `json:"requested_release"`
+	Checks           []certificationCheck   `json:"checks"`
+	Job              certificationJob       `json:"job"`
+	OverallStatus    string                 `json:"overall_status"`
+}
+
+type certificationJob struct {
+	Kind             string `json:"kind"`
+	JobID            string `json:"job_id"`
+	Status           string `json:"status"`
+	Step             string `json:"step"`
+	RequestedVersion string `json:"requested_version,omitempty"`
 }
 
 type issueTarget struct {
@@ -209,7 +231,8 @@ func runReadiness(ctx context.Context, cfg cliConfig, httpClient *http.Client) (
 		return nil, err
 	}
 
-	report, err := buildReadinessReport(certification, cfg)
+	lesserBodyEvidence, lesserBodyEvidencePath, bodyEvidenceErr := loadLesserBodyCertificationReport(cfg.ReportPath, certification)
+	report, err := buildReadinessReport(certification, lesserBodyEvidence, lesserBodyEvidencePath, bodyEvidenceErr, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -255,7 +278,25 @@ func loadCertificationReport(path string) (*certificationReport, error) {
 	return &parsed, nil
 }
 
-func buildReadinessReport(certification *certificationReport, cfg cliConfig) (*readinessReport, error) {
+func loadLesserBodyCertificationReport(certificationReportPath string, certification *certificationReport) (*lesserBodyCertificationReport, string, error) {
+	if certification == nil || !certification.RequestedRelease.RunLesserBody {
+		return nil, "", nil
+	}
+
+	cleanedPath := filepath.Clean(strings.TrimSpace(certificationReportPath))
+	bodyPath := filepath.Join(filepath.Dir(cleanedPath), defaultLesserBodyEvidence)
+	raw, err := os.ReadFile(bodyPath) //nolint:gosec // The readiness workflow reads the sibling evidence file from the operator-selected certification output directory.
+	if err != nil {
+		return nil, bodyPath, err
+	}
+	var parsed lesserBodyCertificationReport
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return nil, bodyPath, err
+	}
+	return &parsed, bodyPath, nil
+}
+
+func buildReadinessReport(certification *certificationReport, lesserBodyEvidence *lesserBodyCertificationReport, lesserBodyEvidencePath string, lesserBodyEvidenceErr error, cfg cliConfig) (*readinessReport, error) {
 	if certification == nil {
 		return nil, errors.New("certification report is required")
 	}
@@ -263,21 +304,25 @@ func buildReadinessReport(certification *certificationReport, cfg cliConfig) (*r
 	status := readinessStatusCertified
 	readiness := rolloutReadinessReady
 	blockingChecks := failedCertificationChecks(certification.Checks)
+	lesserBodyStatus, lesserBodyBlockingChecks := evaluateLesserBodyEvidence(certification, lesserBodyEvidence, lesserBodyEvidenceErr)
+	blockingChecks = appendUniqueChecks(blockingChecks, lesserBodyBlockingChecks...)
 	if strings.TrimSpace(certification.OverallStatus) != certificationStatusPass || len(blockingChecks) > 0 {
 		status = readinessStatusBlocked
 		readiness = rolloutReadinessBlocked
 	}
 
 	return &readinessReport{
-		SchemaVersion:       readinessSchemaVersion,
-		GeneratedAt:         time.Now().UTC().Format(time.RFC3339),
-		Project:             readinessProject{Org: cfg.ProjectOrg, Number: cfg.ProjectNumber},
-		LesserHost:          certification.LesserHost,
-		RequestedRelease:    certification.RequestedRelease,
-		SourceReportPath:    cfg.ReportPath,
-		CertificationStatus: status,
-		RolloutReadiness:    readiness,
-		BlockingChecks:      blockingChecks,
+		SchemaVersion:                 readinessSchemaVersion,
+		GeneratedAt:                   time.Now().UTC().Format(time.RFC3339),
+		Project:                       readinessProject{Org: cfg.ProjectOrg, Number: cfg.ProjectNumber},
+		LesserHost:                    certification.LesserHost,
+		RequestedRelease:              certification.RequestedRelease,
+		SourceReportPath:              cfg.ReportPath,
+		LesserBodyEvidencePath:        lesserBodyEvidencePath,
+		LesserBodyCertificationStatus: lesserBodyStatus,
+		CertificationStatus:           status,
+		RolloutReadiness:              readiness,
+		BlockingChecks:                blockingChecks,
 	}, nil
 }
 
@@ -289,6 +334,53 @@ func failedCertificationChecks(checks []certificationCheck) []string {
 		}
 	}
 	return blocking
+}
+
+func evaluateLesserBodyEvidence(certification *certificationReport, lesserBodyEvidence *lesserBodyCertificationReport, lesserBodyEvidenceErr error) (string, []string) {
+	if certification == nil || !certification.RequestedRelease.RunLesserBody {
+		return readinessStatusNotRequired, nil
+	}
+	if lesserBodyEvidenceErr != nil {
+		return readinessStatusBlocked, []string{"lesser_body_certification_evidence_present"}
+	}
+	if lesserBodyEvidence == nil {
+		return readinessStatusBlocked, []string{"lesser_body_certification_evidence_present"}
+	}
+	if strings.TrimSpace(lesserBodyEvidence.RequestedRelease.LesserBodyVersion) != strings.TrimSpace(certification.RequestedRelease.LesserBodyVersion) ||
+		strings.TrimSpace(lesserBodyEvidence.LesserHost.InstanceSlug) != strings.TrimSpace(certification.LesserHost.InstanceSlug) {
+		return readinessStatusBlocked, []string{"lesser_body_certification_evidence_matches_requested_release"}
+	}
+	if strings.TrimSpace(lesserBodyEvidence.Job.Kind) != "lesser-body" {
+		return readinessStatusBlocked, []string{"lesser_body_certification_evidence_present"}
+	}
+	if strings.TrimSpace(lesserBodyEvidence.OverallStatus) != certificationStatusPass {
+		failedChecks := failedCertificationChecks(lesserBodyEvidence.Checks)
+		if len(failedChecks) == 0 {
+			failedChecks = []string{"lesser_body_certification_status"}
+		}
+		return readinessStatusBlocked, failedChecks
+	}
+	return readinessStatusCertified, nil
+}
+
+func appendUniqueChecks(existing []string, values ...string) []string {
+	seen := make(map[string]struct{}, len(existing))
+	out := append([]string{}, existing...)
+	for _, value := range existing {
+		seen[strings.TrimSpace(value)] = struct{}{}
+	}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 func parseIssueTargets(raw string) ([]issueTarget, error) {
@@ -369,6 +461,7 @@ func renderIssueComment(report *readinessReport) string {
 	b.WriteString("- Certification status: `" + report.CertificationStatus + "`\n")
 	b.WriteString("- Rollout readiness: `" + report.RolloutReadiness + "`\n")
 	b.WriteString("- Lesser version: `" + strings.TrimSpace(report.RequestedRelease.LesserVersion) + "`\n")
+	b.WriteString("- lesser-body certification: `" + strings.TrimSpace(report.LesserBodyCertificationStatus) + "`\n")
 	if strings.TrimSpace(report.RequestedRelease.LesserBodyVersion) != "" {
 		b.WriteString("- lesser-body version: `" + strings.TrimSpace(report.RequestedRelease.LesserBodyVersion) + "`\n")
 	}
@@ -378,7 +471,11 @@ func renderIssueComment(report *readinessReport) string {
 	} else {
 		b.WriteString("- Blocking checks: `" + strings.Join(report.BlockingChecks, "`, `") + "`\n")
 	}
-	b.WriteString("- Evidence: `managed-release-certification.json`, `managed-release-readiness.json`\n")
+	if strings.TrimSpace(report.LesserBodyEvidencePath) != "" {
+		b.WriteString("- Evidence: `managed-release-certification.json`, `managed-release-certification-lesser-body.json`, `managed-release-readiness.json`\n")
+	} else {
+		b.WriteString("- Evidence: `managed-release-certification.json`, `managed-release-readiness.json`\n")
+	}
 	return b.String()
 }
 
@@ -415,6 +512,7 @@ func renderReadinessMarkdown(report *readinessReport) string {
 	b.WriteString("- Certification status: `" + report.CertificationStatus + "`\n")
 	b.WriteString("- Rollout readiness: `" + report.RolloutReadiness + "`\n")
 	b.WriteString("- Lesser version: `" + strings.TrimSpace(report.RequestedRelease.LesserVersion) + "`\n")
+	b.WriteString("- lesser-body certification: `" + strings.TrimSpace(report.LesserBodyCertificationStatus) + "`\n")
 	if strings.TrimSpace(report.RequestedRelease.LesserBodyVersion) != "" {
 		b.WriteString("- lesser-body version: `" + strings.TrimSpace(report.RequestedRelease.LesserBodyVersion) + "`\n")
 	}

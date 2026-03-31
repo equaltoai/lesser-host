@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-03-30T16:46:00Z",
+  "project": {
+    "org": "equaltoai",
+    "number": 17
+  },
+  "lesser_host": {
+    "base_url": "https://lab.lesser.host",
+    "instance_slug": "simulacrum"
+  },
+  "requested_release": {
+    "lesser_version": "v1.2.6",
+    "lesser_body_version": "v0.2.3",
+    "run_lesser": true,
+    "run_lesser_body": true,
+    "run_mcp": true
+  },
+  "source_report_path": "gov-infra/evidence/managed-release-certification/managed-release-certification.json",
+  "lesser_body_evidence_path": "gov-infra/evidence/managed-release-certification/managed-release-certification-lesser-body.json",
+  "lesser_body_certification_status": "certified",
+  "certification_status": "certified",
+  "rollout_readiness": "ready",
+  "issue_targets": [
+    {
+      "repo_full_name": "equaltoai/lesser",
+      "issue_number": 658,
+      "applied_label": "managed-release-certified",
+      "removed_label": "managed-release-blocked",
+      "comment_url": "https://github.com/equaltoai/lesser/issues/658#issuecomment-example"
+    },
+    {
+      "repo_full_name": "equaltoai/lesser-body",
+      "issue_number": 98,
+      "applied_label": "managed-release-certified",
+      "removed_label": "managed-release-blocked",
+      "comment_url": "https://github.com/equaltoai/lesser-body/issues/98#issuecomment-example"
+    },
+    {
+      "repo_full_name": "equaltoai/lesser-host",
+      "issue_number": 109,
+      "applied_label": "managed-release-certified",
+      "removed_label": "managed-release-blocked",
+      "comment_url": "https://github.com/equaltoai/lesser-host/issues/109#issuecomment-example"
+    },
+    {
+      "repo_full_name": "equaltoai/lesser-host",
+      "issue_number": 110,
+      "applied_label": "managed-release-certified",
+      "removed_label": "managed-release-blocked",
+      "comment_url": "https://github.com/equaltoai/lesser-host/issues/110#issuecomment-example"
+    }
+  ]
+}
