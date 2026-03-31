@@ -239,6 +239,23 @@ pins, or verification scope, update the corresponding `gov-infra` docs and/or ve
 Do not weaken standards silently just to get green checks. If a verifier or rubric requirement needs to change, treat
 that as a policy change: update the rubric/docs/evidence surface intentionally and keep the change explicit.
 
+## Consumer release verification standard
+
+When `lesser-host` consumes release assets from another repo (`lesser`, `lesser-body`, or future managed deploy
+dependencies), no contract or rollout-readiness approval is valid until the exact published release assets have been
+verified through the real consumer path.
+
+Minimum bar:
+
+- download the exact published release assets that `lesser-host` will consume
+- verify every manifest, checksum, path, and schema field that the managed runner enforces
+- run the real `lesser-host` ingestion/deploy path against those exact published artifacts whenever practical, rather
+  than relying only on repo-local fixtures, source review, or synthetic tests
+- treat source-level or fixture-only validation as insufficient for consumer signoff
+
+If those steps have not happened yet, do not claim the producer contract is ready, complete, or safe for managed
+rollout.
+
 ## Testing and linting
 
 Go:
