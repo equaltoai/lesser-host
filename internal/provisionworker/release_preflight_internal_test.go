@@ -354,7 +354,7 @@ func TestAdvanceUpdateBodyReleasePreflightFailureFailsBeforeRunnerStarts(t *test
 			Build: &cbtypes.Build{Id: aws.String("run-should-not-start")},
 		},
 	}
-	const version = "v0.2.2"
+	const version = "v0.2.3"
 	handler := http.NewServeMux()
 	handler.HandleFunc("/equaltoai/lesser-body/releases/download/"+version+"/lesser-body-release.json", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

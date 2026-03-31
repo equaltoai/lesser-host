@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"strings"
 )
 
@@ -235,53 +234,6 @@ func buildManagedLesserBodyChecksumRequirements(parsed *managedLesserBodyRelease
 		fmt.Sprintf("lesser-body-managed-%s.template.json", stage): strings.TrimSpace(parsed.Artifacts.DeployTemplates[stage].SHA256),
 	}
 	return required
-}
-
-func ValidateManagedLesserBodyReleaseCompatibility(ctx context.Context, client *http.Client, owner string, repo string, version string, stage string) error {
-	version = strings.TrimSpace(version)
-	if version == "" {
-		return fmt.Errorf("lesser-body version is required")
-	}
-	stage = normalizeManagedLesserStage(stage)
-	if stage == "" {
-		stage = managedStageDev
-	}
-
-	raw, err := fetchManagedGitHubReleaseAsset(
-		ctx,
-		client,
-		owner,
-		repo,
-		version,
-		managedLesserBodyReleaseManifestAsset,
-	)
-	if err != nil {
-		return err
-	}
-	parsed, err := parseManagedLesserBodyReleaseManifest(raw)
-	if err != nil {
-		return err
-	}
-	if validateErr := validateManagedLesserBodyReleaseManifest(parsed, version, stage); validateErr != nil {
-		return validateErr
-	}
-
-	checksumsRaw, err := fetchManagedGitHubReleaseAsset(
-		ctx,
-		client,
-		owner,
-		repo,
-		version,
-		requiredLesserBodyChecksumsPath,
-	)
-	if err != nil {
-		return err
-	}
-	checksums, parseErr := parseManagedReleaseChecksums(checksumsRaw)
-	if parseErr != nil {
-		return parseErr
-	}
-	return validateManagedReleaseChecksumEntries(checksums, buildManagedLesserBodyChecksumRequirements(parsed, stage))
 }
 
 func (s *Server) preflightManagedLesserBodyRelease(ctx context.Context, version string, stage string) error {

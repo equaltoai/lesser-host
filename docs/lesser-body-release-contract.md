@@ -7,6 +7,15 @@ manifest fields, runner expectations, and receipt provenance that the managed ho
 
 Managed rollout decisions for those releases are gated separately by `docs/managed-release-certification.md`.
 
+## Supported managed compatibility contract
+
+The canonical machine-readable compatibility boundary that `lesser-host` supports today lives at:
+
+- `docs/spec/lesser-body-managed-compatibility.json`
+
+That file is verified in CI against the same constants the managed body preflight uses, so operators and rollout
+automation can check support before starting a managed `lesser-body` update.
+
 ## Required lesser-body release assets
 
 Every managed-consumable `lesser-body` release must publish:

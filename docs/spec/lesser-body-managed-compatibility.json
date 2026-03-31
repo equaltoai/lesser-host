@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "release_name": "lesser-body",
+  "minimum_release_version": "v0.2.3",
+  "release_manifest_asset": "lesser-body-release.json",
+  "release_manifest_schema": 1,
+  "checksums": {
+    "path": "checksums.txt",
+    "algorithm": "sha256"
+  },
+  "deploy_manifest": {
+    "path": "lesser-body-deploy.json",
+    "schema_version": 1
+  },
+  "deploy": {
+    "schema_version": 1,
+    "manifest_path": "lesser-body-deploy.json",
+    "template_selection": "by_stage",
+    "source_checkout_required": false,
+    "npm_install_required": false
+  },
+  "lambda_zip": {
+    "path": "lesser-body.zip"
+  },
+  "deploy_script": {
+    "path": "deploy-lesser-body-from-release.sh"
+  },
+  "supported_stages": [
+    "dev",
+    "staging",
+    "live"
+  ],
+  "deploy_templates": {
+    "format": "cloudformation-json"
+  }
+}
