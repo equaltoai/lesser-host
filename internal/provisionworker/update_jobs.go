@@ -1087,6 +1087,8 @@ func (s *Server) buildUpdateDeployRunnerEnv(job *models.UpdateJob, inputs update
 		{Name: aws.String("ARTIFACT_BUCKET"), Value: aws.String(strings.TrimSpace(s.cfg.ArtifactBucketName))},
 		{Name: aws.String("RECEIPT_S3_KEY"), Value: aws.String(inputs.receiptKey)},
 		{Name: aws.String("BOOTSTRAP_S3_KEY"), Value: aws.String(inputs.bootstrapKey)},
+		{Name: aws.String("BODY_FAILURE_S3_KEY"), Value: aws.String(s.updateBodyFailureS3Key(job))},
+		{Name: aws.String("BODY_TEMPLATE_CERT_S3_KEY"), Value: aws.String(s.updateBodyTemplateCertificationS3Key(job))},
 		{Name: aws.String("GITHUB_OWNER"), Value: aws.String(strings.TrimSpace(s.cfg.ManagedLesserGitHubOwner))},
 		{Name: aws.String("GITHUB_REPO"), Value: aws.String(strings.TrimSpace(s.cfg.ManagedLesserGitHubRepo))},
 		{Name: aws.String("LESSER_BODY_GITHUB_OWNER"), Value: aws.String(strings.TrimSpace(s.cfg.ManagedLesserBodyGitHubOwner))},
@@ -1900,7 +1902,11 @@ func (s *Server) failCompletedUpdateRunnerWait(
 	info deployRunnerInfo,
 ) (time.Duration, bool, error) {
 	msg := spec.failedMessage
-	if detail := updateJobPhaseDetail(spec.phase, info.CurrentPhase, info.FailureDetail); detail != "" {
+	failureDetail := info.FailureDetail
+	if strings.TrimSpace(spec.phase) == updatePhaseBody {
+		failureDetail = s.bestUpdateBodyFailureDetail(ctx, job, failureDetail)
+	}
+	if detail := updateJobPhaseDetail(spec.phase, info.CurrentPhase, failureDetail); detail != "" {
 		msg += " (" + detail + ")"
 	}
 	deepLink := strings.TrimSpace(info.DeepLink)

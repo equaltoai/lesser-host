@@ -48,6 +48,11 @@ The managed release is only certified when every required check passes.
   - required when the certification run includes `lesser-body` or MCP follow-on wiring
 - `lesser_body_compatibility_contract_valid`
   - required when the certification run includes `lesser-body` or MCP follow-on wiring
+- `lesser_body_template_preflight_valid`
+  - required when the certification run includes `lesser-body` or MCP follow-on wiring
+- `lesser_body_template_changeset_valid`
+  - required when the certification run includes `lesser-body`
+  - the body runner must prove the published template passed `deploy-lesser-body-from-release.sh --no-execute-changeset`
 - `lesser_body_completed`
   - required when the certification run includes `lesser-body`
 - `lesser_body_runner_visibility_present`
@@ -105,10 +110,12 @@ The report records:
 
 - requested Lesser and `lesser-body` versions
 - the explicit `lesser-body` release-selection and compatibility result for body-enabled certification runs
+- the explicit lesser-body template path that passed preflight and the real consumer-path change-set check
 - target `lesser-host` base URL and managed instance slug
 - every certification check and its pass/fail status
 - phase-level evidence for Lesser, `lesser-body`, and MCP, even when those phases share one managed update job id
 - canonical managed receipt keys
+- lesser-body template certification pointers (`template_path`, `template_certification_key`, `template_verification_mode`) in the body job evidence
 - rollout summary (`overall_status`)
 
 ## Canonical managed receipt keys

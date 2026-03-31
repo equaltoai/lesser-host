@@ -21,6 +21,11 @@ test('RUN_MODE=lesser uses verified Lesser release assets', () => {
 test('RUN_MODE=lesser-body uses the release helper instead of a source checkout', () => {
 	assert.match(buildCommands, /prepare_lesser_body_release_dir/);
 	assert.match(buildCommands, /deploy-lesser-body-from-release\.sh/);
+	assert.match(buildCommands, /--no-execute-changeset/);
+	assert.match(buildCommands, /BODY_TEMPLATE_CERT_S3_KEY/);
+	assert.match(buildCommands, /BODY_FAILURE_S3_KEY/);
+	assert.match(buildCommands, /body-template-certification\.json/);
+	assert.match(buildCommands, /body-failure\.json/);
 	assert.match(buildCommands, /BODY_ASSET_BUCKET="cdk-hnb659fds-assets-\$TARGET_ACCOUNT_ID-\$TARGET_REGION"/);
 	assert.doesNotMatch(buildCommands, /lesser-body-src/);
 	assert.doesNotMatch(buildCommands, /npx cdk deploy --all/);

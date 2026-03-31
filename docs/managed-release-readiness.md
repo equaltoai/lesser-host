@@ -25,6 +25,8 @@ The derived readiness bundle is written alongside it:
   - rollout readiness is `blocked`
 
 Blocking readiness is driven by explicit failed certification checks, not by whether implementation issues have merged.
+For body-enabled rollout, readiness also requires the body evidence bundle to carry the certified template path and the
+template-certification evidence key from the real consumer-path change-set check.
 
 ## Project 17 issue surface
 
@@ -39,6 +41,7 @@ comment with:
 - project number
 - requested Lesser and `lesser-body` versions
 - `lesser-body` certification status from the canonical body evidence bundle
+- the certified `lesser-body` template path and template-certification evidence key when body-enabled rollout is in scope
 - current certification status
 - rollout readiness
 - blocking certification checks
@@ -54,8 +57,8 @@ That makes the project distinguish:
 The managed release canary workflow can target multiple parent issues, for example:
 
 - `equaltoai/lesser#658`
-- `equaltoai/lesser-body#91`
-- `equaltoai/lesser-host#96`
+- `equaltoai/lesser-body#106`
+- `equaltoai/lesser-host#129`
 
 When certification is blocked:
 

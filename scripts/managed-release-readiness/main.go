@@ -56,6 +56,8 @@ type readinessReport struct {
 	SourceReportPath              string                 `json:"source_report_path"`
 	LesserBodyEvidencePath        string                 `json:"lesser_body_evidence_path,omitempty"`
 	LesserBodyCertificationStatus string                 `json:"lesser_body_certification_status,omitempty"`
+	LesserBodyTemplatePath        string                 `json:"lesser_body_template_path,omitempty"`
+	LesserBodyTemplateEvidenceKey string                 `json:"lesser_body_template_evidence_key,omitempty"`
 	CertificationStatus           string                 `json:"certification_status"`
 	RolloutReadiness              string                 `json:"rollout_readiness"`
 	BlockingChecks                []string               `json:"blocking_checks,omitempty"`
@@ -113,11 +115,13 @@ type lesserBodyCertificationReport struct {
 }
 
 type certificationJob struct {
-	Kind             string `json:"kind"`
-	JobID            string `json:"job_id"`
-	Status           string `json:"status"`
-	Step             string `json:"step"`
-	RequestedVersion string `json:"requested_version,omitempty"`
+	Kind                     string `json:"kind"`
+	JobID                    string `json:"job_id"`
+	Status                   string `json:"status"`
+	Step                     string `json:"step"`
+	RequestedVersion         string `json:"requested_version,omitempty"`
+	TemplatePath             string `json:"template_path,omitempty"`
+	TemplateCertificationKey string `json:"template_certification_key,omitempty"`
 }
 
 type issueTarget struct {
@@ -320,6 +324,8 @@ func buildReadinessReport(certification *certificationReport, lesserBodyEvidence
 		SourceReportPath:              cfg.ReportPath,
 		LesserBodyEvidencePath:        lesserBodyEvidencePath,
 		LesserBodyCertificationStatus: lesserBodyStatus,
+		LesserBodyTemplatePath:        lesserBodyTemplatePath(lesserBodyEvidence),
+		LesserBodyTemplateEvidenceKey: lesserBodyTemplateEvidenceKey(lesserBodyEvidence),
 		CertificationStatus:           status,
 		RolloutReadiness:              readiness,
 		BlockingChecks:                blockingChecks,
@@ -353,6 +359,15 @@ func evaluateLesserBodyEvidence(certification *certificationReport, lesserBodyEv
 	if strings.TrimSpace(lesserBodyEvidence.Job.Kind) != "lesser-body" {
 		return readinessStatusBlocked, []string{"lesser_body_certification_evidence_present"}
 	}
+	if strings.TrimSpace(lesserBodyEvidence.Job.TemplatePath) == "" {
+		return readinessStatusBlocked, []string{"lesser_body_template_path_defined"}
+	}
+	if strings.TrimSpace(lesserBodyEvidence.Job.TemplateCertificationKey) == "" {
+		return readinessStatusBlocked, []string{"lesser_body_template_evidence_key_defined"}
+	}
+	if !certificationCheckPassed(lesserBodyEvidence.Checks, "lesser_body_template_changeset_valid") {
+		return readinessStatusBlocked, []string{"lesser_body_template_changeset_valid"}
+	}
 	if strings.TrimSpace(lesserBodyEvidence.OverallStatus) != certificationStatusPass {
 		failedChecks := failedCertificationChecks(lesserBodyEvidence.Checks)
 		if len(failedChecks) == 0 {
@@ -361,6 +376,33 @@ func evaluateLesserBodyEvidence(certification *certificationReport, lesserBodyEv
 		return readinessStatusBlocked, failedChecks
 	}
 	return readinessStatusCertified, nil
+}
+
+func certificationCheckPassed(checks []certificationCheck, id string) bool {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return false
+	}
+	for _, check := range checks {
+		if strings.TrimSpace(check.ID) == id && strings.TrimSpace(check.Status) == certificationStatusPass {
+			return true
+		}
+	}
+	return false
+}
+
+func lesserBodyTemplatePath(report *lesserBodyCertificationReport) string {
+	if report == nil {
+		return ""
+	}
+	return strings.TrimSpace(report.Job.TemplatePath)
+}
+
+func lesserBodyTemplateEvidenceKey(report *lesserBodyCertificationReport) string {
+	if report == nil {
+		return ""
+	}
+	return strings.TrimSpace(report.Job.TemplateCertificationKey)
 }
 
 func appendUniqueChecks(existing []string, values ...string) []string {
@@ -465,6 +507,12 @@ func renderIssueComment(report *readinessReport) string {
 	if strings.TrimSpace(report.RequestedRelease.LesserBodyVersion) != "" {
 		b.WriteString("- lesser-body version: `" + strings.TrimSpace(report.RequestedRelease.LesserBodyVersion) + "`\n")
 	}
+	if strings.TrimSpace(report.LesserBodyTemplatePath) != "" {
+		b.WriteString("- lesser-body template: `" + strings.TrimSpace(report.LesserBodyTemplatePath) + "`\n")
+	}
+	if strings.TrimSpace(report.LesserBodyTemplateEvidenceKey) != "" {
+		b.WriteString("- lesser-body template evidence: `" + strings.TrimSpace(report.LesserBodyTemplateEvidenceKey) + "`\n")
+	}
 	b.WriteString("- Instance: `" + strings.TrimSpace(report.LesserHost.InstanceSlug) + "`\n")
 	if len(report.BlockingChecks) == 0 {
 		b.WriteString("- Blocking checks: none\n")
@@ -515,6 +563,12 @@ func renderReadinessMarkdown(report *readinessReport) string {
 	b.WriteString("- lesser-body certification: `" + strings.TrimSpace(report.LesserBodyCertificationStatus) + "`\n")
 	if strings.TrimSpace(report.RequestedRelease.LesserBodyVersion) != "" {
 		b.WriteString("- lesser-body version: `" + strings.TrimSpace(report.RequestedRelease.LesserBodyVersion) + "`\n")
+	}
+	if strings.TrimSpace(report.LesserBodyTemplatePath) != "" {
+		b.WriteString("- lesser-body template: `" + strings.TrimSpace(report.LesserBodyTemplatePath) + "`\n")
+	}
+	if strings.TrimSpace(report.LesserBodyTemplateEvidenceKey) != "" {
+		b.WriteString("- lesser-body template evidence: `" + strings.TrimSpace(report.LesserBodyTemplateEvidenceKey) + "`\n")
 	}
 	if len(report.BlockingChecks) == 0 {
 		b.WriteString("- Blocking checks: none\n")

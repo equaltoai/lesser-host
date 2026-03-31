@@ -100,8 +100,10 @@ func newHappyManagedLesserBodyReleaseClient(t *testing.T, stage string, versions
 		}
 		releasePath := fmt.Sprintf("/equaltoai/lesser-body/releases/download/%s/lesser-body-release.json", version)
 		checksumsPath := fmt.Sprintf("/equaltoai/lesser-body/releases/download/%s/checksums.txt", version)
+		templatePath := fmt.Sprintf("/equaltoai/lesser-body/releases/download/%s/lesser-body-managed-%s.template.json", version, stage)
 		responses[releasePath] = lesserBodyReleaseManifestJSON(t, version, stage)
 		responses[checksumsPath] = lesserBodyChecksumsTXT(stage, true)
+		responses[templatePath] = lesserBodyTemplateJSON(t, stage)
 	}
 
 	return newManagedReleaseTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -230,6 +232,62 @@ func lesserBodyChecksumsTXT(stage string, includeReleaseChecksum bool) []byte {
 	return []byte(strings.Join(lines, "\n") + "\n")
 }
 
+func lesserBodyTemplateJSON(t *testing.T, stage string) []byte {
+	t.Helper()
+
+	stage = normalizeManagedLesserStage(stage)
+	if stage == "" {
+		stage = managedStageDev
+	}
+	raw, err := json.Marshal(map[string]any{
+		"AWSTemplateFormatVersion": "2010-09-09",
+		"Parameters": map[string]any{
+			"AppName": map[string]any{
+				"Type": "String",
+			},
+			"BaseDomain": map[string]any{
+				"Type": "String",
+			},
+			"LesserBodyCodeBucketName": map[string]any{
+				"Type": "String",
+			},
+			"LesserBodyCodeObjectKey": map[string]any{
+				"Type": "String",
+			},
+			"LesserStageDomainParamLookupParameter": map[string]any{
+				"Type":    "String",
+				"Default": fmt.Sprintf("/lesser/%s/domain", stage),
+			},
+		},
+		"Resources": map[string]any{},
+	})
+	require.NoError(t, err)
+	return raw
+}
+
+func lesserBodyTemplateJSONWithNonStringDefault(t *testing.T, stage string) []byte {
+	t.Helper()
+
+	stage = normalizeManagedLesserStage(stage)
+	if stage == "" {
+		stage = managedStageDev
+	}
+	raw, err := json.Marshal(map[string]any{
+		"AWSTemplateFormatVersion": "2010-09-09",
+		"Parameters": map[string]any{
+			"LesserStageDomainParamLookupParameter": map[string]any{
+				"Type": "String",
+				"Default": map[string]any{
+					"Fn::Join": []any{"", []any{"/lesser/", stage, "/domain"}},
+				},
+			},
+		},
+		"Resources": map[string]any{},
+	})
+	require.NoError(t, err)
+	return raw
+}
+
 func TestPreflightManagedLesserRelease_ValidatesReleaseAndBundleManifest(t *testing.T) {
 	t.Parallel()
 
@@ -269,6 +327,10 @@ func TestPreflightManagedLesserBodyRelease_ValidatesReleaseManifestAndChecksums(
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = w.Write(lesserBodyChecksumsTXT(stage, true))
 	})
+	handler.HandleFunc("/equaltoai/lesser-body/releases/download/"+version+"/lesser-body-managed-"+stage+".template.json", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(lesserBodyTemplateJSON(t, stage))
+	})
 
 	srv := &Server{
 		cfg: config.Config{
@@ -280,6 +342,40 @@ func TestPreflightManagedLesserBodyRelease_ValidatesReleaseManifestAndChecksums(
 	}
 
 	require.NoError(t, srv.preflightManagedLesserBodyRelease(context.Background(), version, stage))
+}
+
+func TestPreflightManagedLesserBodyRelease_RejectsNonStringTemplateDefaults(t *testing.T) {
+	t.Parallel()
+
+	const version = "v0.2.3"
+	const stage = managedStageDev
+	handler := http.NewServeMux()
+	handler.HandleFunc("/equaltoai/lesser-body/releases/download/"+version+"/lesser-body-release.json", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(lesserBodyReleaseManifestJSON(t, version, stage))
+	})
+	handler.HandleFunc("/equaltoai/lesser-body/releases/download/"+version+"/checksums.txt", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write(lesserBodyChecksumsTXT(stage, true))
+	})
+	handler.HandleFunc("/equaltoai/lesser-body/releases/download/"+version+"/lesser-body-managed-"+stage+".template.json", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(lesserBodyTemplateJSONWithNonStringDefault(t, stage))
+	})
+
+	srv := &Server{
+		cfg: config.Config{
+			Stage:                        "lab",
+			ManagedLesserBodyGitHubOwner: "equaltoai",
+			ManagedLesserBodyGitHubRepo:  "lesser-body",
+		},
+		releaseHTTPClient: newManagedReleaseTestClient(t, handler),
+	}
+
+	err := srv.preflightManagedLesserBodyRelease(context.Background(), version, stage)
+	require.ErrorContains(t, err, "non-string Default")
+	require.ErrorContains(t, err, "CloudFormation requires every Default member to be a string")
+	require.ErrorContains(t, err, "lesser-body-managed-dev.template.json")
 }
 
 func TestAdvanceUpdateDeployReleasePreflightFailureFailsBeforeRunnerStarts(t *testing.T) {
@@ -363,6 +459,10 @@ func TestAdvanceUpdateBodyReleasePreflightFailureFailsBeforeRunnerStarts(t *test
 	handler.HandleFunc("/equaltoai/lesser-body/releases/download/"+version+"/checksums.txt", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = w.Write(lesserBodyChecksumsTXT(managedStageDev, false))
+	})
+	handler.HandleFunc("/equaltoai/lesser-body/releases/download/"+version+"/lesser-body-managed-"+managedStageDev+".template.json", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(lesserBodyTemplateJSON(t, managedStageDev))
 	})
 
 	srv := &Server{

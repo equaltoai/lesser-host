@@ -24,6 +24,16 @@
       "detail": "requested lesser-body release matches the published lesser-host managed compatibility contract"
     },
     {
+      "id": "lesser_body_template_preflight_valid",
+      "status": "pass",
+      "detail": "published template lesser-body-managed-dev.template.json passed lesser-host managed body template preflight"
+    },
+    {
+      "id": "lesser_body_template_changeset_valid",
+      "status": "pass",
+      "detail": "published template lesser-body-managed-dev.template.json passed cloudformation_deploy_no_execute_changeset and is recorded at managed/updates/simulacrum/job-update-1/body-template-certification.json"
+    },
+    {
       "id": "lesser_body_completed",
       "status": "pass",
       "detail": "lesser-body managed deploy completed"
@@ -48,7 +58,10 @@
     "run_url": "https://console.aws.amazon.com/codebuild/home?#/builds/job-update-1-body/view/new",
     "body_run_url": "https://console.aws.amazon.com/codebuild/home?#/builds/job-update-1-body/view/new",
     "receipt_key": "managed/updates/simulacrum/job-update-1/body-state.json",
-    "requested_version": "v0.2.3"
+    "requested_version": "v0.2.3",
+    "template_path": "lesser-body-managed-dev.template.json",
+    "template_certification_key": "managed/updates/simulacrum/job-update-1/body-template-certification.json",
+    "template_verification_mode": "cloudformation_deploy_no_execute_changeset"
   },
   "overall_status": "pass"
 }
