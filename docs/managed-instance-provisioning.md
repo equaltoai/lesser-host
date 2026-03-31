@@ -55,6 +55,7 @@ It assumes:
    - read the deployment receipt `~/.lesser/<app>/<base-domain>/state.json`.
 
 6) **(Optional, default-on) Deploy lesser-body (AgentCore MCP) + wire `POST /mcp/{actor}`**
+   - see `docs/lesser-body-release-contract.md` for the canonical managed consumer contract
    - download and verify the managed `lesser-body` release assets:
      - `checksums.txt`
      - `lesser-body-release.json`

@@ -32,8 +32,8 @@ import (
 const (
 	testManagedUpdateTrustBaseURL    = "https://example.test"
 	testManagedUpdateReceiptJSON     = `{"app":"x","base_domain":"d"}`
-	testManagedUpdateBodyReceiptJSON = `{"version":1,"stage":"dev","base_domain":"d","lesser_body_version":"v.0.1.3"}`
-	testManagedUpdateMCPReceiptJSON  = `{"version":1,"stage":"dev","base_domain":"d","lesser_body_version":"v.0.1.3","mcp_url":"https://api.dev.example.test/mcp/{actor}","mcp_lambda_arn":"arn:aws:lambda:us-east-1:123:function:mcp"}`
+	testManagedUpdateBodyReceiptJSON = `{"version":1,"stage":"dev","base_domain":"d","lesser_body_version":"v0.2.3"}`
+	testManagedUpdateMCPReceiptJSON  = `{"version":1,"stage":"dev","base_domain":"d","lesser_body_version":"v0.2.3","mcp_url":"https://api.dev.example.test/mcp/{actor}","mcp_lambda_arn":"arn:aws:lambda:us-east-1:123:function:mcp"}`
 )
 
 func TestRunManagedUpdateStateMachine_HappyPath(t *testing.T) {
@@ -292,7 +292,7 @@ func TestRunManagedUpdateStateMachine_BodyOnlyCompletesIndependently(t *testing.
 		ManagedOrgVendingRoleARN:          "arn:aws:iam::123:role/vending",
 		ManagedLesserGitHubOwner:          "equaltoai",
 		ManagedLesserGitHubRepo:           "lesser",
-		ManagedLesserBodyDefaultVersion:   "v.0.1.3",
+		ManagedLesserBodyDefaultVersion:   "v0.2.3",
 		ManagedLesserBodyGitHubOwner:      "equaltoai",
 		ManagedLesserBodyGitHubRepo:       "lesser-body",
 	}
@@ -300,7 +300,7 @@ func TestRunManagedUpdateStateMachine_BodyOnlyCompletesIndependently(t *testing.
 	st := store.New(db)
 	sqsClient := &fakeSQS{}
 	srv := NewServer(cfg, st, nil, nil, nil, sqsClient, cb, s3Client)
-	srv.releaseHTTPClient = newHappyManagedLesserBodyReleaseClient(t, managedStageLive, "v.0.1.3")
+	srv.releaseHTTPClient = newHappyManagedLesserBodyReleaseClient(t, managedStageLive, "v0.2.3")
 
 	fsm := &fakeSecretsManager{
 		describeErr: &smtypes.ResourceNotFoundException{},
@@ -320,7 +320,7 @@ func TestRunManagedUpdateStateMachine_BodyOnlyCompletesIndependently(t *testing.
 		InstanceSlug:              "slug",
 		Status:                    models.UpdateJobStatusQueued,
 		LesserVersion:             "v1.2.6",
-		LesserBodyVersion:         "v.0.1.3",
+		LesserBodyVersion:         "v0.2.3",
 		BodyOnly:                  true,
 		LesserHostBaseURL:         "https://lab.example.com",
 		LesserHostAttestationsURL: "https://lab.example.com",
@@ -353,13 +353,13 @@ func TestRunManagedUpdateStateMachine_BodyOnlyCompletesIndependently(t *testing.
 	require.NoError(t, srv.runManagedUpdateStateMachine(ctx, job, "req", now.Add(1*time.Minute)))
 	require.Equal(t, updateStepDone, job.Step)
 	require.Equal(t, models.UpdateJobStatusOK, job.Status)
-	require.Equal(t, "v.0.1.3", job.LesserBodyVersion)
+	require.Equal(t, "v0.2.3", job.LesserBodyVersion)
 	require.Equal(t, updatePhaseStatusSucceeded, job.BodyStatus)
 	require.Equal(t, updatePhaseStatusSkipped, job.MCPStatus)
 
 	require.Len(t, cb.startInputs, 1)
 	require.Equal(t, "lesser-body", envValue(cb.startInputs[0], "RUN_MODE"))
-	require.Equal(t, "v.0.1.3", envValue(cb.startInputs[0], "LESSER_BODY_VERSION"))
+	require.Equal(t, "v0.2.3", envValue(cb.startInputs[0], "LESSER_BODY_VERSION"))
 }
 
 func TestRunManagedUpdateStateMachine_MCPOnlySkipsLesserAndBodyDeploy(t *testing.T) {
@@ -447,7 +447,7 @@ func TestRunManagedUpdateStateMachine_MCPOnlySkipsLesserAndBodyDeploy(t *testing
 		ManagedOrgVendingRoleARN:          "arn:aws:iam::123:role/vending",
 		ManagedLesserGitHubOwner:          "equaltoai",
 		ManagedLesserGitHubRepo:           "lesser",
-		ManagedLesserBodyDefaultVersion:   "v.0.1.3",
+		ManagedLesserBodyDefaultVersion:   "v0.2.3",
 		ManagedLesserBodyGitHubOwner:      "equaltoai",
 		ManagedLesserBodyGitHubRepo:       "lesser-body",
 	}
@@ -475,7 +475,7 @@ func TestRunManagedUpdateStateMachine_MCPOnlySkipsLesserAndBodyDeploy(t *testing
 		InstanceSlug:              "slug",
 		Status:                    models.UpdateJobStatusQueued,
 		LesserVersion:             "v1.2.6",
-		LesserBodyVersion:         "v.0.1.3",
+		LesserBodyVersion:         "v0.2.3",
 		MCPOnly:                   true,
 		LesserHostBaseURL:         "https://lab.example.com",
 		LesserHostAttestationsURL: "https://lab.example.com",
@@ -512,7 +512,7 @@ func TestRunManagedUpdateStateMachine_MCPOnlySkipsLesserAndBodyDeploy(t *testing
 
 	require.Len(t, cb.startInputs, 1)
 	require.Equal(t, "lesser-mcp", envValue(cb.startInputs[0], "RUN_MODE"))
-	require.Equal(t, "v.0.1.3", envValue(cb.startInputs[0], "LESSER_BODY_VERSION"))
+	require.Equal(t, "v0.2.3", envValue(cb.startInputs[0], "LESSER_BODY_VERSION"))
 }
 
 func TestUpdateJob_ProcessableAndMissingConfig(t *testing.T) {

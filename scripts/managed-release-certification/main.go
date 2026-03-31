@@ -20,6 +20,14 @@ import (
 )
 
 const certificationSchemaVersion = 1
+const lesserBodyCertificationSchemaVersion = 1
+
+const (
+	certificationJSONFileName               = "managed-release-certification.json"
+	certificationMarkdownFileName           = "managed-release-certification.md"
+	lesserBodyCertificationJSONFileName     = "managed-release-certification-lesser-body.json"
+	lesserBodyCertificationMarkdownFileName = "managed-release-certification-lesser-body.md"
+)
 
 const (
 	statusPass    = "pass"
@@ -47,18 +55,21 @@ const (
 )
 
 type cliConfig struct {
-	BaseURL           string
-	Token             string
-	InstanceSlug      string
-	LesserVersion     string
-	LesserBodyVersion string
-	LesserGitHubOwner string
-	LesserGitHubRepo  string
-	RequireLesserBody bool
-	RequireMCP        bool
-	PollInterval      time.Duration
-	Timeout           time.Duration
-	OutDir            string
+	BaseURL               string
+	Token                 string
+	InstanceSlug          string
+	LesserVersion         string
+	LesserBodyVersion     string
+	LesserGitHubOwner     string
+	LesserGitHubRepo      string
+	LesserBodyGitHubOwner string
+	LesserBodyGitHubRepo  string
+	ManagedStage          string
+	RequireLesserBody     bool
+	RequireMCP            bool
+	PollInterval          time.Duration
+	Timeout               time.Duration
+	OutDir                string
 }
 
 type certificationReport struct {
@@ -68,6 +79,16 @@ type certificationReport struct {
 	RequestedRelease certificationRequested `json:"requested_release"`
 	Checks           []certificationCheck   `json:"checks"`
 	Jobs             []certificationJob     `json:"jobs"`
+	OverallStatus    string                 `json:"overall_status"`
+}
+
+type lesserBodyCertificationReport struct {
+	SchemaVersion    int                    `json:"schema_version"`
+	GeneratedAt      string                 `json:"generated_at"`
+	LesserHost       certificationTarget    `json:"lesser_host"`
+	RequestedRelease certificationRequested `json:"requested_release"`
+	Checks           []certificationCheck   `json:"checks"`
+	Job              certificationJob       `json:"job"`
 	OverallStatus    string                 `json:"overall_status"`
 }
 
@@ -147,6 +168,7 @@ type certificationClient struct {
 }
 
 var validateManagedLesserCompatibility = provisionworker.ValidateManagedLesserReleaseCompatibility
+var validateManagedLesserBodyCompatibility = provisionworker.ValidateManagedLesserBodyReleaseCompatibility
 
 func main() {
 	cfg, err := parseCLI(os.Args[1:])
@@ -183,6 +205,9 @@ func parseCLI(args []string) (cliConfig, error) {
 	fs.StringVar(&cfg.LesserBodyVersion, "lesser-body-version", "", "optional lesser-body release tag to require for follow-on deploy certification")
 	fs.StringVar(&cfg.LesserGitHubOwner, "lesser-github-owner", "equaltoai", "GitHub owner for Lesser release compatibility checks")
 	fs.StringVar(&cfg.LesserGitHubRepo, "lesser-github-repo", "lesser", "GitHub repo for Lesser release compatibility checks")
+	fs.StringVar(&cfg.LesserBodyGitHubOwner, "lesser-body-github-owner", "equaltoai", "GitHub owner for lesser-body release compatibility checks")
+	fs.StringVar(&cfg.LesserBodyGitHubRepo, "lesser-body-github-repo", "lesser-body", "GitHub repo for lesser-body release compatibility checks")
+	fs.StringVar(&cfg.ManagedStage, "managed-stage", "dev", "managed instance stage to use for stage-scoped lesser-body compatibility checks")
 	fs.BoolVar(&cfg.RequireLesserBody, "require-lesser-body", false, "require lesser-body follow-on deploy to succeed in the certification run")
 	fs.BoolVar(&cfg.RequireMCP, "require-mcp", false, "require MCP follow-on wiring to succeed in the certification run")
 	fs.DurationVar(&cfg.PollInterval, "poll-interval", 10*time.Second, "poll interval for update status")
@@ -221,25 +246,47 @@ func parseCLI(args []string) (cliConfig, error) {
 	cfg.LesserBodyVersion = strings.TrimSpace(cfg.LesserBodyVersion)
 	cfg.LesserGitHubOwner = strings.TrimSpace(cfg.LesserGitHubOwner)
 	cfg.LesserGitHubRepo = strings.TrimSpace(cfg.LesserGitHubRepo)
+	cfg.LesserBodyGitHubOwner = strings.TrimSpace(cfg.LesserBodyGitHubOwner)
+	cfg.LesserBodyGitHubRepo = strings.TrimSpace(cfg.LesserBodyGitHubRepo)
+	cfg.ManagedStage = strings.TrimSpace(cfg.ManagedStage)
 	cfg.OutDir = strings.TrimSpace(cfg.OutDir)
 
+	if err := validateRequiredCLIFields(cfg); err != nil {
+		return cliConfig{}, err
+	}
+
+	return validateParsedCLIConfig(cfg)
+}
+
+func validateRequiredCLIFields(cfg cliConfig) error {
 	parsedBaseURL, err := url.Parse(cfg.BaseURL)
 	if err != nil {
-		return cliConfig{}, fmt.Errorf("--base-url is invalid: %w", err)
+		return fmt.Errorf("--base-url is invalid: %w", err)
 	}
 	if parsedBaseURL.Host == "" {
-		return cliConfig{}, errors.New("--base-url must include a host")
+		return errors.New("--base-url must include a host")
 	}
 	if parsedBaseURL.Scheme != "https" && parsedBaseURL.Scheme != "http" {
-		return cliConfig{}, errors.New("--base-url must use http or https")
+		return errors.New("--base-url must use http or https")
 	}
-	if cfg.LesserGitHubOwner == "" {
+	return nil
+}
+
+func validateParsedCLIConfig(cfg cliConfig) (cliConfig, error) {
+	switch {
+	case cfg.LesserGitHubOwner == "":
 		return cliConfig{}, errors.New("--lesser-github-owner is required")
-	}
-	if cfg.LesserGitHubRepo == "" {
+	case cfg.LesserGitHubRepo == "":
 		return cliConfig{}, errors.New("--lesser-github-repo is required")
+	case cfg.LesserBodyGitHubOwner == "":
+		return cliConfig{}, errors.New("--lesser-body-github-owner is required")
+	case cfg.LesserBodyGitHubRepo == "":
+		return cliConfig{}, errors.New("--lesser-body-github-repo is required")
+	case cfg.ManagedStage == "":
+		return cliConfig{}, errors.New("--managed-stage is required")
+	default:
+		return cfg, nil
 	}
-	return cfg, nil
 }
 
 func runCertification(ctx context.Context, cfg cliConfig, httpClient *http.Client) (*certificationReport, error) {
@@ -282,6 +329,45 @@ func runCertification(ctx context.Context, cfg cliConfig, httpClient *http.Clien
 		Status: statusPass,
 		Detail: "requested release matches the published lesser-host managed compatibility contract",
 	})
+
+	if cfg.RequireLesserBody || cfg.RequireMCP {
+		if strings.TrimSpace(cfg.LesserBodyVersion) == "" {
+			report.Checks = append(report.Checks, certificationCheck{
+				ID:     "lesser_body_version_selected",
+				Status: statusFail,
+				Detail: "--lesser-body-version is required when lesser-body or MCP certification is requested",
+			})
+			report.OverallStatus = statusFail
+			return report, nil
+		}
+		report.Checks = append(report.Checks, certificationCheck{
+			ID:     "lesser_body_version_selected",
+			Status: statusPass,
+			Detail: "requested lesser-body release " + cfg.LesserBodyVersion + " will be validated for managed certification",
+		})
+
+		if err := validateManagedLesserBodyCompatibility(
+			ctx,
+			&http.Client{Timeout: 30 * time.Second},
+			cfg.LesserBodyGitHubOwner,
+			cfg.LesserBodyGitHubRepo,
+			cfg.LesserBodyVersion,
+			cfg.ManagedStage,
+		); err != nil {
+			report.Checks = append(report.Checks, certificationCheck{
+				ID:     "lesser_body_compatibility_contract_valid",
+				Status: statusFail,
+				Detail: err.Error(),
+			})
+			report.OverallStatus = statusFail
+			return report, nil
+		}
+		report.Checks = append(report.Checks, certificationCheck{
+			ID:     "lesser_body_compatibility_contract_valid",
+			Status: statusPass,
+			Detail: "requested lesser-body release matches the published lesser-host managed compatibility contract",
+		})
+	}
 
 	startedJob, err := client.createLesserUpdate(ctx, cfg.InstanceSlug, cfg.LesserVersion, cfg.LesserBodyVersion)
 	if err != nil {
@@ -380,6 +466,11 @@ func certificationChecksForManagedUpdate(job updateJobResponse, evidence []certi
 				ID:     "lesser_body_completed",
 				Status: checkStatusForPhase(bodyEvidence),
 				Detail: phaseCompletionDetail(updateJobKindBody, bodyEvidence),
+			},
+			certificationCheck{
+				ID:     "lesser_body_runner_visibility_present",
+				Status: checkStatusForValue(bodyEvidence.BodyRunURL),
+				Detail: valueDetail(bodyEvidence.BodyRunURL, "lesser-body run link was not preserved in the managed update evidence"),
 			},
 			certificationCheck{
 				ID:     "lesser_body_receipt_key_defined",
@@ -517,11 +608,25 @@ func checkStatusForReceiptKey(job certificationJob) string {
 	return statusPass
 }
 
+func checkStatusForValue(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return statusFail
+	}
+	return statusPass
+}
+
 func receiptDetail(job certificationJob, label string) string {
 	if strings.TrimSpace(job.ReceiptKey) != "" {
 		return job.ReceiptKey
 	}
 	return label + " receipt key could not be derived from the managed update job"
+}
+
+func valueDetail(value string, fallback string) string {
+	if strings.TrimSpace(value) != "" {
+		return strings.TrimSpace(value)
+	}
+	return fallback
 }
 
 func phaseCompletionDetail(kind string, job certificationJob) string {
@@ -697,19 +802,100 @@ func writeCertificationOutputs(outDir string, report *certificationReport) error
 		return err
 	}
 
-	jsonPath := filepath.Join(cleanedOutDir, "managed-release-certification.json")
+	jsonPath := filepath.Join(cleanedOutDir, certificationJSONFileName)
 	jsonBytes, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
 		return err
 	}
 	jsonBytes = append(jsonBytes, '\n')
-	if err := os.WriteFile(jsonPath, jsonBytes, 0o600); err != nil { //nolint:gosec // Evidence files are written only to the operator-selected local certification output directory.
-		return err
+	writeErr := os.WriteFile(jsonPath, jsonBytes, 0o600) //nolint:gosec // Evidence files are written only to the operator-selected local certification output directory.
+	if writeErr != nil {
+		return writeErr
 	}
 
-	markdownPath := filepath.Join(cleanedOutDir, "managed-release-certification.md")
-	if err := os.WriteFile(markdownPath, []byte(renderMarkdownSummary(report)), 0o600); err != nil { //nolint:gosec // Evidence files are written only to the operator-selected local certification output directory.
+	markdownPath := filepath.Join(cleanedOutDir, certificationMarkdownFileName)
+	writeErr = os.WriteFile(markdownPath, []byte(renderMarkdownSummary(report)), 0o600) //nolint:gosec // Evidence files are written only to the operator-selected local certification output directory.
+	if writeErr != nil {
+		return writeErr
+	}
+
+	bodyReport := buildLesserBodyCertificationReport(report)
+	if bodyReport == nil {
+		removeErr := removeIfExists(filepath.Join(cleanedOutDir, lesserBodyCertificationJSONFileName))
+		if removeErr != nil {
+			return removeErr
+		}
+		return removeIfExists(filepath.Join(cleanedOutDir, lesserBodyCertificationMarkdownFileName))
+	}
+
+	bodyJSONBytes, err := json.MarshalIndent(bodyReport, "", "  ")
+	if err != nil {
 		return err
+	}
+	bodyJSONBytes = append(bodyJSONBytes, '\n')
+	writeErr = os.WriteFile(filepath.Join(cleanedOutDir, lesserBodyCertificationJSONFileName), bodyJSONBytes, 0o600) //nolint:gosec // Evidence files are written only to the operator-selected local certification output directory.
+	if writeErr != nil {
+		return writeErr
+	}
+	writeErr = os.WriteFile(filepath.Join(cleanedOutDir, lesserBodyCertificationMarkdownFileName), []byte(renderLesserBodyMarkdownSummary(bodyReport)), 0o600) //nolint:gosec // Evidence files are written only to the operator-selected local certification output directory.
+	if writeErr != nil {
+		return writeErr
+	}
+	return nil
+}
+
+func buildLesserBodyCertificationReport(report *certificationReport) *lesserBodyCertificationReport {
+	if report == nil || !report.RequestedRelease.RunLesserBody {
+		return nil
+	}
+
+	bodyChecks := make([]certificationCheck, 0, len(report.Checks))
+	for _, check := range report.Checks {
+		if strings.HasPrefix(strings.TrimSpace(check.ID), "lesser_body_") {
+			bodyChecks = append(bodyChecks, check)
+		}
+	}
+	if len(bodyChecks) == 0 {
+		bodyChecks = append(bodyChecks, certificationCheck{
+			ID:     "lesser_body_evidence_present",
+			Status: statusFail,
+			Detail: "body-enabled certification did not emit lesser-body checks",
+		})
+	}
+
+	bodyJob := findCertificationJob(report.Jobs, updateJobKindBody)
+	if strings.TrimSpace(bodyJob.JobID) == "" {
+		bodyJob = certificationJob{
+			Kind:             updateJobKindBody,
+			Status:           updateJobStatusError,
+			Step:             "evidence.missing",
+			ErrorCode:        "lesser_body_evidence_missing",
+			ErrorMessage:     "lesser-body phase evidence was not present in the managed certification report",
+			RequestedVersion: strings.TrimSpace(report.RequestedRelease.LesserBodyVersion),
+		}
+		if failedCheck := firstFailingCheck(bodyChecks); failedCheck != nil {
+			bodyJob.Step = "preflight.failed"
+			bodyJob.ErrorCode = "lesser_body_certification_failed"
+			bodyJob.ErrorMessage = strings.TrimSpace(failedCheck.Detail)
+		}
+	}
+
+	return &lesserBodyCertificationReport{
+		SchemaVersion:    lesserBodyCertificationSchemaVersion,
+		GeneratedAt:      report.GeneratedAt,
+		LesserHost:       report.LesserHost,
+		RequestedRelease: report.RequestedRelease,
+		Checks:           bodyChecks,
+		Job:              bodyJob,
+		OverallStatus:    overallStatus(bodyChecks),
+	}
+}
+
+func firstFailingCheck(checks []certificationCheck) *certificationCheck {
+	for i := range checks {
+		if strings.TrimSpace(checks[i].Status) == statusFail {
+			return &checks[i]
+		}
 	}
 	return nil
 }
@@ -719,6 +905,28 @@ func renderMarkdownSummary(report *certificationReport) string {
 	writeMarkdownHeader(&b, report)
 	writeMarkdownChecks(&b, report.Checks)
 	writeMarkdownJobs(&b, report.Jobs)
+	return b.String()
+}
+
+func renderLesserBodyMarkdownSummary(report *lesserBodyCertificationReport) string {
+	var b strings.Builder
+	b.WriteString("# lesser-body managed certification\n\n")
+	writeMarkdownBullet(&b, "Generated at", report.GeneratedAt)
+	writeMarkdownBullet(&b, "Base URL", report.LesserHost.BaseURL)
+	writeMarkdownBullet(&b, "Instance slug", report.LesserHost.InstanceSlug)
+	writeMarkdownBullet(&b, "Lesser version", report.RequestedRelease.LesserVersion)
+	writeMarkdownBullet(&b, "lesser-body version", report.RequestedRelease.LesserBodyVersion)
+	writeMarkdownBullet(&b, "Overall status", report.OverallStatus)
+	b.WriteString("\n## Checks\n\n")
+	for _, check := range report.Checks {
+		b.WriteString("- `" + safeMarkdownText(check.ID) + "`: `" + safeMarkdownText(check.Status) + "`")
+		if strings.TrimSpace(check.Detail) != "" {
+			b.WriteString(" - " + safeMarkdownText(check.Detail))
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString("\n## Job\n\n")
+	writeMarkdownJob(&b, report.Job)
 	return b.String()
 }
 
@@ -805,6 +1013,14 @@ func safeMarkdownText(value string) string {
 	escaped = strings.ReplaceAll(escaped, "\r", " ")
 	escaped = strings.ReplaceAll(escaped, "\n", " ")
 	return escaped
+}
+
+func removeIfExists(path string) error {
+	err := os.Remove(path) //nolint:gosec // Evidence files are removed only from the operator-selected local output directory.
+	if err == nil || errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
 }
 
 func (c *certificationClient) createLesserUpdate(ctx context.Context, slug string, lesserVersion string, lesserBodyVersion string) (updateJobResponse, error) {

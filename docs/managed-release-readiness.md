@@ -8,6 +8,7 @@ Readiness is derived from the certification bundle produced by:
 
 - `docs/managed-release-certification.md`
 - `gov-infra/evidence/managed-release-certification/managed-release-certification.json`
+- `gov-infra/evidence/managed-release-certification/managed-release-certification-lesser-body.json` when `run_lesser_body=true`
 
 The derived readiness bundle is written alongside it:
 
@@ -37,6 +38,7 @@ comment with:
 
 - project number
 - requested Lesser and `lesser-body` versions
+- `lesser-body` certification status from the canonical body evidence bundle
 - current certification status
 - rollout readiness
 - blocking certification checks
