@@ -153,7 +153,7 @@ export function renderProvisionRunnerBuildCommands(): string {
 		'  test "$BODY_SOURCE_CHECKOUT_REQUIRED" = "false" || fail "lesser-body release unexpectedly requires a source checkout"',
 		'  BODY_NPM_INSTALL_REQUIRED=$(jq -r \'if .deploy.npm_install_required == false then "false" elif .deploy.npm_install_required == true then "true" else empty end\' "$body_release_dir/lesser-body-release.json")',
 		'  test "$BODY_NPM_INSTALL_REQUIRED" = "false" || fail "lesser-body release unexpectedly requires npm install"',
-		'  BODY_TEMPLATE_PATH=$(jq -r ".artifacts.deploy_templates[$body_stage].path // empty" "$body_release_dir/lesser-body-release.json")',
+		'  BODY_TEMPLATE_PATH=$(jq -r --arg stage "$body_stage" \'.artifacts.deploy_templates[$stage].path // empty\' "$body_release_dir/lesser-body-release.json")',
 		'  test "$BODY_TEMPLATE_PATH" = "lesser-body-managed-$body_stage.template.json" || fail "unexpected lesser-body template path for stage $body_stage: $BODY_TEMPLATE_PATH"',
 		'  BODY_SCRIPT_PATH=$(jq -r \'.artifacts.deploy_script.path // empty\' "$body_release_dir/lesser-body-release.json")',
 		'  test "$BODY_SCRIPT_PATH" = "deploy-lesser-body-from-release.sh" || fail "unexpected lesser-body deploy script path: $BODY_SCRIPT_PATH"',
