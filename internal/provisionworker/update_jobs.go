@@ -129,18 +129,6 @@ func initializeManagedUpdatePhaseState(job *models.UpdateJob) {
 	}
 }
 
-func updateJobPhaseDetail(phase string, currentPhase string, failureDetail string) string {
-	currentPhase = normalizeOperatorVisibleFailureWhitespace(currentPhase)
-	failureDetail = sanitizeOperatorVisibleFailureDetail(failureDetail)
-	if currentPhase != "" && failureDetail != "" {
-		return currentPhase + ": " + failureDetail
-	}
-	if currentPhase != "" {
-		return currentPhase
-	}
-	return failureDetail
-}
-
 func setUpdateJobActivePhase(job *models.UpdateJob, phase string) {
 	if job == nil {
 		return
@@ -1915,10 +1903,17 @@ func (s *Server) failCompletedUpdateRunnerWait(
 	if detail := updateJobPhaseDetail(spec.phase, info.CurrentPhase, info.FailureDetail); detail != "" {
 		msg += " (" + detail + ")"
 	}
-	if info.DeepLink != "" {
-		job.RunURL = info.DeepLink
-		setUpdateJobPhaseRunURL(job, spec.phase, info.DeepLink)
-		msg += " (CodeBuild: " + info.DeepLink + ")"
+	deepLink := strings.TrimSpace(info.DeepLink)
+	if deepLink == "" {
+		deepLink = strings.TrimSpace(job.RunURL)
+	}
+	if deepLink == "" {
+		deepLink = updateJobPhaseRunURL(job, spec.phase)
+	}
+	if deepLink != "" {
+		job.RunURL = deepLink
+		setUpdateJobPhaseRunURL(job, spec.phase, deepLink)
+		msg += " (CodeBuild: " + deepLink + ")"
 	}
 	setUpdateJobPhaseFailed(job, spec.phase, msg)
 	return 0, false, s.failUpdateJob(ctx, job, requestID, now, spec.failedCode, msg)

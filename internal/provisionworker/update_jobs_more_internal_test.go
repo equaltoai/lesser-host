@@ -406,6 +406,87 @@ func TestProcessActiveUpdateSweep_ReconcilesTerminalRunnerFailure(t *testing.T) 
 	require.Contains(t, loaded.ErrorMessage, "bundle mismatch")
 }
 
+func TestProcessActiveUpdateSweep_ReconcilesTerminalBodyRunnerFailure(t *testing.T) {
+	t.Parallel()
+
+	db := ttmocks.NewMockExtendedDB()
+	qJob := new(ttmocks.MockQuery)
+
+	db.On("WithContext", mock.Anything).Return(db).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.UpdateJob")).Return(qJob).Maybe()
+	qJob.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qJob).Maybe()
+	qJob.On("Index", "gsi2").Return(qJob).Maybe()
+	qJob.On("OrderBy", "gsi2SK", "ASC").Return(qJob).Maybe()
+	qJob.On("Limit", mock.Anything).Return(qJob).Maybe()
+	qJob.On("ConsistentRead").Return(qJob).Maybe()
+
+	sweepJob := &models.UpdateJob{
+		ID:           "job-body-sweep",
+		InstanceSlug: "slug",
+		Status:       models.UpdateJobStatusRunning,
+		Step:         updateStepBodyDeployWait,
+		RunID:        "run-body-1",
+		RunURL:       "https://logs.example/body",
+		BodyRunURL:   "https://logs.example/body",
+		CreatedAt:    time.Unix(100, 0).UTC(),
+		UpdatedAt:    time.Unix(101, 0).UTC(),
+		ExpiresAt:    time.Now().UTC().Add(time.Hour),
+		MaxAttempts:  10,
+	}
+
+	qJob.On("All", mock.AnythingOfType("*[]*models.UpdateJob")).Return(nil).Once().Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.UpdateJob](t, args, 0)
+		*dest = []*models.UpdateJob{{ID: sweepJob.ID, InstanceSlug: sweepJob.InstanceSlug, Status: sweepJob.Status, Step: sweepJob.Step, UpdatedAt: sweepJob.UpdatedAt}}
+	})
+
+	var loaded *models.UpdateJob
+	qJob.On("First", mock.AnythingOfType("*models.UpdateJob")).Return(nil).Once().Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.UpdateJob](t, args, 0)
+		*dest = *sweepJob
+		loaded = dest
+	})
+
+	db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Maybe()
+
+	srv := NewServer(config.Config{
+		ManagedProvisioningEnabled:        true,
+		ManagedInstanceRoleName:           "role",
+		ManagedProvisionRunnerProjectName: "project",
+		ArtifactBucketName:                "artifacts",
+		ManagedLesserGitHubOwner:          "equaltoai",
+		ManagedLesserGitHubRepo:           "lesser",
+	}, store.New(db), nil, nil, nil, nil, &fakeCodebuild{
+		batchOut: &codebuild.BatchGetBuildsOutput{
+			Builds: []cbtypes.Build{{
+				BuildStatus:  cbtypes.StatusTypeFailed,
+				CurrentPhase: aws.String("BUILD"),
+				Phases: []cbtypes.BuildPhase{{
+					PhaseType:   cbtypes.BuildPhaseType("BUILD"),
+					PhaseStatus: cbtypes.StatusTypeFailed,
+					Contexts: []cbtypes.PhaseContext{{
+						Message: aws.String("COMMAND_EXECUTION_ERROR: Error while executing command: bash ./deploy-lesser-body-from-release.sh --stack-name demo Reason: exit status 1"),
+					}},
+				}},
+			}},
+		},
+	}, nil)
+
+	out, err := srv.processActiveUpdateSweep(context.Background(), "req-sweep", time.Unix(300, 0).UTC())
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	require.Equal(t, 1, out["active_jobs"])
+	require.Equal(t, 1, out["processed"])
+	require.Equal(t, 0, out["errors"])
+	require.NotNil(t, loaded)
+	require.Equal(t, models.UpdateJobStatusError, loaded.Status)
+	require.Equal(t, "body_deploy_failed", loaded.ErrorCode)
+	require.Equal(t, updatePhaseBody, loaded.FailedPhase)
+	require.Contains(t, loaded.ErrorMessage, "command execution failed (exit status 1)")
+	require.Contains(t, loaded.ErrorMessage, "CodeBuild: https://logs.example/body")
+	require.NotContains(t, loaded.ErrorMessage, "--stack-name")
+	require.Contains(t, loaded.BodyError, "command execution failed (exit status 1)")
+}
+
 func TestGetSecretsManagerSecretPlaintext_ParsesJSONAndBinary(t *testing.T) {
 	t.Parallel()
 
