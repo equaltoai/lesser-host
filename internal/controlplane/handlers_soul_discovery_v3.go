@@ -385,7 +385,7 @@ func (s *Server) handleSoulPublicResolveENSName(ctx *apptheory.Context) (*appthe
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
-	resp, err := apptheory.JSON(http.StatusOK, soulPublicAgentResponse{Version: "1", Agent: *identity})
+	resp, err := apptheory.JSON(http.StatusOK, soulPublicAgentResponse{Version: "1", Agent: s.buildSoulPublicAgentView(ctx.Context(), identity)})
 	if err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
@@ -440,7 +440,7 @@ func (s *Server) handleSoulPublicResolveEmail(ctx *apptheory.Context) (*apptheor
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
-	resp, err := apptheory.JSON(http.StatusOK, soulPublicAgentResponse{Version: "1", Agent: *identity})
+	resp, err := apptheory.JSON(http.StatusOK, soulPublicAgentResponse{Version: "1", Agent: s.buildSoulPublicAgentView(ctx.Context(), identity)})
 	if err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
@@ -496,7 +496,7 @@ func (s *Server) handleSoulPublicResolvePhone(ctx *apptheory.Context) (*apptheor
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
-	resp, err := apptheory.JSON(http.StatusOK, soulPublicAgentResponse{Version: "1", Agent: *identity})
+	resp, err := apptheory.JSON(http.StatusOK, soulPublicAgentResponse{Version: "1", Agent: s.buildSoulPublicAgentView(ctx.Context(), identity)})
 	if err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}

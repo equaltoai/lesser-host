@@ -107,6 +107,30 @@ func DecodePrincipalOfResult(ret []byte) (common.Address, error) {
 	return addr, nil
 }
 
+// EncodeTokenURICall returns ABI-encoded call data for SoulRegistry.tokenURI(tokenId).
+func EncodeTokenURICall(tokenID *big.Int) ([]byte, error) {
+	if tokenID == nil {
+		tokenID = new(big.Int)
+	}
+	return soulRegistryParsedABI.Pack("tokenURI", tokenID)
+}
+
+// DecodeTokenURIResult decodes the ABI result for SoulRegistry.tokenURI(tokenId).
+func DecodeTokenURIResult(ret []byte) (string, error) {
+	out, err := soulRegistryParsedABI.Unpack("tokenURI", ret)
+	if err != nil {
+		return "", err
+	}
+	if len(out) != 1 {
+		return "", errors.New("unexpected tokenURI result shape")
+	}
+	value, ok := out[0].(string)
+	if !ok {
+		return "", errors.New("unexpected tokenURI result type")
+	}
+	return value, nil
+}
+
 // EncodeAgentNoncesCall returns ABI-encoded call data for SoulRegistry.agentNonces(agentId).
 func EncodeAgentNoncesCall(agentID *big.Int) ([]byte, error) {
 	if agentID == nil {

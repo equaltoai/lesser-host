@@ -161,6 +161,16 @@
 				</div>
 			</Card>
 
+			{#if portalRoute.kind === 'souls' || portalRoute.kind === 'soulRegister' || portalRoute.kind === 'soulMint' || portalRoute.kind === 'soulAgent'}
+				<Alert variant="warning" title="Secondary soul route">
+					<Text size="sm">
+						The canonical soul creation, review, approval, and finalize flow now lives in the agent-first Simulacrum
+						client served from Lesser at <span class="portal__mono">/l/*</span>. These portal soul routes remain
+						available as fallback and operator-oriented tools.
+					</Text>
+				</Alert>
+			{/if}
+
 			{#if !$session}
 				<Alert variant="warning" title="Signed out">
 					<Text size="sm">Sign in to continue.</Text>

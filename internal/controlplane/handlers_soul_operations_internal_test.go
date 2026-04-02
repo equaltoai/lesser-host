@@ -32,6 +32,7 @@ type fakeEthClient struct {
 	err     error
 
 	callContract func(ctx context.Context, msg ethereum.CallMsg) ([]byte, error)
+	filterLogs   func(ctx context.Context, q ethereum.FilterQuery) ([]types.Log, error)
 }
 
 func (f *fakeEthClient) CallContract(ctx context.Context, msg ethereum.CallMsg, blockNumber *big.Int) ([]byte, error) {
@@ -43,6 +44,13 @@ func (f *fakeEthClient) CallContract(ctx context.Context, msg ethereum.CallMsg, 
 
 func (f *fakeEthClient) TransactionReceipt(ctx context.Context, txHash common.Hash) (*types.Receipt, error) {
 	return f.receipt, f.err
+}
+
+func (f *fakeEthClient) FilterLogs(ctx context.Context, q ethereum.FilterQuery) ([]types.Log, error) {
+	if f != nil && f.filterLogs != nil {
+		return f.filterLogs(ctx, q)
+	}
+	return nil, errors.New("not implemented")
 }
 
 func (f *fakeEthClient) Close() {}
