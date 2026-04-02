@@ -215,9 +215,24 @@ export interface SoulAgentIdentity {
 	agent_id: string;
 	domain: string;
 	local_id: string;
+	ens_name?: string;
 	wallet: string;
 	token_id?: string;
 	meta_uri?: string;
+	avatar?: {
+		token_uri?: string;
+		image?: string;
+		current_style_id?: number;
+		current_style_name?: string;
+		current_renderer_address?: string;
+		styles?: Array<{
+			style_id: number;
+			style_name?: string;
+			renderer_address?: string;
+			image?: string;
+			selected?: boolean;
+		}>;
+	};
 	capabilities?: string[];
 	status: string;
 	lifecycle_status?: string;
@@ -225,6 +240,9 @@ export interface SoulAgentIdentity {
 	successor_agent_id?: string;
 	predecessor_agent_id?: string;
 	principal_address?: string;
+	principal_signature?: string;
+	principal_declaration?: string;
+	principal_declared_at?: string;
 	self_description_version?: number;
 	mint_tx_hash?: string;
 	minted_at?: string;

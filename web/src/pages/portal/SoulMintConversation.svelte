@@ -439,7 +439,7 @@
 <div class="soul-mint">
 	<header class="soul-mint__header">
 		<div class="soul-mint__title">
-			<Heading level={2} size="xl">Complete profile</Heading>
+			<Heading level={2} size="xl">Legacy Profile Completion</Heading>
 			<Text color="secondary"><span class="soul-mint__mono">{agentId}</span></Text>
 		</div>
 		<div class="soul-mint__actions">
@@ -447,6 +447,11 @@
 			<Button variant="ghost" onclick={() => navigate(`/portal/souls/${agentId}`)}>Back to agent</Button>
 		</div>
 	</header>
+
+	<Alert variant="warning" title="Secondary route">
+		Use this portal conversation only when you need the legacy/fallback host flow. The canonical review and finalize
+		experience now belongs in the agent-first Simulacrum client.
+	</Alert>
 
 	{#if loading}
 		<div class="soul-mint__loading">
@@ -475,8 +480,9 @@
 				</Alert>
 			{:else}
 				<Alert variant="info" title="Pick up where you left off">
-					The mint step is already done. This conversation is the follow-up profile step where you draft and publish
-					the self-description, capabilities, boundaries, and transparency record for this agent.
+					The mint step is already done. This legacy portal conversation remains available for drafting and publishing
+					the self-description, capabilities, boundaries, and transparency record when the Simulacrum path is not in
+					use.
 				</Alert>
 			{/if}
 		</Card>

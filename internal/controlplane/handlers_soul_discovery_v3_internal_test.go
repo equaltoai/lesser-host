@@ -498,6 +498,7 @@ func discoverySuccessSetup(setup discoveryResolveSetup, localID string) discover
 			dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
 			*dest = models.SoulAgentIdentity{AgentID: agentID, Domain: "example.com", LocalID: localID, Status: models.SoulAgentStatusActive}
 		}).Once()
+		tdb.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(theoryErrors.ErrItemNotFound).Once()
 	}
 }
 

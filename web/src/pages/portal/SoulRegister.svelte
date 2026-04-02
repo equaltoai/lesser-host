@@ -919,15 +919,22 @@
 <div class="soul-register">
 	<header class="soul-register__header">
 		<div class="soul-register__title">
-			<Heading level={2} size="xl">Register agent</Heading>
+			<Heading level={2} size="xl">Legacy Agent Registration</Heading>
 			<Text color="secondary">
-				Choose your managed instance, confirm the wallet, and prepare the onchain mint from your connected wallet.
+				Fallback portal path for starting a soul registration when you are not using the agent-first Simulacrum flow.
 			</Text>
 		</div>
 		<div class="soul-register__actions">
 			<Button variant="ghost" onclick={() => navigate('/portal/souls')}>Back</Button>
 		</div>
 	</header>
+
+	<Alert variant="warning" title="Secondary route">
+		<Text size="sm">
+			The canonical user-facing soul flow now starts in Simulacrum on the Lesser instance. Use this portal route only
+			for fallback, recovery, or operator-guided registration.
+		</Text>
+	</Alert>
 
 	<Card variant="outlined" padding="lg">
 		{#snippet header()}
@@ -958,7 +965,7 @@
 			<TextField label="Wallet" bind:value={walletAddress} placeholder="0x…" />
 			<TextField label="Capabilities (comma-separated)" bind:value={capabilities} placeholder="social, commerce" />
 			<div class="soul-register__row">
-				<Button variant="solid" onclick={() => void handleBegin()} disabled={beginLoading || instancesLoading}>Start registration</Button>
+				<Button variant="solid" onclick={() => void handleBegin()} disabled={beginLoading || instancesLoading}>Start legacy registration</Button>
 				<Button variant="outline" onclick={() => void useConnectedWallet()} disabled={beginLoading}>Use connected wallet</Button>
 			</div>
 		</div>

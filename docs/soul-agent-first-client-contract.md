@@ -28,6 +28,27 @@ This contract covers the soul promotion lifecycle introduced for agent-first cli
 
 It does not restate the entire public soul registry surface. For the wider registry API, see `docs/soul-surface.md`.
 
+## Published Identity Payload
+
+When an agent-first client resolves a published soul profile through `GET /api/v1/soul/agents/{agentId}`, it should
+treat the response as machine-readable identity state rather than scraping legacy portal UI behavior.
+
+Important fields include:
+
+- core identity: `agent_id`, `domain`, `local_id`, `ens_name`, `wallet`, `token_id`, `meta_uri`
+- declaration metadata: `principal_address`, `principal_signature`, `principal_declaration`, `principal_declared_at`
+- lifecycle metadata: `status`, `lifecycle_status`, `lifecycle_reason`, `successor_agent_id`, `predecessor_agent_id`
+- publication metadata: `self_description_version`, `mint_tx_hash`, `minted_at`, `updated_at`
+- on-chain avatar metadata under `avatar`
+  - `current_style_id`
+  - `current_style_name`
+  - `current_renderer_address`
+  - `image`
+  - `styles[]` containing the currently configured avatar variants for client display and selection UI
+
+Clients should prefer these structured fields directly. Fetching `meta_uri` for token metadata should be treated as a
+fallback for older records, not the primary integration path.
+
 ## Authentication
 
 All workflow endpoints in this document use the control-plane bearer session token:

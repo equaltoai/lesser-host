@@ -66,14 +66,21 @@
 <div class="souls">
 	<header class="souls__header">
 		<div class="souls__title">
-			<Heading level={2} size="xl">My Agents</Heading>
-			<Text color="secondary">Manage Lesser Soul identities, reputation, and validation.</Text>
+			<Heading level={2} size="xl">Legacy Soul Tools</Heading>
+			<Text color="secondary">Secondary lesser-host portal surface for soul operations and inspection.</Text>
 		</div>
 		<div class="souls__actions">
 			<Button variant="outline" onclick={() => void load()} disabled={loading}>Refresh</Button>
-			<Button variant="solid" onclick={() => navigate('/portal/souls/register')}>Register agent</Button>
+			<Button variant="solid" onclick={() => navigate('/portal/souls/register')}>Open legacy registration</Button>
 		</div>
 	</header>
+
+	<Alert variant="warning" title="Agent-first flow lives in Simulacrum">
+		<Text size="sm">
+			Use the Simulacrum agent workspace on your Lesser instance for the canonical request, review, approval, and
+			finalize experience. Keep this portal surface for fallback, recovery, or operator-guided work.
+		</Text>
+	</Alert>
 
 	{#if loading}
 		<div class="souls__loading">
@@ -84,9 +91,9 @@
 		<Alert variant="error" title="Failed to load /api/v1/soul/agents/mine">{errorMessage}</Alert>
 	{:else if agents.length === 0}
 		<Alert variant="info" title="No agents">
-			<Text size="sm">Register your first agent to get started.</Text>
+			<Text size="sm">No legacy portal agents found yet.</Text>
 			<div class="souls__actions-inline">
-				<Button variant="solid" onclick={() => navigate('/portal/souls/register')}>Register agent</Button>
+				<Button variant="solid" onclick={() => navigate('/portal/souls/register')}>Open legacy registration</Button>
 			</div>
 		</Alert>
 	{:else}
@@ -126,7 +133,7 @@
 						<div class="souls__item-actions">
 							{#if needsProfile}
 								<Button variant="solid" onclick={() => navigate(`/portal/souls/${item.agent.agent_id}/mint`)}>
-									Complete profile
+									Open legacy profile step
 								</Button>
 							{/if}
 							<Button variant="outline" onclick={() => navigate(`/portal/souls/${item.agent.agent_id}`)}>

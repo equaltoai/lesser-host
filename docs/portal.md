@@ -5,6 +5,14 @@ This document describes the **self-serve portal API** for `lesser.host` and the 
 The portal is currently API-first (frontend is tracked separately). All portal endpoints use the same bearer session
 token mechanism as operator auth, but portal wallet login auto-creates a `customer` user on first login.
 
+## Canonical Soul Flow
+
+For soul creation, review, approval, and finalize UX, the canonical user-facing path is now the agent-first
+Simulacrum client served from Lesser at `/l/*`.
+
+Portal soul routes remain supported as secondary, fallback, or operator-guided surfaces. They should not be presented as
+the primary product path once the Simulacrum flow is available.
+
 ## Authentication
 
 ### Portal wallet login (public)

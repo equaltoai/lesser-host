@@ -24,7 +24,7 @@ import (
 
 type soulPublicAgentResponse struct {
 	Version    string                      `json:"version"`
-	Agent      models.SoulAgentIdentity    `json:"agent"`
+	Agent      soulPublicAgentView         `json:"agent"`
 	Reputation *models.SoulAgentReputation `json:"reputation,omitempty"`
 }
 
@@ -56,7 +56,7 @@ func (s *Server) handleSoulPublicGetAgent(ctx *apptheory.Context) (*apptheory.Re
 
 	resp, err := apptheory.JSON(http.StatusOK, soulPublicAgentResponse{
 		Version:    "1",
-		Agent:      *identity,
+		Agent:      s.buildSoulPublicAgentView(ctx.Context(), identity),
 		Reputation: rep,
 	})
 	if err != nil {

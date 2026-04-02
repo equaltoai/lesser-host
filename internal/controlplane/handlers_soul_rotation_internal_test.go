@@ -33,6 +33,7 @@ import (
 type stubEthRPCClient struct {
 	t            *testing.T
 	callContract func(ctx context.Context, msg ethereum.CallMsg, blockNumber *big.Int) ([]byte, error)
+	filterLogs   func(ctx context.Context, q ethereum.FilterQuery) ([]types.Log, error)
 }
 
 func (c *stubEthRPCClient) CallContract(ctx context.Context, msg ethereum.CallMsg, blockNumber *big.Int) ([]byte, error) {
@@ -45,6 +46,13 @@ func (c *stubEthRPCClient) CallContract(ctx context.Context, msg ethereum.CallMs
 func (c *stubEthRPCClient) TransactionReceipt(ctx context.Context, txHash common.Hash) (*types.Receipt, error) {
 	c.t.Fatalf("unexpected TransactionReceipt(%s)", txHash.Hex())
 	return nil, nil
+}
+
+func (c *stubEthRPCClient) FilterLogs(ctx context.Context, q ethereum.FilterQuery) ([]types.Log, error) {
+	if c.filterLogs == nil {
+		c.t.Fatalf("unexpected FilterLogs(%#v)", q)
+	}
+	return c.filterLogs(ctx, q)
 }
 
 func (c *stubEthRPCClient) Close() {}

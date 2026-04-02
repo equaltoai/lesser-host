@@ -1,15 +1,22 @@
 package controlplane
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"math/big"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/ethereum/go-ethereum"
+	"github.com/ethereum/go-ethereum/accounts/abi"
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 	"github.com/theory-cloud/tabletheory/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
@@ -18,6 +25,7 @@ import (
 	"github.com/stretchr/testify/mock"
 
 	"github.com/equaltoai/lesser-host/internal/config"
+	"github.com/equaltoai/lesser-host/internal/soul"
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 	"github.com/equaltoai/lesser-host/internal/testutil"
@@ -40,6 +48,31 @@ func (f *fakeSoulPublicPacks) GetObject(ctx context.Context, key string, maxByte
 	}
 	return f.body, f.contentType, f.etag, nil
 }
+
+type fakeSoulPublicEthClient struct {
+	callContract func(ctx context.Context, msg ethereum.CallMsg) ([]byte, error)
+	filterLogs   func(ctx context.Context, q ethereum.FilterQuery) ([]types.Log, error)
+}
+
+func (f *fakeSoulPublicEthClient) CallContract(ctx context.Context, msg ethereum.CallMsg, blockNumber *big.Int) ([]byte, error) {
+	if f != nil && f.callContract != nil {
+		return f.callContract(ctx, msg)
+	}
+	return nil, errors.New("unexpected CallContract")
+}
+
+func (f *fakeSoulPublicEthClient) FilterLogs(ctx context.Context, q ethereum.FilterQuery) ([]types.Log, error) {
+	if f != nil && f.filterLogs != nil {
+		return f.filterLogs(ctx, q)
+	}
+	return nil, errors.New("unexpected FilterLogs")
+}
+
+func (f *fakeSoulPublicEthClient) TransactionReceipt(ctx context.Context, txHash common.Hash) (*types.Receipt, error) {
+	return nil, ethereum.NotFound
+}
+
+func (f *fakeSoulPublicEthClient) Close() {}
 
 type soulPublicTestDB struct {
 	db        *ttmocks.MockExtendedDB
@@ -216,6 +249,344 @@ func TestHandleSoulPublicGetAgent_Success(t *testing.T) {
 	}
 	if out.Version != "1" || out.Agent.AgentID != agentID || out.Reputation == nil || out.Reputation.AgentID != agentID {
 		t.Fatalf("unexpected response: %#v", out)
+	}
+}
+
+func TestHandleSoulPublicGetAgent_IncludesENSAndAvatarStyles(t *testing.T) {
+	t.Parallel()
+
+	s, expected := newSoulPublicAvatarTestServer(t)
+
+	ctx := &apptheory.Context{Params: map[string]string{"agentId": expected.agentID}}
+	resp, err := s.handleSoulPublicGetAgent(ctx)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+
+	var out soulPublicAgentResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	assertSoulPublicAvatarResponse(t, out, expected)
+}
+
+type soulPublicAvatarExpectations struct {
+	agentID          string
+	ensName          string
+	registryAddr     common.Address
+	renderers        [3]common.Address
+	images           [3]string
+	currentStyleID   int
+	currentStyleName string
+}
+
+type soulPublicAvatarRPCFixture struct {
+	tokenURI         string
+	tokenURICall     []byte
+	styleNameCall    []byte
+	renderAvatarCall []byte
+	styleNames       [3]string
+	styleSVGs        [3]string
+}
+
+func newSoulPublicAvatarTestServer(t *testing.T) (*Server, soulPublicAvatarExpectations) {
+	t.Helper()
+
+	tdb := newSoulPublicTestDB()
+	expected := soulPublicAvatarExpectations{
+		agentID:          "0x" + strings.Repeat("12", 32),
+		ensName:          "agent-bot.lessersoul.eth",
+		registryAddr:     common.HexToAddress("0x0000000000000000000000000000000000000abc"),
+		renderers:        [3]common.Address{common.HexToAddress("0x0000000000000000000000000000000000000100"), common.HexToAddress("0x0000000000000000000000000000000000000101"), common.HexToAddress("0x0000000000000000000000000000000000000102")},
+		images:           [3]string{encodeSoulPublicAvatarSVG("<svg>blob</svg>"), encodeSoulPublicAvatarSVG("<svg>geometry</svg>"), encodeSoulPublicAvatarSVG("<svg>sigil</svg>")},
+		currentStyleID:   1,
+		currentStyleName: "Sacred Geometry",
+	}
+
+	s := &Server{
+		store: store.New(tdb.db),
+		cfg: config.Config{
+			SoulEnabled:                 true,
+			SoulRPCURL:                  "http://rpc",
+			SoulRegistryContractAddress: expected.registryAddr.Hex(),
+		},
+	}
+
+	expectSoulPublicAvatarIdentity(t, tdb, expected.agentID)
+	expectSoulPublicAvatarENSChannel(t, tdb, expected.agentID, expected.ensName)
+	configureSoulPublicAvatarRPC(t, s, expected)
+
+	return s, expected
+}
+
+func expectSoulPublicAvatarIdentity(t *testing.T, tdb soulPublicTestDB, agentID string) {
+	t.Helper()
+
+	tdb.qID.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
+		*dest = models.SoulAgentIdentity{
+			AgentID:                agentID,
+			Domain:                 "example.com",
+			LocalID:                "agent-bot",
+			Wallet:                 "0x00000000000000000000000000000000000000aa",
+			TokenID:                agentID,
+			MetaURI:                "https://example.com/metadata.json",
+			PrincipalAddress:       "0x00000000000000000000000000000000000000bb",
+			PrincipalSignature:     "0xdeadbeef",
+			PrincipalDeclaration:   "I accept responsibility for this agent's behavior.",
+			PrincipalDeclaredAt:    "2026-04-01T12:00:00Z",
+			SelfDescriptionVersion: 3,
+			Status:                 models.SoulAgentStatusActive,
+			LifecycleStatus:        models.SoulAgentStatusActive,
+			MintTxHash:             "0x" + strings.Repeat("ab", 32),
+			MintedAt:               time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC),
+			UpdatedAt:              time.Date(2026, 4, 2, 8, 30, 0, 0, time.UTC),
+		}
+	}).Once()
+	tdb.qRep.On("First", mock.AnythingOfType("*models.SoulAgentReputation")).Return(theoryErrors.ErrItemNotFound).Once()
+}
+
+func expectSoulPublicAvatarENSChannel(t *testing.T, tdb soulPublicTestDB, agentID string, ensName string) {
+	t.Helper()
+
+	tdb.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentChannel](t, args, 0)
+		*dest = models.SoulAgentChannel{
+			AgentID:     agentID,
+			ChannelType: models.SoulChannelTypeENS,
+			Identifier:  ensName,
+			Status:      models.SoulChannelStatusActive,
+		}
+	}).Once()
+}
+
+func configureSoulPublicAvatarRPC(t *testing.T, s *Server, expected soulPublicAvatarExpectations) {
+	t.Helper()
+
+	fixture := newSoulPublicAvatarRPCFixture(t, expected)
+
+	s.dialEVM = func(ctx context.Context, rpcURL string) (ethRPCClient, error) {
+		return &fakeSoulPublicEthClient{
+			callContract: func(ctx context.Context, msg ethereum.CallMsg) ([]byte, error) {
+				if response, ok := soulPublicAvatarCallResult(t, msg, expected, fixture); ok {
+					return response, nil
+				}
+				t.Fatalf("unexpected CallContract to=%v data=%x", msg.To, msg.Data)
+				return nil, errors.New("unexpected call")
+			},
+			filterLogs: func(ctx context.Context, q ethereum.FilterQuery) ([]types.Log, error) {
+				return []types.Log{
+					rendererUpdatedLog(0, expected.renderers[0]),
+					rendererUpdatedLog(1, expected.renderers[1]),
+					rendererUpdatedLog(2, expected.renderers[2]),
+				}, nil
+			},
+		}, nil
+	}
+}
+
+func newSoulPublicAvatarRPCFixture(t *testing.T, expected soulPublicAvatarExpectations) soulPublicAvatarRPCFixture {
+	t.Helper()
+
+	tokenID, ok := new(big.Int).SetString(strings.TrimPrefix(expected.agentID, "0x"), 16)
+	if !ok {
+		t.Fatalf("failed to parse token id")
+	}
+
+	styleNameCall, err := soul.EncodeRendererStyleNameCall()
+	if err != nil {
+		t.Fatalf("encode styleName: %v", err)
+	}
+	renderAvatarCall, err := soul.EncodeRendererRenderAvatarCall(tokenID)
+	if err != nil {
+		t.Fatalf("encode renderAvatar: %v", err)
+	}
+	tokenURICall, err := soul.EncodeTokenURICall(tokenID)
+	if err != nil {
+		t.Fatalf("encode tokenURI: %v", err)
+	}
+
+	tokenMetadataJSON, err := json.Marshal(soulAvatarTokenMetadata{
+		Image: expected.images[expected.currentStyleID],
+		Attributes: []soulAvatarTokenMetadataAttribute{
+			{TraitType: "Style", Value: expected.currentStyleName},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal metadata: %v", err)
+	}
+
+	return soulPublicAvatarRPCFixture{
+		tokenURI:         "data:application/json;base64," + base64.StdEncoding.EncodeToString(tokenMetadataJSON),
+		tokenURICall:     tokenURICall,
+		styleNameCall:    styleNameCall,
+		renderAvatarCall: renderAvatarCall,
+		styleNames:       [3]string{"Ethereal Blob", "Sacred Geometry", "Sigil"},
+		styleSVGs:        [3]string{"<svg>blob</svg>", "<svg>geometry</svg>", "<svg>sigil</svg>"},
+	}
+}
+
+func soulPublicAvatarCallResult(t *testing.T, msg ethereum.CallMsg, expected soulPublicAvatarExpectations, fixture soulPublicAvatarRPCFixture) ([]byte, bool) {
+	t.Helper()
+
+	if msg.To != nil && *msg.To == expected.registryAddr && bytes.Equal(msg.Data, fixture.tokenURICall) {
+		return packSingleStringResult(t, fixture.tokenURI), true
+	}
+	return soulPublicAvatarRendererCallResult(t, msg, expected, fixture)
+}
+
+func soulPublicAvatarRendererCallResult(t *testing.T, msg ethereum.CallMsg, expected soulPublicAvatarExpectations, fixture soulPublicAvatarRPCFixture) ([]byte, bool) {
+	t.Helper()
+
+	for idx, renderer := range expected.renderers {
+		if msg.To == nil || *msg.To != renderer {
+			continue
+		}
+		if bytes.Equal(msg.Data, fixture.styleNameCall) {
+			return packSingleStringResult(t, fixture.styleNames[idx]), true
+		}
+		if bytes.Equal(msg.Data, fixture.renderAvatarCall) {
+			return packSingleStringResult(t, fixture.styleSVGs[idx]), true
+		}
+	}
+	return nil, false
+}
+
+func assertSoulPublicAvatarResponse(t *testing.T, out soulPublicAgentResponse, expected soulPublicAvatarExpectations) {
+	t.Helper()
+
+	if out.Agent.ENSName != expected.ensName {
+		t.Fatalf("expected ens_name, got %#v", out.Agent)
+	}
+	if out.Agent.Avatar == nil {
+		t.Fatalf("expected avatar payload, got %#v", out.Agent)
+	}
+	assertSoulPublicAvatarSelection(t, out.Agent.Avatar, expected)
+	assertSoulPublicAvatarStyles(t, out.Agent.Avatar, expected)
+	assertSoulPublicAgentIdentityDetails(t, out)
+}
+
+func assertSoulPublicAvatarSelection(t *testing.T, avatar *soulPublicAvatarView, expected soulPublicAvatarExpectations) {
+	t.Helper()
+
+	if avatar.CurrentStyleID == nil || *avatar.CurrentStyleID != expected.currentStyleID {
+		t.Fatalf("expected current style id %d, got %#v", expected.currentStyleID, avatar)
+	}
+	if avatar.CurrentStyleName != expected.currentStyleName {
+		t.Fatalf("expected current style name, got %#v", avatar)
+	}
+	if avatar.CurrentRendererAddress != strings.ToLower(expected.renderers[expected.currentStyleID].Hex()) {
+		t.Fatalf("expected current renderer %s, got %#v", expected.renderers[expected.currentStyleID].Hex(), avatar)
+	}
+	if avatar.Image != expected.images[expected.currentStyleID] {
+		t.Fatalf("expected current image %q, got %#v", expected.images[expected.currentStyleID], avatar)
+	}
+	if !avatar.Styles[expected.currentStyleID].Selected {
+		t.Fatalf("expected selected style, got %#v", avatar.Styles)
+	}
+}
+
+func assertSoulPublicAvatarStyles(t *testing.T, avatar *soulPublicAvatarView, expected soulPublicAvatarExpectations) {
+	t.Helper()
+
+	if len(avatar.Styles) != len(expected.images) {
+		t.Fatalf("expected three styles, got %#v", avatar)
+	}
+	for idx, image := range expected.images {
+		if avatar.Styles[idx].Image != image {
+			t.Fatalf("unexpected style images: %#v", avatar.Styles)
+		}
+	}
+}
+
+func assertSoulPublicAgentIdentityDetails(t *testing.T, out soulPublicAgentResponse) {
+	t.Helper()
+
+	if out.Agent.PrincipalSignature == "" || out.Agent.PrincipalDeclaration == "" || out.Agent.PrincipalDeclaredAt == "" || out.Agent.MetaURI == "" {
+		t.Fatalf("expected richer identity details, got %#v", out.Agent)
+	}
+}
+
+func encodeSoulPublicAvatarSVG(svg string) string {
+	return "data:image/svg+xml;base64," + base64.StdEncoding.EncodeToString([]byte(svg))
+}
+
+func TestHandleSoulPublicGetAgent_AvatarLookupFailureIsNonFatal(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulPublicTestDB()
+	agentID := "0x" + strings.Repeat("34", 32)
+	s := &Server{
+		store: store.New(tdb.db),
+		cfg: config.Config{
+			SoulEnabled:                 true,
+			SoulRPCURL:                  "http://rpc",
+			SoulRegistryContractAddress: "0x0000000000000000000000000000000000000abc",
+		},
+	}
+
+	tdb.qID.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
+		*dest = models.SoulAgentIdentity{
+			AgentID:         agentID,
+			Domain:          "example.com",
+			LocalID:         "agent-bot",
+			Wallet:          "0x00000000000000000000000000000000000000aa",
+			Status:          models.SoulAgentStatusActive,
+			LifecycleStatus: models.SoulAgentStatusActive,
+		}
+	}).Once()
+	tdb.qRep.On("First", mock.AnythingOfType("*models.SoulAgentReputation")).Return(theoryErrors.ErrItemNotFound).Once()
+	tdb.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(theoryErrors.ErrItemNotFound).Once()
+
+	s.dialEVM = func(ctx context.Context, rpcURL string) (ethRPCClient, error) {
+		return &fakeSoulPublicEthClient{
+			filterLogs: func(ctx context.Context, q ethereum.FilterQuery) ([]types.Log, error) {
+				return nil, errors.New("rpc boom")
+			},
+		}, nil
+	}
+
+	ctx := &apptheory.Context{Params: map[string]string{"agentId": agentID}}
+	resp, err := s.handleSoulPublicGetAgent(ctx)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+
+	var out soulPublicAgentResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Agent.Avatar != nil {
+		t.Fatalf("expected avatar enrichment to fail closed, got %#v", out.Agent.Avatar)
+	}
+	if out.Agent.AgentID != agentID {
+		t.Fatalf("expected base identity to survive, got %#v", out.Agent)
+	}
+}
+
+func packSingleStringResult(t *testing.T, value string) []byte {
+	t.Helper()
+
+	stringType, err := abi.NewType("string", "", nil)
+	if err != nil {
+		t.Fatalf("new string type: %v", err)
+	}
+	args := abi.Arguments{{Type: stringType}}
+	out, err := args.Pack(value)
+	if err != nil {
+		t.Fatalf("pack string result: %v", err)
+	}
+	return out
+}
+
+func rendererUpdatedLog(styleID uint8, renderer common.Address) types.Log {
+	return types.Log{
+		Topics: []common.Hash{
+			soulRendererUpdatedTopic,
+			common.BigToHash(big.NewInt(int64(styleID))),
+		},
+		Data: common.LeftPadBytes(renderer.Bytes(), 32),
 	}
 }
 

@@ -37,6 +37,7 @@ const soulLifecycleTestAgentIDHex = "0x8db124b1d48e366002db4e61cc1501eeb8561e1ef
 
 type fakeEVMClient struct {
 	callContract func(ctx context.Context, msg ethereum.CallMsg) ([]byte, error)
+	filterLogs   func(ctx context.Context, q ethereum.FilterQuery) ([]types.Log, error)
 }
 
 func (f *fakeEVMClient) CallContract(ctx context.Context, msg ethereum.CallMsg, blockNumber *big.Int) ([]byte, error) {
@@ -48,6 +49,13 @@ func (f *fakeEVMClient) CallContract(ctx context.Context, msg ethereum.CallMsg, 
 
 func (f *fakeEVMClient) TransactionReceipt(ctx context.Context, txHash common.Hash) (*types.Receipt, error) {
 	return nil, ethereum.NotFound
+}
+
+func (f *fakeEVMClient) FilterLogs(ctx context.Context, q ethereum.FilterQuery) ([]types.Log, error) {
+	if f == nil || f.filterLogs == nil {
+		return nil, nil
+	}
+	return f.filterLogs(ctx, q)
 }
 
 func (f *fakeEVMClient) Close() {}

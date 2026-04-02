@@ -1842,7 +1842,7 @@
 <div class="soul-agent">
 	<header class="soul-agent__header">
 		<div class="soul-agent__title">
-			<Heading level={2} size="xl">Agent</Heading>
+			<Heading level={2} size="xl">Legacy Agent Detail</Heading>
 			<Text color="secondary"><span class="soul-agent__mono">{agentId}</span></Text>
 		</div>
 		<div class="soul-agent__actions">
@@ -1850,6 +1850,13 @@
 			<Button variant="ghost" onclick={() => navigate('/portal/souls')}>Back</Button>
 		</div>
 	</header>
+
+	<Alert variant="warning" title="Secondary route">
+		<Text size="sm">
+			Use this portal detail page as a fallback or operator surface. The canonical soul lifecycle, approval, and
+			finalize flow now belongs in the agent-first Simulacrum client on the Lesser instance.
+		</Text>
+	</Alert>
 
 	{#if loading}
 		<div class="soul-agent__loading">
@@ -1885,7 +1892,7 @@
 						<div class="soul-agent__row-right">
 							{#if !current.agent.self_description_version}
 								<Button variant="solid" onclick={() => navigate(`/portal/souls/${current.agent.agent_id}/mint`)}>
-									Complete profile
+									Open legacy profile step
 								</Button>
 							{/if}
 							<CopyButton size="sm" text={current.agent.agent_id} />
