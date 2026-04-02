@@ -5,17 +5,16 @@ import { renderProvisionRunnerBuildCommands } from '../lib/provision-runner-buil
 
 const buildCommands = renderProvisionRunnerBuildCommands();
 
-test('RUN_MODE=lesser uses verified Lesser release assets', () => {
+test('RUN_MODE=lesser uses the CLI binary with --release-dir', () => {
 	assert.match(buildCommands, /prepare_lesser_release_dir "\$LESSER_RELEASE_DIR"/);
-	assert.match(buildCommands, /--release-dir "\$LESSER_RELEASE_DIR"/);
-	assert.match(buildCommands, /lesser-lambda-bundle\.tar\.gz/);
-	assert.match(buildCommands, /lesser-lambda-bundle\.json/);
-
-	const prepareIndex = buildCommands.indexOf('prepare_lesser_release_dir "$LESSER_RELEASE_DIR"');
-	const upIndex = buildCommands.indexOf('./lesser up --app "$APP_SLUG" --base-domain "$BASE_DOMAIN" --aws-profile managed --provisioning-input "$PROVISION_INPUT" --release-dir "$LESSER_RELEASE_DIR"');
-	assert.ok(prepareIndex >= 0, 'expected Lesser release preparation command');
-	assert.ok(upIndex >= 0, 'expected lesser up command');
-	assert.ok(prepareIndex < upIndex, 'expected release preparation before lesser up');
+	assert.match(buildCommands, /prepare_lesser_checkout_dir "\$LESSER_RELEASE_DIR" "\$LESSER_CHECKOUT_DIR"/);
+	assert.match(buildCommands, /ensure_lesser_go_toolchain "\$LESSER_RELEASE_DIR"/);
+	assert.match(buildCommands, /export GOTOOLCHAIN="\$\{GOTOOLCHAIN:-auto\}"/);
+	assert.match(buildCommands, /cd "\$LESSER_CHECKOUT_DIR"/);
+	assert.match(buildCommands, /"\$LESSER_RELEASE_DIR\/lesser" up --app "\$APP_SLUG" --base-domain "\$BASE_DOMAIN" --aws-profile managed --provisioning-input "\$PROVISION_INPUT" --release-dir "\$LESSER_RELEASE_DIR"/);
+	assert.doesNotMatch(buildCommands, /cd infra\/cdk/);
+	assert.doesNotMatch(buildCommands, /deploy_lesser_assembly_stack/);
+	assert.doesNotMatch(buildCommands, /aws cloudformation deploy/);
 });
 
 test('RUN_MODE=lesser-body uses the release helper instead of a source checkout', () => {
@@ -32,16 +31,22 @@ test('RUN_MODE=lesser-body uses the release helper instead of a source checkout'
 	assert.doesNotMatch(buildCommands, /npm ci/);
 });
 
-test('RUN_MODE=lesser-mcp reuses the release lambda bundle', () => {
-	assert.match(buildCommands, /install_lesser_lambda_bundle "\$LESSER_RELEASE_DIR" "\$LESSER_MCP_ASSET_ROOT"/);
-	assert.match(buildCommands, /lambdaAssetRoot="\$LESSER_MCP_ASSET_ROOT"/);
-	assert.doesNotMatch(buildCommands, /\.\/lesser build lambdas/);
+test('RUN_MODE=lesser-mcp uses the CLI binary with --release-dir', () => {
+	assert.match(buildCommands, /prepare_lesser_checkout_dir "\$LESSER_RELEASE_DIR" "\$LESSER_CHECKOUT_DIR"/);
+	assert.match(buildCommands, /ensure_lesser_go_toolchain "\$LESSER_RELEASE_DIR"/);
+	assert.match(buildCommands, /cd "\$LESSER_CHECKOUT_DIR"/);
+	assert.match(buildCommands, /"\$LESSER_RELEASE_DIR\/lesser" up --app "\$APP_SLUG" --base-domain "\$BASE_DOMAIN" --aws-profile managed --provisioning-input "\$PROVISION_INPUT" --release-dir "\$LESSER_RELEASE_DIR"/);
+	assert.match(buildCommands, /mcp_lambda_arn/);
+	assert.doesNotMatch(buildCommands, /cd infra\/cdk/);
+	assert.doesNotMatch(buildCommands, /npx cdk deploy/);
+	assert.doesNotMatch(buildCommands, /deploy_lesser_assembly_stack/);
+	assert.doesNotMatch(buildCommands, /aws cloudformation deploy/);
 });
 
 test('runner emits explicit asset-contract failure messages', () => {
-	assert.match(buildCommands, /unexpected Lesser lambda bundle manifest kind/);
 	assert.match(buildCommands, /lesser-body release unexpectedly requires a source checkout/);
 	assert.match(buildCommands, /unexpected lesser-body deploy manifest path/);
+	assert.match(buildCommands, /Lesser release manifest version mismatch/);
 });
 
 test('RUN_MODE=lesser-body handles boolean false manifest flags without jq fallback drift', () => {

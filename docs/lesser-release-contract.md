@@ -57,24 +57,26 @@ The current managed Lesser path is a two-input deploy:
 The managed runner currently consumes Lesser in two ways:
 
 - `RUN_MODE=lesser`
-  - downloads the Lesser checkout and CLI binary
   - downloads and verifies the published release assets
+  - materializes the release-matched Lesser checkout from `lesser-release.json.git_sha`
+  - ensures the Go toolchain declared by `lesser-release.json.go_version` is available before invoking Lesser
+  - runs the published CLI binary from inside that checkout so repo-local CDK and inventory discovery stay aligned with the release
   - runs:
 
 ```bash
-./lesser up \
+(cd "$LESSER_CHECKOUT_DIR" && "$LESSER_RELEASE_DIR/lesser" up \
   --app "$APP_SLUG" \
   --base-domain "$BASE_DOMAIN" \
   --aws-profile managed \
   --provisioning-input "$PROVISION_INPUT" \
-  --release-dir "$LESSER_RELEASE_DIR"
+  --release-dir "$LESSER_RELEASE_DIR")
 ```
 
 - `RUN_MODE=lesser-mcp`
   - downloads and verifies the same published release assets
-  - extracts `lesser-lambda-bundle.tar.gz`
-  - verifies the extracted `bin/*.zip` files against `lesser-lambda-bundle.json`
-  - passes the staged asset root into the direct stage-stack deploy as `lambdaAssetRoot`
+  - materializes the same release-matched Lesser checkout
+  - ensures the same release-declared Go toolchain is active
+  - runs the published CLI binary from inside that checkout with `--release-dir`
 
 This means the managed runner no longer recompiles Lesser Lambdas in the happy path.
 
