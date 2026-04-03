@@ -376,6 +376,11 @@ func (s *Server) parseSoulPublicSearchParams(ctx *apptheory.Context) (soulPublic
 }
 
 func (s *Server) resolveSoulSearchDomainAndLocal(ctx *apptheory.Context, q string, domainRaw string) (string, string, bool, *apptheory.AppError) {
+	q, domainRaw, appErr := s.canonicalizeSoulSearchInputDomains(ctx, q, domainRaw)
+	if appErr != nil {
+		return "", "", false, appErr
+	}
+
 	currentDomain, appErr := s.resolveSoulSearchCurrentDomainIfNeeded(ctx, q, domainRaw)
 	if appErr != nil {
 		return "", "", false, appErr
@@ -396,11 +401,82 @@ func (s *Server) resolveSoulSearchDomainAndLocal(ctx *apptheory.Context, q strin
 	return domain, localID, localExact, nil
 }
 
+func (s *Server) canonicalizeSoulSearchInputDomains(ctx *apptheory.Context, q string, domainRaw string) (string, string, *apptheory.AppError) {
+	q = strings.TrimSpace(q)
+	domainRaw = strings.TrimSpace(domainRaw)
+
+	canonicalDomain, appErr := s.canonicalizeSoulSearchRawDomain(ctx, domainRaw)
+	if appErr != nil {
+		return "", "", appErr
+	}
+
+	canonicalQ, appErr := s.canonicalizeSoulSearchQueryDomain(ctx, q)
+	if appErr != nil {
+		return "", "", appErr
+	}
+	return canonicalQ, canonicalDomain, nil
+}
+
+func (s *Server) canonicalizeSoulSearchQueryDomain(ctx *apptheory.Context, q string) (string, *apptheory.AppError) {
+	q = strings.TrimSpace(q)
+	if q == "" {
+		return "", nil
+	}
+
+	if strings.Contains(q, "/") {
+		parts := strings.SplitN(q, "/", 2)
+		head := strings.TrimSpace(parts[0])
+		if _, err := domains.NormalizeDomain(head); err != nil {
+			return q, nil
+		}
+
+		canonicalDomain, appErr := s.canonicalizeSoulSearchRawDomain(ctx, head)
+		if appErr != nil {
+			return "", appErr
+		}
+		return canonicalDomain + "/" + parts[1], nil
+	}
+
+	if _, err := domains.NormalizeDomain(q); err != nil {
+		return q, nil
+	}
+	return s.canonicalizeSoulSearchRawDomain(ctx, q)
+}
+
+func (s *Server) canonicalizeSoulSearchRawDomain(ctx *apptheory.Context, domainRaw string) (string, *apptheory.AppError) {
+	domainRaw = strings.TrimSpace(domainRaw)
+	if domainRaw == "" {
+		return "", nil
+	}
+
+	domain, appErr := normalizeSoulSearchDomainParam(domainRaw)
+	if appErr != nil {
+		return "", appErr
+	}
+	return s.canonicalizeSoulSearchDomain(ctx.Context(), domain)
+}
+
 func (s *Server) resolveSoulSearchCurrentDomainIfNeeded(ctx *apptheory.Context, q string, domainRaw string) (string, *apptheory.AppError) {
-	if strings.TrimSpace(domainRaw) != "" || strings.TrimSpace(q) == "" {
+	if !soulSearchNeedsCurrentDomain(q, domainRaw) {
 		return "", nil
 	}
 	return s.resolveTrustedSoulSearchCurrentDomain(ctx)
+}
+
+func soulSearchNeedsCurrentDomain(q string, domainRaw string) bool {
+	if strings.TrimSpace(domainRaw) != "" {
+		return false
+	}
+
+	q = strings.TrimSpace(q)
+	if q == "" {
+		return false
+	}
+	if strings.Contains(q, "/") && soulSearchQueryLooksDomainQualified(q) {
+		return false
+	}
+	_, err := domains.NormalizeDomain(q)
+	return err != nil
 }
 
 func parseSoulPublicSearchFilterParams(ctx *apptheory.Context) (claimLevel string, ensName string, principal string, boundary string, channels []string, status string, appErr *apptheory.AppError) {
