@@ -48,6 +48,27 @@ The soul registry is served by `cmd/control-plane-api` through the `lesser.host`
 - `GET /api/v1/soul/agents/{agentId}/validations` (paginated)
 - `GET /api/v1/soul/search?q=...&capability=...`
 
+#### `GET /api/v1/soul/search` query semantics
+
+The soul search endpoint is intentionally fail-closed and does not perform an unbounded cross-domain local-ID scan.
+
+Accepted lookup forms:
+
+- domain-only: `q=example.com`
+- domain-qualified agent: `q=example.com/medic`
+- explicit domain + local query: `q=medic&domain=example.com`
+- current-instance bare local query: `q=medic`, `q=@medic`, or `q=medic/` when the request host maps to a verified
+  instance domain in the control plane
+
+Managed stage aliases are canonicalized before lookup. For example, `domain=dev.simulacrum.greater.website` resolves
+through the managed primary domain index for `simulacrum.greater.website`.
+
+Security boundaries:
+
+- if the request host does not map to a verified instance domain, bare local queries still reject with a bad request
+- if both `q` and `domain=` specify domains and they do not match, the request rejects instead of guessing
+- malformed local IDs and malformed domains reject with bad-request semantics rather than falling back to a wider search
+
 ### Authenticated lifecycle (portal/operator session)
 
 All write endpoints require `Authorization: Bearer <session>`. Sessions are shared with the portal/operator auth system
