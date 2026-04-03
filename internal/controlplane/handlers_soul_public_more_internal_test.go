@@ -479,13 +479,17 @@ func TestAgentHasBoundaryKeywordIndex_ErrorBranch(t *testing.T) {
 func TestParseSoulPublicSearchParams_ClaimLevelLegacyKey(t *testing.T) {
 	t.Parallel()
 
+	tdb := newSoulPublicTestDB()
+	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(theoryErrors.ErrItemNotFound).Once()
+
 	ctx := &apptheory.Context{Request: apptheory.Request{Query: map[string][]string{
 		"q":           {"example.com"},
 		"capability":  {"social"},
 		"claim_level": {"challenge-passed"},
 		"limit":       {"1"},
 	}}}
-	params, appErr := parseSoulPublicSearchParams(ctx)
+	s := &Server{cfg: config.Config{}, store: store.New(tdb.db)}
+	params, appErr := s.parseSoulPublicSearchParams(ctx)
 	if appErr != nil {
 		t.Fatalf("unexpected appErr: %#v", appErr)
 	}
@@ -497,10 +501,10 @@ func TestParseSoulPublicSearchParams_ClaimLevelLegacyKey(t *testing.T) {
 func TestParseSoulSearchDomainAndLocal_MismatchErrors(t *testing.T) {
 	t.Parallel()
 
-	if _, _, _, appErr := parseSoulSearchDomainAndLocal("example.com/agent-a", "other.com"); appErr == nil {
+	if _, _, _, appErr := parseSoulSearchDomainAndLocal("example.com/agent-a", "other.com", ""); appErr == nil {
 		t.Fatalf("expected domain mismatch error")
 	}
-	if _, _, _, appErr := parseSoulSearchDomainAndLocal("example.com", "other.com"); appErr == nil {
+	if _, _, _, appErr := parseSoulSearchDomainAndLocal("example.com", "other.com", ""); appErr == nil {
 		t.Fatalf("expected domain mismatch error")
 	}
 }

@@ -79,6 +79,8 @@ type soulPublicTestDB struct {
 	qID       *ttmocks.MockQuery
 	qRep      *ttmocks.MockQuery
 	qVal      *ttmocks.MockQuery
+	qDomain   *ttmocks.MockQuery
+	qInstance *ttmocks.MockQuery
 	qDomIdx   *ttmocks.MockQuery
 	qCapIdx   *ttmocks.MockQuery
 	qBoundIdx *ttmocks.MockQuery
@@ -95,6 +97,8 @@ func newSoulPublicTestDB() soulPublicTestDB {
 	qID := new(ttmocks.MockQuery)
 	qRep := new(ttmocks.MockQuery)
 	qVal := new(ttmocks.MockQuery)
+	qDomain := new(ttmocks.MockQuery)
+	qInstance := new(ttmocks.MockQuery)
 	qDomIdx := new(ttmocks.MockQuery)
 	qCapIdx := new(ttmocks.MockQuery)
 	qBoundIdx := new(ttmocks.MockQuery)
@@ -109,6 +113,8 @@ func newSoulPublicTestDB() soulPublicTestDB {
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(qID).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentReputation")).Return(qRep).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentValidationRecord")).Return(qVal).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.Domain")).Return(qDomain).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.Instance")).Return(qInstance).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulDomainAgentIndex")).Return(qDomIdx).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulCapabilityAgentIndex")).Return(qCapIdx).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulBoundaryKeywordAgentIndex")).Return(qBoundIdx).Maybe()
@@ -119,19 +125,20 @@ func newSoulPublicTestDB() soulPublicTestDB {
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(qENS).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulChannelAgentIndex")).Return(qChanIdx).Maybe()
 
-	for _, q := range []*ttmocks.MockQuery{qID, qRep, qVal, qDomIdx, qCapIdx, qBoundIdx, qChannel, qPrefs, qEmailIdx, qPhoneIdx, qENS, qChanIdx} {
+	for _, q := range []*ttmocks.MockQuery{qID, qRep, qVal, qDomain, qInstance, qDomIdx, qCapIdx, qBoundIdx, qChannel, qPrefs, qEmailIdx, qPhoneIdx, qENS, qChanIdx} {
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("OrderBy", mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("Limit", mock.Anything).Return(q).Maybe()
 		q.On("Cursor", mock.Anything).Return(q).Maybe()
 		q.On("Index", mock.Anything).Return(q).Maybe()
 	}
-
 	return soulPublicTestDB{
 		db:        db,
 		qID:       qID,
 		qRep:      qRep,
 		qVal:      qVal,
+		qDomain:   qDomain,
+		qInstance: qInstance,
 		qDomIdx:   qDomIdx,
 		qCapIdx:   qCapIdx,
 		qBoundIdx: qBoundIdx,
@@ -193,6 +200,82 @@ func TestParseSoulSearchQuery(t *testing.T) {
 	if _, _, err := parseSoulSearchQuery("agent-only"); err == nil {
 		t.Fatalf("expected local-only query to fail closed")
 	}
+}
+
+func TestHandleSoulPublicSearch_CurrentInstanceBareLocalQuery(t *testing.T) {
+	t.Parallel()
+
+	agentID := "0x" + strings.Repeat("ab", 32)
+	tdb := newSoulPublicTestDB()
+	s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true, Stage: "lab"}}
+
+	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(theoryErrors.ErrItemNotFound).Once()
+	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
+		*dest = models.Domain{
+			Domain:             "simulacrum.greater.website",
+			InstanceSlug:       "simulacrum",
+			Status:             models.DomainStatusVerified,
+			Type:               models.DomainTypePrimary,
+			VerificationMethod: "managed",
+		}
+	}).Once()
+	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{Slug: "simulacrum", HostedBaseDomain: "simulacrum.greater.website"}
+	}).Once()
+	tdb.qDomIdx.On("AllPaginated", mock.Anything).Return((*core.PaginatedResult)(nil), nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulDomainAgentIndex](t, args, 0)
+		*dest = []*models.SoulDomainAgentIndex{{AgentID: agentID, Domain: "simulacrum.greater.website", LocalID: "medic"}}
+	}).Once()
+	tdb.qID.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
+		*dest = models.SoulAgentIdentity{AgentID: agentID, Status: models.SoulAgentStatusActive}
+	}).Once()
+
+	ctx := &apptheory.Context{Request: apptheory.Request{
+		Headers: map[string][]string{"host": {"dev.simulacrum.greater.website"}},
+		Query:   map[string][]string{"q": {"medic"}},
+	}}
+	assertSoulPublicSearchResponse(t, s, ctx, agentID)
+}
+
+func TestHandleSoulPublicSearch_DomainParamManagedAliasCanonicalizes(t *testing.T) {
+	t.Parallel()
+
+	agentID := "0x" + strings.Repeat("ac", 32)
+	tdb := newSoulPublicTestDB()
+	s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true, Stage: "lab"}}
+
+	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(theoryErrors.ErrItemNotFound).Once()
+	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
+		*dest = models.Domain{
+			Domain:             "simulacrum.greater.website",
+			InstanceSlug:       "simulacrum",
+			Status:             models.DomainStatusVerified,
+			Type:               models.DomainTypePrimary,
+			VerificationMethod: "managed",
+		}
+	}).Once()
+	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{Slug: "simulacrum", HostedBaseDomain: "simulacrum.greater.website"}
+	}).Once()
+	tdb.qDomIdx.On("AllPaginated", mock.Anything).Return((*core.PaginatedResult)(nil), nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulDomainAgentIndex](t, args, 0)
+		*dest = []*models.SoulDomainAgentIndex{{AgentID: agentID, Domain: "simulacrum.greater.website", LocalID: "medic"}}
+	}).Once()
+	tdb.qID.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
+		*dest = models.SoulAgentIdentity{AgentID: agentID, Status: models.SoulAgentStatusActive}
+	}).Once()
+
+	ctx := &apptheory.Context{Request: apptheory.Request{Query: map[string][]string{
+		"domain": {"dev.simulacrum.greater.website"},
+		"q":      {"medic"},
+	}}}
+	assertSoulPublicSearchResponse(t, s, ctx, agentID)
 }
 
 func TestSetSoulPublicHeaders(t *testing.T) {

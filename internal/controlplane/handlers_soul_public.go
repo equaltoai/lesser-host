@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"sort"
 	"strconv"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/equaltoai/lesser-host/internal/domains"
 	"github.com/equaltoai/lesser-host/internal/httpx"
+	"github.com/equaltoai/lesser-host/internal/manageddomain"
 	"github.com/equaltoai/lesser-host/internal/soul"
 	"github.com/equaltoai/lesser-host/internal/soulsearch"
 	"github.com/equaltoai/lesser-host/internal/store/models"
@@ -289,7 +291,7 @@ func (s *Server) handleSoulPublicSearch(ctx *apptheory.Context) (*apptheory.Resp
 		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
 	}
 
-	params, appErr := parseSoulPublicSearchParams(ctx)
+	params, appErr := s.parseSoulPublicSearchParams(ctx)
 	if appErr != nil {
 		return nil, appErr
 	}
@@ -328,7 +330,7 @@ type soulPublicSearchParams struct {
 	Limit      int
 }
 
-func parseSoulPublicSearchParams(ctx *apptheory.Context) (soulPublicSearchParams, *apptheory.AppError) {
+func (s *Server) parseSoulPublicSearchParams(ctx *apptheory.Context) (soulPublicSearchParams, *apptheory.AppError) {
 	if ctx == nil {
 		return soulPublicSearchParams{}, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
@@ -344,7 +346,7 @@ func parseSoulPublicSearchParams(ctx *apptheory.Context) (soulPublicSearchParams
 
 	limit := envIntPositiveClampedFromString(httpx.FirstQueryValue(ctx.Request.Query, "limit"), 50, 100)
 
-	domain, localID, localExact, appErr := parseSoulSearchDomainAndLocal(q, domainRaw)
+	domain, localID, localExact, appErr := s.resolveSoulSearchDomainAndLocal(ctx, q, domainRaw)
 	if appErr != nil {
 		return soulPublicSearchParams{}, appErr
 	}
@@ -371,6 +373,34 @@ func parseSoulPublicSearchParams(ctx *apptheory.Context) (soulPublicSearchParams
 		Cursor:     cursor,
 		Limit:      limit,
 	}, nil
+}
+
+func (s *Server) resolveSoulSearchDomainAndLocal(ctx *apptheory.Context, q string, domainRaw string) (string, string, bool, *apptheory.AppError) {
+	currentDomain, appErr := s.resolveSoulSearchCurrentDomainIfNeeded(ctx, q, domainRaw)
+	if appErr != nil {
+		return "", "", false, appErr
+	}
+
+	domain, localID, localExact, appErr := parseSoulSearchDomainAndLocal(q, domainRaw, currentDomain)
+	if appErr != nil {
+		return "", "", false, appErr
+	}
+	if domain == "" {
+		return "", localID, localExact, nil
+	}
+
+	domain, appErr = s.canonicalizeSoulSearchDomain(ctx.Context(), domain)
+	if appErr != nil {
+		return "", "", false, appErr
+	}
+	return domain, localID, localExact, nil
+}
+
+func (s *Server) resolveSoulSearchCurrentDomainIfNeeded(ctx *apptheory.Context, q string, domainRaw string) (string, *apptheory.AppError) {
+	if strings.TrimSpace(domainRaw) != "" || strings.TrimSpace(q) == "" {
+		return "", nil
+	}
+	return s.resolveTrustedSoulSearchCurrentDomain(ctx)
 }
 
 func parseSoulPublicSearchFilterParams(ctx *apptheory.Context) (claimLevel string, ensName string, principal string, boundary string, channels []string, status string, appErr *apptheory.AppError) {
@@ -1118,54 +1148,179 @@ func parseSoulSearchQuery(q string) (string, string, *apptheory.AppError) {
 	return "", "", &apptheory.AppError{Code: "app.bad_request", Message: "q must include a domain"}
 }
 
-func parseSoulSearchDomainAndLocal(q string, domainRaw string) (domain string, localID string, localExact bool, appErr *apptheory.AppError) {
+func parseSoulSearchDomainAndLocal(q string, domainRaw string, currentDomain string) (domain string, localID string, localExact bool, appErr *apptheory.AppError) {
 	q = strings.TrimSpace(q)
 	domainRaw = strings.TrimSpace(domainRaw)
+	currentDomain = strings.TrimSpace(currentDomain)
 
-	if domainRaw != "" {
-		norm, err := domains.NormalizeDomain(domainRaw)
-		if err != nil {
-			return "", "", false, &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
-		}
-		domain = norm
+	domain, appErr = normalizeSoulSearchDomainParam(domainRaw)
+	if appErr != nil {
+		return "", "", false, appErr
 	}
 
 	if q == "" {
 		return domain, "", false, nil
 	}
 
-	if strings.Contains(q, "/") {
-		dFromQ, localFromQ, parseErr := parseSoulSearchQuery(q)
-		if parseErr != nil {
-			return "", "", false, parseErr
-		}
-		if domain != "" && dFromQ != "" && domain != dFromQ {
-			return "", "", false, &apptheory.AppError{Code: "app.bad_request", Message: "q domain does not match domain parameter"}
-		}
-		return dFromQ, localFromQ, true, nil
+	dFromQ, localFromQ, localExact, handled, appErr := tryParseSoulSearchQualifiedOrDomainQuery(q, domain)
+	if appErr != nil || handled {
+		return dFromQ, localFromQ, localExact, appErr
 	}
 
-	if dFromQ, err := domains.NormalizeDomain(q); err == nil {
-		if domain != "" && domain != dFromQ {
-			return "", "", false, &apptheory.AppError{Code: "app.bad_request", Message: "q domain does not match domain parameter"}
-		}
-		return dFromQ, "", false, nil
-	}
-
+	domain = resolveSoulSearchLocalDomain(domain, currentDomain)
 	if domain == "" {
-		return "", "", false, &apptheory.AppError{Code: "app.bad_request", Message: "q must include a domain (or provide domain=)"}
+		return "", "", false, &apptheory.AppError{Code: "app.bad_request", Message: "q must include a domain unless the request host maps to a verified instance domain (or provide domain=)"}
 	}
 
-	localID = normalizeSoulSearchLocalQuery(q)
+	localID, appErr = normalizeSoulSearchLocalQuery(q)
+	if appErr != nil {
+		return "", "", false, appErr
+	}
 	return domain, localID, false, nil
 }
 
-func normalizeSoulSearchLocalQuery(raw string) string {
+func normalizeSoulSearchDomainParam(domainRaw string) (string, *apptheory.AppError) {
+	domainRaw = strings.TrimSpace(domainRaw)
+	if domainRaw == "" {
+		return "", nil
+	}
+
+	norm, err := domains.NormalizeDomain(domainRaw)
+	if err != nil {
+		return "", &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
+	}
+	return norm, nil
+}
+
+func tryParseSoulSearchQualifiedOrDomainQuery(q string, domain string) (string, string, bool, bool, *apptheory.AppError) {
+	if strings.Contains(q, "/") {
+		dFromQ, localFromQ, parseErr := parseSoulSearchQuery(q)
+		if parseErr == nil {
+			if soulSearchDomainsConflict(domain, dFromQ) {
+				return "", "", false, true, &apptheory.AppError{Code: "app.bad_request", Message: "q domain does not match domain parameter"}
+			}
+			return dFromQ, localFromQ, true, true, nil
+		}
+		if soulSearchQueryLooksDomainQualified(q) {
+			return "", "", false, true, parseErr
+		}
+	}
+
+	dFromQ, err := domains.NormalizeDomain(q)
+	if err != nil {
+		return "", "", false, false, nil
+	}
+	if soulSearchDomainsConflict(domain, dFromQ) {
+		return "", "", false, true, &apptheory.AppError{Code: "app.bad_request", Message: "q domain does not match domain parameter"}
+	}
+	return dFromQ, "", false, true, nil
+}
+
+func soulSearchQueryLooksDomainQualified(q string) bool {
+	qHead := strings.TrimSpace(strings.SplitN(q, "/", 2)[0])
+	_, err := domains.NormalizeDomain(qHead)
+	return err == nil
+}
+
+func soulSearchDomainsConflict(domain string, domainFromQ string) bool {
+	return domain != "" && domainFromQ != "" && domain != domainFromQ
+}
+
+func resolveSoulSearchLocalDomain(domain string, currentDomain string) string {
+	if strings.TrimSpace(domain) != "" {
+		return domain
+	}
+	return strings.TrimSpace(currentDomain)
+}
+
+func normalizeSoulSearchLocalQuery(raw string) (string, *apptheory.AppError) {
+	localID, err := soul.NormalizeLocalAgentID(raw)
+	if err != nil {
+		return "", &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
+	}
+	return localID, nil
+}
+
+func (s *Server) canonicalizeSoulSearchDomain(ctx context.Context, domain string) (string, *apptheory.AppError) {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
+	domain = strings.TrimSpace(domain)
+	if domain == "" {
+		return "", nil
+	}
+	if _, ok := manageddomain.BaseDomainFromStageDomain(s.cfg.Stage, domain); !ok {
+		return domain, nil
+	}
+
+	item, err := s.loadManagedStageAwareDomain(ctx, domain)
+	if err != nil {
+		if theoryErrors.IsNotFound(err) {
+			return domain, nil
+		}
+		return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if item == nil || !domainIsVerifiedOrActive(item.Status) {
+		return domain, nil
+	}
+	if canonical := strings.TrimSpace(item.Domain); canonical != "" {
+		return canonical, nil
+	}
+	return domain, nil
+}
+
+func (s *Server) resolveTrustedSoulSearchCurrentDomain(ctx *apptheory.Context) (string, *apptheory.AppError) {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if ctx == nil {
+		return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
+	hostDomain := normalizeSoulSearchRequestHost(httpx.FirstHeaderValue(ctx.Request.Headers, "host"))
+	if hostDomain == "" {
+		return "", nil
+	}
+
+	item, err := s.loadManagedStageAwareDomain(ctx.Context(), hostDomain)
+	if err != nil {
+		if theoryErrors.IsNotFound(err) {
+			return "", nil
+		}
+		return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if item == nil || !domainIsVerifiedOrActive(item.Status) {
+		return "", nil
+	}
+	return strings.TrimSpace(item.Domain), nil
+}
+
+func normalizeSoulSearchRequestHost(raw string) string {
 	raw = strings.TrimSpace(raw)
-	raw = strings.TrimPrefix(raw, "@")
-	raw = strings.TrimSuffix(raw, "/")
-	raw = strings.ToLower(raw)
-	return raw
+	if raw == "" {
+		return ""
+	}
+	if strings.ContainsAny(raw, " \t\r\n/\\") || strings.Contains(raw, "@") {
+		return ""
+	}
+
+	host := raw
+	if strings.Contains(host, ":") {
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+	}
+	host = strings.Trim(host, "[]")
+	if host == "" {
+		return ""
+	}
+
+	domain, err := domains.NormalizeDomain(host)
+	if err != nil {
+		return ""
+	}
+	return domain
 }
 
 func envIntPositiveFromString(raw string, fallback int) int {
