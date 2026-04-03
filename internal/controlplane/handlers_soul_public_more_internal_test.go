@@ -509,6 +509,138 @@ func TestParseSoulSearchDomainAndLocal_MismatchErrors(t *testing.T) {
 	}
 }
 
+func TestParseSoulSearchDomainAndLocal_CurrentDomainBareLocalForms(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		q    string
+		want string
+	}{
+		{name: "plain", q: "medic", want: "medic"},
+		{name: "at_prefix", q: "@medic", want: "medic"},
+		{name: "trailing_slash", q: "medic/", want: "medic"},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			domain, localID, localExact, appErr := parseSoulSearchDomainAndLocal(tc.q, "", "simulacrum.greater.website")
+			if appErr != nil {
+				t.Fatalf("unexpected appErr: %#v", appErr)
+			}
+			if domain != "simulacrum.greater.website" || localID != tc.want || localExact {
+				t.Fatalf("unexpected resolution for %q: domain=%q local=%q exact=%v", tc.q, domain, localID, localExact)
+			}
+		})
+	}
+}
+
+func TestParseSoulSearchDomainAndLocal_BadRequestShapes(t *testing.T) {
+	t.Parallel()
+
+	t.Run("missing current domain fails closed", func(t *testing.T) {
+		t.Parallel()
+
+		_, _, _, appErr := parseSoulSearchDomainAndLocal("medic", "", "")
+		if appErr == nil || appErr.Code != appErrCodeBadRequest || appErr.Message != "q must include a domain unless the request host maps to a verified instance domain (or provide domain=)" {
+			t.Fatalf("unexpected appErr: %#v", appErr)
+		}
+	})
+
+	t.Run("malformed local id", func(t *testing.T) {
+		t.Parallel()
+
+		_, _, _, appErr := parseSoulSearchDomainAndLocal("bad/local", "", "simulacrum.greater.website")
+		if appErr == nil || appErr.Code != appErrCodeBadRequest || appErr.Message != "local_id must not contain /, :, or @" {
+			t.Fatalf("unexpected appErr: %#v", appErr)
+		}
+	})
+
+	t.Run("malformed domain parameter", func(t *testing.T) {
+		t.Parallel()
+
+		_, _, _, appErr := parseSoulSearchDomainAndLocal("medic", "bad_domain", "")
+		if appErr == nil || appErr.Code != appErrCodeBadRequest || strings.TrimSpace(appErr.Message) == "" {
+			t.Fatalf("unexpected appErr: %#v", appErr)
+		}
+	})
+}
+
+func TestHandleSoulPublicSearch_BareLocalFormsResolveAgainstTrustedHost(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		q    string
+	}{
+		{name: "plain", q: "medic"},
+		{name: "at_prefix", q: "@medic"},
+		{name: "trailing_slash", q: "medic/"},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tdb := newSoulPublicTestDB()
+			s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true, Stage: "lab"}}
+			agentID := "0x" + strings.Repeat("ad", 32)
+
+			tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(theoryErrors.ErrItemNotFound).Once()
+			tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
+				dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
+				*dest = models.Domain{
+					Domain:             "simulacrum.greater.website",
+					InstanceSlug:       "simulacrum",
+					Status:             models.DomainStatusVerified,
+					Type:               models.DomainTypePrimary,
+					VerificationMethod: "managed",
+				}
+			}).Once()
+			tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+				dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+				*dest = models.Instance{Slug: "simulacrum", HostedBaseDomain: "simulacrum.greater.website"}
+			}).Once()
+			tdb.qDomIdx.On("AllPaginated", mock.Anything).Return((*core.PaginatedResult)(nil), nil).Run(func(args mock.Arguments) {
+				dest := testutil.RequireMockArg[*[]*models.SoulDomainAgentIndex](t, args, 0)
+				*dest = []*models.SoulDomainAgentIndex{{AgentID: agentID, Domain: "simulacrum.greater.website", LocalID: "medic"}}
+			}).Once()
+			tdb.qID.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
+				dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
+				*dest = models.SoulAgentIdentity{AgentID: agentID, Status: models.SoulAgentStatusActive}
+			}).Once()
+
+			ctx := &apptheory.Context{Request: apptheory.Request{
+				Headers: map[string][]string{"host": {"dev.simulacrum.greater.website"}},
+				Query:   map[string][]string{"q": {tc.q}},
+			}}
+			assertSoulPublicSearchResponse(t, s, ctx, agentID)
+		})
+	}
+}
+
+func TestHandleSoulPublicSearch_BareLocalFailsClosedWithoutTrustedHost(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulPublicTestDB()
+	s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true, Stage: "lab"}}
+	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(theoryErrors.ErrItemNotFound).Once()
+
+	ctx := &apptheory.Context{Request: apptheory.Request{
+		Headers: map[string][]string{"host": {"lesser.host"}},
+		Query:   map[string][]string{"q": {"medic"}},
+	}}
+	_, err := s.handleSoulPublicSearch(ctx)
+	appErr, ok := err.(*apptheory.AppError)
+	if !ok || appErr.Code != appErrCodeBadRequest || appErr.Message != "q must include a domain unless the request host maps to a verified instance domain (or provide domain=)" {
+		t.Fatalf("unexpected err: %#v", err)
+	}
+}
+
 func TestGetSoulAgentReputation_ValidatesInput(t *testing.T) {
 	t.Parallel()
 
