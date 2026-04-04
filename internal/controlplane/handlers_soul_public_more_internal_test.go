@@ -607,7 +607,7 @@ func TestHandleSoulPublicSearch_BareLocalFormsResolveAgainstTrustedHost(t *testi
 			}).Once()
 			tdb.qDomIdx.On("AllPaginated", mock.Anything).Return((*core.PaginatedResult)(nil), nil).Run(func(args mock.Arguments) {
 				dest := testutil.RequireMockArg[*[]*models.SoulDomainAgentIndex](t, args, 0)
-				*dest = []*models.SoulDomainAgentIndex{{AgentID: agentID, Domain: "simulacrum.greater.website", LocalID: "medic"}}
+				*dest = []*models.SoulDomainAgentIndex{{AgentID: agentID, Domain: "dev.simulacrum.greater.website", LocalID: "medic"}}
 			}).Once()
 			tdb.qID.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
 				dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
@@ -619,6 +619,7 @@ func TestHandleSoulPublicSearch_BareLocalFormsResolveAgainstTrustedHost(t *testi
 				Query:   map[string][]string{"q": {tc.q}},
 			}}
 			assertSoulPublicSearchResponse(t, s, ctx, agentID)
+			assertSoulDomainIndexLookup(t, tdb.qDomIdx, "dev.simulacrum.greater.website")
 		})
 	}
 }
