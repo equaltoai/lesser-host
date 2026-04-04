@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math/big"
 	"net/http"
 	"strings"
@@ -226,7 +227,7 @@ func TestHandleSoulPublicSearch_CurrentInstanceBareLocalQuery(t *testing.T) {
 	}).Once()
 	tdb.qDomIdx.On("AllPaginated", mock.Anything).Return((*core.PaginatedResult)(nil), nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.SoulDomainAgentIndex](t, args, 0)
-		*dest = []*models.SoulDomainAgentIndex{{AgentID: agentID, Domain: "simulacrum.greater.website", LocalID: "medic"}}
+		*dest = []*models.SoulDomainAgentIndex{{AgentID: agentID, Domain: "dev.simulacrum.greater.website", LocalID: "medic"}}
 	}).Once()
 	tdb.qID.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
@@ -238,28 +239,46 @@ func TestHandleSoulPublicSearch_CurrentInstanceBareLocalQuery(t *testing.T) {
 		Query:   map[string][]string{"q": {"medic"}},
 	}}
 	assertSoulPublicSearchResponse(t, s, ctx, agentID)
+	assertSoulDomainIndexLookup(t, tdb.qDomIdx, "dev.simulacrum.greater.website")
 }
 
-func TestHandleSoulPublicSearch_DomainParamManagedAliasCanonicalizes(t *testing.T) {
+func TestHandleSoulPublicSearch_DomainParamManagedStageDomainStaysExact(t *testing.T) {
 	t.Parallel()
 
-	agentID, s := newManagedAliasSoulSearchTestServer(t, "ac")
+	agentID, s, tdb := newManagedAliasSoulSearchTestServer(t, "ac")
 	ctx := &apptheory.Context{Request: apptheory.Request{Query: map[string][]string{
 		"domain": {"dev.simulacrum.greater.website"},
 		"q":      {"medic"},
 	}}}
 	assertSoulPublicSearchResponse(t, s, ctx, agentID)
+	assertSoulDomainIndexLookup(t, tdb.qDomIdx, "dev.simulacrum.greater.website")
 }
 
-func TestHandleSoulPublicSearch_QDomainAndDomainParamAliasCanonicalizeTogether(t *testing.T) {
+func TestHandleSoulPublicSearch_StageQualifiedQueryStaysExact(t *testing.T) {
 	t.Parallel()
 
-	agentID, s := newManagedAliasSoulSearchTestServer(t, "ad")
+	agentID, s, tdb := newManagedAliasSoulSearchTestServer(t, "ad")
+	ctx := &apptheory.Context{Request: apptheory.Request{Query: map[string][]string{
+		"q": {"dev.simulacrum.greater.website/medic"},
+	}}}
+	assertSoulPublicSearchResponse(t, s, ctx, agentID)
+	assertSoulDomainIndexLookup(t, tdb.qDomIdx, "dev.simulacrum.greater.website")
+}
+
+func TestHandleSoulPublicSearch_StageAndBaseDomainsConflict(t *testing.T) {
+	t.Parallel()
+
+	_, s, _ := newManagedAliasSoulSearchTestServer(t, "ad")
 	ctx := &apptheory.Context{Request: apptheory.Request{Query: map[string][]string{
 		"domain": {"dev.simulacrum.greater.website"},
 		"q":      {"simulacrum.greater.website/medic"},
 	}}}
-	assertSoulPublicSearchResponse(t, s, ctx, agentID)
+
+	_, err := s.handleSoulPublicSearch(ctx)
+	appErr, ok := err.(*apptheory.AppError)
+	if !ok || appErr.Code != appErrCodeBadRequest || appErr.Message != "q domain does not match domain parameter" {
+		t.Fatalf("unexpected err: %#v", err)
+	}
 }
 
 func TestHandleSoulPublicSearch_QualifiedQuerySkipsCurrentHostResolution(t *testing.T) {
@@ -285,7 +304,7 @@ func TestHandleSoulPublicSearch_QualifiedQuerySkipsCurrentHostResolution(t *test
 	assertSoulPublicSearchResponse(t, s, ctx, agentID)
 }
 
-func newManagedAliasSoulSearchTestServer(t *testing.T, agentHexByte string) (string, *Server) {
+func newManagedAliasSoulSearchTestServer(t *testing.T, agentHexByte string) (string, *Server, soulPublicTestDB) {
 	t.Helper()
 
 	agentID := "0x" + strings.Repeat(agentHexByte, 32)
@@ -309,14 +328,14 @@ func newManagedAliasSoulSearchTestServer(t *testing.T, agentHexByte string) (str
 	}).Once()
 	tdb.qDomIdx.On("AllPaginated", mock.Anything).Return((*core.PaginatedResult)(nil), nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.SoulDomainAgentIndex](t, args, 0)
-		*dest = []*models.SoulDomainAgentIndex{{AgentID: agentID, Domain: "simulacrum.greater.website", LocalID: "medic"}}
+		*dest = []*models.SoulDomainAgentIndex{{AgentID: agentID, Domain: "dev.simulacrum.greater.website", LocalID: "medic"}}
 	}).Once()
 	tdb.qID.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
 		*dest = models.SoulAgentIdentity{AgentID: agentID, Status: models.SoulAgentStatusActive}
 	}).Once()
 
-	return agentID, s
+	return agentID, s, tdb
 }
 
 func TestSetSoulPublicHeaders(t *testing.T) {
@@ -1145,6 +1164,28 @@ func assertSoulPublicSearchResponse(t *testing.T, s *Server, ctx *apptheory.Cont
 	if out.Count != 1 || len(out.Results) != 1 || out.Results[0].AgentID != expectedAgentID {
 		t.Fatalf("unexpected response: %#v", out)
 	}
+}
+
+func assertSoulDomainIndexLookup(t *testing.T, q *ttmocks.MockQuery, expectedDomain string) {
+	t.Helper()
+
+	wantPK := fmt.Sprintf("SOUL#DOMAIN#%s", expectedDomain)
+	for _, call := range q.Calls {
+		if call.Method != "Where" || len(call.Arguments) != 3 {
+			continue
+		}
+		field, fieldOK := call.Arguments.Get(0).(string)
+		op, opOK := call.Arguments.Get(1).(string)
+		value, valueOK := call.Arguments.Get(2).(string)
+		if !fieldOK || !opOK || !valueOK {
+			continue
+		}
+		if field == "PK" && op == "=" && value == wantPK {
+			return
+		}
+	}
+
+	t.Fatalf("expected soul domain lookup for %q; calls=%#v", wantPK, q.Calls)
 }
 
 func mockSoulPublicGetAgentChannelsSuccess(

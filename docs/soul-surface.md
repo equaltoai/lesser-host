@@ -60,8 +60,8 @@ Accepted lookup forms:
 - current-instance bare local query: `q=medic`, `q=@medic`, or `q=medic/` when the request host maps to a verified
   instance domain in the control plane
 
-Managed stage aliases are canonicalized before lookup. For example, `domain=dev.simulacrum.greater.website` resolves
-through the managed primary domain index for `simulacrum.greater.website`.
+Managed stage domains stay exact for lookup. For example, `domain=dev.simulacrum.greater.website` searches the
+stage-scoped soul index for `dev.simulacrum.greater.website` rather than rewriting to `simulacrum.greater.website`.
 
 Security boundaries:
 

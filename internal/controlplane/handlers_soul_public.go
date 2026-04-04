@@ -18,7 +18,6 @@ import (
 
 	"github.com/equaltoai/lesser-host/internal/domains"
 	"github.com/equaltoai/lesser-host/internal/httpx"
-	"github.com/equaltoai/lesser-host/internal/manageddomain"
 	"github.com/equaltoai/lesser-host/internal/soul"
 	"github.com/equaltoai/lesser-host/internal/soulsearch"
 	"github.com/equaltoai/lesser-host/internal/store/models"
@@ -393,11 +392,6 @@ func (s *Server) resolveSoulSearchDomainAndLocal(ctx *apptheory.Context, q strin
 	if domain == "" {
 		return "", localID, localExact, nil
 	}
-
-	domain, appErr = s.canonicalizeSoulSearchDomain(ctx.Context(), domain)
-	if appErr != nil {
-		return "", "", false, appErr
-	}
 	return domain, localID, localExact, nil
 }
 
@@ -453,7 +447,7 @@ func (s *Server) canonicalizeSoulSearchRawDomain(ctx *apptheory.Context, domainR
 	if appErr != nil {
 		return "", appErr
 	}
-	return s.canonicalizeSoulSearchDomain(ctx.Context(), domain)
+	return domain, nil
 }
 
 func (s *Server) resolveSoulSearchCurrentDomainIfNeeded(ctx *apptheory.Context, q string, domainRaw string) (string, *apptheory.AppError) {
@@ -1317,35 +1311,6 @@ func normalizeSoulSearchLocalQuery(raw string) (string, *apptheory.AppError) {
 	return localID, nil
 }
 
-func (s *Server) canonicalizeSoulSearchDomain(ctx context.Context, domain string) (string, *apptheory.AppError) {
-	if s == nil || s.store == nil || s.store.DB == nil {
-		return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-
-	domain = strings.TrimSpace(domain)
-	if domain == "" {
-		return "", nil
-	}
-	if _, ok := manageddomain.BaseDomainFromStageDomain(s.cfg.Stage, domain); !ok {
-		return domain, nil
-	}
-
-	item, err := s.loadManagedStageAwareDomain(ctx, domain)
-	if err != nil {
-		if theoryErrors.IsNotFound(err) {
-			return domain, nil
-		}
-		return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-	if item == nil || !domainIsVerifiedOrActive(item.Status) {
-		return domain, nil
-	}
-	if canonical := strings.TrimSpace(item.Domain); canonical != "" {
-		return canonical, nil
-	}
-	return domain, nil
-}
-
 func (s *Server) resolveTrustedSoulSearchCurrentDomain(ctx *apptheory.Context) (string, *apptheory.AppError) {
 	if s == nil || s.store == nil || s.store.DB == nil {
 		return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
@@ -1369,7 +1334,7 @@ func (s *Server) resolveTrustedSoulSearchCurrentDomain(ctx *apptheory.Context) (
 	if item == nil || !domainIsVerifiedOrActive(item.Status) {
 		return "", nil
 	}
-	return strings.TrimSpace(item.Domain), nil
+	return hostDomain, nil
 }
 
 func normalizeSoulSearchRequestHost(raw string) string {
