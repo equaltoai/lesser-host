@@ -522,7 +522,7 @@
 			<div class="op-support__row">
 				<Button
 					variant="solid"
-					onclick={() => slug && void startUpdateJob(slug)}
+					onclick={() => slug && void startUpdateJob(slug, { lesserVersion: updateLesserVersion })}
 					disabled={!slug || updateCreating || updatesPolling || updatesLoading || updateInProgress() || !managed()}
 				>
 					Apply configuration
@@ -535,7 +535,7 @@
 			<div class="op-support__row">
 				<Button
 					variant="outline"
-					onclick={() => slug && void startUpdateJob(slug, { rotateInstanceKey: true })}
+					onclick={() => slug && void startUpdateJob(slug, { lesserVersion: updateLesserVersion, rotateInstanceKey: true })}
 					disabled={!slug || updateCreating || updatesPolling || updatesLoading || updateInProgress() || !managed()}
 				>
 					Rotate instance key
