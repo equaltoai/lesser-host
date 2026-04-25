@@ -17,8 +17,8 @@ trust/safety planning.
 - Moderation provider notes: `docs/moderation-provider.md`
 - Tip registry notes: `docs/tip-registry.md`
 - Pinned frameworks (from `app-theory/app.json`):
-  - AppTheory: `github.com/theory-cloud/apptheory@v1.0.0`
-  - TableTheory: `github.com/theory-cloud/tabletheory@v1.6.1`
+  - AppTheory: `github.com/theory-cloud/apptheory@v1.1.0`
+  - TableTheory: `github.com/theory-cloud/tabletheory@v1.7.0`
 
 ## Scope (v1)
 
