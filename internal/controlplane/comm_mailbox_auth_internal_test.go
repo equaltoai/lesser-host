@@ -24,7 +24,7 @@ func TestRequireMailboxInstanceKeyHashOnly(t *testing.T) {
 		db, qKey := newMailboxAuthTestDB()
 		qKey.On("First", mock.AnythingOfType("*models.InstanceKey")).Return(nil).Run(func(args mock.Arguments) {
 			dest := testutil.RequireMockArg[*models.InstanceKey](t, args, 0)
-			*dest = models.InstanceKey{ID: sha256HexTrimmed("raw-key"), InstanceSlug: "inst1", CreatedAt: time.Now().Add(-time.Hour)}
+			*dest = models.InstanceKey{ID: sha256HexTrimmed("raw-key"), InstanceSlug: commWebhookTestInstanceSlug, CreatedAt: time.Now().Add(-time.Hour)}
 		}).Once()
 		qKey.On("Update", mock.Anything).Return(nil).Once()
 
@@ -33,7 +33,7 @@ func TestRequireMailboxInstanceKeyHashOnly(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if key == nil || key.InstanceSlug != "inst1" {
+		if key == nil || key.InstanceSlug != commWebhookTestInstanceSlug {
 			t.Fatalf("unexpected key: %#v", key)
 		}
 	})
@@ -53,7 +53,7 @@ func TestRequireMailboxInstanceKeyHashOnly(t *testing.T) {
 		db, qKey := newMailboxAuthTestDB()
 		qKey.On("First", mock.AnythingOfType("*models.InstanceKey")).Return(nil).Run(func(args mock.Arguments) {
 			dest := testutil.RequireMockArg[*models.InstanceKey](t, args, 0)
-			*dest = models.InstanceKey{ID: sha256HexTrimmed("raw-key"), InstanceSlug: "inst1", RevokedAt: time.Now()}
+			*dest = models.InstanceKey{ID: sha256HexTrimmed("raw-key"), InstanceSlug: commWebhookTestInstanceSlug, RevokedAt: time.Now()}
 		}).Once()
 
 		s := &Server{store: store.New(db)}

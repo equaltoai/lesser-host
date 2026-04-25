@@ -14,6 +14,7 @@ import (
 	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 
 	"github.com/equaltoai/lesser-host/internal/commmailbox"
 	"github.com/equaltoai/lesser-host/internal/config"
@@ -169,29 +170,23 @@ func TestHandleSoulCommContactabilityReturnsBoundedAffordances(t *testing.T) {
 
 	s := newMailboxAPITestServer(fixture)
 	resp, err := s.handleSoulCommContactability(newMailboxAPIContext(soulLifecycleTestAgentIDHex, "", nil))
-	if err != nil {
-		t.Fatalf("handleSoulCommContactability: %v", err)
-	}
-	var out soulCommContactabilityResponse
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if !out.Contactable || len(out.Channels) != 2 || !out.Mailbox.ListAllowed || !out.Mailbox.ContentAllowed {
-		t.Fatalf("unexpected contactability response: %#v", out)
-	}
-	if out.Channels[0].Address != "agent@example.com" || !out.Channels[0].ReceiveAllowed || !out.Channels[0].SendAllowed {
-		t.Fatalf("unexpected email affordance: %#v", out.Channels[0])
-	}
-	if out.Channels[1].Number != "+15551234567" || !out.Channels[1].ReceiveAllowed || !out.Channels[1].SendAllowed {
-		t.Fatalf("unexpected phone affordance: %#v", out.Channels[1])
-	}
+	require.NoError(t, err)
+	out := decodeMailboxContactabilityResponse(t, resp)
+	require.True(t, out.Contactable, "expected contactable response: %#v", out)
+	require.Len(t, out.Channels, 2)
+	require.True(t, out.Mailbox.ListAllowed)
+	require.True(t, out.Mailbox.ContentAllowed)
+	require.Equal(t, "agent@example.com", out.Channels[0].Address)
+	require.True(t, out.Channels[0].ReceiveAllowed)
+	require.True(t, out.Channels[0].SendAllowed)
+	require.Equal(t, "+15551234567", out.Channels[1].Number)
+	require.True(t, out.Channels[1].ReceiveAllowed)
+	require.True(t, out.Channels[1].SendAllowed)
 	body := string(resp.Body)
-	if strings.Contains(body, "secret") || strings.Contains(body, "SecretRef") {
-		t.Fatalf("contactability leaked channel secret metadata: %s", body)
-	}
-	if out.FirstContact.RequireReputation == nil || *out.FirstContact.RequireReputation != minReputation {
-		t.Fatalf("unexpected first-contact policy: %#v", out.FirstContact)
-	}
+	require.NotContains(t, body, "secret")
+	require.NotContains(t, body, "SecretRef")
+	require.NotNil(t, out.FirstContact.RequireReputation)
+	require.Equal(t, minReputation, *out.FirstContact.RequireReputation)
 }
 
 func TestHandleSoulCommContactabilityOmitsUnprovisionedChannels(t *testing.T) {
@@ -215,16 +210,113 @@ func TestHandleSoulCommContactabilityOmitsUnprovisionedChannels(t *testing.T) {
 
 	s := newMailboxAPITestServer(fixture)
 	resp, err := s.handleSoulCommContactability(newMailboxAPIContext(soulLifecycleTestAgentIDHex, "", nil))
-	if err != nil {
-		t.Fatalf("handleSoulCommContactability: %v", err)
+	require.NoError(t, err)
+	out := decodeMailboxContactabilityResponse(t, resp)
+	require.False(t, out.Contactable)
+	require.Empty(t, out.Channels)
+	require.False(t, out.Mailbox.ListAllowed)
+}
+
+func TestSoulCommContactabilityHelpersCoverPolicyEdges(t *testing.T) {
+	t.Parallel()
+
+	inactive := &models.SoulAgentIdentity{Status: models.SoulAgentStatusActive, LifecycleStatus: models.SoulAgentStatusSuspended}
+	require.False(t, soulCommContactabilityIdentityActive(inactive))
+	require.False(t, contactabilityChannelVisible(nil))
+	require.False(t, contactabilityChannelVisible(&models.SoulAgentChannel{Identifier: "agent@example.com", Verified: true, Status: models.SoulChannelStatusActive}))
+
+	now := time.Now().UTC()
+	voiceOnlyPhone := &models.SoulAgentChannel{
+		ChannelType:   models.SoulChannelTypePhone,
+		Identifier:    "+15551234567",
+		Capabilities:  []string{"voice-receive"},
+		Verified:      true,
+		Status:        models.SoulChannelStatusActive,
+		ProvisionedAt: now,
 	}
+	view, ok := contactabilityChannelView(voiceOnlyPhone)
+	require.True(t, ok)
+	require.True(t, view.ReceiveAllowed)
+	require.False(t, view.SendAllowed)
+	require.Equal(t, "always", contactabilityAvailability(nil).Schedule)
+	require.Empty(t, contactabilityPreference(nil, "preferred"))
+	require.False(t, contactabilityMailbox(nil).ListAllowed)
+}
+
+func TestSoulCommContactabilityBuildInactiveIdentityOmitsChannels(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	resp := buildSoulCommContactabilityResponse(mailboxRequestContext{
+		key:     &models.InstanceKey{InstanceSlug: commWebhookTestInstanceSlug},
+		agentID: soulLifecycleTestAgentIDHex,
+		identity: &models.SoulAgentIdentity{
+			Status:          models.SoulAgentStatusActive,
+			LifecycleStatus: models.SoulAgentStatusSuspended,
+			UpdatedAt:       now,
+		},
+	}, nil, &models.SoulAgentChannel{
+		ChannelType:   models.SoulChannelTypeEmail,
+		Identifier:    "agent@example.com",
+		Capabilities:  []string{"receive", "send"},
+		Verified:      true,
+		Status:        models.SoulChannelStatusActive,
+		ProvisionedAt: now,
+		UpdatedAt:     now.Add(-time.Minute),
+	}, nil)
+
+	require.False(t, resp.Contactable)
+	require.Empty(t, resp.Channels)
+	require.False(t, resp.Mailbox.ListAllowed)
+	require.Equal(t, now.UTC().Format(time.RFC3339Nano), resp.UpdatedAt)
+}
+
+func TestSoulCommContactabilityChannelPolicyEdges(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	require.False(t, contactabilityChannelVisible(&models.SoulAgentChannel{Identifier: "agent@example.com", Verified: false, Status: models.SoulChannelStatusActive, ProvisionedAt: now}))
+	require.False(t, contactabilityChannelVisible(&models.SoulAgentChannel{Identifier: "agent@example.com", Verified: true, Status: models.SoulChannelStatusPaused, ProvisionedAt: now}))
+	require.False(t, contactabilityReceiveAllowed(&models.SoulAgentChannel{ChannelType: models.SoulChannelTypeENS, Capabilities: []string{"receive"}}))
+	require.False(t, contactabilitySendAllowed(&models.SoulAgentChannel{ChannelType: models.SoulChannelTypeENS, Capabilities: []string{"send"}}))
+
+	ensView, ok := contactabilityChannelView(&models.SoulAgentChannel{
+		ChannelType:   models.SoulChannelTypeENS,
+		Identifier:    "agent.eth",
+		Verified:      true,
+		Status:        models.SoulChannelStatusActive,
+		ProvisionedAt: now,
+	})
+	require.True(t, ok)
+	require.False(t, ensView.ReceiveAllowed)
+	require.False(t, ensView.SendAllowed)
+	availability := contactabilityAvailability(&models.SoulAgentContactPreferences{
+		AvailabilitySchedule: "custom",
+		AvailabilityTimezone: "UTC",
+		AvailabilityWindows: []models.SoulContactAvailabilityWindow{{
+			Days:      []string{"mon"},
+			StartTime: "09:00",
+			EndTime:   "17:00",
+		}},
+	})
+	require.Equal(t, "custom", availability.Schedule)
+	require.Len(t, availability.Windows, 1)
+}
+
+func TestSoulCommContactabilityOptionalItemStoreError(t *testing.T) {
+	t.Parallel()
+
+	item, appErr := loadOptionalSoulCommContactabilityItem[models.SoulAgentChannel](nil, context.Background(), soulLifecycleTestAgentIDHex, "CHANNEL#email")
+	require.Nil(t, item)
+	assertCommTheoryErrorCode(t, appErr, commCodeInternal, http.StatusInternalServerError)
+}
+
+func decodeMailboxContactabilityResponse(t *testing.T, resp *apptheory.Response) soulCommContactabilityResponse {
+	t.Helper()
+	require.NotNil(t, resp)
 	var out soulCommContactabilityResponse
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if out.Contactable || len(out.Channels) != 0 || out.Mailbox.ListAllowed {
-		t.Fatalf("unprovisioned channels must not become affordances: %#v", out)
-	}
+	require.NoError(t, json.Unmarshal(resp.Body, &out))
+	return out
 }
 
 func newMailboxAPITestDB() mailboxAPITestDB {
@@ -397,4 +489,93 @@ func TestHandleSoulCommMailboxStateMutationsAreIdempotent(t *testing.T) {
 			t.Fatalf("expected archived state: %#v", out.Message.State)
 		}
 	})
+}
+
+func TestHandleSoulCommMailboxStateAdditionalMutations(t *testing.T) {
+	t.Parallel()
+
+	t.Run("mark unread", func(t *testing.T) {
+		t.Parallel()
+		fixture := newMailboxAPITestDB()
+		expectMailboxAPIAccess(t, fixture, soulLifecycleTestAgentIDHex)
+		msg := mailboxAPITestMessage(soulLifecycleTestAgentIDHex)
+		msg.Read = true
+		expectMailboxMessageLoad(t, fixture.qMsg, msg)
+
+		resp, err := newMailboxAPITestServer(fixture).handleSoulCommMailboxMarkUnread(newMailboxAPIContext(soulLifecycleTestAgentIDHex, "comm-delivery-1", nil))
+		require.NoError(t, err)
+		require.False(t, decodeMailboxGetResponse(t, resp).Message.State.Read)
+	})
+
+	t.Run("unarchive", func(t *testing.T) {
+		t.Parallel()
+		fixture := newMailboxAPITestDB()
+		expectMailboxAPIAccess(t, fixture, soulLifecycleTestAgentIDHex)
+		msg := mailboxAPITestMessage(soulLifecycleTestAgentIDHex)
+		msg.Archived = true
+		expectMailboxMessageLoad(t, fixture.qMsg, msg)
+
+		resp, err := newMailboxAPITestServer(fixture).handleSoulCommMailboxUnarchive(newMailboxAPIContext(soulLifecycleTestAgentIDHex, "comm-delivery-1", nil))
+		require.NoError(t, err)
+		require.False(t, decodeMailboxGetResponse(t, resp).Message.State.Archived)
+	})
+}
+
+func TestHandleSoulCommMailboxContentRejectsDeletedOrMissingContent(t *testing.T) {
+	t.Parallel()
+
+	for name, mutate := range map[string]func(*models.SoulCommMailboxMessage){
+		"deleted": func(msg *models.SoulCommMailboxMessage) {
+			msg.Deleted = true
+		},
+		"missing content": func(msg *models.SoulCommMailboxMessage) {
+			msg.HasContent = false
+			msg.ContentKey = ""
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			fixture := newMailboxAPITestDB()
+			expectMailboxAPIAccess(t, fixture, soulLifecycleTestAgentIDHex)
+			msg := mailboxAPITestMessage(soulLifecycleTestAgentIDHex)
+			mutate(msg)
+			expectMailboxMessageLoad(t, fixture.qMsg, msg)
+
+			_, err := newMailboxAPITestServer(fixture).handleSoulCommMailboxContent(newMailboxAPIContext(soulLifecycleTestAgentIDHex, "comm-delivery-1", nil))
+			assertCommTheoryErrorCode(t, err, "comm.not_found", http.StatusNotFound)
+		})
+	}
+}
+
+func TestHandleSoulCommMailboxGetRejectsDeletedMessage(t *testing.T) {
+	t.Parallel()
+
+	fixture := newMailboxAPITestDB()
+	expectMailboxAPIAccess(t, fixture, soulLifecycleTestAgentIDHex)
+	msg := mailboxAPITestMessage(soulLifecycleTestAgentIDHex)
+	msg.Deleted = true
+	expectMailboxMessageLoad(t, fixture.qMsg, msg)
+
+	_, err := newMailboxAPITestServer(fixture).handleSoulCommMailboxGet(newMailboxAPIContext(soulLifecycleTestAgentIDHex, "comm-delivery-1", nil))
+	assertCommTheoryErrorCode(t, err, "comm.not_found", http.StatusNotFound)
+}
+
+func TestSoulCommMailboxHelpersCoverEdges(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, soulCommMailboxMessage{}, mailboxMessageJSON(nil))
+	require.Equal(t, commmailbox.ContentPointer{}, mailboxContentPointer(nil))
+	require.Empty(t, formatMailboxTime(time.Time{}))
+	require.True(t, queryBool(&apptheory.Context{Request: apptheory.Request{Query: map[string][]string{"includeDeleted": {"yes"}}}}, "includeDeleted"))
+
+	_, appErr := newMailboxAPITestServer(newMailboxAPITestDB()).loadMailboxMessage(context.Background(), "inst1", soulLifecycleTestAgentIDHex, "")
+	assertCommTheoryErrorCode(t, appErr, commCodeInvalidRequest, http.StatusBadRequest)
+}
+
+func decodeMailboxGetResponse(t *testing.T, resp *apptheory.Response) soulCommMailboxGetResponse {
+	t.Helper()
+	require.NotNil(t, resp)
+	var out soulCommMailboxGetResponse
+	require.NoError(t, json.Unmarshal(resp.Body, &out))
+	return out
 }
