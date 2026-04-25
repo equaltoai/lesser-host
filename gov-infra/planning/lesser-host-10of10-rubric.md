@@ -4,11 +4,12 @@ This rubric defines what “10/10” means and how category grades are computed.
 “green by dilution” by making scoring **versioned, measurable, and repeatable**.
 
 ## Versioning (no moving goalposts)
-- **Rubric version:** `v0.1.4` (2026-03-29)
+- **Rubric version:** `v0.1.5` (2026-04-25)
 - **Comparability rule:** grades are comparable only within the same version.
 - **Change rule:** bump the version + changelog entry for any rubric change (what changed + why).
 
 ### Changelog
+- `v0.1.5`: Add CMP-4 bounded soul comm mailbox controls verifier for the approved host-authoritative mailbox content/state exception.
 - `v0.1.4`: Extend CON-3 to include lesser-host REST contract parity for the soul mint-conversation surface and the generated adapter/SSE companion artifacts.
 - `v0.1.3`: Extend CON-2 to include Solidity lint (solhint) and SEC-1 to include Solidity SAST (Slither) via the rubric verifier.
 - `v0.1.2`: Implement remaining planned verifiers for CON-3/COM-6/SEC-4/MAI-1/MAI-3 and update rubric text to reference the verifier evidence logs (requirements unchanged).
@@ -76,11 +77,12 @@ SEC-1 note: Slither runs from a repo-local Python venv under `gov-infra/.tools/`
 ## Compliance Readiness (CMP) — auditability and evidence
 | ID | Points | Requirement | How to verify |
 | --- | ---: | --- | --- |
-| CMP-1 | 4 | Controls matrix exists and is current | File exists: `gov-infra/planning/lesser-host-controls-matrix.md` |
-| CMP-2 | 3 | Evidence plan exists and is reproducible | File exists: `gov-infra/planning/lesser-host-evidence-plan.md` |
-| CMP-3 | 3 | Threat model exists and is current | File exists: `gov-infra/planning/lesser-host-threat-model.md` |
+| CMP-1 | 3 | Controls matrix exists and is current | File exists: `gov-infra/planning/lesser-host-controls-matrix.md` |
+| CMP-2 | 2 | Evidence plan exists and is reproducible | File exists: `gov-infra/planning/lesser-host-evidence-plan.md` |
+| CMP-3 | 2 | Threat model exists and is current | File exists: `gov-infra/planning/lesser-host-threat-model.md` |
+| CMP-4 | 3 | Bounded soul comm mailbox controls are explicit | `bash gov-infra/verifiers/gov-verify-rubric.sh` checks ADR 0005, the soul surface, roadmap, threat model, controls matrix, and evidence plan for retention, encryption, access audit, list/content split, no semantic-memory role, hash-only instance auth, write-once audit/events, protected identity/provenance fields, and body/lesser non-authority. |
 
-**10/10 definition:** CMP-1 through CMP-3 pass.
+**10/10 definition:** CMP-1 through CMP-4 pass.
 
 ## Maintainability (MAI) — convergent codebase (recommended for AI-heavy repos)
 | ID | Points | Requirement | How to verify |

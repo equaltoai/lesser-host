@@ -1,4 +1,4 @@
-# lesser-host Controls Matrix (custom — v0.1.2)
+# lesser-host Controls Matrix (custom — v0.1.3)
 
 This matrix is the “requirements → controls → verifiers → evidence” backbone for lesser-host. It is intentionally
 engineering-focused: it does not claim compliance, but it makes security/quality assertions traceable and repeatable.
