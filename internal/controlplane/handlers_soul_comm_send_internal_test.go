@@ -75,6 +75,10 @@ func (f *fakeControlMailboxContentStore) PutContent(_ context.Context, input com
 	}, nil
 }
 
+func (f *fakeControlMailboxContentStore) GetContent(_ context.Context, _ commmailbox.ContentPointer, _ int64) (commmailbox.ContentOutput, error) {
+	return commmailbox.ContentOutput{Body: []byte("content"), ContentType: "text/plain", SHA256: "sha256-outbound", Bytes: int64(len("content"))}, nil
+}
+
 func TestHandleSoulCommSend_UnauthorizedWithoutBearer(t *testing.T) {
 	t.Parallel()
 

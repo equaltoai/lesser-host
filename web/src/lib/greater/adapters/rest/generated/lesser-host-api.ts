@@ -497,6 +497,172 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/soul/comm/contactability/{agentId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Resolve bounded soul comm contactability for one agent
+         * @description Resolves mailbox/read and send affordances for exactly one agent owned by the authenticated instance.
+         *     This endpoint intentionally has no search or list mode and does not expose channel secrets.
+         */
+        get: operations["soulCommContactability"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/soul/comm/mailbox/{agentId}/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List redacted canonical mailbox messages
+         * @description Returns bounded metadata and previews only. Full message content is fetched explicitly from the content endpoint.
+         */
+        get: operations["soulCommMailboxList"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/soul/comm/mailbox/{agentId}/messages/{deliveryId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get canonical mailbox message metadata */
+        get: operations["soulCommMailboxGet"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/soul/comm/mailbox/{agentId}/messages/{deliveryId}/content": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Explicitly fetch bounded mailbox message content
+         * @description Returns full content only for a specific delivery. Calls are instance-key authenticated, rate-limited, and audit logged.
+         */
+        get: operations["soulCommMailboxContent"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/soul/comm/mailbox/{agentId}/messages/{deliveryId}/read": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Mark a mailbox message read */
+        post: operations["soulCommMailboxMarkRead"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/soul/comm/mailbox/{agentId}/messages/{deliveryId}/unread": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Mark a mailbox message unread */
+        post: operations["soulCommMailboxMarkUnread"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/soul/comm/mailbox/{agentId}/messages/{deliveryId}/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Archive a mailbox message */
+        post: operations["soulCommMailboxArchive"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/soul/comm/mailbox/{agentId}/messages/{deliveryId}/unarchive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Unarchive a mailbox message */
+        post: operations["soulCommMailboxUnarchive"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/soul/comm/mailbox/{agentId}/messages/{deliveryId}/delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Soft-delete a mailbox message
+         * @description Sets bounded mailbox delete state. The content object remains lifecycle-bound and is no longer returned by content fetches.
+         */
+        post: operations["soulCommMailboxDelete"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/soul/agents/{agentId}/comm/activity": {
         parameters: {
             query?: never;
@@ -652,6 +818,11 @@ export interface components {
         SoulCommSendErrorEnvelope: components["schemas"]["soul-comm-send.error.schema"];
         SoulCommStatusResponse: components["schemas"]["soul-comm-status.response.schema"];
         SoulCommStatusErrorEnvelope: components["schemas"]["soul-comm-status.error.schema"];
+        SoulCommContactabilityResponse: components["schemas"]["soul-comm-contactability.response.schema"];
+        SoulCommMailboxMessage: components["schemas"]["soul-comm-mailbox-message.schema"];
+        SoulCommMailboxListResponse: components["schemas"]["soul-comm-mailbox-list.response.schema"];
+        SoulCommMailboxGetResponse: components["schemas"]["soul-comm-mailbox-get.response.schema"];
+        SoulCommMailboxContentResponse: components["schemas"]["soul-comm-mailbox-content.response.schema"];
         SoulAgentCommActivityItem: components["schemas"]["soul-agent-comm-activity-item.schema"];
         SoulAgentCommActivityResponse: components["schemas"]["soul-agent-comm-activity.response.schema"];
         SoulAgentCommQueueItem: components["schemas"]["soul-agent-comm-queue-item.schema"];
@@ -1213,6 +1384,121 @@ export interface components {
                 request_id?: string;
             };
         };
+        channel: {
+            /** @enum {string} */
+            channelType: "email" | "phone";
+            /** Format: email */
+            address?: string;
+            number?: string;
+            provider?: string;
+            capabilities: string[];
+            protocols?: string[];
+            verified: boolean;
+            /** @enum {string} */
+            status: "active";
+            receiveAllowed: boolean;
+            sendAllowed: boolean;
+        };
+        mailbox: {
+            listAllowed: boolean;
+            getAllowed: boolean;
+            contentAllowed: boolean;
+            stateAllowed: boolean;
+        };
+        availability: {
+            schedule: string;
+            timezone?: string;
+            windows?: {
+                days: string[];
+                startTime: string;
+                endTime: string;
+            }[];
+        };
+        firstContact: {
+            requireSoul: boolean;
+            requireReputation: number | null;
+            introductionExpected: boolean;
+        };
+        /** GET /api/v1/soul/comm/contactability/{agentId} response */
+        "soul-comm-contactability.response.schema": {
+            instanceSlug: string;
+            agentId: string;
+            contactable: boolean;
+            /** @enum {string} */
+            preferred?: "email" | "phone" | "sms" | "voice";
+            /** @enum {string} */
+            fallback?: "email" | "phone" | "sms" | "voice";
+            channels: components["schemas"]["channel"][];
+            mailbox: components["schemas"]["mailbox"];
+            availability: components["schemas"]["availability"];
+            firstContact: components["schemas"]["firstContact"];
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        party: {
+            address?: string;
+            number?: string;
+            soulAgentId?: string;
+            displayName?: string;
+        };
+        /** Soul comm mailbox redacted message metadata */
+        "soul-comm-mailbox-message.schema": {
+            deliveryId: string;
+            messageId: string;
+            threadId: string;
+            /** @enum {string} */
+            direction: "inbound" | "outbound";
+            /** @enum {string} */
+            channelType: "email" | "sms" | "voice";
+            provider?: string;
+            providerMessageId?: string;
+            /** @enum {string} */
+            status: "accepted" | "sent" | "delivered" | "queued" | "failed" | "bounced" | "dropped";
+            from?: components["schemas"]["party"];
+            to?: components["schemas"]["party"];
+            subject?: string;
+            preview?: string;
+            content: {
+                available: boolean;
+                bytes?: number;
+                mimeType?: string;
+                sha256?: string;
+                contentHref?: string;
+            };
+            state: {
+                read: boolean;
+                archived: boolean;
+                deleted: boolean;
+            };
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        /** GET /api/v1/soul/comm/mailbox/{agentId}/messages response */
+        "soul-comm-mailbox-list.response.schema": {
+            instanceSlug: string;
+            agentId: string;
+            messages: components["schemas"]["soul-comm-mailbox-message.schema"][];
+            count: number;
+            hasMore: boolean;
+            nextCursor?: string;
+        };
+        /** GET /api/v1/soul/comm/mailbox/{agentId}/messages/{deliveryId} response */
+        "soul-comm-mailbox-get.response.schema": {
+            message: components["schemas"]["soul-comm-mailbox-message.schema"];
+        };
+        /** GET /api/v1/soul/comm/mailbox/{agentId}/messages/{deliveryId}/content response */
+        "soul-comm-mailbox-content.response.schema": {
+            instanceSlug: string;
+            agentId: string;
+            deliveryId: string;
+            messageId: string;
+            contentType: string;
+            sha256: string;
+            bytes: number;
+            body: string;
+        };
         /** Soul agent communication activity item */
         "soul-agent-comm-activity-item.schema": {
             agent_id: string;
@@ -1267,8 +1553,57 @@ export interface components {
             count: number;
         };
     };
-    responses: never;
-    parameters: never;
+    responses: {
+        /** @description Invalid request */
+        BadRequest: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorEnvelope"];
+            };
+        };
+        /** @description Unauthorized */
+        Unauthorized: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorEnvelope"];
+            };
+        };
+        /** @description Not found */
+        NotFound: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorEnvelope"];
+            };
+        };
+        /** @description Rate limited */
+        RateLimited: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorEnvelope"];
+            };
+        };
+        /** @description Internal error */
+        InternalError: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorEnvelope"];
+            };
+        };
+    };
+    parameters: {
+        SoulMailboxAgentId: string;
+        SoulMailboxDeliveryId: string;
+    };
     requestBodies: never;
     headers: never;
     pathItems: never;
@@ -3026,6 +3361,370 @@ export interface operations {
                     "application/json": components["schemas"]["soul-comm-status.error.schema"];
                 };
             };
+        };
+    };
+    soulCommContactability: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agentId: components["parameters"]["SoulMailboxAgentId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["soul-comm-contactability.response.schema"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    soulCommMailboxList: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+                includeDeleted?: boolean;
+            };
+            header?: never;
+            path: {
+                agentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["soul-comm-mailbox-list.response.schema"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Rate limited */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    soulCommMailboxGet: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agentId: string;
+                deliveryId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["soul-comm-mailbox-get.response.schema"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Rate limited */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    soulCommMailboxContent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agentId: string;
+                deliveryId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["soul-comm-mailbox-content.response.schema"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Rate limited */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    soulCommMailboxMarkRead: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agentId: components["parameters"]["SoulMailboxAgentId"];
+                deliveryId: components["parameters"]["SoulMailboxDeliveryId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["soul-comm-mailbox-get.response.schema"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    soulCommMailboxMarkUnread: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agentId: components["parameters"]["SoulMailboxAgentId"];
+                deliveryId: components["parameters"]["SoulMailboxDeliveryId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["soul-comm-mailbox-get.response.schema"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    soulCommMailboxArchive: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agentId: components["parameters"]["SoulMailboxAgentId"];
+                deliveryId: components["parameters"]["SoulMailboxDeliveryId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["soul-comm-mailbox-get.response.schema"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    soulCommMailboxUnarchive: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agentId: components["parameters"]["SoulMailboxAgentId"];
+                deliveryId: components["parameters"]["SoulMailboxDeliveryId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["soul-comm-mailbox-get.response.schema"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    soulCommMailboxDelete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agentId: components["parameters"]["SoulMailboxAgentId"];
+                deliveryId: components["parameters"]["SoulMailboxDeliveryId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["soul-comm-mailbox-get.response.schema"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
         };
     };
     soulAgentCommActivity: {
