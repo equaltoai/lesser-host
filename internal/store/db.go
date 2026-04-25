@@ -41,5 +41,7 @@ func LambdaInit() (DB, error) {
 		&models.RenderArtifact{},
 		&models.AuditLogEntry{},
 		&models.VanityDomainRequest{},
+		&models.SoulCommMailboxMessage{},
+		&models.SoulCommMailboxEvent{},
 	)
 }

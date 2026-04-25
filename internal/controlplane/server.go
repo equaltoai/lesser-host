@@ -3,10 +3,12 @@ package controlplane
 import (
 	"context"
 	"log"
+	"strings"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 
 	"github.com/equaltoai/lesser-host/internal/artifacts"
+	"github.com/equaltoai/lesser-host/internal/commmailbox"
 	"github.com/equaltoai/lesser-host/internal/commworker"
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/store"
@@ -19,13 +21,14 @@ type soulPackStore interface {
 
 // Server implements the control plane API.
 type Server struct {
-	cfg       config.Config
-	store     *store.Store
-	webAuthn  webAuthnEngine
-	queues    *queueClient
-	r53       *route53Client
-	soulPacks soulPackStore
-	dialEVM   ethRPCDialer
+	cfg                 config.Config
+	store               *store.Store
+	webAuthn            webAuthnEngine
+	queues              *queueClient
+	r53                 *route53Client
+	soulPacks           soulPackStore
+	mailboxContentStore commmailbox.ContentStore
+	dialEVM             ethRPCDialer
 
 	ssmGetParameter     func(ctx context.Context, name string) (string, error)
 	ssmPutSecureValue   func(ctx context.Context, name string, value string, overwrite bool) error
@@ -71,6 +74,9 @@ func NewServer(cfg config.Config, st *store.Store) *Server {
 		telnyxRelease:       defaultTelnyxReleasePhoneNumber,
 		telnyxSendSMS:       defaultTelnyxSendSMS,
 		telnyxCallVoice:     defaultTelnyxCreateVoiceCall,
+	}
+	if strings.TrimSpace(cfg.SoulCommMailboxBucketName) != "" {
+		srv.mailboxContentStore = commmailbox.NewS3Store(cfg.SoulCommMailboxBucketName)
 	}
 	srv.enqueueCommMessage = srv.queues.enqueueCommMessage
 	return srv

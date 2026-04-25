@@ -29,6 +29,8 @@ type commStoreTestDB struct {
 	qPrefs   *ttmocks.MockQuery
 	qAct     *ttmocks.MockQuery
 	qQueue   *ttmocks.MockQuery
+	qMailbox *ttmocks.MockQuery
+	qEvent   *ttmocks.MockQuery
 	qDomain  *ttmocks.MockQuery
 	qInst    *ttmocks.MockQuery
 }
@@ -42,6 +44,8 @@ func newCommStoreTestDB() commStoreTestDB {
 	qPrefs := new(ttmocks.MockQuery)
 	qAct := new(ttmocks.MockQuery)
 	qQueue := new(ttmocks.MockQuery)
+	qMailbox := new(ttmocks.MockQuery)
+	qEvent := new(ttmocks.MockQuery)
 	qDomain := new(ttmocks.MockQuery)
 	qInst := new(ttmocks.MockQuery)
 
@@ -53,15 +57,22 @@ func newCommStoreTestDB() commStoreTestDB {
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentContactPreferences")).Return(qPrefs).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentCommActivity")).Return(qAct).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentCommQueue")).Return(qQueue).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulCommMailboxMessage")).Return(qMailbox).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulCommMailboxEvent")).Return(qEvent).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.Domain")).Return(qDomain).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.Instance")).Return(qInst).Maybe()
 
-	for _, q := range []*ttmocks.MockQuery{qEmail, qPhone, qIdent, qChannel, qPrefs, qAct, qQueue, qDomain, qInst} {
+	for _, q := range []*ttmocks.MockQuery{qEmail, qPhone, qIdent, qChannel, qPrefs, qAct, qQueue, qMailbox, qEvent, qDomain, qInst} {
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("OrderBy", mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("Limit", mock.Anything).Return(q).Maybe()
+		q.On("IfNotExists").Return(q).Maybe()
+		q.On("IfExists").Return(q).Maybe()
+		q.On("Create").Return(nil).Maybe()
 		q.On("CreateOrUpdate").Return(nil).Maybe()
+		q.On("Update", mock.Anything).Return(nil).Maybe()
 	}
+	qMailbox.On("Update", "Status", "UpdatedAt").Return(nil).Maybe()
 
 	return commStoreTestDB{
 		db:       db,
@@ -72,6 +83,8 @@ func newCommStoreTestDB() commStoreTestDB {
 		qPrefs:   qPrefs,
 		qAct:     qAct,
 		qQueue:   qQueue,
+		qMailbox: qMailbox,
+		qEvent:   qEvent,
 		qDomain:  qDomain,
 		qInst:    qInst,
 	}
@@ -219,57 +232,83 @@ func runGetDomainAndInstanceTest(t *testing.T, ctx context.Context) {
 
 func TestDynamoStoreListAndPut(t *testing.T) {
 	ctx := context.Background()
+	assertNilStoreListRecentCommActivities(t, ctx)
+	t.Run("list activities clamps default limit", func(t *testing.T) { runListActivitiesDefaultLimitTest(t, ctx) })
+	t.Run("list activities clamps maximum limit", func(t *testing.T) { runListActivitiesMaxLimitTest(t, ctx) })
+	t.Run("put helpers validate nil", func(t *testing.T) { runPutHelperNilValidationTest(t, ctx) })
+	t.Run("put helpers write", func(t *testing.T) { runPutHelperWriteTest(t, ctx) })
+}
 
+func assertNilStoreListRecentCommActivities(t *testing.T, ctx context.Context) {
+	t.Helper()
 	var nilStore *dynamoStore
 	if _, err := nilStore.ListRecentCommActivities(ctx, commStoreTestAgentID, 10); err == nil {
 		t.Fatalf("expected store not initialized error")
 	}
+}
 
-	t.Run("list activities clamps default limit", func(t *testing.T) {
-		tdb := newCommStoreTestDB()
-		tdb.qAct.On("Limit", 250).Return(tdb.qAct).Once()
-		tdb.qAct.On("All", mock.AnythingOfType("*[]*models.SoulAgentCommActivity")).Return(nil).Run(func(args mock.Arguments) {
-			dest := testutil.RequireMockArg[*[]*models.SoulAgentCommActivity](t, args, 0)
-			*dest = []*models.SoulAgentCommActivity{{AgentID: commStoreTestAgentID}}
-		}).Once()
+func runListActivitiesDefaultLimitTest(t *testing.T, ctx context.Context) {
+	t.Helper()
+	tdb := newCommStoreTestDB()
+	tdb.qAct.On("Limit", 250).Return(tdb.qAct).Once()
+	tdb.qAct.On("All", mock.AnythingOfType("*[]*models.SoulAgentCommActivity")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulAgentCommActivity](t, args, 0)
+		*dest = []*models.SoulAgentCommActivity{{AgentID: commStoreTestAgentID}}
+	}).Once()
 
-		st := &dynamoStore{db: tdb.db}
-		items, err := st.ListRecentCommActivities(ctx, commStoreTestAgentID, -1)
-		if err != nil || len(items) != 1 {
-			t.Fatalf("unexpected activities result: items=%#v err=%v", items, err)
-		}
-	})
+	st := &dynamoStore{db: tdb.db}
+	items, err := st.ListRecentCommActivities(ctx, commStoreTestAgentID, -1)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("unexpected activities result: items=%#v err=%v", items, err)
+	}
+}
 
-	t.Run("list activities clamps maximum limit", func(t *testing.T) {
-		tdb := newCommStoreTestDB()
-		tdb.qAct.On("Limit", 1000).Return(tdb.qAct).Once()
-		tdb.qAct.On("All", mock.AnythingOfType("*[]*models.SoulAgentCommActivity")).Return(nil).Run(func(args mock.Arguments) {
-			dest := testutil.RequireMockArg[*[]*models.SoulAgentCommActivity](t, args, 0)
-			*dest = []*models.SoulAgentCommActivity{}
-		}).Once()
+func runListActivitiesMaxLimitTest(t *testing.T, ctx context.Context) {
+	t.Helper()
+	tdb := newCommStoreTestDB()
+	tdb.qAct.On("Limit", 1000).Return(tdb.qAct).Once()
+	tdb.qAct.On("All", mock.AnythingOfType("*[]*models.SoulAgentCommActivity")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulAgentCommActivity](t, args, 0)
+		*dest = []*models.SoulAgentCommActivity{}
+	}).Once()
 
-		st := &dynamoStore{db: tdb.db}
-		items, err := st.ListRecentCommActivities(ctx, commStoreTestAgentID, 5000)
-		if err != nil || len(items) != 0 {
-			t.Fatalf("unexpected activities result: items=%#v err=%v", items, err)
-		}
-	})
+	st := &dynamoStore{db: tdb.db}
+	items, err := st.ListRecentCommActivities(ctx, commStoreTestAgentID, 5000)
+	if err != nil || len(items) != 0 {
+		t.Fatalf("unexpected activities result: items=%#v err=%v", items, err)
+	}
+}
 
-	t.Run("put helpers validate nil and write", func(t *testing.T) {
-		tdb := newCommStoreTestDB()
-		st := &dynamoStore{db: tdb.db}
+func runPutHelperNilValidationTest(t *testing.T, ctx context.Context) {
+	t.Helper()
+	st := &dynamoStore{db: newCommStoreTestDB().db}
+	assertError(t, st.PutCommActivity(ctx, nil), "expected error for nil activity")
+	assertError(t, st.PutCommQueue(ctx, nil), "expected error for nil queue item")
+	assertError(t, st.PutMailboxMessage(ctx, nil), "expected error for nil mailbox message")
+	assertError(t, st.PutMailboxEvent(ctx, nil), "expected error for nil mailbox event")
+	assertError(t, st.UpdateMailboxMessageStatus(ctx, nil), "expected error for nil mailbox update")
+}
 
-		if err := st.PutCommActivity(ctx, nil); err == nil {
-			t.Fatalf("expected error for nil activity")
-		}
-		if err := st.PutCommQueue(ctx, nil); err == nil {
-			t.Fatalf("expected error for nil queue item")
-		}
-		if err := st.PutCommActivity(ctx, &models.SoulAgentCommActivity{AgentID: commStoreTestAgentID}); err != nil {
-			t.Fatalf("PutCommActivity: %v", err)
-		}
-		if err := st.PutCommQueue(ctx, &models.SoulAgentCommQueue{AgentID: commStoreTestAgentID}); err != nil {
-			t.Fatalf("PutCommQueue: %v", err)
-		}
-	})
+func runPutHelperWriteTest(t *testing.T, ctx context.Context) {
+	t.Helper()
+	st := &dynamoStore{db: newCommStoreTestDB().db}
+	assertNoError(t, st.PutCommActivity(ctx, &models.SoulAgentCommActivity{AgentID: commStoreTestAgentID}), "PutCommActivity")
+	assertNoError(t, st.PutCommQueue(ctx, &models.SoulAgentCommQueue{AgentID: commStoreTestAgentID}), "PutCommQueue")
+	assertNoError(t, st.PutMailboxMessage(ctx, &models.SoulCommMailboxMessage{AgentID: commStoreTestAgentID}), "PutMailboxMessage")
+	assertNoError(t, st.PutMailboxEvent(ctx, &models.SoulCommMailboxEvent{AgentID: commStoreTestAgentID}), "PutMailboxEvent")
+	assertNoError(t, st.UpdateMailboxMessageStatus(ctx, &models.SoulCommMailboxMessage{AgentID: commStoreTestAgentID}), "UpdateMailboxMessageStatus")
+}
+
+func assertError(t *testing.T, err error, message string) {
+	t.Helper()
+	if err == nil {
+		t.Fatal(message)
+	}
+}
+
+func assertNoError(t *testing.T, err error, label string) {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("%s: %v", label, err)
+	}
 }

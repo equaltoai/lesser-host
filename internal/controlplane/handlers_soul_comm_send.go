@@ -70,6 +70,8 @@ type soulCommSendRequest struct {
 
 type soulCommSendResponse struct {
 	MessageID         string `json:"messageId"`
+	DeliveryID        string `json:"deliveryId,omitempty"`
+	ThreadID          string `json:"threadId,omitempty"`
 	Status            string `json:"status"`
 	Channel           string `json:"channel"`
 	AgentID           string `json:"agentId"`
@@ -239,7 +241,7 @@ func (s *Server) handleSoulCommSend(ctx *apptheory.Context) (*apptheory.Response
 
 	metrics.provider = delivery.provider
 	metrics.status = commMetricSent
-	resp, appErr := soulCommSendJSON(messageID, req, delivery, now)
+	resp, appErr := soulCommSendJSON(messageID, strings.TrimSpace(key.InstanceSlug), req, delivery, now)
 	if appErr != nil {
 		metrics.status = commMetricInternalError
 		return nil, appErr
@@ -1086,6 +1088,11 @@ func (s *Server) recordSoulCommSend(ctx *apptheory.Context, key *models.Instance
 		return apptheory.NewAppTheoryError(commCodeInternal, "failed to record activity").WithStatusCode(http.StatusInternalServerError)
 	}
 
+	if captureErr := s.captureOutboundMailbox(ctx.Context(), key, req, messageID, delivery, statusValue, now); captureErr != nil {
+		metrics.status = commMetricInternalError
+		return apptheory.NewAppTheoryError(commCodeInternal, "failed to record mailbox delivery").WithStatusCode(http.StatusInternalServerError)
+	}
+
 	s.tryWriteAuditLog(ctx, &models.AuditLogEntry{
 		Actor:     fmt.Sprintf("instance:%s", strings.TrimSpace(key.InstanceSlug)),
 		Action:    fmt.Sprintf("soul.comm.send.%s", req.channel),
@@ -1095,8 +1102,8 @@ func (s *Server) recordSoulCommSend(ctx *apptheory.Context, key *models.Instance
 	return nil
 }
 
-func soulCommSendJSON(messageID string, req validatedSoulCommSendRequest, delivery soulCommSendDelivery, now time.Time) (*apptheory.Response, *apptheory.AppTheoryError) {
-	return soulCommSendJSONFields(messageID, soulCommSendResultStatus(delivery.initialStatus), req.channel, req.agentIDHex, req.to, delivery.provider, delivery.providerMessageID, now)
+func soulCommSendJSON(messageID string, instanceSlug string, req validatedSoulCommSendRequest, delivery soulCommSendDelivery, now time.Time) (*apptheory.Response, *apptheory.AppTheoryError) {
+	return soulCommSendJSONFields(messageID, instanceSlug, soulCommSendResultStatus(delivery.initialStatus), req.channel, req.agentIDHex, req.to, delivery.provider, delivery.providerMessageID, req.inReplyTo, now)
 }
 
 func soulCommSendResultStatus(initialStatus string) string {
@@ -1107,9 +1114,16 @@ func soulCommSendResultStatus(initialStatus string) string {
 	return statusValue
 }
 
-func soulCommSendJSONFields(messageID string, status string, channel string, agentID string, to string, provider string, providerMessageID string, createdAt time.Time) (*apptheory.Response, *apptheory.AppTheoryError) {
+func soulCommSendJSONFields(messageID string, instanceSlug string, status string, channel string, agentID string, to string, provider string, providerMessageID string, threadRoot string, createdAt time.Time) (*apptheory.Response, *apptheory.AppTheoryError) {
+	deliveryID := models.SoulCommMailboxDeliveryID(instanceSlug, agentID, models.SoulCommDirectionOutbound, messageID)
+	if strings.TrimSpace(threadRoot) == "" {
+		threadRoot = messageID
+	}
+	threadID := models.SoulCommMailboxThreadID(instanceSlug, agentID, channel, threadRoot)
 	resp, err := apptheory.JSON(http.StatusOK, soulCommSendResponse{
 		MessageID:         strings.TrimSpace(messageID),
+		DeliveryID:        deliveryID,
+		ThreadID:          threadID,
 		Status:            strings.TrimSpace(status),
 		Channel:           strings.TrimSpace(channel),
 		AgentID:           strings.ToLower(strings.TrimSpace(agentID)),
@@ -1125,11 +1139,11 @@ func soulCommSendJSONFields(messageID string, status string, channel string, age
 }
 
 func soulCommSendJSONFromStatusItem(item models.SoulCommMessageStatus) (*apptheory.Response, *apptheory.AppTheoryError) {
-	return soulCommSendJSONFields(item.MessageID, item.Status, item.ChannelType, item.AgentID, item.To, item.Provider, item.ProviderMessageID, item.CreatedAt)
+	return soulCommSendJSONFields(item.MessageID, item.InstanceSlug, item.Status, item.ChannelType, item.AgentID, item.To, item.Provider, item.ProviderMessageID, item.MessageID, item.CreatedAt)
 }
 
 func soulCommSendJSONFromIdempotencyItem(item models.SoulCommSendIdempotency) (*apptheory.Response, *apptheory.AppTheoryError) {
-	return soulCommSendJSONFields(item.MessageID, item.ResponseStatus, item.ChannelType, item.AgentID, item.To, item.Provider, item.ProviderMessageID, item.CreatedAt)
+	return soulCommSendJSONFields(item.MessageID, item.InstanceSlug, item.ResponseStatus, item.ChannelType, item.AgentID, item.To, item.Provider, item.ProviderMessageID, item.MessageID, item.CreatedAt)
 }
 
 func soulCommStatusJSON(item models.SoulCommMessageStatus) soulCommStatusResponse {

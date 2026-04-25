@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/equaltoai/lesser-host/internal/commmailbox"
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
@@ -13,6 +14,22 @@ const (
 	testAgentBobEmail  = "agent-bob@lessersoul.ai"
 	testInstanceAPIKey = "lhk_test"
 )
+
+type fakeMailboxContentStore struct {
+	inputs []commmailbox.ContentInput
+}
+
+func (f *fakeMailboxContentStore) PutContent(_ context.Context, input commmailbox.ContentInput) (commmailbox.ContentPointer, error) {
+	f.inputs = append(f.inputs, input)
+	return commmailbox.ContentPointer{
+		Storage:     commmailbox.ContentStorageS3,
+		Bucket:      "mailbox-bucket",
+		Key:         commmailbox.ContentKey(input.InstanceSlug, input.AgentID, input.DeliveryID),
+		SHA256:      "sha256-test",
+		Bytes:       int64(len(input.Body)),
+		ContentType: commmailbox.DefaultContentType(input.ChannelType),
+	}, nil
+}
 
 type fakeStore struct {
 	emailIndex map[string]string
@@ -27,6 +44,10 @@ type fakeStore struct {
 
 	activities map[string][]*models.SoulAgentCommActivity
 	queued     []*models.SoulAgentCommQueue
+
+	mailboxMessages []*models.SoulCommMailboxMessage
+	mailboxEvents   []*models.SoulCommMailboxEvent
+	mailboxUpdates  []*models.SoulCommMailboxMessage
 }
 
 func (f *fakeStore) LookupAgentByEmail(_ context.Context, email string) (string, bool, error) {
@@ -102,6 +123,30 @@ func (f *fakeStore) PutCommQueue(_ context.Context, item *models.SoulAgentCommQu
 	return nil
 }
 
+func (f *fakeStore) PutMailboxMessage(_ context.Context, item *models.SoulCommMailboxMessage) error {
+	if f == nil {
+		return nil
+	}
+	f.mailboxMessages = append(f.mailboxMessages, item)
+	return nil
+}
+
+func (f *fakeStore) PutMailboxEvent(_ context.Context, item *models.SoulCommMailboxEvent) error {
+	if f == nil {
+		return nil
+	}
+	f.mailboxEvents = append(f.mailboxEvents, item)
+	return nil
+}
+
+func (f *fakeStore) UpdateMailboxMessageStatus(_ context.Context, item *models.SoulCommMailboxMessage) error {
+	if f == nil {
+		return nil
+	}
+	f.mailboxUpdates = append(f.mailboxUpdates, item)
+	return nil
+}
+
 func (f *fakeStore) GetDomain(_ context.Context, domain string) (*models.Domain, bool, error) {
 	if f == nil || f.domains == nil {
 		return nil, false, nil
@@ -147,6 +192,12 @@ func TestProcessInbound_QueuesOutsideAvailabilityWindow(t *testing.T) {
 				},
 				UpdatedAt: now,
 			},
+		},
+		domains: map[string]*models.Domain{
+			"demo.greater.website": {Domain: "demo.greater.website", InstanceSlug: "demo"},
+		},
+		instances: map[string]*models.Instance{
+			"demo": {Slug: "demo", HostedBaseDomain: "demo.greater.website"},
 		},
 	}
 
@@ -221,6 +272,12 @@ func TestProcessInbound_BouncesWhenRateLimited(t *testing.T) {
 			agentID: {
 				{AgentID: agentID, ChannelType: "email", Direction: models.SoulCommDirectionInbound, Action: "receive", Timestamp: now.Add(-10 * time.Minute)},
 			},
+		},
+		domains: map[string]*models.Domain{
+			"demo.greater.website": {Domain: "demo.greater.website", InstanceSlug: "demo"},
+		},
+		instances: map[string]*models.Instance{
+			"demo": {Slug: "demo", HostedBaseDomain: "demo.greater.website"},
 		},
 	}
 
@@ -323,5 +380,125 @@ func TestProcessInbound_DeliversToInstance(t *testing.T) {
 	}
 	if gotURL != "https://api.dev.demo.greater.website/api/v1/notifications/deliver" {
 		t.Fatalf("unexpected deliver url: %q", gotURL)
+	}
+}
+
+func TestProcessInbound_CapturesMailboxBeforeLesserProjection(t *testing.T) {
+	t.Parallel()
+
+	fx := newInboundMailboxCaptureFixture(time.Date(2026, 3, 2, 12, 0, 0, 0, time.UTC))
+	fx.server.deliverNotification = func(_ context.Context, _ string, _ string, _ InboundNotification) error {
+		assertInboundMailboxCapturedBeforeProjection(t, fx)
+		return nil
+	}
+
+	msg := newMailboxCaptureInboundMessage(fx.now, fx.to)
+	if err := fx.server.processInbound(context.Background(), "req", msg); err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	assertInboundMailboxCapturedAfterProjection(t, fx)
+}
+
+type inboundMailboxCaptureFixture struct {
+	now     time.Time
+	agentID string
+	to      string
+	store   *fakeStore
+	content *fakeMailboxContentStore
+	server  *Server
+}
+
+func newInboundMailboxCaptureFixture(now time.Time) inboundMailboxCaptureFixture {
+	agentID := commStoreTestAgentID
+	to := testAgentBobEmail
+	fs := newRoutableInboundFakeStore(now, agentID, to)
+	content := &fakeMailboxContentStore{}
+	s := NewServer(config.Config{Stage: "lab"}, fs, nil, nil)
+	s.mailboxContentStore = content
+	s.now = func() time.Time { return now }
+	s.fetchInstanceKeyPlaintext = func(context.Context, *models.Instance) (string, error) { return testInstanceAPIKey, nil }
+	return inboundMailboxCaptureFixture{now: now, agentID: agentID, to: to, store: fs, content: content, server: s}
+}
+
+func newRoutableInboundFakeStore(now time.Time, agentID string, to string) *fakeStore {
+	return &fakeStore{
+		emailIndex: map[string]string{to: agentID},
+		identities: map[string]*models.SoulAgentIdentity{
+			agentID: {AgentID: agentID, Domain: "demo.greater.website", LifecycleStatus: models.SoulAgentStatusActive, Status: models.SoulAgentStatusActive},
+		},
+		channels: map[string]*models.SoulAgentChannel{
+			agentID + "#email": {AgentID: agentID, ChannelType: "email", Identifier: to, Status: models.SoulChannelStatusActive, Verified: true, ProvisionedAt: now.Add(-time.Hour)},
+		},
+		prefs: map[string]*models.SoulAgentContactPreferences{
+			agentID: {AgentID: agentID, Preferred: "email", AvailabilitySchedule: "always", UpdatedAt: now},
+		},
+		domains: map[string]*models.Domain{
+			"demo.greater.website": {Domain: "demo.greater.website", InstanceSlug: "demo"},
+		},
+		instances: map[string]*models.Instance{
+			"demo": {Slug: "demo", HostedBaseDomain: "demo.greater.website", HostedAccountID: "123", LesserHostInstanceKeySecretARN: "arn:aws:secretsmanager:us-east-1:123:secret:test"},
+		},
+	}
+}
+
+func newMailboxCaptureInboundMessage(now time.Time, to string) QueueMessage {
+	return QueueMessage{
+		Kind:     QueueMessageKindInbound,
+		Provider: "migadu",
+		Notification: InboundNotification{
+			Type:         "communication:inbound",
+			Channel:      "email",
+			From:         InboundParty{Address: "alice@example.com", DisplayName: "Alice"},
+			To:           &InboundParty{Address: to},
+			Subject:      "Hello",
+			Body:         "Full inbound body",
+			BodyMimeType: "text/plain",
+			ReceivedAt:   now.Format(time.RFC3339Nano),
+			MessageID:    "comm-msg-capture",
+		},
+	}
+}
+
+func assertInboundMailboxCapturedBeforeProjection(t *testing.T, fx inboundMailboxCaptureFixture) {
+	t.Helper()
+	if len(fx.content.inputs) != 1 {
+		t.Fatalf("expected content stored before lesser notification projection, got %d writes", len(fx.content.inputs))
+	}
+	if len(fx.store.mailboxMessages) != 1 || fx.store.mailboxMessages[0].Status != models.SoulCommMailboxStatusAccepted {
+		t.Fatalf("expected accepted mailbox row before projection, got %#v", fx.store.mailboxMessages)
+	}
+}
+
+func assertInboundMailboxCapturedAfterProjection(t *testing.T, fx inboundMailboxCaptureFixture) {
+	t.Helper()
+	if len(fx.store.mailboxMessages) != 1 {
+		t.Fatalf("expected one mailbox row, got %d", len(fx.store.mailboxMessages))
+	}
+	assertInboundMailboxRow(t, fx.store.mailboxMessages[0], fx.agentID)
+	assertInboundMailboxStatusUpdate(t, fx.store.mailboxUpdates)
+	assertInboundMailboxEvents(t, fx.store.mailboxEvents)
+}
+
+func assertInboundMailboxRow(t *testing.T, row *models.SoulCommMailboxMessage, agentID string) {
+	t.Helper()
+	if !row.HasContent || row.ContentBucket != "mailbox-bucket" || row.ContentKey == "" || row.ContentSHA256 == "" {
+		t.Fatalf("expected content pointer on mailbox row: %#v", row)
+	}
+	if row.InstanceSlug != "demo" || row.AgentID != agentID || row.Direction != models.SoulCommDirectionInbound || row.Provider != "migadu" {
+		t.Fatalf("unexpected mailbox scope/provenance: %#v", row)
+	}
+}
+
+func assertInboundMailboxStatusUpdate(t *testing.T, updates []*models.SoulCommMailboxMessage) {
+	t.Helper()
+	if len(updates) != 1 || updates[0].Status != models.SoulCommMailboxStatusDelivered {
+		t.Fatalf("expected delivered status update, got %#v", updates)
+	}
+}
+
+func assertInboundMailboxEvents(t *testing.T, events []*models.SoulCommMailboxEvent) {
+	t.Helper()
+	if len(events) != 2 || events[0].EventType != models.SoulCommMailboxEventCreated || events[1].EventType != models.SoulCommMailboxEventStateChanged {
+		t.Fatalf("expected created/state events, got %#v", events)
 	}
 }
