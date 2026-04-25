@@ -29,6 +29,8 @@ type commStoreTestDB struct {
 	qPrefs   *ttmocks.MockQuery
 	qAct     *ttmocks.MockQuery
 	qQueue   *ttmocks.MockQuery
+	qMailbox *ttmocks.MockQuery
+	qEvent   *ttmocks.MockQuery
 	qDomain  *ttmocks.MockQuery
 	qInst    *ttmocks.MockQuery
 }
@@ -42,6 +44,8 @@ func newCommStoreTestDB() commStoreTestDB {
 	qPrefs := new(ttmocks.MockQuery)
 	qAct := new(ttmocks.MockQuery)
 	qQueue := new(ttmocks.MockQuery)
+	qMailbox := new(ttmocks.MockQuery)
+	qEvent := new(ttmocks.MockQuery)
 	qDomain := new(ttmocks.MockQuery)
 	qInst := new(ttmocks.MockQuery)
 
@@ -53,15 +57,22 @@ func newCommStoreTestDB() commStoreTestDB {
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentContactPreferences")).Return(qPrefs).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentCommActivity")).Return(qAct).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentCommQueue")).Return(qQueue).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulCommMailboxMessage")).Return(qMailbox).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulCommMailboxEvent")).Return(qEvent).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.Domain")).Return(qDomain).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.Instance")).Return(qInst).Maybe()
 
-	for _, q := range []*ttmocks.MockQuery{qEmail, qPhone, qIdent, qChannel, qPrefs, qAct, qQueue, qDomain, qInst} {
+	for _, q := range []*ttmocks.MockQuery{qEmail, qPhone, qIdent, qChannel, qPrefs, qAct, qQueue, qMailbox, qEvent, qDomain, qInst} {
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("OrderBy", mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("Limit", mock.Anything).Return(q).Maybe()
+		q.On("IfNotExists").Return(q).Maybe()
+		q.On("IfExists").Return(q).Maybe()
+		q.On("Create").Return(nil).Maybe()
 		q.On("CreateOrUpdate").Return(nil).Maybe()
+		q.On("Update", mock.Anything).Return(nil).Maybe()
 	}
+	qMailbox.On("Update", "Status", "UpdatedAt").Return(nil).Maybe()
 
 	return commStoreTestDB{
 		db:       db,
@@ -72,6 +83,8 @@ func newCommStoreTestDB() commStoreTestDB {
 		qPrefs:   qPrefs,
 		qAct:     qAct,
 		qQueue:   qQueue,
+		qMailbox: qMailbox,
+		qEvent:   qEvent,
 		qDomain:  qDomain,
 		qInst:    qInst,
 	}
@@ -265,11 +278,29 @@ func TestDynamoStoreListAndPut(t *testing.T) {
 		if err := st.PutCommQueue(ctx, nil); err == nil {
 			t.Fatalf("expected error for nil queue item")
 		}
+		if err := st.PutMailboxMessage(ctx, nil); err == nil {
+			t.Fatalf("expected error for nil mailbox message")
+		}
+		if err := st.PutMailboxEvent(ctx, nil); err == nil {
+			t.Fatalf("expected error for nil mailbox event")
+		}
+		if err := st.UpdateMailboxMessageStatus(ctx, nil); err == nil {
+			t.Fatalf("expected error for nil mailbox update")
+		}
 		if err := st.PutCommActivity(ctx, &models.SoulAgentCommActivity{AgentID: commStoreTestAgentID}); err != nil {
 			t.Fatalf("PutCommActivity: %v", err)
 		}
 		if err := st.PutCommQueue(ctx, &models.SoulAgentCommQueue{AgentID: commStoreTestAgentID}); err != nil {
 			t.Fatalf("PutCommQueue: %v", err)
+		}
+		if err := st.PutMailboxMessage(ctx, &models.SoulCommMailboxMessage{AgentID: commStoreTestAgentID}); err != nil {
+			t.Fatalf("PutMailboxMessage: %v", err)
+		}
+		if err := st.PutMailboxEvent(ctx, &models.SoulCommMailboxEvent{AgentID: commStoreTestAgentID}); err != nil {
+			t.Fatalf("PutMailboxEvent: %v", err)
+		}
+		if err := st.UpdateMailboxMessageStatus(ctx, &models.SoulCommMailboxMessage{AgentID: commStoreTestAgentID}); err != nil {
+			t.Fatalf("UpdateMailboxMessageStatus: %v", err)
 		}
 	})
 }
