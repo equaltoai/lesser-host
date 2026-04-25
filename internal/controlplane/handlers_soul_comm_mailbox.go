@@ -8,6 +8,7 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
+	"github.com/theory-cloud/tabletheory/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/commmailbox"
@@ -83,6 +84,12 @@ type soulCommMailboxState struct {
 type mailboxRequestContext struct {
 	key     *models.InstanceKey
 	agentID string
+}
+
+type mailboxStateAction struct {
+	name        string
+	eventDetail string
+	apply       func(*models.SoulCommMailboxMessage) bool
 }
 
 func (s *Server) handleSoulCommMailboxList(ctx *apptheory.Context) (*apptheory.Response, error) {
@@ -171,6 +178,93 @@ func (s *Server) handleSoulCommMailboxContent(ctx *apptheory.Context) (*apptheor
 	})
 }
 
+func (s *Server) handleSoulCommMailboxMarkRead(ctx *apptheory.Context) (*apptheory.Response, error) {
+	return s.handleSoulCommMailboxState(ctx, mailboxStateAction{
+		name:        "read",
+		eventDetail: `{"state":"read"}`,
+		apply: func(msg *models.SoulCommMailboxMessage) bool {
+			changed := !msg.Read
+			msg.Read = true
+			return changed
+		},
+	})
+}
+
+func (s *Server) handleSoulCommMailboxMarkUnread(ctx *apptheory.Context) (*apptheory.Response, error) {
+	return s.handleSoulCommMailboxState(ctx, mailboxStateAction{
+		name:        "unread",
+		eventDetail: `{"state":"unread"}`,
+		apply: func(msg *models.SoulCommMailboxMessage) bool {
+			changed := msg.Read
+			msg.Read = false
+			return changed
+		},
+	})
+}
+
+func (s *Server) handleSoulCommMailboxArchive(ctx *apptheory.Context) (*apptheory.Response, error) {
+	return s.handleSoulCommMailboxState(ctx, mailboxStateAction{
+		name:        "archive",
+		eventDetail: `{"state":"archived"}`,
+		apply: func(msg *models.SoulCommMailboxMessage) bool {
+			changed := !msg.Archived
+			msg.Archived = true
+			return changed
+		},
+	})
+}
+
+func (s *Server) handleSoulCommMailboxUnarchive(ctx *apptheory.Context) (*apptheory.Response, error) {
+	return s.handleSoulCommMailboxState(ctx, mailboxStateAction{
+		name:        "unarchive",
+		eventDetail: `{"state":"unarchived"}`,
+		apply: func(msg *models.SoulCommMailboxMessage) bool {
+			changed := msg.Archived
+			msg.Archived = false
+			return changed
+		},
+	})
+}
+
+func (s *Server) handleSoulCommMailboxDelete(ctx *apptheory.Context) (*apptheory.Response, error) {
+	return s.handleSoulCommMailboxState(ctx, mailboxStateAction{
+		name:        "delete",
+		eventDetail: `{"state":"deleted"}`,
+		apply: func(msg *models.SoulCommMailboxMessage) bool {
+			changed := !msg.Deleted || !msg.Archived
+			msg.Deleted = true
+			msg.Archived = true
+			return changed
+		},
+	})
+}
+
+func (s *Server) handleSoulCommMailboxState(ctx *apptheory.Context, action mailboxStateAction) (*apptheory.Response, error) {
+	reqCtx, appErr := s.requireMailboxRequestContext(ctx)
+	if appErr != nil {
+		return nil, appErr
+	}
+	item, appErr := s.loadMailboxMessage(ctx.Context(), reqCtx.key.InstanceSlug, reqCtx.agentID, ctx.Param("deliveryId"))
+	if appErr != nil {
+		return nil, appErr
+	}
+	if action.apply == nil {
+		return nil, apptheory.NewAppTheoryError(commCodeInternal, "internal error").WithStatusCode(http.StatusInternalServerError)
+	}
+	if changed := action.apply(item); changed {
+		now := time.Now().UTC()
+		item.UpdatedAt = now
+		if err := item.BeforeUpdate(); err != nil {
+			return nil, apptheory.NewAppTheoryError(commCodeInternal, "internal error").WithStatusCode(http.StatusInternalServerError)
+		}
+		evt := mailboxStateEvent(item, action, reqCtx.key.InstanceSlug, now)
+		if err := s.persistMailboxStateChange(ctx.Context(), item, evt); err != nil {
+			return nil, apptheory.NewAppTheoryError(commCodeInternal, "internal error").WithStatusCode(http.StatusInternalServerError)
+		}
+	}
+	return apptheory.JSON(http.StatusOK, soulCommMailboxGetResponse{Message: mailboxMessageJSON(item)})
+}
+
 func (s *Server) requireMailboxRequestContext(ctx *apptheory.Context) (mailboxRequestContext, *apptheory.AppTheoryError) {
 	if s == nil || s.store == nil || s.store.DB == nil || ctx == nil {
 		return mailboxRequestContext{}, apptheory.NewAppTheoryError(commCodeInternal, "internal error").WithStatusCode(http.StatusInternalServerError)
@@ -248,6 +342,41 @@ func (s *Server) loadMailboxMessage(ctx context.Context, instanceSlug string, ag
 		return nil, apptheory.NewAppTheoryError("comm.not_found", "message not found").WithStatusCode(http.StatusNotFound)
 	}
 	return &item, nil
+}
+
+func mailboxStateEvent(item *models.SoulCommMailboxMessage, action mailboxStateAction, instanceSlug string, now time.Time) *models.SoulCommMailboxEvent {
+	return &models.SoulCommMailboxEvent{
+		DeliveryID:   strings.TrimSpace(item.DeliveryID),
+		MessageID:    strings.TrimSpace(item.MessageID),
+		ThreadID:     strings.TrimSpace(item.ThreadID),
+		InstanceSlug: strings.ToLower(strings.TrimSpace(item.InstanceSlug)),
+		AgentID:      strings.ToLower(strings.TrimSpace(item.AgentID)),
+		Direction:    strings.TrimSpace(item.Direction),
+		ChannelType:  strings.TrimSpace(item.ChannelType),
+		EventType:    models.SoulCommMailboxEventStateChanged,
+		Status:       strings.TrimSpace(item.Status),
+		Actor:        "instance:" + strings.ToLower(strings.TrimSpace(instanceSlug)),
+		DetailsJSON:  strings.TrimSpace(action.eventDetail),
+		CreatedAt:    now,
+	}
+}
+
+func (s *Server) persistMailboxStateChange(ctx context.Context, item *models.SoulCommMailboxMessage, evt *models.SoulCommMailboxEvent) error {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return fmt.Errorf("store not configured")
+	}
+	if evt != nil {
+		if err := evt.BeforeCreate(); err != nil {
+			return err
+		}
+	}
+	return s.store.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
+		tx.Update(item, []string{"Read", "Archived", "Deleted", "UpdatedAt"})
+		if evt != nil {
+			tx.Create(evt)
+		}
+		return nil
+	})
 }
 
 func mailboxMessageJSON(item *models.SoulCommMailboxMessage) soulCommMailboxMessage {

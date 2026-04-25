@@ -210,3 +210,71 @@ func mailboxAPITestMessage(agentID string) *models.SoulCommMailboxMessage {
 		UpdatedAt:       now,
 	}
 }
+
+func TestHandleSoulCommMailboxStateMutationsAreIdempotent(t *testing.T) {
+	t.Parallel()
+
+	t.Run("mark read", func(t *testing.T) {
+		t.Parallel()
+		fixture := newMailboxAPITestDB()
+		expectMailboxAPIAccess(t, fixture, soulLifecycleTestAgentIDHex)
+		msg := mailboxAPITestMessage(soulLifecycleTestAgentIDHex)
+		msg.Read = false
+		expectMailboxMessageLoad(t, fixture.qMsg, msg)
+
+		s := newMailboxAPITestServer(fixture)
+		resp, err := s.handleSoulCommMailboxMarkRead(newMailboxAPIContext(soulLifecycleTestAgentIDHex, "comm-delivery-1", nil))
+		if err != nil {
+			t.Fatalf("mark read: %v", err)
+		}
+		var out soulCommMailboxGetResponse
+		if err := json.Unmarshal(resp.Body, &out); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if !out.Message.State.Read || out.Message.State.Deleted {
+			t.Fatalf("unexpected state: %#v", out.Message.State)
+		}
+	})
+
+	t.Run("delete is soft state and hides content href", func(t *testing.T) {
+		t.Parallel()
+		fixture := newMailboxAPITestDB()
+		expectMailboxAPIAccess(t, fixture, soulLifecycleTestAgentIDHex)
+		expectMailboxMessageLoad(t, fixture.qMsg, mailboxAPITestMessage(soulLifecycleTestAgentIDHex))
+
+		s := newMailboxAPITestServer(fixture)
+		resp, err := s.handleSoulCommMailboxDelete(newMailboxAPIContext(soulLifecycleTestAgentIDHex, "comm-delivery-1", nil))
+		if err != nil {
+			t.Fatalf("delete: %v", err)
+		}
+		var out soulCommMailboxGetResponse
+		if err := json.Unmarshal(resp.Body, &out); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if !out.Message.State.Deleted || !out.Message.State.Archived || out.Message.Content.ContentHref != "" {
+			t.Fatalf("unexpected delete state/content: %#v", out.Message)
+		}
+	})
+
+	t.Run("repeated archive remains successful", func(t *testing.T) {
+		t.Parallel()
+		fixture := newMailboxAPITestDB()
+		expectMailboxAPIAccess(t, fixture, soulLifecycleTestAgentIDHex)
+		msg := mailboxAPITestMessage(soulLifecycleTestAgentIDHex)
+		msg.Archived = true
+		expectMailboxMessageLoad(t, fixture.qMsg, msg)
+
+		s := newMailboxAPITestServer(fixture)
+		resp, err := s.handleSoulCommMailboxArchive(newMailboxAPIContext(soulLifecycleTestAgentIDHex, "comm-delivery-1", nil))
+		if err != nil {
+			t.Fatalf("archive: %v", err)
+		}
+		var out soulCommMailboxGetResponse
+		if err := json.Unmarshal(resp.Body, &out); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if !out.Message.State.Archived {
+			t.Fatalf("expected archived state: %#v", out.Message.State)
+		}
+	})
+}

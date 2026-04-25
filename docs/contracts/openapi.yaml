@@ -6,6 +6,55 @@ info:
     Contract snapshot for build-time client generation. This file is not served at runtime.
 
 components:
+  parameters:
+    SoulMailboxAgentId:
+      name: agentId
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: "^0x[0-9a-fA-F]{64}$"
+    SoulMailboxDeliveryId:
+      name: deliveryId
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    Unauthorized:
+      description: Unauthorized
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    RateLimited:
+      description: Rate limited
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    InternalError:
+      description: Internal error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+
   securitySchemes:
     sessionAuth:
       type: http
@@ -2722,6 +2771,117 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorEnvelope"
+
+  /api/v1/soul/comm/mailbox/{agentId}/messages/{deliveryId}/read:
+    post:
+      operationId: soulCommMailboxMarkRead
+      summary: Mark a mailbox message read
+      security:
+        - instanceKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/SoulMailboxAgentId"
+        - $ref: "#/components/parameters/SoulMailboxDeliveryId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SoulCommMailboxGetResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/soul/comm/mailbox/{agentId}/messages/{deliveryId}/unread:
+    post:
+      operationId: soulCommMailboxMarkUnread
+      summary: Mark a mailbox message unread
+      security:
+        - instanceKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/SoulMailboxAgentId"
+        - $ref: "#/components/parameters/SoulMailboxDeliveryId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SoulCommMailboxGetResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/soul/comm/mailbox/{agentId}/messages/{deliveryId}/archive:
+    post:
+      operationId: soulCommMailboxArchive
+      summary: Archive a mailbox message
+      security:
+        - instanceKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/SoulMailboxAgentId"
+        - $ref: "#/components/parameters/SoulMailboxDeliveryId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SoulCommMailboxGetResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/soul/comm/mailbox/{agentId}/messages/{deliveryId}/unarchive:
+    post:
+      operationId: soulCommMailboxUnarchive
+      summary: Unarchive a mailbox message
+      security:
+        - instanceKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/SoulMailboxAgentId"
+        - $ref: "#/components/parameters/SoulMailboxDeliveryId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SoulCommMailboxGetResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/soul/comm/mailbox/{agentId}/messages/{deliveryId}/delete:
+    post:
+      operationId: soulCommMailboxDelete
+      summary: Soft-delete a mailbox message
+      description: Sets bounded mailbox delete state. The content object remains lifecycle-bound and is no longer returned by content fetches.
+      security:
+        - instanceKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/SoulMailboxAgentId"
+        - $ref: "#/components/parameters/SoulMailboxDeliveryId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SoulCommMailboxGetResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/InternalError" }
 
   /api/v1/soul/agents/{agentId}/comm/activity:
     get:
