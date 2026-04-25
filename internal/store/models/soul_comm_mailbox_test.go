@@ -15,7 +15,18 @@ import (
 
 func TestSoulCommMailboxMessageKeysAndRetention(t *testing.T) {
 	created := time.Date(2026, 4, 25, 12, 30, 0, 0, time.UTC)
-	msg := &SoulCommMailboxMessage{
+	msg := newSoulCommMailboxMessageForTest(created)
+	if err := msg.BeforeCreate(); err != nil {
+		t.Fatalf("BeforeCreate: %v", err)
+	}
+	assertMailboxMessageNormalized(t, msg)
+	assertMailboxMessageIDs(t, msg)
+	assertMailboxMessageKeys(t, msg)
+	assertMailboxMessageRetentionAndPreview(t, msg, created)
+}
+
+func newSoulCommMailboxMessageForTest(created time.Time) *SoulCommMailboxMessage {
+	return &SoulCommMailboxMessage{
 		InstanceSlug:      " Demo ",
 		AgentID:           " 0xABC ",
 		Direction:         SoulCommDirectionInbound,
@@ -37,35 +48,61 @@ func TestSoulCommMailboxMessageKeysAndRetention(t *testing.T) {
 		ContentStoredAt:   created,
 		CreatedAt:         created,
 	}
+}
 
-	if err := msg.BeforeCreate(); err != nil {
-		t.Fatalf("BeforeCreate: %v", err)
+func assertMailboxMessageNormalized(t *testing.T, msg *SoulCommMailboxMessage) {
+	t.Helper()
+	if msg.InstanceSlug != "demo" {
+		t.Fatalf("unexpected instance slug: %q", msg.InstanceSlug)
 	}
+	if msg.AgentID != "0xabc" {
+		t.Fatalf("unexpected agent id: %q", msg.AgentID)
+	}
+	if msg.ChannelType != "email" || msg.Provider != "migadu" {
+		t.Fatalf("unexpected channel/provider: %q/%q", msg.ChannelType, msg.Provider)
+	}
+}
 
-	if msg.InstanceSlug != "demo" || msg.AgentID != "0xabc" || msg.ChannelType != "email" || msg.Provider != "migadu" {
-		t.Fatalf("expected normalized identifiers, got %#v", msg)
-	}
+func assertMailboxMessageIDs(t *testing.T, msg *SoulCommMailboxMessage) {
+	t.Helper()
 	if msg.DeliveryID == "" || !strings.HasPrefix(msg.DeliveryID, "comm-delivery-") {
 		t.Fatalf("unexpected delivery id: %q", msg.DeliveryID)
 	}
 	if msg.ThreadID == "" || !strings.HasPrefix(msg.ThreadID, "comm-thread-") {
 		t.Fatalf("unexpected thread id: %q", msg.ThreadID)
 	}
+}
+
+func assertMailboxMessageKeys(t *testing.T, msg *SoulCommMailboxMessage) {
+	t.Helper()
 	wantPK := SoulCommMailboxAgentPK("demo", "0xabc")
-	if msg.PK != wantPK || !strings.HasPrefix(msg.SK, "MSG#2026-04-25T12:30:00.000000000Z#") {
-		t.Fatalf("unexpected keys: pk=%q sk=%q", msg.PK, msg.SK)
+	if msg.PK != wantPK {
+		t.Fatalf("unexpected pk: %q", msg.PK)
+	}
+	if !strings.HasPrefix(msg.SK, "MSG#2026-04-25T12:30:00.000000000Z#") {
+		t.Fatalf("unexpected sk: %q", msg.SK)
 	}
 	if msg.GSI1PK != SoulCommMailboxDeliveryPK(msg.DeliveryID) || msg.GSI1SK != "CURRENT" {
 		t.Fatalf("unexpected delivery index: %q/%q", msg.GSI1PK, msg.GSI1SK)
 	}
-	if msg.GSI2PK != SoulCommMailboxThreadPK("demo", "0xabc", msg.ThreadID) || !strings.HasPrefix(msg.GSI2SK, "MSG#2026-04-25T12:30:00.000000000Z#") {
-		t.Fatalf("unexpected thread index: %q/%q", msg.GSI2PK, msg.GSI2SK)
+	if msg.GSI2PK != SoulCommMailboxThreadPK("demo", "0xabc", msg.ThreadID) {
+		t.Fatalf("unexpected thread pk: %q", msg.GSI2PK)
 	}
+	if !strings.HasPrefix(msg.GSI2SK, "MSG#2026-04-25T12:30:00.000000000Z#") {
+		t.Fatalf("unexpected thread sk: %q", msg.GSI2SK)
+	}
+}
+
+func assertMailboxMessageRetentionAndPreview(t *testing.T, msg *SoulCommMailboxMessage, created time.Time) {
+	t.Helper()
 	if got, want := msg.TTL, created.Add(SoulCommMailboxRetentionDays*24*time.Hour).Unix(); got != want {
 		t.Fatalf("unexpected ttl: got %d want %d", got, want)
 	}
-	if len([]rune(msg.Preview)) > 161 || !strings.HasSuffix(msg.Preview, "…") {
+	if len([]rune(msg.Preview)) > 161 {
 		t.Fatalf("expected bounded preview, got %q", msg.Preview)
+	}
+	if !strings.HasSuffix(msg.Preview, "…") {
+		t.Fatalf("expected truncated preview, got %q", msg.Preview)
 	}
 }
 

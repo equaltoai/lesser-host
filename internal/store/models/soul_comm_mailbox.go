@@ -138,7 +138,14 @@ func (SoulCommMailboxMessage) WritePolicy() theorymodel.WritePolicy {
 
 // BeforeCreate sets defaults and keys before creating a mailbox current row.
 func (m *SoulCommMailboxMessage) BeforeCreate() error {
-	now := time.Now().UTC()
+	m.applyCreateDefaults(time.Now().UTC())
+	if err := m.UpdateKeys(); err != nil {
+		return err
+	}
+	return m.validateCreate()
+}
+
+func (m *SoulCommMailboxMessage) applyCreateDefaults(now time.Time) {
 	if m.CreatedAt.IsZero() {
 		m.CreatedAt = now
 	}
@@ -160,26 +167,24 @@ func (m *SoulCommMailboxMessage) BeforeCreate() error {
 	if m.HasContent && strings.TrimSpace(m.ContentStorage) == "" {
 		m.ContentStorage = "s3"
 	}
-	if err := m.UpdateKeys(); err != nil {
-		return err
+}
+
+func (m *SoulCommMailboxMessage) validateCreate() error {
+	checks := []struct {
+		field string
+		value string
+	}{
+		{field: "deliveryId", value: m.DeliveryID},
+		{field: "messageId", value: m.MessageID},
+		{field: "threadId", value: m.ThreadID},
+		{field: "instanceSlug", value: m.InstanceSlug},
+		{field: "agentId", value: m.AgentID},
+		{field: "channelType", value: m.ChannelType},
 	}
-	if err := requireNonEmpty("deliveryId", m.DeliveryID); err != nil {
-		return err
-	}
-	if err := requireNonEmpty("messageId", m.MessageID); err != nil {
-		return err
-	}
-	if err := requireNonEmpty("threadId", m.ThreadID); err != nil {
-		return err
-	}
-	if err := requireNonEmpty("instanceSlug", m.InstanceSlug); err != nil {
-		return err
-	}
-	if err := requireNonEmpty("agentId", m.AgentID); err != nil {
-		return err
-	}
-	if err := requireNonEmpty("channelType", m.ChannelType); err != nil {
-		return err
+	for _, check := range checks {
+		if err := requireNonEmpty(check.field, check.value); err != nil {
+			return err
+		}
 	}
 	if err := requireOneOf("direction", m.Direction, SoulCommDirectionInbound, SoulCommDirectionOutbound); err != nil {
 		return err
@@ -187,22 +192,29 @@ func (m *SoulCommMailboxMessage) BeforeCreate() error {
 	if err := validateSoulCommMailboxStatus(m.Status); err != nil {
 		return err
 	}
-	if m.HasContent {
-		if err := requireNonEmpty("contentStorage", m.ContentStorage); err != nil {
+	return m.validateContentPointer()
+}
+
+func (m *SoulCommMailboxMessage) validateContentPointer() error {
+	if !m.HasContent {
+		return nil
+	}
+	checks := []struct {
+		field string
+		value string
+	}{
+		{field: "contentStorage", value: m.ContentStorage},
+		{field: "contentBucket", value: m.ContentBucket},
+		{field: "contentKey", value: m.ContentKey},
+		{field: "contentSha256", value: m.ContentSHA256},
+	}
+	for _, check := range checks {
+		if err := requireNonEmpty(check.field, check.value); err != nil {
 			return err
 		}
-		if err := requireNonEmpty("contentBucket", m.ContentBucket); err != nil {
-			return err
-		}
-		if err := requireNonEmpty("contentKey", m.ContentKey); err != nil {
-			return err
-		}
-		if err := requireNonEmpty("contentSha256", m.ContentSHA256); err != nil {
-			return err
-		}
-		if m.ContentBytes <= 0 {
-			return fmt.Errorf("contentBytes must be positive")
-		}
+	}
+	if m.ContentBytes <= 0 {
+		return fmt.Errorf("contentBytes must be positive")
 	}
 	return nil
 }
