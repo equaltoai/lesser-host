@@ -14,6 +14,7 @@ import (
 
 	"github.com/stretchr/testify/mock"
 
+	"github.com/equaltoai/lesser-host/internal/commmailbox"
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
@@ -56,6 +57,22 @@ func assertSoulCommSendResponse(t *testing.T, resp *apptheory.Response, wantStat
 	if wantProviderMessageID != "" && out.ProviderMessageID != wantProviderMessageID {
 		t.Fatalf("expected provider message id %q, got %q", wantProviderMessageID, out.ProviderMessageID)
 	}
+}
+
+type fakeControlMailboxContentStore struct {
+	inputs []commmailbox.ContentInput
+}
+
+func (f *fakeControlMailboxContentStore) PutContent(_ context.Context, input commmailbox.ContentInput) (commmailbox.ContentPointer, error) {
+	f.inputs = append(f.inputs, input)
+	return commmailbox.ContentPointer{
+		Storage:     commmailbox.ContentStorageS3,
+		Bucket:      "mailbox-bucket",
+		Key:         commmailbox.ContentKey(input.InstanceSlug, input.AgentID, input.DeliveryID),
+		SHA256:      "sha256-outbound",
+		Bytes:       int64(len(input.Body)),
+		ContentType: commmailbox.DefaultContentType(input.ChannelType),
+	}, nil
 }
 
 func TestHandleSoulCommSend_UnauthorizedWithoutBearer(t *testing.T) {
@@ -753,5 +770,53 @@ func TestHandleSoulCommStatus_ReturnsStatusRecord(t *testing.T) {
 	}
 	if out.ReplyConfidence == nil || *out.ReplyConfidence != 0.91 {
 		t.Fatalf("expected reply confidence, got %#v", out.ReplyConfidence)
+	}
+}
+
+func TestCaptureOutboundMailboxStoresContentPointer(t *testing.T) {
+	t.Parallel()
+
+	db := ttmocks.NewMockExtendedDB()
+	qMsg := new(ttmocks.MockQuery)
+	qEvt := new(ttmocks.MockQuery)
+	db.On("WithContext", mock.Anything).Return(db).Maybe()
+
+	var gotMsg *models.SoulCommMailboxMessage
+	db.On("Model", mock.AnythingOfType("*models.SoulCommMailboxMessage")).Return(qMsg).Run(func(args mock.Arguments) {
+		gotMsg = testutil.RequireMockArg[*models.SoulCommMailboxMessage](t, args, 0)
+	}).Once()
+	var gotEvt *models.SoulCommMailboxEvent
+	db.On("Model", mock.AnythingOfType("*models.SoulCommMailboxEvent")).Return(qEvt).Run(func(args mock.Arguments) {
+		gotEvt = testutil.RequireMockArg[*models.SoulCommMailboxEvent](t, args, 0)
+	}).Once()
+	allowCommQueryOps(qMsg, qEvt)
+
+	content := &fakeControlMailboxContentStore{}
+	s := &Server{store: store.New(db), mailboxContentStore: content}
+	now := time.Date(2026, 4, 25, 14, 0, 0, 0, time.UTC)
+	req := validatedSoulCommSendRequest{
+		channel:    commChannelEmail,
+		agentIDHex: "0xabc",
+		to:         "recipient@example.com",
+		subject:    "Hello",
+		body:       "Outbound body",
+	}
+	delivery := soulCommSendDelivery{provider: commDeliveryProviderMigadu, providerMessageID: "<provider@msg>", initialStatus: models.SoulCommMessageStatusSent}
+	key := &models.InstanceKey{InstanceSlug: "Demo"}
+
+	if err := s.captureOutboundMailbox(context.Background(), key, req, "comm-msg-out", delivery, models.SoulCommMessageStatusSent, now); err != nil {
+		t.Fatalf("captureOutboundMailbox: %v", err)
+	}
+	if len(content.inputs) != 1 || content.inputs[0].Body != "Outbound body" || content.inputs[0].Direction != models.SoulCommDirectionOutbound {
+		t.Fatalf("unexpected content writes: %#v", content.inputs)
+	}
+	if gotMsg == nil || gotMsg.InstanceSlug != "demo" || gotMsg.AgentID != "0xabc" || gotMsg.Direction != models.SoulCommDirectionOutbound {
+		t.Fatalf("unexpected mailbox row: %#v", gotMsg)
+	}
+	if !gotMsg.HasContent || gotMsg.ContentBucket != "mailbox-bucket" || gotMsg.ContentSHA256 != "sha256-outbound" || gotMsg.ToAddress != "recipient@example.com" || !gotMsg.Read {
+		t.Fatalf("unexpected mailbox content/state: %#v", gotMsg)
+	}
+	if gotEvt == nil || gotEvt.EventType != models.SoulCommMailboxEventCreated || gotEvt.Actor != "instance:demo" || gotEvt.Status != models.SoulCommMessageStatusSent {
+		t.Fatalf("unexpected mailbox event: %#v", gotEvt)
 	}
 }
