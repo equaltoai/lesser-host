@@ -30,6 +30,41 @@ Before opening the first implementation PR:
 - If the updated frameworks make the mailbox model awkward, route that finding through `coordinate-framework-feedback`
   rather than patching around it locally.
 
+### Framework incorporation decisions
+
+After the 2026-04-25 framework refresh, host-v2 is using AppTheory `v1.1.0` and TableTheory `v1.7.0`. If a newer
+AppTheory/TableTheory cut lands before implementation begins, repeat this review before opening Host 1. The current
+incorporation decisions are:
+
+**AppTheory:**
+
+- Use AppTheory's current typed request binding / JSON response idioms for new mailbox HTTP handlers; keep explicit
+  slug/agent ownership checks in handler code rather than relying only on coarse route scopes.
+- Apply AppTheory request limits, handler timeouts, and log-sanitization helpers around content-bearing endpoints and
+  audit events so list/content separation and PII redaction are enforced consistently.
+- Use AppTheory job/concurrency controls where they fit mailbox retention, delivery capture, or projection fan-out; do
+  not rewrite existing SQS comm-worker flows solely to adopt a new helper.
+- Use AppTheory `v1.1.0` EventBridge/DynamoDB Stream workload normalization and observability for scheduled mailbox
+  retention sweeps and any future stream/event-derived projection or audit pipeline.
+- Do not use AppTheory MCP runtime features to make host an MCP server; `lesser-body` remains the MCP facade over
+  host's contract.
+
+**TableTheory:**
+
+- Model bounded content and provider metadata with current TableTheory field idioms, including encrypted content fields or
+  content pointers with explicit hashes, and structured JSON/provider metadata fields rather than ad hoc string blobs.
+- Use TableTheory `v1.7.0` write policies for mailbox immutability boundaries:
+  - immutable audit/event rows are write-once;
+  - current-state rows protect identity/provenance/content identity attributes such as `deliveryId`, `messageId`,
+    `threadId`, `instanceSlug`, `agentId`, provider identity fields, content hash/pointer, and creation provenance;
+  - mutable mailbox state (`read`, `archived`, `deleted`/tombstoned) remains mutable by design and records an immutable
+    event for each transition.
+- Use transactional current-row update plus immutable event append where practical for read/unread/archive/delete and
+  provider-status transitions.
+- Add storage tests that prove protected/write-once mutations fail and allowed state transitions remain idempotent.
+- Consider the new release-state helpers for managed-update/release-certification state in a later focused pass; do not
+  force those helpers onto mailbox state if their release-state semantics make read/archive/delete awkward.
+
 ## Boundary decision
 
 Aron approved host-authoritative bounded mailbox storage because comm delivery already belongs to host. Splitting mailbox
@@ -129,7 +164,8 @@ Each issue should still remain small enough to identify acceptance criteria and 
 - `chore(gov): verify comm mailbox retention controls`
 
 **Acceptance:** ADR and gov-infra planning docs make the approved host-content boundary explicit; a deterministic verifier
-and evidence path prevent silent drift in retention/encryption/list-redaction controls.
+and evidence path prevent silent drift in retention/encryption/list-redaction controls. The policy docs also capture the
+AppTheory/TableTheory incorporation decisions that are binding on the storage/API implementation.
 
 **Validation:**
 
@@ -146,7 +182,8 @@ and evidence path prevent silent drift in retention/encryption/list-redaction co
 - `feat(comm): persist outbound mailbox deliveries`
 
 **Acceptance:** Inbound and outbound comms create canonical host mailbox objects with bounded encrypted content storage,
-without breaking existing send/status and lesser notification flows.
+without breaking existing send/status and lesser notification flows. Mailbox audit/event rows are write-once, identity
+and provenance attributes on current rows are protected, and tests prove forbidden mutations fail.
 
 **Validation:**
 
@@ -167,6 +204,7 @@ without breaking existing send/status and lesser notification flows.
 
 **Acceptance:** Body can call host with strict instance-key auth to list redacted messages, get metadata, fetch content
 explicitly, mutate read/archive/delete state idempotently, and resolve bounded contactability without global enumeration.
+State mutations use transactional current-row updates plus immutable event append where practical.
 
 **Validation:**
 
@@ -213,7 +251,7 @@ path, backward compatibility, rate limits, auth, audit, and projection semantics
   - outbound send creates canonical mailbox object and remains backward compatible;
   - list endpoint returns redacted preview/metadata only;
   - content endpoint returns full content only under explicit strict-auth request;
-  - read/unread/archive/delete are idempotent;
+  - read/unread/archive/delete are idempotent and append immutable transition events where practical;
   - invalid, revoked, plaintext-fallback, and cross-instance keys reject;
   - retention/encryption controls are visible in CDK/gov-infra evidence;
   - body MCP canary passes against lab.
@@ -227,7 +265,7 @@ path, backward compatibility, rate limits, auth, audit, and projection semantics
   - comm-worker errors and SQS depth;
   - SES ingress health;
   - content fetch rates and auth failures;
-  - audit-event emission for content reads and state mutations;
+  - write-once audit/event emission for content reads and state mutations;
   - storage lifecycle/retention evidence;
   - body MCP canary and Sim E2E canary results.
 
