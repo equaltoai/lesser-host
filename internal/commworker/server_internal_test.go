@@ -31,6 +31,10 @@ func (f *fakeMailboxContentStore) PutContent(_ context.Context, input commmailbo
 	}, nil
 }
 
+func (f *fakeMailboxContentStore) GetContent(_ context.Context, _ commmailbox.ContentPointer, _ int64) (commmailbox.ContentOutput, error) {
+	return commmailbox.ContentOutput{Body: []byte("content"), ContentType: "text/plain", SHA256: "sha256-test", Bytes: int64(len("content"))}, nil
+}
+
 type fakeStore struct {
 	emailIndex map[string]string
 	phoneIndex map[string]string

@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 
@@ -45,13 +46,23 @@ type ContentPointer struct {
 	ContentType string
 }
 
-// ContentStore writes bounded mailbox content and returns content pointers.
+// ContentOutput is explicit mailbox body content fetched from bounded storage.
+type ContentOutput struct {
+	Body        []byte
+	ContentType string
+	SHA256      string
+	Bytes       int64
+}
+
+// ContentStore writes and reads bounded mailbox content.
 type ContentStore interface {
 	PutContent(ctx context.Context, input ContentInput) (ContentPointer, error)
+	GetContent(ctx context.Context, pointer ContentPointer, maxBytes int64) (ContentOutput, error)
 }
 
 type s3API interface {
 	PutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error)
+	GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error)
 }
 
 // S3Store stores mailbox content in the dedicated CDK-managed mailbox bucket.
@@ -139,6 +150,59 @@ func (s *S3Store) PutContent(ctx context.Context, input ContentInput) (ContentPo
 		Bytes:       int64(len(body)),
 		ContentType: contentType,
 	}, nil
+}
+
+// GetContent reads a bounded mailbox content object and verifies its digest when
+// the mailbox row carries one.
+func (s *S3Store) GetContent(ctx context.Context, pointer ContentPointer, maxBytes int64) (ContentOutput, error) {
+	if s == nil {
+		return ContentOutput{}, fmt.Errorf("mailbox content store is nil")
+	}
+	bucket := strings.TrimSpace(s.bucket)
+	if bucket == "" {
+		return ContentOutput{}, fmt.Errorf("mailbox content bucket is not configured")
+	}
+	if strings.TrimSpace(pointer.Bucket) != "" && strings.TrimSpace(pointer.Bucket) != bucket {
+		return ContentOutput{}, fmt.Errorf("content pointer bucket mismatch")
+	}
+	key := strings.TrimSpace(pointer.Key)
+	if key == "" {
+		return ContentOutput{}, fmt.Errorf("content key is required")
+	}
+	if maxBytes <= 0 {
+		maxBytes = 1024 * 1024
+	}
+
+	client, err := s.s3Client(ctx)
+	if err != nil {
+		return ContentOutput{}, err
+	}
+	out, err := client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return ContentOutput{}, err
+	}
+	defer out.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(out.Body, maxBytes+1))
+	if err != nil {
+		return ContentOutput{}, err
+	}
+	if int64(len(body)) > maxBytes {
+		return ContentOutput{}, fmt.Errorf("content exceeds maxBytes")
+	}
+	sum := sha256.Sum256(body)
+	digest := hex.EncodeToString(sum[:])
+	if want := strings.ToLower(strings.TrimSpace(pointer.SHA256)); want != "" && want != digest {
+		return ContentOutput{}, fmt.Errorf("content sha256 mismatch")
+	}
+	contentType := strings.TrimSpace(pointer.ContentType)
+	if out.ContentType != nil && strings.TrimSpace(*out.ContentType) != "" {
+		contentType = strings.TrimSpace(*out.ContentType)
+	}
+	return ContentOutput{Body: body, ContentType: contentType, SHA256: digest, Bytes: int64(len(body))}, nil
 }
 
 func (s *S3Store) s3Client(ctx context.Context) (s3API, error) {
