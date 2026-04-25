@@ -103,6 +103,23 @@ export class LesserHostStack extends cdk.Stack {
 			autoDeleteObjects: stage !== 'live',
 		});
 
+		const soulCommMailboxRetentionDays = 90;
+		const soulCommMailboxBucket = new s3.Bucket(this, 'SoulCommMailboxBucket', {
+			bucketName: `${namePrefix}-${cdk.Aws.ACCOUNT_ID}-${cdk.Aws.REGION}-soul-comm-mailbox`,
+			blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+			enforceSSL: true,
+			encryption: s3.BucketEncryption.KMS_MANAGED,
+			lifecycleRules: [
+				{
+					id: 'ExpireSoulCommMailboxContent',
+					prefix: 'mailbox/v1/',
+					expiration: cdk.Duration.days(soulCommMailboxRetentionDays),
+				},
+			],
+			removalPolicy,
+			autoDeleteObjects: stage !== 'live',
+		});
+
 		const previewDLQ = new sqs.Queue(this, 'PreviewDLQ', {
 			queueName: `${namePrefix}-preview-dlq`,
 			retentionPeriod: cdk.Duration.days(14),
@@ -425,6 +442,8 @@ export class LesserHostStack extends cdk.Stack {
 			SAFETY_QUEUE_URL: safetyQueue.queueUrl,
 			PROVISION_QUEUE_URL: provisionQueue.queueUrl,
 			COMM_QUEUE_URL: commQueue.queueUrl,
+			SOUL_COMM_MAILBOX_BUCKET_NAME: soulCommMailboxBucket.bucketName,
+			SOUL_COMM_MAILBOX_RETENTION_DAYS: String(soulCommMailboxRetentionDays),
 			BOOTSTRAP_WALLET_ADDRESS: bootstrapWalletAddress,
 			WEBAUTHN_RP_ID: webAuthnRPID,
 			WEBAUTHN_ORIGINS: webAuthnOrigins,
@@ -566,6 +585,8 @@ export class LesserHostStack extends cdk.Stack {
 			STAGE: stage,
 			STATE_TABLE_NAME: stateTable.tableName,
 			COMM_QUEUE_URL: commQueue.queueUrl,
+			SOUL_COMM_MAILBOX_BUCKET_NAME: soulCommMailboxBucket.bucketName,
+			SOUL_COMM_MAILBOX_RETENTION_DAYS: String(soulCommMailboxRetentionDays),
 			SOUL_ENABLED: soulEnabled,
 			MANAGED_ORG_VENDING_ROLE_ARN: managedOrgVendingRoleArn,
 			MANAGED_INSTANCE_ROLE_NAME: managedInstanceRoleName,
@@ -592,6 +613,8 @@ export class LesserHostStack extends cdk.Stack {
 		stateTable.grantReadWriteData(provisionWorkerFn);
 		stateTable.grantReadWriteData(commWorkerFn);
 		artifactsBucket.grantReadWrite(controlPlaneFn);
+		soulCommMailboxBucket.grantReadWrite(controlPlaneFn);
+		soulCommMailboxBucket.grantReadWrite(commWorkerFn);
 		soulPackBucket.grantReadWrite(controlPlaneFn);
 		soulPackBucket.grantReadWrite(soulReputationWorkerFn);
 		artifactsBucket.grantReadWrite(trustFn);
@@ -1554,6 +1577,7 @@ export class LesserHostStack extends cdk.Stack {
 		new cdk.CfnOutput(this, 'StateTableName', { value: stateTable.tableName });
 			new cdk.CfnOutput(this, 'ArtifactsBucketName', { value: artifactsBucket.bucketName });
 			new cdk.CfnOutput(this, 'InboundEmailBucketName', { value: inboundEmailBucket.bucketName });
+			new cdk.CfnOutput(this, 'SoulCommMailboxBucketName', { value: soulCommMailboxBucket.bucketName });
 			new cdk.CfnOutput(this, 'SoulEmailInboundDomain', { value: soulEmailInboundDomain });
 			new cdk.CfnOutput(this, 'InboundEmailMXRecord', {
 				value: `10 inbound-smtp.${cdk.Aws.REGION}.amazonaws.com`,

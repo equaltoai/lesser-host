@@ -84,6 +84,9 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.SoulV2StrictIntegrity {
 		t.Fatalf("expected strict integrity default off")
 	}
+	if cfg.SoulCommMailboxRetentionDays != 90 {
+		t.Fatalf("expected mailbox retention default 90, got %d", cfg.SoulCommMailboxRetentionDays)
+	}
 }
 
 func TestLoad_SoulV2StrictIntegrity(t *testing.T) {
@@ -91,5 +94,23 @@ func TestLoad_SoulV2StrictIntegrity(t *testing.T) {
 	cfg := Load()
 	if !cfg.SoulV2StrictIntegrity {
 		t.Fatalf("expected strict integrity enabled")
+	}
+}
+
+func TestLoad_SoulCommMailboxConfig(t *testing.T) {
+	t.Setenv("SOUL_COMM_MAILBOX_BUCKET_NAME", " mailbox-bucket ")
+	t.Setenv("SOUL_COMM_MAILBOX_RETENTION_DAYS", "120")
+	cfg := Load()
+	if cfg.SoulCommMailboxBucketName != "mailbox-bucket" {
+		t.Fatalf("unexpected mailbox bucket: %q", cfg.SoulCommMailboxBucketName)
+	}
+	if cfg.SoulCommMailboxRetentionDays != 120 {
+		t.Fatalf("unexpected mailbox retention: %d", cfg.SoulCommMailboxRetentionDays)
+	}
+
+	t.Setenv("SOUL_COMM_MAILBOX_RETENTION_DAYS", "999")
+	cfg = Load()
+	if cfg.SoulCommMailboxRetentionDays != 90 {
+		t.Fatalf("expected invalid retention fallback, got %d", cfg.SoulCommMailboxRetentionDays)
 	}
 }

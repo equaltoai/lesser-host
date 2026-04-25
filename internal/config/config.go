@@ -26,6 +26,12 @@ type Config struct {
 	// InboundEmailS3Prefix is the prefix under InboundEmailBucketName where SES stores raw mail.
 	InboundEmailS3Prefix string
 
+	// SoulCommMailboxBucketName stores bounded canonical mailbox content for soul comm deliveries.
+	SoulCommMailboxBucketName string
+
+	// SoulCommMailboxRetentionDays is the content/object lifecycle window for mailbox bodies.
+	SoulCommMailboxRetentionDays int64
+
 	// ENS gateway (CCIP-Read) configuration.
 	ENSGatewayResolverAddress     string
 	ENSGatewaySigningKeyID        string
@@ -184,11 +190,13 @@ func Load() Config {
 		AppName: "lesser-host",
 		Stage:   stage,
 
-		StateTableName:         stateTableName,
-		PublicBaseURL:          publicBaseURL,
-		SoulEmailInboundDomain: envString("SOUL_EMAIL_INBOUND_DOMAIN"),
-		InboundEmailBucketName: envString("INBOUND_EMAIL_BUCKET_NAME"),
-		InboundEmailS3Prefix:   envStringDefault("INBOUND_EMAIL_S3_PREFIX", "ses/inbound/"),
+		StateTableName:               stateTableName,
+		PublicBaseURL:                publicBaseURL,
+		SoulEmailInboundDomain:       envString("SOUL_EMAIL_INBOUND_DOMAIN"),
+		InboundEmailBucketName:       envString("INBOUND_EMAIL_BUCKET_NAME"),
+		InboundEmailS3Prefix:         envStringDefault("INBOUND_EMAIL_S3_PREFIX", "ses/inbound/"),
+		SoulCommMailboxBucketName:    envString("SOUL_COMM_MAILBOX_BUCKET_NAME"),
+		SoulCommMailboxRetentionDays: envInt64Bounded("SOUL_COMM_MAILBOX_RETENTION_DAYS", 90, 1, 365),
 
 		ENSGatewayResolverAddress:     envString("ENS_GATEWAY_RESOLVER_ADDRESS"),
 		ENSGatewaySigningKeyID:        envString("ENS_GATEWAY_SIGNING_KEY_ID"),
