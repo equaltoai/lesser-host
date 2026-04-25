@@ -10,6 +10,7 @@ import (
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 	"github.com/theory-cloud/tabletheory/pkg/core"
+	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
@@ -26,6 +27,8 @@ type mailboxAPITestDB struct {
 	qKey      *ttmocks.MockQuery
 	qIdentity *ttmocks.MockQuery
 	qDomain   *ttmocks.MockQuery
+	qPrefs    *ttmocks.MockQuery
+	qChannel  *ttmocks.MockQuery
 	qMsg      *ttmocks.MockQuery
 	qAudit    *ttmocks.MockQuery
 }
@@ -111,6 +114,119 @@ func TestHandleSoulCommMailboxGetRejectsCrossInstanceDelivery(t *testing.T) {
 	assertCommTheoryErrorCode(t, err, "comm.not_found", http.StatusNotFound)
 }
 
+func TestHandleSoulCommContactabilityReturnsBoundedAffordances(t *testing.T) {
+	t.Parallel()
+
+	fixture := newMailboxAPITestDB()
+	expectMailboxAPIAccess(t, fixture, soulLifecycleTestAgentIDHex)
+	minReputation := 0.35
+	now := time.Date(2026, 4, 25, 16, 15, 0, 0, time.UTC)
+	fixture.qPrefs.On("First", mock.AnythingOfType("*models.SoulAgentContactPreferences")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentContactPreferences](t, args, 0)
+		*dest = models.SoulAgentContactPreferences{
+			AgentID:                          soulLifecycleTestAgentIDHex,
+			Preferred:                        commChannelEmail,
+			Fallback:                         models.SoulChannelTypePhone,
+			AvailabilitySchedule:             "business-hours",
+			AvailabilityTimezone:             "America/New_York",
+			FirstContactRequireSoul:          true,
+			FirstContactRequireReputation:    &minReputation,
+			FirstContactIntroductionExpected: true,
+			UpdatedAt:                        now,
+		}
+	}).Once()
+	fixture.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentChannel](t, args, 0)
+		*dest = models.SoulAgentChannel{
+			AgentID:       soulLifecycleTestAgentIDHex,
+			ChannelType:   models.SoulChannelTypeEmail,
+			Identifier:    "agent@example.com",
+			Capabilities:  []string{"receive", "send"},
+			Protocols:     []string{"smtp", "imap"},
+			Provider:      commDeliveryProviderMigadu,
+			Verified:      true,
+			Status:        models.SoulChannelStatusActive,
+			SecretRef:     "/secret/not-returned",
+			ProvisionedAt: now,
+			UpdatedAt:     now,
+		}
+	}).Once()
+	fixture.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentChannel](t, args, 0)
+		*dest = models.SoulAgentChannel{
+			AgentID:       soulLifecycleTestAgentIDHex,
+			ChannelType:   models.SoulChannelTypePhone,
+			Identifier:    "+15551234567",
+			Capabilities:  []string{"sms-receive", "sms-send", "voice-send"},
+			Provider:      commDeliveryProviderTelnyx,
+			Verified:      true,
+			Status:        models.SoulChannelStatusActive,
+			SecretRef:     "/secret/phone-not-returned",
+			ProvisionedAt: now,
+			UpdatedAt:     now,
+		}
+	}).Once()
+
+	s := newMailboxAPITestServer(fixture)
+	resp, err := s.handleSoulCommContactability(newMailboxAPIContext(soulLifecycleTestAgentIDHex, "", nil))
+	if err != nil {
+		t.Fatalf("handleSoulCommContactability: %v", err)
+	}
+	var out soulCommContactabilityResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !out.Contactable || len(out.Channels) != 2 || !out.Mailbox.ListAllowed || !out.Mailbox.ContentAllowed {
+		t.Fatalf("unexpected contactability response: %#v", out)
+	}
+	if out.Channels[0].Address != "agent@example.com" || !out.Channels[0].ReceiveAllowed || !out.Channels[0].SendAllowed {
+		t.Fatalf("unexpected email affordance: %#v", out.Channels[0])
+	}
+	if out.Channels[1].Number != "+15551234567" || !out.Channels[1].ReceiveAllowed || !out.Channels[1].SendAllowed {
+		t.Fatalf("unexpected phone affordance: %#v", out.Channels[1])
+	}
+	body := string(resp.Body)
+	if strings.Contains(body, "secret") || strings.Contains(body, "SecretRef") {
+		t.Fatalf("contactability leaked channel secret metadata: %s", body)
+	}
+	if out.FirstContact.RequireReputation == nil || *out.FirstContact.RequireReputation != minReputation {
+		t.Fatalf("unexpected first-contact policy: %#v", out.FirstContact)
+	}
+}
+
+func TestHandleSoulCommContactabilityOmitsUnprovisionedChannels(t *testing.T) {
+	t.Parallel()
+
+	fixture := newMailboxAPITestDB()
+	expectMailboxAPIAccess(t, fixture, soulLifecycleTestAgentIDHex)
+	fixture.qPrefs.On("First", mock.AnythingOfType("*models.SoulAgentContactPreferences")).Return(theoryErrors.ErrItemNotFound).Once()
+	fixture.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentChannel](t, args, 0)
+		*dest = models.SoulAgentChannel{
+			AgentID:      soulLifecycleTestAgentIDHex,
+			ChannelType:  models.SoulChannelTypeEmail,
+			Identifier:   "agent@example.com",
+			Capabilities: []string{"receive", "send"},
+			Verified:     true,
+			Status:       models.SoulChannelStatusActive,
+		}
+	}).Once()
+	fixture.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(theoryErrors.ErrItemNotFound).Once()
+
+	s := newMailboxAPITestServer(fixture)
+	resp, err := s.handleSoulCommContactability(newMailboxAPIContext(soulLifecycleTestAgentIDHex, "", nil))
+	if err != nil {
+		t.Fatalf("handleSoulCommContactability: %v", err)
+	}
+	var out soulCommContactabilityResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Contactable || len(out.Channels) != 0 || out.Mailbox.ListAllowed {
+		t.Fatalf("unprovisioned channels must not become affordances: %#v", out)
+	}
+}
+
 func newMailboxAPITestDB() mailboxAPITestDB {
 	db := ttmocks.NewMockExtendedDB()
 	fixture := mailboxAPITestDB{
@@ -118,6 +234,8 @@ func newMailboxAPITestDB() mailboxAPITestDB {
 		qKey:      new(ttmocks.MockQuery),
 		qIdentity: new(ttmocks.MockQuery),
 		qDomain:   new(ttmocks.MockQuery),
+		qPrefs:    new(ttmocks.MockQuery),
+		qChannel:  new(ttmocks.MockQuery),
 		qMsg:      new(ttmocks.MockQuery),
 		qAudit:    new(ttmocks.MockQuery),
 	}
@@ -125,9 +243,11 @@ func newMailboxAPITestDB() mailboxAPITestDB {
 	db.On("Model", mock.AnythingOfType("*models.InstanceKey")).Return(fixture.qKey).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(fixture.qIdentity).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.Domain")).Return(fixture.qDomain).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentContactPreferences")).Return(fixture.qPrefs).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentChannel")).Return(fixture.qChannel).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulCommMailboxMessage")).Return(fixture.qMsg).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.AuditLogEntry")).Return(fixture.qAudit).Maybe()
-	for _, q := range []*ttmocks.MockQuery{fixture.qKey, fixture.qIdentity, fixture.qDomain, fixture.qMsg, fixture.qAudit} {
+	for _, q := range []*ttmocks.MockQuery{fixture.qKey, fixture.qIdentity, fixture.qDomain, fixture.qPrefs, fixture.qChannel, fixture.qMsg, fixture.qAudit} {
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("Index", mock.Anything).Return(q).Maybe()
 		q.On("OrderBy", mock.Anything, mock.Anything).Return(q).Maybe()

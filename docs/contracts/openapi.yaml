@@ -320,6 +320,9 @@ components:
     SoulCommStatusErrorEnvelope:
       $ref: "../spec/v3/schemas/soul-comm-status.error.schema.json"
 
+    SoulCommContactabilityResponse:
+      $ref: "../spec/v3/schemas/soul-comm-contactability.response.schema.json"
+
     SoulCommMailboxMessage:
       $ref: "../spec/v3/schemas/soul-comm-mailbox-message.schema.json"
 
@@ -2589,6 +2592,29 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SoulCommStatusErrorEnvelope"
+
+  /api/v1/soul/comm/contactability/{agentId}:
+    get:
+      operationId: soulCommContactability
+      summary: Resolve bounded soul comm contactability for one agent
+      description: |
+        Resolves mailbox/read and send affordances for exactly one agent owned by the authenticated instance.
+        This endpoint intentionally has no search or list mode and does not expose channel secrets.
+      security:
+        - instanceKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/SoulMailboxAgentId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SoulCommContactabilityResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/InternalError" }
 
   /api/v1/soul/comm/mailbox/{agentId}/messages:
     get:

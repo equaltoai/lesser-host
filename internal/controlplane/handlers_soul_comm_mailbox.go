@@ -82,8 +82,9 @@ type soulCommMailboxState struct {
 }
 
 type mailboxRequestContext struct {
-	key     *models.InstanceKey
-	agentID string
+	key      *models.InstanceKey
+	agentID  string
+	identity *models.SoulAgentIdentity
 }
 
 type mailboxStateAction struct {
@@ -290,7 +291,7 @@ func (s *Server) requireMailboxRequestContext(ctx *apptheory.Context) (mailboxRe
 	if accessErr := s.requireCommAgentInstanceAccess(ctx.Context(), key, identity); accessErr != nil {
 		return mailboxRequestContext{}, accessErr
 	}
-	return mailboxRequestContext{key: key, agentID: agentID}, nil
+	return mailboxRequestContext{key: key, agentID: agentID, identity: identity}, nil
 }
 
 func (s *Server) listMailboxMessages(ctx context.Context, instanceSlug string, agentID string, limit int, cursor string) ([]*models.SoulCommMailboxMessage, bool, string, error) {

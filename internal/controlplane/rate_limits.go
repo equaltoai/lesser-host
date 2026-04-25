@@ -114,7 +114,8 @@ func (s *Server) mailboxRateLimitMiddleware() apptheory.Middleware {
 			if ctx == nil {
 				return next(ctx)
 			}
-			if strings.HasPrefix(strings.TrimSpace(ctx.Request.Path), "/api/v1/soul/comm/mailbox/") {
+			path := strings.TrimSpace(ctx.Request.Path)
+			if strings.HasPrefix(path, "/api/v1/soul/comm/mailbox/") || strings.HasPrefix(path, "/api/v1/soul/comm/contactability/") {
 				return limitedNext(ctx)
 			}
 			return next(ctx)
