@@ -117,6 +117,24 @@ Operational notes:
 - DNS for `inbound.lessersoul.ai` is managed outside Route53 today, so the stack outputs the DKIM verification CNAMEs and MX target for manual GoDaddy entry.
 - Raw inbound mail is retained briefly in a dedicated S3 bucket with lifecycle expiration to support debugging without keeping message bodies indefinitely.
 
+## Soul Comm Mailbox v1 authority
+
+ADR 0005 defines the bounded mailbox authority decision for soul communications. The short version:
+
+- `lesser-host` owns canonical mailbox delivery objects, including delivery/provider/thread/idempotency facts, bounded
+  content, content identity, and read/unread/archive/delete state.
+- `lesser` receives notification summaries/projections for UX/activity only; it is not authoritative mailbox state.
+- `lesser-body` remains the MCP facade and exposes tools over host's API contract. It must not persist mailbox truth.
+- List endpoints must return redacted previews/metadata only. Full content requires an explicit content/read call and
+  emits access-audit evidence.
+- Content storage is bounded by retention, encryption, access audit, and no-permanent-semantic-memory constraints.
+- Sensitive mailbox APIs require strict hash-only instance auth: bearer raw key -> `sha256(raw_key)` -> stored hash match.
+  Legacy plaintext fallback paths must not be accepted for mailbox list/content/state endpoints.
+
+This is an explicit, governance-documented exception to host's normal metadata-only posture for tenant content. The
+exception is limited to soul comm mailbox delivery artifacts and does not authorize cross-tenant search, tenant content
+analytics, or body-owned mailbox storage.
+
 ### `update-registration` contract (lesser-body / MCP endpoint compatible)
 
 `POST /api/v1/soul/agents/{agentId}/update-registration` publishes the **current** registration JSON to S3 at:
