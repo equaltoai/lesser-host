@@ -33,3 +33,14 @@ npm run verify:lesser-host-contracts
 CI and the governance rubric both run this verification so contract drift fails closed.
 
 Release automation packages these artifacts as GitHub Release assets on every `v*` tag.
+
+## Soul comm mailbox contract notes
+
+The mailbox schemas under `../spec/v3/schemas/soul-comm-mailbox-*.schema.json` are the body-facing canonical contract.
+They are instance-key authenticated and keep list/get metadata separate from explicit content fetches.
+
+The portal compatibility schemas `soul-agent-comm-activity-*` and `soul-agent-comm-queue-*` are derived from canonical
+mailbox state for operator/customer portal views. Queue list items intentionally do not include full message bodies; they
+return preview/content metadata and mailbox state only.
+
+Cross-repo migration guidance for body and lesser is in `../soul-comm-mailbox-migration.md`.

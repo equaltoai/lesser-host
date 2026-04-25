@@ -111,6 +111,20 @@ The receipt preserves the native `lesser-body` deploy fields and adds host-side 
 This provenance object is the canonical consumer-visible record of which verified `lesser-body` release assets were used
 for the managed deploy.
 
+
+## Soul comm mailbox MCP contract
+
+`lesser-body` does not own canonical mailbox state. For soul comm tools it is the MCP facade over host's
+instance-authenticated mailbox contract:
+
+- list/get tools call host mailbox metadata endpoints and return redacted previews/state
+- full message bodies are fetched only by explicit content tools
+- read/unread/archive/delete tools mutate host's canonical mailbox state
+- body must not persist a durable mailbox-content or read-state store of its own
+
+See `docs/soul-comm-mailbox-migration.md` for the migration order, backward-compatibility expectations, rate limits,
+auth, audit, and lesser projection semantics.
+
 ## Follow-on MCP expectation
 
 The `RUN_MODE=lesser-mcp` phase does not consume the `lesser-body` release assets directly. It consumes the deployed body
