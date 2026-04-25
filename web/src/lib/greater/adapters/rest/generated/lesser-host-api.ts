@@ -1503,6 +1503,8 @@ export interface components {
         "soul-agent-comm-activity-item.schema": {
             agent_id: string;
             activity_id: string;
+            delivery_id?: string;
+            thread_id?: string;
             /** @enum {string} */
             channel_type: "email" | "sms" | "voice";
             /** @enum {string} */
@@ -1510,6 +1512,19 @@ export interface components {
             counterparty?: string;
             action?: string;
             message_id?: string;
+            /** @enum {string} */
+            status?: "accepted" | "sent" | "delivered" | "queued" | "failed" | "bounced" | "dropped";
+            subject?: string;
+            preview?: string;
+            content?: {
+                available: boolean;
+                bytes?: number;
+                mime_type?: string;
+                sha256?: string;
+            };
+            read?: boolean;
+            archived?: boolean;
+            deleted?: boolean;
             in_reply_to?: string;
             /** @enum {string} */
             boundary_check?: "passed" | "violated" | "skipped";
@@ -1527,7 +1542,9 @@ export interface components {
         /** Soul agent queued communication item */
         "soul-agent-comm-queue-item.schema": {
             agent_id: string;
+            delivery_id?: string;
             message_id: string;
+            thread_id?: string;
             /** @enum {string} */
             channel_type: "email" | "sms" | "voice";
             /** Format: email */
@@ -1536,7 +1553,13 @@ export interface components {
             from_soul_agent_id?: string;
             from_display_name?: string;
             subject?: string;
-            body: string;
+            preview?: string;
+            content?: {
+                available: boolean;
+                bytes?: number;
+                mime_type?: string;
+                sha256?: string;
+            };
             in_reply_to?: string;
             /** Format: date-time */
             received_at: string;
@@ -1544,6 +1567,9 @@ export interface components {
             scheduled_delivery_time: string;
             /** @enum {string} */
             status: "queued" | "delivered" | "expired";
+            read?: boolean;
+            archived?: boolean;
+            deleted?: boolean;
         };
         /** GET /api/v1/soul/agents/{agentId}/comm/queue response */
         "soul-agent-comm-queue.response.schema": {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 
 	"github.com/stretchr/testify/mock"
 
+	"github.com/equaltoai/lesser-host/internal/commmailbox"
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
@@ -24,6 +26,7 @@ type soulCommPortalTestDB struct {
 	base     soulLifecycleTestDB
 	qAct     *ttmocks.MockQuery
 	qQueue   *ttmocks.MockQuery
+	qMailbox *ttmocks.MockQuery
 	qStatus  *ttmocks.MockQuery
 	qFailure *ttmocks.MockQuery
 }
@@ -32,15 +35,17 @@ func newSoulCommPortalTestDB() soulCommPortalTestDB {
 	base := newSoulLifecycleTestDB()
 	qAct := new(ttmocks.MockQuery)
 	qQueue := new(ttmocks.MockQuery)
+	qMailbox := new(ttmocks.MockQuery)
 	qStatus := new(ttmocks.MockQuery)
 	qFailure := new(ttmocks.MockQuery)
 
 	base.db.On("Model", mock.AnythingOfType("*models.SoulAgentCommActivity")).Return(qAct).Maybe()
 	base.db.On("Model", mock.AnythingOfType("*models.SoulAgentCommQueue")).Return(qQueue).Maybe()
+	base.db.On("Model", mock.AnythingOfType("*models.SoulCommMailboxMessage")).Return(qMailbox).Maybe()
 	base.db.On("Model", mock.AnythingOfType("*models.SoulCommMessageStatus")).Return(qStatus).Maybe()
 	base.db.On("Model", mock.AnythingOfType("*models.SoulAgentFailure")).Return(qFailure).Maybe()
 
-	for _, q := range []*ttmocks.MockQuery{qAct, qQueue, qStatus, qFailure} {
+	for _, q := range []*ttmocks.MockQuery{qAct, qQueue, qMailbox, qStatus, qFailure} {
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("OrderBy", mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("Limit", mock.Anything).Return(q).Maybe()
@@ -53,6 +58,7 @@ func newSoulCommPortalTestDB() soulCommPortalTestDB {
 		base:     base,
 		qAct:     qAct,
 		qQueue:   qQueue,
+		qMailbox: qMailbox,
 		qStatus:  qStatus,
 		qFailure: qFailure,
 	}
@@ -100,6 +106,34 @@ func newSoulPortalServer(tdb soulCommPortalTestDB) *Server {
 	}
 }
 
+func portalMailboxMessage(agentID string, status string) *models.SoulCommMailboxMessage {
+	now := time.Date(2026, 4, 25, 18, 0, 0, 0, time.UTC)
+	return &models.SoulCommMailboxMessage{
+		DeliveryID:      "delivery-1",
+		MessageID:       "message-1",
+		ThreadID:        "thread-1",
+		InstanceSlug:    "inst1",
+		AgentID:         agentID,
+		Direction:       models.SoulCommDirectionInbound,
+		ChannelType:     commChannelEmail,
+		Provider:        commDeliveryProviderMigadu,
+		Status:          status,
+		FromAddress:     "sender@example.com",
+		ToAddress:       "agent@example.com",
+		Subject:         "Hello",
+		Preview:         "redacted preview",
+		ContentStorage:  commmailbox.ContentStorageS3,
+		ContentBucket:   "mailbox-bucket",
+		ContentKey:      "mailbox/v1/secret/content",
+		ContentSHA256:   "sha256-body",
+		ContentBytes:    42,
+		ContentMimeType: "text/plain",
+		HasContent:      true,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+}
+
 func TestRequireSoulAgentWithDomainAccess(t *testing.T) {
 	t.Parallel()
 
@@ -142,7 +176,7 @@ func TestHandleSoulAgentCommPortalHandlers(t *testing.T) {
 	t.Run("activity error and success", func(t *testing.T) {
 		tdb := newSoulCommPortalTestDB()
 		seedSoulAgentPortalAccess(t, tdb, agentID, models.SoulAgentStatusActive)
-		tdb.qAct.On("All", mock.Anything).Return(errors.New("boom")).Once()
+		tdb.qMailbox.On("All", mock.Anything).Return(errors.New("boom")).Once()
 		s := newSoulPortalServer(tdb)
 		if _, err := s.handleSoulAgentCommActivity(ctx); err == nil {
 			t.Fatalf("expected list error")
@@ -150,28 +184,62 @@ func TestHandleSoulAgentCommPortalHandlers(t *testing.T) {
 
 		tdb2 := newSoulCommPortalTestDB()
 		seedSoulAgentPortalAccess(t, tdb2, agentID, models.SoulAgentStatusActive)
-		tdb2.qAct.On("All", mock.AnythingOfType("*[]*models.SoulAgentCommActivity")).Return(nil).Run(func(args mock.Arguments) {
-			dest := testutil.RequireMockArg[*[]*models.SoulAgentCommActivity](t, args, 0)
-			*dest = []*models.SoulAgentCommActivity{{AgentID: agentID, MessageID: "m1"}}
+		tdb2.qMailbox.On("All", mock.AnythingOfType("*[]*models.SoulCommMailboxMessage")).Return(nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*[]*models.SoulCommMailboxMessage](t, args, 0)
+			*dest = []*models.SoulCommMailboxMessage{portalMailboxMessage(agentID, models.SoulCommMailboxStatusDelivered)}
 		}).Once()
 		s = newSoulPortalServer(tdb2)
 		resp, err := s.handleSoulAgentCommActivity(ctx)
 		if err != nil || resp.Status != http.StatusOK {
 			t.Fatalf("unexpected response: %#v %v", resp, err)
 		}
+		if body := string(resp.Body); strings.Contains(body, "mailbox-bucket") || strings.Contains(body, "mailbox/v1/secret") {
+			t.Fatalf("activity leaked content storage pointer: %s", body)
+		}
+		var out soulAgentCommActivityResponse
+		if err := json.Unmarshal(resp.Body, &out); err != nil {
+			t.Fatalf("unmarshal activity: %v", err)
+		}
+		if out.Count != 1 || out.Activities[0].DeliveryID != "delivery-1" || out.Activities[0].Content.SHA256 != "sha256-body" {
+			t.Fatalf("unexpected canonical activity response: %#v", out)
+		}
 	})
 
 	t.Run("queue success", func(t *testing.T) {
 		tdb := newSoulCommPortalTestDB()
 		seedSoulAgentPortalAccess(t, tdb, agentID, models.SoulAgentStatusActive)
-		tdb.qQueue.On("All", mock.AnythingOfType("*[]*models.SoulAgentCommQueue")).Return(nil).Run(func(args mock.Arguments) {
-			dest := testutil.RequireMockArg[*[]*models.SoulAgentCommQueue](t, args, 0)
-			*dest = []*models.SoulAgentCommQueue{{AgentID: agentID, MessageID: "m1"}}
+		tdb.qMailbox.On("All", mock.AnythingOfType("*[]*models.SoulCommMailboxMessage")).Return(nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*[]*models.SoulCommMailboxMessage](t, args, 0)
+			delivered := portalMailboxMessage(agentID, models.SoulCommMailboxStatusDelivered)
+			delivered.DeliveryID = "delivery-delivered"
+			outbound := portalMailboxMessage(agentID, models.SoulCommMailboxStatusQueued)
+			outbound.DeliveryID = "delivery-outbound"
+			outbound.Direction = models.SoulCommDirectionOutbound
+			deleted := portalMailboxMessage(agentID, models.SoulCommMailboxStatusQueued)
+			deleted.DeliveryID = "delivery-deleted"
+			deleted.Deleted = true
+			*dest = []*models.SoulCommMailboxMessage{
+				portalMailboxMessage(agentID, models.SoulCommMailboxStatusQueued),
+				delivered,
+				outbound,
+				deleted,
+			}
 		}).Once()
 		s := newSoulPortalServer(tdb)
 		resp, err := s.handleSoulAgentCommQueue(ctx)
 		if err != nil || resp.Status != http.StatusOK {
 			t.Fatalf("unexpected response: %#v %v", resp, err)
+		}
+		body := string(resp.Body)
+		if strings.Contains(body, `"body"`) || strings.Contains(body, "mailbox-bucket") || strings.Contains(body, "mailbox/v1/secret") {
+			t.Fatalf("queue leaked full body or content storage pointer: %s", body)
+		}
+		var out soulAgentCommQueueResponse
+		if err := json.Unmarshal(resp.Body, &out); err != nil {
+			t.Fatalf("unmarshal queue: %v", err)
+		}
+		if out.Count != 1 || out.Items[0].DeliveryID != "delivery-1" || out.Items[0].Preview != "redacted preview" {
+			t.Fatalf("unexpected canonical queue response: %#v", out)
 		}
 	})
 
