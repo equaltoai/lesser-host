@@ -166,133 +166,170 @@ func TestRequireSoulAgentWithDomainAccess(t *testing.T) {
 	}
 }
 
-func TestHandleSoulAgentCommPortalHandlers(t *testing.T) {
+func TestHandleSoulAgentCommActivityReadsMailbox(t *testing.T) {
 	t.Parallel()
 
 	agentID := soulLifecycleTestAgentIDHex
+	ctx := soulAgentCommPortalCtx(agentID)
+
+	tdb := newSoulCommPortalTestDB()
+	seedSoulAgentPortalAccess(t, tdb, agentID, models.SoulAgentStatusActive)
+	tdb.qMailbox.On("All", mock.Anything).Return(errors.New("boom")).Once()
+	s := newSoulPortalServer(tdb)
+	if _, err := s.handleSoulAgentCommActivity(ctx); err == nil {
+		t.Fatalf("expected list error")
+	}
+
+	tdb2 := newSoulCommPortalTestDB()
+	seedSoulAgentPortalAccess(t, tdb2, agentID, models.SoulAgentStatusActive)
+	expectPortalMailboxRows(t, tdb2.qMailbox, []*models.SoulCommMailboxMessage{
+		portalMailboxMessage(agentID, models.SoulCommMailboxStatusDelivered),
+	})
+	s = newSoulPortalServer(tdb2)
+	resp, err := s.handleSoulAgentCommActivity(ctx)
+	if err != nil || resp.Status != http.StatusOK {
+		t.Fatalf("unexpected response: %#v %v", resp, err)
+	}
+	assertPortalResponseRedacted(t, "activity", resp.Body)
+
+	var out soulAgentCommActivityResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal activity: %v", err)
+	}
+	if out.Count != 1 || out.Activities[0].DeliveryID != "delivery-1" || out.Activities[0].Content.SHA256 != "sha256-body" {
+		t.Fatalf("unexpected canonical activity response: %#v", out)
+	}
+}
+
+func TestHandleSoulAgentCommQueueReadsMailbox(t *testing.T) {
+	t.Parallel()
+
+	agentID := soulLifecycleTestAgentIDHex
+	tdb := newSoulCommPortalTestDB()
+	seedSoulAgentPortalAccess(t, tdb, agentID, models.SoulAgentStatusActive)
+	expectPortalMailboxRows(t, tdb.qMailbox, portalQueueMailboxRows(agentID))
+
+	s := newSoulPortalServer(tdb)
+	resp, err := s.handleSoulAgentCommQueue(soulAgentCommPortalCtx(agentID))
+	if err != nil || resp.Status != http.StatusOK {
+		t.Fatalf("unexpected response: %#v %v", resp, err)
+	}
+	assertPortalResponseRedacted(t, "queue", resp.Body)
+
+	var out soulAgentCommQueueResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal queue: %v", err)
+	}
+	if out.Count != 1 || out.Items[0].DeliveryID != "delivery-1" || out.Items[0].Preview != "redacted preview" {
+		t.Fatalf("unexpected canonical queue response: %#v", out)
+	}
+}
+
+func TestHandleSoulAgentCommStatusBranches(t *testing.T) {
+	t.Parallel()
+
+	agentID := soulLifecycleTestAgentIDHex
+	tdb := newSoulCommPortalTestDB()
+	seedSoulAgentPortalAccess(t, tdb, agentID, models.SoulAgentStatusActive)
+	s := newSoulPortalServer(tdb)
+
+	badCtx := adminCtx()
+	badCtx.Params = map[string]string{"agentId": agentID, "messageId": ""}
+	if _, err := s.handleSoulAgentCommStatus(badCtx); err == nil {
+		t.Fatalf("expected invalid message id error")
+	}
+
+	statusCtx := soulAgentCommStatusCtx(agentID, "msg-1")
+	tdb.qStatus.On("First", mock.AnythingOfType("*models.SoulCommMessageStatus")).Return(theoryErrors.ErrItemNotFound).Once()
+	if _, err := s.handleSoulAgentCommStatus(statusCtx); err == nil {
+		t.Fatalf("expected not found error")
+	}
+
+	expectSoulCommStatusMismatch(t, agentID, statusCtx)
+	expectSoulCommStatusSuccess(t, agentID, statusCtx)
+}
+
+func soulAgentCommPortalCtx(agentID string) *apptheory.Context {
 	ctx := adminCtx()
 	ctx.Params = map[string]string{"agentId": agentID}
+	return ctx
+}
 
-	t.Run("activity error and success", func(t *testing.T) {
-		tdb := newSoulCommPortalTestDB()
-		seedSoulAgentPortalAccess(t, tdb, agentID, models.SoulAgentStatusActive)
-		tdb.qMailbox.On("All", mock.Anything).Return(errors.New("boom")).Once()
-		s := newSoulPortalServer(tdb)
-		if _, err := s.handleSoulAgentCommActivity(ctx); err == nil {
-			t.Fatalf("expected list error")
-		}
+func soulAgentCommStatusCtx(agentID string, messageID string) *apptheory.Context {
+	ctx := adminCtx()
+	ctx.Params = map[string]string{"agentId": agentID, "messageId": messageID}
+	return ctx
+}
 
-		tdb2 := newSoulCommPortalTestDB()
-		seedSoulAgentPortalAccess(t, tdb2, agentID, models.SoulAgentStatusActive)
-		tdb2.qMailbox.On("All", mock.AnythingOfType("*[]*models.SoulCommMailboxMessage")).Return(nil).Run(func(args mock.Arguments) {
-			dest := testutil.RequireMockArg[*[]*models.SoulCommMailboxMessage](t, args, 0)
-			*dest = []*models.SoulCommMailboxMessage{portalMailboxMessage(agentID, models.SoulCommMailboxStatusDelivered)}
-		}).Once()
-		s = newSoulPortalServer(tdb2)
-		resp, err := s.handleSoulAgentCommActivity(ctx)
-		if err != nil || resp.Status != http.StatusOK {
-			t.Fatalf("unexpected response: %#v %v", resp, err)
-		}
-		if body := string(resp.Body); strings.Contains(body, "mailbox-bucket") || strings.Contains(body, "mailbox/v1/secret") {
-			t.Fatalf("activity leaked content storage pointer: %s", body)
-		}
-		var out soulAgentCommActivityResponse
-		if err := json.Unmarshal(resp.Body, &out); err != nil {
-			t.Fatalf("unmarshal activity: %v", err)
-		}
-		if out.Count != 1 || out.Activities[0].DeliveryID != "delivery-1" || out.Activities[0].Content.SHA256 != "sha256-body" {
-			t.Fatalf("unexpected canonical activity response: %#v", out)
-		}
-	})
+func expectPortalMailboxRows(t *testing.T, q *ttmocks.MockQuery, rows []*models.SoulCommMailboxMessage) {
+	t.Helper()
+	q.On("All", mock.AnythingOfType("*[]*models.SoulCommMailboxMessage")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulCommMailboxMessage](t, args, 0)
+		*dest = rows
+	}).Once()
+}
 
-	t.Run("queue success", func(t *testing.T) {
-		tdb := newSoulCommPortalTestDB()
-		seedSoulAgentPortalAccess(t, tdb, agentID, models.SoulAgentStatusActive)
-		tdb.qMailbox.On("All", mock.AnythingOfType("*[]*models.SoulCommMailboxMessage")).Return(nil).Run(func(args mock.Arguments) {
-			dest := testutil.RequireMockArg[*[]*models.SoulCommMailboxMessage](t, args, 0)
-			delivered := portalMailboxMessage(agentID, models.SoulCommMailboxStatusDelivered)
-			delivered.DeliveryID = "delivery-delivered"
-			outbound := portalMailboxMessage(agentID, models.SoulCommMailboxStatusQueued)
-			outbound.DeliveryID = "delivery-outbound"
-			outbound.Direction = models.SoulCommDirectionOutbound
-			deleted := portalMailboxMessage(agentID, models.SoulCommMailboxStatusQueued)
-			deleted.DeliveryID = "delivery-deleted"
-			deleted.Deleted = true
-			*dest = []*models.SoulCommMailboxMessage{
-				portalMailboxMessage(agentID, models.SoulCommMailboxStatusQueued),
-				delivered,
-				outbound,
-				deleted,
-			}
-		}).Once()
-		s := newSoulPortalServer(tdb)
-		resp, err := s.handleSoulAgentCommQueue(ctx)
-		if err != nil || resp.Status != http.StatusOK {
-			t.Fatalf("unexpected response: %#v %v", resp, err)
-		}
-		body := string(resp.Body)
-		if strings.Contains(body, `"body"`) || strings.Contains(body, "mailbox-bucket") || strings.Contains(body, "mailbox/v1/secret") {
-			t.Fatalf("queue leaked full body or content storage pointer: %s", body)
-		}
-		var out soulAgentCommQueueResponse
-		if err := json.Unmarshal(resp.Body, &out); err != nil {
-			t.Fatalf("unmarshal queue: %v", err)
-		}
-		if out.Count != 1 || out.Items[0].DeliveryID != "delivery-1" || out.Items[0].Preview != "redacted preview" {
-			t.Fatalf("unexpected canonical queue response: %#v", out)
-		}
-	})
+func portalQueueMailboxRows(agentID string) []*models.SoulCommMailboxMessage {
+	delivered := portalMailboxMessage(agentID, models.SoulCommMailboxStatusDelivered)
+	delivered.DeliveryID = "delivery-delivered"
+	outbound := portalMailboxMessage(agentID, models.SoulCommMailboxStatusQueued)
+	outbound.DeliveryID = "delivery-outbound"
+	outbound.Direction = models.SoulCommDirectionOutbound
+	deleted := portalMailboxMessage(agentID, models.SoulCommMailboxStatusQueued)
+	deleted.DeliveryID = "delivery-deleted"
+	deleted.Deleted = true
+	return []*models.SoulCommMailboxMessage{
+		portalMailboxMessage(agentID, models.SoulCommMailboxStatusQueued),
+		delivered,
+		outbound,
+		deleted,
+	}
+}
 
-	t.Run("status branches", func(t *testing.T) {
-		tdb := newSoulCommPortalTestDB()
-		seedSoulAgentPortalAccess(t, tdb, agentID, models.SoulAgentStatusActive)
-		s := newSoulPortalServer(tdb)
+func assertPortalResponseRedacted(t *testing.T, label string, body []byte) {
+	t.Helper()
+	text := string(body)
+	if strings.Contains(text, `"body"`) || strings.Contains(text, "mailbox-bucket") || strings.Contains(text, "mailbox/v1/secret") {
+		t.Fatalf("%s leaked full body or content storage pointer: %s", label, text)
+	}
+}
 
-		badCtx := adminCtx()
-		badCtx.Params = map[string]string{"agentId": agentID, "messageId": ""}
-		if _, err := s.handleSoulAgentCommStatus(badCtx); err == nil {
-			t.Fatalf("expected invalid message id error")
-		}
+func expectSoulCommStatusMismatch(t *testing.T, agentID string, statusCtx *apptheory.Context) {
+	t.Helper()
+	tdb := newSoulCommPortalTestDB()
+	seedSoulAgentPortalAccess(t, tdb, agentID, models.SoulAgentStatusActive)
+	tdb.qStatus.On("First", mock.AnythingOfType("*models.SoulCommMessageStatus")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulCommMessageStatus](t, args, 0)
+		*dest = models.SoulCommMessageStatus{MessageID: "msg-1", AgentID: "0xother"}
+	}).Once()
+	s := newSoulPortalServer(tdb)
+	if _, err := s.handleSoulAgentCommStatus(statusCtx); err == nil {
+		t.Fatalf("expected mismatched agent error")
+	}
+}
 
-		statusCtx := adminCtx()
-		statusCtx.Params = map[string]string{"agentId": agentID, "messageId": "msg-1"}
-		tdb.qStatus.On("First", mock.AnythingOfType("*models.SoulCommMessageStatus")).Return(theoryErrors.ErrItemNotFound).Once()
-		if _, err := s.handleSoulAgentCommStatus(statusCtx); err == nil {
-			t.Fatalf("expected not found error")
+func expectSoulCommStatusSuccess(t *testing.T, agentID string, statusCtx *apptheory.Context) {
+	t.Helper()
+	tdb := newSoulCommPortalTestDB()
+	seedSoulAgentPortalAccess(t, tdb, agentID, models.SoulAgentStatusActive)
+	tdb.qStatus.On("First", mock.AnythingOfType("*models.SoulCommMessageStatus")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulCommMessageStatus](t, args, 0)
+		*dest = models.SoulCommMessageStatus{
+			MessageID:         "msg-1",
+			AgentID:           agentID,
+			Status:            "sent",
+			ChannelType:       "email",
+			Provider:          commDeliveryProviderMigadu,
+			ProviderMessageID: "provider-1",
+			CreatedAt:         time.Date(2026, 3, 5, 12, 0, 0, 0, time.UTC),
+			UpdatedAt:         time.Date(2026, 3, 5, 12, 5, 0, 0, time.UTC),
 		}
-
-		tdb2 := newSoulCommPortalTestDB()
-		seedSoulAgentPortalAccess(t, tdb2, agentID, models.SoulAgentStatusActive)
-		tdb2.qStatus.On("First", mock.AnythingOfType("*models.SoulCommMessageStatus")).Return(nil).Run(func(args mock.Arguments) {
-			dest := testutil.RequireMockArg[*models.SoulCommMessageStatus](t, args, 0)
-			*dest = models.SoulCommMessageStatus{MessageID: "msg-1", AgentID: "0xother"}
-		}).Once()
-		s = newSoulPortalServer(tdb2)
-		if _, err := s.handleSoulAgentCommStatus(statusCtx); err == nil {
-			t.Fatalf("expected mismatched agent error")
-		}
-
-		tdb3 := newSoulCommPortalTestDB()
-		seedSoulAgentPortalAccess(t, tdb3, agentID, models.SoulAgentStatusActive)
-		tdb3.qStatus.On("First", mock.AnythingOfType("*models.SoulCommMessageStatus")).Return(nil).Run(func(args mock.Arguments) {
-			dest := testutil.RequireMockArg[*models.SoulCommMessageStatus](t, args, 0)
-			*dest = models.SoulCommMessageStatus{
-				MessageID:         "msg-1",
-				AgentID:           agentID,
-				Status:            "sent",
-				ChannelType:       "email",
-				Provider:          commDeliveryProviderMigadu,
-				ProviderMessageID: "provider-1",
-				CreatedAt:         time.Date(2026, 3, 5, 12, 0, 0, 0, time.UTC),
-				UpdatedAt:         time.Date(2026, 3, 5, 12, 5, 0, 0, time.UTC),
-			}
-		}).Once()
-		s = newSoulPortalServer(tdb3)
-		resp, err := s.handleSoulAgentCommStatus(statusCtx)
-		if err != nil || resp.Status != http.StatusOK {
-			t.Fatalf("unexpected response: %#v %v", resp, err)
-		}
-	})
+	}).Once()
+	s := newSoulPortalServer(tdb)
+	resp, err := s.handleSoulAgentCommStatus(statusCtx)
+	if err != nil || resp.Status != http.StatusOK {
+		t.Fatalf("unexpected response: %#v %v", resp, err)
+	}
 }
 
 func TestHandleSoulFailures_RecordBranches(t *testing.T) {
