@@ -1,4 +1,4 @@
-# lesser-host: Evidence Plan (Rubric v0.1.4)
+# lesser-host: Evidence Plan (Rubric v0.1.5)
 
 This document defines the **evidence surface** for the lesser-host governance rubric.
 
@@ -63,6 +63,7 @@ Legend:
 | Compliance readiness | CMP-1 | Controls matrix exists and is readable | (presence check) + `gov-infra/evidence/CMP-1-output.log` |
 | Compliance readiness | CMP-2 | Evidence plan exists and is readable | (presence check) + `gov-infra/evidence/CMP-2-output.log` |
 | Compliance readiness | CMP-3 | Threat model exists and is readable | (presence check) + `gov-infra/evidence/CMP-3-output.log` |
+| Compliance readiness | CMP-4 | Bounded soul comm mailbox controls are documented before content storage lands | `gov-infra/evidence/CMP-4-output.log` |
 | Maintainability | MAI-1 | Complexity/file-size budgets enforced | `gov-infra/evidence/MAI-1-output.log` |
 | Maintainability | MAI-2 | Maintainability roadmap exists and is integrity-checked | `gov-infra/evidence/MAI-2-output.log` |
 | Maintainability | MAI-3 | Convergence/canonical implementation checks run | `gov-infra/evidence/MAI-3-output.log` |

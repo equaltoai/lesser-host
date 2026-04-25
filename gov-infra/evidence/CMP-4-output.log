@@ -1,0 +1,32 @@
+file: docs/adr/0005-bounded-soul-comm-mailbox-authority.md
+file: docs/roadmap-soul-comm-mailbox.md
+file: docs/soul-surface.md
+file: gov-infra/planning/lesser-host-threat-model.md
+file: gov-infra/planning/lesser-host-controls-matrix.md
+file: gov-infra/planning/lesser-host-evidence-plan.md
+PASS: ADR title declares bounded mailbox authority
+PASS: content retention policy requirement
+PASS: encryption requirement
+PASS: access audit requirement
+PASS: list/content split requirement
+PASS: no semantic-memory role
+PASS: hash-only instance auth requirement
+PASS: write-once audit/event requirement
+PASS: protected identity/provenance requirement
+PASS: body remains MCP facade
+PASS: lesser projection-only boundary
+PASS: cross-tenant search non-goal
+PASS: soul surface names mailbox authority
+PASS: soul surface requires redacted list previews
+PASS: soul surface documents hash-only auth
+PASS: roadmap records framework incorporation decisions
+PASS: roadmap requires write-once audit/event rows
+PASS: roadmap requires retention/encryption/list-redaction controls
+PASS: threat model includes bounded mailbox threat
+PASS: threat model names content/state drift
+PASS: controls matrix includes CMP-4
+PASS: controls matrix maps THR-11
+PASS: controls matrix enumerates bounded mailbox controls
+PASS: evidence plan includes CMP-4
+PASS: evidence plan names CMP-4 evidence path
+PASS: bounded soul comm mailbox governance controls are explicit

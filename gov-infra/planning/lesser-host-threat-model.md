@@ -5,7 +5,7 @@ to controls in `gov-infra/planning/lesser-host-controls-matrix.md`.
 
 ## Scope (must be explicit)
 - **System:** AWS-backed multi-service control plane for hosted Lesser instance provisioning + governance + trust/safety services (Go Lambdas, Svelte web UI, AWS CDK infra, Solidity contracts).
-- **In-scope data:** authentication/session tokens, wallet addresses, instance API keys (hashed), Stripe billing identifiers, AI provider prompts/outputs (may contain sensitive user content), inbound email bodies/headers stored temporarily for routing, operational telemetry, deploy receipts/artifacts, secrets in AWS SSM/KMS.
+- **In-scope data:** authentication/session tokens, wallet addresses, instance API keys (hashed), Stripe billing identifiers, AI provider prompts/outputs (may contain sensitive user content), inbound email bodies/headers stored temporarily for routing, bounded soul comm mailbox content/state, operational telemetry, deploy receipts/artifacts, secrets in AWS SSM/KMS.
 - **Environments:** `lab`, `staging`, `prod` (define “prod-like”: internet-reachable and/or connected to real third-party services).
 - **Third parties:** AWS, Migadu, Telnyx, Stripe, Anthropic, OpenAI, Ethereum JSON-RPC providers, GitHub Actions.
 - **Out of scope:** per-tenant `lesser` application internals (except where the control plane ingests deploy receipts); end-user device security.
@@ -19,6 +19,7 @@ to controls in `gov-infra/planning/lesser-host-controls-matrix.md`.
   - Attestation signing key material (KMS-backed)
   - AI moderation/evidence pipelines (messages, outputs)
   - Inbound email bridge artifacts (SES receipt events + raw S3 objects)
+  - Bounded soul comm mailbox content, content identity, read/archive/delete state, and audit events
   - Provisioning runner permissions (Organizations + CodeBuild)
   - Deploy receipts + artifact buckets
 - **Trust boundaries:**
@@ -26,10 +27,12 @@ to controls in `gov-infra/planning/lesser-host-controls-matrix.md`.
   - Control plane → AWS APIs (DynamoDB/S3/SQS/KMS/Route53/Organizations)
   - Control plane → third parties (Migadu, Telnyx, Stripe, AI providers, RPC)
   - SES inbound pipeline → S3/Lambda/SQS (raw email receipt and normalization)
+  - Instance-authenticated soul comm mailbox APIs → bounded content/state storage
   - Operator browser (web UI) → API endpoints
   - Managed provisioning worker → external releases/artifacts (supply chain)
 - **Entry points:**
   - Public HTTP endpoints (`/api/*`, `/.well-known/*`, `/attestations*`, `/setup/*`)
+  - Instance-authenticated mailbox list/content/state endpoints for soul comms
   - SQS queues (workers)
   - CodeBuild job inputs (managed provisioning)
   - Web UI build pipeline
@@ -52,6 +55,7 @@ Threat IDs must be stable over time. When a new class of risk is discovered:
 | THR-8 | Multi-language drift | Go gates are green but TS/CDK/contracts are failing (or vice versa); CI doesn’t enforce the whole system. | QUA-1 QUA-2 CON-2 MAI-4 | `bash gov-infra/verifiers/gov-verify-rubric.sh` (QUA-1/2, CON-2, MAI-4) |
 | THR-9 | Coverage denominator games | Coverage target is “met” by shrinking scope or excluding critical packages; the number becomes meaningless. | QUA-3 COM-4 | `bash gov-infra/verifiers/gov-verify-rubric.sh` (QUA-3, COM-4) |
 | THR-10 | Governance drift (docs claim controls that aren’t real) | Threats and controls diverge; rubric/roadmap become stale; CI stops enforcing verifiers. | DOC-5 DOC-4 MAI-4 COM-3 | `bash gov-infra/verifiers/gov-verify-rubric.sh` (DOC-5, DOC-4, MAI-4, COM-3) |
+| THR-11 | Bounded mailbox content/state drift | Host's soul comm mailbox exception expands beyond delivery artifacts: content is retained indefinitely, list endpoints expose full bodies, read/archive/delete state lacks audit, instance-auth falls back to plaintext, or mailbox data crosses tenant boundaries. | CMP-4 SEC-4 CON-3 DOC-4 | `bash gov-infra/verifiers/gov-verify-rubric.sh` (CMP-4 after Host 1, SEC-4/CON-3 as APIs land) |
 
 ## Parity Rule (no “named threat without control”)
 - Every `THR-*` listed above must appear at least once in the controls matrix “Threat IDs” column.
