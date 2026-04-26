@@ -24,14 +24,16 @@ import (
 )
 
 type mailboxAPITestDB struct {
-	db        *ttmocks.MockExtendedDB
-	qKey      *ttmocks.MockQuery
-	qIdentity *ttmocks.MockQuery
-	qDomain   *ttmocks.MockQuery
-	qPrefs    *ttmocks.MockQuery
-	qChannel  *ttmocks.MockQuery
-	qMsg      *ttmocks.MockQuery
-	qAudit    *ttmocks.MockQuery
+	db            *ttmocks.MockExtendedDB
+	qKey          *ttmocks.MockQuery
+	qIdentity     *ttmocks.MockQuery
+	qDomain       *ttmocks.MockQuery
+	qPrefs        *ttmocks.MockQuery
+	qChannel      *ttmocks.MockQuery
+	qMsg          *ttmocks.MockQuery
+	qCommActivity *ttmocks.MockQuery
+	qStatus       *ttmocks.MockQuery
+	qAudit        *ttmocks.MockQuery
 }
 
 type fakeMailboxAPIContentStore struct{}
@@ -76,6 +78,78 @@ func TestHandleSoulCommMailboxListRedactsContent(t *testing.T) {
 	if out.Messages[0].Preview != "redacted preview" || out.Messages[0].Content.ContentHref == "" {
 		t.Fatalf("unexpected message summary: %#v", out.Messages[0])
 	}
+	if out.Messages[0].MessageRef != out.Messages[0].DeliveryID {
+		t.Fatalf("expected canonical messageRef to equal deliveryId in v1: %#v", out.Messages[0])
+	}
+}
+
+func TestHandleSoulCommMailboxListAppliesBodyFilters(t *testing.T) {
+	t.Parallel()
+
+	fixture := newMailboxAPITestDB()
+	expectMailboxAPIAccess(t, fixture, soulLifecycleTestAgentIDHex)
+	match := mailboxAPITestMessage(soulLifecycleTestAgentIDHex)
+	match.Read = false
+	match.Archived = false
+	match.Preview = "Alice sent a redacted preview"
+	wrongChannel := mailboxAPITestMessage(soulLifecycleTestAgentIDHex)
+	wrongChannel.DeliveryID = "comm-delivery-sms"
+	wrongChannel.ChannelType = commChannelSMS
+	read := mailboxAPITestMessage(soulLifecycleTestAgentIDHex)
+	read.DeliveryID = "comm-delivery-read"
+	read.Read = true
+	archived := mailboxAPITestMessage(soulLifecycleTestAgentIDHex)
+	archived.DeliveryID = "comm-delivery-archived"
+	archived.Archived = true
+	deleted := mailboxAPITestMessage(soulLifecycleTestAgentIDHex)
+	deleted.DeliveryID = "comm-delivery-deleted"
+	deleted.Deleted = true
+	wrongQuery := mailboxAPITestMessage(soulLifecycleTestAgentIDHex)
+	wrongQuery.DeliveryID = "comm-delivery-other"
+	wrongQuery.Preview = "not the requested metadata"
+
+	fixture.qMsg.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulCommMailboxMessage")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulCommMailboxMessage](t, args, 0)
+		*dest = []*models.SoulCommMailboxMessage{match, wrongChannel, read, archived, deleted, wrongQuery}
+	}).Once()
+
+	s := newMailboxAPITestServer(fixture)
+	resp, err := s.handleSoulCommMailboxList(newMailboxAPIContext(soulLifecycleTestAgentIDHex, "", map[string][]string{
+		"limit":           {"10"},
+		"channelType":     {"email"},
+		"direction":       {"inbound"},
+		"unreadOnly":      {"true"},
+		"includeArchived": {"false"},
+		"query":           {"alice"},
+	}))
+	require.NoError(t, err)
+	var out soulCommMailboxListResponse
+	require.NoError(t, json.Unmarshal(resp.Body, &out))
+	require.Equal(t, 1, out.Count)
+	require.Equal(t, match.DeliveryID, out.Messages[0].DeliveryID)
+}
+
+func TestHandleSoulCommMailboxListRejectsInvalidFilters(t *testing.T) {
+	t.Parallel()
+
+	for name, query := range map[string]map[string][]string{
+		"bad channel": {"channelType": {"fax"}},
+		"bad direction": {
+			"direction": {"sideways"},
+		},
+		"long query": {
+			"query": {strings.Repeat("a", mailboxListQueryMaxLength+1)},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			fixture := newMailboxAPITestDB()
+			expectMailboxAPIAccess(t, fixture, soulLifecycleTestAgentIDHex)
+
+			_, err := newMailboxAPITestServer(fixture).handleSoulCommMailboxList(newMailboxAPIContext(soulLifecycleTestAgentIDHex, "", query))
+			assertCommTheoryErrorCode(t, err, commCodeInvalidRequest, http.StatusBadRequest)
+		})
+	}
 }
 
 func TestHandleSoulCommMailboxContentFetchesExplicitBody(t *testing.T) {
@@ -99,6 +173,9 @@ func TestHandleSoulCommMailboxContentFetchesExplicitBody(t *testing.T) {
 	if out.Body != "Full body" || out.DeliveryID != "comm-delivery-1" || out.SHA256 != "sha256-body" {
 		t.Fatalf("unexpected content response: %#v", out)
 	}
+	if out.MessageRef != out.DeliveryID {
+		t.Fatalf("expected content response messageRef to equal deliveryId: %#v", out)
+	}
 }
 
 func TestHandleSoulCommMailboxGetRejectsCrossInstanceDelivery(t *testing.T) {
@@ -113,6 +190,100 @@ func TestHandleSoulCommMailboxGetRejectsCrossInstanceDelivery(t *testing.T) {
 	s := newMailboxAPITestServer(fixture)
 	_, err := s.handleSoulCommMailboxGet(newMailboxAPIContext(soulLifecycleTestAgentIDHex, "comm-delivery-1", nil))
 	assertCommTheoryErrorCode(t, err, "comm.not_found", http.StatusNotFound)
+}
+
+func TestHandleSoulCommMailboxGetResolvesLegacyMessageRef(t *testing.T) {
+	t.Parallel()
+
+	fixture := newMailboxAPITestDB()
+	expectMailboxAPIAccess(t, fixture, soulLifecycleTestAgentIDHex)
+	ref := "legacy-msg-1"
+	fixture.qMsg.On("First", mock.AnythingOfType("*models.SoulCommMailboxMessage")).Return(theoryErrors.ErrItemNotFound).Once()
+	msg := mailboxAPITestMessage(soulLifecycleTestAgentIDHex)
+	msg.MessageID = ref
+	msg.DeliveryID = models.SoulCommMailboxDeliveryID("inst1", soulLifecycleTestAgentIDHex, models.SoulCommDirectionInbound, ref)
+	expectMailboxMessageLoad(t, fixture.qMsg, msg)
+	fixture.qMsg.On("First", mock.AnythingOfType("*models.SoulCommMailboxMessage")).Return(theoryErrors.ErrItemNotFound).Once()
+
+	resp, err := newMailboxAPITestServer(fixture).handleSoulCommMailboxGet(newMailboxAPIContext(soulLifecycleTestAgentIDHex, ref, nil))
+	require.NoError(t, err)
+	out := decodeMailboxGetResponse(t, resp)
+	require.Equal(t, msg.DeliveryID, out.Message.MessageRef)
+	require.Equal(t, ref, out.Message.MessageID)
+}
+
+func TestHandleSoulCommMailboxGetRejectsAmbiguousLegacyMessageRef(t *testing.T) {
+	t.Parallel()
+
+	fixture := newMailboxAPITestDB()
+	expectMailboxAPIAccess(t, fixture, soulLifecycleTestAgentIDHex)
+	ref := "legacy-msg-ambiguous"
+	fixture.qMsg.On("First", mock.AnythingOfType("*models.SoulCommMailboxMessage")).Return(theoryErrors.ErrItemNotFound).Once()
+	inbound := mailboxAPITestMessage(soulLifecycleTestAgentIDHex)
+	inbound.MessageID = ref
+	inbound.DeliveryID = models.SoulCommMailboxDeliveryID("inst1", soulLifecycleTestAgentIDHex, models.SoulCommDirectionInbound, ref)
+	outbound := mailboxAPITestMessage(soulLifecycleTestAgentIDHex)
+	outbound.Direction = models.SoulCommDirectionOutbound
+	outbound.MessageID = ref
+	outbound.DeliveryID = models.SoulCommMailboxDeliveryID("inst1", soulLifecycleTestAgentIDHex, models.SoulCommDirectionOutbound, ref)
+	expectMailboxMessageLoad(t, fixture.qMsg, inbound)
+	expectMailboxMessageLoad(t, fixture.qMsg, outbound)
+
+	_, err := newMailboxAPITestServer(fixture).handleSoulCommMailboxGet(newMailboxAPIContext(soulLifecycleTestAgentIDHex, ref, nil))
+	assertCommTheoryErrorCode(t, err, "comm.ambiguous_message_ref", http.StatusConflict)
+}
+
+func TestHandleSoulCommMailboxReplyUsesCanonicalSource(t *testing.T) {
+	t.Parallel()
+
+	fixture := newMailboxAPITestDB()
+	expectMailboxAPIAccess(t, fixture, soulLifecycleTestAgentIDHex)
+	source := mailboxAPITestMessage(soulLifecycleTestAgentIDHex)
+	source.MessageID = "incoming-1"
+	source.ProviderMessageID = "<external-1@example.net>"
+	source.ThreadID = "comm-thread-existing"
+	source.FromAddress = "sender@example.com"
+	source.Subject = "Hello"
+	expectMailboxMessageLoad(t, fixture.qMsg, source)
+	expectMailboxAPIIdentityAccess(t, fixture, soulLifecycleTestAgentIDHex)
+	fixture.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentChannel](t, args, 0)
+		*dest = models.SoulAgentChannel{
+			AgentID:       soulLifecycleTestAgentIDHex,
+			ChannelType:   models.SoulChannelTypeEmail,
+			Identifier:    "agent@example.com",
+			Verified:      true,
+			Status:        models.SoulChannelStatusActive,
+			ProvisionedAt: time.Now().Add(-time.Hour),
+		}
+	}).Once()
+	fixture.qCommActivity.On("All", mock.AnythingOfType("*[]*models.SoulAgentCommActivity")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulAgentCommActivity](t, args, 0)
+		*dest = []*models.SoulAgentCommActivity{}
+	}).Twice()
+
+	var smtpBody string
+	s := newMailboxAPITestServer(fixture)
+	s.ssmGetParameter = func(context.Context, string) (string, error) { return "smtp-pass", nil }
+	s.migaduSendSMTP = func(_ context.Context, username string, password string, from string, recipients []string, data []byte) error {
+		require.Equal(t, "agent@example.com", username)
+		require.Equal(t, "smtp-pass", password)
+		require.Equal(t, []string{"sender@example.com"}, recipients)
+		smtpBody = string(data)
+		return nil
+	}
+
+	ctx := newMailboxAPIContext(soulLifecycleTestAgentIDHex, "comm-delivery-1", nil)
+	ctx.Request.Body = []byte(`{"body":"Reply body"}`)
+	resp, err := s.handleSoulCommMailboxReply(ctx)
+	require.NoError(t, err)
+	out := decodeSoulCommSendResponse(t, resp)
+	require.NotEmpty(t, out.MessageRef)
+	require.Equal(t, out.DeliveryID, out.MessageRef)
+	require.Equal(t, source.ThreadID, out.ThreadID)
+	require.Contains(t, smtpBody, "To: sender@example.com")
+	require.Contains(t, smtpBody, "Subject: Re: Hello")
+	require.Contains(t, smtpBody, "In-Reply-To: <external-1@example.net>")
 }
 
 func TestHandleSoulCommContactabilityReturnsBoundedAffordances(t *testing.T) {
@@ -322,14 +493,16 @@ func decodeMailboxContactabilityResponse(t *testing.T, resp *apptheory.Response)
 func newMailboxAPITestDB() mailboxAPITestDB {
 	db := ttmocks.NewMockExtendedDB()
 	fixture := mailboxAPITestDB{
-		db:        db,
-		qKey:      new(ttmocks.MockQuery),
-		qIdentity: new(ttmocks.MockQuery),
-		qDomain:   new(ttmocks.MockQuery),
-		qPrefs:    new(ttmocks.MockQuery),
-		qChannel:  new(ttmocks.MockQuery),
-		qMsg:      new(ttmocks.MockQuery),
-		qAudit:    new(ttmocks.MockQuery),
+		db:            db,
+		qKey:          new(ttmocks.MockQuery),
+		qIdentity:     new(ttmocks.MockQuery),
+		qDomain:       new(ttmocks.MockQuery),
+		qPrefs:        new(ttmocks.MockQuery),
+		qChannel:      new(ttmocks.MockQuery),
+		qMsg:          new(ttmocks.MockQuery),
+		qCommActivity: new(ttmocks.MockQuery),
+		qStatus:       new(ttmocks.MockQuery),
+		qAudit:        new(ttmocks.MockQuery),
 	}
 	db.On("WithContext", mock.Anything).Return(db).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.InstanceKey")).Return(fixture.qKey).Maybe()
@@ -338,16 +511,21 @@ func newMailboxAPITestDB() mailboxAPITestDB {
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentContactPreferences")).Return(fixture.qPrefs).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentChannel")).Return(fixture.qChannel).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulCommMailboxMessage")).Return(fixture.qMsg).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentCommActivity")).Return(fixture.qCommActivity).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulCommMessageStatus")).Return(fixture.qStatus).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.AuditLogEntry")).Return(fixture.qAudit).Maybe()
-	for _, q := range []*ttmocks.MockQuery{fixture.qKey, fixture.qIdentity, fixture.qDomain, fixture.qPrefs, fixture.qChannel, fixture.qMsg, fixture.qAudit} {
+	for _, q := range []*ttmocks.MockQuery{fixture.qKey, fixture.qIdentity, fixture.qDomain, fixture.qPrefs, fixture.qChannel, fixture.qMsg, fixture.qCommActivity, fixture.qStatus, fixture.qAudit} {
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("Index", mock.Anything).Return(q).Maybe()
 		q.On("OrderBy", mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("Limit", mock.Anything).Return(q).Maybe()
 		q.On("Cursor", mock.Anything).Return(q).Maybe()
 		q.On("IfExists").Return(q).Maybe()
+		q.On("IfNotExists").Return(q).Maybe()
 		q.On("ConsistentRead").Return(q).Maybe()
 		q.On("Update", mock.Anything).Return(nil).Maybe()
+		q.On("Create").Return(nil).Maybe()
+		q.On("All", mock.Anything).Return(nil).Maybe()
 	}
 	return fixture
 }
@@ -387,12 +565,32 @@ func expectMailboxAPIAccess(t *testing.T, fixture mailboxAPITestDB, agentID stri
 	}).Once()
 }
 
+func expectMailboxAPIIdentityAccess(t *testing.T, fixture mailboxAPITestDB, agentID string) {
+	t.Helper()
+	fixture.qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
+		*dest = models.SoulAgentIdentity{AgentID: agentID, Domain: "example.com", Status: models.SoulAgentStatusActive, LifecycleStatus: models.SoulAgentStatusActive}
+	}).Once()
+	fixture.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
+		*dest = models.Domain{Domain: "example.com", InstanceSlug: "inst1", Status: models.DomainStatusVerified}
+	}).Once()
+}
+
 func expectMailboxMessageLoad(t *testing.T, q *ttmocks.MockQuery, msg *models.SoulCommMailboxMessage) {
 	t.Helper()
 	q.On("First", mock.AnythingOfType("*models.SoulCommMailboxMessage")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulCommMailboxMessage](t, args, 0)
 		*dest = *msg
 	}).Once()
+}
+
+func decodeSoulCommSendResponse(t *testing.T, resp *apptheory.Response) soulCommSendResponse {
+	t.Helper()
+	require.NotNil(t, resp)
+	var out soulCommSendResponse
+	require.NoError(t, json.Unmarshal(resp.Body, &out))
+	return out
 }
 
 func mailboxAPITestMessage(agentID string) *models.SoulCommMailboxMessage {
@@ -567,8 +765,48 @@ func TestSoulCommMailboxHelpersCoverEdges(t *testing.T) {
 	require.Equal(t, commmailbox.ContentPointer{}, mailboxContentPointer(nil))
 	require.Empty(t, formatMailboxTime(time.Time{}))
 	require.True(t, queryBool(&apptheory.Context{Request: apptheory.Request{Query: map[string][]string{"includeDeleted": {"yes"}}}}, "includeDeleted"))
+	require.False(t, queryPresent(&apptheory.Context{}, "missing"))
+	require.Equal(t, "<comm-msg-1@lessersoul.ai>", emailMessageIDReference("comm-msg-1"))
+	require.Equal(t, "<external@example.net>", emailMessageIDReference("<external@example.net>"))
+	require.Equal(t, "Re: message", mailboxReplySubject(""))
+	require.Equal(t, "Re: Hello", mailboxReplySubject("Hello"))
+	require.Equal(t, "re: already", mailboxReplySubject("re: already"))
 
-	_, appErr := newMailboxAPITestServer(newMailboxAPITestDB()).loadMailboxMessage(context.Background(), "inst1", soulLifecycleTestAgentIDHex, "")
+	filters, appErr := parseMailboxListFilters(&apptheory.Context{Request: apptheory.Request{Query: map[string][]string{
+		"limit":           {"5"},
+		"read":            {"true"},
+		"includeArchived": {"false"},
+		"deleted":         {"false"},
+		"channelType":     {"email"},
+		"direction":       {"inbound"},
+		"threadId":        {"thread-1"},
+		"query":           {"sender"},
+	}}})
+	require.Nil(t, appErr)
+	require.Equal(t, 5, filters.limit)
+	require.True(t, filters.hasPostQueryFilters())
+	require.GreaterOrEqual(t, filters.queryLimit(), 25)
+	msg := mailboxAPITestMessage(soulLifecycleTestAgentIDHex)
+	msg.FromAddress = "sender@example.com"
+	msg.Read = true
+	require.True(t, filters.matches(msg))
+	msg.Deleted = true
+	require.False(t, filters.matches(msg))
+	msg.Deleted = false
+	msg.Archived = true
+	require.False(t, filters.matches(msg))
+
+	recipient, appErr := mailboxReplyRecipient(mailboxAPITestMessage(soulLifecycleTestAgentIDHex), commChannelEmail)
+	require.Nil(t, appErr)
+	require.Equal(t, "sender@example.com", recipient)
+	outbound := mailboxAPITestMessage(soulLifecycleTestAgentIDHex)
+	outbound.Direction = models.SoulCommDirectionOutbound
+	outbound.ToNumber = "+15551234567"
+	recipient, appErr = mailboxReplyRecipient(outbound, commChannelSMS)
+	require.Nil(t, appErr)
+	require.Equal(t, "+15551234567", recipient)
+
+	_, appErr = newMailboxAPITestServer(newMailboxAPITestDB()).loadMailboxMessage(context.Background(), "inst1", soulLifecycleTestAgentIDHex, "")
 	assertCommTheoryErrorCode(t, appErr, commCodeInvalidRequest, http.StatusBadRequest)
 }
 

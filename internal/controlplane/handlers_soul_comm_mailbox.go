@@ -16,6 +16,7 @@ import (
 )
 
 const mailboxContentMaxBytes int64 = 1024 * 1024
+const mailboxListQueryMaxLength = 128
 
 type soulCommMailboxListResponse struct {
 	InstanceSlug string                   `json:"instanceSlug"`
@@ -33,6 +34,7 @@ type soulCommMailboxGetResponse struct {
 type soulCommMailboxContentResponse struct {
 	InstanceSlug string `json:"instanceSlug"`
 	AgentID      string `json:"agentId"`
+	MessageRef   string `json:"messageRef"`
 	DeliveryID   string `json:"deliveryId"`
 	MessageID    string `json:"messageId"`
 	ContentType  string `json:"contentType"`
@@ -42,6 +44,7 @@ type soulCommMailboxContentResponse struct {
 }
 
 type soulCommMailboxMessage struct {
+	MessageRef        string                 `json:"messageRef"`
 	DeliveryID        string                 `json:"deliveryId"`
 	MessageID         string                 `json:"messageId"`
 	ThreadID          string                 `json:"threadId"`
@@ -87,6 +90,20 @@ type mailboxRequestContext struct {
 	identity *models.SoulAgentIdentity
 }
 
+type mailboxListFilters struct {
+	limit           int
+	cursor          string
+	channelType     string
+	direction       string
+	read            *bool
+	archived        *bool
+	deleted         *bool
+	includeArchived *bool
+	includeDeleted  bool
+	threadID        string
+	query           string
+}
+
 type mailboxStateAction struct {
 	name        string
 	eventDetail string
@@ -99,20 +116,24 @@ func (s *Server) handleSoulCommMailboxList(ctx *apptheory.Context) (*apptheory.R
 		return nil, appErr
 	}
 
-	limit := parseLimit(queryFirst(ctx, "limit"), 50, 1, 100)
-	cursor := strings.TrimSpace(queryFirst(ctx, "cursor"))
-	includeDeleted := queryBool(ctx, "includeDeleted")
-	items, hasMore, nextCursor, listErr := s.listMailboxMessages(ctx.Context(), reqCtx.key.InstanceSlug, reqCtx.agentID, limit, cursor)
+	filters, appErr := parseMailboxListFilters(ctx)
+	if appErr != nil {
+		return nil, appErr
+	}
+	items, hasMore, nextCursor, listErr := s.listMailboxMessages(ctx.Context(), reqCtx.key.InstanceSlug, reqCtx.agentID, filters)
 	if listErr != nil {
 		return nil, apptheory.NewAppTheoryError(commCodeInternal, "internal error").WithStatusCode(http.StatusInternalServerError)
 	}
 
 	messages := make([]soulCommMailboxMessage, 0, len(items))
 	for _, item := range items {
-		if item == nil || (item.Deleted && !includeDeleted) {
+		if item == nil || !filters.matches(item) {
 			continue
 		}
 		messages = append(messages, mailboxMessageJSON(item))
+		if len(messages) >= filters.limit {
+			break
+		}
 	}
 
 	return apptheory.JSON(http.StatusOK, soulCommMailboxListResponse{
@@ -130,7 +151,7 @@ func (s *Server) handleSoulCommMailboxGet(ctx *apptheory.Context) (*apptheory.Re
 	if appErr != nil {
 		return nil, appErr
 	}
-	item, appErr := s.loadMailboxMessage(ctx.Context(), reqCtx.key.InstanceSlug, reqCtx.agentID, ctx.Param("deliveryId"))
+	item, appErr := s.loadMailboxMessageByRef(ctx.Context(), reqCtx.key.InstanceSlug, reqCtx.agentID, mailboxMessageRefParam(ctx))
 	if appErr != nil {
 		return nil, appErr
 	}
@@ -145,7 +166,7 @@ func (s *Server) handleSoulCommMailboxContent(ctx *apptheory.Context) (*apptheor
 	if appErr != nil {
 		return nil, appErr
 	}
-	item, appErr := s.loadMailboxMessage(ctx.Context(), reqCtx.key.InstanceSlug, reqCtx.agentID, ctx.Param("deliveryId"))
+	item, appErr := s.loadMailboxMessageByRef(ctx.Context(), reqCtx.key.InstanceSlug, reqCtx.agentID, mailboxMessageRefParam(ctx))
 	if appErr != nil {
 		return nil, appErr
 	}
@@ -170,6 +191,7 @@ func (s *Server) handleSoulCommMailboxContent(ctx *apptheory.Context) (*apptheor
 	return apptheory.JSON(http.StatusOK, soulCommMailboxContentResponse{
 		InstanceSlug: strings.ToLower(strings.TrimSpace(item.InstanceSlug)),
 		AgentID:      strings.ToLower(strings.TrimSpace(item.AgentID)),
+		MessageRef:   mailboxMessageRef(item),
 		DeliveryID:   strings.TrimSpace(item.DeliveryID),
 		MessageID:    strings.TrimSpace(item.MessageID),
 		ContentType:  strings.TrimSpace(content.ContentType),
@@ -245,7 +267,7 @@ func (s *Server) handleSoulCommMailboxState(ctx *apptheory.Context, action mailb
 	if appErr != nil {
 		return nil, appErr
 	}
-	item, appErr := s.loadMailboxMessage(ctx.Context(), reqCtx.key.InstanceSlug, reqCtx.agentID, ctx.Param("deliveryId"))
+	item, appErr := s.loadMailboxMessageByRef(ctx.Context(), reqCtx.key.InstanceSlug, reqCtx.agentID, mailboxMessageRefParam(ctx))
 	if appErr != nil {
 		return nil, appErr
 	}
@@ -294,18 +316,168 @@ func (s *Server) requireMailboxRequestContext(ctx *apptheory.Context) (mailboxRe
 	return mailboxRequestContext{key: key, agentID: agentID, identity: identity}, nil
 }
 
-func (s *Server) listMailboxMessages(ctx context.Context, instanceSlug string, agentID string, limit int, cursor string) ([]*models.SoulCommMailboxMessage, bool, string, error) {
+func parseMailboxListFilters(ctx *apptheory.Context) (mailboxListFilters, *apptheory.AppTheoryError) {
+	filters := mailboxListFilters{
+		limit:          parseLimit(queryFirst(ctx, "limit"), 50, 1, 100),
+		cursor:         strings.TrimSpace(queryFirst(ctx, "cursor")),
+		channelType:    strings.ToLower(strings.TrimSpace(queryFirst(ctx, "channelType"))),
+		direction:      strings.ToLower(strings.TrimSpace(queryFirst(ctx, "direction"))),
+		threadID:       strings.TrimSpace(queryFirst(ctx, "threadId")),
+		query:          strings.ToLower(strings.TrimSpace(queryFirst(ctx, "query"))),
+		includeDeleted: queryBool(ctx, "includeDeleted"),
+	}
+	if filters.channelType != "" && filters.channelType != commChannelEmail && filters.channelType != commChannelSMS && filters.channelType != commChannelVoice {
+		return mailboxListFilters{}, apptheory.NewAppTheoryError(commCodeInvalidRequest, "channelType is invalid").WithStatusCode(http.StatusBadRequest)
+	}
+	if filters.direction != "" && filters.direction != models.SoulCommDirectionInbound && filters.direction != models.SoulCommDirectionOutbound {
+		return mailboxListFilters{}, apptheory.NewAppTheoryError(commCodeInvalidRequest, "direction is invalid").WithStatusCode(http.StatusBadRequest)
+	}
+	if len(filters.query) > mailboxListQueryMaxLength {
+		return mailboxListFilters{}, apptheory.NewAppTheoryError(commCodeInvalidRequest, "query is too long").WithStatusCode(http.StatusBadRequest)
+	}
+	if queryPresent(ctx, "read") {
+		value := queryBool(ctx, "read")
+		filters.read = &value
+	}
+	if queryBool(ctx, "unreadOnly") {
+		value := false
+		filters.read = &value
+	}
+	if queryPresent(ctx, "archived") {
+		value := queryBool(ctx, "archived")
+		filters.archived = &value
+	}
+	if queryPresent(ctx, "includeArchived") {
+		value := queryBool(ctx, "includeArchived")
+		filters.includeArchived = &value
+	}
+	if queryPresent(ctx, "deleted") {
+		value := queryBool(ctx, "deleted")
+		filters.deleted = &value
+		if value {
+			filters.includeDeleted = true
+		}
+	}
+	return filters, nil
+}
+
+func (f mailboxListFilters) queryLimit() int {
+	if f.hasPostQueryFilters() {
+		scanLimit := f.limit * 4
+		if scanLimit < 25 {
+			scanLimit = 25
+		}
+		if scanLimit > 200 {
+			scanLimit = 200
+		}
+		return scanLimit
+	}
+	return f.limit
+}
+
+func (f mailboxListFilters) hasPostQueryFilters() bool {
+	return f.channelType != "" ||
+		f.direction != "" ||
+		f.read != nil ||
+		f.archived != nil ||
+		f.deleted != nil ||
+		f.includeArchived != nil ||
+		f.includeDeleted ||
+		f.query != ""
+}
+
+func (f mailboxListFilters) matches(item *models.SoulCommMailboxMessage) bool {
+	if item == nil {
+		return false
+	}
+	return f.matchesChannelAndDirection(item) && f.matchesReadArchiveState(item) && f.matchesDeletedState(item) && f.matchesQuery(item)
+}
+
+func (f mailboxListFilters) matchesChannelAndDirection(item *models.SoulCommMailboxMessage) bool {
+	if f.channelType != "" && !strings.EqualFold(strings.TrimSpace(item.ChannelType), f.channelType) {
+		return false
+	}
+	if f.direction != "" && !strings.EqualFold(strings.TrimSpace(item.Direction), f.direction) {
+		return false
+	}
+	return true
+}
+
+func (f mailboxListFilters) matchesReadArchiveState(item *models.SoulCommMailboxMessage) bool {
+	if f.read != nil && item.Read != *f.read {
+		return false
+	}
+	if f.archived != nil && item.Archived != *f.archived {
+		return false
+	}
+	if f.includeArchived != nil && !*f.includeArchived && item.Archived {
+		return false
+	}
+	return true
+}
+
+func (f mailboxListFilters) matchesDeletedState(item *models.SoulCommMailboxMessage) bool {
+	if f.deleted != nil {
+		if item.Deleted != *f.deleted {
+			return false
+		}
+	} else if item.Deleted && !f.includeDeleted {
+		return false
+	}
+	return true
+}
+
+func (f mailboxListFilters) matchesQuery(item *models.SoulCommMailboxMessage) bool {
+	return f.query == "" || mailboxMetadataMatchesQuery(item, f.query)
+}
+
+func mailboxMetadataMatchesQuery(item *models.SoulCommMailboxMessage, query string) bool {
+	query = strings.ToLower(strings.TrimSpace(query))
+	if item == nil || query == "" {
+		return true
+	}
+	fields := []string{
+		item.DeliveryID,
+		item.MessageID,
+		item.ThreadID,
+		item.ProviderMessageID,
+		item.Subject,
+		item.Preview,
+		item.FromAddress,
+		item.FromNumber,
+		item.FromSoulAgentID,
+		item.FromDisplayName,
+		item.ToAddress,
+		item.ToNumber,
+		item.ToSoulAgentID,
+		item.ToDisplayName,
+	}
+	for _, field := range fields {
+		if strings.Contains(strings.ToLower(strings.TrimSpace(field)), query) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) listMailboxMessages(ctx context.Context, instanceSlug string, agentID string, filters mailboxListFilters) ([]*models.SoulCommMailboxMessage, bool, string, error) {
 	if s == nil || s.store == nil || s.store.DB == nil {
 		return nil, false, "", fmt.Errorf("store not configured")
 	}
 	items := []*models.SoulCommMailboxMessage{}
 	qb := s.store.DB.WithContext(ctx).
-		Model(&models.SoulCommMailboxMessage{}).
-		Where("PK", "=", models.SoulCommMailboxAgentPK(instanceSlug, agentID)).
-		OrderBy("SK", "DESC").
-		Limit(limit)
-	if strings.TrimSpace(cursor) != "" {
-		qb = qb.Cursor(strings.TrimSpace(cursor))
+		Model(&models.SoulCommMailboxMessage{})
+	if strings.TrimSpace(filters.threadID) != "" {
+		qb = qb.Index("gsi2").
+			Where("gsi2PK", "=", models.SoulCommMailboxThreadPK(instanceSlug, agentID, filters.threadID)).
+			OrderBy("gsi2SK", "DESC")
+	} else {
+		qb = qb.Where("PK", "=", models.SoulCommMailboxAgentPK(instanceSlug, agentID)).
+			OrderBy("SK", "DESC")
+	}
+	qb = qb.Limit(filters.queryLimit())
+	if strings.TrimSpace(filters.cursor) != "" {
+		qb = qb.Cursor(strings.TrimSpace(filters.cursor))
 	}
 	paged, err := qb.AllPaginated(&items)
 	if err != nil {
@@ -318,6 +490,54 @@ func (s *Server) listMailboxMessages(ctx context.Context, instanceSlug string, a
 }
 
 func (s *Server) loadMailboxMessage(ctx context.Context, instanceSlug string, agentID string, deliveryID string) (*models.SoulCommMailboxMessage, *apptheory.AppTheoryError) {
+	return s.loadMailboxMessageByDeliveryID(ctx, instanceSlug, agentID, deliveryID)
+}
+
+func (s *Server) loadMailboxMessageByRef(ctx context.Context, instanceSlug string, agentID string, messageRef string) (*models.SoulCommMailboxMessage, *apptheory.AppTheoryError) {
+	messageRef = strings.TrimSpace(messageRef)
+	if messageRef == "" {
+		return nil, apptheory.NewAppTheoryError(commCodeInvalidRequest, "messageRef is required").WithStatusCode(http.StatusBadRequest)
+	}
+
+	if item, appErr := s.loadMailboxMessageByDeliveryID(ctx, instanceSlug, agentID, messageRef); appErr == nil {
+		return item, nil
+	} else if appErr.StatusCode != http.StatusNotFound {
+		return nil, appErr
+	} else if strings.HasPrefix(messageRef, "comm-delivery-") {
+		return nil, appErr
+	}
+
+	candidates := []string{
+		models.SoulCommMailboxDeliveryID(instanceSlug, agentID, models.SoulCommDirectionInbound, messageRef),
+		models.SoulCommMailboxDeliveryID(instanceSlug, agentID, models.SoulCommDirectionOutbound, messageRef),
+	}
+	var matched *models.SoulCommMailboxMessage
+	for _, deliveryID := range candidates {
+		if deliveryID == messageRef {
+			continue
+		}
+		item, appErr := s.loadMailboxMessageByDeliveryID(ctx, instanceSlug, agentID, deliveryID)
+		if appErr != nil {
+			if appErr.StatusCode == http.StatusNotFound {
+				continue
+			}
+			return nil, appErr
+		}
+		if strings.TrimSpace(item.MessageID) != messageRef {
+			continue
+		}
+		if matched != nil && !strings.EqualFold(strings.TrimSpace(matched.DeliveryID), strings.TrimSpace(item.DeliveryID)) {
+			return nil, apptheory.NewAppTheoryError("comm.ambiguous_message_ref", "messageRef is ambiguous; use deliveryId").WithStatusCode(http.StatusConflict)
+		}
+		matched = item
+	}
+	if matched != nil {
+		return matched, nil
+	}
+	return nil, apptheory.NewAppTheoryError("comm.not_found", "message not found").WithStatusCode(http.StatusNotFound)
+}
+
+func (s *Server) loadMailboxMessageByDeliveryID(ctx context.Context, instanceSlug string, agentID string, deliveryID string) (*models.SoulCommMailboxMessage, *apptheory.AppTheoryError) {
 	if s == nil || s.store == nil || s.store.DB == nil {
 		return nil, apptheory.NewAppTheoryError(commCodeInternal, "internal error").WithStatusCode(http.StatusInternalServerError)
 	}
@@ -385,6 +605,7 @@ func mailboxMessageJSON(item *models.SoulCommMailboxMessage) soulCommMailboxMess
 		return soulCommMailboxMessage{}
 	}
 	return soulCommMailboxMessage{
+		MessageRef:        mailboxMessageRef(item),
 		DeliveryID:        strings.TrimSpace(item.DeliveryID),
 		MessageID:         strings.TrimSpace(item.MessageID),
 		ThreadID:          strings.TrimSpace(item.ThreadID),
@@ -442,7 +663,24 @@ func mailboxContentHref(item *models.SoulCommMailboxMessage) string {
 	if item == nil || !item.HasContent || item.Deleted {
 		return ""
 	}
-	return fmt.Sprintf("/api/v1/soul/comm/mailbox/%s/messages/%s/content", strings.TrimSpace(item.AgentID), strings.TrimSpace(item.DeliveryID))
+	return fmt.Sprintf("/api/v1/soul/comm/mailbox/%s/messages/%s/content", strings.TrimSpace(item.AgentID), mailboxMessageRef(item))
+}
+
+func mailboxMessageRef(item *models.SoulCommMailboxMessage) string {
+	if item == nil {
+		return ""
+	}
+	return strings.TrimSpace(item.DeliveryID)
+}
+
+func mailboxMessageRefParam(ctx *apptheory.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if ref := strings.TrimSpace(ctx.Param("messageRef")); ref != "" {
+		return ref
+	}
+	return strings.TrimSpace(ctx.Param("deliveryId"))
 }
 
 func formatMailboxTime(t time.Time) string {
@@ -459,4 +697,15 @@ func queryBool(ctx *apptheory.Context, key string) bool {
 	default:
 		return false
 	}
+}
+
+func queryPresent(ctx *apptheory.Context, key string) bool {
+	if ctx == nil {
+		return false
+	}
+	if ctx.Request.Query == nil {
+		return false
+	}
+	_, ok := ctx.Request.Query[key]
+	return ok
 }

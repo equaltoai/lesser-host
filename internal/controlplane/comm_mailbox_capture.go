@@ -32,6 +32,9 @@ func (s *Server) captureOutboundMailbox(ctx context.Context, key *models.Instanc
 	}
 	deliveryID := models.SoulCommMailboxDeliveryID(instanceSlug, agentID, models.SoulCommDirectionOutbound, messageID)
 	threadID := models.SoulCommMailboxThreadID(instanceSlug, agentID, channel, threadRoot)
+	if strings.TrimSpace(req.threadID) != "" {
+		threadID = strings.TrimSpace(req.threadID)
+	}
 
 	ptr, err := s.mailboxContentStore.PutContent(ctx, commmailbox.ContentInput{
 		DeliveryID:      deliveryID,

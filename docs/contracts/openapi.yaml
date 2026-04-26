@@ -22,6 +22,15 @@ components:
         type: string
         minLength: 1
         maxLength: 128
+    SoulMailboxMessageRef:
+      name: messageRef
+      in: path
+      required: true
+      description: Opaque stable body-facing mailbox reference. In v1 this is backed by deliveryId; legacy messageId values are accepted only when unambiguous for the authenticated instance and agent.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
 
   responses:
     BadRequest:
@@ -44,6 +53,12 @@ components:
             $ref: "#/components/schemas/ErrorEnvelope"
     RateLimited:
       description: Rate limited
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    Conflict:
+      description: Conflict
       content:
         application/json:
           schema:
@@ -334,6 +349,9 @@ components:
 
     SoulCommMailboxContentResponse:
       $ref: "../spec/v3/schemas/soul-comm-mailbox-content.response.schema.json"
+
+    SoulCommMailboxReplyRequest:
+      $ref: "../spec/v3/schemas/soul-comm-mailbox-reply.request.schema.json"
 
     SoulAgentCommActivityItem:
       $ref: "../spec/v3/schemas/soul-agent-comm-activity-item.schema.json"
@@ -2620,7 +2638,10 @@ paths:
     get:
       operationId: soulCommMailboxList
       summary: List redacted canonical mailbox messages
-      description: Returns bounded metadata and previews only. Full message content is fetched explicitly from the content endpoint.
+      description: |
+        Returns bounded metadata and previews only. Full message content is fetched explicitly from the content endpoint.
+        Filters are evaluated within the authenticated instance + exact agent mailbox. `query` is bounded metadata/preview
+        matching only; it is not full-body search and never scans across tenants or agents.
       security:
         - instanceKeyAuth: []
       parameters:
@@ -2649,6 +2670,63 @@ paths:
           required: false
           schema:
             type: boolean
+        - name: deleted
+          in: query
+          required: false
+          schema:
+            type: boolean
+          description: When present, filters exactly by deleted state. `deleted=true` implies deleted rows may be returned.
+        - name: includeArchived
+          in: query
+          required: false
+          schema:
+            type: boolean
+          description: Set false to exclude archived messages. Omitted preserves legacy behavior and may include archived messages.
+        - name: archived
+          in: query
+          required: false
+          schema:
+            type: boolean
+          description: When present, filters exactly by archived state.
+        - name: read
+          in: query
+          required: false
+          schema:
+            type: boolean
+          description: When present, filters exactly by read state.
+        - name: unreadOnly
+          in: query
+          required: false
+          schema:
+            type: boolean
+          description: Convenience alias for `read=false`.
+        - name: channelType
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [email, sms, voice]
+        - name: direction
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [inbound, outbound]
+        - name: threadId
+          in: query
+          required: false
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+        - name: query
+          in: query
+          required: false
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+          description: Bounded metadata/preview match within the authenticated instance + exact agent mailbox.
       responses:
         "200":
           description: OK
@@ -2681,10 +2759,11 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorEnvelope"
 
-  /api/v1/soul/comm/mailbox/{agentId}/messages/{deliveryId}:
+  /api/v1/soul/comm/mailbox/{agentId}/messages/{messageRef}:
     get:
       operationId: soulCommMailboxGet
       summary: Get canonical mailbox message metadata
+      description: Accepts canonical messageRef/deliveryId and legacy messageId values only when unambiguous for the authenticated instance + agent.
       security:
         - instanceKeyAuth: []
       parameters:
@@ -2694,9 +2773,10 @@ paths:
           schema:
             type: string
             pattern: "^0x[0-9a-fA-F]{64}$"
-        - name: deliveryId
+        - name: messageRef
           in: path
           required: true
+          description: Opaque stable body-facing mailbox reference; v1 equals deliveryId and legacy messageId aliases are accepted only when unambiguous.
           schema:
             type: string
             minLength: 1
@@ -2726,6 +2806,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorEnvelope"
+        "409": { $ref: "#/components/responses/Conflict" }
         "429":
           description: Rate limited
           content:
@@ -2739,11 +2820,11 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorEnvelope"
 
-  /api/v1/soul/comm/mailbox/{agentId}/messages/{deliveryId}/content:
+  /api/v1/soul/comm/mailbox/{agentId}/messages/{messageRef}/content:
     get:
       operationId: soulCommMailboxContent
       summary: Explicitly fetch bounded mailbox message content
-      description: Returns full content only for a specific delivery. Calls are instance-key authenticated, rate-limited, and audit logged.
+      description: Returns full content only for a specific messageRef/delivery. Calls are instance-key authenticated, rate-limited, and audit logged.
       security:
         - instanceKeyAuth: []
       parameters:
@@ -2753,9 +2834,10 @@ paths:
           schema:
             type: string
             pattern: "^0x[0-9a-fA-F]{64}$"
-        - name: deliveryId
+        - name: messageRef
           in: path
           required: true
+          description: Opaque stable body-facing mailbox reference; v1 equals deliveryId and legacy messageId aliases are accepted only when unambiguous.
           schema:
             type: string
             minLength: 1
@@ -2785,6 +2867,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorEnvelope"
+        "409": { $ref: "#/components/responses/Conflict" }
         "429":
           description: Rate limited
           content:
@@ -2798,7 +2881,40 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorEnvelope"
 
-  /api/v1/soul/comm/mailbox/{agentId}/messages/{deliveryId}/read:
+  /api/v1/soul/comm/mailbox/{agentId}/messages/{messageRef}/reply:
+    post:
+      operationId: soulCommMailboxReply
+      summary: Reply to a canonical mailbox message
+      description: |
+        Resolves the messageRef against host's canonical mailbox state, derives recipient/thread/provider reply context,
+        and sends a new outbound soul comm. Body should call this endpoint instead of reconstructing reply recipients or
+        provider headers locally. The request is authenticated with strict hash-only instance API key auth.
+      security:
+        - instanceKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/SoulMailboxAgentId"
+        - $ref: "#/components/parameters/SoulMailboxMessageRef"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SoulCommMailboxReplyRequest"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SoulCommSendResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /api/v1/soul/comm/mailbox/{agentId}/messages/{messageRef}/read:
     post:
       operationId: soulCommMailboxMarkRead
       summary: Mark a mailbox message read
@@ -2806,7 +2922,7 @@ paths:
         - instanceKeyAuth: []
       parameters:
         - $ref: "#/components/parameters/SoulMailboxAgentId"
-        - $ref: "#/components/parameters/SoulMailboxDeliveryId"
+        - $ref: "#/components/parameters/SoulMailboxMessageRef"
       responses:
         "200":
           description: OK
@@ -2817,10 +2933,11 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
         "429": { $ref: "#/components/responses/RateLimited" }
         "500": { $ref: "#/components/responses/InternalError" }
 
-  /api/v1/soul/comm/mailbox/{agentId}/messages/{deliveryId}/unread:
+  /api/v1/soul/comm/mailbox/{agentId}/messages/{messageRef}/unread:
     post:
       operationId: soulCommMailboxMarkUnread
       summary: Mark a mailbox message unread
@@ -2828,7 +2945,7 @@ paths:
         - instanceKeyAuth: []
       parameters:
         - $ref: "#/components/parameters/SoulMailboxAgentId"
-        - $ref: "#/components/parameters/SoulMailboxDeliveryId"
+        - $ref: "#/components/parameters/SoulMailboxMessageRef"
       responses:
         "200":
           description: OK
@@ -2839,10 +2956,11 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
         "429": { $ref: "#/components/responses/RateLimited" }
         "500": { $ref: "#/components/responses/InternalError" }
 
-  /api/v1/soul/comm/mailbox/{agentId}/messages/{deliveryId}/archive:
+  /api/v1/soul/comm/mailbox/{agentId}/messages/{messageRef}/archive:
     post:
       operationId: soulCommMailboxArchive
       summary: Archive a mailbox message
@@ -2850,7 +2968,7 @@ paths:
         - instanceKeyAuth: []
       parameters:
         - $ref: "#/components/parameters/SoulMailboxAgentId"
-        - $ref: "#/components/parameters/SoulMailboxDeliveryId"
+        - $ref: "#/components/parameters/SoulMailboxMessageRef"
       responses:
         "200":
           description: OK
@@ -2861,10 +2979,11 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
         "429": { $ref: "#/components/responses/RateLimited" }
         "500": { $ref: "#/components/responses/InternalError" }
 
-  /api/v1/soul/comm/mailbox/{agentId}/messages/{deliveryId}/unarchive:
+  /api/v1/soul/comm/mailbox/{agentId}/messages/{messageRef}/unarchive:
     post:
       operationId: soulCommMailboxUnarchive
       summary: Unarchive a mailbox message
@@ -2872,7 +2991,7 @@ paths:
         - instanceKeyAuth: []
       parameters:
         - $ref: "#/components/parameters/SoulMailboxAgentId"
-        - $ref: "#/components/parameters/SoulMailboxDeliveryId"
+        - $ref: "#/components/parameters/SoulMailboxMessageRef"
       responses:
         "200":
           description: OK
@@ -2883,10 +3002,11 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
         "429": { $ref: "#/components/responses/RateLimited" }
         "500": { $ref: "#/components/responses/InternalError" }
 
-  /api/v1/soul/comm/mailbox/{agentId}/messages/{deliveryId}/delete:
+  /api/v1/soul/comm/mailbox/{agentId}/messages/{messageRef}/delete:
     post:
       operationId: soulCommMailboxDelete
       summary: Soft-delete a mailbox message
@@ -2895,7 +3015,7 @@ paths:
         - instanceKeyAuth: []
       parameters:
         - $ref: "#/components/parameters/SoulMailboxAgentId"
-        - $ref: "#/components/parameters/SoulMailboxDeliveryId"
+        - $ref: "#/components/parameters/SoulMailboxMessageRef"
       responses:
         "200":
           description: OK
@@ -2906,6 +3026,7 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
         "429": { $ref: "#/components/responses/RateLimited" }
         "500": { $ref: "#/components/responses/InternalError" }
 

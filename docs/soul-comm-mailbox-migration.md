@@ -5,8 +5,8 @@ mailbox contract approved in ADR 0005 and implemented by `lesser-host`.
 
 The intent is to keep authority in one place:
 
-- **host** owns canonical comm objects: `deliveryId`, `messageId`, `threadId`, provider status, delivery metadata,
-  bounded content, and read/unread/archive/delete state.
+- **host** owns canonical comm objects: `messageRef`, `deliveryId`, `messageId`, `threadId`, provider status, delivery
+  metadata, bounded content, and read/unread/archive/delete state.
 - **lesser** receives notification projections only. It may render summaries or ActivityPub/UX notifications, but it is
   not the mailbox source of truth.
 - **body** remains the MCP facade. It gates scope/profile, calls host's instance-authenticated mailbox APIs, and returns
@@ -23,16 +23,19 @@ The intent is to keep authority in one place:
 
 2. **Host mailbox APIs become the body contract**
    - `GET /api/v1/soul/comm/contactability/{agentId}` resolves exact-agent receive/send affordances.
-   - `GET /api/v1/soul/comm/mailbox/{agentId}/messages` lists redacted canonical messages.
-   - `GET /api/v1/soul/comm/mailbox/{agentId}/messages/{deliveryId}` returns canonical metadata for one delivery.
-   - `GET /api/v1/soul/comm/mailbox/{agentId}/messages/{deliveryId}/content` returns full content only by explicit
-     delivery fetch.
-   - read state APIs mutate canonical state:
-     - `POST .../{deliveryId}/read`
-     - `POST .../{deliveryId}/unread`
-     - `POST .../{deliveryId}/archive`
-     - `POST .../{deliveryId}/unarchive`
-     - `POST .../{deliveryId}/delete`
+  - `GET /api/v1/soul/comm/mailbox/{agentId}/messages` lists redacted canonical messages with exact-agent filters for
+    channel, direction, read/unread, archived/deleted state, thread, and bounded metadata/preview `query`.
+  - `GET /api/v1/soul/comm/mailbox/{agentId}/messages/{messageRef}` returns canonical metadata for one delivery.
+  - `GET /api/v1/soul/comm/mailbox/{agentId}/messages/{messageRef}/content` returns full content only by explicit
+    messageRef fetch.
+  - `POST /api/v1/soul/comm/mailbox/{agentId}/messages/{messageRef}/reply` derives recipient/thread/provider reply
+    context from host's canonical mailbox state and sends an outbound soul comm.
+  - read state APIs mutate canonical state:
+    - `POST .../{messageRef}/read`
+    - `POST .../{messageRef}/unread`
+    - `POST .../{messageRef}/archive`
+    - `POST .../{messageRef}/unarchive`
+    - `POST .../{messageRef}/delete`
 
 3. **Portal reads canonical mailbox state**
    - portal activity and inbound queue views read host mailbox rows rather than legacy activity/queue tables.
@@ -54,6 +57,14 @@ The intent is to keep authority in one place:
 
 - `POST /api/v1/soul/comm/send` and `GET /api/v1/soul/comm/status/{messageId}` remain available for existing outbound
   send/status callers.
+- Body-facing mailbox responses return `messageRef` as the canonical opaque reference. In v1 `messageRef` is backed by
+  `deliveryId`; `deliveryId` remains exposed for diagnostics. `messageId` remains legacy/idempotency/provider metadata,
+  not the primary public body reference.
+- Body MCP tool parameters may continue to be named `messageId` for compatibility, but docs should define the value as an
+  opaque host mailbox reference and pass it to host as `messageRef`.
+- Host accepts legacy `messageId` values on mailbox get/content/state/reply routes only when they resolve unambiguously
+  within the authenticated instance + exact agent mailbox. Ambiguous legacy refs fail with a conflict rather than
+  guessing.
 - Legacy `SoulAgentCommActivity` and `SoulAgentCommQueue` records may continue to be written during the migration window,
   but they are no longer authoritative for portal/body mailbox behavior.
 - Portal queue responses no longer include a `body` field. They expose redacted `preview`, `content.available`, content
@@ -74,7 +85,8 @@ The intent is to keep authority in one place:
 ## Rate limits and bounded content
 
 - Body-facing mailbox list/get/content/state endpoints are rate-limited with the control-plane comm API limits.
-- Lists are bounded and paginated where applicable; list responses include metadata/previews only.
+- Lists are bounded and paginated where applicable; list responses include metadata/previews only. `query` is limited to
+  metadata/preview fields already present in canonical rows, is capped in length, and is not logged as raw user content.
 - Full content is stored for the retention window defined by `SoulCommMailboxRetentionDays` and the mailbox content bucket
   lifecycle. Host must not turn mailbox content into permanent semantic memory.
 - Content objects are encrypted at rest and addressed only through host-owned content pointers. Storage bucket/key values
@@ -92,7 +104,8 @@ The intent is to keep authority in one place:
 
 Lesser projections are intentionally lossy summaries:
 
-- projection identity: `deliveryId`, `messageId`, `threadId`, `agentId`, channel type, direction, and timestamp
+- projection identity: `messageRef`, `deliveryId`, `messageId`, `threadId`, `agentId`, channel type, direction, and
+  timestamp
 - projection content: subject and preview only, not full body
 - projection state: optional notification state for UX only; canonical read/archive/delete state stays in host
 - projection retry: duplicate projections should be idempotent by `deliveryId`
@@ -106,7 +119,8 @@ Before body enables host-dependent mailbox tools against a stage:
 
 - host has deployed the Host 2+3+4 mailbox changes to that stage
 - body has an instance API key for the managed instance and never logs the raw token
-- body calls host list/get endpoints for metadata and host content endpoint only for explicit content reads
+- body calls host list/get endpoints for metadata, host content endpoint only for explicit content reads, and host reply
+  endpoint for replies instead of deriving provider reply headers locally
 - body maps host rate-limit and auth failures to MCP errors without retry storms
 - body writes no durable mailbox-content/read-state store of its own
 - lesser consumes projections as notifications, not source-of-truth mailbox records
