@@ -1,11 +1,11 @@
-# lesser-host Controls Matrix (custom — v0.1.2)
+# lesser-host Controls Matrix (custom — v0.1.3)
 
 This matrix is the “requirements → controls → verifiers → evidence” backbone for lesser-host. It is intentionally
 engineering-focused: it does not claim compliance, but it makes security/quality assertions traceable and repeatable.
 
 ## Scope
 - **System:** AWS-backed multi-service control plane for hosted Lesser instance provisioning + governance + trust/safety services (Go Lambdas, Svelte web UI, AWS CDK infra, Solidity contracts).
-- **In-scope data:** authentication/session tokens, wallet addresses, instance API keys (hashed), Stripe billing identifiers, AI provider prompts/outputs (may contain sensitive user content), operational telemetry, deploy receipts/artifacts, secrets in AWS SSM/KMS (no secrets in git).
+- **In-scope data:** authentication/session tokens, wallet addresses, instance API keys (hashed), Stripe billing identifiers, AI provider prompts/outputs (may contain sensitive user content), bounded soul comm mailbox content/state, operational telemetry, deploy receipts/artifacts, secrets in AWS SSM/KMS (no secrets in git).
 - **Environments:** `lab` (default), `staging`, `prod`; “prod-like” means *internet-reachable* and/or *connected to real third-party services* (AWS accounts, Stripe, AI providers) even if “test” data.
 - **Third parties:** AWS (Lambda, DynamoDB, S3, SQS, KMS, Route53, CloudFront, CodeBuild, Organizations), Stripe, Anthropic, OpenAI, Ethereum JSON-RPC providers, GitHub Actions.
 - **Out of scope:** tenant application internals (the per-tenant `lesser` deployments) except where the control plane ingests deploy receipts or calls tenant endpoints; end-user device security.
@@ -41,6 +41,7 @@ This table is the canonical mapping used by the rubric/roadmap/evidence plan.
 | Security | THR-5 | SEC-2 | Dependency vulnerability scan stays green | Run dependency vulnerability scanning with pinned tooling (Go first; add Node tooling once chosen). | `bash gov-infra/verifiers/gov-verify-rubric.sh` (SEC-2) | `gov-infra/evidence/SEC-2-output.log` |
 | Security | THR-5 THR-10 | SEC-3 | Supply-chain verification green | Pin GitHub Actions by commit SHA; scan Node dependency lifecycle hooks (scripts disabled install); flag risky go.mod replace directives and Python custom indexes. | `bash gov-infra/verifiers/gov-verify-rubric.sh` (SEC-3) | `gov-infra/evidence/SEC-3-output.log` |
 | Security | THR-3 THR-4 THR-6 | SEC-4 | Domain-specific P0 regression tests | Add explicit P0 safety/security regression gates (authz invariants, SSRF defense, prompt boundaries, no sensitive logs). | `bash gov-infra/verifiers/gov-verify-rubric.sh` (SEC-4) | `gov-infra/evidence/SEC-4-output.log` |
+| Compliance | THR-11 THR-10 | CMP-4 | Bounded mailbox authority controls stay explicit | Enforce the host-authoritative mailbox boundary: retention, encryption, access audit, list/content split, no semantic-memory role, hash-only instance auth, write-once events, protected identity/provenance fields, and no body-owned mailbox truth. | `bash gov-infra/verifiers/gov-verify-rubric.sh` (CMP-4) | `gov-infra/evidence/CMP-4-output.log` |
 | Docs | THR-1 THR-10 | DOC-5 | Threat model ↔ controls parity (no unmapped threats) | Enforce “named threats must map to controls” via deterministic parity check. | `bash gov-infra/verifiers/gov-verify-rubric.sh` (DOC-5) | `gov-infra/evidence/DOC-5-parity.log` |
 
 > Add rows as needed for additional anti-drift (multi-module health, CI rubric enforcement, encryption/redaction semantics)

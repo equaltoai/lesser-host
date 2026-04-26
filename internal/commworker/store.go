@@ -23,6 +23,10 @@ type commStore interface {
 	PutCommActivity(ctx context.Context, item *models.SoulAgentCommActivity) error
 	PutCommQueue(ctx context.Context, item *models.SoulAgentCommQueue) error
 
+	PutMailboxMessage(ctx context.Context, item *models.SoulCommMailboxMessage) error
+	PutMailboxEvent(ctx context.Context, item *models.SoulCommMailboxEvent) error
+	UpdateMailboxMessageStatus(ctx context.Context, item *models.SoulCommMailboxMessage) error
+
 	GetDomain(ctx context.Context, domain string) (*models.Domain, bool, error)
 	GetInstance(ctx context.Context, slug string) (*models.Instance, bool, error)
 }
@@ -200,6 +204,44 @@ func (s *dynamoStore) PutCommQueue(ctx context.Context, item *models.SoulAgentCo
 		return fmt.Errorf("queue item is nil")
 	}
 	return s.db.WithContext(ctx).Model(item).CreateOrUpdate()
+}
+
+func (s *dynamoStore) PutMailboxMessage(ctx context.Context, item *models.SoulCommMailboxMessage) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("store not initialized")
+	}
+	if item == nil {
+		return fmt.Errorf("mailbox message is nil")
+	}
+	err := s.db.WithContext(ctx).Model(item).IfNotExists().Create()
+	if theoryErrors.IsConditionFailed(err) {
+		return nil
+	}
+	return err
+}
+
+func (s *dynamoStore) PutMailboxEvent(ctx context.Context, item *models.SoulCommMailboxEvent) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("store not initialized")
+	}
+	if item == nil {
+		return fmt.Errorf("mailbox event is nil")
+	}
+	err := s.db.WithContext(ctx).Model(item).IfNotExists().Create()
+	if theoryErrors.IsConditionFailed(err) {
+		return nil
+	}
+	return err
+}
+
+func (s *dynamoStore) UpdateMailboxMessageStatus(ctx context.Context, item *models.SoulCommMailboxMessage) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("store not initialized")
+	}
+	if item == nil {
+		return fmt.Errorf("mailbox message is nil")
+	}
+	return s.db.WithContext(ctx).Model(item).IfExists().Update("Status", "UpdatedAt")
 }
 
 func (s *dynamoStore) GetDomain(ctx context.Context, domain string) (*models.Domain, bool, error) {

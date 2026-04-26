@@ -71,6 +71,8 @@ It assumes:
      `lambdaAssetRoot`, so the instance’s API Gateway exposes:
      - `POST https://api.<stageDomain>/mcp/{actor}`
      - `GET  https://api.<stageDomain>/.well-known/mcp.json`
+   - for soul comm mailbox tools, `lesser-body` calls host's instance-authenticated mailbox APIs and treats host as the
+     source of truth for delivery metadata, bounded content, and read/archive/delete state.
 
 7) **Register with lesser.host**
    - store instance endpoints from the receipt.
@@ -178,6 +180,18 @@ From Lesser (inputs for `lesser-body`):
 
 From `lesser-body` (inputs for Lesser API Gateway `/mcp/{actor}` wiring):
 - `/${app}/${stage}/lesser-body/exports/v1/mcp_lambda_arn`
+
+
+## Soul comm mailbox migration
+
+Managed provisioning does not move mailbox authority into the tenant account. Host mints and stores the instance API key
+hash during registration; body uses the raw instance-side token at runtime to call host's mailbox APIs. The boundary is:
+
+- host owns canonical mailbox rows, bounded encrypted content, provider status, and read/archive/delete state
+- lesser receives notification projections for UX/activity only
+- body exposes MCP tools over host and must not store durable mailbox truth locally
+
+See `docs/soul-comm-mailbox-migration.md` for backward compatibility, rate-limit, auth, audit, and projection details.
 
 ## Smoke test (MCP)
 

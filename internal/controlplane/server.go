@@ -3,10 +3,12 @@ package controlplane
 import (
 	"context"
 	"log"
+	"strings"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 
 	"github.com/equaltoai/lesser-host/internal/artifacts"
+	"github.com/equaltoai/lesser-host/internal/commmailbox"
 	"github.com/equaltoai/lesser-host/internal/commworker"
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/store"
@@ -19,13 +21,14 @@ type soulPackStore interface {
 
 // Server implements the control plane API.
 type Server struct {
-	cfg       config.Config
-	store     *store.Store
-	webAuthn  webAuthnEngine
-	queues    *queueClient
-	r53       *route53Client
-	soulPacks soulPackStore
-	dialEVM   ethRPCDialer
+	cfg                 config.Config
+	store               *store.Store
+	webAuthn            webAuthnEngine
+	queues              *queueClient
+	r53                 *route53Client
+	soulPacks           soulPackStore
+	mailboxContentStore commmailbox.ContentStore
+	dialEVM             ethRPCDialer
 
 	ssmGetParameter     func(ctx context.Context, name string) (string, error)
 	ssmPutSecureValue   func(ctx context.Context, name string, value string, overwrite bool) error
@@ -71,6 +74,9 @@ func NewServer(cfg config.Config, st *store.Store) *Server {
 		telnyxRelease:       defaultTelnyxReleasePhoneNumber,
 		telnyxSendSMS:       defaultTelnyxSendSMS,
 		telnyxCallVoice:     defaultTelnyxCreateVoiceCall,
+	}
+	if strings.TrimSpace(cfg.SoulCommMailboxBucketName) != "" {
+		srv.mailboxContentStore = commmailbox.NewS3Store(cfg.SoulCommMailboxBucketName)
 	}
 	srv.enqueueCommMessage = srv.queues.enqueueCommMessage
 	return srv
@@ -228,6 +234,16 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 	app.Get("/api/v1/soul/search", s.handleSoulPublicSearch)
 	app.Post("/api/v1/soul/comm/send", s.handleSoulCommSend)
 	app.Get("/api/v1/soul/comm/status/{messageId}", s.handleSoulCommStatus)
+	app.Get("/api/v1/soul/comm/contactability/{agentId}", s.handleSoulCommContactability)
+	app.Get("/api/v1/soul/comm/mailbox/{agentId}/messages", s.handleSoulCommMailboxList)
+	app.Get("/api/v1/soul/comm/mailbox/{agentId}/messages/{messageRef}", s.handleSoulCommMailboxGet)
+	app.Get("/api/v1/soul/comm/mailbox/{agentId}/messages/{messageRef}/content", s.handleSoulCommMailboxContent)
+	app.Post("/api/v1/soul/comm/mailbox/{agentId}/messages/{messageRef}/reply", s.handleSoulCommMailboxReply)
+	app.Post("/api/v1/soul/comm/mailbox/{agentId}/messages/{messageRef}/read", s.handleSoulCommMailboxMarkRead)
+	app.Post("/api/v1/soul/comm/mailbox/{agentId}/messages/{messageRef}/unread", s.handleSoulCommMailboxMarkUnread)
+	app.Post("/api/v1/soul/comm/mailbox/{agentId}/messages/{messageRef}/archive", s.handleSoulCommMailboxArchive)
+	app.Post("/api/v1/soul/comm/mailbox/{agentId}/messages/{messageRef}/unarchive", s.handleSoulCommMailboxUnarchive)
+	app.Post("/api/v1/soul/comm/mailbox/{agentId}/messages/{messageRef}/delete", s.handleSoulCommMailboxDelete)
 	app.Get("/api/v1/soul/agents/{agentId}/comm/activity", s.handleSoulAgentCommActivity, apptheory.RequireAuth())
 	app.Get("/api/v1/soul/agents/{agentId}/comm/queue", s.handleSoulAgentCommQueue, apptheory.RequireAuth())
 	app.Get("/api/v1/soul/agents/{agentId}/comm/status/{messageId}", s.handleSoulAgentCommStatus, apptheory.RequireAuth())

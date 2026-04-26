@@ -2290,7 +2290,12 @@
 							<Card variant="outlined" padding="md">
 								<div class="soul-agent__item">
 									<div class="soul-agent__item-left">
-										<Text size="sm" weight="medium">{act.direction} · {act.channel_type} · {act.action || '—'}</Text>
+										<Text size="sm" weight="medium">
+											{act.direction} · {act.channel_type} · {act.action || '—'}
+											{#if act.status}
+												· {act.status}
+											{/if}
+										</Text>
 										<Text size="sm" color="secondary">
 											<span class="soul-agent__mono">{act.timestamp}</span>
 											{#if act.counterparty}
@@ -2302,6 +2307,28 @@
 												message <span class="soul-agent__mono">{act.message_id}</span>
 											</Text>
 										{/if}
+										{#if act.delivery_id}
+											<Text size="sm" color="secondary">
+												delivery <span class="soul-agent__mono">{act.delivery_id}</span>
+											</Text>
+										{/if}
+										{#if act.thread_id}
+											<Text size="sm" color="secondary">
+												thread <span class="soul-agent__mono">{act.thread_id}</span>
+											</Text>
+										{/if}
+										{#if act.subject}
+											<Text size="sm" color="secondary">subject {act.subject}</Text>
+										{/if}
+										{#if act.preview}
+											<Text size="sm" color="secondary">preview {act.preview}</Text>
+										{/if}
+										<Text size="sm" color="secondary">
+											state {act.read ? 'read' : 'unread'}{act.archived ? ' · archived' : ''}{act.deleted ? ' · deleted' : ''}
+											{#if act.content?.available}
+												· content {act.content.bytes ?? 0} bytes
+											{/if}
+										</Text>
 										{#if act.in_reply_to}
 											<Text size="sm" color="secondary">
 												inReplyTo <span class="soul-agent__mono">{act.in_reply_to}</span>
@@ -2365,7 +2392,7 @@
 
 				<div class="soul-agent__divider"></div>
 
-				<Heading level={4} size="base">Queued inbound</Heading>
+				<Heading level={4} size="base">Inbound mailbox queue</Heading>
 				{#if commQueue?.items?.length}
 					<div class="soul-agent__list">
 						{#each commQueue.items as item (item.message_id + item.scheduled_delivery_time)}
@@ -2384,6 +2411,20 @@
 										{#if item.subject}
 											<Text size="sm" color="secondary">subject {item.subject}</Text>
 										{/if}
+										{#if item.preview}
+											<Text size="sm" color="secondary">preview {item.preview}</Text>
+										{/if}
+										{#if item.delivery_id}
+											<Text size="sm" color="secondary">
+												delivery <span class="soul-agent__mono">{item.delivery_id}</span>
+											</Text>
+										{/if}
+										<Text size="sm" color="secondary">
+											state {item.read ? 'read' : 'unread'}{item.archived ? ' · archived' : ''}{item.deleted ? ' · deleted' : ''}
+											{#if item.content?.available}
+												· content {item.content.bytes ?? 0} bytes
+											{/if}
+										</Text>
 									</div>
 								</div>
 							</Card>

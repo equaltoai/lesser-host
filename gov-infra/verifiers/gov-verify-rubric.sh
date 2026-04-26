@@ -1639,6 +1639,100 @@ check_supply_chain
 __GOV_CMD_SUPPLY__
 )
 
+CMD_MAILBOX_CONTROLS=$(cat <<'__GOV_CMD_MAILBOX_CONTROLS__'
+# CMP-4: bounded soul comm mailbox authority controls.
+#
+# This verifier intentionally checks the policy/control baseline before mailbox
+# content storage ships. Later storage/API milestones should extend this gate to
+# inspect concrete models, schemas, and endpoint implementations.
+
+required_files=(
+  "docs/adr/0005-bounded-soul-comm-mailbox-authority.md"
+  "docs/roadmap-soul-comm-mailbox.md"
+  "docs/soul-surface.md"
+  "gov-infra/planning/lesser-host-threat-model.md"
+  "gov-infra/planning/lesser-host-controls-matrix.md"
+  "gov-infra/planning/lesser-host-evidence-plan.md"
+)
+
+fail=0
+
+require_file() {
+  local f="$1"
+  if [[ ! -f "${f}" ]]; then
+    echo "FAIL: missing required bounded-mailbox policy file: ${f}"
+    fail=1
+  else
+    echo "file: ${f}"
+  fi
+}
+
+require_pattern() {
+  local f="$1"
+  local pattern="$2"
+  local label="$3"
+  if [[ ! -f "${f}" ]]; then
+    return
+  fi
+  if ! grep -Eiq -- "${pattern}" "${f}"; then
+    echo "FAIL: ${label} not found in ${f}"
+    echo "  pattern: ${pattern}"
+    fail=1
+  else
+    echo "PASS: ${label}"
+  fi
+}
+
+for f in "${required_files[@]}"; do
+  require_file "${f}"
+done
+
+adr="docs/adr/0005-bounded-soul-comm-mailbox-authority.md"
+soul="docs/soul-surface.md"
+roadmap="docs/roadmap-soul-comm-mailbox.md"
+threats="gov-infra/planning/lesser-host-threat-model.md"
+controls="gov-infra/planning/lesser-host-controls-matrix.md"
+evidence="gov-infra/planning/lesser-host-evidence-plan.md"
+
+require_pattern "${adr}" 'bounded soul comm mailbox authority' 'ADR title declares bounded mailbox authority'
+require_pattern "${adr}" 'explicit retention policy|retention policy' 'content retention policy requirement'
+require_pattern "${adr}" 'encryption at rest|encryption' 'encryption requirement'
+require_pattern "${adr}" 'access[- ]audit' 'access audit requirement'
+require_pattern "${adr}" 'list/content split|List/content split' 'list/content split requirement'
+require_pattern "${adr}" 'semantic memory' 'no semantic-memory role'
+require_pattern "${adr}" 'sha256\(raw_key\)' 'hash-only instance auth requirement'
+require_pattern "${adr}" 'write-once' 'write-once audit/event requirement'
+require_pattern "${adr}" 'protected.*identity|identity.*protected' 'protected identity/provenance requirement'
+require_pattern "${adr}" 'MCP facade' 'body remains MCP facade'
+require_pattern "${adr}" 'notification projections' 'lesser projection-only boundary'
+require_pattern "${adr}" 'cross-tenant search' 'cross-tenant search non-goal'
+
+require_pattern "${soul}" 'Soul Comm Mailbox v1 authority' 'soul surface names mailbox authority'
+require_pattern "${soul}" 'redacted previews/metadata' 'soul surface requires redacted list previews'
+require_pattern "${soul}" 'sha256\(raw_key\)' 'soul surface documents hash-only auth'
+
+require_pattern "${roadmap}" 'Framework incorporation decisions' 'roadmap records framework incorporation decisions'
+require_pattern "${roadmap}" 'write-once audit/event rows|audit/event rows.*write-once' 'roadmap requires write-once audit/event rows'
+require_pattern "${roadmap}" 'retention/encryption/list-redaction controls' 'roadmap requires retention/encryption/list-redaction controls'
+
+require_pattern "${threats}" 'THR-11' 'threat model includes bounded mailbox threat'
+require_pattern "${threats}" 'Bounded mailbox content/state drift' 'threat model names content/state drift'
+
+require_pattern "${controls}" 'CMP-4' 'controls matrix includes CMP-4'
+require_pattern "${controls}" 'THR-11' 'controls matrix maps THR-11'
+require_pattern "${controls}" 'retention, encryption, access audit, list/content split' 'controls matrix enumerates bounded mailbox controls'
+
+require_pattern "${evidence}" 'CMP-4' 'evidence plan includes CMP-4'
+require_pattern "${evidence}" 'CMP-4-output\.log' 'evidence plan names CMP-4 evidence path'
+
+if [[ "${fail}" -ne 0 ]]; then
+  exit 1
+fi
+
+echo "PASS: bounded soul comm mailbox governance controls are explicit"
+__GOV_CMD_MAILBOX_CONTROLS__
+)
+
 CMD_P0=$(cat <<'__GOV_CMD_P0__'
 if ! command -v go >/dev/null 2>&1; then
   echo "BLOCKED: go is required" >&2
@@ -1857,6 +1951,7 @@ run_check "SEC-4" "Security" "$CMD_P0"
 check_file_exists "CMP-1" "Compliance" "${PLANNING_DIR}/lesser-host-controls-matrix.md"
 check_file_exists "CMP-2" "Compliance" "${PLANNING_DIR}/lesser-host-evidence-plan.md"
 check_file_exists "CMP-3" "Compliance" "${PLANNING_DIR}/lesser-host-threat-model.md"
+run_check "CMP-4" "Compliance" "$CMD_MAILBOX_CONTROLS"
 
 # === Maintainability (MAI) ===
 run_check "MAI-1" "Maintainability" "$CMD_FILE_BUDGET"

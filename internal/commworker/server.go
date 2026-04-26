@@ -25,6 +25,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 
+	"github.com/equaltoai/lesser-host/internal/commmailbox"
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/manageddomain"
 	hostsecrets "github.com/equaltoai/lesser-host/internal/secrets"
@@ -56,6 +57,8 @@ type Server struct {
 	ssmGetParameter func(ctx context.Context, name string) (string, error)
 	migaduSendSMTP  func(ctx context.Context, username string, password string, from string, recipients []string, data []byte) error
 
+	mailboxContentStore commmailbox.ContentStore
+
 	fetchInstanceKeyPlaintext func(ctx context.Context, inst *models.Instance) (string, error)
 	deliverNotification       func(ctx context.Context, deliverURL string, apiKey string, notif InboundNotification) error
 
@@ -77,6 +80,9 @@ func NewServer(cfg config.Config, st commStore, stsClient stsAPI, secretsClient 
 			return hostsecrets.GetSSMParameter(ctx, nil, name)
 		},
 		migaduSendSMTP: defaultMigaduSendSMTP,
+	}
+	if strings.TrimSpace(cfg.SoulCommMailboxBucketName) != "" {
+		s.mailboxContentStore = commmailbox.NewS3Store(cfg.SoulCommMailboxBucketName)
 	}
 	s.fetchInstanceKeyPlaintext = s.defaultFetchInstanceKeyPlaintext
 	s.deliverNotification = defaultDeliverNotification
@@ -138,7 +144,19 @@ func (s *Server) processInbound(ctx context.Context, _ string, msg QueueMessage)
 		return nil
 	}
 
-	if s.handleInactiveInbound(ctx, agentID, channel, notif, identity) {
+	inst, instOK, err := s.resolveAgentInstance(ctx, identity)
+	if err != nil {
+		return err
+	}
+	if !instOK || inst == nil {
+		s.logfMessage("commworker: inbound delivery dropped missing_instance agent=%s domain=%s channel=%s message=%s", strings.ToLower(strings.TrimSpace(agentID)), strings.ToLower(strings.TrimSpace(identity.Domain)), channel, strings.TrimSpace(notif.MessageID))
+		_ = s.recordInboundActivity(ctx, agentID, channel, notif, "drop", false)
+		return nil
+	}
+
+	provider := strings.ToLower(strings.TrimSpace(msg.Provider))
+
+	if s.handleInactiveInbound(ctx, agentID, channel, notif, identity, inst, provider) {
 		s.logInboundDrop("inactive_identity", "", "", msg.Kind, channel, strings.TrimSpace(notif.MessageID), nil)
 		return nil
 	}
@@ -148,11 +166,22 @@ func (s *Server) processInbound(ctx context.Context, _ string, msg QueueMessage)
 		return err
 	}
 	if !ok {
+		_ = s.captureInboundMailbox(ctx, inboundMailboxCapture{
+			agentID:      agentID,
+			channel:      channel,
+			provider:     provider,
+			notif:        notif,
+			inst:         inst,
+			status:       models.SoulCommMailboxStatusDropped,
+			storeContent: false,
+			actor:        "comm-worker",
+			detailsJSON:  `{"reason":"unroutable_channel"}`,
+		})
 		s.logInboundDrop("unroutable_channel", "", "", msg.Kind, channel, strings.TrimSpace(notif.MessageID), nil)
 		return nil
 	}
 
-	handled, err := s.handleDeferredInbound(ctx, agentID, channel, notif, prefs)
+	handled, err := s.handleDeferredInbound(ctx, agentID, channel, notif, prefs, inst, provider)
 	if err != nil {
 		return err
 	}
@@ -161,7 +190,7 @@ func (s *Server) processInbound(ctx context.Context, _ string, msg QueueMessage)
 		return nil
 	}
 
-	return s.deliverResolvedInbound(ctx, agentID, channel, notif, identity)
+	return s.deliverResolvedInbound(ctx, agentID, channel, notif, identity, inst, provider)
 }
 
 func (s *Server) resolveInboundIdentity(ctx context.Context, channel string, to *InboundParty) (string, *models.SoulAgentIdentity, bool, error) {
@@ -192,12 +221,23 @@ func soulLifecycleStatus(identity *models.SoulAgentIdentity) string {
 	return strings.TrimSpace(identity.Status)
 }
 
-func (s *Server) handleInactiveInbound(ctx context.Context, agentID string, channel string, notif InboundNotification, identity *models.SoulAgentIdentity) bool {
+func (s *Server) handleInactiveInbound(ctx context.Context, agentID string, channel string, notif InboundNotification, identity *models.SoulAgentIdentity, inst *models.Instance, provider string) bool {
 	status := soulLifecycleStatus(identity)
 	if status == models.SoulAgentStatusActive {
 		return false
 	}
 
+	_ = s.captureInboundMailbox(ctx, inboundMailboxCapture{
+		agentID:      agentID,
+		channel:      channel,
+		provider:     provider,
+		notif:        notif,
+		inst:         inst,
+		status:       models.SoulCommMailboxStatusBounced,
+		storeContent: false,
+		actor:        "comm-worker",
+		detailsJSON:  `{"reason":"inactive_identity"}`,
+	})
 	_ = s.recordInboundActivity(ctx, agentID, channel, notif, "bounce", false)
 	_ = s.maybeBounceEmail(ctx, agentID, status, channel, notif, 0, 0, 0, 0)
 	return true
@@ -233,10 +273,10 @@ func channelReadyForInbound(ch *models.SoulAgentChannel) bool {
 	return strings.TrimSpace(ch.Status) == models.SoulChannelStatusActive && ch.Verified
 }
 
-func (s *Server) handleDeferredInbound(ctx context.Context, agentID string, channel string, notif InboundNotification, prefs *models.SoulAgentContactPreferences) (bool, error) {
+func (s *Server) handleDeferredInbound(ctx context.Context, agentID string, channel string, notif InboundNotification, prefs *models.SoulAgentContactPreferences, inst *models.Instance, provider string) (bool, error) {
 	now := s.now()
 
-	rateLimited, err := s.handleRateLimitedInbound(ctx, agentID, channel, notif, prefs, now)
+	rateLimited, err := s.handleRateLimitedInbound(ctx, agentID, channel, notif, prefs, inst, provider, now)
 	if err != nil || rateLimited {
 		return rateLimited, err
 	}
@@ -245,6 +285,19 @@ func (s *Server) handleDeferredInbound(ctx context.Context, agentID string, chan
 	if available {
 		return false, nil
 	}
+	if err := s.captureInboundMailbox(ctx, inboundMailboxCapture{
+		agentID:      agentID,
+		channel:      channel,
+		provider:     provider,
+		notif:        notif,
+		inst:         inst,
+		status:       models.SoulCommMailboxStatusQueued,
+		storeContent: true,
+		actor:        "comm-worker",
+		detailsJSON:  `{"reason":"outside_availability"}`,
+	}); err != nil {
+		return false, err
+	}
 	if err := s.queueInbound(ctx, agentID, channel, notif, nextDelivery); err != nil {
 		return false, err
 	}
@@ -252,7 +305,7 @@ func (s *Server) handleDeferredInbound(ctx context.Context, agentID string, chan
 	return true, nil
 }
 
-func (s *Server) handleRateLimitedInbound(ctx context.Context, agentID string, channel string, notif InboundNotification, prefs *models.SoulAgentContactPreferences, now time.Time) (bool, error) {
+func (s *Server) handleRateLimitedInbound(ctx context.Context, agentID string, channel string, notif InboundNotification, prefs *models.SoulAgentContactPreferences, inst *models.Instance, provider string, now time.Time) (bool, error) {
 	maxHour, maxDay := inboundRateLimits(prefs, channel)
 	hourCount, err := s.countInboundReceivesSince(ctx, agentID, channel, now.Add(-1*time.Hour), 250)
 	if err != nil {
@@ -266,24 +319,45 @@ func (s *Server) handleRateLimitedInbound(ctx context.Context, agentID string, c
 		return false, nil
 	}
 
+	_ = s.captureInboundMailbox(ctx, inboundMailboxCapture{
+		agentID:      agentID,
+		channel:      channel,
+		provider:     provider,
+		notif:        notif,
+		inst:         inst,
+		status:       models.SoulCommMailboxStatusBounced,
+		storeContent: false,
+		actor:        "comm-worker",
+		detailsJSON:  `{"reason":"rate_limited"}`,
+	})
 	_ = s.recordInboundActivity(ctx, agentID, channel, notif, "bounce", false)
 	_ = s.maybeBounceEmail(ctx, agentID, "rate_limited", channel, notif, maxHour, maxDay, hourCount, dayCount)
 	return true, nil
 }
 
-func (s *Server) deliverResolvedInbound(ctx context.Context, agentID string, channel string, notif InboundNotification, identity *models.SoulAgentIdentity) error {
+func (s *Server) deliverResolvedInbound(ctx context.Context, agentID string, channel string, notif InboundNotification, identity *models.SoulAgentIdentity, inst *models.Instance, provider string) error {
 	// Best-effort: annotate soul-to-soul sender identity.
 	s.maybeAnnotateSenderSoul(ctx, &notif)
 	s.maybeAnnotateRecipientAddress(ctx, agentID, channel, notif.To)
 
-	inst, ok, err := s.resolveAgentInstance(ctx, identity)
-	if err != nil {
-		return err
-	}
-	if !ok || inst == nil {
+	if inst == nil {
 		s.logfMessage("commworker: inbound delivery dropped missing_instance agent=%s domain=%s channel=%s message=%s", strings.ToLower(strings.TrimSpace(agentID)), strings.ToLower(strings.TrimSpace(identity.Domain)), strings.ToLower(strings.TrimSpace(channel)), strings.TrimSpace(notif.MessageID))
 		_ = s.recordInboundActivity(ctx, agentID, channel, notif, "drop", false)
 		return nil
+	}
+
+	if err := s.captureInboundMailbox(ctx, inboundMailboxCapture{
+		agentID:      agentID,
+		channel:      channel,
+		provider:     provider,
+		notif:        notif,
+		inst:         inst,
+		status:       models.SoulCommMailboxStatusAccepted,
+		storeContent: true,
+		actor:        "comm-worker",
+		detailsJSON:  `{"projection":"lesser_notification"}`,
+	}); err != nil {
+		return err
 	}
 
 	apiKey, err := s.fetchInstanceKeyPlaintext(ctx, inst)
@@ -296,6 +370,10 @@ func (s *Server) deliverResolvedInbound(ctx context.Context, agentID string, cha
 		return fmt.Errorf("instance delivery url is empty")
 	}
 	if err := s.deliverNotification(ctx, deliverURL, apiKey, notif); err != nil {
+		return err
+	}
+
+	if err := s.updateInboundMailboxStatus(ctx, agentID, channel, notif, inst, models.SoulCommMailboxStatusDelivered, "comm-worker", `{"projection":"lesser_notification"}`); err != nil {
 		return err
 	}
 

@@ -1,14 +1,14 @@
 {
   "$schema": "https://gov.pai.dev/schemas/pack.schema.json",
   "schemaVersion": 1,
-  "packVersion": "4221f0e715b1",
-  "packDigest": "20fb3f879500ca3fd4c4ca35c95a4428e72c08d2dcf9dff40fdc0ef06f81276f",
+  "packVersion": "13dee675174f",
+  "packDigest": "13dee675174f6a1e7abdfbc8132a680ca148a3462566aaf3efe5dc0bf96661e0",
   "domain": "custom",
   "projectSlug": "lesser-host",
-  "generatedAt": "2026-02-06T00:00:00Z",
+  "generatedAt": "2026-04-25T04:33:47Z",
   "source": {
     "commitSha": "UNKNOWN",
-    "branch": "main"
+    "branch": "codex/host-v2-mailbox-m1-governance"
   },
   "artifacts": {
     "planning": [
@@ -22,13 +22,17 @@
       "gov-infra/planning/lesser-host-supply-chain-allowlist.txt",
       "gov-infra/planning/lesser-host-ai-drift-recovery.md",
       "gov-infra/planning/lesser-host-lint-green-roadmap.md",
-      "gov-infra/planning/lesser-host-coverage-roadmap.md"
+      "gov-infra/planning/lesser-host-coverage-roadmap.md",
+      "docs/adr/0005-bounded-soul-comm-mailbox-authority.md",
+      "docs/roadmap-soul-comm-mailbox.md",
+      "docs/soul-surface.md"
     ],
     "verifiers": [
       "gov-infra/verifiers/gov-verify-rubric.sh"
     ],
     "evidence": [
-      "gov-infra/evidence/gov-rubric-report.json"
+      "gov-infra/evidence/gov-rubric-report.json",
+      "gov-infra/evidence/CMP-4-output.log"
     ]
   }
 }

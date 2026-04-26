@@ -39,6 +39,9 @@ func New(opts ...apptheory.Option) *apptheory.App {
 	if mw := srv.mintConversationRateLimitMiddleware(); mw != nil {
 		app.Use(mw)
 	}
+	if mw := srv.mailboxRateLimitMiddleware(); mw != nil {
+		app.Use(mw)
+	}
 	Register(app, srv)
 	return app
 }
