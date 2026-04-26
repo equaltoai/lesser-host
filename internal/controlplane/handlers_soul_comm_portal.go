@@ -1,9 +1,9 @@
 package controlplane
 
 import (
-	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
@@ -12,39 +12,99 @@ import (
 )
 
 type soulAgentCommActivityResponse struct {
-	Version    string                          `json:"version"`
-	Activities []*models.SoulAgentCommActivity `json:"activities"`
-	Count      int                             `json:"count"`
+	Version    string                      `json:"version"`
+	Activities []soulAgentCommActivityItem `json:"activities"`
+	Count      int                         `json:"count"`
 }
 
 type soulAgentCommQueueResponse struct {
-	Version string                       `json:"version"`
-	Items   []*models.SoulAgentCommQueue `json:"items"`
-	Count   int                          `json:"count"`
+	Version string                   `json:"version"`
+	Items   []soulAgentCommQueueItem `json:"items"`
+	Count   int                      `json:"count"`
+}
+
+type soulAgentCommActivityItem struct {
+	AgentID             string                            `json:"agent_id"`
+	ActivityID          string                            `json:"activity_id"`
+	DeliveryID          string                            `json:"delivery_id,omitempty"`
+	ThreadID            string                            `json:"thread_id,omitempty"`
+	ChannelType         string                            `json:"channel_type"`
+	Direction           string                            `json:"direction"`
+	Counterparty        string                            `json:"counterparty,omitempty"`
+	Action              string                            `json:"action,omitempty"`
+	MessageID           string                            `json:"message_id,omitempty"`
+	Status              string                            `json:"status,omitempty"`
+	Subject             string                            `json:"subject,omitempty"`
+	Preview             string                            `json:"preview,omitempty"`
+	Content             soulAgentCommPortalContentSummary `json:"content"`
+	Read                bool                              `json:"read"`
+	Archived            bool                              `json:"archived"`
+	Deleted             bool                              `json:"deleted"`
+	BoundaryCheck       string                            `json:"boundary_check,omitempty"`
+	PreferenceRespected *bool                             `json:"preference_respected,omitempty"`
+	Timestamp           string                            `json:"timestamp"`
+}
+
+type soulAgentCommQueueItem struct {
+	AgentID               string                            `json:"agent_id"`
+	DeliveryID            string                            `json:"delivery_id,omitempty"`
+	MessageID             string                            `json:"message_id"`
+	ThreadID              string                            `json:"thread_id,omitempty"`
+	ChannelType           string                            `json:"channel_type"`
+	FromAddress           string                            `json:"from_address,omitempty"`
+	FromNumber            string                            `json:"from_number,omitempty"`
+	FromSoulAgentID       string                            `json:"from_soul_agent_id,omitempty"`
+	FromDisplayName       string                            `json:"from_display_name,omitempty"`
+	Subject               string                            `json:"subject,omitempty"`
+	Preview               string                            `json:"preview,omitempty"`
+	Content               soulAgentCommPortalContentSummary `json:"content"`
+	ReceivedAt            string                            `json:"received_at"`
+	ScheduledDeliveryTime string                            `json:"scheduled_delivery_time"`
+	Status                string                            `json:"status"`
+	Read                  bool                              `json:"read"`
+	Archived              bool                              `json:"archived"`
+	Deleted               bool                              `json:"deleted"`
+}
+
+type soulAgentCommPortalContentSummary struct {
+	Available bool   `json:"available"`
+	Bytes     int64  `json:"bytes,omitempty"`
+	MimeType  string `json:"mime_type,omitempty"`
+	SHA256    string `json:"sha256,omitempty"`
 }
 
 type soulAgentCommListContext struct {
-	AgentIDHex string
-	Limit      int
+	AgentIDHex   string
+	InstanceSlug string
+	Limit        int
 }
 
 func (s *Server) requireSoulAgentWithDomainAccess(ctx *apptheory.Context, agentIDHex string) (*models.SoulAgentIdentity, *apptheory.AppError) {
+	identity, _, _, appErr := s.requireSoulAgentWithDomainAccessDetails(ctx, agentIDHex)
+	return identity, appErr
+}
+
+func (s *Server) requireSoulAgentWithDomainAccessDetails(
+	ctx *apptheory.Context,
+	agentIDHex string,
+) (*models.SoulAgentIdentity, *models.Domain, *models.Instance, *apptheory.AppError) {
 	if s == nil || ctx == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, nil, nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
 	identity, err := s.getSoulAgentIdentity(ctx.Context(), agentIDHex)
 	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "agent not found"}
+		return nil, nil, nil, &apptheory.AppError{Code: "app.not_found", Message: "agent not found"}
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return nil, nil, nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
-	if _, _, accessErr := s.requireSoulDomainAccess(ctx, strings.TrimSpace(identity.Domain)); accessErr != nil {
-		return nil, accessErr
+	domain, instance, accessErr := s.requireSoulDomainAccess(ctx, strings.TrimSpace(identity.Domain))
+	if accessErr != nil {
+		return nil, nil, nil, accessErr
 	}
-	return identity, nil
+	return identity, domain, instance, nil
 }
 
 func (s *Server) loadSoulAgentCommListContext(ctx *apptheory.Context) (soulAgentCommListContext, *apptheory.AppError) {
@@ -63,42 +123,203 @@ func (s *Server) loadSoulAgentCommListContext(ctx *apptheory.Context) (soulAgent
 		return soulAgentCommListContext{}, appErr
 	}
 
-	if _, appErr := s.requireSoulAgentWithDomainAccess(ctx, agentIDHex); appErr != nil {
+	_, _, instance, appErr := s.requireSoulAgentWithDomainAccessDetails(ctx, agentIDHex)
+	if appErr != nil {
 		return soulAgentCommListContext{}, appErr
 	}
 
 	return soulAgentCommListContext{
-		AgentIDHex: agentIDHex,
-		Limit:      parseLimit(queryFirst(ctx, "limit"), 50, 1, 200),
+		AgentIDHex:   agentIDHex,
+		InstanceSlug: strings.ToLower(strings.TrimSpace(instance.Slug)),
+		Limit:        parseLimit(queryFirst(ctx, "limit"), 50, 1, 200),
 	}, nil
 }
 
-func (s *Server) listSoulAgentCommActivities(ctx *apptheory.Context, agentIDHex string, limit int) ([]*models.SoulAgentCommActivity, *apptheory.AppError) {
-	var items []*models.SoulAgentCommActivity
-	if err := s.store.DB.WithContext(ctx.Context()).
-		Model(&models.SoulAgentCommActivity{}).
-		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentIDHex)).
-		Where("SK", "BEGINS_WITH", "COMM#").
-		OrderBy("SK", "DESC").
-		Limit(limit).
-		All(&items); err != nil {
+func (s *Server) listSoulAgentCommActivities(
+	ctx *apptheory.Context,
+	listCtx soulAgentCommListContext,
+) ([]soulAgentCommActivityItem, *apptheory.AppError) {
+	messages, appErr := s.listSoulAgentCommMailboxRows(ctx, listCtx, "DESC", listCtx.Limit)
+	if appErr != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list communication activity"}
+	}
+
+	items := make([]soulAgentCommActivityItem, 0, len(messages))
+	for _, msg := range messages {
+		if msg == nil || msg.Deleted {
+			continue
+		}
+		items = append(items, soulAgentCommActivityFromMailbox(msg))
 	}
 	return items, nil
 }
 
-func (s *Server) listSoulAgentCommQueueItems(ctx *apptheory.Context, agentIDHex string, limit int) ([]*models.SoulAgentCommQueue, *apptheory.AppError) {
-	var items []*models.SoulAgentCommQueue
-	if err := s.store.DB.WithContext(ctx.Context()).
-		Model(&models.SoulAgentCommQueue{}).
-		Where("PK", "=", fmt.Sprintf("COMM#QUEUE#%s", agentIDHex)).
-		Where("SK", "BEGINS_WITH", "MSG#").
-		OrderBy("SK", "ASC").
-		Limit(limit).
-		All(&items); err != nil {
+func (s *Server) listSoulAgentCommQueueItems(
+	ctx *apptheory.Context,
+	listCtx soulAgentCommListContext,
+) ([]soulAgentCommQueueItem, *apptheory.AppError) {
+	messages, appErr := s.listSoulAgentCommMailboxRows(ctx, listCtx, "ASC", soulAgentCommPortalQueueScanLimit(listCtx.Limit))
+	if appErr != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list queued messages"}
 	}
+
+	items := make([]soulAgentCommQueueItem, 0, minInt(listCtx.Limit, len(messages)))
+	for _, msg := range messages {
+		if len(items) >= listCtx.Limit {
+			break
+		}
+		if !isPortalQueuedMailboxItem(msg) {
+			continue
+		}
+		items = append(items, soulAgentCommQueueFromMailbox(msg))
+	}
 	return items, nil
+}
+
+func (s *Server) listSoulAgentCommMailboxRows(
+	ctx *apptheory.Context,
+	listCtx soulAgentCommListContext,
+	order string,
+	limit int,
+) ([]*models.SoulCommMailboxMessage, *apptheory.AppError) {
+	var items []*models.SoulCommMailboxMessage
+	order = strings.ToUpper(strings.TrimSpace(order))
+	if order != "ASC" {
+		order = "DESC"
+	}
+	if err := s.store.DB.WithContext(ctx.Context()).
+		Model(&models.SoulCommMailboxMessage{}).
+		Where("PK", "=", models.SoulCommMailboxAgentPK(listCtx.InstanceSlug, listCtx.AgentIDHex)).
+		OrderBy("SK", order).
+		Limit(limit).
+		All(&items); err != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	return items, nil
+}
+
+func soulAgentCommActivityFromMailbox(item *models.SoulCommMailboxMessage) soulAgentCommActivityItem {
+	return soulAgentCommActivityItem{
+		AgentID:      strings.ToLower(strings.TrimSpace(item.AgentID)),
+		ActivityID:   mailboxPortalActivityID(item),
+		DeliveryID:   strings.TrimSpace(item.DeliveryID),
+		ThreadID:     strings.TrimSpace(item.ThreadID),
+		ChannelType:  strings.TrimSpace(item.ChannelType),
+		Direction:    strings.TrimSpace(item.Direction),
+		Counterparty: mailboxPortalCounterparty(item),
+		Action:       mailboxPortalAction(item),
+		MessageID:    strings.TrimSpace(item.MessageID),
+		Status:       strings.TrimSpace(item.Status),
+		Subject:      strings.TrimSpace(item.Subject),
+		Preview:      strings.TrimSpace(item.Preview),
+		Content:      mailboxPortalContentSummary(item),
+		Read:         item.Read,
+		Archived:     item.Archived,
+		Deleted:      item.Deleted,
+		Timestamp:    formatMailboxTime(mailboxPortalTime(item.CreatedAt, item.UpdatedAt)),
+	}
+}
+
+func soulAgentCommQueueFromMailbox(item *models.SoulCommMailboxMessage) soulAgentCommQueueItem {
+	return soulAgentCommQueueItem{
+		AgentID:               strings.ToLower(strings.TrimSpace(item.AgentID)),
+		DeliveryID:            strings.TrimSpace(item.DeliveryID),
+		MessageID:             strings.TrimSpace(item.MessageID),
+		ThreadID:              strings.TrimSpace(item.ThreadID),
+		ChannelType:           strings.TrimSpace(item.ChannelType),
+		FromAddress:           strings.TrimSpace(item.FromAddress),
+		FromNumber:            strings.TrimSpace(item.FromNumber),
+		FromSoulAgentID:       strings.ToLower(strings.TrimSpace(item.FromSoulAgentID)),
+		FromDisplayName:       strings.TrimSpace(item.FromDisplayName),
+		Subject:               strings.TrimSpace(item.Subject),
+		Preview:               strings.TrimSpace(item.Preview),
+		Content:               mailboxPortalContentSummary(item),
+		ReceivedAt:            formatMailboxTime(mailboxPortalTime(item.CreatedAt, item.UpdatedAt)),
+		ScheduledDeliveryTime: formatMailboxTime(mailboxPortalTime(item.UpdatedAt, item.CreatedAt)),
+		Status:                strings.TrimSpace(item.Status),
+		Read:                  item.Read,
+		Archived:              item.Archived,
+		Deleted:               item.Deleted,
+	}
+}
+
+func mailboxPortalContentSummary(item *models.SoulCommMailboxMessage) soulAgentCommPortalContentSummary {
+	if item == nil {
+		return soulAgentCommPortalContentSummary{}
+	}
+	return soulAgentCommPortalContentSummary{
+		Available: item.HasContent && !item.Deleted,
+		Bytes:     item.ContentBytes,
+		MimeType:  strings.TrimSpace(item.ContentMimeType),
+		SHA256:    strings.TrimSpace(item.ContentSHA256),
+	}
+}
+
+func mailboxPortalActivityID(item *models.SoulCommMailboxMessage) string {
+	for _, candidate := range []string{item.DeliveryID, item.MessageID, item.ThreadID} {
+		if trimmed := strings.TrimSpace(candidate); trimmed != "" {
+			return trimmed
+		}
+	}
+	return "mailbox"
+}
+
+func mailboxPortalCounterparty(item *models.SoulCommMailboxMessage) string {
+	if strings.EqualFold(strings.TrimSpace(item.Direction), models.SoulCommDirectionOutbound) {
+		return firstNonEmptySoulCommPortal(item.ToSoulAgentID, item.ToAddress, item.ToNumber, item.ToDisplayName)
+	}
+	return firstNonEmptySoulCommPortal(item.FromSoulAgentID, item.FromAddress, item.FromNumber, item.FromDisplayName)
+}
+
+func mailboxPortalAction(item *models.SoulCommMailboxMessage) string {
+	status := strings.ToLower(strings.TrimSpace(item.Status))
+	if status == models.SoulCommMailboxStatusFailed ||
+		status == models.SoulCommMailboxStatusBounced ||
+		status == models.SoulCommMailboxStatusDropped {
+		return status
+	}
+	if strings.EqualFold(strings.TrimSpace(item.Direction), models.SoulCommDirectionOutbound) {
+		return "send"
+	}
+	return "receive"
+}
+
+func mailboxPortalTime(primary time.Time, fallback time.Time) time.Time {
+	if !primary.IsZero() {
+		return primary
+	}
+	return fallback
+}
+
+func isPortalQueuedMailboxItem(item *models.SoulCommMailboxMessage) bool {
+	if item == nil || item.Deleted {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(item.Direction), models.SoulCommDirectionInbound) &&
+		strings.EqualFold(strings.TrimSpace(item.Status), models.SoulCommMailboxStatusQueued)
+}
+
+func soulAgentCommPortalQueueScanLimit(limit int) int {
+	if limit <= 0 {
+		return 50
+	}
+	return minInt(limit*4, 200)
+}
+
+func firstNonEmptySoulCommPortal(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func minInt(a int, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func (s *Server) handleSoulAgentCommActivity(ctx *apptheory.Context) (*apptheory.Response, error) {
@@ -107,7 +328,7 @@ func (s *Server) handleSoulAgentCommActivity(ctx *apptheory.Context) (*apptheory
 		return nil, appErr
 	}
 
-	items, appErr := s.listSoulAgentCommActivities(ctx, listCtx.AgentIDHex, listCtx.Limit)
+	items, appErr := s.listSoulAgentCommActivities(ctx, listCtx)
 	if appErr != nil {
 		return nil, appErr
 	}
@@ -125,7 +346,7 @@ func (s *Server) handleSoulAgentCommQueue(ctx *apptheory.Context) (*apptheory.Re
 		return nil, appErr
 	}
 
-	items, appErr := s.listSoulAgentCommQueueItems(ctx, listCtx.AgentIDHex, listCtx.Limit)
+	items, appErr := s.listSoulAgentCommQueueItems(ctx, listCtx)
 	if appErr != nil {
 		return nil, appErr
 	}

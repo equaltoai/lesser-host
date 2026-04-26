@@ -135,6 +135,12 @@ This is an explicit, governance-documented exception to host's normal metadata-o
 exception is limited to soul comm mailbox delivery artifacts and does not authorize cross-tenant search, tenant content
 analytics, or body-owned mailbox storage.
 
+The cross-repo migration path is documented in `docs/soul-comm-mailbox-migration.md`. In particular:
+
+- body implements MCP tools by calling host's instance-authenticated mailbox APIs; it does not become a mailbox database.
+- lesser projections are notification summaries only and should remain idempotent by `deliveryId`.
+- portal list views read canonical mailbox state but keep the list/content split: previews and content metadata only.
+
 ### `update-registration` contract (lesser-body / MCP endpoint compatible)
 
 `POST /api/v1/soul/agents/{agentId}/update-registration` publishes the **current** registration JSON to S3 at:
