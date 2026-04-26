@@ -123,6 +123,8 @@ ADR 0005 defines the bounded mailbox authority decision for soul communications.
 
 - `lesser-host` owns canonical mailbox delivery objects, including delivery/provider/thread/idempotency facts, bounded
   content, content identity, and read/unread/archive/delete state.
+- Body-facing APIs use `messageRef` as the canonical opaque mailbox reference, backed by `deliveryId` in v1. Legacy
+  `messageId` values are accepted only when unambiguous within the authenticated instance + exact agent mailbox.
 - `lesser` receives notification summaries/projections for UX/activity only; it is not authoritative mailbox state.
 - `lesser-body` remains the MCP facade and exposes tools over host's API contract. It must not persist mailbox truth.
 - List endpoints must return redacted previews/metadata only. Full content requires an explicit content/read call and
@@ -140,6 +142,8 @@ The cross-repo migration path is documented in `docs/soul-comm-mailbox-migration
 - body implements MCP tools by calling host's instance-authenticated mailbox APIs; it does not become a mailbox database.
 - lesser projections are notification summaries only and should remain idempotent by `deliveryId`.
 - portal list views read canonical mailbox state but keep the list/content split: previews and content metadata only.
+- body calls host's canonical reply endpoint for replies and uses host-side bounded filters/query rather than maintaining
+  a local mailbox index.
 
 ### `update-registration` contract (lesser-body / MCP endpoint compatible)
 

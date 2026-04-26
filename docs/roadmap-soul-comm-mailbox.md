@@ -148,6 +148,7 @@ Each issue should still remain small enough to identify acceptance criteria and 
 | Host 1 — Policy + governance | ADR, threat/control/evidence docs, gov-infra verifier. Lands before code stores comm bodies. | [#161](https://github.com/equaltoai/lesser-host/issues/161), [#162](https://github.com/equaltoai/lesser-host/issues/162) |
 | Host 2 — Storage + capture | TableTheory models, encrypted/lifecycle-bound content storage, inbound and outbound canonical capture. Keep model, CDK, and worker changes as separate commits inside one PR. | [#163](https://github.com/equaltoai/lesser-host/issues/163), [#164](https://github.com/equaltoai/lesser-host/issues/164), [#165](https://github.com/equaltoai/lesser-host/issues/165), [#166](https://github.com/equaltoai/lesser-host/issues/166) |
 | Host 3 — Mailbox APIs | Strict hash-only mailbox auth, list/get/content APIs, idempotent state mutations, bounded contactability resolver. | [#167](https://github.com/equaltoai/lesser-host/issues/167), [#168](https://github.com/equaltoai/lesser-host/issues/168), [#169](https://github.com/equaltoai/lesser-host/issues/169), [#171](https://github.com/equaltoai/lesser-host/issues/171) |
+| Host 3.5 — Body-native mailbox contract | Stable `messageRef` semantics, exact-agent list filters including bounded metadata/preview `query`, and a canonical reply endpoint so body does not reconstruct mailbox truth. | Body blocker follow-up for [lesser-body#149](https://github.com/equaltoai/lesser-body/issues/149), [lesser-body#150](https://github.com/equaltoai/lesser-body/issues/150) |
 | Host 4 — Portal + migration | Portal alignment and cross-repo migration docs after API semantics are stable. | [#170](https://github.com/equaltoai/lesser-host/issues/170), [#172](https://github.com/equaltoai/lesser-host/issues/172) |
 | Body 1 — MCP tools + canary | Body implements MCP facade over host mailbox contract and validates against host lab. | [lesser-body#149](https://github.com/equaltoai/lesser-body/issues/149), [lesser-body#150](https://github.com/equaltoai/lesser-body/issues/150) |
 | Lesser 1 — Projection compatibility | Lesser treats host comm notifications as non-authoritative projections and coordinates future summary-only projections. | [lesser#803](https://github.com/equaltoai/lesser/issues/803) |
@@ -229,6 +230,31 @@ path, backward compatibility, rate limits, auth, audit, and projection semantics
 - `gofmt -l .`
 - `go test ./...`
 - if `web/` changes: `cd web && npm run lint && npm run typecheck && npm test`
+- `bash gov-infra/verifiers/gov-verify-rubric.sh`
+
+### Host 3.5 — Body-native mailbox contract
+
+**Trigger:** latest body steward blocker review after Host 4 merge.
+**Planned commit subjects:**
+
+- `docs(comm): define body-native mailbox contract`
+- `feat(comm): filter mailbox list for body consumers`
+- `feat(comm): expose mailbox messageRef semantics`
+- `feat(comm): add canonical mailbox reply endpoint`
+- `docs(comm): finalize body mailbox migration notes`
+
+**Acceptance:** Host returns `messageRef` as the canonical opaque body-facing reference, backed by `deliveryId` in v1.
+Mailbox get/content/state/reply endpoints accept `messageRef` and legacy `messageId` only when unambiguous within the
+authenticated instance + exact agent. List APIs support exact-agent channel/direction/read/archive/delete/thread filters
+and bounded metadata/preview `query`. Reply APIs derive recipient/thread/provider context from host canonical mailbox
+state so body remains an MCP facade and not mailbox authority.
+
+**Validation:**
+
+- `gofmt -l .`
+- `go test ./...`
+- `go vet ./...`
+- `cd web && npm run generate:lesser-host-api && npm run verify:lesser-host-contracts`
 - `bash gov-infra/verifiers/gov-verify-rubric.sh`
 
 ## Cross-repo sequencing

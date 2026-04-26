@@ -117,9 +117,15 @@ for the managed deploy.
 `lesser-body` does not own canonical mailbox state. For soul comm tools it is the MCP facade over host's
 instance-authenticated mailbox contract:
 
-- list/get tools call host mailbox metadata endpoints and return redacted previews/state
+- list/get tools call host mailbox metadata endpoints and return redacted previews/state. Host returns `messageRef` as the
+  canonical opaque mailbox reference; body MCP parameters may remain named `messageId` for compatibility, but their value
+  should be documented as a host mailbox message reference.
 - full message bodies are fetched only by explicit content tools
 - read/unread/archive/delete tools mutate host's canonical mailbox state
+- reply tools call host's canonical mailbox reply endpoint so body does not reconstruct provider reply headers, thread
+  roots, or recipients locally
+- mailbox list filters and bounded `query` are exact-agent host-side filters only; body must not implement global mailbox
+  search or store durable query indexes
 - body must not persist a durable mailbox-content or read-state store of its own
 
 See `docs/soul-comm-mailbox-migration.md` for the migration order, backward-compatibility expectations, rate limits,
