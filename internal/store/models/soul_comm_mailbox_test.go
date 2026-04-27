@@ -25,6 +25,53 @@ func TestSoulCommMailboxMessageKeysAndRetention(t *testing.T) {
 	assertMailboxMessageRetentionAndPreview(t, msg, created)
 }
 
+func TestSoulCommMailboxMessageBeforeUpdatePreservesLoadedKeys(t *testing.T) {
+	created := time.Date(2026, 4, 25, 12, 30, 0, 0, time.UTC)
+	msg := newSoulCommMailboxMessageForTest(created)
+	if err := msg.BeforeCreate(); err != nil {
+		t.Fatalf("BeforeCreate: %v", err)
+	}
+	loadedPK := msg.PK
+	loadedSK := msg.SK
+	loadedGSI1PK := msg.GSI1PK
+	loadedGSI1SK := msg.GSI1SK
+	loadedGSI2PK := msg.GSI2PK
+	loadedGSI2SK := msg.GSI2SK
+	loadedTTL := msg.TTL
+
+	// TableTheory owns implicit createdAt/updatedAt timestamps at marshal time;
+	// state updates must still target the current row's persisted PK/SK rather
+	// than recomputing keys from a later createdAt attribute.
+	msg.CreatedAt = created.Add(4 * time.Second)
+	msg.Read = true
+	if err := msg.BeforeUpdate(); err != nil {
+		t.Fatalf("BeforeUpdate: %v", err)
+	}
+
+	if msg.PK != loadedPK || msg.SK != loadedSK {
+		t.Fatalf("expected loaded primary keys to be preserved, got %q/%q want %q/%q", msg.PK, msg.SK, loadedPK, loadedSK)
+	}
+	if msg.GSI1PK != loadedGSI1PK || msg.GSI1SK != loadedGSI1SK || msg.GSI2PK != loadedGSI2PK || msg.GSI2SK != loadedGSI2SK {
+		t.Fatalf("expected loaded index keys to be preserved, got gsi1=%q/%q gsi2=%q/%q", msg.GSI1PK, msg.GSI1SK, msg.GSI2PK, msg.GSI2SK)
+	}
+	if msg.TTL != loadedTTL {
+		t.Fatalf("expected loaded ttl to be preserved, got %d want %d", msg.TTL, loadedTTL)
+	}
+}
+
+func TestSoulCommMailboxThreadIDNormalizesHostMessageIDReferences(t *testing.T) {
+	bare := SoulCommMailboxThreadID("demo", "0xabc", "email", "comm-msg-abc123")
+	hostRef := SoulCommMailboxThreadID("demo", "0xabc", "email", "<comm-msg-abc123@lessersoul.ai>")
+	external := SoulCommMailboxThreadID("demo", "0xabc", "email", "<comm-msg-abc123@example.net>")
+
+	if bare != hostRef {
+		t.Fatalf("expected host-generated provider Message-ID to normalize into the bare thread root: %s != %s", bare, hostRef)
+	}
+	if bare == external {
+		t.Fatalf("expected external Message-ID domain to stay distinct from host thread root")
+	}
+}
+
 func newSoulCommMailboxMessageForTest(created time.Time) *SoulCommMailboxMessage {
 	return &SoulCommMailboxMessage{
 		InstanceSlug:      " Demo ",

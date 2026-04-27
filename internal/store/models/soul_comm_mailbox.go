@@ -221,9 +221,26 @@ func (m *SoulCommMailboxMessage) validateContentPointer() error {
 
 // BeforeUpdate updates timestamps and keys before mutating a mailbox current row.
 func (m *SoulCommMailboxMessage) BeforeUpdate() error {
+	existingPK := strings.TrimSpace(m.PK)
+	existingSK := strings.TrimSpace(m.SK)
+	existingGSI1PK := strings.TrimSpace(m.GSI1PK)
+	existingGSI1SK := strings.TrimSpace(m.GSI1SK)
+	existingGSI2PK := strings.TrimSpace(m.GSI2PK)
+	existingGSI2SK := strings.TrimSpace(m.GSI2SK)
+	existingTTL := m.TTL
+
 	m.UpdatedAt = time.Now().UTC()
 	if err := m.UpdateKeys(); err != nil {
 		return err
+	}
+	if existingPK != "" && existingSK != "" {
+		m.PK = existingPK
+		m.SK = existingSK
+		m.GSI1PK = existingGSI1PK
+		m.GSI1SK = existingGSI1SK
+		m.GSI2PK = existingGSI2PK
+		m.GSI2SK = existingGSI2SK
+		m.TTL = existingTTL
 	}
 	if err := requireNonEmpty("deliveryId", m.DeliveryID); err != nil {
 		return err
@@ -410,7 +427,7 @@ func SoulCommMailboxDeliveryID(instanceSlug string, agentID string, direction st
 
 // SoulCommMailboxThreadID returns a deterministic thread id scoped to one agent.
 func SoulCommMailboxThreadID(instanceSlug string, agentID string, channelType string, rootMessageID string) string {
-	root := strings.TrimSpace(rootMessageID)
+	root := SoulCommMailboxCanonicalThreadRoot(rootMessageID)
 	if root == "" {
 		root = "root"
 	}
@@ -421,6 +438,32 @@ func SoulCommMailboxThreadID(instanceSlug string, agentID string, channelType st
 		root,
 	}, "|")
 	return "comm-thread-" + shortHash(payload, 24)
+}
+
+// SoulCommMailboxCanonicalThreadRoot normalizes host-generated email Message-ID
+// references to the stable comm message token used before provider wrapping.
+// External Message-IDs remain untouched so unrelated correspondents do not
+// collapse into host-owned threads.
+func SoulCommMailboxCanonicalThreadRoot(rootMessageID string) string {
+	root := strings.TrimSpace(rootMessageID)
+	if root == "" {
+		return ""
+	}
+	trimmed := strings.Trim(root, "<>")
+	local, domain, ok := strings.Cut(trimmed, "@")
+	if !ok {
+		return root
+	}
+	local = strings.TrimSpace(local)
+	if !strings.HasPrefix(strings.ToLower(local), "comm-msg-") {
+		return root
+	}
+	switch strings.ToLower(strings.TrimSpace(domain)) {
+	case "lessersoul.ai":
+		return local
+	default:
+		return root
+	}
 }
 
 // SoulCommMailboxEventID returns a deterministic-ish event id for append rows.

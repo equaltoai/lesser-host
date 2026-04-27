@@ -65,6 +65,10 @@ The intent is to keep authority in one place:
 - Host accepts legacy `messageId` values on mailbox get/content/state/reply routes only when they resolve unambiguously
   within the authenticated instance + exact agent mailbox. Ambiguous legacy refs fail with a conflict rather than
   guessing.
+- Host-generated email `Message-ID` references are normalized for thread identity. A direct self-send outbound row keyed
+  by `comm-msg-*` and the corresponding inbound provider receipt keyed by `comm-msg-*@lessersoul.ai` must share one
+  canonical `threadId`; future replies inherit that canonical thread rather than starting from the provider-wrapped
+  receipt ID.
 - Legacy `SoulAgentCommActivity` and `SoulAgentCommQueue` records may continue to be written during the migration window,
   but they are no longer authoritative for portal/body mailbox behavior.
 - Portal queue responses no longer include a `body` field. They expose redacted `preview`, `content.available`, content
@@ -96,9 +100,29 @@ The intent is to keep authority in one place:
 
 - Explicit content reads write audit evidence with action `soul_comm_mailbox.content_read`.
 - Read/unread/archive/delete operations append immutable mailbox state-change events alongside the current-row mutation.
+- State mutations must target the loaded canonical mailbox row and require the row to exist. They must not recompute
+  current-row keys from mutable framework-managed timestamps or create partial ghost rows.
 - Delivery/provider facts remain in canonical mailbox metadata so operators can reconcile provider status without reading
   tenant message bodies.
 - Governance evidence for this exception lives in `gov-infra` via the CMP-4 bounded mailbox verifier and ADR 0005.
+
+## Lab hardening cleanup
+
+The Host mailbox hardening patch includes a lab-only repair utility for rows created before self-send normalization and
+state-mutation key preservation shipped:
+
+```bash
+AWS_PROFILE=Lesser STATE_TABLE_NAME=lesser-host-lab-state \
+  go run ./scripts/soul-comm-mailbox-hardening-cleanup \
+  --stage lab \
+  --instance-slug <slug> \
+  --agent-id <agent-id>
+```
+
+The default mode is a dry run. Add `--apply` only after the dry-run output identifies the expected, bounded repairs. The
+utility refuses non-`lab` stages, requires an exact instance + agent scope, deletes only ghost rows missing canonical
+delivery/index attributes, and normalizes only known host-generated self-send split threads. Live/prod cleanup requires a
+separate explicit authorization and migration plan.
 
 ## Projection semantics for lesser
 
