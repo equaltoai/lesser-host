@@ -134,6 +134,9 @@ func TestHandleSoulCommMailboxListRejectsInvalidFilters(t *testing.T) {
 
 	for name, query := range map[string]map[string][]string{
 		"bad channel": {"channelType": {"fax"}},
+		"bad cursor": {
+			"cursor": {"not-a-tabletheory-cursor"},
+		},
 		"bad direction": {
 			"direction": {"sideways"},
 		},
@@ -150,6 +153,42 @@ func TestHandleSoulCommMailboxListRejectsInvalidFilters(t *testing.T) {
 			assertCommTheoryErrorCode(t, err, commCodeInvalidRequest, http.StatusBadRequest)
 		})
 	}
+}
+
+func TestHandleSoulCommMailboxStatePreservesLoadedKeyAndRequiresExistingRow(t *testing.T) {
+	t.Parallel()
+
+	fixture := newMailboxAPITestDB()
+	expectMailboxAPIAccess(t, fixture, soulLifecycleTestAgentIDHex)
+
+	msg := mailboxAPITestMessage(soulLifecycleTestAgentIDHex)
+	msg.Read = false
+	require.NoError(t, msg.BeforeCreate())
+	loadedSK := msg.SK
+	loadedGSI2SK := msg.GSI2SK
+	msg.CreatedAt = msg.CreatedAt.Add(4 * time.Second)
+	expectMailboxMessageLoad(t, fixture.qMsg, msg)
+
+	tx := &recordingMailboxTransactionBuilder{}
+	fixture.db.TransactWriteBuilder = tx
+
+	resp, err := newMailboxAPITestServer(fixture).handleSoulCommMailboxMarkRead(newMailboxAPIContext(soulLifecycleTestAgentIDHex, "comm-delivery-1", nil))
+	require.NoError(t, err)
+	require.True(t, decodeMailboxGetResponse(t, resp).Message.State.Read)
+
+	updated, ok := tx.updateModel.(*models.SoulCommMailboxMessage)
+	require.True(t, ok)
+	require.Equal(t, loadedSK, updated.SK)
+	require.Equal(t, loadedGSI2SK, updated.GSI2SK)
+	require.Condition(t, func() bool {
+		for _, cond := range tx.updateConditions {
+			if cond.Kind == core.TransactConditionKindPrimaryKeyExists {
+				return true
+			}
+		}
+		return false
+	}, "expected mailbox state mutation to require an existing current row")
+	require.Equal(t, 1, tx.createCount)
 }
 
 func TestHandleSoulCommMailboxContentFetchesExplicitBody(t *testing.T) {
@@ -817,3 +856,46 @@ func decodeMailboxGetResponse(t *testing.T, resp *apptheory.Response) soulCommMa
 	require.NoError(t, json.Unmarshal(resp.Body, &out))
 	return out
 }
+
+type recordingMailboxTransactionBuilder struct {
+	updateModel      any
+	updateFields     []string
+	updateConditions []core.TransactCondition
+	createCount      int
+}
+
+func (r *recordingMailboxTransactionBuilder) Put(_ any, _ ...core.TransactCondition) core.TransactionBuilder {
+	return r
+}
+
+func (r *recordingMailboxTransactionBuilder) Create(_ any, _ ...core.TransactCondition) core.TransactionBuilder {
+	r.createCount++
+	return r
+}
+
+func (r *recordingMailboxTransactionBuilder) Update(model any, fields []string, conditions ...core.TransactCondition) core.TransactionBuilder {
+	r.updateModel = model
+	r.updateFields = append([]string(nil), fields...)
+	r.updateConditions = append([]core.TransactCondition(nil), conditions...)
+	return r
+}
+
+func (r *recordingMailboxTransactionBuilder) UpdateWithBuilder(_ any, _ func(core.UpdateBuilder) error, _ ...core.TransactCondition) core.TransactionBuilder {
+	return r
+}
+
+func (r *recordingMailboxTransactionBuilder) Delete(_ any, _ ...core.TransactCondition) core.TransactionBuilder {
+	return r
+}
+
+func (r *recordingMailboxTransactionBuilder) ConditionCheck(_ any, _ ...core.TransactCondition) core.TransactionBuilder {
+	return r
+}
+
+func (r *recordingMailboxTransactionBuilder) WithContext(_ context.Context) core.TransactionBuilder {
+	return r
+}
+
+func (r *recordingMailboxTransactionBuilder) Execute() error { return nil }
+
+func (r *recordingMailboxTransactionBuilder) ExecuteWithContext(_ context.Context) error { return nil }

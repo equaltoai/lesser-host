@@ -8,8 +8,10 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
+	"github.com/theory-cloud/tabletheory"
 	"github.com/theory-cloud/tabletheory/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	theoryquery "github.com/theory-cloud/tabletheory/pkg/query"
 
 	"github.com/equaltoai/lesser-host/internal/commmailbox"
 	"github.com/equaltoai/lesser-host/internal/store/models"
@@ -326,14 +328,8 @@ func parseMailboxListFilters(ctx *apptheory.Context) (mailboxListFilters, *appth
 		query:          strings.ToLower(strings.TrimSpace(queryFirst(ctx, "query"))),
 		includeDeleted: queryBool(ctx, "includeDeleted"),
 	}
-	if filters.channelType != "" && filters.channelType != commChannelEmail && filters.channelType != commChannelSMS && filters.channelType != commChannelVoice {
-		return mailboxListFilters{}, apptheory.NewAppTheoryError(commCodeInvalidRequest, "channelType is invalid").WithStatusCode(http.StatusBadRequest)
-	}
-	if filters.direction != "" && filters.direction != models.SoulCommDirectionInbound && filters.direction != models.SoulCommDirectionOutbound {
-		return mailboxListFilters{}, apptheory.NewAppTheoryError(commCodeInvalidRequest, "direction is invalid").WithStatusCode(http.StatusBadRequest)
-	}
-	if len(filters.query) > mailboxListQueryMaxLength {
-		return mailboxListFilters{}, apptheory.NewAppTheoryError(commCodeInvalidRequest, "query is too long").WithStatusCode(http.StatusBadRequest)
+	if appErr := validateMailboxListFilters(filters); appErr != nil {
+		return mailboxListFilters{}, appErr
 	}
 	if queryPresent(ctx, "read") {
 		value := queryBool(ctx, "read")
@@ -359,6 +355,37 @@ func parseMailboxListFilters(ctx *apptheory.Context) (mailboxListFilters, *appth
 		}
 	}
 	return filters, nil
+}
+
+func validateMailboxListFilters(filters mailboxListFilters) *apptheory.AppTheoryError {
+	if filters.channelType != "" && filters.channelType != commChannelEmail && filters.channelType != commChannelSMS && filters.channelType != commChannelVoice {
+		return apptheory.NewAppTheoryError(commCodeInvalidRequest, "channelType is invalid").WithStatusCode(http.StatusBadRequest)
+	}
+	if filters.direction != "" && filters.direction != models.SoulCommDirectionInbound && filters.direction != models.SoulCommDirectionOutbound {
+		return apptheory.NewAppTheoryError(commCodeInvalidRequest, "direction is invalid").WithStatusCode(http.StatusBadRequest)
+	}
+	if len(filters.query) > mailboxListQueryMaxLength {
+		return apptheory.NewAppTheoryError(commCodeInvalidRequest, "query is too long").WithStatusCode(http.StatusBadRequest)
+	}
+	if appErr := validateMailboxListCursor(filters.cursor); appErr != nil {
+		return appErr
+	}
+	return nil
+}
+
+func validateMailboxListCursor(cursor string) *apptheory.AppTheoryError {
+	cursor = strings.TrimSpace(cursor)
+	if cursor == "" {
+		return nil
+	}
+	decoded, err := theoryquery.DecodeCursor(cursor)
+	if err != nil || decoded == nil || len(decoded.LastEvaluatedKey) == 0 {
+		return apptheory.NewAppTheoryError(commCodeInvalidRequest, "cursor is invalid").WithStatusCode(http.StatusBadRequest)
+	}
+	if _, err := decoded.ToAttributeValues(); err != nil {
+		return apptheory.NewAppTheoryError(commCodeInvalidRequest, "cursor is invalid").WithStatusCode(http.StatusBadRequest)
+	}
+	return nil
 }
 
 func (f mailboxListFilters) queryLimit() int {
@@ -592,7 +619,7 @@ func (s *Server) persistMailboxStateChange(ctx context.Context, item *models.Sou
 		}
 	}
 	return s.store.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
-		tx.Update(item, []string{"Read", "Archived", "Deleted", "UpdatedAt"})
+		tx.Update(item, []string{"Read", "Archived", "Deleted", "UpdatedAt"}, tabletheory.IfExists())
 		if evt != nil {
 			tx.Create(evt)
 		}
