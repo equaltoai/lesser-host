@@ -37,6 +37,7 @@
 		switchEthereumChain,
 		waitForEthereumTransactionReceipt,
 	} from 'src/lib/wallet/ethereum';
+	import { jcsCanonicalize } from 'src/lib/wallet/jcs';
 	import { keccak256Utf8Hex } from 'src/lib/wallet/keccak';
 	import {
 		Alert,
@@ -840,6 +841,14 @@
 			principalSignError = 'Declaration is required.';
 			return;
 		}
+		if (!beginResult?.registration) {
+			principalSignError = 'Generate a registration challenge first.';
+			return;
+		}
+		if (!soulConfig?.chain_id || !soulConfig?.registry_contract_address) {
+			principalSignError = 'Soul registry configuration is unavailable.';
+			return;
+		}
 
 		principalSignLoading = true;
 		try {
@@ -850,9 +859,24 @@
 				return;
 			}
 
-			const digestHex = keccak256Utf8Hex(decl);
+			const declaredAt = new Date().toISOString();
+			const reg = beginResult.registration;
+			const unsigned = {
+				kind: 'soul_principal_declaration',
+				version: '1',
+				agentId: reg.agent_id.trim().toLowerCase(),
+				wallet: reg.wallet_address.trim().toLowerCase(),
+				domain: reg.domain_normalized.trim().toLowerCase(),
+				localId: reg.local_id.trim(),
+				chainId: String(soulConfig.chain_id),
+				contract: soulConfig.registry_contract_address.trim().toLowerCase(),
+				principalAddress: addr.toLowerCase(),
+				declaration: decl,
+				declaredAt,
+			};
+			const digestHex = keccak256Utf8Hex(jcsCanonicalize(unsigned));
 			principalSignature = await personalSign(provider, digestHex, addr);
-			principalDeclaredAt = new Date().toISOString();
+			principalDeclaredAt = declaredAt;
 		} catch (err) {
 			principalSignError = formatError(err);
 		} finally {

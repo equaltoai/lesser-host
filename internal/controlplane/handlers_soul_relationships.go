@@ -208,23 +208,7 @@ func parseSoulCreateRelationshipInput(ctx *apptheory.Context) (soulCreateRelatio
 }
 
 func parseSoulRelationshipCreatedAt(raw string, now time.Time) (time.Time, string, *apptheory.AppError) {
-	if raw == "" {
-		return time.Time{}, "", &apptheory.AppError{Code: "app.bad_request", Message: "created_at is required"}
-	}
-	parsedTS, parseErr := time.Parse(time.RFC3339, raw)
-	if parseErr != nil {
-		if parsedTS, parseErr = time.Parse(time.RFC3339Nano, raw); parseErr != nil {
-			return time.Time{}, "", &apptheory.AppError{Code: "app.bad_request", Message: "created_at must be RFC3339"}
-		}
-	}
-	if parsedTS.After(now.Add(5 * time.Minute)) {
-		return time.Time{}, "", &apptheory.AppError{Code: "app.bad_request", Message: "created_at cannot be in the future"}
-	}
-	if parsedTS.Before(now.Add(-10 * 365 * 24 * time.Hour)) {
-		return time.Time{}, "", &apptheory.AppError{Code: "app.bad_request", Message: "created_at is too far in the past"}
-	}
-	createdAt := parsedTS.UTC()
-	return createdAt, createdAt.Format(time.RFC3339Nano), nil
+	return parseSoulSignedTimestamp(raw, now, "created_at")
 }
 
 func (s *Server) requireSoulRelationshipTarget(ctx context.Context, toAgentIDHex string) *apptheory.AppError {

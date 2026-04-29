@@ -83,14 +83,16 @@ func newSoulRegistryVerifyHarness(t *testing.T, mutateCfg func(*config.Config)) 
 	return s, tdb, reg, key
 }
 
-func newSoulRegistryVerifyContext(t *testing.T, reg *models.SoulAgentRegistration, key *ecdsa.PrivateKey, mutate func(*soulAgentRegistrationVerifyRequest)) *apptheory.Context {
+func newSoulRegistryVerifyContext(t *testing.T, s *Server, reg *models.SoulAgentRegistration, key *ecdsa.PrivateKey, mutate func(*soulAgentRegistrationVerifyRequest)) *apptheory.Context {
 	t.Helper()
 
 	walletSig, err := crypto.Sign(accounts.TextHash([]byte(reg.WalletMessage)), key)
 	require.NoError(t, err)
 
 	principalDeclaration := boundaryTestPrincipalDeclaration
-	principalDigest := crypto.Keccak256([]byte(principalDeclaration))
+	declaredAt := canonicalSoulSignedTimestamp(time.Now().UTC())
+	principalDigest, appErr := s.computeSoulPrincipalDeclarationDigest(reg, reg.Wallet, principalDeclaration, declaredAt)
+	require.Nil(t, appErr)
 	principalSig, err := crypto.Sign(accounts.TextHash(principalDigest), key)
 	require.NoError(t, err)
 
@@ -99,7 +101,7 @@ func newSoulRegistryVerifyContext(t *testing.T, reg *models.SoulAgentRegistratio
 		PrincipalAddress:     reg.Wallet,
 		PrincipalDeclaration: principalDeclaration,
 		PrincipalSignature:   "0x" + hex.EncodeToString(principalSig),
-		DeclaredAt:           reg.CreatedAt.Add(1 * time.Minute).Format(time.RFC3339),
+		DeclaredAt:           declaredAt,
 	}
 	if mutate != nil {
 		mutate(&req)
@@ -358,7 +360,7 @@ func TestHandleSoulAgentRegistrationVerify_ValidationBranches(t *testing.T) {
 
 	t.Run("invalid principal address", func(t *testing.T) {
 		s, _, reg, key := newSoulRegistryVerifyHarness(t, nil)
-		ctx := newSoulRegistryVerifyContext(t, reg, key, func(req *soulAgentRegistrationVerifyRequest) {
+		ctx := newSoulRegistryVerifyContext(t, s, reg, key, func(req *soulAgentRegistrationVerifyRequest) {
 			req.PrincipalAddress = "not-a-wallet"
 		})
 
@@ -371,7 +373,7 @@ func TestHandleSoulAgentRegistrationVerify_ValidationBranches(t *testing.T) {
 	t.Run("principal declaration required", func(t *testing.T) {
 		s, tdb, reg, key := newSoulRegistryVerifyHarness(t, nil)
 		tdb.qWalletIdx.On("First", mock.AnythingOfType("*models.WalletIndex")).Return(theoryErrors.ErrItemNotFound).Once()
-		ctx := newSoulRegistryVerifyContext(t, reg, key, func(req *soulAgentRegistrationVerifyRequest) {
+		ctx := newSoulRegistryVerifyContext(t, s, reg, key, func(req *soulAgentRegistrationVerifyRequest) {
 			req.PrincipalDeclaration = " "
 		})
 
@@ -384,7 +386,7 @@ func TestHandleSoulAgentRegistrationVerify_ValidationBranches(t *testing.T) {
 	t.Run("principal declaration too long", func(t *testing.T) {
 		s, tdb, reg, key := newSoulRegistryVerifyHarness(t, nil)
 		tdb.qWalletIdx.On("First", mock.AnythingOfType("*models.WalletIndex")).Return(theoryErrors.ErrItemNotFound).Once()
-		ctx := newSoulRegistryVerifyContext(t, reg, key, func(req *soulAgentRegistrationVerifyRequest) {
+		ctx := newSoulRegistryVerifyContext(t, s, reg, key, func(req *soulAgentRegistrationVerifyRequest) {
 			req.PrincipalDeclaration = strings.Repeat("x", 8193)
 		})
 
@@ -397,7 +399,7 @@ func TestHandleSoulAgentRegistrationVerify_ValidationBranches(t *testing.T) {
 	t.Run("declared_at required", func(t *testing.T) {
 		s, tdb, reg, key := newSoulRegistryVerifyHarness(t, nil)
 		tdb.qWalletIdx.On("First", mock.AnythingOfType("*models.WalletIndex")).Return(theoryErrors.ErrItemNotFound).Once()
-		ctx := newSoulRegistryVerifyContext(t, reg, key, func(req *soulAgentRegistrationVerifyRequest) {
+		ctx := newSoulRegistryVerifyContext(t, s, reg, key, func(req *soulAgentRegistrationVerifyRequest) {
 			req.DeclaredAt = " "
 		})
 
@@ -410,7 +412,7 @@ func TestHandleSoulAgentRegistrationVerify_ValidationBranches(t *testing.T) {
 	t.Run("declared_at must be rfc3339", func(t *testing.T) {
 		s, tdb, reg, key := newSoulRegistryVerifyHarness(t, nil)
 		tdb.qWalletIdx.On("First", mock.AnythingOfType("*models.WalletIndex")).Return(theoryErrors.ErrItemNotFound).Once()
-		ctx := newSoulRegistryVerifyContext(t, reg, key, func(req *soulAgentRegistrationVerifyRequest) {
+		ctx := newSoulRegistryVerifyContext(t, s, reg, key, func(req *soulAgentRegistrationVerifyRequest) {
 			req.DeclaredAt = "yesterday"
 		})
 
@@ -423,7 +425,7 @@ func TestHandleSoulAgentRegistrationVerify_ValidationBranches(t *testing.T) {
 	t.Run("principal signature required", func(t *testing.T) {
 		s, tdb, reg, key := newSoulRegistryVerifyHarness(t, nil)
 		tdb.qWalletIdx.On("First", mock.AnythingOfType("*models.WalletIndex")).Return(theoryErrors.ErrItemNotFound).Once()
-		ctx := newSoulRegistryVerifyContext(t, reg, key, func(req *soulAgentRegistrationVerifyRequest) {
+		ctx := newSoulRegistryVerifyContext(t, s, reg, key, func(req *soulAgentRegistrationVerifyRequest) {
 			req.PrincipalSignature = " "
 		})
 
@@ -436,8 +438,27 @@ func TestHandleSoulAgentRegistrationVerify_ValidationBranches(t *testing.T) {
 	t.Run("invalid principal signature", func(t *testing.T) {
 		s, tdb, reg, key := newSoulRegistryVerifyHarness(t, nil)
 		tdb.qWalletIdx.On("First", mock.AnythingOfType("*models.WalletIndex")).Return(theoryErrors.ErrItemNotFound).Once()
-		ctx := newSoulRegistryVerifyContext(t, reg, key, func(req *soulAgentRegistrationVerifyRequest) {
+		ctx := newSoulRegistryVerifyContext(t, s, reg, key, func(req *soulAgentRegistrationVerifyRequest) {
 			req.PrincipalSignature = "0x1234"
+		})
+
+		_, err := s.handleSoulAgentRegistrationVerify(ctx)
+		var appErr *apptheory.AppError
+		require.ErrorAs(t, err, &appErr)
+		require.Equal(t, "invalid principal_signature", appErr.Message)
+	})
+
+	t.Run("principal signature is agent-bound", func(t *testing.T) {
+		s, tdb, reg, key := newSoulRegistryVerifyHarness(t, nil)
+		tdb.qWalletIdx.On("First", mock.AnythingOfType("*models.WalletIndex")).Return(theoryErrors.ErrItemNotFound).Once()
+		ctx := newSoulRegistryVerifyContext(t, s, reg, key, func(req *soulAgentRegistrationVerifyRequest) {
+			otherReg := *reg
+			otherReg.AgentID = "0x" + strings.Repeat("66", 32)
+			digest, appErr := s.computeSoulPrincipalDeclarationDigest(&otherReg, req.PrincipalAddress, req.PrincipalDeclaration, req.DeclaredAt)
+			require.Nil(t, appErr)
+			sig, err := crypto.Sign(accounts.TextHash(digest), key)
+			require.NoError(t, err)
+			req.PrincipalSignature = "0x" + hex.EncodeToString(sig)
 		})
 
 		_, err := s.handleSoulAgentRegistrationVerify(ctx)
@@ -451,7 +472,7 @@ func TestHandleSoulAgentRegistrationVerify_ValidationBranches(t *testing.T) {
 			cfg.SoulMintSignerKey = ""
 		})
 		tdb.qWalletIdx.On("First", mock.AnythingOfType("*models.WalletIndex")).Return(theoryErrors.ErrItemNotFound).Once()
-		ctx := newSoulRegistryVerifyContext(t, reg, key, nil)
+		ctx := newSoulRegistryVerifyContext(t, s, reg, key, nil)
 
 		_, err := s.handleSoulAgentRegistrationVerify(ctx)
 		var appErr *apptheory.AppError

@@ -206,6 +206,11 @@ func (s *Server) prepareSoulRegistrationPublish(
 	if validateErr := validatePrevious(nextVersion); validateErr != nil {
 		return soulRegistrationPublishPlan{}, validateErr
 	}
+	if prevVersionFromURI == 0 && nextVersion == 1 {
+		if historyErr := s.ensureNoSoulRegistrationVersionHistory(ctx, agentIDHex); historyErr != nil {
+			return soulRegistrationPublishPlan{}, historyErr
+		}
+	}
 	if identity.SelfDescriptionVersion > nextVersion {
 		return soulRegistrationPublishPlan{}, &apptheory.AppError{Code: "app.conflict", Message: "agent has advanced beyond this version"}
 	}
@@ -239,4 +244,16 @@ func (s *Server) prepareSoulRegistrationPublish(
 		nextVersion:        nextVersion,
 		versionRecord:      versionRecord,
 	}, nil
+}
+
+func (s *Server) ensureNoSoulRegistrationVersionHistory(ctx context.Context, agentIDHex string) *apptheory.AppError {
+	nextExisting, _, appErr := s.getNextSoulAgentVersion(ctx, agentIDHex)
+	if appErr != nil {
+		return appErr
+	}
+	if nextExisting > 2 {
+		log.Printf("controlplane: soul_integrity version_chain_violation agent=%s reason=missing_prev_uri_with_existing_history next_existing=%d", agentIDHex, nextExisting)
+		return &apptheory.AppError{Code: "app.conflict", Message: "previousVersionUri is required for existing version history"}
+	}
+	return nil
 }

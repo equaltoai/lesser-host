@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cyberphone/json-canonicalization/go/src/webpki.org/jsoncanonicalizer"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
@@ -851,6 +852,7 @@ func (s *Server) handleSoulAgentRegistrationVerify(ctx *apptheory.Context) (*app
 
 	principalAddr, principalDeclaration, principalSig, declaredAt, appErr := s.validateSoulRegistrationVerifyPrincipalInputs(
 		ctx.Context(),
+		reg,
 		principalAddrRaw,
 		principalDeclarationRaw,
 		principalSigRaw,
@@ -1101,6 +1103,7 @@ func needsSoulPendingIdentityPrincipalUpdate(existing *models.SoulAgentIdentity,
 
 func (s *Server) validateSoulRegistrationVerifyPrincipalInputs(
 	ctx context.Context,
+	reg *models.SoulAgentRegistration,
 	principalAddrRaw string,
 	principalDeclarationRaw string,
 	principalSigRaw string,
@@ -1121,20 +1124,56 @@ func (s *Server) validateSoulRegistrationVerifyPrincipalInputs(
 	if declaredAt == "" {
 		return "", "", "", "", &apptheory.AppError{Code: "app.bad_request", Message: "declared_at is required"}
 	}
-	if _, err := time.Parse(time.RFC3339, declaredAt); err != nil {
-		if _, err2 := time.Parse(time.RFC3339Nano, declaredAt); err2 != nil {
-			return "", "", "", "", &apptheory.AppError{Code: "app.bad_request", Message: "declared_at must be an RFC3339 timestamp"}
+	_, declaredAtCanonical, tsErr := parseSoulSignedTimestamp(declaredAt, time.Now().UTC(), "declared_at")
+	if tsErr != nil {
+		if tsErr.Message == "declared_at must be RFC3339" {
+			tsErr.Message = "declared_at must be an RFC3339 timestamp"
 		}
+		return "", "", "", "", tsErr
 	}
 	principalSig := strings.TrimSpace(principalSigRaw)
 	if principalSig == "" {
 		return "", "", "", "", &apptheory.AppError{Code: "app.bad_request", Message: "principal_signature is required"}
 	}
-	principalDigest := crypto.Keccak256([]byte(principalDeclaration))
+	principalDigest, appErr := s.computeSoulPrincipalDeclarationDigest(reg, principalAddr, principalDeclaration, declaredAtCanonical)
+	if appErr != nil {
+		return "", "", "", "", appErr
+	}
 	if err := verifyEthereumSignatureBytes(principalAddr, principalDigest, principalSig); err != nil {
 		return "", "", "", "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid principal_signature"}
 	}
-	return principalAddr, principalDeclaration, principalSig, declaredAt, nil
+	return principalAddr, principalDeclaration, principalSig, declaredAtCanonical, nil
+}
+
+func (s *Server) computeSoulPrincipalDeclarationDigest(reg *models.SoulAgentRegistration, principalAddr string, principalDeclaration string, declaredAt string) ([]byte, *apptheory.AppError) {
+	if s == nil || reg == nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if s.cfg.SoulChainID <= 0 || strings.TrimSpace(s.cfg.SoulRegistryContractAddress) == "" {
+		return nil, &apptheory.AppError{Code: "app.conflict", Message: "soul registry is not configured"}
+	}
+	unsigned := map[string]any{
+		"kind":             "soul_principal_declaration",
+		"version":          "1",
+		"agentId":          strings.ToLower(strings.TrimSpace(reg.AgentID)),
+		"wallet":           strings.ToLower(strings.TrimSpace(reg.Wallet)),
+		"domain":           strings.ToLower(strings.TrimSpace(reg.DomainNormalized)),
+		"localId":          strings.TrimSpace(reg.LocalID),
+		"chainId":          strconv.FormatInt(s.cfg.SoulChainID, 10),
+		"contract":         strings.ToLower(strings.TrimSpace(s.cfg.SoulRegistryContractAddress)),
+		"principalAddress": strings.ToLower(strings.TrimSpace(principalAddr)),
+		"declaration":      strings.TrimSpace(principalDeclaration),
+		"declaredAt":       strings.TrimSpace(declaredAt),
+	}
+	unsignedBytes, err := json.Marshal(unsigned)
+	if err != nil {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid principal declaration JSON"}
+	}
+	jcsBytes, err := jsoncanonicalizer.Transform(unsignedBytes)
+	if err != nil {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid principal declaration JSON"}
+	}
+	return crypto.Keccak256(jcsBytes), nil
 }
 
 func (s *Server) upsertSoulAgentIndexes(ctx context.Context, reg *models.SoulAgentRegistration) {

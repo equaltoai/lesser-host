@@ -147,6 +147,7 @@ type strictRelationshipFixture struct {
 func newStrictRelationshipFixture(t *testing.T) *strictRelationshipFixture {
 	t.Helper()
 
+	createdAt := time.Now().UTC()
 	fixture := &strictRelationshipFixture{
 		tdb:               newSoulLifecycleTestDB(),
 		tx:                new(ttmocks.MockTransactionBuilder),
@@ -154,8 +155,8 @@ func newStrictRelationshipFixture(t *testing.T) *strictRelationshipFixture {
 		fromAgentIDHex:    "0x" + strings.Repeat("11", 32),
 		message:           "delegation for summaries",
 		contextJSON:       `{"taskType":"summarization"}`,
-		createdAtRaw:      "2026-03-01T00:00:00Z",
-		expectedCreatedAt: time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC),
+		createdAtRaw:      canonicalSoulSignedTimestamp(createdAt),
+		expectedCreatedAt: createdAt.Truncate(time.Millisecond),
 		createKinds:       map[string]bool{},
 	}
 
