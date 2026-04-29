@@ -32,6 +32,16 @@ type Config struct {
 	// SoulCommMailboxRetentionDays is the content/object lifecycle window for mailbox bodies.
 	SoulCommMailboxRetentionDays int64
 
+	// CommWebhookSharedSecretSSMParam stores the HMAC shared secret for
+	// first-party comm webhook adapters that cannot use provider-native
+	// signatures.
+	CommWebhookSharedSecretSSMParam string
+
+	// TelnyxWebhookPublicKey is Telnyx's Ed25519 webhook verification public
+	// key. It is public key material, not a secret; deployments may also store it
+	// in the `/lesser-host/telnyx` JSON parameter as `webhook_public_key`.
+	TelnyxWebhookPublicKey string
+
 	// ENS gateway (CCIP-Read) configuration.
 	ENSGatewayResolverAddress     string
 	ENSGatewaySigningKeyID        string
@@ -197,6 +207,11 @@ func Load() Config {
 		InboundEmailS3Prefix:         envStringDefault("INBOUND_EMAIL_S3_PREFIX", "ses/inbound/"),
 		SoulCommMailboxBucketName:    envString("SOUL_COMM_MAILBOX_BUCKET_NAME"),
 		SoulCommMailboxRetentionDays: envInt64Bounded("SOUL_COMM_MAILBOX_RETENTION_DAYS", 90, 1, 365),
+		CommWebhookSharedSecretSSMParam: envStringDefault(
+			"COMM_WEBHOOK_SHARED_SECRET_SSM_PARAM",
+			fmt.Sprintf("/lesser-host/comm/%s/webhook", stage),
+		),
+		TelnyxWebhookPublicKey: envString("TELNYX_WEBHOOK_PUBLIC_KEY"),
 
 		ENSGatewayResolverAddress:     envString("ENS_GATEWAY_RESOLVER_ADDRESS"),
 		ENSGatewaySigningKeyID:        envString("ENS_GATEWAY_SIGNING_KEY_ID"),

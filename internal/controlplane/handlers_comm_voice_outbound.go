@@ -191,6 +191,9 @@ func (s *Server) handleCommVoiceGatherWebhook(ctx *apptheory.Context) (*apptheor
 	if !s.cfg.SoulEnabled {
 		return apptheory.JSON(http.StatusNotFound, map[string]any{"ok": false})
 	}
+	if authErr := s.requireTelnyxCommWebhookAuth(ctx); authErr != nil {
+		return nil, authErr
+	}
 
 	messageID := strings.TrimSpace(ctx.Param("messageId"))
 	if messageID == "" {

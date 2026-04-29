@@ -112,6 +112,10 @@ func (s *Server) handleRecord(ctx context.Context, record events.SimpleEmailReco
 	if messageID == "" {
 		return fmt.Errorf("ses message id is required")
 	}
+	if !sesReceiptVerdictsAccepted(record.SES.Receipt) {
+		s.logf("emailingress: rejecting unauthenticated or unsafe SES message %q", safeLogToken(messageID))
+		return nil
+	}
 	rawMessage, err := s.loadRawEmail(ctx, messageID)
 	if err != nil {
 		return err
@@ -157,6 +161,38 @@ func (s *Server) handleRecord(ctx context.Context, record events.SimpleEmailReco
 		}
 	}
 	return nil
+}
+
+func sesReceiptVerdictsAccepted(receipt events.SimpleEmailReceipt) bool {
+	if !sesVerdictPass(receipt.SpamVerdict) || !sesVerdictPass(receipt.VirusVerdict) {
+		return false
+	}
+	return sesVerdictPass(receipt.SPFVerdict) ||
+		sesVerdictPass(receipt.DKIMVerdict) ||
+		sesVerdictPass(receipt.DMARCVerdict)
+}
+
+func sesVerdictPass(verdict events.SimpleEmailVerdict) bool {
+	return strings.EqualFold(strings.TrimSpace(verdict.Status), "PASS")
+}
+
+func safeLogToken(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	value = strings.Map(func(r rune) rune {
+		switch r {
+		case '\r', '\n', '\t':
+			return ' '
+		default:
+			if r < 0x20 || r == 0x7f {
+				return -1
+			}
+			return r
+		}
+	}, value)
+	return strings.Join(strings.Fields(value), " ")
 }
 
 func sesEnvelopeRecipients(record events.SimpleEmailRecord) []string {

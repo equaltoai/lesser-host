@@ -9,21 +9,17 @@ import (
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 
 	"github.com/equaltoai/lesser-host/internal/commworker"
-	"github.com/equaltoai/lesser-host/internal/config"
 )
 
 func TestHandleCommEmailInboundWebhook_EnqueuesNormalizedPayload(t *testing.T) {
 	t.Parallel()
 
 	var got *commworker.QueueMessage
-	s := &Server{
-		cfg: config.Config{SoulEnabled: true},
-		enqueueCommMessage: func(_ context.Context, msg commworker.QueueMessage) error {
-			cp := msg
-			got = &cp
-			return nil
-		},
-	}
+	s := newCommWebhookServer(func(_ context.Context, msg commworker.QueueMessage) error {
+		cp := msg
+		got = &cp
+		return nil
+	})
 
 	body, _ := json.Marshal(commworker.InboundNotification{
 		Type:    "communication:inbound",
@@ -41,7 +37,7 @@ func TestHandleCommEmailInboundWebhook_EnqueuesNormalizedPayload(t *testing.T) {
 
 	ctx := &apptheory.Context{
 		RequestID: "r-webhook-email-1",
-		Request:   apptheory.Request{Body: body},
+		Request:   signedCommWebhookRequest(t, body),
 	}
 
 	resp, err := s.handleCommEmailInboundWebhook(ctx)
@@ -63,14 +59,11 @@ func TestHandleCommEmailInboundWebhook_EnqueuesLegacyFlatPayload(t *testing.T) {
 	t.Parallel()
 
 	var got *commworker.QueueMessage
-	s := &Server{
-		cfg: config.Config{SoulEnabled: true},
-		enqueueCommMessage: func(_ context.Context, msg commworker.QueueMessage) error {
-			cp := msg
-			got = &cp
-			return nil
-		},
-	}
+	s := newCommWebhookServer(func(_ context.Context, msg commworker.QueueMessage) error {
+		cp := msg
+		got = &cp
+		return nil
+	})
 
 	body, _ := json.Marshal(map[string]any{
 		"to":         "agent-bob@lessersoul.ai",
@@ -84,7 +77,7 @@ func TestHandleCommEmailInboundWebhook_EnqueuesLegacyFlatPayload(t *testing.T) {
 
 	ctx := &apptheory.Context{
 		RequestID: "r-webhook-email-2",
-		Request:   apptheory.Request{Body: body},
+		Request:   signedCommWebhookRequest(t, body),
 	}
 
 	resp, err := s.handleCommEmailInboundWebhook(ctx)
@@ -109,14 +102,11 @@ func TestHandleCommSMSInboundWebhook_EnqueuesTelnyxPayload(t *testing.T) {
 	t.Parallel()
 
 	var got *commworker.QueueMessage
-	s := &Server{
-		cfg: config.Config{SoulEnabled: true},
-		enqueueCommMessage: func(_ context.Context, msg commworker.QueueMessage) error {
-			cp := msg
-			got = &cp
-			return nil
-		},
-	}
+	s := newCommWebhookServer(func(_ context.Context, msg commworker.QueueMessage) error {
+		cp := msg
+		got = &cp
+		return nil
+	})
 
 	body, _ := json.Marshal(map[string]any{
 		"data": map[string]any{
@@ -133,7 +123,7 @@ func TestHandleCommSMSInboundWebhook_EnqueuesTelnyxPayload(t *testing.T) {
 
 	ctx := &apptheory.Context{
 		RequestID: "r-webhook-sms-1",
-		Request:   apptheory.Request{Body: body},
+		Request:   signedCommWebhookRequest(t, body),
 	}
 
 	resp, err := s.handleCommSMSInboundWebhook(ctx)
@@ -158,14 +148,11 @@ func TestHandleCommVoiceInboundWebhook_EnqueuesTelnyxPayload(t *testing.T) {
 	t.Parallel()
 
 	var got *commworker.QueueMessage
-	s := &Server{
-		cfg: config.Config{SoulEnabled: true},
-		enqueueCommMessage: func(_ context.Context, msg commworker.QueueMessage) error {
-			cp := msg
-			got = &cp
-			return nil
-		},
-	}
+	s := newCommWebhookServer(func(_ context.Context, msg commworker.QueueMessage) error {
+		cp := msg
+		got = &cp
+		return nil
+	})
 
 	body, _ := json.Marshal(map[string]any{
 		"data": map[string]any{
@@ -182,7 +169,7 @@ func TestHandleCommVoiceInboundWebhook_EnqueuesTelnyxPayload(t *testing.T) {
 
 	ctx := &apptheory.Context{
 		RequestID: "r-webhook-voice-1",
-		Request:   apptheory.Request{Body: body},
+		Request:   signedCommWebhookRequest(t, body),
 	}
 
 	resp, err := s.handleCommVoiceInboundWebhook(ctx)

@@ -62,6 +62,9 @@ func (s *Server) handleCommEmailInboundWebhook(ctx *apptheory.Context) (*apptheo
 	if !s.cfg.SoulEnabled {
 		return apptheory.JSON(http.StatusNotFound, map[string]any{"ok": false})
 	}
+	if authErr := s.requireCommWebhookAdapterAuth(ctx); authErr != nil {
+		return nil, authErr
+	}
 
 	// Prefer the stable communication:inbound payload shape.
 	var notif commworker.InboundNotification
@@ -128,6 +131,9 @@ func (s *Server) handleCommSMSInboundWebhook(ctx *apptheory.Context) (*apptheory
 	}
 	if !s.cfg.SoulEnabled {
 		return apptheory.JSON(http.StatusNotFound, map[string]any{"ok": false})
+	}
+	if authErr := s.requireTelnyxCommWebhookAuth(ctx); authErr != nil {
+		return nil, authErr
 	}
 
 	// Accept already-normalized communication:inbound payloads.
@@ -199,6 +205,9 @@ func (s *Server) handleCommVoiceInboundWebhook(ctx *apptheory.Context) (*apptheo
 	if !s.cfg.SoulEnabled {
 		return apptheory.JSON(http.StatusNotFound, map[string]any{"ok": false})
 	}
+	if authErr := s.requireTelnyxCommWebhookAuth(ctx); authErr != nil {
+		return nil, authErr
+	}
 
 	// Accept already-normalized communication:inbound payloads.
 	var notif commworker.InboundNotification
@@ -251,6 +260,9 @@ func (s *Server) handleCommVoiceStatusWebhook(ctx *apptheory.Context) (*apptheor
 	}
 	if !s.cfg.SoulEnabled {
 		return apptheory.JSON(http.StatusNotFound, map[string]any{"ok": false})
+	}
+	if authErr := s.requireTelnyxCommWebhookAuth(ctx); authErr != nil {
+		return nil, authErr
 	}
 	if resp, handled, err := s.maybeHandleOutboundVoiceStatusWebhook(ctx); handled || err != nil {
 		return resp, err

@@ -86,11 +86,20 @@ func newVoiceGatherCaptureServer(t *testing.T) (*Server, func() *commworker.Queu
 	var queued *commworker.QueueMessage
 	s := &Server{
 		store: store.New(db),
-		cfg:   config.Config{SoulEnabled: true},
+		cfg: config.Config{
+			SoulEnabled:                     true,
+			CommWebhookSharedSecretSSMParam: "/test/comm/webhook",
+		},
 		enqueueCommMessage: func(_ context.Context, msg commworker.QueueMessage) error {
 			cp := msg
 			queued = &cp
 			return nil
+		},
+		ssmGetParameter: func(_ context.Context, name string) (string, error) {
+			if name != "/test/comm/webhook" {
+				return "", context.Canceled
+			}
+			return commWebhookTestSecret, nil
 		},
 	}
 	return s, func() *commworker.QueueMessage { return queued }
@@ -322,7 +331,7 @@ func TestHandleCommVoiceGatherWebhook_CapturesSpeechReplyAndUpdatesStatus(t *tes
 
 	resp, callErr := s.handleCommVoiceGatherWebhook(&apptheory.Context{
 		Params:  map[string]string{"messageId": "comm-msg-1"},
-		Request: apptheory.Request{Body: body},
+		Request: signedCommWebhookRequest(t, body),
 	})
 	if callErr != nil {
 		t.Fatalf("unexpected err: %v", callErr)
@@ -360,10 +369,19 @@ func TestHandleCommVoiceGatherWebhook_EmptyGatherResultAcknowledges(t *testing.T
 
 	s := &Server{
 		store: store.New(db),
-		cfg:   config.Config{SoulEnabled: true},
+		cfg: config.Config{
+			SoulEnabled:                     true,
+			CommWebhookSharedSecretSSMParam: "/test/comm/webhook",
+		},
 		enqueueCommMessage: func(_ context.Context, msg commworker.QueueMessage) error {
 			t.Fatalf("enqueue should not be called for empty gather result")
 			return nil
+		},
+		ssmGetParameter: func(_ context.Context, name string) (string, error) {
+			if name != "/test/comm/webhook" {
+				return "", context.Canceled
+			}
+			return commWebhookTestSecret, nil
 		},
 	}
 
@@ -378,7 +396,7 @@ func TestHandleCommVoiceGatherWebhook_EmptyGatherResultAcknowledges(t *testing.T
 
 	resp, callErr := s.handleCommVoiceGatherWebhook(&apptheory.Context{
 		Params:  map[string]string{"messageId": "comm-msg-1"},
-		Request: apptheory.Request{Body: body},
+		Request: signedCommWebhookRequest(t, body),
 	})
 	if callErr != nil {
 		t.Fatalf("unexpected err: %v", callErr)

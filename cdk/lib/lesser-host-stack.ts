@@ -854,6 +854,13 @@ export class LesserHostStack extends cdk.Stack {
 				resourceName: `lesser-host/soul/${stage}/*`,
 			}),
 		];
+		const commWebhookSsmParamArns = [
+			cdk.Stack.of(this).formatArn({
+				service: 'ssm',
+				resource: 'parameter',
+				resourceName: `lesser-host/comm/${stage}/webhook`,
+			}),
+		];
 		controlPlaneFn.addToRolePolicy(
 			new iam.PolicyStatement({
 				actions: ['ssm:GetParameter', 'ssm:GetParameters'],
@@ -864,6 +871,12 @@ export class LesserHostStack extends cdk.Stack {
 			new iam.PolicyStatement({
 				actions: ['ssm:GetParameter', 'ssm:GetParameters'],
 				resources: telnyxSsmParamArns,
+			}),
+		);
+		controlPlaneFn.addToRolePolicy(
+			new iam.PolicyStatement({
+				actions: ['ssm:GetParameter', 'ssm:GetParameters'],
+				resources: commWebhookSsmParamArns,
 			}),
 		);
 		controlPlaneFn.addToRolePolicy(

@@ -53,6 +53,17 @@ func (f *fakeSQS) SendMessage(_ context.Context, in *sqs.SendMessageInput, _ ...
 	return &sqs.SendMessageOutput{}, nil
 }
 
+func validSESReceipt(recipients ...string) events.SimpleEmailReceipt {
+	return events.SimpleEmailReceipt{
+		Recipients:   recipients,
+		SpamVerdict:  events.SimpleEmailVerdict{Status: "PASS"},
+		VirusVerdict: events.SimpleEmailVerdict{Status: "PASS"},
+		SPFVerdict:   events.SimpleEmailVerdict{Status: "PASS"},
+		DKIMVerdict:  events.SimpleEmailVerdict{Status: "PASS"},
+		DMARCVerdict: events.SimpleEmailVerdict{Status: "PASS"},
+	}
+}
+
 func TestNormalizeInboundRecipient(t *testing.T) {
 	t.Parallel()
 
@@ -306,6 +317,7 @@ func TestHandleSESEvent_SkipsNonBridgeRecipient(t *testing.T) {
 						MessageID:   "ses-msg-2",
 						Destination: []string{"medic@example.com"},
 					},
+					Receipt: validSESReceipt(),
 				},
 			},
 		},
@@ -346,7 +358,8 @@ func TestHandleSESEvent_PropagatesLoadError(t *testing.T) {
 		Records: []events.SimpleEmailRecord{
 			{
 				SES: events.SimpleEmailService{
-					Mail: events.SimpleEmailMessage{MessageID: "ses-msg-err"},
+					Mail:    events.SimpleEmailMessage{MessageID: "ses-msg-err"},
+					Receipt: validSESReceipt(),
 				},
 			},
 		},
@@ -355,6 +368,59 @@ func TestHandleSESEvent_PropagatesLoadError(t *testing.T) {
 	err := srv.HandleSESEvent(context.Background(), event)
 	if err == nil || !strings.Contains(err.Error(), `load inbound email "ses/inbound/ses-msg-err"`) {
 		t.Fatalf("expected load error, got %v", err)
+	}
+}
+
+func TestHandleSESEvent_RejectsUnauthenticatedSenderVerdicts(t *testing.T) {
+	t.Parallel()
+
+	s3Client := &fakeS3{bodyByKey: map[string]string{"ses/inbound/ses-msg-spoof": "From: Alice <alice@example.com>\r\n\r\nbody"}}
+	sqsClient := &fakeSQS{}
+	logs := make([]string, 0, 1)
+	srv := &Server{
+		cfg: config.Config{
+			CommQueueURL:           "queue",
+			SoulEmailInboundDomain: "inbound.lessersoul.ai",
+			InboundEmailBucketName: "bucket",
+			InboundEmailS3Prefix:   "ses/inbound/",
+		},
+		s3:  s3Client,
+		sqs: sqsClient,
+		now: time.Now,
+		logf: func(format string, args ...any) {
+			logs = append(logs, format)
+		},
+	}
+
+	event := events.SimpleEmailEvent{
+		Records: []events.SimpleEmailRecord{
+			{
+				SES: events.SimpleEmailService{
+					Mail: events.SimpleEmailMessage{
+						Source:      "alice@example.com",
+						MessageID:   "ses-msg-spoof",
+						Destination: []string{inboundBridgeAddress},
+					},
+					Receipt: events.SimpleEmailReceipt{
+						SpamVerdict:  events.SimpleEmailVerdict{Status: "PASS"},
+						VirusVerdict: events.SimpleEmailVerdict{Status: "PASS"},
+						SPFVerdict:   events.SimpleEmailVerdict{Status: "FAIL"},
+						DKIMVerdict:  events.SimpleEmailVerdict{Status: "FAIL"},
+						DMARCVerdict: events.SimpleEmailVerdict{Status: "FAIL"},
+					},
+				},
+			},
+		},
+	}
+
+	if err := srv.HandleSESEvent(context.Background(), event); err != nil {
+		t.Fatalf("HandleSESEvent: %v", err)
+	}
+	if len(sqsClient.bodies) != 0 {
+		t.Fatalf("expected no queued messages, got %d", len(sqsClient.bodies))
+	}
+	if len(logs) != 1 || !strings.Contains(logs[0], "rejecting unauthenticated") {
+		t.Fatalf("expected verdict reject log, got %#v", logs)
 	}
 }
 
@@ -397,6 +463,7 @@ func TestHandleSESEvent_PropagatesQueueError(t *testing.T) {
 						MessageID:   "ses-msg-queue",
 						Destination: []string{inboundBridgeAddress},
 					},
+					Receipt: validSESReceipt(),
 				},
 			},
 		},
@@ -453,6 +520,7 @@ func TestHandleSESEvent_EnqueuesEachBridgeRecipient(t *testing.T) {
 						MessageID:   "ses-msg-multi",
 						Destination: []string{"medic@inbound.lessersoul.ai", "surgeon@inbound.lessersoul.ai", "bad@example.com"},
 					},
+					Receipt: validSESReceipt(),
 				},
 			},
 		},
@@ -529,9 +597,7 @@ func TestHandleSESEvent_PrefersSESReceiptRecipientsForForwardedMail(t *testing.T
 						MessageID:   "ses-msg-forwarded",
 						Destination: []string{canonicalMedicAddress},
 					},
-					Receipt: events.SimpleEmailReceipt{
-						Recipients: []string{inboundBridgeAddress},
-					},
+					Receipt: validSESReceipt(inboundBridgeAddress),
 				},
 			},
 		},
@@ -605,6 +671,7 @@ func TestHandleSESEvent_RejectsOversizedInboundEmail(t *testing.T) {
 						MessageID:   "ses-msg-big",
 						Destination: []string{inboundBridgeAddress},
 					},
+					Receipt: validSESReceipt(),
 				},
 			},
 		},
@@ -659,6 +726,7 @@ func TestHandleSESEvent_UsesFallbackReceivedAtWhenTimestampMissing(t *testing.T)
 						MessageID:   "ses-msg-fallback",
 						Destination: []string{inboundBridgeAddress},
 					},
+					Receipt: validSESReceipt(),
 				},
 			},
 		},
@@ -757,6 +825,7 @@ func TestHandleSESEvent_EnqueuesCanonicalEmailNotification(t *testing.T) {
 							Subject: "Hello",
 						},
 					},
+					Receipt: validSESReceipt(),
 				},
 			},
 		},
