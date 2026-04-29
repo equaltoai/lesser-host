@@ -104,55 +104,55 @@ func parseSoulOperationPayloadValue(raw string) (*big.Int, bool) {
 }
 
 func validateSoulExecutionTransactionMatchesPayload(tx *types.Transaction, expect soulOperationReceiptExpectation) *apptheory.AppError {
-	if tx == nil || expect.Value == nil || expect.Payload == nil {
-		return soulOperationReceiptMismatch()
-	}
-	txTo := tx.To()
-	if txTo == nil {
+	if tx == nil || expect.Value == nil || expect.Payload == nil || tx.To() == nil {
 		return soulOperationReceiptMismatch()
 	}
 	safeAddress := strings.TrimSpace(expect.Payload.SafeAddress)
 	if safeAddress == "" {
-		if !addressesEqual(*txTo, expect.To) || !bigIntsEqual(tx.Value(), expect.Value) || !bytes.Equal(tx.Data(), expect.Data) {
-			return soulOperationReceiptMismatch()
-		}
-		return nil
+		return validateDirectSoulExecutionTransaction(tx, expect)
 	}
-	if !common.IsHexAddress(safeAddress) || !addressesEqual(*txTo, common.HexToAddress(safeAddress)) {
-		return soulOperationReceiptMismatch()
-	}
-	innerTo, innerValue, innerData, operation, appErr := decodeSafeExecTransaction(tx.Data())
-	if appErr != nil {
-		return appErr
-	}
-	if operation != 0 || !addressesEqual(innerTo, expect.To) || !bigIntsEqual(innerValue, expect.Value) || !bytes.Equal(innerData, expect.Data) {
+	return validateSafeSoulExecutionTransaction(tx, safeAddress, expect)
+}
+
+func validateDirectSoulExecutionTransaction(tx *types.Transaction, expect soulOperationReceiptExpectation) *apptheory.AppError {
+	if !addressesEqual(*tx.To(), expect.To) || !bigIntsEqual(tx.Value(), expect.Value) || !bytes.Equal(tx.Data(), expect.Data) {
 		return soulOperationReceiptMismatch()
 	}
 	return nil
 }
 
-func decodeSafeExecTransaction(data []byte) (common.Address, *big.Int, []byte, uint8, *apptheory.AppError) {
+func validateSafeSoulExecutionTransaction(tx *types.Transaction, safeAddress string, expect soulOperationReceiptExpectation) *apptheory.AppError {
+	if !common.IsHexAddress(safeAddress) || !addressesEqual(*tx.To(), common.HexToAddress(safeAddress)) {
+		return soulOperationReceiptMismatch()
+	}
+	innerTo, innerValue, innerData, appErr := decodeSafeExecTransaction(tx.Data())
+	if appErr != nil {
+		return appErr
+	}
+	if !addressesEqual(innerTo, expect.To) || !bigIntsEqual(innerValue, expect.Value) || !bytes.Equal(innerData, expect.Data) {
+		return soulOperationReceiptMismatch()
+	}
+	return nil
+}
+
+func decodeSafeExecTransaction(data []byte) (common.Address, *big.Int, []byte, *apptheory.AppError) {
 	method, args, ok := unpackCallData(safeExecReceiptABI, data)
 	if !ok || method.Name != "execTransaction" || len(args) < 4 {
-		return common.Address{}, nil, nil, 0, soulOperationReceiptMismatch()
+		return common.Address{}, nil, nil, soulOperationReceiptMismatch()
 	}
 	to, ok := args[0].(common.Address)
 	if !ok {
-		return common.Address{}, nil, nil, 0, soulOperationReceiptMismatch()
+		return common.Address{}, nil, nil, soulOperationReceiptMismatch()
 	}
 	value, ok := args[1].(*big.Int)
 	if !ok || value == nil {
-		return common.Address{}, nil, nil, 0, soulOperationReceiptMismatch()
+		return common.Address{}, nil, nil, soulOperationReceiptMismatch()
 	}
 	innerData, ok := args[2].([]byte)
-	if !ok {
-		return common.Address{}, nil, nil, 0, soulOperationReceiptMismatch()
+	if !ok || !abiOperationIsCall(args[3]) {
+		return common.Address{}, nil, nil, soulOperationReceiptMismatch()
 	}
-	operation, ok := abiUint8(args[3])
-	if !ok {
-		return common.Address{}, nil, nil, 0, soulOperationReceiptMismatch()
-	}
-	return to, value, innerData, operation, nil
+	return to, value, innerData, nil
 }
 
 func (s *Server) validateSoulOperationSuccessEffect(ctx context.Context, client ethRPCClient, op *models.SoulOperation, expect soulOperationReceiptExpectation, receipt *types.Receipt) *apptheory.AppError {
@@ -171,45 +171,68 @@ func (s *Server) validateSoulOperationSuccessEffect(ctx context.Context, client 
 }
 
 func (s *Server) validateSoulMintExecutionEffect(ctx context.Context, client ethRPCClient, op *models.SoulOperation, expect soulOperationReceiptExpectation, receipt *types.Receipt) *apptheory.AppError {
-	method, args, ok := unpackCallData(soulRegistryReceiptABI, expect.Data)
-	if !ok || !isSoulMintMethod(method.Name) || len(args) < 3 {
+	mint, appErr := decodeSoulMintEffect(op, expect.Data)
+	if appErr != nil {
+		return appErr
+	}
+	if !receiptHasIndexedLog(receipt, expect.To, soulMintedTopic, topicBig(mint.agentID), topicAddress(mint.to)) {
 		return soulOperationReceiptMismatch()
+	}
+	wallet, err := s.soulRegistryGetAgentWallet(ctx, client, expect.To, mint.agentID)
+	if err != nil || !addressesEqual(wallet, mint.to) {
+		return soulOperationReceiptMismatch()
+	}
+	if mint.principal == (common.Address{}) {
+		return nil
+	}
+	if !receiptHasIndexedLog(receipt, expect.To, principalDeclaredTopic, topicBig(mint.agentID), topicAddress(mint.principal)) {
+		return soulOperationReceiptMismatch()
+	}
+	onChainPrincipal, err := s.soulRegistryPrincipalOf(ctx, client, expect.To, mint.agentID)
+	if err != nil || !addressesEqual(onChainPrincipal, mint.principal) {
+		return soulOperationReceiptMismatch()
+	}
+	return nil
+}
+
+type soulMintExecutionEffect struct {
+	to        common.Address
+	agentID   *big.Int
+	principal common.Address
+}
+
+func decodeSoulMintEffect(op *models.SoulOperation, data []byte) (soulMintExecutionEffect, *apptheory.AppError) {
+	method, args, ok := unpackCallData(soulRegistryReceiptABI, data)
+	if !ok || !isSoulMintMethod(method.Name) || len(args) < 3 {
+		return soulMintExecutionEffect{}, soulOperationReceiptMismatch()
 	}
 	to, ok := args[0].(common.Address)
 	if !ok {
-		return soulOperationReceiptMismatch()
+		return soulMintExecutionEffect{}, soulOperationReceiptMismatch()
 	}
 	agentID, ok := args[1].(*big.Int)
 	if !ok || !soulOperationAgentMatches(op, agentID) {
-		return soulOperationReceiptMismatch()
+		return soulMintExecutionEffect{}, soulOperationReceiptMismatch()
 	}
-	principal := common.Address{}
-	if method.Name == "selfMintSoul" {
-		if len(args) < 5 {
-			return soulOperationReceiptMismatch()
-		}
-		principal, ok = args[4].(common.Address)
-		if !ok {
-			return soulOperationReceiptMismatch()
-		}
+	principal, appErr := decodeSelfMintPrincipal(method.Name, args)
+	if appErr != nil {
+		return soulMintExecutionEffect{}, appErr
 	}
-	if !receiptHasIndexedLog(receipt, expect.To, soulMintedTopic, topicBig(agentID), topicAddress(to)) {
-		return soulOperationReceiptMismatch()
+	return soulMintExecutionEffect{to: to, agentID: agentID, principal: principal}, nil
+}
+
+func decodeSelfMintPrincipal(methodName string, args []any) (common.Address, *apptheory.AppError) {
+	if methodName != "selfMintSoul" {
+		return common.Address{}, nil
 	}
-	wallet, err := s.soulRegistryGetAgentWallet(ctx, client, expect.To, agentID)
-	if err != nil || !addressesEqual(wallet, to) {
-		return soulOperationReceiptMismatch()
+	if len(args) < 5 {
+		return common.Address{}, soulOperationReceiptMismatch()
 	}
-	if principal != (common.Address{}) {
-		if !receiptHasIndexedLog(receipt, expect.To, principalDeclaredTopic, topicBig(agentID), topicAddress(principal)) {
-			return soulOperationReceiptMismatch()
-		}
-		onChainPrincipal, err := s.soulRegistryPrincipalOf(ctx, client, expect.To, agentID)
-		if err != nil || !addressesEqual(onChainPrincipal, principal) {
-			return soulOperationReceiptMismatch()
-		}
+	principal, ok := args[4].(common.Address)
+	if !ok {
+		return common.Address{}, soulOperationReceiptMismatch()
 	}
-	return nil
+	return principal, nil
 }
 
 func (s *Server) validateSoulRotateWalletExecutionEffect(ctx context.Context, client ethRPCClient, op *models.SoulOperation, expect soulOperationReceiptExpectation, receipt *types.Receipt) *apptheory.AppError {
@@ -376,16 +399,15 @@ func bigIntsEqual(a *big.Int, b *big.Int) bool {
 	return a.Cmp(b) == 0
 }
 
-func abiUint8(v any) (uint8, bool) {
+func abiOperationIsCall(v any) bool {
 	switch n := v.(type) {
 	case uint8:
-		return n, true
+		return n == 0
 	case *big.Int:
-		if n != nil && n.Sign() >= 0 && n.BitLen() <= 8 {
-			return uint8(n.Uint64()), true
-		}
+		return n != nil && n.Sign() == 0
+	default:
+		return false
 	}
-	return 0, false
 }
 
 func soulOperationReceiptMismatch() *apptheory.AppError {

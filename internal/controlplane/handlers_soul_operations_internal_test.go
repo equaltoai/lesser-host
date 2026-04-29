@@ -23,6 +23,7 @@ import (
 
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/soul"
+	"github.com/equaltoai/lesser-host/internal/soulattestations"
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 	"github.com/equaltoai/lesser-host/internal/testutil"
@@ -332,7 +333,7 @@ func TestHandleRecordSoulOperationExecution_SuccessMint(t *testing.T) {
 	agentID := "0x" + strings.Repeat("11", 32)
 	txHash := "0x" + strings.Repeat("ab", 32)
 	wallet := "0x0000000000000000000000000000000000000002"
-	principal := "0x0000000000000000000000000000000000000003"
+	principal := testEthAddress3
 	payload := soulTestMintPayload(t, s.cfg.SoulRegistryContractAddress, agentID, wallet, principal)
 
 	op := &models.SoulOperation{
@@ -414,7 +415,7 @@ func TestRecordSoulOperationExecution_RejectsMismatchedTransactionPayload(t *tes
 	}
 	agentID := "0x" + strings.Repeat("11", 32)
 	wallet := "0x0000000000000000000000000000000000000002"
-	principal := "0x0000000000000000000000000000000000000003"
+	principal := testEthAddress3
 	payload := soulTestMintPayload(t, s.cfg.SoulRegistryContractAddress, agentID, wallet, principal)
 	wrongPayload := *payload
 	wrongPayload.Data = "0x1234"
@@ -447,7 +448,7 @@ func TestRecordSoulOperationExecution_RejectsMissingMintEvent(t *testing.T) {
 	}
 	agentID := "0x" + strings.Repeat("11", 32)
 	wallet := "0x0000000000000000000000000000000000000002"
-	principal := "0x0000000000000000000000000000000000000003"
+	principal := testEthAddress3
 	payload := soulTestMintPayload(t, s.cfg.SoulRegistryContractAddress, agentID, wallet, principal)
 	op := &models.SoulOperation{OperationID: "op-missing-event", Kind: models.SoulOperationKindMint, AgentID: agentID, Status: models.SoulOperationStatusPending, SafePayloadJSON: soulTestPayloadJSON(t, payload)}
 
@@ -467,6 +468,167 @@ func TestRecordSoulOperationExecution_RejectsMissingMintEvent(t *testing.T) {
 	_, appErr := s.recordSoulOperationExecution(context.Background(), "op", "rid", op, "0x"+strings.Repeat("ab", 32))
 	if appErr == nil || appErr.Message != "execution receipt does not match operation" {
 		t.Fatalf("expected receipt mismatch, got %#v", appErr)
+	}
+}
+
+func TestValidateSoulExecutionTransactionMatchesPayload_DirectAndSafe(t *testing.T) {
+	t.Parallel()
+
+	agentID := "0x" + strings.Repeat("11", 32)
+	payload := soulTestMintPayload(t, testEthAddress1, agentID, testEthAddress2, testEthAddress3)
+	expect := soulOperationReceiptExpectation{Payload: payload, To: common.HexToAddress(payload.To)}
+	expect.Value, _ = parseSoulOperationPayloadValue(payload.Value)
+	expect.Data, _ = hexutil.Decode(payload.Data)
+
+	if appErr := validateSoulExecutionTransactionMatchesPayload(soulTestTxFromPayload(t, payload), expect); appErr != nil {
+		t.Fatalf("expected direct payload to match, got %#v", appErr)
+	}
+
+	safePayload := *payload
+	safePayload.SafeAddress = "0x0000000000000000000000000000000000000004"
+	safeTx := soulTestSafeExecTx(t, &safePayload, 0)
+	expect.Payload = &safePayload
+	if appErr := validateSoulExecutionTransactionMatchesPayload(safeTx, expect); appErr != nil {
+		t.Fatalf("expected safe payload to match, got %#v", appErr)
+	}
+
+	delegateCallTx := soulTestSafeExecTx(t, &safePayload, 1)
+	if appErr := validateSoulExecutionTransactionMatchesPayload(delegateCallTx, expect); appErr == nil {
+		t.Fatalf("expected delegatecall operation mismatch")
+	}
+}
+
+func soulTestSafeExecTx(t *testing.T, payload *safeTxPayload, operation uint8) *types.Transaction {
+	t.Helper()
+	to := common.HexToAddress(payload.To)
+	value, ok := parseSoulOperationPayloadValue(payload.Value)
+	if !ok {
+		t.Fatalf("invalid value %q", payload.Value)
+	}
+	innerData, err := hexutil.Decode(payload.Data)
+	if err != nil {
+		t.Fatalf("decode payload data: %v", err)
+	}
+	data, err := safeExecReceiptABI.Pack(
+		"execTransaction",
+		to,
+		value,
+		innerData,
+		operation,
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		common.Address{},
+		common.Address{},
+		[]byte{0x01},
+	)
+	if err != nil {
+		t.Fatalf("pack safe exec: %v", err)
+	}
+	safeAddress := common.HexToAddress(payload.SafeAddress)
+	return types.NewTx(&types.LegacyTx{To: &safeAddress, Value: big.NewInt(0), Data: data})
+}
+
+func TestValidateSoulRotateWalletExecutionEffect_Success(t *testing.T) {
+	t.Parallel()
+
+	s := &Server{}
+	agentIDHex := "0x" + strings.Repeat("11", 32)
+	newWallet := testEthAddress3
+	payload := soulTestRotatePayload(t, testEthAddress1, agentIDHex, newWallet)
+	agentID, _ := new(big.Int).SetString(strings.TrimPrefix(agentIDHex, "0x"), 16)
+	receipt := &types.Receipt{
+		Status:      1,
+		BlockNumber: big.NewInt(456),
+		GasUsed:     100,
+		Logs: []*types.Log{{
+			Address: common.HexToAddress(payload.To),
+			Topics:  []common.Hash{walletRotatedTopic, topicBig(agentID), topicAddress(common.HexToAddress(testEthAddress2)), topicAddress(common.HexToAddress(newWallet))},
+		}},
+	}
+	client := &fakeEthClient{callContract: soulTestCallContractForWalletPrincipal(t, newWallet, common.Address{}.Hex())}
+	data, _ := hexutil.Decode(payload.Data)
+	expect := soulOperationReceiptExpectation{Payload: payload, To: common.HexToAddress(payload.To), Value: big.NewInt(0), Data: data}
+	op := &models.SoulOperation{Kind: models.SoulOperationKindRotateWallet, AgentID: agentIDHex}
+
+	if appErr := s.validateSoulRotateWalletExecutionEffect(context.Background(), client, op, expect, receipt); appErr != nil {
+		t.Fatalf("expected rotate effect to validate, got %#v", appErr)
+	}
+}
+
+func TestValidateSoulBurnExecutionEffect_Success(t *testing.T) {
+	t.Parallel()
+
+	s := &Server{}
+	agentIDHex := "0x" + strings.Repeat("11", 32)
+	agentID, _ := new(big.Int).SetString(strings.TrimPrefix(agentIDHex, "0x"), 16)
+	data, err := soul.EncodeBurnSoulCall(agentID)
+	if err != nil {
+		t.Fatalf("EncodeBurnSoulCall: %v", err)
+	}
+	payload := &safeTxPayload{To: testEthAddress1, Value: "0", Data: hexutil.Encode(data)}
+	expect := soulOperationReceiptExpectation{Payload: payload, To: common.HexToAddress(payload.To), Value: big.NewInt(0), Data: data}
+	receipt := &types.Receipt{Status: 1, Logs: []*types.Log{{Address: common.HexToAddress(payload.To), Topics: []common.Hash{soulBurnedTopic, topicBig(agentID), topicAddress(common.HexToAddress(testEthAddress2))}}}}
+
+	parsedABI, err := abi.JSON(strings.NewReader(soul.SoulRegistryABI))
+	if err != nil {
+		t.Fatalf("parse abi: %v", err)
+	}
+	walletRet, _ := parsedABI.Methods["getAgentWallet"].Outputs.Pack(common.Address{})
+	client := &fakeEthClient{callContract: func(ctx context.Context, msg ethereum.CallMsg) ([]byte, error) {
+		if bytes.HasPrefix(msg.Data, parsedABI.Methods["getAgentWallet"].ID) {
+			return walletRet, nil
+		}
+		return nil, ethereum.NotFound
+	}}
+	op := &models.SoulOperation{Kind: models.SoulOperationKindBurn, AgentID: agentIDHex}
+	if appErr := s.validateSoulOperationSuccessEffect(context.Background(), client, op, expect, receipt); appErr != nil {
+		t.Fatalf("expected burn effect to validate, got %#v", appErr)
+	}
+}
+
+func TestSoulOperationReceiptHelperBranches(t *testing.T) {
+	t.Parallel()
+
+	if _, ok := parseSoulOperationPayloadValue("not-a-number"); ok {
+		t.Fatalf("expected invalid payload value")
+	}
+	if _, appErr := parseSoulOperationReceiptExpectation(&models.SoulOperation{}); appErr == nil {
+		t.Fatalf("expected missing payload mismatch")
+	}
+	if receiptLogs(nil) != nil {
+		t.Fatalf("expected nil receipt logs")
+	}
+	if topicBig(nil) != (common.Hash{}) {
+		t.Fatalf("expected nil big topic to be zero")
+	}
+	if !bigIntsEqual(nil, big.NewInt(0)) || bigIntsEqual(big.NewInt(1), nil) {
+		t.Fatalf("unexpected big int equality")
+	}
+	if !abiOperationIsCall(uint8(0)) || abiOperationIsCall(uint8(1)) || !abiOperationIsCall(big.NewInt(0)) || abiOperationIsCall(big.NewInt(1)) || abiOperationIsCall("0") {
+		t.Fatalf("unexpected Safe operation handling")
+	}
+}
+
+func TestValidateSoulPublishRootExecutionEffect_SuccessAndMismatch(t *testing.T) {
+	t.Parallel()
+
+	root := common.HexToHash("0x" + strings.Repeat("aa", 32))
+	data, err := soulattestations.EncodePublishRootCall(root, 123, 2)
+	if err != nil {
+		t.Fatalf("EncodePublishRootCall: %v", err)
+	}
+	payload := &safeTxPayload{To: testEthAddress1, Value: "0", Data: hexutil.Encode(data)}
+	expect := soulOperationReceiptExpectation{Payload: payload, To: common.HexToAddress(payload.To), Value: big.NewInt(0), Data: data}
+	op := &models.SoulOperation{Kind: models.SoulOperationKindPublishValidationRoot}
+	receipt := &types.Receipt{Status: 1, Logs: []*types.Log{{Address: common.HexToAddress(payload.To), Topics: []common.Hash{rootPublishedTopic, root}}}}
+
+	if appErr := validateSoulPublishRootExecutionEffect(op, expect, receipt); appErr != nil {
+		t.Fatalf("expected publish root receipt to validate, got %#v", appErr)
+	}
+	receipt.Logs[0].Topics[1] = common.HexToHash("0x" + strings.Repeat("bb", 32))
+	if appErr := validateSoulPublishRootExecutionEffect(op, expect, receipt); appErr == nil {
+		t.Fatalf("expected root mismatch")
 	}
 }
 

@@ -1205,7 +1205,7 @@ func (c *certificationClient) createUpdate(ctx context.Context, slug string, req
 	if err != nil {
 		return updateJobResponse{}, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint("/api/v1/portal/instances/"+slug+"/updates"), bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint("/api/v1/portal/instances/"+slug+"/updates"), bytes.NewReader(body)) //nolint:gosec // Target host is an explicitly provided certification endpoint validated by parseCLI.
 	if err != nil {
 		return updateJobResponse{}, err
 	}
@@ -1267,7 +1267,7 @@ func (c *certificationClient) waitForJob(ctx context.Context, slug string, jobID
 }
 
 func (c *certificationClient) listUpdates(ctx context.Context, slug string) ([]updateJobResponse, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint("/api/v1/portal/instances/"+slug+"/updates"), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint("/api/v1/portal/instances/"+slug+"/updates"), nil) //nolint:gosec // Target host is an explicitly provided certification endpoint validated by parseCLI.
 	if err != nil {
 		return nil, err
 	}
