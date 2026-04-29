@@ -71,7 +71,7 @@ Security / tenant-isolation / on-chain-integrity / governance / provisioning / m
 
 ### Phase 1: P0 public ingress, comm, mailbox, and privacy blockers
 
-- Items: #1, #3, #4, #7, #8, #9, #10, #11, #14, #19, #20, #21, #23, #26, #29, #30, #39, #41, #43, #48, #49, #57, #58, #59, #61, #62, #67.
+- Items: #1, #3, #4, #7, #8, #9, #10, #11, #14, #19, #20, #21, #23, #26, #29, #30, #39, #41, #43, #48, #49, #58, #59, #61, #62, #67.
 - Dependencies: Phase 0 triage for exact repro/acceptance; `audit-trust-and-safety` walk.
 - Risks:
   - Tightening webhook auth can interrupt inbound email/SMS/voice delivery if vendor signatures are mis-modeled.
@@ -87,7 +87,7 @@ Security / tenant-isolation / on-chain-integrity / governance / provisioning / m
 
 ### Phase 2: Soul registry and on-chain operation integrity
 
-- Items: #6, #22, #28, #31, #32, #33, #34, #38, #40, #44, #45, #58, #68.
+- Items: #6, #22, #28, #31, #32, #33, #34, #38, #40, #44, #45, #68.
 - Dependencies: `evolve-soul-registry` walk; contract changes require Hardhat tests, Slither, solhint, Sepolia evidence before mainnet Safe-ready payloads.
 - Risks:
   - On-chain operation side effects are irreversible if tx receipts remain unbound.
@@ -112,12 +112,12 @@ Security / tenant-isolation / on-chain-integrity / governance / provisioning / m
   - `git_sha` validation as immutable 40-hex commit SHA where source checkout is required.
   - lesser-body template certification enabled by default where safety requires it, with truthful evidence status.
   - Stage-scoped instance key secret names and authenticated trust verification restored.
-  - Body-only/update metadata semantics corrected.
+  - Body-only/update metadata semantics corrected, including portal/operator blank-version config and key-rotation actions.
   - Tip config validation prevents deploy-wedging configuration.
 
 ### Phase 4: Public read scalability, web/CSP, governance, reputation, and model registration
 
-- Items: #2, #24, #25, #27, #35, #36, #37, #42, #46, #50, #56, #57, #65, #66, #69.
+- Items: #2, #24, #25, #27, #35, #36, #37, #42, #46, #50, #56, #57, #66, #69.
 - Dependencies: `audit-trust-and-safety` for CSP/web and public reads; `maintain-governance-rubric` for CMP-4; possible `coordinate-framework-feedback` if TableTheory model registration friction is framework-level.
 - Risks:
   - CSP must not be loosened to accommodate Markdown rendering.
@@ -128,7 +128,6 @@ Security / tenant-isolation / on-chain-integrity / governance / provisioning / m
   - MarkdownRenderer sanitization is mandatory for untrusted content; no `unsafe-inline`, no `unsafe-eval`.
   - CMP-4 verifier validates semantics, not keyword presence.
   - Reputation and model registration fixes with tests.
-  - Portal UX fix for blank version update actions.
   - AppTheory deploy-command interpolation finding routed to a safe host contract change or framework-feedback issue.
 
 ### Phase 5: Regression evidence, docs, and staged rollout
