@@ -292,7 +292,7 @@ func upsertProvisionedPhoneChannel(ctx context.Context, s *Server, agentIDHex st
 	if createErr := s.store.DB.WithContext(ctx).Model(channel).CreateOrUpdate(); createErr != nil {
 		return &apptheory.AppError{Code: "app.internal", Message: "failed to record phone channel"}
 	}
-	return nil
+	return s.ensureSoulPhoneAgentIndex(ctx, &models.SoulPhoneAgentIndex{Phone: number, AgentID: agentIDHex})
 }
 
 func (s *Server) handleSoulDeprovisionPhoneChannel(ctx *apptheory.Context) (*apptheory.Response, error) {

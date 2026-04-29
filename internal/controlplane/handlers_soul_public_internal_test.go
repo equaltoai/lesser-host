@@ -1306,6 +1306,18 @@ func TestHandleSoulPublicResolveEmail_Success(t *testing.T) {
 		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
 		*dest = models.SoulAgentIdentity{AgentID: agentID, Status: models.SoulAgentStatusActive}
 	}).Once()
+	tdb.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentChannel](t, args, 0)
+		*dest = models.SoulAgentChannel{
+			AgentID:       agentID,
+			ChannelType:   models.SoulChannelTypeEmail,
+			Identifier:    "agent-bob@lessersoul.ai",
+			Provider:      "migadu",
+			Verified:      true,
+			ProvisionedAt: time.Now().Add(-time.Hour).UTC(),
+			Status:        models.SoulChannelStatusActive,
+		}
+	}).Once()
 
 	ctx := &apptheory.Context{Params: map[string]string{"emailAddress": "agent-bob@lessersoul.ai"}}
 	resp, err := s.handleSoulPublicResolveEmail(ctx)

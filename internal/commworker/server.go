@@ -408,6 +408,9 @@ func (s *Server) lookupRecipientCanonicalAddress(ctx context.Context, agentID st
 	if err != nil || !ok || ch == nil {
 		return ""
 	}
+	if !channelReadyForInbound(ch) || strings.ToLower(strings.TrimSpace(ch.Provider)) != "migadu" {
+		return ""
+	}
 
 	emailAddress := strings.ToLower(strings.TrimSpace(ch.Identifier))
 	if emailAddress == "" {

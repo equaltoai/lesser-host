@@ -426,8 +426,8 @@ func TestDefaultMigaduCreateMailbox_SuccessConflictAndErrors(t *testing.T) {
 	if err := defaultMigaduCreateMailbox(context.Background(), "agent", "", "pw"); err != nil {
 		t.Fatalf("create mailbox: %v", err)
 	}
-	if err := defaultMigaduCreateMailbox(context.Background(), "exists", "Agent", "pw"); err != nil {
-		t.Fatalf("expected conflict to be treated as success: %v", err)
+	if err := defaultMigaduCreateMailbox(context.Background(), "exists", "Agent", "pw"); err == nil {
+		t.Fatalf("expected mailbox conflict to fail closed")
 	}
 	if err := defaultMigaduCreateMailbox(context.Background(), "broken", "Agent", "pw"); err == nil {
 		t.Fatalf("expected server error")

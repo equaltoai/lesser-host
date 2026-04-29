@@ -54,6 +54,15 @@ func TestSoulPhoneAgentIndex_Keys(t *testing.T) {
 	require.Equal(t, "0xabc", i.AgentID)
 }
 
+func TestSoulContactAgentIndexes_RequireNonEmptyIdentity(t *testing.T) {
+	t.Parallel()
+
+	require.Error(t, (&SoulEmailAgentIndex{AgentID: "0xabc"}).BeforeCreate())
+	require.Error(t, (&SoulEmailAgentIndex{Email: "agent@example.com"}).BeforeCreate())
+	require.Error(t, (&SoulPhoneAgentIndex{AgentID: "0xabc"}).BeforeCreate())
+	require.Error(t, (&SoulPhoneAgentIndex{Phone: "+15550123456"}).BeforeCreate())
+}
+
 func TestSoulChannelAgentIndex_Keys(t *testing.T) {
 	t.Parallel()
 

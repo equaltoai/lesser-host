@@ -549,8 +549,8 @@ func TestUpdateSoulAgentRegistrationForInstance_V3_SyncsENSWithoutS3Key(t *testi
 	}
 
 	summary := collectSyncV3StateModels(tdb.db.Calls, agentIDHex)
-	if !summary.ensNames["agent-alice.lessersoul.eth"] {
-		t.Fatalf("expected ENS resolution sync, got %v", summary.ensNames)
+	if len(summary.ensNames) != 0 {
+		t.Fatalf("expected self-asserted ENS resolution to remain unindexed, got %v", summary.ensNames)
 	}
 }
 
@@ -843,6 +843,10 @@ func TestSyncSoulV3StateFromRegistration_PreservesManagedFieldsAndCleansUpIndexe
 			Identifier:  "old-agent.lessersoul.eth",
 		}
 	}).Once()
+	tdb.qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentENSResolution](t, args, 0)
+		*dest = models.SoulAgentENSResolution{ENSName: "old-agent.lessersoul.eth", AgentID: identity.AgentID}
+	}).Once()
 	tdb.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentChannel](t, args, 0)
 		*dest = models.SoulAgentChannel{
@@ -850,6 +854,10 @@ func TestSyncSoulV3StateFromRegistration_PreservesManagedFieldsAndCleansUpIndexe
 			ChannelType: models.SoulChannelTypeEmail,
 			Identifier:  "old-agent@example.com",
 		}
+	}).Once()
+	tdb.qEmailIdx.On("First", mock.AnythingOfType("*models.SoulEmailAgentIndex")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulEmailAgentIndex](t, args, 0)
+		*dest = models.SoulEmailAgentIndex{Email: "old-agent@example.com", AgentID: identity.AgentID}
 	}).Once()
 	tdb.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentChannel](t, args, 0)
@@ -865,6 +873,10 @@ func TestSyncSoulV3StateFromRegistration_PreservesManagedFieldsAndCleansUpIndexe
 			ENSChain:           "",
 			ENSResolverAddress: "",
 		}
+	}).Once()
+	tdb.qPhoneIdx.On("First", mock.AnythingOfType("*models.SoulPhoneAgentIndex")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulPhoneAgentIndex](t, args, 0)
+		*dest = models.SoulPhoneAgentIndex{Phone: "+15551234567", AgentID: identity.AgentID}
 	}).Once()
 
 	regV3 := &soul.RegistrationFileV3{
@@ -919,6 +931,63 @@ func TestSyncSoulV3StateFromRegistration_PreservesManagedFieldsAndCleansUpIndexe
 	assertSyncV3PhoneModel(t, summary.phoneModel, now)
 	assertSyncV3PrefsModel(t, summary.prefsModel, rep)
 	assertSyncV3Indexes(t, summary)
+}
+
+func TestSyncSoulV3StateFromRegistration_RejectsManagedChannelIdentifierChange(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulLifecycleTestDB()
+	s := &Server{store: store.New(tdb.db)}
+	now := time.Date(2026, time.March, 5, 13, 14, 15, 0, time.UTC)
+	identity := &models.SoulAgentIdentity{
+		AgentID:         soulLifecycleTestAgentIDHex,
+		Domain:          "example.com",
+		LocalID:         "agent-alice",
+		LifecycleStatus: models.SoulAgentStatusActive,
+	}
+
+	tdb.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(theoryErrors.ErrItemNotFound).Once()
+	tdb.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(theoryErrors.ErrItemNotFound).Once()
+	tdb.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentChannel](t, args, 0)
+		*dest = models.SoulAgentChannel{
+			AgentID:       identity.AgentID,
+			ChannelType:   models.SoulChannelTypePhone,
+			Identifier:    "+15551234567",
+			Provider:      "telnyx",
+			Verified:      true,
+			ProvisionedAt: now.Add(-time.Hour),
+			Status:        models.SoulChannelStatusActive,
+		}
+	}).Once()
+
+	appErr := s.syncSoulV3StateFromRegistration(context.Background(), identity.AgentID, identity, &soul.RegistrationFileV3{
+		Channels: &soul.ChannelsV3{
+			Phone: &soul.PhoneChannelV3{Number: "+15557654321", Verified: true},
+		},
+	}, now)
+	if appErr == nil || appErr.Code != appErrCodeConflict || appErr.Message != "managed channel must be deprovisioned before changing identifier" {
+		t.Fatalf("expected managed channel conflict, got %v", appErr)
+	}
+}
+
+func TestEnsureSoulEmailAgentIndex_RejectsForeignOwner(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulLifecycleTestDB()
+	s := &Server{store: store.New(tdb.db)}
+	tdb.qEmailIdx.On("First", mock.AnythingOfType("*models.SoulEmailAgentIndex")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulEmailAgentIndex](t, args, 0)
+		*dest = models.SoulEmailAgentIndex{Email: "agent@example.com", AgentID: "0xother"}
+	}).Once()
+
+	appErr := s.ensureSoulEmailAgentIndex(context.Background(), &models.SoulEmailAgentIndex{
+		Email:   "agent@example.com",
+		AgentID: soulLifecycleTestAgentIDHex,
+	})
+	if appErr == nil || appErr.Code != appErrCodeConflict || appErr.Message != "email address is already provisioned" {
+		t.Fatalf("expected foreign owner conflict, got %v", appErr)
+	}
 }
 
 func TestSyncSoulV3StateFromRegistration_DeletesContactPreferencesWhenOmitted(t *testing.T) {
@@ -1077,17 +1146,17 @@ func assertSyncV3PhoneModel(t *testing.T, phoneModel *models.SoulAgentChannel, n
 	if phoneModel == nil {
 		t.Fatalf("expected updated phone channel model call")
 	}
-	if phoneModel.Provider != "twilio" {
-		t.Fatalf("expected host-managed provider to be preserved, got %q", phoneModel.Provider)
+	if phoneModel.Provider != "" {
+		t.Fatalf("expected self-asserted phone update not to inherit provider, got %q", phoneModel.Provider)
 	}
-	if phoneModel.SecretRef != "/ssm/phone" {
-		t.Fatalf("expected host-managed secret ref to be preserved, got %q", phoneModel.SecretRef)
+	if phoneModel.SecretRef != "" {
+		t.Fatalf("expected self-asserted phone update not to inherit secret ref, got %q", phoneModel.SecretRef)
 	}
-	if !phoneModel.ProvisionedAt.Equal(now.Add(-24 * time.Hour)) {
-		t.Fatalf("expected provisionedAt preservation, got %v", phoneModel.ProvisionedAt)
+	if !phoneModel.ProvisionedAt.IsZero() {
+		t.Fatalf("expected self-asserted phone update not to inherit provisionedAt, got %v", phoneModel.ProvisionedAt)
 	}
-	if !phoneModel.DeprovisionedAt.Equal(now.Add(-12 * time.Hour)) {
-		t.Fatalf("expected deprovisionedAt preservation, got %v", phoneModel.DeprovisionedAt)
+	if !phoneModel.DeprovisionedAt.IsZero() {
+		t.Fatalf("expected self-asserted phone update not to inherit deprovisionedAt, got %v", phoneModel.DeprovisionedAt)
 	}
 }
 
@@ -1109,16 +1178,16 @@ func assertSyncV3PrefsModel(t *testing.T, prefsModel *models.SoulAgentContactPre
 
 func assertSyncV3Indexes(t *testing.T, summary syncV3StateModels) {
 	t.Helper()
-	if !summary.ensNames["old-agent.lessersoul.eth"] || !summary.ensNames["agent-alice.lessersoul.eth"] {
-		t.Fatalf("expected old ENS cleanup and new ENS upsert, got %v", summary.ensNames)
+	if !summary.ensNames["old-agent.lessersoul.eth"] || summary.ensNames["agent-alice.lessersoul.eth"] {
+		t.Fatalf("expected old ENS cleanup without self-asserted ENS upsert, got %v", summary.ensNames)
 	}
 	if !summary.emailIndexSeen {
 		t.Fatalf("expected old email index cleanup")
 	}
-	if !summary.phoneIndexes["+15551234567"] || !summary.phoneIndexes["+15557654321"] {
-		t.Fatalf("expected old and new phone index models, got %v", summary.phoneIndexes)
+	if !summary.phoneIndexes["+15551234567"] || summary.phoneIndexes["+15557654321"] {
+		t.Fatalf("expected old phone index cleanup without self-asserted phone upsert, got %v", summary.phoneIndexes)
 	}
-	if !summary.channelIndexTypes[models.SoulChannelTypeEmail] || !summary.channelIndexTypes[models.SoulChannelTypePhone] {
-		t.Fatalf("expected email delete and phone upsert channel index models, got %v", summary.channelIndexTypes)
+	if !summary.channelIndexTypes[models.SoulChannelTypeEmail] || summary.channelIndexTypes[models.SoulChannelTypePhone] {
+		t.Fatalf("expected only removed email channel index cleanup, got %v", summary.channelIndexTypes)
 	}
 }

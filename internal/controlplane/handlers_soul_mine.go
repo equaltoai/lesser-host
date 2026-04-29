@@ -133,6 +133,9 @@ func (s *Server) listDomainsForInstances(ctx context.Context, instances []*model
 			if domain == "" {
 				continue
 			}
+			if !domainIsVerifiedOrActive(d.Status) {
+				continue
+			}
 			domainSet[domain] = struct{}{}
 		}
 

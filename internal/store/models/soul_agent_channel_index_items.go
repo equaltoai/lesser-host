@@ -25,7 +25,18 @@ type SoulEmailAgentIndex struct {
 func (SoulEmailAgentIndex) TableName() string { return MainTableName() }
 
 // BeforeCreate sets defaults and keys before creating SoulEmailAgentIndex.
-func (i *SoulEmailAgentIndex) BeforeCreate() error { return i.UpdateKeys() }
+func (i *SoulEmailAgentIndex) BeforeCreate() error {
+	if err := i.UpdateKeys(); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("email", i.Email); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("agentId", i.AgentID); err != nil {
+		return err
+	}
+	return nil
+}
 
 // UpdateKeys updates the database keys for SoulEmailAgentIndex.
 func (i *SoulEmailAgentIndex) UpdateKeys() error {
@@ -63,7 +74,18 @@ type SoulPhoneAgentIndex struct {
 func (SoulPhoneAgentIndex) TableName() string { return MainTableName() }
 
 // BeforeCreate sets defaults and keys before creating SoulPhoneAgentIndex.
-func (i *SoulPhoneAgentIndex) BeforeCreate() error { return i.UpdateKeys() }
+func (i *SoulPhoneAgentIndex) BeforeCreate() error {
+	if err := i.UpdateKeys(); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("phone", i.Phone); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("agentId", i.AgentID); err != nil {
+		return err
+	}
+	return nil
+}
 
 // UpdateKeys updates the database keys for SoulPhoneAgentIndex.
 func (i *SoulPhoneAgentIndex) UpdateKeys() error {
