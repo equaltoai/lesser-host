@@ -69,6 +69,10 @@ func (f *fakeSoulPublicEthClient) FilterLogs(ctx context.Context, q ethereum.Fil
 	return nil, errors.New("unexpected FilterLogs")
 }
 
+func (f *fakeSoulPublicEthClient) TransactionByHash(ctx context.Context, txHash common.Hash) (*types.Transaction, bool, error) {
+	return nil, false, ethereum.NotFound
+}
+
 func (f *fakeSoulPublicEthClient) TransactionReceipt(ctx context.Context, txHash common.Hash) (*types.Receipt, error) {
 	return nil, ethereum.NotFound
 }

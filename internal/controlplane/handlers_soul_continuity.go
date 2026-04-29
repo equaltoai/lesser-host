@@ -15,6 +15,11 @@ import (
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
+const (
+	soulSignedRequestMaxFutureSkew = 5 * time.Minute
+	soulSignedRequestMaxAge        = 15 * time.Minute
+)
+
 // --- Request / Response types ---
 
 type soulAppendContinuityRequest struct {
@@ -122,7 +127,7 @@ func parseSoulAppendContinuityData(req soulAppendContinuityRequest, now time.Tim
 		return soulAppendContinuityData{}, &apptheory.AppError{Code: "app.bad_request", Message: "invalid continuity entry type"}
 	}
 
-	parsedTS, appErr := parseSoulContinuityTimestamp(strings.TrimSpace(req.Timestamp), now)
+	parsedTS, timestampCanonical, appErr := parseSoulContinuityTimestamp(strings.TrimSpace(req.Timestamp), now)
 	if appErr != nil {
 		return soulAppendContinuityData{}, appErr
 	}
@@ -148,7 +153,7 @@ func parseSoulAppendContinuityData(req soulAppendContinuityRequest, now time.Tim
 	return soulAppendContinuityData{
 		entryType:          entryType,
 		parsedTS:           parsedTS,
-		timestampCanonical: parsedTS.UTC().Format(time.RFC3339Nano),
+		timestampCanonical: timestampCanonical,
 		summary:            summary,
 		recovery:           recovery,
 		references:         normalizeContinuityReferences(req.References),
@@ -157,26 +162,44 @@ func parseSoulAppendContinuityData(req soulAppendContinuityRequest, now time.Tim
 	}, nil
 }
 
-func parseSoulContinuityTimestamp(raw string, now time.Time) (time.Time, *apptheory.AppError) {
+func parseSoulContinuityTimestamp(raw string, now time.Time) (time.Time, string, *apptheory.AppError) {
+	return parseSoulSignedTimestamp(raw, now, "timestamp")
+}
+
+func parseSoulSignedTimestamp(raw string, now time.Time, field string) (time.Time, string, *apptheory.AppError) {
+	raw = strings.TrimSpace(raw)
+	field = strings.TrimSpace(field)
+	if field == "" {
+		field = "timestamp"
+	}
 	if raw == "" {
-		return time.Time{}, &apptheory.AppError{Code: "app.bad_request", Message: "timestamp is required"}
+		return time.Time{}, "", &apptheory.AppError{Code: "app.bad_request", Message: field + " is required"}
 	}
 	parsedTS, parseErr := time.Parse(time.RFC3339, raw)
 	if parseErr != nil {
 		var parsedNano time.Time
 		parsedNano, parseErr = time.Parse(time.RFC3339Nano, raw)
 		if parseErr != nil {
-			return time.Time{}, &apptheory.AppError{Code: "app.bad_request", Message: "timestamp must be RFC3339"}
+			return time.Time{}, "", &apptheory.AppError{Code: "app.bad_request", Message: field + " must be RFC3339"}
 		}
 		parsedTS = parsedNano
 	}
-	if parsedTS.After(now.Add(5 * time.Minute)) {
-		return time.Time{}, &apptheory.AppError{Code: "app.bad_request", Message: "timestamp cannot be in the future"}
+	if now.IsZero() {
+		now = time.Now().UTC()
 	}
-	if parsedTS.Before(now.Add(-10 * 365 * 24 * time.Hour)) {
-		return time.Time{}, &apptheory.AppError{Code: "app.bad_request", Message: "timestamp is too far in the past"}
+	now = now.UTC()
+	parsedTS = parsedTS.UTC()
+	if parsedTS.After(now.Add(soulSignedRequestMaxFutureSkew)) {
+		return time.Time{}, "", &apptheory.AppError{Code: "app.bad_request", Message: field + " cannot be in the future"}
 	}
-	return parsedTS.UTC(), nil
+	if parsedTS.Before(now.Add(-soulSignedRequestMaxAge)) {
+		return time.Time{}, "", &apptheory.AppError{Code: "app.bad_request", Message: field + " is too far in the past"}
+	}
+	return parsedTS, canonicalSoulSignedTimestamp(parsedTS), nil
+}
+
+func canonicalSoulSignedTimestamp(ts time.Time) string {
+	return ts.UTC().Truncate(time.Millisecond).Format("2006-01-02T15:04:05.000Z")
 }
 
 func computeSoulContinuityEntryDigest(entryType string, timestamp string, summary string, recovery string, references []string) ([]byte, *apptheory.AppError) {

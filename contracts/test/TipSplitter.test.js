@@ -889,6 +889,48 @@ describe("TipSplitter — setLesserWallet", () => {
     assert.equal(await splitter.lesserWallet(), other.address);
   });
 
+  it("migrates pending ETH and token balances to the new lesser wallet", async () => {
+    const {
+      splitter,
+      token,
+      tokenAddr,
+      owner,
+      lesserWallet,
+      actor,
+      tipper,
+      other,
+      HOST_ID,
+      CONTENT_HASH,
+    } = await deploy();
+
+    const ethAmount = ethers.parseEther("1");
+    const tokenAmount = ethers.parseEther("2");
+    const ethSplit = expectedSplit(ethAmount);
+    const tokenSplit = expectedSplit(tokenAmount);
+
+    await splitter.connect(tipper).tipETH(HOST_ID, actor.address, CONTENT_HASH, {
+      value: ethAmount,
+    });
+    await splitter
+      .connect(tipper)
+      .tipToken(tokenAddr, HOST_ID, actor.address, tokenAmount, CONTENT_HASH);
+
+    await splitter.connect(owner).setLesserWallet(other.address);
+
+    assert.equal(await splitter.pendingETH(lesserWallet.address), 0n);
+    assert.equal(await splitter.pendingETH(other.address), ethSplit.lesserShare);
+    assert.equal(await splitter.pendingToken(tokenAddr, lesserWallet.address), 0n);
+    assert.equal(
+      await splitter.pendingToken(tokenAddr, other.address),
+      tokenSplit.lesserShare,
+    );
+    assert.equal(await splitter.totalPendingToken(tokenAddr), tokenAmount);
+
+    await splitter.connect(other).withdraw(ethers.ZeroAddress);
+    await splitter.connect(other).withdraw(tokenAddr);
+    assert.equal(await token.balanceOf(other.address), tokenSplit.lesserShare);
+  });
+
   it("rejects zero address", async () => {
     const { splitter, owner } = await deploy();
     await assert.rejects(
@@ -1255,6 +1297,24 @@ describe("TipSplitter — setLesserWallet host collision", () => {
     // Now hostWallet is no longer a host wallet
     await splitter.connect(owner).setLesserWallet(hostWallet.address);
     assert.equal(await splitter.lesserWallet(), hostWallet.address);
+  });
+});
+
+describe("TipSplitter — host wallet rotation pending migration", () => {
+  it("migrates pending host ETH when the last host reference rotates", async () => {
+    const { splitter, owner, hostWallet, actor, tipper, other, HOST_ID, CONTENT_HASH } =
+      await deploy();
+    const amount = ethers.parseEther("1");
+    const split = expectedSplit(amount);
+
+    await splitter.connect(tipper).tipETH(HOST_ID, actor.address, CONTENT_HASH, {
+      value: amount,
+    });
+
+    await splitter.connect(owner).updateHost(HOST_ID, other.address, HOST_FEE_BPS);
+
+    assert.equal(await splitter.pendingETH(hostWallet.address), 0n);
+    assert.equal(await splitter.pendingETH(other.address), split.hostShare);
   });
 });
 

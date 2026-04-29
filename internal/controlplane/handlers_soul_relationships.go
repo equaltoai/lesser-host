@@ -20,6 +20,8 @@ import (
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
+const soulRelationshipCursorLegacyEndorsementPrefix = "legacy_endorsements:"
+
 // --- Request / Response types ---
 
 type soulCreateRelationshipRequest struct {
@@ -208,23 +210,7 @@ func parseSoulCreateRelationshipInput(ctx *apptheory.Context) (soulCreateRelatio
 }
 
 func parseSoulRelationshipCreatedAt(raw string, now time.Time) (time.Time, string, *apptheory.AppError) {
-	if raw == "" {
-		return time.Time{}, "", &apptheory.AppError{Code: "app.bad_request", Message: "created_at is required"}
-	}
-	parsedTS, parseErr := time.Parse(time.RFC3339, raw)
-	if parseErr != nil {
-		if parsedTS, parseErr = time.Parse(time.RFC3339Nano, raw); parseErr != nil {
-			return time.Time{}, "", &apptheory.AppError{Code: "app.bad_request", Message: "created_at must be RFC3339"}
-		}
-	}
-	if parsedTS.After(now.Add(5 * time.Minute)) {
-		return time.Time{}, "", &apptheory.AppError{Code: "app.bad_request", Message: "created_at cannot be in the future"}
-	}
-	if parsedTS.Before(now.Add(-10 * 365 * 24 * time.Hour)) {
-		return time.Time{}, "", &apptheory.AppError{Code: "app.bad_request", Message: "created_at is too far in the past"}
-	}
-	createdAt := parsedTS.UTC()
-	return createdAt, createdAt.Format(time.RFC3339Nano), nil
+	return parseSoulSignedTimestamp(raw, now, "created_at")
 }
 
 func (s *Server) requireSoulRelationshipTarget(ctx context.Context, toAgentIDHex string) *apptheory.AppError {
@@ -339,6 +325,13 @@ func parseSoulRelationshipListParams(ctx *apptheory.Context) soulRelationshipLis
 }
 
 func (s *Server) listSoulPublicRelationships(ctx context.Context, agentIDHex string, params soulRelationshipListParams) ([]models.SoulAgentRelationship, bool, string, *apptheory.AppError) {
+	if legacyCursor, ok := legacyRelationshipEndorsementCursor(params.cursor); ok {
+		if !canUseLegacyRelationshipEndorsementCursor(params) {
+			return nil, false, "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid cursor"}
+		}
+		return s.listLegacyRelationshipEndorsementCursorPage(ctx, agentIDHex, legacyCursor, params.limit)
+	}
+
 	out := make([]models.SoulAgentRelationship, 0, params.limit)
 	pageCursor := params.cursor
 	nextCursor := ""
@@ -364,13 +357,33 @@ func (s *Server) listSoulPublicRelationships(ctx context.Context, agentIDHex str
 	}
 
 	if shouldMergeLegacyRelationshipEndorsements(params) {
-		endorsements, appErr := s.loadLegacyRelationshipEndorsements(ctx, agentIDHex)
-		if appErr != nil {
-			return nil, false, "", appErr
-		}
-		out = append(out, endorsements...)
+		return s.appendLegacyRelationshipEndorsements(ctx, agentIDHex, params.limit, out, hasMore, nextCursor)
 	}
 
+	return out, hasMore, nextCursor, nil
+}
+
+func (s *Server) appendLegacyRelationshipEndorsements(
+	ctx context.Context,
+	agentIDHex string,
+	limit int,
+	out []models.SoulAgentRelationship,
+	hasMore bool,
+	nextCursor string,
+) ([]models.SoulAgentRelationship, bool, string, *apptheory.AppError) {
+	remaining := limit - len(out)
+	if remaining <= 0 {
+		return out, hasMore, nextCursor, nil
+	}
+	endorsements, endorsementsHaveMore, endorsementCursor, appErr := s.loadLegacyRelationshipEndorsements(ctx, agentIDHex, "", remaining)
+	if appErr != nil {
+		return nil, false, "", appErr
+	}
+	out = append(out, endorsements...)
+	if endorsementsHaveMore && strings.TrimSpace(endorsementCursor) != "" {
+		hasMore = true
+		nextCursor = encodeLegacyRelationshipEndorsementCursor(endorsementCursor)
+	}
 	return out, hasMore, nextCursor, nil
 }
 
@@ -450,19 +463,61 @@ func resolveRelationshipPageCursor(items []*models.SoulAgentRelationship, idx in
 }
 
 func shouldMergeLegacyRelationshipEndorsements(params soulRelationshipListParams) bool {
-	return params.cursor == "" &&
-		params.taskTypeFilter == "" &&
+	return params.cursor == "" && canUseLegacyRelationshipEndorsementCursor(params)
+}
+
+func canUseLegacyRelationshipEndorsementCursor(params soulRelationshipListParams) bool {
+	return params.taskTypeFilter == "" &&
 		(params.typeFilter == "" || params.typeFilter == models.SoulRelationshipTypeEndorsement)
 }
 
-func (s *Server) loadLegacyRelationshipEndorsements(ctx context.Context, agentIDHex string) ([]models.SoulAgentRelationship, *apptheory.AppError) {
+func legacyRelationshipEndorsementCursor(cursor string) (string, bool) {
+	cursor = strings.TrimSpace(cursor)
+	if !strings.HasPrefix(cursor, soulRelationshipCursorLegacyEndorsementPrefix) {
+		return "", false
+	}
+	return strings.TrimSpace(strings.TrimPrefix(cursor, soulRelationshipCursorLegacyEndorsementPrefix)), true
+}
+
+func encodeLegacyRelationshipEndorsementCursor(cursor string) string {
+	cursor = strings.TrimSpace(cursor)
+	if cursor == "" {
+		return ""
+	}
+	return soulRelationshipCursorLegacyEndorsementPrefix + cursor
+}
+
+func (s *Server) listLegacyRelationshipEndorsementCursorPage(ctx context.Context, agentIDHex string, legacyCursor string, limit int) ([]models.SoulAgentRelationship, bool, string, *apptheory.AppError) {
+	if strings.TrimSpace(legacyCursor) == "" {
+		return nil, false, "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid cursor"}
+	}
+	endorsements, hasMore, nextCursor, appErr := s.loadLegacyRelationshipEndorsements(ctx, agentIDHex, legacyCursor, limit)
+	if appErr != nil {
+		return nil, false, "", appErr
+	}
+	encodedNextCursor := ""
+	if hasMore && strings.TrimSpace(nextCursor) != "" {
+		encodedNextCursor = encodeLegacyRelationshipEndorsementCursor(nextCursor)
+	}
+	return endorsements, encodedNextCursor != "", encodedNextCursor, nil
+}
+
+func (s *Server) loadLegacyRelationshipEndorsements(ctx context.Context, agentIDHex string, cursor string, limit int) ([]models.SoulAgentRelationship, bool, string, *apptheory.AppError) {
+	if limit <= 0 {
+		return nil, false, "", nil
+	}
 	var endorsements []*models.SoulAgentPeerEndorsement
-	if err := s.store.DB.WithContext(ctx).
+	qb := s.store.DB.WithContext(ctx).
 		Model(&models.SoulAgentPeerEndorsement{}).
 		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentIDHex)).
 		Where("SK", "BEGINS_WITH", "ENDORSEMENT#").
-		All(&endorsements); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list endorsements"}
+		Limit(limit)
+	if strings.TrimSpace(cursor) != "" {
+		qb = qb.Cursor(strings.TrimSpace(cursor))
+	}
+	paged, err := qb.AllPaginated(&endorsements)
+	if err != nil {
+		return nil, false, "", &apptheory.AppError{Code: "app.internal", Message: "failed to list endorsements"}
 	}
 
 	out := make([]models.SoulAgentRelationship, 0, len(endorsements))
@@ -479,7 +534,11 @@ func (s *Server) loadLegacyRelationshipEndorsements(ctx context.Context, agentID
 			CreatedAt:   e.CreatedAt,
 		})
 	}
-	return out, nil
+	nextCursor := ""
+	if paged != nil {
+		nextCursor = strings.TrimSpace(paged.NextCursor)
+	}
+	return out, nextCursor != "", nextCursor, nil
 }
 
 func isValidRelationshipType(relType string) bool {

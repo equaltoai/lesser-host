@@ -192,6 +192,47 @@ describe("OffchainResolver — CCIP-Read contract", () => {
     assert.equal(await resolver.resolveWithProof(response2, extraData), result);
   });
 
+  it("resolveWithProof rejects proofs signed for a different target", async () => {
+    const signerWallet = ethersPkg.Wallet.createRandom();
+    const signingKey = new ethersPkg.SigningKey(signerWallet.privateKey);
+
+    const { resolver, other } = await deployOffchainResolver({
+      signer: signerWallet.address,
+    });
+
+    const resolverAddr = await resolver.getAddress();
+    const replayTarget = other.address;
+    const callData = "0xdeadbeef";
+    const result = "0x1234";
+    const expires =
+      BigInt((await ethers.provider.getBlock("latest")).timestamp) + 300n;
+
+    const replayHash = ethersPkg.solidityPackedKeccak256(
+      ["bytes", "address", "uint64", "bytes32", "bytes32"],
+      [
+        "0x1900",
+        replayTarget,
+        expires,
+        ethersPkg.keccak256(callData),
+        ethersPkg.keccak256(result),
+      ],
+    );
+    const response = ethersPkg.AbiCoder.defaultAbiCoder().encode(
+      ["bytes", "uint64", "bytes"],
+      [result, expires, signingKey.sign(replayHash).compactSerialized],
+    );
+    const extraData = ethersPkg.AbiCoder.defaultAbiCoder().encode(
+      ["bytes", "address"],
+      [callData, replayTarget],
+    );
+
+    await assert.rejects(
+      resolver.resolveWithProof(response, extraData),
+      /target mismatch/,
+    );
+    assert.notEqual(replayTarget, resolverAddr);
+  });
+
   it("owner-only setters enforce access control", async () => {
     const signerWallet = ethersPkg.Wallet.createRandom();
     const { resolver, owner, other } = await deployOffchainResolver({
@@ -214,4 +255,3 @@ describe("OffchainResolver — CCIP-Read contract", () => {
     );
   });
 });
-

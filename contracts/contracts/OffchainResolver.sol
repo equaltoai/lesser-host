@@ -132,6 +132,11 @@ contract OffchainResolver is IOffchainResolver, Ownable2Step {
         override
         returns (bytes memory)
     {
+        (, address sender) = abi.decode(extraData, (bytes, address));
+        if (sender != address(this)) {
+            revert("OffchainResolver: target mismatch");
+        }
+
         (address recovered, bytes memory result) = SignatureVerifier.verify(extraData, response);
         if (recovered != signer && recovered != previousSigner) {
             revert("OffchainResolver: invalid signature");

@@ -123,7 +123,7 @@ func TestHandleSoulPublicGetRelationships_IncludesV1Endorsements(t *testing.T) {
 		*dest = nil
 	}).Once()
 
-	tdb.qEnd.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+	tdb.qEnd.On("AllPaginated", mock.Anything).Return((*core.PaginatedResult)(nil), nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.SoulAgentPeerEndorsement](t, args, 0)
 		*dest = []*models.SoulAgentPeerEndorsement{
 			{
@@ -162,5 +162,112 @@ func TestHandleSoulPublicGetRelationships_IncludesV1Endorsements(t *testing.T) {
 	}
 	if out.Relationships[0].FromAgentID != "0xendorser" {
 		t.Fatalf("unexpected from agent id: %q", out.Relationships[0].FromAgentID)
+	}
+}
+
+func TestHandleSoulPublicGetRelationships_BoundsV1EndorsementMerge(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulRelationshipsTestDB()
+	s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true}}
+
+	agentIDHex := "0x" + strings.Repeat("11", 32)
+
+	tdb.qRel.On("AllPaginated", mock.Anything).Return((*core.PaginatedResult)(nil), nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulAgentRelationship](t, args, 0)
+		*dest = nil
+	}).Once()
+	tdb.qEnd.On("Limit", 1).Return(tdb.qEnd).Once()
+	tdb.qEnd.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{NextCursor: "more-endorsements"}, nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulAgentPeerEndorsement](t, args, 0)
+		*dest = []*models.SoulAgentPeerEndorsement{
+			{
+				AgentID:         agentIDHex,
+				EndorserAgentID: "0xendorser1",
+				Message:         "good agent",
+				Signature:       "0xsig",
+				CreatedAt:       time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC),
+			},
+		}
+	}).Once()
+
+	ctx := &apptheory.Context{
+		RequestID: "r1",
+		Params:    map[string]string{"agentId": agentIDHex},
+		Request: apptheory.Request{Query: map[string][]string{
+			"limit": {"1"},
+		}},
+	}
+
+	resp, err := s.handleSoulPublicGetRelationships(ctx)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if resp.Status != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body=%q)", resp.Status, string(resp.Body))
+	}
+
+	var out soulListRelationshipsResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(out.Relationships) != 1 {
+		t.Fatalf("expected bounded single relationship, got %d", len(out.Relationships))
+	}
+	if !out.HasMore {
+		t.Fatalf("expected has_more when endorsement page has more results")
+	}
+	if !strings.HasPrefix(out.NextCursor, soulRelationshipCursorLegacyEndorsementPrefix) {
+		t.Fatalf("expected usable legacy endorsement cursor, got %q", out.NextCursor)
+	}
+}
+
+func TestHandleSoulPublicGetRelationships_UsesV1EndorsementCursor(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulRelationshipsTestDB()
+	s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true}}
+
+	agentIDHex := "0x" + strings.Repeat("11", 32)
+
+	tdb.qEnd.On("Limit", 1).Return(tdb.qEnd).Once()
+	tdb.qEnd.On("Cursor", "legacy-cursor").Return(tdb.qEnd).Once()
+	tdb.qEnd.On("AllPaginated", mock.Anything).Return((*core.PaginatedResult)(nil), nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulAgentPeerEndorsement](t, args, 0)
+		*dest = []*models.SoulAgentPeerEndorsement{{
+			AgentID:         agentIDHex,
+			EndorserAgentID: "0xendorser2",
+			Message:         "second page",
+			Signature:       "0xsig2",
+			CreatedAt:       time.Date(2026, 3, 1, 1, 0, 0, 0, time.UTC),
+		}}
+	}).Once()
+
+	ctx := &apptheory.Context{
+		RequestID: "r1",
+		Params:    map[string]string{"agentId": agentIDHex},
+		Request: apptheory.Request{Query: map[string][]string{
+			"limit":  {"1"},
+			"cursor": {soulRelationshipCursorLegacyEndorsementPrefix + "legacy-cursor"},
+		}},
+	}
+
+	resp, err := s.handleSoulPublicGetRelationships(ctx)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if resp.Status != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body=%q)", resp.Status, string(resp.Body))
+	}
+
+	var out soulListRelationshipsResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.HasMore || out.NextCursor != "" {
+		t.Fatalf("expected final legacy endorsement page, got has_more=%v cursor=%q", out.HasMore, out.NextCursor)
+	}
+	if len(out.Relationships) != 1 || out.Relationships[0].FromAgentID != "0xendorser2" {
+		t.Fatalf("unexpected relationships: %#v", out.Relationships)
 	}
 }

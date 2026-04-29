@@ -37,7 +37,7 @@ func TestHandleSoulArchiveAgent_ArchivesAndWritesAudit(t *testing.T) {
 	agentIDHex := soulLifecycleTestAgentIDHex
 	seedSoulLifecycleTransitionAccess(t, tdb, agentIDHex, wallet)
 
-	timestamp := time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
+	timestamp := canonicalSoulSignedTimestamp(time.Now().Add(-time.Minute).UTC())
 	digest, appErr := computeSoulContinuityEntryDigest(
 		models.SoulContinuityEntryTypeArchived,
 		timestamp,
@@ -108,7 +108,7 @@ func TestHandleSoulDesignateSuccessor_SucceedsAndCreatesEntries(t *testing.T) {
 	seedSoulLifecycleTransitionAccess(t, tdb, agentIDHex, walletPred)
 	seedSoulSuccessorIdentity(t, tdb, successorIDHex, walletSucc)
 
-	timestamp := time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
+	timestamp := canonicalSoulSignedTimestamp(time.Now().Add(-time.Minute).UTC())
 	declaredDigest, appErr := computeSoulContinuityEntryDigest(
 		models.SoulContinuityEntryTypeSuccessionDeclared,
 		timestamp,
@@ -256,8 +256,8 @@ func expectArchiveContinuityCreate(t *testing.T, tb *ttmocks.MockTransactionBuil
 		if entry.Signature != strings.ToLower(sigHex) {
 			t.Fatalf("expected signature %q, got %q", strings.ToLower(sigHex), entry.Signature)
 		}
-		if entry.Timestamp.UTC().Format(time.RFC3339) != timestamp {
-			t.Fatalf("expected timestamp %q, got %q", timestamp, entry.Timestamp.UTC().Format(time.RFC3339))
+		if canonicalSoulSignedTimestamp(entry.Timestamp.UTC()) != timestamp {
+			t.Fatalf("expected timestamp %q, got %q", timestamp, canonicalSoulSignedTimestamp(entry.Timestamp.UTC()))
 		}
 	})
 }
@@ -311,8 +311,8 @@ func expectSuccessorContinuityCreates(t *testing.T, tb *ttmocks.MockTransactionB
 		default:
 			t.Fatalf("unexpected continuity entry type %q", entry.Type)
 		}
-		if entry.Timestamp.UTC().Format(time.RFC3339) != timestamp {
-			t.Fatalf("expected timestamp %q, got %q", timestamp, entry.Timestamp.UTC().Format(time.RFC3339))
+		if canonicalSoulSignedTimestamp(entry.Timestamp.UTC()) != timestamp {
+			t.Fatalf("expected timestamp %q, got %q", timestamp, canonicalSoulSignedTimestamp(entry.Timestamp.UTC()))
 		}
 	})
 	return createKinds
@@ -468,7 +468,7 @@ func TestHandleSoulArchiveAgent_TransactionFailureReturnsInternalError(t *testin
 		}
 	}).Once()
 
-	timestamp := time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
+	timestamp := canonicalSoulSignedTimestamp(time.Now().Add(-time.Minute).UTC())
 	digest, appErr := computeSoulContinuityEntryDigest(
 		models.SoulContinuityEntryTypeArchived,
 		timestamp,

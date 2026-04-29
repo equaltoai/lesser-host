@@ -205,6 +205,22 @@ func testMintConversationIdentity() *models.SoulAgentIdentity {
 	return identity
 }
 
+func TestRequireMintConversationFinalizeActiveIdentityRejectsPending(t *testing.T) {
+	t.Parallel()
+
+	identity := testMintConversationIdentity()
+	appErr := requireMintConversationFinalizeActiveIdentity(identity)
+	if appErr == nil || appErr.Code != "app.conflict" {
+		t.Fatalf("expected pending identity conflict, got %#v", appErr)
+	}
+
+	identity.Status = models.SoulAgentStatusActive
+	identity.LifecycleStatus = models.SoulAgentStatusActive
+	if appErr := requireMintConversationFinalizeActiveIdentity(identity); appErr != nil {
+		t.Fatalf("expected active identity to pass, got %#v", appErr)
+	}
+}
+
 func TestMintConversationHelperCoverage(t *testing.T) {
 	now := time.Date(2026, 3, 5, 12, 0, 0, 0, time.UTC)
 
@@ -397,8 +413,8 @@ func testMintConversationFinalizeRegistrationHelper(t *testing.T, now time.Time)
 	decl.SelfDescription.Constraints = "Stay within provided context."
 	decl.Capabilities[0].LastValidated = "2026-03-05T12:00:00Z"
 	decl.Boundaries[0].Rationale = "Prevent deception."
-	identity.Status = models.SoulAgentStatusPending
-	identity.LifecycleStatus = models.SoulAgentStatusPending
+	identity.Status = models.SoulAgentStatusActive
+	identity.LifecycleStatus = models.SoulAgentStatusActive
 
 	reg, _, digest, capsNorm, claimLevels, appErr := s.buildMintConversationFinalizeV2Registration(identity.AgentID, identity, decl, map[string]string{"b1": "0x00"}, now, 2, "0x00")
 	assertMintConversationFinalizeRegistrationSuccess(t, identity, reg, digest, capsNorm, claimLevels, appErr)
@@ -1158,6 +1174,10 @@ func TestMintConversationBeginAndFinalize_Success(t *testing.T) {
 		addStandardMockQueryStubs(q)
 	}
 
+	qVersion.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulAgentVersion](t, args, 0)
+		*dest = nil
+	}).Once()
 	qVersion.On("First", mock.AnythingOfType("*models.SoulAgentVersion")).Return(theoryErrors.ErrItemNotFound).Once()
 	tdb.db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Once()
 	tb.On("ConditionCheck", mock.AnythingOfType("*models.SoulAgentIdentity"), mock.Anything).Return(tb).Once()
@@ -1171,6 +1191,8 @@ func TestMintConversationBeginAndFinalize_Success(t *testing.T) {
 	tdb.qIdentity.On("Update", mock.Anything, mock.Anything).Return(nil).Maybe()
 
 	identity, key := testMintConversationIdentityAndKey()
+	identity.Status = models.SoulAgentStatusActive
+	identity.LifecycleStatus = models.SoulAgentStatusActive
 	reg := models.SoulAgentRegistration{
 		ID:               "reg-1",
 		Username:         "alice",

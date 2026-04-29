@@ -74,6 +74,10 @@ func TestHandleSoulAgentUpdateRegistration_V2_FirstVersion_AllowsNullPreviousVer
 		}
 	}).Once()
 	tdb.qVersion.On("First", mock.AnythingOfType("*models.SoulAgentVersion")).Return(theoryErrors.ErrItemNotFound).Once()
+	tdb.qVersion.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulAgentVersion](t, args, 0)
+		*dest = nil
+	}).Once()
 	tdb.qCapIdx.On("First", mock.AnythingOfType("*models.SoulCapabilityAgentIndex")).Return(theoryErrors.ErrItemNotFound).Once()
 
 	parsedABI, err := abi.JSON(strings.NewReader(soul.SoulRegistryABI))
@@ -253,6 +257,10 @@ func TestHandleSoulAgentUpdateRegistration_V3_FirstVersion_AllowsNullPreviousVer
 		}
 	}).Once()
 	tdb.qVersion.On("First", mock.AnythingOfType("*models.SoulAgentVersion")).Return(theoryErrors.ErrItemNotFound).Once()
+	tdb.qVersion.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulAgentVersion](t, args, 0)
+		*dest = nil
+	}).Once()
 	tdb.qCapIdx.On("First", mock.AnythingOfType("*models.SoulCapabilityAgentIndex")).Return(theoryErrors.ErrItemNotFound).Once()
 
 	// v3 sync reads existing channel records by SK.
@@ -616,6 +624,24 @@ func TestGetNextSoulAgentVersion_IgnoresLexicographicSKOrder(t *testing.T) {
 	}
 	if n != 11 {
 		t.Fatalf("expected 11, got %d", n)
+	}
+}
+
+func TestEnsureNoSoulRegistrationVersionHistory_RejectsMissingPreviousURIWithExistingHistory(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulLifecycleTestDB()
+	s := &Server{store: store.New(tdb.db)}
+	tdb.qVersion.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulAgentVersion](t, args, 0)
+		*dest = []*models.SoulAgentVersion{
+			{AgentID: soulLifecycleTestAgentIDHex, VersionNumber: 2},
+		}
+	}).Once()
+
+	appErr := s.ensureNoSoulRegistrationVersionHistory(context.Background(), soulLifecycleTestAgentIDHex)
+	if appErr == nil || appErr.Message != "previousVersionUri is required for existing version history" {
+		t.Fatalf("expected existing history conflict, got %#v", appErr)
 	}
 }
 

@@ -90,7 +90,7 @@ func (s *Server) handleSoulArchiveAgentBegin(ctx *apptheory.Context) (*apptheory
 	}
 
 	now := time.Now().UTC()
-	timestamp := now.Format(time.RFC3339Nano)
+	timestamp := canonicalSoulSignedTimestamp(now)
 	summary := soulContinuitySummaryArchived
 	references := []string{fmt.Sprintf("agent:%s", agentIDHex)}
 
@@ -229,7 +229,7 @@ func (s *Server) handleSoulDesignateSuccessorBegin(ctx *apptheory.Context) (*app
 		return nil, successorErr
 	}
 
-	beginResp, appErr := buildSoulDesignateSuccessorBeginResponse(agentIDHex, successorIDHex, time.Now().UTC().Format(time.RFC3339Nano))
+	beginResp, appErr := buildSoulDesignateSuccessorBeginResponse(agentIDHex, successorIDHex, canonicalSoulSignedTimestamp(time.Now().UTC()))
 	if appErr != nil {
 		return nil, appErr
 	}
@@ -350,23 +350,7 @@ func (s *Server) handleSoulDesignateSuccessor(ctx *apptheory.Context) (*apptheor
 }
 
 func parseAndValidateSoulContinuityTimestamp(tsRaw string) (time.Time, string, *apptheory.AppError) {
-	tsRaw = strings.TrimSpace(tsRaw)
-	parsedTS, parseErr := time.Parse(time.RFC3339, tsRaw)
-	if parseErr != nil {
-		if parsedTS, parseErr = time.Parse(time.RFC3339Nano, tsRaw); parseErr != nil {
-			return time.Time{}, "", &apptheory.AppError{Code: "app.bad_request", Message: "timestamp must be RFC3339"}
-		}
-	}
-
-	now := time.Now().UTC()
-	if parsedTS.After(now.Add(5 * time.Minute)) {
-		return time.Time{}, "", &apptheory.AppError{Code: "app.bad_request", Message: "timestamp cannot be in the future"}
-	}
-	if parsedTS.Before(now.Add(-10 * 365 * 24 * time.Hour)) {
-		return time.Time{}, "", &apptheory.AppError{Code: "app.bad_request", Message: "timestamp is too far in the past"}
-	}
-
-	return parsedTS.UTC(), parsedTS.UTC().Format(time.RFC3339Nano), nil
+	return parseSoulSignedTimestamp(tsRaw, time.Now().UTC(), "timestamp")
 }
 
 func (s *Server) loadSoulLifecycleIdentity(ctx *apptheory.Context, agentIDHex string) (*models.SoulAgentIdentity, *apptheory.AppError) {

@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
@@ -530,19 +531,20 @@ func TestHandleSoulAgentRegistrationVerify_UsesExistingProofFlagsAndCreatesOpera
 	tdb.qWalletIdx.On("First", mock.AnythingOfType("*models.WalletIndex")).Return(theoryErrors.ErrItemNotFound).Once()
 
 	principalDeclaration := boundaryTestPrincipalDeclaration
-	principalDigest := crypto.Keccak256([]byte(principalDeclaration))
-	principalSig, err := crypto.Sign(accounts.TextHash(principalDigest), key)
-	if err != nil {
-		t.Fatalf("principal Sign: %v", err)
-	}
-	principalSigHex := "0x" + hex.EncodeToString(principalSig)
+	declaredAt := canonicalSoulSignedTimestamp(time.Now().UTC())
+	principalSigHex := signSoulRegistrationVerifyPrincipalForTest(t, s, key, &models.SoulAgentRegistration{
+		DomainNormalized: "example.com",
+		LocalID:          "agent-alice",
+		AgentID:          "0x8db124b1d48e366002db4e61cc1501eeb8561e1ef06fd6f9abf9f984501d13ab",
+		Wallet:           addr,
+	}, addr, principalDeclaration, declaredAt)
 
 	body, _ := json.Marshal(soulAgentRegistrationVerifyRequest{
 		Signature:            sigHex,
 		PrincipalAddress:     addr,
 		PrincipalDeclaration: principalDeclaration,
 		PrincipalSignature:   principalSigHex,
-		DeclaredAt:           time.Now().UTC().Format(time.RFC3339),
+		DeclaredAt:           declaredAt,
 	})
 	ctx := &apptheory.Context{
 		RequestID:    "r2",
@@ -738,7 +740,16 @@ func TestHandleSoulAgentPromotionVerify_UsesPromotionRegistrationID(t *testing.T
 	tdb.qWalletIdx.On("First", mock.AnythingOfType("*models.WalletIndex")).Return(theoryErrors.ErrItemNotFound).Once()
 
 	principalDeclaration := boundaryTestPrincipalDeclaration
-	principalDigest := crypto.Keccak256([]byte(principalDeclaration))
+	declaredAt := canonicalSoulSignedTimestamp(time.Now().UTC())
+	principalDigest, appErr := s.computeSoulPrincipalDeclarationDigest(&models.SoulAgentRegistration{
+		DomainNormalized: "example.com",
+		LocalID:          "agent-alice",
+		AgentID:          "0x8db124b1d48e366002db4e61cc1501eeb8561e1ef06fd6f9abf9f984501d13ab",
+		Wallet:           addr,
+	}, addr, principalDeclaration, declaredAt)
+	if appErr != nil {
+		t.Fatalf("principal digest: %#v", appErr)
+	}
 	principalSig, err := crypto.Sign(accounts.TextHash(principalDigest), key)
 	if err != nil {
 		t.Fatalf("principal Sign: %v", err)
@@ -750,7 +761,7 @@ func TestHandleSoulAgentPromotionVerify_UsesPromotionRegistrationID(t *testing.T
 		PrincipalAddress:     addr,
 		PrincipalDeclaration: principalDeclaration,
 		PrincipalSignature:   principalSigHex,
-		DeclaredAt:           time.Now().UTC().Format(time.RFC3339),
+		DeclaredAt:           declaredAt,
 	})
 	ctx := &apptheory.Context{
 		RequestID:    "r-promo-verify",
@@ -774,6 +785,19 @@ func TestHandleSoulAgentPromotionVerify_UsesPromotionRegistrationID(t *testing.T
 	if out.Registration.ID != "reg1" || out.Promotion == nil || out.Promotion.RegistrationID != "reg1" {
 		t.Fatalf("unexpected promotion verify response: %#v", out)
 	}
+}
+
+func signSoulRegistrationVerifyPrincipalForTest(t *testing.T, s *Server, key *ecdsa.PrivateKey, reg *models.SoulAgentRegistration, principalAddr string, principalDeclaration string, declaredAt string) string {
+	t.Helper()
+	principalDigest, appErr := s.computeSoulPrincipalDeclarationDigest(reg, principalAddr, principalDeclaration, declaredAt)
+	if appErr != nil {
+		t.Fatalf("principal digest: %#v", appErr)
+	}
+	principalSig, err := crypto.Sign(accounts.TextHash(principalDigest), key)
+	if err != nil {
+		t.Fatalf("principal Sign: %v", err)
+	}
+	return "0x" + hex.EncodeToString(principalSig)
 }
 
 func TestNormalizeSoulCapabilitiesLoose_NormalizesWithoutAllowlist(t *testing.T) {

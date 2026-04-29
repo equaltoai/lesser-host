@@ -3,12 +3,11 @@ package controlplane
 import (
 	"context"
 	"encoding/json"
-	"math/big"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/common"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
@@ -63,6 +62,7 @@ func TestHandleSoulAgentGetMintOperation_Success(t *testing.T) {
 	stubSoulMintPortalAccess(t, tdb, identity)
 
 	opID := s.soulMintOperationID(&identity)
+	payload := soulTestMintPayload(t, s.cfg.SoulRegistryContractAddress, agentID, identity.Wallet, identity.PrincipalAddress)
 	tdb.base.qOp.On("First", mock.AnythingOfType("*models.SoulOperation")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulOperation](t, args, 0)
 		*dest = models.SoulOperation{
@@ -70,7 +70,7 @@ func TestHandleSoulAgentGetMintOperation_Success(t *testing.T) {
 			Kind:            models.SoulOperationKindMint,
 			AgentID:         agentID,
 			Status:          models.SoulOperationStatusPending,
-			SafePayloadJSON: `{"safe_address":"0x00000000000000000000000000000000000000bb","to":"0x00000000000000000000000000000000000000cc","value":"0","data":"0x1234"}`,
+			SafePayloadJSON: soulTestPayloadJSON(t, payload),
 			CreatedAt:       time.Now().Add(-time.Minute).UTC(),
 			UpdatedAt:       time.Now().UTC(),
 		}
@@ -142,6 +142,7 @@ func TestHandleSoulAgentRecordMintOperationExecution_Success(t *testing.T) {
 	stubSoulMintPortalAccess(t, tdb, identity)
 
 	opID := s.soulMintOperationID(&identity)
+	payload := soulTestMintPayload(t, s.cfg.SoulRegistryContractAddress, agentID, identity.Wallet, identity.PrincipalAddress)
 	tdb.base.qOp.On("First", mock.AnythingOfType("*models.SoulOperation")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulOperation](t, args, 0)
 		*dest = models.SoulOperation{
@@ -149,7 +150,7 @@ func TestHandleSoulAgentRecordMintOperationExecution_Success(t *testing.T) {
 			Kind:            models.SoulOperationKindMint,
 			AgentID:         agentID,
 			Status:          models.SoulOperationStatusPending,
-			SafePayloadJSON: `{"safe_address":"0x00000000000000000000000000000000000000bb","to":"0x00000000000000000000000000000000000000cc","value":"0","data":"0x1234"}`,
+			SafePayloadJSON: soulTestPayloadJSON(t, payload),
 			CreatedAt:       time.Now().Add(-time.Minute).UTC(),
 			UpdatedAt:       time.Now().UTC(),
 		}
@@ -157,12 +158,9 @@ func TestHandleSoulAgentRecordMintOperationExecution_Success(t *testing.T) {
 
 	s.dialEVM = func(ctx context.Context, rpcURL string) (ethRPCClient, error) {
 		return &fakeEthClient{
-			receipt: &types.Receipt{
-				Status:      1,
-				BlockNumber: big.NewInt(42),
-				GasUsed:     100,
-				Logs:        []*types.Log{},
-			},
+			tx:           soulTestTxFromPayload(t, payload),
+			receipt:      soulTestMintReceipt(common.HexToAddress(s.cfg.SoulRegistryContractAddress), agentID, identity.Wallet, identity.PrincipalAddress),
+			callContract: soulTestCallContractForWalletPrincipal(t, identity.Wallet, identity.PrincipalAddress),
 		}, nil
 	}
 

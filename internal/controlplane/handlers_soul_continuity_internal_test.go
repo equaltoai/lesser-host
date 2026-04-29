@@ -63,7 +63,7 @@ func TestHandleSoulAppendContinuity_VerifiesSignedEntry(t *testing.T) {
 	}).Once()
 
 	entryType := models.SoulContinuityEntryTypeModelChange
-	timestamp := "2026-03-01T00:00:00Z"
+	timestamp := canonicalSoulSignedTimestamp(time.Now().UTC())
 	summary := "Updated underlying model to claude-opus-4-6."
 	recovery := ""
 	references := []string{"boundary-001"}
@@ -109,10 +109,28 @@ func TestHandleSoulAppendContinuity_VerifiesSignedEntry(t *testing.T) {
 	if out.Entry.Type != entryType {
 		t.Fatalf("expected type %q, got %q", entryType, out.Entry.Type)
 	}
-	if out.Entry.Timestamp.IsZero() || out.Entry.Timestamp.UTC().Format(time.RFC3339) != timestamp {
+	if out.Entry.Timestamp.IsZero() || canonicalSoulSignedTimestamp(out.Entry.Timestamp) != timestamp {
 		t.Fatalf("expected timestamp %q, got %#v", timestamp, out.Entry.Timestamp)
 	}
 	if out.Entry.Signature != strings.ToLower(sigHex) {
 		t.Fatalf("expected signature %q, got %q", strings.ToLower(sigHex), out.Entry.Signature)
+	}
+}
+
+func TestParseSoulSignedTimestamp_CanonicalizesLikeJavaScriptISOString(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 4, 29, 3, 15, 0, 0, time.UTC)
+	_, canonical, appErr := parseSoulSignedTimestamp("2026-04-29T03:14:59.120Z", now, "timestamp")
+	if appErr != nil {
+		t.Fatalf("unexpected appErr: %#v", appErr)
+	}
+	if canonical != "2026-04-29T03:14:59.120Z" {
+		t.Fatalf("unexpected canonical timestamp: %q", canonical)
+	}
+
+	_, _, appErr = parseSoulSignedTimestamp("2026-04-29T02:59:59.999Z", now, "timestamp")
+	if appErr == nil || appErr.Message != "timestamp is too far in the past" {
+		t.Fatalf("expected stale timestamp rejection, got %#v", appErr)
 	}
 }

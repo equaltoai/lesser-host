@@ -1129,6 +1129,9 @@ func (s *Server) handleSoulBeginFinalizeMintConversation(ctx *apptheory.Context)
 	if finalizeCtx.identity.SelfDescriptionVersion > 0 {
 		return nil, &apptheory.AppError{Code: "app.conflict", Message: soulMintConversationAlreadyPublishedMessage}
 	}
+	if activeErr := requireMintConversationFinalizeActiveIdentity(finalizeCtx.identity); activeErr != nil {
+		return nil, activeErr
+	}
 	req, err := parseMintConversationFinalizeBeginRequestBody(ctx)
 	if err != nil {
 		return nil, err
@@ -1168,6 +1171,9 @@ func (s *Server) handleSoulAgentBeginFinalizeMintConversation(ctx *apptheory.Con
 	}
 	if agentCtx.identity.SelfDescriptionVersion > 0 {
 		return nil, &apptheory.AppError{Code: "app.conflict", Message: soulMintConversationAlreadyPublishedMessage}
+	}
+	if activeErr := requireMintConversationFinalizeActiveIdentity(agentCtx.identity); activeErr != nil {
+		return nil, activeErr
 	}
 	if strings.TrimSpace(agentCtx.identity.PrincipalAddress) == "" ||
 		strings.TrimSpace(agentCtx.identity.PrincipalSignature) == "" ||
@@ -1218,11 +1224,8 @@ func (s *Server) handleSoulFinalizeMintConversation(ctx *apptheory.Context) (*ap
 	}
 
 	nextVersion := *expectedVersion + 1
-	if finalizeCtx.identity.SelfDescriptionVersion > nextVersion {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "agent has advanced beyond this version"}
-	}
-	if finalizeCtx.identity.SelfDescriptionVersion < *expectedVersion {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "version conflict; reload and try again"}
+	if versionErr := requireMintConversationFinalizeVersionAndActive(finalizeCtx.identity, nextVersion, *expectedVersion); versionErr != nil {
+		return nil, versionErr
 	}
 	decl, appErr := parseAndValidateMintConversationDeclarations(finalizeCtx.conv.ProducedDeclarations)
 	if appErr != nil {
@@ -1277,11 +1280,8 @@ func (s *Server) handleSoulAgentFinalizeMintConversation(ctx *apptheory.Context)
 	}
 
 	nextVersion := *expectedVersion + 1
-	if finalizeCtx.identity.SelfDescriptionVersion > nextVersion {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "agent has advanced beyond this version"}
-	}
-	if finalizeCtx.identity.SelfDescriptionVersion < *expectedVersion {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "version conflict; reload and try again"}
+	if versionErr := requireMintConversationFinalizeVersionAndActive(finalizeCtx.identity, nextVersion, *expectedVersion); versionErr != nil {
+		return nil, versionErr
 	}
 
 	decl, appErr := parseAndValidateMintConversationDeclarations(finalizeCtx.conv.ProducedDeclarations)
@@ -1775,10 +1775,34 @@ func mintConversationFinalizeLifecycleStatus(identity *models.SoulAgentIdentity)
 	if lifecycleStatus == "" {
 		lifecycleStatus = strings.ToLower(strings.TrimSpace(identity.Status))
 	}
-	if lifecycleStatus == models.SoulAgentStatusPending || lifecycleStatus == "" {
-		return models.SoulAgentStatusActive
-	}
 	return lifecycleStatus
+}
+
+func requireMintConversationFinalizeVersionAndActive(identity *models.SoulAgentIdentity, nextVersion int, expectedVersion int) *apptheory.AppError {
+	if identity == nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if identity.SelfDescriptionVersion > nextVersion {
+		return &apptheory.AppError{Code: "app.conflict", Message: "agent has advanced beyond this version"}
+	}
+	if identity.SelfDescriptionVersion < expectedVersion {
+		return &apptheory.AppError{Code: "app.conflict", Message: "version conflict; reload and try again"}
+	}
+	return requireMintConversationFinalizeActiveIdentity(identity)
+}
+
+func requireMintConversationFinalizeActiveIdentity(identity *models.SoulAgentIdentity) *apptheory.AppError {
+	lifecycleStatus := ""
+	if identity != nil {
+		lifecycleStatus = strings.ToLower(strings.TrimSpace(identity.LifecycleStatus))
+		if lifecycleStatus == "" {
+			lifecycleStatus = strings.ToLower(strings.TrimSpace(identity.Status))
+		}
+	}
+	if lifecycleStatus != models.SoulAgentStatusActive {
+		return &apptheory.AppError{Code: "app.conflict", Message: "agent must be active before publishing mint conversation registration"}
+	}
+	return nil
 }
 
 func buildMintConversationFinalizePrincipal(identity *models.SoulAgentIdentity) map[string]any {

@@ -134,6 +134,8 @@ func beginFinalizeCoverageResponse(t *testing.T, usePreflightAlias bool) soulMin
 	s := newMintConversationServer(tdb)
 	identity, key := testMintConversationIdentityAndKey()
 	identity.AgentID = f.reg.AgentID
+	identity.Status = models.SoulAgentStatusActive
+	identity.LifecycleStatus = models.SoulAgentStatusActive
 
 	stubMintConversationRegistration(t, tdb, f.reg)
 	stubMintConversationDomainAccess(t, tdb, f.reg.DomainNormalized)
@@ -195,6 +197,8 @@ func testMintConversationBeginFinalizeRequiresBoundarySignatures(t *testing.T) {
 	s := newMintConversationServer(tdb)
 	identity := testMintConversationIdentity()
 	identity.AgentID = f.reg.AgentID
+	identity.Status = models.SoulAgentStatusActive
+	identity.LifecycleStatus = models.SoulAgentStatusActive
 
 	stubMintConversationRegistration(t, tdb, f.reg)
 	stubMintConversationDomainAccess(t, tdb, f.reg.DomainNormalized)
@@ -216,6 +220,8 @@ func testMintConversationFinalizeRequiresExpectedVersion(t *testing.T) {
 	s := newMintConversationServer(tdb)
 	identity := testMintConversationIdentity()
 	identity.AgentID = f.reg.AgentID
+	identity.Status = models.SoulAgentStatusActive
+	identity.LifecycleStatus = models.SoulAgentStatusActive
 
 	stubMintConversationRegistration(t, tdb, f.reg)
 	stubMintConversationDomainAccess(t, tdb, f.reg.DomainNormalized)
@@ -251,6 +257,8 @@ func testMintConversationFinalizeRejectsInvalidRegistrationSignature(t *testing.
 	s := newMintConversationServer(tdb)
 	identity, key := testMintConversationIdentityAndKey()
 	identity.AgentID = f.reg.AgentID
+	identity.Status = models.SoulAgentStatusActive
+	identity.LifecycleStatus = models.SoulAgentStatusActive
 
 	stubMintConversationRegistration(t, tdb, f.reg)
 	stubMintConversationDomainAccess(t, tdb, f.reg.DomainNormalized)
@@ -283,6 +291,8 @@ func assertMintConversationFinalizeIdentityVersionError(t *testing.T, identityVe
 	identity := testMintConversationIdentity()
 	identity.AgentID = f.reg.AgentID
 	identity.SelfDescriptionVersion = identityVersion
+	identity.Status = models.SoulAgentStatusActive
+	identity.LifecycleStatus = models.SoulAgentStatusActive
 
 	stubMintConversationRegistration(t, tdb, f.reg)
 	stubMintConversationDomainAccess(t, tdb, f.reg.DomainNormalized)
