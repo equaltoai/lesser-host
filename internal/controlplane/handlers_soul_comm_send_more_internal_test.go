@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -285,7 +286,7 @@ func TestHandleSoulCommSend_EmailProviderAndVoiceErrors(t *testing.T) {
 	t.Run("email provider not configured", func(t *testing.T) {
 		tdb := newSoulCommSendMoreTestDB()
 		expectCommInstanceKey(t, tdb.qKey, models.InstanceKey{ID: "k1", InstanceSlug: "inst1", CreatedAt: time.Now().Add(-time.Hour).UTC()})
-		expectActiveCommRoute(t, tdb, agentID, "email")
+		expectActiveCommRoute(t, tdb, agentID, models.SoulChannelTypeEmail)
 		s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true}}
 
 		body := mustMarshalCommSendBody(t, map[string]any{
@@ -303,7 +304,7 @@ func TestHandleSoulCommSend_EmailProviderAndVoiceErrors(t *testing.T) {
 	t.Run("email provider unavailable", func(t *testing.T) {
 		tdb := newSoulCommSendMoreTestDB()
 		expectCommInstanceKey(t, tdb.qKey, models.InstanceKey{ID: "k1", InstanceSlug: "inst1", CreatedAt: time.Now().Add(-time.Hour).UTC()})
-		expectActiveCommRoute(t, tdb, agentID, "email")
+		expectActiveCommRoute(t, tdb, agentID, models.SoulChannelTypeEmail)
 		s := &Server{
 			store: store.New(tdb.db),
 			cfg:   config.Config{SoulEnabled: true},
@@ -330,7 +331,7 @@ func TestHandleSoulCommSend_EmailProviderAndVoiceErrors(t *testing.T) {
 	t.Run("email provider rejected", func(t *testing.T) {
 		tdb := newSoulCommSendMoreTestDB()
 		expectCommInstanceKey(t, tdb.qKey, models.InstanceKey{ID: "k1", InstanceSlug: "inst1", CreatedAt: time.Now().Add(-time.Hour).UTC()})
-		expectActiveCommRoute(t, tdb, agentID, "email")
+		expectActiveCommRoute(t, tdb, agentID, models.SoulChannelTypeEmail)
 		s := &Server{
 			store: store.New(tdb.db),
 			cfg:   config.Config{SoulEnabled: true},
@@ -360,7 +361,7 @@ func TestHandleSoulCommSend_EmailProviderAndVoiceErrors(t *testing.T) {
 	t.Run("voice unsupported", func(t *testing.T) {
 		tdb := newSoulCommSendMoreTestDB()
 		expectCommInstanceKey(t, tdb.qKey, models.InstanceKey{ID: "k1", InstanceSlug: "inst1", CreatedAt: time.Now().Add(-time.Hour).UTC()})
-		expectActiveCommRoute(t, tdb, agentID, "phone")
+		expectActiveCommRoute(t, tdb, agentID, models.SoulChannelTypePhone)
 		s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true}}
 
 		body := mustMarshalCommSendBody(t, map[string]any{
@@ -399,7 +400,7 @@ func TestHandleSoulCommSend_IdempotencyBehavior(t *testing.T) {
 	t.Run("returns original success without redispatch", func(t *testing.T) {
 		tdb := newSoulCommSendMoreTestDB()
 		expectCommInstanceKey(t, tdb.qKey, models.InstanceKey{ID: "k1", InstanceSlug: "inst1", CreatedAt: time.Now().Add(-time.Hour).UTC()})
-		expectActiveCommRoute(t, tdb, agentID, "email")
+		expectActiveCommRoute(t, tdb, agentID, models.SoulChannelTypeEmail)
 		tdb.qEmailIdx.On("First", mock.AnythingOfType("*models.SoulEmailAgentIndex")).Return(theoryErrors.ErrItemNotFound).Once()
 		resetCommMockQueryChain(tdb.qIdem)
 		resetCommMockQueryChain(tdb.qStatus)
@@ -454,7 +455,7 @@ func TestHandleSoulCommSend_IdempotencyBehavior(t *testing.T) {
 	t.Run("returns accepted while original request is still processing", func(t *testing.T) {
 		tdb := newSoulCommSendMoreTestDB()
 		expectCommInstanceKey(t, tdb.qKey, models.InstanceKey{ID: "k1", InstanceSlug: "inst1", CreatedAt: time.Now().Add(-time.Hour).UTC()})
-		expectActiveCommRoute(t, tdb, agentID, "email")
+		expectActiveCommRoute(t, tdb, agentID, models.SoulChannelTypeEmail)
 		tdb.qEmailIdx.On("First", mock.AnythingOfType("*models.SoulEmailAgentIndex")).Return(theoryErrors.ErrItemNotFound).Once()
 		resetCommMockQueryChain(tdb.qIdem)
 		resetCommMockQueryChain(tdb.qStatus)
@@ -498,7 +499,7 @@ func TestHandleSoulCommSend_IdempotencyBehavior(t *testing.T) {
 	t.Run("rejects same key for different payload", func(t *testing.T) {
 		tdb := newSoulCommSendMoreTestDB()
 		expectCommInstanceKey(t, tdb.qKey, models.InstanceKey{ID: "k1", InstanceSlug: "inst1", CreatedAt: time.Now().Add(-time.Hour).UTC()})
-		expectActiveCommRoute(t, tdb, agentID, "email")
+		expectActiveCommRoute(t, tdb, agentID, models.SoulChannelTypeEmail)
 		tdb.qEmailIdx.On("First", mock.AnythingOfType("*models.SoulEmailAgentIndex")).Return(theoryErrors.ErrItemNotFound).Once()
 		resetCommMockQueryChain(tdb.qIdem)
 		tdb.qIdem.On("Create").Return(theoryErrors.ErrConditionFailed).Once()
@@ -1395,6 +1396,134 @@ func TestIsCommProviderUnavailable_RecognizesExpectedErrors(t *testing.T) {
 	}
 }
 
+func TestParseSoulCommSendRequest_NormalizesAllRecipients(t *testing.T) {
+	t.Parallel()
+
+	inReplyTo := " <comm-msg-prev@lessersoul.ai> "
+	body, _ := json.Marshal(soulCommSendRequest{
+		Channel:        " EMAIL ",
+		AgentID:        strings.ToUpper(soulLifecycleTestAgentIDHex),
+		To:             "Alice <ALICE@example.com>",
+		CC:             []string{" Bob <bob@example.com> ", "bob@example.com", ""},
+		BCC:            []string{" CAROL@example.com "},
+		Subject:        " Hello ",
+		Body:           " Body ",
+		ReplyTo:        " reply@example.com ",
+		InReplyTo:      &inReplyTo,
+		IdempotencyKey: " idem-1 ",
+	})
+	metrics := newSoulCommSendMetrics(" ", " ")
+
+	req, appErr := parseSoulCommSendRequest(newCommSendCtx(body, nil), metrics)
+	if appErr != nil {
+		t.Fatalf("unexpected appErr: %v", appErr)
+	}
+	if req.channel != commChannelEmail || req.agentIDHex != soulLifecycleTestAgentIDHex || req.to != "alice@example.com" {
+		t.Fatalf("unexpected normalized request identity/channel/to: %#v", req)
+	}
+	if !reflect.DeepEqual(req.cc, []string{"bob@example.com"}) || !reflect.DeepEqual(req.bcc, []string{"carol@example.com"}) {
+		t.Fatalf("unexpected normalized cc/bcc: cc=%#v bcc=%#v", req.cc, req.bcc)
+	}
+	if req.subject != "Hello" || req.body != "Body" || req.replyTo != "reply@example.com" || req.inReplyTo != "<comm-msg-prev@lessersoul.ai>" || req.idempotencyKey != "idem-1" {
+		t.Fatalf("unexpected normalized envelope fields: %#v", req)
+	}
+	if metrics.stage != "lab" || metrics.instance != commMetricUnknown || metrics.channel != commChannelEmail {
+		t.Fatalf("unexpected metrics after parse: %#v", metrics)
+	}
+}
+
+func TestParseSoulCommSendRequest_RejectsRecipientFailures(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		request soulCommSendRequest
+		message string
+	}{
+		{
+			name: "email missing subject",
+			request: soulCommSendRequest{
+				Channel: commChannelEmail,
+				AgentID: soulLifecycleTestAgentIDHex,
+				To:      "alice@example.com",
+				Body:    "body text",
+			},
+			message: "subject is required for email",
+		},
+		{
+			name: "invalid cc",
+			request: soulCommSendRequest{
+				Channel: commChannelEmail,
+				AgentID: soulLifecycleTestAgentIDHex,
+				To:      "alice@example.com",
+				CC:      []string{"not-an-email"},
+				Subject: "Hello",
+				Body:    "body text",
+			},
+			message: "cc must be an email address",
+		},
+		{
+			name: "invalid sms recipient",
+			request: soulCommSendRequest{
+				Channel: commChannelSMS,
+				AgentID: soulLifecycleTestAgentIDHex,
+				To:      "not-a-phone",
+				Body:    "body text",
+			},
+			message: "to must be an E.164 phone number",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body, _ := json.Marshal(tt.request)
+			metrics := newSoulCommSendMetrics("lab", "inst1")
+			_, appErr := parseSoulCommSendRequest(newCommSendCtx(body, nil), metrics)
+			if appErr == nil || appErr.Message != tt.message || appErr.StatusCode != http.StatusBadRequest {
+				t.Fatalf("expected %q bad request, got %#v", tt.message, appErr)
+			}
+			if metrics.status != commMetricInvalidRequest {
+				t.Fatalf("expected invalid request metrics, got %#v", metrics)
+			}
+		})
+	}
+}
+
+func TestSoulCommReplyBoundaryMatching(t *testing.T) {
+	t.Parallel()
+
+	items := []*models.SoulAgentCommActivity{
+		nil,
+		{ChannelType: commChannelSMS, Counterparty: "+15550123", MessageID: "sms-1"},
+		{ChannelType: commChannelEmail, Counterparty: "Other <other@example.com>", MessageID: "email-2"},
+		{ChannelType: commChannelEmail, Counterparty: "Alice <ALICE@example.com>", MessageID: "comm-msg-prev"},
+		{ChannelType: commChannelEmail, Counterparty: "bob@example.com", InReplyTo: "<thread-1@lessersoul.ai>"},
+	}
+
+	if !soulCommReplyBoundaryMatchesRecipient(items, commChannelEmail, "alice@example.com", "<comm-msg-prev@lessersoul.ai>") {
+		t.Fatalf("expected message-id reference to match normalized email recipient")
+	}
+	if !soulCommReplyBoundaryMatchesRecipient(items, commChannelEmail, "Bob <bob@example.com>", "thread-1") {
+		t.Fatalf("expected prior in-reply-to token to match")
+	}
+	if soulCommReplyBoundaryMatchesRecipient(items, commChannelEmail, "charlie@example.com", "comm-msg-prev") {
+		t.Fatalf("did not expect unmatched recipient to pass")
+	}
+	if !soulCommReplyBoundaryMatchesRecipient(items, commChannelSMS, "+1 (555) 0123", "sms-1") {
+		t.Fatalf("expected normalized phone recipient to match")
+	}
+
+	recipients := soulCommBoundaryRecipients(validatedSoulCommSendRequest{
+		channel: commChannelEmail,
+		to:      "Alice <ALICE@example.com>",
+		cc:      []string{"bob@example.com", "BOB@example.com"},
+		bcc:     []string{"carol@example.com"},
+	})
+	if !reflect.DeepEqual(recipients, []string{"ALICE@example.com", "BOB@example.com", "carol@example.com"}) {
+		t.Fatalf("unexpected email boundary recipients: %#v", recipients)
+	}
+}
+
 func newCommSendCtx(body []byte, inReplyTo *string) *apptheory.Context {
 	ctx := &apptheory.Context{
 		Request: apptheory.Request{
@@ -1489,12 +1618,12 @@ func expectActiveCommRoute(t *testing.T, tdb soulCommSendMoreTestDB, agentID str
 	expectCommDomain(t, tdb.qDomain, models.Domain{Domain: "example.com", InstanceSlug: "inst1", Status: models.DomainStatusVerified})
 
 	identifier := provisionTestEmailAddress
-	if channelType == "phone" {
+	if channelType == models.SoulChannelTypePhone {
 		identifier = "+15550142"
 	}
 	expectCommChannel(t, tdb.qChannel, models.SoulAgentChannel{
 		AgentID:       agentID,
-		ChannelType:   map[bool]string{true: models.SoulChannelTypePhone, false: models.SoulChannelTypeEmail}[channelType == "phone"],
+		ChannelType:   map[bool]string{true: models.SoulChannelTypePhone, false: models.SoulChannelTypeEmail}[channelType == models.SoulChannelTypePhone],
 		Identifier:    identifier,
 		Verified:      true,
 		ProvisionedAt: time.Now().Add(-time.Hour).UTC(),
@@ -1506,21 +1635,21 @@ func expectActiveCommRoute(t *testing.T, tdb soulCommSendMoreTestDB, agentID str
 		*dest = []*models.SoulAgentCommActivity{}
 	}).Twice()
 	counterparty := "alice@example.com"
-	if channelType == "phone" {
+	if channelType == models.SoulChannelTypePhone {
 		counterparty = "+15550143"
 	}
 	tdb.qCommActivity.On("All", mock.AnythingOfType("*[]*models.SoulAgentCommActivity")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.SoulAgentCommActivity](t, args, 0)
 		activities := []*models.SoulAgentCommActivity{
 			{
-				ChannelType:  map[bool]string{true: commChannelSMS, false: commChannelEmail}[channelType == "phone"],
+				ChannelType:  map[bool]string{true: commChannelSMS, false: commChannelEmail}[channelType == models.SoulChannelTypePhone],
 				Direction:    models.SoulCommDirectionInbound,
 				Counterparty: counterparty,
 				MessageID:    "comm-msg-prev",
 				Timestamp:    time.Now().Add(-time.Minute).UTC(),
 			},
 		}
-		if channelType == "phone" {
+		if channelType == models.SoulChannelTypePhone {
 			activities = append(activities, &models.SoulAgentCommActivity{
 				ChannelType:  commChannelVoice,
 				Direction:    models.SoulCommDirectionInbound,

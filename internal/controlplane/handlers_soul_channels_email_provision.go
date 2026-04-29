@@ -67,8 +67,8 @@ func (s *Server) handleSoulBeginProvisionEmailChannel(ctx *apptheory.Context) (*
 	if appErr != nil {
 		return nil, appErr
 	}
-	if appErr := s.validateSoulProvisionEmailAddressAvailability(ctx.Context(), agentIDHex, address); appErr != nil {
-		return nil, appErr
+	if availabilityErr := s.validateSoulProvisionEmailAddressAvailability(ctx.Context(), agentIDHex, address); availabilityErr != nil {
+		return nil, availabilityErr
 	}
 
 	// Load the current registration as the base document (v2 or v3).
@@ -134,8 +134,8 @@ func (s *Server) handleSoulProvisionEmailChannel(ctx *apptheory.Context) (*appth
 	if appErr != nil {
 		return nil, appErr
 	}
-	if appErr := s.validateSoulProvisionEmailAddressAvailability(ctx.Context(), agentIDHex, address); appErr != nil {
-		return nil, appErr
+	if availabilityErr := s.validateSoulProvisionEmailAddressAvailability(ctx.Context(), agentIDHex, address); availabilityErr != nil {
+		return nil, availabilityErr
 	}
 
 	// Load the current registration as the base document (v2 or v3).
@@ -506,18 +506,42 @@ func resolveSoulProvisionEmailAddress(identity *models.SoulAgentIdentity, reques
 func (s *Server) validateSoulProvisionEmailAddressAvailability(ctx context.Context, agentIDHex string, address string) *apptheory.AppError {
 	emailIdx := &models.SoulEmailAgentIndex{Email: address}
 	_ = emailIdx.UpdateKeys()
+	return s.validateSoulProvisionIndexAvailability(ctx, &models.SoulEmailAgentIndex{}, emailIdx.PK, emailIdx.SK, agentIDHex, "email address is already provisioned", "failed to validate email mapping", func() any {
+		return &models.SoulEmailAgentIndex{}
+	}, func(existing any) string {
+		if idx, ok := existing.(*models.SoulEmailAgentIndex); ok && idx != nil {
+			return idx.AgentID
+		}
+		return ""
+	})
+}
 
-	var existingIdx models.SoulEmailAgentIndex
+func (s *Server) validateSoulProvisionIndexAvailability(
+	ctx context.Context,
+	model any,
+	pk string,
+	sk string,
+	agentIDHex string,
+	conflictMessage string,
+	internalMessage string,
+	newExisting func() any,
+	owner func(any) string,
+) *apptheory.AppError {
+	existing := newExisting()
 	lookupErr := s.store.DB.WithContext(ctx).
-		Model(&models.SoulEmailAgentIndex{}).
-		Where("PK", "=", emailIdx.PK).
-		Where("SK", "=", emailIdx.SK).
-		First(&existingIdx)
-	if lookupErr == nil && strings.TrimSpace(existingIdx.AgentID) != "" && !strings.EqualFold(strings.TrimSpace(existingIdx.AgentID), agentIDHex) {
-		return &apptheory.AppError{Code: "app.conflict", Message: "email address is already provisioned"}
+		Model(model).
+		Where("PK", "=", pk).
+		Where("SK", "=", sk).
+		First(existing)
+	if lookupErr == nil {
+		existingAgentID := strings.TrimSpace(owner(existing))
+		if existingAgentID != "" && !strings.EqualFold(existingAgentID, agentIDHex) {
+			return &apptheory.AppError{Code: "app.conflict", Message: conflictMessage}
+		}
+		return nil
 	}
-	if lookupErr != nil && !theoryErrors.IsNotFound(lookupErr) {
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to validate email mapping"}
+	if !theoryErrors.IsNotFound(lookupErr) {
+		return &apptheory.AppError{Code: "app.internal", Message: internalMessage}
 	}
 	return nil
 }
@@ -525,7 +549,7 @@ func (s *Server) validateSoulProvisionEmailAddressAvailability(ctx context.Conte
 func (s *Server) soulAgentEmailPasswordSSMParam(agentIDHex string) string {
 	stage := strings.ToLower(strings.TrimSpace(s.cfg.Stage))
 	if stage == "" {
-		stage = "lab"
+		stage = defaultControlPlaneStage
 	}
 	agentIDHex = strings.ToLower(strings.TrimSpace(agentIDHex))
 	// #nosec G101 -- SSM parameter path, not a hardcoded credential.

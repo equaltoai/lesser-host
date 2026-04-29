@@ -67,7 +67,7 @@ func TestHandleCommEmailInboundWebhook_EnqueuesLegacyFlatPayload(t *testing.T) {
 
 	body, _ := json.Marshal(map[string]any{
 		"to":         "agent-bob@lessersoul.ai",
-		"from":       "alice@example.com",
+		"from":       commSendTestEmailRecipient,
 		"fromName":   "Alice",
 		"subject":    "Hello",
 		"body":       "Test",
@@ -93,7 +93,7 @@ func TestHandleCommEmailInboundWebhook_EnqueuesLegacyFlatPayload(t *testing.T) {
 	if got.Notification.To == nil || got.Notification.To.Address != "agent-bob@lessersoul.ai" {
 		t.Fatalf("expected to address, got %#v", got.Notification.To)
 	}
-	if got.Notification.From.Address != "alice@example.com" {
+	if got.Notification.From.Address != commSendTestEmailRecipient {
 		t.Fatalf("expected from address, got %#v", got.Notification.From)
 	}
 }

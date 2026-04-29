@@ -58,11 +58,105 @@ const (
 	commWebhookReceivedAt       = "2026-03-05T12:00:00Z"
 	commWebhookFailedToEnqueue  = "failed to enqueue"
 	commWebhookCallHangup       = "call.hangup"
+	commWebhookJSONContentType  = "application/json"
+	commWebhookSecretSSMParam   = "/test/comm/webhook"
 	commWebhookTestInstanceSlug = "inst1"
 	commWebhookTestSecret       = "test-webhook-secret"
 )
 
 type commWebhookHandler func(*Server, *apptheory.Context) (*apptheory.Response, error)
+
+func TestTelnyxSMSWebhookQueueMessage_NormalizesPayload(t *testing.T) {
+	t.Parallel()
+
+	var tel telnyxInboundWebhook
+	tel.Data.OccurredAt = "2026-03-05T12:00:00Z"
+	tel.Data.Payload.ID = " msg-1 "
+	tel.Data.Payload.Text = " sms webhook body "
+	tel.Data.Payload.From.PhoneNumber = " +15550142 "
+	tel.Data.Payload.To = append(tel.Data.Payload.To, struct {
+		PhoneNumber string `json:"phone_number"`
+	}{PhoneNumber: " +15550143 "})
+
+	msg := telnyxSMSWebhookQueueMessage(tel)
+	if msg.Provider != commDeliveryProviderTelnyx || msg.Kind != commworker.QueueMessageKindInbound {
+		t.Fatalf("unexpected queue metadata: %#v", msg)
+	}
+	if msg.Notification.Channel != commChannelSMS || msg.Notification.MessageID != "msg-1" || msg.Notification.Body != "sms webhook body" {
+		t.Fatalf("unexpected notification payload: %#v", msg.Notification)
+	}
+	if msg.Notification.From.Number != "+15550142" || msg.Notification.To == nil || msg.Notification.To.Number != "+15550143" {
+		t.Fatalf("unexpected telnyx parties: %#v", msg.Notification)
+	}
+}
+
+func TestExtractTelnyxVoiceFields(t *testing.T) {
+	t.Parallel()
+
+	if from, to, callID, occurredAt, duration := extractTelnyxVoiceFields(nil); from != "" || to != "" || callID != "" || occurredAt != "" || duration != 0 {
+		t.Fatalf("expected nil payload to produce empty fields")
+	}
+
+	tel := &telnyxVoiceWebhook{}
+	tel.Data.EventType = commWebhookCallHangup
+	tel.Data.OccurredAt = commWebhookReceivedAt
+	tel.Data.Payload = map[string]any{
+		"from":             map[string]any{"phoneNumber": " +15550142 "},
+		"to":               map[string]any{"number": " +15550143 "},
+		"call_session_id":  " call-1 ",
+		"duration_seconds": json.Number("61"),
+	}
+	from, to, callID, occurredAt, duration := extractTelnyxVoiceFields(tel)
+	if from != "+15550142" || to != "+15550143" || callID != "call-1" || occurredAt != commWebhookReceivedAt || duration != 61 {
+		t.Fatalf("unexpected extracted voice fields: from=%q to=%q callID=%q occurredAt=%q duration=%d", from, to, callID, occurredAt, duration)
+	}
+}
+
+func TestBuildTelnyxVoiceNotificationFallback(t *testing.T) {
+	t.Parallel()
+
+	notif, to, callID, duration := buildTelnyxVoiceNotification([]byte(" "), &telnyxVoiceWebhook{Data: struct {
+		EventType  string         `json:"event_type"`
+		OccurredAt string         `json:"occurred_at"`
+		Payload    map[string]any `json:"payload"`
+	}{EventType: commWebhookCallHangup, Payload: map[string]any{"duration": float64(2)}}})
+	if notif.Body != commWebhookCallHangup || notif.BodyMimeType != commWebhookJSONContentType || notif.Channel != commChannelVoice {
+		t.Fatalf("unexpected fallback voice notification: %#v", notif)
+	}
+	if to != "" || callID != commWebhookCallHangup || duration != 2 {
+		t.Fatalf("unexpected fallback voice fields: to=%q callID=%q duration=%d", to, callID, duration)
+	}
+}
+
+func TestTelnyxPrimitivePayloadReaders(t *testing.T) {
+	t.Parallel()
+
+	if got := readTelnyxPhoneValue(" +15550142 "); got != "+15550142" {
+		t.Fatalf("unexpected string phone value %q", got)
+	}
+	if got := readTelnyxPhoneValue(map[string]any{"phone_number": " +15550143 "}); got != "+15550143" {
+		t.Fatalf("unexpected phone_number value %q", got)
+	}
+	if got := readTelnyxPhoneValue(map[string]any{"number": " +15550144 "}); got != "+15550144" {
+		t.Fatalf("unexpected number value %q", got)
+	}
+	if got := readTelnyxPhonePayload(map[string]any{"to": map[string]any{"phoneNumber": " +15550145 "}}, "to"); got != "+15550145" {
+		t.Fatalf("unexpected payload phone value %q", got)
+	}
+
+	payload := map[string]any{"string": "12", "bad": "nope", "int": 3, "int64": int64(4), "float": float64(5), "json": json.Number("6")}
+	for key, want := range map[string]int64{"string": 12, "int": 3, "int64": 4, "float": 5, "json": 6} {
+		if got := readTelnyxInt64Payload(payload, key); got != want {
+			t.Fatalf("readTelnyxInt64Payload(%q)=%d want %d", key, got, want)
+		}
+	}
+	if got := readTelnyxInt64Payload(payload, "bad", "missing"); got != 0 {
+		t.Fatalf("expected bad/missing integer fields to return zero, got %d", got)
+	}
+	if value, ok := coerceTelnyxInt64([]string{"bad"}); ok || value != 0 {
+		t.Fatalf("expected unsupported integer type to fail, got value=%d ok=%v", value, ok)
+	}
+}
 
 func TestHandleCommEmailInboundWebhook_Disabled(t *testing.T) {
 	t.Parallel()
@@ -108,7 +202,7 @@ func TestHandleCommEmailInboundWebhook_InvalidNormalizedPayloadRejected(t *testi
 	body := marshalCommWebhookBody(t, map[string]any{
 		"type":       "communication:inbound",
 		"from":       map[string]any{"address": "alice@example.com"},
-		"body":       "hello",
+		"body":       "legacy webhook body",
 		"receivedAt": commWebhookReceivedAt,
 		"messageId":  "msg-1",
 	})
@@ -716,10 +810,10 @@ func assertNotFound() error {
 
 func newCommWebhookServer(enqueue func(context.Context, commworker.QueueMessage) error) *Server {
 	return &Server{
-		cfg:                config.Config{SoulEnabled: true, CommWebhookSharedSecretSSMParam: "/test/comm/webhook"},
+		cfg:                config.Config{SoulEnabled: true, CommWebhookSharedSecretSSMParam: commWebhookSecretSSMParam},
 		enqueueCommMessage: enqueue,
 		ssmGetParameter: func(_ context.Context, name string) (string, error) {
-			if name != "/test/comm/webhook" {
+			if name != commWebhookSecretSSMParam {
 				return "", context.Canceled
 			}
 			return commWebhookTestSecret, nil

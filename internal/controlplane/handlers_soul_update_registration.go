@@ -672,22 +672,10 @@ func (s *Server) upsertSoulV3ChannelIndexes(
 	desiredPhoneIndex *models.SoulPhoneAgentIndex,
 	desiredENS *models.SoulAgentENSResolution,
 ) *apptheory.AppError {
-	if desiredEmailIndex != nil {
-		if trustedManagedSoulChannelForIndex(desired) {
-			if appErr := s.ensureSoulEmailAgentIndex(ctx, desiredEmailIndex); appErr != nil {
-				return appErr
-			}
-		} else {
-			desiredEmailIndex = nil
-		}
-	}
-	if desiredPhoneIndex != nil {
-		if trustedManagedSoulChannelForIndex(desired) {
-			if appErr := s.ensureSoulPhoneAgentIndex(ctx, desiredPhoneIndex); appErr != nil {
-				return appErr
-			}
-		} else {
-			desiredPhoneIndex = nil
+	trustedManaged := trustedManagedSoulChannelForIndex(desired)
+	if trustedManaged {
+		if appErr := s.ensureTrustedSoulContactIndexes(ctx, desiredEmailIndex, desiredPhoneIndex); appErr != nil {
+			return appErr
 		}
 	}
 	if desiredENS != nil {
@@ -698,7 +686,7 @@ func (s *Server) upsertSoulV3ChannelIndexes(
 	if channelType != models.SoulChannelTypeEmail && channelType != models.SoulChannelTypePhone {
 		return nil
 	}
-	if !trustedManagedSoulChannelForIndex(desired) {
+	if !trustedManaged {
 		return nil
 	}
 	if strings.TrimSpace(identity.Domain) == "" || strings.TrimSpace(identity.LocalID) == "" {
@@ -713,6 +701,20 @@ func (s *Server) upsertSoulV3ChannelIndexes(
 	_ = idx.UpdateKeys()
 	if err := s.store.DB.WithContext(ctx).Model(idx).CreateOrUpdate(); err != nil {
 		return &apptheory.AppError{Code: "app.internal", Message: "failed to update channel index"}
+	}
+	return nil
+}
+
+func (s *Server) ensureTrustedSoulContactIndexes(ctx context.Context, emailIdx *models.SoulEmailAgentIndex, phoneIdx *models.SoulPhoneAgentIndex) *apptheory.AppError {
+	if emailIdx != nil {
+		if appErr := s.ensureSoulEmailAgentIndex(ctx, emailIdx); appErr != nil {
+			return appErr
+		}
+	}
+	if phoneIdx != nil {
+		if appErr := s.ensureSoulPhoneAgentIndex(ctx, phoneIdx); appErr != nil {
+			return appErr
+		}
 	}
 	return nil
 }
@@ -759,53 +761,19 @@ func soulCanonicalENSName(localID string) string {
 	return localID + ".lessersoul.eth"
 }
 
-func soulENSResolutionAllowedForIdentity(identity *models.SoulAgentIdentity, desired *models.SoulAgentChannel) bool {
-	if identity == nil || desired == nil {
-		return false
-	}
-	desiredCopy := *desired
-	_ = desiredCopy.UpdateKeys()
-	localID, err := soul.NormalizeLocalAgentID(strings.TrimSpace(identity.LocalID))
-	if err != nil {
-		return false
-	}
-	canonical := soulCanonicalENSName(localID)
-	return canonical != "" &&
-		desiredCopy.ChannelType == models.SoulChannelTypeENS &&
-		desiredCopy.Identifier == canonical &&
-		strings.TrimSpace(identity.AgentID) != ""
-}
-
 func (s *Server) ensureSoulEmailAgentIndex(ctx context.Context, idx *models.SoulEmailAgentIndex) *apptheory.AppError {
 	if idx == nil {
 		return nil
 	}
 	_ = idx.UpdateKeys()
-	if strings.TrimSpace(idx.Email) == "" || strings.TrimSpace(idx.AgentID) == "" {
-		return &apptheory.AppError{Code: "app.bad_request", Message: "email index is invalid"}
-	}
-	var existing models.SoulEmailAgentIndex
-	err := s.store.DB.WithContext(ctx).
-		Model(&models.SoulEmailAgentIndex{}).
-		Where("PK", "=", idx.PK).
-		Where("SK", "=", idx.SK).
-		First(&existing)
-	if err == nil {
-		if strings.EqualFold(strings.TrimSpace(existing.AgentID), strings.TrimSpace(idx.AgentID)) {
-			return nil
+	return s.ensureSoulContactAgentIndex(ctx, idx, idx.PK, idx.SK, idx.Email, idx.AgentID, "email index is invalid", "email address is already provisioned", "failed to validate email mapping", "failed to update email index", func() any {
+		return &models.SoulEmailAgentIndex{}
+	}, func(existing any) string {
+		if idx, ok := existing.(*models.SoulEmailAgentIndex); ok && idx != nil {
+			return idx.AgentID
 		}
-		return &apptheory.AppError{Code: "app.conflict", Message: "email address is already provisioned"}
-	}
-	if !theoryErrors.IsNotFound(err) {
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to validate email mapping"}
-	}
-	if err := s.store.DB.WithContext(ctx).Model(idx).Create(); err != nil {
-		if theoryErrors.IsConditionFailed(err) {
-			return &apptheory.AppError{Code: "app.conflict", Message: "email address is already provisioned"}
-		}
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to update email index"}
-	}
-	return nil
+		return ""
+	})
 }
 
 func (s *Server) ensureSoulPhoneAgentIndex(ctx context.Context, idx *models.SoulPhoneAgentIndex) *apptheory.AppError {
@@ -813,29 +781,53 @@ func (s *Server) ensureSoulPhoneAgentIndex(ctx context.Context, idx *models.Soul
 		return nil
 	}
 	_ = idx.UpdateKeys()
-	if strings.TrimSpace(idx.Phone) == "" || strings.TrimSpace(idx.AgentID) == "" {
-		return &apptheory.AppError{Code: "app.bad_request", Message: "phone index is invalid"}
+	return s.ensureSoulContactAgentIndex(ctx, idx, idx.PK, idx.SK, idx.Phone, idx.AgentID, "phone index is invalid", "phone number is already provisioned", "failed to validate phone mapping", "failed to update phone index", func() any {
+		return &models.SoulPhoneAgentIndex{}
+	}, func(existing any) string {
+		if idx, ok := existing.(*models.SoulPhoneAgentIndex); ok && idx != nil {
+			return idx.AgentID
+		}
+		return ""
+	})
+}
+
+func (s *Server) ensureSoulContactAgentIndex(
+	ctx context.Context,
+	idx any,
+	pk string,
+	sk string,
+	identifier string,
+	agentID string,
+	invalidMessage string,
+	conflictMessage string,
+	validateMessage string,
+	updateMessage string,
+	newExisting func() any,
+	owner func(any) string,
+) *apptheory.AppError {
+	if strings.TrimSpace(identifier) == "" || strings.TrimSpace(agentID) == "" {
+		return &apptheory.AppError{Code: "app.bad_request", Message: invalidMessage}
 	}
-	var existing models.SoulPhoneAgentIndex
+	existing := newExisting()
 	err := s.store.DB.WithContext(ctx).
-		Model(&models.SoulPhoneAgentIndex{}).
-		Where("PK", "=", idx.PK).
-		Where("SK", "=", idx.SK).
-		First(&existing)
+		Model(idx).
+		Where("PK", "=", pk).
+		Where("SK", "=", sk).
+		First(existing)
 	if err == nil {
-		if strings.EqualFold(strings.TrimSpace(existing.AgentID), strings.TrimSpace(idx.AgentID)) {
+		if strings.EqualFold(strings.TrimSpace(owner(existing)), strings.TrimSpace(agentID)) {
 			return nil
 		}
-		return &apptheory.AppError{Code: "app.conflict", Message: "phone number is already provisioned"}
+		return &apptheory.AppError{Code: "app.conflict", Message: conflictMessage}
 	}
 	if !theoryErrors.IsNotFound(err) {
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to validate phone mapping"}
+		return &apptheory.AppError{Code: "app.internal", Message: validateMessage}
 	}
-	if err := s.store.DB.WithContext(ctx).Model(idx).Create(); err != nil {
-		if theoryErrors.IsConditionFailed(err) {
-			return &apptheory.AppError{Code: "app.conflict", Message: "phone number is already provisioned"}
+	if createErr := s.store.DB.WithContext(ctx).Model(idx).Create(); createErr != nil {
+		if theoryErrors.IsConditionFailed(createErr) {
+			return &apptheory.AppError{Code: "app.conflict", Message: conflictMessage}
 		}
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to update phone index"}
+		return &apptheory.AppError{Code: "app.internal", Message: updateMessage}
 	}
 	return nil
 }
@@ -856,7 +848,7 @@ func (s *Server) ensureSoulENSResolution(ctx context.Context, idx *models.SoulAg
 		First(&existing)
 	if err == nil {
 		if strings.EqualFold(strings.TrimSpace(existing.AgentID), strings.TrimSpace(idx.AgentID)) {
-			if err := s.store.DB.WithContext(ctx).Model(idx).CreateOrUpdate(); err != nil {
+			if updateErr := s.store.DB.WithContext(ctx).Model(idx).CreateOrUpdate(); updateErr != nil {
 				return &apptheory.AppError{Code: "app.internal", Message: "failed to update ens resolution"}
 			}
 			return nil

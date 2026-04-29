@@ -95,7 +95,7 @@ func TestSoulPublicDiscoveryV3PhoneChannelFromModel(t *testing.T) {
 	if got == nil {
 		t.Fatalf("expected phone channel")
 	}
-	if got.Number != "+14155550123" || got.Provider != "telnyx" || got.Status != "paused" {
+	if got.Number != "+14155550123" || got.Provider != commDeliveryProviderTelnyx || got.Status != "paused" {
 		t.Fatalf("unexpected phone channel: %#v", got)
 	}
 	if got.VerifiedAt != verifiedAt.Format(time.RFC3339Nano) {

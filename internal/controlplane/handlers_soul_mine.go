@@ -107,45 +107,56 @@ func (s *Server) listDomainsForInstances(ctx context.Context, instances []*model
 
 	domainSet := map[string]struct{}{}
 	for _, inst := range instances {
-		if inst == nil {
+		if inst == nil || strings.TrimSpace(inst.Slug) == "" {
 			continue
 		}
-		slug := strings.ToLower(strings.TrimSpace(inst.Slug))
-		if slug == "" {
-			continue
+		domains, listErr := s.listVerifiedDomainsForInstance(ctx, inst)
+		if listErr != nil {
+			return nil, listErr
 		}
-
-		var domains []*models.Domain
-		err := s.store.DB.WithContext(ctx).
-			Model(&models.Domain{}).
-			Index("gsi1").
-			Where("gsi1PK", "=", fmt.Sprintf("INSTANCE_DOMAINS#%s", slug)).
-			All(&domains)
-		if err != nil && !theoryErrors.IsNotFound(err) {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list domains"}
-		}
-
-		for _, d := range domains {
-			if d == nil {
-				continue
-			}
-			domain := strings.ToLower(strings.TrimSpace(d.Domain))
-			if domain == "" {
-				continue
-			}
-			if !domainIsVerifiedOrActive(d.Status) {
-				continue
-			}
-			domainSet[domain] = struct{}{}
-		}
-
-		managedDomain := managedInstanceStageDomain(s.cfg.Stage, strings.TrimSpace(inst.HostedBaseDomain))
-		if managedDomain != "" {
-			domainSet[strings.ToLower(strings.TrimSpace(managedDomain))] = struct{}{}
-		}
+		addStringsToSet(domainSet, domains...)
+		addStringsToSet(domainSet, managedInstanceStageDomain(s.cfg.Stage, strings.TrimSpace(inst.HostedBaseDomain)))
 	}
 
 	return domainSet, nil
+}
+
+func (s *Server) listVerifiedDomainsForInstance(ctx context.Context, inst *models.Instance) ([]string, *apptheory.AppError) {
+	slug := strings.ToLower(strings.TrimSpace(inst.Slug))
+	var domains []*models.Domain
+	err := s.store.DB.WithContext(ctx).
+		Model(&models.Domain{}).
+		Index("gsi1").
+		Where("gsi1PK", "=", fmt.Sprintf("INSTANCE_DOMAINS#%s", slug)).
+		All(&domains)
+	if err != nil && !theoryErrors.IsNotFound(err) {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list domains"}
+	}
+
+	out := make([]string, 0, len(domains))
+	for _, d := range domains {
+		domain := verifiedDomainName(d)
+		if domain != "" {
+			out = append(out, domain)
+		}
+	}
+	return out, nil
+}
+
+func verifiedDomainName(d *models.Domain) string {
+	if d == nil || !domainIsVerifiedOrActive(d.Status) {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(d.Domain))
+}
+
+func addStringsToSet(set map[string]struct{}, values ...string) {
+	for _, value := range values {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value != "" {
+			set[value] = struct{}{}
+		}
+	}
 }
 
 func (s *Server) listAgentIDsForDomains(ctx context.Context, domainSet map[string]struct{}) ([]string, *apptheory.AppError) {

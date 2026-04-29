@@ -141,18 +141,7 @@ func (s *Server) handleCommSMSInboundWebhook(ctx *apptheory.Context) (*apptheory
 	var notif commworker.InboundNotification
 	if err := httpx.ParseJSON(ctx, &notif); err == nil && strings.TrimSpace(notif.Type) != "" {
 		notif.Channel = commChannelSMS
-		msg := commworker.QueueMessage{
-			Kind:         commworker.QueueMessageKindInbound,
-			Provider:     commDeliveryProviderTelnyx,
-			Notification: notif,
-		}
-		if err := msg.Validate(); err != nil {
-			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid webhook payload"}
-		}
-		if err := s.enqueueCommMessage(ctx.Context(), msg); err != nil {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to enqueue"}
-		}
-		return apptheory.JSON(http.StatusOK, map[string]any{"ok": true})
+		return s.enqueueCommInboundWebhook(ctx, notif, commDeliveryProviderTelnyx)
 	}
 
 	// Telnyx webhook payload.
@@ -165,30 +154,21 @@ func (s *Server) handleCommSMSInboundWebhook(ctx *apptheory.Context) (*apptheory
 		return apptheory.JSON(http.StatusOK, map[string]any{"ok": true, "skipped": eventType})
 	}
 
-	from := strings.TrimSpace(tel.Data.Payload.From.PhoneNumber)
-	to := ""
-	if len(tel.Data.Payload.To) > 0 {
-		to = strings.TrimSpace(tel.Data.Payload.To[0].PhoneNumber)
+	msg := telnyxSMSWebhookQueueMessage(tel)
+	if err := msg.Validate(); err != nil {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid webhook payload"}
 	}
-	body := strings.TrimSpace(tel.Data.Payload.Text)
-	messageID := strings.TrimSpace(tel.Data.Payload.ID)
-	receivedAt := strings.TrimSpace(tel.Data.OccurredAt)
-	if receivedAt == "" {
-		receivedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	if err := s.enqueueCommMessage(ctx.Context(), msg); err != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to enqueue"}
 	}
+	return apptheory.JSON(http.StatusOK, map[string]any{"ok": true})
+}
 
+func (s *Server) enqueueCommInboundWebhook(ctx *apptheory.Context, notif commworker.InboundNotification, provider string) (*apptheory.Response, error) {
 	msg := commworker.QueueMessage{
-		Kind:     commworker.QueueMessageKindInbound,
-		Provider: commDeliveryProviderTelnyx,
-		Notification: commworker.InboundNotification{
-			Type:       "communication:inbound",
-			Channel:    commChannelSMS,
-			From:       commworker.InboundParty{Number: from},
-			To:         &commworker.InboundParty{Number: to},
-			Body:       body,
-			ReceivedAt: receivedAt,
-			MessageID:  messageID,
-		},
+		Kind:         commworker.QueueMessageKindInbound,
+		Provider:     provider,
+		Notification: notif,
 	}
 	if err := msg.Validate(); err != nil {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid webhook payload"}
@@ -197,6 +177,31 @@ func (s *Server) handleCommSMSInboundWebhook(ctx *apptheory.Context) (*apptheory
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to enqueue"}
 	}
 	return apptheory.JSON(http.StatusOK, map[string]any{"ok": true})
+}
+
+func telnyxSMSWebhookQueueMessage(tel telnyxInboundWebhook) commworker.QueueMessage {
+	from := strings.TrimSpace(tel.Data.Payload.From.PhoneNumber)
+	to := ""
+	if len(tel.Data.Payload.To) > 0 {
+		to = strings.TrimSpace(tel.Data.Payload.To[0].PhoneNumber)
+	}
+	receivedAt := strings.TrimSpace(tel.Data.OccurredAt)
+	if receivedAt == "" {
+		receivedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	return commworker.QueueMessage{
+		Kind:     commworker.QueueMessageKindInbound,
+		Provider: commDeliveryProviderTelnyx,
+		Notification: commworker.InboundNotification{
+			Type:       "communication:inbound",
+			Channel:    commChannelSMS,
+			From:       commworker.InboundParty{Number: from},
+			To:         &commworker.InboundParty{Number: to},
+			Body:       strings.TrimSpace(tel.Data.Payload.Text),
+			ReceivedAt: receivedAt,
+			MessageID:  strings.TrimSpace(tel.Data.Payload.ID),
+		},
+	}
 }
 
 func (s *Server) handleCommVoiceInboundWebhook(ctx *apptheory.Context) (*apptheory.Response, error) {

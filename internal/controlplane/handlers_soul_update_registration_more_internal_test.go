@@ -1038,6 +1038,234 @@ func TestEnsureSoulEmailAgentIndex_RejectsForeignOwner(t *testing.T) {
 	}
 }
 
+func TestEnsureSoulContactIndexes_CreatesMissingAndAcceptsSameOwner(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulLifecycleTestDB()
+	s := &Server{store: store.New(tdb.db)}
+
+	tdb.qEmailIdx.On("First", mock.AnythingOfType("*models.SoulEmailAgentIndex")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulEmailAgentIndex](t, args, 0)
+		*dest = models.SoulEmailAgentIndex{Email: "agent@example.com", AgentID: soulLifecycleTestAgentIDHex}
+	}).Once()
+	if appErr := s.ensureSoulEmailAgentIndex(context.Background(), &models.SoulEmailAgentIndex{
+		Email:   "agent@example.com",
+		AgentID: soulLifecycleTestAgentIDHex,
+	}); appErr != nil {
+		t.Fatalf("expected same-owner email index to pass, got %v", appErr)
+	}
+
+	tdb.qPhoneIdx.On("First", mock.AnythingOfType("*models.SoulPhoneAgentIndex")).Return(theoryErrors.ErrItemNotFound).Once()
+	if appErr := s.ensureSoulPhoneAgentIndex(context.Background(), &models.SoulPhoneAgentIndex{
+		Phone:   "+15550142",
+		AgentID: soulLifecycleTestAgentIDHex,
+	}); appErr != nil {
+		t.Fatalf("expected missing phone index to be created, got %v", appErr)
+	}
+}
+
+func TestEnsureSoulContactIndexes_FailClosedOnInvalidAndRaces(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulLifecycleTestDB()
+	s := &Server{store: store.New(tdb.db)}
+
+	if appErr := s.ensureSoulEmailAgentIndex(context.Background(), &models.SoulEmailAgentIndex{
+		AgentID: soulLifecycleTestAgentIDHex,
+	}); appErr == nil || appErr.Code != appErrCodeBadRequest {
+		t.Fatalf("expected invalid email index to fail closed, got %v", appErr)
+	}
+
+	tdb.qEmailIdx.ExpectedCalls = nil
+	tdb.qEmailIdx.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(tdb.qEmailIdx).Maybe()
+	tdb.qEmailIdx.On("First", mock.AnythingOfType("*models.SoulEmailAgentIndex")).Return(theoryErrors.ErrItemNotFound).Once()
+	tdb.qEmailIdx.On("Create").Return(theoryErrors.ErrConditionFailed).Once()
+	appErr := s.ensureSoulEmailAgentIndex(context.Background(), &models.SoulEmailAgentIndex{
+		Email:   "agent@example.com",
+		AgentID: soulLifecycleTestAgentIDHex,
+	})
+	if appErr == nil || appErr.Code != appErrCodeConflict || appErr.Message != "email address is already provisioned" {
+		t.Fatalf("expected create race conflict, got %v", appErr)
+	}
+}
+
+func TestTrustedManagedSoulChannelForIndex(t *testing.T) {
+	t.Parallel()
+
+	activeAt := time.Date(2026, time.March, 5, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name string
+		ch   *models.SoulAgentChannel
+		want bool
+	}{
+		{name: "nil"},
+		{name: "unverified", ch: &models.SoulAgentChannel{ChannelType: models.SoulChannelTypeEmail, Identifier: "agent@example.com", Provider: "migadu", ProvisionedAt: activeAt, Status: models.SoulChannelStatusActive}},
+		{name: "missing provisioned", ch: &models.SoulAgentChannel{ChannelType: models.SoulChannelTypeEmail, Identifier: "agent@example.com", Provider: "migadu", Verified: true, Status: models.SoulChannelStatusActive}},
+		{name: "deprovisioned", ch: &models.SoulAgentChannel{ChannelType: models.SoulChannelTypePhone, Identifier: "+15550142", Provider: commDeliveryProviderTelnyx, Verified: true, ProvisionedAt: activeAt, DeprovisionedAt: activeAt.Add(time.Hour), Status: models.SoulChannelStatusActive}},
+		{name: "email unmanaged provider", ch: &models.SoulAgentChannel{ChannelType: models.SoulChannelTypeEmail, Identifier: "agent@example.com", Provider: "other", Verified: true, ProvisionedAt: activeAt, Status: models.SoulChannelStatusActive}},
+		{name: "email managed", ch: &models.SoulAgentChannel{ChannelType: models.SoulChannelTypeEmail, Identifier: "Agent@Example.com", Provider: "migadu", Verified: true, ProvisionedAt: activeAt, Status: models.SoulChannelStatusActive}, want: true},
+		{name: "phone managed", ch: &models.SoulAgentChannel{ChannelType: models.SoulChannelTypePhone, Identifier: "+1 (555) 0142", Provider: commDeliveryProviderTelnyx, Verified: true, ProvisionedAt: activeAt, Status: models.SoulChannelStatusActive}, want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := trustedManagedSoulChannelForIndex(tt.ch); got != tt.want {
+				t.Fatalf("trustedManagedSoulChannelForIndex()=%v want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestUpsertSoulV3ChannelIndexes_CreatesTrustedManagedIndexes(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulLifecycleTestDB()
+	s := &Server{store: store.New(tdb.db)}
+	tdb.qEmailIdx.On("First", mock.AnythingOfType("*models.SoulEmailAgentIndex")).Return(theoryErrors.ErrItemNotFound).Once()
+
+	identity := &models.SoulAgentIdentity{
+		AgentID: soulLifecycleTestAgentIDHex,
+		Domain:  "example.com",
+		LocalID: "agent-alice",
+	}
+	desired := &models.SoulAgentChannel{
+		AgentID:       identity.AgentID,
+		ChannelType:   models.SoulChannelTypeEmail,
+		Identifier:    "agent-alice@lessersoul.ai",
+		Provider:      "migadu",
+		Verified:      true,
+		ProvisionedAt: time.Date(2026, time.March, 5, 12, 0, 0, 0, time.UTC),
+		Status:        models.SoulChannelStatusActive,
+	}
+	emailIdx := &models.SoulEmailAgentIndex{Email: desired.Identifier, AgentID: identity.AgentID}
+	_ = emailIdx.UpdateKeys()
+
+	if appErr := s.upsertSoulV3ChannelIndexes(context.Background(), identity, models.SoulChannelTypeEmail, desired, emailIdx, nil, nil); appErr != nil {
+		t.Fatalf("expected trusted managed channel indexes to upsert, got %v", appErr)
+	}
+}
+
+func TestUpsertSoulV3ChannelIndexes_IgnoresUntrustedContactIndex(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulLifecycleTestDB()
+	s := &Server{store: store.New(tdb.db)}
+	desired := &models.SoulAgentChannel{
+		AgentID:     soulLifecycleTestAgentIDHex,
+		ChannelType: models.SoulChannelTypeEmail,
+		Identifier:  "external@example.com",
+		Provider:    "external",
+		Verified:    true,
+		Status:      models.SoulChannelStatusActive,
+	}
+	identity := &models.SoulAgentIdentity{AgentID: desired.AgentID, Domain: "example.com", LocalID: "agent-alice"}
+
+	if appErr := s.upsertSoulV3ChannelIndexes(context.Background(), identity, models.SoulChannelTypeEmail, desired, &models.SoulEmailAgentIndex{Email: desired.Identifier, AgentID: desired.AgentID}, nil, nil); appErr != nil {
+		t.Fatalf("expected untrusted contact index to be ignored, got %v", appErr)
+	}
+}
+
+func TestUpsertSoulV3ChannelIndexes_HandlesENSAndMissingIdentityIndex(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulLifecycleTestDB()
+	s := &Server{store: store.New(tdb.db)}
+	tdb.qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(theoryErrors.ErrItemNotFound).Once()
+
+	identity := &models.SoulAgentIdentity{AgentID: soulLifecycleTestAgentIDHex}
+	ensIdx := &models.SoulAgentENSResolution{ENSName: "agent-alice.lessersoul.eth", AgentID: soulLifecycleTestAgentIDHex}
+	if appErr := s.upsertSoulV3ChannelIndexes(context.Background(), identity, models.SoulChannelTypeENS, nil, nil, nil, ensIdx); appErr != nil {
+		t.Fatalf("expected ENS resolution to upsert without contact index, got %v", appErr)
+	}
+
+	activeAt := time.Date(2026, time.March, 5, 12, 0, 0, 0, time.UTC)
+	phoneIdx := &models.SoulPhoneAgentIndex{Phone: "+15550142", AgentID: soulLifecycleTestAgentIDHex}
+	tdb.qPhoneIdx.On("First", mock.AnythingOfType("*models.SoulPhoneAgentIndex")).Return(theoryErrors.ErrItemNotFound).Once()
+	if appErr := s.upsertSoulV3ChannelIndexes(context.Background(), identity, models.SoulChannelTypePhone, &models.SoulAgentChannel{
+		AgentID:       soulLifecycleTestAgentIDHex,
+		ChannelType:   models.SoulChannelTypePhone,
+		Identifier:    "+15550142",
+		Provider:      commDeliveryProviderTelnyx,
+		Verified:      true,
+		ProvisionedAt: activeAt,
+		Status:        models.SoulChannelStatusActive,
+	}, nil, phoneIdx, nil); appErr != nil {
+		t.Fatalf("expected missing domain/local id to skip aggregate contact index, got %v", appErr)
+	}
+}
+
+func TestPreserveManagedSoulChannelMetadata(t *testing.T) {
+	t.Parallel()
+
+	provisionedAt := time.Date(2026, time.March, 5, 12, 0, 0, 0, time.UTC)
+	verifiedAt := provisionedAt.Add(time.Minute)
+	deprovisionedAt := provisionedAt.Add(time.Hour)
+	existing := &models.SoulAgentChannel{
+		ChannelType:     models.SoulChannelTypeEmail,
+		Identifier:      "agent@example.com",
+		Provider:        "migadu",
+		SecretRef:       "ssm://secret",
+		ProvisionedAt:   provisionedAt,
+		DeprovisionedAt: deprovisionedAt,
+		Verified:        true,
+		VerifiedAt:      verifiedAt,
+	}
+	desired := &models.SoulAgentChannel{ChannelType: models.SoulChannelTypeEmail, Identifier: "AGENT@example.com"}
+	preserveManagedSoulChannelMetadata(desired, existing)
+	if desired.Provider != existing.Provider || desired.SecretRef != existing.SecretRef || !desired.ProvisionedAt.Equal(provisionedAt) || !desired.DeprovisionedAt.Equal(deprovisionedAt) {
+		t.Fatalf("expected managed metadata to be preserved, got %#v", desired)
+	}
+	if !desired.Verified || !desired.VerifiedAt.Equal(verifiedAt) {
+		t.Fatalf("expected verification metadata to be preserved, got %#v", desired)
+	}
+
+	mismatched := &models.SoulAgentChannel{ChannelType: models.SoulChannelTypeEmail, Identifier: "other@example.com"}
+	preserveManagedSoulChannelMetadata(mismatched, existing)
+	if mismatched.Provider != "" || mismatched.Verified {
+		t.Fatalf("did not expect metadata copy for different identifier, got %#v", mismatched)
+	}
+}
+
+func TestEnsureSoulENSResolution_CreatesAndPreservesOwnedIndex(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulLifecycleTestDB()
+	s := &Server{store: store.New(tdb.db)}
+	ens := &models.SoulAgentENSResolution{ENSName: "agent-alice.lessersoul.eth", AgentID: soulLifecycleTestAgentIDHex}
+
+	tdb.qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(theoryErrors.ErrItemNotFound).Once()
+	if appErr := s.ensureSoulENSResolution(context.Background(), ens); appErr != nil {
+		t.Fatalf("expected missing ENS resolution to be created, got %v", appErr)
+	}
+
+	tdb.qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentENSResolution](t, args, 0)
+		*dest = models.SoulAgentENSResolution{ENSName: ens.ENSName, AgentID: soulLifecycleTestAgentIDHex}
+	}).Once()
+	if appErr := s.ensureSoulENSResolution(context.Background(), ens); appErr != nil {
+		t.Fatalf("expected owned ENS resolution to update, got %v", appErr)
+	}
+}
+
+func TestEnsureSoulENSResolution_RejectsInvalidAndForeignOwner(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulLifecycleTestDB()
+	s := &Server{store: store.New(tdb.db)}
+	if appErr := s.ensureSoulENSResolution(context.Background(), &models.SoulAgentENSResolution{AgentID: soulLifecycleTestAgentIDHex}); appErr == nil || appErr.Code != appErrCodeBadRequest {
+		t.Fatalf("expected invalid ENS resolution to fail closed, got %v", appErr)
+	}
+
+	tdb.qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentENSResolution](t, args, 0)
+		*dest = models.SoulAgentENSResolution{ENSName: "agent-alice.lessersoul.eth", AgentID: "0xother"}
+	}).Once()
+	appErr := s.ensureSoulENSResolution(context.Background(), &models.SoulAgentENSResolution{ENSName: "agent-alice.lessersoul.eth", AgentID: soulLifecycleTestAgentIDHex})
+	if appErr == nil || appErr.Code != appErrCodeConflict || appErr.Message != "ens name is already provisioned" {
+		t.Fatalf("expected ENS ownership conflict, got %v", appErr)
+	}
+}
+
 func TestSyncSoulV3StateFromRegistration_DeletesContactPreferencesWhenOmitted(t *testing.T) {
 	t.Parallel()
 
