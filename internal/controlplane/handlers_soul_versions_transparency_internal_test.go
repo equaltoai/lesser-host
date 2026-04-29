@@ -5,11 +5,10 @@ import (
 	"errors"
 	"net/http"
 	"testing"
-	"time"
 
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	"github.com/theory-cloud/tabletheory/pkg/core"
+	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
 	"github.com/stretchr/testify/mock"
 
@@ -43,73 +42,165 @@ func TestExtractTransparency(t *testing.T) {
 	}
 }
 
-func TestHandleSoulPublicGetVersions(t *testing.T) {
+func TestHandleSoulPublicGetVersionsErrors(t *testing.T) {
 	t.Parallel()
 
-	t.Run("errors", func(t *testing.T) {
-		t.Parallel()
+	s := &Server{cfg: config.Config{SoulEnabled: false}}
+	if _, err := s.handleSoulPublicGetVersions(&apptheory.Context{}); err == nil {
+		t.Fatalf("expected missing store error")
+	}
 
-		s := &Server{cfg: config.Config{SoulEnabled: false}}
-		if _, err := s.handleSoulPublicGetVersions(&apptheory.Context{}); err == nil {
-			t.Fatalf("expected missing store error")
-		}
+	tdb := newSoulLifecycleTestDB()
+	tdb.qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(errors.New("boom")).Once()
+	s = &Server{
+		store: store.New(tdb.db),
+		cfg:   config.Config{SoulEnabled: true},
+	}
+	ctx := &apptheory.Context{Params: map[string]string{"agentId": soulLifecycleTestAgentIDHex}}
+	if _, err := s.handleSoulPublicGetVersions(ctx); err == nil {
+		t.Fatalf("expected query error")
+	}
+}
 
-		tdb := newSoulLifecycleTestDB()
-		tdb.qVersion.On("AllPaginated", mock.Anything).Return((*core.PaginatedResult)(nil), errors.New("boom")).Once()
-		s = &Server{
-			store: store.New(tdb.db),
-			cfg:   config.Config{SoulEnabled: true},
-		}
-		ctx := &apptheory.Context{Params: map[string]string{"agentId": soulLifecycleTestAgentIDHex}}
-		if _, err := s.handleSoulPublicGetVersions(ctx); err == nil {
-			t.Fatalf("expected query error")
-		}
-	})
+func TestHandleSoulPublicGetVersionsNumericHeadPagination(t *testing.T) {
+	t.Parallel()
 
-	t.Run("success sorts and paginates", func(t *testing.T) {
-		t.Parallel()
-
-		tdb := newSoulLifecycleTestDB()
-		tdb.qVersion.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulAgentVersion")).Return(&core.PaginatedResult{HasMore: true, NextCursor: " c2 "}, nil).Run(func(args mock.Arguments) {
-			dest := testutil.RequireMockArg[*[]*models.SoulAgentVersion](t, args, 0)
-			*dest = []*models.SoulAgentVersion{
-				{AgentID: soulLifecycleTestAgentIDHex, VersionNumber: 1, CreatedAt: time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)},
-				nil,
-				{AgentID: soulLifecycleTestAgentIDHex, VersionNumber: 3, CreatedAt: time.Date(2026, 3, 3, 0, 0, 0, 0, time.UTC)},
-				{AgentID: soulLifecycleTestAgentIDHex, VersionNumber: 2, CreatedAt: time.Date(2026, 3, 2, 0, 0, 0, 0, time.UTC)},
-			}
+	tdb := newSoulLifecycleTestDB()
+	tdb.qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
+		*dest = models.SoulAgentIdentity{AgentID: soulLifecycleTestAgentIDHex, SelfDescriptionVersion: 12}
+	}).Once()
+	for _, version := range []int{12, 11} {
+		version := version
+		tdb.qVersion.On("First", mock.AnythingOfType("*models.SoulAgentVersion")).Return(nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*models.SoulAgentVersion](t, args, 0)
+			*dest = models.SoulAgentVersion{AgentID: soulLifecycleTestAgentIDHex, VersionNumber: version}
 		}).Once()
+	}
 
-		s := &Server{
-			store: store.New(tdb.db),
-			cfg:   config.Config{SoulEnabled: true},
-		}
-		ctx := &apptheory.Context{
-			Params: map[string]string{"agentId": soulLifecycleTestAgentIDHex},
-			Request: apptheory.Request{
-				Query: map[string][]string{
-					"cursor": {"c1"},
-					"limit":  {"2"},
-					"origin": {"https://portal.example.com"},
-				},
+	s := &Server{
+		store: store.New(tdb.db),
+		cfg:   config.Config{SoulEnabled: true},
+	}
+	ctx := &apptheory.Context{
+		Params: map[string]string{"agentId": soulLifecycleTestAgentIDHex},
+		Request: apptheory.Request{
+			Query: map[string][]string{
+				"limit":  {"2"},
+				"origin": {"https://portal.example.com"},
 			},
-		}
-		resp, err := s.handleSoulPublicGetVersions(ctx)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if resp.Status != http.StatusOK {
-			t.Fatalf("unexpected status: %d", resp.Status)
-		}
+		},
+	}
+	resp, err := s.handleSoulPublicGetVersions(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Status != http.StatusOK {
+		t.Fatalf("unexpected status: %d", resp.Status)
+	}
 
-		var out soulListVersionsResponse
-		if err := json.Unmarshal(resp.Body, &out); err != nil {
-			t.Fatalf("Unmarshal: %v", err)
-		}
-		if out.Count != 3 || len(out.Versions) != 3 || out.Versions[0].VersionNumber != 3 || out.Versions[1].VersionNumber != 2 || out.Versions[2].VersionNumber != 1 || !out.HasMore || out.NextCursor != "c2" {
-			t.Fatalf("unexpected versions response: %#v", out)
-		}
-	})
+	out := decodeSoulVersionsResponse(t, resp)
+	if out.Count != 2 || len(out.Versions) != 2 || out.Versions[0].VersionNumber != 12 || out.Versions[1].VersionNumber != 11 || !out.HasMore || out.NextCursor != "version:10" {
+		t.Fatalf("unexpected versions response: %#v", out)
+	}
+}
+
+func TestHandleSoulPublicGetVersionsMissingIdentity(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulLifecycleTestDB()
+	tdb.qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(theoryErrors.ErrItemNotFound).Once()
+	s := &Server{
+		store: store.New(tdb.db),
+		cfg:   config.Config{SoulEnabled: true},
+	}
+	ctx := &apptheory.Context{Params: map[string]string{"agentId": soulLifecycleTestAgentIDHex}}
+	resp, err := s.handleSoulPublicGetVersions(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := decodeSoulVersionsResponse(t, resp)
+	if resp.Status != http.StatusOK || out.Count != 0 || len(out.Versions) != 0 || out.HasMore || out.NextCursor != "" {
+		t.Fatalf("unexpected empty versions response: status=%d out=%#v", resp.Status, out)
+	}
+}
+
+func TestLoadSoulAgentVersionsCursorAndMissingRecords(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulLifecycleTestDB()
+	tdb.qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
+		*dest = models.SoulAgentIdentity{AgentID: soulLifecycleTestAgentIDHex, SelfDescriptionVersion: 12}
+	}).Twice()
+	tdb.qVersion.On("First", mock.AnythingOfType("*models.SoulAgentVersion")).Return(theoryErrors.ErrItemNotFound).Once()
+	tdb.qVersion.On("First", mock.AnythingOfType("*models.SoulAgentVersion")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentVersion](t, args, 0)
+		*dest = models.SoulAgentVersion{AgentID: soulLifecycleTestAgentIDHex, VersionNumber: 11}
+	}).Once()
+	tdb.qVersion.On("First", mock.AnythingOfType("*models.SoulAgentVersion")).Return(errors.New("boom")).Once()
+
+	s := &Server{store: store.New(tdb.db)}
+	ctx := &apptheory.Context{}
+	versions, hasMore, nextCursor, appErr := s.loadSoulAgentVersions(ctx, soulLifecycleTestAgentIDHex, "version:12", 2)
+	if appErr != nil {
+		t.Fatalf("unexpected appErr: %#v", appErr)
+	}
+	if len(versions) != 1 || versions[0].VersionNumber != 11 || !hasMore || nextCursor != "version:10" {
+		t.Fatalf("unexpected sparse page: versions=%#v hasMore=%v next=%q", versions, hasMore, nextCursor)
+	}
+
+	_, _, _, appErr = s.loadSoulAgentVersions(ctx, soulLifecycleTestAgentIDHex, "version:9", 1)
+	if appErr == nil || appErr.Code != appErrCodeInternal {
+		t.Fatalf("expected version read error, got %#v", appErr)
+	}
+}
+
+func TestSoulVersionsStartVersion(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name        string
+		cursor      string
+		latest      int
+		want        int
+		wantAppCode string
+	}{
+		{name: "empty uses latest", latest: 12, want: 12},
+		{name: "numeric cursor", cursor: "10", latest: 12, want: 10},
+		{name: "namespaced cursor", cursor: "version:10", latest: 12, want: 10},
+		{name: "key cursor", cursor: "VERSION#9", latest: 12, want: 9},
+		{name: "clamps future cursor", cursor: "99", latest: 12, want: 12},
+		{name: "zero latest", latest: 0, want: 0},
+		{name: "invalid cursor", cursor: "opaque", latest: 12, wantAppCode: appErrCodeBadRequest},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, appErr := soulVersionsStartVersion(tc.cursor, tc.latest)
+			if tc.wantAppCode != "" {
+				if appErr == nil || appErr.Code != tc.wantAppCode {
+					t.Fatalf("expected %s, got %#v", tc.wantAppCode, appErr)
+				}
+				return
+			}
+			if appErr != nil || got != tc.want {
+				t.Fatalf("got version=%d appErr=%#v; want version=%d", got, appErr, tc.want)
+			}
+		})
+	}
+}
+
+func decodeSoulVersionsResponse(t *testing.T, resp *apptheory.Response) soulListVersionsResponse {
+	t.Helper()
+	var out soulListVersionsResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	return out
 }
 
 func TestHandleSoulPublicGetTransparency(t *testing.T) {

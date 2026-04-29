@@ -3,10 +3,11 @@ package controlplane
 import (
 	"fmt"
 	"net/http"
-	"sort"
+	"strconv"
 	"strings"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
+	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/store/models"
@@ -63,40 +64,77 @@ func soulVersionsPageLimit(ctx *apptheory.Context) int {
 	return envIntPositiveClampedFromString(httpx.FirstQueryValue(ctx.Request.Query, "limit"), 50, 200)
 }
 
+const soulVersionsCursorPrefix = "version:"
+
 func (s *Server) loadSoulAgentVersions(ctx *apptheory.Context, agentIDHex string, cursor string, limit int) ([]models.SoulAgentVersion, bool, string, *apptheory.AppError) {
-	var items []*models.SoulAgentVersion
-	qb := s.store.DB.WithContext(ctx.Context()).
-		Model(&models.SoulAgentVersion{}).
-		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentIDHex)).
-		Where("SK", "BEGINS_WITH", "VERSION#").
-		OrderBy("SK", "DESC").
-		Limit(limit)
-	if cursor != "" {
-		qb = qb.Cursor(cursor)
+	if limit <= 0 {
+		limit = 50
 	}
-	paged, err := qb.AllPaginated(&items)
-	if err != nil {
+
+	var identity models.SoulAgentIdentity
+	if err := s.store.DB.WithContext(ctx.Context()).
+		Model(&models.SoulAgentIdentity{}).
+		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentIDHex)).
+		Where("SK", "=", "IDENTITY").
+		First(&identity); theoryErrors.IsNotFound(err) {
+		return []models.SoulAgentVersion{}, false, "", nil
+	} else if err != nil {
 		return nil, false, "", &apptheory.AppError{Code: "app.internal", Message: "failed to list versions"}
 	}
 
-	versions := make([]models.SoulAgentVersion, 0, len(items))
-	for _, item := range items {
-		if item != nil {
-			versions = append(versions, *item)
-		}
+	startVersion, appErr := soulVersionsStartVersion(cursor, identity.SelfDescriptionVersion)
+	if appErr != nil {
+		return nil, false, "", appErr
+	}
+	if startVersion <= 0 {
+		return []models.SoulAgentVersion{}, false, "", nil
 	}
 
-	sort.Slice(versions, func(i, j int) bool {
-		if versions[i].VersionNumber == versions[j].VersionNumber {
-			return versions[i].CreatedAt.After(versions[j].CreatedAt)
+	versions := make([]models.SoulAgentVersion, 0, limit)
+	nextVersion := 0
+	scanned := 0
+	for version := startVersion; version >= 1 && len(versions) < limit && scanned < limit; version-- {
+		scanned++
+		nextVersion = version - 1
+		var item models.SoulAgentVersion
+		if err := s.store.DB.WithContext(ctx.Context()).
+			Model(&models.SoulAgentVersion{}).
+			Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentIDHex)).
+			Where("SK", "=", fmt.Sprintf("VERSION#%d", version)).
+			First(&item); theoryErrors.IsNotFound(err) {
+			continue
+		} else if err != nil {
+			return nil, false, "", &apptheory.AppError{Code: "app.internal", Message: "failed to list versions"}
 		}
-		return versions[i].VersionNumber > versions[j].VersionNumber
-	})
-	nextCursor := ""
-	hasMore := false
-	if paged != nil {
-		nextCursor = strings.TrimSpace(paged.NextCursor)
-		hasMore = paged.HasMore
+		versions = append(versions, item)
 	}
-	return versions, hasMore, nextCursor, nil
+
+	if nextVersion >= 1 {
+		return versions, true, soulVersionsCursor(nextVersion), nil
+	}
+	return versions, false, "", nil
+}
+
+func soulVersionsStartVersion(cursor string, latestVersion int) (int, *apptheory.AppError) {
+	if latestVersion <= 0 {
+		return 0, nil
+	}
+	raw := strings.TrimSpace(cursor)
+	if raw == "" {
+		return latestVersion, nil
+	}
+	raw = strings.TrimPrefix(raw, soulVersionsCursorPrefix)
+	raw = strings.TrimPrefix(raw, "VERSION#")
+	version, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || version <= 0 {
+		return 0, &apptheory.AppError{Code: "app.bad_request", Message: "invalid cursor"}
+	}
+	if version > latestVersion {
+		version = latestVersion
+	}
+	return version, nil
+}
+
+func soulVersionsCursor(nextVersion int) string {
+	return fmt.Sprintf("%s%d", soulVersionsCursorPrefix, nextVersion)
 }
