@@ -67,7 +67,7 @@ func TestStartAndGetInstanceProvisioning(t *testing.T) {
 		cfg: config.Config{
 			ManagedParentDomain:         "lesser.host",
 			ManagedDefaultRegion:        "us-east-1",
-			ManagedLesserDefaultVersion: "v0.0.0",
+			ManagedLesserDefaultVersion: "v1.2.6",
 		},
 		store: store.New(tdb.db),
 		// queues intentionally nil (offline tests).
@@ -82,7 +82,7 @@ func TestStartAndGetInstanceProvisioning(t *testing.T) {
 
 	body, _ := json.Marshal(startInstanceProvisionRequest{
 		Region:             "us-west-2",
-		LesserVersion:      "v1.0.0",
+		LesserVersion:      "v1.2.6",
 		AdminWalletType:    "ethereum",
 		AdminWalletAddress: "0x0000000000000000000000000000000000000003",
 		AdminWalletChainID: 1,
@@ -203,5 +203,5 @@ func TestHandleStartInstanceProvisioning_RejectsMalformedReleaseTag(t *testing.T
 	appErr, ok := err.(*apptheory.AppError)
 	require.True(t, ok)
 	require.Equal(t, "app.bad_request", appErr.Code)
-	require.Contains(t, appErr.Message, "lesser_version must be \"latest\" or a tag like v1.2.3")
+	require.Contains(t, appErr.Message, "lesser_version must be \"latest\" or a final tag like v1.2.3")
 }

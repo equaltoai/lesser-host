@@ -380,7 +380,7 @@ func TestHandlePortalCreateInstanceUpdateJob_RejectsMalformedReleaseTags(t *test
 			appErr, ok := err.(*apptheory.AppError)
 			require.True(t, ok)
 			require.Equal(t, "app.bad_request", appErr.Code)
-			require.Contains(t, appErr.Message, "must be \"latest\" or a tag like v1.2.3")
+			require.Contains(t, appErr.Message, "must be \"latest\" or a final tag like v1.2.3")
 		})
 	}
 }

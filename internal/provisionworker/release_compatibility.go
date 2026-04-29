@@ -14,7 +14,7 @@ const (
 	minimumSupportedManagedLesserReleaseVersion     = "v1.2.6"
 )
 
-var managedReleaseSemverCoreRE = regexp.MustCompile(`^v([0-9]+)\.([0-9]+)\.([0-9]+)(?:[-+].*)?$`)
+var managedReleaseSemverCoreRE = regexp.MustCompile(`^v([0-9]+)\.([0-9]+)\.([0-9]+)$`)
 
 type ManagedLesserCompatibilityContract struct {
 	SchemaVersion         int                               `json:"schema_version"`

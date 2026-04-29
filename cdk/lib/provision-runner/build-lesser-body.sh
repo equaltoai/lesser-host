@@ -19,12 +19,7 @@ if [ "$STAGE" != "live" ]; then STAGE_DOMAIN="$STAGE.$BASE_DOMAIN"; fi
 BODY_OWNER="${LESSER_BODY_GITHUB_OWNER:-equaltoai}"
 BODY_REPO="${LESSER_BODY_GITHUB_REPO:-lesser-body}"
 BODY_TAG="${LESSER_BODY_VERSION:-}"
-BODY_TAG_NORMALIZED=$(printf "%s" "$BODY_TAG" | tr "[:upper:]" "[:lower:]")
-if [ -z "$BODY_TAG" ] || [ "$BODY_TAG_NORMALIZED" = "latest" ]; then
-  echo "Resolving latest lesser-body release..."
-  BODY_TAG=$(resolve_latest_release_tag "$BODY_OWNER" "$BODY_REPO")
-fi
-test -n "$BODY_TAG" && test "$BODY_TAG" != "null"
+require_managed_release_tag "LESSER_BODY_VERSION" "$BODY_TAG"
 echo "Using lesser-body release: $BODY_TAG"
 BODY_RELEASE_DIR="$(pwd)/lesser-body-release"
 prepare_lesser_body_release_dir "$BODY_RELEASE_DIR" "$BODY_OWNER" "$BODY_REPO" "$BODY_TAG" "$STAGE"

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -23,6 +24,8 @@ const (
 	requiredLesserBundleManifestKind        = "lesser.lambda_bundle_manifest"
 	managedReleasePreflightRequestUserAgent = "lesser-host-provisionworker"
 )
+
+var managedReleaseGitSHA40RE = regexp.MustCompile(`^[0-9a-fA-F]{40}$`)
 
 type managedLesserReleaseManifest struct {
 	Schema    int    `json:"schema"`
@@ -168,8 +171,12 @@ func validateManagedLesserReleaseManifest(parsed *managedLesserReleaseManifest, 
 	if expectedTag != "" && strings.TrimSpace(parsed.Version) != expectedTag {
 		return fmt.Errorf("release manifest version mismatch: got %q, want %q", strings.TrimSpace(parsed.Version), expectedTag)
 	}
-	if strings.TrimSpace(parsed.GitSHA) == "" {
+	gitSHA := strings.TrimSpace(parsed.GitSHA)
+	if gitSHA == "" {
 		return fmt.Errorf("release manifest git_sha is missing")
+	}
+	if !managedReleaseGitSHA40RE.MatchString(gitSHA) {
+		return fmt.Errorf("release manifest git_sha must be a 40-character git commit SHA")
 	}
 	if parsed.Artifacts.ReceiptSchemaVersion < requiredLesserReleaseReceiptSchemaMin {
 		return fmt.Errorf("unsupported receipt schema version %d", parsed.Artifacts.ReceiptSchemaVersion)

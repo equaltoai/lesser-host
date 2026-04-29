@@ -17,7 +17,7 @@ type githubLatestRelease struct {
 	TagName string `json:"tag_name"`
 }
 
-var managedReleaseTagRE = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$`)
+var managedReleaseTagRE = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`)
 
 func resolveLatestGitHubReleaseTag(ctx context.Context, owner string, repo string) (string, error) {
 	owner = strings.TrimSpace(owner)
@@ -94,9 +94,9 @@ func validateManagedReleaseVersion(version string, field string) *apptheory.AppE
 	if managedReleaseTagRE.MatchString(version) {
 		return nil
 	}
-	message := "release version must be \"latest\" or a tag like v1.2.3"
+	message := "release version must be \"latest\" or a final tag like v1.2.3"
 	if field != "" {
-		message = field + " must be \"latest\" or a tag like v1.2.3"
+		message = field + " must be \"latest\" or a final tag like v1.2.3"
 	}
 	return &apptheory.AppError{Code: "app.bad_request", Message: message}
 }

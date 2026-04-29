@@ -1,4 +1,4 @@
-const managedReleaseTagRE = /^v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+const managedReleaseTagRE = /^v[0-9]+\.[0-9]+\.[0-9]+$/;
 
 export function validateManagedReleaseTag(
 	value: string,
@@ -20,5 +20,5 @@ export function validateManagedReleaseTag(
 	if (managedReleaseTagRE.test(trimmed)) {
 		return null;
 	}
-	return `${label} must be "latest" or a tag like v1.2.3.`;
+	return `${label} must be "latest" or a final tag like v1.2.3.`;
 }

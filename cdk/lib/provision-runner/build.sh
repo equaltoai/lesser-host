@@ -14,13 +14,7 @@ if [ "$RUN_MODE" = "lesser-body" ]; then
   exit 0
 fi
 
-TAG_NORMALIZED=$(printf "%s" "$TAG" | tr "[:upper:]" "[:lower:]")
-if [ -z "$TAG" ] || [ "$TAG_NORMALIZED" = "latest" ]; then
-  echo "Resolving latest Lesser release..."
-  TAG=$(resolve_latest_release_tag "$OWNER" "$REPO")
-fi
-test -n "$TAG"
-test "$TAG" != "null"
+require_managed_release_tag "LESSER_VERSION" "$TAG"
 echo "Using Lesser release: $TAG"
 LESSER_RELEASE_DIR="$(pwd)/lesser-release"
 prepare_lesser_release_dir "$LESSER_RELEASE_DIR"
