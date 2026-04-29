@@ -59,7 +59,7 @@ func newSoulSovereigntyTestDB() soulSovereigntyTestDB {
 	}
 }
 
-func TestHandleSoulValidationOptIn_DeclineCreatesZeroScoreRecord(t *testing.T) {
+func TestHandleSoulValidationOptIn_DeclineRecordsOptInOnly(t *testing.T) {
 	t.Parallel()
 
 	tdb := newSoulSovereigntyTestDB()
@@ -110,12 +110,6 @@ func TestHandleSoulValidationOptIn_DeclineCreatesZeroScoreRecord(t *testing.T) {
 		}
 	}).Once()
 
-	var createdRec *models.SoulAgentValidationRecord
-	tdb.db.On("Model", mock.AnythingOfType("*models.SoulAgentValidationRecord")).Return(tdb.qRec).Run(func(args mock.Arguments) {
-		rec := testutil.RequireMockArg[*models.SoulAgentValidationRecord](t, args, 0)
-		createdRec = rec
-	}).Once()
-
 	body, _ := json.Marshal(map[string]any{"accepted": false})
 	ctx := &apptheory.Context{
 		RequestID:    "r1",
@@ -132,18 +126,15 @@ func TestHandleSoulValidationOptIn_DeclineCreatesZeroScoreRecord(t *testing.T) {
 	if resp.Status != http.StatusOK {
 		t.Fatalf("expected 200, got %d (body=%q)", resp.Status, string(resp.Body))
 	}
-
-	if createdRec == nil {
-		t.Fatalf("expected validation record to be created")
+	var out models.SoulAgentValidationChallenge
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
 	}
-	if createdRec.Result != models.SoulValidationResultDeclined {
-		t.Fatalf("expected declined result, got %q", createdRec.Result)
+	if out.OptInStatus != models.SoulValidationOptInStatusDeclined {
+		t.Fatalf("expected optInStatus declined, got %q", out.OptInStatus)
 	}
-	if createdRec.Score != 0 {
-		t.Fatalf("expected score 0, got %v", createdRec.Score)
-	}
-	if createdRec.OptInStatus != models.SoulValidationOptInStatusDeclined {
-		t.Fatalf("expected optInStatus declined, got %q", createdRec.OptInStatus)
+	if out.Status == models.SoulValidationChallengeStatusEvaluated || out.Result != "" || out.Score != 0 || !out.EvaluatedAt.IsZero() {
+		t.Fatalf("declined opt-in should not finalize evaluation: %#v", out)
 	}
 }
 

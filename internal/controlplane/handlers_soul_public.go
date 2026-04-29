@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/ethereum/go-ethereum/common"
@@ -170,11 +171,22 @@ func (s *Server) handleSoulPublicGetReputation(ctx *apptheory.Context) (*apptheo
 }
 
 type soulPublicValidationsResponse struct {
-	Version     string                             `json:"version"`
-	Validations []models.SoulAgentValidationRecord `json:"validations"`
-	Count       int                                `json:"count"`
-	HasMore     bool                               `json:"has_more"`
-	NextCursor  string                             `json:"next_cursor,omitempty"`
+	Version     string                       `json:"version"`
+	Validations []soulPublicValidationRecord `json:"validations"`
+	Count       int                          `json:"count"`
+	HasMore     bool                         `json:"has_more"`
+	NextCursor  string                       `json:"next_cursor,omitempty"`
+}
+
+type soulPublicValidationRecord struct {
+	AgentID       string    `json:"agent_id"`
+	ChallengeID   string    `json:"challenge_id"`
+	ChallengeType string    `json:"challenge_type"`
+	ValidatorID   string    `json:"validator_id"`
+	Result        string    `json:"result"`
+	Score         float64   `json:"score"`
+	OptInStatus   string    `json:"opt_in_status,omitempty"`
+	EvaluatedAt   time.Time `json:"evaluated_at"`
 }
 
 func (s *Server) handleSoulPublicGetValidations(ctx *apptheory.Context) (*apptheory.Response, error) {
@@ -212,12 +224,12 @@ func (s *Server) handleSoulPublicGetValidations(ctx *apptheory.Context) (*appthe
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list validations"}
 	}
 
-	out := make([]models.SoulAgentValidationRecord, 0, len(items))
+	out := make([]soulPublicValidationRecord, 0, len(items))
 	for _, item := range items {
 		if item == nil {
 			continue
 		}
-		out = append(out, *item)
+		out = append(out, redactSoulPublicValidationRecord(*item))
 	}
 
 	nextCursor := ""
@@ -239,6 +251,19 @@ func (s *Server) handleSoulPublicGetValidations(ctx *apptheory.Context) (*appthe
 	}
 	s.setSoulPublicHeaders(ctx, resp, "public, max-age=60")
 	return resp, nil
+}
+
+func redactSoulPublicValidationRecord(item models.SoulAgentValidationRecord) soulPublicValidationRecord {
+	return soulPublicValidationRecord{
+		AgentID:       strings.ToLower(strings.TrimSpace(item.AgentID)),
+		ChallengeID:   strings.TrimSpace(item.ChallengeID),
+		ChallengeType: strings.ToLower(strings.TrimSpace(item.ChallengeType)),
+		ValidatorID:   strings.ToLower(strings.TrimSpace(item.ValidatorID)),
+		Result:        strings.ToLower(strings.TrimSpace(item.Result)),
+		Score:         item.Score,
+		OptInStatus:   strings.ToLower(strings.TrimSpace(item.OptInStatus)),
+		EvaluatedAt:   item.EvaluatedAt,
+	}
 }
 
 type soulSearchResult struct {

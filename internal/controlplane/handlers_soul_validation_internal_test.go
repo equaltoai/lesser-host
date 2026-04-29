@@ -65,6 +65,7 @@ func TestSoulValidationHandlers_IssueRespondEvaluate(t *testing.T) {
 
 	issueBody, _ := json.Marshal(soulIssueValidationChallengeRequest{
 		ChallengeType: "identity_verify",
+		Request:       "operator challenge material",
 		TTLSeconds:    -1,
 	})
 	issueCtx := &apptheory.Context{
@@ -99,14 +100,14 @@ func TestSoulValidationHandlers_IssueRespondEvaluate(t *testing.T) {
 			ChallengeID:   chalID,
 			ChallengeType: "identity_verify",
 			ValidatorID:   soulValidatorSystem,
-			Request:       "req",
+			Request:       "operator challenge material",
 			Status:        models.SoulValidationChallengeStatusIssued,
 			IssuedAt:      time.Now().Add(-time.Minute).UTC(),
 			UpdatedAt:     time.Now().Add(-time.Minute).UTC(),
 		}
-	}).Times(2)
+	}).Once()
 
-	respBody, _ := json.Marshal(soulRecordValidationResponseRequest{Response: "ok"})
+	respBody, _ := json.Marshal(soulRecordValidationResponseRequest{Response: "agent response material"})
 	respCtx := &apptheory.Context{
 		RequestID:    "r2",
 		AuthIdentity: "op",
@@ -119,6 +120,22 @@ func TestSoulValidationHandlers_IssueRespondEvaluate(t *testing.T) {
 	if err != nil || respResp.Status != 200 {
 		t.Fatalf("response: resp=%#v err=%v", respResp, err)
 	}
+
+	tdb.qChal.On("First", mock.AnythingOfType("*models.SoulAgentValidationChallenge")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentValidationChallenge](t, args, 0)
+		*dest = models.SoulAgentValidationChallenge{
+			AgentID:       agentID,
+			ChallengeID:   chalID,
+			ChallengeType: "identity_verify",
+			ValidatorID:   soulValidatorSystem,
+			Request:       "operator challenge material",
+			Response:      "agent response material",
+			Status:        models.SoulValidationChallengeStatusResponded,
+			IssuedAt:      time.Now().Add(-time.Minute).UTC(),
+			RespondedAt:   time.Now().Add(-30 * time.Second).UTC(),
+			UpdatedAt:     time.Now().Add(-30 * time.Second).UTC(),
+		}
+	}).Once()
 
 	evalBody, _ := json.Marshal(soulEvaluateValidationChallengeRequest{Result: models.SoulValidationResultPass})
 	evalCtx := &apptheory.Context{
@@ -139,6 +156,9 @@ func TestSoulValidationHandlers_IssueRespondEvaluate(t *testing.T) {
 	}
 	if evalOut.Challenge.Status != models.SoulValidationChallengeStatusEvaluated || evalOut.Record.Result != models.SoulValidationResultPass {
 		t.Fatalf("unexpected evaluate output: %#v", evalOut)
+	}
+	if evalOut.Record.Request != "operator challenge material" || evalOut.Record.Response != "agent response material" {
+		t.Fatalf("operator evaluation response should retain raw transcript: %#v", evalOut.Record)
 	}
 }
 

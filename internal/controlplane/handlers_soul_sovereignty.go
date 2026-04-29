@@ -36,11 +36,19 @@ type soulValidationOptInRequest struct {
 // --- Response types ---
 
 type soulListDisputesResponse struct {
-	Version    string                    `json:"version"`
-	Disputes   []models.SoulAgentDispute `json:"disputes"`
-	Count      int                       `json:"count"`
-	HasMore    bool                      `json:"has_more"`
-	NextCursor string                    `json:"next_cursor,omitempty"`
+	Version    string              `json:"version"`
+	Disputes   []soulPublicDispute `json:"disputes"`
+	Count      int                 `json:"count"`
+	HasMore    bool                `json:"has_more"`
+	NextCursor string              `json:"next_cursor,omitempty"`
+}
+
+type soulPublicDispute struct {
+	AgentID    string    `json:"agent_id"`
+	DisputeID  string    `json:"dispute_id"`
+	Status     string    `json:"status"`
+	CreatedAt  time.Time `json:"created_at"`
+	ResolvedAt time.Time `json:"resolved_at,omitempty"`
 }
 
 // --- Handlers ---
@@ -187,13 +195,6 @@ func (s *Server) handleSoulValidationOptIn(ctx *apptheory.Context) (*apptheory.R
 	now := time.Now().UTC()
 	challenge.OptInStatus = optInStatus
 
-	if optInStatus == models.SoulValidationOptInStatusDeclined {
-		if appErr := s.recordDeclinedSoulValidation(ctx.Context(), agentIDHex, challenge, optInStatus, now); appErr != nil {
-			return nil, appErr
-		}
-		return apptheory.JSON(http.StatusOK, challenge)
-	}
-
 	challenge.UpdatedAt = now
 	_ = challenge.UpdateKeys()
 	if err := s.store.DB.WithContext(ctx.Context()).Model(challenge).IfExists().Update("OptInStatus", "UpdatedAt"); err != nil {
@@ -234,35 +235,6 @@ func (s *Server) loadSoulValidationChallengeForOptIn(ctx context.Context, agentI
 		return nil, &apptheory.AppError{Code: "app.conflict", Message: "challenge is not in issued status"}
 	}
 	return challenge, nil
-}
-
-func (s *Server) recordDeclinedSoulValidation(ctx context.Context, agentIDHex string, challenge *models.SoulAgentValidationChallenge, optInStatus string, now time.Time) *apptheory.AppError {
-	rec := &models.SoulAgentValidationRecord{
-		AgentID:       agentIDHex,
-		ChallengeID:   strings.TrimSpace(challenge.ChallengeID),
-		ChallengeType: strings.TrimSpace(challenge.ChallengeType),
-		ValidatorID:   strings.TrimSpace(challenge.ValidatorID),
-		Request:       strings.TrimSpace(challenge.Request),
-		Response:      "",
-		Result:        models.SoulValidationResultDeclined,
-		Score:         0,
-		OptInStatus:   optInStatus,
-		EvaluatedAt:   now,
-	}
-	_ = rec.UpdateKeys()
-	if err := s.store.DB.WithContext(ctx).Model(rec).Create(); err != nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to record declined validation"}
-	}
-	challenge.Status = models.SoulValidationChallengeStatusEvaluated
-	challenge.Result = models.SoulValidationResultDeclined
-	challenge.Score = 0
-	challenge.EvaluatedAt = now
-	challenge.UpdatedAt = now
-	_ = challenge.UpdateKeys()
-	if err := s.store.DB.WithContext(ctx).Model(challenge).IfExists().Update("OptInStatus", "Status", "Result", "Score", "EvaluatedAt", "UpdatedAt"); err != nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to update opt-in status"}
-	}
-	return nil
 }
 
 // handleSoulCreateDispute creates a dispute record for an agent.
@@ -348,7 +320,7 @@ func (s *Server) handleSoulCreateDispute(ctx *apptheory.Context) (*apptheory.Res
 
 // handleSoulPublicGetDisputes returns paginated disputes for an agent.
 func (s *Server) handleSoulPublicGetDisputes(ctx *apptheory.Context) (*apptheory.Response, error) {
-	out, hasMore, nextCursor, appErr := listSoulPublicAgentItems[models.SoulAgentDispute](
+	items, hasMore, nextCursor, appErr := listSoulPublicAgentItems[models.SoulAgentDispute](
 		s,
 		ctx,
 		&models.SoulAgentDispute{},
@@ -357,6 +329,10 @@ func (s *Server) handleSoulPublicGetDisputes(ctx *apptheory.Context) (*apptheory
 	)
 	if appErr != nil {
 		return nil, appErr
+	}
+	out := make([]soulPublicDispute, 0, len(items))
+	for _, item := range items {
+		out = append(out, redactSoulPublicDispute(item))
 	}
 
 	resp, err := apptheory.JSON(http.StatusOK, soulListDisputesResponse{
@@ -371,6 +347,16 @@ func (s *Server) handleSoulPublicGetDisputes(ctx *apptheory.Context) (*apptheory
 	}
 	s.setSoulPublicHeaders(ctx, resp, "public, max-age=60")
 	return resp, nil
+}
+
+func redactSoulPublicDispute(dispute models.SoulAgentDispute) soulPublicDispute {
+	return soulPublicDispute{
+		AgentID:    strings.ToLower(strings.TrimSpace(dispute.AgentID)),
+		DisputeID:  strings.TrimSpace(dispute.DisputeID),
+		Status:     strings.ToLower(strings.TrimSpace(dispute.Status)),
+		CreatedAt:  dispute.CreatedAt,
+		ResolvedAt: dispute.ResolvedAt,
+	}
 }
 
 func (s *Server) handleSoulPublicGetDispute(ctx *apptheory.Context) (*apptheory.Response, error) {
@@ -397,5 +383,10 @@ func (s *Server) handleSoulPublicGetDispute(ctx *apptheory.Context) (*apptheory.
 	if err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
-	return apptheory.JSON(http.StatusOK, dispute)
+	resp, jsonErr := apptheory.JSON(http.StatusOK, redactSoulPublicDispute(*dispute))
+	if jsonErr != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	s.setSoulPublicHeaders(ctx, resp, "public, max-age=60")
+	return resp, nil
 }

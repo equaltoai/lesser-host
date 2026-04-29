@@ -3,6 +3,7 @@ package controlplane
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -64,8 +65,8 @@ func TestHandleSoulPublicGetDisputes_ReturnsDisputes(t *testing.T) {
 	if out.Disputes[0].DisputeID != "dispute-1" {
 		t.Fatalf("expected dispute_id %q, got %q", "dispute-1", out.Disputes[0].DisputeID)
 	}
-	if out.Disputes[0].SignalRef != "rep:signal:abc" {
-		t.Fatalf("expected signal_ref %q, got %q", "rep:signal:abc", out.Disputes[0].SignalRef)
+	if string(resp.Body) == "" || jsonContainsAny(resp.Body, "signal_ref", "evidence", "statement", "resolution", "rep:signal:abc", "s3://bucket/evidence.json", "This is incorrect.") {
+		t.Fatalf("public dispute list leaked raw evidence fields: %s", string(resp.Body))
 	}
 }
 
@@ -103,11 +104,24 @@ func TestHandleSoulPublicGetDispute_ReturnsDispute(t *testing.T) {
 		t.Fatalf("expected 200, got %d (body=%q)", resp.Status, string(resp.Body))
 	}
 
-	var out models.SoulAgentDispute
+	var out soulPublicDispute
 	if err := json.Unmarshal(resp.Body, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if out.DisputeID != "dispute-1" {
 		t.Fatalf("expected dispute_id %q, got %q", "dispute-1", out.DisputeID)
 	}
+	if jsonContainsAny(resp.Body, "signal_ref", "evidence", "statement", "resolution", "rep:signal:abc", "This is incorrect.") {
+		t.Fatalf("public dispute detail leaked raw evidence fields: %s", string(resp.Body))
+	}
+}
+
+func jsonContainsAny(body []byte, needles ...string) bool {
+	raw := string(body)
+	for _, needle := range needles {
+		if needle != "" && strings.Contains(raw, needle) {
+			return true
+		}
+	}
+	return false
 }

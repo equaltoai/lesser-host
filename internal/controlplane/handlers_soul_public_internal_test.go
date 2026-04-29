@@ -824,7 +824,16 @@ func TestHandleSoulPublicGetValidations_PaginatesAndFiltersNilItems(t *testing.T
 		dest := testutil.RequireMockArg[*[]*models.SoulAgentValidationRecord](t, args, 0)
 		*dest = []*models.SoulAgentValidationRecord{
 			nil,
-			{AgentID: agentID, ChallengeID: "c1", ChallengeType: "identity_verify", Result: "pass", EvaluatedAt: time.Now().UTC()},
+			{
+				AgentID:       agentID,
+				ChallengeID:   "c1",
+				ChallengeType: "identity_verify",
+				ValidatorID:   "system",
+				Request:       "raw challenge transcript",
+				Response:      "raw agent response",
+				Result:        "pass",
+				EvaluatedAt:   time.Now().UTC(),
+			},
 		}
 	}).Once()
 
@@ -843,6 +852,12 @@ func TestHandleSoulPublicGetValidations_PaginatesAndFiltersNilItems(t *testing.T
 	}
 	if out.Count != 1 || len(out.Validations) != 1 || !out.HasMore || out.NextCursor != "c2" {
 		t.Fatalf("unexpected response: %#v", out)
+	}
+	if out.Validations[0].ChallengeID != "c1" || out.Validations[0].ValidatorID != "system" {
+		t.Fatalf("unexpected redacted validation: %#v", out.Validations[0])
+	}
+	if jsonContainsAny(resp.Body, `"request"`, `"response"`, "raw challenge transcript", "raw agent response") {
+		t.Fatalf("public validations leaked raw transcript fields: %s", string(resp.Body))
 	}
 }
 
