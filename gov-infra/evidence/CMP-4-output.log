@@ -5,28 +5,72 @@ file: gov-infra/planning/lesser-host-threat-model.md
 file: gov-infra/planning/lesser-host-controls-matrix.md
 file: gov-infra/planning/lesser-host-evidence-plan.md
 PASS: ADR title declares bounded mailbox authority
+PASS: ADR limits host content storage to bounded delivery artifacts
+PASS: ADR rejects permanent semantic-memory role
 PASS: content retention policy requirement
-PASS: encryption requirement
+PASS: encryption-at-rest requirement
 PASS: access audit requirement
-PASS: list/content split requirement
-PASS: no semantic-memory role
+PASS: list endpoints are redacted metadata only
+PASS: full content requires explicit get/read endpoint
 PASS: hash-only instance auth requirement
+PASS: raw instance keys are never retained or logged
 PASS: write-once audit/event requirement
 PASS: protected identity/provenance requirement
 PASS: body remains MCP facade
 PASS: lesser projection-only boundary
 PASS: cross-tenant search non-goal
+PASS: tenant-scoped mailbox access requirement
 PASS: soul surface names mailbox authority
+PASS: soul surface limits mailbox authority to bounded content/state
 PASS: soul surface requires redacted list previews
+PASS: soul surface requires explicit content fetch
 PASS: soul surface documents hash-only auth
+PASS: soul surface rejects cross-tenant scope expansion
 PASS: roadmap records framework incorporation decisions
 PASS: roadmap requires write-once audit/event rows
-PASS: roadmap requires retention/encryption/list-redaction controls
+PASS: roadmap requires bounded retention/encryption/audit semantics
+PASS: roadmap requires list redaction semantics
+PASS: roadmap requires hash-match instance auth semantics
 PASS: threat model includes bounded mailbox threat
 PASS: threat model names content/state drift
+PASS: threat model enumerates insecure mailbox expansion cases
 PASS: controls matrix includes CMP-4
 PASS: controls matrix maps THR-11
-PASS: controls matrix enumerates bounded mailbox controls
+PASS: controls matrix enumerates bounded mailbox controls with semantics
 PASS: evidence plan includes CMP-4
 PASS: evidence plan names CMP-4 evidence path
+PASS: insecure retention semantics absent
+PASS: insecure encryption semantics absent
+PASS: insecure access-audit semantics absent
+PASS: full content in list semantics absent
+PASS: raw-key retention semantics absent
+PASS: cross-tenant mailbox query semantics absent
+PASS: body-owned mailbox authority semantics absent
+PASS: insecure retention semantics absent
+PASS: insecure encryption semantics absent
+PASS: insecure access-audit semantics absent
+PASS: full content in list semantics absent
+PASS: raw-key retention semantics absent
+PASS: cross-tenant mailbox query semantics absent
+PASS: body-owned mailbox authority semantics absent
+PASS: insecure retention semantics absent
+PASS: insecure encryption semantics absent
+PASS: insecure access-audit semantics absent
+PASS: full content in list semantics absent
+PASS: raw-key retention semantics absent
+PASS: cross-tenant mailbox query semantics absent
+PASS: body-owned mailbox authority semantics absent
+PASS: insecure retention semantics absent
+PASS: insecure encryption semantics absent
+PASS: insecure access-audit semantics absent
+PASS: full content in list semantics absent
+PASS: raw-key retention semantics absent
+PASS: cross-tenant mailbox query semantics absent
+PASS: body-owned mailbox authority semantics absent
+PASS: negative fixture rejected for retention
+PASS: negative fixture rejected for encryption
+PASS: negative fixture rejected for access audit
+PASS: negative fixture rejected for list/content split
+PASS: negative fixture rejected for hash-only auth
+PASS: negative fixture rejected for tenant isolation
 PASS: bounded soul comm mailbox governance controls are explicit
