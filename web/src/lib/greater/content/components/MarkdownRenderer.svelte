@@ -24,12 +24,6 @@ Uses the unified ecosystem (remark + rehype) for ESM-compatible markdown process
 		content: string;
 
 		/**
-		 * Whether to sanitize the HTML output.
-		 * @default true
-		 */
-		sanitize?: boolean;
-
-		/**
 		 * List of allowed HTML tags. If not provided, uses default safe tags.
 		 */
 		allowedTags?: string[];
@@ -70,7 +64,6 @@ Uses the unified ecosystem (remark + rehype) for ESM-compatible markdown process
 
 	let {
 		content,
-		sanitize = true,
 		allowedTags,
 		// enableCodeHighlight = true, // Handled by CSS
 		enableLinks = true,
@@ -81,42 +74,53 @@ Uses the unified ecosystem (remark + rehype) for ESM-compatible markdown process
 		...restProps
 	}: Props = $props();
 
-	// Build custom sanitization schema
+	const safeMarkdownTags = [
+		'p',
+		'br',
+		'strong',
+		'b',
+		'em',
+		'i',
+		'code',
+		'pre',
+		'h1',
+		'h2',
+		'h3',
+		'h4',
+		'h5',
+		'h6',
+		'ul',
+		'ol',
+		'li',
+		'a',
+		'blockquote',
+		'table',
+		'thead',
+		'tbody',
+		'tr',
+		'th',
+		'td',
+		'del',
+		'img',
+		'hr',
+		'span',
+		'div',
+	];
+
+	function allowedMarkdownTags(): string[] {
+		if (!allowedTags) return safeMarkdownTags;
+		const safe = new Set(safeMarkdownTags);
+		const filtered = allowedTags
+			.map((tag) => tag.trim().toLowerCase())
+			.filter((tag) => safe.has(tag));
+		return filtered.length > 0 ? filtered : safeMarkdownTags;
+	}
+
+	// Build custom sanitization schema. Sanitization is mandatory because output flows to {@html}.
 	function buildSanitizeSchema(): Schema {
 		const schema: Schema = {
 			...defaultSchema,
-			tagNames: allowedTags || [
-				'p',
-				'br',
-				'strong',
-				'b',
-				'em',
-				'i',
-				'code',
-				'pre',
-				'h1',
-				'h2',
-				'h3',
-				'h4',
-				'h5',
-				'h6',
-				'ul',
-				'ol',
-				'li',
-				'a',
-				'blockquote',
-				'table',
-				'thead',
-				'tbody',
-				'tr',
-				'th',
-				'td',
-				'del',
-				'img',
-				'hr',
-				'span',
-				'div',
-			],
+			tagNames: allowedMarkdownTags(),
 			attributes: {
 				...defaultSchema.attributes,
 				a: enableLinks
@@ -124,6 +128,11 @@ Uses the unified ecosystem (remark + rehype) for ESM-compatible markdown process
 					: [],
 				img: ['src', 'alt', 'title'],
 				'*': ['className', 'class'],
+			},
+			protocols: {
+				...defaultSchema.protocols,
+				href: ['http', 'https', 'mailto'],
+				src: ['http', 'https', 'data', 'blob'],
 			},
 		};
 
@@ -136,10 +145,7 @@ Uses the unified ecosystem (remark + rehype) for ESM-compatible markdown process
 			allowDangerousHtml: false,
 		});
 
-		if (sanitize) {
-			processor.use(rehypeSanitize, buildSanitizeSchema());
-		}
-
+		processor.use(rehypeSanitize, buildSanitizeSchema());
 		processor.use(rehypeStringify);
 
 		return processor;
