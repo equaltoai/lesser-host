@@ -112,8 +112,9 @@ That contract defines:
   - override: `--stage live`
 - AWS profile behavior:
   - pass `--aws-profile <name>` or set `AWS_PROFILE=<name>` before invoking `theory app up/down`
-  - the host deployment contract captures AppTheory's required `{{AWS_PROFILE}}` placeholder as heredoc data, validates it against AWS-safe profile characters, then exports `AWS_PROFILE`
-  - do not add `eval` or raw profile interpolation to these commands
+  - `theory app up/down` sets `AWS_PROFILE` in the command environment; the host wrapper validates that environment value before any AWS/CDK operation
+  - the AppTheory v1 contract still requires a `{{AWS_PROFILE}}` placeholder in `cdk.up/down`; host parks that placeholder in a shell comment after `exec`, keeping raw profile text out of executable shell syntax
+  - do not add `eval`, heredoc profile capture, or raw profile interpolation to these commands
 
 Copy/paste examples:
 
