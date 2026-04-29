@@ -47,6 +47,10 @@ func (f *fakeEVMClient) CallContract(ctx context.Context, msg ethereum.CallMsg, 
 	return f.callContract(ctx, msg)
 }
 
+func (f *fakeEVMClient) TransactionByHash(ctx context.Context, txHash common.Hash) (*types.Transaction, bool, error) {
+	return nil, false, ethereum.NotFound
+}
+
 func (f *fakeEVMClient) TransactionReceipt(ctx context.Context, txHash common.Hash) (*types.Receipt, error) {
 	return nil, ethereum.NotFound
 }

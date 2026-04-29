@@ -43,6 +43,11 @@ func (c *stubEthRPCClient) CallContract(ctx context.Context, msg ethereum.CallMs
 	return c.callContract(ctx, msg, blockNumber)
 }
 
+func (c *stubEthRPCClient) TransactionByHash(ctx context.Context, txHash common.Hash) (*types.Transaction, bool, error) {
+	c.t.Fatalf("unexpected TransactionByHash(%s)", txHash.Hex())
+	return nil, false, nil
+}
+
 func (c *stubEthRPCClient) TransactionReceipt(ctx context.Context, txHash common.Hash) (*types.Receipt, error) {
 	c.t.Fatalf("unexpected TransactionReceipt(%s)", txHash.Hex())
 	return nil, nil

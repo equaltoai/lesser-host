@@ -140,6 +140,9 @@ func (s *Server) recordSoulOperationExecution(ctx context.Context, actor string,
 	if appErr != nil {
 		return nil, appErr
 	}
+	if appErr := s.validateSoulOperationExecutionReceipt(ctx, client, op, txHash, receipt); appErr != nil {
+		return nil, appErr
+	}
 
 	now := time.Now().UTC()
 	success := receipt.Status == 1

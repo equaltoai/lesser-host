@@ -13,6 +13,7 @@ import (
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/types"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
@@ -30,6 +31,9 @@ import (
 type fakeEthClient struct {
 	receipt *types.Receipt
 	err     error
+	tx      *types.Transaction
+	pending bool
+	txErr   error
 
 	callContract func(ctx context.Context, msg ethereum.CallMsg) ([]byte, error)
 	filterLogs   func(ctx context.Context, q ethereum.FilterQuery) ([]types.Log, error)
@@ -40,6 +44,10 @@ func (f *fakeEthClient) CallContract(ctx context.Context, msg ethereum.CallMsg, 
 		return f.callContract(ctx, msg)
 	}
 	return nil, errors.New("not implemented")
+}
+
+func (f *fakeEthClient) TransactionByHash(ctx context.Context, txHash common.Hash) (*types.Transaction, bool, error) {
+	return f.tx, f.pending, f.txErr
 }
 
 func (f *fakeEthClient) TransactionReceipt(ctx context.Context, txHash common.Hash) (*types.Receipt, error) {
@@ -135,6 +143,91 @@ func latestPromotionLifecycleEventModelCall(t *testing.T, db *ttmocks.MockExtend
 	}
 	t.Fatalf("expected lifecycle event model call")
 	return nil
+}
+
+func soulTestMintPayload(t *testing.T, contract string, agentIDHex string, wallet string, principal string) *safeTxPayload {
+	t.Helper()
+	agentID, ok := new(big.Int).SetString(strings.TrimPrefix(agentIDHex, "0x"), 16)
+	if !ok {
+		t.Fatalf("invalid agent id %q", agentIDHex)
+	}
+	walletAddr := common.HexToAddress(wallet)
+	principalAddr := common.HexToAddress(principal)
+	data, err := soul.EncodeSelfMintSoulCall(walletAddr, agentID, "https://example.com/meta.json", 0, principalAddr, big.NewInt(time.Now().Add(time.Hour).Unix()), []byte{0x01, 0x02})
+	if err != nil {
+		t.Fatalf("EncodeSelfMintSoulCall: %v", err)
+	}
+	return &safeTxPayload{To: contract, Value: "500000000000000", Data: hexutil.Encode(data)}
+}
+
+func soulTestRotatePayload(t *testing.T, contract string, agentIDHex string, newWallet string) *safeTxPayload {
+	t.Helper()
+	agentID, ok := new(big.Int).SetString(strings.TrimPrefix(agentIDHex, "0x"), 16)
+	if !ok {
+		t.Fatalf("invalid agent id %q", agentIDHex)
+	}
+	data, err := soul.EncodeRotateWalletCall(agentID, common.HexToAddress(newWallet), big.NewInt(7), big.NewInt(time.Now().Add(time.Hour).Unix()), []byte{0x01}, []byte{0x02})
+	if err != nil {
+		t.Fatalf("EncodeRotateWalletCall: %v", err)
+	}
+	return &safeTxPayload{To: contract, Value: "0", Data: hexutil.Encode(data)}
+}
+
+func soulTestPayloadJSON(t *testing.T, payload *safeTxPayload) string {
+	t.Helper()
+	b, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	return string(b)
+}
+
+func soulTestTxFromPayload(t *testing.T, payload *safeTxPayload) *types.Transaction {
+	t.Helper()
+	to := common.HexToAddress(payload.To)
+	value, ok := parseSoulOperationPayloadValue(payload.Value)
+	if !ok {
+		t.Fatalf("invalid value %q", payload.Value)
+	}
+	data, err := hexutil.Decode(payload.Data)
+	if err != nil {
+		t.Fatalf("decode payload data: %v", err)
+	}
+	return types.NewTx(&types.LegacyTx{To: &to, Value: value, Data: data})
+}
+
+func soulTestMintReceipt(contract common.Address, agentIDHex string, wallet string, principal string) *types.Receipt {
+	agentID, _ := new(big.Int).SetString(strings.TrimPrefix(agentIDHex, "0x"), 16)
+	walletAddr := common.HexToAddress(wallet)
+	principalAddr := common.HexToAddress(principal)
+	return &types.Receipt{
+		Status:      1,
+		BlockNumber: big.NewInt(123),
+		GasUsed:     100,
+		Logs: []*types.Log{
+			{Address: contract, Topics: []common.Hash{soulMintedTopic, topicBig(agentID), topicAddress(walletAddr)}},
+			{Address: contract, Topics: []common.Hash{principalDeclaredTopic, topicBig(agentID), topicAddress(principalAddr)}},
+		},
+	}
+}
+
+func soulTestCallContractForWalletPrincipal(t *testing.T, wallet string, principal string) func(context.Context, ethereum.CallMsg) ([]byte, error) {
+	t.Helper()
+	parsedABI, err := abi.JSON(strings.NewReader(soul.SoulRegistryABI))
+	if err != nil {
+		t.Fatalf("parse abi: %v", err)
+	}
+	walletRet, _ := parsedABI.Methods["getAgentWallet"].Outputs.Pack(common.HexToAddress(wallet))
+	principalRet, _ := parsedABI.Methods["principalOf"].Outputs.Pack(common.HexToAddress(principal))
+	return func(ctx context.Context, msg ethereum.CallMsg) ([]byte, error) {
+		if bytes.HasPrefix(msg.Data, parsedABI.Methods["getAgentWallet"].ID) {
+			return walletRet, nil
+		}
+		if bytes.HasPrefix(msg.Data, parsedABI.Methods["principalOf"].ID) {
+			return principalRet, nil
+		}
+		return nil, ethereum.NotFound
+	}
 }
 
 func TestHandleListSoulOperations_DefaultStatusAndInvalidStatus(t *testing.T) {
@@ -238,15 +331,19 @@ func TestHandleRecordSoulOperationExecution_SuccessMint(t *testing.T) {
 
 	agentID := "0x" + strings.Repeat("11", 32)
 	txHash := "0x" + strings.Repeat("ab", 32)
+	wallet := "0x0000000000000000000000000000000000000002"
+	principal := "0x0000000000000000000000000000000000000003"
+	payload := soulTestMintPayload(t, s.cfg.SoulRegistryContractAddress, agentID, wallet, principal)
 
 	op := &models.SoulOperation{
-		OperationID:  "op1",
-		Kind:         models.SoulOperationKindMint,
-		AgentID:      agentID,
-		Status:       models.SoulOperationStatusPending,
-		SnapshotJSON: `{"k":"v"}`,
-		CreatedAt:    time.Now().Add(-time.Minute).UTC(),
-		UpdatedAt:    time.Now().Add(-time.Minute).UTC(),
+		OperationID:     "op1",
+		Kind:            models.SoulOperationKindMint,
+		AgentID:         agentID,
+		Status:          models.SoulOperationStatusPending,
+		SafePayloadJSON: soulTestPayloadJSON(t, payload),
+		SnapshotJSON:    `{"k":"v"}`,
+		CreatedAt:       time.Now().Add(-time.Minute).UTC(),
+		UpdatedAt:       time.Now().Add(-time.Minute).UTC(),
 	}
 
 	tdb.qOp.On("First", mock.AnythingOfType("*models.SoulOperation")).Return(nil).Run(func(args mock.Arguments) {
@@ -256,7 +353,7 @@ func TestHandleRecordSoulOperationExecution_SuccessMint(t *testing.T) {
 
 	tdb.qID.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
-		*dest = models.SoulAgentIdentity{AgentID: agentID, Status: models.SoulAgentStatusActive, Wallet: "0x0000000000000000000000000000000000000002"}
+		*dest = models.SoulAgentIdentity{AgentID: agentID, Status: models.SoulAgentStatusActive, Wallet: wallet}
 	}).Once()
 	tdb.qPromotion.On("First", mock.AnythingOfType("*models.SoulAgentPromotion")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentPromotion](t, args, 0)
@@ -276,12 +373,9 @@ func TestHandleRecordSoulOperationExecution_SuccessMint(t *testing.T) {
 
 	s.dialEVM = func(ctx context.Context, rpcURL string) (ethRPCClient, error) {
 		return &fakeEthClient{
-			receipt: &types.Receipt{
-				Status:      1,
-				BlockNumber: big.NewInt(123),
-				GasUsed:     100,
-				Logs:        []*types.Log{},
-			},
+			tx:           soulTestTxFromPayload(t, payload),
+			receipt:      soulTestMintReceipt(common.HexToAddress(s.cfg.SoulRegistryContractAddress), agentID, wallet, principal),
+			callContract: soulTestCallContractForWalletPrincipal(t, wallet, principal),
 		}, nil
 	}
 
@@ -304,6 +398,75 @@ func TestHandleRecordSoulOperationExecution_SuccessMint(t *testing.T) {
 	}
 	if out.ExecSuccess == nil || !*out.ExecSuccess {
 		t.Fatalf("expected ExecSuccess true, got %#v", out.ExecSuccess)
+	}
+}
+
+func TestRecordSoulOperationExecution_RejectsMismatchedTransactionPayload(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulOperationsTestDB()
+	s := &Server{
+		store: store.New(tdb.db),
+		cfg: config.Config{
+			SoulRegistryContractAddress: "0x0000000000000000000000000000000000000001",
+			SoulRPCURL:                  "http://rpc",
+		},
+	}
+	agentID := "0x" + strings.Repeat("11", 32)
+	wallet := "0x0000000000000000000000000000000000000002"
+	principal := "0x0000000000000000000000000000000000000003"
+	payload := soulTestMintPayload(t, s.cfg.SoulRegistryContractAddress, agentID, wallet, principal)
+	wrongPayload := *payload
+	wrongPayload.Data = "0x1234"
+	op := &models.SoulOperation{OperationID: "op-mismatch", Kind: models.SoulOperationKindMint, AgentID: agentID, Status: models.SoulOperationStatusPending, SafePayloadJSON: soulTestPayloadJSON(t, payload)}
+
+	s.dialEVM = func(ctx context.Context, rpcURL string) (ethRPCClient, error) {
+		return &fakeEthClient{
+			tx:           soulTestTxFromPayload(t, &wrongPayload),
+			receipt:      soulTestMintReceipt(common.HexToAddress(s.cfg.SoulRegistryContractAddress), agentID, wallet, principal),
+			callContract: soulTestCallContractForWalletPrincipal(t, wallet, principal),
+		}, nil
+	}
+
+	_, appErr := s.recordSoulOperationExecution(context.Background(), "op", "rid", op, "0x"+strings.Repeat("ab", 32))
+	if appErr == nil || appErr.Message != "execution receipt does not match operation" {
+		t.Fatalf("expected receipt mismatch, got %#v", appErr)
+	}
+}
+
+func TestRecordSoulOperationExecution_RejectsMissingMintEvent(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulOperationsTestDB()
+	s := &Server{
+		store: store.New(tdb.db),
+		cfg: config.Config{
+			SoulRegistryContractAddress: "0x0000000000000000000000000000000000000001",
+			SoulRPCURL:                  "http://rpc",
+		},
+	}
+	agentID := "0x" + strings.Repeat("11", 32)
+	wallet := "0x0000000000000000000000000000000000000002"
+	principal := "0x0000000000000000000000000000000000000003"
+	payload := soulTestMintPayload(t, s.cfg.SoulRegistryContractAddress, agentID, wallet, principal)
+	op := &models.SoulOperation{OperationID: "op-missing-event", Kind: models.SoulOperationKindMint, AgentID: agentID, Status: models.SoulOperationStatusPending, SafePayloadJSON: soulTestPayloadJSON(t, payload)}
+
+	s.dialEVM = func(ctx context.Context, rpcURL string) (ethRPCClient, error) {
+		return &fakeEthClient{
+			tx: soulTestTxFromPayload(t, payload),
+			receipt: &types.Receipt{
+				Status:      1,
+				BlockNumber: big.NewInt(123),
+				GasUsed:     100,
+				Logs:        []*types.Log{},
+			},
+			callContract: soulTestCallContractForWalletPrincipal(t, wallet, principal),
+		}, nil
+	}
+
+	_, appErr := s.recordSoulOperationExecution(context.Background(), "op", "rid", op, "0x"+strings.Repeat("ab", 32))
+	if appErr == nil || appErr.Message != "execution receipt does not match operation" {
+		t.Fatalf("expected receipt mismatch, got %#v", appErr)
 	}
 }
 

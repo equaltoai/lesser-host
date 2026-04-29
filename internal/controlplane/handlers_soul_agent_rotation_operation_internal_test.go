@@ -86,6 +86,7 @@ func TestHandleSoulAgentRecordRotationOperationExecution_Success(t *testing.T) {
 	}).Once()
 
 	opID := soulRotationOpID(s.cfg.SoulChainID, "0x0000000000000000000000000000000000000001", agentID, "0x00000000000000000000000000000000000000aa", "0x00000000000000000000000000000000000000bb", "7", 1700000000)
+	payload := soulTestRotatePayload(t, s.cfg.SoulRegistryContractAddress, agentID, "0x00000000000000000000000000000000000000bb")
 	tdb.base.qOp.On("First", mock.AnythingOfType("*models.SoulOperation")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulOperation](t, args, 0)
 		*dest = models.SoulOperation{
@@ -93,7 +94,7 @@ func TestHandleSoulAgentRecordRotationOperationExecution_Success(t *testing.T) {
 			Kind:            models.SoulOperationKindRotateWallet,
 			AgentID:         agentID,
 			Status:          models.SoulOperationStatusPending,
-			SafePayloadJSON: `{"to":"0x0000000000000000000000000000000000000001","value":"0","data":"0x1234"}`,
+			SafePayloadJSON: soulTestPayloadJSON(t, payload),
 			CreatedAt:       time.Now().Add(-time.Minute).UTC(),
 			UpdatedAt:       time.Now().UTC(),
 		}
@@ -101,6 +102,7 @@ func TestHandleSoulAgentRecordRotationOperationExecution_Success(t *testing.T) {
 
 	s.dialEVM = func(ctx context.Context, rpcURL string) (ethRPCClient, error) {
 		return &fakeEthClient{
+			tx: soulTestTxFromPayload(t, payload),
 			receipt: &types.Receipt{
 				Status:      0,
 				BlockNumber: big.NewInt(42),
