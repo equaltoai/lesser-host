@@ -385,6 +385,31 @@ func TestHandlePortalCreateInstanceUpdateJob_RejectsMalformedReleaseTags(t *test
 	}
 }
 
+func TestHandlePortalCreateInstanceUpdateJob_RejectsBodyOnlyLesserVersion(t *testing.T) {
+	t.Parallel()
+
+	err := validateCreateUpdateJobRequest(&apptheory.Context{AuthIdentity: "alice"}, createUpdateJobRequest{
+		BodyOnly:      true,
+		LesserVersion: "v1.2.6",
+	})
+	require.NotNil(t, err)
+	require.Equal(t, "app.bad_request", err.Code)
+	require.Contains(t, err.Message, "lesser_version is only supported")
+}
+
+func TestValidateManagedUpdateTipConfig_RejectsIncompleteEnabledTips(t *testing.T) {
+	t.Parallel()
+
+	enabled := true
+	require.Nil(t, validateManagedUpdateTipConfig(&models.Instance{TipEnabled: nil}))
+	require.Nil(t, validateManagedUpdateTipConfig(&models.Instance{TipEnabled: &enabled, TipChainID: 8453, TipContractAddress: "0xabc"}))
+
+	err := validateManagedUpdateTipConfig(&models.Instance{TipEnabled: &enabled, TipChainID: 0, TipContractAddress: ""})
+	require.NotNil(t, err)
+	require.Equal(t, "app.conflict", err.Code)
+	require.Contains(t, err.Message, "tip configuration is incomplete")
+}
+
 func TestHandlePortalCreateInstanceUpdateJob_BodyOnlyDefaultsLesserBodyVersion(t *testing.T) {
 	t.Parallel()
 

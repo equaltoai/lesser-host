@@ -511,6 +511,9 @@ func validateCreateUpdateJobRequest(ctx *apptheory.Context, req createUpdateJobR
 	if req.BodyOnly && req.MCPOnly {
 		return &apptheory.AppError{Code: "app.bad_request", Message: "choose either body_only or mcp_only, not both"}
 	}
+	if (req.BodyOnly || req.MCPOnly) && strings.TrimSpace(req.LesserVersion) != "" {
+		return &apptheory.AppError{Code: "app.bad_request", Message: "lesser_version is only supported for core Lesser updates"}
+	}
 	if (req.BodyOnly || req.MCPOnly) && req.RotateInstanceKey {
 		return &apptheory.AppError{Code: "app.bad_request", Message: "body_only and mcp_only updates cannot rotate the instance key"}
 	}
@@ -521,6 +524,16 @@ func validateCreateUpdateJobRequest(ctx *apptheory.Context, req createUpdateJobR
 		if ctx == nil || !isOperator(ctx) {
 			return &apptheory.AppError{Code: "app.forbidden", Message: "forbidden"}
 		}
+	}
+	return nil
+}
+
+func validateManagedUpdateTipConfig(inst *models.Instance) *apptheory.AppError {
+	if inst == nil || !effectiveTipEnabled(inst.TipEnabled) {
+		return nil
+	}
+	if inst.TipChainID <= 0 || strings.TrimSpace(inst.TipContractAddress) == "" {
+		return &apptheory.AppError{Code: "app.conflict", Message: "tip configuration is incomplete for managed update"}
 	}
 	return nil
 }
@@ -646,6 +659,9 @@ func (s *Server) handlePortalCreateInstanceUpdateJob(ctx *apptheory.Context) (*a
 
 	slug := strings.ToLower(strings.TrimSpace(inst.Slug))
 	if appErr := requireManagedUpdateInstance(inst); appErr != nil {
+		return nil, appErr
+	}
+	if appErr := validateManagedUpdateTipConfig(inst); appErr != nil {
 		return nil, appErr
 	}
 

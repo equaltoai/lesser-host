@@ -292,6 +292,8 @@ export class LesserHostStack extends cdk.Stack {
 				(this.node.tryGetContext('managedLesserBodyGitHubOwner') as string | undefined) ?? '';
 			const managedLesserBodyGitHubRepo =
 				(this.node.tryGetContext('managedLesserBodyGitHubRepo') as string | undefined) ?? '';
+			const managedEnableAgentRegistration =
+				(this.node.tryGetContext('managedEnableAgentRegistration') as string | undefined) ?? 'false';
 
 		const tipStageSuffix = stage === 'live' ? 'Live' : 'Lab';
 		const tipContext = (key: string): string =>
@@ -419,6 +421,7 @@ export class LesserHostStack extends cdk.Stack {
 					LESSER_BODY_GITHUB_OWNER: { value: lesserBodyGitHubOwner },
 					LESSER_BODY_GITHUB_REPO: { value: lesserBodyGitHubRepo },
 					LESSER_BODY_VERSION: { value: managedLesserBodyDefaultVersion.trim() },
+					MANAGED_ENABLE_AGENT_REGISTRATION: { value: managedEnableAgentRegistration.trim() },
 					...(managedLesserGitHubTokenSsmParam.trim()
 						? {
 									GITHUB_TOKEN: {

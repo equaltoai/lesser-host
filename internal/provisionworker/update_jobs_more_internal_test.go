@@ -675,6 +675,16 @@ func TestUpdateVerifyInstanceUpdate_DoesNotPanicOnNilJob(t *testing.T) {
 	require.NoError(t, tx.Execute())
 }
 
+func TestUpdateVerifyInstanceUpdate_DoesNotWriteLesserVersionForBodyOnly(t *testing.T) {
+	t.Parallel()
+
+	fn := updateVerifyInstanceUpdate(&models.UpdateJob{BodyOnly: true, LesserVersion: "v9.9.9"})
+	tx := new(ttmocks.MockTransactionBuilder)
+	tx.UpdateWithBuilder(&models.Instance{}, fn)
+	require.NoError(t, tx.Execute())
+	tx.AssertNotCalled(t, "Set", "LesserVersion", "v9.9.9")
+}
+
 func TestUpdateInstanceConfigInstanceUpdate_SetsOptionalURLs(t *testing.T) {
 	t.Parallel()
 
