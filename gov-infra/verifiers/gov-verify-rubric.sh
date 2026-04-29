@@ -1683,6 +1683,43 @@ require_pattern() {
   fi
 }
 
+forbid_pattern() {
+  local f="$1"
+  local pattern="$2"
+  local label="$3"
+  if [[ ! -f "${f}" ]]; then
+    return
+  fi
+  if grep -Eiq -- "${pattern}" "${f}"; then
+    echo "FAIL: ${label} found in ${f}"
+    echo "  forbidden pattern: ${pattern}"
+    fail=1
+  else
+    echo "PASS: ${label} absent"
+  fi
+}
+
+assert_negative_fixture_rejected() {
+  local pattern="$1"
+  local label="$2"
+  local fixture
+  fixture="$(mktemp)"
+  cat > "${fixture}" <<'__CMP4_NEGATIVE_FIXTURE__'
+# Bounded soul comm mailbox authority
+This intentionally insecure fixture contains legacy keywords while violating the policy semantics.
+It says there is no retention policy, content may be unencrypted, access audit can be skipped,
+list endpoints return full body content, raw instance keys are stored, and cross-tenant mailbox search is allowed.
+__CMP4_NEGATIVE_FIXTURE__
+  if grep -Eiq -- "${pattern}" "${fixture}"; then
+    echo "PASS: negative fixture rejected for ${label}"
+  else
+    echo "FAIL: negative fixture did not exercise forbidden semantic: ${label}"
+    echo "  forbidden pattern: ${pattern}"
+    fail=1
+  fi
+  rm -f "${fixture}"
+}
+
 for f in "${required_files[@]}"; do
   require_file "${f}"
 done
@@ -1694,36 +1731,63 @@ threats="gov-infra/planning/lesser-host-threat-model.md"
 controls="gov-infra/planning/lesser-host-controls-matrix.md"
 evidence="gov-infra/planning/lesser-host-evidence-plan.md"
 
-require_pattern "${adr}" 'bounded soul comm mailbox authority' 'ADR title declares bounded mailbox authority'
-require_pattern "${adr}" 'explicit retention policy|retention policy' 'content retention policy requirement'
-require_pattern "${adr}" 'encryption at rest|encryption' 'encryption requirement'
-require_pattern "${adr}" 'access[- ]audit' 'access audit requirement'
-require_pattern "${adr}" 'list/content split|List/content split' 'list/content split requirement'
-require_pattern "${adr}" 'semantic memory' 'no semantic-memory role'
-require_pattern "${adr}" 'sha256\(raw_key\)' 'hash-only instance auth requirement'
+require_pattern "${adr}" '^# ADR 0005 .*Bounded soul comm mailbox authority' 'ADR title declares bounded mailbox authority'
+require_pattern "${adr}" 'Host persists message content only as a bounded mailbox delivery artifact' 'ADR limits host content storage to bounded delivery artifacts'
+require_pattern "${adr}" 'Host does not become permanent semantic memory' 'ADR rejects permanent semantic-memory role'
+require_pattern "${adr}" 'an explicit retention policy' 'content retention policy requirement'
+require_pattern "${adr}" 'encryption at rest' 'encryption-at-rest requirement'
+require_pattern "${adr}" 'access-audit trail for content reads and state mutations' 'access audit requirement'
+require_pattern "${adr}" 'Mailbox list endpoints return redacted previews and metadata only' 'list endpoints are redacted metadata only'
+require_pattern "${adr}" 'Full body/content is available only through an explicit' 'full content requires explicit get/read endpoint'
+require_pattern "${adr}" 'sha256\(raw_key\).*stored instance-key hash|stored instance-key hash.*sha256\(raw_key\)' 'hash-only instance auth requirement'
+require_pattern "${adr}" 'Raw instance keys are never stored, logged, returned' 'raw instance keys are never retained or logged'
 require_pattern "${adr}" 'write-once' 'write-once audit/event requirement'
 require_pattern "${adr}" 'protected.*identity|identity.*protected' 'protected identity/provenance requirement'
-require_pattern "${adr}" 'MCP facade' 'body remains MCP facade'
-require_pattern "${adr}" 'notification projections' 'lesser projection-only boundary'
-require_pattern "${adr}" 'cross-tenant search' 'cross-tenant search non-goal'
+require_pattern "${adr}" 'Body should remain the MCP facade|lesser-body remains the MCP interface' 'body remains MCP facade'
+require_pattern "${adr}" 'lesser.*receives notification projections' 'lesser projection-only boundary'
+require_pattern "${adr}" 'no global cross-tenant search or analytics|Host does not add tenant-content analytics or cross-tenant mailbox search' 'cross-tenant search non-goal'
+require_pattern "${adr}" 'listed or fetched across instances' 'tenant-scoped mailbox access requirement'
 
 require_pattern "${soul}" 'Soul Comm Mailbox v1 authority' 'soul surface names mailbox authority'
-require_pattern "${soul}" 'redacted previews/metadata' 'soul surface requires redacted list previews'
-require_pattern "${soul}" 'sha256\(raw_key\)' 'soul surface documents hash-only auth'
+require_pattern "${soul}" 'content, content identity, and read/unread/archive/delete state' 'soul surface limits mailbox authority to bounded content/state'
+require_pattern "${soul}" 'List endpoints must return redacted previews/metadata only' 'soul surface requires redacted list previews'
+require_pattern "${soul}" 'Full content requires an explicit content/read call' 'soul surface requires explicit content fetch'
+require_pattern "${soul}" 'sha256\(raw_key\).*stored hash match' 'soul surface documents hash-only auth'
+require_pattern "${soul}" 'does not authorize cross-tenant search' 'soul surface rejects cross-tenant scope expansion'
 
 require_pattern "${roadmap}" 'Framework incorporation decisions' 'roadmap records framework incorporation decisions'
-require_pattern "${roadmap}" 'write-once audit/event rows|audit/event rows.*write-once' 'roadmap requires write-once audit/event rows'
-require_pattern "${roadmap}" 'retention/encryption/list-redaction controls' 'roadmap requires retention/encryption/list-redaction controls'
+require_pattern "${roadmap}" 'immutable audit/event rows are write-once|audit/event rows.*write-once' 'roadmap requires write-once audit/event rows'
+require_pattern "${roadmap}" 'Content is bounded.*retention policy, encryption, explicit access audit' 'roadmap requires bounded retention/encryption/audit semantics'
+require_pattern "${roadmap}" 'list endpoints return redacted previews/metadata' 'roadmap requires list redaction semantics'
+require_pattern "${roadmap}" 'bearer token is hashed \(`sha256\(raw_key\)`\) and matched to the' 'roadmap requires hash-match instance auth semantics'
 
 require_pattern "${threats}" 'THR-11' 'threat model includes bounded mailbox threat'
 require_pattern "${threats}" 'Bounded mailbox content/state drift' 'threat model names content/state drift'
+require_pattern "${threats}" 'retained indefinitely, list endpoints expose full bodies, read/archive/delete state lacks audit, instance-auth falls back to plaintext, or mailbox data crosses tenant boundaries' 'threat model enumerates insecure mailbox expansion cases'
 
 require_pattern "${controls}" 'CMP-4' 'controls matrix includes CMP-4'
 require_pattern "${controls}" 'THR-11' 'controls matrix maps THR-11'
-require_pattern "${controls}" 'retention, encryption, access audit, list/content split' 'controls matrix enumerates bounded mailbox controls'
+require_pattern "${controls}" 'retention, encryption, access audit, list/content split, no semantic-memory role, hash-only instance auth, write-once events, protected identity/provenance fields, and no body-owned mailbox truth' 'controls matrix enumerates bounded mailbox controls with semantics'
 
 require_pattern "${evidence}" 'CMP-4' 'evidence plan includes CMP-4'
 require_pattern "${evidence}" 'CMP-4-output\.log' 'evidence plan names CMP-4 evidence path'
+
+for f in "${adr}" "${soul}" "${roadmap}" "${controls}"; do
+  forbid_pattern "${f}" 'no (explicit )?retention policy|without (a[n]? )?retention policy|retained? indefinitely|indefinite retention|unbounded retention' 'insecure retention semantics'
+  forbid_pattern "${f}" 'unencrypted|without encryption|do not encrypt|skip encryption|encryption is optional' 'insecure encryption semantics'
+  forbid_pattern "${f}" 'without access[- ]audit|skip access[- ]audit|no access[- ]audit|access audit can be skipped' 'insecure access-audit semantics'
+  forbid_pattern "${f}" 'list endpoints return (full|complete|raw).*bod(y|ies)|full bod(y|ies).*list endpoints|include full bod(y|ies).*list' 'full content in list semantics'
+  forbid_pattern "${f}" 'raw instance keys are stored|store raw (instance )?keys|log raw (instance )?keys|return raw (instance )?keys' 'raw-key retention semantics'
+  forbid_pattern "${f}" 'cross-tenant (mailbox )?(search|analytics) is allowed|allow(s|ed)? cross-tenant (mailbox )?(search|analytics)' 'cross-tenant mailbox query semantics'
+  forbid_pattern "${f}" 'body-owned mailbox storage is allowed|body (owns|stores|persists) mailbox truth' 'body-owned mailbox authority semantics'
+done
+
+assert_negative_fixture_rejected 'no (explicit )?retention policy|without (a[n]? )?retention policy|retained? indefinitely|indefinite retention|unbounded retention' 'retention'
+assert_negative_fixture_rejected 'unencrypted|without encryption|do not encrypt|skip encryption|encryption is optional' 'encryption'
+assert_negative_fixture_rejected 'without access[- ]audit|skip access[- ]audit|no access[- ]audit|access audit can be skipped' 'access audit'
+assert_negative_fixture_rejected 'list endpoints return (full|complete|raw).*bod(y|ies)|full bod(y|ies).*list endpoints|include full bod(y|ies).*list' 'list/content split'
+assert_negative_fixture_rejected 'raw instance keys are stored|store raw (instance )?keys|log raw (instance )?keys|return raw (instance )?keys' 'hash-only auth'
+assert_negative_fixture_rejected 'cross-tenant (mailbox )?(search|analytics) is allowed|allow(s|ed)? cross-tenant (mailbox )?(search|analytics)' 'tenant isolation'
 
 if [[ "${fail}" -ne 0 ]]; then
   exit 1

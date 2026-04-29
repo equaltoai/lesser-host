@@ -9,6 +9,8 @@ import (
 	"math/big"
 	"net/url"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
@@ -31,6 +33,11 @@ var soulAvatarStyleDefaults = []struct {
 	{StyleID: 2, StyleName: "Sigil"},
 }
 
+const (
+	soulPublicAvatarCacheMaxEntries = 512
+	soulPublicAvatarCacheTTL        = 5 * time.Minute
+)
+
 type soulPublicAgentView struct {
 	models.SoulAgentIdentity
 	ENSName string                `json:"ens_name,omitempty"`
@@ -52,6 +59,16 @@ type soulPublicAvatarStyleView struct {
 	RendererAddress string `json:"renderer_address,omitempty"`
 	Image           string `json:"image,omitempty"`
 	Selected        bool   `json:"selected,omitempty"`
+}
+
+type soulPublicAvatarCacheEntry struct {
+	view      soulPublicAvatarView
+	expiresAt time.Time
+}
+
+type soulPublicAvatarCache struct {
+	mu    sync.Mutex
+	items map[string]soulPublicAvatarCacheEntry
 }
 
 type soulAvatarTokenMetadata struct {
@@ -97,7 +114,7 @@ func (s *Server) loadSoulPublicAgentENSName(ctx context.Context, agentIDHex stri
 }
 
 func (s *Server) loadSoulPublicAgentAvatar(ctx context.Context, identity *models.SoulAgentIdentity) (*soulPublicAvatarView, error) {
-	if s == nil || identity == nil || s.dialEVM == nil {
+	if s == nil || identity == nil || s.dialEVM == nil || !s.cfg.SoulPublicOnChainAvatarEnabled {
 		return nil, nil
 	}
 	rpcURL := strings.TrimSpace(s.cfg.SoulRPCURL)
@@ -118,6 +135,13 @@ func (s *Server) loadSoulPublicAgentAvatar(ctx context.Context, identity *models
 		return nil, fmt.Errorf("invalid token id for agent %s", agentIDHex)
 	}
 
+	now := time.Now().UTC()
+	if s.soulAvatarCache != nil {
+		if cached, ok := s.soulAvatarCache.get(agentIDHex, now); ok {
+			return cached, nil
+		}
+	}
+
 	client, err := s.dialEVM(ctx, rpcURL)
 	if err != nil {
 		return nil, err
@@ -125,11 +149,93 @@ func (s *Server) loadSoulPublicAgentAvatar(ctx context.Context, identity *models
 	defer client.Close()
 
 	contractAddr := common.HexToAddress(contractAddrRaw)
-	view, err := loadSoulPublicAvatarViewFromChain(ctx, client, contractAddr, tokenID)
+	view, err := loadSoulPublicAvatarTokenViewFromChain(ctx, client, contractAddr, tokenID)
 	if err != nil {
 		return nil, err
 	}
 	if view == nil {
+		return nil, nil
+	}
+	if s.soulAvatarCache != nil {
+		s.soulAvatarCache.put(agentIDHex, view, now.Add(soulPublicAvatarCacheTTL), now)
+	}
+	return view, nil
+}
+
+func (c *soulPublicAvatarCache) get(key string, now time.Time) (*soulPublicAvatarView, bool) {
+	if c == nil {
+		return nil, false
+	}
+	key = strings.ToLower(strings.TrimSpace(key))
+	if key == "" {
+		return nil, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.items == nil {
+		return nil, false
+	}
+	entry, ok := c.items[key]
+	if !ok {
+		return nil, false
+	}
+	if !entry.expiresAt.IsZero() && !now.Before(entry.expiresAt) {
+		delete(c.items, key)
+		return nil, false
+	}
+	return cloneSoulPublicAvatarView(&entry.view), true
+}
+
+func (c *soulPublicAvatarCache) put(key string, view *soulPublicAvatarView, expiresAt time.Time, now time.Time) {
+	if c == nil || view == nil || soulPublicAvatarViewEmpty(view) {
+		return
+	}
+	key = strings.ToLower(strings.TrimSpace(key))
+	if key == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.items == nil {
+		c.items = map[string]soulPublicAvatarCacheEntry{}
+	}
+	for k, entry := range c.items {
+		if !entry.expiresAt.IsZero() && !now.Before(entry.expiresAt) {
+			delete(c.items, k)
+		}
+	}
+	if len(c.items) >= soulPublicAvatarCacheMaxEntries {
+		return
+	}
+	c.items[key] = soulPublicAvatarCacheEntry{view: *cloneSoulPublicAvatarView(view), expiresAt: expiresAt}
+}
+
+func cloneSoulPublicAvatarView(view *soulPublicAvatarView) *soulPublicAvatarView {
+	if view == nil {
+		return nil
+	}
+	out := *view
+	if view.CurrentStyleID != nil {
+		id := *view.CurrentStyleID
+		out.CurrentStyleID = &id
+	}
+	if view.Styles != nil {
+		out.Styles = append([]soulPublicAvatarStyleView(nil), view.Styles...)
+	}
+	return &out
+}
+
+func loadSoulPublicAvatarTokenViewFromChain(ctx context.Context, client ethRPCClient, contractAddr common.Address, tokenID *big.Int) (*soulPublicAvatarView, error) {
+	if client == nil || tokenID == nil {
+		return nil, nil
+	}
+
+	tokenURI, metadata, err := loadSoulAvatarTokenMetadata(ctx, client, contractAddr, tokenID)
+	if err != nil {
+		return nil, err
+	}
+	view := newSoulPublicAvatarView(tokenURI, metadata)
+	if soulPublicAvatarViewEmpty(view) {
 		return nil, nil
 	}
 	return view, nil

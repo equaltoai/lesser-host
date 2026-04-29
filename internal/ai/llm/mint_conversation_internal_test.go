@@ -418,3 +418,21 @@ func TestMintConversationStreamingHelpers(t *testing.T) {
 		t.Fatalf("expected unsupported Anthropic model error")
 	}
 }
+
+func TestOpenAIMintConversationStreamParamsCapsOutputTokens(t *testing.T) {
+	t.Parallel()
+
+	params := newOpenAIMintConversationStreamParams("gpt-test", "system", []MintConversationMessage{
+		{Role: "user", Content: "hello"},
+	})
+	body, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("marshal params: %v", err)
+	}
+	if !strings.Contains(string(body), `"max_completion_tokens":4096`) {
+		t.Fatalf("expected max_completion_tokens cap in request params, got %s", string(body))
+	}
+	if !strings.Contains(string(body), `"stream_options"`) || !strings.Contains(string(body), `"include_usage":true`) {
+		t.Fatalf("expected streaming usage options in request params, got %s", string(body))
+	}
+}

@@ -89,6 +89,14 @@ func TestLoad_Defaults(t *testing.T) {
 	}
 }
 
+func TestLoad_SoulPublicOnChainAvatarEnabled(t *testing.T) {
+	t.Setenv("SOUL_PUBLIC_ONCHAIN_AVATAR_ENABLED", "true")
+	cfg := Load()
+	if !cfg.SoulPublicOnChainAvatarEnabled {
+		t.Fatalf("expected public on-chain avatar enrichment enabled")
+	}
+}
+
 func TestLoad_SoulV2StrictIntegrity(t *testing.T) {
 	t.Setenv("SOUL_V2_STRICT_INTEGRITY", "true")
 	cfg := Load()

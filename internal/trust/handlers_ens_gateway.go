@@ -350,6 +350,8 @@ type ensGatewayCacheEntry struct {
 	expiresAt time.Time
 }
 
+const ensGatewayCacheMaxEntries = 512
+
 type ensGatewayCache struct {
 	mu    sync.RWMutex
 	items map[string]ensGatewayCacheEntry
@@ -359,13 +361,17 @@ func (c *ensGatewayCache) get(key string, now time.Time) (ensGatewayMaterial, bo
 	if c == nil {
 		return ensGatewayMaterial{}, false, false
 	}
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.items == nil {
 		return ensGatewayMaterial{}, false, false
 	}
 	entry, ok := c.items[key]
-	if !ok || now.After(entry.expiresAt) {
+	if !ok {
+		return ensGatewayMaterial{}, false, false
+	}
+	if !entry.expiresAt.IsZero() && !now.Before(entry.expiresAt) {
+		delete(c.items, key)
 		return ensGatewayMaterial{}, false, false
 	}
 	return entry.material, entry.ok, true
@@ -379,6 +385,14 @@ func (c *ensGatewayCache) put(key string, material ensGatewayMaterial, ok bool, 
 	defer c.mu.Unlock()
 	if c.items == nil {
 		c.items = map[string]ensGatewayCacheEntry{}
+	}
+	for existingKey, entry := range c.items {
+		if !entry.expiresAt.IsZero() && !time.Now().UTC().Before(entry.expiresAt) {
+			delete(c.items, existingKey)
+		}
+	}
+	if len(c.items) >= ensGatewayCacheMaxEntries {
+		return
 	}
 	c.items[key] = ensGatewayCacheEntry{material: material, ok: ok, expiresAt: expiresAt}
 }

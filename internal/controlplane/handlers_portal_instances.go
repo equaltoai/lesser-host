@@ -334,6 +334,9 @@ func (s *Server) handlePortalUpdateInstanceConfig(ctx *apptheory.Context) (*appt
 	if parseErr := httpx.ParseJSON(ctx, &req); parseErr != nil {
 		return nil, parseErr
 	}
+	if appErr := validatePortalInstanceConfigUpdateRequest(req); appErr != nil {
+		return nil, appErr
+	}
 
 	slug := strings.ToLower(strings.TrimSpace(inst.Slug))
 	update, fields, err := buildInstanceConfigUpdate(slug, req)
@@ -366,6 +369,13 @@ func (s *Server) handlePortalUpdateInstanceConfig(ctx *apptheory.Context) (*appt
 	}
 
 	return apptheory.JSON(http.StatusOK, s.portalInstanceDetailResponse(ctx, updated))
+}
+
+func validatePortalInstanceConfigUpdateRequest(req updateInstanceConfigRequest) *apptheory.AppError {
+	if req.SoulEnabled != nil {
+		return &apptheory.AppError{Code: "app.forbidden", Message: "soul_enabled is operator-managed"}
+	}
+	return nil
 }
 
 func (s *Server) verifyPortalStartProvisionConsent(ctx *apptheory.Context, slug string, req startInstanceProvisionRequest) (startInstanceProvisionRequest, *apptheory.AppError) {

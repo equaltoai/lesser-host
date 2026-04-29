@@ -180,6 +180,17 @@ func TestComputeCommunicationSignals_AggregatesRecentTrafficAndResponses(t *test
 	require.InDelta(t, 0.5+0.4+0.3*math.Exp(-1)-0.1, got.score, 1e-9)
 }
 
+func TestScoreCommunicationResult_NoReplyGetsNoTimeBonus(t *testing.T) {
+	t.Parallel()
+
+	result := communicationResult{
+		emailsReceived: 1,
+		responseRate:   0,
+	}
+	got := scoreCommunicationResult(result, 1)
+	require.InDelta(t, 0.5, got, 1e-9)
+}
+
 func TestComputeCommunicationSignals_ErrorsAndGuards(t *testing.T) {
 	t.Parallel()
 

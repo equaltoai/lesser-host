@@ -176,7 +176,7 @@ func TestHandleRecompute_EndToEndFixture(t *testing.T) {
 
 	snap := requireRecomputeSnapshot(t, fx.packs, "registry/v1/reputation/snapshots/chain-111/block-20.json")
 	assertRecomputeSnapshotMetadata(t, snap, fx.fixedNow)
-	assertRecomputeSnapshotReputations(t, snap, fx.agentA, fx.agentC)
+	assertRecomputeSnapshotReputations(t, snap, fx.agentA, fx.agentB, fx.agentC)
 
 	fx.db.AssertExpectations(t)
 	fx.qIdentity.AssertExpectations(t)
@@ -358,7 +358,7 @@ func newRecomputeFixture(t *testing.T) recomputeFixture {
 	}).Return(nil).Once()
 
 	qRep.On("WithConditionExpression", mock.Anything, mock.Anything).Return(qRep).Maybe()
-	qRep.On("Update", mock.Anything).Return(nil).Times(2)
+	qRep.On("Update", mock.Anything).Return(nil).Times(3)
 
 	qRel.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qRel).Maybe()
 	qRel.On("All", mock.Anything).Return(nil).Maybe()
@@ -399,7 +399,7 @@ func newRecomputeFixture(t *testing.T) recomputeFixture {
 			*dest = nil
 		}
 		valCalls++
-	}).Return(nil).Times(2)
+	}).Return(nil).Once()
 
 	packs := &fakeSoulPackStore{}
 	cfg := config.Config{
@@ -473,27 +473,63 @@ func assertRecomputeSnapshotMetadata(t *testing.T, snap reputationSnapshot, fixe
 	}
 }
 
-func assertRecomputeSnapshotReputations(t *testing.T, snap reputationSnapshot, agentA string, agentC string) {
+func assertRecomputeSnapshotReputations(t *testing.T, snap reputationSnapshot, agentA string, agentB string, agentC string) {
 	t.Helper()
 
-	if len(snap.Reputations) != 2 {
-		t.Fatalf("expected 2 reputations (skip suspended), got %d", len(snap.Reputations))
+	if len(snap.Reputations) != 3 {
+		t.Fatalf("expected 3 reputations with suppressed agents zeroed, got %d", len(snap.Reputations))
 	}
-	if snap.Reputations[0].AgentID != agentA || snap.Reputations[1].AgentID != agentC {
-		t.Fatalf("unexpected reputation ordering: %#v", snap.Reputations)
-	}
+	assertRecomputeSnapshotOrdering(t, snap, agentA, agentB, agentC)
+	assertActiveReputation(t, snap.Reputations[0])
+	assertZeroReputation(t, snap.Reputations[1], "suppressed rep B")
+	assertZeroReputation(t, snap.Reputations[2], "rep C")
+}
 
-	wantEconomicA := 1 - math.Exp(-0.3)
-	gotA := snap.Reputations[0]
-	if gotA.TipsReceived != 3 || gotA.ValidationsPassed != 1 {
-		t.Fatalf("unexpected rep A counts: %#v", gotA)
-	}
-	if math.Abs(gotA.Validation-0.2) > 1e-9 || math.Abs(gotA.Economic-wantEconomicA) > 1e-9 || math.Abs(gotA.Composite-wantEconomicA) > 1e-9 {
-		t.Fatalf("unexpected rep A scores: %#v", gotA)
-	}
+func assertRecomputeSnapshotOrdering(t *testing.T, snap reputationSnapshot, agentA string, agentB string, agentC string) {
+	t.Helper()
 
-	gotC := snap.Reputations[1]
-	if gotC.TipsReceived != 0 || gotC.ValidationsPassed != 0 || gotC.Validation != 0 || gotC.Composite != 0 || gotC.Economic != 0 {
-		t.Fatalf("unexpected rep C: %#v", gotC)
+	if snap.Reputations[0].AgentID != agentA {
+		t.Fatalf("unexpected first reputation: %#v", snap.Reputations)
+	}
+	if snap.Reputations[1].AgentID != agentB {
+		t.Fatalf("unexpected second reputation: %#v", snap.Reputations)
+	}
+	if snap.Reputations[2].AgentID != agentC {
+		t.Fatalf("unexpected third reputation: %#v", snap.Reputations)
+	}
+}
+
+func assertActiveReputation(t *testing.T, got models.SoulAgentReputation) {
+	t.Helper()
+
+	wantEconomic := 1 - math.Exp(-0.3)
+	if got.TipsReceived != 3 {
+		t.Fatalf("unexpected active tip count: %#v", got)
+	}
+	if got.ValidationsPassed != 1 {
+		t.Fatalf("unexpected active validation count: %#v", got)
+	}
+	if math.Abs(got.Validation-0.2) > 1e-9 {
+		t.Fatalf("unexpected active validation score: %#v", got)
+	}
+	if math.Abs(got.Economic-wantEconomic) > 1e-9 {
+		t.Fatalf("unexpected active economic score: %#v", got)
+	}
+	if math.Abs(got.Composite-wantEconomic) > 1e-9 {
+		t.Fatalf("unexpected active composite score: %#v", got)
+	}
+}
+
+func assertZeroReputation(t *testing.T, got models.SoulAgentReputation, label string) {
+	t.Helper()
+
+	if got.TipsReceived != 0 {
+		t.Fatalf("expected zero tips for %s: %#v", label, got)
+	}
+	if got.ValidationsPassed != 0 {
+		t.Fatalf("expected zero validations for %s: %#v", label, got)
+	}
+	if got.Validation != 0 || got.Composite != 0 || got.Economic != 0 {
+		t.Fatalf("expected zero scores for %s: %#v", label, got)
 	}
 }

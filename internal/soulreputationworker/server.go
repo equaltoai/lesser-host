@@ -293,7 +293,13 @@ func (s *Server) computeAndPersistReputations(ctx context.Context, identities []
 			continue
 		}
 
-		if strings.TrimSpace(identity.Status) == models.SoulAgentStatusSuspended {
+		if soulReputationSuppressedStatus(identity) {
+			rep := zeroSoulAgentReputation(agentID, blockRef, now)
+			if err := s.putAgentReputation(ctx, &rep); err != nil {
+				return nil, 0, 0, fmt.Errorf("failed to zero reputation for %s: %w", agentID, err)
+			}
+			reps = append(reps, rep)
+			updated++
 			skippedSuspended++
 			continue
 		}
@@ -353,6 +359,32 @@ func (s *Server) computeAndPersistReputations(ctx context.Context, identities []
 	}
 
 	return reps, updated, skippedSuspended, nil
+}
+
+func soulReputationSuppressedStatus(identity *models.SoulAgentIdentity) bool {
+	status := strings.ToLower(strings.TrimSpace(soulIdentityCurrentStatus(identity)))
+	return status != "" && status != models.SoulAgentStatusActive
+}
+
+func soulIdentityCurrentStatus(identity *models.SoulAgentIdentity) string {
+	if identity == nil {
+		return ""
+	}
+	if status := strings.TrimSpace(identity.LifecycleStatus); status != "" {
+		return status
+	}
+	return strings.TrimSpace(identity.Status)
+}
+
+func zeroSoulAgentReputation(agentID string, blockRef uint64, now time.Time) models.SoulAgentReputation {
+	return soulreputation.ComputeV0(
+		agentID,
+		blockRef,
+		now,
+		soulreputation.V0Config{Weights: soulreputation.Weights{Economic: 1}},
+		soulreputation.SignalCounts{},
+		soulreputation.SignalScores{},
+	)
 }
 
 func reputationSnapshotS3Key(chainID int64, blockRef uint64) string {
@@ -701,9 +733,11 @@ func scoreCommunicationResult(result communicationResult, totalInbound int64) fl
 	score := 0.5
 	if totalInbound > 0 {
 		score += 0.4 * clamp01(result.responseRate)
-		timeScore := 1.0
-		if result.avgResponseTimeMinutes > 0 {
+		timeScore := 0.0
+		if result.responseRate > 0 && result.avgResponseTimeMinutes > 0 {
 			timeScore = math.Exp(-result.avgResponseTimeMinutes / 60.0)
+		} else if result.responseRate > 0 {
+			timeScore = 1.0
 		}
 		score += 0.3 * clamp01(timeScore)
 	}

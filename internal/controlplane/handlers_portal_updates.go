@@ -538,6 +538,20 @@ func validateManagedUpdateTipConfig(inst *models.Instance) *apptheory.AppError {
 	return nil
 }
 
+func parseAndValidateManagedUpdateCreateRequest(ctx *apptheory.Context) (createUpdateJobRequest, *apptheory.AppError) {
+	req, err := parseCreateUpdateJobRequest(ctx)
+	if err != nil {
+		if appErr, ok := err.(*apptheory.AppError); ok {
+			return createUpdateJobRequest{}, appErr
+		}
+		return createUpdateJobRequest{}, &apptheory.AppError{Code: "app.internal", Message: "failed to parse update request"}
+	}
+	if appErr := validateCreateUpdateJobRequest(ctx, req); appErr != nil {
+		return createUpdateJobRequest{}, appErr
+	}
+	return req, nil
+}
+
 func (s *Server) findExistingManagedUpdateJob(
 	ctx *apptheory.Context,
 	inst *models.Instance,
@@ -605,25 +619,49 @@ func (s *Server) newManagedUpdateJob(
 	return job, nil
 }
 
-func (s *Server) resolveManagedUpdateCreateRequest(
-	ctx *apptheory.Context,
-	inst *models.Instance,
-) (createUpdateJobRequest, string, string, *apptheory.AppError) {
-	req, err := parseCreateUpdateJobRequest(ctx)
-	if err != nil {
-		if appErr, ok := err.(*apptheory.AppError); ok {
-			return createUpdateJobRequest{}, "", "", appErr
+func (s *Server) managedUpdateRequestMayResolveLatest(inst *models.Instance, req createUpdateJobRequest) bool {
+	switch updateJobKindFromRequest(req) {
+	case updateJobKindBody:
+		version := strings.TrimSpace(req.LesserBodyVersion)
+		if version == "" && s != nil {
+			version = strings.TrimSpace(s.cfg.ManagedLesserBodyDefaultVersion)
 		}
-		return createUpdateJobRequest{}, "", "", &apptheory.AppError{Code: "app.internal", Message: "failed to parse update request"}
+		return strings.EqualFold(version, "latest")
+	case updateJobKindMCP:
+		version := strings.TrimSpace(req.LesserBodyVersion)
+		if version == "" && inst != nil {
+			version = strings.TrimSpace(inst.LesserBodyVersion)
+		}
+		return strings.EqualFold(version, "latest")
+	default:
+		version := strings.TrimSpace(req.LesserVersion)
+		if version == "" && inst != nil {
+			version = strings.TrimSpace(inst.LesserVersion)
+		}
+		return strings.EqualFold(version, "latest")
 	}
-	if appErr := validateCreateUpdateJobRequest(ctx, req); appErr != nil {
-		return createUpdateJobRequest{}, "", "", appErr
+}
+
+func (s *Server) rejectActiveManagedUpdateBeforeLatestResolution(
+	ctx *apptheory.Context,
+	slug string,
+	req createUpdateJobRequest,
+) (*apptheory.Response, *apptheory.AppError) {
+	activeJobs, err := s.findActiveUpdateJobsByInstance(ctx.Context(), slug)
+	if err != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to inspect active update jobs"}
 	}
-	lesserVersion, lesserBodyVersion, appErr := s.resolveManagedUpdateVersions(ctx.Context(), inst, req)
-	if appErr != nil {
-		return createUpdateJobRequest{}, "", "", appErr
+	if len(activeJobs) == 0 {
+		return nil, nil
 	}
-	return req, lesserVersion, lesserBodyVersion, nil
+	now := time.Now().UTC()
+	for _, activeJob := range activeJobs {
+		if updateJobKind(activeJob) == updateJobKindFromRequest(req) {
+			s.maybeNudgeActiveUpdateJob(ctx, activeJob, now)
+			return nil, managedUpdateConflictError(activeJob, req, req.LesserVersion, req.LesserBodyVersion)
+		}
+	}
+	return nil, managedUpdateConflictError(activeJobs[0], req, req.LesserVersion, req.LesserBodyVersion)
 }
 
 func (s *Server) handleManagedUpdateCreateConflict(
@@ -665,7 +703,17 @@ func (s *Server) handlePortalCreateInstanceUpdateJob(ctx *apptheory.Context) (*a
 		return nil, appErr
 	}
 
-	req, lesserVersion, lesserBodyVersion, appErr := s.resolveManagedUpdateCreateRequest(ctx, inst)
+	req, appErr := parseAndValidateManagedUpdateCreateRequest(ctx)
+	if appErr != nil {
+		return nil, appErr
+	}
+	if s.managedUpdateRequestMayResolveLatest(inst, req) {
+		resp, precheckErr := s.rejectActiveManagedUpdateBeforeLatestResolution(ctx, slug, req)
+		if resp != nil || precheckErr != nil {
+			return resp, precheckErr
+		}
+	}
+	lesserVersion, lesserBodyVersion, appErr := s.resolveManagedUpdateVersions(ctx.Context(), inst, req)
 	if appErr != nil {
 		return nil, appErr
 	}
