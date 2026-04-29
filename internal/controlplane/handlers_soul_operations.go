@@ -12,6 +12,8 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
+	"github.com/theory-cloud/tabletheory"
+	"github.com/theory-cloud/tabletheory/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/httpx"
@@ -130,6 +132,10 @@ func (s *Server) recordSoulOperationExecution(ctx context.Context, actor string,
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "exec_tx_hash is required"}
 	}
 
+	if terminal, appErr := terminalSoulOperationExecutionResult(op, txHash); terminal != nil || appErr != nil {
+		return terminal, appErr
+	}
+
 	client, appErr := s.dialSoulRPCClient(ctx)
 	if appErr != nil {
 		return nil, appErr
@@ -140,12 +146,13 @@ func (s *Server) recordSoulOperationExecution(ctx context.Context, actor string,
 	if appErr != nil {
 		return nil, appErr
 	}
-	if appErr := s.validateSoulOperationExecutionReceipt(ctx, client, op, txHash, receipt); appErr != nil {
+	validation, appErr := s.validateSoulOperationExecutionReceipt(ctx, client, op, txHash, receipt)
+	if appErr != nil {
 		return nil, appErr
 	}
 
 	now := time.Now().UTC()
-	success := receipt.Status == 1
+	success := validation.Success
 	blockNum := soulBlockNumber(receipt)
 	receiptJSON := soulReceiptSnapshotJSON(txHash, receipt)
 	snapshotJSON := strings.TrimSpace(op.SnapshotJSON)
@@ -176,17 +183,9 @@ func (s *Server) recordSoulOperationExecution(ctx context.Context, actor string,
 	}
 	_ = update.UpdateKeys()
 
-	if err := s.store.DB.WithContext(ctx).Model(update).IfExists().Update(
-		"ExecTxHash",
-		"ExecBlockNumber",
-		"ExecSuccess",
-		"ReceiptJSON",
-		"SnapshotJSON",
-		"Status",
-		"UpdatedAt",
-		"ExecutedAt",
-	); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to update operation"}
+	saved, recorded, appErr := s.saveSoulOperationExecutionRecord(ctx, update, txHash)
+	if appErr != nil || !recorded {
+		return saved, appErr
 	}
 
 	if success {
@@ -206,6 +205,69 @@ func (s *Server) recordSoulOperationExecution(ctx context.Context, actor string,
 	s.tryWriteAuditLogWithContext(ctx, audit)
 
 	return update, nil
+}
+
+func terminalSoulOperationExecutionResult(op *models.SoulOperation, txHash string) (*models.SoulOperation, *apptheory.AppError) {
+	if op == nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if !isTerminalSoulOperationStatus(op.Status) {
+		return nil, nil
+	}
+	if strings.EqualFold(strings.TrimSpace(op.ExecTxHash), strings.TrimSpace(txHash)) && strings.TrimSpace(op.ExecTxHash) != "" {
+		return op, nil
+	}
+	return nil, &apptheory.AppError{Code: "app.conflict", Message: "operation execution already recorded"}
+}
+
+func isTerminalSoulOperationStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case models.SoulOperationStatusExecuted, models.SoulOperationStatusFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Server) saveSoulOperationExecutionRecord(ctx context.Context, update *models.SoulOperation, txHash string) (*models.SoulOperation, bool, *apptheory.AppError) {
+	if s == nil || s.store == nil || s.store.DB == nil || update == nil {
+		return nil, false, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
+	fields := []string{
+		"ExecTxHash",
+		"ExecBlockNumber",
+		"ExecSuccess",
+		"ReceiptJSON",
+		"SnapshotJSON",
+		"Status",
+		"UpdatedAt",
+		"ExecutedAt",
+	}
+	err := s.store.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
+		tx.Update(
+			update,
+			fields,
+			tabletheory.IfExists(),
+			tabletheory.Condition("Status", "<>", models.SoulOperationStatusExecuted),
+			tabletheory.Condition("Status", "<>", models.SoulOperationStatusFailed),
+		)
+		return nil
+	})
+	if err == nil {
+		return update, true, nil
+	}
+	if !theoryErrors.IsConditionFailed(err) {
+		return nil, false, &apptheory.AppError{Code: "app.internal", Message: "failed to update operation"}
+	}
+
+	current, getErr := s.getSoulOperation(ctx, strings.TrimSpace(update.OperationID))
+	if getErr == nil {
+		if terminal, appErr := terminalSoulOperationExecutionResult(current, txHash); terminal != nil || appErr != nil {
+			return terminal, false, appErr
+		}
+	}
+	return nil, false, &apptheory.AppError{Code: "app.conflict", Message: "operation execution already recorded"}
 }
 
 func (s *Server) syncMintPromotionAfterOperationExecution(ctx context.Context, update *models.SoulOperation, requestID string, now time.Time, success bool) *apptheory.AppError {

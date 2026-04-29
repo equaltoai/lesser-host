@@ -471,6 +471,137 @@ func TestRecordSoulOperationExecution_RejectsMissingMintEvent(t *testing.T) {
 	}
 }
 
+func TestRecordSoulOperationExecution_TerminalIdempotentAndImmutable(t *testing.T) {
+	t.Parallel()
+
+	txHash := "0x" + strings.Repeat("ab", 32)
+	op := &models.SoulOperation{
+		OperationID: "op-terminal",
+		Kind:        models.SoulOperationKindRotateWallet,
+		Status:      models.SoulOperationStatusExecuted,
+		ExecTxHash:  strings.ToLower(txHash),
+	}
+
+	s := &Server{}
+	got, appErr := s.recordSoulOperationExecution(context.Background(), "op", "rid", op, txHash)
+	if appErr != nil {
+		t.Fatalf("expected idempotent terminal record, got %#v", appErr)
+	}
+	if got != op {
+		t.Fatalf("expected original terminal operation")
+	}
+
+	_, appErr = s.recordSoulOperationExecution(context.Background(), "op", "rid", op, "0x"+strings.Repeat("cd", 32))
+	if appErr == nil || appErr.Code != "app.conflict" {
+		t.Fatalf("expected conflict for different terminal tx hash, got %#v", appErr)
+	}
+}
+
+func TestRecordSoulOperationExecution_ConditionalRaceIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulOperationsTestDB()
+	s := &Server{
+		store: store.New(tdb.db),
+		cfg: config.Config{
+			SoulRegistryContractAddress: testEthAddress1,
+			SoulRPCURL:                  "http://rpc",
+		},
+	}
+
+	agentID := "0x" + strings.Repeat("11", 32)
+	txHash := "0x" + strings.Repeat("ab", 32)
+	payload := soulTestRotatePayload(t, testEthAddress1, agentID, testEthAddress2)
+	op := &models.SoulOperation{
+		OperationID:     "op-race",
+		Kind:            models.SoulOperationKindRotateWallet,
+		AgentID:         agentID,
+		Status:          models.SoulOperationStatusPending,
+		SafePayloadJSON: soulTestPayloadJSON(t, payload),
+	}
+	terminal := *op
+	terminal.Status = models.SoulOperationStatusFailed
+	terminal.ExecTxHash = strings.ToLower(txHash)
+	failed := false
+	terminal.ExecSuccess = &failed
+
+	tdb.db.On("TransactWrite", mock.Anything, mock.Anything).Return(theoryErrors.ErrConditionFailed).Once()
+	tdb.qOp.On("First", mock.AnythingOfType("*models.SoulOperation")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulOperation](t, args, 0)
+		*dest = terminal
+	}).Once()
+
+	s.dialEVM = func(ctx context.Context, rpcURL string) (ethRPCClient, error) {
+		return &fakeEthClient{
+			tx: soulTestTxFromPayload(t, payload),
+			receipt: &types.Receipt{
+				Status:      0,
+				BlockNumber: big.NewInt(77),
+				GasUsed:     100,
+			},
+		}, nil
+	}
+
+	got, appErr := s.recordSoulOperationExecution(context.Background(), "op", "rid", op, txHash)
+	if appErr != nil {
+		t.Fatalf("expected idempotent condition-failed race, got %#v", appErr)
+	}
+	if got == nil || got.Status != models.SoulOperationStatusFailed || !strings.EqualFold(got.ExecTxHash, txHash) {
+		t.Fatalf("unexpected raced operation: %#v", got)
+	}
+}
+
+func TestRecordSoulOperationExecution_SafeInnerFailureRecordsFailed(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulOperationsTestDB()
+	s := &Server{
+		store: store.New(tdb.db),
+		cfg: config.Config{
+			SoulRegistryContractAddress: testEthAddress1,
+			SoulRPCURL:                  "http://rpc",
+		},
+	}
+
+	agentID := "0x" + strings.Repeat("11", 32)
+	txHash := "0x" + strings.Repeat("ab", 32)
+	payload := soulTestRotatePayload(t, testEthAddress1, agentID, testEthAddress2)
+	payload.SafeAddress = testEthAddress3
+	op := &models.SoulOperation{
+		OperationID:     "op-safe-failure",
+		Kind:            models.SoulOperationKindRotateWallet,
+		AgentID:         agentID,
+		Status:          models.SoulOperationStatusPending,
+		SafePayloadJSON: soulTestPayloadJSON(t, payload),
+	}
+
+	s.dialEVM = func(ctx context.Context, rpcURL string) (ethRPCClient, error) {
+		return &fakeEthClient{
+			tx: soulTestSafeExecTx(t, payload, 0),
+			receipt: &types.Receipt{
+				Status:      1,
+				BlockNumber: big.NewInt(88),
+				GasUsed:     100,
+				Logs: []*types.Log{{
+					Address: common.HexToAddress(payload.SafeAddress),
+					Topics:  []common.Hash{safeExecutionFailureTopic},
+				}},
+			},
+		}, nil
+	}
+
+	got, appErr := s.recordSoulOperationExecution(context.Background(), "op", "rid", op, txHash)
+	if appErr != nil {
+		t.Fatalf("expected Safe inner failure to record failed operation, got %#v", appErr)
+	}
+	if got.Status != models.SoulOperationStatusFailed || got.ExecSuccess == nil || *got.ExecSuccess {
+		t.Fatalf("expected failed operation from Safe ExecutionFailure, got %#v", got)
+	}
+	if got.ExecBlockNumber != 88 || !strings.EqualFold(got.ExecTxHash, txHash) {
+		t.Fatalf("unexpected execution metadata: %#v", got)
+	}
+}
+
 func TestValidateSoulExecutionTransactionMatchesPayload_DirectAndSafe(t *testing.T) {
 	t.Parallel()
 

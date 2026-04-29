@@ -28,11 +28,13 @@ var (
 	rootAttestationReceiptABI = mustControlPlaneABI(soulattestations.RootAttestationABI)
 	safeExecReceiptABI        = mustControlPlaneABI(safeExecTransactionABI)
 
-	soulMintedTopic        = crypto.Keccak256Hash([]byte("SoulMinted(uint256,address,string)"))
-	principalDeclaredTopic = crypto.Keccak256Hash([]byte("PrincipalDeclared(uint256,address)"))
-	walletRotatedTopic     = crypto.Keccak256Hash([]byte("WalletRotated(uint256,address,address,uint256)"))
-	soulBurnedTopic        = crypto.Keccak256Hash([]byte("SoulBurned(uint256,address)"))
-	rootPublishedTopic     = crypto.Keccak256Hash([]byte("RootPublished(bytes32,bytes32,uint256,uint256,uint256)"))
+	soulMintedTopic           = crypto.Keccak256Hash([]byte("SoulMinted(uint256,address,string)"))
+	principalDeclaredTopic    = crypto.Keccak256Hash([]byte("PrincipalDeclared(uint256,address)"))
+	walletRotatedTopic        = crypto.Keccak256Hash([]byte("WalletRotated(uint256,address,address,uint256)"))
+	soulBurnedTopic           = crypto.Keccak256Hash([]byte("SoulBurned(uint256,address)"))
+	rootPublishedTopic        = crypto.Keccak256Hash([]byte("RootPublished(bytes32,bytes32,uint256,uint256,uint256)"))
+	safeExecutionSuccessTopic = crypto.Keccak256Hash([]byte("ExecutionSuccess(bytes32,uint256)"))
+	safeExecutionFailureTopic = crypto.Keccak256Hash([]byte("ExecutionFailure(bytes32,uint256)"))
 )
 
 type soulOperationReceiptExpectation struct {
@@ -40,6 +42,10 @@ type soulOperationReceiptExpectation struct {
 	To      common.Address
 	Value   *big.Int
 	Data    []byte
+}
+
+type soulOperationExecutionValidation struct {
+	Success bool
 }
 
 func mustControlPlaneABI(raw string) abi.ABI {
@@ -50,25 +56,72 @@ func mustControlPlaneABI(raw string) abi.ABI {
 	return parsed
 }
 
-func (s *Server) validateSoulOperationExecutionReceipt(ctx context.Context, client ethRPCClient, op *models.SoulOperation, txHash string, receipt *types.Receipt) *apptheory.AppError {
+func (s *Server) validateSoulOperationExecutionReceipt(ctx context.Context, client ethRPCClient, op *models.SoulOperation, txHash string, receipt *types.Receipt) (soulOperationExecutionValidation, *apptheory.AppError) {
 	if s == nil || client == nil || op == nil || receipt == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return soulOperationExecutionValidation{}, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 	expect, appErr := parseSoulOperationReceiptExpectation(op)
 	if appErr != nil {
-		return appErr
+		return soulOperationExecutionValidation{}, appErr
 	}
 	tx, pending, err := client.TransactionByHash(ctx, common.HexToHash(txHash))
 	if err != nil || tx == nil || pending {
-		return soulOperationReceiptMismatch()
+		return soulOperationExecutionValidation{}, soulOperationReceiptMismatch()
 	}
-	if appErr := validateSoulExecutionTransactionMatchesPayload(tx, expect); appErr != nil {
-		return appErr
+	appErr = validateSoulExecutionTransactionMatchesPayload(tx, expect)
+	if appErr != nil {
+		return soulOperationExecutionValidation{}, appErr
+	}
+
+	success, appErr := soulExecutionReceiptSuccess(receipt, expect)
+	if appErr != nil {
+		return soulOperationExecutionValidation{}, appErr
+	}
+	if !success {
+		return soulOperationExecutionValidation{Success: false}, nil
+	}
+	appErr = s.validateSoulOperationSuccessEffect(ctx, client, op, expect, receipt)
+	if appErr != nil {
+		return soulOperationExecutionValidation{}, appErr
+	}
+	return soulOperationExecutionValidation{Success: true}, nil
+}
+
+func soulExecutionReceiptSuccess(receipt *types.Receipt, expect soulOperationReceiptExpectation) (bool, *apptheory.AppError) {
+	if receipt == nil || expect.Payload == nil {
+		return false, soulOperationReceiptMismatch()
 	}
 	if receipt.Status != 1 {
-		return nil
+		return false, nil
 	}
-	return s.validateSoulOperationSuccessEffect(ctx, client, op, expect, receipt)
+	safeAddress := strings.TrimSpace(expect.Payload.SafeAddress)
+	if safeAddress == "" {
+		return true, nil
+	}
+	if !common.IsHexAddress(safeAddress) {
+		return false, soulOperationReceiptMismatch()
+	}
+	return safeExecutionReceiptSuccess(receipt, common.HexToAddress(safeAddress))
+}
+
+func safeExecutionReceiptSuccess(receipt *types.Receipt, safeAddress common.Address) (bool, *apptheory.AppError) {
+	hasSuccess := false
+	hasFailure := false
+	for _, lg := range receiptLogs(receipt) {
+		if lg == nil || !addressesEqual(lg.Address, safeAddress) || len(lg.Topics) == 0 {
+			continue
+		}
+		switch lg.Topics[0] {
+		case safeExecutionSuccessTopic:
+			hasSuccess = true
+		case safeExecutionFailureTopic:
+			hasFailure = true
+		}
+	}
+	if hasSuccess == hasFailure {
+		return false, soulOperationReceiptMismatch()
+	}
+	return hasSuccess, nil
 }
 
 func parseSoulOperationReceiptExpectation(op *models.SoulOperation) (soulOperationReceiptExpectation, *apptheory.AppError) {
