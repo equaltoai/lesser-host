@@ -1493,6 +1493,7 @@ export class LesserHostStack extends cdk.Stack {
 				'health*': trustBehaviorNoCache,
 				'api/v1/previews*': trustApiBehavior,
 				'api/v1/renders*': trustApiBehavior,
+				'api/v1/trust/*': trustApiBehavior,
 				'api/v1/publish/jobs*': trustApiBehavior,
 				'api/v1/soul/agents/*/update-registration': trustApiBehavior,
 				'api/v1/ai/*': trustApiBehavior,

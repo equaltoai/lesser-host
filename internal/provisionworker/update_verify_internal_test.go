@@ -139,3 +139,29 @@ func TestVerifyAIEndpoint_RejectsUnauthorized(t *testing.T) {
 	require.False(t, ok)
 	require.Contains(t, msg, "unauthorized")
 }
+
+func TestVerifyTrustAuthEndpoint_RequiresBearerKey(t *testing.T) {
+	t.Parallel()
+
+	handler := http.NewServeMux()
+	handler.HandleFunc("/api/v1/trust/verify", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer lhk_test" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	ts := httptest.NewTLSServer(handler)
+	t.Cleanup(ts.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+
+	ok, msg := verifyTrustAuthEndpoint(ctx, ts.Client(), ts.URL, "lhk_test")
+	require.True(t, ok)
+	require.Empty(t, msg)
+
+	ok, msg = verifyTrustAuthEndpoint(ctx, ts.Client(), ts.URL, "wrong")
+	require.False(t, ok)
+	require.Contains(t, msg, "unauthorized")
+}

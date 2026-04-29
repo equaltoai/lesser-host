@@ -1079,14 +1079,39 @@ const (
 	managedInstanceKeySecretTagInstanceSlug = "lesser-host:instance-slug"   // #nosec G101 -- tag key, not a credential
 	managedInstanceKeySecretTagKeyID        = "lesser-host:instance-key-id" // #nosec G101 -- tag key, not a credential
 	managedInstanceKeySecretTagManaged      = "lesser-host:managed"
+	managedInstanceKeySecretTagStage        = "lesser-host:control-plane-stage"
 )
 
 func managedInstanceKeySecretName(controlPlaneStage, slug string) string {
+	stage := managedInstanceKeySecretStage(controlPlaneStage)
 	slug = strings.ToLower(strings.TrimSpace(slug))
 	if slug == "" {
 		return ""
 	}
-	return fmt.Sprintf("%s/instance-key", slug)
+	return fmt.Sprintf("%s/%s/instance-key", stage, slug)
+}
+
+func managedInstanceKeySecretStage(controlPlaneStage string) string {
+	stage := strings.ToLower(strings.TrimSpace(controlPlaneStage))
+	if stage == "" {
+		stage = defaultControlPlaneStage
+	}
+	var b strings.Builder
+	for _, r := range stage {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '-', r == '_', r == '.':
+			b.WriteRune(r)
+		}
+	}
+	out := strings.Trim(b.String(), "-_.")
+	if out == "" {
+		return defaultControlPlaneStage
+	}
+	return out
 }
 
 func secretsManagerTagValue(tags []smtypes.Tag, key string) string {
@@ -1211,7 +1236,7 @@ func (s *Server) ensureManagedInstanceKeySecret(ctx context.Context, job *models
 		secretID = secretName
 	}
 
-	arn, describeErr := s.describeAndEnsureManagedInstanceKeySecret(ctx, sm, inputs.slug, secretID)
+	arn, describeErr := s.describeAndEnsureManagedInstanceKeySecret(ctx, sm, inputs.slug, secretID, s.cfg.Stage)
 	if describeErr == nil {
 		return arn, nil
 	}
@@ -1219,10 +1244,10 @@ func (s *Server) ensureManagedInstanceKeySecret(ctx context.Context, job *models
 		return "", describeErr
 	}
 
-	createdArn, keyID, createErr := s.createManagedInstanceKeySecret(ctx, sm, secretName, inputs.slug)
+	createdArn, keyID, createErr := s.createManagedInstanceKeySecret(ctx, sm, secretName, inputs.slug, s.cfg.Stage)
 	if createErr != nil {
 		if isSecretsManagerExists(createErr) {
-			return s.describeAndEnsureManagedInstanceKeySecret(ctx, sm, inputs.slug, secretName)
+			return s.describeAndEnsureManagedInstanceKeySecret(ctx, sm, inputs.slug, secretName, s.cfg.Stage)
 		}
 		return "", createErr
 	}
@@ -1235,7 +1260,7 @@ func (s *Server) ensureManagedInstanceKeySecret(ctx context.Context, job *models
 	if createdArn != "" {
 		return createdArn, nil
 	}
-	return s.describeAndEnsureManagedInstanceKeySecret(ctx, sm, inputs.slug, secretName)
+	return s.describeAndEnsureManagedInstanceKeySecret(ctx, sm, inputs.slug, secretName, s.cfg.Stage)
 }
 
 func (s *Server) rotateManagedInstanceKeySecret(ctx context.Context, job *models.ProvisionJob, secretArn string) (string, error) {
@@ -1276,7 +1301,7 @@ func (s *Server) rotateManagedInstanceKeySecret(ctx context.Context, job *models
 		return "", err
 	}
 
-	updateManagedInstanceKeySecretTags(ctx, sm, secretArn, inputs.slug, keyID)
+	updateManagedInstanceKeySecretTags(ctx, sm, secretArn, inputs.slug, keyID, s.cfg.Stage)
 
 	return keyID, nil
 }
