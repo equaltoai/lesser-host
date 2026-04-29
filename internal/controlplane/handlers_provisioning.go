@@ -16,6 +16,7 @@ import (
 
 	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/provisioning"
+	"github.com/equaltoai/lesser-host/internal/provisionworker"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -260,6 +261,9 @@ func (s *Server) buildManagedProvisionJob(slug string, req startInstanceProvisio
 	}
 	if appErr := validateManagedReleaseVersion(lesserVersion, "lesser_version"); appErr != nil {
 		return nil, "", "", appErr
+	}
+	if err := provisionworker.ValidateManagedLesserReleaseVersionSupported(lesserVersion); err != nil {
+		return nil, "", "", &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
 	}
 
 	accountEmail := strings.TrimSpace(expandManagedAccountEmailTemplate(s.cfg.ManagedAccountEmailTemplate, slug))

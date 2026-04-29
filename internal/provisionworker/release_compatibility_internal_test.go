@@ -31,7 +31,7 @@ func TestValidateManagedLesserReleaseVersionSupported(t *testing.T) {
 
 	require.NoError(t, ValidateManagedLesserReleaseVersionSupported("v1.2.6"))
 	require.NoError(t, ValidateManagedLesserReleaseVersionSupported("v1.2.7"))
-	require.NoError(t, ValidateManagedLesserReleaseVersionSupported("v1.3.0-rc.1"))
+	require.ErrorContains(t, ValidateManagedLesserReleaseVersionSupported("v1.3.0-rc.1"), "must be a concrete semver tag like v1.2.6")
 	require.ErrorContains(t, ValidateManagedLesserReleaseVersionSupported("v1.2.5"), "before v1.2.6 are not supported")
 	require.ErrorContains(t, ValidateManagedLesserReleaseVersionSupported("latest"), "must be a concrete semver tag like v1.2.6")
 }

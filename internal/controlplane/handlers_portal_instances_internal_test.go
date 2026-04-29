@@ -947,7 +947,10 @@ func TestPortalProvisioningHandlers_ReturnExistingAndNewJob(t *testing.T) {
 	t.Parallel()
 
 	tdb := newPortalTestDB()
-	s := &Server{store: store.New(tdb.db)}
+	s := &Server{
+		cfg:   config.Config{ManagedLesserDefaultVersion: "v1.2.6"},
+		store: store.New(tdb.db),
+	}
 
 	tdb.qUser.On("First", mock.AnythingOfType("*models.User")).Return(nil).Run(func(args mock.Arguments) {
 		destAny := args.Get(0)

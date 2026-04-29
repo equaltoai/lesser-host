@@ -48,6 +48,7 @@ const (
 	updateProcessingLeaseTTL     = 90 * time.Second
 	updateRunnerMissingMaxAge    = 10 * time.Minute
 	updateSweepLimit             = 100
+	updateVerifyInternalError    = "internal error"
 )
 
 const (
@@ -928,18 +929,9 @@ func (s *Server) advanceUpdateInstanceConfig(ctx context.Context, job *models.Up
 	job.LesserHostBaseURL = publicBaseURL
 	job.LesserHostAttestationsURL = attestationsURL
 	job.LesserHostInstanceKeySecretARN = strings.TrimSpace(secretArn)
-	if !effectiveBodyEnabled(inst.BodyEnabled) {
-		job.LesserBodyVersion = ""
+	if code, msg := applyManagedUpdateRuntimeConfig(job, inst); code != "" {
+		return 0, false, s.failUpdateJob(ctx, job, requestID, now, code, msg)
 	}
-	job.TipEnabled = effectiveTipEnabled(inst.TipEnabled)
-	job.TipChainID = inst.TipChainID
-	job.TipContractAddress = strings.TrimSpace(inst.TipContractAddress)
-	job.AIEnabled = effectiveLesserAIEnabled(inst.LesserAIEnabled)
-	job.AIModerationEnabled = effectiveLesserAIModerationEnabled(inst.LesserAIModerationEnabled)
-	job.AINsfwDetectionEnabled = effectiveLesserAINsfwDetectionEnabled(inst.LesserAINsfwDetectionEnabled)
-	job.AISpamDetectionEnabled = effectiveLesserAISpamDetectionEnabled(inst.LesserAISpamDetectionEnabled)
-	job.AIPiiDetectionEnabled = effectiveLesserAIPiiDetectionEnabled(inst.LesserAIPiiDetectionEnabled)
-	job.AIContentDetectionEnabled = effectiveLesserAIContentDetectionEnabled(inst.LesserAIContentDetectionEnabled)
 	initializeManagedUpdatePhaseState(job)
 	if job.MCPOnly {
 		job.Step = updateStepDeployMcpStart
@@ -2403,7 +2395,7 @@ func verifyUpdateTips(cfg instanceV2Response, cfgErr error, expectedEnabled bool
 
 func (s *Server) verifyUpdateAI(ctx context.Context, client *http.Client, job *models.UpdateJob) (bool, string) {
 	if s == nil || job == nil {
-		return false, "internal error"
+		return false, updateVerifyInternalError
 	}
 	if !job.AIEnabled {
 		return true, ""
@@ -2427,7 +2419,7 @@ func updateVerifyInstanceUpdate(job *models.UpdateJob) func(core.UpdateBuilder) 
 			return nil
 		}
 		setManagedUpdateInstanceMarker(ub, job, models.UpdateJobStatusOK, job.UpdatedAt)
-		if strings.TrimSpace(job.LesserVersion) != "" {
+		if !job.BodyOnly && !job.MCPOnly && strings.TrimSpace(job.LesserVersion) != "" {
 			ub.Set("LesserVersion", strings.TrimSpace(job.LesserVersion))
 		}
 		ub.Set("TranslationEnabled", job.TranslationEnabled)
@@ -2468,6 +2460,9 @@ func (s *Server) advanceUpdateVerify(ctx context.Context, job *models.UpdateJob,
 	transOK, transErr := verifyUpdateTranslation(ctx, client, verifyDomain, cfg, cfgErr, job.TranslationEnabled)
 	expectedTrustBaseURL := resolveExpectedTrustBaseURL(job, s.publicBaseURL())
 	trustOK, trustErr := verifyUpdateTrust(ctx, client, verifyDomain, cfg, cfgErr, expectedTrustBaseURL)
+	if trustOK {
+		trustOK, trustErr = s.verifyUpdateTrustAuth(ctx, client, job)
+	}
 	tipsOK, tipsErr := verifyUpdateTips(cfg, cfgErr, job.TipEnabled, job.TipChainID, job.TipContractAddress)
 	aiOK, aiErr := s.verifyUpdateAI(ctx, client, job)
 

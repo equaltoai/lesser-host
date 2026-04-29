@@ -78,7 +78,7 @@ func generateInstanceKeySecret() (string, string, string, error) {
 	return plaintext, keyID, secretJSON, nil
 }
 
-func (s *Server) describeAndEnsureManagedInstanceKeySecret(ctx context.Context, sm secretsManagerAPI, slug string, secretID string) (string, error) {
+func (s *Server) describeAndEnsureManagedInstanceKeySecret(ctx context.Context, sm secretsManagerAPI, slug string, secretID string, controlPlaneStage string) (string, error) {
 	if err := s.requireStoreDB(); err != nil {
 		return "", err
 	}
@@ -103,6 +103,17 @@ func (s *Server) describeAndEnsureManagedInstanceKeySecret(ctx context.Context, 
 	}
 
 	keyID := secretsManagerTagValue(desc.Tags, managedInstanceKeySecretTagKeyID)
+	expectedStage := managedInstanceKeySecretStage(controlPlaneStage)
+	managedTag := strings.ToLower(secretsManagerTagValue(desc.Tags, managedInstanceKeySecretTagManaged))
+	slugTag := strings.ToLower(secretsManagerTagValue(desc.Tags, managedInstanceKeySecretTagInstanceSlug))
+	rawStageTag := secretsManagerTagValue(desc.Tags, managedInstanceKeySecretTagStage)
+	stageTag := managedInstanceKeySecretStage(rawStageTag)
+	if managedTag != "true" || slugTag != slug || stageTag != expectedStage {
+		return "", fmt.Errorf("refusing unmanaged or cross-stage instance key secret")
+	}
+	if strings.TrimSpace(rawStageTag) == "" {
+		return "", fmt.Errorf("refusing unmanaged or cross-stage instance key secret")
+	}
 	if keyID == "" {
 		plaintext, err := getSecretsManagerSecretPlaintext(ctx, sm, secretArn)
 		if err != nil {
@@ -121,12 +132,13 @@ func (s *Server) describeAndEnsureManagedInstanceKeySecret(ctx context.Context, 
 	return secretArn, nil
 }
 
-func (s *Server) createManagedInstanceKeySecret(ctx context.Context, sm secretsManagerAPI, secretName, slug string) (string, string, error) {
+func (s *Server) createManagedInstanceKeySecret(ctx context.Context, sm secretsManagerAPI, secretName, slug string, controlPlaneStage string) (string, string, error) {
 	if sm == nil {
 		return "", "", fmt.Errorf("secrets manager client not initialized")
 	}
 	secretName = strings.TrimSpace(secretName)
 	slug = strings.ToLower(strings.TrimSpace(slug))
+	stage := managedInstanceKeySecretStage(controlPlaneStage)
 	if secretName == "" || slug == "" {
 		return "", "", fmt.Errorf("secret name and slug are required")
 	}
@@ -144,6 +156,7 @@ func (s *Server) createManagedInstanceKeySecret(ctx context.Context, sm secretsM
 			{Key: aws.String(managedInstanceKeySecretTagInstanceSlug), Value: aws.String(slug)},
 			{Key: aws.String(managedInstanceKeySecretTagKeyID), Value: aws.String(keyID)},
 			{Key: aws.String(managedInstanceKeySecretTagManaged), Value: aws.String("true")},
+			{Key: aws.String(managedInstanceKeySecretTagStage), Value: aws.String(stage)},
 		},
 	})
 	if err != nil {
@@ -154,13 +167,14 @@ func (s *Server) createManagedInstanceKeySecret(ctx context.Context, sm secretsM
 	return arn, keyID, nil
 }
 
-func updateManagedInstanceKeySecretTags(ctx context.Context, sm secretsManagerAPI, secretArn, slug, keyID string) {
+func updateManagedInstanceKeySecretTags(ctx context.Context, sm secretsManagerAPI, secretArn, slug, keyID string, controlPlaneStage string) {
 	if sm == nil {
 		return
 	}
 	secretArn = strings.TrimSpace(secretArn)
 	slug = strings.ToLower(strings.TrimSpace(slug))
 	keyID = strings.TrimSpace(keyID)
+	stage := managedInstanceKeySecretStage(controlPlaneStage)
 	if secretArn == "" || slug == "" || keyID == "" {
 		return
 	}
@@ -169,7 +183,7 @@ func updateManagedInstanceKeySecretTags(ctx context.Context, sm secretsManagerAP
 	// without fetching the secret value.
 	_, _ = sm.UntagResource(ctx, &secretsmanager.UntagResourceInput{
 		SecretId: aws.String(secretArn),
-		TagKeys:  []string{managedInstanceKeySecretTagKeyID},
+		TagKeys:  []string{managedInstanceKeySecretTagKeyID, managedInstanceKeySecretTagStage},
 	})
 	_, _ = sm.TagResource(ctx, &secretsmanager.TagResourceInput{
 		SecretId: aws.String(secretArn),
@@ -177,6 +191,7 @@ func updateManagedInstanceKeySecretTags(ctx context.Context, sm secretsManagerAP
 			{Key: aws.String(managedInstanceKeySecretTagInstanceSlug), Value: aws.String(slug)},
 			{Key: aws.String(managedInstanceKeySecretTagKeyID), Value: aws.String(keyID)},
 			{Key: aws.String(managedInstanceKeySecretTagManaged), Value: aws.String("true")},
+			{Key: aws.String(managedInstanceKeySecretTagStage), Value: aws.String(stage)},
 		},
 	})
 }

@@ -11,6 +11,33 @@ resolve_latest_release_tag() {
   echo "${url##*/}"
 }
 
+require_managed_release_tag() {
+  name="$1"
+  tag="$2"
+  normalized=$(printf "%s" "$tag" | tr "[:upper:]" "[:lower:]")
+  if [ -z "$tag" ]; then
+    fail "$name must be set to a concrete release tag like v1.2.6"
+  fi
+  if [ "$normalized" = "latest" ]; then
+    fail "$name must be resolved before the deploy runner starts; refusing dynamic latest resolution"
+  fi
+  case "$tag" in
+    v[0-9]*.[0-9]*.[0-9]*) ;;
+    *) fail "$name must be a concrete release tag like v1.2.6 (got: $tag)" ;;
+  esac
+  if ! printf "%s" "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+    fail "$name must be a final semver tag like v1.2.6 (got: $tag)"
+  fi
+}
+
+require_immutable_git_sha() {
+  name="$1"
+  value="$2"
+  if ! printf "%s" "$value" | grep -Eq '^[0-9a-fA-F]{40}$'; then
+    fail "$name must be a 40-character git commit SHA (got: $value)"
+  fi
+}
+
 download_github_release_asset() {
   o="$1"
   r="$2"
@@ -99,6 +126,7 @@ prepare_lesser_checkout_dir() {
 
   LESSER_RELEASE_GIT_SHA=$(jq -r '.git_sha // empty' "$release_dir/lesser-release.json")
   test -n "$LESSER_RELEASE_GIT_SHA" || fail "Lesser release manifest git_sha is missing"
+  require_immutable_git_sha "Lesser release manifest git_sha" "$LESSER_RELEASE_GIT_SHA"
 
   source_archive="$release_dir/lesser-source.tar.gz"
   download_github_archive "$OWNER" "$REPO" "$LESSER_RELEASE_GIT_SHA" "$source_archive"

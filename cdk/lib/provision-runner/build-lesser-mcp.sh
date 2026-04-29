@@ -24,7 +24,11 @@ jq -n --arg slug "$APP_SLUG" --arg stage "$STAGE" --arg admin_wallet_address "$A
   cd "$LESSER_CHECKOUT_DIR"
   "$LESSER_RELEASE_DIR/lesser" up --app "$APP_SLUG" --base-domain "$BASE_DOMAIN" --aws-profile managed --provisioning-input "$PROVISION_INPUT" --release-dir "$LESSER_RELEASE_DIR"
 )
-enable_agents
+if bool_on "${MANAGED_ENABLE_AGENT_REGISTRATION:-}"; then
+  enable_agents
+else
+  echo "Skipping managed agent-registration enablement (MANAGED_ENABLE_AGENT_REGISTRATION is not enabled)."
+fi
 
 MCP_BODY_PARAM="/$APP_SLUG/$STAGE/lesser-body/exports/v1/mcp_lambda_arn"
 MCP_LAMBDA_ARN=$(aws ssm get-parameter --profile managed --name "$MCP_BODY_PARAM" --query "Parameter.Value" --output text)
@@ -32,6 +36,9 @@ test -n "$MCP_LAMBDA_ARN" && test "$MCP_LAMBDA_ARN" != "null"
 
 MCP_RECEIPT_PATH="$STATE_DIR/mcp-state.json"
 LAMBDA_METADATA_PATH="$STATE_DIR/deploy/lambda-assets/metadata.json"
-test -f "$LAMBDA_METADATA_PATH"
-jq -n --arg stage "$STAGE" --arg base_domain "$BASE_DOMAIN" --arg mcp_url "https://api.$STAGE_DOMAIN/mcp/{actor}" --arg mcp_lambda_arn "$MCP_LAMBDA_ARN" --arg lesser_body_version "${LESSER_BODY_VERSION:-}" --slurpfile release "$LESSER_RELEASE_DIR/lesser-release.json" --slurpfile bundle "$LESSER_RELEASE_DIR/lesser-lambda-bundle.json" --slurpfile metadata "$LAMBDA_METADATA_PATH" '({version:1,stage:$stage,base_domain:$base_domain,mcp_url:$mcp_url,mcp_lambda_arn:$mcp_lambda_arn} + (if $lesser_body_version != "" then {lesser_body_version:$lesser_body_version} else {} end) + {managed_deploy_artifacts:{mode:($metadata[0].mode // "release"),checksums_path:"checksums.txt",release_manifest_path:"lesser-release.json",release:{name:($release[0].name // ""),version:($release[0].version // ""),git_sha:($release[0].git_sha // "")},deploy_artifact:{kind:"lambda_bundle",path:($bundle[0].bundle.path // ""),manifest_path:"lesser-lambda-bundle.json",files:($metadata[0].files // ($bundle[0].files | map(.path))),prepared_at:($metadata[0].prepared_at // "")}}})' > "$MCP_RECEIPT_PATH"
+if [ ! -f "$LAMBDA_METADATA_PATH" ]; then
+  mkdir -p "$(dirname "$LAMBDA_METADATA_PATH")"
+  jq -n --slurpfile bundle "$LESSER_RELEASE_DIR/lesser-lambda-bundle.json" '{mode:"release",files:($bundle[0].files | map(.path)),prepared_at:""}' > "$LAMBDA_METADATA_PATH"
+fi
+jq -n --arg stage "$STAGE" --arg base_domain "$BASE_DOMAIN" --arg mcp_url "https://api.$STAGE_DOMAIN/mcp/{actor}" --arg mcp_lambda_arn "$MCP_LAMBDA_ARN" --arg lesser_body_version "${LESSER_BODY_VERSION:-}" --slurpfile release "$LESSER_RELEASE_DIR/lesser-release.json" --slurpfile bundle "$LESSER_RELEASE_DIR/lesser-lambda-bundle.json" --slurpfile metadata "$LAMBDA_METADATA_PATH" '({version:1,stage:$stage,base_domain:$base_domain,mcp_url:$mcp_url,mcp_lambda_arn:$mcp_lambda_arn} + (if $lesser_body_version != "" then {lesser_body_version:$lesser_body_version} else {} end) + {managed_deploy_artifacts:{mode:($metadata[0].mode // "release"),checksums_path:"checksums.txt",release_manifest_path:"lesser-release.json",release:{name:($release[0].name // ""),version:($release[0].version // ""),git_sha:($release[0].git_sha // "")},deploy_artifact:{kind:"lambda_bundle",path:($bundle[0].bundle.path // ""),manifest_path:"lesser-lambda-bundle.json",files:(if (($metadata[0].files // []) | length) > 0 then $metadata[0].files else ($bundle[0].files | map(.path)) end),prepared_at:($metadata[0].prepared_at // "")}}})' > "$MCP_RECEIPT_PATH"
 aws s3 cp "$MCP_RECEIPT_PATH" "s3://$ARTIFACT_BUCKET/$RECEIPT_S3_KEY"

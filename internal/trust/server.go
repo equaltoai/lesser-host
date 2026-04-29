@@ -81,6 +81,7 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 	app.Get("/api/v1/previews/images/{imageId}", s.handleGetLinkPreviewImage, apptheory.RequireAuth())
 
 	// Publish-triggered jobs (link safety, etc).
+	app.Get("/api/v1/trust/verify", s.handleTrustAuthVerify, apptheory.RequireAuth())
 	app.Post("/api/v1/publish/jobs", s.handlePublishJob, apptheory.RequireAuth())
 	app.Get("/api/v1/publish/jobs/{jobId}", s.handleGetPublishJob, apptheory.RequireAuth())
 	app.Post("/api/v1/soul/agents/{agentId}/update-registration", s.handleSoulAgentUpdateRegistration, apptheory.RequireAuth())

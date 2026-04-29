@@ -26,6 +26,7 @@ const (
 	testLabelsPath              = "/repos/equaltoai/lesser-host/labels"
 	testIssueLabelsPath         = "/repos/equaltoai/lesser-host/issues/96/labels"
 	testIssueCommentsPath       = "/repos/equaltoai/lesser-host/issues/96/comments"
+	testGitHubSelfLogin         = "lesser-host-bot"
 )
 
 func TestBuildReadinessReport_Certified(t *testing.T) {
@@ -164,6 +165,61 @@ func TestBuildReadinessReport_BlocksWhenBodyEvidenceFails(t *testing.T) {
 	}
 	if len(report.BlockingChecks) != 1 || report.BlockingChecks[0] != "lesser_body_completed" {
 		t.Fatalf("expected body completion blocking check, got %#v", report.BlockingChecks)
+	}
+}
+
+func TestBuildReadinessReport_BlocksWhenBodyEvidenceLesserVersionStale(t *testing.T) {
+	t.Parallel()
+
+	bodyReport := &lesserBodyCertificationReport{
+		SchemaVersion: 1,
+		LesserHost: certificationTarget{
+			BaseURL:      testBaseURL,
+			InstanceSlug: testInstanceSlug,
+		},
+		RequestedRelease: certificationRequested{
+			LesserVersion:     "v1.2.5",
+			LesserBodyVersion: testLesserBodyVersion,
+			RunLesser:         true,
+			RunLesserBody:     true,
+		},
+		Checks: []certificationCheck{
+			{ID: "lesser_body_template_changeset_valid", Status: certificationStatusPass},
+			{ID: "lesser_body_completed", Status: certificationStatusPass},
+		},
+		Job: certificationJob{
+			Kind:                     "lesser-body",
+			JobID:                    "job-update-1",
+			Status:                   "ok",
+			Step:                     "done",
+			TemplatePath:             "lesser-body-managed-dev.template.json",
+			TemplateCertificationKey: "managed/updates/simulacrum/job-update-1/body-template-certification.json",
+		},
+		OverallStatus: certificationStatusPass,
+	}
+
+	report, err := buildReadinessReport(&certificationReport{
+		LesserHost: certificationTarget{
+			BaseURL:      testBaseURL,
+			InstanceSlug: testInstanceSlug,
+		},
+		RequestedRelease: certificationRequested{
+			LesserVersion:     testLesserVersion,
+			LesserBodyVersion: testLesserBodyVersion,
+			RunLesser:         true,
+			RunLesserBody:     true,
+		},
+		Checks:        []certificationCheck{{ID: "compatibility_contract_valid", Status: certificationStatusPass}},
+		OverallStatus: certificationStatusPass,
+	}, bodyReport, filepath.Join(t.TempDir(), testBodyCertificationReport), nil, cliConfig{ProjectOrg: testProjectOrg, ProjectNumber: testProjectNumber, ReportPath: testCertificationReport})
+	if err != nil {
+		t.Fatalf("buildReadinessReport: %v", err)
+	}
+	if report.LesserBodyCertificationStatus != readinessStatusBlocked {
+		t.Fatalf("expected blocked body status, got %#v", report)
+	}
+	if len(report.BlockingChecks) != 1 || report.BlockingChecks[0] != "lesser_body_certification_evidence_matches_requested_release" {
+		t.Fatalf("expected stale body evidence blocking check, got %#v", report.BlockingChecks)
 	}
 }
 
@@ -417,6 +473,21 @@ func TestRunReadiness_SyncsIssueLabelsAndComments(t *testing.T) {
 			expectedCommentText: "Rollout readiness: `ready`",
 			expectCommentCreate: true,
 		},
+		{
+			name:                "existing marker by another user creates fresh marker",
+			certificationStatus: certificationStatusPass,
+			scenario: readinessSyncScenario{
+				MissingLabel:          readinessLabelCertified,
+				ExistingLabel:         readinessLabelBlocked,
+				RemovedLabel:          readinessLabelBlocked,
+				RemoveStatus:          http.StatusNotFound,
+				ExistingComment:       true,
+				ExistingCommentAuthor: "attacker",
+			},
+			expectedLabel:       readinessLabelCertified,
+			expectedCommentText: "Rollout readiness: `ready`",
+			expectCommentCreate: true,
+		},
 	}
 
 	for _, tc := range testCases {
@@ -431,11 +502,12 @@ func TestRunReadiness_SyncsIssueLabelsAndComments(t *testing.T) {
 }
 
 type readinessSyncScenario struct {
-	MissingLabel    string
-	ExistingLabel   string
-	RemovedLabel    string
-	RemoveStatus    int
-	ExistingComment bool
+	MissingLabel          string
+	ExistingLabel         string
+	RemovedLabel          string
+	RemoveStatus          int
+	ExistingComment       bool
+	ExistingCommentAuthor string
 }
 
 type readinessSyncRecorder struct {
@@ -508,6 +580,8 @@ func newReadinessSyncServer(t *testing.T, scenario readinessSyncScenario, record
 			return
 		case handleSyncCommentMutation(w, r, recorder):
 			return
+		case handleSyncCurrentUser(w, r):
+			return
 		default:
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
 		}
@@ -559,10 +633,23 @@ func handleSyncCommentList(w http.ResponseWriter, r *http.Request, scenario read
 	}
 	w.WriteHeader(http.StatusOK)
 	if scenario.ExistingComment {
-		_, _ = w.Write([]byte(`[{"id":41,"body":"<!-- managed-release-readiness -->\nold body","html_url":"https://github.com/equaltoai/lesser-host/issues/96#issuecomment-41"}]`))
+		author := strings.TrimSpace(scenario.ExistingCommentAuthor)
+		if author == "" {
+			author = testGitHubSelfLogin
+		}
+		_, _ = w.Write([]byte(`[{"id":41,"body":"<!-- managed-release-readiness -->\nold body","html_url":"https://github.com/equaltoai/lesser-host/issues/96#issuecomment-41","user":{"login":"` + author + `"}}]`))
 		return true
 	}
 	_, _ = w.Write([]byte(`[]`))
+	return true
+}
+
+func handleSyncCurrentUser(w http.ResponseWriter, r *http.Request) bool {
+	if r.Method != http.MethodGet || r.URL.Path != "/user" {
+		return false
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"login":"` + testGitHubSelfLogin + `"}`))
 	return true
 }
 

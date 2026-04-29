@@ -133,6 +133,9 @@ type githubIssueComment struct {
 	ID   int64  `json:"id"`
 	Body string `json:"body"`
 	URL  string `json:"html_url"`
+	User struct {
+		Login string `json:"login"`
+	} `json:"user"`
 }
 
 type githubLabelRequest struct {
@@ -153,6 +156,8 @@ type githubClient struct {
 	baseURL string
 	token   string
 	client  *http.Client
+
+	selfLogin string
 }
 
 type githubResponse struct {
@@ -353,6 +358,7 @@ func evaluateLesserBodyEvidence(certification *certificationReport, lesserBodyEv
 		return readinessStatusBlocked, []string{"lesser_body_certification_evidence_present"}
 	}
 	if strings.TrimSpace(lesserBodyEvidence.RequestedRelease.LesserBodyVersion) != strings.TrimSpace(certification.RequestedRelease.LesserBodyVersion) ||
+		strings.TrimSpace(lesserBodyEvidence.RequestedRelease.LesserVersion) != strings.TrimSpace(certification.RequestedRelease.LesserVersion) ||
 		strings.TrimSpace(lesserBodyEvidence.LesserHost.InstanceSlug) != strings.TrimSpace(certification.LesserHost.InstanceSlug) {
 		return readinessStatusBlocked, []string{"lesser_body_certification_evidence_matches_requested_release"}
 	}
@@ -645,12 +651,41 @@ func (g *githubClient) upsertIssueComment(ctx context.Context, repo string, issu
 	if err != nil {
 		return "", err
 	}
+	selfLogin, err := g.currentUserLogin(ctx)
+	if err != nil {
+		return "", err
+	}
 	for _, comment := range comments {
-		if strings.Contains(comment.Body, readinessCommentMarker) {
+		if strings.Contains(comment.Body, readinessCommentMarker) &&
+			strings.EqualFold(strings.TrimSpace(comment.User.Login), strings.TrimSpace(selfLogin)) {
 			return g.updateIssueComment(ctx, repo, comment.ID, body)
 		}
 	}
 	return g.createIssueComment(ctx, repo, issueNumber, body)
+}
+
+func (g *githubClient) currentUserLogin(ctx context.Context) (string, error) {
+	if strings.TrimSpace(g.selfLogin) != "" {
+		return strings.TrimSpace(g.selfLogin), nil
+	}
+	resp, err := g.doJSON(ctx, http.MethodGet, "/user", nil)
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("github current user lookup failed: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(resp.Body)))
+	}
+	var parsed struct {
+		Login string `json:"login"`
+	}
+	if err := json.Unmarshal(resp.Body, &parsed); err != nil {
+		return "", err
+	}
+	g.selfLogin = strings.TrimSpace(parsed.Login)
+	if g.selfLogin == "" {
+		return "", errors.New("github current user response missing login")
+	}
+	return g.selfLogin, nil
 }
 
 func (g *githubClient) listIssueComments(ctx context.Context, repo string, issueNumber int) ([]githubIssueComment, error) {

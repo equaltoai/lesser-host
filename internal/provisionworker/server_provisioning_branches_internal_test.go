@@ -127,8 +127,8 @@ func TestInitializeManagedProvisionJob_SetsDefaultsAndPreservesValues(t *testing
 func TestManagedInstanceKeySecretName_UsesSlugPrefix(t *testing.T) {
 	t.Parallel()
 
-	require.Equal(t, "slug/instance-key", managedInstanceKeySecretName("LIVE", " Slug "))
-	require.Equal(t, "slug/instance-key", managedInstanceKeySecretName("", "slug"))
+	require.Equal(t, "live/slug/instance-key", managedInstanceKeySecretName("LIVE", " Slug "))
+	require.Equal(t, "lab/slug/instance-key", managedInstanceKeySecretName("", "slug"))
 	require.Equal(t, "", managedInstanceKeySecretName("live", " "))
 }
 

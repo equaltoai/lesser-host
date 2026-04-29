@@ -527,6 +527,16 @@ func TestParseCLI_RejectsInvalidArgs(t *testing.T) {
 			wantErr: "--base-url must include a host",
 		},
 		{
+			name:    "unapproved https origin",
+			args:    []string{"--base-url", "https://evil.example", "--token", "token", "--instance-slug", "simulacrum", "--lesser-version", "v1.2.6"},
+			wantErr: "is not in --approved-base-urls",
+		},
+		{
+			name:    "plaintext non-loopback origin",
+			args:    []string{"--base-url", "http://lab.lesser.host", "--token", "token", "--instance-slug", "simulacrum", "--lesser-version", "v1.2.6"},
+			wantErr: "must use https",
+		},
+		{
 			name:    "missing token",
 			args:    []string{"--base-url", "https://lab.lesser.host", "--instance-slug", "simulacrum", "--lesser-version", "v1.2.6"},
 			wantErr: "--token is required",
@@ -630,6 +640,20 @@ func TestParseCLI_ParsesValidArgsAndDefaults(t *testing.T) {
 	if cfg.LesserBodyVersion != "v0.2.3" || !cfg.RequireLesserBody || !cfg.RequireMCP || cfg.ManagedStage != "live" {
 		t.Fatalf("expected follow-on args to parse, got %#v", cfg)
 	}
+}
+
+func TestParseCLI_AllowsOperatorApprovedBaseURL(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := parseCLI([]string{
+		"--base-url", "https://canary.lesser.host",
+		"--approved-base-urls", "https://canary.lesser.host",
+		"--token", "token",
+		"--instance-slug", "simulacrum",
+		"--lesser-version", "v1.2.6",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "https://canary.lesser.host", cfg.BaseURL)
 }
 
 func TestRunCertification_CreateFailureProducesFailReport(t *testing.T) {
@@ -1090,4 +1114,58 @@ func TestBuildLesserBodyCertificationReport_UsesFirstFailingCheckWhenJobMissing(
 	require.Equal(t, "lesser_body_certification_failed", bodyReport.Job.ErrorCode)
 	require.Equal(t, "lesser-body blocked", bodyReport.Job.ErrorMessage)
 	require.Equal(t, updateJobKindBody, bodyReport.Job.Kind)
+}
+
+func TestBuildLesserBodyCertificationReport_IncludesUpstreamFailures(t *testing.T) {
+	t.Parallel()
+
+	report := &certificationReport{
+		SchemaVersion: certificationSchemaVersion,
+		GeneratedAt:   "2026-03-31T00:00:00Z",
+		RequestedRelease: certificationRequested{
+			LesserVersion:     "v1.2.6",
+			LesserBodyVersion: "v0.2.3",
+			RunLesser:         true,
+			RunLesserBody:     true,
+		},
+		Checks: []certificationCheck{
+			{ID: "hosted_update_completed", Status: statusFail, Detail: "core deploy failed"},
+			{ID: "lesser_body_completed", Status: statusPass, Detail: "body deploy completed"},
+		},
+		Jobs: []certificationJob{{
+			Kind:                     updateJobKindBody,
+			JobID:                    "job-body",
+			Status:                   updateJobStatusOK,
+			Step:                     "done",
+			TemplatePath:             testBodyTemplate,
+			TemplateCertificationKey: "managed/updates/simulacrum/job-body/body-template-certification.json",
+			TemplateVerificationMode: lesserBodyTemplateVerificationMode,
+		}},
+		OverallStatus: statusFail,
+	}
+
+	bodyReport := buildLesserBodyCertificationReport(report)
+	require.NotNil(t, bodyReport)
+	require.Equal(t, statusFail, bodyReport.OverallStatus)
+	requireCheckStatus(t, &certificationReport{Checks: bodyReport.Checks}, "upstream_hosted_update_completed", statusFail)
+}
+
+func TestCheckStatusForBodyTemplateCertification_RequiresOKJob(t *testing.T) {
+	t.Parallel()
+
+	job := certificationJob{
+		Kind:                     updateJobKindBody,
+		JobID:                    "job-body",
+		Status:                   updateJobStatusError,
+		Step:                     "failed",
+		ErrorMessage:             "body phase failed after certification",
+		TemplatePath:             testBodyTemplate,
+		TemplateCertificationKey: "managed/updates/simulacrum/job-body/body-template-certification.json",
+		TemplateVerificationMode: lesserBodyTemplateVerificationMode,
+	}
+	require.Equal(t, statusFail, checkStatusForBodyTemplateCertification(job))
+
+	job.Status = updateJobStatusOK
+	job.ErrorMessage = ""
+	require.Equal(t, statusPass, checkStatusForBodyTemplateCertification(job))
 }

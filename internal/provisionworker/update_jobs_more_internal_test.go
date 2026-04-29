@@ -565,7 +565,7 @@ func TestGetSecretsManagerSecretPlaintext_ParsesJSONAndBinary(t *testing.T) {
 	require.Equal(t, "lhk_bin", val)
 }
 
-func TestDescribeAndEnsureManagedInstanceKeySecret_FallsBackWhenTagMissing(t *testing.T) {
+func TestDescribeAndEnsureManagedInstanceKeySecret_RequiresManagedStageTags(t *testing.T) {
 	t.Parallel()
 
 	db := ttmocks.NewMockExtendedDB()
@@ -580,16 +580,27 @@ func TestDescribeAndEnsureManagedInstanceKeySecret_FallsBackWhenTagMissing(t *te
 	sm := &fakeSecretsManager{
 		describeOut: &secretsmanager.DescribeSecretOutput{
 			ARN:  aws.String("arn:secret"),
-			Tags: nil, // force GetSecretValue fallback
+			Tags: nil,
 		},
 		getOut: &secretsmanager.GetSecretValueOutput{
 			SecretString: aws.String(`{"secret":"lhk_test"}`),
 		},
 	}
 
-	arn, err := srv.describeAndEnsureManagedInstanceKeySecret(context.Background(), sm, " slug ", " secret ")
+	_, err := srv.describeAndEnsureManagedInstanceKeySecret(context.Background(), sm, " slug ", " secret ", "lab")
+	require.ErrorContains(t, err, "refusing unmanaged")
+
+	sm.describeOut.Tags = []smtypes.Tag{
+		{Key: aws.String(managedInstanceKeySecretTagInstanceSlug), Value: aws.String("slug")},
+		{Key: aws.String(managedInstanceKeySecretTagManaged), Value: aws.String("true")},
+		{Key: aws.String(managedInstanceKeySecretTagStage), Value: aws.String("lab")},
+	}
+	arn, err := srv.describeAndEnsureManagedInstanceKeySecret(context.Background(), sm, " slug ", " secret ", "lab")
 	require.NoError(t, err)
 	require.Equal(t, "arn:secret", arn)
+
+	_, err = srv.describeAndEnsureManagedInstanceKeySecret(context.Background(), sm, " slug ", " secret ", "live")
+	require.ErrorContains(t, err, "refusing unmanaged")
 }
 
 func TestCreateManagedInstanceKeySecret_ValidatesAndPropagatesErrors(t *testing.T) {
@@ -597,17 +608,17 @@ func TestCreateManagedInstanceKeySecret_ValidatesAndPropagatesErrors(t *testing.
 
 	srv := &Server{}
 
-	_, _, err := srv.createManagedInstanceKeySecret(context.Background(), nil, "name", "slug")
+	_, _, err := srv.createManagedInstanceKeySecret(context.Background(), nil, "name", "slug", "lab")
 	require.Error(t, err)
 
-	_, _, err = srv.createManagedInstanceKeySecret(context.Background(), &fakeSecretsManager{}, " ", "slug")
+	_, _, err = srv.createManagedInstanceKeySecret(context.Background(), &fakeSecretsManager{}, " ", "slug", "lab")
 	require.Error(t, err)
 
-	_, _, err = srv.createManagedInstanceKeySecret(context.Background(), &fakeSecretsManager{}, "name", " ")
+	_, _, err = srv.createManagedInstanceKeySecret(context.Background(), &fakeSecretsManager{}, "name", " ", "lab")
 	require.Error(t, err)
 
 	sm := &fakeSecretsManager{createErr: &smtypes.ResourceExistsException{}}
-	_, _, err = srv.createManagedInstanceKeySecret(context.Background(), sm, "name", "slug")
+	_, _, err = srv.createManagedInstanceKeySecret(context.Background(), sm, "name", "slug", "lab")
 	require.Error(t, err)
 }
 
@@ -624,10 +635,10 @@ func TestManagedInstanceSecretsInputsFromJob_Validates(t *testing.T) {
 func TestUpdateManagedInstanceKeySecretTags_NoopsForMissingInputs(t *testing.T) {
 	t.Parallel()
 
-	updateManagedInstanceKeySecretTags(context.Background(), nil, "arn", "slug", "kid")
-	updateManagedInstanceKeySecretTags(context.Background(), &fakeSecretsManager{}, " ", "slug", "kid")
-	updateManagedInstanceKeySecretTags(context.Background(), &fakeSecretsManager{}, "arn", " ", "kid")
-	updateManagedInstanceKeySecretTags(context.Background(), &fakeSecretsManager{}, "arn", "slug", " ")
+	updateManagedInstanceKeySecretTags(context.Background(), nil, "arn", "slug", "kid", "lab")
+	updateManagedInstanceKeySecretTags(context.Background(), &fakeSecretsManager{}, " ", "slug", "kid", "lab")
+	updateManagedInstanceKeySecretTags(context.Background(), &fakeSecretsManager{}, "arn", " ", "kid", "lab")
+	updateManagedInstanceKeySecretTags(context.Background(), &fakeSecretsManager{}, "arn", "slug", " ", "lab")
 }
 
 func TestGenerateInstanceKeySecret_ReturnsWrappedJSON(t *testing.T) {
@@ -662,6 +673,16 @@ func TestUpdateVerifyInstanceUpdate_DoesNotPanicOnNilJob(t *testing.T) {
 	tx := new(ttmocks.MockTransactionBuilder)
 	tx.UpdateWithBuilder(&models.Instance{}, fn)
 	require.NoError(t, tx.Execute())
+}
+
+func TestUpdateVerifyInstanceUpdate_DoesNotWriteLesserVersionForBodyOnly(t *testing.T) {
+	t.Parallel()
+
+	fn := updateVerifyInstanceUpdate(&models.UpdateJob{BodyOnly: true, LesserVersion: "v9.9.9"})
+	tx := new(ttmocks.MockTransactionBuilder)
+	tx.UpdateWithBuilder(&models.Instance{}, fn)
+	require.NoError(t, tx.Execute())
+	tx.AssertNotCalled(t, "Set", "LesserVersion", "v9.9.9")
 }
 
 func TestUpdateInstanceConfigInstanceUpdate_SetsOptionalURLs(t *testing.T) {

@@ -19,12 +19,7 @@ if [ "$STAGE" != "live" ]; then STAGE_DOMAIN="$STAGE.$BASE_DOMAIN"; fi
 BODY_OWNER="${LESSER_BODY_GITHUB_OWNER:-equaltoai}"
 BODY_REPO="${LESSER_BODY_GITHUB_REPO:-lesser-body}"
 BODY_TAG="${LESSER_BODY_VERSION:-}"
-BODY_TAG_NORMALIZED=$(printf "%s" "$BODY_TAG" | tr "[:upper:]" "[:lower:]")
-if [ -z "$BODY_TAG" ] || [ "$BODY_TAG_NORMALIZED" = "latest" ]; then
-  echo "Resolving latest lesser-body release..."
-  BODY_TAG=$(resolve_latest_release_tag "$BODY_OWNER" "$BODY_REPO")
-fi
-test -n "$BODY_TAG" && test "$BODY_TAG" != "null"
+require_managed_release_tag "LESSER_BODY_VERSION" "$BODY_TAG"
 echo "Using lesser-body release: $BODY_TAG"
 BODY_RELEASE_DIR="$(pwd)/lesser-body-release"
 prepare_lesser_body_release_dir "$BODY_RELEASE_DIR" "$BODY_OWNER" "$BODY_REPO" "$BODY_TAG" "$STAGE"
@@ -41,7 +36,7 @@ rm -f "$BODY_TEMPLATE_CERT_PATH" "$BODY_FAILURE_PATH" "$BODY_TEMPLATE_CERT_LOG" 
 BODY_TEMPLATE_FILE="$BODY_RELEASE_DIR/$BODY_TEMPLATE_PATH"
 patch_lesser_body_template_for_existing_stack "$BODY_STACK_NAME" "$APP_SLUG" "$STAGE" "$BODY_RELEASE_DIR" "$BODY_TEMPLATE_FILE"
 
-BODY_TEMPLATE_CERTIFY="${BODY_TEMPLATE_CERTIFY:-}"
+BODY_TEMPLATE_CERTIFY="${BODY_TEMPLATE_CERTIFY:-true}"
 BODY_TEMPLATE_CERTIFY_NORMALIZED=$(printf "%s" "$BODY_TEMPLATE_CERTIFY" | tr "[:upper:]" "[:lower:]")
 if [ "$BODY_TEMPLATE_CERTIFY_NORMALIZED" = "true" ] || [ "$BODY_TEMPLATE_CERTIFY_NORMALIZED" = "1" ] || [ "$BODY_TEMPLATE_CERTIFY_NORMALIZED" = "yes" ] || [ "$BODY_TEMPLATE_CERTIFY_NORMALIZED" = "on" ]; then
   echo "Certifying lesser-body CloudFormation changeset..."
@@ -56,10 +51,12 @@ if [ "$BODY_TEMPLATE_CERTIFY_NORMALIZED" = "true" ] || [ "$BODY_TEMPLATE_CERTIFY
     fail "lesser-body template certification failed for $BODY_TEMPLATE_PATH"
   fi
 else
-  echo "Skipping lesser-body changeset certification (BODY_TEMPLATE_CERTIFY not enabled)."
-  echo "Skipped: BODY_TEMPLATE_CERTIFY is not enabled." > "$BODY_TEMPLATE_CERT_LOG"
-  write_lesser_body_artifact "$BODY_TEMPLATE_CERT_PATH" "skipped" "$BODY_TAG" "$BODY_TEMPLATE_PATH" "$BODY_STACK_NAME" "cloudformation_deploy_no_execute_changeset" "$BODY_TEMPLATE_CERT_LOG"
+  echo "Refusing to skip lesser-body changeset certification." > "$BODY_TEMPLATE_CERT_LOG"
+  write_lesser_body_artifact "$BODY_TEMPLATE_CERT_PATH" "failed" "$BODY_TAG" "$BODY_TEMPLATE_PATH" "$BODY_STACK_NAME" "cloudformation_deploy_no_execute_changeset" "$BODY_TEMPLATE_CERT_LOG"
   upload_optional_artifact "$BODY_TEMPLATE_CERT_PATH" "${BODY_TEMPLATE_CERT_S3_KEY:-}"
+  write_lesser_body_artifact "$BODY_FAILURE_PATH" "failed" "$BODY_TAG" "$BODY_TEMPLATE_PATH" "$BODY_STACK_NAME" "cloudformation_deploy_no_execute_changeset" "$BODY_TEMPLATE_CERT_LOG"
+  upload_optional_artifact "$BODY_FAILURE_PATH" "${BODY_FAILURE_S3_KEY:-}"
+  fail "lesser-body template certification cannot be disabled"
 fi
 if ! run_lesser_body_helper_with_capture "$BODY_DEPLOY_LOG" env AWS_PROFILE=managed bash "$BODY_RELEASE_DIR/deploy-lesser-body-from-release.sh" --stack-name "$BODY_STACK_NAME" --asset-bucket "$BODY_ASSET_BUCKET" --asset-prefix "$BODY_ASSET_PREFIX" --app "$APP_SLUG" --stage "$STAGE" --base-domain "$BASE_DOMAIN"; then
   write_lesser_body_artifact "$BODY_FAILURE_PATH" "failed" "$BODY_TAG" "$BODY_TEMPLATE_PATH" "$BODY_STACK_NAME" "cloudformation_deploy" "$BODY_DEPLOY_LOG"

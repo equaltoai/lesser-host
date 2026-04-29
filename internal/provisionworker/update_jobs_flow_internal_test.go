@@ -68,6 +68,13 @@ func TestRunManagedUpdateStateMachine_HappyPath(t *testing.T) {
 	handler.HandleFunc("/api/v1/trust/jwks.json", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
+	handler.HandleFunc("/api/v1/trust/verify", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer lhk_test" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
 	handler.HandleFunc("/api/v1/ai/jobs/", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	})

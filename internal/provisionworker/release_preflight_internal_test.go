@@ -128,7 +128,7 @@ func lesserReleaseManifestJSON(t *testing.T, version string) []byte {
 		"schema":  1,
 		"name":    "lesser",
 		"version": version,
-		"git_sha": "abc123",
+		"git_sha": "0123456789abcdef0123456789abcdef01234567",
 		"artifacts": map[string]any{
 			"receipt_schema_version": 2,
 			"deploy_artifacts": map[string]any{
@@ -311,6 +311,17 @@ func TestPreflightManagedLesserRelease_ValidatesReleaseAndBundleManifest(t *test
 	}
 
 	require.NoError(t, srv.preflightManagedLesserRelease(context.Background(), version))
+}
+
+func TestValidateManagedLesserReleaseManifest_RejectsMutableGitSHA(t *testing.T) {
+	t.Parallel()
+
+	manifest, err := parseManagedLesserReleaseManifest(lesserReleaseManifestJSON(t, "v1.2.6"))
+	require.NoError(t, err)
+	manifest.GitSHA = "main"
+
+	err = validateManagedLesserReleaseManifest(manifest, "v1.2.6")
+	require.ErrorContains(t, err, "40-character git commit SHA")
 }
 
 func TestPreflightManagedLesserBodyRelease_ValidatesReleaseManifestAndChecksums(t *testing.T) {
