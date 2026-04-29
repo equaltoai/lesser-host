@@ -777,6 +777,54 @@ func TestValidateCapabilityClaimLevelTransitions_DeprecatedAndInvalidRules(t *te
 	})
 }
 
+func TestPublishLegacySoulRegistration_RejectsClaimTransitionBeforeS3Write(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulLifecycleTestDB()
+	packs := &fakeSoulPackStoreForPublish{}
+	s := &Server{
+		store:     store.New(tdb.db),
+		soulPacks: packs,
+		cfg: config.Config{
+			SoulEnabled:        true,
+			SoulPackBucketName: "soul-packs",
+		},
+	}
+	identity := &models.SoulAgentIdentity{
+		AgentID: "0xabc",
+		Domain:  "example.com",
+		LocalID: "agent-alice",
+	}
+	tdb.qVersion.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulAgentVersion](t, args, 0)
+		*dest = []*models.SoulAgentVersion{}
+	}).Once()
+	tdb.qCapIdx.On("First", mock.AnythingOfType("*models.SoulCapabilityAgentIndex")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulCapabilityAgentIndex](t, args, 0)
+		*dest = models.SoulCapabilityAgentIndex{ClaimLevel: soulClaimLevelPeerEndorsed}
+	}).Once()
+
+	regBytes := []byte(`{"capabilities":[{"capability":"social","claimLevel":"self-declared"}]}`)
+	_, _, appErr := s.publishLegacySoulRegistration(
+		context.Background(),
+		identity.AgentID,
+		identity,
+		regBytes,
+		regSHA256Hex(regBytes),
+		"self-sig",
+		"bad downgrade",
+		[]string{"social"},
+		map[string]string{"social": soulClaimLevelSelfDeclared},
+		time.Now().UTC(),
+	)
+	if appErr == nil || appErr.Code != appErrCodeBadRequest {
+		t.Fatalf("expected claim-level rejection, got %v", appErr)
+	}
+	if len(packs.puts) != 0 {
+		t.Fatalf("rejected registration must not publish S3 metadata, got %d puts", len(packs.puts))
+	}
+}
+
 func TestUpdateSoulAgentCapabilities_UpdatesIdentityAndIndexModels(t *testing.T) {
 	t.Parallel()
 

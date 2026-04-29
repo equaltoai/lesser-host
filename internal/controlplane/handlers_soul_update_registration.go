@@ -338,6 +338,10 @@ func (s *Server) publishLegacySoulRegistration(
 	if appErr != nil {
 		return 0, "", appErr
 	}
+	newCaps := normalizeSoulCapabilitiesLoose(capsNorm)
+	if appErr := s.validateCapabilityClaimLevelTransitions(ctx, identity, newCaps, claimLevels); appErr != nil {
+		return 0, "", appErr
+	}
 
 	s3Key := soulRegistrationS3Key(agentIDHex)
 	versionedKey := soulRegistrationVersionedS3Key(agentIDHex, nextVersion)
@@ -347,7 +351,7 @@ func (s *Server) publishLegacySoulRegistration(
 	if err := s.soulPacks.PutObject(ctx, s3Key, regBytes, "application/json", "private, max-age=0"); err != nil {
 		return 0, "", &apptheory.AppError{Code: "app.internal", Message: "failed to publish registration"}
 	}
-	if appErr := s.updateSoulAgentCapabilities(ctx, identity, capsNorm, claimLevels, now, false); appErr != nil {
+	if appErr := s.updateSoulAgentCapabilities(ctx, identity, capsNorm, claimLevels, now, true); appErr != nil {
 		return 0, "", appErr
 	}
 

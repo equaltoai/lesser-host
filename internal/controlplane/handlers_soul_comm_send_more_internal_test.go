@@ -1023,6 +1023,177 @@ func TestEnforceSoulCommSendGuards_RecipientFirstContactPreferences(t *testing.T
 	})
 }
 
+func TestEnforceSoulCommSendGuards_EmailCCBCCFirstContactPreferences(t *testing.T) {
+	t.Parallel()
+
+	agentID := soulLifecycleTestAgentIDHex
+	tdb := newSoulCommSendMoreTestDB()
+	tdb.qCommActivity.On("All", mock.AnythingOfType("*[]*models.SoulAgentCommActivity")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulAgentCommActivity](t, args, 0)
+		*dest = []*models.SoulAgentCommActivity{}
+	}).Twice()
+	tdb.qEmailIdx.On("First", mock.AnythingOfType("*models.SoulEmailAgentIndex")).Return(theoryErrors.ErrItemNotFound).Once()
+	expectCommEmailIdx(t, tdb.qEmailIdx, "protected@lessersoul.ai", "0xprotected")
+	minRep := 0.9
+	expectCommPrefs(t, tdb.qPrefs, models.SoulAgentContactPreferences{
+		AgentID:                       "0xprotected",
+		FirstContactRequireReputation: &minRep,
+		UpdatedAt:                     time.Now().UTC(),
+	})
+	tdb.qReputation.On("First", mock.AnythingOfType("*models.SoulAgentReputation")).Return(theoryErrors.ErrItemNotFound).Once()
+
+	s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true}}
+	decision, appErr := s.enforceSoulCommSendGuards(
+		&apptheory.Context{RequestID: "req-pref-cc-deny"},
+		&models.SoulAgentIdentity{AgentID: agentID, Domain: "example.com"},
+		validatedSoulCommSendRequest{
+			channel:    commChannelEmail,
+			agentIDHex: agentID,
+			to:         "external@example.com",
+			cc:         []string{"protected@lessersoul.ai"},
+			bcc:        []string{"protected@lessersoul.ai"},
+			subject:    "Hello",
+			body:       "First contact",
+		},
+		time.Now().UTC(),
+		newSoulCommSendMetrics("lab", "inst1"),
+	)
+	if appErr == nil {
+		t.Fatalf("expected preference violation")
+	}
+	if appErr.Code != commCodePreferenceViolation || appErr.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected %s/403, got %q/%d", commCodePreferenceViolation, appErr.Code, appErr.StatusCode)
+	}
+	if decision.preferenceRespected == nil || *decision.preferenceRespected {
+		t.Fatalf("expected preferenceRespected=false, got %#v", decision.preferenceRespected)
+	}
+}
+
+func TestEnforceSoulCommSendGuards_InReplyToRequiresRecipientThread(t *testing.T) {
+	t.Parallel()
+
+	agentID := soulLifecycleTestAgentIDHex
+
+	t.Run("arbitrary token rejected", func(t *testing.T) {
+		tdb := newSoulCommSendMoreTestDB()
+		tdb.qCommActivity.On("All", mock.AnythingOfType("*[]*models.SoulAgentCommActivity")).Return(nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*[]*models.SoulAgentCommActivity](t, args, 0)
+			*dest = []*models.SoulAgentCommActivity{}
+		}).Times(3)
+
+		s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true}}
+		_, appErr := s.enforceSoulCommSendGuards(
+			&apptheory.Context{RequestID: "req-reply-deny"},
+			&models.SoulAgentIdentity{AgentID: agentID, Domain: "example.com"},
+			validatedSoulCommSendRequest{
+				channel:    commChannelEmail,
+				agentIDHex: agentID,
+				to:         "alice@example.com",
+				subject:    "Re",
+				body:       "Reply",
+				inReplyTo:  "comm-msg-prev",
+			},
+			time.Now().UTC(),
+			newSoulCommSendMetrics("lab", "inst1"),
+		)
+		if appErr == nil {
+			t.Fatalf("expected boundary violation")
+		}
+		if appErr.Code != commCodeBoundaryViolation || appErr.StatusCode != http.StatusForbidden {
+			t.Fatalf("expected %s/403, got %q/%d", commCodeBoundaryViolation, appErr.Code, appErr.StatusCode)
+		}
+	})
+
+	t.Run("cc recipient must be part of thread", func(t *testing.T) {
+		tdb := newSoulCommSendMoreTestDB()
+		tdb.qCommActivity.On("All", mock.AnythingOfType("*[]*models.SoulAgentCommActivity")).Return(nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*[]*models.SoulAgentCommActivity](t, args, 0)
+			*dest = []*models.SoulAgentCommActivity{}
+		}).Twice()
+		tdb.qCommActivity.On("All", mock.AnythingOfType("*[]*models.SoulAgentCommActivity")).Return(nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*[]*models.SoulAgentCommActivity](t, args, 0)
+			*dest = []*models.SoulAgentCommActivity{
+				{
+					ChannelType:  commChannelEmail,
+					Direction:    models.SoulCommDirectionInbound,
+					Counterparty: "alice@example.com",
+					MessageID:    "comm-msg-prev",
+					Timestamp:    time.Now().Add(-time.Minute).UTC(),
+				},
+			}
+		}).Once()
+
+		s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true}}
+		_, appErr := s.enforceSoulCommSendGuards(
+			&apptheory.Context{RequestID: "req-reply-cc-deny"},
+			&models.SoulAgentIdentity{AgentID: agentID, Domain: "example.com"},
+			validatedSoulCommSendRequest{
+				channel:    commChannelEmail,
+				agentIDHex: agentID,
+				to:         "alice@example.com",
+				cc:         []string{"new@example.com"},
+				subject:    "Re",
+				body:       "Reply",
+				inReplyTo:  "comm-msg-prev",
+			},
+			time.Now().UTC(),
+			newSoulCommSendMetrics("lab", "inst1"),
+		)
+		if appErr == nil {
+			t.Fatalf("expected boundary violation for cc outside thread")
+		}
+		if appErr.Code != commCodeBoundaryViolation || appErr.StatusCode != http.StatusForbidden {
+			t.Fatalf("expected %s/403, got %q/%d", commCodeBoundaryViolation, appErr.Code, appErr.StatusCode)
+		}
+	})
+
+	t.Run("matching recipients pass", func(t *testing.T) {
+		tdb := newSoulCommSendMoreTestDB()
+		tdb.qCommActivity.On("All", mock.AnythingOfType("*[]*models.SoulAgentCommActivity")).Return(nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*[]*models.SoulAgentCommActivity](t, args, 0)
+			*dest = []*models.SoulAgentCommActivity{}
+		}).Twice()
+		tdb.qCommActivity.On("All", mock.AnythingOfType("*[]*models.SoulAgentCommActivity")).Return(nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*[]*models.SoulAgentCommActivity](t, args, 0)
+			*dest = []*models.SoulAgentCommActivity{
+				{
+					ChannelType:  commChannelEmail,
+					Direction:    models.SoulCommDirectionInbound,
+					Counterparty: "alice@example.com",
+					MessageID:    "comm-msg-prev",
+					Timestamp:    time.Now().Add(-time.Minute).UTC(),
+				},
+				{
+					ChannelType:  commChannelEmail,
+					Direction:    models.SoulCommDirectionInbound,
+					Counterparty: "bob@example.com",
+					MessageID:    "comm-msg-prev",
+					Timestamp:    time.Now().Add(-time.Minute).UTC(),
+				},
+			}
+		}).Once()
+
+		s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true}}
+		if _, appErr := s.enforceSoulCommSendGuards(
+			&apptheory.Context{RequestID: "req-reply-pass"},
+			&models.SoulAgentIdentity{AgentID: agentID, Domain: "example.com"},
+			validatedSoulCommSendRequest{
+				channel:    commChannelEmail,
+				agentIDHex: agentID,
+				to:         "alice@example.com",
+				cc:         []string{"bob@example.com"},
+				subject:    "Re",
+				body:       "Reply",
+				inReplyTo:  "comm-msg-prev",
+			},
+			time.Now().UTC(),
+			newSoulCommSendMetrics("lab", "inst1"),
+		); appErr != nil {
+			t.Fatalf("expected matching reply boundary to pass, got %v", appErr)
+		}
+	})
+}
+
 func TestLookupSoulCommRecipientAgentID_PhoneAndUnsupported(t *testing.T) {
 	t.Parallel()
 
@@ -1334,6 +1505,32 @@ func expectActiveCommRoute(t *testing.T, tdb soulCommSendMoreTestDB, agentID str
 		dest := testutil.RequireMockArg[*[]*models.SoulAgentCommActivity](t, args, 0)
 		*dest = []*models.SoulAgentCommActivity{}
 	}).Twice()
+	counterparty := "alice@example.com"
+	if channelType == "phone" {
+		counterparty = "+15550143"
+	}
+	tdb.qCommActivity.On("All", mock.AnythingOfType("*[]*models.SoulAgentCommActivity")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulAgentCommActivity](t, args, 0)
+		activities := []*models.SoulAgentCommActivity{
+			{
+				ChannelType:  map[bool]string{true: commChannelSMS, false: commChannelEmail}[channelType == "phone"],
+				Direction:    models.SoulCommDirectionInbound,
+				Counterparty: counterparty,
+				MessageID:    "comm-msg-prev",
+				Timestamp:    time.Now().Add(-time.Minute).UTC(),
+			},
+		}
+		if channelType == "phone" {
+			activities = append(activities, &models.SoulAgentCommActivity{
+				ChannelType:  commChannelVoice,
+				Direction:    models.SoulCommDirectionInbound,
+				Counterparty: counterparty,
+				MessageID:    "comm-msg-prev",
+				Timestamp:    time.Now().Add(-time.Minute).UTC(),
+			})
+		}
+		*dest = activities
+	}).Maybe()
 }
 
 func resetCommMockQueryChain(q *ttmocks.MockQuery) {
