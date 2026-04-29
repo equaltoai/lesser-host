@@ -364,11 +364,17 @@ func (s *Server) listSoulPublicRelationships(ctx context.Context, agentIDHex str
 	}
 
 	if shouldMergeLegacyRelationshipEndorsements(params) {
-		endorsements, appErr := s.loadLegacyRelationshipEndorsements(ctx, agentIDHex)
-		if appErr != nil {
-			return nil, false, "", appErr
+		remaining := params.limit - len(out)
+		if remaining > 0 {
+			endorsements, endorsementsHaveMore, appErr := s.loadLegacyRelationshipEndorsements(ctx, agentIDHex, remaining)
+			if appErr != nil {
+				return nil, false, "", appErr
+			}
+			out = append(out, endorsements...)
+			if endorsementsHaveMore {
+				hasMore = true
+			}
 		}
-		out = append(out, endorsements...)
 	}
 
 	return out, hasMore, nextCursor, nil
@@ -455,14 +461,19 @@ func shouldMergeLegacyRelationshipEndorsements(params soulRelationshipListParams
 		(params.typeFilter == "" || params.typeFilter == models.SoulRelationshipTypeEndorsement)
 }
 
-func (s *Server) loadLegacyRelationshipEndorsements(ctx context.Context, agentIDHex string) ([]models.SoulAgentRelationship, *apptheory.AppError) {
+func (s *Server) loadLegacyRelationshipEndorsements(ctx context.Context, agentIDHex string, limit int) ([]models.SoulAgentRelationship, bool, *apptheory.AppError) {
+	if limit <= 0 {
+		return nil, false, nil
+	}
 	var endorsements []*models.SoulAgentPeerEndorsement
-	if err := s.store.DB.WithContext(ctx).
+	paged, err := s.store.DB.WithContext(ctx).
 		Model(&models.SoulAgentPeerEndorsement{}).
 		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentIDHex)).
 		Where("SK", "BEGINS_WITH", "ENDORSEMENT#").
-		All(&endorsements); err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list endorsements"}
+		Limit(limit).
+		AllPaginated(&endorsements)
+	if err != nil {
+		return nil, false, &apptheory.AppError{Code: "app.internal", Message: "failed to list endorsements"}
 	}
 
 	out := make([]models.SoulAgentRelationship, 0, len(endorsements))
@@ -479,7 +490,7 @@ func (s *Server) loadLegacyRelationshipEndorsements(ctx context.Context, agentID
 			CreatedAt:   e.CreatedAt,
 		})
 	}
-	return out, nil
+	return out, paged != nil && strings.TrimSpace(paged.NextCursor) != "", nil
 }
 
 func isValidRelationshipType(relType string) bool {
