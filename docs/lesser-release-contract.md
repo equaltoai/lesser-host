@@ -72,6 +72,21 @@ The managed runner currently consumes Lesser in two ways:
   --release-dir "$LESSER_RELEASE_DIR")
 ```
 
+  - when the managed provisioning input includes `consent_message` and `consent_signature`, immediately seeds the
+    initial admin from the same verified release CLI:
+
+```bash
+(cd "$LESSER_CHECKOUT_DIR" && "$LESSER_RELEASE_DIR/lesser" init-admin \
+  --base-domain "$BASE_DOMAIN" \
+  --aws-profile managed \
+  --provisioning-input "$PROVISION_INPUT")
+```
+
+    For Lesser M9 and later, `consent_message` is the exact compact JSON string described in
+    `docs/managed-instance-provisioning.md#structured-init-admin-consent-lesser-m9`. The EIP-191 signature is over those
+    exact bytes; the managed runner must not trim, pretty-print, or reserialize the string between portal signing and
+    `init-admin`.
+
 - `RUN_MODE=lesser-mcp`
   - downloads and verifies the same published release assets
   - materializes the same release-matched Lesser checkout
@@ -79,6 +94,20 @@ The managed runner currently consumes Lesser in two ways:
   - runs the published CLI binary from inside that checkout with `--release-dir`
 
 This means the managed runner no longer recompiles Lesser Lambdas in the happy path.
+
+## Lesser M9 consumption gate
+
+host does not treat a merged Lesser PR or a trusted commit as sufficient for managed rollout. A Lesser M9 release that
+enforces structured `init-admin` consent is eligible for managed consumption only after:
+
+1. the exact published GitHub Release assets are available;
+2. host's managed runner downloads and checksum-verifies those assets through the normal release path;
+3. managed-release certification/readiness succeeds for that tag;
+4. lab managed provisioning reaches `lesser init-admin` with the structured consent JSON and succeeds; and
+5. a canary managed instance is stable before default-version or live rollout.
+
+If any asset checksum, manifest field, schema field, or certification evidence mismatches, provisioning/update approval
+must fail closed. Do not bypass checksum verification to consume Lesser M9.
 
 ## Lesser-managed receipt contract
 

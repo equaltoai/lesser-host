@@ -108,6 +108,9 @@ This ledger is the M0 evidence baseline for GitHub Project [#26](https://github.
 - **M2**: findings #6, #22, #44, #31, #32, #33, #34, #68, #38, #28, #40, #45
 - **M3**: findings #5, #13, #15, #54, #16, #51, #52, #63, #17, #53, #18, #47, #55, #60, #64, #65, #12
 - **M4**: findings #2, #25, #35, #36, #57, #27, #37, #42, #46, #50, #56, #66, #69, #24
+- **M4.5**: cross-repo lesser M9 structured `init-admin` consent alignment — [#217](https://github.com/equaltoai/lesser-host/issues/217)
+  through [#221](https://github.com/equaltoai/lesser-host/issues/221). This is not a new Codex CSV finding; it is the
+  managed-provisioning handoff needed before host consumes/certifies lesser M9 after the original remediation project.
 
 ## Closure rule
 
