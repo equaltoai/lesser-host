@@ -2,6 +2,7 @@ package provisionworker
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"io"
 	"strings"
@@ -93,6 +94,42 @@ func TestProvisionWorker_HelperFunctions(t *testing.T) {
 	}
 	if isRetryableAssumeRoleErr(nil) {
 		t.Fatalf("expected false for nil")
+	}
+}
+
+func TestBuildDeployRunnerEnv_PreservesConsentMessageBytes(t *testing.T) {
+	t.Parallel()
+
+	consentMessage := `{"kind":"lesser.init_admin_consent.v1","instance":"dev.demo.greater.website","username":"demo","nonce":"0123456789abcdef","expires_at":"2026-04-29T13:30:00Z"}`
+	s := &Server{cfg: config.Config{ArtifactBucketName: "artifacts"}}
+	env := s.buildDeployRunnerEnv(&models.ProvisionJob{
+		ID:                 "job1",
+		InstanceSlug:       "demo",
+		AdminUsername:      "demo",
+		AdminWalletAddr:    "0x0000000000000000000000000000000000000003",
+		AdminWalletChainID: 1,
+		ConsentMessage:     consentMessage,
+		ConsentSignature:   "0xsig",
+		BaseDomain:         "demo.greater.website",
+		AccountID:          "123456789012",
+		AccountRoleName:    "lesser-host-instance",
+		Region:             "us-east-1",
+		LesserVersion:      "v1.2.6",
+	}, "dev", "receipt.json", "bootstrap.json")
+
+	values := map[string]string{}
+	for _, item := range env {
+		values[aws.ToString(item.Name)] = aws.ToString(item.Value)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(values["CONSENT_MESSAGE_B64"])
+	if err != nil {
+		t.Fatalf("decode consent message: %v", err)
+	}
+	if string(decoded) != consentMessage {
+		t.Fatalf("consent message bytes changed: got %q want %q", string(decoded), consentMessage)
+	}
+	if values["CONSENT_SIGNATURE"] != "0xsig" {
+		t.Fatalf("unexpected signature: %q", values["CONSENT_SIGNATURE"])
 	}
 }
 

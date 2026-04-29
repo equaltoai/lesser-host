@@ -244,11 +244,7 @@ func (s *Server) buildManagedProvisionJob(slug string, req startInstanceProvisio
 		return nil, "", "", &apptheory.AppError{Code: "app.internal", Message: "failed to create provisioning job"}
 	}
 
-	parentDomain := strings.TrimSpace(s.cfg.ManagedParentDomain)
-	if parentDomain == "" {
-		parentDomain = defaultManagedParentDomain
-	}
-	baseDomain := fmt.Sprintf("%s.%s", slug, strings.TrimPrefix(parentDomain, "."))
+	baseDomain := managedProvisionBaseDomain(slug, s.cfg.ManagedParentDomain)
 
 	region := strings.TrimSpace(req.Region)
 	if region == "" {
@@ -282,10 +278,10 @@ func (s *Server) buildManagedProvisionJob(slug string, req startInstanceProvisio
 		AdminWalletAddr:    adminWalletAddr,
 		AdminWalletChainID: adminWalletChainID,
 		AccountEmail:       accountEmail,
-		ConsentMessage:     strings.TrimSpace(req.ConsentMessage),
+		ConsentMessage:     req.ConsentMessage,
 		ConsentSignature:   strings.TrimSpace(req.ConsentSignature),
 		ConsentMessageHash: func() string {
-			msg := strings.TrimSpace(req.ConsentMessage)
+			msg := req.ConsentMessage
 			if msg == "" {
 				return ""
 			}

@@ -59,6 +59,36 @@ func TestParseStartInstanceProvisionRequest(t *testing.T) {
 	}
 }
 
+func TestBuildManagedProvisionJob_PreservesStructuredConsentBytes(t *testing.T) {
+	t.Parallel()
+
+	expiresAt := time.Date(2026, 4, 29, 13, 30, 0, 0, time.UTC)
+	consentMessage := buildProvisionConsentMessage(testProvisionConsentStageLab, "demo.lesser.host", testPortalInstanceSlugDemo, testProvisionConsentNonce16, expiresAt)
+
+	s := &Server{cfg: config.Config{
+		Stage:                       "lab",
+		ManagedParentDomain:         "lesser.host",
+		ManagedDefaultRegion:        "us-east-1",
+		ManagedLesserDefaultVersion: "v1.2.6",
+	}}
+
+	job, baseDomain, region, appErr := s.buildManagedProvisionJob(testPortalInstanceSlugDemo, startInstanceProvisionRequest{
+		LesserVersion:      "v1.2.6",
+		AdminWalletType:    "ethereum",
+		AdminWalletAddress: "0x0000000000000000000000000000000000000003",
+		AdminWalletChainID: 1,
+		AdminUsername:      testPortalInstanceSlugDemo,
+		ConsentMessage:     consentMessage,
+		ConsentSignature:   "0xsignature",
+	}, "req", time.Now().UTC())
+	require.Nil(t, appErr)
+	require.NotNil(t, job)
+	require.Equal(t, "demo.lesser.host", baseDomain)
+	require.Equal(t, "us-east-1", region)
+	require.Equal(t, consentMessage, job.ConsentMessage)
+	require.Equal(t, sha256Hex(consentMessage), job.ConsentMessageHash)
+}
+
 func TestStartAndGetInstanceProvisioning(t *testing.T) {
 	t.Parallel()
 

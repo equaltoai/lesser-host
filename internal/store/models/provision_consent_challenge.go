@@ -62,7 +62,6 @@ func (c *ProvisionConsentChallenge) UpdateKeys() error {
 	c.WalletType = strings.TrimSpace(c.WalletType)
 	c.WalletAddr = strings.ToLower(strings.TrimSpace(c.WalletAddr))
 	c.Nonce = strings.TrimSpace(c.Nonce)
-	c.Message = strings.TrimSpace(c.Message)
 
 	c.PK = fmt.Sprintf("PROVISION_CONSENT#%s", c.ID)
 	c.SK = "CHALLENGE"

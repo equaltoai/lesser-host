@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -23,6 +24,16 @@ type provisionConsentChallengeResponse struct {
 	Stage         string                  `json:"stage"`
 	AdminUsername string                  `json:"admin_username"`
 	Wallet        walletChallengeResponse `json:"wallet"`
+}
+
+const provisionInitAdminConsentKindV1 = "lesser.init_admin_consent.v1"
+
+type provisionInitAdminConsentV1 struct {
+	Kind      string    `json:"kind"`
+	Instance  string    `json:"instance"`
+	Username  string    `json:"username"`
+	Nonce     string    `json:"nonce"`
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 func parseProvisionConsentChallengeRequest(ctx *apptheory.Context) (provisionConsentChallengeRequest, error) {
@@ -70,29 +81,32 @@ func normalizeLinkedWalletAddress(cred *models.WalletCredential) (string, *appth
 	return walletAddr, nil
 }
 
-func buildProvisionConsentMessage(slug, stage, adminUsername, walletAddr, nonce string, issuedAt, expiresAt time.Time) string {
-	var sb strings.Builder
-
-	sb.WriteString("lesser.host requests your consent to provision a managed instance.\n\n")
-	sb.WriteString("Slug: ")
-	sb.WriteString(strings.TrimSpace(slug))
-	sb.WriteString("\nStage: ")
-	sb.WriteString(strings.TrimSpace(stage))
-	sb.WriteString("\nAdmin username: ")
-	sb.WriteString(strings.TrimSpace(adminUsername))
-	if walletAddr != "" {
-		sb.WriteString("\nWallet: ")
-		sb.WriteString(strings.ToLower(strings.TrimSpace(walletAddr)))
+func managedProvisionBaseDomain(slug string, parentDomain string) string {
+	slug = strings.ToLower(strings.TrimSpace(slug))
+	parentDomain = strings.ToLower(strings.TrimSpace(parentDomain))
+	if parentDomain == "" {
+		parentDomain = defaultManagedParentDomain
 	}
+	parentDomain = strings.Trim(parentDomain, ".")
+	if slug == "" || parentDomain == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s.%s", slug, parentDomain)
+}
 
-	sb.WriteString("\n\nNonce: ")
-	sb.WriteString(strings.TrimSpace(nonce))
-	sb.WriteString("\nIssued At: ")
-	sb.WriteString(issuedAt.UTC().Format(time.RFC3339))
-	sb.WriteString("\nExpiration Time: ")
-	sb.WriteString(expiresAt.UTC().Format(time.RFC3339))
-
-	return sb.String()
+func buildProvisionConsentMessage(stage, baseDomain, adminUsername, nonce string, expiresAt time.Time) string {
+	payload := provisionInitAdminConsentV1{
+		Kind:      provisionInitAdminConsentKindV1,
+		Instance:  managedInstanceStageDomain(stage, baseDomain),
+		Username:  strings.TrimSpace(adminUsername),
+		Nonce:     strings.TrimSpace(nonce),
+		ExpiresAt: expiresAt.UTC(),
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
 }
 
 func (s *Server) handlePortalProvisionConsentChallenge(ctx *apptheory.Context) (*apptheory.Response, error) {
@@ -144,7 +158,8 @@ func (s *Server) handlePortalProvisionConsentChallenge(ctx *apptheory.Context) (
 
 	now := time.Now().UTC()
 	expiresAt := now.Add(10 * time.Minute)
-	msg := buildProvisionConsentMessage(slug, stage, adminUsername, walletAddr, nonce, now, expiresAt)
+	baseDomain := managedProvisionBaseDomain(slug, s.cfg.ManagedParentDomain)
+	msg := buildProvisionConsentMessage(stage, baseDomain, adminUsername, nonce, expiresAt)
 
 	challenge := &models.ProvisionConsentChallenge{
 		ID:            id,
@@ -250,7 +265,7 @@ func validateProvisionConsentChallenge(ctx *apptheory.Context, chall *models.Pro
 		return &apptheory.AppError{Code: "app.forbidden", Message: "consent challenge stage mismatch"}
 	}
 
-	if strings.TrimSpace(message) == "" || strings.TrimSpace(chall.Message) == "" || strings.TrimSpace(message) != strings.TrimSpace(chall.Message) {
+	if strings.TrimSpace(message) == "" || strings.TrimSpace(chall.Message) == "" || message != chall.Message {
 		return &apptheory.AppError{Code: "app.forbidden", Message: "consent challenge message mismatch"}
 	}
 
