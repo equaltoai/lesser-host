@@ -12,6 +12,8 @@ import (
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
+const mintConversationOpenAIMaxCompletionTokens int64 = 4096
+
 // StreamMintConversationOpenAI streams a chat completion from OpenAI, calling onDelta
 // for each incremental content delta. Returns the full assistant response.
 func StreamMintConversationOpenAI(
@@ -29,16 +31,7 @@ func StreamMintConversationOpenAI(
 
 	client := openAIClientForKey(apiKey)
 	start := time.Now()
-	stream := client.Chat.Completions.NewStreaming(ctx, openai.ChatCompletionNewParams{
-		Model: openai.ChatModel(model),
-		Messages: buildOpenAIConversationMessages(
-			systemPrompt,
-			messages,
-		),
-		StreamOptions: openai.ChatCompletionStreamOptionsParam{
-			IncludeUsage: openai.Bool(true),
-		},
-	})
+	stream := client.Chat.Completions.NewStreaming(ctx, newOpenAIMintConversationStreamParams(model, systemPrompt, messages))
 
 	acc := openai.ChatCompletionAccumulator{}
 	for stream.Next() {
@@ -66,6 +59,20 @@ func StreamMintConversationOpenAI(
 
 	usage := openAIUsageFromChat(&acc.ChatCompletion, start)
 	return full, usage, nil
+}
+
+func newOpenAIMintConversationStreamParams(model string, systemPrompt string, messages []MintConversationMessage) openai.ChatCompletionNewParams {
+	return openai.ChatCompletionNewParams{
+		Model: openai.ChatModel(model),
+		Messages: buildOpenAIConversationMessages(
+			systemPrompt,
+			messages,
+		),
+		MaxCompletionTokens: openai.Int(mintConversationOpenAIMaxCompletionTokens),
+		StreamOptions: openai.ChatCompletionStreamOptionsParam{
+			IncludeUsage: openai.Bool(true),
+		},
+	}
 }
 
 // StreamMintConversationAnthropic streams a chat completion from Anthropic, calling onDelta

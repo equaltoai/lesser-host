@@ -208,6 +208,17 @@ func TestHandlePortalUpdateInstanceConfig_ErrorBranches(t *testing.T) {
 		requirePortalAppErrorCode(t, err, "app.bad_request")
 	})
 
+	t.Run("rejects portal soul enablement", func(t *testing.T) {
+		tdb := newPortalHandlerDB()
+		srv := &Server{store: store.New(tdb.db)}
+		stubPortalOwnedInstance(t, tdb.qInstance, "demo", "alice")
+
+		enable := true
+		body, _ := json.Marshal(updateInstanceConfigRequest{SoulEnabled: &enable})
+		_, err := srv.handlePortalUpdateInstanceConfig(makeCtx(body))
+		requirePortalAppErrorCode(t, err, "app.forbidden")
+	})
+
 	t.Run("condition failures become not found", func(t *testing.T) {
 		tdb := newPortalHandlerDB()
 		srv := &Server{store: store.New(tdb.db)}
