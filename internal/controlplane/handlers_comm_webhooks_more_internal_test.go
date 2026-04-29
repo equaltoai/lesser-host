@@ -641,7 +641,7 @@ func TestMeterTelnyxVoiceCall_CreatesLedgerAndBudgetUpdate(t *testing.T) {
 		*dest = models.InstanceBudgetMonth{InstanceSlug: commWebhookTestInstanceSlug, IncludedCredits: 12, UsedCredits: 5}
 	}).Once()
 
-	tb.On("Put", mock.Anything, mock.Anything).Return(tb).Once().Run(func(args mock.Arguments) {
+	tb.On("Create", mock.Anything, mock.Anything).Return(tb).Once().Run(func(args mock.Arguments) {
 		entry := testutil.RequireMockArg[*models.UsageLedgerEntry](t, args, 0)
 		if entry.InstanceSlug != commWebhookTestInstanceSlug {
 			t.Fatalf("expected instance slug %s, got %q", commWebhookTestInstanceSlug, entry.InstanceSlug)
@@ -674,6 +674,30 @@ func TestMeterTelnyxVoiceCall_CreatesLedgerAndBudgetUpdate(t *testing.T) {
 
 	if err := s.meterTelnyxVoiceCall(ctx, "+1 (555) 0142", "call-1", 61); err != nil {
 		t.Fatalf("unexpected err: %v", err)
+	}
+}
+
+func TestMeterTelnyxVoiceCall_DuplicateLedgerIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	tdb := newCommWebhookTestDB()
+	tb := new(ttmocks.MockTransactionBuilder)
+	tdb.db.TransactWriteBuilder = tb
+	tdb.db.On("TransactWrite", mock.Anything, mock.Anything).Return(theoryErrors.ErrConditionFailed).Once()
+
+	s := &Server{store: store.New(tdb.db)}
+	expectCommWebhookPhoneAgent(t, tdb.qPhone, "0xabc")
+	expectCommWebhookIdentity(t, tdb.qIdentity, "0xabc", "example.com")
+	expectCommWebhookDomain(t, tdb.qDomain, commWebhookTestInstanceSlug)
+	tdb.qBudget.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.InstanceBudgetMonth](t, args, 0)
+		*dest = models.InstanceBudgetMonth{InstanceSlug: commWebhookTestInstanceSlug, IncludedCredits: 12, UsedCredits: 5}
+	}).Once()
+	tb.On("Create", mock.Anything, mock.Anything).Return(tb).Once()
+	tb.On("UpdateWithBuilder", mock.Anything, mock.Anything, mock.Anything).Return(tb).Once()
+
+	if err := s.meterTelnyxVoiceCall(&apptheory.Context{}, "+15550142", "call-1", 60); err != nil {
+		t.Fatalf("expected duplicate ledger to be idempotent, got %v", err)
 	}
 }
 

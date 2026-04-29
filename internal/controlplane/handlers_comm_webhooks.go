@@ -10,6 +10,7 @@ import (
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 	"github.com/theory-cloud/tabletheory"
 	"github.com/theory-cloud/tabletheory/pkg/core"
+	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/billing"
 	"github.com/equaltoai/lesser-host/internal/commworker"
@@ -441,8 +442,8 @@ func (s *Server) meterTelnyxVoiceCall(ctx *apptheory.Context, toNumber string, c
 	}
 	_ = updateBudget.UpdateKeys()
 
-	return s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
-		tx.Put(ledger)
+	err = s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
+		tx.Create(ledger)
 		tx.UpdateWithBuilder(updateBudget, func(ub core.UpdateBuilder) error {
 			ub.Add("UsedCredits", credits)
 			ub.Set("UpdatedAt", now)
@@ -450,6 +451,10 @@ func (s *Server) meterTelnyxVoiceCall(ctx *apptheory.Context, toNumber string, c
 		}, tabletheory.IfExists())
 		return nil
 	})
+	if theoryErrors.IsConditionFailed(err) {
+		return nil
+	}
+	return err
 }
 
 func (s *Server) resolveTelnyxVoiceBudget(ctx *apptheory.Context, toNumber string) (string, string, models.InstanceBudgetMonth, time.Time, error) {
