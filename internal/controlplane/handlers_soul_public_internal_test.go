@@ -399,7 +399,7 @@ func TestHandleSoulPublicGetAgent_Success(t *testing.T) {
 	}
 }
 
-func TestHandleSoulPublicGetAgent_IncludesENSAndAvatarStyles(t *testing.T) {
+func TestHandleSoulPublicGetAgent_IncludesENSAndTokenAvatar(t *testing.T) {
 	t.Parallel()
 
 	s, expected := newSoulPublicAvatarTestServer(t)
@@ -453,9 +453,10 @@ func newSoulPublicAvatarTestServer(t *testing.T) (*Server, soulPublicAvatarExpec
 	s := &Server{
 		store: store.New(tdb.db),
 		cfg: config.Config{
-			SoulEnabled:                 true,
-			SoulRPCURL:                  "http://rpc",
-			SoulRegistryContractAddress: expected.registryAddr.Hex(),
+			SoulEnabled:                    true,
+			SoulRPCURL:                     "http://rpc",
+			SoulRegistryContractAddress:    expected.registryAddr.Hex(),
+			SoulPublicOnChainAvatarEnabled: true,
 		},
 	}
 
@@ -608,41 +609,21 @@ func assertSoulPublicAvatarResponse(t *testing.T, out soulPublicAgentResponse, e
 	if out.Agent.Avatar == nil {
 		t.Fatalf("expected avatar payload, got %#v", out.Agent)
 	}
-	assertSoulPublicAvatarSelection(t, out.Agent.Avatar, expected)
-	assertSoulPublicAvatarStyles(t, out.Agent.Avatar, expected)
+	assertSoulPublicAvatarTokenMetadata(t, out.Agent.Avatar, expected)
 	assertSoulPublicAgentIdentityDetails(t, out)
 }
 
-func assertSoulPublicAvatarSelection(t *testing.T, avatar *soulPublicAvatarView, expected soulPublicAvatarExpectations) {
+func assertSoulPublicAvatarTokenMetadata(t *testing.T, avatar *soulPublicAvatarView, expected soulPublicAvatarExpectations) {
 	t.Helper()
 
-	if avatar.CurrentStyleID == nil || *avatar.CurrentStyleID != expected.currentStyleID {
-		t.Fatalf("expected current style id %d, got %#v", expected.currentStyleID, avatar)
+	if avatar.Image != expected.images[expected.currentStyleID] {
+		t.Fatalf("expected metadata image %q, got %#v", expected.images[expected.currentStyleID], avatar)
 	}
 	if avatar.CurrentStyleName != expected.currentStyleName {
 		t.Fatalf("expected current style name, got %#v", avatar)
 	}
-	if avatar.CurrentRendererAddress != strings.ToLower(expected.renderers[expected.currentStyleID].Hex()) {
-		t.Fatalf("expected current renderer %s, got %#v", expected.renderers[expected.currentStyleID].Hex(), avatar)
-	}
-	if avatar.Image != expected.images[expected.currentStyleID] {
-		t.Fatalf("expected current image %q, got %#v", expected.images[expected.currentStyleID], avatar)
-	}
-	if !avatar.Styles[expected.currentStyleID].Selected {
-		t.Fatalf("expected selected style, got %#v", avatar.Styles)
-	}
-}
-
-func assertSoulPublicAvatarStyles(t *testing.T, avatar *soulPublicAvatarView, expected soulPublicAvatarExpectations) {
-	t.Helper()
-
-	if len(avatar.Styles) != len(expected.images) {
-		t.Fatalf("expected three styles, got %#v", avatar)
-	}
-	for idx, image := range expected.images {
-		if avatar.Styles[idx].Image != image {
-			t.Fatalf("unexpected style images: %#v", avatar.Styles)
-		}
+	if avatar.CurrentStyleID != nil || avatar.CurrentRendererAddress != "" || len(avatar.Styles) != 0 {
+		t.Fatalf("public avatar enrichment must not fan out to renderer styles, got %#v", avatar)
 	}
 }
 
@@ -666,9 +647,10 @@ func TestHandleSoulPublicGetAgent_AvatarLookupFailureIsNonFatal(t *testing.T) {
 	s := &Server{
 		store: store.New(tdb.db),
 		cfg: config.Config{
-			SoulEnabled:                 true,
-			SoulRPCURL:                  "http://rpc",
-			SoulRegistryContractAddress: "0x0000000000000000000000000000000000000abc",
+			SoulEnabled:                    true,
+			SoulRPCURL:                     "http://rpc",
+			SoulRegistryContractAddress:    "0x0000000000000000000000000000000000000abc",
+			SoulPublicOnChainAvatarEnabled: true,
 		},
 	}
 
@@ -748,6 +730,10 @@ func TestHandleSoulPublicGetReputation_NotFoundAndSuccess(t *testing.T) {
 		tdb := newSoulPublicTestDB()
 		s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true}}
 
+		tdb.qID.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
+			*dest = models.SoulAgentIdentity{AgentID: agentID, Status: models.SoulAgentStatusActive}
+		}).Once()
 		tdb.qRep.On("First", mock.AnythingOfType("*models.SoulAgentReputation")).Return(theoryErrors.ErrItemNotFound).Once()
 
 		ctx := &apptheory.Context{Params: map[string]string{"agentId": agentID}}
@@ -762,6 +748,10 @@ func TestHandleSoulPublicGetReputation_NotFoundAndSuccess(t *testing.T) {
 		tdb := newSoulPublicTestDB()
 		s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true}}
 
+		tdb.qID.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
+			*dest = models.SoulAgentIdentity{AgentID: agentID, Status: models.SoulAgentStatusActive}
+		}).Once()
 		tdb.qRep.On("First", mock.AnythingOfType("*models.SoulAgentReputation")).Return(nil).Run(func(args mock.Arguments) {
 			dest := testutil.RequireMockArg[*models.SoulAgentReputation](t, args, 0)
 			*dest = models.SoulAgentReputation{AgentID: agentID, BlockRef: 10, Composite: 0.2, UpdatedAt: time.Now().UTC()}
@@ -771,6 +761,23 @@ func TestHandleSoulPublicGetReputation_NotFoundAndSuccess(t *testing.T) {
 		resp, err := s.handleSoulPublicGetReputation(ctx)
 		if err != nil || resp.Status != http.StatusOK {
 			t.Fatalf("unexpected: resp=%#v err=%v", resp, err)
+		}
+	})
+
+	t.Run("suspended identity hides stale reputation", func(t *testing.T) {
+		t.Parallel()
+
+		tdb := newSoulPublicTestDB()
+		s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true}}
+
+		tdb.qID.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
+			*dest = models.SoulAgentIdentity{AgentID: agentID, Status: models.SoulAgentStatusSuspended}
+		}).Once()
+
+		ctx := &apptheory.Context{Params: map[string]string{"agentId": agentID}}
+		if _, err := s.handleSoulPublicGetReputation(ctx); err == nil {
+			t.Fatalf("expected suspended reputation to be hidden")
 		}
 	})
 }
@@ -911,6 +918,40 @@ func TestHandleSoulPublicSearch_DomainBranch(t *testing.T) {
 	resp, err := s.handleSoulPublicSearch(ctx)
 	if err != nil || resp.Status != http.StatusOK {
 		t.Fatalf("unexpected: resp=%#v err=%v", resp, err)
+	}
+}
+
+func TestHandleSoulPublicSearch_DoesNotScanAdditionalPagesForFilters(t *testing.T) {
+	t.Parallel()
+
+	agentA := "0x" + strings.Repeat("ac", 32)
+	tdb := newSoulPublicTestDB()
+	s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true}}
+
+	tdb.qDomIdx.On("AllPaginated", mock.Anything).Return(&core.PaginatedResult{HasMore: true, NextCursor: " next-page "}, nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulDomainAgentIndex](t, args, 0)
+		*dest = []*models.SoulDomainAgentIndex{{AgentID: agentA, Domain: "example.com", LocalID: "a"}}
+	}).Once()
+	tdb.qID.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
+		*dest = models.SoulAgentIdentity{AgentID: agentA, Status: models.SoulAgentStatusSuspended}
+	}).Once()
+
+	ctx := &apptheory.Context{Request: apptheory.Request{Query: map[string][]string{
+		"q":     {"example.com"},
+		"limit": {"1"},
+	}}}
+	resp, err := s.handleSoulPublicSearch(ctx)
+	if err != nil || resp.Status != http.StatusOK {
+		t.Fatalf("unexpected: resp=%#v err=%v", resp, err)
+	}
+
+	var out soulSearchResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Count != 0 || len(out.Results) != 0 || !out.HasMore || out.NextCursor != "next-page" {
+		t.Fatalf("expected filtered empty bounded page, got %#v", out)
 	}
 }
 

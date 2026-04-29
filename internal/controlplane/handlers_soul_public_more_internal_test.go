@@ -409,6 +409,10 @@ func TestHandleSoulPublicGetReputation_InternalError(t *testing.T) {
 	s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true}}
 
 	agentID := "0x" + strings.Repeat("22", 32)
+	tdb.qID.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
+		*dest = models.SoulAgentIdentity{AgentID: agentID, Status: models.SoulAgentStatusActive}
+	}).Once()
 	tdb.qRep.On("First", mock.AnythingOfType("*models.SoulAgentReputation")).Return(errors.New("boom")).Once()
 
 	ctx := &apptheory.Context{Params: map[string]string{"agentId": agentID}}
@@ -1237,6 +1241,10 @@ func TestHandleSoulPublicGetReputation_SuccessHeaders(t *testing.T) {
 
 	agentID := "0x" + strings.Repeat("22", 32)
 	now := time.Unix(123, 0).UTC()
+	tdb.qID.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
+		*dest = models.SoulAgentIdentity{AgentID: agentID, Status: models.SoulAgentStatusActive}
+	}).Once()
 	tdb.qRep.On("First", mock.AnythingOfType("*models.SoulAgentReputation")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentReputation](t, args, 0)
 		*dest = models.SoulAgentReputation{AgentID: agentID, BlockRef: 10, Composite: 0.2, UpdatedAt: now}

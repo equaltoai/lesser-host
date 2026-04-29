@@ -701,6 +701,22 @@ func TestHandlePortalCreateInstanceUpdateJob_ConflictsWhenSameKindVersionDiffers
 	require.Contains(t, appErr.Message, "lesser-body update to v0.1.11")
 }
 
+func TestHandlePortalCreateInstanceUpdateJob_ActiveLatestConflictBeforeResolve(t *testing.T) {
+	t.Parallel()
+
+	s, ctx := setupActiveManagedUpdateConflictCase(t, []byte(`{"body_only":true,"lesser_body_version":"latest"}`))
+	s.cfg.ManagedLesserBodyGitHubOwner = "invalid-owner-that-should-not-be-called"
+	s.cfg.ManagedLesserBodyGitHubRepo = "invalid-repo-that-should-not-be-called"
+
+	_, err := s.handlePortalCreateInstanceUpdateJob(ctx)
+	require.Error(t, err)
+	appErr, ok := err.(*apptheory.AppError)
+	require.True(t, ok)
+	require.Equal(t, "app.conflict", appErr.Code)
+	require.Contains(t, appErr.Message, "cannot start lesser-body update to latest")
+	require.Contains(t, appErr.Message, "lesser-body update to v0.1.11")
+}
+
 func TestHandlePortalCreateInstanceUpdateJob_TransactWriteFailureReturnsInternalError(t *testing.T) {
 	t.Parallel()
 

@@ -29,6 +29,7 @@ type Server struct {
 	soulPacks           soulPackStore
 	mailboxContentStore commmailbox.ContentStore
 	dialEVM             ethRPCDialer
+	soulAvatarCache     *soulPublicAvatarCache
 
 	ssmGetParameter     func(ctx context.Context, name string) (string, error)
 	ssmPutSecureValue   func(ctx context.Context, name string, value string, overwrite bool) error
@@ -53,12 +54,13 @@ func NewServer(cfg config.Config, st *store.Store) *Server {
 		log.Printf("controlplane: webauthn disabled: %v", err)
 	}
 	srv := &Server{
-		cfg:       cfg,
-		store:     st,
-		webAuthn:  webAuthn,
-		queues:    newQueueClient(cfg.ProvisionQueueURL, cfg.CommQueueURL),
-		r53:       newRoute53Client(),
-		soulPacks: artifacts.New(cfg.SoulPackBucketName),
+		cfg:             cfg,
+		store:           st,
+		webAuthn:        webAuthn,
+		queues:          newQueueClient(cfg.ProvisionQueueURL, cfg.CommQueueURL),
+		r53:             newRoute53Client(),
+		soulPacks:       artifacts.New(cfg.SoulPackBucketName),
+		soulAvatarCache: &soulPublicAvatarCache{},
 		dialEVM: func(ctx context.Context, rpcURL string) (ethRPCClient, error) {
 			return dialEthClient(ctx, rpcURL)
 		},

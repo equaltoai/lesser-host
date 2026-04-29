@@ -89,6 +89,7 @@ type Config struct {
 	SoulMintSignerKeySSMParam                string
 	SoulMintSignerKey                        string
 	SoulPublicCORSOrigins                    []string
+	SoulPublicOnChainAvatarEnabled           bool // opt-in public tokenURI enrichment; default off to avoid EVM fanout on reads
 	SoulV2StrictIntegrity                    bool // harden signature + artifact integrity checks
 
 	// Soul reputation (v0).
@@ -154,6 +155,7 @@ func Load() Config {
 	soulCaps := parseCSV(envString("SOUL_SUPPORTED_CAPABILITIES"))
 	soulPackBucketName := envString("SOUL_PACK_BUCKET_NAME")
 	soulPublicCORSOrigins := parseCSV(envString("SOUL_PUBLIC_CORS_ORIGINS"))
+	soulPublicOnChainAvatarEnabled := envBoolOn("SOUL_PUBLIC_ONCHAIN_AVATAR_ENABLED")
 	soulV2StrictIntegrity := envBoolOn("SOUL_V2_STRICT_INTEGRITY")
 
 	soulRepTipStartBlock := envUint64("SOUL_REPUTATION_TIP_START_BLOCK", 0)
@@ -256,6 +258,7 @@ func Load() Config {
 		SoulPackBucketNameSSMParam:               envString("SOUL_PACK_BUCKET_NAME_SSM_PARAM"),
 		SoulMintSignerKeySSMParam:                envString("SOUL_MINT_SIGNER_KEY_SSM_PARAM"),
 		SoulPublicCORSOrigins:                    soulPublicCORSOrigins,
+		SoulPublicOnChainAvatarEnabled:           soulPublicOnChainAvatarEnabled,
 		SoulV2StrictIntegrity:                    soulV2StrictIntegrity,
 
 		SoulReputationTipStartBlock:       soulRepTipStartBlock,

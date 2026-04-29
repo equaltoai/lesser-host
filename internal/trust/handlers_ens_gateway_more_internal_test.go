@@ -3,6 +3,7 @@ package trust
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math/big"
 	"strings"
 	"testing"
@@ -97,6 +98,28 @@ func TestHandleENSGatewayHealthAndHelpers(t *testing.T) {
 	}
 	if _, _, hit := cache.get("agent.eth", now.Add(2*time.Minute)); hit {
 		t.Fatalf("expected expired cache miss")
+	}
+
+}
+
+func TestENSGatewayCacheMaxEntries(t *testing.T) {
+	t.Parallel()
+
+	cache := &ensGatewayCache{}
+	now := time.Unix(10, 0).UTC()
+	for i := 0; i < ensGatewayCacheMaxEntries+10; i++ {
+		cache.put(
+			fmt.Sprintf("agent-%d.eth", i),
+			ensGatewayMaterial{AgentID: fmt.Sprintf("0x%x", i)},
+			false,
+			now.Add(time.Hour),
+		)
+	}
+	cache.mu.RLock()
+	size := len(cache.items)
+	cache.mu.RUnlock()
+	if size > ensGatewayCacheMaxEntries {
+		t.Fatalf("expected cache size <= %d, got %d", ensGatewayCacheMaxEntries, size)
 	}
 }
 

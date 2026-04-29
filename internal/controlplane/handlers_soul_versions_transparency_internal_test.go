@@ -9,6 +9,7 @@ import (
 
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
+	"github.com/theory-cloud/tabletheory/pkg/core"
 
 	"github.com/stretchr/testify/mock"
 
@@ -54,7 +55,7 @@ func TestHandleSoulPublicGetVersions(t *testing.T) {
 		}
 
 		tdb := newSoulLifecycleTestDB()
-		tdb.qVersion.On("All", mock.Anything).Return(errors.New("boom")).Once()
+		tdb.qVersion.On("AllPaginated", mock.Anything).Return((*core.PaginatedResult)(nil), errors.New("boom")).Once()
 		s = &Server{
 			store: store.New(tdb.db),
 			cfg:   config.Config{SoulEnabled: true},
@@ -69,7 +70,7 @@ func TestHandleSoulPublicGetVersions(t *testing.T) {
 		t.Parallel()
 
 		tdb := newSoulLifecycleTestDB()
-		tdb.qVersion.On("All", mock.AnythingOfType("*[]*models.SoulAgentVersion")).Return(nil).Run(func(args mock.Arguments) {
+		tdb.qVersion.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulAgentVersion")).Return(&core.PaginatedResult{HasMore: true, NextCursor: " c2 "}, nil).Run(func(args mock.Arguments) {
 			dest := testutil.RequireMockArg[*[]*models.SoulAgentVersion](t, args, 0)
 			*dest = []*models.SoulAgentVersion{
 				{AgentID: soulLifecycleTestAgentIDHex, VersionNumber: 1, CreatedAt: time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)},
@@ -87,8 +88,8 @@ func TestHandleSoulPublicGetVersions(t *testing.T) {
 			Params: map[string]string{"agentId": soulLifecycleTestAgentIDHex},
 			Request: apptheory.Request{
 				Query: map[string][]string{
-					"cursor": {"3"},
-					"limit":  {"1"},
+					"cursor": {"c1"},
+					"limit":  {"2"},
 					"origin": {"https://portal.example.com"},
 				},
 			},
@@ -105,7 +106,7 @@ func TestHandleSoulPublicGetVersions(t *testing.T) {
 		if err := json.Unmarshal(resp.Body, &out); err != nil {
 			t.Fatalf("Unmarshal: %v", err)
 		}
-		if out.Count != 1 || len(out.Versions) != 1 || out.Versions[0].VersionNumber != 2 || !out.HasMore || out.NextCursor != "2" {
+		if out.Count != 3 || len(out.Versions) != 3 || out.Versions[0].VersionNumber != 3 || out.Versions[1].VersionNumber != 2 || out.Versions[2].VersionNumber != 1 || !out.HasMore || out.NextCursor != "c2" {
 			t.Fatalf("unexpected versions response: %#v", out)
 		}
 	})

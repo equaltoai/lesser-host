@@ -8,8 +8,10 @@ import (
 	"errors"
 	"math/big"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
@@ -19,6 +21,8 @@ import (
 	"github.com/equaltoai/lesser-host/internal/soul"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
+
+const soulPublicAvatarTestStyleName = "Sigil"
 
 func TestSoulPublicAvatarViewHelpers(t *testing.T) {
 	t.Parallel()
@@ -83,7 +87,7 @@ func TestDecodeSoulAvatarMetadataAndDataURIs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode metadata: %v", err)
 	}
-	if metadata == nil || metadata.Image != "data:image/svg+xml;base64,xyz" || soulAvatarMetadataStyleName(metadata) != "Sigil" {
+	if metadata == nil || metadata.Image != "data:image/svg+xml;base64,xyz" || soulAvatarMetadataStyleName(metadata) != soulPublicAvatarTestStyleName {
 		t.Fatalf("unexpected metadata: %#v", metadata)
 	}
 	if soulAvatarMetadataStyleName(&soulAvatarTokenMetadata{
@@ -104,6 +108,96 @@ func TestDecodeSoulAvatarMetadataAndDataURIs(t *testing.T) {
 	}
 	if _, err := decodeSoulAvatarTokenMetadata("data:text/plain,hello"); err == nil {
 		t.Fatalf("expected non-json metadata to fail")
+	}
+}
+
+func TestSoulPublicAvatarCache(t *testing.T) {
+	t.Parallel()
+
+	cache := &soulPublicAvatarCache{}
+	now := time.Unix(100, 0).UTC()
+	original := soulPublicAvatarCacheFixture()
+
+	requireSoulPublicAvatarCacheMiss(t, cache, "agent", now)
+	cache.put("agent", original, now.Add(time.Minute), now)
+	original.Image = "mutated-after-put"
+
+	got := requireSoulPublicAvatarCacheHit(t, cache, "agent", now)
+	got.Image = "mutated-after-get"
+	got.Styles[0].StyleName = "changed"
+
+	gotAgain := requireSoulPublicAvatarCacheHit(t, cache, "agent", now)
+	if gotAgain.Styles[0].StyleName != soulPublicAvatarTestStyleName {
+		t.Fatalf("expected cache get to return clone, got %#v", gotAgain)
+	}
+	requireSoulPublicAvatarCacheMiss(t, cache, "agent", now.Add(2*time.Minute))
+
+	cache.put("", gotAgain, now.Add(time.Minute), now)
+	cache.put("nil", nil, now.Add(time.Minute), now)
+	requireSoulPublicAvatarCacheMiss(t, cache, "nil", now)
+}
+
+func soulPublicAvatarCacheFixture() *soulPublicAvatarView {
+	styleID := 2
+	return &soulPublicAvatarView{
+		TokenURI:       "ipfs://avatar",
+		Image:          "image",
+		CurrentStyleID: &styleID,
+		Styles: []soulPublicAvatarStyleView{{
+			StyleID:   2,
+			StyleName: soulPublicAvatarTestStyleName,
+			Selected:  true,
+		}},
+	}
+}
+
+func requireSoulPublicAvatarCacheMiss(t *testing.T, cache *soulPublicAvatarCache, key string, now time.Time) {
+	t.Helper()
+
+	got, ok := cache.get(key, now)
+	if ok {
+		t.Fatalf("expected cache miss for %q, got %#v", key, got)
+	}
+	if got != nil {
+		t.Fatalf("expected nil cache value for %q, got %#v", key, got)
+	}
+}
+
+func requireSoulPublicAvatarCacheHit(t *testing.T, cache *soulPublicAvatarCache, key string, now time.Time) *soulPublicAvatarView {
+	t.Helper()
+
+	got, ok := cache.get(key, now)
+	if !ok {
+		t.Fatalf("expected cache hit for %q", key)
+	}
+	if got == nil {
+		t.Fatalf("expected cache avatar for %q", key)
+	}
+	if got.Image != "image" {
+		t.Fatalf("expected cloned cache image, got %#v", got)
+	}
+	if got.CurrentStyleID == nil {
+		t.Fatalf("expected cloned current style, got %#v", got)
+	}
+	if *got.CurrentStyleID != 2 {
+		t.Fatalf("expected current style 2, got %#v", got)
+	}
+	return got
+}
+
+func TestSoulPublicAvatarCacheMaxEntries(t *testing.T) {
+	t.Parallel()
+
+	cache := &soulPublicAvatarCache{}
+	now := time.Unix(200, 0).UTC()
+	for i := 0; i < soulPublicAvatarCacheMaxEntries+10; i++ {
+		cache.put(string(rune('a'+(i%26)))+"-agent-"+strconv.Itoa(i), &soulPublicAvatarView{Image: "image"}, now.Add(time.Hour), now)
+	}
+	cache.mu.Lock()
+	size := len(cache.items)
+	cache.mu.Unlock()
+	if size > soulPublicAvatarCacheMaxEntries {
+		t.Fatalf("expected cache size <= %d, got %d", soulPublicAvatarCacheMaxEntries, size)
 	}
 }
 
@@ -171,7 +265,7 @@ func TestLoadSoulAvatarRendererHelpers(t *testing.T) {
 		callContract: func(ctx context.Context, msg ethereum.CallMsg) ([]byte, error) {
 			switch {
 			case msg.To != nil && *msg.To == rendererAddr && bytes.Equal(msg.Data, styleNameCall):
-				return packSingleStringResult(t, "Sigil"), nil
+				return packSingleStringResult(t, soulPublicAvatarTestStyleName), nil
 			case msg.To != nil && *msg.To == rendererAddr && bytes.Equal(msg.Data, renderAvatarCall):
 				return packSingleStringResult(t, "<svg>sigil</svg>"), nil
 			default:
@@ -196,7 +290,7 @@ func TestLoadSoulAvatarRendererHelpers(t *testing.T) {
 	}
 
 	styleName, err := loadRendererStyleName(context.Background(), client, rendererAddr)
-	if err != nil || styleName != "Sigil" {
+	if err != nil || styleName != soulPublicAvatarTestStyleName {
 		t.Fatalf("expected style name helper to decode, got styleName=%q err=%v", styleName, err)
 	}
 
@@ -244,9 +338,10 @@ func TestBuildSoulPublicAgentViewHandlesNilAndStrictIntegrity(t *testing.T) {
 
 	s = &Server{
 		cfg: config.Config{
-			SoulV2StrictIntegrity:       true,
-			SoulRPCURL:                  "http://rpc",
-			SoulRegistryContractAddress: "0x0000000000000000000000000000000000000abc",
+			SoulV2StrictIntegrity:          true,
+			SoulRPCURL:                     "http://rpc",
+			SoulRegistryContractAddress:    "0x0000000000000000000000000000000000000abc",
+			SoulPublicOnChainAvatarEnabled: true,
 		},
 	}
 	view := s.buildSoulPublicAgentView(context.Background(), &models.SoulAgentIdentity{AgentID: "not-hex"})
@@ -285,8 +380,9 @@ func TestLoadSoulPublicAgentAvatarErrorPaths(t *testing.T) {
 
 	s := &Server{
 		cfg: config.Config{
-			SoulRPCURL:                  "http://rpc",
-			SoulRegistryContractAddress: "0x0000000000000000000000000000000000000abc",
+			SoulRPCURL:                     "http://rpc",
+			SoulRegistryContractAddress:    "0x0000000000000000000000000000000000000abc",
+			SoulPublicOnChainAvatarEnabled: true,
 		},
 		dialEVM: func(ctx context.Context, rpcURL string) (ethRPCClient, error) {
 			return nil, errors.New("dial failed")
@@ -319,6 +415,80 @@ func TestLoadSoulPublicAgentAvatarErrorPaths(t *testing.T) {
 		t.Fatalf("expected empty avatar view to collapse to nil, got %#v", view)
 	}
 	_ = tokenURICall
+}
+
+func TestLoadSoulPublicAvatarViewFromChainSuccess(t *testing.T) {
+	t.Parallel()
+
+	tokenID := big.NewInt(42)
+	contractAddr := common.HexToAddress("0x0000000000000000000000000000000000000abc")
+	rendererAddr := common.HexToAddress("0x0000000000000000000000000000000000000def")
+	client := newSoulPublicAvatarFullLoaderClient(t, tokenID, contractAddr, rendererAddr)
+
+	view, err := loadSoulPublicAvatarViewFromChain(context.Background(), client, contractAddr, tokenID)
+	if err != nil {
+		t.Fatalf("load avatar view: %v", err)
+	}
+	assertSoulPublicAvatarFullLoaderView(t, view)
+}
+
+func newSoulPublicAvatarFullLoaderClient(t *testing.T, tokenID *big.Int, contractAddr common.Address, rendererAddr common.Address) *fakeSoulPublicEthClient {
+	t.Helper()
+
+	tokenURICall, err := soul.EncodeTokenURICall(tokenID)
+	if err != nil {
+		t.Fatalf("encode tokenURI: %v", err)
+	}
+	styleNameCall, err := soul.EncodeRendererStyleNameCall()
+	if err != nil {
+		t.Fatalf("encode styleName: %v", err)
+	}
+	renderAvatarCall, err := soul.EncodeRendererRenderAvatarCall(tokenID)
+	if err != nil {
+		t.Fatalf("encode renderAvatar: %v", err)
+	}
+
+	return &fakeSoulPublicEthClient{
+		callContract: func(ctx context.Context, msg ethereum.CallMsg) ([]byte, error) {
+			if msg.To != nil && *msg.To == contractAddr && bytes.Equal(msg.Data, tokenURICall) {
+				return packSingleStringResult(t, `data:application/json,{"image":"token-image","attributes":[{"trait_type":"Style","value":"Sigil"}]}`), nil
+			}
+			if msg.To != nil && *msg.To == rendererAddr && bytes.Equal(msg.Data, styleNameCall) {
+				return packSingleStringResult(t, soulPublicAvatarTestStyleName), nil
+			}
+			if msg.To != nil && *msg.To == rendererAddr && bytes.Equal(msg.Data, renderAvatarCall) {
+				return packSingleStringResult(t, "renderer-image"), nil
+			}
+			t.Fatalf("unexpected call contract request: %#v", msg)
+			return nil, nil
+		},
+		filterLogs: func(ctx context.Context, q ethereum.FilterQuery) ([]types.Log, error) {
+			return []types.Log{rendererUpdatedLog(2, rendererAddr)}, nil
+		},
+	}
+}
+
+func assertSoulPublicAvatarFullLoaderView(t *testing.T, view *soulPublicAvatarView) {
+	t.Helper()
+
+	if view == nil {
+		t.Fatalf("expected avatar view")
+	}
+	if view.CurrentStyleID == nil {
+		t.Fatalf("expected current style selection, got %#v", view)
+	}
+	if *view.CurrentStyleID != 2 {
+		t.Fatalf("expected current style 2, got %#v", view)
+	}
+	if len(view.Styles) != 3 {
+		t.Fatalf("expected default style slots, got %#v", view)
+	}
+	if !view.Styles[2].Selected {
+		t.Fatalf("expected rendered style 2 selected, got %#v", view)
+	}
+	if !strings.HasPrefix(view.Styles[2].Image, "data:image/svg+xml;base64,") {
+		t.Fatalf("expected rendered style image, got %#v", view)
+	}
 }
 
 func TestLoadSoulPublicAvatarViewFromChainErrorPaths(t *testing.T) {
@@ -438,7 +608,7 @@ func TestAvatarMetadataAndStyleEmptyCases(t *testing.T) {
 	}
 
 	selectView := &soulPublicAvatarView{CurrentStyleName: "Sigil"}
-	selectItem := soulPublicAvatarStyleView{StyleID: 2, StyleName: "Sigil", Image: "data:image/svg+xml;base64,abc"}
+	selectItem := soulPublicAvatarStyleView{StyleID: 2, StyleName: soulPublicAvatarTestStyleName, Image: "data:image/svg+xml;base64,abc"}
 	selectCurrentSoulAvatarStyle(selectView, &selectItem)
 	if selectView.Image != selectItem.Image {
 		t.Fatalf("expected selected style to backfill missing image, got %#v", selectView)

@@ -54,7 +54,10 @@ func (s *Server) handleSoulPublicGetAgent(ctx *apptheory.Context) (*apptheory.Re
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
-	rep, _ := s.getSoulAgentReputation(ctx.Context(), agentIDHex)
+	var rep *models.SoulAgentReputation
+	if soulPublicReputationAllowed(identity) {
+		rep, _ = s.getSoulAgentReputation(ctx.Context(), agentIDHex)
+	}
 
 	resp, err := apptheory.JSON(http.StatusOK, soulPublicAgentResponse{
 		Version:    "1",
@@ -87,6 +90,10 @@ func (s *Server) getSoulAgentReputation(ctx context.Context, agentIDHex string) 
 		return nil, err
 	}
 	return &item, nil
+}
+
+func soulPublicReputationAllowed(identity *models.SoulAgentIdentity) bool {
+	return soulIdentityStatus(identity) == models.SoulAgentStatusActive
 }
 
 func (s *Server) handleSoulPublicGetRegistration(ctx *apptheory.Context) (*apptheory.Response, error) {
@@ -152,6 +159,17 @@ func (s *Server) handleSoulPublicGetReputation(ctx *apptheory.Context) (*apptheo
 	agentIDHex, _, appErr := parseSoulAgentIDHex(ctx.Param("agentId"))
 	if appErr != nil {
 		return nil, appErr
+	}
+
+	identity, err := s.getSoulAgentIdentity(ctx.Context(), agentIDHex)
+	if theoryErrors.IsNotFound(err) {
+		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
+	}
+	if err != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if !soulPublicReputationAllowed(identity) {
+		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
 	}
 
 	rep, err := s.getSoulAgentReputation(ctx.Context(), agentIDHex)
@@ -972,7 +990,6 @@ func (s *Server) searchSoulAgents(ctx context.Context, params soulPublicSearchPa
 	}
 
 	cursor := strings.TrimSpace(params.Cursor)
-	remaining := params.Limit
 	results := make([]soulSearchResult, 0, params.Limit)
 
 	primary := soulSearchPrimaryDomain
@@ -987,36 +1004,23 @@ func (s *Server) searchSoulAgents(ctx context.Context, params soulPublicSearchPa
 		primary = soulSearchPrimaryChannel
 	}
 
-	hasMore := false
-	nextCursor := ""
-
-	for remaining > 0 {
-		entries, pageHasMore, pageNextCursor, appErr := s.querySoulSearchIndexEntries(ctx, primary, params, cursor, remaining)
-		if appErr != nil {
-			return nil, false, "", appErr
-		}
-
-		for _, entry := range entries {
-			pass, err := s.soulSearchEntryPassesFilters(ctx, entry, params, primary)
-			if err != nil || !pass {
-				continue
-			}
-			results = append(results, soulSearchResultFromEntry(entry))
-			remaining = params.Limit - len(results)
-			if remaining <= 0 {
-				break
-			}
-		}
-
-		hasMore = pageHasMore
-		nextCursor = strings.TrimSpace(pageNextCursor)
-		if remaining <= 0 || !hasMore || nextCursor == "" {
-			break
-		}
-		cursor = nextCursor
+	entries, pageHasMore, pageNextCursor, appErr := s.querySoulSearchIndexEntries(ctx, primary, params, cursor, params.Limit)
+	if appErr != nil {
+		return nil, false, "", appErr
 	}
 
-	return results, hasMore, nextCursor, nil
+	for _, entry := range entries {
+		pass, err := s.soulSearchEntryPassesFilters(ctx, entry, params, primary)
+		if err != nil || !pass {
+			continue
+		}
+		results = append(results, soulSearchResultFromEntry(entry))
+		if len(results) >= params.Limit {
+			break
+		}
+	}
+
+	return results, pageHasMore, strings.TrimSpace(pageNextCursor), nil
 }
 
 func (s *Server) filterActiveSoulSearchEntries(ctx context.Context, entries []soulSearchIndexEntry, limit int) []soulSearchResult {
