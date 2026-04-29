@@ -24,6 +24,7 @@ import (
 const (
 	commVoiceReplyBody      = "Yes, please call back tomorrow."
 	commVoiceReplyMessageID = "comm-msg-1-reply-call-1"
+	commVoiceCallControlID  = "call-control-1"
 )
 
 func voiceInstructionFixture() models.SoulCommVoiceInstruction {
@@ -459,7 +460,7 @@ func TestMaybeHandleOutboundVoiceStatusWebhook(t *testing.T) {
 			"data": map[string]any{
 				"event_type": "call.answered",
 				"payload": map[string]any{
-					"call_control_id": "call-control-1",
+					"call_control_id": commVoiceCallControlID,
 				},
 			},
 		})
@@ -482,6 +483,105 @@ func TestMaybeHandleOutboundVoiceStatusWebhook(t *testing.T) {
 			t.Fatalf("expected 200 response, got %#v", resp)
 		}
 	})
+}
+
+func TestMaybeHandleOutboundVoiceStatusWebhook_BillsOutboundExternalRecipient(t *testing.T) {
+	t.Parallel()
+
+	db := ttmocks.NewMockExtendedDBStrict()
+	qStatus := new(ttmocks.MockQuery)
+	qVoice := new(ttmocks.MockQuery)
+	qBudget := new(ttmocks.MockQuery)
+	tx := new(ttmocks.MockTransactionBuilder)
+	db.TransactWriteBuilder = tx
+
+	db.On("WithContext", mock.Anything).Return(db).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulCommMessageStatus")).Return(qStatus).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulCommVoiceInstruction")).Return(qVoice).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(qBudget).Maybe()
+	for _, q := range []*ttmocks.MockQuery{qStatus, qVoice, qBudget} {
+		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
+	}
+	qStatus.On("IfExists").Return(qStatus).Maybe()
+	qStatus.On("Update", mock.Anything).Return(nil).Twice()
+	qBudget.On("ConsistentRead").Return(qBudget).Maybe()
+
+	status := models.SoulCommMessageStatus{
+		MessageID:    "comm-msg-voice",
+		InstanceSlug: commWebhookTestInstanceSlug,
+		AgentID:      "0xabc",
+		ChannelType:  commChannelVoice,
+		To:           "+15557654321",
+		Provider:     commDeliveryProviderTelnyx,
+		Status:       models.SoulCommMessageStatusAccepted,
+		CreatedAt:    time.Now().UTC(),
+		UpdatedAt:    time.Now().UTC(),
+	}
+	qStatus.On("First", mock.AnythingOfType("*models.SoulCommMessageStatus")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulCommMessageStatus](t, args, 0)
+		*dest = status
+	}).Twice()
+	qVoice.On("First", mock.AnythingOfType("*models.SoulCommVoiceInstruction")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulCommVoiceInstruction](t, args, 0)
+		*dest = models.SoulCommVoiceInstruction{
+			MessageID: status.MessageID,
+			AgentID:   status.AgentID,
+			From:      "+15550142",
+			To:        status.To,
+			Body:      "hello",
+			CreatedAt: time.Now().UTC(),
+			UpdatedAt: time.Now().UTC(),
+		}
+	}).Twice()
+	qBudget.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.InstanceBudgetMonth](t, args, 0)
+		*dest = models.InstanceBudgetMonth{InstanceSlug: commWebhookTestInstanceSlug, IncludedCredits: 100, UsedCredits: 0}
+	}).Twice()
+
+	db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Once()
+	db.On("TransactWrite", mock.Anything, mock.Anything).Return(theoryErrors.ErrConditionFailed).Once()
+	tx.On("Create", mock.Anything, mock.Anything).Return(tx).Once().Run(func(args mock.Arguments) {
+		entry := testutil.RequireMockArg[*models.UsageLedgerEntry](t, args, 0)
+		if entry.InstanceSlug != commWebhookTestInstanceSlug || entry.Target != commVoiceCallControlID || entry.RequestID != commVoiceCallControlID {
+			t.Fatalf("unexpected outbound voice ledger identity: %#v", entry)
+		}
+		if entry.ActorURI != "soul_agent:0xabc" || entry.RequestedCredits != 16 || entry.DebitedCredits != 16 {
+			t.Fatalf("unexpected outbound voice ledger accounting: %#v", entry)
+		}
+	})
+	tx.On("UpdateWithBuilder", mock.Anything, mock.Anything, mock.Anything).Return(tx).Once()
+
+	body, err := json.Marshal(map[string]any{
+		"data": map[string]any{
+			"event_type": "call.hangup",
+			"payload": map[string]any{
+				"from":             "+15550142",
+				"to":               "+15557654321",
+				"call_control_id":  commVoiceCallControlID,
+				"duration_seconds": 61,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	s := &Server{store: store.New(db)}
+	for i := 0; i < 2; i++ {
+		resp, handled, callErr := s.maybeHandleOutboundVoiceStatusWebhook(&apptheory.Context{
+			Params:  map[string]string{"messageId": status.MessageID},
+			Request: apptheory.Request{Body: body},
+		})
+		if callErr != nil {
+			t.Fatalf("callback %d unexpected err: %v", i+1, callErr)
+		}
+		if !handled || resp == nil || resp.Status != http.StatusOK {
+			t.Fatalf("callback %d expected handled 200, got handled=%v resp=%#v", i+1, handled, resp)
+		}
+	}
+
+	db.AssertExpectations(t)
+	tx.AssertExpectations(t)
 }
 
 func TestMapTelnyxVoiceEventToSoulStatus(t *testing.T) {

@@ -215,7 +215,7 @@ func handleTelnyxVoiceCallRequest(t *testing.T, w http.ResponseWriter, r *http.R
 		t.Fatalf("unexpected StatusCallback: %q", got)
 	}
 	w.WriteHeader(http.StatusAccepted)
-	_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"call_control_id": "call-control-1"}})
+	_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"call_control_id": commVoiceCallControlID}})
 }
 
 type smtpCapture struct {
@@ -405,7 +405,7 @@ func TestDefaultTelnyxCreateVoiceCall(t *testing.T) {
 		t.Fatalf("expected validation error for empty sender")
 	}
 	callID, err := defaultTelnyxCreateVoiceCall(context.Background(), "+15551234567", "+15557654321", "https://lab.lesser.host/webhooks/comm/voice/texml/comm-msg-1", "https://lab.lesser.host/webhooks/comm/voice/status/comm-msg-1")
-	if err != nil || callID != "call-control-1" {
+	if err != nil || callID != commVoiceCallControlID {
 		t.Fatalf("create voice call: id=%q err=%v", callID, err)
 	}
 }

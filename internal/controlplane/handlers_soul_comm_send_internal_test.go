@@ -533,7 +533,7 @@ func TestHandleSoulCommSend_StartsVoiceCallAndStoresInstruction(t *testing.T) {
 			if !strings.HasPrefix(statusCallbackURL, "https://lab.lesser.host/webhooks/comm/voice/status/comm-msg-") {
 				t.Fatalf("unexpected statusCallbackURL: %q", statusCallbackURL)
 			}
-			return "call-control-1", nil
+			return commVoiceCallControlID, nil
 		},
 	}
 
@@ -562,7 +562,7 @@ func TestHandleSoulCommSend_StartsVoiceCallAndStoresInstruction(t *testing.T) {
 	if !voiceCalled {
 		t.Fatalf("expected telnyx voice call")
 	}
-	assertSoulCommSendResponse(t, resp, models.SoulCommMessageStatusAccepted, commDeliveryProviderTelnyx, commChannelVoice, "call-control-1")
+	assertSoulCommSendResponse(t, resp, models.SoulCommMessageStatusAccepted, commDeliveryProviderTelnyx, commChannelVoice, commVoiceCallControlID)
 }
 
 func TestHandleSoulCommSend_SMSInsufficientCreditsBlocksSend(t *testing.T) {

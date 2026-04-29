@@ -406,8 +406,42 @@ func (s *Server) meterTelnyxVoiceCall(ctx *apptheory.Context, toNumber string, c
 	if err != nil {
 		return nil
 	}
-	month := now.Format("2006-01")
+	return s.meterTelnyxVoiceUsage(ctx, agentID, instanceSlug, budget, now, callID, durationSeconds)
+}
 
+func (s *Server) meterOutboundTelnyxVoiceCall(ctx *apptheory.Context, statusItem *models.SoulCommMessageStatus, callID string, durationSeconds int64) error {
+	if s == nil || s.store == nil || s.store.DB == nil || ctx == nil {
+		return fmt.Errorf("store not initialized")
+	}
+	if statusItem == nil || strings.TrimSpace(callID) == "" || durationSeconds <= 0 {
+		return nil
+	}
+	statusCopy := *statusItem
+	_ = statusCopy.UpdateKeys()
+	if statusCopy.ChannelType != commChannelVoice {
+		return fmt.Errorf("outbound voice status has channel %q", statusCopy.ChannelType)
+	}
+	if statusCopy.Provider != "" && statusCopy.Provider != commDeliveryProviderTelnyx {
+		return fmt.Errorf("outbound voice status has provider %q", statusCopy.Provider)
+	}
+	if strings.TrimSpace(statusCopy.AgentID) == "" || strings.TrimSpace(statusCopy.InstanceSlug) == "" {
+		return fmt.Errorf("outbound voice status missing billable identity")
+	}
+	budget, now, err := s.loadTelnyxVoiceBudgetMonth(ctx, statusCopy.InstanceSlug)
+	if err != nil {
+		return err
+	}
+	return s.meterTelnyxVoiceUsage(ctx, statusCopy.AgentID, statusCopy.InstanceSlug, budget, now, callID, durationSeconds)
+}
+
+func (s *Server) meterTelnyxVoiceUsage(ctx *apptheory.Context, agentID string, instanceSlug string, budget models.InstanceBudgetMonth, now time.Time, callID string, durationSeconds int64) error {
+	agentID = strings.ToLower(strings.TrimSpace(agentID))
+	instanceSlug = strings.TrimSpace(instanceSlug)
+	callID = strings.TrimSpace(callID)
+	if agentID == "" || instanceSlug == "" || callID == "" || durationSeconds <= 0 {
+		return nil
+	}
+	month := now.Format("2006-01")
 	minutes := (durationSeconds + 59) / 60
 	if minutes <= 0 {
 		return nil
@@ -447,7 +481,7 @@ func (s *Server) meterTelnyxVoiceCall(ctx *apptheory.Context, toNumber string, c
 	}
 	_ = updateBudget.UpdateKeys()
 
-	err = s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
+	err := s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
 		tx.Create(ledger)
 		tx.UpdateWithBuilder(updateBudget, func(ub core.UpdateBuilder) error {
 			ub.Add("UsedCredits", credits)
@@ -492,16 +526,30 @@ func (s *Server) resolveTelnyxVoiceBudget(ctx *apptheory.Context, toNumber strin
 		return "", "", budget, now, err
 	}
 
+	budget, now, err = s.loadTelnyxVoiceBudgetMonth(ctx, instanceSlug)
+	if err != nil {
+		return "", "", budget, now, err
+	}
+
+	return agentID, instanceSlug, budget, now, nil
+}
+
+func (s *Server) loadTelnyxVoiceBudgetMonth(ctx *apptheory.Context, instanceSlug string) (models.InstanceBudgetMonth, time.Time, error) {
+	var budget models.InstanceBudgetMonth
+	now := time.Now().UTC()
+	instanceSlug = strings.TrimSpace(instanceSlug)
+	if instanceSlug == "" {
+		return budget, now, fmt.Errorf("instance slug is required")
+	}
 	if err := s.store.DB.WithContext(ctx.Context()).
 		Model(&models.InstanceBudgetMonth{}).
 		Where("PK", "=", fmt.Sprintf("INSTANCE#%s", instanceSlug)).
 		Where("SK", "=", fmt.Sprintf("BUDGET#%s", now.Format("2006-01"))).
 		ConsistentRead().
 		First(&budget); err != nil {
-		return "", "", budget, now, err
+		return budget, now, err
 	}
-
-	return agentID, instanceSlug, budget, now, nil
+	return budget, now, nil
 }
 
 func (s *Server) loadTelnyxVoiceInstanceSlug(ctx *apptheory.Context, identity *models.SoulAgentIdentity) (string, error) {
