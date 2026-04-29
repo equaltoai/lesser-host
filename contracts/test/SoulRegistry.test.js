@@ -234,6 +234,19 @@ describe("SoulRegistry — Burn", () => {
     await assert.rejects(registry.ownerOf(agentId), /ERC721NonexistentToken/);
   });
 
+  it("burn tombstones the agentId so it cannot be reminted", async () => {
+    const { registry, owner, alice, bob } = await deployRegistry();
+    const agentId = 2002n;
+
+    await registry.connect(owner).mintSoulOwner(alice.address, agentId, "ipfs://m", 0);
+    await registry.connect(owner).burnSoul(agentId);
+
+    await assert.rejects(
+      registry.connect(owner).mintSoulOwner(bob.address, agentId, "ipfs://m2", 0),
+      /already minted/,
+    );
+  });
+
   it("burn works when token is soulbound", async () => {
     const { registry, owner, alice } = await deployRegistry({
       claimWindowSeconds: 1n,

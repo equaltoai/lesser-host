@@ -36,6 +36,8 @@ contract SoulRegistry is ERC721, Ownable2Step, Pausable, EIP712 {
 
     // tokenId -> mint timestamp (seconds)
     mapping(uint256 => uint256) private _mintedAt;
+    // tokenId -> whether the ID has ever been minted.
+    mapping(uint256 => bool) private _everMinted;
 
     // agentId -> replay-protection nonce (used for rotations)
     /// @notice Replay-protection nonce used for wallet rotations (agentId => nonce).
@@ -213,10 +215,11 @@ contract SoulRegistry is ERC721, Ownable2Step, Pausable, EIP712 {
         if (bytes(metaURI).length == 0) {
             revert("SoulRegistry: metaURI required");
         }
-        if (_ownerOf(agentId) != address(0)) {
+        if (_ownerOf(agentId) != address(0) || _everMinted[agentId]) {
             revert("SoulRegistry: already minted");
         }
 
+        _everMinted[agentId] = true;
         _mintedAt[agentId] = block.timestamp;
         _metaURI[agentId] = metaURI;
         _avatarStyle[agentId] = avatarStyle;
