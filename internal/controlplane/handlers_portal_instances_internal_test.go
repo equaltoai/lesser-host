@@ -338,7 +338,7 @@ func TestHandlePortalUpdateInstanceConfig(t *testing.T) {
 	body, _ := json.Marshal(updateInstanceConfigRequest{LinkSafetyEnabled: &disable})
 	ctx := &apptheory.Context{
 		AuthIdentity: "alice",
-		Params:       map[string]string{"slug": "demo"},
+		Params:       map[string]string{"slug": testPortalInstanceSlugDemo},
 		Request:      apptheory.Request{Body: body},
 	}
 	resp, err := s.handlePortalUpdateInstanceConfig(ctx)
@@ -1018,7 +1018,7 @@ func TestPortalProvisioningHandlers_ReturnExistingAndNewJob(t *testing.T) {
 
 	issuedAt := time.Now().UTC()
 	expiresAt := issuedAt.Add(5 * time.Minute)
-	msg := buildProvisionConsentMessage("demo", "lab", "demo", walletAddr, "nonce", issuedAt, expiresAt)
+	msg := buildProvisionConsentMessage(testProvisionConsentStageLab, testProvisionConsentBaseDomainDemoGreater, testPortalInstanceSlugDemo, testProvisionConsentNonce16, expiresAt)
 	sigBytes, err := crypto.Sign(accounts.TextHash([]byte(msg)), privKey)
 	if err != nil {
 		t.Fatalf("Sign: %v", err)
@@ -1034,9 +1034,9 @@ func TestPortalProvisioningHandlers_ReturnExistingAndNewJob(t *testing.T) {
 		*dest = models.ProvisionConsentChallenge{
 			ID:            challengeID,
 			Username:      "alice",
-			InstanceSlug:  "demo",
-			Stage:         "lab",
-			AdminUsername: "demo",
+			InstanceSlug:  testPortalInstanceSlugDemo,
+			Stage:         testProvisionConsentStageLab,
+			AdminUsername: testPortalInstanceSlugDemo,
 			WalletType:    "ethereum",
 			WalletAddr:    walletAddr,
 			ChainID:       1,
@@ -1057,7 +1057,7 @@ func TestPortalProvisioningHandlers_ReturnExistingAndNewJob(t *testing.T) {
 
 	ctx2 := &apptheory.Context{
 		AuthIdentity: "alice",
-		Params:       map[string]string{"slug": "demo"},
+		Params:       map[string]string{"slug": testPortalInstanceSlugDemo},
 		Request:      apptheory.Request{Body: bodyJSON},
 	}
 	resp, err = s.handlePortalStartInstanceProvisioning(ctx2)
@@ -1106,7 +1106,7 @@ func TestHandlePortalStartInstanceProvisioning_BlocksReservedWallet(t *testing.T
 
 	issuedAt := time.Now().UTC()
 	expiresAt := issuedAt.Add(5 * time.Minute)
-	msg := buildProvisionConsentMessage("demo", "lab", "demo", reservedWalletLesserHostAdmin, "nonce", issuedAt, expiresAt)
+	msg := buildProvisionConsentMessage(testProvisionConsentStageLab, testProvisionConsentBaseDomainDemoGreater, testPortalInstanceSlugDemo, testProvisionConsentNonce16, expiresAt)
 
 	tdb.qConsent.On("First", mock.AnythingOfType("*models.ProvisionConsentChallenge")).Return(nil).Run(func(args mock.Arguments) {
 		destAny := args.Get(0)
@@ -1117,9 +1117,9 @@ func TestHandlePortalStartInstanceProvisioning_BlocksReservedWallet(t *testing.T
 		*dest = models.ProvisionConsentChallenge{
 			ID:            "c1",
 			Username:      "alice",
-			InstanceSlug:  "demo",
-			Stage:         "lab",
-			AdminUsername: "demo",
+			InstanceSlug:  testPortalInstanceSlugDemo,
+			Stage:         testProvisionConsentStageLab,
+			AdminUsername: testPortalInstanceSlugDemo,
 			WalletType:    "ethereum",
 			WalletAddr:    reservedWalletLesserHostAdmin,
 			ChainID:       1,
@@ -1140,7 +1140,7 @@ func TestHandlePortalStartInstanceProvisioning_BlocksReservedWallet(t *testing.T
 
 	ctx := &apptheory.Context{
 		AuthIdentity: "alice",
-		Params:       map[string]string{"slug": "demo"},
+		Params:       map[string]string{"slug": testPortalInstanceSlugDemo},
 		Request:      apptheory.Request{Body: bodyJSON},
 	}
 	if _, err := s.handlePortalStartInstanceProvisioning(ctx); err == nil {
@@ -1166,7 +1166,7 @@ func TestHandlePortalStartInstanceProvisioning_FailsOnInvalidSignature(t *testin
 	walletAddr := "0x00000000000000000000000000000000000000aa"
 	issuedAt := time.Now().UTC()
 	expiresAt := issuedAt.Add(5 * time.Minute)
-	msg := buildProvisionConsentMessage("demo", "lab", "demo", walletAddr, "nonce", issuedAt, expiresAt)
+	msg := buildProvisionConsentMessage(testProvisionConsentStageLab, testProvisionConsentBaseDomainDemoGreater, testPortalInstanceSlugDemo, testProvisionConsentNonce16, expiresAt)
 
 	tdb.qConsent.On("First", mock.AnythingOfType("*models.ProvisionConsentChallenge")).Return(nil).Run(func(args mock.Arguments) {
 		destAny := args.Get(0)
@@ -1177,9 +1177,9 @@ func TestHandlePortalStartInstanceProvisioning_FailsOnInvalidSignature(t *testin
 		*dest = models.ProvisionConsentChallenge{
 			ID:            "c1",
 			Username:      "alice",
-			InstanceSlug:  "demo",
-			Stage:         "lab",
-			AdminUsername: "demo",
+			InstanceSlug:  testPortalInstanceSlugDemo,
+			Stage:         testProvisionConsentStageLab,
+			AdminUsername: testPortalInstanceSlugDemo,
 			WalletType:    "ethereum",
 			WalletAddr:    walletAddr,
 			ChainID:       1,
@@ -1200,7 +1200,7 @@ func TestHandlePortalStartInstanceProvisioning_FailsOnInvalidSignature(t *testin
 
 	ctx := &apptheory.Context{
 		AuthIdentity: "alice",
-		Params:       map[string]string{"slug": "demo"},
+		Params:       map[string]string{"slug": testPortalInstanceSlugDemo},
 		Request:      apptheory.Request{Body: bodyJSON},
 	}
 	if _, err := s.handlePortalStartInstanceProvisioning(ctx); err == nil {
@@ -1226,7 +1226,7 @@ func TestHandlePortalStartInstanceProvisioning_FailsOnExpiredConsentChallenge(t 
 	walletAddr := "0x00000000000000000000000000000000000000aa"
 	expiresAt := time.Now().UTC().Add(-5 * time.Minute)
 	issuedAt := expiresAt.Add(-5 * time.Minute)
-	msg := buildProvisionConsentMessage("demo", "lab", "demo", walletAddr, "nonce", issuedAt, expiresAt)
+	msg := buildProvisionConsentMessage(testProvisionConsentStageLab, testProvisionConsentBaseDomainDemoGreater, testPortalInstanceSlugDemo, testProvisionConsentNonce16, expiresAt)
 
 	tdb.qConsent.On("First", mock.AnythingOfType("*models.ProvisionConsentChallenge")).Return(nil).Run(func(args mock.Arguments) {
 		destAny := args.Get(0)
@@ -1237,9 +1237,9 @@ func TestHandlePortalStartInstanceProvisioning_FailsOnExpiredConsentChallenge(t 
 		*dest = models.ProvisionConsentChallenge{
 			ID:            "c1",
 			Username:      "alice",
-			InstanceSlug:  "demo",
-			Stage:         "lab",
-			AdminUsername: "demo",
+			InstanceSlug:  testPortalInstanceSlugDemo,
+			Stage:         testProvisionConsentStageLab,
+			AdminUsername: testPortalInstanceSlugDemo,
 			WalletType:    "ethereum",
 			WalletAddr:    walletAddr,
 			ChainID:       1,
@@ -1260,7 +1260,7 @@ func TestHandlePortalStartInstanceProvisioning_FailsOnExpiredConsentChallenge(t 
 
 	ctx := &apptheory.Context{
 		AuthIdentity: "alice",
-		Params:       map[string]string{"slug": "demo"},
+		Params:       map[string]string{"slug": testPortalInstanceSlugDemo},
 		Request:      apptheory.Request{Body: bodyJSON},
 	}
 	if _, err := s.handlePortalStartInstanceProvisioning(ctx); err == nil {

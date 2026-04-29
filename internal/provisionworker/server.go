@@ -2082,7 +2082,7 @@ func (s *Server) deployRunnerStage(job *models.ProvisionJob) string {
 }
 
 func (s *Server) buildDeployRunnerEnv(job *models.ProvisionJob, stage, receiptKey, bootstrapKey string) []cbtypes.EnvironmentVariable {
-	consentMessage := strings.TrimSpace(job.ConsentMessage)
+	consentMessage := job.ConsentMessage
 	consentMessageB64 := ""
 	if consentMessage != "" {
 		consentMessageB64 = base64.StdEncoding.EncodeToString([]byte(consentMessage))

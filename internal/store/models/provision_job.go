@@ -132,7 +132,6 @@ func (j *ProvisionJob) UpdateKeys() error {
 	j.AdminUsername = strings.TrimSpace(j.AdminUsername)
 	j.AdminWalletType = strings.TrimSpace(j.AdminWalletType)
 	j.AdminWalletAddr = strings.ToLower(strings.TrimSpace(j.AdminWalletAddr))
-	j.ConsentMessage = strings.TrimSpace(j.ConsentMessage)
 	j.ConsentMessageHash = strings.TrimSpace(j.ConsentMessageHash)
 	j.ConsentSignature = strings.TrimSpace(j.ConsentSignature)
 	j.AccountRequestID = strings.TrimSpace(j.AccountRequestID)

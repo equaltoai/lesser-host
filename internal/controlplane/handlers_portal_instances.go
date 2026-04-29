@@ -380,12 +380,12 @@ func validatePortalInstanceConfigUpdateRequest(req updateInstanceConfigRequest) 
 
 func (s *Server) verifyPortalStartProvisionConsent(ctx *apptheory.Context, slug string, req startInstanceProvisionRequest) (startInstanceProvisionRequest, *apptheory.AppError) {
 	consentChallengeID := strings.TrimSpace(req.ConsentChallengeID)
-	consentMessage := strings.TrimSpace(req.ConsentMessage)
+	consentMessage := req.ConsentMessage
 	consentSignature := strings.TrimSpace(req.ConsentSignature)
 	if consentChallengeID == "" {
 		return req, &apptheory.AppError{Code: "app.bad_request", Message: "consent_challenge_id is required"}
 	}
-	if consentMessage == "" {
+	if strings.TrimSpace(consentMessage) == "" {
 		return req, &apptheory.AppError{Code: "app.bad_request", Message: "consent_message is required"}
 	}
 	if consentSignature == "" {
@@ -422,7 +422,7 @@ func (s *Server) verifyPortalStartProvisionConsent(ctx *apptheory.Context, slug 
 	req.AdminWalletType = strings.TrimSpace(chall.WalletType)
 	req.AdminWalletAddress = strings.TrimSpace(chall.WalletAddr)
 	req.AdminWalletChainID = chall.ChainID
-	req.ConsentMessage = strings.TrimSpace(chall.Message)
+	req.ConsentMessage = chall.Message
 	req.ConsentSignature = consentSignature
 
 	return req, nil

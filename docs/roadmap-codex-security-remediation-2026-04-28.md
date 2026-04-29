@@ -130,10 +130,34 @@ Security / tenant-isolation / on-chain-integrity / governance / provisioning / m
   - Reputation and model registration fixes with tests.
   - AppTheory deploy-command interpolation finding routed to a safe host contract change or framework-feedback issue.
 
+### Phase 4.5: Lesser M9 structured init-admin consent alignment
+
+- Items: [#217](https://github.com/equaltoai/lesser-host/issues/217),
+  [#218](https://github.com/equaltoai/lesser-host/issues/218),
+  [#219](https://github.com/equaltoai/lesser-host/issues/219),
+  [#220](https://github.com/equaltoai/lesser-host/issues/220),
+  [#221](https://github.com/equaltoai/lesser-host/issues/221).
+- Dependencies: Phase 4 merged; `provision-managed-instance` walk; lesser PR
+  [#901](https://github.com/equaltoai/lesser/pull/901) before final release certification/canary evidence.
+- Risks:
+  - host currently transports provisioning consent but must emit the structured JSON that Lesser M9 accepts.
+  - Any whitespace trimming or reserialization between wallet signing, `ProvisionJob`, CodeBuild, `provision.json`, and
+    `lesser init-admin` invalidates signature/replay semantics.
+  - Certifying M9 before exact published release assets exist would weaken consumer release verification.
+- Deliverables:
+  - host-generated `consent_message` is compact JSON with `kind=lesser.init_admin_consent.v1`, managed stage `instance`,
+    `username`, `nonce`, and `expires_at` only.
+  - Exact signed bytes are preserved through portal verification, stored job state, CodeBuild environment transport, and
+    `provision.json`.
+  - Managed provisioning docs and Lesser release contract document M9 consent shape, instance-stage domain derivation,
+    CORS sequencing, and no-bypass release-certification expectations.
+  - M9 consumption remains gated on checksum-verified exact published assets, managed-release certification/readiness,
+    lab dry-run, and canary evidence before live/default rollout.
+
 ### Phase 5: Regression evidence, docs, and staged rollout
 
 - Items: all fixed findings.
-- Dependencies: Phases 1–4 fixes merged through PR with gov-infra verifiers.
+- Dependencies: Phases 1–4.5 fixes merged through PR with gov-infra verifiers.
 - Risks:
   - Evidence gaps can make a fix unreviewable.
   - Lab-only success may not cover live vendor/provider behavior.
