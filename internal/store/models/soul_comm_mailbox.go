@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	theorymodel "github.com/theory-cloud/tabletheory/pkg/model"
 )
@@ -477,17 +476,15 @@ func SoulCommMailboxEventID(eventType string, deliveryID string, status string, 
 	return "comm-mailbox-event-" + shortHash(root, 20)
 }
 
-// SoulCommMailboxPreview collapses message body text into a bounded redacted
-// preview for list responses. The full body remains in the explicit content
-// object, not in list-oriented fields.
+// SoulCommMailboxPreview returns a constant redacted marker for list responses.
+// The full body remains in the explicit content object, not in list-oriented
+// metadata. Avoid normalizing the full body here: even short messages can carry
+// private content, and unbounded normalization is an avoidable CPU/memory risk.
 func SoulCommMailboxPreview(body string) string {
-	body = strings.Join(strings.Fields(strings.TrimSpace(body)), " ")
-	const maxRunes = 160
-	if utf8.RuneCountInString(body) <= maxRunes {
-		return body
+	if strings.TrimSpace(body) == "" {
+		return ""
 	}
-	runes := []rune(body)
-	return string(runes[:maxRunes]) + "…"
+	return "[content available]"
 }
 
 func validateSoulCommMailboxStatus(status string) error {

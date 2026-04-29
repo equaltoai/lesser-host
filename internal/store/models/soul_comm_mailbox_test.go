@@ -145,11 +145,8 @@ func assertMailboxMessageRetentionAndPreview(t *testing.T, msg *SoulCommMailboxM
 	if got, want := msg.TTL, created.Add(SoulCommMailboxRetentionDays*24*time.Hour).Unix(); got != want {
 		t.Fatalf("unexpected ttl: got %d want %d", got, want)
 	}
-	if len([]rune(msg.Preview)) > 161 {
-		t.Fatalf("expected bounded preview, got %q", msg.Preview)
-	}
-	if !strings.HasSuffix(msg.Preview, "…") {
-		t.Fatalf("expected truncated preview, got %q", msg.Preview)
+	if msg.Preview != "[content available]" {
+		t.Fatalf("expected redacted preview marker, got %q", msg.Preview)
 	}
 }
 

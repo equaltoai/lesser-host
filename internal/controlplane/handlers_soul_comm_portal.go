@@ -158,7 +158,7 @@ func (s *Server) listSoulAgentCommQueueItems(
 	ctx *apptheory.Context,
 	listCtx soulAgentCommListContext,
 ) ([]soulAgentCommQueueItem, *apptheory.AppError) {
-	messages, appErr := s.listSoulAgentCommMailboxRows(ctx, listCtx, "ASC", soulAgentCommPortalQueueScanLimit(listCtx.Limit))
+	messages, appErr := s.listSoulAgentCommMailboxRowsMatching(ctx, listCtx, "ASC", 100, isPortalQueuedMailboxItem)
 	if appErr != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list queued messages"}
 	}
@@ -172,6 +172,36 @@ func (s *Server) listSoulAgentCommQueueItems(
 			continue
 		}
 		items = append(items, soulAgentCommQueueFromMailbox(msg))
+	}
+	return items, nil
+}
+
+func (s *Server) listSoulAgentCommMailboxRowsMatching(
+	ctx *apptheory.Context,
+	listCtx soulAgentCommListContext,
+	order string,
+	pageLimit int,
+	matches func(*models.SoulCommMailboxMessage) bool,
+) ([]*models.SoulCommMailboxMessage, *apptheory.AppError) {
+	items := make([]*models.SoulCommMailboxMessage, 0, listCtx.Limit)
+	cursor := ""
+	for len(items) < listCtx.Limit {
+		page, hasMore, nextCursor, appErr := s.listSoulAgentCommMailboxRowsPage(ctx, listCtx, order, pageLimit, cursor)
+		if appErr != nil {
+			return nil, appErr
+		}
+		for _, msg := range page {
+			if matches == nil || matches(msg) {
+				items = append(items, msg)
+				if len(items) >= listCtx.Limit {
+					break
+				}
+			}
+		}
+		if !hasMore || strings.TrimSpace(nextCursor) == "" {
+			break
+		}
+		cursor = nextCursor
 	}
 	return items, nil
 }
@@ -196,6 +226,36 @@ func (s *Server) listSoulAgentCommMailboxRows(
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 	return items, nil
+}
+
+func (s *Server) listSoulAgentCommMailboxRowsPage(
+	ctx *apptheory.Context,
+	listCtx soulAgentCommListContext,
+	order string,
+	limit int,
+	cursor string,
+) ([]*models.SoulCommMailboxMessage, bool, string, *apptheory.AppError) {
+	var items []*models.SoulCommMailboxMessage
+	order = strings.ToUpper(strings.TrimSpace(order))
+	if order != "ASC" {
+		order = "DESC"
+	}
+	q := s.store.DB.WithContext(ctx.Context()).
+		Model(&models.SoulCommMailboxMessage{}).
+		Where("PK", "=", models.SoulCommMailboxAgentPK(listCtx.InstanceSlug, listCtx.AgentIDHex)).
+		OrderBy("SK", order).
+		Limit(limit)
+	if strings.TrimSpace(cursor) != "" {
+		q = q.Cursor(strings.TrimSpace(cursor))
+	}
+	paged, err := q.AllPaginated(&items)
+	if err != nil {
+		return nil, false, "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if paged == nil {
+		return items, false, "", nil
+	}
+	return items, paged.HasMore, strings.TrimSpace(paged.NextCursor), nil
 }
 
 func soulAgentCommActivityFromMailbox(item *models.SoulCommMailboxMessage) soulAgentCommActivityItem {
@@ -297,13 +357,6 @@ func isPortalQueuedMailboxItem(item *models.SoulCommMailboxMessage) bool {
 	}
 	return strings.EqualFold(strings.TrimSpace(item.Direction), models.SoulCommDirectionInbound) &&
 		strings.EqualFold(strings.TrimSpace(item.Status), models.SoulCommMailboxStatusQueued)
-}
-
-func soulAgentCommPortalQueueScanLimit(limit int) int {
-	if limit <= 0 {
-		return 50
-	}
-	return minInt(limit*4, 200)
 }
 
 func firstNonEmptySoulCommPortal(values ...string) string {

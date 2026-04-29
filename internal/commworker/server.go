@@ -149,7 +149,7 @@ func (s *Server) processInbound(ctx context.Context, _ string, msg QueueMessage)
 		return err
 	}
 	if !instOK || inst == nil {
-		s.logfMessage("commworker: inbound delivery dropped missing_instance agent=%s domain=%s channel=%s message=%s", strings.ToLower(strings.TrimSpace(agentID)), strings.ToLower(strings.TrimSpace(identity.Domain)), channel, strings.TrimSpace(notif.MessageID))
+		s.logfMessage("commworker: inbound delivery dropped missing_instance agent=%s domain=%s channel=%s message=%s", strings.ToLower(safeLogToken(agentID)), strings.ToLower(safeLogToken(identity.Domain)), strings.ToLower(safeLogToken(channel)), safeLogToken(notif.MessageID))
 		_ = s.recordInboundActivity(ctx, agentID, channel, notif, "drop", false)
 		return nil
 	}
@@ -341,7 +341,7 @@ func (s *Server) deliverResolvedInbound(ctx context.Context, agentID string, cha
 	s.maybeAnnotateRecipientAddress(ctx, agentID, channel, notif.To)
 
 	if inst == nil {
-		s.logfMessage("commworker: inbound delivery dropped missing_instance agent=%s domain=%s channel=%s message=%s", strings.ToLower(strings.TrimSpace(agentID)), strings.ToLower(strings.TrimSpace(identity.Domain)), strings.ToLower(strings.TrimSpace(channel)), strings.TrimSpace(notif.MessageID))
+		s.logfMessage("commworker: inbound delivery dropped missing_instance agent=%s domain=%s channel=%s message=%s", strings.ToLower(safeLogToken(agentID)), strings.ToLower(safeLogToken(identity.Domain)), strings.ToLower(safeLogToken(channel)), safeLogToken(notif.MessageID))
 		_ = s.recordInboundActivity(ctx, agentID, channel, notif, "drop", false)
 		return nil
 	}
@@ -1065,17 +1065,36 @@ func (s *Server) logfMessage(format string, args ...any) {
 func (s *Server) logInboundDrop(reason string, requestID string, sqsMessageID string, kind string, channel string, messageID string, err error) {
 	msg := fmt.Sprintf(
 		"commworker: inbound message dropped reason=%s request=%s sqs_message=%s kind=%s channel=%s message=%s",
-		strings.TrimSpace(reason),
-		strings.TrimSpace(requestID),
-		strings.TrimSpace(sqsMessageID),
-		strings.TrimSpace(kind),
-		strings.ToLower(strings.TrimSpace(channel)),
-		strings.TrimSpace(messageID),
+		safeLogToken(reason),
+		safeLogToken(requestID),
+		safeLogToken(sqsMessageID),
+		safeLogToken(kind),
+		strings.ToLower(safeLogToken(channel)),
+		safeLogToken(messageID),
 	)
 	if err != nil {
 		msg += fmt.Sprintf(" err=%v", err)
 	}
 	s.logfMessage("%s", msg)
+}
+
+func safeLogToken(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	value = strings.Map(func(r rune) rune {
+		switch r {
+		case '\r', '\n', '\t':
+			return ' '
+		default:
+			if r < 0x20 || r == 0x7f {
+				return -1
+			}
+			return r
+		}
+	}, value)
+	return strings.Join(strings.Fields(value), " ")
 }
 
 func getSecretsManagerSecretPlaintext(ctx context.Context, sm secretsManagerAPI, secretArn string) (string, error) {
@@ -1283,9 +1302,9 @@ func buildBounceMessageID(fromMailbox string, inReplyTo string) string {
 }
 
 func buildPlaintextEmailRFC5322(from string, to string, subject string, body string, messageID string, inReplyTo string) []byte {
-	from = strings.TrimSpace(from)
-	to = strings.TrimSpace(to)
-	subject = strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(subject), "\r", " "), "\n", " ")
+	from = safeRFC5322HeaderValue(from)
+	to = safeRFC5322HeaderValue(to)
+	subject = safeRFC5322HeaderValue(subject)
 	body = strings.TrimSpace(body)
 	if body != "" {
 		body = strings.ReplaceAll(body, "\r\n", "\n")
@@ -1303,12 +1322,12 @@ func buildPlaintextEmailRFC5322(from string, to string, subject string, body str
 		b.WriteString("Subject: " + subject + "\r\n")
 	}
 	b.WriteString("Date: " + time.Now().UTC().Format(time.RFC1123Z) + "\r\n")
-	if strings.TrimSpace(messageID) != "" {
-		b.WriteString("Message-ID: " + strings.TrimSpace(messageID) + "\r\n")
+	if safeRFC5322HeaderValue(messageID) != "" {
+		b.WriteString("Message-ID: " + safeRFC5322HeaderValue(messageID) + "\r\n")
 	}
-	if strings.TrimSpace(inReplyTo) != "" {
-		b.WriteString("In-Reply-To: " + strings.TrimSpace(inReplyTo) + "\r\n")
-		b.WriteString("References: " + strings.TrimSpace(inReplyTo) + "\r\n")
+	if safeRFC5322HeaderValue(inReplyTo) != "" {
+		b.WriteString("In-Reply-To: " + safeRFC5322HeaderValue(inReplyTo) + "\r\n")
+		b.WriteString("References: " + safeRFC5322HeaderValue(inReplyTo) + "\r\n")
 	}
 	b.WriteString("MIME-Version: 1.0\r\n")
 	b.WriteString("Content-Type: text/plain; charset=UTF-8\r\n")
@@ -1316,6 +1335,25 @@ func buildPlaintextEmailRFC5322(from string, to string, subject string, body str
 	b.WriteString("\r\n")
 	b.WriteString(body)
 	return b.Bytes()
+}
+
+func safeRFC5322HeaderValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	value = strings.Map(func(r rune) rune {
+		switch r {
+		case '\r', '\n', '\t':
+			return ' '
+		default:
+			if r < 0x20 || r == 0x7f {
+				return -1
+			}
+			return r
+		}
+	}, value)
+	return strings.Join(strings.Fields(value), " ")
 }
 
 func newToken(nBytes int) (string, error) {

@@ -490,8 +490,12 @@ func testBounceFormattingHelpers(t *testing.T) {
 		t.Fatalf("unexpected bounce message id: %q", got)
 	}
 	rfc := string(buildPlaintextEmailRFC5322("from@example.com", "to@example.com", "Subject\r\nBad", "Line1\nLine2", "<id>", "<parent>"))
-	if !strings.Contains(rfc, "Subject: Subject  Bad\r\n") || !strings.Contains(rfc, "In-Reply-To: <parent>\r\n") || !strings.Contains(rfc, "Line1\r\nLine2\r\n") {
+	if !strings.Contains(rfc, "Subject: Subject Bad\r\n") || !strings.Contains(rfc, "In-Reply-To: <parent>\r\n") || !strings.Contains(rfc, "Line1\r\nLine2\r\n") {
 		t.Fatalf("unexpected RFC5322 body: %q", rfc)
+	}
+	injected := string(buildPlaintextEmailRFC5322("from@example.com", "to@example.com", "Subject", "Body", "<id>\r\nX-Bad: yes", "<parent>\r\nX-Bad: yes"))
+	if strings.Contains(injected, "\r\nX-Bad: yes") {
+		t.Fatalf("header injection was not neutralized: %q", injected)
 	}
 }
 

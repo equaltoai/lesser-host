@@ -2,22 +2,30 @@ package commmailbox
 
 import (
 	"context"
+	"errors"
 	"io"
 	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/smithy-go"
 )
 
 type fakeS3PutClient struct {
 	input       *s3.PutObjectInput
+	headInput   *s3.HeadObjectInput
 	getBody     string
 	contentType string
+	putErr      error
+	headOutput  *s3.HeadObjectOutput
 }
 
 func (f *fakeS3PutClient) PutObject(_ context.Context, in *s3.PutObjectInput, _ ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
 	f.input = in
+	if f.putErr != nil {
+		return nil, f.putErr
+	}
 	return &s3.PutObjectOutput{}, nil
 }
 
@@ -27,6 +35,14 @@ func (f *fakeS3PutClient) GetObject(_ context.Context, in *s3.GetObjectInput, _ 
 		Body:        io.NopCloser(strings.NewReader(f.getBody)),
 		ContentType: aws.String(f.contentType),
 	}, nil
+}
+
+func (f *fakeS3PutClient) HeadObject(_ context.Context, in *s3.HeadObjectInput, _ ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
+	f.headInput = in
+	if f.headOutput != nil {
+		return f.headOutput, nil
+	}
+	return &s3.HeadObjectOutput{}, nil
 }
 
 func TestS3StorePutContent(t *testing.T) {
@@ -55,12 +71,56 @@ func TestS3StorePutContent(t *testing.T) {
 	if client.input == nil || aws.ToString(client.input.Bucket) != "mailbox-bucket" || aws.ToString(client.input.Key) != ptr.Key {
 		t.Fatalf("unexpected put input: %#v", client.input)
 	}
+	if aws.ToString(client.input.IfNoneMatch) != "*" {
+		t.Fatalf("expected immutable put with If-None-Match, got %#v", client.input.IfNoneMatch)
+	}
 	body, _ := io.ReadAll(client.input.Body)
 	if string(body) != "Hello mailbox" {
 		t.Fatalf("unexpected stored body: %q", string(body))
 	}
 	if client.input.Metadata["delivery-id"] != "comm-delivery-1" || client.input.Metadata["sha256"] != ptr.SHA256 {
 		t.Fatalf("unexpected metadata: %#v", client.input.Metadata)
+	}
+}
+
+func TestS3StorePutContentReturnsExistingPointerOnReplay(t *testing.T) {
+	preconditionErr := &smithy.GenericAPIError{Code: "PreconditionFailed", Message: "object exists"}
+	client := &fakeS3PutClient{
+		putErr: preconditionErr,
+		headOutput: &s3.HeadObjectOutput{
+			ContentLength: aws.Int64(13),
+			ContentType:   aws.String("text/plain"),
+			Metadata:      map[string]string{"sha256": "existing-digest"},
+		},
+	}
+	store := NewS3StoreWithClient("mailbox-bucket", client)
+
+	ptr, err := store.PutContent(context.Background(), ContentInput{
+		DeliveryID:   "comm-delivery-replay",
+		InstanceSlug: "Demo",
+		AgentID:      "0xABC",
+		MessageID:    "msg-1",
+		Direction:    "Inbound",
+		ChannelType:  "Email",
+		Body:         "Replay body",
+	})
+	if err != nil {
+		t.Fatalf("PutContent replay: %v", err)
+	}
+	if ptr.SHA256 != "existing-digest" || ptr.Bytes != 13 || ptr.ContentType != "text/plain" {
+		t.Fatalf("unexpected replay pointer: %#v", ptr)
+	}
+	if client.headInput == nil || aws.ToString(client.headInput.Key) != ptr.Key {
+		t.Fatalf("expected head of existing key, got %#v", client.headInput)
+	}
+}
+
+func TestS3StorePutContentReturnsNonPreconditionErrors(t *testing.T) {
+	client := &fakeS3PutClient{putErr: errors.New("boom")}
+	store := NewS3StoreWithClient("mailbox-bucket", client)
+	_, err := store.PutContent(context.Background(), ContentInput{DeliveryID: "d", AgentID: "a", Body: "body"})
+	if err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("expected put error, got %v", err)
 	}
 }
 
