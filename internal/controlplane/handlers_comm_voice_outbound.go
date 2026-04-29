@@ -191,6 +191,9 @@ func (s *Server) handleCommVoiceGatherWebhook(ctx *apptheory.Context) (*apptheor
 	if !s.cfg.SoulEnabled {
 		return apptheory.JSON(http.StatusNotFound, map[string]any{"ok": false})
 	}
+	if authErr := s.requireTelnyxCommWebhookAuth(ctx); authErr != nil {
+		return nil, authErr
+	}
 
 	messageID := strings.TrimSpace(ctx.Param("messageId"))
 	if messageID == "" {
@@ -477,10 +480,19 @@ func (s *Server) updateOutboundVoiceStatusFromWebhook(ctx *apptheory.Context, me
 	if err != nil {
 		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
+	if strings.TrimSpace(statusItem.MessageID) == "" {
+		statusItem.MessageID = messageID
+	}
 
-	_, to, callID, _, durationSeconds := extractTelnyxVoiceFields(tel)
+	from, to, callID, _, durationSeconds := extractTelnyxVoiceFields(tel)
 	if durationSeconds > 0 {
-		_ = s.meterTelnyxVoiceCall(ctx, to, callID, durationSeconds)
+		if err := s.validateOutboundVoiceBillingSource(ctx, &statusItem, from, to); err != nil {
+			return err
+		}
+		billingCallID := outboundVoiceBillingCallID(messageID, callID, tel.Data.EventType)
+		if err := s.meterOutboundTelnyxVoiceCall(ctx, &statusItem, billingCallID, durationSeconds); err != nil {
+			return &apptheory.AppError{Code: "app.internal", Message: "failed to meter voice call"}
+		}
 	}
 
 	nextStatus, errorCode, errorMessage, shouldUpdate := mapTelnyxVoiceEventToSoulStatus(strings.TrimSpace(tel.Data.EventType), durationSeconds, strings.TrimSpace(statusItem.Status))
@@ -500,6 +512,40 @@ func (s *Server) updateOutboundVoiceStatusFromWebhook(ctx *apptheory.Context, me
 		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 	return nil
+}
+
+func (s *Server) validateOutboundVoiceBillingSource(ctx *apptheory.Context, statusItem *models.SoulCommMessageStatus, fromNumber string, toNumber string) error {
+	if statusItem == nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	instruction, ok, err := s.loadSoulCommVoiceInstruction(ctx, statusItem.MessageID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
+	_ = instruction.UpdateKeys()
+	expectedAgentID := strings.ToLower(strings.TrimSpace(statusItem.AgentID))
+	if !strings.EqualFold(strings.TrimSpace(instruction.AgentID), expectedAgentID) {
+		return &apptheory.AppError{Code: "app.bad_request", Message: "invalid webhook payload"}
+	}
+	if strings.TrimSpace(fromNumber) != "" && normalizeCommPhoneE164(fromNumber) != normalizeCommPhoneE164(instruction.From) {
+		return &apptheory.AppError{Code: "app.bad_request", Message: "invalid webhook payload"}
+	}
+	if strings.TrimSpace(toNumber) != "" && normalizeCommPhoneE164(toNumber) != normalizeCommPhoneE164(instruction.To) {
+		return &apptheory.AppError{Code: "app.bad_request", Message: "invalid webhook payload"}
+	}
+	return nil
+}
+
+func outboundVoiceBillingCallID(messageID string, callID string, eventType string) string {
+	callID = strings.TrimSpace(callID)
+	eventType = strings.TrimSpace(eventType)
+	if callID == "" || (eventType != "" && strings.EqualFold(callID, eventType)) {
+		return strings.TrimSpace(messageID)
+	}
+	return callID
 }
 
 func mapTelnyxVoiceEventToSoulStatus(eventType string, durationSeconds int64, currentStatus string) (status string, errorCode string, errorMessage string, shouldUpdate bool) {

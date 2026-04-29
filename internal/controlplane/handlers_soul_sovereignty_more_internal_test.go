@@ -341,6 +341,9 @@ func TestHandleSoulCreateDispute_ValidationsAndSuccess(t *testing.T) {
 		if out.AgentID != agentID || out.DisputeID != "d-1" || out.Status != models.SoulDisputeStatusOpen {
 			t.Fatalf("unexpected dispute: %#v", out)
 		}
+		if out.SignalRef != "sig-1" || out.Evidence != "e" || out.Statement != "s" {
+			t.Fatalf("authenticated create response should retain raw dispute fields: %#v", out)
+		}
 	})
 
 	t.Run("conflict_when_create_fails", func(t *testing.T) {

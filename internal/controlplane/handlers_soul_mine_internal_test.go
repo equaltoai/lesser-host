@@ -73,7 +73,7 @@ func TestHandleSoulListMyAgents_ReturnsOwnedAgents(t *testing.T) {
 
 	tdb.qDomain.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.Domain](t, args, 0)
-		*dest = []*models.Domain{{Domain: "example.com", InstanceSlug: "inst1"}}
+		*dest = []*models.Domain{{Domain: "example.com", InstanceSlug: "inst1", Status: models.DomainStatusVerified}}
 	}).Once()
 
 	tdb.qIdx.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
@@ -157,7 +157,7 @@ func TestHandleSoulListMyAgents_IncludesManagedStageDomainAgents(t *testing.T) {
 
 	tdb.qDomain.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.Domain](t, args, 0)
-		*dest = []*models.Domain{{Domain: "simulacrum.greater.website", InstanceSlug: "simulacrum"}}
+		*dest = []*models.Domain{{Domain: "simulacrum.greater.website", InstanceSlug: "simulacrum", Status: models.DomainStatusVerified}}
 	}).Once()
 
 	tdb.qIdx.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
@@ -205,5 +205,43 @@ func TestHandleSoulListMyAgents_IncludesManagedStageDomainAgents(t *testing.T) {
 	}
 	if out.Agents[0].Agent.Domain != "dev.simulacrum.greater.website" {
 		t.Fatalf("expected managed stage domain, got %#v", out.Agents[0].Agent.Domain)
+	}
+}
+
+func TestHandleSoulListMyAgents_SkipsUnverifiedVanityDomains(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulMineTestDB()
+	s := &Server{
+		store: store.New(tdb.db),
+		cfg: config.Config{
+			SoulEnabled:                 true,
+			SoulChainID:                 1,
+			SoulRegistryContractAddress: "0x0000000000000000000000000000000000000001",
+		},
+	}
+
+	tdb.qInst.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.Instance](t, args, 0)
+		*dest = []*models.Instance{{Slug: "inst1"}}
+	}).Once()
+	tdb.qDomain.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.Domain](t, args, 0)
+		*dest = []*models.Domain{{Domain: "victim.example", InstanceSlug: "inst1", Status: models.DomainStatusPending}}
+	}).Once()
+
+	ctx := &apptheory.Context{RequestID: "r1", AuthIdentity: "alice"}
+	ctx.Set(ctxKeyOperatorRole, models.RoleAdmin)
+
+	resp, err := s.handleSoulListMyAgents(ctx)
+	if err != nil {
+		t.Fatalf("handleSoulListMyAgents: %v", err)
+	}
+	var out soulMineAgentsResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Count != 0 || len(out.Agents) != 0 {
+		t.Fatalf("expected pending vanity domain to be ignored, got %#v", out)
 	}
 }

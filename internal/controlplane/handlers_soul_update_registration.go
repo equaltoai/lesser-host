@@ -338,6 +338,10 @@ func (s *Server) publishLegacySoulRegistration(
 	if appErr != nil {
 		return 0, "", appErr
 	}
+	newCaps := normalizeSoulCapabilitiesLoose(capsNorm)
+	if appErr := s.validateCapabilityClaimLevelTransitions(ctx, identity, newCaps, claimLevels); appErr != nil {
+		return 0, "", appErr
+	}
 
 	s3Key := soulRegistrationS3Key(agentIDHex)
 	versionedKey := soulRegistrationVersionedS3Key(agentIDHex, nextVersion)
@@ -347,7 +351,7 @@ func (s *Server) publishLegacySoulRegistration(
 	if err := s.soulPacks.PutObject(ctx, s3Key, regBytes, "application/json", "private, max-age=0"); err != nil {
 		return 0, "", &apptheory.AppError{Code: "app.internal", Message: "failed to publish registration"}
 	}
-	if appErr := s.updateSoulAgentCapabilities(ctx, identity, capsNorm, claimLevels, now, false); appErr != nil {
+	if appErr := s.updateSoulAgentCapabilities(ctx, identity, capsNorm, claimLevels, now, true); appErr != nil {
 		return 0, "", appErr
 	}
 
@@ -479,21 +483,7 @@ func (s *Server) buildSoulV3ENSSync(agentIDHex string, identity *models.SoulAgen
 		Status:             models.SoulChannelStatusActive,
 		UpdatedAt:          now,
 	}
-	resolution := &models.SoulAgentENSResolution{
-		ENSName:             strings.TrimSpace(ens.Name),
-		AgentID:             agentIDHex,
-		Wallet:              strings.TrimSpace(identity.Wallet),
-		LocalID:             strings.TrimSpace(identity.LocalID),
-		Domain:              strings.TrimSpace(identity.Domain),
-		SoulRegistrationURI: s.soulMetaURI(agentIDHex),
-		MCPEndpoint:         strings.TrimSpace(regV3.Endpoints.MCP),
-		ActivityPubURI:      strings.TrimSpace(regV3.Endpoints.ActivityPub),
-		Email:               emailAddress,
-		Phone:               phoneNumber,
-		Status:              strings.TrimSpace(identity.LifecycleStatus),
-		UpdatedAt:           now,
-	}
-	return desired, resolution
+	return desired, nil
 }
 
 func buildSoulV3EmailSync(agentIDHex string, regV3 *soul.RegistrationFileV3, now time.Time) (*models.SoulAgentChannel, *models.SoulEmailAgentIndex) {
@@ -550,6 +540,9 @@ func (s *Server) syncSoulV3Channel(
 	if err != nil {
 		return err
 	}
+	if trustedManagedSoulChannelForIndex(existing) && !soulChannelsSameIdentifier(existing, desired) {
+		return &apptheory.AppError{Code: "app.conflict", Message: "managed channel must be deprovisioned before changing identifier"}
+	}
 	preserveManagedSoulChannelMetadata(desired, existing)
 	if appErr := s.cleanupSoulV3ChannelIndexes(ctx, agentIDHex, channelType, identity, existing, desired); appErr != nil {
 		return appErr
@@ -573,6 +566,9 @@ func preserveManagedSoulChannelMetadata(desired *models.SoulAgentChannel, existi
 	if desired == nil || existing == nil {
 		return
 	}
+	if !soulChannelsSameIdentifier(existing, desired) {
+		return
+	}
 	if strings.TrimSpace(desired.Provider) == "" {
 		desired.Provider = strings.TrimSpace(existing.Provider)
 	}
@@ -585,6 +581,12 @@ func preserveManagedSoulChannelMetadata(desired *models.SoulAgentChannel, existi
 	if desired.DeprovisionedAt.IsZero() && !existing.DeprovisionedAt.IsZero() {
 		desired.DeprovisionedAt = existing.DeprovisionedAt
 	}
+	if existing.Verified {
+		desired.Verified = true
+		if desired.VerifiedAt.IsZero() && !existing.VerifiedAt.IsZero() {
+			desired.VerifiedAt = existing.VerifiedAt
+		}
+	}
 }
 
 func (s *Server) cleanupSoulV3ChannelIndexes(ctx context.Context, agentIDHex string, channelType string, identity *models.SoulAgentIdentity, existing *models.SoulAgentChannel, desired *models.SoulAgentChannel) *apptheory.AppError {
@@ -595,15 +597,21 @@ func (s *Server) cleanupSoulV3ChannelIndexes(ctx context.Context, agentIDHex str
 	case models.SoulChannelTypeEmail:
 		old := &models.SoulEmailAgentIndex{Email: existing.Identifier, AgentID: agentIDHex}
 		_ = old.UpdateKeys()
-		_ = s.store.DB.WithContext(ctx).Model(old).Delete()
+		if err := s.deleteSoulEmailAgentIndexIfOwned(ctx, old); err != nil {
+			return &apptheory.AppError{Code: "app.internal", Message: "failed to delete email index"}
+		}
 	case models.SoulChannelTypePhone:
 		old := &models.SoulPhoneAgentIndex{Phone: existing.Identifier, AgentID: agentIDHex}
 		_ = old.UpdateKeys()
-		_ = s.store.DB.WithContext(ctx).Model(old).Delete()
+		if err := s.deleteSoulPhoneAgentIndexIfOwned(ctx, old); err != nil {
+			return &apptheory.AppError{Code: "app.internal", Message: "failed to delete phone index"}
+		}
 	case models.SoulChannelTypeENS:
 		old := &models.SoulAgentENSResolution{ENSName: existing.Identifier, AgentID: agentIDHex}
 		_ = old.UpdateKeys()
-		_ = s.store.DB.WithContext(ctx).Model(old).Delete()
+		if err := s.deleteSoulENSResolutionIfOwned(ctx, old); err != nil {
+			return &apptheory.AppError{Code: "app.internal", Message: "failed to delete ens resolution"}
+		}
 	}
 	if desired == nil {
 		return s.deleteSoulChannelAgentIndex(ctx, identity, channelType, agentIDHex)
@@ -649,7 +657,7 @@ func (s *Server) upsertSoulV3Channel(
 	if err := s.store.DB.WithContext(ctx).Model(desired).CreateOrUpdate(); err != nil {
 		return &apptheory.AppError{Code: "app.internal", Message: "failed to update channel"}
 	}
-	if appErr := s.upsertSoulV3ChannelIndexes(ctx, identity, channelType, desiredEmailIndex, desiredPhoneIndex, desiredENS); appErr != nil {
+	if appErr := s.upsertSoulV3ChannelIndexes(ctx, identity, channelType, desired, desiredEmailIndex, desiredPhoneIndex, desiredENS); appErr != nil {
 		return appErr
 	}
 	return nil
@@ -659,29 +667,26 @@ func (s *Server) upsertSoulV3ChannelIndexes(
 	ctx context.Context,
 	identity *models.SoulAgentIdentity,
 	channelType string,
+	desired *models.SoulAgentChannel,
 	desiredEmailIndex *models.SoulEmailAgentIndex,
 	desiredPhoneIndex *models.SoulPhoneAgentIndex,
 	desiredENS *models.SoulAgentENSResolution,
 ) *apptheory.AppError {
-	if desiredEmailIndex != nil {
-		_ = desiredEmailIndex.UpdateKeys()
-		if err := s.store.DB.WithContext(ctx).Model(desiredEmailIndex).CreateOrUpdate(); err != nil {
-			return &apptheory.AppError{Code: "app.internal", Message: "failed to update email index"}
-		}
-	}
-	if desiredPhoneIndex != nil {
-		_ = desiredPhoneIndex.UpdateKeys()
-		if err := s.store.DB.WithContext(ctx).Model(desiredPhoneIndex).CreateOrUpdate(); err != nil {
-			return &apptheory.AppError{Code: "app.internal", Message: "failed to update phone index"}
+	trustedManaged := trustedManagedSoulChannelForIndex(desired)
+	if trustedManaged {
+		if appErr := s.ensureTrustedSoulContactIndexes(ctx, desiredEmailIndex, desiredPhoneIndex); appErr != nil {
+			return appErr
 		}
 	}
 	if desiredENS != nil {
-		_ = desiredENS.UpdateKeys()
-		if err := s.store.DB.WithContext(ctx).Model(desiredENS).CreateOrUpdate(); err != nil {
-			return &apptheory.AppError{Code: "app.internal", Message: "failed to update ens resolution"}
+		if appErr := s.ensureSoulENSResolution(ctx, desiredENS); appErr != nil {
+			return appErr
 		}
 	}
 	if channelType != models.SoulChannelTypeEmail && channelType != models.SoulChannelTypePhone {
+		return nil
+	}
+	if !trustedManaged {
 		return nil
 	}
 	if strings.TrimSpace(identity.Domain) == "" || strings.TrimSpace(identity.LocalID) == "" {
@@ -698,6 +703,237 @@ func (s *Server) upsertSoulV3ChannelIndexes(
 		return &apptheory.AppError{Code: "app.internal", Message: "failed to update channel index"}
 	}
 	return nil
+}
+
+func (s *Server) ensureTrustedSoulContactIndexes(ctx context.Context, emailIdx *models.SoulEmailAgentIndex, phoneIdx *models.SoulPhoneAgentIndex) *apptheory.AppError {
+	if emailIdx != nil {
+		if appErr := s.ensureSoulEmailAgentIndex(ctx, emailIdx); appErr != nil {
+			return appErr
+		}
+	}
+	if phoneIdx != nil {
+		if appErr := s.ensureSoulPhoneAgentIndex(ctx, phoneIdx); appErr != nil {
+			return appErr
+		}
+	}
+	return nil
+}
+
+func soulChannelsSameIdentifier(existing *models.SoulAgentChannel, desired *models.SoulAgentChannel) bool {
+	if existing == nil && desired == nil {
+		return true
+	}
+	if existing == nil || desired == nil {
+		return false
+	}
+	existingCopy := *existing
+	desiredCopy := *desired
+	_ = existingCopy.UpdateKeys()
+	_ = desiredCopy.UpdateKeys()
+	return strings.EqualFold(strings.TrimSpace(existingCopy.ChannelType), strings.TrimSpace(desiredCopy.ChannelType)) &&
+		strings.EqualFold(strings.TrimSpace(existingCopy.Identifier), strings.TrimSpace(desiredCopy.Identifier))
+}
+
+func trustedManagedSoulChannelForIndex(ch *models.SoulAgentChannel) bool {
+	if ch == nil {
+		return false
+	}
+	chCopy := *ch
+	_ = chCopy.UpdateKeys()
+	if !chCopy.Verified || chCopy.ProvisionedAt.IsZero() || !chCopy.DeprovisionedAt.IsZero() || chCopy.Status != models.SoulChannelStatusActive {
+		return false
+	}
+	switch chCopy.ChannelType {
+	case models.SoulChannelTypeEmail:
+		return chCopy.Provider == "migadu"
+	case models.SoulChannelTypePhone:
+		return chCopy.Provider == "telnyx"
+	default:
+		return false
+	}
+}
+
+func soulCanonicalENSName(localID string) string {
+	localID = strings.TrimSpace(localID)
+	if localID == "" {
+		return ""
+	}
+	return localID + ".lessersoul.eth"
+}
+
+func (s *Server) ensureSoulEmailAgentIndex(ctx context.Context, idx *models.SoulEmailAgentIndex) *apptheory.AppError {
+	if idx == nil {
+		return nil
+	}
+	_ = idx.UpdateKeys()
+	return s.ensureSoulContactAgentIndex(ctx, idx, idx.PK, idx.SK, idx.Email, idx.AgentID, "email index is invalid", "email address is already provisioned", "failed to validate email mapping", "failed to update email index", func() any {
+		return &models.SoulEmailAgentIndex{}
+	}, func(existing any) string {
+		if idx, ok := existing.(*models.SoulEmailAgentIndex); ok && idx != nil {
+			return idx.AgentID
+		}
+		return ""
+	})
+}
+
+func (s *Server) ensureSoulPhoneAgentIndex(ctx context.Context, idx *models.SoulPhoneAgentIndex) *apptheory.AppError {
+	if idx == nil {
+		return nil
+	}
+	_ = idx.UpdateKeys()
+	return s.ensureSoulContactAgentIndex(ctx, idx, idx.PK, idx.SK, idx.Phone, idx.AgentID, "phone index is invalid", "phone number is already provisioned", "failed to validate phone mapping", "failed to update phone index", func() any {
+		return &models.SoulPhoneAgentIndex{}
+	}, func(existing any) string {
+		if idx, ok := existing.(*models.SoulPhoneAgentIndex); ok && idx != nil {
+			return idx.AgentID
+		}
+		return ""
+	})
+}
+
+func (s *Server) ensureSoulContactAgentIndex(
+	ctx context.Context,
+	idx any,
+	pk string,
+	sk string,
+	identifier string,
+	agentID string,
+	invalidMessage string,
+	conflictMessage string,
+	validateMessage string,
+	updateMessage string,
+	newExisting func() any,
+	owner func(any) string,
+) *apptheory.AppError {
+	if strings.TrimSpace(identifier) == "" || strings.TrimSpace(agentID) == "" {
+		return &apptheory.AppError{Code: "app.bad_request", Message: invalidMessage}
+	}
+	existing := newExisting()
+	err := s.store.DB.WithContext(ctx).
+		Model(idx).
+		Where("PK", "=", pk).
+		Where("SK", "=", sk).
+		First(existing)
+	if err == nil {
+		if strings.EqualFold(strings.TrimSpace(owner(existing)), strings.TrimSpace(agentID)) {
+			return nil
+		}
+		return &apptheory.AppError{Code: "app.conflict", Message: conflictMessage}
+	}
+	if !theoryErrors.IsNotFound(err) {
+		return &apptheory.AppError{Code: "app.internal", Message: validateMessage}
+	}
+	if createErr := s.store.DB.WithContext(ctx).Model(idx).Create(); createErr != nil {
+		if theoryErrors.IsConditionFailed(createErr) {
+			return &apptheory.AppError{Code: "app.conflict", Message: conflictMessage}
+		}
+		return &apptheory.AppError{Code: "app.internal", Message: updateMessage}
+	}
+	return nil
+}
+
+func (s *Server) ensureSoulENSResolution(ctx context.Context, idx *models.SoulAgentENSResolution) *apptheory.AppError {
+	if idx == nil {
+		return nil
+	}
+	_ = idx.UpdateKeys()
+	if strings.TrimSpace(idx.ENSName) == "" || strings.TrimSpace(idx.AgentID) == "" {
+		return &apptheory.AppError{Code: "app.bad_request", Message: "ens resolution is invalid"}
+	}
+	var existing models.SoulAgentENSResolution
+	err := s.store.DB.WithContext(ctx).
+		Model(&models.SoulAgentENSResolution{}).
+		Where("PK", "=", idx.PK).
+		Where("SK", "=", idx.SK).
+		First(&existing)
+	if err == nil {
+		if strings.EqualFold(strings.TrimSpace(existing.AgentID), strings.TrimSpace(idx.AgentID)) {
+			if updateErr := s.store.DB.WithContext(ctx).Model(idx).CreateOrUpdate(); updateErr != nil {
+				return &apptheory.AppError{Code: "app.internal", Message: "failed to update ens resolution"}
+			}
+			return nil
+		}
+		return &apptheory.AppError{Code: "app.conflict", Message: "ens name is already provisioned"}
+	}
+	if !theoryErrors.IsNotFound(err) {
+		return &apptheory.AppError{Code: "app.internal", Message: "failed to validate ens resolution"}
+	}
+	if err := s.store.DB.WithContext(ctx).Model(idx).Create(); err != nil {
+		if theoryErrors.IsConditionFailed(err) {
+			return &apptheory.AppError{Code: "app.conflict", Message: "ens name is already provisioned"}
+		}
+		return &apptheory.AppError{Code: "app.internal", Message: "failed to update ens resolution"}
+	}
+	return nil
+}
+
+func (s *Server) deleteSoulEmailAgentIndexIfOwned(ctx context.Context, idx *models.SoulEmailAgentIndex) error {
+	if idx == nil {
+		return nil
+	}
+	_ = idx.UpdateKeys()
+	var existing models.SoulEmailAgentIndex
+	err := s.store.DB.WithContext(ctx).
+		Model(&models.SoulEmailAgentIndex{}).
+		Where("PK", "=", idx.PK).
+		Where("SK", "=", idx.SK).
+		First(&existing)
+	if theoryErrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(strings.TrimSpace(existing.AgentID), strings.TrimSpace(idx.AgentID)) {
+		return nil
+	}
+	return s.store.DB.WithContext(ctx).Model(idx).Delete()
+}
+
+func (s *Server) deleteSoulPhoneAgentIndexIfOwned(ctx context.Context, idx *models.SoulPhoneAgentIndex) error {
+	if idx == nil {
+		return nil
+	}
+	_ = idx.UpdateKeys()
+	var existing models.SoulPhoneAgentIndex
+	err := s.store.DB.WithContext(ctx).
+		Model(&models.SoulPhoneAgentIndex{}).
+		Where("PK", "=", idx.PK).
+		Where("SK", "=", idx.SK).
+		First(&existing)
+	if theoryErrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(strings.TrimSpace(existing.AgentID), strings.TrimSpace(idx.AgentID)) {
+		return nil
+	}
+	return s.store.DB.WithContext(ctx).Model(idx).Delete()
+}
+
+func (s *Server) deleteSoulENSResolutionIfOwned(ctx context.Context, idx *models.SoulAgentENSResolution) error {
+	if idx == nil {
+		return nil
+	}
+	_ = idx.UpdateKeys()
+	var existing models.SoulAgentENSResolution
+	err := s.store.DB.WithContext(ctx).
+		Model(&models.SoulAgentENSResolution{}).
+		Where("PK", "=", idx.PK).
+		Where("SK", "=", idx.SK).
+		First(&existing)
+	if theoryErrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(strings.TrimSpace(existing.AgentID), strings.TrimSpace(idx.AgentID)) {
+		return nil
+	}
+	return s.store.DB.WithContext(ctx).Model(idx).Delete()
 }
 
 func parseRFC3339Loose(raw string) (time.Time, bool) {

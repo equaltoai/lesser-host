@@ -149,20 +149,14 @@ func (s *Server) handleSoulProvisionPhoneChannel(ctx *apptheory.Context) (*appth
 func (s *Server) validateSoulProvisionPhoneNumberAvailability(ctx context.Context, agentIDHex string, number string) *apptheory.AppError {
 	phoneIdx := &models.SoulPhoneAgentIndex{Phone: number}
 	_ = phoneIdx.UpdateKeys()
-
-	var existingIdx models.SoulPhoneAgentIndex
-	lookupErr := s.store.DB.WithContext(ctx).
-		Model(&models.SoulPhoneAgentIndex{}).
-		Where("PK", "=", phoneIdx.PK).
-		Where("SK", "=", phoneIdx.SK).
-		First(&existingIdx)
-	if lookupErr == nil && strings.TrimSpace(existingIdx.AgentID) != "" && !strings.EqualFold(strings.TrimSpace(existingIdx.AgentID), agentIDHex) {
-		return &apptheory.AppError{Code: "app.conflict", Message: "phone number is already provisioned"}
-	}
-	if lookupErr != nil && !theoryErrors.IsNotFound(lookupErr) {
-		return &apptheory.AppError{Code: "app.internal", Message: "failed to validate phone mapping"}
-	}
-	return nil
+	return s.validateSoulProvisionIndexAvailability(ctx, &models.SoulPhoneAgentIndex{}, phoneIdx.PK, phoneIdx.SK, agentIDHex, "phone number is already provisioned", "failed to validate phone mapping", func() any {
+		return &models.SoulPhoneAgentIndex{}
+	}, func(existing any) string {
+		if idx, ok := existing.(*models.SoulPhoneAgentIndex); ok && idx != nil {
+			return idx.AgentID
+		}
+		return ""
+	})
 }
 
 func (s *Server) prepareSoulProvisionPhoneChannel(
@@ -292,7 +286,7 @@ func upsertProvisionedPhoneChannel(ctx context.Context, s *Server, agentIDHex st
 	if createErr := s.store.DB.WithContext(ctx).Model(channel).CreateOrUpdate(); createErr != nil {
 		return &apptheory.AppError{Code: "app.internal", Message: "failed to record phone channel"}
 	}
-	return nil
+	return s.ensureSoulPhoneAgentIndex(ctx, &models.SoulPhoneAgentIndex{Phone: number, AgentID: agentIDHex})
 }
 
 func (s *Server) handleSoulDeprovisionPhoneChannel(ctx *apptheory.Context) (*apptheory.Response, error) {

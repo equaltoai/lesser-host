@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/smithy-go"
 )
 
 const (
@@ -63,15 +65,15 @@ type ContentStore interface {
 type s3API interface {
 	PutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error)
 	GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error)
+	HeadObject(ctx context.Context, params *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error)
 }
 
 // S3Store stores mailbox content in the dedicated CDK-managed mailbox bucket.
 type S3Store struct {
 	bucket string
 
-	once   sync.Once
+	mu     sync.Mutex
 	client s3API
-	err    error
 }
 
 // NewS3Store constructs an S3-backed content store.
@@ -83,7 +85,6 @@ func NewS3Store(bucket string) *S3Store {
 func NewS3StoreWithClient(bucket string, client s3API) *S3Store {
 	st := NewS3Store(bucket)
 	if client != nil {
-		st.once.Do(func() {})
 		st.client = client
 	}
 	return st
@@ -128,6 +129,7 @@ func (s *S3Store) PutContent(ctx context.Context, input ContentInput) (ContentPo
 		Key:         aws.String(key),
 		Body:        bytes.NewReader(body),
 		ContentType: aws.String(contentType),
+		IfNoneMatch: aws.String("*"),
 		Metadata: map[string]string{
 			"delivery-id":   strings.TrimSpace(input.DeliveryID),
 			"agent-id":      strings.ToLower(strings.TrimSpace(input.AgentID)),
@@ -139,6 +141,9 @@ func (s *S3Store) PutContent(ctx context.Context, input ContentInput) (ContentPo
 		},
 	})
 	if err != nil {
+		if isS3PreconditionFailed(err) {
+			return s.existingPointer(ctx, client, bucket, key, contentType)
+		}
 		return ContentPointer{}, err
 	}
 
@@ -150,6 +155,42 @@ func (s *S3Store) PutContent(ctx context.Context, input ContentInput) (ContentPo
 		Bytes:       int64(len(body)),
 		ContentType: contentType,
 	}, nil
+}
+
+func (s *S3Store) existingPointer(ctx context.Context, client s3API, bucket string, key string, fallbackContentType string) (ContentPointer, error) {
+	out, err := client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return ContentPointer{}, err
+	}
+	digest := strings.ToLower(strings.TrimSpace(out.Metadata["sha256"]))
+	contentType := strings.TrimSpace(fallbackContentType)
+	if out.ContentType != nil && strings.TrimSpace(*out.ContentType) != "" {
+		contentType = strings.TrimSpace(*out.ContentType)
+	}
+	var bytes int64
+	if out.ContentLength != nil {
+		bytes = *out.ContentLength
+	}
+	return ContentPointer{
+		Storage:     ContentStorageS3,
+		Bucket:      bucket,
+		Key:         key,
+		SHA256:      digest,
+		Bytes:       bytes,
+		ContentType: contentType,
+	}, nil
+}
+
+func isS3PreconditionFailed(err error) bool {
+	var apiErr smithy.APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	code := strings.ToLower(strings.TrimSpace(apiErr.ErrorCode()))
+	return code == "preconditionfailed" || code == "precondition failed"
 }
 
 // GetContent reads a bounded mailbox content object and verifies its digest when
@@ -209,20 +250,16 @@ func (s *S3Store) s3Client(ctx context.Context) (s3API, error) {
 	if s == nil {
 		return nil, fmt.Errorf("mailbox content store is nil")
 	}
-	s.once.Do(func() {
-		cfg, err := awsconfig.LoadDefaultConfig(ctx)
-		if err != nil {
-			s.err = err
-			return
-		}
-		s.client = s3.NewFromConfig(cfg)
-	})
-	if s.err != nil {
-		return nil, s.err
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.client != nil {
+		return s.client, nil
 	}
-	if s.client == nil {
-		return nil, fmt.Errorf("s3 client not initialized")
+	cfg, err := awsconfig.LoadDefaultConfig(ctx)
+	if err != nil {
+		return nil, err
 	}
+	s.client = s3.NewFromConfig(cfg)
 	return s.client, nil
 }
 

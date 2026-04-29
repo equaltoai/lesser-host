@@ -144,6 +144,24 @@ func TestHandleSoulProvisionEmail_BeginThenConfirm_PublishesV3WithChannelAndIsId
 	assertProvisionEmailIdempotent(t, fixture, confirmBody)
 }
 
+func TestResolveSoulProvisionEmailAddress_RequiresAgentLocalID(t *testing.T) {
+	t.Parallel()
+
+	identity := &models.SoulAgentIdentity{LocalID: "agent-alice"}
+	_, _, _, appErr := resolveSoulProvisionEmailAddress(identity, "victim")
+	if appErr == nil || appErr.Code != appErrCodeConflict || appErr.Message != "localPart must match agent local id" {
+		t.Fatalf("expected local id conflict, got %v", appErr)
+	}
+
+	local, address, ens, appErr := resolveSoulProvisionEmailAddress(identity, "")
+	if appErr != nil {
+		t.Fatalf("expected canonical local id success, got %v", appErr)
+	}
+	if local != "agent-alice" || address != provisionTestEmailAddress || ens != provisionTestEmailENSName {
+		t.Fatalf("unexpected resolved address: local=%q address=%q ens=%q", local, address, ens)
+	}
+}
+
 func newProvisionEmailE2EFixture(t *testing.T) *provisionEmailE2EFixture {
 	t.Helper()
 
@@ -253,6 +271,8 @@ func seedProvisionEmailE2EAccess(t *testing.T, fixture *provisionEmailE2EFixture
 	fixture.tdb.qCapIdx.On("First", mock.AnythingOfType("*models.SoulCapabilityAgentIndex")).Return(theoryErrors.ErrItemNotFound).Maybe()
 	fixture.tdb.db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Once()
 
+	fixture.tdb.qEmailIdx.On("First", mock.AnythingOfType("*models.SoulEmailAgentIndex")).Return(theoryErrors.ErrItemNotFound).Times(3)
+	fixture.tdb.qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(theoryErrors.ErrItemNotFound).Once()
 	fixture.tdb.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(theoryErrors.ErrItemNotFound).Times(3)
 	fixture.tdb.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentChannel](t, args, 0)

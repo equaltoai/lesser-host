@@ -10,6 +10,7 @@ import (
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 	"github.com/theory-cloud/tabletheory"
 	"github.com/theory-cloud/tabletheory/pkg/core"
+	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/billing"
 	"github.com/equaltoai/lesser-host/internal/commworker"
@@ -61,6 +62,9 @@ func (s *Server) handleCommEmailInboundWebhook(ctx *apptheory.Context) (*apptheo
 	}
 	if !s.cfg.SoulEnabled {
 		return apptheory.JSON(http.StatusNotFound, map[string]any{"ok": false})
+	}
+	if authErr := s.requireCommWebhookAdapterAuth(ctx); authErr != nil {
+		return nil, authErr
 	}
 
 	// Prefer the stable communication:inbound payload shape.
@@ -129,23 +133,15 @@ func (s *Server) handleCommSMSInboundWebhook(ctx *apptheory.Context) (*apptheory
 	if !s.cfg.SoulEnabled {
 		return apptheory.JSON(http.StatusNotFound, map[string]any{"ok": false})
 	}
+	if authErr := s.requireTelnyxCommWebhookAuth(ctx); authErr != nil {
+		return nil, authErr
+	}
 
 	// Accept already-normalized communication:inbound payloads.
 	var notif commworker.InboundNotification
 	if err := httpx.ParseJSON(ctx, &notif); err == nil && strings.TrimSpace(notif.Type) != "" {
 		notif.Channel = commChannelSMS
-		msg := commworker.QueueMessage{
-			Kind:         commworker.QueueMessageKindInbound,
-			Provider:     commDeliveryProviderTelnyx,
-			Notification: notif,
-		}
-		if err := msg.Validate(); err != nil {
-			return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid webhook payload"}
-		}
-		if err := s.enqueueCommMessage(ctx.Context(), msg); err != nil {
-			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to enqueue"}
-		}
-		return apptheory.JSON(http.StatusOK, map[string]any{"ok": true})
+		return s.enqueueCommInboundWebhook(ctx, notif, commDeliveryProviderTelnyx)
 	}
 
 	// Telnyx webhook payload.
@@ -158,30 +154,21 @@ func (s *Server) handleCommSMSInboundWebhook(ctx *apptheory.Context) (*apptheory
 		return apptheory.JSON(http.StatusOK, map[string]any{"ok": true, "skipped": eventType})
 	}
 
-	from := strings.TrimSpace(tel.Data.Payload.From.PhoneNumber)
-	to := ""
-	if len(tel.Data.Payload.To) > 0 {
-		to = strings.TrimSpace(tel.Data.Payload.To[0].PhoneNumber)
+	msg := telnyxSMSWebhookQueueMessage(tel)
+	if err := msg.Validate(); err != nil {
+		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid webhook payload"}
 	}
-	body := strings.TrimSpace(tel.Data.Payload.Text)
-	messageID := strings.TrimSpace(tel.Data.Payload.ID)
-	receivedAt := strings.TrimSpace(tel.Data.OccurredAt)
-	if receivedAt == "" {
-		receivedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	if err := s.enqueueCommMessage(ctx.Context(), msg); err != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to enqueue"}
 	}
+	return apptheory.JSON(http.StatusOK, map[string]any{"ok": true})
+}
 
+func (s *Server) enqueueCommInboundWebhook(ctx *apptheory.Context, notif commworker.InboundNotification, provider string) (*apptheory.Response, error) {
 	msg := commworker.QueueMessage{
-		Kind:     commworker.QueueMessageKindInbound,
-		Provider: commDeliveryProviderTelnyx,
-		Notification: commworker.InboundNotification{
-			Type:       "communication:inbound",
-			Channel:    commChannelSMS,
-			From:       commworker.InboundParty{Number: from},
-			To:         &commworker.InboundParty{Number: to},
-			Body:       body,
-			ReceivedAt: receivedAt,
-			MessageID:  messageID,
-		},
+		Kind:         commworker.QueueMessageKindInbound,
+		Provider:     provider,
+		Notification: notif,
 	}
 	if err := msg.Validate(); err != nil {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid webhook payload"}
@@ -192,12 +179,40 @@ func (s *Server) handleCommSMSInboundWebhook(ctx *apptheory.Context) (*apptheory
 	return apptheory.JSON(http.StatusOK, map[string]any{"ok": true})
 }
 
+func telnyxSMSWebhookQueueMessage(tel telnyxInboundWebhook) commworker.QueueMessage {
+	from := strings.TrimSpace(tel.Data.Payload.From.PhoneNumber)
+	to := ""
+	if len(tel.Data.Payload.To) > 0 {
+		to = strings.TrimSpace(tel.Data.Payload.To[0].PhoneNumber)
+	}
+	receivedAt := strings.TrimSpace(tel.Data.OccurredAt)
+	if receivedAt == "" {
+		receivedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	return commworker.QueueMessage{
+		Kind:     commworker.QueueMessageKindInbound,
+		Provider: commDeliveryProviderTelnyx,
+		Notification: commworker.InboundNotification{
+			Type:       "communication:inbound",
+			Channel:    commChannelSMS,
+			From:       commworker.InboundParty{Number: from},
+			To:         &commworker.InboundParty{Number: to},
+			Body:       strings.TrimSpace(tel.Data.Payload.Text),
+			ReceivedAt: receivedAt,
+			MessageID:  strings.TrimSpace(tel.Data.Payload.ID),
+		},
+	}
+}
+
 func (s *Server) handleCommVoiceInboundWebhook(ctx *apptheory.Context) (*apptheory.Response, error) {
 	if s == nil || ctx == nil || s.enqueueCommMessage == nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 	if !s.cfg.SoulEnabled {
 		return apptheory.JSON(http.StatusNotFound, map[string]any{"ok": false})
+	}
+	if authErr := s.requireTelnyxCommWebhookAuth(ctx); authErr != nil {
+		return nil, authErr
 	}
 
 	// Accept already-normalized communication:inbound payloads.
@@ -251,6 +266,9 @@ func (s *Server) handleCommVoiceStatusWebhook(ctx *apptheory.Context) (*apptheor
 	}
 	if !s.cfg.SoulEnabled {
 		return apptheory.JSON(http.StatusNotFound, map[string]any{"ok": false})
+	}
+	if authErr := s.requireTelnyxCommWebhookAuth(ctx); authErr != nil {
+		return nil, authErr
 	}
 	if resp, handled, err := s.maybeHandleOutboundVoiceStatusWebhook(ctx); handled || err != nil {
 		return resp, err
@@ -388,8 +406,42 @@ func (s *Server) meterTelnyxVoiceCall(ctx *apptheory.Context, toNumber string, c
 	if err != nil {
 		return nil
 	}
-	month := now.Format("2006-01")
+	return s.meterTelnyxVoiceUsage(ctx, agentID, instanceSlug, budget, now, callID, durationSeconds)
+}
 
+func (s *Server) meterOutboundTelnyxVoiceCall(ctx *apptheory.Context, statusItem *models.SoulCommMessageStatus, callID string, durationSeconds int64) error {
+	if s == nil || s.store == nil || s.store.DB == nil || ctx == nil {
+		return fmt.Errorf("store not initialized")
+	}
+	if statusItem == nil || strings.TrimSpace(callID) == "" || durationSeconds <= 0 {
+		return nil
+	}
+	statusCopy := *statusItem
+	_ = statusCopy.UpdateKeys()
+	if statusCopy.ChannelType != commChannelVoice {
+		return fmt.Errorf("outbound voice status has channel %q", statusCopy.ChannelType)
+	}
+	if statusCopy.Provider != "" && statusCopy.Provider != commDeliveryProviderTelnyx {
+		return fmt.Errorf("outbound voice status has provider %q", statusCopy.Provider)
+	}
+	if strings.TrimSpace(statusCopy.AgentID) == "" || strings.TrimSpace(statusCopy.InstanceSlug) == "" {
+		return fmt.Errorf("outbound voice status missing billable identity")
+	}
+	budget, now, err := s.loadTelnyxVoiceBudgetMonth(ctx, statusCopy.InstanceSlug)
+	if err != nil {
+		return err
+	}
+	return s.meterTelnyxVoiceUsage(ctx, statusCopy.AgentID, statusCopy.InstanceSlug, budget, now, callID, durationSeconds)
+}
+
+func (s *Server) meterTelnyxVoiceUsage(ctx *apptheory.Context, agentID string, instanceSlug string, budget models.InstanceBudgetMonth, now time.Time, callID string, durationSeconds int64) error {
+	agentID = strings.ToLower(strings.TrimSpace(agentID))
+	instanceSlug = strings.TrimSpace(instanceSlug)
+	callID = strings.TrimSpace(callID)
+	if agentID == "" || instanceSlug == "" || callID == "" || durationSeconds <= 0 {
+		return nil
+	}
+	month := now.Format("2006-01")
 	minutes := (durationSeconds + 59) / 60
 	if minutes <= 0 {
 		return nil
@@ -429,8 +481,8 @@ func (s *Server) meterTelnyxVoiceCall(ctx *apptheory.Context, toNumber string, c
 	}
 	_ = updateBudget.UpdateKeys()
 
-	return s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
-		tx.Put(ledger)
+	err := s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
+		tx.Create(ledger)
 		tx.UpdateWithBuilder(updateBudget, func(ub core.UpdateBuilder) error {
 			ub.Add("UsedCredits", credits)
 			ub.Set("UpdatedAt", now)
@@ -438,6 +490,10 @@ func (s *Server) meterTelnyxVoiceCall(ctx *apptheory.Context, toNumber string, c
 		}, tabletheory.IfExists())
 		return nil
 	})
+	if theoryErrors.IsConditionFailed(err) {
+		return nil
+	}
+	return err
 }
 
 func (s *Server) resolveTelnyxVoiceBudget(ctx *apptheory.Context, toNumber string) (string, string, models.InstanceBudgetMonth, time.Time, error) {
@@ -470,16 +526,30 @@ func (s *Server) resolveTelnyxVoiceBudget(ctx *apptheory.Context, toNumber strin
 		return "", "", budget, now, err
 	}
 
+	budget, now, err = s.loadTelnyxVoiceBudgetMonth(ctx, instanceSlug)
+	if err != nil {
+		return "", "", budget, now, err
+	}
+
+	return agentID, instanceSlug, budget, now, nil
+}
+
+func (s *Server) loadTelnyxVoiceBudgetMonth(ctx *apptheory.Context, instanceSlug string) (models.InstanceBudgetMonth, time.Time, error) {
+	var budget models.InstanceBudgetMonth
+	now := time.Now().UTC()
+	instanceSlug = strings.TrimSpace(instanceSlug)
+	if instanceSlug == "" {
+		return budget, now, fmt.Errorf("instance slug is required")
+	}
 	if err := s.store.DB.WithContext(ctx.Context()).
 		Model(&models.InstanceBudgetMonth{}).
 		Where("PK", "=", fmt.Sprintf("INSTANCE#%s", instanceSlug)).
 		Where("SK", "=", fmt.Sprintf("BUDGET#%s", now.Format("2006-01"))).
 		ConsistentRead().
 		First(&budget); err != nil {
-		return "", "", budget, now, err
+		return budget, now, err
 	}
-
-	return agentID, instanceSlug, budget, now, nil
+	return budget, now, nil
 }
 
 func (s *Server) loadTelnyxVoiceInstanceSlug(ctx *apptheory.Context, identity *models.SoulAgentIdentity) (string, error) {

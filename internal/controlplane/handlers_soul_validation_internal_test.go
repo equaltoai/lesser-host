@@ -55,27 +55,42 @@ func TestSoulValidationHandlers_IssueRespondEvaluate(t *testing.T) {
 
 	tdb := newSoulValidationTestDB()
 	s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true}}
-
 	agentID := "0x" + strings.Repeat("11", 32)
 
-	tdb.qID.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
+	expectSoulValidationIdentity(t, tdb.qID, agentID)
+	issueOut := issueSoulValidationChallengeForTest(t, s, agentID)
+	chalID := issueOut.ChallengeID
+
+	expectSoulValidationChallengeLookup(t, tdb.qChal, issuedSoulValidationChallenge(agentID, chalID))
+	recordSoulValidationResponseForTest(t, s, agentID, chalID)
+
+	expectSoulValidationChallengeLookup(t, tdb.qChal, respondedSoulValidationChallenge(agentID, chalID))
+	evalOut := evaluateSoulValidationChallengeForTest(t, s, agentID, chalID)
+
+	if evalOut.Challenge.Status != models.SoulValidationChallengeStatusEvaluated || evalOut.Record.Result != models.SoulValidationResultPass {
+		t.Fatalf("unexpected evaluate output: %#v", evalOut)
+	}
+	if evalOut.Record.Request != "operator challenge material" || evalOut.Record.Response != "agent response material" {
+		t.Fatalf("operator evaluation response should retain raw transcript: %#v", evalOut.Record)
+	}
+}
+
+func expectSoulValidationIdentity(t *testing.T, q *ttmocks.MockQuery, agentID string) {
+	t.Helper()
+	q.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
 		*dest = models.SoulAgentIdentity{AgentID: agentID, Status: models.SoulAgentStatusActive}
 	}).Once()
+}
 
+func issueSoulValidationChallengeForTest(t *testing.T, s *Server, agentID string) models.SoulAgentValidationChallenge {
+	t.Helper()
 	issueBody, _ := json.Marshal(soulIssueValidationChallengeRequest{
 		ChallengeType: "identity_verify",
+		Request:       "operator challenge material",
 		TTLSeconds:    -1,
 	})
-	issueCtx := &apptheory.Context{
-		RequestID:    "r1",
-		AuthIdentity: "op",
-		Params:       map[string]string{"agentId": agentID},
-		Request:      apptheory.Request{Body: issueBody},
-	}
-	issueCtx.Set(ctxKeyOperatorRole, models.RoleAdmin)
-
-	issueResp, err := s.handleSoulIssueValidationChallenge(issueCtx)
+	issueResp, err := s.handleSoulIssueValidationChallenge(newOperatorSoulValidationCtx("r1", agentID, "", issueBody))
 	if err != nil || issueResp.Status != 200 {
 		t.Fatalf("issue: resp=%#v err=%v", issueResp, err)
 	}
@@ -89,47 +104,53 @@ func TestSoulValidationHandlers_IssueRespondEvaluate(t *testing.T) {
 	if issueOut.Challenge.ValidatorID != soulValidatorSystem {
 		t.Fatalf("expected default validator, got %#v", issueOut.Challenge.ValidatorID)
 	}
+	return issueOut.Challenge
+}
 
-	chalID := issueOut.Challenge.ChallengeID
-
-	tdb.qChal.On("First", mock.AnythingOfType("*models.SoulAgentValidationChallenge")).Return(nil).Run(func(args mock.Arguments) {
+func expectSoulValidationChallengeLookup(t *testing.T, q *ttmocks.MockQuery, challenge models.SoulAgentValidationChallenge) {
+	t.Helper()
+	q.On("First", mock.AnythingOfType("*models.SoulAgentValidationChallenge")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentValidationChallenge](t, args, 0)
-		*dest = models.SoulAgentValidationChallenge{
-			AgentID:       agentID,
-			ChallengeID:   chalID,
-			ChallengeType: "identity_verify",
-			ValidatorID:   soulValidatorSystem,
-			Request:       "req",
-			Status:        models.SoulValidationChallengeStatusIssued,
-			IssuedAt:      time.Now().Add(-time.Minute).UTC(),
-			UpdatedAt:     time.Now().Add(-time.Minute).UTC(),
-		}
-	}).Times(2)
+		*dest = challenge
+	}).Once()
+}
 
-	respBody, _ := json.Marshal(soulRecordValidationResponseRequest{Response: "ok"})
-	respCtx := &apptheory.Context{
-		RequestID:    "r2",
-		AuthIdentity: "op",
-		Params:       map[string]string{"agentId": agentID, "challengeId": chalID},
-		Request:      apptheory.Request{Body: respBody},
+func issuedSoulValidationChallenge(agentID string, chalID string) models.SoulAgentValidationChallenge {
+	issuedAt := time.Now().Add(-time.Minute).UTC()
+	return models.SoulAgentValidationChallenge{
+		AgentID:       agentID,
+		ChallengeID:   chalID,
+		ChallengeType: "identity_verify",
+		ValidatorID:   soulValidatorSystem,
+		Request:       "operator challenge material",
+		Status:        models.SoulValidationChallengeStatusIssued,
+		IssuedAt:      issuedAt,
+		UpdatedAt:     issuedAt,
 	}
-	respCtx.Set(ctxKeyOperatorRole, models.RoleAdmin)
+}
 
-	respResp, err := s.handleSoulRecordValidationResponse(respCtx)
+func respondedSoulValidationChallenge(agentID string, chalID string) models.SoulAgentValidationChallenge {
+	chal := issuedSoulValidationChallenge(agentID, chalID)
+	chal.Response = "agent response material"
+	chal.Status = models.SoulValidationChallengeStatusResponded
+	chal.RespondedAt = time.Now().Add(-30 * time.Second).UTC()
+	chal.UpdatedAt = chal.RespondedAt
+	return chal
+}
+
+func recordSoulValidationResponseForTest(t *testing.T, s *Server, agentID string, chalID string) {
+	t.Helper()
+	respBody, _ := json.Marshal(soulRecordValidationResponseRequest{Response: "agent response material"})
+	respResp, err := s.handleSoulRecordValidationResponse(newOperatorSoulValidationCtx("r2", agentID, chalID, respBody))
 	if err != nil || respResp.Status != 200 {
 		t.Fatalf("response: resp=%#v err=%v", respResp, err)
 	}
+}
 
+func evaluateSoulValidationChallengeForTest(t *testing.T, s *Server, agentID string, chalID string) soulEvaluateValidationChallengeResponse {
+	t.Helper()
 	evalBody, _ := json.Marshal(soulEvaluateValidationChallengeRequest{Result: models.SoulValidationResultPass})
-	evalCtx := &apptheory.Context{
-		RequestID:    "r3",
-		AuthIdentity: "op",
-		Params:       map[string]string{"agentId": agentID, "challengeId": chalID},
-		Request:      apptheory.Request{Body: evalBody},
-	}
-	evalCtx.Set(ctxKeyOperatorRole, models.RoleAdmin)
-
-	evalResp, err := s.handleSoulEvaluateValidationChallenge(evalCtx)
+	evalResp, err := s.handleSoulEvaluateValidationChallenge(newOperatorSoulValidationCtx("r3", agentID, chalID, evalBody))
 	if err != nil || evalResp.Status != 200 {
 		t.Fatalf("evaluate: resp=%#v err=%v", evalResp, err)
 	}
@@ -137,9 +158,22 @@ func TestSoulValidationHandlers_IssueRespondEvaluate(t *testing.T) {
 	if err := json.Unmarshal(evalResp.Body, &evalOut); err != nil {
 		t.Fatalf("unmarshal eval: %v", err)
 	}
-	if evalOut.Challenge.Status != models.SoulValidationChallengeStatusEvaluated || evalOut.Record.Result != models.SoulValidationResultPass {
-		t.Fatalf("unexpected evaluate output: %#v", evalOut)
+	return evalOut
+}
+
+func newOperatorSoulValidationCtx(requestID string, agentID string, chalID string, body []byte) *apptheory.Context {
+	params := map[string]string{"agentId": agentID}
+	if strings.TrimSpace(chalID) != "" {
+		params["challengeId"] = chalID
 	}
+	ctx := &apptheory.Context{
+		RequestID:    requestID,
+		AuthIdentity: "op",
+		Params:       params,
+		Request:      apptheory.Request{Body: body},
+	}
+	ctx.Set(ctxKeyOperatorRole, models.RoleAdmin)
+	return ctx
 }
 
 func TestSoulValidationHandlers_NotFoundAndBadRequest(t *testing.T) {

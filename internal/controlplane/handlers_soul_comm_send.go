@@ -44,6 +44,7 @@ const (
 	commMetricProviderRejected    = "provider_rejected"
 	commMetricInsufficientCredits = "insufficient_credits"
 	commMetricPreferenceViolation = "preference_violation"
+	commMetricBoundaryViolation   = "boundary_violation"
 	commMetricSent                = "sent"
 
 	commCodeInvalidRequest      = "comm.invalid_request"
@@ -52,6 +53,7 @@ const (
 	commCodeProviderUnavailable = "comm.provider_unavailable"
 	commCodeInsufficientCredits = "comm.insufficient_credits"
 	commCodePreferenceViolation = "comm.preference_violation"
+	commCodeBoundaryViolation   = "comm.boundary_violation"
 	commCodeIdempotencyConflict = "comm.idempotency_conflict"
 )
 
@@ -277,23 +279,19 @@ func parseSoulCommSendRequest(ctx *apptheory.Context, metrics *soulCommSendMetri
 		metrics.status = commMetricInvalidRequest
 		return validatedSoulCommSendRequest{}, apptheory.NewAppTheoryError(commCodeInvalidRequest, "to is required").WithStatusCode(http.StatusBadRequest)
 	}
+	var cc []string
+	var bcc []string
 	subject := strings.TrimSpace(req.Subject)
+	var recipientErr *apptheory.AppTheoryError
 	switch channel {
 	case commChannelEmail:
-		if _, err := mail.ParseAddress(to); err != nil {
-			metrics.status = commMetricInvalidRequest
-			return validatedSoulCommSendRequest{}, apptheory.NewAppTheoryError(commCodeInvalidRequest, "to must be an email address").WithStatusCode(http.StatusBadRequest)
-		}
-		if subject == "" {
-			metrics.status = commMetricInvalidRequest
-			return validatedSoulCommSendRequest{}, apptheory.NewAppTheoryError(commCodeInvalidRequest, "subject is required for email").WithStatusCode(http.StatusBadRequest)
-		}
+		to, cc, bcc, recipientErr = validateSoulCommEmailRequestRecipients(to, req.CC, req.BCC, subject)
 	default:
-		to = normalizeCommPhoneE164(to)
-		if !soulE164Regex.MatchString(to) {
-			metrics.status = commMetricInvalidRequest
-			return validatedSoulCommSendRequest{}, apptheory.NewAppTheoryError(commCodeInvalidRequest, "to must be an E.164 phone number").WithStatusCode(http.StatusBadRequest)
-		}
+		to, recipientErr = validateSoulCommPhoneRequestRecipient(to)
+	}
+	if recipientErr != nil {
+		metrics.status = commMetricInvalidRequest
+		return validatedSoulCommSendRequest{}, recipientErr
 	}
 
 	body := strings.TrimSpace(req.Body)
@@ -316,14 +314,41 @@ func parseSoulCommSendRequest(ctx *apptheory.Context, metrics *soulCommSendMetri
 		channel:        channel,
 		agentIDHex:     agentIDHex,
 		to:             to,
-		cc:             req.CC,
-		bcc:            req.BCC,
+		cc:             cc,
+		bcc:            bcc,
 		replyTo:        strings.TrimSpace(req.ReplyTo),
 		subject:        subject,
 		body:           body,
 		inReplyTo:      inReplyTo,
 		idempotencyKey: idempotencyKey,
 	}, nil
+}
+
+func validateSoulCommEmailRequestRecipients(to string, ccRaw []string, bccRaw []string, subject string) (string, []string, []string, *apptheory.AppTheoryError) {
+	to, appErr := normalizeCommEmailRequestAddress(to, "to")
+	if appErr != nil {
+		return "", nil, nil, appErr
+	}
+	cc, appErr := normalizeCommEmailRequestList(ccRaw, "cc")
+	if appErr != nil {
+		return "", nil, nil, appErr
+	}
+	bcc, appErr := normalizeCommEmailRequestList(bccRaw, "bcc")
+	if appErr != nil {
+		return "", nil, nil, appErr
+	}
+	if strings.TrimSpace(subject) == "" {
+		return "", nil, nil, apptheory.NewAppTheoryError(commCodeInvalidRequest, "subject is required for email").WithStatusCode(http.StatusBadRequest)
+	}
+	return to, cc, bcc, nil
+}
+
+func validateSoulCommPhoneRequestRecipient(to string) (string, *apptheory.AppTheoryError) {
+	to = normalizeCommPhoneE164(to)
+	if !soulE164Regex.MatchString(to) {
+		return "", apptheory.NewAppTheoryError(commCodeInvalidRequest, "to must be an E.164 phone number").WithStatusCode(http.StatusBadRequest)
+	}
+	return to, nil
 }
 
 func (s *Server) loadSoulCommSendRoute(ctx context.Context, key *models.InstanceKey, req validatedSoulCommSendRequest, metrics *soulCommSendMetrics) (soulCommSendRoute, *apptheory.AppTheoryError) {
@@ -411,54 +436,32 @@ func (s *Server) enforceSoulCommSendGuards(ctx *apptheory.Context, identity *mod
 		return soulCommSendGuardDecision{}, apptheory.NewAppTheoryError("comm.rate_limited", "rate limited").WithStatusCode(http.StatusTooManyRequests)
 	}
 	if req.inReplyTo != "" {
+		if appErr := s.enforceSoulCommReplyBoundary(ctx, req, now, metrics); appErr != nil {
+			return soulCommSendGuardDecision{}, appErr
+		}
 		return soulCommSendGuardDecision{}, nil
 	}
 	return s.enforceSoulCommFirstContactPolicy(ctx, identity, req, now, metrics)
 }
 
 func (s *Server) enforceSoulCommFirstContactPolicy(ctx *apptheory.Context, identity *models.SoulAgentIdentity, req validatedSoulCommSendRequest, now time.Time, metrics *soulCommSendMetrics) (soulCommSendGuardDecision, *apptheory.AppTheoryError) {
-	recipientAgentID, prefs, appErr := s.loadSoulCommFirstContactRecipient(ctx.Context(), req)
+	recipients, appErr := s.loadSoulCommFirstContactRecipients(ctx.Context(), req)
 	if appErr != nil {
 		return soulCommSendGuardDecision{}, appErr
 	}
-	if recipientAgentID == "" || prefs == nil {
+	if len(recipients) == 0 {
 		return soulCommSendGuardDecision{}, nil
 	}
 
 	enforced := false
-	if prefs.FirstContactRequireSoul {
-		enforced = true
-		if identity == nil || strings.TrimSpace(identity.AgentID) == "" {
-			return soulCommSendGuardDecision{preferenceRespected: boolPtr(false)}, s.denySoulCommFirstContact(ctx, req, now, metrics, "recipient first-contact policy requires a soul sender")
+	for _, recipient := range recipients {
+		recipientEnforced, recipientErr := s.enforceSoulCommRecipientFirstContactPolicy(ctx, identity, req, recipient, now, metrics)
+		if recipientErr != nil {
+			return soulCommSendGuardDecision{preferenceRespected: boolPtr(false)}, recipientErr
 		}
-	}
-
-	if prefs.FirstContactRequireReputation != nil {
-		enforced = true
-		rep, err := s.getSoulAgentReputation(ctx.Context(), req.agentIDHex)
-		if err != nil && !theoryErrors.IsNotFound(err) {
-			metrics.status = commMetricInternalError
-			return soulCommSendGuardDecision{}, apptheory.NewAppTheoryError(commCodeInternal, "internal error").WithStatusCode(http.StatusInternalServerError)
+		if recipientEnforced {
+			enforced = true
 		}
-		score := 0.0
-		if rep != nil {
-			score = rep.Composite
-		}
-		if rep == nil || score < *prefs.FirstContactRequireReputation {
-			return soulCommSendGuardDecision{preferenceRespected: boolPtr(false)}, s.denySoulCommFirstContact(
-				ctx,
-				req,
-				now,
-				metrics,
-				fmt.Sprintf("recipient first-contact policy requires soul reputation >= %.2f", *prefs.FirstContactRequireReputation),
-			)
-		}
-	}
-
-	// `introductionExpected` is currently advisory because the send contract does not yet
-	// include a structured introduction field to validate against.
-	if prefs.FirstContactIntroductionExpected {
-		enforced = true
 	}
 	if enforced {
 		return soulCommSendGuardDecision{preferenceRespected: boolPtr(true)}, nil
@@ -466,8 +469,69 @@ func (s *Server) enforceSoulCommFirstContactPolicy(ctx *apptheory.Context, ident
 	return soulCommSendGuardDecision{}, nil
 }
 
-func (s *Server) loadSoulCommFirstContactRecipient(ctx context.Context, req validatedSoulCommSendRequest) (string, *models.SoulAgentContactPreferences, *apptheory.AppTheoryError) {
-	agentID, found, err := s.lookupSoulCommRecipientAgentID(ctx, req.channel, req.to)
+func (s *Server) enforceSoulCommRecipientFirstContactPolicy(ctx *apptheory.Context, identity *models.SoulAgentIdentity, req validatedSoulCommSendRequest, recipient soulCommFirstContactRecipient, now time.Time, metrics *soulCommSendMetrics) (bool, *apptheory.AppTheoryError) {
+	prefs := recipient.preferences
+	if strings.TrimSpace(recipient.agentID) == "" || prefs == nil {
+		return false, nil
+	}
+	if prefs.FirstContactRequireSoul && (identity == nil || strings.TrimSpace(identity.AgentID) == "") {
+		return true, s.denySoulCommFirstContact(ctx, req, recipient.address, now, metrics, "recipient first-contact policy requires a soul sender")
+	}
+	if prefs.FirstContactRequireReputation != nil {
+		if appErr := s.enforceSoulCommRecipientReputationPolicy(ctx, req, recipient, *prefs.FirstContactRequireReputation, now, metrics); appErr != nil {
+			return true, appErr
+		}
+	}
+	return prefs.FirstContactRequireSoul || prefs.FirstContactRequireReputation != nil || prefs.FirstContactIntroductionExpected, nil
+}
+
+func (s *Server) enforceSoulCommRecipientReputationPolicy(ctx *apptheory.Context, req validatedSoulCommSendRequest, recipient soulCommFirstContactRecipient, minReputation float64, now time.Time, metrics *soulCommSendMetrics) *apptheory.AppTheoryError {
+	rep, err := s.getSoulAgentReputation(ctx.Context(), req.agentIDHex)
+	if err != nil && !theoryErrors.IsNotFound(err) {
+		metrics.status = commMetricInternalError
+		return apptheory.NewAppTheoryError(commCodeInternal, "internal error").WithStatusCode(http.StatusInternalServerError)
+	}
+	score := 0.0
+	if rep != nil {
+		score = rep.Composite
+	}
+	if rep != nil && score >= minReputation {
+		return nil
+	}
+	return s.denySoulCommFirstContact(
+		ctx,
+		req,
+		recipient.address,
+		now,
+		metrics,
+		fmt.Sprintf("recipient first-contact policy requires soul reputation >= %.2f", minReputation),
+	)
+}
+
+type soulCommFirstContactRecipient struct {
+	address     string
+	agentID     string
+	preferences *models.SoulAgentContactPreferences
+}
+
+func (s *Server) loadSoulCommFirstContactRecipients(ctx context.Context, req validatedSoulCommSendRequest) ([]soulCommFirstContactRecipient, *apptheory.AppTheoryError) {
+	addresses := soulCommBoundaryRecipients(req)
+	out := make([]soulCommFirstContactRecipient, 0, len(addresses))
+	for _, address := range addresses {
+		agentID, prefs, appErr := s.loadSoulCommFirstContactRecipient(ctx, req.channel, address)
+		if appErr != nil {
+			return nil, appErr
+		}
+		if agentID == "" || prefs == nil {
+			continue
+		}
+		out = append(out, soulCommFirstContactRecipient{address: address, agentID: agentID, preferences: prefs})
+	}
+	return out, nil
+}
+
+func (s *Server) loadSoulCommFirstContactRecipient(ctx context.Context, channel string, address string) (string, *models.SoulAgentContactPreferences, *apptheory.AppTheoryError) {
+	agentID, found, err := s.lookupSoulCommRecipientAgentID(ctx, channel, address)
 	if err != nil {
 		return "", nil, apptheory.NewAppTheoryError(commCodeInternal, "internal error").WithStatusCode(http.StatusInternalServerError)
 	}
@@ -483,6 +547,129 @@ func (s *Server) loadSoulCommFirstContactRecipient(ctx context.Context, req vali
 		return "", nil, apptheory.NewAppTheoryError(commCodeInternal, "internal error").WithStatusCode(http.StatusInternalServerError)
 	}
 	return agentID, prefs, nil
+}
+
+func soulCommBoundaryRecipients(req validatedSoulCommSendRequest) []string {
+	recipients := []string{strings.TrimSpace(req.to)}
+	if req.channel == commChannelEmail {
+		recipients = append(recipients, req.cc...)
+		recipients = append(recipients, req.bcc...)
+		recipients = normalizeCommEmailList(recipients)
+	} else {
+		recipients[0] = normalizeCommPhoneE164(recipients[0])
+	}
+	out := make([]string, 0, len(recipients))
+	seen := map[string]struct{}{}
+	for _, recipient := range recipients {
+		recipient = strings.TrimSpace(recipient)
+		if recipient == "" {
+			continue
+		}
+		key := strings.ToLower(recipient)
+		if req.channel != commChannelEmail {
+			key = recipient
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, recipient)
+	}
+	return out
+}
+
+func (s *Server) enforceSoulCommReplyBoundary(ctx *apptheory.Context, req validatedSoulCommSendRequest, now time.Time, metrics *soulCommSendMetrics) *apptheory.AppTheoryError {
+	if strings.TrimSpace(req.providerReplyTo) != "" && strings.TrimSpace(req.threadID) != "" && len(req.cc) == 0 && len(req.bcc) == 0 {
+		return nil
+	}
+	recipients := soulCommBoundaryRecipients(req)
+	if len(recipients) == 0 {
+		return s.denySoulCommReplyBoundary(ctx, req, req.to, now, metrics, "reply boundary requires a recipient")
+	}
+	activities, err := s.listSoulCommReplyBoundaryActivities(ctx.Context(), req.agentIDHex, req.channel, 500)
+	if err != nil {
+		metrics.status = commMetricInternalError
+		return apptheory.NewAppTheoryError(commCodeInternal, "internal error").WithStatusCode(http.StatusInternalServerError)
+	}
+	for _, recipient := range recipients {
+		if !soulCommReplyBoundaryMatchesRecipient(activities, req.channel, recipient, req.inReplyTo) {
+			return s.denySoulCommReplyBoundary(ctx, req, recipient, now, metrics, "inReplyTo does not match a prior conversation with every recipient")
+		}
+	}
+	return nil
+}
+
+func (s *Server) listSoulCommReplyBoundaryActivities(ctx context.Context, agentIDHex string, channelType string, scanLimit int) ([]*models.SoulAgentCommActivity, error) {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return nil, fmt.Errorf("store not configured")
+	}
+	agentIDHex = strings.ToLower(strings.TrimSpace(agentIDHex))
+	channelType = strings.ToLower(strings.TrimSpace(channelType))
+	if agentIDHex == "" || channelType == "" {
+		return nil, fmt.Errorf("agent and channelType are required")
+	}
+	if scanLimit <= 0 {
+		scanLimit = 250
+	}
+	if scanLimit > 1000 {
+		scanLimit = 1000
+	}
+	var items []*models.SoulAgentCommActivity
+	err := s.store.DB.WithContext(ctx).
+		Model(&models.SoulAgentCommActivity{}).
+		Where("PK", "=", fmt.Sprintf("SOUL#AGENT#%s", agentIDHex)).
+		Where("SK", "BEGINS_WITH", "COMM#").
+		OrderBy("SK", "DESC").
+		Limit(scanLimit).
+		All(&items)
+	return items, err
+}
+
+func soulCommReplyBoundaryMatchesRecipient(items []*models.SoulAgentCommActivity, channelType string, recipient string, inReplyTo string) bool {
+	channelType = strings.ToLower(strings.TrimSpace(channelType))
+	recipient = soulCommNormalizeBoundaryCounterparty(channelType, recipient)
+	inReplyTo = strings.TrimSpace(inReplyTo)
+	if recipient == "" || inReplyTo == "" {
+		return false
+	}
+	for _, item := range items {
+		if item == nil {
+			continue
+		}
+		if strings.ToLower(strings.TrimSpace(item.ChannelType)) != channelType {
+			continue
+		}
+		if soulCommNormalizeBoundaryCounterparty(channelType, item.Counterparty) != recipient {
+			continue
+		}
+		if soulCommReplyTokenMatches(item.MessageID, inReplyTo) || soulCommReplyTokenMatches(item.InReplyTo, inReplyTo) {
+			return true
+		}
+	}
+	return false
+}
+
+func soulCommNormalizeBoundaryCounterparty(channelType string, counterparty string) string {
+	counterparty = strings.TrimSpace(counterparty)
+	if strings.ToLower(strings.TrimSpace(channelType)) == commChannelEmail {
+		if addr, err := mail.ParseAddress(counterparty); err == nil && addr != nil && strings.TrimSpace(addr.Address) != "" {
+			return strings.ToLower(strings.TrimSpace(addr.Address))
+		}
+		return strings.ToLower(counterparty)
+	}
+	return normalizeCommPhoneE164(counterparty)
+}
+
+func soulCommReplyTokenMatches(stored string, requested string) bool {
+	stored = strings.Trim(strings.TrimSpace(stored), "<>")
+	requested = strings.Trim(strings.TrimSpace(requested), "<>")
+	if stored == "" || requested == "" {
+		return false
+	}
+	if strings.EqualFold(stored, requested) {
+		return true
+	}
+	return strings.EqualFold(emailMessageIDReference(stored), emailMessageIDReference(requested))
 }
 
 func (s *Server) lookupSoulCommRecipientAgentID(ctx context.Context, channel string, to string) (string, bool, error) {
@@ -530,8 +717,17 @@ func (s *Server) lookupSoulCommRecipientAgentID(ctx context.Context, channel str
 	}
 }
 
-func (s *Server) denySoulCommFirstContact(ctx *apptheory.Context, req validatedSoulCommSendRequest, now time.Time, metrics *soulCommSendMetrics, message string) *apptheory.AppTheoryError {
+func (s *Server) denySoulCommFirstContact(ctx *apptheory.Context, req validatedSoulCommSendRequest, recipient string, now time.Time, metrics *soulCommSendMetrics, message string) *apptheory.AppTheoryError {
 	metrics.status = commMetricPreferenceViolation
+	return s.recordSoulCommGuardViolation(ctx, req, recipient, now, metrics, models.SoulCommBoundaryCheckSkipped, commCodePreferenceViolation, message)
+}
+
+func (s *Server) denySoulCommReplyBoundary(ctx *apptheory.Context, req validatedSoulCommSendRequest, recipient string, now time.Time, metrics *soulCommSendMetrics, message string) *apptheory.AppTheoryError {
+	metrics.status = commMetricBoundaryViolation
+	return s.recordSoulCommGuardViolation(ctx, req, recipient, now, metrics, models.SoulCommBoundaryCheckViolated, commCodeBoundaryViolation, message)
+}
+
+func (s *Server) recordSoulCommGuardViolation(ctx *apptheory.Context, req validatedSoulCommSendRequest, recipient string, now time.Time, metrics *soulCommSendMetrics, boundaryCheck string, code string, message string) *apptheory.AppTheoryError {
 	violationID := strings.TrimSpace(ctx.RequestID)
 	if violationID == "" {
 		if token, tokenErr := generateRandomSecret(8); tokenErr == nil {
@@ -544,17 +740,17 @@ func (s *Server) denySoulCommFirstContact(ctx *apptheory.Context, req validatedS
 		ActivityID:          "comm-pref-deny-" + violationID,
 		ChannelType:         req.channel,
 		Direction:           models.SoulCommDirectionOutbound,
-		Counterparty:        req.to,
+		Counterparty:        strings.TrimSpace(recipient),
 		Action:              "send",
 		MessageID:           "",
-		InReplyTo:           "",
-		BoundaryCheck:       models.SoulCommBoundaryCheckSkipped,
+		InReplyTo:           req.inReplyTo,
+		BoundaryCheck:       boundaryCheck,
 		PreferenceRespected: &preferenceRespected,
 		Timestamp:           now,
 	}
 	_ = activity.UpdateKeys()
 	_ = s.store.DB.WithContext(ctx.Context()).Model(activity).Create()
-	return apptheory.NewAppTheoryError(commCodePreferenceViolation, message).WithStatusCode(http.StatusForbidden)
+	return apptheory.NewAppTheoryError(code, message).WithStatusCode(http.StatusForbidden)
 }
 
 func newSoulCommSendMessageID() (string, *apptheory.AppTheoryError) {
@@ -1457,6 +1653,36 @@ func validateCommEmailAddress(value string, field string) *apptheory.AppTheoryEr
 		return apptheory.NewAppTheoryError(commCodeInvalidRequest, field+" must be an email address").WithStatusCode(http.StatusBadRequest)
 	}
 	return nil
+}
+
+func normalizeCommEmailRequestAddress(value string, field string) (string, *apptheory.AppTheoryError) {
+	addr, err := mail.ParseAddress(strings.TrimSpace(value))
+	if err != nil || addr == nil || strings.TrimSpace(addr.Address) == "" {
+		return "", apptheory.NewAppTheoryError(commCodeInvalidRequest, field+" must be an email address").WithStatusCode(http.StatusBadRequest)
+	}
+	return strings.ToLower(strings.TrimSpace(addr.Address)), nil
+}
+
+func normalizeCommEmailRequestList(in []string, field string) ([]string, *apptheory.AppTheoryError) {
+	out := make([]string, 0, len(in))
+	seen := map[string]struct{}{}
+	for _, raw := range in {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		email, appErr := normalizeCommEmailRequestAddress(raw, field)
+		if appErr != nil {
+			return nil, appErr
+		}
+		if _, ok := seen[email]; ok {
+			continue
+		}
+		seen[email] = struct{}{}
+		out = append(out, email)
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 func normalizeCommEmailList(in []string) []string {

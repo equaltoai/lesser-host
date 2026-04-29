@@ -225,6 +225,47 @@ func TestHandleSoulAgentCommQueueReadsMailbox(t *testing.T) {
 	}
 }
 
+func TestHandleSoulAgentCommQueuePaginatesUntilQueuedRows(t *testing.T) {
+	t.Parallel()
+
+	agentID := soulLifecycleTestAgentIDHex
+	tdb := newSoulCommPortalTestDB()
+	seedSoulAgentPortalAccess(t, tdb, agentID, models.SoulAgentStatusActive)
+
+	firstPage := []*models.SoulCommMailboxMessage{
+		portalMailboxMessage(agentID, models.SoulCommMailboxStatusDelivered),
+		portalMailboxMessage(agentID, models.SoulCommMailboxStatusDelivered),
+	}
+	queued := portalMailboxMessage(agentID, models.SoulCommMailboxStatusQueued)
+	queued.DeliveryID = "delivery-queued-page-2"
+	tdb.qMailbox.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulCommMailboxMessage")).
+		Return(&core.PaginatedResult{HasMore: true, NextCursor: "cursor-2"}, nil).
+		Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*[]*models.SoulCommMailboxMessage](t, args, 0)
+			*dest = firstPage
+		}).Once()
+	tdb.qMailbox.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulCommMailboxMessage")).
+		Return(&core.PaginatedResult{}, nil).
+		Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*[]*models.SoulCommMailboxMessage](t, args, 0)
+			*dest = []*models.SoulCommMailboxMessage{queued}
+		}).Once()
+
+	s := newSoulPortalServer(tdb)
+	resp, err := s.handleSoulAgentCommQueue(soulAgentCommPortalCtx(agentID))
+	if err != nil || resp.Status != http.StatusOK {
+		t.Fatalf("unexpected response: %#v %v", resp, err)
+	}
+
+	var out soulAgentCommQueueResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal queue: %v", err)
+	}
+	if out.Count != 1 || out.Items[0].DeliveryID != "delivery-queued-page-2" {
+		t.Fatalf("expected queued row from second page, got %#v", out)
+	}
+}
+
 func TestHandleSoulAgentCommStatusBranches(t *testing.T) {
 	t.Parallel()
 
@@ -263,10 +304,12 @@ func soulAgentCommStatusCtx(agentID string, messageID string) *apptheory.Context
 
 func expectPortalMailboxRows(t *testing.T, q *ttmocks.MockQuery, rows []*models.SoulCommMailboxMessage) {
 	t.Helper()
-	q.On("All", mock.AnythingOfType("*[]*models.SoulCommMailboxMessage")).Return(nil).Run(func(args mock.Arguments) {
+	assign := func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.SoulCommMailboxMessage](t, args, 0)
 		*dest = rows
-	}).Once()
+	}
+	q.On("All", mock.AnythingOfType("*[]*models.SoulCommMailboxMessage")).Return(nil).Run(assign).Maybe()
+	q.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulCommMailboxMessage")).Return(&core.PaginatedResult{}, nil).Run(assign).Maybe()
 }
 
 func portalQueueMailboxRows(agentID string) []*models.SoulCommMailboxMessage {

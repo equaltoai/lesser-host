@@ -87,9 +87,12 @@ func defaultMigaduCreateMailbox(ctx context.Context, localPart string, name stri
 	}
 	defer resp.Body.Close()
 
-	// Migadu returns 201 Created on success, and typically 409 Conflict if the mailbox already exists.
+	// Migadu returns 201 Created on success. A 409 Conflict means the mailbox
+	// belongs to an existing provider-side resource and must not be treated as
+	// success; doing so would let a later forwarding call mutate a mailbox this
+	// agent did not create.
 	switch resp.StatusCode {
-	case http.StatusOK, http.StatusCreated, http.StatusConflict:
+	case http.StatusOK, http.StatusCreated:
 		return nil
 	}
 

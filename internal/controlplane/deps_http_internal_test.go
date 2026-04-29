@@ -215,7 +215,7 @@ func handleTelnyxVoiceCallRequest(t *testing.T, w http.ResponseWriter, r *http.R
 		t.Fatalf("unexpected StatusCallback: %q", got)
 	}
 	w.WriteHeader(http.StatusAccepted)
-	_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"call_control_id": "call-control-1"}})
+	_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"call_control_id": commVoiceCallControlID}})
 }
 
 type smtpCapture struct {
@@ -405,7 +405,7 @@ func TestDefaultTelnyxCreateVoiceCall(t *testing.T) {
 		t.Fatalf("expected validation error for empty sender")
 	}
 	callID, err := defaultTelnyxCreateVoiceCall(context.Background(), "+15551234567", "+15557654321", "https://lab.lesser.host/webhooks/comm/voice/texml/comm-msg-1", "https://lab.lesser.host/webhooks/comm/voice/status/comm-msg-1")
-	if err != nil || callID != "call-control-1" {
+	if err != nil || callID != commVoiceCallControlID {
 		t.Fatalf("create voice call: id=%q err=%v", callID, err)
 	}
 }
@@ -426,8 +426,8 @@ func TestDefaultMigaduCreateMailbox_SuccessConflictAndErrors(t *testing.T) {
 	if err := defaultMigaduCreateMailbox(context.Background(), "agent", "", "pw"); err != nil {
 		t.Fatalf("create mailbox: %v", err)
 	}
-	if err := defaultMigaduCreateMailbox(context.Background(), "exists", "Agent", "pw"); err != nil {
-		t.Fatalf("expected conflict to be treated as success: %v", err)
+	if err := defaultMigaduCreateMailbox(context.Background(), "exists", "Agent", "pw"); err == nil {
+		t.Fatalf("expected mailbox conflict to fail closed")
 	}
 	if err := defaultMigaduCreateMailbox(context.Background(), "broken", "Agent", "pw"); err == nil {
 		t.Fatalf("expected server error")

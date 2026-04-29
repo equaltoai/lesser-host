@@ -95,7 +95,7 @@ func TestSoulPublicDiscoveryV3PhoneChannelFromModel(t *testing.T) {
 	if got == nil {
 		t.Fatalf("expected phone channel")
 	}
-	if got.Number != "+14155550123" || got.Provider != "telnyx" || got.Status != "paused" {
+	if got.Number != "+14155550123" || got.Provider != commDeliveryProviderTelnyx || got.Status != "paused" {
 		t.Fatalf("unexpected phone channel: %#v", got)
 	}
 	if got.VerifiedAt != verifiedAt.Format(time.RFC3339Nano) {
@@ -498,7 +498,31 @@ func discoverySuccessSetup(setup discoveryResolveSetup, localID string) discover
 			dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
 			*dest = models.SoulAgentIdentity{AgentID: agentID, Domain: "example.com", LocalID: localID, Status: models.SoulAgentStatusActive}
 		}).Once()
-		tdb.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(theoryErrors.ErrItemNotFound).Once()
+		if localID == "agent-phone" {
+			tdb.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(nil).Run(func(args mock.Arguments) {
+				dest := testutil.RequireMockArg[*models.SoulAgentChannel](t, args, 0)
+				*dest = models.SoulAgentChannel{
+					AgentID:       agentID,
+					ChannelType:   models.SoulChannelTypePhone,
+					Identifier:    "+14155550123",
+					Provider:      "telnyx",
+					Verified:      true,
+					ProvisionedAt: time.Now().Add(-time.Hour).UTC(),
+					Status:        models.SoulChannelStatusActive,
+				}
+			}).Once()
+			tdb.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(theoryErrors.ErrItemNotFound).Once()
+			return
+		}
+		tdb.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*models.SoulAgentChannel](t, args, 0)
+			*dest = models.SoulAgentChannel{
+				AgentID:     agentID,
+				ChannelType: models.SoulChannelTypeENS,
+				Identifier:  "agent.lessersoul.eth",
+				Status:      models.SoulChannelStatusActive,
+			}
+		}).Twice()
 	}
 }
 

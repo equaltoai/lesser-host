@@ -683,6 +683,7 @@ func TestProcessInbound_PhoneDeliveryIncludesCanonicalRecipientAddress(t *testin
 				AgentID:       agentID,
 				ChannelType:   models.SoulChannelTypeEmail,
 				Identifier:    testAgentBobEmail,
+				Provider:      "migadu",
 				Status:        models.SoulChannelStatusActive,
 				Verified:      true,
 				ProvisionedAt: now.Add(-time.Hour),

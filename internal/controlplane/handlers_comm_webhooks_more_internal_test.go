@@ -2,8 +2,14 @@ package controlplane
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -52,10 +58,105 @@ const (
 	commWebhookReceivedAt       = "2026-03-05T12:00:00Z"
 	commWebhookFailedToEnqueue  = "failed to enqueue"
 	commWebhookCallHangup       = "call.hangup"
+	commWebhookJSONContentType  = "application/json"
+	commWebhookSecretSSMParam   = "/test/comm/webhook"
 	commWebhookTestInstanceSlug = "inst1"
+	commWebhookTestSecret       = "test-webhook-secret"
 )
 
 type commWebhookHandler func(*Server, *apptheory.Context) (*apptheory.Response, error)
+
+func TestTelnyxSMSWebhookQueueMessage_NormalizesPayload(t *testing.T) {
+	t.Parallel()
+
+	var tel telnyxInboundWebhook
+	tel.Data.OccurredAt = "2026-03-05T12:00:00Z"
+	tel.Data.Payload.ID = " msg-1 "
+	tel.Data.Payload.Text = " sms webhook body "
+	tel.Data.Payload.From.PhoneNumber = " +15550142 "
+	tel.Data.Payload.To = append(tel.Data.Payload.To, struct {
+		PhoneNumber string `json:"phone_number"`
+	}{PhoneNumber: " +15550143 "})
+
+	msg := telnyxSMSWebhookQueueMessage(tel)
+	if msg.Provider != commDeliveryProviderTelnyx || msg.Kind != commworker.QueueMessageKindInbound {
+		t.Fatalf("unexpected queue metadata: %#v", msg)
+	}
+	if msg.Notification.Channel != commChannelSMS || msg.Notification.MessageID != "msg-1" || msg.Notification.Body != "sms webhook body" {
+		t.Fatalf("unexpected notification payload: %#v", msg.Notification)
+	}
+	if msg.Notification.From.Number != "+15550142" || msg.Notification.To == nil || msg.Notification.To.Number != "+15550143" {
+		t.Fatalf("unexpected telnyx parties: %#v", msg.Notification)
+	}
+}
+
+func TestExtractTelnyxVoiceFields(t *testing.T) {
+	t.Parallel()
+
+	if from, to, callID, occurredAt, duration := extractTelnyxVoiceFields(nil); from != "" || to != "" || callID != "" || occurredAt != "" || duration != 0 {
+		t.Fatalf("expected nil payload to produce empty fields")
+	}
+
+	tel := &telnyxVoiceWebhook{}
+	tel.Data.EventType = commWebhookCallHangup
+	tel.Data.OccurredAt = commWebhookReceivedAt
+	tel.Data.Payload = map[string]any{
+		"from":             map[string]any{"phoneNumber": " +15550142 "},
+		"to":               map[string]any{"number": " +15550143 "},
+		"call_session_id":  " call-1 ",
+		"duration_seconds": json.Number("61"),
+	}
+	from, to, callID, occurredAt, duration := extractTelnyxVoiceFields(tel)
+	if from != "+15550142" || to != "+15550143" || callID != "call-1" || occurredAt != commWebhookReceivedAt || duration != 61 {
+		t.Fatalf("unexpected extracted voice fields: from=%q to=%q callID=%q occurredAt=%q duration=%d", from, to, callID, occurredAt, duration)
+	}
+}
+
+func TestBuildTelnyxVoiceNotificationFallback(t *testing.T) {
+	t.Parallel()
+
+	notif, to, callID, duration := buildTelnyxVoiceNotification([]byte(" "), &telnyxVoiceWebhook{Data: struct {
+		EventType  string         `json:"event_type"`
+		OccurredAt string         `json:"occurred_at"`
+		Payload    map[string]any `json:"payload"`
+	}{EventType: commWebhookCallHangup, Payload: map[string]any{"duration": float64(2)}}})
+	if notif.Body != commWebhookCallHangup || notif.BodyMimeType != commWebhookJSONContentType || notif.Channel != commChannelVoice {
+		t.Fatalf("unexpected fallback voice notification: %#v", notif)
+	}
+	if to != "" || callID != commWebhookCallHangup || duration != 2 {
+		t.Fatalf("unexpected fallback voice fields: to=%q callID=%q duration=%d", to, callID, duration)
+	}
+}
+
+func TestTelnyxPrimitivePayloadReaders(t *testing.T) {
+	t.Parallel()
+
+	if got := readTelnyxPhoneValue(" +15550142 "); got != "+15550142" {
+		t.Fatalf("unexpected string phone value %q", got)
+	}
+	if got := readTelnyxPhoneValue(map[string]any{"phone_number": " +15550143 "}); got != "+15550143" {
+		t.Fatalf("unexpected phone_number value %q", got)
+	}
+	if got := readTelnyxPhoneValue(map[string]any{"number": " +15550144 "}); got != "+15550144" {
+		t.Fatalf("unexpected number value %q", got)
+	}
+	if got := readTelnyxPhonePayload(map[string]any{"to": map[string]any{"phoneNumber": " +15550145 "}}, "to"); got != "+15550145" {
+		t.Fatalf("unexpected payload phone value %q", got)
+	}
+
+	payload := map[string]any{"string": "12", "bad": "nope", "int": 3, "int64": int64(4), "float": float64(5), "json": json.Number("6")}
+	for key, want := range map[string]int64{"string": 12, "int": 3, "int64": 4, "float": 5, "json": 6} {
+		if got := readTelnyxInt64Payload(payload, key); got != want {
+			t.Fatalf("readTelnyxInt64Payload(%q)=%d want %d", key, got, want)
+		}
+	}
+	if got := readTelnyxInt64Payload(payload, "bad", "missing"); got != 0 {
+		t.Fatalf("expected bad/missing integer fields to return zero, got %d", got)
+	}
+	if value, ok := coerceTelnyxInt64([]string{"bad"}); ok || value != 0 {
+		t.Fatalf("expected unsupported integer type to fail, got value=%d ok=%v", value, ok)
+	}
+}
 
 func TestHandleCommEmailInboundWebhook_Disabled(t *testing.T) {
 	t.Parallel()
@@ -73,6 +174,24 @@ func TestHandleCommEmailInboundWebhook_MissingQueueReturnsInternal(t *testing.T)
 	requireWebhookAppError(t, err, appErrCodeInternal, "internal error")
 }
 
+func TestHandleCommEmailInboundWebhook_RejectsUnsignedPayload(t *testing.T) {
+	t.Parallel()
+
+	s := newCommWebhookServer(func(_ context.Context, msg commworker.QueueMessage) error {
+		t.Fatalf("enqueue should not be called for unsigned payload: %#v", msg)
+		return nil
+	})
+	body := marshalCommWebhookBody(t, commworker.InboundNotification{
+		Type:      "communication:inbound",
+		Channel:   "email",
+		From:      commworker.InboundParty{Address: "alice@example.com"},
+		To:        &commworker.InboundParty{Address: "agent@lessersoul.ai"},
+		MessageID: "msg-unsigned",
+	})
+	_, err := s.handleCommEmailInboundWebhook(&apptheory.Context{Request: apptheory.Request{Body: body}})
+	requireWebhookAppError(t, err, "comm.unauthorized", "unauthorized")
+}
+
 func TestHandleCommEmailInboundWebhook_InvalidNormalizedPayloadRejected(t *testing.T) {
 	t.Parallel()
 
@@ -83,11 +202,11 @@ func TestHandleCommEmailInboundWebhook_InvalidNormalizedPayloadRejected(t *testi
 	body := marshalCommWebhookBody(t, map[string]any{
 		"type":       "communication:inbound",
 		"from":       map[string]any{"address": "alice@example.com"},
-		"body":       "hello",
+		"body":       "legacy webhook body",
 		"receivedAt": commWebhookReceivedAt,
 		"messageId":  "msg-1",
 	})
-	_, err := s.handleCommEmailInboundWebhook(&apptheory.Context{Request: apptheory.Request{Body: body}})
+	_, err := s.handleCommEmailInboundWebhook(signedCommWebhookCtx(t, body))
 	requireWebhookAppError(t, err, appErrCodeBadRequest, "invalid webhook payload")
 }
 
@@ -107,7 +226,7 @@ func TestHandleCommEmailInboundWebhook_LegacyPayloadDefaultsReceivedAt(t *testin
 		"body":      "Test",
 		"messageId": "comm-msg-legacy",
 	})
-	resp, err := s.handleCommEmailInboundWebhook(&apptheory.Context{Request: apptheory.Request{Body: body}})
+	resp, err := s.handleCommEmailInboundWebhook(signedCommWebhookCtx(t, body))
 	requireCommWebhookOK(t, resp, err)
 	if got == nil {
 		t.Fatalf("expected queued message")
@@ -131,7 +250,7 @@ func TestHandleCommEmailInboundWebhook_EnqueueFailureReturnsInternal(t *testing.
 		ReceivedAt: commWebhookReceivedAt,
 		MessageID:  "msg-2",
 	})
-	_, err := s.handleCommEmailInboundWebhook(&apptheory.Context{Request: apptheory.Request{Body: body}})
+	_, err := s.handleCommEmailInboundWebhook(signedCommWebhookCtx(t, body))
 	requireWebhookAppError(t, err, appErrCodeInternal, commWebhookFailedToEnqueue)
 }
 
@@ -159,11 +278,84 @@ func TestHandleCommSMSInboundWebhook_NormalizesPayload(t *testing.T) {
 	}, "sms")
 }
 
+func TestHandleCommSMSInboundWebhook_AcceptsValidTelnyxSignature(t *testing.T) {
+	t.Parallel()
+
+	var got *commworker.QueueMessage
+	s, privateKey := newTelnyxWebhookServer(func(_ context.Context, msg commworker.QueueMessage) error {
+		cp := msg
+		got = &cp
+		return nil
+	})
+	body := marshalCommWebhookBody(t, map[string]any{
+		"data": map[string]any{
+			"event_type": "message.received",
+			"payload": map[string]any{
+				"id":   "telnyx-msg-signed",
+				"text": "Hello",
+				"from": map[string]any{"phone_number": "+15550142"},
+				"to":   []map[string]any{{"phone_number": "+15550143"}},
+			},
+		},
+	})
+	resp, err := s.handleCommSMSInboundWebhook(&apptheory.Context{Request: signedTelnyxWebhookRequest(t, privateKey, body, time.Now())})
+	requireCommWebhookOK(t, resp, err)
+	if got == nil || got.Notification.MessageID != "telnyx-msg-signed" {
+		t.Fatalf("expected signed Telnyx notification, got %#v", got)
+	}
+}
+
+func TestHandleCommSMSInboundWebhook_RejectsInvalidTelnyxSignature(t *testing.T) {
+	t.Parallel()
+
+	s, privateKey := newTelnyxWebhookServer(func(_ context.Context, msg commworker.QueueMessage) error {
+		t.Fatalf("enqueue should not be called for invalid signature: %#v", msg)
+		return nil
+	})
+	body := marshalCommWebhookBody(t, map[string]any{
+		"data": map[string]any{
+			"event_type": "message.received",
+			"payload": map[string]any{
+				"id":   "telnyx-msg-invalid",
+				"text": "Hello",
+				"from": map[string]any{"phone_number": "+15550142"},
+				"to":   []map[string]any{{"phone_number": "+15550143"}},
+			},
+		},
+	})
+	req := signedTelnyxWebhookRequest(t, privateKey, body, time.Now())
+	req.Body = append([]byte(`{"tampered":true}`), body...)
+	_, err := s.handleCommSMSInboundWebhook(&apptheory.Context{Request: req})
+	requireWebhookAppError(t, err, "comm.unauthorized", "unauthorized")
+}
+
+func TestHandleCommSMSInboundWebhook_RejectsStaleSignature(t *testing.T) {
+	t.Parallel()
+
+	s := newCommWebhookServer(func(_ context.Context, msg commworker.QueueMessage) error {
+		t.Fatalf("enqueue should not be called for stale signature: %#v", msg)
+		return nil
+	})
+	body := marshalCommWebhookBody(t, map[string]any{
+		"data": map[string]any{
+			"event_type": "message.received",
+			"payload": map[string]any{
+				"id":   "telnyx-msg-stale",
+				"text": "Hello",
+				"from": map[string]any{"phone_number": "+15550142"},
+				"to":   []map[string]any{{"phone_number": "+15550143"}},
+			},
+		},
+	})
+	_, err := s.handleCommSMSInboundWebhook(&apptheory.Context{Request: signedCommWebhookRequestAt(t, body, time.Now().Add(-10*time.Minute))})
+	requireWebhookAppError(t, err, "comm.unauthorized", "unauthorized")
+}
+
 func TestHandleCommSMSInboundWebhook_InvalidPayloadRejected(t *testing.T) {
 	t.Parallel()
 
 	s := newCommWebhookServer(func(_ context.Context, msg commworker.QueueMessage) error { return nil })
-	_, err := s.handleCommSMSInboundWebhook(&apptheory.Context{Request: apptheory.Request{Body: []byte("{")}})
+	_, err := s.handleCommSMSInboundWebhook(signedCommWebhookCtx(t, []byte("{")))
 	requireWebhookAppError(t, err, appErrCodeBadRequest, "invalid webhook payload")
 }
 
@@ -184,7 +376,7 @@ func TestHandleCommSMSInboundWebhook_EnqueueFailureReturnsInternal(t *testing.T)
 			},
 		},
 	})
-	_, err := s.handleCommSMSInboundWebhook(&apptheory.Context{Request: apptheory.Request{Body: body}})
+	_, err := s.handleCommSMSInboundWebhook(signedCommWebhookCtx(t, body))
 	requireWebhookAppError(t, err, appErrCodeInternal, commWebhookFailedToEnqueue)
 }
 
@@ -207,7 +399,7 @@ func TestHandleCommSMSInboundWebhook_SkipsNonInboundTelnyxEvents(t *testing.T) {
 		},
 	})
 
-	resp, err := s.handleCommSMSInboundWebhook(&apptheory.Context{Request: apptheory.Request{Body: body}})
+	resp, err := s.handleCommSMSInboundWebhook(signedCommWebhookCtx(t, body))
 	requireCommWebhookOK(t, resp, err)
 
 	var got map[string]any
@@ -253,7 +445,7 @@ func TestHandleCommVoiceInboundWebhook_TelnyxFallbackCallIDAndReceivedAt(t *test
 			},
 		},
 	})
-	resp, err := s.handleCommVoiceInboundWebhook(&apptheory.Context{Request: apptheory.Request{Body: body}})
+	resp, err := s.handleCommVoiceInboundWebhook(signedCommWebhookCtx(t, body))
 	requireCommWebhookOK(t, resp, err)
 	if got == nil {
 		t.Fatalf("expected queued message")
@@ -274,7 +466,7 @@ func TestHandleCommVoiceInboundWebhook_InvalidTelnyxPayloadRejected(t *testing.T
 			"payload":    map[string]any{},
 		},
 	})
-	_, err := s.handleCommVoiceInboundWebhook(&apptheory.Context{Request: apptheory.Request{Body: body}})
+	_, err := s.handleCommVoiceInboundWebhook(signedCommWebhookCtx(t, body))
 	requireWebhookAppError(t, err, appErrCodeBadRequest, "invalid webhook payload")
 }
 
@@ -293,7 +485,7 @@ func TestHandleCommVoiceInboundWebhook_EnqueueFailureReturnsInternal(t *testing.
 		ReceivedAt: commWebhookReceivedAt,
 		MessageID:  "voice-msg-2",
 	})
-	_, err := s.handleCommVoiceInboundWebhook(&apptheory.Context{Request: apptheory.Request{Body: body}})
+	_, err := s.handleCommVoiceInboundWebhook(signedCommWebhookCtx(t, body))
 	requireWebhookAppError(t, err, appErrCodeInternal, commWebhookFailedToEnqueue)
 }
 
@@ -318,14 +510,11 @@ func TestHandleCommVoiceStatusWebhook_DelegatesAndDisabled(t *testing.T) {
 
 	t.Run("delegates to inbound handler", func(t *testing.T) {
 		var got *commworker.QueueMessage
-		s := &Server{
-			cfg: config.Config{SoulEnabled: true},
-			enqueueCommMessage: func(_ context.Context, msg commworker.QueueMessage) error {
-				cp := msg
-				got = &cp
-				return nil
-			},
-		}
+		s := newCommWebhookServer(func(_ context.Context, msg commworker.QueueMessage) error {
+			cp := msg
+			got = &cp
+			return nil
+		})
 		body, _ := json.Marshal(commworker.InboundNotification{
 			Type:       "communication:inbound",
 			Channel:    "voice",
@@ -335,7 +524,7 @@ func TestHandleCommVoiceStatusWebhook_DelegatesAndDisabled(t *testing.T) {
 			ReceivedAt: commWebhookReceivedAt,
 			MessageID:  "voice-status-1",
 		})
-		resp, err := s.handleCommVoiceStatusWebhook(&apptheory.Context{Request: apptheory.Request{Body: body}})
+		resp, err := s.handleCommVoiceStatusWebhook(signedCommWebhookCtx(t, body))
 		if err != nil {
 			t.Fatalf("unexpected err: %v", err)
 		}
@@ -546,7 +735,7 @@ func TestMeterTelnyxVoiceCall_CreatesLedgerAndBudgetUpdate(t *testing.T) {
 		*dest = models.InstanceBudgetMonth{InstanceSlug: commWebhookTestInstanceSlug, IncludedCredits: 12, UsedCredits: 5}
 	}).Once()
 
-	tb.On("Put", mock.Anything, mock.Anything).Return(tb).Once().Run(func(args mock.Arguments) {
+	tb.On("Create", mock.Anything, mock.Anything).Return(tb).Once().Run(func(args mock.Arguments) {
 		entry := testutil.RequireMockArg[*models.UsageLedgerEntry](t, args, 0)
 		if entry.InstanceSlug != commWebhookTestInstanceSlug {
 			t.Fatalf("expected instance slug %s, got %q", commWebhookTestInstanceSlug, entry.InstanceSlug)
@@ -582,6 +771,30 @@ func TestMeterTelnyxVoiceCall_CreatesLedgerAndBudgetUpdate(t *testing.T) {
 	}
 }
 
+func TestMeterTelnyxVoiceCall_DuplicateLedgerIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	tdb := newCommWebhookTestDB()
+	tb := new(ttmocks.MockTransactionBuilder)
+	tdb.db.TransactWriteBuilder = tb
+	tdb.db.On("TransactWrite", mock.Anything, mock.Anything).Return(theoryErrors.ErrConditionFailed).Once()
+
+	s := &Server{store: store.New(tdb.db)}
+	expectCommWebhookPhoneAgent(t, tdb.qPhone, "0xabc")
+	expectCommWebhookIdentity(t, tdb.qIdentity, "0xabc", "example.com")
+	expectCommWebhookDomain(t, tdb.qDomain, commWebhookTestInstanceSlug)
+	tdb.qBudget.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.InstanceBudgetMonth](t, args, 0)
+		*dest = models.InstanceBudgetMonth{InstanceSlug: commWebhookTestInstanceSlug, IncludedCredits: 12, UsedCredits: 5}
+	}).Once()
+	tb.On("Create", mock.Anything, mock.Anything).Return(tb).Once()
+	tb.On("UpdateWithBuilder", mock.Anything, mock.Anything, mock.Anything).Return(tb).Once()
+
+	if err := s.meterTelnyxVoiceCall(&apptheory.Context{}, "+15550142", "call-1", 60); err != nil {
+		t.Fatalf("expected duplicate ledger to be idempotent, got %v", err)
+	}
+}
+
 func requireAppError(t *testing.T, err error) *apptheory.AppError {
 	t.Helper()
 	appErr, ok := err.(*apptheory.AppError)
@@ -597,8 +810,65 @@ func assertNotFound() error {
 
 func newCommWebhookServer(enqueue func(context.Context, commworker.QueueMessage) error) *Server {
 	return &Server{
-		cfg:                config.Config{SoulEnabled: true},
+		cfg:                config.Config{SoulEnabled: true, CommWebhookSharedSecretSSMParam: commWebhookSecretSSMParam},
 		enqueueCommMessage: enqueue,
+		ssmGetParameter: func(_ context.Context, name string) (string, error) {
+			if name != commWebhookSecretSSMParam {
+				return "", context.Canceled
+			}
+			return commWebhookTestSecret, nil
+		},
+	}
+}
+
+func newTelnyxWebhookServer(enqueue func(context.Context, commworker.QueueMessage) error) (*Server, ed25519.PrivateKey) {
+	publicKey, privateKey, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		panic(err)
+	}
+	s := newCommWebhookServer(enqueue)
+	s.cfg.TelnyxWebhookPublicKey = base64.StdEncoding.EncodeToString(publicKey)
+	return s, privateKey
+}
+
+func signedCommWebhookCtx(t *testing.T, body []byte) *apptheory.Context {
+	t.Helper()
+	return &apptheory.Context{Request: signedCommWebhookRequest(t, body)}
+}
+
+func signedCommWebhookRequest(t *testing.T, body []byte) apptheory.Request {
+	t.Helper()
+	return signedCommWebhookRequestAt(t, body, time.Now())
+}
+
+func signedCommWebhookRequestAt(t *testing.T, body []byte, at time.Time) apptheory.Request {
+	t.Helper()
+	ts := strconv.FormatInt(at.Unix(), 10)
+	mac := hmac.New(sha256.New, []byte(commWebhookTestSecret))
+	mac.Write([]byte(ts))
+	mac.Write([]byte("."))
+	mac.Write(body)
+	return apptheory.Request{
+		Body: body,
+		Headers: map[string][]string{
+			"x-lesser-host-timestamp": {ts},
+			"x-lesser-host-signature": {"sha256=" + hex.EncodeToString(mac.Sum(nil))},
+		},
+	}
+}
+
+func signedTelnyxWebhookRequest(t *testing.T, privateKey ed25519.PrivateKey, body []byte, at time.Time) apptheory.Request {
+	t.Helper()
+	ts := strconv.FormatInt(at.Unix(), 10)
+	payload := append([]byte(ts+"|"), body...)
+	return apptheory.Request{
+		Body: body,
+		Headers: map[string][]string{
+			"telnyx-timestamp":         {ts},
+			"telnyx-signature-ed25519": {base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, payload))},
+			"x-lesser-host-timestamp":  {"ignored"},
+			"x-lesser-host-signature":  {"ignored"},
+		},
 	}
 }
 
@@ -632,7 +902,7 @@ func assertNormalizedCommWebhook(t *testing.T, handler commWebhookHandler, notif
 		got = &cp
 		return nil
 	})
-	resp, err := handler(s, &apptheory.Context{Request: apptheory.Request{Body: marshalCommWebhookBody(t, notification)}})
+	resp, err := handler(s, signedCommWebhookCtx(t, marshalCommWebhookBody(t, notification)))
 	requireCommWebhookOK(t, resp, err)
 	if got == nil || got.Notification.Channel != wantChannel || got.Provider != "telnyx" {
 		t.Fatalf("expected normalized %s notification, got %#v", wantChannel, got)
@@ -654,6 +924,12 @@ func requireCommWebhookOK(t *testing.T, resp *apptheory.Response, err error) {
 
 func requireWebhookAppError(t *testing.T, err error, code string, message string) {
 	t.Helper()
+	if appErr, ok := apptheory.AsAppTheoryError(err); ok {
+		if appErr.Code != code || appErr.Message != message {
+			t.Fatalf("expected %s %q, got %v", code, message, appErr)
+		}
+		return
+	}
 	appErr := requireAppError(t, err)
 	if appErr.Code != code || appErr.Message != message {
 		t.Fatalf("expected %s %q, got %v", code, message, appErr)

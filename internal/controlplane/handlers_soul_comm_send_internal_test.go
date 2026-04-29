@@ -36,9 +36,24 @@ func allowCommQueryOps(queries ...*ttmocks.MockQuery) {
 		q.On("Update", mock.Anything).Return(nil).Maybe()
 		q.On("OrderBy", mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("Limit", mock.Anything).Return(q).Maybe()
-		q.On("All", mock.Anything).Return(nil).Maybe()
 		q.On("Create").Return(nil).Maybe()
 	}
+}
+
+func expectCommReplyBoundaryActivity(t *testing.T, q *ttmocks.MockQuery, channel string, counterparty string, messageID string) {
+	t.Helper()
+	q.On("All", mock.AnythingOfType("*[]*models.SoulAgentCommActivity")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulAgentCommActivity](t, args, 0)
+		*dest = []*models.SoulAgentCommActivity{
+			{
+				ChannelType:  channel,
+				Direction:    models.SoulCommDirectionInbound,
+				Counterparty: counterparty,
+				MessageID:    messageID,
+				Timestamp:    time.Now().Add(-time.Minute).UTC(),
+			},
+		}
+	}).Once()
 }
 
 func assertSoulCommSendResponse(t *testing.T, resp *apptheory.Response, wantStatus string, wantProvider string, wantChannel string, wantProviderMessageID string) {
@@ -251,6 +266,7 @@ func TestHandleSoulCommSend_SendsEmailAndRecordsStatus(t *testing.T) {
 		dest := testutil.RequireMockArg[*[]*models.SoulAgentCommActivity](t, args, 0)
 		*dest = []*models.SoulAgentCommActivity{}
 	}).Twice()
+	expectCommReplyBoundaryActivity(t, qCommActivity, commChannelEmail, commSendTestEmailRecipient, "comm-msg-xyz")
 
 	var sendCalled bool
 	s := &Server{
@@ -381,6 +397,7 @@ func TestHandleSoulCommSend_SendsSMSAndDebitsCredits(t *testing.T) {
 		dest := testutil.RequireMockArg[*[]*models.SoulAgentCommActivity](t, args, 0)
 		*dest = []*models.SoulAgentCommActivity{}
 	}).Twice()
+	expectCommReplyBoundaryActivity(t, qCommActivity, commChannelSMS, "+15550143", "telnyx-msg-1")
 
 	qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
@@ -499,6 +516,7 @@ func TestHandleSoulCommSend_StartsVoiceCallAndStoresInstruction(t *testing.T) {
 		dest := testutil.RequireMockArg[*[]*models.SoulAgentCommActivity](t, args, 0)
 		*dest = []*models.SoulAgentCommActivity{}
 	}).Twice()
+	expectCommReplyBoundaryActivity(t, qCommActivity, commChannelVoice, "+15550143", "call-back-1")
 
 	var voiceCalled bool
 	s := &Server{
@@ -515,7 +533,7 @@ func TestHandleSoulCommSend_StartsVoiceCallAndStoresInstruction(t *testing.T) {
 			if !strings.HasPrefix(statusCallbackURL, "https://lab.lesser.host/webhooks/comm/voice/status/comm-msg-") {
 				t.Fatalf("unexpected statusCallbackURL: %q", statusCallbackURL)
 			}
-			return "call-control-1", nil
+			return commVoiceCallControlID, nil
 		},
 	}
 
@@ -544,7 +562,7 @@ func TestHandleSoulCommSend_StartsVoiceCallAndStoresInstruction(t *testing.T) {
 	if !voiceCalled {
 		t.Fatalf("expected telnyx voice call")
 	}
-	assertSoulCommSendResponse(t, resp, models.SoulCommMessageStatusAccepted, commDeliveryProviderTelnyx, commChannelVoice, "call-control-1")
+	assertSoulCommSendResponse(t, resp, models.SoulCommMessageStatusAccepted, commDeliveryProviderTelnyx, commChannelVoice, commVoiceCallControlID)
 }
 
 func TestHandleSoulCommSend_SMSInsufficientCreditsBlocksSend(t *testing.T) {
@@ -575,7 +593,6 @@ func TestHandleSoulCommSend_SMSInsufficientCreditsBlocksSend(t *testing.T) {
 		q.On("IfExists").Return(q).Maybe()
 		q.On("ConsistentRead").Return(q).Maybe()
 		q.On("Update", mock.Anything).Return(nil).Maybe()
-		q.On("All", mock.Anything).Return(nil).Maybe()
 	}
 
 	qKey.On("First", mock.AnythingOfType("*models.InstanceKey")).Return(nil).Run(func(args mock.Arguments) {
@@ -619,6 +636,7 @@ func TestHandleSoulCommSend_SMSInsufficientCreditsBlocksSend(t *testing.T) {
 		dest := testutil.RequireMockArg[*[]*models.SoulAgentCommActivity](t, args, 0)
 		*dest = []*models.SoulAgentCommActivity{}
 	}).Twice()
+	expectCommReplyBoundaryActivity(t, qCommActivity, commChannelSMS, "+15550143", "telnyx-msg-1")
 
 	qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
