@@ -167,6 +167,10 @@ Security / tenant-isolation / on-chain-integrity / governance / provisioning / m
   - `gov-infra/evidence/` updated by verifiers where applicable.
   - Lab deployment and soak evidence.
   - Live deploy authorization checklist and post-deploy monitoring notes.
+- M5 repository-owned records:
+  - Evidence package: `docs/security/codex-security-m5-evidence-2026-04-29.md`
+  - Rollout checklist: `docs/security/codex-security-m5-rollout-checklist-2026-04-29.md`
+  - Release notes: `docs/security/codex-security-release-notes-2026-04-29.md`
 
 ## Stage rollout plan (host's own service)
 

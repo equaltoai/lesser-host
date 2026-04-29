@@ -35,3 +35,11 @@ This directory contains maintainer documentation for `lesser-host` (the `lesser.
 - Moderation provider notes: `docs/moderation-provider.md`
 - Evidence policy v1: `docs/evidence-policy-v1.md`
 - Retention sweep: `docs/retention-sweep.md`
+
+## Security remediation records
+
+- Codex Security 2026-04-28 finding ledger: `docs/security/codex-findings-2026-04-28-ledger.md`
+- M0 evidence baseline: `docs/security/codex-security-m0-evidence-baseline-2026-04-28.md`
+- M5 evidence package: `docs/security/codex-security-m5-evidence-2026-04-29.md`
+- M5 rollout checklist: `docs/security/codex-security-m5-rollout-checklist-2026-04-29.md`
+- Release notes: `docs/security/codex-security-release-notes-2026-04-29.md`
