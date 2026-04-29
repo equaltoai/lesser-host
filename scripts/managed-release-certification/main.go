@@ -56,6 +56,7 @@ type cliConfig struct {
 	LesserBodyGitHubOwner string
 	LesserBodyGitHubRepo  string
 	ManagedStage          string
+	ApprovedBaseURLs      string
 	RequireLesserBody     bool
 	RequireMCP            bool
 	PollInterval          time.Duration
@@ -206,6 +207,7 @@ func parseCLI(args []string) (cliConfig, error) {
 	fs.StringVar(&cfg.LesserBodyGitHubOwner, "lesser-body-github-owner", "equaltoai", "GitHub owner for lesser-body release compatibility checks")
 	fs.StringVar(&cfg.LesserBodyGitHubRepo, "lesser-body-github-repo", "lesser-body", "GitHub repo for lesser-body release compatibility checks")
 	fs.StringVar(&cfg.ManagedStage, "managed-stage", "dev", "managed instance stage to use for stage-scoped lesser-body compatibility checks")
+	fs.StringVar(&cfg.ApprovedBaseURLs, "approved-base-urls", "https://lab.lesser.host,https://lesser.host", "comma-separated approved lesser-host origins for bearer-token certification calls")
 	fs.BoolVar(&cfg.RequireLesserBody, "require-lesser-body", false, "require lesser-body follow-on deploy to succeed in the certification run")
 	fs.BoolVar(&cfg.RequireMCP, "require-mcp", false, "require MCP follow-on wiring to succeed in the certification run")
 	fs.DurationVar(&cfg.PollInterval, "poll-interval", 10*time.Second, "poll interval for update status")
@@ -247,6 +249,7 @@ func parseCLI(args []string) (cliConfig, error) {
 	cfg.LesserBodyGitHubOwner = strings.TrimSpace(cfg.LesserBodyGitHubOwner)
 	cfg.LesserBodyGitHubRepo = strings.TrimSpace(cfg.LesserBodyGitHubRepo)
 	cfg.ManagedStage = strings.TrimSpace(cfg.ManagedStage)
+	cfg.ApprovedBaseURLs = strings.TrimSpace(cfg.ApprovedBaseURLs)
 	cfg.OutDir = strings.TrimSpace(cfg.OutDir)
 
 	if err := validateRequiredCLIFields(cfg); err != nil {
@@ -267,6 +270,9 @@ func validateRequiredCLIFields(cfg cliConfig) error {
 	if parsedBaseURL.Scheme != "https" && parsedBaseURL.Scheme != "http" {
 		return errors.New("--base-url must use http or https")
 	}
+	if err := validateApprovedBaseURL(parsedBaseURL, cfg.ApprovedBaseURLs); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -285,6 +291,43 @@ func validateParsedCLIConfig(cfg cliConfig) (cliConfig, error) {
 	default:
 		return cfg, nil
 	}
+}
+
+func validateApprovedBaseURL(parsed *url.URL, approvedCSV string) error {
+	if parsed == nil {
+		return errors.New("--base-url is invalid")
+	}
+	origin := url.URL{Scheme: parsed.Scheme, Host: parsed.Host}
+	originString := strings.TrimRight(origin.String(), "/")
+	if isLoopbackBaseURL(parsed) {
+		return nil
+	}
+	if parsed.Scheme != "https" {
+		return errors.New("--base-url must use https unless it targets loopback test infrastructure")
+	}
+	for _, allowed := range strings.Split(approvedCSV, ",") {
+		allowed = strings.TrimRight(strings.TrimSpace(allowed), "/")
+		if allowed == "" {
+			continue
+		}
+		allowedURL, err := url.Parse(allowed)
+		if err != nil || allowedURL.Scheme == "" || allowedURL.Host == "" {
+			return fmt.Errorf("--approved-base-urls contains invalid origin %q", allowed)
+		}
+		allowedOrigin := url.URL{Scheme: allowedURL.Scheme, Host: allowedURL.Host}
+		if strings.EqualFold(originString, strings.TrimRight(allowedOrigin.String(), "/")) {
+			return nil
+		}
+	}
+	return fmt.Errorf("--base-url origin %q is not in --approved-base-urls", originString)
+}
+
+func isLoopbackBaseURL(parsed *url.URL) bool {
+	if parsed == nil {
+		return false
+	}
+	host := strings.ToLower(strings.Trim(parsed.Hostname(), "[]"))
+	return host == "localhost" || host == "127.0.0.1" || host == "::1"
 }
 
 func runCertification(ctx context.Context, cfg cliConfig, httpClient *http.Client) (*certificationReport, error) {
@@ -797,9 +840,6 @@ func checkStatusForBodyTemplateCertification(job certificationJob) string {
 	if status == updateJobStatusOK {
 		return statusPass
 	}
-	if status == updateJobStatusError && strings.TrimSpace(job.ErrorMessage) != "" {
-		return statusPass
-	}
 	return statusFail
 }
 
@@ -1006,6 +1046,15 @@ func buildLesserBodyCertificationReport(report *certificationReport) *lesserBody
 	for _, check := range report.Checks {
 		if strings.HasPrefix(strings.TrimSpace(check.ID), "lesser_body_") {
 			bodyChecks = append(bodyChecks, check)
+		}
+	}
+	for _, check := range report.Checks {
+		if strings.TrimSpace(check.Status) == statusFail && !strings.HasPrefix(strings.TrimSpace(check.ID), "lesser_body_") {
+			bodyChecks = append(bodyChecks, certificationCheck{
+				ID:     "upstream_" + strings.TrimSpace(check.ID),
+				Status: statusFail,
+				Detail: strings.TrimSpace(check.Detail),
+			})
 		}
 	}
 	if len(bodyChecks) == 0 {
