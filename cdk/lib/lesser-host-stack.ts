@@ -483,6 +483,7 @@ export class LesserHostStack extends cdk.Stack {
 			SOUL_ADMIN_SAFE_ADDRESS: soulAdminSafeAddress,
 			SOUL_TX_MODE: soulTxMode,
 			SOUL_SUPPORTED_CAPABILITIES: soulSupportedCapabilities,
+			SOUL_PACK_BUCKET_NAME: soulPackBucket.bucketName,
 			SOUL_MINT_SIGNER_KEY_SSM_PARAM: soulMintSignerKeySsmParam,
 			PAYMENTS_PROVIDER: paymentsProvider,
 			PAYMENTS_CENTS_PER_1000_CREDITS: paymentsCentsPer1000Credits,
@@ -497,6 +498,15 @@ export class LesserHostStack extends cdk.Stack {
 			PREVIEW_QUEUE_URL: previewQueue.queueUrl,
 			SAFETY_QUEUE_URL: safetyQueue.queueUrl,
 			SOUL_ENABLED: soulEnabled,
+			SOUL_CHAIN_ID: soulChainId,
+			SOUL_RPC_URL_SSM_PARAM: soulRpcUrlSsmParam,
+			SOUL_REGISTRY_CONTRACT_ADDRESS: soulRegistryContractAddress,
+			SOUL_REPUTATION_ATTESTATION_CONTRACT_ADDRESS: soulReputationAttestationContractAddress,
+			SOUL_VALIDATION_ATTESTATION_CONTRACT_ADDRESS: soulValidationAttestationContractAddress,
+			SOUL_ADMIN_SAFE_ADDRESS: soulAdminSafeAddress,
+			SOUL_TX_MODE: soulTxMode,
+			SOUL_SUPPORTED_CAPABILITIES: soulSupportedCapabilities,
+			SOUL_PACK_BUCKET_NAME: soulPackBucket.bucketName,
 			ENS_GATEWAY_SIGNING_KEY_ID: ensGatewaySigningKey.keyId,
 			ENS_GATEWAY_RESOLVER_ADDRESS: ensGatewayResolverAddress.trim(),
 			ENS_GATEWAY_TTL_SECONDS: ensGatewayTTLSeconds.trim(),
@@ -619,6 +629,7 @@ export class LesserHostStack extends cdk.Stack {
 		soulCommMailboxBucket.grantReadWrite(controlPlaneFn);
 		soulCommMailboxBucket.grantReadWrite(commWorkerFn);
 		soulPackBucket.grantReadWrite(controlPlaneFn);
+		soulPackBucket.grantReadWrite(trustFn);
 		soulPackBucket.grantReadWrite(soulReputationWorkerFn);
 		artifactsBucket.grantReadWrite(trustFn);
 		artifactsBucket.grantReadWrite(renderWorkerFn);
@@ -832,18 +843,20 @@ export class LesserHostStack extends cdk.Stack {
 				}),
 			);
 		}
-		controlPlaneFn.addToRolePolicy(
-			new iam.PolicyStatement({
-				actions: ['ssm:GetParameter', 'ssm:GetParameters'],
-				resources: [
-					cdk.Stack.of(this).formatArn({
-						service: 'ssm',
-						resource: 'parameter',
-						resourceName: `soul/${stage}/*`,
-					}),
-				],
-			}),
-		);
+		for (const fn of [controlPlaneFn, trustFn]) {
+			fn.addToRolePolicy(
+				new iam.PolicyStatement({
+					actions: ['ssm:GetParameter', 'ssm:GetParameters'],
+					resources: [
+						cdk.Stack.of(this).formatArn({
+							service: 'ssm',
+							resource: 'parameter',
+							resourceName: `soul/${stage}/*`,
+						}),
+					],
+				}),
+			);
+		}
 		const migaduSsmParamArns = [
 			`arn:aws:ssm:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:parameter/lesser-host/migadu`,
 		];
@@ -895,14 +908,16 @@ export class LesserHostStack extends cdk.Stack {
 			}),
 		);
 		if (soulRpcUrlSsmParam) {
-			controlPlaneFn.addToRolePolicy(
-				new iam.PolicyStatement({
-					actions: ['ssm:GetParameter'],
-					resources: [
-						`arn:aws:ssm:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:parameter/${soulRpcUrlSsmParam.replace(/^\//, '')}`,
-					],
-				}),
-			);
+			for (const fn of [controlPlaneFn, trustFn]) {
+				fn.addToRolePolicy(
+					new iam.PolicyStatement({
+						actions: ['ssm:GetParameter'],
+						resources: [
+							`arn:aws:ssm:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:parameter/${soulRpcUrlSsmParam.replace(/^\//, '')}`,
+						],
+					}),
+				);
+			}
 		}
 		if (soulMintSignerKeySsmParam) {
 			controlPlaneFn.addToRolePolicy(

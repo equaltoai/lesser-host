@@ -67,3 +67,40 @@ test('stack schedules the managed update sweep every five minutes', () => {
 
 	assert.ok(matchingRule, 'expected managed update sweep EventBridge rule');
 });
+
+function findLambdaByFunctionName(template: SynthesizedTemplate, namePart: string): Record<string, unknown> | undefined {
+	return findResources(template, 'AWS::Lambda::Function').find((fn) => {
+		const name = fn.FunctionName;
+		return typeof name === 'string' && name.includes(namePart);
+	});
+}
+
+function lambdaEnvironment(fn: Record<string, unknown> | undefined): Record<string, unknown> {
+	const environment = fn?.Environment;
+	if (!environment || typeof environment !== 'object') {
+		return {};
+	}
+	const variables = (environment as { Variables?: unknown }).Variables;
+	return variables && typeof variables === 'object' ? (variables as Record<string, unknown>) : {};
+}
+
+test('trust api receives soul registration runtime configuration', () => {
+	const template = synthTemplate();
+	const trustFn = findLambdaByFunctionName(template, 'trust-api');
+	const env = lambdaEnvironment(trustFn);
+
+	for (const key of [
+		'SOUL_ENABLED',
+		'SOUL_CHAIN_ID',
+		'SOUL_RPC_URL_SSM_PARAM',
+		'SOUL_REGISTRY_CONTRACT_ADDRESS',
+		'SOUL_REPUTATION_ATTESTATION_CONTRACT_ADDRESS',
+		'SOUL_VALIDATION_ATTESTATION_CONTRACT_ADDRESS',
+		'SOUL_ADMIN_SAFE_ADDRESS',
+		'SOUL_TX_MODE',
+		'SOUL_SUPPORTED_CAPABILITIES',
+		'SOUL_PACK_BUCKET_NAME',
+	]) {
+		assert.ok(key in env, `expected trust-api environment to include ${key}`);
+	}
+});
