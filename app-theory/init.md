@@ -99,8 +99,8 @@ That contract defines:
 - `schema`: contract version
 - `frameworks`: pinned destination details (AppTheory + TableTheory)
 - `cdk.dir`: repo-relative CDK directory
-- `cdk.up`: deploy command (expects AWS profile + stage at runtime)
-- `cdk.down`: destroy command (expects AWS profile + stage at runtime)
+- `cdk.up`: deploy command (expects stage at runtime and inherits AWS credentials from the environment)
+- `cdk.down`: destroy command (expects stage at runtime and inherits AWS credentials from the environment)
 
 ### Using the contract with `theory app up/down`
 
@@ -111,13 +111,12 @@ That contract defines:
   - default: `lab`
   - override: `--stage live`
 - AWS profile behavior:
-  - `--aws-profile <name>`
-  - or `AWS_PROFILE=<name>`
+  - prefer `AWS_PROFILE=<name>` in the environment before invoking `theory app up/down`
+  - the host deployment contract does not interpolate profile names into shell commands
 
 Copy/paste examples:
 
 ```bash
-AWS_PROFILE=my-profile theory app up
-theory app up --aws-profile my-profile --stage lab
-theory app down --aws-profile my-profile --stage live
+AWS_PROFILE=my-profile theory app up --stage lab
+AWS_PROFILE=my-profile theory app down --stage live
 ```

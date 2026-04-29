@@ -21,7 +21,7 @@
   },
   "cdk": {
     "dir": "cdk",
-    "up": "eval \"$(AWS_PROFILE={{AWS_PROFILE}} aws configure export-credentials --format env)\" && export AWS_REGION=\"$(AWS_PROFILE={{AWS_PROFILE}} aws configure get region)\" AWS_DEFAULT_REGION=\"$AWS_REGION\" && npm ci && npm run build && ./node_modules/.bin/cdk deploy --all -c stage={{STAGE}} --require-approval never",
-    "down": "eval \"$(AWS_PROFILE={{AWS_PROFILE}} aws configure export-credentials --format env)\" && export AWS_REGION=\"$(AWS_PROFILE={{AWS_PROFILE}} aws configure get region)\" AWS_DEFAULT_REGION=\"$AWS_REGION\" && npm ci && npm run build && ./node_modules/.bin/cdk destroy --all -c stage={{STAGE}} --force"
+    "up": "if [ -z \"${AWS_REGION:-}\" ]; then AWS_REGION=\"$(aws configure get region 2>/dev/null || true)\"; fi; if [ -n \"${AWS_REGION:-}\" ]; then export AWS_REGION; fi; if [ -z \"${AWS_DEFAULT_REGION:-}\" ] && [ -n \"${AWS_REGION:-}\" ]; then export AWS_DEFAULT_REGION=\"$AWS_REGION\"; fi && npm ci && npm run build && ./node_modules/.bin/cdk deploy --all -c stage={{STAGE}} --require-approval never",
+    "down": "if [ -z \"${AWS_REGION:-}\" ]; then AWS_REGION=\"$(aws configure get region 2>/dev/null || true)\"; fi; if [ -n \"${AWS_REGION:-}\" ]; then export AWS_REGION; fi; if [ -z \"${AWS_DEFAULT_REGION:-}\" ] && [ -n \"${AWS_REGION:-}\" ]; then export AWS_DEFAULT_REGION=\"$AWS_REGION\"; fi && npm ci && npm run build && ./node_modules/.bin/cdk destroy --all -c stage={{STAGE}} --force"
   }
 }
