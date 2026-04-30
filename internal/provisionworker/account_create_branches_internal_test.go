@@ -65,7 +65,7 @@ func TestHandleProvisionAccountCreateStatus_Branches(t *testing.T) {
 	require.False(t, done)
 	require.Zero(t, delay)
 	require.Equal(t, provisionStepFailed, job.Step)
-	require.Equal(t, "account_create_failed", job.ErrorCode)
+	require.Equal(t, "account_email_exists_adoption_required", job.ErrorCode)
 
 	// Succeeded but missing account id.
 	job.Step = provisionStepAccountCreatePoll
@@ -160,16 +160,10 @@ func TestStartProvisionAccountCreate_ErrorBranches(t *testing.T) {
 		require.Equal(t, "create_account_failed", job.ErrorCode)
 	})
 
-	t.Run("reuse_existing_account_by_email", func(t *testing.T) {
+	t.Run("does_not_reuse_existing_account_by_email", func(t *testing.T) {
 		s := makeServer(&fakeOrg{
-			createErr: errors.New("should not create"),
-			listOut: &organizations.ListAccountsOutput{
-				Accounts: []orgtypes.Account{{
-					Id:     aws.String("123456789012"),
-					Email:  aws.String("ops+slug@example.com"),
-					Name:   aws.String("lesser-slug"),
-					Status: orgtypes.AccountStatusActive,
-				}},
+			createOut: &organizations.CreateAccountOutput{
+				CreateAccountStatus: &orgtypes.CreateAccountStatus{Id: aws.String("car-123")},
 			},
 		})
 		job := &models.ProvisionJob{ID: "j4", InstanceSlug: "slug", Status: models.ProvisionJobStatusRunning, Step: provisionStepAccountCreate, MaxAttempts: 3}
@@ -177,10 +171,10 @@ func TestStartProvisionAccountCreate_ErrorBranches(t *testing.T) {
 		delay, done, err := s.startProvisionAccountCreate(context.Background(), job, "req", now)
 		require.NoError(t, err)
 		require.False(t, done)
-		require.Zero(t, delay)
-		require.Equal(t, provisionStepAccountMove, job.Step)
-		require.Equal(t, "123456789012", job.AccountID)
-		require.Contains(t, job.Note, "reusing")
+		require.Equal(t, provisionDefaultPollDelay, delay)
+		require.Equal(t, provisionStepAccountCreatePoll, job.Step)
+		require.Equal(t, "car-123", job.AccountRequestID)
+		require.Empty(t, job.AccountID)
 	})
 }
 
@@ -206,6 +200,75 @@ func TestAdvanceProvisionAccountCreate_Branches(t *testing.T) {
 	if err != nil || done || delay != provisionDefaultPollDelay || job2.Step != provisionStepAccountCreatePoll {
 		t.Fatalf("unexpected request id branch: delay=%v done=%v job=%#v err=%v", delay, done, job2, err)
 	}
+}
+
+func TestValidateAdoptedProvisionAccount_RequiresMatchingOrgAccount(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	makeServer := func(accounts []orgtypes.Account) *Server {
+		db := ttmocks.NewMockExtendedDB()
+		st := store.New(db)
+		return &Server{
+			cfg: config.Config{
+				ManagedAccountEmailTemplate: "ops+{slug}@example.com",
+				ManagedAccountNamePrefix:    "lesser-",
+			},
+			store: st,
+			org: &fakeOrg{listOut: &organizations.ListAccountsOutput{
+				Accounts: accounts,
+			}},
+		}
+	}
+
+	t.Run("matches", func(t *testing.T) {
+		s := makeServer([]orgtypes.Account{{
+			Id:     aws.String("123456789012"),
+			Email:  aws.String("ops+slug@example.com"),
+			Name:   aws.String("lesser-slug"),
+			Status: orgtypes.AccountStatusActive,
+		}})
+		job := &models.ProvisionJob{
+			ID:           "j",
+			InstanceSlug: "slug",
+			Status:       models.ProvisionJobStatusRunning,
+			Step:         provisionStepAccountMove,
+			AccountID:    "123456789012",
+			AccountEmail: "ops+slug@example.com",
+			MaxAttempts:  3,
+		}
+
+		delay, done, err := s.validateAdoptedProvisionAccount(context.Background(), job, "req", now)
+		require.NoError(t, err)
+		require.False(t, done)
+		require.Zero(t, delay)
+		require.NotEqual(t, provisionStepFailed, job.Step)
+	})
+
+	t.Run("mismatched email fails", func(t *testing.T) {
+		s := makeServer([]orgtypes.Account{{
+			Id:     aws.String("123456789012"),
+			Email:  aws.String("ops+other@example.com"),
+			Name:   aws.String("lesser-slug"),
+			Status: orgtypes.AccountStatusActive,
+		}})
+		job := &models.ProvisionJob{
+			ID:           "j",
+			InstanceSlug: "slug",
+			Status:       models.ProvisionJobStatusRunning,
+			Step:         provisionStepAccountMove,
+			AccountID:    "123456789012",
+			AccountEmail: "ops+slug@example.com",
+			MaxAttempts:  3,
+		}
+
+		delay, done, err := s.validateAdoptedProvisionAccount(context.Background(), job, "req", now)
+		require.NoError(t, err)
+		require.False(t, done)
+		require.Zero(t, delay)
+		require.Equal(t, provisionStepFailed, job.Step)
+		require.Equal(t, "account_adoption_invalid", job.ErrorCode)
+	})
 }
 
 func TestAdvanceProvisionAccountCreatePoll_RestartTimeoutAndDescribeError(t *testing.T) {
