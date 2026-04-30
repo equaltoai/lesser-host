@@ -65,7 +65,6 @@ type provisionJobResponse struct {
 	AdminUsername     string    `json:"admin_username,omitempty"`
 
 	ConsentMessageHash string `json:"consent_message_hash,omitempty"`
-	ConsentSignature   string `json:"consent_signature,omitempty"`
 
 	AccountRequestID string `json:"account_request_id,omitempty"`
 	AccountID        string `json:"account_id,omitempty"`
@@ -107,7 +106,6 @@ func provisionJobResponseFromModel(j *models.ProvisionJob) provisionJobResponse 
 		McpWiredAt:         j.McpWiredAt,
 		AdminUsername:      strings.TrimSpace(j.AdminUsername),
 		ConsentMessageHash: strings.TrimSpace(j.ConsentMessageHash),
-		ConsentSignature:   strings.TrimSpace(j.ConsentSignature),
 		AccountRequestID:   strings.TrimSpace(j.AccountRequestID),
 		AccountID:          strings.TrimSpace(j.AccountID),
 		ParentHostedZoneID: strings.TrimSpace(j.ParentHostedZoneID),
@@ -212,7 +210,10 @@ func (s *Server) getExistingProvisionJobAndNudge(ctx *apptheory.Context, inst *m
 		return nil, false
 	}
 
-	s.enqueueProvisionJobBestEffort(ctx, jobID)
+	now := time.Now().UTC()
+	if shouldNudgeAsyncJob(now, job.UpdatedAt) && !job.HasActiveLease(now) {
+		s.enqueueProvisionJobBestEffort(ctx, jobID)
+	}
 	return job, true
 }
 
@@ -418,7 +419,8 @@ func (s *Server) handleGetInstanceProvisioning(ctx *apptheory.Context) (*apptheo
 	}
 
 	if status := strings.ToLower(strings.TrimSpace(job.Status)); status == models.ProvisionJobStatusQueued || status == models.ProvisionJobStatusRunning {
-		if shouldNudgeAsyncJob(time.Now().UTC(), job.UpdatedAt) {
+		now := time.Now().UTC()
+		if shouldNudgeAsyncJob(now, job.UpdatedAt) && !job.HasActiveLease(now) {
 			s.enqueueProvisionJobBestEffort(ctx, jobID)
 		}
 	}

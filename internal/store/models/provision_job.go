@@ -72,6 +72,9 @@ type ProvisionJob struct {
 	Attempts    int64 `theorydb:"attr:attempts" json:"attempts"`
 	MaxAttempts int64 `theorydb:"attr:maxAttempts" json:"max_attempts,omitempty"`
 
+	LeaseOwner     string    `theorydb:"attr:leaseOwner" json:"lease_owner,omitempty"`
+	LeaseExpiresAt time.Time `theorydb:"attr:leaseExpiresAt" json:"lease_expires_at,omitempty"`
+
 	ErrorCode    string `theorydb:"attr:errorCode" json:"error_code,omitempty"`
 	ErrorMessage string `theorydb:"attr:errorMessage" json:"error_message,omitempty"`
 
@@ -143,6 +146,7 @@ func (j *ProvisionJob) UpdateKeys() error {
 	j.ChildHostedZoneID = strings.TrimSpace(j.ChildHostedZoneID)
 	j.ReceiptJSON = strings.TrimSpace(j.ReceiptJSON)
 	j.SoulReceiptJSON = strings.TrimSpace(j.SoulReceiptJSON)
+	j.LeaseOwner = strings.TrimSpace(j.LeaseOwner)
 	j.ErrorCode = strings.TrimSpace(j.ErrorCode)
 	j.ErrorMessage = strings.TrimSpace(j.ErrorMessage)
 	j.RequestID = strings.TrimSpace(j.RequestID)
@@ -163,6 +167,17 @@ func (j *ProvisionJob) GetPK() string { return j.PK }
 
 // GetSK returns the sort key for ProvisionJob.
 func (j *ProvisionJob) GetSK() string { return j.SK }
+
+// HasActiveLease reports whether a worker lease should suppress duplicate provisioning work.
+func (j *ProvisionJob) HasActiveLease(now time.Time) bool {
+	if j == nil {
+		return false
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	return strings.TrimSpace(j.LeaseOwner) != "" && j.LeaseExpiresAt.After(now)
+}
 
 func (j *ProvisionJob) updateGSI1() {
 	if j == nil {

@@ -133,6 +133,57 @@ func TestBuildDeployRunnerEnv_PreservesConsentMessageBytes(t *testing.T) {
 	}
 }
 
+func TestClearProvisionJobConsentArtifacts_PreservesHashOnly(t *testing.T) {
+	t.Parallel()
+
+	job := &models.ProvisionJob{
+		ConsentMessage:   "signed message",
+		ConsentSignature: "0xsignature",
+	}
+	clearProvisionJobConsentArtifacts(job)
+
+	if job.ConsentMessage != "" || job.ConsentSignature != "" {
+		t.Fatalf("expected replayable consent artifacts cleared: %#v", job)
+	}
+	if job.ConsentMessageHash == "" {
+		t.Fatalf("expected consent message hash retained")
+	}
+}
+
+func TestTryAcquireProvisionJobLease_SetsBoundedLease(t *testing.T) {
+	t.Parallel()
+
+	db := ttmocks.NewMockExtendedDB()
+	qJob := new(ttmocks.MockQuery)
+	db.On("WithContext", mock.Anything).Return(db).Once()
+
+	var captured *models.ProvisionJob
+	db.On("Model", mock.MatchedBy(func(job *models.ProvisionJob) bool {
+		captured = job
+		return job != nil
+	})).Return(qJob).Once()
+	qJob.On("IfExists").Return(qJob).Once()
+	qJob.On("WithConditionExpression", mock.Anything, mock.Anything).Return(qJob).Once()
+	qJob.On("Update", []string{"LeaseOwner", "LeaseExpiresAt", "RequestID", "UpdatedAt"}).Return(nil).Once()
+
+	srv := &Server{store: store.New(db)}
+	now := time.Unix(100, 0).UTC()
+	job := &models.ProvisionJob{ID: "job1", InstanceSlug: "slug", Status: models.ProvisionJobStatusQueued, CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
+	leased, err := srv.tryAcquireProvisionJobLease(context.Background(), job, "req1", now)
+	if err != nil {
+		t.Fatalf("tryAcquireProvisionJobLease: %v", err)
+	}
+	if !leased {
+		t.Fatalf("expected lease acquired")
+	}
+	if captured == nil || captured.LeaseOwner == "" || !captured.LeaseExpiresAt.Equal(now.Add(provisionJobLeaseDuration)) {
+		t.Fatalf("unexpected lease update: %#v", captured)
+	}
+	if !job.HasActiveLease(now) {
+		t.Fatalf("expected in-memory job to have active lease: %#v", job)
+	}
+}
+
 func TestAssumeInstanceRole_ValidationAndRetryableError(t *testing.T) {
 	t.Parallel()
 

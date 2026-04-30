@@ -165,7 +165,104 @@ func (s *Server) handleUpdateSweep(ctx *apptheory.EventContext, _ events.EventBr
 	if ctx == nil {
 		return nil, fmt.Errorf("event context is nil")
 	}
-	return s.processActiveUpdateSweep(ctx.Context(), ctx.RequestID, time.Now().UTC())
+	now := time.Now().UTC()
+	updateResult, updateErr := s.processActiveUpdateSweep(ctx.Context(), ctx.RequestID, now)
+	if updateResult == nil {
+		updateResult = map[string]any{}
+	}
+
+	provisionResult, provisionErr := s.processActiveProvisionSweep(ctx.Context(), ctx.RequestID, now)
+	updateResult["provisioning"] = provisionResult
+
+	if updateErr != nil && provisionErr != nil {
+		return updateResult, fmt.Errorf("update sweep failed: %v; provisioning sweep failed: %w", updateErr, provisionErr)
+	}
+	if updateErr != nil {
+		return updateResult, updateErr
+	}
+	if provisionErr != nil {
+		return updateResult, provisionErr
+	}
+	return updateResult, nil
+}
+
+func (s *Server) processActiveProvisionSweep(ctx context.Context, requestID string, now time.Time) (map[string]any, error) {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return nil, fmt.Errorf("store not initialized")
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	if s.sqs == nil {
+		return map[string]any{
+			"active_jobs": 0,
+			"processed":   0,
+			"errors":      0,
+			"skipped":     "sqs not initialized",
+			"swept_at":    now.UTC().Format(time.RFC3339),
+		}, nil
+	}
+
+	var items []*models.ProvisionJob
+	err := s.store.DB.WithContext(ctx).
+		Model(&models.ProvisionJob{}).
+		Where("SK", "=", models.SKJob).
+		Limit(provisionSweepLimit).
+		All(&items)
+	if err != nil && !theoryErrors.IsNotFound(err) {
+		return nil, err
+	}
+
+	activeJobs := 0
+	processed := 0
+	errorCount := 0
+	var firstErr error
+
+	for _, item := range items {
+		if item == nil || !provisionJobProcessable(item) {
+			continue
+		}
+		activeJobs++
+		if !item.ExpiresAt.IsZero() && item.ExpiresAt.Before(now) {
+			if err := s.failJob(ctx, item, requestID, now, "expired", "provisioning job has expired"); err != nil {
+				errorCount++
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
+			}
+			processed++
+			continue
+		}
+		if item.HasActiveLease(now) {
+			continue
+		}
+		lastSeen := item.UpdatedAt
+		if lastSeen.IsZero() {
+			lastSeen = item.CreatedAt
+		}
+		if lastSeen.IsZero() || now.Sub(lastSeen) >= provisionSweepStaleAfter {
+			if err := s.requeueProvisionJob(ctx, strings.TrimSpace(item.ID), 0); err != nil {
+				errorCount++
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
+			}
+			processed++
+		}
+	}
+
+	result := map[string]any{
+		"active_jobs": activeJobs,
+		"processed":   processed,
+		"errors":      errorCount,
+		"swept_at":    now.UTC().Format(time.RFC3339),
+	}
+	if firstErr != nil {
+		return result, fmt.Errorf("provisioning sweep encountered %d errors: %w", errorCount, firstErr)
+	}
+	return result, nil
 }
 
 func (s *Server) processProvisionJob(ctx context.Context, requestID string, jobID string) error {
@@ -191,7 +288,84 @@ func (s *Server) processProvisionJob(ctx context.Context, requestID string, jobI
 		return s.failJob(ctx, job, requestID, now, "missing_config", "missing required config: "+strings.Join(missing, ", "))
 	}
 
+	leased, err := s.tryAcquireProvisionJobLease(ctx, job, requestID, now)
+	if err != nil {
+		return err
+	}
+	if !leased {
+		return nil
+	}
+
 	return s.runManagedProvisioningStateMachine(ctx, job, requestID, now)
+}
+
+func provisionJobLeaseOwner(requestID string, jobID string) string {
+	owner := strings.TrimSpace(requestID)
+	if owner == "" {
+		owner = "worker"
+	}
+	jobID = strings.TrimSpace(jobID)
+	if jobID != "" {
+		owner += ":" + jobID
+	}
+	if len(owner) > 128 {
+		return owner[:128]
+	}
+	return owner
+}
+
+func (s *Server) tryAcquireProvisionJobLease(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (bool, error) {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return false, fmt.Errorf("store not initialized")
+	}
+	if job == nil {
+		return false, nil
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+
+	owner := provisionJobLeaseOwner(requestID, job.ID)
+	expiresAt := now.Add(provisionJobLeaseDuration)
+	jobExpiresAt := job.ExpiresAt
+	if jobExpiresAt.IsZero() {
+		jobExpiresAt = now.Add(30 * 24 * time.Hour)
+	}
+	update := &models.ProvisionJob{
+		ID:             strings.TrimSpace(job.ID),
+		InstanceSlug:   strings.TrimSpace(job.InstanceSlug),
+		CreatedAt:      job.CreatedAt,
+		ExpiresAt:      jobExpiresAt,
+		LeaseOwner:     owner,
+		LeaseExpiresAt: expiresAt,
+		RequestID:      strings.TrimSpace(requestID),
+		UpdatedAt:      now,
+	}
+	_ = update.UpdateKeys()
+
+	err := s.store.DB.WithContext(ctx).
+		Model(update).
+		IfExists().
+		WithConditionExpression(
+			"attribute_not_exists(leaseExpiresAt) OR leaseExpiresAt <= :now OR leaseOwner = :owner OR attribute_not_exists(leaseOwner) OR leaseOwner = :empty",
+			map[string]any{":now": now, ":owner": owner, ":empty": ""},
+		).
+		Update("LeaseOwner", "LeaseExpiresAt", "RequestID", "UpdatedAt")
+	if theoryErrors.IsConditionFailed(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+
+	job.LeaseOwner = owner
+	job.LeaseExpiresAt = expiresAt
+	if job.ExpiresAt.IsZero() {
+		job.ExpiresAt = jobExpiresAt
+	}
+	job.RequestID = strings.TrimSpace(requestID)
+	job.UpdatedAt = now
+	return true, nil
 }
 
 func (s *Server) loadProvisionJob(ctx context.Context, jobID string) (*models.ProvisionJob, error) {
@@ -320,6 +494,9 @@ const (
 	provisionMaxDeployAge           = 3 * time.Hour
 	provisionDefaultPollDelay       = 45 * time.Second
 	provisionDefaultShortRetryDelay = 20 * time.Second
+	provisionJobLeaseDuration       = 10 * time.Second
+	provisionSweepLimit             = 200
+	provisionSweepStaleAfter        = 2 * time.Minute
 
 	noteMissingAccountIDRestart = "missing account id; restarting account allocation"
 
@@ -1260,6 +1437,7 @@ func (s *Server) advanceProvisionDeployStart(ctx context.Context, job *models.Pr
 	if strings.TrimSpace(job.RunID) != "" {
 		job.Step = provisionStepDeployWait
 		job.Note = "deploy runner already started"
+		clearProvisionJobConsentArtifacts(job)
 		if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
 			return 0, false, err
 		}
@@ -1297,10 +1475,23 @@ func (s *Server) advanceProvisionDeployStart(ctx context.Context, job *models.Pr
 	job.RunID = strings.TrimSpace(runID)
 	job.Step = provisionStepDeployWait
 	job.Note = noteDeployRunnerInProgress
+	clearProvisionJobConsentArtifacts(job)
 	if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
 		return 0, false, err
 	}
 	return provisionDefaultPollDelay, false, nil
+}
+
+func clearProvisionJobConsentArtifacts(job *models.ProvisionJob) {
+	if job == nil {
+		return
+	}
+	if strings.TrimSpace(job.ConsentMessageHash) == "" && job.ConsentMessage != "" {
+		sum := sha256.Sum256([]byte(job.ConsentMessage))
+		job.ConsentMessageHash = hex.EncodeToString(sum[:])
+	}
+	job.ConsentMessage = ""
+	job.ConsentSignature = ""
 }
 
 func (s *Server) advanceProvisionDeployWait(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {

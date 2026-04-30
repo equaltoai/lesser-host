@@ -307,3 +307,52 @@ func TestUpdateSweepEventBridge_ReconcilesActiveBodyJob(t *testing.T) {
 	require.Contains(t, loaded.ErrorMessage, "CodeBuild: https://logs.example/body")
 	require.NotContains(t, loaded.ErrorMessage, "--stack-name")
 }
+
+func TestProcessActiveProvisionSweep_RequeuesOnlyStaleUnleasedJobs(t *testing.T) {
+	t.Parallel()
+
+	db := ttmocks.NewMockExtendedDB()
+	qJob := new(ttmocks.MockQuery)
+	db.On("WithContext", mock.Anything).Return(db).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.ProvisionJob")).Return(qJob).Maybe()
+	qJob.On("Where", "SK", "=", models.SKJob).Return(qJob).Once()
+	qJob.On("Limit", provisionSweepLimit).Return(qJob).Once()
+
+	now := time.Unix(1_000, 0).UTC()
+	qJob.On("All", mock.AnythingOfType("*[]*models.ProvisionJob")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.ProvisionJob](t, args, 0)
+		*dest = []*models.ProvisionJob{
+			{
+				ID:           "stale",
+				InstanceSlug: "slug",
+				Status:       models.ProvisionJobStatusQueued,
+				UpdatedAt:    now.Add(-provisionSweepStaleAfter - time.Second),
+				ExpiresAt:    now.Add(time.Hour),
+			},
+			{
+				ID:             "leased",
+				InstanceSlug:   "slug",
+				Status:         models.ProvisionJobStatusRunning,
+				UpdatedAt:      now.Add(-provisionSweepStaleAfter - time.Second),
+				LeaseOwner:     "worker",
+				LeaseExpiresAt: now.Add(time.Minute),
+				ExpiresAt:      now.Add(time.Hour),
+			},
+		}
+	}).Once()
+
+	sqsClient := &fakeSQS{}
+	srv := &Server{
+		cfg:   config.Config{ProvisionQueueURL: "https://sqs.us-east-1.amazonaws.com/123/provision"},
+		store: store.New(db),
+		sqs:   sqsClient,
+	}
+
+	out, err := srv.processActiveProvisionSweep(context.Background(), "req-sweep", now)
+	require.NoError(t, err)
+	require.EqualValues(t, 2, out["active_jobs"])
+	require.EqualValues(t, 1, out["processed"])
+	require.EqualValues(t, 0, out["errors"])
+	require.Len(t, sqsClient.inputs, 1)
+	require.Contains(t, aws.ToString(sqsClient.inputs[0].MessageBody), `"job_id":"stale"`)
+}

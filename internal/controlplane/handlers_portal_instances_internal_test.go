@@ -68,6 +68,7 @@ func newPortalTestDB() portalTestDB {
 		q.On("Limit", mock.Anything).Return(q).Maybe()
 		q.On("IfExists").Return(q).Maybe()
 		q.On("IfNotExists").Return(q).Maybe()
+		q.On("WithConditionExpression", mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("ConsistentRead").Return(q).Maybe()
 		q.On("Create").Return(nil).Maybe()
 		q.On("CreateOrUpdate").Return(nil).Maybe()

@@ -383,7 +383,8 @@ func (s *Server) handleGetOperatorProvisionJob(ctx *apptheory.Context) (*apptheo
 	}
 
 	if status := strings.ToLower(strings.TrimSpace(job.Status)); status == models.ProvisionJobStatusQueued || status == models.ProvisionJobStatusRunning {
-		if shouldNudgeAsyncJob(time.Now().UTC(), job.UpdatedAt) {
+		now := time.Now().UTC()
+		if shouldNudgeAsyncJob(now, job.UpdatedAt) && !job.HasActiveLease(now) {
 			s.enqueueProvisionJobBestEffort(ctx, id)
 		}
 	}
@@ -480,6 +481,9 @@ func (s *Server) handleRetryOperatorProvisionJob(ctx *apptheory.Context) (*appth
 			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to retry job"}
 		}
 	} else {
+		if !shouldNudgeAsyncJob(now, job.UpdatedAt) || job.HasActiveLease(now) {
+			return apptheory.JSON(http.StatusOK, operatorProvisionJobDetailFromModel(job))
+		}
 		audit := &models.AuditLogEntry{
 			Actor:     actor,
 			Action:    auditAction,

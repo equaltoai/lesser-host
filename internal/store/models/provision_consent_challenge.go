@@ -24,10 +24,13 @@ type ProvisionConsentChallenge struct {
 	WalletAddr string `theorydb:"attr:walletAddress" json:"wallet_address"`
 	ChainID    int    `theorydb:"attr:chainID" json:"chain_id"`
 
-	Nonce     string    `theorydb:"attr:nonce" json:"nonce"`
-	Message   string    `theorydb:"attr:message" json:"message"`
-	IssuedAt  time.Time `theorydb:"attr:issuedAt" json:"issued_at"`
-	ExpiresAt time.Time `theorydb:"attr:expiresAt" json:"expires_at"`
+	Nonce       string    `theorydb:"attr:nonce" json:"nonce"`
+	Message     string    `theorydb:"attr:message" json:"message"`
+	MessageHash string    `theorydb:"attr:messageHash" json:"message_hash,omitempty"`
+	Consumed    bool      `theorydb:"attr:consumed" json:"consumed,omitempty"`
+	ConsumedAt  time.Time `theorydb:"attr:consumedAt" json:"consumed_at,omitempty"`
+	IssuedAt    time.Time `theorydb:"attr:issuedAt" json:"issued_at"`
+	ExpiresAt   time.Time `theorydb:"attr:expiresAt" json:"expires_at"`
 }
 
 // TableName returns the database table name for ProvisionConsentChallenge.
@@ -62,6 +65,7 @@ func (c *ProvisionConsentChallenge) UpdateKeys() error {
 	c.WalletType = strings.TrimSpace(c.WalletType)
 	c.WalletAddr = strings.ToLower(strings.TrimSpace(c.WalletAddr))
 	c.Nonce = strings.TrimSpace(c.Nonce)
+	c.MessageHash = strings.TrimSpace(c.MessageHash)
 
 	c.PK = fmt.Sprintf("PROVISION_CONSENT#%s", c.ID)
 	c.SK = "CHALLENGE"
