@@ -25,3 +25,13 @@ Parallel Lesser remediation must be consumed through host's normal managed-relea
 - The exact published Lesser release artifacts must be downloaded and checksum-verified through host's real consumer path.
 - `theory` validation precedes `simulacrum` canary for relevant producer/consumer contract changes.
 - Any interface drift is coordinated through Aron with the Lesser steward before host canary signoff.
+
+## M6 canary checklist
+
+M6 is considered ready for broader lab soak only after all of the following are true:
+
+- Host lab deploy includes the M6 control-plane, CDK, and provisioning-worker changes.
+- `theory` validates account adoption, consent one-time use, provisioning leases, and managed-update runner dispatch.
+- Host consumes a published Lesser artifact through managed-release certification; no source-only signoff.
+- `simulacrum` runs as the host-lab canary after `theory` passes, using the same verified Lesser artifact line.
+- Any Lesser-side rollout blocker is recorded on the M6 tracking issue/PR before canary signoff.
