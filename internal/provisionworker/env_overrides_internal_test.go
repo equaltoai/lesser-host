@@ -88,6 +88,7 @@ func TestStartDeployRunner_AppendsTipAndAIEnv(t *testing.T) {
 			ManagedLesserGitHubOwner:          "o",
 			ManagedLesserGitHubRepo:           "r",
 			ArtifactBucketName:                "bucket",
+			ManagedOrgVendingRoleARN:          "arn:aws:iam::123456789012:role/lesser-host-org-vending",
 		},
 		store: st,
 		cb:    cb,
@@ -110,6 +111,7 @@ func TestStartDeployRunner_AppendsTipAndAIEnv(t *testing.T) {
 	)
 
 	env := envOverrideMap(cb.lastStart.EnvironmentVariablesOverride)
+	require.NotContains(t, env, "MANAGED_ORG_VENDING_ROLE_ARN")
 	require.Equal(t, "true", env["TIP_ENABLED"])
 	require.Equal(t, "8453", env["TIP_CHAIN_ID"])
 	require.Equal(t, "0xabc", env["TIP_CONTRACT_ADDRESS"])
@@ -202,6 +204,7 @@ func TestStartUpdateDeployRunner_AppendsTipAndAIEnv(t *testing.T) {
 			ManagedLesserGitHubOwner:          "o",
 			ManagedLesserGitHubRepo:           "r",
 			ArtifactBucketName:                "bucket",
+			ManagedOrgVendingRoleARN:          "arn:aws:iam::123456789012:role/lesser-host-org-vending",
 		},
 		cb: cb,
 	}
@@ -242,6 +245,7 @@ func TestStartUpdateDeployRunner_AppendsTipAndAIEnv(t *testing.T) {
 	)
 
 	env := envOverrideMap(cb.lastStart.EnvironmentVariablesOverride)
+	require.NotContains(t, env, "MANAGED_ORG_VENDING_ROLE_ARN")
 	require.Equal(t, "true", env["TIP_ENABLED"])
 	require.Equal(t, "10", env["TIP_CHAIN_ID"])
 	require.Equal(t, "0xdef", env["TIP_CONTRACT_ADDRESS"])

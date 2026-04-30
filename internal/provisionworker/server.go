@@ -2115,12 +2115,6 @@ func (s *Server) buildDeployRunnerEnv(job *models.ProvisionJob, stage, receiptKe
 		{Name: aws.String("LESSER_BODY_GITHUB_REPO"), Value: aws.String(strings.TrimSpace(s.cfg.ManagedLesserBodyGitHubRepo))},
 		{Name: aws.String("LESSER_BODY_VERSION"), Value: aws.String(strings.TrimSpace(s.cfg.ManagedLesserBodyDefaultVersion))},
 	}
-	if strings.TrimSpace(s.cfg.ManagedOrgVendingRoleARN) != "" {
-		env = append(env, cbtypes.EnvironmentVariable{
-			Name:  aws.String("MANAGED_ORG_VENDING_ROLE_ARN"),
-			Value: aws.String(strings.TrimSpace(s.cfg.ManagedOrgVendingRoleARN)),
-		})
-	}
 
 	return env
 }
