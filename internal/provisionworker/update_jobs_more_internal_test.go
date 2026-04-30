@@ -592,6 +592,7 @@ func TestDescribeAndEnsureManagedInstanceKeySecret_RequiresManagedStageTags(t *t
 
 	sm.describeOut.Tags = []smtypes.Tag{
 		{Key: aws.String(managedInstanceKeySecretTagInstanceSlug), Value: aws.String("slug")},
+		{Key: aws.String(managedInstanceKeySecretTagKeyID), Value: aws.String(secretValueToKeyID("lhk_test"))},
 		{Key: aws.String(managedInstanceKeySecretTagManaged), Value: aws.String("true")},
 		{Key: aws.String(managedInstanceKeySecretTagStage), Value: aws.String("lab")},
 	}
@@ -601,6 +602,36 @@ func TestDescribeAndEnsureManagedInstanceKeySecret_RequiresManagedStageTags(t *t
 
 	_, err = srv.describeAndEnsureManagedInstanceKeySecret(context.Background(), sm, " slug ", " secret ", "live")
 	require.ErrorContains(t, err, "refusing unmanaged")
+}
+
+func TestDescribeAndEnsureManagedInstanceKeySecret_RejectsTagOnlyKeyIDForgery(t *testing.T) {
+	t.Parallel()
+
+	db := ttmocks.NewMockExtendedDB()
+	qKey := new(ttmocks.MockQuery)
+	db.On("WithContext", mock.Anything).Return(db).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.InstanceKey")).Return(qKey).Maybe()
+	qKey.On("IfNotExists").Return(qKey).Maybe()
+	qKey.On("Create").Return(nil).Maybe()
+
+	srv := &Server{store: store.New(db)}
+	sm := &fakeSecretsManager{
+		describeOut: &secretsmanager.DescribeSecretOutput{
+			ARN: aws.String("arn:secret"),
+			Tags: []smtypes.Tag{
+				{Key: aws.String(managedInstanceKeySecretTagInstanceSlug), Value: aws.String("slug")},
+				{Key: aws.String(managedInstanceKeySecretTagKeyID), Value: aws.String(secretValueToKeyID("lhk_attacker"))},
+				{Key: aws.String(managedInstanceKeySecretTagManaged), Value: aws.String("true")},
+				{Key: aws.String(managedInstanceKeySecretTagStage), Value: aws.String("lab")},
+			},
+		},
+		getOut: &secretsmanager.GetSecretValueOutput{
+			SecretString: aws.String(`{"secret":"lhk_real"}`),
+		},
+	}
+
+	_, err := srv.describeAndEnsureManagedInstanceKeySecret(context.Background(), sm, "slug", "arn:secret", "lab")
+	require.ErrorContains(t, err, "mismatched key id tag")
 }
 
 func TestCreateManagedInstanceKeySecret_ValidatesAndPropagatesErrors(t *testing.T) {

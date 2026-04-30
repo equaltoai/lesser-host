@@ -114,16 +114,19 @@ func (s *Server) describeAndEnsureManagedInstanceKeySecret(ctx context.Context, 
 	if strings.TrimSpace(rawStageTag) == "" {
 		return "", fmt.Errorf("refusing unmanaged or cross-stage instance key secret")
 	}
-	if keyID == "" {
-		plaintext, err := getSecretsManagerSecretPlaintext(ctx, sm, secretArn)
-		if err != nil {
-			return "", err
-		}
-		keyID = secretValueToKeyID(plaintext)
+
+	plaintext, err := getSecretsManagerSecretPlaintext(ctx, sm, secretArn)
+	if err != nil {
+		return "", err
 	}
-	if keyID == "" {
+	derivedKeyID := secretValueToKeyID(plaintext)
+	if derivedKeyID == "" {
 		return "", fmt.Errorf("unable to resolve instance key id from secret")
 	}
+	if keyID != "" && keyID != derivedKeyID {
+		return "", fmt.Errorf("refusing instance key secret with mismatched key id tag")
+	}
+	keyID = derivedKeyID
 
 	if err := s.ensureInstanceKeyRecord(ctx, slug, keyID); err != nil {
 		return "", fmt.Errorf("ensure instance key record: %w", err)
