@@ -165,7 +165,127 @@ func (s *Server) handleUpdateSweep(ctx *apptheory.EventContext, _ events.EventBr
 	if ctx == nil {
 		return nil, fmt.Errorf("event context is nil")
 	}
-	return s.processActiveUpdateSweep(ctx.Context(), ctx.RequestID, time.Now().UTC())
+	now := time.Now().UTC()
+	updateResult, updateErr := s.processActiveUpdateSweep(ctx.Context(), ctx.RequestID, now)
+	if updateResult == nil {
+		updateResult = map[string]any{}
+	}
+
+	provisionResult, provisionErr := s.processActiveProvisionSweep(ctx.Context(), ctx.RequestID, now)
+	updateResult["provisioning"] = provisionResult
+
+	if updateErr != nil && provisionErr != nil {
+		return updateResult, fmt.Errorf("update sweep failed: %v; provisioning sweep failed: %w", updateErr, provisionErr)
+	}
+	if updateErr != nil {
+		return updateResult, updateErr
+	}
+	if provisionErr != nil {
+		return updateResult, provisionErr
+	}
+	return updateResult, nil
+}
+
+func (s *Server) processActiveProvisionSweep(ctx context.Context, requestID string, now time.Time) (map[string]any, error) {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return nil, fmt.Errorf("store not initialized")
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	if s.sqs == nil {
+		return map[string]any{
+			"active_jobs": 0,
+			"processed":   0,
+			"errors":      0,
+			"skipped":     "sqs not initialized",
+			"swept_at":    now.UTC().Format(time.RFC3339),
+		}, nil
+	}
+
+	items, err := s.listProvisionSweepJobs(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	counts := provisionSweepCounts{}
+	for _, item := range items {
+		if item == nil || !provisionJobProcessable(item) {
+			continue
+		}
+		counts.activeJobs++
+		processed, err := s.processProvisionSweepJob(ctx, item, requestID, now)
+		counts.record(processed, err)
+	}
+
+	result := counts.result(now)
+	if counts.firstErr != nil {
+		return result, fmt.Errorf("provisioning sweep encountered %d errors: %w", counts.errorCount, counts.firstErr)
+	}
+	return result, nil
+}
+
+type provisionSweepCounts struct {
+	activeJobs int
+	processed  int
+	errorCount int
+	firstErr   error
+}
+
+func (c *provisionSweepCounts) record(processed bool, err error) {
+	if err != nil {
+		c.errorCount++
+		if c.firstErr == nil {
+			c.firstErr = err
+		}
+		return
+	}
+	if processed {
+		c.processed++
+	}
+}
+
+func (c provisionSweepCounts) result(now time.Time) map[string]any {
+	return map[string]any{
+		"active_jobs": c.activeJobs,
+		"processed":   c.processed,
+		"errors":      c.errorCount,
+		"swept_at":    now.UTC().Format(time.RFC3339),
+	}
+}
+
+func (s *Server) listProvisionSweepJobs(ctx context.Context) ([]*models.ProvisionJob, error) {
+	var items []*models.ProvisionJob
+	err := s.store.DB.WithContext(ctx).
+		Model(&models.ProvisionJob{}).
+		Where("SK", "=", models.SKJob).
+		Limit(provisionSweepLimit).
+		All(&items)
+	if err != nil && !theoryErrors.IsNotFound(err) {
+		return nil, err
+	}
+	return items, nil
+}
+
+func (s *Server) processProvisionSweepJob(ctx context.Context, item *models.ProvisionJob, requestID string, now time.Time) (bool, error) {
+	if !item.ExpiresAt.IsZero() && item.ExpiresAt.Before(now) {
+		return true, s.failJob(ctx, item, requestID, now, "expired", "provisioning job has expired")
+	}
+	if item.HasActiveLease(now) || !provisionJobStaleForSweep(item, now) {
+		return false, nil
+	}
+	return true, s.requeueProvisionJob(ctx, strings.TrimSpace(item.ID), 0)
+}
+
+func provisionJobStaleForSweep(item *models.ProvisionJob, now time.Time) bool {
+	if item == nil {
+		return false
+	}
+	lastSeen := item.UpdatedAt
+	if lastSeen.IsZero() {
+		lastSeen = item.CreatedAt
+	}
+	return lastSeen.IsZero() || now.Sub(lastSeen) >= provisionSweepStaleAfter
 }
 
 func (s *Server) processProvisionJob(ctx context.Context, requestID string, jobID string) error {
@@ -191,7 +311,84 @@ func (s *Server) processProvisionJob(ctx context.Context, requestID string, jobI
 		return s.failJob(ctx, job, requestID, now, "missing_config", "missing required config: "+strings.Join(missing, ", "))
 	}
 
+	leased, err := s.tryAcquireProvisionJobLease(ctx, job, requestID, now)
+	if err != nil {
+		return err
+	}
+	if !leased {
+		return nil
+	}
+
 	return s.runManagedProvisioningStateMachine(ctx, job, requestID, now)
+}
+
+func provisionJobLeaseOwner(requestID string, jobID string) string {
+	owner := strings.TrimSpace(requestID)
+	if owner == "" {
+		owner = "worker"
+	}
+	jobID = strings.TrimSpace(jobID)
+	if jobID != "" {
+		owner += ":" + jobID
+	}
+	if len(owner) > 128 {
+		return owner[:128]
+	}
+	return owner
+}
+
+func (s *Server) tryAcquireProvisionJobLease(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (bool, error) {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return false, fmt.Errorf("store not initialized")
+	}
+	if job == nil {
+		return false, nil
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+
+	owner := provisionJobLeaseOwner(requestID, job.ID)
+	expiresAt := now.Add(provisionJobLeaseDuration)
+	jobExpiresAt := job.ExpiresAt
+	if jobExpiresAt.IsZero() {
+		jobExpiresAt = now.Add(30 * 24 * time.Hour)
+	}
+	update := &models.ProvisionJob{
+		ID:             strings.TrimSpace(job.ID),
+		InstanceSlug:   strings.TrimSpace(job.InstanceSlug),
+		CreatedAt:      job.CreatedAt,
+		ExpiresAt:      jobExpiresAt,
+		LeaseOwner:     owner,
+		LeaseExpiresAt: expiresAt,
+		RequestID:      strings.TrimSpace(requestID),
+		UpdatedAt:      now,
+	}
+	_ = update.UpdateKeys()
+
+	err := s.store.DB.WithContext(ctx).
+		Model(update).
+		IfExists().
+		WithConditionExpression(
+			"attribute_not_exists(leaseExpiresAt) OR leaseExpiresAt <= :now OR leaseOwner = :owner OR attribute_not_exists(leaseOwner) OR leaseOwner = :empty",
+			map[string]any{":now": now, ":owner": owner, ":empty": ""},
+		).
+		Update("LeaseOwner", "LeaseExpiresAt", "RequestID", "UpdatedAt")
+	if theoryErrors.IsConditionFailed(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+
+	job.LeaseOwner = owner
+	job.LeaseExpiresAt = expiresAt
+	if job.ExpiresAt.IsZero() {
+		job.ExpiresAt = jobExpiresAt
+	}
+	job.RequestID = strings.TrimSpace(requestID)
+	job.UpdatedAt = now
+	return true, nil
 }
 
 func (s *Server) loadProvisionJob(ctx context.Context, jobID string) (*models.ProvisionJob, error) {
@@ -320,6 +517,9 @@ const (
 	provisionMaxDeployAge           = 3 * time.Hour
 	provisionDefaultPollDelay       = 45 * time.Second
 	provisionDefaultShortRetryDelay = 20 * time.Second
+	provisionJobLeaseDuration       = 10 * time.Second
+	provisionSweepLimit             = 200
+	provisionSweepStaleAfter        = 2 * time.Minute
 
 	noteMissingAccountIDRestart = "missing account id; restarting account allocation"
 
@@ -548,40 +748,7 @@ func (s *Server) startProvisionAccountCreate(ctx context.Context, job *models.Pr
 	accountName := managedAccountName(s.cfg.ManagedAccountNamePrefix, job.InstanceSlug)
 	roleName := managedAccountRoleName(job.AccountRoleName, s.cfg.ManagedInstanceRoleName)
 
-	handled, delay, done, err := s.tryReuseAccountByEmail(ctx, job, requestID, now, email, accountName)
-	if handled {
-		return delay, done, err
-	}
-
 	return s.requestAccountCreate(ctx, job, requestID, now, email, accountName, roleName)
-}
-
-func (s *Server) tryReuseAccountByEmail(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time, email string, accountName string) (bool, time.Duration, bool, error) {
-	if strings.TrimSpace(email) == "" {
-		return false, 0, false, nil
-	}
-
-	acct, err := s.findAccountByEmail(ctx, email)
-	if err != nil {
-		if isOrgAccessDenied(err) {
-			return true, 0, false, s.failOrgPermissions(ctx, job, requestID, now, "ListAccounts", err)
-		}
-		delay, done, retryErr := s.retryProvisionJobOrFail(ctx, job, requestID, now, "account_lookup_failed", "account lookup failed: "+err.Error(), provisionDefaultShortRetryDelay, 5*time.Minute)
-		return true, delay, done, retryErr
-	}
-	if acct == nil {
-		return false, 0, false, nil
-	}
-
-	if matchErr := ensureAccountMatchesExpected(acct, accountName); matchErr != nil {
-		return true, 0, false, s.failJob(ctx, job, requestID, now, "account_email_conflict", matchErr.Error())
-	}
-	if strings.TrimSpace(job.AccountID) == "" {
-		job.AccountID = strings.TrimSpace(aws.ToString(acct.Id))
-	}
-	job.Note = "AWS account already exists; reusing"
-	delay, done, err := s.advanceToAccountMove(ctx, job, requestID, now, job.Note)
-	return true, delay, done, err
 }
 
 func (s *Server) requestAccountCreate(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time, email string, accountName string, roleName string) (time.Duration, bool, error) {
@@ -768,36 +935,19 @@ func (s *Server) handleAccountCreateEmailExists(
 	requestID string,
 	now time.Time,
 ) (time.Duration, bool, error, bool) {
-	email := strings.TrimSpace(job.AccountEmail)
-	if email == "" {
-		email = strings.TrimSpace(expandManagedAccountEmailTemplate(s.cfg.ManagedAccountEmailTemplate, job.InstanceSlug))
-		job.AccountEmail = email
+	email := ensureProvisionAccountEmail(job, s.cfg.ManagedAccountEmailTemplate)
+	msg := "AWS Organizations reports the managed account email already exists; explicit validated account adoption is required"
+	if strings.TrimSpace(email) != "" {
+		msg += " for " + strings.TrimSpace(email)
 	}
-	accountName := strings.TrimSpace(strings.TrimSpace(s.cfg.ManagedAccountNamePrefix) + strings.TrimSpace(job.InstanceSlug))
-	if len(accountName) > 50 {
-		accountName = accountName[:50]
-	}
-	acct, err := s.findAccountByEmail(ctx, email)
-	if err != nil {
-		if isOrgAccessDenied(err) {
-			return 0, false, s.failOrgPermissions(ctx, job, requestID, now, "ListAccounts", err), true
-		}
-		delay, done, retryErr := s.retryProvisionJobOrFail(ctx, job, requestID, now, "account_lookup_failed", "account lookup failed after email exists: "+err.Error(), provisionDefaultShortRetryDelay, 5*time.Minute)
-		return delay, done, retryErr, true
-	}
-	if acct == nil {
-		return 0, false, nil, false
-	}
-	if matchErr := ensureAccountMatchesExpected(acct, accountName); matchErr != nil {
-		return 0, false, s.failJob(ctx, job, requestID, now, "account_email_conflict", matchErr.Error()), true
-	}
-	job.AccountID = strings.TrimSpace(aws.ToString(acct.Id))
-	job.Note = "AWS account already exists; reusing"
-	delay, done, err := s.advanceToAccountMove(ctx, job, requestID, now, job.Note)
-	return delay, done, err, true
+	return 0, false, s.failJob(ctx, job, requestID, now, "account_email_exists_adoption_required", msg), true
 }
 
 func (s *Server) advanceProvisionAccountMove(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {
+	if delay, done, err := s.validateAdoptedProvisionAccount(ctx, job, requestID, now); err != nil || done || delay > 0 {
+		return delay, done, err
+	}
+
 	targetOu := strings.TrimSpace(s.cfg.ManagedTargetOrganizationalUnitID)
 	if targetOu != "" {
 		requeueDelay, done, err := s.moveProvisionAccountToTargetOU(ctx, job, requestID, now, targetOu)
@@ -1310,6 +1460,7 @@ func (s *Server) advanceProvisionDeployStart(ctx context.Context, job *models.Pr
 	if strings.TrimSpace(job.RunID) != "" {
 		job.Step = provisionStepDeployWait
 		job.Note = "deploy runner already started"
+		clearProvisionJobConsentArtifacts(job)
 		if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
 			return 0, false, err
 		}
@@ -1347,10 +1498,23 @@ func (s *Server) advanceProvisionDeployStart(ctx context.Context, job *models.Pr
 	job.RunID = strings.TrimSpace(runID)
 	job.Step = provisionStepDeployWait
 	job.Note = noteDeployRunnerInProgress
+	clearProvisionJobConsentArtifacts(job)
 	if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
 		return 0, false, err
 	}
 	return provisionDefaultPollDelay, false, nil
+}
+
+func clearProvisionJobConsentArtifacts(job *models.ProvisionJob) {
+	if job == nil {
+		return
+	}
+	if strings.TrimSpace(job.ConsentMessageHash) == "" && job.ConsentMessage != "" {
+		sum := sha256.Sum256([]byte(job.ConsentMessage))
+		job.ConsentMessageHash = hex.EncodeToString(sum[:])
+	}
+	job.ConsentMessage = ""
+	job.ConsentSignature = ""
 }
 
 func (s *Server) advanceProvisionDeployWait(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {
@@ -1717,12 +1881,31 @@ func ensureAccountMatchesExpected(acct *orgtypes.Account, expectedName string) e
 	return nil
 }
 
-func (s *Server) findAccountByEmail(ctx context.Context, email string) (*orgtypes.Account, error) {
+func ensureAdoptedAccountMatchesExpected(acct *orgtypes.Account, accountID string, expectedEmail string, expectedName string) error {
+	if acct == nil {
+		return fmt.Errorf("account lookup returned nil")
+	}
+	accountID = strings.TrimSpace(accountID)
+	if accountID == "" || strings.TrimSpace(aws.ToString(acct.Id)) != accountID {
+		return fmt.Errorf("adopted account id does not match Organizations account")
+	}
+	expectedEmail = strings.ToLower(strings.TrimSpace(expectedEmail))
+	if expectedEmail == "" {
+		return fmt.Errorf("expected account email is required for account adoption")
+	}
+	actualEmail := strings.ToLower(strings.TrimSpace(aws.ToString(acct.Email)))
+	if actualEmail == "" || actualEmail != expectedEmail {
+		return fmt.Errorf("adopted account email does not match expected managed account email")
+	}
+	return ensureAccountMatchesExpected(acct, expectedName)
+}
+
+func (s *Server) findAccountByID(ctx context.Context, accountID string) (*orgtypes.Account, error) {
 	if s == nil || s.org == nil {
 		return nil, fmt.Errorf("org client not initialized")
 	}
-	email = strings.TrimSpace(strings.ToLower(email))
-	if email == "" {
+	accountID = strings.TrimSpace(accountID)
+	if accountID == "" {
 		return nil, nil
 	}
 
@@ -1734,7 +1917,7 @@ func (s *Server) findAccountByEmail(ctx context.Context, email string) (*orgtype
 		}
 		if out != nil {
 			for _, acct := range out.Accounts {
-				if strings.EqualFold(strings.TrimSpace(aws.ToString(acct.Email)), email) {
+				if strings.TrimSpace(aws.ToString(acct.Id)) == accountID {
 					return &acct, nil
 				}
 			}
@@ -1747,6 +1930,40 @@ func (s *Server) findAccountByEmail(ctx context.Context, email string) (*orgtype
 		break
 	}
 	return nil, nil
+}
+
+func (s *Server) validateAdoptedProvisionAccount(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {
+	if s == nil || job == nil {
+		return 0, false, nil
+	}
+	accountID := strings.TrimSpace(job.AccountID)
+	if accountID == "" || strings.TrimSpace(job.AccountRequestID) != "" {
+		return 0, false, nil
+	}
+
+	expectedEmail := strings.TrimSpace(job.AccountEmail)
+	if expectedEmail == "" {
+		expectedEmail = strings.TrimSpace(expandManagedAccountEmailTemplate(s.cfg.ManagedAccountEmailTemplate, job.InstanceSlug))
+	}
+	expectedName := managedAccountName(s.cfg.ManagedAccountNamePrefix, job.InstanceSlug)
+
+	acct, err := s.findAccountByID(ctx, accountID)
+	if err != nil {
+		if isOrgAccessDenied(err) {
+			return 0, false, s.failOrgPermissions(ctx, job, requestID, now, "ListAccounts", err)
+		}
+		return s.retryProvisionJobOrFail(ctx, job, requestID, now, "account_lookup_failed", "account lookup failed for adopted account: "+err.Error(), provisionDefaultShortRetryDelay, 5*time.Minute)
+	}
+	if acct == nil {
+		return 0, false, s.failJob(ctx, job, requestID, now, "account_adoption_invalid", "adopted AWS account is not visible in the managed organization")
+	}
+	if matchErr := ensureAdoptedAccountMatchesExpected(acct, accountID, expectedEmail, expectedName); matchErr != nil {
+		return 0, false, s.failJob(ctx, job, requestID, now, "account_adoption_invalid", matchErr.Error())
+	}
+	if strings.TrimSpace(job.AccountEmail) == "" {
+		job.AccountEmail = expectedEmail
+	}
+	return 0, false, nil
 }
 
 var errAssumeRoleNotReady = errors.New("assume role not ready")
@@ -2111,12 +2328,6 @@ func (s *Server) buildDeployRunnerEnv(job *models.ProvisionJob, stage, receiptKe
 		{Name: aws.String("LESSER_BODY_GITHUB_OWNER"), Value: aws.String(strings.TrimSpace(s.cfg.ManagedLesserBodyGitHubOwner))},
 		{Name: aws.String("LESSER_BODY_GITHUB_REPO"), Value: aws.String(strings.TrimSpace(s.cfg.ManagedLesserBodyGitHubRepo))},
 		{Name: aws.String("LESSER_BODY_VERSION"), Value: aws.String(strings.TrimSpace(s.cfg.ManagedLesserBodyDefaultVersion))},
-	}
-	if strings.TrimSpace(s.cfg.ManagedOrgVendingRoleARN) != "" {
-		env = append(env, cbtypes.EnvironmentVariable{
-			Name:  aws.String("MANAGED_ORG_VENDING_ROLE_ARN"),
-			Value: aws.String(strings.TrimSpace(s.cfg.ManagedOrgVendingRoleARN)),
-		})
 	}
 
 	return env

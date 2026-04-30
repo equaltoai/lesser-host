@@ -226,7 +226,11 @@ func TestHandleAdoptOperatorProvisionJobAccount(t *testing.T) {
 	s := &Server{
 		store:  store.New(tdb.db),
 		queues: &queueClient{},
-		cfg:    config.Config{ProvisionQueueURL: "url"},
+		cfg: config.Config{
+			ProvisionQueueURL:           "url",
+			ManagedAccountEmailTemplate: "ops+{slug}@example.com",
+			ManagedAccountNamePrefix:    "lesser-",
+		},
 	}
 
 	ctx := operatorCtx()
@@ -238,7 +242,7 @@ func TestHandleAdoptOperatorProvisionJobAccount(t *testing.T) {
 
 	ctx = operatorCtx()
 	ctx.Params = map[string]string{"id": "missing"}
-	ctx.Request.Body = []byte(`{"account_id":"123456789012"}`)
+	ctx.Request.Body = []byte(`{"account_id":"123456789012","account_email":"ops+inst@example.com"}`)
 	tdb.qJob.On("First", mock.AnythingOfType("*models.ProvisionJob")).Return(theoryErrors.ErrItemNotFound).Once()
 	if _, err := s.handleAdoptOperatorProvisionJobAccount(ctx); err == nil {
 		t.Fatalf("expected not found")
@@ -246,7 +250,7 @@ func TestHandleAdoptOperatorProvisionJobAccount(t *testing.T) {
 
 	ctx = operatorCtx()
 	ctx.Params = map[string]string{"id": "ok"}
-	ctx.Request.Body = []byte(`{"account_id":"123456789012"}`)
+	ctx.Request.Body = []byte(`{"account_id":"123456789012","account_email":"ops+inst@example.com"}`)
 	tdb.qJob.On("First", mock.AnythingOfType("*models.ProvisionJob")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.ProvisionJob](t, args, 0)
 		*dest = models.ProvisionJob{ID: "ok", InstanceSlug: "inst", Status: models.ProvisionJobStatusOK}
@@ -257,8 +261,20 @@ func TestHandleAdoptOperatorProvisionJobAccount(t *testing.T) {
 	}
 
 	ctx = operatorCtx()
+	ctx.Params = map[string]string{"id": "wrong-email"}
+	ctx.Request.Body = []byte(`{"account_id":"123456789012","account_email":"ops+other@example.com"}`)
+	tdb.qJob.On("First", mock.AnythingOfType("*models.ProvisionJob")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.ProvisionJob](t, args, 0)
+		*dest = models.ProvisionJob{ID: "wrong-email", InstanceSlug: "inst", Status: models.ProvisionJobStatusError}
+		_ = dest.UpdateKeys()
+	}).Once()
+	if _, err := s.handleAdoptOperatorProvisionJobAccount(ctx); err == nil {
+		t.Fatalf("expected forbidden for mismatched adoption email")
+	}
+
+	ctx = operatorCtx()
 	ctx.Params = map[string]string{"id": "e1"}
-	ctx.Request.Body = []byte(`{"account_id":"123456789012","account_email":"ops+demo@example.com","note":"recover"}`)
+	ctx.Request.Body = []byte(`{"account_id":"123456789012","account_email":"ops+inst@example.com","note":"recover"}`)
 	tdb.qJob.On("First", mock.AnythingOfType("*models.ProvisionJob")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.ProvisionJob](t, args, 0)
 		*dest = models.ProvisionJob{ID: "e1", InstanceSlug: "inst", Status: models.ProvisionJobStatusError, CreatedAt: time.Unix(1, 0).UTC()}

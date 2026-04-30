@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	cbtypes "github.com/aws/aws-sdk-go-v2/service/codebuild/types"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	smtypes "github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	ststypes "github.com/aws/aws-sdk-go-v2/service/sts/types"
@@ -97,6 +98,111 @@ func TestProvisionWorker_HelperFunctions(t *testing.T) {
 	}
 }
 
+func TestProvisionWorker_InstanceKeySecretNameAndStageHelpers(t *testing.T) {
+	t.Parallel()
+
+	if got := managedInstanceKeySecretName(" lab ", " Demo "); got != "lab/demo/instance-key" {
+		t.Fatalf("unexpected secret name: %q", got)
+	}
+	if got := managedInstanceKeySecretName("lab", " "); got != "" {
+		t.Fatalf("expected empty name for missing slug, got %q", got)
+	}
+	if got := managedInstanceKeySecretStage(""); got != defaultControlPlaneStage {
+		t.Fatalf("expected default stage, got %q", got)
+	}
+	if got := managedInstanceKeySecretStage("..LAB@@stage__"); got != "labstage" {
+		t.Fatalf("unexpected sanitized stage: %q", got)
+	}
+	if got := managedInstanceKeySecretStage("!!!"); got != defaultControlPlaneStage {
+		t.Fatalf("expected default for all-invalid stage, got %q", got)
+	}
+}
+
+func TestProvisionWorker_InstanceKeySecretTagAndKeyIDHelpers(t *testing.T) {
+	t.Parallel()
+
+	tags := []smtypes.Tag{
+		{Key: aws.String(" key "), Value: aws.String(" value ")},
+	}
+	if got := secretsManagerTagValue(tags, ""); got != "" {
+		t.Fatalf("expected empty lookup for empty key, got %q", got)
+	}
+	if got := secretsManagerTagValue(tags, "key"); got != "value" {
+		t.Fatalf("unexpected tag value: %q", got)
+	}
+	if got := secretsManagerTagValue(tags, "missing"); got != "" {
+		t.Fatalf("expected missing tag lookup to be empty, got %q", got)
+	}
+
+	if got := secretValueToKeyID(" "); got != "" {
+		t.Fatalf("expected empty key id for empty secret, got %q", got)
+	}
+	if got := secretValueToKeyID("  lhk_value  "); got == "" {
+		t.Fatalf("expected key id")
+	}
+}
+
+func TestProvisionWorker_InstanceKeySecretStringHelpers(t *testing.T) {
+	t.Parallel()
+
+	if _, err := unwrapSecretsManagerSecretString(" "); err == nil {
+		t.Fatalf("expected empty secret unwrap error")
+	}
+	if _, err := unwrapSecretsManagerSecretString("{"); err == nil {
+		t.Fatalf("expected invalid json unwrap error")
+	}
+	if _, err := unwrapSecretsManagerSecretString(`{"secret":" "}`); err == nil {
+		t.Fatalf("expected missing secret key error")
+	}
+	if got, err := unwrapSecretsManagerSecretString(" raw-secret "); err != nil || got != "raw-secret" {
+		t.Fatalf("unexpected raw unwrap: got=%q err=%v", got, err)
+	}
+	wrapped, err := wrapSecretsManagerSecretString(" raw-secret ")
+	if err != nil || !strings.Contains(wrapped, "raw-secret") {
+		t.Fatalf("unexpected wrapped secret: %q err=%v", wrapped, err)
+	}
+	if _, err := wrapSecretsManagerSecretString(" "); err == nil {
+		t.Fatalf("expected empty secret wrap error")
+	}
+}
+
+func TestProvisionWorker_SweepHelperAccounting(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1_000, 0).UTC()
+	if provisionJobStaleForSweep(nil, now) {
+		t.Fatalf("nil job should not be stale")
+	}
+	if !provisionJobStaleForSweep(&models.ProvisionJob{}, now) {
+		t.Fatalf("zero timestamps should be stale")
+	}
+	if !provisionJobStaleForSweep(&models.ProvisionJob{CreatedAt: now.Add(-provisionSweepStaleAfter)}, now) {
+		t.Fatalf("old created timestamp should be stale")
+	}
+	if provisionJobStaleForSweep(&models.ProvisionJob{UpdatedAt: now.Add(-time.Second)}, now) {
+		t.Fatalf("recent update should not be stale")
+	}
+
+	counts := provisionSweepCounts{}
+	counts.record(false, nil)
+	counts.record(true, nil)
+	counts.record(false, errors.New("first"))
+	counts.record(false, errors.New("second"))
+	out := counts.result(now)
+	if counts.processed != 1 || counts.errorCount != 2 || counts.firstErr == nil {
+		t.Fatalf("unexpected counts: %#v", counts)
+	}
+	if out["processed"] != 1 || out["errors"] != 2 {
+		t.Fatalf("unexpected result map: %#v", out)
+	}
+
+	leased := &models.ProvisionJob{Status: models.ProvisionJobStatusRunning, UpdatedAt: now.Add(-time.Hour), LeaseOwner: "worker", LeaseExpiresAt: now.Add(time.Minute)}
+	processed, err := (&Server{}).processProvisionSweepJob(context.Background(), leased, "req", now)
+	if err != nil || processed {
+		t.Fatalf("active lease should skip processing, processed=%v err=%v", processed, err)
+	}
+}
+
 func TestBuildDeployRunnerEnv_PreservesConsentMessageBytes(t *testing.T) {
 	t.Parallel()
 
@@ -130,6 +236,88 @@ func TestBuildDeployRunnerEnv_PreservesConsentMessageBytes(t *testing.T) {
 	}
 	if values["CONSENT_SIGNATURE"] != "0xsig" {
 		t.Fatalf("unexpected signature: %q", values["CONSENT_SIGNATURE"])
+	}
+}
+
+func TestClearProvisionJobConsentArtifacts_PreservesHashOnly(t *testing.T) {
+	t.Parallel()
+
+	job := &models.ProvisionJob{
+		ConsentMessage:   "signed message",
+		ConsentSignature: "0xsignature",
+	}
+	clearProvisionJobConsentArtifacts(job)
+
+	if job.ConsentMessage != "" || job.ConsentSignature != "" {
+		t.Fatalf("expected replayable consent artifacts cleared: %#v", job)
+	}
+	if job.ConsentMessageHash == "" {
+		t.Fatalf("expected consent message hash retained")
+	}
+}
+
+func TestTryAcquireProvisionJobLease_SetsBoundedLease(t *testing.T) {
+	t.Parallel()
+
+	db := ttmocks.NewMockExtendedDB()
+	qJob := new(ttmocks.MockQuery)
+	db.On("WithContext", mock.Anything).Return(db).Once()
+
+	var captured *models.ProvisionJob
+	db.On("Model", mock.MatchedBy(func(job *models.ProvisionJob) bool {
+		captured = job
+		return job != nil
+	})).Return(qJob).Once()
+	qJob.On("IfExists").Return(qJob).Once()
+	qJob.On("WithConditionExpression", mock.Anything, mock.Anything).Return(qJob).Once()
+	qJob.On("Update", []string{"LeaseOwner", "LeaseExpiresAt", "RequestID", "UpdatedAt"}).Return(nil).Once()
+
+	srv := &Server{store: store.New(db)}
+	now := time.Unix(100, 0).UTC()
+	job := &models.ProvisionJob{ID: "job1", InstanceSlug: "slug", Status: models.ProvisionJobStatusQueued, CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
+	leased, err := srv.tryAcquireProvisionJobLease(context.Background(), job, "req1", now)
+	if err != nil {
+		t.Fatalf("tryAcquireProvisionJobLease: %v", err)
+	}
+	if !leased {
+		t.Fatalf("expected lease acquired")
+	}
+	if captured == nil || captured.LeaseOwner == "" || !captured.LeaseExpiresAt.Equal(now.Add(provisionJobLeaseDuration)) {
+		t.Fatalf("unexpected lease update: %#v", captured)
+	}
+	if !job.HasActiveLease(now) {
+		t.Fatalf("expected in-memory job to have active lease: %#v", job)
+	}
+}
+
+func TestTryAcquireProvisionJobLease_ValidationAndConditionFailed(t *testing.T) {
+	t.Parallel()
+
+	if _, err := (&Server{}).tryAcquireProvisionJobLease(context.Background(), &models.ProvisionJob{ID: "job"}, "req", time.Now()); err == nil {
+		t.Fatalf("expected store validation error")
+	}
+
+	db := ttmocks.NewMockExtendedDB()
+	srv := &Server{store: store.New(db)}
+	leased, err := srv.tryAcquireProvisionJobLease(context.Background(), nil, "req", time.Now())
+	if err != nil || leased {
+		t.Fatalf("nil job should not lease: leased=%v err=%v", leased, err)
+	}
+
+	qJob := new(ttmocks.MockQuery)
+	db.On("WithContext", mock.Anything).Return(db).Once()
+	db.On("Model", mock.AnythingOfType("*models.ProvisionJob")).Return(qJob).Once()
+	qJob.On("IfExists").Return(qJob).Once()
+	qJob.On("WithConditionExpression", mock.Anything, mock.Anything).Return(qJob).Once()
+	qJob.On("Update", []string{"LeaseOwner", "LeaseExpiresAt", "RequestID", "UpdatedAt"}).Return(theoryErrors.ErrConditionFailed).Once()
+
+	job := &models.ProvisionJob{ID: "job1", InstanceSlug: "slug", Status: models.ProvisionJobStatusQueued}
+	leased, err = srv.tryAcquireProvisionJobLease(context.Background(), job, "", time.Time{})
+	if err != nil || leased {
+		t.Fatalf("condition failure should skip lease without error: leased=%v err=%v", leased, err)
+	}
+	if job.LeaseOwner != "" || !job.LeaseExpiresAt.IsZero() {
+		t.Fatalf("condition failure should not mutate original job lease: %#v", job)
 	}
 }
 

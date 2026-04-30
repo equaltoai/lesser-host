@@ -339,13 +339,29 @@ func TestHandlePortalSetInstanceBudgetMonth_ErrorBranches(t *testing.T) {
 	t.Parallel()
 
 	makeCtx := func(body []byte) *apptheory.Context {
-		return &apptheory.Context{
+		ctx := &apptheory.Context{
 			AuthIdentity: "alice",
 			Params:       map[string]string{"slug": "demo", "month": "2026-01"},
 			Request:      apptheory.Request{Body: body},
 			RequestID:    "rid",
 		}
+		ctx.Set(ctxKeyOperatorRole, models.RoleAdmin)
+		return ctx
 	}
+
+	t.Run("customer cannot self grant credits", func(t *testing.T) {
+		srv := &Server{}
+
+		body, _ := json.Marshal(setBudgetMonthRequest{IncludedCredits: 10})
+		ctx := &apptheory.Context{
+			AuthIdentity: "alice",
+			Params:       map[string]string{"slug": "demo", "month": "2026-01"},
+			Request:      apptheory.Request{Body: body},
+			RequestID:    "rid",
+		}
+		_, err := srv.handlePortalSetInstanceBudgetMonth(ctx)
+		requirePortalAppErrorCode(t, err, "app.forbidden")
+	})
 
 	t.Run("included credits must be non negative", func(t *testing.T) {
 		tdb := newPortalHandlerDB()

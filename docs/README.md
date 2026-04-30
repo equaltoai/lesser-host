@@ -39,6 +39,8 @@ This directory contains maintainer documentation for `lesser-host` (the `lesser.
 ## Security remediation records
 
 - Codex Security 2026-04-28 finding ledger: `docs/security/codex-findings-2026-04-28-ledger.md`
+- Codex Security 2026-04-30 round-2 ledger: `docs/security/codex-findings-2026-04-30-round2-ledger.md`
+- Host Security round-2 pre-live rollout notes: `docs/security/host-security-round2-prelive-rollout.md`
 - M0 evidence baseline: `docs/security/codex-security-m0-evidence-baseline-2026-04-28.md`
 - M5 evidence package: `docs/security/codex-security-m5-evidence-2026-04-29.md`
 - M5 rollout checklist: `docs/security/codex-security-m5-rollout-checklist-2026-04-29.md`

@@ -1109,13 +1109,6 @@ func (s *Server) buildUpdateDeployRunnerEnv(job *models.UpdateJob, inputs update
 		)
 	}
 
-	if strings.TrimSpace(s.cfg.ManagedOrgVendingRoleARN) != "" {
-		env = append(env, cbtypes.EnvironmentVariable{
-			Name:  aws.String("MANAGED_ORG_VENDING_ROLE_ARN"),
-			Value: aws.String(strings.TrimSpace(s.cfg.ManagedOrgVendingRoleARN)),
-		})
-	}
-
 	return env
 }
 

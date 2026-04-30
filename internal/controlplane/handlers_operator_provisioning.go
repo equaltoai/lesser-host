@@ -171,10 +171,13 @@ func parseAdoptProvisionJobAccountRequest(ctx *apptheory.Context) (adoptProvisio
 		return req, &apptheory.AppError{Code: "app.bad_request", Message: "invalid request"}
 	}
 	req.AccountID = strings.TrimSpace(req.AccountID)
-	req.AccountEmail = strings.TrimSpace(req.AccountEmail)
+	req.AccountEmail = strings.ToLower(strings.TrimSpace(req.AccountEmail))
 	req.Note = strings.TrimSpace(req.Note)
 	if !isAWSAccountID(req.AccountID) {
 		return req, &apptheory.AppError{Code: "app.bad_request", Message: "account_id must be a 12-digit AWS account id"}
+	}
+	if req.AccountEmail == "" {
+		return req, &apptheory.AppError{Code: "app.bad_request", Message: "account_email is required for adoption validation"}
 	}
 	return req, nil
 }
@@ -193,6 +196,23 @@ func validateAdoptableProvisionJob(job *models.ProvisionJob) *apptheory.AppError
 	mode := strings.ToLower(strings.TrimSpace(job.Mode))
 	if mode != "" && mode != "managed" {
 		return &apptheory.AppError{Code: "app.conflict", Message: "job is not a managed provisioning job"}
+	}
+	return nil
+}
+
+func (s *Server) validateAdoptProvisionJobAccountRequest(job *models.ProvisionJob, req adoptProvisionJobAccountRequest) *apptheory.AppError {
+	if job == nil {
+		return &apptheory.AppError{Code: "app.not_found", Message: "job not found"}
+	}
+	expectedEmail := strings.ToLower(strings.TrimSpace(expandManagedAccountEmailTemplate(s.cfg.ManagedAccountEmailTemplate, job.InstanceSlug)))
+	if expectedEmail == "" {
+		return &apptheory.AppError{Code: "app.conflict", Message: "managed account email template is required for account adoption"}
+	}
+	if strings.ToLower(strings.TrimSpace(req.AccountEmail)) != expectedEmail {
+		return &apptheory.AppError{Code: "app.forbidden", Message: "account_email does not match expected managed account email"}
+	}
+	if existingAccountID := strings.TrimSpace(job.AccountID); existingAccountID != "" && existingAccountID != strings.TrimSpace(req.AccountID) {
+		return &apptheory.AppError{Code: "app.conflict", Message: "job already references a different account_id"}
 	}
 	return nil
 }
@@ -363,7 +383,8 @@ func (s *Server) handleGetOperatorProvisionJob(ctx *apptheory.Context) (*apptheo
 	}
 
 	if status := strings.ToLower(strings.TrimSpace(job.Status)); status == models.ProvisionJobStatusQueued || status == models.ProvisionJobStatusRunning {
-		if shouldNudgeAsyncJob(time.Now().UTC(), job.UpdatedAt) {
+		now := time.Now().UTC()
+		if shouldNudgeAsyncJob(now, job.UpdatedAt) && !job.HasActiveLease(now) {
 			s.enqueueProvisionJobBestEffort(ctx, id)
 		}
 	}
@@ -460,6 +481,9 @@ func (s *Server) handleRetryOperatorProvisionJob(ctx *apptheory.Context) (*appth
 			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to retry job"}
 		}
 	} else {
+		if !shouldNudgeAsyncJob(now, job.UpdatedAt) || job.HasActiveLease(now) {
+			return apptheory.JSON(http.StatusOK, operatorProvisionJobDetailFromModel(job))
+		}
 		audit := &models.AuditLogEntry{
 			Actor:     actor,
 			Action:    auditAction,
@@ -503,6 +527,9 @@ func (s *Server) handleAdoptOperatorProvisionJobAccount(ctx *apptheory.Context) 
 		return nil, appErr
 	}
 	if appErr := validateAdoptableProvisionJob(job); appErr != nil {
+		return nil, appErr
+	}
+	if appErr := s.validateAdoptProvisionJobAccountRequest(job, req); appErr != nil {
 		return nil, appErr
 	}
 

@@ -405,16 +405,17 @@ func (s *Server) verifyPortalStartProvisionConsent(ctx *apptheory.Context, slug 
 	if appErr := validateProvisionConsentChallenge(ctx, chall, slug, stage, consentMessage); appErr != nil {
 		return req, appErr
 	}
+	if reqAdmin := strings.ToLower(strings.TrimSpace(req.AdminUsername)); reqAdmin != "" && reqAdmin != strings.ToLower(strings.TrimSpace(chall.AdminUsername)) {
+		return req, &apptheory.AppError{Code: "app.bad_request", Message: "admin_username does not match consent challenge"}
+	}
 	if reservedErr := validateNotReservedWalletAddress(strings.TrimSpace(chall.WalletAddr), "wallet"); reservedErr != nil {
 		return req, reservedErr
 	}
+	if appErr := s.consumeProvisionConsentChallenge(ctx, chall, consentMessage, time.Now().UTC()); appErr != nil {
+		return req, appErr
+	}
 	if verifyErr := verifyEthereumSignature(strings.TrimSpace(chall.WalletAddr), strings.TrimSpace(chall.Message), consentSignature); verifyErr != nil {
 		return req, &apptheory.AppError{Code: "app.forbidden", Message: "invalid signature"}
-	}
-	_ = s.deleteProvisionConsentChallenge(ctx, chall)
-
-	if reqAdmin := strings.ToLower(strings.TrimSpace(req.AdminUsername)); reqAdmin != "" && reqAdmin != strings.ToLower(strings.TrimSpace(chall.AdminUsername)) {
-		return req, &apptheory.AppError{Code: "app.bad_request", Message: "admin_username does not match consent challenge"}
 	}
 
 	// Canonicalize consent artifacts from the stored challenge message.
@@ -498,7 +499,8 @@ func (s *Server) handlePortalGetInstanceProvisioning(ctx *apptheory.Context) (*a
 	}
 
 	if status := strings.ToLower(strings.TrimSpace(job.Status)); status == models.ProvisionJobStatusQueued || status == models.ProvisionJobStatusRunning {
-		if shouldNudgeAsyncJob(time.Now().UTC(), job.UpdatedAt) {
+		now := time.Now().UTC()
+		if shouldNudgeAsyncJob(now, job.UpdatedAt) && !job.HasActiveLease(now) {
 			s.enqueueProvisionJobBestEffort(ctx, jobID)
 		}
 	}
@@ -580,6 +582,10 @@ func (s *Server) handlePortalGetInstanceBudgetMonth(ctx *apptheory.Context) (*ap
 }
 
 func (s *Server) handlePortalSetInstanceBudgetMonth(ctx *apptheory.Context) (*apptheory.Response, error) {
+	if err := requireAdmin(ctx); err != nil {
+		return nil, err
+	}
+
 	inst, err := s.requireInstanceAccess(ctx, ctx.Param("slug"))
 	if err != nil {
 		return nil, err

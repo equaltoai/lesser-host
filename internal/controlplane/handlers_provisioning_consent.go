@@ -172,6 +172,7 @@ func (s *Server) handlePortalProvisionConsentChallenge(ctx *apptheory.Context) (
 		ChainID:       cred.ChainID,
 		Nonce:         nonce,
 		Message:       msg,
+		MessageHash:   sha256Hex(msg),
 		IssuedAt:      now,
 		ExpiresAt:     expiresAt,
 	}
@@ -220,53 +221,83 @@ func (s *Server) getProvisionConsentChallenge(ctx *apptheory.Context, id string)
 	return &chall, nil
 }
 
-func (s *Server) deleteProvisionConsentChallenge(ctx *apptheory.Context, chall *models.ProvisionConsentChallenge) error {
+func (s *Server) consumeProvisionConsentChallenge(ctx *apptheory.Context, chall *models.ProvisionConsentChallenge, message string, now time.Time) *apptheory.AppError {
 	if s == nil || s.store == nil || s.store.DB == nil || ctx == nil {
 		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 	if chall == nil {
-		return nil
+		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
-	pk := strings.TrimSpace(chall.PK)
-	sk := strings.TrimSpace(chall.SK)
-	if pk == "" || sk == "" {
-		_ = chall.UpdateKeys()
-		pk = strings.TrimSpace(chall.PK)
-		sk = strings.TrimSpace(chall.SK)
+	if now.IsZero() {
+		now = time.Now().UTC()
 	}
-	if pk == "" || sk == "" {
-		return nil
+	if strings.TrimSpace(message) == "" {
+		return &apptheory.AppError{Code: "app.bad_request", Message: "consent_message is required"}
 	}
-	return s.store.DB.WithContext(ctx.Context()).
-		Model(&models.ProvisionConsentChallenge{}).
-		Where("PK", "=", pk).
-		Where("SK", "=", sk).
-		Delete()
+
+	update := &models.ProvisionConsentChallenge{
+		ID:          strings.TrimSpace(chall.ID),
+		ExpiresAt:   chall.ExpiresAt,
+		Message:     "",
+		MessageHash: sha256Hex(message),
+		Consumed:    true,
+		ConsumedAt:  now,
+	}
+	_ = update.UpdateKeys()
+
+	err := s.store.DB.WithContext(ctx.Context()).
+		Model(update).
+		IfExists().
+		WithConditionExpression("attribute_not_exists(consumed) OR consumed = :false", map[string]any{":false": false}).
+		Update("Consumed", "ConsumedAt", "Message", "MessageHash")
+	if theoryErrors.IsConditionFailed(err) || theoryErrors.IsNotFound(err) {
+		return &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+	}
+	if err != nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "failed to consume consent challenge"}
+	}
+
+	chall.Consumed = true
+	chall.ConsumedAt = now
+	chall.MessageHash = sha256Hex(message)
+	return nil
 }
 
 func validateProvisionConsentChallenge(ctx *apptheory.Context, chall *models.ProvisionConsentChallenge, slug string, stage string, message string) *apptheory.AppError {
 	if ctx == nil || chall == nil {
 		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
-
+	if chall.Consumed {
+		return &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+	}
 	if !chall.ExpiresAt.IsZero() && time.Now().After(chall.ExpiresAt) {
 		return &apptheory.AppError{Code: "app.bad_request", Message: "consent challenge expired"}
 	}
+	if appErr := validateProvisionConsentChallengeScope(ctx, chall, slug, stage); appErr != nil {
+		return appErr
+	}
+	return validateProvisionConsentChallengeMessage(chall, message)
+}
 
+func validateProvisionConsentChallengeScope(ctx *apptheory.Context, chall *models.ProvisionConsentChallenge, slug string, stage string) *apptheory.AppError {
 	if strings.TrimSpace(chall.Username) == "" || strings.TrimSpace(ctx.AuthIdentity) == "" || strings.TrimSpace(chall.Username) != strings.TrimSpace(ctx.AuthIdentity) {
 		return &apptheory.AppError{Code: "app.forbidden", Message: "consent challenge user mismatch"}
 	}
-
 	if strings.TrimSpace(chall.InstanceSlug) != strings.TrimSpace(slug) {
 		return &apptheory.AppError{Code: "app.forbidden", Message: "consent challenge slug mismatch"}
 	}
-
 	if strings.TrimSpace(chall.Stage) != strings.TrimSpace(stage) {
 		return &apptheory.AppError{Code: "app.forbidden", Message: "consent challenge stage mismatch"}
 	}
+	return nil
+}
 
+func validateProvisionConsentChallengeMessage(chall *models.ProvisionConsentChallenge, message string) *apptheory.AppError {
 	if strings.TrimSpace(message) == "" || strings.TrimSpace(chall.Message) == "" || message != chall.Message {
 		return &apptheory.AppError{Code: "app.forbidden", Message: "consent challenge message mismatch"}
+	}
+	if msgHash := strings.TrimSpace(chall.MessageHash); msgHash != "" && msgHash != sha256Hex(message) {
+		return &apptheory.AppError{Code: "app.forbidden", Message: "consent challenge message hash mismatch"}
 	}
 
 	return nil

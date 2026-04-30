@@ -687,15 +687,6 @@ export class LesserHostStack extends cdk.Stack {
 				resources: [`arn:aws:iam::*:role/${managedInstanceRoleName.trim() || defaultManagedInstanceRoleName}`],
 			}),
 		);
-		if (managedOrgVendingRoleArn.trim()) {
-			provisionRunnerProject.addToRolePolicy(
-				new iam.PolicyStatement({
-					actions: ['sts:AssumeRole'],
-					resources: [managedOrgVendingRoleArn.trim()],
-				}),
-			);
-		}
-
 		provisionWorkerFn.addToRolePolicy(
 			new iam.PolicyStatement({
 				actions: [

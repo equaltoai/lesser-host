@@ -102,27 +102,13 @@ func (s *Server) describeAndEnsureManagedInstanceKeySecret(ctx context.Context, 
 		secretArn = secretID
 	}
 
-	keyID := secretsManagerTagValue(desc.Tags, managedInstanceKeySecretTagKeyID)
-	expectedStage := managedInstanceKeySecretStage(controlPlaneStage)
-	managedTag := strings.ToLower(secretsManagerTagValue(desc.Tags, managedInstanceKeySecretTagManaged))
-	slugTag := strings.ToLower(secretsManagerTagValue(desc.Tags, managedInstanceKeySecretTagInstanceSlug))
-	rawStageTag := secretsManagerTagValue(desc.Tags, managedInstanceKeySecretTagStage)
-	stageTag := managedInstanceKeySecretStage(rawStageTag)
-	if managedTag != "true" || slugTag != slug || stageTag != expectedStage {
-		return "", fmt.Errorf("refusing unmanaged or cross-stage instance key secret")
+	if err := validateManagedInstanceKeySecretTags(desc.Tags, slug, controlPlaneStage); err != nil {
+		return "", err
 	}
-	if strings.TrimSpace(rawStageTag) == "" {
-		return "", fmt.Errorf("refusing unmanaged or cross-stage instance key secret")
-	}
-	if keyID == "" {
-		plaintext, err := getSecretsManagerSecretPlaintext(ctx, sm, secretArn)
-		if err != nil {
-			return "", err
-		}
-		keyID = secretValueToKeyID(plaintext)
-	}
-	if keyID == "" {
-		return "", fmt.Errorf("unable to resolve instance key id from secret")
+
+	keyID, err := resolveManagedInstanceKeySecretID(ctx, sm, secretArn, desc.Tags)
+	if err != nil {
+		return "", err
 	}
 
 	if err := s.ensureInstanceKeyRecord(ctx, slug, keyID); err != nil {
@@ -130,6 +116,37 @@ func (s *Server) describeAndEnsureManagedInstanceKeySecret(ctx context.Context, 
 	}
 
 	return secretArn, nil
+}
+
+func validateManagedInstanceKeySecretTags(tags []smtypes.Tag, slug string, controlPlaneStage string) error {
+	expectedStage := managedInstanceKeySecretStage(controlPlaneStage)
+	managedTag := strings.ToLower(secretsManagerTagValue(tags, managedInstanceKeySecretTagManaged))
+	slugTag := strings.ToLower(secretsManagerTagValue(tags, managedInstanceKeySecretTagInstanceSlug))
+	rawStageTag := secretsManagerTagValue(tags, managedInstanceKeySecretTagStage)
+	stageTag := managedInstanceKeySecretStage(rawStageTag)
+	if managedTag != "true" || slugTag != slug || stageTag != expectedStage {
+		return fmt.Errorf("refusing unmanaged or cross-stage instance key secret")
+	}
+	if strings.TrimSpace(rawStageTag) == "" {
+		return fmt.Errorf("refusing unmanaged or cross-stage instance key secret")
+	}
+	return nil
+}
+
+func resolveManagedInstanceKeySecretID(ctx context.Context, sm secretsManagerAPI, secretArn string, tags []smtypes.Tag) (string, error) {
+	taggedKeyID := secretsManagerTagValue(tags, managedInstanceKeySecretTagKeyID)
+	plaintext, err := getSecretsManagerSecretPlaintext(ctx, sm, secretArn)
+	if err != nil {
+		return "", err
+	}
+	derivedKeyID := secretValueToKeyID(plaintext)
+	if derivedKeyID == "" {
+		return "", fmt.Errorf("unable to resolve instance key id from secret")
+	}
+	if taggedKeyID != "" && taggedKeyID != derivedKeyID {
+		return "", fmt.Errorf("refusing instance key secret with mismatched key id tag")
+	}
+	return derivedKeyID, nil
 }
 
 func (s *Server) createManagedInstanceKeySecret(ctx context.Context, sm secretsManagerAPI, secretName, slug string, controlPlaneStage string) (string, string, error) {

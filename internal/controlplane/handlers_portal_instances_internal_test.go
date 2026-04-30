@@ -68,6 +68,7 @@ func newPortalTestDB() portalTestDB {
 		q.On("Limit", mock.Anything).Return(q).Maybe()
 		q.On("IfExists").Return(q).Maybe()
 		q.On("IfNotExists").Return(q).Maybe()
+		q.On("WithConditionExpression", mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("ConsistentRead").Return(q).Maybe()
 		q.On("Create").Return(nil).Maybe()
 		q.On("CreateOrUpdate").Return(nil).Maybe()
@@ -429,9 +430,22 @@ func TestHandlePortalSetInstanceBudgetMonth_SuccessPreservesUsedCredits(t *testi
 
 	body, _ := json.Marshal(setBudgetMonthRequest{IncludedCredits: 10})
 	ctx := &apptheory.Context{AuthIdentity: "alice", Params: map[string]string{"slug": "demo", "month": "2026-01"}, Request: apptheory.Request{Body: body}}
+	ctx.Set(ctxKeyOperatorRole, models.RoleAdmin)
 	resp, err := s.handlePortalSetInstanceBudgetMonth(ctx)
 	if err != nil || resp == nil || resp.Status != 200 {
 		t.Fatalf("unexpected set budget resp: %#v err=%v", resp, err)
+	}
+}
+
+func TestHandlePortalSetInstanceBudgetMonth_RejectsCustomerSelfGrant(t *testing.T) {
+	t.Parallel()
+
+	s := &Server{}
+	body, _ := json.Marshal(setBudgetMonthRequest{IncludedCredits: 10})
+	ctx := &apptheory.Context{AuthIdentity: "alice", Params: map[string]string{"slug": "demo", "month": "2026-01"}, Request: apptheory.Request{Body: body}}
+
+	if _, err := s.handlePortalSetInstanceBudgetMonth(ctx); err == nil {
+		t.Fatalf("expected forbidden for customer budget grant")
 	}
 }
 
@@ -607,6 +621,7 @@ func TestHandlePortalSetInstanceBudgetMonth_RejectsIncludedLessThanUsed(t *testi
 
 	body, _ := json.Marshal(setBudgetMonthRequest{IncludedCredits: 3})
 	ctx := &apptheory.Context{AuthIdentity: "alice", Params: map[string]string{"slug": "demo", "month": "2026-01"}, Request: apptheory.Request{Body: body}}
+	ctx.Set(ctxKeyOperatorRole, models.RoleAdmin)
 	if _, err := s.handlePortalSetInstanceBudgetMonth(ctx); err == nil {
 		t.Fatalf("expected conflict error")
 	}

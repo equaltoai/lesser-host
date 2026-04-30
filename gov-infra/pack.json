@@ -1,14 +1,14 @@
 {
   "$schema": "https://gov.pai.dev/schemas/pack.schema.json",
   "schemaVersion": 1,
-  "packVersion": "5ff40b430fd8",
-  "packDigest": "5ff40b430fd800229f21baaa2f3e38fa43ce5332185f953a07380d7e46b2e25e",
+  "packVersion": "2026.04.30-m6",
+  "packDigest": "506c5bee3285c5d902ea39f0070bd8bfe753a51a91147c06d2e0d658be963d8d",
   "domain": "custom",
   "projectSlug": "lesser-host",
-  "generatedAt": "2026-04-29T12:16:47Z",
+  "generatedAt": "2026-04-30T15:30:00Z",
   "source": {
     "commitSha": "UNKNOWN",
-    "branch": "codex/security-m4-public-web-governance-reliability"
+    "branch": "codex/host-security-m6-prelive-hardening"
   },
   "artifacts": {
     "planning": [
