@@ -446,22 +446,57 @@ scan_python_supply_chain() {
 }
 
 check_supply_chain_actions_pinned() {
-  # Enforces integrity pinning for GitHub Actions (reject floating tags like @v4).
+  # Enforces integrity pinning for GitHub Actions. External actions must pin
+  # either a full 40-character commit SHA or a full SemVer release tag
+  # (vX.Y.Z). Floating refs such as @v4, @v4.1, @main, @master, and branch
+  # names are rejected.
   local wf_dir="${REPO_ROOT}/.github/workflows"
   if [[ ! -d "${wf_dir}" ]]; then
     echo "GitHub Actions pin check: no workflows detected; skipping."
     return 0
   fi
 
-  local matches=""
-  matches="$(grep -R --include='*.yml' --include='*.yaml' -nE '^[[:space:]]*(-[[:space:]]*)?uses:[[:space:]].*@v[0-9]+' "${wf_dir}" 2>/dev/null || true)"
-  if [[ -n "${matches}" ]]; then
-    echo "FAIL: unpinned GitHub Action detected (uses @vN; pin by commit SHA)"
-    echo "${matches}"
+  local failures=""
+  local line file lineno value action ref
+  while IFS= read -r line; do
+    file="${line%%:*}"
+    local rest="${line#*:}"
+    lineno="${rest%%:*}"
+    value="${rest#*:}"
+    value="$(printf '%s' "${value}" | sed -E 's/^[[:space:]]*(-[[:space:]]*)?uses:[[:space:]]*//; s/[[:space:]]+#.*$//; s/^[\"'\\'' ]+//; s/[\"'\\'' ]+$//')"
+    [[ -n "${value}" ]] || continue
+
+    # Local reusable actions and docker image actions do not use owner/repo@ref.
+    if [[ "${value}" == ./* ]] || [[ "${value}" == docker://* ]]; then
+      continue
+    fi
+
+    if [[ "${value}" != *@* ]]; then
+      failures+="${file}:${lineno}: ${value} (missing @ref)"$'\n'
+      continue
+    fi
+
+    action="${value%@*}"
+    ref="${value##*@}"
+    if [[ -z "${action}" || -z "${ref}" ]]; then
+      failures+="${file}:${lineno}: ${value} (malformed uses ref)"$'\n'
+      continue
+    fi
+
+    if [[ "${ref}" =~ ^[0-9a-fA-F]{40}$ ]] || [[ "${ref}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      continue
+    fi
+
+    failures+="${file}:${lineno}: ${value} (ref must be 40-char SHA or vX.Y.Z)"$'\n'
+  done < <(grep -R --include='*.yml' --include='*.yaml' -nE '^[[:space:]]*(-[[:space:]]*)?uses:[[:space:]]*' "${wf_dir}" 2>/dev/null || true)
+
+  if [[ -n "${failures}" ]]; then
+    echo "FAIL: unpinned GitHub Action detected"
+    printf '%s' "${failures}"
     return 1
   fi
 
-  echo "GitHub Actions pin check: PASS (no uses @vN detected)"
+  echo "GitHub Actions pin check: PASS (all external uses refs are 40-char SHA or vX.Y.Z)"
   return 0
 }
 
@@ -864,7 +899,7 @@ scan_node_project_supply_chain() {
 
 check_supply_chain() {
   # SEC-3: Supply-chain verification gate.
-  # - Enforces GitHub Actions SHA pinning (no uses: ...@vN).
+  # - Enforces GitHub Actions ref pinning (40-char SHA or vX.Y.Z; no floating refs).
   # - Scans Node dependencies for subprojects (web/, cdk/, contracts/) with scripts disabled.
   # - Runs lightweight Go and Python metadata scans.
 
