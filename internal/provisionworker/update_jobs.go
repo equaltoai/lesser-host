@@ -1109,7 +1109,6 @@ func (s *Server) buildUpdateDeployRunnerEnv(job *models.UpdateJob, inputs update
 		)
 	}
 
-
 	return env
 }
 
