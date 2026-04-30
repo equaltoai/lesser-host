@@ -221,30 +221,6 @@ func (s *Server) getProvisionConsentChallenge(ctx *apptheory.Context, id string)
 	return &chall, nil
 }
 
-func (s *Server) deleteProvisionConsentChallenge(ctx *apptheory.Context, chall *models.ProvisionConsentChallenge) error {
-	if s == nil || s.store == nil || s.store.DB == nil || ctx == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-	if chall == nil {
-		return nil
-	}
-	pk := strings.TrimSpace(chall.PK)
-	sk := strings.TrimSpace(chall.SK)
-	if pk == "" || sk == "" {
-		_ = chall.UpdateKeys()
-		pk = strings.TrimSpace(chall.PK)
-		sk = strings.TrimSpace(chall.SK)
-	}
-	if pk == "" || sk == "" {
-		return nil
-	}
-	return s.store.DB.WithContext(ctx.Context()).
-		Model(&models.ProvisionConsentChallenge{}).
-		Where("PK", "=", pk).
-		Where("SK", "=", sk).
-		Delete()
-}
-
 func (s *Server) consumeProvisionConsentChallenge(ctx *apptheory.Context, chall *models.ProvisionConsentChallenge, message string, now time.Time) *apptheory.AppError {
 	if s == nil || s.store == nil || s.store.DB == nil || ctx == nil {
 		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
@@ -291,27 +267,32 @@ func validateProvisionConsentChallenge(ctx *apptheory.Context, chall *models.Pro
 	if ctx == nil || chall == nil {
 		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
-
 	if chall.Consumed {
 		return &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
 	}
-
 	if !chall.ExpiresAt.IsZero() && time.Now().After(chall.ExpiresAt) {
 		return &apptheory.AppError{Code: "app.bad_request", Message: "consent challenge expired"}
 	}
+	if appErr := validateProvisionConsentChallengeScope(ctx, chall, slug, stage); appErr != nil {
+		return appErr
+	}
+	return validateProvisionConsentChallengeMessage(chall, message)
+}
 
+func validateProvisionConsentChallengeScope(ctx *apptheory.Context, chall *models.ProvisionConsentChallenge, slug string, stage string) *apptheory.AppError {
 	if strings.TrimSpace(chall.Username) == "" || strings.TrimSpace(ctx.AuthIdentity) == "" || strings.TrimSpace(chall.Username) != strings.TrimSpace(ctx.AuthIdentity) {
 		return &apptheory.AppError{Code: "app.forbidden", Message: "consent challenge user mismatch"}
 	}
-
 	if strings.TrimSpace(chall.InstanceSlug) != strings.TrimSpace(slug) {
 		return &apptheory.AppError{Code: "app.forbidden", Message: "consent challenge slug mismatch"}
 	}
-
 	if strings.TrimSpace(chall.Stage) != strings.TrimSpace(stage) {
 		return &apptheory.AppError{Code: "app.forbidden", Message: "consent challenge stage mismatch"}
 	}
+	return nil
+}
 
+func validateProvisionConsentChallengeMessage(chall *models.ProvisionConsentChallenge, message string) *apptheory.AppError {
 	if strings.TrimSpace(message) == "" || strings.TrimSpace(chall.Message) == "" || message != chall.Message {
 		return &apptheory.AppError{Code: "app.forbidden", Message: "consent challenge message mismatch"}
 	}

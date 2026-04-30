@@ -273,6 +273,30 @@ func TestConsumeProvisionConsentChallenge_MarksConsumedAndClearsMessage(t *testi
 	}
 }
 
+func TestConsumeProvisionConsentChallenge_RejectsAlreadyConsumed(t *testing.T) {
+	t.Parallel()
+
+	db := ttmocks.NewMockExtendedDB()
+	qConsent := new(ttmocks.MockQuery)
+	db.On("WithContext", mock.Anything).Return(db).Once()
+	db.On("Model", mock.AnythingOfType("*models.ProvisionConsentChallenge")).Return(qConsent).Once()
+	qConsent.On("IfExists").Return(qConsent).Once()
+	qConsent.On("WithConditionExpression", mock.Anything, mock.Anything).Return(qConsent).Once()
+	qConsent.On("Update", []string{"Consumed", "ConsumedAt", "Message", "MessageHash"}).Return(theoryErrors.ErrConditionFailed).Once()
+
+	s := &Server{store: store.New(db)}
+	now := time.Unix(100, 0).UTC()
+	msg := buildProvisionConsentMessage(testProvisionConsentStageLab, testProvisionConsentBaseDomainDemoGreater, testProvisionConsentSlugDemo, testProvisionConsentNonce16, now.Add(time.Minute))
+	chall := &models.ProvisionConsentChallenge{ID: "c1", Message: msg, ExpiresAt: now.Add(time.Minute)}
+	_ = chall.UpdateKeys()
+
+	ctx := &apptheory.Context{AuthIdentity: "alice"}
+	appErr := s.consumeProvisionConsentChallenge(ctx, chall, msg, now)
+	if appErr == nil || appErr.Code != testProvisionConsentCodeUnauthorized {
+		t.Fatalf("expected unauthorized, got %#v", appErr)
+	}
+}
+
 func TestValidateProvisionConsentChallenge_RequiresExactMessageBytes(t *testing.T) {
 	t.Parallel()
 
@@ -363,6 +387,16 @@ func TestValidateProvisionConsentChallenge_RejectsMismatchedOrExpiredChallenge(t
 			slug:  testProvisionConsentSlugDemo,
 			stage: testProvisionConsentStageLab,
 			code:  testProvisionConsentCodeUnauthorized,
+		},
+		{
+			name: "message hash mismatch",
+			ctx:  &apptheory.Context{AuthIdentity: "alice"},
+			mut: func(chall *models.ProvisionConsentChallenge) {
+				chall.MessageHash = strings.Repeat("0", 64)
+			},
+			slug:  testProvisionConsentSlugDemo,
+			stage: testProvisionConsentStageLab,
+			code:  appErrCodeForbidden,
 		},
 	}
 

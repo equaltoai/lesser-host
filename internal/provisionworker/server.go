@@ -203,6 +203,58 @@ func (s *Server) processActiveProvisionSweep(ctx context.Context, requestID stri
 		}, nil
 	}
 
+	items, err := s.listProvisionSweepJobs(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	counts := provisionSweepCounts{}
+	for _, item := range items {
+		if item == nil || !provisionJobProcessable(item) {
+			continue
+		}
+		counts.activeJobs++
+		processed, err := s.processProvisionSweepJob(ctx, item, requestID, now)
+		counts.record(processed, err)
+	}
+
+	result := counts.result(now)
+	if counts.firstErr != nil {
+		return result, fmt.Errorf("provisioning sweep encountered %d errors: %w", counts.errorCount, counts.firstErr)
+	}
+	return result, nil
+}
+
+type provisionSweepCounts struct {
+	activeJobs int
+	processed  int
+	errorCount int
+	firstErr   error
+}
+
+func (c *provisionSweepCounts) record(processed bool, err error) {
+	if err != nil {
+		c.errorCount++
+		if c.firstErr == nil {
+			c.firstErr = err
+		}
+		return
+	}
+	if processed {
+		c.processed++
+	}
+}
+
+func (c provisionSweepCounts) result(now time.Time) map[string]any {
+	return map[string]any{
+		"active_jobs": c.activeJobs,
+		"processed":   c.processed,
+		"errors":      c.errorCount,
+		"swept_at":    now.UTC().Format(time.RFC3339),
+	}
+}
+
+func (s *Server) listProvisionSweepJobs(ctx context.Context) ([]*models.ProvisionJob, error) {
 	var items []*models.ProvisionJob
 	err := s.store.DB.WithContext(ctx).
 		Model(&models.ProvisionJob{}).
@@ -212,57 +264,28 @@ func (s *Server) processActiveProvisionSweep(ctx context.Context, requestID stri
 	if err != nil && !theoryErrors.IsNotFound(err) {
 		return nil, err
 	}
+	return items, nil
+}
 
-	activeJobs := 0
-	processed := 0
-	errorCount := 0
-	var firstErr error
+func (s *Server) processProvisionSweepJob(ctx context.Context, item *models.ProvisionJob, requestID string, now time.Time) (bool, error) {
+	if !item.ExpiresAt.IsZero() && item.ExpiresAt.Before(now) {
+		return true, s.failJob(ctx, item, requestID, now, "expired", "provisioning job has expired")
+	}
+	if item.HasActiveLease(now) || !provisionJobStaleForSweep(item, now) {
+		return false, nil
+	}
+	return true, s.requeueProvisionJob(ctx, strings.TrimSpace(item.ID), 0)
+}
 
-	for _, item := range items {
-		if item == nil || !provisionJobProcessable(item) {
-			continue
-		}
-		activeJobs++
-		if !item.ExpiresAt.IsZero() && item.ExpiresAt.Before(now) {
-			if err := s.failJob(ctx, item, requestID, now, "expired", "provisioning job has expired"); err != nil {
-				errorCount++
-				if firstErr == nil {
-					firstErr = err
-				}
-				continue
-			}
-			processed++
-			continue
-		}
-		if item.HasActiveLease(now) {
-			continue
-		}
-		lastSeen := item.UpdatedAt
-		if lastSeen.IsZero() {
-			lastSeen = item.CreatedAt
-		}
-		if lastSeen.IsZero() || now.Sub(lastSeen) >= provisionSweepStaleAfter {
-			if err := s.requeueProvisionJob(ctx, strings.TrimSpace(item.ID), 0); err != nil {
-				errorCount++
-				if firstErr == nil {
-					firstErr = err
-				}
-				continue
-			}
-			processed++
-		}
+func provisionJobStaleForSweep(item *models.ProvisionJob, now time.Time) bool {
+	if item == nil {
+		return false
 	}
-
-	result := map[string]any{
-		"active_jobs": activeJobs,
-		"processed":   processed,
-		"errors":      errorCount,
-		"swept_at":    now.UTC().Format(time.RFC3339),
+	lastSeen := item.UpdatedAt
+	if lastSeen.IsZero() {
+		lastSeen = item.CreatedAt
 	}
-	if firstErr != nil {
-		return result, fmt.Errorf("provisioning sweep encountered %d errors: %w", errorCount, firstErr)
-	}
-	return result, nil
+	return lastSeen.IsZero() || now.Sub(lastSeen) >= provisionSweepStaleAfter
 }
 
 func (s *Server) processProvisionJob(ctx context.Context, requestID string, jobID string) error {

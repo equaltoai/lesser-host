@@ -356,3 +356,90 @@ func TestProcessActiveProvisionSweep_RequeuesOnlyStaleUnleasedJobs(t *testing.T)
 	require.Len(t, sqsClient.inputs, 1)
 	require.Contains(t, aws.ToString(sqsClient.inputs[0].MessageBody), `"job_id":"stale"`)
 }
+
+func TestProcessActiveProvisionSweep_FailsExpiredJobs(t *testing.T) {
+	t.Parallel()
+
+	db := ttmocks.NewMockExtendedDB()
+	qJob := new(ttmocks.MockQuery)
+	db.On("WithContext", mock.Anything).Return(db).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.ProvisionJob")).Return(qJob).Maybe()
+	qJob.On("Where", "SK", "=", models.SKJob).Return(qJob).Once()
+	qJob.On("Limit", provisionSweepLimit).Return(qJob).Once()
+
+	now := time.Unix(1_000, 0).UTC()
+	expired := &models.ProvisionJob{
+		ID:           "expired",
+		InstanceSlug: "slug",
+		Status:       models.ProvisionJobStatusRunning,
+		UpdatedAt:    now.Add(-time.Hour),
+		ExpiresAt:    now.Add(-time.Minute),
+	}
+	qJob.On("All", mock.AnythingOfType("*[]*models.ProvisionJob")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.ProvisionJob](t, args, 0)
+		*dest = []*models.ProvisionJob{expired}
+	}).Once()
+	db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Once()
+
+	srv := &Server{
+		cfg:   config.Config{ProvisionQueueURL: "https://sqs.us-east-1.amazonaws.com/123/provision"},
+		store: store.New(db),
+		sqs:   &fakeSQS{},
+	}
+
+	out, err := srv.processActiveProvisionSweep(context.Background(), "req-sweep", now)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, out["active_jobs"])
+	require.EqualValues(t, 1, out["processed"])
+	require.Equal(t, models.ProvisionJobStatusError, expired.Status)
+	require.Equal(t, "expired", expired.ErrorCode)
+}
+
+func TestProcessActiveProvisionSweep_ValidationAndErrorAccounting(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(2_000, 0).UTC()
+	var nilServer *Server
+	_, err := nilServer.processActiveProvisionSweep(context.Background(), "req", now)
+	require.ErrorContains(t, err, "store not initialized")
+
+	out, err := (&Server{store: store.New(ttmocks.NewMockExtendedDB())}).processActiveProvisionSweep(context.Background(), "req", now)
+	require.NoError(t, err)
+	require.Equal(t, "sqs not initialized", out["skipped"])
+
+	dbListErr := ttmocks.NewMockExtendedDB()
+	qListErr := new(ttmocks.MockQuery)
+	dbListErr.On("WithContext", mock.Anything).Return(dbListErr).Once()
+	dbListErr.On("Model", mock.AnythingOfType("*models.ProvisionJob")).Return(qListErr).Once()
+	qListErr.On("Where", "SK", "=", models.SKJob).Return(qListErr).Once()
+	qListErr.On("Limit", provisionSweepLimit).Return(qListErr).Once()
+	qListErr.On("All", mock.AnythingOfType("*[]*models.ProvisionJob")).Return(fmt.Errorf("db down")).Once()
+
+	_, err = (&Server{store: store.New(dbListErr), sqs: &fakeSQS{}}).processActiveProvisionSweep(context.Background(), "req", now)
+	require.ErrorContains(t, err, "db down")
+
+	dbProcessErr := ttmocks.NewMockExtendedDB()
+	qProcessErr := new(ttmocks.MockQuery)
+	dbProcessErr.On("WithContext", mock.Anything).Return(dbProcessErr).Once()
+	dbProcessErr.On("Model", mock.AnythingOfType("*models.ProvisionJob")).Return(qProcessErr).Once()
+	qProcessErr.On("Where", "SK", "=", models.SKJob).Return(qProcessErr).Once()
+	qProcessErr.On("Limit", provisionSweepLimit).Return(qProcessErr).Once()
+	qProcessErr.On("All", mock.AnythingOfType("*[]*models.ProvisionJob")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.ProvisionJob](t, args, 0)
+		*dest = []*models.ProvisionJob{
+			nil,
+			{ID: "done", Status: models.ProvisionJobStatusOK},
+			{ID: "stale", Status: models.ProvisionJobStatusRunning, UpdatedAt: now.Add(-time.Hour)},
+		}
+	}).Once()
+
+	out, err = (&Server{
+		cfg:   config.Config{ProvisionQueueURL: "https://sqs.us-east-1.amazonaws.com/123/provision"},
+		store: store.New(dbProcessErr),
+		sqs:   &fakeSQS{err: fmt.Errorf("sqs down")},
+	}).processActiveProvisionSweep(context.Background(), "req", now)
+	require.ErrorContains(t, err, "sqs down")
+	require.EqualValues(t, 1, out["active_jobs"])
+	require.EqualValues(t, 0, out["processed"])
+	require.EqualValues(t, 1, out["errors"])
+}
