@@ -580,6 +580,10 @@ func (s *Server) handlePortalGetInstanceBudgetMonth(ctx *apptheory.Context) (*ap
 }
 
 func (s *Server) handlePortalSetInstanceBudgetMonth(ctx *apptheory.Context) (*apptheory.Response, error) {
+	if err := requireAdmin(ctx); err != nil {
+		return nil, err
+	}
+
 	inst, err := s.requireInstanceAccess(ctx, ctx.Param("slug"))
 	if err != nil {
 		return nil, err
