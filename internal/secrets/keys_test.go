@@ -44,7 +44,7 @@ func TestLooksLikeJSONObject(t *testing.T) {
 func TestLoadFirstSSMParameterCached_TriesCandidatesInOrder(t *testing.T) {
 	t.Parallel()
 
-	clearParamCache()
+	isolateParamCache(t)
 
 	client := stubSSM{
 		getParameter: func(_ context.Context, params *ssm.GetParameterInput) (*ssm.GetParameterOutput, error) {
@@ -94,7 +94,7 @@ func TestStripeStageAndCandidates(t *testing.T) {
 func TestLoadFirstSSMParameterCached_ErrorsOnEmptyCandidates(t *testing.T) {
 	t.Parallel()
 
-	clearParamCache()
+	isolateParamCache(t)
 
 	if _, err := loadFirstSSMParameterCached(context.Background(), stubSSM{}, nil, 1*time.Minute); err == nil {
 		t.Fatalf("expected error")
@@ -104,7 +104,7 @@ func TestLoadFirstSSMParameterCached_ErrorsOnEmptyCandidates(t *testing.T) {
 func TestProviderKeyLoaders_UseSSMClientAndParse(t *testing.T) {
 	t.Parallel()
 
-	clearParamCache()
+	isolateParamCache(t)
 
 	client := stubSSM{
 		getParameter: func(_ context.Context, params *ssm.GetParameterInput) (*ssm.GetParameterOutput, error) {
