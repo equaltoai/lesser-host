@@ -636,6 +636,9 @@ func soulCommReplyBoundaryMatchesRecipient(items []*models.SoulAgentCommActivity
 		if item == nil {
 			continue
 		}
+		if !soulCommActivityEligibleForReplyBoundary(item) {
+			continue
+		}
 		if strings.ToLower(strings.TrimSpace(item.ChannelType)) != channelType {
 			continue
 		}
@@ -647,6 +650,29 @@ func soulCommReplyBoundaryMatchesRecipient(items []*models.SoulAgentCommActivity
 		}
 	}
 	return false
+}
+
+func soulCommActivityEligibleForReplyBoundary(item *models.SoulAgentCommActivity) bool {
+	if item == nil {
+		return false
+	}
+	if item.PreferenceRespected != nil && !*item.PreferenceRespected {
+		return false
+	}
+	boundaryCheck := strings.ToLower(strings.TrimSpace(item.BoundaryCheck))
+	if boundaryCheck == models.SoulCommBoundaryCheckViolated {
+		return false
+	}
+	if strings.ToLower(strings.TrimSpace(item.Direction)) == models.SoulCommDirectionOutbound &&
+		boundaryCheck != "" &&
+		boundaryCheck != models.SoulCommBoundaryCheckPassed {
+		return false
+	}
+	action := strings.ToLower(strings.TrimSpace(item.Action))
+	if action == "drop" || action == "bounce" {
+		return false
+	}
+	return true
 }
 
 func soulCommNormalizeBoundaryCounterparty(channelType string, counterparty string) string {
@@ -1605,24 +1631,34 @@ func buildOutboundEmailRFC5322(input outboundEmailRFC5322Input) ([]byte, []strin
 	if date.IsZero() {
 		date = time.Now().UTC()
 	}
+	fromHeader := safeRFC5322HeaderValue(from)
+	toHeader := safeRFC5322HeaderValue(to)
+	replyToHeader := safeRFC5322HeaderValue(replyTo)
+	subjectHeader := safeRFC5322HeaderValue(subject)
+	messageIDHeader := safeRFC5322HeaderValue(messageID)
+	if fromHeader == "" || toHeader == "" || replyToHeader == "" || subjectHeader == "" || messageIDHeader == "" {
+		return nil, nil, apptheory.NewAppTheoryError(commCodeInvalidRequest, "invalid email payload").WithStatusCode(http.StatusBadRequest)
+	}
 
 	headers := []string{
-		fmt.Sprintf("From: %s", from),
-		fmt.Sprintf("To: %s", to),
-		fmt.Sprintf("Reply-To: %s", replyTo),
-		fmt.Sprintf("Subject: %s", subject),
+		fmt.Sprintf("From: %s", fromHeader),
+		fmt.Sprintf("To: %s", toHeader),
+		fmt.Sprintf("Reply-To: %s", replyToHeader),
+		fmt.Sprintf("Subject: %s", subjectHeader),
 		fmt.Sprintf("Date: %s", date.Format(time.RFC1123Z)),
-		fmt.Sprintf("Message-ID: %s", messageID),
+		fmt.Sprintf("Message-ID: %s", messageIDHeader),
 		"MIME-Version: 1.0",
 		"Content-Type: text/plain; charset=utf-8",
 		"Content-Transfer-Encoding: 8bit",
 	}
 	if len(cc) > 0 {
-		headers = append(headers, fmt.Sprintf("Cc: %s", strings.Join(cc, ", ")))
+		headers = append(headers, fmt.Sprintf("Cc: %s", safeRFC5322HeaderValue(strings.Join(cc, ", "))))
 	}
 	if inReplyTo != "" {
 		// Best-effort: if caller supplied a known message id token, embed it as a Message-ID reference.
-		headers = append(headers, fmt.Sprintf("In-Reply-To: %s", emailMessageIDReference(inReplyTo)))
+		if ref := safeRFC5322HeaderValue(emailMessageIDReference(inReplyTo)); ref != "" {
+			headers = append(headers, fmt.Sprintf("In-Reply-To: %s", ref))
+		}
 	}
 
 	raw := strings.Join(headers, "\r\n") + "\r\n\r\n" + body + "\r\n"
@@ -1637,7 +1673,7 @@ func mailboxProviderReplyReference(req validatedSoulCommSendRequest) string {
 }
 
 func emailMessageIDReference(value string) string {
-	value = strings.TrimSpace(value)
+	value = safeRFC5322HeaderValue(value)
 	if value == "" {
 		return ""
 	}
@@ -1646,6 +1682,25 @@ func emailMessageIDReference(value string) string {
 		return "<" + trimmed + ">"
 	}
 	return "<" + trimmed + "@lessersoul.ai>"
+}
+
+func safeRFC5322HeaderValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	value = strings.Map(func(r rune) rune {
+		switch r {
+		case '\r', '\n', '\t':
+			return ' '
+		default:
+			if r < 0x20 || r == 0x7f {
+				return -1
+			}
+			return r
+		}
+	}, value)
+	return strings.Join(strings.Fields(value), " ")
 }
 
 func validateCommEmailAddress(value string, field string) *apptheory.AppTheoryError {

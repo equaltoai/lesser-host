@@ -2,6 +2,8 @@ package commmailbox
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"strings"
@@ -85,12 +87,14 @@ func TestS3StorePutContent(t *testing.T) {
 
 func TestS3StorePutContentReturnsExistingPointerOnReplay(t *testing.T) {
 	preconditionErr := &smithy.GenericAPIError{Code: "PreconditionFailed", Message: "object exists"}
+	sum := sha256.Sum256([]byte("Replay body"))
+	digest := hex.EncodeToString(sum[:])
 	client := &fakeS3PutClient{
 		putErr: preconditionErr,
 		headOutput: &s3.HeadObjectOutput{
-			ContentLength: aws.Int64(13),
+			ContentLength: aws.Int64(int64(len("Replay body"))),
 			ContentType:   aws.String("text/plain"),
-			Metadata:      map[string]string{"sha256": "existing-digest"},
+			Metadata:      map[string]string{"sha256": digest},
 		},
 	}
 	store := NewS3StoreWithClient("mailbox-bucket", client)
@@ -107,11 +111,37 @@ func TestS3StorePutContentReturnsExistingPointerOnReplay(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PutContent replay: %v", err)
 	}
-	if ptr.SHA256 != "existing-digest" || ptr.Bytes != 13 || ptr.ContentType != "text/plain" {
+	if ptr.SHA256 != digest || ptr.Bytes != int64(len("Replay body")) || ptr.ContentType != "text/plain" {
 		t.Fatalf("unexpected replay pointer: %#v", ptr)
 	}
 	if client.headInput == nil || aws.ToString(client.headInput.Key) != ptr.Key {
 		t.Fatalf("expected head of existing key, got %#v", client.headInput)
+	}
+}
+
+func TestS3StorePutContentRejectsReplayDigestMismatch(t *testing.T) {
+	preconditionErr := &smithy.GenericAPIError{Code: "PreconditionFailed", Message: "object exists"}
+	client := &fakeS3PutClient{
+		putErr: preconditionErr,
+		headOutput: &s3.HeadObjectOutput{
+			ContentLength: aws.Int64(13),
+			ContentType:   aws.String("text/plain"),
+			Metadata:      map[string]string{"sha256": "different-digest"},
+		},
+	}
+	store := NewS3StoreWithClient("mailbox-bucket", client)
+
+	_, err := store.PutContent(context.Background(), ContentInput{
+		DeliveryID:   "comm-delivery-replay",
+		InstanceSlug: "Demo",
+		AgentID:      "0xABC",
+		MessageID:    "msg-1",
+		Direction:    "Inbound",
+		ChannelType:  "Email",
+		Body:         "Replay body",
+	})
+	if err == nil || !strings.Contains(err.Error(), "content sha256 mismatch") {
+		t.Fatalf("expected replay digest mismatch, got %v", err)
 	}
 }
 
