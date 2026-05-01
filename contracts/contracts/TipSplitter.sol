@@ -64,11 +64,6 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
 
     mapping(address => uint256) private _hostWalletRefCount; // wallet => number of hosts using it
 
-    // recipient => list of tokens with a non-zero pending balance for that recipient.
-    // Maintained to make migrations bounded to the recipient's active tokens (instead of a global ever-allowed list).
-    mapping(address => address[]) private _recipientTokenList;
-    mapping(address => mapping(address => uint256)) private _recipientTokenIndex; // recipient => token => index in _recipientTokenList (1-based)
-
     /// @notice Per-token max tip amount (0 = unlimited). Use address(0) key for ETH.
     mapping(address => uint256) public maxTipAmount;
     /// @notice Per-token min tip amount (0 = MIN_TIP_AMOUNT unless hasCustomMinTipAmount is true). Use address(0) key for ETH.
@@ -103,8 +98,6 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
     event TokenAllowedSet(address indexed token, bool allowed);
     /// @notice Emitted when the Lesser wallet is updated.
     event LesserWalletUpdated(address indexed oldWallet, address indexed newWallet);
-    /// @notice Emitted when pending balances are migrated during a wallet rotation.
-    event PendingMigrated(address indexed oldWallet, address indexed newWallet, uint256 ethAmount, uint256 tokenCount);
     /// @notice Emitted when a token's maximum tip amount is updated.
     event MaxTipAmountSet(address indexed token, uint256 amount);
     /// @notice Emitted when a token's minimum tip amount is updated.
@@ -335,7 +328,6 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
         uint256 tokenAmount = pendingToken[token][msg.sender];
         require(tokenAmount > 0, "TipSplitter: no pending");
         pendingToken[token][msg.sender] = 0;
-        _removeRecipientToken(msg.sender, token);
         totalPendingToken[token] -= tokenAmount;
 
         IERC20(token).safeTransfer(msg.sender, tokenAmount);
@@ -357,6 +349,7 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
     }
 
     /// @notice Update a host configuration (owner only).
+    /// @dev Existing pending balances stay with the wallet they were credited to; rotations affect future tips only.
     function updateHost(bytes32 hostId, address wallet, uint16 feeBps) external onlyOwner {
         require(hosts[hostId].wallet != address(0), "TipSplitter: host missing");
         require(wallet != address(0), "TipSplitter: invalid wallet");
@@ -365,12 +358,8 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
 
         address oldWallet = hosts[hostId].wallet;
         if (oldWallet != wallet) {
-            uint256 oldRefCount = _hostWalletRefCount[oldWallet];
-            _hostWalletRefCount[oldWallet] = oldRefCount - 1;
+            _hostWalletRefCount[oldWallet]--;
             _hostWalletRefCount[wallet]++;
-            if (oldRefCount == 1) {
-                _migratePending(oldWallet, wallet);
-            }
         }
         hosts[hostId].wallet = wallet;
         hosts[hostId].feeBps = feeBps;
@@ -421,13 +410,13 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
     // ========= Admin =========
 
     /// @notice Update the Lesser wallet address (owner only).
+    /// @dev Existing pending balances stay with the wallet they were credited to; rotations affect future tips only.
     function setLesserWallet(address newWallet) external onlyOwner {
         require(newWallet != address(0), "TipSplitter: invalid wallet");
         require(newWallet != lesserWallet, "TipSplitter: no-op");
         require(_hostWalletRefCount[newWallet] == 0, "TipSplitter: wallet is a host wallet");
         address old = lesserWallet;
         lesserWallet = newWallet;
-        _migratePending(old, newWallet);
         emit LesserWalletUpdated(old, newWallet);
     }
 
@@ -529,59 +518,8 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
         if (amount == 0) {
             return;
         }
-        if (_recipientTokenIndex[recipient][token] == 0) {
-            _recipientTokenList[recipient].push(token);
-            _recipientTokenIndex[recipient][token] = _recipientTokenList[recipient].length; // 1-based
-        }
         pendingToken[token][recipient] += amount;
         totalPendingToken[token] += amount;
-    }
-
-    function _removeRecipientToken(address recipient, address token) internal {
-        uint256 idx = _recipientTokenIndex[recipient][token];
-        if (idx == 0) {
-            return;
-        }
-        uint256 last = _recipientTokenList[recipient].length;
-        if (idx != last) {
-            address lastToken = _recipientTokenList[recipient][last - 1];
-            _recipientTokenList[recipient][idx - 1] = lastToken;
-            _recipientTokenIndex[recipient][lastToken] = idx;
-        }
-        _recipientTokenList[recipient].pop();
-        delete _recipientTokenIndex[recipient][token];
-    }
-
-    function _migratePending(address oldWallet, address newWallet) internal {
-        if (oldWallet == newWallet) {
-            return;
-        }
-
-        uint256 ethAmount = pendingETH[oldWallet];
-        if (ethAmount > 0) {
-            pendingETH[oldWallet] = 0;
-            pendingETH[newWallet] += ethAmount;
-        }
-
-        uint256 tokenCount = 0;
-        while (_recipientTokenList[oldWallet].length > 0) {
-            address token = _recipientTokenList[oldWallet][_recipientTokenList[oldWallet].length - 1];
-            uint256 amount = pendingToken[token][oldWallet];
-            pendingToken[token][oldWallet] = 0;
-            _removeRecipientToken(oldWallet, token);
-            if (amount > 0) {
-                if (_recipientTokenIndex[newWallet][token] == 0) {
-                    _recipientTokenList[newWallet].push(token);
-                    _recipientTokenIndex[newWallet][token] = _recipientTokenList[newWallet].length; // 1-based
-                }
-                pendingToken[token][newWallet] += amount;
-                tokenCount++;
-            }
-        }
-
-        if (ethAmount > 0 || tokenCount > 0) {
-            emit PendingMigrated(oldWallet, newWallet, ethAmount, tokenCount);
-        }
     }
 
     function _split(uint16 hostFeeBps, uint256 amount)
