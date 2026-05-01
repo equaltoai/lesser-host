@@ -77,15 +77,7 @@ func TestPrepareBudgetDebit_ErrorsAndSuccess(t *testing.T) {
 	}
 
 	{
-		body, _ := json.Marshal(budgetDebitRequest{Credits: 1, Month: "bad"})
-		_, err := s.prepareBudgetDebit(&apptheory.Context{AuthIdentity: "inst", Request: apptheory.Request{Body: body}})
-		if err == nil {
-			t.Fatalf("expected error for invalid month")
-		}
-	}
-
-	{
-		body, _ := json.Marshal(budgetDebitRequest{Credits: 5, Month: testBudgetMonth202601})
+		body, _ := json.Marshal(budgetDebitRequest{Credits: 5, Month: "bad"})
 		prepared, err := s.prepareBudgetDebit(&apptheory.Context{
 			AuthIdentity: testBudgetInstanceSlug,
 			RequestID:    "rid",
@@ -94,10 +86,11 @@ func TestPrepareBudgetDebit_ErrorsAndSuccess(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected err: %v", err)
 		}
-		if prepared.InstanceSlug != testBudgetInstanceSlug || prepared.Month != testBudgetMonth202601 || prepared.Credits != 5 {
+		expectedMonth := time.Now().UTC().Format("2006-01")
+		if prepared.InstanceSlug != testBudgetInstanceSlug || prepared.Month != expectedMonth || prepared.Credits != 5 {
 			t.Fatalf("unexpected prepared: %#v", prepared)
 		}
-		if prepared.PK != "INSTANCE#"+testBudgetInstanceSlug || prepared.SK != "BUDGET#"+testBudgetMonth202601 || prepared.RequestID != "rid" {
+		if prepared.PK != "INSTANCE#"+testBudgetInstanceSlug || prepared.SK != "BUDGET#"+expectedMonth || prepared.RequestID != "rid" {
 			t.Fatalf("unexpected prepared keys: %#v", prepared)
 		}
 		if prepared.AllowOverage {
@@ -150,10 +143,10 @@ func TestTransactBudgetDebit(t *testing.T) {
 	audit := &models.AuditLogEntry{Actor: testBudgetInstanceSlug, Action: "budget.debit", Target: "x"}
 	_ = audit.UpdateKeys()
 
-	if err := s.transactBudgetDebit(context.Background(), update, false, 5, 5, now, ledger, audit); err != nil {
+	if err := s.transactBudgetDebit(context.Background(), update, false, 5, 5, update.IncludedCredits, now, ledger, audit); err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if err := s.transactBudgetDebit(context.Background(), update, true, 5, 5, now, ledger, audit); err != nil {
+	if err := s.transactBudgetDebit(context.Background(), update, true, 5, 5, update.IncludedCredits, now, ledger, audit); err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
 }
@@ -209,6 +202,48 @@ func TestHandleBudgetDebit_NotConfiguredAndExceeded(t *testing.T) {
 	resp, err = s.handleBudgetDebit(ctx)
 	if err != nil || resp == nil || resp.Status != 200 {
 		t.Fatalf("unexpected resp: %#v err=%v", resp, err)
+	}
+}
+
+func TestHandleBudgetDebit_Success(t *testing.T) {
+	t.Parallel()
+
+	db := ttmocks.NewMockExtendedDB()
+	q := new(ttmocks.MockQuery)
+	tx := new(ttmocks.MockTransactionBuilder)
+	db.TransactWriteBuilder = tx
+	db.On("WithContext", mock.Anything).Return(db).Maybe()
+	db.On("Model", mock.Anything).Return(q).Maybe()
+	db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Once()
+	q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
+	q.On("ConsistentRead").Return(q).Maybe()
+	q.On("First", mock.AnythingOfType("*models.Instance")).Return(theoryErrors.ErrItemNotFound).Maybe()
+
+	expectedMonth := time.Now().UTC().Format("2006-01")
+	q.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.InstanceBudgetMonth](t, args, 0)
+		*dest = models.InstanceBudgetMonth{InstanceSlug: testBudgetInstanceSlug, Month: expectedMonth, IncludedCredits: 10, UsedCredits: 2}
+	}).Once()
+	q.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.InstanceBudgetMonth](t, args, 0)
+		*dest = models.InstanceBudgetMonth{InstanceSlug: testBudgetInstanceSlug, Month: expectedMonth, IncludedCredits: 10, UsedCredits: 7}
+	}).Once()
+
+	s := &Server{store: store.New(db)}
+	body, _ := json.Marshal(budgetDebitRequest{Credits: 5, Month: testBudgetMonth202601})
+	resp, err := s.handleBudgetDebit(&apptheory.Context{AuthIdentity: testBudgetInstanceSlug, RequestID: "rid", Request: apptheory.Request{Body: body}})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if resp == nil || resp.Status != 200 {
+		t.Fatalf("unexpected resp: %#v", resp)
+	}
+	var out budgetDebitResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !out.Allowed || out.Reason != budgetReasonDebited || out.Month != expectedMonth || out.UsedCredits != 7 || out.RemainingCredits != 3 {
+		t.Fatalf("unexpected output: %#v", out)
 	}
 }
 

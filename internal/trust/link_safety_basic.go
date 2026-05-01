@@ -55,10 +55,11 @@ func normalizeLinkURLDeterministic(raw string) string {
 	return normalizeURLForSafety(u, scheme, asciiHost, port)
 }
 
-func linkSafetyBasicJobID(actorURI, objectURI, contentHash, linksHash string) string {
+func linkSafetyBasicJobID(instanceSlug, actorURI, objectURI, contentHash, linksHash string) string {
 	sum := sha256.Sum256([]byte(strings.Join([]string{
 		"link_safety_basic",
 		linkSafetyBasicPolicyVersion,
+		strings.ToLower(strings.TrimSpace(instanceSlug)),
 		strings.TrimSpace(actorURI),
 		strings.TrimSpace(objectURI),
 		strings.TrimSpace(contentHash),

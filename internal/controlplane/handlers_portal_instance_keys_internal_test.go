@@ -24,6 +24,30 @@ func TestInstanceKeyListItemFromModel_Nil(t *testing.T) {
 	require.Empty(t, out.ID)
 }
 
+func TestInstanceKeyListItemFromModel_OmitsZeroTimes(t *testing.T) {
+	t.Parallel()
+
+	created := time.Unix(1, 0).UTC()
+	out := instanceKeyListItemFromModel(&models.InstanceKey{ID: " k1 ", CreatedAt: created})
+	require.Equal(t, "k1", out.ID)
+	require.Equal(t, created, out.CreatedAt)
+	require.Nil(t, out.LastUsedAt)
+	require.Nil(t, out.RevokedAt)
+
+	b, err := json.Marshal(out)
+	require.NoError(t, err)
+	require.NotContains(t, string(b), "last_used_at")
+	require.NotContains(t, string(b), "revoked_at")
+
+	lastUsedAt := time.Unix(2, 0).UTC()
+	revokedAt := time.Unix(3, 0).UTC()
+	out = instanceKeyListItemFromModel(&models.InstanceKey{ID: "k2", CreatedAt: created, LastUsedAt: lastUsedAt, RevokedAt: revokedAt})
+	require.NotNil(t, out.LastUsedAt)
+	require.Equal(t, lastUsedAt, *out.LastUsedAt)
+	require.NotNil(t, out.RevokedAt)
+	require.Equal(t, revokedAt, *out.RevokedAt)
+}
+
 func TestHandlePortalListInstanceKeys_ReturnsKeys(t *testing.T) {
 	t.Parallel()
 

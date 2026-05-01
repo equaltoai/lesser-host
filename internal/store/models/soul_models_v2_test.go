@@ -133,7 +133,7 @@ func TestSoulAgentBoundary_CategoryConstants(t *testing.T) {
 // --- SoulAgentContinuity ---
 
 func TestSoulAgentContinuity_Keys(t *testing.T) {
-	ts := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	ts := time.Date(2026, 3, 1, 12, 0, 0, 987654321, time.UTC)
 	c := &SoulAgentContinuity{
 		AgentID:   " 0xABC ",
 		Type:      " SIGNIFICANT_FAILURE ",
@@ -146,7 +146,9 @@ func TestSoulAgentContinuity_Keys(t *testing.T) {
 
 	require.Equal(t, "SOUL#AGENT#0xabc", c.PK)
 	require.Contains(t, c.SK, "CONTINUITY#")
+	require.Contains(t, c.SK, "2026-03-01T12:00:00.987Z")
 	require.Contains(t, c.SK, "#significant_failure")
+	require.Equal(t, time.Date(2026, 3, 1, 12, 0, 0, 987000000, time.UTC), c.Timestamp)
 	require.Equal(t, "significant_failure", c.Type)
 	require.Equal(t, "Something failed.", c.Summary)
 	require.Equal(t, "Fixed it.", c.Recovery)
@@ -182,7 +184,7 @@ func TestSoulAgentContinuity_EntryTypeConstants(t *testing.T) {
 // --- SoulAgentRelationship ---
 
 func TestSoulAgentRelationship_Keys(t *testing.T) {
-	ts := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	ts := time.Date(2026, 3, 1, 12, 0, 0, 987654321, time.UTC)
 	r := &SoulAgentRelationship{
 		FromAgentID: " 0xFROM ",
 		ToAgentID:   " 0xTO ",
@@ -196,6 +198,8 @@ func TestSoulAgentRelationship_Keys(t *testing.T) {
 
 	require.Equal(t, "SOUL#AGENT#0xto", r.PK)
 	require.Contains(t, r.SK, "RELATIONSHIP#0xfrom#")
+	require.Contains(t, r.SK, "2026-03-01T12:00:00.987Z")
+	require.Equal(t, time.Date(2026, 3, 1, 12, 0, 0, 987000000, time.UTC), r.CreatedAt)
 	require.Equal(t, "0xfrom", r.FromAgentID)
 	require.Equal(t, "0xto", r.ToAgentID)
 	require.Equal(t, "delegation", r.Type)

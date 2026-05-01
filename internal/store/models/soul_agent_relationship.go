@@ -82,7 +82,8 @@ func (r *SoulAgentRelationship) UpdateKeys() error {
 	r.Message = strings.TrimSpace(r.Message)
 	r.Signature = strings.ToLower(strings.TrimSpace(r.Signature))
 
-	ts := r.CreatedAt.UTC().Format("2006-01-02T15:04:05.000000000Z")
+	r.CreatedAt = r.CreatedAt.UTC().Truncate(time.Millisecond)
+	ts := r.CreatedAt.Format("2006-01-02T15:04:05.000Z")
 	r.PK = fmt.Sprintf("SOUL#AGENT#%s", r.ToAgentID)
 	r.SK = fmt.Sprintf("RELATIONSHIP#%s#%s", r.FromAgentID, ts)
 	return nil

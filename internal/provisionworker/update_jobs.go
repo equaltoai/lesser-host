@@ -2479,6 +2479,11 @@ func (s *Server) advanceUpdateVerify(ctx context.Context, job *models.UpdateJob,
 	job.VerifyAIOK = &aiOK
 	job.VerifyAIErr = strings.TrimSpace(aiErr)
 
+	if !transOK || !trustOK || !tipsOK || !aiOK {
+		job.FailedPhase = updatePhaseVerify
+		return 0, true, s.failUpdateJob(ctx, job, requestID, now, "verification_failed", managedUpdateVerificationFailureMessage(job))
+	}
+
 	job.ActivePhase = updatePhaseNone
 	job.Step = updateStepDone
 	job.Status = models.UpdateJobStatusOK

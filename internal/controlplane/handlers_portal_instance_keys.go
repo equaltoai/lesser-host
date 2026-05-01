@@ -13,10 +13,10 @@ import (
 )
 
 type instanceKeyListItem struct {
-	ID         string    `json:"id"`
-	CreatedAt  time.Time `json:"created_at"`
-	LastUsedAt time.Time `json:"last_used_at,omitempty"`
-	RevokedAt  time.Time `json:"revoked_at,omitempty"`
+	ID         string     `json:"id"`
+	CreatedAt  time.Time  `json:"created_at"`
+	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
+	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
 }
 
 type listInstanceKeysResponse struct {
@@ -34,12 +34,19 @@ func instanceKeyListItemFromModel(k *models.InstanceKey) instanceKeyListItem {
 	if k == nil {
 		return instanceKeyListItem{}
 	}
-	return instanceKeyListItem{
-		ID:         strings.TrimSpace(k.ID),
-		CreatedAt:  k.CreatedAt,
-		LastUsedAt: k.LastUsedAt,
-		RevokedAt:  k.RevokedAt,
+	out := instanceKeyListItem{
+		ID:        strings.TrimSpace(k.ID),
+		CreatedAt: k.CreatedAt,
 	}
+	if !k.LastUsedAt.IsZero() {
+		lastUsedAt := k.LastUsedAt
+		out.LastUsedAt = &lastUsedAt
+	}
+	if !k.RevokedAt.IsZero() {
+		revokedAt := k.RevokedAt
+		out.RevokedAt = &revokedAt
+	}
+	return out
 }
 
 func (s *Server) handlePortalListInstanceKeys(ctx *apptheory.Context) (*apptheory.Response, error) {

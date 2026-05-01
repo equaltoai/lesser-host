@@ -83,9 +83,10 @@ func TestServeAttestationByID_Success(t *testing.T) {
 	q.On("First", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.Attestation](t, args, 0)
 		*dest = models.Attestation{
-			ID:        "id",
-			JWS:       jws,
-			ExpiresAt: time.Now().UTC().Add(1 * time.Hour),
+			ID:           "id",
+			InstanceSlug: "inst",
+			JWS:          jws,
+			ExpiresAt:    time.Now().UTC().Add(1 * time.Hour),
 		}
 	}).Once()
 
@@ -141,14 +142,16 @@ func TestHandleLookupAttestation_ValidatesAndServes(t *testing.T) {
 	contentHash := "sha256:deadbeef"
 	module := "claim_verify_llm"
 	policyVersion := "v1"
-	id := attestations.AttestationID(actorURI, objectURI, contentHash, module, policyVersion)
+	instanceSlug := testBudgetInstanceSlug
+	id := attestations.InstanceAttestationID(instanceSlug, actorURI, objectURI, contentHash, module, policyVersion)
 
 	q.On("First", mock.AnythingOfType("*models.Attestation")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.Attestation](t, args, 0)
 		*dest = models.Attestation{
-			ID:        id,
-			JWS:       jws,
-			ExpiresAt: time.Now().UTC().Add(1 * time.Hour),
+			ID:           id,
+			InstanceSlug: instanceSlug,
+			JWS:          jws,
+			ExpiresAt:    time.Now().UTC().Add(1 * time.Hour),
 		}
 	}).Once()
 
@@ -163,6 +166,7 @@ func TestHandleLookupAttestation_ValidatesAndServes(t *testing.T) {
 		"actor_uri":      {actorURI},
 		"object_uri":     {objectURI},
 		"content_hash":   {contentHash},
+		"instance_slug":  {instanceSlug},
 		"module":         {module},
 		"policy_version": {policyVersion},
 	}}}

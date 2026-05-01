@@ -54,6 +54,92 @@ func TestModerationModelSet(t *testing.T) {
 	}
 }
 
+func TestHandleAIModerationText_DisabledShortCircuitsQueue(t *testing.T) {
+	t.Parallel()
+
+	st := &store.Store{}
+	s := &Server{store: st, ai: ai.NewService(st)}
+	body, _ := json.Marshal(aiModerationTextRequest{Text: testHello})
+	resp, err := s.handleAIModerationText(&apptheory.Context{
+		AuthIdentity: testBudgetInstanceSlug,
+		Request:      apptheory.Request{Body: body},
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if resp.Status != 200 {
+		t.Fatalf("expected 200, got %d", resp.Status)
+	}
+
+	var out aiModerationResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Status != statusDisabled || out.ErrorMessage != aiDisabledForInstanceReason {
+		t.Fatalf("expected disabled moderation response, got %#v", out)
+	}
+	if out.Contract.Module != ai.ModerationTextLLMModule || out.Contract.InputsHash == "" {
+		t.Fatalf("expected text moderation contract, got %#v", out.Contract)
+	}
+}
+
+func TestHandleAIModerationImage_DisabledShortCircuitsFetch(t *testing.T) {
+	t.Parallel()
+
+	st := &store.Store{}
+	s := &Server{store: st, ai: ai.NewService(st), artifacts: artifacts.New("bucket")}
+	body, _ := json.Marshal(aiModerationImageRequest{URL: "https://example.com/image.png"})
+	resp, err := s.handleAIModerationImage(&apptheory.Context{
+		AuthIdentity: testBudgetInstanceSlug,
+		Request:      apptheory.Request{Body: body},
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if resp.Status != 200 {
+		t.Fatalf("expected 200, got %d", resp.Status)
+	}
+
+	var out aiModerationResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Status != statusDisabled || out.ErrorMessage != aiDisabledForInstanceReason {
+		t.Fatalf("expected disabled image moderation response before fetch, got %#v", out)
+	}
+	if out.Contract.Module != ai.ModerationImageLLMModule || out.Contract.InputsHash == "" {
+		t.Fatalf("expected image moderation contract, got %#v", out.Contract)
+	}
+}
+
+func TestModerationImageDisabledResponse(t *testing.T) {
+	t.Parallel()
+
+	req := aiModerationImageRequest{Context: &aiModerationScanCtxV1{ViralityScore: 0}}
+	resp := moderationImageDisabledResponse("moderation.scan.request", req, instanceTrustConfig{AIEnabled: false}, modelSetDeterministic, "hash", 3)
+	if resp == nil || resp.ErrorMessage != aiDisabledForInstanceReason {
+		t.Fatalf("expected ai disabled response, got %#v", resp)
+	}
+
+	enabled := instanceTrustConfig{AIEnabled: true, ModerationEnabled: false}
+	resp = moderationImageDisabledResponse("moderation.scan.request", req, enabled, modelSetDeterministic, "hash", 3)
+	if resp == nil || resp.ErrorMessage != "moderation scanning disabled for instance" {
+		t.Fatalf("expected moderation disabled response, got %#v", resp)
+	}
+
+	enabled.ModerationEnabled = true
+	enabled.ModerationTrigger = moderationTriggerVirality
+	enabled.ModerationViralityMin = 10
+	resp = moderationImageDisabledResponse("moderation.scan.request", req, enabled, modelSetDeterministic, "hash", 3)
+	if resp == nil || !strings.Contains(resp.ErrorMessage, "virality") {
+		t.Fatalf("expected trigger disabled response, got %#v", resp)
+	}
+
+	if resp = moderationImageDisabledResponse("moderation.scan.report", req, enabled, modelSetDeterministic, "hash", 3); resp != nil {
+		t.Fatalf("expected report action to bypass trigger response, got %#v", resp)
+	}
+}
+
 func TestBuildAIModerationResponse(t *testing.T) {
 	t.Parallel()
 

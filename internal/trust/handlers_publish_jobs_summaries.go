@@ -521,28 +521,19 @@ func (s *Server) processQueuedRenderSummaries(ctx *apptheory.Context, instanceSl
 	shards := shardQueuedSummaries(queued, cfg.BatchMaxItems, cfg.BatchMaxTotalBytes)
 	if inline {
 		for _, shard := range shards {
-			s.processRenderSummaryShard(ctx, instanceSlug, now, cfg.ModelSet, shard, out, true)
+			for _, q := range shard {
+				s.processRenderSummaryShard(ctx, instanceSlug, now, cfg.ModelSet, []queuedRenderSummary{q}, out, true)
+			}
 		}
 		return
 	}
 
 	for _, shard := range shards {
-		if cfg.BatchingMode == aiBatchingModeNone {
-			for _, q := range shard {
-				id := strings.TrimSpace(q.JobID)
-				if err := s.enqueueRenderSummaryJobs(ctx, cfg.BatchingMode, []string{id}); err != nil {
-					s.processRenderSummaryShard(ctx, instanceSlug, now, cfg.ModelSet, []queuedRenderSummary{q}, out, true)
-				}
-			}
-			continue
-		}
-
-		ids := make([]string, 0, len(shard))
 		for _, q := range shard {
-			ids = append(ids, strings.TrimSpace(q.JobID))
-		}
-		if err := s.enqueueRenderSummaryJobs(ctx, cfg.BatchingMode, ids); err != nil {
-			s.processRenderSummaryShard(ctx, instanceSlug, now, cfg.ModelSet, shard, out, true)
+			id := strings.TrimSpace(q.JobID)
+			if err := s.enqueueRenderSummaryJobs(ctx, cfg.BatchingMode, []string{id}); err != nil {
+				s.processRenderSummaryShard(ctx, instanceSlug, now, cfg.ModelSet, []queuedRenderSummary{q}, out, true)
+			}
 		}
 	}
 }
@@ -576,15 +567,17 @@ func (s *Server) enqueueRenderSummaryJobs(ctx *apptheory.Context, mode string, j
 		return fmt.Errorf("ai queue not configured")
 	}
 
-	msg := ai.JobMessage{}
-	if len(jobIDs) == 1 && mode == aiBatchingModeNone {
-		msg.Kind = "ai_job"
-		msg.JobID = jobIDs[0]
-	} else {
-		msg.Kind = "ai_job_batch"
-		msg.JobIDs = append([]string(nil), jobIDs...)
+	for _, id := range jobIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		msg := ai.JobMessage{Kind: "ai_job", JobID: id}
+		if err := s.queues.enqueueAIJob(ctx.Context(), msg); err != nil {
+			return err
+		}
 	}
-	return s.queues.enqueueAIJob(ctx.Context(), msg)
+	return nil
 }
 
 func (s *Server) processRenderSummaryShard(

@@ -106,21 +106,22 @@ func TestComputeLinkSafetyBasicSummary(t *testing.T) {
 func TestLinkSafetyBasicAttestationParts_ValidatesFields(t *testing.T) {
 	t.Parallel()
 
-	if _, _, _, ok := linkSafetyBasicAttestationParts(nil); ok {
+	if _, _, _, _, ok := linkSafetyBasicAttestationParts(nil); ok {
 		t.Fatalf("expected nil to be invalid")
 	}
 
-	if _, _, _, ok := linkSafetyBasicAttestationParts(&models.LinkSafetyBasicResult{ActorURI: "a"}); ok {
+	if _, _, _, _, ok := linkSafetyBasicAttestationParts(&models.LinkSafetyBasicResult{ActorURI: "a"}); ok {
 		t.Fatalf("expected missing fields to be invalid")
 	}
 
-	actor, object, hash, ok := linkSafetyBasicAttestationParts(&models.LinkSafetyBasicResult{
-		ActorURI:    " actor ",
-		ObjectURI:   " object ",
-		ContentHash: " hash ",
+	instance, actor, object, hash, ok := linkSafetyBasicAttestationParts(&models.LinkSafetyBasicResult{
+		InstanceSlug: " inst ",
+		ActorURI:     " actor ",
+		ObjectURI:    " object ",
+		ContentHash:  " hash ",
 	})
-	if !ok || actor != "actor" || object != "object" || hash != "hash" {
-		t.Fatalf("unexpected parts: ok=%v actor=%q object=%q hash=%q", ok, actor, object, hash)
+	if !ok || instance != "inst" || actor != "actor" || object != "object" || hash != "hash" {
+		t.Fatalf("unexpected parts: ok=%v instance=%q actor=%q object=%q hash=%q", ok, instance, actor, object, hash)
 	}
 }
 

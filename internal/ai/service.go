@@ -223,7 +223,7 @@ func (s *Service) prepareGetOrQueue(req Request) (getOrQueuePrepared, Response, 
 	now := time.Now().UTC()
 	month := now.Format("2006-01")
 	pricingMultiplierBps := req.PricingMultiplierBps
-	if pricingMultiplierBps <= 0 || pricingMultiplierBps >= 10000 {
+	if pricingMultiplierBps <= 0 {
 		pricingMultiplierBps = 10000
 	}
 	creditsRequested := billing.PricedCredits(req.BaseCredits, pricingMultiplierBps)
@@ -535,8 +535,10 @@ func (s *Service) queueWithDebit(ctx context.Context, prepared getOrQueuePrepare
 	pk := fmt.Sprintf("INSTANCE#%s", prepared.InstanceSlug)
 	sk := fmt.Sprintf("BUDGET#%s", prepared.Month)
 	maxUsed := int64(0)
+	expectedIncluded := int64(0)
 	if budget != nil {
 		maxUsed = budget.IncludedCredits - prepared.CreditsRequested
+		expectedIncluded = budget.IncludedCredits
 	}
 
 	err := s.store.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
@@ -544,7 +546,7 @@ func (s *Service) queueWithDebit(ctx context.Context, prepared getOrQueuePrepare
 		tx.Put(ledger)
 		tx.Put(auditBudget)
 		tx.Put(auditJob)
-		return s.applyBudgetDebit(tx, updateBudget, prepared.Now, maxUsed, prepared.CreditsRequested, req.AllowOverage)
+		return s.applyBudgetDebit(tx, updateBudget, prepared.Now, expectedIncluded, maxUsed, prepared.CreditsRequested, req.AllowOverage)
 	})
 	if theoryErrors.IsConditionFailed(err) {
 		return s.handleDebitConditionFailed(ctx, prepared, pk, sk, prepared.CreditsRequested)
@@ -557,7 +559,7 @@ func (s *Service) queueWithDebit(ctx context.Context, prepared getOrQueuePrepare
 	return queuedWithDebitResponse(prepared, latest, overageDebited), nil
 }
 
-func (s *Service) applyBudgetDebit(tx core.TransactionBuilder, budget *models.InstanceBudgetMonth, now time.Time, maxUsed int64, creditsRequested int64, allowOverage bool) error {
+func (s *Service) applyBudgetDebit(tx core.TransactionBuilder, budget *models.InstanceBudgetMonth, now time.Time, expectedIncludedCredits int64, maxUsed int64, creditsRequested int64, allowOverage bool) error {
 	if tx == nil || budget == nil {
 		return nil
 	}
@@ -567,7 +569,10 @@ func (s *Service) applyBudgetDebit(tx core.TransactionBuilder, budget *models.In
 			ub.Add("UsedCredits", creditsRequested)
 			ub.Set("UpdatedAt", now)
 			return nil
-		}, tabletheory.IfExists())
+		},
+			tabletheory.IfExists(),
+			tabletheory.Condition("IncludedCredits", "=", expectedIncludedCredits),
+		)
 		return nil
 	}
 
@@ -577,6 +582,7 @@ func (s *Service) applyBudgetDebit(tx core.TransactionBuilder, budget *models.In
 		return nil
 	},
 		tabletheory.IfExists(),
+		tabletheory.Condition("IncludedCredits", "=", expectedIncludedCredits),
 		tabletheory.ConditionExpression(
 			"attribute_not_exists(usedCredits) OR usedCredits <= :max",
 			map[string]any{

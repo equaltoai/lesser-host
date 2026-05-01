@@ -133,3 +133,26 @@ func TestAttestationID_IsDeterministic(t *testing.T) {
 		t.Fatalf("expected different ids")
 	}
 }
+
+func TestInstanceAttestationID_BindsInstanceSlug(t *testing.T) {
+	t.Parallel()
+
+	id1 := InstanceAttestationID(" inst ", "actor", "object", "hash", "module", "v1")
+	id2 := InstanceAttestationID("INST", "actor", "object", "HASH", "MODULE", "v1")
+	if id1 == "" || len(id1) != 64 {
+		t.Fatalf("unexpected id: %q", id1)
+	}
+	if id1 != id2 {
+		t.Fatalf("expected normalized inputs to match: %q vs %q", id1, id2)
+	}
+
+	legacyID := AttestationID("actor", "object", "hash", "module", "v1")
+	if id1 == legacyID {
+		t.Fatalf("expected instance-bound id to differ from legacy id")
+	}
+
+	id3 := InstanceAttestationID("other", "actor", "object", "hash", "module", "v1")
+	if id3 == id1 {
+		t.Fatalf("expected different ids for different instance slugs")
+	}
+}

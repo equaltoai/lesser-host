@@ -387,7 +387,7 @@ func TestIssueClaimVerifyAttestationV1_ReturnsAttestationUnavailableForNonStore(
 		fakeComprehend{},
 		fakeRekognition{},
 	)
-	job := &models.AIJob{Module: "claim_verify_llm", PolicyVersion: "v1"}
+	job := &models.AIJob{InstanceSlug: "inst", Module: "claim_verify_llm", PolicyVersion: "v1"}
 	in := ai.ClaimVerifyInputsV1{ActorURI: "a", ObjectURI: "o", ContentHash: "h"}
 	res := ai.ClaimVerifyResultV1{Kind: "claim_verify", Version: "v1"}
 	errs := srv.issueClaimVerifyAttestationV1(context.Background(), job, in, res)

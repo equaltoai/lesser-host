@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
 func TestNormalizeVerifyHost(t *testing.T) {
@@ -149,7 +151,8 @@ func TestVerifyTrustAuthEndpoint_RequiresBearerKey(t *testing.T) {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		w.WriteHeader(http.StatusNoContent)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok","instance_slug":"slug"}`))
 	})
 	ts := httptest.NewTLSServer(handler)
 	t.Cleanup(ts.Close)
@@ -157,11 +160,35 @@ func TestVerifyTrustAuthEndpoint_RequiresBearerKey(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	t.Cleanup(cancel)
 
-	ok, msg := verifyTrustAuthEndpoint(ctx, ts.Client(), ts.URL, "lhk_test")
+	ok, msg := verifyTrustAuthEndpoint(ctx, ts.Client(), ts.URL, "lhk_test", "slug")
 	require.True(t, ok)
 	require.Empty(t, msg)
 
-	ok, msg = verifyTrustAuthEndpoint(ctx, ts.Client(), ts.URL, "wrong")
+	ok, msg = verifyTrustAuthEndpoint(ctx, ts.Client(), ts.URL, "wrong", "slug")
 	require.False(t, ok)
 	require.Contains(t, msg, "unauthorized")
+
+	ok, msg = verifyTrustAuthEndpoint(ctx, ts.Client(), ts.URL, "lhk_test", "other")
+	require.False(t, ok)
+	require.Contains(t, msg, "instance_slug")
+}
+
+func TestManagedUpdateVerificationFailureMessage(t *testing.T) {
+	t.Parallel()
+
+	trustOK := false
+	aiOK := true
+	job := &models.UpdateJob{
+		VerifyTrustOK:  &trustOK,
+		VerifyTrustErr: "expected instance_slug \"slug\", got \"other\"",
+		VerifyAIOK:     &aiOK,
+	}
+	got := managedUpdateVerificationFailureMessage(job)
+	require.Contains(t, got, "managed update verification failed")
+	require.Contains(t, got, "trust: expected instance_slug")
+	require.NotContains(t, got, "ai:")
+	require.Equal(t, "managed update verification failed", managedUpdateVerificationFailureMessage(nil))
+	translationOK := false
+	got = managedUpdateVerificationFailureMessage(&models.UpdateJob{VerifyTranslationOK: &translationOK})
+	require.Contains(t, got, "translation: failed")
 }

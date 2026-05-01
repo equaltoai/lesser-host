@@ -16,9 +16,10 @@ type Attestation struct {
 
 	ID string `theorydb:"attr:id" json:"id"`
 
-	ActorURI    string `theorydb:"attr:actorUri" json:"actor_uri,omitempty"`
-	ObjectURI   string `theorydb:"attr:objectUri" json:"object_uri,omitempty"`
-	ContentHash string `theorydb:"attr:contentHash" json:"content_hash,omitempty"`
+	ActorURI     string `theorydb:"attr:actorUri" json:"actor_uri,omitempty"`
+	ObjectURI    string `theorydb:"attr:objectUri" json:"object_uri,omitempty"`
+	ContentHash  string `theorydb:"attr:contentHash" json:"content_hash,omitempty"`
+	InstanceSlug string `theorydb:"attr:instanceSlug" json:"instance_slug,omitempty"`
 
 	Module        string `theorydb:"attr:module" json:"module"`
 	PolicyVersion string `theorydb:"attr:policyVersion" json:"policy_version"`
@@ -55,6 +56,7 @@ func (a *Attestation) UpdateKeys() error {
 	a.ActorURI = strings.TrimSpace(a.ActorURI)
 	a.ObjectURI = strings.TrimSpace(a.ObjectURI)
 	a.ContentHash = strings.TrimSpace(a.ContentHash)
+	a.InstanceSlug = strings.ToLower(strings.TrimSpace(a.InstanceSlug))
 
 	a.Module = strings.ToLower(strings.TrimSpace(a.Module))
 	a.PolicyVersion = strings.TrimSpace(a.PolicyVersion)

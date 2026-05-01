@@ -121,12 +121,15 @@ func TestParseSoulSignedTimestamp_CanonicalizesLikeJavaScriptISOString(t *testin
 	t.Parallel()
 
 	now := time.Date(2026, 4, 29, 3, 15, 0, 0, time.UTC)
-	_, canonical, appErr := parseSoulSignedTimestamp("2026-04-29T03:14:59.120Z", now, "timestamp")
+	parsed, canonical, appErr := parseSoulSignedTimestamp("2026-04-29T03:14:59.120987654Z", now, "timestamp")
 	if appErr != nil {
 		t.Fatalf("unexpected appErr: %#v", appErr)
 	}
 	if canonical != "2026-04-29T03:14:59.120Z" {
 		t.Fatalf("unexpected canonical timestamp: %q", canonical)
+	}
+	if parsed.Nanosecond() != 120_000_000 {
+		t.Fatalf("expected millisecond-truncated timestamp, got %s", parsed.Format(time.RFC3339Nano))
 	}
 
 	_, _, appErr = parseSoulSignedTimestamp("2026-04-29T02:59:59.999Z", now, "timestamp")

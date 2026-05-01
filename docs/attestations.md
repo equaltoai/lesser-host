@@ -10,7 +10,9 @@
 
 - Fetch by id: `GET /attestations/{id}`
 
-- Lookup by tuple: `GET /attestations?actor_uri=...&object_uri=...&content_hash=...&module=...&policy_version=...`
+- Lookup by tuple:
+  `GET /attestations?instance_slug=...&actor_uri=...&object_uri=...&content_hash=...&module=...&policy_version=...`
+  - `instance_slug` is required so lookup ids are bound to the managed instance that produced the attestation.
 
 ## Response format
 
@@ -25,15 +27,17 @@ Attestation responses return:
 
 The signed payload is `type=lesser.host/attestation/v1` and binds:
 
+- `instance_slug`
 - `actor_uri`, `object_uri`, `content_hash`
 - `module`, `policy_version`, `model_set`
 - `created_at`, `expires_at`
 - module-specific `result` (and optional `evidence`)
 
-This binding is why attestations **do not apply to quote posts** unless `(actor_uri, object_uri, content_hash)` matches
-exactly.
+This binding is why attestations **do not apply to quote posts** or other tenants unless
+`(instance_slug, actor_uri, object_uri, content_hash)` matches exactly. Attestation-producing endpoints additionally
+require the authenticated instance to own the `actor_uri` and `object_uri` HTTP(S) hosts before issuing public
+attestations.
 
 ## Caching behavior
 
 `GET /attestations/{id}` is served with `Cache-Control: public, max-age=<seconds-until-expires_at>, immutable`.
-

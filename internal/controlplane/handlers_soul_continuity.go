@@ -195,7 +195,8 @@ func parseSoulSignedTimestamp(raw string, now time.Time, field string) (time.Tim
 	if parsedTS.Before(now.Add(-soulSignedRequestMaxAge)) {
 		return time.Time{}, "", &apptheory.AppError{Code: "app.bad_request", Message: field + " is too far in the past"}
 	}
-	return parsedTS, canonicalSoulSignedTimestamp(parsedTS), nil
+	canonicalTS := parsedTS.Truncate(time.Millisecond)
+	return canonicalTS, canonicalSoulSignedTimestamp(canonicalTS), nil
 }
 
 func canonicalSoulSignedTimestamp(ts time.Time) string {

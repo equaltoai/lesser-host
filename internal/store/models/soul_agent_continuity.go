@@ -90,7 +90,8 @@ func (c *SoulAgentContinuity) UpdateKeys() error {
 	}
 	c.Signature = strings.ToLower(strings.TrimSpace(c.Signature))
 
-	ts := c.Timestamp.UTC().Format("2006-01-02T15:04:05.000000000Z")
+	c.Timestamp = c.Timestamp.UTC().Truncate(time.Millisecond)
+	ts := c.Timestamp.Format("2006-01-02T15:04:05.000Z")
 	c.PK = fmt.Sprintf("SOUL#AGENT#%s", c.AgentID)
 	c.SK = fmt.Sprintf("CONTINUITY#%s#%s", ts, c.Type)
 	return nil

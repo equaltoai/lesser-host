@@ -100,6 +100,13 @@ func (s *Server) handlePublishJob(ctx *apptheory.Context) (*apptheory.Response, 
 	actorURI := strings.TrimSpace(req.ActorURI)
 	objectURI := strings.TrimSpace(req.ObjectURI)
 	contentHash := strings.TrimSpace(req.ContentHash)
+	subject, appErr := s.normalizeInstanceAttestationSubject(ctx.Context(), instanceSlug, actorURI, objectURI, contentHash)
+	if appErr != nil {
+		return nil, appErr
+	}
+	actorURI = subject.ActorURI
+	objectURI = subject.ObjectURI
+	contentHash = subject.ContentHash
 
 	// Default modules when omitted.
 	modules := req.Modules
@@ -109,7 +116,10 @@ func (s *Server) handlePublishJob(ctx *apptheory.Context) (*apptheory.Response, 
 
 	pricingMultiplierBps := int64(10000)
 	if req.Pricing != nil && req.Pricing.AuthorAtPublish {
-		pricingMultiplierBps = authorPublishDiscountBPS
+		// The client-provided flag is retained for request compatibility, but
+		// discounts are not applied until host has a server-authoritative proof
+		// that the work is eligible for author-at-initial-publish pricing.
+		pricingMultiplierBps = 10000
 	}
 
 	canonical := canonicalizePublishLinks(req.Links)
@@ -117,7 +127,7 @@ func (s *Server) handlePublishJob(ctx *apptheory.Context) (*apptheory.Response, 
 	linksHash := linkSafetyBasicLinksHash(canonical)
 
 	// For now we only support link_safety_basic; return a stable job id regardless.
-	jobID := linkSafetyBasicJobID(actorURI, objectURI, contentHash, linksHash)
+	jobID := linkSafetyBasicJobID(instanceSlug, actorURI, objectURI, contentHash, linksHash)
 
 	out := publishJobResponse{
 		JobID:       jobID,
@@ -267,10 +277,6 @@ func (s *Server) runPublishJobModule(
 	}
 }
 
-const (
-	authorPublishDiscountBPS int64 = 5000 // 50% discount when explicitly flagged as "author at publish".
-)
-
 var publishJobIDRE = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 func (s *Server) handleGetPublishJob(ctx *apptheory.Context) (*apptheory.Response, error) {
@@ -299,7 +305,7 @@ func (s *Server) handleGetPublishJob(ctx *apptheory.Context) (*apptheory.Respons
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
-	if strings.TrimSpace(item.InstanceSlug) != "" && strings.TrimSpace(item.InstanceSlug) != instanceSlug {
+	if strings.TrimSpace(item.InstanceSlug) != instanceSlug {
 		return nil, &apptheory.AppError{Code: "app.not_found", Message: "job not found"}
 	}
 
@@ -356,6 +362,21 @@ func (s *Server) storeLinkSafetyBasicNoLinksResult(
 	})
 	if theoryErrors.IsConditionFailed(err) {
 		if cached, err2 := s.store.GetLinkSafetyBasicResult(ctx.Context(), jobID); err2 == nil {
+			if !linkSafetyBasicResultOwnedByInstance(cached, instanceSlug) {
+				return publishJobModuleResponse{
+					Name:          "link_safety_basic",
+					PolicyVersion: linkSafetyBasicPolicyVersion,
+					Status:        statusError,
+					Cached:        false,
+					Budget: budgetDecision{
+						Allowed:          true,
+						OverBudget:       false,
+						Reason:           "owner conflict",
+						RequestedCredits: 0,
+						DebitedCredits:   0,
+					},
+				}
+			}
 			attID, _ := s.ensureLinkSafetyBasicAttestation(ctx.Context(), cached)
 			return publishJobModuleResponse{
 				Name:          "link_safety_basic",
@@ -489,6 +510,7 @@ func (s *Server) precheckLinkSafetyBasicBudget(
 func (s *Server) transactDebitBudgetAndStoreLinkSafetyBasic(
 	ctx *apptheory.Context,
 	allowOverage bool,
+	expectedIncludedCredits int64,
 	maxUsed int64,
 	update *models.InstanceBudgetMonth,
 	ledger *models.UsageLedgerEntry,
@@ -504,7 +526,10 @@ func (s *Server) transactDebitBudgetAndStoreLinkSafetyBasic(
 				ub.Add("UsedCredits", creditsPriced)
 				ub.Set("UpdatedAt", now)
 				return nil
-			}, tabletheory.IfExists())
+			},
+				tabletheory.IfExists(),
+				tabletheory.Condition("IncludedCredits", "=", expectedIncludedCredits),
+			)
 			tx.Put(auditBudget)
 			tx.Put(ledger)
 			tx.Create(item)
@@ -520,6 +545,7 @@ func (s *Server) transactDebitBudgetAndStoreLinkSafetyBasic(
 			return nil
 		},
 			tabletheory.IfExists(),
+			tabletheory.Condition("IncludedCredits", "=", expectedIncludedCredits),
 			tabletheory.ConditionExpression(
 				"attribute_not_exists(usedCredits) OR usedCredits <= :max",
 				map[string]any{
@@ -552,6 +578,21 @@ func (s *Server) handleLinkSafetyBasicConditionFailed(
 	now time.Time,
 ) publishJobModuleResponse {
 	if cached, err2 := s.store.GetLinkSafetyBasicResult(ctx.Context(), jobID); err2 == nil {
+		if !linkSafetyBasicResultOwnedByInstance(cached, instanceSlug) {
+			return publishJobModuleResponse{
+				Name:          "link_safety_basic",
+				PolicyVersion: linkSafetyBasicPolicyVersion,
+				Status:        statusError,
+				Cached:        false,
+				Budget: budgetDecision{
+					Allowed:          true,
+					OverBudget:       false,
+					Reason:           "owner conflict",
+					RequestedCredits: creditsPriced,
+					DebitedCredits:   0,
+				},
+			}
+		}
 		return s.linkSafetyBasicCacheHitResponse(
 			ctx,
 			instanceSlug,
@@ -688,6 +729,21 @@ func (s *Server) runLinkSafetyBasicJob(
 
 	// Cache hit path (no charge).
 	if cached, err := s.store.GetLinkSafetyBasicResult(ctx.Context(), jobID); err == nil {
+		if !linkSafetyBasicResultOwnedByInstance(cached, instanceSlug) {
+			return publishJobModuleResponse{
+				Name:          "link_safety_basic",
+				PolicyVersion: linkSafetyBasicPolicyVersion,
+				Status:        statusError,
+				Cached:        false,
+				Budget: budgetDecision{
+					Allowed:          true,
+					OverBudget:       false,
+					Reason:           "owner conflict",
+					RequestedCredits: creditsPriced,
+					DebitedCredits:   0,
+				},
+			}
+		}
 		return s.linkSafetyBasicCacheHitResponse(
 			ctx,
 			instanceSlug,
@@ -790,7 +846,7 @@ func (s *Server) runLinkSafetyBasicJob(
 
 	allowOverage := strings.ToLower(strings.TrimSpace(overagePolicy)) == overagePolicyAllow
 	maxUsed := budget.IncludedCredits - creditsPriced
-	txnErr := s.transactDebitBudgetAndStoreLinkSafetyBasic(ctx, allowOverage, maxUsed, update, ledger, item, auditBudget, auditScan, creditsPriced, now)
+	txnErr := s.transactDebitBudgetAndStoreLinkSafetyBasic(ctx, allowOverage, budget.IncludedCredits, maxUsed, update, ledger, item, auditBudget, auditScan, creditsPriced, now)
 	if theoryErrors.IsConditionFailed(txnErr) {
 		return s.handleLinkSafetyBasicConditionFailed(
 			ctx,
@@ -884,4 +940,11 @@ func (s *Server) linkSafetyBasicCacheHitResponse(
 		AttestationURL: attestationURL(ctx, attID, s.cfg.PublicBaseURL),
 		Result:         cached,
 	}
+}
+
+func linkSafetyBasicResultOwnedByInstance(item *models.LinkSafetyBasicResult, instanceSlug string) bool {
+	if item == nil {
+		return false
+	}
+	return strings.TrimSpace(item.InstanceSlug) == strings.TrimSpace(instanceSlug)
 }

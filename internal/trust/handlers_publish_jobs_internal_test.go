@@ -99,10 +99,8 @@ func TestHandlePublishJob_NoModulesRequested_ReturnsNoop(t *testing.T) {
 	tdb.qInst.On("First", mock.AnythingOfType("*models.Instance")).Return(theoryErrors.ErrItemNotFound).Once()
 
 	body, _ := json.Marshal(publishJobRequest{
-		ActorURI:  "https://actor.example",
-		ObjectURI: "https://obj.example",
-		Modules:   []publishJobModuleRequest{{Name: " "}}, // skip all modules -> no-op
-		Links:     []string{"https://example.com"},
+		Modules: []publishJobModuleRequest{{Name: " "}}, // skip all modules -> no-op
+		Links:   []string{"https://example.com"},
 	})
 	ctx := &apptheory.Context{
 		AuthIdentity: "inst",
@@ -146,11 +144,8 @@ func TestHandlePublishJob_LinkSafetyBasic_NoLinks(t *testing.T) {
 	tdb.qLSB.On("First", mock.AnythingOfType("*models.LinkSafetyBasicResult")).Return(theoryErrors.ErrItemNotFound).Once()
 
 	body, _ := json.Marshal(publishJobRequest{
-		ActorURI:    "https://actor.example",
-		ObjectURI:   "https://obj.example",
-		ContentHash: "hash",
-		Modules:     []publishJobModuleRequest{{Name: "link_safety_basic"}},
-		Links:       nil,
+		Modules: []publishJobModuleRequest{{Name: "link_safety_basic"}},
+		Links:   nil,
 	})
 	ctx := &apptheory.Context{
 		AuthIdentity: "inst",
@@ -277,6 +272,7 @@ func TestRunLinkSafetyBasicJob_CacheHit(t *testing.T) {
 		dest := testutil.RequireMockArg[*models.LinkSafetyBasicResult](t, args, 0)
 		*dest = models.LinkSafetyBasicResult{
 			ID:            strings.Repeat("a", 64),
+			InstanceSlug:  "inst",
 			PolicyVersion: linkSafetyBasicPolicyVersion,
 			ActorURI:      "https://actor.example",
 			ObjectURI:     "https://obj.example",
@@ -351,7 +347,7 @@ func TestHandleGetPublishJob_ValidationNotFoundAndSuccess(t *testing.T) {
 	// Success.
 	tdb.qLSB.On("First", mock.AnythingOfType("*models.LinkSafetyBasicResult")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.LinkSafetyBasicResult](t, args, 0)
-		*dest = models.LinkSafetyBasicResult{ID: jobID, PolicyVersion: linkSafetyBasicPolicyVersion, CreatedAt: time.Now().UTC()}
+		*dest = models.LinkSafetyBasicResult{ID: jobID, InstanceSlug: "inst", PolicyVersion: linkSafetyBasicPolicyVersion, CreatedAt: time.Now().UTC()}
 		_ = dest.UpdateKeys()
 	}).Once()
 

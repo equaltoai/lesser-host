@@ -6,11 +6,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/mock"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
+	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
 
 	"github.com/equaltoai/lesser-host/internal/ai"
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
+	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
 func TestClaimVerifyRetrievalMode(t *testing.T) {
@@ -121,75 +124,113 @@ func TestSanitizeClaimVerifyClaims(t *testing.T) {
 	}
 }
 
-func TestBuildClaimVerifyEvidence(t *testing.T) {
+func TestHandleAIClaimVerify_DisabledShortCircuitsProvider(t *testing.T) {
 	t.Parallel()
 
-	t.Run("TooManyItems", func(t *testing.T) {
-		t.Parallel()
-
-		req := make([]claimVerifyEvidenceRequest, claimVerifyMaxEvidenceItems+1)
-		_, _, err := buildClaimVerifyEvidence(req)
-		if err == nil {
-			t.Fatalf("expected error")
-		}
+	st := &store.Store{}
+	s := &Server{store: st, ai: ai.NewService(st)}
+	body, _ := json.Marshal(claimVerifyRequest{
+		Text: testHello,
+		Evidence: []claimVerifyEvidenceRequest{{
+			SourceID: "src",
+			Text:     testHello,
+		}},
 	})
-
-	t.Run("MissingSourceID", func(t *testing.T) {
-		t.Parallel()
-
-		_, _, err := buildClaimVerifyEvidence([]claimVerifyEvidenceRequest{{SourceID: " ", Text: "x"}})
-		if err == nil {
-			t.Fatalf("expected error")
-		}
+	resp, err := s.handleAIClaimVerify(&apptheory.Context{
+		AuthIdentity: testBudgetInstanceSlug,
+		Request:      apptheory.Request{Body: body},
 	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if resp.Status != 200 {
+		t.Fatalf("expected 200, got %d", resp.Status)
+	}
 
-	t.Run("DuplicateSourceID", func(t *testing.T) {
-		t.Parallel()
+	var out aiClaimVerifyResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Status != statusDisabled || out.Budget.Reason != aiDisabledForInstanceReason {
+		t.Fatalf("expected disabled claim response before provider use, got %#v", out)
+	}
+	if out.Contract.Module != ai.ClaimVerifyLLMModule || out.Contract.ModelSet != modelSetDeterministic || out.Contract.InputsHash == "" {
+		t.Fatalf("unexpected contract: %#v", out.Contract)
+	}
+}
 
-		_, _, err := buildClaimVerifyEvidence([]claimVerifyEvidenceRequest{
-			{SourceID: "a", Text: "x"},
-			{SourceID: "a", Text: "y"},
+func TestNormalizeClaimVerifyTextBounds(t *testing.T) {
+	t.Parallel()
+
+	text, err := normalizeClaimVerifyText(" hello ")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if text != testHello {
+		t.Fatalf("expected trim, got %q", text)
+	}
+
+	if _, err := normalizeClaimVerifyText(strings.Repeat("x", int(claimVerifyMaxTextBytes)+1)); err == nil {
+		t.Fatalf("expected oversized text error")
+	}
+}
+
+func TestBuildClaimVerifyEvidenceRejectsInvalidRequests(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		req  []claimVerifyEvidenceRequest
+	}{
+		{"TooManyItems", make([]claimVerifyEvidenceRequest, claimVerifyMaxEvidenceItems+1)},
+		{"MissingSourceID", []claimVerifyEvidenceRequest{{SourceID: " ", Text: "x"}}},
+		{"DuplicateSourceID", []claimVerifyEvidenceRequest{{SourceID: "a", Text: "x"}, {SourceID: "a", Text: "y"}}},
+		{"InvalidRenderID", []claimVerifyEvidenceRequest{{SourceID: "a", RenderID: "nope"}}},
+		{"MissingTextAndRenderID", []claimVerifyEvidenceRequest{{SourceID: "a"}}},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if _, _, err := buildClaimVerifyEvidence(tc.req); err == nil {
+				t.Fatalf("expected error")
+			}
 		})
-		if err == nil {
-			t.Fatalf("expected error")
-		}
-	})
+	}
+}
 
-	t.Run("InvalidRenderID", func(t *testing.T) {
-		t.Parallel()
+func TestBuildClaimVerifyEvidenceRejectsOversizedMetadata(t *testing.T) {
+	t.Parallel()
 
-		_, _, err := buildClaimVerifyEvidence([]claimVerifyEvidenceRequest{{SourceID: "a", RenderID: "nope"}})
-		if err == nil {
-			t.Fatalf("expected error")
+	cases := []claimVerifyEvidenceRequest{
+		{SourceID: strings.Repeat("s", int(claimVerifyMaxSourceIDBytes)+1), Text: "x"},
+		{SourceID: "s", URL: strings.Repeat("u", int(claimVerifyMaxURLBytes)+1), Text: "x"},
+		{SourceID: "s", Title: strings.Repeat("t", int(claimVerifyMaxTitleBytes)+1), Text: "x"},
+		{SourceID: "s", Text: strings.Repeat("x", int(claimVerifyMaxEvidenceBytes)+1)},
+	}
+	for _, tc := range cases {
+		if _, _, err := buildClaimVerifyEvidence([]claimVerifyEvidenceRequest{tc}); err == nil {
+			t.Fatalf("expected oversized metadata/text error for %#v", tc)
 		}
-	})
+	}
+}
 
-	t.Run("MissingTextAndRenderID", func(t *testing.T) {
-		t.Parallel()
+func TestBuildClaimVerifyEvidenceSuccessText(t *testing.T) {
+	t.Parallel()
 
-		_, _, err := buildClaimVerifyEvidence([]claimVerifyEvidenceRequest{{SourceID: "a"}})
-		if err == nil {
-			t.Fatalf("expected error")
-		}
-	})
-
-	t.Run("Success_Text", func(t *testing.T) {
-		t.Parallel()
-
-		evidence, total, err := buildClaimVerifyEvidence([]claimVerifyEvidenceRequest{{SourceID: "a", URL: " u ", Title: " t ", Text: " hello "}})
-		if err != nil {
-			t.Fatalf("unexpected err: %v", err)
-		}
-		if len(evidence) != 1 {
-			t.Fatalf("expected 1 item, got %#v", evidence)
-		}
-		if evidence[0].SourceID != "a" || evidence[0].Text != "hello" {
-			t.Fatalf("unexpected evidence: %#v", evidence[0])
-		}
-		if total <= 0 {
-			t.Fatalf("expected positive total bytes, got %d", total)
-		}
-	})
+	evidence, total, err := buildClaimVerifyEvidence([]claimVerifyEvidenceRequest{{SourceID: "a", URL: " u ", Title: " t ", Text: " hello "}})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if len(evidence) != 1 {
+		t.Fatalf("expected 1 item, got %#v", evidence)
+	}
+	if evidence[0].SourceID != "a" || evidence[0].Text != testHello {
+		t.Fatalf("unexpected evidence: %#v", evidence[0])
+	}
+	if total <= 0 {
+		t.Fatalf("expected positive total bytes, got %d", total)
+	}
 }
 
 func TestNormalizeClaimVerifyRetrieval(t *testing.T) {
@@ -235,14 +276,11 @@ func TestClampEvidenceText(t *testing.T) {
 
 	long := strings.Repeat("x", 50)
 	trimmed, b, err = clampEvidenceText(long, 10)
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
+	if err == nil {
+		t.Fatalf("expected oversized evidence error")
 	}
-	if len([]byte(trimmed)) > 10 {
-		t.Fatalf("expected <= 10 bytes, got %d", len([]byte(trimmed)))
-	}
-	if b != int64(len([]byte(trimmed))) {
-		t.Fatalf("expected bytes to match, got %d want %d", b, len([]byte(trimmed)))
+	if trimmed != "" || b != 0 {
+		t.Fatalf("expected empty oversized output, got %q (%d)", trimmed, b)
 	}
 }
 
@@ -351,21 +389,37 @@ func TestHandleAIClaimVerify_OpenAIWebSearchRequiresOpenAIModel(t *testing.T) {
 		Request:      apptheory.Request{Body: body},
 	}
 
-	_, err := s.handleAIClaimVerify(ctx)
-	if err == nil {
-		t.Fatalf("expected error")
+	resp, err := s.handleAIClaimVerify(ctx)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
 	}
-	if appErr, ok := err.(*apptheory.AppError); !ok || appErr.Code != "app.bad_request" {
-		t.Fatalf("expected bad_request, got %T: %v", err, err)
+	var out aiClaimVerifyResponse
+	if unmarshalErr := json.Unmarshal(resp.Body, &out); unmarshalErr != nil {
+		t.Fatalf("unmarshal: %v", unmarshalErr)
+	}
+	if out.Status != statusDisabled || out.Budget.Allowed {
+		t.Fatalf("expected disabled response, got %#v", out)
 	}
 }
 
 func TestHandleAIClaimVerify_ReturnsInternalErrorWhenAIServiceNotReady(t *testing.T) {
 	t.Parallel()
 
+	db := ttmocks.NewMockExtendedDB()
+	qInst := new(ttmocks.MockQuery)
+	db.On("WithContext", mock.Anything).Return(db).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.Instance")).Return(qInst).Maybe()
+	qInst.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qInst).Maybe()
+	qInst.On("ConsistentRead").Return(qInst).Maybe()
+	enabled := true
+	qInst.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{Slug: "inst", AIEnabled: &enabled}
+	}).Once()
+
 	s := &Server{
 		ai:    ai.NewService(nil),
-		store: store.New(nil), // trust config store not ready -> default config
+		store: store.New(db),
 	}
 
 	body, _ := json.Marshal(claimVerifyRequest{
