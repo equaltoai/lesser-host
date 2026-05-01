@@ -2,6 +2,7 @@ package provisionworker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -11,6 +12,8 @@ import (
 
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
+
+var errManagedInstanceKeySecretTags = errors.New("refusing unmanaged or cross-stage instance key secret")
 
 type managedInstanceSecretsInputs struct {
 	accountID string
@@ -125,12 +128,16 @@ func validateManagedInstanceKeySecretTags(tags []smtypes.Tag, slug string, contr
 	rawStageTag := secretsManagerTagValue(tags, managedInstanceKeySecretTagStage)
 	stageTag := managedInstanceKeySecretStage(rawStageTag)
 	if managedTag != "true" || slugTag != slug || stageTag != expectedStage {
-		return fmt.Errorf("refusing unmanaged or cross-stage instance key secret")
+		return errManagedInstanceKeySecretTags
 	}
 	if strings.TrimSpace(rawStageTag) == "" {
-		return fmt.Errorf("refusing unmanaged or cross-stage instance key secret")
+		return errManagedInstanceKeySecretTags
 	}
 	return nil
+}
+
+func isManagedInstanceKeySecretTagError(err error) bool {
+	return errors.Is(err, errManagedInstanceKeySecretTags)
 }
 
 func resolveManagedInstanceKeySecretID(ctx context.Context, sm secretsManagerAPI, secretArn string, tags []smtypes.Tag) (string, error) {
