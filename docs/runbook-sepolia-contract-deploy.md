@@ -126,6 +126,45 @@ cd contracts
 SOUL_REGISTRY_ADDRESS=0x... npm run deploy:sepolia:soul-renderers
 ```
 
+### Standalone TipSplitter redeploy (M9 hardening path)
+
+If only `TipSplitter.sol` changes, do **not** redeploy the full soul-registry set by default. For the M9 pre-live
+hardening rollout, deploy a fresh TipSplitter that points at the already-active Sepolia SoulRegistry:
+
+```bash
+cd contracts
+npm ci
+npm test
+npm run lint
+# `bash ../gov-infra/verifiers/gov-verify-rubric.sh` creates the pinned Slither venv; use an equivalent pinned Slither
+# environment if running this command before the full verifier.
+PATH="../gov-infra/.tools/python/venv-sec-1-slither/bin:$PATH" npm run slither
+
+LESSER_WALLET=<current lesser_wallet from docs/deployments/sepolia/latest.json> \
+INITIAL_OWNER=<current owner_safe from docs/deployments/sepolia/latest.json> \
+AGENT_IDENTITY_REGISTRY=<current SoulRegistry address from docs/deployments/sepolia/latest.json> \
+npm run deploy:sepolia
+```
+
+After deployment:
+
+1. Run read-only checks against the new address:
+   - `owner() == INITIAL_OWNER`
+   - `lesserWallet() == LESSER_WALLET`
+   - `agentIdentityRegistry() == AGENT_IDENTITY_REGISTRY`
+   - `paused() == false`
+   - `withdrawalsPaused() == false`
+2. Update `docs/deployments/sepolia/latest.json`:
+   - `contracts.TipSplitter.address`
+   - `contracts.TipSplitter.deployment_tx_hash`
+   - `lesser_host.cdk_context.tipContractAddressLab`
+3. Update local CDK context for lab to the new `tipContractAddressLab` and deploy host lab through
+   `theory app up --stage lab` in a separate deployment step.
+4. Validate `/api/v1/tip-registry/config` returns the new TipSplitter address before using `simulacrum` as the canary.
+
+Because M9 is pre-live and there are no live tips to preserve, this path intentionally avoids any live-funds migration.
+Mainnet Safe execution remains deferred until a future live-readiness authorization.
+
 ### Phase 3 — Mint signer setup
 
 The portal mint flow uses `selfMintSoul`: the control plane signs an EIP-712 self-mint attestation with a hot key (stored in SSM), and the Safe (or user) submits the transaction (paying gas + mint fee).

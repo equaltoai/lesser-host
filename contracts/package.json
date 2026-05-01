@@ -15,6 +15,7 @@
     "deploy:sepolia:soul-attestations": "hardhat run --network sepolia scripts/deploy-soul-attestations.js",
     "deploy:sepolia:soul-renderers": "hardhat run --network sepolia scripts/deploy-soul-renderers.js",
     "lint": "solhint \"contracts/**/*.sol\"",
+    "slither": "slither contracts/TipSplitter.sol --config-file slither.config.json",
     "test": "hardhat compile && node --test test/*.test.js"
   },
   "devDependencies": {
