@@ -321,6 +321,9 @@ func (s *Server) prepareAIEvidenceImage(ctx *apptheory.Context) (aiEvidenceImage
 	if key == "" {
 		return aiEvidenceImagePrepared{}, &apptheory.AppError{Code: "app.bad_request", Message: "object_key is required"}
 	}
+	if appErr := validateAIEvidenceImageObjectKey(instanceSlug, key); appErr != nil {
+		return aiEvidenceImagePrepared{}, appErr
+	}
 
 	instCfg := s.loadInstanceTrustConfig(ctx.Context(), instanceSlug)
 	allowOverage := strings.ToLower(strings.TrimSpace(instCfg.OveragePolicy)) == overagePolicyAllow
@@ -402,6 +405,36 @@ func aiEvidenceDisabledResponse(module string, policyVersion string, modelSet st
 			ModelSet:      strings.TrimSpace(modelSet),
 			InputsHash:    strings.TrimSpace(inputsHash),
 		},
+	}
+}
+
+func validateAIEvidenceImageObjectKey(instanceSlug string, key string) *apptheory.AppError {
+	instanceSlug = strings.TrimSpace(instanceSlug)
+	key = strings.TrimSpace(key)
+	if instanceSlug == "" {
+		return &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+	}
+	if key == "" {
+		return &apptheory.AppError{Code: "app.bad_request", Message: "object_key is required"}
+	}
+
+	prefixes := aiEvidenceImageObjectKeyPrefixes(instanceSlug)
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(key, prefix) {
+			return nil
+		}
+	}
+	return &apptheory.AppError{Code: "app.bad_request", Message: "object_key must be under " + strings.Join(prefixes, " or ")}
+}
+
+func aiEvidenceImageObjectKeyPrefixes(instanceSlug string) []string {
+	instanceSlug = strings.TrimSpace(instanceSlug)
+	if instanceSlug == "" {
+		return nil
+	}
+	return []string{
+		"evidence/" + instanceSlug + "/",
+		"moderation/" + instanceSlug + "/",
 	}
 }
 

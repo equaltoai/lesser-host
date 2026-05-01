@@ -163,6 +163,51 @@ func newTestArtifactsStore(t *testing.T, bucket string) (*artifacts.Store, func(
 	return artifacts.NewWithClient(bucket, client), ts.Close
 }
 
+func TestValidateAIEvidenceImageObjectKey(t *testing.T) {
+	t.Parallel()
+
+	for _, key := range []string{
+		"evidence/inst/img",
+		"moderation/inst/img",
+	} {
+		if err := validateAIEvidenceImageObjectKey("inst", key); err != nil {
+			t.Fatalf("expected %q to be accepted: %v", key, err)
+		}
+	}
+
+	for _, key := range []string{
+		"evidence/other/img",
+		"moderation/other/img",
+		"renders/render-id/snapshot.txt",
+		"evidence/inst",
+		"",
+	} {
+		if err := validateAIEvidenceImageObjectKey("inst", key); err == nil || err.Code != appErrCodeBadRequest {
+			t.Fatalf("expected bad_request for %q, got %T: %v", key, err, err)
+		}
+	}
+
+	if err := validateAIEvidenceImageObjectKey("", "evidence/inst/img"); err == nil || err.Code != "app.unauthorized" {
+		t.Fatalf("expected unauthorized for missing instance, got %T: %v", err, err)
+	}
+}
+
+func TestHandleAIEvidenceImage_RejectsCrossInstanceObjectKeyBeforeStorage(t *testing.T) {
+	t.Parallel()
+
+	st := &store.Store{}
+	s := &Server{store: st, ai: ai.NewService(st), artifacts: artifacts.New("bucket")}
+	body, _ := json.Marshal(aiEvidenceImageRequest{ObjectKey: "evidence/other/img"})
+	_, err := s.handleAIEvidenceImage(&apptheory.Context{
+		AuthIdentity: testBudgetInstanceSlug,
+		Request:      apptheory.Request{Body: body},
+	})
+	appErr, ok := err.(*apptheory.AppError)
+	if !ok || appErr.Code != appErrCodeBadRequest || !strings.Contains(appErr.Message, "evidence/inst/") {
+		t.Fatalf("expected owned-prefix bad_request, got %T: %v", err, err)
+	}
+}
+
 func TestHandleAIEvidenceImage_DisabledShortCircuitsStorage(t *testing.T) {
 	t.Parallel()
 
@@ -173,7 +218,7 @@ func TestHandleAIEvidenceImage_DisabledShortCircuitsStorage(t *testing.T) {
 		artifacts: artifacts.New("bucket"),
 	}
 
-	body, _ := json.Marshal(aiEvidenceImageRequest{ObjectKey: "missing"})
+	body, _ := json.Marshal(aiEvidenceImageRequest{ObjectKey: "evidence/inst/missing"})
 	resp, err := s.handleAIEvidenceImage(&apptheory.Context{
 		AuthIdentity: testBudgetInstanceSlug,
 		Request:      apptheory.Request{Body: body},
@@ -227,7 +272,7 @@ func TestHandleAIEvidenceImage_BudgetNotConfigured(t *testing.T) {
 	art, cleanup := newTestArtifactsStore(t, "bucket")
 	t.Cleanup(cleanup)
 
-	if err := art.PutObject(ctx, "img1", []byte("abc"), "image/png", ""); err != nil {
+	if err := art.PutObject(ctx, "evidence/demo/img1", []byte("abc"), "image/png", ""); err != nil {
 		t.Fatalf("PutObject: %v", err)
 	}
 
@@ -255,7 +300,7 @@ func TestHandleAIEvidenceImage_BudgetNotConfigured(t *testing.T) {
 	// Budget month missing => not_checked_budget response.
 	tdb.qBudget.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(theoryErrors.ErrItemNotFound).Once()
 
-	body, _ := json.Marshal(aiEvidenceImageRequest{ObjectKey: "img1"})
+	body, _ := json.Marshal(aiEvidenceImageRequest{ObjectKey: "evidence/demo/img1"})
 	resp, err := s.handleAIEvidenceImage(&apptheory.Context{
 		AuthIdentity: "demo",
 		Request:      apptheory.Request{Body: body},
