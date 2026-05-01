@@ -61,6 +61,35 @@ func newAIEvidenceTestDB() aiEvidenceTestDB {
 	}
 }
 
+func TestHandleAIEvidenceText_DisabledShortCircuitsAIQueue(t *testing.T) {
+	t.Parallel()
+
+	st := &store.Store{}
+	s := &Server{store: st, ai: ai.NewService(st)}
+	body, _ := json.Marshal(aiEvidenceTextRequest{Text: testHello})
+	resp, err := s.handleAIEvidenceText(&apptheory.Context{
+		AuthIdentity: testBudgetInstanceSlug,
+		Request:      apptheory.Request{Body: body},
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if resp.Status != 200 {
+		t.Fatalf("expected 200, got %d", resp.Status)
+	}
+
+	var out aiEvidenceResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Status != statusDisabled || out.Budget.Reason != aiDisabledForInstanceReason {
+		t.Fatalf("expected disabled response before queue use, got %#v", out)
+	}
+	if out.Contract.Module != aiEvidenceTextModule || out.Contract.InputsHash == "" {
+		t.Fatalf("expected text contract hash, got %#v", out.Contract)
+	}
+}
+
 func TestHandleAIEvidenceText_BudgetNotConfigured(t *testing.T) {
 	t.Parallel()
 
@@ -71,8 +100,11 @@ func TestHandleAIEvidenceText_BudgetNotConfigured(t *testing.T) {
 		ai:    ai.NewService(st),
 	}
 
-	// loadInstanceTrustConfig falls back to defaults when instance not found.
-	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(theoryErrors.ErrItemNotFound).Once()
+	enabled := true
+	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{Slug: "demo", AIEnabled: &enabled}
+	}).Once()
 	// No cached result, no job exists.
 	tdb.qResult.On("First", mock.AnythingOfType("*models.AIResult")).Return(theoryErrors.ErrItemNotFound).Once()
 	tdb.qJob.On("First", mock.AnythingOfType("*models.AIJob")).Return(theoryErrors.ErrItemNotFound).Once()

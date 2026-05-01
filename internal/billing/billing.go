@@ -18,8 +18,12 @@ func PricedCredits(base int64, multiplierBps int64) int64 {
 	if multiplierBps <= 0 {
 		return base
 	}
-	if multiplierBps >= 10000 {
+	if multiplierBps == 10000 {
 		return base
+	}
+	const maxInt64 = int64(1<<63 - 1)
+	if base > (maxInt64-9999)/multiplierBps {
+		return maxInt64
 	}
 	return (base*multiplierBps + 9999) / 10000
 }

@@ -112,7 +112,7 @@ func TestFailJob_UpdatesJobAndTransacts(t *testing.T) {
 	if err := s.failJob(context.Background(), job, "req", now, "code", "msg"); err != nil {
 		t.Fatalf("failJob: %v", err)
 	}
-	if job.Status != models.ProvisionJobStatusError || job.Step != "failed" {
+	if job.Status != models.ProvisionJobStatusError || job.Step != provisionStepFailed {
 		t.Fatalf("expected job marked failed, got status=%q step=%q", job.Status, job.Step)
 	}
 	if job.ErrorCode != "code" || job.ErrorMessage != "msg" {

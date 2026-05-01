@@ -541,7 +541,10 @@ func (s *Server) debitBudgetForPreviewRender(ctx *apptheory.Context, instanceSlu
 	_ = auditBudget.UpdateKeys()
 
 	maxUsed := budget.IncludedCredits - linkRenderCreditCost
-	budgetUpdateConditions := []core.TransactCondition{tabletheory.IfExists()}
+	budgetUpdateConditions := []core.TransactCondition{
+		tabletheory.IfExists(),
+		tabletheory.Condition("IncludedCredits", "=", budget.IncludedCredits),
+	}
 	if !allowOverage {
 		budgetUpdateConditions = append(budgetUpdateConditions,
 			tabletheory.ConditionExpression(

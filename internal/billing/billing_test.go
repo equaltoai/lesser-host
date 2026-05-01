@@ -16,10 +16,16 @@ func TestPricedCredits(t *testing.T) {
 		t.Fatalf("expected passthrough, got %d", got)
 	}
 	if got := PricedCredits(10, 10000); got != 10 {
-		t.Fatalf("expected passthrough for >=10000, got %d", got)
+		t.Fatalf("expected passthrough for 10000, got %d", got)
+	}
+	if got := PricedCredits(10, 15000); got != 15 {
+		t.Fatalf("expected surcharge multiplier to apply, got %d", got)
 	}
 	if got := PricedCredits(1, 9999); got != 1 {
 		t.Fatalf("expected ceil to 1, got %d", got)
+	}
+	if got := PricedCredits(1<<62, 30000); got != int64(1<<63-1) {
+		t.Fatalf("expected overflow saturation, got %d", got)
 	}
 }
 

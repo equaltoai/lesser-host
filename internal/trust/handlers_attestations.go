@@ -56,14 +56,15 @@ func (s *Server) handleLookupAttestation(ctx *apptheory.Context) (*apptheory.Res
 	actorURI := strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "actor_uri"))
 	objectURI := strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "object_uri"))
 	contentHash := strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "content_hash"))
+	instanceSlug := strings.ToLower(strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "instance_slug")))
 	module := strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "module"))
 	policyVersion := strings.TrimSpace(httpx.FirstQueryValue(ctx.Request.Query, "policy_version"))
 
-	if actorURI == "" || objectURI == "" || contentHash == "" || module == "" || policyVersion == "" {
+	if actorURI == "" || objectURI == "" || contentHash == "" || instanceSlug == "" || module == "" || policyVersion == "" {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "missing required query parameters"}
 	}
 
-	id := attestations.AttestationID(actorURI, objectURI, contentHash, module, policyVersion)
+	id := attestations.InstanceAttestationID(instanceSlug, actorURI, objectURI, contentHash, module, policyVersion)
 	return s.serveAttestationByID(ctx, id)
 }
 
@@ -94,6 +95,9 @@ func (s *Server) serveAttestationByID(ctx *apptheory.Context, id string) (*appth
 	}
 	if err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if strings.TrimSpace(item.InstanceSlug) == "" {
+		return nil, &apptheory.AppError{Code: "app.not_found", Message: "attestation not found"}
 	}
 
 	headerBytes, payloadBytes, _, err := attestations.ParseCompactJWS(strings.TrimSpace(item.JWS))

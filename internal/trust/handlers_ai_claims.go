@@ -11,15 +11,20 @@ import (
 
 	"github.com/equaltoai/lesser-host/internal/ai"
 	"github.com/equaltoai/lesser-host/internal/attestations"
+	"github.com/equaltoai/lesser-host/internal/billing"
 	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
 const (
 	claimVerifyMaxClaims           = 10
+	claimVerifyMaxTextBytes        = int64(16 * 1024)
 	claimVerifyMaxEvidenceItems    = 5
 	claimVerifyMaxEvidenceBytes    = int64(8 * 1024)
 	claimVerifyMaxTotalEvidence    = int64(64 * 1024)
+	claimVerifyMaxSourceIDBytes    = int64(128)
+	claimVerifyMaxURLBytes         = int64(2048)
+	claimVerifyMaxTitleBytes       = int64(240)
 	claimVerifyBaseCreditsMin      = int64(10)
 	claimVerifyBaseCreditsPerClaim = int64(2)
 )
@@ -140,14 +145,24 @@ func (s *Server) handleAIClaimVerify(ctx *apptheory.Context) (*apptheory.Respons
 	actorURI := strings.TrimSpace(req.ActorURI)
 	objectURI := strings.TrimSpace(req.ObjectURI)
 	contentHash := strings.TrimSpace(req.ContentHash)
+	subject, appErr := s.normalizeInstanceAttestationSubject(ctx.Context(), instanceSlug, actorURI, objectURI, contentHash)
+	if appErr != nil {
+		return nil, appErr
+	}
+	actorURI = subject.ActorURI
+	objectURI = subject.ObjectURI
+	contentHash = subject.ContentHash
 
-	text := strings.TrimSpace(req.Text)
+	text, appErr := normalizeClaimVerifyText(req.Text)
+	if appErr != nil {
+		return nil, appErr
+	}
 	claims := sanitizeClaimVerifyClaims(req.Claims)
 
 	retrieval := normalizeClaimVerifyRetrieval(req.Retrieval)
 	retrievalMode := claimVerifyRetrievalMode(retrieval)
-	if appErr := validateClaimVerifyRequest(text, claims, req.Evidence, retrievalMode); appErr != nil {
-		return nil, appErr
+	if validateErr := validateClaimVerifyRequest(text, claims, req.Evidence, retrievalMode); validateErr != nil {
+		return nil, validateErr
 	}
 
 	evidence, totalEvidenceBytes, err := buildClaimVerifyEvidence(req.Evidence)
@@ -159,11 +174,6 @@ func (s *Server) handleAIClaimVerify(ctx *apptheory.Context) (*apptheory.Respons
 	allowOverage := strings.ToLower(strings.TrimSpace(instCfg.OveragePolicy)) == overagePolicyAllow
 	baseCredits := estimateClaimVerifyCredits(text, claims, retrieval, retrievalMode, totalEvidenceBytes)
 
-	modelSet, appErr := claimVerifyModelSet(instCfg, retrievalMode)
-	if appErr != nil {
-		return nil, appErr
-	}
-
 	inputs := ai.ClaimVerifyInputsV1{
 		ActorURI:    actorURI,
 		ObjectURI:   objectURI,
@@ -174,6 +184,31 @@ func (s *Server) handleAIClaimVerify(ctx *apptheory.Context) (*apptheory.Respons
 		Retrieval:   retrieval,
 	}
 	inputsHash, _ := ai.InputsHash(inputs)
+	if !instCfg.AIEnabled {
+		out := aiClaimVerifyResponse{
+			Status: statusDisabled,
+			Cached: false,
+			Budget: ai.BudgetDecision{
+				Allowed:          false,
+				OverBudget:       false,
+				Reason:           aiDisabledForInstanceReason,
+				RequestedCredits: billing.PricedCredits(baseCredits, instCfg.AIPricingMultiplierBps),
+				DebitedCredits:   0,
+			},
+			Contract: ai.ModuleContract{
+				Module:        ai.ClaimVerifyLLMModule,
+				PolicyVersion: ai.ClaimVerifyLLMPolicyVersion,
+				ModelSet:      modelSetDeterministic,
+				InputsHash:    strings.TrimSpace(inputsHash),
+			},
+		}
+		return apptheory.JSON(http.StatusOK, out)
+	}
+
+	modelSet, appErr := claimVerifyModelSet(instCfg, retrievalMode)
+	if appErr != nil {
+		return nil, appErr
+	}
 
 	resp, err := s.ai.GetOrQueue(ctx.Context(), ai.Request{
 		InstanceSlug:         instanceSlug,
@@ -204,7 +239,7 @@ func (s *Server) handleAIClaimVerify(ctx *apptheory.Context) (*apptheory.Respons
 	attID := ""
 	attURL := ""
 	if actorURI != "" && objectURI != "" && contentHash != "" {
-		attID = attestations.AttestationID(actorURI, objectURI, contentHash, ai.ClaimVerifyLLMModule, ai.ClaimVerifyLLMPolicyVersion)
+		attID = attestations.InstanceAttestationID(instanceSlug, actorURI, objectURI, contentHash, ai.ClaimVerifyLLMModule, ai.ClaimVerifyLLMPolicyVersion)
 		attURL = attestationURL(ctx, attID, s.cfg.PublicBaseURL)
 	}
 
@@ -247,6 +282,28 @@ func sanitizeClaimVerifyClaims(in []string) []string {
 	return claims
 }
 
+func normalizeClaimVerifyText(raw string) (string, *apptheory.AppError) {
+	text := strings.TrimSpace(raw)
+	if text == "" {
+		return "", nil
+	}
+	if int64(len([]byte(text))) > claimVerifyMaxTextBytes {
+		return "", &apptheory.AppError{Code: "app.bad_request", Message: "text is too large"}
+	}
+	return text, nil
+}
+
+func normalizeClaimVerifyMetadata(field string, value string, maxBytes int64) (string, *apptheory.AppError) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
+	}
+	if int64(len([]byte(value))) > maxBytes {
+		return "", &apptheory.AppError{Code: "app.bad_request", Message: field + " is too large"}
+	}
+	return value, nil
+}
+
 func buildClaimVerifyEvidence(req []claimVerifyEvidenceRequest) ([]ai.ClaimVerifyEvidenceV1, int64, error) {
 	// Evidence policy v1: caller must supply bounded evidence texts for citations.
 	if len(req) > claimVerifyMaxEvidenceItems {
@@ -258,33 +315,12 @@ func buildClaimVerifyEvidence(req []claimVerifyEvidenceRequest) ([]ai.ClaimVerif
 	seenIDs := map[string]struct{}{}
 
 	for _, e := range req {
-		id := strings.TrimSpace(e.SourceID)
-		if id == "" {
-			return nil, 0, &apptheory.AppError{Code: "app.bad_request", Message: "evidence.source_id is required"}
+		item, itemBytes, err := buildClaimVerifyEvidenceItem(e, seenIDs)
+		if err != nil {
+			return nil, 0, err
 		}
-		if _, ok := seenIDs[id]; ok {
-			return nil, 0, &apptheory.AppError{Code: "app.bad_request", Message: "duplicate evidence.source_id"}
-		}
-		seenIDs[id] = struct{}{}
-
-		renderID := strings.TrimSpace(e.RenderID)
-		if renderID != "" && !aiJobIDRE.MatchString(renderID) {
-			return nil, 0, &apptheory.AppError{Code: "app.bad_request", Message: "invalid evidence.render_id"}
-		}
-
-		evText := ""
-		b := int64(0)
-		if strings.TrimSpace(e.Text) != "" {
-			var err error
-			evText, b, err = clampEvidenceText(e.Text, claimVerifyMaxEvidenceBytes)
-			if err != nil {
-				return nil, 0, err
-			}
-		} else if renderID == "" {
-			return nil, 0, &apptheory.AppError{Code: "app.bad_request", Message: "evidence.text or evidence.render_id is required"}
-		}
-		totalEvidenceBytes += b
-		if renderID != "" && b == 0 {
+		totalEvidenceBytes += itemBytes
+		if item.RenderID != "" && itemBytes == 0 {
 			// Approximate bounded evidence size when using render snapshots to avoid under-estimating costs.
 			totalEvidenceBytes += claimVerifyMaxEvidenceBytes
 		}
@@ -292,16 +328,61 @@ func buildClaimVerifyEvidence(req []claimVerifyEvidenceRequest) ([]ai.ClaimVerif
 			return nil, 0, &apptheory.AppError{Code: "app.bad_request", Message: "evidence too large"}
 		}
 
-		evidence = append(evidence, ai.ClaimVerifyEvidenceV1{
-			SourceID: id,
-			URL:      strings.TrimSpace(e.URL),
-			Title:    strings.TrimSpace(e.Title),
-			RenderID: renderID,
-			Text:     evText,
-		})
+		evidence = append(evidence, item)
 	}
 
 	return evidence, totalEvidenceBytes, nil
+}
+
+func buildClaimVerifyEvidenceItem(e claimVerifyEvidenceRequest, seenIDs map[string]struct{}) (ai.ClaimVerifyEvidenceV1, int64, error) {
+	id, appErr := normalizeClaimVerifyMetadata("evidence.source_id", e.SourceID, claimVerifyMaxSourceIDBytes)
+	if appErr != nil {
+		return ai.ClaimVerifyEvidenceV1{}, 0, appErr
+	}
+	if id == "" {
+		return ai.ClaimVerifyEvidenceV1{}, 0, &apptheory.AppError{Code: "app.bad_request", Message: "evidence.source_id is required"}
+	}
+	if _, ok := seenIDs[id]; ok {
+		return ai.ClaimVerifyEvidenceV1{}, 0, &apptheory.AppError{Code: "app.bad_request", Message: "duplicate evidence.source_id"}
+	}
+	seenIDs[id] = struct{}{}
+
+	renderID := strings.TrimSpace(e.RenderID)
+	if renderID != "" && !aiJobIDRE.MatchString(renderID) {
+		return ai.ClaimVerifyEvidenceV1{}, 0, &apptheory.AppError{Code: "app.bad_request", Message: "invalid evidence.render_id"}
+	}
+
+	url, appErr := normalizeClaimVerifyMetadata("evidence.url", e.URL, claimVerifyMaxURLBytes)
+	if appErr != nil {
+		return ai.ClaimVerifyEvidenceV1{}, 0, appErr
+	}
+	title, appErr := normalizeClaimVerifyMetadata("evidence.title", e.Title, claimVerifyMaxTitleBytes)
+	if appErr != nil {
+		return ai.ClaimVerifyEvidenceV1{}, 0, appErr
+	}
+
+	evText, textBytes, err := claimVerifyEvidenceText(e.Text, renderID)
+	if err != nil {
+		return ai.ClaimVerifyEvidenceV1{}, 0, err
+	}
+
+	return ai.ClaimVerifyEvidenceV1{
+		SourceID: id,
+		URL:      url,
+		Title:    title,
+		RenderID: renderID,
+		Text:     evText,
+	}, textBytes, nil
+}
+
+func claimVerifyEvidenceText(text string, renderID string) (string, int64, error) {
+	if strings.TrimSpace(text) != "" {
+		return clampEvidenceText(text, claimVerifyMaxEvidenceBytes)
+	}
+	if strings.TrimSpace(renderID) == "" {
+		return "", 0, &apptheory.AppError{Code: "app.bad_request", Message: "evidence.text or evidence.render_id is required"}
+	}
+	return "", 0, nil
 }
 
 func normalizeClaimVerifyRetrieval(req *claimVerifyRetrievalRequest) *ai.ClaimVerifyRetrievalV1 {
@@ -353,8 +434,7 @@ func clampEvidenceText(raw string, maxBytes int64) (string, int64, error) {
 		return evText, b, nil
 	}
 
-	trimmed := strings.TrimSpace(string([]byte(evText)[:maxBytes]))
-	return trimmed, int64(len([]byte(trimmed))), nil
+	return "", 0, &apptheory.AppError{Code: "app.bad_request", Message: "evidence.text is too large"}
 }
 
 func estimateClaimVerifyBaseCredits(claimCount int64, totalEvidenceBytes int64) int64 {

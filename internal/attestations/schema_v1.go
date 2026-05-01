@@ -18,6 +18,9 @@ type PayloadV1 struct {
 	ActorURI    string `json:"actor_uri,omitempty"`
 	ObjectURI   string `json:"object_uri,omitempty"`
 	ContentHash string `json:"content_hash,omitempty"`
+	// InstanceSlug binds the signed claim to the authenticated lesser.host
+	// instance that produced it. Public lookup IDs are derived from this value.
+	InstanceSlug string `json:"instance_slug,omitempty"`
 
 	Module        string `json:"module"`
 	PolicyVersion string `json:"policy_version"`

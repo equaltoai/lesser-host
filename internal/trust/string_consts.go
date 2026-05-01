@@ -35,11 +35,12 @@ const (
 
 	modelSetDeterministic = "deterministic"
 
-	budgetReasonDebited       = "debited"
-	budgetReasonOverage       = "overage"
-	budgetReasonCacheHit      = "cache_hit"
-	budgetReasonNotConfigured = "budget not configured"
-	budgetReasonExceeded      = "budget exceeded"
+	budgetReasonDebited         = "debited"
+	budgetReasonOverage         = "overage"
+	budgetReasonCacheHit        = "cache_hit"
+	budgetReasonNotConfigured   = "budget not configured"
+	budgetReasonExceeded        = "budget exceeded"
+	aiDisabledForInstanceReason = "ai disabled for instance"
 
 	budgetErrKindInternal      = "internal"
 	budgetErrKindExceeded      = "exceeded"

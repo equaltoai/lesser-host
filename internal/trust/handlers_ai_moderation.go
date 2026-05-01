@@ -157,6 +157,19 @@ func (s *Server) handleAIModerationTextTriggered(ctx *apptheory.Context, action 
 	inputsHash, _ := ai.InputsHash(inputs)
 
 	creditsRequested := billing.PricedCredits(aiModerationTextBaseCredits, instCfg.AIPricingMultiplierBps)
+	if !instCfg.AIEnabled {
+		return apptheory.JSON(
+			http.StatusOK,
+			moderationDisabledResponse(
+				ai.ModerationTextLLMModule,
+				ai.ModerationTextLLMPolicyVersion,
+				modelSet,
+				inputsHash,
+				creditsRequested,
+				aiDisabledForInstanceReason,
+			),
+		)
+	}
 	if !instCfg.ModerationEnabled {
 		return apptheory.JSON(
 			http.StatusOK,
@@ -242,19 +255,8 @@ func (s *Server) handleAIModerationImageTriggered(ctx *apptheory.Context, action
 		return nil, parseErr
 	}
 
-	key, contentType, etag, size, err := s.prepareModerationImageInput(ctx.Context(), instanceSlug, req)
-	if err != nil {
-		return nil, err
-	}
-	if key == "" {
+	if strings.TrimSpace(req.ObjectKey) == "" && strings.TrimSpace(req.URL) == "" {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "object_key or url is required"}
-	}
-
-	if size <= 0 || size > 5*1024*1024 {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "object too large"}
-	}
-	if ct := strings.ToLower(strings.TrimSpace(contentType)); ct != "" && !strings.HasPrefix(ct, "image/") {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "object must be an image"}
 	}
 
 	instCfg := s.loadInstanceTrustConfig(ctx.Context(), instanceSlug)
@@ -262,45 +264,26 @@ func (s *Server) handleAIModerationImageTriggered(ctx *apptheory.Context, action
 
 	modelSet := moderationModelSet(instCfg)
 
-	inputs := ai.ModerationImageInputsV1{
-		ObjectKey:   key,
-		ObjectETag:  strings.TrimSpace(etag),
-		Bytes:       size,
-		ContentType: strings.TrimSpace(contentType),
+	precheckInputs := map[string]string{
+		"object_key": strings.TrimSpace(req.ObjectKey),
+		"url":        strings.TrimSpace(req.URL),
 	}
-	inputsHash, _ := ai.InputsHash(inputs)
+	inputsHash, _ := ai.InputsHash(precheckInputs)
 
 	creditsRequested := billing.PricedCredits(aiModerationImageBaseCredits, instCfg.AIPricingMultiplierBps)
-	if !instCfg.ModerationEnabled {
-		return apptheory.JSON(
-			http.StatusOK,
-			moderationDisabledResponse(
-				ai.ModerationImageLLMModule,
-				ai.ModerationImageLLMPolicyVersion,
-				modelSet,
-				inputsHash,
-				creditsRequested,
-				"moderation scanning disabled for instance",
-			),
-		)
+	if disabled := moderationImageDisabledResponse(action, req, instCfg, modelSet, inputsHash, creditsRequested); disabled != nil {
+		return apptheory.JSON(http.StatusOK, *disabled)
 	}
 
-	if strings.EqualFold(action, "moderation.scan.request") {
-		trigger := strings.ToLower(strings.TrimSpace(instCfg.ModerationTrigger))
-		ok, msg := moderationRequestAllowed(trigger, req.Context, instCfg.ModerationViralityMin, "image")
-		if !ok {
-			return apptheory.JSON(
-				http.StatusOK,
-				moderationDisabledResponse(
-					ai.ModerationImageLLMModule,
-					ai.ModerationImageLLMPolicyVersion,
-					modelSet,
-					inputsHash,
-					creditsRequested,
-					msg,
-				),
-			)
-		}
+	if budgetResp, appErr := s.moderationImageBudgetPrecheckResponse(ctx.Context(), instanceSlug, instCfg, allowOverage, modelSet, inputsHash); appErr != nil {
+		return nil, appErr
+	} else if budgetResp != nil {
+		return apptheory.JSON(http.StatusOK, *budgetResp)
+	}
+
+	inputs, inputsHash, err := s.prepareModerationImageInputs(ctx.Context(), instanceSlug, req)
+	if err != nil {
+		return nil, err
 	}
 
 	resp, err := s.ai.GetOrQueue(ctx.Context(), ai.Request{
@@ -331,6 +314,71 @@ func (s *Server) handleAIModerationImageTriggered(ctx *apptheory.Context, action
 	s.emitAIRequestMetrics(instanceSlug, ai.ModerationImageLLMModule, resp, nil)
 
 	return apptheory.JSON(http.StatusOK, buildAIModerationResponse(resp, ai.ModerationImageLLMModule, ai.ModerationImageLLMPolicyVersion, modelSet, inputsHash))
+}
+
+func (s *Server) prepareModerationImageInputs(ctx context.Context, instanceSlug string, req aiModerationImageRequest) (ai.ModerationImageInputsV1, string, error) {
+	key, contentType, etag, size, err := s.prepareModerationImageInput(ctx, instanceSlug, req)
+	if err != nil {
+		return ai.ModerationImageInputsV1{}, "", err
+	}
+	if key == "" {
+		return ai.ModerationImageInputsV1{}, "", &apptheory.AppError{Code: "app.bad_request", Message: "object_key or url is required"}
+	}
+	if size <= 0 || size > 5*1024*1024 {
+		return ai.ModerationImageInputsV1{}, "", &apptheory.AppError{Code: "app.bad_request", Message: "object too large"}
+	}
+	if ct := strings.ToLower(strings.TrimSpace(contentType)); ct != "" && !strings.HasPrefix(ct, "image/") {
+		return ai.ModerationImageInputsV1{}, "", &apptheory.AppError{Code: "app.bad_request", Message: "object must be an image"}
+	}
+	inputs := ai.ModerationImageInputsV1{
+		ObjectKey:   key,
+		ObjectETag:  strings.TrimSpace(etag),
+		Bytes:       size,
+		ContentType: strings.TrimSpace(contentType),
+	}
+	inputsHash, _ := ai.InputsHash(inputs)
+	return inputs, inputsHash, nil
+}
+
+func moderationImageDisabledResponse(action string, req aiModerationImageRequest, instCfg instanceTrustConfig, modelSet string, inputsHash string, creditsRequested int64) *aiModerationResponse {
+	if !instCfg.AIEnabled {
+		resp := moderationDisabledResponse(ai.ModerationImageLLMModule, ai.ModerationImageLLMPolicyVersion, modelSet, inputsHash, creditsRequested, aiDisabledForInstanceReason)
+		return &resp
+	}
+	if !instCfg.ModerationEnabled {
+		resp := moderationDisabledResponse(ai.ModerationImageLLMModule, ai.ModerationImageLLMPolicyVersion, modelSet, inputsHash, creditsRequested, "moderation scanning disabled for instance")
+		return &resp
+	}
+	if !strings.EqualFold(action, "moderation.scan.request") {
+		return nil
+	}
+	trigger := strings.ToLower(strings.TrimSpace(instCfg.ModerationTrigger))
+	ok, msg := moderationRequestAllowed(trigger, req.Context, instCfg.ModerationViralityMin, "image")
+	if ok {
+		return nil
+	}
+	resp := moderationDisabledResponse(ai.ModerationImageLLMModule, ai.ModerationImageLLMPolicyVersion, modelSet, inputsHash, creditsRequested, msg)
+	return &resp
+}
+
+func (s *Server) moderationImageBudgetPrecheckResponse(ctx context.Context, instanceSlug string, instCfg instanceTrustConfig, allowOverage bool, modelSet string, inputsHash string) (*aiModerationResponse, *apptheory.AppError) {
+	precheck, appErr := s.precheckAIBudget(ctx, instanceSlug, aiModerationImageBaseCredits, instCfg.AIPricingMultiplierBps, allowOverage)
+	if appErr != nil || precheck == nil || precheck.Allowed {
+		return nil, appErr
+	}
+	return &aiModerationResponse{
+		Status: string(ai.JobStatusNotCheckedBudget),
+		Cached: false,
+		Budget: *precheck,
+		Contract: ai.ModuleContract{
+			Module:        ai.ModerationImageLLMModule,
+			PolicyVersion: ai.ModerationImageLLMPolicyVersion,
+			ModelSet:      modelSet,
+			InputsHash:    inputsHash,
+		},
+		ErrorCode:    statusNotCheckedBudget,
+		ErrorMessage: strings.TrimSpace(precheck.Reason),
+	}, nil
 }
 
 func (s *Server) prepareModerationImageInput(ctx context.Context, instanceSlug string, req aiModerationImageRequest) (key string, contentType string, etag string, size int64, err error) {

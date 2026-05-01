@@ -163,6 +163,108 @@ func newTestArtifactsStore(t *testing.T, bucket string) (*artifacts.Store, func(
 	return artifacts.NewWithClient(bucket, client), ts.Close
 }
 
+func TestValidateAIEvidenceImageObjectKey(t *testing.T) {
+	t.Parallel()
+
+	for _, key := range []string{
+		"evidence/inst/img",
+		"moderation/inst/img",
+	} {
+		if err := validateAIEvidenceImageObjectKey("inst", key); err != nil {
+			t.Fatalf("expected %q to be accepted: %v", key, err)
+		}
+	}
+
+	for _, key := range []string{
+		"evidence/other/img",
+		"moderation/other/img",
+		"renders/render-id/snapshot.txt",
+		"evidence/inst",
+		"",
+	} {
+		if err := validateAIEvidenceImageObjectKey("inst", key); err == nil || err.Code != appErrCodeBadRequest {
+			t.Fatalf("expected bad_request for %q, got %T: %v", key, err, err)
+		}
+	}
+
+	if err := validateAIEvidenceImageObjectKey("", "evidence/inst/img"); err == nil || err.Code != "app.unauthorized" {
+		t.Fatalf("expected unauthorized for missing instance, got %T: %v", err, err)
+	}
+}
+
+func TestHandleAIEvidenceImage_RejectsCrossInstanceObjectKeyBeforeStorage(t *testing.T) {
+	t.Parallel()
+
+	st := &store.Store{}
+	s := &Server{store: st, ai: ai.NewService(st), artifacts: artifacts.New("bucket")}
+	body, _ := json.Marshal(aiEvidenceImageRequest{ObjectKey: "evidence/other/img"})
+	_, err := s.handleAIEvidenceImage(&apptheory.Context{
+		AuthIdentity: testBudgetInstanceSlug,
+		Request:      apptheory.Request{Body: body},
+	})
+	appErr, ok := err.(*apptheory.AppError)
+	if !ok || appErr.Code != appErrCodeBadRequest || !strings.Contains(appErr.Message, "evidence/inst/") {
+		t.Fatalf("expected owned-prefix bad_request, got %T: %v", err, err)
+	}
+}
+
+func TestHandleAIEvidenceImage_DisabledShortCircuitsStorage(t *testing.T) {
+	t.Parallel()
+
+	st := &store.Store{}
+	s := &Server{
+		store:     st,
+		ai:        ai.NewService(st),
+		artifacts: artifacts.New("bucket"),
+	}
+
+	body, _ := json.Marshal(aiEvidenceImageRequest{ObjectKey: "evidence/inst/missing"})
+	resp, err := s.handleAIEvidenceImage(&apptheory.Context{
+		AuthIdentity: testBudgetInstanceSlug,
+		Request:      apptheory.Request{Body: body},
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if resp.Status != 200 {
+		t.Fatalf("expected 200, got %d", resp.Status)
+	}
+
+	var out aiEvidenceResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Status != statusDisabled || out.Budget.Reason != aiDisabledForInstanceReason {
+		t.Fatalf("expected disabled response before storage use, got %#v", out)
+	}
+	if out.Contract.Module != aiEvidenceImageModule || out.Contract.InputsHash == "" {
+		t.Fatalf("expected image contract with precheck hash, got %#v", out.Contract)
+	}
+	if out.Budget.RequestedCredits != aiEvidenceImageBaseCredits || out.Budget.DebitedCredits != 0 || out.Budget.Allowed {
+		t.Fatalf("unexpected budget decision: %#v", out.Budget)
+	}
+}
+
+func TestAIEvidenceDisabledResponses(t *testing.T) {
+	t.Parallel()
+
+	if got := aiEvidenceTextDisabledResponse(instanceTrustConfig{AIEnabled: true}, "hash"); got != nil {
+		t.Fatalf("expected enabled config to return nil, got %#v", got)
+	}
+	textResp := aiEvidenceTextDisabledResponse(instanceTrustConfig{AIEnabled: false, AIPricingMultiplierBps: 25000}, " hash ")
+	if textResp == nil || textResp.Status != statusDisabled || textResp.Budget.RequestedCredits != 3 {
+		t.Fatalf("unexpected text disabled response: %#v", textResp)
+	}
+
+	resp := aiEvidenceDisabledResponse(" module ", " policy ", " model ", " input ", 7, " disabled ")
+	if resp.Contract.Module != "module" || resp.Contract.PolicyVersion != "policy" || resp.Contract.ModelSet != "model" || resp.Contract.InputsHash != "input" {
+		t.Fatalf("expected trimmed contract, got %#v", resp.Contract)
+	}
+	if resp.Budget.Reason != statusDisabled || resp.Budget.RequestedCredits != 7 || resp.Budget.Allowed {
+		t.Fatalf("unexpected budget: %#v", resp.Budget)
+	}
+}
+
 func TestHandleAIEvidenceImage_BudgetNotConfigured(t *testing.T) {
 	t.Parallel()
 
@@ -170,7 +272,7 @@ func TestHandleAIEvidenceImage_BudgetNotConfigured(t *testing.T) {
 	art, cleanup := newTestArtifactsStore(t, "bucket")
 	t.Cleanup(cleanup)
 
-	if err := art.PutObject(ctx, "img1", []byte("abc"), "image/png", ""); err != nil {
+	if err := art.PutObject(ctx, "evidence/demo/img1", []byte("abc"), "image/png", ""); err != nil {
 		t.Fatalf("PutObject: %v", err)
 	}
 
@@ -182,8 +284,11 @@ func TestHandleAIEvidenceImage_BudgetNotConfigured(t *testing.T) {
 		artifacts: art,
 	}
 
-	// loadInstanceTrustConfig falls back to defaults when instance not found.
-	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(theoryErrors.ErrItemNotFound).Once()
+	enabled := true
+	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{Slug: "demo", AIEnabled: &enabled}
+	}).Once()
 	// No cached result, no job exists.
 	tdb.qResult.On("First", mock.AnythingOfType("*models.AIResult")).Return(theoryErrors.ErrItemNotFound).Once()
 	tdb.qJob.On("First", mock.AnythingOfType("*models.AIJob")).Return(theoryErrors.ErrItemNotFound).Once()
@@ -195,7 +300,7 @@ func TestHandleAIEvidenceImage_BudgetNotConfigured(t *testing.T) {
 	// Budget month missing => not_checked_budget response.
 	tdb.qBudget.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(theoryErrors.ErrItemNotFound).Once()
 
-	body, _ := json.Marshal(aiEvidenceImageRequest{ObjectKey: "img1"})
+	body, _ := json.Marshal(aiEvidenceImageRequest{ObjectKey: "evidence/demo/img1"})
 	resp, err := s.handleAIEvidenceImage(&apptheory.Context{
 		AuthIdentity: "demo",
 		Request:      apptheory.Request{Body: body},
@@ -263,6 +368,7 @@ func TestHandleAIModerationTextAndImageReport_BudgetNotConfigured(t *testing.T) 
 	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
 		v := true
+		dest.AIEnabled = &v
 		dest.ModerationEnabled = &v
 	}).Twice()
 

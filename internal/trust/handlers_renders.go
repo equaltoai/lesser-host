@@ -8,7 +8,6 @@ import (
 	"time"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
-	"github.com/theory-cloud/tabletheory"
 	"github.com/theory-cloud/tabletheory/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
@@ -350,27 +349,7 @@ func (s *Server) debitBudgetForCreateRender(
 
 	maxUsed := budget.IncludedCredits - linkRenderCreditCost
 	err = s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
-		if allowOverage {
-			tx.UpdateWithBuilder(update, func(ub core.UpdateBuilder) error {
-				ub.Add("UsedCredits", linkRenderCreditCost)
-				ub.Set("UpdatedAt", now)
-				return nil
-			}, tabletheory.IfExists())
-		} else {
-			tx.UpdateWithBuilder(update, func(ub core.UpdateBuilder) error {
-				ub.Add("UsedCredits", linkRenderCreditCost)
-				ub.Set("UpdatedAt", now)
-				return nil
-			},
-				tabletheory.IfExists(),
-				tabletheory.ConditionExpression(
-					"attribute_not_exists(usedCredits) OR usedCredits <= :max",
-					map[string]any{
-						":max": maxUsed,
-					},
-				),
-			)
-		}
+		addBudgetDebitUpdate(tx, update, linkRenderCreditCost, now, allowOverage, budget.IncludedCredits, maxUsed)
 		tx.Put(ledger)
 		tx.Put(auditBudget)
 		return nil

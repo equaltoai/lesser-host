@@ -419,14 +419,12 @@ func (s *Server) processRenderSummaryGroup(ctx context.Context, requestID string
 		return nil
 	}
 
-	items := renderSummaryBatchItems(group)
-	if len(items) == 0 {
-		return nil
-	}
-
-	results, usage, commonErrs := s.renderSummaryBatchResults(ctx, modelSet, items)
-
 	for _, pj := range group {
+		items := renderSummaryBatchItems([]renderSummaryParsedJob{pj})
+		if len(items) == 0 {
+			continue
+		}
+		results, usage, commonErrs := s.renderSummaryBatchResults(ctx, modelSet, items)
 		if err := s.putRenderSummaryResult(ctx, requestID, now, pj, modelSet, results, usage, commonErrs); err != nil {
 			return err
 		}
@@ -1645,11 +1643,14 @@ type claimVerifyAttestationEvidenceV1 struct {
 }
 
 func (s *Server) issueClaimVerifyAttestationV1(ctx context.Context, job *models.AIJob, in ai.ClaimVerifyInputsV1, res ai.ClaimVerifyResultV1) []models.AIError {
-	if s == nil || s.attest == nil || !s.attest.Enabled() || job == nil {
+	if !s.claimVerifyAttestationEnabled(job) {
 		return nil
 	}
 
-	actorURI, objectURI, contentHash, ok := claimVerifyAttestationSubject(in)
+	instanceSlug, actorURI, objectURI, contentHash, errs, ok := claimVerifyAttestationSubjectForJob(job, in)
+	if len(errs) > 0 {
+		return errs
+	}
 	if !ok {
 		return nil
 	}
@@ -1664,7 +1665,7 @@ func (s *Server) issueClaimVerifyAttestationV1(ctx context.Context, job *models.
 		return nil
 	}
 
-	id := attestations.AttestationID(actorURI, objectURI, contentHash, module, policyVersion)
+	id := attestations.InstanceAttestationID(instanceSlug, actorURI, objectURI, contentHash, module, policyVersion)
 
 	exists, errs := s.attestationAlreadyExists(ctx, st, id)
 	if len(errs) > 0 {
@@ -1685,9 +1686,10 @@ func (s *Server) issueClaimVerifyAttestationV1(ctx context.Context, job *models.
 	payload := attestations.PayloadV1{
 		Type: attestations.PayloadTypeV1,
 
-		ActorURI:    actorURI,
-		ObjectURI:   objectURI,
-		ContentHash: contentHash,
+		ActorURI:     actorURI,
+		ObjectURI:    objectURI,
+		ContentHash:  contentHash,
+		InstanceSlug: instanceSlug,
 
 		Module:        module,
 		PolicyVersion: policyVersion,
@@ -1715,10 +1717,11 @@ func (s *Server) issueClaimVerifyAttestationV1(ctx context.Context, job *models.
 	}
 
 	item := &models.Attestation{
-		ID:          id,
-		ActorURI:    actorURI,
-		ObjectURI:   objectURI,
-		ContentHash: contentHash,
+		ID:           id,
+		ActorURI:     actorURI,
+		ObjectURI:    objectURI,
+		ContentHash:  contentHash,
+		InstanceSlug: instanceSlug,
 
 		Module:        module,
 		PolicyVersion: policyVersion,
@@ -1740,6 +1743,10 @@ func (s *Server) issueClaimVerifyAttestationV1(ctx context.Context, job *models.
 	return nil
 }
 
+func (s *Server) claimVerifyAttestationEnabled(job *models.AIJob) bool {
+	return s != nil && s.attest != nil && s.attest.Enabled() && job != nil
+}
+
 func claimVerifyAttestationSubject(in ai.ClaimVerifyInputsV1) (string, string, string, bool) {
 	actorURI := strings.TrimSpace(in.ActorURI)
 	objectURI := strings.TrimSpace(in.ObjectURI)
@@ -1748,6 +1755,21 @@ func claimVerifyAttestationSubject(in ai.ClaimVerifyInputsV1) (string, string, s
 		return "", "", "", false
 	}
 	return actorURI, objectURI, contentHash, true
+}
+
+func claimVerifyAttestationSubjectForJob(job *models.AIJob, in ai.ClaimVerifyInputsV1) (instanceSlug, actorURI, objectURI, contentHash string, errs []models.AIError, ok bool) {
+	actorURI, objectURI, contentHash, ok = claimVerifyAttestationSubject(in)
+	if !ok {
+		return "", "", "", "", nil, false
+	}
+	if job == nil {
+		return "", "", "", "", nil, false
+	}
+	instanceSlug = strings.ToLower(strings.TrimSpace(job.InstanceSlug))
+	if instanceSlug == "" {
+		return "", "", "", "", []models.AIError{{Code: "attestation_failed", Message: "Attestation subject is missing instance binding", Retryable: false}}, false
+	}
+	return instanceSlug, actorURI, objectURI, contentHash, nil, true
 }
 
 func (s *Server) attestationStoreForAIJob() (*store.Store, error) {

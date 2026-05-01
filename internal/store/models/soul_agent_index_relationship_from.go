@@ -45,7 +45,8 @@ func (i *SoulRelationshipFromIndex) UpdateKeys() error {
 	i.ToAgentID = strings.ToLower(strings.TrimSpace(i.ToAgentID))
 	i.Type = strings.ToLower(strings.TrimSpace(i.Type))
 
-	ts := i.CreatedAt.UTC().Format("2006-01-02T15:04:05.000000000Z")
+	i.CreatedAt = i.CreatedAt.UTC().Truncate(time.Millisecond)
+	ts := i.CreatedAt.Format("2006-01-02T15:04:05.000Z")
 	i.PK = fmt.Sprintf("SOUL#RELATIONSHIPS_FROM#%s", i.FromAgentID)
 	i.SK = fmt.Sprintf("TO#%s#%s", i.ToAgentID, ts)
 	return nil

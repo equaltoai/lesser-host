@@ -37,7 +37,7 @@ func TestRequireCreateRenderAuth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if instanceSlug != "inst" {
+	if instanceSlug != testBudgetInstanceSlug {
 		t.Fatalf("expected trimmed identity, got %q", instanceSlug)
 	}
 }

@@ -16,12 +16,12 @@ func (s *Server) ensureLinkSafetyBasicAttestation(ctx context.Context, result *m
 		return "", nil
 	}
 
-	actorURI, objectURI, contentHash, ok := linkSafetyBasicAttestationParts(result)
+	instanceSlug, actorURI, objectURI, contentHash, ok := linkSafetyBasicAttestationParts(result)
 	if !ok {
 		return "", nil
 	}
 
-	id := attestations.AttestationID(actorURI, objectURI, contentHash, "link_safety_basic", linkSafetyBasicPolicyVersion)
+	id := attestations.InstanceAttestationID(instanceSlug, actorURI, objectURI, contentHash, "link_safety_basic", linkSafetyBasicPolicyVersion)
 
 	existing, err := s.store.GetAttestation(ctx, id)
 	if err == nil {
@@ -35,9 +35,10 @@ func (s *Server) ensureLinkSafetyBasicAttestation(ctx context.Context, result *m
 	payload := attestations.PayloadV1{
 		Type: attestations.PayloadTypeV1,
 
-		ActorURI:    actorURI,
-		ObjectURI:   objectURI,
-		ContentHash: contentHash,
+		ActorURI:     actorURI,
+		ObjectURI:    objectURI,
+		ContentHash:  contentHash,
+		InstanceSlug: instanceSlug,
 
 		Module:        "link_safety_basic",
 		PolicyVersion: linkSafetyBasicPolicyVersion,
@@ -64,10 +65,11 @@ func (s *Server) ensureLinkSafetyBasicAttestation(ctx context.Context, result *m
 	}
 
 	item := &models.Attestation{
-		ID:          id,
-		ActorURI:    actorURI,
-		ObjectURI:   objectURI,
-		ContentHash: contentHash,
+		ID:           id,
+		ActorURI:     actorURI,
+		ObjectURI:    objectURI,
+		ContentHash:  contentHash,
+		InstanceSlug: instanceSlug,
 
 		Module:        "link_safety_basic",
 		PolicyVersion: linkSafetyBasicPolicyVersion,
@@ -96,15 +98,16 @@ func (s *Server) canIssueAttestations() bool {
 	return s.attest.Enabled()
 }
 
-func linkSafetyBasicAttestationParts(result *models.LinkSafetyBasicResult) (actorURI, objectURI, contentHash string, ok bool) {
+func linkSafetyBasicAttestationParts(result *models.LinkSafetyBasicResult) (instanceSlug, actorURI, objectURI, contentHash string, ok bool) {
 	if result == nil {
-		return "", "", "", false
+		return "", "", "", "", false
 	}
+	instanceSlug = strings.ToLower(strings.TrimSpace(result.InstanceSlug))
 	actorURI = strings.TrimSpace(result.ActorURI)
 	objectURI = strings.TrimSpace(result.ObjectURI)
 	contentHash = strings.TrimSpace(result.ContentHash)
-	if actorURI == "" || objectURI == "" || contentHash == "" {
-		return "", "", "", false
+	if instanceSlug == "" || actorURI == "" || objectURI == "" || contentHash == "" {
+		return "", "", "", "", false
 	}
-	return actorURI, objectURI, contentHash, true
+	return instanceSlug, actorURI, objectURI, contentHash, true
 }

@@ -87,7 +87,7 @@ func (s *Server) handleBudgetDebit(ctx *apptheory.Context) (*apptheory.Response,
 	audit := buildBudgetDebitAuditEntry(prepared, now)
 
 	maxUsed := budget.IncludedCredits - prepared.Credits
-	err = s.transactBudgetDebit(ctx.Context(), update, prepared.AllowOverage, maxUsed, prepared.Credits, now, ledger, audit)
+	err = s.transactBudgetDebit(ctx.Context(), update, prepared.AllowOverage, budget.IncludedCredits, maxUsed, prepared.Credits, now, ledger, audit)
 	if theoryErrors.IsConditionFailed(err) {
 		latest, _, _ := s.loadInstanceBudgetMonth(ctx.Context(), prepared.PK, prepared.SK)
 		remaining = latest.IncludedCredits - latest.UsedCredits
@@ -160,10 +160,10 @@ func (s *Server) prepareBudgetDebit(ctx *apptheory.Context) (budgetDebitPrepared
 		return budgetDebitPrepared{}, &apptheory.AppError{Code: "app.bad_request", Message: "credits must be > 0"}
 	}
 
-	month, err := normalizeBudgetMonth(req.Month, time.Now().UTC())
-	if err != nil {
-		return budgetDebitPrepared{}, &apptheory.AppError{Code: "app.bad_request", Message: "month must be YYYY-MM"}
-	}
+	// The authenticated instance is the metered party, so it cannot select the
+	// accounting period. Always debit the server's current month; the request
+	// field is ignored for backwards-compatible clients.
+	month := time.Now().UTC().Format("2006-01")
 
 	return budgetDebitPrepared{
 		InstanceSlug: instanceSlug,
@@ -213,6 +213,7 @@ func (s *Server) transactBudgetDebit(
 	ctx context.Context,
 	update *models.InstanceBudgetMonth,
 	allowOverage bool,
+	expectedIncludedCredits int64,
 	maxUsed int64,
 	credits int64,
 	now time.Time,
@@ -225,6 +226,7 @@ func (s *Server) transactBudgetDebit(
 
 	return s.store.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
 		conditions := []core.TransactCondition{tabletheory.IfExists()}
+		conditions = append(conditions, tabletheory.Condition("IncludedCredits", "=", expectedIncludedCredits))
 		if !allowOverage {
 			conditions = append(conditions,
 				tabletheory.ConditionExpression(

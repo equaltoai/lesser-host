@@ -13,6 +13,7 @@ import (
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/ai"
+	"github.com/equaltoai/lesser-host/internal/billing"
 	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
@@ -123,21 +124,14 @@ func (s *Server) handleGetAIJob(ctx *apptheory.Context) (*apptheory.Response, er
 }
 
 func (s *Server) handleAIEvidenceText(ctx *apptheory.Context) (*apptheory.Response, error) {
-	if s == nil || s.ai == nil || s.store == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-	if ctx == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-
-	instanceSlug := strings.TrimSpace(ctx.AuthIdentity)
-	if instanceSlug == "" {
-		return nil, &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+	instanceSlug, err := s.requireAIHandler(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	var req aiEvidenceTextRequest
-	if err := httpx.ParseJSON(ctx, &req); err != nil {
-		return nil, err
+	if parseErr := httpx.ParseJSON(ctx, &req); parseErr != nil {
+		return nil, parseErr
 	}
 
 	text := strings.TrimSpace(req.Text)
@@ -159,6 +153,9 @@ func (s *Server) handleAIEvidenceText(ctx *apptheory.Context) (*apptheory.Respon
 
 	inputs := aiEvidenceTextInputsV1{Text: text}
 	inputsHash, _ := ai.InputsHash(inputs)
+	if disabled := aiEvidenceTextDisabledResponse(instCfg, inputsHash); disabled != nil {
+		return apptheory.JSON(http.StatusOK, *disabled)
+	}
 
 	resp, err := s.ai.GetOrQueue(ctx.Context(), ai.Request{
 		InstanceSlug:         instanceSlug,
@@ -212,10 +209,28 @@ func (s *Server) handleAIEvidenceText(ctx *apptheory.Context) (*apptheory.Respon
 	return apptheory.JSON(http.StatusOK, out)
 }
 
+func aiEvidenceTextDisabledResponse(instCfg instanceTrustConfig, inputsHash string) *aiEvidenceResponse {
+	if instCfg.AIEnabled {
+		return nil
+	}
+	resp := aiEvidenceDisabledResponse(
+		aiEvidenceTextModule,
+		aiEvidenceTextPolicyVersion,
+		aiEvidenceTextModelSet,
+		inputsHash,
+		billing.PricedCredits(aiEvidenceTextBaseCredits, instCfg.AIPricingMultiplierBps),
+		aiDisabledForInstanceReason,
+	)
+	return &resp
+}
+
 func (s *Server) handleAIEvidenceImage(ctx *apptheory.Context) (*apptheory.Response, error) {
 	prepared, err := s.prepareAIEvidenceImage(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if prepared.EarlyResponse != nil {
+		return apptheory.JSON(http.StatusOK, *prepared.EarlyResponse)
 	}
 
 	resp, err := s.ai.GetOrQueue(ctx.Context(), ai.Request{
@@ -272,12 +287,13 @@ func (s *Server) handleAIEvidenceImage(ctx *apptheory.Context) (*apptheory.Respo
 }
 
 type aiEvidenceImagePrepared struct {
-	InstanceSlug string
-	InstCfg      instanceTrustConfig
-	AllowOverage bool
-	Inputs       aiEvidenceImageInputsV1
-	InputsHash   string
-	Evidence     []models.AIEvidenceRef
+	InstanceSlug  string
+	InstCfg       instanceTrustConfig
+	AllowOverage  bool
+	EarlyResponse *aiEvidenceResponse
+	Inputs        aiEvidenceImageInputsV1
+	InputsHash    string
+	Evidence      []models.AIEvidenceRef
 }
 
 func (s *Server) prepareAIEvidenceImage(ctx *apptheory.Context) (aiEvidenceImagePrepared, error) {
@@ -305,14 +321,46 @@ func (s *Server) prepareAIEvidenceImage(ctx *apptheory.Context) (aiEvidenceImage
 	if key == "" {
 		return aiEvidenceImagePrepared{}, &apptheory.AppError{Code: "app.bad_request", Message: "object_key is required"}
 	}
+	if appErr := validateAIEvidenceImageObjectKey(instanceSlug, key); appErr != nil {
+		return aiEvidenceImagePrepared{}, appErr
+	}
+
+	instCfg := s.loadInstanceTrustConfig(ctx.Context(), instanceSlug)
+	allowOverage := strings.ToLower(strings.TrimSpace(instCfg.OveragePolicy)) == overagePolicyAllow
+	precheckInputs := aiEvidenceImageInputsV1{ObjectKey: key}
+	precheckHash, _ := ai.InputsHash(precheckInputs)
+	if !instCfg.AIEnabled {
+		resp := aiEvidenceDisabledResponse(
+			aiEvidenceImageModule,
+			aiEvidenceImagePolicyVersion,
+			aiEvidenceImageModelSet,
+			precheckHash,
+			billing.PricedCredits(aiEvidenceImageBaseCredits, instCfg.AIPricingMultiplierBps),
+			aiDisabledForInstanceReason,
+		)
+		return aiEvidenceImagePrepared{InstanceSlug: instanceSlug, InstCfg: instCfg, AllowOverage: allowOverage, EarlyResponse: &resp}, nil
+	}
+	if precheck, appErr := s.precheckAIBudget(ctx.Context(), instanceSlug, aiEvidenceImageBaseCredits, instCfg.AIPricingMultiplierBps, allowOverage); appErr != nil {
+		return aiEvidenceImagePrepared{}, appErr
+	} else if precheck != nil && !precheck.Allowed {
+		resp := aiEvidenceResponse{
+			Status: string(ai.JobStatusNotCheckedBudget),
+			Cached: false,
+			Budget: *precheck,
+			Contract: ai.ModuleContract{
+				Module:        aiEvidenceImageModule,
+				PolicyVersion: aiEvidenceImagePolicyVersion,
+				ModelSet:      aiEvidenceImageModelSet,
+				InputsHash:    strings.TrimSpace(precheckHash),
+			},
+		}
+		return aiEvidenceImagePrepared{InstanceSlug: instanceSlug, InstCfg: instCfg, AllowOverage: allowOverage, EarlyResponse: &resp}, nil
+	}
 
 	contentType, etag, size, err := s.headAndValidateEvidenceImageObject(ctx.Context(), key)
 	if err != nil {
 		return aiEvidenceImagePrepared{}, err
 	}
-
-	instCfg := s.loadInstanceTrustConfig(ctx.Context(), instanceSlug)
-	allowOverage := strings.ToLower(strings.TrimSpace(instCfg.OveragePolicy)) == overagePolicyAllow
 
 	inputs := aiEvidenceImageInputsV1{
 		ObjectKey:   key,
@@ -338,6 +386,56 @@ func (s *Server) prepareAIEvidenceImage(ctx *apptheory.Context) (aiEvidenceImage
 		InputsHash:   strings.TrimSpace(inputsHash),
 		Evidence:     []models.AIEvidenceRef{evidence},
 	}, nil
+}
+
+func aiEvidenceDisabledResponse(module string, policyVersion string, modelSet string, inputsHash string, creditsRequested int64, message string) aiEvidenceResponse {
+	return aiEvidenceResponse{
+		Status: statusDisabled,
+		Cached: false,
+		Budget: ai.BudgetDecision{
+			Allowed:          false,
+			OverBudget:       false,
+			Reason:           strings.TrimSpace(message),
+			RequestedCredits: creditsRequested,
+			DebitedCredits:   0,
+		},
+		Contract: ai.ModuleContract{
+			Module:        strings.TrimSpace(module),
+			PolicyVersion: strings.TrimSpace(policyVersion),
+			ModelSet:      strings.TrimSpace(modelSet),
+			InputsHash:    strings.TrimSpace(inputsHash),
+		},
+	}
+}
+
+func validateAIEvidenceImageObjectKey(instanceSlug string, key string) *apptheory.AppError {
+	instanceSlug = strings.TrimSpace(instanceSlug)
+	key = strings.TrimSpace(key)
+	if instanceSlug == "" {
+		return &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
+	}
+	if key == "" {
+		return &apptheory.AppError{Code: "app.bad_request", Message: "object_key is required"}
+	}
+
+	prefixes := aiEvidenceImageObjectKeyPrefixes(instanceSlug)
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(key, prefix) {
+			return nil
+		}
+	}
+	return &apptheory.AppError{Code: "app.bad_request", Message: "object_key must be under " + strings.Join(prefixes, " or ")}
+}
+
+func aiEvidenceImageObjectKeyPrefixes(instanceSlug string) []string {
+	instanceSlug = strings.TrimSpace(instanceSlug)
+	if instanceSlug == "" {
+		return nil
+	}
+	return []string{
+		"evidence/" + instanceSlug + "/",
+		"moderation/" + instanceSlug + "/",
+	}
 }
 
 func (s *Server) headAndValidateEvidenceImageObject(ctx context.Context, key string) (contentType, etag string, size int64, err error) {
