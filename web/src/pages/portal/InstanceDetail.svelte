@@ -298,6 +298,7 @@
 		rotateInstanceKey?: boolean;
 		bodyOnly?: boolean;
 		mcpOnly?: boolean;
+		allowBlankLesserVersion?: boolean;
 	}) {
 		updatesError = null;
 
@@ -305,7 +306,10 @@
 		const bodyVersion = (options?.lesserBodyVersion || '').trim();
 		const versionErr =
 			!options?.bodyOnly && !options?.mcpOnly
-				? validateManagedReleaseTag(version, { label: 'Lesser version' })
+				? validateManagedReleaseTag(version, {
+						allowBlank: options?.allowBlankLesserVersion ?? false,
+						label: 'Lesser version',
+					})
 				: null;
 		const bodyVersionErr = options?.bodyOnly
 			? validateManagedReleaseTag(bodyVersion, { allowBlank: true, label: 'lesser-body version' })
@@ -750,7 +754,11 @@
 			<div class="instance-detail__row">
 				<Button
 					variant="solid"
-					onclick={() => void startUpdateJob({ lesserVersion: updateLesserVersion })}
+					onclick={() =>
+						void startUpdateJob({
+							lesserVersion: updateLesserVersion,
+							allowBlankLesserVersion: true,
+						})}
 					disabled={updateCreating || updatesPolling || updatesLoading || updateInProgress() || !managed}
 				>
 					Apply configuration
@@ -763,7 +771,12 @@
 			<div class="instance-detail__row">
 				<Button
 					variant="outline"
-					onclick={() => void startUpdateJob({ lesserVersion: updateLesserVersion, rotateInstanceKey: true })}
+					onclick={() =>
+						void startUpdateJob({
+							lesserVersion: updateLesserVersion,
+							rotateInstanceKey: true,
+							allowBlankLesserVersion: true,
+						})}
 					disabled={updateCreating || updatesPolling || updatesLoading || updateInProgress() || !managed}
 				>
 					Rotate instance key

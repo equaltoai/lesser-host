@@ -242,6 +242,29 @@ export interface ListUpdateJobsResponse {
 	count: number;
 }
 
+export function normalizeInstanceKeyTimestamp(value: string | null | undefined): string | undefined {
+	const trimmed = (value || '').trim();
+	if (!trimmed) return undefined;
+	if (trimmed.startsWith('0001-01-01T00:00:00')) return undefined;
+	return trimmed;
+}
+
+export function normalizeInstanceKeysResponse(res: ListInstanceKeysResponse): ListInstanceKeysResponse {
+	return {
+		...res,
+		keys: (res.keys ?? []).map((key) => {
+			const { last_used_at: rawLastUsedAt, revoked_at: rawRevokedAt, ...rest } = key;
+			const lastUsedAt = normalizeInstanceKeyTimestamp(rawLastUsedAt);
+			const revokedAt = normalizeInstanceKeyTimestamp(rawRevokedAt);
+			return {
+				...rest,
+				...(lastUsedAt ? { last_used_at: lastUsedAt } : {}),
+				...(revokedAt ? { revoked_at: revokedAt } : {}),
+			};
+		}),
+	};
+}
+
 export function portalListInstances(token: string): Promise<ListInstancesResponse> {
 	return fetchJson<ListInstancesResponse>('/api/v1/portal/instances', {
 		headers: {
@@ -374,7 +397,7 @@ export function portalListInstanceKeys(token: string, slug: string, limit?: numb
 		headers: {
 			authorization: `Bearer ${token}`,
 		},
-	});
+	}).then(normalizeInstanceKeysResponse);
 }
 
 export function portalRevokeInstanceKey(token: string, slug: string, keyId: string): Promise<RevokeInstanceKeyResponse> {

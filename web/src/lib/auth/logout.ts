@@ -4,14 +4,11 @@ import { authLogout } from 'src/lib/api/auth';
 import { clearSession, session } from 'src/lib/session';
 
 export async function logout(): Promise<void> {
-	const current = get(session);
-	if (current?.token) {
-		try {
-			await authLogout(current.token);
-		} catch {
-			// Best-effort: always clear local session state.
-		}
-	}
+	const token = get(session)?.token;
 	clearSession();
+	if (token) {
+		void authLogout(token).catch(() => {
+			// Best-effort: local session state has already been cleared.
+		});
+	}
 }
-

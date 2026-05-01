@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onDestroy, onMount } from 'svelte';
+	import { onDestroy } from 'svelte';
 
 	import { type ApiError, safeHref } from 'src/lib/api/http';
 	import type { BudgetMonthResponse, ListBudgetsResponse } from 'src/lib/api/portalUsage';
@@ -39,6 +39,8 @@
 	let updateLesserBodyVersion = $state('');
 
 	let updatesPollController: AbortController | null = null;
+	let loadedSlug = $state<string | null>(null);
+	let loadGeneration = 0;
 
 	function formatError(err: unknown): string {
 		if (!err) return 'unknown error';
@@ -130,13 +132,28 @@
 		updatesPolling = false;
 	}
 
+	function clearLoadedState() {
+		errorMessage = null;
+		instance = null;
+		domains = [];
+		budgets = null;
+		provisioning = null;
+		updatesError = null;
+		updateJobs = [];
+		loading = false;
+		updatesLoading = false;
+		updateCreating = false;
+	}
+
 	async function loadUpdates(targetSlug: string) {
 		updatesError = null;
 		updatesLoading = true;
 		try {
 			const res = await portalListUpdateJobs(token, targetSlug, 50);
+			if (loadedSlug !== targetSlug) return;
 			updateJobs = res.jobs ?? [];
 		} catch (err) {
+			if (loadedSlug !== targetSlug) return;
 			if ((err as Partial<ApiError>).status === 401) {
 				await logout();
 				navigate('/login');
@@ -144,7 +161,9 @@
 			}
 			updatesError = formatError(err);
 		} finally {
-			updatesLoading = false;
+			if (loadedSlug === targetSlug) {
+				updatesLoading = false;
+			}
 		}
 	}
 
@@ -163,7 +182,9 @@
 		try {
 			await pollUntil(
 				async () => {
+					if (loadedSlug !== targetSlug) return null;
 					const res = await portalListUpdateJobs(token, targetSlug, 50);
+					if (loadedSlug !== targetSlug) return null;
 					updateJobs = res.jobs ?? [];
 					return (res.jobs ?? []).find((j) => j.id === jobId) ?? null;
 				},
@@ -176,6 +197,7 @@
 						factor: 1.6,
 					},
 					onUpdate: (job) => {
+						if (loadedSlug !== targetSlug) return;
 						if (!job) return;
 						const idx = updateJobs.findIndex((j) => j.id === job.id);
 						if (idx >= 0) {
@@ -184,8 +206,11 @@
 					},
 				},
 			);
-			void loadAll(targetSlug);
+			if (loadedSlug === targetSlug) {
+				void loadAll(targetSlug);
+			}
 		} catch (err) {
+			if (loadedSlug !== targetSlug) return;
 			if ((err as Partial<ApiError>).status === 401) {
 				await logout();
 				navigate('/login');
@@ -195,7 +220,9 @@
 				updatesError = formatError(err);
 			}
 		} finally {
-			updatesPolling = false;
+			if (loadedSlug === targetSlug) {
+				updatesPolling = false;
+			}
 			if (updatesPollController === controller) {
 				updatesPollController = null;
 			}
@@ -246,9 +273,11 @@
 			if (options?.bodyOnly) input.body_only = true;
 			if (options?.mcpOnly) input.mcp_only = true;
 			const job = await portalCreateUpdateJob(token, targetSlug, input);
+			if (loadedSlug !== targetSlug) return;
 			updateJobs = [job, ...updateJobs.filter((j) => j.id !== job.id)];
 			void pollUpdateJob(targetSlug, job.id);
 		} catch (err) {
+			if (loadedSlug !== targetSlug) return;
 			if ((err as Partial<ApiError>).status === 401) {
 				await logout();
 				navigate('/login');
@@ -256,11 +285,14 @@
 			}
 			updatesError = formatError(err);
 		} finally {
-			updateCreating = false;
+			if (loadedSlug === targetSlug) {
+				updateCreating = false;
+			}
 		}
 	}
 
 	async function loadAll(targetSlug: string) {
+		const generation = ++loadGeneration;
 		errorMessage = null;
 		instance = null;
 		domains = [];
@@ -277,6 +309,7 @@
 				portalListBudgets(token, targetSlug),
 				portalListUpdateJobs(token, targetSlug, 50),
 			]);
+			if (generation !== loadGeneration) return;
 			instance = inst;
 			domains = dom.domains ?? [];
 			budgets = bud;
@@ -284,7 +317,9 @@
 
 			try {
 				provisioning = await portalGetProvisioning(token, targetSlug);
+				if (generation !== loadGeneration) return;
 			} catch (err) {
+				if (generation !== loadGeneration) return;
 				const maybe = err as Partial<ApiError>;
 				if (maybe.status === 404) {
 					provisioning = null;
@@ -293,6 +328,7 @@
 				}
 			}
 		} catch (err) {
+			if (generation !== loadGeneration) return;
 			if ((err as Partial<ApiError>).status === 401) {
 				await logout();
 				navigate('/login');
@@ -300,7 +336,9 @@
 			}
 			errorMessage = formatError(err);
 		} finally {
-			loading = false;
+			if (generation === loadGeneration) {
+				loading = false;
+			}
 		}
 	}
 
@@ -310,22 +348,28 @@
 		navigate(`/operator/instances/${normalized}`);
 	}
 
-	onMount(() => {
-		const normalized = slug ? normalizeSlug(slug) : null;
-		if (normalized) {
-			void loadAll(normalized);
-		}
-	});
-
 	onDestroy(() => {
 		abortUpdatesPolling();
 	});
 
 	$effect(() => {
 		const normalized = slug ? normalizeSlug(slug) : null;
-		if (!normalized) return;
+		if (!normalized) {
+			if (loadedSlug !== null) {
+				loadGeneration++;
+				loadedSlug = null;
+				abortUpdatesPolling();
+				clearLoadedState();
+			}
+			return;
+		}
 		if (slugInput.trim().toLowerCase() !== normalized) {
 			slugInput = normalized;
+		}
+		if (loadedSlug !== normalized) {
+			loadedSlug = normalized;
+			abortUpdatesPolling();
+			void loadAll(normalized);
 		}
 	});
 </script>
