@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"sort"
@@ -99,10 +100,18 @@ func operatorProvisionJobListItemFromModel(j *models.ProvisionJob) operatorProvi
 }
 
 func operatorProvisionJobDetailFromModel(j *models.ProvisionJob) operatorProvisionJobDetail {
+	return operatorProvisionJobDetailFromModelForRole(j, models.RoleAdmin)
+}
+
+func operatorProvisionJobDetailFromModelForRole(j *models.ProvisionJob, role string) operatorProvisionJobDetail {
 	if j == nil {
 		return operatorProvisionJobDetail{}
 	}
 	base := operatorProvisionJobListItemFromModel(j)
+	receiptJSON := ""
+	if strings.TrimSpace(role) == models.RoleAdmin {
+		receiptJSON = redactProvisionReceiptJSON(j.ReceiptJSON)
+	}
 	return operatorProvisionJobDetail{
 		operatorProvisionJobListItem: base,
 		Mode:                         strings.TrimSpace(j.Mode),
@@ -117,8 +126,76 @@ func operatorProvisionJobDetailFromModel(j *models.ProvisionJob) operatorProvisi
 		BaseDomain:                   strings.TrimSpace(j.BaseDomain),
 		ChildHostedZoneID:            strings.TrimSpace(j.ChildHostedZoneID),
 		ChildNameServers:             append([]string(nil), j.ChildNameServers...),
-		ReceiptJSON:                  strings.TrimSpace(j.ReceiptJSON),
+		ReceiptJSON:                  receiptJSON,
 	}
+}
+
+func redactProvisionReceiptJSON(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+
+	var parsed any
+	dec := json.NewDecoder(strings.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&parsed); err != nil {
+		return `{"redacted":true}`
+	}
+
+	out, err := json.Marshal(redactProvisionReceiptValue(parsed, ""))
+	if err != nil {
+		return `{"redacted":true}`
+	}
+	return string(out)
+}
+
+func redactProvisionReceiptValue(value any, key string) any {
+	if provisionReceiptKeySensitive(key) {
+		return "[redacted]"
+	}
+	switch typed := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for k, v := range typed {
+			out[k] = redactProvisionReceiptValue(v, k)
+		}
+		return out
+	case []any:
+		out := make([]any, len(typed))
+		for i, v := range typed {
+			out[i] = redactProvisionReceiptValue(v, key)
+		}
+		return out
+	default:
+		return value
+	}
+}
+
+func provisionReceiptKeySensitive(key string) bool {
+	key = strings.ToLower(strings.TrimSpace(key))
+	if key == "" {
+		return false
+	}
+	normalized := strings.NewReplacer("_", "", "-", "", ".", "", " ", "").Replace(key)
+	for _, token := range []string{
+		"secret",
+		"password",
+		"token",
+		"privatekey",
+		"apikey",
+		"credential",
+		"authorization",
+		"bearer",
+		"accesskey",
+		"sessionkey",
+		"instancekey",
+	} {
+		if strings.Contains(normalized, token) {
+			return true
+		}
+	}
+	return false
 }
 
 func queryFirst(ctx *apptheory.Context, key string) string {
@@ -389,7 +466,7 @@ func (s *Server) handleGetOperatorProvisionJob(ctx *apptheory.Context) (*apptheo
 		}
 	}
 
-	return apptheory.JSON(http.StatusOK, operatorProvisionJobDetailFromModel(job))
+	return apptheory.JSON(http.StatusOK, operatorProvisionJobDetailFromModelForRole(job, operatorRoleFromContext(ctx)))
 }
 
 func (s *Server) handleRetryOperatorProvisionJob(ctx *apptheory.Context) (*apptheory.Response, error) {
@@ -482,7 +559,7 @@ func (s *Server) handleRetryOperatorProvisionJob(ctx *apptheory.Context) (*appth
 		}
 	} else {
 		if !shouldNudgeAsyncJob(now, job.UpdatedAt) || job.HasActiveLease(now) {
-			return apptheory.JSON(http.StatusOK, operatorProvisionJobDetailFromModel(job))
+			return apptheory.JSON(http.StatusOK, operatorProvisionJobDetailFromModelForRole(job, operatorRoleFromContext(ctx)))
 		}
 		audit := &models.AuditLogEntry{
 			Actor:     actor,
@@ -501,7 +578,7 @@ func (s *Server) handleRetryOperatorProvisionJob(ctx *apptheory.Context) (*appth
 	})
 
 	updated, _ := s.store.GetProvisionJob(ctx.Context(), strings.TrimSpace(job.ID))
-	return apptheory.JSON(http.StatusOK, operatorProvisionJobDetailFromModel(updated))
+	return apptheory.JSON(http.StatusOK, operatorProvisionJobDetailFromModelForRole(updated, operatorRoleFromContext(ctx)))
 }
 
 func (s *Server) handleAdoptOperatorProvisionJobAccount(ctx *apptheory.Context) (*apptheory.Response, error) {
@@ -545,7 +622,7 @@ func (s *Server) handleAdoptOperatorProvisionJobAccount(ctx *apptheory.Context) 
 	})
 
 	updated, _ := s.store.GetProvisionJob(ctx.Context(), strings.TrimSpace(job.ID))
-	return apptheory.JSON(http.StatusOK, operatorProvisionJobDetailFromModel(updated))
+	return apptheory.JSON(http.StatusOK, operatorProvisionJobDetailFromModelForRole(updated, operatorRoleFromContext(ctx)))
 }
 
 func (s *Server) requireProvisionRetryReady() *apptheory.AppError {
@@ -630,5 +707,5 @@ func (s *Server) handleAppendOperatorProvisionJobNote(ctx *apptheory.Context) (*
 	}
 
 	updated, _ := s.store.GetProvisionJob(ctx.Context(), strings.TrimSpace(job.ID))
-	return apptheory.JSON(http.StatusOK, operatorProvisionJobDetailFromModel(updated))
+	return apptheory.JSON(http.StatusOK, operatorProvisionJobDetailFromModelForRole(updated, operatorRoleFromContext(ctx)))
 }
