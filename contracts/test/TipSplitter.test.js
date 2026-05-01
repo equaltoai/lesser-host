@@ -601,6 +601,18 @@ describe("TipSplitter — tipToken", () => {
       /amount exceeds max/,
     );
   });
+
+  it("reverts when paused", async () => {
+    const { splitter, tokenAddr, actor, tipper, owner, HOST_ID, CONTENT_HASH } =
+      await deploy();
+    await splitter.connect(owner).pause();
+    await assert.rejects(
+      splitter
+        .connect(tipper)
+        .tipToken(tokenAddr, HOST_ID, actor.address, MIN_TIP, CONTENT_HASH),
+      /EnforcedPause/,
+    );
+  });
 });
 
 // ======================================================================
@@ -694,7 +706,7 @@ describe("TipSplitter — Withdrawals", () => {
     );
   });
 
-  it("allows withdrawals when paused", async () => {
+  it("reverts ETH withdrawals when globally paused", async () => {
     const { splitter, actor, tipper, owner, HOST_ID, CONTENT_HASH } =
       await deploy();
     const amount = ethers.parseEther("1");
@@ -702,7 +714,26 @@ describe("TipSplitter — Withdrawals", () => {
       .connect(tipper)
       .tipETH(HOST_ID, actor.address, CONTENT_HASH, { value: amount });
     await splitter.connect(owner).pause();
+    await assert.rejects(
+      splitter.connect(actor).withdraw(ethers.ZeroAddress),
+      /EnforcedPause/,
+    );
+    await splitter.connect(owner).unpause();
     await splitter.connect(actor).withdraw(ethers.ZeroAddress);
+  });
+
+  it("reverts ERC-20 withdrawals when globally paused", async () => {
+    const { splitter, tokenAddr, actor, tipper, owner, HOST_ID, CONTENT_HASH } =
+      await deploy();
+    const amount = ethers.parseEther("10");
+    await splitter
+      .connect(tipper)
+      .tipToken(tokenAddr, HOST_ID, actor.address, amount, CONTENT_HASH);
+    await splitter.connect(owner).pause();
+    await assert.rejects(
+      splitter.connect(actor).withdraw(tokenAddr),
+      /EnforcedPause/,
+    );
   });
 
   it("reverts when withdrawals are paused", async () => {
@@ -1102,6 +1133,23 @@ describe("TipSplitter — Pause / Unpause", () => {
       splitter.connect(tipper).setWithdrawalsPaused(true),
       /OwnableUnauthorizedAccount/,
     );
+  });
+
+  it("keeps owner admin controls available during a global pause", async () => {
+    const { splitter, owner, other, tokenAddr, HOST_ID } = await deploy();
+    await splitter.connect(owner).pause();
+
+    await splitter.connect(owner).setHostActive(HOST_ID, false);
+    await splitter.connect(owner).updateHost(HOST_ID, other.address, 200);
+    await splitter.connect(owner).setTokenAllowed(tokenAddr, false);
+    await splitter.connect(owner).setWithdrawalsPaused(true);
+
+    const [wallet, feeBps, isActive] = await splitter.hosts(HOST_ID);
+    assert.equal(wallet, other.address);
+    assert.equal(feeBps, 200n);
+    assert.equal(isActive, false);
+    assert.equal(await splitter.allowedTokens(tokenAddr), false);
+    assert.equal(await splitter.withdrawalsPaused(), true);
   });
 });
 

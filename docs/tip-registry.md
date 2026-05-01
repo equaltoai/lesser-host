@@ -23,17 +23,41 @@ Emergency owner-only methods (intended for incident response; not normal registr
   - callable only when both `paused()` and `withdrawalsPaused` are true
   - sweeps only untracked token balance (`balanceOf(this) - totalPendingToken[token]`) to `lesserWallet`
 
+## TipSplitter safety semantics
+
+### Wallet rotations
+
+`setLesserWallet` and `updateHost` affect **future** tips only. Existing `pendingETH` and `pendingToken` liabilities
+remain credited to the wallet that originally received them and must be withdrawn by that credited wallet. The contract
+does not perform automatic pending-balance migrations during wallet rotations because the public pending ledgers are
+recipient-keyed and can include multiple roles (Lesser share, host share, actor share) for the same address.
+
+If a future live deployment needs to move already-accrued liabilities, that must be handled as an explicit governance
+migration with role-scoped accounting and transaction evidence. It is not part of the normal host registry update path.
+
+### Pause controls
+
+`pause()` is the emergency global freeze:
+
+- deposit/split paths (`tipETH`, `batchTipETH`, `tipToken`, `batchTipToken`, `tipAgentETH`, `tipAgentToken`) revert while
+  paused
+- withdrawals revert while paused
+- owner/admin controls remain available so the Safe can correct configuration and prepare recovery actions
+
+`setWithdrawalsPaused(true)` is an additional withdrawal-only freeze. It can block withdrawals without blocking new tips,
+and it remains in effect after `unpause()` until the owner calls `setWithdrawalsPaused(false)`.
+
 ## Emergency runbook (operator)
 
 Use this only during incident response. The contract owner is expected to be the admin Safe.
 
 ### 1) Freeze movement
 
-1. Execute `pause()`.
-2. Execute `setWithdrawalsPaused(true)`.
+1. Execute `pause()` to freeze both new tips and withdrawals.
+2. If untracked-balance sweep operations may be needed, also execute `setWithdrawalsPaused(true)`.
 3. Verify:
    - `paused() == true`
-   - `withdrawalsPaused == true`
+   - `withdrawalsPaused == true` when sweep operations are planned
 
 ### 2) Sweep untracked stray balances
 

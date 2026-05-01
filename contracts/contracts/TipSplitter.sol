@@ -308,8 +308,8 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
 
     // ========= Withdrawals =========
 
-    /// @notice Withdraw pending balance. Withdrawals can be paused independently.
-    function withdraw(address token) external nonReentrant {
+    /// @notice Withdraw pending balance. Global pause and withdrawalsPaused both freeze withdrawals.
+    function withdraw(address token) external nonReentrant whenNotPaused {
         require(!withdrawalsPaused, "TipSplitter: withdrawals paused");
         if (token == address(0)) {
             uint256 ethAmount = pendingETH[msg.sender];
@@ -430,17 +430,17 @@ contract TipSplitter is Ownable2Step, Pausable, ReentrancyGuard {
         emit AgentIdentityRegistryUpdated(old, registry);
     }
 
-    /// @notice Pause tipping and other state-changing operations (owner only).
+    /// @notice Pause tipping, batch tipping, agent tipping, and withdrawals (owner only).
     function pause() external onlyOwner {
         _pause();
     }
 
-    /// @notice Unpause tipping and other state-changing operations (owner only).
+    /// @notice Unpause tipping, batch tipping, agent tipping, and withdrawals unless withdrawalsPaused is still set.
     function unpause() external onlyOwner {
         _unpause();
     }
 
-    /// @notice Pause or unpause withdrawals independently from tips.
+    /// @notice Pause or unpause withdrawals independently from the global pause.
     function setWithdrawalsPaused(bool paused_) external onlyOwner {
         withdrawalsPaused = paused_;
         emit WithdrawalsPausedSet(paused_);
