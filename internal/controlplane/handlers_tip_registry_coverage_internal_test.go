@@ -49,10 +49,10 @@ func newConfiguredTipRegistryServer(tdb tipRegistryTestDB) *Server {
 	}
 }
 
-func TestTipRegistryWalletHelpers_Branches(t *testing.T) {
+func TestNormalizeTipRegistryWalletAddress_Branches(t *testing.T) {
 	t.Parallel()
 
-	t.Run("normalize_wallet_rejects_empty_invalid_and_reserved", func(t *testing.T) {
+	t.Run("rejects_empty_invalid_and_reserved", func(t *testing.T) {
 		t.Parallel()
 
 		tdb := newTipRegistryTestDB()
@@ -73,7 +73,7 @@ func TestTipRegistryWalletHelpers_Branches(t *testing.T) {
 		}
 	})
 
-	t.Run("normalize_wallet_success_lowercases", func(t *testing.T) {
+	t.Run("success_lowercases", func(t *testing.T) {
 		t.Parallel()
 
 		tdb := newTipRegistryTestDB()
@@ -87,8 +87,12 @@ func TestTipRegistryWalletHelpers_Branches(t *testing.T) {
 			t.Fatalf("expected lowercased address, got %q", got)
 		}
 	})
+}
 
-	t.Run("wallet_from_registration_branches", func(t *testing.T) {
+func TestTipRegistryWalletFromRegistration_Branches(t *testing.T) {
+	t.Parallel()
+
+	t.Run("rejects_invalid_reserved_and_privileged_wallets", func(t *testing.T) {
 		t.Parallel()
 
 		tdb := newTipRegistryTestDB()
@@ -116,6 +120,13 @@ func TestTipRegistryWalletHelpers_Branches(t *testing.T) {
 		if appErr == nil || appErr.Code != appErrCodeBadRequest {
 			t.Fatalf("expected privileged wallet error, got %#v", appErr)
 		}
+	})
+
+	t.Run("allows_public_unclaimed_wallets", func(t *testing.T) {
+		t.Parallel()
+
+		tdb := newTipRegistryTestDB()
+		s := newConfiguredTipRegistryServer(tdb)
 
 		tdb.qWalletIdx.On("First", mock.AnythingOfType("*models.WalletIndex")).Return(theoryErrors.ErrItemNotFound).Once()
 		wallet, lower, appErr := s.tipRegistryWalletFromRegistration(context.Background(), &models.TipHostRegistration{WalletAddr: "0x00000000000000000000000000000000000000Bb"})

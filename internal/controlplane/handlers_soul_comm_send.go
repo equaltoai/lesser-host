@@ -1590,6 +1590,73 @@ type outboundEmailRFC5322Input struct {
 	SentAt             time.Time
 }
 
+func validateOutboundEmailRequiredFields(values ...string) *apptheory.AppTheoryError {
+	for _, value := range values {
+		if strings.TrimSpace(value) == "" {
+			return apptheory.NewAppTheoryError("comm.invalid_request", "invalid email payload").WithStatusCode(http.StatusBadRequest)
+		}
+	}
+	return nil
+}
+
+func validateOutboundEmailEnvelope(from string, to string, replyTo string) *apptheory.AppTheoryError {
+	for _, field := range []struct {
+		value string
+		label string
+	}{
+		{value: from, label: "from"},
+		{value: to, label: "to"},
+		{value: replyTo, label: "replyTo"},
+	} {
+		if appErr := validateCommEmailAddress(field.value, field.label); appErr != nil {
+			return appErr
+		}
+	}
+	return nil
+}
+
+type outboundEmailSafeHeaders struct {
+	From      string
+	To        string
+	ReplyTo   string
+	Subject   string
+	MessageID string
+}
+
+func safeRequiredOutboundEmailHeaders(from string, to string, replyTo string, subject string, messageID string) (outboundEmailSafeHeaders, *apptheory.AppTheoryError) {
+	var headers outboundEmailSafeHeaders
+	for _, field := range []struct {
+		value  string
+		target *string
+	}{
+		{value: from, target: &headers.From},
+		{value: to, target: &headers.To},
+		{value: replyTo, target: &headers.ReplyTo},
+		{value: subject, target: &headers.Subject},
+		{value: messageID, target: &headers.MessageID},
+	} {
+		safe := safeRFC5322HeaderValue(field.value)
+		if safe == "" {
+			return outboundEmailSafeHeaders{}, apptheory.NewAppTheoryError(commCodeInvalidRequest, "invalid email payload").WithStatusCode(http.StatusBadRequest)
+		}
+		*field.target = safe
+	}
+	return headers, nil
+}
+
+func appendOptionalOutboundEmailHeaders(headers []string, cc []string, inReplyTo string) []string {
+	if len(cc) > 0 {
+		headers = append(headers, fmt.Sprintf("Cc: %s", safeRFC5322HeaderValue(strings.Join(cc, ", "))))
+	}
+	if inReplyTo != "" {
+		// Best-effort: if caller supplied a known message id token, embed it as a Message-ID reference.
+		if ref := safeRFC5322HeaderValue(emailMessageIDReference(inReplyTo)); ref != "" {
+			headers = append(headers, fmt.Sprintf("In-Reply-To: %s", ref))
+		}
+	}
+	return headers
+}
+
 func buildOutboundEmailRFC5322(input outboundEmailRFC5322Input) ([]byte, []string, *apptheory.AppTheoryError) {
 	from := strings.TrimSpace(input.From)
 	to := strings.TrimSpace(input.To)
@@ -1599,20 +1666,14 @@ func buildOutboundEmailRFC5322(input outboundEmailRFC5322Input) ([]byte, []strin
 	messageID := strings.TrimSpace(input.MessageID)
 	inReplyTo := strings.TrimSpace(input.InReplyToMessageID)
 
-	if from == "" || to == "" || subject == "" || body == "" || messageID == "" {
-		return nil, nil, apptheory.NewAppTheoryError("comm.invalid_request", "invalid email payload").WithStatusCode(http.StatusBadRequest)
+	if appErr := validateOutboundEmailRequiredFields(from, to, subject, body, messageID); appErr != nil {
+		return nil, nil, appErr
 	}
 	if replyTo == "" {
 		replyTo = from
 	}
 
-	if appErr := validateCommEmailAddress(from, "from"); appErr != nil {
-		return nil, nil, appErr
-	}
-	if appErr := validateCommEmailAddress(to, "to"); appErr != nil {
-		return nil, nil, appErr
-	}
-	if appErr := validateCommEmailAddress(replyTo, "replyTo"); appErr != nil {
+	if appErr := validateOutboundEmailEnvelope(from, to, replyTo); appErr != nil {
 		return nil, nil, appErr
 	}
 
@@ -1631,35 +1692,23 @@ func buildOutboundEmailRFC5322(input outboundEmailRFC5322Input) ([]byte, []strin
 	if date.IsZero() {
 		date = time.Now().UTC()
 	}
-	fromHeader := safeRFC5322HeaderValue(from)
-	toHeader := safeRFC5322HeaderValue(to)
-	replyToHeader := safeRFC5322HeaderValue(replyTo)
-	subjectHeader := safeRFC5322HeaderValue(subject)
-	messageIDHeader := safeRFC5322HeaderValue(messageID)
-	if fromHeader == "" || toHeader == "" || replyToHeader == "" || subjectHeader == "" || messageIDHeader == "" {
-		return nil, nil, apptheory.NewAppTheoryError(commCodeInvalidRequest, "invalid email payload").WithStatusCode(http.StatusBadRequest)
+	safeHeaders, appErr := safeRequiredOutboundEmailHeaders(from, to, replyTo, subject, messageID)
+	if appErr != nil {
+		return nil, nil, appErr
 	}
 
 	headers := []string{
-		fmt.Sprintf("From: %s", fromHeader),
-		fmt.Sprintf("To: %s", toHeader),
-		fmt.Sprintf("Reply-To: %s", replyToHeader),
-		fmt.Sprintf("Subject: %s", subjectHeader),
+		fmt.Sprintf("From: %s", safeHeaders.From),
+		fmt.Sprintf("To: %s", safeHeaders.To),
+		fmt.Sprintf("Reply-To: %s", safeHeaders.ReplyTo),
+		fmt.Sprintf("Subject: %s", safeHeaders.Subject),
 		fmt.Sprintf("Date: %s", date.Format(time.RFC1123Z)),
-		fmt.Sprintf("Message-ID: %s", messageIDHeader),
+		fmt.Sprintf("Message-ID: %s", safeHeaders.MessageID),
 		"MIME-Version: 1.0",
 		"Content-Type: text/plain; charset=utf-8",
 		"Content-Transfer-Encoding: 8bit",
 	}
-	if len(cc) > 0 {
-		headers = append(headers, fmt.Sprintf("Cc: %s", safeRFC5322HeaderValue(strings.Join(cc, ", "))))
-	}
-	if inReplyTo != "" {
-		// Best-effort: if caller supplied a known message id token, embed it as a Message-ID reference.
-		if ref := safeRFC5322HeaderValue(emailMessageIDReference(inReplyTo)); ref != "" {
-			headers = append(headers, fmt.Sprintf("In-Reply-To: %s", ref))
-		}
-	}
+	headers = appendOptionalOutboundEmailHeaders(headers, cc, inReplyTo)
 
 	raw := strings.Join(headers, "\r\n") + "\r\n\r\n" + body + "\r\n"
 	return []byte(raw), recipients, nil
