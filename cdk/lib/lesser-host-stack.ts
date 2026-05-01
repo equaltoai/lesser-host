@@ -586,6 +586,7 @@ export class LesserHostStack extends cdk.Stack {
 				MANAGED_DEFAULT_REGION: managedDefaultRegion,
 				MANAGED_LESSER_DEFAULT_VERSION: managedLesserDefaultVersion,
 				MANAGED_PROVISION_RUNNER_PROJECT_NAME: provisionRunnerProjectName,
+				MANAGED_PROVISION_RUNNER_ROLE_ARN: provisionRunnerProject.role?.roleArn ?? '',
 				MANAGED_LESSER_GITHUB_OWNER: lesserGitHubOwner,
 				MANAGED_LESSER_GITHUB_REPO: lesserGitHubRepo,
 				MANAGED_LESSER_GITHUB_TOKEN_SSM_PARAM: managedLesserGitHubTokenSsmParam.trim(),

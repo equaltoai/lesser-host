@@ -35,3 +35,11 @@ M6 is considered ready for broader lab soak only after all of the following are 
 - Host consumes a published Lesser artifact through managed-release certification; no source-only signoff.
 - `simulacrum` runs as the host-lab canary after `theory` passes, using the same verified Lesser artifact line.
 - Any Lesser-side rollout blocker is recorded on the M6 tracking issue/PR before canary signoff.
+
+### Lab canary trust-policy remediation
+
+M6 intentionally keeps the Organizations vending role scoped to host-side orchestration; the CodeBuild deploy runner must
+not receive that high-privilege role. Before a managed provisioning or managed-update runner starts, the provision worker
+now ensures the per-instance `MANAGED_INSTANCE_ROLE_NAME` trust policy includes the concrete
+`MANAGED_PROVISION_RUNNER_ROLE_ARN`. Existing lab tenant accounts (`theory` first, `simulacrum` canary second) should be
+migrated by the normal managed-update path; do not restore org-vending-role access to the deploy runner as a shortcut.

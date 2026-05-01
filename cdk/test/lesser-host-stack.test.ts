@@ -176,3 +176,18 @@ test('provision runner cannot assume the organization vending role', () => {
 		}
 	}
 });
+
+test('provision worker receives deploy runner role arn for tenant trust repair', () => {
+	const template = synthTemplate();
+	const provisionWorker = findLambdaByFunctionName(template, 'provision-worker');
+	const env = lambdaEnvironment(provisionWorker);
+
+	assert.ok(
+		'MANAGED_PROVISION_RUNNER_ROLE_ARN' in env,
+		'expected provision worker to receive CodeBuild service role ARN',
+	);
+	assert.ok(
+		env.MANAGED_PROVISION_RUNNER_ROLE_ARN,
+		'expected provision worker CodeBuild service role ARN to be non-empty',
+	);
+});

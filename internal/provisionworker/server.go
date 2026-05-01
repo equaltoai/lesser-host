@@ -98,7 +98,8 @@ type Server struct {
 	cb  codebuildAPI
 	s3  s3API
 
-	smFactory secretsManagerClientFactory
+	smFactory  secretsManagerClientFactory
+	iamFactory iamClientFactory
 }
 
 // NewServer constructs a Server with AWS service clients and a store.
@@ -520,6 +521,7 @@ const (
 	provisionJobLeaseDuration       = 10 * time.Second
 	provisionSweepLimit             = 200
 	provisionSweepStaleAfter        = 2 * time.Minute
+	defaultManagedAWSRegion         = "us-east-1"
 
 	noteMissingAccountIDRestart = "missing account id; restarting account allocation"
 
@@ -2100,7 +2102,7 @@ func (s *Server) childSecretsManagerClient(ctx context.Context, accountID string
 		region = strings.TrimSpace(s.cfg.ManagedDefaultRegion)
 	}
 	if region == "" {
-		region = "us-east-1"
+		region = defaultManagedAWSRegion
 	}
 
 	assumed, _, err := s.assumeInstanceRole(ctx, accountID, roleName, slug, jobID)
