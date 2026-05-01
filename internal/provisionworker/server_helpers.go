@@ -60,6 +60,14 @@ func (s *Server) startDeployRunner(ctx context.Context, job *models.ProvisionJob
 	return s.startDeployRunnerWithMode(ctx, job, deployRunnerModeLesser, s.receiptS3Key(job))
 }
 
+func normalizeDeployRunnerMode(mode string) string {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "" {
+		return deployRunnerModeLesser
+	}
+	return mode
+}
+
 func (s *Server) startDeployRunnerWithMode(ctx context.Context, job *models.ProvisionJob, mode string, receiptKey string) (string, error) {
 	if s == nil || s.cb == nil {
 		return "", fmt.Errorf("codebuild client not initialized")
@@ -95,14 +103,22 @@ func (s *Server) startDeployRunnerWithMode(ctx context.Context, job *models.Prov
 	if lesserHostURL == "" {
 		return "", fmt.Errorf("lesser host base url is missing")
 	}
+	trustErr := s.ensureDeployRunnerAssumeRoleTrust(
+		ctx,
+		strings.TrimSpace(job.AccountID),
+		strings.TrimSpace(job.AccountRoleName),
+		strings.TrimSpace(job.Region),
+		strings.TrimSpace(job.InstanceSlug),
+		strings.TrimSpace(job.ID),
+	)
+	if trustErr != nil {
+		return "", trustErr
+	}
 
 	bootstrapKey := s.bootstrapS3Key(job)
 	stage := s.deployRunnerStage(job)
 	env := s.buildDeployRunnerEnv(job, stage, receiptKey, bootstrapKey)
-	mode = strings.ToLower(strings.TrimSpace(mode))
-	if mode == "" {
-		mode = deployRunnerModeLesser
-	}
+	mode = normalizeDeployRunnerMode(mode)
 	env = append(env, cbtypes.EnvironmentVariable{Name: aws.String("RUN_MODE"), Value: aws.String(mode)})
 	tipEnabled := effectiveTipEnabled(inst.TipEnabled)
 	env = append(env,

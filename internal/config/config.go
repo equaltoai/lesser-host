@@ -119,6 +119,7 @@ type Config struct {
 	ManagedDefaultRegion              string // e.g. us-east-1
 	ManagedLesserDefaultVersion       string // release tag or "latest", optional
 	ManagedProvisionRunnerProjectName string // CodeBuild project name used to run lesser up
+	ManagedProvisionRunnerRoleARN     string // CodeBuild service role allowed in per-instance assume-role trust
 	ManagedLesserGitHubOwner          string // GitHub org/user for the lesser repo
 	ManagedLesserGitHubRepo           string // GitHub repo name for lesser
 	ManagedLesserGitHubTokenSSMParam  string // optional SSM param name for a GitHub token (CodeBuild)
@@ -284,6 +285,7 @@ func Load() Config {
 		ManagedDefaultRegion:              managedDefaultRegion,
 		ManagedLesserDefaultVersion:       envString("MANAGED_LESSER_DEFAULT_VERSION"),
 		ManagedProvisionRunnerProjectName: managedProvisionRunnerProjectName,
+		ManagedProvisionRunnerRoleARN:     envString("MANAGED_PROVISION_RUNNER_ROLE_ARN"),
 		ManagedLesserGitHubOwner:          managedLesserGitHubOwner,
 		ManagedLesserGitHubRepo:           managedLesserGitHubRepo,
 		ManagedLesserGitHubTokenSSMParam:  envString("MANAGED_LESSER_GITHUB_TOKEN_SSM_PARAM"),

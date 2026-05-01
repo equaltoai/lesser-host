@@ -1135,6 +1135,17 @@ func (s *Server) startUpdateDeployRunnerWithMode(ctx context.Context, job *model
 	if strings.TrimSpace(receiptKey) != "" {
 		inputs.receiptKey = strings.TrimSpace(receiptKey)
 	}
+	trustErr := s.ensureDeployRunnerAssumeRoleTrust(
+		ctx,
+		inputs.accountID,
+		inputs.roleName,
+		inputs.region,
+		strings.TrimSpace(job.InstanceSlug),
+		strings.TrimSpace(job.ID),
+	)
+	if trustErr != nil {
+		return "", trustErr
+	}
 	env := s.buildUpdateDeployRunnerEnv(job, inputs)
 
 	mode = strings.ToLower(strings.TrimSpace(mode))

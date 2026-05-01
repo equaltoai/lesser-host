@@ -176,6 +176,8 @@ The control plane needs (at minimum):
 - `MANAGED_DEFAULT_REGION` (default: `AWS_REGION` or `us-east-1`)
 - `MANAGED_LESSER_DEFAULT_VERSION` (optional release tag or `latest`; used when the request doesn’t specify one)
 - `MANAGED_PROVISION_RUNNER_PROJECT_NAME` (CodeBuild project name used to run `lesser up`)
+- `MANAGED_PROVISION_RUNNER_ROLE_ARN` (CodeBuild service role ARN; provision worker ensures the per-instance role trust
+  policy allows this principal before invoking the runner)
 - `ARTIFACT_BUCKET_NAME` (S3 bucket where the runner writes receipts)
 - `MANAGED_LESSER_GITHUB_OWNER` (default: `equaltoai`)
 - `MANAGED_LESSER_GITHUB_REPO` (default: `lesser`)
