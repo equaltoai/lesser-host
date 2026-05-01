@@ -1386,12 +1386,12 @@ func (s *Server) ensureManagedInstanceKeySecret(ctx context.Context, job *models
 		secretID = secretName
 	}
 
-	arn, describeErr := s.describeAndEnsureManagedInstanceKeySecret(ctx, sm, inputs.slug, secretID, s.cfg.Stage)
-	if describeErr == nil {
-		return arn, nil
+	arn, found, err := s.findManagedInstanceKeySecret(ctx, sm, inputs.slug, secretID, secretName)
+	if err != nil {
+		return "", err
 	}
-	if !isSecretsManagerNotFound(describeErr) {
-		return "", describeErr
+	if found {
+		return arn, nil
 	}
 
 	createdArn, keyID, createErr := s.createManagedInstanceKeySecret(ctx, sm, secretName, inputs.slug, s.cfg.Stage)
@@ -1411,6 +1411,41 @@ func (s *Server) ensureManagedInstanceKeySecret(ctx context.Context, job *models
 		return createdArn, nil
 	}
 	return s.describeAndEnsureManagedInstanceKeySecret(ctx, sm, inputs.slug, secretName, s.cfg.Stage)
+}
+
+func (s *Server) findManagedInstanceKeySecret(ctx context.Context, sm secretsManagerAPI, slug string, secretID string, secretName string) (string, bool, error) {
+	arn, err := s.describeAndEnsureManagedInstanceKeySecret(ctx, sm, slug, secretID, s.cfg.Stage)
+	if err == nil {
+		return arn, true, nil
+	}
+	if isSecretsManagerNotFound(err) {
+		return "", false, nil
+	}
+	if !s.canIgnoreLegacyInstanceKeySecret(secretID, secretName, err) {
+		return "", false, err
+	}
+	arn, err = s.describeAndEnsureManagedInstanceKeySecret(ctx, sm, slug, secretName, s.cfg.Stage)
+	if err == nil {
+		return arn, true, nil
+	}
+	if isSecretsManagerNotFound(err) {
+		return "", false, nil
+	}
+	return "", false, err
+}
+
+func (s *Server) canIgnoreLegacyInstanceKeySecret(secretID string, secretName string, err error) bool {
+	if !isManagedInstanceKeySecretTagError(err) {
+		return false
+	}
+	// Pre-M6 lab managed instances may point at tenant-account secrets that predate the
+	// managed/stage/slug tag contract. Do not adopt those secrets by tag-forgery-prone
+	// inference; in non-live stages only, ignore the legacy ARN and create/reuse the
+	// canonical managed secret instead. Live remains fail-closed.
+	if managedInstanceKeySecretStage(s.cfg.Stage) == "live" {
+		return false
+	}
+	return strings.TrimSpace(secretID) != "" && strings.TrimSpace(secretID) != strings.TrimSpace(secretName)
 }
 
 func (s *Server) rotateManagedInstanceKeySecret(ctx context.Context, job *models.ProvisionJob, secretArn string) (string, error) {

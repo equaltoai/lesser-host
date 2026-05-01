@@ -128,14 +128,18 @@ func (f *fakeCodebuild) StartBuild(_ context.Context, in *codebuild.StartBuildIn
 }
 
 type fakeSecretsManager struct {
-	describeOut *secretsmanager.DescribeSecretOutput
-	describeErr error
+	describeOut     *secretsmanager.DescribeSecretOutput
+	describeErr     error
+	describeByID    map[string]*secretsmanager.DescribeSecretOutput
+	describeErrByID map[string]error
+	describeInputs  []string
 
 	getOut *secretsmanager.GetSecretValueOutput
 	getErr error
 
-	createOut *secretsmanager.CreateSecretOutput
-	createErr error
+	createOut    *secretsmanager.CreateSecretOutput
+	createErr    error
+	createInputs []*secretsmanager.CreateSecretInput
 
 	updateOut *secretsmanager.UpdateSecretOutput
 	updateErr error
@@ -147,14 +151,30 @@ type fakeSecretsManager struct {
 	untagErr error
 }
 
-func (f *fakeSecretsManager) CreateSecret(_ context.Context, _ *secretsmanager.CreateSecretInput, _ ...func(*secretsmanager.Options)) (*secretsmanager.CreateSecretOutput, error) {
+func (f *fakeSecretsManager) CreateSecret(_ context.Context, in *secretsmanager.CreateSecretInput, _ ...func(*secretsmanager.Options)) (*secretsmanager.CreateSecretOutput, error) {
+	f.createInputs = append(f.createInputs, in)
 	if f.createErr != nil {
 		return nil, f.createErr
 	}
-	return f.createOut, nil
+	if f.createOut != nil {
+		return f.createOut, nil
+	}
+	return &secretsmanager.CreateSecretOutput{ARN: in.Name}, nil
 }
 
-func (f *fakeSecretsManager) DescribeSecret(_ context.Context, _ *secretsmanager.DescribeSecretInput, _ ...func(*secretsmanager.Options)) (*secretsmanager.DescribeSecretOutput, error) {
+func (f *fakeSecretsManager) DescribeSecret(_ context.Context, in *secretsmanager.DescribeSecretInput, _ ...func(*secretsmanager.Options)) (*secretsmanager.DescribeSecretOutput, error) {
+	secretID := strings.TrimSpace(aws.ToString(in.SecretId))
+	f.describeInputs = append(f.describeInputs, secretID)
+	if f.describeErrByID != nil {
+		if err, ok := f.describeErrByID[secretID]; ok {
+			return nil, err
+		}
+	}
+	if f.describeByID != nil {
+		if out, ok := f.describeByID[secretID]; ok {
+			return out, nil
+		}
+	}
 	if f.describeErr != nil {
 		return nil, f.describeErr
 	}

@@ -634,6 +634,75 @@ func TestDescribeAndEnsureManagedInstanceKeySecret_RejectsTagOnlyKeyIDForgery(t 
 	require.ErrorContains(t, err, "mismatched key id tag")
 }
 
+func TestEnsureManagedInstanceKeySecret_NonLiveReplacesLegacyUntaggedARN(t *testing.T) {
+	t.Parallel()
+
+	db := ttmocks.NewMockExtendedDB()
+	qKey := new(ttmocks.MockQuery)
+	db.On("WithContext", mock.Anything).Return(db).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.InstanceKey")).Return(qKey).Maybe()
+	qKey.On("IfNotExists").Return(qKey).Once()
+	qKey.On("Create").Return(nil).Once()
+
+	oldArn := "arn:aws:secretsmanager:us-east-1:123456789012:secret:legacy/instance-key"
+	newArn := "arn:aws:secretsmanager:us-east-1:123456789012:secret:lab/slug/instance-key"
+	canonicalName := managedInstanceKeySecretName("lab", "slug")
+	sm := &fakeSecretsManager{
+		describeByID: map[string]*secretsmanager.DescribeSecretOutput{
+			oldArn: {ARN: aws.String(oldArn), Tags: nil},
+		},
+		describeErrByID: map[string]error{
+			canonicalName: &smtypes.ResourceNotFoundException{},
+		},
+		createOut: &secretsmanager.CreateSecretOutput{ARN: aws.String(newArn)},
+	}
+
+	srv := &Server{
+		cfg:   config.Config{Stage: "lab"},
+		store: store.New(db),
+		smFactory: func(context.Context, string, string, string, string, string) (secretsManagerAPI, error) {
+			return sm, nil
+		},
+	}
+	job := &models.ProvisionJob{ID: "job1", InstanceSlug: "slug", AccountID: "123456789012", AccountRoleName: "role", Region: "us-east-1"}
+	inst := &models.Instance{Slug: "slug", LesserHostInstanceKeySecretARN: oldArn}
+
+	arn, err := srv.ensureManagedInstanceKeySecret(context.Background(), job, inst)
+	require.NoError(t, err)
+	require.Equal(t, newArn, arn)
+	require.Equal(t, []string{oldArn, canonicalName}, sm.describeInputs)
+	require.Len(t, sm.createInputs, 1)
+	require.Equal(t, canonicalName, aws.ToString(sm.createInputs[0].Name))
+	require.Equal(t, "slug", secretsManagerTagValue(sm.createInputs[0].Tags, managedInstanceKeySecretTagInstanceSlug))
+	require.Equal(t, "lab", secretsManagerTagValue(sm.createInputs[0].Tags, managedInstanceKeySecretTagStage))
+}
+
+func TestEnsureManagedInstanceKeySecret_LiveRefusesLegacyUntaggedARN(t *testing.T) {
+	t.Parallel()
+
+	oldArn := "arn:aws:secretsmanager:us-east-1:123456789012:secret:legacy/instance-key"
+	sm := &fakeSecretsManager{
+		describeByID: map[string]*secretsmanager.DescribeSecretOutput{
+			oldArn: {ARN: aws.String(oldArn), Tags: nil},
+		},
+	}
+
+	srv := &Server{
+		cfg:   config.Config{Stage: "live"},
+		store: store.New(ttmocks.NewMockExtendedDB()),
+		smFactory: func(context.Context, string, string, string, string, string) (secretsManagerAPI, error) {
+			return sm, nil
+		},
+	}
+	job := &models.ProvisionJob{ID: "job1", InstanceSlug: "slug", AccountID: "123456789012", AccountRoleName: "role", Region: "us-east-1"}
+	inst := &models.Instance{Slug: "slug", LesserHostInstanceKeySecretARN: oldArn}
+
+	_, err := srv.ensureManagedInstanceKeySecret(context.Background(), job, inst)
+	require.ErrorContains(t, err, "refusing unmanaged or cross-stage instance key secret")
+	require.Equal(t, []string{oldArn}, sm.describeInputs)
+	require.Empty(t, sm.createInputs)
+}
+
 func TestCreateManagedInstanceKeySecret_ValidatesAndPropagatesErrors(t *testing.T) {
 	t.Parallel()
 
