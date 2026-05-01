@@ -1492,12 +1492,22 @@ func TestParseSoulCommSendRequest_RejectsRecipientFailures(t *testing.T) {
 func TestSoulCommReplyBoundaryMatching(t *testing.T) {
 	t.Parallel()
 
+	denied := false
 	items := []*models.SoulAgentCommActivity{
 		nil,
 		{ChannelType: commChannelSMS, Counterparty: "+15550123", MessageID: "sms-1"},
 		{ChannelType: commChannelEmail, Counterparty: "Other <other@example.com>", MessageID: "email-2"},
 		{ChannelType: commChannelEmail, Counterparty: "Alice <ALICE@example.com>", MessageID: "comm-msg-prev"},
 		{ChannelType: commChannelEmail, Counterparty: "bob@example.com", InReplyTo: "<thread-1@lessersoul.ai>"},
+		{
+			ChannelType:         commChannelEmail,
+			Direction:           models.SoulCommDirectionOutbound,
+			Counterparty:        "charlie@example.com",
+			Action:              "send",
+			InReplyTo:           "denied-thread",
+			BoundaryCheck:       models.SoulCommBoundaryCheckViolated,
+			PreferenceRespected: &denied,
+		},
 	}
 
 	if !soulCommReplyBoundaryMatchesRecipient(items, commChannelEmail, "alice@example.com", "<comm-msg-prev@lessersoul.ai>") {
@@ -1508,6 +1518,9 @@ func TestSoulCommReplyBoundaryMatching(t *testing.T) {
 	}
 	if soulCommReplyBoundaryMatchesRecipient(items, commChannelEmail, "charlie@example.com", "comm-msg-prev") {
 		t.Fatalf("did not expect unmatched recipient to pass")
+	}
+	if soulCommReplyBoundaryMatchesRecipient(items, commChannelEmail, "charlie@example.com", "denied-thread") {
+		t.Fatalf("did not expect denied activity to satisfy reply boundary")
 	}
 	if !soulCommReplyBoundaryMatchesRecipient(items, commChannelSMS, "+1 (555) 0123", "sms-1") {
 		t.Fatalf("expected normalized phone recipient to match")
@@ -1521,6 +1534,31 @@ func TestSoulCommReplyBoundaryMatching(t *testing.T) {
 	})
 	if !reflect.DeepEqual(recipients, []string{"ALICE@example.com", "BOB@example.com", "carol@example.com"}) {
 		t.Fatalf("unexpected email boundary recipients: %#v", recipients)
+	}
+}
+
+func TestBuildOutboundEmailRFC5322_SanitizesHeaderInjection(t *testing.T) {
+	t.Parallel()
+
+	raw, _, appErr := buildOutboundEmailRFC5322(outboundEmailRFC5322Input{
+		From:               "agent@lessersoul.ai",
+		To:                 "alice@example.com",
+		ReplyTo:            "reply@example.com",
+		Subject:            "Hello\r\nBcc: victim@example.com",
+		Body:               "body",
+		MessageID:          "<comm-msg-1@lessersoul.ai>\r\nX-Bad: yes",
+		InReplyToMessageID: "<parent@lessersoul.ai>\r\nX-Bad: yes",
+		SentAt:             time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC),
+	})
+	if appErr != nil {
+		t.Fatalf("buildOutboundEmailRFC5322: %v", appErr)
+	}
+	text := string(raw)
+	if strings.Contains(text, "\r\nBcc: victim@example.com") || strings.Contains(text, "\r\nX-Bad: yes") {
+		t.Fatalf("header injection was not neutralized: %q", text)
+	}
+	if !strings.Contains(text, "Subject: Hello Bcc: victim@example.com\r\n") {
+		t.Fatalf("expected sanitized subject, got %q", text)
 	}
 }
 

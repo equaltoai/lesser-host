@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -48,6 +49,12 @@ func newOperatorProvisioningTestDB() operatorProvisioningTestDB {
 func operatorCtx() *apptheory.Context {
 	ctx := &apptheory.Context{AuthIdentity: "alice", RequestID: "rid"}
 	ctx.Set(ctxKeyOperatorRole, models.RoleAdmin)
+	return ctx
+}
+
+func provisionOperatorRoleCtx() *apptheory.Context {
+	ctx := &apptheory.Context{AuthIdentity: "ops", RequestID: "rid"}
+	ctx.Set(ctxKeyOperatorRole, models.RoleOperator)
 	return ctx
 }
 
@@ -132,6 +139,60 @@ func TestHandleGetOperatorProvisionJob_NotFoundAndSuccess(t *testing.T) {
 	resp, err := s.handleGetOperatorProvisionJob(ctx)
 	if err != nil || resp.Status != 200 {
 		t.Fatalf("resp=%#v err=%v", resp, err)
+	}
+}
+
+func TestHandleGetOperatorProvisionJob_RedactsReceiptForOperator(t *testing.T) {
+	t.Parallel()
+
+	tdb := newOperatorProvisioningTestDB()
+	s := &Server{store: store.New(tdb.db)}
+
+	ctx := provisionOperatorRoleCtx()
+	ctx.Params = map[string]string{"id": "j1"}
+	tdb.qJob.On("First", mock.AnythingOfType("*models.ProvisionJob")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.ProvisionJob](t, args, 0)
+		*dest = models.ProvisionJob{
+			ID:           "j1",
+			InstanceSlug: "inst",
+			Status:       models.ProvisionJobStatusOK,
+			ReceiptJSON:  `{"endpoint":"https://inst.example","instance_key":"raw-secret"}`,
+		}
+		_ = dest.UpdateKeys()
+	}).Once()
+
+	resp, err := s.handleGetOperatorProvisionJob(ctx)
+	if err != nil || resp.Status != 200 {
+		t.Fatalf("resp=%#v err=%v", resp, err)
+	}
+	var out operatorProvisionJobDetail
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !out.HasReceipt {
+		t.Fatalf("expected has_receipt to remain true")
+	}
+	if out.ReceiptJSON != "" {
+		t.Fatalf("expected non-admin operator receipt to be omitted, got %q", out.ReceiptJSON)
+	}
+}
+
+func TestOperatorProvisionJobDetail_RedactsAdminReceiptSecrets(t *testing.T) {
+	t.Parallel()
+
+	detail := operatorProvisionJobDetailFromModel(&models.ProvisionJob{
+		ID:           "j1",
+		InstanceSlug: "inst",
+		ReceiptJSON:  `{"endpoint":"https://inst.example","instance_key":"raw-secret","nested":{"token":"tok","ok":"value"}}`,
+	})
+	if detail.ReceiptJSON == "" {
+		t.Fatalf("expected admin diagnostic receipt")
+	}
+	if strings.Contains(detail.ReceiptJSON, "raw-secret") || strings.Contains(detail.ReceiptJSON, `"tok"`) {
+		t.Fatalf("expected sensitive receipt fields to be redacted, got %q", detail.ReceiptJSON)
+	}
+	if !strings.Contains(detail.ReceiptJSON, "https://inst.example") || !strings.Contains(detail.ReceiptJSON, "value") {
+		t.Fatalf("expected non-sensitive receipt fields to remain, got %q", detail.ReceiptJSON)
 	}
 }
 

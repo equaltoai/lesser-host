@@ -129,9 +129,6 @@ func (s *Server) normalizeTipRegistryWalletAddress(ctx context.Context, walletAd
 	if appErr := validateNotReservedWalletAddress(walletAddr, "wallet_address"); appErr != nil {
 		return "", appErr
 	}
-	if appErr := s.validateNotPrivilegedWalletAddress(ctx, walletTypeEthereum, walletAddr, "wallet_address"); appErr != nil {
-		return "", appErr
-	}
 	return walletAddr, nil
 }
 
@@ -983,7 +980,7 @@ type listTipRegistryOperationsResponse struct {
 }
 
 func (s *Server) handleListTipRegistryOperations(ctx *apptheory.Context) (*apptheory.Response, error) {
-	if err := requireOperator(ctx); err != nil {
+	if err := requireAdmin(ctx); err != nil {
 		return nil, err
 	}
 	if s == nil || s.store == nil || s.store.DB == nil {
@@ -1023,7 +1020,7 @@ func (s *Server) handleListTipRegistryOperations(ctx *apptheory.Context) (*appth
 }
 
 func (s *Server) handleGetTipRegistryOperation(ctx *apptheory.Context) (*apptheory.Response, error) {
-	if err := requireOperator(ctx); err != nil {
+	if err := requireAdmin(ctx); err != nil {
 		return nil, err
 	}
 	if s == nil || s.store == nil || s.store.DB == nil {
@@ -1051,7 +1048,7 @@ type recordTipRegistryExecutionRequest struct {
 }
 
 func (s *Server) handleRecordTipRegistryOperationExecution(ctx *apptheory.Context) (*apptheory.Response, error) {
-	if err := requireOperator(ctx); err != nil {
+	if err := requireAdmin(ctx); err != nil {
 		return nil, err
 	}
 	if appErr := s.requireTipRegistryConfigured(); appErr != nil {
@@ -1292,7 +1289,7 @@ type setTipRegistryHostActiveRequest struct {
 }
 
 func (s *Server) handleSetTipRegistryHostActive(ctx *apptheory.Context) (*apptheory.Response, error) {
-	if err := requireOperator(ctx); err != nil {
+	if err := requireAdmin(ctx); err != nil {
 		return nil, err
 	}
 	if appErr := s.requireTipRegistryConfigured(); appErr != nil {
@@ -1384,7 +1381,7 @@ type setTipRegistryTokenAllowedRequest struct {
 }
 
 func (s *Server) handleSetTipRegistryTokenAllowed(ctx *apptheory.Context) (*apptheory.Response, error) {
-	if err := requireOperator(ctx); err != nil {
+	if err := requireAdmin(ctx); err != nil {
 		return nil, err
 	}
 	if appErr := s.requireTipRegistryConfigured(); appErr != nil {
@@ -1467,7 +1464,7 @@ func (s *Server) handleSetTipRegistryTokenAllowed(ctx *apptheory.Context) (*appt
 }
 
 func (s *Server) handleEnsureTipRegistryHost(ctx *apptheory.Context) (*apptheory.Response, error) {
-	if err := requireOperator(ctx); err != nil {
+	if err := requireAdmin(ctx); err != nil {
 		return nil, err
 	}
 	if s == nil || s.store == nil || s.store.DB == nil {

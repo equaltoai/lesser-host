@@ -142,7 +142,7 @@ func (s *S3Store) PutContent(ctx context.Context, input ContentInput) (ContentPo
 	})
 	if err != nil {
 		if isS3PreconditionFailed(err) {
-			return s.existingPointer(ctx, client, bucket, key, contentType)
+			return s.existingPointer(ctx, client, bucket, key, digest, int64(len(body)), contentType)
 		}
 		return ContentPointer{}, err
 	}
@@ -157,7 +157,7 @@ func (s *S3Store) PutContent(ctx context.Context, input ContentInput) (ContentPo
 	}, nil
 }
 
-func (s *S3Store) existingPointer(ctx context.Context, client s3API, bucket string, key string, fallbackContentType string) (ContentPointer, error) {
+func (s *S3Store) existingPointer(ctx context.Context, client s3API, bucket string, key string, expectedDigest string, expectedBytes int64, fallbackContentType string) (ContentPointer, error) {
 	out, err := client.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
@@ -166,6 +166,10 @@ func (s *S3Store) existingPointer(ctx context.Context, client s3API, bucket stri
 		return ContentPointer{}, err
 	}
 	digest := strings.ToLower(strings.TrimSpace(out.Metadata["sha256"]))
+	expectedDigest = strings.ToLower(strings.TrimSpace(expectedDigest))
+	if expectedDigest == "" || digest == "" || digest != expectedDigest {
+		return ContentPointer{}, fmt.Errorf("content sha256 mismatch")
+	}
 	contentType := strings.TrimSpace(fallbackContentType)
 	if out.ContentType != nil && strings.TrimSpace(*out.ContentType) != "" {
 		contentType = strings.TrimSpace(*out.ContentType)
@@ -173,6 +177,9 @@ func (s *S3Store) existingPointer(ctx context.Context, client s3API, bucket stri
 	var bytes int64
 	if out.ContentLength != nil {
 		bytes = *out.ContentLength
+	}
+	if expectedBytes >= 0 && bytes != 0 && bytes != expectedBytes {
+		return ContentPointer{}, fmt.Errorf("content length mismatch")
 	}
 	return ContentPointer{
 		Storage:     ContentStorageS3,

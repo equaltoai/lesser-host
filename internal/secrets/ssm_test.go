@@ -3,6 +3,7 @@ package secrets
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -29,10 +30,20 @@ func clearParamCache() {
 	})
 }
 
+var paramCacheTestMu sync.Mutex
+
+func isolateParamCache(t *testing.T) {
+	t.Helper()
+	paramCacheTestMu.Lock()
+	clearParamCache()
+	t.Cleanup(func() {
+		clearParamCache()
+		paramCacheTestMu.Unlock()
+	})
+}
+
 func TestGetSSMParameter_TrimsAndValidates(t *testing.T) {
 	t.Parallel()
-
-	clearParamCache()
 
 	client := stubSSM{
 		getParameter: func(_ context.Context, params *ssm.GetParameterInput) (*ssm.GetParameterOutput, error) {
@@ -65,8 +76,6 @@ func TestGetSSMParameter_TrimsAndValidates(t *testing.T) {
 func TestGetSSMParameter_ErrorsOnEmptyInputsAndResponses(t *testing.T) {
 	t.Parallel()
 
-	clearParamCache()
-
 	client := stubSSM{
 		getParameter: func(_ context.Context, _ *ssm.GetParameterInput) (*ssm.GetParameterOutput, error) {
 			return &ssm.GetParameterOutput{}, nil
@@ -84,7 +93,7 @@ func TestGetSSMParameter_ErrorsOnEmptyInputsAndResponses(t *testing.T) {
 func TestGetSSMParameterCached_CachesWithinTTL(t *testing.T) {
 	t.Parallel()
 
-	clearParamCache()
+	isolateParamCache(t)
 
 	calls := 0
 	client := stubSSM{
