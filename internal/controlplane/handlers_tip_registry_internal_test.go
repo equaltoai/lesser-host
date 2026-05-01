@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"math/big"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -92,7 +93,6 @@ func TestHandleTipHostRegistrationBegin_Success(t *testing.T) {
 		WalletAddr: "0x000000000000000000000000000000000000dEaD",
 		HostFeeBps: 5,
 	})
-	tdb.qWalletIdx.On("First", mock.AnythingOfType("*models.WalletIndex")).Return(theoryErrors.ErrItemNotFound).Once()
 	resp, err := s.handleTipHostRegistrationBegin(&apptheory.Context{RequestID: "r1", Request: apptheory.Request{Body: body}})
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
@@ -122,6 +122,34 @@ func TestHandleTipHostRegistrationBegin_Success(t *testing.T) {
 	}
 	if !strings.HasPrefix(out.Proofs[0].DNSName, tipRegistryProofPrefix) {
 		t.Fatalf("unexpected dns name: %#v", out.Proofs[0].DNSName)
+	}
+}
+
+func TestHandleTipHostRegistrationBegin_DoesNotPreflightPrivilegedWallet(t *testing.T) {
+	t.Parallel()
+
+	tdb := newTipRegistryTestDB()
+	s := &Server{
+		store: store.New(tdb.db),
+		cfg: config.Config{
+			TipEnabled:         true,
+			TipChainID:         1,
+			TipContractAddress: "0x0000000000000000000000000000000000000001",
+			TipTxMode:          tipTxModeSafe,
+		},
+	}
+
+	body, _ := json.Marshal(tipHostRegistrationBeginRequest{
+		Domain:     "example.com",
+		WalletAddr: "0x00000000000000000000000000000000000000aa",
+		HostFeeBps: 5,
+	})
+	resp, err := s.handleTipHostRegistrationBegin(&apptheory.Context{RequestID: "r1", Request: apptheory.Request{Body: body}})
+	if err != nil {
+		t.Fatalf("begin should not disclose privileged wallet status during public preflight: %v", err)
+	}
+	if resp.Status != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", resp.Status)
 	}
 }
 
@@ -222,6 +250,33 @@ func TestTipRegistryAdminEndpoints_ListAndGet(t *testing.T) {
 	getCtx.Set(ctxKeyOperatorRole, models.RoleAdmin)
 	if _, err := s.handleGetTipRegistryOperation(getCtx); err == nil {
 		t.Fatalf("expected not_found")
+	}
+}
+
+func TestTipRegistryAdminMutationsRequireAdmin(t *testing.T) {
+	t.Parallel()
+
+	tdb := newTipRegistryTestDB()
+	s := &Server{
+		store: store.New(tdb.db),
+		cfg: config.Config{
+			TipEnabled:          true,
+			TipChainID:          1,
+			TipContractAddress:  "0x0000000000000000000000000000000000000001",
+			TipTxMode:           tipTxModeSafe,
+			TipAdminSafeAddress: "0x0000000000000000000000000000000000000002",
+		},
+	}
+
+	ctx := &apptheory.Context{
+		AuthIdentity: "ops",
+		Request:      apptheory.Request{Body: []byte(`{"token_address":"0x00000000000000000000000000000000000000ff","allowed":true}`)},
+	}
+	ctx.Set(ctxKeyOperatorRole, models.RoleOperator)
+	if _, err := s.handleSetTipRegistryTokenAllowed(ctx); err == nil {
+		t.Fatalf("expected operator role to be denied tip registry admin mutation")
+	} else {
+		requireTipRegistryAppErrCode(t, err, "app.forbidden")
 	}
 }
 
