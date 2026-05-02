@@ -176,7 +176,7 @@ func TestHandleSoulPublicGetAgentChannels_DiscoveryV3ENSAndPhone(t *testing.T) {
 		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
 		*dest = models.SoulAgentIdentity{
 			AgentID:   agentID,
-			Domain:    "example.com",
+			Domain:    testDomainExampleCom,
 			LocalID:   "agent-caro",
 			Status:    models.SoulAgentStatusActive,
 			UpdatedAt: identityUpdated,
@@ -209,8 +209,10 @@ func TestHandleSoulPublicGetAgentChannels_DiscoveryV3ENSAndPhone(t *testing.T) {
 			UpdatedAt:    phoneUpdated,
 		}
 	}).Once()
+	mockSoulReachabilityDomainAccess(t, &tdb, testDomainExampleCom)
 
-	ctx := &apptheory.Context{Params: map[string]string{"agentId": agentID}}
+	ctx := adminCtx()
+	ctx.Params = map[string]string{"agentId": agentID}
 	resp, err := s.handleSoulPublicGetAgentChannels(ctx)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
@@ -258,7 +260,7 @@ func TestHandleSoulPublicGetAgentChannelPreferences_DiscoveryV3Success(t *testin
 		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
 		*dest = models.SoulAgentIdentity{
 			AgentID:   agentID,
-			Domain:    "example.com",
+			Domain:    testDomainExampleCom,
 			LocalID:   "agent-drew",
 			Status:    models.SoulAgentStatusActive,
 			UpdatedAt: identityUpdated,
@@ -283,8 +285,10 @@ func TestHandleSoulPublicGetAgentChannelPreferences_DiscoveryV3Success(t *testin
 			UpdatedAt:                        prefsUpdated,
 		}
 	}).Once()
+	mockSoulReachabilityDomainAccess(t, &tdb, testDomainExampleCom)
 
-	ctx := &apptheory.Context{Params: map[string]string{"agentId": agentID}}
+	ctx := adminCtx()
+	ctx.Params = map[string]string{"agentId": agentID}
 	resp, err := s.handleSoulPublicGetAgentChannelPreferences(ctx)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
@@ -324,13 +328,16 @@ func TestHandleSoulPublicGetAgentChannelPreferences_DiscoveryV3PrefsNotFoundUses
 		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
 		*dest = models.SoulAgentIdentity{
 			AgentID:   agentID,
+			Domain:    testDomainExampleCom,
 			Status:    models.SoulAgentStatusActive,
 			UpdatedAt: identityUpdated,
 		}
 	}).Once()
+	mockSoulReachabilityDomainAccess(t, &tdb, testDomainExampleCom)
 	tdb.qPrefs.On("First", mock.AnythingOfType("*models.SoulAgentContactPreferences")).Return(theoryErrors.ErrItemNotFound).Once()
 
-	ctx := &apptheory.Context{Params: map[string]string{"agentId": agentID}}
+	ctx := adminCtx()
+	ctx.Params = map[string]string{"agentId": agentID}
 	resp, err := s.handleSoulPublicGetAgentChannelPreferences(ctx)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
@@ -413,7 +420,9 @@ func TestHandleSoulPublicResolveEmail_DiscoveryV3Errors(t *testing.T) {
 		tdb := newSoulPublicTestDB()
 		s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true}}
 
-		_, err := s.handleSoulPublicResolveEmail(&apptheory.Context{Params: map[string]string{"emailAddress": " "}})
+		ctx := adminCtx()
+		ctx.Params = map[string]string{"emailAddress": " "}
+		_, err := s.handleSoulPublicResolveEmail(ctx)
 		requireAppErrorCode(t, err, "app.bad_request")
 	})
 
@@ -423,7 +432,9 @@ func TestHandleSoulPublicResolveEmail_DiscoveryV3Errors(t *testing.T) {
 		tdb := newSoulPublicTestDB()
 		s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true}}
 
-		_, err := s.handleSoulPublicResolveEmail(&apptheory.Context{Params: map[string]string{"emailAddress": "not-an-email"}})
+		ctx := adminCtx()
+		ctx.Params = map[string]string{"emailAddress": "not-an-email"}
+		_, err := s.handleSoulPublicResolveEmail(ctx)
 		requireAppErrorCode(t, err, "app.bad_request")
 	})
 
@@ -438,7 +449,9 @@ func TestHandleSoulPublicResolveEmail_DiscoveryV3Errors(t *testing.T) {
 			*dest = models.SoulEmailAgentIndex{Email: "agent@lessersoul.ai", AgentID: " "}
 		}).Once()
 
-		_, err := s.handleSoulPublicResolveEmail(&apptheory.Context{Params: map[string]string{"emailAddress": "agent@lessersoul.ai"}})
+		ctx := adminCtx()
+		ctx.Params = map[string]string{"emailAddress": "agent@lessersoul.ai"}
+		_, err := s.handleSoulPublicResolveEmail(ctx)
 		requireAppErrorCode(t, err, "app.not_found")
 	})
 
@@ -455,9 +468,90 @@ func TestHandleSoulPublicResolveEmail_DiscoveryV3Errors(t *testing.T) {
 		}).Once()
 		tdb.qID.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(theoryErrors.ErrItemNotFound).Once()
 
-		_, err := s.handleSoulPublicResolveEmail(&apptheory.Context{Params: map[string]string{"emailAddress": "agent@lessersoul.ai"}})
+		ctx := adminCtx()
+		ctx.Params = map[string]string{"emailAddress": "agent@lessersoul.ai"}
+		_, err := s.handleSoulPublicResolveEmail(ctx)
 		requireAppErrorCode(t, err, "app.not_found")
 	})
+}
+
+func TestHandleSoulReachabilityPrivateEndpointsRequireAuth(t *testing.T) {
+	t.Parallel()
+
+	agentID := "0x" + strings.Repeat("66", 32)
+	for _, tc := range []struct {
+		name string
+		call func(*Server, *apptheory.Context) (*apptheory.Response, error)
+		ctx  *apptheory.Context
+	}{
+		{
+			name: "channels",
+			call: func(s *Server, ctx *apptheory.Context) (*apptheory.Response, error) {
+				return s.handleSoulPublicGetAgentChannels(ctx)
+			},
+			ctx: &apptheory.Context{Params: map[string]string{"agentId": agentID}},
+		},
+		{
+			name: "preferences",
+			call: func(s *Server, ctx *apptheory.Context) (*apptheory.Response, error) {
+				return s.handleSoulPublicGetAgentChannelPreferences(ctx)
+			},
+			ctx: &apptheory.Context{Params: map[string]string{"agentId": agentID}},
+		},
+		{
+			name: "resolve_email",
+			call: func(s *Server, ctx *apptheory.Context) (*apptheory.Response, error) {
+				return s.handleSoulPublicResolveEmail(ctx)
+			},
+			ctx: &apptheory.Context{Params: map[string]string{"emailAddress": "agent@example.com"}},
+		},
+		{
+			name: "resolve_phone",
+			call: func(s *Server, ctx *apptheory.Context) (*apptheory.Response, error) {
+				return s.handleSoulPublicResolvePhone(ctx)
+			},
+			ctx: &apptheory.Context{Params: map[string]string{"phoneNumber": "+14155550123"}},
+		},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tdb := newSoulPublicTestDB()
+			s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true}}
+			_, err := tc.call(s, tc.ctx)
+			requireAppErrorCode(t, err, "app.unauthorized")
+		})
+	}
+}
+
+func TestHandleSoulResolveEmail_AccessDeniedDoesNotConfirmLinkage(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulPublicTestDB()
+	s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true}}
+	agentID := "0x" + strings.Repeat("33", 32)
+
+	mockSoulReachabilityApprovedCustomer(t, &tdb, "alice")
+	tdb.qEmailIdx.On("First", mock.AnythingOfType("*models.SoulEmailAgentIndex")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulEmailAgentIndex](t, args, 0)
+		*dest = models.SoulEmailAgentIndex{Email: "agent@example.com", AgentID: agentID}
+	}).Once()
+	tdb.qID.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
+		*dest = models.SoulAgentIdentity{AgentID: agentID, Domain: testDomainExampleCom, Status: models.SoulAgentStatusActive}
+	}).Once()
+	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
+		*dest = models.Domain{Domain: testDomainExampleCom, Status: models.DomainStatusActive, InstanceSlug: "demo"}
+	}).Once()
+	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{Slug: "demo", Owner: "bob"}
+	}).Once()
+
+	ctx := &apptheory.Context{AuthIdentity: "alice", Params: map[string]string{"emailAddress": "agent@example.com"}}
+	_, err := s.handleSoulPublicResolveEmail(ctx)
+	requireAppErrorCode(t, err, "app.not_found")
 }
 
 type discoveryResolveCall func(*Server, *apptheory.Context) (*apptheory.Response, error)
@@ -496,9 +590,10 @@ func discoverySuccessSetup(setup discoveryResolveSetup, localID string) discover
 		setup(t, tdb, agentID)
 		tdb.qID.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
 			dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
-			*dest = models.SoulAgentIdentity{AgentID: agentID, Domain: "example.com", LocalID: localID, Status: models.SoulAgentStatusActive}
+			*dest = models.SoulAgentIdentity{AgentID: agentID, Domain: testDomainExampleCom, LocalID: localID, Status: models.SoulAgentStatusActive}
 		}).Once()
 		if localID == "agent-phone" {
+			mockSoulReachabilityDomainAccess(t, tdb, testDomainExampleCom)
 			tdb.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(nil).Run(func(args mock.Arguments) {
 				dest := testutil.RequireMockArg[*models.SoulAgentChannel](t, args, 0)
 				*dest = models.SoulAgentChannel{
@@ -642,7 +737,9 @@ func runDiscoveryResolveCase(t *testing.T, cfg discoveryResolveCaseConfig) {
 			cfg.setup(t, &tdb, setupAgentID)
 		}
 
-		resp, err := cfg.call(s, &apptheory.Context{Params: map[string]string{cfg.paramKey: cfg.paramValue}})
+		ctx := adminCtx()
+		ctx.Params = map[string]string{cfg.paramKey: cfg.paramValue}
+		resp, err := cfg.call(s, ctx)
 		if cfg.expectAgent == "" {
 			requireAppErrorCode(t, err, cfg.wantCode)
 			return

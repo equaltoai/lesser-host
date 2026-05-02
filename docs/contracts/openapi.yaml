@@ -1113,7 +1113,9 @@ paths:
   /api/v1/soul/agents/{agentId}/channels:
     get:
       operationId: soulGetAgentChannels
-      summary: Get agent reachability channels (v3)
+      summary: Get authenticated agent reachability channels (v3)
+      security:
+        - sessionAuth: []
       parameters:
         - name: agentId
           in: path
@@ -1134,6 +1136,14 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
         "404":
           description: Not found
           content:
@@ -1144,7 +1154,9 @@ paths:
   /api/v1/soul/agents/{agentId}/channels/preferences:
     get:
       operationId: soulGetAgentChannelPreferences
-      summary: Get agent contact preferences (v3)
+      summary: Get authenticated agent contact preferences (v3)
+      security:
+        - sessionAuth: []
       parameters:
         - name: agentId
           in: path
@@ -1161,6 +1173,14 @@ paths:
                 $ref: "#/components/schemas/SoulAgentChannelPreferencesResponse"
         "400":
           description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Forbidden
           content:
             application/json:
               schema:
@@ -1262,7 +1282,9 @@ paths:
   /api/v1/soul/resolve/email/{emailAddress}:
     get:
       operationId: soulResolveEmail
-      summary: Resolve an email address to a soul agent
+      summary: Resolve an email address to an owned soul agent
+      security:
+        - sessionAuth: []
       parameters:
         - name: emailAddress
           in: path
@@ -1283,6 +1305,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
         "404":
           description: Not found
           content:
@@ -1293,7 +1317,9 @@ paths:
   /api/v1/soul/resolve/phone/{phoneNumber}:
     get:
       operationId: soulResolvePhone
-      summary: Resolve an E.164 phone number to a soul agent
+      summary: Resolve an E.164 phone number to an owned soul agent
+      security:
+        - sessionAuth: []
       parameters:
         - name: phoneNumber
           in: path
@@ -1314,6 +1340,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
         "404":
           description: Not found
           content:

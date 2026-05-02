@@ -1422,7 +1422,7 @@ func (s *Server) setSoulPublicHeaders(ctx *apptheory.Context, resp *apptheory.Re
 	}
 	cacheControl = strings.TrimSpace(cacheControl)
 	if cacheControl == "" {
-		cacheControl = "no-store"
+		cacheControl = cacheControlNoStore
 	}
 	resp.Headers["cache-control"] = []string{cacheControl}
 
