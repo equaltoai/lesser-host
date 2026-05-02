@@ -43,3 +43,20 @@ not receive that high-privilege role. Before a managed provisioning or managed-u
 now ensures the per-instance `MANAGED_INSTANCE_ROLE_NAME` trust policy includes the concrete
 `MANAGED_PROVISION_RUNNER_ROLE_ARN`. Existing lab tenant accounts (`theory` first, `simulacrum` canary second) should be
 migrated by the normal managed-update path; do not restore org-vending-role access to the deploy runner as a shortcut.
+
+## M9 Sepolia TipSplitter handoff
+
+M9 hardens the pre-live TipSplitter contract before any live/mainnet tipping is enabled:
+
+- wallet rotations no longer migrate recipient-keyed pending balances; pending liabilities remain with the credited
+  wallet, and rotations affect future tips only
+- `pause()` is the emergency global freeze for both new tips and withdrawals
+- `setWithdrawalsPaused(true)` remains available for withdrawal-only freezes and is still required, together with
+  `pause()`, before stray-balance sweep operations
+
+Post-merge, deploy a fresh TipSplitter to Sepolia using the standalone TipSplitter redeploy path in
+`docs/runbook-sepolia-contract-deploy.md`. Update `docs/deployments/sepolia/latest.json` and lab CDK context with the new
+TipSplitter address only after the Sepolia deployment transaction is confirmed and read-only constructor checks pass.
+
+Mainnet Safe execution remains deferred until a future live-readiness authorization. Do not prepare or execute a mainnet
+TipSplitter Safe transaction as part of this round-2 pre-live milestone.
