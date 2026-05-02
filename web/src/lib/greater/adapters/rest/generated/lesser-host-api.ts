@@ -11,7 +11,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get agent reachability channels (v3) */
+        /** Get authenticated agent reachability channels (v3) */
         get: operations["soulGetAgentChannels"];
         put?: never;
         post?: never;
@@ -28,7 +28,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get agent contact preferences (v3) */
+        /** Get authenticated agent contact preferences (v3) */
         get: operations["soulGetAgentChannelPreferences"];
         /** Update agent contact preferences (v3) */
         put: operations["soulUpdateAgentChannelPreferences"];
@@ -63,7 +63,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Resolve an email address to a soul agent */
+        /** Resolve an email address to an owned soul agent */
         get: operations["soulResolveEmail"];
         put?: never;
         post?: never;
@@ -80,7 +80,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Resolve an E.164 phone number to a soul agent */
+        /** Resolve an E.164 phone number to an owned soul agent */
         get: operations["soulResolvePhone"];
         put?: never;
         post?: never;
@@ -1724,6 +1724,16 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
+            401: components["responses"]["Unauthorized"];
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
             /** @description Not found */
             404: {
                 headers: {
@@ -1757,6 +1767,16 @@ export interface operations {
             };
             /** @description Invalid request */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description Forbidden */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1915,6 +1935,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
+            401: components["responses"]["Unauthorized"];
             /** @description Not found */
             404: {
                 headers: {
@@ -1955,6 +1976,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
+            401: components["responses"]["Unauthorized"];
             /** @description Not found */
             404: {
                 headers: {

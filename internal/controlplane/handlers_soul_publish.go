@@ -263,13 +263,13 @@ func (s *Server) persistSoulMerkleRootPack(ctx context.Context, prefix string, n
 	}
 	manifestKey = prefix + "manifest.json"
 
-	if putErr := s.soulPacks.PutObject(ctx, snapKey, snapBody, "application/json", "no-store"); putErr != nil {
+	if putErr := s.soulPacks.PutObject(ctx, snapKey, snapBody, "application/json", cacheControlNoStore); putErr != nil {
 		return "", "", "", &apptheory.AppError{Code: "app.internal", Message: "failed to persist snapshot"}
 	}
-	if putErr := s.soulPacks.PutObject(ctx, proofsKey, proofsBody, "application/json", "no-store"); putErr != nil {
+	if putErr := s.soulPacks.PutObject(ctx, proofsKey, proofsBody, "application/json", cacheControlNoStore); putErr != nil {
 		return "", "", "", &apptheory.AppError{Code: "app.internal", Message: "failed to persist proofs"}
 	}
-	if putErr := s.soulPacks.PutObject(ctx, manifestKey, manifestBody, "application/json", "no-store"); putErr != nil {
+	if putErr := s.soulPacks.PutObject(ctx, manifestKey, manifestBody, "application/json", cacheControlNoStore); putErr != nil {
 		return "", "", "", &apptheory.AppError{Code: "app.internal", Message: "failed to persist manifest"}
 	}
 

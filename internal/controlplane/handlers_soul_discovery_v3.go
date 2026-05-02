@@ -74,13 +74,20 @@ func (s *Server) handleSoulPublicGetAgentChannels(ctx *apptheory.Context) (*appt
 	if !s.cfg.SoulEnabled {
 		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
 	}
+	if appErr := s.requireSoulPortalPrereqs(ctx); appErr != nil {
+		return nil, appErr
+	}
 
 	agentIDHex, _, appErr := parseSoulAgentIDHex(ctx.Param("agentId"))
 	if appErr != nil {
 		return nil, appErr
 	}
 
-	identity, prefs, ens, email, phone, appErr := s.loadSoulPublicAgentChannels(ctx, agentIDHex)
+	identity, appErr := s.requireActiveSoulAgentWithDomainAccess(ctx, agentIDHex)
+	if appErr != nil {
+		return nil, appErr
+	}
+	prefs, ens, email, phone, appErr := s.loadSoulAgentChannelRecords(ctx, agentIDHex)
 	if appErr != nil {
 		return nil, appErr
 	}
@@ -101,46 +108,37 @@ func (s *Server) handleSoulPublicGetAgentChannels(ctx *apptheory.Context) (*appt
 	if err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
-	s.setSoulPublicHeaders(ctx, resp, "public, max-age=60")
+	setSoulPrivateNoStoreHeaders(resp)
 	return resp, nil
 }
 
-func (s *Server) loadSoulPublicAgentChannels(
+func (s *Server) loadSoulAgentChannelRecords(
 	ctx *apptheory.Context,
 	agentIDHex string,
 ) (
-	identity *models.SoulAgentIdentity,
 	prefs *models.SoulAgentContactPreferences,
 	ens *models.SoulAgentChannel,
 	email *models.SoulAgentChannel,
 	phone *models.SoulAgentChannel,
 	appErr *apptheory.AppError,
 ) {
-	identity, err := s.getSoulAgentIdentity(ctx.Context(), agentIDHex)
-	if theoryErrors.IsNotFound(err) {
-		return nil, nil, nil, nil, nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
-	}
-	if err != nil {
-		return nil, nil, nil, nil, nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-
 	prefs, appErr = loadSoulOptionalItem[models.SoulAgentContactPreferences](s, ctx, agentIDHex, "CONTACT_PREFERENCES")
 	if appErr != nil {
-		return nil, nil, nil, nil, nil, appErr
+		return nil, nil, nil, nil, appErr
 	}
 	ens, appErr = loadSoulOptionalItem[models.SoulAgentChannel](s, ctx, agentIDHex, "CHANNEL#ens")
 	if appErr != nil {
-		return nil, nil, nil, nil, nil, appErr
+		return nil, nil, nil, nil, appErr
 	}
 	email, appErr = loadSoulOptionalItem[models.SoulAgentChannel](s, ctx, agentIDHex, "CHANNEL#email")
 	if appErr != nil {
-		return nil, nil, nil, nil, nil, appErr
+		return nil, nil, nil, nil, appErr
 	}
 	phone, appErr = loadSoulOptionalItem[models.SoulAgentChannel](s, ctx, agentIDHex, "CHANNEL#phone")
 	if appErr != nil {
-		return nil, nil, nil, nil, nil, appErr
+		return nil, nil, nil, nil, appErr
 	}
-	return identity, prefs, ens, email, phone, nil
+	return prefs, ens, email, phone, nil
 }
 
 func loadSoulOptionalItem[T any](s *Server, ctx *apptheory.Context, agentIDHex string, sk string) (*T, *apptheory.AppError) {
@@ -309,18 +307,18 @@ func (s *Server) handleSoulPublicGetAgentChannelPreferences(ctx *apptheory.Conte
 	if !s.cfg.SoulEnabled {
 		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
 	}
+	if appErr := s.requireSoulPortalPrereqs(ctx); appErr != nil {
+		return nil, appErr
+	}
 
 	agentIDHex, _, appErr := parseSoulAgentIDHex(ctx.Param("agentId"))
 	if appErr != nil {
 		return nil, appErr
 	}
 
-	identity, err := s.getSoulAgentIdentity(ctx.Context(), agentIDHex)
-	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
-	}
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	identity, appErr := s.requireActiveSoulAgentWithDomainAccess(ctx, agentIDHex)
+	if appErr != nil {
+		return nil, appErr
 	}
 
 	prefs, err := getSoulAgentItemBySK[models.SoulAgentContactPreferences](s, ctx.Context(), agentIDHex, "CONTACT_PREFERENCES")
@@ -336,7 +334,7 @@ func (s *Server) handleSoulPublicGetAgentChannelPreferences(ctx *apptheory.Conte
 	if err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
-	s.setSoulPublicHeaders(ctx, resp, "public, max-age=60")
+	setSoulPrivateNoStoreHeaders(resp)
 	return resp, nil
 }
 
@@ -353,10 +351,10 @@ func (s *Server) handleSoulPublicResolveENSName(ctx *apptheory.Context) (*appthe
 
 	raw, _ := url.PathUnescape(strings.TrimSpace(ctx.Param("ensName")))
 	if raw == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "ensName is required"}
+		return nil, &apptheory.AppError{Code: appErrCodeBadRequest, Message: "ensName is required"}
 	}
 	if !soulENSNameRegex.MatchString(strings.ToLower(raw)) {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "ensName is invalid"}
+		return nil, &apptheory.AppError{Code: appErrCodeBadRequest, Message: "ensName is invalid"}
 	}
 
 	key := &models.SoulAgentENSResolution{ENSName: raw}
@@ -404,23 +402,78 @@ func (s *Server) handleSoulPublicResolveEmail(ctx *apptheory.Context) (*apptheor
 	if s == nil || ctx == nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
-	if appErr := requireStoreDB(s); appErr != nil {
+	if appErr := s.requireSoulPrivateReachabilityPrereqs(ctx); appErr != nil {
 		return nil, appErr
-	}
-	if !s.cfg.SoulEnabled {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
 	}
 
 	emailAddress, appErr := soulResolveEmailParam(ctx)
 	if appErr != nil {
 		return nil, appErr
 	}
-	item, appErr := s.lookupSoulEmailAgentIndex(ctx.Context(), emailAddress)
+	agentID, appErr := s.lookupSoulEmailAgentID(ctx.Context(), emailAddress)
 	if appErr != nil {
 		return nil, appErr
 	}
+	return s.soulPrivateResolveContact(ctx, agentID, models.SoulChannelTypeEmail, emailAddress)
+}
 
-	identity, err := s.getSoulAgentIdentity(ctx.Context(), item.AgentID)
+func soulResolveEmailParam(ctx *apptheory.Context) (string, *apptheory.AppError) {
+	raw, _ := url.PathUnescape(strings.TrimSpace(ctx.Param("emailAddress")))
+	if raw == "" {
+		return "", &apptheory.AppError{Code: appErrCodeBadRequest, Message: "emailAddress is required"}
+	}
+	addr, err := mail.ParseAddress(raw)
+	if err != nil || addr == nil || strings.TrimSpace(addr.Address) == "" {
+		return "", &apptheory.AppError{Code: appErrCodeBadRequest, Message: "emailAddress is invalid"}
+	}
+	return strings.TrimSpace(addr.Address), nil
+}
+
+func (s *Server) lookupSoulEmailAgentID(ctx context.Context, emailAddress string) (string, *apptheory.AppError) {
+	idx := &models.SoulEmailAgentIndex{Email: emailAddress}
+	_ = idx.UpdateKeys()
+	return s.lookupSoulContactAgentID(ctx, idx, idx.PK, func() string { return idx.AgentID })
+}
+
+func (s *Server) handleSoulPublicResolvePhone(ctx *apptheory.Context) (*apptheory.Response, error) {
+	if s == nil || ctx == nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if appErr := s.requireSoulPrivateReachabilityPrereqs(ctx); appErr != nil {
+		return nil, appErr
+	}
+
+	phoneNumber, appErr := soulResolvePhoneParam(ctx)
+	if appErr != nil {
+		return nil, appErr
+	}
+	agentID, appErr := s.lookupSoulPhoneAgentID(ctx.Context(), phoneNumber)
+	if appErr != nil {
+		return nil, appErr
+	}
+	return s.soulPrivateResolveContact(ctx, agentID, models.SoulChannelTypePhone, phoneNumber)
+}
+
+func (s *Server) requireSoulPrivateReachabilityPrereqs(ctx *apptheory.Context) *apptheory.AppError {
+	if appErr := requireStoreDB(s); appErr != nil {
+		return appErr
+	}
+	if !s.cfg.SoulEnabled {
+		return &apptheory.AppError{Code: "app.not_found", Message: "not found"}
+	}
+	if appErr := s.requireSoulPortalPrereqs(ctx); appErr != nil {
+		return appErr
+	}
+	return nil
+}
+
+func (s *Server) soulPrivateResolveContact(
+	ctx *apptheory.Context,
+	agentID string,
+	channelType string,
+	identifier string,
+) (*apptheory.Response, error) {
+	identity, err := s.getSoulAgentIdentity(ctx.Context(), agentID)
 	if theoryErrors.IsNotFound(err) {
 		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
 	}
@@ -430,7 +483,10 @@ func (s *Server) handleSoulPublicResolveEmail(ctx *apptheory.Context) (*apptheor
 	if !soulIdentityPubliclyResolvable(identity) {
 		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
 	}
-	if appErr := s.requirePublicResolvableSoulChannel(ctx, strings.TrimSpace(item.AgentID), models.SoulChannelTypeEmail, emailAddress); appErr != nil {
+	if _, _, accessErr := s.requireSoulDomainAccess(ctx, strings.TrimSpace(identity.Domain)); accessErr != nil {
+		return nil, soulReachabilityAccessError(accessErr)
+	}
+	if appErr := s.requirePublicResolvableSoulChannel(ctx, strings.TrimSpace(agentID), channelType, identifier); appErr != nil {
 		return nil, appErr
 	}
 
@@ -438,58 +494,67 @@ func (s *Server) handleSoulPublicResolveEmail(ctx *apptheory.Context) (*apptheor
 	if err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
-	s.setSoulPublicHeaders(ctx, resp, "public, max-age=60")
+	setSoulPrivateNoStoreHeaders(resp)
 	return resp, nil
 }
 
-func soulResolveEmailParam(ctx *apptheory.Context) (string, *apptheory.AppError) {
-	raw, _ := url.PathUnescape(strings.TrimSpace(ctx.Param("emailAddress")))
-	if raw == "" {
-		return "", &apptheory.AppError{Code: "app.bad_request", Message: "emailAddress is required"}
-	}
-	addr, err := mail.ParseAddress(raw)
-	if err != nil || addr == nil || strings.TrimSpace(addr.Address) == "" {
-		return "", &apptheory.AppError{Code: "app.bad_request", Message: "emailAddress is invalid"}
-	}
-	return strings.TrimSpace(addr.Address), nil
+func (s *Server) lookupSoulPhoneAgentID(ctx context.Context, phoneNumber string) (string, *apptheory.AppError) {
+	idx := &models.SoulPhoneAgentIndex{Phone: phoneNumber}
+	_ = idx.UpdateKeys()
+	return s.lookupSoulContactAgentID(ctx, idx, idx.PK, func() string { return idx.AgentID })
 }
 
-func (s *Server) lookupSoulEmailAgentIndex(ctx context.Context, emailAddress string) (*models.SoulEmailAgentIndex, *apptheory.AppError) {
-	idx := &models.SoulEmailAgentIndex{Email: emailAddress}
-	_ = idx.UpdateKeys()
-
-	var item models.SoulEmailAgentIndex
+func (s *Server) lookupSoulContactAgentID(
+	ctx context.Context,
+	item any,
+	pk string,
+	agentID func() string,
+) (string, *apptheory.AppError) {
 	err := s.store.DB.WithContext(ctx).
-		Model(&models.SoulEmailAgentIndex{}).
-		Where("PK", "=", idx.PK).
+		Model(item).
+		Where("PK", "=", pk).
 		Where("SK", "=", "AGENT").
-		First(&item)
+		First(item)
 	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
+		return "", &apptheory.AppError{Code: "app.not_found", Message: "not found"}
 	}
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
-	if strings.TrimSpace(item.AgentID) == "" {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
+	id := strings.TrimSpace(agentID())
+	if id == "" {
+		return "", &apptheory.AppError{Code: "app.not_found", Message: "not found"}
 	}
-	return &item, nil
+	return id, nil
 }
 
-func (s *Server) handleSoulPublicResolvePhone(ctx *apptheory.Context) (*apptheory.Response, error) {
-	if s == nil || ctx == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+func setSoulPrivateNoStoreHeaders(resp *apptheory.Response) {
+	if resp == nil {
+		return
 	}
-	if appErr := requireStoreDB(s); appErr != nil {
-		return nil, appErr
+	if resp.Headers == nil {
+		resp.Headers = map[string][]string{}
 	}
-	if !s.cfg.SoulEnabled {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
-	}
+	resp.Headers["cache-control"] = []string{cacheControlNoStore}
+	resp.Headers["pragma"] = []string{"no-cache"}
+}
 
+func soulReachabilityAccessError(appErr *apptheory.AppError) *apptheory.AppError {
+	if appErr == nil {
+		return nil
+	}
+	switch appErr.Code {
+	case appErrCodeUnauthorized, appErrCodeForbidden, appErrCodeBadRequest:
+		return &apptheory.AppError{Code: "app.not_found", Message: "not found"}
+	default:
+		return appErr
+	}
+}
+
+func soulResolvePhoneParam(ctx *apptheory.Context) (string, *apptheory.AppError) {
 	raw, _ := url.PathUnescape(strings.TrimSpace(ctx.Param("phoneNumber")))
 	if raw == "" {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "phoneNumber is required"}
+		return "", &apptheory.AppError{Code: appErrCodeBadRequest, Message: "phoneNumber is required"}
 	}
 
 	idx := &models.SoulPhoneAgentIndex{Phone: raw}
@@ -497,45 +562,9 @@ func (s *Server) handleSoulPublicResolvePhone(ctx *apptheory.Context) (*apptheor
 
 	// Validate normalized E.164 form (required for stable reverse lookup keys).
 	if !soulE164Regex.MatchString(strings.TrimSpace(idx.Phone)) {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "phoneNumber is invalid"}
+		return "", &apptheory.AppError{Code: appErrCodeBadRequest, Message: "phoneNumber is invalid"}
 	}
-
-	var item models.SoulPhoneAgentIndex
-	err := s.store.DB.WithContext(ctx.Context()).
-		Model(&models.SoulPhoneAgentIndex{}).
-		Where("PK", "=", idx.PK).
-		Where("SK", "=", "AGENT").
-		First(&item)
-	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
-	}
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-	if strings.TrimSpace(item.AgentID) == "" {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
-	}
-
-	identity, err := s.getSoulAgentIdentity(ctx.Context(), item.AgentID)
-	if theoryErrors.IsNotFound(err) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
-	}
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-	if !soulIdentityPubliclyResolvable(identity) {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
-	}
-	if appErr := s.requirePublicResolvableSoulChannel(ctx, strings.TrimSpace(item.AgentID), models.SoulChannelTypePhone, idx.Phone); appErr != nil {
-		return nil, appErr
-	}
-
-	resp, err := apptheory.JSON(http.StatusOK, soulPublicAgentResponse{Version: "1", Agent: s.buildSoulPublicAgentView(ctx.Context(), identity)})
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-	s.setSoulPublicHeaders(ctx, resp, "public, max-age=60")
-	return resp, nil
+	return idx.Phone, nil
 }
 
 func soulIdentityPubliclyResolvable(identity *models.SoulAgentIdentity) bool {

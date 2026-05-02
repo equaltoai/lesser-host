@@ -1494,7 +1494,7 @@
 				soulPublicGetCapabilities(agentId),
 				soulPublicGetTransparency(agentId),
 				soulPublicGetFailures(agentId, undefined, 50),
-				soulPublicGetAgentChannels(agentId),
+				soulPublicGetAgentChannels(agentId, token),
 				soulAgentListCommActivity(token, agentId, 50),
 				soulAgentListCommQueue(token, agentId, 50),
 			]);

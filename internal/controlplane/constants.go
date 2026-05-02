@@ -12,4 +12,10 @@ const (
 
 	paymentsProviderStripeName = "stripe"
 	paymentsActorStripe        = "stripe"
+
+	appErrCodeBadRequest   = "app.bad_request"
+	appErrCodeForbidden    = "app.forbidden"
+	appErrCodeUnauthorized = "app.unauthorized"
+
+	cacheControlNoStore = "no-store"
 )

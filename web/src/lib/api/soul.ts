@@ -82,8 +82,10 @@ export interface SoulPublicAgentChannelsResponse {
 	updatedAt: string;
 }
 
-export function soulPublicGetAgentChannels(agentId: string): Promise<SoulPublicAgentChannelsResponse> {
-	return fetchJson<SoulPublicAgentChannelsResponse>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/channels`);
+export function soulPublicGetAgentChannels(agentId: string, token: string): Promise<SoulPublicAgentChannelsResponse> {
+	return fetchJson<SoulPublicAgentChannelsResponse>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/channels`, {
+		headers: { authorization: `Bearer ${token}` },
+	});
 }
 
 export interface SoulProvisionEmailBeginResponse {
