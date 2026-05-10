@@ -2,11 +2,13 @@ package controlplane
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
+	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 	"github.com/theory-cloud/tabletheory"
 	"github.com/theory-cloud/tabletheory/pkg/core"
@@ -19,6 +21,8 @@ import (
 
 const mailboxContentMaxBytes int64 = 1024 * 1024
 const mailboxListQueryMaxLength = 128
+const mailboxProjectedFieldsMaxCount = 32
+const mailboxFilteredScanMaxRows = 500
 
 type soulCommMailboxListResponse struct {
 	InstanceSlug string                   `json:"instanceSlug"`
@@ -27,6 +31,21 @@ type soulCommMailboxListResponse struct {
 	Count        int                      `json:"count"`
 	HasMore      bool                     `json:"hasMore"`
 	NextCursor   string                   `json:"nextCursor,omitempty"`
+	PartialScan  bool                     `json:"partialScan,omitempty"`
+	ScanHasMore  bool                     `json:"scanHasMore,omitempty"`
+	ScanCursor   string                   `json:"scanCursor,omitempty"`
+}
+
+type soulCommMailboxProjectedListResponse struct {
+	InstanceSlug string           `json:"instanceSlug"`
+	AgentID      string           `json:"agentId"`
+	Messages     []map[string]any `json:"messages"`
+	Count        int              `json:"count"`
+	HasMore      bool             `json:"hasMore"`
+	NextCursor   string           `json:"nextCursor,omitempty"`
+	PartialScan  bool             `json:"partialScan,omitempty"`
+	ScanHasMore  bool             `json:"scanHasMore,omitempty"`
+	ScanCursor   string           `json:"scanCursor,omitempty"`
 }
 
 type soulCommMailboxGetResponse struct {
@@ -104,6 +123,22 @@ type mailboxListFilters struct {
 	includeDeleted  bool
 	threadID        string
 	query           string
+	projection      mailboxFieldProjection
+}
+
+type mailboxFieldProjection struct {
+	fields     []string
+	fieldsSet  bool
+	includeRaw bool
+}
+
+type mailboxListResult struct {
+	items       []*models.SoulCommMailboxMessage
+	hasMore     bool
+	nextCursor  string
+	partialScan bool
+	scanHasMore bool
+	scanCursor  string
 }
 
 type mailboxStateAction struct {
@@ -122,20 +157,36 @@ func (s *Server) handleSoulCommMailboxList(ctx *apptheory.Context) (*apptheory.R
 	if appErr != nil {
 		return nil, appErr
 	}
-	items, hasMore, nextCursor, listErr := s.listMailboxMessages(ctx.Context(), reqCtx.key.InstanceSlug, reqCtx.agentID, filters)
+	result, listErr := s.listMailboxMessages(ctx.Context(), reqCtx.key.InstanceSlug, reqCtx.agentID, filters)
 	if listErr != nil {
 		return nil, apptheory.NewAppTheoryError(commCodeInternal, "internal error").WithStatusCode(http.StatusInternalServerError)
 	}
 
-	messages := make([]soulCommMailboxMessage, 0, len(items))
-	for _, item := range items {
-		if item == nil || !filters.matches(item) {
-			continue
+	if filters.projection.enabled() {
+		messages := make([]map[string]any, 0, len(result.items))
+		for _, item := range result.items {
+			projected, err := projectMailboxMessage(mailboxMessageJSON(item), filters.projection)
+			if err != nil {
+				return nil, apptheory.NewAppTheoryError(commCodeInternal, "internal error").WithStatusCode(http.StatusInternalServerError)
+			}
+			messages = append(messages, projected)
 		}
+		return apptheory.JSON(http.StatusOK, soulCommMailboxProjectedListResponse{
+			InstanceSlug: strings.ToLower(strings.TrimSpace(reqCtx.key.InstanceSlug)),
+			AgentID:      reqCtx.agentID,
+			Messages:     messages,
+			Count:        len(messages),
+			HasMore:      result.hasMore,
+			NextCursor:   result.nextCursor,
+			PartialScan:  result.partialScan,
+			ScanHasMore:  result.scanHasMore,
+			ScanCursor:   result.scanCursor,
+		})
+	}
+
+	messages := make([]soulCommMailboxMessage, 0, len(result.items))
+	for _, item := range result.items {
 		messages = append(messages, mailboxMessageJSON(item))
-		if len(messages) >= filters.limit {
-			break
-		}
 	}
 
 	return apptheory.JSON(http.StatusOK, soulCommMailboxListResponse{
@@ -143,8 +194,11 @@ func (s *Server) handleSoulCommMailboxList(ctx *apptheory.Context) (*apptheory.R
 		AgentID:      reqCtx.agentID,
 		Messages:     messages,
 		Count:        len(messages),
-		HasMore:      hasMore,
-		NextCursor:   nextCursor,
+		HasMore:      result.hasMore,
+		NextCursor:   result.nextCursor,
+		PartialScan:  result.partialScan,
+		ScanHasMore:  result.scanHasMore,
+		ScanCursor:   result.scanCursor,
 	})
 }
 
@@ -328,6 +382,11 @@ func parseMailboxListFilters(ctx *apptheory.Context) (mailboxListFilters, *appth
 		query:          strings.ToLower(strings.TrimSpace(queryFirst(ctx, "query"))),
 		includeDeleted: queryBool(ctx, "includeDeleted"),
 	}
+	projection, appErr := parseMailboxFieldProjection(ctx)
+	if appErr != nil {
+		return mailboxListFilters{}, appErr
+	}
+	filters.projection = projection
 	if appErr := validateMailboxListFilters(filters); appErr != nil {
 		return mailboxListFilters{}, appErr
 	}
@@ -373,6 +432,63 @@ func validateMailboxListFilters(filters mailboxListFilters) *apptheory.AppTheory
 	return nil
 }
 
+func parseMailboxFieldProjection(ctx *apptheory.Context) (mailboxFieldProjection, *apptheory.AppTheoryError) {
+	projection := mailboxFieldProjection{
+		fieldsSet:  queryPresent(ctx, "fields"),
+		includeRaw: queryBool(ctx, "include_raw"),
+	}
+	raw := strings.TrimSpace(queryFirst(ctx, "fields"))
+	if raw == "" {
+		if projection.fieldsSet {
+			return mailboxFieldProjection{}, apptheory.NewAppTheoryError(commCodeInvalidRequest, "fields is required when present").WithStatusCode(http.StatusBadRequest)
+		}
+		return projection, nil
+	}
+
+	seen := map[string]struct{}{}
+	for _, part := range strings.Split(raw, ",") {
+		field := strings.TrimSpace(part)
+		if field == "" {
+			return mailboxFieldProjection{}, apptheory.NewAppTheoryError(commCodeInvalidRequest, "fields contains an empty field").WithStatusCode(http.StatusBadRequest)
+		}
+		if !mailboxProjectionFieldAllowed(field) {
+			return mailboxFieldProjection{}, apptheory.NewAppTheoryError(commCodeInvalidRequest, "fields contains an unsupported field").WithStatusCode(http.StatusBadRequest)
+		}
+		if field == "raw" && !projection.includeRaw {
+			continue
+		}
+		if _, ok := seen[field]; ok {
+			continue
+		}
+		seen[field] = struct{}{}
+		projection.fields = append(projection.fields, field)
+		if len(projection.fields) > mailboxProjectedFieldsMaxCount {
+			return mailboxFieldProjection{}, apptheory.NewAppTheoryError(commCodeInvalidRequest, "fields contains too many fields").WithStatusCode(http.StatusBadRequest)
+		}
+	}
+
+	return projection, nil
+}
+
+func mailboxProjectionFieldAllowed(field string) bool {
+	switch strings.TrimSpace(field) {
+	case "messageRef", "deliveryId", "messageId", "threadId", "direction", "channelType",
+		"provider", "providerMessageId", "status", "from", "to", "subject", "preview",
+		"content", "state", "createdAt", "updatedAt", "raw",
+		"from.address", "from.number", "from.soulAgentId", "from.displayName",
+		"to.address", "to.number", "to.soulAgentId", "to.displayName",
+		"content.available", "content.bytes", "content.mimeType", "content.sha256", "content.contentHref",
+		"state.read", "state.archived", "state.deleted":
+		return true
+	default:
+		return false
+	}
+}
+
+func (p mailboxFieldProjection) enabled() bool {
+	return p.fieldsSet
+}
+
 func validateMailboxListCursor(cursor string) *apptheory.AppTheoryError {
 	cursor = strings.TrimSpace(cursor)
 	if cursor == "" {
@@ -400,6 +516,20 @@ func (f mailboxListFilters) queryLimit() int {
 		return scanLimit
 	}
 	return f.limit
+}
+
+func (f mailboxListFilters) filteredScanBudget() int {
+	if !f.hasPostQueryFilters() {
+		return f.limit
+	}
+	budget := f.limit * 20
+	if budget < f.queryLimit() {
+		budget = f.queryLimit()
+	}
+	if budget > mailboxFilteredScanMaxRows {
+		budget = mailboxFilteredScanMaxRows
+	}
+	return budget
 }
 
 func (f mailboxListFilters) hasPostQueryFilters() bool {
@@ -487,9 +617,99 @@ func mailboxMetadataMatchesQuery(item *models.SoulCommMailboxMessage, query stri
 	return false
 }
 
-func (s *Server) listMailboxMessages(ctx context.Context, instanceSlug string, agentID string, filters mailboxListFilters) ([]*models.SoulCommMailboxMessage, bool, string, error) {
+func (s *Server) listMailboxMessages(ctx context.Context, instanceSlug string, agentID string, filters mailboxListFilters) (mailboxListResult, error) {
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, false, "", fmt.Errorf("store not configured")
+		return mailboxListResult{}, fmt.Errorf("store not configured")
+	}
+	if !filters.hasPostQueryFilters() {
+		items, paged, err := s.queryMailboxMessagesPage(ctx, instanceSlug, agentID, filters, strings.TrimSpace(filters.cursor), filters.limit)
+		if err != nil {
+			return mailboxListResult{}, err
+		}
+		result := mailboxListResult{items: items}
+		if paged != nil {
+			result.hasMore = paged.HasMore
+			result.nextCursor = strings.TrimSpace(paged.NextCursor)
+		}
+		return result, nil
+	}
+	return s.listFilteredMailboxMessages(ctx, instanceSlug, agentID, filters)
+}
+
+func (s *Server) listFilteredMailboxMessages(ctx context.Context, instanceSlug string, agentID string, filters mailboxListFilters) (mailboxListResult, error) {
+	out := make([]*models.SoulCommMailboxMessage, 0, filters.limit)
+	cursor := strings.TrimSpace(filters.cursor)
+	pageLimit := filters.queryLimit()
+	scanBudget := filters.filteredScanBudget()
+	scanned := 0
+	var lastReturned *models.SoulCommMailboxMessage
+
+	for {
+		remainingBudget := scanBudget - scanned
+		if remainingBudget <= 0 {
+			return mailboxListResult{items: out, partialScan: cursor != "", scanHasMore: cursor != "", scanCursor: cursor}, nil
+		}
+		limit := pageLimit
+		if remainingBudget < limit {
+			limit = remainingBudget
+		}
+		items, paged, err := s.queryMailboxMessagesPage(ctx, instanceSlug, agentID, filters, cursor, limit)
+		if err != nil {
+			return mailboxListResult{}, err
+		}
+		scanned += len(items)
+		nextCursor, err := consumeFilteredMailboxItems(&out, items, filters, &lastReturned)
+		if err != nil {
+			return mailboxListResult{}, err
+		}
+		if nextCursor != "" {
+			return mailboxListResult{items: out, hasMore: true, nextCursor: nextCursor}, nil
+		}
+		if mailboxPageExhausted(paged) {
+			return mailboxListResult{items: out}, nil
+		}
+		cursor = strings.TrimSpace(paged.NextCursor)
+		if scanned >= scanBudget {
+			return partialMailboxScanResult(out, cursor), nil
+		}
+	}
+}
+
+func consumeFilteredMailboxItems(out *[]*models.SoulCommMailboxMessage, items []*models.SoulCommMailboxMessage, filters mailboxListFilters, lastReturned **models.SoulCommMailboxMessage) (string, error) {
+	for _, item := range items {
+		if item == nil || !filters.matches(item) {
+			continue
+		}
+		if len(*out) < filters.limit {
+			*out = append(*out, item)
+			*lastReturned = item
+			continue
+		}
+		nextCursor := encodeMailboxListCursor(*lastReturned, filters)
+		if nextCursor == "" {
+			return "", fmt.Errorf("failed to encode mailbox cursor")
+		}
+		return nextCursor, nil
+	}
+	return "", nil
+}
+
+func mailboxPageExhausted(paged *core.PaginatedResult) bool {
+	return paged == nil || !paged.HasMore || strings.TrimSpace(paged.NextCursor) == ""
+}
+
+func partialMailboxScanResult(items []*models.SoulCommMailboxMessage, cursor string) mailboxListResult {
+	return mailboxListResult{
+		items:       items,
+		partialScan: true,
+		scanHasMore: true,
+		scanCursor:  strings.TrimSpace(cursor),
+	}
+}
+
+func (s *Server) queryMailboxMessagesPage(ctx context.Context, instanceSlug string, agentID string, filters mailboxListFilters, cursor string, limit int) ([]*models.SoulCommMailboxMessage, *core.PaginatedResult, error) {
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return nil, nil, fmt.Errorf("store not configured")
 	}
 	items := []*models.SoulCommMailboxMessage{}
 	qb := s.store.DB.WithContext(ctx).
@@ -502,18 +722,42 @@ func (s *Server) listMailboxMessages(ctx context.Context, instanceSlug string, a
 		qb = qb.Where("PK", "=", models.SoulCommMailboxAgentPK(instanceSlug, agentID)).
 			OrderBy("SK", "DESC")
 	}
-	qb = qb.Limit(filters.queryLimit())
-	if strings.TrimSpace(filters.cursor) != "" {
-		qb = qb.Cursor(strings.TrimSpace(filters.cursor))
+	qb = qb.Limit(limit)
+	if strings.TrimSpace(cursor) != "" {
+		qb = qb.Cursor(strings.TrimSpace(cursor))
 	}
 	paged, err := qb.AllPaginated(&items)
 	if err != nil {
-		return nil, false, "", err
+		return nil, nil, err
 	}
-	if paged == nil {
-		return items, false, "", nil
+	return items, paged, nil
+}
+
+func encodeMailboxListCursor(item *models.SoulCommMailboxMessage, filters mailboxListFilters) string {
+	if item == nil {
+		return ""
 	}
-	return items, paged.HasMore, strings.TrimSpace(paged.NextCursor), nil
+	lastKey := map[string]ddbtypes.AttributeValue{
+		"PK": &ddbtypes.AttributeValueMemberS{Value: strings.TrimSpace(item.PK)},
+		"SK": &ddbtypes.AttributeValueMemberS{Value: strings.TrimSpace(item.SK)},
+	}
+	indexName := ""
+	if strings.TrimSpace(filters.threadID) != "" {
+		lastKey["gsi2PK"] = &ddbtypes.AttributeValueMemberS{Value: strings.TrimSpace(item.GSI2PK)}
+		lastKey["gsi2SK"] = &ddbtypes.AttributeValueMemberS{Value: strings.TrimSpace(item.GSI2SK)}
+		indexName = "gsi2"
+	}
+	for key, value := range lastKey {
+		member, ok := value.(*ddbtypes.AttributeValueMemberS)
+		if !ok || strings.TrimSpace(member.Value) == "" {
+			delete(lastKey, key)
+		}
+	}
+	cursor, err := theoryquery.EncodeCursor(lastKey, indexName, "DESC")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(cursor)
 }
 
 func (s *Server) loadMailboxMessage(ctx context.Context, instanceSlug string, agentID string, deliveryID string) (*models.SoulCommMailboxMessage, *apptheory.AppTheoryError) {
@@ -670,6 +914,68 @@ func mailboxMessageJSON(item *models.SoulCommMailboxMessage) soulCommMailboxMess
 		CreatedAt: formatMailboxTime(item.CreatedAt),
 		UpdatedAt: formatMailboxTime(item.UpdatedAt),
 	}
+}
+
+func projectMailboxMessage(message soulCommMailboxMessage, projection mailboxFieldProjection) (map[string]any, error) {
+	source, err := mailboxMessageMap(message)
+	if err != nil {
+		return nil, err
+	}
+	if !projection.includeRaw {
+		delete(source, "raw")
+	}
+	if !projection.enabled() {
+		return source, nil
+	}
+	out := make(map[string]any, len(projection.fields))
+	for _, field := range projection.fields {
+		copyMailboxProjectionField(source, out, strings.Split(field, "."))
+	}
+	if !projection.includeRaw {
+		delete(out, "raw")
+	}
+	return out, nil
+}
+
+func mailboxMessageMap(message soulCommMailboxMessage) (map[string]any, error) {
+	data, err := json.Marshal(message)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]any{}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func copyMailboxProjectionField(source map[string]any, dest map[string]any, path []string) {
+	if len(path) == 0 {
+		return
+	}
+	value, ok := source[path[0]]
+	if !ok {
+		return
+	}
+	if len(path) == 1 {
+		dest[path[0]] = value
+		return
+	}
+	sourceChild, ok := value.(map[string]any)
+	if !ok {
+		return
+	}
+	if existingValue, exists := dest[path[0]]; exists {
+		if _, wholeObjectSelected := existingValue.(map[string]any); !wholeObjectSelected {
+			return
+		}
+	}
+	destChild, ok := dest[path[0]].(map[string]any)
+	if !ok {
+		destChild = map[string]any{}
+		dest[path[0]] = destChild
+	}
+	copyMailboxProjectionField(sourceChild, destChild, path[1:])
 }
 
 func mailboxContentPointer(item *models.SoulCommMailboxMessage) commmailbox.ContentPointer {

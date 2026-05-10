@@ -530,6 +530,11 @@ export interface paths {
          * @description Returns bounded metadata and previews only. Full message content is fetched explicitly from the content endpoint.
          *     Filters are evaluated within the authenticated instance + exact agent mailbox. `query` is bounded metadata/preview
          *     matching only; it is not full-body search and never scans across tenants or agents.
+         *
+         *     `fields` may be used by MCP clients to request compact projected message objects. `hasMore` and `nextCursor`
+         *     describe the filtered result set. If bounded server-side filtering stops before exhausting broad mailbox rows,
+         *     `partialScan`, `scanHasMore`, and `scanCursor` expose that broad scan state separately so MCP callers do not treat
+         *     broad mailbox pagination as matching SMS/voice pagination.
          */
         get: operations["soulCommMailboxList"];
         put?: never;
@@ -1473,6 +1478,61 @@ export interface components {
             soulAgentId?: string;
             displayName?: string;
         };
+        content: {
+            available?: boolean;
+            bytes?: number;
+            mimeType?: string;
+            sha256?: string;
+            contentHref?: string;
+        };
+        state: {
+            read?: boolean;
+            archived?: boolean;
+            deleted?: boolean;
+        };
+        /** Soul comm mailbox projected message metadata */
+        "soul-comm-mailbox-message-projection.schema": {
+            /** @description Opaque stable body-facing mailbox reference. In v1 this is backed by deliveryId. */
+            messageRef?: string;
+            /** @description Canonical host delivery identity; exposed for diagnostics. */
+            deliveryId?: string;
+            /** @description Legacy/idempotency/provider-adjacent metadata; not the primary mailbox reference. */
+            messageId?: string;
+            threadId?: string;
+            /** @enum {string} */
+            direction?: "inbound" | "outbound";
+            /** @enum {string} */
+            channelType?: "email" | "sms" | "voice";
+            provider?: string;
+            providerMessageId?: string;
+            /** @enum {string} */
+            status?: "accepted" | "sent" | "delivered" | "queued" | "failed" | "bounced" | "dropped";
+            from?: components["schemas"]["party"];
+            to?: components["schemas"]["party"];
+            subject?: string;
+            preview?: string;
+            content?: components["schemas"]["content"];
+            state?: components["schemas"]["state"];
+            /** Format: date-time */
+            createdAt?: string;
+            /** Format: date-time */
+            updatedAt?: string;
+        };
+        /** GET /api/v1/soul/comm/mailbox/{agentId}/messages response */
+        "soul-comm-mailbox-list.response.schema": {
+            instanceSlug: string;
+            agentId: string;
+            messages: components["schemas"]["soul-comm-mailbox-message-projection.schema"][];
+            count: number;
+            hasMore: boolean;
+            nextCursor?: string;
+            /** @description True when bounded server-side filtering stopped before exhausting the broad mailbox scan. MCP-facing hasMore remains filtered-result pagination, not broad scan state. */
+            partialScan?: boolean;
+            /** @description When partialScan is true, indicates the underlying broad mailbox scan has more rows. */
+            scanHasMore?: boolean;
+            /** @description Underlying broad mailbox cursor for diagnostics or explicit follow-up scans when partialScan is true. */
+            scanCursor?: string;
+        };
         /** Soul comm mailbox redacted message metadata */
         "soul-comm-mailbox-message.schema": {
             /** @description Opaque stable body-facing mailbox reference. In v1 this is backed by deliveryId. */
@@ -1510,15 +1570,6 @@ export interface components {
             createdAt: string;
             /** Format: date-time */
             updatedAt?: string;
-        };
-        /** GET /api/v1/soul/comm/mailbox/{agentId}/messages response */
-        "soul-comm-mailbox-list.response.schema": {
-            instanceSlug: string;
-            agentId: string;
-            messages: components["schemas"]["soul-comm-mailbox-message.schema"][];
-            count: number;
-            hasMore: boolean;
-            nextCursor?: string;
         };
         /** GET /api/v1/soul/comm/mailbox/{agentId}/messages/{deliveryId} response */
         "soul-comm-mailbox-get.response.schema": {
@@ -3517,6 +3568,19 @@ export interface operations {
                 threadId?: string;
                 /** @description Bounded metadata/preview match within the authenticated instance + exact agent mailbox. */
                 query?: string;
+                /**
+                 * @description Comma-separated projection list for compact MCP responses. Supported fields are
+                 *     `messageRef`, `deliveryId`, `messageId`, `threadId`, `direction`, `channelType`, `provider`,
+                 *     `providerMessageId`, `status`, `from`, `to`, `subject`, `preview`, `content`, `state`, `createdAt`,
+                 *     `updatedAt`, and nested fields such as `content.available`, `state.read`, `from.address`, and `to.number`.
+                 *     When omitted, the legacy full metadata object is returned.
+                 */
+                fields?: string;
+                /**
+                 * @description Defaults to false. Host mailbox list responses do not expose raw upstream provider payloads; when false,
+                 *     any future raw diagnostic payload is omitted unless explicitly requested and available.
+                 */
+                include_raw?: boolean;
             };
             header?: never;
             path: {

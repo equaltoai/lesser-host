@@ -24,7 +24,10 @@ The intent is to keep authority in one place:
 2. **Host mailbox APIs become the body contract**
    - `GET /api/v1/soul/comm/contactability/{agentId}` resolves exact-agent receive/send affordances.
   - `GET /api/v1/soul/comm/mailbox/{agentId}/messages` lists redacted canonical messages with exact-agent filters for
-    channel, direction, read/unread, archived/deleted state, thread, and bounded metadata/preview `query`.
+    channel, direction, read/unread, archived/deleted state, thread, and bounded metadata/preview `query`. MCP callers
+    may add `fields=messageRef,subject,preview,createdAt,state,content.available` (or another supported comma-separated
+    field list) to receive compact projected message objects; `include_raw=false` is the default and host does not expose
+    raw upstream provider payloads in mailbox list responses.
   - `GET /api/v1/soul/comm/mailbox/{agentId}/messages/{messageRef}` returns canonical metadata for one delivery.
   - `GET /api/v1/soul/comm/mailbox/{agentId}/messages/{messageRef}/content` returns full content only by explicit
     messageRef fetch.
@@ -75,6 +78,10 @@ The intent is to keep authority in one place:
   byte/hash metadata, and mailbox state. Full content requires the explicit content endpoint.
 - Body should tolerate instances that have not yet generated canonical mailbox rows by returning an empty mailbox result
   or a clear capability-not-ready error rather than reconstructing mailbox state from legacy rows.
+- Filtered list pagination is matching-result pagination. Host may scan multiple bounded broad mailbox pages internally
+  to satisfy `channelType`, direction, state, and query filters. `hasMore`/`nextCursor` describe additional matching
+  messages; if host stops because the bounded broad scan budget is reached, it sets `partialScan`, `scanHasMore`, and
+  `scanCursor` separately rather than overloading MCP-facing `hasMore`.
 
 ## Auth and tenant isolation
 
