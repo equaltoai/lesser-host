@@ -51,7 +51,7 @@ func TestHandleSoulCommMailboxListRedactsContent(t *testing.T) {
 
 	fixture := newMailboxAPITestDB()
 	expectMailboxAPIAccess(t, fixture, soulLifecycleTestAgentIDHex)
-	fixture.qMsg.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulCommMailboxMessage")).Return(&core.PaginatedResult{HasMore: true, NextCursor: "cursor-2"}, nil).Run(func(args mock.Arguments) {
+	fixture.qMsg.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulCommMailboxMessage")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.SoulCommMailboxMessage](t, args, 0)
 		*dest = []*models.SoulCommMailboxMessage{mailboxAPITestMessage(soulLifecycleTestAgentIDHex)}
 	}).Once()
@@ -72,7 +72,7 @@ func TestHandleSoulCommMailboxListRedactsContent(t *testing.T) {
 	if err := json.Unmarshal(resp.Body, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if out.Count != 1 || !out.HasMore || out.NextCursor != "cursor-2" {
+	if out.Count != 1 || out.HasMore || out.NextCursor != "" {
 		t.Fatalf("unexpected page metadata: %#v", out)
 	}
 	if out.Messages[0].Preview != "redacted preview" || out.Messages[0].Content.ContentHref == "" {
@@ -170,6 +170,69 @@ func TestHandleSoulCommMailboxListProjectsRequestedFields(t *testing.T) {
 		state, ok := msg["state"].(map[string]any)
 		require.True(t, ok)
 		require.ElementsMatch(t, []string{"read", "archived", "deleted"}, mapKeys(state))
+	}
+}
+
+func TestHandleSoulCommMailboxListOmitsDeletedRowsByDefault(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name      string
+		query     map[string][]string
+		projected bool
+	}{
+		{
+			name: "legacy metadata response",
+			query: map[string][]string{
+				"limit": {"10"},
+			},
+		},
+		{
+			name: "projected response",
+			query: map[string][]string{
+				"limit":  {"10"},
+				"fields": {"messageRef,subject,state"},
+			},
+			projected: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			fixture := newMailboxAPITestDB()
+			expectMailboxAPIAccess(t, fixture, soulLifecycleTestAgentIDHex)
+			visible := mailboxAPITestMessage(soulLifecycleTestAgentIDHex)
+			visible.DeliveryID = "comm-delivery-visible"
+			visible.Subject = "Visible subject"
+			deleted := mailboxAPITestMessage(soulLifecycleTestAgentIDHex)
+			deleted.DeliveryID = "comm-delivery-deleted"
+			deleted.Subject = "Deleted subject"
+			deleted.Deleted = true
+			deleted.Archived = true
+			fixture.qMsg.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulCommMailboxMessage")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
+				dest := testutil.RequireMockArg[*[]*models.SoulCommMailboxMessage](t, args, 0)
+				*dest = []*models.SoulCommMailboxMessage{visible, deleted}
+			}).Once()
+
+			resp, err := newMailboxAPITestServer(fixture).handleSoulCommMailboxList(newMailboxAPIContext(soulLifecycleTestAgentIDHex, "", tc.query))
+			require.NoError(t, err)
+			require.NotContains(t, string(resp.Body), "Deleted subject")
+
+			if tc.projected {
+				var out soulCommMailboxProjectedListResponse
+				require.NoError(t, json.Unmarshal(resp.Body, &out))
+				require.Equal(t, 1, out.Count)
+				require.Len(t, out.Messages, 1)
+				require.Equal(t, "comm-delivery-visible", out.Messages[0]["messageRef"])
+				return
+			}
+
+			var out soulCommMailboxListResponse
+			require.NoError(t, json.Unmarshal(resp.Body, &out))
+			require.Equal(t, 1, out.Count)
+			require.Len(t, out.Messages, 1)
+			require.Equal(t, "comm-delivery-visible", out.Messages[0].DeliveryID)
+		})
 	}
 }
 

@@ -540,7 +540,12 @@ func (f mailboxListFilters) hasPostQueryFilters() bool {
 		f.deleted != nil ||
 		f.includeArchived != nil ||
 		f.includeDeleted ||
-		f.query != ""
+		f.query != "" ||
+		f.excludesDeletedByDefault()
+}
+
+func (f mailboxListFilters) excludesDeletedByDefault() bool {
+	return f.deleted == nil && !f.includeDeleted
 }
 
 func (f mailboxListFilters) matches(item *models.SoulCommMailboxMessage) bool {
