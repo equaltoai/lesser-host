@@ -51,7 +51,7 @@ func TestHandleSoulCommMailboxListRedactsContent(t *testing.T) {
 
 	fixture := newMailboxAPITestDB()
 	expectMailboxAPIAccess(t, fixture, soulLifecycleTestAgentIDHex)
-	fixture.qMsg.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulCommMailboxMessage")).Return(&core.PaginatedResult{HasMore: true, NextCursor: "cursor-2"}, nil).Run(func(args mock.Arguments) {
+	fixture.qMsg.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulCommMailboxMessage")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.SoulCommMailboxMessage](t, args, 0)
 		*dest = []*models.SoulCommMailboxMessage{mailboxAPITestMessage(soulLifecycleTestAgentIDHex)}
 	}).Once()
@@ -72,7 +72,7 @@ func TestHandleSoulCommMailboxListRedactsContent(t *testing.T) {
 	if err := json.Unmarshal(resp.Body, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if out.Count != 1 || !out.HasMore || out.NextCursor != "cursor-2" {
+	if out.Count != 1 || out.HasMore || out.NextCursor != "" {
 		t.Fatalf("unexpected page metadata: %#v", out)
 	}
 	if out.Messages[0].Preview != "redacted preview" || out.Messages[0].Content.ContentHref == "" {
@@ -129,6 +129,175 @@ func TestHandleSoulCommMailboxListAppliesBodyFilters(t *testing.T) {
 	require.Equal(t, match.DeliveryID, out.Messages[0].DeliveryID)
 }
 
+func TestHandleSoulCommMailboxListProjectsRequestedFields(t *testing.T) {
+	t.Parallel()
+
+	fixture := newMailboxAPITestDB()
+	expectMailboxAPIAccess(t, fixture, soulLifecycleTestAgentIDHex)
+	fixture.qMsg.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulCommMailboxMessage")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulCommMailboxMessage](t, args, 0)
+		messages := make([]*models.SoulCommMailboxMessage, 0, 5)
+		for i := 0; i < 5; i++ {
+			msg := mailboxAPITestMessage(soulLifecycleTestAgentIDHex)
+			msg.DeliveryID = msg.DeliveryID + "-" + string(rune('a'+i))
+			msg.Subject = "Subject " + string(rune('a'+i))
+			msg.Preview = "Preview " + string(rune('a'+i))
+			messages = append(messages, msg)
+		}
+		*dest = messages
+	}).Once()
+
+	resp, err := newMailboxAPITestServer(fixture).handleSoulCommMailboxList(newMailboxAPIContext(soulLifecycleTestAgentIDHex, "", map[string][]string{
+		"limit":       {"5"},
+		"fields":      {"messageRef,subject,preview,createdAt,state,content.available"},
+		"include_raw": {"false"},
+	}))
+	require.NoError(t, err)
+	require.Less(t, len(resp.Body), 3000, "projected five-message mailbox response should stay MCP-compact")
+
+	var out soulCommMailboxProjectedListResponse
+	require.NoError(t, json.Unmarshal(resp.Body, &out))
+	require.Equal(t, 5, out.Count)
+	require.Len(t, out.Messages, 5)
+	for _, msg := range out.Messages {
+		require.ElementsMatch(t, []string{"messageRef", "subject", "preview", "createdAt", "state", "content"}, mapKeys(msg))
+		require.NotContains(t, msg, "raw")
+		require.NotContains(t, msg, "deliveryId")
+		require.NotContains(t, msg, "from")
+		content, ok := msg["content"].(map[string]any)
+		require.True(t, ok)
+		require.ElementsMatch(t, []string{"available"}, mapKeys(content))
+		state, ok := msg["state"].(map[string]any)
+		require.True(t, ok)
+		require.ElementsMatch(t, []string{"read", "archived", "deleted"}, mapKeys(state))
+	}
+}
+
+func TestHandleSoulCommMailboxListOmitsDeletedRowsByDefault(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name      string
+		query     map[string][]string
+		projected bool
+	}{
+		{
+			name: "legacy metadata response",
+			query: map[string][]string{
+				"limit": {"10"},
+			},
+		},
+		{
+			name: "projected response",
+			query: map[string][]string{
+				"limit":  {"10"},
+				"fields": {"messageRef,subject,state"},
+			},
+			projected: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			fixture := newMailboxAPITestDB()
+			expectMailboxAPIAccess(t, fixture, soulLifecycleTestAgentIDHex)
+			visible := mailboxAPITestMessage(soulLifecycleTestAgentIDHex)
+			visible.DeliveryID = "comm-delivery-visible"
+			visible.Subject = "Visible subject"
+			deleted := mailboxAPITestMessage(soulLifecycleTestAgentIDHex)
+			deleted.DeliveryID = "comm-delivery-deleted"
+			deleted.Subject = "Deleted subject"
+			deleted.Deleted = true
+			deleted.Archived = true
+			fixture.qMsg.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulCommMailboxMessage")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
+				dest := testutil.RequireMockArg[*[]*models.SoulCommMailboxMessage](t, args, 0)
+				*dest = []*models.SoulCommMailboxMessage{visible, deleted}
+			}).Once()
+
+			resp, err := newMailboxAPITestServer(fixture).handleSoulCommMailboxList(newMailboxAPIContext(soulLifecycleTestAgentIDHex, "", tc.query))
+			require.NoError(t, err)
+			require.NotContains(t, string(resp.Body), "Deleted subject")
+
+			if tc.projected {
+				var out soulCommMailboxProjectedListResponse
+				require.NoError(t, json.Unmarshal(resp.Body, &out))
+				require.Equal(t, 1, out.Count)
+				require.Len(t, out.Messages, 1)
+				require.Equal(t, "comm-delivery-visible", out.Messages[0]["messageRef"])
+				return
+			}
+
+			var out soulCommMailboxListResponse
+			require.NoError(t, json.Unmarshal(resp.Body, &out))
+			require.Equal(t, 1, out.Count)
+			require.Len(t, out.Messages, 1)
+			require.Equal(t, "comm-delivery-visible", out.Messages[0].DeliveryID)
+		})
+	}
+}
+
+func TestHandleSoulCommMailboxListSparseFilteredPaginationDoesNotExposeBroadHasMore(t *testing.T) {
+	t.Parallel()
+
+	fixture := newMailboxAPITestDB()
+	expectMailboxAPIAccess(t, fixture, soulLifecycleTestAgentIDHex)
+	fixture.qMsg.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulCommMailboxMessage")).Return(&core.PaginatedResult{HasMore: true, NextCursor: "broad-2"}, nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulCommMailboxMessage](t, args, 0)
+		*dest = []*models.SoulCommMailboxMessage{
+			mailboxAPITestMessage(soulLifecycleTestAgentIDHex),
+			mailboxAPITestMessage(soulLifecycleTestAgentIDHex),
+		}
+	}).Once()
+	fixture.qMsg.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulCommMailboxMessage")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulCommMailboxMessage](t, args, 0)
+		*dest = []*models.SoulCommMailboxMessage{mailboxAPITestMessage(soulLifecycleTestAgentIDHex)}
+	}).Once()
+
+	resp, err := newMailboxAPITestServer(fixture).handleSoulCommMailboxList(newMailboxAPIContext(soulLifecycleTestAgentIDHex, "", map[string][]string{
+		"limit":       {"5"},
+		"channelType": {"sms"},
+	}))
+	require.NoError(t, err)
+	var out soulCommMailboxListResponse
+	require.NoError(t, json.Unmarshal(resp.Body, &out))
+	require.Equal(t, 0, out.Count)
+	require.Empty(t, out.Messages)
+	require.False(t, out.HasMore, "filtered hasMore must not mirror broad mailbox pagination when no matching SMS rows exist")
+	require.Empty(t, out.NextCursor)
+	require.False(t, out.PartialScan)
+	require.False(t, out.ScanHasMore)
+	require.Empty(t, out.ScanCursor)
+}
+
+func TestHandleSoulCommMailboxListPartialFilteredScanExposesScanMetadata(t *testing.T) {
+	t.Parallel()
+
+	fixture := newMailboxAPITestDB()
+	expectMailboxAPIAccess(t, fixture, soulLifecycleTestAgentIDHex)
+	fixture.qMsg.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulCommMailboxMessage")).Return(&core.PaginatedResult{HasMore: true, NextCursor: "broad-2"}, nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulCommMailboxMessage](t, args, 0)
+		messages := make([]*models.SoulCommMailboxMessage, 0, 25)
+		for i := 0; i < 25; i++ {
+			messages = append(messages, mailboxAPITestMessage(soulLifecycleTestAgentIDHex))
+		}
+		*dest = messages
+	}).Once()
+
+	resp, err := newMailboxAPITestServer(fixture).handleSoulCommMailboxList(newMailboxAPIContext(soulLifecycleTestAgentIDHex, "", map[string][]string{
+		"limit":       {"1"},
+		"channelType": {"voice"},
+	}))
+	require.NoError(t, err)
+	var out soulCommMailboxListResponse
+	require.NoError(t, json.Unmarshal(resp.Body, &out))
+	require.Equal(t, 0, out.Count)
+	require.False(t, out.HasMore, "filtered hasMore must not claim matching voice rows when only the broad scan has more")
+	require.Empty(t, out.NextCursor)
+	require.True(t, out.PartialScan)
+	require.True(t, out.ScanHasMore)
+	require.Equal(t, "broad-2", out.ScanCursor)
+}
+
 func TestHandleSoulCommMailboxListRejectsInvalidFilters(t *testing.T) {
 	t.Parallel()
 
@@ -142,6 +311,9 @@ func TestHandleSoulCommMailboxListRejectsInvalidFilters(t *testing.T) {
 		},
 		"long query": {
 			"query": {strings.Repeat("a", mailboxListQueryMaxLength+1)},
+		},
+		"bad projection": {
+			"fields": {"messageRef,unknown"},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -658,6 +830,14 @@ func mailboxAPITestMessage(agentID string) *models.SoulCommMailboxMessage {
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}
+}
+
+func mapKeys(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	return keys
 }
 
 func TestHandleSoulCommMailboxStateMutationsAreIdempotent(t *testing.T) {

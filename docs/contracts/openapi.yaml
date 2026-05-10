@@ -2670,6 +2670,11 @@ paths:
         Returns bounded metadata and previews only. Full message content is fetched explicitly from the content endpoint.
         Filters are evaluated within the authenticated instance + exact agent mailbox. `query` is bounded metadata/preview
         matching only; it is not full-body search and never scans across tenants or agents.
+
+        `fields` may be used by MCP clients to request compact projected message objects. `hasMore` and `nextCursor`
+        describe the filtered result set. If bounded server-side filtering stops before exhausting broad mailbox rows,
+        `partialScan`, `scanHasMore`, and `scanCursor` expose that broad scan state separately so MCP callers do not treat
+        broad mailbox pagination as matching SMS/voice pagination.
       security:
         - instanceKeyAuth: []
       parameters:
@@ -2755,6 +2760,28 @@ paths:
             minLength: 1
             maxLength: 128
           description: Bounded metadata/preview match within the authenticated instance + exact agent mailbox.
+        - name: fields
+          in: query
+          required: false
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 512
+          description: |
+            Comma-separated projection list for compact MCP responses. Supported fields are
+            `messageRef`, `deliveryId`, `messageId`, `threadId`, `direction`, `channelType`, `provider`,
+            `providerMessageId`, `status`, `from`, `to`, `subject`, `preview`, `content`, `state`, `createdAt`,
+            `updatedAt`, and nested fields such as `content.available`, `state.read`, `from.address`, and `to.number`.
+            When omitted, the legacy full metadata object is returned.
+        - name: include_raw
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+          description: |
+            Defaults to false. Host mailbox list responses do not expose raw upstream provider payloads; when false,
+            any future raw diagnostic payload is omitted unless explicitly requested and available.
       responses:
         "200":
           description: OK

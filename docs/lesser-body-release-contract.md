@@ -126,6 +126,12 @@ instance-authenticated mailbox contract:
   roots, or recipients locally
 - mailbox list filters and bounded `query` are exact-agent host-side filters only; body must not implement global mailbox
   search or store durable query indexes
+- mailbox list tools should use host-side `fields` projection (for example
+  `messageRef,subject,preview,from,to,createdAt,state,content.available,threadId`) for compact MCP responses; `include_raw`
+  defaults false and body should not re-add a duplicated raw upstream message object
+- filtered mailbox `hasMore`/`nextCursor` describe matching results. If host returns `partialScan`/`scanHasMore`/
+  `scanCursor`, that is explicit broad-scan metadata and must not be surfaced to MCP callers as matching-message
+  pagination.
 - body must not persist a durable mailbox-content or read-state store of its own
 
 See `docs/soul-comm-mailbox-migration.md` for the migration order, backward-compatibility expectations, rate limits,
