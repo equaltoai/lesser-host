@@ -124,6 +124,12 @@ instance-authenticated mailbox contract:
 - read/unread/archive/delete tools mutate host's canonical mailbox state
 - reply tools call host's canonical mailbox reply endpoint so body does not reconstruct provider reply headers, thread
   roots, or recipients locally
+- send tools must treat host-generated message identity as response-only. Host `POST /api/v1/soul/comm/send` does not
+  accept caller-supplied outgoing `messageId`; its optional `inReplyTo` is a reply/conversation boundary reference that
+  must match prior host/provider state for every recipient. Invalid refs fail closed as HTTP 403
+  `comm.boundary_violation` with `error.details.field=inReplyTo`. Body should remove, rename, or prevalidate any
+  `email_send.messageId`-style argument rather than forwarding it as Host `inReplyTo`; mailbox replies should use
+  `email_reply` / Host's mailbox reply endpoint.
 - mailbox list filters and bounded `query` are exact-agent host-side filters only; body must not implement global mailbox
   search or store durable query indexes
 - mailbox list tools should use host-side `fields` projection (for example
