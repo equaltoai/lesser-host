@@ -34,8 +34,10 @@ type mintConversationTestDB struct {
 	qReg       *ttmocks.MockQuery
 	qDomain    *ttmocks.MockQuery
 	qInstance  *ttmocks.MockQuery
+	qKey       *ttmocks.MockQuery
 	qConv      *ttmocks.MockQuery
 	qIdentity  *ttmocks.MockQuery
+	qAudit     *ttmocks.MockQuery
 	qPromotion *ttmocks.MockQuery
 	qLifecycle *ttmocks.MockQuery
 	qUser      *ttmocks.MockQuery
@@ -50,8 +52,10 @@ func newMintConversationTestDB() *mintConversationTestDB {
 		qReg:       new(ttmocks.MockQuery),
 		qDomain:    new(ttmocks.MockQuery),
 		qInstance:  new(ttmocks.MockQuery),
+		qKey:       new(ttmocks.MockQuery),
 		qConv:      new(ttmocks.MockQuery),
 		qIdentity:  new(ttmocks.MockQuery),
+		qAudit:     new(ttmocks.MockQuery),
 		qPromotion: new(ttmocks.MockQuery),
 		qLifecycle: new(ttmocks.MockQuery),
 		qUser:      new(ttmocks.MockQuery),
@@ -61,6 +65,7 @@ func newMintConversationTestDB() *mintConversationTestDB {
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentRegistration")).Return(tdb.qReg).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.Domain")).Return(tdb.qDomain).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.Instance")).Return(tdb.qInstance).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.InstanceKey")).Return(tdb.qKey).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentMintConversation")).Return(tdb.qConv).Maybe().Run(func(args mock.Arguments) {
 		if conv, ok := args.Get(0).(*models.SoulAgentMintConversation); ok && conv != nil {
 			copy := *conv
@@ -68,11 +73,12 @@ func newMintConversationTestDB() *mintConversationTestDB {
 		}
 	})
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(tdb.qIdentity).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.AuditLogEntry")).Return(tdb.qAudit).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentPromotion")).Return(tdb.qPromotion).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentPromotionLifecycleEvent")).Return(tdb.qLifecycle).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.User")).Return(tdb.qUser).Maybe()
 
-	for _, q := range []*ttmocks.MockQuery{tdb.qReg, tdb.qDomain, tdb.qInstance, tdb.qConv, tdb.qIdentity, tdb.qPromotion, tdb.qLifecycle, tdb.qUser} {
+	for _, q := range []*ttmocks.MockQuery{tdb.qReg, tdb.qDomain, tdb.qInstance, tdb.qKey, tdb.qConv, tdb.qIdentity, tdb.qAudit, tdb.qPromotion, tdb.qLifecycle, tdb.qUser} {
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("Index", mock.Anything).Return(q).Maybe()
 		q.On("Limit", mock.Anything).Return(q).Maybe()
@@ -82,6 +88,7 @@ func newMintConversationTestDB() *mintConversationTestDB {
 		q.On("Create").Return(nil).Maybe()
 		q.On("CreateOrUpdate").Return(nil).Maybe()
 		q.On("Delete").Return(nil).Maybe()
+		q.On("Update", mock.Anything).Return(nil).Maybe()
 		if q != tdb.qConv {
 			q.On("All", mock.Anything).Return(nil).Maybe()
 		}

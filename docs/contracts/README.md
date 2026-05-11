@@ -27,6 +27,8 @@ npm run verify:lesser-host-contracts
 `verify:lesser-host-contracts` is the anti-drift gate. It fails if:
 
 - required soul mint-conversation routes or schemas are missing from `docs/contracts/openapi.yaml`
+- required instance-key mint-conversation read routes and compact/full response schemas are missing from
+  `docs/contracts/openapi.yaml`
 - the SSE companion contract is missing required events or routes
 - the checked-in generated adapter does not match a fresh regeneration
 
