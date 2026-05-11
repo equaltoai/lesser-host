@@ -55,6 +55,15 @@ const (
 	commCodePreferenceViolation = "comm.preference_violation"
 	commCodeBoundaryViolation   = "comm.boundary_violation"
 	commCodeIdempotencyConflict = "comm.idempotency_conflict"
+
+	commReplyBoundaryDetailBoundary = "boundary"
+	commReplyBoundaryDetailField    = "field"
+	commReplyBoundaryDetailReason   = "reason"
+	commReplyBoundaryFieldInReplyTo = "inReplyTo"
+	commReplyBoundaryConversation   = "conversation"
+
+	commReplyBoundaryReasonDefault             = "reply_boundary_violation"
+	commReplyBoundaryReasonNoPriorConversation = "no_prior_conversation"
 )
 
 type soulCommSendRequest struct {
@@ -593,7 +602,7 @@ func (s *Server) enforceSoulCommReplyBoundary(ctx *apptheory.Context, req valida
 	}
 	for _, recipient := range recipients {
 		if !soulCommReplyBoundaryMatchesRecipient(activities, req.channel, recipient, req.inReplyTo) {
-			return s.denySoulCommReplyBoundary(ctx, req, recipient, now, metrics, "inReplyTo", "no_prior_conversation", "inReplyTo does not match a prior conversation with every recipient")
+			return s.denySoulCommReplyBoundary(ctx, req, recipient, now, metrics, commReplyBoundaryFieldInReplyTo, commReplyBoundaryReasonNoPriorConversation, "inReplyTo does not match a prior conversation with every recipient")
 		}
 	}
 	return nil
@@ -751,25 +760,25 @@ func (s *Server) denySoulCommFirstContact(ctx *apptheory.Context, req validatedS
 func (s *Server) denySoulCommReplyBoundary(ctx *apptheory.Context, req validatedSoulCommSendRequest, recipient string, now time.Time, metrics *soulCommSendMetrics, field string, reason string, message string) *apptheory.AppTheoryError {
 	metrics.status = commMetricBoundaryViolation
 	appErr := s.recordSoulCommGuardViolation(ctx, req, recipient, now, metrics, models.SoulCommBoundaryCheckViolated, commCodeBoundaryViolation, message)
-	if appErr != nil {
-		appErr.WithDetails(soulCommReplyBoundaryErrorDetails(field, reason))
+	if appErr == nil {
+		return nil
 	}
-	return appErr
+	return appErr.WithDetails(soulCommReplyBoundaryErrorDetails(field, reason))
 }
 
 func soulCommReplyBoundaryErrorDetails(field string, reason string) map[string]any {
 	field = strings.TrimSpace(field)
 	if field == "" {
-		field = "inReplyTo"
+		field = commReplyBoundaryFieldInReplyTo
 	}
 	reason = strings.TrimSpace(reason)
 	if reason == "" {
-		reason = "reply_boundary_violation"
+		reason = commReplyBoundaryReasonDefault
 	}
 	return map[string]any{
-		"boundary": "conversation",
-		"field":    field,
-		"reason":   reason,
+		commReplyBoundaryDetailBoundary: commReplyBoundaryConversation,
+		commReplyBoundaryDetailField:    field,
+		commReplyBoundaryDetailReason:   reason,
 	}
 }
 
