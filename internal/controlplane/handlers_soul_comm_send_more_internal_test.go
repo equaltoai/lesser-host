@@ -1103,6 +1103,9 @@ func TestEnforceSoulCommSendGuards_InReplyToRequiresRecipientThread(t *testing.T
 		if appErr.Code != commCodeBoundaryViolation || appErr.StatusCode != http.StatusForbidden {
 			t.Fatalf("expected %s/403, got %q/%d", commCodeBoundaryViolation, appErr.Code, appErr.StatusCode)
 		}
+		if appErr.Details["field"] != "inReplyTo" || appErr.Details["reason"] != "no_prior_conversation" || appErr.Details["boundary"] != "conversation" {
+			t.Fatalf("expected structured inReplyTo boundary details, got %#v", appErr.Details)
+		}
 	})
 
 	t.Run("cc recipient must be part of thread", func(t *testing.T) {

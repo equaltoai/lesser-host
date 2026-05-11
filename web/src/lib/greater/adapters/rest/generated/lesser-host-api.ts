@@ -472,7 +472,17 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Send an outbound comm message */
+        /**
+         * Send an outbound comm message
+         * @description Sends a new outbound comm through host. Host always generates the outgoing `messageId`, `messageRef`, and
+         *     `deliveryId`; callers must not use this endpoint to supply outbound message identity.
+         *
+         *     `inReplyTo`, when present, is a reply/conversation boundary reference rather than an identity override. Host
+         *     checks it against prior host/provider conversation state for every recipient and fails closed with HTTP 403
+         *     `comm.boundary_violation` plus `error.details.field=inReplyTo` when the reference is invalid. Canonical mailbox
+         *     replies should use `POST /api/v1/soul/comm/mailbox/{agentId}/messages/{messageRef}/reply`, which derives
+         *     recipient, thread, and provider reply headers from host's mailbox state.
+         */
         post: operations["soulCommSend"];
         delete?: never;
         options?: never;
@@ -1347,7 +1357,10 @@ export interface components {
             has_more: boolean;
             next_cursor?: string;
         };
-        /** POST /api/v1/soul/comm/send request */
+        /**
+         * POST /api/v1/soul/comm/send request
+         * @description Sends a new outbound comm. Host always generates the outgoing messageId/messageRef; callers must not supply outgoing message identity. The optional inReplyTo field is only a reply/conversation boundary reference for legacy send callers and must match prior host/provider conversation state for every recipient. Canonical mailbox replies should use POST /api/v1/soul/comm/mailbox/{agentId}/messages/{messageRef}/reply instead.
+         */
         "soul-comm-send.request.schema": {
             /** @enum {string} */
             channel: "email" | "sms" | "voice";
@@ -1359,11 +1372,13 @@ export interface components {
             replyTo?: string;
             subject?: string;
             body: string;
+            /** @description Optional reply/conversation boundary reference, not an outgoing message identity. If present, it must match a prior conversation with every recipient; invalid refs fail closed with 403 comm.boundary_violation and error.details.field=inReplyTo. Prefer the canonical mailbox reply endpoint for replies. */
             inReplyTo?: string | null;
             idempotencyKey?: string;
         } & (unknown & unknown & unknown);
         /** POST /api/v1/soul/comm/send response */
         "soul-comm-send.response.schema": {
+            /** @description Host-generated outbound send/status identifier. Callers cannot supply this value on POST /api/v1/soul/comm/send. */
             messageId: string;
             /** @enum {string} */
             status: "accepted" | "sent" | "failed";
@@ -1377,6 +1392,7 @@ export interface components {
             createdAt: string;
             /** @description Opaque stable body-facing mailbox reference for the created outbound delivery; v1 equals deliveryId. */
             messageRef: string;
+            /** @description Host-generated canonical mailbox delivery identifier; v1 also backs messageRef. */
             deliveryId: string;
             threadId: string;
         };
@@ -1384,8 +1400,20 @@ export interface components {
         "soul-comm-send.error.schema": {
             error: {
                 /** @enum {string} */
-                code: "comm.invalid_request" | "comm.unauthorized" | "comm.agent_not_active" | "comm.channel_not_provisioned" | "comm.channel_unverified" | "comm.rate_limited" | "comm.preference_violation" | "comm.insufficient_credits" | "comm.provider_unavailable" | "comm.provider_rejected" | "comm.internal";
+                code: "comm.invalid_request" | "comm.unauthorized" | "comm.agent_not_active" | "comm.channel_not_provisioned" | "comm.channel_unverified" | "comm.rate_limited" | "comm.preference_violation" | "comm.boundary_violation" | "comm.insufficient_credits" | "comm.provider_unavailable" | "comm.provider_rejected" | "comm.idempotency_conflict" | "comm.internal";
                 message: string;
+                status_code?: number;
+                /** @description Optional structured, client-safe metadata. For comm.boundary_violation caused by an invalid reply/conversation reference, Host returns field=inReplyTo, boundary=conversation, and a reason such as no_prior_conversation. */
+                details?: {
+                    /** @enum {string} */
+                    boundary?: "conversation";
+                    /** @enum {string} */
+                    field?: "inReplyTo" | "to";
+                    /** @enum {string} */
+                    reason?: "no_prior_conversation" | "missing_recipient" | "reply_boundary_violation";
+                } & {
+                    [key: string]: unknown;
+                };
                 request_id?: string;
             };
         };
@@ -3445,6 +3473,15 @@ export interface operations {
             };
             /** @description Unauthorized */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["soul-comm-send.error.schema"];
+                };
+            };
+            /** @description Boundary or preference violation */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

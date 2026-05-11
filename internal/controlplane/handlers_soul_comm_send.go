@@ -55,6 +55,15 @@ const (
 	commCodePreferenceViolation = "comm.preference_violation"
 	commCodeBoundaryViolation   = "comm.boundary_violation"
 	commCodeIdempotencyConflict = "comm.idempotency_conflict"
+
+	commReplyBoundaryDetailBoundary = "boundary"
+	commReplyBoundaryDetailField    = "field"
+	commReplyBoundaryDetailReason   = "reason"
+	commReplyBoundaryFieldInReplyTo = "inReplyTo"
+	commReplyBoundaryConversation   = "conversation"
+
+	commReplyBoundaryReasonDefault             = "reply_boundary_violation"
+	commReplyBoundaryReasonNoPriorConversation = "no_prior_conversation"
 )
 
 type soulCommSendRequest struct {
@@ -584,7 +593,7 @@ func (s *Server) enforceSoulCommReplyBoundary(ctx *apptheory.Context, req valida
 	}
 	recipients := soulCommBoundaryRecipients(req)
 	if len(recipients) == 0 {
-		return s.denySoulCommReplyBoundary(ctx, req, req.to, now, metrics, "reply boundary requires a recipient")
+		return s.denySoulCommReplyBoundary(ctx, req, req.to, now, metrics, "to", "missing_recipient", "reply boundary requires a recipient")
 	}
 	activities, err := s.listSoulCommReplyBoundaryActivities(ctx.Context(), req.agentIDHex, req.channel, 500)
 	if err != nil {
@@ -593,7 +602,7 @@ func (s *Server) enforceSoulCommReplyBoundary(ctx *apptheory.Context, req valida
 	}
 	for _, recipient := range recipients {
 		if !soulCommReplyBoundaryMatchesRecipient(activities, req.channel, recipient, req.inReplyTo) {
-			return s.denySoulCommReplyBoundary(ctx, req, recipient, now, metrics, "inReplyTo does not match a prior conversation with every recipient")
+			return s.denySoulCommReplyBoundary(ctx, req, recipient, now, metrics, commReplyBoundaryFieldInReplyTo, commReplyBoundaryReasonNoPriorConversation, "inReplyTo does not match a prior conversation with every recipient")
 		}
 	}
 	return nil
@@ -748,9 +757,29 @@ func (s *Server) denySoulCommFirstContact(ctx *apptheory.Context, req validatedS
 	return s.recordSoulCommGuardViolation(ctx, req, recipient, now, metrics, models.SoulCommBoundaryCheckSkipped, commCodePreferenceViolation, message)
 }
 
-func (s *Server) denySoulCommReplyBoundary(ctx *apptheory.Context, req validatedSoulCommSendRequest, recipient string, now time.Time, metrics *soulCommSendMetrics, message string) *apptheory.AppTheoryError {
+func (s *Server) denySoulCommReplyBoundary(ctx *apptheory.Context, req validatedSoulCommSendRequest, recipient string, now time.Time, metrics *soulCommSendMetrics, field string, reason string, message string) *apptheory.AppTheoryError {
 	metrics.status = commMetricBoundaryViolation
-	return s.recordSoulCommGuardViolation(ctx, req, recipient, now, metrics, models.SoulCommBoundaryCheckViolated, commCodeBoundaryViolation, message)
+	appErr := s.recordSoulCommGuardViolation(ctx, req, recipient, now, metrics, models.SoulCommBoundaryCheckViolated, commCodeBoundaryViolation, message)
+	if appErr == nil {
+		return nil
+	}
+	return appErr.WithDetails(soulCommReplyBoundaryErrorDetails(field, reason))
+}
+
+func soulCommReplyBoundaryErrorDetails(field string, reason string) map[string]any {
+	field = strings.TrimSpace(field)
+	if field == "" {
+		field = commReplyBoundaryFieldInReplyTo
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = commReplyBoundaryReasonDefault
+	}
+	return map[string]any{
+		commReplyBoundaryDetailBoundary: commReplyBoundaryConversation,
+		commReplyBoundaryDetailField:    field,
+		commReplyBoundaryDetailReason:   reason,
+	}
 }
 
 func (s *Server) recordSoulCommGuardViolation(ctx *apptheory.Context, req validatedSoulCommSendRequest, recipient string, now time.Time, metrics *soulCommSendMetrics, boundaryCheck string, code string, message string) *apptheory.AppTheoryError {

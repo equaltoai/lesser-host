@@ -60,6 +60,15 @@ The intent is to keep authority in one place:
 
 - `POST /api/v1/soul/comm/send` and `GET /api/v1/soul/comm/status/{messageId}` remain available for existing outbound
   send/status callers.
+- `POST /api/v1/soul/comm/send` is not an outgoing-message-identity API. Host always generates the outbound
+  `messageId`, `messageRef`, and `deliveryId` returned in the response. Its optional `inReplyTo` request field is a
+  reply/conversation boundary reference for legacy callers only: if present, it must match prior host/provider
+  conversation state for every recipient. Arbitrary caller-supplied refs fail closed with HTTP 403
+  `comm.boundary_violation` and structured details naming `field: "inReplyTo"`.
+- New mailbox replies should use `POST /api/v1/soul/comm/mailbox/{agentId}/messages/{messageRef}/reply`; host derives
+  the recipient, thread, and provider reply headers from canonical mailbox state. Body should not map an MCP
+  `email_send.messageId` argument into Host `inReplyTo`; reply-oriented MCP flows should call the mailbox reply
+  endpoint instead.
 - Body-facing mailbox responses return `messageRef` as the canonical opaque reference. In v1 `messageRef` is backed by
   `deliveryId`; `deliveryId` remains exposed for diagnostics. `messageId` remains legacy/idempotency/provider metadata,
   not the primary public body reference.

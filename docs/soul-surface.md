@@ -125,6 +125,10 @@ ADR 0005 defines the bounded mailbox authority decision for soul communications.
   content, content identity, and read/unread/archive/delete state.
 - Body-facing APIs use `messageRef` as the canonical opaque mailbox reference, backed by `deliveryId` in v1. Legacy
   `messageId` values are accepted only when unambiguous within the authenticated instance + exact agent mailbox.
+- Outbound `POST /api/v1/soul/comm/send` never accepts caller-supplied outgoing message identity. Host generates
+  `messageId`/`messageRef`/`deliveryId`; the request `inReplyTo` field is only a reply/conversation boundary reference
+  and fails closed with `comm.boundary_violation` when it does not match prior conversation state for every recipient.
+  Canonical replies should use the mailbox reply endpoint so host derives recipient/thread/provider context.
 - `lesser` receives notification summaries/projections for UX/activity only; it is not authoritative mailbox state.
 - `lesser-body` remains the MCP facade and exposes tools over host's API contract. It must not persist mailbox truth.
 - List endpoints must return redacted previews/metadata only. Full content requires an explicit content/read call and

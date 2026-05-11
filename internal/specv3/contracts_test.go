@@ -35,9 +35,12 @@ func TestV3ContractFixturesValidate(t *testing.T) {
 			fixtures: []string{filepath.Join(fixturesDir, "communication-outbound-notification.email.example.json")},
 		},
 		{
-			name:     "soul_comm_send_request",
-			schema:   filepath.Join(schemasDir, "soul-comm-send.request.schema.json"),
-			fixtures: []string{filepath.Join(fixturesDir, "soul-comm-send.request.example.json")},
+			name:   "soul_comm_send_request",
+			schema: filepath.Join(schemasDir, "soul-comm-send.request.schema.json"),
+			fixtures: []string{
+				filepath.Join(fixturesDir, "soul-comm-send.request.example.json"),
+				filepath.Join(fixturesDir, "soul-comm-send.request.reply-boundary.example.json"),
+			},
 		},
 		{
 			name:     "soul_comm_send_response",
@@ -45,9 +48,12 @@ func TestV3ContractFixturesValidate(t *testing.T) {
 			fixtures: []string{filepath.Join(fixturesDir, "soul-comm-send.response.example.json")},
 		},
 		{
-			name:     "soul_comm_send_error",
-			schema:   filepath.Join(schemasDir, "soul-comm-send.error.schema.json"),
-			fixtures: []string{filepath.Join(fixturesDir, "soul-comm-send.error.preference-violation.example.json")},
+			name:   "soul_comm_send_error",
+			schema: filepath.Join(schemasDir, "soul-comm-send.error.schema.json"),
+			fixtures: []string{
+				filepath.Join(fixturesDir, "soul-comm-send.error.preference-violation.example.json"),
+				filepath.Join(fixturesDir, "soul-comm-send.error.boundary-violation.example.json"),
+			},
 		},
 		{
 			name:     "soul_agent_channels_response",
