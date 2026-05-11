@@ -310,6 +310,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/soul/instance/agents/{agentId}/mint-conversations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List compact mint-conversation metadata for an instance-owned agent
+         * @description Instance-key authenticated read used by Lesser's self-scope proxy. The list response is compact and never
+         *     includes private `messages` or `produced_declarations`; use the explicit single-conversation route for a
+         *     bounded full private record.
+         */
+        get: operations["soulInstanceListMintConversations"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/soul/instance/agents/{agentId}/mint-conversations/{conversationId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get a bounded private mint-conversation record for an instance-owned agent
+         * @description Instance-key authenticated read used by Lesser's self-scope proxy. This explicit single-conversation route may
+         *     include private `messages` and `produced_declarations`, subject to a 2 MiB response cap and tenant-boundary
+         *     enforcement.
+         */
+        get: operations["soulInstanceGetMintConversation"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/soul/agents/{agentId}/mint-conversation/{conversationId}/complete": {
         parameters: {
             query?: never;
@@ -1102,6 +1146,52 @@ export interface components {
             version: "1";
             conversations: components["schemas"]["SoulMintConversation"][];
             count: number;
+        };
+        SoulInstanceMintConversationSummary: {
+            agent_id: string;
+            conversation_id: string;
+            model?: string;
+            /** @enum {string} */
+            status: "in_progress" | "completed" | "failed";
+            usage?: components["schemas"]["AIUsage"];
+            charged_credits?: number;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            completed_at?: string;
+        };
+        SoulInstanceMintConversationsResponse: {
+            /** @enum {string} */
+            version: "1";
+            conversations: components["schemas"]["SoulInstanceMintConversationSummary"][];
+            count: number;
+            limit: number;
+        };
+        SoulInstanceMintConversationResponse: {
+            /** @enum {string} */
+            version: "1";
+            conversation: components["schemas"]["SoulMintConversation"];
+        };
+        SoulMintConversationInstanceReadErrorEnvelope: {
+            error: {
+                /** @enum {string} */
+                code: "soul_mint.invalid_request" | "soul_mint.unauthorized" | "soul_mint.boundary_violation" | "soul_mint.not_found" | "soul_mint.conflict" | "soul_mint.rate_limited" | "soul_mint.response_too_large" | "soul_mint.internal";
+                message: string;
+                status_code?: number;
+                /** @description Client-safe metadata for validation, tenant-boundary, rate-limit, or oversize failures. */
+                details?: {
+                    /** @enum {string} */
+                    boundary?: "instance_domain";
+                    /** @enum {string} */
+                    field?: "agentId" | "conversationId" | "limit" | "body";
+                    /** @enum {string} */
+                    reason?: "invalid_agent_id" | "invalid_conversation_id" | "invalid_limit" | "request_body_present" | "tenant_domain_mismatch" | "domain_not_verified" | "response_too_large";
+                    retry_after_seconds?: number;
+                } & {
+                    [key: string]: unknown;
+                };
+                request_id?: string;
+            };
         };
         SoulMintConversationFinalizeBeginRequest: {
             boundary_signatures: {
@@ -2858,6 +2948,183 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    soulInstanceListMintConversations: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                agentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SoulInstanceMintConversationsResponse"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SoulMintConversationInstanceReadErrorEnvelope"];
+                };
+            };
+            /** @description Missing, invalid, or revoked instance key */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SoulMintConversationInstanceReadErrorEnvelope"];
+                };
+            };
+            /** @description Tenant/domain boundary mismatch */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SoulMintConversationInstanceReadErrorEnvelope"];
+                };
+            };
+            /** @description Agent not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SoulMintConversationInstanceReadErrorEnvelope"];
+                };
+            };
+            /** @description Response too large */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SoulMintConversationInstanceReadErrorEnvelope"];
+                };
+            };
+            /** @description Rate limited */
+            429: {
+                headers: {
+                    /** @description Seconds until the caller should retry when available. */
+                    "Retry-After"?: number;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SoulMintConversationInstanceReadErrorEnvelope"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SoulMintConversationInstanceReadErrorEnvelope"];
+                };
+            };
+        };
+    };
+    soulInstanceGetMintConversation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agentId: string;
+                conversationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SoulInstanceMintConversationResponse"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SoulMintConversationInstanceReadErrorEnvelope"];
+                };
+            };
+            /** @description Missing, invalid, or revoked instance key */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SoulMintConversationInstanceReadErrorEnvelope"];
+                };
+            };
+            /** @description Tenant/domain boundary mismatch */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SoulMintConversationInstanceReadErrorEnvelope"];
+                };
+            };
+            /** @description Conversation not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SoulMintConversationInstanceReadErrorEnvelope"];
+                };
+            };
+            /** @description Response too large */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SoulMintConversationInstanceReadErrorEnvelope"];
+                };
+            };
+            /** @description Rate limited */
+            429: {
+                headers: {
+                    /** @description Seconds until the caller should retry when available. */
+                    "Retry-After"?: number;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SoulMintConversationInstanceReadErrorEnvelope"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SoulMintConversationInstanceReadErrorEnvelope"];
                 };
             };
         };

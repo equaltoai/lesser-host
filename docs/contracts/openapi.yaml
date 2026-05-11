@@ -915,6 +915,128 @@ components:
           type: integer
           minimum: 0
 
+    SoulInstanceMintConversationSummary:
+      type: object
+      additionalProperties: false
+      required:
+        - agent_id
+        - conversation_id
+        - status
+        - created_at
+      properties:
+        agent_id:
+          type: string
+          pattern: "^0x[0-9a-fA-F]{64}$"
+        conversation_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+        model:
+          type: string
+        status:
+          type: string
+          enum: [in_progress, completed, failed]
+        usage:
+          $ref: "#/components/schemas/AIUsage"
+        charged_credits:
+          type: integer
+          minimum: 0
+        created_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+
+    SoulInstanceMintConversationsResponse:
+      type: object
+      additionalProperties: false
+      required: [version, conversations, count, limit]
+      properties:
+        version:
+          type: string
+          enum: ["1"]
+        conversations:
+          type: array
+          items:
+            $ref: "#/components/schemas/SoulInstanceMintConversationSummary"
+        count:
+          type: integer
+          minimum: 0
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 50
+
+    SoulInstanceMintConversationResponse:
+      type: object
+      additionalProperties: false
+      required: [version, conversation]
+      properties:
+        version:
+          type: string
+          enum: ["1"]
+        conversation:
+          $ref: "#/components/schemas/SoulMintConversation"
+
+    SoulMintConversationInstanceReadErrorEnvelope:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum:
+                - soul_mint.invalid_request
+                - soul_mint.unauthorized
+                - soul_mint.boundary_violation
+                - soul_mint.not_found
+                - soul_mint.conflict
+                - soul_mint.rate_limited
+                - soul_mint.response_too_large
+                - soul_mint.internal
+            message:
+              type: string
+              minLength: 1
+              maxLength: 2048
+            status_code:
+              type: integer
+              minimum: 400
+              maximum: 599
+            details:
+              type: object
+              additionalProperties: true
+              description: Client-safe metadata for validation, tenant-boundary, rate-limit, or oversize failures.
+              properties:
+                boundary:
+                  type: string
+                  enum: [instance_domain]
+                field:
+                  type: string
+                  enum: [agentId, conversationId, limit, body]
+                reason:
+                  type: string
+                  enum:
+                    - invalid_agent_id
+                    - invalid_conversation_id
+                    - invalid_limit
+                    - request_body_present
+                    - tenant_domain_mismatch
+                    - domain_not_verified
+                    - response_too_large
+                retry_after_seconds:
+                  type: integer
+                  minimum: 1
+            request_id:
+              type: string
+              minLength: 1
+              maxLength: 128
+
     SoulMintConversationFinalizeBeginRequest:
       type: object
       additionalProperties: false
@@ -2057,6 +2179,168 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorEnvelope"
+
+  /api/v1/soul/instance/agents/{agentId}/mint-conversations:
+    get:
+      operationId: soulInstanceListMintConversations
+      summary: List compact mint-conversation metadata for an instance-owned agent
+      description: |
+        Instance-key authenticated read used by Lesser's self-scope proxy. The list response is compact and never
+        includes private `messages` or `produced_declarations`; use the explicit single-conversation route for a
+        bounded full private record.
+      security:
+        - instanceKeyAuth: []
+      parameters:
+        - name: agentId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: "^0x[0-9a-fA-F]{64}$"
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 20
+            minimum: 1
+            maximum: 50
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SoulInstanceMintConversationsResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SoulMintConversationInstanceReadErrorEnvelope"
+        "401":
+          description: Missing, invalid, or revoked instance key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SoulMintConversationInstanceReadErrorEnvelope"
+        "403":
+          description: Tenant/domain boundary mismatch
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SoulMintConversationInstanceReadErrorEnvelope"
+        "404":
+          description: Agent not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SoulMintConversationInstanceReadErrorEnvelope"
+        "413":
+          description: Response too large
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SoulMintConversationInstanceReadErrorEnvelope"
+        "429":
+          description: Rate limited
+          headers:
+            Retry-After:
+              description: Seconds until the caller should retry when available.
+              schema:
+                type: integer
+                minimum: 1
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SoulMintConversationInstanceReadErrorEnvelope"
+        "500":
+          description: Internal error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SoulMintConversationInstanceReadErrorEnvelope"
+
+  /api/v1/soul/instance/agents/{agentId}/mint-conversations/{conversationId}:
+    get:
+      operationId: soulInstanceGetMintConversation
+      summary: Get a bounded private mint-conversation record for an instance-owned agent
+      description: |
+        Instance-key authenticated read used by Lesser's self-scope proxy. This explicit single-conversation route may
+        include private `messages` and `produced_declarations`, subject to a 2 MiB response cap and tenant-boundary
+        enforcement.
+      security:
+        - instanceKeyAuth: []
+      parameters:
+        - name: agentId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: "^0x[0-9a-fA-F]{64}$"
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+            pattern: "^[A-Za-z0-9._:-]{1,128}$"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SoulInstanceMintConversationResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SoulMintConversationInstanceReadErrorEnvelope"
+        "401":
+          description: Missing, invalid, or revoked instance key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SoulMintConversationInstanceReadErrorEnvelope"
+        "403":
+          description: Tenant/domain boundary mismatch
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SoulMintConversationInstanceReadErrorEnvelope"
+        "404":
+          description: Conversation not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SoulMintConversationInstanceReadErrorEnvelope"
+        "413":
+          description: Response too large
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SoulMintConversationInstanceReadErrorEnvelope"
+        "429":
+          description: Rate limited
+          headers:
+            Retry-After:
+              description: Seconds until the caller should retry when available.
+              schema:
+                type: integer
+                minimum: 1
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SoulMintConversationInstanceReadErrorEnvelope"
+        "500":
+          description: Internal error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SoulMintConversationInstanceReadErrorEnvelope"
 
   /api/v1/soul/agents/{agentId}/mint-conversation/{conversationId}/complete:
     post:

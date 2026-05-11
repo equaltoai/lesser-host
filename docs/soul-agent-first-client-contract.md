@@ -92,6 +92,21 @@ There are two equivalent route families during the review/finalize phase:
 
 The client should prefer the agent-scoped form once `agentId` is known and stored.
 
+There is also a narrow instance-key read family for Lesser-mediated private self-scope reads:
+
+- `GET /api/v1/soul/instance/agents/{agentId}/mint-conversations`
+- `GET /api/v1/soul/instance/agents/{agentId}/mint-conversations/{conversationId}`
+
+These routes are **not** portal/session routes. They require `instanceKeyAuth` using strict `sha256(raw bearer)` lookup,
+do not accept the legacy plaintext key-id fallback, and enforce that the authenticated instance owns the managed domain
+for the requested agent identity. The list route returns compact metadata only and never includes `messages` or
+`produced_declarations`; the explicit single-conversation route may return the bounded full private record for the
+requested conversation. Instance keys do not gain access to mint start, complete, finalize preflight, finalize begin, or
+finalize mutation routes. Bounds are part of the contract: list defaults to `limit=20` and rejects values above `50`,
+conversation IDs are opaque safe path values up to `128` characters, list responses are capped at `1 MiB`, single
+responses are capped at `2 MiB`, oversize responses fail with `413 soul_mint.response_too_large` rather than silent
+truncation, and rate limiting returns `429 soul_mint.rate_limited` with `Retry-After` when available.
+
 ## End-to-End Sequence
 
 ### 1. Create the request
