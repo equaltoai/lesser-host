@@ -98,7 +98,7 @@ func managedGitHubReleaseAssetURL(owner string, repo string, tag string, asset s
 	if strings.Contains(tag, "/") || strings.Contains(tag, "\n") || strings.Contains(tag, "\r") {
 		return "", fmt.Errorf("invalid github release tag")
 	}
-	if strings.Contains(asset, "/") || strings.Contains(asset, "\n") || strings.Contains(asset, "\r") {
+	if err := validateManagedReleaseAssetPath(asset, "github release asset"); err != nil {
 		return "", fmt.Errorf("invalid github release asset")
 	}
 
@@ -108,6 +108,27 @@ func managedGitHubReleaseAssetURL(owner string, repo string, tag string, asset s
 		Path:   fmt.Sprintf("/%s/%s/releases/download/%s/%s", owner, repo, tag, asset),
 	}
 	return u.String(), nil
+}
+
+func validateManagedReleaseAssetPath(pathValue string, label string) error {
+	pathValue = strings.TrimSpace(pathValue)
+	label = strings.TrimSpace(label)
+	if label == "" {
+		label = "release asset path"
+	}
+	if pathValue == "" {
+		return fmt.Errorf("%s is required", label)
+	}
+	if strings.HasPrefix(pathValue, "/") || strings.Contains(pathValue, "\\") || strings.Contains(pathValue, "\n") || strings.Contains(pathValue, "\r") {
+		return fmt.Errorf("%s must be a relative release asset path", label)
+	}
+	for _, part := range strings.Split(pathValue, "/") {
+		part = strings.TrimSpace(part)
+		if part == "" || part == "." || part == ".." {
+			return fmt.Errorf("%s must not contain empty, current, or parent path segments", label)
+		}
+	}
+	return nil
 }
 
 func fetchManagedGitHubReleaseAsset(ctx context.Context, client *http.Client, owner string, repo string, tag string, asset string) ([]byte, error) {

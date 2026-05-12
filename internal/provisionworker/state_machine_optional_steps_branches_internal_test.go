@@ -35,7 +35,16 @@ func newProvisionServerWithStore(t *testing.T) *Server {
 
 	db := ttmocks.NewMockExtendedDB()
 	st := store.New(db)
-	return &Server{store: st}
+	return &Server{
+		cfg: config.Config{
+			Stage:                           "lab",
+			ManagedLesserBodyDefaultVersion: "v0.2.3",
+			ManagedLesserBodyGitHubOwner:    "equaltoai",
+			ManagedLesserBodyGitHubRepo:     "lesser-body",
+		},
+		store:             st,
+		releaseHTTPClient: newHappyManagedLesserBodyReleaseClient(t, managedStageDev, "v0.2.3"),
+	}
 }
 
 func runProvisionWait(t *testing.T, fn provisionWaitFn, step string, status cbtypes.StatusType, deepLink string, createdAt time.Time, now time.Time) (*models.ProvisionJob, time.Duration, bool, error) {
