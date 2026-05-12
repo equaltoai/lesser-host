@@ -70,7 +70,7 @@ The runner:
 
 1. downloads the published `lesser-body` release assets into a clean release directory
 2. verifies the release manifest, deploy manifest path, stage template path, required capabilities, and checksum coverage
-3. for schema-2 releases, downloads every declared auxiliary asset, verifies its checksum and byte size, uploads it to the managed release artifact prefix, and validates that the selected template references only declared auxiliary code-key parameters
+3. for schema-2 releases, downloads every declared auxiliary asset, verifies its checksum and byte size, uploads it to the managed release artifact prefix, and validates that the selected template references only the primary Body code key or declared auxiliary code-key parameters
 4. runs `deploy-lesser-body-from-release.sh --no-execute-changeset` against the managed instance account to certify the
    published stage template through the real CloudFormation consumer path
 5. executes `deploy-lesser-body-from-release.sh` for the actual managed body deploy
@@ -113,6 +113,9 @@ Host fails closed before deploy if:
 - an auxiliary asset download is missing, checksum-mismatched, or byte-size mismatched
 - a required auxiliary asset lacks a reference for the selected stage template
 - the selected template references an auxiliary Lambda code-key parameter that is not declared by `auxiliary_assets[]`
+- any managed Body Lambda `Code.S3Bucket` / `Code.S3Key` uses a literal, `Fn::Sub`, CDK bootstrap bucket
+  (`cdk-hnb659fds-*`), or any non-Host-managed bucket/key instead of `Ref: LesserBodyCodeBucketName` plus either
+  `Ref: LesserBodyCodeObjectKey` or a declared auxiliary asset parameter
 
 `content_type` is optional. If present, Host preserves it on the S3 upload; Host does not require MIME metadata for
 CloudFormation Lambda code assets.

@@ -444,6 +444,44 @@ func lesserBodyTemplateJSONWithAuxiliary(t *testing.T, stage string) []byte {
 	return raw
 }
 
+func lesserBodyTemplateJSONWithRawBootstrapAuxiliary(t *testing.T, stage string) []byte {
+	t.Helper()
+
+	raw, err := json.Marshal(map[string]any{
+		"AWSTemplateFormatVersion": "2010-09-09",
+		"Parameters": map[string]any{
+			"LesserBodyCodeBucketName": map[string]any{
+				"Type": "String",
+			},
+			"LesserBodyCodeObjectKey": map[string]any{
+				"Type": "String",
+			},
+		},
+		"Resources": map[string]any{
+			"McpHandler03E6F2E1": map[string]any{
+				"Type": "AWS::Lambda::Function",
+				"Properties": map[string]any{
+					"Code": map[string]any{
+						"S3Bucket": map[string]any{"Ref": "LesserBodyCodeBucketName"},
+						"S3Key":    map[string]any{"Ref": "LesserBodyCodeObjectKey"},
+					},
+				},
+			},
+			"CustomS3AutoDeleteObjectsCustomResourceProviderHandler9D90184F": map[string]any{
+				"Type": "AWS::Lambda::Function",
+				"Properties": map[string]any{
+					"Code": map[string]any{
+						"S3Bucket": map[string]any{"Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}"},
+						"S3Key":    "asset.apptheory-s3-auto-delete-provider/handler.zip",
+					},
+				},
+			},
+		},
+	})
+	require.NoError(t, err)
+	return raw
+}
+
 func lesserBodyChecksumsSchema2TXT(stage string) []byte {
 	if strings.TrimSpace(stage) == "" {
 		stage = managedStageDev
@@ -654,6 +692,52 @@ func TestPreflightManagedLesserBodyRelease_RejectsTemplateReferenceWithoutAuxili
 
 	err := srv.preflightManagedLesserBodyRelease(context.Background(), version, stage)
 	require.ErrorContains(t, err, "deploy manifest is missing auxiliary asset")
+}
+
+func TestPreflightManagedLesserBodyRelease_RejectsRawBootstrapLambdaAssetRefs(t *testing.T) {
+	t.Parallel()
+
+	const version = "v0.2.3"
+	const stage = managedStageDev
+	releaseRaw := lesserBodyReleaseManifestSchema2JSON(t, version, stage, "")
+	var releaseDoc map[string]any
+	require.NoError(t, json.Unmarshal(releaseRaw, &releaseDoc))
+	artifacts, ok := releaseDoc["artifacts"].(map[string]any)
+	require.True(t, ok)
+	artifacts["auxiliary_assets"] = []map[string]any{}
+	releaseRaw, err := json.Marshal(releaseDoc)
+	require.NoError(t, err)
+
+	handler := http.NewServeMux()
+	handler.HandleFunc("/equaltoai/lesser-body/releases/download/"+version+"/lesser-body-release.json", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(releaseRaw)
+	})
+	handler.HandleFunc("/equaltoai/lesser-body/releases/download/"+version+"/lesser-body-deploy.json", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(lesserBodyDeployManifestSchema2JSON(t, stage, "", []map[string]any{}))
+	})
+	handler.HandleFunc("/equaltoai/lesser-body/releases/download/"+version+"/checksums.txt", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write(lesserBodyChecksumsSchema2TXT(stage))
+	})
+	handler.HandleFunc("/equaltoai/lesser-body/releases/download/"+version+"/lesser-body-managed-"+stage+".template.json", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(lesserBodyTemplateJSONWithRawBootstrapAuxiliary(t, stage))
+	})
+
+	srv := &Server{
+		cfg: config.Config{
+			Stage:                        "lab",
+			ManagedLesserBodyGitHubOwner: "equaltoai",
+			ManagedLesserBodyGitHubRepo:  "lesser-body",
+		},
+		releaseHTTPClient: newManagedReleaseTestClient(t, handler),
+	}
+
+	err = srv.preflightManagedLesserBodyRelease(context.Background(), version, stage)
+	require.ErrorContains(t, err, "Code.S3Bucket must Ref LesserBodyCodeBucketName")
+	require.ErrorContains(t, err, "CDK bootstrap buckets are not allowed")
 }
 
 func TestManagedLesserBodySchema2BodyFixtureParsesAuxiliaryUploadPlan(t *testing.T) {

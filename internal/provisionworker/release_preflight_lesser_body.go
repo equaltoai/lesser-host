@@ -855,14 +855,34 @@ func validateManagedLesserBodyTemplateDeclaredAuxiliaryRefs(parsed map[string]an
 		if !ok {
 			continue
 		}
-		bucketRef := managedTemplateRef(code["S3Bucket"])
-		keyRef := managedTemplateRef(code["S3Key"])
-		if bucketRef != "LesserBodyCodeBucketName" || keyRef == "" || keyRef == "LesserBodyCodeObjectKey" {
+		bucketValue, hasBucket := code["S3Bucket"]
+		keyValue, hasKey := code["S3Key"]
+		if !hasBucket && !hasKey {
 			continue
 		}
-		if _, ok := declaredParams[keyRef]; !ok {
-			return managedTemplatePathErrorf(templatePath, "references auxiliary code key parameter %s from %s without a declared auxiliary asset", keyRef, strings.TrimSpace(logicalID))
+		bucketRef := managedTemplateRef(bucketValue)
+		keyRef := managedTemplateRef(keyValue)
+		if bucketRef != "LesserBodyCodeBucketName" {
+			return managedTemplatePathErrorf(
+				templatePath,
+				"lambda %s Code.S3Bucket must Ref LesserBodyCodeBucketName; literal, Fn::Sub, and CDK bootstrap buckets are not allowed",
+				strings.TrimSpace(logicalID),
+			)
 		}
+		if keyRef == "" {
+			return managedTemplatePathErrorf(
+				templatePath,
+				"lambda %s Code.S3Key must Ref LesserBodyCodeObjectKey or a declared auxiliary asset parameter",
+				strings.TrimSpace(logicalID),
+			)
+		}
+		if keyRef == "LesserBodyCodeObjectKey" {
+			continue
+		}
+		if _, ok := declaredParams[keyRef]; ok {
+			continue
+		}
+		return managedTemplatePathErrorf(templatePath, "references auxiliary code key parameter %s from %s without a declared auxiliary asset", keyRef, strings.TrimSpace(logicalID))
 	}
 	return nil
 }
