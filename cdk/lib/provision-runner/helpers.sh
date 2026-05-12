@@ -183,9 +183,9 @@ upload_lesser_body_auxiliary_assets() {
     object_key="$body_asset_prefix/$s3_key"
     echo "Uploading lesser-body auxiliary asset $id to s3://$body_asset_bucket/$object_key"
     if [ -n "$content_type" ]; then
-      aws s3 cp "$body_release_dir/$path" "s3://$body_asset_bucket/$object_key" --content-type "$content_type"
+      AWS_PROFILE=managed aws s3 cp "$body_release_dir/$path" "s3://$body_asset_bucket/$object_key" --content-type "$content_type"
     else
-      aws s3 cp "$body_release_dir/$path" "s3://$body_asset_bucket/$object_key"
+      AWS_PROFILE=managed aws s3 cp "$body_release_dir/$path" "s3://$body_asset_bucket/$object_key"
     fi
   done
 }
