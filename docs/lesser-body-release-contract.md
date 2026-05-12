@@ -26,6 +26,7 @@ Every managed-consumable `lesser-body` release must publish:
 - `lesser-body.zip`
 - `deploy-lesser-body-from-release.sh`
 - `lesser-body-managed-<stage>.template.json`
+- every required schema-2 `auxiliary_assets[].path` asset, when the deploy manifest declares auxiliary assets
 
 The managed runner verifies the checksum coverage for:
 
@@ -34,6 +35,7 @@ The managed runner verifies the checksum coverage for:
 - `lesser-body.zip`
 - `deploy-lesser-body-from-release.sh`
 - `lesser-body-managed-<stage>.template.json`
+- every declared schema-2 auxiliary asset path
 
 ## Required release-manifest fields
 
@@ -45,16 +47,17 @@ The managed runner verifies the checksum coverage for:
 - `artifacts.checksums.path = "checksums.txt"`
 - `artifacts.checksums.algorithm = "sha256"`
 - `artifacts.deploy_manifest.path = "lesser-body-deploy.json"`
-- `artifacts.deploy_manifest.schema = 1`
+- `artifacts.deploy_manifest.schema = 1` for legacy releases, or `2` for managed auxiliary assets
 - `artifacts.lambda_zip.path = "lesser-body.zip"`
 - `artifacts.deploy_script.path = "deploy-lesser-body-from-release.sh"`
 - `artifacts.deploy_templates.<stage>.path = "lesser-body-managed-<stage>.template.json"`
 - `artifacts.deploy_templates.<stage>.format = "cloudformation-json"`
-- `deploy.schema = 1`
+- `deploy.schema = 1` for legacy releases, or `2` for managed auxiliary assets
 - `deploy.manifest_path = "lesser-body-deploy.json"`
 - `deploy.template_selection = "by_stage"`
 - `deploy.source_checkout_required = false`
 - `deploy.npm_install_required = false`
+- for schema 2, `deploy.required_capabilities` must include `managed_auxiliary_assets_v1`
 
 The managed runner currently normalizes the requested managed stage to `dev`, `staging`, or `live` and expects template
 metadata for the selected stage.
@@ -66,14 +69,56 @@ The managed `lesser-body` consumer path is `RUN_MODE=lesser-body`.
 The runner:
 
 1. downloads the published `lesser-body` release assets into a clean release directory
-2. verifies the release manifest, deploy manifest path, stage template path, and checksum coverage
-3. runs `deploy-lesser-body-from-release.sh --no-execute-changeset` against the managed instance account to certify the
+2. verifies the release manifest, deploy manifest path, stage template path, required capabilities, and checksum coverage
+3. for schema-2 releases, downloads every declared auxiliary asset, verifies its checksum and byte size, uploads it to the managed release artifact prefix, and validates that the selected template references only the primary Body code key or declared auxiliary code-key parameters
+4. runs `deploy-lesser-body-from-release.sh --no-execute-changeset` against the managed instance account to certify the
    published stage template through the real CloudFormation consumer path
-4. executes `deploy-lesser-body-from-release.sh` for the actual managed body deploy
-5. reads the instance-scoped SSM export `/${app}/${stage}/lesser-body/exports/v1/mcp_lambda_arn`
-6. writes the managed receipt and uploads it back to the host artifacts bucket
+5. executes `deploy-lesser-body-from-release.sh` for the actual managed body deploy
+6. reads the instance-scoped SSM export `/${app}/${stage}/lesser-body/exports/v1/mcp_lambda_arn`
+7. writes the managed receipt and uploads it back to the host artifacts bucket
 
 The managed runner does not require a `lesser-body` source checkout or `npm install` in the happy path.
+
+
+## Schema 2 auxiliary assets
+
+Schema-2 `lesser-body` deploy manifests are supported for AppTheory/CDK file assets that must be staged alongside the
+primary Body Lambda zip. Schema 2 is additive: schema-1 / older single-asset Body releases remain supported.
+
+Host supports exactly this required capability today:
+
+- `managed_auxiliary_assets_v1`
+
+For schema-2 releases, `lesser-body-deploy.json` must declare `required_capabilities: ["managed_auxiliary_assets_v1"]`
+and every required auxiliary asset under `auxiliary_assets[]`. Host treats `auxiliary_assets[].s3_key` as
+**prefix-relative**: the runner uploads the release asset to
+`s3://<assetBucket>/<assetPrefix>/<s3_key>`, where Host's managed asset prefix is currently
+`managed/lesser-body/<slug>/<stage>/<tag>`. Do not publish absolute S3 keys in `s3_key`.
+
+Each auxiliary asset entry must include:
+
+- `id`
+- `path`
+- `sha256`
+- `bytes`
+- `required`
+- `s3_key`
+- `template_parameter`
+- `template_references[]`
+
+Host fails closed before deploy if:
+
+- a required capability is unsupported or omitted
+- a declared auxiliary asset path is missing from `checksums.txt`
+- an auxiliary asset download is missing, checksum-mismatched, or byte-size mismatched
+- a required auxiliary asset lacks a reference for the selected stage template
+- the selected template references an auxiliary Lambda code-key parameter that is not declared by `auxiliary_assets[]`
+- any managed Body Lambda `Code.S3Bucket` / `Code.S3Key` uses a literal, `Fn::Sub`, CDK bootstrap bucket
+  (`cdk-hnb659fds-*`), or any non-Host-managed bucket/key instead of `Ref: LesserBodyCodeBucketName` plus either
+  `Ref: LesserBodyCodeObjectKey` or a declared auxiliary asset parameter
+
+`content_type` is optional. If present, Host preserves it on the S3 upload; Host does not require MIME metadata for
+CloudFormation Lambda code assets.
 
 ## lesser-body managed receipt contract
 
@@ -102,7 +147,9 @@ The receipt preserves the native `lesser-body` deploy fields and adds host-side 
       "path": "lesser-body.zip",
       "manifest_path": "lesser-body-deploy.json",
       "script_path": "deploy-lesser-body-from-release.sh",
-      "template_path": "lesser-body-managed-dev.template.json"
+      "template_path": "lesser-body-managed-dev.template.json",
+      "asset_prefix": "managed/lesser-body/simulacrum/dev/v0.2.3",
+      "auxiliary_assets": []
     }
   }
 }

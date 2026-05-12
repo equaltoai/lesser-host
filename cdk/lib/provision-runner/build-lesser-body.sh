@@ -35,6 +35,7 @@ rm -f "$BODY_TEMPLATE_CERT_PATH" "$BODY_FAILURE_PATH" "$BODY_TEMPLATE_CERT_LOG" 
 
 BODY_TEMPLATE_FILE="$BODY_RELEASE_DIR/$BODY_TEMPLATE_PATH"
 patch_lesser_body_template_for_existing_stack "$BODY_STACK_NAME" "$APP_SLUG" "$STAGE" "$BODY_RELEASE_DIR" "$BODY_TEMPLATE_FILE"
+upload_lesser_body_auxiliary_assets "$BODY_RELEASE_DIR" "$BODY_ASSET_BUCKET" "$BODY_ASSET_PREFIX"
 
 BODY_TEMPLATE_CERTIFY="${BODY_TEMPLATE_CERTIFY:-true}"
 BODY_TEMPLATE_CERTIFY_NORMALIZED=$(printf "%s" "$BODY_TEMPLATE_CERTIFY" | tr "[:upper:]" "[:lower:]")
@@ -68,5 +69,5 @@ BODY_LAMBDA_ARN=$(aws ssm get-parameter --profile managed --name "$BODY_PARAM" -
 test -n "$BODY_LAMBDA_ARN" && test "$BODY_LAMBDA_ARN" != "null"
 BODY_RECEIPT_PATH="$STATE_DIR/body-state.json"
 BODY_RELEASE_GIT_SHA=$(jq -r '.git_sha // empty' "$BODY_RELEASE_DIR/lesser-body-release.json")
-jq -n --arg stage "$STAGE" --arg base_domain "$BASE_DOMAIN" --arg mcp_url "https://api.$STAGE_DOMAIN/mcp/{actor}" --arg version "$BODY_TAG" --arg mcp_lambda_arn "$BODY_LAMBDA_ARN" --arg release_git_sha "$BODY_RELEASE_GIT_SHA" --arg template_path "lesser-body-managed-$STAGE.template.json" '{version:1,stage:$stage,base_domain:$base_domain,mcp_url:$mcp_url,lesser_body_version:$version,mcp_lambda_arn:$mcp_lambda_arn,managed_deploy_artifacts:{mode:"release",checksums_path:"checksums.txt",release_manifest_path:"lesser-body-release.json",release:{name:"lesser-body",version:$version,git_sha:$release_git_sha,source_checkout_required:false,npm_install_required:false},deploy_artifact:{kind:"lesser_body_managed_deploy",path:"lesser-body.zip",manifest_path:"lesser-body-deploy.json",script_path:"deploy-lesser-body-from-release.sh",template_path:$template_path}}}' > "$BODY_RECEIPT_PATH"
+jq -n --arg stage "$STAGE" --arg base_domain "$BASE_DOMAIN" --arg mcp_url "https://api.$STAGE_DOMAIN/mcp/{actor}" --arg version "$BODY_TAG" --arg mcp_lambda_arn "$BODY_LAMBDA_ARN" --arg release_git_sha "$BODY_RELEASE_GIT_SHA" --arg template_path "lesser-body-managed-$STAGE.template.json" --arg asset_prefix "$BODY_ASSET_PREFIX" --slurpfile deploy "$BODY_RELEASE_DIR/lesser-body-deploy.json" '{version:1,stage:$stage,base_domain:$base_domain,mcp_url:$mcp_url,lesser_body_version:$version,mcp_lambda_arn:$mcp_lambda_arn,managed_deploy_artifacts:{mode:"release",checksums_path:"checksums.txt",release_manifest_path:"lesser-body-release.json",release:{name:"lesser-body",version:$version,git_sha:$release_git_sha,source_checkout_required:false,npm_install_required:false},deploy_artifact:{kind:"lesser_body_managed_deploy",path:"lesser-body.zip",manifest_path:"lesser-body-deploy.json",script_path:"deploy-lesser-body-from-release.sh",template_path:$template_path,asset_prefix:$asset_prefix,auxiliary_assets:($deploy[0].auxiliary_assets // [])}}}' > "$BODY_RECEIPT_PATH"
 aws s3 cp "$BODY_RECEIPT_PATH" "s3://$ARTIFACT_BUCKET/$RECEIPT_S3_KEY"

@@ -10,14 +10,25 @@
   },
   "deploy_manifest": {
     "path": "lesser-body-deploy.json",
-    "schema_version": 1
+    "schema_version": 1,
+    "supported_schema_versions": [
+      1,
+      2
+    ]
   },
   "deploy": {
     "schema_version": 1,
     "manifest_path": "lesser-body-deploy.json",
     "template_selection": "by_stage",
     "source_checkout_required": false,
-    "npm_install_required": false
+    "npm_install_required": false,
+    "supported_schema_versions": [
+      1,
+      2
+    ],
+    "supported_required_capabilities": [
+      "managed_auxiliary_assets_v1"
+    ]
   },
   "lambda_zip": {
     "path": "lesser-body.zip"
@@ -32,5 +43,24 @@
   ],
   "deploy_templates": {
     "format": "cloudformation-json"
+  },
+  "supported_release_manifest_schemas": [
+    1,
+    2
+  ],
+  "auxiliary_assets": {
+    "required_capability": "managed_auxiliary_assets_v1",
+    "s3_key_semantics": "prefix-relative",
+    "template_parameter": "cloudformation-parameter-name",
+    "required_fields": [
+      "id",
+      "path",
+      "sha256",
+      "bytes",
+      "required",
+      "s3_key",
+      "template_parameter",
+      "template_references"
+    ]
   }
 }

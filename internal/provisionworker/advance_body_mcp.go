@@ -97,6 +97,9 @@ func (s *Server) advanceProvisionStartDeployRunner(
 }
 
 func (s *Server) advanceProvisionBodyDeployStartStartRunner(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {
+	if err := s.preflightManagedLesserBodyRelease(ctx, strings.TrimSpace(s.cfg.ManagedLesserBodyDefaultVersion), s.deployRunnerStage(job)); err != nil {
+		return 0, false, s.failJob(ctx, job, requestID, now, "body_release_preflight_failed", "lesser-body release preflight failed: "+err.Error())
+	}
 	return s.advanceProvisionStartDeployRunner(
 		ctx,
 		job,

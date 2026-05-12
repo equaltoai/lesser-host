@@ -83,6 +83,113 @@ verify_downloaded_asset_checksum() {
   test "$expected" = "$actual" || fail "checksum mismatch for $asset_name"
 }
 
+safe_release_asset_path() {
+  value="$1"
+  label="$2"
+  if [ -z "$value" ]; then fail "$label is required"; fi
+  case "$value" in
+    /*|*\\*|*..*|*$'\n'*|*$'\r'*) fail "$label must be a safe relative release asset path (got: $value)" ;;
+  esac
+  if printf "%s" "$value" | grep -Eq '(^|/)(\.|)(/|$)'; then
+    fail "$label must not contain empty/current path segments (got: $value)"
+  fi
+}
+
+require_lesser_body_auxiliary_capability() {
+  manifest_path="$1"
+  if ! jq -e '.required_capabilities // [] | index("managed_auxiliary_assets_v1")' "$manifest_path" >/dev/null; then
+    fail "lesser-body deploy manifest schema 2 requires managed_auxiliary_assets_v1 capability"
+  fi
+  unsupported=$(jq -r '.required_capabilities[]? | select(. != "managed_auxiliary_assets_v1")' "$manifest_path" | head -n 1)
+  test -z "$unsupported" || fail "unsupported lesser-body required capability: $unsupported"
+}
+
+require_lesser_body_release_auxiliary_capability() {
+  release_manifest_path="$1"
+  if ! jq -e '.deploy.required_capabilities // [] | index("managed_auxiliary_assets_v1")' "$release_manifest_path" >/dev/null; then
+    fail "lesser-body release manifest schema 2 requires managed_auxiliary_assets_v1 capability"
+  fi
+  unsupported=$(jq -r '.deploy.required_capabilities[]? | select(. != "managed_auxiliary_assets_v1")' "$release_manifest_path" | head -n 1)
+  test -z "$unsupported" || fail "unsupported lesser-body release required capability: $unsupported"
+}
+
+require_lesser_body_auxiliary_manifest_agreement() {
+  release_manifest_path="$1"
+  deploy_manifest_path="$2"
+  release_paths=$(jq -r '.artifacts.auxiliary_assets[]?.path' "$release_manifest_path" | sort)
+  deploy_paths=$(jq -r '.auxiliary_assets[]?.path' "$deploy_manifest_path" | sort)
+  test "$release_paths" = "$deploy_paths" || fail "lesser-body auxiliary asset paths must match between release and deploy manifests"
+}
+
+prepare_lesser_body_auxiliary_assets() {
+  body_release_dir="$1"
+  body_owner="$2"
+  body_repo="$3"
+  body_tag="$4"
+  body_stage="$5"
+  deploy_manifest_path="$body_release_dir/lesser-body-deploy.json"
+  deploy_schema=$(jq -r '.schema // 1' "$deploy_manifest_path")
+  if [ "$deploy_schema" = "1" ]; then
+    return 0
+  fi
+  test "$deploy_schema" = "2" || fail "unsupported lesser-body deploy manifest schema: $deploy_schema"
+  require_lesser_body_auxiliary_capability "$deploy_manifest_path"
+  require_lesser_body_auxiliary_manifest_agreement "$body_release_dir/lesser-body-release.json" "$deploy_manifest_path"
+
+  template_path="lesser-body-managed-$body_stage.template.json"
+  jq -c '.auxiliary_assets[]?' "$deploy_manifest_path" | while IFS= read -r asset; do
+    id=$(printf "%s" "$asset" | jq -r '.id // empty')
+    path=$(printf "%s" "$asset" | jq -r '.path // empty')
+    s3_key=$(printf "%s" "$asset" | jq -r '.s3_key // empty')
+    template_parameter=$(printf "%s" "$asset" | jq -r '.template_parameter // empty')
+    bytes=$(printf "%s" "$asset" | jq -r '.bytes // 0')
+    required=$(printf "%s" "$asset" | jq -r 'if .required == false then "false" else "true" end')
+    test -n "$id" || fail "lesser-body auxiliary asset id is required"
+    safe_release_asset_path "$path" "lesser-body auxiliary asset $id path"
+    safe_release_asset_path "$s3_key" "lesser-body auxiliary asset $id s3_key"
+    printf "%s" "$template_parameter" | grep -Eq '^[A-Za-z][A-Za-z0-9]*$' || fail "lesser-body auxiliary asset $id template_parameter is invalid"
+    test "$bytes" -gt 0 || fail "lesser-body auxiliary asset $id bytes must be positive"
+    if [ "$required" = "true" ]; then
+      refs=$(printf "%s" "$asset" | jq --arg stage "$body_stage" --arg template "$template_path" --arg param "$template_parameter" '[.template_references[]? | select((.stage == $stage) and (.template == $template) and (.key_parameter == $param))] | length')
+      test "$refs" -gt 0 || fail "required lesser-body auxiliary asset $id has no matching template reference for $template_path"
+    fi
+    mkdir -p "$(dirname "$body_release_dir/$path")"
+    download_github_release_asset "$body_owner" "$body_repo" "$body_tag" "$path" "$body_release_dir/$path"
+    verify_downloaded_asset_checksum "$body_release_dir/checksums.txt" "$path" "$body_release_dir/$path"
+    actual_bytes=$(stat -c%s "$body_release_dir/$path")
+    test "$actual_bytes" = "$bytes" || fail "byte-size mismatch for lesser-body auxiliary asset $id"
+  done
+}
+
+upload_lesser_body_auxiliary_assets() {
+  body_release_dir="$1"
+  body_asset_bucket="$2"
+  body_asset_prefix="$3"
+  deploy_manifest_path="$body_release_dir/lesser-body-deploy.json"
+  deploy_schema=$(jq -r '.schema // 1' "$deploy_manifest_path")
+  if [ "$deploy_schema" = "1" ]; then
+    return 0
+  fi
+  test "$deploy_schema" = "2" || fail "unsupported lesser-body deploy manifest schema: $deploy_schema"
+  require_lesser_body_auxiliary_capability "$deploy_manifest_path"
+
+  jq -c '.auxiliary_assets[]?' "$deploy_manifest_path" | while IFS= read -r asset; do
+    id=$(printf "%s" "$asset" | jq -r '.id // empty')
+    path=$(printf "%s" "$asset" | jq -r '.path // empty')
+    s3_key=$(printf "%s" "$asset" | jq -r '.s3_key // empty')
+    content_type=$(printf "%s" "$asset" | jq -r '.content_type // empty')
+    safe_release_asset_path "$path" "lesser-body auxiliary asset $id path"
+    safe_release_asset_path "$s3_key" "lesser-body auxiliary asset $id s3_key"
+    object_key="$body_asset_prefix/$s3_key"
+    echo "Uploading lesser-body auxiliary asset $id to s3://$body_asset_bucket/$object_key"
+    if [ -n "$content_type" ]; then
+      aws s3 cp "$body_release_dir/$path" "s3://$body_asset_bucket/$object_key" --content-type "$content_type"
+    else
+      aws s3 cp "$body_release_dir/$path" "s3://$body_asset_bucket/$object_key"
+    fi
+  done
+}
+
 prepare_lesser_release_dir() {
   release_dir="$1"
   rm -rf "$release_dir"
@@ -223,6 +330,9 @@ prepare_lesser_body_release_dir() {
   test "$BODY_RELEASE_NAME" = "lesser-body" || fail "unexpected lesser-body release manifest name: $BODY_RELEASE_NAME"
   BODY_RELEASE_VERSION=$(jq -r '.version // empty' "$body_release_dir/lesser-body-release.json")
   test "$BODY_RELEASE_VERSION" = "$body_tag" || fail "lesser-body release manifest version mismatch: $BODY_RELEASE_VERSION"
+  BODY_RELEASE_SCHEMA=$(jq -r '.schema // 1' "$body_release_dir/lesser-body-release.json")
+  BODY_RELEASE_DEPLOY_SCHEMA=$(jq -r '.deploy.schema // 1' "$body_release_dir/lesser-body-release.json")
+  BODY_RELEASE_DEPLOY_MANIFEST_SCHEMA=$(jq -r '.artifacts.deploy_manifest.schema // 1' "$body_release_dir/lesser-body-release.json")
   BODY_DEPLOY_MANIFEST=$(jq -r '.deploy.manifest_path // empty' "$body_release_dir/lesser-body-release.json")
   test "$BODY_DEPLOY_MANIFEST" = "lesser-body-deploy.json" || fail "unexpected lesser-body deploy manifest path: $BODY_DEPLOY_MANIFEST"
   BODY_SOURCE_CHECKOUT_REQUIRED=$(jq -r 'if .deploy.source_checkout_required == false then "false" elif .deploy.source_checkout_required == true then "true" else empty end' "$body_release_dir/lesser-body-release.json")
@@ -235,6 +345,22 @@ prepare_lesser_body_release_dir() {
   test "$BODY_SCRIPT_PATH" = "deploy-lesser-body-from-release.sh" || fail "unexpected lesser-body deploy script path: $BODY_SCRIPT_PATH"
   BODY_LAMBDA_PATH=$(jq -r '.artifacts.lambda_zip.path // empty' "$body_release_dir/lesser-body-release.json")
   test "$BODY_LAMBDA_PATH" = "lesser-body.zip" || fail "unexpected lesser-body lambda zip path: $BODY_LAMBDA_PATH"
+  BODY_DEPLOY_SCHEMA=$(jq -r '.schema // 1' "$body_release_dir/lesser-body-deploy.json")
+  if [ "$BODY_RELEASE_SCHEMA" = "2" ]; then
+    test "$BODY_RELEASE_DEPLOY_SCHEMA" = "2" || fail "lesser-body release schema 2 requires deploy schema 2"
+    test "$BODY_RELEASE_DEPLOY_MANIFEST_SCHEMA" = "2" || fail "lesser-body release schema 2 requires deploy manifest schema 2"
+    test "$BODY_DEPLOY_SCHEMA" = "2" || fail "lesser-body release schema 2 requires lesser-body-deploy.json schema 2"
+    require_lesser_body_release_auxiliary_capability "$body_release_dir/lesser-body-release.json"
+  else
+    test "$BODY_RELEASE_SCHEMA" = "1" || fail "unsupported lesser-body release manifest schema: $BODY_RELEASE_SCHEMA"
+    test "$BODY_RELEASE_DEPLOY_SCHEMA" = "1" || fail "unsupported lesser-body deploy schema for release schema 1: $BODY_RELEASE_DEPLOY_SCHEMA"
+    test "$BODY_RELEASE_DEPLOY_MANIFEST_SCHEMA" = "1" || fail "unsupported lesser-body deploy manifest schema for release schema 1: $BODY_RELEASE_DEPLOY_MANIFEST_SCHEMA"
+  fi
+  if [ "$BODY_DEPLOY_SCHEMA" = "2" ]; then
+    prepare_lesser_body_auxiliary_assets "$body_release_dir" "$body_owner" "$body_repo" "$body_tag" "$body_stage"
+  else
+    test "$BODY_DEPLOY_SCHEMA" = "1" || fail "unsupported lesser-body deploy manifest schema: $BODY_DEPLOY_SCHEMA"
+  fi
 }
 
 upload_optional_artifact() {
