@@ -391,10 +391,13 @@ func TestUpdateSoulAgentRegistrationForInstance_V3_SyncsENSWithoutS3Key(t *testi
 		t.Fatalf("generate key: %v", err)
 	}
 	wallet := strings.ToLower(crypto.PubkeyToAddress(key.PublicKey).Hex())
+	principalDeclaration := boundaryTestPrincipalDeclaration
+	principalSigHex := signSoulUpdateRegistrationPrincipalForTest(t, key, principalDeclaration)
+	verifiedPrincipalSigHex := signSoulUpdateRegistrationVerifiedPrincipalForTest(t, s, key, agentIDHex, wallet, principalDeclaration)
 
 	tdb.qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
-		*dest = models.SoulAgentIdentity{
+		identity := models.SoulAgentIdentity{
 			AgentID:   agentIDHex,
 			Domain:    "example.com",
 			LocalID:   "agent-alice",
@@ -402,6 +405,8 @@ func TestUpdateSoulAgentRegistrationForInstance_V3_SyncsENSWithoutS3Key(t *testi
 			Status:    models.SoulAgentStatusActive,
 			UpdatedAt: time.Now().Add(-time.Minute).UTC(),
 		}
+		applySoulUpdateRegistrationPrincipalForTest(&identity, wallet, principalDeclaration, verifiedPrincipalSigHex)
+		*dest = identity
 	}).Once()
 	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
@@ -429,13 +434,6 @@ func TestUpdateSoulAgentRegistrationForInstance_V3_SyncsENSWithoutS3Key(t *testi
 	}}
 	s.dialEVM = func(ctx context.Context, rpcURL string) (ethRPCClient, error) { return client, nil }
 
-	principalDeclaration := boundaryTestPrincipalDeclaration
-	principalDigest := crypto.Keccak256([]byte(principalDeclaration))
-	principalSig, err := crypto.Sign(accounts.TextHash(principalDigest), key)
-	if err != nil {
-		t.Fatalf("principal sign: %v", err)
-	}
-
 	unsigned := map[string]any{
 		"version": "3",
 		"agentId": agentIDHex,
@@ -448,8 +446,8 @@ func TestUpdateSoulAgentRegistrationForInstance_V3_SyncsENSWithoutS3Key(t *testi
 			"displayName": "Alice",
 			"contactUri":  "https://example.com/alice",
 			"declaration": principalDeclaration,
-			"signature":   "0x" + hex.EncodeToString(principalSig),
-			"declaredAt":  "2026-03-01T00:00:00Z",
+			"signature":   principalSigHex,
+			"declaredAt":  soulUpdateRegistrationPrincipalDeclaredAtForTest,
 		},
 		"selfDescription": map[string]any{
 			"purpose":    "I summarize documents for humans.",

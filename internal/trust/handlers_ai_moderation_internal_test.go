@@ -7,7 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/mock"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
+	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
 
 	"github.com/equaltoai/lesser-host/internal/ai"
 	"github.com/equaltoai/lesser-host/internal/artifacts"
@@ -109,6 +112,57 @@ func TestHandleAIModerationImage_DisabledShortCircuitsFetch(t *testing.T) {
 	}
 	if out.Contract.Module != ai.ModerationImageLLMModule || out.Contract.InputsHash == "" {
 		t.Fatalf("expected image moderation contract, got %#v", out.Contract)
+	}
+}
+
+func TestHandleAIModerationImage_BudgetPrecheckShortCircuitsFetch(t *testing.T) {
+	t.Parallel()
+
+	db := ttmocks.NewMockExtendedDB()
+	qInstance := new(ttmocks.MockQuery)
+	qBudget := new(ttmocks.MockQuery)
+	db.On("WithContext", mock.Anything).Return(db).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.Instance")).Return(qInstance).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(qBudget).Maybe()
+	qInstance.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qInstance).Maybe()
+	qBudget.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qBudget).Maybe()
+	qBudget.On("ConsistentRead").Return(qBudget).Maybe()
+
+	enabled := true
+	qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest, ok := args.Get(0).(*models.Instance)
+		if !ok {
+			t.Fatalf("expected *models.Instance mock destination")
+		}
+		*dest = models.Instance{
+			Slug:              testBudgetInstanceSlug,
+			AIEnabled:         &enabled,
+			ModerationEnabled: &enabled,
+			ModerationTrigger: moderationTriggerAlways,
+		}
+	}).Once()
+	qBudget.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(theoryErrors.ErrItemNotFound).Once()
+
+	st := store.New(db)
+	s := &Server{store: st, ai: ai.NewService(st), artifacts: artifacts.New("bucket")}
+	body, _ := json.Marshal(aiModerationImageRequest{URL: "https://example.com/image.png"})
+	resp, err := s.handleAIModerationImage(&apptheory.Context{
+		AuthIdentity: testBudgetInstanceSlug,
+		Request:      apptheory.Request{Body: body},
+	})
+	if err != nil {
+		t.Fatalf("expected budget precheck response before url fetch, got err: %v", err)
+	}
+	if resp.Status != 200 {
+		t.Fatalf("expected 200, got %d", resp.Status)
+	}
+
+	var out aiModerationResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Status != statusNotCheckedBudget || out.ErrorCode != statusNotCheckedBudget || out.Budget.Reason != budgetReasonNotConfigured {
+		t.Fatalf("expected not_checked_budget precheck response before fetch, got %#v", out)
 	}
 }
 

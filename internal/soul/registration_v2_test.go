@@ -3,6 +3,7 @@ package soul
 import (
 	"crypto/ecdsa"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -177,6 +178,33 @@ func TestRegistrationFileV2_ParseAndValidate(t *testing.T) {
 				t.Fatalf("expected validation error")
 			}
 		})
+	}
+}
+
+func TestPrincipalDeclarationV2ValidateVerifiedBinding(t *testing.T) {
+	t.Parallel()
+
+	valid := validPrincipalV2(t)
+	binding := PrincipalDeclarationBindingV2{
+		Identifier:  strings.ToLower(valid.Identifier),
+		Declaration: "  " + valid.Declaration + "  ",
+		Signature:   "  " + valid.Signature + "  ",
+		DeclaredAt:  "  " + valid.DeclaredAt + "  ",
+	}
+	if err := valid.ValidateVerifiedBinding(binding); err != nil {
+		t.Fatalf("expected binding to validate case-insensitive identifier and trimmed fields: %v", err)
+	}
+
+	missing := binding
+	missing.Identifier = " "
+	if err := valid.ValidateVerifiedBinding(missing); !errors.Is(err, ErrPrincipalBindingMissing) {
+		t.Fatalf("expected missing binding sentinel, got %v", err)
+	}
+
+	mismatched := binding
+	mismatched.Identifier = common.HexToAddress("0x0000000000000000000000000000000000000001").Hex()
+	if err := valid.ValidateVerifiedBinding(mismatched); err == nil || !strings.Contains(err.Error(), "verified agent principal") {
+		t.Fatalf("expected principal mismatch, got %v", err)
 	}
 }
 

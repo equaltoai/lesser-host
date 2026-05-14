@@ -16,6 +16,7 @@ const (
 	appErrCodeBadRequest   = "app.bad_request"
 	appErrCodeForbidden    = "app.forbidden"
 	appErrCodeUnauthorized = "app.unauthorized"
+	appErrCodeConflict     = "app.conflict"
 
 	cacheControlNoStore = "no-store"
 )

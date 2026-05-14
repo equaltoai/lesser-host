@@ -52,6 +52,9 @@ func TestHandleSoulAgentUpdateRegistration_V2_FirstVersion_AllowsNullPreviousVer
 		t.Fatalf("generate key: %v", err)
 	}
 	wallet := strings.ToLower(crypto.PubkeyToAddress(key.PublicKey).Hex())
+	principalDeclaration := boundaryTestPrincipalDeclaration
+	principalSigHex := signSoulUpdateRegistrationPrincipalForTest(t, key, principalDeclaration)
+	verifiedPrincipalSigHex := signSoulUpdateRegistrationVerifiedPrincipalForTest(t, s, key, agentIDHex, wallet, principalDeclaration)
 
 	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
@@ -64,7 +67,7 @@ func TestHandleSoulAgentUpdateRegistration_V2_FirstVersion_AllowsNullPreviousVer
 	tdb.qWalletIdx.On("First", mock.AnythingOfType("*models.WalletIndex")).Return(theoryErrors.ErrItemNotFound).Once()
 	tdb.qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
-		*dest = models.SoulAgentIdentity{
+		identity := models.SoulAgentIdentity{
 			AgentID:   agentIDHex,
 			Domain:    "example.com",
 			LocalID:   "agent-alice",
@@ -72,6 +75,8 @@ func TestHandleSoulAgentUpdateRegistration_V2_FirstVersion_AllowsNullPreviousVer
 			Status:    models.SoulAgentStatusActive,
 			UpdatedAt: time.Now().Add(-time.Minute).UTC(),
 		}
+		applySoulUpdateRegistrationPrincipalForTest(&identity, wallet, principalDeclaration, verifiedPrincipalSigHex)
+		*dest = identity
 	}).Once()
 	tdb.qVersion.On("First", mock.AnythingOfType("*models.SoulAgentVersion")).Return(theoryErrors.ErrItemNotFound).Once()
 	tdb.qVersion.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
@@ -93,14 +98,6 @@ func TestHandleSoulAgentUpdateRegistration_V2_FirstVersion_AllowsNullPreviousVer
 	}}
 	s.dialEVM = func(ctx context.Context, rpcURL string) (ethRPCClient, error) { return client, nil }
 
-	principalDeclaration := boundaryTestPrincipalDeclaration
-	principalDigest := crypto.Keccak256([]byte(principalDeclaration))
-	principalSig, err := crypto.Sign(accounts.TextHash(principalDigest), key)
-	if err != nil {
-		t.Fatalf("principal Sign: %v", err)
-	}
-	principalSigHex := "0x" + hex.EncodeToString(principalSig)
-
 	unsigned := map[string]any{
 		"version": "2",
 		"agentId": agentIDHex,
@@ -114,7 +111,7 @@ func TestHandleSoulAgentUpdateRegistration_V2_FirstVersion_AllowsNullPreviousVer
 			"contactUri":  "https://example.com/alice",
 			"declaration": principalDeclaration,
 			"signature":   principalSigHex,
-			"declaredAt":  "2026-03-01T00:00:00Z",
+			"declaredAt":  soulUpdateRegistrationPrincipalDeclaredAtForTest,
 		},
 		"selfDescription": map[string]any{
 			"purpose":    "I summarize documents for humans.",
@@ -235,6 +232,9 @@ func TestHandleSoulAgentUpdateRegistration_V3_FirstVersion_AllowsNullPreviousVer
 		t.Fatalf("generate key: %v", err)
 	}
 	wallet := strings.ToLower(crypto.PubkeyToAddress(key.PublicKey).Hex())
+	principalDeclaration := boundaryTestPrincipalDeclaration
+	principalSigHex := signSoulUpdateRegistrationPrincipalForTest(t, key, principalDeclaration)
+	verifiedPrincipalSigHex := signSoulUpdateRegistrationVerifiedPrincipalForTest(t, s, key, agentIDHex, wallet, principalDeclaration)
 
 	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
@@ -247,7 +247,7 @@ func TestHandleSoulAgentUpdateRegistration_V3_FirstVersion_AllowsNullPreviousVer
 	tdb.qWalletIdx.On("First", mock.AnythingOfType("*models.WalletIndex")).Return(theoryErrors.ErrItemNotFound).Once()
 	tdb.qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
-		*dest = models.SoulAgentIdentity{
+		identity := models.SoulAgentIdentity{
 			AgentID:   agentIDHex,
 			Domain:    "example.com",
 			LocalID:   "agent-alice",
@@ -255,6 +255,8 @@ func TestHandleSoulAgentUpdateRegistration_V3_FirstVersion_AllowsNullPreviousVer
 			Status:    models.SoulAgentStatusActive,
 			UpdatedAt: time.Now().Add(-time.Minute).UTC(),
 		}
+		applySoulUpdateRegistrationPrincipalForTest(&identity, wallet, principalDeclaration, verifiedPrincipalSigHex)
+		*dest = identity
 	}).Once()
 	tdb.qVersion.On("First", mock.AnythingOfType("*models.SoulAgentVersion")).Return(theoryErrors.ErrItemNotFound).Once()
 	tdb.qVersion.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
@@ -279,14 +281,6 @@ func TestHandleSoulAgentUpdateRegistration_V3_FirstVersion_AllowsNullPreviousVer
 	}}
 	s.dialEVM = func(ctx context.Context, rpcURL string) (ethRPCClient, error) { return client, nil }
 
-	principalDeclaration := boundaryTestPrincipalDeclaration
-	principalDigest := crypto.Keccak256([]byte(principalDeclaration))
-	principalSig, err := crypto.Sign(accounts.TextHash(principalDigest), key)
-	if err != nil {
-		t.Fatalf("principal Sign: %v", err)
-	}
-	principalSigHex := "0x" + hex.EncodeToString(principalSig)
-
 	unsigned := map[string]any{
 		"version": "3",
 		"agentId": agentIDHex,
@@ -300,7 +294,7 @@ func TestHandleSoulAgentUpdateRegistration_V3_FirstVersion_AllowsNullPreviousVer
 			"contactUri":  "https://example.com/alice",
 			"declaration": principalDeclaration,
 			"signature":   principalSigHex,
-			"declaredAt":  "2026-03-01T00:00:00Z",
+			"declaredAt":  soulUpdateRegistrationPrincipalDeclaredAtForTest,
 		},
 		"selfDescription": map[string]any{
 			"purpose":    "I summarize documents for humans.",
@@ -435,6 +429,9 @@ func TestHandleSoulAgentUpdateRegistration_V2_RequiresPreviousVersionURI_ForSubs
 		t.Fatalf("generate key: %v", err)
 	}
 	wallet := strings.ToLower(crypto.PubkeyToAddress(key.PublicKey).Hex())
+	principalDeclaration := boundaryTestPrincipalDeclaration
+	principalSigHex := signSoulUpdateRegistrationPrincipalForTest(t, key, principalDeclaration)
+	verifiedPrincipalSigHex := signSoulUpdateRegistrationVerifiedPrincipalForTest(t, s, key, agentIDHex, wallet, principalDeclaration)
 
 	// No existing record for version 2 (target).
 	tdb.qVersion.On("First", mock.AnythingOfType("*models.SoulAgentVersion")).Return(theoryErrors.ErrItemNotFound).Once()
@@ -455,7 +452,7 @@ func TestHandleSoulAgentUpdateRegistration_V2_RequiresPreviousVersionURI_ForSubs
 	tdb.qWalletIdx.On("First", mock.AnythingOfType("*models.WalletIndex")).Return(theoryErrors.ErrItemNotFound).Once()
 	tdb.qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
-		*dest = models.SoulAgentIdentity{
+		identity := models.SoulAgentIdentity{
 			AgentID:                agentIDHex,
 			Domain:                 "example.com",
 			LocalID:                "agent-alice",
@@ -464,6 +461,8 @@ func TestHandleSoulAgentUpdateRegistration_V2_RequiresPreviousVersionURI_ForSubs
 			SelfDescriptionVersion: 1,
 			UpdatedAt:              time.Now().Add(-time.Minute).UTC(),
 		}
+		applySoulUpdateRegistrationPrincipalForTest(&identity, wallet, principalDeclaration, verifiedPrincipalSigHex)
+		*dest = identity
 	}).Once()
 	tdb.qCapIdx.On("First", mock.AnythingOfType("*models.SoulCapabilityAgentIndex")).Return(theoryErrors.ErrItemNotFound).Once()
 
@@ -482,14 +481,6 @@ func TestHandleSoulAgentUpdateRegistration_V2_RequiresPreviousVersionURI_ForSubs
 
 	prevURI := "s3://bucket/" + soulRegistrationVersionedS3Key(agentIDHex, 1)
 
-	principalDeclaration := boundaryTestPrincipalDeclaration
-	principalDigest := crypto.Keccak256([]byte(principalDeclaration))
-	principalSig, err := crypto.Sign(accounts.TextHash(principalDigest), key)
-	if err != nil {
-		t.Fatalf("principal Sign: %v", err)
-	}
-	principalSigHex := "0x" + hex.EncodeToString(principalSig)
-
 	unsigned := map[string]any{
 		"version": "2",
 		"agentId": agentIDHex,
@@ -501,7 +492,7 @@ func TestHandleSoulAgentUpdateRegistration_V2_RequiresPreviousVersionURI_ForSubs
 			"identifier":  wallet,
 			"declaration": principalDeclaration,
 			"signature":   principalSigHex,
-			"declaredAt":  "2026-03-01T00:00:00Z",
+			"declaredAt":  soulUpdateRegistrationPrincipalDeclaredAtForTest,
 		},
 		"selfDescription": map[string]any{
 			"purpose":    "I summarize documents for humans.",
