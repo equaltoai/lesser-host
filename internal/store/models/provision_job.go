@@ -47,9 +47,10 @@ type ProvisionJob struct {
 	AdminWalletAddr    string    `theorydb:"attr:adminWalletAddress" json:"admin_wallet_address,omitempty"`
 	AdminWalletChainID int       `theorydb:"attr:adminWalletChainID" json:"admin_wallet_chain_id,omitempty"`
 
-	ConsentMessage     string `theorydb:"attr:consentMessage" json:"consent_message,omitempty"`
-	ConsentMessageHash string `theorydb:"attr:consentMessageHash" json:"consent_message_hash,omitempty"`
-	ConsentSignature   string `theorydb:"attr:consentSignature" json:"consent_signature,omitempty"`
+	ConsentMessage     string    `theorydb:"attr:consentMessage" json:"consent_message,omitempty"`
+	ConsentMessageHash string    `theorydb:"attr:consentMessageHash" json:"consent_message_hash,omitempty"`
+	ConsentSignature   string    `theorydb:"attr:consentSignature" json:"consent_signature,omitempty"`
+	ConsentExpiresAt   time.Time `theorydb:"attr:consentExpiresAt" json:"consent_expires_at,omitempty"`
 
 	// Account allocation / creation.
 	AccountRequestID string `theorydb:"attr:accountRequestId" json:"account_request_id,omitempty"`

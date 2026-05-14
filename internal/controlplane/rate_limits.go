@@ -10,8 +10,10 @@ import (
 
 	"github.com/theory-cloud/apptheory/pkg/limited"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
+	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/httpx"
+	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
 const (
@@ -24,7 +26,10 @@ const (
 
 	soulMintConversationInstanceReadRateLimitPrefix    = "soul-mint-read:"
 	soulMintConversationInstanceReadRateLimitAnonymous = soulMintConversationInstanceReadRateLimitPrefix + "anonymous"
+	soulMintConversationInstanceReadRateLimitInvalid   = soulMintConversationInstanceReadRateLimitPrefix + "invalid"
 	soulMintConversationInstanceReadRateLimitRouteKey  = "route_class"
+
+	ctxKeySoulMintConversationInstanceReadKey = "soul_mint.instance_read_key"
 )
 
 func (s *Server) mintConversationRateLimitMiddleware() apptheory.Middleware {
@@ -162,7 +167,7 @@ func (s *Server) mintConversationInstanceReadRateLimitMiddleware() apptheory.Mid
 			method := strings.ToUpper(strings.TrimSpace(ctx.Request.Method))
 			path := strings.TrimSpace(ctx.Request.Path)
 			if method == http.MethodGet && isSoulMintConversationInstanceReadPath(path) {
-				if resp, err := soulMintConversationInstanceReadCheckRateLimit(ctx, limiter, method, path); resp != nil || err != nil {
+				if resp, err := s.soulMintConversationInstanceReadCheckRateLimit(ctx, limiter, method, path); resp != nil || err != nil {
 					return resp, err
 				}
 			}
@@ -176,22 +181,45 @@ func isSoulMintConversationInstanceReadPath(path string) bool {
 		strings.Contains(strings.TrimSpace(path), "/mint-conversations")
 }
 
-func soulMintConversationInstanceReadRateLimitIdentifier(ctx *apptheory.Context) string {
+func (s *Server) soulMintConversationInstanceReadRateLimitIdentifier(ctx *apptheory.Context) (string, *apptheory.AppTheoryError) {
 	if ctx == nil {
-		return soulMintConversationInstanceReadRateLimitAnonymous
+		return soulMintConversationInstanceReadRateLimitAnonymous, nil
 	}
-	if raw := httpx.BearerToken(ctx.Request.Headers); strings.TrimSpace(raw) != "" {
-		return soulMintConversationInstanceReadRateLimitPrefix + sha256HexTrimmed(raw)
+	raw := httpx.BearerToken(ctx.Request.Headers)
+	if strings.TrimSpace(raw) == "" {
+		return soulMintConversationInstanceReadRateLimitAnonymous, nil
 	}
-	return soulMintConversationInstanceReadRateLimitAnonymous
+	hash := sha256HexTrimmed(raw)
+	if key := soulMintConversationInstanceReadKeyFromContext(ctx); key != nil && soulMintConversationInstanceReadKeyActiveForHash(key, hash) {
+		return soulMintConversationInstanceReadRateLimitPrefix + hash, nil
+	}
+	if s == nil || s.store == nil || s.store.DB == nil {
+		return "", soulMintInstanceReadError(soulMintInstanceReadCodeInternal, "internal error", http.StatusInternalServerError, nil)
+	}
+	key, err := s.store.GetInstanceKey(ctx.Context(), hash)
+	if err != nil {
+		if theoryErrors.IsNotFound(err) {
+			return soulMintConversationInstanceReadRateLimitInvalid, nil
+		}
+		return "", soulMintInstanceReadError(soulMintInstanceReadCodeInternal, "internal error", http.StatusInternalServerError, nil)
+	}
+	if key == nil || !soulMintConversationInstanceReadKeyActiveForHash(key, hash) {
+		return soulMintConversationInstanceReadRateLimitInvalid, nil
+	}
+	ctx.Set(ctxKeySoulMintConversationInstanceReadKey, key)
+	return soulMintConversationInstanceReadRateLimitPrefix + hash, nil
 }
 
-func soulMintConversationInstanceReadCheckRateLimit(ctx *apptheory.Context, limiter limited.AtomicRateLimiter, method string, path string) (*apptheory.Response, error) {
+func (s *Server) soulMintConversationInstanceReadCheckRateLimit(ctx *apptheory.Context, limiter limited.AtomicRateLimiter, method string, path string) (*apptheory.Response, error) {
 	if limiter == nil {
 		return nil, nil
 	}
+	identifier, appErr := s.soulMintConversationInstanceReadRateLimitIdentifier(ctx)
+	if appErr != nil {
+		return nil, appErr
+	}
 	decision, err := limiter.CheckAndIncrement(ctx.Context(), limited.RateLimitKey{
-		Identifier: soulMintConversationInstanceReadRateLimitIdentifier(ctx),
+		Identifier: identifier,
 		Resource:   "control-plane-api",
 		Operation:  "soul_mint_conversation_instance_read",
 		Metadata: map[string]string{
@@ -207,6 +235,21 @@ func soulMintConversationInstanceReadCheckRateLimit(ctx *apptheory.Context, limi
 		return soulMintConversationInstanceReadRateLimitResponse(ctx, decision), nil
 	}
 	return nil, nil
+}
+
+func soulMintConversationInstanceReadKeyFromContext(ctx *apptheory.Context) *models.InstanceKey {
+	if ctx == nil {
+		return nil
+	}
+	key, _ := ctx.Get(ctxKeySoulMintConversationInstanceReadKey).(*models.InstanceKey)
+	return key
+}
+
+func soulMintConversationInstanceReadKeyActiveForHash(key *models.InstanceKey, hash string) bool {
+	return key != nil &&
+		strings.TrimSpace(hash) != "" &&
+		strings.TrimSpace(key.ID) == strings.TrimSpace(hash) &&
+		key.RevokedAt.IsZero()
 }
 
 func soulMintConversationInstanceReadRateLimitRouteClass(path string) string {

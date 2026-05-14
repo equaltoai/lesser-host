@@ -680,27 +680,33 @@ func TestEnsureManagedInstanceKeySecret_NonLiveReplacesLegacyUntaggedARN(t *test
 func TestEnsureManagedInstanceKeySecret_LiveRefusesLegacyUntaggedARN(t *testing.T) {
 	t.Parallel()
 
-	oldArn := "arn:aws:secretsmanager:us-east-1:123456789012:secret:legacy/instance-key"
-	sm := &fakeSecretsManager{
-		describeByID: map[string]*secretsmanager.DescribeSecretOutput{
-			oldArn: {ARN: aws.String(oldArn), Tags: nil},
-		},
-	}
+	for _, stage := range []string{"live", "prod", "production"} {
+		t.Run(stage, func(t *testing.T) {
+			t.Parallel()
 
-	srv := &Server{
-		cfg:   config.Config{Stage: "live"},
-		store: store.New(ttmocks.NewMockExtendedDB()),
-		smFactory: func(context.Context, string, string, string, string, string) (secretsManagerAPI, error) {
-			return sm, nil
-		},
-	}
-	job := &models.ProvisionJob{ID: "job1", InstanceSlug: "slug", AccountID: "123456789012", AccountRoleName: "role", Region: "us-east-1"}
-	inst := &models.Instance{Slug: "slug", LesserHostInstanceKeySecretARN: oldArn}
+			oldArn := "arn:aws:secretsmanager:us-east-1:123456789012:secret:legacy/instance-key"
+			sm := &fakeSecretsManager{
+				describeByID: map[string]*secretsmanager.DescribeSecretOutput{
+					oldArn: {ARN: aws.String(oldArn), Tags: nil},
+				},
+			}
 
-	_, err := srv.ensureManagedInstanceKeySecret(context.Background(), job, inst)
-	require.ErrorContains(t, err, "refusing unmanaged or cross-stage instance key secret")
-	require.Equal(t, []string{oldArn}, sm.describeInputs)
-	require.Empty(t, sm.createInputs)
+			srv := &Server{
+				cfg:   config.Config{Stage: stage},
+				store: store.New(ttmocks.NewMockExtendedDB()),
+				smFactory: func(context.Context, string, string, string, string, string) (secretsManagerAPI, error) {
+					return sm, nil
+				},
+			}
+			job := &models.ProvisionJob{ID: "job1", InstanceSlug: "slug", AccountID: "123456789012", AccountRoleName: "role", Region: "us-east-1"}
+			inst := &models.Instance{Slug: "slug", LesserHostInstanceKeySecretARN: oldArn}
+
+			_, err := srv.ensureManagedInstanceKeySecret(context.Background(), job, inst)
+			require.ErrorContains(t, err, "refusing unmanaged or cross-stage instance key secret")
+			require.Equal(t, []string{oldArn}, sm.describeInputs)
+			require.Empty(t, sm.createInputs)
+		})
+	}
 }
 
 func TestCreateManagedInstanceKeySecret_ValidatesAndPropagatesErrors(t *testing.T) {
@@ -830,11 +836,45 @@ func TestResolveManagedUpdateMetadata_Validation(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestResolveUpdateDeployRunnerInputs_EnforcesTenantBoundary(t *testing.T) {
+	t.Parallel()
+
+	s := &Server{cfg: config.Config{Stage: "lab", ManagedInstanceRoleName: "role"}}
+	job := &models.UpdateJob{
+		ID:                             "u1",
+		InstanceSlug:                   "slug",
+		AccountID:                      "123456789012",
+		AccountRoleName:                "role",
+		Region:                         "us-east-1",
+		BaseDomain:                     "slug.example.com",
+		LesserVersion:                  "v1.2.3",
+		LesserHostInstanceKeySecretARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:key",
+	}
+	inst := &models.Instance{
+		Slug:             "slug",
+		Owner:            "wallet-abc",
+		HostedAccountID:  "210987654321",
+		HostedRegion:     "us-east-1",
+		HostedBaseDomain: "slug.example.com",
+	}
+
+	_, err := s.resolveUpdateDeployRunnerInputs(job, inst)
+	require.ErrorContains(t, err, "target account does not match")
+
+	inst.HostedAccountID = job.AccountID
+	job.AccountRoleName = "other-role"
+	_, err = s.resolveUpdateDeployRunnerInputs(job, inst)
+	require.ErrorContains(t, err, "target role does not match")
+}
+
 func TestResolveUpdateDeployRunnerInputs_ErrorsForNonWalletOwner(t *testing.T) {
 	t.Parallel()
 
-	s := &Server{cfg: config.Config{Stage: "lab"}}
-	_, err := s.resolveUpdateDeployRunnerInputs(&models.UpdateJob{AccountID: "1", AccountRoleName: "r", Region: "us", BaseDomain: "d", LesserVersion: "v", LesserHostInstanceKeySecretARN: "arn"}, &models.Instance{Owner: "alice"})
+	s := &Server{cfg: config.Config{Stage: "lab", ManagedInstanceRoleName: "r"}}
+	_, err := s.resolveUpdateDeployRunnerInputs(
+		&models.UpdateJob{InstanceSlug: "slug", AccountID: "123456789012", AccountRoleName: "r", Region: "us", BaseDomain: "d", LesserVersion: "v", LesserHostInstanceKeySecretARN: "arn"},
+		&models.Instance{Slug: "slug", Owner: "alice", HostedAccountID: "123456789012", HostedRegion: "us", HostedBaseDomain: "d"},
+	)
 	require.Error(t, err)
 }
 

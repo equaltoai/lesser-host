@@ -95,6 +95,17 @@ safe_release_asset_path() {
   fi
 }
 
+require_lesser_body_not_reserved_release_asset_path() {
+  value="$1"
+  label="$2"
+  body_stage="$3"
+  case "$value" in
+    checksums.txt|lesser-body-release.json|lesser-body-deploy.json|deploy-lesser-body-from-release.sh|lesser-body.zip|"lesser-body-managed-$body_stage.template.json")
+      fail "$label is reserved for a verified lesser-body release artifact (got: $value)"
+      ;;
+  esac
+}
+
 require_lesser_body_auxiliary_capability() {
   manifest_path="$1"
   if ! jq -e '.required_capabilities // [] | index("managed_auxiliary_assets_v1")' "$manifest_path" >/dev/null; then
@@ -147,6 +158,8 @@ prepare_lesser_body_auxiliary_assets() {
     test -n "$id" || fail "lesser-body auxiliary asset id is required"
     safe_release_asset_path "$path" "lesser-body auxiliary asset $id path"
     safe_release_asset_path "$s3_key" "lesser-body auxiliary asset $id s3_key"
+    require_lesser_body_not_reserved_release_asset_path "$path" "lesser-body auxiliary asset $id path" "$body_stage"
+    require_lesser_body_not_reserved_release_asset_path "$s3_key" "lesser-body auxiliary asset $id s3_key" "$body_stage"
     printf "%s" "$template_parameter" | grep -Eq '^[A-Za-z][A-Za-z0-9]*$' || fail "lesser-body auxiliary asset $id template_parameter is invalid"
     test "$bytes" -gt 0 || fail "lesser-body auxiliary asset $id bytes must be positive"
     if [ "$required" = "true" ]; then
@@ -180,6 +193,10 @@ upload_lesser_body_auxiliary_assets() {
     content_type=$(printf "%s" "$asset" | jq -r '.content_type // empty')
     safe_release_asset_path "$path" "lesser-body auxiliary asset $id path"
     safe_release_asset_path "$s3_key" "lesser-body auxiliary asset $id s3_key"
+    body_stage="${STAGE:-}"
+    if [ -z "$body_stage" ]; then body_stage=$(jq -r '.templates | keys[0] // "dev"' "$deploy_manifest_path"); fi
+    require_lesser_body_not_reserved_release_asset_path "$path" "lesser-body auxiliary asset $id path" "$body_stage"
+    require_lesser_body_not_reserved_release_asset_path "$s3_key" "lesser-body auxiliary asset $id s3_key" "$body_stage"
     object_key="$body_asset_prefix/$s3_key"
     echo "Uploading lesser-body auxiliary asset $id to s3://$body_asset_bucket/$object_key"
     if [ -n "$content_type" ]; then
