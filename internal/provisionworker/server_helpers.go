@@ -25,6 +25,8 @@ var (
 	operatorVisibleFailureWhitespaceRE = regexp.MustCompile(`\s+`)
 	codebuildFailureReasonRE           = regexp.MustCompile(`(?i)\breason:\s*(.+)$`)
 	codebuildExitStatusRE              = regexp.MustCompile(`(?i)\bexit status \d+\b`)
+	awsAccountIDRE                     = regexp.MustCompile(`^[0-9]{12}$`)
+	evmAddressRE                       = regexp.MustCompile(`^0x[0-9a-fA-F]{40}$`)
 	operatorVisibleFailureReplacer     = strings.NewReplacer(
 		"--", "- -",
 		"/*", "/ *",
@@ -72,36 +74,17 @@ func (s *Server) startDeployRunnerWithMode(ctx context.Context, job *models.Prov
 	if s == nil || s.cb == nil {
 		return "", fmt.Errorf("codebuild client not initialized")
 	}
-	if err := s.validateDeployRunnerJob(job); err != nil {
-		return "", err
+	if validationErr := s.validateDeployRunnerJob(job); validationErr != nil {
+		return "", validationErr
 	}
 	projectName, err := s.provisionRunnerProjectName()
 	if err != nil {
 		return "", err
 	}
 
-	inst, err := s.loadInstance(ctx, strings.TrimSpace(job.InstanceSlug))
+	runnerInputs, err := s.resolveProvisionDeployRunnerInstanceInputs(ctx, job)
 	if err != nil {
 		return "", err
-	}
-	if inst == nil {
-		return "", fmt.Errorf("instance not found")
-	}
-
-	lesserHostURL := strings.TrimSpace(inst.LesserHostBaseURL)
-	if lesserHostURL == "" {
-		lesserHostURL = strings.TrimSpace(s.publicBaseURL())
-	}
-	lesserHostAttestationsURL := strings.TrimSpace(inst.LesserHostAttestationsURL)
-	if lesserHostAttestationsURL == "" {
-		lesserHostAttestationsURL = lesserHostURL
-	}
-	instanceKeySecretArn := strings.TrimSpace(inst.LesserHostInstanceKeySecretARN)
-	if instanceKeySecretArn == "" {
-		return "", fmt.Errorf("instance key secret arn is missing")
-	}
-	if lesserHostURL == "" {
-		return "", fmt.Errorf("lesser host base url is missing")
 	}
 	trustErr := s.ensureDeployRunnerAssumeRoleTrust(
 		ctx,
@@ -120,26 +103,7 @@ func (s *Server) startDeployRunnerWithMode(ctx context.Context, job *models.Prov
 	env := s.buildDeployRunnerEnv(job, stage, receiptKey, bootstrapKey)
 	mode = normalizeDeployRunnerMode(mode)
 	env = append(env, cbtypes.EnvironmentVariable{Name: aws.String("RUN_MODE"), Value: aws.String(mode)})
-	tipEnabled := effectiveTipEnabled(inst.TipEnabled)
-	env = append(env,
-		cbtypes.EnvironmentVariable{Name: aws.String("LESSER_HOST_URL"), Value: aws.String(lesserHostURL)},
-		cbtypes.EnvironmentVariable{Name: aws.String("LESSER_HOST_ATTESTATIONS_URL"), Value: aws.String(lesserHostAttestationsURL)},
-		cbtypes.EnvironmentVariable{Name: aws.String("LESSER_HOST_INSTANCE_KEY_ARN"), Value: aws.String(instanceKeySecretArn)},
-		cbtypes.EnvironmentVariable{Name: aws.String("TRANSLATION_ENABLED"), Value: aws.String(fmt.Sprintf("%t", effectiveTranslationEnabled(inst.TranslationEnabled)))},
-		cbtypes.EnvironmentVariable{Name: aws.String("TIP_ENABLED"), Value: aws.String(fmt.Sprintf("%t", tipEnabled))},
-		cbtypes.EnvironmentVariable{Name: aws.String("AI_ENABLED"), Value: aws.String(fmt.Sprintf("%t", effectiveLesserAIEnabled(inst.LesserAIEnabled)))},
-		cbtypes.EnvironmentVariable{Name: aws.String("AI_MODERATION_ENABLED"), Value: aws.String(fmt.Sprintf("%t", effectiveLesserAIModerationEnabled(inst.LesserAIModerationEnabled)))},
-		cbtypes.EnvironmentVariable{Name: aws.String("AI_NSFW_DETECTION_ENABLED"), Value: aws.String(fmt.Sprintf("%t", effectiveLesserAINsfwDetectionEnabled(inst.LesserAINsfwDetectionEnabled)))},
-		cbtypes.EnvironmentVariable{Name: aws.String("AI_SPAM_DETECTION_ENABLED"), Value: aws.String(fmt.Sprintf("%t", effectiveLesserAISpamDetectionEnabled(inst.LesserAISpamDetectionEnabled)))},
-		cbtypes.EnvironmentVariable{Name: aws.String("AI_PII_DETECTION_ENABLED"), Value: aws.String(fmt.Sprintf("%t", effectiveLesserAIPiiDetectionEnabled(inst.LesserAIPiiDetectionEnabled)))},
-		cbtypes.EnvironmentVariable{Name: aws.String("AI_CONTENT_DETECTION_ENABLED"), Value: aws.String(fmt.Sprintf("%t", effectiveLesserAIContentDetectionEnabled(inst.LesserAIContentDetectionEnabled)))},
-	)
-	if tipEnabled {
-		env = append(env,
-			cbtypes.EnvironmentVariable{Name: aws.String("TIP_CHAIN_ID"), Value: aws.String(fmt.Sprintf("%d", inst.TipChainID))},
-			cbtypes.EnvironmentVariable{Name: aws.String("TIP_CONTRACT_ADDRESS"), Value: aws.String(strings.TrimSpace(inst.TipContractAddress))},
-		)
-	}
+	env = appendProvisionDeployRunnerInstanceEnv(env, runnerInputs)
 
 	idempotencyToken := codebuildIdempotencyToken(
 		projectName,

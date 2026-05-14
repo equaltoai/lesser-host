@@ -658,6 +658,29 @@ func TestPreflightManagedLesserBodyRelease_RejectsUnsupportedSchema2Capability(t
 	require.ErrorContains(t, err, "unsupported lesser-body required capability")
 }
 
+func TestPreflightManagedLesserBodyRelease_RejectsSourceCheckoutOrNPMInstall(t *testing.T) {
+	t.Parallel()
+
+	releaseManifest, err := parseManagedLesserBodyReleaseManifest(lesserBodyReleaseManifestJSON(t, "v0.2.3", managedStageDev))
+	require.NoError(t, err)
+
+	t.Run("source checkout", func(t *testing.T) {
+		required := true
+		releaseManifest.Deploy.SourceCheckoutRequired = &required
+		err := validateManagedLesserBodyReleaseManifest(releaseManifest, "v0.2.3", managedStageDev)
+		require.ErrorContains(t, err, "source checkout")
+	})
+
+	t.Run("npm install", func(t *testing.T) {
+		releaseManifest, err := parseManagedLesserBodyReleaseManifest(lesserBodyReleaseManifestJSON(t, "v0.2.3", managedStageDev))
+		require.NoError(t, err)
+		required := true
+		releaseManifest.Deploy.NPMInstallRequired = &required
+		err = validateManagedLesserBodyReleaseManifest(releaseManifest, "v0.2.3", managedStageDev)
+		require.ErrorContains(t, err, "npm install")
+	})
+}
+
 func TestPreflightManagedLesserBodyRelease_RejectsTemplateReferenceWithoutAuxiliaryDeclaration(t *testing.T) {
 	t.Parallel()
 
@@ -833,6 +856,24 @@ func TestManagedLesserBodySchema2DeployManifestRejectsContractDrift(t *testing.T
 		require.NoError(t, err)
 		err = validateManagedLesserBodyDeployManifest(deployManifest, releaseManifest, managedStageDev)
 		require.ErrorContains(t, err, "must not contain empty, current, or parent path segments")
+	})
+
+	t.Run("auxiliary path cannot shadow primary artifact", func(t *testing.T) {
+		asset := lesserBodyAuxiliaryAssetFixture(managedStageDev)
+		asset["path"] = requiredLesserBodyLambdaZipPath
+		deployManifest, err := parseManagedLesserBodyDeployManifest(lesserBodyDeployManifestSchema2JSON(t, managedStageDev, "", []map[string]any{asset}))
+		require.NoError(t, err)
+		err = validateManagedLesserBodyDeployManifest(deployManifest, releaseManifest, managedStageDev)
+		require.ErrorContains(t, err, "reserved for a verified lesser-body release artifact")
+	})
+
+	t.Run("auxiliary s3 key cannot shadow primary artifact", func(t *testing.T) {
+		asset := lesserBodyAuxiliaryAssetFixture(managedStageDev)
+		asset["s3_key"] = requiredLesserBodyLambdaZipPath
+		deployManifest, err := parseManagedLesserBodyDeployManifest(lesserBodyDeployManifestSchema2JSON(t, managedStageDev, "", []map[string]any{asset}))
+		require.NoError(t, err)
+		err = validateManagedLesserBodyDeployManifest(deployManifest, releaseManifest, managedStageDev)
+		require.ErrorContains(t, err, "reserved for a verified lesser-body release artifact")
 	})
 }
 

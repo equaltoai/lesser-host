@@ -211,7 +211,7 @@ func (s *Server) processActiveProvisionSweep(ctx context.Context, requestID stri
 
 	counts := provisionSweepCounts{}
 	for _, item := range items {
-		if item == nil || !provisionJobProcessable(item) {
+		if !isProvisionJobStorageRow(item) || !provisionJobProcessable(item) {
 			continue
 		}
 		counts.activeJobs++
@@ -269,6 +269,13 @@ func (s *Server) listProvisionSweepJobs(ctx context.Context) ([]*models.Provisio
 }
 
 func (s *Server) processProvisionSweepJob(ctx context.Context, item *models.ProvisionJob, requestID string, now time.Time) (bool, error) {
+	if !isProvisionJobStorageRow(item) {
+		return false, nil
+	}
+	if provisionJobConsentExpired(item, now) {
+		clearProvisionJobConsentArtifacts(item)
+		return true, s.failJob(ctx, item, requestID, now, "provision_consent_expired", "provisioning consent expired before deploy runner start")
+	}
 	if !item.ExpiresAt.IsZero() && item.ExpiresAt.Before(now) {
 		return true, s.failJob(ctx, item, requestID, now, "expired", "provisioning job has expired")
 	}
@@ -276,6 +283,30 @@ func (s *Server) processProvisionSweepJob(ctx context.Context, item *models.Prov
 		return false, nil
 	}
 	return true, s.requeueProvisionJob(ctx, strings.TrimSpace(item.ID), 0)
+}
+
+func isProvisionJobStorageRow(item *models.ProvisionJob) bool {
+	if item == nil {
+		return false
+	}
+	return strings.HasPrefix(strings.TrimSpace(item.PK), "PROVISION_JOB#") && strings.TrimSpace(item.SK) == models.SKJob
+}
+
+func provisionJobHasConsentArtifacts(job *models.ProvisionJob) bool {
+	if job == nil {
+		return false
+	}
+	return strings.TrimSpace(job.ConsentMessage) != "" || strings.TrimSpace(job.ConsentSignature) != ""
+}
+
+func provisionJobConsentExpired(job *models.ProvisionJob, now time.Time) bool {
+	if !provisionJobHasConsentArtifacts(job) || job.ConsentExpiresAt.IsZero() {
+		return false
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	return !now.Before(job.ConsentExpiresAt)
 }
 
 func provisionJobStaleForSweep(item *models.ProvisionJob, now time.Time) bool {
@@ -574,6 +605,9 @@ func (s *Server) initializeManagedProvisionJob(job *models.ProvisionJob) {
 	}
 	if strings.TrimSpace(job.AccountRoleName) == "" {
 		job.AccountRoleName = strings.TrimSpace(s.cfg.ManagedInstanceRoleName)
+		if strings.TrimSpace(job.AccountRoleName) == "" {
+			job.AccountRoleName = defaultManagedInstanceRoleName
+		}
 	}
 	if strings.TrimSpace(job.BaseDomain) == "" {
 		job.BaseDomain = managedBaseDomain(strings.TrimSpace(job.InstanceSlug), strings.TrimSpace(s.cfg.ManagedParentDomain))
@@ -605,7 +639,7 @@ func (s *Server) publicBaseURL() string {
 	}
 
 	switch stage {
-	case "live", "prod", "production":
+	case managedStageLive, managedStageLiveProdAlias, managedStageLiveLongAlias:
 		return "https://" + rootDomain
 	default:
 		return "https://" + stage + "." + rootDomain
@@ -788,10 +822,7 @@ func (s *Server) requestAccountCreate(ctx context.Context, job *models.Provision
 func (s *Server) advanceToAccountMove(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time, note string) (time.Duration, bool, error) {
 	job.Step = provisionStepAccountMove
 	job.Note = strings.TrimSpace(note)
-	if err := s.persistJobAndInstance(ctx, job, requestID, now, func(ub core.UpdateBuilder) error {
-		ub.Set("HostedAccountID", strings.TrimSpace(job.AccountID))
-		return nil
-	}); err != nil {
+	if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
 		return 0, false, err
 	}
 	return 0, false, nil
@@ -1006,7 +1037,10 @@ func (s *Server) moveProvisionAccountToTargetOU(ctx context.Context, job *models
 func (s *Server) advanceToAssumeRole(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {
 	job.Step = provisionStepAssumeRole
 	job.Note = "assuming provisioning role into instance account"
-	if err := s.persistJobAndInstance(ctx, job, requestID, now, nil); err != nil {
+	if err := s.persistJobAndInstance(ctx, job, requestID, now, func(ub core.UpdateBuilder) error {
+		ub.Set("HostedAccountID", strings.TrimSpace(job.AccountID))
+		return nil
+	}); err != nil {
 		return 0, false, err
 	}
 	return 0, false, nil
@@ -1245,6 +1279,10 @@ func managedInstanceKeySecretName(controlPlaneStage, slug string) string {
 
 func managedInstanceKeySecretStage(controlPlaneStage string) string {
 	stage := strings.ToLower(strings.TrimSpace(controlPlaneStage))
+	switch stage {
+	case managedStageLiveProdAlias, managedStageLiveLongAlias:
+		stage = managedStageLive
+	}
 	if stage == "" {
 		stage = defaultControlPlaneStage
 	}
@@ -1519,6 +1557,14 @@ func (s *Server) advanceProvisionDeployStart(ctx context.Context, job *models.Pr
 			return 0, false, persistErr
 		}
 		return 0, false, nil
+	}
+	if provisionJobHasConsentArtifacts(job) && job.ConsentExpiresAt.IsZero() {
+		clearProvisionJobConsentArtifacts(job)
+		return 0, false, s.failJob(ctx, job, requestID, now, "provision_consent_expiration_missing", "provisioning consent expiration is missing")
+	}
+	if provisionJobConsentExpired(job, now) {
+		clearProvisionJobConsentArtifacts(job)
+		return 0, false, s.failJob(ctx, job, requestID, now, "provision_consent_expired", "provisioning consent expired before deploy runner start")
 	}
 
 	runID, err := s.startDeployRunner(ctx, job)
@@ -2317,6 +2363,9 @@ func (s *Server) provisionRunnerProjectName() (string, error) {
 func (s *Server) validateDeployRunnerJob(job *models.ProvisionJob) error {
 	if job == nil {
 		return fmt.Errorf("job is nil")
+	}
+	if strings.TrimSpace(job.InstanceSlug) == "" {
+		return fmt.Errorf("instance slug not configured")
 	}
 	if strings.TrimSpace(job.AdminUsername) == "" {
 		return fmt.Errorf("admin username not configured")

@@ -4,7 +4,7 @@ import test from 'node:test';
 
 import * as cdk from 'aws-cdk-lib';
 
-import { LesserHostStack } from '../lib/lesser-host-stack';
+import { LesserHostStack, shouldUseLocalWebBundling } from '../lib/lesser-host-stack';
 
 process.env.GOTOOLCHAIN = process.env.GOTOOLCHAIN || 'auto';
 
@@ -220,4 +220,10 @@ test('provision worker receives deploy runner role arn for tenant trust repair',
 		env.MANAGED_PROVISION_RUNNER_ROLE_ARN,
 		'expected provision worker CodeBuild service role ARN to be non-empty',
 	);
+});
+
+test('web asset bundling does not execute npm locally in CI', () => {
+	assert.equal(shouldUseLocalWebBundling({ CI: 'true' }), false);
+	assert.equal(shouldUseLocalWebBundling({ GITHUB_ACTIONS: 'true' }), false);
+	assert.equal(shouldUseLocalWebBundling({}), true);
 });

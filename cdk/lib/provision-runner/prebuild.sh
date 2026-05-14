@@ -23,4 +23,9 @@ read MANAGED_AK MANAGED_SK MANAGED_TOKEN <<< "$CREDS"
 mkdir -p ~/.aws
 printf "[managed]\naws_access_key_id=%s\naws_secret_access_key=%s\naws_session_token=%s\n" "$MANAGED_AK" "$MANAGED_SK" "$MANAGED_TOKEN" > ~/.aws/credentials
 printf "[profile managed]\nregion=%s\noutput=json\n" "$TARGET_REGION" > ~/.aws/config
+MANAGED_CALLER_ACCOUNT=$(aws sts get-caller-identity --profile managed --query Account --output text)
+test "$MANAGED_CALLER_ACCOUNT" = "$TARGET_ACCOUNT_ID" || {
+  echo "ERROR: managed profile resolved account $MANAGED_CALLER_ACCOUNT, expected $TARGET_ACCOUNT_ID" >&2
+  exit 1
+}
 aws sts get-caller-identity --profile managed

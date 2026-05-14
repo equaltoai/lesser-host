@@ -64,13 +64,16 @@ func TestStartDeployRunner_AppendsTipAndAIEnv(t *testing.T) {
 		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
 		*dest = models.Instance{
 			Slug:                           "demo",
+			HostedAccountID:                "123456789012",
+			HostedRegion:                   "us-east-1",
+			HostedBaseDomain:               "demo.example.com",
 			LesserHostBaseURL:              "https://lab.lesser.host",
 			LesserHostAttestationsURL:      "https://lab.lesser.host",
 			LesserHostInstanceKeySecretARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:test",
 
 			TipEnabled:         &tipEnabled,
 			TipChainID:         8453,
-			TipContractAddress: " 0xabc ",
+			TipContractAddress: " 0x1111111111111111111111111111111111111111 ",
 		}
 	})
 
@@ -88,6 +91,7 @@ func TestStartDeployRunner_AppendsTipAndAIEnv(t *testing.T) {
 			ManagedLesserGitHubOwner:          "o",
 			ManagedLesserGitHubRepo:           "r",
 			ArtifactBucketName:                "bucket",
+			ManagedInstanceRoleName:           "role",
 			ManagedOrgVendingRoleARN:          "arn:aws:iam::123456789012:role/lesser-host-org-vending",
 		},
 		store: st,
@@ -99,6 +103,11 @@ func TestStartDeployRunner_AppendsTipAndAIEnv(t *testing.T) {
 		InstanceSlug:    "demo",
 		AdminUsername:   "demo",
 		AdminWalletAddr: "0x123",
+		AccountID:       "123456789012",
+		AccountRoleName: "role",
+		Region:          "us-east-1",
+		BaseDomain:      "demo.example.com",
+		LesserVersion:   "v1.2.3",
 	}
 
 	runID, err := s.startDeployRunner(context.Background(), job)
@@ -114,7 +123,7 @@ func TestStartDeployRunner_AppendsTipAndAIEnv(t *testing.T) {
 	require.NotContains(t, env, "MANAGED_ORG_VENDING_ROLE_ARN")
 	require.Equal(t, "true", env["TIP_ENABLED"])
 	require.Equal(t, "8453", env["TIP_CHAIN_ID"])
-	require.Equal(t, "0xabc", env["TIP_CONTRACT_ADDRESS"])
+	require.Equal(t, "0x1111111111111111111111111111111111111111", env["TIP_CONTRACT_ADDRESS"])
 
 	require.Equal(t, "true", env["AI_ENABLED"])
 	require.Equal(t, "true", env["AI_MODERATION_ENABLED"])
@@ -140,6 +149,9 @@ func TestStartDeployRunner_OmitsTipChainAndContractWhenDisabled(t *testing.T) {
 		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
 		*dest = models.Instance{
 			Slug:                           "demo",
+			HostedAccountID:                "123456789012",
+			HostedRegion:                   "us-east-1",
+			HostedBaseDomain:               "demo.example.com",
 			LesserHostBaseURL:              "https://lab.lesser.host",
 			LesserHostAttestationsURL:      "https://lab.lesser.host",
 			LesserHostInstanceKeySecretARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:test",
@@ -161,6 +173,7 @@ func TestStartDeployRunner_OmitsTipChainAndContractWhenDisabled(t *testing.T) {
 			ManagedLesserGitHubOwner:          "o",
 			ManagedLesserGitHubRepo:           "r",
 			ArtifactBucketName:                "bucket",
+			ManagedInstanceRoleName:           "role",
 		},
 		store: st,
 		cb:    cb,
@@ -171,6 +184,11 @@ func TestStartDeployRunner_OmitsTipChainAndContractWhenDisabled(t *testing.T) {
 		InstanceSlug:    "demo",
 		AdminUsername:   "demo",
 		AdminWalletAddr: "0x123",
+		AccountID:       "123456789012",
+		AccountRoleName: "role",
+		Region:          "us-east-1",
+		BaseDomain:      "demo.example.com",
+		LesserVersion:   "v1.2.3",
 	}
 
 	_, err := s.startDeployRunner(context.Background(), job)
@@ -204,6 +222,7 @@ func TestStartUpdateDeployRunner_AppendsTipAndAIEnv(t *testing.T) {
 			ManagedLesserGitHubOwner:          "o",
 			ManagedLesserGitHubRepo:           "r",
 			ArtifactBucketName:                "bucket",
+			ManagedInstanceRoleName:           "role",
 			ManagedOrgVendingRoleARN:          "arn:aws:iam::123456789012:role/lesser-host-org-vending",
 		},
 		cb: cb,
@@ -224,7 +243,7 @@ func TestStartUpdateDeployRunner_AppendsTipAndAIEnv(t *testing.T) {
 
 		TipEnabled:         true,
 		TipChainID:         10,
-		TipContractAddress: " 0xdef ",
+		TipContractAddress: " 0x2222222222222222222222222222222222222222 ",
 
 		AIEnabled:                 false,
 		AIModerationEnabled:       true,
@@ -233,7 +252,13 @@ func TestStartUpdateDeployRunner_AppendsTipAndAIEnv(t *testing.T) {
 		AIPiiDetectionEnabled:     true,
 		AIContentDetectionEnabled: false,
 	}
-	inst := &models.Instance{Owner: "wallet-abc"}
+	inst := &models.Instance{
+		Slug:             "demo",
+		Owner:            "wallet-abc",
+		HostedAccountID:  "123456789012",
+		HostedRegion:     "us-east-1",
+		HostedBaseDomain: "demo.example.com",
+	}
 
 	runID, err := s.startUpdateDeployRunner(context.Background(), job, inst)
 	require.NoError(t, err)
@@ -248,7 +273,7 @@ func TestStartUpdateDeployRunner_AppendsTipAndAIEnv(t *testing.T) {
 	require.NotContains(t, env, "MANAGED_ORG_VENDING_ROLE_ARN")
 	require.Equal(t, "true", env["TIP_ENABLED"])
 	require.Equal(t, "10", env["TIP_CHAIN_ID"])
-	require.Equal(t, "0xdef", env["TIP_CONTRACT_ADDRESS"])
+	require.Equal(t, "0x2222222222222222222222222222222222222222", env["TIP_CONTRACT_ADDRESS"])
 
 	require.Equal(t, "false", env["AI_ENABLED"])
 	require.Equal(t, "true", env["AI_MODERATION_ENABLED"])
@@ -273,6 +298,7 @@ func TestStartUpdateDeployRunner_OmitsTipChainAndContractWhenDisabled(t *testing
 			ManagedLesserGitHubOwner:          "o",
 			ManagedLesserGitHubRepo:           "r",
 			ArtifactBucketName:                "bucket",
+			ManagedInstanceRoleName:           "role",
 		},
 		cb: cb,
 	}
@@ -291,7 +317,7 @@ func TestStartUpdateDeployRunner_OmitsTipChainAndContractWhenDisabled(t *testing
 		TranslationEnabled:             true,
 		TipEnabled:                     false,
 		TipChainID:                     10,
-		TipContractAddress:             "0xdef",
+		TipContractAddress:             "0x2222222222222222222222222222222222222222",
 		AIEnabled:                      true,
 		AIModerationEnabled:            true,
 		AINsfwDetectionEnabled:         true,
@@ -299,7 +325,13 @@ func TestStartUpdateDeployRunner_OmitsTipChainAndContractWhenDisabled(t *testing
 		AIPiiDetectionEnabled:          false,
 		AIContentDetectionEnabled:      false,
 	}
-	inst := &models.Instance{Owner: "wallet-abc"}
+	inst := &models.Instance{
+		Slug:             "demo",
+		Owner:            "wallet-abc",
+		HostedAccountID:  "123456789012",
+		HostedRegion:     "us-east-1",
+		HostedBaseDomain: "demo.example.com",
+	}
 
 	_, err := s.startUpdateDeployRunner(context.Background(), job, inst)
 	require.NoError(t, err)

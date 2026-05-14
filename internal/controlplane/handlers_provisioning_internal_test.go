@@ -87,6 +87,7 @@ func TestBuildManagedProvisionJob_PreservesStructuredConsentBytes(t *testing.T) 
 	require.Equal(t, "us-east-1", region)
 	require.Equal(t, consentMessage, job.ConsentMessage)
 	require.Equal(t, sha256Hex(consentMessage), job.ConsentMessageHash)
+	require.Equal(t, expiresAt.UTC(), job.ConsentExpiresAt)
 }
 
 func TestStartAndGetInstanceProvisioning(t *testing.T) {

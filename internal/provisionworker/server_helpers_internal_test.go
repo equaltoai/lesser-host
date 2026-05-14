@@ -18,6 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	ststypes "github.com/aws/aws-sdk-go-v2/service/sts/types"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
+	"github.com/theory-cloud/tabletheory/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
 
@@ -109,6 +110,12 @@ func TestProvisionWorker_InstanceKeySecretNameAndStageHelpers(t *testing.T) {
 	}
 	if got := managedInstanceKeySecretStage(""); got != defaultControlPlaneStage {
 		t.Fatalf("expected default stage, got %q", got)
+	}
+	if got := managedInstanceKeySecretStage("prod"); got != managedStageLive {
+		t.Fatalf("expected prod alias to fail closed as live, got %q", got)
+	}
+	if got := managedInstanceKeySecretStage("production"); got != managedStageLive {
+		t.Fatalf("expected production alias to fail closed as live, got %q", got)
 	}
 	if got := managedInstanceKeySecretStage("..LAB@@stage__"); got != "labstage" {
 		t.Fatalf("unexpected sanitized stage: %q", got)
@@ -253,6 +260,141 @@ func TestClearProvisionJobConsentArtifacts_PreservesHashOnly(t *testing.T) {
 	}
 	if job.ConsentMessageHash == "" {
 		t.Fatalf("expected consent message hash retained")
+	}
+}
+
+func TestProcessProvisionSweepJobFailsExpiredConsentAndClearsArtifacts(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1_000, 0).UTC()
+	db := ttmocks.NewMockExtendedDBStrict()
+	builder := &recordingTransactionBuilder{}
+	db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Once().Run(func(args mock.Arguments) {
+		fn := testutil.RequireMockArg[func(core.TransactionBuilder) error](t, args, 1)
+		if err := fn(builder); err != nil {
+			t.Fatalf("transaction: %v", err)
+		}
+	})
+	srv := &Server{store: store.New(db)}
+	job := &models.ProvisionJob{
+		ID:               "job1",
+		InstanceSlug:     "slug",
+		Status:           models.ProvisionJobStatusRunning,
+		UpdatedAt:        now.Add(-time.Hour),
+		ExpiresAt:        now.Add(time.Hour),
+		ConsentMessage:   "signed message",
+		ConsentSignature: "0xsig",
+		ConsentExpiresAt: now.Add(-time.Minute),
+	}
+	_ = job.UpdateKeys()
+
+	processed, err := srv.processProvisionSweepJob(context.Background(), job, "req", now)
+	if err != nil {
+		t.Fatalf("processProvisionSweepJob: %v", err)
+	}
+	if !processed {
+		t.Fatalf("expected expired consent to be processed")
+	}
+	if job.Status != models.ProvisionJobStatusError || job.ErrorCode != "provision_consent_expired" {
+		t.Fatalf("unexpected job failure state: %#v", job)
+	}
+	if job.ConsentMessage != "" || job.ConsentSignature != "" {
+		t.Fatalf("expected replayable consent artifacts cleared: %#v", job)
+	}
+}
+
+func TestValidateDeployRunnerJobForInstanceEnforcesTenantBoundary(t *testing.T) {
+	t.Parallel()
+
+	srv := &Server{cfg: config.Config{ManagedInstanceRoleName: "role"}}
+	job := &models.ProvisionJob{
+		ID:              "job1",
+		InstanceSlug:    "slug",
+		AdminUsername:   "slug",
+		AdminWalletAddr: "0x0000000000000000000000000000000000000003",
+		AccountID:       "123456789012",
+		AccountRoleName: "role",
+		Region:          "us-east-1",
+		BaseDomain:      "slug.example.com",
+		LesserVersion:   "v1.2.3",
+	}
+	inst := &models.Instance{
+		Slug:             "slug",
+		HostedAccountID:  "210987654321",
+		HostedRegion:     "us-east-1",
+		HostedBaseDomain: "slug.example.com",
+	}
+
+	err := srv.validateDeployRunnerJobForInstance(job, inst)
+	if err == nil || !strings.Contains(err.Error(), "target account does not match") {
+		t.Fatalf("expected tenant account mismatch, got %v", err)
+	}
+
+	inst.HostedAccountID = job.AccountID
+	job.AccountRoleName = "other-role"
+	err = srv.validateDeployRunnerJobForInstance(job, inst)
+	if err == nil || !strings.Contains(err.Error(), "target role does not match") {
+		t.Fatalf("expected role mismatch, got %v", err)
+	}
+}
+
+func TestValidateManagedTipDeployConfigRequiresCompleteEVMConfig(t *testing.T) {
+	t.Parallel()
+
+	if err := validateManagedTipDeployConfig(false, 0, ""); err != nil {
+		t.Fatalf("disabled tips should not require config: %v", err)
+	}
+	if err := validateManagedTipDeployConfig(true, 0, "0x1111111111111111111111111111111111111111"); err == nil {
+		t.Fatalf("expected missing chain id error")
+	}
+	if err := validateManagedTipDeployConfig(true, 1, "0xabc"); err == nil {
+		t.Fatalf("expected invalid contract address error")
+	}
+	if err := validateManagedTipDeployConfig(true, 1, "0x1111111111111111111111111111111111111111"); err != nil {
+		t.Fatalf("valid tip config rejected: %v", err)
+	}
+}
+
+func TestAdvanceAccountMoveDefersHostedAccountIDUntilAssumeRole(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1_000, 0).UTC()
+	db := ttmocks.NewMockExtendedDBStrict()
+	var moveBuilder recordingTransactionBuilder
+	db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Once().Run(func(args mock.Arguments) {
+		fn := testutil.RequireMockArg[func(core.TransactionBuilder) error](t, args, 1)
+		if err := fn(&moveBuilder); err != nil {
+			t.Fatalf("transaction: %v", err)
+		}
+	})
+	var assumeBuilder recordingTransactionBuilder
+	db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Once().Run(func(args mock.Arguments) {
+		fn := testutil.RequireMockArg[func(core.TransactionBuilder) error](t, args, 1)
+		if err := fn(&assumeBuilder); err != nil {
+			t.Fatalf("transaction: %v", err)
+		}
+	})
+
+	srv := &Server{store: store.New(db)}
+	job := &models.ProvisionJob{
+		ID:           "job1",
+		InstanceSlug: "slug",
+		Status:       models.ProvisionJobStatusRunning,
+		AccountID:    "123456789012",
+	}
+
+	if _, _, err := srv.advanceToAccountMove(context.Background(), job, "req", now, "account ready"); err != nil {
+		t.Fatalf("advanceToAccountMove: %v", err)
+	}
+	if len(moveBuilder.updateWithBuilderCalls) != 0 {
+		t.Fatalf("account move should not update instance metadata before adoption validation: %#v", moveBuilder.updateWithBuilderCalls)
+	}
+
+	if _, _, err := srv.advanceToAssumeRole(context.Background(), job, "req", now); err != nil {
+		t.Fatalf("advanceToAssumeRole: %v", err)
+	}
+	if len(assumeBuilder.updateWithBuilderCalls) != 1 {
+		t.Fatalf("assume role should persist validated hosted account id to instance metadata, got %#v", assumeBuilder.updateWithBuilderCalls)
 	}
 }
 

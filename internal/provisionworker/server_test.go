@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -322,14 +323,14 @@ func TestProcessActiveProvisionSweep_RequeuesOnlyStaleUnleasedJobs(t *testing.T)
 	qJob.On("All", mock.AnythingOfType("*[]*models.ProvisionJob")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.ProvisionJob](t, args, 0)
 		*dest = []*models.ProvisionJob{
-			{
+			testProvisionSweepJob(&models.ProvisionJob{
 				ID:           "stale",
 				InstanceSlug: "slug",
 				Status:       models.ProvisionJobStatusQueued,
 				UpdatedAt:    now.Add(-provisionSweepStaleAfter - time.Second),
 				ExpiresAt:    now.Add(time.Hour),
-			},
-			{
+			}),
+			testProvisionSweepJob(&models.ProvisionJob{
 				ID:             "leased",
 				InstanceSlug:   "slug",
 				Status:         models.ProvisionJobStatusRunning,
@@ -337,7 +338,7 @@ func TestProcessActiveProvisionSweep_RequeuesOnlyStaleUnleasedJobs(t *testing.T)
 				LeaseOwner:     "worker",
 				LeaseExpiresAt: now.Add(time.Minute),
 				ExpiresAt:      now.Add(time.Hour),
-			},
+			}),
 		}
 	}).Once()
 
@@ -375,6 +376,7 @@ func TestProcessActiveProvisionSweep_FailsExpiredJobs(t *testing.T) {
 		UpdatedAt:    now.Add(-time.Hour),
 		ExpiresAt:    now.Add(-time.Minute),
 	}
+	expired = testProvisionSweepJob(expired)
 	qJob.On("All", mock.AnythingOfType("*[]*models.ProvisionJob")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.ProvisionJob](t, args, 0)
 		*dest = []*models.ProvisionJob{expired}
@@ -428,8 +430,9 @@ func TestProcessActiveProvisionSweep_ValidationAndErrorAccounting(t *testing.T) 
 		dest := testutil.RequireMockArg[*[]*models.ProvisionJob](t, args, 0)
 		*dest = []*models.ProvisionJob{
 			nil,
-			{ID: "done", Status: models.ProvisionJobStatusOK},
-			{ID: "stale", Status: models.ProvisionJobStatusRunning, UpdatedAt: now.Add(-time.Hour)},
+			testProvisionSweepJob(&models.ProvisionJob{ID: "done", InstanceSlug: "slug", Status: models.ProvisionJobStatusOK}),
+			testProvisionSweepJob(&models.ProvisionJob{ID: "stale", InstanceSlug: "slug", Status: models.ProvisionJobStatusRunning, UpdatedAt: now.Add(-time.Hour)}),
+			{PK: "UPDATE_JOB#u1", SK: models.SKJob, ID: "u1", Status: models.ProvisionJobStatusRunning, UpdatedAt: now.Add(-time.Hour)},
 		}
 	}).Once()
 
@@ -442,4 +445,15 @@ func TestProcessActiveProvisionSweep_ValidationAndErrorAccounting(t *testing.T) 
 	require.EqualValues(t, 1, out["active_jobs"])
 	require.EqualValues(t, 0, out["processed"])
 	require.EqualValues(t, 1, out["errors"])
+}
+
+func testProvisionSweepJob(job *models.ProvisionJob) *models.ProvisionJob {
+	if job == nil {
+		return nil
+	}
+	if strings.TrimSpace(job.InstanceSlug) == "" {
+		job.InstanceSlug = "slug"
+	}
+	_ = job.UpdateKeys()
+	return job
 }

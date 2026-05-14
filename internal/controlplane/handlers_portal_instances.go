@@ -425,6 +425,7 @@ func (s *Server) verifyPortalStartProvisionConsent(ctx *apptheory.Context, slug 
 	req.AdminWalletChainID = chall.ChainID
 	req.ConsentMessage = chall.Message
 	req.ConsentSignature = consentSignature
+	req.ConsentExpiresAt = chall.ExpiresAt
 
 	return req, nil
 }
