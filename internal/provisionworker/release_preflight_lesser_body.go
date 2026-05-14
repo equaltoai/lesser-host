@@ -452,7 +452,7 @@ func validateManagedLesserBodyDeployManifestTemplate(parsed *managedLesserBodyDe
 }
 
 func validateManagedLesserBodyAuxiliaryAssets(assets []managedLesserBodyAuxiliaryAsset, stage string, templatePath string) error {
-	seen := newManagedLesserBodyAuxiliaryAssetUniqueness()
+	seen := newManagedLesserBodyAuxiliaryAssetUniqueness(stage, templatePath)
 	for i, asset := range assets {
 		if err := validateManagedLesserBodyAuxiliaryAsset(asset, i, stage, templatePath, seen); err != nil {
 			return err
@@ -466,15 +466,55 @@ type managedLesserBodyAuxiliaryAssetUniqueness struct {
 	paths              map[string]struct{}
 	s3Keys             map[string]struct{}
 	templateParameters map[string]struct{}
+	reservedPaths      map[string]struct{}
 }
 
-func newManagedLesserBodyAuxiliaryAssetUniqueness() *managedLesserBodyAuxiliaryAssetUniqueness {
+func newManagedLesserBodyAuxiliaryAssetUniqueness(stage string, templatePath string) *managedLesserBodyAuxiliaryAssetUniqueness {
 	return &managedLesserBodyAuxiliaryAssetUniqueness{
 		ids:                map[string]struct{}{},
 		paths:              map[string]struct{}{},
 		s3Keys:             map[string]struct{}{},
 		templateParameters: map[string]struct{}{},
+		reservedPaths:      managedLesserBodyReservedReleaseAssetPaths(stage, templatePath),
 	}
+}
+
+func managedLesserBodyReservedReleaseAssetPaths(stage string, templatePath string) map[string]struct{} {
+	stage = normalizeManagedLesserStage(stage)
+	if stage == "" {
+		stage = managedStageDev
+	}
+	templatePath = strings.TrimSpace(templatePath)
+	if templatePath == "" {
+		templatePath = fmt.Sprintf("lesser-body-managed-%s.template.json", stage)
+	}
+	paths := []string{
+		managedLesserBodyReleaseManifestAsset,
+		requiredLesserBodyChecksumsPath,
+		requiredLesserBodyDeployManifestPath,
+		requiredLesserBodyLambdaZipPath,
+		requiredLesserBodyDeployScriptPath,
+		templatePath,
+	}
+	out := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		path = strings.TrimSpace(path)
+		if path != "" {
+			out[path] = struct{}{}
+		}
+	}
+	return out
+}
+
+func (seen *managedLesserBodyAuxiliaryAssetUniqueness) rejectReservedReleaseAssetPath(value string, label string) error {
+	if seen == nil || len(seen.reservedPaths) == 0 {
+		return nil
+	}
+	value = strings.TrimSpace(value)
+	if _, ok := seen.reservedPaths[value]; ok {
+		return fmt.Errorf("%s %q is reserved for a verified lesser-body release artifact", strings.TrimSpace(label), value)
+	}
+	return nil
 }
 
 func validateManagedLesserBodyAuxiliaryAsset(
@@ -504,6 +544,9 @@ func validateManagedLesserBodyAuxiliaryAssetIdentity(asset managedLesserBodyAuxi
 	if err := validateManagedReleaseAssetPath(asset.Path, label+" path"); err != nil {
 		return err
 	}
+	if err := seen.rejectReservedReleaseAssetPath(asset.Path, label+" path"); err != nil {
+		return err
+	}
 	return validateManagedLesserBodyUniqueRequiredValue(strings.TrimSpace(asset.Path), label+" path", seen.paths)
 }
 
@@ -515,6 +558,9 @@ func validateManagedLesserBodyAuxiliaryAssetObjectMetadata(asset managedLesserBo
 		return fmt.Errorf("%s bytes must be positive", label)
 	}
 	if err := validateManagedReleaseAssetPath(asset.S3Key, label+" s3_key"); err != nil {
+		return err
+	}
+	if err := seen.rejectReservedReleaseAssetPath(asset.S3Key, label+" s3_key"); err != nil {
 		return err
 	}
 	if err := validateManagedLesserBodyUniqueRequiredValue(strings.TrimSpace(asset.S3Key), label+" s3_key", seen.s3Keys); err != nil {

@@ -38,6 +38,10 @@ export interface LesserHostStackProps extends cdk.StackProps {
 
 const defaultManagedInstanceRoleName = 'OrganizationAccountAccessRole';
 
+export function shouldUseLocalWebBundling(env: NodeJS.ProcessEnv = process.env): boolean {
+	return env.CI !== 'true' && env.GITHUB_ACTIONS !== 'true';
+}
+
 export class LesserHostStack extends cdk.Stack {
 	private readonly namePrefix: string;
 
@@ -1550,7 +1554,7 @@ export class LesserHostStack extends cdk.Stack {
 						image: cdk.DockerImage.fromRegistry('node:24-bookworm'),
 						local: {
 							tryBundle(outputDir: string) {
-								if (process.env.CI !== 'true') {
+								if (!shouldUseLocalWebBundling()) {
 									return false;
 								}
 

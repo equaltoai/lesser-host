@@ -23,6 +23,8 @@ It assumes:
 2) **Allocate account**
    - create a new AWS account in the org (or allocate from an account pool).
    - ensure `lesser.host` can assume a provisioning role into the new account.
+   - for manually adopted accounts, validate the account ID, expected account email/name, and active Organizations
+     membership before persisting it as the instance's hosted account boundary.
 
 3) **Create delegated hosted zone**
    - in the instance account, create a public hosted zone for `slug.greater.website`.
@@ -50,6 +52,9 @@ It assumes:
      - `--aws-profile <temp-profile>` (static session creds)
      - `--provisioning-input <path>`
      - `--release-dir <verified-release-dir>`
+   - before CodeBuild starts, the provisioning worker revalidates that the job's slug, account ID, role, region, and
+     base domain match the instance metadata; the runner also verifies that its assumed `managed` AWS profile resolves
+     to the requested account ID.
    - immediately seed the admin wallet and unlock the instance:
      - `lesser init-admin --base-domain <slug.greater.website> --aws-profile <temp-profile> --provisioning-input <path>`
    - read the deployment receipt `~/.lesser/<app>/<base-domain>/state.json`.
@@ -138,7 +143,9 @@ lesser init-admin --base-domain <slug.greater.website> --aws-profile <temp-profi
 ```
 
 Do not canonicalize, pretty-print, trim, or reserialize the consent message after signing. Any byte drift invalidates the
-wallet signature and can cause Lesser M9 replay protection to reject the admin seed.
+wallet signature and can cause Lesser M9 replay protection to reject the admin seed. Treat the raw message and signature
+as replayable artifacts while they exist: the provisioning worker fails the job and clears them if `expires_at` is
+missing or has passed before the deploy runner starts, and clears them as soon as CodeBuild accepts the deploy runner.
 
 ### CORS sequencing for Lesser M9
 
@@ -241,6 +248,12 @@ From Lesser (inputs for `lesser-body`):
 From `lesser-body` (inputs for Lesser API Gateway `/mcp/{actor}` wiring):
 - `/${app}/${stage}/lesser-body/exports/v1/mcp_lambda_arn`
 
+## Instance key secret stage aliases
+
+The instance-account Secrets Manager secret for host instance-auth keys is named by the normalized control-plane stage
+(`lab/<slug>/instance-key`, `live/<slug>/instance-key`, etc.) and must carry host-managed tags for slug, key ID,
+managed status, and control-plane stage. The live fail-closed rule treats `live`, `prod`, and `production` as the same
+live stage: legacy untagged ARNs are refused for all three aliases instead of being ignored and replaced.
 
 ## Soul comm mailbox migration
 

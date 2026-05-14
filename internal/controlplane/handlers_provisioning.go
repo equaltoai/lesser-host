@@ -3,6 +3,7 @@ package controlplane
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -33,15 +34,33 @@ func shouldNudgeAsyncJob(now time.Time, updatedAt time.Time) bool {
 }
 
 type startInstanceProvisionRequest struct {
-	LesserVersion      string `json:"lesser_version,omitempty"`
-	Region             string `json:"region,omitempty"`
-	AdminUsername      string `json:"admin_username,omitempty"`
-	AdminWalletType    string `json:"admin_wallet_type,omitempty"`
-	AdminWalletAddress string `json:"admin_wallet_address,omitempty"`
-	AdminWalletChainID int    `json:"admin_wallet_chain_id,omitempty"`
-	ConsentChallengeID string `json:"consent_challenge_id,omitempty"`
-	ConsentMessage     string `json:"consent_message,omitempty"`
-	ConsentSignature   string `json:"consent_signature,omitempty"`
+	LesserVersion      string    `json:"lesser_version,omitempty"`
+	Region             string    `json:"region,omitempty"`
+	AdminUsername      string    `json:"admin_username,omitempty"`
+	AdminWalletType    string    `json:"admin_wallet_type,omitempty"`
+	AdminWalletAddress string    `json:"admin_wallet_address,omitempty"`
+	AdminWalletChainID int       `json:"admin_wallet_chain_id,omitempty"`
+	ConsentChallengeID string    `json:"consent_challenge_id,omitempty"`
+	ConsentMessage     string    `json:"consent_message,omitempty"`
+	ConsentSignature   string    `json:"consent_signature,omitempty"`
+	ConsentExpiresAt   time.Time `json:"-"`
+}
+
+func provisionConsentMessageExpiresAt(message string) (time.Time, error) {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return time.Time{}, nil
+	}
+	var payload struct {
+		ExpiresAt time.Time `json:"expires_at"`
+	}
+	if err := json.Unmarshal([]byte(message), &payload); err != nil {
+		return time.Time{}, fmt.Errorf("invalid consent_message")
+	}
+	if payload.ExpiresAt.IsZero() {
+		return time.Time{}, fmt.Errorf("consent_message expires_at is required")
+	}
+	return payload.ExpiresAt.UTC(), nil
 }
 
 type provisionJobResponse struct {
@@ -264,6 +283,14 @@ func (s *Server) buildManagedProvisionJob(slug string, req startInstanceProvisio
 	}
 
 	accountEmail := strings.TrimSpace(expandManagedAccountEmailTemplate(s.cfg.ManagedAccountEmailTemplate, slug))
+	consentExpiresAt := req.ConsentExpiresAt
+	if consentExpiresAt.IsZero() && strings.TrimSpace(req.ConsentMessage) != "" {
+		parsedExpiresAt, parseErr := provisionConsentMessageExpiresAt(req.ConsentMessage)
+		if parseErr != nil {
+			return nil, "", "", &apptheory.AppError{Code: "app.bad_request", Message: parseErr.Error()}
+		}
+		consentExpiresAt = parsedExpiresAt
+	}
 
 	job := &models.ProvisionJob{
 		ID:                 id,
@@ -281,6 +308,7 @@ func (s *Server) buildManagedProvisionJob(slug string, req startInstanceProvisio
 		AccountEmail:       accountEmail,
 		ConsentMessage:     req.ConsentMessage,
 		ConsentSignature:   strings.TrimSpace(req.ConsentSignature),
+		ConsentExpiresAt:   consentExpiresAt,
 		ConsentMessageHash: func() string {
 			msg := req.ConsentMessage
 			if msg == "" {

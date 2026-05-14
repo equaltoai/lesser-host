@@ -1,7 +1,8 @@
 package provisionworker
 
 const (
-	defaultControlPlaneStage = "lab"
+	defaultControlPlaneStage       = "lab"
+	defaultManagedInstanceRoleName = "OrganizationAccountAccessRole"
 
 	noteStartingDeployRunner          = "starting deploy runner"
 	noteEnsuringInstanceConfiguration = "ensuring instance configuration"
