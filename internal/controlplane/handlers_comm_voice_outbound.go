@@ -77,18 +77,11 @@ func safeSoulCommHost(host string) bool {
 	return true
 }
 
-func soulCommRequestBaseURL(ctx *apptheory.Context, publicBaseURL string) string {
+func soulCommRequestBaseURL(_ *apptheory.Context, publicBaseURL string) string {
 	if base := normalizeSoulCommPublicBaseURL(publicBaseURL); base != "" {
 		return base
 	}
-	if ctx == nil {
-		return ""
-	}
-	host := strings.TrimSpace(httpx.FirstHeaderValue(ctx.Request.Headers, "host"))
-	if !safeSoulCommHost(host) {
-		return ""
-	}
-	return "https://" + host
+	return ""
 }
 
 func (s *Server) handleCommVoiceTeXML(ctx *apptheory.Context) (*apptheory.Response, error) {

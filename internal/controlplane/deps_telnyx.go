@@ -176,6 +176,9 @@ func defaultTelnyxUpdateMessagingProfile(ctx context.Context, webhookURL string)
 	if webhookURL == "" {
 		return fmt.Errorf("telnyx webhookURL is required")
 	}
+	if err := validateTelnyxCallbackURL(webhookURL, "telnyx webhookURL"); err != nil {
+		return err
+	}
 
 	creds, err := secrets.TelnyxCreds(ctx, nil)
 	if err != nil {
@@ -415,8 +418,8 @@ func defaultTelnyxCreateVoiceCall(ctx context.Context, from string, to string, t
 	to = strings.TrimSpace(to)
 	texmlURL = strings.TrimSpace(texmlURL)
 	statusCallbackURL = strings.TrimSpace(statusCallbackURL)
-	if from == "" || to == "" || texmlURL == "" || statusCallbackURL == "" {
-		return "", fmt.Errorf("telnyx voice call requires from, to, texmlURL, and statusCallbackURL")
+	if err := validateTelnyxVoiceCallRequest(from, to, texmlURL, statusCallbackURL); err != nil {
+		return "", err
 	}
 
 	creds, err := secrets.TelnyxCreds(ctx, nil)
@@ -487,4 +490,33 @@ func defaultTelnyxCreateVoiceCall(ctx context.Context, from string, to string, t
 		}
 	}
 	return "", nil
+}
+
+func validateTelnyxVoiceCallRequest(from string, to string, texmlURL string, statusCallbackURL string) error {
+	if from == "" || to == "" || texmlURL == "" || statusCallbackURL == "" {
+		return fmt.Errorf("telnyx voice call requires from, to, texmlURL, and statusCallbackURL")
+	}
+	if err := validateTelnyxCallbackURL(texmlURL, "telnyx texmlURL"); err != nil {
+		return err
+	}
+	return validateTelnyxCallbackURL(statusCallbackURL, "telnyx statusCallbackURL")
+}
+
+func validateTelnyxCallbackURL(raw string, label string) error {
+	raw = strings.TrimSpace(raw)
+	label = strings.TrimSpace(label)
+	if label == "" {
+		label = "telnyx callback URL"
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u == nil {
+		return fmt.Errorf("%s is invalid", label)
+	}
+	if strings.ToLower(strings.TrimSpace(u.Scheme)) != "https" {
+		return fmt.Errorf("%s must use https", label)
+	}
+	if u.User != nil || !safeSoulCommHost(u.Host) || strings.TrimSpace(u.Fragment) != "" {
+		return fmt.Errorf("%s host is invalid", label)
+	}
+	return nil
 }
