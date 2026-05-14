@@ -27,12 +27,12 @@ describe('logout', () => {
 
 		vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network down')));
 
-		await logout();
+		await expect(logout()).rejects.toThrow('network down');
 
 		expect(get(session)).toBeNull();
 	});
 
-	it('clears the local session before the API call resolves', async () => {
+	it('waits for server-side revocation before clearing the local session', async () => {
 		const { session, setSession } = await import('src/lib/session');
 		const { logout } = await import('src/lib/auth/logout');
 
@@ -55,9 +55,10 @@ describe('logout', () => {
 			),
 		);
 
-		await logout();
+		const pendingLogout = logout();
 
-		expect(get(session)).toBeNull();
+		await Promise.resolve();
+		expect(get(session)).not.toBeNull();
 		expect(resolveLogout).toBeTypeOf('function');
 
 		resolveLogout?.(
@@ -66,5 +67,7 @@ describe('logout', () => {
 				headers: { 'content-type': 'application/json' },
 			}),
 		);
+		await pendingLogout;
+		expect(get(session)).toBeNull();
 	});
 });

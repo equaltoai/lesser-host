@@ -160,19 +160,34 @@ func (s *Server) requireSoulMintInstanceReadKey(ctx *apptheory.Context) (*models
 	if token == "" {
 		return nil, soulMintInstanceReadError(soulMintInstanceReadCodeUnauthorized, "unauthorized", http.StatusUnauthorized, nil)
 	}
-
-	key, err := s.store.GetInstanceKey(ctx.Context(), sha256HexTrimmed(token))
-	if theoryErrors.IsNotFound(err) || key == nil || !key.RevokedAt.IsZero() {
-		return nil, soulMintInstanceReadError(soulMintInstanceReadCodeUnauthorized, "unauthorized", http.StatusUnauthorized, nil)
+	tokenHash := sha256HexTrimmed(token)
+	if key := soulMintConversationInstanceReadKeyFromContext(ctx); soulMintConversationInstanceReadKeyActiveForHash(key, tokenHash) {
+		s.updateSoulMintInstanceReadKeyLastUsed(ctx, key)
+		return key, nil
 	}
+
+	key, err := s.store.GetInstanceKey(ctx.Context(), tokenHash)
 	if err != nil {
+		if theoryErrors.IsNotFound(err) {
+			return nil, soulMintInstanceReadError(soulMintInstanceReadCodeUnauthorized, "unauthorized", http.StatusUnauthorized, nil)
+		}
 		return nil, soulMintInstanceReadError(soulMintInstanceReadCodeInternal, "internal error", http.StatusInternalServerError, nil)
 	}
+	if key == nil || !key.RevokedAt.IsZero() {
+		return nil, soulMintInstanceReadError(soulMintInstanceReadCodeUnauthorized, "unauthorized", http.StatusUnauthorized, nil)
+	}
 
+	s.updateSoulMintInstanceReadKeyLastUsed(ctx, key)
+	return key, nil
+}
+
+func (s *Server) updateSoulMintInstanceReadKeyLastUsed(ctx *apptheory.Context, key *models.InstanceKey) {
+	if s == nil || s.store == nil || s.store.DB == nil || ctx == nil || key == nil {
+		return
+	}
 	key.LastUsedAt = time.Now().UTC()
 	_ = key.UpdateKeys()
 	_ = s.store.DB.WithContext(ctx.Context()).Model(key).IfExists().Update("LastUsedAt")
-	return key, nil
 }
 
 func soulMintInstanceReadErrorFromAppError(appErr *apptheory.AppError) *apptheory.AppTheoryError {
