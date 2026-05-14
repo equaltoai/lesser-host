@@ -1583,7 +1583,7 @@ export class LesserHostStack extends cdk.Stack {
 						command: [
 							'bash',
 							'-c',
-							'rm -rf /tmp/webbuild && mkdir -p /tmp/webbuild && cp -R /asset-input/. /tmp/webbuild && cd /tmp/webbuild && rm -rf node_modules dist && npm ci && npm run build && cp -r dist/* /asset-output/',
+							'export HOME=/tmp npm_config_cache=/tmp/.npm NPM_CONFIG_CACHE=/tmp/.npm && rm -rf /tmp/webbuild && mkdir -p /tmp/webbuild /tmp/.npm && cp -R /asset-input/. /tmp/webbuild && cd /tmp/webbuild && rm -rf node_modules dist && npm ci --cache /tmp/.npm && npm run build && cp -r dist/* /asset-output/',
 						],
 					},
 				}),
