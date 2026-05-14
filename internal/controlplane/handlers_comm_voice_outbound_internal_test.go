@@ -171,13 +171,13 @@ func TestSoulCommRequestBaseURL(t *testing.T) {
 		}
 	})
 
-	t.Run("falls back to request host", func(t *testing.T) {
+	t.Run("does not trust request host without configured base url", func(t *testing.T) {
 		t.Parallel()
 		ctx := &apptheory.Context{
 			Request: apptheory.Request{Headers: map[string][]string{"host": {"portal.lesser.host"}}},
 		}
-		if got := soulCommRequestBaseURL(ctx, ""); got != "https://portal.lesser.host" {
-			t.Fatalf("expected request host fallback, got %q", got)
+		if got := soulCommRequestBaseURL(ctx, ""); got != "" {
+			t.Fatalf("expected blank base url, got %q", got)
 		}
 	})
 
@@ -190,6 +190,38 @@ func TestSoulCommRequestBaseURL(t *testing.T) {
 			t.Fatalf("expected blank base url, got %q", got)
 		}
 	})
+}
+
+func TestValidateTelnyxCallbackURL(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		raw     string
+		wantErr bool
+	}{
+		{name: "https public callback", raw: "https://lab.lesser.host/webhooks/comm/sms/inbound"},
+		{name: "https localhost allowed for local dev", raw: "https://localhost:5173/webhooks/comm/sms/inbound"},
+		{name: "http rejected", raw: "http://lab.lesser.host/webhooks/comm/sms/inbound", wantErr: true},
+		{name: "userinfo rejected", raw: "https://user@lab.lesser.host/webhooks/comm/sms/inbound", wantErr: true},
+		{name: "unsafe host rejected", raw: "https://bad host/webhooks/comm/sms/inbound", wantErr: true},
+		{name: "fragment rejected", raw: "https://lab.lesser.host/webhooks/comm/sms/inbound#frag", wantErr: true},
+		{name: "blank rejected", raw: " ", wantErr: true},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateTelnyxCallbackURL(tc.raw, "telnyx callback")
+			if tc.wantErr && err == nil {
+				t.Fatalf("expected error")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
 }
 
 func TestBuildSoulCommVoiceTeXML(t *testing.T) {

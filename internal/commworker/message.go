@@ -13,6 +13,7 @@ const (
 	inboundChannelEmail     = "email"
 	inboundChannelSMS       = "sms"
 	inboundChannelVoice     = "voice"
+	maxInboundExternalIDLen = 512
 )
 
 // QueueMessage is the SQS payload processed by comm-worker.
@@ -93,8 +94,11 @@ func (n *InboundNotification) Validate() error {
 	if strings.TrimSpace(n.ReceivedAt) == "" {
 		return fmt.Errorf("receivedAt is required")
 	}
-	if strings.TrimSpace(n.MessageID) == "" {
+	if !validInboundExternalID(n.MessageID, true) {
 		return fmt.Errorf("messageId is required")
+	}
+	if n.InReplyTo != nil && !validInboundExternalID(*n.InReplyTo, false) {
+		return fmt.Errorf("invalid inReplyTo")
 	}
 
 	if channel == inboundChannelEmail && strings.TrimSpace(n.Subject) == "" {
@@ -118,4 +122,20 @@ func (p *InboundParty) Validate() error {
 	}
 	// Number shape validation is handled deeper in the pipeline (normalization + index lookups).
 	return nil
+}
+
+func validInboundExternalID(value string, required bool) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return !required
+	}
+	if len(value) > maxInboundExternalIDLen {
+		return false
+	}
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	return true
 }

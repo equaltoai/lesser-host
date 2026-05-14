@@ -3,6 +3,7 @@ package emailingress
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/mail"
 	"strings"
@@ -21,6 +22,10 @@ import (
 const (
 	inboundBridgeAddress  = "medic@inbound.lessersoul.ai"
 	canonicalMedicAddress = "medic@lessersoul.ai"
+	testAliceName         = "Alice"
+	testAliceAddress      = "alice@example.com"
+	testAliceFromHeader   = "From: Alice <alice@example.com>"
+	testAliceSource       = "Alice <alice@example.com>"
 )
 
 type fakeS3 struct {
@@ -101,7 +106,7 @@ func TestParseRawEmail_MultipartPrefersPlainText(t *testing.T) {
 	t.Parallel()
 
 	raw := strings.Join([]string{
-		"From: Alice <alice@example.com>",
+		testAliceFromHeader,
 		"To: medic@inbound.lessersoul.ai",
 		"Subject: =?UTF-8?Q?Hello_=E2=9C=A8?=",
 		"Message-ID: <msg-1@example.com>",
@@ -121,11 +126,11 @@ func TestParseRawEmail_MultipartPrefersPlainText(t *testing.T) {
 		"",
 	}, "\r\n")
 
-	parsed, err := parseRawEmail([]byte(raw), "alice@example.com", "", "ses-msg-1")
+	parsed, err := parseRawEmail([]byte(raw), testAliceAddress, "", "ses-msg-1")
 	if err != nil {
 		t.Fatalf("parseRawEmail: %v", err)
 	}
-	if parsed.From.Address != "alice@example.com" || parsed.From.DisplayName != "Alice" {
+	if parsed.From.Address != testAliceAddress || parsed.From.DisplayName != testAliceName {
 		t.Fatalf("unexpected from: %#v", parsed.From)
 	}
 	if parsed.Subject != "Hello ✨" {
@@ -155,7 +160,7 @@ func TestParseRawEmail_MultipartFallsBackToHTML(t *testing.T) {
 	t.Parallel()
 
 	raw := strings.Join([]string{
-		"From: Alice <alice@example.com>",
+		testAliceFromHeader,
 		"To: medic@inbound.lessersoul.ai",
 		"Subject: Hello",
 		"Message-ID: <msg-2@example.com>",
@@ -170,7 +175,7 @@ func TestParseRawEmail_MultipartFallsBackToHTML(t *testing.T) {
 		"",
 	}, "\r\n")
 
-	parsed, err := parseRawEmail([]byte(raw), "alice@example.com", "", "ses-msg-2")
+	parsed, err := parseRawEmail([]byte(raw), testAliceAddress, "", "ses-msg-2")
 	if err != nil {
 		t.Fatalf("parseRawEmail: %v", err)
 	}
@@ -230,6 +235,30 @@ func TestParseInboundFrom_UsesFallbackWhenHeaderIsMalformed(t *testing.T) {
 	}
 }
 
+func TestParseInboundFrom_PrefersAuthenticatedSourceOverSpoofedHeader(t *testing.T) {
+	t.Parallel()
+
+	from, err := parseInboundFrom(mail.Header{"From": []string{"Mallory <spoof@example.net>"}}, testAliceSource)
+	if err != nil {
+		t.Fatalf("parseInboundFrom: %v", err)
+	}
+	if from.Address != testAliceAddress || from.DisplayName != testAliceName {
+		t.Fatalf("expected authenticated source identity, got %#v", from)
+	}
+}
+
+func TestParseInboundFrom_ReusesHeaderDisplayNameOnlyWhenAddressMatchesSource(t *testing.T) {
+	t.Parallel()
+
+	from, err := parseInboundFrom(mail.Header{"From": []string{"Alice Display <alice@example.com>"}}, testAliceAddress)
+	if err != nil {
+		t.Fatalf("parseInboundFrom: %v", err)
+	}
+	if from.Address != testAliceAddress || from.DisplayName != "Alice Display" {
+		t.Fatalf("expected authenticated address with matching display name, got %#v", from)
+	}
+}
+
 func TestHandleSESEvent_RequiresConfiguredBridge(t *testing.T) {
 	t.Parallel()
 
@@ -277,7 +306,7 @@ func TestHandleSESEvent_SkipsNonBridgeRecipient(t *testing.T) {
 	t.Parallel()
 
 	raw := strings.Join([]string{
-		"From: Alice <alice@example.com>",
+		testAliceFromHeader,
 		"To: medic@example.com",
 		"Subject: Hello",
 		"Content-Type: text/plain; charset=utf-8",
@@ -313,7 +342,7 @@ func TestHandleSESEvent_SkipsNonBridgeRecipient(t *testing.T) {
 			{
 				SES: events.SimpleEmailService{
 					Mail: events.SimpleEmailMessage{
-						Source:      "alice@example.com",
+						Source:      testAliceAddress,
 						MessageID:   "ses-msg-2",
 						Destination: []string{"medic@example.com"},
 					},
@@ -331,6 +360,67 @@ func TestHandleSESEvent_SkipsNonBridgeRecipient(t *testing.T) {
 	}
 	if len(logs) != 1 || !strings.Contains(logs[0], "skipping non-bridge recipient") {
 		t.Fatalf("unexpected skip logs: %#v", logs)
+	}
+}
+
+func TestHandleSESEvent_SanitizesSkippedRecipientLog(t *testing.T) {
+	t.Parallel()
+
+	raw := strings.Join([]string{
+		testAliceFromHeader,
+		"To: medic@example.com",
+		"Subject: Hello",
+		"Content-Type: text/plain; charset=utf-8",
+		"",
+		"Email body",
+		"",
+	}, "\r\n")
+
+	s3Client := &fakeS3{
+		bodyByKey: map[string]string{
+			"ses/inbound/ses-msg-log": raw,
+		},
+	}
+	sqsClient := &fakeSQS{}
+	logs := make([]string, 0, 1)
+	srv := &Server{
+		cfg: config.Config{
+			CommQueueURL:           "queue",
+			SoulEmailInboundDomain: "inbound.lessersoul.ai",
+			InboundEmailBucketName: "bucket",
+			InboundEmailS3Prefix:   "ses/inbound/",
+		},
+		s3:  s3Client,
+		sqs: sqsClient,
+		now: time.Now,
+		logf: func(format string, args ...any) {
+			logs = append(logs, fmt.Sprintf(format, args...))
+		},
+	}
+
+	event := events.SimpleEmailEvent{
+		Records: []events.SimpleEmailRecord{
+			{
+				SES: events.SimpleEmailService{
+					Mail: events.SimpleEmailMessage{
+						Source:      testAliceAddress,
+						MessageID:   "ses-msg-log",
+						Destination: []string{"bad@example.com\r\nlevel=error message=hijack"},
+					},
+					Receipt: validSESReceipt(),
+				},
+			},
+		},
+	}
+
+	if err := srv.HandleSESEvent(context.Background(), event); err != nil {
+		t.Fatalf("HandleSESEvent: %v", err)
+	}
+	if len(sqsClient.bodies) != 0 {
+		t.Fatalf("expected no queued messages, got %d", len(sqsClient.bodies))
+	}
+	if len(logs) != 1 || strings.ContainsAny(logs[0], "\r\n\t") || strings.Contains(logs[0], "level=error") {
+		t.Fatalf("expected sanitized single-line skip log, got %#v", logs)
 	}
 }
 
@@ -374,7 +464,7 @@ func TestHandleSESEvent_PropagatesLoadError(t *testing.T) {
 func TestHandleSESEvent_RejectsUnauthenticatedSenderVerdicts(t *testing.T) {
 	t.Parallel()
 
-	s3Client := &fakeS3{bodyByKey: map[string]string{"ses/inbound/ses-msg-spoof": "From: Alice <alice@example.com>\r\n\r\nbody"}}
+	s3Client := &fakeS3{bodyByKey: map[string]string{"ses/inbound/ses-msg-spoof": testAliceFromHeader + "\r\n\r\nbody"}}
 	sqsClient := &fakeSQS{}
 	logs := make([]string, 0, 1)
 	srv := &Server{
@@ -397,7 +487,7 @@ func TestHandleSESEvent_RejectsUnauthenticatedSenderVerdicts(t *testing.T) {
 			{
 				SES: events.SimpleEmailService{
 					Mail: events.SimpleEmailMessage{
-						Source:      "alice@example.com",
+						Source:      testAliceAddress,
 						MessageID:   "ses-msg-spoof",
 						Destination: []string{inboundBridgeAddress},
 					},
@@ -428,7 +518,7 @@ func TestHandleSESEvent_PropagatesQueueError(t *testing.T) {
 	t.Parallel()
 
 	raw := strings.Join([]string{
-		"From: Alice <alice@example.com>",
+		testAliceFromHeader,
 		"To: medic@inbound.lessersoul.ai",
 		"Subject: Hello",
 		"Content-Type: text/plain; charset=utf-8",
@@ -459,7 +549,7 @@ func TestHandleSESEvent_PropagatesQueueError(t *testing.T) {
 			{
 				SES: events.SimpleEmailService{
 					Mail: events.SimpleEmailMessage{
-						Source:      "alice@example.com",
+						Source:      testAliceAddress,
 						MessageID:   "ses-msg-queue",
 						Destination: []string{inboundBridgeAddress},
 					},
@@ -479,7 +569,7 @@ func TestHandleSESEvent_EnqueuesEachBridgeRecipient(t *testing.T) {
 	t.Parallel()
 
 	raw := strings.Join([]string{
-		"From: Alice <alice@example.com>",
+		testAliceFromHeader,
 		"To: medic@inbound.lessersoul.ai, surgeon@inbound.lessersoul.ai",
 		"Subject: Hello",
 		"Message-ID: <msg-multi@example.com>",
@@ -516,7 +606,7 @@ func TestHandleSESEvent_EnqueuesEachBridgeRecipient(t *testing.T) {
 			{
 				SES: events.SimpleEmailService{
 					Mail: events.SimpleEmailMessage{
-						Source:      "alice@example.com",
+						Source:      testAliceAddress,
 						MessageID:   "ses-msg-multi",
 						Destination: []string{"medic@inbound.lessersoul.ai", "surgeon@inbound.lessersoul.ai", "bad@example.com"},
 					},
@@ -556,7 +646,7 @@ func TestHandleSESEvent_PrefersSESReceiptRecipientsForForwardedMail(t *testing.T
 	t.Parallel()
 
 	raw := strings.Join([]string{
-		"From: Alice <alice@example.com>",
+		testAliceFromHeader,
 		"To: " + canonicalMedicAddress,
 		"Subject: Hello",
 		"Message-ID: <msg-forwarded@example.com>",
@@ -593,7 +683,7 @@ func TestHandleSESEvent_PrefersSESReceiptRecipientsForForwardedMail(t *testing.T
 			{
 				SES: events.SimpleEmailService{
 					Mail: events.SimpleEmailMessage{
-						Source:      "alice@example.com",
+						Source:      testAliceAddress,
 						MessageID:   "ses-msg-forwarded",
 						Destination: []string{canonicalMedicAddress},
 					},
@@ -687,7 +777,7 @@ func TestHandleSESEvent_UsesFallbackReceivedAtWhenTimestampMissing(t *testing.T)
 	t.Parallel()
 
 	raw := strings.Join([]string{
-		"From: Alice <alice@example.com>",
+		testAliceFromHeader,
 		"To: medic@inbound.lessersoul.ai",
 		"Subject: Hello",
 		"Message-ID: <msg-fallback@example.com>",
@@ -722,7 +812,7 @@ func TestHandleSESEvent_UsesFallbackReceivedAtWhenTimestampMissing(t *testing.T)
 			{
 				SES: events.SimpleEmailService{
 					Mail: events.SimpleEmailMessage{
-						Source:      "alice@example.com",
+						Source:      testAliceAddress,
 						MessageID:   "ses-msg-fallback",
 						Destination: []string{inboundBridgeAddress},
 					},
@@ -783,7 +873,7 @@ func TestExtractEmailBody_MultipartMissingBoundary(t *testing.T) {
 
 func TestHandleSESEvent_EnqueuesCanonicalEmailNotification(t *testing.T) {
 	raw := strings.Join([]string{
-		"From: Alice <alice@example.com>",
+		testAliceFromHeader,
 		"To: medic@inbound.lessersoul.ai",
 		"Subject: Hello",
 		"Message-ID: <msg-1@example.com>",
@@ -817,7 +907,7 @@ func TestHandleSESEvent_EnqueuesCanonicalEmailNotification(t *testing.T) {
 			{
 				SES: events.SimpleEmailService{
 					Mail: events.SimpleEmailMessage{
-						Source:      "alice@example.com",
+						Source:      testAliceAddress,
 						MessageID:   "ses-msg-1",
 						Timestamp:   time.Date(2026, 3, 21, 14, 0, 0, 0, time.UTC),
 						Destination: []string{inboundBridgeAddress},
@@ -853,5 +943,68 @@ func TestHandleSESEvent_EnqueuesCanonicalEmailNotification(t *testing.T) {
 	}
 	if msg.Notification.MessageID != "msg-1@example.com" {
 		t.Fatalf("unexpected message id: %q", msg.Notification.MessageID)
+	}
+}
+
+func TestHandleSESEvent_QueuesAuthenticatedSourceInsteadOfSpoofedFromHeader(t *testing.T) {
+	t.Parallel()
+
+	raw := strings.Join([]string{
+		"From: Mallory <spoof@example.net>",
+		"To: medic@inbound.lessersoul.ai",
+		"Subject: Hello",
+		"Message-ID: <msg-spoof@example.com>",
+		"Content-Type: text/plain; charset=utf-8",
+		"",
+		"Email body",
+		"",
+	}, "\r\n")
+
+	s3Client := &fakeS3{
+		bodyByKey: map[string]string{
+			"ses/inbound/ses-msg-source": raw,
+		},
+	}
+	sqsClient := &fakeSQS{}
+	srv := &Server{
+		cfg: config.Config{
+			CommQueueURL:           "queue",
+			SoulEmailInboundDomain: "inbound.lessersoul.ai",
+			InboundEmailBucketName: "bucket",
+			InboundEmailS3Prefix:   "ses/inbound/",
+		},
+		s3:   s3Client,
+		sqs:  sqsClient,
+		now:  time.Now,
+		logf: func(string, ...any) {},
+	}
+
+	event := events.SimpleEmailEvent{
+		Records: []events.SimpleEmailRecord{
+			{
+				SES: events.SimpleEmailService{
+					Mail: events.SimpleEmailMessage{
+						Source:      testAliceSource,
+						MessageID:   "ses-msg-source",
+						Destination: []string{inboundBridgeAddress},
+					},
+					Receipt: validSESReceipt(),
+				},
+			},
+		},
+	}
+
+	if err := srv.HandleSESEvent(context.Background(), event); err != nil {
+		t.Fatalf("HandleSESEvent: %v", err)
+	}
+	if len(sqsClient.bodies) != 1 {
+		t.Fatalf("expected 1 queued message, got %d", len(sqsClient.bodies))
+	}
+	var msg commworker.QueueMessage
+	if err := json.Unmarshal([]byte(sqsClient.bodies[0]), &msg); err != nil {
+		t.Fatalf("unmarshal queued body: %v", err)
+	}
+	if msg.Notification.From.Address != testAliceAddress || msg.Notification.From.DisplayName != testAliceName {
+		t.Fatalf("expected authenticated source sender, got %#v", msg.Notification.From)
 	}
 }

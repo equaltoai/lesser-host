@@ -134,7 +134,7 @@ func (s *Server) handleRecord(ctx context.Context, record events.SimpleEmailReco
 	for _, destination := range sesEnvelopeRecipients(record) {
 		toAddress, ok := normalizeInboundRecipient(destination, inboundDomain)
 		if !ok {
-			s.logf("emailingress: skipping non-bridge recipient %q", strings.TrimSpace(destination))
+			s.logf("emailingress: skipping non-bridge recipient %q", safeLogToken(destination))
 			continue
 		}
 		msg := commworker.QueueMessage{
@@ -192,7 +192,8 @@ func safeLogToken(value string) string {
 			return r
 		}
 	}, value)
-	return strings.Join(strings.Fields(value), " ")
+	value = strings.Join(strings.Fields(value), " ")
+	return strings.NewReplacer("=", ":", "\"", "'", "`", "'").Replace(value)
 }
 
 func sesEnvelopeRecipients(record events.SimpleEmailRecord) []string {
@@ -325,23 +326,40 @@ func parseRawEmail(raw []byte, fallbackSource string, fallbackSubject string, fa
 
 func parseInboundFrom(header mail.Header, fallbackSource string) (commworker.InboundParty, error) {
 	rawFrom := strings.TrimSpace(header.Get("From"))
-	if rawFrom == "" {
-		rawFrom = strings.TrimSpace(fallbackSource)
-	}
-	if rawFrom == "" {
-		return commworker.InboundParty{}, fmt.Errorf("from address is required")
+	var headerAddr *mail.Address
+	if rawFrom != "" {
+		if parsed, err := mail.ParseAddress(rawFrom); err == nil {
+			headerAddr = parsed
+		}
 	}
 
-	addr, err := mail.ParseAddress(rawFrom)
-	if err != nil {
-		addr, err = mail.ParseAddress(strings.TrimSpace(fallbackSource))
+	rawSource := strings.TrimSpace(fallbackSource)
+	if rawSource != "" {
+		sourceAddr, err := mail.ParseAddress(rawSource)
 		if err != nil {
 			return commworker.InboundParty{}, fmt.Errorf("invalid from address: %w", err)
 		}
+		displayName := strings.TrimSpace(sourceAddr.Name)
+		if headerAddr != nil &&
+			strings.EqualFold(strings.TrimSpace(headerAddr.Address), strings.TrimSpace(sourceAddr.Address)) &&
+			strings.TrimSpace(headerAddr.Name) != "" {
+			displayName = strings.TrimSpace(headerAddr.Name)
+		}
+		return commworker.InboundParty{
+			Address:     strings.TrimSpace(sourceAddr.Address),
+			DisplayName: displayName,
+		}, nil
+	}
+
+	if headerAddr == nil {
+		if rawFrom == "" {
+			return commworker.InboundParty{}, fmt.Errorf("from address is required")
+		}
+		return commworker.InboundParty{}, fmt.Errorf("invalid from address")
 	}
 	return commworker.InboundParty{
-		Address:     strings.TrimSpace(addr.Address),
-		DisplayName: strings.TrimSpace(addr.Name),
+		Address:     strings.TrimSpace(headerAddr.Address),
+		DisplayName: strings.TrimSpace(headerAddr.Name),
 	}, nil
 }
 

@@ -1097,7 +1097,8 @@ func safeLogToken(value string) string {
 			return r
 		}
 	}, value)
-	return strings.Join(strings.Fields(value), " ")
+	value = strings.Join(strings.Fields(value), " ")
+	return strings.NewReplacer("=", ":", "\"", "'", "`", "'").Replace(value)
 }
 
 func getSecretsManagerSecretPlaintext(ctx context.Context, sm secretsManagerAPI, secretArn string) (string, error) {

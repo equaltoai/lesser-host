@@ -427,6 +427,28 @@ func TestHandleCommVoiceInboundWebhook_NormalizesPayload(t *testing.T) {
 	}, "voice")
 }
 
+func TestHandleCommVoiceInboundWebhook_RejectsUnsignedBeforeEnqueue(t *testing.T) {
+	t.Parallel()
+
+	s := newCommWebhookServer(func(_ context.Context, msg commworker.QueueMessage) error {
+		t.Fatalf("enqueue should not be called for unsigned voice inbound payload: %#v", msg)
+		return nil
+	})
+	body := marshalCommWebhookBody(t, map[string]any{
+		"data": map[string]any{
+			"event_type": commWebhookCallHangup,
+			"payload": map[string]any{
+				"from":             map[string]any{"phone_number": "+15550142"},
+				"to":               map[string]any{"phone_number": "+15550143"},
+				"call_session_id":  "call-unsigned",
+				"duration_seconds": 61,
+			},
+		},
+	})
+	_, err := s.handleCommVoiceInboundWebhook(&apptheory.Context{Request: apptheory.Request{Body: body}})
+	requireWebhookAppError(t, err, "comm.unauthorized", "unauthorized")
+}
+
 func TestHandleCommVoiceInboundWebhook_TelnyxFallbackCallIDAndReceivedAt(t *testing.T) {
 	t.Parallel()
 
@@ -535,6 +557,31 @@ func TestHandleCommVoiceStatusWebhook_DelegatesAndDisabled(t *testing.T) {
 			t.Fatalf("expected delegated voice notification, got %#v", got)
 		}
 	})
+}
+
+func TestHandleCommVoiceStatusWebhook_RejectsUnsignedBeforeBilling(t *testing.T) {
+	t.Parallel()
+
+	s := newCommWebhookServer(func(_ context.Context, msg commworker.QueueMessage) error {
+		t.Fatalf("enqueue should not be called for unsigned voice status payload: %#v", msg)
+		return nil
+	})
+	body := marshalCommWebhookBody(t, map[string]any{
+		"data": map[string]any{
+			"event_type": commWebhookCallHangup,
+			"payload": map[string]any{
+				"from":             map[string]any{"phone_number": "+15550142"},
+				"to":               map[string]any{"phone_number": "+15550143"},
+				"call_session_id":  "call-unsigned-status",
+				"duration_seconds": 61,
+			},
+		},
+	})
+	_, err := s.handleCommVoiceStatusWebhook(&apptheory.Context{
+		Params:  map[string]string{"messageId": "comm-msg-unsigned"},
+		Request: apptheory.Request{Body: body},
+	})
+	requireWebhookAppError(t, err, "comm.unauthorized", "unauthorized")
 }
 
 func TestExtractTelnyxVoiceFields_CoversAlternateShapes(t *testing.T) {

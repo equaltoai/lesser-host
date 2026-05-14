@@ -71,6 +71,32 @@ func TestQueueMessageValidation(t *testing.T) {
 		t.Fatalf("unexpected validation error: %v", err)
 	}
 
+	msgWithControlMessageID := msg
+	msgWithControlMessageID.Notification.MessageID = "msg-1\r\nlevel=error"
+	if err := msgWithControlMessageID.Validate(); err == nil {
+		t.Fatalf("expected message id with control characters to be rejected")
+	}
+
+	msgWithLongMessageID := msg
+	msgWithLongMessageID.Notification.MessageID = strings.Repeat("a", maxInboundExternalIDLen+1)
+	if err := msgWithLongMessageID.Validate(); err == nil {
+		t.Fatalf("expected oversized message id to be rejected")
+	}
+
+	validInReplyTo := "<msg-0@example.com>"
+	msgWithValidInReplyTo := msg
+	msgWithValidInReplyTo.Notification.InReplyTo = &validInReplyTo
+	if err := msgWithValidInReplyTo.Validate(); err != nil {
+		t.Fatalf("expected valid in-reply-to to pass: %v", err)
+	}
+
+	invalidInReplyTo := "msg-0\nlevel=error"
+	msgWithInvalidInReplyTo := msg
+	msgWithInvalidInReplyTo.Notification.InReplyTo = &invalidInReplyTo
+	if err := msgWithInvalidInReplyTo.Validate(); err == nil {
+		t.Fatalf("expected in-reply-to with control characters to be rejected")
+	}
+
 	msg.Notification.Subject = ""
 	if err := msg.Validate(); err == nil {
 		t.Fatalf("expected subject required error")
@@ -85,6 +111,15 @@ func TestCommWorkerPureHelpers(t *testing.T) {
 	testAvailabilityHelpers(t)
 	testTimeAndPhoneHelpers(t)
 	testStageAndQueueHelpers(t)
+}
+
+func TestSafeLogTokenSanitizesStructuredLogInjection(t *testing.T) {
+	t.Parallel()
+
+	got := safeLogToken("msg-1\r\nlevel=error\tquoted=\"yes\"")
+	if strings.ContainsAny(got, "\r\n\t") || strings.Contains(got, "level=error") || strings.Contains(got, "\"") {
+		t.Fatalf("expected sanitized token, got %q", got)
+	}
 }
 
 func testDefaultContactPreferences(t *testing.T) {
