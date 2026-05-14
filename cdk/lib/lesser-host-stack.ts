@@ -1028,11 +1028,17 @@ export class LesserHostStack extends cdk.Stack {
 			? { throttlingRateLimit: 500, throttlingBurstLimit: 1000 }
 			: { throttlingRateLimit: 100, throttlingBurstLimit: 200 };
 
+		const controlPlaneIntegration = new apigwv2Integrations.HttpLambdaIntegration(
+			'ControlPlaneIntegration', controlPlaneFn,
+		);
 		const controlPlaneApi = new apigwv2.HttpApi(this, 'ControlPlaneHttpApi', {
 			apiName: `${namePrefix}-control-plane`,
-			defaultIntegration: new apigwv2Integrations.HttpLambdaIntegration(
-				'ControlPlaneIntegration', controlPlaneFn,
-			),
+			defaultIntegration: controlPlaneIntegration,
+		});
+		controlPlaneApi.addRoutes({
+			path: '/api/v1/soul/instance/agents/{agentId}/mint-conversations/{conversationId}',
+			methods: [apigwv2.HttpMethod.GET],
+			integration: controlPlaneIntegration,
 		});
 		// AppTheory can stream SSE correctly through API Gateway REST proxy responses, but not via HttpApi.
 		// Keep the main control plane on HttpApi and route only the soul mint conversation subtree to REST.
@@ -1102,7 +1108,11 @@ export class LesserHostStack extends cdk.Stack {
 					ip: '$context.identity.sourceIp',
 					requestTime: '$context.requestTime',
 					method: '$context.httpMethod',
-					path: '$context.path',
+					// HTTP API access logs cannot transform path parameters. Persist the
+					// route key instead of the raw path so private mint-conversation
+					// identifiers never land in API Gateway access logs; Lambda request
+					// logs retain sanitized path correlation.
+					path: '$context.routeKey',
 					protocol: '$context.protocol',
 					status: '$context.status',
 					responseLength: '$context.responseLength',

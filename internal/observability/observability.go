@@ -21,6 +21,7 @@ func New(service string) apptheory.ObservabilityHooks {
 
 	return apptheory.ObservabilityHooks{
 		Log: func(rec apptheory.LogRecord) {
+			rec.Path = SanitizeLogPath(rec.Path)
 			emitTrustProxy503BestEffort(service, rec)
 			emitCommWebhookMetricsBestEffort(service, rec)
 

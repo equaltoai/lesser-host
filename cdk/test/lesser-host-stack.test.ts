@@ -41,6 +41,14 @@ function findResources(template: SynthesizedTemplate, type: string): Array<Recor
 		.map((resource) => resource?.Properties ?? {});
 }
 
+function parseAccessLogFormat(stage: Record<string, unknown>): Record<string, unknown> {
+	const accessLogSettings = stage.AccessLogSettings;
+	assert.ok(accessLogSettings && typeof accessLogSettings === 'object', 'expected stage access log settings');
+	const format = (accessLogSettings as { Format?: unknown }).Format;
+	assert.equal(typeof format, 'string', 'expected access log format string');
+	return JSON.parse(format as string) as Record<string, unknown>;
+}
+
 test('state table exposes the active update recovery index', () => {
 	const template = synthTemplate();
 	const tables = findResources(template, 'AWS::DynamoDB::Table');
@@ -74,6 +82,28 @@ test('stack schedules the managed update sweep every five minutes', () => {
 	});
 
 	assert.ok(matchingRule, 'expected managed update sweep EventBridge rule');
+});
+
+test('control-plane HTTP API access logs do not persist raw request paths', () => {
+	const template = synthTemplate();
+	const stages = findResources(template, 'AWS::ApiGatewayV2::Stage');
+	const controlPlaneStage = stages.find((stage) => stage.StageName === '$default');
+	assert.ok(controlPlaneStage, 'expected control-plane HTTP API default stage');
+	const format = parseAccessLogFormat(controlPlaneStage);
+
+	assert.equal(format.path, '$context.routeKey');
+	assert.equal(format.routeKey, '$context.routeKey');
+	assert.notEqual(format.path, '$context.path');
+});
+
+test('private mint-conversation instance read route has a templated HTTP API route key', () => {
+	const template = synthTemplate();
+	const routes = findResources(template, 'AWS::ApiGatewayV2::Route');
+	const matching = routes.find((route) => {
+		return route.RouteKey === 'GET /api/v1/soul/instance/agents/{agentId}/mint-conversations/{conversationId}';
+	});
+
+	assert.ok(matching, 'expected private mint-conversation single-read route to have a non-raw route key');
 });
 
 function findLambdaByFunctionName(template: SynthesizedTemplate, namePart: string): Record<string, unknown> | undefined {
