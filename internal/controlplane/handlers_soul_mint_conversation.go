@@ -918,7 +918,7 @@ func (s *Server) updateMintConversationMessages(ctx context.Context, agentIDHex 
 	}
 	_ = conv.UpdateKeys()
 	if err := s.store.DB.WithContext(ctx).Model(conv).IfExists().Update("Messages"); err != nil {
-		log.Printf("controlplane: update mint conversation messages failed: agent=%s conversation=%s err=%v", conv.AgentID, conv.ConversationID, err)
+		log.Printf("controlplane: update mint conversation messages failed: agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(conv.AgentID), soulMintInstanceReadAuditHash(conv.ConversationID), err)
 	}
 }
 
@@ -964,7 +964,7 @@ func (s *Server) updateMintConversationTurn(ctx context.Context, agentIDHex stri
 	}
 	_ = conv.UpdateKeys()
 	if err := s.store.DB.WithContext(ctx).Model(conv).IfExists().Update("Messages", "Usage"); err != nil {
-		log.Printf("controlplane: update mint conversation turn failed: agent=%s conversation=%s err=%v", conv.AgentID, conv.ConversationID, err)
+		log.Printf("controlplane: update mint conversation turn failed: agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(conv.AgentID), soulMintInstanceReadAuditHash(conv.ConversationID), err)
 	}
 }
 
@@ -984,7 +984,7 @@ func (s *Server) updateMintConversationStatus(ctx context.Context, agentIDHex st
 	}
 	_ = conv.UpdateKeys()
 	if err := s.store.DB.WithContext(ctx).Model(conv).IfExists().Update("Messages", "ProducedDeclarations", "Status", "CompletedAt"); err != nil {
-		log.Printf("controlplane: update mint conversation status failed: agent=%s conversation=%s status=%s err=%v", conv.AgentID, conv.ConversationID, conv.Status, err)
+		log.Printf("controlplane: update mint conversation status failed: agent_hash=%s conversation_hash=%s status=%s err=%v", soulMintInstanceReadAuditHash(conv.AgentID), soulMintInstanceReadAuditHash(conv.ConversationID), conv.Status, err)
 	}
 }
 

@@ -83,6 +83,27 @@ func TestHandleSoulCommMailboxListRedactsContent(t *testing.T) {
 	}
 }
 
+func TestHandleSoulCommMailboxListThreadQueryRestrictsToMessageRows(t *testing.T) {
+	t.Parallel()
+
+	fixture := newMailboxAPITestDB()
+	expectMailboxAPIAccess(t, fixture, soulLifecycleTestAgentIDHex)
+	fixture.qMsg.On("AllPaginated", mock.AnythingOfType("*[]*models.SoulCommMailboxMessage")).Return(&core.PaginatedResult{}, nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulCommMailboxMessage](t, args, 0)
+		*dest = []*models.SoulCommMailboxMessage{mailboxAPITestMessage(soulLifecycleTestAgentIDHex)}
+	}).Once()
+
+	_, err := newMailboxAPITestServer(fixture).handleSoulCommMailboxList(newMailboxAPIContext(soulLifecycleTestAgentIDHex, "", map[string][]string{
+		"threadId": {"comm-thread-1"},
+		"limit":    {"10"},
+	}))
+	require.NoError(t, err)
+
+	fixture.qMsg.AssertCalled(t, "Index", "gsi2")
+	fixture.qMsg.AssertCalled(t, "Where", "gsi2PK", "=", models.SoulCommMailboxThreadPK("inst1", soulLifecycleTestAgentIDHex, "comm-thread-1"))
+	fixture.qMsg.AssertCalled(t, "Where", "gsi2SK", "BEGINS_WITH", "MSG#")
+}
+
 func TestHandleSoulCommMailboxListAppliesBodyFilters(t *testing.T) {
 	t.Parallel()
 

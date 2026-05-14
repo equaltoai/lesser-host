@@ -722,6 +722,7 @@ func (s *Server) queryMailboxMessagesPage(ctx context.Context, instanceSlug stri
 	if strings.TrimSpace(filters.threadID) != "" {
 		qb = qb.Index("gsi2").
 			Where("gsi2PK", "=", models.SoulCommMailboxThreadPK(instanceSlug, agentID, filters.threadID)).
+			Where("gsi2SK", "BEGINS_WITH", "MSG#").
 			OrderBy("gsi2SK", "DESC")
 	} else {
 		qb = qb.Where("PK", "=", models.SoulCommMailboxAgentPK(instanceSlug, agentID)).
