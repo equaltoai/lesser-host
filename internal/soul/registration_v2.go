@@ -59,6 +59,20 @@ type PrincipalDeclarationV2 struct {
 	DeclaredAt  string `json:"declaredAt"`
 }
 
+var ErrPrincipalBindingMissing = errors.New("verified principal binding is missing")
+
+// PrincipalDeclarationBindingV2 carries the host-verified principal fields that
+// were accepted during the registration proof flow. The registration file leaf
+// validator remains compatible with the v2 public schema, while host publication
+// uses this binding to prevent a valid principal declaration from being replayed
+// into another agent's registration.
+type PrincipalDeclarationBindingV2 struct {
+	Identifier  string
+	Declaration string
+	Signature   string
+	DeclaredAt  string
+}
+
 type SelfDescriptionV2 struct {
 	Purpose      string `json:"purpose"`
 	Constraints  string `json:"constraints,omitempty"`
@@ -286,6 +300,31 @@ func (p *PrincipalDeclarationV2) Validate() error {
 	}
 	if err := validateRFC3339(p.DeclaredAt); err != nil {
 		return fmt.Errorf("declaredAt: %w", err)
+	}
+	return nil
+}
+
+func (p *PrincipalDeclarationV2) ValidateVerifiedBinding(binding PrincipalDeclarationBindingV2) error {
+	if p == nil {
+		return errors.New("principal is required")
+	}
+	if strings.TrimSpace(binding.Identifier) == "" ||
+		strings.TrimSpace(binding.Declaration) == "" ||
+		strings.TrimSpace(binding.Signature) == "" ||
+		strings.TrimSpace(binding.DeclaredAt) == "" {
+		return ErrPrincipalBindingMissing
+	}
+	// The stored signature is intentionally presence-only here. A v2 public
+	// registration can carry the schema's declaration-only signature while host
+	// stores the domain-separated proof signature accepted during registration.
+	if !strings.EqualFold(strings.TrimSpace(p.Identifier), strings.TrimSpace(binding.Identifier)) {
+		return errors.New("principal does not match verified agent principal")
+	}
+	if strings.TrimSpace(p.Declaration) != strings.TrimSpace(binding.Declaration) {
+		return errors.New("principal does not match verified agent principal")
+	}
+	if strings.TrimSpace(p.DeclaredAt) != strings.TrimSpace(binding.DeclaredAt) {
+		return errors.New("principal does not match verified agent principal")
 	}
 	return nil
 }

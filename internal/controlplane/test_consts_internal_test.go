@@ -1,9 +1,8 @@
 package controlplane
 
 const (
-	appErrCodeConflict = "app.conflict"
-	testNope           = "nope"
-	testNotAnAddress   = "not-an-address"
+	testNope         = "nope"
+	testNotAnAddress = "not-an-address"
 
 	testEthAddress1 = "0x0000000000000000000000000000000000000001"
 	testEthAddress2 = "0x0000000000000000000000000000000000000002"

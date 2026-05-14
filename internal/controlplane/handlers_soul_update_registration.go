@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math/big"
@@ -177,6 +178,9 @@ func (s *Server) completeSoulAgentRegistrationUpdate(
 	if appErr != nil {
 		return nil, appErr
 	}
+	if bindingErr := s.validateSoulUpdateRegistrationPrincipalBinding(identity, regV2, regV3); bindingErr != nil {
+		return nil, bindingErr
+	}
 
 	now := time.Now().UTC()
 	claimLevels := extractCapabilityClaimLevels(reg)
@@ -250,6 +254,55 @@ func (s *Server) requireSoulUpdateRegistrationInstancePrereqs(instanceSlug strin
 	}
 	if s.soulPacks == nil {
 		return &apptheory.AppError{Code: "app.conflict", Message: "soul registry bucket is not configured"}
+	}
+	return nil
+}
+
+func (s *Server) validateSoulUpdateRegistrationPrincipalBinding(identity *models.SoulAgentIdentity, regV2 *soul.RegistrationFileV2, regV3 *soul.RegistrationFileV3) *apptheory.AppError {
+	if regV2 == nil && regV3 == nil {
+		return nil
+	}
+	if identity == nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
+	var principal *soul.PrincipalDeclarationV2
+	if regV2 != nil {
+		principal = &regV2.Principal
+	}
+	if regV3 != nil {
+		principal = &regV3.Principal
+	}
+	if principal == nil {
+		return nil
+	}
+
+	binding := soul.PrincipalDeclarationBindingV2{
+		Identifier:  strings.TrimSpace(identity.PrincipalAddress),
+		Declaration: strings.TrimSpace(identity.PrincipalDeclaration),
+		Signature:   strings.TrimSpace(identity.PrincipalSignature),
+		DeclaredAt:  strings.TrimSpace(identity.PrincipalDeclaredAt),
+	}
+	if err := principal.ValidateVerifiedBinding(binding); err != nil {
+		code := appErrCodeBadRequest
+		if errors.Is(err, soul.ErrPrincipalBindingMissing) {
+			code = appErrCodeConflict
+		}
+		return &apptheory.AppError{Code: code, Message: err.Error()}
+	}
+
+	verifiedRegistration := &models.SoulAgentRegistration{
+		AgentID:          strings.TrimSpace(identity.AgentID),
+		Wallet:           strings.TrimSpace(identity.Wallet),
+		DomainNormalized: strings.TrimSpace(identity.Domain),
+		LocalID:          strings.TrimSpace(identity.LocalID),
+	}
+	digest, appErr := s.computeSoulPrincipalDeclarationDigest(verifiedRegistration, binding.Identifier, binding.Declaration, binding.DeclaredAt)
+	if appErr != nil {
+		return appErr
+	}
+	if err := verifyEthereumSignatureBytes(binding.Identifier, digest, binding.Signature); err != nil {
+		return &apptheory.AppError{Code: appErrCodeConflict, Message: "verified principal binding is invalid; re-verify agent principal"}
 	}
 	return nil
 }
