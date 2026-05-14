@@ -446,57 +446,203 @@ scan_python_supply_chain() {
 }
 
 check_supply_chain_actions_pinned() {
-  # Enforces integrity pinning for GitHub Actions. External actions must pin
-  # either a full 40-character commit SHA or a full SemVer release tag
-  # (vX.Y.Z). Floating refs such as @v4, @v4.1, @main, @master, and branch
-  # names are rejected.
-  local wf_dir="${REPO_ROOT}/.github/workflows"
+  # Enforces integrity pinning for GitHub Actions. External actions must pin a
+  # full 40-character commit SHA. Floating refs such as @v4, @v4.1.0, @main,
+  # @master, branch names, and expression-derived refs are rejected. Local
+  # in-repo actions are allowed; docker:// actions must pin an immutable image
+  # digest.
+  local wf_dir="${1:-${REPO_ROOT}/.github/workflows}"
   if [[ ! -d "${wf_dir}" ]]; then
     echo "GitHub Actions pin check: no workflows detected; skipping."
     return 0
   fi
 
-  local failures=""
-  local line file lineno value action ref
-  while IFS= read -r line; do
-    file="${line%%:*}"
-    local rest="${line#*:}"
-    lineno="${rest%%:*}"
-    value="${rest#*:}"
-    value="$(printf '%s' "${value}" | sed -E 's/^[[:space:]]*(-[[:space:]]*)?uses:[[:space:]]*//; s/[[:space:]]+#.*$//; s/^[\"'\\'' ]+//; s/[\"'\\'' ]+$//')"
-    [[ -n "${value}" ]] || continue
+  local output ec
+  set +e
+  output="$(python3 - "${wf_dir}" "${REPO_ROOT}" <<'PY' 2>&1
+import pathlib
+import re
+import sys
 
-    # Local reusable actions and docker image actions do not use owner/repo@ref.
-    if [[ "${value}" == ./* ]] || [[ "${value}" == docker://* ]]; then
-      continue
-    fi
+wf_dir = pathlib.Path(sys.argv[1])
+repo_root = pathlib.Path(sys.argv[2])
+workflow_files = sorted(
+    p for p in wf_dir.rglob("*") if p.is_file() and p.suffix in {".yml", ".yaml"}
+)
 
-    if [[ "${value}" != *@* ]]; then
-      failures+="${file}:${lineno}: ${value} (missing @ref)"$'\n'
-      continue
-    fi
+line_uses = re.compile(
+    r"^\s*(?:-\s*)?(?:['\"]?uses['\"]?)\s*:\s*(?P<value>.+?)\s*$",
+    re.IGNORECASE,
+)
+flow_uses = re.compile(
+    r"(?P<prefix>[{,])\s*(?:['\"]?uses['\"]?)\s*:\s*(?P<value>[^,}]+)",
+    re.IGNORECASE,
+)
+sha_ref = re.compile(r"^[0-9a-fA-F]{40}$")
+docker_digest = re.compile(r"^docker://.+@sha256:[0-9a-fA-F]{64}$")
 
-    action="${value%@*}"
-    ref="${value##*@}"
-    if [[ -z "${action}" || -z "${ref}" ]]; then
-      failures+="${file}:${lineno}: ${value} (malformed uses ref)"$'\n'
-      continue
-    fi
 
-    if [[ "${ref}" =~ ^[0-9a-fA-F]{40}$ ]] || [[ "${ref}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-      continue
-    fi
+def display_path(path):
+    try:
+        return str(path.relative_to(repo_root))
+    except ValueError:
+        return str(path)
 
-    failures+="${file}:${lineno}: ${value} (ref must be 40-char SHA or vX.Y.Z)"$'\n'
-  done < <(grep -R --include='*.yml' --include='*.yaml' -nE '^[[:space:]]*(-[[:space:]]*)?uses:[[:space:]]*' "${wf_dir}" 2>/dev/null || true)
 
-  if [[ -n "${failures}" ]]; then
-    echo "FAIL: unpinned GitHub Action detected"
-    printf '%s' "${failures}"
+def strip_yaml_comment(value):
+    quote = ""
+    escape = False
+    for idx, ch in enumerate(value):
+        if escape:
+            escape = False
+            continue
+        if ch == "\\":
+            escape = True
+            continue
+        if quote:
+            if ch == quote:
+                quote = ""
+            continue
+        if ch in {"'", '"'}:
+            quote = ch
+            continue
+        if ch == "#" and (idx == 0 or value[idx - 1].isspace()):
+            return value[:idx].strip()
+    return value.strip()
+
+
+def normalize_scalar(value):
+    value = strip_yaml_comment(value).strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        value = value[1:-1]
+    return value.strip()
+
+
+def iter_uses(path):
+    for lineno, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        match = line_uses.match(raw_line)
+        if match:
+            yield lineno, normalize_scalar(match.group("value"))
+            continue
+        for match in flow_uses.finditer(raw_line):
+            yield lineno, normalize_scalar(match.group("value"))
+
+
+def pin_failure(value):
+    if not value:
+        return "empty uses value"
+    if value.startswith("./"):
+        return None
+    if value.startswith("docker://"):
+        if docker_digest.fullmatch(value):
+            return None
+        return "docker action must pin an immutable sha256 digest"
+    if "@" not in value:
+        return "missing @ref"
+    action, ref = value.rsplit("@", 1)
+    if not action or not ref:
+        return "malformed uses ref"
+    if not sha_ref.fullmatch(ref):
+        return "ref must be a 40-character commit SHA"
+    return None
+
+
+failures = []
+uses_count = 0
+for path in workflow_files:
+    for lineno, value in iter_uses(path):
+        uses_count += 1
+        reason = pin_failure(value)
+        if reason:
+            failures.append(f"- {display_path(path)}:{lineno}: {value} ({reason})")
+
+if failures:
+    print("FAIL: unpinned GitHub Action detected")
+    print("\n".join(failures))
+    sys.exit(1)
+
+print(
+    f"GitHub Actions pin check: PASS ({len(workflow_files)} workflow files; "
+    f"{uses_count} uses entries; external uses refs are 40-character commit SHAs)"
+)
+PY
+)"
+  ec=$?
+  set -e
+  printf '%s\n' "${output}"
+  return "${ec}"
+}
+
+check_supply_chain_actions_pinned_selftest() {
+  local tmp sha digest invalid_output
+  tmp="$(mktemp -d)"
+  sha="0123456789abcdef0123456789abcdef01234567"
+  digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  mkdir -p "${tmp}"
+
+  cat > "${tmp}/valid.yml" <<EOF
+name: valid
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@${sha}
+      - name: setup
+        uses : "actions/setup-go@${sha}" # pinned
+      - { uses: actions/setup-node@${sha} }
+      - uses: ./.github/actions/local
+      - uses: docker://ghcr.io/equaltoai/tool@${digest}
+  reusable:
+    uses: equaltoai/reusable/.github/workflows/test.yml@${sha}
+EOF
+
+  if ! check_supply_chain_actions_pinned "${tmp}" >/dev/null; then
+    echo "FAIL: SEC-3 action pinning self-test rejected a pinned workflow fixture"
+    rm -rf "${tmp}"
     return 1
   fi
 
-  echo "GitHub Actions pin check: PASS (all external uses refs are 40-char SHA or vX.Y.Z)"
+  cat > "${tmp}/invalid.yml" <<'EOF'
+name: invalid
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - "uses": actions/setup-go@main
+      - { uses: actions/setup-node@v5 }
+  reusable:
+    uses: equaltoai/reusable/.github/workflows/test.yml@v1
+EOF
+
+  set +e
+  invalid_output="$(check_supply_chain_actions_pinned "${tmp}" 2>&1)"
+  local invalid_ec=$?
+  set -e
+  if [[ "${invalid_ec}" -eq 0 ]]; then
+    echo "FAIL: SEC-3 action pinning self-test accepted an unpinned workflow fixture"
+    rm -rf "${tmp}"
+    return 1
+  fi
+
+  local expected
+  for expected in \
+    "actions/checkout@v5" \
+    "actions/setup-go@main" \
+    "actions/setup-node@v5" \
+    "equaltoai/reusable/.github/workflows/test.yml@v1"; do
+    if ! printf '%s\n' "${invalid_output}" | grep -q "${expected}"; then
+      echo "FAIL: SEC-3 action pinning self-test did not detect ${expected}"
+      printf '%s\n' "${invalid_output}"
+      rm -rf "${tmp}"
+      return 1
+    fi
+  done
+
+  rm -rf "${tmp}"
+  echo "GitHub Actions pin check self-test: PASS (normal step, quoted key, flow mapping, and reusable workflow syntax detected)"
   return 0
 }
 
@@ -899,7 +1045,7 @@ scan_node_project_supply_chain() {
 
 check_supply_chain() {
   # SEC-3: Supply-chain verification gate.
-  # - Enforces GitHub Actions ref pinning (40-char SHA or vX.Y.Z; no floating refs).
+  # - Enforces GitHub Actions ref pinning (40-char SHA; no floating refs).
   # - Scans Node dependencies for subprojects (web/, cdk/, contracts/) with scripts disabled.
   # - Runs lightweight Go and Python metadata scans.
 
@@ -918,6 +1064,14 @@ check_supply_chain() {
   local ec_actions=$?
   set -e
   if [[ $ec_actions -ne 0 ]]; then
+    fail=1
+  fi
+
+  set +e
+  check_supply_chain_actions_pinned_selftest
+  local ec_actions_selftest=$?
+  set -e
+  if [[ $ec_actions_selftest -ne 0 ]]; then
     fail=1
   fi
 
@@ -1743,7 +1897,9 @@ assert_negative_fixture_rejected() {
 # Bounded soul comm mailbox authority
 This intentionally insecure fixture contains legacy keywords while violating the policy semantics.
 It says there is no retention policy, content may be unencrypted, access audit can be skipped,
-list endpoints return full body content, raw instance keys are stored, and cross-tenant mailbox search is allowed.
+retention is optional, content may be kept forever, mailbox content may be stored in plaintext,
+audit logging is optional, list responses include complete message content, plaintext instance-key fallback is allowed,
+raw instance keys are stored, global mailbox analytics are allowed, and cross-tenant mailbox search is allowed.
 __CMP4_NEGATIVE_FIXTURE__
   if grep -Eiq -- "${pattern}" "${fixture}"; then
     echo "PASS: negative fixture rejected for ${label}"
@@ -1808,21 +1964,21 @@ require_pattern "${evidence}" 'CMP-4' 'evidence plan includes CMP-4'
 require_pattern "${evidence}" 'CMP-4-output\.log' 'evidence plan names CMP-4 evidence path'
 
 for f in "${adr}" "${soul}" "${roadmap}" "${controls}"; do
-  forbid_pattern "${f}" 'no (explicit )?retention policy|without (a[n]? )?retention policy|retained? indefinitely|indefinite retention|unbounded retention' 'insecure retention semantics'
-  forbid_pattern "${f}" 'unencrypted|without encryption|do not encrypt|skip encryption|encryption is optional' 'insecure encryption semantics'
-  forbid_pattern "${f}" 'without access[- ]audit|skip access[- ]audit|no access[- ]audit|access audit can be skipped' 'insecure access-audit semantics'
-  forbid_pattern "${f}" 'list endpoints return (full|complete|raw).*bod(y|ies)|full bod(y|ies).*list endpoints|include full bod(y|ies).*list' 'full content in list semantics'
-  forbid_pattern "${f}" 'raw instance keys are stored|store raw (instance )?keys|log raw (instance )?keys|return raw (instance )?keys' 'raw-key retention semantics'
-  forbid_pattern "${f}" 'cross-tenant (mailbox )?(search|analytics) is allowed|allow(s|ed)? cross-tenant (mailbox )?(search|analytics)' 'cross-tenant mailbox query semantics'
+  forbid_pattern "${f}" 'no (explicit )?retention policy|without (a[n]? )?retention policy|retained? indefinitely|indefinite retention|unbounded retention|retention (is )?optional|optional retention|skip retention|best[- ]effort retention|keep (content|messages?|mailbox items?) forever|never purge' 'insecure retention semantics'
+  forbid_pattern "${f}" 'unencrypted|without encryption|do not encrypt|skip encryption|encryption (is )?optional|optional encryption|stored? in plaintext|plaintext (mailbox|message|content|body)' 'insecure encryption semantics'
+  forbid_pattern "${f}" 'without access[- ]audit|skip access[- ]audit|no access[- ]audit|access audit can be skipped|audit logging (is )?optional|optional audit|unaudited (read|content|state|mutation)|read(s)? without audit' 'insecure access-audit semantics'
+  forbid_pattern "${f}" 'list endpoints return (full|complete|raw).*bod(y|ies)|full bod(y|ies).*list endpoints|include full bod(y|ies).*list|list (responses|payloads|results) include (full|complete|raw).*(message|content|bod(y|ies))|complete (message|content|bod(y|ies)).*list (responses|payloads|results)' 'full content in list semantics'
+  forbid_pattern "${f}" 'raw instance keys are stored|store raw (instance )?keys|log raw (instance )?keys|return raw (instance )?keys|plaintext (instance[- ]?)?key fallback|instance[- ]auth falls back to plaintext|accept raw (instance )?keys from storage' 'raw-key retention semantics'
+  forbid_pattern "${f}" 'cross-tenant (mailbox )?(search|analytics) is allowed|allow(s|ed)? cross-tenant (mailbox )?(search|analytics)|global mailbox (search|analytics) (is )?allowed|search (mailbox )?content across tenants' 'cross-tenant mailbox query semantics'
   forbid_pattern "${f}" 'body-owned mailbox storage is allowed|body (owns|stores|persists) mailbox truth' 'body-owned mailbox authority semantics'
 done
 
-assert_negative_fixture_rejected 'no (explicit )?retention policy|without (a[n]? )?retention policy|retained? indefinitely|indefinite retention|unbounded retention' 'retention'
-assert_negative_fixture_rejected 'unencrypted|without encryption|do not encrypt|skip encryption|encryption is optional' 'encryption'
-assert_negative_fixture_rejected 'without access[- ]audit|skip access[- ]audit|no access[- ]audit|access audit can be skipped' 'access audit'
-assert_negative_fixture_rejected 'list endpoints return (full|complete|raw).*bod(y|ies)|full bod(y|ies).*list endpoints|include full bod(y|ies).*list' 'list/content split'
-assert_negative_fixture_rejected 'raw instance keys are stored|store raw (instance )?keys|log raw (instance )?keys|return raw (instance )?keys' 'hash-only auth'
-assert_negative_fixture_rejected 'cross-tenant (mailbox )?(search|analytics) is allowed|allow(s|ed)? cross-tenant (mailbox )?(search|analytics)' 'tenant isolation'
+assert_negative_fixture_rejected 'no (explicit )?retention policy|without (a[n]? )?retention policy|retained? indefinitely|indefinite retention|unbounded retention|retention (is )?optional|optional retention|skip retention|best[- ]effort retention|keep (content|messages?|mailbox items?) forever|never purge' 'retention'
+assert_negative_fixture_rejected 'unencrypted|without encryption|do not encrypt|skip encryption|encryption (is )?optional|optional encryption|stored? in plaintext|plaintext (mailbox|message|content|body)' 'encryption'
+assert_negative_fixture_rejected 'without access[- ]audit|skip access[- ]audit|no access[- ]audit|access audit can be skipped|audit logging (is )?optional|optional audit|unaudited (read|content|state|mutation)|read(s)? without audit' 'access audit'
+assert_negative_fixture_rejected 'list endpoints return (full|complete|raw).*bod(y|ies)|full bod(y|ies).*list endpoints|include full bod(y|ies).*list|list (responses|payloads|results) include (full|complete|raw).*(message|content|bod(y|ies))|complete (message|content|bod(y|ies)).*list (responses|payloads|results)' 'list/content split'
+assert_negative_fixture_rejected 'raw instance keys are stored|store raw (instance )?keys|log raw (instance )?keys|return raw (instance )?keys|plaintext (instance[- ]?)?key fallback|instance[- ]auth falls back to plaintext|accept raw (instance )?keys from storage' 'hash-only auth'
+assert_negative_fixture_rejected 'cross-tenant (mailbox )?(search|analytics) is allowed|allow(s|ed)? cross-tenant (mailbox )?(search|analytics)|global mailbox (search|analytics) (is )?allowed|search (mailbox )?content across tenants' 'tenant isolation'
 
 if [[ "${fail}" -ne 0 ]]; then
   exit 1
