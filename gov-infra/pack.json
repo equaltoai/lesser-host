@@ -1,14 +1,14 @@
 {
   "$schema": "https://gov.pai.dev/schemas/pack.schema.json",
   "schemaVersion": 1,
-  "packVersion": "2026.04.30-m6",
-  "packDigest": "506c5bee3285c5d902ea39f0070bd8bfe753a51a91147c06d2e0d658be963d8d",
+  "packVersion": "2026.05.14-m7.2",
+  "packDigest": "c326dfb8a5827ab1d48e156cd1cdf7f04e4cd47e92bb0185bce7320723fdf8cb",
   "domain": "custom",
   "projectSlug": "lesser-host",
-  "generatedAt": "2026-04-30T15:30:00Z",
+  "generatedAt": "2026-05-14T21:49:27Z",
   "source": {
     "commitSha": "UNKNOWN",
-    "branch": "codex/host-security-m6-prelive-hardening"
+    "branch": "codex/issue-285-gov-docs-isolation"
   },
   "artifacts": {
     "planning": [

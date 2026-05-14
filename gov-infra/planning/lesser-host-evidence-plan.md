@@ -58,7 +58,7 @@ Legend:
 | Completeness | COM-6 | Logging/operational standards checks run | `gov-infra/evidence/COM-6-output.log` |
 | Security | SEC-1 | Static security scan runs with pinned tooling (Go + Solidity) | `gov-infra/evidence/SEC-1-output.log` |
 | Security | SEC-2 | Dependency vulnerability scan runs with pinned tooling | `gov-infra/evidence/SEC-2-output.log` |
-| Security | SEC-3 | Supply-chain verification gates run (Actions pinning + dependency lifecycle scan) | `gov-infra/evidence/SEC-3-output.log` |
+| Security | SEC-3 | Supply-chain verification gates run (full-SHA Actions pinning with syntax self-tests + dependency lifecycle scan) | `gov-infra/evidence/SEC-3-output.log` |
 | Security | SEC-4 | Domain-specific P0 security regression tests run | `gov-infra/evidence/SEC-4-output.log` |
 | Compliance readiness | CMP-1 | Controls matrix exists and is readable | (presence check) + `gov-infra/evidence/CMP-1-output.log` |
 | Compliance readiness | CMP-2 | Evidence plan exists and is readable | (presence check) + `gov-infra/evidence/CMP-2-output.log` |

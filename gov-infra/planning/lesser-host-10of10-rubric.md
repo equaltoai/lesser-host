@@ -67,7 +67,7 @@ Enforcement rule (anti-drift):
 | --- | ---: | --- | --- |
 | SEC-1 | 3 | Static security scan green (pinned version) | `golangci-lint run --timeout=10m` with `gosec` enabled + `slither` on `contracts` (implemented in verifier; see `gov-infra/evidence/SEC-1-output.log`). |
 | SEC-2 | 3 | Dependency vulnerability scan green | `govulncheck -mode=binary` on shipped `cmd/*` binaries (implemented in verifier; see `gov-infra/evidence/SEC-2-output.log`). |
-| SEC-3 | 2 | Supply-chain verification green | GitHub Actions must be pinned by commit SHA (no `uses: ...@vN`); Node lifecycle hooks scanned with scripts-disabled installs; Go/Python metadata scans (implemented in verifier; see `gov-infra/evidence/SEC-3-output.log`) |
+| SEC-3 | 2 | Supply-chain verification green | GitHub Actions must be pinned by full commit SHA (no tag, branch, SemVer, or expression refs in `uses:`); the verifier self-tests normal step, quoted-key, flow-mapping, and reusable-workflow syntax; Node lifecycle hooks scanned with scripts-disabled installs; Go/Python metadata scans (implemented in verifier; see `gov-infra/evidence/SEC-3-output.log`) |
 | SEC-4 | 2 | Domain-specific P0 regression tests (security critical paths) | Run `TestP0_*` regression suite (bootstrap/authz invariants, SSRF defense, instance auth) (implemented in verifier; see `gov-infra/evidence/SEC-4-output.log`). |
 
 SEC-1 note: Slither runs from a repo-local Python venv under `gov-infra/.tools/` (created/managed by the verifier); do not rely on a system-wide Slither install.
@@ -80,7 +80,7 @@ SEC-1 note: Slither runs from a repo-local Python venv under `gov-infra/.tools/`
 | CMP-1 | 3 | Controls matrix exists and is current | File exists: `gov-infra/planning/lesser-host-controls-matrix.md` |
 | CMP-2 | 2 | Evidence plan exists and is reproducible | File exists: `gov-infra/planning/lesser-host-evidence-plan.md` |
 | CMP-3 | 2 | Threat model exists and is current | File exists: `gov-infra/planning/lesser-host-threat-model.md` |
-| CMP-4 | 3 | Bounded soul comm mailbox controls are explicit | `bash gov-infra/verifiers/gov-verify-rubric.sh` checks ADR 0005, the soul surface, roadmap, threat model, controls matrix, and evidence plan for retention, encryption, access audit, list/content split, no semantic-memory role, hash-only instance auth, write-once audit/events, protected identity/provenance fields, and body/lesser non-authority. |
+| CMP-4 | 3 | Bounded soul comm mailbox controls are explicit | `bash gov-infra/verifiers/gov-verify-rubric.sh` checks ADR 0005, the soul surface, roadmap, threat model, controls matrix, and evidence plan for retention, encryption, access audit, list/content split, no semantic-memory role, hash-only instance auth, write-once audit/events, protected identity/provenance fields, and body/lesser non-authority. The gate rejects explicit insecure variants (optional retention/encryption/audit, full-content list responses, raw-key/plaintext fallback, and cross-tenant mailbox search/analytics) instead of relying on positive keyword presence alone. |
 
 **10/10 definition:** CMP-1 through CMP-4 pass.
 

@@ -96,7 +96,7 @@ func TestParseMigaduCredentials(t *testing.T) {
 func TestMigaduAndTelnyxLoaders(t *testing.T) {
 	t.Parallel()
 
-	clearParamCache()
+	isolateParamCache(t)
 
 	client := stubSSM{
 		getParameter: func(_ context.Context, params *ssm.GetParameterInput) (*ssm.GetParameterOutput, error) {
@@ -136,7 +136,7 @@ func TestMigaduAndTelnyxLoaders(t *testing.T) {
 func TestLoadFirstSSMParameterCached_ReturnsLastError(t *testing.T) {
 	t.Parallel()
 
-	clearParamCache()
+	isolateParamCache(t)
 
 	client := stubSSM{
 		getParameter: func(_ context.Context, params *ssm.GetParameterInput) (*ssm.GetParameterOutput, error) {
