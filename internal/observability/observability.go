@@ -47,6 +47,7 @@ func New(service string) apptheory.ObservabilityHooks {
 			)
 		},
 		Metric: func(rec apptheory.MetricRecord) {
+			tags := SanitizeMetricTags(rec.Tags)
 			logger.Log(
 				context.Background(),
 				slog.LevelInfo,
@@ -54,7 +55,7 @@ func New(service string) apptheory.ObservabilityHooks {
 				slog.String("service", service),
 				slog.String("name", rec.Name),
 				slog.Int("value", rec.Value),
-				slog.Any("tags", rec.Tags),
+				slog.Any("tags", tags),
 			)
 		},
 	}

@@ -72,6 +72,47 @@ func TestSanitizeLogPathLeavesOtherRoutesUnchanged(t *testing.T) {
 	}
 }
 
+func TestSanitizeMetricTagsRedactsPathWithoutMutatingInput(t *testing.T) {
+	t.Parallel()
+
+	rawPath := "/api/v1/soul/instance/agents/0xabc/mint-conversations/conv-private-1?cursor=raw-cursor"
+	tags := map[string]string{
+		"method": "GET",
+		"path":   rawPath,
+		"status": "200",
+	}
+
+	got := SanitizeMetricTags(tags)
+	if got == nil {
+		t.Fatal("expected sanitized tags")
+	}
+	if got["method"] != "GET" || got["status"] != "200" {
+		t.Fatalf("expected non-path tags preserved, got %#v", got)
+	}
+	if !strings.HasPrefix(got["path"], "/api/v1/soul/instance/agents/0xabc/mint-conversations/conversation-sha256:") {
+		t.Fatalf("expected sanitized metric path, got %q", got["path"])
+	}
+	if strings.Contains(got["path"], "conv-private-1") || strings.Contains(got["path"], "raw-cursor") {
+		t.Fatalf("sanitized metric path leaked private path/query data: %q", got["path"])
+	}
+	if tags["path"] != rawPath {
+		t.Fatalf("expected input tags to remain unchanged, got %q", tags["path"])
+	}
+}
+
+func TestSanitizeMetricTagsLeavesPathlessTagsUnchanged(t *testing.T) {
+	t.Parallel()
+
+	tags := map[string]string{"method": "GET", "status": "200"}
+	got := SanitizeMetricTags(tags)
+	if got["method"] != "GET" || got["status"] != "200" {
+		t.Fatalf("expected pathless tags preserved, got %#v", got)
+	}
+	if _, ok := got["path"]; ok {
+		t.Fatalf("expected no path tag, got %#v", got)
+	}
+}
+
 func TestCommWebhookProviderAndChannel(t *testing.T) {
 	t.Parallel()
 

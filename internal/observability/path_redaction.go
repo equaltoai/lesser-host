@@ -26,6 +26,24 @@ func SanitizeLogPath(raw string) string {
 	return strings.TrimSpace(raw)
 }
 
+// SanitizeMetricTags copies framework metric tags and normalizes any request
+// path tag before generic metric logs persist it. AppTheory emits the raw
+// request path in MetricRecord.Tags["path"] independently from LogRecord.Path,
+// so Host must apply the same redaction at the metric hook boundary.
+func SanitizeMetricTags(tags map[string]string) map[string]string {
+	if len(tags) == 0 {
+		return tags
+	}
+	sanitized := make(map[string]string, len(tags))
+	for key, value := range tags {
+		sanitized[key] = value
+	}
+	if path, ok := sanitized["path"]; ok {
+		sanitized["path"] = SanitizeLogPath(path)
+	}
+	return sanitized
+}
+
 func splitLogPathSuffix(raw string) (path string, suffix string) {
 	for i, r := range raw {
 		if r == '?' || r == '#' {
