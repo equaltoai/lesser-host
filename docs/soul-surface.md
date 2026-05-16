@@ -35,6 +35,53 @@ These two surfaces are related, but intentionally not the same thing. See `docs/
 - Suspension policy: `docs/adr/0003-suspension-policy.md`
 - Agent ID conformance vectors: `docs/spec/agent-id-test-vectors.md`
 
+## Hosted-bound-soul policy vocabulary v1
+
+Project 32 M1 introduces an explicit hosted-bound-soul policy vocabulary so `lesser-host`, `lesser`, and `lesser-body`
+do not rely on implicit channel or x402 assumptions.
+
+The v1 vocabulary names four separate concepts:
+
+1. **Anchor state**
+   - `hosted_offchain`: the soul exists as host-managed off-chain registry state and registration artifacts.
+   - `immutable_onchain`: a mint execution has been recorded on-chain and reconciled into host state.
+   - Anchor state is **assurance metadata only**. `immutable_onchain` is not a prerequisite for basic hosted-bound-soul
+     communication, and `hosted_offchain` is not a lesser capability downgrade.
+2. **Operational binding**
+   - `hosted_bound_soul`: the agent is bound to a host-managed lesser/body instance through host's domain and
+     instance-key authorization checks.
+   - Operational binding is separate from channel/capability policy; it says which managed instance may act for the
+     agent, not which operations are allowed.
+3. **Capability policy**
+   - Version: `capability-policy/v1`.
+   - Email is the default hosted-bound-soul communication capability when an active, verified, provisioned email channel
+     exists (`email.defaultAllowed=true`).
+   - Phone/SMS/voice are denied until a paid or provisioned phone entitlement exists
+     (`phone.entitlementStatus in ["provisioned","paid"]` with the relevant `smsAllowed` / `voiceAllowed` flag).
+4. **Caller access/payment policy**
+   - Version: `caller-access-payment/v1`.
+   - M1 models `publicPaidCaller` explicitly but keeps it `denied`.
+   - Public paid x402 invocation grants are intentionally deferred to M2. M1 must not grant principal/operator
+     authority to public callers.
+
+Migration path for existing souls:
+
+- Existing identities without persisted policy fields are interpreted as `hosted-bound-soul/v1` with
+  `migration.state=implicit_default_v1`.
+- The implicit default is email allowed, phone/SMS/voice not entitled, and public paid callers denied.
+- New or touched identities persist `migration.state=persisted_v1`. Email provisioning persists the default v1 policy;
+  phone provisioning persists `phone.entitlementStatus=provisioned` plus `smsAllowed=true` and `voiceAllowed=true`;
+  phone deprovisioning returns the phone policy to `not_entitled`.
+- On-chain mint execution updates `anchorState=immutable_onchain`; it does not change capability authority by itself.
+
+Body-facing contract:
+
+- `GET /api/v1/soul/comm/contactability/{agentId}` returns the effective `policy` object alongside bounded channel
+  affordances.
+- Entitlement failures use `comm.entitlement_required` with the client-safe message `channel entitlement required`.
+  The failure is produced before loading phone channel/provider details and does not reveal private reachability,
+  payment evidence, tenant data, wallet material, or provider configuration.
+
 ## Soul registry API surface (`/api/v1/soul/*`)
 
 The soul registry is served by `cmd/control-plane-api` through the `lesser.host` distribution.

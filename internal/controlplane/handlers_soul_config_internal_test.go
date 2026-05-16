@@ -11,6 +11,7 @@ import (
 
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/store"
+	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
 const (
@@ -157,6 +158,15 @@ func TestHandleSoulConfig_ErrorsAndSuccess(t *testing.T) {
 		require.Equal(t, testSoulSafeAddr, parsed.AdminSafeAddress)
 		require.Equal(t, "safe", parsed.TxMode)
 		require.Equal(t, []string{"a", "b"}, parsed.SupportedCapabilities)
+		require.NotNil(t, parsed.PolicyVocabulary)
+		require.Equal(t, models.SoulPolicyVersionHostedBoundSoulV1, parsed.PolicyVocabulary.Version)
+		require.Contains(t, parsed.PolicyVocabulary.AnchorStates, models.SoulAnchorStateHostedOffchain)
+		require.Contains(t, parsed.PolicyVocabulary.AnchorStates, models.SoulAnchorStateImmutableOnchain)
+		require.Equal(t, models.SoulCapabilityPolicyVersionV1, parsed.PolicyVocabulary.CapabilityPolicyVersion)
+		require.Equal(t, models.SoulCallerAccessPaymentPolicyVersionV1, parsed.PolicyVocabulary.CallerAccessPaymentPolicyVersion)
+		require.Contains(t, parsed.PolicyVocabulary.PhoneEntitlementStatuses, models.SoulPhoneEntitlementNotEntitled)
+		require.Contains(t, parsed.PolicyVocabulary.PhoneEntitlementStatuses, models.SoulPhoneEntitlementProvisioned)
+		require.Contains(t, parsed.PolicyVocabulary.PublicPaidCallerAccess, models.SoulPublicPaidCallerAccessDenied)
 		require.NotNil(t, parsed.ReputationWeights)
 		require.Equal(t, float64(1), parsed.ReputationWeights.Economic)
 		require.Equal(t, float64(2), parsed.ReputationWeights.Social)

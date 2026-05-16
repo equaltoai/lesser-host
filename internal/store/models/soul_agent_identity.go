@@ -17,6 +17,27 @@ const (
 	SoulAgentStatusBurned        = "burned"
 )
 
+// Soul policy vocabulary constants define the hosted-bound-soul v1 policy contract.
+//
+// The names intentionally separate immutable anchor assurance from operational
+// binding, capability policy, and caller access/payment policy. They are
+// persisted on SoulAgentIdentity so existing souls can migrate in place without
+// a new on-chain action.
+const (
+	SoulPolicyVersionHostedBoundSoulV1        = "hosted-bound-soul/v1"
+	SoulAnchorStateHostedOffchain             = "hosted_offchain"
+	SoulAnchorStateImmutableOnchain           = "immutable_onchain"
+	SoulOperationalBindingHostedBoundSoul     = "hosted_bound_soul"
+	SoulCapabilityPolicyVersionV1             = "capability-policy/v1"
+	SoulCallerAccessPaymentPolicyVersionV1    = "caller-access-payment/v1"
+	SoulPhoneEntitlementNotEntitled           = "not_entitled"
+	SoulPhoneEntitlementProvisioned           = "provisioned"
+	SoulPhoneEntitlementPaid                  = "paid"
+	SoulPublicPaidCallerAccessDenied          = "denied"
+	SoulPolicyMigrationStateImplicitDefaultV1 = "implicit_default_v1"
+	SoulPolicyMigrationStatePersistedV1       = "persisted_v1"
+)
+
 // SoulAgentIdentity stores the off-chain identity record for a soul agent.
 //
 // Keys:
@@ -57,6 +78,21 @@ type SoulAgentIdentity struct {
 	MintTxHash string    `theorydb:"attr:mintTxHash" json:"mint_tx_hash,omitempty"`
 	MintedAt   time.Time `theorydb:"attr:mintedAt" json:"minted_at,omitempty"`
 	UpdatedAt  time.Time `theorydb:"attr:updatedAt" json:"updated_at,omitempty"`
+
+	// hosted-bound-soul v1 policy vocabulary. These fields are off-chain policy
+	// state; they do not grant on-chain authority and must not be interpreted as
+	// replacing contract ownership or Safe-governed mutations.
+	PolicyVersion                    string `theorydb:"attr:policyVersion" json:"policy_version,omitempty"`
+	AnchorState                      string `theorydb:"attr:anchorState" json:"anchor_state,omitempty"`
+	OperationalBinding               string `theorydb:"attr:operationalBinding" json:"operational_binding,omitempty"`
+	CapabilityPolicyVersion          string `theorydb:"attr:capabilityPolicyVersion" json:"capability_policy_version,omitempty"`
+	CallerAccessPaymentPolicyVersion string `theorydb:"attr:callerAccessPaymentPolicyVersion" json:"caller_access_payment_policy_version,omitempty"`
+	EmailDefaultAllowed              bool   `theorydb:"attr:emailDefaultAllowed" json:"email_default_allowed,omitempty"`
+	PhoneEntitlementStatus           string `theorydb:"attr:phoneEntitlementStatus" json:"phone_entitlement_status,omitempty"`
+	SMSAllowed                       bool   `theorydb:"attr:smsAllowed" json:"sms_allowed,omitempty"`
+	VoiceAllowed                     bool   `theorydb:"attr:voiceAllowed" json:"voice_allowed,omitempty"`
+	PublicPaidCallerAccess           string `theorydb:"attr:publicPaidCallerAccess" json:"public_paid_caller_access,omitempty"`
+	PolicyMigrationState             string `theorydb:"attr:policyMigrationState" json:"policy_migration_state,omitempty"`
 }
 
 // TableName returns the database table name for SoulAgentIdentity.
@@ -170,6 +206,14 @@ func (a *SoulAgentIdentity) UpdateKeys() error {
 	a.PredecessorAgentID = strings.ToLower(strings.TrimSpace(a.PredecessorAgentID))
 	a.Status = strings.ToLower(strings.TrimSpace(a.Status))
 	a.MintTxHash = strings.ToLower(strings.TrimSpace(a.MintTxHash))
+	a.PolicyVersion = strings.ToLower(strings.TrimSpace(a.PolicyVersion))
+	a.AnchorState = strings.ToLower(strings.TrimSpace(a.AnchorState))
+	a.OperationalBinding = strings.ToLower(strings.TrimSpace(a.OperationalBinding))
+	a.CapabilityPolicyVersion = strings.ToLower(strings.TrimSpace(a.CapabilityPolicyVersion))
+	a.CallerAccessPaymentPolicyVersion = strings.ToLower(strings.TrimSpace(a.CallerAccessPaymentPolicyVersion))
+	a.PhoneEntitlementStatus = strings.ToLower(strings.TrimSpace(a.PhoneEntitlementStatus))
+	a.PublicPaidCallerAccess = strings.ToLower(strings.TrimSpace(a.PublicPaidCallerAccess))
+	a.PolicyMigrationState = strings.ToLower(strings.TrimSpace(a.PolicyMigrationState))
 
 	a.PK = fmt.Sprintf("SOUL#AGENT#%s", a.AgentID)
 	a.SK = "IDENTITY"

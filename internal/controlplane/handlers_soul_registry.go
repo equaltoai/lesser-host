@@ -1015,7 +1015,7 @@ func buildSoulPendingAgentIdentity(
 	principalDeclaredAt string,
 	now time.Time,
 ) *models.SoulAgentIdentity {
-	return &models.SoulAgentIdentity{
+	identity := &models.SoulAgentIdentity{
 		AgentID:              reg.AgentID,
 		Domain:               reg.DomainNormalized,
 		LocalID:              reg.LocalID,
@@ -1030,6 +1030,8 @@ func buildSoulPendingAgentIdentity(
 		Status:               models.SoulAgentStatusPending,
 		UpdatedAt:            now,
 	}
+	applyHostedBoundSoulPolicyDefaults(identity)
+	return identity
 }
 
 func (s *Server) reconcileSoulPendingIdentity(

@@ -1413,6 +1413,25 @@ export interface components {
             mint_tx_hash?: string;
             /** Format: date-time */
             minted_at?: string;
+            /** @enum {string} */
+            policy_version?: "hosted-bound-soul/v1";
+            /** @enum {string} */
+            anchor_state?: "hosted_offchain" | "immutable_onchain";
+            /** @enum {string} */
+            operational_binding?: "hosted_bound_soul";
+            /** @enum {string} */
+            capability_policy_version?: "capability-policy/v1";
+            /** @enum {string} */
+            caller_access_payment_policy_version?: "caller-access-payment/v1";
+            email_default_allowed?: boolean;
+            /** @enum {string} */
+            phone_entitlement_status?: "not_entitled" | "provisioned" | "paid";
+            sms_allowed?: boolean;
+            voice_allowed?: boolean;
+            /** @enum {string} */
+            public_paid_caller_access?: "denied";
+            /** @enum {string} */
+            policy_migration_state?: "implicit_default_v1" | "persisted_v1";
             /** Format: date-time */
             updated_at?: string;
             $defs: {
@@ -1490,7 +1509,7 @@ export interface components {
         "soul-comm-send.error.schema": {
             error: {
                 /** @enum {string} */
-                code: "comm.invalid_request" | "comm.unauthorized" | "comm.agent_not_active" | "comm.channel_not_provisioned" | "comm.channel_unverified" | "comm.rate_limited" | "comm.preference_violation" | "comm.boundary_violation" | "comm.insufficient_credits" | "comm.provider_unavailable" | "comm.provider_rejected" | "comm.idempotency_conflict" | "comm.internal";
+                code: "comm.invalid_request" | "comm.unauthorized" | "comm.agent_not_active" | "comm.channel_not_provisioned" | "comm.channel_unverified" | "comm.rate_limited" | "comm.preference_violation" | "comm.boundary_violation" | "comm.entitlement_required" | "comm.insufficient_credits" | "comm.provider_unavailable" | "comm.provider_rejected" | "comm.idempotency_conflict" | "comm.internal";
                 message: string;
                 status_code?: number;
                 /** @description Optional structured, client-safe metadata. For comm.boundary_violation caused by an invalid reply/conversation reference, Host returns field=inReplyTo, boundary=conversation, and a reason such as no_prior_conversation. */
@@ -1539,6 +1558,39 @@ export interface components {
                 request_id?: string;
             };
         };
+        policy: {
+            /** @enum {string} */
+            version: "hosted-bound-soul/v1";
+            /** @enum {string} */
+            anchorState: "hosted_offchain" | "immutable_onchain";
+            /** @enum {string} */
+            operationalBinding: "hosted_bound_soul";
+            /** @enum {string} */
+            capabilityPolicyVersion: "capability-policy/v1";
+            /** @enum {string} */
+            callerAccessPaymentPolicyVersion: "caller-access-payment/v1";
+            capabilities: {
+                email: {
+                    defaultAllowed: boolean;
+                };
+                phone: {
+                    /** @enum {string} */
+                    entitlementStatus: "not_entitled" | "provisioned" | "paid";
+                    smsAllowed: boolean;
+                    voiceAllowed: boolean;
+                };
+            };
+            callerAccessPayment: {
+                publicPaidCaller: {
+                    /** @enum {string} */
+                    access: "denied";
+                };
+            };
+            migration: {
+                /** @enum {string} */
+                state: "implicit_default_v1" | "persisted_v1";
+            };
+        };
         channel: {
             /** @enum {string} */
             channelType: "email" | "phone";
@@ -1583,6 +1635,7 @@ export interface components {
             preferred?: "email" | "phone" | "sms" | "voice";
             /** @enum {string} */
             fallback?: "email" | "phone" | "sms" | "voice";
+            policy: components["schemas"]["policy"];
             channels: components["schemas"]["channel"][];
             mailbox: components["schemas"]["mailbox"];
             availability: components["schemas"]["availability"];

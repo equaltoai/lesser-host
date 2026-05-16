@@ -152,6 +152,7 @@ func TestEnforceSoulCommSendGuards_AllowsFirstContactToExternalRecipient(t *test
 			LifecycleStatus: models.SoulAgentStatusActive,
 			UpdatedAt:       time.Now().UTC(),
 		}
+		applyProvisionedPhonePolicy(dest)
 	}).Once()
 
 	qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
@@ -241,6 +242,7 @@ func TestHandleSoulCommSend_SendsEmailAndRecordsStatus(t *testing.T) {
 			LifecycleStatus: models.SoulAgentStatusActive,
 			UpdatedAt:       time.Now().UTC(),
 		}
+		applyProvisionedPhonePolicy(dest)
 	}).Once()
 
 	qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
@@ -373,6 +375,7 @@ func TestHandleSoulCommSend_SendsSMSAndDebitsCredits(t *testing.T) {
 			LifecycleStatus: models.SoulAgentStatusActive,
 			UpdatedAt:       time.Now().UTC(),
 		}
+		applyProvisionedPhonePolicy(dest)
 	}).Once()
 
 	qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
@@ -492,6 +495,7 @@ func TestHandleSoulCommSend_StartsVoiceCallAndStoresInstruction(t *testing.T) {
 			LifecycleStatus: models.SoulAgentStatusActive,
 			UpdatedAt:       time.Now().UTC(),
 		}
+		applyProvisionedPhonePolicy(dest)
 	}).Once()
 
 	qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
@@ -612,6 +616,7 @@ func TestHandleSoulCommSend_SMSInsufficientCreditsBlocksSend(t *testing.T) {
 			LifecycleStatus: models.SoulAgentStatusActive,
 			UpdatedAt:       time.Now().UTC(),
 		}
+		applyProvisionedPhonePolicy(dest)
 	}).Once()
 
 	qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {

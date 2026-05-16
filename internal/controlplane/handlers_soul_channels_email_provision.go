@@ -256,6 +256,10 @@ func (s *Server) finalizeSoulProvisionEmailChannel(
 	if appErr := upsertProvisionedEmailChannel(ctx.Context(), s, agentIDHex, address, passParamName, now); appErr != nil {
 		return nil, appErr
 	}
+	applyHostedBoundSoulPolicyDefaults(identity)
+	if appErr := s.persistSoulAgentPolicyFields(ctx.Context(), identity, now); appErr != nil {
+		return nil, appErr
+	}
 
 	s.tryWriteAuditLog(ctx, &models.AuditLogEntry{
 		Action:    "soul.channel.email.provision",
