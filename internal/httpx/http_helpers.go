@@ -11,6 +11,33 @@ import (
 const maxRequestBodySize = 1 << 20
 
 func ParseJSON(ctx *apptheory.Context, dest any) error {
+	if err := validateJSONBody(ctx); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(ctx.Request.Body, dest); err != nil {
+		return &apptheory.AppError{Code: "app.bad_request", Message: "invalid JSON"}
+	}
+	return nil
+}
+
+// BindJSON uses AppTheory typed request binding for JSON bodies while
+// preserving host's existing ParseJSON request-size and error semantics.
+func BindJSON[Req any](ctx *apptheory.Context) (Req, error) {
+	var zero Req
+	if err := validateJSONBody(ctx); err != nil {
+		return zero, err
+	}
+
+	req, err := apptheory.BindRequest(ctx, apptheory.BindConfig[Req]{
+		Body: true,
+	})
+	if err != nil {
+		return zero, &apptheory.AppError{Code: "app.bad_request", Message: "invalid JSON"}
+	}
+	return req, nil
+}
+
+func validateJSONBody(ctx *apptheory.Context) error {
 	if ctx == nil {
 		return &apptheory.AppError{Code: "app.bad_request", Message: "invalid request"}
 	}
@@ -19,9 +46,6 @@ func ParseJSON(ctx *apptheory.Context, dest any) error {
 	}
 	if len(ctx.Request.Body) > maxRequestBodySize {
 		return &apptheory.AppError{Code: "app.bad_request", Message: "request body too large"}
-	}
-	if err := json.Unmarshal(ctx.Request.Body, dest); err != nil {
-		return &apptheory.AppError{Code: "app.bad_request", Message: "invalid JSON"}
 	}
 	return nil
 }
