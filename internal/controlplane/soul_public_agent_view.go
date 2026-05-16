@@ -39,9 +39,28 @@ const (
 )
 
 type soulPublicAgentView struct {
-	models.SoulAgentIdentity
-	ENSName string                `json:"ens_name,omitempty"`
-	Avatar  *soulPublicAvatarView `json:"avatar,omitempty"`
+	AgentID                string                `json:"agent_id,omitempty"`
+	Domain                 string                `json:"domain,omitempty"`
+	LocalID                string                `json:"local_id,omitempty"`
+	ENSName                string                `json:"ens_name,omitempty"`
+	Wallet                 string                `json:"wallet,omitempty"`
+	TokenID                string                `json:"token_id,omitempty"`
+	MetaURI                string                `json:"meta_uri,omitempty"`
+	Avatar                 *soulPublicAvatarView `json:"avatar,omitempty"`
+	Capabilities           []string              `json:"capabilities,omitempty"`
+	PrincipalAddress       string                `json:"principal_address,omitempty"`
+	PrincipalSignature     string                `json:"principal_signature,omitempty"`
+	PrincipalDeclaration   string                `json:"principal_declaration,omitempty"`
+	PrincipalDeclaredAt    string                `json:"principal_declared_at,omitempty"`
+	SelfDescriptionVersion int                   `json:"self_description_version,omitempty"`
+	LifecycleStatus        string                `json:"lifecycle_status,omitempty"`
+	LifecycleReason        string                `json:"lifecycle_reason,omitempty"`
+	SuccessorAgentID       string                `json:"successor_agent_id,omitempty"`
+	PredecessorAgentID     string                `json:"predecessor_agent_id,omitempty"`
+	Status                 string                `json:"status,omitempty"`
+	MintTxHash             string                `json:"mint_tx_hash,omitempty"`
+	MintedAt               time.Time             `json:"minted_at,omitempty"`
+	UpdatedAt              time.Time             `json:"updated_at,omitempty"`
 }
 
 type soulPublicAvatarView struct {
@@ -87,7 +106,7 @@ func (s *Server) buildSoulPublicAgentView(ctx context.Context, identity *models.
 		return view
 	}
 
-	view.SoulAgentIdentity = *identity
+	view = buildSoulPublicAgentIdentityView(identity)
 	if strings.TrimSpace(identity.LocalID) != "" {
 		if ensName, err := s.loadSoulPublicAgentENSName(ctx, identity.AgentID); err == nil {
 			view.ENSName = ensName
@@ -100,6 +119,34 @@ func (s *Server) buildSoulPublicAgentView(ctx context.Context, identity *models.
 	}
 
 	return view
+}
+
+func buildSoulPublicAgentIdentityView(identity *models.SoulAgentIdentity) soulPublicAgentView {
+	if identity == nil {
+		return soulPublicAgentView{}
+	}
+	return soulPublicAgentView{
+		AgentID:                identity.AgentID,
+		Domain:                 identity.Domain,
+		LocalID:                identity.LocalID,
+		Wallet:                 identity.Wallet,
+		TokenID:                identity.TokenID,
+		MetaURI:                identity.MetaURI,
+		Capabilities:           append([]string(nil), identity.Capabilities...),
+		PrincipalAddress:       identity.PrincipalAddress,
+		PrincipalSignature:     identity.PrincipalSignature,
+		PrincipalDeclaration:   identity.PrincipalDeclaration,
+		PrincipalDeclaredAt:    identity.PrincipalDeclaredAt,
+		SelfDescriptionVersion: identity.SelfDescriptionVersion,
+		LifecycleStatus:        identity.LifecycleStatus,
+		LifecycleReason:        identity.LifecycleReason,
+		SuccessorAgentID:       identity.SuccessorAgentID,
+		PredecessorAgentID:     identity.PredecessorAgentID,
+		Status:                 identity.Status,
+		MintTxHash:             identity.MintTxHash,
+		MintedAt:               identity.MintedAt,
+		UpdatedAt:              identity.UpdatedAt,
+	}
 }
 
 func (s *Server) loadSoulPublicAgentENSName(ctx context.Context, agentIDHex string) (string, error) {

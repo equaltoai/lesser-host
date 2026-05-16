@@ -1413,25 +1413,6 @@ export interface components {
             mint_tx_hash?: string;
             /** Format: date-time */
             minted_at?: string;
-            /** @enum {string} */
-            policy_version?: "hosted-bound-soul/v1";
-            /** @enum {string} */
-            anchor_state?: "hosted_offchain" | "immutable_onchain";
-            /** @enum {string} */
-            operational_binding?: "hosted_bound_soul";
-            /** @enum {string} */
-            capability_policy_version?: "capability-policy/v1";
-            /** @enum {string} */
-            caller_access_payment_policy_version?: "caller-access-payment/v1";
-            email_default_allowed?: boolean;
-            /** @enum {string} */
-            phone_entitlement_status?: "not_entitled" | "provisioned" | "paid";
-            sms_allowed?: boolean;
-            voice_allowed?: boolean;
-            /** @enum {string} */
-            public_paid_caller_access?: "denied";
-            /** @enum {string} */
-            policy_migration_state?: "implicit_default_v1" | "persisted_v1";
             /** Format: date-time */
             updated_at?: string;
             $defs: {

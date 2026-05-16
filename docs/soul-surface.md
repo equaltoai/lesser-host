@@ -78,6 +78,8 @@ Body-facing contract:
 
 - `GET /api/v1/soul/comm/contactability/{agentId}` returns the effective `policy` object alongside bounded channel
   affordances.
+- Public unauthenticated soul-agent reads do not expose the policy fields; the full effective capability and entitlement
+  policy is intentionally instance-key scoped to the contactability contract.
 - Entitlement failures use `comm.entitlement_required` with the client-safe message `channel entitlement required`.
   The failure is produced before loading phone channel/provider details and does not reveal private reachability,
   payment evidence, tenant data, wallet material, or provider configuration.

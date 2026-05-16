@@ -374,7 +374,21 @@ func TestHandleSoulPublicGetAgent_Success(t *testing.T) {
 
 	tdb.qID.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
-		*dest = models.SoulAgentIdentity{AgentID: agentID, Status: models.SoulAgentStatusActive}
+		*dest = models.SoulAgentIdentity{
+			AgentID:                          agentID,
+			Status:                           models.SoulAgentStatusActive,
+			PolicyVersion:                    models.SoulPolicyVersionHostedBoundSoulV1,
+			AnchorState:                      models.SoulAnchorStateImmutableOnchain,
+			OperationalBinding:               models.SoulOperationalBindingHostedBoundSoul,
+			CapabilityPolicyVersion:          models.SoulCapabilityPolicyVersionV1,
+			CallerAccessPaymentPolicyVersion: models.SoulCallerAccessPaymentPolicyVersionV1,
+			EmailDefaultAllowed:              true,
+			PhoneEntitlementStatus:           models.SoulPhoneEntitlementProvisioned,
+			SMSAllowed:                       true,
+			VoiceAllowed:                     true,
+			PublicPaidCallerAccess:           models.SoulPublicPaidCallerAccessDenied,
+			PolicyMigrationState:             models.SoulPolicyMigrationStatePersistedV1,
+		}
 	}).Once()
 	tdb.qRep.On("First", mock.AnythingOfType("*models.SoulAgentReputation")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentReputation](t, args, 0)
@@ -400,6 +414,23 @@ func TestHandleSoulPublicGetAgent_Success(t *testing.T) {
 	}
 	if out.Version != "1" || out.Agent.AgentID != agentID || out.Reputation == nil || out.Reputation.AgentID != agentID {
 		t.Fatalf("unexpected response: %#v", out)
+	}
+	for _, privateField := range []string{
+		"policy_version",
+		"anchor_state",
+		"operational_binding",
+		"capability_policy_version",
+		"caller_access_payment_policy_version",
+		"email_default_allowed",
+		"phone_entitlement_status",
+		"sms_allowed",
+		"voice_allowed",
+		"public_paid_caller_access",
+		"policy_migration_state",
+	} {
+		if bytes.Contains(resp.Body, []byte(privateField)) {
+			t.Fatalf("public agent response leaked private policy field %q: %s", privateField, string(resp.Body))
+		}
 	}
 }
 
