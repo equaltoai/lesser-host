@@ -7,6 +7,7 @@ import (
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 
+	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -21,8 +22,20 @@ func (s *Server) tryWriteAuditLog(ctx *apptheory.Context, entry *models.AuditLog
 	if strings.TrimSpace(entry.RequestID) == "" {
 		entry.RequestID = strings.TrimSpace(ctx.RequestID)
 	}
+	applyAuditSourceProvenance(ctx, entry)
 
 	s.tryWriteAuditLogWithContext(ctx.Context(), entry)
+}
+
+func applyAuditSourceProvenance(ctx *apptheory.Context, entry *models.AuditLogEntry) {
+	if ctx == nil || entry == nil {
+		return
+	}
+	source := httpx.TrustedSourceFromContext(ctx)
+	entry.SourceIP = strings.TrimSpace(source.SourceIP)
+	entry.SourceProvider = strings.TrimSpace(source.Provider)
+	entry.SourceProvenance = strings.TrimSpace(source.Source)
+	entry.SourceValid = source.Valid
 }
 
 func (s *Server) tryWriteAuditLogWithContext(ctx context.Context, entry *models.AuditLogEntry) {

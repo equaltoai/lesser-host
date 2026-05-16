@@ -7,6 +7,8 @@ import (
 
 	"github.com/theory-cloud/apptheory/pkg/limited"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
+
+	"github.com/equaltoai/lesser-host/internal/httpx"
 )
 
 const (
@@ -38,18 +40,9 @@ func (s *Server) aiRateLimitMiddleware() apptheory.Middleware {
 	limiter := limited.NewDynamoRateLimiter(s.store.DB, limited.DefaultConfig(), strategy)
 
 	rateLimitMW := apptheory.RateLimitMiddleware(apptheory.RateLimitConfig{
-		Limiter:    limiter,
-		FailClosed: true,
-		ExtractIdentifier: func(ctx *apptheory.Context) string {
-			if ctx == nil {
-				return "anonymous"
-			}
-			id := strings.TrimSpace(ctx.AuthIdentity)
-			if id == "" {
-				return "anonymous"
-			}
-			return id
-		},
+		Limiter:           limiter,
+		FailClosed:        true,
+		ExtractIdentifier: aiRateLimitIdentifier,
 	})
 
 	return func(next apptheory.Handler) apptheory.Handler {
@@ -68,4 +61,14 @@ func (s *Server) aiRateLimitMiddleware() apptheory.Middleware {
 			return next(ctx)
 		}
 	}
+}
+
+func aiRateLimitIdentifier(ctx *apptheory.Context) string {
+	if ctx == nil {
+		return httpx.SourceRateLimitIdentifier(nil, "trust-ai:anonymous")
+	}
+	if id := strings.TrimSpace(ctx.AuthIdentity); id != "" {
+		return id
+	}
+	return httpx.SourceRateLimitIdentifier(ctx, "trust-ai:anonymous")
 }

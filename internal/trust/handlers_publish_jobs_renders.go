@@ -487,6 +487,7 @@ func (s *Server) debitLinkRenderBudget(
 		RequestID: strings.TrimSpace(ctx.RequestID),
 		CreatedAt: now,
 	}
+	applyAuditSourceProvenance(ctx, auditBudget)
 	_ = auditBudget.UpdateKeys()
 
 	maxUsed := budget.IncludedCredits - creditsNeededPriced
@@ -530,6 +531,7 @@ func (s *Server) queueMissingRenders(ctx *apptheory.Context, instanceSlug string
 				RequestID: strings.TrimSpace(ctx.RequestID),
 				CreatedAt: now,
 			}
+			applyAuditSourceProvenance(ctx, audit)
 			_ = audit.UpdateKeys()
 			_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
 		}

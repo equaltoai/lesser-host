@@ -89,6 +89,7 @@ func (s *Server) handleWalletLogin(ctx *apptheory.Context) (*apptheory.Response,
 		RequestID: ctx.RequestID,
 		CreatedAt: now,
 	}
+	applyAuditSourceProvenance(ctx, audit)
 	_ = audit.UpdateKeys()
 	if err := s.store.DB.WithContext(ctx.Context()).Model(audit).Create(); err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to write audit log"}

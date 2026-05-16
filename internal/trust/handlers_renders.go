@@ -139,6 +139,7 @@ func (s *Server) maybeServeCachedRenderRequest(
 		RequestID: strings.TrimSpace(ctx.RequestID),
 		CreatedAt: now,
 	}
+	applyAuditSourceProvenance(ctx, audit)
 	_ = audit.UpdateKeys()
 	_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
 
@@ -237,6 +238,7 @@ func (s *Server) handleCreateRender(ctx *apptheory.Context) (*apptheory.Response
 		RequestID: strings.TrimSpace(ctx.RequestID),
 		CreatedAt: now,
 	}
+	applyAuditSourceProvenance(ctx, audit)
 	_ = audit.UpdateKeys()
 	_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
 
@@ -248,6 +250,7 @@ func (s *Server) handleCreateRender(ctx *apptheory.Context) (*apptheory.Response
 			RequestID: strings.TrimSpace(ctx.RequestID),
 			CreatedAt: now,
 		}
+		applyAuditSourceProvenance(ctx, auditQueue)
 		_ = auditQueue.UpdateKeys()
 		_ = s.store.DB.WithContext(ctx.Context()).Model(auditQueue).Create()
 	}
@@ -345,6 +348,7 @@ func (s *Server) debitBudgetForCreateRender(
 		RequestID: strings.TrimSpace(ctx.RequestID),
 		CreatedAt: now,
 	}
+	applyAuditSourceProvenance(ctx, auditBudget)
 	_ = auditBudget.UpdateKeys()
 
 	maxUsed := budget.IncludedCredits - linkRenderCreditCost
