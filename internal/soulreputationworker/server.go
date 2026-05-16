@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"math/big"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -52,6 +54,8 @@ type Server struct {
 	dialTip tipLogDialer
 	now     func() time.Time
 	attest  *attestations.KMSService
+
+	logPhaseFailure func(ctx *apptheory.EventContext, phase string)
 }
 
 // NewServer constructs a soul reputation worker Server.
@@ -63,6 +67,8 @@ func NewServer(cfg config.Config, st *store.Store, packs soulPackStore) *Server 
 		dialTip: dialTipLogClient,
 		now:     time.Now,
 		attest:  attestations.NewKMSService(cfg.AttestationSigningKeyID, cfg.AttestationPublicKeyIDs),
+
+		logPhaseFailure: logRecomputePhaseFailure,
 	}
 }
 
@@ -99,7 +105,7 @@ type reputationSnapshotSignaturePayload struct {
 
 func (s *Server) handleRecompute(ctx *apptheory.EventContext, _ events.EventBridgeEvent) (any, error) {
 	if err := s.requireRecomputePrereqs(ctx); err != nil {
-		return nil, err
+		return nil, s.recomputePhaseError(ctx, "prereqs", err)
 	}
 
 	rpcURL, contractAddr, skip := s.tipRecomputeConfig()
@@ -109,24 +115,24 @@ func (s *Server) handleRecompute(ctx *apptheory.EventContext, _ events.EventBrid
 
 	client, err := s.dialTip(ctx.Context(), rpcURL)
 	if err != nil {
-		return nil, fmt.Errorf("failed to dial tip rpc: %w", err)
+		return nil, s.recomputePhaseError(ctx, "dial_tip_rpc", fmt.Errorf("failed to dial tip rpc: %w", err))
 	}
 	defer client.Close()
 
 	blockRef, err := client.BlockNumber(ctx.Context())
 	if err != nil {
-		return nil, fmt.Errorf("failed to read head block: %w", err)
+		return nil, s.recomputePhaseError(ctx, "read_head_block", fmt.Errorf("failed to read head block: %w", err))
 	}
 
 	fromBlock, chunkSize := s.tipIngestRange(blockRef)
 	tipCounts, err := fetchAgentTipCounts(ctx.Context(), client, contractAddr, fromBlock, blockRef, chunkSize)
 	if err != nil {
-		return nil, fmt.Errorf("failed to ingest tips: %w", err)
+		return nil, s.recomputePhaseError(ctx, "ingest_tips", fmt.Errorf("failed to ingest tips: %w", err))
 	}
 
 	identities, err := s.listAgentIdentities(ctx.Context())
 	if err != nil {
-		return nil, fmt.Errorf("failed to list identities: %w", err)
+		return nil, s.recomputePhaseError(ctx, "list_identities", fmt.Errorf("failed to list identities: %w", err))
 	}
 	sort.Slice(identities, func(i, j int) bool { return soulIdentitySortKey(identities[i]) < soulIdentitySortKey(identities[j]) })
 
@@ -135,7 +141,7 @@ func (s *Server) handleRecompute(ctx *apptheory.EventContext, _ events.EventBrid
 
 	reps, updated, skippedSuspended, err := s.computeAndPersistReputations(ctx.Context(), identities, blockRef, now, v0cfg, tipCounts)
 	if err != nil {
-		return nil, err
+		return nil, s.recomputePhaseError(ctx, "compute_and_persist_reputations", err)
 	}
 	totalTipEvents := sumTipEvents(tipCounts)
 
@@ -153,12 +159,12 @@ func (s *Server) handleRecompute(ctx *apptheory.EventContext, _ events.EventBrid
 
 	body, err := json.Marshal(snapshot)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal snapshot: %w", err)
+		return nil, s.recomputePhaseError(ctx, "marshal_snapshot", fmt.Errorf("failed to marshal snapshot: %w", err))
 	}
 
 	key := reputationSnapshotS3Key(s.cfg.TipChainID, blockRef)
 	if err := s.packs.PutObject(ctx.Context(), key, body, "application/json", "no-store"); err != nil {
-		return nil, fmt.Errorf("failed to write snapshot: %w", err)
+		return nil, s.recomputePhaseError(ctx, "write_snapshot", fmt.Errorf("failed to write snapshot: %w", err))
 	}
 
 	sigKey := ""
@@ -173,17 +179,17 @@ func (s *Server) handleRecompute(ctx *apptheory.EventContext, _ events.EventBrid
 			ComputedAt:     now,
 		})
 		if err != nil {
-			return nil, fmt.Errorf("failed to marshal snapshot signature payload: %w", err)
+			return nil, s.recomputePhaseError(ctx, "marshal_snapshot_signature_payload", fmt.Errorf("failed to marshal snapshot signature payload: %w", err))
 		}
 
 		jws, _, err := s.attest.SignPayloadJWS(ctx.Context(), payloadBytes)
 		if err != nil {
-			return nil, fmt.Errorf("failed to sign snapshot signature payload: %w", err)
+			return nil, s.recomputePhaseError(ctx, "sign_snapshot_signature_payload", fmt.Errorf("failed to sign snapshot signature payload: %w", err))
 		}
 
 		sigKey = reputationSnapshotSignatureS3Key(key)
 		if err := s.packs.PutObject(ctx.Context(), sigKey, []byte(jws), "application/jose", "no-store"); err != nil {
-			return nil, fmt.Errorf("failed to write snapshot signature: %w", err)
+			return nil, s.recomputePhaseError(ctx, "write_snapshot_signature", fmt.Errorf("failed to write snapshot signature: %w", err))
 		}
 	}
 
@@ -199,6 +205,51 @@ func (s *Server) handleRecompute(ctx *apptheory.EventContext, _ events.EventBrid
 		"tip_agents_with_tips": len(tipCounts),
 		"tip_events_total":     totalTipEvents,
 	}, nil
+}
+
+var soulReputationPhaseLogger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+func (s *Server) recomputePhaseError(ctx *apptheory.EventContext, phase string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if s != nil && s.logPhaseFailure != nil {
+		s.logPhaseFailure(ctx, phase)
+	}
+	return fmt.Errorf("soul reputation recompute phase %s failed: %w", normalizeRecomputePhase(phase), err)
+}
+
+func logRecomputePhaseFailure(ctx *apptheory.EventContext, phase string) {
+	requestID := ""
+	if ctx != nil {
+		requestID = strings.TrimSpace(ctx.RequestID)
+	}
+
+	soulReputationPhaseLogger.Error(
+		"soul_reputation_recompute.phase_failed",
+		slog.String("service", ServiceName),
+		slog.String("request_id", requestID),
+		slog.String("phase", normalizeRecomputePhase(phase)),
+	)
+}
+
+func normalizeRecomputePhase(phase string) string {
+	switch strings.ToLower(strings.TrimSpace(phase)) {
+	case "prereqs",
+		"dial_tip_rpc",
+		"read_head_block",
+		"ingest_tips",
+		"list_identities",
+		"compute_and_persist_reputations",
+		"marshal_snapshot",
+		"write_snapshot",
+		"marshal_snapshot_signature_payload",
+		"sign_snapshot_signature_payload",
+		"write_snapshot_signature":
+		return strings.ToLower(strings.TrimSpace(phase))
+	default:
+		return "unknown"
+	}
 }
 
 func (s *Server) requireRecomputePrereqs(ctx *apptheory.EventContext) error {

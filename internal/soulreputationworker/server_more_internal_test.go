@@ -2,6 +2,7 @@ package soulreputationworker
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
@@ -86,4 +87,35 @@ func TestTipIngestRange_ClampsAndDefaults(t *testing.T) {
 	from, chunk := srv.tipIngestRange(20)
 	require.Equal(t, uint64(20), from)
 	require.Equal(t, uint64(5000), chunk)
+}
+
+func TestRecomputePhaseError_LogsOnlySanitizedPhase(t *testing.T) {
+	t.Parallel()
+
+	const rawAgentID = "0x00000000000000000000000000000000000000000000000000000000000000aa"
+	var logged []string
+	srv := &Server{
+		logPhaseFailure: func(ctx *apptheory.EventContext, phase string) {
+			require.Equal(t, "rid", ctx.RequestID)
+			logged = append(logged, phase)
+		},
+	}
+
+	err := srv.recomputePhaseError(
+		&apptheory.EventContext{RequestID: "rid"},
+		"compute_and_persist_reputations",
+		errors.New("failed to persist reputation for "+rawAgentID),
+	)
+	require.Error(t, err)
+	require.ErrorContains(t, err, rawAgentID)
+	require.Equal(t, []string{"compute_and_persist_reputations"}, logged)
+	require.NotContains(t, logged[0], rawAgentID)
+}
+
+func TestNormalizeRecomputePhase(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, "list_identities", normalizeRecomputePhase(" LIST_IDENTITIES "))
+	require.Equal(t, "unknown", normalizeRecomputePhase("list_identities\nextra"))
+	require.Equal(t, "unknown", normalizeRecomputePhase(""))
 }
