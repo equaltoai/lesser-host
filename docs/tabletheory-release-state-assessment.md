@@ -226,4 +226,3 @@ The helper is directionally useful, but host would likely need a few framework-l
 4. If Aron wants code adoption later, scope a separate design for an additive `ManagedReleaseStateActual` /
    `ManagedReleaseStateEvent` ledger populated only after checksum verification, receipt ingest, and post-deploy
    verification succeed.
-
