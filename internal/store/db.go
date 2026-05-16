@@ -1,14 +1,21 @@
 package store
 
 import (
+	"time"
+
 	"github.com/theory-cloud/tabletheory"
 
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
+// lambdaTimeoutBuffer is the cold-start TableTheory buffer host leaves before
+// the Lambda hard deadline so handlers can return structured errors instead
+// of timing out mid-DynamoDB operation.
+const lambdaTimeoutBuffer = 1500 * time.Millisecond
+
 // LambdaInit initializes the database connection and registers all models.
 func LambdaInit() (DB, error) {
-	return tabletheory.LambdaInit(
+	db, err := tabletheory.LambdaInit(
 		&models.AIJob{},
 		&models.AIResult{},
 		&models.Attestation{},
@@ -77,4 +84,8 @@ func LambdaInit() (DB, error) {
 		&models.SoulRelationshipFromIndex{},
 		&models.SoulAgentDispute{},
 	)
+	if err != nil {
+		return nil, err
+	}
+	return db.WithLambdaTimeoutConfig(tabletheory.LambdaTimeoutConfig{Buffer: lambdaTimeoutBuffer}), nil
 }

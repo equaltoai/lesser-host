@@ -206,6 +206,63 @@ func TestRetentionSweepDeletesExpiredArtifacts(t *testing.T) {
 	}
 }
 
+func TestRetentionSweepReturnsScheduledWorkloadSummary(t *testing.T) {
+	t.Parallel()
+
+	srv := NewServer(config.Config{}, &fakeRenderStore{items: map[string]*models.RenderArtifact{}}, &fakeArtifactStore{})
+	scheduledAt := time.Date(2026, 5, 16, 12, 0, 0, 0, time.UTC)
+	event := testkit.EventBridgeEvent(testkit.EventBridgeEventOptions{
+		ID: "retention-evt-1",
+		Detail: map[string]any{
+			"run_id":          "retention-run-1",
+			"idempotency_key": "retention/sweep/1",
+			"correlation_id":  "retention-corr-1",
+		},
+		Time: scheduledAt,
+	})
+
+	out, err := srv.handleRetentionSweep(&apptheory.EventContext{RequestID: "req-retention", RemainingMS: 6000}, event)
+	if err != nil {
+		t.Fatalf("handleRetentionSweep: %v", err)
+	}
+
+	m, ok := out.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map output, got %T", out)
+	}
+	workload, ok := m["workload"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected workload summary map, got %#v", m["workload"])
+	}
+
+	want := map[string]any{
+		"kind":               "scheduled",
+		"run_id":             "retention-run-1",
+		"idempotency_key":    "retention/sweep/1",
+		"correlation_id":     "retention-corr-1",
+		"correlation_source": "detail.correlation_id",
+		"event_id":           "retention-evt-1",
+		"source":             "aws.events",
+		"detail_type":        "Scheduled Event",
+		"remaining_ms":       6000,
+		"scheduled_time":     scheduledAt.Format(time.RFC3339),
+	}
+	for key, expected := range want {
+		if got := workload[key]; got != expected {
+			t.Fatalf("workload[%s] = %#v, want %#v (full workload %#v)", key, got, expected, workload)
+		}
+	}
+	if deadline, ok := workload["deadline_unix_ms"].(int64); !ok || deadline <= 0 {
+		t.Fatalf("expected positive deadline_unix_ms, got %#v", workload["deadline_unix_ms"])
+	}
+	if _, leaked := workload["detail"]; leaked {
+		t.Fatalf("workload summary must not expose raw event detail: %#v", workload)
+	}
+	if _, leaked := workload["resources"]; leaked {
+		t.Fatalf("workload summary must not expose raw event resources: %#v", workload)
+	}
+}
+
 func containsString(haystack []string, needle string) bool {
 	needle = strings.TrimSpace(needle)
 	for _, s := range haystack {
