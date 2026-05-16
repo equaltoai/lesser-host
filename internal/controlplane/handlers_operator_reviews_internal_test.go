@@ -192,3 +192,63 @@ func TestPortalExternalInstanceRegistrationLifecycle(t *testing.T) {
 		t.Fatalf("reject: resp=%#v err=%v", resp, err)
 	}
 }
+
+func TestPortalExternalInstanceRegistrationTypedBinding(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name        string
+		body        []byte
+		wantMessage string
+	}{
+		{
+			name:        "empty body",
+			body:        nil,
+			wantMessage: "empty body",
+		},
+		{
+			name:        "malformed json",
+			body:        []byte("{"),
+			wantMessage: "invalid JSON",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tdb := newOperatorReviewsTestDB()
+			s := &Server{store: store.New(tdb.db)}
+			_, err := s.handlePortalCreateExternalInstanceRegistration(&apptheory.Context{
+				AuthIdentity: "alice",
+				RequestID:    "r1",
+				Request:      apptheory.Request{Body: tc.body},
+			})
+			appErr, ok := err.(*apptheory.AppError)
+			if !ok {
+				t.Fatalf("expected AppError, got %T (%v)", err, err)
+			}
+			if appErr.Code != appErrCodeBadRequest || appErr.Message != tc.wantMessage {
+				t.Fatalf("unexpected error: %#v", appErr)
+			}
+		})
+	}
+
+	t.Run("unknown fields are ignored", func(t *testing.T) {
+		t.Parallel()
+
+		tdb := newOperatorReviewsTestDB()
+		s := &Server{store: store.New(tdb.db)}
+
+		tdb.qInst.On("First", mock.AnythingOfType("*models.Instance")).Return(theoryErrors.ErrItemNotFound).Once()
+		tdb.qReg.On("Create").Return(nil).Once()
+		tdb.qAudit.On("Create").Return(nil).Once()
+
+		resp, err := s.handlePortalCreateExternalInstanceRegistration(&apptheory.Context{
+			AuthIdentity: "alice",
+			RequestID:    "r1",
+			Request:      apptheory.Request{Body: []byte(`{"slug":"demo","note":"hello","extra":true}`)},
+		})
+		if err != nil || resp.Status != 201 {
+			t.Fatalf("unknown field create: resp=%#v err=%v", resp, err)
+		}
+	})
+}

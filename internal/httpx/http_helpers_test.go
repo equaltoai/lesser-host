@@ -38,6 +38,37 @@ func TestParseJSON(t *testing.T) {
 	}
 }
 
+func TestBindJSON(t *testing.T) {
+	t.Parallel()
+
+	type bindRequest struct {
+		Value string `json:"value"`
+	}
+
+	if _, err := BindJSON[bindRequest](nil); err == nil {
+		t.Fatalf("expected error for nil ctx")
+	}
+
+	ctx := &apptheory.Context{}
+	if _, err := BindJSON[bindRequest](ctx); err == nil {
+		t.Fatalf("expected error for empty body")
+	}
+
+	ctx.Request.Body = []byte("{")
+	if _, err := BindJSON[bindRequest](ctx); err == nil {
+		t.Fatalf("expected error for invalid json")
+	}
+
+	ctx.Request.Body = []byte(`{"value":"x","unknown":true}`)
+	req, err := BindJSON[bindRequest](ctx)
+	if err != nil {
+		t.Fatalf("BindJSON: %v", err)
+	}
+	if req.Value != "x" {
+		t.Fatalf("expected typed bound value, got %#v", req)
+	}
+}
+
 func TestBearerToken(t *testing.T) {
 	t.Parallel()
 

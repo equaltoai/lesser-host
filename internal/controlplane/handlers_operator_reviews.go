@@ -352,9 +352,9 @@ func (s *Server) handlePortalCreateExternalInstanceRegistration(ctx *apptheory.C
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
-	var req externalInstanceRegistrationRequest
-	if err := httpx.ParseJSON(ctx, &req); err != nil {
-		return nil, err
+	req, parseErr := httpx.BindJSON[externalInstanceRegistrationRequest](ctx)
+	if parseErr != nil {
+		return nil, parseErr
 	}
 
 	slug := strings.ToLower(strings.TrimSpace(req.Slug))
