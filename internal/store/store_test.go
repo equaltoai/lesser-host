@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"errors"
 	"testing"
+	"time"
 
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
@@ -22,6 +24,55 @@ func TestIsNotFound(t *testing.T) {
 	if !IsNotFound(theoryErrors.ErrItemNotFound) {
 		t.Fatalf("expected true")
 	}
+}
+
+func TestStore_LambdaTimeoutGuard_NoOpsWithoutDeadline(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := ttmocks.NewMockExtendedDBStrict()
+
+	db.On("WithContext", ctx).Return(db).Once()
+
+	st := New(db)
+	got := st.DB.WithContext(ctx)
+	if got != db {
+		t.Fatalf("expected original DB for non-deadline context, got %T", got)
+	}
+
+	db.AssertNotCalled(t, "WithLambdaTimeout", mock.Anything)
+	db.AssertExpectations(t)
+}
+
+func TestStore_LambdaTimeoutGuard_AppliesDeadlineAndPreservesTransactWrite(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(time.Minute))
+	defer cancel()
+
+	base := ttmocks.NewMockExtendedDBStrict()
+	guarded := ttmocks.NewMockExtendedDBStrict()
+	expectedErr := errors.New("transaction delegated")
+
+	base.On("WithLambdaTimeout", ctx).Return(guarded).Once()
+	guarded.On("WithContext", ctx).Return(guarded).Once()
+
+	st := New(base)
+	got := st.DB.WithContext(ctx)
+	if got != guarded {
+		t.Fatalf("expected guarded DB for deadline context, got %T", got)
+	}
+
+	base.On("WithLambdaTimeout", ctx).Return(guarded).Once()
+	guarded.On("TransactWrite", ctx, mock.Anything).Return(expectedErr).Once()
+
+	err := st.DB.TransactWrite(ctx, nil)
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected delegated TransactWrite error %v, got %v", expectedErr, err)
+	}
+
+	base.AssertExpectations(t)
+	guarded.AssertExpectations(t)
 }
 
 func TestStore_DBHelpers(t *testing.T) {
