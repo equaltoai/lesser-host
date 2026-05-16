@@ -253,6 +253,10 @@ func (s *Server) finalizeSoulProvisionPhoneChannel(
 	if appErr := upsertProvisionedPhoneChannel(ctx.Context(), s, agentIDHex, number, now); appErr != nil {
 		return nil, appErr
 	}
+	applyProvisionedPhonePolicy(identity)
+	if appErr := s.persistSoulAgentPolicyFields(ctx.Context(), identity, now); appErr != nil {
+		return nil, appErr
+	}
 
 	_ = s.store.DB.WithContext(ctx.Context()).Model(&models.AuditLogEntry{
 		Actor:     strings.TrimSpace(ctx.AuthIdentity),
@@ -338,10 +342,18 @@ func (s *Server) handleSoulDeprovisionPhoneChannel(ctx *apptheory.Context) (*app
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to update phone channel"}
 	}
 
+	return s.finalizeSoulDeprovisionPhoneChannel(ctx, agentIDHex, identity, ch, now)
+}
+
+func (s *Server) finalizeSoulDeprovisionPhoneChannel(ctx *apptheory.Context, agentIDHex string, identity *models.SoulAgentIdentity, ch *models.SoulAgentChannel, now time.Time) (*apptheory.Response, error) {
 	// Remove reverse lookup index so the number no longer resolves.
 	idx := &models.SoulPhoneAgentIndex{Phone: strings.TrimSpace(ch.Identifier), AgentID: agentIDHex}
 	_ = idx.UpdateKeys()
 	_ = s.store.DB.WithContext(ctx.Context()).Model(idx).Delete()
+	applyPhonePolicyNotEntitled(identity)
+	if appErr := s.persistSoulAgentPolicyFields(ctx.Context(), identity, now); appErr != nil {
+		return nil, appErr
+	}
 
 	// Best-effort: clear phone field from ENS resolution record (if it exists).
 	ensName := strings.TrimSpace(identity.LocalID) + ".lessersoul.eth"

@@ -497,15 +497,45 @@ func (s *Server) applySoulOperationMintSideEffects(ctx context.Context, op *mode
 
 	now := time.Now().UTC()
 	update := &models.SoulAgentIdentity{
-		AgentID:         agentID,
-		Status:          status,
-		LifecycleStatus: status,
-		MintTxHash:      strings.ToLower(strings.TrimSpace(op.ExecTxHash)),
-		MintedAt:        now,
-		UpdatedAt:       now,
+		AgentID:                          agentID,
+		Status:                           status,
+		LifecycleStatus:                  status,
+		MintTxHash:                       strings.ToLower(strings.TrimSpace(op.ExecTxHash)),
+		MintedAt:                         now,
+		PolicyVersion:                    identity.PolicyVersion,
+		AnchorState:                      identity.AnchorState,
+		OperationalBinding:               identity.OperationalBinding,
+		CapabilityPolicyVersion:          identity.CapabilityPolicyVersion,
+		CallerAccessPaymentPolicyVersion: identity.CallerAccessPaymentPolicyVersion,
+		EmailDefaultAllowed:              identity.EmailDefaultAllowed,
+		PhoneEntitlementStatus:           identity.PhoneEntitlementStatus,
+		SMSAllowed:                       identity.SMSAllowed,
+		VoiceAllowed:                     identity.VoiceAllowed,
+		PublicPaidCallerAccess:           identity.PublicPaidCallerAccess,
+		PolicyMigrationState:             identity.PolicyMigrationState,
+		UpdatedAt:                        now,
 	}
+	applyHostedBoundSoulPolicyDefaults(update)
+	update.AnchorState = models.SoulAnchorStateImmutableOnchain
 	_ = update.UpdateKeys()
-	_ = s.store.DB.WithContext(ctx).Model(update).IfExists().Update("Status", "LifecycleStatus", "MintTxHash", "MintedAt", "UpdatedAt")
+	_ = s.store.DB.WithContext(ctx).Model(update).IfExists().Update(
+		"Status",
+		"LifecycleStatus",
+		"MintTxHash",
+		"MintedAt",
+		"UpdatedAt",
+		"PolicyVersion",
+		"AnchorState",
+		"OperationalBinding",
+		"CapabilityPolicyVersion",
+		"CallerAccessPaymentPolicyVersion",
+		"EmailDefaultAllowed",
+		"PhoneEntitlementStatus",
+		"SMSAllowed",
+		"VoiceAllowed",
+		"PublicPaidCallerAccess",
+		"PolicyMigrationState",
+	)
 }
 
 func (s *Server) applySoulOperationRotateWalletSideEffects(ctx context.Context, client ethRPCClient, agentID string) {

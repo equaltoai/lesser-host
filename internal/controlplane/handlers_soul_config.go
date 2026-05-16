@@ -6,6 +6,8 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
+
+	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
 type soulConfigReputationWeights struct {
@@ -24,7 +26,19 @@ type soulConfigResponse struct {
 	AdminSafeAddress        string                       `json:"admin_safe_address,omitempty"`
 	TxMode                  string                       `json:"tx_mode,omitempty"`
 	SupportedCapabilities   []string                     `json:"supported_capabilities,omitempty"`
+	PolicyVocabulary        *soulConfigPolicyVocabulary  `json:"policy_vocabulary,omitempty"`
 	ReputationWeights       *soulConfigReputationWeights `json:"reputation_weights,omitempty"`
+}
+
+type soulConfigPolicyVocabulary struct {
+	Version                           string   `json:"version"`
+	AnchorStates                      []string `json:"anchor_states"`
+	OperationalBindings               []string `json:"operational_bindings"`
+	CapabilityPolicyVersion           string   `json:"capability_policy_version"`
+	CallerAccessPaymentPolicyVersion  string   `json:"caller_access_payment_policy_version"`
+	PhoneEntitlementStatuses          []string `json:"phone_entitlement_statuses"`
+	PublicPaidCallerAccess            []string `json:"public_paid_caller_access"`
+	MissingPolicyRecordMigrationState string   `json:"missing_policy_record_migration_state"`
 }
 
 func (s *Server) requireSoulRegistryConfigured() *apptheory.AppError {
@@ -69,6 +83,27 @@ func (s *Server) handleSoulConfig(ctx *apptheory.Context) (*apptheory.Response, 
 		AdminSafeAddress:        strings.ToLower(strings.TrimSpace(s.cfg.SoulAdminSafeAddress)),
 		TxMode:                  strings.ToLower(strings.TrimSpace(s.cfg.SoulTxMode)),
 		SupportedCapabilities:   caps,
+		PolicyVocabulary: &soulConfigPolicyVocabulary{
+			Version: models.SoulPolicyVersionHostedBoundSoulV1,
+			AnchorStates: []string{
+				models.SoulAnchorStateHostedOffchain,
+				models.SoulAnchorStateImmutableOnchain,
+			},
+			OperationalBindings: []string{
+				models.SoulOperationalBindingHostedBoundSoul,
+			},
+			CapabilityPolicyVersion:          models.SoulCapabilityPolicyVersionV1,
+			CallerAccessPaymentPolicyVersion: models.SoulCallerAccessPaymentPolicyVersionV1,
+			PhoneEntitlementStatuses: []string{
+				models.SoulPhoneEntitlementNotEntitled,
+				models.SoulPhoneEntitlementProvisioned,
+				models.SoulPhoneEntitlementPaid,
+			},
+			PublicPaidCallerAccess: []string{
+				models.SoulPublicPaidCallerAccessDenied,
+			},
+			MissingPolicyRecordMigrationState: models.SoulPolicyMigrationStateImplicitDefaultV1,
+		},
 		ReputationWeights: &soulConfigReputationWeights{
 			Economic:      s.cfg.SoulReputationWeightEconomic,
 			Social:        s.cfg.SoulReputationWeightSocial,

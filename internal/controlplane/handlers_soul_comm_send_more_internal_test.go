@@ -374,6 +374,34 @@ func TestHandleSoulCommSend_EmailProviderAndVoiceErrors(t *testing.T) {
 		_, err := s.handleSoulCommSend(newCommSendCtx(body, strPtr("comm-msg-prev")))
 		assertCommTheoryErrorCode(t, err, commCodeProviderUnavailable, http.StatusServiceUnavailable)
 	})
+
+	t.Run("phone entitlement required before channel details", func(t *testing.T) {
+		tdb := newSoulCommSendMoreTestDB()
+		expectCommInstanceKey(t, tdb.qKey, models.InstanceKey{ID: "k1", InstanceSlug: "inst1", CreatedAt: time.Now().Add(-time.Hour).UTC()})
+		expectCommIdentity(t, tdb.qIdentity, models.SoulAgentIdentity{
+			AgentID:         agentID,
+			Domain:          "example.com",
+			LocalID:         "agent-alice",
+			Status:          models.SoulAgentStatusActive,
+			LifecycleStatus: models.SoulAgentStatusActive,
+			UpdatedAt:       time.Now().UTC(),
+		})
+		expectCommDomain(t, tdb.qDomain, models.Domain{Domain: "example.com", InstanceSlug: "inst1", Status: models.DomainStatusVerified})
+		s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true}}
+
+		body := mustMarshalCommSendBody(t, map[string]any{
+			"channel": "sms",
+			"agentId": agentID,
+			"to":      "+15550143",
+			"body":    "hello",
+		})
+		_, err := s.handleSoulCommSend(newCommSendCtx(body, nil))
+		appErr := requireCommTheoryError(t, err)
+		if appErr.Code != commCodeEntitlementRequired || appErr.StatusCode != http.StatusForbidden || appErr.Message != "channel entitlement required" {
+			t.Fatalf("expected entitlement_required/403 without detail leak, got %q/%d %q", appErr.Code, appErr.StatusCode, appErr.Message)
+		}
+		tdb.qChannel.AssertNotCalled(t, "First", mock.Anything)
+	})
 }
 
 func TestHandleSoulCommSend_IdempotencyBehavior(t *testing.T) {
@@ -1648,14 +1676,18 @@ func expectCommPrefs(t *testing.T, q *ttmocks.MockQuery, prefs models.SoulAgentC
 func expectActiveCommRoute(t *testing.T, tdb soulCommSendMoreTestDB, agentID string, channelType string) {
 	t.Helper()
 
-	expectCommIdentity(t, tdb.qIdentity, models.SoulAgentIdentity{
+	identity := models.SoulAgentIdentity{
 		AgentID:         agentID,
 		Domain:          "example.com",
 		LocalID:         "agent-alice",
 		Status:          models.SoulAgentStatusActive,
 		LifecycleStatus: models.SoulAgentStatusActive,
 		UpdatedAt:       time.Now().UTC(),
-	})
+	}
+	if channelType == models.SoulChannelTypePhone {
+		applyProvisionedPhonePolicy(&identity)
+	}
+	expectCommIdentity(t, tdb.qIdentity, identity)
 	expectCommDomain(t, tdb.qDomain, models.Domain{Domain: "example.com", InstanceSlug: "inst1", Status: models.DomainStatusVerified})
 
 	identifier := provisionTestEmailAddress

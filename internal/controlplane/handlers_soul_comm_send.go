@@ -365,6 +365,9 @@ func (s *Server) loadSoulCommSendRoute(ctx context.Context, key *models.Instance
 	if appErr != nil {
 		return soulCommSendRoute{}, appErr
 	}
+	if policyErr := enforceSoulCommCapabilityPolicy(identity, req, metrics); policyErr != nil {
+		return soulCommSendRoute{}, policyErr
+	}
 	channel, appErr := s.loadSoulCommSendChannel(ctx, req, metrics)
 	if appErr != nil {
 		return soulCommSendRoute{}, appErr

@@ -372,14 +372,22 @@ func TestModels_UpdateKeysAndDefaults(t *testing.T) {
 		t.Parallel()
 
 		a := &SoulAgentIdentity{
-			AgentID:    " 0xABC ",
-			Domain:     " Example.COM ",
-			LocalID:    " @Alice/ ",
-			Wallet:     " 0xDEF ",
-			TokenID:    " 0x123 ",
-			MetaURI:    " https://example.com/agent.json ",
-			Status:     "",
-			MintTxHash: " 0xBEEF ",
+			AgentID:                          " 0xABC ",
+			Domain:                           " Example.COM ",
+			LocalID:                          " @Alice/ ",
+			Wallet:                           " 0xDEF ",
+			TokenID:                          " 0x123 ",
+			MetaURI:                          " https://example.com/agent.json ",
+			Status:                           "",
+			MintTxHash:                       " 0xBEEF ",
+			PolicyVersion:                    " HOSTED-BOUND-SOUL/V1 ",
+			AnchorState:                      " HOSTED_OFFCHAIN ",
+			OperationalBinding:               " HOSTED_BOUND_SOUL ",
+			CapabilityPolicyVersion:          " CAPABILITY-POLICY/V1 ",
+			CallerAccessPaymentPolicyVersion: " CALLER-ACCESS-PAYMENT/V1 ",
+			PhoneEntitlementStatus:           " PROVISIONED ",
+			PublicPaidCallerAccess:           " DENIED ",
+			PolicyMigrationState:             " PERSISTED_V1 ",
 		}
 		require.NoError(t, a.BeforeCreate())
 		require.Equal(t, "SOUL#AGENT#0xabc", a.PK)
@@ -392,6 +400,14 @@ func TestModels_UpdateKeysAndDefaults(t *testing.T) {
 		require.Equal(t, "https://example.com/agent.json", a.MetaURI)
 		require.Equal(t, SoulAgentStatusPending, a.Status)
 		require.Equal(t, "0xbeef", a.MintTxHash)
+		require.Equal(t, SoulPolicyVersionHostedBoundSoulV1, a.PolicyVersion)
+		require.Equal(t, SoulAnchorStateHostedOffchain, a.AnchorState)
+		require.Equal(t, SoulOperationalBindingHostedBoundSoul, a.OperationalBinding)
+		require.Equal(t, SoulCapabilityPolicyVersionV1, a.CapabilityPolicyVersion)
+		require.Equal(t, SoulCallerAccessPaymentPolicyVersionV1, a.CallerAccessPaymentPolicyVersion)
+		require.Equal(t, SoulPhoneEntitlementProvisioned, a.PhoneEntitlementStatus)
+		require.Equal(t, SoulPublicPaidCallerAccessDenied, a.PublicPaidCallerAccess)
+		require.Equal(t, SoulPolicyMigrationStatePersistedV1, a.PolicyMigrationState)
 		require.False(t, a.UpdatedAt.IsZero())
 	})
 

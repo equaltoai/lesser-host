@@ -18,6 +18,7 @@ type soulCommContactabilityResponse struct {
 	Contactable  bool                               `json:"contactable"`
 	Preferred    string                             `json:"preferred,omitempty"`
 	Fallback     string                             `json:"fallback,omitempty"`
+	Policy       soulAgentEffectivePolicy           `json:"policy"`
 	Channels     []soulCommContactabilityChannel    `json:"channels"`
 	Mailbox      soulCommContactabilityMailbox      `json:"mailbox"`
 	Availability soulCommContactabilityAvailability `json:"availability"`
@@ -125,10 +126,11 @@ func buildSoulCommContactabilityResponse(
 	phone *models.SoulAgentChannel,
 ) soulCommContactabilityResponse {
 	activeIdentity := soulCommContactabilityIdentityActive(reqCtx.identity)
+	policy := effectiveSoulAgentPolicy(reqCtx.identity)
 	channels := make([]soulCommContactabilityChannel, 0, 2)
 	if activeIdentity {
-		channels = appendContactabilityChannel(channels, email)
-		channels = appendContactabilityChannel(channels, phone)
+		channels = appendContactabilityChannel(channels, policy, email)
+		channels = appendContactabilityChannel(channels, policy, phone)
 	}
 
 	contactable := false
@@ -150,6 +152,7 @@ func buildSoulCommContactabilityResponse(
 		Contactable:  contactable,
 		Preferred:    contactabilityPreference(prefs, "preferred"),
 		Fallback:     contactabilityPreference(prefs, "fallback"),
+		Policy:       policy,
 		Channels:     channels,
 		Mailbox:      contactabilityMailbox(channels),
 		Availability: contactabilityAvailability(prefs),
@@ -171,16 +174,17 @@ func soulCommContactabilityIdentityActive(identity *models.SoulAgentIdentity) bo
 
 func appendContactabilityChannel(
 	out []soulCommContactabilityChannel,
+	policy soulAgentEffectivePolicy,
 	channel *models.SoulAgentChannel,
 ) []soulCommContactabilityChannel {
-	view, ok := contactabilityChannelView(channel)
+	view, ok := contactabilityChannelView(policy, channel)
 	if !ok {
 		return out
 	}
 	return append(out, view)
 }
 
-func contactabilityChannelView(channel *models.SoulAgentChannel) (soulCommContactabilityChannel, bool) {
+func contactabilityChannelView(policy soulAgentEffectivePolicy, channel *models.SoulAgentChannel) (soulCommContactabilityChannel, bool) {
 	if !contactabilityChannelVisible(channel) {
 		return soulCommContactabilityChannel{}, false
 	}
@@ -193,8 +197,8 @@ func contactabilityChannelView(channel *models.SoulAgentChannel) (soulCommContac
 		Protocols:      append([]string(nil), channel.Protocols...),
 		Verified:       channel.Verified,
 		Status:         strings.TrimSpace(channel.Status),
-		ReceiveAllowed: contactabilityReceiveAllowed(channel),
-		SendAllowed:    contactabilitySendAllowed(channel),
+		ReceiveAllowed: contactabilityReceiveAllowed(policy, channel),
+		SendAllowed:    contactabilitySendAllowed(policy, channel),
 	}
 	switch view.ChannelType {
 	case models.SoulChannelTypeEmail:
@@ -218,23 +222,25 @@ func contactabilityChannelVisible(channel *models.SoulAgentChannel) bool {
 	return !channel.ProvisionedAt.IsZero() && channel.DeprovisionedAt.IsZero()
 }
 
-func contactabilityReceiveAllowed(channel *models.SoulAgentChannel) bool {
+func contactabilityReceiveAllowed(policy soulAgentEffectivePolicy, channel *models.SoulAgentChannel) bool {
 	switch strings.TrimSpace(channel.ChannelType) {
 	case models.SoulChannelTypeEmail:
-		return stringSliceContains(channel.Capabilities, "receive")
+		return policy.Capabilities.Email.DefaultAllowed && stringSliceContains(channel.Capabilities, "receive")
 	case models.SoulChannelTypePhone:
-		return stringSliceContains(channel.Capabilities, "sms-receive") || stringSliceContains(channel.Capabilities, "voice-receive")
+		return (policy.Capabilities.Phone.SMSAllowed && stringSliceContains(channel.Capabilities, "sms-receive")) ||
+			(policy.Capabilities.Phone.VoiceAllowed && stringSliceContains(channel.Capabilities, "voice-receive"))
 	default:
 		return false
 	}
 }
 
-func contactabilitySendAllowed(channel *models.SoulAgentChannel) bool {
+func contactabilitySendAllowed(policy soulAgentEffectivePolicy, channel *models.SoulAgentChannel) bool {
 	switch strings.TrimSpace(channel.ChannelType) {
 	case models.SoulChannelTypeEmail:
-		return stringSliceContains(channel.Capabilities, "send")
+		return policy.Capabilities.Email.DefaultAllowed && stringSliceContains(channel.Capabilities, "send")
 	case models.SoulChannelTypePhone:
-		return stringSliceContains(channel.Capabilities, "sms-send") || stringSliceContains(channel.Capabilities, "voice-send")
+		return (policy.Capabilities.Phone.SMSAllowed && stringSliceContains(channel.Capabilities, "sms-send")) ||
+			(policy.Capabilities.Phone.VoiceAllowed && stringSliceContains(channel.Capabilities, "voice-send"))
 	default:
 		return false
 	}

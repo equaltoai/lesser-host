@@ -629,6 +629,13 @@ func TestSoulCommContactabilityHelpersCoverPolicyEdges(t *testing.T) {
 	require.False(t, contactabilityChannelVisible(&models.SoulAgentChannel{Identifier: "agent@example.com", Verified: true, Status: models.SoulChannelStatusActive}))
 
 	now := time.Now().UTC()
+	phonePolicy := effectiveSoulAgentPolicy(&models.SoulAgentIdentity{
+		PolicyVersion:          models.SoulPolicyVersionHostedBoundSoulV1,
+		EmailDefaultAllowed:    true,
+		PhoneEntitlementStatus: models.SoulPhoneEntitlementProvisioned,
+		SMSAllowed:             true,
+		VoiceAllowed:           true,
+	})
 	voiceOnlyPhone := &models.SoulAgentChannel{
 		ChannelType:   models.SoulChannelTypePhone,
 		Identifier:    "+15551234567",
@@ -637,13 +644,37 @@ func TestSoulCommContactabilityHelpersCoverPolicyEdges(t *testing.T) {
 		Status:        models.SoulChannelStatusActive,
 		ProvisionedAt: now,
 	}
-	view, ok := contactabilityChannelView(voiceOnlyPhone)
+	view, ok := contactabilityChannelView(phonePolicy, voiceOnlyPhone)
 	require.True(t, ok)
 	require.True(t, view.ReceiveAllowed)
 	require.False(t, view.SendAllowed)
 	require.Equal(t, "always", contactabilityAvailability(nil).Schedule)
 	require.Empty(t, contactabilityPreference(nil, "preferred"))
 	require.False(t, contactabilityMailbox(nil).ListAllowed)
+
+	defaultPolicyResp := buildSoulCommContactabilityResponse(mailboxRequestContext{
+		key:     &models.InstanceKey{InstanceSlug: commWebhookTestInstanceSlug},
+		agentID: soulLifecycleTestAgentIDHex,
+		identity: &models.SoulAgentIdentity{
+			Status:          models.SoulAgentStatusActive,
+			LifecycleStatus: models.SoulAgentStatusActive,
+			UpdatedAt:       now,
+		},
+	}, nil, nil, &models.SoulAgentChannel{
+		ChannelType:   models.SoulChannelTypePhone,
+		Identifier:    "+15551234567",
+		Capabilities:  []string{"sms-receive", "sms-send", "voice-receive", "voice-send"},
+		Verified:      true,
+		Status:        models.SoulChannelStatusActive,
+		ProvisionedAt: now,
+		UpdatedAt:     now,
+	})
+	require.Equal(t, models.SoulPolicyMigrationStateImplicitDefaultV1, defaultPolicyResp.Policy.Migration.State)
+	require.Equal(t, models.SoulPhoneEntitlementNotEntitled, defaultPolicyResp.Policy.Capabilities.Phone.EntitlementStatus)
+	require.False(t, defaultPolicyResp.Contactable)
+	require.Len(t, defaultPolicyResp.Channels, 1)
+	require.False(t, defaultPolicyResp.Channels[0].ReceiveAllowed)
+	require.False(t, defaultPolicyResp.Channels[0].SendAllowed)
 }
 
 func TestSoulCommContactabilityBuildInactiveIdentityOmitsChannels(t *testing.T) {
@@ -680,10 +711,11 @@ func TestSoulCommContactabilityChannelPolicyEdges(t *testing.T) {
 	now := time.Now().UTC()
 	require.False(t, contactabilityChannelVisible(&models.SoulAgentChannel{Identifier: "agent@example.com", Verified: false, Status: models.SoulChannelStatusActive, ProvisionedAt: now}))
 	require.False(t, contactabilityChannelVisible(&models.SoulAgentChannel{Identifier: "agent@example.com", Verified: true, Status: models.SoulChannelStatusPaused, ProvisionedAt: now}))
-	require.False(t, contactabilityReceiveAllowed(&models.SoulAgentChannel{ChannelType: models.SoulChannelTypeENS, Capabilities: []string{"receive"}}))
-	require.False(t, contactabilitySendAllowed(&models.SoulAgentChannel{ChannelType: models.SoulChannelTypeENS, Capabilities: []string{"send"}}))
+	policy := effectiveSoulAgentPolicy(&models.SoulAgentIdentity{})
+	require.False(t, contactabilityReceiveAllowed(policy, &models.SoulAgentChannel{ChannelType: models.SoulChannelTypeENS, Capabilities: []string{"receive"}}))
+	require.False(t, contactabilitySendAllowed(policy, &models.SoulAgentChannel{ChannelType: models.SoulChannelTypeENS, Capabilities: []string{"send"}}))
 
-	ensView, ok := contactabilityChannelView(&models.SoulAgentChannel{
+	ensView, ok := contactabilityChannelView(policy, &models.SoulAgentChannel{
 		ChannelType:   models.SoulChannelTypeENS,
 		Identifier:    "agent.eth",
 		Verified:      true,
@@ -789,7 +821,17 @@ func expectMailboxAPIAccess(t *testing.T, fixture mailboxAPITestDB, agentID stri
 	}).Once()
 	fixture.qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
-		*dest = models.SoulAgentIdentity{AgentID: agentID, Domain: "example.com", Status: models.SoulAgentStatusActive, LifecycleStatus: models.SoulAgentStatusActive}
+		*dest = models.SoulAgentIdentity{
+			AgentID:                agentID,
+			Domain:                 "example.com",
+			Status:                 models.SoulAgentStatusActive,
+			LifecycleStatus:        models.SoulAgentStatusActive,
+			PolicyVersion:          models.SoulPolicyVersionHostedBoundSoulV1,
+			EmailDefaultAllowed:    true,
+			PhoneEntitlementStatus: models.SoulPhoneEntitlementProvisioned,
+			SMSAllowed:             true,
+			VoiceAllowed:           true,
+		}
 	}).Once()
 	fixture.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
@@ -801,7 +843,17 @@ func expectMailboxAPIIdentityAccess(t *testing.T, fixture mailboxAPITestDB, agen
 	t.Helper()
 	fixture.qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
-		*dest = models.SoulAgentIdentity{AgentID: agentID, Domain: "example.com", Status: models.SoulAgentStatusActive, LifecycleStatus: models.SoulAgentStatusActive}
+		*dest = models.SoulAgentIdentity{
+			AgentID:                agentID,
+			Domain:                 "example.com",
+			Status:                 models.SoulAgentStatusActive,
+			LifecycleStatus:        models.SoulAgentStatusActive,
+			PolicyVersion:          models.SoulPolicyVersionHostedBoundSoulV1,
+			EmailDefaultAllowed:    true,
+			PhoneEntitlementStatus: models.SoulPhoneEntitlementProvisioned,
+			SMSAllowed:             true,
+			VoiceAllowed:           true,
+		}
 	}).Once()
 	fixture.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
