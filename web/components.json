@@ -1,7 +1,7 @@
 {
   "$schema": "https://greater.components.dev/schema.json",
   "version": "1.0.0",
-  "ref": "greater-v0.6.1",
+  "ref": "0abcb00d4466b425473476dd1b38ba628118091c",
   "installMode": "vendored",
   "style": "default",
   "rsc": false,
@@ -24,57 +24,57 @@
   "installed": [
     {
       "name": "button",
-      "version": "greater-v0.6.1",
-      "installedAt": "2026-03-29T13:52:04.868Z",
+      "version": "0abcb00d4466b425473476dd1b38ba628118091c",
+      "installedAt": "2026-05-16T12:08:15.233Z",
       "modified": false,
       "checksums": []
     },
     {
       "name": "icons",
-      "version": "greater-v0.6.1",
-      "installedAt": "2026-03-29T13:52:04.968Z",
+      "version": "0abcb00d4466b425473476dd1b38ba628118091c",
+      "installedAt": "2026-05-16T12:08:15.348Z",
       "modified": false,
       "checksums": []
     },
     {
       "name": "utils",
-      "version": "greater-v0.6.1",
-      "installedAt": "2026-03-29T13:52:04.978Z",
+      "version": "0abcb00d4466b425473476dd1b38ba628118091c",
+      "installedAt": "2026-05-16T12:08:15.356Z",
       "modified": false,
       "checksums": []
     },
     {
       "name": "tokens",
-      "version": "greater-v0.6.1",
-      "installedAt": "2026-03-29T13:52:04.983Z",
+      "version": "0abcb00d4466b425473476dd1b38ba628118091c",
+      "installedAt": "2026-05-16T12:08:15.361Z",
       "modified": false,
       "checksums": []
     },
     {
       "name": "primitives",
-      "version": "greater-v0.6.1",
-      "installedAt": "2026-03-29T13:52:05.022Z",
+      "version": "0abcb00d4466b425473476dd1b38ba628118091c",
+      "installedAt": "2026-05-16T12:08:15.417Z",
       "modified": false,
       "checksums": []
     },
     {
       "name": "content",
-      "version": "greater-v0.6.1",
-      "installedAt": "2026-03-29T13:52:05.027Z",
-      "modified": false,
+      "version": "0abcb00d4466b425473476dd1b38ba628118091c",
+      "installedAt": "2026-05-16T12:08:15.422Z",
+      "modified": true,
       "checksums": []
     },
     {
       "name": "adapters",
-      "version": "greater-v0.6.1",
-      "installedAt": "2026-03-29T13:52:05.053Z",
+      "version": "0abcb00d4466b425473476dd1b38ba628118091c",
+      "installedAt": "2026-05-16T12:08:20.819Z",
       "modified": false,
       "checksums": []
     },
     {
       "name": "headless",
-      "version": "greater-v0.6.1",
-      "installedAt": "2026-03-29T13:52:05.068Z",
+      "version": "0abcb00d4466b425473476dd1b38ba628118091c",
+      "installedAt": "2026-05-16T12:08:20.837Z",
       "modified": false,
       "checksums": []
     }

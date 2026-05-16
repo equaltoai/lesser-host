@@ -5,7 +5,8 @@ This is the frontend for `lesser.host` (repo: `lesser-host`).
 ## Stack
 
 - Vite + Svelte 5 + TypeScript
-- `greater-components` (vendored via `greater` CLI, pinned to `greater-v0.6.1`)
+- `greater-components` (vendored via `greater` CLI, pinned to `greater-v0.8.11` / commit `0abcb00d4466b425473476dd1b38ba628118091c`)
+  - Host keeps a local safety hardening on `MarkdownRenderer`: sanitization is mandatory before `{@html}` output.
 
 ## Local dev
 
