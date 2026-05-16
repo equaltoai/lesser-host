@@ -281,7 +281,7 @@ func (s *Server) storeRenderError(ctx context.Context, renderID string, normaliz
 	return s.store.PutRenderArtifact(ctx, item)
 }
 
-func (s *Server) handleRetentionSweep(ctx *apptheory.EventContext, _ events.EventBridgeEvent) (any, error) {
+func (s *Server) handleRetentionSweep(ctx *apptheory.EventContext, event events.EventBridgeEvent) (any, error) {
 	if s == nil || s.store == nil {
 		return nil, fmt.Errorf("store not initialized")
 	}
@@ -292,6 +292,7 @@ func (s *Server) handleRetentionSweep(ctx *apptheory.EventContext, _ events.Even
 		return nil, fmt.Errorf("event context is nil")
 	}
 
+	workload := apptheory.NormalizeEventBridgeScheduledWorkload(ctx, event)
 	now := time.Now().UTC()
 	deleted := 0
 
@@ -317,8 +318,25 @@ func (s *Server) handleRetentionSweep(ctx *apptheory.EventContext, _ events.Even
 	}
 
 	return map[string]any{
-		"deleted": deleted,
+		"deleted":  deleted,
+		"workload": retentionSweepWorkloadSummary(workload),
 	}, nil
+}
+
+func retentionSweepWorkloadSummary(summary apptheory.EventBridgeScheduledWorkloadSummary) map[string]any {
+	return map[string]any{
+		"correlation_id":     summary.CorrelationID,
+		"correlation_source": summary.CorrelationSource,
+		"deadline_unix_ms":   summary.DeadlineUnixMS,
+		"detail_type":        summary.DetailType,
+		"event_id":           summary.EventID,
+		"idempotency_key":    summary.IdempotencyKey,
+		"kind":               summary.Kind,
+		"remaining_ms":       summary.RemainingMS,
+		"run_id":             summary.RunID,
+		"scheduled_time":     summary.ScheduledTime,
+		"source":             summary.Source,
+	}
 }
 
 func sqsQueueNameFromURL(raw string) string {
