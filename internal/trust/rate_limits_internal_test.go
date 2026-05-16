@@ -2,6 +2,7 @@ package trust
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -66,4 +67,35 @@ func TestAIRateLimitMiddleware_Basic(t *testing.T) {
 	require.Equal(t, 3, called)
 
 	require.Nil(t, mw(nil))
+}
+
+func TestAIRateLimitIdentifierUsesTrustedSourceOnlyForAnonymous(t *testing.T) {
+	t.Parallel()
+
+	ctx := &apptheory.Context{
+		AuthIdentity: "managed-slug",
+		Request: apptheory.Request{
+			Headers: map[string][]string{
+				"x-forwarded-for": {"203.0.113.250"},
+			},
+			SourceProvenance: apptheory.SourceProvenance{
+				SourceIP: "198.51.100.88",
+				Provider: "lambda-url",
+				Source:   "provider_request_context",
+				Valid:    true,
+			},
+		},
+	}
+	require.Equal(t, "managed-slug", aiRateLimitIdentifier(ctx))
+
+	ctx.AuthIdentity = ""
+	got := aiRateLimitIdentifier(ctx)
+	require.True(t, strings.HasPrefix(got, "trust-ai:anonymous:source:lambda-url:"), got)
+	require.NotContains(t, got, "198.51.100.88")
+	require.NotContains(t, got, "203.0.113.250")
+
+	headerOnly := &apptheory.Context{Request: apptheory.Request{Headers: map[string][]string{
+		"x-forwarded-for": {"198.51.100.42"},
+	}}}
+	require.Equal(t, "trust-ai:anonymous:source:unknown", aiRateLimitIdentifier(headerOnly))
 }

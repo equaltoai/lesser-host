@@ -608,6 +608,7 @@ func (s *Server) handleSetupCreateAdmin(ctx *apptheory.Context) (*apptheory.Resp
 		RequestID: ctx.RequestID,
 		CreatedAt: now,
 	}
+	applyAuditSourceProvenance(ctx, audit)
 	_ = audit.UpdateKeys()
 	if err := s.store.DB.WithContext(ctx.Context()).Model(audit).Create(); err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to write audit log"}
@@ -654,6 +655,7 @@ func (s *Server) handleSetupFinalize(ctx *apptheory.Context) (*apptheory.Respons
 		RequestID: ctx.RequestID,
 		CreatedAt: now,
 	}
+	applyAuditSourceProvenance(ctx, audit)
 	_ = audit.UpdateKeys()
 	if err := s.store.DB.WithContext(ctx.Context()).Model(audit).Create(); err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to write audit log"}

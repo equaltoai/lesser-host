@@ -262,6 +262,7 @@ func (s *Server) handleWebAuthnRegisterFinish(ctx *apptheory.Context) (*apptheor
 		RequestID: ctx.RequestID,
 		CreatedAt: now,
 	}
+	applyAuditSourceProvenance(ctx, audit)
 	_ = audit.UpdateKeys()
 	if err := s.store.DB.WithContext(ctx.Context()).Model(audit).Create(); err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to write audit log"}
@@ -430,6 +431,7 @@ func (s *Server) handleWebAuthnLoginFinish(ctx *apptheory.Context) (*apptheory.R
 		RequestID: ctx.RequestID,
 		CreatedAt: now,
 	}
+	applyAuditSourceProvenance(ctx, audit)
 	_ = audit.UpdateKeys()
 	if err := s.store.DB.WithContext(ctx.Context()).Model(audit).Create(); err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to write audit log"}
@@ -572,6 +574,7 @@ func (s *Server) handleWebAuthnDeleteCredential(ctx *apptheory.Context) (*appthe
 		RequestID: ctx.RequestID,
 		CreatedAt: now,
 	}
+	applyAuditSourceProvenance(ctx, audit)
 	_ = audit.UpdateKeys()
 	if err := s.store.DB.WithContext(ctx.Context()).Model(audit).Create(); err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to write audit log"}
@@ -627,6 +630,7 @@ func (s *Server) handleWebAuthnUpdateCredential(ctx *apptheory.Context) (*appthe
 		RequestID: ctx.RequestID,
 		CreatedAt: now,
 	}
+	applyAuditSourceProvenance(ctx, audit)
 	_ = audit.UpdateKeys()
 	if err := s.store.DB.WithContext(ctx.Context()).Model(audit).Create(); err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to write audit log"}

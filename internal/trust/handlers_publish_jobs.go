@@ -353,6 +353,7 @@ func (s *Server) storeLinkSafetyBasicNoLinksResult(
 		RequestID: strings.TrimSpace(ctx.RequestID),
 		CreatedAt: now,
 	}
+	applyAuditSourceProvenance(ctx, audit)
 	_ = audit.UpdateKeys()
 
 	err := s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
@@ -833,6 +834,7 @@ func (s *Server) runLinkSafetyBasicJob(
 		RequestID: strings.TrimSpace(ctx.RequestID),
 		CreatedAt: now,
 	}
+	applyAuditSourceProvenance(ctx, auditBudget)
 	_ = auditBudget.UpdateKeys()
 
 	auditScan := &models.AuditLogEntry{
@@ -842,6 +844,7 @@ func (s *Server) runLinkSafetyBasicJob(
 		RequestID: strings.TrimSpace(ctx.RequestID),
 		CreatedAt: now,
 	}
+	applyAuditSourceProvenance(ctx, auditScan)
 	_ = auditScan.UpdateKeys()
 
 	allowOverage := strings.ToLower(strings.TrimSpace(overagePolicy)) == overagePolicyAllow

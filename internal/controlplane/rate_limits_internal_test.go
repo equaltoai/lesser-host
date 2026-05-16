@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -152,6 +153,9 @@ func TestMintConversationInstanceReadRateLimitCheck_UsesHashedBearerAndCachesKey
 		limiter.lastKey.Metadata[soulMintConversationInstanceReadRateLimitRouteKey] != soulMintInstanceReadRouteList {
 		t.Fatalf("expected method/path metadata, got %#v", limiter.lastKey.Metadata)
 	}
+	if limiter.lastKey.Metadata["source_valid"] != "false" || limiter.lastKey.Metadata["source_provider"] != "unknown" {
+		t.Fatalf("expected source metadata, got %#v", limiter.lastKey.Metadata)
+	}
 	if routeClass := soulMintConversationInstanceReadRateLimitRouteClass("/api/v1/soul/instance/agents/agent/mint-conversations/conv-1"); routeClass != soulMintInstanceReadRouteSingle {
 		t.Fatalf("expected single route class, got %q", routeClass)
 	}
@@ -172,7 +176,7 @@ func TestMintConversationInstanceReadRateLimitCheck_TypedErrorsAndAnonymousIdent
 	if err != nil || resp == nil || resp.Status != http.StatusTooManyRequests {
 		t.Fatalf("expected typed 429 response, got resp=%#v err=%v", resp, err)
 	}
-	if limiter.lastKey.Identifier != soulMintConversationInstanceReadRateLimitAnonymous {
+	if limiter.lastKey.Identifier != soulMintConversationInstanceReadRateLimitAnonymous+":source:unknown" {
 		t.Fatalf("expected anonymous identifier, got %q", limiter.lastKey.Identifier)
 	}
 
@@ -183,7 +187,7 @@ func TestMintConversationInstanceReadRateLimitCheck_TypedErrorsAndAnonymousIdent
 		t.Fatalf("expected internal app error on limiter failure, got resp=%#v err=%#v", resp, appErr)
 	}
 
-	if id, err := s.soulMintConversationInstanceReadRateLimitIdentifier(&apptheory.Context{}); err != nil || id != soulMintConversationInstanceReadRateLimitAnonymous {
+	if id, err := s.soulMintConversationInstanceReadRateLimitIdentifier(&apptheory.Context{}); err != nil || id != soulMintConversationInstanceReadRateLimitAnonymous+":source:unknown" {
 		t.Fatalf("expected anonymous identifier, got %q", id)
 	}
 }
@@ -211,13 +215,129 @@ func TestMintConversationInstanceReadRateLimitCheck_InvalidBearerUsesSharedBudge
 	if limiter.calls != 1 {
 		t.Fatalf("expected one limiter call, got %d", limiter.calls)
 	}
-	if limiter.lastKey.Identifier != soulMintConversationInstanceReadRateLimitInvalid {
+	if limiter.lastKey.Identifier != soulMintConversationInstanceReadRateLimitInvalid+":source:unknown" {
 		t.Fatalf("expected invalid bearer to use shared invalid budget, got %q", limiter.lastKey.Identifier)
 	}
 	if cached := soulMintConversationInstanceReadKeyFromContext(ctx); cached != nil {
 		t.Fatalf("invalid bearer must not cache an instance key, got %#v", cached)
 	}
 	qKey.AssertExpectations(t)
+}
+
+func TestSourceProvenanceRateLimitIdentifiers(t *testing.T) {
+	t.Parallel()
+
+	ctx := &apptheory.Context{
+		AuthIdentity: testUsernameAlice,
+		Request: apptheory.Request{
+			Headers: map[string][]string{
+				"x-forwarded-for": {testSourceForwardedHeader},
+			},
+			SourceProvenance: testSourceProvenance(),
+		},
+	}
+	if got := mintConversationRateLimitIdentifier(ctx); got != testUsernameAlice {
+		t.Fatalf("authenticated mint identifier must remain identity-based, got %q", got)
+	}
+	if got := mailboxRateLimitIdentifier(&apptheory.Context{Request: apptheory.Request{Headers: map[string][]string{
+		"authorization": {"Bearer mailbox-key"},
+	}}}); got != "mailbox:"+sha256HexTrimmed("mailbox-key") {
+		t.Fatalf("bearer mailbox identifier must remain key-hash based, got %q", got)
+	}
+
+	ctx.AuthIdentity = ""
+	mintAnon := mintConversationRateLimitIdentifier(ctx)
+	if !strings.HasPrefix(mintAnon, "mint-conversation:anonymous"+testSourceRateLimitPrefix) || rateLimitIdentifierContainsRawSource(mintAnon) {
+		t.Fatalf("unexpected mint anonymous source identifier: %q", mintAnon)
+	}
+	mailboxAnon := mailboxRateLimitIdentifier(ctx)
+	if !strings.HasPrefix(mailboxAnon, "mailbox:anonymous"+testSourceRateLimitPrefix) || rateLimitIdentifierContainsRawSource(mailboxAnon) {
+		t.Fatalf("unexpected mailbox anonymous source identifier: %q", mailboxAnon)
+	}
+}
+
+func TestMintConversationInstanceReadRateLimitCheck_AnonymousUsesSourceProvenance(t *testing.T) {
+	t.Parallel()
+
+	s, _ := newMintConversationInstanceReadRateLimitTestServer()
+
+	ctx := newSourceRateLimitContext()
+	limiter := &mintConversationInstanceReadTestLimiter{
+		decision: &limited.LimitDecision{Allowed: true},
+	}
+
+	resp, err := s.soulMintConversationInstanceReadCheckRateLimit(ctx, limiter, "GET", "/api/v1/soul/instance/agents/agent/mint-conversations/conv-1")
+	if resp != nil || err != nil {
+		t.Fatalf("expected anonymous request to consume limiter then continue, got resp=%#v err=%v", resp, err)
+	}
+	if !strings.HasPrefix(limiter.lastKey.Identifier, soulMintConversationInstanceReadRateLimitAnonymous+testSourceRateLimitPrefix) ||
+		rateLimitIdentifierContainsRawSource(limiter.lastKey.Identifier) {
+		t.Fatalf("unexpected anonymous source identifier: %q", limiter.lastKey.Identifier)
+	}
+	if limiter.lastKey.Metadata["source_valid"] != "true" ||
+		limiter.lastKey.Metadata["source_provider"] != testSourceProvider ||
+		limiter.lastKey.Metadata["source"] != testSourceProvenanceSource ||
+		limiter.lastKey.Metadata["source_ip_sha256"] == "" ||
+		limiter.lastKey.Metadata[soulMintConversationInstanceReadRateLimitRouteKey] != soulMintInstanceReadRouteSingle {
+		t.Fatalf("unexpected source metadata: %#v", limiter.lastKey.Metadata)
+	}
+}
+
+func TestMintConversationInstanceReadRateLimitCheck_InvalidUsesSourceProvenance(t *testing.T) {
+	t.Parallel()
+
+	s, qKey := newMintConversationInstanceReadRateLimitTestServer()
+	qKey.On("First", mock.AnythingOfType("*models.InstanceKey")).Return(theoryErrors.ErrItemNotFound).Once()
+
+	ctx := newSourceRateLimitContext()
+	ctx.Request.Headers["authorization"] = []string{"Bearer invalid-instance-key"}
+	limiter := &mintConversationInstanceReadTestLimiter{
+		decision: &limited.LimitDecision{Allowed: true},
+	}
+
+	resp, err := s.soulMintConversationInstanceReadCheckRateLimit(ctx, limiter, "GET", "/api/v1/soul/instance/agents/agent/mint-conversations")
+	if resp != nil || err != nil {
+		t.Fatalf("expected invalid request to consume limiter then continue, got resp=%#v err=%v", resp, err)
+	}
+	if !strings.HasPrefix(limiter.lastKey.Identifier, soulMintConversationInstanceReadRateLimitInvalid+testSourceRateLimitPrefix) ||
+		rateLimitIdentifierContainsRawSource(limiter.lastKey.Identifier) {
+		t.Fatalf("unexpected invalid source identifier: %q", limiter.lastKey.Identifier)
+	}
+
+	qKey.AssertExpectations(t)
+}
+
+const (
+	testSourceIP               = "198.51.100.77"
+	testSourceForwardedHeader  = "203.0.113.250"
+	testSourceProvider         = "lambda-url"
+	testSourceProvenanceSource = "provider_request_context"
+	testSourceRateLimitPrefix  = ":source:" + testSourceProvider + ":"
+)
+
+func testSourceProvenance() apptheory.SourceProvenance {
+	return apptheory.SourceProvenance{
+		SourceIP: testSourceIP,
+		Provider: testSourceProvider,
+		Source:   testSourceProvenanceSource,
+		Valid:    true,
+	}
+}
+
+func newSourceRateLimitContext() *apptheory.Context {
+	return &apptheory.Context{
+		RequestID: "req-source-rate-check",
+		Request: apptheory.Request{
+			Headers: map[string][]string{
+				"x-forwarded-for": {testSourceForwardedHeader},
+			},
+			SourceProvenance: testSourceProvenance(),
+		},
+	}
+}
+
+func rateLimitIdentifierContainsRawSource(identifier string) bool {
+	return strings.Contains(identifier, testSourceIP) || strings.Contains(identifier, testSourceForwardedHeader)
 }
 
 func newMintConversationInstanceReadRateLimitTestServer() (*Server, *ttmocks.MockQuery) {

@@ -99,6 +99,7 @@ func (s *Server) writeAIJobAuditEntryBestEffort(ctx *apptheory.Context, instance
 		RequestID: strings.TrimSpace(ctx.RequestID),
 		CreatedAt: time.Now().UTC(),
 	}
+	applyAuditSourceProvenance(ctx, entry)
 	_ = entry.UpdateKeys()
 	_ = s.store.DB.WithContext(ctx.Context()).Model(entry).Create()
 }

@@ -26,6 +26,7 @@ func (s *Server) InstanceAuthHook(ctx *apptheory.Context) (string, error) {
 	if ctx == nil {
 		return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
+	httpx.SetTrustedSource(ctx)
 
 	raw := strings.TrimSpace(httpx.BearerToken(ctx.Request.Headers))
 	if raw == "" {

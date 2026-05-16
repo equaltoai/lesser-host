@@ -19,6 +19,13 @@ type AuditLogEntry struct {
 	Target    string    `theorydb:"attr:target" json:"target"`
 	RequestID string    `theorydb:"attr:requestID" json:"request_id"`
 	CreatedAt time.Time `theorydb:"attr:createdAt" json:"created_at"`
+
+	// Source provenance is provider-derived request metadata used only for
+	// audit/rate-limit context. It must never become an authorization input.
+	SourceIP         string `theorydb:"attr:sourceIP,omitempty" json:"source_ip,omitempty"`
+	SourceProvider   string `theorydb:"attr:sourceProvider,omitempty" json:"source_provider,omitempty"`
+	SourceProvenance string `theorydb:"attr:sourceProvenance,omitempty" json:"source_provenance,omitempty"`
+	SourceValid      bool   `theorydb:"attr:sourceValid,omitempty" json:"source_valid,omitempty"`
 }
 
 // TableName returns the database table name for AuditLogEntry.

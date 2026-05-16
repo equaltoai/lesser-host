@@ -538,6 +538,7 @@ func (s *Server) debitBudgetForPreviewRender(ctx *apptheory.Context, instanceSlu
 		RequestID: strings.TrimSpace(ctx.RequestID),
 		CreatedAt: now,
 	}
+	applyAuditSourceProvenance(ctx, auditBudget)
 	_ = auditBudget.UpdateKeys()
 
 	maxUsed := budget.IncludedCredits - linkRenderCreditCost
@@ -580,6 +581,7 @@ func (s *Server) auditPreviewRenderQueuedBestEffort(ctx *apptheory.Context, inst
 		RequestID: strings.TrimSpace(ctx.RequestID),
 		CreatedAt: now,
 	}
+	applyAuditSourceProvenance(ctx, audit)
 	_ = audit.UpdateKeys()
 	_ = s.store.DB.WithContext(ctx.Context()).Model(audit).Create()
 }
