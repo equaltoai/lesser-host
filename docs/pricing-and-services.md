@@ -169,6 +169,24 @@ with lesser.host and consume trust services without committing to hosting. The o
 - **Overage billing** can be enabled with a payment method on file — usage beyond included credits is billed at the tier's overage rate.
 - **Hard cap option:** Set a maximum monthly spend to prevent unexpected overage charges.
 
+## Public Paid x402 Access (Pre-Launch Gate)
+
+Public x402 invocation grants are separate from lesser.host subscription credits and Stripe-hosted credit purchases. The
+backend contract is documented in `docs/soul-surface.md`; the public launch disclosures and blocking checklist live in
+`docs/hosted-bound-soul-launch-gates.md`.
+
+Before public clients present x402 access as a launched product surface, product copy must disclose:
+
+- the caller's payment obligations for the requested x402 amount, network, asset/currency, and facilitator route
+- that a successful payment request can issue only a scoped off-chain invocation grant, not a control-plane session,
+  principal/operator authority, wallet authority, tenant-data access, mailbox browsing, or on-chain authority
+- that host stores minimized hashes of caller/payment evidence and must not expose raw payment evidence, private comms
+  reachability, tenant data, wallet material, or unresolved security details
+- the operator-approved refund/support route for captured payments that do not result in a usable grant, without
+  promising automatic refunds unless a reviewed refund integration exists
+- the failure cases clients must handle: grant unavailable, invalid payment shape, expiry, exhausted usage, scope
+  mismatch, idempotency conflict, and authenticated-instance rejection
+
 ---
 
 ## Domain Management
