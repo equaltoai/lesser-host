@@ -627,6 +627,7 @@ func (s *Server) getSoulX402InvocationGrant(ctx context.Context, grantID string)
 		Model(&models.SoulX402InvocationGrant{}).
 		Where("PK", "=", rec.PK).
 		Where("SK", "=", rec.SK).
+		ConsistentRead().
 		First(&item)
 	if err != nil {
 		return nil, err
@@ -645,6 +646,7 @@ func (s *Server) listSoulX402InvocationGrantUsages(ctx context.Context, grantID 
 		Where("SK", "BEGINS_WITH", "USAGE#").
 		OrderBy("SK", "ASC").
 		Limit(limit).
+		ConsistentRead().
 		All(&items)
 	return items, err
 }
@@ -687,35 +689,29 @@ func validateSoulX402GrantForConsume(grant *models.SoulX402InvocationGrant, req 
 }
 
 func (s *Server) claimSoulX402InvocationGrantUsage(ctx context.Context, key *models.InstanceKey, grant *models.SoulX402InvocationGrant, req validatedSoulX402GrantConsume, now time.Time) (*models.SoulX402InvocationGrantUsage, int, bool, *apptheory.AppTheoryError) {
-	items, err := s.listSoulX402InvocationGrantUsages(ctx, grant.GrantID, grant.MaxUsage)
-	if err != nil {
-		return nil, 0, false, newX402Error(x402CodeInternal, "internal error", http.StatusInternalServerError)
+	maxAttempts := grant.MaxUsage + 1
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		usage, usedCount, replayed, retry, appErr := s.tryClaimSoulX402InvocationGrantUsage(ctx, key, grant, req, now)
+		if appErr != nil || !retry {
+			return usage, usedCount, replayed, appErr
+		}
 	}
-	occupied := map[int]struct{}{}
-	for _, item := range items {
-		if item == nil {
-			continue
-		}
-		occupied[item.UsageSlot] = struct{}{}
-		if strings.EqualFold(strings.TrimSpace(item.ConsumeIdempotencyKeyHash), req.idempotencyHash) {
-			if !strings.EqualFold(strings.TrimSpace(item.ConsumeRequestHash), req.consumeRequestHash) {
-				return nil, 0, false, newX402Error(x402CodeIdempotencyConflict, "idempotency key already used for a different consume request", http.StatusConflict)
-			}
-			return item, len(items), true, nil
-		}
+	return nil, grant.MaxUsage, false, newX402Error(x402CodeGrantRejected, "grant usage exhausted", http.StatusForbidden)
+}
+
+func (s *Server) tryClaimSoulX402InvocationGrantUsage(ctx context.Context, key *models.InstanceKey, grant *models.SoulX402InvocationGrant, req validatedSoulX402GrantConsume, now time.Time) (*models.SoulX402InvocationGrantUsage, int, bool, bool, *apptheory.AppTheoryError) {
+	items, occupied, replay, appErr := s.loadSoulX402InvocationGrantUsageSnapshot(ctx, grant, req)
+	if appErr != nil {
+		return nil, 0, false, false, appErr
+	}
+	if replay != nil {
+		return replay, len(items), true, false, nil
 	}
 	if len(occupied) >= grant.MaxUsage {
-		return nil, len(occupied), false, newX402Error(x402CodeGrantRejected, "grant usage exhausted", http.StatusForbidden)
+		return nil, len(occupied), false, false, newX402Error(x402CodeGrantRejected, "grant usage exhausted", http.StatusForbidden)
 	}
 
-	slots := make([]int, 0, grant.MaxUsage)
-	for slot := 0; slot < grant.MaxUsage; slot++ {
-		if _, ok := occupied[slot]; !ok {
-			slots = append(slots, slot)
-		}
-	}
-	sort.Ints(slots)
-	for _, slot := range slots {
+	for _, slot := range availableSoulX402InvocationGrantUsageSlots(grant.MaxUsage, occupied) {
 		usage := &models.SoulX402InvocationGrantUsage{
 			GrantID:                   grant.GrantID,
 			UsageSlot:                 slot,
@@ -728,14 +724,46 @@ func (s *Server) claimSoulX402InvocationGrantUsage(ctx context.Context, key *mod
 		if createErr := s.store.DB.WithContext(ctx).Model(usage).IfNotExists().Create(); createErr == nil {
 			usedCount := len(occupied) + 1
 			_ = s.recordSoulX402InvocationGrantConsumption(ctx, grant, usage, usedCount, now)
-			return usage, usedCount, false, nil
+			return usage, usedCount, false, false, nil
 		} else if theoryErrors.IsConditionFailed(createErr) {
-			continue
+			return nil, len(occupied), false, true, nil
 		} else {
-			return nil, 0, false, newX402Error(x402CodeInternal, "internal error", http.StatusInternalServerError)
+			return nil, 0, false, false, newX402Error(x402CodeInternal, "internal error", http.StatusInternalServerError)
 		}
 	}
-	return nil, len(occupied), false, newX402Error(x402CodeGrantRejected, "grant usage exhausted", http.StatusForbidden)
+	return nil, len(occupied), false, false, newX402Error(x402CodeGrantRejected, "grant usage exhausted", http.StatusForbidden)
+}
+
+func (s *Server) loadSoulX402InvocationGrantUsageSnapshot(ctx context.Context, grant *models.SoulX402InvocationGrant, req validatedSoulX402GrantConsume) ([]*models.SoulX402InvocationGrantUsage, map[int]struct{}, *models.SoulX402InvocationGrantUsage, *apptheory.AppTheoryError) {
+	items, err := s.listSoulX402InvocationGrantUsages(ctx, grant.GrantID, grant.MaxUsage)
+	if err != nil {
+		return nil, nil, nil, newX402Error(x402CodeInternal, "internal error", http.StatusInternalServerError)
+	}
+	occupied := map[int]struct{}{}
+	for _, item := range items {
+		if item == nil {
+			continue
+		}
+		occupied[item.UsageSlot] = struct{}{}
+		if strings.EqualFold(strings.TrimSpace(item.ConsumeIdempotencyKeyHash), req.idempotencyHash) {
+			if !strings.EqualFold(strings.TrimSpace(item.ConsumeRequestHash), req.consumeRequestHash) {
+				return nil, nil, nil, newX402Error(x402CodeIdempotencyConflict, "idempotency key already used for a different consume request", http.StatusConflict)
+			}
+			return items, occupied, item, nil
+		}
+	}
+	return items, occupied, nil, nil
+}
+
+func availableSoulX402InvocationGrantUsageSlots(maxUsage int, occupied map[int]struct{}) []int {
+	slots := make([]int, 0, maxUsage)
+	for slot := 0; slot < maxUsage; slot++ {
+		if _, ok := occupied[slot]; !ok {
+			slots = append(slots, slot)
+		}
+	}
+	sort.Ints(slots)
+	return slots
 }
 
 func (s *Server) recordSoulX402InvocationGrantConsumption(ctx context.Context, grant *models.SoulX402InvocationGrant, usage *models.SoulX402InvocationGrantUsage, usedCount int, now time.Time) error {

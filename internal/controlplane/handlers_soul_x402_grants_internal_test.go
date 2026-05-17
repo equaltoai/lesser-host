@@ -336,6 +336,42 @@ func TestClaimSoulX402InvocationGrantUsage_ExhaustsMaxUsage(t *testing.T) {
 	}
 }
 
+func TestClaimSoulX402InvocationGrantUsage_RefreshesAfterSlotContention(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulX402GrantTestDB()
+	grant := &models.SoulX402InvocationGrant{GrantID: "x402-grant-1", AgentID: soulLifecycleTestAgentIDHex, MaxUsage: 2}
+	req := validatedSoulX402GrantConsume{
+		idempotencyHash:    sha256HexTrimmed("consume-idem-1"),
+		consumeRequestHash: strings.Repeat("c", 64),
+	}
+	existing := &models.SoulX402InvocationGrantUsage{
+		GrantID:                   grant.GrantID,
+		UsageSlot:                 0,
+		AgentID:                   grant.AgentID,
+		InstanceSlug:              "inst1",
+		ConsumeIdempotencyKeyHash: req.idempotencyHash,
+		ConsumeRequestHash:        req.consumeRequestHash,
+		ConsumedAt:                time.Now().UTC(),
+	}
+	tdb.qUsage.On("All", mock.AnythingOfType("*[]*models.SoulX402InvocationGrantUsage")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulX402InvocationGrantUsage](t, args, 0)
+		*dest = nil
+	}).Once()
+	tdb.qUsage.On("Create").Return(theoryErrors.ErrConditionFailed).Once()
+	tdb.qUsage.On("All", mock.AnythingOfType("*[]*models.SoulX402InvocationGrantUsage")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulX402InvocationGrantUsage](t, args, 0)
+		*dest = []*models.SoulX402InvocationGrantUsage{existing}
+	}).Once()
+
+	s := &Server{store: store.New(tdb.db)}
+	usage, usedCount, replayed, appErr := s.claimSoulX402InvocationGrantUsage(t.Context(), &models.InstanceKey{InstanceSlug: "inst1"}, grant, req, time.Now().UTC())
+	if appErr != nil || !replayed || usedCount != 1 || usage == nil || usage.UsageSlot != 0 {
+		t.Fatalf("expected contention refresh to return existing replay, usage=%#v used=%d replay=%v err=%v", usage, usedCount, replayed, appErr)
+	}
+	tdb.qUsage.AssertNumberOfCalls(t, "Create", 1)
+}
+
 func TestHandleSoulX402IssueInvocationGrant_IdempotencyConflict(t *testing.T) {
 	t.Parallel()
 
@@ -343,7 +379,7 @@ func TestHandleSoulX402IssueInvocationGrant_IdempotencyConflict(t *testing.T) {
 	expectX402Identity(t, tdb.qIdentity, models.SoulPublicPaidCallerAccessGrantable)
 	tdb.qGrant.On("Create").Return(theoryErrors.ErrConditionFailed).Once()
 	existing := models.SoulX402InvocationGrant{
-		GrantID:          models.SoulX402InvocationGrantID(soulLifecycleTestAgentIDHex, "issue-idem-1"),
+		GrantID:          models.SoulX402InvocationGrantID(soulLifecycleTestAgentIDHex, sha256HexTrimmed("issue-idem-1")),
 		AgentID:          soulLifecycleTestAgentIDHex,
 		IssueRequestHash: strings.Repeat("e", 64),
 		MaxUsage:         1,
