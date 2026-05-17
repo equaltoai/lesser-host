@@ -60,6 +60,11 @@ their allowed capabilities, x402 caller grants, and communication channels when 
 `immutable_onchain` adds trust evidence; it must not create a second agent namespace, rotate `agent_id`, or silently
 change capability/access policy.
 
+Public clients that expose hosted-bound-soul or x402 flows must also follow the launch-gate disclosures in
+`docs/hosted-bound-soul-launch-gates.md`: hosted/off-chain wording must not be conflated with immutable/on-chain
+assurance, x402 payment/refund/failure boundaries must be surfaced before paid access, and email/phone/SMS/voice
+capabilities require privacy and consent copy before public launch.
+
 ## Authentication
 
 All workflow endpoints in this document use the control-plane bearer session token:

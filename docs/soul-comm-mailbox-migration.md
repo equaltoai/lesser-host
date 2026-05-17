@@ -12,6 +12,11 @@ The intent is to keep authority in one place:
 - **body** remains the MCP facade. It gates scope/profile, calls host's instance-authenticated mailbox APIs, and returns
   MCP-shaped tool results without storing mailbox truth locally.
 
+Public client exposure of hosted-bound-soul email, phone, SMS, or voice capabilities is additionally gated by
+`docs/hosted-bound-soul-launch-gates.md`. The mailbox contract below defines bounded authority and privacy behavior; it
+does not by itself approve public launch or waive channel-specific consent, entitlement, retention, opt-out, or support
+copy.
+
 ## Migration phases
 
 1. **Host canonical capture is present**

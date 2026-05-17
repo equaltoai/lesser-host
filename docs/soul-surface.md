@@ -40,6 +40,10 @@ These two surfaces are related, but intentionally not the same thing. See `docs/
 Project 32 M1 introduces an explicit hosted-bound-soul policy vocabulary so `lesser-host`, `lesser`, and `lesser-body`
 do not rely on implicit channel or x402 assumptions.
 
+Public hosted-bound-soul and x402 product surfaces are still launch-gated by
+`docs/hosted-bound-soul-launch-gates.md`. This backend vocabulary is the contract those disclosures use; it is not, by
+itself, public-launch approval.
+
 The v1 vocabulary names four separate concepts:
 
 1. **Anchor state**

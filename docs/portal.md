@@ -13,6 +13,12 @@ Simulacrum client served from Lesser at `/l/*`.
 Portal soul routes remain supported as secondary, fallback, or operator-guided surfaces. They should not be presented as
 the primary product path once the Simulacrum flow is available.
 
+Hosted-bound-soul and public x402 surfaces remain launch-gated until
+`docs/hosted-bound-soul-launch-gates.md` records accepted terminology, payment/refund/failure, and comms consent
+disclosures and the parent launch milestone explicitly unblocks public clients. Portal or Simulacrum copy must not imply
+that `immutable_onchain` is a prerequisite for basic hosted-bound-soul function, and public x402 callers must never be
+presented as receiving principal/operator authority.
+
 ## Authentication
 
 ### Portal wallet login (public)
