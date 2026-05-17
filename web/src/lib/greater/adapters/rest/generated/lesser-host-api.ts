@@ -948,6 +948,27 @@ export interface components {
         SoulAgentChannelPreferencesResponse: components["schemas"]["soul-agent-channel-preferences.response.schema"];
         SoulAgentChannelPreferencesRequest: components["schemas"]["soul-agent-channel-preferences.request.schema"];
         SoulAgentIdentity: components["schemas"]["soul-agent-identity.schema"];
+        SoulAnchorEvidence: {
+            /** @enum {string} */
+            kind: "host_registry_record" | "mint_transaction";
+            tx_hash?: string;
+            operation_id?: string;
+            token_id?: string;
+            chain_id?: number;
+            /** Format: date-time */
+            recorded_at?: string;
+        };
+        SoulAnchorAssurance: {
+            /** @enum {string} */
+            state: "hosted_offchain" | "immutable_onchain";
+            /** @enum {string} */
+            source: "host_record" | "onchain_receipt";
+            /** @enum {boolean} */
+            capability_gate: false;
+            mutable: boolean;
+            revocable: boolean;
+            evidence?: components["schemas"]["SoulAnchorEvidence"][];
+        };
         SoulResolveResponse: {
             /** @enum {string} */
             version: "1";
@@ -1132,6 +1153,7 @@ export interface components {
             request_id?: string;
             operation_id?: string;
             conversation_id?: string;
+            anchor_assurance?: components["schemas"]["SoulAnchorAssurance"];
             promotion: components["schemas"]["SoulAgentPromotion"];
         };
         SoulAgentPromotionLifecycleEventListResponse: {
@@ -1441,6 +1463,16 @@ export interface components {
             renderer_address?: string;
             image?: string;
         };
+        anchor_evidence: {
+            /** @enum {string} */
+            kind: "host_registry_record" | "mint_transaction";
+            tx_hash?: string;
+            operation_id?: string;
+            token_id?: string;
+            chain_id?: number;
+            /** Format: date-time */
+            recorded_at?: string;
+        };
         avatar: {
             token_uri?: string;
             image?: string;
@@ -1448,6 +1480,17 @@ export interface components {
             current_style_name?: string;
             current_renderer_address?: string;
             styles?: components["schemas"]["avatar_style"][];
+        };
+        anchor_assurance: {
+            /** @enum {string} */
+            state: "hosted_offchain" | "immutable_onchain";
+            /** @enum {string} */
+            source: "host_record" | "onchain_receipt";
+            /** @constant */
+            capability_gate: false;
+            mutable: boolean;
+            revocable: boolean;
+            evidence?: components["schemas"]["anchor_evidence"][];
         };
         /** Soul agent identity */
         "soul-agent-identity.schema": {
@@ -1460,6 +1503,7 @@ export interface components {
             /** Format: uri */
             meta_uri?: string;
             avatar?: components["schemas"]["avatar"];
+            anchor_assurance?: components["schemas"]["anchor_assurance"];
             capabilities?: string[];
             principal_address?: string;
             principal_signature?: string;
@@ -1490,6 +1534,27 @@ export interface components {
                     current_style_name?: string;
                     current_renderer_address?: string;
                     styles?: components["schemas"]["avatar_style"][];
+                };
+                anchor_evidence: {
+                    /** @enum {string} */
+                    kind: "host_registry_record" | "mint_transaction";
+                    tx_hash?: string;
+                    operation_id?: string;
+                    token_id?: string;
+                    chain_id?: number;
+                    /** Format: date-time */
+                    recorded_at?: string;
+                };
+                anchor_assurance: {
+                    /** @enum {string} */
+                    state: "hosted_offchain" | "immutable_onchain";
+                    /** @enum {string} */
+                    source: "host_record" | "onchain_receipt";
+                    /** @constant */
+                    capability_gate: false;
+                    mutable: boolean;
+                    revocable: boolean;
+                    evidence?: components["schemas"]["anchor_evidence"][];
                 };
             };
         };

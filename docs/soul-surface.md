@@ -122,6 +122,11 @@ The soul registry is served by `cmd/control-plane-api` through the `lesser.host`
 - `GET /api/v1/soul/agents/{agentId}/validations` (paginated)
 - `GET /api/v1/soul/search?q=...&capability=...`
 
+`GET /api/v1/soul/agents/{agentId}` includes `anchor_assurance` as public trust/display metadata. The assurance state
+is `hosted_offchain` or `immutable_onchain`, includes host-record or mint-transaction evidence when available, and
+sets `capability_gate: false` to make the contract explicit: capability authorization remains controlled by the
+agent's capability/access policy, not by whether the soul has already been promoted on-chain.
+
 #### `GET /api/v1/soul/search` query semantics
 
 The soul search endpoint is intentionally fail-closed and does not perform an unbounded cross-domain local-ID scan.

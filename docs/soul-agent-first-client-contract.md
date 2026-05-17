@@ -39,6 +39,12 @@ Important fields include:
 - declaration metadata: `principal_address`, `principal_signature`, `principal_declaration`, `principal_declared_at`
 - lifecycle metadata: `status`, `lifecycle_status`, `lifecycle_reason`, `successor_agent_id`, `predecessor_agent_id`
 - publication metadata: `self_description_version`, `mint_tx_hash`, `minted_at`, `updated_at`
+- anchor assurance metadata under `anchor_assurance`
+  - `state`: `hosted_offchain` or `immutable_onchain`
+  - `source`: `host_record` or `onchain_receipt`
+  - `capability_gate`: always `false`; assurance is a trust/display signal, not default capability authority
+  - `mutable` / `revocable`: display hints for the assurance tier, not permission decisions
+  - `evidence[]`: host-registry or mint-transaction evidence (`tx_hash`, `operation_id`, `chain_id`, timestamps when known)
 - on-chain avatar metadata under `avatar`
   - `current_style_id`
   - `current_style_name`
@@ -48,6 +54,11 @@ Important fields include:
 
 Clients should prefer these structured fields directly. Fetching `meta_uri` for token metadata should be treated as a
 fallback for older records, not the primary integration path.
+
+Anchor assurance is deliberately separate from capability and caller-access policy. Hosted/off-chain souls may still use
+their allowed capabilities, x402 caller grants, and communication channels when their policy permits it. Promotion to
+`immutable_onchain` adds trust evidence; it must not create a second agent namespace, rotate `agent_id`, or silently
+change capability/access policy.
 
 ## Authentication
 
@@ -316,6 +327,7 @@ Each event includes:
 - `event_type`
 - `summary`
 - `occurred_at`
+- optional `anchor_assurance` for transitions that add anchor evidence, especially `mint_executed`
 - optional linkage fields:
   - `request_id`
   - `operation_id`
@@ -346,6 +358,12 @@ These are the most important contract-level failure cases for clients to handle 
     closed
 - expected version mismatch
   - finalize/update publication can reject stale clients that try to publish against an outdated version chain
+- anchor promotion failure / rollback
+  - failed or unrecorded mint execution leaves the identity in its existing hosted/off-chain assurance state
+  - retry the same promotion/mint operation or record a verified execution receipt; do not create a replacement
+    `agent_id` or parallel namespace
+  - if off-chain reconciliation cannot verify an `immutable_onchain` marker, treat the assurance evidence as incomplete
+    and surface a repair state; do not revoke ordinary capabilities unless the explicit capability/access policy changed
 
 Clients should surface these as explicit workflow states instead of retrying blindly.
 

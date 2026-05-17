@@ -132,7 +132,7 @@ func latestPromotionLifecycleEventModelCall(t *testing.T, db *ttmocks.MockExtend
 
 	for i := len(db.Calls) - 1; i >= 0; i-- {
 		call := db.Calls[i]
-		if call.Method != "Model" || len(call.Arguments) == 0 {
+		if call.Method != modelCallMethod || len(call.Arguments) == 0 {
 			continue
 		}
 		event, ok := call.Arguments.Get(0).(*models.SoulAgentPromotionLifecycleEvent)
@@ -143,6 +143,25 @@ func latestPromotionLifecycleEventModelCall(t *testing.T, db *ttmocks.MockExtend
 		return &copy
 	}
 	t.Fatalf("expected lifecycle event model call")
+	return nil
+}
+
+func latestSoulAgentIdentityUpdateModelCall(t *testing.T, db *ttmocks.MockExtendedDB) *models.SoulAgentIdentity {
+	t.Helper()
+
+	for i := len(db.Calls) - 1; i >= 0; i-- {
+		call := db.Calls[i]
+		if call.Method != modelCallMethod || len(call.Arguments) == 0 {
+			continue
+		}
+		identity, ok := call.Arguments.Get(0).(*models.SoulAgentIdentity)
+		if !ok || identity == nil || strings.TrimSpace(identity.MintTxHash) == "" {
+			continue
+		}
+		copy := *identity
+		return &copy
+	}
+	t.Fatalf("expected soul identity update model call")
 	return nil
 }
 
@@ -299,6 +318,7 @@ func TestSyncMintPromotionAfterOperationExecution_EmitsLifecycleEvent(t *testing
 		Kind:        models.SoulOperationKindMint,
 		AgentID:     agentID,
 		Status:      models.SoulOperationStatusExecuted,
+		ExecTxHash:  "0x" + strings.Repeat("ab", 32),
 	}, "rid-1", now, true)
 	if appErr != nil {
 		t.Fatalf("unexpected appErr: %#v", appErr)
@@ -313,6 +333,64 @@ func TestSyncMintPromotionAfterOperationExecution_EmitsLifecycleEvent(t *testing
 	}
 	if event.ReadinessStatus != models.SoulAgentPromotionReadinessReadyForConversation {
 		t.Fatalf("expected ready-for-conversation snapshot, got %#v", event)
+	}
+	if event.AnchorState != models.SoulAnchorStateImmutableOnchain ||
+		event.AnchorEvidenceTxHash != "0x"+strings.Repeat("ab", 32) ||
+		!event.AnchorEvidenceAt.Equal(now) {
+		t.Fatalf("expected immutable anchor evidence on mint event, got %#v", event)
+	}
+}
+
+func TestApplySoulOperationMintSideEffectsPreservesAgentIDAndPolicy(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulOperationsTestDB()
+	s := &Server{store: store.New(tdb.db)}
+
+	agentID := "0x" + strings.Repeat("77", 32)
+	txHash := "0x" + strings.Repeat("ef", 32)
+	tdb.qID.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
+		*dest = models.SoulAgentIdentity{
+			AgentID:                          agentID,
+			Status:                           models.SoulAgentStatusActive,
+			LifecycleStatus:                  models.SoulAgentStatusActive,
+			PolicyVersion:                    models.SoulPolicyVersionHostedBoundSoulV1,
+			AnchorState:                      models.SoulAnchorStateHostedOffchain,
+			OperationalBinding:               models.SoulOperationalBindingHostedBoundSoul,
+			CapabilityPolicyVersion:          models.SoulCapabilityPolicyVersionV1,
+			CallerAccessPaymentPolicyVersion: models.SoulCallerAccessPaymentPolicyVersionV1,
+			EmailDefaultAllowed:              true,
+			PhoneEntitlementStatus:           models.SoulPhoneEntitlementProvisioned,
+			SMSAllowed:                       true,
+			VoiceAllowed:                     true,
+			PublicPaidCallerAccess:           models.SoulPublicPaidCallerAccessGrantable,
+			PolicyMigrationState:             models.SoulPolicyMigrationStatePersistedV1,
+		}
+	}).Once()
+	tdb.qID.On("Update", mock.Anything).Return(nil).Once()
+
+	s.applySoulOperationMintSideEffects(context.Background(), &models.SoulOperation{
+		Kind:       models.SoulOperationKindMint,
+		AgentID:    agentID,
+		ExecTxHash: txHash,
+	}, agentID)
+
+	update := latestSoulAgentIdentityUpdateModelCall(t, tdb.db)
+	if update.AgentID != agentID || update.MintTxHash != txHash || update.AnchorState != models.SoulAnchorStateImmutableOnchain {
+		t.Fatalf("unexpected mint side-effect identity update: %#v", update)
+	}
+	if update.PolicyVersion != models.SoulPolicyVersionHostedBoundSoulV1 ||
+		update.OperationalBinding != models.SoulOperationalBindingHostedBoundSoul ||
+		update.CapabilityPolicyVersion != models.SoulCapabilityPolicyVersionV1 ||
+		update.CallerAccessPaymentPolicyVersion != models.SoulCallerAccessPaymentPolicyVersionV1 ||
+		!update.EmailDefaultAllowed ||
+		update.PhoneEntitlementStatus != models.SoulPhoneEntitlementProvisioned ||
+		!update.SMSAllowed ||
+		!update.VoiceAllowed ||
+		update.PublicPaidCallerAccess != models.SoulPublicPaidCallerAccessGrantable ||
+		update.PolicyMigrationState != models.SoulPolicyMigrationStatePersistedV1 {
+		t.Fatalf("mint side effect churned capability/access policy: %#v", update)
 	}
 }
 

@@ -350,6 +350,36 @@ func TestBuildSoulPublicAgentViewHandlesNilAndStrictIntegrity(t *testing.T) {
 	}
 }
 
+func TestBuildSoulPublicAgentViewIncludesHostedAnchorAssurance(t *testing.T) {
+	t.Parallel()
+
+	updatedAt := time.Date(2026, 5, 17, 2, 0, 0, 0, time.UTC)
+	s := &Server{cfg: config.Config{SoulChainID: 11155111}}
+	view := s.buildSoulPublicAgentView(context.Background(), &models.SoulAgentIdentity{
+		AgentID:     "0x" + strings.Repeat("44", 32),
+		Status:      models.SoulAgentStatusActive,
+		AnchorState: models.SoulAnchorStateHostedOffchain,
+		UpdatedAt:   updatedAt,
+	})
+	if view.AnchorAssurance == nil {
+		t.Fatalf("expected anchor assurance: %#v", view)
+	}
+	if view.AnchorAssurance.State != models.SoulAnchorStateHostedOffchain ||
+		view.AnchorAssurance.Source != soulAnchorAssuranceSourceHostRecord ||
+		view.AnchorAssurance.CapabilityGate ||
+		!view.AnchorAssurance.Mutable ||
+		!view.AnchorAssurance.Revocable {
+		t.Fatalf("unexpected hosted anchor assurance: %#v", view.AnchorAssurance)
+	}
+	if len(view.AnchorAssurance.Evidence) != 1 ||
+		view.AnchorAssurance.Evidence[0].Kind != soulAnchorEvidenceKindHostRecord ||
+		view.AnchorAssurance.Evidence[0].ChainID != 11155111 ||
+		view.AnchorAssurance.Evidence[0].RecordedAt == nil ||
+		!view.AnchorAssurance.Evidence[0].RecordedAt.Equal(updatedAt) {
+		t.Fatalf("unexpected hosted anchor evidence: %#v", view.AnchorAssurance.Evidence)
+	}
+}
+
 func TestLoadSoulPublicAgentAvatarGuardClauses(t *testing.T) {
 	t.Parallel()
 

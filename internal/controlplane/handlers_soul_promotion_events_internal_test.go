@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -83,6 +84,9 @@ func TestHandleSoulListMyPromotionLifecycleEvents_ReturnsPagedViews(t *testing.T
 				ApprovalStatus:           models.SoulAgentPromotionApprovalStatusApproved,
 				ReadinessStatus:          models.SoulAgentPromotionReadinessReadyForFinalize,
 				MintOperationID:          "op-1",
+				AnchorState:              models.SoulAnchorStateImmutableOnchain,
+				AnchorEvidenceTxHash:     "0x" + strings.Repeat("cd", 32),
+				AnchorEvidenceAt:         time.Date(2026, 3, 28, 17, 55, 0, 0, time.UTC),
 				ConversationID:           "conv-1",
 				PublishedVersion:         0,
 				CreatedAt:                time.Date(2026, 3, 28, 17, 0, 0, 0, time.UTC),
@@ -115,6 +119,22 @@ func TestHandleSoulListMyPromotionLifecycleEvents_ReturnsPagedViews(t *testing.T
 	}
 	if out.Events[0].Promotion.NextActions[0] != testSoulPromotionActionBeginFinalize {
 		t.Fatalf("expected finalize next action, got %#v", out.Events[0].Promotion)
+	}
+	assertSoulPromotionEventAnchorAssurance(t, out.Events[0].AnchorAssurance)
+}
+
+func assertSoulPromotionEventAnchorAssurance(t *testing.T, assurance *soulAnchorAssuranceView) {
+	t.Helper()
+
+	if assurance == nil {
+		t.Fatalf("expected mint event anchor assurance evidence")
+	}
+	if assurance.State != models.SoulAnchorStateImmutableOnchain ||
+		assurance.Source != soulAnchorAssuranceSourceOnchainReceipt ||
+		assurance.CapabilityGate ||
+		len(assurance.Evidence) != 1 ||
+		assurance.Evidence[0].Kind != soulAnchorEvidenceKindMintTransaction {
+		t.Fatalf("expected mint event anchor assurance evidence, got %#v", assurance)
 	}
 }
 

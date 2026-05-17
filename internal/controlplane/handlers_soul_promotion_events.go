@@ -13,14 +13,15 @@ import (
 )
 
 type soulAgentPromotionLifecycleEventView struct {
-	EventID        string                 `json:"event_id"`
-	EventType      string                 `json:"event_type"`
-	Summary        string                 `json:"summary,omitempty"`
-	OccurredAt     time.Time              `json:"occurred_at"`
-	RequestID      string                 `json:"request_id,omitempty"`
-	OperationID    string                 `json:"operation_id,omitempty"`
-	ConversationID string                 `json:"conversation_id,omitempty"`
-	Promotion      soulAgentPromotionView `json:"promotion"`
+	EventID         string                   `json:"event_id"`
+	EventType       string                   `json:"event_type"`
+	Summary         string                   `json:"summary,omitempty"`
+	OccurredAt      time.Time                `json:"occurred_at"`
+	RequestID       string                   `json:"request_id,omitempty"`
+	OperationID     string                   `json:"operation_id,omitempty"`
+	ConversationID  string                   `json:"conversation_id,omitempty"`
+	AnchorAssurance *soulAnchorAssuranceView `json:"anchor_assurance,omitempty"`
+	Promotion       soulAgentPromotionView   `json:"promotion"`
 }
 
 type soulAgentPromotionLifecycleEventListResponse struct {
@@ -32,12 +33,15 @@ type soulAgentPromotionLifecycleEventListResponse struct {
 }
 
 type soulAgentPromotionLifecycleEventInput struct {
-	EventType      string
-	Summary        string
-	RequestID      string
-	OperationID    string
-	ConversationID string
-	OccurredAt     time.Time
+	EventType        string
+	Summary          string
+	RequestID        string
+	OperationID      string
+	ConversationID   string
+	AnchorState      string
+	AnchorTxHash     string
+	AnchorEvidenceAt time.Time
+	OccurredAt       time.Time
 }
 
 func cloneSoulAgentPromotion(promotion *models.SoulAgentPromotion) *models.SoulAgentPromotion {
@@ -76,6 +80,9 @@ func buildSoulAgentPromotionLifecycleEvent(promotion *models.SoulAgentPromotion,
 		MintOperationID:          promotion.MintOperationID,
 		MintOperationStatus:      promotion.MintOperationStatus,
 		PrincipalAddress:         promotion.PrincipalAddress,
+		AnchorState:              strings.TrimSpace(input.AnchorState),
+		AnchorEvidenceTxHash:     strings.TrimSpace(input.AnchorTxHash),
+		AnchorEvidenceAt:         input.AnchorEvidenceAt,
 		LatestConversationID:     promotion.LatestConversationID,
 		LatestConversationStatus: promotion.LatestConversationStatus,
 		LatestReviewSHA256:       promotion.LatestReviewSHA256,
@@ -200,15 +207,20 @@ func (s *Server) buildSoulAgentPromotionLifecycleEventView(event *models.SoulAge
 	if event == nil {
 		return soulAgentPromotionLifecycleEventView{}
 	}
+	chainID := int64(0)
+	if s != nil {
+		chainID = s.cfg.SoulChainID
+	}
 	return soulAgentPromotionLifecycleEventView{
-		EventID:        strings.TrimSpace(event.EventID),
-		EventType:      strings.TrimSpace(event.EventType),
-		Summary:        strings.TrimSpace(event.Summary),
-		OccurredAt:     event.OccurredAt,
-		RequestID:      strings.TrimSpace(event.RequestID),
-		OperationID:    strings.TrimSpace(event.OperationID),
-		ConversationID: strings.TrimSpace(event.ConversationID),
-		Promotion:      s.buildSoulAgentPromotionView(promotionFromLifecycleEvent(event)),
+		EventID:         strings.TrimSpace(event.EventID),
+		EventType:       strings.TrimSpace(event.EventType),
+		Summary:         strings.TrimSpace(event.Summary),
+		OccurredAt:      event.OccurredAt,
+		RequestID:       strings.TrimSpace(event.RequestID),
+		OperationID:     strings.TrimSpace(event.OperationID),
+		ConversationID:  strings.TrimSpace(event.ConversationID),
+		AnchorAssurance: buildSoulAnchorAssuranceFromLifecycleEvent(event, chainID),
+		Promotion:       s.buildSoulAgentPromotionView(promotionFromLifecycleEvent(event)),
 	}
 }
 
