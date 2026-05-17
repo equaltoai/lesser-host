@@ -5,9 +5,9 @@ to controls in `gov-infra/planning/lesser-host-controls-matrix.md`.
 
 ## Scope (must be explicit)
 - **System:** AWS-backed multi-service control plane for hosted Lesser instance provisioning + governance + trust/safety services (Go Lambdas, Svelte web UI, AWS CDK infra, Solidity contracts).
-- **In-scope data:** authentication/session tokens, wallet addresses, instance API keys (hashed), Stripe billing identifiers, AI provider prompts/outputs (may contain sensitive user content), inbound email bodies/headers stored temporarily for routing, bounded soul comm mailbox content/state, operational telemetry, deploy receipts/artifacts, secrets in AWS SSM/KMS.
+- **In-scope data:** authentication/session tokens, wallet addresses, instance API keys (hashed), Stripe billing identifiers, x402 invocation grant hashes/usage slots, AI provider prompts/outputs (may contain sensitive user content), inbound email bodies/headers stored temporarily for routing, bounded soul comm mailbox content/state, operational telemetry, deploy receipts/artifacts, secrets in AWS SSM/KMS.
 - **Environments:** `lab`, `staging`, `prod` (define “prod-like”: internet-reachable and/or connected to real third-party services).
-- **Third parties:** AWS, Migadu, Telnyx, Stripe, Anthropic, OpenAI, Ethereum JSON-RPC providers, GitHub Actions.
+- **Third parties:** AWS, Migadu, Telnyx, Stripe, caller-provided x402 facilitators, Anthropic, OpenAI, Ethereum JSON-RPC providers, GitHub Actions.
 - **Out of scope:** per-tenant `lesser` application internals (except where the control plane ingests deploy receipts); end-user device security.
 - **Assurance target:** audit-ready hardening for security-critical paths with deterministic, CI-enforced verifiers.
 
@@ -20,6 +20,7 @@ to controls in `gov-infra/planning/lesser-host-controls-matrix.md`.
   - AI moderation/evidence pipelines (messages, outputs)
   - Inbound email bridge artifacts (SES receipt events + raw S3 objects)
   - Bounded soul comm mailbox content, content identity, read/archive/delete state, and audit events
+  - Scoped x402 invocation grants (hash-only caller/payment evidence, one-time token hash, usage-slot state)
   - Provisioning runner permissions (Organizations + CodeBuild)
   - Deploy receipts + artifact buckets
 - **Trust boundaries:**
@@ -28,11 +29,13 @@ to controls in `gov-infra/planning/lesser-host-controls-matrix.md`.
   - Control plane → third parties (Migadu, Telnyx, Stripe, AI providers, RPC)
   - SES inbound pipeline → S3/Lambda/SQS (raw email receipt and normalization)
   - Instance-authenticated soul comm mailbox APIs → bounded content/state storage
+  - Public x402 grant issue → host caller-access payment policy; instance-authenticated x402 grant consume → bounded usage slots
   - Operator browser (web UI) → API endpoints
   - Managed provisioning worker → external releases/artifacts (supply chain)
 - **Entry points:**
   - Public HTTP endpoints (`/api/*`, `/.well-known/*`, `/attestations*`, `/setup/*`)
   - Instance-authenticated mailbox list/content/state endpoints for soul comms
+  - Public x402 grant issue and instance-authenticated x402 grant consume endpoints
   - SQS queues (workers)
   - CodeBuild job inputs (managed provisioning)
   - Web UI build pipeline
@@ -56,6 +59,7 @@ Threat IDs must be stable over time. When a new class of risk is discovered:
 | THR-9 | Coverage denominator games | Coverage target is “met” by shrinking scope or excluding critical packages; the number becomes meaningless. | QUA-3 COM-4 | `bash gov-infra/verifiers/gov-verify-rubric.sh` (QUA-3, COM-4) |
 | THR-10 | Governance drift (docs claim controls that aren’t real) | Threats and controls diverge; rubric/roadmap become stale; CI stops enforcing verifiers. | DOC-5 DOC-4 MAI-4 COM-3 | `bash gov-infra/verifiers/gov-verify-rubric.sh` (DOC-5, DOC-4, MAI-4, COM-3) |
 | THR-11 | Bounded mailbox content/state drift | Host's soul comm mailbox exception expands beyond delivery artifacts: content is retained indefinitely, list endpoints expose full bodies, read/archive/delete state lacks audit, instance-auth falls back to plaintext, or mailbox data crosses tenant boundaries. | CMP-4 SEC-4 CON-3 DOC-4 | `bash gov-infra/verifiers/gov-verify-rubric.sh` (CMP-4 after Host 1, SEC-4/CON-3 as APIs land) |
+| THR-12 | x402 invocation grant authority drift | Public paid callers gain principal/operator authority, grant tokens or payment evidence are stored/logged raw, facilitator claims are treated as host-verified settlement, grants are reusable beyond expiry/max usage, or consume bypasses instance-domain ownership. | SEC-4 CON-3 QUA-1 DOC-4 | `bash gov-infra/verifiers/gov-verify-rubric.sh` (SEC-4 P0 tests, CON-3 contract parity, QUA-1 regression tests, DOC-4 docs integrity) |
 
 ## Parity Rule (no “named threat without control”)
 - Every `THR-*` listed above must appear at least once in the controls matrix “Threat IDs” column.

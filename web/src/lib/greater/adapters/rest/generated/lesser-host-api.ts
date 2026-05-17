@@ -507,6 +507,62 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/soul/x402/grants": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Issue a scoped x402 invocation grant
+         * @description Issues a host-side off-chain invocation grant for a configured public paid caller. The grant binds the
+         *     `agentId`, `capability`, `tool`, `resource`, invocation `requestHash`, caller subject hash, payment evidence
+         *     hash, amount/network metadata, nonce, idempotency key hash, expiry, max usage, and caller-access payment policy
+         *     version.
+         *
+         *     This public route returns a raw `grantToken` only on the first successful issue. Idempotent replays return the
+         *     same grant metadata with `tokenReturned=false`; callers must retain the original token. Host stores only hashes
+         *     of caller subject, payment evidence, optional payment id, idempotency key, and grant token. Generic
+         *     `x402.grant_unavailable` errors avoid exposing private soul state, private comm reachability, unresolved payment
+         *     detail, wallet material, or tenant data.
+         */
+        post: operations["soulX402IssueInvocationGrant"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/soul/x402/grants/{grantId}/consume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Consume a scoped x402 invocation grant
+         * @description Consumes a host-issued x402 invocation grant from an authenticated managed instance. The bearer token is the
+         *     instance API key; public paid callers never receive principal/operator/session authority. The authenticated
+         *     instance must own the agent domain, present the one-time raw grant token, and repeat the original
+         *     agent/capability/tool/resource/request hash binding.
+         *
+         *     Consumption writes a bounded usage slot keyed by the consume idempotency key hash. Repeating the same consume
+         *     idempotency key with the same consume request hash is a replay and does not increment usage. Distinct consume
+         *     idempotency keys cannot exceed `maxUsage`.
+         */
+        post: operations["soulX402ConsumeInvocationGrant"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/soul/comm/send": {
         parameters: {
             query?: never;
@@ -905,6 +961,11 @@ export interface components {
         SoulCommStatusResponse: components["schemas"]["soul-comm-status.response.schema"];
         SoulCommStatusErrorEnvelope: components["schemas"]["soul-comm-status.error.schema"];
         SoulCommContactabilityResponse: components["schemas"]["soul-comm-contactability.response.schema"];
+        SoulX402InvocationGrant: components["schemas"]["soul-x402-invocation-grant.schema"];
+        SoulX402InvocationGrantIssueRequest: components["schemas"]["soul-x402-invocation-grant.issue.request.schema"];
+        SoulX402InvocationGrantIssueResponse: components["schemas"]["soul-x402-invocation-grant.issue.response.schema"];
+        SoulX402InvocationGrantConsumeRequest: components["schemas"]["soul-x402-invocation-grant.consume.request.schema"];
+        SoulX402InvocationGrantConsumeResponse: components["schemas"]["soul-x402-invocation-grant.consume.response.schema"];
         SoulCommMailboxMessage: components["schemas"]["soul-comm-mailbox-message.schema"];
         SoulCommMailboxListResponse: components["schemas"]["soul-comm-mailbox-list.response.schema"];
         SoulCommMailboxGetResponse: components["schemas"]["soul-comm-mailbox-get.response.schema"];
@@ -1448,6 +1509,130 @@ export interface components {
             next_cursor?: string;
         };
         /**
+         * POST /api/v1/soul/x402/grants request
+         * @description Issues a host-side scoped x402 invocation grant for configured public paid callers. Raw caller and payment evidence may be supplied for hashing but is never returned by the public route.
+         */
+        "soul-x402-invocation-grant.issue.request.schema": {
+            agentId: string;
+            capability: string;
+            tool: string;
+            resource: string;
+            requestHash: string;
+            /** @description Provide either subject or subjectHash. If subject is supplied, host hashes it and returns only subjectHash. */
+            caller: {
+                subject?: string;
+                subjectHash?: string;
+            } | {
+                subject: string;
+            } | {
+                subjectHash: string;
+            };
+            /** @description Provide either evidence or evidenceHash. If raw evidence is supplied, host hashes it and returns only evidenceHash. */
+            payment: {
+                /** @enum {string} */
+                scheme?: "x402";
+                network: string;
+                asset?: string;
+                amount: string;
+                currency?: string;
+                facilitator?: string;
+                evidence?: string;
+                evidenceHash?: string;
+                paymentId?: string;
+                paymentIdHash?: string;
+            } | {
+                evidence: string;
+            } | {
+                evidenceHash: string;
+            };
+            nonce: string;
+            idempotencyKey: string;
+            /** Format: date-time */
+            expiresAt: string;
+            /** @description Optional; host defaults omitted maxUsage to 1. */
+            maxUsage?: number;
+        };
+        /**
+         * Soul x402 invocation grant
+         * @description A minimized host-issued off-chain grant for one bounded public paid invocation. It is scoped invocation authority only and does not confer principal, operator, wallet, or tenant-data authority.
+         */
+        "soul-x402-invocation-grant.schema": {
+            grantId: string;
+            /** @description Raw opaque grant token returned once on first issue. Host stores only sha256(grantToken); idempotent replays intentionally omit it. */
+            grantToken?: string;
+            agentId: string;
+            capability: string;
+            tool: string;
+            resource: string;
+            /** @description sha256 hash of the concrete invocation request Body must present later; raw request body is not stored. */
+            requestHash: string;
+            /** @description sha256 hash of the public caller subject. The raw subject is not returned. */
+            callerSubjectHash: string;
+            payment: {
+                /** @enum {string} */
+                scheme: "x402";
+                network: string;
+                asset?: string;
+                amount: string;
+                currency?: string;
+                facilitator?: string;
+                /**
+                 * @description The facilitator value is caller-provided payment-binding metadata, not host-verified settlement proof.
+                 * @enum {string}
+                 */
+                facilitatorTrustBoundary: "caller_provided_unverified";
+                evidenceHash: string;
+                paymentIdHash?: string;
+            };
+            nonce: string;
+            idempotencyKeyHash: string;
+            /** @enum {string} */
+            policyVersion: "caller-access-payment/v1";
+            /** @enum {string} */
+            authority: "scoped_invocation";
+            /** @enum {string} */
+            status: "issued" | "revoked";
+            maxUsage: number;
+            usedCount: number;
+            /** Format: date-time */
+            issuedAt: string;
+            /** Format: date-time */
+            expiresAt: string;
+        };
+        /** POST /api/v1/soul/x402/grants response */
+        "soul-x402-invocation-grant.issue.response.schema": {
+            grant: components["schemas"]["soul-x402-invocation-grant.schema"];
+            replayed: boolean;
+            /** @description False on idempotent replay because raw grant tokens are returned only once. */
+            tokenReturned: boolean;
+        };
+        /** POST /api/v1/soul/x402/grants/{grantId}/consume request */
+        "soul-x402-invocation-grant.consume.request.schema": {
+            grantToken: string;
+            agentId: string;
+            capability: string;
+            tool: string;
+            resource: string;
+            requestHash: string;
+            idempotencyKey: string;
+        };
+        /** POST /api/v1/soul/x402/grants/{grantId}/consume response */
+        "soul-x402-invocation-grant.consume.response.schema": {
+            /** @constant */
+            accepted: true;
+            replayed: boolean;
+            grant: components["schemas"]["soul-x402-invocation-grant.schema"];
+            usage: {
+                slot: number;
+                idempotencyKeyHash: string;
+                consumeRequestHash: string;
+                /** Format: date-time */
+                consumedAt: string;
+                usedCount: number;
+                maxUsage: number;
+            };
+        };
+        /**
          * POST /api/v1/soul/comm/send request
          * @description Sends a new outbound comm. Host always generates the outgoing messageId/messageRef; callers must not supply outgoing message identity. The optional inReplyTo field is only a reply/conversation boundary reference for legacy send callers and must match prior host/provider conversation state for every recipient. Canonical mailbox replies should use POST /api/v1/soul/comm/mailbox/{agentId}/messages/{messageRef}/reply instead.
          */
@@ -1564,7 +1749,7 @@ export interface components {
             callerAccessPayment: {
                 publicPaidCaller: {
                     /** @enum {string} */
-                    access: "denied";
+                    access: "denied" | "grantable";
                 };
             };
             migration: {
@@ -3739,6 +3924,65 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
+        };
+    };
+    soulX402IssueInvocationGrant: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["soul-x402-invocation-grant.issue.request.schema"];
+            };
+        };
+        responses: {
+            /** @description Grant issued or idempotently replayed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["soul-x402-invocation-grant.issue.response.schema"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    soulX402ConsumeInvocationGrant: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                grantId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["soul-x402-invocation-grant.consume.request.schema"];
+            };
+        };
+        responses: {
+            /** @description Grant consumed or idempotently replayed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["soul-x402-invocation-grant.consume.response.schema"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Unauthorized"];
+            409: components["responses"]["Conflict"];
+            500: components["responses"]["InternalError"];
         };
     };
     soulCommSend: {

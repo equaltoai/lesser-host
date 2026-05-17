@@ -49,7 +49,7 @@ Legend:
 | Quality | QUA-3 | Coverage measurement is produced and threshold enforced (≥ 80%) | `gov-infra/evidence/QUA-3-output.log`, `gov-infra/evidence/coverage.out` |
 | Consistency | CON-1 | Go formatting is clean (no gofmt diffs) | `gov-infra/evidence/CON-1-output.log` |
 | Consistency | CON-2 | Lint/static analysis gates run with pinned toolchain (Go + web + CDK + Solidity) | `gov-infra/evidence/CON-2-output.log` |
-| Consistency | CON-3 | Public boundary contract parity checks run for TipSplitter ABI and lesser-host REST/SSE contract artifacts | `gov-infra/evidence/CON-3-output.log` |
+| Consistency | CON-3 | Public boundary contract parity checks run for TipSplitter ABI, lesser-host REST/SSE contract artifacts, and scoped x402 grant issue/consume schemas | `gov-infra/evidence/CON-3-output.log` |
 | Completeness | COM-1 | All Go modules compile from a clean checkout | `gov-infra/evidence/COM-1-output.log` |
 | Completeness | COM-2 | Toolchain pins and CI expectations align (Go/Node/tooling) | `gov-infra/evidence/COM-2-output.log` |
 | Completeness | COM-3 | Lint configuration is schema-valid for the pinned linter | `gov-infra/evidence/COM-3-output.log` |
@@ -59,7 +59,7 @@ Legend:
 | Security | SEC-1 | Static security scan runs with pinned tooling (Go + Solidity) | `gov-infra/evidence/SEC-1-output.log` |
 | Security | SEC-2 | Dependency vulnerability scan runs with pinned tooling | `gov-infra/evidence/SEC-2-output.log` |
 | Security | SEC-3 | Supply-chain verification gates run (full-SHA Actions pinning with syntax self-tests + dependency lifecycle scan) | `gov-infra/evidence/SEC-3-output.log` |
-| Security | SEC-4 | Domain-specific P0 security regression tests run | `gov-infra/evidence/SEC-4-output.log` |
+| Security | SEC-4 | Domain-specific P0 security regression tests run, including scoped x402 grant minimization/authority invariants | `gov-infra/evidence/SEC-4-output.log` |
 | Compliance readiness | CMP-1 | Controls matrix exists and is readable | (presence check) + `gov-infra/evidence/CMP-1-output.log` |
 | Compliance readiness | CMP-2 | Evidence plan exists and is readable | (presence check) + `gov-infra/evidence/CMP-2-output.log` |
 | Compliance readiness | CMP-3 | Threat model exists and is readable | (presence check) + `gov-infra/evidence/CMP-3-output.log` |

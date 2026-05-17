@@ -60,9 +60,10 @@ The v1 vocabulary names four separate concepts:
      (`phone.entitlementStatus in ["provisioned","paid"]` with the relevant `smsAllowed` / `voiceAllowed` flag).
 4. **Caller access/payment policy**
    - Version: `caller-access-payment/v1`.
-   - M1 models `publicPaidCaller` explicitly but keeps it `denied`.
-   - Public paid x402 invocation grants are intentionally deferred to M2. M1 must not grant principal/operator
-     authority to public callers.
+   - `publicPaidCaller.access=denied` is the implicit default.
+   - `publicPaidCaller.access=grantable` allows host to issue scoped public x402 invocation grants. The grant remains
+     off-chain control-plane policy state; it does not grant principal/operator authority, wallet authority, tenant-data
+     access, or on-chain authority to the public caller.
 
 Migration path for existing souls:
 
@@ -78,6 +79,30 @@ Body-facing contract:
 
 - `GET /api/v1/soul/comm/contactability/{agentId}` returns the effective `policy` object alongside bounded channel
   affordances.
+- `POST /api/v1/soul/x402/grants` is the public grant-issue route for configured public paid callers. It binds:
+  - `agentId`
+  - `capability`
+  - `tool`
+  - `resource`
+  - invocation `requestHash`
+  - caller subject hash
+  - x402 payment evidence hash
+  - amount/network/asset/currency metadata
+  - caller-provided facilitator with `facilitatorTrustBoundary=caller_provided_unverified`
+  - nonce
+  - idempotency key hash
+  - expiry
+  - max usage
+  - `caller-access-payment/v1` policy version
+- The public issue route returns the raw `grantToken` once. Idempotent replays return grant metadata with
+  `tokenReturned=false`; clients must retain the original token. Host stores only hashes of the caller subject, payment
+  evidence, optional payment id, idempotency key, and grant token. Generic `x402.grant_unavailable` failures avoid
+  disclosing private soul state, private comm reachability, unresolved payment detail, wallet material, or tenant data.
+- `POST /api/v1/soul/x402/grants/{grantId}/consume` is instance-key authenticated. Body presents the raw grant token and
+  repeats the bound `agentId`/`capability`/`tool`/`resource`/`requestHash`. Host verifies the instance key, checks that
+  the authenticated instance owns the soul's domain, and writes a usage slot. Repeating the same consume idempotency key
+  with the same consume request hash is a replay and does not increment usage; distinct consume idempotency keys cannot
+  exceed `maxUsage`.
 - Public unauthenticated soul-agent reads do not expose the policy fields; the full effective capability and entitlement
   policy is intentionally instance-key scoped to the contactability contract.
 - Entitlement failures use `comm.entitlement_required` with the client-safe message `channel entitlement required`.

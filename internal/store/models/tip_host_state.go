@@ -59,7 +59,7 @@ func (s *TipHostState) UpdateKeys() error {
 	s.WalletAddr = strings.ToLower(strings.TrimSpace(s.WalletAddr))
 
 	s.PK = fmt.Sprintf("TIPHOST#%s", s.HostIDHex)
-	s.SK = "STATE"
+	s.SK = stateSortKey
 	return nil
 }
 

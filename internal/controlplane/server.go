@@ -234,6 +234,8 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 	app.Get("/api/v1/soul/resolve/email/{emailAddress}", s.handleSoulPublicResolveEmail, apptheory.RequireAuth())
 	app.Get("/api/v1/soul/resolve/phone/{phoneNumber}", s.handleSoulPublicResolvePhone, apptheory.RequireAuth())
 	app.Get("/api/v1/soul/search", s.handleSoulPublicSearch)
+	app.Post("/api/v1/soul/x402/grants", s.handleSoulX402IssueInvocationGrant)
+	app.Post("/api/v1/soul/x402/grants/{grantId}/consume", s.handleSoulX402ConsumeInvocationGrant)
 	app.Post("/api/v1/soul/comm/send", s.handleSoulCommSend)
 	app.Get("/api/v1/soul/comm/status/{messageId}", s.handleSoulCommStatus)
 	app.Get("/api/v1/soul/comm/contactability/{agentId}", s.handleSoulCommContactability)
