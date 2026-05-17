@@ -114,6 +114,7 @@ func expectX402Identity(t *testing.T, q *ttmocks.MockQuery, access string) {
 			Status:                           models.SoulAgentStatusActive,
 			LifecycleStatus:                  models.SoulAgentStatusActive,
 			PolicyVersion:                    models.SoulPolicyVersionHostedBoundSoulV1,
+			AnchorState:                      models.SoulAnchorStateHostedOffchain,
 			CallerAccessPaymentPolicyVersion: models.SoulCallerAccessPaymentPolicyVersionV1,
 			PublicPaidCallerAccess:           access,
 			UpdatedAt:                        time.Now().UTC(),
@@ -207,6 +208,24 @@ func TestP0_HandleSoulX402IssueInvocationGrant_SuccessMinimizesPaymentEvidence(t
 	resp, err := s.handleSoulX402IssueInvocationGrant(&apptheory.Context{Request: apptheory.Request{Body: x402IssueBody(t, nil)}})
 	out := requireX402IssueResponse(t, resp, err)
 	assertX402IssueMinimized(t, resp, out, *captured)
+}
+
+func TestHandleSoulX402IssueInvocationGrant_HostedAnchorIsNotCapabilityGate(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulX402GrantTestDB()
+	expectX402Identity(t, tdb.qIdentity, models.SoulPublicPaidCallerAccessGrantable)
+	captured := expectX402GrantCreateCapture(t, tdb)
+
+	s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true}}
+	resp, err := s.handleSoulX402IssueInvocationGrant(&apptheory.Context{Request: apptheory.Request{Body: x402IssueBody(t, nil)}})
+	out := requireX402IssueResponse(t, resp, err)
+	if !out.TokenReturned || out.Grant.PolicyVersion != models.SoulCallerAccessPaymentPolicyVersionV1 {
+		t.Fatalf("expected hosted/offchain grantable policy to issue scoped grant, got %#v", out)
+	}
+	if *captured == nil || (*captured).PolicyVersion != models.SoulCallerAccessPaymentPolicyVersionV1 {
+		t.Fatalf("expected hosted/offchain grant persisted without immutable anchor requirement, got %#v", *captured)
+	}
 }
 
 func TestHandleSoulX402IssueInvocationGrant_DeniedPolicyReturnsGenericUnavailable(t *testing.T) {

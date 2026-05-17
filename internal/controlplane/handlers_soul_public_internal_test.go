@@ -367,7 +367,7 @@ func TestHandleSoulPublicGetAgent_Success(t *testing.T) {
 	tdb := newSoulPublicTestDB()
 	s := &Server{
 		store: store.New(tdb.db),
-		cfg:   config.Config{SoulEnabled: true},
+		cfg:   config.Config{SoulEnabled: true, SoulChainID: 1},
 	}
 
 	agentID := "0x" + strings.Repeat("11", 32)
@@ -388,6 +388,8 @@ func TestHandleSoulPublicGetAgent_Success(t *testing.T) {
 			VoiceAllowed:                     true,
 			PublicPaidCallerAccess:           models.SoulPublicPaidCallerAccessDenied,
 			PolicyMigrationState:             models.SoulPolicyMigrationStatePersistedV1,
+			MintTxHash:                       "0x" + strings.Repeat("ab", 32),
+			MintedAt:                         time.Date(2026, 5, 17, 1, 2, 3, 0, time.UTC),
 		}
 	}).Once()
 	tdb.qRep.On("First", mock.AnythingOfType("*models.SoulAgentReputation")).Return(nil).Run(func(args mock.Arguments) {
@@ -415,6 +417,35 @@ func TestHandleSoulPublicGetAgent_Success(t *testing.T) {
 	if out.Version != "1" || out.Agent.AgentID != agentID || out.Reputation == nil || out.Reputation.AgentID != agentID {
 		t.Fatalf("unexpected response: %#v", out)
 	}
+	assertSoulPublicAgentOnchainAnchorAssurance(t, out.Agent.AnchorAssurance)
+	assertSoulPublicAgentPolicyFieldsNotLeaked(t, resp.Body)
+}
+
+func assertSoulPublicAgentOnchainAnchorAssurance(t *testing.T, assurance *soulAnchorAssuranceView) {
+	t.Helper()
+
+	if assurance == nil {
+		t.Fatalf("expected anchor assurance metadata")
+	}
+	if assurance.State != models.SoulAnchorStateImmutableOnchain ||
+		assurance.Source != soulAnchorAssuranceSourceOnchainReceipt ||
+		assurance.CapabilityGate ||
+		assurance.Mutable ||
+		assurance.Revocable {
+		t.Fatalf("unexpected anchor assurance: %#v", assurance)
+	}
+	if len(assurance.Evidence) != 1 ||
+		assurance.Evidence[0].Kind != soulAnchorEvidenceKindMintTransaction ||
+		assurance.Evidence[0].TxHash == "" ||
+		assurance.Evidence[0].ChainID != 1 ||
+		assurance.Evidence[0].RecordedAt == nil {
+		t.Fatalf("unexpected anchor evidence: %#v", assurance.Evidence)
+	}
+}
+
+func assertSoulPublicAgentPolicyFieldsNotLeaked(t *testing.T, body []byte) {
+	t.Helper()
+
 	for _, privateField := range []string{
 		"policy_version",
 		"anchor_state",
@@ -428,8 +459,8 @@ func TestHandleSoulPublicGetAgent_Success(t *testing.T) {
 		"public_paid_caller_access",
 		"policy_migration_state",
 	} {
-		if bytes.Contains(resp.Body, []byte(privateField)) {
-			t.Fatalf("public agent response leaked private policy field %q: %s", privateField, string(resp.Body))
+		if bytes.Contains(body, []byte(privateField)) {
+			t.Fatalf("public agent response leaked private policy field %q: %s", privateField, string(body))
 		}
 	}
 }

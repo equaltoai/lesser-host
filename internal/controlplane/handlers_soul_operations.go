@@ -293,10 +293,13 @@ func (s *Server) syncMintPromotionAfterOperationExecution(ctx context.Context, u
 	}
 	if success && (previous == nil || !strings.EqualFold(strings.TrimSpace(previous.ReadinessStatus), models.SoulAgentPromotionReadinessReadyForConversation)) {
 		if appErr := s.saveSoulAgentPromotionLifecycleEvent(ctx, buildSoulAgentPromotionLifecycleEvent(promotion, soulAgentPromotionLifecycleEventInput{
-			EventType:   models.SoulAgentPromotionEventTypeMintExecuted,
-			RequestID:   strings.TrimSpace(requestID),
-			OperationID: update.OperationID,
-			OccurredAt:  now,
+			EventType:        models.SoulAgentPromotionEventTypeMintExecuted,
+			RequestID:        strings.TrimSpace(requestID),
+			OperationID:      update.OperationID,
+			AnchorState:      models.SoulAnchorStateImmutableOnchain,
+			AnchorTxHash:     update.ExecTxHash,
+			AnchorEvidenceAt: now,
+			OccurredAt:       now,
 		})); appErr != nil {
 			return appErr
 		}

@@ -190,6 +190,9 @@ export interface SoulSearchResponse {
 	next_cursor?: string;
 }
 
+export type SoulAnchorEvidence = components['schemas']['SoulAnchorEvidence'];
+export type SoulAnchorAssurance = components['schemas']['SoulAnchorAssurance'];
+
 export function soulPublicSearch(input: {
 	q?: string;
 	domain?: string;
@@ -235,6 +238,7 @@ export interface SoulAgentIdentity {
 			selected?: boolean;
 		}>;
 	};
+	anchor_assurance?: SoulAnchorAssurance;
 	capabilities?: string[];
 	status: string;
 	lifecycle_status?: string;
@@ -398,6 +402,7 @@ export interface SoulAgentPromotionLifecycleEvent {
 	request_id?: string;
 	operation_id?: string;
 	conversation_id?: string;
+	anchor_assurance?: SoulAnchorAssurance;
 	promotion: SoulAgentPromotion;
 }
 

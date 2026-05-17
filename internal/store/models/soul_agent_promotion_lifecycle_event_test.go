@@ -9,10 +9,12 @@ func TestSoulAgentPromotionLifecycleEventBeforeCreateSetsKeys(t *testing.T) {
 	t.Parallel()
 
 	event := &SoulAgentPromotionLifecycleEvent{
-		AgentID:     " 0xABC ",
-		EventType:   SoulAgentPromotionEventTypeFinalizeReady,
-		RequestedBy: " alice ",
-		OccurredAt:  time.Date(2026, 3, 28, 19, 0, 0, 0, time.UTC),
+		AgentID:              " 0xABC ",
+		EventType:            SoulAgentPromotionEventTypeFinalizeReady,
+		RequestedBy:          " alice ",
+		AnchorState:          " IMMUTABLE_ONCHAIN ",
+		AnchorEvidenceTxHash: " 0xBEEF ",
+		OccurredAt:           time.Date(2026, 3, 28, 19, 0, 0, 0, time.UTC),
 	}
 	if err := event.BeforeCreate(); err != nil {
 		t.Fatalf("BeforeCreate: %v", err)
@@ -25,6 +27,9 @@ func TestSoulAgentPromotionLifecycleEventBeforeCreateSetsKeys(t *testing.T) {
 	}
 	if event.EventID == "" || event.SK == "" || event.GSI1SK == "" {
 		t.Fatalf("expected generated event keys, got %#v", event)
+	}
+	if event.AnchorState != SoulAnchorStateImmutableOnchain || event.AnchorEvidenceTxHash != "0xbeef" {
+		t.Fatalf("expected normalized anchor evidence fields, got %#v", event)
 	}
 }
 

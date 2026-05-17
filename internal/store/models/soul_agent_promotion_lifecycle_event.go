@@ -60,6 +60,10 @@ type SoulAgentPromotionLifecycleEvent struct {
 	MintOperationStatus string `theorydb:"attr:mintOperationStatus" json:"mint_operation_status,omitempty"`
 	PrincipalAddress    string `theorydb:"attr:principalAddress" json:"principal_address,omitempty"`
 
+	AnchorState          string    `theorydb:"attr:anchorState" json:"anchor_state,omitempty"`
+	AnchorEvidenceTxHash string    `theorydb:"attr:anchorEvidenceTxHash" json:"anchor_evidence_tx_hash,omitempty"`
+	AnchorEvidenceAt     time.Time `theorydb:"attr:anchorEvidenceAt" json:"anchor_evidence_at,omitempty"`
+
 	LatestConversationID     string `theorydb:"attr:latestConversationId" json:"latest_conversation_id,omitempty"`
 	LatestConversationStatus string `theorydb:"attr:latestConversationStatus" json:"latest_conversation_status,omitempty"`
 	LatestReviewSHA256       string `theorydb:"attr:latestReviewSha256" json:"latest_review_sha256,omitempty"`
@@ -138,6 +142,8 @@ func (e *SoulAgentPromotionLifecycleEvent) UpdateKeys() error {
 	e.MintOperationID = strings.TrimSpace(e.MintOperationID)
 	e.MintOperationStatus = strings.ToLower(strings.TrimSpace(e.MintOperationStatus))
 	e.PrincipalAddress = strings.TrimSpace(e.PrincipalAddress)
+	e.AnchorState = strings.ToLower(strings.TrimSpace(e.AnchorState))
+	e.AnchorEvidenceTxHash = strings.ToLower(strings.TrimSpace(e.AnchorEvidenceTxHash))
 	e.LatestConversationID = strings.TrimSpace(e.LatestConversationID)
 	e.LatestConversationStatus = strings.ToLower(strings.TrimSpace(e.LatestConversationStatus))
 	e.LatestReviewSHA256 = strings.ToLower(strings.TrimSpace(e.LatestReviewSHA256))

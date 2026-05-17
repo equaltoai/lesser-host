@@ -303,6 +303,56 @@ components:
     SoulAgentIdentity:
       $ref: "../spec/v3/schemas/soul-agent-identity.schema.json"
 
+    SoulAnchorEvidence:
+      type: object
+      additionalProperties: false
+      required: [kind]
+      properties:
+        kind:
+          type: string
+          enum: [host_registry_record, mint_transaction]
+        tx_hash:
+          type: string
+          pattern: "^0x[0-9a-fA-F]{64}$"
+        operation_id:
+          type: string
+          minLength: 1
+          maxLength: 256
+        token_id:
+          type: string
+          minLength: 1
+          maxLength: 256
+        chain_id:
+          type: integer
+          minimum: 1
+        recorded_at:
+          type: string
+          format: date-time
+
+    SoulAnchorAssurance:
+      type: object
+      additionalProperties: false
+      required: [state, source, capability_gate, mutable, revocable]
+      properties:
+        state:
+          type: string
+          enum: [hosted_offchain, immutable_onchain]
+        source:
+          type: string
+          enum: [host_record, onchain_receipt]
+        capability_gate:
+          type: boolean
+          enum: [false]
+        mutable:
+          type: boolean
+        revocable:
+          type: boolean
+        evidence:
+          type: array
+          maxItems: 8
+          items:
+            $ref: "#/components/schemas/SoulAnchorEvidence"
+
     SoulResolveResponse:
       type: object
       additionalProperties: false
@@ -734,6 +784,8 @@ components:
           type: string
         conversation_id:
           type: string
+        anchor_assurance:
+          $ref: "#/components/schemas/SoulAnchorAssurance"
         promotion:
           $ref: "#/components/schemas/SoulAgentPromotion"
 
