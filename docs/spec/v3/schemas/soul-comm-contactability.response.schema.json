@@ -77,7 +77,7 @@
               "additionalProperties": false,
               "required": ["access"],
               "properties": {
-                "access": { "type": "string", "enum": ["denied"] }
+                "access": { "type": "string", "enum": ["denied", "grantable"] }
               }
             }
           }

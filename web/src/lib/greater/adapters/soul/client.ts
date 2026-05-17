@@ -47,6 +47,15 @@ export type SoulCommSendResponse = components['schemas']['SoulCommSendResponse']
 export type SoulCommSendErrorEnvelope = components['schemas']['SoulCommSendErrorEnvelope'];
 export type SoulCommStatusResponse = components['schemas']['SoulCommStatusResponse'];
 export type SoulCommStatusErrorEnvelope = components['schemas']['SoulCommStatusErrorEnvelope'];
+export type SoulX402InvocationGrant = components['schemas']['SoulX402InvocationGrant'];
+export type SoulX402InvocationGrantIssueRequest =
+	components['schemas']['SoulX402InvocationGrantIssueRequest'];
+export type SoulX402InvocationGrantIssueResponse =
+	components['schemas']['SoulX402InvocationGrantIssueResponse'];
+export type SoulX402InvocationGrantConsumeRequest =
+	components['schemas']['SoulX402InvocationGrantConsumeRequest'];
+export type SoulX402InvocationGrantConsumeResponse =
+	components['schemas']['SoulX402InvocationGrantConsumeResponse'];
 
 export interface LesserHostSoulClientConfig {
 	baseUrl: string;
@@ -167,6 +176,28 @@ export class LesserHostSoulClient {
 
 	async sendCommunication(request: SoulCommSendRequest): Promise<SoulCommSendResponse> {
 		return this.requestJson('/api/v1/soul/comm/send', {
+			method: 'POST',
+			body: request,
+		});
+	}
+
+	async issueX402InvocationGrant(
+		request: SoulX402InvocationGrantIssueRequest
+	): Promise<SoulX402InvocationGrantIssueResponse> {
+		return this.requestJson('/api/v1/soul/x402/grants', {
+			method: 'POST',
+			body: request,
+		});
+	}
+
+	async consumeX402InvocationGrant(
+		grantId: string,
+		request: SoulX402InvocationGrantConsumeRequest
+	): Promise<SoulX402InvocationGrantConsumeResponse> {
+		const id = grantId.trim();
+		if (!id) throw new Error('grantId is required');
+
+		return this.requestJson(`/api/v1/soul/x402/grants/${encodeURIComponent(id)}/consume`, {
 			method: 'POST',
 			body: request,
 		});

@@ -45,6 +45,8 @@ func TestModelContracts_TableNameAndKeyAccessors(t *testing.T) {
 		RenderArtifact{},
 		SetupSession{},
 		SoulCommSendIdempotency{},
+		SoulX402InvocationGrant{},
+		SoulX402InvocationGrantUsage{},
 		TipHostRegistration{},
 		TipHostState{},
 		TipRegistryOperation{},
@@ -107,6 +109,41 @@ func TestModelContracts_TableNameAndKeyAccessors(t *testing.T) {
 	require.NoError(t, ra.BeforeCreate())
 	require.NotEmpty(t, ra.GetPK())
 	require.NotEmpty(t, ra.GetSK())
+
+	x402Grant := &SoulX402InvocationGrant{
+		GrantID:                         "x402-grant-id",
+		AgentID:                         "0xabc",
+		Capability:                      "tool.invoke",
+		Tool:                            "summarize",
+		Resource:                        "mcp://agent/summarize",
+		RequestHash:                     "request-binding-hash",
+		CallerSubjectHash:               "caller-hash",
+		PaymentNetwork:                  "base",
+		PaymentAmount:                   "1000",
+		PaymentFacilitatorTrustBoundary: SoulX402InvocationGrantFacilitatorTrustCallerProvided,
+		PaymentEvidenceHash:             "evidence-hash",
+		Nonce:                           "nonce",
+		IdempotencyKeyHash:              "idem-hash",
+		IssueRequestHash:                "request-hash",
+		GrantTokenHash:                  "token-hash",
+		PolicyVersion:                   SoulCallerAccessPaymentPolicyVersionV1,
+		ExpiresAt:                       time.Now().Add(time.Hour).UTC(),
+	}
+	require.NoError(t, x402Grant.BeforeCreate())
+	require.NotEmpty(t, x402Grant.GetPK())
+	require.NotEmpty(t, x402Grant.GetSK())
+
+	x402Usage := &SoulX402InvocationGrantUsage{
+		GrantID:                   "x402-grant-id",
+		UsageSlot:                 0,
+		AgentID:                   "0xabc",
+		InstanceSlug:              "slug",
+		ConsumeIdempotencyKeyHash: "consume-idem-hash",
+		ConsumeRequestHash:        "consume-request-hash",
+	}
+	require.NoError(t, x402Usage.BeforeCreate())
+	require.NotEmpty(t, x402Usage.GetPK())
+	require.NotEmpty(t, x402Usage.GetSK())
 
 	th := &TipHostState{HostIDHex: "abc", DomainNormalized: "example.com", ContractAddress: "0x0"}
 	require.NoError(t, th.BeforeCreate())

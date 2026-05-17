@@ -386,7 +386,7 @@ func TestModels_UpdateKeysAndDefaults(t *testing.T) {
 			CapabilityPolicyVersion:          " CAPABILITY-POLICY/V1 ",
 			CallerAccessPaymentPolicyVersion: " CALLER-ACCESS-PAYMENT/V1 ",
 			PhoneEntitlementStatus:           " PROVISIONED ",
-			PublicPaidCallerAccess:           " DENIED ",
+			PublicPaidCallerAccess:           " GRANTABLE ",
 			PolicyMigrationState:             " PERSISTED_V1 ",
 		}
 		require.NoError(t, a.BeforeCreate())
@@ -406,7 +406,7 @@ func TestModels_UpdateKeysAndDefaults(t *testing.T) {
 		require.Equal(t, SoulCapabilityPolicyVersionV1, a.CapabilityPolicyVersion)
 		require.Equal(t, SoulCallerAccessPaymentPolicyVersionV1, a.CallerAccessPaymentPolicyVersion)
 		require.Equal(t, SoulPhoneEntitlementProvisioned, a.PhoneEntitlementStatus)
-		require.Equal(t, SoulPublicPaidCallerAccessDenied, a.PublicPaidCallerAccess)
+		require.Equal(t, SoulPublicPaidCallerAccessGrantable, a.PublicPaidCallerAccess)
 		require.Equal(t, SoulPolicyMigrationStatePersistedV1, a.PolicyMigrationState)
 		require.False(t, a.UpdatedAt.IsZero())
 	})

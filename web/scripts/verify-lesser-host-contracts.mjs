@@ -31,7 +31,9 @@ const requiredPaths = [
   '/api/v1/soul/agents/{agentId}/mint-conversation/{conversationId}/complete',
   '/api/v1/soul/agents/{agentId}/mint-conversation/{conversationId}/finalize/preflight',
   '/api/v1/soul/agents/{agentId}/mint-conversation/{conversationId}/finalize/begin',
-  '/api/v1/soul/agents/{agentId}/mint-conversation/{conversationId}/finalize'
+  '/api/v1/soul/agents/{agentId}/mint-conversation/{conversationId}/finalize',
+  '/api/v1/soul/x402/grants',
+  '/api/v1/soul/x402/grants/{grantId}/consume'
 ];
 
 const requiredSchemas = [
@@ -47,7 +49,12 @@ const requiredSchemas = [
   'SoulMintConversationFinalizeBeginRequest',
   'SoulMintConversationFinalizeRequest',
   'SoulMintConversationFinalizePreflightResponse',
-  'SoulMintConversationFinalizeResponse'
+  'SoulMintConversationFinalizeResponse',
+  'SoulX402InvocationGrant',
+  'SoulX402InvocationGrantIssueRequest',
+  'SoulX402InvocationGrantIssueResponse',
+  'SoulX402InvocationGrantConsumeRequest',
+  'SoulX402InvocationGrantConsumeResponse'
 ];
 
 const requiredSseEvents = [
@@ -134,4 +141,4 @@ verifyOpenApiSurface();
 verifySseCompanionSurface();
 verifyGeneratedAdapter();
 
-process.stdout.write('PASS: lesser-host mint-conversation contracts are complete and in sync\n');
+process.stdout.write('PASS: lesser-host REST contracts are complete and in sync\n');

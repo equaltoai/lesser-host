@@ -138,7 +138,7 @@ func (m *SoulCommSendIdempotency) UpdateKeys() error {
 	m.ErrorMessage = strings.TrimSpace(m.ErrorMessage)
 
 	m.PK = SoulCommSendIdempotencyPK(m.InstanceSlug, m.AgentID, m.IdempotencyKey)
-	m.SK = "STATE"
+	m.SK = stateSortKey
 	m.TTL = m.CreatedAt.UTC().Add(90 * 24 * time.Hour).Unix()
 	return nil
 }

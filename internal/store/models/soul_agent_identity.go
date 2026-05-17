@@ -34,6 +34,7 @@ const (
 	SoulPhoneEntitlementProvisioned           = "provisioned"
 	SoulPhoneEntitlementPaid                  = "paid"
 	SoulPublicPaidCallerAccessDenied          = "denied"
+	SoulPublicPaidCallerAccessGrantable       = "grantable"
 	SoulPolicyMigrationStateImplicitDefaultV1 = "implicit_default_v1"
 	SoulPolicyMigrationStatePersistedV1       = "persisted_v1"
 )
