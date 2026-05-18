@@ -1,9 +1,20 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 
 import { renderProvisionRunnerBuildCommands } from '../lib/provision-runner-buildspec';
 
 const buildCommands = renderProvisionRunnerBuildCommands();
+
+test('rendered provision runner build script is valid bash', () => {
+	const result = spawnSync('bash', ['-n'], {
+		encoding: 'utf8',
+		input: buildCommands,
+	});
+
+	assert.ifError(result.error);
+	assert.equal(result.status, 0, result.stderr || result.stdout);
+});
 
 test('RUN_MODE=lesser uses the CLI binary with --release-dir', () => {
 	assert.match(buildCommands, /prepare_lesser_release_dir "\$LESSER_RELEASE_DIR"/);

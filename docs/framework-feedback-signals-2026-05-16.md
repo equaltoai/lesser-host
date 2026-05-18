@@ -2,7 +2,10 @@
 
 This record closes Phase 6 of the lesser-host Theory Cloud adoption roadmap. It
 captures framework-level feedback surfaced while adopting AppTheory `v1.6.0`,
-TableTheory `v1.8.3`, and Greater Components `greater-v0.8.11`.
+TableTheory `v1.8.3`, and Greater Components `greater-v0.8.11`. The 2026-05-18
+AppTheory `v1.7.0` / Greater `greater-v0.8.14` refresh consumed the upstream
+LightningCSS selector cleanup while preserving the remaining strict-CSP markdown
+feedback.
 
 These are feedback signals only. They do **not** authorize local framework
 patches, CSP loosening, trust-API auth changes, provisioning changes, or managed
@@ -14,7 +17,7 @@ release-verification changes.
 | --- | --- | --- |
 | AppTheory SES event-source dispatch | AppTheory framework steward via Aron / Arch review | Prepared below; this host endpoint has no contactable AppTheory mailbox, so it is routed through Aron with this PR and the Arch review handoff. |
 | Greater/FaceTheory fail-closed markdown rendering | Greater Components steward; FaceTheory pattern owner via Greater/Aron | Prepared below and sent to `greater.equaltoai@theorymcp.ai`; delivery ID recorded after send. |
-| Greater/FaceTheory LightningCSS-safe global selectors | Greater Components steward; FaceTheory pattern owner via Greater/Aron | Prepared below and sent to `greater.equaltoai@theorymcp.ai`; delivery ID recorded after send. |
+| Greater/FaceTheory LightningCSS-safe global selectors | Greater Components steward; FaceTheory pattern owner via Greater/Aron | Prepared below and sent to `greater.equaltoai@theorymcp.ai`; delivery ID recorded after send. Consumed in host on 2026-05-18 via Greater `greater-v0.8.14` primitive CSS refresh. |
 
 Related TableTheory release-state feedback is already recorded in
 `docs/tabletheory-release-state-assessment.md`; it should be routed as a
@@ -209,6 +212,10 @@ patterns.
 Greater Components `greater-v0.8.11` / commit
 `0abcb00d4466b425473476dd1b38ba628118091c`.
 
+2026-05-18 follow-up: host consumed Greater Components `greater-v0.8.14` /
+commit `74ce64890bab7c85b83847a1ff72dc882b66ebc5` for primitive CSS, which
+removes the plain-CSS `:global(...)` selectors from the vendored stylesheet.
+
 ### The concern (under host's constraints)
 
 Host builds a static Svelte 5 SPA with Vite and strict CSP. Some vendored
@@ -263,10 +270,9 @@ third-party stylesheet origins are added.
 
 ### Proposed next step
 
-Greater / FaceTheory stewards should scope a CSS packaging cleanup that removes
-Svelte-only `:global(...)` selector syntax from plain distributed CSS while
-preserving component semantics and strict-CSP compatibility. Host should adopt it
-through a pinned Greater refresh, not by patching Greater locally.
+Completed for host on 2026-05-18 through a pinned Greater `greater-v0.8.14`
+primitive CSS refresh, not a local framework patch. Future Greater refreshes must
+continue preserving component semantics and strict-CSP compatibility.
 
 ## Outbound coordination record
 
