@@ -2,7 +2,7 @@
 
 ## Goal
 
-Deliberately adopt AppTheory `v1.6.0`, TableTheory `v1.8.3`, and Greater Components `greater-v0.8.11` in `lesser-host`, close the current Dependabot security alerts, and then consume only the framework capabilities that improve host's reliability, trust/auth audit posture, worker behavior, and maintenance discipline without weakening multi-tenant isolation, on-chain integrity, consumer release verification, trust API instance-auth, or strict CSP.
+Deliberately adopt AppTheory `v1.7.0`, TableTheory `v1.8.3`, and Greater Components `greater-v0.8.14` in `lesser-host`, close the current Dependabot security alerts, and then consume only the framework capabilities that improve host's reliability, trust/auth audit posture, worker behavior, and maintenance discipline without weakening multi-tenant isolation, on-chain integrity, consumer release verification, trust API instance-auth, or strict CSP.
 
 ## Classification
 
@@ -33,7 +33,7 @@ Dependency maintenance, security, operational reliability, trust-API/auth audit 
 
 - **AppTheory**: required for feedback on native SES event-source support; host will locally adopt source provenance, event workload helpers, and typed binding pilots where idiomatic.
 - **TableTheory**: required only if Lambda timeout propagation exposes an interface/ergonomic gap. Initial work is local host consumption.
-- **FaceTheory / Greater**: required for markdown sanitizer/CSP feedback and LightningCSS `:global(...)` warnings.
+- **FaceTheory / Greater**: required for markdown sanitizer/CSP feedback; the LightningCSS `:global(...)` warning feedback was consumed through the Greater `greater-v0.8.14` primitive CSS refresh.
 
 ## External-vendor coordination
 

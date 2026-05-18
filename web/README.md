@@ -5,8 +5,9 @@ This is the frontend for `lesser.host` (repo: `lesser-host`).
 ## Stack
 
 - Vite + Svelte 5 + TypeScript
-- `greater-components` (vendored via `greater` CLI, pinned to `greater-v0.8.11` / commit `0abcb00d4466b425473476dd1b38ba628118091c`)
-  - Host keeps a local safety hardening on `MarkdownRenderer`: sanitization is mandatory before `{@html}` output.
+- `greater-components` (vendored via `greater` CLI, config target `greater-v0.8.14` / commit `74ce64890bab7c85b83847a1ff72dc882b66ebc5`; primitives refreshed to that tag)
+  - Host keeps local safety hardening on `MarkdownRenderer`: sanitization is mandatory before `{@html}` output.
+  - Host marks `content` and `adapters` as locally modified in `components.json`; do not overwrite them during Greater refreshes without preserving strict-CSP markdown sanitization and current host soul/x402 adapter contracts.
 
 ## Local dev
 

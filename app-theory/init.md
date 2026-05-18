@@ -21,19 +21,19 @@ This section defines the **pinned destination frameworks**. These values are **c
 (do not guess; do not write UNKNOWN).
 
 ### AppTheory (pinned)
-- Go module: `github.com/theory-cloud/apptheory@v1.6.0`
+- Go module: `github.com/theory-cloud/apptheory@v1.7.0`
 - Go runtime import: `github.com/theory-cloud/apptheory/runtime`
-- Docs entrypoints (for tag `v1.6.0`):
+- Docs entrypoints (for tag `v1.7.0`):
   - `docs/getting-started.md`
   - `docs/migration/from-lift.md`
 - Copy/paste dependency command:
-  - `go get github.com/theory-cloud/apptheory@v1.6.0`
+  - `go get github.com/theory-cloud/apptheory@v1.7.0`
 - Recommended pinned docs links:
-  - `https://github.com/theory-cloud/AppTheory/blob/v1.6.0/docs/getting-started.md`
-  - `https://github.com/theory-cloud/AppTheory/blob/v1.6.0/docs/migration/from-lift.md`
+  - `https://github.com/theory-cloud/AppTheory/blob/v1.7.0/docs/getting-started.md`
+  - `https://github.com/theory-cloud/AppTheory/blob/v1.7.0/docs/migration/from-lift.md`
 - Recommended pinned CDK docs links:
-  - `https://github.com/theory-cloud/AppTheory/blob/v1.6.0/cdk/docs/getting-started.md`
-  - `https://github.com/theory-cloud/AppTheory/blob/v1.6.0/cdk/docs/api-reference.md`
+  - `https://github.com/theory-cloud/AppTheory/blob/v1.7.0/cdk/docs/getting-started.md`
+  - `https://github.com/theory-cloud/AppTheory/blob/v1.7.0/cdk/docs/api-reference.md`
 
 ### TableTheory (pinned)
 - Go module: `github.com/theory-cloud/tabletheory@v1.8.3`
