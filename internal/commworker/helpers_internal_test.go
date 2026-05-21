@@ -252,7 +252,12 @@ func TestCommWorkerStoreAndNotificationHelpers(t *testing.T) {
 
 func newCommWorkerStoreHelperStore(now time.Time) *fakeStore {
 	return &fakeStore{
-		emailIndex: map[string]string{"alice@example.com": "0xabc"},
+		emailIndex: map[string]string{
+			"alice@example.com":                       "0xabc",
+			"agent.with.dot.simulacrum@lessersoul.ai": "0xcompound",
+			"pilot.simulacrum@lessersoul.ai":          "0xpilot-sim",
+			"pilot.other-instance@lessersoul.ai":      "0xpilot-other",
+		},
 		phoneIndex: map[string]string{"+15551234567": "0xdef"},
 		domains:    map[string]*models.Domain{"example.com": {Domain: "example.com", InstanceSlug: "inst-1"}},
 		instances:  map[string]*models.Instance{"inst-1": {Slug: "inst-1", HostedBaseDomain: "demo.example.com"}},
@@ -266,7 +271,8 @@ func newCommWorkerStoreHelperStore(now time.Time) *fakeStore {
 			},
 		},
 		channels: map[string]*models.SoulAgentChannel{
-			"0xabc#email": {AgentID: "0xabc", ChannelType: "email", Identifier: commTestAgentEmail, SecretRef: "/pw"},
+			"0xabc#email":      {AgentID: "0xabc", ChannelType: "email", Identifier: commTestAgentEmail, SecretRef: "/pw"},
+			"0xcompound#email": {AgentID: "0xcompound", ChannelType: "email", Identifier: "agent.with.dot.simulacrum@lessersoul.ai", SecretRef: "/pw"},
 		},
 	}
 }
@@ -294,6 +300,34 @@ func testResolveRecipientAndChannelMatching(t *testing.T, s *Server) {
 	}
 	if s.channelMatchesNotification(nil, "sms", &InboundParty{Number: "1"}) {
 		t.Fatalf("expected nil channel to miss")
+	}
+
+	testResolveInstanceScopedEmailRecipients(t, s)
+	testChannelMatchesInstanceScopedEmail(t, s)
+}
+
+func testResolveInstanceScopedEmailRecipients(t *testing.T, s *Server) {
+	t.Helper()
+
+	agentID, ok, err := s.resolveRecipient(context.Background(), "email", &InboundParty{Address: "Agent.With.Dot.Simulacrum@LesserSoul.ai"})
+	if err != nil || !ok || agentID != "0xcompound" {
+		t.Fatalf("unexpected compound local-part lookup: %q %v %v", agentID, ok, err)
+	}
+	agentID, ok, err = s.resolveRecipient(context.Background(), "email", &InboundParty{Address: "pilot.simulacrum@lessersoul.ai"})
+	if err != nil || !ok || agentID != "0xpilot-sim" {
+		t.Fatalf("unexpected same-local-id first instance lookup: %q %v %v", agentID, ok, err)
+	}
+	agentID, ok, err = s.resolveRecipient(context.Background(), "email", &InboundParty{Address: "pilot.other-instance@lessersoul.ai"})
+	if err != nil || !ok || agentID != "0xpilot-other" {
+		t.Fatalf("unexpected same-local-id second instance lookup: %q %v %v", agentID, ok, err)
+	}
+}
+
+func testChannelMatchesInstanceScopedEmail(t *testing.T, s *Server) {
+	t.Helper()
+
+	if !s.channelMatchesNotification(&models.SoulAgentChannel{Identifier: "agent.with.dot.simulacrum@lessersoul.ai"}, "email", &InboundParty{Address: "Agent.With.Dot.Simulacrum@LesserSoul.ai"}) {
+		t.Fatalf("expected compound email match")
 	}
 }
 
