@@ -258,6 +258,14 @@ func newCommWorkerStoreHelperStore(now time.Time) *fakeStore {
 			"pilot.simulacrum@lessersoul.ai":          "0xpilot-sim",
 			"pilot.other-instance@lessersoul.ai":      "0xpilot-other",
 		},
+		emailAlias: map[string]*models.SoulEmailLegacyAliasIndex{
+			"pilot@lessersoul.ai": {
+				AliasEmail:     "pilot@lessersoul.ai",
+				CanonicalEmail: "pilot.simulacrum@lessersoul.ai",
+				AgentID:        "0xpilot-sim",
+				Status:         models.SoulEmailLegacyAliasStatusActive,
+			},
+		},
 		phoneIndex: map[string]string{"+15551234567": "0xdef"},
 		domains:    map[string]*models.Domain{"example.com": {Domain: "example.com", InstanceSlug: "inst-1"}},
 		instances:  map[string]*models.Instance{"inst-1": {Slug: "inst-1", HostedBaseDomain: "demo.example.com"}},
@@ -320,6 +328,24 @@ func testResolveInstanceScopedEmailRecipients(t *testing.T, s *Server) {
 	agentID, ok, err = s.resolveRecipient(context.Background(), "email", &InboundParty{Address: "pilot.other-instance@lessersoul.ai"})
 	if err != nil || !ok || agentID != "0xpilot-other" {
 		t.Fatalf("unexpected same-local-id second instance lookup: %q %v %v", agentID, ok, err)
+	}
+	testResolveLegacyEmailAliasRecipients(t, s)
+}
+
+func testResolveLegacyEmailAliasRecipients(t *testing.T, s *Server) {
+	t.Helper()
+
+	legacy := &InboundParty{Address: "pilot@lessersoul.ai"}
+	agentID, ok, err := s.resolveRecipient(context.Background(), "email", legacy)
+	if err != nil || !ok || agentID != "0xpilot-sim" {
+		t.Fatalf("unexpected legacy alias lookup: %q %v %v", agentID, ok, err)
+	}
+	if legacy.Address != "pilot.simulacrum@lessersoul.ai" {
+		t.Fatalf("expected legacy alias to canonicalize before channel matching, got %q", legacy.Address)
+	}
+	agentID, ok, err = s.resolveRecipient(context.Background(), "email", &InboundParty{Address: "unknown@lessersoul.ai"})
+	if err != nil || ok || agentID != "" {
+		t.Fatalf("expected unknown bare alias to fail closed, got %q %v %v", agentID, ok, err)
 	}
 }
 

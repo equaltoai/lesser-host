@@ -81,6 +81,7 @@ func LambdaInit() (DB, error) {
 		&models.SoulCommMailboxEvent{},
 		&models.SoulOperation{},
 		&models.SoulEmailAgentIndex{},
+		&models.SoulEmailLegacyAliasIndex{},
 		&models.SoulPhoneAgentIndex{},
 		&models.SoulChannelAgentIndex{},
 		&models.SoulRelationshipFromIndex{},

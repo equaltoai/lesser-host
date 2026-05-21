@@ -593,17 +593,78 @@ func (s *Server) syncSoulV3Channel(
 	if err != nil {
 		return err
 	}
-	if trustedManagedSoulChannelForIndex(existing) && !soulChannelsSameIdentifier(existing, desired) {
+	legacyEmailAlias, appErr := s.buildLegacyEmailAliasForManagedMigration(ctx, identity, existing, desired, channelType)
+	if appErr != nil {
+		return appErr
+	}
+	if trustedManagedSoulChannelForIndex(existing) && !soulChannelsSameIdentifier(existing, desired) && legacyEmailAlias == nil {
 		return &apptheory.AppError{Code: "app.conflict", Message: "managed channel must be deprovisioned before changing identifier"}
 	}
-	preserveManagedSoulChannelMetadata(desired, existing)
+	if legacyEmailAlias != nil {
+		preserveManagedSoulChannelProvisioningMetadata(desired, existing)
+	} else {
+		preserveManagedSoulChannelMetadata(desired, existing)
+	}
+	if legacyEmailAlias != nil {
+		if appErr := s.ensureSoulEmailLegacyAliasIndex(ctx, legacyEmailAlias); appErr != nil {
+			return appErr
+		}
+	}
 	if appErr := s.cleanupSoulV3ChannelIndexes(ctx, agentIDHex, channelType, identity, existing, desired); appErr != nil {
 		return appErr
 	}
 	if desired == nil {
 		return s.deleteSoulV3Channel(ctx, identity, channelType, existing)
 	}
-	return s.upsertSoulV3Channel(ctx, identity, channelType, desired, desiredEmailIndex, desiredPhoneIndex, desiredENS)
+	if appErr := s.upsertSoulV3Channel(ctx, identity, channelType, desired, desiredEmailIndex, desiredPhoneIndex, desiredENS); appErr != nil {
+		return appErr
+	}
+	return nil
+}
+
+func (s *Server) buildLegacyEmailAliasForManagedMigration(
+	ctx context.Context,
+	identity *models.SoulAgentIdentity,
+	existing *models.SoulAgentChannel,
+	desired *models.SoulAgentChannel,
+	channelType string,
+) (*models.SoulEmailLegacyAliasIndex, *apptheory.AppError) {
+	if channelType != models.SoulChannelTypeEmail || existing == nil || desired == nil {
+		return nil, nil
+	}
+	if !trustedManagedSoulChannelForIndex(existing) || soulChannelsSameIdentifier(existing, desired) {
+		return nil, nil
+	}
+	existingCopy := *existing
+	desiredCopy := *desired
+	_ = existingCopy.UpdateKeys()
+	_ = desiredCopy.UpdateKeys()
+	if existingCopy.Provider != commDeliveryProviderMigadu || desiredCopy.ChannelType != models.SoulChannelTypeEmail {
+		return nil, nil
+	}
+	if !isLegacyBareSoulEmailAlias(existingCopy.Identifier) {
+		return nil, nil
+	}
+	expected, appErr := s.resolveSoulProvisionEmailAddress(ctx, identity, "")
+	if appErr != nil {
+		return nil, appErr
+	}
+	if !strings.EqualFold(strings.TrimSpace(desiredCopy.Identifier), expected.Address) {
+		return nil, nil
+	}
+	return &models.SoulEmailLegacyAliasIndex{
+		AliasEmail:     existingCopy.Identifier,
+		CanonicalEmail: desiredCopy.Identifier,
+		AgentID:        strings.TrimSpace(desiredCopy.AgentID),
+		Status:         models.SoulEmailLegacyAliasStatusActive,
+		Source:         "project37-m2-registration-sync",
+	}, nil
+}
+
+func isLegacyBareSoulEmailAlias(address string) bool {
+	address = strings.ToLower(strings.TrimSpace(address))
+	local, domain, ok := strings.Cut(address, "@")
+	return ok && strings.TrimSpace(local) != "" && domain == soulManagedEmailDomain
 }
 
 func (s *Server) loadExistingSoulChannel(ctx context.Context, agentIDHex string, channelType string) (*models.SoulAgentChannel, *apptheory.AppError) {
@@ -620,6 +681,13 @@ func preserveManagedSoulChannelMetadata(desired *models.SoulAgentChannel, existi
 		return
 	}
 	if !soulChannelsSameIdentifier(existing, desired) {
+		return
+	}
+	preserveManagedSoulChannelProvisioningMetadata(desired, existing)
+}
+
+func preserveManagedSoulChannelProvisioningMetadata(desired *models.SoulAgentChannel, existing *models.SoulAgentChannel) {
+	if desired == nil || existing == nil {
 		return
 	}
 	if strings.TrimSpace(desired.Provider) == "" {
@@ -842,6 +910,42 @@ func (s *Server) ensureSoulPhoneAgentIndex(ctx context.Context, idx *models.Soul
 		}
 		return ""
 	})
+}
+
+func (s *Server) ensureSoulEmailLegacyAliasIndex(ctx context.Context, idx *models.SoulEmailLegacyAliasIndex) *apptheory.AppError {
+	if idx == nil {
+		return nil
+	}
+	_ = idx.UpdateKeys()
+	if strings.TrimSpace(idx.AliasEmail) == "" || strings.TrimSpace(idx.CanonicalEmail) == "" || strings.TrimSpace(idx.AgentID) == "" {
+		return &apptheory.AppError{Code: "app.bad_request", Message: "legacy email alias is invalid"}
+	}
+	var existing models.SoulEmailLegacyAliasIndex
+	err := s.store.DB.WithContext(ctx).
+		Model(&models.SoulEmailLegacyAliasIndex{}).
+		Where("PK", "=", idx.PK).
+		Where("SK", "=", idx.SK).
+		First(&existing)
+	if err == nil {
+		if strings.EqualFold(strings.TrimSpace(existing.AgentID), strings.TrimSpace(idx.AgentID)) &&
+			strings.EqualFold(strings.TrimSpace(existing.CanonicalEmail), strings.TrimSpace(idx.CanonicalEmail)) {
+			if updateErr := s.store.DB.WithContext(ctx).Model(idx).CreateOrUpdate(); updateErr != nil {
+				return &apptheory.AppError{Code: "app.internal", Message: "failed to update legacy email alias"}
+			}
+			return nil
+		}
+		return &apptheory.AppError{Code: "app.conflict", Message: "legacy email alias is already assigned"}
+	}
+	if !theoryErrors.IsNotFound(err) {
+		return &apptheory.AppError{Code: "app.internal", Message: "failed to validate legacy email alias"}
+	}
+	if err := s.store.DB.WithContext(ctx).Model(idx).Create(); err != nil {
+		if theoryErrors.IsConditionFailed(err) {
+			return &apptheory.AppError{Code: "app.conflict", Message: "legacy email alias is already assigned"}
+		}
+		return &apptheory.AppError{Code: "app.internal", Message: "failed to update legacy email alias"}
+	}
+	return nil
 }
 
 func (s *Server) ensureSoulContactAgentIndex(

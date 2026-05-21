@@ -13,6 +13,7 @@ import (
 
 type commStore interface {
 	LookupAgentByEmail(ctx context.Context, email string) (string, bool, error)
+	LookupLegacyEmailAlias(ctx context.Context, email string) (*models.SoulEmailLegacyAliasIndex, bool, error)
 	LookupAgentByPhone(ctx context.Context, phone string) (string, bool, error)
 
 	GetSoulAgentIdentity(ctx context.Context, agentID string) (*models.SoulAgentIdentity, bool, error)
@@ -53,6 +54,32 @@ func (s *dynamoStore) LookupAgentByEmail(ctx context.Context, email string) (str
 	return s.lookupAgentIndex(ctx, &models.SoulEmailAgentIndex{}, idx.GetPK(), idx.GetSK(), &item, func() string {
 		return item.AgentID
 	})
+}
+
+func (s *dynamoStore) LookupLegacyEmailAlias(ctx context.Context, email string) (*models.SoulEmailLegacyAliasIndex, bool, error) {
+	if s == nil || s.db == nil {
+		return nil, false, fmt.Errorf("store not initialized")
+	}
+	idx := &models.SoulEmailLegacyAliasIndex{AliasEmail: strings.TrimSpace(email)}
+	_ = idx.UpdateKeys()
+
+	var item models.SoulEmailLegacyAliasIndex
+	err := s.db.WithContext(ctx).
+		Model(&models.SoulEmailLegacyAliasIndex{}).
+		Where("PK", "=", idx.GetPK()).
+		Where("SK", "=", idx.GetSK()).
+		First(&item)
+	if theoryErrors.IsNotFound(err) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	_ = item.UpdateKeys()
+	if item.Status != models.SoulEmailLegacyAliasStatusActive || strings.TrimSpace(item.AgentID) == "" || strings.TrimSpace(item.CanonicalEmail) == "" {
+		return nil, false, nil
+	}
+	return &item, true, nil
 }
 
 func (s *dynamoStore) LookupAgentByPhone(ctx context.Context, phone string) (string, bool, error) {

@@ -122,6 +122,7 @@ type soulLifecycleTestDB struct {
 	qChannel    *ttmocks.MockQuery
 	qPrefs      *ttmocks.MockQuery
 	qEmailIdx   *ttmocks.MockQuery
+	qEmailAlias *ttmocks.MockQuery
 	qPhoneIdx   *ttmocks.MockQuery
 	qChannelIdx *ttmocks.MockQuery
 	qENS        *ttmocks.MockQuery
@@ -146,6 +147,7 @@ func newSoulLifecycleTestDB() soulLifecycleTestDB {
 	qChannel := new(ttmocks.MockQuery)
 	qContactPrefs := new(ttmocks.MockQuery)
 	qEmailIdx := new(ttmocks.MockQuery)
+	qEmailAlias := new(ttmocks.MockQuery)
 	qPhoneIdx := new(ttmocks.MockQuery)
 	qChannelTypeIdx := new(ttmocks.MockQuery)
 	qENSResolution := new(ttmocks.MockQuery)
@@ -168,6 +170,7 @@ func newSoulLifecycleTestDB() soulLifecycleTestDB {
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentChannel")).Return(qChannel).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentContactPreferences")).Return(qContactPrefs).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulEmailAgentIndex")).Return(qEmailIdx).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulEmailLegacyAliasIndex")).Return(qEmailAlias).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulPhoneAgentIndex")).Return(qPhoneIdx).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulChannelAgentIndex")).Return(qChannelTypeIdx).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(qENSResolution).Maybe()
@@ -190,6 +193,7 @@ func newSoulLifecycleTestDB() soulLifecycleTestDB {
 		qChannel,
 		qContactPrefs,
 		qEmailIdx,
+		qEmailAlias,
 		qPhoneIdx,
 		qChannelTypeIdx,
 		qENSResolution,
@@ -228,6 +232,7 @@ func newSoulLifecycleTestDB() soulLifecycleTestDB {
 		qChannel:    qChannel,
 		qPrefs:      qContactPrefs,
 		qEmailIdx:   qEmailIdx,
+		qEmailAlias: qEmailAlias,
 		qPhoneIdx:   qPhoneIdx,
 		qChannelIdx: qChannelTypeIdx,
 		qENS:        qENSResolution,
