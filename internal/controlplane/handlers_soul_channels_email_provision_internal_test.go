@@ -25,9 +25,14 @@ import (
 )
 
 const (
-	provisionTestEmailLocalPart = "agent-alice"
-	provisionTestEmailAddress   = provisionTestEmailLocalPart + "@lessersoul.ai"
-	provisionTestEmailENSName   = provisionTestEmailLocalPart + ".lessersoul.eth"
+	provisionTestAgentLocalID    = "agent-alice"
+	provisionTestInstanceSlug    = "inst1"
+	provisionTestEmailLocalPart  = provisionTestAgentLocalID + "." + provisionTestInstanceSlug
+	provisionTestEmailAddress    = provisionTestEmailLocalPart + "@lessersoul.ai"
+	provisionTestEmailENSName    = provisionTestAgentLocalID + ".lessersoul.eth"
+	provisionTestAgentDomain     = "example.com"
+	provisionTestStageAlias      = "dev.simulacrum.greater.website"
+	provisionTestStageBaseDomain = "simulacrum.greater.website"
 )
 
 func mustMarshalJSON(t testing.TB, v any) []byte {
@@ -53,8 +58,8 @@ func testProvisionManagedChannelBaseRegistration(agentIDHex string, wallet strin
 	return map[string]any{
 		"version": "2",
 		"agentId": agentIDHex,
-		"domain":  "example.com",
-		"localId": provisionTestEmailLocalPart,
+		"domain":  provisionTestAgentDomain,
+		"localId": provisionTestAgentLocalID,
 		"wallet":  wallet,
 		"principal": map[string]any{
 			"type":        "individual",
@@ -144,22 +149,200 @@ func TestHandleSoulProvisionEmail_BeginThenConfirm_PublishesV3WithChannelAndIsId
 	assertProvisionEmailIdempotent(t, fixture, confirmBody)
 }
 
-func TestResolveSoulProvisionEmailAddress_RequiresAgentLocalID(t *testing.T) {
+func TestBuildSoulProvisionManagedEmailAddress_DerivesInstanceScopedAddress(t *testing.T) {
 	t.Parallel()
 
-	identity := &models.SoulAgentIdentity{LocalID: "agent-alice"}
-	_, _, _, appErr := resolveSoulProvisionEmailAddress(identity, "victim")
-	if appErr == nil || appErr.Code != appErrCodeConflict || appErr.Message != "localPart must match agent local id" {
-		t.Fatalf("expected local id conflict, got %v", appErr)
+	_, appErr := buildSoulProvisionManagedEmailAddress(provisionTestAgentLocalID, provisionTestInstanceSlug, "victim")
+	if appErr == nil || appErr.Code != appErrCodeConflict || appErr.Message != soulEmailProvisionErrDerivedLocalPartReq {
+		t.Fatalf("expected stale local_part conflict, got %v", appErr)
 	}
 
-	local, address, ens, appErr := resolveSoulProvisionEmailAddress(identity, "")
+	got, appErr := buildSoulProvisionManagedEmailAddress(provisionTestAgentLocalID, provisionTestInstanceSlug, "")
 	if appErr != nil {
-		t.Fatalf("expected canonical local id success, got %v", appErr)
+		t.Fatalf("expected derived address success, got %v", appErr)
 	}
-	if local != "agent-alice" || address != provisionTestEmailAddress || ens != provisionTestEmailENSName {
-		t.Fatalf("unexpected resolved address: local=%q address=%q ens=%q", local, address, ens)
+	if got.AgentLocalID != provisionTestAgentLocalID ||
+		got.InstanceSlug != provisionTestInstanceSlug ||
+		got.ProviderLocalPart != provisionTestEmailLocalPart ||
+		got.Address != provisionTestEmailAddress ||
+		got.ENSName != provisionTestEmailENSName {
+		t.Fatalf("unexpected resolved address: %#v", got)
 	}
+}
+
+func TestBuildSoulProvisionManagedEmailAddress_AllowsDotsAndSameLocalIDAcrossInstances(t *testing.T) {
+	t.Parallel()
+
+	got, appErr := buildSoulProvisionManagedEmailAddress("Agent.With.Dot", "simulacrum", "agent.with.dot.simulacrum")
+	if appErr != nil {
+		t.Fatalf("expected dotted local id success, got %v", appErr)
+	}
+	if got.ProviderLocalPart != "agent.with.dot.simulacrum" || got.Address != "agent.with.dot.simulacrum@lessersoul.ai" {
+		t.Fatalf("unexpected dotted address: %#v", got)
+	}
+
+	a, appErr := buildSoulProvisionManagedEmailAddress("pilot", "simulacrum", "")
+	if appErr != nil {
+		t.Fatalf("expected first instance success, got %v", appErr)
+	}
+	b, appErr := buildSoulProvisionManagedEmailAddress("pilot", "sim-lab", "")
+	if appErr != nil {
+		t.Fatalf("expected second instance success, got %v", appErr)
+	}
+	if a.Address == b.Address || a.Address != "pilot.simulacrum@lessersoul.ai" || b.Address != "pilot.sim-lab@lessersoul.ai" {
+		t.Fatalf("expected same local id to derive distinct instance addresses: a=%#v b=%#v", a, b)
+	}
+}
+
+func TestBuildSoulProvisionManagedEmailAddress_RejectsOverflowAndInvalidSlug(t *testing.T) {
+	t.Parallel()
+
+	_, appErr := buildSoulProvisionManagedEmailAddress(strings.Repeat("a", 56), "simulacrum", "")
+	if appErr == nil || appErr.Code != appErrCodeConflict || appErr.Message != "email local_part exceeds 64-octet SMTP limit" {
+		t.Fatalf("expected SMTP local_part overflow conflict, got %v", appErr)
+	}
+
+	_, appErr = buildSoulProvisionManagedEmailAddress("pilot", "bad_slug", "")
+	if appErr == nil || appErr.Code != appErrCodeConflict || appErr.Message != "agent domain instance slug is invalid" {
+		t.Fatalf("expected invalid slug conflict, got %v", appErr)
+	}
+}
+
+func TestValidateSoulProvisionEmailAddressAvailability_PreventsDuplicateFullAddress(t *testing.T) {
+	t.Parallel()
+
+	db, queries := newTestDBWithModelQueries("*models.SoulEmailAgentIndex")
+	qEmail := queries[0]
+	qEmail.On("First", mock.AnythingOfType("*models.SoulEmailAgentIndex")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulEmailAgentIndex](t, args, 0)
+		*dest = models.SoulEmailAgentIndex{
+			Email:   "pilot.simulacrum@lessersoul.ai",
+			AgentID: "0xother",
+		}
+	}).Once()
+
+	s := &Server{store: store.New(db)}
+	appErr := s.validateSoulProvisionEmailAddressAvailability(context.Background(), "0xagent", "pilot.simulacrum@lessersoul.ai")
+	if appErr == nil || appErr.Code != appErrCodeConflict || appErr.Message != soulEmailProvisionErrAddressTaken {
+		t.Fatalf("expected duplicate full-address conflict, got %v", appErr)
+	}
+}
+
+func TestResolveSoulProvisionEmailAddress_ExactVanityDomain(t *testing.T) {
+	t.Parallel()
+
+	db, queries := newTestDBWithModelQueries("*models.Domain")
+	qDomain := queries[0]
+	qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
+		*dest = models.Domain{
+			Domain:       "agents.example.com",
+			InstanceSlug: "vanity-inst",
+			Type:         models.DomainTypeVanity,
+			Status:       models.DomainStatusVerified,
+		}
+	}).Once()
+
+	s := &Server{store: store.New(db)}
+	got, appErr := s.resolveSoulProvisionEmailAddress(context.Background(), &models.SoulAgentIdentity{
+		Domain:  "agents.example.com",
+		LocalID: "Pilot",
+	}, "")
+	if appErr != nil {
+		t.Fatalf("expected exact vanity resolution, got %v", appErr)
+	}
+	if got.ProviderLocalPart != "pilot.vanity-inst" || got.Address != "pilot.vanity-inst@lessersoul.ai" {
+		t.Fatalf("unexpected exact vanity address: %#v", got)
+	}
+}
+
+func TestResolveSoulProvisionEmailAddress_ManagedStagePrimaryAlias(t *testing.T) {
+	t.Parallel()
+
+	db, queries := newTestDBWithModelQueries("*models.Domain", "*models.Instance")
+	qDomain := queries[0]
+	qInstance := queries[1]
+	qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(theoryErrors.ErrItemNotFound).Once()
+	qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
+		*dest = models.Domain{
+			Domain:             provisionTestStageBaseDomain,
+			InstanceSlug:       "simulacrum",
+			Type:               models.DomainTypePrimary,
+			Status:             models.DomainStatusActive,
+			VerificationMethod: "managed",
+		}
+	}).Once()
+	qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{Slug: "simulacrum", HostedBaseDomain: provisionTestStageBaseDomain}
+	}).Once()
+
+	s := &Server{store: store.New(db), cfg: config.Config{Stage: "lab"}}
+	got, appErr := s.resolveSoulProvisionEmailAddress(context.Background(), &models.SoulAgentIdentity{
+		Domain:  provisionTestStageAlias,
+		LocalID: "Pilot",
+	}, "")
+	if appErr != nil {
+		t.Fatalf("expected managed stage alias resolution, got %v", appErr)
+	}
+	if got.ProviderLocalPart != "pilot.simulacrum" || got.Address != "pilot.simulacrum@lessersoul.ai" {
+		t.Fatalf("unexpected stage alias address: %#v", got)
+	}
+}
+
+func TestResolveSoulProvisionEmailAddress_FailsClosedForDomainState(t *testing.T) {
+	t.Parallel()
+
+	t.Run("missing domain", func(t *testing.T) {
+		t.Parallel()
+
+		db, queries := newTestDBWithModelQueries("*models.Domain")
+		queries[0].On("First", mock.AnythingOfType("*models.Domain")).Return(theoryErrors.ErrItemNotFound).Once()
+		s := &Server{store: store.New(db), cfg: config.Config{Stage: "lab"}}
+		_, appErr := s.resolveSoulProvisionEmailAddress(context.Background(), &models.SoulAgentIdentity{Domain: "example.com", LocalID: "pilot"}, "")
+		if appErr == nil || appErr.Code != appErrCodeConflict || appErr.Message != "agent domain is not registered for managed email" {
+			t.Fatalf("expected missing-domain conflict, got %v", appErr)
+		}
+	})
+
+	t.Run("unverified exact domain", func(t *testing.T) {
+		t.Parallel()
+
+		db, queries := newTestDBWithModelQueries("*models.Domain")
+		queries[0].On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
+			*dest = models.Domain{Domain: "example.com", InstanceSlug: "simulacrum", Status: models.DomainStatusPending}
+		}).Once()
+		s := &Server{store: store.New(db)}
+		_, appErr := s.resolveSoulProvisionEmailAddress(context.Background(), &models.SoulAgentIdentity{Domain: "example.com", LocalID: "pilot"}, "")
+		if appErr == nil || appErr.Code != appErrCodeConflict || appErr.Message != "agent domain is not verified for managed email" {
+			t.Fatalf("expected unverified-domain conflict, got %v", appErr)
+		}
+	})
+
+	t.Run("stage vanity alias", func(t *testing.T) {
+		t.Parallel()
+
+		db, queries := newTestDBWithModelQueries("*models.Domain", "*models.Instance")
+		qDomain := queries[0]
+		qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(theoryErrors.ErrItemNotFound).Once()
+		qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
+			*dest = models.Domain{
+				Domain:             "vanity.example.com",
+				InstanceSlug:       "simulacrum",
+				Type:               models.DomainTypeVanity,
+				Status:             models.DomainStatusVerified,
+				VerificationMethod: "dns_txt",
+			}
+		}).Once()
+		s := &Server{store: store.New(db), cfg: config.Config{Stage: "lab"}}
+		_, appErr := s.resolveSoulProvisionEmailAddress(context.Background(), &models.SoulAgentIdentity{Domain: "dev.vanity.example.com", LocalID: "pilot"}, "")
+		if appErr == nil || appErr.Code != appErrCodeConflict || appErr.Message != "agent domain is not registered for managed email" {
+			t.Fatalf("expected stage vanity alias conflict, got %v", appErr)
+		}
+	})
 }
 
 func newProvisionEmailE2EFixture(t *testing.T) *provisionEmailE2EFixture {
@@ -240,11 +423,11 @@ func seedProvisionEmailE2EAccess(t *testing.T, fixture *provisionEmailE2EFixture
 
 	fixture.tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
-		*dest = models.Domain{Domain: "example.com", InstanceSlug: "inst1", Status: models.DomainStatusVerified}
-	}).Times(3)
+		*dest = models.Domain{Domain: provisionTestAgentDomain, InstanceSlug: provisionTestInstanceSlug, Status: models.DomainStatusVerified}
+	}).Times(5)
 	fixture.tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
-		*dest = models.Instance{Slug: "inst1", Owner: "admin"}
+		*dest = models.Instance{Slug: provisionTestInstanceSlug, Owner: "admin"}
 	}).Times(3)
 
 	identityCalls := 0
@@ -257,8 +440,8 @@ func seedProvisionEmailE2EAccess(t *testing.T, fixture *provisionEmailE2EFixture
 		}
 		*dest = models.SoulAgentIdentity{
 			AgentID:                fixture.agentIDHex,
-			Domain:                 "example.com",
-			LocalID:                provisionTestEmailLocalPart,
+			Domain:                 provisionTestAgentDomain,
+			LocalID:                provisionTestAgentLocalID,
 			Wallet:                 fixture.wallet,
 			Status:                 models.SoulAgentStatusActive,
 			LifecycleStatus:        models.SoulAgentStatusActive,
@@ -350,6 +533,10 @@ func assertProvisionEmailConfirmCreated(t *testing.T, fixture *provisionEmailE2E
 	if confirmResp.Status != http.StatusCreated {
 		t.Fatalf("confirm expected 201, got %d (body=%q)", confirmResp.Status, string(confirmResp.Body))
 	}
+	confirmOut := mustUnmarshalJSON[soulProvisionEmailConfirmResponse](t, confirmResp.Body)
+	if confirmOut.Address != provisionTestEmailAddress || confirmOut.RegistrationVersion != 4 {
+		t.Fatalf("unexpected confirm response: %#v", confirmOut)
+	}
 	if len(fixture.migaduCalls) != 1 {
 		t.Fatalf("expected 1 migadu call, got %d", len(fixture.migaduCalls))
 	}
@@ -362,7 +549,7 @@ func assertProvisionEmailConfirmCreated(t *testing.T, fixture *provisionEmailE2E
 	if fixture.forwardingCalls[0].localPart != provisionTestEmailLocalPart {
 		t.Fatalf("expected forwarding localPart %s, got %q", provisionTestEmailLocalPart, fixture.forwardingCalls[0].localPart)
 	}
-	if fixture.forwardingCalls[0].address != "agent-alice@inbound.lessersoul.ai" {
+	if fixture.forwardingCalls[0].address != "agent-alice.inst1@inbound.lessersoul.ai" {
 		t.Fatalf("unexpected forwarding address: %q", fixture.forwardingCalls[0].address)
 	}
 }
@@ -408,6 +595,10 @@ func assertProvisionEmailIdempotent(t *testing.T, fixture *provisionEmailE2EFixt
 	}
 	if confirmResp.Status != http.StatusOK {
 		t.Fatalf("confirm2 expected 200, got %d (body=%q)", confirmResp.Status, string(confirmResp.Body))
+	}
+	confirmOut := mustUnmarshalJSON[soulProvisionEmailConfirmResponse](t, confirmResp.Body)
+	if confirmOut.Address != provisionTestEmailAddress || confirmOut.RegistrationVersion != 4 {
+		t.Fatalf("unexpected idempotent confirm response: %#v", confirmOut)
 	}
 	if len(fixture.migaduCalls) != 1 {
 		t.Fatalf("expected migadu not called again; got %d calls", len(fixture.migaduCalls))
@@ -457,6 +648,57 @@ func TestHandleSoulProvisionEmail_ForwardingFailureRollsBackMailboxAndStopsPubli
 	published := mustUnmarshalJSON[map[string]any](t, fixture.packs.objects[fixture.s3Key].body)
 	if got := strings.TrimSpace(extractStringField(published, "version")); got != "2" {
 		t.Fatalf("expected registration version to remain 2 after rollback, got %q", got)
+	}
+}
+
+func TestHandleSoulProvisionEmail_RejectsStaleBareLocalPartOnConfirm(t *testing.T) {
+	t.Parallel()
+
+	fixture := newProvisionEmailE2EFixture(t)
+	beginOut := runProvisionEmailBegin(t, fixture)
+	var confirmBody map[string]any
+	if err := json.Unmarshal(buildProvisionEmailConfirmBody(t, fixture, beginOut), &confirmBody); err != nil {
+		t.Fatalf("unmarshal confirm body: %v", err)
+	}
+	confirmBody["local_part"] = provisionTestAgentLocalID
+
+	confirmCtx := &apptheory.Context{
+		RequestID:    "r-email-confirm-stale-local-1",
+		AuthIdentity: "admin",
+		Params:       map[string]string{"agentId": fixture.agentIDHex},
+		Request:      apptheory.Request{Body: mustMarshalJSON(t, confirmBody)},
+	}
+	confirmCtx.Set(ctxKeyOperatorRole, models.RoleAdmin)
+
+	_, err := fixture.server.handleSoulProvisionEmailChannel(confirmCtx)
+	appErr := requireProvisionEmailAppErr(t, err)
+	if appErr.Code != appErrCodeConflict || appErr.Message != soulEmailProvisionErrDerivedLocalPartReq {
+		t.Fatalf("unexpected app error: %#v", appErr)
+	}
+	if len(fixture.migaduCalls) != 0 || len(fixture.forwardingCalls) != 0 || len(fixture.deleteMailboxCalls) != 0 {
+		t.Fatalf("expected stale local_part to stop before provider calls: creates=%#v forwardings=%#v deletes=%#v", fixture.migaduCalls, fixture.forwardingCalls, fixture.deleteMailboxCalls)
+	}
+}
+
+func TestHandleSoulBeginProvisionEmail_RejectsStaleBareLocalPart(t *testing.T) {
+	t.Parallel()
+
+	fixture := newProvisionEmailE2EFixture(t)
+	beginCtx := &apptheory.Context{
+		RequestID:    "r-email-begin-stale-local-1",
+		AuthIdentity: "admin",
+		Params:       map[string]string{"agentId": fixture.agentIDHex},
+		Request:      apptheory.Request{Body: []byte(`{"local_part":"agent-alice"}`)},
+	}
+	beginCtx.Set(ctxKeyOperatorRole, models.RoleAdmin)
+
+	_, err := fixture.server.handleSoulBeginProvisionEmailChannel(beginCtx)
+	appErr := requireProvisionEmailAppErr(t, err)
+	if appErr.Code != appErrCodeConflict || appErr.Message != soulEmailProvisionErrDerivedLocalPartReq {
+		t.Fatalf("unexpected app error: %#v", appErr)
+	}
+	if len(fixture.migaduCalls) != 0 || len(fixture.forwardingCalls) != 0 || len(fixture.deleteMailboxCalls) != 0 {
+		t.Fatalf("expected stale local_part to stop before provider calls: creates=%#v forwardings=%#v deletes=%#v", fixture.migaduCalls, fixture.forwardingCalls, fixture.deleteMailboxCalls)
 	}
 }
 
