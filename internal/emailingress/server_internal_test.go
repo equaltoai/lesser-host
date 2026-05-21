@@ -75,6 +75,9 @@ func TestNormalizeInboundRecipient(t *testing.T) {
 	if got, ok := normalizeInboundRecipient("Agent@Inbound.LesserSoul.ai", "inbound.lessersoul.ai"); !ok || got != "agent@lessersoul.ai" {
 		t.Fatalf("unexpected recipient mapping: got=%q ok=%v", got, ok)
 	}
+	if got, ok := normalizeInboundRecipient("Agent.With.Dot.Simulacrum@Inbound.LesserSoul.ai", "inbound.lessersoul.ai"); !ok || got != "agent.with.dot.simulacrum@lessersoul.ai" {
+		t.Fatalf("unexpected compound recipient mapping: got=%q ok=%v", got, ok)
+	}
 	if _, ok := normalizeInboundRecipient("agent@example.com", "inbound.lessersoul.ai"); ok {
 		t.Fatal("expected non-bridge recipient to be rejected")
 	}

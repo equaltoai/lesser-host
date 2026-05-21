@@ -819,7 +819,7 @@ func (s *Server) ensureSoulEmailAgentIndex(ctx context.Context, idx *models.Soul
 		return nil
 	}
 	_ = idx.UpdateKeys()
-	return s.ensureSoulContactAgentIndex(ctx, idx, idx.PK, idx.SK, idx.Email, idx.AgentID, "email index is invalid", "email address is already provisioned", "failed to validate email mapping", "failed to update email index", func() any {
+	return s.ensureSoulContactAgentIndex(ctx, idx, idx.PK, idx.SK, idx.Email, idx.AgentID, "email index is invalid", soulEmailProvisionErrAddressTaken, "failed to validate email mapping", "failed to update email index", func() any {
 		return &models.SoulEmailAgentIndex{}
 	}, func(existing any) string {
 		if idx, ok := existing.(*models.SoulEmailAgentIndex); ok && idx != nil {

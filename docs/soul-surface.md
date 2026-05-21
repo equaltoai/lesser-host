@@ -190,7 +190,7 @@ Sender -> Migadu mailbox -> <agent-local-id>.<instance-slug>@inbound.lessersoul.
 
 - Migadu remains the mailbox and outbound SMTP provider for `@lessersoul.ai`.
 - Project 37 defines the instance-scoped managed address contract in `docs/instance-scoped-soul-email-m0.md`: new managed soul email channels use `<agent-local-id>.<instance-slug>@lessersoul.ai`, with `instanceSlug` resolved from `Domain.InstanceSlug`.
-- New provisioning and operational backfills set Migadu forwarding targets to `<agent-local-id>.<instance-slug>@inbound.lessersoul.ai`.
+- New provisioning derives the provider local-part from `Domain.InstanceSlug` and sets Migadu forwarding targets to `<agent-local-id>.<instance-slug>@inbound.lessersoul.ai`.
 - Existing bare `<agent-local-id>@lessersoul.ai` addresses are legacy inbound aliases for migrated agents only; they are not current public channels after migration.
 - Amazon SES receives mail for `inbound.lessersoul.ai`, stores the raw message in S3, and invokes `cmd/email-ingress`.
 - `cmd/email-ingress` parses the raw RFC 5322 message and enqueues the existing `communication:inbound` payload shape for `comm-worker`.

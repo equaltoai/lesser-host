@@ -15,13 +15,25 @@ import (
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
+	"github.com/equaltoai/lesser-host/internal/domains"
 	"github.com/equaltoai/lesser-host/internal/httpx"
 	"github.com/equaltoai/lesser-host/internal/secrets"
 	"github.com/equaltoai/lesser-host/internal/soul"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
+const (
+	soulManagedEmailDomain    = "lessersoul.ai"
+	soulEmailSMTPLocalPartMax = 64
+
+	soulEmailProvisionErrAddressTaken        = "email address is already provisioned"
+	soulEmailProvisionErrDerivedLocalPartReq = "local_part must match derived provider local part"
+)
+
 type soulProvisionEmailBeginRequest struct {
+	// LocalPart is retained for wire compatibility only. New managed soul email
+	// provisioning derives the provider local part from agent local ID +
+	// Domain.InstanceSlug, and callers may not choose a bare/custom handle.
 	LocalPart string `json:"local_part,omitempty"`
 }
 
@@ -37,6 +49,9 @@ type soulProvisionEmailBeginResponse struct {
 }
 
 type soulProvisionEmailConfirmRequest struct {
+	// LocalPart is retained for wire compatibility only. When present it must
+	// match the derived provider local part exactly; stale bare local-parts are
+	// rejected before provider calls.
 	LocalPart string `json:"local_part,omitempty"`
 
 	IssuedAt        string `json:"issued_at"`
@@ -63,11 +78,11 @@ func (s *Server) handleSoulBeginProvisionEmailChannel(ctx *apptheory.Context) (*
 		}
 	}
 
-	localNorm, address, ensName, appErr := resolveSoulProvisionEmailAddress(identity, req.LocalPart)
+	emailAddress, appErr := s.resolveSoulProvisionEmailAddress(ctx.Context(), identity, req.LocalPart)
 	if appErr != nil {
 		return nil, appErr
 	}
-	if availabilityErr := s.validateSoulProvisionEmailAddressAvailability(ctx.Context(), agentIDHex, address); availabilityErr != nil {
+	if availabilityErr := s.validateSoulProvisionEmailAddressAvailability(ctx.Context(), agentIDHex, emailAddress.Address); availabilityErr != nil {
 		return nil, availabilityErr
 	}
 
@@ -82,9 +97,9 @@ func (s *Server) handleSoulBeginProvisionEmailChannel(ctx *apptheory.Context) (*
 	nextVersion := expectedVersion + 1
 
 	regMap, regV3, digest, appErr := s.buildSoulProvisionEmailRegistration(ctx.Context(), baseReg, baseVersion, agentIDHex, identity, soulProvisionEmailBuildInput{
-		LocalPart:          localNorm,
-		EmailAddress:       address,
-		ENSName:            ensName,
+		LocalPart:          emailAddress.ProviderLocalPart,
+		EmailAddress:       emailAddress.Address,
+		ENSName:            emailAddress.ENSName,
 		IssuedAt:           now,
 		ExpectedPrev:       expectedVersion,
 		NextVersion:        nextVersion,
@@ -97,8 +112,8 @@ func (s *Server) handleSoulBeginProvisionEmailChannel(ctx *apptheory.Context) (*
 
 	return apptheory.JSON(http.StatusOK, soulProvisionEmailBeginResponse{
 		Version:         "1",
-		Address:         address,
-		ENSName:         ensName,
+		Address:         emailAddress.Address,
+		ENSName:         emailAddress.ENSName,
 		DigestHex:       "0x" + hex.EncodeToString(digest),
 		IssuedAt:        now.Format(time.RFC3339Nano),
 		ExpectedVersion: expectedVersion,
@@ -130,11 +145,11 @@ func (s *Server) handleSoulProvisionEmailChannel(ctx *apptheory.Context) (*appth
 		return nil, &apptheory.AppError{Code: "app.conflict", Message: "version conflict; reload and try again"}
 	}
 
-	localNorm, address, ensName, appErr := resolveSoulProvisionEmailAddress(identity, req.LocalPart)
+	emailAddress, appErr := s.resolveSoulProvisionEmailAddress(ctx.Context(), identity, req.LocalPart)
 	if appErr != nil {
 		return nil, appErr
 	}
-	if availabilityErr := s.validateSoulProvisionEmailAddressAvailability(ctx.Context(), agentIDHex, address); availabilityErr != nil {
+	if availabilityErr := s.validateSoulProvisionEmailAddressAvailability(ctx.Context(), agentIDHex, emailAddress.Address); availabilityErr != nil {
 		return nil, availabilityErr
 	}
 
@@ -147,9 +162,9 @@ func (s *Server) handleSoulProvisionEmailChannel(ctx *apptheory.Context) (*appth
 	nextVersion := expectedVersion + 1
 
 	regMap, regV3, digest, appErr := s.buildSoulProvisionEmailRegistration(ctx.Context(), baseReg, baseVersion, agentIDHex, identity, soulProvisionEmailBuildInput{
-		LocalPart:          localNorm,
-		EmailAddress:       address,
-		ENSName:            ensName,
+		LocalPart:          emailAddress.ProviderLocalPart,
+		EmailAddress:       emailAddress.Address,
+		ENSName:            emailAddress.ENSName,
 		IssuedAt:           issuedAt.UTC(),
 		ExpectedPrev:       expectedVersion,
 		NextVersion:        nextVersion,
@@ -162,7 +177,7 @@ func (s *Server) handleSoulProvisionEmailChannel(ctx *apptheory.Context) (*appth
 	if verifyErr := verifyEthereumSignatureBytes(identity.Wallet, digest, selfSig); verifyErr != nil {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid registration signature"}
 	}
-	return s.finalizeSoulProvisionEmailChannel(ctx, agentIDHex, identity, expectedVersion, localNorm, address, regMap, regV3, selfSig)
+	return s.finalizeSoulProvisionEmailChannel(ctx, agentIDHex, identity, expectedVersion, emailAddress.ProviderLocalPart, emailAddress.Address, regMap, regV3, selfSig)
 }
 
 func parseSoulProvisionConfirm(expectedVersion *int, issuedAtRaw string, selfAttestation string) (int, time.Time, string, *apptheory.AppError) {
@@ -484,33 +499,94 @@ func (s *Server) requireSoulProvisionIdentity(ctx *apptheory.Context) (string, *
 	return agentIDHex, identity, nil
 }
 
-func resolveSoulProvisionEmailAddress(identity *models.SoulAgentIdentity, requestedLocalPart string) (string, string, string, *apptheory.AppError) {
+type soulProvisionManagedEmailAddress struct {
+	AgentLocalID      string
+	InstanceSlug      string
+	ProviderLocalPart string
+	Address           string
+	ENSName           string
+}
+
+func (s *Server) resolveSoulProvisionEmailAddress(ctx context.Context, identity *models.SoulAgentIdentity, requestedLocalPart string) (soulProvisionManagedEmailAddress, *apptheory.AppError) {
 	if identity == nil {
-		return "", "", "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return soulProvisionManagedEmailAddress{}, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 	canonicalLocal, err := soul.NormalizeLocalAgentID(identity.LocalID)
 	if err != nil || canonicalLocal == "" {
-		return "", "", "", &apptheory.AppError{Code: "app.conflict", Message: "agent local id is invalid"}
+		return soulProvisionManagedEmailAddress{}, &apptheory.AppError{Code: "app.conflict", Message: "agent local id is invalid"}
 	}
-	localPart := strings.TrimSpace(requestedLocalPart)
-	if localPart == "" {
-		localPart = canonicalLocal
+	instanceSlug, appErr := s.resolveSoulProvisionEmailInstanceSlug(ctx, identity)
+	if appErr != nil {
+		return soulProvisionManagedEmailAddress{}, appErr
 	}
-	localNorm, err := soul.NormalizeLocalAgentID(localPart)
+	return buildSoulProvisionManagedEmailAddress(canonicalLocal, instanceSlug, requestedLocalPart)
+}
+
+func (s *Server) resolveSoulProvisionEmailInstanceSlug(ctx context.Context, identity *models.SoulAgentIdentity) (string, *apptheory.AppError) {
+	if s == nil || identity == nil {
+		return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	normalizedDomain, err := domains.NormalizeDomain(identity.Domain)
 	if err != nil {
-		return "", "", "", &apptheory.AppError{Code: "app.bad_request", Message: "localPart is invalid"}
+		return "", &apptheory.AppError{Code: "app.conflict", Message: "agent domain is invalid"}
 	}
-	if localNorm != canonicalLocal {
-		return "", "", "", &apptheory.AppError{Code: "app.conflict", Message: "localPart must match agent local id"}
+
+	domain, loadErr := s.loadManagedStageAwareDomain(ctx, normalizedDomain)
+	if theoryErrors.IsNotFound(loadErr) {
+		return "", &apptheory.AppError{Code: "app.conflict", Message: "agent domain is not registered for managed email"}
 	}
-	ensName := soulCanonicalENSName(canonicalLocal)
-	return localNorm, localNorm + "@lessersoul.ai", ensName, nil
+	if loadErr != nil {
+		return "", &apptheory.AppError{Code: "app.internal", Message: "failed to load agent domain"}
+	}
+	if domain == nil || !domainIsVerifiedOrActive(domain.Status) {
+		return "", &apptheory.AppError{Code: "app.conflict", Message: "agent domain is not verified for managed email"}
+	}
+
+	instanceSlug := strings.ToLower(strings.TrimSpace(domain.InstanceSlug))
+	if !instanceSlugRE.MatchString(instanceSlug) {
+		return "", &apptheory.AppError{Code: "app.conflict", Message: "agent domain instance slug is invalid"}
+	}
+	return instanceSlug, nil
+}
+
+func buildSoulProvisionManagedEmailAddress(agentLocalID string, instanceSlug string, requestedLocalPart string) (soulProvisionManagedEmailAddress, *apptheory.AppError) {
+	canonicalLocal, err := soul.NormalizeLocalAgentID(agentLocalID)
+	if err != nil || canonicalLocal == "" {
+		return soulProvisionManagedEmailAddress{}, &apptheory.AppError{Code: "app.conflict", Message: "agent local id is invalid"}
+	}
+	slug := strings.ToLower(strings.TrimSpace(instanceSlug))
+	if !instanceSlugRE.MatchString(slug) {
+		return soulProvisionManagedEmailAddress{}, &apptheory.AppError{Code: "app.conflict", Message: "agent domain instance slug is invalid"}
+	}
+
+	providerLocalPart := canonicalLocal + "." + slug
+	if len(providerLocalPart) > soulEmailSMTPLocalPartMax {
+		return soulProvisionManagedEmailAddress{}, &apptheory.AppError{Code: "app.conflict", Message: "email local_part exceeds 64-octet SMTP limit"}
+	}
+
+	if requested := strings.TrimSpace(requestedLocalPart); requested != "" {
+		requestedNorm, err := soul.NormalizeLocalAgentID(requested)
+		if err != nil {
+			return soulProvisionManagedEmailAddress{}, &apptheory.AppError{Code: "app.bad_request", Message: "local_part is invalid"}
+		}
+		if requestedNorm != providerLocalPart {
+			return soulProvisionManagedEmailAddress{}, &apptheory.AppError{Code: "app.conflict", Message: soulEmailProvisionErrDerivedLocalPartReq}
+		}
+	}
+
+	return soulProvisionManagedEmailAddress{
+		AgentLocalID:      canonicalLocal,
+		InstanceSlug:      slug,
+		ProviderLocalPart: providerLocalPart,
+		Address:           providerLocalPart + "@" + soulManagedEmailDomain,
+		ENSName:           soulCanonicalENSName(canonicalLocal),
+	}, nil
 }
 
 func (s *Server) validateSoulProvisionEmailAddressAvailability(ctx context.Context, agentIDHex string, address string) *apptheory.AppError {
 	emailIdx := &models.SoulEmailAgentIndex{Email: address}
 	_ = emailIdx.UpdateKeys()
-	return s.validateSoulProvisionIndexAvailability(ctx, &models.SoulEmailAgentIndex{}, emailIdx.PK, emailIdx.SK, agentIDHex, "email address is already provisioned", "failed to validate email mapping", func() any {
+	return s.validateSoulProvisionIndexAvailability(ctx, &models.SoulEmailAgentIndex{}, emailIdx.PK, emailIdx.SK, agentIDHex, soulEmailProvisionErrAddressTaken, "failed to validate email mapping", func() any {
 		return &models.SoulEmailAgentIndex{}
 	}, func(existing any) string {
 		if idx, ok := existing.(*models.SoulEmailAgentIndex); ok && idx != nil {

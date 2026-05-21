@@ -1035,7 +1035,7 @@ func TestEnsureSoulEmailAgentIndex_RejectsForeignOwner(t *testing.T) {
 		Email:   "agent@example.com",
 		AgentID: soulLifecycleTestAgentIDHex,
 	})
-	if appErr == nil || appErr.Code != appErrCodeConflict || appErr.Message != "email address is already provisioned" {
+	if appErr == nil || appErr.Code != appErrCodeConflict || appErr.Message != soulEmailProvisionErrAddressTaken {
 		t.Fatalf("expected foreign owner conflict, got %v", appErr)
 	}
 }
@@ -1086,7 +1086,7 @@ func TestEnsureSoulContactIndexes_FailClosedOnInvalidAndRaces(t *testing.T) {
 		Email:   "agent@example.com",
 		AgentID: soulLifecycleTestAgentIDHex,
 	})
-	if appErr == nil || appErr.Code != appErrCodeConflict || appErr.Message != "email address is already provisioned" {
+	if appErr == nil || appErr.Code != appErrCodeConflict || appErr.Message != soulEmailProvisionErrAddressTaken {
 		t.Fatalf("expected create race conflict, got %v", appErr)
 	}
 }

@@ -105,7 +105,9 @@ export interface SoulProvisionEmailConfirmResponse {
 	registration_version: number;
 }
 
-export function soulProvisionEmailBegin(token: string, agentId: string, input: { local_part?: string }): Promise<SoulProvisionEmailBeginResponse> {
+// local_part is retained by the backend for internal compatibility only.
+// Managed email addresses are derived as <agent-local-id>.<instance-slug>@lessersoul.ai.
+export function soulProvisionEmailBegin(token: string, agentId: string, input: { local_part?: string } = {}): Promise<SoulProvisionEmailBeginResponse> {
 	const req = jsonRequest(input);
 	return fetchJson<SoulProvisionEmailBeginResponse>(`/api/v1/soul/agents/${encodeURIComponent(agentId)}/channels/email/provision/begin`, {
 		method: 'POST',
