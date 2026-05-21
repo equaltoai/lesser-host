@@ -185,11 +185,13 @@ All write endpoints require `Authorization: Bearer <session>`. Sessions are shar
 Inbound soul email delivery uses a bridge domain instead of direct HTTP forwarding from Migadu:
 
 ```text
-Sender -> Migadu mailbox -> agent@inbound.lessersoul.ai -> SES receipt rule -> email-ingress Lambda -> comm-worker
+Sender -> Migadu mailbox -> <agent-local-id>.<instance-slug>@inbound.lessersoul.ai -> SES receipt rule -> email-ingress Lambda -> comm-worker
 ```
 
 - Migadu remains the mailbox and outbound SMTP provider for `@lessersoul.ai`.
-- New provisioning and operational backfills set Migadu forwarding targets to `<localPart>@inbound.lessersoul.ai`.
+- Project 37 defines the instance-scoped managed address contract in `docs/instance-scoped-soul-email-m0.md`: new managed soul email channels use `<agent-local-id>.<instance-slug>@lessersoul.ai`, with `instanceSlug` resolved from `Domain.InstanceSlug`.
+- New provisioning and operational backfills set Migadu forwarding targets to `<agent-local-id>.<instance-slug>@inbound.lessersoul.ai`.
+- Existing bare `<agent-local-id>@lessersoul.ai` addresses are legacy inbound aliases for migrated agents only; they are not current public channels after migration.
 - Amazon SES receives mail for `inbound.lessersoul.ai`, stores the raw message in S3, and invokes `cmd/email-ingress`.
 - `cmd/email-ingress` parses the raw RFC 5322 message and enqueues the existing `communication:inbound` payload shape for `comm-worker`.
 - `comm-worker` continues to resolve the final recipient against the canonical `@lessersoul.ai` address, so downstream routing and delivery semantics stay unchanged.
