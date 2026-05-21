@@ -127,7 +127,6 @@
 	let mintDirectTxHash = $state('');
 
 	// Channel provisioning state
-	let emailLocalPart = $state('');
 	let emailProvisionBegin = $state<SoulProvisionEmailBeginResponse | null>(null);
 	let emailProvisionSignature = $state('');
 	let emailProvisionError = $state<string | null>(null);
@@ -869,9 +868,7 @@
 
 		emailProvisionBeginLoading = true;
 		try {
-			emailProvisionBegin = await soulProvisionEmailBegin(token, agentId, {
-				local_part: emailLocalPart.trim() || undefined,
-			});
+			emailProvisionBegin = await soulProvisionEmailBegin(token, agentId, {});
 		} catch (err) {
 			if (await handleAuthError(err)) return;
 			emailProvisionError = formatError(err);
@@ -934,12 +931,10 @@
 		emailProvisionConfirmLoading = true;
 		try {
 			emailProvisionResult = await soulProvisionEmailConfirm(token, agentId, {
-				local_part: emailLocalPart.trim() || undefined,
 				issued_at: emailProvisionBegin.issued_at,
 				expected_version: emailProvisionBegin.expected_version,
 				self_attestation: emailProvisionSignature.trim(),
 			});
-			emailLocalPart = '';
 			emailProvisionSignature = '';
 			emailProvisionBegin = null;
 			await load();
@@ -2090,7 +2085,9 @@
 				<div class="soul-agent__divider"></div>
 
 				<Heading level={4} size="base">Provision email</Heading>
-				<Text size="sm" color="secondary">Creates a managed mailbox on <span class="soul-agent__mono">lessersoul.ai</span>.</Text>
+				<Text size="sm" color="secondary">
+					Creates a derived managed mailbox on <span class="soul-agent__mono">&lt;agent-local-id&gt;.&lt;instance-slug&gt;@lessersoul.ai</span>.
+				</Text>
 
 				{#if emailProvisionError}
 					<Alert variant="error" title="Email provisioning">{emailProvisionError}</Alert>
@@ -2102,7 +2099,6 @@
 				{/if}
 
 				<div class="soul-agent__form">
-					<TextField label="Local part (optional)" bind:value={emailLocalPart} placeholder="local-id" />
 					<div class="soul-agent__row">
 						<Button
 							variant="outline"
