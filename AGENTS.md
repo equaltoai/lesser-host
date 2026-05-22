@@ -150,26 +150,32 @@ Public trust endpoints (no auth):
 
 ## Deployment (AWS CDK + AppTheory contract)
 
-### Recommended: `theory app up/down`
+### Required: `theory app up/down --execute`
 
 The deploy contract is `app-theory/app.json`. It drives CDK deploy/destroy with stage substitution.
+Use the AppTheory contract for deploys; do not bypass it by invoking CDK directly or by calling the wrapper scripts
+yourself. `theory app up/down` is symbolic unless `--execute` is present, so actual deploys must include `--execute`.
 
 Examples:
 
 ```bash
-AWS_PROFILE=my-profile theory app up --stage lab
-AWS_PROFILE=my-profile theory app down --stage lab
+AWS_PROFILE=my-profile theory app up --stage lab --execute
+AWS_PROFILE=my-profile theory app down --stage lab --execute
 ```
 
-### Manual CDK deploy
+Never set a timeout on a CDK deploy. Let CloudFormation finish or roll back and capture the complete output.
+
+### Manual CDK context (diagnostics only)
 
 `cdk/bin/lesser-host.ts` reads the stage from CDK context (`-c stage=...`, default `lab`) and deploys a stack named
 `lesser-host-<stage>`.
 
+Direct CDK commands are for diagnostics only (for example, local synth while investigating). They are not the deploy path.
+
 ```bash
 cd cdk
 npm ci
-AWS_PROFILE=my-profile npx cdk deploy --all -c stage=lab --require-approval never
+AWS_PROFILE=my-profile npx cdk synth --all -c stage=lab
 ```
 
 ### What CDK deploys (high level)
