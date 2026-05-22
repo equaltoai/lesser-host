@@ -17,7 +17,7 @@ provider state, and registration authority are reviewed.
   capture. Unknown bare recipients fail closed.
 - v3 registration sync now permits the narrow Project 37 migration:
   a trusted managed Migadu email channel may move from an existing
-  `@lessersoul.ai` address to the derived
+  old bare `<normalized-agent-local-id>@lessersoul.ai` address to the derived
   `<agent-local-id>.<instance-slug>@lessersoul.ai` address. The sync preserves
   managed-channel metadata, writes the new current `SoulEmailAgentIndex`, and
   creates the internal legacy alias record. Other managed identifier changes
@@ -25,7 +25,8 @@ provider state, and registration authority are reviewed.
 - `go run ./scripts/soul-email-m2-migration` reads M0 inventory evidence,
   plans provider/registration/host-sync actions, and can apply provider-prepare
   forwarding idempotently. It does not execute the live migration gate by
-  itself.
+  itself. The command refuses inventory whose `schema_version`, `stage`, or
+  `table_name` does not match the requested run config.
 
 ## Required sequence
 
@@ -51,6 +52,9 @@ provider state, and registration authority are reviewed.
    per-agent mailbox password from
    `/lesser-host/soul/<stage>/agents/<agentId>/channels/email/migadu_password`
    and ensures the new Migadu mailbox plus inbound forwarding:
+   `provider_prepared` requires the exact expected forwarding target
+   `<agent-local-id>.<instance-slug>@inbound.lessersoul.ai`; an unrelated
+   forwarding or alias is not sufficient.
 
    ```bash
    SOUL_EMAIL_INBOUND_DOMAIN=inbound.lessersoul.ai \

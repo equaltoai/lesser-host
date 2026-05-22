@@ -1092,6 +1092,47 @@ func TestSyncSoulV3StateFromRegistration_AllowsProject37LegacyEmailMigration(t *
 	}
 }
 
+func TestSyncSoulV3StateFromRegistration_RejectsNonAgentLegacyEmailAlias(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulLifecycleTestDB()
+	s := &Server{cfg: config.Config{Stage: "lab"}, store: store.New(tdb.db)}
+	now := time.Date(2026, time.May, 22, 8, 0, 0, 0, time.UTC)
+	identity := &models.SoulAgentIdentity{
+		AgentID:         soulLifecycleTestAgentIDHex,
+		Domain:          "simulacrum.greater.website",
+		LocalID:         "pilot",
+		LifecycleStatus: models.SoulAgentStatusActive,
+	}
+
+	tdb.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(theoryErrors.ErrItemNotFound).Once()
+	tdb.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentChannel](t, args, 0)
+		*dest = models.SoulAgentChannel{
+			AgentID:       identity.AgentID,
+			ChannelType:   models.SoulChannelTypeEmail,
+			Identifier:    "other@lessersoul.ai",
+			Provider:      "migadu",
+			Verified:      true,
+			ProvisionedAt: now.Add(-24 * time.Hour),
+			Status:        models.SoulChannelStatusActive,
+			SecretRef:     "/lesser-host/soul/lab/agents/0xabc/channels/email/migadu_password",
+		}
+	}).Once()
+
+	appErr := s.syncSoulV3StateFromRegistration(context.Background(), identity.AgentID, identity, &soul.RegistrationFileV3{
+		Channels: &soul.ChannelsV3{
+			Email: &soul.EmailChannelV3{
+				Address:  provisionTestPilotScopedEmail,
+				Verified: true,
+			},
+		},
+	}, now)
+	if appErr == nil || appErr.Code != appErrCodeConflict || appErr.Message != "managed channel must be deprovisioned before changing identifier" {
+		t.Fatalf("expected managed channel conflict for non-agent legacy alias, got %v", appErr)
+	}
+}
+
 func findProject37EmailMigrationModels(calls []mock.Call, oldAddress string, newAddress string) (*models.SoulAgentChannel, *models.SoulEmailLegacyAliasIndex) {
 	var migratedChannel *models.SoulAgentChannel
 	var aliasIndex *models.SoulEmailLegacyAliasIndex

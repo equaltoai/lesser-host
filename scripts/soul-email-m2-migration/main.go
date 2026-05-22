@@ -247,6 +247,9 @@ func runMigration(ctx context.Context, provider providerClient, cfg migrationCon
 	if err != nil {
 		return migrationReport{}, err
 	}
+	if err := validateInventoryMetadata(inventory, cfg); err != nil {
+		return migrationReport{}, err
+	}
 	report := newMigrationReport(cfg, inventory, now)
 	report.Issues = append(report.Issues, inventoryBlockingIssues(inventory)...)
 	selected := selectInventoryAgents(inventory.Agents, cfg.AgentID, cfg.MaxAgents)
@@ -282,6 +285,25 @@ func runMigration(ctx context.Context, provider providerClient, cfg migrationCon
 		return report.Agents[i].Domain < report.Agents[j].Domain
 	})
 	return report, nil
+}
+
+func validateInventoryMetadata(inventory inventoryReport, cfg migrationConfig) error {
+	var mismatches []string
+	if inventory.SchemaVersion != migrationSchemaVersion {
+		mismatches = append(mismatches, fmt.Sprintf("schema_version=%d expected=%d", inventory.SchemaVersion, migrationSchemaVersion))
+	}
+	inventoryStage := strings.ToLower(strings.TrimSpace(inventory.Stage))
+	if inventoryStage != cfg.Stage {
+		mismatches = append(mismatches, fmt.Sprintf("stage=%q expected=%q", inventoryStage, cfg.Stage))
+	}
+	inventoryTable := strings.TrimSpace(inventory.TableName)
+	if inventoryTable != cfg.TableName {
+		mismatches = append(mismatches, fmt.Sprintf("table_name=%q expected=%q", inventoryTable, cfg.TableName))
+	}
+	if len(mismatches) > 0 {
+		return fmt.Errorf("inventory metadata mismatch: %s", strings.Join(mismatches, "; "))
+	}
+	return nil
 }
 
 func newMigrationReport(cfg migrationConfig, inventory inventoryReport, now time.Time) migrationReport {
@@ -352,7 +374,7 @@ func selectInventoryAgents(records []managedEmailInventory, agentID string, maxA
 }
 
 func planAgentMigration(rec managedEmailInventory, emailInboundDomain string) migrationAgentReport {
-	agent := baseMigrationAgentReport(rec)
+	agent := baseMigrationAgentReport(rec, emailInboundDomain)
 	if rec.DomainRecord != nil {
 		agent.InstanceSlug = strings.ToLower(strings.TrimSpace(rec.DomainRecord.InstanceSlug))
 	}
@@ -368,7 +390,7 @@ func planAgentMigration(rec managedEmailInventory, emailInboundDomain string) mi
 	return planPendingAgentMigration(agent, rec, emailInboundDomain)
 }
 
-func baseMigrationAgentReport(rec managedEmailInventory) migrationAgentReport {
+func baseMigrationAgentReport(rec managedEmailInventory, emailInboundDomain string) migrationAgentReport {
 	return migrationAgentReport{
 		AgentID:             strings.ToLower(strings.TrimSpace(rec.AgentID)),
 		Domain:              strings.ToLower(strings.TrimSpace(rec.Domain)),
@@ -378,7 +400,7 @@ func baseMigrationAgentReport(rec managedEmailInventory) migrationAgentReport {
 		ProviderLocalPart:   strings.ToLower(strings.TrimSpace(rec.Proposed.LocalPart)),
 		CanSelfAttest:       normalizeSigningState(rec.MigrationReadiness.CanSelfAttest),
 		State:               migrationStateInventoryDryRun,
-		ProviderState:       providerMigrationStateFor(rec),
+		ProviderState:       providerMigrationStateFor(rec, emailInboundDomain),
 		RegistrationVersion: rec.RegistrationVersion,
 		Rollback: []string{
 			"preserve old bare provider delivery during rollback",
@@ -495,14 +517,14 @@ func registrationAndHostSyncActions(agent migrationAgentReport) []migrationActio
 	}
 }
 
-func providerMigrationStateFor(rec managedEmailInventory) providerMigrationState {
+func providerMigrationStateFor(rec managedEmailInventory, emailInboundDomain string) providerMigrationState {
 	current := rec.ProviderState.Current
 	proposed := rec.ProviderState.Proposed
 	return providerMigrationState{
 		CurrentKnown:      current != nil,
 		CurrentReachable:  providerReachable(current),
 		ProposedKnown:     proposed != nil,
-		ProposedReachable: providerReachable(proposed),
+		ProposedReachable: providerForwardsTo(proposed, expectedProviderForwardingTarget(rec.Proposed.LocalPart, emailInboundDomain)),
 	}
 }
 
@@ -514,6 +536,31 @@ func providerReachable(state *providerAddressState) bool {
 		return true
 	}
 	return len(state.Forwardings) > 0 || len(state.Aliases) > 0
+}
+
+func providerForwardsTo(state *providerAddressState, target string) bool {
+	if state == nil {
+		return false
+	}
+	target = normalizeEmail(target)
+	if target == "" {
+		return false
+	}
+	for _, forwarding := range state.Forwardings {
+		if normalizeEmail(forwarding) == target {
+			return true
+		}
+	}
+	return false
+}
+
+func expectedProviderForwardingTarget(localPart string, emailInboundDomain string) string {
+	localPart = strings.ToLower(strings.TrimSpace(localPart))
+	emailInboundDomain = strings.ToLower(strings.TrimSpace(emailInboundDomain))
+	if localPart == "" || emailInboundDomain == "" {
+		return ""
+	}
+	return localPart + "@" + emailInboundDomain
 }
 
 func mergeMigrationSummary(summary *migrationSummary, agent migrationAgentReport) {

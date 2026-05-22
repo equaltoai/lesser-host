@@ -24,6 +24,7 @@ const (
 	testForwardingAddr  = "pilot.simulacrum@inbound.lessersoul.ai"
 	testDisplayName     = "pilot"
 	testMailboxPassword = "mailbox-password"
+	testLiveStage       = "live"
 )
 
 type fakeProvider struct {
@@ -114,6 +115,84 @@ func TestRunMigration_RefusesInventoryDuplicatesAndOverflow(t *testing.T) {
 	}
 	if !contains(report.Issues, "duplicate_proposed_address") || !contains(report.Issues, "proposed_local_part_overflow") {
 		t.Fatalf("expected duplicate/overflow issues, got %#v", report.Issues)
+	}
+}
+
+func TestRunMigration_RejectsInventoryMetadataMismatch(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		mut  func(*inventoryReport)
+		want string
+	}{
+		{
+			name: "schema",
+			mut:  func(inv *inventoryReport) { inv.SchemaVersion = migrationSchemaVersion + 1 },
+			want: "schema_version",
+		},
+		{
+			name: "stage",
+			mut:  func(inv *inventoryReport) { inv.Stage = testLiveStage },
+			want: "stage",
+		},
+		{
+			name: "table",
+			mut:  func(inv *inventoryReport) { inv.TableName = "lesser-host-live-state" },
+			want: "table_name",
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			inv := happyInventoryReport(nil)
+			tc.mut(&inv)
+			dir := t.TempDir()
+			path := filepath.Join(dir, "inventory.json")
+			raw, err := jsonMarshalIndent(inv)
+			if err != nil {
+				t.Fatalf("marshal inventory: %v", err)
+			}
+			writeErr := os.WriteFile(path, raw, 0o600)
+			if writeErr != nil {
+				t.Fatalf("write inventory: %v", writeErr)
+			}
+			provider := &fakeProvider{}
+			_, err = runMigration(context.Background(), provider, migrationConfig{
+				Stage:              defaultStage,
+				TableName:          "state",
+				InventoryPath:      path,
+				EmailInboundDomain: defaultInboundDomain,
+				Apply:              true,
+			}, time.Unix(0, 0).UTC())
+			if err == nil || !strings.Contains(err.Error(), "inventory metadata mismatch") || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected metadata mismatch containing %q, got %v", tc.want, err)
+			}
+			if len(provider.calls) != 0 {
+				t.Fatalf("provider should not be called on metadata mismatch, got %#v", provider.calls)
+			}
+		})
+	}
+}
+
+func TestPlanAgentMigration_ProposedProviderRequiresExactInboundForwarding(t *testing.T) {
+	t.Parallel()
+
+	report := runMigrationForTest(t, false, happyInventoryReport(func(rec *managedEmailInventory) {
+		trueValue := true
+		rec.ProviderState.Proposed = &providerAddressState{
+			LocalPart:     testNewLocalPart,
+			MailboxExists: &trueValue,
+			Forwardings:   []string{"pilot.simulacrum@wrong.example"},
+			Aliases:       []string{testNewEmail},
+		}
+	}))
+	if report.Summary.ProviderPrepared != 0 || report.Summary.ProviderActionsPlanned != 1 {
+		t.Fatalf("expected exact forwarding to be required, summary=%#v agent=%#v", report.Summary, report.Agents[0])
+	}
+	if report.Agents[0].State != migrationStateProviderPreparePending || report.Agents[0].ProviderState.ProposedReachable {
+		t.Fatalf("expected provider_prepare_pending with unreachable proposed state, got %#v", report.Agents[0])
 	}
 }
 
@@ -245,7 +324,7 @@ func TestParseConfigAndWriteReport(t *testing.T) {
 	cfg, err := parseConfig([]string{"--inventory", "inventory.json", "--agent-id", " 0xAGENT ", "--apply", "--max-agents", "2"}, func(key string) string {
 		switch key {
 		case "STAGE":
-			return "live"
+			return testLiveStage
 		case "SOUL_EMAIL_INBOUND_DOMAIN":
 			return "Inbound.LesserSoul.ai"
 		default:
@@ -255,7 +334,7 @@ func TestParseConfigAndWriteReport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse config: %v", err)
 	}
-	if !cfg.Apply || cfg.Stage != "live" || cfg.TableName != "lesser-host-live-state" || cfg.AgentID != testAgentID || cfg.EmailInboundDomain != defaultInboundDomain || cfg.MaxAgents != 2 {
+	if !cfg.Apply || cfg.Stage != testLiveStage || cfg.TableName != "lesser-host-live-state" || cfg.AgentID != testAgentID || cfg.EmailInboundDomain != defaultInboundDomain || cfg.MaxAgents != 2 {
 		t.Fatalf("unexpected config: %#v", cfg)
 	}
 
@@ -282,7 +361,12 @@ func TestRunCLI(t *testing.T) {
 		t.Fatalf("write inventory: %v", writeErr)
 	}
 	var stdout, stderr bytes.Buffer
-	code := runCLI([]string{"--inventory", inventoryPath}, func(string) string { return "" }, &stdout, &stderr, &fakeProvider{}, time.Unix(0, 0).UTC())
+	code := runCLI([]string{"--inventory", inventoryPath}, func(key string) string {
+		if key == "STATE_TABLE_NAME" {
+			return "state"
+		}
+		return ""
+	}, &stdout, &stderr, &fakeProvider{}, time.Unix(0, 0).UTC())
 	if code != 0 || stderr.Len() != 0 || !bytes.Contains(stdout.Bytes(), []byte(`"mode": "dry-run"`)) {
 		t.Fatalf("unexpected CLI result code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}

@@ -642,7 +642,7 @@ func (s *Server) buildLegacyEmailAliasForManagedMigration(
 	if existingCopy.Provider != commDeliveryProviderMigadu || desiredCopy.ChannelType != models.SoulChannelTypeEmail {
 		return nil, nil
 	}
-	if !isLegacyBareSoulEmailAlias(existingCopy.Identifier) {
+	if !isExpectedLegacyBareSoulEmailAlias(existingCopy.Identifier, identity) {
 		return nil, nil
 	}
 	expected, appErr := s.resolveSoulProvisionEmailAddress(ctx, identity, "")
@@ -661,10 +661,23 @@ func (s *Server) buildLegacyEmailAliasForManagedMigration(
 	}, nil
 }
 
-func isLegacyBareSoulEmailAlias(address string) bool {
-	address = strings.ToLower(strings.TrimSpace(address))
-	local, domain, ok := strings.Cut(address, "@")
-	return ok && strings.TrimSpace(local) != "" && domain == soulManagedEmailDomain
+func isExpectedLegacyBareSoulEmailAlias(address string, identity *models.SoulAgentIdentity) bool {
+	expected, ok := expectedLegacyBareSoulEmailAlias(identity)
+	if !ok {
+		return false
+	}
+	return strings.EqualFold(strings.ToLower(strings.TrimSpace(address)), expected)
+}
+
+func expectedLegacyBareSoulEmailAlias(identity *models.SoulAgentIdentity) (string, bool) {
+	if identity == nil {
+		return "", false
+	}
+	localID, err := soul.NormalizeLocalAgentID(identity.LocalID)
+	if err != nil || strings.TrimSpace(localID) == "" {
+		return "", false
+	}
+	return localID + "@" + soulManagedEmailDomain, true
 }
 
 func (s *Server) loadExistingSoulChannel(ctx context.Context, agentIDHex string, channelType string) (*models.SoulAgentChannel, *apptheory.AppError) {
