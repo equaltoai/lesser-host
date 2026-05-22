@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-05-22T18:45:21Z",
+  "mode": "validate-redacted-canary-evidence",
+  "stage": "lab",
+  "evidence_path": "gov-infra/evidence/project37/m3-email-canary-lab.json",
+  "agents_checked": 2,
+  "primary_checked": 2,
+  "legacy_checked": 2,
+  "body_mcp_checked": 0,
+  "unknown_alias_checked": true
+}
