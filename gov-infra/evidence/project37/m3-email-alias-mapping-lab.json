@@ -1,0 +1,129 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-05-22T18:45:00Z",
+  "stage": "lab",
+  "table_name": "lesser-host-lab-state",
+  "mode": "redacted-alias-mapping",
+  "contract": {
+    "canonical_address_format": "<agent-local-id>.<instance-slug>@lessersoul.ai",
+    "legacy_alias_policy": "legacy bare addresses are inbound-only aliases for migrated agents and are not assignable current public channels"
+  },
+  "summary": {
+    "migrated_agents": 12,
+    "active_aliases": 12,
+    "instances": [
+      "simulacrum",
+      "theory"
+    ]
+  },
+  "mappings": [
+    {
+      "local_id": "advocate",
+      "agent_id": "0x0d0ff6430055bf84964386c340cd9fa7875771972187d54f70a61b564469c772",
+      "legacy_alias": "advocate@lessersoul.ai",
+      "canonical_address": "advocate.simulacrum@lessersoul.ai",
+      "status": "active",
+      "source": "project37-m2-dev-host-audit-batch",
+      "updated_at": "2026-05-22T14:30:55.744041485Z"
+    },
+    {
+      "local_id": "agent-0",
+      "agent_id": "0xaf87d423717e3aecbb2fc829d6224ea2acb66e7475f88c920d1a53e0789f313d",
+      "legacy_alias": "agent-0@lessersoul.ai",
+      "canonical_address": "agent-0.simulacrum@lessersoul.ai",
+      "status": "active",
+      "source": "project37-m2-dev-host-audit-agent-0",
+      "updated_at": "2026-05-22T14:04:51.878838493Z"
+    },
+    {
+      "local_id": "arch",
+      "agent_id": "0xfd0a5fa6fe9674866f4a8b87cafc1ce2fe03786392ff9f7e4d93bc0b3ff1db8c",
+      "legacy_alias": "arch@lessersoul.ai",
+      "canonical_address": "arch.simulacrum@lessersoul.ai",
+      "status": "active",
+      "source": "project37-m2-dev-host-audit-batch",
+      "updated_at": "2026-05-22T14:30:55.903101525Z"
+    },
+    {
+      "local_id": "counsel",
+      "agent_id": "0xcbafba9c2bd415ca4dd8c58150ba288e3e9022e794a981e0d9620b58156108fb",
+      "legacy_alias": "counsel@lessersoul.ai",
+      "canonical_address": "counsel.simulacrum@lessersoul.ai",
+      "status": "active",
+      "source": "project37-m2-dev-host-audit-batch",
+      "updated_at": "2026-05-22T14:30:56.010825533Z"
+    },
+    {
+      "local_id": "herald",
+      "agent_id": "0x5c523ba7a7152357039b776432daa861b69ea40c1c37086cc433743238cc9ebf",
+      "legacy_alias": "herald@lessersoul.ai",
+      "canonical_address": "herald.theory@lessersoul.ai",
+      "status": "active",
+      "source": "project37-m2-dev-host-audit-batch",
+      "updated_at": "2026-05-22T14:30:56.543732255Z"
+    },
+    {
+      "local_id": "ledger",
+      "agent_id": "0x08e5983b64f2de98355326be34da3f538ae81d6d2a9d29d0f418826990d8c2b7",
+      "legacy_alias": "ledger@lessersoul.ai",
+      "canonical_address": "ledger.theory@lessersoul.ai",
+      "status": "active",
+      "source": "project37-m2-dev-host-audit-batch",
+      "updated_at": "2026-05-22T14:30:56.956873997Z"
+    },
+    {
+      "local_id": "medic",
+      "agent_id": "0xbd70ce31d811b0bed13f70b9ad7fd829399260c6aa16fa58b15754e3b72e5bc7",
+      "legacy_alias": "medic@lessersoul.ai",
+      "canonical_address": "medic.simulacrum@lessersoul.ai",
+      "status": "active",
+      "source": "project37-m2-dev-host-audit-batch",
+      "updated_at": "2026-05-22T14:30:56.127319102Z"
+    },
+    {
+      "local_id": "ops",
+      "agent_id": "0xc328d6c24e5174cac7f4972e9b94ea11026a07a4baeecb6f2ddd69788e18c5b4",
+      "legacy_alias": "ops@lessersoul.ai",
+      "canonical_address": "ops.simulacrum@lessersoul.ai",
+      "status": "active",
+      "source": "project37-m2-dev-host-audit-batch",
+      "updated_at": "2026-05-22T14:30:56.249624476Z"
+    },
+    {
+      "local_id": "pilot",
+      "agent_id": "0xeccb58e7b8df042987cd7ff609c9d3773e625aadccb7a05412dd747d6911b8b1",
+      "legacy_alias": "pilot@lessersoul.ai",
+      "canonical_address": "pilot.simulacrum@lessersoul.ai",
+      "status": "active",
+      "source": "project37-m2-dev-host-audit-batch",
+      "updated_at": "2026-05-22T14:30:56.350497135Z"
+    },
+    {
+      "local_id": "scout",
+      "agent_id": "0x44a3898846ebd204ff4e84630356a652e95569276780c0434279c4f669ebec99",
+      "legacy_alias": "scout@lessersoul.ai",
+      "canonical_address": "scout.simulacrum@lessersoul.ai",
+      "status": "active",
+      "source": "project37-m2-dev-host-audit-batch",
+      "updated_at": "2026-05-22T14:30:56.438841055Z"
+    },
+    {
+      "local_id": "scribe",
+      "agent_id": "0x79f6108420796083689c84e2df06790ea1e7aec5d30004da38192e062c75ddac",
+      "legacy_alias": "scribe@lessersoul.ai",
+      "canonical_address": "scribe.theory@lessersoul.ai",
+      "status": "active",
+      "source": "project37-m2-dev-host-audit-batch",
+      "updated_at": "2026-05-22T14:30:57.060387651Z"
+    },
+    {
+      "local_id": "steward",
+      "agent_id": "0x85d3a95f9220e3bd257e33ddbdffa1985c7bd4cab509388f1aa7a0c5d750ef77",
+      "legacy_alias": "steward@lessersoul.ai",
+      "canonical_address": "steward.theory@lessersoul.ai",
+      "status": "active",
+      "source": "project37-m2-dev-host-audit-batch",
+      "updated_at": "2026-05-22T14:30:57.155332976Z"
+    }
+  ]
+}

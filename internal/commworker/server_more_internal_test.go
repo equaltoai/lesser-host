@@ -661,6 +661,56 @@ func TestProcessInbound_SMSAnnotatesSenderBeforeDelivery(t *testing.T) {
 	}
 }
 
+func TestProcessInbound_AnnotatesResolvedRecipientBeforeDelivery(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 3, 5, 12, 0, 0, 0, time.UTC)
+	agentID := commStoreTestAgentID
+	canonicalTo := commTestPilotSimulacrumEmail
+	legacyTo := commTestPilotLegacyEmail
+	staleToSoulAgentID := "0xstale-recipient"
+
+	fs := newActiveInboundStore(now, agentID, inboundChannelEmail, canonicalTo)
+	fs.emailAlias = map[string]*models.SoulEmailLegacyAliasIndex{
+		legacyTo: {
+			AliasEmail:     legacyTo,
+			CanonicalEmail: canonicalTo,
+			AgentID:        agentID,
+			Status:         models.SoulEmailLegacyAliasStatusActive,
+		},
+	}
+
+	var delivered InboundNotification
+	s := NewServer(config.Config{Stage: "lab"}, fs, nil, nil)
+	s.now = func() time.Time { return now }
+	s.fetchInstanceKeyPlaintext = func(context.Context, *models.Instance) (string, error) { return testInstanceAPIKey, nil }
+	s.deliverNotification = func(_ context.Context, _ string, apiKey string, notif InboundNotification) error {
+		if apiKey != testInstanceAPIKey {
+			t.Fatalf("unexpected api key: %q", apiKey)
+		}
+		delivered = notif
+		return nil
+	}
+
+	msg := newInboundEmailMessage(now, legacyTo)
+	msg.Notification.To.SoulAgentID = &staleToSoulAgentID
+	if err := s.processInbound(context.Background(), "req-recipient-soul", msg); err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if delivered.To == nil {
+		t.Fatal("expected delivered recipient payload")
+	}
+	if delivered.To.Address != canonicalTo {
+		t.Fatalf("expected delivered recipient address to be canonicalized, got %#v", delivered.To)
+	}
+	if delivered.To.SoulAgentID == nil || *delivered.To.SoulAgentID != agentID {
+		t.Fatalf("expected delivered recipient soul agent id %q, got %#v", agentID, delivered.To.SoulAgentID)
+	}
+	if *delivered.To.SoulAgentID == staleToSoulAgentID {
+		t.Fatalf("expected stale inbound recipient soul agent id to be overwritten, got %#v", delivered.To.SoulAgentID)
+	}
+}
+
 func TestProcessInbound_PhoneDeliveryIncludesCanonicalRecipientAddress(t *testing.T) {
 	t.Parallel()
 

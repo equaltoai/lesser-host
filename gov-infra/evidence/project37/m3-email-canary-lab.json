@@ -1,0 +1,169 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-05-22T18:45:00Z",
+  "stage": "lab",
+  "table_name": "lesser-host-lab-state",
+  "mode": "redacted-canary",
+  "contract": {
+    "canonical_address_format": "<agent-local-id>.<instance-slug>@lessersoul.ai",
+    "legacy_alias_policy": "host-internal aliases canonicalize before comm-worker channel matching",
+    "redaction_policy": "message bodies, provider payloads, and credentials omitted"
+  },
+  "agents": [
+    {
+      "agent_id": "0xaf87d423717e3aecbb2fc829d6224ea2acb66e7475f88c920d1a53e0789f313d",
+      "local_id": "agent-0",
+      "instance_slug": "simulacrum",
+      "canonical_address": "agent-0.simulacrum@lessersoul.ai",
+      "legacy_alias": "agent-0@lessersoul.ai",
+      "primary": {
+        "inbound": {
+          "passed": true,
+          "recipient": "agent-0.simulacrum@lessersoul.ai",
+          "mailbox_to_address": "agent-0.simulacrum@lessersoul.ai",
+          "status": "accepted",
+          "message_ref": "comm-msg-c7ecaa6a5790701110a7def3@lessersoul.ai",
+          "delivery_id": "comm-delivery-28a7fbe7928e25e14b1b7817"
+        },
+        "outbound": {
+          "passed": true,
+          "sender": "agent-0.simulacrum@lessersoul.ai",
+          "status": "sent",
+          "message_ref": "comm-msg-dfbf303824ad38838b2f81b3",
+          "delivery_id": "comm-delivery-8e44eb7abb4d1a8a08457ff0"
+        },
+        "mailbox": {
+          "list": true,
+          "get": true,
+          "content": true,
+          "search": true,
+          "content_redacted": true,
+          "to_address": "agent-0.simulacrum@lessersoul.ai"
+        },
+        "resolve": {
+          "status": "ok",
+          "agent_id": "0xaf87d423717e3aecbb2fc829d6224ea2acb66e7475f88c920d1a53e0789f313d",
+          "address": "agent-0.simulacrum@lessersoul.ai"
+        },
+        "contactability": {
+          "passed": true,
+          "address": "agent-0.simulacrum@lessersoul.ai",
+          "status": "ok"
+        }
+      },
+      "legacy": {
+        "inbound": {
+          "passed": true,
+          "recipient": "agent-0@lessersoul.ai",
+          "mailbox_to_address": "agent-0.simulacrum@lessersoul.ai",
+          "canonicalized_to": "agent-0.simulacrum@lessersoul.ai",
+          "status": "accepted",
+          "message_ref": "comm-msg-28a83f600b1e36927a57f467@lessersoul.ai",
+          "delivery_id": "comm-delivery-54237cac60c9760d0be13163"
+        },
+        "canonical_mailbox": {
+          "passed": true,
+          "mailbox_to_address": "agent-0.simulacrum@lessersoul.ai",
+          "canonicalized_to": "agent-0.simulacrum@lessersoul.ai"
+        },
+        "non_advertisement": {
+          "passed": true,
+          "public_email_address": "agent-0.simulacrum@lessersoul.ai",
+          "public_email_addresses": [
+            "agent-0.simulacrum@lessersoul.ai"
+          ],
+          "legacy_address_advertised": false
+        },
+        "resolve": {
+          "status": "not_found"
+        }
+      },
+      "notes": [
+        "Host-controlled SoulAgentChannel and SoulEmailAgentIndex advertise only the instance-scoped address; signed registration public endpoints are tracked separately in m3-email-canary-lab-blockers.json.",
+        "Mailbox evidence is redacted to delivery/message references, status, and address fields; message content and provider payloads are omitted.",
+        "Public signed registration endpoint still returned agent-0@lessersoul.ai during the lab evidence pass."
+      ]
+    },
+    {
+      "agent_id": "0xfd0a5fa6fe9674866f4a8b87cafc1ce2fe03786392ff9f7e4d93bc0b3ff1db8c",
+      "local_id": "arch",
+      "instance_slug": "simulacrum",
+      "canonical_address": "arch.simulacrum@lessersoul.ai",
+      "legacy_alias": "arch@lessersoul.ai",
+      "primary": {
+        "inbound": {
+          "passed": true,
+          "recipient": "arch.simulacrum@lessersoul.ai",
+          "mailbox_to_address": "arch.simulacrum@lessersoul.ai",
+          "status": "accepted",
+          "message_ref": "comm-msg-dfbf303824ad38838b2f81b3@lessersoul.ai",
+          "delivery_id": "comm-delivery-8b6c4fc2119378d305dfad50"
+        },
+        "outbound": {
+          "passed": true,
+          "sender": "arch.simulacrum@lessersoul.ai",
+          "status": "sent",
+          "message_ref": "comm-msg-c7ecaa6a5790701110a7def3",
+          "delivery_id": "comm-delivery-23ef1f42b3d4158a2dafc596"
+        },
+        "mailbox": {
+          "list": true,
+          "get": true,
+          "content": true,
+          "search": true,
+          "content_redacted": true,
+          "to_address": "arch.simulacrum@lessersoul.ai"
+        },
+        "resolve": {
+          "status": "ok",
+          "agent_id": "0xfd0a5fa6fe9674866f4a8b87cafc1ce2fe03786392ff9f7e4d93bc0b3ff1db8c",
+          "address": "arch.simulacrum@lessersoul.ai"
+        },
+        "contactability": {
+          "passed": true,
+          "address": "arch.simulacrum@lessersoul.ai",
+          "status": "ok"
+        }
+      },
+      "legacy": {
+        "inbound": {
+          "passed": true,
+          "recipient": "arch@lessersoul.ai",
+          "mailbox_to_address": "arch.simulacrum@lessersoul.ai",
+          "canonicalized_to": "arch.simulacrum@lessersoul.ai",
+          "status": "accepted",
+          "message_ref": "comm-msg-eeac98c77b79a2645397b6c5@lessersoul.ai",
+          "delivery_id": "comm-delivery-a2121a0c4927a77bfedc062c"
+        },
+        "canonical_mailbox": {
+          "passed": true,
+          "mailbox_to_address": "arch.simulacrum@lessersoul.ai",
+          "canonicalized_to": "arch.simulacrum@lessersoul.ai"
+        },
+        "non_advertisement": {
+          "passed": true,
+          "public_email_address": "arch.simulacrum@lessersoul.ai",
+          "public_email_addresses": [
+            "arch.simulacrum@lessersoul.ai"
+          ],
+          "legacy_address_advertised": false
+        },
+        "resolve": {
+          "status": "not_found"
+        }
+      },
+      "notes": [
+        "Host-controlled SoulAgentChannel and SoulEmailAgentIndex advertise only the instance-scoped address; signed registration public endpoints are tracked separately in m3-email-canary-lab-blockers.json.",
+        "Mailbox evidence is redacted to delivery/message references, status, and address fields; message content and provider payloads are omitted.",
+        "Public signed registration endpoint still returned arch@lessersoul.ai during the lab evidence pass."
+      ]
+    }
+  ],
+  "unknown_alias": {
+    "address": "unknown@lessersoul.ai",
+    "resolve_status": "not_found"
+  },
+  "notes": [
+    "Host-controlled canary records include Agent-0 and Arch; Steward channel/index state and signed-registration caveat are recorded separately in blockers/mapping evidence."
+  ]
+}

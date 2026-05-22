@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-05-22T18:45:21Z",
+  "mode": "validate-redacted-canary-evidence",
+  "stage": "lab",
+  "evidence_path": "gov-infra/evidence/project37/m3-email-canary-lab.json",
+  "agents_checked": 2,
+  "primary_checked": 2,
+  "legacy_checked": 2,
+  "body_mcp_checked": 0,
+  "unknown_alias_checked": true,
+  "issues": [
+    "agents[0:0xaf87d423717e3aecbb2fc829d6224ea2acb66e7475f88c920d1a53e0789f313d].body_mcp is required",
+    "agents[1:0xfd0a5fa6fe9674866f4a8b87cafc1ce2fe03786392ff9f7e4d93bc0b3ff1db8c].body_mcp is required",
+    "no body MCP canary evidence checked"
+  ]
+}

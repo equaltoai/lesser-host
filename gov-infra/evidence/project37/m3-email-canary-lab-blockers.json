@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-05-22T18:45:00Z",
+  "stage": "lab",
+  "mode": "m3-evidence-closeout-blockers",
+  "release": {
+    "tag": "v0.4.3",
+    "commit": "40197a31c20ea1ab963c5996dfc3a1830a1c3d56",
+    "url": "https://github.com/equaltoai/lesser-host/releases/tag/v0.4.3"
+  },
+  "host_routing_status": "passed_host_only_validation",
+  "blockers": [
+    {
+      "id": "signed-registration-public-channel",
+      "status": "blocked",
+      "summary": "Host-controlled channel/index state is instance-scoped, but signed public registration documents in lab still advertise legacy bare email addresses.",
+      "evidence": [
+        {
+          "agent_id": "0xaf87d423717e3aecbb2fc829d6224ea2acb66e7475f88c920d1a53e0789f313d",
+          "local_id": "agent-0",
+          "canonical_address": "agent-0.simulacrum@lessersoul.ai",
+          "signed_registration_email": "agent-0@lessersoul.ai"
+        },
+        {
+          "agent_id": "0xfd0a5fa6fe9674866f4a8b87cafc1ce2fe03786392ff9f7e4d93bc0b3ff1db8c",
+          "local_id": "arch",
+          "canonical_address": "arch.simulacrum@lessersoul.ai",
+          "signed_registration_email": "arch@lessersoul.ai"
+        },
+        {
+          "agent_id": "0x85d3a95f9220e3bd257e33ddbdffa1985c7bd4cab509388f1aa7a0c5d750ef77",
+          "local_id": "steward",
+          "canonical_address": "steward.theory@lessersoul.ai",
+          "signed_registration_email": "steward@lessersoul.ai"
+        }
+      ],
+      "next_step": "Use the approved signing/update-registration path, or keep the disclosed dev-host-audit caveat until self-attested registration versions are republished."
+    },
+    {
+      "id": "lesser-body-mcp-compatibility",
+      "status": "pending_cross_repo_evidence",
+      "summary": "Host did not have Body steward MCP evidence at PR creation time; lesser-body issue #275 remains In Progress.",
+      "issue": "https://github.com/equaltoai/lesser-body/issues/275",
+      "next_step": "Attach Body MCP identity/mailbox evidence, then rerun scripts/soul-email-m3-canary with --require-body-mcp."
+    },
+    {
+      "id": "agent0-mcp-credential-unavailable-to-host",
+      "status": "blocked_local_probe",
+      "summary": "Agent-0 MCP delegated credentials were unavailable in the Host steward environment, so Host did not perform new Agent-0 MCP reads from this repo session.",
+      "next_step": "Use the Body steward canary or fresh delegated credentials if Agent-0 MCP evidence is required from Host."
+    }
+  ]
+}

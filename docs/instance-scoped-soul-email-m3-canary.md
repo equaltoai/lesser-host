@@ -171,3 +171,66 @@ evidence.
   cross-repo canaries are complete.
 - The validation report belongs in `gov-infra/evidence/project37/` with the
   canary evidence. Commit only redacted evidence.
+
+## Lab evidence pass — 2026-05-22
+
+Release `v0.4.3` was deployed to `lab` before this evidence pass. Host
+recorded the redacted evidence under `gov-infra/evidence/project37/`:
+
+- `m3-email-canary-lab.json` — Host-controlled routing canary evidence for
+  Agent-0 and Arch. It covers primary instance-scoped inbound, outbound,
+  mailbox list/get/content/search, canonical email resolve, contactability,
+  legacy bare inbound canonicalization, legacy resolve fail-closed behavior,
+  and unknown bare alias fail-closed behavior. Steward channel/index state is
+  included in the alias mapping and signed-registration blocker evidence, but
+  not in the two-agent host canary set because this pass did not capture a
+  fresh Steward outbound canary.
+- `m3-email-canary-lab-host-validation.json` — passing host-only verifier
+  output using `--require-legacy-alias --require-unknown-alias`.
+- `m3-email-canary-lab-full-validation-blocked.json` — full release-gate
+  verifier output showing the remaining `--require-body-mcp` dependency.
+- `m3-email-alias-mapping-lab.json` — redacted old-bare to current
+  instance-scoped mapping for the 12 migrated lab advisor agents.
+- `m3-email-canary-lab-blockers.json` — explicit blockers/dependencies for
+  the remaining full-M3 gate.
+
+The host-only validation command for this pass was:
+
+```bash
+go run ./scripts/soul-email-m3-canary \
+  --stage lab \
+  --evidence gov-infra/evidence/project37/m3-email-canary-lab.json \
+  --require-legacy-alias \
+  --require-unknown-alias \
+  --out gov-infra/evidence/project37/m3-email-canary-lab-host-validation.json
+```
+
+Full release-gate validation still requires cross-repo Body MCP evidence:
+
+```bash
+go run ./scripts/soul-email-m3-canary \
+  --stage lab \
+  --evidence gov-infra/evidence/project37/m3-email-canary-lab.json \
+  --require-legacy-alias \
+  --require-body-mcp \
+  --require-unknown-alias \
+  --out gov-infra/evidence/project37/m3-email-canary-lab-validation.json
+```
+
+The 2026-05-22 host pass intentionally does not claim that full gate as green:
+`lesser-body#275` is still the body-facing dependency for
+`identity_whoami`, `identity_lookup`, and mailbox MCP compatibility evidence.
+
+### Signed-registration caveat
+
+Host-controlled `SoulAgentChannel`, `SoulEmailAgentIndex`, and
+`SoulEmailLegacyAliasIndex` state now treats `<agent>.<instance>@lessersoul.ai`
+as the current address and each legacy bare `<agent>@lessersoul.ai` as an
+inbound-only alias. However, the lab signed registration documents served from
+`/api/v1/soul/agents/{agentId}/registration` still returned legacy bare email
+addresses for the checked agents during this pass.
+
+That caveat is recorded as a blocker, not hidden in the passing host-only
+validation. The full M3/M4 release gate needs either self-attested registration
+republish evidence or an explicitly approved host audit path before signed
+public registration surfaces can be treated as fully current.
