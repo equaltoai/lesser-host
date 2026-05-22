@@ -338,6 +338,7 @@ func (s *Server) handleRateLimitedInbound(ctx context.Context, agentID string, c
 func (s *Server) deliverResolvedInbound(ctx context.Context, agentID string, channel string, notif InboundNotification, identity *models.SoulAgentIdentity, inst *models.Instance, provider string) error {
 	// Best-effort: annotate soul-to-soul sender identity.
 	s.maybeAnnotateSenderSoul(ctx, &notif)
+	annotateRecipientSoulAgentID(agentID, notif.To)
 	s.maybeAnnotateRecipientAddress(ctx, agentID, channel, notif.To)
 
 	if inst == nil {
@@ -379,6 +380,17 @@ func (s *Server) deliverResolvedInbound(ctx context.Context, agentID string, cha
 
 	_ = s.recordInboundActivity(ctx, agentID, channel, notif, "receive", true)
 	return nil
+}
+
+func annotateRecipientSoulAgentID(agentID string, to *InboundParty) {
+	if to == nil {
+		return
+	}
+	agentID = strings.ToLower(strings.TrimSpace(agentID))
+	if agentID == "" {
+		return
+	}
+	to.SoulAgentID = &agentID
 }
 
 func (s *Server) maybeAnnotateRecipientAddress(ctx context.Context, agentID string, channel string, to *InboundParty) {

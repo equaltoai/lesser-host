@@ -161,7 +161,7 @@ func runLookupLegacyEmailAliasTest(t *testing.T, ctx context.Context) {
 
 		st := &dynamoStore{db: tdb.db}
 		alias, ok, err := st.LookupLegacyEmailAlias(ctx, " Pilot@LesserSoul.ai ")
-		if err != nil || !ok || alias == nil || alias.AgentID != commStoreTestAgentID || alias.CanonicalEmail != "pilot.simulacrum@lessersoul.ai" {
+		if err != nil || !ok || alias == nil || alias.AgentID != commStoreTestAgentID || alias.CanonicalEmail != commTestPilotSimulacrumEmail {
 			t.Fatalf("unexpected alias result: alias=%#v ok=%v err=%v", alias, ok, err)
 		}
 	})

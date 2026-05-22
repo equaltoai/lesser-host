@@ -21,10 +21,12 @@ import (
 )
 
 const (
-	commTestAgentEmail   = "agent@example.com"
-	commTestSMTPPassword = "smtp-pass"
-	commTestSenderSoulID = "0xsender"
-	commTestSecretValue  = "child"
+	commTestAgentEmail           = "agent@example.com"
+	commTestPilotSimulacrumEmail = "pilot.simulacrum@lessersoul.ai"
+	commTestPilotLegacyEmail     = "pilot@lessersoul.ai"
+	commTestSMTPPassword         = "smtp-pass"
+	commTestSenderSoulID         = "0xsender"
+	commTestSecretValue          = "child"
 )
 
 type stubSecretsManager struct {
@@ -255,13 +257,13 @@ func newCommWorkerStoreHelperStore(now time.Time) *fakeStore {
 		emailIndex: map[string]string{
 			"alice@example.com":                       "0xabc",
 			"agent.with.dot.simulacrum@lessersoul.ai": "0xcompound",
-			"pilot.simulacrum@lessersoul.ai":          "0xpilot-sim",
+			commTestPilotSimulacrumEmail:              "0xpilot-sim",
 			"pilot.other-instance@lessersoul.ai":      "0xpilot-other",
 		},
 		emailAlias: map[string]*models.SoulEmailLegacyAliasIndex{
-			"pilot@lessersoul.ai": {
-				AliasEmail:     "pilot@lessersoul.ai",
-				CanonicalEmail: "pilot.simulacrum@lessersoul.ai",
+			commTestPilotLegacyEmail: {
+				AliasEmail:     commTestPilotLegacyEmail,
+				CanonicalEmail: commTestPilotSimulacrumEmail,
 				AgentID:        "0xpilot-sim",
 				Status:         models.SoulEmailLegacyAliasStatusActive,
 			},
@@ -321,7 +323,7 @@ func testResolveInstanceScopedEmailRecipients(t *testing.T, s *Server) {
 	if err != nil || !ok || agentID != "0xcompound" {
 		t.Fatalf("unexpected compound local-part lookup: %q %v %v", agentID, ok, err)
 	}
-	agentID, ok, err = s.resolveRecipient(context.Background(), "email", &InboundParty{Address: "pilot.simulacrum@lessersoul.ai"})
+	agentID, ok, err = s.resolveRecipient(context.Background(), "email", &InboundParty{Address: commTestPilotSimulacrumEmail})
 	if err != nil || !ok || agentID != "0xpilot-sim" {
 		t.Fatalf("unexpected same-local-id first instance lookup: %q %v %v", agentID, ok, err)
 	}
@@ -335,12 +337,12 @@ func testResolveInstanceScopedEmailRecipients(t *testing.T, s *Server) {
 func testResolveLegacyEmailAliasRecipients(t *testing.T, s *Server) {
 	t.Helper()
 
-	legacy := &InboundParty{Address: "pilot@lessersoul.ai"}
+	legacy := &InboundParty{Address: commTestPilotLegacyEmail}
 	agentID, ok, err := s.resolveRecipient(context.Background(), "email", legacy)
 	if err != nil || !ok || agentID != "0xpilot-sim" {
 		t.Fatalf("unexpected legacy alias lookup: %q %v %v", agentID, ok, err)
 	}
-	if legacy.Address != "pilot.simulacrum@lessersoul.ai" {
+	if legacy.Address != commTestPilotSimulacrumEmail {
 		t.Fatalf("expected legacy alias to canonicalize before channel matching, got %q", legacy.Address)
 	}
 	agentID, ok, err = s.resolveRecipient(context.Background(), "email", &InboundParty{Address: "unknown@lessersoul.ai"})
