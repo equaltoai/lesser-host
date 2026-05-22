@@ -490,13 +490,21 @@ func validateBodyMCPCanary(prefix string, body *bodyMCPCanary, canonical string,
 		{name: "identity_whoami_email", value: body.IdentityWhoamiEmail},
 		{name: "identity_lookup_email", value: body.IdentityLookupEmail},
 	} {
-		addr := normalizeEmail(check.value)
-		if addr != "" && addr != canonical {
-			issues.add("%s.%s=%q expected=%q", prefix, check.name, addr, canonical)
-		}
-		if legacy != "" && addr == legacy {
-			issues.add("%s.%s must not expose legacy alias %q as current", prefix, check.name, legacy)
-		}
+		validateBodyMCPIdentityEmail(prefix, check.name, check.value, canonical, legacy, issues)
+	}
+}
+
+func validateBodyMCPIdentityEmail(prefix string, name string, value string, canonical string, legacy string, issues *issueCollector) {
+	addr := normalizeEmail(value)
+	if addr == "" {
+		issues.add("%s.%s is required and must equal canonical address %q", prefix, name, canonical)
+		return
+	}
+	if addr != canonical {
+		issues.add("%s.%s=%q expected=%q", prefix, name, addr, canonical)
+	}
+	if legacy != "" && addr == legacy {
+		issues.add("%s.%s must not expose legacy alias %q as current", prefix, name, legacy)
 	}
 }
 
@@ -509,6 +517,7 @@ func validateUnknownAlias(alias *unknownAliasCanary, issues *issueCollector) {
 	if addr == "" {
 		issues.add("unknown_alias.address is required")
 	}
+	statusesChecked := 0
 	for _, check := range []struct {
 		name  string
 		value string
@@ -519,9 +528,13 @@ func validateUnknownAlias(alias *unknownAliasCanary, issues *issueCollector) {
 		if strings.TrimSpace(check.value) == "" {
 			continue
 		}
+		statusesChecked++
 		if !isFailClosedStatus(check.value) {
 			issues.add("unknown_alias.%s=%q must be fail-closed", check.name, check.value)
 		}
+	}
+	if statusesChecked == 0 {
+		issues.add("unknown_alias requires at least one fail-closed status: inbound_status or resolve_status")
 	}
 }
 

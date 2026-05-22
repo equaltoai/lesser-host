@@ -35,6 +35,40 @@ func TestRunCLI_PassesRedactedM3Evidence(t *testing.T) {
 	}
 }
 
+func TestRunCLI_FailsWhenRequiredUnknownAliasHasNoFailClosedStatus(t *testing.T) {
+	fixture := strings.Replace(validCanaryEvidenceJSON(), `"unknown_alias": {
+    "address": "unknown@lessersoul.ai",
+    "inbound_status": "dropped",
+    "resolve_status": "not_found"
+  }`, `"unknown_alias": {
+    "address": "unknown@lessersoul.ai"
+  }`, 1)
+	path := writeCanaryFixture(t, fixture)
+	var stdout bytes.Buffer
+	code := runCLI([]string{"--stage", "lab", "--evidence", path, "--require-unknown-alias"}, func(string) string { return "" }, &stdout, &bytes.Buffer{}, time.Date(2026, 5, 22, 15, 0, 0, 0, time.UTC))
+	if code != 2 {
+		t.Fatalf("expected validation failure exit 2, got %d stdout=%s", code, stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "unknown_alias") || !strings.Contains(stdout.String(), "fail-closed") {
+		t.Fatalf("expected unknown alias fail-closed issue, got %s", stdout.String())
+	}
+}
+
+func TestRunCLI_FailsWhenRequiredBodyMCPIdentityEmailsAreOmitted(t *testing.T) {
+	fixture := strings.Replace(validCanaryEvidenceJSON(), `        "identity_whoami_email": "pilot.simulacrum@lessersoul.ai",
+        "identity_lookup_email": "pilot.simulacrum@lessersoul.ai",
+`, ``, 1)
+	path := writeCanaryFixture(t, fixture)
+	var stdout bytes.Buffer
+	code := runCLI([]string{"--stage", "lab", "--evidence", path, "--require-body-mcp"}, func(string) string { return "" }, &stdout, &bytes.Buffer{}, time.Date(2026, 5, 22, 15, 0, 0, 0, time.UTC))
+	if code != 2 {
+		t.Fatalf("expected validation failure exit 2, got %d stdout=%s", code, stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "identity_whoami_email") || !strings.Contains(stdout.String(), "identity_lookup_email") {
+		t.Fatalf("expected body identity email issues, got %s", stdout.String())
+	}
+}
+
 func TestRunCLI_FailsWhenLegacyAliasIsAdvertised(t *testing.T) {
 	fixture := strings.Replace(validCanaryEvidenceJSON(), `"legacy_address_advertised": false`, `"legacy_address_advertised": true`, 1)
 	path := writeCanaryFixture(t, fixture)

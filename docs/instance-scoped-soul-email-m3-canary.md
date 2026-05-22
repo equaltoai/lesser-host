@@ -37,11 +37,13 @@ For each checked agent, the evidence must prove:
 - resolving a legacy bare address fails closed as a public/current contact
   lookup; and
 - when `--require-body-mcp` is used, lesser-body identity and mailbox tools work
-  against the same canonical address without exposing the legacy alias as the
-  current channel.
+  against the same canonical address, with `identity_whoami_email` and
+  `identity_lookup_email` both present and equal to that canonical address,
+  without exposing the legacy alias as the current channel.
 
 The optional top-level `unknown_alias` check records that an unmigrated bare
-address fails closed for inbound and/or resolve behavior. Use
+address fails closed for inbound and/or resolve behavior. At least one of
+`inbound_status` or `resolve_status` must be present and fail-closed; use
 `--require-unknown-alias` for release-gate evidence.
 
 ## Evidence redaction envelope
