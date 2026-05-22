@@ -43,6 +43,27 @@ func TestSoulEmailAgentIndex_Keys(t *testing.T) {
 	require.Equal(t, "0xabc", i.AgentID)
 }
 
+func TestSoulEmailLegacyAliasIndex_Keys(t *testing.T) {
+	t.Parallel()
+
+	i := &SoulEmailLegacyAliasIndex{
+		AliasEmail:     " Agent-Bob@Lessersoul.ai ",
+		CanonicalEmail: " Agent-Bob.Simulacrum@LesserSoul.ai ",
+		AgentID:        " 0xABC ",
+		Source:         " project37-m2 ",
+	}
+	require.NoError(t, i.BeforeCreate())
+	require.Equal(t, "SOUL#EMAIL_ALIAS#agent-bob@lessersoul.ai", i.PK)
+	require.Equal(t, "CANONICAL", i.SK)
+	require.Equal(t, "agent-bob@lessersoul.ai", i.AliasEmail)
+	require.Equal(t, "agent-bob.simulacrum@lessersoul.ai", i.CanonicalEmail)
+	require.Equal(t, "0xabc", i.AgentID)
+	require.Equal(t, SoulEmailLegacyAliasStatusActive, i.Status)
+	require.Equal(t, "project37-m2", i.Source)
+	require.False(t, i.CreatedAt.IsZero())
+	require.False(t, i.UpdatedAt.IsZero())
+}
+
 func TestSoulPhoneAgentIndex_Keys(t *testing.T) {
 	t.Parallel()
 
@@ -59,6 +80,9 @@ func TestSoulContactAgentIndexes_RequireNonEmptyIdentity(t *testing.T) {
 
 	require.Error(t, (&SoulEmailAgentIndex{AgentID: "0xabc"}).BeforeCreate())
 	require.Error(t, (&SoulEmailAgentIndex{Email: "agent@example.com"}).BeforeCreate())
+	require.Error(t, (&SoulEmailLegacyAliasIndex{CanonicalEmail: "agent.example@lessersoul.ai", AgentID: "0xabc"}).BeforeCreate())
+	require.Error(t, (&SoulEmailLegacyAliasIndex{AliasEmail: "agent@lessersoul.ai", AgentID: "0xabc"}).BeforeCreate())
+	require.Error(t, (&SoulEmailLegacyAliasIndex{AliasEmail: "agent@lessersoul.ai", CanonicalEmail: "agent.example@lessersoul.ai"}).BeforeCreate())
 	require.Error(t, (&SoulPhoneAgentIndex{AgentID: "0xabc"}).BeforeCreate())
 	require.Error(t, (&SoulPhoneAgentIndex{Phone: "+15550123456"}).BeforeCreate())
 }

@@ -23,6 +23,7 @@ const (
 type commStoreTestDB struct {
 	db       *ttmocks.MockExtendedDB
 	qEmail   *ttmocks.MockQuery
+	qAlias   *ttmocks.MockQuery
 	qPhone   *ttmocks.MockQuery
 	qIdent   *ttmocks.MockQuery
 	qChannel *ttmocks.MockQuery
@@ -38,6 +39,7 @@ type commStoreTestDB struct {
 func newCommStoreTestDB() commStoreTestDB {
 	db := ttmocks.NewMockExtendedDB()
 	qEmail := new(ttmocks.MockQuery)
+	qAlias := new(ttmocks.MockQuery)
 	qPhone := new(ttmocks.MockQuery)
 	qIdent := new(ttmocks.MockQuery)
 	qChannel := new(ttmocks.MockQuery)
@@ -51,6 +53,7 @@ func newCommStoreTestDB() commStoreTestDB {
 
 	db.On("WithContext", mock.Anything).Return(db).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulEmailAgentIndex")).Return(qEmail).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulEmailLegacyAliasIndex")).Return(qAlias).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulPhoneAgentIndex")).Return(qPhone).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(qIdent).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentChannel")).Return(qChannel).Maybe()
@@ -62,7 +65,7 @@ func newCommStoreTestDB() commStoreTestDB {
 	db.On("Model", mock.AnythingOfType("*models.Domain")).Return(qDomain).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.Instance")).Return(qInst).Maybe()
 
-	for _, q := range []*ttmocks.MockQuery{qEmail, qPhone, qIdent, qChannel, qPrefs, qAct, qQueue, qMailbox, qEvent, qDomain, qInst} {
+	for _, q := range []*ttmocks.MockQuery{qEmail, qAlias, qPhone, qIdent, qChannel, qPrefs, qAct, qQueue, qMailbox, qEvent, qDomain, qInst} {
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("OrderBy", mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("Limit", mock.Anything).Return(q).Maybe()
@@ -77,6 +80,7 @@ func newCommStoreTestDB() commStoreTestDB {
 	return commStoreTestDB{
 		db:       db,
 		qEmail:   qEmail,
+		qAlias:   qAlias,
 		qPhone:   qPhone,
 		qIdent:   qIdent,
 		qChannel: qChannel,
@@ -109,8 +113,12 @@ func TestDynamoStoreLookupsAndGets(t *testing.T) {
 	if _, _, err := nilStore.LookupAgentByEmail(ctx, "user@example.com"); err == nil {
 		t.Fatalf("expected store not initialized error")
 	}
+	if _, _, err := nilStore.LookupLegacyEmailAlias(ctx, "user@example.com"); err == nil {
+		t.Fatalf("expected store not initialized error")
+	}
 
 	runLookupAgentByEmailTest(t, ctx)
+	runLookupLegacyEmailAliasTest(t, ctx)
 	runLookupAgentByPhoneTest(t, ctx)
 	runGetSoulAgentIdentityTest(t, ctx)
 	runGetSoulAgentChannelTest(t, ctx)
@@ -132,6 +140,40 @@ func runLookupAgentByEmailTest(t *testing.T, ctx context.Context) {
 		agentID, ok, err := st.LookupAgentByEmail(ctx, " User@example.com ")
 		if err != nil || !ok || agentID != "0xabcd" {
 			t.Fatalf("unexpected lookup result: agentID=%q ok=%v err=%v", agentID, ok, err)
+		}
+	})
+}
+
+func runLookupLegacyEmailAliasTest(t *testing.T, ctx context.Context) {
+	t.Helper()
+
+	t.Run("lookup legacy email alias success normalizes and filters disabled", func(t *testing.T) {
+		tdb := newCommStoreTestDB()
+		tdb.qAlias.On("First", mock.AnythingOfType("*models.SoulEmailLegacyAliasIndex")).Return(nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*models.SoulEmailLegacyAliasIndex](t, args, 0)
+			*dest = models.SoulEmailLegacyAliasIndex{
+				AliasEmail:     " Pilot@LesserSoul.ai ",
+				CanonicalEmail: " Pilot.Simulacrum@LesserSoul.ai ",
+				AgentID:        " 0xAGENT ",
+				Status:         models.SoulEmailLegacyAliasStatusActive,
+			}
+		}).Once()
+
+		st := &dynamoStore{db: tdb.db}
+		alias, ok, err := st.LookupLegacyEmailAlias(ctx, " Pilot@LesserSoul.ai ")
+		if err != nil || !ok || alias == nil || alias.AgentID != commStoreTestAgentID || alias.CanonicalEmail != "pilot.simulacrum@lessersoul.ai" {
+			t.Fatalf("unexpected alias result: alias=%#v ok=%v err=%v", alias, ok, err)
+		}
+	})
+
+	t.Run("lookup legacy email alias not found", func(t *testing.T) {
+		tdb := newCommStoreTestDB()
+		tdb.qAlias.On("First", mock.AnythingOfType("*models.SoulEmailLegacyAliasIndex")).Return(theoryErrors.ErrItemNotFound).Once()
+
+		st := &dynamoStore{db: tdb.db}
+		alias, ok, err := st.LookupLegacyEmailAlias(ctx, "unknown@lessersoul.ai")
+		if err != nil || ok || alias != nil {
+			t.Fatalf("unexpected alias result: alias=%#v ok=%v err=%v", alias, ok, err)
 		}
 	})
 }

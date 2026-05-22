@@ -2,6 +2,7 @@ package commworker
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -37,6 +38,7 @@ func (f *fakeMailboxContentStore) GetContent(_ context.Context, _ commmailbox.Co
 
 type fakeStore struct {
 	emailIndex map[string]string
+	emailAlias map[string]*models.SoulEmailLegacyAliasIndex
 	phoneIndex map[string]string
 
 	identities map[string]*models.SoulAgentIdentity
@@ -63,6 +65,14 @@ func (f *fakeStore) LookupAgentByEmail(_ context.Context, email string) (string,
 	}
 	id, ok := f.emailIndex[email]
 	return id, ok, nil
+}
+
+func (f *fakeStore) LookupLegacyEmailAlias(_ context.Context, email string) (*models.SoulEmailLegacyAliasIndex, bool, error) {
+	if f == nil || f.emailAlias == nil {
+		return nil, false, nil
+	}
+	alias, ok := f.emailAlias[strings.ToLower(strings.TrimSpace(email))]
+	return alias, ok, nil
 }
 
 func (f *fakeStore) LookupAgentByPhone(_ context.Context, phone string) (string, bool, error) {

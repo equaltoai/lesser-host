@@ -25,14 +25,15 @@ import (
 )
 
 const (
-	provisionTestAgentLocalID    = "agent-alice"
-	provisionTestInstanceSlug    = "inst1"
-	provisionTestEmailLocalPart  = provisionTestAgentLocalID + "." + provisionTestInstanceSlug
-	provisionTestEmailAddress    = provisionTestEmailLocalPart + "@lessersoul.ai"
-	provisionTestEmailENSName    = provisionTestAgentLocalID + ".lessersoul.eth"
-	provisionTestAgentDomain     = "example.com"
-	provisionTestStageAlias      = "dev.simulacrum.greater.website"
-	provisionTestStageBaseDomain = "simulacrum.greater.website"
+	provisionTestAgentLocalID     = "agent-alice"
+	provisionTestInstanceSlug     = "inst1"
+	provisionTestEmailLocalPart   = provisionTestAgentLocalID + "." + provisionTestInstanceSlug
+	provisionTestEmailAddress     = provisionTestEmailLocalPart + "@lessersoul.ai"
+	provisionTestEmailENSName     = provisionTestAgentLocalID + ".lessersoul.eth"
+	provisionTestAgentDomain      = "example.com"
+	provisionTestStageAlias       = "dev.simulacrum.greater.website"
+	provisionTestStageBaseDomain  = "simulacrum.greater.website"
+	provisionTestPilotScopedEmail = "pilot.simulacrum@lessersoul.ai"
 )
 
 func mustMarshalJSON(t testing.TB, v any) []byte {
@@ -189,7 +190,7 @@ func TestBuildSoulProvisionManagedEmailAddress_AllowsDotsAndSameLocalIDAcrossIns
 	if appErr != nil {
 		t.Fatalf("expected second instance success, got %v", appErr)
 	}
-	if a.Address == b.Address || a.Address != "pilot.simulacrum@lessersoul.ai" || b.Address != "pilot.sim-lab@lessersoul.ai" {
+	if a.Address == b.Address || a.Address != provisionTestPilotScopedEmail || b.Address != "pilot.sim-lab@lessersoul.ai" {
 		t.Fatalf("expected same local id to derive distinct instance addresses: a=%#v b=%#v", a, b)
 	}
 }

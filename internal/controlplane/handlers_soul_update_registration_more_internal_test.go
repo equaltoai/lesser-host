@@ -1021,6 +1021,144 @@ func TestSyncSoulV3StateFromRegistration_RejectsManagedChannelIdentifierChange(t
 	}
 }
 
+func TestSyncSoulV3StateFromRegistration_AllowsProject37LegacyEmailMigration(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulLifecycleTestDB()
+	s := &Server{cfg: config.Config{Stage: "lab"}, store: store.New(tdb.db)}
+	now := time.Date(2026, time.May, 21, 14, 0, 0, 0, time.UTC)
+	identity := &models.SoulAgentIdentity{
+		AgentID:         soulLifecycleTestAgentIDHex,
+		Domain:          "simulacrum.greater.website",
+		LocalID:         "pilot",
+		LifecycleStatus: models.SoulAgentStatusActive,
+	}
+	oldAddress := "pilot@lessersoul.ai"
+	newAddress := provisionTestPilotScopedEmail
+
+	tdb.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(theoryErrors.ErrItemNotFound).Once()
+	tdb.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentChannel](t, args, 0)
+		*dest = models.SoulAgentChannel{
+			AgentID:       identity.AgentID,
+			ChannelType:   models.SoulChannelTypeEmail,
+			Identifier:    oldAddress,
+			Provider:      "migadu",
+			Verified:      true,
+			ProvisionedAt: now.Add(-24 * time.Hour),
+			Status:        models.SoulChannelStatusActive,
+			SecretRef:     "/lesser-host/soul/lab/agents/0xabc/channels/email/migadu_password",
+			Capabilities:  []string{"receive", "send"},
+			Protocols:     []string{"imap", "smtp"},
+		}
+	}).Once()
+	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
+		*dest = models.Domain{
+			Domain:       identity.Domain,
+			InstanceSlug: "simulacrum",
+			Status:       models.DomainStatusVerified,
+		}
+	}).Once()
+	tdb.qEmailIdx.On("First", mock.AnythingOfType("*models.SoulEmailAgentIndex")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulEmailAgentIndex](t, args, 0)
+		*dest = models.SoulEmailAgentIndex{Email: oldAddress, AgentID: identity.AgentID}
+	}).Once()
+	tdb.qEmailIdx.On("First", mock.AnythingOfType("*models.SoulEmailAgentIndex")).Return(theoryErrors.ErrItemNotFound).Once()
+	tdb.qEmailAlias.On("First", mock.AnythingOfType("*models.SoulEmailLegacyAliasIndex")).Return(theoryErrors.ErrItemNotFound).Once()
+	tdb.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(theoryErrors.ErrItemNotFound).Once()
+
+	appErr := s.syncSoulV3StateFromRegistration(context.Background(), identity.AgentID, identity, &soul.RegistrationFileV3{
+		Channels: &soul.ChannelsV3{
+			Email: &soul.EmailChannelV3{
+				Address:      newAddress,
+				Capabilities: []string{"receive", "send"},
+				Protocols:    []string{"smtp", "imap"},
+				Verified:     true,
+				VerifiedAt:   now.Format(time.RFC3339Nano),
+			},
+		},
+	}, now)
+	if appErr != nil {
+		t.Fatalf("unexpected appErr: %v", appErr)
+	}
+
+	migratedChannel, aliasIndex := findProject37EmailMigrationModels(tdb.db.Calls, oldAddress, newAddress)
+	if migratedChannel == nil || migratedChannel.Provider != commDeliveryProviderMigadu || migratedChannel.ProvisionedAt.IsZero() || migratedChannel.SecretRef == "" {
+		t.Fatalf("expected migrated managed channel metadata to be preserved, got %#v", migratedChannel)
+	}
+	if aliasIndex == nil || aliasIndex.CanonicalEmail != newAddress || aliasIndex.AgentID != identity.AgentID || aliasIndex.Status != models.SoulEmailLegacyAliasStatusActive {
+		t.Fatalf("expected legacy alias index for old bare address, got %#v", aliasIndex)
+	}
+}
+
+func TestSyncSoulV3StateFromRegistration_RejectsNonAgentLegacyEmailAlias(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulLifecycleTestDB()
+	s := &Server{cfg: config.Config{Stage: "lab"}, store: store.New(tdb.db)}
+	now := time.Date(2026, time.May, 22, 8, 0, 0, 0, time.UTC)
+	identity := &models.SoulAgentIdentity{
+		AgentID:         soulLifecycleTestAgentIDHex,
+		Domain:          "simulacrum.greater.website",
+		LocalID:         "pilot",
+		LifecycleStatus: models.SoulAgentStatusActive,
+	}
+
+	tdb.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(theoryErrors.ErrItemNotFound).Once()
+	tdb.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentChannel](t, args, 0)
+		*dest = models.SoulAgentChannel{
+			AgentID:       identity.AgentID,
+			ChannelType:   models.SoulChannelTypeEmail,
+			Identifier:    "other@lessersoul.ai",
+			Provider:      "migadu",
+			Verified:      true,
+			ProvisionedAt: now.Add(-24 * time.Hour),
+			Status:        models.SoulChannelStatusActive,
+			SecretRef:     "/lesser-host/soul/lab/agents/0xabc/channels/email/migadu_password",
+		}
+	}).Once()
+
+	appErr := s.syncSoulV3StateFromRegistration(context.Background(), identity.AgentID, identity, &soul.RegistrationFileV3{
+		Channels: &soul.ChannelsV3{
+			Email: &soul.EmailChannelV3{
+				Address:  provisionTestPilotScopedEmail,
+				Verified: true,
+			},
+		},
+	}, now)
+	if appErr == nil || appErr.Code != appErrCodeConflict || appErr.Message != "managed channel must be deprovisioned before changing identifier" {
+		t.Fatalf("expected managed channel conflict for non-agent legacy alias, got %v", appErr)
+	}
+}
+
+func findProject37EmailMigrationModels(calls []mock.Call, oldAddress string, newAddress string) (*models.SoulAgentChannel, *models.SoulEmailLegacyAliasIndex) {
+	var migratedChannel *models.SoulAgentChannel
+	var aliasIndex *models.SoulEmailLegacyAliasIndex
+	for _, call := range calls {
+		if call.Method != modelCallMethod || len(call.Arguments) == 0 {
+			continue
+		}
+		migratedChannel, aliasIndex = recordProject37EmailMigrationModel(call.Arguments.Get(0), oldAddress, newAddress, migratedChannel, aliasIndex)
+	}
+	return migratedChannel, aliasIndex
+}
+
+func recordProject37EmailMigrationModel(model any, oldAddress string, newAddress string, migratedChannel *models.SoulAgentChannel, aliasIndex *models.SoulEmailLegacyAliasIndex) (*models.SoulAgentChannel, *models.SoulEmailLegacyAliasIndex) {
+	switch v := model.(type) {
+	case *models.SoulAgentChannel:
+		if v.ChannelType == models.SoulChannelTypeEmail && v.Identifier == newAddress {
+			migratedChannel = v
+		}
+	case *models.SoulEmailLegacyAliasIndex:
+		if v.AliasEmail == oldAddress {
+			aliasIndex = v
+		}
+	}
+	return migratedChannel, aliasIndex
+}
+
 func TestEnsureSoulEmailAgentIndex_RejectsForeignOwner(t *testing.T) {
 	t.Parallel()
 

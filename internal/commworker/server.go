@@ -433,7 +433,11 @@ func (s *Server) resolveRecipient(ctx context.Context, channel string, to *Inbou
 		if addr == "" {
 			return "", false, nil
 		}
-		return s.store.LookupAgentByEmail(ctx, addr)
+		agentID, ok, err := s.store.LookupAgentByEmail(ctx, addr)
+		if err != nil || ok {
+			return agentID, ok, err
+		}
+		return s.resolveLegacyEmailAlias(ctx, addr, to)
 	case inboundChannelSMS, inboundChannelVoice:
 		num := normalizePhone(to.Number)
 		if num == "" {
@@ -443,6 +447,32 @@ func (s *Server) resolveRecipient(ctx context.Context, channel string, to *Inbou
 	default:
 		return "", false, nil
 	}
+}
+
+func (s *Server) resolveLegacyEmailAlias(ctx context.Context, addr string, to *InboundParty) (string, bool, error) {
+	alias, ok, err := s.store.LookupLegacyEmailAlias(ctx, addr)
+	if err != nil || !ok || alias == nil {
+		return "", false, err
+	}
+	if alias.Status != models.SoulEmailLegacyAliasStatusActive {
+		return "", false, nil
+	}
+	canonical := strings.ToLower(strings.TrimSpace(alias.CanonicalEmail))
+	agentID := strings.ToLower(strings.TrimSpace(alias.AgentID))
+	if canonical == "" || agentID == "" || strings.EqualFold(canonical, addr) {
+		return "", false, nil
+	}
+
+	canonicalAgentID, canonicalOK, err := s.store.LookupAgentByEmail(ctx, canonical)
+	if err != nil || !canonicalOK {
+		return "", false, err
+	}
+	if !strings.EqualFold(strings.TrimSpace(canonicalAgentID), agentID) {
+		return "", false, nil
+	}
+
+	to.Address = canonical
+	return agentID, true, nil
 }
 
 func channelRecordType(channel string) string {

@@ -26,6 +26,7 @@ type hookedStore struct {
 	*fakeStore
 
 	lookupAgentByEmailFn       func(context.Context, string) (string, bool, error)
+	lookupLegacyEmailAliasFn   func(context.Context, string) (*models.SoulEmailLegacyAliasIndex, bool, error)
 	lookupAgentByPhoneFn       func(context.Context, string) (string, bool, error)
 	getSoulAgentIdentityFn     func(context.Context, string) (*models.SoulAgentIdentity, bool, error)
 	getSoulAgentChannelFn      func(context.Context, string, string) (*models.SoulAgentChannel, bool, error)
@@ -43,6 +44,16 @@ func (h *hookedStore) LookupAgentByEmail(ctx context.Context, email string) (str
 		return h.fakeStore.LookupAgentByEmail(ctx, email)
 	}
 	return "", false, nil
+}
+
+func (h *hookedStore) LookupLegacyEmailAlias(ctx context.Context, email string) (*models.SoulEmailLegacyAliasIndex, bool, error) {
+	if h.lookupLegacyEmailAliasFn != nil {
+		return h.lookupLegacyEmailAliasFn(ctx, email)
+	}
+	if h.fakeStore != nil {
+		return h.fakeStore.LookupLegacyEmailAlias(ctx, email)
+	}
+	return nil, false, nil
 }
 
 func (h *hookedStore) LookupAgentByPhone(ctx context.Context, phone string) (string, bool, error) {
