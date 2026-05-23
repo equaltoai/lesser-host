@@ -257,9 +257,12 @@ func (s *Server) encryptConsentForJob(consentMessage string, consentSignature st
 // supplied. Fails closed when consent is supplied but the encryption key is
 // missing or encryption fails (CSR-017).
 func (s *Server) processConsentForJob(consentMessage, consentSignature string, reqExpiresAt time.Time) (consentMsgHash string, consentEncrypted string, consentExpiresAt time.Time, appErr *apptheory.AppError) {
-	consentMessage = strings.TrimSpace(consentMessage)
-	consentSignature = strings.TrimSpace(consentSignature)
-	if consentMessage == "" {
+	// Use a trimmed copy only for presence/validation decisions.
+	// Raw bytes are preserved for hash and encryption so signed
+	// consent round-trips exactly (leading/trailing whitespace
+	// and newlines are part of the signed payload).
+	trimmedMessage := strings.TrimSpace(consentMessage)
+	if trimmedMessage == "" {
 		return "", "", reqExpiresAt, nil
 	}
 

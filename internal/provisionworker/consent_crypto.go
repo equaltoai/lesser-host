@@ -46,7 +46,10 @@ func packConsent(message, signature string) ([]byte, error) {
 func unpackConsent(raw []byte) (message string, signature string) {
 	var p consentCryptoPacket
 	if err := json.Unmarshal(raw, &p); err != nil {
-		return strings.TrimSpace(string(raw)), ""
+		// Return raw unchanged for backward compatibility with legacy
+		// plaintext payloads. No trimming — legacy callers' byte
+		// expectations are preserved as-is.
+		return string(raw), ""
 	}
 	// Return the exact bytes from the packet — no TrimSpace.
 	return p.Message, p.Signature
@@ -60,7 +63,9 @@ func unpackConsent(raw []byte) (message string, signature string) {
 // The plaintext is encrypted as-is (no trimming) so that signed consent bytes
 // round-trip exactly.
 func EncryptConsent(plaintext string, key []byte) (string, error) {
-	plaintext = strings.TrimSpace(plaintext)
+	// Only treat exact empty string as noop — do not trim.
+	// Non-empty plaintext is encrypted as-is for exact round-trip
+	// of signed consent bytes including any whitespace/newlines.
 	if plaintext == "" {
 		return "", nil
 	}

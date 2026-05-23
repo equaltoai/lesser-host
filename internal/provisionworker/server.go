@@ -2445,7 +2445,10 @@ func (s *Server) buildDeployRunnerEnv(job *models.ProvisionJob, stage, receiptKe
 	if consentMessage != "" {
 		consentMessageB64 = base64.StdEncoding.EncodeToString([]byte(consentMessage))
 	}
-	consentSignature := strings.TrimSpace(job.ConsentSignature)
+	// Preserve exact consent signature bytes for the runner env —
+	// the signature was part of the signed payload and must not be
+	// trimmed before it reaches the deploy runner.
+	consentSignature := job.ConsentSignature
 
 	env := []cbtypes.EnvironmentVariable{
 		{Name: aws.String("JOB_ID"), Value: aws.String(strings.TrimSpace(job.ID))},
