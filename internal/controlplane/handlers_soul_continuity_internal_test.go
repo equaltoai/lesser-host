@@ -68,7 +68,7 @@ func TestHandleSoulAppendContinuity_VerifiesSignedEntry(t *testing.T) {
 	recovery := ""
 	references := []string{"boundary-001"}
 
-	digest, appErr := computeSoulContinuityEntryDigest(entryType, timestamp, summary, recovery, references)
+	digest, appErr := computeSoulContinuityEntryDigest(entryType, timestamp, summary, recovery, references, "")
 	if appErr != nil {
 		t.Fatalf("digest: %v", appErr)
 	}

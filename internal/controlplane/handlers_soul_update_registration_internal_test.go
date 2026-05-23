@@ -636,6 +636,47 @@ func TestEnsureNoSoulRegistrationVersionHistory_RejectsMissingPreviousURIWithExi
 	}
 }
 
+// CSR-015 regression: ensureNoSoulRegistrationVersionHistory must reject
+// missing previousVersionUri even when only a single version-1 record exists.
+// (Before the fix, the off-by-one threshold accepted version 1-only history.)
+func TestEnsureNoSoulRegistrationVersionHistory_RejectsSingleVersion1(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulLifecycleTestDB()
+	s := &Server{store: store.New(tdb.db)}
+	// Version 1 exists → max=1, nextExisting=2. Must trigger rejection (2 > 1).
+	tdb.qVersion.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulAgentVersion](t, args, 0)
+		*dest = []*models.SoulAgentVersion{
+			{AgentID: soulLifecycleTestAgentIDHex, VersionNumber: 1},
+		}
+	}).Once()
+
+	appErr := s.ensureNoSoulRegistrationVersionHistory(context.Background(), soulLifecycleTestAgentIDHex)
+	if appErr == nil || appErr.Message != "previousVersionUri is required for existing version history" {
+		t.Fatalf("expected existing history conflict for single version 1, got %#v", appErr)
+	}
+}
+
+// CSR-015 regression: ensureNoSoulRegistrationVersionHistory passes when no
+// version history exists at all.
+func TestEnsureNoSoulRegistrationVersionHistory_AllowsEmptyHistory(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulLifecycleTestDB()
+	s := &Server{store: store.New(tdb.db)}
+	// No versions exist → max=0, nextExisting=1. Must pass (1 is not > 1).
+	tdb.qVersion.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulAgentVersion](t, args, 0)
+		*dest = []*models.SoulAgentVersion{}
+	}).Once()
+
+	appErr := s.ensureNoSoulRegistrationVersionHistory(context.Background(), soulLifecycleTestAgentIDHex)
+	if appErr != nil {
+		t.Fatalf("expected no error for empty history, got %#v", appErr)
+	}
+}
+
 func TestValidateCapabilityClaimLevelTransitions_RejectsDowngrade(t *testing.T) {
 	t.Parallel()
 

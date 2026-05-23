@@ -251,7 +251,7 @@ func (s *Server) ensureNoSoulRegistrationVersionHistory(ctx context.Context, age
 	if appErr != nil {
 		return appErr
 	}
-	if nextExisting > 2 {
+	if nextExisting > 1 {
 		log.Printf("controlplane: soul_integrity version_chain_violation agent=%s reason=missing_prev_uri_with_existing_history next_existing=%d", agentIDHex, nextExisting)
 		return &apptheory.AppError{Code: "app.conflict", Message: "previousVersionUri is required for existing version history"}
 	}

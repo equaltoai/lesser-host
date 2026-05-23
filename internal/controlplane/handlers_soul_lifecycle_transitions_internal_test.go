@@ -38,12 +38,14 @@ func TestHandleSoulArchiveAgent_ArchivesAndWritesAudit(t *testing.T) {
 	seedSoulLifecycleTransitionAccess(t, tdb, agentIDHex, wallet)
 
 	timestamp := canonicalSoulSignedTimestamp(time.Now().Add(-time.Minute).UTC())
+	continuityNonce := "test-archive-nonce"
 	digest, appErr := computeSoulContinuityEntryDigest(
 		models.SoulContinuityEntryTypeArchived,
 		timestamp,
 		"Archived",
 		"",
 		[]string{"agent:" + agentIDHex},
+		continuityNonce,
 	)
 	if appErr != nil {
 		t.Fatalf("digest: %v", appErr)
@@ -63,7 +65,7 @@ func TestHandleSoulArchiveAgent_ArchivesAndWritesAudit(t *testing.T) {
 		AuthIdentity: "alice",
 		Params:       map[string]string{"agentId": agentIDHex},
 		Request: apptheory.Request{
-			Body: []byte(`{"reason":"done","timestamp":"` + timestamp + `","signature":"` + sigHex + `"}`),
+			Body: []byte(`{"reason":"done","timestamp":"` + timestamp + `","signature":"` + sigHex + `","continuity_nonce":"` + continuityNonce + `"}`),
 		},
 	}
 	ctx.Set(ctxKeyOperatorRole, models.RoleOperator)
@@ -109,12 +111,14 @@ func TestHandleSoulDesignateSuccessor_SucceedsAndCreatesEntries(t *testing.T) {
 	seedSoulSuccessorIdentity(t, tdb, successorIDHex, walletSucc)
 
 	timestamp := canonicalSoulSignedTimestamp(time.Now().Add(-time.Minute).UTC())
+	continuityNonce := "test-succession-nonce"
 	declaredDigest, appErr := computeSoulContinuityEntryDigest(
 		models.SoulContinuityEntryTypeSuccessionDeclared,
 		timestamp,
 		"Succession declared",
 		"",
 		[]string{"agent:" + agentIDHex, "successor:" + successorIDHex},
+		continuityNonce,
 	)
 	if appErr != nil {
 		t.Fatalf("declared digest: %v", appErr)
@@ -131,6 +135,7 @@ func TestHandleSoulDesignateSuccessor_SucceedsAndCreatesEntries(t *testing.T) {
 		"Succession received",
 		"",
 		[]string{"agent:" + successorIDHex, "predecessor:" + agentIDHex},
+		continuityNonce,
 	)
 	if appErr != nil {
 		t.Fatalf("received digest: %v", appErr)
@@ -151,7 +156,7 @@ func TestHandleSoulDesignateSuccessor_SucceedsAndCreatesEntries(t *testing.T) {
 		AuthIdentity: "alice",
 		Params:       map[string]string{"agentId": agentIDHex},
 		Request: apptheory.Request{
-			Body: []byte(`{"successor_agent_id":"` + successorIDHex + `","reason":"upgrade","timestamp":"` + timestamp + `","predecessor_signature":"` + declaredSigHex + `","successor_signature":"` + receivedSigHex + `"}`),
+			Body: []byte(`{"successor_agent_id":"` + successorIDHex + `","reason":"upgrade","timestamp":"` + timestamp + `","predecessor_signature":"` + declaredSigHex + `","successor_signature":"` + receivedSigHex + `","continuity_nonce":"` + continuityNonce + `"}`),
 		},
 	}
 	ctx.Set(ctxKeyOperatorRole, models.RoleOperator)
@@ -469,12 +474,14 @@ func TestHandleSoulArchiveAgent_TransactionFailureReturnsInternalError(t *testin
 	}).Once()
 
 	timestamp := canonicalSoulSignedTimestamp(time.Now().Add(-time.Minute).UTC())
+	continuityNonce := "test-archive-nonce-2"
 	digest, appErr := computeSoulContinuityEntryDigest(
 		models.SoulContinuityEntryTypeArchived,
 		timestamp,
 		"Archived",
 		"",
 		[]string{"agent:" + agentIDHex},
+		continuityNonce,
 	)
 	if appErr != nil {
 		t.Fatalf("digest: %v", appErr)
@@ -490,7 +497,7 @@ func TestHandleSoulArchiveAgent_TransactionFailureReturnsInternalError(t *testin
 		AuthIdentity: "alice",
 		Params:       map[string]string{"agentId": agentIDHex},
 		Request: apptheory.Request{
-			Body: []byte(`{"reason":"done","timestamp":"` + timestamp + `","signature":"` + sigHex + `"}`),
+			Body: []byte(`{"reason":"done","timestamp":"` + timestamp + `","signature":"` + sigHex + `","continuity_nonce":"` + continuityNonce + `"}`),
 		},
 	}
 	ctx.Set(ctxKeyOperatorRole, models.RoleOperator)
@@ -505,5 +512,146 @@ func TestHandleSoulArchiveAgent_TransactionFailureReturnsInternalError(t *testin
 	}
 	if appErr.Code != appErrCodeInternal {
 		t.Fatalf("expected %s, got %s", appErrCodeInternal, appErr.Code)
+	}
+}
+
+// CSR-013 regression: archive commit must require continuity_nonce (replay protection).
+func TestHandleSoulArchiveAgent_RejectMissingNonce(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulLifecycleTestDB()
+
+	key, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	wallet := strings.ToLower(crypto.PubkeyToAddress(key.PublicKey).Hex())
+	_ = prepareSoulLifecycleTransitionServer(t, tdb)
+
+	agentIDHex := soulLifecycleTestAgentIDHex
+	seedSoulLifecycleTransitionAccess(t, tdb, agentIDHex, wallet)
+
+	timestamp := canonicalSoulSignedTimestamp(time.Now().Add(-time.Minute).UTC())
+	digest, appErr := computeSoulContinuityEntryDigest(
+		models.SoulContinuityEntryTypeArchived,
+		timestamp,
+		"Archived",
+		"",
+		[]string{"agent:" + agentIDHex},
+		"",
+	)
+	if appErr != nil {
+		t.Fatalf("digest: %v", appErr)
+	}
+	sig, sigErr := crypto.Sign(accounts.TextHash(digest), key)
+	if sigErr != nil {
+		t.Fatalf("sign: %v", sigErr)
+	}
+	sigHex := "0x" + hex.EncodeToString(sig)
+
+	ctx := &apptheory.Context{
+		RequestID:    "r-csr013",
+		AuthIdentity: "alice",
+		Params:       map[string]string{"agentId": agentIDHex},
+		Request: apptheory.Request{
+			// Missing continuity_nonce — should be rejected.
+			Body: []byte(`{"reason":"done","timestamp":"` + timestamp + `","signature":"` + sigHex + `"}`),
+		},
+	}
+	ctx.Set(ctxKeyOperatorRole, models.RoleOperator)
+
+	_, callErr := newSoulLifecycleTransitionServer(tdb).handleSoulArchiveAgent(ctx)
+	if callErr == nil {
+		t.Fatalf("expected error for missing continuity_nonce")
+	}
+	appErr2, ok := callErr.(*apptheory.AppError)
+	if !ok {
+		t.Fatalf("expected AppError, got %T", callErr)
+	}
+	if appErr2.Code != "app.bad_request" {
+		t.Fatalf("expected app.bad_request, got %s", appErr2.Code)
+	}
+}
+
+// CSR-013 regression: designate-successor commit must require continuity_nonce (replay protection).
+func TestHandleSoulDesignateSuccessor_RejectMissingNonce(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulLifecycleTestDB()
+
+	keyPred, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("generate predecessor key: %v", err)
+	}
+	walletPred := strings.ToLower(crypto.PubkeyToAddress(keyPred.PublicKey).Hex())
+
+	keySucc, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("generate successor key: %v", err)
+	}
+	walletSucc := strings.ToLower(crypto.PubkeyToAddress(keySucc.PublicKey).Hex())
+	_ = prepareSoulLifecycleTransitionServer(t, tdb)
+
+	agentIDHex := soulLifecycleTestAgentIDHex
+	successorIDHex := "0x" + strings.Repeat("22", 32)
+	seedSoulLifecycleTransitionAccess(t, tdb, agentIDHex, walletPred)
+	seedSoulSuccessorIdentity(t, tdb, successorIDHex, walletSucc)
+
+	timestamp := canonicalSoulSignedTimestamp(time.Now().Add(-time.Minute).UTC())
+	declaredDigest, appErr := computeSoulContinuityEntryDigest(
+		models.SoulContinuityEntryTypeSuccessionDeclared,
+		timestamp,
+		"Succession declared",
+		"",
+		[]string{"agent:" + agentIDHex, "successor:" + successorIDHex},
+		"",
+	)
+	if appErr != nil {
+		t.Fatalf("declared digest: %v", appErr)
+	}
+	declaredSigBytes, sigErr := crypto.Sign(accounts.TextHash(declaredDigest), keyPred)
+	if sigErr != nil {
+		t.Fatalf("sign declared: %v", sigErr)
+	}
+	declaredSigHex := "0x" + hex.EncodeToString(declaredSigBytes)
+
+	receivedDigest, appErr := computeSoulContinuityEntryDigest(
+		models.SoulContinuityEntryTypeSuccessionReceived,
+		timestamp,
+		"Succession received",
+		"",
+		[]string{"agent:" + successorIDHex, "predecessor:" + agentIDHex},
+		"",
+	)
+	if appErr != nil {
+		t.Fatalf("received digest: %v", appErr)
+	}
+	receivedSigBytes, sigErr := crypto.Sign(accounts.TextHash(receivedDigest), keySucc)
+	if sigErr != nil {
+		t.Fatalf("sign received: %v", sigErr)
+	}
+	receivedSigHex := "0x" + hex.EncodeToString(receivedSigBytes)
+
+	ctx := &apptheory.Context{
+		RequestID:    "r-csr013",
+		AuthIdentity: "alice",
+		Params:       map[string]string{"agentId": agentIDHex},
+		Request: apptheory.Request{
+			// Missing continuity_nonce — should be rejected.
+			Body: []byte(`{"successor_agent_id":"` + successorIDHex + `","reason":"upgrade","timestamp":"` + timestamp + `","predecessor_signature":"` + declaredSigHex + `","successor_signature":"` + receivedSigHex + `"}`),
+		},
+	}
+	ctx.Set(ctxKeyOperatorRole, models.RoleOperator)
+
+	_, callErr := newSoulLifecycleTransitionServer(tdb).handleSoulDesignateSuccessor(ctx)
+	if callErr == nil {
+		t.Fatalf("expected error for missing continuity_nonce")
+	}
+	appErr2, ok := callErr.(*apptheory.AppError)
+	if !ok {
+		t.Fatalf("expected AppError, got %T", callErr)
+	}
+	if appErr2.Code != "app.bad_request" {
+		t.Fatalf("expected app.bad_request, got %s", appErr2.Code)
 	}
 }
