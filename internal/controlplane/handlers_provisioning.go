@@ -236,6 +236,50 @@ func (s *Server) getExistingProvisionJobAndNudge(ctx *apptheory.Context, inst *m
 	return job, true
 }
 
+func (s *Server) encryptConsentForJob(consentMessage string, consentSignature string) (string, *apptheory.AppError) {
+	encKey, encErr := provisionworker.ConsentEncryptionKeyHex(s.cfg.ManagedProvisionConsentEncryptionKeyHex)
+	if encErr != nil {
+		return "", &apptheory.AppError{Code: "app.internal", Message: "consent encryption key is not configured"}
+	}
+	packed, packErr := provisionworker.PackConsent(consentMessage, consentSignature)
+	if packErr != nil {
+		return "", &apptheory.AppError{Code: "app.internal", Message: "failed to pack consent"}
+	}
+	encrypted, encErr2 := provisionworker.EncryptConsent(string(packed), encKey)
+	if encErr2 != nil {
+		return "", &apptheory.AppError{Code: "app.internal", Message: "failed to protect consent"}
+	}
+	return encrypted, nil
+}
+
+// processConsentForJob handles consent expiration parsing, hash computation,
+// and encryption. Returns empty artifacts (no error) when no consent is
+// supplied. Fails closed when consent is supplied but the encryption key is
+// missing or encryption fails (CSR-017).
+func (s *Server) processConsentForJob(consentMessage, consentSignature string, reqExpiresAt time.Time) (consentMsgHash string, consentEncrypted string, consentExpiresAt time.Time, appErr *apptheory.AppError) {
+	consentMessage = strings.TrimSpace(consentMessage)
+	consentSignature = strings.TrimSpace(consentSignature)
+	if consentMessage == "" {
+		return "", "", reqExpiresAt, nil
+	}
+
+	consentExpiresAt = reqExpiresAt
+	if consentExpiresAt.IsZero() {
+		parsedExpiresAt, parseErr := provisionConsentMessageExpiresAt(consentMessage)
+		if parseErr != nil {
+			return "", "", time.Time{}, &apptheory.AppError{Code: "app.bad_request", Message: parseErr.Error()}
+		}
+		consentExpiresAt = parsedExpiresAt
+	}
+
+	consentMsgHash = sha256Hex(consentMessage)
+	consentEncrypted, appErr = s.encryptConsentForJob(consentMessage, consentSignature)
+	if appErr != nil {
+		return "", "", time.Time{}, appErr
+	}
+	return consentMsgHash, consentEncrypted, consentExpiresAt, nil
+}
+
 func (s *Server) buildManagedProvisionJob(slug string, req startInstanceProvisionRequest, requestID string, now time.Time) (*models.ProvisionJob, string, string, *apptheory.AppError) {
 	if s == nil {
 		return nil, "", "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
@@ -283,40 +327,15 @@ func (s *Server) buildManagedProvisionJob(slug string, req startInstanceProvisio
 	}
 
 	accountEmail := strings.TrimSpace(expandManagedAccountEmailTemplate(s.cfg.ManagedAccountEmailTemplate, slug))
-	consentExpiresAt := req.ConsentExpiresAt
-	consentMessage := strings.TrimSpace(req.ConsentMessage)
-	consentSignature := strings.TrimSpace(req.ConsentSignature)
-	if consentExpiresAt.IsZero() && consentMessage != "" {
-		parsedExpiresAt, parseErr := provisionConsentMessageExpiresAt(consentMessage)
-		if parseErr != nil {
-			return nil, "", "", &apptheory.AppError{Code: "app.bad_request", Message: parseErr.Error()}
-		}
-		consentExpiresAt = parsedExpiresAt
-	}
 
-	consentMsgHash := ""
-	if consentMessage != "" {
-		consentMsgHash = sha256Hex(consentMessage)
-	}
-
-	// CSR-017: Encrypt consent before persisting to DynamoDB so the raw
-	// message and signature are not stored as replayable plaintext. The
-	// provision worker decrypts at deploy-runner-start time and clears
-	// the artifacts immediately after use.
-	consentEncrypted := ""
-	if consentMessage != "" {
-		encKey, encErr := provisionworker.ConsentEncryptionKeyHex(s.cfg.ManagedProvisionConsentEncryptionKeyHex)
-		if encErr == nil {
-			var encErr2 error
-			payload := consentMessage
-			if consentSignature != "" {
-				payload = consentMessage + "\n" + consentSignature
-			}
-			consentEncrypted, encErr2 = provisionworker.EncryptConsent(payload, encKey)
-			if encErr2 != nil {
-				return nil, "", "", &apptheory.AppError{Code: "app.internal", Message: "failed to protect consent"}
-			}
-		}
+	// CSR-017: process consent expiration, hash, and encryption atomically.
+	// Fails closed when consent is supplied but encryption key is missing or
+	// encryption fails.
+	consentMsgHash, consentEncrypted, consentExpiresAt, consentAppErr := s.processConsentForJob(
+		req.ConsentMessage, req.ConsentSignature, req.ConsentExpiresAt,
+	)
+	if consentAppErr != nil {
+		return nil, "", "", consentAppErr
 	}
 
 	job := &models.ProvisionJob{

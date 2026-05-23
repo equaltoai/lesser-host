@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,10 +19,46 @@ const consentEncryptionVersionPrefix = "enc:v1:"
 // is empty or missing.
 var ErrConsentEncryptionKeyRequired = errors.New("consent encryption key is required")
 
+// consentCryptoPacket is a structured, non-ambiguous container for the consent
+// message and signature to be encrypted together. Using JSON avoids the unsafe
+// newline-delimited packing that could corrupt message/signature separation
+// when the consent message contains newlines (e.g. pretty-printed JSON).
+type consentCryptoPacket struct {
+	Message   string `json:"message"`
+	Signature string `json:"signature"`
+}
+
+// packConsent serializes a consent message and signature into a JSON byte
+// slice suitable for encryption. Empty signature is preserved (omitted in
+// JSON), and the exact bytes of message are preserved (no trimming).
+func packConsent(message, signature string) ([]byte, error) {
+	p := consentCryptoPacket{
+		Message:   message,
+		Signature: signature,
+	}
+	return json.Marshal(p)
+}
+
+// unpackConsent deserializes an encrypted/decrypted consent payload JSON
+// back into message and signature. If the payload cannot be parsed as a
+// consentCryptoPacket, it is treated as a plain message with no signature
+// for backward compatibility.
+func unpackConsent(raw []byte) (message string, signature string) {
+	var p consentCryptoPacket
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return strings.TrimSpace(string(raw)), ""
+	}
+	// Return the exact bytes from the packet — no TrimSpace.
+	return p.Message, p.Signature
+}
+
 // EncryptConsent encrypts a plaintext consent payload using AES-256-GCM with
 // the supplied 32-byte key. Returns a base64-encoded ciphertext prefixed with
 // "enc:v1:" so the decryption path can distinguish encrypted values from
 // legacy plaintext consent stored in older job records.
+//
+// The plaintext is encrypted as-is (no trimming) so that signed consent bytes
+// round-trip exactly.
 func EncryptConsent(plaintext string, key []byte) (string, error) {
 	plaintext = strings.TrimSpace(plaintext)
 	if plaintext == "" {
@@ -53,7 +90,7 @@ func EncryptConsent(plaintext string, key []byte) (string, error) {
 // DecryptConsent decrypts a consent value that was encrypted with
 // EncryptConsent. If the value does not have the "enc:v1:" prefix, it is
 // returned as-is for backward compatibility with legacy plaintext consent.
-// Returns the trimmed plaintext on success.
+// Returns the exact decrypted bytes on success (no trimming).
 func DecryptConsent(encoded string, key []byte) (string, error) {
 	encoded = strings.TrimSpace(encoded)
 	if encoded == "" {
@@ -100,7 +137,24 @@ func DecryptConsent(encoded string, key []byte) (string, error) {
 		return "", fmt.Errorf("consent decrypt: %w", err)
 	}
 
-	return strings.TrimSpace(string(plaintext)), nil
+	// Return exact bytes — no trimming. Callers that need
+	// structured message/signature use unpackConsent instead.
+	return string(plaintext), nil
+}
+
+// PackConsent serializes a consent message and signature into a JSON byte
+// slice suitable for encryption. The message and signature bytes are
+// preserved exactly — no trimming is applied by this function.
+func PackConsent(message, signature string) ([]byte, error) {
+	return packConsent(message, signature)
+}
+
+// UnpackConsent deserializes an encrypted-then-decrypted consent payload JSON
+// back into message and signature. If the payload cannot be parsed as a
+// consentCryptoPacket, it is treated as a plain message with no signature
+// for backward compatibility with legacy non-structured payloads.
+func UnpackConsent(raw []byte) (message string, signature string) {
+	return unpackConsent(raw)
 }
 
 // ConsentEncryptionKeyHex decodes a hex-encoded consent encryption key string

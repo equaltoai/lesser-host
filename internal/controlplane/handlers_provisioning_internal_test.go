@@ -59,17 +59,49 @@ func TestParseStartInstanceProvisionRequest(t *testing.T) {
 	}
 }
 
-func TestBuildManagedProvisionJob_PreservesStructuredConsentBytes(t *testing.T) {
+func TestBuildManagedProvisionJob_ConsentFailClosedWithoutKey(t *testing.T) {
 	t.Parallel()
 
 	expiresAt := time.Date(2026, 4, 29, 13, 30, 0, 0, time.UTC)
 	consentMessage := buildProvisionConsentMessage(testProvisionConsentStageLab, "demo.lesser.host", testPortalInstanceSlugDemo, testProvisionConsentNonce16, expiresAt)
 
+	// No encryption key configured — consent is supplied but cannot be
+	// encrypted. CSR-017 fix: fail closed instead of silently dropping.
 	s := &Server{cfg: config.Config{
 		Stage:                       "lab",
 		ManagedParentDomain:         "lesser.host",
 		ManagedDefaultRegion:        "us-east-1",
 		ManagedLesserDefaultVersion: "v1.2.6",
+	}}
+
+	job, _, _, appErr := s.buildManagedProvisionJob(testPortalInstanceSlugDemo, startInstanceProvisionRequest{
+		LesserVersion:      "v1.2.6",
+		AdminWalletType:    "ethereum",
+		AdminWalletAddress: "0x0000000000000000000000000000000000000003",
+		AdminWalletChainID: 1,
+		AdminUsername:      testPortalInstanceSlugDemo,
+		ConsentMessage:     consentMessage,
+		ConsentSignature:   "0xsignature",
+	}, "req", time.Now().UTC())
+	require.NotNil(t, appErr)
+	require.Nil(t, job)
+	require.Contains(t, appErr.Message, "consent")
+}
+
+func TestBuildManagedProvisionJob_EncryptsConsentWithKey(t *testing.T) {
+	t.Parallel()
+
+	expiresAt := time.Date(2026, 4, 29, 13, 30, 0, 0, time.UTC)
+	consentMessage := buildProvisionConsentMessage(testProvisionConsentStageLab, "demo.lesser.host", testPortalInstanceSlugDemo, testProvisionConsentNonce16, expiresAt)
+
+	// Use a valid 32-byte hex key for encryption.
+	testKeyHex := "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+	s := &Server{cfg: config.Config{
+		Stage:                                   "lab",
+		ManagedParentDomain:                     "lesser.host",
+		ManagedDefaultRegion:                    "us-east-1",
+		ManagedLesserDefaultVersion:             "v1.2.6",
+		ManagedProvisionConsentEncryptionKeyHex: testKeyHex,
 	}}
 
 	job, baseDomain, region, appErr := s.buildManagedProvisionJob(testPortalInstanceSlugDemo, startInstanceProvisionRequest{
@@ -85,12 +117,11 @@ func TestBuildManagedProvisionJob_PreservesStructuredConsentBytes(t *testing.T) 
 	require.NotNil(t, job)
 	require.Equal(t, "demo.lesser.host", baseDomain)
 	require.Equal(t, "us-east-1", region)
-	// CSR-017: consent is no longer stored as plaintext. Without an
-	// encryption key the consent is ephemeral (not persisted). The
-	// hash is still preserved for audit reference.
-	require.Empty(t, job.ConsentMessage)
-	require.Empty(t, job.ConsentSignature)
-	require.Empty(t, job.ConsentEncrypted, "consent must not be persisted without encryption key")
+	// CSR-017: consent is no longer stored as plaintext — encrypted only.
+	require.Empty(t, job.ConsentMessage, "consent message must not be stored as plaintext")
+	require.Empty(t, job.ConsentSignature, "consent signature must not be stored as plaintext")
+	require.NotEmpty(t, job.ConsentEncrypted, "consent must be stored encrypted")
+	// The hash is still preserved for audit reference (computed pre-encryption).
 	require.Equal(t, sha256Hex(consentMessage), job.ConsentMessageHash)
 	require.Equal(t, expiresAt.UTC(), job.ConsentExpiresAt)
 }

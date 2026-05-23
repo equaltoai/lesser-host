@@ -1554,30 +1554,36 @@ func (s *Server) rotateManagedInstanceKeySecret(ctx context.Context, job *models
 	return keyID, nil
 }
 
+// decryptConsentFromJob decrypts the encrypted consent field on the job,
+// unpacking the structured JSON payload into ConsentMessage and ConsentSignature.
+// Returns an error when the key is missing or decryption fails — the caller
+// should fail the job.
+func (s *Server) decryptConsentFromJob(job *models.ProvisionJob) error {
+	if strings.TrimSpace(job.ConsentEncrypted) == "" {
+		return nil
+	}
+	encKey, encKeyErr := ConsentEncryptionKeyHex(s.cfg.ManagedProvisionConsentEncryptionKeyHex)
+	if encKeyErr != nil {
+		return fmt.Errorf("consent decryption key: %w", encKeyErr)
+	}
+	decrypted, decErr := DecryptConsent(job.ConsentEncrypted, encKey)
+	if decErr != nil {
+		return fmt.Errorf("consent decrypt: %w", decErr)
+	}
+	// CSR-017: Use structured JSON unpacking instead of newline-delimited
+	// splitting so that message/signature separation is unambiguous even
+	// when the consent message contains newlines.
+	job.ConsentMessage, job.ConsentSignature = UnpackConsent([]byte(decrypted))
+	return nil
+}
+
 func (s *Server) advanceProvisionDeployStart(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {
 	// CSR-017: Decrypt consent from the encrypted at-rest field before
 	// validation and use. Legacy jobs with plaintext ConsentMessage /
 	// ConsentSignature (and empty ConsentEncrypted) are handled as-is.
-	if strings.TrimSpace(job.ConsentEncrypted) != "" {
-		encKey, encKeyErr := ConsentEncryptionKeyHex(s.cfg.ManagedProvisionConsentEncryptionKeyHex)
-		if encKeyErr != nil {
-			clearProvisionJobConsentArtifacts(job)
-			return 0, false, s.failJob(ctx, job, requestID, now, "consent_decrypt_key_error", "failed to load consent decryption key: "+encKeyErr.Error())
-		}
-		decrypted, decErr := DecryptConsent(job.ConsentEncrypted, encKey)
-		if decErr != nil {
-			clearProvisionJobConsentArtifacts(job)
-			return 0, false, s.failJob(ctx, job, requestID, now, "consent_decrypt_failed", "failed to decrypt consent: "+decErr.Error())
-		}
-		// Split the combined payload back into message and signature.
-		// The encrypted payload is "message\nsignature" or just "message".
-		if idx := strings.Index(decrypted, "\n"); idx >= 0 {
-			job.ConsentMessage = decrypted[:idx]
-			job.ConsentSignature = decrypted[idx+1:]
-		} else {
-			job.ConsentMessage = decrypted
-			job.ConsentSignature = ""
-		}
+	if decErr := s.decryptConsentFromJob(job); decErr != nil {
+		clearProvisionJobConsentArtifacts(job)
+		return 0, false, s.failJob(ctx, job, requestID, now, "consent_decrypt_failed", decErr.Error())
 	}
 
 	if strings.TrimSpace(job.RunID) != "" {

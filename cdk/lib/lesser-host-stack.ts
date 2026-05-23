@@ -284,6 +284,8 @@ export class LesserHostStack extends cdk.Stack {
 		const managedDefaultRegion = (this.node.tryGetContext('managedDefaultRegion') as string | undefined) ?? '';
 		const managedLesserDefaultVersion =
 			(this.node.tryGetContext('managedLesserDefaultVersion') as string | undefined) ?? '';
+			const managedProvisionConsentEncryptionKeyHex =
+				(this.node.tryGetContext('managedProvisionConsentEncryptionKeyHex') as string | undefined) ?? '';
 			const managedProvisionRunnerProjectName =
 				(this.node.tryGetContext('managedProvisionRunnerProjectName') as string | undefined) ?? '';
 			const managedLesserGitHubOwner = (this.node.tryGetContext('managedLesserGitHubOwner') as string | undefined) ?? '';
@@ -470,6 +472,7 @@ export class LesserHostStack extends cdk.Stack {
 				MANAGED_LESSER_BODY_DEFAULT_VERSION: managedLesserBodyDefaultVersion,
 				MANAGED_LESSER_BODY_GITHUB_OWNER: lesserBodyGitHubOwner,
 				MANAGED_LESSER_BODY_GITHUB_REPO: lesserBodyGitHubRepo,
+				MANAGED_PROVISION_CONSENT_ENCRYPTION_KEY_HEX: managedProvisionConsentEncryptionKeyHex.trim(),
 				TIP_ENABLED: tipEnabled,
 				TIP_CHAIN_ID: tipChainId,
 				TIP_RPC_URL_SSM_PARAM: tipRpcUrlSsmParam,
@@ -597,6 +600,7 @@ export class LesserHostStack extends cdk.Stack {
 				MANAGED_LESSER_BODY_DEFAULT_VERSION: managedLesserBodyDefaultVersion,
 				MANAGED_LESSER_BODY_GITHUB_OWNER: lesserBodyGitHubOwner,
 				MANAGED_LESSER_BODY_GITHUB_REPO: lesserBodyGitHubRepo,
+				MANAGED_PROVISION_CONSENT_ENCRYPTION_KEY_HEX: managedProvisionConsentEncryptionKeyHex.trim(),
 			});
 
 		const commWorkerFn = this.goLambda('CommWorker', './cmd/comm-worker', {

@@ -26,6 +26,7 @@ const (
 	testMailboxPassword = "mailbox-password"
 	testLiveStage       = "live"
 )
+const testMailboxesPath = "/domains/lessersoul.ai/mailboxes"
 
 type fakeProvider struct {
 	calls []string
@@ -414,7 +415,7 @@ func TestDefaultMigaduClientEnsuresMailboxAndForwarding(t *testing.T) {
 		t.Fatalf("EnsureMailboxAndForwarding: %v", err)
 	}
 	got := strings.Join(paths, ",")
-	if got != "POST /domains/lessersoul.ai/mailboxes,POST /domains/lessersoul.ai/mailboxes/"+testNewLocalPart+"/forwardings" {
+	if got != "POST "+(testMailboxesPath)+",POST "+(testMailboxesPath)+"/"+testNewLocalPart+"/forwardings" {
 		t.Fatalf("unexpected request order: %s", got)
 	}
 }
@@ -458,7 +459,7 @@ func newMigaduConflictMailboxTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/domains/lessersoul.ai/mailboxes":
+		case testMailboxesPath:
 			w.WriteHeader(http.StatusConflict)
 		case "/domains/lessersoul.ai/mailboxes/" + testNewLocalPart + "/forwardings":
 			w.WriteHeader(http.StatusCreated)
@@ -474,7 +475,7 @@ func newMigaduProviderTestServer(t *testing.T, paths *[]string) *httptest.Server
 		*paths = append(*paths, r.Method+" "+r.URL.Path)
 		assertMigaduTestAuth(t, r)
 		switch r.URL.Path {
-		case "/domains/lessersoul.ai/mailboxes":
+		case testMailboxesPath:
 			assertMigaduMailboxRequest(t, r)
 			w.WriteHeader(http.StatusCreated)
 		case "/domains/lessersoul.ai/mailboxes/" + testNewLocalPart + "/forwardings":
@@ -577,7 +578,7 @@ func newFailingMigaduTestServer(t *testing.T, mailboxStatus int, forwardingStatu
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/domains/lessersoul.ai/mailboxes":
+		case testMailboxesPath:
 			http.Error(w, "mailbox failed", mailboxStatus)
 		case "/domains/lessersoul.ai/mailboxes/" + testNewLocalPart + "/forwardings":
 			http.Error(w, "forwarding failed", forwardingStatus)
