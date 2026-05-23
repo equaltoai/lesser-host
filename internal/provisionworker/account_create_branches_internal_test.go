@@ -462,9 +462,9 @@ func TestAdvanceProvisionAccountMove_NoFallthroughAfterValidationFailure(t *test
 	st := store.New(db)
 	s := &Server{
 		cfg: config.Config{
-			ManagedAccountEmailTemplate:        "ops+{slug}@example.com",
-			ManagedAccountNamePrefix:           "lesser-",
-			ManagedTargetOrganizationalUnitID:  "ou-target",
+			ManagedAccountEmailTemplate:       "ops+{slug}@example.com",
+			ManagedAccountNamePrefix:          "lesser-",
+			ManagedTargetOrganizationalUnitID: "ou-target",
 		},
 		store: st,
 		org: &fakeOrg{listOut: &organizations.ListAccountsOutput{
