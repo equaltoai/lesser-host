@@ -568,8 +568,8 @@ func TestHandleSoulArchiveAgent_RejectMissingNonce(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected AppError, got %T", callErr)
 	}
-	if appErr2.Code != "app.bad_request" {
-		t.Fatalf("expected app.bad_request, got %s", appErr2.Code)
+	if appErr2.Code != appErrCodeBadRequest {
+		t.Fatalf("expected %s, got %s", appErrCodeBadRequest, appErr2.Code)
 	}
 }
 
@@ -651,7 +651,7 @@ func TestHandleSoulDesignateSuccessor_RejectMissingNonce(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected AppError, got %T", callErr)
 	}
-	if appErr2.Code != "app.bad_request" {
-		t.Fatalf("expected app.bad_request, got %s", appErr2.Code)
+	if appErr2.Code != appErrCodeBadRequest {
+		t.Fatalf("expected %s, got %s", appErrCodeBadRequest, appErr2.Code)
 	}
 }
