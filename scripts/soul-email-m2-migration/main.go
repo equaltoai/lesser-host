@@ -51,6 +51,13 @@ var (
 	newHTTPClient    = func() *http.Client { return &http.Client{Timeout: 10 * time.Second} }
 )
 
+// errMigaduMailboxAlreadyExists is a sentinel returned by defaultMigaduCreateMailbox
+// when the Migadu API responds with HTTP 409 Conflict, meaning a mailbox with the
+// same local part already exists. The caller should treat this as a non-fatal
+// signal: the mailbox exists (possibly from a prior migration run) and forwarding
+// may still be created or already be in place.
+var errMigaduMailboxAlreadyExists = errors.New("migadu mailbox already exists")
+
 type migrationConfig struct {
 	Stage              string
 	TableName          string
@@ -682,7 +689,7 @@ func (defaultMigaduClient) EnsureMailboxAndForwarding(ctx context.Context, input
 	if input.DisplayName == "" {
 		input.DisplayName = input.LocalPart
 	}
-	if err := defaultMigaduCreateMailbox(ctx, creds, input.LocalPart, input.DisplayName, password); err != nil {
+	if err := defaultMigaduCreateMailbox(ctx, creds, input.LocalPart, input.DisplayName, password); err != nil && !errors.Is(err, errMigaduMailboxAlreadyExists) {
 		return err
 	}
 	return defaultMigaduCreateForwarding(ctx, creds, input.LocalPart, input.ForwardingAddress)
@@ -712,8 +719,10 @@ func defaultMigaduCreateMailbox(ctx context.Context, creds secrets.MigaduCredent
 	}
 	defer resp.Body.Close()
 	switch resp.StatusCode {
-	case http.StatusOK, http.StatusCreated, http.StatusConflict:
+	case http.StatusOK, http.StatusCreated:
 		return nil
+	case http.StatusConflict:
+		return errMigaduMailboxAlreadyExists
 	}
 	msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	return fmt.Errorf("migadu mailbox: status=%d body=%q", resp.StatusCode, strings.TrimSpace(string(msg)))
