@@ -297,7 +297,7 @@ export class LesserHostStack extends cdk.Stack {
 			const managedLesserBodyGitHubRepo =
 				(this.node.tryGetContext('managedLesserBodyGitHubRepo') as string | undefined) ?? '';
 			const managedEnableAgentRegistration =
-				(this.node.tryGetContext('managedEnableAgentRegistration') as string | undefined) ?? 'false';
+				(this.node.tryGetContext('managedEnableAgentRegistration') as string | undefined) ?? 'true';
 
 		const tipStageSuffix = stage === 'live' ? 'Live' : 'Lab';
 		const tipContext = (key: string): string =>
