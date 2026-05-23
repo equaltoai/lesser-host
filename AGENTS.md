@@ -245,6 +245,21 @@ pins, or verification scope, update the corresponding `gov-infra` docs and/or ve
 Do not weaken standards silently just to get green checks. If a verifier or rubric requirement needs to change, treat
 that as a policy change: update the rubric/docs/evidence surface intentionally and keep the change explicit.
 
+## GitHub provenance
+
+When GitHub activity is part of the task (reading issues or PRs, commenting, reviewing, creating branches, committing
+bounded file changes, opening PRs, or recording check runs), use the repo-local `$github-provenance` skill first.
+
+- Prefer the routed `mcp__host_lab__` GitHub tools whenever they support the needed action, so GitHub reads and writes
+  are attributable to the host steward endpoint.
+- Fall back to the general GitHub plugin or `gh` only for capabilities the routed tools do not expose, such as diffs,
+  inline review comments, unresolved review threads, Actions logs, labels, search, approvals, or large local git pushes.
+- If a fallback performs a GitHub write, state why in the final response and preserve routed-tool provenance where it is
+  useful without adding noisy provenance-only comments.
+- Provenance does not relax normal host discipline: branch protection, required review, gov-infra verifiers,
+  multi-tenant isolation, on-chain/Safe-ready discipline, consumer release verification, trust-API/CSP rigor, and AGPL
+  checks still apply.
+
 ## Consumer release verification standard
 
 When `lesser-host` consumes release assets from another repo (`lesser`, `lesser-body`, or future managed deploy
