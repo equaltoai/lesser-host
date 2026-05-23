@@ -284,12 +284,39 @@ func (s *Server) buildManagedProvisionJob(slug string, req startInstanceProvisio
 
 	accountEmail := strings.TrimSpace(expandManagedAccountEmailTemplate(s.cfg.ManagedAccountEmailTemplate, slug))
 	consentExpiresAt := req.ConsentExpiresAt
-	if consentExpiresAt.IsZero() && strings.TrimSpace(req.ConsentMessage) != "" {
-		parsedExpiresAt, parseErr := provisionConsentMessageExpiresAt(req.ConsentMessage)
+	consentMessage := strings.TrimSpace(req.ConsentMessage)
+	consentSignature := strings.TrimSpace(req.ConsentSignature)
+	if consentExpiresAt.IsZero() && consentMessage != "" {
+		parsedExpiresAt, parseErr := provisionConsentMessageExpiresAt(consentMessage)
 		if parseErr != nil {
 			return nil, "", "", &apptheory.AppError{Code: "app.bad_request", Message: parseErr.Error()}
 		}
 		consentExpiresAt = parsedExpiresAt
+	}
+
+	consentMsgHash := ""
+	if consentMessage != "" {
+		consentMsgHash = sha256Hex(consentMessage)
+	}
+
+	// CSR-017: Encrypt consent before persisting to DynamoDB so the raw
+	// message and signature are not stored as replayable plaintext. The
+	// provision worker decrypts at deploy-runner-start time and clears
+	// the artifacts immediately after use.
+	consentEncrypted := ""
+	if consentMessage != "" {
+		encKey, encErr := provisionworker.ConsentEncryptionKeyHex(s.cfg.ManagedProvisionConsentEncryptionKeyHex)
+		if encErr == nil {
+			var encErr2 error
+			payload := consentMessage
+			if consentSignature != "" {
+				payload = consentMessage + "\n" + consentSignature
+			}
+			consentEncrypted, encErr2 = provisionworker.EncryptConsent(payload, encKey)
+			if encErr2 != nil {
+				return nil, "", "", &apptheory.AppError{Code: "app.internal", Message: "failed to protect consent"}
+			}
+		}
 	}
 
 	job := &models.ProvisionJob{
@@ -306,16 +333,9 @@ func (s *Server) buildManagedProvisionJob(slug string, req startInstanceProvisio
 		AdminWalletAddr:    adminWalletAddr,
 		AdminWalletChainID: adminWalletChainID,
 		AccountEmail:       accountEmail,
-		ConsentMessage:     req.ConsentMessage,
-		ConsentSignature:   strings.TrimSpace(req.ConsentSignature),
+		ConsentMessageHash: consentMsgHash,
+		ConsentEncrypted:   consentEncrypted,
 		ConsentExpiresAt:   consentExpiresAt,
-		ConsentMessageHash: func() string {
-			msg := req.ConsentMessage
-			if msg == "" {
-				return ""
-			}
-			return sha256Hex(msg)
-		}(),
 		ParentHostedZoneID: strings.TrimSpace(s.cfg.ManagedParentHostedZoneID),
 		BaseDomain:         baseDomain,
 		CreatedAt:          now,

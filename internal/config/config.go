@@ -127,6 +127,11 @@ type Config struct {
 	ManagedLesserBodyGitHubOwner      string // GitHub org/user for the lesser-body repo
 	ManagedLesserBodyGitHubRepo       string // GitHub repo name for lesser-body
 
+	// ManagedProvisionConsentEncryptionKeyHex is a hex-encoded 32-byte
+	// AES-256 key used to encrypt provisioning consent payloads at rest
+	// in the DynamoDB ProvisionJob record (CSR-017).
+	ManagedProvisionConsentEncryptionKeyHex string
+
 	// Payments (M10).
 	PaymentsProvider            string // stripe|mock|none
 	PaymentsCheckoutSuccessURL  string // redirect target after checkout completion
@@ -292,6 +297,10 @@ func Load() Config {
 		ManagedLesserBodyDefaultVersion:   envString("MANAGED_LESSER_BODY_DEFAULT_VERSION"),
 		ManagedLesserBodyGitHubOwner:      managedLesserBodyGitHubOwner,
 		ManagedLesserBodyGitHubRepo:       managedLesserBodyGitHubRepo,
+
+		// CSR-017: consent encryption key for at-rest protection of provisioning consent
+		// payloads stored in the DynamoDB ProvisionJob record.
+		ManagedProvisionConsentEncryptionKeyHex: envString("MANAGED_PROVISION_CONSENT_ENCRYPTION_KEY_HEX"),
 
 		PaymentsProvider:            paymentsProvider,
 		PaymentsCheckoutSuccessURL:  checkoutSuccessURL,

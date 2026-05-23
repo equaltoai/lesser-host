@@ -85,7 +85,12 @@ func TestBuildManagedProvisionJob_PreservesStructuredConsentBytes(t *testing.T) 
 	require.NotNil(t, job)
 	require.Equal(t, "demo.lesser.host", baseDomain)
 	require.Equal(t, "us-east-1", region)
-	require.Equal(t, consentMessage, job.ConsentMessage)
+	// CSR-017: consent is no longer stored as plaintext. Without an
+	// encryption key the consent is ephemeral (not persisted). The
+	// hash is still preserved for audit reference.
+	require.Empty(t, job.ConsentMessage)
+	require.Empty(t, job.ConsentSignature)
+	require.Empty(t, job.ConsentEncrypted, "consent must not be persisted without encryption key")
 	require.Equal(t, sha256Hex(consentMessage), job.ConsentMessageHash)
 	require.Equal(t, expiresAt.UTC(), job.ConsentExpiresAt)
 }

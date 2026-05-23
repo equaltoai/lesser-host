@@ -187,8 +187,8 @@ func TestAdvanceProvisionAccountCreate_Branches(t *testing.T) {
 
 	now := time.Now().UTC()
 
-	// Account ID present => advance to move.
-	job := &models.ProvisionJob{ID: "j1", InstanceSlug: "slug", Status: models.ProvisionJobStatusRunning, Step: provisionStepAccountCreate, AccountID: "123"}
+	// Account ID + Request ID present => advance to move (normal post-CreateAccount path, not adoption).
+	job := &models.ProvisionJob{ID: "j1", InstanceSlug: "slug", Status: models.ProvisionJobStatusRunning, Step: provisionStepAccountCreate, AccountID: "123", AccountRequestID: "car-1"}
 	delay, done, err := s.advanceProvisionAccountCreate(context.Background(), job, "req", now)
 	if err != nil || done || delay != 0 || job.Step != provisionStepAccountMove {
 		t.Fatalf("unexpected account id branch: delay=%v done=%v job=%#v err=%v", delay, done, job, err)
@@ -373,4 +373,127 @@ func TestMoveProvisionAccountToTargetOU_Branches(t *testing.T) {
 			t.Fatalf("unexpected retry: delay=%v done=%v job=%#v err=%v", delay, done, job, err)
 		}
 	})
+}
+
+// TestAdvanceProvisionAccountCreate_AdoptedAccountFailsEarly guards the
+// CSR-012 fix: when an adopted account (AccountID set, AccountRequestID
+// empty) fails validation, the job must be failed at account.create
+// before any state transition to account.move or subsequent side effects.
+func TestAdvanceProvisionAccountCreate_AdoptedAccountFailsEarly(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	makeServer := func(accounts []orgtypes.Account) *Server {
+		db := ttmocks.NewMockExtendedDB()
+		st := store.New(db)
+		return &Server{
+			cfg: config.Config{
+				ManagedAccountEmailTemplate: "ops+{slug}@example.com",
+				ManagedAccountNamePrefix:    "lesser-",
+			},
+			store: st,
+			org: &fakeOrg{listOut: &organizations.ListAccountsOutput{
+				Accounts: accounts,
+			}},
+		}
+	}
+
+	t.Run("adopted_account_validation_fails_at_create_not_move", func(t *testing.T) {
+		s := makeServer([]orgtypes.Account{{
+			Id:     aws.String("123456789012"),
+			Email:  aws.String("ops+other@example.com"),
+			Name:   aws.String("lesser-slug"),
+			Status: orgtypes.AccountStatusActive,
+		}})
+		job := &models.ProvisionJob{
+			ID:           "j-adopt",
+			InstanceSlug: "slug",
+			Status:       models.ProvisionJobStatusRunning,
+			Step:         provisionStepAccountCreate,
+			AccountID:    "123456789012",
+			AccountEmail: "ops+slug@example.com",
+			MaxAttempts:  3,
+			CreatedAt:    now.Add(-1 * time.Minute),
+			ExpiresAt:    now.Add(1 * time.Hour),
+		}
+
+		delay, done, err := s.advanceProvisionAccountCreate(context.Background(), job, "req", now)
+		require.NoError(t, err)
+		require.True(t, done)
+		require.Zero(t, delay)
+		require.Equal(t, models.ProvisionJobStatusError, job.Status)
+		require.Equal(t, "account_adoption_invalid", job.ErrorCode)
+		require.Equal(t, provisionStepFailed, job.Step)
+	})
+
+	t.Run("adopted_account_not_in_org_fails_at_create", func(t *testing.T) {
+		s := makeServer(nil)
+		job := &models.ProvisionJob{
+			ID:           "j-missing",
+			InstanceSlug: "slug",
+			Status:       models.ProvisionJobStatusRunning,
+			Step:         provisionStepAccountCreate,
+			AccountID:    "123456789012",
+			AccountEmail: "ops+slug@example.com",
+			MaxAttempts:  3,
+			CreatedAt:    now.Add(-1 * time.Minute),
+			ExpiresAt:    now.Add(1 * time.Hour),
+		}
+
+		delay, done, err := s.advanceProvisionAccountCreate(context.Background(), job, "req", now)
+		require.NoError(t, err)
+		require.True(t, done)
+		require.Zero(t, delay)
+		require.Equal(t, models.ProvisionJobStatusError, job.Status)
+		require.Equal(t, "account_adoption_invalid", job.ErrorCode)
+		require.Equal(t, provisionStepFailed, job.Step)
+	})
+}
+
+// TestAdvanceProvisionAccountMove_NoFallthroughAfterValidationFailure guards
+// the CSR-012 fix: after validateAdoptedProvisionAccount fails the job via
+// failJob, the calling code must check job.Status and return immediately
+// rather than proceeding through OU move and assume-role steps.
+func TestAdvanceProvisionAccountMove_NoFallthroughAfterValidationFailure(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	db := ttmocks.NewMockExtendedDB()
+	st := store.New(db)
+	s := &Server{
+		cfg: config.Config{
+			ManagedAccountEmailTemplate:        "ops+{slug}@example.com",
+			ManagedAccountNamePrefix:           "lesser-",
+			ManagedTargetOrganizationalUnitID:  "ou-target",
+		},
+		store: st,
+		org: &fakeOrg{listOut: &organizations.ListAccountsOutput{
+			Accounts: []orgtypes.Account{{
+				Id:     aws.String("123456789012"),
+				Email:  aws.String("ops+other@example.com"),
+				Name:   aws.String("lesser-slug"),
+				Status: orgtypes.AccountStatusActive,
+			}},
+		}},
+	}
+
+	job := &models.ProvisionJob{
+		ID:           "j-fallthrough",
+		InstanceSlug: "slug",
+		Status:       models.ProvisionJobStatusRunning,
+		Step:         provisionStepAccountMove,
+		AccountID:    "123456789012",
+		AccountEmail: "ops+slug@example.com",
+		MaxAttempts:  3,
+		CreatedAt:    now.Add(-1 * time.Minute),
+		ExpiresAt:    now.Add(1 * time.Hour),
+	}
+
+	delay, done, err := s.advanceProvisionAccountMove(context.Background(), job, "req", now)
+	require.NoError(t, err)
+	require.True(t, done)
+	require.Zero(t, delay)
+	require.Equal(t, models.ProvisionJobStatusError, job.Status)
+	require.Equal(t, "account_adoption_invalid", job.ErrorCode)
+	require.Equal(t, provisionStepFailed, job.Step)
 }
