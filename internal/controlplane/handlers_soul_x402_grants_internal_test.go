@@ -85,13 +85,14 @@ func x402IssueBody(t *testing.T, overrides map[string]any) []byte {
 func x402ConsumeBody(t *testing.T, grantToken string, overrides map[string]any) []byte {
 	t.Helper()
 	body := map[string]any{
-		"grantToken":     grantToken,
-		"agentId":        soulLifecycleTestAgentIDHex,
-		"capability":     "tools.invoke",
-		"tool":           "summarize",
-		"resource":       "mcp://agent/summarize",
-		"requestHash":    x402GrantTestRequestHash,
-		"idempotencyKey": "consume-idem-1",
+		"grantToken":          grantToken,
+		"agentId":             soulLifecycleTestAgentIDHex,
+		"capability":          "tools.invoke",
+		"tool":                "summarize",
+		"resource":            "mcp://agent/summarize",
+		"requestHash":         x402GrantTestRequestHash,
+		"idempotencyKey":      "consume-idem-1",
+		"paymentEvidenceHash": "sha256:" + sha256HexTrimmed("raw-payment-evidence"),
 	}
 	for key, value := range overrides {
 		body[key] = value
@@ -517,6 +518,10 @@ func TestValidateSoulX402GrantForConsume_RejectsInvalidScopeAndLifecycle(t *test
 		}},
 		{name: "scope mismatch", code: x402CodeGrantRejected, mutate: func(_ *models.SoulX402InvocationGrant, req *validatedSoulX402GrantConsume) { req.tool = "other" }},
 		{name: "bad max usage", code: x402CodeGrantRejected, mutate: func(g *models.SoulX402InvocationGrant, _ *validatedSoulX402GrantConsume) { g.MaxUsage = 101 }},
+		{name: "payment evidence hash mismatch", code: x402CodeGrantRejected, mutate: func(g *models.SoulX402InvocationGrant, req *validatedSoulX402GrantConsume) {
+			g.PaymentEvidenceHash = sha256HexTrimmed("stored-evidence")
+			req.paymentEvidenceHash = sha256HexTrimmed("different-evidence")
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

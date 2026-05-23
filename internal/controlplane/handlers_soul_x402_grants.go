@@ -63,13 +63,14 @@ type soulX402GrantPaymentRequest struct {
 }
 
 type soulX402GrantConsumeRequest struct {
-	GrantToken     string `json:"grantToken"`
-	AgentID        string `json:"agentId"`
-	Capability     string `json:"capability"`
-	Tool           string `json:"tool"`
-	Resource       string `json:"resource"`
-	RequestHash    string `json:"requestHash"`
-	IdempotencyKey string `json:"idempotencyKey"`
+	GrantToken          string `json:"grantToken"`
+	AgentID             string `json:"agentId"`
+	Capability          string `json:"capability"`
+	Tool                string `json:"tool"`
+	Resource            string `json:"resource"`
+	RequestHash         string `json:"requestHash"`
+	IdempotencyKey      string `json:"idempotencyKey"`
+	PaymentEvidenceHash string `json:"paymentEvidenceHash"`
 }
 
 type validatedSoulX402GrantIssue struct {
@@ -88,14 +89,15 @@ type validatedSoulX402GrantIssue struct {
 }
 
 type validatedSoulX402GrantConsume struct {
-	grantTokenHash     string
-	agentIDHex         string
-	capability         string
-	tool               string
-	resource           string
-	requestHash        string
-	idempotencyHash    string
-	consumeRequestHash string
+	grantTokenHash       string
+	agentIDHex           string
+	capability           string
+	tool                 string
+	resource             string
+	requestHash          string
+	idempotencyHash      string
+	paymentEvidenceHash  string
+	consumeRequestHash   string
 }
 
 type soulX402GrantIssueResponse struct {
@@ -414,14 +416,19 @@ func parseSoulX402GrantConsumeRequest(ctx *apptheory.Context) (validatedSoulX402
 	if appErr != nil {
 		return validatedSoulX402GrantConsume{}, appErr
 	}
+	paymentEvidenceHash, appErr := normalizeX402Hash("paymentEvidenceHash", raw.PaymentEvidenceHash, true)
+	if appErr != nil {
+		return validatedSoulX402GrantConsume{}, appErr
+	}
 	out := validatedSoulX402GrantConsume{
-		grantTokenHash:  sha256HexTrimmed(token),
-		agentIDHex:      agentID,
-		capability:      capability,
-		tool:            tool,
-		resource:        resource,
-		requestHash:     requestHash,
-		idempotencyHash: sha256HexTrimmed(idempotencyKey),
+		grantTokenHash:      sha256HexTrimmed(token),
+		agentIDHex:          agentID,
+		capability:          capability,
+		tool:                tool,
+		resource:            resource,
+		requestHash:         requestHash,
+		idempotencyHash:     sha256HexTrimmed(idempotencyKey),
+		paymentEvidenceHash: paymentEvidenceHash,
 	}
 	out.consumeRequestHash = soulX402ConsumeRequestHash(out)
 	return out, nil
@@ -695,6 +702,9 @@ func validateSoulX402GrantForConsume(grant *models.SoulX402InvocationGrant, req 
 	if grant.MaxUsage < 1 || grant.MaxUsage > x402GrantMaximumUsage {
 		return newX402Error(x402CodeGrantRejected, "grant rejected", http.StatusForbidden)
 	}
+	if strings.TrimSpace(grant.PaymentEvidenceHash) != req.paymentEvidenceHash {
+		return newX402Error(x402CodeGrantRejected, "payment evidence hash mismatch", http.StatusForbidden)
+	}
 	return nil
 }
 
@@ -904,21 +914,23 @@ func soulX402IssueRequestHash(req validatedSoulX402GrantIssue) string {
 
 func soulX402ConsumeRequestHash(req validatedSoulX402GrantConsume) string {
 	payload := struct {
-		AgentID         string `json:"agentId"`
-		Capability      string `json:"capability"`
-		Tool            string `json:"tool"`
-		Resource        string `json:"resource"`
-		RequestHash     string `json:"requestHash"`
-		GrantTokenHash  string `json:"grantTokenHash"`
-		IdempotencyHash string `json:"idempotencyKeyHash"`
+		AgentID             string `json:"agentId"`
+		Capability          string `json:"capability"`
+		Tool                string `json:"tool"`
+		Resource            string `json:"resource"`
+		RequestHash         string `json:"requestHash"`
+		GrantTokenHash      string `json:"grantTokenHash"`
+		IdempotencyHash     string `json:"idempotencyKeyHash"`
+		PaymentEvidenceHash string `json:"paymentEvidenceHash"`
 	}{
-		AgentID:         req.agentIDHex,
-		Capability:      req.capability,
-		Tool:            req.tool,
-		Resource:        req.resource,
-		RequestHash:     req.requestHash,
-		GrantTokenHash:  req.grantTokenHash,
-		IdempotencyHash: req.idempotencyHash,
+		AgentID:             req.agentIDHex,
+		Capability:          req.capability,
+		Tool:                req.tool,
+		Resource:            req.resource,
+		RequestHash:         req.requestHash,
+		GrantTokenHash:      req.grantTokenHash,
+		IdempotencyHash:     req.idempotencyHash,
+		PaymentEvidenceHash: req.paymentEvidenceHash,
 	}
 	return hashX402JSON(payload)
 }
