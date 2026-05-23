@@ -49,7 +49,7 @@ func (f *fakeIAM) UpdateAssumeRolePolicy(_ context.Context, in *iam.UpdateAssume
 func TestEnsureAssumeRolePolicyAllowsPrincipalAddsDeployRunner(t *testing.T) {
 	policy := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::902552026581:root"},"Action":"sts:AssumeRole"}]}`
 
-	updated, changed, err := ensureAssumeRolePolicyAllowsPrincipal(policy, testDeployRunnerRoleARN)
+	updated, changed, err := ensureAssumeRolePolicyAllowsPrincipal(policy, testDeployRunnerRoleARN, deployRunnerExternalID("demo"))
 	require.NoError(t, err)
 	require.True(t, changed)
 
@@ -57,16 +57,49 @@ func TestEnsureAssumeRolePolicyAllowsPrincipalAddsDeployRunner(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(updated), &doc))
 	statements, err := normalizedPolicyStatements(doc["Statement"])
 	require.NoError(t, err)
-	require.Len(t, statements, 2)
-	require.True(t, assumeRoleStatementAllowsPrincipal(statements[1], testDeployRunnerRoleARN))
+	// The original root statement is preserved; a new conditioned statement is added.
+	require.GreaterOrEqual(t, len(statements), 2)
+	require.True(t, assumeRoleStatementAllowsPrincipal(statements[len(statements)-1], testDeployRunnerRoleARN))
+	require.True(t, assumeRoleStatementHasExternalID(statements[len(statements)-1], deployRunnerExternalID("demo")),
+		"new statement must carry the tenant-scoped external ID condition")
 }
 
-func TestEnsureAssumeRolePolicyAllowsPrincipalNoopsForExistingEncodedTrust(t *testing.T) {
+func TestEnsureAssumeRolePolicyAllowsPrincipalAddsConditionToExistingStatement(t *testing.T) {
+	// An existing statement that allows the principal but lacks the
+	// external-ID condition must be replaced with a conditioned one.
 	policy := `{"Version":"2012-10-17","Statement":{"Effect":"Allow","Principal":{"AWS":["` + testDeployRunnerRoleARN + `"]},"Action":["sts:AssumeRole"]}}`
 
-	updated, changed, err := ensureAssumeRolePolicyAllowsPrincipal(url.QueryEscape(policy), testDeployRunnerRoleARN)
+	updated, changed, err := ensureAssumeRolePolicyAllowsPrincipal(url.QueryEscape(policy), testDeployRunnerRoleARN, deployRunnerExternalID("demo"))
+	require.NoError(t, err)
+	require.True(t, changed)
+
+	var doc map[string]any
+	require.NoError(t, json.Unmarshal([]byte(updated), &doc))
+	statements, err := normalizedPolicyStatements(doc["Statement"])
+	require.NoError(t, err)
+	require.Len(t, statements, 1)
+	require.True(t, assumeRoleStatementAllowsPrincipal(statements[0], testDeployRunnerRoleARN))
+	require.True(t, assumeRoleStatementHasExternalID(statements[0], deployRunnerExternalID("demo")),
+		"existing statement must be upgraded to include the tenant-scoped external ID condition")
+}
+
+func TestEnsureAssumeRolePolicyAllowsPrincipalNoopsForExistingConditionedTrust(t *testing.T) {
+	// When the statement already carries the correct external-ID condition, no change.
+	policy := `{"Version":"2012-10-17","Statement":{"Effect":"Allow","Principal":{"AWS":"` + testDeployRunnerRoleARN + `"},"Action":"sts:AssumeRole","Condition":{"StringEquals":{"sts:ExternalId":"lesser-host/deploy/demo"}}}}`
+
+	updated, changed, err := ensureAssumeRolePolicyAllowsPrincipal(policy, testDeployRunnerRoleARN, deployRunnerExternalID("demo"))
 	require.NoError(t, err)
 	require.False(t, changed)
+	require.JSONEq(t, policy, updated)
+}
+
+func TestEnsureAssumeRolePolicyAllowsPrincipalNoopsForExistingUnconditionedWhenNoExternalID(t *testing.T) {
+	// When no external ID is required, an existing unconditioned statement is left alone.
+	policy := `{"Version":"2012-10-17","Statement":{"Effect":"Allow","Principal":{"AWS":["` + testDeployRunnerRoleARN + `"]},"Action":["sts:AssumeRole"]}}`
+
+	updated, changed, err := ensureAssumeRolePolicyAllowsPrincipal(url.QueryEscape(policy), testDeployRunnerRoleARN, "")
+	require.NoError(t, err)
+	require.False(t, changed, "when external ID is empty, existing unconditioned statement should not be replaced")
 	require.JSONEq(t, policy, updated)
 }
 
@@ -111,10 +144,30 @@ func TestEnsureDeployRunnerAssumeRoleTrustNoopsWhenRunnerRoleUnset(t *testing.T)
 	require.False(t, called)
 }
 
-func TestEnsureDeployRunnerAssumeRoleTrustNoopsWhenAlreadyAllowed(t *testing.T) {
+func TestEnsureDeployRunnerAssumeRoleTrustUpdatesWhenExistingStatementLacksExternalID(t *testing.T) {
 	t.Parallel()
 
+	// Runner is already allowed but the statement lacks the external-ID condition.
 	policy := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"` + testDeployRunnerRoleARN + `"},"Action":"sts:AssumeRole"}]}`
+	fake := &fakeIAM{getOut: &iam.GetRoleOutput{Role: &iamtypes.Role{AssumeRolePolicyDocument: aws.String(policy)}}}
+	srv := &Server{
+		cfg:        config.Config{ManagedProvisionRunnerRoleARN: testDeployRunnerRoleARN},
+		iamFactory: func(context.Context, string, string, string, string, string) (iamAPI, error) { return fake, nil },
+	}
+
+	err := srv.ensureDeployRunnerAssumeRoleTrust(context.Background(), "123456789012", "OrganizationAccountAccessRole", defaultManagedAWSRegion, "demo", "job1")
+	require.NoError(t, err)
+	require.Len(t, fake.getInputs, 1)
+	// Should update — the existing statement lacks the external-ID condition.
+	require.Len(t, fake.updateInputs, 1)
+	require.Contains(t, aws.ToString(fake.updateInputs[0].PolicyDocument), "lesser-host/deploy/demo")
+}
+
+func TestEnsureDeployRunnerAssumeRoleTrustNoopsWhenAlreadyConditioned(t *testing.T) {
+	t.Parallel()
+
+	// Runner is already allowed with the correct external-ID condition.
+	policy := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"` + testDeployRunnerRoleARN + `"},"Action":"sts:AssumeRole","Condition":{"StringEquals":{"sts:ExternalId":"lesser-host/deploy/demo"}}}]}`
 	fake := &fakeIAM{getOut: &iam.GetRoleOutput{Role: &iamtypes.Role{AssumeRolePolicyDocument: aws.String(policy)}}}
 	srv := &Server{
 		cfg:        config.Config{ManagedProvisionRunnerRoleARN: testDeployRunnerRoleARN},

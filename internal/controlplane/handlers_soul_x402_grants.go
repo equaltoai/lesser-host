@@ -161,6 +161,16 @@ func (s *Server) handleSoulX402IssueInvocationGrant(ctx *apptheory.Context) (*ap
 		return nil, newX402Error(x402CodeGrantUnavailable, "grant unavailable", http.StatusNotFound)
 	}
 
+	// Require instance key authentication for grant issuance.
+	// Grants represent a payment offer that binds the issuing instance as the payer's
+	// representative. Requiring an authenticated instance key prevents unauthenticated
+	// callers from issuing unverified grants and provides audit traceability.
+	key, authErr := s.requireCommInstanceKey(ctx)
+	if authErr != nil {
+		return nil, newX402Error(x402CodeUnauthorized, "unauthorized", http.StatusUnauthorized)
+	}
+	_ = key // key is validated by requireCommInstanceKey; instance slug available for future audit binding.
+
 	now := time.Now().UTC()
 	req, appErr := parseSoulX402GrantIssueRequest(ctx, now)
 	if appErr != nil {

@@ -135,6 +135,7 @@ func expectX402GrantCreateCapture(t *testing.T, tdb soulX402GrantTestDB) **model
 	var captured *models.SoulX402InvocationGrant
 	tdb.db.ExpectedCalls = nil
 	tdb.db.On("WithContext", mock.Anything).Return(tdb.db).Maybe()
+	tdb.db.On("Model", mock.AnythingOfType("*models.InstanceKey")).Return(tdb.qKey).Maybe()
 	tdb.db.On("Model", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(tdb.qIdentity).Maybe()
 	tdb.db.On("Model", mock.AnythingOfType("*models.SoulX402InvocationGrant")).Return(tdb.qGrant).Run(func(args mock.Arguments) {
 		grant, ok := args.Get(0).(*models.SoulX402InvocationGrant)
@@ -201,11 +202,12 @@ func TestP0_HandleSoulX402IssueInvocationGrant_SuccessMinimizesPaymentEvidence(t
 	t.Parallel()
 
 	tdb := newSoulX402GrantTestDB()
+	expectCommInstanceKey(t, tdb.qKey, models.InstanceKey{ID: sha256HexTrimmed("raw-instance-key"), InstanceSlug: "inst1", CreatedAt: time.Now().Add(-time.Hour)})
 	expectX402Identity(t, tdb.qIdentity, models.SoulPublicPaidCallerAccessGrantable)
 	captured := expectX402GrantCreateCapture(t, tdb)
 
 	s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true}}
-	resp, err := s.handleSoulX402IssueInvocationGrant(&apptheory.Context{Request: apptheory.Request{Body: x402IssueBody(t, nil)}})
+	resp, err := s.handleSoulX402IssueInvocationGrant(&apptheory.Context{Request: apptheory.Request{Body: x402IssueBody(t, nil), Headers: map[string][]string{"authorization": {"Bearer raw-instance-key"}}}})
 	out := requireX402IssueResponse(t, resp, err)
 	assertX402IssueMinimized(t, resp, out, *captured)
 }
@@ -214,11 +216,12 @@ func TestHandleSoulX402IssueInvocationGrant_HostedAnchorIsNotCapabilityGate(t *t
 	t.Parallel()
 
 	tdb := newSoulX402GrantTestDB()
+	expectCommInstanceKey(t, tdb.qKey, models.InstanceKey{ID: sha256HexTrimmed("raw-instance-key"), InstanceSlug: "inst1", CreatedAt: time.Now().Add(-time.Hour)})
 	expectX402Identity(t, tdb.qIdentity, models.SoulPublicPaidCallerAccessGrantable)
 	captured := expectX402GrantCreateCapture(t, tdb)
 
 	s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true}}
-	resp, err := s.handleSoulX402IssueInvocationGrant(&apptheory.Context{Request: apptheory.Request{Body: x402IssueBody(t, nil)}})
+	resp, err := s.handleSoulX402IssueInvocationGrant(&apptheory.Context{Request: apptheory.Request{Body: x402IssueBody(t, nil), Headers: map[string][]string{"authorization": {"Bearer raw-instance-key"}}}})
 	out := requireX402IssueResponse(t, resp, err)
 	if !out.TokenReturned || out.Grant.PolicyVersion != models.SoulCallerAccessPaymentPolicyVersionV1 {
 		t.Fatalf("expected hosted/offchain grantable policy to issue scoped grant, got %#v", out)
@@ -232,10 +235,11 @@ func TestHandleSoulX402IssueInvocationGrant_DeniedPolicyReturnsGenericUnavailabl
 	t.Parallel()
 
 	tdb := newSoulX402GrantTestDB()
+	expectCommInstanceKey(t, tdb.qKey, models.InstanceKey{ID: sha256HexTrimmed("raw-instance-key"), InstanceSlug: "inst1", CreatedAt: time.Now().Add(-time.Hour)})
 	expectX402Identity(t, tdb.qIdentity, models.SoulPublicPaidCallerAccessDenied)
 	s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true}}
 
-	_, err := s.handleSoulX402IssueInvocationGrant(&apptheory.Context{Request: apptheory.Request{Body: x402IssueBody(t, nil)}})
+	_, err := s.handleSoulX402IssueInvocationGrant(&apptheory.Context{Request: apptheory.Request{Body: x402IssueBody(t, nil), Headers: map[string][]string{"authorization": {"Bearer raw-instance-key"}}}})
 	appErr := requireCommTheoryError(t, err)
 	if appErr.Code != x402CodeGrantUnavailable || appErr.StatusCode != http.StatusNotFound {
 		t.Fatalf("expected generic unavailable/404, got %q/%d", appErr.Code, appErr.StatusCode)
@@ -395,6 +399,7 @@ func TestHandleSoulX402IssueInvocationGrant_IdempotencyConflict(t *testing.T) {
 	t.Parallel()
 
 	tdb := newSoulX402GrantTestDB()
+	expectCommInstanceKey(t, tdb.qKey, models.InstanceKey{ID: sha256HexTrimmed("raw-instance-key"), InstanceSlug: "inst1", CreatedAt: time.Now().Add(-time.Hour)})
 	expectX402Identity(t, tdb.qIdentity, models.SoulPublicPaidCallerAccessGrantable)
 	tdb.qGrant.On("Create").Return(theoryErrors.ErrConditionFailed).Once()
 	existing := models.SoulX402InvocationGrant{
@@ -408,7 +413,7 @@ func TestHandleSoulX402IssueInvocationGrant_IdempotencyConflict(t *testing.T) {
 	expectX402Grant(t, tdb.qGrant, existing)
 	s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true}}
 
-	_, err := s.handleSoulX402IssueInvocationGrant(&apptheory.Context{Request: apptheory.Request{Body: x402IssueBody(t, nil)}})
+	_, err := s.handleSoulX402IssueInvocationGrant(&apptheory.Context{Request: apptheory.Request{Body: x402IssueBody(t, nil), Headers: map[string][]string{"authorization": {"Bearer raw-instance-key"}}}})
 	appErr := requireCommTheoryError(t, err)
 	if appErr.Code != x402CodeIdempotencyConflict || appErr.StatusCode != http.StatusConflict {
 		t.Fatalf("expected idempotency conflict, got %q/%d", appErr.Code, appErr.StatusCode)

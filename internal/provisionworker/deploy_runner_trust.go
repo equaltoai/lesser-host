@@ -34,6 +34,7 @@ func (s *Server) ensureDeployRunnerAssumeRoleTrust(ctx context.Context, accountI
 
 	accountID = strings.TrimSpace(accountID)
 	roleName = strings.TrimSpace(roleName)
+	slug = strings.TrimSpace(slug)
 	if accountID == "" || roleName == "" {
 		return fmt.Errorf("account id and role name are required")
 	}
@@ -51,7 +52,12 @@ func (s *Server) ensureDeployRunnerAssumeRoleTrust(ctx context.Context, accountI
 		return fmt.Errorf("managed instance role trust policy is empty")
 	}
 
-	updated, changed, err := ensureAssumeRolePolicyAllowsPrincipal(aws.ToString(out.Role.AssumeRolePolicyDocument), runnerRoleARN)
+	// Derive a tenant-scoped external ID to prevent cross-tenant assume-role.
+	// A compromised CodeBuild runner for tenant A cannot assume tenant B's role
+	// because tenant B's trust policy requires an external ID the runner does not know.
+	externalID := deployRunnerExternalID(slug)
+
+	updated, changed, err := ensureAssumeRolePolicyAllowsPrincipal(aws.ToString(out.Role.AssumeRolePolicyDocument), runnerRoleARN, externalID)
 	if err != nil {
 		return err
 	}
@@ -66,6 +72,16 @@ func (s *Server) ensureDeployRunnerAssumeRoleTrust(ctx context.Context, accountI
 		return fmt.Errorf("update managed instance role trust policy: %w", err)
 	}
 	return nil
+}
+
+// deployRunnerExternalID returns a tenant-scoped external ID used for sts:ExternalId
+// conditioning on the cross-account assume-role trust policy.
+func deployRunnerExternalID(slug string) string {
+	slug = strings.TrimSpace(slug)
+	if slug == "" {
+		return "lesser-host/deploy/unknown"
+	}
+	return "lesser-host/deploy/" + slug
 }
 
 func (s *Server) childIAMClient(ctx context.Context, accountID string, roleName string, region string, slug string, jobID string) (iamAPI, error) {
@@ -114,11 +130,12 @@ func validateIAMRoleARN(value string) error {
 	return nil
 }
 
-func ensureAssumeRolePolicyAllowsPrincipal(rawPolicy string, principalARN string) (string, bool, error) {
+func ensureAssumeRolePolicyAllowsPrincipal(rawPolicy string, principalARN string, externalID string) (string, bool, error) {
 	principalARN = strings.TrimSpace(principalARN)
 	if principalARN == "" {
 		return "", false, fmt.Errorf("principal arn is required")
 	}
+	externalID = strings.TrimSpace(externalID)
 
 	policyJSON, err := decodeAssumeRolePolicyDocument(rawPolicy)
 	if err != nil {
@@ -137,19 +154,51 @@ func ensureAssumeRolePolicyAllowsPrincipal(rawPolicy string, principalARN string
 	if err != nil {
 		return "", false, err
 	}
+
+	// Check if a statement already exists that both allows the principal AND
+	// carries the expected external-ID condition.
 	for _, statement := range statements {
 		if assumeRoleStatementAllowsPrincipal(statement, principalARN) {
-			return policyJSON, false, nil
+			if externalID == "" || assumeRoleStatementHasExternalID(statement, externalID) {
+				return policyJSON, false, nil
+			}
+			// Statement allows the principal but is missing the external-ID
+			// condition. Replace it with a conditioned statement.
+			break
 		}
 	}
 
-	statements = append(statements, map[string]any{
+	// Remove any existing statements that allow the principal without the
+	// required external-ID condition, then add a properly conditioned statement.
+	filtered := make([]any, 0, len(statements)+1)
+	for _, statement := range statements {
+		if !assumeRoleStatementAllowsPrincipal(statement, principalARN) {
+			filtered = append(filtered, statement)
+			continue
+		}
+		if externalID != "" && assumeRoleStatementHasExternalID(statement, externalID) {
+			filtered = append(filtered, statement)
+			continue
+		}
+		// Drop this statement — it allows the principal but lacks the
+		// required external-ID condition. We will replace it below.
+	}
+
+	newStatement := map[string]any{
 		"Effect": "Allow",
 		"Principal": map[string]any{
 			"AWS": principalARN,
 		},
 		"Action": "sts:AssumeRole",
-	})
+	}
+	if externalID != "" {
+		newStatement["Condition"] = map[string]any{
+			"StringEquals": map[string]any{
+				"sts:ExternalId": externalID,
+			},
+		}
+	}
+	statements = append(filtered, newStatement)
 	doc["Statement"] = statements
 
 	updated, err := json.Marshal(doc)
@@ -157,6 +206,29 @@ func ensureAssumeRolePolicyAllowsPrincipal(rawPolicy string, principalARN string
 		return "", false, fmt.Errorf("marshal managed instance role trust policy: %w", err)
 	}
 	return string(updated), true, nil
+}
+
+// assumeRoleStatementHasExternalID checks whether a trust-policy statement
+// carries a StringEquals condition on sts:ExternalId matching the supplied
+// value.
+func assumeRoleStatementHasExternalID(statement any, externalID string) bool {
+	stmt, ok := statement.(map[string]any)
+	if !ok {
+		return false
+	}
+	condition, ok := stmt["Condition"].(map[string]any)
+	if !ok {
+		return false
+	}
+	stringEquals, ok := condition["StringEquals"].(map[string]any)
+	if !ok {
+		return false
+	}
+	got, ok := stringEquals["sts:ExternalId"].(string)
+	if !ok {
+		return false
+	}
+	return strings.TrimSpace(got) == strings.TrimSpace(externalID)
 }
 
 func decodeAssumeRolePolicyDocument(rawPolicy string) (string, error) {
