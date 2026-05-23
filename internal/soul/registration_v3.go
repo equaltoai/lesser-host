@@ -140,7 +140,7 @@ func (r *RegistrationFileV3) Validate() error {
 }
 
 func (r *RegistrationFileV3) validateCoreSections() error {
-	if err := r.Principal.Validate(); err != nil {
+	if err := r.Principal.ValidateWithDomainSeparation(strings.ToLower(strings.TrimSpace(r.AgentID))); err != nil {
 		return fmt.Errorf("principal: %w", err)
 	}
 	if err := r.SelfDescription.Validate(); err != nil {

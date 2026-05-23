@@ -16,8 +16,8 @@ import (
 )
 
 const (
-	soulSignedRequestMaxFutureSkew = 5 * time.Minute
-	soulSignedRequestMaxAge        = 15 * time.Minute
+	soulSignedRequestMaxFutureSkew = 2 * time.Minute
+	soulSignedRequestMaxAge        = 2 * time.Minute
 )
 
 // --- Request / Response types ---
@@ -76,7 +76,7 @@ func (s *Server) handleSoulAppendContinuity(ctx *apptheory.Context) (*apptheory.
 		return nil, appErr
 	}
 
-	digest, appErr := computeSoulContinuityEntryDigest(entryData.entryType, entryData.timestampCanonical, entryData.summary, entryData.recovery, entryData.references)
+	digest, appErr := computeSoulContinuityEntryDigest(entryData.entryType, entryData.timestampCanonical, entryData.summary, entryData.recovery, entryData.references, "")
 	if appErr != nil {
 		return nil, appErr
 	}
@@ -203,12 +203,13 @@ func canonicalSoulSignedTimestamp(ts time.Time) string {
 	return ts.UTC().Truncate(time.Millisecond).Format("2006-01-02T15:04:05.000Z")
 }
 
-func computeSoulContinuityEntryDigest(entryType string, timestamp string, summary string, recovery string, references []string) ([]byte, *apptheory.AppError) {
+func computeSoulContinuityEntryDigest(entryType string, timestamp string, summary string, recovery string, references []string, nonce string) ([]byte, *apptheory.AppError) {
 	entryType = strings.ToLower(strings.TrimSpace(entryType))
 	timestampStr := strings.TrimSpace(timestamp)
 	summary = strings.TrimSpace(summary)
 	recovery = strings.TrimSpace(recovery)
 	references = normalizeContinuityReferences(references)
+	nonce = strings.TrimSpace(nonce)
 
 	unsigned := map[string]any{
 		"type":      entryType,
@@ -220,6 +221,9 @@ func computeSoulContinuityEntryDigest(entryType string, timestamp string, summar
 	}
 	if len(references) > 0 {
 		unsigned["references"] = references
+	}
+	if nonce != "" {
+		unsigned["nonce"] = nonce
 	}
 
 	unsignedBytes, err := json.Marshal(unsigned)
