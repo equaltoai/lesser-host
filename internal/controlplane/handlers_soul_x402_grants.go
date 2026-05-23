@@ -89,15 +89,15 @@ type validatedSoulX402GrantIssue struct {
 }
 
 type validatedSoulX402GrantConsume struct {
-	grantTokenHash       string
-	agentIDHex           string
-	capability           string
-	tool                 string
-	resource             string
-	requestHash          string
-	idempotencyHash      string
-	paymentEvidenceHash  string
-	consumeRequestHash   string
+	grantTokenHash      string
+	agentIDHex          string
+	capability          string
+	tool                string
+	resource            string
+	requestHash         string
+	idempotencyHash     string
+	paymentEvidenceHash string
+	consumeRequestHash  string
 }
 
 type soulX402GrantIssueResponse struct {
