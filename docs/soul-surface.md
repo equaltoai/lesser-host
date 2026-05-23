@@ -83,7 +83,7 @@ Body-facing contract:
 
 - `GET /api/v1/soul/comm/contactability/{agentId}` returns the effective `policy` object alongside bounded channel
   affordances.
-- `POST /api/v1/soul/x402/grants` is the public grant-issue route for configured public paid callers. It binds:
+- `POST /api/v1/soul/x402/grants` is the instance-key authenticated grant-issue route for configured public paid callers. It binds:
   - `agentId`
   - `capability`
   - `tool`
@@ -98,15 +98,17 @@ Body-facing contract:
   - expiry
   - max usage
   - `caller-access-payment/v1` policy version
-- The public issue route returns the raw `grantToken` once. Idempotent replays return grant metadata with
-  `tokenReturned=false`; clients must retain the original token. Host stores only hashes of the caller subject, payment
-  evidence, optional payment id, idempotency key, and grant token. Generic `x402.grant_unavailable` failures avoid
+- The instance-key authenticated issue route returns the raw `grantToken` once. Idempotent replays return grant metadata
+  with `tokenReturned=false`; clients must retain the original token. Host stores only hashes of the caller subject,
+  payment evidence, optional payment id, idempotency key, and grant token. Generic `x402.grant_unavailable` failures avoid
   disclosing private soul state, private comm reachability, unresolved payment detail, wallet material, or tenant data.
-- `POST /api/v1/soul/x402/grants/{grantId}/consume` is instance-key authenticated. Body presents the raw grant token and
-  repeats the bound `agentId`/`capability`/`tool`/`resource`/`requestHash`. Host verifies the instance key, checks that
-  the authenticated instance owns the soul's domain, and writes a usage slot. Repeating the same consume idempotency key
-  with the same consume request hash is a replay and does not increment usage; distinct consume idempotency keys cannot
-  exceed `maxUsage`.
+- `POST /api/v1/soul/x402/grants/{grantId}/consume` is instance-key authenticated. Body presents the raw grant token,
+  the `paymentEvidenceHash` bound to the original payment, and repeats the bound
+  `agentId`/`capability`/`tool`/`resource`/`requestHash`. Host verifies the instance key, checks that the authenticated
+  instance owns the soul's domain, compares `paymentEvidenceHash` against the stored grant payment evidence hash, and
+  writes a usage slot only on match. Mismatched payment evidence returns a denial and does not claim usage. Repeating
+  the same consume idempotency key with the same consume request hash is a replay and does not increment usage;
+  distinct consume idempotency keys cannot exceed `maxUsage`.
 - Public unauthenticated soul-agent reads do not expose the policy fields; the full effective capability and entitlement
   policy is intentionally instance-key scoped to the contactability contract.
 - Entitlement failures use `comm.entitlement_required` with the client-safe message `channel entitlement required`.

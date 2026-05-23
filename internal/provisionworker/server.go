@@ -2405,6 +2405,7 @@ func (s *Server) buildDeployRunnerEnv(job *models.ProvisionJob, stage, receiptKe
 		{Name: aws.String("TARGET_ACCOUNT_ID"), Value: aws.String(strings.TrimSpace(job.AccountID))},
 		{Name: aws.String("TARGET_ROLE_NAME"), Value: aws.String(strings.TrimSpace(job.AccountRoleName))},
 		{Name: aws.String("TARGET_REGION"), Value: aws.String(strings.TrimSpace(job.Region))},
+		{Name: aws.String("DEPLOY_EXTERNAL_ID"), Value: aws.String(deployRunnerExternalID(strings.TrimSpace(job.InstanceSlug)))},
 		{Name: aws.String("LESSER_VERSION"), Value: aws.String(strings.TrimSpace(job.LesserVersion))},
 		{Name: aws.String("ARTIFACT_BUCKET"), Value: aws.String(strings.TrimSpace(s.cfg.ArtifactBucketName))},
 		{Name: aws.String("RECEIPT_S3_KEY"), Value: aws.String(receiptKey)},
