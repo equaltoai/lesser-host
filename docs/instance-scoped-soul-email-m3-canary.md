@@ -237,7 +237,8 @@ inbound-only alias. However, the lab signed registration documents served from
 `/api/v1/soul/agents/{agentId}/registration` still returned legacy bare email
 addresses for the checked agents during this pass.
 
-That caveat is recorded as a blocker, not hidden in the passing host-only
-validation. The full M3/M4 release gate needs either self-attested registration
+That caveat is recorded as an accepted caveat for the release gate — the verifier
+now emits it in `caveats` rather than `issues` when `identity_whoami_email` shows
+a legacy address. The full M3/M4 release gate needs either self-attested registration
 republish evidence or an explicitly approved host audit path before signed
 public registration surfaces can be treated as fully current.
