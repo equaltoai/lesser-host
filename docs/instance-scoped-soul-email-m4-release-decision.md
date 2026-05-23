@@ -32,7 +32,7 @@ Lab evidence from `v0.4.3`/`v0.4.4` on `lesser-host-lab`:
 |---|---|
 | `m3-email-canary-lab.json` | Host-controlled canary evidence for Agent-0 and Arch |
 | `m3-email-canary-lab-host-validation.json` | Passing host-only validation (legacy alias + unknown alias) |
-| `m3-email-canary-lab-full-validation-blocked.json` | Full gate blocked on `--require-body-mcp` |
+| `m3-email-canary-lab-full-validation-blocked.json` | Full gate was blocked on `--require-body-mcp` (now resolved: body v0.4.6) |
 | `m3-email-alias-mapping-lab.json` | Redacted old→new mapping for 12 migrated lab advisor agents |
 | `m3-email-canary-lab-blockers.json` | Explicit blockers and dependencies |
 
@@ -76,7 +76,12 @@ Lab evidence from `v0.4.3`/`v0.4.4` on `lesser-host-lab`:
 | Risk | Resolution required |
 |---|---|
 | (to be filled from live evidence) | |
-| `lesser-body#275` — body MCP identity/mailbox canary evidence | Merge and deploy body release, then rerun M3 canaries with `--require-body-mcp` on live, OR record explicit Aron caveat accepting this gap |
+
+### Resolved dependencies
+
+| Dependency | Status |
+|---|---|
+| `lesser-body#275`/#276 — body MCP identity/mailbox canary evidence | Merged and released (`lesser-body` v0.4.6). Ops live-mode MCP/email probe evidence exists. `--require-body-mcp` gate available. |
 
 ## Caveats carried forward from M3
 
@@ -86,10 +91,11 @@ Lab evidence from `v0.4.3`/`v0.4.4` on `lesser-host-lab`:
    self-attestations. This caveat is accepted for the live release gate unless
    Aron requires registration republish before sign-off.
 
-2. **Body MCP evidence** (`--require-body-mcp`) was not available during the lab
-   host-only M3 pass. If body release [#275](https://github.com/equaltoai/lesser-body/issues/275)
-   is not merged before the live release decision, this gap must be explicitly
-   accepted or the release deferred.
+2. **Body MCP evidence** (`--require-body-mcp`) is now available — `lesser-body`
+   [#275](https://github.com/equaltoai/lesser-body/issues/275) and
+   [#276](https://github.com/equaltoai/lesser-body/issues/276) are merged and
+   released as `lesser-body` v0.4.6. Ops live-mode MCP/email probe evidence exists.
+   The remaining step is a live M3 canary re-run with `--require-body-mcp`.
 
 ## Sign-off owners
 

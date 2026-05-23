@@ -19,10 +19,12 @@ Before any live migration step, the operator must have:
 - Arch/Ops review of the inventory, dry-run, and provider-state evidence.
 - M3 lab canary evidence (`--require-legacy-alias --require-unknown-alias`)
   passing host-only validation.
-- Full M3 canary evidence (`--require-body-mcp`) passing or the remaining
-  body-MCP dependency explicitly accepted as a known caveat for the live gate.
-- `lesser-body` release [#275](https://github.com/equaltoai/lesser-body/issues/275)
-  status understood (merged or caveated).
+- Full M3 canary evidence (`--require-body-mcp`) — `lesser-body`
+  [#275](https://github.com/equaltoai/lesser-body/issues/275) and
+  [#276](https://github.com/equaltoai/lesser-body/issues/276) are merged and
+  released as `lesser-body` v0.4.6. Ops live-mode MCP/email probe evidence
+  exists. Live M3 canary re-run with `--require-body-mcp` is the remaining
+  verification step.
 
 ## Deploy order
 
@@ -105,7 +107,7 @@ provider state.
      --out gov-infra/evidence/project37/m3-email-canary-live-validation.json
    ```
 
-   If body-MCP evidence is available, add `--require-body-mcp`.
+   Add `--require-body-mcp` (body v0.4.6 is released; evidence is available).
 
 8. **Arch/Ops final review** — Link the canary evidence, provider-prepare
    evidence, registration-publish evidence, and operator sign-off in the M4.2
@@ -124,7 +126,7 @@ Per M3 acceptance, the following must pass against live:
 | Legacy alias inbound | `--require-legacy-alias` | `agent@lessersoul.ai` canonicalizes and delivers to same mailbox |
 | Legacy non-advertisement | `--require-legacy-alias` | Public channel surfaces do not advertise legacy bare address |
 | Unknown alias fail-closed | `--require-unknown-alias` | `unknown@lessersoul.ai` inbound dropped, resolve returns not_found |
-| Body MCP identity tools | `--require-body-mcp` | `identity_whoami_email` and `identity_lookup_email` match canonical address |
+| Body MCP identity tools | `--require-body-mcp` | `identity_lookup_email` matches canonical address (hard); `identity_whoami_email` may reflect legacy signed registration until republish (accepted caveat, recorded in validation report) |
 
 ## Monitoring checks
 

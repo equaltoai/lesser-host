@@ -152,6 +152,7 @@ type canaryValidationReport struct {
 	BodyMCPChecked      int      `json:"body_mcp_checked"`
 	UnknownAliasChecked bool     `json:"unknown_alias_checked"`
 	Issues              []string `json:"issues,omitempty"`
+	Caveats             []string `json:"caveats,omitempty"`
 }
 
 func main() {
@@ -237,10 +238,12 @@ func validateCanaryEvidence(e canaryEvidence, cfg canaryConfig, now time.Time) c
 		EvidencePath:  cfg.EvidencePath,
 	}
 	issues := issueCollector{}
+	caveats := issueCollector{}
 	validateEvidenceHeader(e, cfg, &issues)
-	validateCanaryAgents(e.Agents, cfg, &issues, &report)
+	validateCanaryAgents(e.Agents, cfg, &issues, &caveats, &report)
 	validateRequiredCanaryCoverage(e, cfg, &issues, &report)
 	report.Issues = issues.list()
+	report.Caveats = caveats.list()
 	return report
 }
 
@@ -259,7 +262,7 @@ func validateEvidenceHeader(e canaryEvidence, cfg canaryConfig, issues *issueCol
 	}
 }
 
-func validateCanaryAgents(agents []canaryAgentEvidence, cfg canaryConfig, issues *issueCollector, report *canaryValidationReport) {
+func validateCanaryAgents(agents []canaryAgentEvidence, cfg canaryConfig, issues *issueCollector, caveats *issueCollector, report *canaryValidationReport) {
 	for i, agent := range agents {
 		agent.AgentID = strings.ToLower(strings.TrimSpace(agent.AgentID))
 		if cfg.AgentID != "" && agent.AgentID != cfg.AgentID {
@@ -267,7 +270,7 @@ func validateCanaryAgents(agents []canaryAgentEvidence, cfg canaryConfig, issues
 		}
 		report.AgentsChecked++
 		prefix := fmt.Sprintf("agents[%d:%s]", i, valueOr(agent.AgentID, "unknown"))
-		validateAgentEvidence(prefix, agent, cfg, issues, report)
+		validateAgentEvidence(prefix, agent, cfg, issues, caveats, report)
 	}
 	if cfg.AgentID != "" && report.AgentsChecked == 0 {
 		issues.add("target_agent_not_found: %s", cfg.AgentID)
@@ -290,7 +293,7 @@ func validateRequiredCanaryCoverage(e canaryEvidence, cfg canaryConfig, issues *
 	}
 }
 
-func validateAgentEvidence(prefix string, agent canaryAgentEvidence, cfg canaryConfig, issues *issueCollector, report *canaryValidationReport) {
+func validateAgentEvidence(prefix string, agent canaryAgentEvidence, cfg canaryConfig, issues *issueCollector, caveats *issueCollector, report *canaryValidationReport) {
 	canonical := normalizeEmail(agent.CanonicalAddress)
 	legacy := normalizeEmail(agent.LegacyAlias)
 	localID := strings.ToLower(strings.TrimSpace(agent.LocalID))
@@ -321,7 +324,7 @@ func validateAgentEvidence(prefix string, agent canaryAgentEvidence, cfg canaryC
 		validateLegacyCanary(prefix+".legacy", agent, canonical, legacy, issues, report)
 	}
 	if agent.BodyMCP != nil || cfg.RequireBodyMCP {
-		validateBodyMCPCanary(prefix+".body_mcp", agent.BodyMCP, canonical, legacy, issues, report)
+		validateBodyMCPCanary(prefix+".body_mcp", agent.BodyMCP, canonical, legacy, issues, caveats, report)
 	}
 }
 
@@ -459,7 +462,7 @@ func validateLegacyResolve(prefix string, resolve resolveCanary, legacy string, 
 	}
 }
 
-func validateBodyMCPCanary(prefix string, body *bodyMCPCanary, canonical string, legacy string, issues *issueCollector, report *canaryValidationReport) {
+func validateBodyMCPCanary(prefix string, body *bodyMCPCanary, canonical string, legacy string, issues *issueCollector, caveats *issueCollector, report *canaryValidationReport) {
 	if body == nil {
 		issues.add("%s is required", prefix)
 		return
@@ -483,29 +486,28 @@ func validateBodyMCPCanary(prefix string, body *bodyMCPCanary, canonical string,
 			issues.add("%s.%s must be true", prefix, check.name)
 		}
 	}
-	for _, check := range []struct {
-		name  string
-		value string
-	}{
-		{name: "identity_whoami_email", value: body.IdentityWhoamiEmail},
-		{name: "identity_lookup_email", value: body.IdentityLookupEmail},
-	} {
-		validateBodyMCPIdentityEmail(prefix, check.name, check.value, canonical, legacy, issues)
-	}
+	// identity_lookup_email is the authoritative lookup — must match canonical.
+	validateBodyMCPIdentityEmail(prefix, "identity_lookup_email", body.IdentityLookupEmail, canonical, legacy, false, issues, caveats)
+	// identity_whoami_email may reflect signed/on-chain registration state that
+	// lags behind the current channel until the agent republishes; legacy values
+	// are recorded as a caveat rather than a hard failure.
+	validateBodyMCPIdentityEmail(prefix, "identity_whoami_email", body.IdentityWhoamiEmail, canonical, legacy, true, issues, caveats)
 }
 
-func validateBodyMCPIdentityEmail(prefix string, name string, value string, canonical string, legacy string, issues *issueCollector) {
+func validateBodyMCPIdentityEmail(prefix string, name string, value string, canonical string, legacy string, allowLegacy bool, issues *issueCollector, caveats *issueCollector) {
 	addr := normalizeEmail(value)
 	if addr == "" {
 		issues.add("%s.%s is required and must equal canonical address %q", prefix, name, canonical)
 		return
 	}
-	if addr != canonical {
-		issues.add("%s.%s=%q expected=%q", prefix, name, addr, canonical)
+	if addr == canonical {
+		return
 	}
-	if legacy != "" && addr == legacy {
-		issues.add("%s.%s must not expose legacy alias %q as current", prefix, name, legacy)
+	if allowLegacy && legacy != "" && addr == legacy {
+		caveats.add("%s.%s=%q reflects legacy signed-registration address (canonical=%q); accepted as a declared caveat", prefix, name, addr, canonical)
+		return
 	}
+	issues.add("%s.%s=%q expected=%q", prefix, name, addr, canonical)
 }
 
 func validateUnknownAlias(alias *unknownAliasCanary, issues *issueCollector) {

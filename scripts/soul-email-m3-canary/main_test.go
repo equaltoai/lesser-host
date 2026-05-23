@@ -33,6 +33,9 @@ func TestRunCLI_PassesRedactedM3Evidence(t *testing.T) {
 	if len(report.Issues) != 0 {
 		t.Fatalf("unexpected issues: %#v", report.Issues)
 	}
+	if len(report.Caveats) != 0 {
+		t.Fatalf("unexpected caveats: %#v", report.Caveats)
+	}
 }
 
 func TestRunCLI_FailsWhenRequiredUnknownAliasHasNoFailClosedStatus(t *testing.T) {
@@ -105,6 +108,50 @@ func TestRunCLI_FailsOnCanonicalAddressMismatch(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "canonical_address") {
 		t.Fatalf("expected canonical address issue, got %s", stdout.String())
+	}
+}
+
+func TestRunCLI_PassesWhenIdentityWhoamiEmailShowsLegacyAlias(t *testing.T) {
+	// identity_whoami_email=legacy is a declared caveat, not a hard failure.
+	fixture := strings.Replace(validCanaryEvidenceJSON(),
+		`"identity_whoami_email": "pilot.simulacrum@lessersoul.ai"`,
+		`"identity_whoami_email": "pilot@lessersoul.ai"`, 1)
+	path := writeCanaryFixture(t, fixture)
+	var stdout bytes.Buffer
+	code := runCLI([]string{"--stage", "lab", "--evidence", path, "--require-body-mcp", "--require-legacy-alias", "--require-unknown-alias"},
+		func(string) string { return "" }, &stdout, &bytes.Buffer{}, time.Date(2026, 5, 22, 15, 0, 0, 0, time.UTC))
+	if code != 0 {
+		t.Fatalf("expected pass (whoami legacy is a caveat), got exit %d stdout=%s", code, stdout.String())
+	}
+	var report canaryValidationReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode report: %v", err)
+	}
+	if len(report.Issues) != 0 {
+		t.Fatalf("unexpected issues: %#v", report.Issues)
+	}
+	if len(report.Caveats) == 0 {
+		t.Fatalf("expected caveat for identity_whoami_email=legacy, got none; report=%s", stdout.String())
+	}
+	if !strings.Contains(strings.Join(report.Caveats, "\n"), "identity_whoami_email") {
+		t.Fatalf("expected whoami caveat, got caveats=%#v", report.Caveats)
+	}
+}
+
+func TestRunCLI_FailsWhenIdentityLookupEmailShowsLegacyAlias(t *testing.T) {
+	// identity_lookup_email must always equal canonical (authoritative lookup).
+	fixture := strings.Replace(validCanaryEvidenceJSON(),
+		`"identity_lookup_email": "pilot.simulacrum@lessersoul.ai"`,
+		`"identity_lookup_email": "pilot@lessersoul.ai"`, 1)
+	path := writeCanaryFixture(t, fixture)
+	var stdout bytes.Buffer
+	code := runCLI([]string{"--stage", "lab", "--evidence", path, "--require-body-mcp"},
+		func(string) string { return "" }, &stdout, &bytes.Buffer{}, time.Date(2026, 5, 22, 15, 0, 0, 0, time.UTC))
+	if code != 2 {
+		t.Fatalf("expected validation failure exit 2, got %d stdout=%s", code, stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "identity_lookup_email") {
+		t.Fatalf("expected identity_lookup_email issue, got %s", stdout.String())
 	}
 }
 

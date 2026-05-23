@@ -37,9 +37,11 @@ For each checked agent, the evidence must prove:
 - resolving a legacy bare address fails closed as a public/current contact
   lookup; and
 - when `--require-body-mcp` is used, lesser-body identity and mailbox tools work
-  against the same canonical address, with `identity_whoami_email` and
-  `identity_lookup_email` both present and equal to that canonical address,
-  without exposing the legacy alias as the current channel.
+  against the same canonical address; `identity_lookup_email` must equal the
+  canonical address (authoritative lookup). `identity_whoami_email` may reflect
+  legacy signed-registration state and is accepted as a declared caveat when it
+  equals a known legacy alias (recorded in `caveats`, not `issues`).
+  Legacy aliases must never be exposed as the current channel.
 
 The optional top-level `unknown_alias` check records that an unmigrated bare
 address fails closed for inbound and/or resolve behavior. At least one of
@@ -168,8 +170,11 @@ evidence.
   canary without editing the evidence file.
 - M4 release-gate evidence should use `--require-legacy-alias`,
   `--require-body-mcp`, and `--require-unknown-alias` once the corresponding
-  cross-repo canaries are complete.
-- The validation report belongs in `gov-infra/evidence/project37/` with the
+  cross-repo canaries are complete. With `--require-body-mcp`, the verifier
+  gates on `identity_lookup_email == canonical` while recording
+  `identity_whoami_email` legacy signed-registration lag in `caveats`.
+- The validation report (now with `caveats` field) belongs in
+  `gov-infra/evidence/project37/` with the
   canary evidence. Commit only redacted evidence.
 
 ## Lab evidence pass — 2026-05-22
@@ -217,9 +222,11 @@ go run ./scripts/soul-email-m3-canary \
   --out gov-infra/evidence/project37/m3-email-canary-lab-validation.json
 ```
 
-The 2026-05-22 host pass intentionally does not claim that full gate as green:
-`lesser-body#275` is still the body-facing dependency for
+The 2026-05-22 host pass relied on `lesser-body#275`/#276 for
 `identity_whoami`, `identity_lookup`, and mailbox MCP compatibility evidence.
+As of M4, `lesser-body#275` and `lesser-body#276` are merged and released
+(`lesser-body` v0.4.6). The `--require-body-mcp` gate is now available; the
+remaining caveat is the signed-registration surface (see M4 release decision).
 
 ### Signed-registration caveat
 
