@@ -1,14 +1,24 @@
 /* ============================================================================
  * FaceTheory server entry (host web/)
  *
- * Builds the host SSR FaceApp and exposes the Lambda Function URL streaming
+ * Builds the host SSR FaceApp, wraps it with a `/_facetheory/data/*.json`
+ * sidecar pre-router, and exposes the Lambda Function URL streaming
  * handler. M0.4 ports every existing host page onto its own FaceModule via
  * the shell factory in `src/routes/_shell.ts`; the SSR Lambda emits a
- * strict-no-inline-CSP HTML shell + external hydration sidecar, and the
- * existing `src/App.svelte` (mounted by `src/client/face-client.ts`) keeps
- * handling per-page routing and rendering after hydration. The M0.3 probe
- * at `/_facetheory/probe` is retained as a per-request health signal that
- * exercises the shell pipeline without claiming a user-facing route.
+ * strict-no-inline-CSP HTML shell + external hydration sidecar URL, and
+ * the existing `src/App.svelte` (mounted by `src/client/face-client.ts`)
+ * keeps handling per-page routing and rendering. The M0.3 probe at
+ * `/_facetheory/probe` is retained as a per-request health signal.
+ *
+ * Why a sidecar pre-router (FaceTheory v3.3.0 limitation): FaceTheory's
+ * runtime always wraps FaceModule responses in `renderHTMLDocument(...)`
+ * (see `app.js#toHTTPResponse`), so JSON sidecars cannot be served from a
+ * FaceModule. ISR mode exposes `onHydrationSidecar` for persistence, but
+ * SSR mode has no equivalent. The host-side pre-router below shells the
+ * static `{routeId, route}` payload for `/_facetheory/data/<routeId>.json`
+ * before delegating to the FaceApp. Captured as a framework-feedback
+ * candidate (see memory note `mem-66a93e3b1c3a1ce1` for the related
+ * client-bundle export-map signal).
  *
  * CSP posture (preserves host's canonical webCsp byte-string):
  *   - Each FaceModule sets `csp: { inlineScripts: false, inlineStyles: false,
@@ -49,10 +59,12 @@ import {
 	viteAssetsForEntry,
 	type FaceCspPolicy,
 	type FaceModule,
+	type FaceRequest,
+	type FaceResponse,
 	type ViteManifest,
 } from '@theory-cloud/facetheory';
 
-import { allRoutes, createShellFace } from '../routes/index';
+import { allRoutes, createShellFace, type ShellHydrationPayload } from '../routes/index';
 import type { FaceTheoryProbePayload } from '../client/face-client';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -90,6 +102,13 @@ function loadManifest(): ViteManifest {
 const manifest = loadManifest();
 
 // ─── Probe FaceModule (M0.3 carryover; per-request health/SSR pipeline check) ─
+//
+// The probe sidecar payload deliberately omits the per-request timestamp so
+// the static sidecar pre-router below can serve `/_facetheory/data/probe.json`
+// without a per-request re-render. The HTML response still includes the
+// timestamp for human eyeballs during lab soak.
+
+const PROBE_ROUTE_ID = 'probe';
 
 const probeFace: FaceModule = {
 	route: PROBE_ROUTE,
@@ -133,9 +152,132 @@ const routeFaces: FaceModule[] = allRoutes.map((opts) =>
 	}),
 );
 
-// ─── App + Lambda handler ─────────────────────────────────────────────────────
+// ─── FaceApp ──────────────────────────────────────────────────────────────────
 
 export const app = createFaceApp({ faces: [probeFace, ...routeFaces] });
+
+// ─── Sidecar pre-router ───────────────────────────────────────────────────────
+//
+// Map routeId → the static hydration payload the SSR shells reference via
+// `externalHydrationForEntry({ dataUrl: '/_facetheory/data/<routeId>.json' })`.
+// FaceTheory's runtime only serves SSG/ISR sidecars natively; for SSR we
+// serve the JSON ourselves here so the dataUrl actually resolves.
+
+interface SidecarEntry {
+	readonly contentType: string;
+	readonly cacheControl: string;
+	readonly payload: ShellHydrationPayload | { route: string };
+}
+
+const SIDECAR_PATH_PREFIX = HYDRATION_DATA_URL_BASE; // '/_facetheory/data/'
+const SIDECAR_PATH_SUFFIX = '.json';
+const SIDECAR_CONTENT_TYPE = 'application/json; charset=utf-8';
+const SIDECAR_CACHE_CONTROL = 'no-store';
+
+const sidecarById: ReadonlyMap<string, SidecarEntry> = new Map(
+	[
+		// Real shell routes — static `{ routeId, route }` payload per routeId.
+		...allRoutes.map<readonly [string, SidecarEntry]>((r) => [
+			r.routeId,
+			{
+				contentType: SIDECAR_CONTENT_TYPE,
+				cacheControl: SIDECAR_CACHE_CONTROL,
+				payload: { routeId: r.routeId, route: r.route },
+			},
+		]),
+		// M0.3 probe route — sidecar holds only the route name (the request-
+		// time timestamp the probe's render emits is intentionally not in the
+		// sidecar so the URL stays deterministic).
+		[
+			PROBE_ROUTE_ID,
+			{
+				contentType: SIDECAR_CONTENT_TYPE,
+				cacheControl: SIDECAR_CACHE_CONTROL,
+				payload: { route: PROBE_ROUTE },
+			},
+		],
+	],
+);
+
+function isSidecarPath(path: string): boolean {
+	return path.startsWith(SIDECAR_PATH_PREFIX) && path.endsWith(SIDECAR_PATH_SUFFIX);
+}
+
+function resolveSidecarRouteId(path: string): string | null {
+	const tail = path.slice(SIDECAR_PATH_PREFIX.length, path.length - SIDECAR_PATH_SUFFIX.length);
+	// Reject path traversal / nested segments / empty tail — sidecar URLs are
+	// single-segment routeIds only.
+	if (!tail || tail.includes('/') || tail.includes('..')) {
+		return null;
+	}
+	return tail;
+}
+
+function makeJsonResponse(status: number, body: string, headers: Record<string, string>): FaceResponse {
+	const normalized: Record<string, string[]> = {};
+	for (const [k, v] of Object.entries(headers)) {
+		normalized[k.toLowerCase()] = [v];
+	}
+	return {
+		status,
+		headers: normalized,
+		cookies: [],
+		body: new TextEncoder().encode(body),
+		isBase64: false,
+	};
+}
+
+function handleSidecarRequest(req: FaceRequest): FaceResponse {
+	if (req.method !== 'GET' && req.method !== 'HEAD') {
+		return makeJsonResponse(
+			405,
+			JSON.stringify({ error: 'method_not_allowed' }),
+			{ 'content-type': SIDECAR_CONTENT_TYPE, allow: 'GET, HEAD' },
+		);
+	}
+	const routeId = resolveSidecarRouteId(req.path);
+	if (routeId === null) {
+		return makeJsonResponse(
+			404,
+			JSON.stringify({ error: 'not_found' }),
+			{ 'content-type': SIDECAR_CONTENT_TYPE },
+		);
+	}
+	const entry = sidecarById.get(routeId);
+	if (!entry) {
+		return makeJsonResponse(
+			404,
+			JSON.stringify({ error: 'unknown_route_id', routeId }),
+			{ 'content-type': SIDECAR_CONTENT_TYPE },
+		);
+	}
+	return makeJsonResponse(
+		200,
+		JSON.stringify(entry.payload),
+		{
+			'content-type': entry.contentType,
+			'cache-control': entry.cacheControl,
+		},
+	);
+}
+
+/**
+ * Request handler that the Lambda streaming wrapper drives. Pre-routes
+ * `/_facetheory/data/*.json` to the static sidecar map, then delegates
+ * every other request to the FaceApp. Exported (alongside `app`) so unit
+ * tests + the M0.16 web build-time verifier can exercise the full handler
+ * tree without spinning up Lambda streaming.
+ */
+export const requestHandler: { handle: (req: FaceRequest) => Promise<FaceResponse> } = {
+	async handle(req: FaceRequest): Promise<FaceResponse> {
+		if (isSidecarPath(req.path)) {
+			return handleSidecarRequest(req);
+		}
+		return app.handle(req);
+	},
+};
+
+// ─── Lambda handler ───────────────────────────────────────────────────────────
 
 /**
  * Lazy Lambda handler. `createLambdaUrlStreamingHandler` reaches for
@@ -146,7 +288,7 @@ export const app = createFaceApp({ faces: [probeFace, ...routeFaces] });
  */
 function createSafeHandler(): ReturnType<typeof createLambdaUrlStreamingHandler> {
 	try {
-		return createLambdaUrlStreamingHandler({ app });
+		return createLambdaUrlStreamingHandler({ app: requestHandler });
 	} catch (err) {
 		const message =
 			'face-app handler invoked without globalThis.awslambda; this entry is for AWS Lambda runtime only';

@@ -37,11 +37,14 @@ import {
 /** Discriminator written into the hydration sidecar so the client knows which
  *  route family was matched on the server. The client mounts `App.svelte`
  *  unconditionally (its own router picks the page); the discriminator exists
- *  for future per-route shell adoption (M0.6+) and for evidence/audit. */
+ *  for future per-route shell adoption (M0.6+) and for evidence/audit. The
+ *  payload is intentionally per-routeId-static (not per-request) so the
+ *  matching sidecar URL `/_facetheory/data/<routeId>.json` can be served
+ *  deterministically by the host-side pre-router in `face-app.ts` — see the
+ *  sidecar-serving block there for the source of truth. */
 export interface ShellHydrationPayload {
 	readonly routeId: string;
 	readonly route: string;
-	readonly path: string;
 }
 
 export interface ShellFaceOptions {
@@ -87,10 +90,9 @@ export function createShellFace(
 	return {
 		route,
 		mode: 'ssr',
-		load: async (ctx): Promise<ShellHydrationPayload> => ({
+		load: async (): Promise<ShellHydrationPayload> => ({
 			routeId,
 			route,
-			path: ctx.request.path,
 		}),
 		render: async (_ctx, data) => {
 			const assets = hasManifestEntry

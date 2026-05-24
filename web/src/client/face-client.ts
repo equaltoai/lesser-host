@@ -3,25 +3,30 @@
  *
  * Bootstrap module loaded by FaceTheory's strict-no-inline-CSP hydration path.
  * The SSR Lambda emits a `<script type="module" src=".../face-client-*.js">`
- * head tag (via `viteAssetsForEntry`) plus a JSON sidecar at
- * `/_facetheory/data/<routeId>.json` (via `externalHydrationForEntry`); the
- * browser fetches the sidecar, then evaluates this module to hydrate the
- * server-rendered DOM.
+ * head tag (via `viteAssetsForEntry`) plus a same-origin JSON hydration
+ * sidecar URL pointer (via `externalHydrationForEntry`); FaceTheory's
+ * `readFaceHydrationDataUrl(doc)` reads that URL from the
+ * `#__FACETHEORY_DATA_URL__` link tag, and this module fetches it before
+ * mounting `App.svelte`. `readFaceHydrationData(doc)` is checked first
+ * for inline payloads (today's shells never emit inline, but the dual
+ * read keeps the client compatible with both modes for SSG / ISR /
+ * future inline-hydration routes).
  *
- * M0.4 — per-route shell hydration. Reads the `ShellHydrationPayload` (route
- * discriminator + path) the SSR Lambda wrote to the sidecar, exposes it on
- * `window.__FACETHEORY_SHELL__` for evidence/observability, then mounts the
- * existing `src/App.svelte` into `<div id="app">` exactly as `src/main.ts`
- * does today. App.svelte's in-house router at `src/lib/router.ts` keeps
- * driving the per-page logic, so every existing page is rendered through
- * its FaceModule without a per-page rewrite.
+ * M0.4 — per-route shell hydration. Reads the `ShellHydrationPayload`
+ * (`{ routeId, route }`) the SSR Lambda wrote to the sidecar via the
+ * `/_facetheory/data/<routeId>.json` pre-router in `face-app.ts`, exposes
+ * it on `window.__FACETHEORY_SHELL__` for evidence/observability, then
+ * mounts the existing `src/App.svelte` into `<div id="app">` exactly as
+ * `src/main.ts` does today. App.svelte's in-house router at
+ * `src/lib/router.ts` keeps driving the per-page logic. The mount runs
+ * synchronously alongside the fetch — App.svelte does not depend on the
+ * hydration payload (shell-only architecture), so a slow sidecar fetch
+ * never blocks user-visible rendering.
  *
  * M0.5 — `startAwsOacFormTransport()` is wired via `ensureAwsOacFormTransport`
  * (see `oac-form.ts`) so any future `<form data-facetheory-oac-form>` rendered
  * by an SSR-route is submitted with the `x-amz-content-sha256` digest that
- * CloudFront Lambda URL OAC signing requires. The current shells emit no such
- * forms; the transport stages the listener for later (SEC-7 verifier covers
- * marker hygiene once it lands later in M0).
+ * CloudFront Lambda URL OAC signing requires.
  *
  * The M0.3 `/_facetheory/probe` route still emits the legacy
  * `FaceTheoryProbePayload` shape; we keep reading both payload shapes so the
@@ -32,7 +37,7 @@
 
 import { mount } from 'svelte';
 
-import { readFaceHydrationData } from '@theory-cloud/facetheory';
+import { readFaceHydrationData, readFaceHydrationDataUrl } from '@theory-cloud/facetheory';
 
 import App from '../App.svelte';
 import 'src/lib/styles/greater/tokens.css';
@@ -45,7 +50,7 @@ import type { ShellHydrationPayload } from '../routes/index';
 /** Legacy M0.3 probe payload shape. */
 export interface FaceTheoryProbePayload {
 	route: string;
-	timestamp: string;
+	timestamp?: string;
 }
 
 type FaceTheoryHydrationPayload = ShellHydrationPayload | FaceTheoryProbePayload;
@@ -57,25 +62,74 @@ declare global {
 	}
 }
 
-function isShellPayload(payload: FaceTheoryHydrationPayload | null): payload is ShellHydrationPayload {
-	return !!payload && typeof (payload as ShellHydrationPayload).routeId === 'string';
+function isShellPayload(payload: unknown): payload is ShellHydrationPayload {
+	return !!payload && typeof (payload as { routeId?: unknown }).routeId === 'string';
 }
 
-function isProbePayload(payload: FaceTheoryHydrationPayload | null): payload is FaceTheoryProbePayload {
+function isProbePayload(payload: unknown): payload is FaceTheoryProbePayload {
 	return (
 		!!payload &&
-		typeof (payload as FaceTheoryProbePayload).timestamp === 'string' &&
-		typeof (payload as { routeId?: string }).routeId !== 'string'
+		typeof (payload as { route?: unknown }).route === 'string' &&
+		typeof (payload as { routeId?: unknown }).routeId !== 'string'
 	);
 }
 
-const data = readFaceHydrationData<FaceTheoryHydrationPayload>();
+function stashHydrationPayload(payload: unknown): void {
+	if (isShellPayload(payload)) {
+		window.__FACETHEORY_SHELL__ = payload;
+	} else if (isProbePayload(payload)) {
+		window.__FACETHEORY_PROBE__ = payload;
+	}
+}
 
-if (typeof window !== 'undefined') {
-	if (isShellPayload(data)) {
-		window.__FACETHEORY_SHELL__ = data;
-	} else if (isProbePayload(data)) {
-		window.__FACETHEORY_PROBE__ = data;
+/** Fetch the external hydration sidecar URL. Strict same-origin + `redirect:
+ *  'error'` so a 307/308 open redirect cannot relocate the request to a
+ *  cross-origin endpoint and exfiltrate any future credentials/cookies that
+ *  the sidecar handler might consume. Returns `null` on any non-2xx or
+ *  parse failure — the mount path runs unconditionally so a missing sidecar
+ *  never blocks the user-visible app. */
+async function fetchSidecarPayload(rawUrl: string): Promise<FaceTheoryHydrationPayload | null> {
+	let url: URL;
+	try {
+		url = new URL(rawUrl, document.location.origin);
+	} catch {
+		return null;
+	}
+	if (url.origin !== document.location.origin) {
+		// Cross-origin sidecars are refused regardless of CORS; the SSR
+		// Lambda only ever emits same-origin URLs, so a cross-origin URL
+		// here would be a marker-tampering attempt.
+		return null;
+	}
+	try {
+		const res = await fetch(url, {
+			credentials: 'same-origin',
+			redirect: 'error',
+			headers: { accept: 'application/json' },
+		});
+		if (!res.ok) {
+			return null;
+		}
+		return (await res.json()) as FaceTheoryHydrationPayload;
+	} catch {
+		return null;
+	}
+}
+
+if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+	// 1. Try inline hydration first (FaceInlineHydration; not used by today's
+	//    shells but kept for forward compatibility with future SSG/ISR routes).
+	const inlineData = readFaceHydrationData<FaceTheoryHydrationPayload>();
+	if (inlineData) {
+		stashHydrationPayload(inlineData);
+	} else {
+		// 2. Otherwise look for the external sidecar URL the SSR shell wrote
+		//    into `<link id="__FACETHEORY_DATA_URL__" rel="facetheory-hydration">`
+		//    and fetch it. Fire-and-forget — the mount runs independently.
+		const sidecarUrl = readFaceHydrationDataUrl();
+		if (sidecarUrl) {
+			void fetchSidecarPayload(sidecarUrl).then(stashHydrationPayload);
+		}
 	}
 
 	// Stage the OAC-safe form transport once per document. Idempotent; safe
