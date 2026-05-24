@@ -14,9 +14,9 @@ Output of the `create-github-project` walk for the 2026-05-24 web/ UI rework. Tr
 - **Visibility**: Private
 - **Pattern**: follows Project 32 / 37 / 38 cadence (README + Status kanban + milestone groupings + parent + sub-issue hierarchy)
 
-## Initial seed items
+## Project items
 
-Nine initial items in Project 39: 8 parent-level issues + this planning PR. Sub-issues will be created at each milestone's `implement-milestone` walk start (per the parent issue bodies). This mirrors Project 37/38 cadence (~30 items each) by seeding the project with the structural anchors and letting sub-issues populate as work begins.
+Project 39 was initially seeded with 9 host structural anchors (8 parent-level issues + this planning PR). On 2026-05-24, after Greater expanded its companion milestones, host expanded the four host milestone parents into the full 78 enumerated-change sub-issues so the board now mirrors the same nested parent/sub-issue tracking cadence.
 
 The planning PR itself ([#380](https://github.com/equaltoai/lesser-host/pull/380)) is included in the project as the active planning item per Arch's PR review recommendation (avoids the quiet-board seam recently corrected in Project 38); it moves to Done after merge.
 
@@ -32,20 +32,18 @@ The planning PR itself ([#380](https://github.com/equaltoai/lesser-host/pull/380
 | [#379](https://github.com/equaltoai/lesser-host/issues/379) | R.2 — Live cutover after milestone soak + sim canary signoff | Rollout | Blocked by R.1 sim signoff + all milestones soaked |
 | [#380](https://github.com/equaltoai/lesser-host/pull/380) | Planning: web/ UI rework on FaceTheory v3.3.0 + greater-components (Project 39) | Planning PR | Active planning baseline; moves to Done after merge |
 
-## Sub-issue creation cadence
+## Expanded host sub-issues (executed 2026-05-24)
 
-Per each parent issue body, sub-issues are created at `implement-milestone` walk start, not now. This avoids creating 25 issues that may need revision once Signal A/D resolve.
+The host milestone parents now have one GitHub sub-issue per enumerated commit from `docs/enumerated-changes-web-ui-rework-2026-05-24.md`:
 
-When M0 implement-milestone begins, the sub-issues for #372 will be:
+| Parent | Expanded child issue range | Enumerated changes | Count | Notes |
+| --- | --- | --- | ---: | --- |
+| [#372](https://github.com/equaltoai/lesser-host/issues/372) | [#381](https://github.com/equaltoai/lesser-host/issues/381)–[#409](https://github.com/equaltoai/lesser-host/issues/409) | M0.1–M0.29 | 29 | M0.12 and SEC-8 still wait for the AppTheory mixed-auth composition implementation/docs; SEC-7 issues carry the FaceTheory marker-scoped OAC transport nuance. |
+| [#373](https://github.com/equaltoai/lesser-host/issues/373) | [#410](https://github.com/equaltoai/lesser-host/issues/410)–[#426](https://github.com/equaltoai/lesser-host/issues/426) | M1.1–M1.17 | 17 | Portal hero pages + stack-state endpoint + SEC-11. |
+| [#374](https://github.com/equaltoai/lesser-host/issues/374) | [#427](https://github.com/equaltoai/lesser-host/issues/427)–[#444](https://github.com/equaltoai/lesser-host/issues/444) | M2.1–M2.18 | 18 | Operator console + drift/wire-all + SEC-12/MAI-5. |
+| [#375](https://github.com/equaltoai/lesser-host/issues/375) | [#445](https://github.com/equaltoai/lesser-host/issues/445)–[#458](https://github.com/equaltoai/lesser-host/issues/458) | M3.1–M3.14 | 14 | M3.7–M3.14 remain deferrable/conditional per the roadmap. |
 
-- M0 foundation (M0.1–M0.5)
-- M0 CDK + tests (M0.12–M0.16)
-- M0 gated UI components (M0.6–M0.11) — gated on Signal A + D
-- M0 verifiers (M0.17–M0.23)
-- M0 governance + docs (M0.24–M0.29)
-- M0 lab deploy + soak
-
-Equivalent sub-issue shapes for M1, M2, M3 are listed in their parent issue bodies.
+All 78 child issues are in Project 39 with Status `Todo`, and linked through GitHub's sub-issue relation so the project `Parent issue` / `Sub-issues progress` fields are populated automatically.
 
 ## Labels used
 
@@ -78,10 +76,8 @@ Per the project README: "Treat this as a kanban. Move issues through Status as e
 If the planning PR is approved + merged to main:
 
 1. M0 `implement-milestone` walk begins
-2. Sub-issues for #372 are created at that time
-3. Signal A + D coordination (parallel track, started at M0 implement-milestone kickoff)
-4. Each milestone follows the same pattern: implement-milestone → sub-issues → commits → PRs → review → merge → lab deploy → soak → next milestone
-
-If Signal A is resolved early (Week 1–2), M0 gated commits can land alongside the rest of M0; otherwise the provisional Stitch adoption per the enumerated change list gating note unblocks M0 by Week 3–4.
+2. Use the already-created #372 sub-issues (#381–#409) as the implementation queue
+3. Signal D coordination continues in parallel with Greater
+4. Each milestone follows the same pattern: implement-milestone → child issue queue → commits → PRs → review → merge → lab deploy → soak → next milestone
 
 If live launch date is set, the calendar-week-relative roadmap (`docs/roadmap-web-ui-rework-2026-05-24.md` section "Calendar-week-relative phasing") maps backwards from cutover; aggressive variant (8 weeks total, defer M3.2) and conservative variant (20+ weeks) are documented there.
