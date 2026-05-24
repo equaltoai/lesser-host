@@ -14,9 +14,11 @@ Output of the `create-github-project` walk for the 2026-05-24 web/ UI rework. Tr
 - **Visibility**: Private
 - **Pattern**: follows Project 32 / 37 / 38 cadence (README + Status kanban + milestone groupings + parent + sub-issue hierarchy)
 
-## Initial seed issues (parent-level)
+## Initial seed items
 
-Eight parent-level issues created on `equaltoai/lesser-host`. Sub-issues will be created at each milestone's `implement-milestone` walk start (per the parent issue bodies). This mirrors Project 37/38 cadence (~30 items each) by seeding the project with the structural anchors and letting sub-issues populate as work begins.
+Nine initial items in Project 39: 8 parent-level issues + this planning PR. Sub-issues will be created at each milestone's `implement-milestone` walk start (per the parent issue bodies). This mirrors Project 37/38 cadence (~30 items each) by seeding the project with the structural anchors and letting sub-issues populate as work begins.
+
+The planning PR itself ([#380](https://github.com/equaltoai/lesser-host/pull/380)) is included in the project as the active planning item per Arch's PR review recommendation (avoids the quiet-board seam recently corrected in Project 38); it moves to Done after merge.
 
 | # | Title | Type | Blocks / Blocked by |
 | --- | --- | --- | --- |
@@ -28,6 +30,7 @@ Eight parent-level issues created on `equaltoai/lesser-host`. Sub-issues will be
 | [#377](https://github.com/equaltoai/lesser-host/issues/377) | Coordination — Signal D: greater-components additive component requests | Coordination | Contingent on Signal A; shapes M0.7–M0.10 + M2.6–M2.7 |
 | [#378](https://github.com/equaltoai/lesser-host/issues/378) | R.1 — Sim canary walk-through against host lab post-M3 soak | Rollout | Blocks R.2; blocked by M3 lab soak |
 | [#379](https://github.com/equaltoai/lesser-host/issues/379) | R.2 — Live cutover after milestone soak + sim canary signoff | Rollout | Blocked by R.1 sim signoff + all milestones soaked |
+| [#380](https://github.com/equaltoai/lesser-host/pull/380) | Planning: web/ UI rework on FaceTheory v3.3.0 + greater-components (Project 39) | Planning PR | Active planning baseline; moves to Done after merge |
 
 ## Sub-issue creation cadence
 
@@ -59,9 +62,9 @@ From existing host label catalog:
 
 ## Coordination
 
-- **Greater Components steward**: notified via Signal D issue (#377), contingent on Signal A
-- **FaceTheory / Theory Cloud steward**: notified via Signal A issue (#376)
-- **Sim steward**: notified at M3 lab deploy time per #378
+- **Greater Components steward**: **to be notified via** Signal D issue (#377), contingent on Signal A. Notification comment posts at M0 implement-milestone kickoff (not yet posted; issue currently exists as a coordination-tracking record only).
+- **FaceTheory / Theory Cloud steward**: **to be notified via** Signal A issue (#376). Notification comment posts at M0 implement-milestone kickoff.
+- **Sim steward**: **to be notified** at M3 lab deploy time per #378.
 - **No advisor-dispatched coordination**: this is Aron-direct
 
 ## Working method
