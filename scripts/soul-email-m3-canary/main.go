@@ -574,6 +574,14 @@ func walkJSON(value any, path string, visit func(path string, key string, value 
 	case []any:
 		for i, item := range v {
 			childPath := fmt.Sprintf("%s[%d]", path, i)
+			// Visit array elements directly so that string values embedded in
+			// arrays are checked against redaction policy (disallowed keys and
+			// sensitive-looking values). Without this call, secrets placed inside
+			// JSON arrays bypass the redaction verifier (CSR-020).
+			key := fmt.Sprintf("[%d]", i)
+			if err := visit(childPath, key, item); err != nil {
+				return err
+			}
 			if err := walkJSON(item, childPath, visit); err != nil {
 				return err
 			}
