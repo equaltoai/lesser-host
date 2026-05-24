@@ -4,38 +4,85 @@
  * Bootstrap module loaded by FaceTheory's strict-no-inline-CSP hydration path.
  * The SSR Lambda emits a `<script type="module" src=".../face-client-*.js">`
  * head tag (via `viteAssetsForEntry`) plus a JSON sidecar at
- * `/_facetheory/data/<route>.json` (via `externalHydrationForEntry`); the
+ * `/_facetheory/data/<routeId>.json` (via `externalHydrationForEntry`); the
  * browser fetches the sidecar, then evaluates this module to hydrate the
  * server-rendered DOM.
  *
- * M0.3 — bootstrap only. We read the hydration payload and stash it on
- * `window.__FACETHEORY_PROBE__` so the probe response is visibly hydrated
- * during the M0 lab soak without claiming any real route. M0.4 ports the
- * existing Portal / Operator / Trust / Login / Setup / Account / Home /
- * NotFound / TipRegistry routes onto Svelte FaceModules and replaces this
- * stash with `mount(...)`-style hydration of the real components. M0.5 adds
- * `startAwsOacFormTransport()` here so any marked `<form
- * data-facetheory-oac-form>` rendered in M0.4+ submits with the right
+ * M0.4 — per-route shell hydration. Reads the `ShellHydrationPayload` (route
+ * discriminator + path) the SSR Lambda wrote to the sidecar, exposes it on
+ * `window.__FACETHEORY_SHELL__` for evidence/observability, then mounts the
+ * existing `src/App.svelte` into `<div id="app">` exactly as `src/main.ts`
+ * does today. App.svelte's in-house router at `src/lib/router.ts` keeps
+ * driving the per-page logic, so every existing page is rendered through
+ * its FaceModule without a per-page rewrite. M0.5 adds
+ * `startAwsOacFormTransport()` here so any future marked
+ * `<form data-facetheory-oac-form>` submits with the right
  * `x-amz-content-sha256` signing.
  *
- * Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M0.3
+ * The M0.3 `/_facetheory/probe` route still emits the legacy
+ * `FaceTheoryProbePayload` shape; we keep reading both payload shapes so the
+ * probe + the real routes coexist during lab soak.
+ *
+ * Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M0.4
  * ========================================================================== */
+
+import { mount } from 'svelte';
 
 import { readFaceHydrationData } from '@theory-cloud/facetheory';
 
+import App from '../App.svelte';
+import 'src/lib/styles/greater/tokens.css';
+import 'src/lib/styles/greater/primitives.css';
+import '../app.css';
+
+import type { ShellHydrationPayload } from '../routes/index';
+
+/** Legacy M0.3 probe payload shape. */
 export interface FaceTheoryProbePayload {
 	route: string;
 	timestamp: string;
 }
 
-// Read the hydration payload the SSR Lambda wrote to the sidecar. Returns
-// `null` if the document has no FaceTheory hydration marker (e.g. when this
-// bundle is loaded by a not-yet-ported legacy page); the probe just no-ops in
-// that case until M0.4 ports real routes.
-const data = readFaceHydrationData<FaceTheoryProbePayload>();
+type FaceTheoryHydrationPayload = ShellHydrationPayload | FaceTheoryProbePayload;
 
-if (typeof window !== 'undefined' && data) {
-	(window as unknown as { __FACETHEORY_PROBE__?: FaceTheoryProbePayload }).__FACETHEORY_PROBE__ = data;
+declare global {
+	interface Window {
+		__FACETHEORY_SHELL__?: ShellHydrationPayload;
+		__FACETHEORY_PROBE__?: FaceTheoryProbePayload;
+	}
+}
+
+function isShellPayload(payload: FaceTheoryHydrationPayload | null): payload is ShellHydrationPayload {
+	return !!payload && typeof (payload as ShellHydrationPayload).routeId === 'string';
+}
+
+function isProbePayload(payload: FaceTheoryHydrationPayload | null): payload is FaceTheoryProbePayload {
+	return (
+		!!payload &&
+		typeof (payload as FaceTheoryProbePayload).timestamp === 'string' &&
+		typeof (payload as { routeId?: string }).routeId !== 'string'
+	);
+}
+
+const data = readFaceHydrationData<FaceTheoryHydrationPayload>();
+
+if (typeof window !== 'undefined') {
+	if (isShellPayload(data)) {
+		window.__FACETHEORY_SHELL__ = data;
+	} else if (isProbePayload(data)) {
+		window.__FACETHEORY_PROBE__ = data;
+	}
+
+	// Mount the existing host app into the SSR-emitted `<div id="app">`. The
+	// shell HTML contains no Svelte SSR'd content (M0.4 is shell-only); the
+	// client mount drives every page exactly as `src/main.ts` does for the
+	// legacy CSR entrypoint, so existing pages and `src/lib/router.ts` keep
+	// working unchanged. M0.6+ replaces this `mount` with `hydrate` when the
+	// shell primitives ship from greater-components.
+	const target = document.getElementById('app');
+	if (target) {
+		mount(App, { target });
+	}
 }
 
 export {};

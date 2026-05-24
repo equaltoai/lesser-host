@@ -2,11 +2,13 @@
  * FaceTheory server entry (host web/)
  *
  * Builds the host SSR FaceApp and exposes the Lambda Function URL streaming
- * handler. M0.3 lands one minimal probe FaceModule at `/_facetheory/probe`
- * proving the SSR + strict-no-inline-CSP + JSON-sidecar hydration path
- * end-to-end; M0.4 replaces the probe with real Svelte FaceModules ported
- * from the existing `src/pages/*` SPA routes via `createSvelteFace` +
- * `renderSvelte` (from `@theory-cloud/facetheory/svelte`).
+ * handler. M0.4 ports every existing host page onto its own FaceModule via
+ * the shell factory in `src/routes/_shell.ts`; the SSR Lambda emits a
+ * strict-no-inline-CSP HTML shell + external hydration sidecar, and the
+ * existing `src/App.svelte` (mounted by `src/client/face-client.ts`) keeps
+ * handling per-page routing and rendering after hydration. The M0.3 probe
+ * at `/_facetheory/probe` is retained as a per-request health signal that
+ * exercises the shell pipeline without claiming a user-facing route.
  *
  * CSP posture (preserves host's canonical webCsp byte-string):
  *   - Each FaceModule sets `csp: { inlineScripts: false, inlineStyles: false,
@@ -14,9 +16,14 @@
  *     no-inline, but does *not* attach a CSP header itself. CloudFront's
  *     response-headers policy continues to attach host's canonical webCsp
  *     and safeAppCsp byte-strings (planning trust-and-safety walk,
- *     docs/trust-and-safety-web-ui-rework-2026-05-24.md). FaceTheory's
- *     `buildStrictCspHeader()` is intentionally not invoked here so the
- *     CDN's CSP remains the single source of truth.
+ *     docs/trust-and-safety-web-ui-rework-2026-05-24.md).
+ *
+ * Browser-only-code isolation:
+ *   - This module imports zero browser-only modules. `src/App.svelte`,
+ *     `src/lib/router.ts`, `src/lib/session.ts` (which all reference
+ *     `window`/`document`/`sessionStorage` at module init) are imported
+ *     only from `src/client/face-client.ts` and `src/main.ts`, both of
+ *     which run in browser environments. SSR Lambda safety preserved.
  *
  * Manifest contract:
  *   - The client build (vite.config.ts `client` environment) emits a Vite
@@ -25,11 +32,10 @@
  *     `dist/server/face-app.mjs`, so the relative path is
  *     `../.vite/manifest.json`. CDK packaging (M0.12) co-locates the
  *     manifest with the Lambda bundle on the same relative layout.
- *   - If the manifest can't be loaded (e.g. ahead of CDK packaging), the
- *     probe degrades gracefully to literal HTML without asset tags rather
- *     than crashing on module init.
+ *   - If the manifest can't be loaded (e.g. ahead of CDK packaging), shells
+ *     degrade gracefully to empty `<head>` rather than crashing on init.
  *
- * Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M0.3
+ * Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M0.4
  * ========================================================================== */
 
 import { readFileSync } from 'node:fs';
@@ -46,20 +52,16 @@ import {
 	type ViteManifest,
 } from '@theory-cloud/facetheory';
 
-import type { FaceTheoryProbePayload } from '../client/face-client.ts';
+import { allRoutes, createShellFace } from '../routes/index';
+import type { FaceTheoryProbePayload } from '../client/face-client';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const CLIENT_ENTRY = 'src/client/face-client.ts';
+const HYDRATION_DATA_URL_BASE = '/_facetheory/data/';
 const PROBE_ROUTE = '/_facetheory/probe';
-const HYDRATION_DATA_URL = '/_facetheory/data/probe.json';
+const SHELL_TITLE = 'lesser.host';
 
-/**
- * Strict no-inline CSP validation policy. Tells FaceTheory to reject any
- * rendered HTML that would require `'unsafe-inline'` or raw head HTML; the
- * actual `content-security-policy` header is attached by CloudFront, not
- * here, so host's canonical webCsp byte-string remains the only CSP truth.
- */
 const STRICT_CSP_POLICY: FaceCspPolicy = Object.freeze({
 	inlineScripts: false,
 	inlineStyles: false,
@@ -75,12 +77,10 @@ function loadManifest(): ViteManifest {
 	try {
 		return JSON.parse(readFileSync(MANIFEST_PATH, 'utf8')) as ViteManifest;
 	} catch (err) {
-		// Render-time degrade rather than module-init crash. M0.12 ensures
-		// the manifest ships with the Lambda bundle in production.
 		console.warn(
 			'[face-app] client manifest not found at',
 			MANIFEST_PATH,
-			'— rendering probe without Vite asset tags',
+			'— rendering shells without Vite asset tags',
 			err instanceof Error ? err.message : String(err),
 		);
 		return {};
@@ -89,7 +89,7 @@ function loadManifest(): ViteManifest {
 
 const manifest = loadManifest();
 
-// ─── Probe FaceModule ─────────────────────────────────────────────────────────
+// ─── Probe FaceModule (M0.3 carryover; per-request health/SSR pipeline check) ─
 
 const probeFace: FaceModule = {
 	route: PROBE_ROUTE,
@@ -105,7 +105,7 @@ const probeFace: FaceModule = {
 			: { bootstrapModule: '', headTags: [] };
 		const hydration = hasManifestEntry
 			? externalHydrationForEntry(manifest, CLIENT_ENTRY, data, {
-					dataUrl: HYDRATION_DATA_URL,
+					dataUrl: `${HYDRATION_DATA_URL_BASE}probe.json`,
 				})
 			: undefined;
 
@@ -115,17 +115,27 @@ const probeFace: FaceModule = {
 			hydration,
 			html:
 				'<main data-facetheory-view>' +
-				'<h1>FaceTheory bootstrap probe</h1>' +
-				'<p>SSR + strict-no-inline-CSP + JSON-sidecar hydration ready.</p>' +
-				'<p>Real routes ported in M0.4.</p>' +
+				'<h1>FaceTheory probe</h1>' +
+				'<p>SSR + strict-no-inline-CSP + JSON-sidecar hydration OK.</p>' +
 				'</main>',
 		};
 	},
 };
 
+// ─── Route FaceModules (one per host page, all sharing the shell factory) ────
+
+const routeFaces: FaceModule[] = allRoutes.map((opts) =>
+	createShellFace(opts, {
+		manifest,
+		clientEntry: CLIENT_ENTRY,
+		hydrationDataUrlBase: HYDRATION_DATA_URL_BASE,
+		title: SHELL_TITLE,
+	}),
+);
+
 // ─── App + Lambda handler ─────────────────────────────────────────────────────
 
-export const app = createFaceApp({ faces: [probeFace] });
+export const app = createFaceApp({ faces: [probeFace, ...routeFaces] });
 
 /**
  * Lazy Lambda handler. `createLambdaUrlStreamingHandler` reaches for
