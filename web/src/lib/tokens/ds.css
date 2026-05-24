@@ -1,0 +1,364 @@
+/* ============================================================================
+ * Lesser Design System — Foundations (host)
+ *
+ * Tokens for color, type, spacing, radii, shadows, motion. Mirrors the design
+ * handoff at docs/design/web-ui-rework-2026-05-24/project/assets/tokens.css.
+ *
+ * The system has one canonical theme:
+ *
+ *   AGENT GENESIS  (every product surface)
+ *     Warm parchment background, amber primary, violet secondary,
+ *     glassmorphic panels, Manrope + Noto Serif. Applies at :root.
+ *
+ * The deep #9333ea Lesser purple survives in one role only — the literal
+ * `<` brand-mark glyph (favicon, app icon, auth screen logo). See
+ * --ds-lesser-* below.
+ *
+ * For migration / legacy reference, the original dark-themed auth surface
+ * is preserved as `.theme-lesser` at the bottom of this file. Do not use
+ * it for new work.
+ *
+ * The `--gr-*` bridge to greater-components tokens lives in the sibling
+ * file `gr-bridge.css`. Both files are surfaced through `index.ts`.
+ *
+ * Webfonts: Manrope, Noto Serif, Inter, JetBrains Mono are referenced by
+ * --ds-font-* family stacks. Loading is intentionally deferred to a later
+ * milestone — Google Fonts @import would violate host's strict single-origin
+ * CSP (`style-src 'self'`), so fonts must be self-hosted before consumer
+ * adoption. System fallbacks in each stack keep the scaffold usable until
+ * then. See Project 39 enumerated changes for the self-hosting follow-up.
+ * ========================================================================== */
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * AGENT GENESIS THEME  (default; applies at :root)
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+:root {
+
+  /* ─── Primary scale — warm amber/gold ─────────────────────────────────── */
+  --ds-primary-50:  #fff8ef;
+  --ds-primary-100: #ffe8bf;
+  --ds-primary-200: #ffd596;
+  --ds-primary-300: #f4bf6b;
+  --ds-primary-400: #e6a645;
+  --ds-primary-500: #cd8331;   /* base */
+  --ds-primary-600: #b56b24;
+  --ds-primary-700: #8f5018;
+  --ds-primary-800: #6b3810;
+  --ds-primary-900: #49220a;
+
+  /* ─── Secondary scale — soft violet ───────────────────────────────────── */
+  --ds-secondary-50:  #faf6ff;
+  --ds-secondary-100: #ece2ff;
+  --ds-secondary-200: #dac7ff;
+  --ds-secondary-300: #c3a7ff;
+  --ds-secondary-400: #aa84f2;
+  --ds-secondary-500: #8d64d1;   /* base */
+  --ds-secondary-600: #714ab0;
+  --ds-secondary-700: #57358b;
+  --ds-secondary-800: #402667;
+  --ds-secondary-900: #2b1847;
+
+  /* ─── Lesser purple (for auth surfaces; do not use in Agent contexts) ─── */
+  --ds-lesser-50:  #faf5ff;
+  --ds-lesser-100: #f3e8ff;
+  --ds-lesser-200: #e9d5ff;
+  --ds-lesser-300: #d8b4fe;
+  --ds-lesser-400: #c084fc;
+  --ds-lesser-500: #a855f7;
+  --ds-lesser-600: #9333ea;   /* the badge / wordmark mark color */
+  --ds-lesser-700: #7e22ce;
+  --ds-lesser-800: #6b21a8;
+  --ds-lesser-900: #581c87;
+
+  /* ─── Semantic status colors ──────────────────────────────────────────── */
+  --ds-success-50:  #f0fdf4;
+  --ds-success-100: #dcfce7;
+  --ds-success-300: #86efac;
+  --ds-success-500: #22c55e;
+  --ds-success-700: #15803d;
+  --ds-success-800: #166534;
+
+  --ds-warning-50:  #fffbeb;
+  --ds-warning-100: #fef3c7;
+  --ds-warning-300: #fcd34d;
+  --ds-warning-500: #f59e0b;
+  --ds-warning-700: #b45309;
+  --ds-warning-800: #92400e;
+
+  --ds-error-50:  #fef2f2;
+  --ds-error-100: #fee2e2;
+  --ds-error-300: #fca5a5;
+  --ds-error-500: #ef4444;
+  --ds-error-700: #b91c1c;
+  --ds-error-800: #991b1b;
+
+  --ds-info-500: #3b82f6;
+  --ds-info-700: #1d4ed8;
+
+  /* ─── Foreground (warm dark brown, not black) ─────────────────────────── */
+  --ds-fg-1:        #332116;                 /* primary text */
+  --ds-fg-2:        rgba(51, 33, 22, 0.78);  /* secondary text */
+  --ds-fg-3:        rgba(51, 33, 22, 0.58);  /* tertiary / eyebrow */
+  --ds-fg-disabled: rgba(51, 33, 22, 0.32);
+  --ds-fg-inverse:  #fffaf2;
+
+  /* ─── Background (cream / parchment, translucent panels) ──────────────── */
+  --ds-bg-base:      #f8f1e7;                /* page background */
+  --ds-bg-primary:   rgba(255, 252, 247, 0.92);
+  --ds-bg-secondary: rgba(247, 239, 231, 0.92);
+  --ds-bg-tertiary:  rgba(238, 229, 220, 0.88);
+  --ds-bg-surface:   rgba(255, 251, 245, 0.92);  /* card */
+  --ds-bg-raised:    rgba(255, 255, 255, 0.72);  /* nested chip / metric */
+  --ds-bg-glass:     rgba(255, 251, 245, 0.82);  /* the glassmorphic panel */
+  --ds-bg-overlay:   rgba(45, 25, 10, 0.45);
+
+  /* Ambient page background — the signature radial-glow gradient.
+   * Apply to body: `background: var(--ds-page-gradient);` */
+  --ds-page-gradient:
+    radial-gradient(circle at top right, rgba(141, 100, 209, 0.16), transparent 32rem),
+    radial-gradient(circle at top left,  rgba(230, 166, 69, 0.16),  transparent 28rem),
+    linear-gradient(180deg, #fdf7ef 0%, #f4eadf 100%);
+
+  /* ─── Borders (warm brown, low-opacity) ───────────────────────────────── */
+  --ds-border-subtle:  rgba(107, 56, 16, 0.10);
+  --ds-border-default: rgba(107, 56, 16, 0.16);
+  --ds-border-strong:  rgba(107, 56, 16, 0.28);
+  --ds-border-focus:   var(--ds-secondary-500);
+
+  /* ─── Action / interactive colors ─────────────────────────────────────── */
+  --ds-action-primary:        var(--ds-secondary-500);
+  --ds-action-primary-hover:  var(--ds-secondary-600);
+  --ds-action-primary-active: var(--ds-secondary-700);
+  --ds-action-link:           var(--ds-secondary-700);
+
+  /* The signature gradient button: violet → amber */
+  --ds-action-gradient: linear-gradient(135deg, var(--ds-secondary-500), var(--ds-primary-400));
+
+  /* ─── Typography ──────────────────────────────────────────────────────── *
+   * Self-host fonts before any consumer route adopts these tokens (see file
+   * header). Stacks fall through to system fonts until the self-hosted
+   * sources land.
+   * ────────────────────────────────────────────────────────────────────── */
+  --ds-font-sans:    'Manrope', 'Avenir Next', 'Segoe UI', system-ui, sans-serif;
+  --ds-font-serif:   'Noto Serif', 'Iowan Old Style', 'Palatino Linotype', Georgia, serif;
+  --ds-font-heading: var(--ds-font-serif);    /* headings are serif */
+  --ds-font-mono:    'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  /* Type scale (rem; 1rem = 16px) */
+  --ds-text-xs:   0.75rem;     /* 12 */
+  --ds-text-sm:   0.875rem;    /* 14 */
+  --ds-text-base: 1rem;        /* 16 */
+  --ds-text-lg:   1.125rem;    /* 18 */
+  --ds-text-xl:   1.25rem;     /* 20 */
+  --ds-text-2xl:  1.5rem;      /* 24 */
+  --ds-text-3xl:  1.875rem;    /* 30 */
+  --ds-text-4xl:  2.25rem;     /* 36 */
+  --ds-text-5xl:  3rem;        /* 48 */
+  --ds-text-hero: clamp(2.3rem, 4vw, 4rem);   /* responsive page-hero */
+
+  --ds-weight-normal:    400;
+  --ds-weight-medium:    500;
+  --ds-weight-semibold:  600;
+  --ds-weight-bold:      700;
+
+  --ds-leading-tight:    1.1;
+  --ds-leading-snug:     1.3;
+  --ds-leading-normal:   1.5;
+  --ds-leading-relaxed:  1.65;
+
+  /* The eyebrow treatment — used everywhere above panel titles */
+  --ds-eyebrow-size:    0.78rem;
+  --ds-eyebrow-weight:  700;
+  --ds-eyebrow-track:   0.12em;
+
+  /* ─── Spacing scale (8pt grid; matches greater-components scale) ──────── */
+  --ds-space-0:  0;
+  --ds-space-1:  0.25rem;
+  --ds-space-2:  0.5rem;
+  --ds-space-3:  0.75rem;
+  --ds-space-4:  1rem;
+  --ds-space-5:  1.25rem;
+  --ds-space-6:  1.5rem;
+  --ds-space-8:  2rem;
+  --ds-space-10: 2.5rem;
+  --ds-space-12: 3rem;
+  --ds-space-16: 4rem;
+  --ds-space-20: 5rem;
+
+  /* ─── Radii (generous; this is a rounded system) ──────────────────────── */
+  --ds-radius-none:  0;
+  --ds-radius-sm:    0.375rem;     /* fields when compact */
+  --ds-radius-md:    0.75rem;      /* nested chips, sub-cards */
+  --ds-radius-lg:    1rem;         /* fields, items, sub-panels */
+  --ds-radius-xl:    1.25rem;      /* panels */
+  --ds-radius-2xl:   1.5rem;       /* feature panels */
+  --ds-radius-3xl:   1.75rem;      /* hero panels */
+  --ds-radius-pill:  999px;        /* all buttons, badges, chips */
+
+  /* ─── Shadows (warm-tinted, soft) ─────────────────────────────────────── */
+  --ds-shadow-xs:   0 1px 2px 0 rgba(73, 34, 10, 0.04);
+  --ds-shadow-sm:   0 4px 10px rgba(73, 34, 10, 0.05);
+  --ds-shadow-md:   0 10px 24px rgba(73, 34, 10, 0.08);
+  --ds-shadow-lg:   0 18px 40px rgba(73, 34, 10, 0.10);   /* panels */
+  --ds-shadow-xl:   0 24px 50px rgba(73, 34, 10, 0.14);
+  --ds-shadow-button-primary: 0 18px 40px rgba(148, 74, 0, 0.18);
+  --ds-shadow-button-hover:   0 10px 24px rgba(73, 34, 10, 0.10);
+
+  /* ─── Motion ──────────────────────────────────────────────────────────── */
+  --ds-duration-fast:  140ms;
+  --ds-duration-base:  250ms;
+  --ds-duration-slow:  400ms;
+  --ds-ease-standard:  cubic-bezier(0.4, 0, 0.2, 1);
+  --ds-ease-out:       cubic-bezier(0, 0, 0.2, 1);
+  --ds-ease-in:        cubic-bezier(0.4, 0, 1, 1);
+
+  /* ─── Blur (for glass surfaces) ───────────────────────────────────────── */
+  --ds-blur-glass: 20px;
+  --ds-blur-nav:   24px;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * LEGACY: `.theme-lesser`  — the original dark navy + saturated purple
+ * palette the Lesser auth UI shipped with. Kept here for migration
+ * reference; the live auth UI has been moved to Agent Genesis.
+ * Do not use for new work. The `--gr-*` overrides for this theme live in
+ * `gr-bridge.css`.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+.theme-lesser {
+  --ds-font-sans:    'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --ds-font-heading: var(--ds-font-sans);
+  --ds-font-mono:    'JetBrains Mono', 'Fira Code', monospace;
+
+  /* Saturated purple replaces secondary in this theme */
+  --ds-action-primary:        var(--ds-lesser-600);
+  --ds-action-primary-hover:  var(--ds-lesser-700);
+  --ds-action-primary-active: var(--ds-lesser-800);
+  --ds-action-link:           var(--ds-lesser-500);
+
+  /* Dark foreground/background */
+  --ds-bg-base:      #0f0f23;
+  --ds-bg-primary:   #0f0f23;
+  --ds-bg-secondary: #1a1a2e;
+  --ds-bg-surface:   #16213e;   /* the auth card */
+  --ds-bg-raised:    #1d2748;
+  --ds-bg-glass:     rgba(22, 33, 62, 0.88);
+  --ds-bg-overlay:   rgba(0, 0, 0, 0.75);
+
+  --ds-fg-1:         #f7fafc;
+  --ds-fg-2:         #a0aec0;
+  --ds-fg-3:         #718096;
+  --ds-fg-disabled:  #4a5568;
+  --ds-fg-inverse:   #1a1a2e;
+
+  --ds-border-subtle:  rgba(255, 255, 255, 0.06);
+  --ds-border-default: #2d3748;
+  --ds-border-strong:  #4a5568;
+
+  /* Dark-mode shadows are darker; the auth card uses a deep drop. */
+  --ds-shadow-lg: 0 20px 60px rgba(0, 0, 0, 0.30);
+
+  /* Linear gradient backdrop for the auth landing */
+  --ds-page-gradient: linear-gradient(135deg, #0f0f23 0%, #1a1a2e 100%);
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * SEMANTIC TYPE PRIMITIVES — drop-in tags
+ * Reset margins (consumers wrap with their own spacing) and set the system
+ * scale. Apply to a root element with `.ds-prose` or use as `.ds-h1` etc.
+ * Style-bearing classes only; no `:global()` to keep these usable as plain
+ * CSS (closes the 2026-05-16 LightningCSS feedback locally).
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+.ds-prose,
+.ds-prose * {
+  margin: 0;
+}
+
+/* Headings — serif in Agent Genesis, sans in Lesser */
+.ds-h1 {
+  font-family: var(--ds-font-heading);
+  font-size: var(--ds-text-hero);
+  line-height: 0.98;
+  font-weight: var(--ds-weight-bold);
+  color: var(--ds-fg-1);
+  letter-spacing: -0.01em;
+}
+
+.ds-h2 {
+  font-family: var(--ds-font-heading);
+  font-size: var(--ds-text-2xl);
+  line-height: var(--ds-leading-snug);
+  font-weight: var(--ds-weight-bold);
+  color: var(--ds-fg-1);
+}
+
+.ds-h3 {
+  font-family: var(--ds-font-heading);
+  font-size: var(--ds-text-xl);
+  line-height: var(--ds-leading-snug);
+  font-weight: var(--ds-weight-bold);
+  color: var(--ds-fg-1);
+}
+
+.ds-h4 {
+  font-family: var(--ds-font-sans);
+  font-size: var(--ds-text-base);
+  font-weight: var(--ds-weight-semibold);
+  color: var(--ds-fg-1);
+}
+
+/* Eyebrow — uppercase, tracked, tertiary; sits above every panel title */
+.ds-eyebrow {
+  font-family: var(--ds-font-sans);
+  font-size: var(--ds-eyebrow-size);
+  font-weight: var(--ds-eyebrow-weight);
+  letter-spacing: var(--ds-eyebrow-track);
+  text-transform: uppercase;
+  color: var(--ds-fg-3);
+}
+
+/* Body */
+.ds-p {
+  font-family: var(--ds-font-sans);
+  font-size: var(--ds-text-base);
+  line-height: var(--ds-leading-relaxed);
+  color: var(--ds-fg-2);
+}
+
+.ds-lead {
+  font-size: var(--ds-text-lg);
+  line-height: var(--ds-leading-relaxed);
+  color: var(--ds-fg-2);
+}
+
+.ds-small {
+  font-size: var(--ds-text-sm);
+  color: var(--ds-fg-2);
+}
+
+/* Code / mono */
+.ds-code {
+  font-family: var(--ds-font-mono);
+  font-size: 0.92em;
+  padding: 0.12em 0.4em;
+  border-radius: var(--ds-radius-sm);
+  background: var(--ds-bg-raised);
+  color: var(--ds-fg-1);
+  border: 1px solid var(--ds-border-subtle);
+}
+
+/* Links */
+.ds-link {
+  color: var(--ds-action-link);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color var(--ds-duration-fast) var(--ds-ease-standard);
+}
+.ds-link:hover {
+  border-bottom-color: currentColor;
+}

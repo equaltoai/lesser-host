@@ -1,0 +1,96 @@
+/* ============================================================================
+ * Lesser DS → greater-components token bridge
+ *
+ * The host design system writes `--ds-*` tokens. greater-components reads
+ * `--gr-*` tokens. This file is the single bridge layer that maps DS to GR
+ * so components from greater-components inherit the Agent Genesis identity
+ * automatically.
+ *
+ * Keep this file in lockstep with `ds.css` — every consumer GR token must
+ * either resolve to a DS token here or fall through to the GR default in
+ * `src/lib/greater/tokens/`. Do not duplicate DS tokens in this file;
+ * import `ds.css` first (handled by `index.ts`).
+ *
+ * The legacy `.theme-lesser` overrides at the bottom of this file
+ * override only the `--gr-*` mapping (the `--ds-*` overrides live in
+ * `ds.css`). No `:global()`; plain CSS only.
+ * ========================================================================== */
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Default bridge — DS → GR (Agent Genesis)
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+:root {
+  /* Color: primary scale */
+  --gr-color-primary-50:  var(--ds-primary-50);
+  --gr-color-primary-100: var(--ds-primary-100);
+  --gr-color-primary-200: var(--ds-primary-200);
+  --gr-color-primary-300: var(--ds-primary-300);
+  --gr-color-primary-400: var(--ds-primary-400);
+  --gr-color-primary-500: var(--ds-primary-500);
+  --gr-color-primary-600: var(--ds-primary-600);
+  --gr-color-primary-700: var(--ds-primary-700);
+  --gr-color-primary-800: var(--ds-primary-800);
+  --gr-color-primary-900: var(--ds-primary-900);
+
+  /* Color: secondary scale */
+  --gr-color-secondary-50:  var(--ds-secondary-50);
+  --gr-color-secondary-100: var(--ds-secondary-100);
+  --gr-color-secondary-200: var(--ds-secondary-200);
+  --gr-color-secondary-300: var(--ds-secondary-300);
+  --gr-color-secondary-400: var(--ds-secondary-400);
+  --gr-color-secondary-500: var(--ds-secondary-500);
+  --gr-color-secondary-600: var(--ds-secondary-600);
+  --gr-color-secondary-700: var(--ds-secondary-700);
+  --gr-color-secondary-800: var(--ds-secondary-800);
+  --gr-color-secondary-900: var(--ds-secondary-900);
+
+  /* Typography: family stacks */
+  --gr-typography-fontFamily-sans:    var(--ds-font-sans);
+  --gr-typography-fontFamily-heading: var(--ds-font-heading);
+  --gr-typography-fontFamily-serif:   var(--ds-font-serif);
+  --gr-typography-fontFamily-mono:    var(--ds-font-mono);
+
+  /* Semantic: background */
+  --gr-semantic-background-base:      var(--ds-bg-base);
+  --gr-semantic-background-primary:   var(--ds-bg-primary);
+  --gr-semantic-background-secondary: var(--ds-bg-secondary);
+  --gr-semantic-background-tertiary:  var(--ds-bg-tertiary);
+  --gr-semantic-background-surface:   var(--ds-bg-surface);
+
+  /* Semantic: border */
+  --gr-semantic-border-subtle:  var(--ds-border-subtle);
+  --gr-semantic-border-default: var(--ds-border-default);
+
+  /* Semantic: foreground */
+  --gr-semantic-foreground-primary:   var(--ds-fg-1);
+  --gr-semantic-foreground-secondary: var(--ds-fg-2);
+  --gr-semantic-foreground-tertiary:  var(--ds-fg-3);
+
+  /* Semantic: action / interactive */
+  --gr-semantic-action-primary-default: var(--ds-action-primary);
+  --gr-semantic-action-primary-hover:   var(--ds-action-primary-hover);
+  --gr-semantic-action-primary-active:  var(--ds-action-primary-active);
+  --gr-semantic-focus-ring:             var(--ds-border-focus);
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Legacy `.theme-lesser` override — primary scale switches to Lesser purple
+ * The DS-side legacy overrides (foreground/background/etc.) live in
+ * `ds.css`; only the GR primary-scale remap belongs here.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+.theme-lesser {
+  --gr-color-primary-50:  var(--ds-lesser-50);
+  --gr-color-primary-100: var(--ds-lesser-100);
+  --gr-color-primary-200: var(--ds-lesser-200);
+  --gr-color-primary-300: var(--ds-lesser-300);
+  --gr-color-primary-400: var(--ds-lesser-400);
+  --gr-color-primary-500: var(--ds-lesser-500);
+  --gr-color-primary-600: var(--ds-lesser-600);
+  --gr-color-primary-700: var(--ds-lesser-700);
+  --gr-color-primary-800: var(--ds-lesser-800);
+  --gr-color-primary-900: var(--ds-lesser-900);
+}

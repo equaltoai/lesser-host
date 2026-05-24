@@ -41,6 +41,7 @@
     "@graphql-typed-document-node/core": "^3.2.0",
     "@noble/hashes": "^2.0.1",
     "@safe-global/safe-apps-sdk": "^9.1.0",
+    "@theory-cloud/facetheory": "https://github.com/theory-cloud/FaceTheory/releases/download/v3.3.0/theory-cloud-facetheory-3.3.0.tgz",
     "focus-trap": "^8.0.0",
     "graphql": "^16.13.1",
     "graphql-ws": "^6.0.7",
