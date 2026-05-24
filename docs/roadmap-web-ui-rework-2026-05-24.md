@@ -38,8 +38,8 @@ UI / UX rework + framework adoption + provisioning evolution + observability add
 | Framework | Required | Signal |
 | --- | --- | --- |
 | AppTheory v1.7.0 | **Yes** via Aron. Signal C from framework-feedback walk. | Mixed-auth CloudFront composition under `AppTheorySsrSite`: host carries workaround (hand-wired `addBehavior` for bearer-auth Lambda origins); steward shapes the supported pattern over 1–2 future releases. Additive verifier SEC-8 locks the expected shape. |
-| TableTheory v1.8.3 | **No** for M0–M2. **Conditional** for M3 cost-telemetry firehose if `CostTelemetry` model patterns reveal awkwardness; would route through `coordinate-framework-feedback` then. | FaceTheoryIsrMetaStore is available but unused (ISR deferred per Signal B). |
-| FaceTheory v3.3.0 | **Yes** via Aron. Signals A, B, C from framework-feedback walk. | Signal A (Stitch shell vs Greater shell ownership) blocks M0.6–M0.10 until resolved; Signal B (tenant-partition-safe ISR canonical pattern) defers ISR adoption; Signal C (mixed-auth composition) tracked via Signal C above. |
+| TableTheory v1.8.3 | **No** for M0–M2. **Conditional** for M3 cost-telemetry firehose if `CostTelemetry` model patterns reveal awkwardness; would route through `coordinate-framework-feedback` then. | FaceTheoryIsrMetaStore is available but unused (ISR deferred — see Signal B recategorization). |
+| FaceTheory v3.3.0 | **Yes** via Aron. Signals A and C from framework-feedback walk (Signal B withdrawn 2026-05-24 per Arch review; recategorized as host trust-surface conservatism note). | Signal A (Stitch shell vs Greater shell ownership) blocks M0.6–M0.10 until resolved; Signal C (mixed-auth composition) tracked via Signal C above. ISR on trust surfaces deferred to a post-launch separate scope per the conservatism note. |
 
 ## External-vendor coordination
 

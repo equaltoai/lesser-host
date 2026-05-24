@@ -134,16 +134,17 @@ The public attestation inspector lives in `web/src/pages/` (re-skinned per the C
 
 Per the scoped-need M3, the public attestation inspector is re-skinned per the design (Anthropic Claude Design handoff under `docs/design/web-ui-rework-2026-05-24/`). The re-skin is presentational only — same data flow, same endpoints, same authentication model (public read, instance-auth write).
 
-The framework-feedback walk's Signal B flagged that FaceTheory v3.3.0's marketing surface advertises "tenant-partition-safe ISR" but the canonical pattern for per-tenant ISR partition safety is **not surfaced** in the public theorycloud knowledge base for tenant-scoped routes like `/attestations/{id}` (where attestation issuer is tenant-scoped) or `/.well-known/jwks.json` (which is host-scoped, not tenant-scoped, but still needs partition-safe invalidation on host-key-set rotation).
+The framework-feedback walk's Signal B initially flagged a documentation gap on tenant-partition-safe ISR. **That signal was withdrawn 2026-05-24 per Arch's PR #380 review**: FaceTheory v3.3.0 primary docs/code do provide `tenantKey` / custom `cacheKey` guidance plus fail-closed handling for `x-tenant-id` / `x-facetheory-tenant` headers. The framework support is present for tenant-scoped routes like `/attestations/{id}` (where attestation issuer is tenant-scoped) or `/.well-known/jwks.json` (which is host-scoped but still needs partition-safe invalidation on host-key-set rotation).
 
 ### ISR adoption decision
 
-**Defer ISR adoption on tenant-scoped trust-API surfaces (`/attestations/{id}`, `/.well-known/jwks.json`) for this rework.** Reasons:
+**Defer ISR adoption on tenant-scoped trust-API surfaces (`/attestations/{id}`, `/.well-known/jwks.json`) for this rework.** The framework support exists (`tenantKey` / custom `cacheKey` / fail-closed on `x-tenant-id` / `x-facetheory-tenant`); the deferral is **host-specific trust-surface conservatism**, not a framework limitation. Reasons:
 
-1. The canonical tenant-partition-safe ISR pattern is not documented in the queried theorycloud knowledge base (Signal B). Adopting ISR without the canonical pattern risks the worst trust-and-safety failure mode: serving one tenant's attestation under another tenant's URL scope, or serving a stale attestation after a key rotation.
-2. The cost of staying client-rendered for the attestation inspector is small. Third-party readers parse attestations programmatically (not via the inspector UI); the inspector is for humans inspecting attestations interactively. Cold-start latency on the inspector page is acceptable.
-3. `/.well-known/jwks.json` is already served by the trust-api Lambda with bounded cache headers; reading the host's published public key set is cheap and already cacheable at the CloudFront layer. ISR would not add value here.
-4. If ISR's canonical pattern is documented in a future FaceTheory release, ISR adoption for the attestation inspector is a **separate follow-up scope** governed by `audit-trust-and-safety` rerun + `maintain-governance-rubric` walk for the per-tenant cache-invalidation verifier.
+1. **Trust-surface elevated stakes.** Any cache-layer regression (mis-keyed entry, stale-after-rotation entry, cross-tenant serve) on `/attestations/*` or `/.well-known/jwks.json` would materially compromise the public trust posture before host's evidence pipeline could surface the regression. Trust surfaces warrant a more cautious adoption path than the rest of host's static SPA.
+2. **Rotation interaction is host-specific.** Host rotates instance API key hashes, attestation-signing keys (via KMS), and soul-registry mint-signer keys at independent cadences. Each rotation must invalidate the relevant ISR entries without leaving stale per-tenant entries or accidentally invalidating cross-tenant cache. The framework primitives support this, but the host-side rotation→invalidation wiring is bespoke and warrants extended soak in a non-trust-critical surface first.
+3. **Verifier coverage gap.** Host does not yet have a verifier asserting "no ISR cache entry serves under another tenant's URL or scope" or "every key rotation invalidates the matching ISR partition." Building such verifiers is in scope for a future rubric evolution; rushing ISR adoption ahead of them weakens the change-lock posture established by SEC-9 + SEC-10.
+4. **Cost of staying client-rendered is small.** Third-party readers parse attestations programmatically (not via the inspector UI); the inspector is for humans inspecting attestations interactively. Cold-start latency on the inspector page is acceptable. `/.well-known/jwks.json` is already served by the trust-api Lambda with bounded cache headers; reading the host's published public key set is cheap and already cacheable at the CloudFront layer.
+5. **Future ISR adoption is a separate scope.** Pilot ISR on a low-stakes surface first; build the per-tenant cache-isolation + rotation→invalidation verifiers; then scope ISR-on-trust-surfaces as a separate rework with its own audit-trust-and-safety + maintain-governance-rubric walks. See the framework-feedback walk's Signal B (recategorized) for the full posture rationale.
 
 The attestation inspector re-skin is **strictly visual** for this rework: same fetch pattern (`fetch('/attestations/{id}')`), same JWS decoding, same key-id rendering. No data-layer change.
 
@@ -156,7 +157,7 @@ The attestation inspector re-skin is **strictly visual** for this rework: same f
 
 ### Refusal cases triggered (none yet, but explicit)
 
-- Any proposal to ISR-cache `/attestations/{id}` without a documented per-tenant partition pattern → **refuse**; defer until Signal B resolves.
+- Any proposal to ISR-cache `/attestations/{id}` before the per-tenant cache-isolation + rotation→invalidation verifiers exist → **refuse**; defer to a separate post-launch ISR-pilot scope per the conservatism note above.
 - Any proposal to client-side-cache attestation content beyond the browser HTTP cache → **refuse**; staleness risk after key rotation.
 - Any proposal to surface internal correlation IDs in the inspector for "debug" purposes → **refuse**; the inspector is a public-facing trust surface.
 

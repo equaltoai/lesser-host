@@ -319,7 +319,7 @@ Per the skill's failure-mode rules:
 
 The four walks land here as a single consolidated governance event:
 
-1. **Framework-feedback walk** (5579350): four signals raised; A and D require Greater/Theory-Cloud steward coordination; B drives an ISR deferral; C drives SEC-8.
+1. **Framework-feedback walk** (5579350): four signals raised; A and D require Greater/Theory-Cloud steward coordination; B was withdrawn 2026-05-24 per Arch's PR #380 review (framework support for tenant-partition-safe ISR confirmed; recategorized as host trust-surface conservatism note documenting the ISR deferral); C drives SEC-8.
 2. **Trust-and-safety walk** (24dcd86): CSP shape change is delivery-path only (contract preserved); OAC posture under AppTheorySsrSite documented; ISR deferred; auth + attestation signing preservation enforced. Drives SEC-5, SEC-6, SEC-7, SEC-8, SEC-9.
 3. **Provisioning walk** (e1aa36a): three of four design-proposed "new" backend concepts already exist; wire-mcp is entirely host-internal; the actual new work is five additive read/aggregation endpoints + one operator-side write endpoint + UI-derived labeling. Drives SEC-10, SEC-11, SEC-12, CON-4, MAI-5.
 4. **This governance walk**: ten additive verifiers consolidated, threat-model + controls-matrix entries proposed, pack.json bump plan staged per-milestone.

@@ -21,7 +21,7 @@ The May 16 markdown-sanitizer signal (Greater/FaceTheory fail-closed markdown re
 | Signal | Owner path | Routing status |
 | --- | --- | --- |
 | Signal A — Stitch shell vs Greater-components shell-primitive boundary | Greater Components steward + FaceTheory steward (joint) via Aron | Prepared below; needs cross-team product decision (Greater + Theory Cloud). |
-| Signal B — Tenant-partition-safe ISR canonical pattern | FaceTheory steward via Aron | Prepared below; doc gap, not code gap. |
+| Signal B — Tenant-partition-safe ISR canonical pattern | ~~FaceTheory steward via Aron~~ | **Withdrawn 2026-05-24** per Arch review on PR #380: FaceTheory v3.3.0 docs/code do include `tenantKey` / custom `cacheKey` + fail-closed on `x-tenant-id` / `x-facetheory-tenant`. Recategorized as host-side trust-surface conservatism note. |
 | Signal C — AppTheory HTTP + FaceTheory SSR + greater-components SPA composition under a single CloudFront distribution | AppTheory steward + FaceTheory steward (joint) via Aron | Prepared below; adoption-guidance gap. |
 | Signal D — Greater-components additive components for hosted-platform UIs | Greater Components steward via Aron | Prepared below; additive request list. |
 
@@ -119,83 +119,50 @@ Pre-adoption. Planned workaround until the boundary is resolved: host would eith
 
 Greater Components steward + FaceTheory steward jointly designate ownership of hosted-platform shell primitives (Shell, Sidebar, Topbar, Panel, StatCard, SummaryStrip). Aron's preference for "greater-components as much as possible" is recorded as input. If Greater owns it, Signal D's additive component requests are accepted. If FaceTheory Stitch owns it, host adopts Stitch and greater-components remains the content + iconography + adapters + headless-behaviors layer. Either resolution unblocks host's M0.
 
-## Framework-feedback signal B: Tenant-partition-safe ISR canonical pattern documentation
+## Signal B (recategorized): Tenant-partition-safe ISR — host-side trust-surface conservatism note
+
+> **Update following Arch's 2026-05-24 review on PR #380**: Arch verified that FaceTheory v3.3.0 primary docs/code **do** include the canonical tenant-partition-safe ISR primitives: `tenantKey` / custom `cacheKey` guidance plus fail-closed handling for `x-tenant-id` / `x-facetheory-tenant` headers. The original Signal B drafting (that the canonical pattern wasn't surfaced) reflected an incomplete KB query in this walk, not a genuine framework gap. Signal B is therefore **withdrawn as a framework-feedback signal** and recorded here as a **host-side trust-surface conservatism note** explaining the ISR deferral decision.
 
 ### Target framework
 
-FaceTheory v3.3.0 blocking ISR.
+FaceTheory v3.3.0 blocking ISR (framework support is present; this section captures the host posture decision).
 
 ### Framework version in use
 
 FaceTheory v3.3.0 (targeted for adoption).
 
-### The concern (under host's constraints)
+### Framework support confirmed
 
-FaceTheory v3.3.0's release marketing surfaces "tenant partition safety that fails closed when tenant headers appear without explicit handling" as a host-aligned feature. The FaceTheory documentation queried via the `theorycloud` knowledge base exposes:
+FaceTheory v3.3.0 provides, per the primary docs and code:
 
-- Blocking ISR storage (S3HtmlStore + DynamoDB metadata + LeaseManager).
-- TableTheory `FaceTheoryIsrMetaStore` helper.
-- ISR idempotency patterns (lease + request-scoped idempotency record).
-- ISR incident checks (stale, wait-hit, regeneration timing).
-- ISR transaction recipes (multi-language).
+- `tenantKey` / custom `cacheKey` for per-tenant ISR partitioning.
+- Fail-closed handling for `x-tenant-id` / `x-facetheory-tenant` request headers (rejecting requests that imply tenant scoping a route did not opt into).
+- The blocking-ISR storage primitives previously enumerated (S3HtmlStore + DynamoDB metadata + LeaseManager + TableTheory `FaceTheoryIsrMetaStore` helper + idempotency / incident checks / multi-language transaction recipes).
 
-What is **not surfaced** in the queried knowledge base is the canonical pattern host needs to safely apply ISR to per-tenant public surfaces (specifically `/.well-known/jwks.json` per tenant or `/attestations/{id}` where attestation issuer is tenant-scoped). Host's posture is that ISR-cached responses must:
+Host could, mechanically, adopt ISR on `/attestations/*` and `/.well-known/jwks.json` using these primitives.
 
-1. Never serve one tenant's content to another tenant's URL or scope.
-2. Fail closed if a tenant header appears on a route the FaceModule didn't explicitly partition by.
-3. Invalidate per-tenant on key rotation (host rotates instance API key hashes, attestation signing keys, soul-registry mint-signer keys) without inadvertently invalidating cross-tenant cache or leaving stale per-tenant entries.
+### Host's posture: defer ISR adoption on tenant-scoped trust surfaces for this rework
 
-Host cannot adopt ISR on `/attestations/*` confidently without the canonical pattern.
+The deferral is **host-specific trust-surface conservatism**, not a framework limitation:
 
-### The idiomatic code host would write if the framework documented this cleanly
+1. **Trust-surface elevated stakes.** `/attestations/*` and `/.well-known/jwks.json` are the public surfaces third parties rely on to verify managed-instance trust claims. Any cache-layer regression (mis-keyed entry, stale-after-rotation entry, cross-tenant serve) on these surfaces would materially compromise trust posture before host's evidence pipeline could surface the regression.
+2. **Rotation interaction is host-specific.** Host rotates instance API key hashes, attestation-signing keys (via KMS), and soul-registry mint-signer keys at independent cadences. Each rotation must invalidate the relevant ISR entries without leaving stale per-tenant entries or accidentally invalidating cross-tenant cache. The framework primitives support this, but the host-side rotation→invalidation wiring is bespoke and warrants extended soak in a non-trust-critical surface first.
+3. **Verifier coverage gap.** Host does not yet have a CSI-style verifier asserting "no ISR cache entry serves under another tenant's URL or scope" or "every key rotation invalidates the matching ISR partition." Building such a verifier is in scope for a future rubric evolution; rushing ISR adoption ahead of the verifier weakens the change-lock posture established by SEC-9 + SEC-10.
+4. **Cost of deferral is low.** Public attestation reads stay client-rendered with same-origin API call (already strict-CSP-compliant; no SEO or cold-start regression beyond status quo).
 
-```ts
-// Per-tenant ISR partition
-import { createFaceApp, isrPartition } from '@theory-cloud/facetheory';
+### Future ISR adoption path
 
-export const attestationsFace: FaceModule = {
-  route: '/attestations/:id',
-  mode: 'isr',
-  partition: isrPartition.byHeader('x-tenant-slug', { failClosed: true }),
-  // partition.cacheKey = `${slug}:${params.id}`; invalidations honor the slug; cross-tenant requests fail closed.
-};
-```
+Treat ISR-on-trust-surfaces as a **post-launch separate scope-need**:
 
-And a documented invalidation pattern:
+1. Pilot ISR adoption on a low-stakes surface first (e.g., a content-style page that doesn't touch trust claims).
+2. Build the per-tenant cache-isolation verifier + the rotation→invalidation wiring verifier as part of that pilot.
+3. Once those verifiers are green in lab + live, scope ISR adoption on `/attestations/*` / `/.well-known/jwks.json` as a separate rework, with its own audit-trust-and-safety walk + maintain-governance-rubric walk.
 
-```ts
-// On key rotation for tenant `slug`, invalidate all ISR entries scoped to slug.
-import { invalidateIsrPartition } from '@theory-cloud/facetheory/cdk';
-await invalidateIsrPartition({ partition: { header: 'x-tenant-slug', value: slug } });
-```
+### Status
 
-### The current workaround in host (or "blocked")
-
-Pre-adoption. If the canonical pattern is missing or insufficient, host's posture per the scoped-need is to **not adopt ISR on tenant-scoped surfaces** — keep `/attestations/*` client-rendered for v1, defer ISR to a follow-up scope when the docs / pattern are clearer.
-
-### Cost of the workaround
-
-- Code complexity: deferring ISR is the smaller scope; the workaround is "skip ISR for tenant-scoped routes." Acceptable.
-- Test burden: minimal; the deferred work waits.
-- Performance impact: public attestation reads stay client-rendered with same-origin API call. SEO and cold-start UX lower than ISR would deliver.
-- Maintenance drag: moderate; the rework will need a follow-up to add ISR if the pattern materializes.
-- Governance-rubric impact: none.
-
-### Scope of the gap
-
-- Specific to host's constraints: multi-tenant SaaS managed-platform with per-tenant trust signing keys.
-- Likely broader: yes; any FaceTheory adopter with tenant-isolated public caches needs this.
-- Other known consumers affected: unknown from host's scope.
-
-### Host's workaround posture
-
-- Continue workaround while framework evolves: yes — defer ISR adoption on tenant-scoped routes.
-- Workaround is temporary / awaits framework: yes.
-- Governance-rubric allows the workaround: yes; no isolation regression.
-
-### Proposed next step
-
-FaceTheory steward exposes the canonical tenant-partition-safe ISR pattern (route declaration + invalidation flow + tenant-header fail-closed handling) in the public KB. Host's `audit-trust-and-safety` walk (next specialist after this one) will note the deferral if the doc still isn't surfaced; M3 may revisit if it lands during the rework window.
+- Framework feedback to FaceTheory steward: **none required**. Framework support is present; no upstream signal.
+- Host posture: deferral recorded; revisit per the "Future ISR adoption path" above.
+- Trust-and-safety walk (commit `24dcd86`): the ISR-deferral verdict is preserved; the rationale is reframed to cite this conservatism note rather than a framework gap.
 
 ## Framework-feedback signal C: AppTheory HTTP + FaceTheory SSR + greater-components SPA composition under a single CloudFront distribution
 
@@ -405,7 +372,7 @@ Components accepted into Greater are pulled via `greater add` on Greater release
 
 - **Signal A (Stitch vs Greater shell) blocks Signal D (additive components)**: until the shell ownership is designated, the additive Greater request list cannot be finalized. If Stitch owns the shell, the Greater request list is the hosted-platform-specific subset listed in Signal D. If Greater owns the shell, the request list expands to include the shell primitives too.
 - **Signal C (CloudFront composition) shapes the `audit-trust-and-safety` walk**: the CSP-shape-change, OAC-form, and observability decisions are inputs to the trust-and-safety walk that runs next.
-- **Signal B (tenant-partition-safe ISR) gates the `audit-trust-and-safety` ISR decision** for `/attestations/*`: if the canonical pattern is not surfaced, the walk will defer ISR adoption.
+- **Signal B (recategorized) records the host-side ISR deferral rationale** for `/attestations/*` and `/.well-known/jwks.json`: framework support is present (per Arch's 2026-05-24 correction), but host's strict-CSP + per-tenant rotation + verifier-coverage posture warrants deferral until a separate post-launch ISR-pilot scope can build the per-tenant cache-isolation + rotation→invalidation verifiers first.
 - **None of the signals weaken the governance rubric** by themselves; the additive verifiers tracking the workarounds are consolidated in the `maintain-governance-rubric` walk that runs after the other three.
 
 ## Outbound coordination record
@@ -413,7 +380,7 @@ Components accepted into Greater are pulled via `greater add` on Greater release
 To be populated when the signal is sent to the framework stewards:
 
 - Greater Components steward (`greater.equaltoai@theorymcp.ai` per the 2026-05-16 record): _signals A and D pending Aron coordination_.
-- FaceTheory steward: _signals A, B, and C pending Aron coordination; no contactable Theory Cloud framework mailbox is exposed to this host endpoint_.
+- FaceTheory steward: _signals A and C pending Aron coordination; no contactable Theory Cloud framework mailbox is exposed to this host endpoint. Signal B was withdrawn 2026-05-24 per Arch review (framework support confirmed; recategorized as host posture note)._
 - AppTheory steward: _signal C pending Aron coordination_.
 
 Per the 2026-05-16 outbound discipline, signals routed without a contactable framework mailbox are routed through this PR, Arch review (n/a; not an advisor-dispatched scope), and Aron handoff for manual framework-steward delivery.
