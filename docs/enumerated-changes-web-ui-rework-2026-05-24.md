@@ -161,7 +161,7 @@ Each commit's body explains the *why*, ends with `Co-Authored-By: Claude Opus 4.
 
 ### M0.12. CDK: AppTheorySsrSite + `/_facetheory/data/*` behavior + preserve existing API origins
 
-- **Paths**: `cdk/lib/lesser-host-stack.ts`, `cdk/lib/web-ssr-site.ts` (or inline) 
+- **Paths**: `cdk/lib/lesser-host-stack.ts`, `cdk/lib/web-ssr-site.ts` (or inline)
 - **Surface**: cdk
 - **Classification**: framework-feedback (Signal C composition); CSP-shape change
 - **Governance-rubric impact**: none directly (SEC-8 + SEC-5 verifiers land in M0.17-M0.20)

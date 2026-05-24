@@ -256,4 +256,3 @@ Two independent release channels are now first-class:
 - **Provisioning list** — new Kind column with colored badges, target version column, and a top-of-page **MCP drift alert** that names the affected instances with a one-click "Wire all" link.
 
 Try clicking `press-room` in the sidebar — it has the worst drift (body updated, MCP not wired) so it shows the full warning treatment in the Stack card. From there, "Wire now" jumps straight to the wire-mcp job timeline.
-
