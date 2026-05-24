@@ -20,12 +20,14 @@ The May 16 markdown-sanitizer signal (Greater/FaceTheory fail-closed markdown re
 
 | Signal | Owner path | Routing status |
 | --- | --- | --- |
-| Signal A — Stitch shell vs Greater-components shell-primitive boundary | Greater Components steward + FaceTheory steward (joint) via Aron | Prepared below; needs cross-team product decision (Greater + Theory Cloud). |
+| Signal A — Stitch shell vs Greater-components shell-primitive boundary | Greater Components steward + FaceTheory steward (joint) via Aron | **Resolved 2026-05-24** by Aron-direct product decision: **Greater Components owns UI primitives across all equaltoai products**. FaceTheory Stitch shell is not adopted in host; host requests additive Greater shell primitives via Signal D. |
 | Signal B — Tenant-partition-safe ISR canonical pattern | ~~FaceTheory steward via Aron~~ | **Withdrawn 2026-05-24** per Arch review on PR #380: FaceTheory v3.3.0 docs/code do include `tenantKey` / custom `cacheKey` + fail-closed on `x-tenant-id` / `x-facetheory-tenant`. Recategorized as host-side trust-surface conservatism note. |
-| Signal C — AppTheory HTTP + FaceTheory SSR + greater-components SPA composition under a single CloudFront distribution | AppTheory steward + FaceTheory steward (joint) via Aron | Prepared below; adoption-guidance gap. |
-| Signal D — Greater-components additive components for hosted-platform UIs | Greater Components steward via Aron | Prepared below; additive request list. |
+| Signal C — AppTheory HTTP + FaceTheory SSR + greater-components SPA composition under a single CloudFront distribution | AppTheory steward + FaceTheory steward (joint) via Aron | **Issues opened 2026-05-24**: [theory-cloud/AppTheory#593](https://github.com/theory-cloud/AppTheory/issues/593) + [theory-cloud/FaceTheory#248](https://github.com/theory-cloud/FaceTheory/issues/248). Per Aron's direction, host **waits for upstream resolution before moving forward with M0.12 CDK adoption**. |
+| Signal D — Greater-components additive components for hosted-platform UIs | Greater Components steward via Aron | **Request sent 2026-05-24** via host_lab MCP email (delivery `delivery-f3c1b7a6f664bb27`) to `greater.equaltoai@theorymcp.ai`. Aron coordinates triage with Greater steward through implementation. Expanded list per Signal A resolution (shell primitives + hosted-platform components). |
 
 ## Framework-feedback signal A: Stitch shell vs Greater-components shell-primitive boundary
+
+> **Resolved 2026-05-24** by Aron-direct product decision: **Greater Components owns UI primitives across all equaltoai products**. The decision applies stack-wide (host, lesser, body, sim, future equaltoai consumers). FaceTheory Stitch shell primitives are **not adopted in host**. host requests the additive Greater shell primitives (Shell, Sidebar, Topbar, Panel, StatCard, SummaryStrip) + the hosted-platform UI vocabulary via Signal D below. Aron is the upstream greater-components maintainer, which makes the request-to-acceptance cycle dramatically faster than a third-party-steward roundtrip while preserving the framework-feedback discipline. Resolution propagated to enumerated changes (M0.6 un-gated; M0.7–M0.10 gating note narrows to "Signal D triage only"), roadmap (Signal A risk closed), and Project 39 #376.
 
 ### Target framework
 
@@ -166,6 +168,8 @@ Treat ISR-on-trust-surfaces as a **post-launch separate scope-need**:
 
 ## Framework-feedback signal C: AppTheory HTTP + FaceTheory SSR + greater-components SPA composition under a single CloudFront distribution
 
+> **Status 2026-05-24**: framework issues opened by Aron's direction at [theory-cloud/AppTheory#593](https://github.com/theory-cloud/AppTheory/issues/593) (AppTheory-side: mixed-auth co-origin composition pattern under `AppTheorySsrSite`) and [theory-cloud/FaceTheory#248](https://github.com/theory-cloud/FaceTheory/issues/248) (FaceTheory-side: OAC form transport composition + strict-CSP Svelte adapter + tenant ISR pointers). **Host waits for upstream resolution before moving forward with M0.12 (CDK adoption of `AppTheorySsrSite`).** All other M0 work that doesn't depend on the composition pattern (M0.1–M0.5 FaceTheory bootstrap + route port + OAC transport bootstrap; M0.13–M0.16 tests; M0.17–M0.23 verifiers in skeleton form pending stable CDK shape; M0.24–M0.29 governance + docs) may proceed unblocked, but M0 cannot ship to lab until M0.12 is unblocked. Roadmap risk register updated.
+
 ### Target framework
 
 AppTheory v1.7.0 HTTP Lambda runtime + FaceTheory v3.3.0 SSR runtime + AppTheory `AppTheorySsrSite` CDK construct.
@@ -274,6 +278,16 @@ AppTheory steward + FaceTheory steward jointly document the supported compositio
 
 ## Framework-feedback signal D: Greater-components additive components for hosted-platform UIs
 
+> **Sent 2026-05-24** via host_lab MCP `email_send` (delivery `delivery-f3c1b7a6f664bb27`) to `greater.equaltoai@theorymcp.ai`. Subject: "Greater additive component request — lesser-host web UI rework (Project 39, 2026-05-24)". Per Signal A resolution, the request list expanded to include shell primitives (Shell, Sidebar, Topbar, Panel, StatCard, SummaryStrip) in addition to the hosted-platform UI vocabulary (CommandPalette, FleetCard, CostGauge, ActivitySparkline, ProvisioningTimeline, ReleaseTimeline, StackMatrix). **Aron coordinates triage with the Greater steward directly through implementation.** host's per-milestone need:
+>
+> | Priority | Component | Host milestone |
+> |---|---|---|
+> | 1 | Shell, Sidebar, Topbar, Panel, StatCard, SummaryStrip *(shell primitives — added by Signal A resolution)* | M0 |
+> | 1 | CommandPalette, FleetCard, CostGauge | M0 |
+> | 2 | ActivitySparkline | M0–M1 |
+> | 2 | ProvisioningTimeline | M2 |
+> | 3 | ReleaseTimeline, StackMatrix | M2 |
+
 ### Target framework
 
 Greater Components (target version `greater-v0.8.14` and forward).
@@ -368,22 +382,28 @@ Greater Components steward triages the additive request list. Priority order fro
 
 Components accepted into Greater are pulled via `greater add` on Greater release; components declined are scoped as host-bespoke and tracked in M0–M2's enumerated changes.
 
-## Cross-signal interactions
+## Cross-signal interactions (updated 2026-05-24)
 
-- **Signal A (Stitch vs Greater shell) blocks Signal D (additive components)**: until the shell ownership is designated, the additive Greater request list cannot be finalized. If Stitch owns the shell, the Greater request list is the hosted-platform-specific subset listed in Signal D. If Greater owns the shell, the request list expands to include the shell primitives too.
-- **Signal C (CloudFront composition) shapes the `audit-trust-and-safety` walk**: the CSP-shape-change, OAC-form, and observability decisions are inputs to the trust-and-safety walk that runs next.
+- **Signal A resolved (Greater owns)** unblocks Signal D's request list (expanded with shell primitives) and unblocks enumerated M0.6 (shell adoption from `@equaltoai/greater-components/shell` once those primitives ship from Greater).
+- **Signal C blocks M0.12 (CDK adoption)** per Aron's direction to wait for upstream resolution. M0 lab deploy gates on the framework issues' resolution; the rest of M0 (Phase M0.1 bootstrap, M0.3 component work, M0.5 verifier scaffolding, M0.6 docs) may proceed unblocked.
+- **Signal D coordination** is now owned by Aron through implementation; host steward provides component implementation context, Aron coordinates Greater steward triage.
 - **Signal B (recategorized) records the host-side ISR deferral rationale** for `/attestations/*` and `/.well-known/jwks.json`: framework support is present (per Arch's 2026-05-24 correction), but host's strict-CSP + per-tenant rotation + verifier-coverage posture warrants deferral until a separate post-launch ISR-pilot scope can build the per-tenant cache-isolation + rotation→invalidation verifiers first.
 - **None of the signals weaken the governance rubric** by themselves; the additive verifiers tracking the workarounds are consolidated in the `maintain-governance-rubric` walk that runs after the other three.
 
 ## Outbound coordination record
 
-To be populated when the signal is sent to the framework stewards:
+- **Greater Components steward** (`greater.equaltoai@theorymcp.ai`):
+  - Signal A (resolved Aron-direct): no upstream signal required; resolution captured in this doc and propagated to enumerated changes + roadmap.
+  - Signal D request sent 2026-05-24 via host_lab MCP `email_send` — delivery `delivery-f3c1b7a6f664bb27`. Subject: "Greater additive component request — lesser-host web UI rework (Project 39, 2026-05-24)". Aron coordinates triage with the Greater steward through implementation.
+- **FaceTheory steward** (`theory-cloud/FaceTheory` repo):
+  - Signal C-FaceTheory portion: issue [theory-cloud/FaceTheory#248](https://github.com/theory-cloud/FaceTheory/issues/248) opened 2026-05-24 covering OAC form transport composition with non-OAC co-origins, strict-CSP Svelte adapter confirmation, and tenant ISR canonical-example pointers.
+  - Signal B was withdrawn 2026-05-24 per Arch's PR #380 review (framework support confirmed; recategorized as host posture note).
+- **AppTheory steward** (`theory-cloud/AppTheory` repo):
+  - Signal C-AppTheory portion: issue [theory-cloud/AppTheory#593](https://github.com/theory-cloud/AppTheory/issues/593) opened 2026-05-24 covering `AppTheorySsrSite` composition with mixed-auth co-origins (bearer-auth Lambda Function URLs alongside the OAC-IAM SSR origin) under a single CloudFront distribution.
 
-- Greater Components steward (`greater.equaltoai@theorymcp.ai` per the 2026-05-16 record): _signals A and D pending Aron coordination_.
-- FaceTheory steward: _signals A and C pending Aron coordination; no contactable Theory Cloud framework mailbox is exposed to this host endpoint. Signal B was withdrawn 2026-05-24 per Arch review (framework support confirmed; recategorized as host posture note)._
-- AppTheory steward: _signal C pending Aron coordination_.
+Per Aron's direction (2026-05-24): **host waits for upstream resolution on the framework issues before moving forward with M0.12 CDK adoption**. M0 work that doesn't depend on the composition pattern may proceed; M0 lab deploy gates on the framework issues' resolution.
 
-Per the 2026-05-16 outbound discipline, signals routed without a contactable framework mailbox are routed through this PR, Arch review (n/a; not an advisor-dispatched scope), and Aron handoff for manual framework-steward delivery.
+**Steward note**: Aron maintains both the equaltoai stack (lesser-host, greater-components, etc.) and the theory-cloud framework stack (AppTheory, FaceTheory, etc.) and is actively working on the Signal C resolutions in a neighboring computer. The wait-for-upstream discipline still applies (preserves audit trail; framework changes ship through their own release cycle rather than as host-local patches), but cycle time is dramatically faster than a third-party-steward roundtrip would be. Same applies to Signal D / Greater coordination.
 
 ## Persistence
 

@@ -60,12 +60,14 @@ From existing host label catalog:
 - `host-reliability` — Operational reliability and DoS hardening
 - `host-trust-api` — Trust API, attestations, instance auth
 
-## Coordination
+## Coordination (executed 2026-05-24)
 
-- **Greater Components steward**: **to be notified via** Signal D issue (#377), contingent on Signal A. Notification comment posts at M0 implement-milestone kickoff (not yet posted; issue currently exists as a coordination-tracking record only).
-- **FaceTheory / Theory Cloud steward**: **to be notified via** Signal A issue (#376). Notification comment posts at M0 implement-milestone kickoff.
-- **Sim steward**: **to be notified** at M3 lab deploy time per #378.
-- **No advisor-dispatched coordination**: this is Aron-direct
+- **Greater Components steward** (`greater.equaltoai@theorymcp.ai` — Aron is the upstream maintainer): **request sent** via host_lab MCP `email_send` (delivery `delivery-f3c1b7a6f664bb27`). Signal A resolved Aron-direct (Greater owns UI primitives across all equaltoai products); Signal D additive request list expanded with shell primitives (Shell, Sidebar, Topbar, Panel, StatCard, SummaryStrip) plus the hosted-platform UI vocabulary (CommandPalette, FleetCard, CostGauge, ActivitySparkline, ProvisioningTimeline, ReleaseTimeline, StackMatrix). Aron coordinates triage through implementation. Project 39 issue #377 updated with the expanded list.
+- **AppTheory + FaceTheory stewards** (theory-cloud org — Aron is the upstream maintainer): **framework issues opened** at [theory-cloud/AppTheory#593](https://github.com/theory-cloud/AppTheory/issues/593) (mixed-auth co-origin composition under `AppTheorySsrSite`) and [theory-cloud/FaceTheory#248](https://github.com/theory-cloud/FaceTheory/issues/248) (OAC form transport composition + strict-CSP Svelte adapter + tenant ISR pointers). Per Aron's direction, host waits for upstream resolution before moving forward with M0.12 CDK adoption. Aron is solving these in a neighboring computer; host steward tracks status via the upstream issues.
+- **Sim steward**: to be notified at M3 lab deploy time per #378 (no change to this cadence).
+- **No advisor-dispatched coordination**: this is Aron-direct. Note: Arch (advisor agent) reviewed planning PR #380 on 2026-05-24; review handled per the `review-advisor-brief` discipline under Aron's standing authorization ("consider arch requests as under my authority").
+
+**Steward note**: Aron maintains both the equaltoai stack (lesser-host, greater-components, etc.) and the theory-cloud framework stack (AppTheory, FaceTheory, etc.). The "wait for upstream resolution" discipline still applies as a process gate even when the upstream maintainer is the same person — it preserves the audit trail and ensures the framework changes ship through the framework's own release cycle rather than landing as host-local patches. Cycle time is dramatically faster than a third-party-steward roundtrip would be.
 
 ## Working method
 

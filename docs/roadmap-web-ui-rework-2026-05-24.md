@@ -56,10 +56,16 @@ UI / UX rework + framework adoption + provisioning evolution + observability add
 
 The rework is structured as **four lab-deployed milestones (M0 → M1 → M2 → M3)** with explicit soak between each. Within each milestone, sub-phases organize the enumerated commits by surface and dependency order. Verifier additions land alongside the code they protect.
 
-### Phase M0.0 — Coordination track (parallel, week-1 onward)
+### Phase M0.0 — Coordination track (executed 2026-05-24, ongoing)
 
-- **Not a code phase.** Aron sends Signal A + Signal D to Greater Components + FaceTheory stewards. Tracked separately from code-merge work. Signal A resolution unblocks M0.6–M0.10; Signal D shapes whether Greater accepts the additive components or host builds them bespoke.
-- **Coordination cadence**: Aron sends signal Week 1; steward response target Week 2–4; if unresolved by Week 4, host adopts Stitch provisionally (per the enumerated change gating note) and revisits when upstream clarifies.
+- **Executed 2026-05-24**:
+  - **Signal A resolved** by Aron-direct product decision: Greater Components owns UI primitives across all equaltoai products. M0.6 un-gated.
+  - **Signal D request sent** to Greater steward via host_lab MCP email (delivery `delivery-f3c1b7a6f664bb27`, recipient `greater.equaltoai@theorymcp.ai`). Aron coordinates triage with Greater steward through implementation.
+  - **Signal C framework issues opened**: [theory-cloud/AppTheory#593](https://github.com/theory-cloud/AppTheory/issues/593) + [theory-cloud/FaceTheory#248](https://github.com/theory-cloud/FaceTheory/issues/248). Per Aron's direction, host waits for upstream resolution before M0.12 CDK adoption.
+- **Ongoing**:
+  - Signal D triage cadence: Greater steward responds per-component; Aron coordinates.
+  - Signal C resolution cadence: theory-cloud stewards respond on the framework issues; M0 lab deploy gates on this.
+- **Risk if upstream framework issues take longer than expected**: M0 lab deploy slips; rest of M0 work that doesn't depend on M0.12 can still merge to main on the planning branch (Phase M0.1, M0.3, M0.5, M0.6 contingent on Signal D triage, M0.21–M0.23 change-lock verifiers).
 
 ### Phase M0.1 — Foundation (no shell adoption yet)
 
@@ -295,10 +301,10 @@ The rework is structured as **four lab-deployed milestones (M0 → M1 → M2 →
 
 | Risk | Likelihood | Impact | Mitigation |
 | --- | --- | --- | --- |
-| Signal A (Stitch vs Greater shell ownership) unresolved beyond Week 4 | medium | medium (delays M0.6–M0.10) | Provisional Stitch adoption per enumerated-change gating note; revisit when upstream clarifies; or expedite Greater steward triage via Aron |
-| FaceTheory v3.3.0 build path edge case for Svelte 5 SSR | low | medium (could delay M0 lab soak) | Lab soak catches; rollback by reverting M0.3–M0.4 if needed; consult Theory Cloud KB / FaceTheory steward |
-| AppTheorySsrSite composition with bearer-auth Lambda origins (Signal C) iteration | medium | low (additive verifier locks expected shape) | SEC-8 verifier; PRs iterate addBehavior list; Theory Cloud steward eventually documents supported pattern |
-| Greater steward declines Signal D additive components | low | medium (host carries bespoke) | Host carries bespoke per framework-feedback workaround posture; acceptable; revisit on future Greater release |
+| ~~Signal A (Stitch vs Greater shell ownership) unresolved~~ | n/a | n/a | **Resolved 2026-05-24** Aron-direct: Greater owns. Risk closed. |
+| FaceTheory v3.3.0 build path edge case for Svelte 5 SSR | low | medium (could delay M0 lab soak) | Lab soak catches; rollback by reverting M0.3–M0.4 if needed; consult Theory Cloud KB / FaceTheory steward (FaceTheory#248 also asks for strict-CSP Svelte adapter confirmation) |
+| **AppTheorySsrSite composition with bearer-auth Lambda origins (Signal C) — upstream resolution wait** | medium | **high** (M0 lab deploy gates on it) | Framework issues opened at theory-cloud/AppTheory#593 + theory-cloud/FaceTheory#248 (2026-05-24); Aron follows up. host waits per Aron's direction; rest of M0 work that doesn't depend on M0.12 can merge to main on planning branch in the meantime. Mitigation if wait extends materially: Aron decides whether to ship a temporary M0 workaround (hand-wired addBehavior with SEC-8 verifier locking) ahead of upstream resolution. |
+| Greater steward declines part of Signal D expanded list (shell primitives + hosted-platform components) | medium (list is larger than originally scoped) | medium (host carries bespoke for declined items) | Host carries bespoke per framework-feedback workaround posture; acceptable; revisit on future Greater release. Per-component bespoke fallback contract: same import-surface as the Greater equivalent so future swap is mechanical. |
 | Sim canary readiness delay (sim not on current lesser release) | medium | medium (delays live cutover) | Aron coordinates sim release upgrade alongside M2 lab; if sim isn't ready by R.1, pick alternate canary slug (or accept reduced canary coverage) |
 | Operator dark-chrome visual sign-off feedback (Open Question #5) | low | low (one revision cycle) | Accept prototype resolution as default; Aron reviews at M2.1 commit if desired |
 | Live launch window unknown (Open Question #1) | high | varies | Roadmap is week-relative; Aron sets calendar dates at any time; M3.2 deferrable for tight launches |
@@ -311,8 +317,8 @@ The rework is structured as **four lab-deployed milestones (M0 → M1 → M2 →
 ## Open questions
 
 1. **Live release window / target date** — still TBD from scope-need. Roadmap is calendar-week-relative; once Aron sets a date, the roadmap maps `theory app up --stage live --execute` (Phase R.2) backwards from it.
-2. **Signal A resolution** — Stitch or Greater? Tracked separately as Phase M0.0 coordination.
-3. **Signal D resolution** — Greater additive component triage; depends on Signal A.
+2. ~~**Signal A resolution** — Stitch or Greater?~~ — **Resolved 2026-05-24** Aron-direct: Greater owns UI primitives across all equaltoai products.
+3. **Signal D triage** — Greater steward triages the expanded additive list (shell primitives + hosted-platform components); Aron coordinates through implementation.
 4. **Operator dark-chrome visual sign-off** — accept prototype resolution, or Aron reviews at M2.1? Default: accept.
 5. **M3 cost-telemetry firehose: land or defer?** — depends on live launch window tightness. Default: include if launch is ≥10 weeks out; defer if tighter.
 6. **Sim canary readiness** — sim must be on a current lesser release before Phase R.1; Aron coordinates with sim steward.

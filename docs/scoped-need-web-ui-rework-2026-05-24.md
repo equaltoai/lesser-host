@@ -136,12 +136,14 @@ Aron selected "phase by surface (recommended)" and "full backend co-scoping." Wi
 ## Open questions
 
 1. **Live release window / target date** — needed for `plan-roadmap` to sequence milestones. If aggressive, M3 (cost-telemetry firehose) may need to be split or deferred post-launch.
-2. **MCP-wiring job-kind contract with lesser + body stewards** — does `wire-mcp` need any lesser-side or body-side coordination, or is it entirely host-internal (host calls `POST /mcp/{actor}` on the lesser instance after a body update)? `provision-managed-instance` walk will resolve this.
+2. ~~**MCP-wiring job-kind contract with lesser + body stewards**~~ — **Resolved** by the provisioning walk (`docs/provisioning-web-ui-rework-2026-05-24.md`, commit `e1aa36a`): wire-mcp is entirely host-internal; lesser owns the `POST /mcp/{actor}` contract; no lesser/body steward coordination needed.
 3. ~~**Public attestation inspector ISR adoption**~~ — **Resolved 2026-05-24**: defer ISR adoption on tenant-scoped trust surfaces for this rework. Framework support exists (FaceTheory v3.3.0 provides `tenantKey` / custom `cacheKey` + fail-closed on tenant headers — per Arch's PR #380 review correction); deferral is host-specific trust-surface conservatism pending a post-launch ISR-pilot scope that builds per-tenant cache-isolation + rotation→invalidation verifiers first. See `docs/trust-and-safety-web-ui-rework-2026-05-24.md` Dimension 3 and `docs/framework-feedback-facetheory-v3.3.0-2026-05-24.md` Signal B (recategorized).
 4. **Cost telemetry depth** — Lambda + DynamoDB + egress confirmed in the design; should we also include S3, SQS, CloudFront request cost? `provision-managed-instance` + product-decision (Aron) inputs here.
 5. **Operator dark chrome** — chat assistant proposed warm-charcoal with amber-on-coffee accents. Does this need explicit visual sign-off from Aron before M2, or accept the prototype's resolution?
 6. **Combined-scope acceptance** — surfaced as steward concern: full FaceTheory migration + full backend co-scoping + live-release timing is a substantial bundle. Confirming Aron accepts that this is multi-milestone and not a one-shot ship.
-7. **Live cutover canary plan** — once M0–M3 land in `lab`, do we canary to one customer slug (e.g., simulacrum) before opening `live` to general customers? Will be specified in `plan-roadmap`.
+7. **Live cutover canary plan** — once M0–M3 land in `lab`, do we canary to one customer slug (e.g., simulacrum) before opening `live` to general customers? Specified in `docs/roadmap-web-ui-rework-2026-05-24.md` Phase R.1; tracked as Project 39 issue #378.
+
+8. ~~**Framework-feedback signal coordination cadence (Signals A/B/C/D)**~~ — **Resolved 2026-05-24**: Signal A resolved Aron-direct (Greater owns UI primitives across all equaltoai products); Signal B withdrawn per Arch's correction (framework support confirmed; recategorized as host conservatism note); Signal C framework issues opened at [theory-cloud/AppTheory#593](https://github.com/theory-cloud/AppTheory/issues/593) + [theory-cloud/FaceTheory#248](https://github.com/theory-cloud/FaceTheory/issues/248) (host waits for upstream resolution before M0.12 CDK adoption); Signal D request sent to Greater steward (delivery `delivery-f3c1b7a6f664bb27`; Aron coordinates triage through implementation).
 
 ---
 

@@ -9,10 +9,11 @@ Inputs (all on `aron/web-ui-rework-planning`):
 - `docs/provisioning-web-ui-rework-2026-05-24.md` (e1aa36a)
 - `docs/governance-rubric-web-ui-rework-2026-05-24.md` (b4b38c5)
 
-## Gating notes (apply across all milestones)
+## Gating notes (updated 2026-05-24 with Signal A/C/D resolutions)
 
-- **Signal A gate (Stitch vs greater-components shell ownership)**: blocks M0.6–M0.10 (shell primitives + hosted-platform components: Shell/Sidebar/Topbar/Panel/StatCard/SummaryStrip/CommandPalette/FleetCard/CostGauge/ActivitySparkline). The framework-feedback signal was sent to Greater + Theory Cloud stewards; resolution required before these commits can land. Workaround if the gate stays unresolved beyond M0's planned cadence: adopt Stitch shell primitives provisionally with an additive verifier locking the import path, then revert to greater-components when those primitives land upstream.
-- **Signal D gate (Greater-components additive request triage)**: contingent on Signal A. If Greater owns the shell, Signal D's request list expands; if Stitch owns the shell, the list is the hosted-platform-specific subset (CommandPalette/FleetCard/CostGauge/ActivitySparkline + later ProvisioningTimeline/ReleaseTimeline/StackMatrix).
+- ~~**Signal A gate (Stitch vs greater-components shell ownership)**~~ — **Resolved 2026-05-24** by Aron-direct product decision: Greater Components owns UI primitives across all equaltoai products. M0.6 un-gated (now reads: adopt shell primitives from `@equaltoai/greater-components/shell` once they ship from Greater per Signal D triage). M0.7–M0.10 gating note narrows to "Signal D triage only" (Greater steward acceptance per-component).
+- **Signal C gate (AppTheory + FaceTheory composition under one CloudFront distribution)**: framework issues opened 2026-05-24 at [theory-cloud/AppTheory#593](https://github.com/theory-cloud/AppTheory/issues/593) + [theory-cloud/FaceTheory#248](https://github.com/theory-cloud/FaceTheory/issues/248). Per Aron's direction, **host waits for upstream resolution before moving forward with M0.12 (CDK adoption of `AppTheorySsrSite`)**. M0.13 + M0.14 + SEC-8 verifier all depend on M0.12 and inherit the wait. **M0 lab deploy (Phase M0.7) gates on the framework issues' resolution.** M0 work that doesn't depend on the composition pattern may proceed unblocked (M0.1–M0.5 FaceTheory bootstrap + route port + OAC transport bootstrap; M0.15–M0.16 web build-time tests; M0.17 SEC-5 + M0.18 SEC-6 + M0.19 SEC-7 + M0.21 SEC-9 + M0.22 SEC-10 + M0.23 CON-4 verifiers; M0.24 pack bump can defer until SEC-8 is ready; M0.25–M0.29 governance + docs).
+- **Signal D gate (Greater-components additive request triage)**: request sent 2026-05-24 via host_lab MCP `email_send` (delivery `delivery-f3c1b7a6f664bb27`) to `greater.equaltoai@theorymcp.ai`. Aron coordinates triage with Greater steward through implementation. M0.6–M0.10 land as Greater accepts components (vendored via `greater add ...`) or as host-bespoke fallback (per the workaround posture in the framework-feedback walk).
 - **Live-launch window unknown**: M3 cost-telemetry firehose (M3.7–M3.13) is marked "deferrable" — if live launch is tight, M3 ships as Operator Console balance only and the cost-telemetry firehose lands post-launch as a separate scope.
 - **Wire-mcp coordination**: resolved as host-internal in the provisioning walk; no lesser/body steward PR coordination needed.
 
@@ -33,7 +34,7 @@ Each commit's body explains the *why*, ends with `Co-Authored-By: Claude Opus 4.
 
 ## M0 — FaceTheory foundation + design system + shell + Portal Fleet POC
 
-**Goal**: prove end-to-end that FaceTheory v3.3.0 + Svelte adapter + strict-CSP JSON-sidecar hydration + new shell renders Portal Fleet correctly in `lab` behind CloudFront with the unchanged CSP byte-string. M0 lands the seven foundation verifiers (SEC-5/6/7/8/9/10 + CON-4) and bumps `pack.json` to `2026.05.24-web.0`. Shell-primitive commits (M0.6–M0.10) are Signal-A-gated.
+**Goal**: prove end-to-end that FaceTheory v3.3.0 + Svelte adapter + strict-CSP JSON-sidecar hydration + new shell renders Portal Fleet correctly in `lab` behind CloudFront with the unchanged CSP byte-string. M0 lands the seven foundation verifiers (SEC-5/6/7/8/9/10 + CON-4) and bumps `pack.json` to `2026.05.24-web.0`. Shell-primitive commits (M0.6–M0.10) gate on Signal D triage by Greater steward (Signal A resolved 2026-05-24 — Greater owns shell). CDK adoption commit M0.12 (and dependent SEC-8) gate on Signal C resolution via [theory-cloud/AppTheory#593](https://github.com/theory-cloud/AppTheory/issues/593) + [theory-cloud/FaceTheory#248](https://github.com/theory-cloud/FaceTheory/issues/248) — M0 lab deploy gates on those framework issues per Aron's wait-on-upstream direction.
 
 ### M0.1. Add FaceTheory v3.3.0 dependency
 
@@ -106,22 +107,22 @@ Each commit's body explains the *why*, ends with `Co-Authored-By: Claude Opus 4.
 - **Validation**: web lint + build; transport import present in built bundle (grep `startAwsOacFormTransport` in built JS).
 - **Conventional Commit subject**: `feat(web): wire startAwsOacFormTransport at client bootstrap`
 
-### M0.6. **[GATED — Signal A]** Adopt shell primitives (Stitch or greater-components)
+### M0.6. **[Signal A resolved; Signal D triage pending]** Adopt greater-components shell primitives
 
-- **Paths**: `web/src/lib/shell/**` (new directory; either re-exports from `@theory-cloud/facetheory/svelte/stitch-shell` or from `@equaltoai/greater-components/shell`)
+- **Paths**: `web/src/lib/shell/**` (new directory; re-exports from `@equaltoai/greater-components/shell` once those primitives ship from Greater per Signal D triage)
 - **Surface**: web
-- **Classification**: framework-feedback (resolution of Signal A)
+- **Classification**: framework-feedback (Greater-side adoption)
 - **Governance-rubric impact**: none
 - **Multi-tenant-isolation impact**: none
 - **On-chain impact**: none
 - **Trust-API / CSP / instance-auth impact**: none
-- **Framework consumption**: idiomatic (whichever owner is chosen)
-- **Acceptance**: a single import surface at `web/src/lib/shell/` exposes Shell, Sidebar, Topbar, Panel, StatCard, SummaryStrip, Section, PageFrame, PageTitle, Breadcrumb, Callout — sourced from the canonical owner per Signal A resolution.
-- **Validation**: web lint + build + tests; greater-components vendored tree unchanged (if greater wins, those primitives are vendored via `greater add ...` in this commit too); if Stitch wins, no greater-components churn.
-- **Conventional Commit subject**: `feat(web): adopt <stitch|greater> shell primitives via Signal A resolution`
-- **Gating note**: this commit cannot land until Aron resolves Signal A. The PR can sit as draft until then.
+- **Framework consumption**: idiomatic (Greater owns shell primitives across all equaltoai products per Aron's 2026-05-24 resolution)
+- **Acceptance**: a single import surface at `web/src/lib/shell/` exposes Shell, Sidebar, Topbar, Panel, StatCard, SummaryStrip, Section, PageFrame, PageTitle, Breadcrumb, Callout from `@equaltoai/greater-components/shell` (vendored via `greater add ...`).
+- **Validation**: web lint + build + tests; greater-components vendored tree updated with the new primitives.
+- **Conventional Commit subject**: `feat(web): adopt greater-components shell primitives`
+- **Gating note**: depends on Greater steward acceptance of the shell primitives in Signal D triage. Fallback if any primitive is declined: bespoke implementation under `web/src/lib/shell/` matching the same import-surface contract.
 
-### M0.7. **[GATED — Signal D, contingent on M0.6]** Command palette (⌘K)
+### M0.7. **[Signal D triage]** Command palette (⌘K)
 
 - **Paths**: `web/src/lib/components/CommandPalette.svelte` (host-bespoke) OR vendored from greater-components if accepted
 - **Surface**: web
@@ -131,20 +132,20 @@ Each commit's body explains the *why*, ends with `Co-Authored-By: Claude Opus 4.
 - **Validation**: web lint + build + tests; component-level a11y test.
 - **Conventional Commit subject**: `feat(web): add command palette (⌘K)`
 
-### M0.8. **[GATED — Signal D]** Fleet card component
+### M0.8. **[Signal D triage]** Fleet card component
 
 - **Paths**: `web/src/lib/components/FleetCard.svelte`
 - **Acceptance**: card renders with slug, status pulse dot, cost gauge slot, sparkline slot, metadata line.
 - **Validation**: web lint + build + tests; storybook-style snapshot.
 - **Conventional Commit subject**: `feat(web): add fleet card component`
 
-### M0.9. **[GATED — Signal D]** Cost gauge component
+### M0.9. **[Signal D triage]** Cost gauge component
 
 - **Paths**: `web/src/lib/components/CostGauge.svelte`
 - **Acceptance**: radial gauge with current/limit/currency props; colored arc indicates consumption; ARIA labels for screen readers.
 - **Conventional Commit subject**: `feat(web): add cost gauge component`
 
-### M0.10. **[GATED — Signal D]** Activity sparkline component
+### M0.10. **[Signal D triage]** Activity sparkline component
 
 - **Paths**: `web/src/lib/components/ActivitySparkline.svelte`
 - **Acceptance**: inline sparkline takes numeric series + optional baseline; SVG-rendered for crisp scaling.
@@ -159,7 +160,7 @@ Each commit's body explains the *why*, ends with `Co-Authored-By: Claude Opus 4.
 - **Validation**: web lint + build + tests; manual smoke in lab against real backend.
 - **Conventional Commit subject**: `feat(web): wire Portal Fleet page on new shell`
 
-### M0.12. CDK: AppTheorySsrSite + `/_facetheory/data/*` behavior + preserve existing API origins
+### M0.12. **[BLOCKED on Signal C — wait for upstream]** CDK: AppTheorySsrSite + `/_facetheory/data/*` behavior + preserve existing API origins
 
 - **Paths**: `cdk/lib/lesser-host-stack.ts`, `cdk/lib/web-ssr-site.ts` (or inline)
 - **Surface**: cdk
@@ -168,10 +169,11 @@ Each commit's body explains the *why*, ends with `Co-Authored-By: Claude Opus 4.
 - **Multi-tenant-isolation impact**: none
 - **On-chain impact**: none
 - **Trust-API / CSP / instance-auth impact**: preserves; CSP byte-string in `webCsp` / `safeAppCsp` unchanged; new behavior for `/_facetheory/data/*` (S3, no Lambda); existing `/api/*`, `/auth/*`, `/setup/*`, `/.well-known/*`, `/attestations/*` behaviors unchanged
-- **Framework consumption**: idiomatic per `AppTheorySsrSite` contract; hand-wired `addBehavior` for the four existing bearer-auth Lambda origins per Signal C workaround
+- **Framework consumption**: idiomatic per `AppTheorySsrSite` contract once Signal C is resolved upstream; until then host waits per Aron's 2026-05-24 direction (issues at [theory-cloud/AppTheory#593](https://github.com/theory-cloud/AppTheory/issues/593) + [theory-cloud/FaceTheory#248](https://github.com/theory-cloud/FaceTheory/issues/248)).
 - **Acceptance**: `cdk synth --context stage=lab` and `--context stage=live` produce CloudFormation with exactly one OAC-protected default origin (SSR Lambda), S3 origin for `/_facetheory/data/*`, existing Lambda Function URL origins for the four API paths with auth-type NONE.
 - **Validation**: `cd cdk && npm test && npm run synth`; manual review of synthesized template diff.
 - **Conventional Commit subject**: `feat(cdk): adopt AppTheorySsrSite + JSON-sidecar S3 behavior under preserved CSP`
+- **Gating note**: this commit cannot land until the upstream framework issues confirm the supported composition pattern for `AppTheorySsrSite` + mixed-auth co-origins. M0.13 (CDK composition test), M0.14 (CSP test depends on the new behaviors), M0.20 (SEC-8 CloudFront composition verifier) all depend on this and inherit the wait. M0 lab deploy (Phase M0.7) gates on this.
 
 ### M0.13. CDK test: distribution composition assertion (SEC-8 input)
 
