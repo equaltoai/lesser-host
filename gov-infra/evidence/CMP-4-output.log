@@ -73,4 +73,5 @@ PASS: negative fixture rejected for access audit
 PASS: negative fixture rejected for list/content split
 PASS: negative fixture rejected for hash-only auth
 PASS: negative fixture rejected for tenant isolation
+PASS: negative fixture rejected for body-owned mailbox authority
 PASS: bounded soul comm mailbox governance controls are explicit
