@@ -14,10 +14,14 @@
  * existing `src/App.svelte` into `<div id="app">` exactly as `src/main.ts`
  * does today. App.svelte's in-house router at `src/lib/router.ts` keeps
  * driving the per-page logic, so every existing page is rendered through
- * its FaceModule without a per-page rewrite. M0.5 adds
- * `startAwsOacFormTransport()` here so any future marked
- * `<form data-facetheory-oac-form>` submits with the right
- * `x-amz-content-sha256` signing.
+ * its FaceModule without a per-page rewrite.
+ *
+ * M0.5 — `startAwsOacFormTransport()` is wired via `ensureAwsOacFormTransport`
+ * (see `oac-form.ts`) so any future `<form data-facetheory-oac-form>` rendered
+ * by an SSR-route is submitted with the `x-amz-content-sha256` digest that
+ * CloudFront Lambda URL OAC signing requires. The current shells emit no such
+ * forms; the transport stages the listener for later (SEC-7 verifier covers
+ * marker hygiene once it lands later in M0).
  *
  * The M0.3 `/_facetheory/probe` route still emits the legacy
  * `FaceTheoryProbePayload` shape; we keep reading both payload shapes so the
@@ -35,6 +39,7 @@ import 'src/lib/styles/greater/tokens.css';
 import 'src/lib/styles/greater/primitives.css';
 import '../app.css';
 
+import { ensureAwsOacFormTransport } from './oac-form';
 import type { ShellHydrationPayload } from '../routes/index';
 
 /** Legacy M0.3 probe payload shape. */
@@ -72,6 +77,11 @@ if (typeof window !== 'undefined') {
 	} else if (isProbePayload(data)) {
 		window.__FACETHEORY_PROBE__ = data;
 	}
+
+	// Stage the OAC-safe form transport once per document. Idempotent; safe
+	// to call before any marked `<form data-facetheory-oac-form>` exists in
+	// the DOM — the transport listens for `submit` events lazily.
+	ensureAwsOacFormTransport();
 
 	// Mount the existing host app into the SSR-emitted `<div id="app">`. The
 	// shell HTML contains no Svelte SSR'd content (M0.4 is shell-only); the
