@@ -559,32 +559,44 @@ func ensureEvidenceRedacted(raw map[string]any) error {
 func walkJSON(value any, path string, visit func(path string, key string, value any) error) error {
 	switch v := value.(type) {
 	case map[string]any:
-		for k, item := range v {
-			childPath := k
-			if path != "" {
-				childPath = path + "." + k
-			}
-			if err := visit(childPath, k, item); err != nil {
-				return err
-			}
-			if err := walkJSON(item, childPath, visit); err != nil {
-				return err
-			}
-		}
+		return walkJSONMap(v, path, visit)
 	case []any:
-		for i, item := range v {
-			childPath := fmt.Sprintf("%s[%d]", path, i)
-			// Visit array elements directly so that string values embedded in
-			// arrays are checked against redaction policy (disallowed keys and
-			// sensitive-looking values). Without this call, secrets placed inside
-			// JSON arrays bypass the redaction verifier (CSR-020).
-			key := fmt.Sprintf("[%d]", i)
-			if err := visit(childPath, key, item); err != nil {
-				return err
-			}
-			if err := walkJSON(item, childPath, visit); err != nil {
-				return err
-			}
+		return walkJSONSlice(v, path, visit)
+	}
+	return nil
+}
+
+// walkJSONMap recursively walks a map, calling visit for every entry before
+// recursing into child values.
+func walkJSONMap(v map[string]any, path string, visit func(path string, key string, value any) error) error {
+	for k, item := range v {
+		childPath := k
+		if path != "" {
+			childPath = path + "." + k
+		}
+		if err := visit(childPath, k, item); err != nil {
+			return err
+		}
+		if err := walkJSON(item, childPath, visit); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// walkJSONSlice recursively walks a slice, calling visit for every element
+// before recursing into child values. The visit call on array elements is
+// load-bearing: without it, secrets embedded in JSON arrays bypass the
+// redaction verifier (CSR-020).
+func walkJSONSlice(v []any, path string, visit func(path string, key string, value any) error) error {
+	for i, item := range v {
+		childPath := fmt.Sprintf("%s[%d]", path, i)
+		key := fmt.Sprintf("[%d]", i)
+		if err := visit(childPath, key, item); err != nil {
+			return err
+		}
+		if err := walkJSON(item, childPath, visit); err != nil {
+			return err
 		}
 	}
 	return nil
