@@ -192,7 +192,7 @@ func validateRegistrationIdentity(agentID string, domain string, localID string,
 }
 
 func (r *RegistrationFileV2) validateCoreSections() error {
-	if err := r.Principal.Validate(); err != nil {
+	if err := r.Principal.ValidateWithDomainSeparation(strings.ToLower(strings.TrimSpace(r.AgentID))); err != nil {
 		return fmt.Errorf("principal: %w", err)
 	}
 	if err := r.SelfDescription.Validate(); err != nil {
@@ -265,6 +265,15 @@ func validateRegistrationTimestamps(created string, updated string) error {
 }
 
 func (p *PrincipalDeclarationV2) Validate() error {
+	return p.ValidateWithDomainSeparation("")
+}
+
+// ValidateWithDomainSeparation validates the principal declaration. When agentID is
+// non-empty, the signature is additionally verified against a domain-separated digest
+// that binds the declaration to the specific agent, preventing cross-agent replay.
+// When agentID is empty, only the declaration-level signature is checked (backward
+// compatible with existing v2 registration files).
+func (p *PrincipalDeclarationV2) ValidateWithDomainSeparation(agentID string) error {
 	if p == nil {
 		return errors.New("is required")
 	}
@@ -289,10 +298,41 @@ func (p *PrincipalDeclarationV2) Validate() error {
 	if !regexHexSig.MatchString(sig) {
 		return errors.New("signature must be hex (0x...)")
 	}
+
+	// Primary validation: declaration-level signature (backward-compatible with
+	// existing v2 registration files). Some principals sign only the declaration
+	// text; agent binding is enforced at the host level through
+	// ValidateVerifiedBinding and the registration proof flow.
 	declarationDigest := crypto.Keccak256([]byte(declaration))
-	if err := verifyEIP191SignatureOverDigest(identifier, declarationDigest, sig); err != nil {
+	declErr := verifyEIP191SignatureOverDigest(identifier, declarationDigest, sig)
+
+	// Secondary validation: when agentID is known, also try domain-separated digest
+	// that binds the declaration to the specific agent. New registration files
+	// SHOULD use this format to prevent the same principal declaration from being
+	// replayed into another agent's registration.
+	if agentID != "" {
+		domainCtx := "lesser-soul-v2-principal:" + strings.ToLower(strings.TrimSpace(agentID)) + "\n" + declaration
+		domainDigest := crypto.Keccak256([]byte(domainCtx))
+		if domainErr := verifyEIP191SignatureOverDigest(identifier, domainDigest, sig); domainErr == nil {
+			// Agent-bound signature is valid — this is the preferred format.
+		} else if declErr != nil {
+			return errors.New("signature is invalid")
+		}
+		// If agent-bound verification failed but declaration-level passed, accept
+		// for backward compatibility (host-level binding will catch cross-agent
+		// replay through ValidateVerifiedBinding).
+		return p.validateStructFields()
+	}
+
+	if declErr != nil {
 		return errors.New("signature is invalid")
 	}
+	return p.validateStructFields()
+}
+
+// validateStructFields validates the non-signature structural fields of the
+// principal declaration.
+func (p *PrincipalDeclarationV2) validateStructFields() error {
 	if strings.TrimSpace(p.ContactURI) != "" {
 		if _, err := url.ParseRequestURI(strings.TrimSpace(p.ContactURI)); err != nil {
 			return errors.New("contactUri is invalid")

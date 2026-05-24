@@ -50,6 +50,7 @@ type ProvisionJob struct {
 	ConsentMessage     string    `theorydb:"attr:consentMessage" json:"consent_message,omitempty"`
 	ConsentMessageHash string    `theorydb:"attr:consentMessageHash" json:"consent_message_hash,omitempty"`
 	ConsentSignature   string    `theorydb:"attr:consentSignature" json:"consent_signature,omitempty"`
+	ConsentEncrypted   string    `theorydb:"attr:consentEncrypted" json:"consent_encrypted,omitempty"`
 	ConsentExpiresAt   time.Time `theorydb:"attr:consentExpiresAt" json:"consent_expires_at,omitempty"`
 
 	// Account allocation / creation.
@@ -138,6 +139,7 @@ func (j *ProvisionJob) UpdateKeys() error {
 	j.AdminWalletAddr = strings.ToLower(strings.TrimSpace(j.AdminWalletAddr))
 	j.ConsentMessageHash = strings.TrimSpace(j.ConsentMessageHash)
 	j.ConsentSignature = strings.TrimSpace(j.ConsentSignature)
+	j.ConsentEncrypted = strings.TrimSpace(j.ConsentEncrypted)
 	j.AccountRequestID = strings.TrimSpace(j.AccountRequestID)
 	j.AccountID = strings.TrimSpace(j.AccountID)
 	j.AccountEmail = strings.TrimSpace(j.AccountEmail)

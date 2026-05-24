@@ -161,6 +161,7 @@ func (s *Server) buildUpdateDeployRunnerEnv(job *models.UpdateJob, inputs update
 		{Name: aws.String("TARGET_ACCOUNT_ID"), Value: aws.String(inputs.accountID)},
 		{Name: aws.String("TARGET_ROLE_NAME"), Value: aws.String(inputs.roleName)},
 		{Name: aws.String("TARGET_REGION"), Value: aws.String(inputs.region)},
+		{Name: aws.String("DEPLOY_EXTERNAL_ID"), Value: aws.String(deployRunnerExternalID(strings.TrimSpace(job.InstanceSlug)))},
 		{Name: aws.String("LESSER_VERSION"), Value: aws.String(inputs.lesserVersion)},
 		{Name: aws.String("ARTIFACT_BUCKET"), Value: aws.String(strings.TrimSpace(s.cfg.ArtifactBucketName))},
 		{Name: aws.String("RECEIPT_S3_KEY"), Value: aws.String(inputs.receiptKey)},

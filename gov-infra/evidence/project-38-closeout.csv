@@ -1,0 +1,3 @@
+csr_id,severity,repo,title,disposition,evidence_pr,regression_test,closed_at
+CSR-020,low,lesser-host,Redaction verifier skips secrets embedded in arrays,fix,equaltoai/lesser-host#370,TestRunCLI_FailsOnSecretValueInArray+TestRunCLI_FailsOnLongSecretValueInArray+TestRunCLI_FailsOnDisallowedKeyInNestedArrayElement+TestRunCLI_PassesWhenArrayContainsOnlySafeValues,
+CSR-022,low,lesser-host,CMP-4 verifier can be bypassed with insecure wording,fix,equaltoai/lesser-host#370,assert_negative_fixture_rejected expanded fixture with circumlocution variants,

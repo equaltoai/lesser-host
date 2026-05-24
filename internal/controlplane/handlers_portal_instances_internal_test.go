@@ -963,7 +963,10 @@ func TestPortalProvisioningHandlers_ReturnExistingAndNewJob(t *testing.T) {
 
 	tdb := newPortalTestDB()
 	s := &Server{
-		cfg:   config.Config{ManagedLesserDefaultVersion: "v1.2.6"},
+		cfg: config.Config{
+			ManagedLesserDefaultVersion:             "v1.2.6",
+			ManagedProvisionConsentEncryptionKeyHex: "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+		},
 		store: store.New(tdb.db),
 	}
 

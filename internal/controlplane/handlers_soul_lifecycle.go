@@ -21,6 +21,7 @@ type soulArchiveRequest struct {
 	Reason    string `json:"reason,omitempty"`
 	Timestamp string `json:"timestamp"`
 	Signature string `json:"signature"`
+	Nonce     string `json:"continuity_nonce"`
 }
 
 type soulDesignateSuccessorRequest struct {
@@ -29,17 +30,20 @@ type soulDesignateSuccessorRequest struct {
 	Timestamp        string `json:"timestamp"`
 	PredecessorSig   string `json:"predecessor_signature"`
 	SuccessorSig     string `json:"successor_signature"`
+	Nonce            string `json:"continuity_nonce"`
 }
 
 type soulArchiveBeginResponse struct {
-	Version string               `json:"version"`
-	Entry   soulContinuityToSign `json:"entry"`
+	Version         string               `json:"version"`
+	Entry           soulContinuityToSign `json:"entry"`
+	ContinuityNonce string               `json:"continuity_nonce"`
 }
 
 type soulDesignateSuccessorBeginResponse struct {
 	Version          string               `json:"version"`
 	PredecessorEntry soulContinuityToSign `json:"predecessor_entry"`
 	SuccessorEntry   soulContinuityToSign `json:"successor_entry"`
+	ContinuityNonce  string               `json:"continuity_nonce"`
 }
 
 type soulContinuityToSign struct {
@@ -93,14 +97,19 @@ func (s *Server) handleSoulArchiveAgentBegin(ctx *apptheory.Context) (*apptheory
 	timestamp := canonicalSoulSignedTimestamp(now)
 	summary := soulContinuitySummaryArchived
 	references := []string{fmt.Sprintf("agent:%s", agentIDHex)}
+	continuityNonce, appErr := newSoulContinuityNonce()
+	if appErr != nil {
+		return nil, appErr
+	}
 
-	digest, appErr := computeSoulContinuityEntryDigest(models.SoulContinuityEntryTypeArchived, timestamp, summary, "", references)
+	digest, appErr := computeSoulContinuityEntryDigest(models.SoulContinuityEntryTypeArchived, timestamp, summary, "", references, continuityNonce)
 	if appErr != nil {
 		return nil, appErr
 	}
 
 	return apptheory.JSON(http.StatusOK, soulArchiveBeginResponse{
-		Version: "1",
+		Version:         "1",
+		ContinuityNonce: continuityNonce,
 		Entry: soulContinuityToSign{
 			AgentID:    agentIDHex,
 			Type:       models.SoulContinuityEntryTypeArchived,
@@ -138,7 +147,7 @@ func (s *Server) handleSoulArchiveAgent(ctx *apptheory.Context) (*apptheory.Resp
 		return nil, statusErr
 	}
 
-	reason, parsedTS, timestampCanonical, sig, appErr := parseSoulArchiveRequestBody(ctx)
+	reason, parsedTS, timestampCanonical, sig, continuityNonce, appErr := parseSoulArchiveRequestBody(ctx)
 	if appErr != nil {
 		return nil, appErr
 	}
@@ -147,7 +156,7 @@ func (s *Server) handleSoulArchiveAgent(ctx *apptheory.Context) (*apptheory.Resp
 
 	// Verify archive continuity signature (EIP-191 over keccak256(JCS(unsignedEntry))).
 	continuitySummary, continuityRefs := soulArchiveContinuityPayload(agentIDHex)
-	contDigest, appErr := computeSoulContinuityEntryDigest(models.SoulContinuityEntryTypeArchived, timestampCanonical, continuitySummary, "", continuityRefs)
+	contDigest, appErr := computeSoulContinuityEntryDigest(models.SoulContinuityEntryTypeArchived, timestampCanonical, continuitySummary, "", continuityRefs, continuityNonce)
 	if appErr != nil {
 		return nil, appErr
 	}
@@ -229,7 +238,11 @@ func (s *Server) handleSoulDesignateSuccessorBegin(ctx *apptheory.Context) (*app
 		return nil, successorErr
 	}
 
-	beginResp, appErr := buildSoulDesignateSuccessorBeginResponse(agentIDHex, successorIDHex, canonicalSoulSignedTimestamp(time.Now().UTC()))
+	continuityNonce, nonceErr := newSoulContinuityNonce()
+	if nonceErr != nil {
+		return nil, nonceErr
+	}
+	beginResp, appErr := buildSoulDesignateSuccessorBeginResponse(agentIDHex, successorIDHex, canonicalSoulSignedTimestamp(time.Now().UTC()), continuityNonce)
 	if appErr != nil {
 		return nil, appErr
 	}
@@ -262,7 +275,7 @@ func (s *Server) handleSoulDesignateSuccessor(ctx *apptheory.Context) (*apptheor
 		return nil, statusErr
 	}
 
-	successorIDHex, reason, parsedTS, timestampCanonical, predSig, succSig, appErr := parseSoulDesignateSuccessorRequestBody(ctx, agentIDHex)
+	successorIDHex, reason, parsedTS, timestampCanonical, predSig, succSig, continuityNonce, appErr := parseSoulDesignateSuccessorRequestBody(ctx, agentIDHex)
 	if appErr != nil {
 		return nil, appErr
 	}
@@ -275,7 +288,7 @@ func (s *Server) handleSoulDesignateSuccessor(ctx *apptheory.Context) (*apptheor
 	now := time.Now().UTC()
 
 	declaredSummary, declaredRefs, receivedSummary, receivedRefs := soulSuccessionContinuityPayloads(agentIDHex, successorIDHex)
-	declaredDigest, appErr := computeSoulContinuityEntryDigest(models.SoulContinuityEntryTypeSuccessionDeclared, timestampCanonical, declaredSummary, "", declaredRefs)
+	declaredDigest, appErr := computeSoulContinuityEntryDigest(models.SoulContinuityEntryTypeSuccessionDeclared, timestampCanonical, declaredSummary, "", declaredRefs, continuityNonce)
 	if appErr != nil {
 		return nil, appErr
 	}
@@ -283,7 +296,7 @@ func (s *Server) handleSoulDesignateSuccessor(ctx *apptheory.Context) (*apptheor
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid predecessor continuity signature"}
 	}
 
-	receivedDigest, appErr := computeSoulContinuityEntryDigest(models.SoulContinuityEntryTypeSuccessionReceived, timestampCanonical, receivedSummary, "", receivedRefs)
+	receivedDigest, appErr := computeSoulContinuityEntryDigest(models.SoulContinuityEntryTypeSuccessionReceived, timestampCanonical, receivedSummary, "", receivedRefs, continuityNonce)
 	if appErr != nil {
 		return nil, appErr
 	}
@@ -375,25 +388,30 @@ func validateSoulLifecycleMutableStatus(identity *models.SoulAgentIdentity, acti
 	return &apptheory.AppError{Code: "app.conflict", Message: fmt.Sprintf("only active or self-suspended agents can %s", strings.TrimSpace(action))}
 }
 
-func parseSoulArchiveRequestBody(ctx *apptheory.Context) (reason string, parsedTS time.Time, timestampCanonical string, sig string, appErr *apptheory.AppError) {
+func parseSoulArchiveRequestBody(ctx *apptheory.Context) (reason string, parsedTS time.Time, timestampCanonical string, sig string, continuityNonce string, appErr *apptheory.AppError) {
 	var req soulArchiveRequest
 	_ = httpx.ParseJSON(ctx, &req)
 
 	reason = strings.TrimSpace(req.Reason)
 	tsRaw := strings.TrimSpace(req.Timestamp)
 	if tsRaw == "" {
-		return "", time.Time{}, "", "", &apptheory.AppError{Code: "app.bad_request", Message: "timestamp is required"}
+		return "", time.Time{}, "", "", "", &apptheory.AppError{Code: "app.bad_request", Message: "timestamp is required"}
 	}
 	parsedTS, timestampCanonical, appErr = parseAndValidateSoulContinuityTimestamp(tsRaw)
 	if appErr != nil {
-		return "", time.Time{}, "", "", appErr
+		return "", time.Time{}, "", "", "", appErr
 	}
 
 	sig = strings.TrimSpace(req.Signature)
 	if sig == "" {
-		return "", time.Time{}, "", "", &apptheory.AppError{Code: "app.bad_request", Message: "signature is required"}
+		return "", time.Time{}, "", "", "", &apptheory.AppError{Code: "app.bad_request", Message: "signature is required"}
 	}
-	return reason, parsedTS, timestampCanonical, sig, nil
+
+	continuityNonce = strings.TrimSpace(req.Nonce)
+	if continuityNonce == "" {
+		return "", time.Time{}, "", "", "", &apptheory.AppError{Code: "app.bad_request", Message: "continuity_nonce is required"}
+	}
+	return reason, parsedTS, timestampCanonical, sig, continuityNonce, nil
 }
 
 func parseSoulSuccessorAgentID(ctx *apptheory.Context, agentIDHex string) (string, *apptheory.AppError) {
@@ -410,42 +428,55 @@ func parseSoulSuccessorAgentID(ctx *apptheory.Context, agentIDHex string) (strin
 	return normalizeSoulSuccessorAgentID(req.SuccessorAgentID, agentIDHex)
 }
 
-func parseSoulDesignateSuccessorRequestBody(ctx *apptheory.Context, agentIDHex string) (successorIDHex string, reason string, parsedTS time.Time, timestampCanonical string, predSig string, succSig string, appErr *apptheory.AppError) {
+func parseSoulDesignateSuccessorRequestBody(ctx *apptheory.Context, agentIDHex string) (successorIDHex string, reason string, parsedTS time.Time, timestampCanonical string, predSig string, succSig string, continuityNonce string, appErr *apptheory.AppError) {
 	var req soulDesignateSuccessorRequest
 	if parseErr := httpx.ParseJSON(ctx, &req); parseErr != nil {
 		parsedAppErr, ok := parseErr.(*apptheory.AppError)
 		if !ok {
-			return "", "", time.Time{}, "", "", "", &apptheory.AppError{Code: "app.bad_request", Message: parseErr.Error()}
+			return "", "", time.Time{}, "", "", "", "", &apptheory.AppError{Code: "app.bad_request", Message: parseErr.Error()}
 		}
-		return "", "", time.Time{}, "", "", "", parsedAppErr
+		return "", "", time.Time{}, "", "", "", "", parsedAppErr
 	}
 
 	successorIDHex, appErr = normalizeSoulSuccessorAgentID(req.SuccessorAgentID, agentIDHex)
 	if appErr != nil {
-		return "", "", time.Time{}, "", "", "", appErr
+		return "", "", time.Time{}, "", "", "", "", appErr
 	}
 
 	reason = strings.TrimSpace(req.Reason)
 	tsRaw := strings.TrimSpace(req.Timestamp)
 	if tsRaw == "" {
-		return "", "", time.Time{}, "", "", "", &apptheory.AppError{Code: "app.bad_request", Message: "timestamp is required"}
+		return "", "", time.Time{}, "", "", "", "", &apptheory.AppError{Code: "app.bad_request", Message: "timestamp is required"}
 	}
 	parsedTS, timestampCanonical, appErr = parseAndValidateSoulContinuityTimestamp(tsRaw)
 	if appErr != nil {
-		return "", "", time.Time{}, "", "", "", appErr
+		return "", "", time.Time{}, "", "", "", "", appErr
 	}
 
 	predSig = strings.TrimSpace(req.PredecessorSig)
 	if predSig == "" {
-		return "", "", time.Time{}, "", "", "", &apptheory.AppError{Code: "app.bad_request", Message: "predecessor_signature is required"}
+		return "", "", time.Time{}, "", "", "", "", &apptheory.AppError{Code: "app.bad_request", Message: "predecessor_signature is required"}
 	}
 
 	succSig = strings.TrimSpace(req.SuccessorSig)
 	if succSig == "" {
-		return "", "", time.Time{}, "", "", "", &apptheory.AppError{Code: "app.bad_request", Message: "successor_signature is required"}
+		return "", "", time.Time{}, "", "", "", "", &apptheory.AppError{Code: "app.bad_request", Message: "successor_signature is required"}
 	}
 
-	return successorIDHex, reason, parsedTS, timestampCanonical, predSig, succSig, nil
+	continuityNonce = strings.TrimSpace(req.Nonce)
+	if continuityNonce == "" {
+		return "", "", time.Time{}, "", "", "", "", &apptheory.AppError{Code: "app.bad_request", Message: "continuity_nonce is required"}
+	}
+
+	return successorIDHex, reason, parsedTS, timestampCanonical, predSig, succSig, continuityNonce, nil
+}
+
+func newSoulContinuityNonce() (string, *apptheory.AppError) {
+	nonce, err := newToken(32)
+	if err != nil {
+		return "", &apptheory.AppError{Code: "app.internal", Message: "failed to generate nonce"}
+	}
+	return nonce, nil
 }
 
 func normalizeSoulSuccessorAgentID(successorAgentID string, agentIDHex string) (string, *apptheory.AppError) {
@@ -497,20 +528,21 @@ func soulSuccessionContinuityPayloads(agentIDHex string, successorIDHex string) 
 		[]string{fmt.Sprintf("agent:%s", successorIDHex), fmt.Sprintf("predecessor:%s", agentIDHex)}
 }
 
-func buildSoulDesignateSuccessorBeginResponse(agentIDHex string, successorIDHex string, timestamp string) (soulDesignateSuccessorBeginResponse, *apptheory.AppError) {
+func buildSoulDesignateSuccessorBeginResponse(agentIDHex string, successorIDHex string, timestamp string, continuityNonce string) (soulDesignateSuccessorBeginResponse, *apptheory.AppError) {
 	declaredSummary, declaredRefs, receivedSummary, receivedRefs := soulSuccessionContinuityPayloads(agentIDHex, successorIDHex)
 
-	declaredDigest, appErr := computeSoulContinuityEntryDigest(models.SoulContinuityEntryTypeSuccessionDeclared, timestamp, declaredSummary, "", declaredRefs)
+	declaredDigest, appErr := computeSoulContinuityEntryDigest(models.SoulContinuityEntryTypeSuccessionDeclared, timestamp, declaredSummary, "", declaredRefs, continuityNonce)
 	if appErr != nil {
 		return soulDesignateSuccessorBeginResponse{}, appErr
 	}
-	receivedDigest, appErr := computeSoulContinuityEntryDigest(models.SoulContinuityEntryTypeSuccessionReceived, timestamp, receivedSummary, "", receivedRefs)
+	receivedDigest, appErr := computeSoulContinuityEntryDigest(models.SoulContinuityEntryTypeSuccessionReceived, timestamp, receivedSummary, "", receivedRefs, continuityNonce)
 	if appErr != nil {
 		return soulDesignateSuccessorBeginResponse{}, appErr
 	}
 
 	return soulDesignateSuccessorBeginResponse{
-		Version: "1",
+		Version:         "1",
+		ContinuityNonce: continuityNonce,
 		PredecessorEntry: soulContinuityToSign{
 			AgentID:    agentIDHex,
 			Type:       models.SoulContinuityEntryTypeSuccessionDeclared,

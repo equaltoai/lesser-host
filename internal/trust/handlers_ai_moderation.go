@@ -241,6 +241,19 @@ func (s *Server) handleAIModerationImageReport(ctx *apptheory.Context) (*apptheo
 	return s.handleAIModerationImageTriggered(ctx, "moderation.scan.report")
 }
 
+// handleAIModerationImageTriggered enforces this ordering contract (CSR-018):
+//  1. Parse and validate the request (no side effects).
+//  2. Policy checks (AI enabled, moderation enabled, trigger policy).
+//  3. Budget precheck (query InstanceBudgetMonth; abort if over budget with
+//     overagePolicy=block).
+//  4. Image ingest (fetch URL, validate content-type, store to S3 artifact
+//     bucket).
+//  5. Queue the AI job.
+//
+// Steps 2 and 3 run before step 4 so that image ingest (the most expensive
+// side effect) is never reached when policy or budget would refuse the
+// request. This ordering was verified against the current code on 2026-05-23
+// and CSR-018 is recorded as false-positive.
 func (s *Server) handleAIModerationImageTriggered(ctx *apptheory.Context, action string) (*apptheory.Response, error) {
 	if s.artifacts == nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "artifact store not configured"}

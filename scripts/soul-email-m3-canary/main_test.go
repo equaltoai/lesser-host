@@ -155,6 +155,74 @@ func TestRunCLI_FailsWhenIdentityLookupEmailShowsLegacyAlias(t *testing.T) {
 	}
 }
 
+func TestRunCLI_FailsOnSecretValueInArray(t *testing.T) {
+	// CSR-020 regression: secrets embedded in JSON arrays must be caught.
+	// The valid fixture's public_email_addresses array contains only email addresses.
+	// Inject a bearer token into the array — this must trigger a redaction failure.
+	fixture := strings.Replace(validCanaryEvidenceJSON(),
+		`"public_email_addresses": ["pilot.simulacrum@lessersoul.ai"]`,
+		`"public_email_addresses": ["pilot.simulacrum@lessersoul.ai", "Bearer sk-1234567890abcdef1234567890abcdef"]`, 1)
+	path := writeCanaryFixture(t, fixture)
+	var stdout bytes.Buffer
+	code := runCLI([]string{"--stage", "lab", "--evidence", path, "--require-legacy-alias"},
+		func(string) string { return "" }, &stdout, &bytes.Buffer{}, time.Date(2026, 5, 22, 15, 0, 0, 0, time.UTC))
+	if code != 2 {
+		t.Fatalf("expected redaction failure exit 2 (bearer token in array), got %d stdout=%s", code, stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "redaction") {
+		t.Fatalf("expected redaction issue for bearer token in array, got %s", stdout.String())
+	}
+}
+
+func TestRunCLI_FailsOnLongSecretValueInArray(t *testing.T) {
+	// CSR-020 regression: long token-like strings (>=80 chars, no spaces, few hyphens)
+	// embedded in arrays must be caught by looksLikeSecretValue.
+	longToken := strings.Repeat("a", 80)
+	fixture := strings.Replace(validCanaryEvidenceJSON(),
+		`"public_email_addresses": ["pilot.simulacrum@lessersoul.ai"]`,
+		`"public_email_addresses": ["pilot.simulacrum@lessersoul.ai", "`+longToken+`"]`, 1)
+	path := writeCanaryFixture(t, fixture)
+	var stdout bytes.Buffer
+	code := runCLI([]string{"--stage", "lab", "--evidence", path, "--require-legacy-alias"},
+		func(string) string { return "" }, &stdout, &bytes.Buffer{}, time.Date(2026, 5, 22, 15, 0, 0, 0, time.UTC))
+	if code != 2 {
+		t.Fatalf("expected redaction failure exit 2 (long token in array), got %d stdout=%s", code, stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "redaction") {
+		t.Fatalf("expected redaction issue for long token in array, got %s", stdout.String())
+	}
+}
+
+func TestRunCLI_FailsOnDisallowedKeyInNestedArrayElement(t *testing.T) {
+	// CSR-020 regression: if a map inside an array contains a disallowed key
+	// (e.g., "token"), the redaction verifier must catch it.
+	fixture := strings.Replace(validCanaryEvidenceJSON(),
+		`"legacy_address_advertised": false`,
+		`"legacy_address_advertised": false, "extra_metadata": [{"token": "abc123", "note": "test"}]`, 1)
+	path := writeCanaryFixture(t, fixture)
+	var stdout bytes.Buffer
+	code := runCLI([]string{"--stage", "lab", "--evidence", path, "--require-legacy-alias"},
+		func(string) string { return "" }, &stdout, &bytes.Buffer{}, time.Date(2026, 5, 22, 15, 0, 0, 0, time.UTC))
+	if code != 2 {
+		t.Fatalf("expected redaction failure exit 2 (disallowed key in array element), got %d stdout=%s", code, stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "redaction") {
+		t.Fatalf("expected redaction issue for disallowed key in array element, got %s", stdout.String())
+	}
+}
+
+func TestRunCLI_PassesWhenArrayContainsOnlySafeValues(t *testing.T) {
+	// CSR-020 regression: the original valid fixture with safe array values
+	// must still pass (no false positives from array element visiting).
+	path := writeCanaryFixture(t, validCanaryEvidenceJSON())
+	var stdout bytes.Buffer
+	code := runCLI([]string{"--stage", "lab", "--evidence", path, "--require-legacy-alias", "--require-body-mcp", "--require-unknown-alias"},
+		func(string) string { return "" }, &stdout, &bytes.Buffer{}, time.Date(2026, 5, 22, 15, 0, 0, 0, time.UTC))
+	if code != 0 {
+		t.Fatalf("expected pass for safe array values, got exit %d stdout=%s", code, stdout.String())
+	}
+}
+
 func writeCanaryFixture(t *testing.T, content string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "m3-canary.json")

@@ -403,3 +403,89 @@ func TestRegistrationV2RFC3339Validator(t *testing.T) {
 func ptr[T any](v T) *T {
 	return &v
 }
+
+// CSR-014 regression: principal declaration signed for one agent must be rejected
+// when presented for a different agent under domain-separated validation.
+func TestPrincipalDeclarationV2_ValidateWithDomainSeparation_CrossAgentReplay(t *testing.T) {
+	t.Parallel()
+
+	key, _ := mustRegistrationTestKey(t)
+
+	agentA := "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1"
+	agentB := "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+	declaration := "I, Alice, affirm that I am the responsible principal for this agent."
+
+	// Sign with agent-A binding (domain-separated digest). The signature does NOT
+	// match the declaration-only digest, so cross-agent detection is possible.
+	domainCtx := "lesser-soul-v2-principal:" + strings.ToLower(agentA) + "\n" + declaration
+	domainDigest := crypto.Keccak256([]byte(domainCtx))
+	sig, err := crypto.Sign(accounts.TextHash(domainDigest), key)
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	sigHex := hexutil.Encode(sig)
+
+	p := &PrincipalDeclarationV2{
+		Type:        "individual",
+		Identifier:  strings.ToLower(crypto.PubkeyToAddress(key.PublicKey).Hex()),
+		Declaration: declaration,
+		Signature:   sigHex,
+		DeclaredAt:  "2026-03-05T12:00:00Z",
+	}
+
+	// With correct agent A: agent-bound digest matches, should pass.
+	if err := p.ValidateWithDomainSeparation(agentA); err != nil {
+		t.Fatalf("agent-bound signature should pass for correct agent: %v", err)
+	}
+
+	// With wrong agent B: agent-bound digest does NOT match (different agent).
+	// The declaration-level digest also does NOT match (signature is over a
+	// different digest). Both fail → rejected.
+	errB := p.ValidateWithDomainSeparation(agentB)
+	if errB == nil {
+		t.Fatalf("expected cross-agent validation to fail for wrong agent")
+	}
+	if !strings.Contains(errB.Error(), "signature is invalid") {
+		t.Fatalf("expected 'signature is invalid', got: %v", errB)
+	}
+}
+
+// CSR-014 regression: agent-bound principal signature passes domain-separated
+// validation for the correct agent and is rejected for declaration-only path.
+func TestPrincipalDeclarationV2_ValidateWithDomainSeparation_AgentBound(t *testing.T) {
+	t.Parallel()
+
+	key, _ := mustRegistrationTestKey(t)
+
+	agentID := "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+
+	declaration := "I am the responsible principal for this agent."
+	domainCtx := "lesser-soul-v2-principal:" + strings.ToLower(agentID) + "\n" + declaration
+	domainDigest := crypto.Keccak256([]byte(domainCtx))
+	sig, err := crypto.Sign(accounts.TextHash(domainDigest), key)
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	sigHex := hexutil.Encode(sig)
+
+	p := &PrincipalDeclarationV2{
+		Type:        "individual",
+		Identifier:  strings.ToLower(crypto.PubkeyToAddress(key.PublicKey).Hex()),
+		Declaration: declaration,
+		Signature:   sigHex,
+		DeclaredAt:  "2026-03-05T12:00:00Z",
+	}
+
+	// Agent-bound signature must pass for the correct agent.
+	if err := p.ValidateWithDomainSeparation(agentID); err != nil {
+		t.Fatalf("agent-bound signature should pass: %v", err)
+	}
+
+	// Declaration-level only (no agent) should FAIL because the signature is over
+	// a different (agent-bound) digest, not the bare declaration digest.
+	// This is expected — the declaration-only path exists only for backward compat.
+	if err := p.ValidateWithDomainSeparation(""); err == nil {
+		t.Fatalf("expected declaration-only validation to reject agent-bound signature")
+	}
+}

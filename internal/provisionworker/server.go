@@ -296,7 +296,9 @@ func provisionJobHasConsentArtifacts(job *models.ProvisionJob) bool {
 	if job == nil {
 		return false
 	}
-	return strings.TrimSpace(job.ConsentMessage) != "" || strings.TrimSpace(job.ConsentSignature) != ""
+	return strings.TrimSpace(job.ConsentMessage) != "" ||
+		strings.TrimSpace(job.ConsentSignature) != "" ||
+		strings.TrimSpace(job.ConsentEncrypted) != ""
 }
 
 func provisionJobConsentExpired(job *models.ProvisionJob, now time.Time) bool {
@@ -743,6 +745,20 @@ func (s *Server) advanceProvisionQueued(ctx context.Context, job *models.Provisi
 
 func (s *Server) advanceProvisionAccountCreate(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {
 	if strings.TrimSpace(job.AccountID) != "" {
+		// CSR-012: Validate adopted account before transitioning to account.move.
+		// An adopted account (AccountID set but no AccountRequestID) must be
+		// verified against Organizations expectations before any move or
+		// assume-role side effects occur. Failing early at account.create
+		// prevents the state machine from proceeding through OU move and
+		// assume-role steps on an invalid adopted account.
+		if strings.TrimSpace(job.AccountRequestID) == "" {
+			if delay, done, err := s.validateAdoptedProvisionAccount(ctx, job, requestID, now); err != nil || done || delay > 0 {
+				return delay, done, err
+			}
+			if jobFailed := strings.ToLower(strings.TrimSpace(job.Status)) == models.ProvisionJobStatusError; jobFailed {
+				return 0, true, nil
+			}
+		}
 		return s.advanceToAccountMove(ctx, job, requestID, now, "AWS account allocated")
 	}
 	if strings.TrimSpace(job.AccountRequestID) == "" {
@@ -979,6 +995,13 @@ func (s *Server) handleAccountCreateEmailExists(
 func (s *Server) advanceProvisionAccountMove(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {
 	if delay, done, err := s.validateAdoptedProvisionAccount(ctx, job, requestID, now); err != nil || done || delay > 0 {
 		return delay, done, err
+	}
+	// CSR-012: validateAdoptedProvisionAccount may fail the job via failJob,
+	// which returns (0, false, nil) after persisting the failure. Check the
+	// in-memory status to avoid proceeding through OU move and assume-role
+	// steps on a job that has already been marked as error.
+	if jobFailed := strings.ToLower(strings.TrimSpace(job.Status)) == models.ProvisionJobStatusError; jobFailed {
+		return 0, true, nil
 	}
 
 	targetOu := strings.TrimSpace(s.cfg.ManagedTargetOrganizationalUnitID)
@@ -1531,7 +1554,38 @@ func (s *Server) rotateManagedInstanceKeySecret(ctx context.Context, job *models
 	return keyID, nil
 }
 
+// decryptConsentFromJob decrypts the encrypted consent field on the job,
+// unpacking the structured JSON payload into ConsentMessage and ConsentSignature.
+// Returns an error when the key is missing or decryption fails — the caller
+// should fail the job.
+func (s *Server) decryptConsentFromJob(job *models.ProvisionJob) error {
+	if strings.TrimSpace(job.ConsentEncrypted) == "" {
+		return nil
+	}
+	encKey, encKeyErr := ConsentEncryptionKeyHex(s.cfg.ManagedProvisionConsentEncryptionKeyHex)
+	if encKeyErr != nil {
+		return fmt.Errorf("consent decryption key: %w", encKeyErr)
+	}
+	decrypted, decErr := DecryptConsent(job.ConsentEncrypted, encKey)
+	if decErr != nil {
+		return fmt.Errorf("consent decrypt: %w", decErr)
+	}
+	// CSR-017: Use structured JSON unpacking instead of newline-delimited
+	// splitting so that message/signature separation is unambiguous even
+	// when the consent message contains newlines.
+	job.ConsentMessage, job.ConsentSignature = UnpackConsent([]byte(decrypted))
+	return nil
+}
+
 func (s *Server) advanceProvisionDeployStart(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {
+	// CSR-017: Decrypt consent from the encrypted at-rest field before
+	// validation and use. Legacy jobs with plaintext ConsentMessage /
+	// ConsentSignature (and empty ConsentEncrypted) are handled as-is.
+	if decErr := s.decryptConsentFromJob(job); decErr != nil {
+		clearProvisionJobConsentArtifacts(job)
+		return 0, false, s.failJob(ctx, job, requestID, now, "consent_decrypt_failed", decErr.Error())
+	}
+
 	if strings.TrimSpace(job.RunID) != "" {
 		job.Step = provisionStepDeployWait
 		job.Note = "deploy runner already started"
@@ -1598,6 +1652,7 @@ func clearProvisionJobConsentArtifacts(job *models.ProvisionJob) {
 	}
 	job.ConsentMessage = ""
 	job.ConsentSignature = ""
+	job.ConsentEncrypted = ""
 }
 
 func (s *Server) advanceProvisionDeployWait(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {
@@ -2390,7 +2445,10 @@ func (s *Server) buildDeployRunnerEnv(job *models.ProvisionJob, stage, receiptKe
 	if consentMessage != "" {
 		consentMessageB64 = base64.StdEncoding.EncodeToString([]byte(consentMessage))
 	}
-	consentSignature := strings.TrimSpace(job.ConsentSignature)
+	// Preserve exact consent signature bytes for the runner env —
+	// the signature was part of the signed payload and must not be
+	// trimmed before it reaches the deploy runner.
+	consentSignature := job.ConsentSignature
 
 	env := []cbtypes.EnvironmentVariable{
 		{Name: aws.String("JOB_ID"), Value: aws.String(strings.TrimSpace(job.ID))},
@@ -2405,6 +2463,7 @@ func (s *Server) buildDeployRunnerEnv(job *models.ProvisionJob, stage, receiptKe
 		{Name: aws.String("TARGET_ACCOUNT_ID"), Value: aws.String(strings.TrimSpace(job.AccountID))},
 		{Name: aws.String("TARGET_ROLE_NAME"), Value: aws.String(strings.TrimSpace(job.AccountRoleName))},
 		{Name: aws.String("TARGET_REGION"), Value: aws.String(strings.TrimSpace(job.Region))},
+		{Name: aws.String("DEPLOY_EXTERNAL_ID"), Value: aws.String(deployRunnerExternalID(strings.TrimSpace(job.InstanceSlug)))},
 		{Name: aws.String("LESSER_VERSION"), Value: aws.String(strings.TrimSpace(job.LesserVersion))},
 		{Name: aws.String("ARTIFACT_BUCKET"), Value: aws.String(strings.TrimSpace(s.cfg.ArtifactBucketName))},
 		{Name: aws.String("RECEIPT_S3_KEY"), Value: aws.String(receiptKey)},
