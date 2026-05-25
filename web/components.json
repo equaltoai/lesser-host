@@ -84,6 +84,13 @@
       "installedAt": "2026-05-25T05:07:35.219Z",
       "modified": false,
       "checksums": []
+    },
+    {
+      "name": "host-platform",
+      "version": "4b1e36473544ee640a6a3dd429139323c75d56c3",
+      "installedAt": "2026-05-25T05:13:30.723Z",
+      "modified": false,
+      "checksums": []
     }
   ]
 }
