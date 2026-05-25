@@ -8,12 +8,13 @@
 #      (AuthType: AWS_IAM, origin access control present)
 #   2. /_facetheory/data/* routes to the S3 htmlStoreBucket (OAC-protected,
 #      GET/HEAD/OPTIONS only)
-#   3. /api/*, /auth/*, /setup/* routes to the control-plane-api Lambda
-#      Function URL (AuthType: NONE — bearer-auth in handler)
-#   4. /.well-known/* and /attestations/* routes to the trust-api Lambda
-#      Function URL (AuthType: NONE — bearer-auth in handler)
-#   5. Only the SSR default origin and the sidecar S3 origin carry OAC;
-#      bearer-auth origins do NOT carry OAC
+#   3. Every required bearer-auth cache behavior is present with exact
+#      PathPattern matching (no fuzzy fallback). The target origin must
+#      exist and must NOT carry OAC. Missing → FAIL.
+#   4. S3 origins (framework-driven by AppTheorySsrSite + our htmlStoreBucket
+#      sidecar) and the default SSR Function URL origin may carry OAC.
+#      Custom/HTTP bearer-auth origins must NOT carry OAC (auth is in the
+#      Lambda handler). Any Custom origin other than default with OAC → FAIL.
 #
 # Pass: all composition invariants hold. Fail: any drift detected.
 # No partial credit.
@@ -93,7 +94,7 @@ echo "CloudFront distribution: ${DISTRIBUTION_ID}"
 
 DIST=".Resources.${DISTRIBUTION_ID}.Properties.DistributionConfig"
 
-# --- Check 2: Default origin is OAC-protected Lambda Function URL ---
+# ── Check 2: Default origin is OAC-protected Lambda Function URL ──────────
 DEFAULT_ORIGIN_ID="$(jq -r "${DIST}.DefaultCacheBehavior.TargetOriginId" "${TEMPLATE_FILE}")"
 echo "Default origin ID: ${DEFAULT_ORIGIN_ID}"
 
@@ -115,21 +116,23 @@ DEFAULT_METHODS="$(jq -r "${DIST}.DefaultCacheBehavior.AllowedMethods // [] | jo
 echo "  AllowedMethods: ${DEFAULT_METHODS}"
 echo ""
 
-# --- Check 3: /_facetheory/data/* behavior routes to S3 htmlStoreBucket ---
+# ── Check 3: /_facetheory/data/* behavior ──────────────────────────────────
 SIDECAR_BEHAVIOR="$(jq -r "[${DIST}.CacheBehaviors[]? | select(.PathPattern == \"_facetheory/data/*\")] | .[0]" "${TEMPLATE_FILE}")"
+SIDECAR_ORIGIN_ID=""
+
 if [[ -z "${SIDECAR_BEHAVIOR}" || "${SIDECAR_BEHAVIOR}" == "null" ]]; then
   echo "FAIL: no CacheBehavior for _facetheory/data/*" >&2
   fail=1
 else
-  SIDECAR_ORIGIN="$(printf '%s' "${SIDECAR_BEHAVIOR}" | jq -r '.TargetOriginId')"
-  echo "/_facetheory/data/* → origin: ${SIDECAR_ORIGIN}"
+  SIDECAR_ORIGIN_ID="$(printf '%s' "${SIDECAR_BEHAVIOR}" | jq -r '.TargetOriginId')"
+  echo "/_facetheory/data/* → origin: ${SIDECAR_ORIGIN_ID}"
 
   # The sidecar origin should be S3 (check if it's an S3Origin or has S3 config).
-  SIDECAR_ORIGIN_TYPE="$(jq -r "${DIST}.Origins[] | select(.Id == \"${SIDECAR_ORIGIN}\") | if .S3OriginConfig then \"S3\" elif .CustomOriginConfig then \"Custom\" else \"Unknown\" end" "${TEMPLATE_FILE}")"
+  SIDECAR_ORIGIN_TYPE="$(jq -r "${DIST}.Origins[] | select(.Id == \"${SIDECAR_ORIGIN_ID}\") | if .S3OriginConfig then \"S3\" elif .CustomOriginConfig then \"Custom\" else \"Unknown\" end" "${TEMPLATE_FILE}")"
   echo "  origin type: ${SIDECAR_ORIGIN_TYPE}"
 
   # Sidecar origin should have OAC.
-  SIDECAR_OAC="$(jq -r "${DIST}.Origins[] | select(.Id == \"${SIDECAR_ORIGIN}\") | .OriginAccessControlId // \"none\"" "${TEMPLATE_FILE}")"
+  SIDECAR_OAC="$(jq -r "${DIST}.Origins[] | select(.Id == \"${SIDECAR_ORIGIN_ID}\") | .OriginAccessControlId // \"none\"" "${TEMPLATE_FILE}")"
   echo "  OAC: ${SIDECAR_OAC}"
   if [[ "${SIDECAR_OAC}" == "none" ]]; then
     echo "FAIL: _facetheory/data/* origin has no OAC" >&2
@@ -146,18 +149,26 @@ else
 fi
 echo ""
 
-# --- Check 4: /api/*, /auth/*, /setup/* route to control-plane Lambda (AuthType NONE) ---
+# ── Check 4: Required bearer-auth behaviors ────────────────────────────────
+#
+# Every pattern below must be present in the CloudFront distribution as a
+# CacheBehavior with an exact PathPattern match. The target origin must exist
+# and must NOT carry OriginAccessControl (bearer-auth = AuthType NONE in
+# handler; OAC belongs only on the SSR and sidecar origins).
+#
+# Patterns are sourced from cdk/lib/lesser-host-stack.ts attachBearerBehavior()
+# calls. Missing any required behavior is a FAIL (fail-closed).
+
 check_bearer_auth_behavior() {
   local pattern="$1"
   local label="$2"
 
   local behavior
   behavior="$(jq -r "[${DIST}.CacheBehaviors[]? | select(.PathPattern == \"${pattern}\")] | .[0]" "${TEMPLATE_FILE}")"
+
   if [[ -z "${behavior}" || "${behavior}" == "null" ]]; then
-    behavior="$(jq -r "[${DIST}.CacheBehaviors[]? | select(.PathPattern | startswith(\"${pattern%'*'}\"))] | .[0]" "${TEMPLATE_FILE}")"
-  fi
-  if [[ -z "${behavior}" || "${behavior}" == "null" ]]; then
-    echo "  ${pattern}: not found (may be under wildcard)" >&2
+    echo "FAIL: required cache behavior '${pattern}' is missing (${label})" >&2
+    fail=1
     return 0
   fi
 
@@ -165,16 +176,20 @@ check_bearer_auth_behavior() {
   origin_id="$(printf '%s' "${behavior}" | jq -r '.TargetOriginId')"
   echo "${pattern} → origin: ${origin_id}"
 
-  # Check the origin is a Lambda Function URL (CustomOrigin with FunctionURL domain).
-  local origin_domain
-  origin_domain="$(jq -r "${DIST}.Origins[] | select(.Id == \"${origin_id}\") | .DomainName // \"\"" "${TEMPLATE_FILE}")"
-  echo "  domain: ${origin_domain}"
+  # Verify the target origin exists in the Origins array.
+  local origin_exists
+  origin_exists="$(jq -r "[${DIST}.Origins[] | select(.Id == \"${origin_id}\")] | length" "${TEMPLATE_FILE}")"
+  if [[ "${origin_exists}" -eq 0 ]]; then
+    echo "FAIL: origin '${origin_id}' referenced by '${pattern}' not found in Origins array" >&2
+    fail=1
+    return 0
+  fi
 
-  # Bearer-auth origins should NOT have OAC.
+  # Bearer-auth origins must NOT have OAC.
   local oac
   oac="$(jq -r "${DIST}.Origins[] | select(.Id == \"${origin_id}\") | .OriginAccessControlId // \"none\"" "${TEMPLATE_FILE}")"
   if [[ "${oac}" != "none" ]]; then
-    echo "FAIL: ${pattern} origin has OAC (should be AuthType NONE for bearer-auth in handler)" >&2
+    echo "FAIL: ${pattern} origin '${origin_id}' has OAC (should be AuthType NONE for bearer-auth in handler)" >&2
     fail=1
   else
     echo "  OAC: none (bearer-auth, correct)"
@@ -182,22 +197,85 @@ check_bearer_auth_behavior() {
   echo ""
 }
 
-check_bearer_auth_behavior "api/*" "API (control-plane)"
-check_bearer_auth_behavior "auth/*" "Auth (control-plane)"
-check_bearer_auth_behavior "setup/status" "Setup (control-plane)"
-check_bearer_auth_behavior ".well-known/*" "Trust API (.well-known)"
-check_bearer_auth_behavior "attestations" "Trust API (attestations)"
-check_bearer_auth_behavior "attestations/*" "Trust API (attestations/*)"
+echo "--- Bearer-auth cache behavior verification ---"
+echo ""
 
-# --- Check 5: No OAC on non-default, non-sidecar origins ---
-echo "--- Origin access control audit ---"
-DEFAULT_OAC="$(jq -r "${DIST}.Origins[] | select(.Id == \"${DEFAULT_ORIGIN_ID}\") | .OriginAccessControlId // \"\"" "${TEMPLATE_FILE}")"
+# ── Trust API paths (trustOrigin) ──
+check_bearer_auth_behavior "api/v1/previews*"    "trust-api previews"
+check_bearer_auth_behavior "api/v1/renders*"     "trust-api renders"
+check_bearer_auth_behavior "api/v1/trust/*"      "trust-api trust"
+check_bearer_auth_behavior "api/v1/publish/jobs*" "trust-api publish jobs"
+check_bearer_auth_behavior "api/v1/soul/agents/*/update-registration" "trust-api update-registration"
+check_bearer_auth_behavior "api/v1/ai/*"         "trust-api AI"
+check_bearer_auth_behavior "api/v1/budget/debit"  "trust-api budget debit"
+
+# ── Control-plane SSE paths (controlPlaneSseOrigin) ──
+check_bearer_auth_behavior "api/v1/soul/agents/register/*/mint-conversation*" "control-plane SSE mint-conversation (register)"
+check_bearer_auth_behavior "api/v1/soul/agents/*/mint-conversation*"          "control-plane SSE mint-conversation"
+
+# ── Control-plane HTTP API catch-all + auth + setup (controlPlaneOrigin) ──
+check_bearer_auth_behavior "api/*"               "control-plane API catch-all"
+check_bearer_auth_behavior "auth/*"              "control-plane auth"
+check_bearer_auth_behavior "setup/status"        "control-plane setup status"
+check_bearer_auth_behavior "setup/bootstrap/*"   "control-plane setup bootstrap"
+check_bearer_auth_behavior "setup/admin"         "control-plane setup admin"
+check_bearer_auth_behavior "setup/finalize"      "control-plane setup finalize"
+
+# ── Trust API .well-known + attestation paths (trustOrigin) ──
+check_bearer_auth_behavior ".well-known/*"       "trust-api .well-known"
+check_bearer_auth_behavior "attestations"         "trust-api attestations exact"
+check_bearer_auth_behavior "attestations/*"       "trust-api attestations wildcard"
+
+# ── Check 5: OAC enforcement ───────────────────────────────────────────────
+#
+# Invariant: OAC on a CloudFront origin means CloudFront signs requests before
+# forwarding. Bearer-auth origins (Custom/HTTP) carry their own auth in the
+# handler (bearer token, wallet challenge, WebAuthn); OAC would interfere.
+#
+# Allowed OAC carriers:
+#   - Default SSR origin (Function URL, OAC = AWS_IAM fail-closed)
+#   - S3 origins (framework-driven by AppTheorySsrSite; e.g. assets bucket,
+#     htmlStoreBucket sidecar)
+#
+# Forbidden: any Custom/HTTP origin (other than default) with OAC.
+# These are bearer-auth origins and must NOT be OAC-signed.
+#
+echo "--- Origin access control enforcement ---"
 ALL_ORIGIN_IDS="$(jq -r "${DIST}.Origins[].Id" "${TEMPLATE_FILE}")"
+
 while IFS= read -r oid; do
   [[ -z "${oid}" ]] && continue
   oac="$(jq -r "${DIST}.Origins[] | select(.Id == \"${oid}\") | .OriginAccessControlId // \"none\"" "${TEMPLATE_FILE}")"
   otype="$(jq -r "${DIST}.Origins[] | select(.Id == \"${oid}\") | if .S3OriginConfig then \"S3\" elif .CustomOriginConfig then \"Custom\" else \"Unknown\" end" "${TEMPLATE_FILE}")"
-  echo "  ${oid} (${otype}): OAC=${oac}"
+
+  if [[ "${oac}" == "none" ]]; then
+    echo "  ${oid} (${otype}): OAC=none"
+    continue
+  fi
+
+  # OAC is present. Determine if this is allowed.
+  case "${otype}" in
+    S3)
+      # S3 origins: OAC is expected (AppTheorySsrSite creates them internally
+      # for assets + we add htmlStoreBucket). Always allowed.
+      echo "  ${oid} (${otype}): OAC present (allowed: S3 origin)"
+      ;;
+    Custom)
+      if [[ "${oid}" == "${DEFAULT_ORIGIN_ID}" ]]; then
+        echo "  ${oid} (${otype}): OAC present (allowed: default SSR Function URL origin)"
+      else
+        echo "FAIL: Custom origin '${oid}' has OAC (forbidden for bearer-auth origins)" >&2
+        echo "  Bearer-auth origins must NOT carry OAC — auth is handled in the Lambda" >&2
+        echo "  handler via bearer token, wallet challenge, or WebAuthn." >&2
+        fail=1
+      fi
+      ;;
+    *)
+      # Unknown origin type with OAC: fail conservatively.
+      echo "FAIL: origin '${oid}' (${otype}) has unexpected OAC" >&2
+      fail=1
+      ;;
+  esac
 done <<< "${ALL_ORIGIN_IDS}"
 
 if [[ "${fail}" -ne 0 ]]; then
@@ -207,4 +285,4 @@ if [[ "${fail}" -ne 0 ]]; then
 fi
 
 echo ""
-echo "PASS: CloudFront distribution composition verified (SSR/OAC default, S3 sidecar, bearer-auth origins intact)"
+echo "PASS: CloudFront distribution composition verified (SSR/OAC default, S3 sidecar, 18 bearer-auth behaviors, OAC audit clean)"
