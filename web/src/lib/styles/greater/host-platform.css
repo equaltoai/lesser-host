@@ -1,0 +1,38 @@
+/* ============================================================================
+ * Greater Host-Platform — CSS bundle aggregator (host web/)
+ *
+ * Mirrors `tokens.css` / `primitives.css` / `shell.css`: a host-owned
+ * aggregator that `@import`s every CSS file shipped by the vendored
+ * `host-platform` package under `web/src/lib/greater/host-platform/`. The
+ * vendored files stay unmodified (canonical adoption — `components.json`
+ * records `modified: false`); the aggregator lives outside the vendored
+ * tree so `greater list` / re-vendoring never observes a host-side patch.
+ *
+ * Import order:
+ *   1. `styles/base.css` — defines `--gr-host-platform-*` token defaults
+ *      via low-specificity `:where(...)` selectors and ships a byte-for-byte
+ *      copy of the `.gr-sr-only` utility (mirroring the shell + primitives
+ *      bundles) so consumers importing only host-platform CSS still get
+ *      working visually-hidden announcement text for the CostGauge meter
+ *      and ActivitySparkline labels.
+ *   2. Component CSS files in alphabetical order. Each file scopes its
+ *      rules to its own `.gr-host-platform-<name>` root class; no
+ *      inter-CSS dependencies.
+ *
+ * Bonus components vendored in M0.8 (ProvisioningTimeline, ReleaseTimeline,
+ * StackMatrix) are M2-track surfaces but their CSS is included here so
+ * the bundle is complete and re-vendoring doesn't surface a CSS gap when
+ * those components get adopted by `web/src/lib/components/` wrappers in
+ * the M2 operator-console work.
+ *
+ * Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M0.8-M0.10
+ * Issues: equaltoai/lesser-host#388 / #389 / #390 (CSS adoption follow-up)
+ * ========================================================================== */
+
+@import '../../greater/host-platform/styles/base.css';
+@import '../../greater/host-platform/components/ActivitySparkline.css';
+@import '../../greater/host-platform/components/CostGauge.css';
+@import '../../greater/host-platform/components/FleetCard.css';
+@import '../../greater/host-platform/components/ProvisioningTimeline.css';
+@import '../../greater/host-platform/components/ReleaseTimeline.css';
+@import '../../greater/host-platform/components/StackMatrix.css';
