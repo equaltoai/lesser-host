@@ -1677,6 +1677,23 @@ export class LesserHostStack extends cdk.Stack {
 			distributionPaths: ['/*'],
 		});
 
+		// Deploy the static FaceTheory hydration sidecars to htmlStoreBucket
+		// at key prefix `_facetheory/data/` so CloudFront's /_facetheory/data/*
+		// behavior (which forwards the full URL path to S3 without OriginPath
+		// rewrite) finds each `<routeId>.json` at the expected key. Sources
+		// are produced by `web/scripts/build-sidecars.mjs` and bundled into
+		// `dist/sidecars/` during `npm run build` (see WebDeployment above).
+		new s3deploy.BucketDeployment(this, 'WebSidecarsDeployment', {
+			destinationBucket: htmlStoreBucket,
+			destinationKeyPrefix: '_facetheory/data',
+			sources: [
+				s3deploy.Source.asset(path.join(this.repoRoot(), 'web', 'dist', 'sidecars')),
+			],
+			distribution: webDistribution,
+			distributionPaths: ['/_facetheory/data/*'],
+			prune: true,
+		});
+
 		if (webZone && webCert) {
 			new route53.ARecord(this, 'WebAliasA', {
 				zone: webZone,
