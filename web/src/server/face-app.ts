@@ -1,8 +1,7 @@
 /* ============================================================================
  * FaceTheory server entry (host web/)
  *
- * Builds the host SSR FaceApp, wraps it with a `/_facetheory/data/*.json`
- * sidecar pre-router, and exposes the Lambda Function URL streaming
+ * Builds the host SSR FaceApp and exposes the Lambda Function URL streaming
  * handler. M0.4 ports every existing host page onto its own FaceModule via
  * the shell factory in `src/routes/_shell.ts`; the SSR Lambda emits a
  * strict-no-inline-CSP HTML shell + external hydration sidecar URL, and
@@ -10,15 +9,21 @@
  * keeps handling per-page routing and rendering. The M0.3 probe at
  * `/_facetheory/probe` is retained as a per-request health signal.
  *
- * Why a sidecar pre-router (FaceTheory v3.3.0 limitation): FaceTheory's
- * runtime always wraps FaceModule responses in `renderHTMLDocument(...)`
- * (see `app.js#toHTTPResponse`), so JSON sidecars cannot be served from a
- * FaceModule. ISR mode exposes `onHydrationSidecar` for persistence, but
- * SSR mode has no equivalent. The host-side pre-router below shells the
- * static `{routeId, route}` payload for `/_facetheory/data/<routeId>.json`
- * before delegating to the FaceApp. Captured as a framework-feedback
- * candidate (see memory note `mem-66a93e3b1c3a1ce1` for the related
- * client-bundle export-map signal).
+ * Sidecar serving (M0.12 — retires the 216fb96 in-memory pre-router):
+ *   - Each shell's hydration payload `{ routeId, route }` is deterministic
+ *     per routeId (no per-request data), so the JSON sidecars at
+ *     `/_facetheory/data/<routeId>.json` are pre-generated at web build
+ *     time (`web/scripts/build-sidecars.mjs`) and uploaded to the
+ *     FaceTheory ISR htmlStoreBucket via the CDK BucketDeployment.
+ *   - CloudFront's `/_facetheory/data/*` behavior (AppTheorySsrSite-managed
+ *     distribution, M0.12 CDK) serves the JSON directly from S3; the
+ *     SSR Lambda never sees those requests, which is the canonical
+ *     AppTheory/FaceTheory contract for static SSG hydration payloads.
+ *   - When host introduces shells whose hydration payload varies per-
+ *     request, the canonical createSsrHydrationSidecarStore +
+ *     `/_facetheory/ssr-data/<signed-token>` (Lambda-served, HMAC-signed
+ *     under TTL) takes over for those routes — that's a future per-route
+ *     opt-in, not a host-wide refactor.
  *
  * CSP posture (preserves host's canonical webCsp byte-string):
  *   - Each FaceModule sets `csp: { inlineScripts: false, inlineStyles: false,
@@ -64,7 +69,7 @@ import {
 	type ViteManifest,
 } from '@theory-cloud/facetheory';
 
-import { allRoutes, createShellFace, type ShellHydrationPayload } from '../routes/index';
+import { allRoutes, createShellFace } from '../routes/index';
 import type { FaceTheoryProbePayload } from '../client/face-client';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -107,8 +112,6 @@ const manifest = loadManifest();
 // the static sidecar pre-router below can serve `/_facetheory/data/probe.json`
 // without a per-request re-render. The HTML response still includes the
 // timestamp for human eyeballs during lab soak.
-
-const PROBE_ROUTE_ID = 'probe';
 
 const probeFace: FaceModule = {
 	route: PROBE_ROUTE,
@@ -156,125 +159,20 @@ const routeFaces: FaceModule[] = allRoutes.map((opts) =>
 
 export const app = createFaceApp({ faces: [probeFace, ...routeFaces] });
 
-// ─── Sidecar pre-router ───────────────────────────────────────────────────────
-//
-// Map routeId → the static hydration payload the SSR shells reference via
-// `externalHydrationForEntry({ dataUrl: '/_facetheory/data/<routeId>.json' })`.
-// FaceTheory's runtime only serves SSG/ISR sidecars natively; for SSR we
-// serve the JSON ourselves here so the dataUrl actually resolves.
-
-interface SidecarEntry {
-	readonly contentType: string;
-	readonly cacheControl: string;
-	readonly payload: ShellHydrationPayload | { route: string };
-}
-
-const SIDECAR_PATH_PREFIX = HYDRATION_DATA_URL_BASE; // '/_facetheory/data/'
-const SIDECAR_PATH_SUFFIX = '.json';
-const SIDECAR_CONTENT_TYPE = 'application/json; charset=utf-8';
-const SIDECAR_CACHE_CONTROL = 'no-store';
-
-const sidecarById: ReadonlyMap<string, SidecarEntry> = new Map(
-	[
-		// Real shell routes — static `{ routeId, route }` payload per routeId.
-		...allRoutes.map<readonly [string, SidecarEntry]>((r) => [
-			r.routeId,
-			{
-				contentType: SIDECAR_CONTENT_TYPE,
-				cacheControl: SIDECAR_CACHE_CONTROL,
-				payload: { routeId: r.routeId, route: r.route },
-			},
-		]),
-		// M0.3 probe route — sidecar holds only the route name (the request-
-		// time timestamp the probe's render emits is intentionally not in the
-		// sidecar so the URL stays deterministic).
-		[
-			PROBE_ROUTE_ID,
-			{
-				contentType: SIDECAR_CONTENT_TYPE,
-				cacheControl: SIDECAR_CACHE_CONTROL,
-				payload: { route: PROBE_ROUTE },
-			},
-		],
-	],
-);
-
-function isSidecarPath(path: string): boolean {
-	return path.startsWith(SIDECAR_PATH_PREFIX) && path.endsWith(SIDECAR_PATH_SUFFIX);
-}
-
-function resolveSidecarRouteId(path: string): string | null {
-	const tail = path.slice(SIDECAR_PATH_PREFIX.length, path.length - SIDECAR_PATH_SUFFIX.length);
-	// Reject path traversal / nested segments / empty tail — sidecar URLs are
-	// single-segment routeIds only.
-	if (!tail || tail.includes('/') || tail.includes('..')) {
-		return null;
-	}
-	return tail;
-}
-
-function makeJsonResponse(status: number, body: string, headers: Record<string, string>): FaceResponse {
-	const normalized: Record<string, string[]> = {};
-	for (const [k, v] of Object.entries(headers)) {
-		normalized[k.toLowerCase()] = [v];
-	}
-	return {
-		status,
-		headers: normalized,
-		cookies: [],
-		body: new TextEncoder().encode(body),
-		isBase64: false,
-	};
-}
-
-function handleSidecarRequest(req: FaceRequest): FaceResponse {
-	if (req.method !== 'GET' && req.method !== 'HEAD') {
-		return makeJsonResponse(
-			405,
-			JSON.stringify({ error: 'method_not_allowed' }),
-			{ 'content-type': SIDECAR_CONTENT_TYPE, allow: 'GET, HEAD' },
-		);
-	}
-	const routeId = resolveSidecarRouteId(req.path);
-	if (routeId === null) {
-		return makeJsonResponse(
-			404,
-			JSON.stringify({ error: 'not_found' }),
-			{ 'content-type': SIDECAR_CONTENT_TYPE },
-		);
-	}
-	const entry = sidecarById.get(routeId);
-	if (!entry) {
-		return makeJsonResponse(
-			404,
-			JSON.stringify({ error: 'unknown_route_id', routeId }),
-			{ 'content-type': SIDECAR_CONTENT_TYPE },
-		);
-	}
-	return makeJsonResponse(
-		200,
-		JSON.stringify(entry.payload),
-		{
-			'content-type': entry.contentType,
-			'cache-control': entry.cacheControl,
-		},
-	);
-}
-
 /**
- * Request handler that the Lambda streaming wrapper drives. Pre-routes
- * `/_facetheory/data/*.json` to the static sidecar map, then delegates
- * every other request to the FaceApp. Exported (alongside `app`) so unit
- * tests + the M0.16 web build-time verifier can exercise the full handler
- * tree without spinning up Lambda streaming.
+ * Request handler the Lambda streaming wrapper drives. The 216fb96
+ * `/_facetheory/data/*.json` in-memory pre-router has been retired in
+ * M0.12 (commit 8bf29e8): CloudFront now routes `/_facetheory/data/*`
+ * directly to S3 via the AppTheorySsrSite-managed distribution + the
+ * BucketDeployment of `web/scripts/build-sidecars.mjs` output to the
+ * htmlStoreBucket. The SSR Lambda no longer sees sidecar requests, so
+ * the handler is just `app.handle` (FaceApp request dispatch).
+ *
+ * Exported alongside `app` so unit tests + the M0.16 web build-time
+ * verifier can exercise the FaceApp without Lambda streaming.
  */
 export const requestHandler: { handle: (req: FaceRequest) => Promise<FaceResponse> } = {
-	async handle(req: FaceRequest): Promise<FaceResponse> {
-		if (isSidecarPath(req.path)) {
-			return handleSidecarRequest(req);
-		}
-		return app.handle(req);
-	},
+	handle: (req: FaceRequest): Promise<FaceResponse> => app.handle(req),
 };
 
 // ─── Lambda handler ───────────────────────────────────────────────────────────
