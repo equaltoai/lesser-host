@@ -64,7 +64,14 @@ mkdir -p "${EVIDENCE_DIR}"
 rm -f \
   "${REPORT_PATH}" \
   "${EVIDENCE_DIR}/"*-output.log \
-  "${EVIDENCE_DIR}/DOC-5-parity.log"
+  "${EVIDENCE_DIR}/DOC-5-parity.log" \
+  "${EVIDENCE_DIR}/SEC-5-output.log" \
+  "${EVIDENCE_DIR}/SEC-6-output.log" \
+  "${EVIDENCE_DIR}/SEC-7-output.log" \
+  "${EVIDENCE_DIR}/SEC-8-output.log" \
+  "${EVIDENCE_DIR}/SEC-9-output.log" \
+  "${EVIDENCE_DIR}/SEC-10-output.log" \
+  "${EVIDENCE_DIR}/CON-4-output.log"
 
 # Initialize report structure
 REPORT_SCHEMA_VERSION=1
@@ -2221,6 +2228,7 @@ run_check "QUA-3" "Quality" "$CMD_COVERAGE"
 run_check "CON-1" "Consistency" "$CMD_FMT"
 run_check "CON-2" "Consistency" "$CMD_LINT"
 run_check "CON-3" "Consistency" "$CMD_CONTRACT"
+run_check "CON-4" "Consistency" "bash ${GOV_INFRA}/verifiers/con/wire-mcp-route-ownership.sh"
 
 # === Completeness (COM) ===
 run_check "COM-1" "Completeness" "$CMD_MODULES"
@@ -2235,6 +2243,12 @@ run_check "SEC-1" "Security" "$CMD_SAST"
 run_check "SEC-2" "Security" "$CMD_VULN"
 run_check "SEC-3" "Security" "$CMD_SUPPLY"
 run_check "SEC-4" "Security" "$CMD_P0"
+run_check "SEC-5" "Security" "bash ${GOV_INFRA}/verifiers/sec/web-csp-integrity.sh"
+run_check "SEC-6" "Security" "bash ${GOV_INFRA}/verifiers/sec/web-html-inline-absence.sh"
+run_check "SEC-7" "Security" "bash ${GOV_INFRA}/verifiers/sec/oac-form-integrity.sh"
+run_check "SEC-8" "Security" "bash ${GOV_INFRA}/verifiers/sec/cloudfront-composition.sh"
+run_check "SEC-9" "Security" "bash ${GOV_INFRA}/verifiers/sec/trust-auth-preservation.sh"
+run_check "SEC-10" "Security" "bash ${GOV_INFRA}/verifiers/sec/release-verification-preservation.sh"
 
 # === Compliance Readiness (CMP) ===
 check_file_exists "CMP-1" "Compliance" "${PLANNING_DIR}/lesser-host-controls-matrix.md"
