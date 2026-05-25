@@ -1,7 +1,7 @@
 {
   "$schema": "https://greater.components.dev/schema.json",
   "version": "1.0.0",
-  "ref": "74ce64890bab7c85b83847a1ff72dc882b66ebc5",
+  "ref": "4b1e36473544ee640a6a3dd429139323c75d56c3",
   "installMode": "vendored",
   "style": "default",
   "rsc": false,
@@ -75,6 +75,13 @@
       "name": "headless",
       "version": "74ce64890bab7c85b83847a1ff72dc882b66ebc5",
       "installedAt": "2026-05-18T15:45:00.000Z",
+      "modified": false,
+      "checksums": []
+    },
+    {
+      "name": "shell",
+      "version": "4b1e36473544ee640a6a3dd429139323c75d56c3",
+      "installedAt": "2026-05-25T05:07:35.219Z",
       "modified": false,
       "checksums": []
     }
