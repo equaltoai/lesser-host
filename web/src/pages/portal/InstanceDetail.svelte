@@ -28,6 +28,7 @@
 		Text,
 		TextField,
 	} from 'src/lib/ui';
+	import StackCard from 'src/lib/components/StackCard.svelte';
 
 	let { token, slug } = $props<{ token: string; slug: string }>();
 
@@ -545,23 +546,13 @@
 </script>
 
 <div class="instance-detail">
-	<header class="instance-detail__header">
-		<div class="instance-detail__title">
-			<Heading level={2} size="xl">Instance</Heading>
-			<Text color="secondary"><span class="instance-detail__mono">{slug}</span></Text>
-		</div>
-		<div class="instance-detail__actions">
-			<Button variant="outline" onclick={() => void refreshAll()} disabled={instanceLoading || domainsLoading || provisioningLoading}>
-				Refresh
-			</Button>
-			<Button variant="ghost" onclick={() => navigate(`/portal/instances/${slug}/config`)}>Config</Button>
-			<Button variant="ghost" onclick={() => navigate(`/portal/instances/${slug}/budgets`)}>Budgets</Button>
-			<Button variant="ghost" onclick={() => navigate(`/portal/instances/${slug}/usage`)}>Usage</Button>
-			<Button variant="ghost" onclick={() => navigate(`/portal/instances/${slug}/domains`)}>Domains</Button>
-			<Button variant="ghost" onclick={() => navigate(`/portal/instances/${slug}/keys`)}>Keys</Button>
-			<Button variant="ghost" onclick={() => navigate('/portal')}>Back</Button>
-		</div>
-	</header>
+	<div class="instance-detail__overview-actions">
+		<Button variant="outline" onclick={() => void refreshAll()} disabled={instanceLoading || domainsLoading || provisioningLoading}>
+			Refresh
+		</Button>
+	</div>
+
+	<StackCard {token} {slug} fallback={instance} />
 
 	{#if instanceLoading}
 		<div class="instance-detail__loading">
@@ -1080,24 +1071,11 @@
 		gap: var(--gr-spacing-scale-6);
 	}
 
-	.instance-detail__header {
+	.instance-detail__overview-actions {
 		display: flex;
-		gap: var(--gr-spacing-scale-4);
-		justify-content: space-between;
-		align-items: flex-start;
-		flex-wrap: wrap;
-	}
-
-	.instance-detail__title {
-		display: flex;
-		flex-direction: column;
-		gap: var(--gr-spacing-scale-1);
-	}
-
-	.instance-detail__actions {
-		display: flex;
-		gap: var(--gr-spacing-scale-2);
+		gap: var(--ds-space-2);
 		align-items: center;
+		justify-content: flex-end;
 		flex-wrap: wrap;
 	}
 

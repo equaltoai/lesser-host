@@ -293,6 +293,72 @@ export function portalGetInstance(token: string, slug: string): Promise<Instance
 	});
 }
 
+/**
+ * Customer-readable stack-state contract per the Project 39 provisioning
+ * walk (Change 5.1 of docs/provisioning-web-ui-rework-2026-05-24.md).
+ *
+ * Per-component `drift` values:
+ *   - "ok"       — current matches target
+ *   - "stale"    — current is older than target
+ *   - "wire-stale" — MCP is wired against an older body version than is
+ *                   currently deployed
+ *   - "unknown"  — no target / no telemetry yet
+ *
+ * Endpoint: GET /api/v1/portal/instances/{slug}/stack. Owner ownership
+ * check applies before any DB read (SEC-11 verifier). The endpoint lands
+ * with M1.11 (backend, out of scope for the M1.1–M1.10 UI batch); the
+ * client function defined here is intentionally fault-tolerant so the
+ * StackCard renders a graceful empty state when the endpoint is not yet
+ * deployed.
+ */
+export type StackDrift = 'ok' | 'stale' | 'wire-stale' | 'unknown' | string;
+
+export interface InstanceStackLesser {
+	current_version?: string;
+	target_version?: string;
+	deployed_at?: string;
+	source_job_id?: string;
+	drift?: StackDrift;
+}
+
+export interface InstanceStackBody {
+	enabled: boolean;
+	current_version?: string;
+	target_version?: string;
+	deployed_at?: string;
+	source_job_id?: string;
+	drift?: StackDrift;
+}
+
+export interface InstanceStackMcp {
+	wired_at?: string;
+	wired_against_body_version?: string;
+	current_body_version?: string;
+	drift?: StackDrift;
+}
+
+export interface InstanceStackResponse {
+	slug: string;
+	lesser: InstanceStackLesser;
+	body: InstanceStackBody;
+	mcp: InstanceStackMcp;
+	drift_summary?: string;
+}
+
+export function portalGetInstanceStack(
+	token: string,
+	slug: string,
+): Promise<InstanceStackResponse> {
+	return fetchJson<InstanceStackResponse>(
+		`/api/v1/portal/instances/${encodeURIComponent(slug)}/stack`,
+		{
+			headers: {
+				authorization: `Bearer ${token}`,
+			},
+		},
+	);
+}
+
 export function portalUpdateInstanceConfig(
 	token: string,
 	slug: string,
