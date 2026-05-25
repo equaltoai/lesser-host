@@ -16,7 +16,11 @@
 #      asserts the inlined build-lesser-mcp.sh content appears in the
 #      rendered output (proving the INLINE mechanism works) and no
 #      host-owned MCP routes appear.  Built via CDK synth from
-#      cdk/lib/provision-runner-buildspec.ts.
+#      cdk/lib/provision-runner-buildspec.ts.  If the rendered artifact is
+#      absent, the verifier synthesizes it deterministically from cdk/
+#      (tsc + cdk synth) before inspecting; a synth failure exits 2
+#      (BLOCKED), and continued absence after synth exits 1 (FAIL).
+#      There is no "artifact absent but PASS" fallback.
 #   4. The Go code in internal/provisionworker/advance_body_mcp.go — asserts
 #      the mode "lesser-mcp" is used to start the deploy runner (line 143).
 #
@@ -136,6 +140,40 @@ else
 fi
 
 # --- Check 3: Rendered buildspec confirms INLINE mechanism works ---
+# When the rendered artifact is absent, synthesize it deterministically from cdk/.
+# If synthesis fails, exit 2 (BLOCKED) — the verifier cannot judge correctness
+# without inspecting the rendered output.
+if [[ ! -f "${BUILDSPEC_JSON}" ]]; then
+  echo "--- Rendered buildspec: not found — synthesizing from cdk/ ---"
+
+  if [[ ! -d cdk/node_modules ]]; then
+    echo "  Installing CDK dependencies (npm ci)..."
+    if (cd cdk && npm ci --no-audit --no-fund); then
+      echo "  CDK dependencies installed."
+    else
+      echo "BLOCKED: CDK dependency installation failed — cannot synthesize buildspec" >&2
+      exit 2
+    fi
+  fi
+
+  echo "  Running CDK synth (tsc + cdk synth)..."
+  if (cd cdk && npm run synth); then
+    echo "  CDK synth succeeded."
+  else
+    echo "BLOCKED: CDK synth failed — cannot verify rendered buildspec" >&2
+    exit 2
+  fi
+
+  if [[ ! -f "${BUILDSPEC_JSON}" ]]; then
+    echo "FAIL: rendered buildspec still absent after CDK synth —" >&2
+    echo "  provision-runner-buildspec.ts did not produce the expected output file." >&2
+    fail=1
+  else
+    echo "  Rendered buildspec generated successfully."
+  fi
+  echo ""
+fi
+
 if [[ -f "${BUILDSPEC_JSON}" ]]; then
   echo "--- Rendered buildspec: ${BUILDSPEC_JSON} ---"
 
@@ -158,14 +196,6 @@ if [[ -f "${BUILDSPEC_JSON}" ]]; then
     echo "  PASS: no host-owned routes in rendered buildspec"
   fi
 
-  echo ""
-else
-  echo "--- Rendered buildspec: not found (${BUILDSPEC_JSON}) ---"
-  echo "  NOTE: buildspec artifact not present; run 'cd cdk && npm run synth' to generate."
-  echo "  build.sh is the deterministic rendered source used by the buildspec assembler"
-  echo "  (cdk/lib/provision-runner-buildspec.ts reads .sh files and replaces INLINE markers"
-  echo "   at CDK synth time).  Without the rendered artifact, dispatcher + script checks above"
-  echo "  are the authoritative source-of-truth."
   echo ""
 fi
 
