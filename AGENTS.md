@@ -50,7 +50,7 @@ References:
   - `internal/store` — TableTheory models + DynamoDB access
   - `internal/secrets` — SSM Parameter Store reads (Stripe, AI providers, etc)
 - **Infra (AWS CDK):** `cdk/`
-- **Web UI (SPA):** `web/` (Svelte 5 + Vite + TypeScript)
+- **Web UI (SSR):** `web/` (FaceTheory v3.3.0 SSR + Svelte 5 + Vite + TypeScript, strict-CSP-via-JSON-sidecar)
 - **Specs/contracts:** `contracts/`
 - **Docs:** `docs/`
 - **Deployment records:** `docs/deployments/` (latest on-chain addresses + required Safe admin calls; Sepolia: `docs/deployments/sepolia/latest.json` + `docs/deployments/sepolia/safe-tx-builder-post-deploy.json`)
