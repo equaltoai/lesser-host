@@ -42,6 +42,8 @@ import { readFaceHydrationData, readFaceHydrationDataUrl } from '@theory-cloud/f
 import App from '../App.svelte';
 import 'src/lib/styles/greater/tokens.css';
 import 'src/lib/styles/greater/primitives.css';
+import 'src/lib/styles/greater/shell.css';
+import 'src/lib/styles/greater/host-platform.css';
 import '../app.css';
 
 import { ensureAwsOacFormTransport } from './oac-form';

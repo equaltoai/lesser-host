@@ -1,0 +1,47 @@
+/* ============================================================================
+ * Greater Shell — CSS bundle aggregator (host web/)
+ *
+ * Mirrors `tokens.css` / `primitives.css`: a host-owned aggregator that
+ * `@import`s every CSS file shipped by the vendored `shell` package under
+ * `web/src/lib/greater/shell/`. The vendored files themselves stay
+ * unmodified (canonical adoption — `components.json` records
+ * `modified: false`); the aggregator lives outside the vendored tree so
+ * `greater list` / re-vendoring never observes a host-side patch.
+ *
+ * Import order:
+ *   1. `styles/base.css` — defines the `--gr-shell-*` token defaults via
+ *      low-specificity `:where(...)` selectors AND ships the `.gr-sr-only`
+ *      live-region utility that `createLiveRegion()` (used by
+ *      CommandPalette and any future shell announcements) appends to
+ *      `document.body`. Loading base first ensures all subsequent
+ *      component CSS resolves `var(--gr-shell-*)` against the package
+ *      defaults.
+ *   2. Component CSS files in alphabetical order. The Greater shell
+ *      components have no inter-CSS dependencies (each file scopes its
+ *      rules to its own `.gr-shell-<name>` root class), so ordering
+ *      between them is cosmetic.
+ *
+ * Why this matters:
+ *   - Without these imports the M0.6-M0.10 vendored shell + host-platform
+ *     Svelte surfaces render unstyled (the components author CSS as
+ *     sibling `.css` files, not Svelte scoped `<style>` blocks).
+ *   - The shell base.css is the canonical home of `.gr-sr-only`; missing
+ *     it would surface live-region announcement strings as visible text
+ *     in any consumer that doesn't also import primitives `theme.css`.
+ *
+ * Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M0.6
+ * Issue: equaltoai/lesser-host#386 (CSS adoption follow-up)
+ * ========================================================================== */
+
+@import '../../greater/shell/styles/base.css';
+@import '../../greater/shell/components/Breadcrumb.css';
+@import '../../greater/shell/components/Callout.css';
+@import '../../greater/shell/components/CommandPalette.css';
+@import '../../greater/shell/components/PageFrame.css';
+@import '../../greater/shell/components/PageTitle.css';
+@import '../../greater/shell/components/Panel.css';
+@import '../../greater/shell/components/Shell.css';
+@import '../../greater/shell/components/Sidebar.css';
+@import '../../greater/shell/components/StatCard.css';
+@import '../../greater/shell/components/SummaryStrip.css';
+@import '../../greater/shell/components/Topbar.css';
