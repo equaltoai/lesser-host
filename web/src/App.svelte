@@ -6,6 +6,7 @@
 	import { consumeSafeAppTarget, currentPath, isSafeAppPath, navigate } from 'src/lib/router';
 
 	import PortalLayout from 'src/lib/components/PortalLayout.svelte';
+	import PortalShell from 'src/lib/components/PortalShell.svelte';
 	import OperatorLayout from 'src/lib/components/OperatorLayout.svelte';
 
 	import Account from 'src/pages/Account.svelte';
@@ -14,17 +15,29 @@
 	import NotFound from 'src/pages/NotFound.svelte';
 	import Operator from 'src/pages/Operator.svelte';
 	import Portal from 'src/pages/Portal.svelte';
+	import PortalFleet from 'src/pages/portal/PortalFleet.svelte';
+	import { session } from 'src/lib/session';
 	import Setup from 'src/pages/Setup.svelte';
 	import TipRegistryRegister from 'src/pages/TipRegistryRegister.svelte';
 	import Trust from 'src/pages/Trust.svelte';
 
 	let isOperatorRoute = $derived($currentPath === '/operator' || $currentPath.startsWith('/operator/'));
+	// M0.11 — /portal/fleet is the new shell-based fleet view; it renders
+	// inside PortalShell (greater-components Shell + Sidebar + Topbar +
+	// PageFrame + CommandPalette) rather than the legacy PortalLayout.
+	// Compatibility note: /portal and /portal/instances continue to use
+	// PortalLayout below — no legacy behavior is changed by this PR.
+	let isPortalFleetRoute = $derived(
+		$currentPath === '/portal/fleet' || $currentPath.startsWith('/portal/fleet/')
+	);
 	let isPortalRoute = $derived(
-		$currentPath === '/' ||
-		$currentPath === '/portal' || $currentPath.startsWith('/portal/') ||
-		$currentPath === '/trust' || $currentPath.startsWith('/trust/') ||
-		$currentPath === '/tip-registry' || $currentPath === '/tip-registry/register' ||
-		$currentPath === '/account'
+		!isPortalFleetRoute && (
+			$currentPath === '/' ||
+			$currentPath === '/portal' || $currentPath.startsWith('/portal/') ||
+			$currentPath === '/trust' || $currentPath.startsWith('/trust/') ||
+			$currentPath === '/tip-registry' || $currentPath === '/tip-registry/register' ||
+			$currentPath === '/account'
+		)
 	);
 
 	onMount(() => {
@@ -41,6 +54,10 @@
 		<OperatorLayout>
 			<Operator />
 		</OperatorLayout>
+	{:else if isPortalFleetRoute}
+		<PortalShell>
+			<PortalFleet token={$session?.token ?? ''} />
+		</PortalShell>
 	{:else if isPortalRoute}
 		<PortalLayout>
 			{#if $currentPath === '/'}
