@@ -103,7 +103,7 @@ function recordViolation(violations, file, message) {
  */
 function checkInlineScripts(html) {
 	const violations = [];
-	const SCRIPT_RE = /<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi;
+	const SCRIPT_RE = /<script\b([^>]*)>([\s\S]*?)<\s*\/\s*script\b[^>]*>/gi;
 	let match;
 	while ((match = SCRIPT_RE.exec(html)) !== null) {
 		const attrs = match[1] ?? '';
@@ -133,7 +133,7 @@ function checkInlineScripts(html) {
  */
 function checkInlineStyles(html) {
 	const violations = [];
-	const STYLE_RE = /<style\b[^>]*>([\s\S]*?)<\/style\s*>/gi;
+	const STYLE_RE = /<style\b[^>]*>([\s\S]*?)<\s*\/\s*style\b[^>]*>/gi;
 	let match;
 	while ((match = STYLE_RE.exec(html)) !== null) {
 		const body = (match[1] ?? '').trim();
