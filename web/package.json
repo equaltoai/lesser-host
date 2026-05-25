@@ -9,7 +9,7 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "vite build && node ./scripts/build-sidecars.mjs",
+    "build": "vite build && node ./scripts/build-sidecars.mjs && node ./scripts/verify-no-inline-html.mjs",
     "preview": "vite preview",
     "generate:lesser-host-api": "openapi-typescript ../docs/contracts/openapi.yaml -o src/lib/greater/adapters/rest/generated/lesser-host-api.ts",
     "verify:lesser-host-contracts": "node ./scripts/verify-lesser-host-contracts.mjs",
