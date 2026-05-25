@@ -4,6 +4,7 @@ import * as fs from 'node:fs';
 
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
+import { AppTheorySsrSite, AppTheorySsrSiteMode } from '@theory-cloud/apptheory-cdk';
 import * as acm from 'aws-cdk-lib/aws-certificatemanager';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
@@ -1482,20 +1483,96 @@ export class LesserHostStack extends cdk.Stack {
 			],
 		});
 
-		const webDistribution = new cloudfront.Distribution(this, 'WebDistribution', {
-			defaultRootObject: 'index.html',
-			certificate: webCert,
-			domainNames: webCert ? [webDomainName] : undefined,
+		// SSR Lambda — FaceTheory shell renderer. Wraps face-app.ts's `handler`
+		// export. Bundle produced by `cd web && npm run build`; must run before
+		// `cdk synth`. AppTheorySsrSite (below) wraps this Lambda with an
+		// OAC-protected Function URL (AWS_IAM fail-closed) as the default origin.
+		const webSsrFn = new lambda.Function(this, 'WebSsrFn', {
+			functionName: `${namePrefix}-web-ssr`,
+			code: lambda.Code.fromAsset(path.join(this.repoRoot(), 'web', 'dist', 'server')),
+			handler: 'face-app.handler',
+			runtime: lambda.Runtime.NODEJS_22_X,
+			memorySize: 512,
+			timeout: cdk.Duration.seconds(15),
+			environment: { NODE_OPTIONS: '--enable-source-maps' },
+			logRetention: logs.RetentionDays.ONE_WEEK,
+		});
+
+		// FaceTheory ISR HTML store: holds per-request strict-CSP hydration
+		// sidecars (written by createSsrHydrationSidecarStore in face-app.ts,
+		// served at /_facetheory/data/* via the addBehavior below) plus any
+		// future ISR-rendered HTML. AppTheorySsrSite grants the SSR Lambda
+		// read/write + auto-wires FACETHEORY_ISR_BUCKET / FACETHEORY_ISR_PREFIX.
+		const htmlStoreBucket = new s3.Bucket(this, 'WebHtmlStoreBucket', {
+			bucketName: `${namePrefix}-${cdk.Aws.ACCOUNT_ID}-${cdk.Aws.REGION}-html-store`,
+			blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+			enforceSSL: true,
+			encryption: s3.BucketEncryption.S3_MANAGED,
+			versioned: stage === 'live',
+			lifecycleRules: [
+				{
+					id: 'ExpireSidecarsAndIsr',
+					expiration: cdk.Duration.days(stage === 'live' ? 7 : 1),
+					noncurrentVersionExpiration: cdk.Duration.days(stage === 'live' ? 7 : 1),
+				},
+			],
+			removalPolicy,
+			autoDeleteObjects: stage !== 'live',
+		});
+
+		// AppTheorySsrSite (M0.12) — canonical AppTheory v1.9.0 composition.
+		// Owns the single CloudFront distribution + OAC-signed SSR Lambda
+		// origin (AuthType.AWS_IAM fail-closed). Bearer-auth co-origins (HTTP
+		// API + SSE REST) attach via addBehavior() below; OAC does NOT
+		// propagate to them (M0.13 test asserts). CSP byte-string preserved
+		// via responseHeadersPolicy (M0.14 test). Mode SSR_ONLY matches host's
+		// per-request SSR architecture; SSG_ISR (S3 primary HTML) would be a
+		// larger shift not in scope. directS3PathPatterns NOT used because in
+		// SSR_ONLY it routes to assetsBucket; /_facetheory/data/* must hit
+		// htmlStoreBucket so SSR-Lambda sidecar writes and CloudFront reads
+		// land together without granting SSR write access to webBucket.
+		const webSite = new AppTheorySsrSite(this, 'WebSite', {
+			ssrFunction: webSsrFn,
+			mode: AppTheorySsrSiteMode.SSR_ONLY,
+			ssrUrlAuthType: lambda.FunctionUrlAuthType.AWS_IAM,
+			invokeMode: lambda.InvokeMode.RESPONSE_STREAM,
+			assetsBucket: webBucket,
+			htmlStoreBucket,
+			responseHeadersPolicy: webSecurityHeaders,
+			certificateArn: webCert?.certificateArn,
+			domainName: webCert ? webDomainName : undefined,
+			// hostedZone intentionally omitted: AppTheorySsrSite would only
+			// create an A record; host preserves the existing A + AAAA pair
+			// in the `if (webZone && webCert)` block below.
 			webAclId: webAcl.attrArn,
 			enableLogging: true,
-			logBucket: accessLogsBucket,
-			logFilePrefix: `${namePrefix}/cloudfront/`,
-			defaultBehavior: {
-				origin: new origins.S3Origin(webBucket, { originAccessIdentity: webOai }),
+			logsBucket: accessLogsBucket,
+			removalPolicy,
+			autoDeleteObjects: stage !== 'live',
+		});
+
+		// /_facetheory/data/* hand-wired to htmlStoreBucket. S3BucketOrigin
+		// .withOriginAccessControl keeps the bucket blockPublicAccess and
+		// signs CloudFront reads.
+		const sidecarOrigin = origins.S3BucketOrigin.withOriginAccessControl(htmlStoreBucket);
+		webSite.distribution.addBehavior('_facetheory/data/*', sidecarOrigin, {
+			viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+			allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
+			cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
+			responseHeadersPolicy: webSecurityHeaders,
+		});
+
+		// Bearer-auth co-origins (existing HTTP API + SSE REST; not Function
+		// URLs, so AppTheorySsrSite.bearerFunctionUrlOrigins[] doesn't apply).
+		// Attached via addBehavior(); OAC does NOT propagate (M0.13 test).
+		webSite.distribution.addBehavior(
+			'safe-app*',
+			new origins.S3Origin(webBucket, { originAccessIdentity: webOai }),
+			{
 				viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
 				allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
 				cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
-				responseHeadersPolicy: webSecurityHeaders,
+				responseHeadersPolicy: safeAppSecurityHeaders,
 				functionAssociations: [
 					{
 						function: webSpaRewriteFn,
@@ -1503,45 +1580,49 @@ export class LesserHostStack extends cdk.Stack {
 					},
 				],
 			},
-			additionalBehaviors: {
-				'safe-app*': {
-					origin: new origins.S3Origin(webBucket, { originAccessIdentity: webOai }),
-					viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
-					allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
-					cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
-					responseHeadersPolicy: safeAppSecurityHeaders,
-					functionAssociations: [
-						{
-							function: webSpaRewriteFn,
-							eventType: cloudfront.FunctionEventType.VIEWER_REQUEST,
-						},
-					],
-				},
-				'resolve*': trustBehaviorNoCache,
-				'health*': trustBehaviorNoCache,
-				'api/v1/previews*': trustApiBehavior,
-				'api/v1/renders*': trustApiBehavior,
-				'api/v1/trust/*': trustApiBehavior,
-				'api/v1/publish/jobs*': trustApiBehavior,
-				'api/v1/soul/agents/*/update-registration': trustApiBehavior,
-				'api/v1/ai/*': trustApiBehavior,
-				'api/v1/budget/debit': trustApiBehavior,
-				'api/v1/soul/agents/register/*/mint-conversation*': apiSseBehavior,
-				'api/v1/soul/agents/*/mint-conversation*': apiSseBehavior,
+		);
 
-				'api/*': apiBehavior,
-				'auth/*': apiBehavior,
-				'webhooks/*': apiBehavior,
-				'setup/status': apiBehavior,
-				'setup/bootstrap/*': apiBehavior,
-				'setup/admin': apiBehavior,
-				'setup/finalize': apiBehavior,
+		// Helper for attaching the existing HTTP API behaviors. Pulls the
+		// origin out of the constructed BehaviorOptions object so we can
+		// pass the rest of the options through to addBehavior's third arg.
+		const attachBearerBehavior = (pattern: string, behavior: cloudfront.BehaviorOptions) => {
+			webSite.distribution.addBehavior(pattern, behavior.origin, {
+				viewerProtocolPolicy: behavior.viewerProtocolPolicy,
+				allowedMethods: behavior.allowedMethods,
+				cachePolicy: behavior.cachePolicy,
+				originRequestPolicy: behavior.originRequestPolicy,
+				responseHeadersPolicy: behavior.responseHeadersPolicy,
+			});
+		};
 
-				'.well-known/*': trustBehaviorCached,
-				'attestations': trustBehaviorNoCache,
-				'attestations/*': trustBehaviorCached,
-			},
-		});
+		attachBearerBehavior('resolve*', trustBehaviorNoCache);
+		attachBearerBehavior('health*', trustBehaviorNoCache);
+		attachBearerBehavior('api/v1/previews*', trustApiBehavior);
+		attachBearerBehavior('api/v1/renders*', trustApiBehavior);
+		attachBearerBehavior('api/v1/trust/*', trustApiBehavior);
+		attachBearerBehavior('api/v1/publish/jobs*', trustApiBehavior);
+		attachBearerBehavior('api/v1/soul/agents/*/update-registration', trustApiBehavior);
+		attachBearerBehavior('api/v1/ai/*', trustApiBehavior);
+		attachBearerBehavior('api/v1/budget/debit', trustApiBehavior);
+		attachBearerBehavior('api/v1/soul/agents/register/*/mint-conversation*', apiSseBehavior);
+		attachBearerBehavior('api/v1/soul/agents/*/mint-conversation*', apiSseBehavior);
+
+		attachBearerBehavior('api/*', apiBehavior);
+		attachBearerBehavior('auth/*', apiBehavior);
+		attachBearerBehavior('webhooks/*', apiBehavior);
+		attachBearerBehavior('setup/status', apiBehavior);
+		attachBearerBehavior('setup/bootstrap/*', apiBehavior);
+		attachBearerBehavior('setup/admin', apiBehavior);
+		attachBearerBehavior('setup/finalize', apiBehavior);
+
+		attachBearerBehavior('.well-known/*', trustBehaviorCached);
+		attachBearerBehavior('attestations', trustBehaviorNoCache);
+		attachBearerBehavior('attestations/*', trustBehaviorCached);
+
+		// Back-compat alias so downstream env-wiring / route53 / outputs /
+		// bucket-deployment blocks below keep referencing `webDistribution`
+		// without diff churn.
+		const webDistribution = webSite.distribution;
 
 		const publicBaseURL = webCert
 			? `https://${webDomainName}`
