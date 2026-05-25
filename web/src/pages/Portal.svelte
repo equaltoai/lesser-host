@@ -21,6 +21,7 @@
 	import SoulMintConversation from 'src/pages/portal/SoulMintConversation.svelte';
 	import SoulRegister from 'src/pages/portal/SoulRegister.svelte';
 	import Souls from 'src/pages/portal/Souls.svelte';
+	import InstanceSouls from 'src/pages/portal/InstanceSouls.svelte';
 	import InstanceDetailShell from 'src/lib/components/InstanceDetailShell.svelte';
 
 	let loading = $state(false);
@@ -234,17 +235,7 @@
 				</InstanceDetailShell>
 			{:else if portalRoute.kind === 'instanceSouls'}
 				<InstanceDetailShell slug={portalRoute.slug}>
-					<Alert variant="info" title="Souls tab — coming soon">
-						<Text size="sm">
-							The per-instance Souls listing lands with M1.10. Until then, use the portal-wide
-							<a class="portal__link" href="/portal/souls"
-								onclick={(ev) => {
-									ev.preventDefault();
-									navigate('/portal/souls');
-								}}>Souls</a>
-							view.
-						</Text>
-					</Alert>
+					<InstanceSouls token={$session.token} slug={portalRoute.slug} />
 				</InstanceDetailShell>
 			{:else if portalRoute.kind === 'souls'}
 				<Souls token={$session.token} />
