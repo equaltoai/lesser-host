@@ -57,15 +57,16 @@ if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   exit 2
 fi
 
-# Determine the base ref.
-BASE_REF="origin/main"
-if ! git rev-parse --verify "${BASE_REF}" >/dev/null 2>&1; then
-  if git rev-parse --verify "main" >/dev/null 2>&1; then
-    BASE_REF="main"
-  else
-    echo "BLOCKED: cannot resolve origin/main or main" >&2
-    exit 2
-  fi
+# Resolve the base ref deterministically.
+# Sources shared helper with fetch-fallback for CI (shallow-clone) environments.
+VERIFIER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./_resolve_base_ref.sh
+source "${VERIFIER_DIR}/_resolve_base_ref.sh"
+
+BASE_REF=""
+if ! BASE_REF="$(resolve_base_ref)"; then
+  echo "BLOCKED: cannot resolve origin/main or main (fetch + local fallback exhausted)" >&2
+  exit 2
 fi
 
 BASE_SHA="$(git rev-parse "${BASE_REF}")"
