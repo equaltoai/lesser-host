@@ -97,6 +97,7 @@
 		TextArea,
 		TextField,
 	} from 'src/lib/ui';
+	import { PageFrame, PageTitle } from 'src/lib/shell';
 
 	let { token, agentId } = $props<{ token: string; agentId: string }>();
 
@@ -1834,17 +1835,20 @@
 	});
 </script>
 
-<div class="soul-agent">
-	<header class="soul-agent__header">
-		<div class="soul-agent__title">
-			<Heading level={2} size="xl">Legacy Agent Detail</Heading>
-			<Text color="secondary"><span class="soul-agent__mono">{agentId}</span></Text>
-		</div>
-		<div class="soul-agent__actions">
-			<Button variant="outline" onclick={() => void load()} disabled={loading}>Refresh</Button>
-			<Button variant="ghost" onclick={() => navigate('/portal/souls')}>Back</Button>
-		</div>
-	</header>
+<PageFrame width="default">
+	{#snippet header()}
+		<PageTitle
+			eyebrow="Souls"
+			title="Legacy agent detail"
+			subtitle={agentId}
+		>
+			{#snippet actions()}
+				<Button variant="outline" onclick={() => void load()} disabled={loading}>Refresh</Button>
+				<Button variant="ghost" onclick={() => navigate('/portal/souls')}>Back</Button>
+			{/snippet}
+		</PageTitle>
+	{/snippet}
+	<div class="soul-agent">
 
 	<Alert variant="warning" title="Secondary route">
 		<Text size="sm">
@@ -3217,7 +3221,8 @@
 			<Text size="sm">Agent not found.</Text>
 		</Alert>
 	{/if}
-</div>
+	</div>
+</PageFrame>
 
 <style>
 	.soul-agent {
