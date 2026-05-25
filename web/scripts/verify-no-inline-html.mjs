@@ -115,9 +115,9 @@ function checkInlineScripts(html) {
 		if (dataMatch) {
 			violations.push(`<script src="data:..."> (CSP violation): ${dataMatch[1].slice(0, 80)}…`);
 		}
-		const srcMatch = attrs.match(/\bsrc\s*=\s*"([^"]+)"/i) ?? attrs.match(/\bsrc\s*=\s*'([^']+)'/i);
+		const srcMatch = attrs.match(/\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s"'<>]+))/i);
 		if (srcMatch) {
-			const src = srcMatch[1];
+			const src = srcMatch[1] ?? srcMatch[2] ?? srcMatch[3];
 			if (!src.startsWith('data:') && !isSameOriginUrl(src)) {
 				violations.push(`<script src="${src.slice(0, 80)}"> is not same-origin`);
 			}
@@ -153,7 +153,7 @@ function checkInlineEventHandlers(html) {
 	// Match `on<letters>="..."` or `on<letters>='...'`, case-insensitive.
 	// Must be preceded by whitespace inside a tag to avoid matching things
 	// like `onload` in text content.
-	const EVT_RE = /<[a-zA-Z][^>]*?\s(on[a-z]+)\s*=\s*["'][^"']*["']/gi;
+	const EVT_RE = /<[a-zA-Z][^>]*?\s(on[a-z]+)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'<>]+)/gi;
 	let match;
 	while ((match = EVT_RE.exec(html)) !== null) {
 		const handler = match[1];
@@ -172,13 +172,13 @@ function checkStylesheetOrigins(html) {
 	let match;
 	while ((match = LINK_RE.exec(html)) !== null) {
 		const attrs = match[1] ?? '';
-		const relMatch = attrs.match(/\brel\s*=\s*"([^"]+)"|\brel\s*=\s*'([^']+)'/i);
+		const relMatch = attrs.match(/\brel\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s"'<>]+))/i);
 		if (!relMatch) continue;
-		const rel = (relMatch[1] ?? relMatch[2] ?? '').toLowerCase();
+		const rel = (relMatch[1] ?? relMatch[2] ?? relMatch[3] ?? '').toLowerCase();
 		if (rel !== 'stylesheet' && rel !== 'preload' && rel !== 'modulepreload') continue;
-		const hrefMatch = attrs.match(/\bhref\s*=\s*"([^"]+)"|\bhref\s*=\s*'([^']+)'/i);
+		const hrefMatch = attrs.match(/\bhref\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s"'<>]+))/i);
 		if (!hrefMatch) continue;
-		const href = hrefMatch[1] ?? hrefMatch[2] ?? '';
+		const href = hrefMatch[1] ?? hrefMatch[2] ?? hrefMatch[3] ?? '';
 		if (!isSameOriginUrl(href)) {
 			violations.push(`<link rel="${rel}" href="${href.slice(0, 80)}"> is not same-origin`);
 		}

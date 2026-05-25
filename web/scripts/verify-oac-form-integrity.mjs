@@ -139,9 +139,8 @@ function checkFormsInHtml(file, html, violations) {
 		const attrs = match[1] ?? '';
 		const hasMarker = new RegExp(`\\b${MARKER_ATTR}\\b`, 'i').test(attrs);
 		if (!hasMarker) continue;
-		const actionMatch =
-			attrs.match(/\baction\s*=\s*"([^"]*)"/i) ?? attrs.match(/\baction\s*=\s*'([^']*)'/i);
-		const action = actionMatch?.[1] ?? '';
+		const actionMatch = attrs.match(/\baction\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'<>]+))/i);
+		const action = actionMatch?.[1] ?? actionMatch?.[2] ?? actionMatch?.[3] ?? '';
 		if (!action) {
 			recordViolation(
 				violations,
@@ -164,9 +163,8 @@ function checkFormsInHtml(file, html, violations) {
 				`<form ${MARKER_ATTR} action="${action.slice(0, 80)}"> targets a bearer-auth API path — must NOT be marked (CloudFront origin is not OAC-signed for those paths)`,
 			);
 		}
-		const methodMatch =
-			attrs.match(/\bmethod\s*=\s*"([^"]*)"/i) ?? attrs.match(/\bmethod\s*=\s*'([^']*)'/i);
-		const method = (methodMatch?.[1] ?? '').toUpperCase();
+		const methodMatch = attrs.match(/\bmethod\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'<>]+))/i);
+		const method = (methodMatch?.[1] ?? methodMatch?.[2] ?? methodMatch?.[3] ?? '').toUpperCase();
 		if (!MUTATING_METHODS.has(method)) {
 			recordViolation(
 				violations,
