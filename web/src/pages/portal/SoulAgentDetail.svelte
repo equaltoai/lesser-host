@@ -3231,27 +3231,6 @@
 		gap: var(--gr-spacing-scale-6);
 	}
 
-	.soul-agent__header {
-		display: flex;
-		gap: var(--gr-spacing-scale-4);
-		align-items: flex-start;
-		justify-content: space-between;
-		flex-wrap: wrap;
-	}
-
-	.soul-agent__title {
-		display: flex;
-		flex-direction: column;
-		gap: var(--gr-spacing-scale-1);
-	}
-
-	.soul-agent__actions {
-		display: flex;
-		gap: var(--gr-spacing-scale-2);
-		align-items: center;
-		flex-wrap: wrap;
-	}
-
 	.soul-agent__nav {
 		display: flex;
 		gap: var(--gr-spacing-scale-1);

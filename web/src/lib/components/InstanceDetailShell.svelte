@@ -140,7 +140,7 @@ Issue: equaltoai/lesser-host#414
 		</PageTitle>
 	{/snippet}
 
-	<nav
+	<div
 		class="instance-tabs"
 		role="tablist"
 		aria-label="Instance sections"
@@ -163,7 +163,7 @@ Issue: equaltoai/lesser-host#414
 				{tab.label}
 			</button>
 		{/each}
-	</nav>
+	</div>
 
 	<div
 		role="tabpanel"
