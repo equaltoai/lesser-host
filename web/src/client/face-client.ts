@@ -5,18 +5,14 @@
  * The SSR Lambda emits a `<script type="module" src=".../face-client-*.js">`
  * head tag (via `viteAssetsForEntry`) plus a same-origin JSON hydration
  * sidecar URL pointer (via `externalHydrationForEntry`); FaceTheory's
- * `readFaceHydrationDataUrl(doc)` reads that URL from the
- * `#__FACETHEORY_DATA_URL__` link tag, and this module fetches it before
- * mounting `App.svelte`. `readFaceHydrationData(doc)` is checked first
- * for inline payloads (today's shells never emit inline, but the dual
- * read keeps the client compatible with both modes for SSG / ISR /
- * future inline-hydration routes).
+ * canonical `loadFaceHydrationData()` reads any inline payload first, then
+ * falls back to fetching the external sidecar referenced by the
+ * `#__FACETHEORY_DATA_URL__` link tag.
  *
  * M0.4 — per-route shell hydration. Reads the `ShellHydrationPayload`
- * (`{ routeId, route }`) the SSR Lambda wrote to the sidecar via the
- * `/_facetheory/data/<routeId>.json` pre-router in `face-app.ts`, exposes
- * it on `window.__FACETHEORY_SHELL__` for evidence/observability, then
- * mounts the existing `src/App.svelte` into `<div id="app">` exactly as
+ * (`{ routeId, route }`) the SSR Lambda wrote to the sidecar, exposes it on
+ * `window.__FACETHEORY_SHELL__` for evidence/observability, then mounts
+ * the existing `src/App.svelte` into `<div id="app">` exactly as
  * `src/main.ts` does today. App.svelte's in-house router at
  * `src/lib/router.ts` keeps driving the per-page logic. The mount runs
  * synchronously alongside the fetch — App.svelte does not depend on the
@@ -28,6 +24,22 @@
  * by an SSR-route is submitted with the `x-amz-content-sha256` digest that
  * CloudFront Lambda URL OAC signing requires.
  *
+ * Framework upgrade (this commit) — retire 216fb96 client-side workaround.
+ * Earlier, host shipped a bespoke `fetchSidecarPayload` helper that did
+ * its own URL construction, same-origin enforcement, and fail-quiet
+ * fetch with `redirect: 'error'`, because FaceTheory v3.3.0 did not
+ * expose a canonical loader. FaceTheory v3.4.0 ships
+ * `loadFaceHydrationData()` (closes equaltoai/lesser-host's framework
+ * issue theory-cloud/FaceTheory#250) with built-in `allowedOrigin`
+ * enforcement (pre-fetch URL check + post-fetch redirect-chain check)
+ * and a `requestInit` passthrough that lets host keep its stricter
+ * `redirect: 'error'` posture (the framework default is `follow`).
+ * The server-side `/_facetheory/data/*.json` pre-router in
+ * `src/server/face-app.ts` stays in place for now — its canonical
+ * replacement is the `createSsrHydrationSidecarStore` HMAC-signed,
+ * TTL-bound, S3-backed pattern, which is M0.12's responsibility
+ * (AppTheorySsrSite + JSON-sidecar S3 behavior).
+ *
  * The M0.3 `/_facetheory/probe` route still emits the legacy
  * `FaceTheoryProbePayload` shape; we keep reading both payload shapes so the
  * probe + the real routes coexist during lab soak.
@@ -37,7 +49,12 @@
 
 import { mount } from 'svelte';
 
-import { readFaceHydrationData, readFaceHydrationDataUrl } from '@theory-cloud/facetheory';
+// Use the v3.4.0 client subpath: the top-level `@theory-cloud/facetheory`
+// entry re-exports SSR modules that import `node:crypto`/`node:path`/
+// `node:fs/promises` — Vite externalizes them with a browser-compat warning
+// on every build. The `./client` subpath ships only browser-safe helpers
+// and is the framework's intended import for client bundles.
+import { loadFaceHydrationData } from '@theory-cloud/facetheory/client';
 
 import App from '../App.svelte';
 import 'src/lib/styles/greater/tokens.css';
@@ -84,55 +101,31 @@ function stashHydrationPayload(payload: unknown): void {
 	}
 }
 
-/** Fetch the external hydration sidecar URL. Strict same-origin + `redirect:
- *  'error'` so a 307/308 open redirect cannot relocate the request to a
- *  cross-origin endpoint and exfiltrate any future credentials/cookies that
- *  the sidecar handler might consume. Returns `null` on any non-2xx or
- *  parse failure — the mount path runs unconditionally so a missing sidecar
- *  never blocks the user-visible app. */
-async function fetchSidecarPayload(rawUrl: string): Promise<FaceTheoryHydrationPayload | null> {
-	let url: URL;
-	try {
-		url = new URL(rawUrl, document.location.origin);
-	} catch {
-		return null;
-	}
-	if (url.origin !== document.location.origin) {
-		// Cross-origin sidecars are refused regardless of CORS; the SSR
-		// Lambda only ever emits same-origin URLs, so a cross-origin URL
-		// here would be a marker-tampering attempt.
-		return null;
-	}
-	try {
-		const res = await fetch(url, {
-			credentials: 'same-origin',
-			redirect: 'error',
-			headers: { accept: 'application/json' },
-		});
-		if (!res.ok) {
-			return null;
-		}
-		return (await res.json()) as FaceTheoryHydrationPayload;
-	} catch {
-		return null;
-	}
-}
-
 if (typeof window !== 'undefined' && typeof document !== 'undefined') {
-	// 1. Try inline hydration first (FaceInlineHydration; not used by today's
-	//    shells but kept for forward compatibility with future SSG/ISR routes).
-	const inlineData = readFaceHydrationData<FaceTheoryHydrationPayload>();
-	if (inlineData) {
-		stashHydrationPayload(inlineData);
-	} else {
-		// 2. Otherwise look for the external sidecar URL the SSR shell wrote
-		//    into `<link id="__FACETHEORY_DATA_URL__" rel="facetheory-hydration">`
-		//    and fetch it. Fire-and-forget — the mount runs independently.
-		const sidecarUrl = readFaceHydrationDataUrl();
-		if (sidecarUrl) {
-			void fetchSidecarPayload(sidecarUrl).then(stashHydrationPayload);
-		}
-	}
+	// Hydration: inline first (forward-compat with future SSG/ISR routes),
+	// then external sidecar fetch via the canonical loader. Posture overrides:
+	//   - `allowedOrigin` pinned to `document.location.origin`: the SSR Lambda
+	//     only ever emits same-origin sidecar URLs; any cross-origin URL would
+	//     indicate marker-tampering. FaceTheory v3.4.0 enforces this both
+	//     pre-fetch (URL resolution) and post-fetch (final-URL recheck after
+	//     redirects). Explicit here for audit clarity.
+	//   - `requestInit.redirect: 'error'`: framework default is `follow` + a
+	//     post-fetch cross-origin check; host opts into the stricter "refuse
+	//     any redirect at all" posture because the SSR Lambda emits URLs that
+	//     are served directly with 2xx, so a 3xx is anomalous and likely
+	//     indicates an open-redirect / tampering attempt regardless of where
+	//     it points. Defense-in-depth on top of the framework's same-origin
+	//     guarantee.
+	// Fail-quiet via `.catch`: a missing or invalid sidecar never blocks the
+	// user-visible mount — App.svelte does not depend on the hydration payload.
+	void loadFaceHydrationData<FaceTheoryHydrationPayload>({
+		allowedOrigin: document.location.origin,
+		requestInit: { redirect: 'error' },
+	})
+		.then(stashHydrationPayload)
+		.catch(() => {
+			/* swallowed: fail-quiet preserves user-visible mount */
+		});
 
 	// Stage the OAC-safe form transport once per document. Idempotent; safe
 	// to call before any marked `<form data-facetheory-oac-form>` exists in
