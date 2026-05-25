@@ -32,8 +32,9 @@ type portalUsageSummaryResponse struct {
 	DebitedCredits   int64 `json:"debited_credits"`
 	DiscountCredits  int64 `json:"discount_credits"`
 
-	IncludedCredits int64 `json:"included_credits,omitempty"`
-	UsedCredits     int64 `json:"used_credits,omitempty"`
+	IncludedCredits  int64 `json:"included_credits,omitempty"`
+	UsedCredits      int64 `json:"used_credits,omitempty"`
+	RemainingCredits int64 `json:"remaining_credits,omitempty"`
 }
 
 type portalBudgetsResponse struct {
@@ -531,11 +532,12 @@ func (s *Server) handlePortalListInstanceBudgets(ctx *apptheory.Context) (*appth
 	out := make([]budgetMonthResponse, 0, len(items))
 	for _, b := range items {
 		out = append(out, budgetMonthResponse{
-			InstanceSlug:    b.InstanceSlug,
-			Month:           b.Month,
-			IncludedCredits: b.IncludedCredits,
-			UsedCredits:     b.UsedCredits,
-			UpdatedAt:       b.UpdatedAt,
+			InstanceSlug:     b.InstanceSlug,
+			Month:            b.Month,
+			IncludedCredits:  b.IncludedCredits,
+			UsedCredits:      b.UsedCredits,
+			RemainingCredits: remainingBudgetCredits(b.IncludedCredits, b.UsedCredits),
+			UpdatedAt:        b.UpdatedAt,
 		})
 	}
 
@@ -574,11 +576,12 @@ func (s *Server) handlePortalGetInstanceBudgetMonth(ctx *apptheory.Context) (*ap
 	}
 
 	return apptheory.JSON(http.StatusOK, budgetMonthResponse{
-		InstanceSlug:    item.InstanceSlug,
-		Month:           item.Month,
-		IncludedCredits: item.IncludedCredits,
-		UsedCredits:     item.UsedCredits,
-		UpdatedAt:       item.UpdatedAt,
+		InstanceSlug:     item.InstanceSlug,
+		Month:            item.Month,
+		IncludedCredits:  item.IncludedCredits,
+		UsedCredits:      item.UsedCredits,
+		RemainingCredits: remainingBudgetCredits(item.IncludedCredits, item.UsedCredits),
+		UpdatedAt:        item.UpdatedAt,
 	})
 }
 
@@ -652,11 +655,12 @@ func (s *Server) handlePortalSetInstanceBudgetMonth(ctx *apptheory.Context) (*ap
 	s.tryWriteAuditLog(ctx, audit)
 
 	return apptheory.JSON(http.StatusOK, budgetMonthResponse{
-		InstanceSlug:    slug,
-		Month:           month,
-		IncludedCredits: budget.IncludedCredits,
-		UsedCredits:     budget.UsedCredits,
-		UpdatedAt:       budget.UpdatedAt,
+		InstanceSlug:     slug,
+		Month:            month,
+		IncludedCredits:  budget.IncludedCredits,
+		UsedCredits:      budget.UsedCredits,
+		RemainingCredits: remainingBudgetCredits(budget.IncludedCredits, budget.UsedCredits),
+		UpdatedAt:        budget.UpdatedAt,
 	})
 }
 
@@ -773,6 +777,7 @@ func (s *Server) handlePortalGetInstanceUsageSummary(ctx *apptheory.Context) (*a
 		First(&budget); err == nil {
 		out.IncludedCredits = budget.IncludedCredits
 		out.UsedCredits = budget.UsedCredits
+		out.RemainingCredits = remainingBudgetCredits(budget.IncludedCredits, budget.UsedCredits)
 	}
 
 	return apptheory.JSON(http.StatusOK, out)
