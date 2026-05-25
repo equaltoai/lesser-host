@@ -1,14 +1,14 @@
 {
   "$schema": "https://gov.pai.dev/schemas/pack.schema.json",
   "schemaVersion": 1,
-  "packVersion": "2026.05.14-m7.2",
-  "packDigest": "c326dfb8a5827ab1d48e156cd1cdf7f04e4cd47e92bb0185bce7320723fdf8cb",
+  "packVersion": "2026.05.24-web.0",
+  "packDigest": "9e9397f32861dc5385f577c77a4c6cc088c77a3d213a97dde82d68e5303ee00c",
   "domain": "custom",
   "projectSlug": "lesser-host",
-  "generatedAt": "2026-05-14T21:49:27Z",
+  "generatedAt": "2026-05-25T21:04:33Z",
   "source": {
-    "commitSha": "UNKNOWN",
-    "branch": "codex/issue-285-gov-docs-isolation"
+    "commitSha": "e0c3ab8cb2dda7b163c97feeb1e963a11170ba1e",
+    "branch": "theorymcp/equaltoai/host/project-39-m0.24-m0.29-closeout"
   },
   "artifacts": {
     "planning": [
@@ -24,15 +24,30 @@
       "gov-infra/planning/lesser-host-lint-green-roadmap.md",
       "gov-infra/planning/lesser-host-coverage-roadmap.md",
       "docs/adr/0005-bounded-soul-comm-mailbox-authority.md",
+      "docs/adr/0006-facetheory-adoption.md",
       "docs/roadmap-soul-comm-mailbox.md",
       "docs/soul-surface.md"
     ],
     "verifiers": [
-      "gov-infra/verifiers/gov-verify-rubric.sh"
+      "gov-infra/verifiers/gov-verify-rubric.sh",
+      "gov-infra/verifiers/sec/web-csp-integrity.sh",
+      "gov-infra/verifiers/sec/web-html-inline-absence.sh",
+      "gov-infra/verifiers/sec/oac-form-integrity.sh",
+      "gov-infra/verifiers/sec/cloudfront-composition.sh",
+      "gov-infra/verifiers/sec/release-verification-preservation.sh",
+      "gov-infra/verifiers/sec/trust-auth-preservation.sh",
+      "gov-infra/verifiers/con/wire-mcp-route-ownership.sh"
     ],
     "evidence": [
       "gov-infra/evidence/gov-rubric-report.json",
-      "gov-infra/evidence/CMP-4-output.log"
+      "gov-infra/evidence/CMP-4-output.log",
+      "gov-infra/evidence/SEC-5-output.log",
+      "gov-infra/evidence/SEC-6-output.log",
+      "gov-infra/evidence/SEC-7-output.log",
+      "gov-infra/evidence/SEC-8-output.log",
+      "gov-infra/evidence/SEC-9-output.log",
+      "gov-infra/evidence/SEC-10-output.log",
+      "gov-infra/evidence/CON-4-output.log"
     ]
   }
 }
