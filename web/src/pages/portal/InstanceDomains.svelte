@@ -17,14 +17,13 @@
 	import {
 		Alert,
 		Button,
-		Card,
 		DefinitionItem,
 		DefinitionList,
-		Heading,
 		Spinner,
 		Text,
 		TextField,
 	} from 'src/lib/ui';
+	import { Panel } from 'src/lib/shell';
 
 	let { token, slug } = $props<{ token: string; slug: string }>();
 
@@ -230,16 +229,12 @@
 </script>
 
 <div class="domains">
-	<header class="domains__header">
-		<div class="domains__title">
-			<Heading level={2} size="xl">Domains</Heading>
-			<Text color="secondary">Manage vanity domains for <span class="domains__mono">{slug}</span>.</Text>
-		</div>
-		<div class="domains__actions">
+	<div class="domains__actions">
+		<Text size="sm" color="secondary">Manage primary and vanity domains for this managed instance.</Text>
+		<div class="domains__action-buttons">
 			<Button variant="outline" onclick={() => void loadDomains()} disabled={loading}>Refresh</Button>
-			<Button variant="ghost" onclick={() => navigate(`/portal/instances/${slug}`)}>Back</Button>
 		</div>
-	</header>
+	</div>
 
 	{#if loading}
 		<div class="domains__loading">
@@ -249,21 +244,15 @@
 	{:else if errorMessage}
 		<Alert variant="error" title="Failed to load domains">{errorMessage}</Alert>
 	{:else}
-		<Card variant="outlined" padding="lg">
-			{#snippet header()}
-				<Heading level={3} size="lg">Primary domain</Heading>
-			{/snippet}
+		<Panel title="Primary domain" headerLevel={2}>
 			<Text size="sm" color="secondary">Managed by lesser.host.</Text>
 			<DefinitionList>
 				<DefinitionItem label="Domain" monospace>{primaryDomain()?.domain || '—'}</DefinitionItem>
 				<DefinitionItem label="Status" monospace>{primaryDomain()?.status || '—'}</DefinitionItem>
 			</DefinitionList>
-		</Card>
+		</Panel>
 
-		<Card variant="outlined" padding="lg">
-			{#snippet header()}
-				<Heading level={3} size="lg">Add vanity domain</Heading>
-			{/snippet}
+		<Panel title="Add vanity domain" headerLevel={2}>
 			<Text size="sm" color="secondary">Verify by adding a DNS TXT record.</Text>
 
 			<div class="domains__form">
@@ -278,7 +267,7 @@
 			{#if addError}
 				<Alert variant="error" title="Add failed">{addError}</Alert>
 			{/if}
-		</Card>
+		</Panel>
 
 		{#if actionError}
 			<Alert variant="error" title="Domain action failed">{actionError}</Alert>
@@ -288,11 +277,7 @@
 			<Alert variant="info" title="Clipboard">{copyNotice}</Alert>
 		{/if}
 
-		<Card variant="outlined" padding="lg">
-			{#snippet header()}
-				<Heading level={3} size="lg">Vanity domains</Heading>
-			{/snippet}
-
+		<Panel title="Vanity domains" headerLevel={2}>
 			{#if vanityDomains().length === 0}
 				<Alert variant="info" title="No vanity domains">
 					<Text size="sm">Add a vanity domain above.</Text>
@@ -300,7 +285,7 @@
 			{:else}
 				<div class="domains__list">
 					{#each vanityDomains() as d (d.domain)}
-						<Card variant="outlined" padding="md">
+						<div class="domains__list-item">
 							<div class="domains__item">
 								<div class="domains__item-meta">
 									<Text size="sm" weight="medium">{d.domain}</Text>
@@ -381,11 +366,11 @@
 									</Button>
 								</div>
 							</div>
-						</Card>
+						</div>
 					{/each}
 				</div>
 			{/if}
-		</Card>
+		</Panel>
 	{/if}
 </div>
 
@@ -396,25 +381,26 @@
 		gap: var(--gr-spacing-scale-6);
 	}
 
-	.domains__header {
-		display: flex;
-		gap: var(--gr-spacing-scale-4);
-		justify-content: space-between;
-		align-items: flex-start;
-		flex-wrap: wrap;
-	}
-
-	.domains__title {
-		display: flex;
-		flex-direction: column;
-		gap: var(--gr-spacing-scale-1);
-	}
-
 	.domains__actions {
 		display: flex;
-		gap: var(--gr-spacing-scale-2);
+		gap: var(--ds-space-3);
+		justify-content: space-between;
 		align-items: center;
 		flex-wrap: wrap;
+	}
+
+	.domains__action-buttons {
+		display: flex;
+		gap: var(--ds-space-2);
+		align-items: center;
+		flex-wrap: wrap;
+	}
+
+	.domains__list-item {
+		padding: var(--ds-space-3);
+		border: 1px solid var(--ds-border-subtle, var(--gr-color-border-subtle));
+		border-radius: var(--ds-radius-md, var(--gr-radius-md));
+		background: var(--ds-bg-raised, var(--gr-color-surface));
 	}
 
 	.domains__loading {
