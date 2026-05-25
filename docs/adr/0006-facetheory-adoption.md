@@ -55,7 +55,7 @@ CSP byte-string, making any drift a CI-failing condition.
 This ADR was prepared under the four-walk governance review:
 1. **CSP/Security walk** — SEC-5 (CSP byte-string), SEC-6 (inline absence), SEC-7 (OAC integrity),
    SEC-8 (CloudFront composition) verifiers enforce the security contract.
-2. **Supply-chain walk** — SEC-9 (release-verification change-lock), SEC-10 (trust-auth change-lock)
+2. **Supply-chain walk** — SEC-9 (trust-auth change-lock), SEC-10 (release-verification change-lock)
    verifiers prevent regression on the provisioning and trust-auth pipelines.
 3. **Framework-consumption walk** — CON-4 (MCP route ownership) verifier ensures the framework
    integration surfaces preserve host-owned routes.

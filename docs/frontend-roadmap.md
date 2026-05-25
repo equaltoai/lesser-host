@@ -9,8 +9,8 @@
 > - `gov-infra/planning/lesser-host-controls-matrix.md` — controls C-CSP-FT, C-OAC-MUT,
 >   C-CDN-COMP, C-AUTH-LOCK, C-SUPPLY-LOCK, C-MCP-ROUTE
 > - `gov-infra/verifiers/sec/` — SEC-5 through SEC-10 deterministic verifiers (CSP
->   byte-string, inline absence, OAC integrity, CloudFront composition, release-verification
->   change-lock, trust-auth change-lock)
+>   byte-string, inline absence, OAC integrity, CloudFront composition, trust-auth
+>   change-lock, release-verification change-lock)
 > - `gov-infra/verifiers/con/wire-mcp-route-ownership.sh` — CON-4 MCP route ownership
 >
 > The original content below is preserved for historical context.
