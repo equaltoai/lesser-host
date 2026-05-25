@@ -1483,10 +1483,11 @@ export class LesserHostStack extends cdk.Stack {
 			],
 		});
 
-		// SSR Lambda — FaceTheory shell renderer. Wraps face-app.ts's `handler`
-		// export. Bundle produced by `cd web && npm run build`; must run before
-		// `cdk synth`. AppTheorySsrSite (below) wraps this Lambda with an
-		// OAC-protected Function URL (AWS_IAM fail-closed) as the default origin.
+		// Pre-build web/dist so WebSsrFn + WebSidecarsDeployment assets have
+		// inputs ready (mirrors the Go Lambda factory: build first, then
+		// fromAsset). AppTheorySsrSite wraps the SSR Lambda with an
+		// OAC-protected Function URL (AWS_IAM fail-closed) as default origin.
+		this.ensureWebBuild();
 		const webSsrFn = new lambda.Function(this, 'WebSsrFn', {
 			functionName: `${namePrefix}-web-ssr`,
 			code: lambda.Code.fromAsset(path.join(this.repoRoot(), 'web', 'dist', 'server')),
@@ -1955,6 +1956,27 @@ export class LesserHostStack extends cdk.Stack {
 				environment,
 			});
 		}
+
+	// Ensure web/dist/{server,sidecars} exist before WebSsrFn +
+	// WebSidecarsDeployment construction. Idempotent: skips if already
+	// built (fast path); on fresh checkout runs npm ci + npm run build.
+	// One synchronous build is cheaper than per-asset CDK bundling
+	// (would trigger 2-3 redundant builds per synth).
+	private webBuildPrepared = false;
+	private ensureWebBuild(): void {
+		if (this.webBuildPrepared) return;
+		const webDir = path.join(this.repoRoot(), 'web');
+		const serverEntry = path.join(webDir, 'dist', 'server', 'face-app.mjs');
+		const sidecarsDir = path.join(webDir, 'dist', 'sidecars');
+		if (fs.existsSync(serverEntry) && fs.existsSync(sidecarsDir)) {
+			this.webBuildPrepared = true;
+			return;
+		}
+		console.log('[lesser-host-stack] building web/ for WebSsrFn + WebSidecarsDeployment');
+		execFileSync('npm', ['ci', '--no-audit', '--no-fund'], { cwd: webDir, stdio: 'inherit' });
+		execFileSync('npm', ['run', 'build'], { cwd: webDir, stdio: 'inherit' });
+		this.webBuildPrepared = true;
+	}
 
 	private repoRoot(): string {
 		let current = __dirname;
