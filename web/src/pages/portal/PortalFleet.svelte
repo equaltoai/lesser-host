@@ -37,8 +37,9 @@ Issue: equaltoai/lesser-host#391
 	import { Alert, Button, Heading, Spinner, Text, TextField } from 'src/lib/ui';
 	import FleetCard from 'src/lib/components/FleetCard.svelte';
 	import CostGauge from 'src/lib/components/CostGauge.svelte';
-	import type { FleetCardStatus, FleetCardMetadataItem } from 'src/lib/greater/host-platform';
+	import type { FleetCardMetadataItem } from 'src/lib/greater/host-platform';
 	import { portalFleetInstances } from 'src/lib/portalFleetState';
+	import { mapInstanceFleetStatus } from 'src/lib/fleetStatus';
 
 	let { token } = $props<{ token: string }>();
 
@@ -67,45 +68,10 @@ Issue: equaltoai/lesser-host#391
 		return String(err);
 	}
 
-	/**
-	 * Map host's instance status + provision_status onto FleetCardStatus.
-	 *
-	 * The host backend exposes `status` (instance lifecycle) and
-	 * `provision_status` (the current provisioning job's state). When a
-	 * provisioning job is active, the fleet card surfaces 'provisioning'
-	 * so the operator sees the in-flight state. Otherwise we map the
-	 * stable instance lifecycle onto the FleetCard status taxonomy.
-	 *
-	 * The mapping is conservative: unknown values render as 'unknown'
-	 * rather than guessing, so the badge text matches the underlying
-	 * state honestly.
-	 */
-	function mapStatus(inst: InstanceResponse): FleetCardStatus {
-		const provision = (inst.provision_status ?? '').toLowerCase();
-		if (provision && provision !== 'done' && provision !== 'complete' && provision !== 'completed') {
-			if (provision === 'failed' || provision === 'error') return 'degraded';
-			return 'provisioning';
-		}
-		const status = (inst.status ?? '').toLowerCase();
-		switch (status) {
-			case 'active':
-			case 'running':
-			case 'healthy':
-				return 'healthy';
-			case 'suspended':
-			case 'paused':
-			case 'stopped':
-				return 'offline';
-			case 'failed':
-			case 'error':
-			case 'degraded':
-				return 'degraded';
-			case 'warning':
-				return 'warning';
-			default:
-				return 'unknown';
-		}
-	}
+	// Backend status taxonomy mapping lives in `src/lib/fleetStatus.ts` so
+	// it can be tested independently. See that module's docstring for the
+	// authoritative mapping rules (backend sources: internal/store/models/
+	// instance.go + provision_job.go).
 
 	function buildMetadata(inst: InstanceResponse): FleetCardMetadataItem[] {
 		const rows: FleetCardMetadataItem[] = [];
@@ -288,7 +254,7 @@ Issue: equaltoai/lesser-host#391
 						slug={inst.slug}
 						region={inst.hosted_region}
 						version={inst.lesser_version}
-						status={mapStatus(inst)}
+						status={mapInstanceFleetStatus(inst)}
 						metadata={buildMetadata(inst)}
 						variant="elevated"
 					>
