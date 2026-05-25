@@ -1,5 +1,20 @@
 # lesser.host frontend roadmap (portal + operator console)
 
+> **Superseded (2026-05-24).** This roadmap has been superseded by the 2026-05-24 web/ UI
+> rework planning artifacts. See:
+> - `docs/adr/0006-facetheory-adoption.md` — FaceTheory v3.3.0 adoption ADR (Security,
+>   Delivery-Path, Signal A resolution)
+> - `gov-infra/planning/lesser-host-threat-model.md` — threat additions T-CSP-001,
+>   T-OAC-001, T-COMP-001, T-AUTH-DRIFT-001, T-SUPPLY-001, T-MCP-ROUTE-001
+> - `gov-infra/planning/lesser-host-controls-matrix.md` — controls C-CSP-FT, C-OAC-MUT,
+>   C-CDN-COMP, C-AUTH-LOCK, C-SUPPLY-LOCK, C-MCP-ROUTE
+> - `gov-infra/verifiers/sec/` — SEC-5 through SEC-10 deterministic verifiers (CSP
+>   byte-string, inline absence, OAC integrity, CloudFront composition, release-verification
+>   change-lock, trust-auth change-lock)
+> - `gov-infra/verifiers/con/wire-mcp-route-ownership.sh` — CON-4 MCP route ownership
+>
+> The original content below is preserved for historical context.
+
 This roadmap defines the **web interfaces** for `lesser.host` (repo: `lesser-host`), covering both:
 
 - **Self-serve** customer experiences (portal)
