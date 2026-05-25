@@ -1,5 +1,10 @@
+import type { FetchResult } from '@apollo/client';
 import type { LesserGraphQLAdapter } from '../graphql/LesserGraphQLAdapter.js';
-import type { ActorSummaryFragment, ObjectFieldsFragment } from '../graphql/generated/types.js';
+import type {
+	ActorSummaryFragment,
+	ConversationUpdatesSubscription,
+	ObjectFieldsFragment,
+} from '../graphql/generated/types.js';
 import {
 	AcceptMessageRequestDocument,
 	ConversationMessagesDocument,
@@ -289,7 +294,7 @@ export function createLesserMessagesHandlers(
 			callbacks.onConnectionStatusChange?.('connecting');
 
 			const sub = adapter.subscribeToConversationUpdates().subscribe({
-				next: ({ data }) => {
+				next: ({ data }: FetchResult<ConversationUpdatesSubscription>) => {
 					const conversationId = data?.conversationUpdates?.id;
 					if (!conversationId) {
 						return;
@@ -318,7 +323,7 @@ export function createLesserMessagesHandlers(
 							// Ignore per-event fetch errors; the caller can fall back to polling.
 						});
 				},
-				error: (error) => {
+				error: (error: unknown) => {
 					const message = error instanceof Error ? error.message : 'Realtime unavailable';
 					callbacks.onConnectionStatusChange?.('error', message);
 				},

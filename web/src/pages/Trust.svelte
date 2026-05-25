@@ -1,10 +1,33 @@
+<!--
+@component
+Trust — public trust portal (attestation lookup + inspector entry).
+
+M1.3 re-skin: renders on the new shell (greater-components `PageFrame` +
+`PageTitle` + `Panel`) and consumes DS tokens through the existing
+`--gr-*` bridge. Routing, lookup behavior, and attestation-inspector
+delegation are preserved byte-for-byte from the pre-M1 implementation;
+only the visual layer changes.
+
+Posture invariants preserved:
+  - Strict-no-inline-CSP safe.
+  - Trust-API instance-auth contract NOT touched here — Trust UI is
+    a public-read surface that calls the same `lookupAttestation` API
+    client. SEC-9 change-lock not engaged.
+  - Attestation integrity preserved: the AttestationInspector subroute
+    is delegated unchanged.
+
+Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M1.3
+Issue: equaltoai/lesser-host#412
+-->
+
 <script lang="ts">
 	import { onMount } from 'svelte';
 
 	import type { ApiError } from 'src/lib/api/http';
 	import { lookupAttestation } from 'src/lib/api/trust';
 	import { currentPath, navigate } from 'src/lib/router';
-	import { Alert, Button, Card, Container, Heading, Spinner, Text, TextField } from 'src/lib/ui';
+	import { Alert, Button, Spinner, Text, TextField } from 'src/lib/ui';
+	import { PageFrame, PageTitle, Panel } from 'src/lib/shell';
 
 	import AttestationInspector from 'src/pages/trust/AttestationInspector.svelte';
 
@@ -95,131 +118,96 @@
 	});
 </script>
 
-<Container size="lg" gutter="lg">
-	<div class="trust">
-		<header class="trust__header">
-			<div class="trust__title">
-				<Heading level={1}>Trust</Heading>
-				<Text color="secondary">Attestations and evidence inspection.</Text>
-			</div>
-			<div class="trust__actions">
+<PageFrame width="default">
+	{#snippet header()}
+		<PageTitle
+			eyebrow="Trust"
+			title="Trust"
+			description="Attestations and evidence inspection."
+		>
+			{#snippet actions()}
 				<Button variant="ghost" onclick={() => navigate('/')}>Home</Button>
+			{/snippet}
+		</PageTitle>
+	{/snippet}
+
+	{#if trustRoute.kind === 'home'}
+		<Panel title="Fetch by id" headerLevel={2}>
+			<Text size="sm" color="secondary">
+				Note: raw attestation JSON lives at <span class="trust__mono">/attestations/*</span>. This UI
+				uses <span class="trust__mono">/trust/*</span> to avoid routing conflicts.
+			</Text>
+			<div class="trust__form">
+				<TextField label="Attestation id" bind:value={idInput} placeholder="64-char hex" />
+				<Button variant="solid" onclick={openById}>Open</Button>
 			</div>
-		</header>
+		</Panel>
 
-		{#if trustRoute.kind === 'home'}
-			<Card variant="outlined" padding="lg">
-				{#snippet header()}
-					<Heading level={2} size="xl">Fetch by id</Heading>
-				{/snippet}
-				<Text size="sm" color="secondary">
-					Note: raw attestation JSON lives at <span class="trust__mono">/attestations/*</span>. This UI uses
-					<span class="trust__mono">/trust/*</span> to avoid routing conflicts.
-				</Text>
-				<div class="trust__form">
-					<TextField label="Attestation id" bind:value={idInput} placeholder="64-char hex" />
-					<Button variant="solid" onclick={openById}>Open</Button>
-				</div>
-			</Card>
-
-			<Card variant="outlined" padding="lg">
-				{#snippet header()}
-					<Heading level={2} size="xl">Lookup</Heading>
-				{/snippet}
-				<Text size="sm" color="secondary">
-					Lookup by <span class="trust__mono">(actor_uri, object_uri, content_hash, module, policy_version)</span>.
-				</Text>
-				<div class="trust__grid">
-					<TextField label="actor_uri" bind:value={actorUri} placeholder="did:..." />
-					<TextField label="object_uri" bind:value={objectUri} placeholder="https://..." />
-					<TextField label="content_hash" bind:value={contentHash} placeholder="sha256:..." />
-					<TextField label="module" bind:value={module} placeholder="link_safety_basic" />
-					<TextField label="policy_version" bind:value={policyVersion} placeholder="v1" />
-				</div>
-				<div class="trust__row">
-					<Button variant="solid" onclick={() => void lookup()} disabled={lookupLoading}>Lookup</Button>
-					{#if lookupLoading}
-						<div class="trust__loading-inline">
-							<Spinner size="sm" />
-							<Text size="sm">Searching…</Text>
-						</div>
-					{/if}
-				</div>
-				{#if lookupError}
-					<Alert variant="error" title="Lookup failed">{lookupError}</Alert>
+		<Panel title="Lookup" headerLevel={2}>
+			<Text size="sm" color="secondary">
+				Lookup by
+				<span class="trust__mono">(actor_uri, object_uri, content_hash, module, policy_version)</span>.
+			</Text>
+			<div class="trust__grid">
+				<TextField label="actor_uri" bind:value={actorUri} placeholder="did:..." />
+				<TextField label="object_uri" bind:value={objectUri} placeholder="https://..." />
+				<TextField label="content_hash" bind:value={contentHash} placeholder="sha256:..." />
+				<TextField label="module" bind:value={module} placeholder="link_safety_basic" />
+				<TextField label="policy_version" bind:value={policyVersion} placeholder="v1" />
+			</div>
+			<div class="trust__row">
+				<Button variant="solid" onclick={() => void lookup()} disabled={lookupLoading}>Lookup</Button>
+				{#if lookupLoading}
+					<div class="trust__loading-inline">
+						<Spinner size="sm" />
+						<Text size="sm">Searching…</Text>
+					</div>
 				{/if}
-			</Card>
-		{:else if trustRoute.kind === 'attestation'}
-			<AttestationInspector id={trustRoute.id} />
-		{:else}
-			<Alert variant="warning" title="Not found">
-				<Text size="sm">Unknown trust path.</Text>
-			</Alert>
-		{/if}
-	</div>
-</Container>
+			</div>
+			{#if lookupError}
+				<Alert variant="error" title="Lookup failed">{lookupError}</Alert>
+			{/if}
+		</Panel>
+	{:else if trustRoute.kind === 'attestation'}
+		<AttestationInspector id={trustRoute.id} />
+	{:else}
+		<Alert variant="warning" title="Not found">
+			<Text size="sm">Unknown trust path.</Text>
+		</Alert>
+	{/if}
+</PageFrame>
 
 <style>
-	.trust {
-		display: flex;
-		flex-direction: column;
-		gap: var(--gr-spacing-scale-6);
-		padding: var(--gr-spacing-scale-12) 0;
-	}
-
-	.trust__header {
-		display: flex;
-		gap: var(--gr-spacing-scale-4);
-		justify-content: space-between;
-		align-items: flex-start;
-		flex-wrap: wrap;
-	}
-
-	.trust__title {
-		display: flex;
-		flex-direction: column;
-		gap: var(--gr-spacing-scale-2);
-	}
-
-	.trust__actions {
-		display: flex;
-		gap: var(--gr-spacing-scale-2);
-		align-items: center;
-		flex-wrap: wrap;
-	}
-
 	.trust__form {
 		display: flex;
-		gap: var(--gr-spacing-scale-3);
+		gap: var(--ds-space-3);
 		align-items: flex-end;
-		margin-top: var(--gr-spacing-scale-4);
+		margin-top: var(--ds-space-4);
 		flex-wrap: wrap;
 	}
 
 	.trust__grid {
 		display: grid;
 		grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-		gap: var(--gr-spacing-scale-3);
-		margin-top: var(--gr-spacing-scale-4);
+		gap: var(--ds-space-3);
+		margin-top: var(--ds-space-4);
 	}
 
 	.trust__row {
 		display: flex;
-		gap: var(--gr-spacing-scale-2);
+		gap: var(--ds-space-2);
 		align-items: center;
-		margin-top: var(--gr-spacing-scale-4);
+		margin-top: var(--ds-space-4);
 		flex-wrap: wrap;
 	}
 
 	.trust__loading-inline {
 		display: flex;
-		gap: var(--gr-spacing-scale-2);
+		gap: var(--ds-space-2);
 		align-items: center;
 	}
 
 	.trust__mono {
-		font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New',
-			monospace;
+		font-family: var(--ds-font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
 	}
 </style>
-

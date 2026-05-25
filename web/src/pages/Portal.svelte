@@ -21,6 +21,8 @@
 	import SoulMintConversation from 'src/pages/portal/SoulMintConversation.svelte';
 	import SoulRegister from 'src/pages/portal/SoulRegister.svelte';
 	import Souls from 'src/pages/portal/Souls.svelte';
+	import InstanceSouls from 'src/pages/portal/InstanceSouls.svelte';
+	import InstanceDetailShell from 'src/lib/components/InstanceDetailShell.svelte';
 
 	let loading = $state(false);
 	let errorMessage = $state<string | null>(null);
@@ -29,11 +31,13 @@
 	type PortalRoute =
 		| { kind: 'instances' }
 		| { kind: 'instance'; slug: string }
+		| { kind: 'instanceCost'; slug: string }
 		| { kind: 'instanceConfig'; slug: string }
 		| { kind: 'instanceBudgets'; slug: string }
 		| { kind: 'instanceUsage'; slug: string }
 		| { kind: 'instanceDomains'; slug: string }
 		| { kind: 'instanceKeys'; slug: string }
+		| { kind: 'instanceSouls'; slug: string }
 		| { kind: 'souls' }
 		| { kind: 'soulRegister' }
 		| { kind: 'soulMint'; agentId: string }
@@ -52,11 +56,14 @@
 		if (parts[0] === 'instances') {
 			if (parts[1]) {
 				if (parts.length === 2) return { kind: 'instance', slug: parts[1] };
+				if (parts[2] === 'overview') return { kind: 'instance', slug: parts[1] };
+				if (parts[2] === 'cost') return { kind: 'instanceCost', slug: parts[1] };
 				if (parts[2] === 'config') return { kind: 'instanceConfig', slug: parts[1] };
 				if (parts[2] === 'budgets') return { kind: 'instanceBudgets', slug: parts[1] };
 				if (parts[2] === 'usage') return { kind: 'instanceUsage', slug: parts[1] };
 				if (parts[2] === 'domains') return { kind: 'instanceDomains', slug: parts[1] };
 				if (parts[2] === 'keys') return { kind: 'instanceKeys', slug: parts[1] };
+				if (parts[2] === 'souls') return { kind: 'instanceSouls', slug: parts[1] };
 				return { kind: 'notFound' };
 			}
 			return { kind: 'instances' };
@@ -181,17 +188,55 @@
 			{:else if portalRoute.kind === 'instances'}
 				<Instances token={$session.token} />
 			{:else if portalRoute.kind === 'instance'}
-				<InstanceDetail token={$session.token} slug={portalRoute.slug} />
+				<InstanceDetailShell slug={portalRoute.slug}>
+					<InstanceDetail token={$session.token} slug={portalRoute.slug} />
+				</InstanceDetailShell>
+			{:else if portalRoute.kind === 'instanceCost'}
+				<InstanceDetailShell slug={portalRoute.slug}>
+					<Alert variant="info" title="Cost & usage tab — coming soon">
+						<Text size="sm">
+							The customer Cost & usage view (current-month budget, used credits, cache hit rate)
+							is in progress. Per-Lambda/Dynamo/egress real-time telemetry ships in M3 with the
+							cost-telemetry firehose. For now, use the legacy
+							<a class="portal__link" href={`/portal/instances/${portalRoute.slug}/budgets`}
+								onclick={(ev) => {
+									ev.preventDefault();
+									navigate(`/portal/instances/${portalRoute.slug}/budgets`);
+								}}>Budgets</a>
+							or
+							<a class="portal__link" href={`/portal/instances/${portalRoute.slug}/usage`}
+								onclick={(ev) => {
+									ev.preventDefault();
+									navigate(`/portal/instances/${portalRoute.slug}/usage`);
+								}}>Usage</a>
+							pages.
+						</Text>
+					</Alert>
+				</InstanceDetailShell>
 			{:else if portalRoute.kind === 'instanceConfig'}
-				<InstanceConfig token={$session.token} slug={portalRoute.slug} />
+				<InstanceDetailShell slug={portalRoute.slug}>
+					<InstanceConfig token={$session.token} slug={portalRoute.slug} />
+				</InstanceDetailShell>
 			{:else if portalRoute.kind === 'instanceBudgets'}
-				<InstanceBudgets token={$session.token} slug={portalRoute.slug} />
+				<InstanceDetailShell slug={portalRoute.slug}>
+					<InstanceBudgets token={$session.token} slug={portalRoute.slug} />
+				</InstanceDetailShell>
 			{:else if portalRoute.kind === 'instanceUsage'}
-				<InstanceUsage token={$session.token} slug={portalRoute.slug} />
+				<InstanceDetailShell slug={portalRoute.slug}>
+					<InstanceUsage token={$session.token} slug={portalRoute.slug} />
+				</InstanceDetailShell>
 			{:else if portalRoute.kind === 'instanceDomains'}
-				<InstanceDomains token={$session.token} slug={portalRoute.slug} />
+				<InstanceDetailShell slug={portalRoute.slug}>
+					<InstanceDomains token={$session.token} slug={portalRoute.slug} />
+				</InstanceDetailShell>
 			{:else if portalRoute.kind === 'instanceKeys'}
-				<InstanceKeys token={$session.token} slug={portalRoute.slug} />
+				<InstanceDetailShell slug={portalRoute.slug}>
+					<InstanceKeys token={$session.token} slug={portalRoute.slug} />
+				</InstanceDetailShell>
+			{:else if portalRoute.kind === 'instanceSouls'}
+				<InstanceDetailShell slug={portalRoute.slug}>
+					<InstanceSouls token={$session.token} slug={portalRoute.slug} />
+				</InstanceDetailShell>
 			{:else if portalRoute.kind === 'souls'}
 				<Souls token={$session.token} />
 			{:else if portalRoute.kind === 'soulRegister'}
@@ -268,5 +313,11 @@
 	.portal__mono {
 		font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New',
 			monospace;
+	}
+
+	.portal__link {
+		color: var(--ds-action-link, var(--gr-color-primary-foreground));
+		text-decoration: underline;
+		text-underline-offset: 2px;
 	}
 </style>

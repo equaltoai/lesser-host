@@ -12,7 +12,8 @@
 		configFormFromInstance,
 		validateInstanceConfigForm,
 	} from 'src/lib/instanceConfig';
-	import { Alert, Button, Card, Heading, Select, Spinner, Switch, Text, TextField } from 'src/lib/ui';
+	import { Alert, Button, Select, Spinner, Switch, Text, TextField } from 'src/lib/ui';
+	import { Panel } from 'src/lib/shell';
 
 	let { token, slug } = $props<{ token: string; slug: string }>();
 
@@ -146,19 +147,13 @@
 </script>
 
 <div class="config">
-	<header class="config__header">
-		<div class="config__title">
-			<Heading level={2} size="xl">Configuration</Heading>
-			<Text color="secondary">
-				Instance <span class="config__mono">{slug}</span>.
-			</Text>
-		</div>
-		<div class="config__actions">
+	<div class="config__actions">
+		<Text size="sm" color="secondary">Configure features, moderation, and AI for this managed instance.</Text>
+		<div class="config__action-buttons">
 			<Button variant="outline" onclick={() => void load()} disabled={loading || saving}>Refresh</Button>
-			<Button variant="ghost" onclick={() => navigate(`/portal/instances/${slug}`)}>Back</Button>
 			<Button variant="solid" onclick={() => void save()} disabled={!canSave}>Save</Button>
 		</div>
-	</header>
+	</div>
 
 	{#if loading}
 		<div class="config__loading">
@@ -172,10 +167,7 @@
 	{/if}
 
 	{#if instance && form}
-		<Card variant="outlined" padding="lg">
-			{#snippet header()}
-				<Heading level={3} size="lg">Features</Heading>
-			{/snippet}
+		<Panel title="Features" headerLevel={2}>
 
 			<div class="config__grid">
 				<div class="config__toggle">
@@ -235,12 +227,9 @@
 					</div>
 				</Alert>
 			{/if}
-		</Card>
+		</Panel>
 
-		<Card variant="outlined" padding="lg">
-			{#snippet header()}
-				<Heading level={3} size="lg">Moderation</Heading>
-			{/snippet}
+		<Panel title="Moderation" headerLevel={2}>
 
 			<div class="config__grid">
 				<div class="config__toggle">
@@ -272,12 +261,9 @@
 					/>
 				</div>
 			</div>
-		</Card>
+		</Panel>
 
-		<Card variant="outlined" padding="lg">
-			{#snippet header()}
-				<Heading level={3} size="lg">AI</Heading>
-			{/snippet}
+		<Panel title="AI" headerLevel={2}>
 
 			<Text size="sm" color="secondary">
 				Batching reduces cost at the expense of latency. <span class="config__mono">hybrid</span> can balance both.
@@ -363,7 +349,7 @@
 					</div>
 				</Alert>
 			{/if}
-		</Card>
+		</Panel>
 	{/if}
 </div>
 
@@ -374,23 +360,17 @@
 		gap: var(--gr-spacing-scale-6);
 	}
 
-	.config__header {
+	.config__actions {
 		display: flex;
-		gap: var(--gr-spacing-scale-4);
+		gap: var(--ds-space-3);
 		justify-content: space-between;
-		align-items: flex-start;
+		align-items: center;
 		flex-wrap: wrap;
 	}
 
-	.config__title {
+	.config__action-buttons {
 		display: flex;
-		flex-direction: column;
-		gap: var(--gr-spacing-scale-1);
-	}
-
-	.config__actions {
-		display: flex;
-		gap: var(--gr-spacing-scale-2);
+		gap: var(--ds-space-2);
 		align-items: center;
 		flex-wrap: wrap;
 	}
