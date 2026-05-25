@@ -55,20 +55,49 @@ Issue: equaltoai/lesser-host#391
 	import { session } from 'src/lib/session';
 	import { logout } from 'src/lib/auth/logout';
 	import { Button, Text, Heading } from 'src/lib/ui';
+	import { portalFleetInstances, clearPortalFleetState } from 'src/lib/portalFleetState';
 
 	interface Props {
 		/** Page content rendered inside the shell's PageFrame. */
 		children: Snippet;
 		/**
-		 * Optional per-instance "Open <slug>" command palette entries.
-		 * The caller (PortalFleet) builds these from the loaded fleet
-		 * so commands like "Open my-instance" navigate to
-		 * `/portal/instances/<slug>` directly.
+		 * Optional per-instance "Open <slug>" command palette entries
+		 * passed in directly. When omitted (the typical case), the shell
+		 * derives instance entries from the shared `portalFleetInstances`
+		 * store, which `PortalFleet` populates on every successful load.
+		 * Explicit passing here is the escape hatch for tests / hosts
+		 * that want to override the store-derived list.
 		 */
 		instanceCommands?: CommandPaletteItem[];
 	}
 
-	let { children, instanceCommands = [] }: Props = $props();
+	let { children, instanceCommands }: Props = $props();
+
+	// Auto-derive per-instance commands from the shared fleet store when
+	// the caller hasn't passed an explicit list. Each store entry becomes
+	// an `instance.<slug>` command with the slug + region + version
+	// surfaced as the description so fuzzy-search matches "my-instance",
+	// "us-east-1", and "v1.4.12" alike.
+	const derivedInstanceCommands = $derived<CommandPaletteItem[]>(
+		instanceCommands ??
+			$portalFleetInstances.map((inst) => {
+				const descriptionParts = [];
+				if (inst.hosted_region) descriptionParts.push(inst.hosted_region);
+				if (inst.lesser_version) descriptionParts.push(inst.lesser_version);
+				const description = descriptionParts.join(' • ') || undefined;
+				return {
+					id: `instance.${inst.slug}`,
+					label: `Open ${inst.slug}`,
+					description: description ?? 'Managed instance',
+					keywords: [
+						inst.slug,
+						...(inst.hosted_region ? [inst.hosted_region] : []),
+						...(inst.lesser_version ? [inst.lesser_version] : []),
+						'instance',
+					],
+				};
+			})
+	);
 
 	let paletteOpen = $state(false);
 	let paletteQuery = $state('');
@@ -95,6 +124,9 @@ Issue: equaltoai/lesser-host#391
 	}
 
 	async function handleLogout() {
+		// Drop the fleet snapshot before the next user signs in — an old
+		// user's slugs must never leak into a new user's palette.
+		clearPortalFleetState();
 		await logout();
 		navigate('/login');
 	}
@@ -176,11 +208,11 @@ Issue: equaltoai/lesser-host#391
 	});
 
 	const instancesGroup = $derived<CommandPaletteGroup | null>(
-		instanceCommands.length > 0
+		derivedInstanceCommands.length > 0
 			? {
 					id: 'instances',
 					label: 'Instances',
-					items: instanceCommands,
+					items: derivedInstanceCommands,
 			  }
 			: null
 	);

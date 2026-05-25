@@ -38,6 +38,7 @@ Issue: equaltoai/lesser-host#391
 	import FleetCard from 'src/lib/components/FleetCard.svelte';
 	import CostGauge from 'src/lib/components/CostGauge.svelte';
 	import type { FleetCardStatus, FleetCardMetadataItem } from 'src/lib/greater/host-platform';
+	import { portalFleetInstances } from 'src/lib/portalFleetState';
 
 	let { token } = $props<{ token: string }>();
 
@@ -131,12 +132,28 @@ Issue: equaltoai/lesser-host#391
 		errorMessage = null;
 		instances = [];
 		budgets = {};
+		// Clear the shared fleet snapshot during a refetch so a stale
+		// snapshot never produces palette entries for instances the
+		// current user no longer has access to.
+		portalFleetInstances.set([]);
 
 		loading = true;
 		try {
 			const res = await portalListInstances(token);
 			const list = res.instances ?? [];
 			instances = list;
+			// Publish the projection that PortalShell's CommandPalette
+			// uses to build per-instance "Open <slug>" entries. Narrow
+			// the projection to slug + a couple of low-sensitivity fields
+			// so growth in InstanceResponse doesn't widen what the palette
+			// observes.
+			portalFleetInstances.set(
+				list.map((inst) => ({
+					slug: inst.slug,
+					hosted_region: inst.hosted_region,
+					lesser_version: inst.lesser_version,
+				}))
+			);
 
 			// Fetch budgets in parallel; fail-quiet per-instance so one
 			// missing-budget 404 doesn't fail the whole fleet view.
