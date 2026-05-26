@@ -134,6 +134,9 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 	app.Post("/api/v1/operators/provisioning/jobs/{id}/adopt", s.handleAdoptOperatorProvisionJobAccount, apptheory.RequireAuth())
 	app.Post("/api/v1/operators/provisioning/jobs/{id}/note", s.handleAppendOperatorProvisionJobNote, apptheory.RequireAuth())
 	app.Get("/api/v1/operators/audit", s.handleListOperatorAuditLog, apptheory.RequireAuth())
+	app.Get("/api/v1/operators/releases", s.handleOperatorReleases, apptheory.RequireAuth())
+	app.Get("/api/v1/operators/instances/drift", s.handleOperatorInstancesDrift, apptheory.RequireAuth())
+	app.Post("/api/v1/operators/instances/remediate-mcp-drift", s.handleOperatorRemediateMCPDrift, apptheory.RequireAuth())
 
 	// Portal identity helpers.
 	app.Get("/api/v1/portal/me", s.handlePortalMe, apptheory.RequireAuth())
