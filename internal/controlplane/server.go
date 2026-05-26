@@ -157,6 +157,7 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 	app.Get("/api/v1/portal/instances/{slug}/stack", s.handlePortalGetInstanceStack, apptheory.RequireAuth())
 	app.Get("/api/v1/portal/instances/{slug}/usage/{month}", s.handlePortalListInstanceUsage, apptheory.RequireAuth())
 	app.Get("/api/v1/portal/instances/{slug}/usage/{month}/summary", s.handlePortalGetInstanceUsageSummary, apptheory.RequireAuth())
+	app.Get("/api/v1/portal/instances/{slug}/cost", s.handlePortalGetInstanceCost, apptheory.RequireAuth())
 
 	// Portal domains (owner-scoped).
 	app.Get("/api/v1/portal/instances/{slug}/domains", s.handlePortalListInstanceDomains, apptheory.RequireAuth())
