@@ -32,7 +32,7 @@ import * as apigwv2Integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations'
 import * as wafv2 from 'aws-cdk-lib/aws-wafv2';
 
 import { renderProvisionRunnerBuildCommands, renderProvisionRunnerPreBuildCommands } from './provision-runner-buildspec';
-
+import { CostTelemetryWorker } from './cost-telemetry-worker-construct';
 export interface LesserHostStackProps extends cdk.StackProps {
 	stage: string;
 }
@@ -627,7 +627,7 @@ export class LesserHostStack extends cdk.Stack {
 			},
 			{ memorySize: 512, timeoutSeconds: 30 },
 		);
-
+		const costTelemetry = new CostTelemetryWorker(this, 'CostTelemetry', { namePrefix, repoRoot, stage });
 		stateTable.grantReadWriteData(controlPlaneFn);
 		stateTable.grantReadWriteData(trustFn);
 		stateTable.grantReadWriteData(renderWorkerFn);
