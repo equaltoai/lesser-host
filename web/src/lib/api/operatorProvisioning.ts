@@ -105,27 +105,145 @@ export function appendOperatorProvisionJobNote(
 }
 
 /* ──────────────────────────────────────────────────────────────────────────
- * MCP-drift fleet aggregation — M2.9 endpoint client (forward-compatible).
+ * UpdateJob fleet feed — operator-scope listing (forward-compatible).
  *
- * The `/api/v1/operators/instances/drift` endpoint lands in M2.9 (issue
- * #437). Until then `listOperatorInstancesDrift()` catches the expected
- * 404 / 501 and surfaces a sentinel result so the M2.3 banner can render
- * "telemetry pending" without blocking the page. Same fault-tolerance
- * pattern as the M1.6 stack endpoint (mem-06120131ee628046, PR #505).
+ * The per-slug portal already exposes UpdateJobs via
+ * `/api/v1/portal/instances/{slug}/updates` (see `portalInstances.ts`).
+ * The operator-scope equivalent — a flat fleet-wide listing — is not yet
+ * shipped. PR #512 arch review 4363557132 Blocker 4 calls for the M2.3
+ * provisioning list to surface ProvisionJob + UpdateJob rows side by
+ * side; this client is the forward-compat client that consumes the
+ * eventual endpoint, with an `endpoint-pending` sentinel so the UI
+ * lights up without backend dependency.
+ *
+ * Target endpoint: GET `/api/v1/operators/updates`.
+ * Expected shape: `{ jobs: OperatorUpdateJobListItem[], count: number }`.
+ * Operator-JWT required (same auth shape as the ProvisionJob list).
  * ────────────────────────────────────────────────────────────────────── */
 
-export interface OperatorInstanceDriftEntry {
+export interface OperatorUpdateJobListItem {
+	id: string;
 	instance_slug: string;
-	lesser_version?: string;
-	body_version?: string;
-	mcp_wired_against?: string;
-	drift_status: 'ok' | 'wire-stale' | 'unknown' | string;
+	/** UpdateJob kind: 'lesser' / 'body' / 'mcp' / etc. */
+	kind?: string;
+	status: string;
+	/** Currently active phase (deploy / body / mcp / verify) or empty. */
+	active_phase?: string;
+	failed_phase?: string;
+	/** Body-only / MCP-only flags discriminate kind when `kind` is unset. */
+	body_only?: boolean;
+	mcp_only?: boolean;
+	step?: string;
+	attempts?: number;
+	max_attempts?: number;
+	run_id?: string;
+	run_url?: string;
+	deploy_run_url?: string;
+	body_run_url?: string;
+	mcp_run_url?: string;
+	error_code?: string;
+	error_message?: string;
+	request_id?: string;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface ListOperatorUpdateJobsResponse {
+	jobs: OperatorUpdateJobListItem[];
+	count: number;
+}
+
+export type ListOperatorUpdateJobsResult =
+	| { kind: 'data'; data: ListOperatorUpdateJobsResponse }
+	| { kind: 'endpoint-pending'; status: number };
+
+export async function listOperatorUpdateJobs(
+	token: string,
+	input?: { status?: string; limit?: number },
+): Promise<ListOperatorUpdateJobsResult> {
+	const qs = new URLSearchParams();
+	if (input?.status) qs.set('status', input.status);
+	if (input?.limit) qs.set('limit', String(input.limit));
+	const url = qs.toString() ? `/api/v1/operators/updates?${qs.toString()}` : '/api/v1/operators/updates';
+	try {
+		const data = await fetchJson<ListOperatorUpdateJobsResponse>(url, {
+			headers: {
+				authorization: `Bearer ${token}`,
+			},
+		});
+		return { kind: 'data', data };
+	} catch (err) {
+		const status = (err as { status?: number })?.status ?? 0;
+		if (status === 404 || status === 501) {
+			return { kind: 'endpoint-pending', status };
+		}
+		throw err;
+	}
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * MCP-drift fleet aggregation — M2.9 endpoint client (forward-compatible).
+ *
+ * Shape matches the documented contract in
+ * `docs/provisioning-web-ui-rework-2026-05-24.md` Change 5.3:
+ *
+ *   GET /api/v1/operators/instances/drift
+ *   {
+ *     "instances": [
+ *       {
+ *         "slug": "press-room",
+ *         "lesser": { "current": "v1.4.1", "target": "v1.4.2", "drift": "stale" },
+ *         "body":   { "current": "v0.2.5", "target": "v0.2.6", "drift": "stale" },
+ *         "mcp":    { "wired_against": "v0.2.5", "current_body": "v0.2.5", "drift": "ok" }
+ *       }
+ *     ],
+ *     "summary": { "total": 12, "lesser_stale": 3, "body_stale": 2, "mcp_wire_stale": 4 }
+ *   }
+ *
+ * Until M2.9 (issue #437) lands, `listOperatorInstancesDrift()` catches
+ * the expected 404 / 501 and returns an `endpoint-pending` sentinel so
+ * pages render gracefully. Aligned to documented contract after PR #512
+ * arch review 4363557132 Blocker 2.
+ * ────────────────────────────────────────────────────────────────────── */
+
+/** Per-component drift state. 'ok' / 'stale' / 'wire-stale' / 'unknown'. */
+export type DriftState = 'ok' | 'stale' | 'wire-stale' | 'unknown' | string;
+
+export interface DriftCellLesser {
+	current?: string;
+	target?: string;
+	drift: DriftState;
+}
+
+export interface DriftCellBody {
+	current?: string;
+	target?: string;
+	drift: DriftState;
+}
+
+export interface DriftCellMcp {
+	wired_against?: string;
+	current_body?: string;
+	drift: DriftState;
+}
+
+export interface OperatorInstanceDriftEntry {
+	slug: string;
+	lesser: DriftCellLesser;
+	body: DriftCellBody;
+	mcp: DriftCellMcp;
+}
+
+export interface OperatorInstancesDriftSummary {
+	total: number;
+	lesser_stale: number;
+	body_stale: number;
+	mcp_wire_stale: number;
 }
 
 export interface ListOperatorInstancesDriftResponse {
 	instances: OperatorInstanceDriftEntry[];
-	count: number;
-	mcp_drift_count: number;
+	summary: OperatorInstancesDriftSummary;
 }
 
 export type OperatorInstancesDriftResult =
@@ -147,4 +265,21 @@ export async function listOperatorInstancesDrift(token: string): Promise<Operato
 		}
 		throw err;
 	}
+}
+
+/**
+ * Derive a single "row-level" drift label from a per-instance entry.
+ * Used by the M2.6 Stack Matrix to colour each row + drive the Wire-MCP
+ * CTA visibility. Priority: wire-stale > lesser-stale > body-stale > ok.
+ */
+export type RowDriftLabel = 'ok' | 'lesser-stale' | 'body-stale' | 'wire-stale' | 'unknown';
+export function rowDriftLabel(entry: OperatorInstanceDriftEntry): RowDriftLabel {
+	if ((entry.mcp?.drift || '').toLowerCase() === 'wire-stale') return 'wire-stale';
+	if ((entry.lesser?.drift || '').toLowerCase() === 'stale') return 'lesser-stale';
+	if ((entry.body?.drift || '').toLowerCase() === 'stale') return 'body-stale';
+	const allOk =
+		(entry.lesser?.drift || '').toLowerCase() === 'ok' &&
+		(entry.body?.drift || '').toLowerCase() === 'ok' &&
+		(entry.mcp?.drift || '').toLowerCase() === 'ok';
+	return allOk ? 'ok' : 'unknown';
 }

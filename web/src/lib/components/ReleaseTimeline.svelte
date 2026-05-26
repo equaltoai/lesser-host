@@ -5,23 +5,25 @@ ReleaseTimeline — vertical timeline of releases for a single channel.
 Project 39 M2.5 (issue #431) introduced the file as a scaffold; M2.7
 (issue #433) fleshes it out with the full version-card content:
 
-  - version string (monospace, prominent)
+  - version string (monospace, prominent; amber-emphasised when latest)
   - released-at timestamp
-  - "Latest" badge when `is_latest === true`
-  - "Breaking" badge when `is_breaking === true`
-  - adoption bar (0..100%) rendered from `adoption_pct`
+  - "Latest" badge (when `is_latest === true`)
+  - "Breaking" badge (when `is_breaking === true`)
   - optional summary blurb
+  - adoption bar coloured by band (high ≥80% / mid 40-80% / low <40%)
+  - adoption caption "N of M instances (X%)" sourced from the
+    `adoption.instances` / `adoption.of` / `adoption.percent` fields per
+    the documented Change 5.2 contract.
 
-Each version is a list item on a vertical-rail timeline; connector
-lines join consecutive cards so the timeline reads as a continuous
-sequence. The latest release is visually emphasized (filled indicator
-+ amber accent) so operators can locate the cutting edge at a glance.
+Aligned to the documented M2.8 backend contract after PR #512 arch
+review 4363557132 Blocker 2. Earlier draft consumed a flat
+`adoption_pct` field; the documented shape nests
+`adoption: { instances, of, percent }`.
 
-The adoption bar is rendered as an inline SVG `<rect>` whose width is
-an SVG attribute — not a CSS inline style — so it does NOT violate the
-strict `style-src 'self'` CSP that blocks `style=""` attributes. Bar
-fill colour follows the canonical operator-chrome status palette
-(success ≥80%, warning 40-80%, error <40%).
+CSP-safe dynamic widths: the adoption bar is rendered as an inline SVG
+`<rect>` whose `width` is an SVG attribute, NOT an inline CSS `style=""`
+attribute. Inline style attributes would violate the deployed
+`style-src 'self'` CSP (no `'unsafe-inline'`).
 
 Posture preserved:
 - Strict-CSP-safe: no inline scripts / styles, no third-party origins.
@@ -34,9 +36,7 @@ Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M2.5, M2.7
 <script lang="ts" module>
 	/**
 	 * Map an adoption percentage to a tone band so the bar fill colour
-	 * tracks fleet maturity at a glance. The bands match the rest of
-	 * the operator-chrome status palette (success ≥80%, warning 40-80%,
-	 * error <40%).
+	 * tracks fleet maturity at a glance.
 	 */
 	export type AdoptionBand = 'high' | 'mid' | 'low';
 	export function adoptionBand(pct: number | undefined): AdoptionBand {
@@ -56,57 +56,61 @@ Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M2.5, M2.7
 </script>
 
 <script lang="ts">
-	import type { ReleaseEntry, ReleaseChannel } from 'src/lib/api/operatorReleases';
+	import type { ReleaseChannelId, ReleaseVersionEntry } from 'src/lib/api/operatorReleases';
 	import { Badge, Text } from 'src/lib/ui';
 
 	let {
-		channel,
-		entries,
+		channelId,
+		versions,
+		fleetTotal,
 	}: {
-		channel: ReleaseChannel;
-		entries: ReleaseEntry[];
+		channelId: ReleaseChannelId;
+		versions: ReleaseVersionEntry[];
+		fleetTotal?: number;
 	} = $props();
 
-	const heading = $derived(channel === 'lesser' ? 'lesser' : 'lesser-body');
+	const heading = $derived(channelId === 'lesser' ? 'lesser' : 'lesser-body');
 </script>
 
 <section class="release-timeline" aria-label="{heading} release timeline">
 	<header class="release-timeline__header">
 		<span class="release-timeline__channel">{heading}</span>
 		<Text size="sm" color="secondary">
-			{entries.length} {entries.length === 1 ? 'release' : 'releases'}
+			{versions.length} {versions.length === 1 ? 'release' : 'releases'}
 		</Text>
 	</header>
 
-	{#if entries.length === 0}
+	{#if versions.length === 0}
 		<Text size="sm" color="secondary">No releases on record for this channel.</Text>
 	{:else}
 		<ol class="release-timeline__list">
-			{#each entries as entry (entry.version)}
-				{@const pct = clampAdoption(entry.adoption_pct)}
-				{@const band = adoptionBand(entry.adoption_pct)}
-				{@const hasAdoption = typeof entry.adoption_pct === 'number'}
+			{#each versions as v (v.version)}
+				{@const pct = clampAdoption(v.adoption?.percent)}
+				{@const band = adoptionBand(v.adoption?.percent)}
+				{@const hasAdoption = !!v.adoption}
+				{@const instances = v.adoption?.instances ?? 0}
+				{@const of = v.adoption?.of ?? fleetTotal ?? 0}
 				<li
 					class="release-timeline__item"
-					class:release-timeline__item--latest={entry.is_latest}
-					data-latest={entry.is_latest ? 'true' : 'false'}
+					class:release-timeline__item--latest={v.is_latest}
+					data-latest={v.is_latest ? 'true' : 'false'}
 				>
 					<span class="release-timeline__indicator" aria-hidden="true"></span>
 					<div class="release-timeline__card">
 						<div class="release-timeline__row">
-							<span class="release-timeline__version">{entry.version}</span>
-							{#if entry.is_latest}
+							<span class="release-timeline__version">{v.version}</span>
+							{#if v.is_latest}
 								<Badge color="warning" variant="filled" size="sm">Latest</Badge>
 							{/if}
-							{#if entry.is_breaking}
+							{#if v.is_breaking}
 								<Badge color="error" variant="filled" size="sm">Breaking</Badge>
 							{/if}
 						</div>
-						{#if entry.released_at}
-							<Text size="sm" color="secondary">Released {entry.released_at}</Text>
+						{#if v.released_at}
+							<Text size="sm" color="secondary">Released {v.released_at}</Text>
 						{/if}
-						{#if entry.summary}
-							<Text size="sm">{entry.summary}</Text>
+						{#if v.summary}
+							<Text size="sm">{v.summary}</Text>
 						{/if}
 						{#if hasAdoption}
 							<div
@@ -115,7 +119,7 @@ Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M2.5, M2.7
 								aria-valuemin="0"
 								aria-valuemax="100"
 								aria-valuenow={pct}
-								aria-label="{entry.version} adoption"
+								aria-label="{v.version} adoption"
 							>
 								<!--
 									SVG bar (not CSS-styled-width) so the dynamic fill
@@ -140,7 +144,9 @@ Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M2.5, M2.7
 										rx="2"
 									/>
 								</svg>
-								<Text size="sm" color="secondary">{Math.round(pct)}% adoption</Text>
+								<Text size="sm" color="secondary">
+									{instances} of {of} instances ({Math.round(pct)}%)
+								</Text>
 							</div>
 						{/if}
 					</div>
@@ -214,9 +220,9 @@ Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M2.5, M2.7
 	}
 
 	.release-timeline__item--latest .release-timeline__indicator {
-		background: var(--ds-warning-500);
-		border-color: var(--ds-warning-500);
-		box-shadow: 0 0 0 4px color-mix(in srgb, var(--ds-warning-500) 28%, transparent);
+		background: #f59e0b;
+		border-color: #f59e0b;
+		box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.28);
 	}
 
 	.release-timeline__card {
@@ -242,7 +248,7 @@ Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M2.5, M2.7
 	}
 
 	.release-timeline__item--latest .release-timeline__version {
-		color: var(--ds-warning-500);
+		color: #f59e0b;
 	}
 
 	.release-timeline__adoption {
@@ -258,16 +264,16 @@ Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M2.5, M2.7
 	}
 
 	.release-timeline__bar-track {
-		fill: var(--ds-bg-raised, rgba(255, 255, 255, 0.1));
+		fill: rgba(255, 255, 255, 0.10);
 	}
 
 	.release-timeline__bar-fill--high {
-		fill: var(--ds-success-500);
+		fill: #22c55e;
 	}
 	.release-timeline__bar-fill--mid {
-		fill: var(--ds-warning-500);
+		fill: #f59e0b;
 	}
 	.release-timeline__bar-fill--low {
-		fill: var(--ds-error-500);
+		fill: #ef4444;
 	}
 </style>

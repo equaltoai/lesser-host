@@ -2,29 +2,48 @@
 @component
 ProvisioningTimeline — vertical timeline of provisioning-job steps.
 
-Project 39 M2.4 (issue #430). Renders the kind-specific step list per
-the provisioning walk as a vertical timeline, marks the active step,
-and exposes a "View live CodeBuild log" link on the active node so
-operators can drop into the AWS console without leaving the page.
+Project 39 M2.4 (issue #430). Renders the kind-specific step list for
+the active job and marks the active step so operators can see which
+phase is currently running.
+
+Step vocabulary is sourced from the real provision-worker / update-job
+constants (NOT from a parallel UI-side enumeration). Aligned to source
+after PR #512 arch review 4363557132 Blocker 3:
+
+  provision steps      — from `internal/provisionworker/server.go`
+                          `provisionStep*` constants:
+                          queued → account.create → account.create.poll →
+                          account.move → account.assumeRole →
+                          dns.childZone → dns.parentDelegation →
+                          instance.config → deploy.start → deploy.wait →
+                          receipt.ingest → body.deploy.start →
+                          body.deploy.wait → deploy.mcp.start →
+                          deploy.mcp.wait → done
+  update-* phases      — from `internal/provisionworker/update_jobs.go`
+                          `updatePhase*` constants. Kind discriminates:
+                          update-lesser: deploy → verify
+                          update-body  : body → verify
+                          wire-mcp     : mcp → verify
+
+A `failed` step is rendered if the job's status is 'error' and the
+active step matches a known step name; otherwise an unknown / new step
+is rendered as a single fallback node.
+
+The "View live CodeBuild log" link is only rendered when a real
+`runUrl` is supplied. The earlier draft synthesised a URL from
+`run_id`, but the ProvisionJob operator response carries `run_id` as a
+build identifier — not a console URL — and host's region is not
+exposed in the response either. Synthesising an AWS console URL would
+mislead operators (and break on stage/region drift), so the link is
+honest: only renders when the backend gives us a real URL. The
+update-job response already carries `run_url` / `deploy_run_url` /
+`body_run_url` / `mcp_run_url`; provision-job will carry the same once
+backend M2.4-companion work lands.
 
 The active-step indicator follows the WAI-ARIA "progressbar within a
 list" pattern: the timeline is a `<ol>`; the active step carries
-`aria-current="step"`; each completed step uses `aria-checked="true"`.
-
-The "live log" is exposed as a link (not an embedded iframe). Embedding
-CodeBuild log output cross-origin would either require unauthenticated
-public log access (which we never do) or relax the strict single-origin
-CSP (which we never do). The link pattern preserves both.
-
-Step lists per kind (from the provisioning walk's table):
-
-  provision:     account.create → account.move → dns.delegate →
-                  cdk.deploy → lesser.deploy → body.deploy →
-                  wire.mcp → verify
-  update-lesser: deploy.lesser → verify.lesser
-  update-body:   deploy.body → verify.body
-  wire-mcp:      wire.mcp → verify.mcp
-  unknown:       (single "step" node sourced from job.step)
+`aria-current="step"`; per-step state is exposed via `data-state` for
+analytics + gov-rubric checks.
 
 Posture preserved:
 - Strict-CSP-safe: no inline styles / scripts, no third-party origins.
@@ -37,39 +56,70 @@ Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M2.4
 <script lang="ts" module>
 	import type { JobKind } from './JobKindBadge.svelte';
 
+	/**
+	 * Step lists per kind. Sourced verbatim from the real
+	 * provisionworker / update_jobs state machine constants so the
+	 * timeline cannot drift from production behaviour.
+	 *
+	 * The `provision` list omits the `failed` terminal (rendered via
+	 * status='error' state on the matching active step) and includes
+	 * `done` as the canonical success terminal.
+	 */
 	const STEPS_BY_KIND: Record<JobKind, string[]> = {
 		'provision': [
+			'queued',
 			'account.create',
+			'account.create.poll',
 			'account.move',
-			'dns.delegate',
-			'cdk.deploy',
-			'lesser.deploy',
-			'body.deploy',
-			'wire.mcp',
-			'verify',
+			'account.assumeRole',
+			'dns.childZone',
+			'dns.parentDelegation',
+			'instance.config',
+			'deploy.start',
+			'deploy.wait',
+			'receipt.ingest',
+			'body.deploy.start',
+			'body.deploy.wait',
+			'deploy.mcp.start',
+			'deploy.mcp.wait',
+			'done',
 		],
-		'update-lesser': ['deploy.lesser', 'verify.lesser'],
-		'update-body': ['deploy.body', 'verify.body'],
-		'wire-mcp': ['wire.mcp', 'verify.mcp'],
+		// Update-job phases. `updatePhaseNone` (empty string) and the
+		// per-phase status (`pending`/`running`/`succeeded`/`failed`/`skipped`)
+		// are not part of the visible step list; we render the major-phase
+		// sequence and let the per-step state reflect status.
+		'update-lesser': ['deploy', 'verify'],
+		'update-body': ['body', 'verify'],
+		'wire-mcp': ['mcp', 'verify'],
 		'unknown': [],
 	};
 
 	/**
-	 * Build the step list for a given kind. For 'unknown' (or any kind with
-	 * an empty list), fall back to a single node sourced from `activeStep`
-	 * so the timeline always renders at least the current step.
+	 * Build the step list for a given kind. For 'unknown' (or any kind
+	 * with an empty list), fall back to a single node sourced from
+	 * `activeStep` so the timeline always renders at least the current
+	 * step. If the active step is not in the enumerated list (an unexpected
+	 * server-side step name — most likely a new phase added in
+	 * provision-worker before this component was updated), the active step
+	 * is appended at the end so it still surfaces somewhere.
 	 */
 	export function stepsForKind(kind: JobKind, activeStep: string | undefined): string[] {
 		const enumerated = STEPS_BY_KIND[kind] ?? [];
-		if (enumerated.length > 0) return enumerated;
-		return activeStep ? [activeStep] : [];
+		if (enumerated.length === 0) return activeStep ? [activeStep] : [];
+		if (!activeStep) return enumerated;
+		const normalized = activeStep.toLowerCase();
+		const hit = enumerated.some((s) => s.toLowerCase() === normalized);
+		if (hit) return enumerated;
+		// Unknown step name — surface it so the operator at least sees it.
+		return [...enumerated, activeStep];
 	}
 
 	/**
-	 * Classify each step as 'completed', 'active', or 'pending' relative
-	 * to the active step. The active step is matched case-insensitively
-	 * to tolerate backend-side variants like "Deploy.Lesser" vs.
-	 * "deploy.lesser".
+	 * Classify each step as 'completed', 'active', 'failed', or 'pending'
+	 * relative to the active step. The active step is matched
+	 * case-insensitively to tolerate backend-side variants. When the
+	 * active step is unknown (not in the enumerated list and not appended
+	 * by `stepsForKind`), all steps are marked pending.
 	 */
 	export type StepState = 'completed' | 'active' | 'pending' | 'failed';
 	export function classifySteps(
@@ -77,19 +127,21 @@ Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M2.4
 		activeStep: string | undefined,
 		jobStatus: string,
 	): StepState[] {
+		const status = (jobStatus || '').toLowerCase();
 		if (!activeStep) {
 			// No active step → mark all as pending (or completed if status is 'ok').
-			return steps.map(() => (jobStatus.toLowerCase() === 'ok' ? 'completed' : 'pending'));
+			return steps.map(() => (status === 'ok' ? 'completed' : 'pending'));
 		}
-		const activeIndex = steps.findIndex((s) => s.toLowerCase() === activeStep.toLowerCase());
-		// If the active step isn't in the enumerated list (unexpected step name),
-		// classify everything as pending so the operator can still see the steps.
+		const normalized = activeStep.toLowerCase();
+		const activeIndex = steps.findIndex((s) => s.toLowerCase() === normalized);
 		if (activeIndex < 0) return steps.map(() => 'pending');
 		return steps.map((_, i) => {
 			if (i < activeIndex) return 'completed';
 			if (i === activeIndex) {
-				return jobStatus.toLowerCase() === 'error' ? 'failed' : 'active';
+				return status === 'error' || status === 'failed' ? 'failed' : 'active';
 			}
+			// If the whole job is done, every step is completed.
+			if (status === 'ok' || status === 'done') return 'completed';
 			return 'pending';
 		});
 	}
@@ -108,6 +160,13 @@ Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M2.4
 		kind: JobKind;
 		activeStep?: string;
 		status: string;
+		/**
+		 * Real CodeBuild run URL surfaced by the backend. The earlier
+		 * draft synthesised this from `run_id`; that was wrong because
+		 * `run_id` is the build identifier, not a console URL, and the
+		 * region is not exposed in the response. Only render the log
+		 * link when the backend provides a real URL.
+		 */
 		runUrl?: string;
 		errorMessage?: string;
 	} = $props();
@@ -203,19 +262,19 @@ Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M2.4
 	}
 
 	.timeline__step--completed .timeline__indicator {
-		background: var(--ds-success-500);
-		border-color: var(--ds-success-500);
+		background: #22c55e;
+		border-color: #22c55e;
 	}
 
 	.timeline__step--active .timeline__indicator {
-		background: var(--ds-warning-500);
-		border-color: var(--ds-warning-500);
-		box-shadow: 0 0 0 4px color-mix(in srgb, var(--ds-warning-500) 28%, transparent);
+		background: #f59e0b;
+		border-color: #f59e0b;
+		box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.28);
 	}
 
 	.timeline__step--failed .timeline__indicator {
-		background: var(--ds-error-500);
-		border-color: var(--ds-error-500);
+		background: #ef4444;
+		border-color: #ef4444;
 	}
 
 	.timeline__content {
@@ -249,23 +308,23 @@ Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M2.4
 	}
 
 	.timeline__pill--active {
-		color: var(--ds-warning-500);
-		background: color-mix(in srgb, var(--ds-warning-500) 14%, transparent);
+		color: #f59e0b;
+		background: rgba(245, 158, 11, 0.14);
 	}
 
 	.timeline__pill--completed {
-		color: var(--ds-success-500);
-		background: color-mix(in srgb, var(--ds-success-500) 14%, transparent);
+		color: #22c55e;
+		background: rgba(34, 197, 94, 0.14);
 	}
 
 	.timeline__pill--failed {
-		color: var(--ds-error-500);
-		background: color-mix(in srgb, var(--ds-error-500) 14%, transparent);
+		color: #ef4444;
+		background: rgba(239, 68, 68, 0.14);
 	}
 
 	.timeline__log {
 		font-size: 0.92rem;
-		color: var(--ds-action-link, var(--ds-warning-500));
+		color: #f59e0b;
 		text-decoration: none;
 		border-bottom: 1px solid transparent;
 		align-self: flex-start;

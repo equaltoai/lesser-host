@@ -244,8 +244,12 @@ Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M2.4
 		<!--
 			Project 39 M2.4: per-step vertical timeline. Kind is 'provision' here
 			(this page is the operator ProvisionJob detail). The active step is
-			sourced from `job.step`; the live-log link points at the AWS console
-			CodeBuild run URL when a run is associated with the active step.
+			sourced from `job.step`. The live-log link is intentionally NOT
+			synthesised from `run_id` (which is a build identifier, not a console
+			URL) — arch review 4363557132 Blocker 3. ProvisionJob does not yet
+			expose a real `run_url`; the link will surface automatically once the
+			backend adds the field. Until then operators can copy the run_id from
+			the Overview card and navigate the AWS console manually.
 		-->
 		<Card variant="outlined" padding="lg">
 			{#snippet header()}
@@ -260,7 +264,7 @@ Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M2.4
 				kind={deriveProvisionJobKind()}
 				activeStep={job.step}
 				status={job.status}
-				runUrl={job.run_id ? `https://console.aws.amazon.com/codesuite/codebuild/projects/${encodeURIComponent(job.run_id)}/build/${encodeURIComponent(job.run_id)}` : undefined}
+				runUrl={undefined}
 				errorMessage={job.error_message}
 			/>
 		</Card>

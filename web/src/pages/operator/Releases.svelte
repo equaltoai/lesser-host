@@ -26,7 +26,7 @@ Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M2.5
 	import type { OperatorInstancesDriftResult } from 'src/lib/api/operatorProvisioning';
 	import { listOperatorInstancesDrift } from 'src/lib/api/operatorProvisioning';
 	import type { ListOperatorReleasesResult } from 'src/lib/api/operatorReleases';
-	import { channelEntries, listOperatorReleases } from 'src/lib/api/operatorReleases';
+	import { channelVersions, listOperatorReleases } from 'src/lib/api/operatorReleases';
 	import ReleaseTimeline from 'src/lib/components/ReleaseTimeline.svelte';
 	import StackMatrix from 'src/lib/components/StackMatrix.svelte';
 	import { logout } from 'src/lib/auth/logout';
@@ -96,11 +96,14 @@ Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M2.5
 		void load();
 	});
 
-	const lesserEntries = $derived(
-		releases?.kind === 'data' ? channelEntries(releases.data, 'lesser') : [],
+	const lesserVersions = $derived(
+		releases?.kind === 'data' ? channelVersions(releases.data, 'lesser') : [],
 	);
-	const bodyEntries = $derived(
-		releases?.kind === 'data' ? channelEntries(releases.data, 'lesser-body') : [],
+	const bodyVersions = $derived(
+		releases?.kind === 'data' ? channelVersions(releases.data, 'lesser-body') : [],
+	);
+	const fleetTotal = $derived(
+		releases?.kind === 'data' ? releases.data.fleet_total ?? 0 : 0,
 	);
 </script>
 
@@ -135,10 +138,10 @@ Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M2.5
 	{:else if releases?.kind === 'data'}
 		<div class="op-releases__columns">
 			<Card variant="outlined" padding="lg">
-				<ReleaseTimeline channel="lesser" entries={lesserEntries} />
+				<ReleaseTimeline channelId="lesser" versions={lesserVersions} fleetTotal={fleetTotal} />
 			</Card>
 			<Card variant="outlined" padding="lg">
-				<ReleaseTimeline channel="lesser-body" entries={bodyEntries} />
+				<ReleaseTimeline channelId="lesser-body" versions={bodyVersions} fleetTotal={fleetTotal} />
 			</Card>
 		</div>
 	{/if}

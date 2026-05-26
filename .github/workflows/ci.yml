@@ -108,6 +108,10 @@ jobs:
         working-directory: web
       - run: npm run build
         working-directory: web
+      # Project 39 M2.1 regression guard (PR #512 arch review 4363557132):
+      # ensure operator-chrome.css actually reaches the built CSS bundle.
+      # Runs after `npm run build` produces web/dist/.
+      - run: bash gov-infra/verifiers/sec/operator-chrome-bundled.sh
 
   contract-verify:
     runs-on: ubuntu-latest

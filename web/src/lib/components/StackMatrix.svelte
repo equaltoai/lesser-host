@@ -3,22 +3,26 @@
 StackMatrix — fleet-wide stack version table for the Operator Console.
 
 Project 39 M2.6 (issue #432). Each row shows one managed instance's
-lesser version, lesser-body version, MCP wired-against version, and a
-drift indicator. Per-row CTAs:
+lesser version + target, body version + target, MCP wired-against
+version + current body, plus per-cell drift indicators and a row-level
+drift label.
 
-  Update    — navigate to the instance's operator detail page (where
-              an UpdateJob can be triggered once M2.10 ships).
-  Wire MCP  — emit `onAction(slug, 'wire-mcp')` so a parent surface can
-              dispatch the M2.10 remediation. The button is rendered
-              only for `wire-stale` rows.
+Aligned to the documented Change 5.3 contract after PR #512 arch
+review 4363557132 Blocker 2. The data model is now per-component
+nested:
 
-Sortable columns:
-  slug, lesser, body, mcp, drift
-Filterable: drift status (all / ok / wire-stale / unknown).
+  entry.lesser = { current, target, drift }
+  entry.body   = { current, target, drift }
+  entry.mcp    = { wired_against, current_body, drift }
 
-The component is render-only; data fetching belongs to the parent (the
-M2.5 Releases page consumes the same OperatorInstanceDriftEntry list it
-sources for the top-of-page banner).
+Per-row CTAs:
+  Update    — link to /operator/instances/{slug}
+  Wire MCP  — emits `onAction(slug, 'wire-mcp')` for wire-stale rows;
+              rendered only when the parent supplies `onAction`.
+
+Sortable columns: slug, lesser, body, mcp, drift.
+Filterable: drift status (all / ok / lesser-stale / body-stale /
+            wire-stale / unknown).
 
 Posture preserved:
 - Strict-CSP-safe: no inline scripts / styles / third-party origins.
@@ -29,19 +33,20 @@ Posture preserved:
 Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M2.6
 -->
 <script lang="ts" module>
-	import type { OperatorInstanceDriftEntry } from 'src/lib/api/operatorProvisioning';
+	import type { OperatorInstanceDriftEntry, RowDriftLabel } from 'src/lib/api/operatorProvisioning';
+	import { rowDriftLabel } from 'src/lib/api/operatorProvisioning';
 
 	export type SortColumn = 'slug' | 'lesser' | 'body' | 'mcp' | 'drift';
 	export type SortDirection = 'asc' | 'desc';
-	export type DriftFilter = 'all' | 'ok' | 'wire-stale' | 'unknown';
+	export type DriftFilter = 'all' | 'ok' | 'lesser-stale' | 'body-stale' | 'wire-stale' | 'unknown';
 
-	/** Filter entries by drift status. 'all' passes everything through. */
+	/** Filter entries by row-level drift label. 'all' passes everything through. */
 	export function filterByDrift(
 		entries: OperatorInstanceDriftEntry[],
 		filter: DriftFilter,
 	): OperatorInstanceDriftEntry[] {
 		if (filter === 'all') return entries;
-		return entries.filter((e) => (e.drift_status || 'unknown') === filter);
+		return entries.filter((e) => rowDriftLabel(e) === filter);
 	}
 
 	/** Stable comparator for the chosen column + direction. */
@@ -54,15 +59,15 @@ Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M2.6
 		const key = (e: OperatorInstanceDriftEntry): string => {
 			switch (column) {
 				case 'slug':
-					return e.instance_slug;
+					return e.slug;
 				case 'lesser':
-					return e.lesser_version || '';
+					return e.lesser?.current || '';
 				case 'body':
-					return e.body_version || '';
+					return e.body?.current || '';
 				case 'mcp':
-					return e.mcp_wired_against || '';
+					return e.mcp?.wired_against || '';
 				case 'drift':
-					return e.drift_status || 'unknown';
+					return rowDriftLabel(e);
 			}
 		};
 		// Slice so we don't mutate the parent's array reference.
@@ -109,15 +114,38 @@ Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M2.6
 		return sortDirection === 'asc' ? 'ascending' : 'descending';
 	}
 
-	function driftBadge(status: string): {
+	function driftBadge(label: RowDriftLabel): {
 		color: 'success' | 'warning' | 'gray' | 'error';
-		label: string;
+		text: string;
 	} {
-		const s = (status || 'unknown').toLowerCase();
-		if (s === 'ok') return { color: 'success', label: 'OK' };
-		if (s === 'wire-stale') return { color: 'warning', label: 'Wire-stale' };
-		if (s === 'unknown') return { color: 'gray', label: 'Unknown' };
-		return { color: 'error', label: s };
+		switch (label) {
+			case 'ok':
+				return { color: 'success', text: 'OK' };
+			case 'wire-stale':
+				return { color: 'warning', text: 'Wire-stale' };
+			case 'lesser-stale':
+				return { color: 'warning', text: 'Lesser-stale' };
+			case 'body-stale':
+				return { color: 'warning', text: 'Body-stale' };
+			case 'unknown':
+			default:
+				return { color: 'gray', text: 'Unknown' };
+		}
+	}
+
+	function cellLabel(current: string | undefined, target?: string, drift?: string): string {
+		const cur = current || '—';
+		if (!target || target === current) return cur;
+		const d = (drift || '').toLowerCase();
+		if (d === 'stale' || d === 'wire-stale') return `${cur} → ${target}`;
+		return cur;
+	}
+
+	function mcpLabel(entry: OperatorInstanceDriftEntry): string {
+		const wired = entry.mcp?.wired_against || '—';
+		const cur = entry.mcp?.current_body;
+		if (cur && cur !== wired) return `${wired} (body @ ${cur})`;
+		return wired;
 	}
 </script>
 
@@ -130,6 +158,8 @@ Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M2.6
 				options={[
 					{ value: 'all', label: 'All' },
 					{ value: 'ok', label: 'OK' },
+					{ value: 'lesser-stale', label: 'Lesser-stale' },
+					{ value: 'body-stale', label: 'Body-stale' },
 					{ value: 'wire-stale', label: 'Wire-stale' },
 					{ value: 'unknown', label: 'Unknown' },
 				]}
@@ -176,31 +206,33 @@ Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M2.6
 					</tr>
 				</thead>
 				<tbody>
-					{#each sorted as entry (entry.instance_slug)}
-						{@const badge = driftBadge(entry.drift_status)}
+					{#each sorted as entry (entry.slug)}
+						{@const label = rowDriftLabel(entry)}
+						{@const badge = driftBadge(label)}
 						<tr>
 							<th scope="row" class="matrix__slug">
-								<Link {...linkProps(`/operator/instances/${entry.instance_slug}`)} variant="default">
-									{entry.instance_slug}
+								<Link {...linkProps(`/operator/instances/${entry.slug}`)} variant="default">
+									{entry.slug}
 								</Link>
 							</th>
-							<td class="matrix__mono">{entry.lesser_version || '—'}</td>
-							<td class="matrix__mono">{entry.body_version || '—'}</td>
-							<td class="matrix__mono">{entry.mcp_wired_against || '—'}</td>
+							<td class="matrix__mono">
+								{cellLabel(entry.lesser?.current, entry.lesser?.target, entry.lesser?.drift)}
+							</td>
+							<td class="matrix__mono">
+								{cellLabel(entry.body?.current, entry.body?.target, entry.body?.drift)}
+							</td>
+							<td class="matrix__mono">{mcpLabel(entry)}</td>
 							<td>
-								<Badge color={badge.color} variant="filled" size="sm">{badge.label}</Badge>
+								<Badge color={badge.color} variant="filled" size="sm">{badge.text}</Badge>
 							</td>
 							<td class="matrix__actions">
-								<Link
-									{...linkProps(`/operator/instances/${entry.instance_slug}`)}
-									variant="ghost"
-								>
+								<Link {...linkProps(`/operator/instances/${entry.slug}`)} variant="ghost">
 									Update
 								</Link>
-								{#if (entry.drift_status || '').toLowerCase() === 'wire-stale' && onAction}
+								{#if label === 'wire-stale' && onAction}
 									<Button
 										variant="outline"
-										onclick={() => onAction?.(entry.instance_slug, 'wire-mcp')}
+										onclick={() => onAction?.(entry.slug, 'wire-mcp')}
 									>
 										Wire MCP
 									</Button>
@@ -277,7 +309,7 @@ Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M2.6
 		text-transform: inherit;
 	}
 	.matrix__sort:focus-visible {
-		outline: 2px solid var(--ds-border-focus, var(--ds-warning-500));
+		outline: 2px solid var(--ds-border-focus, #f59e0b);
 		outline-offset: 2px;
 		border-radius: 2px;
 	}

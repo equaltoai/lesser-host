@@ -1,42 +1,71 @@
 /* ============================================================================
  * operatorReleases — M2.8 endpoint client (forward-compatible).
  *
- * Project 39 M2.5 (issue #431) consumes the `/api/v1/operators/releases`
- * aggregation endpoint shipped in M2.8 (issue #436). Until M2.8 lands,
- * `listOperatorReleases()` catches the expected 404 / 501 and returns an
- * `endpoint-pending` sentinel so the /operator/releases page can render
- * a "release telemetry pending" placeholder without blocking.
+ * Shape matches the documented contract in
+ * `docs/provisioning-web-ui-rework-2026-05-24.md` Change 5.2:
  *
- * Adoption: clients receive `adoption_pct` (0-100) per version so the
- * release-timeline component can render an adoption bar.
+ *   GET /api/v1/operators/releases
+ *   {
+ *     "channels": [
+ *       {
+ *         "id": "lesser",
+ *         "versions": [
+ *           {
+ *             "version": "v1.4.2",
+ *             "released_at": "...",
+ *             "is_latest": true,
+ *             "is_breaking": false,
+ *             "adoption": { "instances": 7, "of": 12, "percent": 58 }
+ *           }
+ *         ]
+ *       },
+ *       { "id": "lesser-body", "versions": [...] }
+ *     ],
+ *     "fleet_total": 12
+ *   }
  *
- * Same fault-tolerance pattern as `listOperatorInstancesDrift` (M2.3)
- * and the M1.6 stack endpoint (mem-06120131ee628046).
+ * Until M2.8 (issue #436) lands, `listOperatorReleases()` catches the
+ * expected 404 / 501 and returns an `endpoint-pending` sentinel so the
+ * /operator/releases page can render a "telemetry pending" placeholder
+ * without blocking. Same fault-tolerance pattern as
+ * `listOperatorInstancesDrift` (M2.3) and the M1.6 stack endpoint.
+ *
+ * Aligned to documented contract after PR #512 arch review 4363557132
+ * Blocker 2.
  * ========================================================================== */
 
 import { fetchJson } from './http';
 
-/** Channel = which release surface this entry belongs to. */
-export type ReleaseChannel = 'lesser' | 'lesser-body';
+/** Channel id = which release surface this entry belongs to. */
+export type ReleaseChannelId = 'lesser' | 'lesser-body';
 
-export interface ReleaseEntry {
+export interface ReleaseAdoption {
+	/** Number of managed instances on this version. */
+	instances: number;
+	/** Total managed instances (fleet size). */
+	of: number;
+	/** Adoption percent (0-100). Server-computed: round(instances/of*100). */
+	percent: number;
+}
+
+export interface ReleaseVersionEntry {
 	version: string;
 	released_at: string;
 	is_latest?: boolean;
 	is_breaking?: boolean;
-	/** Adoption percentage across managed instances (0..100). */
-	adoption_pct?: number;
+	adoption?: ReleaseAdoption;
 	/** Optional summary blurb the timeline can render under the version card. */
 	summary?: string;
 }
 
 export interface ReleaseChannelData {
-	channel: ReleaseChannel;
-	entries: ReleaseEntry[];
+	id: ReleaseChannelId | string;
+	versions: ReleaseVersionEntry[];
 }
 
 export interface ListOperatorReleasesResponse {
 	channels: ReleaseChannelData[];
+	fleet_total: number;
 }
 
 export type ListOperatorReleasesResult =
@@ -60,12 +89,12 @@ export async function listOperatorReleases(token: string): Promise<ListOperatorR
 	}
 }
 
-/** Extract entries for a specific channel; empty list if not present. */
-export function channelEntries(
+/** Extract versions for a specific channel id; empty list if not present. */
+export function channelVersions(
 	data: ListOperatorReleasesResponse | undefined,
-	channel: ReleaseChannel,
-): ReleaseEntry[] {
+	id: ReleaseChannelId,
+): ReleaseVersionEntry[] {
 	if (!data) return [];
-	const found = data.channels.find((c) => c.channel === channel);
-	return found?.entries ?? [];
+	const found = data.channels.find((c) => c.id === id);
+	return found?.versions ?? [];
 }
