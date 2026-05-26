@@ -14,12 +14,19 @@ import (
 // CloudWatch collection, Cost Explorer integration, and DynamoDB cache.
 type Server struct {
 	cfg config.Config
+
+	// cloudwatch is the M3.8 CloudWatch metric collector. Nil until
+	// wired in production (M3.9/M3.10). The handler is safe when nil.
+	cloudwatch CloudWatchCollector
 }
 
 // NewServer constructs a cost telemetry worker Server.
-func NewServer(cfg config.Config) *Server {
+// Pass a nil collector to run without metric collection (M3.7 scaffold
+// behavior); pass a CloudWatchCollector to enable M3.8+ metric collection.
+func NewServer(cfg config.Config, collector CloudWatchCollector) *Server {
 	return &Server{
-		cfg: cfg,
+		cfg:        cfg,
+		cloudwatch: collector,
 	}
 }
 
