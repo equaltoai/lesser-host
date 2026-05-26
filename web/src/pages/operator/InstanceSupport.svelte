@@ -1,3 +1,42 @@
+<!--
+@component
+Operator Instances — read-only support view re-skinned for the M2.1 dark
+warm-charcoal chrome.
+
+Project 39 M3.3 (issue #447). One page covers both routes the issue
+identifies (`/operator/instances` slug search and
+`/operator/instances/{slug}` slug detail); the routing dispatch in
+`web/src/pages/Operator.svelte` maps `instances` + `instanceDetail` to this
+component (with the slug prop set on the detail route).
+
+Behavior preserved:
+- Read-mostly support surface: Overview / Config / Domains / Budgets /
+  Provisioning / Updates cards.
+- Managed-only mutations (Apply configuration / Rotate instance key /
+  Start version update / Update lesser-body / Update MCP) remain gated
+  behind `managed()` and the existing operator-JWT portal endpoints.
+- Same `portalGetInstance` / `portalListInstanceDomains` /
+  `portalListBudgets` / `portalGetProvisioning` /
+  `portalListUpdateJobs` / `portalCreateUpdateJob` endpoints; same
+  401 → logout / login navigation guard; same `pollUntil` UpdateJob
+  polling contract with abort-on-slug-change semantics; same
+  `validateManagedReleaseTag` input validation.
+- No operator-only routes added; this surface re-uses the customer
+  portal endpoints intentionally (operator support view re-uses the
+  same data shape so support and customer self-serve diverge minimally).
+
+Posture preserved:
+- Strict-CSP-safe: no inline scripts / styles / third-party origins;
+  `safeHref` continues to gate external run-log URLs.
+- Multi-tenant isolation: scoped per slug; no cross-slug aggregation;
+  the slug navigation guard in `$effect` re-loads on slug change.
+- Trust-API instance-auth untouched; SEC-9 / SEC-12 change-locks not
+  engaged.
+- Release-verification untouched: managed-update jobs flow through the
+  existing checksum-gated worker contract.
+
+Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M3.3
+-->
 <script lang="ts">
 	import { onDestroy } from 'svelte';
 
@@ -16,6 +55,8 @@
 	import { pollUntil } from 'src/lib/polling';
 	import { navigate } from 'src/lib/router';
 	import { validateManagedReleaseTag } from 'src/lib/utils/versionTags';
+	import { StatCard, SummaryStrip } from 'src/lib/shell';
+	import type { StatCardStatus } from 'src/lib/shell';
 	import { Alert, Button, Card, CopyButton, DefinitionItem, DefinitionList, Heading, Spinner, Text, TextField } from 'src/lib/ui';
 
 	let { token, slug } = $props<{ token: string; slug?: string }>();
@@ -90,6 +131,20 @@
 	function isUpdateTerminal(job: UpdateJobResponse | null): boolean {
 		if (!job) return true;
 		return job.status === 'ok' || job.status === 'error';
+	}
+
+	/**
+	 * Map a string status to a `StatCard` tone so the top-of-page
+	 * SummaryStrip reads as "ok" / "needs attention" / "error" on the
+	 * dark chrome. Empty / unknown statuses fall through to neutral.
+	 */
+	function statusTone(value: string | undefined | null): StatCardStatus {
+		const v = (value || '').toLowerCase().trim();
+		if (!v) return 'default';
+		if (v === 'ok' || v === 'active' || v === 'success' || v === 'ready') return 'success';
+		if (v === 'error' || v === 'failed') return 'danger';
+		if (v === 'running' || v === 'queued' || v === 'pending' || v === 'in_progress' || v === 'updating') return 'warning';
+		return 'default';
 	}
 
 	function jobKind(job?: UpdateJobResponse | null): string {
@@ -413,6 +468,20 @@
 			<Text size="sm">Enter a slug and click Open.</Text>
 		</Alert>
 	{:else if instance}
+		<SummaryStrip label="Instance state" columns={3} gap="md">
+			<StatCard label="Status" value={instance.status || '—'} status={statusTone(instance.status)} />
+			<StatCard
+				label="Provision"
+				value={instance.provision_status || '—'}
+				status={statusTone(instance.provision_status)}
+			/>
+			<StatCard
+				label="Lesser update"
+				value={instance.lesser_update_status || '—'}
+				status={statusTone(instance.lesser_update_status)}
+			/>
+		</SummaryStrip>
+
 		<Card variant="outlined" padding="lg">
 			{#snippet header()}
 				<div class="op-support__row">
@@ -926,8 +995,17 @@
 		background: var(--gr-color-surface);
 	}
 
+	/* Canonical mono token chain — see UserApprovals.svelte (M3.1) for rationale. */
 	.op-support__mono {
-		font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New',
+		font-family:
+			var(--gr-typography-fontFamily-mono),
+			ui-monospace,
+			SFMono-Regular,
+			Menlo,
+			Monaco,
+			Consolas,
+			'Liberation Mono',
+			'Courier New',
 			monospace;
 	}
 
