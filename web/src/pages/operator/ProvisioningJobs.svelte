@@ -27,11 +27,13 @@ Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M2.3
 		OperatorInstancesDriftResult,
 		OperatorProvisionJobListItem,
 		OperatorUpdateJobListItem,
+		RemediateMCPDriftResponse,
 	} from 'src/lib/api/operatorProvisioning';
 	import {
 		listOperatorInstancesDrift,
 		listOperatorProvisionJobs,
 		listOperatorUpdateJobs,
+		remediateMCPDrift,
 		retryOperatorProvisionJob,
 	} from 'src/lib/api/operatorProvisioning';
 	import JobKindBadge from 'src/lib/components/JobKindBadge.svelte';
@@ -57,6 +59,14 @@ Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M2.3
 	// is not yet present; `data` once telemetry is available.
 	let drift = $state<OperatorInstancesDriftResult | null>(null);
 	let driftError = $state<string | null>(null);
+
+	// M2.12 wire-all state mirrors /operator/releases: the same fleet
+	// remediation endpoint, the same idempotency contract, the same
+	// post-action drift refresh. Both pages render the alert + CTA so an
+	// operator finding wire-stale drift on either page can act in place.
+	let wireAllPending = $state(false);
+	let wireAllResult = $state<RemediateMCPDriftResponse | null>(null);
+	let wireAllError = $state<string | null>(null);
 
 	/**
 	 * Unified feed: ProvisionJob rows + UpdateJob rows merged by
@@ -95,6 +105,11 @@ Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M2.3
 		driftError = null;
 		provisionJobs = [];
 		updateJobsResult = null;
+		// Drop a stale wire-all result on a manual refresh so the toast
+		// doesn't outlive its data lineage; the per-attempt error similarly
+		// resets.
+		wireAllResult = null;
+		wireAllError = null;
 		// Keep `drift` across reloads so the banner doesn't flicker on filter
 		// changes; only clear if a fresh load fails or the endpoint flips
 		// from `data` → `endpoint-pending` (which is a meaningful change).
@@ -138,6 +153,38 @@ Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M2.3
 			errorMessage = formatError(err);
 		} finally {
 			loading = false;
+		}
+	}
+
+	/**
+	 * M2.12 wire-all CTA. Calls the M2.10 fleet remediation endpoint and
+	 * stores the per-attempt result so the toast wording can reflect
+	 * created vs. skipped (idempotent re-clicks land 0 created /
+	 * non-zero skipped). After remediation we reload the page list so
+	 * any newly-queued MCP-only UpdateJobs surface in the rows feed —
+	 * the rows themselves come from the UpdateJob aggregation, but a
+	 * full `load()` also re-fetches drift so the alert reflects the
+	 * post-action posture.
+	 */
+	async function wireAll() {
+		wireAllError = null;
+		wireAllResult = null;
+		wireAllPending = true;
+		try {
+			wireAllResult = await remediateMCPDrift(token);
+			// Re-fetch drift only; the rows feed already includes UpdateJobs
+			// once they materialize and the operator can refresh manually
+			// for the row-level view.
+			drift = await listOperatorInstancesDrift(token).catch(() => drift);
+		} catch (err) {
+			if ((err as Partial<ApiError>).status === 401) {
+				await logout();
+				navigate('/login');
+				return;
+			}
+			wireAllError = formatError(err);
+		} finally {
+			wireAllPending = false;
 		}
 	}
 
@@ -188,12 +235,32 @@ Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M2.3
 		{@const count = drift.data.summary?.mcp_wire_stale ?? 0}
 		{#if count > 0}
 			<Alert variant="warning" title="MCP wire drift detected">
-				<Text size="sm">
-					{count} managed {count === 1 ? 'instance is' : 'instances are'} on a wire-stale MCP
-					revision. Use the Stack Matrix or Wire-all CTA on
-					<Link {...linkProps('/operator/releases')} variant="default">/operator/releases</Link>
-					to remediate.
-				</Text>
+				<!--
+					M2.12: top-of-page wire-all CTA. The alert frames the problem
+					(N wire-stale instances) and the button calls the M2.10
+					fleet-remediation endpoint directly so an operator landing on
+					/operator/provisioning doesn't need to bounce through the
+					releases page to act. Idempotent by backend contract; the
+					toast below reflects created + skipped.
+				-->
+				<div class="op-provisioning__wireall">
+					<Text size="sm">
+						{count} managed {count === 1 ? 'instance is' : 'instances are'} on a wire-stale
+						MCP revision. The "Wire all" CTA queues one MCP-only UpdateJob per affected slug;
+						idempotent on re-click. The Stack Matrix on
+						<Link {...linkProps('/operator/releases')} variant="default">/operator/releases</Link>
+						shows per-row drift detail.
+					</Text>
+					<div class="op-provisioning__wireall-actions">
+						<Button
+							variant="solid"
+							onclick={() => void wireAll()}
+							disabled={wireAllPending}
+						>
+							{wireAllPending ? 'Wiring…' : `Wire all (${count})`}
+						</Button>
+					</div>
+				</div>
 			</Alert>
 		{:else}
 			<Alert variant="info" title="Fleet wire-aligned">
@@ -203,15 +270,56 @@ Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M2.3
 	{:else if drift?.kind === 'endpoint-pending'}
 		<Alert variant="info" title="MCP drift telemetry pending">
 			<Text size="sm">
-				Awaiting the operator drift-aggregation endpoint
-				(<span class="op-provisioning__mono">/api/v1/operators/instances/drift</span>, M2.9).
-				The provisioning list still renders normally while the backend ships.
+				The operator drift aggregation endpoint
+				(<span class="op-provisioning__mono">/api/v1/operators/instances/drift</span>) did not
+				respond with drift data for the current request. The provisioning list still renders
+				normally; use Refresh to retry.
 			</Text>
 		</Alert>
 	{:else if driftError}
 		<Alert variant="warning" title="MCP drift load failed">
 			<Text size="sm">{driftError}</Text>
 		</Alert>
+	{/if}
+
+	<!--
+		M2.12 wire-all result + error toasts (shared shape with
+		/operator/releases). Created → success toast with link to view the
+		queued jobs (which surface inline in the rows feed below as
+		updateJobsResult ships, but the explicit toast confirms the action
+		regardless). Skipped-only → info-toast explicitly noting the
+		idempotency guard fired; surfaces the active-jobs count.
+	-->
+	{#if wireAllError}
+		<Alert variant="error" title="Wire all failed">
+			<Text size="sm">{wireAllError}</Text>
+		</Alert>
+	{:else if wireAllResult}
+		{#if wireAllResult.created > 0}
+			<Alert variant="success" title="MCP wire-all queued">
+				<Text size="sm">
+					Queued {wireAllResult.created}
+					MCP-only {wireAllResult.created === 1 ? 'job' : 'jobs'}{wireAllResult.skipped > 0
+						? `; skipped ${wireAllResult.skipped} already-active`
+						: ''}. The new {wireAllResult.created === 1 ? 'row appears' : 'rows appear'} in the
+					list below once the worker picks them up.
+				</Text>
+			</Alert>
+		{:else if wireAllResult.skipped > 0}
+			<Alert variant="info" title="MCP wire-all idempotent">
+				<Text size="sm">
+					No new jobs created — {wireAllResult.skipped}
+					{wireAllResult.skipped === 1 ? 'slug already has' : 'slugs already have'} an active
+					MCP-only UpdateJob in flight. Re-check once those jobs land.
+				</Text>
+			</Alert>
+		{:else}
+			<Alert variant="info" title="MCP wire-all no-op">
+				<Text size="sm">
+					Nothing to do — no instances reported wire-stale at request time.
+				</Text>
+			</Alert>
+		{/if}
 	{/if}
 
 	<Card variant="outlined" padding="lg">
@@ -432,5 +540,22 @@ Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M2.3
 	.op-provisioning__mono {
 		font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New',
 			monospace;
+	}
+
+	/*
+	 * M2.12 wire-all alert layout — stack body + action vertically so the
+	 * button reads as a clear next-step rather than fighting the title
+	 * baseline. Matches the equivalent block on /operator/releases.
+	 */
+	.op-provisioning__wireall {
+		display: flex;
+		flex-direction: column;
+		gap: var(--gr-spacing-scale-2);
+	}
+
+	.op-provisioning__wireall-actions {
+		display: flex;
+		gap: var(--gr-spacing-scale-2);
+		flex-wrap: wrap;
 	}
 </style>

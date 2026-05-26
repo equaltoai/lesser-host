@@ -283,3 +283,41 @@ export function rowDriftLabel(entry: OperatorInstanceDriftEntry): RowDriftLabel 
 		(entry.mcp?.drift || '').toLowerCase() === 'ok';
 	return allOk ? 'ok' : 'unknown';
 }
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * MCP-drift fleet remediation — M2.10 endpoint client.
+ *
+ * Shape matches the documented contract in
+ * `docs/provisioning-web-ui-rework-2026-05-24.md` Change 5.4 and the
+ * shipped backend (`internal/controlplane/handlers_operator_remediate_mcp.go`):
+ *
+ *   POST /api/v1/operators/instances/remediate-mcp-drift
+ *   {
+ *     "created_job_ids": ["uj-…", "uj-…"],
+ *     "created": 2,
+ *     "skipped": 1
+ *   }
+ *
+ * The backend reads fleet drift internally, then creates one MCP-only
+ * UpdateJob per slug whose `mcp.drift == "wire-stale"`. Idempotency is
+ * enforced via `GSI2 = UPDATE_ACTIVE` lookup — slugs that already have
+ * an active MCP-only job are surfaced in `skipped`, not `created`. The
+ * operator-JWT requirement matches the rest of the operator surface.
+ *
+ * No request body is required; the operator-JWT is the sole input.
+ * ────────────────────────────────────────────────────────────────────── */
+
+export interface RemediateMCPDriftResponse {
+	created_job_ids: string[];
+	created: number;
+	skipped: number;
+}
+
+export function remediateMCPDrift(token: string): Promise<RemediateMCPDriftResponse> {
+	return fetchJson<RemediateMCPDriftResponse>('/api/v1/operators/instances/remediate-mcp-drift', {
+		method: 'POST',
+		headers: {
+			authorization: `Bearer ${token}`,
+		},
+	});
+}
