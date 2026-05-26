@@ -72,8 +72,11 @@ type CostExplorerCollector interface {
 // billing-grain cost queries.
 const costBreakdownMetric = "UnblendedCost"
 
-// CostBreakdown represents a single AWS service's cost from Cost Explorer.
+// CostBreakdown represents a single AWS service's cost from Cost Explorer
+// on a single day. The Date field carries the YYYY-MM-DD value from
+// ResultByTime.TimePeriod.Start.
 type CostBreakdown struct {
+	Date     string  `json:"date"`     // YYYY-MM-DD
 	Service  string  `json:"service"`  // e.g., "Amazon Lambda"
 	Amount   float64 `json:"amount"`   // cost in USD (or the queried currency)
 	Currency string  `json:"currency"` // e.g., "USD"
@@ -195,21 +198,27 @@ func (c *costExplorerCollectorImpl) queryCostExplorer(
 	return allResults, nil
 }
 
-// buildCostExplorerResult converts paginated Cost Explorer results into
-// a CostExplorerResult carrying a flat list of per-service cost breakdowns
-// across the full window.
-func buildCostExplorerResult(
-	scope TenantScope,
-	windowStart, windowEnd time.Time,
-	results []cetypes.ResultByTime,
-) (*CostExplorerResult, error) {
-	costMap := make(map[string]*CostBreakdown) // keyed by CE service name
+// costBreakdownKey is the composite key for CostExplorer cost entries,
+// scoping a CostBreakdown to a single day and a single service.
+type costBreakdownKey struct {
+	date    string
+	service string
+}
+
+// aggregateCostBreakdowns walks paginated Cost Explorer results and
+// accumulates per-day per-service cost breakdowns. Returns the populated
+// map (keyed by date+service), the running total, and the prevailing
+// currency string observed from metric units.
+func aggregateCostBreakdowns(results []cetypes.ResultByTime) (map[costBreakdownKey]*CostBreakdown, float64, string) {
+	costMap := make(map[costBreakdownKey]*CostBreakdown)
 	var totalCost float64
 	currency := "USD"
 
 	for _, rbt := range results {
-		// Aggregate per-period totals (groups may or may not sum to
-		// the period total due to rounding / ungrouped line items).
+		date := ""
+		if rbt.TimePeriod != nil && rbt.TimePeriod.Start != nil {
+			date = *rbt.TimePeriod.Start
+		}
 		for _, group := range rbt.Groups {
 			ceService := ""
 			if len(group.Keys) > 0 {
@@ -222,26 +231,38 @@ func buildCostExplorerResult(
 			if cur != "" {
 				currency = cur
 			}
-			entry, ok := costMap[ceService]
+			ck := costBreakdownKey{date: date, service: ceService}
+			entry, ok := costMap[ck]
 			if !ok {
 				entry = &CostBreakdown{
+					Date:     date,
 					Service:  ceService,
 					Currency: currency,
 				}
-				costMap[ceService] = entry
+				costMap[ck] = entry
 			}
 			entry.Amount += am
 			totalCost += am
 		}
 	}
+	return costMap, totalCost, currency
+}
+
+// buildCostExplorerResult converts paginated Cost Explorer results into
+// a CostExplorerResult carrying a flat list of per-day per-service cost
+// breakdowns across the full window. Each entry carries the CE daily
+// date (ResultByTime.TimePeriod.Start) so downstream reconciliation
+// preserves the day dimension required by M3.9.
+func buildCostExplorerResult(
+	scope TenantScope,
+	windowStart, windowEnd time.Time,
+	results []cetypes.ResultByTime,
+) (*CostExplorerResult, error) {
+	costMap, totalCost, currency := aggregateCostBreakdowns(results)
 
 	costs := make([]CostBreakdown, 0, len(costMap))
 	for _, cb := range costMap {
-		// Round to meaningful precision (6 decimal places for
-		// sub-cent fractional costs common in AWS billing).
 		cb.Amount = math.Round(cb.Amount*1e6) / 1e6
-		// Omit zero-cost entries — they represent nil/unparseable
-		// amounts or services with no meaningful cost, and add noise.
 		if cb.Amount == 0 {
 			continue
 		}
@@ -249,8 +270,10 @@ func buildCostExplorerResult(
 	}
 	totalCost = math.Round(totalCost*1e6) / 1e6
 
-	// Sort for deterministic output.
 	sort.Slice(costs, func(i, j int) bool {
+		if costs[i].Date != costs[j].Date {
+			return costs[i].Date < costs[j].Date
+		}
 		return costs[i].Service < costs[j].Service
 	})
 
@@ -294,12 +317,21 @@ func (c *costExplorerCollectorImpl) Reconcile(ceResult *CostExplorerResult, cwRe
 	for _, cb := range ceResult.Costs {
 		normService := mapCEToCWService(cb.Service)
 
+		// M3.9: every reconciled entry must carry a date. If the
+		// upstream CostBreakdown has an empty Date, the CE collection
+		// step did not preserve TimePeriod.Start and the report is
+		// unusable for per-day attribution.
+		if cb.Date == "" {
+			return nil, fmt.Errorf("costtelemetry: CE cost entry for service %q has empty date — CE collection must preserve TimePeriod.Start", cb.Service)
+		}
+
 		var metrics []ServiceAttribution
 		if attrs, ok := cwByService[normService]; ok {
 			metrics = attrs
 		}
 
 		entries = append(entries, ReconciledCostEntry{
+			Date:     cb.Date,
 			Service:  normService,
 			Cost:     cb.Amount,
 			Currency: cb.Currency,
@@ -307,8 +339,11 @@ func (c *costExplorerCollectorImpl) Reconcile(ceResult *CostExplorerResult, cwRe
 		})
 	}
 
-	// Sort entries for deterministic output.
+	// Sort entries for deterministic output: date, service, cost.
 	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].Date != entries[j].Date {
+			return entries[i].Date < entries[j].Date
+		}
 		if entries[i].Service != entries[j].Service {
 			return entries[i].Service < entries[j].Service
 		}

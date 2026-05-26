@@ -268,6 +268,13 @@ func TestCECollectCosts_HappyPath(t *testing.T) {
 		t.Fatalf("expected 2 costs, got %d: %s", len(result.Costs), costKeys(result.Costs))
 	}
 
+	// Verify each entry carries the daily date from TimePeriod.Start.
+	for _, c := range result.Costs {
+		if c.Date != testCEDate1 {
+			t.Fatalf("expected date %q, got %q for service %q", testCEDate1, c.Date, c.Service)
+		}
+	}
+
 	// Verify rounding: 0.0532947123 → 0.053295 after rounding to 1e6.
 	lambdaCost, ok := findCostBreakdown(result.Costs, testCEServiceLambda)
 	if !ok {
@@ -322,18 +329,43 @@ func TestCECollectCosts_MultipleDays(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Same service across two days should be aggregated into a single
-	// CostBreakdown entry with the summed amount.
-	if len(result.Costs) != 1 {
-		t.Fatalf("expected 1 cost entry (aggregated across days), got %d: %s",
+	// M3.9: same service across two days must NOT collapse into one entry.
+	// Each day must produce its own CostBreakdown with the correct date
+	// and per-day amount.
+	if len(result.Costs) != 2 {
+		t.Fatalf("expected 2 cost entries (one per day), got %d: %s",
 			len(result.Costs), costKeys(result.Costs))
 	}
-	lambdaCost, ok := findCostBreakdown(result.Costs, testCEServiceLambda)
-	if !ok {
-		t.Fatalf("missing cost for %s", testCEServiceLambda)
+
+	// Find entries by date.
+	var day1Cost, day2Cost float64
+	var day1Found, day2Found bool
+	for _, c := range result.Costs {
+		if c.Service != testCEServiceLambda {
+			t.Fatalf("unexpected service %q", c.Service)
+		}
+		switch c.Date {
+		case testCEDate1:
+			day1Cost = c.Amount
+			day1Found = true
+		case testCEDate2:
+			day2Cost = c.Amount
+			day2Found = true
+		default:
+			t.Fatalf("unexpected date %q in cost entry", c.Date)
+		}
 	}
-	if lambdaCost.Amount != 0.08 {
-		t.Fatalf("Lambda cost = %v, want 0.08 (0.05 + 0.03)", lambdaCost.Amount)
+	if !day1Found {
+		t.Fatal("missing cost entry for date 2026-05-25")
+	}
+	if !day2Found {
+		t.Fatal("missing cost entry for date 2026-05-26")
+	}
+	if day1Cost != 0.05 {
+		t.Fatalf("2026-05-25 Lambda cost = %v, want 0.05", day1Cost)
+	}
+	if day2Cost != 0.03 {
+		t.Fatalf("2026-05-26 Lambda cost = %v, want 0.03", day2Cost)
 	}
 	if result.TotalCost != 0.08 {
 		t.Fatalf("TotalCost = %v, want 0.08", result.TotalCost)
@@ -371,7 +403,16 @@ func TestCECollectCosts_MultipleServices(t *testing.T) {
 		t.Fatalf("TotalCost = %v, want 2.05", result.TotalCost)
 	}
 
-	// Verify deterministic sort order (lexicographic by CE service name).
+	// M3.9: every entry must carry the date from TimePeriod.Start.
+	for _, c := range result.Costs {
+		if c.Date != testCEDate1 {
+			t.Fatalf("expected date %q, got %q for service %q", testCEDate1, c.Date, c.Service)
+		}
+	}
+
+	// Verify deterministic sort order (date, then lexicographic by CE
+	// service name). With a single date the primary key is the same for
+	// all entries, so the secondary service-name sort dominates.
 	// "AWS" < "Amazon" because 'W' (87) < 'm' (109) in ASCII.
 	expectedOrder := []string{
 		testCEServiceLambda,   // "AWS Lambda"
@@ -510,9 +551,6 @@ func TestCECollectCosts_NilAmount(t *testing.T) {
 	if len(result.Costs) != 0 {
 		t.Fatalf("expected 0 costs (nil amount treated as 0, zero-cost entry may be omitted), got %d", len(result.Costs))
 	}
-	// Actually with amount=0, the CostBreakdown is created but with Amount=0.
-	// Let me check: buildCostExplorerResult appends every group with non-empty
-	// key even if the amount is 0. So it should have 1 entry.
 	if result.TotalCost != 0 {
 		t.Fatalf("TotalCost = %v, want 0", result.TotalCost)
 	}
@@ -589,8 +627,8 @@ func TestReconcile_HappyPath(t *testing.T) {
 		TotalCost:   0.08,
 		Currency:    testCECurrencyUSD,
 		Costs: []CostBreakdown{
-			{Service: testCEServiceLambda, Amount: 0.053295, Currency: testCECurrencyUSD},
-			{Service: testCEServiceDynamoDB, Amount: 0.004219, Currency: testCECurrencyUSD},
+			{Date: testCEDate1, Service: testCEServiceLambda, Amount: 0.053295, Currency: testCECurrencyUSD},
+			{Date: testCEDate1, Service: testCEServiceDynamoDB, Amount: 0.004219, Currency: testCECurrencyUSD},
 		},
 	}
 
@@ -618,8 +656,25 @@ func TestReconcile_HappyPath(t *testing.T) {
 		t.Fatalf("expected 2 entries, got %d: %s", len(report.Entries), entryKeys(report.Entries))
 	}
 
-	// Lambda entry should have 2 CW metrics attached.
-	for _, entry := range report.Entries {
+	assertReconciledEntryDates(t, report.Entries)
+	assertReconciledServiceEntries(t, report.Entries)
+}
+
+// assertReconciledEntryDates fails if any reconciled entry has an empty Date.
+func assertReconciledEntryDates(t *testing.T, entries []ReconciledCostEntry) {
+	t.Helper()
+	for _, entry := range entries {
+		if entry.Date == "" {
+			t.Fatalf("reconciled entry for service %q has empty date", entry.Service)
+		}
+	}
+}
+
+// assertReconciledServiceEntries validates the HappyPath fixture's per-service
+// cost and metric counts for Lambda and DynamoDB entries.
+func assertReconciledServiceEntries(t *testing.T, entries []ReconciledCostEntry) {
+	t.Helper()
+	for _, entry := range entries {
 		switch entry.Service {
 		case testCENormLambda:
 			if entry.Cost != 0.053295 {
@@ -715,7 +770,7 @@ func TestReconcile_EmptyCWAttributions(t *testing.T) {
 		TotalCost:   0.05,
 		Currency:    testCECurrencyUSD,
 		Costs: []CostBreakdown{
-			{Service: testCEServiceLambda, Amount: 0.05, Currency: testCECurrencyUSD},
+			{Date: testCEDate1, Service: testCEServiceLambda, Amount: 0.05, Currency: testCECurrencyUSD},
 		},
 	}
 
@@ -732,6 +787,9 @@ func TestReconcile_EmptyCWAttributions(t *testing.T) {
 	if len(report.Entries[0].Metrics) != 0 {
 		t.Fatalf("expected 0 metrics (empty CW), got %d", len(report.Entries[0].Metrics))
 	}
+	if report.Entries[0].Date == "" {
+		t.Fatal("reconciled entry has empty date")
+	}
 }
 
 func TestReconcile_ServiceMappingApplied(t *testing.T) {
@@ -746,7 +804,7 @@ func TestReconcile_ServiceMappingApplied(t *testing.T) {
 		TotalCost:   0.10,
 		Currency:    testCECurrencyUSD,
 		Costs: []CostBreakdown{
-			{Service: testCEServiceAPIGW, Amount: 0.10, Currency: testCECurrencyUSD},
+			{Date: testCEDate1, Service: testCEServiceAPIGW, Amount: 0.10, Currency: testCECurrencyUSD},
 		},
 	}
 
@@ -784,7 +842,7 @@ func TestReconcile_UnknownServicePassthrough(t *testing.T) {
 		TotalCost:   0.01,
 		Currency:    testCECurrencyUSD,
 		Costs: []CostBreakdown{
-			{Service: "AWS NoSuchService", Amount: 0.01, Currency: testCECurrencyUSD},
+			{Date: testCEDate1, Service: "AWS NoSuchService", Amount: 0.01, Currency: testCECurrencyUSD},
 		},
 	}
 
@@ -816,8 +874,8 @@ func TestReconcile_DeterministicOutput(t *testing.T) {
 		TotalCost:   0.15,
 		Currency:    testCECurrencyUSD,
 		Costs: []CostBreakdown{
-			{Service: testCEServiceS3, Amount: 0.05, Currency: testCECurrencyUSD},
-			{Service: testCEServiceLambda, Amount: 0.10, Currency: testCECurrencyUSD},
+			{Date: testCEDate1, Service: testCEServiceS3, Amount: 0.05, Currency: testCECurrencyUSD},
+			{Date: testCEDate1, Service: testCEServiceLambda, Amount: 0.10, Currency: testCECurrencyUSD},
 		},
 	}
 
@@ -856,7 +914,7 @@ func TestReconcile_WindowIntersection(t *testing.T) {
 		TotalCost:   0.05,
 		Currency:    testCECurrencyUSD,
 		Costs: []CostBreakdown{
-			{Service: testCEServiceLambda, Amount: 0.05, Currency: testCECurrencyUSD},
+			{Date: testCEDate1, Service: testCEServiceLambda, Amount: 0.05, Currency: testCECurrencyUSD},
 		},
 	}
 
@@ -1165,7 +1223,7 @@ func TestReconcile_MultipleMetricsSameService(t *testing.T) {
 		TotalCost:   0.05,
 		Currency:    testCECurrencyUSD,
 		Costs: []CostBreakdown{
-			{Service: testCEServiceLambda, Amount: 0.05, Currency: testCECurrencyUSD},
+			{Date: testCEDate1, Service: testCEServiceLambda, Amount: 0.05, Currency: testCECurrencyUSD},
 		},
 	}
 
@@ -1200,7 +1258,7 @@ func TestReconcile_CWServiceNotInCE(t *testing.T) {
 		TotalCost:   0.05,
 		Currency:    testCECurrencyUSD,
 		Costs: []CostBreakdown{
-			{Service: testCEServiceLambda, Amount: 0.05, Currency: testCECurrencyUSD},
+			{Date: testCEDate1, Service: testCEServiceLambda, Amount: 0.05, Currency: testCECurrencyUSD},
 		},
 	}
 
@@ -1237,9 +1295,9 @@ func TestReconcile_SortOrder(t *testing.T) {
 		TotalCost:   0.35,
 		Currency:    testCECurrencyUSD,
 		Costs: []CostBreakdown{
-			{Service: testCEServiceS3, Amount: 0.10, Currency: testCECurrencyUSD},
-			{Service: testCEServiceSQS, Amount: 0.05, Currency: testCECurrencyUSD},
-			{Service: testCEServiceLambda, Amount: 0.20, Currency: testCECurrencyUSD},
+			{Date: testCEDate1, Service: testCEServiceS3, Amount: 0.10, Currency: testCECurrencyUSD},
+			{Date: testCEDate1, Service: testCEServiceSQS, Amount: 0.05, Currency: testCECurrencyUSD},
+			{Date: testCEDate1, Service: testCEServiceLambda, Amount: 0.20, Currency: testCECurrencyUSD},
 		},
 	}
 
@@ -1256,5 +1314,36 @@ func TestReconcile_SortOrder(t *testing.T) {
 		if report.Entries[i].Service != exp {
 			t.Fatalf("entries[%d] = %q, want %q (deterministic sort)", i, report.Entries[i].Service, exp)
 		}
+	}
+}
+
+// TestReconcile_EmptyDate verifies that Reconcile returns an error when
+// any CostBreakdown has an empty Date. M3.9 acceptance requires per-day
+// attribution; entries without dates are unusable.
+func TestReconcile_EmptyDate(t *testing.T) {
+	t.Parallel()
+
+	cc := makeCECollector(nil)
+	ceResult := &CostExplorerResult{
+		Slug:        testSlug,
+		AccountID:   testAccountID,
+		WindowStart: time.Date(2026, 5, 25, 0, 0, 0, 0, time.UTC),
+		WindowEnd:   time.Date(2026, 5, 27, 0, 0, 0, 0, time.UTC),
+		TotalCost:   0.10,
+		Currency:    testCECurrencyUSD,
+		Costs: []CostBreakdown{
+			{Date: testCEDate1, Service: testCEServiceLambda, Amount: 0.05, Currency: testCECurrencyUSD},
+			{Date: "", Service: testCEServiceDynamoDB, Amount: 0.05, Currency: testCECurrencyUSD},
+		},
+	}
+
+	cwReport := cwReportWithAttributions(testSlug, testAccountID)
+
+	_, err := cc.Reconcile(ceResult, cwReport)
+	if err == nil {
+		t.Fatal("expected error for empty Date in CostBreakdown")
+	}
+	if !strings.Contains(err.Error(), "empty date") {
+		t.Fatalf("error should mention empty date: %v", err)
 	}
 }
