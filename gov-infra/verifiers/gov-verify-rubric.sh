@@ -71,6 +71,7 @@ rm -f \
   "${EVIDENCE_DIR}/SEC-8-output.log" \
   "${EVIDENCE_DIR}/SEC-9-output.log" \
   "${EVIDENCE_DIR}/SEC-10-output.log" \
+  "${EVIDENCE_DIR}/SEC-11-output.log" \
   "${EVIDENCE_DIR}/CON-4-output.log"
 
 # Initialize report structure
@@ -2249,6 +2250,7 @@ run_check "SEC-7" "Security" "bash ${GOV_INFRA}/verifiers/sec/oac-form-integrity
 run_check "SEC-8" "Security" "bash ${GOV_INFRA}/verifiers/sec/cloudfront-composition.sh"
 run_check "SEC-9" "Security" "bash ${GOV_INFRA}/verifiers/sec/trust-auth-preservation.sh"
 run_check "SEC-10" "Security" "bash ${GOV_INFRA}/verifiers/sec/release-verification-preservation.sh"
+run_check "SEC-11" "Security" "bash ${GOV_INFRA}/verifiers/sec/portal-stack-state-tenant-scoping.sh"
 
 # === Compliance Readiness (CMP) ===
 check_file_exists "CMP-1" "Compliance" "${PLANNING_DIR}/lesser-host-controls-matrix.md"
