@@ -68,6 +68,13 @@
 				Provisioning
 			</Link>
 			<Link
+				{...linkProps('/operator/releases')}
+				variant="ghost"
+				aria-current={isActive('/operator/releases') ? 'page' : undefined}
+			>
+				Releases
+			</Link>
+			<Link
 				{...linkProps('/operator/instances')}
 				variant="ghost"
 				aria-current={isActive('/operator/instances') ? 'page' : undefined}
