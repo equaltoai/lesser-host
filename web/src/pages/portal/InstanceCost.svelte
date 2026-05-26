@@ -93,9 +93,20 @@ Issue: equaltoai/lesser-host#422
 	let displayMonth = $state<string>(currentMonthUTC());
 
 	async function loadAll() {
+		// Do NOT clear `budget` / `summary` before the await. Clearing
+		// here makes the page-level spinner gate (`loading && !budget &&
+		// !summary` in the template) win on every manual refresh, which
+		// in turn replaces the Refresh button subtree — at which point
+		// `Button` is no longer in the DOM and its `loading` prop can
+		// never render the inline spinner. Keeping the prior values
+		// during the refresh round-trip lets the page-level branch fire
+		// only on first load (no prior data) and lets the Refresh
+		// button's inline loading affordance render during inflight
+		// refresh. On non-401 errors, `errorMessage` wins the template
+		// branch and the stale data is hidden by the existing
+		// `{:else if errorMessage}` arm; on 401 we navigate to /login
+		// before the state matters.
 		errorMessage = null;
-		budget = null;
-		summary = null;
 
 		const month = currentMonthUTC();
 		displayMonth = month;

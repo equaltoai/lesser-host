@@ -73,4 +73,44 @@ describe('InstanceCost cost & usage tab', () => {
 		expect(template).toContain('loading={loading}');
 		expect(template).toContain('loadingBehavior="prepend"');
 	});
+
+	it('does not clear budget/summary before the await in loadAll', () => {
+		// REGRESSION GUARD: clearing budget/summary at the start of loadAll
+		// makes the page-level spinner gate `loading && !budget && !summary`
+		// win on every refresh, replacing the Refresh button subtree — at
+		// which point Button's `loading` prop is no longer in the DOM and
+		// the inflight-refresh affordance is dead.
+		//
+		// Reviewer caught this on PR #507 head 91cc28f (review 4359812637).
+		// The fix is to keep prior `budget` / `summary` values during the
+		// refresh round-trip; the page-level spinner then fires only on
+		// first load (when both are still null), and the Refresh button's
+		// inline `loading` affordance carries the rest.
+		const fnStart = source.indexOf('async function loadAll()');
+		expect(fnStart).toBeGreaterThan(0);
+		const tryStart = source.indexOf('try {', fnStart);
+		expect(tryStart).toBeGreaterThan(fnStart);
+
+		// Region between `async function loadAll()` and the opening `try {`
+		// must not contain any `budget = null` or `summary = null`
+		// assignment. The reassignments inside `try` (on success) and in
+		// callers outside loadAll are still permitted.
+		const preludeRegion = source.slice(fnStart, tryStart);
+		expect(preludeRegion).not.toMatch(/\bbudget\s*=\s*null\b/);
+		expect(preludeRegion).not.toMatch(/\bsummary\s*=\s*null\b/);
+
+		// `loading = true` must still appear in the prelude so the
+		// inflight state is visible to the template.
+		expect(preludeRegion).toContain('loading = true');
+	});
+
+	it('reserves the page-level spinner branch for the no-prior-data case', () => {
+		// The template's loading gate must AND on `!budget && !summary` so
+		// that the page-level spinner only takes over when there is no
+		// prior data to show. During a refresh after a successful initial
+		// load, `budget` and `summary` are non-null and the `{:else}`
+		// branch (containing the Refresh button with its inline loading
+		// affordance) keeps the user oriented.
+		expect(source).toContain('{#if loading && !budget && !summary}');
+	});
 });
