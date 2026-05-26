@@ -73,6 +73,7 @@ rm -f \
   "${EVIDENCE_DIR}/SEC-10-output.log" \
   "${EVIDENCE_DIR}/SEC-11-output.log" \
   "${EVIDENCE_DIR}/SEC-12-output.log" \
+  "${EVIDENCE_DIR}/MAI-5-output.log" \
   "${EVIDENCE_DIR}/CON-4-output.log"
 
 # Initialize report structure
@@ -2265,6 +2266,7 @@ run_check "MAI-1" "Maintainability" "$CMD_FILE_BUDGET"
 run_check "MAI-2" "Maintainability" "$CMD_MAINTAINABILITY"
 run_check "MAI-3" "Maintainability" "$CMD_SINGLETON"
 run_check "MAI-4" "Maintainability" "$CMD_CI_ENFORCED"
+run_check "MAI-5" "Maintainability" "bash ${GOV_INFRA}/verifiers/mai/wire-all-idempotency.sh"
 
 # === Docs (DOC) ===
 check_file_exists "DOC-1" "Docs" "${PLANNING_DIR}/lesser-host-threat-model.md"
