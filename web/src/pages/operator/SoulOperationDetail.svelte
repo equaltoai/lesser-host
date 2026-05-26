@@ -6,22 +6,9 @@
 	import type { SoulOperation, SafeTxPayload } from 'src/lib/api/soul';
 	import { getSoulOperation, recordSoulOperationExecution, soulPublicGetConfig } from 'src/lib/api/soul';
 	import { logout } from 'src/lib/auth/logout';
-	import { navigate, safeAppRootUrl, stageSafeAppTarget } from 'src/lib/router';
+	import { linkProps, navigate, safeAppRootUrl, stageSafeAppTarget } from 'src/lib/router';
 	import { session, stageSafeAppSessionHandoff } from 'src/lib/session';
-	import {
-		Alert,
-		Badge,
-		Button,
-		Card,
-		CopyButton,
-		DefinitionItem,
-		DefinitionList,
-		Heading,
-		Spinner,
-		Text,
-		TextArea,
-		TextField,
-	} from 'src/lib/ui';
+	import { Alert, Badge, Button, Card, CopyButton, DefinitionItem, DefinitionList, Heading, Link, Spinner, Text, TextArea, TextField } from 'src/lib/ui';
 	import {
 		buildSafeWalletAppUrl,
 		clearPendingSafeAppTxHash,
@@ -324,7 +311,7 @@
 		</div>
 		<div class="op-soul-op__actions">
 			<Button variant="outline" onclick={() => void load()} disabled={loading}>Refresh</Button>
-			<Button variant="ghost" onclick={() => navigate('/operator/soul')}>Back</Button>
+			<Link {...linkProps('/operator/soul')} variant="ghost">Back</Link>
 		</div>
 	</header>
 

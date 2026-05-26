@@ -26,7 +26,7 @@
 	} from 'src/lib/api/soul';
 	import { logout } from 'src/lib/auth/logout';
 	import { MarkdownRenderer } from 'src/lib/greater/content';
-	import { navigate } from 'src/lib/router';
+	import { linkProps, navigate } from 'src/lib/router';
 	import {
 		ensureAccounts,
 		getChainId,
@@ -39,20 +39,7 @@
 	} from 'src/lib/wallet/ethereum';
 	import { jcsCanonicalize } from 'src/lib/wallet/jcs';
 	import { keccak256Utf8Hex } from 'src/lib/wallet/keccak';
-	import {
-		Alert,
-		Button,
-		Card,
-		CopyButton,
-		DefinitionItem,
-		DefinitionList,
-		Heading,
-		Select,
-		Spinner,
-		Text,
-		TextArea,
-		TextField,
-	} from 'src/lib/ui';
+	import { Alert, Button, Card, CopyButton, DefinitionItem, DefinitionList, Heading, Link, Select, Spinner, Text, TextArea, TextField } from 'src/lib/ui';
 
 	let { token } = $props<{ token: string }>();
 
@@ -949,7 +936,7 @@
 			</Text>
 		</div>
 		<div class="soul-register__actions">
-			<Button variant="ghost" onclick={() => navigate('/portal/souls')}>Back</Button>
+			<Link {...linkProps('/portal/souls')} variant="ghost">Back</Link>
 		</div>
 	</header>
 
@@ -1210,9 +1197,9 @@
 							<Button variant="solid" onclick={() => navigate(`/portal/souls/${begin.registration.agent_id}`)}>
 								{verifyUsesSafe || !verifyMintExecuted ? 'Open mint recovery' : 'Open agent'}
 							</Button>
-							<Button variant="outline" onclick={() => navigate(`/portal/souls/${begin.registration.agent_id}/mint`)}>
+							<Link {...linkProps(`/portal/souls/${begin.registration.agent_id}/mint`)} variant="default">
 								Complete profile
-							</Button>
+							</Link>
 							<CopyButton size="sm" text={verifyResult.operation.operation_id} />
 						</div>
 
@@ -1432,7 +1419,7 @@
 							<Text size="sm">Published v2 registration version {mintFinalizeResult.published_version}.</Text>
 						</Alert>
 						<div class="soul-register__row">
-							<Button variant="outline" onclick={() => navigate(`/portal/souls/${begin.registration.agent_id}`)}>Open agent</Button>
+							<Link {...linkProps(`/portal/souls/${begin.registration.agent_id}`)} variant="default">Open agent</Link>
 							<Button variant="solid" onclick={() => navigate(`/portal/souls/${begin.registration.agent_id}/mint`)}>
 								Review profile
 							</Button>

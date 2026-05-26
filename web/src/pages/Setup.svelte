@@ -12,7 +12,7 @@
 		walletLogin,
 	} from 'src/lib/api/controlPlane';
 	import type { ApiError } from 'src/lib/api/http';
-	import { navigate } from 'src/lib/router';
+	import { linkProps, navigate } from 'src/lib/router';
 	import { getChainId, getEthereumProvider, personalSign, requestAccounts } from 'src/lib/wallet/ethereum';
 	import type { Eip1193Provider } from 'src/lib/wallet/ethereum';
 	import {
@@ -24,6 +24,7 @@
 		DefinitionItem,
 		DefinitionList,
 		Heading,
+		Link,
 		Spinner,
 		StepIndicator,
 		Text,
@@ -312,7 +313,7 @@
 			</div>
 			<div class="setup__header-actions">
 				<Button variant="outline" onclick={() => void refreshStatus()} disabled={statusLoading}>Refresh</Button>
-				<Button variant="ghost" onclick={() => navigate('/')}>Home</Button>
+				<Link {...linkProps('/')} variant="ghost">Home</Link>
 			</div>
 		</header>
 
@@ -356,7 +357,7 @@
 					</Text>
 					<div class="setup__row">
 						<Button variant="solid" onclick={() => navigate('/login')}>Sign in</Button>
-						<Button variant="outline" onclick={() => navigate('/')}>Home</Button>
+						<Link {...linkProps('/')} variant="default">Home</Link>
 					</div>
 				</Alert>
 			{:else if !status.bootstrap_wallet_address_set}

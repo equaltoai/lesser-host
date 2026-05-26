@@ -5,8 +5,8 @@
 	import type { ListUsageResponse, UsageSummaryResponse } from 'src/lib/api/portalUsage';
 	import { portalGetUsageSummary, portalListUsage } from 'src/lib/api/portalUsage';
 	import { logout } from 'src/lib/auth/logout';
-	import { navigate } from 'src/lib/router';
-	import { Alert, Badge, Button, Card, DefinitionItem, DefinitionList, Heading, Spinner, Text, TextField } from 'src/lib/ui';
+	import { linkProps, navigate } from 'src/lib/router';
+	import { Alert, Badge, Button, Card, DefinitionItem, DefinitionList, Heading, Link, Spinner, Text, TextField } from 'src/lib/ui';
 
 	let { token, slug } = $props<{ token: string; slug: string }>();
 
@@ -91,9 +91,9 @@
 		</div>
 		<div class="usage__actions">
 			<Button variant="outline" onclick={() => void loadAll()} disabled={loading}>Refresh</Button>
-			<Button variant="ghost" onclick={() => navigate(`/portal/instances/${slug}/budgets`)}>Budgets</Button>
-			<Button variant="ghost" onclick={() => navigate('/portal/billing')}>Billing</Button>
-			<Button variant="ghost" onclick={() => navigate(`/portal/instances/${slug}`)}>Back</Button>
+			<Link {...linkProps(`/portal/instances/${slug}/budgets`)} variant="ghost">Budgets</Link>
+			<Link {...linkProps('/portal/billing')} variant="ghost">Billing</Link>
+			<Link {...linkProps(`/portal/instances/${slug}`)} variant="ghost">Back</Link>
 		</div>
 	</header>
 

@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { navigate } from 'src/lib/router';
-	import { Button, Container, Heading, Text } from 'src/lib/ui';
+	import { linkProps } from 'src/lib/router';
+	import { Container, Heading, Link, Text } from 'src/lib/ui';
 </script>
 
 <Container size="lg" gutter="lg">
@@ -8,7 +8,7 @@
 		<Heading level={1}>Not found</Heading>
 		<Text color="secondary">This route does not exist.</Text>
 		<div class="not-found__actions">
-			<Button variant="outline" onclick={() => navigate('/')}>Home</Button>
+			<Link {...linkProps('/')} variant="default">Home</Link>
 		</div>
 	</div>
 </Container>

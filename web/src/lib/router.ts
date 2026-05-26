@@ -80,3 +80,30 @@ export function navigate(to: string): void {
 	history.pushState({}, '', target);
 	window.dispatchEvent(new PopStateEvent('popstate'));
 }
+
+/**
+ * Returns the props bag (`href` + `onnavigate`) for a greater-components `Link`
+ * primitive pointing at an in-app route. Handles base-path application so
+ * Cmd/Ctrl/middle-click "open in new tab" intents resolve to the correct URL
+ * (with `SAFE_APP_BASE_PATH` prefix when running under safe-app mode), while
+ * the SPA-router intercept calls `navigate()` with the unprefixed path so
+ * route normalization stays in one place.
+ *
+ * @example
+ *   import { Link } from '$lib/greater/primitives';
+ *   import { linkProps } from '$lib/router';
+ *
+ *   <Link {...linkProps('/portal/billing')} variant="ghost">Billing</Link>
+ */
+export function linkProps(to: string): {
+	href: string;
+	onnavigate: (ev: MouseEvent, href: string) => void;
+} {
+	return {
+		href: withBasePath(normalizePath(to)),
+		onnavigate: (ev) => {
+			ev.preventDefault();
+			navigate(to);
+		},
+	};
+}

@@ -32,8 +32,8 @@ Issue: equaltoai/lesser-host#419
 	import type { SoulMineAgentItem } from 'src/lib/api/soul';
 	import { soulListMyAgents } from 'src/lib/api/soul';
 	import { logout } from 'src/lib/auth/logout';
-	import { navigate } from 'src/lib/router';
-	import { Alert, Badge, Button, CopyButton, Spinner, Text } from 'src/lib/ui';
+	import { linkProps, navigate } from 'src/lib/router';
+	import { Alert, Badge, Button, CopyButton, Link, Spinner, Text } from 'src/lib/ui';
 	import { Panel } from 'src/lib/shell';
 
 	interface Props {
@@ -148,9 +148,9 @@ Issue: equaltoai/lesser-host#419
 				agent.
 			</Text>
 			<div class="instance-souls__actions-inline">
-				<Button variant="outline" onclick={() => navigate('/portal/souls')}>
+				<Link {...linkProps('/portal/souls')} variant="default">
 					Open legacy portal souls list
-				</Button>
+				</Link>
 			</div>
 		</Alert>
 	{:else}

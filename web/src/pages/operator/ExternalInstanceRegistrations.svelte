@@ -9,8 +9,8 @@
 		rejectExternalInstanceRegistration,
 	} from 'src/lib/api/operators';
 	import { logout } from 'src/lib/auth/logout';
-	import { navigate } from 'src/lib/router';
-	import { Alert, Badge, Button, Card, CopyButton, Heading, Spinner, Text } from 'src/lib/ui';
+	import { linkProps, navigate } from 'src/lib/router';
+	import { Alert, Badge, Button, Card, CopyButton, Heading, Link, Spinner, Text } from 'src/lib/ui';
 
 	let { token } = $props<{ token: string }>();
 
@@ -150,9 +150,9 @@
 						>
 							Reject
 						</Button>
-						<Button variant="ghost" onclick={() => navigate(`/operator/instances/${reg.slug}`)}>
+						<Link {...linkProps(`/operator/instances/${reg.slug}`)} variant="ghost">
 							Open instance
-						</Button>
+						</Link>
 						{#if actingId === reg.id}
 							<div class="op-external__loading-inline">
 								<Spinner size="sm" />

@@ -9,6 +9,7 @@ export {
 	DefinitionItem,
 	DefinitionList,
 	Heading,
+	Link,
 	List,
 	ListItem,
 	Select,

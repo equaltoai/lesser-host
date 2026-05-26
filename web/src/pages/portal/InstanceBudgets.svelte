@@ -6,8 +6,8 @@
 	import type { BudgetMonthResponse, ListBudgetsResponse, UsageSummaryResponse } from 'src/lib/api/portalUsage';
 	import { portalGetBudgetMonth, portalGetUsageSummary, portalListBudgets, portalSetBudgetMonth } from 'src/lib/api/portalUsage';
 	import { logout } from 'src/lib/auth/logout';
-	import { navigate } from 'src/lib/router';
-	import { Alert, Button, Card, DefinitionItem, DefinitionList, Heading, Spinner, Text, TextField } from 'src/lib/ui';
+	import { linkProps, navigate } from 'src/lib/router';
+	import { Alert, Button, Card, DefinitionItem, DefinitionList, Heading, Link, Spinner, Text, TextField } from 'src/lib/ui';
 
 	let { token, slug } = $props<{ token: string; slug: string }>();
 
@@ -166,9 +166,9 @@
 		</div>
 		<div class="budgets__actions">
 			<Button variant="outline" onclick={() => void loadAll()} disabled={loading}>Refresh</Button>
-			<Button variant="ghost" onclick={() => navigate(`/portal/instances/${slug}/usage`)}>Usage</Button>
-			<Button variant="ghost" onclick={() => navigate(`/portal/instances/${slug}`)}>Back</Button>
-			<Button variant="ghost" onclick={() => navigate('/portal/billing')}>Billing</Button>
+			<Link {...linkProps(`/portal/instances/${slug}/usage`)} variant="ghost">Usage</Link>
+			<Link {...linkProps(`/portal/instances/${slug}`)} variant="ghost">Back</Link>
+			<Link {...linkProps('/portal/billing')} variant="ghost">Billing</Link>
 		</div>
 	</header>
 

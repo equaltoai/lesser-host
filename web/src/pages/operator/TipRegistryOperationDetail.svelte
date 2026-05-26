@@ -5,8 +5,8 @@
 	import type { TipRegistryOperation } from 'src/lib/api/tipRegistry';
 	import { getTipRegistryOperation, recordTipRegistryOperationExecution } from 'src/lib/api/tipRegistry';
 	import { logout } from 'src/lib/auth/logout';
-	import { navigate } from 'src/lib/router';
-	import { Alert, Badge, Button, Card, CopyButton, DefinitionItem, DefinitionList, Heading, Spinner, Text, TextArea, TextField } from 'src/lib/ui';
+	import { linkProps, navigate } from 'src/lib/router';
+	import { Alert, Badge, Button, Card, CopyButton, DefinitionItem, DefinitionList, Heading, Link, Spinner, Text, TextArea, TextField } from 'src/lib/ui';
 
 	let { token, id } = $props<{ token: string; id: string }>();
 
@@ -97,7 +97,7 @@
 		</div>
 		<div class="op-tip-op__actions">
 			<Button variant="outline" onclick={() => void load()} disabled={loading}>Refresh</Button>
-			<Button variant="ghost" onclick={() => navigate('/operator/tip-registry')}>Back</Button>
+			<Link {...linkProps('/operator/tip-registry')} variant="ghost">Back</Link>
 		</div>
 	</header>
 

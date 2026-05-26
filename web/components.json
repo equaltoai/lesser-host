@@ -1,7 +1,7 @@
 {
   "$schema": "https://greater.components.dev/schema.json",
   "version": "1.0.0",
-  "ref": "4b1e36473544ee640a6a3dd429139323c75d56c3",
+  "ref": "b4d26ad77a8b52dcb2fb0c45e5f4d76b62390ed7",
   "installMode": "vendored",
   "style": "default",
   "rsc": false,
@@ -52,8 +52,8 @@
     },
     {
       "name": "primitives",
-      "version": "74ce64890bab7c85b83847a1ff72dc882b66ebc5",
-      "installedAt": "2026-05-18T15:45:00.000Z",
+      "version": "b4d26ad77a8b52dcb2fb0c45e5f4d76b62390ed7",
+      "installedAt": "2026-05-26T04:15:11.250Z",
       "modified": false,
       "checksums": []
     },

@@ -68,7 +68,7 @@
 		soulUpdateRegistration,
 	} from 'src/lib/api/soul';
 	import { logout } from 'src/lib/auth/logout';
-	import { navigate } from 'src/lib/router';
+	import { linkProps, navigate } from 'src/lib/router';
 	import {
 		ensureAccounts,
 		getChainId,
@@ -82,21 +82,7 @@
 	} from 'src/lib/wallet/ethereum';
 	import { jcsCanonicalize } from 'src/lib/wallet/jcs';
 	import { keccak256Utf8Hex } from 'src/lib/wallet/keccak';
-	import {
-		Alert,
-		Badge,
-		Button,
-		Card,
-		CopyButton,
-		DefinitionItem,
-		DefinitionList,
-		Heading,
-		Select,
-		Spinner,
-		Text,
-		TextArea,
-		TextField,
-	} from 'src/lib/ui';
+	import { Alert, Badge, Button, Card, CopyButton, DefinitionItem, DefinitionList, Heading, Link, Select, Spinner, Text, TextArea, TextField } from 'src/lib/ui';
 	import { PageFrame, PageTitle } from 'src/lib/shell';
 
 	let { token, agentId } = $props<{ token: string; agentId: string }>();
@@ -1844,7 +1830,7 @@
 		>
 			{#snippet actions()}
 				<Button variant="outline" onclick={() => void load()} disabled={loading}>Refresh</Button>
-				<Button variant="ghost" onclick={() => navigate('/portal/souls')}>Back</Button>
+				<Link {...linkProps('/portal/souls')} variant="ghost">Back</Link>
 			{/snippet}
 		</PageTitle>
 	{/snippet}

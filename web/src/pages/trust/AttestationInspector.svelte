@@ -4,8 +4,8 @@
 	import type { ApiError } from 'src/lib/api/http';
 	import type { AttestationResponse, JWKS } from 'src/lib/api/trust';
 	import { getAttestation, getJWKS } from 'src/lib/api/trust';
-	import { navigate } from 'src/lib/router';
-	import { Alert, Button, Card, CopyButton, DefinitionItem, DefinitionList, Heading, Spinner, Text, TextArea } from 'src/lib/ui';
+	import { linkProps, navigate } from 'src/lib/router';
+	import { Alert, Button, Card, CopyButton, DefinitionItem, DefinitionList, Heading, Link, Spinner, Text, TextArea } from 'src/lib/ui';
 
 	let { id } = $props<{ id: string }>();
 
@@ -75,7 +75,7 @@
 		</div>
 		<div class="trust-att__actions">
 			<Button variant="outline" onclick={() => void load()} disabled={loading}>Refresh</Button>
-			<Button variant="ghost" onclick={() => navigate('/trust')}>Back</Button>
+			<Link {...linkProps('/trust')} variant="ghost">Back</Link>
 		</div>
 	</header>
 
