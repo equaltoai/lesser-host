@@ -17,7 +17,7 @@ func TestHandleScheduledTelemetryReturnsWorkloadSummary(t *testing.T) {
 		AppName: "lesser-host",
 		Stage:   "lab",
 	}
-	srv := NewServer(cfg)
+	srv := NewServer(cfg, nil)
 
 	scheduledAt := time.Date(2026, 5, 26, 12, 0, 0, 0, time.UTC)
 	event := events.EventBridgeEvent{
@@ -79,7 +79,7 @@ func TestHandleScheduledTelemetryReturnsWorkloadSummary(t *testing.T) {
 func TestHandleScheduledTelemetryNilContext(t *testing.T) {
 	t.Parallel()
 
-	srv := NewServer(config.Config{})
+	srv := NewServer(config.Config{}, nil)
 	_, err := srv.handleScheduledTelemetry(nil, events.EventBridgeEvent{})
 	if err == nil {
 		t.Fatalf("expected error for nil context")
@@ -99,7 +99,7 @@ func TestHandleScheduledTelemetryNilServer(t *testing.T) {
 func TestHandleScheduledTelemetryEmptyEvents(t *testing.T) {
 	t.Parallel()
 
-	srv := NewServer(config.Config{})
+	srv := NewServer(config.Config{}, nil)
 	out, err := srv.handleScheduledTelemetry(&apptheory.EventContext{
 		RemainingMS: 6000,
 	}, events.EventBridgeEvent{})
