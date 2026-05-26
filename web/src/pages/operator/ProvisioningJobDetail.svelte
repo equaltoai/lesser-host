@@ -10,21 +10,8 @@
 		retryOperatorProvisionJob,
 	} from 'src/lib/api/operatorProvisioning';
 	import { logout } from 'src/lib/auth/logout';
-	import { navigate } from 'src/lib/router';
-	import {
-		Alert,
-		Badge,
-		Button,
-		Card,
-		CopyButton,
-		DefinitionItem,
-		DefinitionList,
-		Heading,
-		Spinner,
-		Text,
-		TextArea,
-		TextField,
-	} from 'src/lib/ui';
+	import { linkProps, navigate } from 'src/lib/router';
+	import { Alert, Badge, Button, Card, CopyButton, DefinitionItem, DefinitionList, Heading, Link, Spinner, Text, TextArea, TextField } from 'src/lib/ui';
 
 	let { token, id } = $props<{ token: string; id: string }>();
 
@@ -181,7 +168,7 @@
 		</div>
 		<div class="op-job__actions">
 			<Button variant="outline" onclick={() => void load()} disabled={loading}>Refresh</Button>
-			<Button variant="ghost" onclick={() => navigate('/operator/provisioning/jobs')}>Back</Button>
+			<Link {...linkProps('/operator/provisioning/jobs')} variant="ghost">Back</Link>
 		</div>
 	</header>
 
@@ -217,7 +204,7 @@
 			</DefinitionList>
 
 			<div class="op-job__row">
-				<Button variant="ghost" onclick={() => navigate(`/operator/instances/${job?.instance_slug ?? ''}`)}>Open instance</Button>
+				<Link {...linkProps(`/operator/instances/${job?.instance_slug ?? ''}`)} variant="ghost">Open instance</Link>
 				<Button variant="outline" onclick={() => void retry()} disabled={retryLoading || job?.status === 'ok'}>
 					Retry / requeue
 				</Button>

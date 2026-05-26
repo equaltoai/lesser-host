@@ -5,8 +5,8 @@
 	import type { ListVanityDomainRequestsResponse } from 'src/lib/api/operators';
 	import { approveVanityDomainRequest, listVanityDomainRequests, rejectVanityDomainRequest } from 'src/lib/api/operators';
 	import { logout } from 'src/lib/auth/logout';
-	import { navigate } from 'src/lib/router';
-	import { Alert, Badge, Button, Card, CopyButton, Heading, Spinner, Text, TextArea } from 'src/lib/ui';
+	import { linkProps, navigate } from 'src/lib/router';
+	import { Alert, Badge, Button, Card, CopyButton, Heading, Link, Spinner, Text, TextArea } from 'src/lib/ui';
 
 	let { token } = $props<{ token: string }>();
 
@@ -158,9 +158,9 @@
 						>
 							Reject
 						</Button>
-						<Button variant="ghost" onclick={() => navigate(`/operator/instances/${req.instance_slug}`)}>
+						<Link {...linkProps(`/operator/instances/${req.instance_slug}`)} variant="ghost">
 							Open instance
-						</Button>
+						</Link>
 						{#if actingDomain === req.domain}
 							<div class="op-requests__loading-inline">
 								<Spinner size="sm" />

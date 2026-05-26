@@ -25,8 +25,8 @@ Issue: equaltoai/lesser-host#412
 
 	import type { ApiError } from 'src/lib/api/http';
 	import { lookupAttestation } from 'src/lib/api/trust';
-	import { currentPath, navigate } from 'src/lib/router';
-	import { Alert, Button, Spinner, Text, TextField } from 'src/lib/ui';
+	import { currentPath, linkProps, navigate } from 'src/lib/router';
+	import { Alert, Button, Link, Spinner, Text, TextField } from 'src/lib/ui';
 	import { PageFrame, PageTitle, Panel } from 'src/lib/shell';
 
 	import AttestationInspector from 'src/pages/trust/AttestationInspector.svelte';
@@ -126,7 +126,7 @@ Issue: equaltoai/lesser-host#412
 			description="Attestations and evidence inspection."
 		>
 			{#snippet actions()}
-				<Button variant="ghost" onclick={() => navigate('/')}>Home</Button>
+				<Link {...linkProps('/')} variant="ghost">Home</Link>
 			{/snippet}
 		</PageTitle>
 	{/snippet}

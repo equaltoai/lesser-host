@@ -34,8 +34,8 @@ Issue: equaltoai/lesser-host#413
 		portalListPaymentMethods,
 	} from 'src/lib/api/portalBilling';
 	import { logout } from 'src/lib/auth/logout';
-	import { navigate } from 'src/lib/router';
-	import { Alert, Badge, Button, CopyButton, Spinner, Text } from 'src/lib/ui';
+	import { linkProps, navigate } from 'src/lib/router';
+	import { Alert, Badge, Button, CopyButton, Link, Spinner, Text } from 'src/lib/ui';
 	import { PageFrame, PageTitle, Panel } from 'src/lib/shell';
 
 	let { token } = $props<{ token: string }>();
@@ -147,7 +147,7 @@ Issue: equaltoai/lesser-host#413
 		>
 			{#snippet actions()}
 				<Button variant="outline" onclick={() => void loadAll()} disabled={loading}>Refresh</Button>
-				<Button variant="ghost" onclick={() => navigate('/portal')}>Back</Button>
+				<Link {...linkProps('/portal')} variant="ghost">Back</Link>
 			{/snippet}
 		</PageTitle>
 	{/snippet}

@@ -5,8 +5,8 @@
 	import type { InstanceResponse } from 'src/lib/api/portalInstances';
 	import { portalCreateInstance, portalListInstances } from 'src/lib/api/portalInstances';
 	import { logout } from 'src/lib/auth/logout';
-	import { navigate } from 'src/lib/router';
-	import { Alert, Button, Card, Heading, Spinner, Text, TextField } from 'src/lib/ui';
+	import { linkProps, navigate } from 'src/lib/router';
+	import { Alert, Button, Card, Heading, Link, Spinner, Text, TextField } from 'src/lib/ui';
 
 	let { token } = $props<{ token: string }>();
 
@@ -151,9 +151,9 @@
 							{/if}
 						</div>
 						<div class="instances__item-actions">
-							<Button variant="outline" onclick={() => navigate(`/portal/instances/${inst.slug}`)}>
+							<Link {...linkProps(`/portal/instances/${inst.slug}`)} variant="default">
 								Open
-							</Button>
+							</Link>
 						</div>
 					</div>
 				</Card>

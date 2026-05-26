@@ -32,8 +32,8 @@ Issue: equaltoai/lesser-host#422
 	import type { BudgetMonthResponse, UsageSummaryResponse } from 'src/lib/api/portalUsage';
 	import { portalGetBudgetMonth, portalGetUsageSummary } from 'src/lib/api/portalUsage';
 	import { logout } from 'src/lib/auth/logout';
-	import { navigate } from 'src/lib/router';
-	import { Alert, Button, Card, DefinitionItem, DefinitionList, Heading, Spinner, Text } from 'src/lib/ui';
+	import { linkProps, navigate } from 'src/lib/router';
+	import { Alert, Button, Card, DefinitionItem, DefinitionList, Heading, Link, Spinner, Text } from 'src/lib/ui';
 	import { StatCard, SummaryStrip } from 'src/lib/shell';
 
 	let { token, slug } = $props<{ token: string; slug: string }>();
@@ -236,8 +236,8 @@ Issue: equaltoai/lesser-host#422
 			>
 				Refresh
 			</Button>
-			<Button variant="ghost" onclick={() => navigate(`/portal/instances/${slug}/budgets`)}>Budgets (legacy)</Button>
-			<Button variant="ghost" onclick={() => navigate(`/portal/instances/${slug}/usage`)}>Usage (legacy)</Button>
+			<Link {...linkProps(`/portal/instances/${slug}/budgets`)} variant="ghost">Budgets (legacy)</Link>
+			<Link {...linkProps(`/portal/instances/${slug}/usage`)} variant="ghost">Usage (legacy)</Link>
 		</div>
 	{/if}
 </div>

@@ -5,12 +5,12 @@
 	import { portalWalletChallenge, portalWalletLogin } from 'src/lib/api/portal';
 	import { webAuthnLoginBegin, webAuthnLoginFinish } from 'src/lib/api/webauthn';
 	import { logout } from 'src/lib/auth/logout';
-	import { navigate } from 'src/lib/router';
+	import { linkProps, navigate } from 'src/lib/router';
 	import { clearSession, consumeSessionExpiredAt, setSession, session } from 'src/lib/session';
 	import { getChainId, getEthereumProvider, personalSign, requestAccounts } from 'src/lib/wallet/ethereum';
 	import type { Eip1193Provider } from 'src/lib/wallet/ethereum';
 	import { serializeCredentialRequest, toPublicKeyRequestOptions } from 'src/lib/webauthn/client';
-	import { Alert, Button, Card, Container, Heading, Spinner, Text, TextField } from 'src/lib/ui';
+	import { Alert, Button, Card, Container, Heading, Link, Spinner, Text, TextField } from 'src/lib/ui';
 
 	type LoginMode = 'portal' | 'operator';
 	type OperatorMethod = 'wallet' | 'passkey';
@@ -289,8 +289,8 @@
 				<Text color="secondary">Authenticate with wallet or passkey.</Text>
 			</div>
 			<div class="login__header-actions">
-				<Button variant="ghost" onclick={() => navigate('/')}>Home</Button>
-				<Button variant="ghost" onclick={() => navigate('/setup')}>Setup</Button>
+				<Link {...linkProps('/')} variant="ghost">Home</Link>
+				<Link {...linkProps('/setup')} variant="ghost">Setup</Link>
 			</div>
 			</header>
 
@@ -498,9 +498,9 @@
 					>) · expires <span class="login__mono">{$session.expiresAt}</span>
 				</Text>
 				<div class="login__row">
-					<Button variant="outline" onclick={() => navigate(defaultRouteForRole($session.role))}>
+					<Link {...linkProps(defaultRouteForRole($session.role))} variant="default">
 						Continue
-					</Button>
+					</Link>
 					<Button
 						variant="ghost"
 						onclick={() => {

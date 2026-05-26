@@ -5,9 +5,9 @@
 	import type { PortalMeResponse } from 'src/lib/api/portal';
 	import { getPortalMe } from 'src/lib/api/portal';
 	import { logout } from 'src/lib/auth/logout';
-	import { currentPath, navigate } from 'src/lib/router';
+	import { currentPath, linkProps, navigate } from 'src/lib/router';
 	import { session } from 'src/lib/session';
-	import { Alert, Button, Card, Container, Heading, Spinner, Text } from 'src/lib/ui';
+	import { Alert, Button, Card, Container, Heading, Link, Spinner, Text } from 'src/lib/ui';
 
 	import Billing from 'src/pages/portal/Billing.svelte';
 	import InstanceConfig from 'src/pages/portal/InstanceConfig.svelte';
@@ -137,7 +137,7 @@
 			</div>
 			<div class="portal__actions">
 				<Button variant="outline" onclick={() => void loadMe()} disabled={loading}>Refresh</Button>
-				<Button variant="ghost" onclick={() => navigate('/portal/billing')}>Billing</Button>
+				<Link {...linkProps('/portal/billing')} variant="ghost">Billing</Link>
 			</div>
 		</header>
 
@@ -183,7 +183,7 @@
 				<Alert variant="warning" title="Signed out">
 					<Text size="sm">Sign in to continue.</Text>
 					<div class="portal__actions-inline">
-						<Button variant="outline" onclick={() => navigate('/login')}>Sign in</Button>
+						<Link {...linkProps('/login')} variant="default">Sign in</Link>
 					</div>
 				</Alert>
 			{:else if portalRoute.kind === 'instances'}
@@ -239,7 +239,7 @@
 			<Alert variant="warning" title="No session">
 				<Text size="sm">You are signed out.</Text>
 				<div class="portal__actions-inline">
-					<Button variant="outline" onclick={() => navigate('/login')}>Sign in</Button>
+					<Link {...linkProps('/login')} variant="default">Sign in</Link>
 				</div>
 			</Alert>
 		{/if}

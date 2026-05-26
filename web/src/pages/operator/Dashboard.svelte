@@ -4,8 +4,8 @@
 	import type { ApiError } from 'src/lib/api/http';
 	import { listExternalInstanceRegistrations, listPortalUserApprovals, listVanityDomainRequests } from 'src/lib/api/operators';
 	import { logout } from 'src/lib/auth/logout';
-	import { navigate } from 'src/lib/router';
-	import { Alert, Button, Card, DefinitionItem, DefinitionList, Heading, Spinner, Text } from 'src/lib/ui';
+	import { linkProps, navigate } from 'src/lib/router';
+	import { Alert, Button, Card, DefinitionItem, DefinitionList, Heading, Link, Spinner, Text } from 'src/lib/ui';
 
 	let { token } = $props<{ token: string }>();
 
@@ -89,15 +89,15 @@
 			</DefinitionList>
 
 			<div class="op-dashboard__row">
-				<Button variant="outline" onclick={() => navigate('/operator/approvals/domains')}>Review domains</Button>
-				<Button variant="outline" onclick={() => navigate('/operator/approvals/users')}>Review users</Button>
-				<Button variant="outline" onclick={() => navigate('/operator/approvals/external-instances')}>
+				<Link {...linkProps('/operator/approvals/domains')} variant="default">Review domains</Link>
+				<Link {...linkProps('/operator/approvals/users')} variant="default">Review users</Link>
+				<Link {...linkProps('/operator/approvals/external-instances')} variant="default">
 					Review external registrations
-				</Button>
-				<Button variant="outline" onclick={() => navigate('/operator/provisioning/jobs')}>Provisioning jobs</Button>
-				<Button variant="outline" onclick={() => navigate('/operator/instances')}>Instance search</Button>
-				<Button variant="outline" onclick={() => navigate('/operator/tip-registry')}>Tip registry</Button>
-				<Button variant="outline" onclick={() => navigate('/operator/audit')}>Audit log</Button>
+				</Link>
+				<Link {...linkProps('/operator/provisioning/jobs')} variant="default">Provisioning jobs</Link>
+				<Link {...linkProps('/operator/instances')} variant="default">Instance search</Link>
+				<Link {...linkProps('/operator/tip-registry')} variant="default">Tip registry</Link>
+				<Link {...linkProps('/operator/audit')} variant="default">Audit log</Link>
 			</div>
 		</Card>
 	{/if}

@@ -19,10 +19,10 @@
 	} from 'src/lib/api/soul';
 	import { logout } from 'src/lib/auth/logout';
 	import { MarkdownRenderer } from 'src/lib/greater/content';
-	import { navigate } from 'src/lib/router';
+	import { linkProps, navigate } from 'src/lib/router';
 	import { ensureAccounts, getEthereumProvider, personalSign } from 'src/lib/wallet/ethereum';
 	import { keccak256Utf8Hex } from 'src/lib/wallet/keccak';
-	import { Alert, Button, Card, CopyButton, DefinitionItem, DefinitionList, Heading, Select, Spinner, Text, TextArea } from 'src/lib/ui';
+	import { Alert, Button, Card, CopyButton, DefinitionItem, DefinitionList, Heading, Link, Select, Spinner, Text, TextArea } from 'src/lib/ui';
 
 	let { token, agentId } = $props<{ token: string; agentId: string }>();
 
@@ -444,7 +444,7 @@
 		</div>
 		<div class="soul-mint__actions">
 			<Button variant="outline" onclick={() => void load()} disabled={loading}>Refresh</Button>
-			<Button variant="ghost" onclick={() => navigate(`/portal/souls/${agentId}`)}>Back to agent</Button>
+			<Link {...linkProps(`/portal/souls/${agentId}`)} variant="ghost">Back to agent</Link>
 		</div>
 	</header>
 

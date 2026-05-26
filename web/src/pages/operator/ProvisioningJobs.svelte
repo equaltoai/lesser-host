@@ -5,8 +5,8 @@
 	import type { ListOperatorProvisionJobsResponse, OperatorProvisionJobListItem } from 'src/lib/api/operatorProvisioning';
 	import { listOperatorProvisionJobs, retryOperatorProvisionJob } from 'src/lib/api/operatorProvisioning';
 	import { logout } from 'src/lib/auth/logout';
-	import { navigate } from 'src/lib/router';
-	import { Alert, Badge, Button, Card, CopyButton, Heading, Select, Spinner, Text } from 'src/lib/ui';
+	import { linkProps, navigate } from 'src/lib/router';
+	import { Alert, Badge, Button, Card, CopyButton, Heading, Link, Select, Spinner, Text } from 'src/lib/ui';
 
 	let { token } = $props<{ token: string }>();
 
@@ -178,8 +178,8 @@
 					</div>
 
 					<div class="op-provisioning__row">
-						<Button variant="outline" onclick={() => navigate(`/operator/provisioning/jobs/${job.id}`)}>View</Button>
-						<Button variant="ghost" onclick={() => navigate(`/operator/instances/${job.instance_slug}`)}>Open instance</Button>
+						<Link {...linkProps(`/operator/provisioning/jobs/${job.id}`)} variant="default">View</Link>
+						<Link {...linkProps(`/operator/instances/${job.instance_slug}`)} variant="ghost">Open instance</Link>
 						{#if job.status === 'error'}
 							<Button variant="solid" onclick={() => void retry(job)} disabled={actingId === job.id}>Retry</Button>
 						{/if}

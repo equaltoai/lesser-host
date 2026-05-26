@@ -10,8 +10,8 @@
 		setTipRegistryTokenAllowed,
 	} from 'src/lib/api/tipRegistry';
 	import { logout } from 'src/lib/auth/logout';
-	import { navigate } from 'src/lib/router';
-	import { Alert, Badge, Button, Card, CopyButton, DefinitionItem, DefinitionList, Heading, Select, Spinner, Text, TextField } from 'src/lib/ui';
+	import { linkProps, navigate } from 'src/lib/router';
+	import { Alert, Badge, Button, Card, CopyButton, DefinitionItem, DefinitionList, Heading, Link, Select, Spinner, Text, TextField } from 'src/lib/ui';
 
 	let { token } = $props<{ token: string }>();
 
@@ -228,9 +228,9 @@
 						Operation <span class="op-tip__mono">{res.operation.id}</span>
 					</Text>
 					<div class="op-tip__row">
-						<Button variant="outline" onclick={() => navigate(`/operator/tip-registry/operations/${res.operation.id}`)}>
+						<Link {...linkProps(`/operator/tip-registry/operations/${res.operation.id}`)} variant="default">
 							View operation
-						</Button>
+						</Link>
 						<CopyButton size="sm" text={res.operation.id} />
 					</div>
 
@@ -294,7 +294,7 @@
 							</Text>
 						</div>
 						<div class="op-tip__list-actions">
-							<Button variant="outline" onclick={() => navigate(`/operator/tip-registry/operations/${op.id}`)}>View</Button>
+							<Link {...linkProps(`/operator/tip-registry/operations/${op.id}`)} variant="default">View</Link>
 							<CopyButton size="sm" text={op.id} />
 						</div>
 					</div>

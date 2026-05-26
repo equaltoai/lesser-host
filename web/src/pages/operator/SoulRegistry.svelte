@@ -6,21 +6,9 @@
 	import type { ListSoulOperationsResponse, PublishRootResponse, SoulOperation } from 'src/lib/api/soul';
 	import { listSoulOperations, publishSoulReputationRoot, publishSoulValidationRoot, soulPublicGetConfig } from 'src/lib/api/soul';
 	import { logout } from 'src/lib/auth/logout';
-	import { navigate, safeAppRootUrl, stageSafeAppTarget } from 'src/lib/router';
+	import { linkProps, navigate, safeAppRootUrl, stageSafeAppTarget } from 'src/lib/router';
 	import { session, stageSafeAppSessionHandoff } from 'src/lib/session';
-	import {
-		Alert,
-		Badge,
-		Button,
-		Card,
-		CopyButton,
-		DefinitionItem,
-		DefinitionList,
-		Heading,
-		Select,
-		Spinner,
-		Text,
-	} from 'src/lib/ui';
+	import { Alert, Badge, Button, Card, CopyButton, DefinitionItem, DefinitionList, Heading, Link, Select, Spinner, Text } from 'src/lib/ui';
 	import { buildSafeWalletAppUrl } from 'src/lib/wallet/safeApp';
 
 	let { token } = $props<{ token: string }>();
@@ -251,12 +239,9 @@
 				Operation <span class="op-soul__mono">{res.operation.operation_id}</span>
 			</Text>
 			<div class="op-soul__row">
-				<Button
-					variant="outline"
-					onclick={() => navigate(`/operator/soul/operations/${res.operation.operation_id}`)}
-				>
+				<Link {...linkProps(`/operator/soul/operations/${res.operation.operation_id}`)} variant="default">
 					View operation
-				</Button>
+				</Link>
 				<CopyButton size="sm" text={res.operation.operation_id} />
 			</div>
 
@@ -331,9 +316,9 @@
 										Open in Safe
 									</Button>
 								{/if}
-								<Button variant="outline" onclick={() => navigate(`/operator/soul/operations/${op.operation_id}`)}>
+								<Link {...linkProps(`/operator/soul/operations/${op.operation_id}`)} variant="default">
 									Open
-								</Button>
+								</Link>
 								<CopyButton size="sm" text={op.operation_id} />
 							</div>
 						</div>
