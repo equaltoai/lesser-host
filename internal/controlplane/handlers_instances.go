@@ -153,11 +153,21 @@ type setBudgetMonthRequest struct {
 }
 
 type budgetMonthResponse struct {
-	InstanceSlug    string    `json:"instance_slug"`
-	Month           string    `json:"month"`
-	IncludedCredits int64     `json:"included_credits"`
-	UsedCredits     int64     `json:"used_credits"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	InstanceSlug     string    `json:"instance_slug"`
+	Month            string    `json:"month"`
+	IncludedCredits  int64     `json:"included_credits"`
+	UsedCredits      int64     `json:"used_credits"`
+	RemainingCredits int64     `json:"remaining_credits"`
+	UpdatedAt        time.Time `json:"updated_at"`
+}
+
+// remainingBudgetCredits returns included minus used, floored at 0.
+func remainingBudgetCredits(included, used int64) int64 {
+	remaining := included - used
+	if remaining < 0 {
+		remaining = 0
+	}
+	return remaining
 }
 
 func instanceResponseFromModel(inst *models.Instance) instanceResponse {
@@ -989,10 +999,11 @@ func (s *Server) handleSetInstanceBudgetMonth(ctx *apptheory.Context) (*apptheor
 	}
 
 	return apptheory.JSON(http.StatusOK, budgetMonthResponse{
-		InstanceSlug:    slug,
-		Month:           month,
-		IncludedCredits: budget.IncludedCredits,
-		UsedCredits:     budget.UsedCredits,
-		UpdatedAt:       budget.UpdatedAt,
+		InstanceSlug:     slug,
+		Month:            month,
+		IncludedCredits:  budget.IncludedCredits,
+		UsedCredits:      budget.UsedCredits,
+		RemainingCredits: remainingBudgetCredits(budget.IncludedCredits, budget.UsedCredits),
+		UpdatedAt:        budget.UpdatedAt,
 	})
 }
