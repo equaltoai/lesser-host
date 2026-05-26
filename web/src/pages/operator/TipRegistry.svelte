@@ -1,3 +1,42 @@
+<!--
+@component
+Operator Tip registry — re-skinned for the M2.1 dark warm-charcoal chrome.
+
+Project 39 M3.4 (issue #448). The index surface at `/operator/tip-registry`
+that gathers Safe-mediated tip-registry mutations (host ensure / set host
+active / token allowlist) and lists open operations by status. The dark
+chrome treats Safe-payload preview material as first-class evidence: per-row
+CopyButton on each Safe payload field so the safe-launch flow round-trips
+unbroken from this surface (the Open-operation detail page —
+`TipRegistryOperationDetail.svelte` — handles tx-hash reconciliation on
+its own re-skin track via operator-detail wiring).
+
+Behavior preserved:
+- Same `ensureTipRegistryHost` / `setTipRegistryHostActive` /
+  `setTipRegistryTokenAllowed` / `listTipRegistryOperations` endpoints.
+- Same Safe-payload data shape — `safe_address` / `to` / `value` / `data`
+  copy-to-clipboard is preserved (now per-field for the Safe-payload
+  audit-trail; the per-operation `View operation` link still navigates to
+  the detail page where tx-hash reconciliation lives).
+- Same operator-JWT requirement; same 401 → logout / login navigation
+  guard; same idempotent ensure-host no-op surface; same TipSplitter Safe
+  contract interaction (this page is presentational; no Safe contract or
+  Safe-ready governance mutation is introduced).
+- No new operator-JWT routes; no new write endpoints.
+
+Posture preserved:
+- Strict-CSP-safe: no inline scripts / styles / third-party origins; the
+  Safe-app `frame-ancestors` exception lives in `safeAppCsp` and is
+  unchanged.
+- Multi-tenant isolation: operator-scope only; tip-registry mutations
+  govern the platform-wide allowlist, not per-tenant data.
+- Trust-API instance-auth untouched; SEC-9 / SEC-12 change-locks not
+  engaged.
+- On-chain integrity untouched: Safe-ready payloads continue to flow
+  through the existing tip-registry operations contract.
+
+Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M3.4
+-->
 <script lang="ts">
 	import { onMount } from 'svelte';
 
@@ -11,6 +50,8 @@
 	} from 'src/lib/api/tipRegistry';
 	import { logout } from 'src/lib/auth/logout';
 	import { linkProps, navigate } from 'src/lib/router';
+	import { StatCard, SummaryStrip } from 'src/lib/shell';
+	import type { StatCardStatus } from 'src/lib/shell';
 	import { Alert, Badge, Button, Card, CopyButton, DefinitionItem, DefinitionList, Heading, Link, Select, Spinner, Text, TextField } from 'src/lib/ui';
 
 	let { token } = $props<{ token: string }>();
@@ -46,6 +87,20 @@
 		if (s === 'proposed' || s === 'pending') return { variant: 'outlined', color: 'warning' };
 		if (s === 'failed') return { variant: 'filled', color: 'error' };
 		return { variant: 'outlined', color: 'gray' };
+	}
+
+	/**
+	 * Map the active status-filter result count to a `StatCardStatus` tone
+	 * so the top-of-page SummaryStrip telegraphs whether there's a backlog.
+	 * Pending-bucket non-zero → amber (operator attention); other buckets
+	 * (proposed / executed / failed) stay neutral — they're informational
+	 * not actionable from this surface.
+	 */
+	function bucketStatus(filter: string, count: number | null): StatCardStatus {
+		if (count == null) return 'default';
+		if (filter === 'pending' && count > 0) return 'warning';
+		if (filter === 'failed' && count > 0) return 'danger';
+		return 'default';
 	}
 
 	async function load() {
@@ -139,6 +194,8 @@
 		}
 	}
 
+	const bucketCount = $derived<number | null>(ops ? ops.operations.length : null);
+
 	onMount(() => {
 		void load();
 	});
@@ -154,6 +211,14 @@
 			<Button variant="outline" onclick={() => void load()} disabled={loading}>Refresh</Button>
 		</div>
 	</header>
+
+	<SummaryStrip label="Operations in current bucket" columns={1} gap="md">
+		<StatCard
+			label={`Operations · status ${statusFilter}`}
+			value={String(bucketCount ?? 0)}
+			status={bucketStatus(statusFilter, bucketCount)}
+		/>
+	</SummaryStrip>
 
 	<Card variant="outlined" padding="lg">
 		{#snippet header()}
@@ -235,11 +300,40 @@
 					</div>
 
 					{#if res.safe_tx}
+						<!--
+							Safe-payload preview keeps each field's copy-to-clipboard
+							adjacent to its value so an operator handing off to Safe
+							for signing can paste each field individually without
+							hunting through a JSON blob. This preserves the M3.4
+							"Safe payload copy-to-clipboard preserved" acceptance
+							criterion. tx-hash reconciliation continues to live on
+							the per-operation detail page.
+						-->
 						<DefinitionList>
-							<DefinitionItem label="Safe" monospace>{res.safe_tx.safe_address}</DefinitionItem>
-							<DefinitionItem label="To" monospace>{res.safe_tx.to}</DefinitionItem>
-							<DefinitionItem label="Value" monospace>{res.safe_tx.value}</DefinitionItem>
-							<DefinitionItem label="Data" monospace>{res.safe_tx.data}</DefinitionItem>
+							<DefinitionItem label="Safe" monospace>
+								<span class="op-tip__safe-row">
+									<span>{res.safe_tx.safe_address}</span>
+									<CopyButton size="sm" text={res.safe_tx.safe_address} />
+								</span>
+							</DefinitionItem>
+							<DefinitionItem label="To" monospace>
+								<span class="op-tip__safe-row">
+									<span>{res.safe_tx.to}</span>
+									<CopyButton size="sm" text={res.safe_tx.to} />
+								</span>
+							</DefinitionItem>
+							<DefinitionItem label="Value" monospace>
+								<span class="op-tip__safe-row">
+									<span>{res.safe_tx.value}</span>
+									<CopyButton size="sm" text={res.safe_tx.value} />
+								</span>
+							</DefinitionItem>
+							<DefinitionItem label="Data" monospace>
+								<span class="op-tip__safe-row">
+									<span>{res.safe_tx.data}</span>
+									<CopyButton size="sm" text={res.safe_tx.data} />
+								</span>
+							</DefinitionItem>
 						</DefinitionList>
 					{/if}
 				{/if}
@@ -417,8 +511,28 @@
 		align-items: center;
 	}
 
+	/* Inline Safe-payload row: value + CopyButton sit on the same line so the
+	 * field is paste-ready without scrolling. The hash string wraps if the
+	 * viewport narrows. */
+	.op-tip__safe-row {
+		display: inline-flex;
+		gap: var(--gr-spacing-scale-2);
+		align-items: center;
+		flex-wrap: wrap;
+		word-break: break-all;
+	}
+
+	/* Canonical mono token chain — see UserApprovals.svelte (M3.1) for rationale. */
 	.op-tip__mono {
-		font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New',
+		font-family:
+			var(--gr-typography-fontFamily-mono),
+			ui-monospace,
+			SFMono-Regular,
+			Menlo,
+			Monaco,
+			Consolas,
+			'Liberation Mono',
+			'Courier New',
 			monospace;
 	}
 </style>

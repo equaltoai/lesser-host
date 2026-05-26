@@ -1,3 +1,27 @@
+<!--
+@component
+Operator vanity domain requests — re-skinned for the M2.1 dark warm-charcoal
+chrome.
+
+Project 39 M3.1 (issue #445). Tab 2 of 3 in the Approvals surface (alongside
+portal users and external instance registrations). Carries the same
+SummaryStrip queue-count header so an operator landing on the Approvals
+navigation sees the per-tab backlog before scrolling.
+
+Behavior preserved:
+- Same `listVanityDomainRequests` + `approveVanityDomainRequest` +
+  `rejectVanityDomainRequest` endpoints; same 401 → logout / login
+  navigation guard; same review-note capture; same Open-instance link.
+- No new operator-JWT routes; no new write endpoints.
+
+Posture preserved:
+- Strict-CSP-safe: no inline scripts / styles / third-party origins.
+- Multi-tenant isolation: pending vanity domain requests are operator-scope
+  only; no tenant content read.
+- Trust-API instance-auth untouched; SEC-9 / SEC-12 change-locks not engaged.
+
+Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M3.1
+-->
 <script lang="ts">
 	import { onMount } from 'svelte';
 
@@ -6,6 +30,8 @@
 	import { approveVanityDomainRequest, listVanityDomainRequests, rejectVanityDomainRequest } from 'src/lib/api/operators';
 	import { logout } from 'src/lib/auth/logout';
 	import { linkProps, navigate } from 'src/lib/router';
+	import { StatCard, SummaryStrip } from 'src/lib/shell';
+	import type { StatCardStatus } from 'src/lib/shell';
 	import { Alert, Badge, Button, Card, CopyButton, Heading, Link, Spinner, Text, TextArea } from 'src/lib/ui';
 
 	let { token } = $props<{ token: string }>();
@@ -17,6 +43,16 @@
 	let reviewNote = $state('');
 	let actingDomain = $state<string | null>(null);
 	let actionError = $state<string | null>(null);
+
+	/**
+	 * Mirror M2.2 Dashboard.queueStatus(): non-zero queue → amber on dark
+	 * chrome; zero → success-green; null (unloaded) → neutral default.
+	 */
+	function queueStatus(count: number | null): StatCardStatus {
+		if (count == null) return 'default';
+		if (count > 0) return 'warning';
+		return 'success';
+	}
 
 	function formatError(err: unknown): string {
 		if (!err) return 'unknown error';
@@ -71,6 +107,8 @@
 		}
 	}
 
+	const queueCount = $derived<number | null>(data ? data.requests.length : null);
+
 	onMount(() => {
 		void load();
 	});
@@ -86,6 +124,14 @@
 			<Button variant="outline" onclick={() => void load()} disabled={loading}>Refresh</Button>
 		</div>
 	</header>
+
+	<SummaryStrip label="Vanity domain queue" columns={1} gap="md">
+		<StatCard
+			label="Pending vanity domains"
+			value={String(queueCount ?? 0)}
+			status={queueStatus(queueCount)}
+		/>
+	</SummaryStrip>
 
 	<Card variant="outlined" padding="lg">
 		{#snippet header()}
@@ -258,8 +304,17 @@
 		align-items: center;
 	}
 
+	/* Canonical mono token chain — see UserApprovals.svelte (M3.1) for rationale. */
 	.op-requests__mono {
-		font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New',
+		font-family:
+			var(--gr-typography-fontFamily-mono),
+			ui-monospace,
+			SFMono-Regular,
+			Menlo,
+			Monaco,
+			Consolas,
+			'Liberation Mono',
+			'Courier New',
 			monospace;
 	}
 </style>

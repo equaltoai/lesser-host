@@ -1,3 +1,37 @@
+<!--
+@component
+Public attestation inspector — re-skinned for the M2.1 design-token surface.
+
+Project 39 M3.6 (issue #450). The publicly-reachable attestation viewer at
+`/attestations/{id}`. Re-skin is presentational only per the trust-and-safety
+walk (24dcd86) — Dimension 1 (no auth change), Dimension 2 (no JWS decode
+path change), Dimension 3 (client-rendered; ISR deferred), Dimension 4
+(MarkdownRenderer mandatory-sanitization path preserved by intentional
+absence — no markdown surface is introduced; `pretty()` JSON-stringifies
+the header / payload into `TextArea readonly`, which Svelte escapes safely).
+
+Posture preserved:
+- Strict-CSP-safe: no inline scripts / styles / third-party origins; the
+  `webCsp` byte-string remains unchanged; the inspector renders entirely
+  via host's own bundle.
+- Trust-API instance-auth untouched: this is the public read surface; no
+  instance-key path; no internal-only fields surfaced (the response shape
+  from `/attestations/{id}` already redacts; nothing read here that wasn't
+  already in the public response).
+- No client-side caching beyond browser HTTP cache: same fetch on every
+  load; no IndexedDB / localStorage / SW caching layer added.
+- Multi-tenant isolation: attestations are public artifacts; no tenant
+  data is accessed.
+
+Behavior preserved:
+- Same `getAttestation(id)` + `getJWKS()` endpoints; same JWS decode +
+  header-kid + JWKS-kid surface; same Refresh button; same `Back` link;
+  same TextArea-readonly render of header + payload JSON.
+- No new endpoints; no new fields surfaced.
+
+Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M3.6
+Trust walk: docs/trust-and-safety-web-ui-rework-2026-05-24.md (24dcd86)
+-->
 <script lang="ts">
 	import { onMount } from 'svelte';
 
@@ -5,6 +39,8 @@
 	import type { AttestationResponse, JWKS } from 'src/lib/api/trust';
 	import { getAttestation, getJWKS } from 'src/lib/api/trust';
 	import { linkProps, navigate } from 'src/lib/router';
+	import { StatCard, SummaryStrip } from 'src/lib/shell';
+	import type { StatCardStatus } from 'src/lib/shell';
 	import { Alert, Button, Card, CopyButton, DefinitionItem, DefinitionList, Heading, Link, Spinner, Text, TextArea } from 'src/lib/ui';
 
 	let { id } = $props<{ id: string }>();
@@ -43,6 +79,31 @@
 		const keys = jwks?.keys ?? [];
 		const kids = keys.map((k) => (typeof k.kid === 'string' ? k.kid : '')).filter(Boolean);
 		return Array.from(new Set(kids));
+	}
+
+	/**
+	 * Surface whether the header's kid is present in the JWKS the inspector
+	 * loaded alongside the attestation. A `success` tone tells the reader
+	 * "this attestation's signing key is in the published JWKS"; a `warning`
+	 * tone (kid present, JWKS missing) tells them the JWKS read failed but
+	 * the attestation itself loaded; `default` for the loading / no-data
+	 * state. Verification is the operator's responsibility; this card is a
+	 * fast visual signal, not a verifier.
+	 */
+	function kidPresenceStatus(): StatCardStatus {
+		if (!attestation) return 'default';
+		const headerK = headerKid();
+		if (!headerK) return 'default';
+		if (!jwks) return 'warning';
+		return jwksKids().includes(headerK) ? 'success' : 'warning';
+	}
+
+	function kidPresenceLabel(): string {
+		if (!attestation) return '—';
+		const headerK = headerKid();
+		if (!headerK) return 'no kid';
+		if (!jwks) return 'JWKS unavailable';
+		return jwksKids().includes(headerK) ? 'kid in JWKS' : 'kid not in JWKS';
 	}
 
 	async function load() {
@@ -87,6 +148,18 @@
 	{:else if errorMessage}
 		<Alert variant="error" title="Attestation">{errorMessage}</Alert>
 	{:else if attestation}
+		<!--
+			Fast visual signal: does the attestation's header kid appear in
+			the public JWKS the inspector loaded alongside it? This is a
+			lookup, not a verification — the reader still runs the JWS
+			verification per the instructions below. `warning` covers both
+			"kid not found in JWKS" and "JWKS unavailable" so the inspector
+			never silently implies a verified posture it can't claim.
+		-->
+		<SummaryStrip label="Inspector state" columns={1} gap="md">
+			<StatCard label="Header kid presence" value={kidPresenceLabel()} status={kidPresenceStatus()} />
+		</SummaryStrip>
+
 		<Card variant="outlined" padding="lg">
 			{#snippet header()}
 				<div class="trust-att__row">
@@ -118,6 +191,13 @@
 			{#snippet header()}
 				<Heading level={3} size="lg">Header</Heading>
 			{/snippet}
+			<!--
+				JSON content is rendered through TextArea readonly. Svelte
+				escapes the string body; no Markdown or HTML interpretation
+				path is introduced here, which preserves the mandatory-
+				sanitization invariant the trust-and-safety walk asserts
+				for the inspector (Dimension 4).
+			-->
 			<TextArea value={pretty(attestation.header)} readonly rows={10} />
 		</Card>
 
@@ -177,8 +257,17 @@
 		margin-top: var(--gr-spacing-scale-3);
 	}
 
+	/* Canonical mono token chain — see UserApprovals.svelte (M3.1) for rationale. */
 	.trust-att__mono {
-		font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New',
+		font-family:
+			var(--gr-typography-fontFamily-mono),
+			ui-monospace,
+			SFMono-Regular,
+			Menlo,
+			Monaco,
+			Consolas,
+			'Liberation Mono',
+			'Courier New',
 			monospace;
 	}
 </style>
