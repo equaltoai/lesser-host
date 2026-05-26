@@ -1,3 +1,27 @@
+<!--
+@component
+Operator Audit explorer — re-skinned for the M2.1 dark warm-charcoal chrome.
+
+Project 39 M3.2 (issue #446). Surfaces the operator-audit log search behind
+a dark-chrome shell: search filters live in a single Filters card; results
+land in a per-row card list under a Results card; the result count surfaces
+as a top-of-page `SummaryStrip` + `StatCard` so an operator scanning the
+audit feed sees the post-filter sample size before scrolling.
+
+Behavior preserved:
+- Same `listOperatorAuditLog` endpoint, same operator-JWT requirement, same
+  RFC3339 filter contract (actor / action / target / request_id / since /
+  until), same 100-row paging, same 401 → logout / login navigation guard.
+- No new operator-JWT routes; no audit-row mutation (audit is append-only
+  per host's audit-event discipline).
+
+Posture preserved:
+- Strict-CSP-safe: no inline scripts / styles / third-party origins.
+- Multi-tenant isolation: operator-scope read; no tenant content.
+- Trust-API instance-auth untouched; SEC-9 / SEC-12 change-locks not engaged.
+
+Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M3.2
+-->
 <script lang="ts">
 	import { onMount } from 'svelte';
 
@@ -6,6 +30,8 @@
 	import { listOperatorAuditLog } from 'src/lib/api/operatorAudit';
 	import { logout } from 'src/lib/auth/logout';
 	import { navigate } from 'src/lib/router';
+	import { StatCard, SummaryStrip } from 'src/lib/shell';
+	import type { StatCardStatus } from 'src/lib/shell';
 	import { Alert, Button, Card, CopyButton, Heading, Spinner, Text, TextField } from 'src/lib/ui';
 
 	let { token } = $props<{ token: string }>();
@@ -20,6 +46,17 @@
 	let requestId = $state('');
 	let since = $state('');
 	let until = $state('');
+
+	/**
+	 * Audit-result tone: zero rows reads as neutral (no signal), >0 reads as
+	 * informational (results present). The audit feed is operator-read-only,
+	 * so non-zero is not "needs attention" — `default` keeps the dark chrome
+	 * calm.
+	 */
+	function resultStatus(count: number | null): StatCardStatus {
+		if (count == null) return 'default';
+		return 'default';
+	}
 
 	function formatError(err: unknown): string {
 		if (!err) return 'unknown error';
@@ -58,6 +95,8 @@
 		}
 	}
 
+	const resultCount = $derived<number | null>(data ? data.entries.length : null);
+
 	onMount(() => {
 		void load();
 	});
@@ -73,6 +112,14 @@
 			<Button variant="outline" onclick={() => void load()} disabled={loading}>Refresh</Button>
 		</div>
 	</header>
+
+	<SummaryStrip label="Audit window" columns={1} gap="md">
+		<StatCard
+			label="Results in current view"
+			value={String(resultCount ?? 0)}
+			status={resultStatus(resultCount)}
+		/>
+	</SummaryStrip>
 
 	<Card variant="outlined" padding="lg">
 		{#snippet header()}
@@ -218,9 +265,17 @@
 		align-items: center;
 	}
 
+	/* Canonical mono token chain — see UserApprovals.svelte (M3.1) for rationale. */
 	.op-audit__mono {
-		font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New',
+		font-family:
+			var(--gr-typography-fontFamily-mono),
+			ui-monospace,
+			SFMono-Regular,
+			Menlo,
+			Monaco,
+			Consolas,
+			'Liberation Mono',
+			'Courier New',
 			monospace;
 	}
 </style>
-
