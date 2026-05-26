@@ -1,3 +1,27 @@
+<!--
+@component
+Operator portal user approvals — re-skinned for the M2.1 dark warm-charcoal chrome.
+
+Project 39 M3.1 (issue #445). One of three Approvals tabs (alongside vanity
+domains and external instance registrations); each tab carries a SummaryStrip
+queue-count card at the top so an operator landing on the page sees the
+backlog before scrolling. Mirrors the M2.2 Dashboard pattern (issue #428):
+non-zero queue → amber warning, zero queue → success.
+
+Behavior preserved:
+- Same `listPortalUserApprovals` + `approvePortalUser` + `rejectPortalUser`
+  endpoints; same 401 → logout / login navigation guard; same review-note
+  capture.
+- No new operator-JWT routes; no new write endpoints.
+
+Posture preserved:
+- Strict-CSP-safe: no inline scripts / styles / third-party origins.
+- Multi-tenant isolation: pending portal users are operator-scope only; no
+  tenant content read.
+- Trust-API instance-auth untouched; SEC-9 / SEC-12 change-locks not engaged.
+
+Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M3.1
+-->
 <script lang="ts">
 	import { onMount } from 'svelte';
 
@@ -6,6 +30,8 @@
 	import { approvePortalUser, listPortalUserApprovals, rejectPortalUser } from 'src/lib/api/operators';
 	import { logout } from 'src/lib/auth/logout';
 	import { navigate } from 'src/lib/router';
+	import { StatCard, SummaryStrip } from 'src/lib/shell';
+	import type { StatCardStatus } from 'src/lib/shell';
 	import { Alert, Badge, Button, Card, CopyButton, Heading, Spinner, Text, TextArea } from 'src/lib/ui';
 
 	let { token } = $props<{ token: string }>();
@@ -17,6 +43,16 @@
 	let reviewNote = $state('');
 	let actingUser = $state<string | null>(null);
 	let actionError = $state<string | null>(null);
+
+	/**
+	 * Mirror M2.2 Dashboard.queueStatus(): non-zero queue → amber so the
+	 * SummaryStrip card reads as "needs attention" on the dark chrome.
+	 */
+	function queueStatus(count: number | null): StatCardStatus {
+		if (count == null) return 'default';
+		if (count > 0) return 'warning';
+		return 'success';
+	}
 
 	function formatError(err: unknown): string {
 		if (!err) return 'unknown error';
@@ -71,6 +107,8 @@
 		}
 	}
 
+	const queueCount = $derived<number | null>(data ? data.users.length : null);
+
 	onMount(() => {
 		void load();
 	});
@@ -86,6 +124,14 @@
 			<Button variant="outline" onclick={() => void load()} disabled={loading}>Refresh</Button>
 		</div>
 	</header>
+
+	<SummaryStrip label="Portal user queue" columns={1} gap="md">
+		<StatCard
+			label="Pending portal users"
+			value={String(queueCount ?? 0)}
+			status={queueStatus(queueCount)}
+		/>
+	</SummaryStrip>
 
 	<Card variant="outlined" padding="lg">
 		{#snippet header()}
@@ -258,7 +304,23 @@
 		align-items: center;
 	}
 
+	/*
+	 * Token chain mirrors operator-chrome.css: prefer the canonical
+	 * greater-components typography token, fall back to the system mono
+	 * stack. The previous `--gr-font-family-mono` reference was a typo
+	 * (the bridged token is `--gr-typography-fontFamily-mono` — confirmed
+	 * in `src/lib/styles/greater/tokens.css` and `src/lib/tokens/gr-bridge.css`).
+	 */
 	.op-users__mono {
-		font-family: var(--gr-font-family-mono);
+		font-family:
+			var(--gr-typography-fontFamily-mono),
+			ui-monospace,
+			SFMono-Regular,
+			Menlo,
+			Monaco,
+			Consolas,
+			'Liberation Mono',
+			'Courier New',
+			monospace;
 	}
 </style>
