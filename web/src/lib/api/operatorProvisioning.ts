@@ -103,3 +103,48 @@ export function appendOperatorProvisionJobNote(
 		body: req.body,
 	});
 }
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * MCP-drift fleet aggregation — M2.9 endpoint client (forward-compatible).
+ *
+ * The `/api/v1/operators/instances/drift` endpoint lands in M2.9 (issue
+ * #437). Until then `listOperatorInstancesDrift()` catches the expected
+ * 404 / 501 and surfaces a sentinel result so the M2.3 banner can render
+ * "telemetry pending" without blocking the page. Same fault-tolerance
+ * pattern as the M1.6 stack endpoint (mem-06120131ee628046, PR #505).
+ * ────────────────────────────────────────────────────────────────────── */
+
+export interface OperatorInstanceDriftEntry {
+	instance_slug: string;
+	lesser_version?: string;
+	body_version?: string;
+	mcp_wired_against?: string;
+	drift_status: 'ok' | 'wire-stale' | 'unknown' | string;
+}
+
+export interface ListOperatorInstancesDriftResponse {
+	instances: OperatorInstanceDriftEntry[];
+	count: number;
+	mcp_drift_count: number;
+}
+
+export type OperatorInstancesDriftResult =
+	| { kind: 'data'; data: ListOperatorInstancesDriftResponse }
+	| { kind: 'endpoint-pending'; status: number };
+
+export async function listOperatorInstancesDrift(token: string): Promise<OperatorInstancesDriftResult> {
+	try {
+		const data = await fetchJson<ListOperatorInstancesDriftResponse>('/api/v1/operators/instances/drift', {
+			headers: {
+				authorization: `Bearer ${token}`,
+			},
+		});
+		return { kind: 'data', data };
+	} catch (err) {
+		const status = (err as { status?: number })?.status ?? 0;
+		if (status === 404 || status === 501) {
+			return { kind: 'endpoint-pending', status };
+		}
+		throw err;
+	}
+}
