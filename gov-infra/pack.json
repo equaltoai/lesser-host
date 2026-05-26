@@ -1,14 +1,14 @@
 {
   "$schema": "https://gov.pai.dev/schemas/pack.schema.json",
   "schemaVersion": 1,
-  "packVersion": "2026.05.24-web.0",
-  "packDigest": "9e9397f32861dc5385f577c77a4c6cc088c77a3d213a97dde82d68e5303ee00c",
+  "packVersion": "2026.05.24-web.1",
+  "packDigest": "232b10ad81263b2df5a19d56cdcc9ad7fa3b38dd9f1a121bc816ac08677bd3e7",
   "domain": "custom",
   "projectSlug": "lesser-host",
-  "generatedAt": "2026-05-25T21:04:33Z",
+  "generatedAt": "2026-05-26T02:59:33Z",
   "source": {
-    "commitSha": "e0c3ab8cb2dda7b163c97feeb1e963a11170ba1e",
-    "branch": "theorymcp/equaltoai/host/project-39-m0.24-m0.29-closeout"
+    "commitSha": "2f067e8cedf52c17f3a657081d0b4977313bcf5e",
+    "branch": "theorymcp/equaltoai/host/project-39-m1.17-pack-bump-web.1"
   },
   "artifacts": {
     "planning": [
@@ -36,7 +36,8 @@
       "gov-infra/verifiers/sec/cloudfront-composition.sh",
       "gov-infra/verifiers/sec/release-verification-preservation.sh",
       "gov-infra/verifiers/sec/trust-auth-preservation.sh",
-      "gov-infra/verifiers/con/wire-mcp-route-ownership.sh"
+      "gov-infra/verifiers/con/wire-mcp-route-ownership.sh",
+      "gov-infra/verifiers/sec/portal-stack-state-tenant-scoping.sh"
     ],
     "evidence": [
       "gov-infra/evidence/gov-rubric-report.json",
@@ -47,7 +48,8 @@
       "gov-infra/evidence/SEC-8-output.log",
       "gov-infra/evidence/SEC-9-output.log",
       "gov-infra/evidence/SEC-10-output.log",
-      "gov-infra/evidence/CON-4-output.log"
+      "gov-infra/evidence/CON-4-output.log",
+      "gov-infra/evidence/SEC-11-output.log"
     ]
   }
 }
