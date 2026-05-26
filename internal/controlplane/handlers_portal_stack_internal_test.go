@@ -21,10 +21,10 @@ import (
 // primed for stack queries. Returns the mocks so tests can set expectations
 // for UpdateJob and ProvisionJob reads.
 type stackTestHarness struct {
-	s      *Server
-	ctx    *apptheory.Context
-	tdb    portalTestDB
-	qUpd   *ttmocks.MockQuery
+	s    *Server
+	ctx  *apptheory.Context
+	tdb  portalTestDB
+	qUpd *ttmocks.MockQuery
 }
 
 func newStackTestHarness(t *testing.T, slug, owner string, bodyEnabled *bool) stackTestHarness {
@@ -66,19 +66,19 @@ func TestHandlePortalGetInstanceStack_OwnerSuccess(t *testing.T) {
 		dest := testutil.RequireMockArg[*[]*models.UpdateJob](t, args, 0)
 		*dest = []*models.UpdateJob{
 			{
-				ID:           "upd-lesser-1",
-				InstanceSlug: "demo",
-				Status:       models.UpdateJobStatusOK,
+				ID:            "upd-lesser-1",
+				InstanceSlug:  "demo",
+				Status:        models.UpdateJobStatusOK,
 				LesserVersion: "v1.2.7",
-				UpdatedAt:    now,
+				UpdatedAt:     now,
 			},
 			{
-				ID:               "upd-body-1",
-				InstanceSlug:     "demo",
-				Status:           models.UpdateJobStatusOK,
-				BodyOnly:         true,
+				ID:                "upd-body-1",
+				InstanceSlug:      "demo",
+				Status:            models.UpdateJobStatusOK,
+				BodyOnly:          true,
 				LesserBodyVersion: "v0.3.0",
-				UpdatedAt:        now.Add(time.Minute),
+				UpdatedAt:         now.Add(time.Minute),
 			},
 		}
 	}).Once()
@@ -87,14 +87,14 @@ func TestHandlePortalGetInstanceStack_OwnerSuccess(t *testing.T) {
 	h.tdb.qJob.On("First", mock.AnythingOfType("*models.ProvisionJob")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.ProvisionJob](t, args, 0)
 		*dest = models.ProvisionJob{
-			ID:               "prov-job-1",
-			InstanceSlug:     "demo",
-			Status:           models.ProvisionJobStatusOK,
-			LesserVersion:    "v1.2.6",
-			BodyEnabled:      true,
+			ID:                "prov-job-1",
+			InstanceSlug:      "demo",
+			Status:            models.ProvisionJobStatusOK,
+			LesserVersion:     "v1.2.6",
+			BodyEnabled:       true,
 			BodyProvisionedAt: now.Add(-24 * time.Hour),
-			McpWiredAt:       now.Add(-23 * time.Hour),
-			UpdatedAt:        now.Add(-24 * time.Hour),
+			McpWiredAt:        now.Add(-23 * time.Hour),
+			UpdatedAt:         now.Add(-24 * time.Hour),
 		}
 	}).Once()
 
@@ -172,14 +172,14 @@ func TestHandlePortalGetInstanceStack_NoUpdateYetFallbackToProvisionJob(t *testi
 	h.tdb.qJob.On("First", mock.AnythingOfType("*models.ProvisionJob")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.ProvisionJob](t, args, 0)
 		*dest = models.ProvisionJob{
-			ID:               "prov-job-1",
-			InstanceSlug:     "demo",
-			Status:           models.ProvisionJobStatusOK,
-			LesserVersion:    "v1.2.6",
-			BodyEnabled:      true,
+			ID:                "prov-job-1",
+			InstanceSlug:      "demo",
+			Status:            models.ProvisionJobStatusOK,
+			LesserVersion:     "v1.2.6",
+			BodyEnabled:       true,
 			BodyProvisionedAt: now,
-			McpWiredAt:       now.Add(time.Minute),
-			UpdatedAt:        now,
+			McpWiredAt:        now.Add(time.Minute),
+			UpdatedAt:         now,
 		}
 	}).Once()
 
@@ -208,8 +208,10 @@ func TestHandlePortalGetInstanceStack_BodyNotInstalled(t *testing.T) {
 	t.Parallel()
 
 	// Instance created without body provisioning — BodyEnabled nil
-	// means body was never deployed (effectiveBodyEnabled returns true
-	// but there is no provision job with BodyProvisionedAt).
+	// means body was never configured, and there is no body installation
+	// evidence (no successful body update, no BodyProvisionedAt timestamp).
+	// The stack contract must report body.enabled=false so the already-merged
+	// StackCard shows its "Add agentic" CTA.
 	h := newStackTestHarness(t, "demo", "alice", nil)
 
 	now := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
@@ -228,11 +230,8 @@ func TestHandlePortalGetInstanceStack_BodyNotInstalled(t *testing.T) {
 		}
 	}).Once()
 
-	// No provision job exists.
-	// The handler calls GetProvisionJob on the empty ProvisionJobID, but
-	// in the real DB that'd be a not-found or the instance's provisionJobID
-	// is the real one. Since we set ProvisionJobID to "prov-job-1", the
-	// store will try to load it. We need to mock this.
+	// No provision job evidence for body — GetProvisionJob returns not-found.
+	// The instance record also has BodyProvisionedAt at zero value.
 	h.tdb.qJob.On("First", mock.AnythingOfType("*models.ProvisionJob")).Return(theoryErrors.ErrItemNotFound).Once()
 
 	resp, err := h.s.handlePortalGetInstanceStack(h.ctx)
@@ -246,13 +245,12 @@ func TestHandlePortalGetInstanceStack_BodyNotInstalled(t *testing.T) {
 	require.Equal(t, "v1.2.7", body.Lesser.CurrentVersion)
 	require.Equal(t, stackDriftOK, body.Lesser.Drift)
 
-	// Body: enabled (effectiveBodyEnabled nil→true) but version info
-	// is empty because no body deploy happened.
-	require.True(t, body.Body.Enabled)
+	// Body: not enabled (no installation evidence → StackCard "Add agentic" CTA).
+	require.False(t, body.Body.Enabled)
 	require.Empty(t, body.Body.CurrentVersion)
 	require.Equal(t, stackDriftUnknown, body.Body.Drift)
 
-	// MCP: unknown drift (no wiring evidence).
+	// MCP: unknown drift (no body installed → no meaningful wiring info).
 	require.Equal(t, stackDriftUnknown, body.MCP.Drift)
 }
 
@@ -268,20 +266,20 @@ func TestHandlePortalGetInstanceStack_MCPWireStale(t *testing.T) {
 		dest := testutil.RequireMockArg[*[]*models.UpdateJob](t, args, 0)
 		*dest = []*models.UpdateJob{
 			{
-				ID:               "upd-body-2",
-				InstanceSlug:     "demo",
-				Status:           models.UpdateJobStatusOK,
-				BodyOnly:         true,
+				ID:                "upd-body-2",
+				InstanceSlug:      "demo",
+				Status:            models.UpdateJobStatusOK,
+				BodyOnly:          true,
 				LesserBodyVersion: "v0.4.0",
-				UpdatedAt:        now,
+				UpdatedAt:         now,
 			},
 			{
-				ID:               "upd-mcp-1",
-				InstanceSlug:     "demo",
-				Status:           models.UpdateJobStatusOK,
-				MCPOnly:          true,
+				ID:                "upd-mcp-1",
+				InstanceSlug:      "demo",
+				Status:            models.UpdateJobStatusOK,
+				MCPOnly:           true,
 				LesserBodyVersion: "v0.3.0", // wired against older version
-				UpdatedAt:        now.Add(-time.Hour),
+				UpdatedAt:         now.Add(-time.Hour),
 			},
 		}
 	}).Once()
@@ -312,6 +310,80 @@ func TestHandlePortalGetInstanceStack_MCPWireStale(t *testing.T) {
 	require.Equal(t, "v0.3.0", body.MCP.WiredAgainstBodyVersion)
 	require.Equal(t, "v0.4.0", body.MCP.CurrentBodyVersion)
 	require.Equal(t, stackDriftWireStale, body.MCP.Drift)
+}
+
+func TestHandlePortalGetInstanceStack_NewerNonOKJobIgnored(t *testing.T) {
+	t.Parallel()
+
+	// Regression: a newer queued/running/error update job must not be
+	// reported as the currently deployed version. The stack endpoint
+	// must source current-version data from the latest *successful*
+	// (status=ok) job per component kind.
+	h := newStackTestHarness(t, "demo", "alice", nil)
+
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+
+	// Three jobs: older ok body, older ok lesser, newer error body.
+	// The newer error body job must be ignored; current-version data
+	// must come from the older ok jobs.
+	h.qUpd.On("All", mock.AnythingOfType("*[]*models.UpdateJob")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.UpdateJob](t, args, 0)
+		*dest = []*models.UpdateJob{
+			{
+				ID:                "upd-body-2",
+				InstanceSlug:      "demo",
+				Status:            models.UpdateJobStatusError,
+				BodyOnly:          true,
+				LesserBodyVersion: "v0.5.0", // newer but FAILED — must be ignored
+				UpdatedAt:         now,
+			},
+			{
+				ID:                "upd-body-1",
+				InstanceSlug:      "demo",
+				Status:            models.UpdateJobStatusOK,
+				BodyOnly:          true,
+				LesserBodyVersion: "v0.3.0", // older but SUCCESSFUL — must be used
+				UpdatedAt:         now.Add(-time.Hour),
+			},
+			{
+				ID:            "upd-lesser-1",
+				InstanceSlug:  "demo",
+				Status:        models.UpdateJobStatusOK,
+				LesserVersion: "v1.2.7",
+				UpdatedAt:     now.Add(-30 * time.Minute),
+			},
+		}
+	}).Once()
+
+	h.tdb.qJob.On("First", mock.AnythingOfType("*models.ProvisionJob")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.ProvisionJob](t, args, 0)
+		*dest = models.ProvisionJob{
+			ID:                "prov-job-1",
+			InstanceSlug:      "demo",
+			Status:            models.ProvisionJobStatusOK,
+			BodyEnabled:       true,
+			BodyProvisionedAt: now.Add(-48 * time.Hour),
+			UpdatedAt:         now.Add(-48 * time.Hour),
+		}
+	}).Once()
+
+	resp, err := h.s.handlePortalGetInstanceStack(h.ctx)
+	require.NoError(t, err)
+	require.Equal(t, 200, resp.Status)
+
+	var body instanceStackResponse
+	require.NoError(t, json.Unmarshal(resp.Body, &body))
+
+	// Lesser: ok update job version, NOT skipped.
+	require.Equal(t, "v1.2.7", body.Lesser.CurrentVersion)
+	require.Equal(t, "upd-lesser-1", body.Lesser.SourceJobID)
+	require.Equal(t, stackDriftOK, body.Lesser.Drift)
+
+	// Body: must use the older OK job (v0.3.0), NOT the newer error job (v0.5.0).
+	require.True(t, body.Body.Enabled)
+	require.Equal(t, "v0.3.0", body.Body.CurrentVersion)
+	require.Equal(t, "upd-body-1", body.Body.SourceJobID)
+	require.Equal(t, stackDriftOK, body.Body.Drift)
 }
 
 func TestComputeLesserDrift(t *testing.T) {

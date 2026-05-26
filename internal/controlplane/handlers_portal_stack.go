@@ -14,11 +14,11 @@ import (
 // Project 39 provisioning walk Change 5.1. Shape matches the existing M1.6
 // StackCard client TypeScript types.
 type instanceStackResponse struct {
-	Slug         string             `json:"slug"`
+	Slug         string              `json:"slug"`
 	Lesser       instanceStackLesser `json:"lesser"`
 	Body         instanceStackBody   `json:"body"`
 	MCP          instanceStackMCP    `json:"mcp"`
-	DriftSummary string             `json:"drift_summary,omitempty"`
+	DriftSummary string              `json:"drift_summary,omitempty"`
 }
 
 type instanceStackLesser struct {
@@ -80,7 +80,7 @@ func (s *Server) handlePortalGetInstanceStack(ctx *apptheory.Context) (*apptheor
 	jobs := categorizeLatestUpdateJobs(ctx, s, slug)
 	provJob := loadProvisionJobFallback(ctx, s, inst)
 
-	bodyEnabled := effectiveBodyEnabled(inst.BodyEnabled)
+	bodyEnabled := determineBodyEnabledForStack(inst, jobs.body, provJob)
 
 	lesser := buildStackLesser(jobs.lesser, provJob)
 	body := buildStackBody(bodyEnabled, jobs.body, provJob)
@@ -98,12 +98,19 @@ func (s *Server) handlePortalGetInstanceStack(ctx *apptheory.Context) (*apptheor
 }
 
 // categorizeLatestUpdateJobs queries recent update jobs via GSI1 and returns
-// the first (most-recently-created) for each component kind.
+// the latest successful (status=ok) job for each component kind. Jobs with
+// non-ok status (queued, running, error) are skipped — only successfully
+// deployed updates are eligible for current-version sourcing. When no
+// successful update exists for a kind, the field remains nil and the
+// per-component builder falls back to the provision job.
 func categorizeLatestUpdateJobs(ctx *apptheory.Context, s *Server, slug string) categorizedUpdateJobs {
 	items, _ := s.store.ListUpdateJobsByInstance(ctx.Context(), slug, 20)
 	var out categorizedUpdateJobs
 	for _, item := range items {
 		if item == nil {
+			continue
+		}
+		if strings.ToLower(strings.TrimSpace(item.Status)) != models.UpdateJobStatusOK {
 			continue
 		}
 		switch updateJobKind(item) {
@@ -135,6 +142,34 @@ func loadProvisionJobFallback(ctx *apptheory.Context, s *Server, inst *models.In
 	}
 	job, _ := s.store.GetProvisionJob(ctx.Context(), provisionJobID)
 	return job
+}
+
+// determineBodyEnabledForStack decides whether the body component is enabled
+// for the customer-readable stack contract. It checks actual body installation
+// evidence rather than relying on the config default (BodyEnabled nil→true),
+// so the already-merged StackCard can show its "Add agentic" CTA when body is
+// not installed.
+//
+// Evidence sources (any one is sufficient):
+//   - A successful body update job
+//   - ProvisionJob.BodyProvisionedAt is set
+//   - Instance.BodyProvisionedAt is set
+//
+// Explicit disable (BodyEnabled=false) takes precedence and always returns false.
+func determineBodyEnabledForStack(inst *models.Instance, bodyJob *models.UpdateJob, provJob *models.ProvisionJob) bool {
+	if inst != nil && inst.BodyEnabled != nil && !*inst.BodyEnabled {
+		return false
+	}
+	if bodyJob != nil {
+		return true
+	}
+	if provJob != nil && !provJob.BodyProvisionedAt.IsZero() {
+		return true
+	}
+	if inst != nil && !inst.BodyProvisionedAt.IsZero() {
+		return true
+	}
+	return false
 }
 
 // buildStackLesser constructs the Lesser stack row from update or provision info.
