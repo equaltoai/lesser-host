@@ -2,35 +2,32 @@
 @component
 InstanceCost — Instance Detail Cost & usage tab.
 
-M1.13 — Project 39 web UI rework. Replaces the coming-soon placeholder on
-the Cost & usage tab with real data: current-month budget (included, used,
-remaining credits) and cache hit rate, both sourced from the existing
-portal budget + usage-summary endpoints.
+M3.12 — Project 39 cost telemetry wiring. Replaces the "coming soon" empty state
+and TODO(M3) static breakdown with real-time cost telemetry from
+GET /api/v1/portal/instances/{slug}/cost. Aggregates response entries by service
+and renders category totals plus daily/entry details.
 
-Per-Lambda/Dynamo/egress real-time cost telemetry is deferred to M3; this
-tab surfaces a "Real-time cost telemetry coming soon" empty state for that
-breakdown. Legacy `/portal/instances/{slug}/budgets` and `/usage` pages
-remain functional for drill-down.
+Budget + usage summary from M1.13 is preserved. Cost data loads separately so
+budget/summary still display even when cost telemetry is not yet available.
 
 Posture invariants preserved:
   - Strict-no-inline-CSP safe.
-  - Multi-tenant isolation: budget/usage endpoints enforce per-slug
-    ownership server-side via `requireInstanceAccess`.
-  - Trust-API instance-auth untouched; SEC-9 change-lock not engaged.
+  - Multi-tenant isolation: cost endpoint enforces per-slug ownership server-side
+    via requireInstanceAccess.
+  - Trust-API instance-auth untouched.
   - No on-chain code path changed.
   - No framework local patches; consumes existing API client modules,
     UI primitives, and shell components through released surfaces.
 
-Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M1.13
-Issue: equaltoai/lesser-host#422
+Source: Issue equaltoai/lesser-host#456
 -->
 
 <script lang="ts">
 	import { onMount } from 'svelte';
 
 	import type { ApiError } from 'src/lib/api/http';
-	import type { BudgetMonthResponse, UsageSummaryResponse } from 'src/lib/api/portalUsage';
-	import { portalGetBudgetMonth, portalGetUsageSummary } from 'src/lib/api/portalUsage';
+	import type { BudgetMonthResponse, UsageSummaryResponse, PortalCostResponse, CostDayEntry } from 'src/lib/api/portalUsage';
+	import { portalGetBudgetMonth, portalGetUsageSummary, portalGetInstanceCost } from 'src/lib/api/portalUsage';
 	import { logout } from 'src/lib/auth/logout';
 	import { linkProps, navigate } from 'src/lib/router';
 	import { Alert, Button, Card, DefinitionItem, DefinitionList, Heading, Link, Spinner, Text } from 'src/lib/ui';
@@ -78,11 +75,50 @@ Issue: equaltoai/lesser-host#422
 		return Math.max(0, included - used);
 	}
 
+	interface ServiceAggregate {
+		service: string;
+		total: number;
+		count: number;
+		currency: string;
+	}
+
+	/**
+	 * Aggregate cost entries across all days by service name.
+	 * Returns an array of service aggregates sorted by total cost descending.
+	 */
+	function aggregateByService(days: CostDayEntry[]): ServiceAggregate[] {
+		const byService: Record<string, ServiceAggregate> = {};
+		for (const day of days) {
+			for (const entry of day.entries) {
+				const existing = byService[entry.service];
+				if (existing) {
+					existing.total += entry.cost;
+					existing.count++;
+				} else {
+					byService[entry.service] = { service: entry.service, total: entry.cost, count: 1, currency: entry.currency };
+				}
+			}
+		}
+		return Object.values(byService).sort((a, b) => b.total - a.total);
+	}
+
+	/**
+	 * Format a cost value for display. Uses fixed precision for sub-dollar
+	 * values and 2 decimal places for larger amounts.
+	 */
+	function formatCost(n: number): string {
+		if (n < 0.01) return `$${n.toFixed(6)}`;
+		return `$${n.toFixed(2)}`;
+	}
+
 	let loading = $state(false);
+	let costLoading = $state(false);
 	let errorMessage = $state<string | null>(null);
+	let costError = $state<string | null>(null);
 
 	let budget = $state<BudgetMonthResponse | null>(null);
 	let summary = $state<UsageSummaryResponse | null>(null);
+	let cost = $state<PortalCostResponse | null>(null);
 
 	/**
 	 * Month label pinned at the start of each `loadAll()` so the header,
@@ -107,6 +143,7 @@ Issue: equaltoai/lesser-host#422
 		// `{:else if errorMessage}` arm; on 401 we navigate to /login
 		// before the state matters.
 		errorMessage = null;
+		costError = null;
 
 		const month = currentMonthUTC();
 		displayMonth = month;
@@ -127,6 +164,22 @@ Issue: equaltoai/lesser-host#422
 			errorMessage = formatError(err);
 		} finally {
 			loading = false;
+		}
+
+		// Cost telemetry loads separately so budget/summary still display
+		// when cost data is not yet available. On 401, redirect.
+		costLoading = true;
+		try {
+			cost = await portalGetInstanceCost(token, slug);
+		} catch (err) {
+			if ((err as Partial<ApiError>).status === 401) {
+				await logout();
+				navigate('/login');
+				return;
+			}
+			costError = formatError(err);
+		} finally {
+			costLoading = false;
 		}
 	}
 
@@ -199,39 +252,73 @@ Issue: equaltoai/lesser-host#422
 				<Heading level={3} size="lg">Real-time cost telemetry</Heading>
 			{/snippet}
 
-			<Alert variant="info" title="Real-time cost telemetry coming soon">
-				<Text size="sm">
-					Per-Lambda, per-Dynamo-table, and per-egress cost breakdown with
-					real-time telemetry is scheduled for M3 alongside the cost-telemetry
-					firehose. The current tab surfaces budget and aggregate usage through
-					the existing portal budget and usage-summary endpoints.
+			{#if costLoading && !cost}
+				<div class="instance-cost__loading">
+					<Spinner size="sm" />
+					<Text size="sm">Loading cost telemetry…</Text>
+				</div>
+			{:else if costError && !cost}
+				<Alert variant="warning" title="Cost telemetry unavailable">{costError}</Alert>
+			{:else if cost}
+				<Text size="sm" color="secondary">
+					{cost.from_date} – {cost.to_date} · {cost.count} day(s) · Total: {formatCost(cost.total_cost)} {cost.currency}
 				</Text>
-			</Alert>
 
-			<!-- TODO(M3): replace this static breakdown with live per-Lambda /
-			     per-Dynamo / per-egress telemetry once the cost-telemetry firehose
-			     lands. Tracking: M3 cost-telemetry milestone. -->
-			<div class="instance-cost__coming-soon-grid">
-				<div class="instance-cost__coming-soon-item">
-					<Text size="sm" weight="medium">Lambda</Text>
-					<Text size="sm" color="secondary">Invocation count / duration / cost per function — pending M3 telemetry pipeline.</Text>
-				</div>
-				<div class="instance-cost__coming-soon-item">
-					<Text size="sm" weight="medium">DynamoDB</Text>
-					<Text size="sm" color="secondary">RCU/WCU consumption / storage per table — pending M3 telemetry pipeline.</Text>
-				</div>
-				<div class="instance-cost__coming-soon-item">
-					<Text size="sm" weight="medium">Egress</Text>
-					<Text size="sm" color="secondary">Data transfer by destination / protocol — pending M3 telemetry pipeline.</Text>
-				</div>
-			</div>
+				{@const byService = aggregateByService(cost.days)}
+				{#if byService.length > 0}
+					<div class="instance-cost__service-grid">
+						{#each byService as agg (agg.service)}
+							<div class="instance-cost__service-item">
+								<Text size="sm" weight="medium">{agg.service}</Text>
+								<div class="instance-cost__service-cost">
+									<Text size="sm"><span class="instance-cost__mono">{formatCost(agg.total)}</span></Text>
+									<Text size="xs" color="secondary">{agg.count} entry(s)</Text>
+								</div>
+							</div>
+						{/each}
+					</div>
+				{/if}
+
+				{#if cost.days.length > 0}
+					<div class="instance-cost__daily-section">
+						<Text size="sm" weight="medium">Daily breakdown</Text>
+						<div class="instance-cost__daily-list">
+							{#each [...cost.days].reverse() as day (day.date)}
+								<div class="instance-cost__daily-row">
+									<div class="instance-cost__daily-header">
+										<Text size="sm" weight="medium">{day.date}</Text>
+										<Text size="sm"><span class="instance-cost__mono">{formatCost(day.day_cost)} {day.currency}</span></Text>
+									</div>
+									{#if day.entries.length > 0}
+										<div class="instance-cost__daily-entries">
+											{#each day.entries as entry (entry.service + "-" + entry.date)}
+												<div class="instance-cost__daily-entry">
+													<Text size="xs" color="secondary">{entry.service}</Text>
+													<Text size="xs"><span class="instance-cost__mono">{formatCost(entry.cost)}</span></Text>
+												</div>
+											{/each}
+										</div>
+									{/if}
+								</div>
+							{/each}
+						</div>
+					</div>
+				{/if}
+			{:else}
+				<Alert variant="info" title="No cost telemetry available">
+					<Text size="sm">
+						Cost telemetry data for this instance is not yet available.
+						Data typically appears within 24–48 hours of instance activity.
+					</Text>
+				</Alert>
+			{/if}
 		</Card>
 
 		<div class="instance-cost__actions">
 			<Button
 				variant="outline"
 				onclick={() => void loadAll()}
-				loading={loading}
+				loading={loading || costLoading}
 				loadingBehavior="prepend"
 			>
 				Refresh
@@ -255,14 +342,14 @@ Issue: equaltoai/lesser-host#422
 		align-items: center;
 	}
 
-	.instance-cost__coming-soon-grid {
+	.instance-cost__service-grid {
 		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-		gap: var(--gr-spacing-scale-4);
+		grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+		gap: var(--gr-spacing-scale-3);
 		margin-top: var(--gr-spacing-scale-4);
 	}
 
-	.instance-cost__coming-soon-item {
+	.instance-cost__service-item {
 		display: flex;
 		flex-direction: column;
 		gap: var(--gr-spacing-scale-1);
@@ -272,10 +359,60 @@ Issue: equaltoai/lesser-host#422
 		background: var(--gr-color-surface);
 	}
 
+	.instance-cost__service-cost {
+		display: flex;
+		flex-direction: column;
+		gap: var(--gr-spacing-scale-0);
+	}
+
+	.instance-cost__daily-section {
+		margin-top: var(--gr-spacing-scale-4);
+		display: flex;
+		flex-direction: column;
+		gap: var(--gr-spacing-scale-3);
+	}
+
+	.instance-cost__daily-list {
+		display: flex;
+		flex-direction: column;
+		gap: var(--gr-spacing-scale-2);
+	}
+
+	.instance-cost__daily-row {
+		padding: var(--gr-spacing-scale-2);
+		border: 1px solid var(--gr-color-border-subtle, #d9d9d9);
+		border-radius: var(--gr-radius-sm, 8px);
+	}
+
+	.instance-cost__daily-header {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+	}
+
+	.instance-cost__daily-entries {
+		margin-top: var(--gr-spacing-scale-1);
+		padding-top: var(--gr-spacing-scale-1);
+		border-top: 1px solid var(--gr-color-border-subtle, #d9d9d9);
+		display: flex;
+		flex-direction: column;
+		gap: var(--gr-spacing-scale-0);
+	}
+
+	.instance-cost__daily-entry {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+	}
+
 	.instance-cost__actions {
 		display: flex;
 		gap: var(--gr-spacing-scale-2);
 		align-items: center;
 		flex-wrap: wrap;
+	}
+
+	.instance-cost__mono {
+		font-family: var(--gr-typography-fontFamily-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
 	}
 </style>

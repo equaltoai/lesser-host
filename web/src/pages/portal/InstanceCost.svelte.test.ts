@@ -55,12 +55,6 @@ describe('InstanceCost cost & usage tab', () => {
 		expect(source).toContain("navigate('/login');");
 	});
 
-	it('marks the per-Lambda / Dynamo / egress breakdown for M3 replacement', () => {
-		// Anchor the deferral to the M3 milestone so the static placeholder
-		// is not left as a visual artifact once live telemetry lands.
-		expect(source).toContain('TODO(M3)');
-	});
-
 	it('surfaces inflight-refresh state via Button loading prop', () => {
 		// The Refresh button must convey inflight state during a refresh after
 		// initial load — when data is already present, the page-level spinner
@@ -70,7 +64,7 @@ describe('InstanceCost cost & usage tab', () => {
 		const scriptEnd = source.indexOf('</script>');
 		expect(scriptEnd).toBeGreaterThan(0);
 		const template = source.slice(scriptEnd);
-		expect(template).toContain('loading={loading}');
+		expect(template).toContain('loading={loading || costLoading}');
 		expect(template).toContain('loadingBehavior="prepend"');
 	});
 
@@ -112,5 +106,54 @@ describe('InstanceCost cost & usage tab', () => {
 		// branch (containing the Refresh button with its inline loading
 		// affordance) keeps the user oriented.
 		expect(source).toContain('{#if loading && !budget && !summary}');
+	});
+
+	// ── M3 cost telemetry wiring tests (#456) ────────────────────────────
+
+	it('imports and calls portalGetInstanceCost for real-time cost telemetry', () => {
+		// M3.12: the page must request the cost endpoint.
+		expect(source).toContain('import { portalGetBudgetMonth, portalGetUsageSummary, portalGetInstanceCost }');
+		expect(source).toContain('portalGetInstanceCost(token, slug)');
+	});
+
+	it('does not render the old TODO(M3) placeholder or coming-soon empty state', () => {
+		// M3.12: the "coming soon" empty state and TODO(M3) static breakdown
+		// must be replaced with live cost data. The doc comment may reference
+		// TODO(M3) historically, but the template must not contain any TODO(M3)
+		// directives or coming-soon placeholder text.
+		const scriptEnd = source.indexOf('</script>');
+		expect(scriptEnd).toBeGreaterThan(0);
+		const template = source.slice(scriptEnd);
+		expect(template).not.toContain('TODO(M3)');
+		expect(template).not.toContain('Real-time cost telemetry coming soon');
+		expect(template).not.toContain('cost__coming-soon-grid');
+		expect(template).not.toContain('cost__coming-soon-item');
+	});
+
+	it('renders per-service cost breakdown grid from live data', () => {
+		// M3.12: the service grid must exist, aggregating entries by service.
+		expect(source).toContain('aggregateByService(cost.days)');
+		expect(source).toContain('instance-cost__service-grid');
+		expect(source).toContain('instance-cost__service-item');
+	});
+
+	it('renders daily cost breakdown from live data', () => {
+		// M3.12: daily breakdown section must exist.
+		expect(source).toContain('Daily breakdown');
+		expect(source).toContain('instance-cost__daily-list');
+		expect(source).toContain('instance-cost__daily-row');
+	});
+
+	it('handles 401 on cost endpoint', () => {
+		// M3.12: 401 from the cost endpoint must also trigger logout + redirect.
+		// The cost-specific catch block must contain the 401 check.
+		expect(source).toContain('portalGetInstanceCost(token, slug)');
+
+		// Verify there's a second 401 check in the cost catch block
+		// (the first is in the budget/summary catch).
+		const first401 = source.indexOf(').status === 401');
+		expect(first401).toBeGreaterThan(0);
+		const second401 = source.indexOf(').status === 401', first401 + 1);
+		expect(second401).toBeGreaterThan(first401);
 	});
 });

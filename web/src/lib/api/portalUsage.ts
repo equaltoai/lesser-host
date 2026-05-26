@@ -115,3 +115,63 @@ export function portalGetUsageSummary(token: string, slug: string, month: string
 	});
 }
 
+// ---------------------------------------------------------------------------
+// Cost telemetry (M3.11+) — GET /api/v1/portal/instances/{slug}/cost
+// ---------------------------------------------------------------------------
+
+export interface CostAttributionMetric {
+	service: string;
+	metric_name: string;
+	stat: string;
+	unit: string;
+	value: number;
+}
+
+export interface CostServiceEntry {
+	date: string;
+	service: string;
+	cost: number;
+	currency: string;
+	metrics?: CostAttributionMetric[];
+}
+
+export interface CostDayEntry {
+	date: string;
+	day_cost: number;
+	currency: string;
+	entries: CostServiceEntry[];
+}
+
+export interface PortalCostResponse {
+	instance_slug: string;
+	from_date: string;
+	to_date: string;
+	days: CostDayEntry[];
+	count: number;
+	total_cost: number;
+	currency: string;
+}
+
+/**
+ * Fetch per-instance real-time cost telemetry for the given date window.
+ * Defaults to the past 30 days when from/to are omitted.
+ */
+export function portalGetInstanceCost(
+	token: string,
+	slug: string,
+	from?: string,
+	to?: string,
+): Promise<PortalCostResponse> {
+	const params = new URLSearchParams();
+	if (from) params.set('from', from);
+	if (to) params.set('to', to);
+	const qs = params.toString();
+	return fetchJson<PortalCostResponse>(
+		`/api/v1/portal/instances/${encodeURIComponent(slug)}/cost${qs ? `?${qs}` : ''}`,
+		{
+			headers: {
+				authorization: `Bearer ${token}`,
+			},
+		},
+	);
+}
