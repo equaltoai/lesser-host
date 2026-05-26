@@ -2,8 +2,6 @@ package controlplane
 
 import (
 	"strings"
-
-	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
 // fleetDriftComponent holds per-component drift telemetry for a single instance.
@@ -43,18 +41,22 @@ type fleetDriftResponse struct {
 	Summary   fleetDriftSummary `json:"summary"`
 }
 
-// computeFleetDrift computes per-instance drift for the entire active fleet.
-// Targets come from config defaults; drift is computed per component.
+// computeFleetDrift computes per-instance drift for the entire active fleet
+// using UpdateJob + ProvisionJob + Instance evidence. Targets come from
+// config defaults; drift is computed per component.
 func computeFleetDrift(
-	instances []*models.Instance,
+	evidence []*instanceJobsEvidence,
 	lesserTarget string,
 	bodyTarget string,
 ) fleetDriftResponse {
-	entries := make([]fleetDriftEntry, 0, len(instances))
-	summary := fleetDriftSummary{Total: len(instances)}
+	entries := make([]fleetDriftEntry, 0, len(evidence))
+	summary := fleetDriftSummary{Total: len(evidence)}
 
-	for _, inst := range instances {
-		entry := computeInstanceDrift(inst, lesserTarget, bodyTarget)
+	for _, ev := range evidence {
+		if ev == nil {
+			continue
+		}
+		entry := computeInstanceDrift(ev, lesserTarget, bodyTarget)
 		entries = append(entries, entry)
 
 		if entry.Lesser.Drift == stackDriftStale {
@@ -71,60 +73,81 @@ func computeFleetDrift(
 	return fleetDriftResponse{Instances: entries, Summary: summary}
 }
 
-// computeInstanceDrift computes drift for a single instance against target versions.
+// computeInstanceDrift computes drift for a single instance against target
+// versions using evidence from update jobs, provisioning, and instance state.
+//
+// The MCP wired_against field is resolved from the latest successful MCP-only
+// UpdateJob (which records the body version MCP was wired against at job time).
+// The current_body field comes from the latest successful body update job (or
+// instance state as fallback).
+//
+// This replaces the previous timestamp-only heuristic which could emit
+// contradictory rows (wired_against == current_body while drift == wire-stale)
+// and could not distinguish which body version MCP was wired against.
 func computeInstanceDrift(
-	inst *models.Instance,
+	ev *instanceJobsEvidence,
 	lesserTarget string,
 	bodyTarget string,
 ) fleetDriftEntry {
-	slug := strings.TrimSpace(inst.Slug)
-	lesserCurrent := strings.TrimSpace(inst.LesserVersion)
-	bodyCurrent := strings.TrimSpace(inst.LesserBodyVersion)
+	if ev == nil || ev.instance == nil {
+		return fleetDriftEntry{}
+	}
+
+	slug := strings.TrimSpace(ev.instance.Slug)
+
+	// Lesser: use evidence-based current version.
+	lesserCurrent := lesserVersionFromEvidence(ev)
+	lesserTargetVal := strings.TrimSpace(lesserTarget)
 
 	entry := fleetDriftEntry{
 		Slug: slug,
 		Lesser: fleetDriftComponent{
 			Current: lesserCurrent,
-			Target:  strings.TrimSpace(lesserTarget),
-			Drift:   computeComponentDrift(lesserCurrent, lesserTarget),
-		},
-		Body: fleetDriftComponent{
-			Current: bodyCurrent,
-			Target:  strings.TrimSpace(bodyTarget),
-			Drift:   computeComponentDrift(bodyCurrent, bodyTarget),
+			Target:  lesserTargetVal,
+			Drift:   computeComponentDrift(lesserCurrent, lesserTargetVal),
 		},
 	}
 
-	// MCP drift: wired_against comes from the Instance's LesserBodyVersion
-	// (which reflects what MCP was wired against), current_body is the
-	// body version currently deployed.
-	mcpWiredAgainst := bodyCurrent // By default, MCP is wired against the deploy-time body version
-	mcpDrift := stackDriftUnknown
-	if bodyCurrent != "" {
-		// When MCP is wired, it's against the body version at time of wiring.
-		// We approximate this from the instance's stored body version.
-		// A true wire-stale condition exists when:
-		// 1. The instance has a body version
-		// 2. The body version is at target (i.e., no body drift)
-		// 3. But the MCP wiring may be out of sync
-		// For the fleet drift endpoint, we flag wire-stale when the
-		// body version is at target but there's a possible stale wiring
-		// (which is conservatively all instances with body != "").
-		//
-		// In practice, the caller (remediate-mcp-drift) uses a more precise
-		// check via update jobs. For the drift display, we conservatively
-		// mark body-up-to-date instances as potentially wire-stale if MCP
-		// hasn't been recently re-wired.
-		mcpDrift = computeFleetMCPDrift(inst, bodyCurrent, bodyTarget)
+	// Body: use evidence-based current version.
+	bodyCurrent := bodyVersionFromEvidence(ev)
+	bodyTargetVal := strings.TrimSpace(bodyTarget)
+
+	entry.Body = fleetDriftComponent{
+		Current: bodyCurrent,
+		Target:  bodyTargetVal,
+		Drift:   computeComponentDrift(bodyCurrent, bodyTargetVal),
 	}
+
+	// MCP: wired_against from latest MCP update evidence, current_body from
+	// latest body update evidence. Drift is wire-stale when the versions differ.
+	mcpWiredAgainst := mcpWiredAgainstFromEvidence(ev)
+	mcpCurrentBody := mcpCurrentBodyFromEvidence(ev)
+	mcpDrift := computeMCPEvidenceDrift(mcpWiredAgainst, mcpCurrentBody)
 
 	entry.MCP = fleetDriftMCP{
 		WiredAgainst: mcpWiredAgainst,
-		CurrentBody:  bodyCurrent,
+		CurrentBody:  mcpCurrentBody,
 		Drift:        mcpDrift,
 	}
 
 	return entry
+}
+
+// computeMCPEvidenceDrift determines MCP wiring drift from evidence-derived
+// versions. Returns "wire-stale" when MCP was wired against a different body
+// version than what is currently deployed (regardless of whether the body is
+// at the fleet target). Returns "unknown" when either version is empty.
+func computeMCPEvidenceDrift(wiredAgainst, currentBody string) string {
+	wiredAgainst = strings.TrimSpace(wiredAgainst)
+	currentBody = strings.TrimSpace(currentBody)
+
+	if wiredAgainst == "" || currentBody == "" {
+		return stackDriftUnknown
+	}
+	if wiredAgainst != currentBody {
+		return stackDriftWireStale
+	}
+	return stackDriftOK
 }
 
 // computeComponentDrift determines whether a component version is stale
@@ -144,42 +167,5 @@ func computeComponentDrift(current string, target string) string {
 		return stackDriftStale
 	}
 	// current is newer than target — consider it ok (ahead of fleet).
-	return stackDriftOK
-}
-
-// computeFleetMCPDrift checks MCP wiring staleness. Returns "wire-stale" if
-// MCP was wired against a body version older than the currently deployed body
-// version and the current body version is at or below the target.
-//
-// For the fleet-level drift view, we use Instance timestamps as a heuristic:
-// if McpWiredAt is set and predates LesserBodyUpdateAt, and the body version
-// changed between the two timestamps, MCP is likely wire-stale.
-//
-// When MCP hasn't been explicitly wired (McpWiredAt is zero), we report
-// "ok" for instances with no body (MCP isn't applicable) and "unknown"
-// for instances with a body version.
-func computeFleetMCPDrift(inst *models.Instance, bodyCurrent string, bodyTarget string) string {
-	if bodyCurrent == "" {
-		return stackDriftUnknown
-	}
-
-	// If McpWiredAt is set and predates LesserBodyUpdateAt, MCP may be stale.
-	// But without per-job detail, the Instance-level heuristic is too coarse.
-	// For the fleet drift endpoint, we conservatively report "ok" when the
-	// body version is at target and MCP was wired at or after the body update.
-	// "wire-stale" only when MCP predates the last body update.
-	mcpWiredAt := inst.McpWiredAt
-	bodyUpdatedAt := inst.LesserBodyUpdateAt
-
-	if !mcpWiredAt.IsZero() && !bodyUpdatedAt.IsZero() && mcpWiredAt.Before(bodyUpdatedAt) {
-		return stackDriftWireStale
-	}
-
-	// If MCP has never been wired but body is present, it's unknown.
-	if mcpWiredAt.IsZero() {
-		return stackDriftUnknown
-	}
-
-	// Default: MCP wiring appears up-to-date.
 	return stackDriftOK
 }

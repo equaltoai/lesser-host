@@ -27,8 +27,13 @@ type wireStaleEntry struct {
 }
 
 // handleOperatorRemediateMCPDrift creates MCP-only UpdateJobs for instances
-// with wire-stale MCP wiring. Operator JWT required. Idempotent: skips slugs
-// that already have an active MCP-only UpdateJob.
+// with wire-stale MCP wiring, using evidence-based drift detection (from
+// Blocker 2). Operator JWT required. Idempotent: skips slugs that already
+// have an active MCP-only UpdateJob.
+//
+// Remediation wires MCP against the currently deployed body version (from
+// drift evidence), not the fleet config target, so MCP is consistent with
+// what's actually running on each instance.
 func (s *Server) handleOperatorRemediateMCPDrift(ctx *apptheory.Context) (*apptheory.Response, error) {
 	if err := requireOperator(ctx); err != nil {
 		return nil, err
@@ -42,12 +47,13 @@ func (s *Server) handleOperatorRemediateMCPDrift(ctx *apptheory.Context) (*appth
 		return nil, appErr
 	}
 
-	// Compute fleet drift to identify wire-stale instances.
+	// Compute evidence-based drift to identify wire-stale instances.
+	evidence := gatherFleetEvidence(ctx, s, instances)
 	lesserTarget := strings.TrimSpace(s.cfg.ManagedLesserDefaultVersion)
 	bodyTarget := strings.TrimSpace(s.cfg.ManagedLesserBodyDefaultVersion)
-	driftResp := computeFleetDrift(instances, lesserTarget, bodyTarget)
+	driftResp := computeFleetDrift(evidence, lesserTarget, bodyTarget)
 
-	// Collect wire-stale slugs with their current body versions.
+	// Collect wire-stale slugs with their current deployed body versions.
 	var wireStale []wireStaleEntry
 	for _, entry := range driftResp.Instances {
 		if entry.MCP.Drift == stackDriftWireStale {
@@ -66,7 +72,7 @@ func (s *Server) handleOperatorRemediateMCPDrift(ctx *apptheory.Context) (*appth
 		})
 	}
 
-	// Check for existing active MCP-only jobs (idempotency).
+	// Check for existing active MCP-only jobs (idempotency via GSI2 UPDATE_ACTIVE).
 	activeJobs, listErr := s.store.ListActiveUpdateJobs(ctx.Context(), 500)
 	if listErr != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list active update jobs"}
@@ -82,10 +88,17 @@ func (s *Server) handleOperatorRemediateMCPDrift(ctx *apptheory.Context) (*appth
 	// Resolve instance details and create jobs.
 	now := time.Now().UTC()
 	actor := strings.TrimSpace(ctx.AuthIdentity)
-	createdJobIDs, skipped := s.remediateWireStaleInstances(ctx, wireStale, activeMCPSlugs, bodyTarget, now)
 
-	// Emit operator audit event.
-	s.emitRemediationAudit(ctx, len(wireStale), now, actor)
+	// Remediation uses the drift entry's current_body (deployed body version),
+	// not the fleet config target. bodyTarget is only a fallback when the
+	// entry's current body version is empty.
+	createdJobIDs, remediatedSlugs, skipped := s.remediateWireStaleInstances(
+		ctx, wireStale, activeMCPSlugs, bodyTarget, now,
+	)
+
+	// Emit operator audit event AFTER remediation so we can include the
+	// affected slug list and created job IDs.
+	s.emitRemediationAudit(ctx, remediatedSlugs, createdJobIDs, now, actor)
 
 	return apptheory.JSON(http.StatusOK, remediateMCPDriftResponse{
 		CreatedJobIDs: createdJobIDs,
@@ -96,15 +109,16 @@ func (s *Server) handleOperatorRemediateMCPDrift(ctx *apptheory.Context) (*appth
 
 // remediateWireStaleInstances creates MCP-only UpdateJobs for wire-stale slugs,
 // skipping those that already have an active MCP-only job. Returns created
-// job IDs and the count of skipped slugs.
+// job IDs, the list of successfully remediated slugs, and the count of skipped slugs.
 func (s *Server) remediateWireStaleInstances(
 	ctx *apptheory.Context,
 	wireStale []wireStaleEntry,
 	activeMCPSlugs map[string]bool,
 	bodyTarget string,
 	now time.Time,
-) ([]string, int) {
+) ([]string, []string, int) {
 	var createdJobIDs []string
+	var remediatedSlugs []string
 	var skipped int
 
 	for _, entry := range wireStale {
@@ -119,7 +133,15 @@ func (s *Server) remediateWireStaleInstances(
 			continue
 		}
 
-		job, jobErr := s.createRemediationMCPJob(ctx, inst, entry.currentBodyVer, bodyTarget, now)
+		// Use the drift entry's current_body (deployed body version) as the
+		// primary version source for MCP wiring. Fall back to bodyTarget only
+		// if currentBodyVer is empty.
+		wireVersion := strings.TrimSpace(entry.currentBodyVer)
+		if wireVersion == "" {
+			wireVersion = strings.TrimSpace(bodyTarget)
+		}
+
+		job, jobErr := s.createRemediationMCPJob(ctx, inst, wireVersion, now)
 		if jobErr != nil {
 			skipped++
 			continue
@@ -136,19 +158,20 @@ func (s *Server) remediateWireStaleInstances(
 		})
 
 		createdJobIDs = append(createdJobIDs, strings.TrimSpace(job.ID))
+		remediatedSlugs = append(remediatedSlugs, entry.slug)
 	}
 
-	return createdJobIDs, skipped
+	return createdJobIDs, remediatedSlugs, skipped
 }
 
 // createRemediationMCPJob builds an MCP-only UpdateJob for fleet remediation.
-// It sets LesserBodyVersion to the body target (config default) so the wire-mcp
-// deploy runner wires MCP against the target body version.
+// wireBodyVersion is the body version to wire MCP against — this should be
+// the currently deployed body version (from drift evidence), not the config
+// target, so MCP is wired against what's actually running on the instance.
 func (s *Server) createRemediationMCPJob(
 	ctx *apptheory.Context,
 	inst *models.Instance,
-	currentBodyVer string,
-	bodyTarget string,
+	wireBodyVersion string,
 	now time.Time,
 ) (*models.UpdateJob, error) {
 	id, tokenErr := newToken(16)
@@ -156,11 +179,7 @@ func (s *Server) createRemediationMCPJob(
 		return nil, tokenErr
 	}
 
-	// Use target as the LesserBodyVersion for the MCP wiring step.
-	lesserBodyVersion := strings.TrimSpace(bodyTarget)
-	if lesserBodyVersion == "" {
-		lesserBodyVersion = strings.TrimSpace(currentBodyVer)
-	}
+	lesserBodyVersion := strings.TrimSpace(wireBodyVersion)
 	if lesserBodyVersion == "" {
 		return nil, fmt.Errorf("no body version available for MCP wiring")
 	}
@@ -205,9 +224,12 @@ func (s *Server) createRemediationMCPJob(
 }
 
 // emitRemediationAudit writes an operator audit event for MCP remediation.
+// The audit record includes the affected slug list and created job IDs using
+// existing AuditLogEntry fields — no tenant content or secrets are logged.
 func (s *Server) emitRemediationAudit(
 	ctx *apptheory.Context,
-	numWireStale int,
+	slugs []string,
+	jobIDs []string,
 	now time.Time,
 	actor string,
 ) {
@@ -215,10 +237,18 @@ func (s *Server) emitRemediationAudit(
 		return
 	}
 
+	target := fmt.Sprintf("fleet:mcp-remediation:%d-slugs", len(slugs))
+	if len(slugs) > 0 {
+		target = fmt.Sprintf("fleet:mcp-remediation:slugs=%s", strings.Join(slugs, ","))
+	}
+	if len(jobIDs) > 0 {
+		target += fmt.Sprintf(";jobs=%s", strings.Join(jobIDs, ","))
+	}
+
 	audit := &models.AuditLogEntry{
 		Actor:     actor,
 		Action:    "operator.fleet.remediate_mcp_drift",
-		Target:    fmt.Sprintf("fleet:mcp-remediation:%d-slugs", numWireStale),
+		Target:    target,
 		RequestID: strings.TrimSpace(ctx.RequestID),
 		CreatedAt: now,
 	}

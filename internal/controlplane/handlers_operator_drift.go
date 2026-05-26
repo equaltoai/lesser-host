@@ -8,9 +8,10 @@ import (
 )
 
 // handleOperatorInstancesDrift returns fleet-wide drift telemetry for all
-// active instances against the configured default target versions.
-// Operator JWT required. Response shape per Project 39 provisioning walk
-// Change 5.3.
+// active instances against the configured default target versions. Uses
+// UpdateJob + ProvisionJob + Instance evidence to compute per-component
+// drift, including MCP wired_against vs current_body. Operator JWT required.
+// Response shape per Project 39 provisioning walk Change 5.3.
 func (s *Server) handleOperatorInstancesDrift(ctx *apptheory.Context) (*apptheory.Response, error) {
 	if err := requireOperator(ctx); err != nil {
 		return nil, err
@@ -24,9 +25,11 @@ func (s *Server) handleOperatorInstancesDrift(ctx *apptheory.Context) (*apptheor
 		return nil, appErr
 	}
 
+	evidence := gatherFleetEvidence(ctx, s, instances)
+
 	lesserTarget := strings.TrimSpace(s.cfg.ManagedLesserDefaultVersion)
 	bodyTarget := strings.TrimSpace(s.cfg.ManagedLesserBodyDefaultVersion)
 
-	resp := computeFleetDrift(instances, lesserTarget, bodyTarget)
+	resp := computeFleetDrift(evidence, lesserTarget, bodyTarget)
 	return apptheory.JSON(http.StatusOK, resp)
 }

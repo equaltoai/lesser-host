@@ -39,7 +39,8 @@ type operatorReleasesResponse struct {
 }
 
 // handleOperatorReleases returns per-channel release adoption telemetry
-// aggregated from host-side Instance state. Operator JWT required.
+// aggregated from UpdateJob + ProvisionJob + Instance evidence, per
+// Project 39 provisioning walk Change 5.2. Operator JWT required.
 func (s *Server) handleOperatorReleases(ctx *apptheory.Context) (*apptheory.Response, error) {
 	if err := requireOperator(ctx); err != nil {
 		return nil, err
@@ -53,10 +54,12 @@ func (s *Server) handleOperatorReleases(ctx *apptheory.Context) (*apptheory.Resp
 		return nil, appErr
 	}
 
+	evidence := gatherFleetEvidence(ctx, s, instances)
+
 	lesserTarget := strings.TrimSpace(s.cfg.ManagedLesserDefaultVersion)
 	bodyTarget := strings.TrimSpace(s.cfg.ManagedLesserBodyDefaultVersion)
 
-	resp := buildOperatorReleasesResponse(instances, lesserTarget, bodyTarget)
+	resp := buildOperatorReleasesResponse(evidence, lesserTarget, bodyTarget)
 	return apptheory.JSON(http.StatusOK, resp)
 }
 
@@ -89,33 +92,46 @@ func (s *Server) listActiveInstances(ctx *apptheory.Context) ([]*models.Instance
 }
 
 // buildOperatorReleasesResponse aggregates per-channel version adoption from
-// active instance records. For each channel, versions are collected from
-// the Instance's current-version fields, counted, and sorted newest-first.
+// UpdateJob + ProvisionJob + Instance evidence. For each instance, the version
+// and released_at come from the best-available evidence source:
+//   - lesser channel: latest successful lesser update → provision job → instance
+//   - body channel:   latest successful body update   → instance state
+//
+// Without evidence, Instance fields alone can produce wrong version/adoption
+// when a successful update job exists but the Instance marker hasn't caught up,
+// or when a provision job records a deployment timestamp earlier than the
+// Instance's UpdatedAt.
 func buildOperatorReleasesResponse(
-	instances []*models.Instance,
+	evidence []*instanceJobsEvidence,
 	lesserDefault string,
 	bodyDefault string,
 ) operatorReleasesResponse {
-	fleetTotal := len(instances)
+	fleetTotal := len(evidence)
 
 	lesserVersions := map[string]*versionAdoption{}
 	bodyVersions := map[string]*versionAdoption{}
 
-	for _, inst := range instances {
-		slug := strings.TrimSpace(inst.Slug)
+	for _, ev := range evidence {
+		if ev == nil || ev.instance == nil {
+			continue
+		}
+		slug := strings.TrimSpace(ev.instance.Slug)
+		_ = slug // reserved for future per-slug drill-down
 
-		lesserVer := strings.TrimSpace(inst.LesserVersion)
+		// Lesser channel: prefer update job evidence for version and deployed-at.
+		lesserVer := lesserVersionFromEvidence(ev)
+		lesserAt := parseEvidenceTime(lesserDeployedAtFromEvidence(ev))
 		if lesserVer != "" {
-			va := ensureVersionAdoption(lesserVersions, lesserVer, inst.UpdatedAt)
+			va := ensureVersionAdoption(lesserVersions, lesserVer, lesserAt)
 			va.count++
-			va.slugs = append(va.slugs, slug)
 		}
 
-		bodyVer := strings.TrimSpace(inst.LesserBodyVersion)
+		// Body channel: prefer body update job evidence.
+		bodyVer := bodyVersionFromEvidence(ev)
+		bodyAt := parseEvidenceTime(bodyDeployedAtFromEvidence(ev))
 		if bodyVer != "" {
-			va := ensureVersionAdoption(bodyVersions, bodyVer, inst.LesserBodyUpdateAt)
+			va := ensureVersionAdoption(bodyVersions, bodyVer, bodyAt)
 			va.count++
-			va.slugs = append(va.slugs, slug)
 		}
 	}
 
@@ -128,9 +144,21 @@ func buildOperatorReleasesResponse(
 	}
 }
 
+// parseEvidenceTime parses an RFC3339 string back to time.Time for adoption
+// earliest-at tracking. Returns zero time on parse failure or empty string.
+func parseEvidenceTime(s string) time.Time {
+	if s == "" {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
+}
+
 type versionAdoption struct {
 	count      int
-	slugs      []string
 	earliestAt time.Time
 }
 
