@@ -1,9 +1,9 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
-	import { navigate, currentPath } from 'src/lib/router';
+	import { currentPath, linkProps, navigate } from 'src/lib/router';
 	import { session } from 'src/lib/session';
 	import { logout } from 'src/lib/auth/logout';
-	import { Button, Text, Heading } from 'src/lib/ui';
+	import { Button, Heading, Link, Text } from 'src/lib/ui';
 
 	let { children }: { children: Snippet } = $props();
 
@@ -28,44 +28,44 @@
 			<Heading level={2} size="xl">lesser.host</Heading>
 		</div>
 		<div class="layout__nav">
-			<Button
-				variant={isPortalActive() ? 'solid' : 'ghost'}
-				onclick={() => navigate('/portal')}
+			<Link
+				{...linkProps('/portal')}
+				variant="ghost"
+				aria-current={isPortalActive() ? 'page' : undefined}
 			>
 				Portal
-			</Button>
-			<Button
-				variant={isActive('/portal/souls') ? 'solid' : 'ghost'}
-				onclick={() => navigate('/portal/souls')}
+			</Link>
+			<Link
+				{...linkProps('/portal/souls')}
+				variant="ghost"
+				aria-current={isActive('/portal/souls') ? 'page' : undefined}
 			>
 				Souls
-			</Button>
-			<Button
-				variant={isActive('/trust') ? 'solid' : 'ghost'}
-				onclick={() => navigate('/trust')}
+			</Link>
+			<Link
+				{...linkProps('/trust')}
+				variant="ghost"
+				aria-current={isActive('/trust') ? 'page' : undefined}
 			>
 				Trust
-			</Button>
-			<Button
-				variant={isActive('/tip-registry/register') ? 'solid' : 'ghost'}
-				onclick={() => navigate('/tip-registry/register')}
+			</Link>
+			<Link
+				{...linkProps('/tip-registry/register')}
+				variant="ghost"
+				aria-current={isActive('/tip-registry/register') ? 'page' : undefined}
 			>
 				Host registry
-			</Button>
-			<Button
-				variant={isActive('/account', true) ? 'solid' : 'ghost'}
-				onclick={() => navigate('/account')}
+			</Link>
+			<Link
+				{...linkProps('/account')}
+				variant="ghost"
+				aria-current={isActive('/account', true) ? 'page' : undefined}
 			>
 				Account
-			</Button>
+			</Link>
 
 			{#if $session && ($session.role === 'admin' || $session.role === 'operator')}
-				<Button
-					variant="ghost"
-					onclick={() => navigate('/operator')}
-				>
-					Operator Console
-				</Button>
+				<Link {...linkProps('/operator')} variant="ghost">Operator Console</Link>
 			{/if}
 		</div>
 		<div class="layout__footer">
@@ -76,7 +76,7 @@
 				</div>
 				<Button variant="outline" onclick={() => void handleLogout()}>Logout</Button>
 			{:else}
-				<Button variant="outline" onclick={() => navigate('/login')}>Sign in</Button>
+				<Link {...linkProps('/login')} variant="default">Sign in</Link>
 			{/if}
 		</div>
 	</nav>

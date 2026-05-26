@@ -51,10 +51,10 @@ Issue: equaltoai/lesser-host#391
 		type CommandPaletteItem,
 		type CommandPaletteGroup,
 	} from 'src/lib/shell';
-	import { navigate, currentPath } from 'src/lib/router';
+	import { currentPath, linkProps, navigate } from 'src/lib/router';
 	import { session } from 'src/lib/session';
 	import { logout } from 'src/lib/auth/logout';
-	import { Button, Text, Heading } from 'src/lib/ui';
+	import { Button, Heading, Link, Text } from 'src/lib/ui';
 	import { portalFleetInstances, clearPortalFleetState } from 'src/lib/portalFleetState';
 
 	interface Props {
@@ -298,7 +298,7 @@ Issue: equaltoai/lesser-host#391
 						<Text size="sm" color="secondary">{$session.role}</Text>
 						<Button variant="outline" onclick={() => void handleLogout()}>Logout</Button>
 					{:else}
-						<Button variant="outline" onclick={() => navigate('/login')}>Sign in</Button>
+						<Link {...linkProps('/login')} variant="default">Sign in</Link>
 					{/if}
 				</div>
 			{/snippet}
@@ -308,46 +308,50 @@ Issue: equaltoai/lesser-host#391
 	{#snippet sidebar()}
 		<Sidebar label="Primary navigation">
 			<div class="portal-shell__nav">
-				<Button
-					variant={isPortalFleetActive() ? 'solid' : 'ghost'}
-					onclick={() => navigate('/portal/fleet')}
+				<Link
+					{...linkProps('/portal/fleet')}
+					variant="ghost"
+					aria-current={isPortalFleetActive() ? 'page' : undefined}
 				>
 					Fleet
-				</Button>
-				<Button
-					variant={isLegacyPortalActive() ? 'solid' : 'ghost'}
-					onclick={() => navigate('/portal/instances')}
+				</Link>
+				<Link
+					{...linkProps('/portal/instances')}
+					variant="ghost"
+					aria-current={isLegacyPortalActive() ? 'page' : undefined}
 				>
 					Instances (legacy)
-				</Button>
-				<Button
-					variant={isActive('/portal/souls') ? 'solid' : 'ghost'}
-					onclick={() => navigate('/portal/souls')}
+				</Link>
+				<Link
+					{...linkProps('/portal/souls')}
+					variant="ghost"
+					aria-current={isActive('/portal/souls') ? 'page' : undefined}
 				>
 					Souls
-				</Button>
-				<Button
-					variant={isActive('/portal/billing') ? 'solid' : 'ghost'}
-					onclick={() => navigate('/portal/billing')}
+				</Link>
+				<Link
+					{...linkProps('/portal/billing')}
+					variant="ghost"
+					aria-current={isActive('/portal/billing') ? 'page' : undefined}
 				>
 					Billing
-				</Button>
-				<Button
-					variant={isActive('/trust') ? 'solid' : 'ghost'}
-					onclick={() => navigate('/trust')}
+				</Link>
+				<Link
+					{...linkProps('/trust')}
+					variant="ghost"
+					aria-current={isActive('/trust') ? 'page' : undefined}
 				>
 					Trust
-				</Button>
-				<Button
-					variant={isActive('/account', true) ? 'solid' : 'ghost'}
-					onclick={() => navigate('/account')}
+				</Link>
+				<Link
+					{...linkProps('/account')}
+					variant="ghost"
+					aria-current={isActive('/account', true) ? 'page' : undefined}
 				>
 					Account
-				</Button>
+				</Link>
 				{#if $session && ($session.role === 'admin' || $session.role === 'operator')}
-					<Button variant="ghost" onclick={() => navigate('/operator')}>
-						Operator Console
-					</Button>
+					<Link {...linkProps('/operator')} variant="ghost">Operator Console</Link>
 				{/if}
 			</div>
 			<div class="portal-shell__sidebar-footer">

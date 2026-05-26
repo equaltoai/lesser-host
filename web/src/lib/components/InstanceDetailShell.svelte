@@ -35,8 +35,8 @@ Issue: equaltoai/lesser-host#414
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 
-	import { currentPath, navigate } from 'src/lib/router';
-	import { Button } from 'src/lib/ui';
+	import { currentPath, linkProps, navigate } from 'src/lib/router';
+	import { Link } from 'src/lib/ui';
 	import { PageFrame, PageTitle } from 'src/lib/shell';
 
 	type TabKey = 'overview' | 'cost' | 'config' | 'domains' | 'keys' | 'souls';
@@ -134,8 +134,8 @@ Issue: equaltoai/lesser-host#414
 			description="Managed lesser.host instance — release state, configuration, domains, and access keys."
 		>
 			{#snippet actions()}
-				<Button variant="ghost" onclick={() => navigate('/portal/fleet')}>Fleet</Button>
-				<Button variant="ghost" onclick={() => navigate('/portal')}>Back</Button>
+				<Link {...linkProps('/portal/fleet')} variant="ghost">Fleet</Link>
+				<Link {...linkProps('/portal')} variant="ghost">Back</Link>
 			{/snippet}
 		</PageTitle>
 	{/snippet}

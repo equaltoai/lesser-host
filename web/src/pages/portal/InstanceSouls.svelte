@@ -191,12 +191,9 @@ Issue: equaltoai/lesser-host#419
 						{/if}
 					</div>
 					<div class="instance-souls__item-actions">
-						<Button
-							variant="outline"
-							onclick={() => navigate(`/portal/souls/${item.agent.agent_id}`)}
-						>
+						<Link {...linkProps(`/portal/souls/${item.agent.agent_id}`)} variant="default">
 							Open
-						</Button>
+						</Link>
 						<CopyButton size="sm" text={item.agent.agent_id} />
 					</div>
 				</li>

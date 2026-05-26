@@ -27,8 +27,8 @@ Issue: equaltoai/lesser-host#411
 	import type { SoulMineAgentItem } from 'src/lib/api/soul';
 	import { soulListMyAgents } from 'src/lib/api/soul';
 	import { logout } from 'src/lib/auth/logout';
-	import { navigate } from 'src/lib/router';
-	import { Alert, Badge, Button, CopyButton, Spinner, Text } from 'src/lib/ui';
+	import { linkProps, navigate } from 'src/lib/router';
+	import { Alert, Badge, Button, CopyButton, Link, Spinner, Text } from 'src/lib/ui';
 	import { PageFrame, PageTitle, Panel, Callout } from 'src/lib/shell';
 
 	let { token } = $props<{ token: string }>();
@@ -173,12 +173,9 @@ Issue: equaltoai/lesser-host#411
 									Open legacy profile step
 								</Button>
 							{/if}
-							<Button
-								variant="outline"
-								onclick={() => navigate(`/portal/souls/${item.agent.agent_id}`)}
-							>
+							<Link {...linkProps(`/portal/souls/${item.agent.agent_id}`)} variant="default">
 								Open
-							</Button>
+							</Link>
 							<CopyButton size="sm" text={item.agent.agent_id} />
 						</div>
 					</li>

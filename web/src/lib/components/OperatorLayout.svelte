@@ -1,9 +1,9 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
-	import { navigate, currentPath } from 'src/lib/router';
+	import { currentPath, linkProps, navigate } from 'src/lib/router';
 	import { session } from 'src/lib/session';
 	import { logout } from 'src/lib/auth/logout';
-	import { Button, Text, Heading } from 'src/lib/ui';
+	import { Button, Heading, Link, Text } from 'src/lib/ui';
 
 	let { children }: { children: Snippet } = $props();
 
@@ -24,65 +24,74 @@
 			<Heading level={2} size="xl">Operator Console</Heading>
 		</div>
 		<div class="layout__nav">
-			<Button
-				variant={isActive('/operator', true) ? 'solid' : 'ghost'}
-				onclick={() => navigate('/operator')}
+			<Link
+				{...linkProps('/operator')}
+				variant="ghost"
+				aria-current={isActive('/operator', true) ? 'page' : undefined}
 			>
 				Dashboard
-			</Button>
-			<Button
-				variant={isActive('/operator/approvals/domains') ? 'solid' : 'ghost'}
-				onclick={() => navigate('/operator/approvals/domains')}
+			</Link>
+			<Link
+				{...linkProps('/operator/approvals/domains')}
+				variant="ghost"
+				aria-current={isActive('/operator/approvals/domains') ? 'page' : undefined}
 			>
 				Domains
-			</Button>
-			<Button
-				variant={isActive('/operator/approvals/users') ? 'solid' : 'ghost'}
-				onclick={() => navigate('/operator/approvals/users')}
+			</Link>
+			<Link
+				{...linkProps('/operator/approvals/users')}
+				variant="ghost"
+				aria-current={isActive('/operator/approvals/users') ? 'page' : undefined}
 			>
 				Users
-			</Button>
-			<Button
-				variant={isActive('/operator/approvals/external-instances') ? 'solid' : 'ghost'}
-				onclick={() => navigate('/operator/approvals/external-instances')}
+			</Link>
+			<Link
+				{...linkProps('/operator/approvals/external-instances')}
+				variant="ghost"
+				aria-current={isActive('/operator/approvals/external-instances') ? 'page' : undefined}
 			>
 				External regs
-			</Button>
-			<Button
-				variant={isActive('/operator/provisioning') ? 'solid' : 'ghost'}
-				onclick={() => navigate('/operator/provisioning/jobs')}
+			</Link>
+			<Link
+				{...linkProps('/operator/provisioning/jobs')}
+				variant="ghost"
+				aria-current={isActive('/operator/provisioning') ? 'page' : undefined}
 			>
 				Provisioning
-			</Button>
-			<Button
-				variant={isActive('/operator/instances') ? 'solid' : 'ghost'}
-				onclick={() => navigate('/operator/instances')}
+			</Link>
+			<Link
+				{...linkProps('/operator/instances')}
+				variant="ghost"
+				aria-current={isActive('/operator/instances') ? 'page' : undefined}
 			>
 				Instances
-			</Button>
-			<Button
-				variant={isActive('/operator/tip-registry') ? 'solid' : 'ghost'}
-				onclick={() => navigate('/operator/tip-registry')}
+			</Link>
+			<Link
+				{...linkProps('/operator/tip-registry')}
+				variant="ghost"
+				aria-current={isActive('/operator/tip-registry') ? 'page' : undefined}
 			>
 				Tip registry
-			</Button>
-			<Button
-				variant={isActive('/operator/soul') ? 'solid' : 'ghost'}
-				onclick={() => navigate('/operator/soul')}
+			</Link>
+			<Link
+				{...linkProps('/operator/soul')}
+				variant="ghost"
+				aria-current={isActive('/operator/soul') ? 'page' : undefined}
 			>
 				Souls
-			</Button>
-			<Button
-				variant={isActive('/operator/audit') ? 'solid' : 'ghost'}
-				onclick={() => navigate('/operator/audit')}
+			</Link>
+			<Link
+				{...linkProps('/operator/audit')}
+				variant="ghost"
+				aria-current={isActive('/operator/audit') ? 'page' : undefined}
 			>
 				Audit
-			</Button>
+			</Link>
 		</div>
 
 		<div class="layout__footer">
-			<Button variant="ghost" onclick={() => navigate('/portal')}>← Return to Portal</Button>
-			<Button variant="ghost" onclick={() => navigate('/account')}>Account Settings</Button>
+			<Link {...linkProps('/portal')} variant="ghost">← Return to Portal</Link>
+			<Link {...linkProps('/account')} variant="ghost">Account Settings</Link>
 			{#if $session}
 				<div class="layout__user">
 					<Text size="sm" weight="medium">{$session.username}</Text>

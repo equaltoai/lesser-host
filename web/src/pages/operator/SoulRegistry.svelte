@@ -239,12 +239,9 @@
 				Operation <span class="op-soul__mono">{res.operation.operation_id}</span>
 			</Text>
 			<div class="op-soul__row">
-				<Button
-					variant="outline"
-					onclick={() => navigate(`/operator/soul/operations/${res.operation.operation_id}`)}
-				>
+				<Link {...linkProps(`/operator/soul/operations/${res.operation.operation_id}`)} variant="default">
 					View operation
-				</Button>
+				</Link>
 				<CopyButton size="sm" text={res.operation.operation_id} />
 			</div>
 

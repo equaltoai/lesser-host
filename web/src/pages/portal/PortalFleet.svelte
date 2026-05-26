@@ -33,8 +33,8 @@ Issue: equaltoai/lesser-host#391
 	import type { BudgetMonthResponse } from 'src/lib/api/portalUsage';
 	import { portalGetBudgetMonth } from 'src/lib/api/portalUsage';
 	import { logout } from 'src/lib/auth/logout';
-	import { navigate } from 'src/lib/router';
-	import { Alert, Button, Heading, Spinner, Text, TextField } from 'src/lib/ui';
+	import { linkProps, navigate } from 'src/lib/router';
+	import { Alert, Button, Heading, Link, Spinner, Text, TextField } from 'src/lib/ui';
 	import FleetCard from 'src/lib/components/FleetCard.svelte';
 	import CostGauge from 'src/lib/components/CostGauge.svelte';
 	import type { FleetCardMetadataItem } from 'src/lib/greater/host-platform';
@@ -272,12 +272,9 @@ Issue: equaltoai/lesser-host#391
 							{/if}
 						{/snippet}
 						{#snippet actions()}
-							<Button
-								variant="outline"
-								onclick={() => navigate(`/portal/instances/${inst.slug}`)}
-							>
+							<Link {...linkProps(`/portal/instances/${inst.slug}`)} variant="default">
 								Open
-							</Button>
+							</Link>
 						{/snippet}
 					</FleetCard>
 				</li>
