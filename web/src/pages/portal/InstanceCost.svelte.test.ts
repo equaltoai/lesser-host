@@ -130,11 +130,30 @@ describe('InstanceCost cost & usage tab', () => {
 		expect(template).not.toContain('cost__coming-soon-item');
 	});
 
-	it('renders per-service cost breakdown grid from live data', () => {
-		// M3.12: the service grid must exist, aggregating entries by service.
-		expect(source).toContain('aggregateByService(cost.days)');
+	it('renders per-category cost breakdown grid from live data', () => {
+		// M3.12: the service grid must exist, aggregating entries by category
+		// via the categorization layer (categoryForService).
+		expect(source).toContain('aggregateByCategory(cost.days)');
 		expect(source).toContain('instance-cost__service-grid');
 		expect(source).toContain('instance-cost__service-item');
+	});
+
+	it('categorizes Lambda, DynamoDB, and Egress services with explicit labels', () => {
+		// M3.12 #456: the categorization layer must map services to
+		// user-facing category labels. Removing the categoryForService
+		// function or its Egress mapping must fail this test.
+		expect(source).toContain('function categoryForService(');
+		expect(source).toContain("return 'Lambda'");
+		expect(source).toContain("return 'DynamoDB'");
+		expect(source).toContain("return 'Egress'");
+
+		// DataTransfer and CloudFront must both map to Egress.
+		expect(source).toContain("lower === 'datatransfer'");
+		expect(source).toContain("lower === 'cloudfront'");
+
+		// Egress-like patterns must be caught.
+		expect(source).toContain("lower.includes('data transfer')");
+		expect(source).toContain("lower.includes('egress')");
 	});
 
 	it('renders daily cost breakdown from live data', () => {

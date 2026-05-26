@@ -2,6 +2,7 @@
   "$schema": "https://gov.pai.dev/schemas/pack.schema.json",
   "schemaVersion": 1,
   "packVersion": "2026.05.24-web.3",
+  "packDigest": "27bbbb8d0e045ff31c3662dccc3ff3e855fd363d92ca5bd24923c0a8b23a38b7",
   "domain": "custom",
   "projectSlug": "lesser-host",
   "generatedAt": "2026-05-26T22:38:16Z",
@@ -56,6 +57,5 @@
       "gov-infra/evidence/MAI-5-output.log",
       "gov-infra/evidence/SEC-13-output.log"
     ]
-  },
-  "packDigest": "91222d2785f12f91b746fd4d71ea8d2e8053b8cda7e9f383bb7a63a4c3766ce3"
+  }
 }

@@ -77,29 +77,58 @@ Source: Issue equaltoai/lesser-host#456
 
 	interface ServiceAggregate {
 		service: string;
+		category: string;
 		total: number;
 		count: number;
 		currency: string;
 	}
 
 	/**
-	 * Aggregate cost entries across all days by service name.
-	 * Returns an array of service aggregates sorted by total cost descending.
+	 * Aggregate cost entries across all days by category.
+	 * Returns an array of category aggregates sorted by total cost descending.
 	 */
-	function aggregateByService(days: CostDayEntry[]): ServiceAggregate[] {
-		const byService: Record<string, ServiceAggregate> = {};
+	function aggregateByCategory(days: CostDayEntry[]): ServiceAggregate[] {
+		const byCategory: Record<string, ServiceAggregate> = {};
 		for (const day of days) {
 			for (const entry of day.entries) {
-				const existing = byService[entry.service];
+				const cat = categoryForService(entry.service);
+				const existing = byCategory[cat];
 				if (existing) {
 					existing.total += entry.cost;
 					existing.count++;
 				} else {
-					byService[entry.service] = { service: entry.service, total: entry.cost, count: 1, currency: entry.currency };
+					byCategory[cat] = { service: entry.service, category: cat, total: entry.cost, count: 1, currency: entry.currency };
 				}
 			}
 		}
-		return Object.values(byService).sort((a, b) => b.total - a.total);
+		return Object.values(byCategory).sort((a, b) => b.total - a.total);
+	}
+
+	/**
+	 * Categorize a normalized service name into a user-facing category label.
+	 *
+	 * Maps Lambda → "Lambda", DynamoDB → "DynamoDB", and
+	 * DataTransfer / CloudFront / any data-transfer-like service → "Egress".
+	 * All other services pass through unchanged.
+	 *
+	 * The mapping is case-insensitive on input and returns stable labels
+	 * regardless of upstream service-name drift.
+	 */
+	function categoryForService(service: string): string {
+		const s = (service ?? '').trim();
+		const lower = s.toLowerCase();
+		if (lower === 'lambda') return 'Lambda';
+		if (lower === 'dynamodb') return 'DynamoDB';
+		if (
+			lower === 'datatransfer' ||
+			lower === 'cloudfront' ||
+			lower.includes('data transfer') ||
+			lower.includes('egress') ||
+			lower.includes('datatransfer')
+		) {
+			return 'Egress';
+		}
+		return s || 'Unknown';
 	}
 
 	/**
@@ -264,12 +293,12 @@ Source: Issue equaltoai/lesser-host#456
 					{cost.from_date} – {cost.to_date} · {cost.count} day(s) · Total: {formatCost(cost.total_cost)} {cost.currency}
 				</Text>
 
-				{@const byService = aggregateByService(cost.days)}
-				{#if byService.length > 0}
+				{@const byCategory = aggregateByCategory(cost.days)}
+				{#if byCategory.length > 0}
 					<div class="instance-cost__service-grid">
-						{#each byService as agg (agg.service)}
+						{#each byCategory as agg (agg.category)}
 							<div class="instance-cost__service-item">
-								<Text size="sm" weight="medium">{agg.service}</Text>
+								<Text size="sm" weight="medium">{agg.category}</Text>
 								<div class="instance-cost__service-cost">
 									<Text size="sm"><span class="instance-cost__mono">{formatCost(agg.total)}</span></Text>
 									<Text size="xs" color="secondary">{agg.count} entry(s)</Text>
