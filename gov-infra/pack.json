@@ -1,14 +1,14 @@
 {
   "$schema": "https://gov.pai.dev/schemas/pack.schema.json",
   "schemaVersion": 1,
-  "packVersion": "2026.05.24-web.1",
-  "packDigest": "232b10ad81263b2df5a19d56cdcc9ad7fa3b38dd9f1a121bc816ac08677bd3e7",
+  "packVersion": "2026.05.24-web.2",
+  "packDigest": "2e63904cdd37fba5efb4f3c215b12d468f3fcf56c3a4419a11205eb1b543a404",
   "domain": "custom",
   "projectSlug": "lesser-host",
-  "generatedAt": "2026-05-26T02:59:33Z",
+  "generatedAt": "2026-05-26T16:12:07Z",
   "source": {
-    "commitSha": "2f067e8cedf52c17f3a657081d0b4977313bcf5e",
-    "branch": "theorymcp/equaltoai/host/project-39-m1.17-pack-bump-web.1"
+    "commitSha": "78c40e4a09e6d1980d8cbd0dc70c6fb1b9caa0c7",
+    "branch": "theorymcp/equaltoai/host/project-39-m2.14-m2.18-gov-pack"
   },
   "artifacts": {
     "planning": [
@@ -37,7 +37,9 @@
       "gov-infra/verifiers/sec/release-verification-preservation.sh",
       "gov-infra/verifiers/sec/trust-auth-preservation.sh",
       "gov-infra/verifiers/con/wire-mcp-route-ownership.sh",
-      "gov-infra/verifiers/sec/portal-stack-state-tenant-scoping.sh"
+      "gov-infra/verifiers/sec/portal-stack-state-tenant-scoping.sh",
+      "gov-infra/verifiers/sec/operator-drift-auth-gate.sh",
+      "gov-infra/verifiers/mai/wire-all-idempotency.sh"
     ],
     "evidence": [
       "gov-infra/evidence/gov-rubric-report.json",
@@ -49,7 +51,9 @@
       "gov-infra/evidence/SEC-9-output.log",
       "gov-infra/evidence/SEC-10-output.log",
       "gov-infra/evidence/CON-4-output.log",
-      "gov-infra/evidence/SEC-11-output.log"
+      "gov-infra/evidence/SEC-11-output.log",
+      "gov-infra/evidence/SEC-12-output.log",
+      "gov-infra/evidence/MAI-5-output.log"
     ]
   }
 }
