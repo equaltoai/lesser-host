@@ -1,9 +1,42 @@
+<!--
+@component
+Operator Provisioning list — adds per-row Kind badges (Project 39 M2.3,
+issue #429) and a top-of-page MCP-drift banner derived from the M2.9
+`/api/v1/operators/instances/drift` aggregation endpoint. When the M2.9
+endpoint is not yet present, the drift client returns an
+`endpoint-pending` sentinel and the banner renders a "telemetry pending"
+message rather than blocking the page (same fault-tolerance pattern as
+the M1.6 stack endpoint).
+
+Posture preserved:
+- Strict-CSP-safe: no inline scripts / styles / third-party origins.
+- Multi-tenant isolation: every row is gated through the existing
+  operator-JWT endpoint; drift aggregation is operator-scope only.
+- Trust-API instance-auth untouched; SEC-9 / SEC-10 change-locks not
+  engaged.
+
+Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M2.3
+-->
 <script lang="ts">
 	import { onMount } from 'svelte';
 
 	import type { ApiError } from 'src/lib/api/http';
-	import type { ListOperatorProvisionJobsResponse, OperatorProvisionJobListItem } from 'src/lib/api/operatorProvisioning';
-	import { listOperatorProvisionJobs, retryOperatorProvisionJob } from 'src/lib/api/operatorProvisioning';
+	import type {
+		ListOperatorProvisionJobsResponse,
+		ListOperatorUpdateJobsResult,
+		OperatorInstancesDriftResult,
+		OperatorProvisionJobListItem,
+		OperatorUpdateJobListItem,
+	} from 'src/lib/api/operatorProvisioning';
+	import {
+		listOperatorInstancesDrift,
+		listOperatorProvisionJobs,
+		listOperatorUpdateJobs,
+		retryOperatorProvisionJob,
+	} from 'src/lib/api/operatorProvisioning';
+	import JobKindBadge from 'src/lib/components/JobKindBadge.svelte';
+	import type { OperatorJobRow } from 'src/lib/components/operatorJobRow';
+	import { mergeJobRows } from 'src/lib/components/operatorJobRow';
 	import { logout } from 'src/lib/auth/logout';
 	import { linkProps, navigate } from 'src/lib/router';
 	import { Alert, Badge, Button, Card, CopyButton, Heading, Link, Select, Spinner, Text } from 'src/lib/ui';
@@ -13,10 +46,30 @@
 	let statusFilter = $state('queued');
 	let loading = $state(false);
 	let errorMessage = $state<string | null>(null);
-	let data = $state<ListOperatorProvisionJobsResponse | null>(null);
+	let provisionJobs = $state<OperatorProvisionJobListItem[]>([]);
+	let updateJobsResult = $state<ListOperatorUpdateJobsResult | null>(null);
 
 	let actingId = $state<string | null>(null);
 	let actionError = $state<string | null>(null);
+
+	// MCP-drift banner state — sourced from the M2.9 aggregation endpoint.
+	// `null` while not yet loaded; `endpoint-pending` if the M2.9 backend
+	// is not yet present; `data` once telemetry is available.
+	let drift = $state<OperatorInstancesDriftResult | null>(null);
+	let driftError = $state<string | null>(null);
+
+	/**
+	 * Unified feed: ProvisionJob rows + UpdateJob rows merged by
+	 * `updated_at` desc. Until the operator-scope UpdateJob endpoint
+	 * ships, the update half is empty and the page renders only
+	 * ProvisionJobs (with an info note above the list explaining the
+	 * partial state — see the template).
+	 */
+	const rows = $derived.by<OperatorJobRow[]>(() => {
+		const updates: OperatorUpdateJobListItem[] =
+			updateJobsResult?.kind === 'data' ? updateJobsResult.data.jobs : [];
+		return mergeJobRows(provisionJobs, updates);
+	});
 
 	function formatError(err: unknown): string {
 		if (!err) return 'unknown error';
@@ -39,11 +92,43 @@
 	async function load() {
 		errorMessage = null;
 		actionError = null;
-		data = null;
+		driftError = null;
+		provisionJobs = [];
+		updateJobsResult = null;
+		// Keep `drift` across reloads so the banner doesn't flicker on filter
+		// changes; only clear if a fresh load fails or the endpoint flips
+		// from `data` → `endpoint-pending` (which is a meaningful change).
 
 		loading = true;
 		try {
-			data = await listOperatorProvisionJobs(token, { status: statusFilter === 'all' ? 'all' : statusFilter, limit: 100 });
+			// Drift + UpdateJob aggregation are intentionally tolerated; if
+			// either backend endpoint is unavailable or errors, the ProvisionJob
+			// list must still render. Errors are surfaced inline (`driftError`
+			// for drift; `updateJobsResult.kind === 'endpoint-pending'` for
+			// the UpdateJob feed — see the template banner below).
+			const driftPromise = listOperatorInstancesDrift(token).catch((err) => {
+				driftError = formatError(err);
+				return null;
+			});
+
+			const updateJobsPromise = listOperatorUpdateJobs(token, {
+				status: statusFilter === 'all' ? 'all' : statusFilter,
+				limit: 100,
+			}).catch(() => null);
+
+			const provisionJobsPromise = listOperatorProvisionJobs(token, {
+				status: statusFilter === 'all' ? 'all' : statusFilter,
+				limit: 100,
+			});
+
+			const [driftRes, updateRes, provisionRes] = await Promise.all([
+				driftPromise,
+				updateJobsPromise,
+				provisionJobsPromise,
+			]);
+			drift = driftRes;
+			updateJobsResult = updateRes;
+			provisionJobs = provisionRes.jobs;
 		} catch (err) {
 			if ((err as Partial<ApiError>).status === 401) {
 				await logout();
@@ -56,11 +141,20 @@
 		}
 	}
 
-	async function retry(job: OperatorProvisionJobListItem) {
+	async function retry(row: OperatorJobRow) {
 		actionError = null;
-		actingId = job.id;
+		// Only ProvisionJobs have an operator retry endpoint today
+		// (`POST /api/v1/operators/provisioning/jobs/{id}/retry`). UpdateJob
+		// retry is the customer-portal flow and isn't exposed at operator
+		// scope yet. The row's `retryable` flag gates the CTA so this guard
+		// is defence-in-depth.
+		if (row.source !== 'provision' || !row.retryable) {
+			actionError = `Retry not supported for ${row.source} jobs at operator scope.`;
+			return;
+		}
+		actingId = row.id;
 		try {
-			await retryOperatorProvisionJob(token, job.id);
+			await retryOperatorProvisionJob(token, row.id);
 			await load();
 		} catch (err) {
 			if ((err as Partial<ApiError>).status === 401) {
@@ -89,6 +183,36 @@
 			<Button variant="outline" onclick={() => void load()} disabled={loading}>Refresh</Button>
 		</div>
 	</header>
+
+	{#if drift?.kind === 'data'}
+		{@const count = drift.data.summary?.mcp_wire_stale ?? 0}
+		{#if count > 0}
+			<Alert variant="warning" title="MCP wire drift detected">
+				<Text size="sm">
+					{count} managed {count === 1 ? 'instance is' : 'instances are'} on a wire-stale MCP
+					revision. Use the Stack Matrix or Wire-all CTA on
+					<Link {...linkProps('/operator/releases')} variant="default">/operator/releases</Link>
+					to remediate.
+				</Text>
+			</Alert>
+		{:else}
+			<Alert variant="info" title="Fleet wire-aligned">
+				<Text size="sm">All managed instances are wire-aligned with their target MCP revision.</Text>
+			</Alert>
+		{/if}
+	{:else if drift?.kind === 'endpoint-pending'}
+		<Alert variant="info" title="MCP drift telemetry pending">
+			<Text size="sm">
+				Awaiting the operator drift-aggregation endpoint
+				(<span class="op-provisioning__mono">/api/v1/operators/instances/drift</span>, M2.9).
+				The provisioning list still renders normally while the backend ships.
+			</Text>
+		</Alert>
+	{:else if driftError}
+		<Alert variant="warning" title="MCP drift load failed">
+			<Text size="sm">{driftError}</Text>
+		</Alert>
+	{/if}
 
 	<Card variant="outlined" padding="lg">
 		{#snippet header()}
@@ -119,71 +243,91 @@
 		</div>
 	{:else if errorMessage}
 		<Alert variant="error" title="Provisioning jobs">{errorMessage}</Alert>
-	{:else if data && data.jobs.length === 0}
+	{:else if rows.length === 0}
 		<Alert variant="info" title="No jobs">
 			<Text size="sm">No jobs found for this filter.</Text>
 		</Alert>
-	{:else if data}
+	{:else}
 		{#if actionError}
 			<Alert variant="error" title="Action failed">{actionError}</Alert>
 		{/if}
 
+		{#if updateJobsResult?.kind === 'endpoint-pending'}
+			<Alert variant="info" title="UpdateJob fleet feed pending">
+				<Text size="sm">
+					Awaiting the operator UpdateJob aggregation endpoint
+					(<span class="op-provisioning__mono">/api/v1/operators/updates</span>). Provision
+					rows render below; update-lesser / update-body / wire-mcp rows surface as soon
+					as the backend ships.
+				</Text>
+			</Alert>
+		{/if}
+
 		<div class="op-provisioning__list">
-			{#each data.jobs as job (job.id)}
+			{#each rows as row (row.id)}
 				<Card variant="outlined" padding="lg">
 					{#snippet header()}
 						<div class="op-provisioning__row">
 							<div class="op-provisioning__row-left">
-								<Heading level={3} size="lg"><span class="op-provisioning__mono">{job.id}</span></Heading>
+								<Heading level={3} size="lg"><span class="op-provisioning__mono">{row.id}</span></Heading>
+								<!--
+									Project 39 M2.3: per-row Kind badge derived per-source.
+									ProvisionJobs → 'provision'; UpdateJobs map per kind /
+									body_only / mcp_only via deriveUpdateJobKind() inside the
+									merge normalizer.
+								-->
+								<JobKindBadge kind={row.kind} size="sm" />
 								<Badge
-									variant={badgeForStatus(job.status).variant}
-									color={badgeForStatus(job.status).color}
+									variant={badgeForStatus(row.status).variant}
+									color={badgeForStatus(row.status).color}
 									size="sm"
 								>
-									{job.status}
+									{row.status}
 								</Badge>
 							</div>
 							<div class="op-provisioning__row-right">
-								<CopyButton size="sm" text={job.id} />
+								<CopyButton size="sm" text={row.id} />
 							</div>
 						</div>
 					{/snippet}
 
 					<div class="op-provisioning__meta">
 						<Text size="sm" color="secondary">
-							instance <span class="op-provisioning__mono">{job.instance_slug}</span>
-							{#if job.step}
-								· step <span class="op-provisioning__mono">{job.step}</span>
+							instance <span class="op-provisioning__mono">{row.instance_slug}</span>
+							{#if row.step}
+								· step <span class="op-provisioning__mono">{row.step}</span>
 							{/if}
 						</Text>
 						<Text size="sm" color="secondary">
-							updated <span class="op-provisioning__mono">{job.updated_at}</span>
-							· attempts <span class="op-provisioning__mono">{String(job.attempts)}</span>/{String(job.max_attempts || 0)}
+							updated <span class="op-provisioning__mono">{row.updated_at}</span>
+							{#if typeof row.attempts === 'number'}
+								· attempts <span class="op-provisioning__mono">{String(row.attempts)}</span>/{String(row.max_attempts || 0)}
+							{/if}
 						</Text>
-						{#if job.run_id}
+						{#if row.run_id}
 							<Text size="sm" color="secondary">
-								run <span class="op-provisioning__mono">{job.run_id}</span>
+								run <span class="op-provisioning__mono">{row.run_id}</span>
 							</Text>
 						{/if}
-						{#if job.request_id}
+						{#if row.request_id}
 							<Text size="sm" color="secondary">
-								request <span class="op-provisioning__mono">{job.request_id}</span>
+								request <span class="op-provisioning__mono">{row.request_id}</span>
 							</Text>
 						{/if}
-						{#if job.error_code || job.error_message}
+						{#if row.error_code || row.error_message}
 							<Text size="sm" color="secondary">
-								<span class="op-provisioning__mono">{job.error_code || 'error'}</span> {job.error_message || ''}
+								<span class="op-provisioning__mono">{row.error_code || 'error'}</span> {row.error_message || ''}
 							</Text>
 						{/if}
 					</div>
 
 					<div class="op-provisioning__row">
-						<Link {...linkProps(`/operator/provisioning/jobs/${job.id}`)} variant="default">View</Link>
-						<Link {...linkProps(`/operator/instances/${job.instance_slug}`)} variant="ghost">Open instance</Link>
-						{#if job.status === 'error'}
-							<Button variant="solid" onclick={() => void retry(job)} disabled={actingId === job.id}>Retry</Button>
+						<Link {...linkProps(row.detail_path)} variant="default">View</Link>
+						<Link {...linkProps(`/operator/instances/${row.instance_slug}`)} variant="ghost">Open instance</Link>
+						{#if row.retryable && row.status === 'error'}
+							<Button variant="solid" onclick={() => void retry(row)} disabled={actingId === row.id}>Retry</Button>
 						{/if}
-						{#if actingId === job.id}
+						{#if actingId === row.id}
 							<div class="op-provisioning__loading-inline">
 								<Spinner size="sm" />
 								<Text size="sm">Working…</Text>
@@ -193,10 +337,6 @@
 				</Card>
 			{/each}
 		</div>
-	{:else}
-		<Alert variant="warning" title="No data">
-			<Text size="sm">No response from provisioning endpoints.</Text>
-		</Alert>
 	{/if}
 </div>
 

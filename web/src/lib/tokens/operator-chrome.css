@@ -1,0 +1,149 @@
+/* ============================================================================
+ * Operator Console — dark warm-charcoal chrome
+ *
+ * Project 39 — M2.1 (issue #427).
+ *
+ * Scopes the warm-charcoal palette + amber-on-coffee accents to operator-
+ * only surfaces so the Operator Console is visually unmistakable from the
+ * Portal. Source-of-truth is the Claude Design handoff:
+ *
+ *   docs/design/web-ui-rework-2026-05-24/project/assets/app.css
+ *
+ * This file is intentionally SELF-CONTAINED — every colour resolves to a
+ * literal value rather than to a `--ds-*` token. The `src/lib/tokens/ds.css`
+ * + `gr-bridge.css` scaffolding is not yet wired into the runtime bundle
+ * (see the M0.2 scaffold-only note in `src/lib/tokens/index.ts`), so this
+ * file is consumed directly from `src/main.ts` instead of indirected
+ * through the token barrel. That guarantees the operator chrome ships
+ * regardless of when the broader DS bridge is plugged in.
+ *
+ * Two scoping selectors are supported for back-compat:
+ *
+ *   .shell--operator  — the canonical M0.6 / design-handoff class
+ *   .layout--operator — the existing `OperatorLayout.svelte` wrapper class
+ *
+ * Strict single-origin CSP (`style-src 'self'`) is preserved: this file
+ * is loaded through host's own bundle, never inline.
+ *
+ * Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M2.1
+ * Verified by gov-infra/verifiers/sec/operator-chrome-bundled.sh (M2.1
+ *   regression guard added at the same time as the bundle-fix; see PR
+ *   #512 review 4363557132 for the original miss).
+ * ========================================================================== */
+
+.shell--operator,
+.layout--operator {
+  /* Distinct operator surface: cooler, darker parchment with subtle warning tint */
+  --op-chrome-page-gradient:
+    radial-gradient(circle at top right, rgba(178, 80, 24, 0.18), transparent 32rem),
+    radial-gradient(circle at top left, rgba(82, 50, 25, 0.18), transparent 28rem),
+    linear-gradient(180deg, #2a1f17 0%, #1c1410 100%);
+
+  /* Foreground reads on dark coffee (warm parchment text) */
+  --op-chrome-fg-1: #faf4ea;
+  --op-chrome-fg-2: rgba(250, 244, 234, 0.78);
+  --op-chrome-fg-3: rgba(250, 244, 234, 0.58);
+
+  /* Background scale shifts to warm charcoal */
+  --op-chrome-bg-base: #1c1410;
+  --op-chrome-bg-surface: rgba(40, 30, 22, 0.92);
+  --op-chrome-bg-glass: rgba(40, 30, 22, 0.78);
+  --op-chrome-bg-raised: rgba(60, 44, 32, 0.62);
+
+  /* Borders gain a hint of warmth so they're visible on dark coffee */
+  --op-chrome-border-subtle: rgba(255, 235, 200, 0.08);
+  --op-chrome-border-default: rgba(255, 235, 200, 0.14);
+  --op-chrome-border-strong: rgba(255, 235, 200, 0.26);
+
+  /* Amber accents (warning-500 in the canonical DS palette) */
+  --op-chrome-accent-amber: #f59e0b;
+  --op-chrome-accent-amber-hover: #b45309;
+  --op-chrome-accent-amber-soft: rgba(245, 158, 11, 0.18);
+  --op-chrome-accent-amber-seam: rgba(245, 158, 11, 0.55);
+
+  /* Status palette — used by descendant badge / alert overrides below */
+  --op-chrome-success-soft: rgba(34, 197, 94, 0.20);
+  --op-chrome-success-text: #86efac;
+  --op-chrome-warning-soft: rgba(245, 158, 11, 0.22);
+  --op-chrome-warning-text: #fcd34d;
+  --op-chrome-error-soft: rgba(239, 68, 68, 0.22);
+  --op-chrome-error-text: #fca5a5;
+
+  /* Page surface */
+  color: var(--op-chrome-fg-1);
+  background: var(--op-chrome-bg-base);
+  background-image: var(--op-chrome-page-gradient);
+  background-attachment: fixed;
+}
+
+/* Sidebar seam: amber-tint accent so Portal-vs-Operator is immediately
+ * visible at the brand-mark column. */
+.shell--operator .layout__sidebar,
+.layout--operator .layout__sidebar {
+  border-right: 2px solid var(--op-chrome-accent-amber-seam);
+  background: var(--op-chrome-bg-glass);
+  color: var(--op-chrome-fg-1);
+}
+
+/* NOTE — no `:global(...)` selectors anywhere in this file. `:global()` is
+ * a Svelte-scoped-styles construct (and a Lightning CSS Module syntax);
+ * this file is a plain global stylesheet imported from `src/main.ts`, so
+ * its selectors already apply globally and any `:global()` wrapping is
+ * invalid CSS that the Lightning CSS minifier rejects with an
+ * "unrecognized pseudo-class" warning. Same precedent as `ds.css`, which
+ * documents: "no `:global()` to keep these usable as plain CSS (closes
+ * the 2026-05-16 LightningCSS feedback locally)." */
+
+/* Active-route emphasis in dark chrome — `aria-current="page"` pattern
+ * matches the rest of the host nav (see PR #511). */
+.shell--operator .layout__nav [aria-current="page"],
+.layout--operator .layout__nav [aria-current="page"] {
+  background: var(--op-chrome-accent-amber-soft);
+  color: var(--op-chrome-fg-1);
+}
+
+/* Sidebar nav links inherit the dark-on-warm text colour. */
+.shell--operator .layout__nav a,
+.layout--operator .layout__nav a {
+  color: var(--op-chrome-fg-2);
+}
+.shell--operator .layout__nav a:hover,
+.layout--operator .layout__nav a:hover {
+  color: var(--op-chrome-fg-1);
+}
+
+/* Footer + user block on the dark sidebar */
+.shell--operator .layout__footer,
+.layout--operator .layout__footer {
+  border-top: 1px solid var(--op-chrome-border-subtle);
+  color: var(--op-chrome-fg-2);
+}
+
+/* Status badges in dark chrome shift to higher-contrast palettes so the
+ * meaning survives the lower-luminance backdrop. The selectors target
+ * descendant badges from any source — host-local or greater-components. */
+.shell--operator .badge--success,
+.layout--operator .badge--success {
+  background: var(--op-chrome-success-soft);
+  color: var(--op-chrome-success-text);
+}
+.shell--operator .badge--warning,
+.layout--operator .badge--warning {
+  background: var(--op-chrome-warning-soft);
+  color: var(--op-chrome-warning-text);
+}
+.shell--operator .badge--error,
+.layout--operator .badge--error {
+  background: var(--op-chrome-error-soft);
+  color: var(--op-chrome-error-text);
+}
+
+/* Mobile collapse: the seam shifts to a bottom-edge accent so the
+ * operator-vs-portal cue survives the column→row layout. */
+@media (max-width: 768px) {
+  .shell--operator .layout__sidebar,
+  .layout--operator .layout__sidebar {
+    border-right: none;
+    border-bottom: 2px solid var(--op-chrome-accent-amber-seam);
+  }
+}

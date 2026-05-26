@@ -1,3 +1,21 @@
+<!--
+@component
+Operator Provisioning job detail — adds a per-step vertical timeline
+(Project 39 M2.4, issue #430). The timeline shows the kind-specific
+step list per the provisioning walk, marks the active step, and exposes
+a "View live CodeBuild log" link on the active node so operators can
+drop into the AWS console for live log streaming. Existing detail card,
+retry / adopt / note flows are preserved unchanged.
+
+Posture preserved:
+- Strict-CSP-safe: no inline scripts / styles / third-party origins;
+  the CodeBuild log link uses `rel="noopener noreferrer"` for the new tab.
+- Multi-tenant isolation: read is operator-JWT gated; the AWS console
+  link follows the operator's IAM session.
+- Trust-API instance-auth untouched; SEC-9 change-lock not engaged.
+
+Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M2.4
+-->
 <script lang="ts">
 	import { onMount } from 'svelte';
 
@@ -9,6 +27,9 @@
 		getOperatorProvisionJob,
 		retryOperatorProvisionJob,
 	} from 'src/lib/api/operatorProvisioning';
+	import JobKindBadge from 'src/lib/components/JobKindBadge.svelte';
+	import { deriveProvisionJobKind } from 'src/lib/components/jobKind';
+	import ProvisioningTimeline from 'src/lib/components/ProvisioningTimeline.svelte';
 	import { logout } from 'src/lib/auth/logout';
 	import { linkProps, navigate } from 'src/lib/router';
 	import { Alert, Badge, Button, Card, CopyButton, DefinitionItem, DefinitionList, Heading, Link, Spinner, Text, TextArea, TextField } from 'src/lib/ui';
@@ -218,6 +239,34 @@
 			{#if retryError}
 				<Alert variant="error" title="Retry failed">{retryError}</Alert>
 			{/if}
+		</Card>
+
+		<!--
+			Project 39 M2.4: per-step vertical timeline. Kind is 'provision' here
+			(this page is the operator ProvisionJob detail). The active step is
+			sourced from `job.step`. The live-log link is intentionally NOT
+			synthesised from `run_id` (which is a build identifier, not a console
+			URL) — arch review 4363557132 Blocker 3. ProvisionJob does not yet
+			expose a real `run_url`; the link will surface automatically once the
+			backend adds the field. Until then operators can copy the run_id from
+			the Overview card and navigate the AWS console manually.
+		-->
+		<Card variant="outlined" padding="lg">
+			{#snippet header()}
+				<div class="op-job__row">
+					<div class="op-job__row-left">
+						<Heading level={3} size="lg">Timeline</Heading>
+						<JobKindBadge kind={deriveProvisionJobKind()} size="sm" />
+					</div>
+				</div>
+			{/snippet}
+			<ProvisioningTimeline
+				kind={deriveProvisionJobKind()}
+				activeStep={job.step}
+				status={job.status}
+				runUrl={undefined}
+				errorMessage={job.error_message}
+			/>
 		</Card>
 
 		{#if job.status === 'error'}

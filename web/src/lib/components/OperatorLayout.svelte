@@ -18,10 +18,18 @@
 	}
 </script>
 
-<div class="layout layout--operator">
+<!--
+	Project 39 M2.1 (issue #427): the wrapper carries both `layout--operator`
+	(legacy class used by the original sidebar tint) and `shell--operator`
+	(canonical design-handoff class) so the operator-chrome token overrides
+	in `src/lib/tokens/operator-chrome.css` apply uniformly. The data-shell
+	attribute is a stable hook for future analytics and gov-rubric checks.
+-->
+<div class="layout layout--operator shell--operator" data-shell="operator">
 	<nav class="layout__sidebar">
 		<div class="layout__brand">
 			<Heading level={2} size="xl">Operator Console</Heading>
+			<Text size="sm" color="secondary">Managed-hosting control plane</Text>
 		</div>
 		<div class="layout__nav">
 			<Link
@@ -58,6 +66,13 @@
 				aria-current={isActive('/operator/provisioning') ? 'page' : undefined}
 			>
 				Provisioning
+			</Link>
+			<Link
+				{...linkProps('/operator/releases')}
+				variant="ghost"
+				aria-current={isActive('/operator/releases') ? 'page' : undefined}
+			>
+				Releases
 			</Link>
 			<Link
 				{...linkProps('/operator/instances')}
@@ -121,10 +136,12 @@
 		gap: var(--gr-spacing-scale-6);
 		background: var(--gr-color-background-surface);
 	}
-	.layout--operator .layout__sidebar {
-		/* Add a subtle tint or border to distinguish operator view if desired */
-		border-right: 2px solid var(--gr-color-error-hover);
-	}
+	/*
+	 * The operator-specific sidebar seam is owned by operator-chrome.css so
+	 * the amber tint reads against the warm-charcoal page gradient. The
+	 * legacy `--gr-color-error-hover` red is replaced — see M2.1 design
+	 * handoff (docs/design/web-ui-rework-2026-05-24/project/assets/app.css).
+	 */
 	.layout__brand {
 		padding: 0 var(--gr-spacing-scale-2);
 		margin-bottom: var(--gr-spacing-scale-2);
@@ -167,7 +184,7 @@
 		.layout__sidebar {
 			width: 100%;
 			border-right: none;
-			border-bottom: 2px solid var(--gr-color-error-hover);
+			/* Operator-specific bottom-edge seam owned by operator-chrome.css */
 			padding: var(--gr-spacing-scale-4);
 		}
 		.layout__nav {

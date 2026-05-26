@@ -15,6 +15,7 @@
 	import InstanceSupport from 'src/pages/operator/InstanceSupport.svelte';
 	import ProvisioningJobDetail from 'src/pages/operator/ProvisioningJobDetail.svelte';
 	import ProvisioningJobs from 'src/pages/operator/ProvisioningJobs.svelte';
+	import Releases from 'src/pages/operator/Releases.svelte';
 	import SoulOperationDetail from 'src/pages/operator/SoulOperationDetail.svelte';
 	import SoulRegistry from 'src/pages/operator/SoulRegistry.svelte';
 	import TipRegistry from 'src/pages/operator/TipRegistry.svelte';
@@ -33,6 +34,7 @@
 		| { kind: 'externalRegistrations' }
 		| { kind: 'provisioningJobs' }
 		| { kind: 'provisioningJobDetail'; id: string }
+		| { kind: 'releases' }
 		| { kind: 'tipRegistry' }
 		| { kind: 'tipRegistryOperation'; id: string }
 		| { kind: 'soulRegistry' }
@@ -66,6 +68,10 @@
 				return { kind: 'provisioningJobs' };
 			}
 			if (parts.length === 1) return { kind: 'provisioningJobs' };
+			return { kind: 'notFound' };
+		}
+		if (parts[0] === 'releases') {
+			if (parts.length === 1) return { kind: 'releases' };
 			return { kind: 'notFound' };
 		}
 		if (parts[0] === 'tip-registry') {
@@ -183,6 +189,8 @@
 				<ProvisioningJobs token={$session.token} />
 			{:else if operatorRoute.kind === 'provisioningJobDetail'}
 				<ProvisioningJobDetail token={$session.token} id={operatorRoute.id} />
+			{:else if operatorRoute.kind === 'releases'}
+				<Releases token={$session.token} />
 			{:else if operatorRoute.kind === 'instances'}
 				<InstanceSupport token={$session.token} />
 			{:else if operatorRoute.kind === 'instanceDetail'}
