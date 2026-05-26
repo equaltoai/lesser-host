@@ -22,6 +22,7 @@ func LambdaInit() (DB, error) {
 		&models.BillingPaymentMethod{},
 		&models.BillingProfile{},
 		&models.ControlPlaneConfig{},
+		&models.CostTelemetry{},
 		&models.CreditPurchase{},
 		&models.Domain{},
 		&models.ExternalInstanceRegistration{},
