@@ -23,9 +23,12 @@ Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M2.5
 	import { onMount } from 'svelte';
 
 	import type { ApiError } from 'src/lib/api/http';
+	import type { OperatorInstancesDriftResult } from 'src/lib/api/operatorProvisioning';
+	import { listOperatorInstancesDrift } from 'src/lib/api/operatorProvisioning';
 	import type { ListOperatorReleasesResult } from 'src/lib/api/operatorReleases';
 	import { channelEntries, listOperatorReleases } from 'src/lib/api/operatorReleases';
 	import ReleaseTimeline from 'src/lib/components/ReleaseTimeline.svelte';
+	import StackMatrix from 'src/lib/components/StackMatrix.svelte';
 	import { logout } from 'src/lib/auth/logout';
 	import { navigate } from 'src/lib/router';
 	import { Alert, Button, Card, Heading, Spinner, Text } from 'src/lib/ui';
@@ -35,6 +38,8 @@ Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M2.5
 	let loading = $state(false);
 	let errorMessage = $state<string | null>(null);
 	let releases = $state<ListOperatorReleasesResult | null>(null);
+	let drift = $state<OperatorInstancesDriftResult | null>(null);
+	let wireActionInfo = $state<string | null>(null);
 
 	function formatError(err: unknown): string {
 		if (!err) return 'unknown error';
@@ -48,11 +53,20 @@ Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M2.5
 
 	async function load() {
 		errorMessage = null;
+		wireActionInfo = null;
 		releases = null;
+		drift = null;
 
 		loading = true;
 		try {
-			releases = await listOperatorReleases(token);
+			// Load releases + drift in parallel. Drift powers the Stack Matrix;
+			// neither blocks the other.
+			const [r, d] = await Promise.all([
+				listOperatorReleases(token),
+				listOperatorInstancesDrift(token).catch(() => null),
+			]);
+			releases = r;
+			drift = d;
 		} catch (err) {
 			if ((err as Partial<ApiError>).status === 401) {
 				await logout();
@@ -62,6 +76,19 @@ Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M2.5
 			errorMessage = formatError(err);
 		} finally {
 			loading = false;
+		}
+	}
+
+	/**
+	 * Per-row "Wire MCP" handler emitted by the Stack Matrix. The actual
+	 * remediation endpoint is M2.10; until that ships we surface an
+	 * info banner explaining the action, the slug, and the next-step
+	 * link so the operator can take manual action from the per-slug
+	 * detail page.
+	 */
+	function handleStackAction(slug: string, action: 'wire-mcp') {
+		if (action === 'wire-mcp') {
+			wireActionInfo = `Wire MCP requested for "${slug}". The fleet remediation endpoint (M2.10) ships in a follow-on commit; use the per-instance detail page for manual remediation in the meantime.`;
 		}
 	}
 
@@ -115,6 +142,29 @@ Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M2.5
 			</Card>
 		</div>
 	{/if}
+
+	{#if wireActionInfo}
+		<Alert variant="info" title="Wire MCP requested">
+			<Text size="sm">{wireActionInfo}</Text>
+		</Alert>
+	{/if}
+
+	<Card variant="outlined" padding="lg">
+		{#snippet header()}
+			<Heading level={3} size="lg">Stack matrix</Heading>
+		{/snippet}
+		{#if drift?.kind === 'data'}
+			<StackMatrix entries={drift.data.instances} onAction={handleStackAction} />
+		{:else if drift?.kind === 'endpoint-pending'}
+			<Text size="sm" color="secondary">
+				Stack matrix telemetry is pending the M2.9
+				<span class="op-releases__mono">/api/v1/operators/instances/drift</span> endpoint.
+				The matrix component lights up the moment the backend ships.
+			</Text>
+		{:else}
+			<Text size="sm" color="secondary">No fleet drift data loaded.</Text>
+		{/if}
+	</Card>
 </div>
 
 <style>
