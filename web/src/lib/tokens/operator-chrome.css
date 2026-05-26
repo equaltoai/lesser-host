@@ -1,0 +1,115 @@
+/* ============================================================================
+ * Operator Console — dark warm-charcoal chrome
+ *
+ * Project 39 — M2.1 (issue #427).
+ *
+ * Scopes the `--ds-*` semantic tokens to operator-only surfaces so the
+ * Operator Console is visually unmistakable from the Portal: deep
+ * cooler-than-night warm-charcoal background, amber-on-coffee accents,
+ * pull-out warning tint at the sidebar seam. Source-of-truth is the
+ * Claude Design handoff:
+ *
+ *   docs/design/web-ui-rework-2026-05-24/project/assets/app.css
+ *
+ * Two scoping selectors are supported and intentionally redundant so
+ * the chrome applies regardless of which shell wrapper is mounted:
+ *
+ *   .shell--operator  — the canonical M0.6 / design-handoff class
+ *   .layout--operator — the existing `OperatorLayout.svelte` class
+ *
+ * Apply at the wrapper level (sidebar + content); never at :root, so
+ * Portal / Trust / Account surfaces keep their parchment baseline.
+ *
+ * No inline styles, no third-party origins. Strict single-origin CSP
+ * (`style-src 'self'`) is preserved: this file is loaded through the
+ * `tokens/index.ts` import barrel from host's own bundle.
+ *
+ * Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M2.1
+ * ========================================================================== */
+
+.shell--operator,
+.layout--operator {
+  /* Distinct operator surface: cooler, darker parchment with subtle warning tint */
+  --ds-page-gradient:
+    radial-gradient(circle at top right, rgba(178, 80, 24, 0.18), transparent 32rem),
+    radial-gradient(circle at top left, rgba(82, 50, 25, 0.18), transparent 28rem),
+    linear-gradient(180deg, #2a1f17 0%, #1c1410 100%);
+
+  /* Foreground reads on dark coffee */
+  --ds-fg-1: #faf4ea;
+  --ds-fg-2: rgba(250, 244, 234, 0.78);
+  --ds-fg-3: rgba(250, 244, 234, 0.58);
+  --ds-fg-disabled: rgba(250, 244, 234, 0.32);
+
+  /* Background scale shifts to warm charcoal */
+  --ds-bg-base: #1c1410;
+  --ds-bg-primary: #1c1410;
+  --ds-bg-secondary: #221911;
+  --ds-bg-tertiary: #2c2118;
+  --ds-bg-surface: rgba(40, 30, 22, 0.92);
+  --ds-bg-glass: rgba(40, 30, 22, 0.78);
+  --ds-bg-raised: rgba(60, 44, 32, 0.62);
+
+  /* Borders gain a hint of warmth so they're visible on dark coffee */
+  --ds-border-subtle: rgba(255, 235, 200, 0.08);
+  --ds-border-default: rgba(255, 235, 200, 0.14);
+  --ds-border-strong: rgba(255, 235, 200, 0.26);
+
+  /* Primary action becomes amber (warning-500 is the canonical amber) */
+  --ds-action-primary: var(--ds-warning-500);
+  --ds-action-primary-hover: var(--ds-warning-700);
+
+  /* Shadows deepen for the dark surface */
+  --ds-shadow-lg: 0 18px 40px rgba(0, 0, 0, 0.35);
+  --ds-shadow-md: 0 10px 24px rgba(0, 0, 0, 0.28);
+  --ds-shadow-button-primary: 0 18px 40px rgba(245, 158, 11, 0.28);
+
+  color: var(--ds-fg-1);
+  background: var(--ds-bg-base);
+}
+
+/* Sidebar seam: amber-tint accent so Portal-vs-Operator is immediately
+ * visible at the brand-mark column. */
+.shell--operator .layout__sidebar,
+.layout--operator .layout__sidebar {
+  border-right: 2px solid color-mix(in srgb, var(--ds-warning-500) 55%, transparent);
+  background: var(--ds-bg-glass);
+}
+
+/* Active-route emphasis in dark chrome — `aria-current="page"` pattern
+ * matches the rest of the host nav (see PR #511). */
+.shell--operator .layout__nav :global([aria-current="page"]),
+.layout--operator .layout__nav :global([aria-current="page"]) {
+  background: color-mix(in srgb, var(--ds-warning-500) 18%, transparent);
+}
+
+/* Status badges in dark chrome shift to higher-contrast palettes so the
+ * meaning survives the lower-luminance backdrop. */
+.shell--operator :global(.badge--success),
+.layout--operator :global(.badge--success) {
+  background: color-mix(in srgb, var(--ds-success-500) 20%, transparent);
+  color: var(--ds-success-300);
+  border-color: color-mix(in srgb, var(--ds-success-500) 40%, transparent);
+}
+.shell--operator :global(.badge--warning),
+.layout--operator :global(.badge--warning) {
+  background: color-mix(in srgb, var(--ds-warning-500) 22%, transparent);
+  color: var(--ds-warning-300);
+  border-color: color-mix(in srgb, var(--ds-warning-500) 40%, transparent);
+}
+.shell--operator :global(.badge--error),
+.layout--operator :global(.badge--error) {
+  background: color-mix(in srgb, var(--ds-error-500) 22%, transparent);
+  color: var(--ds-error-300);
+  border-color: color-mix(in srgb, var(--ds-error-500) 40%, transparent);
+}
+
+/* Mobile collapse: the seam shifts to a bottom-edge accent so the
+ * operator-vs-portal cue survives the column→row layout. */
+@media (max-width: 768px) {
+  .shell--operator .layout__sidebar,
+  .layout--operator .layout__sidebar {
+    border-right: none;
+    border-bottom: 2px solid color-mix(in srgb, var(--ds-warning-500) 55%, transparent);
+  }
+}
