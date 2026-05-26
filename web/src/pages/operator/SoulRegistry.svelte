@@ -1,3 +1,45 @@
+<!--
+@component
+Operator Soul registry — re-skinned for the M2.1 dark warm-charcoal chrome.
+
+Project 39 M3.5 (issue #449). Re-skins the Safe-mediated soul-registry
+governance surface at `/operator/soul-registry`. Publishes (reputation root
+/ validation root) and lists open governance operations by status. Adds a
+top-of-page `SummaryStrip` with the active status-filter bucket count and
+per-field `CopyButton` on the Safe-payload preview so an operator handing
+off to Safe for signing can paste each field individually.
+
+Posture preserved (and elevated because soul-registry mutations touch
+the soul-registry namespace contract that lesser-soul publishes — every
+mutation here is, by host's discipline, a Safe-ready governance event):
+- Strict-CSP-safe: no inline scripts / styles / third-party origins; the
+  Safe-app `frame-ancestors` exception lives in `safeAppCsp` and is
+  unchanged.
+- Safe-ready governance preserved: Open-in-Safe handoff continues to
+  stage a short-lived operator session via `stageSafeAppSessionHandoff`
+  and to build the Safe-app launch URL via `buildSafeWalletAppUrl` —
+  no signer-bypass paths added, no new Safe contract calls introduced.
+- On-chain integrity untouched: no contract changes, no mint-signer
+  surface, no off-chain reconciliation contract change.
+- Multi-tenant isolation: operator-scope only; soul-registry mutations
+  govern the registry namespace, not per-tenant data.
+- Trust-API instance-auth untouched; SEC-9 / SEC-12 change-locks not
+  engaged.
+
+Behavior preserved:
+- Same `listSoulOperations` + `publishSoulReputationRoot` +
+  `publishSoulValidationRoot` + `soulPublicGetConfig` endpoints.
+- Same Safe-launch handoff with `stageSafeAppSessionHandoff` +
+  `buildSafeWalletAppUrl`, same chain-id resolution, same clipboard
+  fallback when popup blockers fire.
+- Same operator-JWT requirement; same 401 → logout / login navigation
+  guard; same status-filter contract (pending / proposed / executed /
+  failed).
+- No new operator-JWT routes; no new write endpoints; no new Safe
+  contract calls.
+
+Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M3.5
+-->
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { get } from 'svelte/store';
@@ -8,6 +50,8 @@
 	import { logout } from 'src/lib/auth/logout';
 	import { linkProps, navigate, safeAppRootUrl, stageSafeAppTarget } from 'src/lib/router';
 	import { session, stageSafeAppSessionHandoff } from 'src/lib/session';
+	import { StatCard, SummaryStrip } from 'src/lib/shell';
+	import type { StatCardStatus } from 'src/lib/shell';
 	import { Alert, Badge, Button, Card, CopyButton, DefinitionItem, DefinitionList, Heading, Link, Select, Spinner, Text } from 'src/lib/ui';
 	import { buildSafeWalletAppUrl } from 'src/lib/wallet/safeApp';
 
@@ -41,6 +85,18 @@
 		if (s === 'proposed' || s === 'pending') return { variant: 'outlined', color: 'warning' };
 		if (s === 'failed') return { variant: 'filled', color: 'error' };
 		return { variant: 'outlined', color: 'gray' };
+	}
+
+	/**
+	 * Mirror TipRegistry.bucketStatus(): pending-bucket non-zero → amber
+	 * (operator attention for sign-off); failed-bucket non-zero → danger;
+	 * proposed / executed are informational.
+	 */
+	function bucketStatus(filter: string, count: number | null): StatCardStatus {
+		if (count == null) return 'default';
+		if (filter === 'pending' && count > 0) return 'warning';
+		if (filter === 'failed' && count > 0) return 'danger';
+		return 'default';
 	}
 
 	function parseSafePayload(op: SoulOperation): { safe_address: string; to: string; value: string; data: string } | null {
@@ -169,6 +225,8 @@
 		}
 	}
 
+	const bucketCount = $derived<number | null>(ops ? ops.operations.length : null);
+
 	onMount(() => {
 		void loadConfig();
 		void load();
@@ -185,6 +243,14 @@
 			<Button variant="outline" onclick={() => void load()} disabled={loading}>Refresh</Button>
 		</div>
 	</header>
+
+	<SummaryStrip label="Operations in current bucket" columns={1} gap="md">
+		<StatCard
+			label={`Operations · status ${statusFilter}`}
+			value={String(bucketCount ?? 0)}
+			status={bucketStatus(statusFilter, bucketCount)}
+		/>
+	</SummaryStrip>
 
 	<Card variant="outlined" padding="lg">
 		{#snippet header()}
@@ -246,11 +312,38 @@
 			</div>
 
 			{#if res.safe_tx}
+				<!--
+					Safe-payload preview keeps each field's copy-to-clipboard
+					adjacent to its value so an operator handing off to Safe
+					for signing can paste each field individually. Mirrors the
+					M3.4 Tip-registry preview. tx-hash reconciliation lives on
+					the per-operation detail surface.
+				-->
 				<DefinitionList>
-					<DefinitionItem label="Safe" monospace>{res.safe_tx.safe_address}</DefinitionItem>
-					<DefinitionItem label="To" monospace>{res.safe_tx.to}</DefinitionItem>
-					<DefinitionItem label="Value" monospace>{res.safe_tx.value}</DefinitionItem>
-					<DefinitionItem label="Data" monospace>{res.safe_tx.data}</DefinitionItem>
+					<DefinitionItem label="Safe" monospace>
+						<span class="op-soul__safe-row">
+							<span>{res.safe_tx.safe_address}</span>
+							<CopyButton size="sm" text={res.safe_tx.safe_address} />
+						</span>
+					</DefinitionItem>
+					<DefinitionItem label="To" monospace>
+						<span class="op-soul__safe-row">
+							<span>{res.safe_tx.to}</span>
+							<CopyButton size="sm" text={res.safe_tx.to} />
+						</span>
+					</DefinitionItem>
+					<DefinitionItem label="Value" monospace>
+						<span class="op-soul__safe-row">
+							<span>{res.safe_tx.value}</span>
+							<CopyButton size="sm" text={res.safe_tx.value} />
+						</span>
+					</DefinitionItem>
+					<DefinitionItem label="Data" monospace>
+						<span class="op-soul__safe-row">
+							<span>{res.safe_tx.data}</span>
+							<CopyButton size="sm" text={res.safe_tx.data} />
+						</span>
+					</DefinitionItem>
 				</DefinitionList>
 			{/if}
 		</Card>
@@ -419,8 +512,26 @@
 		flex-wrap: wrap;
 	}
 
+	/* Inline Safe-payload row — see TipRegistry.svelte (M3.4) for rationale. */
+	.op-soul__safe-row {
+		display: inline-flex;
+		gap: var(--gr-spacing-scale-2);
+		align-items: center;
+		flex-wrap: wrap;
+		word-break: break-all;
+	}
+
+	/* Canonical mono token chain — see UserApprovals.svelte (M3.1) for rationale. */
 	.op-soul__mono {
-		font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New',
+		font-family:
+			var(--gr-typography-fontFamily-mono),
+			ui-monospace,
+			SFMono-Regular,
+			Menlo,
+			Monaco,
+			Consolas,
+			'Liberation Mono',
+			'Courier New',
 			monospace;
 	}
 </style>
