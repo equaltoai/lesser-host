@@ -5,6 +5,8 @@ export interface BudgetMonthResponse {
 	month: string;
 	included_credits: number;
 	used_credits: number;
+	/** Server-computed remaining credits (M1.12 — lands with PR #506). Computed client-side as fallback when absent. */
+	remaining_credits?: number;
 	updated_at?: string;
 }
 
@@ -54,6 +56,8 @@ export interface UsageSummaryResponse {
 	discount_credits: number;
 	included_credits?: number;
 	used_credits?: number;
+	/** Server-computed remaining credits (M1.12 — lands with PR #506). Computed client-side as fallback when absent. */
+	remaining_credits?: number;
 }
 
 export function portalListBudgets(token: string, slug: string): Promise<ListBudgetsResponse> {
