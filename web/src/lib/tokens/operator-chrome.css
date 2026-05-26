@@ -85,21 +85,30 @@
   color: var(--op-chrome-fg-1);
 }
 
+/* NOTE — no `:global(...)` selectors anywhere in this file. `:global()` is
+ * a Svelte-scoped-styles construct (and a Lightning CSS Module syntax);
+ * this file is a plain global stylesheet imported from `src/main.ts`, so
+ * its selectors already apply globally and any `:global()` wrapping is
+ * invalid CSS that the Lightning CSS minifier rejects with an
+ * "unrecognized pseudo-class" warning. Same precedent as `ds.css`, which
+ * documents: "no `:global()` to keep these usable as plain CSS (closes
+ * the 2026-05-16 LightningCSS feedback locally)." */
+
 /* Active-route emphasis in dark chrome — `aria-current="page"` pattern
  * matches the rest of the host nav (see PR #511). */
-.shell--operator .layout__nav :global([aria-current="page"]),
-.layout--operator .layout__nav :global([aria-current="page"]) {
+.shell--operator .layout__nav [aria-current="page"],
+.layout--operator .layout__nav [aria-current="page"] {
   background: var(--op-chrome-accent-amber-soft);
   color: var(--op-chrome-fg-1);
 }
 
 /* Sidebar nav links inherit the dark-on-warm text colour. */
-.shell--operator .layout__nav :global(a),
-.layout--operator .layout__nav :global(a) {
+.shell--operator .layout__nav a,
+.layout--operator .layout__nav a {
   color: var(--op-chrome-fg-2);
 }
-.shell--operator .layout__nav :global(a:hover),
-.layout--operator .layout__nav :global(a:hover) {
+.shell--operator .layout__nav a:hover,
+.layout--operator .layout__nav a:hover {
   color: var(--op-chrome-fg-1);
 }
 
@@ -113,18 +122,18 @@
 /* Status badges in dark chrome shift to higher-contrast palettes so the
  * meaning survives the lower-luminance backdrop. The selectors target
  * descendant badges from any source — host-local or greater-components. */
-.shell--operator :global(.badge--success),
-.layout--operator :global(.badge--success) {
+.shell--operator .badge--success,
+.layout--operator .badge--success {
   background: var(--op-chrome-success-soft);
   color: var(--op-chrome-success-text);
 }
-.shell--operator :global(.badge--warning),
-.layout--operator :global(.badge--warning) {
+.shell--operator .badge--warning,
+.layout--operator .badge--warning {
   background: var(--op-chrome-warning-soft);
   color: var(--op-chrome-warning-text);
 }
-.shell--operator :global(.badge--error),
-.layout--operator :global(.badge--error) {
+.shell--operator .badge--error,
+.layout--operator .badge--error {
   background: var(--op-chrome-error-soft);
   color: var(--op-chrome-error-text);
 }

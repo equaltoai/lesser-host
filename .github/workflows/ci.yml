@@ -112,6 +112,11 @@ jobs:
       # ensure operator-chrome.css actually reaches the built CSS bundle.
       # Runs after `npm run build` produces web/dist/.
       - run: bash gov-infra/verifiers/sec/operator-chrome-bundled.sh
+      # PR #512 arch follow-up: plain-CSS files must not contain
+      # `:global(...)` (a Svelte-scoped-styles construct that becomes an
+      # unrecognised pseudo-class in standalone .css files and trips a
+      # Lightning CSS warning on every build).
+      - run: bash gov-infra/verifiers/sec/web-css-no-svelte-global.sh
 
   contract-verify:
     runs-on: ubuntu-latest
