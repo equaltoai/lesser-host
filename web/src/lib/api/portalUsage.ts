@@ -5,6 +5,8 @@ export interface BudgetMonthResponse {
 	month: string;
 	included_credits: number;
 	used_credits: number;
+	/** Server-computed remaining credits (M1.12 — lands with PR #506). Computed client-side as fallback when absent. */
+	remaining_credits?: number;
 	updated_at?: string;
 }
 
@@ -47,6 +49,12 @@ export interface UsageSummaryResponse {
 	requests: number;
 	cache_hits: number;
 	cache_misses: number;
+	/**
+	 * Cache hit ratio as a 0.0–1.0 float (NOT a 0–100 percentage).
+	 * Server computes `cacheHits / totalRequests`; see
+	 * `internal/controlplane/handlers_portal_instances.go` `cacheHitRate`.
+	 * Format with `formatPercent` (multiplies by 100) at the call site.
+	 */
 	cache_hit_rate: number;
 	list_credits: number;
 	requested_credits: number;
@@ -54,6 +62,8 @@ export interface UsageSummaryResponse {
 	discount_credits: number;
 	included_credits?: number;
 	used_credits?: number;
+	/** Server-computed remaining credits (M1.12 — lands with PR #506). Computed client-side as fallback when absent. */
+	remaining_credits?: number;
 }
 
 export function portalListBudgets(token: string, slug: string): Promise<ListBudgetsResponse> {
