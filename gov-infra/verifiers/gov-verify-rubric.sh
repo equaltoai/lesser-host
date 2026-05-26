@@ -73,6 +73,7 @@ rm -f \
   "${EVIDENCE_DIR}/SEC-10-output.log" \
   "${EVIDENCE_DIR}/SEC-11-output.log" \
   "${EVIDENCE_DIR}/SEC-12-output.log" \
+  "${EVIDENCE_DIR}/SEC-13-output.log" \
   "${EVIDENCE_DIR}/MAI-5-output.log" \
   "${EVIDENCE_DIR}/CON-4-output.log"
 
@@ -2254,6 +2255,7 @@ run_check "SEC-9" "Security" "bash ${GOV_INFRA}/verifiers/sec/trust-auth-preserv
 run_check "SEC-10" "Security" "bash ${GOV_INFRA}/verifiers/sec/release-verification-preservation.sh"
 run_check "SEC-11" "Security" "bash ${GOV_INFRA}/verifiers/sec/portal-stack-state-tenant-scoping.sh"
 run_check "SEC-12" "Security" "bash ${GOV_INFRA}/verifiers/sec/operator-drift-auth-gate.sh"
+run_check "SEC-13" "Security" "bash ${GOV_INFRA}/verifiers/sec/cost-telemetry-redaction.sh"
 
 # === Compliance Readiness (CMP) ===
 check_file_exists "CMP-1" "Compliance" "${PLANNING_DIR}/lesser-host-controls-matrix.md"
