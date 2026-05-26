@@ -60,4 +60,17 @@ describe('InstanceCost cost & usage tab', () => {
 		// is not left as a visual artifact once live telemetry lands.
 		expect(source).toContain('TODO(M3)');
 	});
+
+	it('surfaces inflight-refresh state via Button loading prop', () => {
+		// The Refresh button must convey inflight state during a refresh after
+		// initial load — when data is already present, the page-level spinner
+		// gate is closed, so feedback has to come from the button itself.
+		// greater-components Button exposes `loading` + `loadingBehavior` for
+		// this; the consumer just has to wire them.
+		const scriptEnd = source.indexOf('</script>');
+		expect(scriptEnd).toBeGreaterThan(0);
+		const template = source.slice(scriptEnd);
+		expect(template).toContain('loading={loading}');
+		expect(template).toContain('loadingBehavior="prepend"');
+	});
 });

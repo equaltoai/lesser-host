@@ -217,7 +217,14 @@ Issue: equaltoai/lesser-host#422
 		</Card>
 
 		<div class="instance-cost__actions">
-			<Button variant="outline" onclick={() => void loadAll()} disabled={loading}>Refresh</Button>
+			<Button
+				variant="outline"
+				onclick={() => void loadAll()}
+				loading={loading}
+				loadingBehavior="prepend"
+			>
+				Refresh
+			</Button>
 			<Button variant="ghost" onclick={() => navigate(`/portal/instances/${slug}/budgets`)}>Budgets (legacy)</Button>
 			<Button variant="ghost" onclick={() => navigate(`/portal/instances/${slug}/usage`)}>Usage (legacy)</Button>
 		</div>
