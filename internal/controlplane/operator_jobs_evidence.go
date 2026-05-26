@@ -173,20 +173,3 @@ func mcpWiredAgainstFromEvidence(ev *instanceJobsEvidence) string {
 func mcpCurrentBodyFromEvidence(ev *instanceJobsEvidence) string {
 	return bodyVersionFromEvidence(ev)
 }
-
-// mcpWiredAtFromEvidence returns the ISO8601 timestamp of the last MCP wiring.
-func mcpWiredAtFromEvidence(ev *instanceJobsEvidence) string {
-	if ev == nil {
-		return ""
-	}
-	if ev.latestMCPUpdate != nil {
-		return formatStackTime(ev.latestMCPUpdate.UpdatedAt)
-	}
-	if ev.provisionJob != nil && !ev.provisionJob.McpWiredAt.IsZero() {
-		return formatStackTime(ev.provisionJob.McpWiredAt)
-	}
-	if ev.instance != nil {
-		return formatStackTime(ev.instance.McpWiredAt)
-	}
-	return ""
-}

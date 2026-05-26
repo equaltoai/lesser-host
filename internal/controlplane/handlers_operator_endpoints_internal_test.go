@@ -161,22 +161,6 @@ func instanceWithProvisionJob(slug, lesserVer, provisionJobID string, updatedAt 
 	}
 }
 
-func instanceFull(slug, lesserVer, bodyVer, provisionJobID string, updatedAt time.Time) *models.Instance {
-	return &models.Instance{
-		Slug:               slug,
-		Owner:              "alice",
-		Status:             models.InstanceStatusActive,
-		LesserVersion:      lesserVer,
-		LesserBodyVersion:  bodyVer,
-		ProvisionJobID:     provisionJobID,
-		LesserBodyUpdateAt: updatedAt,
-		UpdatedAt:          updatedAt,
-		HostedAccountID:    "123456789012",
-		HostedRegion:       "us-east-1",
-		HostedBaseDomain:   slug + ".greater.website",
-	}
-}
-
 // --- #434: Operator releases endpoint ---
 
 func TestHandleOperatorReleases_HappyPath(t *testing.T) {
@@ -618,7 +602,7 @@ func TestHandleOperatorInstancesDrift_MCPWireStaleEvidence(t *testing.T) {
 	// MCP-only update job wired against v0.2.5.
 	// Evidence layer takes the latest per kind, so wire-stale shows.
 	tdb.qUpdate.On("All", mock.AnythingOfType("*[]*models.UpdateJob")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*[]*models.UpdateJob)
+		dest := testutil.RequireMockArg[*[]*models.UpdateJob](t, args, 0)
 		*dest = []*models.UpdateJob{
 			{
 				ID:                "upd-body-1",
@@ -776,7 +760,7 @@ func TestHandleOperatorRemediateMCPDrift_VersionFromDeployedBody(t *testing.T) {
 
 	// Evidence: body update job deployed v0.2.5, MCP job wired v0.2.4 → wire-stale.
 	tdb.qUpdate.On("All", mock.AnythingOfType("*[]*models.UpdateJob")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*[]*models.UpdateJob)
+		dest := testutil.RequireMockArg[*[]*models.UpdateJob](t, args, 0)
 		*dest = []*models.UpdateJob{
 			{
 				ID:                "upd-body-1",
@@ -799,7 +783,7 @@ func TestHandleOperatorRemediateMCPDrift_VersionFromDeployedBody(t *testing.T) {
 
 	// GSI2 active jobs: empty (no existing MCP-only jobs).
 	tdb.qUpdate.On("All", mock.AnythingOfType("*[]*models.UpdateJob")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*[]*models.UpdateJob)
+		dest := testutil.RequireMockArg[*[]*models.UpdateJob](t, args, 0)
 		*dest = []*models.UpdateJob{}
 	}).Once()
 
@@ -900,7 +884,7 @@ func TestHandleOperatorRemediateMCPDrift_AuditIncludesSlugList(t *testing.T) {
 
 	// Evidence for ws-audit-1: body v0.3.0 deployed, MCP v0.2.9 → wire-stale.
 	tdb.qUpdate.On("All", mock.AnythingOfType("*[]*models.UpdateJob")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*[]*models.UpdateJob)
+		dest := testutil.RequireMockArg[*[]*models.UpdateJob](t, args, 0)
 		*dest = []*models.UpdateJob{
 			{
 				ID: "b1", InstanceSlug: "ws-audit-1", Status: models.UpdateJobStatusOK,
@@ -915,7 +899,7 @@ func TestHandleOperatorRemediateMCPDrift_AuditIncludesSlugList(t *testing.T) {
 
 	// Evidence for ws-audit-2: body v0.3.0 deployed, MCP v0.2.9 → wire-stale.
 	tdb.qUpdate.On("All", mock.AnythingOfType("*[]*models.UpdateJob")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*[]*models.UpdateJob)
+		dest := testutil.RequireMockArg[*[]*models.UpdateJob](t, args, 0)
 		*dest = []*models.UpdateJob{
 			{
 				ID: "b2", InstanceSlug: "ws-audit-2", Status: models.UpdateJobStatusOK,
@@ -930,7 +914,7 @@ func TestHandleOperatorRemediateMCPDrift_AuditIncludesSlugList(t *testing.T) {
 
 	// GSI2 active jobs: empty.
 	tdb.qUpdate.On("All", mock.AnythingOfType("*[]*models.UpdateJob")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*[]*models.UpdateJob)
+		dest := testutil.RequireMockArg[*[]*models.UpdateJob](t, args, 0)
 		*dest = []*models.UpdateJob{}
 	}).Once()
 
@@ -1020,7 +1004,7 @@ func TestHandleOperatorRemediateMCPDrift_SingleWireStale(t *testing.T) {
 
 	// Evidence: body v0.3.0 deployed, MCP wired v0.2.9 → wire-stale.
 	tdb.qUpdate.On("All", mock.AnythingOfType("*[]*models.UpdateJob")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*[]*models.UpdateJob)
+		dest := testutil.RequireMockArg[*[]*models.UpdateJob](t, args, 0)
 		*dest = []*models.UpdateJob{
 			{
 				ID: "b1", InstanceSlug: "wired-stale", Status: models.UpdateJobStatusOK,
@@ -1035,7 +1019,7 @@ func TestHandleOperatorRemediateMCPDrift_SingleWireStale(t *testing.T) {
 
 	// GSI2 active jobs: empty.
 	tdb.qUpdate.On("All", mock.AnythingOfType("*[]*models.UpdateJob")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*[]*models.UpdateJob)
+		dest := testutil.RequireMockArg[*[]*models.UpdateJob](t, args, 0)
 		*dest = []*models.UpdateJob{}
 	}).Once()
 
@@ -1113,7 +1097,7 @@ func TestHandleOperatorRemediateMCPDrift_IdempotentSkip(t *testing.T) {
 
 	// Evidence for ws-1: body v0.3.0, MCP v0.2.9 → wire-stale.
 	tdb.qUpdate.On("All", mock.AnythingOfType("*[]*models.UpdateJob")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*[]*models.UpdateJob)
+		dest := testutil.RequireMockArg[*[]*models.UpdateJob](t, args, 0)
 		*dest = []*models.UpdateJob{
 			{
 				ID: "b1", InstanceSlug: "ws-1", Status: models.UpdateJobStatusOK,
@@ -1128,7 +1112,7 @@ func TestHandleOperatorRemediateMCPDrift_IdempotentSkip(t *testing.T) {
 
 	// Evidence for ws-2: body v0.3.0, MCP v0.2.9 → wire-stale.
 	tdb.qUpdate.On("All", mock.AnythingOfType("*[]*models.UpdateJob")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*[]*models.UpdateJob)
+		dest := testutil.RequireMockArg[*[]*models.UpdateJob](t, args, 0)
 		*dest = []*models.UpdateJob{
 			{
 				ID: "b2", InstanceSlug: "ws-2", Status: models.UpdateJobStatusOK,
@@ -1143,7 +1127,7 @@ func TestHandleOperatorRemediateMCPDrift_IdempotentSkip(t *testing.T) {
 
 	// GSI2 active jobs: ws-1 already has an active MCP-only job.
 	tdb.qUpdate.On("All", mock.AnythingOfType("*[]*models.UpdateJob")).Return(nil).Run(func(args mock.Arguments) {
-		dest := args.Get(0).(*[]*models.UpdateJob)
+		dest := testutil.RequireMockArg[*[]*models.UpdateJob](t, args, 0)
 		*dest = []*models.UpdateJob{
 			{
 				ID:           "existing-mcp-1",
