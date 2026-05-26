@@ -1,23 +1,25 @@
 <!--
 @component
-Operator Releases — two-channel release timeline (lesser + lesser-body).
+Operator Releases — two-channel release timeline (lesser + lesser-body)
+plus the fleet Stack Matrix.
 
-Project 39 M2.5 (issue #431). Renders two side-by-side columns sourcing
-adoption-aware release history from the M2.8 endpoint
-`/api/v1/operators/releases`. When the endpoint is not yet present,
-falls back to a "telemetry pending" placeholder so the page is
-navigable from day one (same pattern as the M2.3 drift banner and the
-M1.6 stack endpoint).
+Project 39 M2.5 (issue #431) shipped the two-channel timeline scaffold
+plus a forward-compat Stack Matrix card whose narrative pointed at the
+then-pending M2.9 drift endpoint. PR #513 landed the M2.8 / M2.9 / M2.10
+operator backends, so the Stack Matrix is now first-class: M2.11
+(issue #437) wires it through to the live `/api/v1/operators/instances/drift`
+aggregation and surfaces a per-summary drift strip above the matrix so
+the operator can read fleet posture at a glance.
 
-The page is operator-only: the calling endpoint is operator-JWT gated;
-no tenant content is read.
+The page is operator-only: every endpoint it consumes is operator-JWT
+gated; no tenant content is read.
 
 Posture preserved:
 - Strict-CSP-safe: no inline scripts / styles / third-party origins.
 - Multi-tenant isolation: aggregation is fleet-level metadata only.
 - Trust-API instance-auth untouched; SEC-9 change-lock not engaged.
 
-Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M2.5
+Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M2.5, M2.11
 -->
 <script lang="ts">
 	import { onMount } from 'svelte';
@@ -130,9 +132,10 @@ Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M2.5
 	{:else if releases?.kind === 'endpoint-pending'}
 		<Alert variant="info" title="Release telemetry pending">
 			<Text size="sm">
-				Awaiting the operator releases aggregation endpoint
-				(<span class="op-releases__mono">/api/v1/operators/releases</span>, M2.8). The page
-				layout ships now so the M2.6 Stack Matrix + M2.11 Wire-all CTA have a stable home.
+				The operator releases aggregation endpoint
+				(<span class="op-releases__mono">/api/v1/operators/releases</span>, M2.8) did not
+				respond with adoption data for the current request. The Stack Matrix below still
+				reads from the M2.9 drift endpoint and renders independently.
 			</Text>
 		</Alert>
 	{:else if releases?.kind === 'data'}
@@ -157,12 +160,43 @@ Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M2.5
 			<Heading level={3} size="lg">Stack matrix</Heading>
 		{/snippet}
 		{#if drift?.kind === 'data'}
+			{@const summary = drift.data.summary}
+			<dl
+				class="op-releases__summary"
+				aria-label="Fleet drift summary"
+			>
+				<div class="op-releases__summary-cell">
+					<dt><Text size="xs" color="secondary">Total</Text></dt>
+					<dd class="op-releases__summary-value">{summary?.total ?? drift.data.instances.length}</dd>
+				</div>
+				<div class="op-releases__summary-cell">
+					<dt><Text size="xs" color="secondary">Lesser stale</Text></dt>
+					<dd
+						class="op-releases__summary-value"
+						data-tone={(summary?.lesser_stale ?? 0) > 0 ? 'warn' : 'ok'}
+					>{summary?.lesser_stale ?? 0}</dd>
+				</div>
+				<div class="op-releases__summary-cell">
+					<dt><Text size="xs" color="secondary">Body stale</Text></dt>
+					<dd
+						class="op-releases__summary-value"
+						data-tone={(summary?.body_stale ?? 0) > 0 ? 'warn' : 'ok'}
+					>{summary?.body_stale ?? 0}</dd>
+				</div>
+				<div class="op-releases__summary-cell">
+					<dt><Text size="xs" color="secondary">MCP wire-stale</Text></dt>
+					<dd
+						class="op-releases__summary-value"
+						data-tone={(summary?.mcp_wire_stale ?? 0) > 0 ? 'warn' : 'ok'}
+					>{summary?.mcp_wire_stale ?? 0}</dd>
+				</div>
+			</dl>
 			<StackMatrix entries={drift.data.instances} onAction={handleStackAction} />
 		{:else if drift?.kind === 'endpoint-pending'}
 			<Text size="sm" color="secondary">
-				Stack matrix telemetry is pending the M2.9
-				<span class="op-releases__mono">/api/v1/operators/instances/drift</span> endpoint.
-				The matrix component lights up the moment the backend ships.
+				The operator drift aggregation endpoint
+				(<span class="op-releases__mono">/api/v1/operators/instances/drift</span>) did not
+				respond with drift data for the current request. Use Refresh to retry.
 			</Text>
 		{:else}
 			<Text size="sm" color="secondary">No fleet drift data loaded.</Text>
@@ -212,6 +246,57 @@ Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M2.5
 
 	.op-releases__mono {
 		font-family: var(--gr-typography-fontFamily-mono, ui-monospace, monospace);
+	}
+
+	/*
+	 * M2.11 drift summary strip. Reads directly from
+	 * `drift.data.summary` (total / lesser_stale / body_stale / mcp_wire_stale)
+	 * so the operator can read fleet posture before scanning the matrix.
+	 * `data-tone="warn"` is the single dynamic state; rendered as a static
+	 * attribute (not an inline `style:` directive) to keep the strict
+	 * `style-src 'self'` CSP intact — same pattern as PR #512 M2.7
+	 * (SVG adoption bar) but with even less moving parts since it's a
+	 * count, not a width.
+	 */
+	.op-releases__summary {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+		gap: var(--gr-spacing-scale-3);
+		margin: 0 0 var(--gr-spacing-scale-4) 0;
+		padding: var(--gr-spacing-scale-3);
+		border: 1px solid var(--gr-color-border, currentColor);
+		border-radius: 6px;
+		background: rgba(255, 255, 255, 0.02);
+	}
+
+	.op-releases__summary-cell {
+		display: flex;
+		flex-direction: column;
+		gap: var(--gr-spacing-scale-1);
+		min-width: 0;
+	}
+
+	.op-releases__summary-cell dt {
+		margin: 0;
+	}
+
+	.op-releases__summary-cell dd {
+		margin: 0;
+	}
+
+	.op-releases__summary-value {
+		font-family: var(--gr-typography-fontFamily-mono, ui-monospace, monospace);
+		font-size: 1.1rem;
+		font-weight: 600;
+		color: var(--ds-fg-1, inherit);
+	}
+
+	.op-releases__summary-value[data-tone='warn'] {
+		color: #f59e0b;
+	}
+
+	.op-releases__summary-value[data-tone='ok'] {
+		color: #22c55e;
 	}
 
 	@media (max-width: 880px) {
