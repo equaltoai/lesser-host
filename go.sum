@@ -38,6 +38,8 @@ github.com/aws/aws-sdk-go-v2/service/codebuild v1.68.12 h1:lQTVEv/YAk8Rw1Yf4XZS/
 github.com/aws/aws-sdk-go-v2/service/codebuild v1.68.12/go.mod h1:yoa0R6Xku788EmJYkFiARzJBxt4A3hgFjQPRmMAttr0=
 github.com/aws/aws-sdk-go-v2/service/comprehend v1.40.20 h1:AFxiBqfeAwybIkTFP2cVYjPpEeo9jvYR5qaJ+664mLI=
 github.com/aws/aws-sdk-go-v2/service/comprehend v1.40.20/go.mod h1:0ZcEjoeeMH4Mji0ZrwiKgTnQiv7uoNG9DoQS2crnhX8=
+github.com/aws/aws-sdk-go-v2/service/costexplorer v1.63.8 h1:rUg81vwoGgCmnQxsVl+B65QF8Qh+zYCluhyAcxsk79o=
+github.com/aws/aws-sdk-go-v2/service/costexplorer v1.63.8/go.mod h1:V+bKJ05kIC6K0LH8TB3D5boy7F8BhrZeecoXLz1NlB4=
 github.com/aws/aws-sdk-go-v2/service/dynamodb v1.56.2 h1:xi/ECwajy2mixviBD7bKAlGGSwzEaFKX2wIhrZt9NGw=
 github.com/aws/aws-sdk-go-v2/service/dynamodb v1.56.2/go.mod h1:dLREOeW66eVaaGIOi2ZlLHDgkR3nuJ02rd00j0YSlBE=
 github.com/aws/aws-sdk-go-v2/service/iam v1.53.9 h1:slEs4iUvSt/YOiQQajtXkYBZTMrsEeplSnaB928p4l0=

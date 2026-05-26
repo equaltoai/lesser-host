@@ -12,6 +12,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/cloudwatch v1.57.0
 	github.com/aws/aws-sdk-go-v2/service/codebuild v1.68.12
 	github.com/aws/aws-sdk-go-v2/service/comprehend v1.40.20
+	github.com/aws/aws-sdk-go-v2/service/costexplorer v1.63.8
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.56.2
 	github.com/aws/aws-sdk-go-v2/service/iam v1.53.9
 	github.com/aws/aws-sdk-go-v2/service/kms v1.50.3
