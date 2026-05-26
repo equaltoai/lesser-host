@@ -49,6 +49,12 @@ export interface UsageSummaryResponse {
 	requests: number;
 	cache_hits: number;
 	cache_misses: number;
+	/**
+	 * Cache hit ratio as a 0.0–1.0 float (NOT a 0–100 percentage).
+	 * Server computes `cacheHits / totalRequests`; see
+	 * `internal/controlplane/handlers_portal_instances.go` `cacheHitRate`.
+	 * Format with `formatPercent` (multiplies by 100) at the call site.
+	 */
 	cache_hit_rate: number;
 	list_credits: number;
 	requested_credits: number;

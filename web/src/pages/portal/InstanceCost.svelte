@@ -52,6 +52,11 @@ Issue: equaltoai/lesser-host#422
 		return String(err);
 	}
 
+	/**
+	 * Format a 0.0–1.0 ratio as a percentage string with one decimal place.
+	 * Matches the wire contract of `UsageSummaryResponse.cache_hit_rate`
+	 * (see `portalUsage.ts`). Returns "—" for non-finite input.
+	 */
 	function formatPercent(p: number): string {
 		if (!Number.isFinite(p)) return '—';
 		return `${Math.round(p * 1000) / 10}%`;
@@ -79,12 +84,21 @@ Issue: equaltoai/lesser-host#422
 	let budget = $state<BudgetMonthResponse | null>(null);
 	let summary = $state<UsageSummaryResponse | null>(null);
 
+	/**
+	 * Month label pinned at the start of each `loadAll()` so the header,
+	 * data, and refresh button all reference the same month. Without this
+	 * pin, a refresh that straddles UTC midnight on the 1st of the month
+	 * would render a header month different from the fetched data.
+	 */
+	let displayMonth = $state<string>(currentMonthUTC());
+
 	async function loadAll() {
 		errorMessage = null;
 		budget = null;
 		summary = null;
 
 		const month = currentMonthUTC();
+		displayMonth = month;
 		loading = true;
 		try {
 			const [b, s] = await Promise.all([
@@ -130,7 +144,15 @@ Issue: equaltoai/lesser-host#422
 			<StatCard
 				label="Remaining credits"
 				value={String(remaining)}
-				status={remaining > 0 ? 'success' : used > 0 ? 'warning' : 'default'}
+				status={
+					used > included
+						? 'danger'
+						: remaining > 0
+							? 'success'
+							: used > 0
+								? 'warning'
+								: 'default'
+				}
 			/>
 			<StatCard
 				label="Cache hit rate"
@@ -141,7 +163,7 @@ Issue: equaltoai/lesser-host#422
 
 		<Card variant="outlined" padding="lg">
 			{#snippet header()}
-				<Heading level={3} size="lg">Current month ({currentMonthUTC()})</Heading>
+				<Heading level={3} size="lg">Current month ({displayMonth})</Heading>
 			{/snippet}
 
 			<DefinitionList>
@@ -175,6 +197,9 @@ Issue: equaltoai/lesser-host#422
 				</Text>
 			</Alert>
 
+			<!-- TODO(M3): replace this static breakdown with live per-Lambda /
+			     per-Dynamo / per-egress telemetry once the cost-telemetry firehose
+			     lands. Tracking: M3 cost-telemetry milestone. -->
 			<div class="instance-cost__coming-soon-grid">
 				<div class="instance-cost__coming-soon-item">
 					<Text size="sm" weight="medium">Lambda</Text>

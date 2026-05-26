@@ -1,0 +1,63 @@
+/// <reference types="node" />
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+import { describe, expect, it } from 'vitest';
+
+const source = readFileSync(join(process.cwd(), 'src/pages/portal/InstanceCost.svelte'), 'utf8');
+
+describe('InstanceCost cost & usage tab', () => {
+	it('prefers server-computed remaining_credits, falling back to floor(included - used)', () => {
+		// Server-field precedence (M1.12 / PR #506 forward-compat).
+		expect(source).toContain(
+			'const server = budget?.remaining_credits ?? summary?.remaining_credits;',
+		);
+		expect(source).toContain(
+			"if (typeof server === 'number' && Number.isFinite(server)) return server;",
+		);
+
+		// Client fallback floors at zero so transient overruns never render as negative.
+		expect(source).toContain('return Math.max(0, included - used);');
+	});
+
+	it('formats cache_hit_rate as a 0.0–1.0 ratio scaled to a percentage', () => {
+		// Wire contract: cache_hit_rate is a ratio, not a 0–100 percentage.
+		// `p * 1000 / 10` yields one decimal place after multiplying by 100.
+		expect(source).toContain('return `${Math.round(p * 1000) / 10}%`;');
+		expect(source).toContain("if (!Number.isFinite(p)) return '—';");
+	});
+
+	it('pins displayMonth at load time so header, data, and refresh stay consistent', () => {
+		// Pinning prevents UTC-midnight-on-the-1st straddle skew between
+		// the header label and the data the user is looking at.
+		expect(source).toContain('let displayMonth = $state<string>(currentMonthUTC());');
+		expect(source).toContain('displayMonth = month;');
+		expect(source).toContain('Current month ({displayMonth})');
+
+		// The template must not call currentMonthUTC() at render time.
+		const scriptEnd = source.indexOf('</script>');
+		expect(scriptEnd).toBeGreaterThan(0);
+		const template = source.slice(scriptEnd);
+		expect(template).not.toContain('currentMonthUTC()');
+	});
+
+	it('flags overrun (used > included) as danger status on the Remaining credits stat', () => {
+		// Once M1.12 server-side remaining_credits can express overrun semantics,
+		// the Remaining credits card must surface danger rather than warning when
+		// used exceeds included. ('danger' is the StatCardStatus value, not 'error'.)
+		expect(source).toContain("used > included");
+		expect(source).toContain("? 'danger'");
+	});
+
+	it('redirects to /login on 401 from either budget or usage endpoint', () => {
+		expect(source).toContain("(err as Partial<ApiError>).status === 401");
+		expect(source).toContain('await logout();');
+		expect(source).toContain("navigate('/login');");
+	});
+
+	it('marks the per-Lambda / Dynamo / egress breakdown for M3 replacement', () => {
+		// Anchor the deferral to the M3 milestone so the static placeholder
+		// is not left as a visual artifact once live telemetry lands.
+		expect(source).toContain('TODO(M3)');
+	});
+});
