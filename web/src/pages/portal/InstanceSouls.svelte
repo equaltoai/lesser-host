@@ -100,13 +100,47 @@ Issue: equaltoai/lesser-host#419
 		}
 	}
 
+	// Project 42 M0.5 (#530): the audit caught "No souls bound to this
+	// instance" rendering on instances that demonstrably have bound souls.
+	//
+	// Root-caused binding mismatch (server vs client):
+	//   - Server `handleSoulListMyAgents` walks the owner's instances and
+	//     gathers BOTH per-instance verified domains AND the stage-prefixed
+	//     managed domain (`internal/controlplane/handlers_soul_mine.go`
+	//     :103-122; the stage prefix comes from
+	//     `managedInstanceStageDomain(stage, HostedBaseDomain)` =
+	//     `<stage>.<base>` for non-live stages — e.g. `dev.simulacrum.greater.website`).
+	//   - Soul agents on a managed instance are registered against the
+	//     stage-prefixed managed domain (the URL the customer's browser
+	//     actually hits), so `agent.domain` is the stage-prefixed form.
+	//   - The previous client filter compared `agent.domain ===
+	//     instance.hosted_base_domain`. `hosted_base_domain` is the BASE
+	//     (without stage prefix); on every non-live stage the comparison
+	//     therefore mismatches the stage-prefixed `agent.domain` and the
+	//     filter silently dropped every bound soul.
+	//
+	// Fix (matches server semantics without backend churn):
+	//   - The portal instance DTO ALREADY exposes `managed_lesser_domain`
+	//     (the stage-prefixed canonical form, computed in
+	//     `internal/controlplane/instance_response_derived.go`). Compare
+	//     `agent.domain` against the set { hosted_base_domain,
+	//     managed_lesser_domain } so live-stage instances (where the two
+	//     are equal) and non-live stages both match correctly.
 	const boundAgents = $derived.by<SoulMineAgentItem[]>(() => {
 		if (!instance) return [];
-		const targetDomain = (instance.hosted_base_domain || '').trim().toLowerCase();
-		if (!targetDomain) return [];
-		return allAgents.filter(
-			(item) => (item.agent.domain || '').trim().toLowerCase() === targetDomain,
-		);
+		// Use plain object (Record), not Set: svelte/prefer-svelte-reactivity
+		// prohibits Map/Set in .svelte files even in local function scope.
+		const candidateDomains: Record<string, true> = {};
+		const baseDomain = (instance.hosted_base_domain || '').trim().toLowerCase();
+		const managedDomain = (instance.managed_lesser_domain || '').trim().toLowerCase();
+		if (baseDomain) candidateDomains[baseDomain] = true;
+		if (managedDomain) candidateDomains[managedDomain] = true;
+		const candidateCount = Object.keys(candidateDomains).length;
+		if (candidateCount === 0) return [];
+		return allAgents.filter((item) => {
+			const domain = (item.agent.domain || '').trim().toLowerCase();
+			return Boolean(candidateDomains[domain]);
+		});
 	});
 
 	onMount(() => {
