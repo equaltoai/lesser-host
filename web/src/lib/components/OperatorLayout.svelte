@@ -3,7 +3,8 @@
 	import { currentPath, linkProps, navigate } from 'src/lib/router';
 	import { session } from 'src/lib/session';
 	import { logout } from 'src/lib/auth/logout';
-	import { Button, Heading, Link, Text } from 'src/lib/ui';
+	import { Button, Link, Text } from 'src/lib/ui';
+	import BrandLockup from './BrandLockup.svelte';
 
 	let { children }: { children: Snippet } = $props();
 
@@ -28,7 +29,7 @@
 <div class="layout layout--operator shell--operator" data-shell="operator">
 	<nav class="layout__sidebar">
 		<div class="layout__brand">
-			<Heading level={2} size="xl">Operator Console</Heading>
+			<BrandLockup edition="Operator console" />
 			<Text size="sm" color="secondary">Managed-hosting control plane</Text>
 		</div>
 		<div class="layout__nav">
@@ -125,16 +126,41 @@
 	.layout {
 		display: flex;
 		min-height: 100vh;
-		background: var(--gr-color-background);
+		background: var(--ds-bg-base, #f8f1e7);
+		background-image: var(--ds-page-gradient);
+		background-attachment: fixed;
+	}
+	.layout--operator {
+		background: #1c1410;
+		background-image:
+			radial-gradient(circle at top right, rgba(178, 80, 24, 0.18), transparent 32rem),
+			radial-gradient(circle at top left, rgba(82, 50, 25, 0.18), transparent 28rem),
+			linear-gradient(180deg, #2a1f17 0%, #1c1410 100%);
+		background-attachment: fixed;
+		color: #faf4ea;
 	}
 	.layout__sidebar {
 		width: 260px;
 		display: flex;
 		flex-direction: column;
-		border-right: 1px solid var(--gr-color-border);
+		border-right: 1px solid var(--ds-border-default, var(--gr-semantic-border-default));
 		padding: var(--gr-spacing-scale-6) var(--gr-spacing-scale-4);
 		gap: var(--gr-spacing-scale-6);
-		background: var(--gr-color-background-surface);
+		background: var(--ds-bg-glass, var(--gr-semantic-background-surface));
+	}
+	.layout--operator .layout__sidebar {
+		border-right: 2px solid rgba(245, 158, 11, 0.55);
+		background: rgba(40, 30, 22, 0.78);
+		color: #faf4ea;
+	}
+	.layout--operator :global(.brand-lockup__main) {
+		color: #faf4ea;
+	}
+	.layout--operator :global(.brand-lockup__edition) {
+		color: rgba(250, 244, 234, 0.58);
+	}
+	.layout--operator :global(.gr-text--color-secondary) {
+		color: rgba(250, 244, 234, 0.68);
 	}
 	/*
 	 * The operator-specific sidebar seam is owned by operator-chrome.css so
@@ -161,6 +187,10 @@
 		gap: var(--gr-spacing-scale-3);
 		padding-top: var(--gr-spacing-scale-4);
 		border-top: 1px solid var(--gr-color-border);
+	}
+	.layout--operator .layout__footer {
+		border-top-color: rgba(255, 235, 200, 0.08);
+		color: rgba(250, 244, 234, 0.78);
 	}
 	.layout__footer :global(button) {
 		justify-content: flex-start;

@@ -10,12 +10,9 @@
  *   docs/design/web-ui-rework-2026-05-24/project/assets/app.css
  *
  * This file is intentionally SELF-CONTAINED — every colour resolves to a
- * literal value rather than to a `--ds-*` token. The `src/lib/tokens/ds.css`
- * + `gr-bridge.css` scaffolding is not yet wired into the runtime bundle
- * (see the M0.2 scaffold-only note in `src/lib/tokens/index.ts`), so this
- * file is consumed directly from `src/main.ts` instead of indirected
- * through the token barrel. That guarantees the operator chrome ships
- * regardless of when the broader DS bridge is plugged in.
+ * literal value rather than depending on token-import order. The global
+ * Agent Genesis DS bridge is imported from `src/main.ts`; operator chrome
+ * then layers on top as the operator-only dark warm-charcoal skin.
  *
  * Two scoping selectors are supported for back-compat:
  *

@@ -1,4 +1,7 @@
 import 'src/lib/styles/greater/tokens.css';
+// Project 39 runtime brand/theme bridge: Agent Genesis DS tokens override
+// the default Greater token scale before component CSS consumes them.
+import 'src/lib/tokens';
 import 'src/lib/styles/greater/primitives.css';
 import 'src/lib/styles/greater/shell.css';
 import 'src/lib/styles/greater/host-platform.css';
