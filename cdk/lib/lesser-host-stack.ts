@@ -1490,8 +1490,8 @@ export class LesserHostStack extends cdk.Stack {
 		this.ensureWebBuild();
 		const webSsrFn = new lambda.Function(this, 'WebSsrFn', {
 			functionName: `${namePrefix}-web-ssr`,
-			code: lambda.Code.fromAsset(path.join(this.repoRoot(), 'web', 'dist', 'server')),
-			handler: 'face-app.handler',
+			code: lambda.Code.fromAsset(path.join(this.repoRoot(), 'web', 'dist')),
+			handler: 'server/face-app.handler',
 			runtime: lambda.Runtime.NODEJS_22_X,
 			memorySize: 512,
 			timeout: cdk.Duration.seconds(15),
@@ -1555,6 +1555,8 @@ export class LesserHostStack extends cdk.Stack {
 			removalPolicy,
 			autoDeleteObjects: stage !== 'live',
 		});
+		// Preserve the legacy logical id so the existing CNAME owner updates in place.
+		(webSite.distribution.node.defaultChild as cloudfront.CfnDistribution).overrideLogicalId('WebDistribution59C46482');
 
 		// /_facetheory/data/* hand-wired to htmlStoreBucket. S3BucketOrigin
 		// .withOriginAccessControl keeps the bucket blockPublicAccess and
