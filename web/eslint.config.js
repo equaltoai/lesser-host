@@ -10,6 +10,7 @@ export default [
 	{
 		ignores: [
 			'dist/**',
+			'fixtures-dist/**',
 			'node_modules/**',
 			'src/lib/greater/**',
 			'src/lib/primitives/**',

@@ -1,0 +1,126 @@
+/*
+ * M1 ProgressBar — CSP-safe bar with tone variants.
+ *
+ * Replaces the design fixture's inline `style="width: X%"` with a
+ * `data-ratio` integer attribute + CSS selector approach. The
+ * container (`.bar`) and tone variants (`.bar__fill--warning`,
+ * `.bar__fill--error`, `.bar__fill--success`) are provided by
+ * `base.css`; this file adds `.bar__fill--accent` for the missing
+ * tone and the 0–100 width-step rules.
+ *
+ * Strict-CSP safe: no inline styles, no inline event handlers.
+ * Consumes `--ds-*` design tokens.
+ *
+ * @license AGPL-3.0-only
+ */
+
+/* Accent tone: uses secondary/primary gradient (matching the action gradient) */
+.bar__fill--accent {
+	background: var(--ds-action-gradient);
+}
+
+/* Width steps via data-ratio (0–100). Each rule sets `right: (100 - N)%`
+ * so the fill expands from the left. Using `right` instead of `width`
+ * so the `inset: 0; right: auto` baseline in `.bar__fill` works correctly
+ * with the `position: absolute` model from the app stylesheet. */
+.bar__fill[data-ratio='0']   { right: 100%; }
+.bar__fill[data-ratio='1']   { right: 99%; }
+.bar__fill[data-ratio='2']   { right: 98%; }
+.bar__fill[data-ratio='3']   { right: 97%; }
+.bar__fill[data-ratio='4']   { right: 96%; }
+.bar__fill[data-ratio='5']   { right: 95%; }
+.bar__fill[data-ratio='6']   { right: 94%; }
+.bar__fill[data-ratio='7']   { right: 93%; }
+.bar__fill[data-ratio='8']   { right: 92%; }
+.bar__fill[data-ratio='9']   { right: 91%; }
+.bar__fill[data-ratio='10']  { right: 90%; }
+.bar__fill[data-ratio='11']  { right: 89%; }
+.bar__fill[data-ratio='12']  { right: 88%; }
+.bar__fill[data-ratio='13']  { right: 87%; }
+.bar__fill[data-ratio='14']  { right: 86%; }
+.bar__fill[data-ratio='15']  { right: 85%; }
+.bar__fill[data-ratio='16']  { right: 84%; }
+.bar__fill[data-ratio='17']  { right: 83%; }
+.bar__fill[data-ratio='18']  { right: 82%; }
+.bar__fill[data-ratio='19']  { right: 81%; }
+.bar__fill[data-ratio='20']  { right: 80%; }
+.bar__fill[data-ratio='21']  { right: 79%; }
+.bar__fill[data-ratio='22']  { right: 78%; }
+.bar__fill[data-ratio='23']  { right: 77%; }
+.bar__fill[data-ratio='24']  { right: 76%; }
+.bar__fill[data-ratio='25']  { right: 75%; }
+.bar__fill[data-ratio='26']  { right: 74%; }
+.bar__fill[data-ratio='27']  { right: 73%; }
+.bar__fill[data-ratio='28']  { right: 72%; }
+.bar__fill[data-ratio='29']  { right: 71%; }
+.bar__fill[data-ratio='30']  { right: 70%; }
+.bar__fill[data-ratio='31']  { right: 69%; }
+.bar__fill[data-ratio='32']  { right: 68%; }
+.bar__fill[data-ratio='33']  { right: 67%; }
+.bar__fill[data-ratio='34']  { right: 66%; }
+.bar__fill[data-ratio='35']  { right: 65%; }
+.bar__fill[data-ratio='36']  { right: 64%; }
+.bar__fill[data-ratio='37']  { right: 63%; }
+.bar__fill[data-ratio='38']  { right: 62%; }
+.bar__fill[data-ratio='39']  { right: 61%; }
+.bar__fill[data-ratio='40']  { right: 60%; }
+.bar__fill[data-ratio='41']  { right: 59%; }
+.bar__fill[data-ratio='42']  { right: 58%; }
+.bar__fill[data-ratio='43']  { right: 57%; }
+.bar__fill[data-ratio='44']  { right: 56%; }
+.bar__fill[data-ratio='45']  { right: 55%; }
+.bar__fill[data-ratio='46']  { right: 54%; }
+.bar__fill[data-ratio='47']  { right: 53%; }
+.bar__fill[data-ratio='48']  { right: 52%; }
+.bar__fill[data-ratio='49']  { right: 51%; }
+.bar__fill[data-ratio='50']  { right: 50%; }
+.bar__fill[data-ratio='51']  { right: 49%; }
+.bar__fill[data-ratio='52']  { right: 48%; }
+.bar__fill[data-ratio='53']  { right: 47%; }
+.bar__fill[data-ratio='54']  { right: 46%; }
+.bar__fill[data-ratio='55']  { right: 45%; }
+.bar__fill[data-ratio='56']  { right: 44%; }
+.bar__fill[data-ratio='57']  { right: 43%; }
+.bar__fill[data-ratio='58']  { right: 42%; }
+.bar__fill[data-ratio='59']  { right: 41%; }
+.bar__fill[data-ratio='60']  { right: 40%; }
+.bar__fill[data-ratio='61']  { right: 39%; }
+.bar__fill[data-ratio='62']  { right: 38%; }
+.bar__fill[data-ratio='63']  { right: 37%; }
+.bar__fill[data-ratio='64']  { right: 36%; }
+.bar__fill[data-ratio='65']  { right: 35%; }
+.bar__fill[data-ratio='66']  { right: 34%; }
+.bar__fill[data-ratio='67']  { right: 33%; }
+.bar__fill[data-ratio='68']  { right: 32%; }
+.bar__fill[data-ratio='69']  { right: 31%; }
+.bar__fill[data-ratio='70']  { right: 30%; }
+.bar__fill[data-ratio='71']  { right: 29%; }
+.bar__fill[data-ratio='72']  { right: 28%; }
+.bar__fill[data-ratio='73']  { right: 27%; }
+.bar__fill[data-ratio='74']  { right: 26%; }
+.bar__fill[data-ratio='75']  { right: 25%; }
+.bar__fill[data-ratio='76']  { right: 24%; }
+.bar__fill[data-ratio='77']  { right: 23%; }
+.bar__fill[data-ratio='78']  { right: 22%; }
+.bar__fill[data-ratio='79']  { right: 21%; }
+.bar__fill[data-ratio='80']  { right: 20%; }
+.bar__fill[data-ratio='81']  { right: 19%; }
+.bar__fill[data-ratio='82']  { right: 18%; }
+.bar__fill[data-ratio='83']  { right: 17%; }
+.bar__fill[data-ratio='84']  { right: 16%; }
+.bar__fill[data-ratio='85']  { right: 15%; }
+.bar__fill[data-ratio='86']  { right: 14%; }
+.bar__fill[data-ratio='87']  { right: 13%; }
+.bar__fill[data-ratio='88']  { right: 12%; }
+.bar__fill[data-ratio='89']  { right: 11%; }
+.bar__fill[data-ratio='90']  { right: 10%; }
+.bar__fill[data-ratio='91']  { right: 9%; }
+.bar__fill[data-ratio='92']  { right: 8%; }
+.bar__fill[data-ratio='93']  { right: 7%; }
+.bar__fill[data-ratio='94']  { right: 6%; }
+.bar__fill[data-ratio='95']  { right: 5%; }
+.bar__fill[data-ratio='96']  { right: 4%; }
+.bar__fill[data-ratio='97']  { right: 3%; }
+.bar__fill[data-ratio='98']  { right: 2%; }
+.bar__fill[data-ratio='99']  { right: 1%; }
+.bar__fill[data-ratio='100'] { right: 0%; }

@@ -1,0 +1,50 @@
+/*
+ * M1 Metric — tone variants and icon styling.
+ *
+ * Extends `.metric__value` with tone-based color classes that replace the
+ * design fixture's inline `style={color: accent}` (CSP divergence).
+ * The `.metric__icon` class replaces the design's inline icon color.
+ * The `.metric__delta--sub` class scopes the subtext styling (distinct
+ * from the delta row).
+ *
+ * Consumes `--ds-*` design tokens. Container, label, value, and delta
+ * base styling is provided by `base.css` (`.metric`, `.metric__label`,
+ * `.metric__value`, `.metric__delta`, `.metric__delta--up`,
+ * `.metric__delta--down`).
+ *
+ * @license AGPL-3.0-only
+ */
+
+/* Icon container — matches the design's `color: var(--ds-fg-3)` */
+.metric__icon {
+	color: var(--ds-fg-3);
+	display: inline-flex;
+	align-items: center;
+}
+
+/* Subtext — rendered as a delta row without directional arrow */
+.metric__delta--sub {
+	/* inherits .metric__delta base from app stylesheet */
+}
+
+/* Delta arrow character spacing */
+.metric__delta-arrow {
+	/* invisible wrapper — the arrow character inherits from parent */
+}
+
+/* Tone variants for the metric value (CSP-safe replacement for inline accent color) */
+.metric__value--success {
+	color: var(--ds-success-700);
+}
+.metric__value--warning {
+	color: var(--ds-warning-700);
+}
+.metric__value--error {
+	color: var(--ds-error-700);
+}
+.metric__value--info {
+	color: var(--ds-info-700);
+}
+.metric__value--accent {
+	color: var(--ds-secondary-500);
+}

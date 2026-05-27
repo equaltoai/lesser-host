@@ -1,0 +1,15 @@
+/*
+ * M1 Primitives Fixture — layout-only CSS.
+ *
+ * This file provides NO primitive base classes. All primitive CSS
+ * (`.eyebrow`, `.metric`, `.bar`, `.sparkline-svg`, `.row`, `.gr-sr-only`)
+ * is shipped in the M1 runtime CSS bundle at
+ * `web/src/lib/components/primitives/base.css`, imported via
+ * `web/src/lib/styles/m1-primitives.css`.
+ *
+ * This file is imported ONLY by the isolated M1 fixture page
+ * (`web/fixtures/m1-primitives.html`). It is NOT loaded by any
+ * customer portal route.
+ *
+ * @license AGPL-3.0-only
+ */
