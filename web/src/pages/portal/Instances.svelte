@@ -106,8 +106,21 @@
 			<Heading level={2} size="xl">Instances</Heading>
 		{/snippet}
 
+		<!--
+		Project 42 M0.6 (#531): the previous template rendered the literal
+		`{slug}` to the DOM (audit P3 — unrendered template variable),
+		because Svelte text expressions output their string contents
+		verbatim once escaped. Replace with reactive copy that mirrors the
+		operator's current input (and gives an explicit placeholder
+		instructional when empty) so no literal template token leaks.
+		-->
 		<Text size="sm" color="secondary">
-			Create a slug to reserve <code>{'{slug}'}</code> and start provisioning managed hosting.
+			{#if createSlug.trim()}
+				Create a slug to reserve <code>{createSlug.trim()}</code> and start provisioning managed hosting.
+			{:else}
+				Enter a slug below (lowercase letters, digits, hyphens) to reserve a managed-hosting
+				instance.
+			{/if}
 		</Text>
 
 		<div class="instances__create">
