@@ -4,9 +4,32 @@
 **Date:** 2026-05-27
 **Branch:** `aron/portal-m1-primitives`
 
-## Screenshot status
+## Screenshot
 
-**PNG evidence is pending.** This environment is headless (no display server, no browser automation tool installed). A pixel-accurate screenshot will be produced post-lab-deployment via browser DevTools screenshot at 2× DPR.
+**PNG evidence captured.** See `primitives.png` (960×1400px, 103 KB).
+
+### Capture details
+
+| Property | Value |
+|----------|-------|
+| Command | `/usr/bin/google-chrome --headless=new --no-sandbox --disable-gpu --window-size=960,1400 --virtual-time-budget=5000 --screenshot` |
+| Browser | Google Chrome 148.0.7778.178 |
+| Viewport | 960×1400px (window size; 1× DPR) |
+| Fixture path | `web/fixtures/m1-primitives.html` (served via Vite build → static HTTP) |
+| Components rendered | Eyebrow (3 variants), Metric (8 variants: base, success/warning/error/info/accent tones, up/down deltas, subtext), CostGauge (4 variants: 0%/50%/75%/95%), Sparkline (2 variants: with/without fill), ProgressBar (5 variants: default, success, warning, error, accent) |
+| Comparison basis | `/tmp/design-sNM/lesser-host/project/src/primitives.jsx` + `assets/app.css` |
+| Build config | `web/fixtures/vite.fixture.config.ts` (standalone; not the main web build) |
+| Fixture CSS | `web/fixtures/m1-primitives-fixture.css` (base classes `.eyebrow`, `.metric`, `.bar`, `.sparkline-svg` ported from design fixture app.css; M2 owns runtime CSS integration) |
+
+### Visual inspection notes
+
+- All five primitives render in a single column layout with section headings.
+- Eyebrow renders as uppercase tracked labels in `--ds-fg-3`.
+- Metric tiles render with card backgrounds, tone-colored values, and correct delta arrows (↗/↘).
+- CostGauge rings render at correct rotation with threshold colors: green (0%/50%), amber (75%), red (95%).
+- Sparkline renders SVG paths with and without area fill.
+- ProgressBar renders with correct width ratios and tone-based gradient fills.
+- Colors match the design fixture's `--ds-*` token references. The fixture page does not set the operator-chrome dark theme, so the Agent Genesis light theme is active — colors and background are consistent with the default token scale.
 
 ## Component inventory vs. design fixture
 
@@ -113,3 +136,15 @@ All components consume `--ds-*` tokens bridged from `tokens.css`. No inline colo
 - Metric: 10 tests covering all prop combinations (label, value, sub, delta/direction, icon placeholder, all 5 tones)
 - ProgressBar: 11 tests covering value clamping, tone variants (warning/error/success/accent), edge cases (zero/negative max), accessibility labels
 - Sparkline: 8 tests covering SVG structure, empty state, fill toggle, dimensions, deterministic output, accessibility
+
+## Isolated fixture
+
+A committed fixture renders all M1 primitives in isolation for visual review and PNG capture. It is NOT mounted by any customer portal route — no App.svelte changes, no route additions. Files:
+
+- `web/src/lib/components/primitives/__fixtures__/M1PrimitivesFixture.svelte` — renders Eyebrow, Metric (tone + delta variants), CostGauge (0/50/75/95), Sparkline (with/without fill), ProgressBar (all tones)
+- `web/fixtures/m1-primitives.html` — standalone HTML entry (Vite-served)
+- `web/fixtures/m1-primitives.ts` — entry point (imports CSS, mounts fixture)
+- `web/fixtures/m1-primitives-fixture.css` — fixture-only base CSS (`.eyebrow`, `.metric`, `.bar`, `.sparkline-svg` from design fixture; not loaded by any customer route)
+- `web/fixtures/vite.fixture.config.ts` — standalone Vite build config (no file watching, SPA-only)
+
+All fixture files carry `@license AGPL-3.0-only` headers.
