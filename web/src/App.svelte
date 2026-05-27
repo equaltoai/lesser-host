@@ -1,4 +1,15 @@
 <script lang="ts">
+	// FaceTheory emits CSS discovered from the rendered App surface into the
+	// SSR HTML. Keep Project 39 global styles on this graph (not only
+	// `main.ts`) so lab receives the Agent Genesis theme before hydration.
+	import 'src/lib/styles/greater/tokens.css';
+	import 'src/lib/tokens';
+	import 'src/lib/styles/greater/primitives.css';
+	import 'src/lib/styles/greater/shell.css';
+	import 'src/lib/styles/greater/host-platform.css';
+	import 'src/lib/tokens/operator-chrome.css';
+	import './app.css';
+
 	import { onMount } from 'svelte';
 	import { get } from 'svelte/store';
 
@@ -22,20 +33,23 @@
 	import Trust from 'src/pages/Trust.svelte';
 
 	let isOperatorRoute = $derived($currentPath === '/operator' || $currentPath.startsWith('/operator/'));
-	// M0.11 — /portal/fleet is the new shell-based fleet view; it renders
-	// inside PortalShell (greater-components Shell + Sidebar + Topbar +
-	// PageFrame + CommandPalette) rather than the legacy PortalLayout.
-	// Compatibility note: /portal and /portal/instances continue to use
-	// PortalLayout below — no legacy behavior is changed by this PR.
-	let isPortalFleetRoute = $derived(
-		$currentPath === '/portal/fleet' || $currentPath.startsWith('/portal/fleet/')
+	// Project 39 customer surfaces render inside the shell. /portal is the
+	// canonical fleet view; /portal/fleet remains a compatibility alias.
+	let isPortalShellRoute = $derived(
+		$currentPath === '/portal' ||
+			$currentPath === '/portal/fleet' ||
+			$currentPath.startsWith('/portal/fleet/') ||
+			$currentPath.startsWith('/portal/') ||
+			$currentPath === '/trust' ||
+			$currentPath.startsWith('/trust/') ||
+			$currentPath === '/account' ||
+			$currentPath === '/tip-registry' ||
+			$currentPath === '/tip-registry/register'
 	);
 	let isPortalRoute = $derived(
-		!isPortalFleetRoute && (
+		!isPortalShellRoute && (
 			$currentPath === '/' ||
-			$currentPath === '/portal' || $currentPath.startsWith('/portal/') ||
-			$currentPath === '/trust' || $currentPath.startsWith('/trust/') ||
-			$currentPath === '/tip-registry' || $currentPath === '/tip-registry/register' ||
+			$currentPath === '/trust' ||
 			$currentPath === '/account'
 		)
 	);
@@ -54,9 +68,19 @@
 		<OperatorLayout>
 			<Operator />
 		</OperatorLayout>
-	{:else if isPortalFleetRoute}
+	{:else if isPortalShellRoute}
 		<PortalShell>
-			<PortalFleet token={$session?.token ?? ''} />
+			{#if $currentPath === '/portal' || $currentPath === '/portal/fleet' || $currentPath.startsWith('/portal/fleet/')}
+				<PortalFleet token={$session?.token ?? ''} />
+			{:else if $currentPath.startsWith('/portal/')}
+				<Portal />
+			{:else if $currentPath === '/trust' || $currentPath.startsWith('/trust/')}
+				<Trust />
+			{:else if $currentPath === '/account'}
+				<Account />
+			{:else if $currentPath === '/tip-registry' || $currentPath === '/tip-registry/register'}
+				<TipRegistryRegister />
+			{/if}
 		</PortalShell>
 	{:else if isPortalRoute}
 		<PortalLayout>

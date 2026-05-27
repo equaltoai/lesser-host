@@ -134,7 +134,7 @@ Issue: equaltoai/lesser-host#414
 			description="Managed lesser.host instance — release state, configuration, domains, and access keys."
 		>
 			{#snippet actions()}
-				<Link {...linkProps('/portal/fleet')} variant="ghost">Fleet</Link>
+				<Link {...linkProps('/portal')} variant="ghost">Fleet</Link>
 				<Link {...linkProps('/portal')} variant="ghost">Back</Link>
 			{/snippet}
 		</PageTitle>

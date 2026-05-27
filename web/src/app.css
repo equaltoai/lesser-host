@@ -5,9 +5,14 @@ body {
 
 body {
 	margin: 0;
-	font-family: var(--gr-typography-fontFamily-sans, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif);
-	background: var(--gr-semantic-background-base, var(--gr-semantic-background-primary, #ffffff));
-	color: var(--gr-semantic-foreground-primary, #111827);
+	font-family: var(--ds-font-sans, var(--gr-typography-fontFamily-sans, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif));
+	background: var(--ds-bg-base, #f8f1e7);
+	background-image: var(--ds-page-gradient);
+	background-attachment: fixed;
+	color: var(--ds-fg-1, var(--gr-semantic-foreground-primary, #332116));
+	-webkit-font-smoothing: antialiased;
+	text-rendering: optimizeLegibility;
+	font-size: 15px;
 }
 
 a {
@@ -16,4 +21,82 @@ a {
 
 #app {
 	min-height: 100%;
+}
+
+:focus-visible {
+	outline: 2px solid var(--ds-border-focus, var(--gr-semantic-focus-ring, #8d64d1));
+	outline-offset: 2px;
+	border-radius: var(--ds-radius-sm, 0.375rem);
+}
+
+/*
+ * Project 39 — Agent Genesis runtime skin.
+ *
+ * The design-system tokens live in `src/lib/tokens`; these selectors make
+ * the vendored Greater shell/components visibly consume them. This is not a
+ * framework patch: it is host's app-level skin over Greater's stable class
+ * surface, loaded from the first-party bundle under the strict CSP.
+ */
+.gr-shell:not(.shell--operator) {
+	background: var(--ds-bg-base, #f8f1e7);
+	background-image: var(--ds-page-gradient);
+	background-attachment: fixed;
+	color: var(--ds-fg-1, #332116);
+}
+
+.gr-shell:not(.shell--operator) .gr-shell-sidebar,
+.gr-shell:not(.shell--operator) .gr-shell-topbar {
+	background: var(--ds-bg-glass, rgba(255, 251, 245, 0.82));
+	-webkit-backdrop-filter: blur(var(--ds-blur-nav, 24px));
+	backdrop-filter: blur(var(--ds-blur-nav, 24px));
+	border-color: var(--ds-border-default, rgba(107, 56, 16, 0.16));
+}
+
+.gr-shell:not(.shell--operator) .gr-shell-sidebar__header,
+.gr-shell:not(.shell--operator) .gr-shell-sidebar__footer {
+	border-color: var(--ds-border-subtle, rgba(107, 56, 16, 0.1));
+}
+
+.gr-shell:not(.shell--operator) .gr-shell-sidebar__body > a,
+.gr-shell:not(.shell--operator) .gr-shell-sidebar__body > button {
+	border-radius: var(--ds-radius-md, 0.75rem);
+	color: var(--ds-fg-2, rgba(51, 33, 22, 0.78));
+}
+
+.gr-shell:not(.shell--operator) .gr-shell-sidebar__body > a:hover,
+.gr-shell:not(.shell--operator) .gr-shell-sidebar__body > button:hover {
+	background: var(--ds-bg-raised, rgba(255, 255, 255, 0.72));
+	color: var(--ds-fg-1, #332116);
+}
+
+.gr-shell:not(.shell--operator) .gr-shell-sidebar__body > a[aria-current='page'],
+.gr-shell:not(.shell--operator) .gr-shell-sidebar__body > button[aria-pressed='true'] {
+	background: color-mix(in srgb, var(--ds-secondary-500, #8d64d1) 14%, transparent);
+	color: var(--ds-fg-1, #332116);
+	font-weight: 700;
+}
+
+.gr-shell-panel,
+.gr-shell-statcard,
+.gr-card {
+	background: var(--ds-bg-surface, rgba(255, 251, 245, 0.92));
+	border-color: var(--ds-border-default, rgba(107, 56, 16, 0.16));
+	border-radius: var(--ds-radius-xl, 1.25rem);
+	box-shadow: var(--ds-shadow-sm, 0 4px 10px rgba(73, 34, 10, 0.05));
+}
+
+.gr-heading {
+	font-family: var(--ds-font-heading, var(--gr-typography-fontFamily-heading, Georgia, serif));
+	letter-spacing: -0.01em;
+}
+
+.gr-button--solid {
+	background: var(--ds-action-gradient, linear-gradient(135deg, #8d64d1, #e6a645));
+	box-shadow: var(--ds-shadow-button-primary, 0 18px 40px rgba(148, 74, 0, 0.18));
+	border: 0;
+}
+
+.gr-button--outline,
+.gr-button--ghost {
+	border-color: var(--ds-border-default, rgba(107, 56, 16, 0.16));
 }

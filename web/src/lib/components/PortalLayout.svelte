@@ -3,7 +3,8 @@
 	import { currentPath, linkProps, navigate } from 'src/lib/router';
 	import { session } from 'src/lib/session';
 	import { logout } from 'src/lib/auth/logout';
-	import { Button, Heading, Link, Text } from 'src/lib/ui';
+	import { Button, Link, Text } from 'src/lib/ui';
+	import BrandLockup from './BrandLockup.svelte';
 
 	let { children }: { children: Snippet } = $props();
 
@@ -25,7 +26,7 @@
 <div class="layout">
 	<nav class="layout__sidebar">
 		<div class="layout__brand">
-			<Heading level={2} size="xl">lesser.host</Heading>
+			<BrandLockup edition="Control plane" />
 		</div>
 		<div class="layout__nav">
 			<Link
@@ -89,16 +90,20 @@
 	.layout {
 		display: flex;
 		min-height: 100vh;
-		background: var(--gr-color-background);
+		background: var(--ds-bg-base, #f8f1e7);
+		background-image: var(--ds-page-gradient);
+		background-attachment: fixed;
 	}
 	.layout__sidebar {
 		width: 260px;
 		display: flex;
 		flex-direction: column;
-		border-right: 1px solid var(--gr-color-border);
+		border-right: 1px solid var(--ds-border-default, var(--gr-semantic-border-default));
 		padding: var(--gr-spacing-scale-6) var(--gr-spacing-scale-4);
 		gap: var(--gr-spacing-scale-6);
-		background: var(--gr-color-background-surface);
+		background: var(--ds-bg-glass, var(--gr-semantic-background-surface));
+		-webkit-backdrop-filter: blur(var(--ds-blur-nav, 24px));
+		backdrop-filter: blur(var(--ds-blur-nav, 24px));
 	}
 	.layout__brand {
 		padding: 0 var(--gr-spacing-scale-2);
@@ -118,7 +123,7 @@
 		flex-direction: column;
 		gap: var(--gr-spacing-scale-3);
 		padding-top: var(--gr-spacing-scale-4);
-		border-top: 1px solid var(--gr-color-border);
+		border-top: 1px solid var(--ds-border-subtle, var(--gr-semantic-border-subtle));
 	}
 	.layout__user {
 		display: flex;

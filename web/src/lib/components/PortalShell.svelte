@@ -1,15 +1,11 @@
 <!--
 @component
 PortalShell — greater-components Shell + Sidebar + Topbar + PageFrame
-composition for the customer portal's new fleet view.
+composition for the customer portal's fleet view.
 
-This is an ADDITIVE component for M0.11:
-  - It does NOT replace `PortalLayout.svelte` (kept untouched for the
-    legacy `/portal` / `/portal/instances` paths so byte-for-byte
-    compatibility is preserved).
-  - It is currently wired only by the new `/portal/fleet` route.
-  - Subsequent milestones may migrate additional portal sub-views into
-    this shell; this PR doesn't speculate.
+This shell is now the canonical `/portal` surface. The older
+`PortalLayout.svelte` remains only for legacy `/portal/instances` detail
+paths that have not yet been migrated into this shell.
 
 Behavior:
   - `Shell` provides the root grid with a `<main>` landmark
@@ -56,6 +52,7 @@ Issue: equaltoai/lesser-host#391
 	import { logout } from 'src/lib/auth/logout';
 	import { Button, Heading, Link, Text } from 'src/lib/ui';
 	import { portalFleetInstances, clearPortalFleetState } from 'src/lib/portalFleetState';
+	import BrandLockup from './BrandLockup.svelte';
 
 	interface Props {
 		/** Page content rendered inside the shell's PageFrame. */
@@ -108,18 +105,14 @@ Issue: equaltoai/lesser-host#391
 	}
 
 	function isPortalFleetActive(): boolean {
-		return isActive('/portal/fleet');
+		return $currentPath === '/portal' || isActive('/portal/fleet');
 	}
 
 	function isLegacyPortalActive(): boolean {
-		// Matches /portal and /portal/instances + nested paths, but NOT
-		// /portal/fleet, /portal/souls, or /portal/billing — which each
-		// get their own button state below.
+		// Matches only the legacy /portal/instances + nested paths.
 		return (
-			isActive('/portal') &&
-			!isActive('/portal/fleet') &&
-			!isActive('/portal/souls') &&
-			!isActive('/portal/billing')
+			isActive('/portal/instances') &&
+			!isActive('/portal/fleet')
 		);
 	}
 
@@ -138,15 +131,15 @@ Issue: equaltoai/lesser-host#391
 			{
 				id: 'nav.fleet',
 				label: 'Go to Fleet',
-				description: 'Customer fleet view (new shell)',
+				description: 'Customer fleet view',
 				keywords: ['portal', 'instances', 'overview'],
 				shortcut: 'F',
 			},
 			{
 				id: 'nav.legacy-instances',
-				label: 'Go to Instances (legacy)',
-				description: 'Existing /portal/instances list',
-				keywords: ['portal', 'list', 'old'],
+				label: 'Go to Instance list',
+				description: 'Detailed instance list',
+				keywords: ['portal', 'list', 'instances'],
 			},
 			{
 				id: 'nav.souls',
@@ -228,7 +221,7 @@ Issue: equaltoai/lesser-host#391
 		paletteQuery = '';
 		switch (item.id) {
 			case 'nav.fleet':
-				navigate('/portal/fleet');
+				navigate('/portal');
 				return;
 			case 'nav.legacy-instances':
 				navigate('/portal/instances');
@@ -285,11 +278,19 @@ Issue: equaltoai/lesser-host#391
 
 <Shell mainLabel="Customer portal" sidebarPlacement="left" sidebarWidth="md">
 	{#snippet topbar()}
-		<Topbar variant="default">
+		<Topbar variant="default" sticky>
 			{#snippet start()}
-				<div class="portal-shell__brand">
-					<Heading level={2} size="lg">lesser.host</Heading>
+				<div class="portal-shell__crumb">
+					<Heading level={2} size="lg">Portal</Heading>
+					<Text size="sm" color="secondary">Fleet, billing, trust, and soul operations</Text>
 				</div>
+			{/snippet}
+			{#snippet center()}
+				<button class="portal-shell__cmdk-trigger" type="button" onclick={() => (paletteOpen = true)}>
+					<span aria-hidden="true">⌕</span>
+					<span>Search instances, souls, jobs…</span>
+					<span class="portal-shell__kbd">⌘K</span>
+				</button>
 			{/snippet}
 			{#snippet end()}
 				<div class="portal-shell__topbar-end">
@@ -307,9 +308,12 @@ Issue: equaltoai/lesser-host#391
 
 	{#snippet sidebar()}
 		<Sidebar label="Primary navigation">
+			{#snippet header()}
+				<BrandLockup edition="Customer portal" />
+			{/snippet}
 			<div class="portal-shell__nav">
 				<Link
-					{...linkProps('/portal/fleet')}
+					{...linkProps('/portal')}
 					variant="ghost"
 					aria-current={isPortalFleetActive() ? 'page' : undefined}
 				>
@@ -320,7 +324,7 @@ Issue: equaltoai/lesser-host#391
 					variant="ghost"
 					aria-current={isLegacyPortalActive() ? 'page' : undefined}
 				>
-					Instances (legacy)
+					Instance list
 				</Link>
 				<Link
 					{...linkProps('/portal/souls')}
@@ -354,9 +358,24 @@ Issue: equaltoai/lesser-host#391
 					<Link {...linkProps('/operator')} variant="ghost">Operator Console</Link>
 				{/if}
 			</div>
-			<div class="portal-shell__sidebar-footer">
-				<Text size="sm" color="secondary">⌘K for command palette</Text>
-			</div>
+			{#snippet footer()}
+				<div class="portal-shell__sidebar-footer">
+					<Text size="sm" color="secondary">⌘K for command palette</Text>
+					{#if $session}
+						<div class="portal-shell__user-chip">
+							<span class="portal-shell__avatar" aria-hidden="true">
+								{$session.username.slice(0, 2).toUpperCase()}
+							</span>
+							<span class="portal-shell__user-copy">
+								<Text size="sm" weight="medium">@{$session.username}</Text>
+								<Text size="sm" color="secondary">{$session.role} · {$session.method ?? 'session'}</Text>
+							</span>
+						</div>
+					{:else}
+						<Link {...linkProps('/login')} variant="default">Sign in</Link>
+					{/if}
+				</div>
+			{/snippet}
 		</Sidebar>
 	{/snippet}
 
@@ -374,10 +393,11 @@ Issue: equaltoai/lesser-host#391
 />
 
 <style>
-	.portal-shell__brand {
+	.portal-shell__crumb {
 		display: flex;
-		align-items: center;
-		padding: 0 var(--gr-spacing-scale-3);
+		flex-direction: column;
+		justify-content: center;
+		min-width: 0;
 	}
 
 	.portal-shell__topbar-end {
@@ -385,6 +405,38 @@ Issue: equaltoai/lesser-host#391
 		gap: var(--gr-spacing-scale-3);
 		align-items: center;
 		padding: 0 var(--gr-spacing-scale-3);
+	}
+
+	.portal-shell__cmdk-trigger {
+		display: flex;
+		align-items: center;
+		gap: var(--ds-space-2, 0.5rem);
+		min-width: min(26rem, 42vw);
+		border: 1px solid var(--ds-border-subtle, rgba(107, 56, 16, 0.1));
+		border-radius: var(--ds-radius-pill, 999px);
+		padding: 0.42rem 0.75rem;
+		background: var(--ds-bg-raised, rgba(255, 255, 255, 0.72));
+		color: var(--ds-fg-2, rgba(51, 33, 22, 0.78));
+		font: inherit;
+		text-align: left;
+		cursor: pointer;
+		box-shadow: var(--ds-shadow-xs, 0 1px 2px rgba(73, 34, 10, 0.04));
+	}
+
+	.portal-shell__cmdk-trigger:hover {
+		color: var(--ds-fg-1, #332116);
+		border-color: var(--ds-border-default, rgba(107, 56, 16, 0.16));
+	}
+
+	.portal-shell__kbd {
+		margin-left: auto;
+		font-family: var(--ds-font-mono, ui-monospace, monospace);
+		font-size: 0.7rem;
+		background: var(--ds-bg-surface, rgba(255, 251, 245, 0.92));
+		border: 1px solid var(--ds-border-subtle, rgba(107, 56, 16, 0.1));
+		padding: 0.05rem 0.32rem;
+		border-radius: 5px;
+		color: var(--ds-fg-2, rgba(51, 33, 22, 0.78));
 	}
 
 	.portal-shell__nav {
@@ -400,7 +452,44 @@ Issue: equaltoai/lesser-host#391
 	}
 
 	.portal-shell__sidebar-footer {
-		padding: var(--gr-spacing-scale-3);
-		border-top: 1px solid var(--gr-semantic-border-default, var(--gr-color-gray-200));
+		display: flex;
+		flex-direction: column;
+		gap: var(--ds-space-3, 0.75rem);
+	}
+
+	.portal-shell__user-chip {
+		display: flex;
+		align-items: center;
+		gap: var(--ds-space-3, 0.75rem);
+		padding: var(--ds-space-2, 0.5rem);
+		border-radius: var(--ds-radius-lg, 1rem);
+		background: var(--ds-bg-raised, rgba(255, 255, 255, 0.72));
+		border: 1px solid var(--ds-border-subtle, rgba(107, 56, 16, 0.1));
+		min-width: 0;
+	}
+
+	.portal-shell__avatar {
+		width: 32px;
+		height: 32px;
+		border-radius: 999px;
+		background: linear-gradient(135deg, var(--ds-secondary-400, #aa84f2), var(--ds-primary-400, #e6a645));
+		color: white;
+		display: grid;
+		place-items: center;
+		font-weight: 700;
+		font-size: 0.82rem;
+		flex: 0 0 auto;
+	}
+
+	.portal-shell__user-copy {
+		display: flex;
+		flex-direction: column;
+		min-width: 0;
+	}
+
+	@media (max-width: 58rem) {
+		.portal-shell__cmdk-trigger {
+			display: none;
+		}
 	}
 </style>
