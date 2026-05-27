@@ -1525,17 +1525,9 @@ export class LesserHostStack extends cdk.Stack {
 			autoDeleteObjects: stage !== 'live',
 		});
 
-		// AppTheorySsrSite (M0.12) — canonical AppTheory v1.9.0 composition.
+		// AppTheorySsrSite (M0.12) — canonical AppTheory v1.11.0 composition.
 		// Owns the single CloudFront distribution + OAC-signed SSR Lambda
-		// origin (AuthType.AWS_IAM fail-closed). Bearer-auth co-origins (HTTP
-		// API + SSE REST) attach via addBehavior() below; OAC does NOT
-		// propagate to them (M0.13 test asserts). CSP byte-string preserved
-		// via responseHeadersPolicy (M0.14 test). Mode SSR_ONLY matches host's
-		// per-request SSR architecture; SSG_ISR (S3 primary HTML) would be a
-		// larger shift not in scope. directS3PathPatterns NOT used because in
-		// SSR_ONLY it routes to assetsBucket; /_facetheory/data/* must hit
-		// htmlStoreBucket so SSR-Lambda sidecar writes and CloudFront reads
-		// land together without granting SSR write access to webBucket.
+		// origin and the direct S3 Vite asset behaviors.
 		const webSite = new AppTheorySsrSite(this, 'WebSite', {
 			ssrFunction: webSsrFn,
 			mode: AppTheorySsrSiteMode.SSR_ONLY,
@@ -1558,9 +1550,7 @@ export class LesserHostStack extends cdk.Stack {
 		// Preserve the legacy logical id so the existing CNAME owner updates in place.
 		(webSite.distribution.node.defaultChild as cloudfront.CfnDistribution).overrideLogicalId('WebDistribution59C46482');
 
-		// /_facetheory/data/* hand-wired to htmlStoreBucket. S3BucketOrigin
-		// .withOriginAccessControl keeps the bucket blockPublicAccess and
-		// signs CloudFront reads.
+		// /_facetheory/data/* hand-wired to htmlStoreBucket with OAC reads.
 		const sidecarOrigin = origins.S3BucketOrigin.withOriginAccessControl(htmlStoreBucket);
 		webSite.distribution.addBehavior('_facetheory/data/*', sidecarOrigin, {
 			viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
@@ -1568,7 +1558,6 @@ export class LesserHostStack extends cdk.Stack {
 			cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
 			responseHeadersPolicy: webSecurityHeaders,
 		});
-
 		// Bearer-auth co-origins (existing HTTP API + SSE REST; not Function
 		// URLs, so AppTheorySsrSite.bearerFunctionUrlOrigins[] doesn't apply).
 		// Attached via addBehavior(); OAC does NOT propagate (M0.13 test).
