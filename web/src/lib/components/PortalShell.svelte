@@ -230,10 +230,14 @@ Issue: equaltoai/lesser-host#391
 				navigate('/portal/souls');
 				return;
 			case 'nav.trust':
-				navigate('/trust');
+				// Project 42 M0.1 (#526): canonical Trust path is now under
+				// portal chrome. /trust still resolves (App.svelte routes it
+				// to the same Trust component) but the command palette
+				// always navigates to the canonical entrypoint.
+				navigate('/portal/trust');
 				return;
 			case 'nav.account':
-				navigate('/account');
+				navigate('/portal/account');
 				return;
 			case 'nav.billing':
 				navigate('/portal/billing');
@@ -341,16 +345,18 @@ Issue: equaltoai/lesser-host#391
 					Billing
 				</Link>
 				<Link
-					{...linkProps('/trust')}
+					{...linkProps('/portal/trust')}
 					variant="ghost"
-					aria-current={isActive('/trust') ? 'page' : undefined}
+					aria-current={isActive('/portal/trust') || isActive('/trust') ? 'page' : undefined}
 				>
 					Trust
 				</Link>
 				<Link
-					{...linkProps('/account')}
+					{...linkProps('/portal/account')}
 					variant="ghost"
-					aria-current={isActive('/account', true) ? 'page' : undefined}
+					aria-current={isActive('/portal/account', true) || isActive('/account', true)
+						? 'page'
+						: undefined}
 				>
 					Account
 				</Link>
