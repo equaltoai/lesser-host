@@ -114,3 +114,103 @@ Optional 8th task (stretch, can defer to M2):
 ## Estimated size
 
 ≤ 8 commits, ≤ 400 lines diff total. Reviewable in ≤ 20 minutes.
+
+## Post-implementation findings (2026-05-27)
+
+The milestone landed as PR #534 (draft) with 7/8 sub-issues fixed in
+commits b09d5e9, cdf04a2, 829a6ea, 8201061, 1dd67da, 4e7d5d2, 44be898
+(plus the planning-bundle docs commit 378d45a). The 8th sub-issue
+(#529 M0.4) revealed a Lesser-side contract gap that arch's
+"important dependency rule" requires reporting upstream rather than
+masking on the host side.
+
+### #529 M0.4 — Lesser route gap (blocks M0 closure)
+
+Read-only audit of `/home/aron/ai-workspace/codebases/equaltoai/lesser`:
+
+- `cmd/api/handlers/metrics.go:15` defines
+  `HandleGetInstanceMetricsLift` exactly per arch's reference
+  (reads `Analytics().GetActiveUserCount`,
+  `Cost().GetCostsByDateRange`, `Cost().GetDailyAggregates`).
+- `cmd/api/handlers/round11_metrics_test.go:41` and
+  `cmd/api/handlers/metrics_round12_coverage_test.go:247,255`
+  exercise the handler directly in tests.
+- **`cmd/api/routes.go` and `cmd/api/main.go` contain NO
+  `app.Get(...)` mount for this handler.** Exhaustive grep across
+  `cmd/` and `pkg/` finds the symbol only in (a) the handler
+  definition and (b) those two test files. There is no route
+  registration anywhere in the Lesser repo.
+
+Auth is moot until the route exists; the missing route is the
+blocking gap.
+
+### What host's M0.4 follow-up PR needs from Lesser
+
+Lesser must mount `HandleGetInstanceMetricsLift` (or a sibling
+cost-only handler shaped to `PortalCostResponse`'s needs) under a
+stable path with instance-API-key bearer auth. Once that lands,
+host's follow-up PR on Project 42 (narrow scope, still under M0
+parent #525 until closed) lands:
+
+1. `requireInstanceAccess` first.
+2. `internal/manageddomain.StageDomain(stage, inst.HostedBaseDomain)`
+   to derive `https://api.<stage-domain>` as the upstream origin.
+3. `internal/commworker/server.go`'s `instanceSecretFetchInputs` +
+   `getSecretsManagerSecretPlaintext` pattern (cross-account
+   assume-role when present, same-account fallback otherwise) to
+   resolve `LesserHostInstanceKeySecretARN`.
+4. `http.NewRequestWithContext(ctx, http.MethodGet, "https://api.<stage-domain>/...", nil)`
+   with `Authorization: Bearer <key>`.
+5. Map response into `PortalCostResponse` (bounded DTO change
+   allowed in the same follow-up PR per arch's correction email
+   `delivery-3ef80b6c7ccc6fea`).
+
+Required tests in the follow-up PR (per arch's correction):
+
+- Fake managed Lesser HTTP server: assert `Authorization` header
+  equals `Bearer <key>`; assert non-empty Lesser response maps
+  into the portal cost shape.
+- Ownership-failure test: `requireInstanceAccess` returns
+  `app.forbidden` before any HTTP call is made.
+- No-leak / no-log key proof: response body never contains the
+  raw key; log lines never emit it.
+- Empty-instance-data test: empty Lesser response maps to a
+  genuine empty state (not fabricated).
+- Upstream-failure test: 5xx from Lesser propagates as an
+  appropriate `app.upstream_*` code with the underlying error
+  logged but not echoed to the browser.
+
+### Standing instructions captured during M0.4 investigation
+
+Aron's directive, recorded verbatim for the steward stack:
+
+> Do not patch over gaps in our data with "graceful degradation" —
+> we deal with the missing pipeline honestly or we don't ship the
+> masking.
+
+The half-measure rejected during M0.4 was a server-side
+`log.Printf` of the underlying DynamoDB error PLUS a softened UI
+empty-state ("Cost telemetry warming up · last value at HH:MM").
+Both individually defensible, but together they would have
+promised data that the platform cannot deliver — the cost-telemetry
+producer pipeline (`internal/costtelemetry/server.go:60` returning
+`{scaffold: "cost-telemetry-worker M3.7 scaffold — no business
+logic yet"}`) is unwired, and even the M3.8/M3.9/M3.10 path arch's
+correction rejected as wrong-source. The Lesser-side metrics path
+is the correct data source per arch.
+
+### M0 closure path
+
+M0 is incomplete by arch's definition until #529 either reads real
+instance metrics OR an explicit split is authorized. Two paths:
+
+A) **Wait for Lesser route mount, then host follow-up PR closes
+   #529 against the same parent #525.** M0 PR #534 stays in draft
+   (or remains the parent PR with the follow-up as a stacked PR)
+   until both land.
+B) **Explicit arch-authorized split: merge #534 with 7 fixes,
+   keep #529 open as a Lesser contract tracker.** M0 closes
+   partially; the Lesser route mount drives reopening / final
+   closure when ready.
+
+Arch's call. Reported via `delivery-da9c3196f24b229a` (2026-05-27).
