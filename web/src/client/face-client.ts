@@ -61,6 +61,7 @@ import 'src/lib/styles/greater/tokens.css';
 import 'src/lib/styles/greater/primitives.css';
 import 'src/lib/styles/greater/shell.css';
 import 'src/lib/styles/greater/host-platform.css';
+import 'src/lib/styles/m1-primitives.css';
 import '../app.css';
 
 import { ensureAwsOacFormTransport } from './oac-form';

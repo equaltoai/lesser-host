@@ -9,6 +9,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export default defineConfig({
 	plugins: [svelte()],
 	resolve: {
+		conditions: ['browser'],
 		alias: {
 			src: path.resolve(__dirname, './src'),
 		},

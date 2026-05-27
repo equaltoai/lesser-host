@@ -5,6 +5,7 @@ import 'src/lib/tokens';
 import 'src/lib/styles/greater/primitives.css';
 import 'src/lib/styles/greater/shell.css';
 import 'src/lib/styles/greater/host-platform.css';
+import 'src/lib/styles/m1-primitives.css';
 
 // Operator Console dark warm-charcoal chrome (Project 39 M2.1, issue #427).
 // Imported directly here — the `src/lib/tokens` barrel that previously

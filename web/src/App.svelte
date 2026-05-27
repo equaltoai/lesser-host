@@ -7,6 +7,7 @@
 	import 'src/lib/styles/greater/primitives.css';
 	import 'src/lib/styles/greater/shell.css';
 	import 'src/lib/styles/greater/host-platform.css';
+	import 'src/lib/styles/m1-primitives.css';
 	import 'src/lib/tokens/operator-chrome.css';
 	import './app.css';
 

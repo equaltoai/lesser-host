@@ -1,0 +1,18 @@
+/* ============================================================================
+ * M1 Primitives — CSS bundle aggregator (Project 42)
+ *
+ * Aggregates CSS files for the M1 foundation primitives under
+ * `web/src/lib/components/primitives/`. Each component CSS file scopes
+ * its rules to its own root class; no inter-CSS dependencies.
+ *
+ * Import order: alphabetical by component name.
+ *
+ * Strict-CSP safe: no inline styles. All visual state is driven by CSS
+ * classes and data-* attribute selectors.
+ *
+ * Source: GitHub issue #535 (M1 — Foundation primitives)
+ * ========================================================================== */
+
+@import '../components/primitives/CostGauge.css';
+@import '../components/primitives/Metric.css';
+@import '../components/primitives/ProgressBar.css';

@@ -1,0 +1,60 @@
+/*
+ * M1 CostGauge — circular SVG budget gauge.
+ *
+ * Strict-CSP safe: no inline styles. Status communicates via CSS classes
+ * (`.gr-m1-cost-gauge--ok` / `--warning` / `--danger`) paired with the
+ * text percentage + label, never color-only.
+ *
+ * Consumes `--ds-*` design tokens bridged from host's tokens.css.
+ * Rotation is scoped to the ring group so center text stays upright.
+ */
+
+.gr-m1-cost-gauge {
+	display: inline-flex;
+	flex-shrink: 0;
+}
+
+.gr-m1-cost-gauge__svg {
+	display: block;
+}
+
+.gr-m1-cost-gauge__ring-group {
+	transform: rotate(-90deg);
+	transform-origin: center;
+}
+
+.gr-m1-cost-gauge__track {
+	fill: none;
+	stroke: var(--ds-border-subtle);
+}
+
+.gr-m1-cost-gauge__arc {
+	fill: none;
+	stroke-linecap: round;
+	transition: stroke-dashoffset 500ms ease;
+}
+
+.gr-m1-cost-gauge--ok .gr-m1-cost-gauge__arc {
+	stroke: var(--ds-success-500);
+}
+.gr-m1-cost-gauge--warning .gr-m1-cost-gauge__arc {
+	stroke: var(--ds-warning-500);
+}
+.gr-m1-cost-gauge--danger .gr-m1-cost-gauge__arc {
+	stroke: var(--ds-error-500);
+}
+
+.gr-m1-cost-gauge__percent {
+	font-family: var(--ds-font-heading);
+	font-weight: 700;
+	fill: var(--ds-fg-1);
+}
+
+.gr-m1-cost-gauge__label {
+	font-family: var(--ds-font-sans);
+	font-size: 0.5625rem;
+	fill: var(--ds-fg-3);
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
+	font-weight: 700;
+}
