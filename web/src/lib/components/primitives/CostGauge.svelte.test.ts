@@ -3,6 +3,8 @@
  *
  * Acceptance gate: covers 0%, 50%, 75%, and 95% as required by issue #535.
  * Additional coverage: edge cases (zero budget, over-budget, exact thresholds).
+ *
+ * @license AGPL-3.0-only
  */
 import { describe, expect, it } from 'vitest';
 import { mount } from 'svelte';

@@ -1,143 +1,15 @@
 /*
- * M1 Primitives Fixture — base primitive CSS.
+ * M1 Primitives Fixture — layout-only CSS.
  *
- * Provides the CSS classes referenced by M1 primitives (`.eyebrow`,
- * `.metric`, `.bar`, `.sparkline-svg`) that are defined in the design
- * fixture (`/tmp/design-sNM/lesser-host/project/assets/app.css`) but
- * not yet ported to host's runtime CSS (M2 owns CSS integration).
+ * This file provides NO primitive base classes. All primitive CSS
+ * (`.eyebrow`, `.metric`, `.bar`, `.sparkline-svg`, `.row`, `.gr-sr-only`)
+ * is shipped in the M1 runtime CSS bundle at
+ * `web/src/lib/components/primitives/base.css`, imported via
+ * `web/src/lib/styles/m1-primitives.css`.
  *
  * This file is imported ONLY by the isolated M1 fixture page
  * (`web/fixtures/m1-primitives.html`). It is NOT loaded by any
  * customer portal route.
  *
- * All classes consume `--ds-*` design tokens bridged from host's
- * tokens.css + Agent Genesis theme.
- *
  * @license AGPL-3.0-only
  */
-
-/*
- * Eyebrow — uppercase tracked label
- * Source: design fixture app.css line 24–31
- */
-.eyebrow {
-	font-size: var(--ds-eyebrow-size, 0.78rem);
-	font-weight: var(--ds-eyebrow-weight, 700);
-	letter-spacing: var(--ds-eyebrow-track, 0.12em);
-	text-transform: uppercase;
-	color: var(--ds-fg-3, rgba(51, 33, 22, 0.58));
-	font-family: var(--ds-font-sans, sans-serif);
-	margin: 0;
-}
-
-/*
- * Metric tile — base container + sub-elements
- * Source: design fixture app.css lines 565–577
- */
-.metric {
-	display: flex;
-	flex-direction: column;
-	gap: 0.4rem;
-	padding: 1.1rem;
-	border-radius: var(--ds-radius-lg, 0.75rem);
-	background: rgba(255, 255, 255, 0.65);
-	border: 1px solid var(--ds-border-subtle, rgba(107, 56, 16, 0.1));
-}
-
-.metric__label {
-	font-size: 0.72rem;
-	font-weight: 700;
-	letter-spacing: 0.12em;
-	text-transform: uppercase;
-	color: var(--ds-fg-3, rgba(51, 33, 22, 0.58));
-}
-
-.metric__value {
-	font-family: var(--ds-font-heading, Georgia, serif);
-	font-size: 1.85rem;
-	font-weight: 700;
-	letter-spacing: -0.02em;
-	line-height: 1;
-}
-
-.metric__delta {
-	font-size: 0.78rem;
-	color: var(--ds-fg-2, rgba(51, 33, 22, 0.78));
-}
-
-.metric__delta--up {
-	color: var(--ds-success-700, #15803d);
-}
-
-.metric__delta--down {
-	color: var(--ds-error-700, #b91c1c);
-}
-
-/*
- * Progress bar — container + fill
- * Source: design fixture app.css lines 614–629
- */
-.bar {
-	position: relative;
-	height: 7px;
-	border-radius: 999px;
-	background: var(--ds-bg-raised, rgba(255, 255, 255, 0.72));
-	border: 1px solid var(--ds-border-subtle, rgba(107, 56, 16, 0.1));
-	overflow: hidden;
-}
-
-.bar__fill {
-	position: absolute;
-	inset: 0;
-	right: auto;
-	border-radius: 999px;
-	background: var(--ds-action-gradient, linear-gradient(135deg, var(--ds-secondary-500), var(--ds-primary-400)));
-}
-
-.bar__fill--warning {
-	background: linear-gradient(135deg, var(--ds-warning-500, #f59e0b), var(--ds-warning-300, #fcd34d));
-}
-
-.bar__fill--error {
-	background: linear-gradient(135deg, var(--ds-error-500, #ef4444), var(--ds-warning-500, #f59e0b));
-}
-
-.bar__fill--success {
-	background: linear-gradient(135deg, var(--ds-success-500, #22c55e), var(--ds-success-300, #86efac));
-}
-
-/*
- * Sparkline SVG — responsive scaling
- * Source: design fixture app.css line 631
- */
-.sparkline-svg {
-	width: 100%;
-	display: block;
-}
-
-/*
- * Utility classes referenced by M1 primitives
- */
-.row {
-	display: flex;
-	align-items: center;
-}
-
-.row--between {
-	justify-content: space-between;
-}
-
-/*
- * Screen-reader-only utility (referenced by CostGauge)
- */
-.gr-sr-only {
-	position: absolute;
-	width: 1px;
-	height: 1px;
-	padding: 0;
-	margin: -1px;
-	overflow: hidden;
-	clip: rect(0, 0, 0, 0);
-	white-space: nowrap;
-	border-width: 0;
-}

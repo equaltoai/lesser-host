@@ -19,7 +19,7 @@
 | Components rendered | Eyebrow (3 variants), Metric (8 variants: base, success/warning/error/info/accent tones, up/down deltas, subtext), CostGauge (4 variants: 0%/50%/75%/95%), Sparkline (2 variants: with/without fill), ProgressBar (5 variants: default, success, warning, error, accent) |
 | Comparison basis | `/tmp/design-sNM/lesser-host/project/src/primitives.jsx` + `assets/app.css` |
 | Build config | `web/fixtures/vite.fixture.config.ts` (standalone; not the main web build) |
-| Fixture CSS | `web/fixtures/m1-primitives-fixture.css` (base classes `.eyebrow`, `.metric`, `.bar`, `.sparkline-svg` ported from design fixture app.css; M2 owns runtime CSS integration) |
+| Fixture CSS | `web/fixtures/m1-primitives-fixture.css` (layout-only; all primitive base classes ship in the M1 runtime CSS bundle at `web/src/lib/components/primitives/base.css`, imported via `web/src/lib/styles/m1-primitives.css`) |
 
 ### Visual inspection notes
 
@@ -43,14 +43,14 @@ Token source: `/tmp/design-sNM/lesser-host/project/assets/tokens.css`
 |--------|---------------|----------------|-------|
 | Element | `<As>` (default `p`) | `<p>` (fixed) | Partial — CSP-safe simplification. Dynamic element `<{as}>` is unsupported by eslint-plugin-svelte at current version. Consumer can wrap in desired tag. |
 | CSS class | `.eyebrow` | `.eyebrow` | Exact |
-| Tokens | `--ds-eyebrow-size`, `--ds-eyebrow-weight`, `--ds-eyebrow-track`, `--ds-fg-3`, `--ds-font-sans` | Same (via existing app.css) | Exact |
+| Tokens | `--ds-eyebrow-size`, `--ds-eyebrow-weight`, `--ds-eyebrow-track`, `--ds-fg-3`, `--ds-font-sans` | Same (via base.css) | Exact |
 | text-transform | uppercase | uppercase (via CSS) | Exact |
 
 ### Metric
 
 | Aspect | Design Fixture | Implementation | Match |
 |--------|---------------|----------------|-------|
-| Container | `<div class="metric">` with `position: relative` | `<div class="metric">` (position via app.css) | Exact |
+| Container | `<div class="metric">` with `position: relative` | `<div class="metric">` (position via base.css) | Exact |
 | Label | `<span class="metric__label">` | Same | Exact |
 | Value | `<div class="metric__value">` | Same | Exact |
 | Subtext | `<div class="metric__delta">` | `<div class="metric__delta metric__delta--sub">` | Minimal deviation: added `--sub` modifier for CSS scoping |
@@ -103,11 +103,11 @@ Token source: `/tmp/design-sNM/lesser-host/project/assets/tokens.css`
 
 | Component | Default dimensions | CSS reference |
 |-----------|-------------------|---------------|
-| Eyebrow | Inherits from text content | `app.css .eyebrow` |
-| Metric | Fills container, min-width: 0 | `app.css .metric` |
+| Eyebrow | Inherits from text content | `base.css .eyebrow` |
+| Metric | Fills container, min-width: 0 | `base.css .metric` |
 | CostGauge | 72×72px (configurable via `size`) | `CostGauge.css` |
-| Sparkline | 120×32px viewBox (CSS: `width: 100%; height: auto`) | `app.css .sparkline-svg` |
-| ProgressBar | 100% width, 7px height | `app.css .bar` |
+| Sparkline | 120×32px viewBox (CSS: `width: 100%; height: auto`) | `base.css .sparkline-svg` |
+| ProgressBar | 100% width, 7px height | `base.css .bar` |
 
 ## Color and token usage
 
@@ -144,7 +144,8 @@ A committed fixture renders all M1 primitives in isolation for visual review and
 - `web/src/lib/components/primitives/__fixtures__/M1PrimitivesFixture.svelte` — renders Eyebrow, Metric (tone + delta variants), CostGauge (0/50/75/95), Sparkline (with/without fill), ProgressBar (all tones)
 - `web/fixtures/m1-primitives.html` — standalone HTML entry (Vite-served)
 - `web/fixtures/m1-primitives.ts` — entry point (imports CSS, mounts fixture)
-- `web/fixtures/m1-primitives-fixture.css` — fixture-only base CSS (`.eyebrow`, `.metric`, `.bar`, `.sparkline-svg` from design fixture; not loaded by any customer route)
+- `web/fixtures/m1-primitives-fixture.css` — layout-only (no primitive base classes; those ship in `web/src/lib/components/primitives/base.css`)
 - `web/fixtures/vite.fixture.config.ts` — standalone Vite build config (no file watching, SPA-only)
 
-All fixture files carry `@license AGPL-3.0-only` headers.
+M1 ships the complete runtime CSS for all primitives via `web/src/lib/styles/m1-primitives.css` (imports `base.css` + `CostGauge.css` + `Metric.css` + `ProgressBar.css`). No CSS work is deferred to M2.
+All new source, fixture, test, CSS, TS, and Svelte files carry `@license AGPL-3.0-only` headers.

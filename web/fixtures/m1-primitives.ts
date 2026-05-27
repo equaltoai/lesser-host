@@ -14,11 +14,15 @@ import 'src/lib/styles/greater/tokens.css';
 import 'src/lib/tokens';
 import 'src/lib/styles/greater/primitives.css';
 
-/* M1 primitives component CSS (tone variants, gauge rings, progressbar steps) */
+/*
+ * M1 runtime CSS bundle: base classes (.eyebrow, .metric, .bar,
+ * .sparkline-svg, .row, .gr-sr-only) + component CSS (tone variants,
+ * gauge rings, progressbar steps, data-ratio selectors).
+ * All primitive visuals are complete in M1 via this single import.
+ */
 import 'src/lib/styles/m1-primitives.css';
 
-/* Fixture-only base CSS: .eyebrow, .metric, .bar, .sparkline-svg
- * (from design fixture app.css; not yet in host runtime — M2 owns CSS integration) */
+/* Fixture layout-only CSS (no primitive base classes). */
 import './m1-primitives-fixture.css';
 
 import { mount } from 'svelte';

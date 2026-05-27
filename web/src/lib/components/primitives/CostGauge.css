@@ -7,6 +7,8 @@
  *
  * Consumes `--ds-*` design tokens bridged from host's tokens.css.
  * Rotation is scoped to the ring group so center text stays upright.
+ *
+ * @license AGPL-3.0-only
  */
 
 .gr-m1-cost-gauge {

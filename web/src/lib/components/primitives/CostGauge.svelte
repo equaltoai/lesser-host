@@ -2,6 +2,8 @@
 @component
 CostGauge — circular SVG budget gauge matching the Project 42 design fixture.
 
+@license AGPL-3.0-only
+
 Renders a circular gauge with:
 - An SVG ring with background track and a colored arc representing usage
 - Threshold-based color: green (OK, ≤69%), amber (warning, 70–89%), red (danger, 90%+)

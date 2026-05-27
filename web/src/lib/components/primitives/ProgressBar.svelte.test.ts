@@ -2,6 +2,8 @@
  * M1 ProgressBar unit tests.
  *
  * Covers the prop matrix: value, max, tone variants, edge cases.
+ *
+ * @license AGPL-3.0-only
  */
 import { describe, expect, it } from 'vitest';
 import { mount } from 'svelte';

@@ -2,6 +2,8 @@
 @component
 Eyebrow — uppercase tracked label primitive matching the Project 42 design fixture.
 
+@license AGPL-3.0-only
+
 Renders as a `<p>` element with the `.eyebrow` CSS class that consumes
 `--ds-eyebrow-size`, `--ds-eyebrow-weight`, `--ds-eyebrow-track`,
 `--ds-fg-3`, and `--ds-font-sans` tokens.

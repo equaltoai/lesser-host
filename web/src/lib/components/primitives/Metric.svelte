@@ -2,6 +2,8 @@
 @component
 Metric — metric tile primitive matching the Project 42 design fixture.
 
+@license AGPL-3.0-only
+
 Displays a label, value, optional subtext, optional delta with direction
 indicator, optional icon, and tone/accent support. Consumes `.metric`,
 `.metric__label`, `.metric__value`, `.metric__delta`, `.metric__delta--up`,

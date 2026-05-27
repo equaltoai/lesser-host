@@ -4,12 +4,14 @@
  * Replaces the design fixture's inline `style="width: X%"` with a
  * `data-ratio` integer attribute + CSS selector approach. The
  * container (`.bar`) and tone variants (`.bar__fill--warning`,
- * `.bar__fill--error`, `.bar__fill--success`) are reused from
- * the app stylesheet; this file adds `.bar__fill--accent` for
- * the missing tone and the 0–100 width-step rules.
+ * `.bar__fill--error`, `.bar__fill--success`) are provided by
+ * `base.css`; this file adds `.bar__fill--accent` for the missing
+ * tone and the 0–100 width-step rules.
  *
  * Strict-CSP safe: no inline styles, no inline event handlers.
  * Consumes `--ds-*` design tokens.
+ *
+ * @license AGPL-3.0-only
  */
 
 /* Accent tone: uses secondary/primary gradient (matching the action gradient) */

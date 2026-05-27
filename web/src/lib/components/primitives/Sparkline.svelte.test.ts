@@ -3,6 +3,8 @@
  *
  * Covers: data series rendering, area fill on/off, empty state,
  * custom dimensions, deterministic path output.
+ *
+ * @license AGPL-3.0-only
  */
 import { describe, expect, it } from 'vitest';
 import { mount } from 'svelte';

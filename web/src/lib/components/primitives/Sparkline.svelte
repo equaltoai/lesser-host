@@ -2,6 +2,8 @@
 @component
 Sparkline — tiny SVG line chart matching the Project 42 design fixture.
 
+@license AGPL-3.0-only
+
 Renders an inline SVG sparkline with an optional area fill below the line.
 The path is computed deterministically from the data series — no random or
 time-dependent values, so SSR and client renders produce identical output

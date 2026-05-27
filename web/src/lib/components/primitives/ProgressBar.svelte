@@ -2,6 +2,8 @@
 @component
 ProgressBar — CSP-safe progress bar matching the Project 42 design fixture.
 
+@license AGPL-3.0-only
+
 Renders a horizontal bar with a filled portion representing progress.
 Tone variants express semantic states (`.bar__fill--warning`,
 `.bar__fill--error`, `.bar__fill--success`, `.bar__fill--accent`).

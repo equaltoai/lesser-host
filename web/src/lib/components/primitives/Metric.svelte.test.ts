@@ -2,6 +2,8 @@
  * M1 Metric unit tests.
  *
  * Covers the prop matrix: label, value, sub, delta/deltaDir, icon, tone.
+ *
+ * @license AGPL-3.0-only
  */
 import { describe, expect, it } from 'vitest';
 import { mount } from 'svelte';
