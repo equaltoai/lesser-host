@@ -46,6 +46,15 @@
 		| { kind: 'billing' }
 		| { kind: 'notFound' };
 
+	// Project 42 M0.2 (#527): the outer page <h1> in this component used to
+	// render "Portal Dashboard" for every /portal/* sub-route, which the
+	// 2026-05-27 audit caught as wrong for /portal/billing (the h1 read
+	// "Portal Dashboard" while the Billing eyebrow + title appeared
+	// further down the page). The h1 + description are now derived from
+	// portalRoute so each sub-route names itself correctly without copying
+	// the inner section's eyebrow. Other sub-routes still default to the
+	// existing "Portal Dashboard" copy until their own redesign milestone
+	// owns the page.
 	const portalRoute = $derived.by<PortalRoute>(() => {
 		const path = $currentPath;
 		if (!path.startsWith('/portal')) return { kind: 'instances' };
@@ -82,6 +91,29 @@
 		}
 
 		return { kind: 'notFound' };
+	});
+
+	// Project 42 M0.2 (#527): scoped title + description per sub-route.
+	// /portal/billing now reads "Billing" (audit P0 fix); other sub-routes
+	// continue to render the existing dashboard copy until their owning
+	// milestone (M11 Billing UI / M13 Souls UI / M6 Instance Overview UI /
+	// etc.) redesigns them.
+	const pageTitle = $derived.by((): string => {
+		switch (portalRoute.kind) {
+			case 'billing':
+				return 'Billing';
+			default:
+				return 'Portal Dashboard';
+		}
+	});
+
+	const pageDescription = $derived.by((): string => {
+		switch (portalRoute.kind) {
+			case 'billing':
+				return 'Credits, usage, and invoices for the signed-in account.';
+			default:
+				return 'Self-serve customer dashboard.';
+		}
 	});
 
 	function formatError(err: unknown): string {
@@ -132,8 +164,8 @@
 	<div class="portal">
 		<header class="portal__header">
 			<div class="portal__title">
-				<Heading level={1}>Portal Dashboard</Heading>
-				<Text color="secondary">Self-serve customer dashboard.</Text>
+				<Heading level={1}>{pageTitle}</Heading>
+				<Text color="secondary">{pageDescription}</Text>
 			</div>
 			<div class="portal__actions">
 				<Button variant="outline" onclick={() => void loadMe()} disabled={loading}>Refresh</Button>
