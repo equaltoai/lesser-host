@@ -547,8 +547,23 @@
 
 <div class="instance-detail">
 	<div class="instance-detail__overview-actions">
-		<Button variant="outline" onclick={() => void refreshAll()} disabled={instanceLoading || domainsLoading || provisioningLoading}>
-			Refresh
+		<!--
+		Project 42 M0.8 (#533): the audit caught two identically labeled,
+		identically styled "Refresh" buttons on the Instance Overview —
+		the page-scoped one here (refreshes instance + domains +
+		provisioning via refreshAll()) and a stack-scoped one inside the
+		StackCard panel (refreshes just the stack-state telemetry).
+		Distinguish the page-scoped action with an explicit label so the
+		operator can tell the two refresh affordances apart. The
+		StackCard's "Refresh" stays as-is because its parent panel header
+		"Stack" already disambiguates its scope.
+		-->
+		<Button
+			variant="outline"
+			onclick={() => void refreshAll()}
+			disabled={instanceLoading || domainsLoading || provisioningLoading}
+		>
+			Refresh page
 		</Button>
 	</div>
 
