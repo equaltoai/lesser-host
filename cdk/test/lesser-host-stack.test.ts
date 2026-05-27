@@ -41,6 +41,13 @@ function findResources(template: SynthesizedTemplate, type: string): Array<Recor
 		.map((resource) => resource?.Properties ?? {});
 }
 
+function findResourceEntries(
+	template: SynthesizedTemplate,
+	type: string,
+): Array<[string, { Type?: string; Properties?: Record<string, unknown> }]> {
+	return Object.entries(template.Resources ?? {}).filter(([, resource]) => resource?.Type === type);
+}
+
 function parseAccessLogFormat(stage: Record<string, unknown>): Record<string, unknown> {
 	const accessLogSettings = stage.AccessLogSettings;
 	assert.ok(accessLogSettings && typeof accessLogSettings === 'object', 'expected stage access log settings');
@@ -228,6 +235,16 @@ test('web asset bundling does not execute npm locally in CI', () => {
 	assert.equal(shouldUseLocalWebBundling({}), true);
 });
 
+test('web SSR Lambda packages the Vite manifest beside the server bundle', () => {
+	const template = synthTemplate();
+	const fn = findLambdaByFunctionName(template, '-web-ssr');
+	assert.equal(
+		fn?.Handler,
+		'server/face-app.handler',
+		'WebSsrFn must package web/dist so face-app can read ../.vite/manifest.json and emit client assets',
+	);
+});
+
 // ────────────────────────────────────────────────────────────────────
 // M0.13 — CloudFront composition tests (SEC-8 verifier input).
 //
@@ -270,6 +287,20 @@ function distributionConfig(template: SynthesizedTemplate): DistributionConfig {
 	assert.ok(config && typeof config === 'object', 'distribution missing DistributionConfig');
 	return config as DistributionConfig;
 }
+
+test('M0.13 distribution: preserves legacy logical id for in-place alias migration', () => {
+	const distributions = findResourceEntries(synthTemplate(), 'AWS::CloudFront::Distribution');
+	assert.equal(
+		distributions.length,
+		1,
+		`expected exactly one CloudFront distribution, got ${distributions.length}`,
+	);
+	assert.equal(
+		distributions[0]?.[0],
+		'WebDistribution59C46482',
+		'CloudFront distribution logical id must remain the legacy WebDistribution id so lab/live aliases update in place instead of colliding on create-before-delete',
+	);
+});
 
 function originById(config: DistributionConfig, id: unknown): CloudFrontOrigin {
 	const origin = (config.Origins ?? []).find((entry) => entry.Id === id);
