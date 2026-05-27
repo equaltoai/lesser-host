@@ -1,7 +1,12 @@
 package controlplane
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
@@ -9,36 +14,26 @@ import (
 	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 
-	"github.com/equaltoai/lesser-host/internal/costtelemetry"
+	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
-// ---------------------------------------------------------------------------
-// test constants
-// ---------------------------------------------------------------------------
-
 const (
 	testCostSlug1 = "demo"
 	testCostDate1 = "2026-05-25"
 	testCostDate2 = "2026-05-26"
+	testRawKey    = "lhk_test_secret"
 )
 
-// ---------------------------------------------------------------------------
-// helpers
-// ---------------------------------------------------------------------------
-
-// newCostTestDB creates a mock DB pre-wired for Instance and CostTelemetry
-// model queries.
-func newCostTestDB() (*ttmocks.MockExtendedDB, *ttmocks.MockQuery, *ttmocks.MockQuery) {
-	db, qs := newTestDBWithModelQueries("*models.Instance", "*models.CostTelemetry")
-	return db, qs[0], qs[1]
+func newCostTestDB() (*ttmocks.MockExtendedDB, *ttmocks.MockQuery) {
+	db, qs := newTestDBWithModelQueries("*models.Instance")
+	return db, qs[0]
 }
 
-// stubCostInstanceFirst configures the Instance mock query's First to return
-// the given instance.
 func stubCostInstanceFirst(t *testing.T, q *ttmocks.MockQuery, inst models.Instance) {
 	t.Helper()
 	q.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
@@ -47,37 +42,6 @@ func stubCostInstanceFirst(t *testing.T, q *ttmocks.MockQuery, inst models.Insta
 	}).Maybe()
 }
 
-// stubCostRecords configures the CostTelemetry mock query's All to return
-// the given records.
-func stubCostRecords(t *testing.T, q *ttmocks.MockQuery, records []*models.CostTelemetry, err error) {
-	t.Helper()
-	q.On("All", mock.AnythingOfType("*[]*models.CostTelemetry")).Return(err).Run(func(args mock.Arguments) {
-		if err != nil {
-			return
-		}
-		dest := testutil.RequireMockArg[*[]*models.CostTelemetry](t, args, 0)
-		*dest = records
-	}).Once()
-}
-
-// costRecord builds a minimal CostTelemetry record with decoded entries in
-// EntriesJSON.
-func costRecord(slug, date string, dayCost float64, currency string, entries []costtelemetry.ReconciledCostEntry) *models.CostTelemetry {
-	entriesJSON, err := json.Marshal(entries)
-	if err != nil {
-		panic(err)
-	}
-	return &models.CostTelemetry{
-		InstanceSlug: slug,
-		Date:         date,
-		DayCost:      dayCost,
-		Currency:     currency,
-		EntriesJSON:  string(entriesJSON),
-	}
-}
-
-// newCostHandlerCtx builds a context with the given slug and optional query
-// params.
 func newCostHandlerCtx(slug string, query map[string][]string) *apptheory.Context {
 	ctx := &apptheory.Context{
 		AuthIdentity: "alice",
@@ -89,192 +53,234 @@ func newCostHandlerCtx(slug string, query map[string][]string) *apptheory.Contex
 	return ctx
 }
 
-// jsonContains asserts that the marshaled JSON of v does not contain any of
-// the forbidden strings.
-func jsonContains(t *testing.T, v any, forbidden ...string) {
+func baseCostInstance(owner string) models.Instance {
+	return models.Instance{
+		Slug:                           testCostSlug1,
+		Owner:                          owner,
+		HostedAccountID:                "123456789012",
+		HostedRegion:                   "us-east-1",
+		HostedBaseDomain:               "simulacrum.greater.website",
+		LesserHostInstanceKeySecretARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:demo/instance-key",
+	}
+}
+
+func newCostTestServer(t *testing.T, inst models.Instance, handler http.HandlerFunc) (*Server, *httptest.Server) {
 	t.Helper()
-	b, err := json.Marshal(v)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
+	tdb, qInst := newCostTestDB()
+	stubCostInstanceFirst(t, qInst, inst)
+
+	ts := httptest.NewServer(handler)
+	t.Cleanup(ts.Close)
+
+	s := &Server{
+		cfg:                  config.Config{Stage: "lab", ManagedInstanceRoleName: "OrganizationAccountAccessRole", ManagedDefaultRegion: "us-east-1"},
+		store:                store.New(tdb),
+		portalCostHTTPClient: ts.Client(),
+		fetchInstanceKeyPlaintextFunc: func(context.Context, *models.Instance) (string, error) {
+			return testRawKey, nil
+		},
+		resolveInstanceMetricsBaseURLFunc: func(*models.Instance) (string, error) {
+			return ts.URL, nil
+		},
 	}
-	s := string(b)
-	for _, f := range forbidden {
-		if contains(s, f) {
-			t.Errorf("response contained forbidden field %q", f)
-		}
-	}
+	return s, ts
 }
 
-func contains(s, needle string) bool {
-	return len(s) >= len(needle) && searchSubstring(s, needle)
-}
-
-func searchSubstring(s, needle string) bool {
-	for i := 0; i <= len(s)-len(needle); i++ {
-		if s[i:i+len(needle)] == needle {
-			return true
-		}
-	}
-	return false
-}
-
-// ---------------------------------------------------------------------------
-// tests
-// ---------------------------------------------------------------------------
-
-func TestHandlePortalGetInstanceCost_Success(t *testing.T) {
+func TestHandlePortalGetInstanceCost_SendsBearerAuthAndMapsDailyRows(t *testing.T) {
 	t.Parallel()
 
-	tdb, qInst, qCost := newCostTestDB()
-	s := &Server{store: store.New(tdb)}
-
-	stubCostInstanceFirst(t, qInst, models.Instance{
-		Slug:  testCostSlug1,
-		Owner: "alice",
+	var gotAuth string
+	var gotPath string
+	var gotFrom string
+	var gotTo string
+	s, _ := newCostTestServer(t, baseCostInstance("alice"), func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotPath = r.URL.Path
+		gotFrom = r.URL.Query().Get("from")
+		gotTo = r.URL.Query().Get("to")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"period":{"start":"2026-05-25","end":"2026-05-26","days":2,"timezone":"UTC"},
+			"daily":[
+				{"date":"2026-05-25","total_requests":100,"unique_users":4,"dynamodb_reads":50,"dynamodb_writes":10,"lambda_duration_ms":250,"cost_cents":12,"cost_dollars":0.12,"currency":"USD"},
+				{"date":"2026-05-26","total_requests":200,"unique_users":7,"dynamodb_reads":70,"dynamodb_writes":20,"lambda_duration_ms":450,"cost_cents":34,"cost_dollars":0.34,"currency":"USD"}
+			]
+		}`))
 	})
-
-	entries := []costtelemetry.ReconciledCostEntry{
-		{Date: testCostDate1, Service: "Lambda", Cost: 0.25, Currency: "USD"},
-		{Date: testCostDate1, Service: "DynamoDB", Cost: 0.10, Currency: "USD"},
-	}
-
-	stubCostRecords(t, qCost, []*models.CostTelemetry{
-		costRecord(testCostSlug1, testCostDate1, 0.35, "USD", entries),
-	}, nil)
 
 	ctx := newCostHandlerCtx(testCostSlug1, map[string][]string{
 		"from": {testCostDate1},
-		"to":   {testCostDate1},
+		"to":   {testCostDate2},
 	})
-
 	resp, err := s.handlePortalGetInstanceCost(ctx)
-	if err != nil || resp == nil || resp.Status != 200 {
-		t.Fatalf("unexpected response: %#v err=%v", resp, err)
-	}
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.Equal(t, http.StatusOK, resp.Status)
+	require.Equal(t, "Bearer "+testRawKey, gotAuth)
+	require.Equal(t, "/api/v1/instance/metrics/daily", gotPath)
+	require.Equal(t, testCostDate1, gotFrom)
+	require.Equal(t, testCostDate2, gotTo)
 
 	var body portalCostResponse
-	if err := json.Unmarshal(resp.Body, &body); err != nil {
-		t.Fatalf("unmarshal response: %v", err)
+	require.NoError(t, json.Unmarshal(resp.Body, &body))
+	require.Equal(t, testCostSlug1, body.InstanceSlug)
+	require.Equal(t, testCostDate1, body.FromDate)
+	require.Equal(t, testCostDate2, body.ToDate)
+	require.Equal(t, 2, body.Count)
+	require.InDelta(t, 0.46, body.TotalCost, 0.000001)
+	require.Equal(t, "USD", body.Currency)
+	require.Len(t, body.Days, 2)
+	require.Equal(t, testCostDate1, body.Days[0].Date)
+	require.InDelta(t, 0.12, body.Days[0].DayCost, 0.000001)
+	require.Len(t, body.Days[0].Entries, 1)
+	require.Equal(t, "Managed Lesser", body.Days[0].Entries[0].Service)
+	require.InDelta(t, 0.12, body.Days[0].Entries[0].Cost, 0.000001)
+	require.NotEmpty(t, body.Days[0].Entries[0].Metrics)
+	require.NotContains(t, string(resp.Body), testRawKey)
+	for _, forbidden := range []string{`"account_id"`, `"PK"`, `"SK"`, `"ttl"`, `"entries_json"`, `"EntriesJSON"`, `"instance_key"`, `"raw_key"`} {
+		require.NotContains(t, string(resp.Body), forbidden)
 	}
-
-	if body.InstanceSlug != testCostSlug1 {
-		t.Errorf("expected slug %q, got %q", testCostSlug1, body.InstanceSlug)
-	}
-	if body.Count != 1 {
-		t.Fatalf("expected 1 day, got %d", body.Count)
-	}
-	if body.TotalCost != 0.35 {
-		t.Errorf("expected total 0.35, got %f", body.TotalCost)
-	}
-	if body.Currency != "USD" {
-		t.Errorf("expected currency USD, got %q", body.Currency)
-	}
-
-	day := body.Days[0]
-	if day.Date != testCostDate1 {
-		t.Errorf("expected date %q, got %q", testCostDate1, day.Date)
-	}
-	if day.DayCost != 0.35 {
-		t.Errorf("expected day cost 0.35, got %f", day.DayCost)
-	}
-	if len(day.Entries) != 2 {
-		t.Fatalf("expected 2 entries, got %d", len(day.Entries))
-	}
-	if day.Entries[0].Service != "Lambda" || day.Entries[1].Service != "DynamoDB" {
-		t.Errorf("unexpected entries: %+v", day.Entries)
-	}
-
-	// Redaction: response must not contain internal fields.
-	jsonContains(t, body, "account_id", "PK", "SK", "ttl", "entries_json", "EntriesJSON")
 }
 
-func TestHandlePortalGetInstanceCost_WrongOwnerForbidden(t *testing.T) {
+func TestHandlePortalGetInstanceCost_EmptyLesserData(t *testing.T) {
 	t.Parallel()
 
-	tdb, qInst, qCost := newCostTestDB()
-	s := &Server{store: store.New(tdb)}
-
-	// Instance is owned by "bob"; caller is "alice".
-	stubCostInstanceFirst(t, qInst, models.Instance{
-		Slug:  testCostSlug1,
-		Owner: "bob",
+	s, _ := newCostTestServer(t, baseCostInstance("alice"), func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "Bearer "+testRawKey, r.Header.Get("Authorization"))
+		_, _ = w.Write([]byte(`{"period":{"start":"2026-05-25","end":"2026-05-25","days":1,"timezone":"UTC"},"daily":[]}`))
 	})
 
-	ctx := newCostHandlerCtx(testCostSlug1, map[string][]string{
+	resp, err := s.handlePortalGetInstanceCost(newCostHandlerCtx(testCostSlug1, map[string][]string{
 		"from": {testCostDate1},
 		"to":   {testCostDate1},
-	})
+	}))
+	require.NoError(t, err)
+	var body portalCostResponse
+	require.NoError(t, json.Unmarshal(resp.Body, &body))
+	require.Equal(t, 0, body.Count)
+	require.Empty(t, body.Days)
+	require.Equal(t, 0.0, body.TotalCost)
+}
 
-	_, err := s.handlePortalGetInstanceCost(ctx)
-	if err == nil {
-		t.Fatal("expected forbidden error for wrong owner")
+func TestHandlePortalGetInstanceCost_WrongOwnerForbiddenBeforeSecretOrHTTP(t *testing.T) {
+	t.Parallel()
+
+	tdb, qInst := newCostTestDB()
+	stubCostInstanceFirst(t, qInst, baseCostInstance("bob"))
+
+	secretReads := 0
+	httpCalls := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		httpCalls++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	s := &Server{
+		cfg:                  config.Config{Stage: "lab"},
+		store:                store.New(tdb),
+		portalCostHTTPClient: ts.Client(),
+		fetchInstanceKeyPlaintextFunc: func(context.Context, *models.Instance) (string, error) {
+			secretReads++
+			return testRawKey, nil
+		},
+		resolveInstanceMetricsBaseURLFunc: func(*models.Instance) (string, error) { return ts.URL, nil },
 	}
+
+	_, err := s.handlePortalGetInstanceCost(newCostHandlerCtx(testCostSlug1, map[string][]string{
+		"from": {testCostDate1},
+		"to":   {testCostDate1},
+	}))
+	require.Error(t, err)
 	appErr, ok := err.(*apptheory.AppError)
-	if !ok || appErr.Code != appErrCodeForbidden {
-		t.Fatalf("expected app.forbidden, got %#v", err)
-	}
-
-	// Prove cost telemetry was never read.
-	qCost.AssertNotCalled(t, "All", mock.Anything)
+	require.True(t, ok)
+	require.Equal(t, appErrCodeForbidden, appErr.Code)
+	require.Zero(t, secretReads)
+	require.Zero(t, httpCalls)
 }
 
-func TestHandlePortalGetInstanceCost_OperatorBypass(t *testing.T) {
+func TestHandlePortalGetInstanceCost_Upstream5xxDoesNotLeakKeyOrBody(t *testing.T) {
 	t.Parallel()
 
-	tdb, qInst, qCost := newCostTestDB()
-	s := &Server{store: store.New(tdb)}
-
-	stubCostInstanceFirst(t, qInst, models.Instance{
-		Slug:  testCostSlug1,
-		Owner: "bob", // not the caller
+	s, _ := newCostTestServer(t, baseCostInstance("alice"), func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "Bearer "+testRawKey, r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("upstream body contains " + testRawKey))
 	})
 
-	stubCostRecords(t, qCost, []*models.CostTelemetry{
-		costRecord(testCostSlug1, testCostDate1, 1.50, "USD", nil),
-	}, nil)
-
-	ctx := newCostHandlerCtx(testCostSlug1, map[string][]string{
+	_, err := s.handlePortalGetInstanceCost(newCostHandlerCtx(testCostSlug1, map[string][]string{
 		"from": {testCostDate1},
 		"to":   {testCostDate1},
-	})
-	ctx.Set(ctxKeyOperatorRole, models.RoleAdmin)
-
-	resp, err := s.handlePortalGetInstanceCost(ctx)
-	if err != nil || resp == nil || resp.Status != 200 {
-		t.Fatalf("operator should bypass ownership: resp=%#v err=%v", resp, err)
-	}
+	}))
+	require.Error(t, err)
+	appErr, ok := err.(*apptheory.AppError)
+	require.True(t, ok)
+	require.Equal(t, "app.upstream_error", appErr.Code)
+	require.NotContains(t, appErr.Message, testRawKey)
+	require.NotContains(t, appErr.Message, "upstream body")
 }
 
-func TestHandlePortalGetInstanceCost_DefaultWindow(t *testing.T) {
+func TestHandlePortalGetInstanceCost_UpstreamUnavailable(t *testing.T) {
 	t.Parallel()
 
-	tdb, qInst, qCost := newCostTestDB()
-	s := &Server{store: store.New(tdb)}
+	tdb, qInst := newCostTestDB()
+	stubCostInstanceFirst(t, qInst, baseCostInstance("alice"))
 
-	stubCostInstanceFirst(t, qInst, models.Instance{
-		Slug:  testCostSlug1,
-		Owner: "alice",
-	})
-
-	// When the handler has no query params, it defaults to past 30 days.
-	// We don't verify exact dates (they depend on time.Now()), but we verify
-	// the handler succeeds and the store is queried.
-	stubCostRecords(t, qCost, []*models.CostTelemetry{}, nil)
-
-	ctx := newCostHandlerCtx(testCostSlug1, nil)
-
-	resp, err := s.handlePortalGetInstanceCost(ctx)
-	if err != nil || resp == nil || resp.Status != 200 {
-		t.Fatalf("unexpected response: %#v err=%v", resp, err)
+	s := &Server{
+		cfg:                  config.Config{Stage: "lab"},
+		store:                store.New(tdb),
+		portalCostHTTPClient: http.DefaultClient,
+		fetchInstanceKeyPlaintextFunc: func(context.Context, *models.Instance) (string, error) {
+			return testRawKey, nil
+		},
+		resolveInstanceMetricsBaseURLFunc: func(*models.Instance) (string, error) {
+			return "http://127.0.0.1:1", nil
+		},
 	}
 
-	var body portalCostResponse
-	if err := json.Unmarshal(resp.Body, &body); err != nil {
-		t.Fatalf("unmarshal response: %v", err)
+	_, err := s.handlePortalGetInstanceCost(newCostHandlerCtx(testCostSlug1, map[string][]string{
+		"from": {testCostDate1},
+		"to":   {testCostDate1},
+	}))
+	require.Error(t, err)
+	appErr, ok := err.(*apptheory.AppError)
+	require.True(t, ok)
+	require.Equal(t, "app.upstream_unavailable", appErr.Code)
+	require.NotContains(t, appErr.Message, testRawKey)
+}
+
+func TestHandlePortalGetInstanceCost_KeyResolverFailureDoesNotLeak(t *testing.T) {
+	t.Parallel()
+
+	tdb, qInst := newCostTestDB()
+	stubCostInstanceFirst(t, qInst, baseCostInstance("alice"))
+
+	s := &Server{
+		cfg:   config.Config{Stage: "lab"},
+		store: store.New(tdb),
+		fetchInstanceKeyPlaintextFunc: func(context.Context, *models.Instance) (string, error) {
+			return "", errors.New("secret failure includes " + testRawKey)
+		},
 	}
-	if body.FromDate == "" || body.ToDate == "" {
-		t.Errorf("expected default date window, got from=%q to=%q", body.FromDate, body.ToDate)
-	}
+
+	_, err := s.handlePortalGetInstanceCost(newCostHandlerCtx(testCostSlug1, map[string][]string{
+		"from": {testCostDate1},
+		"to":   {testCostDate1},
+	}))
+	require.Error(t, err)
+	appErr, ok := err.(*apptheory.AppError)
+	require.True(t, ok)
+	require.Equal(t, "app.internal", appErr.Code)
+	require.NotContains(t, appErr.Message, testRawKey)
+}
+
+func TestHandlePortalGetInstanceCost_DefaultManagedMetricsURL(t *testing.T) {
+	t.Parallel()
+
+	s := &Server{cfg: config.Config{Stage: "lab"}}
+	baseURL, err := s.defaultInstanceMetricsBaseURL(&models.Instance{HostedBaseDomain: "example.greater.website"})
+	require.NoError(t, err)
+	require.Equal(t, "https://api.dev.example.greater.website", baseURL)
 }
 
 func TestHandlePortalGetInstanceCost_InvalidDates(t *testing.T) {
@@ -294,30 +300,22 @@ func TestHandlePortalGetInstanceCost_InvalidDates(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			tdb, qInst, _ := newCostTestDB()
+			tdb, qInst := newCostTestDB()
 			s := &Server{store: store.New(tdb)}
+			stubCostInstanceFirst(t, qInst, baseCostInstance("alice"))
 
-			stubCostInstanceFirst(t, qInst, models.Instance{
-				Slug:  testCostSlug1,
-				Owner: "alice",
-			})
-
-			ctx := newCostHandlerCtx(testCostSlug1, map[string][]string{
+			_, err := s.handlePortalGetInstanceCost(newCostHandlerCtx(testCostSlug1, map[string][]string{
 				"from": {tt.from},
 				"to":   {tt.to},
-			})
-
-			_, err := s.handlePortalGetInstanceCost(ctx)
-			if err == nil {
-				t.Fatal("expected error")
-			}
+			}))
+			require.Error(t, err)
 			appErr, ok := err.(*apptheory.AppError)
-			if !ok || appErr.Code != tt.code {
-				t.Fatalf("expected %s, got %#v", tt.code, err)
-			}
+			require.True(t, ok)
+			require.Equal(t, tt.code, appErr.Code)
 		})
 	}
 }
@@ -325,22 +323,26 @@ func TestHandlePortalGetInstanceCost_InvalidDates(t *testing.T) {
 func TestHandlePortalGetInstanceCost_InstanceNotFound(t *testing.T) {
 	t.Parallel()
 
-	tdb, qInst, _ := newCostTestDB()
+	tdb, qInst := newCostTestDB()
 	s := &Server{store: store.New(tdb)}
-
 	qInst.On("First", mock.AnythingOfType("*models.Instance")).Return(theoryErrors.ErrItemNotFound).Once()
 
-	ctx := newCostHandlerCtx(testCostSlug1, map[string][]string{
+	_, err := s.handlePortalGetInstanceCost(newCostHandlerCtx(testCostSlug1, map[string][]string{
 		"from": {testCostDate1},
 		"to":   {testCostDate1},
-	})
-
-	_, err := s.handlePortalGetInstanceCost(ctx)
-	if err == nil {
-		t.Fatal("expected not_found")
-	}
+	}))
+	require.Error(t, err)
 	appErr, ok := err.(*apptheory.AppError)
-	if !ok || appErr.Code != soulMintAppErrCodeNotFound {
-		t.Fatalf("expected app.not_found, got %#v", err)
-	}
+	require.True(t, ok)
+	require.Equal(t, soulMintAppErrCodeNotFound, appErr.Code)
+}
+
+func TestBuildManagedInstanceMetricsURL(t *testing.T) {
+	t.Parallel()
+
+	got, err := buildManagedInstanceMetricsURL("https://api.dev.example.greater.website/", testCostDate1, testCostDate2)
+	require.NoError(t, err)
+	require.True(t, strings.HasPrefix(got, "https://api.dev.example.greater.website/api/v1/instance/metrics/daily?"))
+	require.Contains(t, got, "from=2026-05-25")
+	require.Contains(t, got, "to=2026-05-26")
 }

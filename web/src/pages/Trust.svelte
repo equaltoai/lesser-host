@@ -36,11 +36,22 @@ Issue: equaltoai/lesser-host#412
 		| { kind: 'attestation'; id: string }
 		| { kind: 'notFound' };
 
+	// Project 42 M0.1 (#526): the Trust UI now serves at two equivalent
+	// prefixes — /portal/trust (canonical, inside portal chrome) and /trust
+	// (legacy alias). Derive the active prefix so subroute parsing +
+	// navigate() calls work for either entry point. The trust API itself
+	// (`/.well-known/*`, `/attestations/*`) is Lambda-served and unchanged.
+	const trustBasePath = $derived(
+		$currentPath === '/portal/trust' || $currentPath.startsWith('/portal/trust/')
+			? '/portal/trust'
+			: '/trust'
+	);
+
 	const trustRoute = $derived.by<TrustRoute>(() => {
 		const path = $currentPath;
-		if (!path.startsWith('/trust')) return { kind: 'home' };
+		if (!path.startsWith(trustBasePath)) return { kind: 'home' };
 
-		const rest = path.slice('/trust'.length);
+		const rest = path.slice(trustBasePath.length);
 		const parts = rest.split('/').filter(Boolean);
 		if (parts.length === 0) return { kind: 'home' };
 		if (parts[0] === 'attestations' && parts[1]) return { kind: 'attestation', id: parts[1] };
@@ -77,7 +88,7 @@ Issue: equaltoai/lesser-host#412
 	function openById() {
 		const normalized = normalizeId(idInput);
 		if (!normalized) return;
-		navigate(`/trust/attestations/${normalized}`);
+		navigate(`${trustBasePath}/attestations/${normalized}`);
 	}
 
 	async function lookup() {
@@ -103,7 +114,7 @@ Issue: equaltoai/lesser-host#412
 				module: m,
 				policy_version: p,
 			});
-			navigate(`/trust/attestations/${res.id}`);
+			navigate(`${trustBasePath}/attestations/${res.id}`);
 		} catch (err) {
 			lookupError = formatError(err);
 		} finally {

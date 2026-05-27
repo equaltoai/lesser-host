@@ -3,6 +3,7 @@ package controlplane
 import (
 	"context"
 	"log"
+	"net/http"
 	"strings"
 
 	apptheory "github.com/theory-cloud/apptheory/runtime"
@@ -12,6 +13,7 @@ import (
 	"github.com/equaltoai/lesser-host/internal/commworker"
 	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/store"
+	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
 type soulPackStore interface {
@@ -30,6 +32,13 @@ type Server struct {
 	mailboxContentStore commmailbox.ContentStore
 	dialEVM             ethRPCDialer
 	soulAvatarCache     *soulPublicAvatarCache
+
+	sts     controlPlaneSTSAPI
+	secrets controlPlaneSecretsManagerAPI
+
+	portalCostHTTPClient              *http.Client
+	fetchInstanceKeyPlaintextFunc     func(ctx context.Context, inst *models.Instance) (string, error)
+	resolveInstanceMetricsBaseURLFunc func(inst *models.Instance) (string, error)
 
 	ssmGetParameter     func(ctx context.Context, name string) (string, error)
 	ssmPutSecureValue   func(ctx context.Context, name string, value string, overwrite bool) error

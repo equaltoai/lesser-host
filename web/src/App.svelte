@@ -35,6 +35,12 @@
 	let isOperatorRoute = $derived($currentPath === '/operator' || $currentPath.startsWith('/operator/'));
 	// Project 39 customer surfaces render inside the shell. /portal is the
 	// canonical fleet view; /portal/fleet remains a compatibility alias.
+	// Project 42 M0.1 (#526): /portal/trust and /portal/account are now
+	// canonical paths for Trust + Account inside portal chrome; /trust and
+	// /account remain backward-compat aliases so existing bookmarks /
+	// deep-links continue to work without redirect (and the public
+	// attestation inspector subroute under /trust/attestations/* keeps
+	// resolving via the same Trust component).
 	let isPortalShellRoute = $derived(
 		$currentPath === '/portal' ||
 			$currentPath === '/portal/fleet' ||
@@ -53,6 +59,15 @@
 			$currentPath === '/account'
 		)
 	);
+	// Project 42 M0.1: helpers for /portal/trust + /portal/account dispatch.
+	// Specific paths checked before the generic /portal/ catch-all so they
+	// render Trust + Account directly under PortalShell (matching the
+	// design's namespacing) rather than falling through to Portal.svelte's
+	// instance-list switch (which would return "Unknown portal path").
+	let isPortalTrustRoute = $derived(
+		$currentPath === '/portal/trust' || $currentPath.startsWith('/portal/trust/')
+	);
+	let isPortalAccountRoute = $derived($currentPath === '/portal/account');
 
 	onMount(() => {
 		if (!isSafeAppPath() || get(currentPath) !== '/') return;
@@ -72,6 +87,10 @@
 		<PortalShell>
 			{#if $currentPath === '/portal' || $currentPath === '/portal/fleet' || $currentPath.startsWith('/portal/fleet/')}
 				<PortalFleet token={$session?.token ?? ''} />
+			{:else if isPortalTrustRoute}
+				<Trust />
+			{:else if isPortalAccountRoute}
+				<Account />
 			{:else if $currentPath.startsWith('/portal/')}
 				<Portal />
 			{:else if $currentPath === '/trust' || $currentPath.startsWith('/trust/')}

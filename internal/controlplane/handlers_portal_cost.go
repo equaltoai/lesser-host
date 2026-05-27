@@ -1,7 +1,6 @@
 package controlplane
 
 import (
-	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
@@ -10,7 +9,6 @@ import (
 
 	"github.com/equaltoai/lesser-host/internal/costtelemetry"
 	"github.com/equaltoai/lesser-host/internal/httpx"
-	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
 // portalCostResponse is the public DTO returned by
@@ -19,8 +17,9 @@ import (
 // Safety invariants:
 //   - Excludes PK, SK, TTL, account_id, raw EntriesJSON string, raw instance
 //     keys, secrets, request bodies, and tenant content.
-//   - Each day's entries are decoded from the store's cached JSON into
-//     ReconciledCostEntry structs, which carry no account_id or internal fields.
+//   - M0.4 sources daily usage/cost data from the managed Lesser instance via
+//     an instance-key-authenticated server-side call; raw instance keys never
+//     reach the browser.
 type portalCostResponse struct {
 	InstanceSlug string               `json:"instance_slug"`
 	FromDate     string               `json:"from_date"`
@@ -43,14 +42,12 @@ type portalCostDayEntry struct {
 // are supplied (past 30 days inclusive).
 const costQueryDefaultDays = 30
 
-// costQueryMaxLimit caps the number of records returned.
-const costQueryMaxLimit = 200
-
 // handlePortalGetInstanceCost implements GET /api/v1/portal/instances/{slug}/cost.
 //
-// Ownership is enforced via requireInstanceAccess before any cost telemetry
-// read. Optional query params from and to (YYYY-MM-DD) narrow the window;
-// the default is the past 30 days inclusive. Invalid dates fail closed.
+// Ownership is enforced via requireInstanceAccess before any instance-key
+// secret read or managed Lesser HTTP call. Optional query params from and to
+// (YYYY-MM-DD) narrow the window; the default is the past 30 days inclusive.
+// Invalid dates fail closed.
 func (s *Server) handlePortalGetInstanceCost(ctx *apptheory.Context) (*apptheory.Response, error) {
 	inst, err := s.requireInstanceAccess(ctx, ctx.Param("slug"))
 	if err != nil {
@@ -63,12 +60,17 @@ func (s *Server) handlePortalGetInstanceCost(ctx *apptheory.Context) (*apptheory
 		return nil, parseErr
 	}
 
-	records, storeErr := s.store.ListCostTelemetryByInstance(ctx.Context(), slug, from, to, costQueryMaxLimit)
-	if storeErr != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to list cost telemetry"}
+	apiKey, keyErr := s.resolvePortalCostInstanceKey(ctx.Context(), inst)
+	if keyErr != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to resolve instance metrics access"}
 	}
 
-	resp := buildPortalCostResponse(slug, from, to, records)
+	metrics, metricsErr := s.fetchManagedInstanceMetrics(ctx.Context(), inst, apiKey, from, to)
+	if metricsErr != nil {
+		return nil, metricsErr
+	}
+
+	resp := buildPortalCostResponseFromLesser(slug, from, to, metrics)
 	return apptheory.JSON(http.StatusOK, resp)
 }
 
@@ -103,38 +105,49 @@ func parseCostDateWindow(ctx *apptheory.Context) (from, to string, appErr *appth
 	return from, to, nil
 }
 
-// buildPortalCostResponse decodes EntriesJSON from each CostTelemetry record
-// and assembles the public response DTO. Internal fields (PK, SK, TTL,
-// account_id, raw JSON string) are excluded by construction.
-func buildPortalCostResponse(slug, from, to string, records []*models.CostTelemetry) portalCostResponse {
-	var total float64
-	days := make([]portalCostDayEntry, 0, len(records))
+func buildPortalCostResponseFromLesser(slug, from, to string, metrics lesserInstanceMetricsResponse) portalCostResponse {
+	days := make([]portalCostDayEntry, 0, len(metrics.Daily))
+	total := 0.0
 	currency := "USD"
 
-	for _, rec := range records {
-		if rec == nil {
+	for _, row := range metrics.Daily {
+		date := strings.TrimSpace(row.Date)
+		if date == "" {
 			continue
 		}
 
-		var entries []costtelemetry.ReconciledCostEntry
-		if rec.EntriesJSON != "" {
-			if unmarshalErr := json.Unmarshal([]byte(rec.EntriesJSON), &entries); unmarshalErr != nil {
-				continue
-			}
+		rowCurrency := strings.TrimSpace(row.Currency)
+		if rowCurrency == "" {
+			rowCurrency = "USD"
 		}
-		if entries == nil {
-			entries = []costtelemetry.ReconciledCostEntry{}
-		}
+		currency = rowCurrency
 
-		total += rec.DayCost
-		if rec.Currency != "" {
-			currency = rec.Currency
+		dayCost := row.CostDollars
+		if dayCost == 0 && row.CostCents != 0 {
+			dayCost = float64(row.CostCents) / 100
+		}
+		total += dayCost
+
+		entries := []costtelemetry.ReconciledCostEntry{
+			{
+				Date:     date,
+				Service:  "Managed Lesser",
+				Cost:     dayCost,
+				Currency: rowCurrency,
+				Metrics: []costtelemetry.ServiceAttribution{
+					{Service: "Managed Lesser", MetricName: "Requests", Stat: "Sum", Unit: "Count", Value: float64(row.TotalRequests)},
+					{Service: "Managed Lesser", MetricName: "UniqueUsers", Stat: "Maximum", Unit: "Count", Value: float64(row.UniqueUsers)},
+					{Service: "DynamoDB", MetricName: "ConsumedReadCapacityUnits", Stat: "Sum", Unit: "Count", Value: float64(row.DynamoDBReads)},
+					{Service: "DynamoDB", MetricName: "ConsumedWriteCapacityUnits", Stat: "Sum", Unit: "Count", Value: float64(row.DynamoDBWrites)},
+					{Service: "Lambda", MetricName: "Duration", Stat: "Sum", Unit: "Milliseconds", Value: float64(row.LambdaDurationMs)},
+				},
+			},
 		}
 
 		days = append(days, portalCostDayEntry{
-			Date:     rec.Date,
-			DayCost:  rec.DayCost,
-			Currency: rec.Currency,
+			Date:     date,
+			DayCost:  dayCost,
+			Currency: rowCurrency,
 			Entries:  entries,
 		})
 	}

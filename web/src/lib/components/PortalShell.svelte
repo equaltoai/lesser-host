@@ -230,10 +230,14 @@ Issue: equaltoai/lesser-host#391
 				navigate('/portal/souls');
 				return;
 			case 'nav.trust':
-				navigate('/trust');
+				// Project 42 M0.1 (#526): canonical Trust path is now under
+				// portal chrome. /trust still resolves (App.svelte routes it
+				// to the same Trust component) but the command palette
+				// always navigates to the canonical entrypoint.
+				navigate('/portal/trust');
 				return;
 			case 'nav.account':
-				navigate('/account');
+				navigate('/portal/account');
 				return;
 			case 'nav.billing':
 				navigate('/portal/billing');
@@ -262,6 +266,52 @@ Issue: equaltoai/lesser-host#391
 		if (key !== 'k') return false;
 		return ev.metaKey || ev.ctrlKey;
 	}
+
+	// Project 42 M0.7 (#532): the sidebar footer used to render
+	// `@{session.username}` literally. For wallet-login customers the
+	// username is auto-generated as `wallet-<64-hex>` and the audit
+	// caught the result rendering as `@wallet-f7c8c15eefb7a907ceee47ae…`
+	// — visible, unreadable, and operator-hostile. The full display-name
+	// surfacing belongs to M2 (PortalShell redesign), which fetches the
+	// `display_name` field returned by `/api/v1/portal/me`. This M0 fix
+	// is the bounded interim: detect the wallet-* synthetic-username
+	// pattern and substitute a short, recognizable identity built from
+	// the session.walletAddress already on the wire.
+	const WALLET_USERNAME_PATTERN = /^wallet-[0-9a-f]+$/i;
+
+	function shortWalletAddress(addr: string | undefined): string {
+		const a = (addr ?? '').trim();
+		if (!a) return '';
+		if (a.length <= 14) return a;
+		return `${a.slice(0, 6)}…${a.slice(-4)}`;
+	}
+
+	const displayHandle = $derived.by((): string => {
+		if (!$session) return '';
+		const u = ($session.username || '').trim();
+		if (!u) return '';
+		if (!WALLET_USERNAME_PATTERN.test(u)) {
+			return `@${u}`;
+		}
+		// Synthetic wallet-* username: prefer the truncated wallet address
+		// when present, fall back to a short prefix of the synthetic name.
+		const short = shortWalletAddress($session.walletAddress);
+		if (short) return short;
+		const tail = u.slice('wallet-'.length, 'wallet-'.length + 6);
+		return tail ? `@wallet-${tail}…` : '@wallet';
+	});
+
+	const avatarInitials = $derived.by((): string => {
+		if (!$session) return '';
+		const u = ($session.username || '').trim();
+		if (!u) return '?';
+		if (!WALLET_USERNAME_PATTERN.test(u)) {
+			return u.slice(0, 2).toUpperCase();
+		}
+		const addr = ($session.walletAddress || '').trim();
+		if (addr.startsWith('0x') && addr.length >= 4) return addr.slice(2, 4).toUpperCase();
+		return 'W•';
+	});
 
 	onMount(() => {
 		function onKeydown(ev: KeyboardEvent) {
@@ -295,7 +345,7 @@ Issue: equaltoai/lesser-host#391
 			{#snippet end()}
 				<div class="portal-shell__topbar-end">
 					{#if $session}
-						<Text size="sm" weight="medium">{$session.username}</Text>
+						<Text size="sm" weight="medium">{displayHandle}</Text>
 						<Text size="sm" color="secondary">{$session.role}</Text>
 						<Button variant="outline" onclick={() => void handleLogout()}>Logout</Button>
 					{:else}
@@ -341,16 +391,18 @@ Issue: equaltoai/lesser-host#391
 					Billing
 				</Link>
 				<Link
-					{...linkProps('/trust')}
+					{...linkProps('/portal/trust')}
 					variant="ghost"
-					aria-current={isActive('/trust') ? 'page' : undefined}
+					aria-current={isActive('/portal/trust') || isActive('/trust') ? 'page' : undefined}
 				>
 					Trust
 				</Link>
 				<Link
-					{...linkProps('/account')}
+					{...linkProps('/portal/account')}
 					variant="ghost"
-					aria-current={isActive('/account', true) ? 'page' : undefined}
+					aria-current={isActive('/portal/account', true) || isActive('/account', true)
+						? 'page'
+						: undefined}
 				>
 					Account
 				</Link>
@@ -364,10 +416,10 @@ Issue: equaltoai/lesser-host#391
 					{#if $session}
 						<div class="portal-shell__user-chip">
 							<span class="portal-shell__avatar" aria-hidden="true">
-								{$session.username.slice(0, 2).toUpperCase()}
+								{avatarInitials}
 							</span>
 							<span class="portal-shell__user-copy">
-								<Text size="sm" weight="medium">@{$session.username}</Text>
+								<Text size="sm" weight="medium">{displayHandle}</Text>
 								<Text size="sm" color="secondary">{$session.role} · {$session.method ?? 'session'}</Text>
 							</span>
 						</div>
