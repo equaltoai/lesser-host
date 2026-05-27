@@ -137,9 +137,11 @@ configurable thresholds.
 **Primitives consumed.** `Panel`, `Sparkline`, `Badge`, `ProgressBar`,
 `Switch`, `Button`, `gtable` (data table).
 
-**Data shown.** Real-time cost telemetry **already shipped** in PR
-#522. The layout / breakdown table / budget alarm rows need UI work
-only; no new backend.
+**Data shown.** Real managed Lesser instance usage/cost metrics. PR
+#522 shipped host-local telemetry scaffolding, but it does **not** satisfy the
+portal instance data source by itself. M0.4 wires the existing portal cost route
+to the managed Lesser metrics contract; M8 is UI/layout work on top of that
+route, not permission to fall back to host-local or synthetic telemetry.
 
 ### Tab: Configuration
 

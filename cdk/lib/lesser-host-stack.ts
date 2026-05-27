@@ -691,12 +691,15 @@ export class LesserHostStack extends cdk.Stack {
 		});
 		inboundEmailRule.node.addDependency(inboundEmailIdentity);
 
-		provisionRunnerProject.addToRolePolicy(
-			new iam.PolicyStatement({
-				actions: ['sts:AssumeRole'],
-				resources: [`arn:aws:iam::*:role/${managedInstanceRoleName.trim() || defaultManagedInstanceRoleName}`],
-			}),
-		);
+		const managedInstanceRoleArn = `arn:aws:iam::*:role/${managedInstanceRoleName.trim() || defaultManagedInstanceRoleName}`;
+		for (const principal of [provisionRunnerProject, provisionWorkerFn, controlPlaneFn, commWorkerFn]) {
+			principal.addToRolePolicy(
+				new iam.PolicyStatement({
+					actions: ['sts:AssumeRole'],
+					resources: [managedInstanceRoleArn],
+				}),
+			);
+		}
 		provisionWorkerFn.addToRolePolicy(
 			new iam.PolicyStatement({
 				actions: [
@@ -710,34 +713,15 @@ export class LesserHostStack extends cdk.Stack {
 			}),
 		);
 
-		provisionWorkerFn.addToRolePolicy(
-			new iam.PolicyStatement({
-				actions: ['sts:AssumeRole'],
-				resources: [`arn:aws:iam::*:role/${managedInstanceRoleName.trim() || defaultManagedInstanceRoleName}`],
-			}),
-		);
 		if (managedOrgVendingRoleArn.trim()) {
-			provisionWorkerFn.addToRolePolicy(
-				new iam.PolicyStatement({
-					actions: ['sts:AssumeRole'],
-					resources: [managedOrgVendingRoleArn.trim()],
-				}),
-			);
-		}
-
-		commWorkerFn.addToRolePolicy(
-			new iam.PolicyStatement({
-				actions: ['sts:AssumeRole'],
-				resources: [`arn:aws:iam::*:role/${managedInstanceRoleName.trim() || defaultManagedInstanceRoleName}`],
-			}),
-		);
-		if (managedOrgVendingRoleArn.trim()) {
-			commWorkerFn.addToRolePolicy(
-				new iam.PolicyStatement({
-					actions: ['sts:AssumeRole'],
-					resources: [managedOrgVendingRoleArn.trim()],
-				}),
-			);
+			for (const fn of [provisionWorkerFn, controlPlaneFn, commWorkerFn]) {
+				fn.addToRolePolicy(
+					new iam.PolicyStatement({
+						actions: ['sts:AssumeRole'],
+						resources: [managedOrgVendingRoleArn.trim()],
+					}),
+				);
+			}
 		}
 
 		if (managedParentHostedZoneId.trim()) {

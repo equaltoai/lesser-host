@@ -132,6 +132,9 @@ of whether the board is up.
   `audit-mapping.md` in this directory.
 - Prior planning bundle (superseded): `docs/project-39-web-ui-rework-2026-05-24.md`
 - Already-shipped foundation work that this bundle assumes complete:
-  PRs #520, #521, #522 (cost telemetry endpoint, web wiring, SEC-13
-  verifier); #523 (FaceTheory CDN cutover); #524 (Project 39 branded
-  shell + FaceTheory v3.4.2 asset fix).
+  PRs #520, #521, #522 for host-local billing/telemetry scaffolding and SEC-13
+  verifier coverage; #523 (FaceTheory CDN cutover); #524 (Project 39 branded
+  shell + FaceTheory v3.4.2 asset fix). Important caveat: PR #522 does **not**
+  satisfy Project 42 M0.4 by itself. Portal instance cost/usage must read the
+  managed Lesser instance metrics contract, not host-local or synthetic
+  telemetry.

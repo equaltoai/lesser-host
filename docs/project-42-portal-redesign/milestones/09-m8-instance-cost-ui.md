@@ -4,8 +4,9 @@
 **Concern.** Re-skin the Cost & usage tab to the design: three header
 cards (MTD vs budget with progress, Compute GB-sec sparkline, Egress
 GB), the "Where the dollars go" breakdown table with progress bars,
-and Budget alarms panel. Live telemetry already shipped in PR #522;
-this PR is presentation only.
+and Budget alarms panel. M8 assumes M0.4's managed Lesser metrics path is
+available through the existing portal cost route; PR #522's host-local telemetry
+scaffolding is not the authoritative instance data source.
 
 ## Scope (≤ 6 tasks)
 
@@ -19,8 +20,9 @@ this PR is presentation only.
 
 ## Out of scope
 
-- New telemetry data (already shipped).
-- Per-tenant Cost Explorer integration (M3.7+ from prior bundle,
-  deferrable).
+- Replacing the M0.4 managed Lesser metrics data source with host-local,
+  synthetic, or Cost Explorer-only telemetry.
+- New portal cost endpoint shape unless M8 proves the existing
+  `PortalCostResponse` cannot express the design honestly.
 
 Detail filled in when M7 merges.
