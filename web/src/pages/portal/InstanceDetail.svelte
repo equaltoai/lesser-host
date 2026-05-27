@@ -701,7 +701,56 @@
 						{/if}
 					</Alert>
 				{/if}
-			{:else}
+			{:else if instance.provision_status === 'ok'}
+				<!--
+				Project 42 M0.3 (#528): instance is already provisioned but
+				the current provisioning-job record was not returned (typical
+				when the job is archived). Surface the provisioned state
+				explicitly instead of falling through to the "Not started"
+				form, which used to render on every healthy/live managed
+				instance that no longer carried a live job record.
+				-->
+				<Alert variant="success" title="Provisioned">
+					<Text size="sm">
+						Managed infrastructure is allocated for this instance. The current provisioning-job record is
+						no longer retained; use the Updates section below to apply configuration changes or rotate the
+						instance key.
+					</Text>
+				</Alert>
+			{:else if instance.provision_status === 'error'}
+				<!--
+				Project 42 M0.3 (#528): explicit failure path when the
+				last provisioning attempt errored but no job record is
+				currently returned. Re-show the form so the operator can
+				retry; this is the original audit-rationale fallback,
+				preserved deliberately for failed instances.
+				-->
+				<Alert variant="warning" title="Provisioning failed previously">
+					<Text size="sm">
+						The last provisioning attempt errored and the job record is no longer retained. Update the inputs
+						(optional) and retry.
+					</Text>
+				</Alert>
+
+				<div class="instance-detail__form">
+					<TextField label="Admin username" bind:value={provisionAdminUsername} placeholder={slug} />
+					<TextField label="Region (optional)" bind:value={provisionRegion} placeholder="us-east-1" />
+					<TextField label="Lesser version (optional)" bind:value={provisionLesserVersion} placeholder="v1.2.3 or latest" />
+				</div>
+
+				<div class="instance-detail__row">
+					<Button variant="solid" onclick={() => void startProvisioning()} disabled={provisioningLoading}>
+						Restart provisioning
+					</Button>
+				</div>
+			{:else if instance.hosted_account_id && instance.hosted_region && instance.hosted_base_domain}
+				<!--
+				Project 42 M0.3 (#528): the form only appears for managed
+				instances that have never been provisioned (provision_status
+				is empty AND no live provisioning-job record). Non-managed /
+				externally-registered instances skip this entire branch and
+				render the explanatory alert below.
+				-->
 				<Alert variant="info" title="Not started">
 					<Text size="sm">Start managed provisioning to allocate infrastructure for this instance.</Text>
 				</Alert>
@@ -717,6 +766,20 @@
 						Start provisioning
 					</Button>
 				</div>
+			{:else}
+				<!--
+				Project 42 M0.3 (#528): externally-registered (non-managed)
+				instance — managed provisioning does not apply. Suppress
+				the "Start provisioning" form entirely so the operator
+				doesn't see misleading allocation inputs for an instance
+				the control plane never provisions.
+				-->
+				<Alert variant="info" title="Externally registered">
+					<Text size="sm">
+						This instance is not managed by lesser.host. Managed provisioning does not apply; lifecycle
+						management is owned by the external operator.
+					</Text>
+				</Alert>
 			{/if}
 		</Card>
 
