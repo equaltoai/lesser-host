@@ -44,6 +44,33 @@ export interface InstanceResponse {
 	ai_batch_max_total_bytes: number;
 	ai_pricing_multiplier_bps: number;
 	ai_max_inflight_jobs: number;
+	// M6: instance capabilities surfaced alongside config toggles.
+	soul_enabled?: boolean;
+	body_enabled?: boolean;
+	soul_version?: string;
+	soul_provisioned_at?: string;
+	mcp_url?: string;
+	tip_enabled?: boolean;
+	tip_chain_id?: number;
+	tip_contract_address?: string;
+	lesser_ai_enabled?: boolean;
+	lesser_ai_moderation_enabled?: boolean;
+	lesser_ai_nsfw_detection_enabled?: boolean;
+	lesser_ai_spam_detection_enabled?: boolean;
+	lesser_ai_pii_detection_enabled?: boolean;
+	lesser_ai_content_detection_enabled?: boolean;
+
+	// M7: additive fields from PR #557 (aron/portal-m7-instance-overview-data).
+	owner_handle?: string;
+	owner_role?: string;
+	owner_avatar_hash?: string;
+	soul_anchor_state?: string;
+	soul_anchor_at?: string;
+	lesser_drift?: string;
+	lesser_body_drift?: string;
+	mcp_drift?: string;
+	drift_summary?: string;
+
 	created_at: string;
 	updated_at?: string;
 }
