@@ -23,7 +23,7 @@ Strict-CSP safe: no inline styles, no inline event handlers.
 	import CostGauge from 'src/lib/components/CostGauge.svelte';
 	import Sparkline from 'src/lib/components/primitives/Sparkline.svelte';
 	import Metric from 'src/lib/components/primitives/Metric.svelte';
-	
+
 	import type { FleetCardMetadataItem } from 'src/lib/greater/host-platform';
 
 	const COST_THRESHOLDS = { warning: 0.75, danger: 0.95 } as const;

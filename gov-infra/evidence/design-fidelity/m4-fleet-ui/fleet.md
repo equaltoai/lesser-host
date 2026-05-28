@@ -1,9 +1,9 @@
 # M4 Fleet UI — Design Fidelity Evidence
 
-**Milestone:** M4 — Fleet UI  
-**Issue:** equaltoai/lesser-host#539  
-**Surface:** /portal Fleet page  
-**Viewport:** 1440 × 900  
+**Milestone:** M4 — Fleet UI
+**Issue:** equaltoai/lesser-host#539
+**Surface:** /portal Fleet page
+**Viewport:** 1440 × 900
 **Captured:** 2026-05-28 (fixture-based, Puppeteer + headless Chrome; re-captured after switching to page-local `formatValue` formatter)
 
 ## Evidence artifacts
