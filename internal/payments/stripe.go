@@ -325,7 +325,6 @@ func (p stripeProvider) ListRecentInvoices(ctx context.Context, customerID strin
 		ListParams: stripe.ListParams{Limit: stripe.Int64(limit)},
 		Customer:   stripe.String(customerID),
 	}
-	params.Filters.AddFilter("status", "", "draft")
 
 	iter := invoice.List(params)
 	var out []InvoiceInfo

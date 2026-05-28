@@ -314,10 +314,18 @@ func TestHandlePortalListInvoices_CrossUserIsolation(t *testing.T) {
 	t.Parallel()
 
 	tdb := newBillingDataTestDB()
-	// Bob's billing profile.
-	tdb.stubBillingProfile(t, "bob", "cus_bob", "")
+	// Set up ONLY Alice's profile with her specific Stripe customer ID.
+	tdb.stubBillingProfile(t, "alice", "cus_alice", "")
 
-	provider := safeInvoicesProvider(sampleInvoices)
+	// Spy provider captures the customer ID argument to prove auth-identity scoping.
+	var capturedCustomerID string
+	provider := &stubPaymentsProvider{
+		name: paymentsProviderStripeName,
+		listInvoices: func(ctx context.Context, customerID string, limit int64) ([]payments.InvoiceInfo, error) {
+			capturedCustomerID = customerID
+			return sampleInvoices, nil
+		},
+	}
 
 	s := &Server{
 		store:                    store.New(tdb.db),
@@ -325,15 +333,23 @@ func TestHandlePortalListInvoices_CrossUserIsolation(t *testing.T) {
 		paymentsProviderFactory: func(name string) payments.Provider { return provider },
 	}
 
-	// Alice authenticates — should NOT see Bob's invoices.
-	// The handler uses ctx.AuthIdentity to build PK ("USER#alice").
-	// Because the mock Mayb() stub returns Bob's profile regardless of
-	// Where clauses, this test can't fully validate cross-user isolation
-	// at the mock level. Real isolation is enforced by DynamoDB PK/SK scoping.
-	// This test exists as documentation of the expected behavior.
-	_ = s
-	_ = tdb
-	_ = provider
+	// Alice authenticates — handler must scope queries and provider calls to Alice.
+	ctx := makeContext("alice")
+	resp, err := s.handlePortalListInvoices(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+
+	// Core isolation proof: the provider receives Alice's Stripe customer ID.
+	// If the handler leaked Bob's customer ID, capturedCustomerID would differ.
+	require.Equal(t, "cus_alice", capturedCustomerID,
+		"provider must receive Alice's Stripe customer ID, not another user's")
+
+	// Verify the DB query used Alice's PK (not Bob's, not unscoped).
+	tdb.qProfile.AssertCalled(t, "Where", "PK", "=", fmt.Sprintf(models.KeyPatternUser, "alice"))
+
+	var body listInvoicesResponse
+	require.NoError(t, json.Unmarshal(resp.Body, &body))
+	require.Len(t, body.Invoices, 2)
 }
 
 // ---------------------------------------------------------------------------
@@ -455,6 +471,28 @@ func TestHandlePortalGetPaymentMethod_PaymentMethodNotFound(t *testing.T) {
 	require.Nil(t, wrapper.PaymentMethod, "payment method not found should return null")
 }
 
+func TestHandlePortalGetPaymentMethod_DBError(t *testing.T) {
+	t.Parallel()
+
+	tdb := newBillingDataTestDB()
+	tdb.stubBillingProfile(t, "alice", "cus_123", "pm_123")
+
+	// Payment method lookup returns a non-not-found DB error.
+	tdb.qMethod.On("First", mock.AnythingOfType("*models.BillingPaymentMethod")).
+		Return(errors.New("connection reset")).Maybe()
+
+	s := &Server{store: store.New(tdb.db), cfg: config.Config{}}
+
+	ctx := makeContext("alice")
+	resp, err := s.handlePortalGetPaymentMethod(ctx)
+	require.Nil(t, resp, "DB errors must not return data")
+	require.Error(t, err)
+	appErr, ok := err.(*apptheory.AppError)
+	require.True(t, ok)
+	require.Equal(t, "app.internal", appErr.Code,
+		"unexpected DB errors must become sanitized app.internal, not swallowed as no-data")
+}
+
 func TestHandlePortalGetPaymentMethod_Unauthenticated(t *testing.T) {
 	t.Parallel()
 
@@ -472,47 +510,47 @@ func TestHandlePortalGetPaymentMethod_CrossUserIsolation(t *testing.T) {
 	t.Parallel()
 
 	tdb := newBillingDataTestDB()
-	// Bob's billing profile with default payment method.
-	tdb.stubBillingProfile(t, "bob", "cus_bob", "pm_bob")
+	// Alice has a profile with her own default payment method.
+	tdb.stubBillingProfile(t, "alice", "cus_alice", "pm_alice")
 
-	// Stub Bob's payment method.
+	// Stub Alice's payment method — the handler must return ONLY this, not Bob's.
 	tdb.qMethod.On("First", mock.AnythingOfType("*models.BillingPaymentMethod")).Return(nil).
 		Run(func(args mock.Arguments) {
 			dest := testutil.RequireMockArg[*models.BillingPaymentMethod](t, args, 0)
 			*dest = models.BillingPaymentMethod{
-				ID:     "pm_bob",
-				Brand:  "mastercard",
-				Last4:  "9999",
-				Status: models.BillingPaymentMethodStatusActive,
+				ID:       "pm_alice",
+				Username: "alice",
+				Provider: models.BillingProviderStripe,
+				Type:     "card",
+				Brand:    "visa",
+				Last4:    "4242",
+				ExpMonth: 12,
+				ExpYear:  2028,
+				Status:   models.BillingPaymentMethodStatusActive,
 			}
 		}).Maybe()
 
 	s := &Server{store: store.New(tdb.db), cfg: config.Config{}}
 
-	// Alice authenticates — should NOT see Bob's PM.
-	// The handler uses ctx.AuthIdentity to build PK: USER#alice.
-	// Bob's profile is under USER#bob. Real DynamoDB would not return it.
-	// With the Maybe() mock, First might return Bob's data regardless.
-	// This test validates the handler wiring; cross-user isolation is
-	// enforced by PK/SK key scoping in DynamoDB.
-
+	// Alice authenticates — handler queries by Alice's PK.
 	ctx := makeContext("alice")
 	resp, err := s.handlePortalGetPaymentMethod(ctx)
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 
+	// Prove PK scoping: the handler queried the DB with Alice's PK.
+	tdb.qProfile.AssertCalled(t, "Where", "PK", "=", fmt.Sprintf(models.KeyPatternUser, "alice"))
+
 	var wrapper struct {
 		PaymentMethod *paymentMethodSafe `json:"payment_method"`
 	}
 	require.NoError(t, json.Unmarshal(resp.Body, &wrapper))
+	require.NotNil(t, wrapper.PaymentMethod,
+		"Alice must receive her own payment method when scoped to her PK")
 
-	// Note: with mock .Maybe() the stub may return Bob's data even for alice's
-	// query because the mock doesn't validate PK/SK clauses. In a real
-	// deployment, DynamoDB scoping prevents this. The critical assertion is
-	// that the handler code uses ctx.AuthIdentity to construct PK — which
-	// we verify through code review of the handler source:
-	//   pk := fmt.Sprintf(models.KeyPatternUser, username)
-	_ = wrapper
+	// The payment method returned must be Alice's, not Bob's.
+	require.Equal(t, "pm_alice", wrapper.PaymentMethod.ID)
+	require.Equal(t, "4242", wrapper.PaymentMethod.Last4)
 }
 
 // ---------------------------------------------------------------------------

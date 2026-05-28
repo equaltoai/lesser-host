@@ -9,6 +9,7 @@ import (
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 
 	"github.com/equaltoai/lesser-host/internal/payments"
+	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -143,8 +144,11 @@ func (s *Server) handlePortalGetPaymentMethod(ctx *apptheory.Context) (*apptheor
 		Where("SK", "=", sk).
 		First(&method)
 	if lookupErr != nil {
-		// Not found — return null payment_method without error.
-		return apptheory.JSON(http.StatusOK, map[string]any{"payment_method": nil})
+		if store.IsNotFound(lookupErr) {
+			// Not found — return null payment_method without error.
+			return apptheory.JSON(http.StatusOK, map[string]any{"payment_method": nil})
+		}
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 
 	// Map to safe DTO — never expose PK/SK/internal fields.
