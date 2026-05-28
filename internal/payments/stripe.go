@@ -11,6 +11,7 @@ import (
 	"github.com/stripe/stripe-go/v79"
 	checkoutsession "github.com/stripe/stripe-go/v79/checkout/session"
 	"github.com/stripe/stripe-go/v79/customer"
+	"github.com/stripe/stripe-go/v79/invoice"
 	"github.com/stripe/stripe-go/v79/paymentmethod"
 	"github.com/stripe/stripe-go/v79/setupintent"
 	"github.com/stripe/stripe-go/v79/webhook"
@@ -295,6 +296,57 @@ func (p stripeProvider) ResolveSetupPaymentMethod(ctx context.Context, setupInte
 		out.Last4 = strings.TrimSpace(pm.Card.Last4)
 		out.ExpMonth = int64(pm.Card.ExpMonth)
 		out.ExpYear = int64(pm.Card.ExpYear)
+	}
+
+	return out, nil
+}
+
+func dateStringFromUnix(ts int64) string {
+	if ts <= 0 {
+		return ""
+	}
+	return time.Unix(ts, 0).UTC().Format(time.RFC3339)
+}
+
+func (p stripeProvider) ListRecentInvoices(ctx context.Context, customerID string, limit int64) ([]InvoiceInfo, error) {
+	if err := p.ensureKey(ctx); err != nil {
+		return nil, err
+	}
+
+	customerID = strings.TrimSpace(customerID)
+	if customerID == "" {
+		return nil, fmt.Errorf("customer id is required")
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 10
+	}
+
+	params := &stripe.InvoiceListParams{
+		ListParams: stripe.ListParams{Limit: stripe.Int64(limit)},
+		Customer:   stripe.String(customerID),
+	}
+	params.Filters.AddFilter("status", "", "draft")
+
+	iter := invoice.List(params)
+	var out []InvoiceInfo
+	for iter.Next() {
+		inv := iter.Invoice()
+		if inv == nil || strings.TrimSpace(inv.ID) == "" {
+			continue
+		}
+		out = append(out, InvoiceInfo{
+			ID:          strings.TrimSpace(inv.ID),
+			PeriodStart: dateStringFromUnix(inv.PeriodStart),
+			PeriodEnd:   dateStringFromUnix(inv.PeriodEnd),
+			AmountDue:   inv.AmountDue,
+			Currency:    strings.TrimSpace(string(inv.Currency)),
+			Status:      strings.TrimSpace(string(inv.Status)),
+			HostedURL:   strings.TrimSpace(inv.HostedInvoiceURL),
+			PDFURL:      strings.TrimSpace(inv.InvoicePDF),
+		})
+	}
+	if err := iter.Err(); err != nil {
+		return nil, err
 	}
 
 	return out, nil

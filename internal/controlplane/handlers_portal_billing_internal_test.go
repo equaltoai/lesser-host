@@ -82,6 +82,7 @@ type stubPaymentsProvider struct {
 	name               string
 	ensureCustomer     func(ctx context.Context, in payments.EnsureCustomerInput) (string, error)
 	resolveSetupMethod func(ctx context.Context, setupIntentID string) (*payments.PaymentMethodDetails, error)
+	listInvoices       func(ctx context.Context, customerID string, limit int64) ([]payments.InvoiceInfo, error)
 }
 
 func (s stubPaymentsProvider) Name() string { return s.name }
@@ -110,6 +111,13 @@ func (s stubPaymentsProvider) ResolveSetupPaymentMethod(ctx context.Context, set
 		return nil, nil
 	}
 	return s.resolveSetupMethod(ctx, setupIntentID)
+}
+
+func (s stubPaymentsProvider) ListRecentInvoices(ctx context.Context, customerID string, limit int64) ([]payments.InvoiceInfo, error) {
+	if s.listInvoices == nil {
+		return nil, nil
+	}
+	return s.listInvoices(ctx, customerID, limit)
 }
 
 func TestLoadBillingProfile_NotFoundAndSuccess(t *testing.T) {
