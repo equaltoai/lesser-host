@@ -311,6 +311,11 @@ func (s *Server) handlePortalListInstances(ctx *apptheory.Context) (*apptheory.R
 		out = append(out, s.portalInstanceResponseFromModel(inst))
 	}
 
+	// Best-effort Fleet enrichment from managed Lesser instance metrics.
+	// Enrichment is bounded (concurrency cap, per-instance deadline,
+	// aggregate budget). Failures are silent; fields stay at zero values.
+	s.fleetEnrichInstancesConcurrently(ctx.Context(), items, out)
+
 	return apptheory.JSON(http.StatusOK, listInstancesResponse{
 		Instances: out,
 		Count:     len(out),
