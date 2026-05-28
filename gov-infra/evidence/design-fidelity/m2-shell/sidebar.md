@@ -7,10 +7,23 @@
 
 ## Capture Method
 
-PNG screenshot capture is **blocked** in the current local environment (no
-browser automation available; lab deploy not performed before merge). This
-markdown describes the implemented sidebar state. Real PNG artifacts should
-be captured post-merge during lab smoke or from a local `npm run dev` session.
+`sidebar.png` was cropped from the full-shell capture (`full-shell.png`,
+1440×900) using Python/PIL to isolate the full-height sidebar region.
+
+```bash
+python3 -c "
+from PIL import Image
+i = Image.open('gov-infra/evidence/design-fidelity/m2-shell/full-shell.png')
+# Sidebar: left 420px (md width + right border), full 900px height
+sidebar = i.crop((0, 0, 420, 900))
+sidebar.save('gov-infra/evidence/design-fidelity/m2-shell/sidebar.png')
+"
+```
+
+The source `full-shell.png` was captured via Google Chrome headless against
+`web/fixtures/m2-shell.html` at 1440×900 viewport (see `full-shell.md`).
+
+Result: `sidebar.png`, 420×900 RGB PNG.
 
 ## Sidebar Structure
 

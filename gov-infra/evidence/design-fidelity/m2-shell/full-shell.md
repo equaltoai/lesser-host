@@ -7,11 +7,22 @@
 
 ## Capture Method
 
-PNG screenshot capture is **blocked** in the current local environment (no
-browser automation available; lab deploy not performed before merge). This
-markdown describes the full 1440×900 shell composition. Real PNG artifacts
-should be captured post-merge during lab smoke or from a local `npm run dev`
-session.
+Captured via Google Chrome headless against the M2 fixture page
+(`web/fixtures/m2-shell.html`), which mounts PortalShell in isolation with
+pre-seeded session data and mock API responses at 1440×900 viewport.
+
+```bash
+# Serve fixture in one terminal
+cd web && npx vite --config fixtures/vite.fixture.m2.config.ts --port 4173
+
+# Capture in another
+/usr/bin/google-chrome --headless --disable-gpu \
+  --window-size=1440,900 \
+  --screenshot=gov-infra/evidence/design-fidelity/m2-shell/full-shell.png \
+  http://localhost:4173/
+```
+
+Result: `full-shell.png`, 1440×900 RGB PNG (39,747 bytes), non-interlaced.
 
 ## Full-Shell Layout (1440 × 900 viewport)
 
