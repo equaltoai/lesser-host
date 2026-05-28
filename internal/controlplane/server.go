@@ -40,6 +40,12 @@ type Server struct {
 	fetchInstanceKeyPlaintextFunc     func(ctx context.Context, inst *models.Instance) (string, error)
 	resolveInstanceMetricsBaseURLFunc func(inst *models.Instance) (string, error)
 
+	// instanceKeyCache is a short-TTL in-memory cache for resolved managed
+	// instance API keys, keyed by LesserHostInstanceKeySecretARN. It avoids
+	// repeated STS/SecretsManager calls when the list endpoint polls many
+	// instances in quick succession. Cache hit avoids AssumeRole + GetSecretValue.
+	instanceKeyCache *instanceKeyCache
+
 	ssmGetParameter     func(ctx context.Context, name string) (string, error)
 	ssmPutSecureValue   func(ctx context.Context, name string, value string, overwrite bool) error
 	migaduCreateEmail   func(ctx context.Context, localPart string, name string, password string) error
@@ -90,6 +96,7 @@ func NewServer(cfg config.Config, st *store.Store) *Server {
 		srv.mailboxContentStore = commmailbox.NewS3Store(cfg.SoulCommMailboxBucketName)
 	}
 	srv.enqueueCommMessage = srv.queues.enqueueCommMessage
+		srv.instanceKeyCache = newInstanceKeyCache()
 	return srv
 }
 

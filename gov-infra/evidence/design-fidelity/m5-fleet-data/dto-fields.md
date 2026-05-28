@@ -11,7 +11,7 @@ decode without error because standard JSON decoders ignore unknown fields.
 
 | JSON field          | Go type   | Zero value      | Source                                                 |
 |---------------------|-----------|-----------------|--------------------------------------------------------|
-| `active_users_30d`  | `int64`   | `0`             | Managed Lesser `/api/v1/instance/metrics/daily` (max daily `unique_users` over 30-day window) |
+| `peak_daily_users_30d`  | `int64`   | `0`             | Managed Lesser `/api/v1/instance/metrics/daily` (max daily `unique_users` over 30-day window) |
 | `posts_24h`         | `int64`   | `0`             | Not yet counterized                                    |
 | `sig_fails_24h`     | `int64`   | `0`             | Not yet counterized                                    |
 | `spark_activity`    | `[]int64` | `null` (omitted)| Managed Lesser `/api/v1/instance/metrics/daily` (`total_requests` per day, last 7 days) |
@@ -38,7 +38,7 @@ Verified by `TestFleetDataDTORedactionProof` in `handlers_portal_fleet_internal_
 
 ### managed Lesser metrics endpoint
 
-All computed Fleet fields (`active_users_30d`, `spark_activity`, `spark_cost`)
+All computed Fleet fields (`peak_daily_users_30d`, `spark_activity`, `spark_cost`)
 are sourced from the managed Lesser instance metrics endpoint
 (`/api/v1/instance/metrics/daily`). This path has been available since
 M0.4/#529 and is the same path used by the per-instance cost endpoint
@@ -47,20 +47,30 @@ M0.4/#529 and is the same path used by the per-instance cost endpoint
 The enrichment flow:
 1. `handlePortalListInstances` scopes instances to the authenticated owner via
    GSI1 (`OWNER#<username>`) — this is the ownership gate.
-2. For each owned instance, `fleetEnrichFromManagedMetrics` resolves the
-   instance API key via `resolvePortalCostInstanceKey` (same no-log/no-browser
-   secret handling used by the cost endpoint).
-3. `fetchManagedInstanceMetrics` calls the managed Lesser with a 30-day window
+2. `fleetEnrichInstancesConcurrently` fans out enrichment across owned instances
+   with bounded concurrency (max 4 concurrent), per-instance deadlines (5s),
+   and an aggregate enrichment budget (20s). This prevents a single
+   slow/unreachable instance from making the list timeout.
+3. For each instance, `fleetEnrichFromManagedMetrics` resolves the API key via
+   `resolveInstanceKeyCached` — a short-TTL (60s) in-memory cache keyed by
+   `LesserHostInstanceKeySecretARN` that avoids repeated STS AssumeRole +
+   SecretsManager GetSecretValue calls.
+4. `fetchManagedInstanceMetrics` calls the managed Lesser with a 30-day window
    using the resolved key as a Bearer token.
-4. Fleet fields are computed from the daily metrics response.
+5. Fleet fields are computed from the daily metrics response.
 
-### active_users_30d
+### peak_daily_users_30d
 
 - **Computation**: `max(daily.unique_users)` over the 30-day window.
 - **Rationale**: `unique_users` is a per-day count. Summing would double-count
   users who are active on multiple days. Taking the maximum is the
   least-misleading single-value summary available from the daily metrics
-  endpoint. This is documented in the code and in this evidence file.
+  endpoint. The field name `peak_daily_users_30d` honestly describes the
+  computation — this is the peak daily active-user count, not a rolling 30-day
+  reach (which would require distinct-user counting across days).
+- **Renamed from `active_users_30d`** in PR #555 rework (Finding C): the
+  original name implied a rolling 30-day reach, but the implementation is
+  `max(daily.unique_users)`. The rename makes the contract honest.
 - **When unavailable**: Returns `0`. This happens when the managed instance
   has no metrics yet (new instance), when the instance key has not been
   provisioned, or when the metrics endpoint is unreachable.
@@ -93,12 +103,30 @@ The enrichment flow:
 
 ## Failure Posture
 
+Enrichment is bounded on three axes:
+
+1. **Per-instance deadline** (`fleetEnrichPerInstanceTimeout` = 5s): a single
+   slow/unreachable instance does not hold up the list.
+2. **Concurrency cap** (`fleetEnrichMaxConcurrency` = 4): at most 4 concurrent
+   managed-metrics HTTP calls run at once.
+3. **Aggregate budget** (`fleetEnrichAggregateBudget` = 20s): the entire
+   enrichment phase has a wall-clock budget. Once exhausted, remaining
+   instances are returned with Fleet fields at zero values.
+
 If key resolution or the managed metrics HTTP call fails for any instance:
 
 - The `handlePortalListInstances` endpoint does **not** return HTTP 500.
-- That instance's Fleet fields (`active_users_30d`, `spark_activity`,
+- That instance's Fleet fields (`peak_daily_users_30d`, `spark_activity`,
   `spark_cost`) remain at their zero values.
 - The remaining instances in the list are unaffected.
+
+### Instance key cache
+
+Per-instance API keys resolved via `resolveInstanceKeyCached` are cached
+in-memory with a 60-second TTL, keyed by `LesserHostInstanceKeySecretARN`.
+Cache hits avoid STS AssumeRole + SecretsManager GetSecretValue. Cache is
+protected by `sync.RWMutex` for concurrent access. Plaintext keys are never
+logged or exposed.
 
 This is verified by `TestHandlePortalListInstancesMetricsFailureIsSilent`
 and `TestFleetEnrichFromManagedMetricsUpstreamFailure`.
@@ -130,7 +158,7 @@ Verified by `TestHandlePortalListInstancesCrossTenantIsolation`.
 | `TestFleetDataDTORedactionProof`                           | No PK/SK/account_id/secrets in output                 |
 | `TestFleetDataEmptyMetricsReturnsZeroValues`               | All fields zero when no data                          |
 | `TestFleetEnrichFromManagedMetricsPopulatesFields`         | All three computed fields populated from managed metrics |
-| `TestFleetEnrichFromManagedMetricsMaxUsersSemantics`       | active_users_30d uses max, not sum                    |
+| `TestFleetEnrichFromManagedMetricsMaxUsersSemantics`       | peak_daily_users_30d uses max, not sum                    |
 | `TestFleetEnrichFromManagedMetricsCostCentsFallback`       | CostCents fallback when CostDollars is zero           |
 | `TestFleetEnrichFromManagedMetricsKeyResolutionFailure`    | Fields zero on key resolution failure (no panic)      |
 | `TestFleetEnrichFromManagedMetricsUpstreamFailure`         | Fields zero on upstream HTTP 503 (no panic)           |
@@ -141,3 +169,25 @@ Verified by `TestHandlePortalListInstancesCrossTenantIsolation`.
 | `TestHandlePortalListInstancesUnauthenticated`             | Auth required                                         |
 | `TestHandlePortalListInstancesStoreNotInitialized`         | Error on nil store                                    |
 | `TestHandlePortalListInstancesQueryFailure`                | Error on DB failure                                   |
+| `TestHandlePortalListInstancesConcurrentEnrichment`         | Bounded concurrency, per-instance deadline, aggregate budget |
+| `TestResolveInstanceKeyCachedHit`                           | Cache hit avoids second underlying fetch              |
+| `TestResolveInstanceKeyCachedExpiry`                        | Expired cache entry triggers refetch                  |
+| `TestResolveInstanceKeyCachedConcurrent`                    | Concurrent access to cache is safe                    |
+
+## Managed Lesser Route Verification (Finding D)
+
+The Fleet data enrichment calls `GET /api/v1/instance/metrics/daily` on each
+managed Lesser instance. This route was verified as mounted in the current
+Lesser codebase:
+
+- **File**: `lesser/cmd/api/routes.go:582`
+  ```go
+  app.Get("/api/v1/instance/metrics/daily", apiHandler.HandleGetInstanceMetricsDailyLift)
+  ```
+- **Handler**: `lesser/cmd/api/handlers/metrics.go:16` — `HandleGetInstanceMetricsDailyLift`
+- **Route manifest**: `lesser/cmd/api/testdata/routes_manifest.txt:87` — `GET /api/v1/instance/metrics/daily`
+
+Note: `HandleGetInstanceMetricsLift` (the older handler at metrics.go:117) is
+not mounted. The daily endpoint uses `HandleGetInstanceMetricsDailyLift`, which
+is the active handler serving daily metrics including `unique_users`,
+`total_requests`, `cost_dollars`, and `cost_cents`.

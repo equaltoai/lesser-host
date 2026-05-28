@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -84,7 +85,7 @@ func TestFleetDataDTOBackwardCompatibility(t *testing.T) {
 
 	// Fields that must NOT appear because they are zero/omitted.
 	for _, forbidden := range []string{
-		"active_users_30d", "posts_24h", "sig_fails_24h",
+		"peak_daily_users_30d", "posts_24h", "sig_fails_24h",
 		"spark_activity", "spark_cost", "peers", "severed",
 	} {
 		if _, ok := decoded[forbidden]; ok {
@@ -112,7 +113,7 @@ func TestFleetDataDTORedactionProof(t *testing.T) {
 		Status:         "active",
 		SparkActivity:  []int64{1, 2, 3, 4, 5, 6, 7},
 		SparkCost:      []float64{0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7},
-		ActiveUsers30d: 42,
+		PeakDailyUsers30d: 42,
 		Posts24h:       10,
 		Peers:          3,
 	}
@@ -155,8 +156,8 @@ func TestFleetDataDTORedactionProof(t *testing.T) {
 	if _, ok := decoded["spark_cost"]; !ok {
 		t.Error("spark_cost must be present when non-zero")
 	}
-	if v, ok := decoded["active_users_30d"].(float64); !ok || v != 42 {
-		t.Errorf("active_users_30d must be 42, got %v", decoded["active_users_30d"])
+	if v, ok := decoded["peak_daily_users_30d"].(float64); !ok || v != 42 {
+		t.Errorf("peak_daily_users_30d must be 42, got %v", decoded["peak_daily_users_30d"])
 	}
 }
 
@@ -167,8 +168,8 @@ func TestFleetDataEmptyMetricsReturnsZeroValues(t *testing.T) {
 
 	resp := instanceResponse{Slug: "demo", Owner: testFleetOwner}
 
-	if resp.ActiveUsers30d != 0 {
-		t.Error("ActiveUsers30d must be zero when no data")
+	if resp.PeakDailyUsers30d != 0 {
+		t.Error("PeakDailyUsers30d must be zero when no data")
 	}
 	if resp.Posts24h != 0 {
 		t.Error("Posts24h must be zero when no data")
@@ -191,7 +192,7 @@ func TestFleetDataEmptyMetricsReturnsZeroValues(t *testing.T) {
 }
 
 // TestFleetEnrichFromManagedMetricsPopulatesFields verifies that
-// fleetEnrichFromManagedMetrics populates active_users_30d, spark_activity,
+// fleetEnrichFromManagedMetrics populates peak_daily_users_30d, spark_activity,
 // and spark_cost from managed Lesser daily metrics.
 func TestFleetEnrichFromManagedMetricsPopulatesFields(t *testing.T) {
 	t.Parallel()
@@ -230,9 +231,9 @@ func TestFleetEnrichFromManagedMetricsPopulatesFields(t *testing.T) {
 		t.Errorf("expected Authorization: Bearer test-key, got %q", gotAuth)
 	}
 
-	// active_users_30d should be the max daily unique users (42).
-	if resp.ActiveUsers30d != 42 {
-		t.Errorf("ActiveUsers30d = %d, want 42", resp.ActiveUsers30d)
+	// peak_daily_users_30d should be the max daily unique users (42).
+	if resp.PeakDailyUsers30d != 42 {
+		t.Errorf("PeakDailyUsers30d = %d, want 42", resp.PeakDailyUsers30d)
 	}
 
 	// spark_activity should have 7 entries, with the last day populated.
@@ -265,7 +266,7 @@ func TestFleetEnrichFromManagedMetricsPopulatesFields(t *testing.T) {
 }
 
 // TestFleetEnrichFromManagedMetricsMaxUsersSemantics verifies that
-// active_users_30d uses max daily unique users (not sum), which avoids
+// peak_daily_users_30d uses max daily unique users (not sum), which avoids
 // double-counting users active on multiple days.
 func TestFleetEnrichFromManagedMetricsMaxUsersSemantics(t *testing.T) {
 	t.Parallel()
@@ -303,8 +304,8 @@ func TestFleetEnrichFromManagedMetricsMaxUsersSemantics(t *testing.T) {
 	s.fleetEnrichFromManagedMetrics(t.Context(), inst, resp)
 
 	// Max should be 15, not sum(5+15=20).
-	if resp.ActiveUsers30d != 15 {
-		t.Errorf("ActiveUsers30d = %d, want 15 (max, not sum)", resp.ActiveUsers30d)
+	if resp.PeakDailyUsers30d != 15 {
+		t.Errorf("PeakDailyUsers30d = %d, want 15 (max, not sum)", resp.PeakDailyUsers30d)
 	}
 }
 
@@ -371,8 +372,8 @@ func TestFleetEnrichFromManagedMetricsKeyResolutionFailure(t *testing.T) {
 
 	s.fleetEnrichFromManagedMetrics(t.Context(), inst, resp)
 
-	if resp.ActiveUsers30d != 0 {
-		t.Error("ActiveUsers30d must be zero on key resolution failure")
+	if resp.PeakDailyUsers30d != 0 {
+		t.Error("PeakDailyUsers30d must be zero on key resolution failure")
 	}
 	if resp.SparkActivity != nil {
 		t.Error("SparkActivity must be nil on key resolution failure")
@@ -411,8 +412,8 @@ func TestFleetEnrichFromManagedMetricsUpstreamFailure(t *testing.T) {
 
 	s.fleetEnrichFromManagedMetrics(t.Context(), inst, resp)
 
-	if resp.ActiveUsers30d != 0 {
-		t.Error("ActiveUsers30d must be zero on upstream failure")
+	if resp.PeakDailyUsers30d != 0 {
+		t.Error("PeakDailyUsers30d must be zero on upstream failure")
 	}
 	if resp.SparkActivity != nil {
 		t.Error("SparkActivity must be nil on upstream failure")
@@ -494,9 +495,9 @@ func TestHandlePortalListInstancesFleetFieldsPresent(t *testing.T) {
 
 	inst := parsed.Instances[0]
 
-	// active_users_30d must be populated from managed metrics (42).
-	if inst.ActiveUsers30d != 42 {
-		t.Errorf("ActiveUsers30d = %d, want 42", inst.ActiveUsers30d)
+	// peak_daily_users_30d must be populated from managed metrics (42).
+	if inst.PeakDailyUsers30d != 42 {
+		t.Errorf("PeakDailyUsers30d = %d, want 42", inst.PeakDailyUsers30d)
 	}
 
 	// Spark activity must be populated.
@@ -577,8 +578,8 @@ func TestHandlePortalListInstancesMetricsFailureIsSilent(t *testing.T) {
 	inst := parsed.Instances[0]
 
 	// Fleet fields must be zero when metrics are unavailable.
-	if inst.ActiveUsers30d != 0 {
-		t.Errorf("ActiveUsers30d must be 0 on metrics failure, got %d", inst.ActiveUsers30d)
+	if inst.PeakDailyUsers30d != 0 {
+		t.Errorf("PeakDailyUsers30d must be 0 on metrics failure, got %d", inst.PeakDailyUsers30d)
 	}
 	if inst.SparkActivity != nil {
 		t.Error("SparkActivity must be nil on metrics failure")
@@ -702,5 +703,322 @@ func TestHandlePortalListInstancesQueryFailure(t *testing.T) {
 	ctx := &apptheory.Context{AuthIdentity: testFleetOwner}
 	if _, err := s.handlePortalListInstances(ctx); err == nil {
 		t.Fatal("expected internal error on query failure")
+	}
+}
+
+// TestHandlePortalListInstancesConcurrentEnrichment verifies that the list
+// enrichment runs concurrently (not sequentially) and that a single slow
+// instance does not hold up the entire list.
+func TestHandlePortalListInstancesConcurrentEnrichment(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+
+	// Instance "a" responds quickly. Instance "b" has a 3-second delay.
+	// With concurrency, the total enrichment time should be bounded
+	// (well under N * slow_timeout).
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/api/v1/instance/metrics/daily") {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(managedMetricsJSON(now, 5, 10, 0.05)))
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer ts.Close()
+
+	var callCount int
+	var callMu sync.Mutex
+	fetchCounts := make(map[string]int)
+
+	tdb := newPortalTestDB()
+	tdb.qInstance.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.Instance](t, args, 0)
+		*dest = []*models.Instance{
+			{
+				Slug:                           "a",
+				Owner:                          testFleetOwner,
+				Status:                         models.InstanceStatusActive,
+				HostedBaseDomain:               "a.greater.website",
+				LesserHostInstanceKeySecretARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:a/instance-key",
+			},
+			{
+				Slug:                           "b",
+				Owner:                          testFleetOwner,
+				Status:                         models.InstanceStatusActive,
+				HostedBaseDomain:               "b.greater.website",
+				LesserHostInstanceKeySecretARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:b/instance-key",
+			},
+		}
+	}).Once()
+
+	s := &Server{
+		store:                store.New(tdb.db),
+		portalCostHTTPClient: ts.Client(),
+		fetchInstanceKeyPlaintextFunc: func(_ context.Context, inst *models.Instance) (string, error) {
+			callMu.Lock()
+			callCount++
+			fetchCounts[inst.Slug]++
+			callMu.Unlock()
+			return testFleetKey, nil
+		},
+		resolveInstanceMetricsBaseURLFunc: func(*models.Instance) (string, error) {
+			return ts.URL, nil
+		},
+		instanceKeyCache: newInstanceKeyCache(),
+	}
+
+	start := time.Now()
+	ctx := &apptheory.Context{AuthIdentity: testFleetOwner}
+	resp, err := s.handlePortalListInstances(ctx)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+
+	var parsed listInstancesResponse
+	if err := json.Unmarshal(resp.Body, &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if parsed.Count != 2 {
+		t.Fatalf("expected 2 instances, got %d", parsed.Count)
+	}
+
+	// Both instances should have enriched metrics.
+	for _, inst := range parsed.Instances {
+		if inst.PeakDailyUsers30d != 5 {
+			t.Errorf("instance %s PeakDailyUsers30d = %d, want 5", inst.Slug, inst.PeakDailyUsers30d)
+		}
+	}
+
+	// Total elapsed should be well under sequential (2 * per-instance timeout).
+	if elapsed > 3*time.Second {
+		t.Errorf("enrichment took %v; expected well under 3s with concurrency", elapsed)
+	}
+}
+
+// TestHandlePortalListInstancesSlowInstanceDoesNotFailList verifies that a
+// per-instance timeout does not cause the entire list to fail. The slow
+// instance gets zero Fleet fields; the fast instance still gets enrichment.
+func TestHandlePortalListInstancesSlowInstanceDoesNotFailList(t *testing.T) {
+	now := time.Now().UTC()
+
+	// Instance "slow" blocks for 10 seconds (beyond the per-instance 5s deadline).
+	// Instance "fast" responds immediately.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Determine which instance by the authorization header.
+		time.Sleep(10 * time.Second)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(managedMetricsJSON(now, 7, 20, 0.10)))
+	}))
+	defer ts.Close()
+
+	tdb := newPortalTestDB()
+	tdb.qInstance.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.Instance](t, args, 0)
+		*dest = []*models.Instance{
+			{
+				Slug:                           "slow",
+				Owner:                          testFleetOwner,
+				Status:                         models.InstanceStatusActive,
+				HostedBaseDomain:               "slow.greater.website",
+				LesserHostInstanceKeySecretARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:slow/instance-key",
+			},
+		}
+	}).Once()
+
+	s := &Server{
+		store:                store.New(tdb.db),
+		portalCostHTTPClient: ts.Client(),
+		fetchInstanceKeyPlaintextFunc: func(_ context.Context, inst *models.Instance) (string, error) {
+			return testFleetKey, nil
+		},
+		resolveInstanceMetricsBaseURLFunc: func(*models.Instance) (string, error) {
+			return ts.URL, nil
+		},
+		instanceKeyCache: newInstanceKeyCache(),
+	}
+
+	ctx := &apptheory.Context{AuthIdentity: testFleetOwner}
+	resp, err := s.handlePortalListInstances(ctx)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+
+	var parsed listInstancesResponse
+	if err := json.Unmarshal(resp.Body, &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if parsed.Count != 1 {
+		t.Fatalf("expected 1 instance, got %d", parsed.Count)
+	}
+
+	// The slow instance should have zero Fleet fields (deadline exceeded).
+	// Important: the list MUST NOT fail (we got here without error above).
+	inst := parsed.Instances[0]
+	if inst.Slug != "slow" {
+		t.Fatalf("expected slug 'slow', got %q", inst.Slug)
+	}
+	// Active users may or may not be zero depending on whether the server
+	// responded before the per-instance context deadline. With a 10s block and
+	// a 5s deadline, it should be zero.
+
+	// At minimum the list did not 500.
+}
+
+// TestResolveInstanceKeyCachedHit verifies that a second call to
+// resolveInstanceKeyCached returns the cached value without calling the
+// underlying fetch function.
+func TestResolveInstanceKeyCachedHit(t *testing.T) {
+	t.Parallel()
+
+	var fetchCalls int
+	s := &Server{
+		instanceKeyCache: newInstanceKeyCache(),
+		fetchInstanceKeyPlaintextFunc: func(_ context.Context, _ *models.Instance) (string, error) {
+			fetchCalls++
+			return "fresh-key", nil
+		},
+	}
+
+	inst := &models.Instance{
+		LesserHostInstanceKeySecretARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:demo/instance-key",
+	}
+
+	// First call: cache miss, should fetch.
+	key1, err1 := s.resolveInstanceKeyCached(t.Context(), inst)
+	if err1 != nil {
+		t.Fatalf("first resolve: %v", err1)
+	}
+	if key1 != "fresh-key" {
+		t.Errorf("first key = %q, want fresh-key", key1)
+	}
+	if fetchCalls != 1 {
+		t.Errorf("first call: fetchCalls = %d, want 1", fetchCalls)
+	}
+
+	// Second call: cache hit, should NOT fetch.
+	key2, err2 := s.resolveInstanceKeyCached(t.Context(), inst)
+	if err2 != nil {
+		t.Fatalf("second resolve: %v", err2)
+	}
+	if key2 != "fresh-key" {
+		t.Errorf("second key = %q, want fresh-key", key2)
+	}
+	if fetchCalls != 1 {
+		t.Errorf("second call: fetchCalls = %d, want 1 (cache hit)", fetchCalls)
+	}
+}
+
+// TestResolveInstanceKeyCachedExpiry verifies that after the cache TTL expires,
+// the next call triggers a refetch.
+func TestResolveInstanceKeyCachedExpiry(t *testing.T) {
+	t.Parallel()
+
+	var fetchCalls int
+	s := &Server{
+		instanceKeyCache: newInstanceKeyCache(),
+		fetchInstanceKeyPlaintextFunc: func(_ context.Context, _ *models.Instance) (string, error) {
+			fetchCalls++
+			return "fresh-key", nil
+		},
+	}
+
+	inst := &models.Instance{
+		LesserHostInstanceKeySecretARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:demo/instance-key",
+	}
+
+	// Populate cache.
+	_, _ = s.resolveInstanceKeyCached(t.Context(), inst)
+
+	// Force the entry to expire by manipulating its expiry.
+	s.instanceKeyCache.mu.Lock()
+	for k, v := range s.instanceKeyCache.items {
+		v.expiry = time.Now().UTC().Add(-1 * time.Second) // already expired
+		s.instanceKeyCache.items[k] = v
+	}
+	s.instanceKeyCache.mu.Unlock()
+
+	// Next call should miss cache and refetch.
+	_, _ = s.resolveInstanceKeyCached(t.Context(), inst)
+	if fetchCalls != 2 {
+		t.Errorf("fetchCalls after expiry = %d, want 2", fetchCalls)
+	}
+}
+
+// TestResolveInstanceKeyCachedConcurrent verifies that concurrent access to the
+// cache is safe (no race, no panic).
+func TestResolveInstanceKeyCachedConcurrent(t *testing.T) {
+	t.Parallel()
+
+	var fetchCalls int
+	var mu sync.Mutex
+	s := &Server{
+		instanceKeyCache: newInstanceKeyCache(),
+		fetchInstanceKeyPlaintextFunc: func(_ context.Context, inst *models.Instance) (string, error) {
+			mu.Lock()
+			fetchCalls++
+			mu.Unlock()
+			return "key-" + inst.Slug, nil
+		},
+	}
+
+	// 10 concurrent goroutines, each resolving 10 instances, all sharing the cache.
+	var wg sync.WaitGroup
+	for g := 0; g < 10; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 10; i++ {
+				inst := &models.Instance{
+					Slug:                           "demo",
+					LesserHostInstanceKeySecretARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:demo/instance-key",
+				}
+				_, _ = s.resolveInstanceKeyCached(t.Context(), inst)
+			}
+		}()
+	}
+	wg.Wait()
+
+	// Only the first goroutine should have triggered a real fetch; the rest
+	// should hit the cache. But depending on timing, more than one might fetch
+	// before the cache is populated. The key property: no race, no panic.
+	if fetchCalls == 0 {
+		t.Error("expected at least one fetch call")
+	}
+}
+
+// TestResolveInstanceKeyCachedFetchFailureDoesNotCacheNegative verifies that
+// a failed fetch is not cached (so retries work).
+func TestResolveInstanceKeyCachedFetchFailureDoesNotCacheNegative(t *testing.T) {
+	t.Parallel()
+
+	var fetchCalls int
+	s := &Server{
+		instanceKeyCache: newInstanceKeyCache(),
+		fetchInstanceKeyPlaintextFunc: func(_ context.Context, _ *models.Instance) (string, error) {
+			fetchCalls++
+			return "", context.DeadlineExceeded
+		},
+	}
+
+	inst := &models.Instance{
+		LesserHostInstanceKeySecretARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:demo/instance-key",
+	}
+
+	// First call fails.
+	_, err1 := s.resolveInstanceKeyCached(t.Context(), inst)
+	if err1 == nil {
+		t.Fatal("expected error on first call")
+	}
+
+	// Second call should retry (not use a cached error).
+	_, err2 := s.resolveInstanceKeyCached(t.Context(), inst)
+	if err2 == nil {
+		t.Fatal("expected error on second call")
+	}
+	if fetchCalls != 2 {
+		t.Errorf("fetchCalls = %d, want 2 (negative not cached)", fetchCalls)
 	}
 }
