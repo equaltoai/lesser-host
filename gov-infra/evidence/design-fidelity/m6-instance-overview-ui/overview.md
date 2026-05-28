@@ -1,8 +1,8 @@
 # M6 Instance Detail Overview UI — Design Fidelity Evidence
 
-**Milestone:** M6 (Project 42 — `aron/portal-m6-instance-overview-ui`)  
-**Issue:** [#541](https://github.com/equaltoai/lesser-host/issues/541)  
-**Viewport:** 1440 × 900  
+**Milestone:** M6 (Project 42 — `aron/portal-m6-instance-overview-ui`)
+**Issue:** [#541](https://github.com/equaltoai/lesser-host/issues/541)
+**Viewport:** 1440 × 900
 **Evidence file:** `gov-infra/evidence/design-fidelity/m6-instance-overview-ui/overview.png`
 
 ## Scope delivered
