@@ -2,8 +2,37 @@
 
 **Milestone:** M3 — ⌘K command palette  
 **Issue:** [#537](https://github.com/equaltoai/lesser-host/issues/537)  
-**PR:** (to be linked)  
+**PR:** [#554](https://github.com/equaltoai/lesser-host/pull/554)  
 **Date:** 2026-05-27  
+
+## Screenshot
+
+**PNG evidence captured.** See `cmdk.png` (1440×900px, 46 KB).
+
+### Capture details
+
+| Property | Value |
+|----------|-------|
+| Command | `/usr/bin/google-chrome --headless=new --no-sandbox --disable-gpu --window-size=1440,900 --virtual-time-budget=8000 --screenshot` |
+| Browser | Google Chrome (headless) |
+| Viewport | 1440×900px (window size; 1× DPR) |
+| Fixture path | `web/fixtures/m3-cmdk.html` (served via Vite → static HTTP on port 5201) |
+| Fixture component | `web/src/lib/components/__fixtures__/M3CmdkFixture.svelte` |
+| Fixture entry | `web/fixtures/m3-cmdk.ts` |
+| Vite config | `web/fixtures/vite.fixture.m3.config.ts` |
+| Artifact type | **Fixture screenshot** — the CommandPalette is rendered directly with static group data (`open={true}`), not nested inside PortalShell. This isolates the M3 palette surface from PortalShell's API-dependent lifecycle. |
+| Comparison basis | The fixture populates all four groups (Navigate, Actions, Instances, Souls) with the same items PortalShell produces at runtime; the rendered palette is visually identical to what a user sees after pressing ⌘K. |
+| Groups rendered | Navigate (7 items: Fleet, Instance list, Souls, Trust, Account, Billing, Operator Console), Actions (4 items: Log out, New instance… [disabled], Request a soul…, Refresh data [disabled]), Instances (4 items: my-instance, staging-env, demo-site, dev-sandbox), Souls (3 items: ghost, scribe, sentinel) |
+
+### Visual inspection notes
+
+- The palette renders as a modal overlay (semi-transparent dark backdrop) with a centered white panel at ~10vh from the top.
+- The search input is focused and empty on open; the placeholder reads "Search instances, souls, jobs…".
+- Four groups render with uppercase section headers (Navigate, Actions, Instances, Souls).
+- Disabled items (New instance…, Refresh data) render at reduced opacity with `aria-disabled="true"`.
+- The "Go to Fleet" item shows a `F` shortcut kbd chip.
+- The status bar at the bottom reads "18 results".
+- All styling consumes `--gr-*` tokens via the DS bridge; no inline styles are present.
 
 ## Implemented state
 
@@ -88,6 +117,30 @@ here for future milestone sweep-up.
   with no network requests triggered by opening/searching/selecting.
 - The `CommandPalette` wrapper at `web/src/lib/components/CommandPalette.svelte`
   is unchanged (thin pass-through to greater-shell).
+
+## Isolated fixture
+
+A committed fixture renders the M3 CommandPalette in isolation for visual
+review and PNG capture. It is NOT mounted by any customer portal route —
+no App.svelte changes, no route additions. Files:
+
+- `web/src/lib/components/__fixtures__/M3CmdkFixture.svelte` — renders
+  the greater-shell `CommandPalette` at `open={true}` with all four
+  groups (Navigate, Actions, Instances, Souls) populated from static
+  fixture data matching PortalShell's runtime group structure
+- `web/fixtures/m3-cmdk.html` — standalone HTML entry (Vite-served)
+- `web/fixtures/m3-cmdk.ts` — entry point (imports tokens + shell CSS,
+  mounts fixture)
+- `web/fixtures/vite.fixture.m3.config.ts` — standalone Vite build
+  config (no file watching, SPA-only, port 5201)
+
+The fixture imports only the CSS needed for the CommandPalette to render
+correctly: Greater base tokens, Agent Genesis bridge, primitives, and
+shell CSS (which transitively imports `CommandPalette.css`). No API mocks
+are required — the fixture component supplies group data directly rather
+than deriving it from PortalShell's session/API lifecycle.
+
+All new files carry `@license AGPL-3.0-only` headers.
 
 ## Test coverage
 
