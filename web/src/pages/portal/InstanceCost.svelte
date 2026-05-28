@@ -76,10 +76,13 @@ Source: Issue equaltoai/lesser-host#542
 	}
 
 	/**
-	 * Format GB-sec or GB value with one decimal place.
+	 * Format GB-sec or GB value with human-readable abbreviation for
+	 * large numbers (e.g. "1.85M GB-sec" rather than "15962000.0 GB-sec").
 	 */
 	function formatUnit(n: number, unit: string): string {
 		if (!Number.isFinite(n)) return '—';
+		if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M ${unit}`;
+		if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K ${unit}`;
 		return `${n.toFixed(1)} ${unit}`;
 	}
 
