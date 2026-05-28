@@ -25,18 +25,34 @@ vi.mock('src/lib/api/portal', () => ({
 	getPortalMe: vi.fn(),
 }));
 
+vi.mock('src/lib/api/soul', () => ({
+	soulListMyAgents: vi.fn(),
+}));
+
+// Partial mock: preserve real router but replace navigate with a mock
+// so route-selection tests can verify which path was navigated to.
+vi.mock('src/lib/router', async () => {
+	const actual = await vi.importActual<typeof import('src/lib/router')>('src/lib/router');
+	return { ...actual, navigate: vi.fn() };
+});
+
 // ── Imports (after hoisted mocks) ─────────────────────────────────
 
 import PortalShell from './PortalShell.svelte';
 import { setSession, clearSession } from 'src/lib/session';
+import { portalFleetInstances } from 'src/lib/portalFleetState';
 import { portalListInstances } from 'src/lib/api/portalInstances';
 import { getPortalMe } from 'src/lib/api/portal';
+import { soulListMyAgents } from 'src/lib/api/soul';
+import { navigate } from 'src/lib/router';
 import type { InstanceResponse } from 'src/lib/api/portalInstances';
 
 // ── Typed mock references ─────────────────────────────────────────
 
 const mockListInstances = vi.mocked(portalListInstances);
 const mockGetPortalMe = vi.mocked(getPortalMe);
+const mockSoulListMyAgents = vi.mocked(soulListMyAgents);
+const mockNavigate = vi.mocked(navigate);
 
 // ── Helpers ───────────────────────────────────────────────────────
 
@@ -91,6 +107,19 @@ function makeInstance(overrides: Partial<InstanceResponse> = {}): InstanceRespon
 	};
 }
 
+function makeSoulAgent(overrides: Record<string, unknown> = {}) {
+	return {
+		agent: {
+			agent_id: overrides.agent_id as string ?? 'agent-001',
+			domain: overrides.domain as string ?? 'example.com',
+			local_id: overrides.local_id as string ?? 'hal',
+			wallet: '0xabcd',
+			status: overrides.status as string ?? 'graduated',
+		},
+		reputation: undefined,
+	};
+}
+
 function mountPortalShell(props?: { children?: () => string }) {
 	const target = document.createElement('div');
 	document.body.appendChild(target);
@@ -117,6 +146,8 @@ async function flushMountAsync() {
 beforeEach(() => {
 	mockListInstances.mockReset();
 	mockGetPortalMe.mockReset();
+	mockSoulListMyAgents.mockReset();
+	mockNavigate.mockReset();
 	clearSession();
 });
 
@@ -597,6 +628,379 @@ describe('PortalShell', () => {
 			expect(opBtnIdx).toBeGreaterThan(-1);
 			expect(userChipIdx).toBeGreaterThan(-1);
 			expect(opBtnIdx).toBeLessThan(userChipIdx);
+		});
+	});
+
+	describe('command palette (M3 — ⌘K)', () => {
+		/** Open the palette by dispatching Meta+K on the document. */
+		function openPalette() {
+			document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true, bubbles: true }));
+		}
+
+		/** Resolve all data-loading promises + flush Svelte ticks. */
+		async function settle() {
+			await flushMountAsync();
+		}
+
+		it('opens the palette on Meta+K keydown', async () => {
+			setSession(customerSession());
+			mockListInstances.mockResolvedValue({ instances: [], count: 0 });
+			mockGetPortalMe.mockResolvedValue({ username: 'u', role: 'customer', method: 'wallet' });
+			mockSoulListMyAgents.mockResolvedValue({ agents: [], count: 0 });
+
+			const { target } = mountPortalShell();
+			await settle();
+
+			// Palette should be closed initially
+			let dialog = target.querySelector('[role="dialog"][aria-modal="true"]');
+			expect(dialog).toBeNull();
+
+			openPalette();
+			await tick();
+
+			dialog = target.querySelector('[role="dialog"][aria-modal="true"]');
+			expect(dialog).not.toBeNull();
+			// greater-shell uses aria-labelledby (not aria-label); verify it is set
+			expect(dialog?.getAttribute('aria-labelledby')).toBeTruthy();
+		});
+
+		it('opens the palette on Ctrl+K keydown', async () => {
+			setSession(customerSession());
+			mockListInstances.mockResolvedValue({ instances: [], count: 0 });
+			mockGetPortalMe.mockResolvedValue({ username: 'u', role: 'customer', method: 'wallet' });
+			mockSoulListMyAgents.mockResolvedValue({ agents: [], count: 0 });
+
+			const { target } = mountPortalShell();
+			await settle();
+
+			document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true }));
+			await tick();
+
+			const dialog = target.querySelector('[role="dialog"][aria-modal="true"]');
+			expect(dialog).not.toBeNull();
+		});
+
+		it('opens the palette on lesserhost:cmd-k-trigger event', async () => {
+			setSession(customerSession());
+			mockListInstances.mockResolvedValue({ instances: [], count: 0 });
+			mockGetPortalMe.mockResolvedValue({ username: 'u', role: 'customer', method: 'wallet' });
+			mockSoulListMyAgents.mockResolvedValue({ agents: [], count: 0 });
+
+			const { target } = mountPortalShell();
+			await settle();
+
+			// The trigger button dispatches this event; verify it opens the palette
+			window.dispatchEvent(new CustomEvent('lesserhost:cmd-k-trigger', { bubbles: true }));
+			await tick();
+
+			const dialog = target.querySelector('[role="dialog"][aria-modal="true"]');
+			expect(dialog).not.toBeNull();
+		});
+
+		it('closes the palette on Escape', async () => {
+			setSession(customerSession());
+			mockListInstances.mockResolvedValue({ instances: [], count: 0 });
+			mockGetPortalMe.mockResolvedValue({ username: 'u', role: 'customer', method: 'wallet' });
+			mockSoulListMyAgents.mockResolvedValue({ agents: [], count: 0 });
+
+			const { target } = mountPortalShell();
+			await settle();
+
+			openPalette();
+			await tick();
+
+			let dialog = target.querySelector('[role="dialog"][aria-modal="true"]');
+			expect(dialog).not.toBeNull();
+
+			// Dispatch Escape on the dialog element
+			dialog!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+			await tick();
+
+			dialog = target.querySelector('[role="dialog"][aria-modal="true"]');
+			expect(dialog).toBeNull();
+		});
+
+		it('closes the palette on backdrop click (click-outside)', async () => {
+			setSession(customerSession());
+			mockListInstances.mockResolvedValue({ instances: [], count: 0 });
+			mockGetPortalMe.mockResolvedValue({ username: 'u', role: 'customer', method: 'wallet' });
+			mockSoulListMyAgents.mockResolvedValue({ agents: [], count: 0 });
+
+			const { target } = mountPortalShell();
+			await settle();
+
+			openPalette();
+			await tick();
+
+			let dialog = target.querySelector('[role="dialog"][aria-modal="true"]');
+			expect(dialog).not.toBeNull();
+
+			// Click the backdrop (the dialog root itself is the backdrop container)
+			dialog!.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+			await tick();
+
+			dialog = target.querySelector('[role="dialog"][aria-modal="true"]');
+			expect(dialog).toBeNull();
+		});
+
+		it('renders four groups: Navigate, Actions, Instances, Souls', async () => {
+			setSession(customerSession());
+			mockListInstances.mockResolvedValue({
+				instances: [makeInstance({ slug: 'alpha', status: 'ok' })],
+				count: 1,
+			});
+			mockGetPortalMe.mockResolvedValue({ username: 'u', role: 'customer', method: 'wallet' });
+			mockSoulListMyAgents.mockResolvedValue({
+				agents: [makeSoulAgent({ agent_id: 's1', domain: 'alpha.greater.website', local_id: 'bot' })],
+				count: 1,
+			});
+
+			// Populate fleet store so Instances group appears in palette
+			portalFleetInstances.set([{ slug: "alpha", hosted_region: "us-east-1", lesser_version: "v1.0.0" }]);
+
+			const { target } = mountPortalShell();
+			await settle();
+
+			openPalette();
+			await tick();
+
+			const dialog = target.querySelector('[role="dialog"][aria-modal="true"]')!;
+			expect(dialog).not.toBeNull();
+
+			const groups = dialog.querySelectorAll('[role="group"]');
+			expect(groups.length).toBe(4);
+
+			const groupLabels = Array.from(groups).map((g) =>
+				g.getAttribute('aria-labelledby')
+					? target.querySelector('#' + g.getAttribute('aria-labelledby'))?.textContent?.trim()
+					: ''
+			);
+			expect(groupLabels).toContain('Navigate');
+			expect(groupLabels).toContain('Actions');
+			expect(groupLabels).toContain('Instances');
+			expect(groupLabels).toContain('Souls');
+		});
+
+		it('renders stubbed actions as disabled items', async () => {
+			setSession(customerSession());
+			mockListInstances.mockResolvedValue({ instances: [], count: 0 });
+			mockGetPortalMe.mockResolvedValue({ username: 'u', role: 'customer', method: 'wallet' });
+			mockSoulListMyAgents.mockResolvedValue({ agents: [], count: 0 });
+
+			const { target } = mountPortalShell();
+			await settle();
+
+			openPalette();
+			await tick();
+
+			const dialog = target.querySelector('[role="dialog"][aria-modal="true"]')!;
+			expect(dialog).not.toBeNull();
+			const options = dialog.querySelectorAll('[role="option"]');
+			const stubs = Array.from(options).filter(
+				(opt) => opt.getAttribute('aria-disabled') === 'true'
+			);
+			expect(stubs.length).toBeGreaterThanOrEqual(2);
+
+			const stubLabels = stubs.map((s) => s.textContent?.trim() ?? '');
+			expect(stubLabels.some((l) => l.includes('New instance'))).toBe(true);
+			expect(stubLabels.some((l) => l.includes('Refresh data'))).toBe(true);
+		});
+
+		it('filters results when typing in the search input', async () => {
+			setSession(customerSession());
+			mockListInstances.mockResolvedValue({ instances: [], count: 0 });
+			mockGetPortalMe.mockResolvedValue({ username: 'u', role: 'customer', method: 'wallet' });
+			mockSoulListMyAgents.mockResolvedValue({ agents: [], count: 0 });
+
+			const { target } = mountPortalShell();
+			await settle();
+
+			openPalette();
+			await tick();
+
+			const dialog = target.querySelector('[role="dialog"][aria-modal="true"]')!;
+			expect(dialog).not.toBeNull();
+
+			// All items visible initially
+			let options = dialog.querySelectorAll('[role="option"]');
+			const initialCount = options.length;
+			expect(initialCount).toBeGreaterThan(0);
+
+			// Type a filter that matches the Fleet navigate item
+			const input = target.querySelector('[role="combobox"]') as HTMLInputElement;
+			expect(input).not.toBeNull();
+			input.value = 'Fleet';
+			input.dispatchEvent(new Event('input', { bubbles: true }));
+			await tick();
+
+			// Fewer items after filtering
+			options = dialog.querySelectorAll('[role="option"]');
+			expect(options.length).toBeLessThan(initialCount);
+			expect(options.length).toBeGreaterThan(0);
+
+			// Only Fleet-matching items should remain
+			const visibleLabels = Array.from(options).map((o) => o.textContent?.trim() ?? '');
+			expect(visibleLabels.some((l) => l.toLowerCase().includes('fleet'))).toBe(true);
+		});
+
+		it('navigates to /portal when selecting Fleet from Navigate group', async () => {
+			setSession(customerSession());
+			mockListInstances.mockResolvedValue({ instances: [], count: 0 });
+			mockGetPortalMe.mockResolvedValue({ username: 'u', role: 'customer', method: 'wallet' });
+			mockSoulListMyAgents.mockResolvedValue({ agents: [], count: 0 });
+
+			const { target } = mountPortalShell();
+			await settle();
+
+			openPalette();
+			await tick();
+
+			const dialog = target.querySelector('[role="dialog"][aria-modal="true"]')!;
+			expect(dialog).not.toBeNull();
+			// Find the "Go to Fleet" option and click it
+			const options = dialog.querySelectorAll('[role="option"]');
+			const fleetOption = Array.from(options).find(
+				(o) => o.textContent?.includes('Go to Fleet')
+			) as HTMLElement | undefined;
+			expect(fleetOption).toBeDefined();
+			fleetOption!.click();
+			await tick();
+
+			expect(mockNavigate).toHaveBeenCalledWith('/portal');
+		});
+
+		it('navigates to /portal/souls/register when selecting Request a soul', async () => {
+			setSession(customerSession());
+			mockListInstances.mockResolvedValue({ instances: [], count: 0 });
+			mockGetPortalMe.mockResolvedValue({ username: 'u', role: 'customer', method: 'wallet' });
+			mockSoulListMyAgents.mockResolvedValue({ agents: [], count: 0 });
+
+			const { target } = mountPortalShell();
+			await settle();
+
+			openPalette();
+			await tick();
+
+			const dialog = target.querySelector('[role="dialog"][aria-modal="true"]')!;
+			expect(dialog).not.toBeNull();
+			const options = dialog.querySelectorAll('[role="option"]');
+			const soulReqOption = Array.from(options).find(
+				(o) => o.textContent?.includes('Request a soul')
+			) as HTMLElement | undefined;
+			expect(soulReqOption).toBeDefined();
+			soulReqOption!.click();
+			await tick();
+
+			expect(mockNavigate).toHaveBeenCalledWith('/portal/souls/register');
+		});
+
+		it('closes the palette after selecting an item', async () => {
+			setSession(customerSession());
+			mockListInstances.mockResolvedValue({ instances: [], count: 0 });
+			mockGetPortalMe.mockResolvedValue({ username: 'u', role: 'customer', method: 'wallet' });
+			mockSoulListMyAgents.mockResolvedValue({ agents: [], count: 0 });
+
+			const { target } = mountPortalShell();
+			await settle();
+
+			openPalette();
+			await tick();
+
+			const paletteDialog = target.querySelector('[role="dialog"][aria-modal="true"]')!;
+			expect(paletteDialog).not.toBeNull();
+			const options = paletteDialog.querySelectorAll('[role="option"]');
+			const fleetOption = Array.from(options).find(
+				(o) => o.textContent?.includes('Go to Fleet')
+			) as HTMLElement | undefined;
+			expect(fleetOption).toBeDefined();
+			fleetOption!.click();
+			await tick();
+
+			const dialog = target.querySelector('[role="dialog"][aria-modal="true"]');
+			expect(dialog).toBeNull();
+		});
+
+		it('renders soul items with agent identity in the Souls group', async () => {
+			setSession(customerSession());
+			mockListInstances.mockResolvedValue({ instances: [], count: 0 });
+			mockGetPortalMe.mockResolvedValue({ username: 'u', role: 'customer', method: 'wallet' });
+			mockSoulListMyAgents.mockResolvedValue({
+				agents: [
+					makeSoulAgent({ agent_id: 'agent-aaa', domain: 'example.com', local_id: 'helper', status: 'graduated' }),
+				],
+				count: 1,
+			});
+
+			const { target } = mountPortalShell();
+			await settle();
+
+			openPalette();
+			await tick();
+
+			const dialog = target.querySelector('[role="dialog"][aria-modal="true"]')!;
+			expect(dialog).not.toBeNull();
+			// Find the Souls group
+			const groups = dialog.querySelectorAll('[role="group"]');
+			const soulsGroup = Array.from(groups).find((g) => {
+				const headerId = g.getAttribute('aria-labelledby');
+				if (!headerId) return false;
+				const header = target.querySelector('#' + headerId);
+				return header?.textContent?.trim() === 'Souls';
+			});
+			expect(soulsGroup).toBeDefined();
+
+			// Soul item should show agent identity
+			const soulOptions = soulsGroup!.querySelectorAll('[role="option"]');
+			expect(soulOptions.length).toBe(1);
+			expect(soulOptions[0].textContent).toContain('helper');
+			expect(soulOptions[0].textContent).toContain('example.com');
+		});
+
+		it('hides the Souls group when no souls are bound', async () => {
+			setSession(customerSession());
+			mockListInstances.mockResolvedValue({ instances: [], count: 0 });
+			mockGetPortalMe.mockResolvedValue({ username: 'u', role: 'customer', method: 'wallet' });
+			mockSoulListMyAgents.mockResolvedValue({ agents: [], count: 0 });
+
+			const { target } = mountPortalShell();
+			await settle();
+
+			openPalette();
+			await tick();
+
+			const dialog = target.querySelector('[role="dialog"][aria-modal="true"]')!;
+			expect(dialog).not.toBeNull();
+			// Souls group should be absent
+			const groups = dialog.querySelectorAll('[role="group"]');
+			const soulsGroup = Array.from(groups).find((g) => {
+				const headerId = g.getAttribute('aria-labelledby');
+				if (!headerId) return false;
+				const header = target.querySelector('#' + headerId);
+				return header?.textContent?.trim() === 'Souls';
+			});
+			expect(soulsGroup).toBeUndefined();
+		});
+
+		it('focuses the search input when the palette opens', async () => {
+			setSession(customerSession());
+			mockListInstances.mockResolvedValue({ instances: [], count: 0 });
+			mockGetPortalMe.mockResolvedValue({ username: 'u', role: 'customer', method: 'wallet' });
+			mockSoulListMyAgents.mockResolvedValue({ agents: [], count: 0 });
+
+			const { target } = mountPortalShell();
+			await settle();
+
+			openPalette();
+			await tick();
+			// Focus trap defers focus to the next microtask
+			await new Promise((r) => setTimeout(r, 0));
+			await tick();
+
+			const dialog = target.querySelector('[role="dialog"][aria-modal="true"]')!;
+			expect(dialog).not.toBeNull();
+			const input = dialog.querySelector('[role="combobox"]') as HTMLInputElement;
+			expect(input).not.toBeNull();
+			expect(document.activeElement).toBe(input);
 		});
 	});
 });
