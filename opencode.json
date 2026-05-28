@@ -1,0 +1,10 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "host_lab": {
+      "type": "remote",
+      "url": "https://lab.theorymcp.ai/equaltoai/agents/host/mcp",
+      "oauth": {}
+    }
+  }
+}
