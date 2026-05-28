@@ -128,7 +128,9 @@
 
     <!-- Main Content Area -->
     <main class="main-content" id="main">
-      <div class="ambient-glow" aria-hidden="true"></div>
+      <div class="ambient-glow ambient-glow-1" aria-hidden="true"></div>
+      <div class="ambient-glow ambient-glow-2" aria-hidden="true"></div>
+      <div class="ambient-glow ambient-glow-3" aria-hidden="true"></div>
 
       <!-- Hero Section -->
       <section id="hero" class="hero-section" aria-labelledby="page-title">
@@ -445,11 +447,11 @@
             <span class="terminal-title">bash - local-verification</span>
           </div>
           <div class="terminal-body">
-            <pre class="terminal-code"><code><span class="prompt">$</span> go test ./...
-<span class="prompt">$</span> cd web &amp;&amp; npm run lint &amp;&amp; npm run typecheck &amp;&amp; npm test
-<span class="prompt">$</span> cd cdk &amp;&amp; npm run synth -- -c stage=lab
-<span class="prompt">$</span> cd contracts &amp;&amp; npm test
-<span class="prompt">$</span> bash gov-infra/verifiers/gov-verify-rubric.sh</code></pre>
+            <pre class="terminal-code"><code><span class="prompt">$</span> <span class="cmd-bin">go</span> <span class="cmd-sub">test</span> <span class="cmd-arg">./...</span>
+<span class="prompt">$</span> <span class="cmd-bin">cd</span> <span class="cmd-arg">web</span> <span class="cmd-op">&amp;&amp;</span> <span class="cmd-bin">npm</span> <span class="cmd-sub">run</span> <span class="cmd-arg">lint</span> <span class="cmd-op">&amp;&amp;</span> <span class="cmd-bin">npm</span> <span class="cmd-sub">run</span> <span class="cmd-arg">typecheck</span> <span class="cmd-op">&amp;&amp;</span> <span class="cmd-bin">npm</span> <span class="cmd-sub">test</span>
+<span class="prompt">$</span> <span class="cmd-bin">cd</span> <span class="cmd-arg">cdk</span> <span class="cmd-op">&amp;&amp;</span> <span class="cmd-bin">npm</span> <span class="cmd-sub">run</span> <span class="cmd-arg">synth</span> <span class="cmd-op">--</span> <span class="cmd-arg">-c stage=lab</span>
+<span class="prompt">$</span> <span class="cmd-bin">cd</span> <span class="cmd-arg">contracts</span> <span class="cmd-op">&amp;&amp;</span> <span class="cmd-bin">npm</span> <span class="cmd-sub">test</span>
+<span class="prompt">$</span> <span class="cmd-bin">bash</span> <span class="cmd-arg">gov-infra/verifiers/gov-verify-rubric.sh</span></code></pre>
           </div>
         </div>
       </section>
