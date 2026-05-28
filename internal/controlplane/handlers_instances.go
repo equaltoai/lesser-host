@@ -102,6 +102,25 @@ type instanceResponse struct {
 	AIMaxInflightJobs         int64     `json:"ai_max_inflight_jobs"`
 	CreatedAt                 time.Time `json:"created_at"`
 	UpdatedAt                 time.Time `json:"updated_at,omitempty"`
+
+	// Owner enrichment from the User profile (additive; M7).
+	OwnerHandle     string `json:"owner_handle,omitempty"`
+	OwnerRole       string `json:"owner_role,omitempty"`
+	OwnerAvatarHash string `json:"owner_avatar_hash,omitempty"`
+
+	// Soul anchor freshness derived from instance state (additive; M7).
+	// SoulAnchorState is "anchored" when SoulProvisionedAt is set, else "".
+	SoulAnchorState string     `json:"soul_anchor_state,omitempty"`
+	SoulAnchorAt    *time.Time `json:"soul_anchor_at,omitempty"`
+
+	// Per-component drift flags and summary (additive; M7).
+	// These mirror the instance stack endpoint but are available inline
+	// on the instance detail response so the Instance Overview right rail
+	// and Stack card can consume them without a second request.
+	LesserDrift     string `json:"lesser_drift,omitempty"`
+	LesserBodyDrift string `json:"lesser_body_drift,omitempty"`
+	MCPDrift        string `json:"mcp_drift,omitempty"`
+	DriftSummary    string `json:"drift_summary,omitempty"`
 }
 
 type listInstancesResponse struct {
@@ -232,7 +251,43 @@ func instanceResponseFromModel(inst *models.Instance) instanceResponse {
 		AIMaxInflightJobs:         effectiveAIMaxInflightJobs(inst.AIMaxInflightJobs),
 		CreatedAt:                 inst.CreatedAt,
 		UpdatedAt:                 inst.UpdatedAt,
+		SoulAnchorState:           deriveSoulAnchorState(inst),
+		SoulAnchorAt:              soulAnchorPtrFromTime(inst.SoulProvisionedAt),
 	}
+}
+
+// soulAnchorPtrFromTime returns nil when t is zero, otherwise a pointer to t.
+// This ensures JSON serialization with omitempty correctly omits the field
+// for unprovisioned souls instead of emitting "0001-01-01T00:00:00Z".
+// Go's encoding/json does not treat zero time.Time as "empty" for omitempty.
+func soulAnchorPtrFromTime(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+	return &t
+}
+
+// soulAnchorStateAnchored is the human-readable label returned when a soul
+// agent is enabled and has been provisioned for the instance.
+const soulAnchorStateAnchored = "anchored"
+
+// deriveSoulAnchorState returns a human-readable anchor-state label derived
+// from the instance's soul-enablement and provisioning fields — no additional
+// DB query required.
+//
+//	"anchored"  — soul enabled and provisioned
+//	""          — soul not enabled or not yet provisioned (honest empty)
+func deriveSoulAnchorState(inst *models.Instance) string {
+	if inst == nil {
+		return ""
+	}
+	if !effectiveSoulEnabled(inst.SoulEnabled) {
+		return ""
+	}
+	if inst.SoulProvisionedAt.IsZero() {
+		return ""
+	}
+	return soulAnchorStateAnchored
 }
 
 func (s *Server) getInstance(ctx *apptheory.Context, slug string) (*models.Instance, error) {
