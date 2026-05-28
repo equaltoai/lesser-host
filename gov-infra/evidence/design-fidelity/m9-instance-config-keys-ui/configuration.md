@@ -1,8 +1,8 @@
 # M9 Instance Configuration UI — Design Fidelity Evidence
 
-**Milestone:** M9 (Project 42 — `aron/portal-m9-instance-config-keys-ui`)  
-**Issue:** [#543](https://github.com/equaltoai/lesser-host/issues/543)  
-**Viewport:** 1440 × 900  
+**Milestone:** M9 (Project 42 — `aron/portal-m9-instance-config-keys-ui`)
+**Issue:** [#543](https://github.com/equaltoai/lesser-host/issues/543)
+**Viewport:** 1440 × 900
 **Evidence file:** `gov-infra/evidence/design-fidelity/m9-instance-config-keys-ui/configuration.png`
 
 ## Scope delivered
