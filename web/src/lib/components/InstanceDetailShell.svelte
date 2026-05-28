@@ -1,7 +1,7 @@
 <!--
 @component
 InstanceDetailShell — tabbed shell for the customer Instance Detail
-section (Overview / Cost & usage / Config / Domains / Keys / Souls).
+section (Overview / Cost & usage / Configuration / Domains / Keys / Souls).
 
 M1.5 — Project 39 web UI rework. Renders the page header + a
 tablist-shaped tab bar that drives navigation across the six instance
@@ -59,7 +59,7 @@ Issue: equaltoai/lesser-host#414
 	const tabs: readonly TabDescriptor[] = [
 		{ key: 'overview', label: 'Overview', segment: '' },
 		{ key: 'cost', label: 'Cost & usage', segment: '/cost' },
-		{ key: 'config', label: 'Config', segment: '/config' },
+		{ key: 'config', label: 'Configuration', segment: '/config' },
 		{ key: 'domains', label: 'Domains', segment: '/domains' },
 		{ key: 'keys', label: 'Keys', segment: '/keys' },
 		{ key: 'souls', label: 'Souls', segment: '/souls' },
