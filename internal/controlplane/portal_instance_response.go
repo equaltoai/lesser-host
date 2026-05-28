@@ -141,7 +141,6 @@ func computeMCPDriftForDetail(mcpJob *models.UpdateJob, bodyJob *models.UpdateJo
 	return stackDriftOK
 }
 
-
 // categorizedDetailUpdateJobs holds the latest job per component kind,
 // separated into two tiers: the latest overall (any status, for managed
 // update status fields) and the latest successful (ok) job (for drift,
@@ -168,29 +167,41 @@ func categorizeDetailUpdateJobs(items []*models.UpdateJob) categorizedDetailUpda
 		isOK := strings.ToLower(strings.TrimSpace(item.Status)) == models.UpdateJobStatusOK
 		switch updateJobKind(item) {
 		case updateJobKindBody:
-			if out.latestBody == nil {
-				out.latestBody = item
-			}
-			if out.latestOkBody == nil && isOK {
-				out.latestOkBody = item
-			}
+			out.setBody(item, isOK)
 		case updateJobKindMCP:
-			if out.latestMCP == nil {
-				out.latestMCP = item
-			}
-			if out.latestOkMCP == nil && isOK {
-				out.latestOkMCP = item
-			}
+			out.setMCP(item, isOK)
 		default:
-			if out.latestLesser == nil {
-				out.latestLesser = item
-			}
-			if out.latestOkLesser == nil && isOK {
-				out.latestOkLesser = item
-			}
+			out.setLesser(item, isOK)
 		}
 	}
 	return out
+}
+
+func (c *categorizedDetailUpdateJobs) setLesser(item *models.UpdateJob, isOK bool) {
+	c.setIfNil(&c.latestLesser, item)
+	if isOK {
+		c.setIfNil(&c.latestOkLesser, item)
+	}
+}
+
+func (c *categorizedDetailUpdateJobs) setBody(item *models.UpdateJob, isOK bool) {
+	c.setIfNil(&c.latestBody, item)
+	if isOK {
+		c.setIfNil(&c.latestOkBody, item)
+	}
+}
+
+func (c *categorizedDetailUpdateJobs) setMCP(item *models.UpdateJob, isOK bool) {
+	c.setIfNil(&c.latestMCP, item)
+	if isOK {
+		c.setIfNil(&c.latestOkMCP, item)
+	}
+}
+
+func (c *categorizedDetailUpdateJobs) setIfNil(dst **models.UpdateJob, item *models.UpdateJob) {
+	if *dst == nil {
+		*dst = item
+	}
 }
 
 func applyDerivedManagedUpdateSummary(resp *instanceResponse, job *models.UpdateJob, kind string) {
