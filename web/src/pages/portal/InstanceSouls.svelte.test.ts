@@ -13,13 +13,13 @@ const source = readFileSync(join(process.cwd(), 'src/pages/portal/InstanceSouls.
 describe('InstanceSouls M10 Souls tab', () => {
 	// ── Table layout ────────────────────────────────────────────────────
 
-	it('renders souls in a table with Handle / Stage / Model / Anchor / Tips (MTD) columns', () => {
+	it('renders souls in a table with Handle / Stage / Model / Anchor / Tips (lifetime) columns', () => {
 		expect(source).toContain('instance-souls__table');
 		expect(source).toContain('<th>Handle</th>');
 		expect(source).toContain('<th>Stage</th>');
 		expect(source).toContain('<th>Model</th>');
 		expect(source).toContain('<th>Anchor</th>');
-		expect(source).toContain('<th>Tips (MTD)</th>');
+		expect(source).toContain('<th>Tips (lifetime)</th>');
 	});
 
 	it('uses Panel with "Souls on this instance" title and Request soul CTA', () => {

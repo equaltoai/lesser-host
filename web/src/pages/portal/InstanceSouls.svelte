@@ -7,12 +7,12 @@ with a "+ Request soul" CTA. The data-fetch correctness fix (M0.5 domain
 matching by managed_lesser_domain) is preserved.
 
 Columns: Handle (avatar + local_id + domain), Stage (badge), Model,
-Anchor freshness, Tips MTD. Row click navigates to /portal/souls/{agent_id}.
+Anchor freshness, Tips (lifetime). Row click navigates to /portal/souls/{agent_id}.
 
 Data-availability notes:
   - Model is not present on SoulAgentIdentity; rendered as "—".
   - Anchor freshness derived from anchor_assurance.state; absent → "—".
-  - Tips MTD is rendered from reputation.tips_received (total tips, not MTD);
+  - Tips (lifetime) is rendered from reputation.tips_received (cumulative tips);
     this deviation is documented in the evidence MD.
   - The "+ Request soul" CTA is disabled (coming soon) because the
     soul-request workflow (distinct from soul registration) does not exist.
@@ -237,7 +237,7 @@ Issue: equaltoai/lesser-host#544
 					<th>Stage</th>
 					<th>Model</th>
 					<th>Anchor</th>
-					<th>Tips (MTD)</th>
+					<th>Tips (lifetime)</th>
 					<th></th>
 				</tr>
 			</thead>

@@ -9,7 +9,7 @@
 
 | # | Item | Status |
 |---|---|---|
-| 1 | Table columns: Handle (avatar + local_id/domain), Stage badge, Model, Anchor freshness, Tips MTD | ✅ |
+| 1 | Table columns: Handle (avatar + local_id/domain), Stage badge, Model, Anchor freshness, Tips (lifetime) | ✅ |
 | 2 | "+ Request soul" CTA in tab header (disabled, coming-soon) | ✅ |
 | 3 | Row click navigates to `/portal/souls/{agent_id}` with keyboard accessibility (role="link", tabindex, Enter/Space) | ✅ |
 | 4 | Loaded, empty, and no-access states with honest copy | ✅ |
@@ -17,13 +17,13 @@
 
 ## Deliberate data deviations
 
-These are driven by field availability on the existing `SoulMineAgentItem` DTO. Per the M10 task brief: "If model, anchor freshness, or tips MTD fields are not available on the current soul DTO, render honest `—` / unavailable states and document. Do not fabricate values."
+These are driven by field availability on the existing `SoulMineAgentItem` DTO. Per the M10 task brief: "If model, anchor freshness, or tips fields are not available on the current soul DTO, render honest `—` / unavailable states and document. Do not fabricate values."
 
 | # | Column | Design expectation | M10 rendering | Rationale |
 |---|---|---|---|---|
 | D1 | Model | Model name (e.g., "sonnet-4.5") | `—` | `SoulAgentIdentity` has no `model` field. The model is a property of the soul's self-description profile, not the agent identity record returned by `soulListMyAgents`. |
 | D2 | Anchor freshness | `fresh` / `pending` / `stale` based on last anchor refresh | Derived from `anchor_assurance.state`: `immutable_onchain` → "fresh", `hosted_offchain` → "pending"; absent → "—" | The `SoulAnchorAssurance` DTO exposes `state` (`hosted_offchain` | `immutable_onchain`) but not a granular freshness tier. The mapping is honest and reversible. No `stale` tier is computable from the available data. |
-| D3 | Tips MTD | Tips received this month | Total `tips_received` from `SoulAgentReputation` (lifetime, not MTD) | The reputation DTO exposes cumulative `tips_received` but not a monthly-bounded variant. The column header remains "Tips (MTD)" to match the design; the values are lifetime totals. This is documented in the evidence and the component's JSDoc. |
+| D3 | Tips (lifetime) | Tips received this month | Total `tips_received` from `SoulAgentReputation` (lifetime, not MTD) | The reputation DTO exposes cumulative `tips_received` but not a monthly-bounded variant. The column header is now "Tips (lifetime)" to honestly label the cumulative data rather than assert a monthly claim the data cannot back. |
 
 ## Deliberate visual deviations
 
