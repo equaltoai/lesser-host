@@ -2,7 +2,6 @@ package controlplane
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"time"
 
@@ -12,16 +11,33 @@ import (
 // fleetSparkDays is the number of daily buckets returned for sparkline fields.
 const fleetSparkDays = 7
 
-// fleetEnrichSparklines populates SparkActivity and SparkCost on the given
-// instance response by querying host-local data stores (CostTelemetry for
-// cost, UsageLedgerEntry for activity). Both queries are scoped to the owning
-// customer's instance slug — no cross-tenant aggregation is possible.
+// fleetMetricsWindowDays is the lookback window for the managed Lesser metrics
+// fetch used to compute active_users_30d and the 7-day sparklines.
+const fleetMetricsWindowDays = 30
+
+// fleetEnrichFromManagedMetrics populates Fleet data fields on the given
+// instanceResponse by calling the managed Lesser instance metrics endpoint.
+// It uses the existing resolvePortalCostInstanceKey + fetchManagedInstanceMetrics
+// path that has been available since M0.4/#529.
 //
-// Failures are silent: if the store is unavailable or data is missing the
-// fields remain at their zero values. This is the honest contract — zero
-// means "no data available", not "zero cost/activity".
-func (s *Server) fleetEnrichSparklines(ctx context.Context, resp *instanceResponse) {
-	if s == nil || s.store == nil || s.store.DB == nil || resp == nil {
+// Semantics:
+//   - active_users_30d = max daily UniqueUsers over the 30-day window.
+//     Unique users is a per-day count; using max avoids double-counting users
+//     who are active on multiple days. This is the least-misleading single-value
+//     summary available from the daily metrics endpoint.
+//   - spark_activity = TotalRequests per day for the last 7 days, oldest→newest.
+//     Missing days are zero.
+//   - spark_cost = CostDollars per day for the last 7 days, oldest→newest.
+//     Missing days are zero.
+//
+// posts_24h, sig_fails_24h, peers, and severed are not yet counterized on the
+// managed Lesser side and remain zero.
+//
+// Failure posture: if key resolution or the managed metrics HTTP call fails for
+// any reason, all Fleet fields stay at their zero values. The list endpoint
+// must not 500 because one instance's metrics are unavailable.
+func (s *Server) fleetEnrichFromManagedMetrics(ctx context.Context, inst *models.Instance, resp *instanceResponse) {
+	if s == nil || inst == nil || resp == nil {
 		return
 	}
 
@@ -31,85 +47,51 @@ func (s *Server) fleetEnrichSparklines(ctx context.Context, resp *instanceRespon
 	}
 
 	now := time.Now().UTC()
-	fromDate := now.AddDate(0, 0, -fleetSparkDays).Format("2006-01-02")
-	toDate := now.Format("2006-01-02")
+	from := now.AddDate(0, 0, -fleetMetricsWindowDays).Format("2006-01-02")
+	to := now.Format("2006-01-02")
 
-	// Cost sparkline from CostTelemetry (host-local DynamoDB).
-	costRecords, err := s.store.ListCostTelemetryByInstance(ctx, slug, fromDate, toDate, fleetSparkDays)
-	if err == nil && len(costRecords) > 0 {
-		costs := make([]float64, fleetSparkDays)
-		// Records are ordered by date descending (most recent first).
-		// Build a date-indexed map then fill the 7-day window oldest→newest.
-		costByDate := make(map[string]float64, len(costRecords))
-		for _, r := range costRecords {
-			if r == nil {
-				continue
-			}
-			date := strings.TrimSpace(r.Date)
-			if date != "" {
-				costByDate[date] = r.DayCost
-			}
+	apiKey, keyErr := s.resolvePortalCostInstanceKey(ctx, inst)
+	if keyErr != nil {
+		return
+	}
+
+	metrics, metricsErr := s.fetchManagedInstanceMetrics(ctx, inst, apiKey, from, to)
+	if metricsErr != nil {
+		return
+	}
+
+	if len(metrics.Daily) == 0 {
+		return
+	}
+
+	// Compute active_users_30d as max daily unique users across the window.
+	var maxUsers int64
+	for _, row := range metrics.Daily {
+		if row.UniqueUsers > maxUsers {
+			maxUsers = row.UniqueUsers
 		}
-		for i := 0; i < fleetSparkDays; i++ {
-			date := now.AddDate(0, 0, -(fleetSparkDays - 1 - i)).Format("2006-01-02")
-			if c, ok := costByDate[date]; ok {
-				costs[i] = c
-			}
-		}
-		resp.SparkCost = costs
+	}
+	resp.ActiveUsers30d = maxUsers
+
+	// Compute 7-day sparklines (oldest→newest, missing days as zero).
+	dateIndex := make(map[string]int, len(metrics.Daily))
+	for i, row := range metrics.Daily {
+		dateIndex[strings.TrimSpace(row.Date)] = i
 	}
 
-	// Activity sparkline from UsageLedgerEntry aggregation.
-	// Count entries per day for the last 7 days. Because UsageLedgerEntry PK
-	// embeds the month, a 7-day window may span up to 2 months (at most 2
-	// DynamoDB queries per instance).
-	activity, err := fleetAggregateDailyActivity(ctx, s, slug, now)
-	if err == nil {
-		resp.SparkActivity = activity
-	}
-}
-
-// fleetAggregateDailyActivity counts UsageLedgerEntry records per day for the
-// last fleetSparkDays days. The window may span at most 2 months.
-func fleetAggregateDailyActivity(ctx context.Context, s *Server, slug string, now time.Time) ([]int64, error) {
-	if s == nil || s.store == nil || s.store.DB == nil {
-		return nil, fmt.Errorf("store not available")
-	}
-
-	counts := make([]int64, fleetSparkDays)
-	months := make(map[string]bool)
-
+	sparkActivity := make([]int64, fleetSparkDays)
+	sparkCost := make([]float64, fleetSparkDays)
 	for i := 0; i < fleetSparkDays; i++ {
-		date := now.AddDate(0, 0, -(fleetSparkDays - 1 - i))
-		months[date.Format("2006-01")] = true
-	}
-
-	for month := range months {
-		pk := fmt.Sprintf("USAGE#%s#%s", slug, month)
-		var items []*models.UsageLedgerEntry
-		err := s.store.DB.WithContext(ctx).
-			Model(&models.UsageLedgerEntry{}).
-			Where("PK", "=", pk).
-			Limit(2000).
-			All(&items)
-		if err != nil {
-			return nil, err
-		}
-
-		for _, e := range items {
-			if e == nil {
-				continue
-			}
-			entryDate := e.CreatedAt.UTC().Format("2006-01-02")
-			for i := 0; i < fleetSparkDays; i++ {
-				bucketDate := now.AddDate(0, 0, -(fleetSparkDays - 1 - i)).Format("2006-01-02")
-				if entryDate == bucketDate {
-					counts[i]++
-					break
-				}
+		date := now.AddDate(0, 0, -(fleetSparkDays - 1 - i)).Format("2006-01-02")
+		if idx, ok := dateIndex[date]; ok {
+			row := metrics.Daily[idx]
+			sparkActivity[i] = row.TotalRequests
+			sparkCost[i] = row.CostDollars
+			if sparkCost[i] == 0 && row.CostCents != 0 {
+				sparkCost[i] = float64(row.CostCents) / 100
 			}
 		}
 	}
-
-	return counts, nil
+	resp.SparkActivity = sparkActivity
+	resp.SparkCost = sparkCost
 }

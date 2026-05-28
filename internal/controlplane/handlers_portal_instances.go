@@ -309,10 +309,10 @@ func (s *Server) handlePortalListInstances(ctx *apptheory.Context) (*apptheory.R
 	out := make([]instanceResponse, 0, len(items))
 	for _, inst := range items {
 		resp := s.portalInstanceResponseFromModel(inst)
-		// Best-effort Fleet enrichment from host-local data stores.
-		// Failures are silent; fields stay at zero values when data is
+		// Best-effort Fleet enrichment from managed Lesser instance metrics.
+		// Failures are silent; fields stay at zero values when metrics are
 		// unavailable (honest contract — zero = "no data available").
-		s.fleetEnrichSparklines(ctx.Context(), &resp)
+		s.fleetEnrichFromManagedMetrics(ctx.Context(), inst, &resp)
 		out = append(out, resp)
 	}
 

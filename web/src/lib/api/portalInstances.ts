@@ -48,10 +48,10 @@ export interface InstanceResponse {
 	updated_at?: string;
 
 	// Fleet data fields (M5 — backend/data only; M4 Fleet UI owns rendering).
-	// All fields are zero-valued when data is unavailable. This is the honest
-	// contract: active users, posts, and sig-fail counters require the managed
-	// Lesser instance metrics endpoint; sparklines are best-effort from
-	// host-local CostTelemetry and UsageLedgerEntry stores.
+	// All fields are zero-valued when data is unavailable. active_users_30d,
+	// spark_activity, and spark_cost are computed from managed Lesser instance
+	// metrics (/api/v1/instance/metrics/daily). posts_24h, sig_fails_24h,
+	// peers, and severed are not yet counterized.
 	active_users_30d?: number;
 	posts_24h?: number;
 	sig_fails_24h?: number;

@@ -105,9 +105,10 @@ type instanceResponse struct {
 
 	// Fleet data fields (M5 — backend/data only; M4 Fleet UI owns rendering).
 	// All fields are zero-valued when data is unavailable. This is the honest
-	// contract: active users, posts, and sig-fail counters require the managed
-	// Lesser instance metrics endpoint; sparklines are best-effort from
-	// host-local CostTelemetry and UsageLedgerEntry stores.
+	// contract. active_users_30d, spark_activity, and spark_cost are computed
+	// from managed Lesser instance metrics (/api/v1/instance/metrics/daily) via
+	// fleetEnrichFromManagedMetrics. posts_24h, sig_fails_24h, peers, and
+	// severed are not yet counterized on the managed Lesser side.
 	ActiveUsers30d int64     `json:"active_users_30d,omitempty"`
 	Posts24h       int64     `json:"posts_24h,omitempty"`
 	SigFails24h    int64     `json:"sig_fails_24h,omitempty"`

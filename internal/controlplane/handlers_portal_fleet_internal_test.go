@@ -1,22 +1,65 @@
 package controlplane
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/mock"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
-	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
+
+	"github.com/stretchr/testify/mock"
 
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
-const testFleetOwner = "alice"
+const (
+	testFleetOwner = "alice"
+	testFleetKey   = "test-key"
+)
+
+// managedMetricsJSON returns a JSON response body for the managed Lesser metrics
+// endpoint with daily rows spanning the last fleetMetricsWindowDays days.
+// uniqueUsersPerDay controls how many unique users each daily row reports.
+func managedMetricsJSON(now time.Time, uniqueUsersPerDay int64, requestsPerDay int64, costPerDay float64) string {
+	type daily struct {
+		Date           string  `json:"date"`
+		TotalRequests  int64   `json:"total_requests"`
+		UniqueUsers    int64   `json:"unique_users"`
+		DynamoDBReads  int64   `json:"dynamodb_reads"`
+		DynamoDBWrites int64   `json:"dynamodb_writes"`
+		CostCents      int64   `json:"cost_cents"`
+		CostDollars    float64 `json:"cost_dollars"`
+		Currency       string  `json:"currency"`
+	}
+	rows := make([]daily, fleetMetricsWindowDays)
+	for i := 0; i < fleetMetricsWindowDays; i++ {
+		date := now.AddDate(0, 0, -(fleetMetricsWindowDays - 1 - i)).Format("2006-01-02")
+		rows[i] = daily{
+			Date:          date,
+			TotalRequests: requestsPerDay,
+			UniqueUsers:   uniqueUsersPerDay,
+			CostDollars:   costPerDay,
+			Currency:      "USD",
+		}
+	}
+	b, _ := json.Marshal(map[string]any{
+		"period": map[string]any{
+			"start":    rows[0].Date,
+			"end":      rows[len(rows)-1].Date,
+			"days":     fleetMetricsWindowDays,
+			"timezone": "UTC",
+		},
+		"daily": rows,
+	})
+	return string(b)
+}
 
 // TestFleetDataDTOBackwardCompatibility verifies that existing consumers
 // (which decode instanceResponse without Fleet fields) continue to work.
@@ -25,7 +68,6 @@ const testFleetOwner = "alice"
 func TestFleetDataDTOBackwardCompatibility(t *testing.T) {
 	t.Parallel()
 
-	// Simulate the shape an existing pre-M5 consumer would see.
 	orig := instanceResponse{
 		Slug:  "demo",
 		Owner: testFleetOwner,
@@ -125,7 +167,6 @@ func TestFleetDataEmptyMetricsReturnsZeroValues(t *testing.T) {
 
 	resp := instanceResponse{Slug: "demo", Owner: testFleetOwner}
 
-	// All Fleet fields should be zero.
 	if resp.ActiveUsers30d != 0 {
 		t.Error("ActiveUsers30d must be zero when no data")
 	}
@@ -149,165 +190,293 @@ func TestFleetDataEmptyMetricsReturnsZeroValues(t *testing.T) {
 	}
 }
 
-// TestFleetEnrichSparklinesWithCostTelemetry verifies that sparkCost is
-// populated from CostTelemetry records.
-func TestFleetEnrichSparklinesWithCostTelemetry(t *testing.T) {
+// TestFleetEnrichFromManagedMetricsPopulatesFields verifies that
+// fleetEnrichFromManagedMetrics populates active_users_30d, spark_activity,
+// and spark_cost from managed Lesser daily metrics.
+func TestFleetEnrichFromManagedMetricsPopulatesFields(t *testing.T) {
 	t.Parallel()
 
-	qCostTele := new(ttmocks.MockQuery)
-	qUsage := new(ttmocks.MockQuery)
+	now := time.Now().UTC()
 
-	db := ttmocks.NewMockExtendedDB()
-	db.On("WithContext", mock.Anything).Return(db).Maybe()
-	db.On("Model", mock.AnythingOfType("*models.CostTelemetry")).Return(qCostTele).Maybe()
-	db.On("Model", mock.AnythingOfType("*models.UsageLedgerEntry")).Return(qUsage).Maybe()
+	var gotAuth string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(managedMetricsJSON(now, 42, 100, 0.25)))
+	}))
+	defer ts.Close()
 
-	for _, q := range []*ttmocks.MockQuery{qCostTele, qUsage} {
-		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
-		q.On("Limit", mock.Anything).Return(q).Maybe()
-		q.On("OrderBy", mock.Anything, mock.Anything).Return(q).Maybe()
+	s := &Server{
+		portalCostHTTPClient: ts.Client(),
+		fetchInstanceKeyPlaintextFunc: func(context.Context, *models.Instance) (string, error) {
+			return testFleetKey, nil
+		},
+		resolveInstanceMetricsBaseURLFunc: func(*models.Instance) (string, error) {
+			return ts.URL, nil
+		},
 	}
 
-	// Return no usage data (activity sparkline stays empty).
-	qUsage.On("All", mock.Anything).Return(nil).Maybe()
-
-	now := time.Now().UTC()
-	today := now.Format("2006-01-02")
-	yesterday := now.AddDate(0, 0, -1).Format("2006-01-02")
-
-	// Return cost telemetry for yesterday only.
-	qCostTele.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
-		dest := testutil.RequireMockArg[*[]*models.CostTelemetry](t, args, 0)
-		*dest = []*models.CostTelemetry{
-			{Date: yesterday, DayCost: 1.23},
-		}
-	}).Once()
-
-	s := &Server{store: store.New(db)}
+	inst := &models.Instance{
+		Slug:                           "demo",
+		HostedBaseDomain:               "demo.greater.website",
+		LesserHostInstanceKeySecretARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:demo/instance-key",
+	}
 	resp := &instanceResponse{Slug: "demo"}
 
-	s.fleetEnrichSparklines(t.Context(), resp)
+	s.fleetEnrichFromManagedMetrics(t.Context(), inst, resp)
 
+	// Verify auth header was sent.
+	if gotAuth != "Bearer test-key" {
+		t.Errorf("expected Authorization: Bearer test-key, got %q", gotAuth)
+	}
+
+	// active_users_30d should be the max daily unique users (42).
+	if resp.ActiveUsers30d != 42 {
+		t.Errorf("ActiveUsers30d = %d, want 42", resp.ActiveUsers30d)
+	}
+
+	// spark_activity should have 7 entries, with the last day populated.
+	if resp.SparkActivity == nil {
+		t.Fatal("SparkActivity must not be nil")
+	}
+	if len(resp.SparkActivity) != fleetSparkDays {
+		t.Fatalf("SparkActivity must have %d entries, got %d", fleetSparkDays, len(resp.SparkActivity))
+	}
+	// Every day in the 30-day window has requests, so all 7 sparkline days should be populated.
+	// The 7-day window is a subset of the 30-day fetch. Verify each entry is 100.
+	for i, v := range resp.SparkActivity {
+		if v != 100 {
+			t.Errorf("SparkActivity[%d] = %d, want 100", i, v)
+		}
+	}
+
+	// spark_cost should have 7 entries.
 	if resp.SparkCost == nil {
-		t.Fatal("SparkCost must not be nil after enrichment")
+		t.Fatal("SparkCost must not be nil")
 	}
 	if len(resp.SparkCost) != fleetSparkDays {
 		t.Fatalf("SparkCost must have %d entries, got %d", fleetSparkDays, len(resp.SparkCost))
 	}
-
-	// Yesterday's position: second-to-last entry (index 5 for 7-day window).
-	found := false
-	for i := range fleetSparkDays {
-		date := now.AddDate(0, 0, -(fleetSparkDays - 1 - i)).Format("2006-01-02")
-		if date == yesterday && resp.SparkCost[i] == 1.23 {
-			found = true
+	for i, v := range resp.SparkCost {
+		if v != 0.25 {
+			t.Errorf("SparkCost[%d] = %f, want 0.25", i, v)
 		}
-		// Today should be zero (no data).
-		if date == today && resp.SparkCost[i] != 0 {
-			t.Errorf("today's cost should be 0 (no data), got %v", resp.SparkCost[i])
-		}
-	}
-	if !found {
-		t.Errorf("yesterday's cost 1.23 not found in sparkCost: %v", resp.SparkCost)
 	}
 }
 
-// TestFleetEnrichSparklinesNilServer verifies safety when server or store is nil.
-func TestFleetEnrichSparklinesNilServer(t *testing.T) {
+// TestFleetEnrichFromManagedMetricsMaxUsersSemantics verifies that
+// active_users_30d uses max daily unique users (not sum), which avoids
+// double-counting users active on multiple days.
+func TestFleetEnrichFromManagedMetricsMaxUsersSemantics(t *testing.T) {
 	t.Parallel()
 
-	// Nil server: must not panic.
-	(*Server)(nil).fleetEnrichSparklines(t.Context(), &instanceResponse{Slug: "demo"})
+	now := time.Now().UTC()
+	// Only 2 days: one with 5 users, one with 15 users. Max should be 15.
+	body := `{"period":{"start":"` + now.AddDate(0, 0, -1).Format("2006-01-02") + `","end":"` + now.Format("2006-01-02") + `","days":2,"timezone":"UTC"},"daily":[
+		{"date":"` + now.AddDate(0, 0, -1).Format("2006-01-02") + `","total_requests":10,"unique_users":5,"cost_dollars":0.10,"currency":"USD"},
+		{"date":"` + now.Format("2006-01-02") + `","total_requests":30,"unique_users":15,"cost_dollars":0.30,"currency":"USD"}
+	]}`
 
-	// Server with nil store: must not panic.
-	s := &Server{}
-	s.fleetEnrichSparklines(t.Context(), &instanceResponse{Slug: "demo"})
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer ts.Close()
 
-	// Nil response: must not panic.
-	qCostTele := new(ttmocks.MockQuery)
-	db := ttmocks.NewMockExtendedDB()
-	db.On("WithContext", mock.Anything).Return(db).Maybe()
-	db.On("Model", mock.AnythingOfType("*models.CostTelemetry")).Return(qCostTele).Maybe()
-	s2 := &Server{store: store.New(db)}
-	s2.fleetEnrichSparklines(t.Context(), nil)
+	s := &Server{
+		portalCostHTTPClient: ts.Client(),
+		fetchInstanceKeyPlaintextFunc: func(context.Context, *models.Instance) (string, error) {
+			return testFleetKey, nil
+		},
+		resolveInstanceMetricsBaseURLFunc: func(*models.Instance) (string, error) {
+			return ts.URL, nil
+		},
+	}
 
-	// Empty slug: must not panic.
-	s2.fleetEnrichSparklines(t.Context(), &instanceResponse{})
+	inst := &models.Instance{
+		Slug:                           "demo",
+		HostedBaseDomain:               "demo.greater.website",
+		LesserHostInstanceKeySecretARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:demo/instance-key",
+	}
+	resp := &instanceResponse{Slug: "demo"}
+
+	s.fleetEnrichFromManagedMetrics(t.Context(), inst, resp)
+
+	// Max should be 15, not sum(5+15=20).
+	if resp.ActiveUsers30d != 15 {
+		t.Errorf("ActiveUsers30d = %d, want 15 (max, not sum)", resp.ActiveUsers30d)
+	}
 }
 
-// TestFleetAggregateDailyActivity verifies the activity sparkline aggregation
-// from UsageLedgerEntry records.
-func TestFleetAggregateDailyActivity(t *testing.T) {
+// TestFleetEnrichFromManagedMetricsCostCentsFallback verifies that CostCents
+// is used as a fallback when CostDollars is zero.
+func TestFleetEnrichFromManagedMetricsCostCentsFallback(t *testing.T) {
 	t.Parallel()
-
-	qUsage := new(ttmocks.MockQuery)
-	db := ttmocks.NewMockExtendedDB()
-	db.On("WithContext", mock.Anything).Return(db).Maybe()
-	db.On("Model", mock.AnythingOfType("*models.UsageLedgerEntry")).Return(qUsage).Maybe()
-
-	for _, q := range []*ttmocks.MockQuery{qUsage} {
-		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
-		q.On("Limit", mock.Anything).Return(q).Maybe()
-	}
 
 	now := time.Now().UTC()
 	today := now.Format("2006-01-02")
+	// Today has CostCents=34 but CostDollars=0.
+	body := `{"period":{"start":"` + today + `","end":"` + today + `","days":1,"timezone":"UTC"},"daily":[
+		{"date":"` + today + `","total_requests":100,"unique_users":7,"cost_cents":34,"cost_dollars":0,"currency":"USD"}
+	]}`
 
-	// Return 3 entries for today.
-	qUsage.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
-		dest := testutil.RequireMockArg[*[]*models.UsageLedgerEntry](t, args, 0)
-		*dest = []*models.UsageLedgerEntry{
-			{ID: "e1", CreatedAt: now},
-			{ID: "e2", CreatedAt: now},
-			{ID: "e3", CreatedAt: now},
-		}
-	}).Maybe()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer ts.Close()
 
-	s := &Server{store: store.New(db)}
-	counts, err := fleetAggregateDailyActivity(t.Context(), s, "demo", now)
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
+	s := &Server{
+		portalCostHTTPClient: ts.Client(),
+		fetchInstanceKeyPlaintextFunc: func(context.Context, *models.Instance) (string, error) {
+			return testFleetKey, nil
+		},
+		resolveInstanceMetricsBaseURLFunc: func(*models.Instance) (string, error) {
+			return ts.URL, nil
+		},
 	}
-	if len(counts) != fleetSparkDays {
-		t.Fatalf("expected %d buckets, got %d", fleetSparkDays, len(counts))
-	}
 
-	// Today is the last entry (newest).
+	inst := &models.Instance{
+		Slug:                           "demo",
+		HostedBaseDomain:               "demo.greater.website",
+		LesserHostInstanceKeySecretARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:demo/instance-key",
+	}
+	resp := &instanceResponse{Slug: "demo"}
+
+	s.fleetEnrichFromManagedMetrics(t.Context(), inst, resp)
+
+	// Today is the last sparkline entry (newest). Cost should be 0.34 from cents.
+	if resp.SparkCost == nil {
+		t.Fatal("SparkCost must not be nil")
+	}
 	lastIdx := fleetSparkDays - 1
-	if todayBucket := now.Format("2006-01-02"); todayBucket == today {
-		if counts[lastIdx] != 3 {
-			t.Errorf("today's activity count should be 3, got %d", counts[lastIdx])
-		}
+	if resp.SparkCost[lastIdx] != 0.34 {
+		t.Errorf("SparkCost[%d] = %f, want 0.34 (34 cents converted to dollars)", lastIdx, resp.SparkCost[lastIdx])
 	}
 }
 
-// TestFleetAggregateDailyActivityStoreNotAvailable verifies error handling
-// when the store is not available.
-func TestFleetAggregateDailyActivityStoreNotAvailable(t *testing.T) {
+// TestFleetEnrichFromManagedMetricsKeyResolutionFailure verifies that Fleet
+// fields stay zero when instance key resolution fails (no 500, no panic).
+func TestFleetEnrichFromManagedMetricsKeyResolutionFailure(t *testing.T) {
 	t.Parallel()
 
-	_, err := fleetAggregateDailyActivity(t.Context(), nil, "demo", time.Now().UTC())
-	if err == nil {
-		t.Fatal("expected error when server is nil")
+	s := &Server{
+		fetchInstanceKeyPlaintextFunc: func(context.Context, *models.Instance) (string, error) {
+			return "", context.DeadlineExceeded
+		},
 	}
+
+	inst := &models.Instance{Slug: "demo"}
+	resp := &instanceResponse{Slug: "demo"}
+
+	s.fleetEnrichFromManagedMetrics(t.Context(), inst, resp)
+
+	if resp.ActiveUsers30d != 0 {
+		t.Error("ActiveUsers30d must be zero on key resolution failure")
+	}
+	if resp.SparkActivity != nil {
+		t.Error("SparkActivity must be nil on key resolution failure")
+	}
+	if resp.SparkCost != nil {
+		t.Error("SparkCost must be nil on key resolution failure")
+	}
+}
+
+// TestFleetEnrichFromManagedMetricsUpstreamFailure verifies that Fleet fields
+// stay zero when the managed metrics HTTP endpoint returns non-2xx.
+func TestFleetEnrichFromManagedMetricsUpstreamFailure(t *testing.T) {
+	t.Parallel()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer ts.Close()
+
+	s := &Server{
+		portalCostHTTPClient: ts.Client(),
+		fetchInstanceKeyPlaintextFunc: func(context.Context, *models.Instance) (string, error) {
+			return testFleetKey, nil
+		},
+		resolveInstanceMetricsBaseURLFunc: func(*models.Instance) (string, error) {
+			return ts.URL, nil
+		},
+	}
+
+	inst := &models.Instance{
+		Slug:                           "demo",
+		HostedBaseDomain:               "demo.greater.website",
+		LesserHostInstanceKeySecretARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:demo/instance-key",
+	}
+	resp := &instanceResponse{Slug: "demo"}
+
+	s.fleetEnrichFromManagedMetrics(t.Context(), inst, resp)
+
+	if resp.ActiveUsers30d != 0 {
+		t.Error("ActiveUsers30d must be zero on upstream failure")
+	}
+	if resp.SparkActivity != nil {
+		t.Error("SparkActivity must be nil on upstream failure")
+	}
+	if resp.SparkCost != nil {
+		t.Error("SparkCost must be nil on upstream failure")
+	}
+}
+
+// TestFleetEnrichFromManagedMetricsNilServer verifies safety when server,
+// instance, or response is nil.
+func TestFleetEnrichFromManagedMetricsNilServer(t *testing.T) {
+	t.Parallel()
+
+	// Nil server: must not panic.
+	(*Server)(nil).fleetEnrichFromManagedMetrics(t.Context(), &models.Instance{Slug: "demo"}, &instanceResponse{Slug: "demo"})
+
+	// Server with non-nil but nil instance: must not panic.
+	s := &Server{}
+	s.fleetEnrichFromManagedMetrics(t.Context(), nil, &instanceResponse{Slug: "demo"})
+
+	// Nil response: must not panic.
+	s.fleetEnrichFromManagedMetrics(t.Context(), &models.Instance{Slug: "demo"}, nil)
+
+	// Empty slug: must not panic.
+	s.fleetEnrichFromManagedMetrics(t.Context(), &models.Instance{Slug: "demo"}, &instanceResponse{})
 }
 
 // TestHandlePortalListInstancesFleetFieldsPresent verifies that the list
-// endpoint returns Fleet fields (zero-valued for non-enriched instances).
+// endpoint returns Fleet fields populated from managed metrics.
 func TestHandlePortalListInstancesFleetFieldsPresent(t *testing.T) {
 	t.Parallel()
 
-	tdb := newPortalTestDB()
-	s := &Server{store: store.New(tdb.db)}
+	now := time.Now().UTC()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(managedMetricsJSON(now, 42, 100, 0.25)))
+	}))
+	defer ts.Close()
 
+	tdb := newPortalTestDB()
 	tdb.qInstance.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.Instance](t, args, 0)
 		*dest = []*models.Instance{
-			{Slug: "a", Owner: testFleetOwner, Status: models.InstanceStatusActive},
+			{
+				Slug:                           "a",
+				Owner:                          testFleetOwner,
+				Status:                         models.InstanceStatusActive,
+				HostedBaseDomain:               "a.greater.website",
+				LesserHostInstanceKeySecretARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:a/instance-key",
+			},
 		}
 	}).Once()
 
-	tdb.qUsage.On("All", mock.Anything).Return(nil).Maybe()
+	s := &Server{
+		store:                store.New(tdb.db),
+		portalCostHTTPClient: ts.Client(),
+		fetchInstanceKeyPlaintextFunc: func(context.Context, *models.Instance) (string, error) {
+			return testFleetKey, nil
+		},
+		resolveInstanceMetricsBaseURLFunc: func(*models.Instance) (string, error) {
+			return ts.URL, nil
+		},
+	}
 
 	ctx := &apptheory.Context{AuthIdentity: testFleetOwner}
 	resp, err := s.handlePortalListInstances(ctx)
@@ -325,24 +494,97 @@ func TestHandlePortalListInstancesFleetFieldsPresent(t *testing.T) {
 
 	inst := parsed.Instances[0]
 
-	// Fleet fields should be present (additive, even if zero).
-	// Marshal to JSON and check field presence.
-	b, _ := json.Marshal(inst)
-	raw := string(b)
-
-	// These fields should not appear when zero (omitempty).
-	if strings.Contains(raw, `"active_users_30d"`) {
-		t.Log("active_users_30d present (may be non-zero from enrichment)")
+	// active_users_30d must be populated from managed metrics (42).
+	if inst.ActiveUsers30d != 42 {
+		t.Errorf("ActiveUsers30d = %d, want 42", inst.ActiveUsers30d)
 	}
-	if strings.Contains(raw, `"spark_activity"`) {
-		t.Log("spark_activity present (may be non-zero from enrichment)")
+
+	// Spark activity must be populated.
+	if inst.SparkActivity == nil {
+		t.Error("SparkActivity must not be nil when managed metrics are available")
+	} else if len(inst.SparkActivity) != fleetSparkDays {
+		t.Errorf("SparkActivity must have %d entries, got %d", fleetSparkDays, len(inst.SparkActivity))
+	}
+
+	// Spark cost must be populated.
+	if inst.SparkCost == nil {
+		t.Error("SparkCost must not be nil when managed metrics are available")
+	} else if len(inst.SparkCost) != fleetSparkDays {
+		t.Errorf("SparkCost must have %d entries, got %d", fleetSparkDays, len(inst.SparkCost))
 	}
 
 	// Essential existing fields must be present.
+	b, _ := json.Marshal(inst)
+	raw := string(b)
 	for _, required := range []string{`"slug":"a"`, `"owner":"alice"`} {
 		if !strings.Contains(raw, required) {
 			t.Errorf("existing field missing: %s in %s", required, raw)
 		}
+	}
+}
+
+// TestHandlePortalListInstancesMetricsFailureIsSilent verifies that when
+// managed metrics are unavailable for one instance, the list endpoint still
+// returns successfully with Fleet fields at zero for that instance.
+func TestHandlePortalListInstancesMetricsFailureIsSilent(t *testing.T) {
+	t.Parallel()
+
+	// Return a 503 for the managed metrics endpoint.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer ts.Close()
+
+	tdb := newPortalTestDB()
+	tdb.qInstance.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.Instance](t, args, 0)
+		*dest = []*models.Instance{
+			{
+				Slug:                           "a",
+				Owner:                          testFleetOwner,
+				Status:                         models.InstanceStatusActive,
+				HostedBaseDomain:               "a.greater.website",
+				LesserHostInstanceKeySecretARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:a/instance-key",
+			},
+		}
+	}).Once()
+
+	s := &Server{
+		store:                store.New(tdb.db),
+		portalCostHTTPClient: ts.Client(),
+		fetchInstanceKeyPlaintextFunc: func(context.Context, *models.Instance) (string, error) {
+			return testFleetKey, nil
+		},
+		resolveInstanceMetricsBaseURLFunc: func(*models.Instance) (string, error) {
+			return ts.URL, nil
+		},
+	}
+
+	ctx := &apptheory.Context{AuthIdentity: testFleetOwner}
+	resp, err := s.handlePortalListInstances(ctx)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+
+	var parsed listInstancesResponse
+	if err := json.Unmarshal(resp.Body, &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if parsed.Count != 1 {
+		t.Fatalf("expected 1 instance, got %d", parsed.Count)
+	}
+
+	inst := parsed.Instances[0]
+
+	// Fleet fields must be zero when metrics are unavailable.
+	if inst.ActiveUsers30d != 0 {
+		t.Errorf("ActiveUsers30d must be 0 on metrics failure, got %d", inst.ActiveUsers30d)
+	}
+	if inst.SparkActivity != nil {
+		t.Error("SparkActivity must be nil on metrics failure")
+	}
+	if inst.SparkCost != nil {
+		t.Error("SparkCost must be nil on metrics failure")
 	}
 }
 
@@ -351,19 +593,45 @@ func TestHandlePortalListInstancesFleetFieldsPresent(t *testing.T) {
 func TestHandlePortalListInstancesCrossTenantIsolation(t *testing.T) {
 	t.Parallel()
 
-	tdb := newPortalTestDB()
-	s := &Server{store: store.New(tdb.db)}
+	now := time.Now().UTC()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(managedMetricsJSON(now, 5, 10, 0.05)))
+	}))
+	defer ts.Close()
 
-	// Return only the customer's instances — the GSI1 query ensures this.
+	tdb := newPortalTestDB()
+	// GSI1 query scopes to owner — enrichment happens after this.
 	tdb.qInstance.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.Instance](t, args, 0)
 		*dest = []*models.Instance{
-			{Slug: "a", Owner: testFleetOwner, Status: models.InstanceStatusActive},
-			{Slug: "b", Owner: testFleetOwner, Status: models.InstanceStatusActive},
+			{
+				Slug:                           "a",
+				Owner:                          testFleetOwner,
+				Status:                         models.InstanceStatusActive,
+				HostedBaseDomain:               "a.greater.website",
+				LesserHostInstanceKeySecretARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:a/instance-key",
+			},
+			{
+				Slug:                           "b",
+				Owner:                          testFleetOwner,
+				Status:                         models.InstanceStatusActive,
+				HostedBaseDomain:               "b.greater.website",
+				LesserHostInstanceKeySecretARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:b/instance-key",
+			},
 		}
 	}).Once()
 
-	tdb.qUsage.On("All", mock.Anything).Return(nil).Maybe()
+	s := &Server{
+		store:                store.New(tdb.db),
+		portalCostHTTPClient: ts.Client(),
+		fetchInstanceKeyPlaintextFunc: func(context.Context, *models.Instance) (string, error) {
+			return testFleetKey, nil
+		},
+		resolveInstanceMetricsBaseURLFunc: func(*models.Instance) (string, error) {
+			return ts.URL, nil
+		},
+	}
 
 	ctx := &apptheory.Context{AuthIdentity: testFleetOwner}
 	resp, err := s.handlePortalListInstances(ctx)
@@ -432,8 +700,6 @@ func TestHandlePortalListInstancesQueryFailure(t *testing.T) {
 	tdb.qInstance.On("All", mock.Anything).Return(theoryErrors.ErrItemNotFound).Once()
 
 	ctx := &apptheory.Context{AuthIdentity: testFleetOwner}
-	// ErrItemNotFound from All is an actual error (not a not-found semantic),
-	// so it should be treated as an internal error.
 	if _, err := s.handlePortalListInstances(ctx); err == nil {
 		t.Fatal("expected internal error on query failure")
 	}
