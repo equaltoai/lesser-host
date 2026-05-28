@@ -28,7 +28,7 @@
 		Text,
 		TextField,
 	} from 'src/lib/ui';
-	import StackCard from 'src/lib/components/StackCard.svelte';
+	import InstanceOverview from 'src/pages/portal/InstanceOverview.svelte';
 
 	let { token, slug } = $props<{ token: string; slug: string }>();
 
@@ -545,92 +545,27 @@
 	});
 </script>
 
-<div class="instance-detail">
-	<div class="instance-detail__overview-actions">
-		<!--
-		Project 42 M0.8 (#533): the audit caught two identically labeled,
-		identically styled "Refresh" buttons on the Instance Overview —
-		the page-scoped one here (refreshes instance + domains +
-		provisioning via refreshAll()) and a stack-scoped one inside the
-		StackCard panel (refreshes just the stack-state telemetry).
-		Distinguish the page-scoped action with an explicit label so the
-		operator can tell the two refresh affordances apart. The
-		StackCard's "Refresh" stays as-is because its parent panel header
-		"Stack" already disambiguates its scope.
-		-->
-		<Button
-			variant="outline"
-			onclick={() => void refreshAll()}
-			disabled={instanceLoading || domainsLoading || provisioningLoading}
-		>
-			Refresh page
-		</Button>
-	</div>
-
-	<StackCard {token} {slug} fallback={instance} />
-
-	{#if instanceLoading}
-		<div class="instance-detail__loading">
-			<Spinner size="md" />
-			<Text>Loading instance…</Text>
-		</div>
-	{:else if instanceError}
-		<Alert variant="error" title="Failed to load instance">{instanceError}</Alert>
-	{:else if instance}
-		<Card variant="outlined" padding="lg">
-			{#snippet header()}
-				<Heading level={3} size="lg">Overview</Heading>
-			{/snippet}
-
-			<DefinitionList>
-				<DefinitionItem label="Slug" monospace>{instance.slug}</DefinitionItem>
-				<DefinitionItem label="Status" monospace>{instance.status}</DefinitionItem>
-				<DefinitionItem label="Provision status" monospace>{instance.provision_status || '—'}</DefinitionItem>
-				<DefinitionItem label="Provision job id" monospace>{instance.provision_job_id || '—'}</DefinitionItem>
-				<DefinitionItem label="Primary domain" monospace>{primaryDomain()?.domain || '—'}</DefinitionItem>
-				<DefinitionItem label="Hosted account" monospace>{instance.hosted_account_id || '—'}</DefinitionItem>
-				<DefinitionItem label="Hosted region" monospace>{instance.hosted_region || '—'}</DefinitionItem>
-				<DefinitionItem label="Current Lesser version" monospace>{instance.lesser_version || '—'}</DefinitionItem>
-				<DefinitionItem label="Current lesser-body version" monospace>{instance.lesser_body_version || '—'}</DefinitionItem>
-				<DefinitionItem label="Body provisioned" monospace>{instance.body_provisioned_at || '—'}</DefinitionItem>
-				<DefinitionItem label="MCP wired" monospace>{instance.mcp_wired_at || '—'}</DefinitionItem>
-				<DefinitionItem label="Lesser update state" monospace>{instance.lesser_update_status || '—'}</DefinitionItem>
-				<DefinitionItem label="Lesser update job" monospace>{instance.lesser_update_job_id || '—'}</DefinitionItem>
-				<DefinitionItem label="Lesser updated" monospace>{instance.lesser_update_at || '—'}</DefinitionItem>
-				<DefinitionItem label="lesser-body update state" monospace>{instance.lesser_body_update_status || '—'}</DefinitionItem>
-				<DefinitionItem label="lesser-body update job" monospace>{instance.lesser_body_update_job_id || '—'}</DefinitionItem>
-				<DefinitionItem label="lesser-body updated" monospace>{instance.lesser_body_update_at || '—'}</DefinitionItem>
-				<DefinitionItem label="MCP update state" monospace>{instance.mcp_update_status || '—'}</DefinitionItem>
-				<DefinitionItem label="MCP update job" monospace>{instance.mcp_update_job_id || '—'}</DefinitionItem>
-				<DefinitionItem label="MCP updated" monospace>{instance.mcp_update_at || '—'}</DefinitionItem>
-				<DefinitionItem label="Instance updated" monospace>{instance.updated_at || '—'}</DefinitionItem>
-			</DefinitionList>
-
-			{#if domainsError}
-				<Alert variant="error" title="Failed to load domains">{domainsError}</Alert>
-			{/if}
-		</Card>
-
-		<Card variant="outlined" padding="lg">
-			{#snippet header()}
-				<Heading level={3} size="lg">Integration health</Heading>
-			{/snippet}
-
-			<DefinitionList>
-				<DefinitionItem label="Lesser host base url" monospace>{instance.lesser_host_base_url || '—'}</DefinitionItem>
-				<DefinitionItem label="Attestations url" monospace>{instance.lesser_host_attestations_url || '—'}</DefinitionItem>
-				<DefinitionItem label="Verify trust" monospace>{trustHealthLabel()}</DefinitionItem>
-				<DefinitionItem label="Verify translation" monospace>{translationHealthLabel()}</DefinitionItem>
-				<DefinitionItem label="Verify tips" monospace>{tipsHealthLabel()}</DefinitionItem>
-				<DefinitionItem label="Verify AI" monospace>{aiHealthLabel()}</DefinitionItem>
-			</DefinitionList>
-
-			{#if trustHealthLabel() !== 'ok'}
-				<Alert variant="info" title="Trust not verified yet">
-					<Text size="sm">Run an update to apply config and verify trust wiring.</Text>
-				</Alert>
-			{/if}
-		</Card>
+	<div class="instance-detail">
+		{#if instanceLoading}
+			<div class="instance-detail__loading">
+				<Spinner size="md" />
+				<Text>Loading instance…</Text>
+			</div>
+		{:else if instanceError}
+			<Alert variant="error" title="Failed to load instance">{instanceError}</Alert>
+		{:else if instance}
+			<!--
+			Project 42 M6 (#541): the Overview tab is replaced with the
+			design's layout: metric cards, Stack card, Activity panel,
+			Souls preview, and right rail (Snapshot / Operate / Owners).
+			The old DefinitionList-based overview and integration-health
+			cards are retired. The duplicate-refresh fix from M0.8 (#533)
+			is preserved — the separate StackCard was the source of the
+			second "Refresh" button and is now replaced by the inline
+			Stack panel inside InstanceOverview. The M0.3 provisioning-form
+			fix (no form on live/healthy instances) remains intact below.
+			-->
+			<InstanceOverview {token} {instance} />
 
 		<Card variant="outlined" padding="lg">
 			{#snippet header()}
@@ -1147,14 +1082,6 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--gr-spacing-scale-6);
-	}
-
-	.instance-detail__overview-actions {
-		display: flex;
-		gap: var(--ds-space-2);
-		align-items: center;
-		justify-content: flex-end;
-		flex-wrap: wrap;
 	}
 
 	.instance-detail__loading {
