@@ -21,7 +21,7 @@ topbar.save('gov-infra/evidence/design-fidelity/m2-shell/topbar.png')
 ```
 
 The source `full-shell.png` was captured via Google Chrome headless against
-`web/fixtures/m2-shell.html` at 1440×900 viewport (see `full-shell.md`).
+`web/fixtures/m2-shell.html` at 1440×900 viewport on port 5200 (see `full-shell.md`).
 
 Result: `topbar.png`, 1440×96 RGB PNG.
 

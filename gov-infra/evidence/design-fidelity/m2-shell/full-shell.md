@@ -11,18 +11,24 @@ Captured via Google Chrome headless against the M2 fixture page
 (`web/fixtures/m2-shell.html`), which mounts PortalShell in isolation with
 pre-seeded session data and mock API responses at 1440×900 viewport.
 
+The fixture entrypoint (`web/fixtures/m2-shell.ts`) imports the full
+Greater Shell CSS bundle (`src/lib/styles/greater/shell.css` plus
+host-platform.css, operator-chrome.css, and app.css) so the captured
+evidence reflects the actual Greater shell layout — topbar full-width,
+sidebar as a left column with grouped nav links, content in the main area.
+
 ```bash
 # Serve fixture in one terminal
-cd web && npx vite --config fixtures/vite.fixture.m2.config.ts --port 4173
+cd web && npx vite --config fixtures/vite.fixture.m2.config.ts --port 5200
 
 # Capture in another
 /usr/bin/google-chrome --headless --disable-gpu \
   --window-size=1440,900 \
   --screenshot=gov-infra/evidence/design-fidelity/m2-shell/full-shell.png \
-  http://localhost:4173/
+  http://localhost:5200/fixtures/m2-shell.html
 ```
 
-Result: `full-shell.png`, 1440×900 RGB PNG (39,747 bytes), non-interlaced.
+Result: `full-shell.png`, 1440×900 RGB PNG (208,879 bytes), non-interlaced.
 
 ## Full-Shell Layout (1440 × 900 viewport)
 
