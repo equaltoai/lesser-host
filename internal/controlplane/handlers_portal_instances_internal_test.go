@@ -1735,8 +1735,8 @@ func TestHandlePortalGetInstance_SoulAnchorFields(t *testing.T) {
 		if body.SoulAnchorState != "" {
 			t.Fatalf("SoulAnchorState = %q, want empty", body.SoulAnchorState)
 		}
-		if !body.SoulAnchorAt.IsZero() {
-			t.Fatalf("SoulAnchorAt = %v, want zero", body.SoulAnchorAt)
+		if body.SoulAnchorAt != nil {
+			t.Fatalf("SoulAnchorAt = %v, want nil pointer", body.SoulAnchorAt)
 		}
 	})
 
@@ -1772,10 +1772,41 @@ func TestHandlePortalGetInstance_SoulAnchorFields(t *testing.T) {
 		if body.SoulAnchorState != "anchored" {
 			t.Fatalf("SoulAnchorState = %q, want \"anchored\"", body.SoulAnchorState)
 		}
-		if !body.SoulAnchorAt.Equal(now) {
-			t.Fatalf("SoulAnchorAt = %v, want %v", body.SoulAnchorAt, now)
-		}
+		assertSoulAnchorAtEqual(t, body.SoulAnchorAt, now)
 	})
+}
+
+// TestHandlePortalGetInstance_SoulAnchorFields_JSONAbsence verifies that
+// soul_anchor_at is absent from JSON (not "0001-01-01T00:00:00Z") when
+// the soul is not provisioned. This guards against Go's time.Time omitempty
+// behavior where zero time still serializes.
+func TestHandlePortalGetInstance_SoulAnchorFields_JSONAbsence(t *testing.T) {
+	t.Parallel()
+
+	tdb := newPortalTestDB()
+	s := &Server{store: store.New(tdb.db)}
+
+	qUpdate := new(ttmocks.MockQuery)
+	tdb.db.On("Model", mock.AnythingOfType("*models.UpdateJob")).Return(qUpdate).Maybe()
+	addStandardMockQueryStubs(qUpdate)
+	qUpdate.On("All", mock.AnythingOfType("*[]*models.UpdateJob")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.UpdateJob](t, args, 0)
+		*dest = []*models.UpdateJob{}
+	}).Maybe()
+
+	f := false
+	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive, SoulEnabled: &f}
+	}).Once()
+
+	ctx := &apptheory.Context{AuthIdentity: "alice", Params: map[string]string{"slug": "demo"}}
+	resp, err := s.handlePortalGetInstance(ctx)
+	if err != nil || resp == nil || resp.Status != 200 {
+		t.Fatalf("resp=%#v err=%v", resp, err)
+	}
+
+	assertJSONFieldAbsent(t, resp.Body, "soul_anchor_at")
 }
 
 func TestInstanceResponseDTO_RedactionProof(t *testing.T) {
@@ -1788,7 +1819,7 @@ func TestInstanceResponseDTO_RedactionProof(t *testing.T) {
 		OwnerHandle:     "Alice Example",
 		OwnerRole:       "customer",
 		SoulAnchorState: "anchored",
-		SoulAnchorAt:    time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC),
+		SoulAnchorAt:    soulAnchorTestTime(),
 		LesserDrift:     stackDriftOK,
 		LesserBodyDrift: stackDriftOK,
 		MCPDrift:        stackDriftUnknown,
@@ -1907,4 +1938,28 @@ func TestEnrichOwnerIdentity_NilArgs(t *testing.T) {
 	enrichOwnerIdentity(nil, nil, nil, nil)
 	enrichOwnerIdentity(&apptheory.Context{}, nil, &models.Instance{Owner: "alice"}, &instanceResponse{})
 	enrichOwnerIdentity(&apptheory.Context{}, &Server{}, nil, &instanceResponse{})
+}
+
+// soulAnchorTestTime returns a pointer to a deterministic test timestamp.
+// Used by DTO tests that need a non-nil *time.Time for the SoulAnchorAt field.
+func soulAnchorTestTime() *time.Time {
+	t := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC)
+	return &t
+}
+
+// assertSoulAnchorAtEqual fails t if at is nil or does not equal want.
+func assertSoulAnchorAtEqual(t *testing.T, at *time.Time, want time.Time) {
+	t.Helper()
+	if at == nil || !at.Equal(want) {
+		t.Fatalf("SoulAnchorAt = %v, want %v", at, want)
+	}
+}
+
+// assertJSONFieldAbsent fails t if raw contains a JSON key for field.
+func assertJSONFieldAbsent(t *testing.T, raw []byte, field string) {
+	t.Helper()
+	needle := "\"" + field + "\""
+	if strings.Contains(string(raw), needle) {
+		t.Fatalf("JSON contains %s, want absent: %s", needle, string(raw))
+	}
 }

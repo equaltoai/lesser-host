@@ -33,7 +33,7 @@ account-level membership or cross-tenant identifiers are leaked.
 |---------------------|--------|--------------------------|------------------------------|
 | `soul_anchor_state` | string | `deriveSoulAnchorState`  | `""` if soul not enabled     |
 |                     |        |                          | `"anchored"` if provisioned  |
-| `soul_anchor_at`    | time   | `Instance.SoulProvisionedAt` | Zero time if not provisioned |
+| `soul_anchor_at`    | *time  | `Instance.SoulProvisionedAt` | `null` (absent from JSON) if not provisioned |
 
 No additional DB query is required — these are derived entirely from the
 existing Instance model fields (`SoulEnabled`, `SoulProvisionedAt`).
@@ -57,7 +57,7 @@ Drift values match the dedicated `/stack` endpoint contract:
 
 All new fields use `omitempty`. When the underlying data is absent:
 - Strings default to `""` (empty string, omitted from JSON)
-- Times default to `0001-01-01T00:00:00Z` (zero time, omitted from JSON via `omitempty`)
+- Times use `*time.Time` pointers — `nil` when not provisioned, absent from JSON via `omitempty`
 - `owner_avatar_hash` is intentionally always empty — no avatar storage exists
 
 ## Multi-tenant isolation
@@ -77,8 +77,9 @@ Go tests cover:
 - `TestHandlePortalGetInstance_CrossTenantIsolation` — Alice can't read Bob's instance
 - `TestHandlePortalGetInstance_DriftFields` — successful update jobs → drift=ok
 - `TestHandlePortalGetInstance_DriftWireStale` — MCP wired against old body
-- `TestHandlePortalGetInstance_SoulAnchorFields` — soul disabled vs. anchored
-- `TestInstanceResponseDTO_RedactionProof` — no PK/SK/TTL/GSI/account_id/secret leaks
+- `TestHandlePortalGetInstance_SoulAnchorFields` — soul disabled (nil pointer) vs. anchored
+- `TestHandlePortalGetInstance_SoulAnchorFields_JSONAbsence` — `soul_anchor_at` absent from JSON when not provisioned (guards against Go `time.Time` zero-serialization)
+- `TestInstanceResponseDTO_RedactionProof` — no PK/SK/TTL/GSI/account_id/secret leaks; `soul_anchor_at` present when anchored
 - `TestEnrichDerivedDrift_NilResponse` — nil safety
 - `TestEnrichDerivedDrift_EmptyJobs` — empty jobs → all unknown
 - `TestComputeMCPDriftForDetail_*` — nil, non-OK edge cases

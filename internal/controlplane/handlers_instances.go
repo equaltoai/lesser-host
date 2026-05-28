@@ -110,8 +110,8 @@ type instanceResponse struct {
 
 	// Soul anchor freshness derived from instance state (additive; M7).
 	// SoulAnchorState is "anchored" when SoulProvisionedAt is set, else "".
-	SoulAnchorState string    `json:"soul_anchor_state,omitempty"`
-	SoulAnchorAt    time.Time `json:"soul_anchor_at,omitempty"`
+	SoulAnchorState string     `json:"soul_anchor_state,omitempty"`
+	SoulAnchorAt    *time.Time `json:"soul_anchor_at,omitempty"`
 
 	// Per-component drift flags and summary (additive; M7).
 	// These mirror the instance stack endpoint but are available inline
@@ -252,8 +252,19 @@ func instanceResponseFromModel(inst *models.Instance) instanceResponse {
 		CreatedAt:                 inst.CreatedAt,
 		UpdatedAt:                 inst.UpdatedAt,
 		SoulAnchorState:           deriveSoulAnchorState(inst),
-		SoulAnchorAt:              inst.SoulProvisionedAt,
+		SoulAnchorAt:              soulAnchorPtrFromTime(inst.SoulProvisionedAt),
 	}
+}
+
+// soulAnchorPtrFromTime returns nil when t is zero, otherwise a pointer to t.
+// This ensures JSON serialization with omitempty correctly omits the field
+// for unprovisioned souls instead of emitting "0001-01-01T00:00:00Z".
+// Go's encoding/json does not treat zero time.Time as "empty" for omitempty.
+func soulAnchorPtrFromTime(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+	return &t
 }
 
 // soulAnchorStateAnchored is the human-readable label returned when a soul
