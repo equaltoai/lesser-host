@@ -5,7 +5,7 @@ on:
     branches:
       - feat/pages
     paths:
-      - site/**
+      - pages/**
       - .github/workflows/pages.yml
   workflow_dispatch:
 
@@ -37,9 +37,9 @@ jobs:
       - name: Validate static site
         run: |
           set -euo pipefail
-          test -f site/index.html
-          test -f site/styles.css
-          if grep -RInE '<script|style=' site; then
+          test -f pages/index.html
+          test -f pages/styles.css
+          if grep -RInE '<script|style=' pages; then
             echo "GitHub Pages site must stay script-free and inline-style-free." >&2
             exit 1
           fi
@@ -47,7 +47,7 @@ jobs:
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
         with:
-          path: site
+          path: pages
 
       - name: Deploy to GitHub Pages
         id: deployment
