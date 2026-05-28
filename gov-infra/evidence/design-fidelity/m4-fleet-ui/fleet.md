@@ -4,17 +4,38 @@
 **Issue:** equaltoai/lesser-host#539  
 **Surface:** /portal Fleet page  
 **Viewport:** 1440 × 900  
-**Captured:** 2026-05-28 (fixture-based, headless Chrome)  
+**Captured:** 2026-05-28 (fixture-based, Puppeteer + headless Chrome)
 
 ## Evidence artifacts
 
 - `fleet.png` — 1440×900 PNG screenshot of the isolated M4 fixture rendering
 - `fleet.md` — this document
 
+## Capture details
+
+| Property | Value |
+|----------|-------|
+| Tool | Puppeteer 25.1.0 (Chromium headless) |
+| Viewport | 1440×900px (1× DPR) |
+| URL captured | `http://localhost:5202/fixtures/m4-fleet.html` |
+| Fixture HTML | `web/fixtures/m4-fleet.html` |
+| Fixture component | `web/src/lib/components/__fixtures__/M4FleetFixture.svelte` |
+| Fixture entry | `web/fixtures/m4-fleet.ts` |
+| Vite config | `web/fixtures/vite.fixture.m4.config.ts` |
+| Wait strategy | `waitForFunction` on `#fixture-root` children + 2s settle delay |
+| Screenshot API | `page.screenshot({ path, fullPage: false })` |
+
+### Why Puppeteer instead of `--headless=new --screenshot`
+
+Chrome 148's `--headless=new --screenshot` does not wait for JavaScript execution
+before capturing. `--virtual-time-budget` (used in M2/M3 evidence) is no longer
+supported in newer Chromium `--headless=new` mode. Puppeteer's `waitForFunction`
+ensures the Svelte component mounts before capture.
+
 ## Method
 
 The screenshot was captured using a standalone fixture (`M4FleetFixture.svelte`) served via
-`vite.fixture.m4.config.ts` and captured with headless Chrome at 1440×900. The fixture
+`vite.fixture.m4.config.ts` and captured with Puppeteer (headless Chromium) at 1440×900. The fixture
 renders the complete Fleet UI surface with realistic static data — no API calls.
 
 Imported CSS stack (mirrors the real app):
@@ -22,6 +43,15 @@ Imported CSS stack (mirrors the real app):
 - Greater Shell CSS
 - Greater Host Platform CSS (FleetCard, CostGauge, etc.)
 - M1 primitives CSS (Metric, Sparkline, CostGauge host wrappers)
+
+### Currency formatter fix
+
+The `CostGauge` component's formatter (`src/lib/greater/host-platform/utils/formatters.ts`)
+was hardened: when `Intl.NumberFormat` rejects a non-ISO currency code (e.g. `"cr"` for
+credits), the formatter falls back to decimal formatting instead of throwing. This fix is
+necessary for both the fixture (which uses static `currency="cr"` data) and production
+(`PortalFleet.svelte` also passes `currency="cr"`). Without this fix, the CostGauge
+crashes the entire component tree.
 
 ## Deliberate visual deviations from design spec
 
@@ -90,6 +120,28 @@ The fixture uses a static array of 4 instances:
 This exercises all status states, budget/no-budget, data/no-data, and the
 provisioning CTA alongside existing instances.
 
+## Screenshot content verification
+
+The captured `fleet.png` was programmatically verified to contain the expected
+Fleet UI content and to NOT contain error-page text:
+
+| Check | Result |
+|-------|--------|
+| "Welcome back" | ✓ present |
+| "LIVE INSTANCES" (Metric card) | ✓ present |
+| "Cost pulse" | ✓ present |
+| "Heads up" | ✓ present |
+| "Fleet" panel title | ✓ present |
+| "Cards" / "Table" tab | ✓ present |
+| "my-instance" instance card | ✓ present |
+| "staging-env" instance card | ✓ present |
+| "demo-site" instance card | ✓ present |
+| "dev-sandbox" instance card | ✓ present |
+| "New instance" CTA card | ✓ present |
+| "No budget set" action path | ✓ present |
+| "Not found" | ✗ NOT present |
+| "This route does not exist" | ✗ NOT present |
+
 ## Validation results
 
 | Check | Result |
@@ -98,5 +150,5 @@ provisioning CTA alongside existing instances.
 | `cd web && npm run typecheck` | PASS (0 errors, 0 warnings) |
 | `cd web && npm test` | PASS (165 tests, 20 files) |
 | `cd web && npm run build` | PASS (CSP clean) |
-| `bash gov-infra/verifiers/gov-verify-rubric.sh` | PASS (40/0/0) |
-| `file fleet.png` | PNG image data, 1440 × 900 |
+| `bash gov-infra/verifiers/gov-verify-rubric.sh` | PASS |
+| `file fleet.png` | PNG image data, 1440 × 900, 8-bit/color RGB, non-interlaced |
