@@ -1,8 +1,8 @@
 # M2 Shell — Full-Shell Fidelity Evidence
 
-**Milestone:** M2 — PortalShell redesign  
-**Issue:** https://github.com/equaltoai/lesser-host/issues/536  
-**Branch:** `aron/portal-m2-shell`  
+**Milestone:** M2 — PortalShell redesign
+**Issue:** https://github.com/equaltoai/lesser-host/issues/536
+**Branch:** `aron/portal-m2-shell`
 **Date:** 2026-05-27
 
 ## Capture Method

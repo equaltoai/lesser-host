@@ -1,8 +1,8 @@
 # M2 Shell — Sidebar Fidelity Evidence
 
-**Milestone:** M2 — PortalShell redesign  
-**Issue:** https://github.com/equaltoai/lesser-host/issues/536  
-**Branch:** `aron/portal-m2-shell`  
+**Milestone:** M2 — PortalShell redesign
+**Issue:** https://github.com/equaltoai/lesser-host/issues/536
+**Branch:** `aron/portal-m2-shell`
 **Date:** 2026-05-27
 
 ## Capture Method
@@ -84,6 +84,6 @@ Four grouped sections with `<Eyebrow>` labels (M1 primitive, uppercase tracked):
 
 ## Component: PortalShell.svelte
 
-Full source: `web/src/lib/components/PortalShell.svelte` (963 lines)  
-Tests: `web/src/lib/components/PortalShell.svelte.test.ts` (17 tests)  
+Full source: `web/src/lib/components/PortalShell.svelte` (963 lines)
+Tests: `web/src/lib/components/PortalShell.svelte.test.ts` (17 tests)
 Vitest config: `web/vitest.config.ts` (updated with Greater aliases)
