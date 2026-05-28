@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="lesser-host is the governance-first managed hosting control plane for lesser.host.">
+  <title>lesser-host | Managed Lesser hosting control plane</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="hero">
+    <nav class="topbar" aria-label="Primary navigation">
+      <a class="brand" href="./">lesser-host</a>
+      <div class="navlinks">
+        <a href="#surfaces">Surfaces</a>
+        <a href="#governance">Governance</a>
+        <a href="#docs">Docs</a>
+        <a href="https://github.com/equaltoai/lesser-host">GitHub</a>
+      </div>
+    </nav>
+
+    <section class="hero-content" aria-labelledby="page-title">
+      <p class="eyebrow">lesser.host control plane</p>
+      <h1 id="page-title">Managed hosting, trust, safety, billing, and soul registry infrastructure for Lesser.</h1>
+      <p class="lede">
+        lesser-host provisions isolated AWS accounts for managed Lesser and Body instances, verifies release artifacts,
+        publishes attestations, operates comms and billing surfaces, and anchors agent identity through the soul registry.
+      </p>
+      <div class="actions">
+        <a class="button button-primary" href="#docs">Read the docs</a>
+        <a class="button" href="https://github.com/equaltoai/lesser-host">View source</a>
+      </div>
+    </section>
+  </header>
+
+  <main>
+    <section class="panel grid" aria-label="Repository priorities">
+      <article>
+        <h2>Multi-tenant isolation</h2>
+        <p>Each managed instance is provisioned into its own AWS account. Host stores control-plane metadata, not tenant content.</p>
+      </article>
+      <article>
+        <h2>Release verification</h2>
+        <p>Lesser and Body artifacts are checksum-verified before the provisioning worker deploys them into tenant accounts.</p>
+      </article>
+      <article>
+        <h2>Trust rigor</h2>
+        <p>Instance APIs authenticate with bearer keys whose SHA-256 hashes are stored server-side. Raw keys are never retained.</p>
+      </article>
+    </section>
+
+    <section id="surfaces" class="section">
+      <p class="eyebrow">Public surfaces</p>
+      <h2>One first-party origin, three major surfaces</h2>
+      <div class="cards">
+        <article class="card">
+          <h3>Control plane API</h3>
+          <p>Operator and customer portal APIs for wallet login, WebAuthn, instance CRUD, provisioning, updates, billing, and setup.</p>
+          <code>/api/v1/* · /auth/* · /setup/*</code>
+        </article>
+        <article class="card">
+          <h3>Trust API</h3>
+          <p>Public attestation reads plus instance-authenticated trust, preview, render, safety, and AI evidence services.</p>
+          <code>/.well-known/* · /attestations/*</code>
+        </article>
+        <article class="card">
+          <h3>Soul registry</h3>
+          <p>On-chain ERC-721 identity, off-chain DynamoDB state, Safe-ready governance payloads, and public agent lookup APIs.</p>
+          <code>/api/v1/soul/*</code>
+        </article>
+      </div>
+    </section>
+
+    <section id="governance" class="section split">
+      <div>
+        <p class="eyebrow">Governance-first</p>
+        <h2>CI-enforced rubric, evidence, and anti-drift discipline</h2>
+        <p>
+          The <code>gov-infra/</code> rubric is a deterministic quality, security, compliance, and evidence system. Verifiers
+          produce 0-or-full-points results and write evidence artifacts for review.
+        </p>
+      </div>
+      <ul class="checklist" aria-label="Stewardship constraints">
+        <li>Strict single-origin CSP posture</li>
+        <li>Safe-ready mainnet on-chain governance</li>
+        <li>AGPL-3.0-only source discipline</li>
+        <li>No raw instance keys or tenant data in host</li>
+      </ul>
+    </section>
+
+    <section id="docs" class="section docs">
+      <p class="eyebrow">Start here</p>
+      <h2>Maintainer documentation</h2>
+      <div class="doc-list">
+        <a href="https://github.com/equaltoai/lesser-host/blob/main/README.md">Repository README</a>
+        <a href="https://github.com/equaltoai/lesser-host/blob/main/AGENTS.md">Agent architecture notes</a>
+        <a href="https://github.com/equaltoai/lesser-host/blob/main/docs/portal.md">Portal API surface</a>
+        <a href="https://github.com/equaltoai/lesser-host/blob/main/docs/managed-instance-provisioning.md">Managed provisioning</a>
+        <a href="https://github.com/equaltoai/lesser-host/blob/main/docs/attestations.md">Attestations</a>
+        <a href="https://github.com/equaltoai/lesser-host/blob/main/docs/soul-registry.md">Soul registry</a>
+        <a href="https://github.com/equaltoai/lesser-host/blob/main/gov-infra/README.md">Governance rubric</a>
+        <a href="https://github.com/equaltoai/lesser-host/blob/main/docs/managed-release-certification.md">Release certification</a>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <p>AGPL-3.0-only · Governance-first · Multi-tenant-absolute · Release-verifying</p>
+  </footer>
+</body>
+</html>
