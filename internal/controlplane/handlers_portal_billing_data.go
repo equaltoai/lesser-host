@@ -43,6 +43,13 @@ type paymentMethodSafe struct {
 	Status   string `json:"status"`
 }
 
+// getPaymentMethodResponse is a typed response for the payment method endpoint.
+// It wraps a nullable paymentMethodSafe so callers can distinguish "no method"
+// (null) from "method present."
+type getPaymentMethodResponse struct {
+	PaymentMethod *paymentMethodSafe `json:"payment_method"`
+}
+
 func (s *Server) paymentsProvider() payments.Provider {
 	if s != nil && s.paymentsProviderFactory != nil {
 		return s.paymentsProviderFactory(s.cfg.PaymentsProvider)
@@ -131,7 +138,7 @@ func (s *Server) handlePortalGetPaymentMethod(ctx *apptheory.Context) (*apptheor
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 	if !ok || profile == nil || strings.TrimSpace(profile.DefaultPaymentMethodID) == "" {
-		return apptheory.JSON(http.StatusOK, map[string]any{"payment_method": nil})
+		return apptheory.JSON(http.StatusOK, getPaymentMethodResponse{})
 	}
 
 	defaultID := strings.TrimSpace(profile.DefaultPaymentMethodID)
@@ -146,7 +153,7 @@ func (s *Server) handlePortalGetPaymentMethod(ctx *apptheory.Context) (*apptheor
 	if lookupErr != nil {
 		if store.IsNotFound(lookupErr) {
 			// Not found — return null payment_method without error.
-			return apptheory.JSON(http.StatusOK, map[string]any{"payment_method": nil})
+			return apptheory.JSON(http.StatusOK, getPaymentMethodResponse{})
 		}
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
@@ -172,5 +179,7 @@ func (s *Server) handlePortalGetPaymentMethod(ctx *apptheory.Context) (*apptheor
 	}
 	s.tryWriteAuditLog(ctx, audit)
 
-	return apptheory.JSON(http.StatusOK, map[string]any{"payment_method": safe})
+	return apptheory.JSON(http.StatusOK, getPaymentMethodResponse{
+		PaymentMethod: &safe,
+	})
 }

@@ -308,6 +308,31 @@ func dateStringFromUnix(ts int64) string {
 	return time.Unix(ts, 0).UTC().Format(time.RFC3339)
 }
 
+// buildInvoiceListParams constructs a Stripe invoice list params object for a
+// single page. Single=true prevents the iterator from auto-paginating through
+// the entire customer history.
+func buildInvoiceListParams(customerID string, limit int64) *stripe.InvoiceListParams {
+	return &stripe.InvoiceListParams{
+		ListParams: stripe.ListParams{
+			Limit:  stripe.Int64(limit),
+			Single: true,
+		},
+		Customer: stripe.String(customerID),
+	}
+}
+
+// isCustomerFacingInvoiceStatus returns true for finalized invoice statuses
+// (open, paid, void, uncollectible) and false for drafts and unknowns.
+func isCustomerFacingInvoiceStatus(status stripe.InvoiceStatus) bool {
+	switch status {
+	case stripe.InvoiceStatusOpen, stripe.InvoiceStatusPaid,
+		stripe.InvoiceStatusVoid, stripe.InvoiceStatusUncollectible:
+		return true
+	default:
+		return false
+	}
+}
+
 func (p stripeProvider) ListRecentInvoices(ctx context.Context, customerID string, limit int64) ([]InvoiceInfo, error) {
 	if err := p.ensureKey(ctx); err != nil {
 		return nil, err
@@ -321,16 +346,17 @@ func (p stripeProvider) ListRecentInvoices(ctx context.Context, customerID strin
 		limit = 10
 	}
 
-	params := &stripe.InvoiceListParams{
-		ListParams: stripe.ListParams{Limit: stripe.Int64(limit)},
-		Customer:   stripe.String(customerID),
-	}
+	params := buildInvoiceListParams(customerID, limit)
 
 	iter := invoice.List(params)
 	var out []InvoiceInfo
 	for iter.Next() {
 		inv := iter.Invoice()
 		if inv == nil || strings.TrimSpace(inv.ID) == "" {
+			continue
+		}
+		// Exclude draft invoices — they are not customer-facing.
+		if !isCustomerFacingInvoiceStatus(inv.Status) {
 			continue
 		}
 		out = append(out, InvoiceInfo{
@@ -343,6 +369,11 @@ func (p stripeProvider) ListRecentInvoices(ctx context.Context, customerID strin
 			HostedURL:   strings.TrimSpace(inv.HostedInvoiceURL),
 			PDFURL:      strings.TrimSpace(inv.InvoicePDF),
 		})
+		// Defensive break: never exceed the requested limit even if filtering
+		// changes the effective count from a page.
+		if len(out) >= int(limit) {
+			break
+		}
 	}
 	if err := iter.Err(); err != nil {
 		return nil, err

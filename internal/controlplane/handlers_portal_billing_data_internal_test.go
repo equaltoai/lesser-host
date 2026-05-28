@@ -1089,3 +1089,87 @@ func TestHandlePortalListInvoices_ErrorMessageSanitization(t *testing.T) {
 	require.NotContains(t, strings.ToLower(appErr.Message), "sk_live")
 	require.NotContains(t, strings.ToLower(appErr.Message), "cus_secret")
 }
+
+// ---------------------------------------------------------------------------
+// Draft invoice filtering — the provider is responsible for excluding drafts.
+// This handler-level test verifies the handler correctly maps a pre-filtered
+// provider result (simulating what ListRecentInvoices returns in production).
+// The actual draft-exclusion logic is tested at the provider layer
+// (TestIsCustomerFacingInvoiceStatus in internal/payments).
+// ---------------------------------------------------------------------------
+
+func TestHandlePortalListInvoices_HandlesPreFilteredProviderOutput(t *testing.T) {
+	t.Parallel()
+
+	tdb := newBillingDataTestDB()
+	tdb.stubBillingProfile(t, "alice", "cus_123", "")
+
+	// Simulate what the real Stripe provider returns after draft filtering:
+	// only paid, open, void, uncollectible invoices — no drafts.
+	provider := safeInvoicesProvider([]payments.InvoiceInfo{
+		{ID: "in_paid", Status: "paid", AmountDue: 1000, Currency: "usd"},
+		{ID: "in_open", Status: "open", AmountDue: 750, Currency: "usd"},
+		{ID: "in_void", Status: "void", AmountDue: 0, Currency: "usd"},
+	})
+
+	s := &Server{
+		store:                   store.New(tdb.db),
+		cfg:                     config.Config{PaymentsProvider: paymentsProviderStripeName},
+		paymentsProviderFactory: func(name string) payments.Provider { return provider },
+	}
+
+	ctx := makeContext("alice")
+	resp, err := s.handlePortalListInvoices(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+
+	var body listInvoicesResponse
+	require.NoError(t, json.Unmarshal(resp.Body, &body))
+
+	require.Len(t, body.Invoices, 3)
+	require.Equal(t, 3, body.Count)
+
+	ids := make(map[string]bool)
+	for _, inv := range body.Invoices {
+		ids[inv.ID] = true
+		require.NotEqual(t, "draft", inv.Status, "handler must never surface draft invoices")
+	}
+	require.True(t, ids["in_paid"])
+	require.True(t, ids["in_open"])
+	require.True(t, ids["in_void"])
+}
+
+func TestHandlePortalListInvoices_FilterEmptyIDsFromProviderOutput(t *testing.T) {
+	t.Parallel()
+
+	tdb := newBillingDataTestDB()
+	tdb.stubBillingProfile(t, "alice", "cus_123", "")
+
+	// Provider returns a mix of valid and empty-ID invoices. The handler's own
+	// guard must drop empty IDs — this is a defense-in-depth check independent
+	// of the provider.
+	provider := safeInvoicesProvider([]payments.InvoiceInfo{
+		{ID: "", Status: "paid", AmountDue: 100, Currency: "usd"},
+		{ID: "in_ok", Status: "paid", AmountDue: 300, Currency: "usd"},
+	})
+
+	s := &Server{
+		store:                   store.New(tdb.db),
+		cfg:                     config.Config{PaymentsProvider: paymentsProviderStripeName},
+		paymentsProviderFactory: func(name string) payments.Provider { return provider },
+	}
+
+	ctx := makeContext("alice")
+	resp, err := s.handlePortalListInvoices(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+
+	var body listInvoicesResponse
+	require.NoError(t, json.Unmarshal(resp.Body, &body))
+
+	require.Len(t, body.Invoices, 1)
+	require.Equal(t, 1, body.Count)
+	require.Equal(t, "in_ok", body.Invoices[0].ID)
+}
+
+// ---------------------------------------------------------------------------

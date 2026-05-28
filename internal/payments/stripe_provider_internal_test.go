@@ -463,3 +463,43 @@ func TestStripeProvider_HeaderValue_TrimsKeyAndValue(t *testing.T) {
 		t.Fatalf("expected sig, got %q", got)
 	}
 }
+
+func TestBuildInvoiceListParams_SetsSingleAndLimit(t *testing.T) {
+	t.Parallel()
+
+	customerID := "cus_test"
+	limit := int64(25)
+
+	params := buildInvoiceListParams(customerID, limit)
+
+	require.NotNil(t, params)
+	require.NotNil(t, params.Customer)
+	require.Equal(t, "cus_test", *params.Customer)
+
+	require.NotNil(t, params.Limit)
+	require.Equal(t, int64(25), *params.Limit)
+
+	require.True(t, params.Single, "Single must be true to prevent auto-pagination through full customer history")
+}
+
+func TestIsCustomerFacingInvoiceStatus(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		status   stripe.InvoiceStatus
+		expected bool
+	}{
+		{stripe.InvoiceStatusDraft, false},
+		{stripe.InvoiceStatusOpen, true},
+		{stripe.InvoiceStatusPaid, true},
+		{stripe.InvoiceStatusVoid, true},
+		{stripe.InvoiceStatusUncollectible, true},
+	}
+
+	for _, tc := range tests {
+		t.Run(string(tc.status), func(t *testing.T) {
+			require.Equal(t, tc.expected, isCustomerFacingInvoiceStatus(tc.status),
+				"Status=%s expected=%v", tc.status, tc.expected)
+		})
+	}
+}
