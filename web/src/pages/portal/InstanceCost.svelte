@@ -136,6 +136,9 @@ Source: Issue equaltoai/lesser-host#542
 				for (const m of entry.metrics) {
 					const unit = (m.unit ?? '').toLowerCase();
 					const svc = (m.service ?? '').toLowerCase();
+					// Skip compute units (GB-sec / GB*s / GBs) — those are
+					// counted by deriveComputeGbSec, not egress.
+					if (unit.includes('gb-sec') || unit.includes('gb*s') || unit.includes('gbs')) continue;
 					// Match data-transfer or egress-like metrics
 					if (
 						svc.includes('datatransfer') ||

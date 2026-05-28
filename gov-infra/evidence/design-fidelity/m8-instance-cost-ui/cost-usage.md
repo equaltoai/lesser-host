@@ -75,23 +75,37 @@
 
 ## States exercised
 
-| State | Trigger | Rendering |
-|---|---|---|
-| Loaded (budget + usage) | Successful budget/usage fetch | Header cards with credit data, credit summary panel |
-| Loaded (cost telemetry) | Successful cost fetch | Dollar badge, breakdown table, compute/egress metrics (or unavailable states) |
-| Cost loading | costLoading && !cost | Spinner in cost panels |
-| Cost error | costError && !cost | Alert with error message |
-| No cost data | cost present but no entries | "No cost breakdown available" alert |
-| No compute metrics | cost present but no GB-sec metrics | "Not available" Metric tone=info |
-| No egress metrics | cost present but no data transfer metrics | "Not available" Metric tone=info |
-| 401 (budget/usage) | 401 from either endpoint | Redirect to /login |
-| 401 (cost) | 401 from cost endpoint | Redirect to /login |
+The committed screenshot (`cost-usage.png`) captures the **loaded** paths. Empty, error, and 401 states are exercised by source tests (`InstanceCost.svelte.test.ts`) and Svelte template branches.
+
+| State | Trigger | Rendering | Captured |
+|---|---|---|---|
+| Loaded (budget + usage) | Successful budget/usage fetch | Header cards with credit data, credit summary panel | ✅ PNG |
+| Loaded (cost telemetry) | Successful cost fetch | Dollar badge, breakdown table, compute/egress metrics | ✅ PNG |
+| Cost loading | costLoading && !cost | Spinner in cost panels | Source tests |
+| Cost error | costError && !cost | Alert with error message | Source tests |
+| No cost data | cost present but no entries | "No cost breakdown available" alert | Source tests |
+| No compute metrics | cost present but no GB-sec metrics | "Not available" Metric tone=info | Template branch |
+| No egress metrics | cost present but no data transfer metrics | "Not available" Metric tone=info | Template branch |
+| 401 (budget/usage) | 401 from either endpoint | Redirect to /login | Source tests |
+| 401 (cost) | 401 from cost endpoint | Redirect to /login | Source tests |
+
+### Egress derivation fix (M8)
+
+The initial `deriveEgressGb()` heuristic was too greedy: `unit.includes('gb')` matched compute `GB-sec`/`GB*s`/`GBs` units, double-counting compute metrics as egress. Fixed by adding an early-continue guard that skips compute-unit metrics before the egress match block. The committed PNG reflects the corrected egress value (~129.7 GB data transfer, not 15.9M GB-sec).
 
 ## Fixture ↔ runtime alignment
 
-The fixture `M8InstanceCostFixture.svelte` mounts the real `InstanceCost` component with a fixture token and slug. In the fixture environment (no backend), the component renders the loading state followed by error states, exercising the error/unavailable paths. Loaded states are exercised via development against the lab API.
+The fixture `M8InstanceCostFixture.svelte` mounts the real `InstanceCost` component at 1440×900. The Vite fixture config (`vite.fixture.m8.config.ts`) aliases `src/lib/api/portalUsage` to `fixtures/__mocks__/portalUsage.ts`, which returns deterministic mock data for all three API calls:
 
-The fixture is captured at 1440×900 via headless browser against `web/fixtures/m8-instance-cost-ui.html`.
+- `portalGetBudgetMonth` → 5,000 included credits, 2,347 used (~47%), 2,653 remaining
+- `portalGetUsageSummary` → 142,857 requests, 98,765 cache hits, cache hit rate 0.6913
+- `portalGetInstanceCost` → 7 days of cost telemetry ($12.47 total, 5 services, GB-sec and byte metrics)
+
+The committed PNG (`cost-usage.png`) is captured from this deterministic loaded fixture — **no backend contact**. All M8 design surfaces are populated: MTD spend gauge with progress bar, Compute GB-sec metric with 7-day sparkline, Egress GB metric, 5-service breakdown table with progress bars, budget alarm rows (disabled), and monthly credit summary.
+
+**Empty and error states** (cost loading, cost error, no cost data, no compute/egress metrics, 401 redirect) are exercised by source tests (`InstanceCost.svelte.test.ts`) and template branches in `InstanceCost.svelte`, not by this screenshot. If additional state-specific evidence artifacts are needed, they should be captured separately.
+
+The fixture is captured at 1440×900 via headless browser (Puppeteer / Chrome headless) against `web/fixtures/m8-instance-cost-ui.html`.
 
 ## CSP, isolation, and governance
 
