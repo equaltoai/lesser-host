@@ -1,8 +1,8 @@
 # M8 Instance Cost UI — Design Fidelity Evidence
 
-**Milestone:** M8 (Project 42 — `aron/portal-m8-instance-cost-ui`)  
-**Issue:** [#542](https://github.com/equaltoai/lesser-host/issues/542)  
-**Viewport:** 1440 × 900  
+**Milestone:** M8 (Project 42 — `aron/portal-m8-instance-cost-ui`)
+**Issue:** [#542](https://github.com/equaltoai/lesser-host/issues/542)
+**Viewport:** 1440 × 900
 **Evidence file:** `gov-infra/evidence/design-fidelity/m8-instance-cost-ui/cost-usage.png`
 
 ## Scope delivered
