@@ -4,7 +4,7 @@
 **Issue:** equaltoai/lesser-host#539  
 **Surface:** /portal Fleet page  
 **Viewport:** 1440 × 900  
-**Captured:** 2026-05-28 (fixture-based, Puppeteer + headless Chrome)
+**Captured:** 2026-05-28 (fixture-based, Puppeteer + headless Chrome; re-captured after switching to page-local `formatValue` formatter)
 
 ## Evidence artifacts
 
@@ -44,14 +44,23 @@ Imported CSS stack (mirrors the real app):
 - Greater Host Platform CSS (FleetCard, CostGauge, etc.)
 - M1 primitives CSS (Metric, Sparkline, CostGauge host wrappers)
 
-### Currency formatter fix
+### Credit formatting
 
-The `CostGauge` component's formatter (`src/lib/greater/host-platform/utils/formatters.ts`)
-was hardened: when `Intl.NumberFormat` rejects a non-ISO currency code (e.g. `"cr"` for
-credits), the formatter falls back to decimal formatting instead of throwing. This fix is
-necessary for both the fixture (which uses static `currency="cr"` data) and production
-(`PortalFleet.svelte` also passes `currency="cr"`). Without this fix, the CostGauge
-crashes the entire component tree.
+Budget gauges display values in credits (`cr`) rather than ISO currency codes. Since
+`Intl.NumberFormat` rejects non-ISO codes, the `CostGauge`'s `currency` prop is not used
+for credit display. Instead, `PortalFleet.svelte` and `M4FleetFixture.svelte` define a
+page-local formatter (`formatCreditValue`) and pass it via CostGauge's `formatValue`
+prop without a `currency` prop:
+
+```ts
+function formatCreditValue(value: number, _currency?: string): string {
+    return `${formatSpend(value)} cr`;
+}
+```
+
+This keeps credit formatting page-local and avoids any modification to vendored Greater
+components (`web/src/lib/greater/host-platform/`). The `CostGauge.formatValue` hook is
+the canonical extension point for custom formatting.
 
 ## Deliberate visual deviations from design spec
 

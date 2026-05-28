@@ -42,8 +42,7 @@ Issue: equaltoai/lesser-host#539
 	import CostGauge from 'src/lib/components/CostGauge.svelte';
 	import Sparkline from 'src/lib/components/primitives/Sparkline.svelte';
 	import Metric from 'src/lib/components/primitives/Metric.svelte';
-	import Eyebrow from 'src/lib/components/primitives/Eyebrow.svelte';
-	import { portalFleetInstances } from 'src/lib/portalFleetState';
+		import { portalFleetInstances } from 'src/lib/portalFleetState';
 	import { mapInstanceFleetStatus } from 'src/lib/fleetStatus';
 	import type { FleetCardMetadataItem } from 'src/lib/greater/host-platform';
 
@@ -183,6 +182,9 @@ Issue: equaltoai/lesser-host#539
 			return `${(value / 1000).toFixed(1)}k`;
 		}
 		return value.toLocaleString();
+	}
+	function formatCreditValue(value: number, _currency?: string): string {
+		return `${formatSpend(value)} cr`;
 	}
 
 	function buildCardMetadata(inst: InstanceResponse): FleetCardMetadataItem[] {
@@ -436,7 +438,7 @@ Issue: equaltoai/lesser-host#539
 											<CostGauge
 												current={budget.used_credits}
 												limit={budget.included_credits}
-												currency="cr"
+												formatValue={formatCreditValue}
 												thresholds={COST_THRESHOLDS}
 												label="Budget"
 											/>

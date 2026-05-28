@@ -23,7 +23,7 @@ Strict-CSP safe: no inline styles, no inline event handlers.
 	import CostGauge from 'src/lib/components/CostGauge.svelte';
 	import Sparkline from 'src/lib/components/primitives/Sparkline.svelte';
 	import Metric from 'src/lib/components/primitives/Metric.svelte';
-	import Eyebrow from 'src/lib/components/primitives/Eyebrow.svelte';
+	
 	import type { FleetCardMetadataItem } from 'src/lib/greater/host-platform';
 
 	const COST_THRESHOLDS = { warning: 0.75, danger: 0.95 } as const;
@@ -146,6 +146,9 @@ Strict-CSP safe: no inline styles, no inline event handlers.
 		if (value >= 1000) return `${(value / 1000).toFixed(1)}k`;
 		return value.toLocaleString();
 	}
+	function formatCreditValue(value: number, _currency?: string): string {
+		return `${formatSpend(value)} cr`;
+	}
 </script>
 
 <div class="fleet-page">
@@ -210,7 +213,7 @@ Strict-CSP safe: no inline styles, no inline event handlers.
 									<CostGauge
 										current={inst.budgetUsed}
 										limit={inst.budgetLimit}
-										currency="cr"
+										formatValue={formatCreditValue}
 										thresholds={COST_THRESHOLDS}
 										label="Budget"
 									/>

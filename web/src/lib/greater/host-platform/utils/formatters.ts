@@ -16,29 +16,10 @@ function getFormatter(currency: string | undefined, locale?: string): Intl.Numbe
 	const key = `${resolvedLocale}|${currency ?? ''}`;
 	const cached = formatterCache.get(key);
 	if (cached) return cached;
-	let formatter: Intl.NumberFormat;
-	if (currency) {
-		try {
-			formatter = new Intl.NumberFormat(resolvedLocale, {
-				style: 'currency',
-				currency,
-				maximumFractionDigits: 2,
-			});
-		} catch {
-			// Non-ISO currency code (e.g. "cr" for credits). Fall back to
-			// decimal formatting — the caller is responsible for appending
-			// the currency label when needed.
-			formatter = new Intl.NumberFormat(resolvedLocale, {
-				style: 'decimal',
-				maximumFractionDigits: 2,
-			});
-		}
-	} else {
-		formatter = new Intl.NumberFormat(resolvedLocale, {
-			style: 'decimal',
-			maximumFractionDigits: 2,
-		});
-	}
+	const options: Intl.NumberFormatOptions = currency
+		? { style: 'currency', currency, maximumFractionDigits: 2 }
+		: { style: 'decimal', maximumFractionDigits: 2 };
+	const formatter = new Intl.NumberFormat(resolvedLocale, options);
 	formatterCache.set(key, formatter);
 	return formatter;
 }
