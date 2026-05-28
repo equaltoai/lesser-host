@@ -541,6 +541,17 @@ func TestHandlePortalGetPaymentMethod_CrossUserIsolation(t *testing.T) {
 	// Prove PK scoping: the handler queried the DB with Alice's PK.
 	tdb.qProfile.AssertCalled(t, "Where", "PK", "=", fmt.Sprintf(models.KeyPatternUser, "alice"))
 
+	// Prove the payment-method query itself is scoped to Alice —
+	// the handler must construct both PK and SK from Alice's identity.
+	aliceSK := fmt.Sprintf("PAYMENT_METHOD#%s#%s", models.BillingProviderStripe, "pm_alice")
+	tdb.qMethod.AssertCalled(t, "Where", "PK", "=", fmt.Sprintf(models.KeyPatternUser, "alice"))
+	tdb.qMethod.AssertCalled(t, "Where", "SK", "=", aliceSK)
+
+	// Negative proof: Bob's identity was never used in the payment-method query.
+	tdb.qMethod.AssertNotCalled(t, "Where", "PK", "=", fmt.Sprintf(models.KeyPatternUser, "bob"))
+	bobSK := fmt.Sprintf("PAYMENT_METHOD#%s#%s", models.BillingProviderStripe, "pm_bob")
+	tdb.qMethod.AssertNotCalled(t, "Where", "SK", "=", bobSK)
+
 	var wrapper struct {
 		PaymentMethod *paymentMethodSafe `json:"payment_method"`
 	}
