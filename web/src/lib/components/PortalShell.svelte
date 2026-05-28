@@ -229,9 +229,9 @@ Issue: equaltoai/lesser-host#536
 	function instanceStatusColor(status: string): string {
 		const s = (status ?? '').toLowerCase();
 		if (s === 'ok' || s === 'active' || s === 'running' || s === 'provisioned') return 'ok';
-		if (s === 'warning' || s === 'provisioning') return 'warning';
+		if (s === 'warning') return 'warning';
 		if (s === 'error' || s === 'failed') return 'error';
-		if (s === 'pending' || s === 'in_progress' || s === 'creating') return 'accent';
+		if (s === 'pending' || s === 'in_progress' || s === 'creating' || s === 'provisioning') return 'accent';
 		return 'ok';
 	}
 
@@ -537,6 +537,22 @@ Issue: equaltoai/lesser-host#536
 					<span class="portal-shell__nav-icon"><HomeIcon /></span>
 					Fleet
 				</Link>
+				<Link
+					{...linkProps('/portal/billing')}
+					variant="ghost"
+					aria-current={isActive('/portal/billing') ? 'page' : undefined}
+				>
+					<DollarSignIcon class="portal-shell__nav-icon" />
+					Cost &amp; billing
+				</Link>
+				<Link
+					{...linkProps('/portal/trust')}
+					variant="ghost"
+					aria-current={isActive('/portal/trust') || isActive('/trust') ? 'page' : undefined}
+				>
+					<CheckCircleIcon class="portal-shell__nav-icon" />
+					Trust
+				</Link>
 
 				<!-- ── Instances section ──────────────────────────── -->
 				<div class="portal-shell__nav-section">
@@ -591,14 +607,6 @@ Issue: equaltoai/lesser-host#536
 					<Eyebrow>Settings</Eyebrow>
 				</div>
 				<Link
-					{...linkProps('/portal/trust')}
-					variant="ghost"
-					aria-current={isActive('/portal/trust') || isActive('/trust') ? 'page' : undefined}
-				>
-					<CheckCircleIcon class="portal-shell__nav-icon" />
-					Trust
-				</Link>
-				<Link
 					{...linkProps('/portal/account')}
 					variant="ghost"
 					aria-current={isActive('/portal/account', true) || isActive('/account', true) ? 'page' : undefined}
@@ -606,19 +614,21 @@ Issue: equaltoai/lesser-host#536
 					<SettingsIcon class="portal-shell__nav-icon" />
 					Account
 				</Link>
-				<Link
-					{...linkProps('/portal/billing')}
-					variant="ghost"
-					aria-current={isActive('/portal/billing') ? 'page' : undefined}
-				>
-					<DollarSignIcon class="portal-shell__nav-icon" />
-					Billing
-				</Link>
 			</div>
 
 			{#snippet footer()}
 				<div class="portal-shell__sidebar-footer">
 					{#if $session}
+						{#if $session.role === 'admin' || $session.role === 'operator'}
+							<Button
+								variant="outline"
+								onclick={() => navigate('/operator')}
+								class="portal-shell__operator-btn"
+							>
+								<ShieldIcon class="portal-shell__operator-icon" />
+								Operator console
+							</Button>
+						{/if}
 						<div class="portal-shell__user-chip">
 							<span class="portal-shell__avatar" aria-hidden="true">
 								{avatarInitials}
@@ -636,16 +646,6 @@ Issue: equaltoai/lesser-host#536
 								<LogOutIcon />
 							</button>
 						</div>
-						{#if $session.role === 'admin' || $session.role === 'operator'}
-							<Button
-								variant="outline"
-								onclick={() => navigate('/operator')}
-								class="portal-shell__operator-btn"
-							>
-								<ShieldIcon class="portal-shell__operator-icon" />
-								Operator console
-							</Button>
-						{/if}
 					{:else}
 						<Link {...linkProps('/login')} variant="default">Sign in</Link>
 					{/if}

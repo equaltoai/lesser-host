@@ -509,4 +509,94 @@ describe('PortalShell', () => {
 			expect(target.querySelector('.portal-shell__bell-popover')).toBeNull();
 		});
 	});
+
+	describe('instance status dot mapping', () => {
+		it('maps provisioning status to accent, not warning', async () => {
+			setSession(customerSession());
+
+			mockListInstances.mockResolvedValue({
+				instances: [makeInstance({ slug: 'new-box', status: 'provisioning' })],
+				count: 1,
+			});
+			mockGetPortalMe.mockResolvedValue({
+				username: 'wallet-user',
+				role: 'customer',
+				method: 'wallet',
+			});
+
+			const { target } = mountPortalShell();
+			await flushMountAsync();
+
+			const dot = target.querySelector('.portal-shell__status-dot') as HTMLElement;
+			expect(dot).not.toBeNull();
+			expect(dot.getAttribute('data-status')).toBe('accent');
+		});
+	});
+
+	describe('sidebar nav IA ordering', () => {
+		it('places Fleet, Cost & billing, Trust under Overview and Account alone under Settings', async () => {
+			setSession(customerSession());
+
+			mockListInstances.mockResolvedValue({
+				instances: [makeInstance({ slug: 'alpha', status: 'ok' })],
+				count: 1,
+			});
+			mockGetPortalMe.mockResolvedValue({
+				username: 'wallet-user',
+				role: 'customer',
+				method: 'wallet',
+			});
+
+			const { target } = mountPortalShell();
+			await flushMountAsync();
+
+			const nav = target.querySelector('.portal-shell__nav');
+			expect(nav).not.toBeNull();
+			const allText = nav!.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+
+			const fleetIdx = allText.indexOf('Fleet');
+			const billingIdx = allText.indexOf('Cost & billing');
+			const trustIdx = allText.indexOf('Trust');
+			const instancesEyebrowIdx = allText.indexOf('Instances');
+			const settingsEyebrowIdx = allText.indexOf('Settings');
+			const accountIdx = allText.indexOf('Account');
+
+			expect(fleetIdx).toBeGreaterThan(-1);
+			expect(billingIdx).toBeGreaterThan(fleetIdx);
+			expect(trustIdx).toBeGreaterThan(billingIdx);
+			expect(instancesEyebrowIdx).toBeGreaterThan(trustIdx);
+			expect(settingsEyebrowIdx).toBeGreaterThan(instancesEyebrowIdx);
+			expect(accountIdx).toBeGreaterThan(settingsEyebrowIdx);
+
+			const bareBillingMatch = /(?<!&)\bBilling\b/.test(allText);
+			expect(bareBillingMatch).toBe(false);
+		});
+	});
+
+	describe('sidebar footer ordering', () => {
+		it('renders operator button before user chip for admin sessions', async () => {
+			setSession(operatorSession());
+
+			mockListInstances.mockResolvedValue({ instances: [], count: 0 });
+			mockGetPortalMe.mockResolvedValue({
+				username: 'admin-user',
+				role: 'admin',
+				method: 'wallet',
+			});
+
+			const { target } = mountPortalShell();
+			await flushMountAsync();
+
+			const footer = target.querySelector('.portal-shell__sidebar-footer');
+			expect(footer).not.toBeNull();
+
+			const children = Array.from(footer!.children);
+			const opBtnIdx = children.findIndex((c) => c.classList.contains('portal-shell__operator-btn'));
+			const userChipIdx = children.findIndex((c) => c.classList.contains('portal-shell__user-chip'));
+
+			expect(opBtnIdx).toBeGreaterThan(-1);
+			expect(userChipIdx).toBeGreaterThan(-1);
+			expect(opBtnIdx).toBeLessThan(userChipIdx);
+		});
+	});
 });
