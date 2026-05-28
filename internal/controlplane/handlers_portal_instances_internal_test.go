@@ -80,8 +80,9 @@ func newPortalTestDB() portalTestDB {
 		q.On("OrderBy", mock.Anything, mock.Anything).Return(q).Maybe()
 	}
 
-	// Fleet enrichment (M5) calls All on CostTelemetry. Stub as no-op so
-	// existing tests not exercising the Fleet path don't panic.
+	// DB model mocks are stubbed as no-ops so existing tests not exercising
+	// the Fleet path don't panic. Fleet enrichment (M5) now uses managed
+	// Lesser metrics over HTTP and does not query host-local tables.
 	qCostTele.On("All", mock.Anything).Return(nil).Maybe()
 
 	stubUser := &models.User{Username: "alice", Role: models.RoleCustomer, Approved: true}
