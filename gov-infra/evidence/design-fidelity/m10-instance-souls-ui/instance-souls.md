@@ -1,8 +1,8 @@
 # M10 Instance Detail Souls Tab UI — Design Fidelity Evidence
 
-**Milestone:** M10 (Project 42 — `aron/portal-m10-instance-souls-ui`)  
-**Issue:** [#544](https://github.com/equaltoai/lesser-host/issues/544)  
-**Viewport:** 1440 × 900  
+**Milestone:** M10 (Project 42 — `aron/portal-m10-instance-souls-ui`)
+**Issue:** [#544](https://github.com/equaltoai/lesser-host/issues/544)
+**Viewport:** 1440 × 900
 **Evidence file:** `gov-infra/evidence/design-fidelity/m10-instance-souls-ui/instance-souls.png`
 
 ## Scope delivered
