@@ -1,5 +1,6 @@
 export {
 	Alert,
+	Avatar,
 	Badge,
 	Button,
 	Card,
