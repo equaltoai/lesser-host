@@ -2,25 +2,29 @@
 @component
 InstanceSouls — Souls tab content for the Instance Detail shell.
 
-M1.10 — Project 39 web UI rework. Lists the soul agents bound to a
-specific managed instance by client-side filtering the per-owner
-`soulListMyAgents` response on `agent.domain == instance.hosted_base_domain`.
-The portal already exposes the user's full agent list and the
-per-instance summary via existing endpoints; this view composes them
-to present an instance-scoped projection.
+Project 42 M10 (#544): re-skins the Souls tab as a design-aligned table
+with a "+ Request soul" CTA. The data-fetch correctness fix (M0.5 domain
+matching by managed_lesser_domain) is preserved.
+
+Columns: Handle (avatar + local_id + domain), Stage (badge), Model,
+Anchor freshness, Tips (lifetime). Row click navigates to /portal/souls/{agent_id}.
+
+Data-availability notes:
+  - Model is not present on SoulAgentIdentity; rendered as "—".
+  - Anchor freshness derived from anchor_assurance.state; absent → "—".
+  - Tips (lifetime) is rendered from reputation.tips_received (cumulative tips);
+    this deviation is documented in the evidence MD.
+  - The "+ Request soul" CTA is disabled (coming soon) because the
+    soul-request workflow (distinct from soul registration) does not exist.
 
 Posture invariants preserved:
   - Strict-no-inline-CSP safe.
-  - Multi-tenant isolation: both source endpoints (`/api/v1/soul/agents/mine`
-    and `/api/v1/portal/instances/{slug}`) enforce per-owner / per-slug
-    ownership server-side; filtering happens client-side over data the
-    user is already authorized to see.
-  - Trust-API instance-auth untouched (this is a customer-side soul
-    listing; no instance-key path is touched). SEC-9 change-lock not
-    engaged.
+  - Multi-tenant isolation: both source endpoints enforce per-owner /
+    per-slug ownership server-side.
+  - Trust-API instance-auth untouched.
 
-Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M1.10
-Issue: equaltoai/lesser-host#419
+Source: project-40-portal-redesign-recovery/milestones/11-m10-instance-souls-ui.md
+Issue: equaltoai/lesser-host#544
 -->
 
 <script lang="ts">
@@ -33,7 +37,7 @@ Issue: equaltoai/lesser-host#419
 	import { soulListMyAgents } from 'src/lib/api/soul';
 	import { logout } from 'src/lib/auth/logout';
 	import { linkProps, navigate } from 'src/lib/router';
-	import { Alert, Badge, Button, CopyButton, Link, Spinner, Text } from 'src/lib/ui';
+	import { Alert, Avatar, Badge, Button, Link, Spinner, Text } from 'src/lib/ui';
 	import { Panel } from 'src/lib/shell';
 
 	interface Props {
@@ -58,22 +62,69 @@ Issue: equaltoai/lesser-host#419
 		return String(err);
 	}
 
-	function badgeForStatus(status: string): {
+	// ── Stage badge mapping ─────────────────────────────────────────────
+
+	interface StageBadgeStyle {
 		variant: 'outlined' | 'filled';
-		color: 'success' | 'warning' | 'error' | 'gray';
-	} {
-		const s = (status || '').toLowerCase();
-		if (s === 'active') return { variant: 'filled', color: 'success' };
-		if (s === 'pending') return { variant: 'outlined', color: 'warning' };
-		if (s === 'suspended') return { variant: 'filled', color: 'error' };
-		return { variant: 'outlined', color: 'gray' };
+		color: 'success' | 'warning' | 'error' | 'info' | 'gray';
+		label: string;
 	}
 
-	function shortHex(hex: string, left: number = 8, right: number = 6): string {
-		const h = (hex || '').trim();
-		if (h.length <= left + right + 2) return h;
-		return `${h.slice(0, left)}…${h.slice(-right)}`;
+	function badgeForStage(lifecycleStatus?: string, status?: string): StageBadgeStyle {
+		const s = (lifecycleStatus || status || '').toLowerCase();
+		if (s === 'graduated') return { variant: 'filled', color: 'success', label: 'graduated' };
+		if (s === 'in_review') return { variant: 'outlined', color: 'info', label: 'in review' };
+		if (s === 'requested') return { variant: 'outlined', color: 'gray', label: 'requested' };
+		if (s === 'on_hold') return { variant: 'filled', color: 'warning', label: 'on hold' };
+		if (s === 'active') return { variant: 'filled', color: 'success', label: 'active' };
+		if (s === 'pending') return { variant: 'outlined', color: 'warning', label: 'pending' };
+		if (s === 'suspended') return { variant: 'filled', color: 'error', label: 'suspended' };
+		return { variant: 'outlined', color: 'gray', label: s || '—' };
 	}
+
+	// ── Anchor freshness ────────────────────────────────────────────────
+
+	interface AnchorDisplay {
+		label: string;
+		dot: boolean;
+		color: 'success' | 'warning' | 'error' | 'gray';
+	}
+
+	function anchorDisplay(item: SoulMineAgentItem): AnchorDisplay {
+		const state = item.agent.anchor_assurance?.state;
+		if (state === 'immutable_onchain') return { label: 'fresh', dot: true, color: 'success' };
+		if (state === 'hosted_offchain') return { label: 'pending', dot: true, color: 'warning' };
+		// No anchor_assurance at all
+		return { label: '—', dot: false, color: 'gray' };
+	}
+
+	// ── Tips display ────────────────────────────────────────────────────
+
+	function tipsDisplay(item: SoulMineAgentItem): string {
+		const tips = item.reputation?.tips_received;
+		if (tips == null) return '—';
+		return `$${tips.toFixed(2)}`;
+	}
+
+	// ── Date formatting ─────────────────────────────────────────────────
+
+	function formatDate(iso: string | undefined): string {
+		if (!iso) return '—';
+		if (iso.startsWith('0001-01-01T00:00:00')) return '—';
+		try {
+			const d = new Date(iso);
+			if (isNaN(d.getTime())) return '—';
+			return d.toLocaleDateString('en-US', {
+				month: 'short',
+				day: 'numeric',
+				year: 'numeric',
+			});
+		} catch {
+			return '—';
+		}
+	}
+
+	// ── Data loading ────────────────────────────────────────────────────
 
 	async function load() {
 		errorMessage = null;
@@ -100,36 +151,12 @@ Issue: equaltoai/lesser-host#419
 		}
 	}
 
-	// Project 42 M0.5 (#530): the audit caught "No souls bound to this
-	// instance" rendering on instances that demonstrably have bound souls.
-	//
-	// Root-caused binding mismatch (server vs client):
-	//   - Server `handleSoulListMyAgents` walks the owner's instances and
-	//     gathers BOTH per-instance verified domains AND the stage-prefixed
-	//     managed domain (`internal/controlplane/handlers_soul_mine.go`
-	//     :103-122; the stage prefix comes from
-	//     `managedInstanceStageDomain(stage, HostedBaseDomain)` =
-	//     `<stage>.<base>` for non-live stages — e.g. `dev.simulacrum.greater.website`).
-	//   - Soul agents on a managed instance are registered against the
-	//     stage-prefixed managed domain (the URL the customer's browser
-	//     actually hits), so `agent.domain` is the stage-prefixed form.
-	//   - The previous client filter compared `agent.domain ===
-	//     instance.hosted_base_domain`. `hosted_base_domain` is the BASE
-	//     (without stage prefix); on every non-live stage the comparison
-	//     therefore mismatches the stage-prefixed `agent.domain` and the
-	//     filter silently dropped every bound soul.
-	//
-	// Fix (matches server semantics without backend churn):
-	//   - The portal instance DTO ALREADY exposes `managed_lesser_domain`
-	//     (the stage-prefixed canonical form, computed in
-	//     `internal/controlplane/instance_response_derived.go`). Compare
-	//     `agent.domain` against the set { hosted_base_domain,
-	//     managed_lesser_domain } so live-stage instances (where the two
-	//     are equal) and non-live stages both match correctly.
+	// M0.5 domain-matching fix: compare agent.domain against both
+	// hosted_base_domain and managed_lesser_domain (stage-prefixed) so
+	// non-live stage instances match correctly. Preserved from the pre-M10
+	// implementation — this is a data-fetch correctness fix, not layout.
 	const boundAgents = $derived.by<SoulMineAgentItem[]>(() => {
 		if (!instance) return [];
-		// Use plain object (Record), not Set: svelte/prefer-svelte-reactivity
-		// prohibits Map/Set in .svelte files even in local function scope.
 		const candidateDomains: Record<string, true> = {};
 		const baseDomain = (instance.hosted_base_domain || '').trim().toLowerCase();
 		const managedDomain = (instance.managed_lesser_domain || '').trim().toLowerCase();
@@ -148,16 +175,19 @@ Issue: equaltoai/lesser-host#419
 	});
 </script>
 
-<Panel title="Souls bound to this instance" headerLevel={2}>
+<Panel
+	title="Souls on this instance"
+	headerLevel={2}
+	padding="none"
+>
 	{#snippet actions()}
-		<Button variant="outline" onclick={() => void load()} disabled={loading}>Refresh</Button>
+		<div class="instance-souls__header-actions">
+			<Button variant="solid" size="sm" disabled title="Soul request workflow is coming soon. Until then, use the Simulacrum agent workspace on the instance to request and finalize a new agent.">
+				+ Request soul
+			</Button>
+			<Button variant="ghost" size="sm" onclick={() => void load()} disabled={loading}>Refresh</Button>
+		</div>
 	{/snippet}
-
-	<Text size="sm" color="secondary">
-		Soul agents whose domain matches this instance's managed base domain. The canonical agent-first
-		soul lifecycle (request, review, approval, finalize) lives in the Simulacrum agent workspace
-		served from the instance.
-	</Text>
 
 	{#if loading && boundAgents.length === 0}
 		<div class="instance-souls__loading">
@@ -165,133 +195,226 @@ Issue: equaltoai/lesser-host#419
 			<Text>Loading souls…</Text>
 		</div>
 	{:else if errorMessage}
-		<Alert variant="error" title="Failed to load souls">{errorMessage}</Alert>
+		<div class="instance-souls__padded">
+			<Alert variant="error" title="Failed to load souls">{errorMessage}</Alert>
+		</div>
 	{:else if !instance?.hosted_base_domain}
-		<Alert variant="info" title="Instance not provisioned">
-			<Text size="sm">
-				This instance has no managed base domain yet. Souls bind to an instance once provisioning
-				completes and the managed domain is delegated.
-			</Text>
-		</Alert>
+		<div class="instance-souls__padded">
+			<Alert variant="info" title="Instance not provisioned">
+				<Text size="sm">
+					This instance has no managed base domain yet. Souls bind to an instance once provisioning
+					completes and the managed domain is delegated.
+				</Text>
+			</Alert>
+		</div>
 	{:else if boundAgents.length === 0}
-		<Alert variant="info" title="No souls bound to this instance">
-			<Text size="sm">
-				You have no soul agents registered under
-				<span class="instance-souls__mono">{instance.hosted_base_domain}</span>
-				yet. Use the Simulacrum agent workspace on the instance to request and finalize a new
-				agent.
-			</Text>
-			<div class="instance-souls__actions-inline">
-				<Link {...linkProps('/portal/souls')} variant="default">
-					Open legacy portal souls list
-				</Link>
-			</div>
-		</Alert>
+		<div class="instance-souls__padded">
+			<Alert variant="info" title="No souls bound to this instance">
+				<Text size="sm">
+					You have no soul agents registered under
+					<span class="instance-souls__mono">{instance.hosted_base_domain}</span>
+					yet. Use the Simulacrum agent workspace on the instance to request and finalize a new
+					agent.
+				</Text>
+				<div class="instance-souls__actions-inline">
+					<Link {...linkProps('/portal/souls')} variant="default">
+						View all souls
+					</Link>
+				</div>
+			</Alert>
+		</div>
 	{:else}
-		<ul class="instance-souls__list">
-			{#each boundAgents as item (item.agent.agent_id)}
-				{@const statusBadge = badgeForStatus(item.agent.status)}
-				{@const needsProfile = !item.agent.self_description_version}
-				<li class="instance-souls__item">
-					<div class="instance-souls__item-meta">
-						<div class="instance-souls__row">
-							<Text size="sm" weight="medium">
-								{item.agent.domain}/{item.agent.local_id}
-							</Text>
-							<Badge variant={statusBadge.variant} color={statusBadge.color} size="sm">
-								{item.agent.status}
+		<!-- Design-fidelity: tabular layout per the M10 design fixture (portal-pages.jsx:484-506). -->
+		<div class="instance-souls__eyebrow">
+			<Text size="xs" color="secondary">
+				<span class="instance-souls__eyebrow-text">{boundAgents.length} bound</span>
+			</Text>
+		</div>
+		<table class="instance-souls__table">
+			<thead>
+				<tr>
+					<th>Handle</th>
+					<th>Stage</th>
+					<th>Model</th>
+					<th>Anchor</th>
+					<th>Tips (lifetime)</th>
+					<th></th>
+				</tr>
+			</thead>
+			<tbody>
+				{#each boundAgents as item (item.agent.agent_id)}
+					{@const soulPath = `/portal/souls/${item.agent.agent_id}`}
+					{@const stageStyle = badgeForStage(item.agent.lifecycle_status, item.agent.status)}
+					{@const anchor = anchorDisplay(item)}
+					<tr
+						class="instance-souls__row"
+						onclick={() => navigate(soulPath)}
+						onkeydown={(e) => {
+							if (e.key === 'Enter' || e.key === ' ') {
+								e.preventDefault();
+								navigate(soulPath);
+							}
+						}}
+						tabindex="0"
+						role="link"
+						aria-label="Open soul {item.agent.local_id || item.agent.agent_id}"
+					>
+						<td class="instance-souls__cell-handle">
+							<div class="instance-souls__handle-row">
+								<Avatar
+									src={item.agent.avatar?.image}
+									name={item.agent.local_id}
+									size="sm"
+									shape="circle"
+								/>
+								<div class="instance-souls__handle-text">
+									<Text size="sm" weight="semibold">
+										{item.agent.local_id || item.agent.agent_id}
+									</Text>
+									<Text size="xs" color="tertiary">
+										<span class="instance-souls__mono">{item.agent.domain}</span>
+									</Text>
+								</div>
+							</div>
+						</td>
+						<td class="instance-souls__cell-stage">
+							<Badge variant={stageStyle.variant} color={stageStyle.color} size="sm">
+								{stageStyle.label}
 							</Badge>
-						</div>
-						<Text size="sm" color="secondary">
-							Agent ID:
-							<span class="instance-souls__mono">{shortHex(item.agent.agent_id, 14, 10)}</span>
-						</Text>
-						<Text size="sm" color="secondary">
-							Wallet: <span class="instance-souls__mono">{shortHex(item.agent.wallet)}</span>
-						</Text>
-						{#if needsProfile}
-							<Text size="sm" color="secondary">Profile status: setup not finished</Text>
-						{:else}
-							<Text size="sm" color="secondary">
-								Profile status: published v{item.agent.self_description_version}
+						</td>
+						<td class="instance-souls__cell-model">
+							<Text size="sm" color="tertiary">
+								<span class="instance-souls__mono">—</span>
 							</Text>
-						{/if}
-						{#if item.reputation}
-							<Text size="sm" color="secondary">
-								Reputation:
-								<span class="instance-souls__mono">{item.reputation.composite.toFixed(3)}</span>
-								(block {item.reputation.block_ref ?? '—'})
+						</td>
+						<td class="instance-souls__cell-anchor">
+							{#if anchor.label === '—'}
+								<Text size="sm" color="tertiary">—</Text>
+							{:else}
+								<Badge variant="dot" color={anchor.color} size="sm">
+									{anchor.label}
+								</Badge>
+							{/if}
+						</td>
+						<td class="instance-souls__cell-tips">
+							<Text size="sm">
+								<span class="instance-souls__mono">{tipsDisplay(item)}</span>
 							</Text>
-						{/if}
-					</div>
-					<div class="instance-souls__item-actions">
-						<Link {...linkProps(`/portal/souls/${item.agent.agent_id}`)} variant="default">
-							Open
-						</Link>
-						<CopyButton size="sm" text={item.agent.agent_id} />
-					</div>
-				</li>
-			{/each}
-		</ul>
+						</td>
+						<td class="instance-souls__cell-chevron">
+							<Link {...linkProps(soulPath)} variant="ghost" aria-label="Open soul {item.agent.local_id || item.agent.agent_id}">
+								<svg width="15" height="15" viewBox="0 0 15 15" fill="none" aria-hidden="true">
+									<path d="M5.5 2.5L10.5 7.5L5.5 12.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+								</svg>
+							</Link>
+						</td>
+					</tr>
+				{/each}
+			</tbody>
+		</table>
 	{/if}
 </Panel>
 
 <style>
+	.instance-souls__header-actions {
+		display: flex;
+		gap: var(--ds-space-2);
+		align-items: center;
+	}
+
 	.instance-souls__loading {
 		display: flex;
 		gap: var(--ds-space-3);
 		align-items: center;
+		padding: var(--ds-space-4);
 	}
 
-	.instance-souls__list {
-		list-style: none;
-		padding: 0;
-		margin: var(--ds-space-3) 0 0 0;
-		display: flex;
-		flex-direction: column;
-		gap: var(--ds-space-3);
+	.instance-souls__padded {
+		padding: var(--ds-space-4);
 	}
 
-	.instance-souls__item {
-		display: flex;
-		gap: var(--ds-space-4);
-		justify-content: space-between;
-		align-items: flex-start;
-		flex-wrap: wrap;
-		padding: var(--ds-space-3);
-		border: 1px solid var(--ds-border-subtle, var(--gr-color-border-subtle));
-		border-radius: var(--ds-radius-md, var(--gr-radius-md));
-		background: var(--ds-bg-raised, var(--gr-color-surface));
+	.instance-souls__eyebrow-text {
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
 	}
 
-	.instance-souls__item-meta {
-		display: flex;
-		flex-direction: column;
-		gap: var(--ds-space-1);
-		min-width: min(360px, 100%);
+	.instance-souls__eyebrow {
+		padding: var(--ds-space-3) var(--ds-space-4) 0 var(--ds-space-4);
 	}
 
-	.instance-souls__item-actions {
-		display: flex;
-		gap: var(--ds-space-2);
-		align-items: center;
-		flex-wrap: wrap;
+	.instance-souls__table {
+		width: 100%;
+		border-collapse: collapse;
+		margin-top: var(--ds-space-2);
+	}
+
+	.instance-souls__table th {
+		text-align: left;
+		padding: var(--ds-space-2) var(--ds-space-4);
+		font-size: var(--ds-font-size-xs, 0.75rem);
+		font-weight: var(--ds-weight-semibold, 600);
+		color: var(--ds-fg-2, var(--gr-color-foreground-secondary));
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		border-bottom: 1px solid var(--ds-border-subtle, var(--gr-color-border-subtle));
 	}
 
 	.instance-souls__row {
+		border-bottom: 1px solid var(--ds-border-subtle, var(--gr-color-border-subtle));
+		cursor: pointer;
+		transition: background var(--ds-duration-fast, 140ms) var(--ds-ease-standard, ease);
+		outline: none;
+	}
+
+	.instance-souls__row:hover {
+		background: var(--ds-bg-hover, var(--gr-color-surface-hover));
+	}
+
+	.instance-souls__row:focus-visible {
+		outline: 2px solid var(--ds-border-focus, var(--gr-color-primary));
+		outline-offset: -2px;
+	}
+
+	.instance-souls__table td {
+		padding: var(--ds-space-3) var(--ds-space-4);
+		vertical-align: middle;
+	}
+
+	.instance-souls__cell-handle {
+		min-width: 200px;
+	}
+
+	.instance-souls__cell-model,
+	.instance-souls__cell-tips {
+		white-space: nowrap;
+	}
+
+	.instance-souls__cell-chevron {
+		width: 48px;
+		text-align: center;
+		padding: var(--ds-space-3) var(--ds-space-2);
+		color: var(--ds-fg-3, var(--gr-color-foreground-tertiary));
+	}
+
+	.instance-souls__handle-row {
 		display: flex;
-		gap: var(--ds-space-2);
+		gap: 0.65rem;
 		align-items: center;
-		flex-wrap: wrap;
+	}
+
+	.instance-souls__handle-text {
+		display: flex;
+		flex-direction: column;
+		gap: 0;
+	}
+
+	.instance-souls__mono {
+		font-family: var(--ds-font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
 	}
 
 	.instance-souls__actions-inline {
 		display: flex;
 		gap: var(--ds-space-2);
 		margin-top: var(--ds-space-3);
-	}
-
-	.instance-souls__mono {
-		font-family: var(--ds-font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
 	}
 </style>
