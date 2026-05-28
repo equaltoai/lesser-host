@@ -103,6 +103,19 @@ type instanceResponse struct {
 	CreatedAt                 time.Time `json:"created_at"`
 	UpdatedAt                 time.Time `json:"updated_at,omitempty"`
 
+	// Fleet data fields (M5 — backend/data only; M4 Fleet UI owns rendering).
+	// All fields are zero-valued when data is unavailable. This is the honest
+	// contract: active users, posts, and sig-fail counters require the managed
+	// Lesser instance metrics endpoint; sparklines are best-effort from
+	// host-local CostTelemetry and UsageLedgerEntry stores.
+	ActiveUsers30d int64     `json:"active_users_30d,omitempty"`
+	Posts24h       int64     `json:"posts_24h,omitempty"`
+	SigFails24h    int64     `json:"sig_fails_24h,omitempty"`
+	SparkActivity  []int64   `json:"spark_activity,omitempty"`
+	SparkCost      []float64 `json:"spark_cost,omitempty"`
+	Peers          int64     `json:"peers,omitempty"`
+	Severed        int64     `json:"severed,omitempty"`
+
 	// Owner enrichment from the User profile (additive; M7).
 	OwnerHandle     string `json:"owner_handle,omitempty"`
 	OwnerRole       string `json:"owner_role,omitempty"`
