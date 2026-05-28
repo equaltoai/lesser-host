@@ -1,3 +1,21 @@
+<!--
+@component
+InstanceConfig — the Configuration tab on Instance Detail for managed instances.
+
+Project 42 M9 (#543): re-skinned with three design-aligned read-only sections
+(Instance identity, Federation policy, Rate limits) above the existing
+Features / Moderation / AI mutation form. Toggle sizing normalised (audit P3).
+
+Posture invariants:
+  - Strict-no-inline-CSP safe: no inline scripts, no inline styles, no
+    third-party origins.
+  - Multi-tenant isolation: all data fetches use the instance-scoped
+    portalGetInstance / portalUpdateInstanceConfig endpoints; ownership
+    checks enforced at the API layer.
+  - Trust-API instance-auth untouched.
+
+Source: issue #543, design fixture portal-pages.jsx:380–423
+-->
 <script lang="ts">
 	import { onMount } from 'svelte';
 
@@ -12,7 +30,17 @@
 		configFormFromInstance,
 		validateInstanceConfigForm,
 	} from 'src/lib/instanceConfig';
-	import { Alert, Button, Select, Spinner, Switch, Text, TextField } from 'src/lib/ui';
+	import {
+		Alert,
+		Button,
+		DefinitionItem,
+		DefinitionList,
+		Select,
+		Spinner,
+		Switch,
+		Text,
+		TextField,
+	} from 'src/lib/ui';
 	import { Panel } from 'src/lib/shell';
 
 	let { token, slug } = $props<{ token: string; slug: string }>();
@@ -37,6 +65,12 @@
 			Object.keys(fieldErrors).length === 0 &&
 			(!requiresRenderAlwaysAck || ackRenderAlways) &&
 			(!requiresAIAck || ackAI),
+	);
+
+	const displayName = $derived(
+		slug
+			.replace(/-/g, ' ')
+			.replace(/^./, (c: string) => c.toUpperCase()),
 	);
 
 	$effect(() => {
@@ -167,8 +201,86 @@
 	{/if}
 
 	{#if instance && form}
-		<Panel title="Features" headerLevel={2}>
+		<!-- Section 1: Instance Identity -->
+		<Panel title="Instance identity" headerLevel={2}>
+			<div class="config__eyebrow"><Text size="xs" color="secondary">Identity</Text></div>
+			<DefinitionList>
+				<DefinitionItem label="Display name">{displayName}</DefinitionItem>
+				<DefinitionItem label="Description">
+					<Text size="sm" color="secondary">—</Text>
+				</DefinitionItem>
+				<DefinitionItem label="Default visibility" monospace>
+					<Text size="sm" color="secondary">—</Text>
+				</DefinitionItem>
+				<DefinitionItem label="Reg open" monospace>
+					<Text size="sm" color="secondary">—</Text>
+				</DefinitionItem>
+			</DefinitionList>
+		</Panel>
 
+		<!-- Section 2: Federation Policy -->
+		<Panel title="Federation policy" headerLevel={2}>
+			<div class="config__eyebrow"><Text size="xs" color="secondary">Federation</Text></div>
+			<div class="config__toggle-rows">
+				<div class="config__toggle-row">
+					<div class="config__toggle-row-body">
+						<Text size="sm" weight="semibold">Accept federation</Text>
+						<Text size="xs" color="secondary">Default ALLOW; per-instance overrides below</Text>
+					</div>
+					<Switch checked={false} disabled={true} label="Accept federation" />
+				</div>
+				<div class="config__toggle-row">
+					<div class="config__toggle-row-body">
+						<Text size="sm" weight="semibold">Allow quote posts</Text>
+						<Text size="xs" color="secondary">Lesser-native; respects post-level permission</Text>
+					</div>
+					<Switch checked={false} disabled={true} label="Allow quote posts" />
+				</div>
+				<div class="config__toggle-row">
+					<div class="config__toggle-row-body">
+						<Text size="sm" weight="semibold">Auto-thread sync</Text>
+						<Text size="xs" color="secondary">Fetch missing replies on hit</Text>
+					</div>
+					<Switch checked={false} disabled={true} label="Auto-thread sync" />
+				</div>
+				<div class="config__toggle-row">
+					<div class="config__toggle-row-body">
+						<Text size="sm" weight="semibold">AI moderation hint</Text>
+						<Text size="xs" color="secondary">Inline toxicity + spam scores</Text>
+					</div>
+					<Switch checked={false} disabled={true} label="AI moderation hint" />
+				</div>
+				<div class="config__toggle-row">
+					<div class="config__toggle-row-body">
+						<Text size="sm" weight="semibold">Public webfinger</Text>
+						<Text size="xs" color="secondary">Required for inbound resolution</Text>
+					</div>
+					<Switch checked={false} disabled={true} label="Public webfinger" />
+				</div>
+			</div>
+		</Panel>
+
+		<!-- Section 3: Rate Limits -->
+		<Panel title="Rate limits" headerLevel={2}>
+			<div class="config__eyebrow"><Text size="xs" color="secondary">Limits</Text></div>
+			<DefinitionList>
+				<DefinitionItem label="Posts / hour" monospace>
+					<Text size="sm" color="secondary">—</Text>
+				</DefinitionItem>
+				<DefinitionItem label="Inbox delivery" monospace>
+					<Text size="sm" color="secondary">—</Text>
+				</DefinitionItem>
+				<DefinitionItem label="Search QPS" monospace>
+					<Text size="sm" color="secondary">—</Text>
+				</DefinitionItem>
+				<DefinitionItem label="Outbound HTTP" monospace>
+					<Text size="sm" color="secondary">—</Text>
+				</DefinitionItem>
+			</DefinitionList>
+		</Panel>
+
+		<!-- Section 4: Features (existing mutation form) -->
+		<Panel title="Features" headerLevel={2}>
 			<div class="config__grid">
 				<div class="config__toggle">
 					<Switch bind:checked={form.hosted_previews_enabled} label="Hosted previews" />
@@ -229,8 +341,8 @@
 			{/if}
 		</Panel>
 
+		<!-- Section 5: Moderation (existing mutation form) -->
 		<Panel title="Moderation" headerLevel={2}>
-
 			<div class="config__grid">
 				<div class="config__toggle">
 					<Switch bind:checked={form.moderation_enabled} label="Enabled" />
@@ -263,8 +375,8 @@
 			</div>
 		</Panel>
 
+		<!-- Section 6: AI (existing mutation form) -->
 		<Panel title="AI" headerLevel={2}>
-
 			<Text size="sm" color="secondary">
 				Batching reduces cost at the expense of latency. <span class="config__mono">hybrid</span> can balance both.
 			</Text>
@@ -381,6 +493,13 @@
 		align-items: center;
 	}
 
+	.config__eyebrow {
+		display: block;
+		margin-bottom: var(--ds-space-1);
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+	}
+
 	.config__grid {
 		display: grid;
 		grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
@@ -394,6 +513,12 @@
 		gap: var(--gr-spacing-scale-2);
 	}
 
+	/*
+	 * Normalised toggle card (audit P3): consistent padding, border, and
+	 * layout used by Features, Moderation, and AI toggles. Resolves the
+	 * previous sizing inconsistency where some Switch wrappers used
+	 * different padding or omitted the background/border treatment.
+	 */
 	.config__toggle {
 		display: flex;
 		flex-direction: column;
@@ -402,6 +527,34 @@
 		border: 1px solid var(--gr-color-border-subtle);
 		border-radius: var(--gr-radius-md);
 		background: var(--gr-color-surface);
+	}
+
+	/*
+	 * ConfigToggle rows (Federation policy section). Each row is a
+	 * horizontal bar: label + sub on the left, Switch on the right.
+	 * Matches the design's <ConfigToggle> pattern.
+	 */
+	.config__toggle-rows {
+		display: flex;
+		flex-direction: column;
+		gap: var(--ds-space-2);
+	}
+
+	.config__toggle-row {
+		display: flex;
+		gap: var(--ds-space-4);
+		align-items: center;
+		padding: var(--ds-space-3) var(--ds-space-4);
+		border: 1px solid var(--gr-color-border-subtle);
+		border-radius: var(--gr-radius-md);
+		background: var(--gr-color-surface);
+	}
+
+	.config__toggle-row-body {
+		display: flex;
+		flex-direction: column;
+		gap: 0;
+		flex: 1;
 	}
 
 	.config__row {
