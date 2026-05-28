@@ -1,3 +1,6 @@
+=== CONTROLPLANE BILLING-DATA TESTS ===
+go test -v -count=1 ./internal/controlplane/ -run 'TestHandlePortalListInvoices|TestHandlePortalGetPaymentMethod|TestInvoiceSummary|TestPaymentMethodSafe|TestListInvoicesResponse|TestDTOs_HaveClearSafeSemantics|TestServerStruct_HasPaymentsFactory'
+
 === RUN   TestHandlePortalListInvoices_HappyPath
 === PAUSE TestHandlePortalListInvoices_HappyPath
 === RUN   TestHandlePortalListInvoices_WithInvoices
@@ -62,69 +65,105 @@
 === PAUSE TestServerStruct_HasPaymentsFactory
 === RUN   TestHandlePortalListInvoices_ErrorMessageSanitization
 === PAUSE TestHandlePortalListInvoices_ErrorMessageSanitization
-=== CONT  TestHandlePortalListInvoices_HappyPath
-=== CONT  TestPaymentMethodSafe_NoSecretsLeaked
+=== RUN   TestHandlePortalListInvoices_HandlesPreFilteredProviderOutput
+=== PAUSE TestHandlePortalListInvoices_HandlesPreFilteredProviderOutput
+=== RUN   TestHandlePortalListInvoices_FilterEmptyIDsFromProviderOutput
+=== PAUSE TestHandlePortalListInvoices_FilterEmptyIDsFromProviderOutput
+=== CONT  TestHandlePortalListInvoices_NilStore
+--- PASS: TestHandlePortalListInvoices_NilStore (0.00s)
 === CONT  TestHandlePortalListInvoices_StripeNotConfiguredReturnsEmpty
---- PASS: TestPaymentMethodSafe_NoSecretsLeaked (0.00s)
-=== CONT  TestHandlePortalListInvoices_EmptySliceFromProvider
---- PASS: TestHandlePortalListInvoices_HappyPath (0.00s)
-=== CONT  TestDTOs_HaveClearSafeSemantics
---- PASS: TestDTOs_HaveClearSafeSemantics (0.00s)
-=== CONT  TestHandlePortalListInvoices_ErrorMessageSanitization
+=== CONT  TestHandlePortalListInvoices_HappyPath
+=== CONT  TestHandlePortalGetPaymentMethod_NoDefaultSet
+=== CONT  TestHandlePortalGetPaymentMethod_NoBillingProfile
 --- PASS: TestHandlePortalListInvoices_StripeNotConfiguredReturnsEmpty (0.00s)
 === CONT  TestHandlePortalGetPaymentMethod_NilStore
 --- PASS: TestHandlePortalGetPaymentMethod_NilStore (0.00s)
-=== CONT  TestServerStruct_HasPaymentsFactory
---- PASS: TestServerStruct_HasPaymentsFactory (0.00s)
-=== CONT  TestHandlePortalListInvoices_ResponseShapeHasNoInternalFields
-=== CONT  TestHandlePortalGetPaymentMethod_NilDB
---- PASS: TestHandlePortalGetPaymentMethod_NilDB (0.00s)
+--- PASS: TestHandlePortalListInvoices_HappyPath (0.00s)
 === CONT  TestHandlePortalGetPaymentMethod_ResponseShapeHasNoInternalFields
---- PASS: TestHandlePortalListInvoices_EmptySliceFromProvider (0.00s)
-=== CONT  TestHandlePortalListInvoices_UsesAuthIdentityForPK
---- PASS: TestHandlePortalListInvoices_ErrorMessageSanitization (0.00s)
---- PASS: TestHandlePortalListInvoices_ResponseShapeHasNoInternalFields (0.00s)
-=== CONT  TestInvoiceSummary_NoBillingProfileInternalFields
-=== CONT  TestPaymentMethodSafe_OnlyExposesSafeFields
---- PASS: TestInvoiceSummary_NoBillingProfileInternalFields (0.00s)
---- PASS: TestPaymentMethodSafe_OnlyExposesSafeFields (0.00s)
-=== CONT  TestListInvoicesResponse_NoInternalFieldsLeaked
-=== CONT  TestHandlePortalListInvoices_NilStore
-=== CONT  TestHandlePortalListInvoices_NoCustomerID
 === CONT  TestHandlePortalGetPaymentMethod_HappyPath
+--- PASS: TestHandlePortalGetPaymentMethod_NoDefaultSet (0.00s)
+--- PASS: TestHandlePortalGetPaymentMethod_NoBillingProfile (0.00s)
+=== CONT  TestHandlePortalListInvoices_ResponseShapeHasNoInternalFields
 === CONT  TestHandlePortalListInvoices_CrossUserIsolation
-=== CONT  TestHandlePortalListInvoices_NilFromProvider
+=== CONT  TestListInvoicesResponse_NoInternalFieldsLeaked
+=== CONT  TestPaymentMethodSafe_NoSecretsLeaked
+--- PASS: TestPaymentMethodSafe_NoSecretsLeaked (0.00s)
+=== CONT  TestInvoiceSummary_NoBillingProfileInternalFields
 === CONT  TestInvoiceSummary_NoSecretsLeaked
-=== CONT  TestHandlePortalGetPaymentMethod_DBError
-=== CONT  TestHandlePortalGetPaymentMethod_PaymentMethodNotFound
-=== CONT  TestHandlePortalGetPaymentMethod_CrossUserIsolation
-=== CONT  TestHandlePortalGetPaymentMethod_NoDefaultSet
 === CONT  TestHandlePortalListInvoices_PaymentsNotConfigured
-=== CONT  TestHandlePortalListInvoices_ProviderError
-=== CONT  TestHandlePortalGetPaymentMethod_NoBillingProfile
+=== CONT  TestHandlePortalGetPaymentMethod_CrossUserIsolation
+=== CONT  TestHandlePortalListInvoices_FilterEmptyIDsFromProviderOutput
 === CONT  TestHandlePortalGetPaymentMethod_Unauthenticated
-=== CONT  TestHandlePortalListInvoices_NoBillingProfile
+=== CONT  TestHandlePortalListInvoices_ProviderError
+=== CONT  TestHandlePortalListInvoices_HandlesPreFilteredProviderOutput
+=== CONT  TestHandlePortalListInvoices_NoCustomerID
+=== CONT  TestHandlePortalListInvoices_ErrorMessageSanitization
 === CONT  TestHandlePortalListInvoices_Unauthenticated
+=== CONT  TestServerStruct_HasPaymentsFactory
+=== CONT  TestHandlePortalGetPaymentMethod_PaymentMethodNotFound
+=== CONT  TestHandlePortalGetPaymentMethod_NilDB
+=== CONT  TestHandlePortalListInvoices_NoBillingProfile
+=== CONT  TestHandlePortalListInvoices_EmptySliceFromProvider
+=== CONT  TestHandlePortalGetPaymentMethod_DBError
+=== CONT  TestDTOs_HaveClearSafeSemantics
+=== CONT  TestHandlePortalListInvoices_UsesAuthIdentityForPK
+=== CONT  TestPaymentMethodSafe_OnlyExposesSafeFields
 === CONT  TestHandlePortalListInvoices_WithInvoices
+=== CONT  TestHandlePortalListInvoices_NilFromProvider
 --- PASS: TestListInvoicesResponse_NoInternalFieldsLeaked (0.00s)
---- PASS: TestHandlePortalListInvoices_NilStore (0.00s)
---- PASS: TestHandlePortalListInvoices_UsesAuthIdentityForPK (0.00s)
+--- PASS: TestInvoiceSummary_NoSecretsLeaked (0.00s)
 --- PASS: TestHandlePortalGetPaymentMethod_ResponseShapeHasNoInternalFields (0.00s)
 --- PASS: TestHandlePortalGetPaymentMethod_HappyPath (0.00s)
---- PASS: TestInvoiceSummary_NoSecretsLeaked (0.00s)
---- PASS: TestHandlePortalListInvoices_CrossUserIsolation (0.00s)
---- PASS: TestHandlePortalListInvoices_NilFromProvider (0.00s)
---- PASS: TestHandlePortalListInvoices_NoCustomerID (0.00s)
---- PASS: TestHandlePortalGetPaymentMethod_DBError (0.00s)
---- PASS: TestHandlePortalListInvoices_PaymentsNotConfigured (0.00s)
---- PASS: TestHandlePortalGetPaymentMethod_NoDefaultSet (0.00s)
---- PASS: TestHandlePortalGetPaymentMethod_CrossUserIsolation (0.00s)
---- PASS: TestHandlePortalListInvoices_ProviderError (0.00s)
+--- PASS: TestInvoiceSummary_NoBillingProfileInternalFields (0.00s)
+--- PASS: TestHandlePortalListInvoices_ResponseShapeHasNoInternalFields (0.00s)
 --- PASS: TestHandlePortalGetPaymentMethod_Unauthenticated (0.00s)
---- PASS: TestHandlePortalGetPaymentMethod_PaymentMethodNotFound (0.00s)
+--- PASS: TestHandlePortalGetPaymentMethod_CrossUserIsolation (0.00s)
+--- PASS: TestHandlePortalListInvoices_PaymentsNotConfigured (0.00s)
+--- PASS: TestHandlePortalListInvoices_FilterEmptyIDsFromProviderOutput (0.00s)
+--- PASS: TestHandlePortalListInvoices_ProviderError (0.00s)
+--- PASS: TestHandlePortalListInvoices_CrossUserIsolation (0.00s)
+--- PASS: TestHandlePortalListInvoices_NoCustomerID (0.00s)
 --- PASS: TestHandlePortalListInvoices_Unauthenticated (0.00s)
---- PASS: TestHandlePortalGetPaymentMethod_NoBillingProfile (0.00s)
---- PASS: TestHandlePortalListInvoices_NoBillingProfile (0.00s)
+--- PASS: TestServerStruct_HasPaymentsFactory (0.00s)
+--- PASS: TestHandlePortalListInvoices_ErrorMessageSanitization (0.00s)
+--- PASS: TestHandlePortalListInvoices_HandlesPreFilteredProviderOutput (0.00s)
+--- PASS: TestHandlePortalGetPaymentMethod_NilDB (0.00s)
 --- PASS: TestHandlePortalListInvoices_WithInvoices (0.00s)
+--- PASS: TestHandlePortalListInvoices_NoBillingProfile (0.00s)
+--- PASS: TestHandlePortalGetPaymentMethod_PaymentMethodNotFound (0.00s)
+--- PASS: TestDTOs_HaveClearSafeSemantics (0.00s)
+--- PASS: TestHandlePortalListInvoices_EmptySliceFromProvider (0.00s)
+--- PASS: TestPaymentMethodSafe_OnlyExposesSafeFields (0.00s)
+--- PASS: TestHandlePortalListInvoices_UsesAuthIdentityForPK (0.00s)
+--- PASS: TestHandlePortalGetPaymentMethod_DBError (0.00s)
+--- PASS: TestHandlePortalListInvoices_NilFromProvider (0.00s)
 PASS
-ok  	github.com/equaltoai/lesser-host/internal/controlplane	0.120s
+ok  	github.com/equaltoai/lesser-host/internal/controlplane	(cached)
+
+=== PAYMENTS-PROVIDER REVIEW TESTS ===
+go test -v -count=1 ./internal/payments/ -run 'TestBuildInvoiceListParams_SetsSingleAndLimit|TestIsCustomerFacingInvoiceStatus'
+
+=== RUN   TestBuildInvoiceListParams_SetsSingleAndLimit
+=== PAUSE TestBuildInvoiceListParams_SetsSingleAndLimit
+=== RUN   TestIsCustomerFacingInvoiceStatus
+=== PAUSE TestIsCustomerFacingInvoiceStatus
+=== CONT  TestBuildInvoiceListParams_SetsSingleAndLimit
+--- PASS: TestBuildInvoiceListParams_SetsSingleAndLimit (0.00s)
+=== CONT  TestIsCustomerFacingInvoiceStatus
+=== RUN   TestIsCustomerFacingInvoiceStatus/draft
+=== RUN   TestIsCustomerFacingInvoiceStatus/open
+=== RUN   TestIsCustomerFacingInvoiceStatus/paid
+=== RUN   TestIsCustomerFacingInvoiceStatus/void
+=== RUN   TestIsCustomerFacingInvoiceStatus/uncollectible
+--- PASS: TestIsCustomerFacingInvoiceStatus (0.00s)
+    --- PASS: TestIsCustomerFacingInvoiceStatus/draft (0.00s)
+    --- PASS: TestIsCustomerFacingInvoiceStatus/open (0.00s)
+    --- PASS: TestIsCustomerFacingInvoiceStatus/paid (0.00s)
+    --- PASS: TestIsCustomerFacingInvoiceStatus/void (0.00s)
+    --- PASS: TestIsCustomerFacingInvoiceStatus/uncollectible (0.00s)
+PASS
+ok  	github.com/equaltoai/lesser-host/internal/payments	(cached)
+
+=== go vet ===
+go vet ./internal/controlplane/ ./internal/payments/
+(clean — no output)
