@@ -16,7 +16,7 @@ All controlplane tests in `internal/controlplane/handlers_portal_billing_data_in
 - Redaction: no PK/SK, no account_id, no PAN/CVV, no vendor secrets, no raw keys, no customer_id, no TTL/GSI fields, no internal storage fields; safe fields (id, last4, brand, exp_month, exp_year, status) confirmed present
 - DTO naming: `invoiceSummary` and `paymentMethodSafe` enforce safe semantics
 - Error message sanitization: provider errors and DB errors wrapped in generic `app.internal` messages
-- Provider-output defence-in-depth: Stripe provider filters draft invoices via `isCustomerFacingInvoiceStatus` (status-based exclusion, tested at provider layer). Handler-layer test `TestHandlePortalListInvoices_HandlesPreFilteredProviderOutput` verifies pre-filtered provider output maps cleanly and the handler's own status guard works. `TestHandlePortalListInvoices_FilterEmptyIDsFromProviderOutput` proves empty-string invoice IDs are silently dropped by the handler
+- Provider-output defence-in-depth: Stripe provider filters draft invoices via `isCustomerFacingInvoiceStatus` (status-based exclusion, tested at provider layer). Handler-layer test `TestHandlePortalListInvoices_HandlesPreFilteredProviderOutput` verifies pre-filtered provider output maps cleanly and does not introduce draft invoices. `TestHandlePortalListInvoices_FilterEmptyIDsFromProviderOutput` proves empty-string invoice IDs are silently dropped by the handler
 
 Payments-provider review tests in `internal/payments/stripe_provider_internal_test.go` (2 review-specific test funcs):
 - `TestBuildInvoiceListParams_SetsSingleAndLimit` — verifies that the Stripe invoice.List call uses `Single: true` (prevents iterator auto-pagination beyond the first page) and `Limit` is set to the platform page size
