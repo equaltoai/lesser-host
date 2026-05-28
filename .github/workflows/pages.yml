@@ -38,11 +38,57 @@ jobs:
         run: |
           set -euo pipefail
           test -f pages/index.html
+          test -f pages/404.html
           test -f pages/styles.css
-          if grep -RInE '<script|style=' pages; then
-            echo "GitHub Pages site must stay script-free and inline-style-free." >&2
-            exit 1
-          fi
+          python3 - <<'PY'
+          from html.parser import HTMLParser
+          from pathlib import Path
+          import re
+          import sys
+
+          class PageGuard(HTMLParser):
+              def __init__(self, path):
+                  super().__init__()
+                  self.path = path
+                  self.errors = []
+                  self.ids = set()
+                  self.hrefs = []
+
+              def handle_starttag(self, tag, attrs):
+                  attrs = dict(attrs)
+                  if tag == 'script':
+                      self.errors.append('script tag is not allowed')
+                  if tag == 'style':
+                      self.errors.append('inline style tag is not allowed')
+                  for name in attrs:
+                      if name == 'style' or name.startswith('on'):
+                          self.errors.append(f'inline behavior/style attribute is not allowed: {name}')
+                  if 'id' in attrs:
+                      self.ids.add(attrs['id'])
+                  if tag == 'a' and 'href' in attrs:
+                      self.hrefs.append(attrs['href'])
+
+          failures = []
+          for path in sorted(Path('pages').glob('*.html')):
+              guard = PageGuard(path)
+              text = path.read_text(encoding='utf-8')
+              guard.feed(text)
+              for href in guard.hrefs:
+                  if href.startswith('#') and href[1:] not in guard.ids:
+                      guard.errors.append(f'missing in-page anchor target: {href}')
+              if not re.search(r'<link[^>]+rel=["\']stylesheet["\'][^>]+href=["\']styles\.css["\']', text):
+                  guard.errors.append('expected local styles.css stylesheet link')
+              failures.extend(f'{path}: {error}' for error in guard.errors)
+
+          css = Path('pages/styles.css').read_text(encoding='utf-8')
+          if '@import' in css:
+              failures.append('pages/styles.css: @import is not allowed')
+          if failures:
+              print('GitHub Pages static validation failed:', file=sys.stderr)
+              for failure in failures:
+                  print(f'- {failure}', file=sys.stderr)
+              sys.exit(1)
+          PY
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
