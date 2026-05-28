@@ -35,6 +35,7 @@ type portalTestDB struct {
 	qAudit    *ttmocks.MockQuery
 	qJob      *ttmocks.MockQuery
 	qConsent  *ttmocks.MockQuery
+	qCostTele *ttmocks.MockQuery
 
 	stubUser *models.User
 }
@@ -50,6 +51,7 @@ func newPortalTestDB() portalTestDB {
 	qAudit := new(ttmocks.MockQuery)
 	qJob := new(ttmocks.MockQuery)
 	qConsent := new(ttmocks.MockQuery)
+	qCostTele := new(ttmocks.MockQuery)
 
 	db.On("WithContext", mock.Anything).Return(db).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.User")).Return(qUser).Maybe()
@@ -61,8 +63,9 @@ func newPortalTestDB() portalTestDB {
 	db.On("Model", mock.AnythingOfType("*models.AuditLogEntry")).Return(qAudit).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.ProvisionJob")).Return(qJob).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.ProvisionConsentChallenge")).Return(qConsent).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.CostTelemetry")).Return(qCostTele).Maybe()
 
-	for _, q := range []*ttmocks.MockQuery{qUser, qCred, qInstance, qBudget, qUsage, qDomain, qAudit, qJob, qConsent} {
+	for _, q := range []*ttmocks.MockQuery{qUser, qCred, qInstance, qBudget, qUsage, qDomain, qAudit, qJob, qConsent, qCostTele} {
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("Index", mock.Anything).Return(q).Maybe()
 		q.On("Limit", mock.Anything).Return(q).Maybe()
@@ -74,7 +77,13 @@ func newPortalTestDB() portalTestDB {
 		q.On("CreateOrUpdate").Return(nil).Maybe()
 		q.On("Delete").Return(nil).Maybe()
 		q.On("Update", mock.Anything).Return(nil).Maybe()
+		q.On("OrderBy", mock.Anything, mock.Anything).Return(q).Maybe()
 	}
+
+	// DB model mocks are stubbed as no-ops so existing tests not exercising
+	// the Fleet path don't panic. Fleet enrichment (M5) now uses managed
+	// Lesser metrics over HTTP and does not query host-local tables.
+	qCostTele.On("All", mock.Anything).Return(nil).Maybe()
 
 	stubUser := &models.User{Username: "alice", Role: models.RoleCustomer, Approved: true}
 	qUser.On("First", mock.AnythingOfType("*models.User")).Return(nil).Run(func(args mock.Arguments) {
@@ -98,6 +107,7 @@ func newPortalTestDB() portalTestDB {
 		qAudit:    qAudit,
 		qJob:      qJob,
 		qConsent:  qConsent,
+		qCostTele: qCostTele,
 		stubUser:  stubUser,
 	}
 }
@@ -278,6 +288,9 @@ func TestHandlePortalListInstances(t *testing.T) {
 			{Slug: "b", Owner: "alice", Status: models.InstanceStatusActive},
 		}
 	}).Once()
+
+	// Fleet enrichment: sparkline queries return empty (best-effort, silent failure).
+	tdb.qUsage.On("All", mock.Anything).Return(nil).Maybe()
 
 	ctx := &apptheory.Context{AuthIdentity: "alice"}
 	resp, err := s.handlePortalListInstances(ctx)
