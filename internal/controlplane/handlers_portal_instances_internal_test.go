@@ -1660,6 +1660,65 @@ func TestHandlePortalGetInstance_DriftFields(t *testing.T) {
 	}
 }
 
+// TestHandlePortalGetInstance_DriftOkFallback ensures that when a newer
+// non-ok (e.g. error) update job exists alongside an older ok job for the
+// same component kind, the detail endpoint drift categorisation matches the
+// /stack endpoint: it skips the non-ok job and reports the latest ok job's
+// drift (ok), rather than picking the newest job regardless of status and
+// reporting "unknown".
+func TestHandlePortalGetInstance_DriftOkFallback(t *testing.T) {
+	t.Parallel()
+
+	tdb := newPortalTestDB()
+	s := &Server{store: store.New(tdb.db)}
+
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+
+	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive}
+	}).Once()
+
+	// Newer error job + older ok job for lesser.  ListUpdateJobsByInstance
+	// returns newest-first, so the error job comes first.
+	qUpdate := new(ttmocks.MockQuery)
+	tdb.db.On("Model", mock.AnythingOfType("*models.UpdateJob")).Return(qUpdate).Maybe()
+	addStandardMockQueryStubs(qUpdate)
+	qUpdate.On("All", mock.AnythingOfType("*[]*models.UpdateJob")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.UpdateJob](t, args, 0)
+		*dest = []*models.UpdateJob{
+			{ID: "lesser-err", InstanceSlug: "demo", Status: models.UpdateJobStatusError, LesserVersion: "v1.2.8", UpdatedAt: now},
+			{ID: "lesser-ok", InstanceSlug: "demo", Status: models.UpdateJobStatusOK, LesserVersion: "v1.2.7", UpdatedAt: now.Add(-1 * time.Hour)},
+		}
+	}).Once()
+
+	ctx := &apptheory.Context{AuthIdentity: "alice", Params: map[string]string{"slug": "demo"}}
+	resp, err := s.handlePortalGetInstance(ctx)
+	if err != nil || resp == nil || resp.Status != 200 {
+		t.Fatalf("resp=%#v err=%v", resp, err)
+	}
+
+	var body instanceResponse
+	if err := json.Unmarshal(resp.Body, &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	// Drift must be "ok" (from the successful job), matching /stack.
+	if body.LesserDrift != stackDriftOK {
+		t.Fatalf("LesserDrift = %q, want %q (should fall back to older ok job, not newer error job)", body.LesserDrift, stackDriftOK)
+	}
+
+	// Managed-update status must reflect the newest job (error).
+	if body.LesserUpdateStatus != models.UpdateJobStatusError {
+		t.Fatalf("LesserUpdateStatus = %q, want %q (should reflect newest job)", body.LesserUpdateStatus, models.UpdateJobStatusError)
+	}
+
+	// Soul anchor absence regression: zero-time must not appear in JSON.
+	if body.SoulAnchorAt != nil {
+		t.Fatalf("SoulAnchorAt = %v, want nil (zero-time absence regression)", body.SoulAnchorAt)
+	}
+}
+
 func TestHandlePortalGetInstance_DriftWireStale(t *testing.T) {
 	t.Parallel()
 

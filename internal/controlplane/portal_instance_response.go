@@ -48,35 +48,17 @@ func (s *Server) portalInstanceDetailResponse(ctx *apptheory.Context, inst *mode
 		return resp
 	}
 
-	var latestLesser *models.UpdateJob
-	var latestBody *models.UpdateJob
-	var latestMCP *models.UpdateJob
-	for _, item := range items {
-		if item == nil {
-			continue
-		}
-		switch updateJobKind(item) {
-		case updateJobKindBody:
-			if latestBody == nil {
-				latestBody = item
-			}
-		case updateJobKindMCP:
-			if latestMCP == nil {
-				latestMCP = item
-			}
-		default:
-			if latestLesser == nil {
-				latestLesser = item
-			}
-		}
-	}
+	cats := categorizeDetailUpdateJobs(items)
 
-	applyDerivedManagedUpdateSummary(&resp, latestLesser, updateJobKindLesser)
-	applyDerivedManagedUpdateSummary(&resp, latestBody, updateJobKindBody)
-	applyDerivedManagedUpdateSummary(&resp, latestMCP, updateJobKindMCP)
+	applyDerivedManagedUpdateSummary(&resp, cats.latestLesser, updateJobKindLesser)
+	applyDerivedManagedUpdateSummary(&resp, cats.latestBody, updateJobKindBody)
+	applyDerivedManagedUpdateSummary(&resp, cats.latestMCP, updateJobKindMCP)
 
-	// Per-component drift flags and summary from the same update jobs already loaded.
-	enrichDerivedDrift(&resp, latestLesser, latestBody, latestMCP)
+	// Per-component drift flags and summary.  Drift uses the latest
+	// successful (ok-status) job per kind, matching the /stack endpoint
+	// contract.  The status summary above uses the latest job overall so
+	// operators see the real current state (running, error, etc.).
+	enrichDerivedDrift(&resp, cats.latestOkLesser, cats.latestOkBody, cats.latestOkMCP)
 
 	return resp
 }
@@ -157,6 +139,58 @@ func computeMCPDriftForDetail(mcpJob *models.UpdateJob, bodyJob *models.UpdateJo
 		return stackDriftWireStale
 	}
 	return stackDriftOK
+}
+
+
+// categorizedDetailUpdateJobs holds the latest job per component kind,
+// separated into two tiers: the latest overall (any status, for managed
+// update status fields) and the latest successful (ok) job (for drift,
+// matching the /stack endpoint contract).
+type categorizedDetailUpdateJobs struct {
+	latestLesser   *models.UpdateJob
+	latestBody     *models.UpdateJob
+	latestMCP      *models.UpdateJob
+	latestOkLesser *models.UpdateJob
+	latestOkBody   *models.UpdateJob
+	latestOkMCP    *models.UpdateJob
+}
+
+// categorizeDetailUpdateJobs extracts the latest overall and latest
+// successful job per component kind from a list of update jobs (newest
+// first).  The caller receives both tiers so status summary can report
+// the real current state while drift uses the ok-tier only.
+func categorizeDetailUpdateJobs(items []*models.UpdateJob) categorizedDetailUpdateJobs {
+	var out categorizedDetailUpdateJobs
+	for _, item := range items {
+		if item == nil {
+			continue
+		}
+		isOK := strings.ToLower(strings.TrimSpace(item.Status)) == models.UpdateJobStatusOK
+		switch updateJobKind(item) {
+		case updateJobKindBody:
+			if out.latestBody == nil {
+				out.latestBody = item
+			}
+			if out.latestOkBody == nil && isOK {
+				out.latestOkBody = item
+			}
+		case updateJobKindMCP:
+			if out.latestMCP == nil {
+				out.latestMCP = item
+			}
+			if out.latestOkMCP == nil && isOK {
+				out.latestOkMCP = item
+			}
+		default:
+			if out.latestLesser == nil {
+				out.latestLesser = item
+			}
+			if out.latestOkLesser == nil && isOK {
+				out.latestOkLesser = item
+			}
+		}
+	}
+	return out
 }
 
 func applyDerivedManagedUpdateSummary(resp *instanceResponse, job *models.UpdateJob, kind string) {
