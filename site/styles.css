@@ -1,0 +1,263 @@
+:root {
+  color-scheme: dark;
+  --bg: #0a0f1d;
+  --panel: #111827;
+  --panel-soft: #172033;
+  --text: #f7fafc;
+  --muted: #a7b0c0;
+  --line: rgba(255, 255, 255, 0.12);
+  --accent: #8bd8bd;
+  --accent-strong: #55c6a1;
+  --warning: #ffd166;
+  --shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  background:
+    radial-gradient(circle at 20% 0%, rgba(85, 198, 161, 0.22), transparent 28rem),
+    radial-gradient(circle at 100% 20%, rgba(104, 121, 255, 0.16), transparent 30rem),
+    var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+}
+
+a {
+  color: inherit;
+}
+
+code {
+  color: var(--accent);
+  font: 0.95em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.hero {
+  min-height: 72vh;
+  padding: 1.25rem clamp(1rem, 4vw, 4rem) 4rem;
+}
+
+.topbar,
+.hero-content,
+main,
+footer {
+  width: min(1120px, 100%);
+  margin: 0 auto;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 0;
+}
+
+.brand {
+  font-weight: 800;
+  letter-spacing: -0.04em;
+  text-decoration: none;
+}
+
+.navlinks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.navlinks a,
+.doc-list a {
+  text-decoration: none;
+}
+
+.navlinks a:hover,
+.doc-list a:hover {
+  color: var(--accent);
+}
+
+.hero-content {
+  padding-top: clamp(3rem, 10vw, 7rem);
+}
+
+.eyebrow {
+  color: var(--accent);
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  margin: 0 0 0.85rem;
+  text-transform: uppercase;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin-top: 0;
+}
+
+h1 {
+  font-size: clamp(2.5rem, 6vw, 5.8rem);
+  letter-spacing: -0.075em;
+  line-height: 0.94;
+  max-width: 980px;
+}
+
+h2 {
+  font-size: clamp(1.8rem, 4vw, 3.2rem);
+  letter-spacing: -0.055em;
+  line-height: 1;
+}
+
+h3 {
+  font-size: 1.25rem;
+  letter-spacing: -0.025em;
+}
+
+.lede {
+  color: var(--muted);
+  font-size: clamp(1.1rem, 2vw, 1.35rem);
+  max-width: 780px;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.8rem;
+  margin-top: 2rem;
+}
+
+.button {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--text);
+  display: inline-flex;
+  font-weight: 700;
+  padding: 0.8rem 1.15rem;
+  text-decoration: none;
+}
+
+.button-primary {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+  color: #04110d;
+}
+
+main {
+  padding: 0 clamp(1rem, 4vw, 4rem) 4rem;
+}
+
+.panel,
+.section {
+  background: rgba(17, 24, 39, 0.82);
+  border: 1px solid var(--line);
+  border-radius: 2rem;
+  box-shadow: var(--shadow);
+  margin-bottom: 1.2rem;
+  padding: clamp(1.25rem, 4vw, 3rem);
+}
+
+.grid,
+.cards,
+.doc-list {
+  display: grid;
+  gap: 1rem;
+}
+
+.grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.grid article,
+.card,
+.doc-list a,
+.checklist li {
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+  border-radius: 1.25rem;
+  padding: 1.1rem;
+}
+
+.grid p,
+.card p,
+.split p,
+footer {
+  color: var(--muted);
+}
+
+.cards,
+.doc-list {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.card code {
+  display: block;
+  margin-top: 1rem;
+}
+
+.split {
+  display: grid;
+  gap: 2rem;
+  grid-template-columns: minmax(0, 1.2fr) minmax(260px, 0.8fr);
+}
+
+.checklist {
+  display: grid;
+  gap: 0.8rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.checklist li::before {
+  color: var(--warning);
+  content: "• ";
+  font-weight: 900;
+}
+
+footer {
+  padding: 2rem clamp(1rem, 4vw, 4rem) 3rem;
+  text-align: center;
+}
+
+.not-found {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+}
+
+.not-found-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 2rem;
+  max-width: 640px;
+  padding: clamp(1.5rem, 5vw, 3rem);
+}
+
+@media (max-width: 840px) {
+  .topbar,
+  .split {
+    align-items: flex-start;
+    grid-template-columns: 1fr;
+  }
+
+  .topbar {
+    flex-direction: column;
+  }
+
+  .grid,
+  .cards,
+  .doc-list {
+    grid-template-columns: 1fr;
+  }
+}
