@@ -2,8 +2,8 @@
  * Vite config for the M6 Instance Overview fixture page.
  *
  * Minimal config that serves ONLY `fixtures/m6-instance-overview.html`.
- * No API mocks are needed — the fixture component renders InstanceOverview
- * with static mock data rather than making real API calls.
+ * Aliases `src/lib/api/soul` to a fixture mock so the Souls preview
+ * renders realistic data rather than a localhost fetch error.
  *
  * File watching is disabled so this works in headless environments
  * where inotify watchers are exhausted.
@@ -25,6 +25,9 @@ export default defineConfig({
 	plugins: [svelte()],
 	resolve: {
 		alias: {
+			// Mock soul API so the Souls preview renders realistic data
+			// rather than hitting localhost.
+			'src/lib/api/soul': path.resolve(webDir, 'fixtures/__mocks__/soul.ts'),
 			src: path.resolve(webDir, 'src'),
 			'@equaltoai/greater-components-icons': path.resolve(webDir, 'src/lib/greater/icons'),
 			'@equaltoai/greater-components-primitives': path.resolve(webDir, 'src/lib/greater/primitives'),

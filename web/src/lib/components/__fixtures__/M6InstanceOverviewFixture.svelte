@@ -3,8 +3,8 @@
 M6InstanceOverviewFixture — isolated visual fixture for the M6 Instance
 Overview layout. Renders InstanceOverview with realistic mock data to
 exercise all UI states: metric cards (all unavailable), Stack card with
-drift, Activity panel (empty), Souls preview (2 bound souls), right rail
-(Snapshot/Operate/Owners).
+drift, Activity panel (empty), Souls preview (2 mock souls via aliased
+soulListMyAgents), right rail (Snapshot/Operate/Owners).
 
 Not mounted by any customer portal route — exists solely for local
 visual review and headless PNG capture at 1440×900.
@@ -61,8 +61,9 @@ visual review and headless PNG capture at 1440×900.
 		owner_avatar_hash: '',
 	};
 
-	// Provide a mock token — the fixture component never makes real API calls
-	// because the Souls fetch will fail silently in the fixture environment.
+	// Mock token — the fixture Vite config aliases src/lib/api/soul to a
+	// fixture mock that returns 2 bound souls, so the Souls preview renders
+	// the design state without a backend.
 	const fixtureToken = 'fixture-token-m6';
 </script>
 

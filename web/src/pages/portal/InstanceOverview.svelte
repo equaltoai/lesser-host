@@ -208,7 +208,7 @@ const mcpDriftBadge = $derived(driftBadge(instance.mcp_drift));
 		<div class="overview__metrics">
 			<Metric
 				label="MTD spend"
-				value={instance.tip_enabled ? '—' : '—'}
+				value="—"
 				sub="Not available"
 				tone="info"
 			/>

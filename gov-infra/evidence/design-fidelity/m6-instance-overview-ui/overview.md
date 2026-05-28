@@ -66,10 +66,11 @@ exercises:
 - Soul anchor: anchored state with relative time
 - All metric cards in honest-unavailable state
 - Empty activity sparklines
-- Bound souls (not rendered in fixture — souls fetch will fail silently)
+- Bound souls (2 mock souls via aliased `soulListMyAgents` in fixture Vite config)
 
-The fixture does NOT mock the souls API endpoint; the souls preview shows the
-"no souls bound" empty state in the fixture capture.
+The fixture Vite config aliases `src/lib/api/soul` to a fixture mock that
+returns 2 bound souls, so the Souls preview renders the design state in the
+fixture capture rather than a fetch error.
 
 ## CSP, isolation, and governance
 
