@@ -10,204 +10,568 @@
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
 
-  <header class="site-header">
-    <nav class="nav" aria-label="Primary navigation">
-      <a class="brand" href="./" aria-label="lesser-host home">
-        <span class="brand-mark" aria-hidden="true">lh</span>
-        <span>lesser-host</span>
-      </a>
-      <div class="nav-links">
-        <a href="#architecture">Architecture</a>
-        <a href="#runtime">Runtime</a>
-        <a href="#invariants">Invariants</a>
-        <a href="#docs">Docs</a>
-        <a href="https://github.com/equaltoai/lesser-host">GitHub</a>
+  <div class="app-layout">
+    <!-- Sticky Sidebar Navigation -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-header">
+        <a class="brand" href="./" aria-label="lesser-host home">
+          <span class="brand-mark" aria-hidden="true">lh</span>
+          <span class="brand-name">lesser-host</span>
+        </a>
+        <span class="version-badge">v1.2.0-beta</span>
       </div>
-    </nav>
-  </header>
 
-  <main id="main">
-    <section class="hero" aria-labelledby="page-title">
-      <div class="hero-copy">
-        <p class="eyebrow">lesser.host control plane</p>
-        <h1 id="page-title">Managed Lesser hosting with governance, trust, billing, and soul identity built in.</h1>
-        <p class="lede">
-          This repository runs the platform around managed Lesser instances: per-slug AWS account provisioning,
-          customer and operator APIs, public trust attestations, release verification, comms, billing, and the
-          soul registry that anchors EqualToAI agent identity.
-        </p>
-        <div class="hero-actions" aria-label="Primary actions">
-          <a class="button button-primary" href="#docs">Start with the docs</a>
-          <a class="button" href="https://github.com/equaltoai/lesser-host">View source</a>
+      <div class="search-container">
+        <div class="search-box">
+          <svg class="icon search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="11" cy="11" r="8"></circle>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+          </svg>
+          <input type="text" placeholder="Search documentation..." disabled aria-label="Documentation search placeholder">
         </div>
       </div>
 
-      <aside class="status-card" aria-label="Repository posture summary">
-        <p class="status-label">Repository posture</p>
-        <dl class="status-list">
-          <div>
-            <dt>Boundary</dt>
-            <dd>Host stores metadata; tenant content stays in tenant accounts.</dd>
-          </div>
-          <div>
-            <dt>Auth</dt>
-            <dd>Wallet/WebAuthn sessions for humans; SHA-256 instance-key hashes for machines.</dd>
-          </div>
-          <div>
-            <dt>Delivery</dt>
-            <dd>Single-origin CloudFront with strict CSP and path-based API routing.</dd>
-          </div>
-        </dl>
-      </aside>
-    </section>
+      <nav class="sidebar-nav" aria-label="Primary documentation navigation">
+        <div class="nav-group">
+          <p class="nav-group-title">Overview</p>
+          <a class="nav-link" href="#hero">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
+              <polyline points="9 22 9 12 15 12 15 22"></polyline>
+            </svg>
+            <span>Introduction</span>
+          </a>
+          <a class="nav-link" href="#posture">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+              <line x1="12" y1="8" x2="12" y2="16"></line>
+              <line x1="8" y1="12" x2="16" y2="12"></line>
+            </svg>
+            <span>Repository Posture</span>
+          </a>
+          <a class="nav-link" href="#capabilities">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="3" y="3" width="7" height="7"></rect>
+              <rect x="14" y="3" width="7" height="7"></rect>
+              <rect x="14" y="14" width="7" height="7"></rect>
+              <rect x="3" y="14" width="7" height="7"></rect>
+            </svg>
+            <span>Capabilities</span>
+          </a>
+        </div>
 
-    <section class="section summary-grid" aria-label="What lesser-host runs">
-      <article class="summary-card accent-blue">
-        <p class="card-kicker">Provision</p>
-        <h2>Managed instances</h2>
-        <p>Creates dedicated AWS accounts, delegates <code>slug.greater.website</code>, verifies Lesser and Body release assets, and drives CodeBuild runners.</p>
-      </article>
-      <article class="summary-card accent-green">
-        <p class="card-kicker">Trust</p>
-        <h2>Attestations and safety</h2>
-        <p>Serves public JWKS and attestation lookups, plus instance-authenticated preview, render, safety, moderation, and AI-evidence workflows.</p>
-      </article>
-      <article class="summary-card accent-yellow">
-        <p class="card-kicker">Identity</p>
-        <h2>Soul registry</h2>
-        <p>Combines on-chain ERC-721 identity anchors, off-chain TableTheory state, S3 registration artifacts, and Safe-ready governance payloads.</p>
-      </article>
-      <article class="summary-card accent-red">
-        <p class="card-kicker">Operate</p>
-        <h2>Portal, billing, and comms</h2>
-        <p>Supports wallet customer login, operator review, credits and Stripe billing primitives, inbound email, and outbound SMS/voice/email queues.</p>
-      </article>
-    </section>
+        <div class="nav-group">
+          <p class="nav-group-title">Architecture</p>
+          <a class="nav-link" href="#architecture">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <line x1="6" y1="3" x2="6" y2="15"></line>
+              <circle cx="18" cy="6" r="3"></circle>
+              <circle cx="6" cy="18" r="3"></circle>
+              <path d="M18 9a9 9 0 0 1-9 9"></path>
+            </svg>
+            <span>System Layout</span>
+          </a>
+          <a class="nav-link" href="#runtime">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
+              <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
+              <line x1="6" y1="6" x2="6.01" y2="6"></line>
+              <line x1="6" y1="18" x2="6.01" y2="18"></line>
+            </svg>
+            <span>Services Map</span>
+          </a>
+        </div>
 
-    <section id="architecture" class="section feature-section">
-      <div class="section-heading">
-        <p class="eyebrow">Architecture</p>
-        <h2>Single-origin control plane, isolated tenant runtime.</h2>
-        <p>
+        <div class="nav-group">
+          <p class="nav-group-title">Governance</p>
+          <a class="nav-link" href="#invariants">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+            </svg>
+            <span>Invariants</span>
+          </a>
+          <a class="nav-link" href="#maintainer">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polyline points="4 17 10 11 4 5"></polyline>
+              <line x1="12" y1="19" x2="20" y2="19"></line>
+            </svg>
+            <span>Maintainer Loop</span>
+          </a>
+        </div>
+
+        <div class="nav-group">
+          <p class="nav-group-title">Resources</p>
+          <a class="nav-link" href="#docs">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
+              <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
+            </svg>
+            <span>Reference Docs</span>
+          </a>
+          <a class="nav-link external-link" href="https://github.com/equaltoai/lesser-host" target="_blank" rel="noopener noreferrer">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"></path>
+            </svg>
+            <span>GitHub Repository</span>
+            <svg class="icon ext-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <line x1="7" y1="17" x2="17" y2="7"></line>
+              <polyline points="7 7 17 7 17 17"></polyline>
+            </svg>
+          </a>
+        </div>
+      </nav>
+
+      <div class="sidebar-footer">
+        <p>AGPL-3.0 License</p>
+      </div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main class="main-content" id="main">
+      <div class="ambient-glow" aria-hidden="true"></div>
+
+      <!-- Hero Section -->
+      <section id="hero" class="hero-section" aria-labelledby="page-title">
+        <div class="hero-content">
+          <p class="eyebrow">Lesser Host Control Plane</p>
+          <h1 id="page-title">Managed Lesser hosting with governance, trust, billing, and soul identity.</h1>
+          <p class="lede">
+            This repository runs the platform around managed Lesser instances: per-slug AWS account provisioning,
+            customer and operator APIs, public trust attestations, release verification, comms, billing, and the
+            soul registry that anchors EqualToAI agent identity.
+          </p>
+          <div class="hero-actions" aria-label="Primary actions">
+            <a class="button button-primary" href="#docs">
+              <span>Start with the docs</span>
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <line x1="5" y1="12" x2="19" y2="12"></line>
+                <polyline points="12 5 19 12 12 19"></polyline>
+              </svg>
+            </a>
+            <a class="button" href="https://github.com/equaltoai/lesser-host" target="_blank" rel="noopener noreferrer">
+              <span>View source</span>
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"></path>
+              </svg>
+            </a>
+          </div>
+        </div>
+      </section>
+
+      <!-- Posture Section -->
+      <section id="posture" class="posture-section" aria-labelledby="posture-title">
+        <div class="section-header-inline">
+          <svg class="icon section-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M22 12h-4l-3 9L9 3l-3 9H2"></path>
+          </svg>
+          <h2 id="posture-title">Repository Posture</h2>
+        </div>
+        <div class="posture-grid">
+          <div class="posture-card">
+            <span class="card-kicker">Boundary</span>
+            <h3>Data Isolation</h3>
+            <p>Host stores metadata only; tenant content stays strictly within tenant accounts.</p>
+          </div>
+          <div class="posture-card">
+            <span class="card-kicker">Auth</span>
+            <h3>Dual Auth Models</h3>
+            <p>Wallet/WebAuthn sessions for humans; SHA-256 instance-key hashes for machines.</p>
+          </div>
+          <div class="posture-card">
+            <span class="card-kicker">Delivery</span>
+            <h3>Single Origin</h3>
+            <p>Single-origin CloudFront with strict CSP and path-based API routing.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Capabilities Section -->
+      <section id="capabilities" class="capabilities-section" aria-labelledby="capabilities-title">
+        <div class="section-header-inline">
+          <svg class="icon section-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="3" y="3" width="7" height="7"></rect>
+            <rect x="14" y="3" width="7" height="7"></rect>
+            <rect x="14" y="14" width="7" height="7"></rect>
+            <rect x="3" y="14" width="7" height="7"></rect>
+          </svg>
+          <h2 id="capabilities-title">Core Capabilities</h2>
+        </div>
+        <div class="capabilities-grid">
+          <article class="capability-card accent-blue">
+            <div class="card-icon-container">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+              </svg>
+            </div>
+            <p class="card-kicker">Provision</p>
+            <h3>Managed instances</h3>
+            <p>Creates dedicated AWS accounts, delegates <code>slug.greater.website</code>, verifies Lesser and Body release assets, and drives CodeBuild runners.</p>
+          </article>
+          <article class="capability-card accent-green">
+            <div class="card-icon-container">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+              </svg>
+            </div>
+            <p class="card-kicker">Trust</p>
+            <h3>Attestations and safety</h3>
+            <p>Serves public JWKS and attestation lookups, plus instance-authenticated preview, render, safety, moderation, and AI-evidence workflows.</p>
+          </article>
+          <article class="capability-card accent-yellow">
+            <div class="card-icon-container">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="10"></circle>
+                <path d="M12 8v4l3 3"></path>
+              </svg>
+            </div>
+            <p class="card-kicker">Identity</p>
+            <h3>Soul registry</h3>
+            <p>Combines on-chain ERC-721 identity anchors, off-chain TableTheory state, S3 registration artifacts, and Safe-ready governance payloads.</p>
+          </article>
+          <article class="capability-card accent-red">
+            <div class="card-icon-container">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="2" y="4" width="20" height="16" rx="2"></rect>
+                <line x1="12" y1="4" x2="12" y2="20"></line>
+              </svg>
+            </div>
+            <p class="card-kicker">Operate</p>
+            <h3>Portal, billing, and comms</h3>
+            <p>Supports wallet customer login, operator review, credits and Stripe billing primitives, inbound email, and outbound SMS/voice/email queues.</p>
+          </article>
+        </div>
+      </section>
+
+      <!-- Architecture Section -->
+      <section id="architecture" class="architecture-section" aria-labelledby="architecture-title">
+        <div class="section-header-inline">
+          <svg class="icon section-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+            <polyline points="2 17 12 22 22 17"></polyline>
+            <polyline points="2 12 12 17 22 12"></polyline>
+          </svg>
+          <h2 id="architecture-title">System Architecture</h2>
+        </div>
+        <p class="section-intro">
           The host stack is AWS CDK managed and deployed through the AppTheory contract. Public traffic lands at one
           CloudFront distribution; tenant workloads run outside the host account boundary in per-slug managed accounts.
         </p>
-      </div>
-      <div class="flow" aria-label="Architecture flow">
-        <article>
-          <span class="flow-step">01</span>
-          <h3>CloudFront entry</h3>
-          <p>Static web assets and API paths share a first-party origin to preserve a strict no-inline CSP posture.</p>
-        </article>
-        <article>
-          <span class="flow-step">02</span>
-          <h3>Control and trust APIs</h3>
-          <p><code>/api/*</code>, <code>/auth/*</code>, and <code>/setup/*</code> route to the control-plane API; <code>/.well-known/*</code> and <code>/attestations*</code> route to the trust API.</p>
-        </article>
-        <article>
-          <span class="flow-step">03</span>
-          <h3>State and queues</h3>
-          <p>DynamoDB, S3, SQS, KMS, SSM, and Secrets Manager back jobs, attestations, release receipts, billing state, and operational evidence.</p>
-        </article>
-        <article>
-          <span class="flow-step">04</span>
-          <h3>Managed account runner</h3>
-          <p>The provisioning worker invokes CodeBuild to deploy verified Lesser and Body releases into the target tenant account.</p>
-        </article>
-      </div>
-    </section>
 
-    <section id="runtime" class="section">
-      <div class="section-heading compact">
-        <p class="eyebrow">Runtime map</p>
-        <h2>Go entrypoints under <code>cmd/</code></h2>
-      </div>
-      <div class="runtime-grid">
-        <article><h3>control-plane-api</h3><p>Portal, operator, setup, wallet/WebAuthn auth, provisioning triggers, updates, billing, tips, and soul APIs.</p></article>
-        <article><h3>trust-api</h3><p>Public trust surface, JWKS, attestation reads, instance-key auth, previews, safety, and AI evidence endpoints.</p></article>
-        <article><h3>provision-worker</h3><p>SQS-driven managed provisioning and update orchestration, including release preflight and CodeBuild recovery.</p></article>
-        <article><h3>render-worker</h3><p>Preview rendering, artifact storage, scheduled retention sweeps, and render queue consumption.</p></article>
-        <article><h3>ai-worker</h3><p>Moderation, safety, evidence extraction, claim verification, and attestation signing jobs.</p></article>
-        <article><h3>email-ingress</h3><p>SES inbound mail bridge from S3 events into normalized comm-worker messages.</p></article>
-        <article><h3>comm-worker</h3><p>Outbound communication delivery for host-managed soul mailbox and body communication tools.</p></article>
-        <article><h3>soul-reputation-worker</h3><p>Scheduled reputation aggregation and signed reputation/validation root publication.</p></article>
-        <article><h3>cost-telemetry-worker</h3><p>Periodic cost and usage telemetry that supports operator-visible managed-hosting economics.</p></article>
-      </div>
-    </section>
+        <div class="flow-layout">
+          <article class="flow-card">
+            <div class="flow-badge">
+              <span class="flow-step">01</span>
+            </div>
+            <div class="flow-content">
+              <h3>CloudFront entry</h3>
+              <p>Static web assets and API paths share a first-party origin to preserve a strict no-inline CSP posture.</p>
+            </div>
+          </article>
+          <article class="flow-card">
+            <div class="flow-badge">
+              <span class="flow-step">02</span>
+            </div>
+            <div class="flow-content">
+              <h3>Control and trust APIs</h3>
+              <p><code>/api/*</code>, <code>/auth/*</code>, and <code>/setup/*</code> route to the control-plane API; <code>/.well-known/*</code> and <code>/attestations*</code> route to the trust API.</p>
+            </div>
+          </article>
+          <article class="flow-card">
+            <div class="flow-badge">
+              <span class="flow-step">03</span>
+            </div>
+            <div class="flow-content">
+              <h3>State and queues</h3>
+              <p>DynamoDB, S3, SQS, KMS, SSM, and Secrets Manager back jobs, attestations, release receipts, billing state, and operational evidence.</p>
+            </div>
+          </article>
+          <article class="flow-card">
+            <div class="flow-badge">
+              <span class="flow-step">04</span>
+            </div>
+            <div class="flow-content">
+              <h3>Managed account runner</h3>
+              <p>The provisioning worker invokes CodeBuild to deploy verified Lesser and Body releases into the target tenant account.</p>
+            </div>
+          </article>
+        </div>
+      </section>
 
-    <section id="invariants" class="section invariants">
-      <div class="section-heading">
-        <p class="eyebrow">Non-negotiables</p>
-        <h2>The page is simple; the platform is high-trust.</h2>
-        <p>These constraints shape every production change in the repository.</p>
-      </div>
-      <div class="invariant-list">
-        <article>
-          <h3>Multi-tenant isolation</h3>
-          <p>Each managed instance has its own AWS account and delegated DNS zone. Host avoids tenant content and stores only control-plane metadata.</p>
-        </article>
-        <article>
-          <h3>Consumer release verification</h3>
-          <p>Lesser and lesser-body artifacts are downloaded, manifest-checked, and SHA-256 verified before any managed deployment proceeds.</p>
-        </article>
-        <article>
-          <h3>Trust API rigor</h3>
-          <p>Instance API keys are raw only at presentation time; host persists and compares hashes. Attestations are signed and publicly verifiable.</p>
-        </article>
-        <article>
-          <h3>On-chain care</h3>
-          <p>Soul and TipSplitter operations use Solidity tests, linting, Slither, Sepolia-first deploys, and Safe-ready mainnet governance.</p>
-        </article>
-        <article>
-          <h3>Governance evidence</h3>
-          <p><code>gov-infra/</code> verifiers are deterministic, fail closed, and emit evidence rather than silently weakening the rubric.</p>
-        </article>
-        <article>
-          <h3>AGPL and CSP discipline</h3>
-          <p>No proprietary blobs, no secret material in git, no inline scripts/styles, and no third-party script dependency for operator surfaces.</p>
-        </article>
-      </div>
-    </section>
+      <!-- Runtime Section -->
+      <section id="runtime" class="runtime-section" aria-labelledby="runtime-title">
+        <div class="section-header-inline">
+          <svg class="icon section-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+          </svg>
+          <h2 id="runtime-title">Services &amp; Workers</h2>
+        </div>
+        <p class="section-intro">Go entrypoints managed under the <code>cmd/</code> directory.</p>
 
-    <section class="section command-section" aria-labelledby="operator-checklist">
-      <div>
-        <p class="eyebrow">Maintainer loop</p>
-        <h2 id="operator-checklist">Validate the surfaces that match the change.</h2>
-        <p>
+        <div class="runtime-grid">
+          <article class="runtime-card">
+            <div class="runtime-header">
+              <span class="badge api-badge">API</span>
+              <h3>control-plane-api</h3>
+            </div>
+            <p>Portal, operator, setup, wallet/WebAuthn auth, provisioning triggers, updates, billing, tips, and soul APIs.</p>
+          </article>
+
+          <article class="runtime-card">
+            <div class="runtime-header">
+              <span class="badge api-badge">API</span>
+              <h3>trust-api</h3>
+            </div>
+            <p>Public trust surface, JWKS, attestation reads, instance-key auth, previews, safety, and AI evidence endpoints.</p>
+          </article>
+
+          <article class="runtime-card">
+            <div class="runtime-header">
+              <span class="badge worker-badge">Worker</span>
+              <h3>provision-worker</h3>
+            </div>
+            <p>SQS-driven managed provisioning and update orchestration, including release preflight and CodeBuild recovery.</p>
+          </article>
+
+          <article class="runtime-card">
+            <div class="runtime-header">
+              <span class="badge worker-badge">Worker</span>
+              <h3>render-worker</h3>
+            </div>
+            <p>Preview rendering, artifact storage, scheduled retention sweeps, and render queue consumption.</p>
+          </article>
+
+          <article class="runtime-card">
+            <div class="runtime-header">
+              <span class="badge worker-badge">Worker</span>
+              <h3>ai-worker</h3>
+            </div>
+            <p>Moderation, safety, evidence extraction, claim verification, and attestation signing jobs.</p>
+          </article>
+
+          <article class="runtime-card">
+            <div class="runtime-header">
+              <span class="badge ingress-badge">Ingress</span>
+              <h3>email-ingress</h3>
+            </div>
+            <p>SES inbound mail bridge from S3 events into normalized comm-worker messages.</p>
+          </article>
+
+          <article class="runtime-card">
+            <div class="runtime-header">
+              <span class="badge worker-badge">Worker</span>
+              <h3>comm-worker</h3>
+            </div>
+            <p>Outbound communication delivery for host-managed soul mailbox and body communication tools.</p>
+          </article>
+
+          <article class="runtime-card">
+            <div class="runtime-header">
+              <span class="badge worker-badge">Worker</span>
+              <h3>soul-reputation-worker</h3>
+            </div>
+            <p>Scheduled reputation aggregation and signed reputation/validation root publication.</p>
+          </article>
+
+          <article class="runtime-card">
+            <div class="runtime-header">
+              <span class="badge worker-badge">Worker</span>
+              <h3>cost-telemetry-worker</h3>
+            </div>
+            <p>Periodic cost and usage telemetry that supports operator-visible managed-hosting economics.</p>
+          </article>
+        </div>
+      </section>
+
+      <!-- Invariants Section -->
+      <section id="invariants" class="invariants-section" aria-labelledby="invariants-title">
+        <div class="section-header-inline">
+          <svg class="icon section-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+            <polyline points="9 11 11 13 15 9"></polyline>
+          </svg>
+          <h2 id="invariants-title">Non-Negotiable Invariants</h2>
+        </div>
+        <p class="section-intro">These constraints shape every production change in the repository to guarantee a high-trust architecture.</p>
+
+        <div class="invariants-grid">
+          <article class="invariant-card border-blue">
+            <h3>Multi-tenant isolation</h3>
+            <p>Each managed instance has its own AWS account and delegated DNS zone. Host avoids tenant content and stores only control-plane metadata.</p>
+          </article>
+          <article class="invariant-card border-green">
+            <h3>Consumer release verification</h3>
+            <p>Lesser and lesser-body artifacts are downloaded, manifest-checked, and SHA-256 verified before any managed deployment proceeds.</p>
+          </article>
+          <article class="invariant-card border-yellow">
+            <h3>Trust API rigor</h3>
+            <p>Instance API keys are raw only at presentation time; host persists and compares hashes. Attestations are signed and publicly verifiable.</p>
+          </article>
+          <article class="invariant-card border-red">
+            <h3>On-chain care</h3>
+            <p>Soul and TipSplitter operations use Solidity tests, linting, Slither, Sepolia-first deploys, and Safe-ready mainnet governance.</p>
+          </article>
+          <article class="invariant-card border-purple">
+            <h3>Governance evidence</h3>
+            <p><code>gov-infra/</code> verifiers are deterministic, fail closed, and emit evidence rather than silently weakening the rubric.</p>
+          </article>
+          <article class="invariant-card border-cyan">
+            <h3>AGPL and CSP discipline</h3>
+            <p>No proprietary blobs, no secret material in git, no inline scripts/styles, and no third-party script dependency for operator surfaces.</p>
+          </article>
+        </div>
+      </section>
+
+      <!-- Maintainer Loop Section -->
+      <section id="maintainer" class="maintainer-section" aria-labelledby="maintainer-title">
+        <div class="section-header-inline">
+          <svg class="icon section-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="4 17 10 11 4 5"></polyline>
+            <line x1="12" y1="19" x2="20" y2="19"></line>
+          </svg>
+          <h2 id="maintainer-title">Maintainer Loop</h2>
+        </div>
+        <p class="section-intro">
           For production changes, the normal path is branch, review, CI, lab deploy and soak, then authorized live deploy.
           CDK deploys use <code>theory app up --stage &lt;lab|live&gt; --execute</code>; do not timeout CloudFormation.
         </p>
-      </div>
-      <div class="command-card" aria-label="Common verification commands">
-        <code>go test ./...</code>
-        <code>cd web &amp;&amp; npm run lint &amp;&amp; npm run typecheck &amp;&amp; npm test</code>
-        <code>cd cdk &amp;&amp; npm run synth -- -c stage=lab</code>
-        <code>cd contracts &amp;&amp; npm test</code>
-        <code>bash gov-infra/verifiers/gov-verify-rubric.sh</code>
-      </div>
-    </section>
 
-    <section id="docs" class="section docs-section">
-      <div class="section-heading compact">
-        <p class="eyebrow">Source of truth</p>
-        <h2>Read the repository docs next.</h2>
-      </div>
-      <div class="doc-grid">
-        <a href="https://github.com/equaltoai/lesser-host/blob/main/README.md"><span>Repository README</span><small>Repo map and local verification</small></a>
-        <a href="https://github.com/equaltoai/lesser-host/blob/main/AGENTS.md"><span>Agent architecture notes</span><small>Auth, routing, deploy, and governance map</small></a>
-        <a href="https://github.com/equaltoai/lesser-host/blob/main/docs/portal.md"><span>Portal API</span><small>Customer, operator, billing, domains, updates</small></a>
-        <a href="https://github.com/equaltoai/lesser-host/blob/main/docs/managed-instance-provisioning.md"><span>Managed provisioning</span><small>Per-slug account and release-deploy contract</small></a>
-        <a href="https://github.com/equaltoai/lesser-host/blob/main/docs/managed-release-certification.md"><span>Release certification</span><small>Real consumer-path artifact verification</small></a>
-        <a href="https://github.com/equaltoai/lesser-host/blob/main/docs/attestations.md"><span>Attestations</span><small>Signed public trust payloads and JWKS</small></a>
-        <a href="https://github.com/equaltoai/lesser-host/blob/main/docs/soul-surface.md"><span>Soul surface</span><small>Registry, instance proofs, comm policy</small></a>
-        <a href="https://github.com/equaltoai/lesser-host/blob/main/docs/soul-registry.md"><span>Soul contracts</span><small>ERC-721 identity anchors and deployment discipline</small></a>
-        <a href="https://github.com/equaltoai/lesser-host/blob/main/gov-infra/README.md"><span>Governance rubric</span><small>Deterministic verifiers and evidence policy</small></a>
-      </div>
-    </section>
-  </main>
+        <div class="terminal-mockup">
+          <div class="terminal-header">
+            <div class="terminal-buttons">
+              <span class="dot close"></span>
+              <span class="dot minimize"></span>
+              <span class="dot expand"></span>
+            </div>
+            <span class="terminal-title">bash - local-verification</span>
+          </div>
+          <div class="terminal-body">
+            <pre class="terminal-code"><code><span class="prompt">$</span> go test ./...
+<span class="prompt">$</span> cd web &amp;&amp; npm run lint &amp;&amp; npm run typecheck &amp;&amp; npm test
+<span class="prompt">$</span> cd cdk &amp;&amp; npm run synth -- -c stage=lab
+<span class="prompt">$</span> cd contracts &amp;&amp; npm test
+<span class="prompt">$</span> bash gov-infra/verifiers/gov-verify-rubric.sh</code></pre>
+          </div>
+        </div>
+      </section>
 
-  <footer class="site-footer">
-    <p>AGPL-3.0-only source · Strict CSP · Multi-tenant isolation · Release-verifying managed hosting</p>
-  </footer>
+      <!-- Reference Docs Section -->
+      <section id="docs" class="docs-section" aria-labelledby="docs-title">
+        <div class="section-header-inline">
+          <svg class="icon section-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
+            <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
+          </svg>
+          <h2 id="docs-title">Reference Documentation</h2>
+        </div>
+        <p class="section-intro">In-depth guides on the control plane design, components, and security policies.</p>
+
+        <div class="doc-links-grid">
+          <a class="doc-link-card" href="https://github.com/equaltoai/lesser-host/blob/main/README.md" target="_blank" rel="noopener noreferrer">
+            <div class="doc-link-header">
+              <h3>Repository README</h3>
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <line x1="7" y1="17" x2="17" y2="7"></line>
+                <polyline points="7 7 17 7 17 17"></polyline>
+              </svg>
+            </div>
+            <p>Repository layout, building, and local verification loops.</p>
+          </a>
+
+          <a class="doc-link-card" href="https://github.com/equaltoai/lesser-host/blob/main/AGENTS.md" target="_blank" rel="noopener noreferrer">
+            <div class="doc-link-header">
+              <h3>Agent notes</h3>
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <line x1="7" y1="17" x2="17" y2="7"></line>
+                <polyline points="7 7 17 7 17 17"></polyline>
+              </svg>
+            </div>
+            <p>Auth hooks, Lambda routing, SSM secrets, and deploy contracts.</p>
+          </a>
+
+          <a class="doc-link-card" href="https://github.com/equaltoai/lesser-host/blob/main/docs/portal.md" target="_blank" rel="noopener noreferrer">
+            <div class="doc-link-header">
+              <h3>Portal API</h3>
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <line x1="7" y1="17" x2="17" y2="7"></line>
+                <polyline points="7 7 17 7 17 17"></polyline>
+              </svg>
+            </div>
+            <p>Customer registration, operator review, Stripe integration details.</p>
+          </a>
+
+          <a class="doc-link-card" href="https://github.com/equaltoai/lesser-host/blob/main/docs/managed-instance-provisioning.md" target="_blank" rel="noopener noreferrer">
+            <div class="doc-link-header">
+              <h3>Managed provisioning</h3>
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <line x1="7" y1="17" x2="17" y2="7"></line>
+                <polyline points="7 7 17 7 17 17"></polyline>
+              </svg>
+            </div>
+            <p>Per-tenant AWS accounts, DNS delegation, and runner execution.</p>
+          </a>
+
+          <a class="doc-link-card" href="https://github.com/equaltoai/lesser-host/blob/main/docs/managed-release-certification.md" target="_blank" rel="noopener noreferrer">
+            <div class="doc-link-header">
+              <h3>Release certification</h3>
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <line x1="7" y1="17" x2="17" y2="7"></line>
+                <polyline points="7 7 17 7 17 17"></polyline>
+              </svg>
+            </div>
+            <p>Validating checksums and manifests through real consumer paths.</p>
+          </a>
+
+          <a class="doc-link-card" href="https://github.com/equaltoai/lesser-host/blob/main/docs/attestations.md" target="_blank" rel="noopener noreferrer">
+            <div class="doc-link-header">
+              <h3>Attestations</h3>
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <line x1="7" y1="17" x2="17" y2="7"></line>
+                <polyline points="7 7 17 7 17 17"></polyline>
+              </svg>
+            </div>
+            <p>Cryptographically signed trust receipts and JWKS publication details.</p>
+          </a>
+
+          <a class="doc-link-card" href="https://github.com/equaltoai/lesser-host/blob/main/docs/soul-surface.md" target="_blank" rel="noopener noreferrer">
+            <div class="doc-link-header">
+              <h3>Soul surface</h3>
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <line x1="7" y1="17" x2="17" y2="7"></line>
+                <polyline points="7 7 17 7 17 17"></polyline>
+              </svg>
+            </div>
+            <p>Identity keys, peer verification, and comm policy boundaries.</p>
+          </a>
+
+          <a class="doc-link-card" href="https://github.com/equaltoai/lesser-host/blob/main/docs/soul-registry.md" target="_blank" rel="noopener noreferrer">
+            <div class="doc-link-header">
+              <h3>Soul contracts</h3>
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <line x1="7" y1="17" x2="17" y2="7"></line>
+                <polyline points="7 7 17 7 17 17"></polyline>
+              </svg>
+            </div>
+            <p>ERC-721 ledger rules, Safe multi-sig flows, and mainnet setups.</p>
+          </a>
+
+          <a class="doc-link-card" href="https://github.com/equaltoai/lesser-host/blob/main/gov-infra/README.md" target="_blank" rel="noopener noreferrer">
+            <div class="doc-link-header">
+              <h3>Governance rubric</h3>
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <line x1="7" y1="17" x2="17" y2="7"></line>
+                <polyline points="7 7 17 7 17 17"></polyline>
+              </svg>
+            </div>
+            <p>Deterministic checks, evidence directories, and audit scoring.</p>
+          </a>
+        </div>
+      </section>
+
+      <!-- Footer -->
+      <footer class="site-footer">
+        <p>AGPL-3.0-only source &bull; Strict CSP &bull; Multi-tenant isolation &bull; Release-verifying managed hosting</p>
+      </footer>
+    </main>
+  </div>
 </body>
 </html>
