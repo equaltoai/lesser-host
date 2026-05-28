@@ -227,35 +227,35 @@ Source: issue #543, design fixture portal-pages.jsx:380–423
 						<Text size="sm" weight="semibold">Accept federation</Text>
 						<Text size="xs" color="secondary">Default ALLOW; per-instance overrides below</Text>
 					</div>
-					<Switch checked={false} disabled={true} label="Accept federation" />
+					<Switch checked={false} disabled={true} aria-label="Accept federation" />
 				</div>
 				<div class="config__toggle-row">
 					<div class="config__toggle-row-body">
 						<Text size="sm" weight="semibold">Allow quote posts</Text>
 						<Text size="xs" color="secondary">Lesser-native; respects post-level permission</Text>
 					</div>
-					<Switch checked={false} disabled={true} label="Allow quote posts" />
+					<Switch checked={false} disabled={true} aria-label="Allow quote posts" />
 				</div>
 				<div class="config__toggle-row">
 					<div class="config__toggle-row-body">
 						<Text size="sm" weight="semibold">Auto-thread sync</Text>
 						<Text size="xs" color="secondary">Fetch missing replies on hit</Text>
 					</div>
-					<Switch checked={false} disabled={true} label="Auto-thread sync" />
+					<Switch checked={false} disabled={true} aria-label="Auto-thread sync" />
 				</div>
 				<div class="config__toggle-row">
 					<div class="config__toggle-row-body">
 						<Text size="sm" weight="semibold">AI moderation hint</Text>
 						<Text size="xs" color="secondary">Inline toxicity + spam scores</Text>
 					</div>
-					<Switch checked={false} disabled={true} label="AI moderation hint" />
+					<Switch checked={false} disabled={true} aria-label="AI moderation hint" />
 				</div>
 				<div class="config__toggle-row">
 					<div class="config__toggle-row-body">
 						<Text size="sm" weight="semibold">Public webfinger</Text>
 						<Text size="xs" color="secondary">Required for inbound resolution</Text>
 					</div>
-					<Switch checked={false} disabled={true} label="Public webfinger" />
+					<Switch checked={false} disabled={true} aria-label="Public webfinger" />
 				</div>
 			</div>
 		</Panel>
