@@ -16,14 +16,14 @@ import (
 // invoiceSummary is a portal-safe invoice DTO. No raw Stripe objects, no
 // account_ids, no internal storage keys, no permanent fabricated URLs.
 type invoiceSummary struct {
-	ID              string `json:"id"`
-	PeriodStart     string `json:"period_start"`
-	PeriodEnd       string `json:"period_end"`
-	AmountDue       int64  `json:"amount_due"`
-	Currency        string `json:"currency"`
-	Status          string `json:"status"`
+	ID               string `json:"id"`
+	PeriodStart      string `json:"period_start"`
+	PeriodEnd        string `json:"period_end"`
+	AmountDue        int64  `json:"amount_due"`
+	Currency         string `json:"currency"`
+	Status           string `json:"status"`
 	HostedInvoiceURL string `json:"hosted_invoice_url,omitempty"`
-	InvoicePDFURL   string `json:"invoice_pdf_url,omitempty"`
+	InvoicePDFURL    string `json:"invoice_pdf_url,omitempty"`
 }
 
 type listInvoicesResponse struct {

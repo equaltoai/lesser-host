@@ -16,18 +16,18 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
+	"github.com/equaltoai/lesser-host/internal/config"
 	"github.com/equaltoai/lesser-host/internal/payments"
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 	"github.com/equaltoai/lesser-host/internal/testutil"
-	"github.com/equaltoai/lesser-host/internal/config"
 )
 
 type billingDataTestDB struct {
-	db        *ttmocks.MockExtendedDB
-	qProfile  *ttmocks.MockQuery
-	qMethod   *ttmocks.MockQuery
-	qAudit    *ttmocks.MockQuery
+	db       *ttmocks.MockExtendedDB
+	qProfile *ttmocks.MockQuery
+	qMethod  *ttmocks.MockQuery
+	qAudit   *ttmocks.MockQuery
 }
 
 func newBillingDataTestDB() billingDataTestDB {
@@ -143,7 +143,7 @@ func TestHandlePortalListInvoices_HappyPath(t *testing.T) {
 
 	s := &Server{
 		store: store.New(tdb.db),
-		cfg: config.Config{PaymentsProvider: "mock"},
+		cfg:   config.Config{PaymentsProvider: "mock"},
 	}
 
 	ctx := makeContext("alice")
@@ -167,8 +167,8 @@ func TestHandlePortalListInvoices_WithInvoices(t *testing.T) {
 	provider := safeInvoicesProvider(sampleInvoices)
 
 	s := &Server{
-		store:           store.New(tdb.db),
-		cfg: config.Config{PaymentsProvider: paymentsProviderStripeName},
+		store:                   store.New(tdb.db),
+		cfg:                     config.Config{PaymentsProvider: paymentsProviderStripeName},
 		paymentsProviderFactory: func(name string) payments.Provider { return provider },
 	}
 
@@ -207,7 +207,7 @@ func TestHandlePortalListInvoices_NoBillingProfile(t *testing.T) {
 
 	s := &Server{
 		store: store.New(tdb.db),
-		cfg: config.Config{PaymentsProvider: paymentsProviderStripeName},
+		cfg:   config.Config{PaymentsProvider: paymentsProviderStripeName},
 	}
 
 	ctx := makeContext("alice")
@@ -244,7 +244,7 @@ func TestHandlePortalListInvoices_NoCustomerID(t *testing.T) {
 
 	s := &Server{
 		store: store.New(tdb.db),
-		cfg: config.Config{PaymentsProvider: paymentsProviderStripeName},
+		cfg:   config.Config{PaymentsProvider: paymentsProviderStripeName},
 	}
 
 	ctx := makeContext("alice")
@@ -273,8 +273,8 @@ func TestHandlePortalListInvoices_ProviderError(t *testing.T) {
 	}
 
 	s := &Server{
-		store:           store.New(tdb.db),
-		cfg: config.Config{PaymentsProvider: paymentsProviderStripeName},
+		store:                   store.New(tdb.db),
+		cfg:                     config.Config{PaymentsProvider: paymentsProviderStripeName},
 		paymentsProviderFactory: func(name string) payments.Provider { return provider },
 	}
 
@@ -295,7 +295,7 @@ func TestHandlePortalListInvoices_PaymentsNotConfigured(t *testing.T) {
 
 	s := &Server{
 		store: store.New(tdb.db),
-		cfg: config.Config{PaymentsProvider: "none"},
+		cfg:   config.Config{PaymentsProvider: "none"},
 	}
 
 	ctx := makeContext("alice")
@@ -328,8 +328,8 @@ func TestHandlePortalListInvoices_CrossUserIsolation(t *testing.T) {
 	}
 
 	s := &Server{
-		store:                    store.New(tdb.db),
-		cfg: config.Config{PaymentsProvider: paymentsProviderStripeName},
+		store:                   store.New(tdb.db),
+		cfg:                     config.Config{PaymentsProvider: paymentsProviderStripeName},
 		paymentsProviderFactory: func(name string) payments.Provider { return provider },
 	}
 
@@ -721,8 +721,8 @@ func TestHandlePortalListInvoices_ResponseShapeHasNoInternalFields(t *testing.T)
 	provider := safeInvoicesProvider(sampleInvoices)
 
 	s := &Server{
-		store:           store.New(tdb.db),
-		cfg: config.Config{PaymentsProvider: paymentsProviderStripeName},
+		store:                   store.New(tdb.db),
+		cfg:                     config.Config{PaymentsProvider: paymentsProviderStripeName},
 		paymentsProviderFactory: func(name string) payments.Provider { return provider },
 	}
 
@@ -870,7 +870,7 @@ func TestHandlePortalListInvoices_StripeNotConfiguredReturnsEmpty(t *testing.T) 
 
 	s := &Server{
 		store: store.New(tdb.db),
-		cfg: config.Config{PaymentsProvider: "none"},
+		cfg:   config.Config{PaymentsProvider: "none"},
 	}
 
 	ctx := makeContext("alice")
@@ -898,8 +898,8 @@ func TestHandlePortalListInvoices_EmptySliceFromProvider(t *testing.T) {
 	provider := safeInvoicesProvider([]payments.InvoiceInfo{})
 
 	s := &Server{
-		store:           store.New(tdb.db),
-		cfg: config.Config{PaymentsProvider: paymentsProviderStripeName},
+		store:                   store.New(tdb.db),
+		cfg:                     config.Config{PaymentsProvider: paymentsProviderStripeName},
 		paymentsProviderFactory: func(name string) payments.Provider { return provider },
 	}
 
@@ -927,8 +927,8 @@ func TestHandlePortalListInvoices_NilFromProvider(t *testing.T) {
 	provider := safeInvoicesProvider(nil)
 
 	s := &Server{
-		store:           store.New(tdb.db),
-		cfg: config.Config{PaymentsProvider: paymentsProviderStripeName},
+		store:                   store.New(tdb.db),
+		cfg:                     config.Config{PaymentsProvider: paymentsProviderStripeName},
 		paymentsProviderFactory: func(name string) payments.Provider { return provider },
 	}
 
@@ -1016,8 +1016,8 @@ func TestHandlePortalListInvoices_UsesAuthIdentityForPK(t *testing.T) {
 	provider := safeInvoicesProvider(sampleInvoices)
 
 	s := &Server{
-		store:           store.New(tdb.db),
-		cfg: config.Config{PaymentsProvider: paymentsProviderStripeName},
+		store:                   store.New(tdb.db),
+		cfg:                     config.Config{PaymentsProvider: paymentsProviderStripeName},
 		paymentsProviderFactory: func(name string) payments.Provider { return provider },
 	}
 
@@ -1072,8 +1072,8 @@ func TestHandlePortalListInvoices_ErrorMessageSanitization(t *testing.T) {
 	}
 
 	s := &Server{
-		store:           store.New(tdb.db),
-		cfg: config.Config{PaymentsProvider: paymentsProviderStripeName},
+		store:                   store.New(tdb.db),
+		cfg:                     config.Config{PaymentsProvider: paymentsProviderStripeName},
 		paymentsProviderFactory: func(name string) payments.Provider { return provider },
 	}
 
