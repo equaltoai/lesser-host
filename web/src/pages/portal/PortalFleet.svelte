@@ -6,7 +6,7 @@ Personalised landing page showing customer greeting, smart summary, four
 metric cards, an instance card grid (with Cards/Table tabs), and a right
 rail with Cost pulse, Right-now/Provisioning, and Heads-up panels.
 
-Consumes the M5 Fleet DTO fields (active_users_30d, posts_24h,
+Consumes the M5 Fleet DTO fields (peak_daily_users_30d, posts_24h,
 spark_activity, spark_cost, peers, severed) for per-instance display and
 metric computation. Fields that are zero-valued (no data yet) are shown
 honestly with placeholder copy.
@@ -42,6 +42,7 @@ Issue: equaltoai/lesser-host#539
 	import CostGauge from 'src/lib/components/CostGauge.svelte';
 	import Sparkline from 'src/lib/components/primitives/Sparkline.svelte';
 	import Metric from 'src/lib/components/primitives/Metric.svelte';
+	import Eyebrow from 'src/lib/components/primitives/Eyebrow.svelte';
 		import { portalFleetInstances } from 'src/lib/portalFleetState';
 	import { mapInstanceFleetStatus } from 'src/lib/fleetStatus';
 	import type { FleetCardMetadataItem } from 'src/lib/greater/host-platform';
@@ -87,8 +88,20 @@ Issue: equaltoai/lesser-host#539
 		Object.values(budgets).reduce((sum, b) => sum + (b.used_credits ?? 0), 0)
 	);
 
+	const totalBudgetCap = $derived.by(() =>
+		Object.values(budgets).reduce((sum, b) => sum + (b.included_credits ?? 0), 0)
+	);
+
+	const budgetedInstanceCount = $derived.by(() =>
+		Object.values(budgets).filter((b) => b.included_credits > 0).length
+	);
+
 	const totalPeers = $derived(
 		instances.reduce((sum, i) => sum + (i.peers ?? 0), 0)
+	);
+
+	const instancesWithPeers = $derived(
+		instances.filter((i) => (i.peers ?? 0) > 0).length
 	);
 
 	const uniqueRegions = $derived.by(() => {
@@ -160,8 +173,55 @@ Issue: equaltoai/lesser-host#539
 	});
 
 	/* ========================================================================
+	 * Fleet sparkline — element-wise sum by day index across instances.
+	 *
+	 * Each instance's spark_cost series represents daily cost for the same
+	 * N-day window (typically last 7 days, oldest→newest). Summing element-
+	 * wise by index produces the fleet-level daily cost curve.  flatMap +
+	 * slice would concatenate per-instance series, producing a false trend.
+	 * ======================================================================*/
+
+	const fleetCostSparkline = $derived.by(() => {
+		const maxLen = Math.max(0, ...instances.map((i) => i.spark_cost?.length ?? 0));
+		if (maxLen === 0) return [];
+		const result = new Array(maxLen).fill(0);
+		for (const inst of instances) {
+			const costs = inst.spark_cost ?? [];
+			for (let day = 0; day < costs.length; day += 1) {
+				result[day] += costs[day];
+			}
+		}
+		return result;
+	});
+
+	const hasFleetCostData = $derived(fleetCostSparkline.length > 0);
+
+	const projectedEOM = $derived.by(() => {
+		if (fleetCostSparkline.length === 0) return undefined;
+		const now = new Date();
+		const daysInMonth = new Date(now.getUTCFullYear(), now.getUTCMonth() + 1, 0).getUTCDate();
+		const dayOfMonth = now.getUTCDate();
+		const remainingDays = Math.max(0, daysInMonth - dayOfMonth);
+		if (remainingDays === 0) return undefined;
+		const avgDaily = fleetCostSparkline.reduce((s, v) => s + v, 0) / fleetCostSparkline.length;
+		return mtdSpend + avgDaily * remainingDays;
+	});
+
+	/* ========================================================================
 	 * Helpers
 	 * ======================================================================*/
+
+	function timeOfDayGreeting(): string {
+		const h = new Date().getHours();
+		if (h < 12) return 'Good morning';
+		if (h < 17) return 'Good afternoon';
+		return 'Good evening';
+	}
+
+	function currentMonthLabel(): string {
+		const now = new Date();
+		return now.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+	}
 
 	function formatError(err: unknown): string {
 		if (!err) return 'unknown error';
@@ -194,7 +254,7 @@ Issue: equaltoai/lesser-host#539
 		if (domain) items.push({ key: 'Domain', value: domain });
 		if (inst.hosted_region) items.push({ key: 'Region', value: inst.hosted_region });
 
-		items.push({ key: 'Active users', value: inst.active_users_30d != null && inst.active_users_30d > 0 ? String(inst.active_users_30d) : '—' });
+		items.push({ key: 'Active users', value: inst.peak_daily_users_30d != null && inst.peak_daily_users_30d > 0 ? String(inst.peak_daily_users_30d) : '—' });
 
 		items.push({ key: 'Posts 24h', value: inst.posts_24h != null && inst.posts_24h > 0 ? String(inst.posts_24h) : '—' });
 
@@ -207,16 +267,14 @@ Issue: equaltoai/lesser-host#539
 		return items;
 	}
 
-	function hasSparkData(inst: InstanceResponse): boolean {
-		const a = inst.spark_activity;
-		const c = inst.spark_cost;
-		return (!!a && a.length > 0) || (!!c && c.length > 0);
-	}
-
 	function getSparkValues(inst: InstanceResponse): number[] {
 		if (inst.spark_cost && inst.spark_cost.length > 0) return inst.spark_cost;
 		if (inst.spark_activity && inst.spark_activity.length > 0) return inst.spark_activity;
 		return [];
+	}
+
+	function scrollToCta() {
+		document.querySelector('.fleet-cta-card')?.scrollIntoView({ behavior: 'smooth' });
 	}
 
 	/* ========================================================================
@@ -346,9 +404,12 @@ Issue: equaltoai/lesser-host#539
 		<!-- Greeting header -->
 		<header class="fleet-header">
 			<div class="fleet-header__text">
-				<Heading level={1} size="2xl">
+				{#if !loading}
+					<Eyebrow>CUSTOMER PORTAL</Eyebrow>
+				{/if}
+				<Heading level={1} size="2xl" class="fleet-greeting">
 					{#if displayName}
-						Welcome back{displayName ? `, ${displayName}` : ''}
+						{timeOfDayGreeting()}, {displayName}.
 					{:else if !loading}
 						Fleet
 					{:else}
@@ -362,6 +423,7 @@ Issue: equaltoai/lesser-host#539
 				{/if}
 			</div>
 			<div class="fleet-header__actions">
+				<Button variant="solid" onclick={scrollToCta} disabled={loading}>Provision instance</Button>
 				<Button variant="outline" onclick={() => void loadFleet()} disabled={loading}>
 					Refresh
 				</Button>
@@ -374,10 +436,30 @@ Issue: equaltoai/lesser-host#539
 		{:else}
 			<!-- Metric cards -->
 			<div class="fleet-metrics">
-				<Metric label="Live instances" value={String(liveInstances)} tone="accent" />
-				<Metric label="Souls" value={String(soulCount)} tone="info" />
-				<Metric label="MTD spend" value={`${formatSpend(mtdSpend)} cr`} tone="warning" />
-				<Metric label="Federation" value={String(totalPeers)} tone="success" />
+				<Metric
+					label="Live instances"
+					value={String(liveInstances)}
+					sub={instances.length > 0 ? `of ${instances.length} total` : undefined}
+					tone="accent"
+				/>
+				<Metric
+					label="Souls"
+					value={String(soulCount)}
+					sub={soulCount > 0 ? 'deployed agents' : undefined}
+					tone="info"
+				/>
+				<Metric
+					label="MTD spend"
+					value={`${formatSpend(mtdSpend)} cr`}
+					sub={totalBudgetCap > 0 ? `of ${formatSpend(totalBudgetCap)} cr budget` : 'no budgets set'}
+					tone="warning"
+				/>
+				<Metric
+					label="Federation"
+					value={String(totalPeers)}
+					sub={instancesWithPeers > 0 ? `across ${instancesWithPeers} instance${instancesWithPeers !== 1 ? 's' : ''}` : undefined}
+					tone="success"
+				/>
 			</div>
 
 			<!-- Fleet panel -->
@@ -475,7 +557,7 @@ Issue: equaltoai/lesser-host#539
 							</div>
 						{/each}
 
-						<!-- New-instance CTA card -->
+						<!-- New-instance CTA card (secondary; hero button is primary) -->
 						<div class="fleet-cards__item fleet-cta-card" role="listitem">
 							<div class="fleet-cta-card__inner">
 								<Heading level={3} size="base">New instance</Heading>
@@ -563,19 +645,47 @@ Issue: equaltoai/lesser-host#539
 		<!-- Cost pulse panel -->
 		<Panel title="Cost pulse" headerLevel={3} variant="flat" padding="sm">
 			{#if !loading && instances.length > 0}
+				<div class="fleet-rail__eyebrow">
+					<Text size="xs" color="secondary">{currentMonthLabel()}</Text>
+				</div>
 				<div class="fleet-rail__pulse">
 					<span class="fleet-rail__live-dot" aria-label="Live"></span>
-					<Text size="sm"><strong>{formatSpend(mtdSpend)} cr</strong> spent MTD</Text>
+					<Text size="sm">
+						<strong>{formatSpend(mtdSpend)} cr</strong>
+						{#if totalBudgetCap > 0}
+							 of {formatSpend(totalBudgetCap)} cr budget
+						{/if}
+					</Text>
 				</div>
-				{#if instances.some((i) => (i.spark_cost?.length ?? 0) > 0)}
-					<Sparkline
-						values={instances
-							.flatMap((i) => i.spark_cost ?? [])
-							.slice(0, 30)}
-						width={200}
-						height={48}
-						color="var(--ds-warning-500)"
-					/>
+				{#if totalBudgetCap > 0}
+					{@const pct = Math.min(100, Math.round((mtdSpend / totalBudgetCap) * 100))}
+					<div class="fleet-rail__budget-bar">
+						<div
+							class="fleet-rail__budget-fill"
+							data-ratio={pct}
+							role="progressbar"
+							aria-valuenow={pct}
+							aria-valuemin="0"
+							aria-valuemax="100"
+							aria-label={`${pct}% of budget used`}
+						></div>
+					</div>
+					<Text size="xs" color="secondary">
+						{Math.round((mtdSpend / totalBudgetCap) * 100)}% used
+						{#if projectedEOM != null}
+							 — proj. EOM {formatSpend(projectedEOM)} cr
+						{/if}
+					</Text>
+				{/if}
+				{#if hasFleetCostData}
+					<div class="fleet-rail__sparkline">
+						<Sparkline
+							values={fleetCostSparkline}
+							width={200}
+							height={48}
+							color="var(--ds-warning-500)"
+						/>
+					</div>
 				{:else}
 					<Text size="xs" color="secondary">No cost-telemetry data yet</Text>
 				{/if}
@@ -595,9 +705,16 @@ Issue: equaltoai/lesser-host#539
 					{#each provisioningInstances as pi (pi.slug)}
 						<li class="fleet-rail__list-item">
 							<span class="fleet-rail__list-dot" data-status="provisioning" aria-hidden="true"></span>
-							<Text size="sm">
-								<strong>{pi.slug}</strong> — Provisioning
-							</Text>
+							<div class="fleet-rail__list-text">
+								<Text size="sm">
+									<strong>{pi.slug}</strong>
+								</Text>
+								<Text size="xs" color="secondary">
+									{#if pi.hosted_region}{pi.hosted_region}{/if}
+									{#if pi.provision_status} — {pi.provision_status}{/if}
+									— <Link {...linkProps(`/portal/instances/${pi.slug}`)} variant="default">View details</Link>
+								</Text>
+							</div>
 						</li>
 					{/each}
 				</ul>
@@ -867,11 +984,15 @@ Issue: equaltoai/lesser-host#539
 
 	/* ── Right rail panels ──────────────────────────────────────────── */
 
+	.fleet-rail__eyebrow {
+		margin-bottom: var(--gr-spacing-scale-1, 0.25rem);
+	}
+
 	.fleet-rail__pulse {
 		display: flex;
 		align-items: center;
 		gap: var(--gr-spacing-scale-2, 0.5rem);
-		margin-bottom: var(--gr-spacing-scale-3, 0.75rem);
+		margin-bottom: var(--gr-spacing-scale-2, 0.5rem);
 	}
 
 	/* CSP-safe live dot (CSS-only, no inline style) */
@@ -890,6 +1011,128 @@ Issue: equaltoai/lesser-host#539
 		50% { opacity: 0.4; }
 	}
 
+	/* CSP-safe budget progress bar */
+	.fleet-rail__budget-bar {
+		width: 100%;
+		height: 4px;
+		border-radius: 2px;
+		background: var(--gr-semantic-background-subtle, var(--gr-color-gray-100));
+		margin-bottom: var(--gr-spacing-scale-1, 0.25rem);
+		overflow: hidden;
+	}
+
+	.fleet-rail__budget-fill {
+		height: 100%;
+		border-radius: 2px;
+		background: var(--ds-warning-500, var(--gr-color-amber-500));
+	}
+
+	.fleet-rail__budget-fill[data-ratio='0'] { width: 0%; }
+	.fleet-rail__budget-fill[data-ratio='1'] { width: 1%; }
+	.fleet-rail__budget-fill[data-ratio='2'] { width: 2%; }
+	.fleet-rail__budget-fill[data-ratio='3'] { width: 3%; }
+	.fleet-rail__budget-fill[data-ratio='4'] { width: 4%; }
+	.fleet-rail__budget-fill[data-ratio='5'] { width: 5%; }
+	.fleet-rail__budget-fill[data-ratio='6'] { width: 6%; }
+	.fleet-rail__budget-fill[data-ratio='7'] { width: 7%; }
+	.fleet-rail__budget-fill[data-ratio='8'] { width: 8%; }
+	.fleet-rail__budget-fill[data-ratio='9'] { width: 9%; }
+	.fleet-rail__budget-fill[data-ratio='10'] { width: 10%; }
+	.fleet-rail__budget-fill[data-ratio='11'] { width: 11%; }
+	.fleet-rail__budget-fill[data-ratio='12'] { width: 12%; }
+	.fleet-rail__budget-fill[data-ratio='13'] { width: 13%; }
+	.fleet-rail__budget-fill[data-ratio='14'] { width: 14%; }
+	.fleet-rail__budget-fill[data-ratio='15'] { width: 15%; }
+	.fleet-rail__budget-fill[data-ratio='16'] { width: 16%; }
+	.fleet-rail__budget-fill[data-ratio='17'] { width: 17%; }
+	.fleet-rail__budget-fill[data-ratio='18'] { width: 18%; }
+	.fleet-rail__budget-fill[data-ratio='19'] { width: 19%; }
+	.fleet-rail__budget-fill[data-ratio='20'] { width: 20%; }
+	.fleet-rail__budget-fill[data-ratio='21'] { width: 21%; }
+	.fleet-rail__budget-fill[data-ratio='22'] { width: 22%; }
+	.fleet-rail__budget-fill[data-ratio='23'] { width: 23%; }
+	.fleet-rail__budget-fill[data-ratio='24'] { width: 24%; }
+	.fleet-rail__budget-fill[data-ratio='25'] { width: 25%; }
+	.fleet-rail__budget-fill[data-ratio='26'] { width: 26%; }
+	.fleet-rail__budget-fill[data-ratio='27'] { width: 27%; }
+	.fleet-rail__budget-fill[data-ratio='28'] { width: 28%; }
+	.fleet-rail__budget-fill[data-ratio='29'] { width: 29%; }
+	.fleet-rail__budget-fill[data-ratio='30'] { width: 30%; }
+	.fleet-rail__budget-fill[data-ratio='31'] { width: 31%; }
+	.fleet-rail__budget-fill[data-ratio='32'] { width: 32%; }
+	.fleet-rail__budget-fill[data-ratio='33'] { width: 33%; }
+	.fleet-rail__budget-fill[data-ratio='34'] { width: 34%; }
+	.fleet-rail__budget-fill[data-ratio='35'] { width: 35%; }
+	.fleet-rail__budget-fill[data-ratio='36'] { width: 36%; }
+	.fleet-rail__budget-fill[data-ratio='37'] { width: 37%; }
+	.fleet-rail__budget-fill[data-ratio='38'] { width: 38%; }
+	.fleet-rail__budget-fill[data-ratio='39'] { width: 39%; }
+	.fleet-rail__budget-fill[data-ratio='40'] { width: 40%; }
+	.fleet-rail__budget-fill[data-ratio='41'] { width: 41%; }
+	.fleet-rail__budget-fill[data-ratio='42'] { width: 42%; }
+	.fleet-rail__budget-fill[data-ratio='43'] { width: 43%; }
+	.fleet-rail__budget-fill[data-ratio='44'] { width: 44%; }
+	.fleet-rail__budget-fill[data-ratio='45'] { width: 45%; }
+	.fleet-rail__budget-fill[data-ratio='46'] { width: 46%; }
+	.fleet-rail__budget-fill[data-ratio='47'] { width: 47%; }
+	.fleet-rail__budget-fill[data-ratio='48'] { width: 48%; }
+	.fleet-rail__budget-fill[data-ratio='49'] { width: 49%; }
+	.fleet-rail__budget-fill[data-ratio='50'] { width: 50%; }
+	.fleet-rail__budget-fill[data-ratio='51'] { width: 51%; }
+	.fleet-rail__budget-fill[data-ratio='52'] { width: 52%; }
+	.fleet-rail__budget-fill[data-ratio='53'] { width: 53%; }
+	.fleet-rail__budget-fill[data-ratio='54'] { width: 54%; }
+	.fleet-rail__budget-fill[data-ratio='55'] { width: 55%; }
+	.fleet-rail__budget-fill[data-ratio='56'] { width: 56%; }
+	.fleet-rail__budget-fill[data-ratio='57'] { width: 57%; }
+	.fleet-rail__budget-fill[data-ratio='58'] { width: 58%; }
+	.fleet-rail__budget-fill[data-ratio='59'] { width: 59%; }
+	.fleet-rail__budget-fill[data-ratio='60'] { width: 60%; }
+	.fleet-rail__budget-fill[data-ratio='61'] { width: 61%; }
+	.fleet-rail__budget-fill[data-ratio='62'] { width: 62%; }
+	.fleet-rail__budget-fill[data-ratio='63'] { width: 63%; }
+	.fleet-rail__budget-fill[data-ratio='64'] { width: 64%; }
+	.fleet-rail__budget-fill[data-ratio='65'] { width: 65%; }
+	.fleet-rail__budget-fill[data-ratio='66'] { width: 66%; }
+	.fleet-rail__budget-fill[data-ratio='67'] { width: 67%; }
+	.fleet-rail__budget-fill[data-ratio='68'] { width: 68%; }
+	.fleet-rail__budget-fill[data-ratio='69'] { width: 69%; }
+	.fleet-rail__budget-fill[data-ratio='70'] { width: 70%; }
+	.fleet-rail__budget-fill[data-ratio='71'] { width: 71%; }
+	.fleet-rail__budget-fill[data-ratio='72'] { width: 72%; }
+	.fleet-rail__budget-fill[data-ratio='73'] { width: 73%; }
+	.fleet-rail__budget-fill[data-ratio='74'] { width: 74%; }
+	.fleet-rail__budget-fill[data-ratio='75'] { width: 75%; }
+	.fleet-rail__budget-fill[data-ratio='76'] { width: 76%; }
+	.fleet-rail__budget-fill[data-ratio='77'] { width: 77%; }
+	.fleet-rail__budget-fill[data-ratio='78'] { width: 78%; }
+	.fleet-rail__budget-fill[data-ratio='79'] { width: 79%; }
+	.fleet-rail__budget-fill[data-ratio='80'] { width: 80%; }
+	.fleet-rail__budget-fill[data-ratio='81'] { width: 81%; }
+	.fleet-rail__budget-fill[data-ratio='82'] { width: 82%; }
+	.fleet-rail__budget-fill[data-ratio='83'] { width: 83%; }
+	.fleet-rail__budget-fill[data-ratio='84'] { width: 84%; }
+	.fleet-rail__budget-fill[data-ratio='85'] { width: 85%; }
+	.fleet-rail__budget-fill[data-ratio='86'] { width: 86%; }
+	.fleet-rail__budget-fill[data-ratio='87'] { width: 87%; }
+	.fleet-rail__budget-fill[data-ratio='88'] { width: 88%; }
+	.fleet-rail__budget-fill[data-ratio='89'] { width: 89%; }
+	.fleet-rail__budget-fill[data-ratio='90'] { width: 90%; }
+	.fleet-rail__budget-fill[data-ratio='91'] { width: 91%; }
+	.fleet-rail__budget-fill[data-ratio='92'] { width: 92%; }
+	.fleet-rail__budget-fill[data-ratio='93'] { width: 93%; }
+	.fleet-rail__budget-fill[data-ratio='94'] { width: 94%; }
+	.fleet-rail__budget-fill[data-ratio='95'] { width: 95%; }
+	.fleet-rail__budget-fill[data-ratio='96'] { width: 96%; }
+	.fleet-rail__budget-fill[data-ratio='97'] { width: 97%; }
+	.fleet-rail__budget-fill[data-ratio='98'] { width: 98%; }
+	.fleet-rail__budget-fill[data-ratio='99'] { width: 99%; }
+	.fleet-rail__budget-fill[data-ratio='100'] { width: 100%; }
+
+	.fleet-rail__sparkline {
+		margin-top: var(--gr-spacing-scale-2, 0.5rem);
+	}
+
 	/* CSP-safe status dots for right-rail list items */
 	.fleet-rail__list {
 		list-style: none;
@@ -902,8 +1145,14 @@ Issue: equaltoai/lesser-host#539
 
 	.fleet-rail__list-item {
 		display: flex;
-		align-items: center;
+		align-items: flex-start;
 		gap: var(--gr-spacing-scale-2, 0.5rem);
+	}
+
+	.fleet-rail__list-text {
+		display: flex;
+		flex-direction: column;
+		gap: var(--gr-spacing-scale-1, 0.25rem);
 	}
 
 	.fleet-rail__list-dot {
@@ -912,6 +1161,7 @@ Issue: equaltoai/lesser-host#539
 		height: 8px;
 		border-radius: 50%;
 		flex-shrink: 0;
+		margin-top: 0.35em;
 		background: var(--gr-color-gray-400);
 	}
 
