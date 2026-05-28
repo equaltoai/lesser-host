@@ -1,9 +1,9 @@
 # M3 — ⌘K Command Palette — Design Fidelity Evidence
 
-**Milestone:** M3 — ⌘K command palette  
-**Issue:** [#537](https://github.com/equaltoai/lesser-host/issues/537)  
-**PR:** [#554](https://github.com/equaltoai/lesser-host/pull/554)  
-**Date:** 2026-05-27  
+**Milestone:** M3 — ⌘K command palette
+**Issue:** [#537](https://github.com/equaltoai/lesser-host/issues/537)
+**PR:** [#554](https://github.com/equaltoai/lesser-host/pull/554)
+**Date:** 2026-05-28
 
 ## Screenshot
 
@@ -21,16 +21,16 @@
 | Fixture entry | `web/fixtures/m3-cmdk.ts` |
 | Vite config | `web/fixtures/vite.fixture.m3.config.ts` |
 | Artifact type | **Fixture screenshot** — the CommandPalette is rendered directly with static group data (`open={true}`), not nested inside PortalShell. This isolates the M3 palette surface from PortalShell's API-dependent lifecycle. |
-| Comparison basis | The fixture populates all four groups (Navigate, Actions, Instances, Souls) with the same items PortalShell produces at runtime; the rendered palette is visually identical to what a user sees after pressing ⌘K. |
+| Comparison basis | The fixture populates all four groups (Navigate, Actions, Instances, Souls) with the same items PortalShell produces at runtime, and the `placeholder` prop is passed identically in both the fixture and PortalShell's `<CommandPalette>` call-site. No `<kbd>` shortcut chips are set on any items in either context. The fixture PNG therefore reflects what a user sees after pressing ⌘K: same placeholder text, same item layout, same absence of per-item shortcut chips. |
 | Groups rendered | Navigate (7 items: Fleet, Instance list, Souls, Trust, Account, Billing, Operator Console), Actions (4 items: Log out, New instance… [disabled], Request a soul…, Refresh data [disabled]), Instances (4 items: my-instance, staging-env, demo-site, dev-sandbox), Souls (3 items: ghost, scribe, sentinel) |
 
 ### Visual inspection notes
 
 - The palette renders as a modal overlay (semi-transparent dark backdrop) with a centered white panel at ~10vh from the top.
-- The search input is focused and empty on open; the placeholder reads "Search instances, souls, jobs…".
+- The search input is focused and empty on open; the placeholder reads "Search instances, souls, jobs…" (same string passed as `placeholder` prop in both `PortalShell.svelte` and `M3CmdkFixture.svelte`).
 - Four groups render with uppercase section headers (Navigate, Actions, Instances, Souls).
 - Disabled items (New instance…, Refresh data) render at reduced opacity with `aria-disabled="true"`.
-- The "Go to Fleet" item shows a `F` shortcut kbd chip.
+- No per-item shortcut chips (no `<kbd>` rendered on any palette entry).
 - The status bar at the bottom reads "18 results".
 - All styling consumes `--gr-*` tokens via the DS bridge; no inline styles are present.
 
@@ -96,18 +96,46 @@ here for future milestone sweep-up.
 
 ## Deliberate visual deviations
 
+M3 consumes the canonical greater-shell `CommandPalette` component (which
+provides focus trap, keyboard navigation, fuzzy filtering, and live-region
+announcements) rather than implementing a bespoke palette. This decision
+carries deliberate visual differences from the React mockup in the design
+bundle (`shell.jsx:249-329`):
+
+- **No leading chevron per item.** The React mockup prepends a `>` character
+  to each item label; the greater-shell component does not render a leading
+  glyph.
+- **Stacked label + description vs. inline hint.** The greater-shell
+  component stacks the item description below the label rather than
+  rendering a single line with an inline hint separated by `—`.
+- **No per-item stage badge.** The React mockup shows a rounded-pill stage
+  badge (e.g. "Beta", "Stable") to the right of each item description.
+  The greater-shell component does not include stage badges in the item
+  template.
+- **"N results" footer.** The greater-shell component renders a status bar
+  at the bottom showing a live result count (e.g. "18 results"). The
+  React mockup has no equivalent footer element.
+- **No "esc" chip in the search input.** The React mockup renders an
+  `<kbd>esc</kbd>` chip at the right edge of the search input; the
+  greater-shell component does not include one.
+- **No per-item shortcut chips.** The design mockup has no per-item
+  shortcut `<kbd>` chips, and M3 sets no `item.shortcut` on any palette
+  entry — matching the design.
+- **No search icon in the input.** The greater-shell component does not
+  render a leading icon in the search input. The topbar trigger button
+  shows a `<SearchIcon>`, establishing the visual association.
 - **No custom panel styling.** The palette reuses the greater-shell
   `CommandPalette` component's default styling (`.gr-shell-command-palette__*`
   CSS classes) which consumes `--gr-*` tokens. Host's DS bridge maps
   these to the Agent Genesis palette, inheriting the Greater design
   language.
-- **No `kbd` shortcut chips on individual items.** The greater-shell
-  component supports `item.shortcut` (renders a `<kbd>` chip), but
-  M3 does not set shortcuts on any item. The only visible keyboard
-  hint is the "⌘K" chip in the topbar trigger button.
-- **No search icon in the input.** The greater-shell component does
-  not render a leading icon in the search input. The topbar trigger
-  button shows a `<SearchIcon>`, establishing the visual association.
+
+These deviations stem from consuming a canonical, a11y-complete component
+rather than reimplementing the React wireframe pixel-for-pixel. The
+greater-shell component provides keyboard navigation, focus trapping,
+screen-reader announcements, and CSP-safe rendering that a bespoke
+reimplementation would need to replicate — and would need to maintain
+across future greater-shell releases.
 
 ## CSP posture
 

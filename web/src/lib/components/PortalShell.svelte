@@ -366,7 +366,6 @@ Issue: equaltoai/lesser-host#536
 				label: 'Go to Fleet',
 				description: 'Customer fleet view',
 				keywords: ['portal', 'instances', 'overview'],
-				shortcut: 'F',
 			},
 			{
 				id: 'nav.legacy-instances',
@@ -735,6 +734,7 @@ Issue: equaltoai/lesser-host#536
 	bind:open={paletteOpen}
 	bind:query={paletteQuery}
 	label="Portal command palette"
+	placeholder="Search instances, souls, jobs…"
 	groups={paletteGroups}
 	onselect={handlePaletteSelect}
 />

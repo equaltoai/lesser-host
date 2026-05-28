@@ -30,7 +30,6 @@ Strict-CSP safe: no inline styles, no inline event handlers.
 				label: 'Go to Fleet',
 				description: 'Customer fleet view',
 				keywords: ['portal', 'instances', 'overview'],
-				shortcut: 'F',
 			},
 			{
 				id: 'nav.instances',
