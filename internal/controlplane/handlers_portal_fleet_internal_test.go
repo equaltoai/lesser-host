@@ -21,8 +21,9 @@ import (
 )
 
 const (
-	testFleetOwner = "alice"
-	testFleetKey   = "test-key"
+	testFleetOwner           = "alice"
+	testFleetKey             = "test-key"
+	testInstanceKeyPlaintext = "fresh-key"
 )
 
 // managedMetricsJSON returns a JSON response body for the managed Lesser metrics
@@ -108,14 +109,14 @@ func TestFleetDataDTORedactionProof(t *testing.T) {
 	t.Parallel()
 
 	resp := instanceResponse{
-		Slug:           "demo",
-		Owner:          testFleetOwner,
-		Status:         "active",
-		SparkActivity:  []int64{1, 2, 3, 4, 5, 6, 7},
-		SparkCost:      []float64{0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7},
+		Slug:              "demo",
+		Owner:             testFleetOwner,
+		Status:            "active",
+		SparkActivity:     []int64{1, 2, 3, 4, 5, 6, 7},
+		SparkCost:         []float64{0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7},
 		PeakDailyUsers30d: 42,
-		Posts24h:       10,
-		Peers:          3,
+		Posts24h:          10,
+		Peers:             3,
 	}
 
 	b, err := json.Marshal(resp)
@@ -878,7 +879,7 @@ func TestResolveInstanceKeyCachedHit(t *testing.T) {
 		instanceKeyCache: newInstanceKeyCache(),
 		fetchInstanceKeyPlaintextFunc: func(_ context.Context, _ *models.Instance) (string, error) {
 			fetchCalls++
-			return "fresh-key", nil
+			return testInstanceKeyPlaintext, nil
 		},
 	}
 
@@ -891,7 +892,7 @@ func TestResolveInstanceKeyCachedHit(t *testing.T) {
 	if err1 != nil {
 		t.Fatalf("first resolve: %v", err1)
 	}
-	if key1 != "fresh-key" {
+	if key1 != testInstanceKeyPlaintext {
 		t.Errorf("first key = %q, want fresh-key", key1)
 	}
 	if fetchCalls != 1 {
@@ -903,7 +904,7 @@ func TestResolveInstanceKeyCachedHit(t *testing.T) {
 	if err2 != nil {
 		t.Fatalf("second resolve: %v", err2)
 	}
-	if key2 != "fresh-key" {
+	if key2 != testInstanceKeyPlaintext {
 		t.Errorf("second key = %q, want fresh-key", key2)
 	}
 	if fetchCalls != 1 {
@@ -921,7 +922,7 @@ func TestResolveInstanceKeyCachedExpiry(t *testing.T) {
 		instanceKeyCache: newInstanceKeyCache(),
 		fetchInstanceKeyPlaintextFunc: func(_ context.Context, _ *models.Instance) (string, error) {
 			fetchCalls++
-			return "fresh-key", nil
+			return testInstanceKeyPlaintext, nil
 		},
 	}
 
