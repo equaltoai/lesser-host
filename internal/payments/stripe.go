@@ -11,6 +11,7 @@ import (
 	"github.com/stripe/stripe-go/v79"
 	checkoutsession "github.com/stripe/stripe-go/v79/checkout/session"
 	"github.com/stripe/stripe-go/v79/customer"
+	"github.com/stripe/stripe-go/v79/invoice"
 	"github.com/stripe/stripe-go/v79/paymentmethod"
 	"github.com/stripe/stripe-go/v79/setupintent"
 	"github.com/stripe/stripe-go/v79/webhook"
@@ -295,6 +296,87 @@ func (p stripeProvider) ResolveSetupPaymentMethod(ctx context.Context, setupInte
 		out.Last4 = strings.TrimSpace(pm.Card.Last4)
 		out.ExpMonth = int64(pm.Card.ExpMonth)
 		out.ExpYear = int64(pm.Card.ExpYear)
+	}
+
+	return out, nil
+}
+
+func dateStringFromUnix(ts int64) string {
+	if ts <= 0 {
+		return ""
+	}
+	return time.Unix(ts, 0).UTC().Format(time.RFC3339)
+}
+
+// buildInvoiceListParams constructs a Stripe invoice list params object for a
+// single page. Single=true prevents the iterator from auto-paginating through
+// the entire customer history.
+func buildInvoiceListParams(customerID string, limit int64) *stripe.InvoiceListParams {
+	return &stripe.InvoiceListParams{
+		ListParams: stripe.ListParams{
+			Limit:  stripe.Int64(limit),
+			Single: true,
+		},
+		Customer: stripe.String(customerID),
+	}
+}
+
+// isCustomerFacingInvoiceStatus returns true for finalized invoice statuses
+// (open, paid, void, uncollectible) and false for drafts and unknowns.
+func isCustomerFacingInvoiceStatus(status stripe.InvoiceStatus) bool {
+	switch status {
+	case stripe.InvoiceStatusOpen, stripe.InvoiceStatusPaid,
+		stripe.InvoiceStatusVoid, stripe.InvoiceStatusUncollectible:
+		return true
+	default:
+		return false
+	}
+}
+
+func (p stripeProvider) ListRecentInvoices(ctx context.Context, customerID string, limit int64) ([]InvoiceInfo, error) {
+	if err := p.ensureKey(ctx); err != nil {
+		return nil, err
+	}
+
+	customerID = strings.TrimSpace(customerID)
+	if customerID == "" {
+		return nil, fmt.Errorf("customer id is required")
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 10
+	}
+
+	params := buildInvoiceListParams(customerID, limit)
+
+	iter := invoice.List(params)
+	var out []InvoiceInfo
+	for iter.Next() {
+		inv := iter.Invoice()
+		if inv == nil || strings.TrimSpace(inv.ID) == "" {
+			continue
+		}
+		// Exclude draft invoices — they are not customer-facing.
+		if !isCustomerFacingInvoiceStatus(inv.Status) {
+			continue
+		}
+		out = append(out, InvoiceInfo{
+			ID:          strings.TrimSpace(inv.ID),
+			PeriodStart: dateStringFromUnix(inv.PeriodStart),
+			PeriodEnd:   dateStringFromUnix(inv.PeriodEnd),
+			AmountDue:   inv.AmountDue,
+			Currency:    strings.TrimSpace(string(inv.Currency)),
+			Status:      strings.TrimSpace(string(inv.Status)),
+			HostedURL:   strings.TrimSpace(inv.HostedInvoiceURL),
+			PDFURL:      strings.TrimSpace(inv.InvoicePDF),
+		})
+		// Defensive break: never exceed the requested limit even if filtering
+		// changes the effective count from a page.
+		if len(out) >= int(limit) {
+			break
+		}
+	}
+	if err := iter.Err(); err != nil {
+		return nil, err
 	}
 
 	return out, nil
