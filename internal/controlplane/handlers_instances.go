@@ -110,12 +110,12 @@ type instanceResponse struct {
 	// fleetEnrichFromManagedMetrics. posts_24h, sig_fails_24h, peers, and
 	// severed are not yet counterized on the managed Lesser side.
 	PeakDailyUsers30d int64     `json:"peak_daily_users_30d,omitempty"`
-	Posts24h       int64     `json:"posts_24h,omitempty"`
-	SigFails24h    int64     `json:"sig_fails_24h,omitempty"`
-	SparkActivity  []int64   `json:"spark_activity,omitempty"`
-	SparkCost      []float64 `json:"spark_cost,omitempty"`
-	Peers          int64     `json:"peers,omitempty"`
-	Severed        int64     `json:"severed,omitempty"`
+	Posts24h          int64     `json:"posts_24h,omitempty"`
+	SigFails24h       int64     `json:"sig_fails_24h,omitempty"`
+	SparkActivity     []int64   `json:"spark_activity,omitempty"`
+	SparkCost         []float64 `json:"spark_cost,omitempty"`
+	Peers             int64     `json:"peers,omitempty"`
+	Severed           int64     `json:"severed,omitempty"`
 }
 
 type listInstancesResponse struct {

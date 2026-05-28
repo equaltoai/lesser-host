@@ -96,7 +96,7 @@ func NewServer(cfg config.Config, st *store.Store) *Server {
 		srv.mailboxContentStore = commmailbox.NewS3Store(cfg.SoulCommMailboxBucketName)
 	}
 	srv.enqueueCommMessage = srv.queues.enqueueCommMessage
-		srv.instanceKeyCache = newInstanceKeyCache()
+	srv.instanceKeyCache = newInstanceKeyCache()
 	return srv
 }
 
