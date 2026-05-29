@@ -1,93 +1,112 @@
-# M11 Billing UI — Design Fidelity Evidence
+# M11 Billing UI — Design Fidelity Evidence (Corrective Rework)
 
 **Source design.** Project 42 design fixture `portal-pages-2.jsx:3–169` (`PortalBilling`), extracted from the design workspace at `/tmp/design-sNM/lesser-host/`.
 
-**Implementation.** `web/src/pages/portal/Billing.svelte` — complete re-skin of the `/portal/billing` page to the design's spend-analytics surface.
+**Implementation.** `web/src/pages/portal/Billing.svelte` — owner fleet spend-analytics surface with four metric cards, stacked weekly bar chart, per-instance breakdown table with burn progress, and right rail panels.
 
 **Route.** `/portal/billing` via `Portal.svelte` → `Billing.svelte`.
 
-**Fixture.** No local fixture file; the page loads real API data from:
-- `GET /api/v1/portal/instances` (instance list)
-- `GET /api/v1/portal/instances/{slug}/cost` (cost telemetry, per instance)
-- `GET /api/v1/portal/billing/invoices` (invoice list, M12 backend)
-- `GET /api/v1/portal/billing/payment-method` (payment method, M12 backend)
+**Data sources (all owner-scoped, read-only):**
 
-**Screenshot.** 1440×900 capture command (Chromium headless):
+| Source | Endpoint | Used for |
+|--------|----------|----------|
+| Instance list | `GET /api/v1/portal/instances` | Fleet instance enumeration |
+| Cost telemetry | `GET /api/v1/portal/instances/{slug}/cost` | MTD cost, Projected EOM, daily UniqueUsers (from cost metrics `entries[].metrics[]`) |
+| Instance budget | `GET /api/v1/portal/instances/{slug}/budgets/{month}` | Per-instance included/used credits for budget column and burn bar |
+| Instance activity | `GET /api/v1/portal/instances/{slug}/activity` | Post/status count denominator (owner-scoped bridge to Lesser `GET /api/v1/instance/activity`) |
+| Invoices | `GET /api/v1/portal/billing/invoices` | Recent invoice list (M12 backend) |
+| Payment method | `GET /api/v1/portal/billing/payment-method` | Masked card display (M12 backend) |
+
+**Backend bridge added (M11 corrective):**
+- `internal/controlplane/handlers_portal_instance_activity.go` — `GET /api/v1/portal/instances/{slug}/activity`
+- Ownership enforced via `requireInstanceAccess` before any instance-key resolution or Lesser HTTP call.
+- Calls Lesser's `GET /api/v1/instance/activity`, filters weekly entries to the current month, sums `statuses` count.
+- Returns safe DTO: `{ instance_slug, statuses, weeks, month }` — no raw instance keys, account IDs, or upstream payload dumps.
+
+**Screenshot.** 1440×900 capture (pending lab deploy with live API data):
 ```bash
+# Option A: Chromium headless against local dev
 npx playwright screenshot --viewport 1440x900 http://localhost:5173/portal/billing billing.png
+
+# Option B: Against lab deploy
+npx playwright screenshot --viewport 1440x900 https://dev.lesser.host/portal/billing billing.png
 ```
-_Capture pending lab deploy — the PNG in this directory is a placeholder at the correct dimensions._
+_Capture pending — the PNG in this directory is a placeholder at the correct dimensions. The page renders correctly in local dev against a proxied or mocked API._
 
 ### Surface elements rendered
 
 | Element | Design reference | Implementation |
 |---------|-----------------|----------------|
 | Page header | `PageHeader` with eyebrow "Cost & billing", title "Where the money goes." | `PageTitle` with eyebrow, title, description, actions |
-| MTD metric | `Metric` card with spend/budget sub | `Metric` component with formatCurrency(totalMtd) |
-| Projected EOM metric | `Metric` card with trailing label | `Metric` component with formatCurrency(totalProjected) |
-| Per active user | `Metric` card with MAU denominator | Renders `—` (unavailable; MAU not on wire contract) |
-| Per federated post | `Metric` card with post-count comparison | Renders `—` (unavailable; post count not on wire contract) |
+| MTD metric | `Metric` card with spend/budget sub | Real `totalMtd` from cost telemetry; sub shows total budget credits |
+| Projected EOM metric | `Metric` card with trailing label | Real `totalProjected` computed from MTD / daysElapsed * daysInMonth |
+| Per active user | `Metric` card with MAU denominator | Real `totalMtd / totalMaxDailyUniqueUsers`; UniqueUsers extracted from cost telemetry `entries[].metrics[]` with `metric_name === 'UniqueUsers'` |
+| Per federated post | `Metric` card with post-count denominator | Real `totalMtd / totalStatuses`; statuses from owner-scoped bridge to Lesser `/api/v1/instance/activity` (current-month weekly statuses sum) |
 | Stacked weekly bar chart | 5 weeks, stacked by instance, projection bar | SVG `<rect>` elements with per-week aggregated cost telemetry |
-| Per-instance breakdown table | Table with slug, MTD, budget, projected, burn | HTML table with `ProgressBar` burn bars |
-| This month rail panel | Eyebrow + value + budget + progress + sparkline + delta | `Panel` with `Eyebrow`, `ProgressBar`, `Sparkline` |
+| Per-instance breakdown table | Table with slug, MTD, budget, projected, burn | HTML table with real budget credits and credit-based burn bars |
+| This month rail panel | Eyebrow + value + budget + progress + sparkline | `Panel` with `Eyebrow`, credit-based `ProgressBar`, `Sparkline` |
 | Payment method rail panel | Masked card + brand + last4 + expiry | `Panel` rendering `PaymentMethodSafe` DTO fields only |
 | Recent invoices rail panel | Invoice list with ID, date, amount, status | `Panel` rendering `InvoiceSummary` DTO fields (period_start, amount_due, status) |
 
+### Metric semantics
+
+| Metric | Numerator | Denominator | Zero-state display |
+|--------|-----------|-------------|-------------------|
+| MTD | Sum of instance daily costs for current month (USD) | N/A | `$0.00` |
+| Projected EOM | MTD / daysElapsed * daysInMonth (USD) | N/A | `$0.00` |
+| Per active user | MTD (USD) | Sum of each instance's max daily UniqueUsers in current month | `$—` with "no active-user data" |
+| Per federated post | MTD (USD) | Sum of instance activity statuses for current month (from Lesser `/api/v1/instance/activity`) | `$—` with "no post/status data" |
+
 ### Deliberate deviations from design
 
-1. **"Per active user" and "Per federated post" metrics.** The design fixture shows live computed values ($0.012 and $0.0004). The host API contract does not expose MAU or federated-post counts. Both metrics render `—` (explicit unavailable state) with explanatory sublabels "unavailable · MAU data not on contract" and "unavailable · post count not on contract". No invented fixture numbers; no divide-by-zero.
+1. **Per federated post denominator.** The design fixture shows a comparison with "mastodon avg" ($0.001). The implementation uses Lesser's `/api/v1/instance/activity` weekly statuses aggregated to the current month via the owner-scoped bridge. The sublabel honestly states "statuses (instance activity)" rather than fabricating a mastodon comparison.
 
-2. **Instance accent colors.** The design assigns per-instance accent colors from the instance data. Host's instance API does not include an accent color field. The implementation assigns deterministic colors from a fixed palette (`--ds-secondary-500`, `--ds-primary-500`, `--ds-warning-500`, `--ds-success-500`, `--ds-info-500`, `--ds-fg-3`) based on the instance's position in the list.
+2. **Per active user denominator.** The design shows "2,468 MAU / month". The implementation uses the sum of per-instance peak daily UniqueUsers from cost telemetry (a daily-max proxy for MAU). The sublabel states the total peak daily user count.
 
-3. **Weekly chart projection.** The design uses the last bar as a dashed projection. The implementation computes projection by extrapolating the current partial week to a full 7-day week using the fraction of days elapsed.
+3. **Instance budgets in credits.** Host stores budgets as credits (not USD). The breakdown table shows budget as credits explicitly labeled "(credits)", MTD/projected as USD, and the burn bar uses credit-based progress (used_credits / included_credits). The "This month" rail panel's progress bar also uses credits.
 
-4. **Instance budget.** Host's instance API does not expose per-instance budgets. The implementation uses hardcoded fallback values for known slugs and a default of $25 for unknown slugs. This will be replaced when per-instance budget data lands.
+4. **No hardcoded budget fallbacks.** The prior `BUDGET_FALLBACKS` map and `inferBudget()` function have been deleted. Budgets are fetched per-instance via `portalGetBudgetMonth`.
 
-5. **Export CSV and May invoice buttons.** The design header actions (Export CSV, May invoice) are omitted. These are future enhancements not in M11 scope.
+5. **Instance accent colors.** The design assigns per-instance accent colors from the instance data. Host's instance API does not include an accent color field. The implementation assigns deterministic colors from a fixed palette based on the instance's position in the list.
 
-6. **No Cost & usage tab changes.** The InstanceCost tab (`/portal/instances/{slug}/cost`) is untouched. M11 scope is `/portal/billing` only.
+6. **Export CSV and May invoice buttons.** Omitted — future enhancements not in M11 scope.
 
-7. **No payment update flow.** The Payment method panel is read-only (displays card brand/last4/expiry/status). No "Update method" button or checkout initiation is included. This is the M12 backend's surface consumed read-only per the brief.
+7. **No Cost & usage tab changes.** InstanceCost tab untouched. M11 scope is `/portal/billing` only.
+
+8. **No payment update flow.** Payment method panel is read-only per M12 backend consumption.
+
+### Limitations
+
+- **UniqueUsers is daily-max, not true MAU.** The cost telemetry `UniqueUsers` field is recorded as a daily maximum, not as a deduplicated monthly count. The "Per active user" metric uses this as a best-effort proxy.
+- **Activity statuses are weekly aggregates.** Lesser's `/api/v1/instance/activity` returns weekly `statuses` counts. The bridge sums weeks whose Unix timestamps fall in the current month. Edge weeks that span month boundaries may be counted in the wrong month.
+- **Budget credits vs USD.** The burn bar compares used_credits against included_credits (both in credits). MTD and projected columns are USD. There is no USD-to-credits conversion factor available.
 
 ### Secret-redaction posture
 
 | Field | Rendered | Rationale |
 |-------|----------|-----------|
-| `PaymentMethodSafe.id` | Yes | Provider payment-method ID (e.g. `pm_xxx`), not a secret |
-| `PaymentMethodSafe.type` | Yes | Payment type (e.g. `card`) |
-| `PaymentMethodSafe.brand` | Yes | Card brand (e.g. `visa`) |
-| `PaymentMethodSafe.last4` | Yes | Last 4 digits only; masked display |
-| `PaymentMethodSafe.exp_month` / `exp_year` | Yes | Expiry date |
-| `PaymentMethodSafe.status` | Yes | Active/inactive status |
-| PAN / full card number | **No** | Never stored, never rendered |
-| CVV | **No** | Never stored, never rendered |
-| `provider_customer_id` | **No** | Internal Stripe ID, not in DTO |
-| `provider_checkout_session_id` | **No** | Internal Stripe ID, not in DTO |
-| `provider_payment_intent_id` | **No** | Internal Stripe ID, not in DTO |
-| `account_id` | **No** | Internal billing account ID, not in DTO |
-| PK / SK | **No** | Internal DynamoDB keys, never exposed |
-| Raw API keys / secrets | **No** | Never rendered in any template |
+| `PaymentMethodSafe.brand` / `last4` / `exp_month` / `exp_year` / `status` | Yes | Masked DTO fields only |
+| Raw instance API keys | **No** | Resolved server-side, never reach the browser |
+| PAN / CVV / full card number | **No** | Never stored, never rendered |
+| `provider_customer_id` / `provider_checkout_session_id` / `provider_payment_intent_id` | **No** | Internal Stripe IDs, not in DTO |
+| `account_id` / PK / SK | **No** | Internal DynamoDB keys, never exposed |
 
 ### CSP posture
 
 - No inline `style="..."` attributes on HTML elements.
 - Dynamic colors use `data-accent` attributes with CSS attribute selectors.
-- Chart rendering uses SVG presentation attributes (`fill`, `stroke`, `height`, `width`) which are not governed by `style-src` CSP.
-- Dynamic heights in the chart use SVG `<rect>` elements with computed `height` and `y` presentation attributes.
-- All `<style>` blocks are Svelte scoped styles (compiled to injected `<style>` elements from self-origin).
+- Chart rendering uses SVG presentation attributes (`fill`, `stroke`, `height`, `width`).
+- All `<style>` blocks are Svelte scoped styles from self-origin.
 
 ### Validation results
 
 | Check | Result |
 |-------|--------|
+| `go test ./internal/controlplane/` | PASS — all tests including 8 new activity bridge tests |
 | `npm run lint --prefix web` | PASS — 0 errors, 0 warnings |
 | `npm run typecheck --prefix web` | PASS — 0 errors, 0 warnings |
-| `npm test --prefix web` | PASS — 21 files, 181 tests |
+| `npm test --prefix web` | PASS — 21 files, 192 tests (27 Billing-specific) |
 | `npm run build --prefix web` | PASS — client + SSR bundles produced |
-| `bash gov-infra/verifiers/gov-verify-rubric.sh` | PASS — 40/40 verifiers |
 | CSP inline-style scan (`verify-no-inline-html`) | PASS |
 | OAC form integrity (`verify-oac-form-integrity`) | PASS |
-
-### Lab deploy status
-
-Lab deploy pending at time of PR. The page renders correctly in local dev (`npm run dev`) at `http://localhost:5173/portal/billing` against a proxied control-plane API (or with empty-state handling when no backend is available). A 1440×900 screenshot will be captured after the first lab deploy.
+| Gov-infra rubric (`gov-verify-rubric.sh`) | Pending (see below) |

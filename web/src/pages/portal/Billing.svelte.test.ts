@@ -5,14 +5,11 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const source = readFileSync(join(process.cwd(), 'src/pages/portal/Billing.svelte'), 'utf8');
-const apiSource = readFileSync(join(process.cwd(), 'src/lib/api/portalBilling.ts'), 'utf8');
+const apiBillingSource = readFileSync(join(process.cwd(), 'src/lib/api/portalBilling.ts'), 'utf8');
+const apiUsageSource = readFileSync(join(process.cwd(), 'src/lib/api/portalUsage.ts'), 'utf8');
 
-describe('M11 Billing UI', () => {
+describe('M11 Billing UI — corrective rework', () => {
 	it('preserves M0.2 page title fix — renders Billing h1/title, not Portal Dashboard', () => {
-		// The M0.2 fix in Portal.svelte scopes pageTitle to 'Billing' for /portal/billing.
-		// The Billing component itself renders a PageTitle that carries the design's
-		// "Where the money goes." title. The outer h1 in Portal.svelte is 'Billing'.
-		// This test confirms the inner PageTitle uses the design title (not "Billing").
 		const scriptEnd = source.indexOf('</script>');
 		expect(scriptEnd).toBeGreaterThan(0);
 		const template = source.slice(scriptEnd);
@@ -20,28 +17,69 @@ describe('M11 Billing UI', () => {
 		expect(template).toContain('Cost &amp; billing');
 	});
 
-	it('renders four metric cards with explicit unavailable state for unsupported denominators', () => {
-		// "Per active user" and "Per federated post" must show '—', never invented
-		// numbers or divide-by-zero.
+	it('renders four metric cards (MTD, Projected EOM, Per active user, Per federated post)', () => {
 		const scriptEnd = source.indexOf('</script>');
 		const template = source.slice(scriptEnd);
 		expect(template).toContain('Per active user');
 		expect(template).toContain('Per federated post');
-		// Both unavailable denominators render '—' as their value
-		const metricValuePattern = /value="—"/g;
-		const matches = template.match(metricValuePattern);
-		expect(matches).not.toBeNull();
-		expect(matches!.length).toBeGreaterThanOrEqual(2);
+		expect(template).toContain('MTD');
+		expect(template).toContain('Projected EOM');
+	});
+
+	it('does NOT use hardcoded unavailable placeholder value="—" for metric denominators', () => {
+		// The corrective rework replaced hardcoded '—' placeholders with
+		// real computed values (perActiveUser, perFederatedPost). The only
+		// '—' allowed is the $— display when denominator is zero.
+		const scriptEnd = source.indexOf('</script>');
+		const template = source.slice(scriptEnd);
+		// Check that value="—" (hardcoded em-dash) does not appear in metric cards
+		const metricSection = template.slice(
+			template.indexOf('billing-metrics'),
+			template.indexOf('billing-metrics') + 600
+		);
+		// No bare value="—" in metric cards
+		expect(metricSection).not.toContain('value="—"');
+	});
+
+	it('deletes BUDGET_FALLBACKS — no hardcoded budget lookup table', () => {
+		// Check only the script and template sections (after the HTML comment close -->)
+		const afterComment = source.slice(source.indexOf('-->') + 3);
+		expect(afterComment).not.toContain('BUDGET_FALLBACKS');
+	});
+
+	it('deletes inferBudget — no hardcoded budget fallback function', () => {
+		// Check only the script and template sections (after the HTML comment close -->)
+		const afterComment = source.slice(source.indexOf('-->') + 3);
+		expect(afterComment).not.toContain('inferBudget');
+	});
+
+	it('imports and calls portalGetBudgetMonth for real per-instance budgets', () => {
+		expect(source).toContain('portalGetBudgetMonth');
+		expect(source).toContain("portalGetBudgetMonth(token, inst.slug, currentMonth)");
+	});
+
+	it('imports and calls portalGetInstanceActivity for post/status denominator', () => {
+		expect(source).toContain('portalGetInstanceActivity');
+		expect(source).toContain("portalGetInstanceActivity(token, inst.slug)");
+	});
+
+	it('extracts UniqueUsers from cost telemetry for Per active user denominator', () => {
+		expect(source).toContain('UniqueUsers');
+		expect(source).toContain('extractMaxDailyUniqueUsers');
+		expect(source).toContain('metric.metric_name');
+	});
+
+	it('uses portalGetInstanceActivity statuses (not Requests) for Per federated post denominator', () => {
+		// Must NOT use Requests as a proxy for post count
+		const scriptSection = source.slice(0, source.indexOf('</script>'));
+		expect(source).toContain('totalStatuses');
+		expect(source).toContain('perFederatedPost');
+		// Ensure Requests is NOT used as a post denominator proxy
+		expect(scriptSection).not.toContain('Requests');
 	});
 
 	it('is CSP-safe — no inline style attributes', () => {
-		// Strict-CSP posture: no style="..." attributes. All styling through
-		// CSS classes, data-* selectors, and SVG presentation attributes.
 		const template = source.slice(source.indexOf('</script>'));
-		// SVG presentation attributes (fill, stroke, etc.) are not inline CSS styles
-		// and are CSP-safe per the SVG spec.
-		// The only style-like attribute allowed is Svelte's class: directive output.
-		// We check that there are no HTML style="...value..." attribute patterns.
 		const inlineStylePattern = /<[^>]+\sstyle\s*=\s*"[^"]*[a-zA-Z][^"]*"/gi;
 		expect(inlineStylePattern.test(template)).toBe(false);
 	});
@@ -71,9 +109,6 @@ describe('M11 Billing UI', () => {
 	});
 
 	it('does not render raw payment secrets — no PAN, CVV, raw tokens', () => {
-		// The payment method DTO only exposes brand/last4/expiry/status.
-		// No raw PAN (16-digit sequences), CVV, full tokens, account IDs,
-		// PK/SK, checkout session IDs, or payment intent IDs.
 		const template = source.slice(source.indexOf('</script>'));
 		expect(template).toContain('paymentMethodResponse');
 		expect(template).not.toContain('provider_customer_id');
@@ -83,63 +118,83 @@ describe('M11 Billing UI', () => {
 	});
 
 	it('renders invoice list from safe DTO without internal fields', () => {
-		// The InvoiceSummary DTO (portalBilling.ts) defines safe fields only:
-		// id, period_start, period_end, amount_due, currency, status,
-		// hosted_invoice_url, invoice_pdf_url. The template renders
-		// period_start and amount_due from these safe fields.
 		const template = source.slice(source.indexOf('</script>'));
 		expect(template).toContain('invoicesResponse');
-		// Template accesses inv.period_start (safe date) and inv.amount_due (safe amount)
 		expect(template).toContain('period_start');
 		expect(template).toContain('amount_due');
 	});
 
-	it('no backend/internal edits — UI-only milestone', () => {
-		// M11 is a UI-only milestone. The backend M12 endpoints are consumed
-		// but not modified here. Verify no Go source imports or package
-		// declarations (the tell-tale sign of backend code).
+	it('still a UI-focused milestone — no Go package declarations smuggled in', () => {
 		expect(source).not.toContain('package controlplane');
 		expect(source).not.toContain('package payments');
 		expect(source).not.toContain('package store');
 	});
 });
 
+describe('portalUsage API — M11 budget and activity exports', () => {
+	it('exports portalGetBudgetMonth for per-instance monthly budget fetch', () => {
+		expect(apiUsageSource).toContain('portalGetBudgetMonth');
+		expect(apiUsageSource).toContain('/api/v1/portal/instances/');
+	});
+
+	it('exports portalGetInstanceActivity for owner-scoped activity bridge', () => {
+		expect(apiUsageSource).toContain('portalGetInstanceActivity');
+		expect(apiUsageSource).toContain('/api/v1/portal/instances/');
+		expect(apiUsageSource).toContain('/activity');
+	});
+
+	it('PortalInstanceActivityResponse DTO has safe fields only (no raw keys)', () => {
+		expect(apiUsageSource).toContain('PortalInstanceActivityResponse');
+		expect(apiUsageSource).toContain('instance_slug');
+		expect(apiUsageSource).toContain('statuses');
+		expect(apiUsageSource).toContain('weeks');
+		expect(apiUsageSource).toContain('month');
+		// No raw instance keys, account IDs, provider secrets
+		expect(apiUsageSource).not.toContain('raw_key');
+		expect(apiUsageSource).not.toContain('secret_arn');
+	});
+
+	it('BudgetMonthResponse DTO has credits fields (included_credits, used_credits)', () => {
+		expect(apiUsageSource).toContain('BudgetMonthResponse');
+		expect(apiUsageSource).toContain('included_credits');
+		expect(apiUsageSource).toContain('used_credits');
+	});
+});
+
 describe('portalBilling API — M12 invoice and payment-method DTOs', () => {
 	it('exports portalListInvoices function', () => {
-		expect(apiSource).toContain('portalListInvoices');
-		expect(apiSource).toContain('/api/v1/portal/billing/invoices');
+		expect(apiBillingSource).toContain('portalListInvoices');
+		expect(apiBillingSource).toContain('/api/v1/portal/billing/invoices');
 	});
 
 	it('exports portalGetPaymentMethod function', () => {
-		expect(apiSource).toContain('portalGetPaymentMethod');
-		expect(apiSource).toContain('/api/v1/portal/billing/payment-method'); // singular
+		expect(apiBillingSource).toContain('portalGetPaymentMethod');
+		expect(apiBillingSource).toContain('/api/v1/portal/billing/payment-method');
 	});
 
 	it('InvoiceSummary DTO has safe fields only', () => {
-		expect(apiSource).toContain('period_start');
-		expect(apiSource).toContain('period_end');
-		expect(apiSource).toContain('amount_due');
-		expect(apiSource).toContain('hosted_invoice_url');
-		expect(apiSource).toContain('invoice_pdf_url');
-		// No raw Stripe objects
-		expect(apiSource).not.toContain('stripe_invoice');
-		expect(apiSource).not.toContain('raw_invoice');
+		expect(apiBillingSource).toContain('period_start');
+		expect(apiBillingSource).toContain('period_end');
+		expect(apiBillingSource).toContain('amount_due');
+		expect(apiBillingSource).toContain('hosted_invoice_url');
+		expect(apiBillingSource).toContain('invoice_pdf_url');
+		expect(apiBillingSource).not.toContain('stripe_invoice');
+		expect(apiBillingSource).not.toContain('raw_invoice');
 	});
 
 	it('PaymentMethodSafe DTO has masked fields only', () => {
-		expect(apiSource).toContain('PaymentMethodSafe');
-		expect(apiSource).toContain('brand');
-		expect(apiSource).toContain('last4');
-		expect(apiSource).toContain('exp_month');
-		expect(apiSource).toContain('exp_year');
-		expect(apiSource).toContain('status');
-		// No raw payment data
-		expect(apiSource).not.toContain('pan');
-		expect(apiSource).not.toContain('cvv');
-		expect(apiSource).not.toContain('full_token');
+		expect(apiBillingSource).toContain('PaymentMethodSafe');
+		expect(apiBillingSource).toContain('brand');
+		expect(apiBillingSource).toContain('last4');
+		expect(apiBillingSource).toContain('exp_month');
+		expect(apiBillingSource).toContain('exp_year');
+		expect(apiBillingSource).toContain('status');
+		expect(apiBillingSource).not.toContain('pan');
+		expect(apiBillingSource).not.toContain('cvv');
+		expect(apiBillingSource).not.toContain('full_token');
 	});
 
 	it('GetPaymentMethodResponse has nullable payment_method', () => {
-		expect(apiSource).toContain('payment_method: PaymentMethodSafe | null');
+		expect(apiBillingSource).toContain('payment_method: PaymentMethodSafe | null');
 	});
 });

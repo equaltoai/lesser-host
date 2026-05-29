@@ -152,6 +152,40 @@ export interface PortalCostResponse {
 	currency: string;
 }
 
+// ---------------------------------------------------------------------------
+// Instance activity (M11 corrective) — GET /api/v1/portal/instances/{slug}/activity
+// ---------------------------------------------------------------------------
+
+export interface PortalInstanceActivityResponse {
+	instance_slug: string;
+	/** Sum of weekly statuses from /api/v1/instance/activity filtered to current month. */
+	statuses: number;
+	/** Number of activity weeks that fell within the current month. */
+	weeks: number;
+	month: string;
+}
+
+/**
+ * Fetch managed Lesser instance activity (weekly statuses) via the
+ * owner-scoped read-only instance-auth bridge. Used as the post/status
+ * denominator for the "Per federated post" fleet billing metric.
+ */
+export function portalGetInstanceActivity(
+	token: string,
+	slug: string,
+): Promise<PortalInstanceActivityResponse> {
+	return fetchJson<PortalInstanceActivityResponse>(
+		`/api/v1/portal/instances/${encodeURIComponent(slug)}/activity`,
+		{
+			headers: {
+				authorization: `Bearer ${token}`,
+			},
+		},
+	);
+}
+
+// ---------------------------------------------------------------------------
+
 /**
  * Fetch per-instance real-time cost telemetry for the given date window.
  * Defaults to the past 30 days when from/to are omitted.

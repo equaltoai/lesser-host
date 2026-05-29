@@ -1,19 +1,22 @@
 <!--
 @component
-Billing — spend-analytics billing page re-skinned for M11.
+Billing — spend-analytics billing page for M11 (corrective rework).
 
 SPDX-License-Identifier: AGPL-3.0-only
 @license AGPL-3.0-only
 
-Renders the spend-analytics surface defined in the Project 42 design fixture
-(portal-pages-2.jsx:3–169): four metric cards, a stacked weekly bar chart,
-a per-instance breakdown table with burn progress, and a right rail with
-This-month / Payment-method / Recent-invoices panels.
+Renders the owner fleet spend-analytics surface defined in the Project 42
+design fixture (portal-pages-2.jsx:3–169): four metric cards, a stacked
+weekly bar chart, a per-instance breakdown table with burn progress, and
+a right rail with This-month / Payment-method / Recent-invoices panels.
 
-Data is aggregated client-side from existing portalListInstances +
-portalGetInstanceCost cost telemetry. Invoice and payment-method data
-comes from the M12 backend endpoints (GET /api/v1/portal/billing/invoices,
-GET /api/v1/portal/billing/payment-method).
+Data sources (all owner-scoped, read-only):
+  - portalGetInstanceCost    → MTD, Projected EOM, UniqueUsers (from cost metrics)
+  - portalGetBudgetMonth     → budget/used credits per instance
+  - portalGetInstanceActivity → post/status count from Lesser instance activity
+    (owner-scoped bridge via GET /api/v1/portal/instances/{slug}/activity)
+  - portalListInvoices       → M12 invoice history
+  - portalGetPaymentMethod   → M12 payment method (masked DTO only)
 
 Posture invariants preserved:
   - Strict-no-inline-CSP safe: no inline style attributes; styling through
@@ -22,10 +25,11 @@ Posture invariants preserved:
     no cross-tenant reads.
   - No raw payment data rendered: only brand/last4/expiry/status and
     safe invoice period/status/amount/hosted links.
-  - Unavailable denominators ("Per active user", "Per federated post")
-    render an explicit '—' state, never invented numbers or divide-by-zero.
-  - No backend edits. No internal/controlplane/internal/payments/store/infra
-    changes. No Cost & usage tab work. No new payment update flow.
+  - No hardcoded budget fallback map or inference function.
+  - "Per active user" sourced from UniqueUsers in cost telemetry metrics.
+  - "Per federated post" sourced from owner-scoped instance-activity bridge.
+  - No backend edits to payment/invoice surfaces. No Cost & usage tab.
+    No new payment update flow.
 
 Source: docs/portal-pages-2.jsx M11 Billing UI
 Issue: equaltoai/lesser-host#546
@@ -39,13 +43,11 @@ Issue: equaltoai/lesser-host#546
 	import type { ApiError } from 'src/lib/api/http';
 	import type { InstanceResponse } from 'src/lib/api/portalInstances';
 	import { portalListInstances } from 'src/lib/api/portalInstances';
-	import type { PortalCostResponse } from 'src/lib/api/portalUsage';
-	import { portalGetInstanceCost } from 'src/lib/api/portalUsage';
+	import type { PortalCostResponse, BudgetMonthResponse, PortalInstanceActivityResponse } from 'src/lib/api/portalUsage';
+	import { portalGetInstanceCost, portalGetBudgetMonth, portalGetInstanceActivity } from 'src/lib/api/portalUsage';
 	import type {
 		ListInvoicesResponse,
 		GetPaymentMethodResponse,
-		PaymentMethodSafe,
-		InvoiceSummary,
 	} from 'src/lib/api/portalBilling';
 	import {
 		portalListInvoices,
@@ -65,6 +67,8 @@ Issue: equaltoai/lesser-host#546
 
 	let instances = $state<InstanceResponse[]>([]);
 	let costsBySlug = $state<Map<string, PortalCostResponse>>(new Map());
+	let budgetsBySlug = $state<Map<string, BudgetMonthResponse>>(new Map());
+	let activityBySlug = $state<Map<string, PortalInstanceActivityResponse>>(new Map());
 	let invoicesResponse = $state<ListInvoicesResponse | null>(null);
 	let paymentMethodResponse = $state<GetPaymentMethodResponse | null>(null);
 
@@ -100,30 +104,48 @@ Issue: equaltoai/lesser-host#546
 		return d.toISOString().slice(0, 10);
 	}
 
-	function dateCmp(a: string, b: string): number {
-		return a.localeCompare(b);
-	}
-
 	// ---- derived: per-instance costs ----
 	interface InstanceCostData {
 		slug: string;
 		domain: string;
 		status: string;
 		mtd: number;
-		budget: number;
+		budgetCredits: number;
+		usedCredits: number;
 		projected: number;
 		accentIndex: number;
 		dailyCosts: number[];
 	}
 
+	/** Extract the max daily UniqueUsers from cost telemetry entries.metrics for a given slug. */
+	function extractMaxDailyUniqueUsers(slug: string): number {
+		const costResp = costsBySlug.get(slug);
+		if (!costResp) return 0;
+		let maxVal = 0;
+		for (const day of costResp.days) {
+			for (const entry of day.entries) {
+				for (const metric of entry.metrics ?? []) {
+					if (metric.metric_name === 'UniqueUsers') {
+						maxVal = Math.max(maxVal, metric.value);
+					}
+				}
+			}
+		}
+		return Math.round(maxVal);
+	}
+
 	const instanceCosts = $derived.by((): InstanceCostData[] => {
 		return instances.map((inst, idx) => {
 			const costResp = costsBySlug.get(inst.slug);
+			const budgetResp = budgetsBySlug.get(inst.slug);
 			const days = costResp?.days ?? [];
 			const monthPrefix = `${currentMonth}-`;
 			const mtdDays = days.filter((d) => d.date.startsWith(monthPrefix));
 			const mtd = mtdDays.reduce((sum, d) => sum + (d.day_cost || 0), 0);
 			const projected = daysElapsed > 0 ? (mtd / daysElapsed) * daysInMonth : mtd;
+
+			const budgetCredits = budgetResp?.included_credits ?? 0;
+			const usedCredits = budgetResp?.used_credits ?? 0;
 
 			const dailyCosts = mtdDays
 				.sort((a, b) => a.date.localeCompare(b.date))
@@ -134,7 +156,8 @@ Issue: equaltoai/lesser-host#546
 				domain: inst.managed_lesser_domain || inst.hosted_base_domain || '—',
 				status: inst.status,
 				mtd,
-				budget: inferBudget(inst.slug),
+				budgetCredits,
+				usedCredits,
 				projected,
 				accentIndex: idx,
 				dailyCosts,
@@ -143,8 +166,23 @@ Issue: equaltoai/lesser-host#546
 	});
 
 	const totalMtd = $derived(instanceCosts.reduce((s, i) => s + i.mtd, 0));
-	const totalBudget = $derived(instanceCosts.reduce((s, i) => s + i.budget, 0));
+	const totalBudgetCredits = $derived(instanceCosts.reduce((s, i) => s + i.budgetCredits, 0));
+	const totalUsedCredits = $derived(instanceCosts.reduce((s, i) => s + i.usedCredits, 0));
 	const totalProjected = $derived(instanceCosts.reduce((s, i) => s + i.projected, 0));
+
+	// ---- derived: fleet-level metric denominators ----
+	const totalMaxDailyUsers = $derived(
+		instances.reduce((sum, inst) => sum + extractMaxDailyUniqueUsers(inst.slug), 0)
+	);
+	const totalStatuses = $derived(
+		instances.reduce((sum, inst) => {
+			const a = activityBySlug.get(inst.slug);
+			return sum + (a?.statuses ?? 0);
+		}, 0)
+	);
+
+	const perActiveUser = $derived(totalMaxDailyUsers > 0 ? totalMtd / totalMaxDailyUsers : 0);
+	const perFederatedPost = $derived(totalStatuses > 0 ? totalMtd / totalStatuses : 0);
 
 	// ---- derived: weekly stacked data via SVG chart ----
 	interface WeekStack {
@@ -222,19 +260,6 @@ Issue: equaltoai/lesser-host#546
 	const chartSvgWidth = $derived(weeklyStacks.length * (CHART_BAR_W + CHART_GAP) - CHART_GAP + 2);
 	const chartSvgHeight = $derived(CHART_MAX_H + CHART_PADD_Y + LEGEND_HEIGHT);
 
-	function stackYOffset(stacks: number[], maxIdx: number): number {
-		let below = 0;
-		for (let i = 0; i < maxIdx; i++) {
-			below += stacks[i];
-		}
-		return below;
-	}
-
-	function barHeight(stackVal: number, total: number): number {
-		if (total <= 0) return 0;
-		return Math.max(1, Math.round((stackVal / total) * CHART_MAX_H));
-	}
-
 	// ---- accent color palette ----
 	const ACCENT_COLORS = $derived([
 		'var(--ds-secondary-500, #8d64d1)',
@@ -246,20 +271,6 @@ Issue: equaltoai/lesser-host#546
 	]);
 
 	const NUM_ACCENTS = $derived(ACCENT_COLORS.length);
-
-	// ---- budget fallback ----
-	const BUDGET_FALLBACKS: Record<string, number> = {
-		equaltoai: 50,
-		'maeve-studio': 20,
-		staging: 10,
-		'press-room': 25,
-		guild: 30,
-		lab: 15,
-	};
-
-	function inferBudget(slug: string): number {
-		return BUDGET_FALLBACKS[slug] ?? 25;
-	}
 
 	// ---- formatting ----
 	function formatError(err: unknown): string {
@@ -305,6 +316,8 @@ Issue: equaltoai/lesser-host#546
 		errorMessage = null;
 		instances = [];
 		costsBySlug = new Map();
+		budgetsBySlug = new Map();
+		activityBySlug = new Map();
 		invoicesResponse = null;
 		paymentMethodResponse = null;
 		loading = true;
@@ -321,18 +334,32 @@ Issue: equaltoai/lesser-host#546
 			paymentMethodResponse = pmResp;
 
 			const monthStart = `${currentMonth}-01`;
-			const costPromises = instances.map((inst) =>
-				portalGetInstanceCost(token, inst.slug, monthStart)
-					.then((cr) => ({ slug: inst.slug, data: cr }))
-					.catch(() => null)
-			);
-			const costResults = await Promise.all(costPromises);
-			// eslint-disable-next-line svelte/prefer-svelte-reactivity -- temporary Map for data assembly, not reactive state
+
+			// Fetch cost telemetry, budgets, and activity in parallel per instance.
+			const dataPromises = instances.map(async (inst) => {
+				const [costResult, budgetResult, activityResult] = await Promise.allSettled([
+					portalGetInstanceCost(token, inst.slug, monthStart),
+					portalGetBudgetMonth(token, inst.slug, currentMonth),
+					portalGetInstanceActivity(token, inst.slug),
+				]);
+				return { slug: inst.slug, costResult, budgetResult, activityResult };
+			});
+			const dataResults = await Promise.all(dataPromises);
+
+			// eslint-disable-next-line svelte/prefer-svelte-reactivity -- temporary Maps for data assembly, not reactive state
 			const costMap = new Map<string, PortalCostResponse>();
-			for (const r of costResults) {
-				if (r) costMap.set(r.slug, r.data);
+			// eslint-disable-next-line svelte/prefer-svelte-reactivity -- temporary Maps for data assembly, not reactive state
+			const budgetMap = new Map<string, BudgetMonthResponse>();
+			// eslint-disable-next-line svelte/prefer-svelte-reactivity -- temporary Maps for data assembly, not reactive state
+			const activityMap = new Map<string, PortalInstanceActivityResponse>();
+			for (const r of dataResults) {
+				if (r.costResult.status === 'fulfilled') costMap.set(r.slug, r.costResult.value);
+				if (r.budgetResult.status === 'fulfilled') budgetMap.set(r.slug, r.budgetResult.value);
+				if (r.activityResult.status === 'fulfilled') activityMap.set(r.slug, r.activityResult.value);
 			}
 			costsBySlug = costMap;
+			budgetsBySlug = budgetMap;
+			activityBySlug = activityMap;
 		} catch (err) {
 			if ((err as Partial<ApiError>).status === 401) {
 				await logout();
@@ -370,9 +397,9 @@ Issue: equaltoai/lesser-host#546
 				<Eyebrow>{currentMonthLabel}</Eyebrow>
 				<div class="billing-rail__amount">
 					<span class="billing-rail__value">{formatCurrency(totalMtd)}</span>
-					<span class="billing-rail__budget">of {formatCurrency(totalBudget)}</span>
+					<span class="billing-rail__budget">of {totalBudgetCredits} credits</span>
 				</div>
-				<ProgressBar value={totalMtd} max={Math.max(1, totalBudget)} />
+				<ProgressBar value={totalUsedCredits} max={Math.max(1, totalBudgetCredits)} />
 				<div class="billing-rail__row">
 					<span class="billing-rail__sub">Projected {formatCurrency(totalProjected)}</span>
 				</div>
@@ -450,7 +477,7 @@ Issue: equaltoai/lesser-host#546
 			<Metric
 				label="MTD"
 				value={formatCurrency(totalMtd)}
-				sub={`of ${formatCurrency(totalBudget)} aggregate budget`}
+				sub={`of ${totalBudgetCredits} credits aggregate budget`}
 			/>
 			<Metric
 				label="Projected EOM"
@@ -459,13 +486,13 @@ Issue: equaltoai/lesser-host#546
 			/>
 			<Metric
 				label="Per active user"
-				value="—"
-				sub="unavailable · MAU data not on contract"
+				value={totalMaxDailyUsers > 0 ? formatCurrency(perActiveUser) : '$—'}
+				sub={totalMaxDailyUsers > 0 ? `${totalMaxDailyUsers} peak daily users` : 'no active-user data'}
 			/>
 			<Metric
 				label="Per federated post"
-				value="—"
-				sub="unavailable · post count not on contract"
+				value={totalStatuses > 0 ? formatCurrency(perFederatedPost) : '$—'}
+				sub={totalStatuses > 0 ? `${totalStatuses} statuses (instance activity)` : 'no post/status data'}
 			/>
 		</div>
 
@@ -560,16 +587,16 @@ Issue: equaltoai/lesser-host#546
 						<thead>
 							<tr>
 								<th>Instance</th>
-								<th class="billing-table__num">MTD</th>
-								<th class="billing-table__num">Budget</th>
-								<th class="billing-table__num">Projected</th>
-								<th>Burn</th>
+								<th class="billing-table__num">MTD (USD)</th>
+								<th class="billing-table__num">Budget (credits)</th>
+								<th class="billing-table__num">Projected (USD)</th>
+								<th>Burn (credits)</th>
 							</tr>
 						</thead>
 						<tbody>
 						{#each instanceCosts as ic, idx (ic.slug)}
-							{@const spendRatio = ic.budget > 0 ? ic.mtd / ic.budget : 0}
-							{@const overBudget = ic.projected > ic.budget}
+							{@const creditRatio = ic.budgetCredits > 0 ? ic.usedCredits / ic.budgetCredits : 0}
+							{@const overBudget = ic.usedCredits > ic.budgetCredits}
 							<tr>
 									<td>
 										<div class="billing-table__instance">
@@ -584,7 +611,7 @@ Issue: equaltoai/lesser-host#546
 										</div>
 									</td>
 									<td class="billing-table__num"><strong>{formatCurrency(ic.mtd)}</strong></td>
-									<td class="billing-table__num billing-table__num--muted">{formatCurrency(ic.budget)}</td>
+									<td class="billing-table__num billing-table__num--muted">{ic.budgetCredits} credits</td>
 									<td class="billing-table__num">
 										{formatCurrency(ic.projected)}
 										{#if overBudget}
@@ -593,8 +620,8 @@ Issue: equaltoai/lesser-host#546
 									</td>
 									<td>
 										<div class="billing-table__burn">
-											<ProgressBar value={ic.mtd} max={Math.max(1, ic.budget)} tone={burnTone(spendRatio)} />
-											<span class="billing-table__burn-pct">{Math.round(spendRatio * 100)}%</span>
+											<ProgressBar value={ic.usedCredits} max={Math.max(1, ic.budgetCredits)} tone={burnTone(creditRatio)} />
+											<span class="billing-table__burn-pct">{Math.round(creditRatio * 100)}%</span>
 										</div>
 									</td>
 								</tr>
