@@ -1238,8 +1238,162 @@ section {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   Responsive Breakpoints
+   Stats Bar
    ═══════════════════════════════════════════════════════════════════════════ */
+
+.stats-section {
+  margin-bottom: 3rem;
+}
+
+.stats-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.5rem 3rem;
+  justify-content: center;
+  padding: 2rem 0;
+  border-top: 1px solid var(--ds-border-subtle);
+  border-bottom: 1px solid var(--ds-border-subtle);
+}
+
+.stat-item {
+  text-align: center;
+  min-width: 80px;
+}
+
+.stat-value {
+  display: block;
+  font-family: var(--ds-font-heading);
+  font-size: 2rem;
+  font-weight: 700;
+  color: var(--ds-secondary-500);
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+
+.stat-label {
+  display: block;
+  font-size: 0.78rem;
+  color: var(--ds-fg-3);
+  font-weight: 500;
+  margin-top: 0.3rem;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   API Surface Cards
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.api-surface-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 1.25rem;
+}
+
+.api-surface-card {
+  background: var(--ds-bg-glass);
+  backdrop-filter: blur(var(--ds-blur-glass));
+  -webkit-backdrop-filter: blur(var(--ds-blur-glass));
+  border: 1px solid var(--ds-border-default);
+  border-radius: var(--ds-radius-xl);
+  padding: 1.5rem;
+  box-shadow: var(--ds-shadow-sm);
+}
+
+.api-surface-card h3 {
+  font-size: 1.1rem;
+  margin-bottom: 0.35rem;
+}
+
+.api-path {
+  font-family: var(--ds-font-mono);
+  font-size: 0.78rem;
+  color: var(--ds-secondary-500);
+  font-weight: 600;
+  margin-bottom: 0.75rem;
+}
+
+.api-endpoints {
+  margin-top: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.api-endpoints code {
+  font-size: 0.75rem;
+  padding: 0.08em 0.35em;
+}
+
+.endpoint-tag {
+  display: inline-block;
+  font-family: var(--ds-font-mono);
+  font-size: 0.6rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 0.08em 0.35em;
+  border-radius: var(--ds-radius-sm);
+  margin-right: 0.3rem;
+  min-width: 2.2em;
+  text-align: center;
+}
+
+.endpoint-tag.get    { background: #e8f5e9; color: #2e7d32; }
+.endpoint-tag.post   { background: #e3f2fd; color: #1565c0; }
+.endpoint-tag.put    { background: #fff3e0; color: #e65100; }
+.endpoint-tag.delete { background: #fce4ec; color: #c62828; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Utility Classes
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.mt-5 { margin-top: 1.25rem; }
+.mt-6 { margin-top: 1.5rem; }
+.mt-8 { margin-top: 2rem; }
+
+/* Section sub-headings inside cards */
+.h3-section {
+  font-size: 1.15rem;
+  margin-bottom: 0.75rem;
+}
+
+.h3-detail {
+  font-size: 1rem;
+  margin-bottom: 0.5rem;
+}
+
+.h3-card-sm {
+  font-size: 0.95rem;
+}
+
+.h3-card-xs {
+  font-size: 0.9rem;
+}
+
+/* Grid column overrides */
+.grid-4 {
+  grid-template-columns: repeat(4, 1fr);
+}
+
+/* Full-width terminal */
+.terminal-wide {
+  max-width: 100%;
+}
+
+/* Pricing display */
+.price-value {
+  font-family: var(--ds-font-heading);
+  font-size: 1.5rem;
+  font-weight: 700;
+  margin: 0.5rem 0;
+}
+
+.price-period {
+  font-size: 0.8rem;
+  color: var(--ds-fg-3);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Responsive Breakpoints
 
 @media (max-width: 1080px) {
   .main-content {
