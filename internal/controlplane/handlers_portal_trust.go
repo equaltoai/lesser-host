@@ -14,7 +14,7 @@ import (
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
-// portaltTrustDataResponse is the top-level response for the portal trust-data
+// portalTrustDataResponse is the top-level response for the portal trust-data
 // endpoint. All five categories are populated even when backing telemetry does
 // not yet exist; in those cases the fields carry safe zero/empty/null values
 // with documented semantics.
@@ -90,11 +90,12 @@ type portalTrustSignaturesResponse struct {
 	// TotalFailures is the total signature-failure count in the window.
 	TotalFailures int `json:"total_failures"`
 
-	// BySource is a bounded per-agent breakdown (max 50 entries).
+	// BySource is a bounded per-bound-agent breakdown (max 50 entries).
 	BySource []portalTrustSignaturesSourceRow `json:"by_source"`
 }
 
-// portalTrustSignaturesSourceRow is a per-source signature-failure count.
+// portalTrustSignaturesSourceRow is a per-bound-agent signature-failure count.
+// Source is the bound soul agent ID, not a remote federation peer.
 type portalTrustSignaturesSourceRow struct {
 	Source   string `json:"source"`
 	Failures int    `json:"failures"`
@@ -133,7 +134,7 @@ type portalTrustQueueDepthPoint struct {
 //   - economic    ← Economic
 //   - integrity   ← Integrity
 //
-// Each dimension is averaged across agents that have non-zero values.
+// Each dimension is averaged across all agents with reputation rows.
 // When no agent reputation rows exist, score is 0 and dimensions are 0.
 type portalTrustScoreResponse struct {
 	// Score is the aggregate composite trust score (0.0–100.0).
@@ -179,8 +180,8 @@ type portalTrustVouchItem struct {
 	// Peer is the peer identifier (endorser agent ID).
 	Peer string `json:"peer"`
 
-	// Strength is the vouch strength (0.0–1.0). Default 1.0 for endorsements
-	// since SoulAgentPeerEndorsement has no numeric strength field.
+	// Strength is currently a fixed presence marker (1.0) for endorsements
+	// because SoulAgentPeerEndorsement has no numeric strength field.
 	Strength float64 `json:"strength"`
 
 	// Type is the vouch relationship type ("endorsement").
@@ -211,8 +212,10 @@ const trustSignaturesMaxSources = 50
 // for signature failures. The model normalises FailureType to lowercase.
 const signatureFailureType = "signature_failure"
 
-// vouchDefaultStrength is the documented default vouch strength (1.0) when the
-// backing model has no numeric strength field.
+// vouchDefaultStrength is the documented default vouch presence marker (1.0)
+// when the backing model has no numeric strength field. M15 should render
+// vouches as a list/count rather than a comparative strength bar until a
+// numeric strength source exists.
 const vouchDefaultStrength = 1.0
 
 // handlePortalGetTrustData returns per-instance trust data for the Trust
