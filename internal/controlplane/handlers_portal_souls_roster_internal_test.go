@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -266,4 +267,149 @@ func TestListSoulRosterDomainOwners_RespectsInstanceOwnershipBoundary(t *testing
 	// this assertion would fail — and testify/mock would have already
 	// panicked above because qDomain.All was only set up for one call.
 	require.NotContains(t, domainOwners, "bob.example")
+}
+
+// TestHandlePortalSoulRoster_IsolationExcludesUnownedDomainSouls is a
+// handler-level regression test for /portal/souls roster isolation.
+//
+// It proves that handlePortalSoulRoster only includes souls under domains
+// the authenticated caller actually owns. The mock for qIdx is configured
+// .Twice() — once for the caller's verified domain and once for the managed
+// stage domain. A third call (e.g. for an unowned domain) would fail-fast
+// with a testify/mock unexpected-call panic.
+//
+// The test also proves the anchor_assurance boundary: when AnchorState is
+// explicitly hosted_offchain but MintedAt is set (the pending-but-minted
+// failure mode), the roster response still reports hosted_offchain. This
+// guards against future code that might inspect MintedAt directly instead
+// of respecting the explicit AnchorState.
+func TestHandlePortalSoulRoster_IsolationExcludesUnownedDomainSouls(t *testing.T) {
+	t.Parallel()
+
+	aliceAgentID := "0x00000000000000000000000000000000000000000000000000000000000000aa"
+	bobAgentID := "0x00000000000000000000000000000000000000000000000000000000000000bb" // soul under a domain Alice does not own
+
+	// Track every Lesser agent-metadata fetch so we can prove the handler
+	// never queries for an unowned-domain agent.
+	var gotPaths []string
+	s, _, tdb := newPortalSoulRosterServer(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPaths = append(gotPaths, r.URL.Path)
+		if strings.Contains(r.URL.Path, "agent-b") {
+			t.Fatalf("handler queried Lesser for an unowned-domain agent")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{
+			"username": "agent-a",
+			"display_name": "Agent A",
+			"agent_type": "assistant",
+			"agent_version": "gpt-5-mini"
+		}`)
+	})
+
+	// Alice owns one instance with one verified domain.
+	tdb.qInst.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.Instance](t, args, 0)
+		*dest = []*models.Instance{{
+			Slug:             "alice-inst",
+			Owner:            "alice",
+			HostedBaseDomain: "alice-inst.greater.website",
+		}}
+	}).Once()
+
+	tdb.qDomain.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.Domain](t, args, 0)
+		*dest = []*models.Domain{{Domain: "alice.example", InstanceSlug: "alice-inst", Status: models.DomainStatusVerified}}
+	}).Once()
+
+	// Two index queries: alice.example (verified) + dev.alice-inst.greater.website (managed).
+	// Both return Alice's agent; deduplication collapses to one candidate.
+	// .Twice() is the isolation proof — if a future change queries an
+	// unowned domain, testify/mock fails with an unexpected-call panic.
+	idxCalls := 0
+	tdb.qIdx.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulDomainAgentIndex](t, args, 0)
+		if idxCalls == 0 {
+			*dest = []*models.SoulDomainAgentIndex{{
+				Domain:  "alice.example",
+				LocalID: "agent-a",
+				AgentID: aliceAgentID,
+			}}
+		} else {
+			*dest = []*models.SoulDomainAgentIndex{{
+				Domain:  "dev.alice-inst.greater.website",
+				LocalID: "agent-a",
+				AgentID: aliceAgentID,
+			}}
+		}
+		idxCalls++
+	}).Twice()
+
+	// Identity: AnchorState is explicitly hosted_offchain even though
+	// MintedAt is set. This guards the pending-but-minted failure mode.
+	mintedAt := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	tdb.qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
+		*dest = models.SoulAgentIdentity{
+			AgentID:     aliceAgentID,
+			Domain:      "alice.example",
+			LocalID:     "agent-a",
+			Wallet:      "0x000000000000000000000000000000000000beef",
+			TokenID:     "42",
+			MintTxHash:  "0xabc123",
+			MintedAt:    mintedAt,
+			AnchorState: models.SoulAnchorStateHostedOffchain,
+			Status:      models.SoulAgentStatusActive,
+			UpdatedAt:   time.Now().UTC(),
+		}
+	}).Once()
+
+	tdb.qRep.On("First", mock.AnythingOfType("*models.SoulAgentReputation")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentReputation](t, args, 0)
+		*dest = models.SoulAgentReputation{AgentID: aliceAgentID, TipsReceived: 0, UpdatedAt: time.Now().UTC()}
+	}).Once()
+
+	ctx := &apptheory.Context{RequestID: "r1", AuthIdentity: "alice"}
+	ctx.Set(ctxKeyOperatorRole, models.RoleAdmin)
+
+	resp, err := s.handlePortalSoulRoster(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.Equal(t, http.StatusOK, resp.Status)
+
+	var out portalSoulRosterResponse
+	require.NoError(t, json.Unmarshal(resp.Body, &out))
+
+	// ----- Isolation assertions -----
+	require.Len(t, out.Souls, 1,
+		"roster must contain exactly one soul — the one Alice owns")
+	require.Equal(t, aliceAgentID, out.Souls[0].Agent.AgentID,
+		"roster must include Alice's agent")
+	require.Equal(t, "alice-inst", out.Souls[0].Instance.Slug)
+
+	// Explicitly prove bobAgentID is absent.
+	for i, soul := range out.Souls {
+		require.NotEqual(t, bobAgentID, soul.Agent.AgentID,
+			"roster[%d] must not include Bob's soul (unowned domain)", i)
+	}
+
+	// Extra defence: prove Lesser was only queried for Alice's agent.
+	require.Len(t, gotPaths, 1)
+	require.Contains(t, gotPaths[0], "agent-a")
+
+	// ----- Anchor assurance assertions -----
+	// When AnchorState is explicitly hosted_offchain but MintedAt is
+	// non-zero, the assurance must remain hosted_offchain. This guards
+	// against future code that might inspect MintedAt directly instead
+	// of respecting the explicit AnchorState field.
+	require.NotNil(t, out.Souls[0].AnchorAssurance)
+	require.Equal(t, models.SoulAnchorStateHostedOffchain, out.Souls[0].AnchorAssurance.State,
+		"anchor_assurance.state must be hosted_offchain when AnchorState is explicitly hosted_offchain, regardless of MintedAt")
+	require.False(t, out.Souls[0].AnchorAssurance.CapabilityGate,
+		"hosted_offchain souls must not gate capabilities")
+	require.True(t, out.Souls[0].AnchorAssurance.Mutable,
+		"hosted_offchain souls must be mutable")
+	require.True(t, out.Souls[0].AnchorAssurance.Revocable,
+		"hosted_offchain souls must be revocable")
+	require.Equal(t, soulAnchorAssuranceSourceHostRecord, out.Souls[0].AnchorAssurance.Source,
+		"hosted_offchain souls sourced from host record")
 }
