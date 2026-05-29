@@ -338,7 +338,7 @@ Issue: equaltoai/lesser-host#546
 			// Fetch cost telemetry, budgets, and activity in parallel per instance.
 			const dataPromises = instances.map(async (inst) => {
 				const [costResult, budgetResult, activityResult] = await Promise.allSettled([
-					portalGetInstanceCost(token, inst.slug, monthStart),
+					portalGetInstanceCost(token, inst.slug, monthStart, nowStr.slice(0, 10)),
 					portalGetBudgetMonth(token, inst.slug, currentMonth),
 					portalGetInstanceActivity(token, inst.slug),
 				]);

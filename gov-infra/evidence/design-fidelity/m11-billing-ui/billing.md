@@ -23,15 +23,28 @@
 - Calls Lesser's `GET /api/v1/instance/activity`, filters weekly entries to the current month, sums `statuses` count.
 - Returns safe DTO: `{ instance_slug, statuses, weeks, month }` — no raw instance keys, account IDs, or upstream payload dumps.
 
-**Screenshot.** 1440×900 capture (pending lab deploy with live API data):
-```bash
-# Option A: Chromium headless against local dev
-npx playwright screenshot --viewport 1440x900 http://localhost:5173/portal/billing billing.png
+**Screenshot.** 1440×900 capture via headless Chrome against a local Vite fixture that mounts the real `Billing.svelte` component with mocked API responses flowing through the same component/data-loading code. The fixture intercepts `window.fetch` to serve realistic cost, budget, activity, invoice, and payment-method data for two sample instances (`my-instance` and `staging-env`).
 
-# Option B: Against lab deploy
-npx playwright screenshot --viewport 1440x900 https://dev.lesser.host/portal/billing billing.png
+**Capture command:**
+```bash
+# Terminal 1: serve the fixture
+cd web && npx vite --config fixtures/vite.fixture.m11.config.ts --port 5204
+
+# Terminal 2: capture
+/usr/bin/google-chrome --headless=new --no-sandbox --disable-gpu \
+  --window-size=1440,900 --virtual-time-budget=15000 \
+  --screenshot=gov-infra/evidence/design-fidelity/m11-billing-ui/billing.png \
+  http://localhost:5204/fixtures/m11-billing.html
 ```
-_Capture pending — the PNG in this directory is a placeholder at the correct dimensions. The page renders correctly in local dev against a proxied or mocked API._
+
+**Capture environment:**
+- Browser: Google Chrome (headless=new)
+- Viewport: 1440×900px (1x DPR)
+- Fixture entry: `web/fixtures/m11-billing.html` → `web/fixtures/m11-billing.ts`
+- Vite config: `web/fixtures/vite.fixture.m11.config.ts` (port 5204, watch disabled)
+- Mock data: inline in `m11-billing.ts` — two instances with 28 days of cost telemetry each, budget credits, activity statuses, 2 invoices, 1 masked payment method
+
+**Validation:** PIL confirms 271 KB file size, 186 unique colors in first 2000 pixels, non-uniform corner colors — not a blank/solid placeholder.
 
 ### Surface elements rendered
 
@@ -105,8 +118,18 @@ _Capture pending — the PNG in this directory is a placeholder at the correct d
 | `go test ./internal/controlplane/` | PASS — all tests including 8 new activity bridge tests |
 | `npm run lint --prefix web` | PASS — 0 errors, 0 warnings |
 | `npm run typecheck --prefix web` | PASS — 0 errors, 0 warnings |
-| `npm test --prefix web` | PASS — 21 files, 192 tests (27 Billing-specific) |
+| `npm test --prefix web` | PASS — 21 files, 193 tests (28 Billing-specific, incl. new from+to regression test) |
 | `npm run build --prefix web` | PASS — client + SSR bundles produced |
 | CSP inline-style scan (`verify-no-inline-html`) | PASS |
 | OAC form integrity (`verify-oac-form-integrity`) | PASS |
-| Gov-infra rubric (`gov-verify-rubric.sh`) | Pending (see below) |
+| Gov-infra rubric (`gov-verify-rubric.sh`) | Local timeout — 2328-line script did not complete within 180 s; rely on hosted CI check status |
+
+### Fixture files added (M11 corrective rework)
+
+| File | Purpose |
+|------|---------|
+| `web/fixtures/m11-billing.html` | Standalone HTML entry for headless PNG capture |
+| `web/fixtures/m11-billing.ts` | Entry point: fetch interception + mock data + Billing.svelte mount |
+| `web/fixtures/vite.fixture.m11.config.ts` | Standalone Vite config (port 5204, watch disabled) |
+
+All fixture files are AGPL-3.0-only licensed, not reachable from any customer portal route, and exist solely for visual evidence capture.

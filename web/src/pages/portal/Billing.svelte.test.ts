@@ -108,6 +108,20 @@ describe('M11 Billing UI — corrective rework', () => {
 		expect(source).toContain('portalGetInstanceCost');
 	});
 
+	it('passes both from and to to portalGetInstanceCost — not from-only', () => {
+		// The backend parseCostDateWindow rejects from-only requests:
+		// when one of from/to is supplied, both are required.
+		// Regression: calling with monthStart only (no to) would fail at runtime.
+		const callLine = source.split('\n').find((l) =>
+			l.includes('portalGetInstanceCost') && l.includes('monthStart')
+		);
+		expect(callLine).toBeDefined();
+		// Must pass a second date argument (to) — nowStr.slice(0, 10)
+		expect(callLine).toContain('nowStr.slice(0, 10)');
+		// monthStart is the from; there must be a comma and then the to expression
+		expect(callLine).toContain('monthStart, nowStr.slice(0, 10)');
+	});
+
 	it('does not render raw payment secrets — no PAN, CVV, raw tokens', () => {
 		const template = source.slice(source.indexOf('</script>'));
 		expect(template).toContain('paymentMethodResponse');
