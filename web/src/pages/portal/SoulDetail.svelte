@@ -74,8 +74,6 @@ Issue: equaltoai/lesser-host#548
 		Avatar,
 		Badge,
 		Button,
-		DefinitionItem,
-		DefinitionList,
 		Link,
 		Spinner,
 		Text,
@@ -367,18 +365,36 @@ Issue: equaltoai/lesser-host#548
 		<div class="soul-detail-rail">
 			<!-- Manifest -->
 			<Panel title="Manifest" headerLevel={2}>
-				<DefinitionList>
-					<DefinitionItem label="Handle" monospace>{handleDomain}</DefinitionItem>
-					<DefinitionItem label="Stage">
-						<Badge variant="filled" color={stageBadgeColor} size="sm">{stageLabel}</Badge>
-					</DefinitionItem>
-					<DefinitionItem label="Model" monospace>{modelLabel}</DefinitionItem>
-					<DefinitionItem label="Instance" monospace>{instanceSlug || instanceDomain}</DefinitionItem>
-					<DefinitionItem label="Requested" monospace>{formatDate(requestedAt)}</DefinitionItem>
+				<dl class="soul-detail-rail__manifest">
+					<div class="soul-detail-rail__manifest-row">
+						<dt class="soul-detail-rail__manifest-label">Handle</dt>
+						<dd class="soul-detail-rail__manifest-value soul-detail-rail__mono" title={handleDomain}>{handleDomain}</dd>
+					</div>
+					<div class="soul-detail-rail__manifest-row">
+						<dt class="soul-detail-rail__manifest-label">Stage</dt>
+						<dd class="soul-detail-rail__manifest-value">
+							<Badge variant="filled" color={stageBadgeColor} size="sm">{stageLabel}</Badge>
+						</dd>
+					</div>
+					<div class="soul-detail-rail__manifest-row">
+						<dt class="soul-detail-rail__manifest-label">Model</dt>
+						<dd class="soul-detail-rail__manifest-value soul-detail-rail__mono" title={modelLabel}>{modelLabel}</dd>
+					</div>
+					<div class="soul-detail-rail__manifest-row">
+						<dt class="soul-detail-rail__manifest-label">Instance</dt>
+						<dd class="soul-detail-rail__manifest-value soul-detail-rail__mono" title={instanceSlug || instanceDomain}>{instanceSlug || instanceDomain}</dd>
+					</div>
+					<div class="soul-detail-rail__manifest-row">
+						<dt class="soul-detail-rail__manifest-label">Requested</dt>
+						<dd class="soul-detail-rail__manifest-value soul-detail-rail__mono">{formatDate(requestedAt)}</dd>
+					</div>
 					{#if graduatedAt}
-						<DefinitionItem label="Graduated" monospace>{formatDate(graduatedAt)}</DefinitionItem>
+						<div class="soul-detail-rail__manifest-row">
+							<dt class="soul-detail-rail__manifest-label">Graduated</dt>
+							<dd class="soul-detail-rail__manifest-value soul-detail-rail__mono">{formatDate(graduatedAt)}</dd>
+						</div>
 					{/if}
-				</DefinitionList>
+				</dl>
 			</Panel>
 
 			<!-- Anchor gauge -->
@@ -663,6 +679,45 @@ Issue: equaltoai/lesser-host#548
 		display: flex;
 		flex-direction: column;
 		gap: var(--gr-spacing-scale-5);
+	}
+
+	/* ── Manifest definition list (right rail) ────────────────────── */
+
+	.soul-detail-rail__manifest {
+		display: flex;
+		flex-direction: column;
+		gap: 0;
+		margin: 0;
+		padding: 0;
+	}
+
+	.soul-detail-rail__manifest-row {
+		display: grid;
+		grid-template-columns: minmax(0, 6rem) minmax(0, 1fr);
+		gap: var(--gr-spacing-scale-2);
+		padding: var(--gr-spacing-scale-1) 0;
+	}
+
+	.soul-detail-rail__manifest-row:not(:last-child) {
+		border-bottom: 1px solid var(--gr-color-border-subtle, var(--gr-color-border-secondary, #e0e0e0));
+	}
+
+	.soul-detail-rail__manifest-label {
+		margin: 0;
+		font-size: 0.80rem;
+		font-weight: var(--gr-typography-fontWeight-medium, 500);
+		color: var(--gr-color-text-secondary, #666);
+		white-space: nowrap;
+	}
+
+	.soul-detail-rail__manifest-value {
+		margin: 0;
+		font-size: 0.86rem;
+		color: var(--gr-color-text-primary, #111);
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 
 	.soul-detail-rail__anchor {

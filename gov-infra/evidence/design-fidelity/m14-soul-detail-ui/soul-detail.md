@@ -202,7 +202,7 @@ await browser.close();
 "
 ```
 
-**Resolution:** 1440 × 900, PNG, 8-bit RGB, ~241 KB.
+**Resolution:** 1440 × 900, PNG, 8-bit RGB, ~284 KB.
 
 **Target agent:** `0x1a2b3c4d5e6f7890abcdef1234567890abcdef12` (local_id: `maeve`), a graduated soul with `self_description_version: 3`, `immutable_onchain` anchor, `anthropic:claude-sonnet-4-6` model, 184 tip events, 14 continuity entries across 6 of 7 trailing days, and 10 comm activity items.
 
