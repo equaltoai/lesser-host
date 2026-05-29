@@ -23,6 +23,7 @@
 	import Souls from 'src/pages/portal/Souls.svelte';
 	import InstanceCost from 'src/pages/portal/InstanceCost.svelte';
 	import InstanceSouls from 'src/pages/portal/InstanceSouls.svelte';
+	import PortalTrust from 'src/pages/portal/Trust.svelte';
 	import InstanceDetailShell from 'src/lib/components/InstanceDetailShell.svelte';
 
 	let loading = $state(false);
@@ -44,6 +45,7 @@
 		| { kind: 'soulMint'; agentId: string }
 		| { kind: 'soulAgent'; agentId: string }
 		| { kind: 'billing' }
+		| { kind: 'portalTrust' }
 		| { kind: 'notFound' };
 
 	// Project 42 M0.2 (#527): the outer page <h1> in this component used to
@@ -82,6 +84,12 @@
 			if (parts.length === 1) return { kind: 'billing' };
 			return { kind: 'notFound' };
 		}
+		if (parts[0] === 'trust') {
+			if (parts.length === 1) return { kind: 'portalTrust' };
+			// /portal/trust/attestations/* is handled by App.svelte directly;
+			// fall through to notFound here as a safety net.
+			return { kind: 'notFound' };
+		}
 		if (parts[0] === 'souls') {
 			if (parts.length === 1) return { kind: 'souls' };
 			if (parts[1] === 'register') return { kind: 'soulRegister' };
@@ -102,6 +110,8 @@
 		switch (portalRoute.kind) {
 			case 'billing':
 				return 'Billing';
+			case 'portalTrust':
+				return 'Trust & federation';
 			default:
 				return 'Portal Dashboard';
 		}
@@ -111,6 +121,8 @@
 		switch (portalRoute.kind) {
 			case 'billing':
 				return 'Credits, usage, and invoices for the signed-in account.';
+			case 'portalTrust':
+				return 'Federation health, signature reliability, and trust posture across managed instances.';
 			default:
 				return 'Self-serve customer dashboard.';
 		}
@@ -262,6 +274,8 @@
 				<SoulDetail token={$session.token} agentId={portalRoute.agentId} />
 			{:else if portalRoute.kind === 'billing'}
 				<Billing token={$session.token} />
+			{:else if portalRoute.kind === 'portalTrust'}
+				<PortalTrust token={$session.token} />
 			{:else}
 				<Alert variant="warning" title="Not found">
 					<Text size="sm">Unknown portal path.</Text>
