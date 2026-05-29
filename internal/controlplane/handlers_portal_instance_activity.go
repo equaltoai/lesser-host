@@ -32,9 +32,9 @@ type portalInstanceActivityResponse struct {
 //
 // Mastodon convention: all numeric fields are strings.
 type lesserActivityEntry struct {
-	Week         string `json:"week"`
-	Statuses     string `json:"statuses"`
-	Logins       string `json:"logins"`
+	Week          string `json:"week"`
+	Statuses      string `json:"statuses"`
+	Logins        string `json:"logins"`
 	Registrations string `json:"registrations"`
 }
 
