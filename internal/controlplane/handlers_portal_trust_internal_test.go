@@ -1,9 +1,11 @@
 package controlplane
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +21,8 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
+
+const portalTrustTestInstanceSecret = "instance-secret"
 
 // portalTrustTestDB wraps mock DB and queries for trust-data handler tests.
 type portalTrustTestDB struct {
@@ -94,7 +98,7 @@ func TestHandlePortalGetTrustData_HappyPath(t *testing.T) {
 	require.Len(t, data.Federation.Peers, 0)
 
 	// Signatures: zero defaults with correct window
-	require.Equal(t, 168, data.Signatures.WindowHours)
+	require.Equal(t, 24, data.Signatures.WindowHours)
 	require.Equal(t, 0, data.Signatures.TotalFailures)
 	require.NotNil(t, data.Signatures.BySource)
 	require.Len(t, data.Signatures.BySource, 0)
@@ -392,6 +396,163 @@ func TestHandlePortalGetTrustData_ResponseShapeStability(t *testing.T) {
 	}
 }
 
+func TestHandlePortalGetTrustData_FederationFromManagedLesser(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC().Truncate(time.Second)
+	instances := []lesserFederationInstanceInfo{
+		{Domain: "reachable.example", LastSeen: now.Add(-1 * time.Hour).Format(time.RFC3339), TrustScore: 95},
+		{Domain: "silenced.example", IsSilenced: true, LastSeen: now.Add(-2 * time.Hour).Format(time.RFC3339), TrustScore: 90},
+		{Domain: "suspended.example", IsSuspended: true, LastSeen: now.Add(-3 * time.Hour).Format(time.RFC3339), TrustScore: 90},
+		{Domain: "degraded.example", LastSeen: now.Add(-4 * time.Hour).Format(time.RFC3339), TrustScore: 25},
+	}
+
+	statsCalled := false
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "Bearer "+portalTrustTestInstanceSecret, r.Header.Get("Authorization"))
+		switch r.URL.Path {
+		case "/api/v1/admin/federation/statistics":
+			statsCalled = true
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"active_instances": 1,
+				"total_users":      4,
+				"total_messages":   12,
+				"time_range": map[string]string{
+					"start": now.Add(-24 * time.Hour).Format(time.RFC3339),
+					"end":   now.Format(time.RFC3339),
+				},
+			})
+		case "/api/v1/admin/federation/instances":
+			require.Equal(t, "100", r.URL.Query().Get("limit"))
+			_ = json.NewEncoder(w).Encode(map[string]any{"instances": instances})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	tdb := newPortalTrustTestDB(t)
+	stubOwnedInstance(t, tdb.qInstance, "demo", "alice")
+	s := &Server{
+		store:                store.New(tdb.db),
+		cfg:                  config.Config{},
+		portalCostHTTPClient: ts.Client(),
+		fetchInstanceKeyPlaintextFunc: func(context.Context, *models.Instance) (string, error) {
+			return portalTrustTestInstanceSecret, nil
+		},
+		resolveInstanceMetricsBaseURLFunc: func(*models.Instance) (string, error) { return ts.URL, nil },
+	}
+
+	resp, err := s.handlePortalGetTrustData(&apptheory.Context{AuthIdentity: "alice", Params: map[string]string{"slug": "demo"}})
+	require.NoError(t, err)
+	require.True(t, statsCalled, "statistics endpoint should be probed before peer rows")
+
+	var data portalTrustDataResponse
+	require.NoError(t, json.Unmarshal(resp.Body, &data))
+	require.Equal(t, 1, data.Federation.Reachable)
+	require.Equal(t, 2, data.Federation.Warning)
+	require.Equal(t, 1, data.Federation.Severed)
+	require.Equal(t, trustFederationSource, data.Federation.Source)
+	require.Len(t, data.Federation.Peers, 4)
+
+	byDomain := map[string]portalTrustFederationPeerRow{}
+	for _, row := range data.Federation.Peers {
+		byDomain[row.Domain] = row
+		require.NotEmpty(t, row.LastSeen)
+		require.Empty(t, row.LastFetch)
+		require.Nil(t, row.FollowerCount, "active_users must not be mapped to follower_count")
+	}
+	require.Equal(t, trustFederationStatusReachable, byDomain["reachable.example"].Status)
+	require.Equal(t, trustFederationStatusWarning, byDomain["silenced.example"].Status)
+	require.Equal(t, trustFederationStatusWarning, byDomain["degraded.example"].Status)
+	require.Equal(t, trustFederationStatusSevered, byDomain["suspended.example"].Status)
+}
+
+func TestTrustFederationStatusMapping(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	require.Equal(t, trustFederationStatusSevered, trustFederationStatus(lesserFederationInstanceInfo{IsSuspended: true, IsSilenced: true, TrustScore: 100}, now))
+	require.Equal(t, trustFederationStatusWarning, trustFederationStatus(lesserFederationInstanceInfo{IsSilenced: true, TrustScore: 100}, now))
+	require.Equal(t, trustFederationStatusWarning, trustFederationStatus(lesserFederationInstanceInfo{TrustScore: 25}, now))
+	require.Equal(t, trustFederationStatusWarning, trustFederationStatus(lesserFederationInstanceInfo{TrustScore: 100, LastSeen: now.Add(-31 * 24 * time.Hour).Format(time.RFC3339)}, now))
+	require.Equal(t, trustFederationStatusReachable, trustFederationStatus(lesserFederationInstanceInfo{TrustScore: 100, LastSeen: now.Add(-1 * time.Hour).Format(time.RFC3339)}, now))
+}
+
+func TestHandlePortalGetTrustData_FederationPeersBounded(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC().Truncate(time.Second)
+	instances := make([]lesserFederationInstanceInfo, 60)
+	for i := range instances {
+		instances[i] = lesserFederationInstanceInfo{
+			Domain:     fmt.Sprintf("peer-%02d.example", i),
+			LastSeen:   now.Format(time.RFC3339),
+			TrustScore: 90,
+		}
+	}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/admin/federation/statistics":
+			_ = json.NewEncoder(w).Encode(map[string]any{"active_instances": 60, "time_range": map[string]string{"start": now.Add(-24 * time.Hour).Format(time.RFC3339), "end": now.Format(time.RFC3339)}})
+		case "/api/v1/admin/federation/instances":
+			_ = json.NewEncoder(w).Encode(map[string]any{"instances": instances})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	tdb := newPortalTrustTestDB(t)
+	stubOwnedInstance(t, tdb.qInstance, "demo", "alice")
+	s := &Server{
+		store:                store.New(tdb.db),
+		portalCostHTTPClient: ts.Client(),
+		fetchInstanceKeyPlaintextFunc: func(context.Context, *models.Instance) (string, error) {
+			return portalTrustTestInstanceSecret, nil
+		},
+		resolveInstanceMetricsBaseURLFunc: func(*models.Instance) (string, error) { return ts.URL, nil },
+	}
+
+	resp, err := s.handlePortalGetTrustData(&apptheory.Context{AuthIdentity: "alice", Params: map[string]string{"slug": "demo"}})
+	require.NoError(t, err)
+	var data portalTrustDataResponse
+	require.NoError(t, json.Unmarshal(resp.Body, &data))
+	require.Equal(t, 60, data.Federation.Reachable)
+	require.Len(t, data.Federation.Peers, trustFederationPeerRowsMax)
+	require.Equal(t, "peer-00.example", data.Federation.Peers[0].Domain)
+	require.Equal(t, "peer-49.example", data.Federation.Peers[49].Domain)
+}
+
+func TestHandlePortalGetTrustData_ForbiddenDoesNotCallFederation(t *testing.T) {
+	t.Parallel()
+
+	called := false
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		http.Error(w, "should not be called", http.StatusInternalServerError)
+	}))
+	defer ts.Close()
+
+	tdb := newPortalTrustTestDB(t)
+	stubOwnedInstance(t, tdb.qInstance, "bob-instance", "bob")
+	s := &Server{
+		store:                store.New(tdb.db),
+		portalCostHTTPClient: ts.Client(),
+		fetchInstanceKeyPlaintextFunc: func(context.Context, *models.Instance) (string, error) {
+			return portalTrustTestInstanceSecret, nil
+		},
+		resolveInstanceMetricsBaseURLFunc: func(*models.Instance) (string, error) { return ts.URL, nil },
+	}
+
+	_, err := s.handlePortalGetTrustData(&apptheory.Context{AuthIdentity: "alice", Params: map[string]string{"slug": "bob-instance"}})
+	require.Error(t, err)
+	appErr, ok := err.(*apptheory.AppError)
+	require.True(t, ok)
+	require.Equal(t, "app.forbidden", appErr.Code)
+	require.False(t, called, "not-owned instances must not trigger upstream federation fetches")
+}
+
 // ============================================================================
 // M16 populated-data tests — soul registry enabled with bound agents
 // ============================================================================
@@ -407,6 +568,8 @@ type soulTrustTestDB struct {
 	qRep      *ttmocks.MockQuery
 	qFailure  *ttmocks.MockQuery
 	qEndorse  *ttmocks.MockQuery
+	qMailbox  *ttmocks.MockQuery
+	qQueue    *ttmocks.MockQuery
 }
 
 func newSoulTrustTestDB(t *testing.T) *soulTrustTestDB {
@@ -427,6 +590,8 @@ func newSoulTrustTestDB(t *testing.T) *soulTrustTestDB {
 		{"*models.SoulAgentReputation", "qRep"},
 		{"*models.SoulAgentFailure", "qFailure"},
 		{"*models.SoulAgentPeerEndorsement", "qEndorse"},
+		{"*models.SoulCommMailboxMessage", "qMailbox"},
+		{"*models.TrustQueueDepthSample", "qQueue"},
 	}
 
 	for _, m := range md {
@@ -446,6 +611,8 @@ func newSoulTrustTestDB(t *testing.T) *soulTrustTestDB {
 		qRep:      qs["qRep"],
 		qFailure:  qs["qFailure"],
 		qEndorse:  qs["qEndorse"],
+		qMailbox:  qs["qMailbox"],
+		qQueue:    qs["qQueue"],
 	}
 
 	// Default: user "alice" exists as customer
@@ -453,6 +620,15 @@ func newSoulTrustTestDB(t *testing.T) *soulTrustTestDB {
 		dest := testutil.RequireMockArg[*models.User](t, args, 0)
 		*dest = models.User{Username: "alice", Role: "customer", Approved: true}
 	}).Maybe()
+
+	// Default queue telemetry path: no queued mailbox rows and no persisted
+	// samples. Tests that need populated queue data reset these expectations.
+	tdb.qMailbox.On("Filter", mock.Anything, mock.Anything, mock.Anything).Return(tdb.qMailbox).Maybe()
+	tdb.qMailbox.On("Count").Return(int64(0), nil).Maybe()
+	tdb.qQueue.On("OrderBy", mock.Anything, mock.Anything).Return(tdb.qQueue).Maybe()
+	tdb.qQueue.On("Limit", mock.Anything).Return(tdb.qQueue).Maybe()
+	tdb.qQueue.On("Create").Return(nil).Maybe()
+	tdb.qQueue.On("All", mock.Anything).Return(theoryErrors.ErrItemNotFound).Maybe()
 
 	return tdb
 }
@@ -656,13 +832,14 @@ func TestHandlePortalGetTrustData_SoulPopulatedSignatureFailures(t *testing.T) {
 	// No reputation for either agent
 	tdb.qRep.On("First", mock.AnythingOfType("*models.SoulAgentReputation")).Return(theoryErrors.ErrItemNotFound).Twice()
 
-	// Agent A: 3 signature failures within window, 1 outside window, 1 non-signature
+	// Agent A: 3 signature failures within the 24h window, 2 outside window, 1 non-signature
 	tdb.qFailure.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.SoulAgentFailure](t, args, 0)
 		*dest = []*models.SoulAgentFailure{
 			{FailureType: "signature_failure", Timestamp: now.Add(-1 * time.Hour)},
 			{FailureType: "signature_failure", Timestamp: now.Add(-2 * time.Hour)},
 			{FailureType: "signature_failure", Timestamp: now.Add(-3 * time.Hour)},
+			{FailureType: "signature_failure", Timestamp: now.Add(-25 * time.Hour)},  // outside 24h window
 			{FailureType: "signature_failure", Timestamp: now.Add(-200 * time.Hour)}, // outside window
 			{FailureType: "crash_loop", Timestamp: now.Add(-1 * time.Hour)},          // not signature
 		}
@@ -698,7 +875,7 @@ func TestHandlePortalGetTrustData_SoulPopulatedSignatureFailures(t *testing.T) {
 
 	// Total: 3 (agent A) + 1 (agent B) = 4
 	require.Equal(t, 4, data.Signatures.TotalFailures)
-	require.Equal(t, 168, data.Signatures.WindowHours)
+	require.Equal(t, 24, data.Signatures.WindowHours)
 
 	// By-source: 2 entries (one per agent)
 	require.Len(t, data.Signatures.BySource, 2)
@@ -716,6 +893,109 @@ func TestHandlePortalGetTrustData_SoulPopulatedSignatureFailures(t *testing.T) {
 	require.NotContains(t, body, `"failure_id"`)
 	require.NotContains(t, body, `"FailureID"`)
 	require.NotContains(t, body, `"description"`)
+}
+
+func TestHandlePortalGetTrustData_QueueDepthSnapshotCountsScopedMailboxRows(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulTrustTestDB(t)
+	agentID := "0x0000000000000000000000000000000000000000000000000000000000000aaa"
+
+	stubOwnedInstance(t, tdb.qInstance, "demo", "alice")
+	tdb.qDomain.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.Domain](t, args, 0)
+		*dest = []*models.Domain{{Domain: "example.com", InstanceSlug: "demo", Status: models.DomainStatusVerified}}
+	}).Once()
+	tdb.qIdx.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulDomainAgentIndex](t, args, 0)
+		*dest = []*models.SoulDomainAgentIndex{{Domain: "example.com", LocalID: "agent", AgentID: agentID}}
+	}).Once()
+	tdb.qRep.On("First", mock.AnythingOfType("*models.SoulAgentReputation")).Return(theoryErrors.ErrItemNotFound).Once()
+	tdb.qFailure.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulAgentFailure](t, args, 0)
+		*dest = []*models.SoulAgentFailure{}
+	}).Once()
+	tdb.qEndorse.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulAgentPeerEndorsement](t, args, 0)
+		*dest = []*models.SoulAgentPeerEndorsement{}
+	}).Once()
+
+	// Override the default zero-count queue mock. The production query is scoped
+	// to COMM#MAILBOX#INSTANCE#demo#AGENT#{agentID}; no global queue is read.
+	tdb.qMailbox.ExpectedCalls = nil
+	tdb.qMailbox.On("Where", "PK", "=", models.SoulCommMailboxAgentPK("demo", agentID)).Return(tdb.qMailbox).Once()
+	tdb.qMailbox.On("Filter", "direction", "=", models.SoulCommDirectionInbound).Return(tdb.qMailbox).Once()
+	tdb.qMailbox.On("Filter", "status", "=", models.SoulCommMailboxStatusQueued).Return(tdb.qMailbox).Once()
+	tdb.qMailbox.On("Filter", "deleted", "=", false).Return(tdb.qMailbox).Once()
+	tdb.qMailbox.On("Count").Return(int64(7), nil).Once()
+
+	s := &Server{store: store.New(tdb.db), cfg: soulEnabledConfig()}
+	resp, err := s.handlePortalGetTrustData(&apptheory.Context{AuthIdentity: "alice", Params: map[string]string{"slug": "demo"}})
+	require.NoError(t, err)
+
+	var data portalTrustDataResponse
+	require.NoError(t, json.Unmarshal(resp.Body, &data))
+	require.Equal(t, trustQueueDepthWindowHours, data.QueueDepth.WindowHours)
+	require.Equal(t, trustQueueDepthSource, data.QueueDepth.Source)
+	require.Len(t, data.QueueDepth.Series, 1)
+	require.Equal(t, 7, data.QueueDepth.Series[0].Depth)
+}
+
+func TestHandlePortalGetTrustData_QueueDepthSeriesBoundedAndScoped(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulTrustTestDB(t)
+	agentID := "0x0000000000000000000000000000000000000000000000000000000000000aaa"
+	now := time.Now().UTC().Truncate(time.Second)
+
+	stubOwnedInstance(t, tdb.qInstance, "alice-inst", "alice")
+	tdb.qDomain.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.Domain](t, args, 0)
+		*dest = []*models.Domain{{Domain: "alice.example", InstanceSlug: "alice-inst", Status: models.DomainStatusVerified}}
+	}).Once()
+	tdb.qIdx.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulDomainAgentIndex](t, args, 0)
+		*dest = []*models.SoulDomainAgentIndex{{Domain: "alice.example", LocalID: "agent", AgentID: agentID}}
+	}).Once()
+	tdb.qRep.On("First", mock.AnythingOfType("*models.SoulAgentReputation")).Return(theoryErrors.ErrItemNotFound).Once()
+	tdb.qFailure.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulAgentFailure](t, args, 0)
+		*dest = []*models.SoulAgentFailure{}
+	}).Once()
+	tdb.qEndorse.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulAgentPeerEndorsement](t, args, 0)
+		*dest = []*models.SoulAgentPeerEndorsement{}
+	}).Once()
+
+	// Return more rows than the DTO cap and one cross-tenant row; the handler
+	// must bound and filter the response even if storage returns unexpected rows.
+	tdb.qQueue.ExpectedCalls = nil
+	tdb.qQueue.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(tdb.qQueue).Maybe()
+	tdb.qQueue.On("OrderBy", "SK", "DESC").Return(tdb.qQueue).Once()
+	tdb.qQueue.On("Limit", trustQueueDepthMaxSeriesPoints).Return(tdb.qQueue).Once()
+	tdb.qQueue.On("Create").Return(nil).Maybe()
+	samples := make([]*models.TrustQueueDepthSample, 0, 61)
+	for i := 0; i < 60; i++ {
+		samples = append(samples, &models.TrustQueueDepthSample{InstanceSlug: "alice-inst", Timestamp: now.Add(-time.Duration(i) * time.Minute), Depth: i + 1, Source: trustQueueDepthSource})
+	}
+	samples = append(samples, &models.TrustQueueDepthSample{InstanceSlug: "bob-inst", Timestamp: now, Depth: 999, Source: trustQueueDepthSource})
+	tdb.qQueue.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.TrustQueueDepthSample](t, args, 0)
+		*dest = samples
+	}).Once()
+
+	s := &Server{store: store.New(tdb.db), cfg: soulEnabledConfig()}
+	resp, err := s.handlePortalGetTrustData(&apptheory.Context{AuthIdentity: "alice", Params: map[string]string{"slug": "alice-inst"}})
+	require.NoError(t, err)
+
+	var data portalTrustDataResponse
+	require.NoError(t, json.Unmarshal(resp.Body, &data))
+	require.Len(t, data.QueueDepth.Series, trustQueueDepthMaxSeriesPoints)
+	for _, point := range data.QueueDepth.Series {
+		require.NotEqual(t, 999, point.Depth)
+	}
+	body := string(resp.Body)
+	require.NotContains(t, body, "bob-inst")
 }
 
 func TestHandlePortalGetTrustData_SoulNoAgentsBound(t *testing.T) {
