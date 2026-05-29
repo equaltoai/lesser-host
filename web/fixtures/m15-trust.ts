@@ -112,6 +112,15 @@ const equaltoaiTrust = {
 			{ source: '0x3c4d5e6f7890abcdef1234567890abcdef123456', failures: 4 },
 			{ source: '0x4d5e6f7890abcdef1234567890abcdef12345678', failures: 2 },
 		],
+		series: [
+			{ timestamp: '2026-05-28T11:00:00Z', failures: 1 },
+			{ timestamp: '2026-05-28T15:00:00Z', failures: 2 },
+			{ timestamp: '2026-05-28T19:00:00Z', failures: 1 },
+			{ timestamp: '2026-05-28T23:00:00Z', failures: 4 },
+			{ timestamp: '2026-05-29T03:00:00Z', failures: 2 },
+			{ timestamp: '2026-05-29T07:00:00Z', failures: 3 },
+			{ timestamp: '2026-05-29T10:00:00Z', failures: 1 },
+		],
 	},
 	queue_depth: {
 		series: [
@@ -165,6 +174,12 @@ const maeveStudioTrust = {
 		by_source: [
 			{ source: '0x5e6f7890abcdef1234567890abcdef1234567890', failures: 4 },
 			{ source: '0x6f7890abcdef1234567890abcdef123456789012', failures: 3 },
+		],
+		series: [
+			{ timestamp: '2026-05-28T13:00:00Z', failures: 1 },
+			{ timestamp: '2026-05-28T18:00:00Z', failures: 2 },
+			{ timestamp: '2026-05-29T02:00:00Z', failures: 1 },
+			{ timestamp: '2026-05-29T06:00:00Z', failures: 3 },
 		],
 	},
 	queue_depth: {

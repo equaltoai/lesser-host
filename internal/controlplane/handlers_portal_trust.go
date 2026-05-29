@@ -92,8 +92,9 @@ type portalTrustFederationPeerRow struct {
 	FollowerCount *int   `json:"follower_count,omitempty"`
 }
 
-// portalTrustSignaturesResponse contains signature-failure counters over the
-// dashboard window, scoped to agents bound to the requesting instance.
+// portalTrustSignaturesResponse contains signature-failure counters and a
+// bounded hourly time series over the dashboard window, scoped to agents bound
+// to the requesting instance.
 //
 // Data source: SoulAgentFailure rows (FailureType = "signature_failure")
 // queried per resolved agent, filtered to the 24-hour dashboard window.
@@ -106,6 +107,12 @@ type portalTrustSignaturesResponse struct {
 
 	// BySource is a bounded per-bound-agent breakdown (max 50 entries).
 	BySource []portalTrustSignaturesSourceRow `json:"by_source"`
+
+	// Series is a true hourly time series of signature failures across all
+	// scoped agents. Each point is a nonzero UTC hour bucket derived from
+	// SoulAgentFailure.Timestamp; raw failure IDs, descriptions, storage keys,
+	// account IDs, and agent IDs are not exposed in the point shape.
+	Series []portalTrustSignatureSeriesPoint `json:"series"`
 }
 
 // portalTrustSignaturesSourceRow is a per-bound-agent signature-failure count.
@@ -113,6 +120,14 @@ type portalTrustSignaturesResponse struct {
 type portalTrustSignaturesSourceRow struct {
 	Source   string `json:"source"`
 	Failures int    `json:"failures"`
+}
+
+// portalTrustSignatureSeriesPoint is a single signature-failure time-series
+// data point. Timestamp is the UTC hour bucket and Failures is the number of
+// signature failures in that bucket.
+type portalTrustSignatureSeriesPoint struct {
+	Timestamp string `json:"timestamp"` // ISO 8601 UTC hour bucket
+	Failures  int    `json:"failures"`
 }
 
 // portalTrustQueueDepthResponse contains an inbound queue depth time series
@@ -338,6 +353,7 @@ func (s *Server) handlePortalGetTrustData(ctx *apptheory.Context) (*apptheory.Re
 			WindowHours:   trustSignaturesWindowHours,
 			TotalFailures: 0,
 			BySource:      []portalTrustSignaturesSourceRow{},
+			Series:        []portalTrustSignatureSeriesPoint{},
 		},
 		QueueDepth: portalTrustQueueDepthResponse{
 			WindowHours: trustQueueDepthWindowHours,
@@ -708,15 +724,19 @@ func uniqueSortedStrings(values []string) []string {
 
 // loadTrustSignatures queries SoulAgentFailure rows for the given agent IDs,
 // filters to signature_failure types within the 24-hour window, and returns
-// total and per-agent breakdown counts.
+// total and per-agent breakdown counts plus a redacted hourly time series.
 func (s *Server) loadTrustSignatures(ctx context.Context, agentIDs []string) portalTrustSignaturesResponse {
-	windowStart := time.Now().UTC().Add(-trustSignaturesWindowHours * time.Hour)
+	now := time.Now().UTC()
+	windowStart := now.Add(-trustSignaturesWindowHours * time.Hour)
 
 	resp := portalTrustSignaturesResponse{
 		WindowHours: trustSignaturesWindowHours,
+		BySource:    []portalTrustSignaturesSourceRow{},
+		Series:      []portalTrustSignatureSeriesPoint{},
 	}
 
 	bySource := make(map[string]int) // agentID → failure count
+	byBucket := make(map[time.Time]int)
 	totalFailures := 0
 
 	for _, agentID := range agentIDs {
@@ -739,17 +759,53 @@ func (s *Server) loadTrustSignatures(ctx context.Context, agentIDs []string) por
 			if strings.ToLower(strings.TrimSpace(f.FailureType)) != signatureFailureType {
 				continue
 			}
-			if f.Timestamp.Before(windowStart) {
+			if signatureFailureTimestampOutOfWindow(f.Timestamp, windowStart, now) {
 				continue
 			}
 			totalFailures++
 			bySource[agentID]++
+			bucket := signatureFailureHourBucket(f.Timestamp)
+			byBucket[bucket]++
 		}
 	}
 
 	resp.TotalFailures = totalFailures
 	resp.BySource = sortedSourceRows(bySource, trustSignaturesMaxSources)
+	resp.Series = sortedSignatureSeries(byBucket)
 	return resp
+}
+
+func signatureFailureTimestampOutOfWindow(ts time.Time, windowStart time.Time, now time.Time) bool {
+	return ts.IsZero() || ts.Before(windowStart) || ts.After(now)
+}
+
+func signatureFailureHourBucket(ts time.Time) time.Time {
+	return ts.UTC().Truncate(time.Hour)
+}
+
+func sortedSignatureSeries(byBucket map[time.Time]int) []portalTrustSignatureSeriesPoint {
+	buckets := make([]time.Time, 0, len(byBucket))
+	for bucket, failures := range byBucket {
+		if failures > 0 {
+			buckets = append(buckets, bucket.UTC())
+		}
+	}
+	sort.Slice(buckets, func(i, j int) bool {
+		return buckets[i].Before(buckets[j])
+	})
+
+	points := make([]portalTrustSignatureSeriesPoint, 0, len(buckets))
+	for _, bucket := range buckets {
+		failures := byBucket[bucket]
+		if failures <= 0 {
+			continue
+		}
+		points = append(points, portalTrustSignatureSeriesPoint{
+			Timestamp: bucket.UTC().Format(time.RFC3339),
+			Failures:  failures,
+		})
+	}
+	return points
 }
 
 // sortedSourceRows returns a bounded, descending-sorted slice of source rows.

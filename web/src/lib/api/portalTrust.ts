@@ -41,11 +41,18 @@ export interface TrustSignaturesSourceRow {
 	failures: number;
 }
 
+/** A single signature-failure time-series point. */
+export interface TrustSignatureSeriesPoint {
+	timestamp: string; // ISO 8601 UTC hour bucket
+	failures: number;
+}
+
 /** Signature-failure counters scoped to the dashboard window. */
 export interface TrustSignaturesResponse {
 	window_hours: number;
 	total_failures: number;
 	by_source: TrustSignaturesSourceRow[];
+	series: TrustSignatureSeriesPoint[];
 }
 
 /** A single queue depth time-series point. */

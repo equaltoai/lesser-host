@@ -11,7 +11,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { mount, unmount } from 'svelte';
 import { tick } from 'svelte';
@@ -29,6 +29,15 @@ const appSource = readFileSync(
 	join(process.cwd(), 'src/App.svelte'),
 	'utf8',
 );
+
+const apiSource = readFileSync(
+	join(process.cwd(), 'src/lib/api/portalTrust.ts'),
+	'utf8',
+);
+
+afterEach(() => {
+	vi.restoreAllMocks();
+});
 
 describe('M15 Trust UI — source-level contracts', () => {
 	describe('CSP safety (strict no-inline)', () => {
@@ -64,6 +73,13 @@ describe('M15 Trust UI — source-level contracts', () => {
 			expect(source).toContain('.queue_depth.');
 			expect(source).toContain('.trust_score.');
 			expect(source).toContain('.vouches.');
+		});
+
+		it('types additive signature series separately from queue-depth points', () => {
+			expect(apiSource).toContain('TrustSignatureSeriesPoint');
+			expect(apiSource).toContain('failures: number');
+			expect(apiSource).toContain('TrustQueueDepthPoint');
+			expect(apiSource).toContain('depth: number');
 		});
 
 		it('renders vouches as list/count, not strength bars', () => {
@@ -142,24 +158,28 @@ describe('M15 Trust UI — source-level contracts', () => {
 		});
 	});
 
-	// ── #573: Signature failures — no fabricated sparkline ────────────
+	// ── #573: Signature failures — true series sparkline only ─────────
 
 	describe('signature failures panel truthfulness', () => {
-		it('does not render a Sparkline in the signature failures panel', () => {
-			// Per #573: the signature DTO has total_failures + by_source but
-			// no time-series "series" field. The UI must not fabricate a
-			// sparkline from per-source aggregate counts.
-			// The only Sparkline in Trust.svelte should be in the queue depth panel.
+		it('renders signature Sparkline from signatures.series[].failures, not by_source aggregates', () => {
 			const styleIdx = source.lastIndexOf('<style>');
 			const templatePart = styleIdx > 0 ? source.substring(0, styleIdx) : source;
 
-			// Count Sparkline occurrences in template (before <style>)
 			const sparklineMatches = templatePart.match(/<Sparkline/g);
-			// Only the queue depth Sparkline should exist (1 occurrence).
-			expect(sparklineMatches?.length ?? 0).toBe(1);
+			expect(sparklineMatches?.length ?? 0).toBe(2);
+
+			const sigSectionStart = templatePart.indexOf('HTTP signature failures');
+			const sigSectionEnd = templatePart.indexOf('</section>', sigSectionStart);
+			const sigSection = templatePart.substring(sigSectionStart, sigSectionEnd);
+			expect(sigSection).toContain('Sparkline');
+			expect(sigSection).toContain('signatures.seriesFailureValues');
+			const sparklineTag = sigSection.match(/<Sparkline[\s\S]*?\/>/)?.[0] ?? '';
+			expect(sparklineTag).toContain('values={signatures.seriesFailureValues}');
+			expect(sparklineTag).not.toContain('bySource');
+			expect(sparklineTag).not.toContain('src.failures');
 		});
 
-		it('renders source list honestly without time-series claim', () => {
+		it('keeps source list as a breakdown separate from the time-series chart', () => {
 			expect(source).toContain('trust__source-list');
 			expect(source).toContain('Failures by source');
 		});
@@ -170,6 +190,8 @@ describe('M15 Trust UI — source-level contracts', () => {
 	describe('queue depth renders real time series', () => {
 		it('renders Sparkline from queueDepth.seriesDepthValues', () => {
 			expect(source).toContain('queueDepth.seriesDepthValues');
+			expect(source).toContain('values.push(pt.depth)');
+			expect(source).not.toContain('values.push(pt.value)');
 		});
 
 		it('renders queue depth Sparkline with values from series', () => {
@@ -213,6 +235,109 @@ describe('M15 Trust UI — App.svelte route dispatch', () => {
 		expect(appSource).toContain('<Trust />');
 	});
 });
+
+function jsonResponse(body: unknown, status = 200): Response {
+	return new Response(JSON.stringify(body), {
+		status,
+		headers: { 'content-type': 'application/json' },
+	});
+}
+
+function installLoadedTrustFetchMock() {
+	const trustResponse = {
+		instance_slug: 'demo',
+		federation: {
+			reachable: 1,
+			warning: 1,
+			severed: 0,
+			peers: [
+				{
+					domain: 'alpha.example',
+					status: 'reachable',
+					follower_count: 12,
+					last_seen: '2026-05-29T08:15:00Z',
+				},
+				{
+					domain: 'beta.example',
+					status: 'warning',
+					last_fetch: '2026-05-29T10:30:00Z',
+				},
+			],
+		},
+		signatures: {
+			window_hours: 24,
+			total_failures: 3,
+			by_source: [{ source: '0xagent', failures: 3 }],
+			series: [
+				{ timestamp: '2026-05-29T08:00:00Z', failures: 1 },
+				{ timestamp: '2026-05-29T09:00:00Z', failures: 2 },
+			],
+		},
+		queue_depth: {
+			series: [
+				{ timestamp: '2026-05-29T08:00:00Z', depth: 4 },
+				{ timestamp: '2026-05-29T09:00:00Z', depth: 8 },
+			],
+		},
+		trust_score: {
+			score: 77,
+			formula: 'trust_score = average(Composite) across agents',
+			dimensions: {
+				operational: 80,
+				attestation: 75,
+				social: 70,
+				economic: 65,
+				integrity: 90,
+			},
+			source: 'lesser-host:soul_agent_reputation',
+		},
+		vouches: {
+			items: [
+				{
+					peer: '0xpeer',
+					strength: 1,
+					type: 'endorsement',
+					created_at: '2026-05-28T10:00:00Z',
+				},
+			],
+			count: 1,
+		},
+	};
+
+	vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+		const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+		if (url.endsWith('/api/v1/portal/instances')) {
+			return Promise.resolve(
+				jsonResponse({
+					instances: [
+						{
+							slug: 'demo',
+							status: 'ok',
+							hosted_region: 'us-east-1',
+							created_at: '2026-05-29T00:00:00Z',
+						},
+					],
+					count: 1,
+				}),
+			);
+		}
+		if (url.endsWith('/api/v1/portal/instances/demo/trust/data')) {
+			return Promise.resolve(jsonResponse(trustResponse));
+		}
+		return Promise.resolve(jsonResponse({ message: 'not found' }, 404));
+	});
+}
+
+async function waitForText(target: HTMLElement, expected: string) {
+	for (let i = 0; i < 20; i += 1) {
+		await tick();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		if (target.textContent?.includes(expected)) {
+			return;
+		}
+	}
+	expect(target.textContent).toContain(expected);
+}
 
 // ── DOM mount tests — component renders ─────────────────────────────────
 
@@ -327,6 +452,35 @@ describe('M15 Trust UI — DOM mount', () => {
 		expect(gauge?.getAttribute('aria-valuemin')).toBe('0');
 		expect(gauge?.getAttribute('aria-valuemax')).toBe('100');
 
+		document.body.removeChild(target);
+	});
+
+	it('renders loaded peer metadata, signature series, and queue-depth depth values', async () => {
+		installLoadedTrustFetchMock();
+		const target = document.createElement('div');
+		document.body.appendChild(target);
+
+		const instance = mount(PortalTrust, {
+			target,
+			props: { token: 'test-token' },
+		});
+
+		await waitForText(target, 'alpha.example');
+
+		const text = target.textContent ?? '';
+		expect(text).toContain('12 followers');
+		expect(text).toContain('followers unavailable');
+		expect(text).toContain('Seen: 2026-05-29');
+		expect(text).toContain('Fetch: 2026-05-29');
+		expect(text).toContain('Sig failures 24h');
+		expect(text).toContain('3 total');
+		expect(text).toMatch(/2 hourly bucket\s*s/);
+		expect(text).toContain('Max failures: 2');
+		expect(text).toMatch(/2 data point\s*s/);
+		expect(text).toContain('Max depth: 8');
+		expect(text).not.toContain('not yet instrumented');
+
+		unmount(instance);
 		document.body.removeChild(target);
 	});
 });

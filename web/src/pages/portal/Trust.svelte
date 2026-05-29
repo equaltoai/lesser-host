@@ -15,7 +15,7 @@ fetches trust data for each, and aggregates across the fleet.
       severed peers, signature failures
    3. Left panel: peer constellation grid (with follower count and
       last_seen / last_fetch timestamps when available) + sparkline
-      panels (queue depth)
+      panels (signature failures, queue depth)
    4. Right rail: trust score gauge + dimensions + vouches list + severed alert
 
 Issue #573 corrections applied:
@@ -23,8 +23,9 @@ Issue #573 corrections applied:
     unavailable" when the field is null/omitted.
   - Peer grid renders last_seen (from lesser admin API) or last_fetch
     (host-side fallback timestamp) per peer row.
-  - Signature failures panel shows aggregate count and per-source
-    breakdown honestly; no fabricated sparkline from per-source counts.
+  - Signature failures panel renders a Sparkline only from the real
+    signatures.series[].failures time series; it never derives a chart from
+    per-source aggregates.
   - Window hours reflect the backend 24h default (window_hours=24).
   - Queue depth sparkline renders from real queue_depth.series data.
   - Empty states say "no scoped data is present" rather than "not yet
@@ -35,7 +36,8 @@ Issue #573 corrections applied:
 Posture invariants preserved:
   - Strict-CSP safe: no inline style attributes or inline scripts.
   - Multi-tenant isolation: only owner-scoped portal endpoints consumed.
-  - No backend modifications: consumes merged #572 DTO as-is.
+  - Backend DTO extension is additive: signatures.series is redacted,
+    timestamped, and 24h bounded; queue_depth.series[].depth remains intact.
   - /portal/trust remains inside PortalShell; /portal/trust/attestations/{id}
     still delegates to the public attestation inspector via App.svelte routing.
 
@@ -53,6 +55,7 @@ Issue: equaltoai/lesser-host#550, #573
 	import type {
 		PortalTrustDataResponse,
 		TrustFederationPeerRow,
+		TrustSignatureSeriesPoint,
 		TrustSignaturesSourceRow,
 		TrustVouchItem,
 	} from 'src/lib/api/portalTrust';
@@ -89,6 +92,8 @@ Issue: equaltoai/lesser-host#550, #573
 		windowHours: number;
 		totalFailures: number;
 		bySource: TrustSignaturesSourceRow[];
+		series: TrustSignatureSeriesPoint[];
+		seriesFailureValues: number[];
 	}
 
 	interface AggQueueDepth {
@@ -139,12 +144,17 @@ Issue: equaltoai/lesser-host#550, #573
 	const signatures = $derived.by<AggSignatures>(() => {
 		let totalFailures = 0;
 		const windowHours =
-			trustData.length > 0 ? trustData[0].signatures.window_hours : 168;
+			trustData.length > 0 ? trustData[0].signatures.window_hours : 24;
 		const sourceMap: Record<string, number> = {};
+		const seriesMap: Record<string, number> = {};
 		for (const td of trustData) {
 			totalFailures += td.signatures.total_failures;
 			for (const s of td.signatures.by_source) {
 				sourceMap[s.source] = (sourceMap[s.source] ?? 0) + s.failures;
+			}
+			for (const point of td.signatures.series ?? []) {
+				seriesMap[point.timestamp] =
+					(seriesMap[point.timestamp] ?? 0) + point.failures;
 			}
 		}
 		const bySource: TrustSignaturesSourceRow[] = [];
@@ -152,7 +162,19 @@ Issue: equaltoai/lesser-host#550, #573
 			bySource.push({ source, failures: sourceMap[source] });
 		}
 		bySource.sort((a, b) => b.failures - a.failures);
-		return { windowHours, totalFailures, bySource };
+		const series = Object.keys(seriesMap)
+			.sort()
+			.map((timestamp) => ({
+				timestamp,
+				failures: seriesMap[timestamp],
+			}));
+		return {
+			windowHours,
+			totalFailures,
+			bySource,
+			series,
+			seriesFailureValues: series.map((point) => point.failures),
+		};
 	});
 
 	const queueDepth = $derived.by<AggQueueDepth>(() => {
@@ -446,13 +468,33 @@ Issue: equaltoai/lesser-host#550, #573
 						failures across {signatures.bySource.length} source
 						{signatures.bySource.length !== 1 ? 's' : ''}.
 					</Text>
-					{#if signatures.bySource.length === 0}
+					{#if signatures.seriesFailureValues.length === 0}
 						<div class="trust__empty-state">
 							<Text size="sm" color="secondary">
-								No signature failures recorded in the dashboard window.
+								{#if signatures.totalFailures === 0}
+									No signature failures recorded in the dashboard window.
+								{:else}
+									Signature failures were counted, but no timestamped series
+									points are present in this response.
+								{/if}
 							</Text>
 						</div>
 					{:else}
+						<Text size="sm" color="secondary">
+							{signatures.series.length} hourly bucket
+							{signatures.series.length !== 1 ? 's' : ''}.
+							Max failures: {Math.max(...signatures.seriesFailureValues)}.
+						</Text>
+						<div class="trust__sparkline-container">
+							<Sparkline
+								values={signatures.seriesFailureValues}
+								width={200}
+								height={48}
+								color="var(--ds-warning-500)"
+							/>
+						</div>
+					{/if}
+					{#if signatures.bySource.length > 0}
 						<div class="trust__source-list" role="list" aria-label="Failures by source">
 							{#each signatures.bySource as src (src.source)}
 								<div class="trust__source-row" role="listitem">
