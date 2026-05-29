@@ -1,8 +1,8 @@
 /**
- * M15 Trust UI contract tests.
+ * M15 Trust UI contract tests — Issue #573 real-data rendering.
  *
- * Route compatibility, CSP safety, attestation route preservation, and
- * public trust API path protection.
+ * Route compatibility, CSP safety, attestation route preservation,
+ * real DTO field rendering, honest empty states, and sparkline truthfulness.
  *
  * @license AGPL-3.0-only
  */
@@ -11,7 +11,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { mount, unmount } from 'svelte';
 import { tick } from 'svelte';
@@ -30,25 +30,25 @@ const appSource = readFileSync(
 	'utf8',
 );
 
+const apiSource = readFileSync(
+	join(process.cwd(), 'src/lib/api/portalTrust.ts'),
+	'utf8',
+);
+
+afterEach(() => {
+	vi.restoreAllMocks();
+});
+
 describe('M15 Trust UI — source-level contracts', () => {
 	describe('CSP safety (strict no-inline)', () => {
 		it('contains no inline style= attribute', () => {
-			// The component must never emit inline style attributes.
-			// Svelte static styles are fine (compiled to <style> blocks).
-			// We check for attribute patterns that would produce CSP violations.
 			const styleAttrPattern = /\bstyle\s*=\s*"/g;
-			// Allow only CSS custom property passing on SVG elements which
-			// Svelte handles as presentation attributes.
 			const matches = source.match(styleAttrPattern);
-			// If any exist, verify they are permitted (e.g., none should exist
-			// since we removed all inline styles)
 			if (matches) {
-				// Double-check: none of the matches should be inline CSS
 				for (const m of matches) {
-					expect(m).toBe(''); // fail if present
+					expect(m).toBe('');
 				}
 			}
-			// No expectation needed — the loop above catches violations
 			expect(true).toBe(true);
 		});
 
@@ -57,7 +57,6 @@ describe('M15 Trust UI — source-level contracts', () => {
 		});
 
 		it('imports no third-party origin resources', () => {
-			// No external font/script/style imports in component
 			expect(source).not.toMatch(/https?:\/\/[^/]+\/[^"'\s]*\.(?:js|css|woff2?)/);
 		});
 	});
@@ -76,43 +75,51 @@ describe('M15 Trust UI — source-level contracts', () => {
 			expect(source).toContain('.vouches.');
 		});
 
+		it('types additive signature series separately from queue-depth points', () => {
+			expect(apiSource).toContain('TrustSignatureSeriesPoint');
+			expect(apiSource).toContain('failures: number');
+			expect(apiSource).toContain('TrustQueueDepthPoint');
+			expect(apiSource).toContain('depth: number');
+		});
+
 		it('renders vouches as list/count, not strength bars', () => {
-			// Per M16: vouches should be list/count presence, not strength
-			// ranking, until a numeric strength source exists.
-			// Inspect the template area (before the <style> tag), not the
-			// style block.
 			const styleIdx = source.lastIndexOf('<style>');
 			const templatePart = styleIdx > 0 ? source.substring(0, styleIdx) : source;
-			// Vouch items render as list items (trust__vouch-list, trust__vouch-item),
-			// not as progress bars or comparative strength indicators.
 			expect(templatePart).toContain('trust__vouch-list');
 			expect(templatePart).toContain('trust__vouch-item');
-			// Should not contain per-vouch progress-bar rendering patterns.
 			expect(templatePart).not.toMatch(/vouch-item.*ProgressBar/i);
-			// The component should reference vouchItem properties correctly.
 			expect(source).toContain('vouches.items');
 		});
 
-		it('shows honest federation empty state when peers are not instrumented', () => {
-			expect(source).toContain('not yet instrumented');
+		// ── #573: Honest empty states ───────────────────────────────────
+
+		it('shows honest empty state when no scoped peer data is present', () => {
+			expect(source).toContain('No scoped federation peer data is present');
 		});
 
-		it('shows honest queue depth empty state when not instrumented', () => {
-			expect(source).toContain('Inbound queue depth');
+		it('does not claim federation telemetry is "not yet instrumented"', () => {
+			// #573: the normal empty-state path must not say instrumentation is missing
+			expect(source).not.toContain('not yet instrumented');
+		});
+
+		it('shows honest queue depth empty state', () => {
+			expect(source).toContain('No inbound queue depth data is present');
 		});
 	});
 
 	describe('CSP: no inline style= attribute in template', () => {
 		it('avoids dynamic width via style attribute in progress bars', () => {
-			// The progress bar must use SVG width attribute, not CSS style.
 			expect(source).not.toMatch(/style\s*=\s*["']width:\s*\{/);
 		});
 	});
 
 	describe('label correctness', () => {
-		it('does not hardcode "Sig failures 24h"', () => {
-			// The M16 window is 168h, not 24h. The label must be dynamic.
-			expect(source).not.toContain('24h');
+		it('does not hardcode "Sig failures 24h" as a literal', () => {
+			// The label is dynamic: "Sig failures {windowHours}h".
+			// With the backend 24h window the rendered label is "Sig failures 24h",
+			// but the source must derive it, not hardcode it.
+			expect(source).toContain('sigFailuresLabel');
+			expect(source).not.toContain("'Sig failures 24h'");
 		});
 
 		it('derives sig-failures label from signatures.windowHours', () => {
@@ -121,13 +128,80 @@ describe('M15 Trust UI — source-level contracts', () => {
 		});
 
 		it('does not hardcode "Severed last 30d"', () => {
-			// The M16 federation DTO exposes `severed` without a last-30d
-			// window. Use an honest label.
 			expect(source).not.toContain('Severed last 30d');
 		});
 
 		it('uses "Severed peers" label', () => {
 			expect(source).toContain('Severed peers');
+		});
+	});
+
+	// ── #573: Peer grid renders follower_count and timestamps ─────────
+
+	describe('peer grid renders real fields', () => {
+		it('renders follower_count conditionally', () => {
+			expect(source).toContain('peer.follower_count');
+		});
+
+		it('shows "followers unavailable" when follower_count is null/absent', () => {
+			expect(source).toContain('followers unavailable');
+		});
+
+		it('renders last_seen timestamp', () => {
+			expect(source).toContain('peer.last_seen');
+			expect(source).toContain('Seen:');
+		});
+
+		it('renders last_fetch as fallback when last_seen is absent', () => {
+			expect(source).toContain('peer.last_fetch');
+			expect(source).toContain('Fetch:');
+		});
+	});
+
+	// ── #573: Signature failures — true series sparkline only ─────────
+
+	describe('signature failures panel truthfulness', () => {
+		it('renders signature Sparkline from signatures.series[].failures, not by_source aggregates', () => {
+			const styleIdx = source.lastIndexOf('<style>');
+			const templatePart = styleIdx > 0 ? source.substring(0, styleIdx) : source;
+
+			const sparklineMatches = templatePart.match(/<Sparkline/g);
+			expect(sparklineMatches?.length ?? 0).toBe(2);
+
+			const sigSectionStart = templatePart.indexOf('HTTP signature failures');
+			const sigSectionEnd = templatePart.indexOf('</section>', sigSectionStart);
+			const sigSection = templatePart.substring(sigSectionStart, sigSectionEnd);
+			expect(sigSection).toContain('Sparkline');
+			expect(sigSection).toContain('signatures.seriesFailureValues');
+			const sparklineTag = sigSection.match(/<Sparkline[\s\S]*?\/>/)?.[0] ?? '';
+			expect(sparklineTag).toContain('values={signatures.seriesFailureValues}');
+			expect(sparklineTag).not.toContain('bySource');
+			expect(sparklineTag).not.toContain('src.failures');
+		});
+
+		it('keeps source list as a breakdown separate from the time-series chart', () => {
+			expect(source).toContain('trust__source-list');
+			expect(source).toContain('Failures by source');
+		});
+	});
+
+	// ── #573: Queue depth sparkline from real series ──────────────────
+
+	describe('queue depth renders real time series', () => {
+		it('renders Sparkline from queueDepth.seriesDepthValues', () => {
+			expect(source).toContain('queueDepth.seriesDepthValues');
+			expect(source).toContain('values.push(pt.depth)');
+			expect(source).not.toContain('values.push(pt.value)');
+		});
+
+		it('renders queue depth Sparkline with values from series', () => {
+			const styleIdx = source.lastIndexOf('<style>');
+			const templatePart = styleIdx > 0 ? source.substring(0, styleIdx) : source;
+			// Sparkline should be inside the queue depth panel
+			const qdSectionStart = templatePart.indexOf('Inbound queue depth');
+			const qdSectionEnd = templatePart.indexOf('</section>', qdSectionStart);
+			const qdSection = templatePart.substring(qdSectionStart, qdSectionEnd);
+			expect(qdSection).toContain('Sparkline');
 		});
 	});
 });
@@ -152,27 +226,126 @@ describe('M15 Trust UI — App.svelte route dispatch', () => {
 	});
 
 	it('renders PortalTrust for dashboard route and Trust for attestation subroute', () => {
-		// The template should have both PortalTrust and Trust rendering branches.
 		expect(appSource).toContain('<PortalTrust');
 		expect(appSource).toContain('<Trust />');
 	});
 
 	it('preserves public /trust route dispatch to Trust component', () => {
-		// /trust paths should still route to Trust (public attestation inspector).
 		expect(appSource).toContain("startsWith('/trust/')");
 		expect(appSource).toContain('<Trust />');
 	});
 });
 
-// ── DOM mount test — component renders ─────────────────────────────────
+function jsonResponse(body: unknown, status = 200): Response {
+	return new Response(JSON.stringify(body), {
+		status,
+		headers: { 'content-type': 'application/json' },
+	});
+}
+
+function installLoadedTrustFetchMock() {
+	const trustResponse = {
+		instance_slug: 'demo',
+		federation: {
+			reachable: 1,
+			warning: 1,
+			severed: 0,
+			peers: [
+				{
+					domain: 'alpha.example',
+					status: 'reachable',
+					follower_count: 12,
+					last_seen: '2026-05-29T08:15:00Z',
+				},
+				{
+					domain: 'beta.example',
+					status: 'warning',
+					last_fetch: '2026-05-29T10:30:00Z',
+				},
+			],
+		},
+		signatures: {
+			window_hours: 24,
+			total_failures: 3,
+			by_source: [{ source: '0xagent', failures: 3 }],
+			series: [
+				{ timestamp: '2026-05-29T08:00:00Z', failures: 1 },
+				{ timestamp: '2026-05-29T09:00:00Z', failures: 2 },
+			],
+		},
+		queue_depth: {
+			series: [
+				{ timestamp: '2026-05-29T08:00:00Z', depth: 4 },
+				{ timestamp: '2026-05-29T09:00:00Z', depth: 8 },
+			],
+		},
+		trust_score: {
+			score: 77,
+			formula: 'trust_score = average(Composite) across agents',
+			dimensions: {
+				operational: 80,
+				attestation: 75,
+				social: 70,
+				economic: 65,
+				integrity: 90,
+			},
+			source: 'lesser-host:soul_agent_reputation',
+		},
+		vouches: {
+			items: [
+				{
+					peer: '0xpeer',
+					strength: 1,
+					type: 'endorsement',
+					created_at: '2026-05-28T10:00:00Z',
+				},
+			],
+			count: 1,
+		},
+	};
+
+	vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+		const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+		if (url.endsWith('/api/v1/portal/instances')) {
+			return Promise.resolve(
+				jsonResponse({
+					instances: [
+						{
+							slug: 'demo',
+							status: 'ok',
+							hosted_region: 'us-east-1',
+							created_at: '2026-05-29T00:00:00Z',
+						},
+					],
+					count: 1,
+				}),
+			);
+		}
+		if (url.endsWith('/api/v1/portal/instances/demo/trust/data')) {
+			return Promise.resolve(jsonResponse(trustResponse));
+		}
+		return Promise.resolve(jsonResponse({ message: 'not found' }, 404));
+	});
+}
+
+async function waitForText(target: HTMLElement, expected: string) {
+	for (let i = 0; i < 20; i += 1) {
+		await tick();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		if (target.textContent?.includes(expected)) {
+			return;
+		}
+	}
+	expect(target.textContent).toContain(expected);
+}
+
+// ── DOM mount tests — component renders ─────────────────────────────────
 
 describe('M15 Trust UI — DOM mount', () => {
 	it('mounts without error and renders the page header', async () => {
 		const target = document.createElement('div');
 		document.body.appendChild(target);
 
-		// Mount with empty token — the component should render its
-		// initial loading state or error state gracefully.
 		const instance = mount(PortalTrust, {
 			target,
 			props: { token: '' },
@@ -180,11 +353,8 @@ describe('M15 Trust UI — DOM mount', () => {
 
 		await tick();
 
-		// Should render the header even before data loads.
 		const header = target.querySelector('.trust__header');
 		expect(header).not.toBeNull();
-
-		// The heading should contain the eyebrow text.
 		expect(header?.textContent).toContain('Trust');
 		expect(header?.textContent).toContain('federation');
 
@@ -201,7 +371,6 @@ describe('M15 Trust UI — DOM mount', () => {
 			props: { token: '' },
 		});
 
-		// The section should exist even with no data.
 		const section = target.querySelector('[aria-label="Federation peer constellation"]');
 		expect(section).not.toBeNull();
 
@@ -283,6 +452,35 @@ describe('M15 Trust UI — DOM mount', () => {
 		expect(gauge?.getAttribute('aria-valuemin')).toBe('0');
 		expect(gauge?.getAttribute('aria-valuemax')).toBe('100');
 
+		document.body.removeChild(target);
+	});
+
+	it('renders loaded peer metadata, signature series, and queue-depth depth values', async () => {
+		installLoadedTrustFetchMock();
+		const target = document.createElement('div');
+		document.body.appendChild(target);
+
+		const instance = mount(PortalTrust, {
+			target,
+			props: { token: 'test-token' },
+		});
+
+		await waitForText(target, 'alpha.example');
+
+		const text = target.textContent ?? '';
+		expect(text).toContain('12 followers');
+		expect(text).toContain('followers unavailable');
+		expect(text).toContain('Seen: 2026-05-29');
+		expect(text).toContain('Fetch: 2026-05-29');
+		expect(text).toContain('Sig failures 24h');
+		expect(text).toContain('3 total');
+		expect(text).toMatch(/2 hourly bucket\s*s/);
+		expect(text).toContain('Max failures: 2');
+		expect(text).toMatch(/2 data point\s*s/);
+		expect(text).toContain('Max depth: 8');
+		expect(text).not.toContain('not yet instrumented');
+
+		unmount(instance);
 		document.body.removeChild(target);
 	});
 });

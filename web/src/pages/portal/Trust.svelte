@@ -5,7 +5,7 @@ Trust — Project 42 M15 portal trust dashboard at /portal/trust.
 SPDX-License-Identifier: AGPL-3.0-only
 @license AGPL-3.0-only
 
-Fleet-level trust & federation dashboard consuming the M16 owner-scoped
+Fleet-level trust & federation dashboard consuming the owner-scoped
 per-instance trust-data endpoint. Loads all the customer's instances,
 fetches trust data for each, and aggregates across the fleet.
 
@@ -13,35 +13,36 @@ fetches trust data for each, and aggregates across the fleet.
    1. Page header with eyebrow "Trust & federation" + title
    2. Four metric cards (SummaryStrip): reachable peers, warnings,
       severed peers, signature failures
-   3. Left panel: peer constellation grid + sparkline panels
-      (signature failures, queue depth)
+   3. Left panel: peer constellation grid (with follower count and
+      last_seen / last_fetch timestamps when available) + sparkline
+      panels (signature failures, queue depth)
    4. Right rail: trust score gauge + dimensions + vouches list + severed alert
 
-Documented deviations from design fixture:
-  - Federation peer data is not yet instrumented (M16 backend returns
-    zero/empty). Peer grid shows honest "not yet instrumented" empty state.
-  - Peer grid squares omit follower count and last-fetch timestamps
-    because the M16 federation model (domain + status only) does not
-    carry those fields.
-  - Vouches are rendered as list/count (not strength bars) per M16
-    because SoulAgentPeerEndorsement has no numeric strength field.
-  - Signature sparkline uses aggregated by_source rows, not time buckets,
-    because the M16 endpoint returns per-source aggregate counts, not a
-    time series.
-  - Queue depth series is empty when not instrumented; renders honest
-    "not yet instrumented" empty state.
-  - Trust score gauge shows average across instances when multiple
-    instances exist; single-instance customers see per-instance score.
+Issue #573 corrections applied:
+  - Peer grid renders follower_count when present, honest "followers
+    unavailable" when the field is null/omitted.
+  - Peer grid renders last_seen (from lesser admin API) or last_fetch
+    (host-side fallback timestamp) per peer row.
+  - Signature failures panel renders a Sparkline only from the real
+    signatures.series[].failures time series; it never derives a chart from
+    per-source aggregates.
+  - Window hours reflect the backend 24h default (window_hours=24).
+  - Queue depth sparkline renders from real queue_depth.series data.
+  - Empty states say "no scoped data is present" rather than "not yet
+    instrumented".
+  - Trust score gauge and vouches list use real scoped data; vouch
+    strength is the presence marker (1.0) per the backing model.
 
 Posture invariants preserved:
   - Strict-CSP safe: no inline style attributes or inline scripts.
   - Multi-tenant isolation: only owner-scoped portal endpoints consumed.
-  - No backend modifications: consumes M16 endpoint as-is.
+  - Backend DTO extension is additive: signatures.series is redacted,
+    timestamped, and 24h bounded; queue_depth.series[].depth remains intact.
   - /portal/trust remains inside PortalShell; /portal/trust/attestations/{id}
     still delegates to the public attestation inspector via App.svelte routing.
 
 Source: design fixture portal-pages-2.jsx:1–249 (FederationView / Trust)
-Issue: equaltoai/lesser-host#550
+Issue: equaltoai/lesser-host#550, #573
 @license AGPL-3.0-only
 -->
 
@@ -54,6 +55,7 @@ Issue: equaltoai/lesser-host#550
 	import type {
 		PortalTrustDataResponse,
 		TrustFederationPeerRow,
+		TrustSignatureSeriesPoint,
 		TrustSignaturesSourceRow,
 		TrustVouchItem,
 	} from 'src/lib/api/portalTrust';
@@ -90,6 +92,8 @@ Issue: equaltoai/lesser-host#550
 		windowHours: number;
 		totalFailures: number;
 		bySource: TrustSignaturesSourceRow[];
+		series: TrustSignatureSeriesPoint[];
+		seriesFailureValues: number[];
 	}
 
 	interface AggQueueDepth {
@@ -140,12 +144,17 @@ Issue: equaltoai/lesser-host#550
 	const signatures = $derived.by<AggSignatures>(() => {
 		let totalFailures = 0;
 		const windowHours =
-			trustData.length > 0 ? trustData[0].signatures.window_hours : 168;
+			trustData.length > 0 ? trustData[0].signatures.window_hours : 24;
 		const sourceMap: Record<string, number> = {};
+		const seriesMap: Record<string, number> = {};
 		for (const td of trustData) {
 			totalFailures += td.signatures.total_failures;
 			for (const s of td.signatures.by_source) {
 				sourceMap[s.source] = (sourceMap[s.source] ?? 0) + s.failures;
+			}
+			for (const point of td.signatures.series ?? []) {
+				seriesMap[point.timestamp] =
+					(seriesMap[point.timestamp] ?? 0) + point.failures;
 			}
 		}
 		const bySource: TrustSignaturesSourceRow[] = [];
@@ -153,7 +162,19 @@ Issue: equaltoai/lesser-host#550
 			bySource.push({ source, failures: sourceMap[source] });
 		}
 		bySource.sort((a, b) => b.failures - a.failures);
-		return { windowHours, totalFailures, bySource };
+		const series = Object.keys(seriesMap)
+			.sort()
+			.map((timestamp) => ({
+				timestamp,
+				failures: seriesMap[timestamp],
+			}));
+		return {
+			windowHours,
+			totalFailures,
+			bySource,
+			series,
+			seriesFailureValues: series.map((point) => point.failures),
+		};
 	});
 
 	const queueDepth = $derived.by<AggQueueDepth>(() => {
@@ -341,8 +362,8 @@ Issue: equaltoai/lesser-host#550
 			<Heading level={1} size="2xl">{headingTitle}</Heading>
 			<Text size="sm" color="secondary">
 				Fleet-wide federation health, signature reliability, and trust posture
-				across your managed instances. Federation peer data is not yet
-				instrumented; the dashboard reflects available telemetry.
+				across your managed instances. Data is scoped to your owned instances
+				and reflects available telemetry.
 			</Text>
 		</div>
 	</header>
@@ -391,10 +412,10 @@ Issue: equaltoai/lesser-host#550
 					{#if federation.peers.length === 0}
 						<div class="trust__empty-state">
 							<Text size="sm" color="secondary">
-								Federation peer telemetry is not yet instrumented.
-								When enabled, each managed instance&rsquo;s federation
-								peers will appear as constellation squares with
-								reachability status.
+								No scoped federation peer data is present.
+								When federation peers are detected across your
+								managed instances, they will appear here as
+								constellation squares with reachability status.
 							</Text>
 						</div>
 					{:else}
@@ -405,12 +426,34 @@ Issue: equaltoai/lesser-host#550
 						>
 							{#each federation.peers as peer (peer.domain)}
 								<div class="trust-peer-grid__item" role="listitem">
-									<span
-										class="trust-peer-grid__dot {peerStatusClass(peer.status)}"
-										aria-hidden="true"
-									></span>
-									<span class="trust-peer-grid__domain">{peer.domain}</span>
-									<span class="trust-peer-grid__status">{peer.status}</span>
+									<div class="trust-peer-grid__main">
+										<span
+											class="trust-peer-grid__dot {peerStatusClass(peer.status)}"
+											aria-hidden="true"
+										></span>
+										<span class="trust-peer-grid__domain">{peer.domain}</span>
+										<span class="trust-peer-grid__status">{peer.status}</span>
+									</div>
+									<div class="trust-peer-grid__meta">
+										{#if peer.follower_count != null}
+											<span class="trust-peer-grid__followers">
+												{peer.follower_count.toLocaleString()} follower{peer.follower_count !== 1 ? 's' : ''}
+											</span>
+										{:else}
+											<span class="trust-peer-grid__followers trust-peer-grid__followers--unavailable">
+												followers unavailable
+											</span>
+										{/if}
+										{#if peer.last_seen}
+											<span class="trust-peer-grid__timestamp">
+												Seen: {peer.last_seen.slice(0, 10)}
+											</span>
+										{:else if peer.last_fetch}
+											<span class="trust-peer-grid__timestamp">
+												Fetch: {peer.last_fetch.slice(0, 10)}
+											</span>
+										{/if}
+									</div>
 								</div>
 							{/each}
 						</div>
@@ -425,22 +468,33 @@ Issue: equaltoai/lesser-host#550
 						failures across {signatures.bySource.length} source
 						{signatures.bySource.length !== 1 ? 's' : ''}.
 					</Text>
-					{#if signatures.bySource.length === 0}
+					{#if signatures.seriesFailureValues.length === 0}
 						<div class="trust__empty-state">
 							<Text size="sm" color="secondary">
-								No signature failures recorded in the dashboard window.
+								{#if signatures.totalFailures === 0}
+									No signature failures recorded in the dashboard window.
+								{:else}
+									Signature failures were counted, but no timestamped series
+									points are present in this response.
+								{/if}
 							</Text>
 						</div>
 					{:else}
-						{@const sparkValues = signatures.bySource.map((s) => s.failures)}
+						<Text size="sm" color="secondary">
+							{signatures.series.length} hourly bucket
+							{signatures.series.length !== 1 ? 's' : ''}.
+							Max failures: {Math.max(...signatures.seriesFailureValues)}.
+						</Text>
 						<div class="trust__sparkline-container">
 							<Sparkline
-								values={sparkValues}
+								values={signatures.seriesFailureValues}
 								width={200}
 								height={48}
 								color="var(--ds-warning-500)"
 							/>
 						</div>
+					{/if}
+					{#if signatures.bySource.length > 0}
 						<div class="trust__source-list" role="list" aria-label="Failures by source">
 							{#each signatures.bySource as src (src.source)}
 								<div class="trust__source-row" role="listitem">
@@ -458,7 +512,7 @@ Issue: equaltoai/lesser-host#550
 					{#if queueDepth.seriesDepthValues.length === 0}
 						<div class="trust__empty-state">
 							<Text size="sm" color="secondary">
-								Inbound queue depth telemetry is not yet instrumented.
+								No inbound queue depth data is present.
 							</Text>
 						</div>
 					{:else}
@@ -732,11 +786,24 @@ Strict-CSP safe: no inline styles; uses CSS classes only.
 
 	.trust-peer-grid__item {
 		display: flex;
-		align-items: center;
-		gap: var(--gr-spacing-scale-2);
+		flex-direction: column;
+		gap: var(--gr-spacing-scale-1);
 		padding: var(--gr-spacing-scale-2) var(--gr-spacing-scale-3);
 		border: 1px solid var(--gr-semantic-border-default, var(--gr-color-gray-200));
 		border-radius: var(--gr-radii-sm, 0.25rem);
+	}
+
+	.trust-peer-grid__main {
+		display: flex;
+		align-items: center;
+		gap: var(--gr-spacing-scale-2);
+	}
+
+	.trust-peer-grid__meta {
+		display: flex;
+		align-items: center;
+		gap: var(--gr-spacing-scale-2);
+		padding-left: calc(8px + var(--gr-spacing-scale-2));
 	}
 
 	.trust-peer-grid__dot {
@@ -775,6 +842,22 @@ Strict-CSP safe: no inline styles; uses CSS classes only.
 		font-size: var(--gr-font-size-xs, 0.75rem);
 		color: var(--gr-semantic-text-secondary, var(--gr-color-gray-500));
 		flex-shrink: 0;
+	}
+
+	.trust-peer-grid__followers {
+		font-size: var(--gr-font-size-xs, 0.75rem);
+		color: var(--gr-semantic-text-secondary, var(--gr-color-gray-500));
+		font-variant-numeric: tabular-nums;
+	}
+
+	.trust-peer-grid__followers--unavailable {
+		color: var(--ds-secondary-400, #9ca3af);
+		font-style: italic;
+	}
+
+	.trust-peer-grid__timestamp {
+		font-size: var(--gr-font-size-xs, 0.75rem);
+		color: var(--gr-semantic-text-secondary, var(--gr-color-gray-500));
 	}
 
 	/* ── Sparkline container ─────────────────────────────────────────── */

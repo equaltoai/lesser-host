@@ -102,6 +102,8 @@ func TestHandlePortalGetTrustData_HappyPath(t *testing.T) {
 	require.Equal(t, 0, data.Signatures.TotalFailures)
 	require.NotNil(t, data.Signatures.BySource)
 	require.Len(t, data.Signatures.BySource, 0)
+	require.NotNil(t, data.Signatures.Series)
+	require.Len(t, data.Signatures.Series, 0)
 
 	// Queue depth: empty series
 	require.NotNil(t, data.QueueDepth.Series)
@@ -808,6 +810,7 @@ func TestHandlePortalGetTrustData_SoulPopulatedSignatureFailures(t *testing.T) {
 	agentA := "0x0000000000000000000000000000000000000000000000000000000000000aaa"
 	agentB := "0x0000000000000000000000000000000000000000000000000000000000000bbb"
 	now := time.Now().UTC()
+	sameHour := now.Truncate(time.Hour).Add(-2 * time.Hour).Add(5 * time.Minute)
 
 	stubOwnedInstance(t, tdb.qInstance, "demo", "alice")
 
@@ -832,15 +835,17 @@ func TestHandlePortalGetTrustData_SoulPopulatedSignatureFailures(t *testing.T) {
 	// No reputation for either agent
 	tdb.qRep.On("First", mock.AnythingOfType("*models.SoulAgentReputation")).Return(theoryErrors.ErrItemNotFound).Twice()
 
-	// Agent A: 3 signature failures within the 24h window, 2 outside window, 1 non-signature
+	// Agent A: 4 signature failures within the 24h window, 3 outside window/future, 1 non-signature
 	tdb.qFailure.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*[]*models.SoulAgentFailure](t, args, 0)
 		*dest = []*models.SoulAgentFailure{
 			{FailureType: "signature_failure", Timestamp: now.Add(-1 * time.Hour)},
-			{FailureType: "signature_failure", Timestamp: now.Add(-2 * time.Hour)},
+			{FailureType: "SIGNATURE_FAILURE", Timestamp: sameHour},
+			{FailureType: "signature_failure", Timestamp: sameHour.Add(10 * time.Minute)},
 			{FailureType: "signature_failure", Timestamp: now.Add(-3 * time.Hour)},
 			{FailureType: "signature_failure", Timestamp: now.Add(-25 * time.Hour)},  // outside 24h window
 			{FailureType: "signature_failure", Timestamp: now.Add(-200 * time.Hour)}, // outside window
+			{FailureType: "signature_failure", Timestamp: now.Add(1 * time.Hour)},    // future/outside window
 			{FailureType: "crash_loop", Timestamp: now.Add(-1 * time.Hour)},          // not signature
 		}
 	}).Once()
@@ -873,8 +878,10 @@ func TestHandlePortalGetTrustData_SoulPopulatedSignatureFailures(t *testing.T) {
 	err = json.Unmarshal(resp.Body, &data)
 	require.NoError(t, err)
 
-	// Total: 3 (agent A) + 1 (agent B) = 4
-	require.Equal(t, 4, data.Signatures.TotalFailures)
+	// Total: 4 (agent A) + 1 (agent B) = 5. Older, future, and
+	// non-signature failures are excluded before both aggregate and series
+	// counts are computed.
+	require.Equal(t, 5, data.Signatures.TotalFailures)
 	require.Equal(t, 24, data.Signatures.WindowHours)
 
 	// By-source: 2 entries (one per agent)
@@ -885,14 +892,57 @@ func TestHandlePortalGetTrustData_SoulPopulatedSignatureFailures(t *testing.T) {
 	for _, row := range data.Signatures.BySource {
 		srcMap[row.Source] = row.Failures
 	}
-	require.Equal(t, 3, srcMap[agentA])
+	require.Equal(t, 4, srcMap[agentA])
 	require.Equal(t, 1, srcMap[agentB])
+
+	// Series: hourly points are derived from real failure timestamps only.
+	// The shape must remain redacted: timestamp + failures, no source/agent ID
+	// and no raw failure metadata.
+	require.NotEmpty(t, data.Signatures.Series)
+	seriesSum := 0
+	var previous time.Time
+	hasBucketWithMultipleFailures := false
+	for i, point := range data.Signatures.Series {
+		ts, parseErr := time.Parse(time.RFC3339, point.Timestamp)
+		require.NoError(t, parseErr)
+		require.Equal(t, ts.Truncate(time.Hour), ts, "signature bucket timestamps must be UTC hour buckets")
+		require.False(t, ts.After(now.UTC()))
+		require.Greater(t, point.Failures, 0)
+		seriesSum += point.Failures
+		if point.Failures > 1 {
+			hasBucketWithMultipleFailures = true
+		}
+		if i > 0 {
+			require.True(t, previous.Before(ts), "signature series should be sorted ascending")
+		}
+		previous = ts
+	}
+	require.Equal(t, data.Signatures.TotalFailures, seriesSum)
+	require.True(t, hasBucketWithMultipleFailures, "same-hour signature failures should be bucketed together")
 
 	// Verify no raw failure data leaks
 	body := string(resp.Body)
 	require.NotContains(t, body, `"failure_id"`)
 	require.NotContains(t, body, `"FailureID"`)
 	require.NotContains(t, body, `"description"`)
+	require.NotContains(t, body, `"value"`, "signature series must not use the queue-depth/shared value shape")
+
+	var raw map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(resp.Body, &raw))
+	var rawSignatures struct {
+		Series []map[string]any `json:"series"`
+	}
+	require.NoError(t, json.Unmarshal(raw["signatures"], &rawSignatures))
+	for _, point := range rawSignatures.Series {
+		require.Contains(t, point, "timestamp")
+		require.Contains(t, point, "failures")
+		require.NotContains(t, point, "source")
+		require.NotContains(t, point, "agent_id")
+		require.NotContains(t, point, "failure_id")
+		require.NotContains(t, point, "description")
+		require.NotContains(t, point, "PK")
+		require.NotContains(t, point, "SK")
+	}
 }
 
 func TestHandlePortalGetTrustData_QueueDepthSnapshotCountsScopedMailboxRows(t *testing.T) {
