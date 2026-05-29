@@ -57,6 +57,7 @@ Issue: equaltoai/lesser-host#536
 	import Eyebrow from './primitives/Eyebrow.svelte';
 	import { portalListInstances, type InstanceResponse } from 'src/lib/api/portalInstances';
 	import { getPortalMe, type PortalMeResponse } from 'src/lib/api/portal';
+	import { soulListMyAgents, type SoulMineAgentItem } from 'src/lib/api/soul';
 	import type { ApiError } from 'src/lib/api/http';
 
 	// Icons
@@ -91,6 +92,10 @@ Issue: equaltoai/lesser-host#536
 	// ── Instance list state (for sidebar) ─────────────────────────────
 	let instancesLoading = $state(false);
 	let instances = $state<InstanceResponse[]>([]);
+
+	// ── Souls state (for command palette) ─────────────────────────────
+	let soulsLoading = $state(false);
+	let souls = $state<SoulMineAgentItem[]>([]);
 
 	// ── Bell popover ──────────────────────────────────────────────────
 	let bellOpen = $state(false);
@@ -267,6 +272,18 @@ Issue: equaltoai/lesser-host#536
 		} finally {
 			instancesLoading = false;
 		}
+
+		// Fetch souls for command palette group
+		soulsLoading = true;
+		try {
+			const soulRes = await soulListMyAgents(tok);
+			souls = soulRes.agents ?? [];
+		} catch (_err) {
+			// Fail-quiet: cmd-k palette omits Souls group.
+			souls = [];
+		} finally {
+			soulsLoading = false;
+		}
 	}
 
 	onMount(() => {
@@ -277,8 +294,18 @@ Issue: equaltoai/lesser-host#536
 			ev.preventDefault();
 			paletteOpen = !paletteOpen;
 		}
+
+		function onCmdKTrigger() {
+			paletteOpen = true;
+			paletteQuery = '';
+		}
+
 		document.addEventListener('keydown', onKeydown);
-		return () => document.removeEventListener('keydown', onKeydown);
+		window.addEventListener('lesserhost:cmd-k-trigger', onCmdKTrigger);
+		return () => {
+			document.removeEventListener('keydown', onKeydown);
+			window.removeEventListener('lesserhost:cmd-k-trigger', onCmdKTrigger);
+		};
 	});
 
 	// ── Handlers ──────────────────────────────────────────────────────
@@ -339,7 +366,6 @@ Issue: equaltoai/lesser-host#536
 				label: 'Go to Fleet',
 				description: 'Customer fleet view',
 				keywords: ['portal', 'instances', 'overview'],
-				shortcut: 'F',
 			},
 			{
 				id: 'nav.legacy-instances',
@@ -387,23 +413,46 @@ Issue: equaltoai/lesser-host#536
 	const actionsGroup = $derived<CommandPaletteGroup>({
 		id: 'actions',
 		label: 'Actions',
-		items: $session
-			? [
-					{
-						id: 'action.logout',
-						label: 'Log out',
-						description: 'Sign out of the portal',
-						keywords: ['signout', 'leave'],
-					},
-				]
-			: [
-					{
-						id: 'action.login',
-						label: 'Sign in',
-						description: 'Open the login page',
-						keywords: ['signin', 'session'],
-					},
-				],
+		items: [
+			...($session
+				? [
+						{
+							id: 'action.logout',
+							label: 'Log out',
+							description: 'Sign out of the portal',
+							keywords: ['signout', 'leave'],
+						},
+					]
+				: [
+						{
+							id: 'action.login',
+							label: 'Sign in',
+							description: 'Open the login page',
+							keywords: ['signin', 'session'],
+						},
+					]),
+			// Stubbed / future actions (M3)
+			{
+				id: 'action.new-instance',
+				label: 'New instance…',
+				description: 'Create a new managed instance',
+				keywords: ['create', 'provision', 'deploy'],
+				disabled: true,
+			},
+			{
+				id: 'action.request-soul',
+				label: 'Request a soul…',
+				description: 'Register a new soul agent',
+				keywords: ['register', 'agent', 'soul'],
+			},
+			{
+				id: 'action.refresh-data',
+				label: 'Refresh data',
+				description: 'Refresh portal data',
+				keywords: ['reload', 'sync'],
+				disabled: true,
+			},
+		],
 	});
 
 	const instancesGroup = $derived<CommandPaletteGroup | null>(
@@ -416,10 +465,25 @@ Issue: equaltoai/lesser-host#536
 			: null
 	);
 
+	const soulsGroup = $derived<CommandPaletteGroup | null>(
+		souls.length > 0
+			? {
+					id: 'souls',
+					label: 'Souls',
+					items: souls.map((entry) => ({
+						id: `soul.${entry.agent.agent_id}`,
+						label: `${entry.agent.local_id}@${entry.agent.domain}`,
+						description: entry.agent.status || undefined,
+						keywords: [entry.agent.local_id, entry.agent.domain, 'soul', 'agent'],
+					})),
+				}
+			: null
+	);
+
 	const paletteGroups = $derived<CommandPaletteGroup[]>(
-		instancesGroup
-			? [navigationGroup, instancesGroup, actionsGroup]
-			: [navigationGroup, actionsGroup]
+		[navigationGroup, actionsGroup, instancesGroup, soulsGroup].filter(
+			(g): g is CommandPaletteGroup => g !== null
+		)
 	);
 
 	function handlePaletteSelect(item: CommandPaletteItem) {
@@ -453,10 +517,17 @@ Issue: equaltoai/lesser-host#536
 			case 'action.login':
 				navigate('/login');
 				return;
+			case 'action.request-soul':
+				navigate('/portal/souls/register');
+				return;
 		}
 		if (item.id.startsWith('instance.')) {
 			const slug = item.id.slice('instance.'.length);
 			if (slug) navigate(`/portal/instances/${slug}`);
+		}
+		if (item.id.startsWith('soul.')) {
+			const agentId = item.id.slice('soul.'.length);
+			if (agentId) navigate(`/portal/souls/${agentId}`);
 		}
 	}
 
@@ -663,6 +734,7 @@ Issue: equaltoai/lesser-host#536
 	bind:open={paletteOpen}
 	bind:query={paletteQuery}
 	label="Portal command palette"
+	placeholder="Search instances, souls, jobs…"
 	groups={paletteGroups}
 	onselect={handlePaletteSelect}
 />

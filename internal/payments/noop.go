@@ -36,3 +36,10 @@ func (noopProvider) ResolveSetupPaymentMethod(ctx context.Context, setupIntentID
 	_ = setupIntentID
 	return nil, ErrNotConfigured
 }
+
+func (noopProvider) ListRecentInvoices(ctx context.Context, customerID string, limit int64) ([]InvoiceInfo, error) {
+	_ = ctx
+	_ = customerID
+	_ = limit
+	return nil, ErrNotConfigured
+}

@@ -12,6 +12,7 @@ import (
 	"github.com/equaltoai/lesser-host/internal/commmailbox"
 	"github.com/equaltoai/lesser-host/internal/commworker"
 	"github.com/equaltoai/lesser-host/internal/config"
+	"github.com/equaltoai/lesser-host/internal/payments"
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
@@ -54,6 +55,10 @@ type Server struct {
 	telnyxCallVoice     func(ctx context.Context, from string, to string, texmlURL string, statusCallbackURL string) (string, error)
 
 	enqueueCommMessage func(ctx context.Context, msg commworker.QueueMessage) error
+
+	// paymentsProviderFactory is a test-injection hook. When non-nil, handlers
+	// use it instead of payments.NewProvider.
+	paymentsProviderFactory func(name string) payments.Provider
 }
 
 // NewServer constructs a new control plane Server.
@@ -167,6 +172,7 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 	app.Get("/api/v1/portal/instances/{slug}/usage/{month}", s.handlePortalListInstanceUsage, apptheory.RequireAuth())
 	app.Get("/api/v1/portal/instances/{slug}/usage/{month}/summary", s.handlePortalGetInstanceUsageSummary, apptheory.RequireAuth())
 	app.Get("/api/v1/portal/instances/{slug}/cost", s.handlePortalGetInstanceCost, apptheory.RequireAuth())
+	app.Get("/api/v1/portal/instances/{slug}/activity", s.handlePortalGetInstanceActivity, apptheory.RequireAuth())
 
 	// Portal domains (owner-scoped).
 	app.Get("/api/v1/portal/instances/{slug}/domains", s.handlePortalListInstanceDomains, apptheory.RequireAuth())
@@ -189,6 +195,10 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 	app.Get("/api/v1/portal/billing/credits/purchases", s.handlePortalListCreditPurchases, apptheory.RequireAuth())
 	app.Post("/api/v1/portal/billing/payment-method/checkout", s.handlePortalCreatePaymentMethodCheckout, apptheory.RequireAuth())
 	app.Get("/api/v1/portal/billing/payment-methods", s.handlePortalListPaymentMethods, apptheory.RequireAuth())
+
+	// Portal billing data (M12 — invoice history + current payment method).
+	app.Get("/api/v1/portal/billing/invoices", s.handlePortalListInvoices, apptheory.RequireAuth())
+	app.Get("/api/v1/portal/billing/payment-method", s.handlePortalGetPaymentMethod, apptheory.RequireAuth())
 
 	// Payments webhooks (public).
 	app.Post("/api/v1/payments/stripe/webhook", s.handleStripeWebhook)

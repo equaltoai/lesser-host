@@ -1,55 +1,278 @@
 <!--
 @component
-Billing — customer billing page (credits purchases + payment methods).
+Billing — spend-analytics billing page for M11 (corrective rework).
 
-M1.4 re-skin: renders on the new shell (greater-components `PageFrame` +
-`PageTitle` + `Panel`) with DS-token spacing. Endpoint shapes, checkout
-redirect flow (no third-party scripts — Stripe Checkout redirect only),
-and webhook reconciliation hand-off are preserved byte-for-byte from the
-pre-M1 implementation; only the visual layer changes.
+SPDX-License-Identifier: AGPL-3.0-only
+@license AGPL-3.0-only
+
+Renders the owner fleet spend-analytics surface defined in the Project 42
+design fixture (portal-pages-2.jsx:3–169): four metric cards, a stacked
+weekly bar chart, a per-instance breakdown table with burn progress, and
+a right rail with This-month / Payment-method / Recent-invoices panels.
+
+Data sources (all owner-scoped, read-only):
+  - portalGetInstanceCost    → MTD, Projected EOM, UniqueUsers (from cost metrics)
+  - portalGetBudgetMonth     → budget/used credits per instance
+  - portalGetInstanceActivity → post/status count from Lesser instance activity
+    (owner-scoped bridge via GET /api/v1/portal/instances/{slug}/activity)
+  - portalListInvoices       → M12 invoice history
+  - portalGetPaymentMethod   → M12 payment method (masked DTO only)
 
 Posture invariants preserved:
-  - Strict-no-inline-CSP safe: no inline scripts/styles; no third-party
-    Stripe.js or Embed; redirect-only setup flow preserved.
-  - Multi-tenant isolation: consumes only per-owner portal billing
-    endpoints; no cross-tenant reads.
-  - No raw payment data is rendered (only provider IDs / last4 /
-    redacted brand strings).
+  - Strict-no-inline-CSP safe: no inline style attributes; styling through
+    CSS classes, data-* attribute selectors, and SVG presentation attributes.
+  - Multi-tenant isolation: consumes only per-owner portal endpoints;
+    no cross-tenant reads.
+  - No raw payment data rendered: only brand/last4/expiry/status and
+    safe invoice period/status/amount/hosted links.
+  - No hardcoded budget fallback map or inference function.
+  - "Per active user" sourced from UniqueUsers in cost telemetry metrics.
+  - "Per federated post" sourced from owner-scoped instance-activity bridge.
+  - No backend edits to payment/invoice surfaces. No Cost & usage tab.
+    No new payment update flow.
 
-Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M1.4
-Issue: equaltoai/lesser-host#413
+Source: docs/portal-pages-2.jsx M11 Billing UI
+Issue: equaltoai/lesser-host#546
+@license AGPL-3.0-only
 -->
 
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import type { Snippet } from 'svelte';
 
-	import { type ApiError, isSafeRedirectUrl } from 'src/lib/api/http';
+	import type { ApiError } from 'src/lib/api/http';
+	import type { InstanceResponse } from 'src/lib/api/portalInstances';
+	import { portalListInstances } from 'src/lib/api/portalInstances';
+	import type { PortalCostResponse, BudgetMonthResponse, PortalInstanceActivityResponse } from 'src/lib/api/portalUsage';
+	import { portalGetInstanceCost, portalGetBudgetMonth, portalGetInstanceActivity } from 'src/lib/api/portalUsage';
 	import type {
-		ListCreditPurchasesResponse,
-		ListPaymentMethodsResponse,
+		ListInvoicesResponse,
+		GetPaymentMethodResponse,
 	} from 'src/lib/api/portalBilling';
 	import {
-		portalCreatePaymentMethodCheckout,
-		portalListCreditPurchases,
-		portalListPaymentMethods,
+		portalListInvoices,
+		portalGetPaymentMethod,
 	} from 'src/lib/api/portalBilling';
 	import { logout } from 'src/lib/auth/logout';
-	import { linkProps, navigate } from 'src/lib/router';
-	import { Alert, Badge, Button, CopyButton, Link, Spinner, Text } from 'src/lib/ui';
+	import { navigate } from 'src/lib/router';
+	import { Alert, Badge, Button, Spinner, Text } from 'src/lib/ui';
 	import { PageFrame, PageTitle, Panel } from 'src/lib/shell';
+	import { Eyebrow, Metric, Sparkline, ProgressBar } from 'src/lib/components/primitives';
 
 	let { token } = $props<{ token: string }>();
 
+	// ---- state ----
 	let loading = $state(false);
 	let errorMessage = $state<string | null>(null);
 
-	let purchases = $state<ListCreditPurchasesResponse | null>(null);
-	let methods = $state<ListPaymentMethodsResponse | null>(null);
+	let instances = $state<InstanceResponse[]>([]);
+	let costsBySlug = $state<Map<string, PortalCostResponse>>(new Map());
+	let budgetsBySlug = $state<Map<string, BudgetMonthResponse>>(new Map());
+	let activityBySlug = $state<Map<string, PortalInstanceActivityResponse>>(new Map());
+	let invoicesResponse = $state<ListInvoicesResponse | null>(null);
+	let paymentMethodResponse = $state<GetPaymentMethodResponse | null>(null);
 
-	let checkoutNotice = $state<string | null>(null);
-	let addPaymentMethodLoading = $state(false);
-	let addPaymentMethodError = $state<string | null>(null);
+	// ---- derived: month helpers ----
+	const nowStr = $derived(new Date().toISOString());
+	const currentYear = $derived(Number(nowStr.slice(0, 4)));
+	const currentMonthNum = $derived(Number(nowStr.slice(5, 7)));
+	const currentMonth = $derived(`${currentYear}-${String(currentMonthNum).padStart(2, '0')}`);
+	const currentDay = $derived(Number(nowStr.slice(8, 10)));
+	const currentMonthLabel = $derived(monthName(currentMonthNum, currentYear));
+	const daysInMonth = $derived(monthDays(currentYear, currentMonthNum));
+	const daysElapsed = $derived(Math.max(1, currentDay));
 
+	function monthName(m: number, y: number): string {
+		const names = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+		return `${names[m - 1] ?? 'Unknown'} ${y}`;
+	}
+
+	function monthDays(y: number, m: number): number {
+		return new Date(y, m, 0).getDate();
+	}
+
+	// Day of week for week-start calculation: 0=Sun, ..., 6=Sat
+	const currentDow = $derived(new Date(nowStr).getDay());
+	const daysSinceMonday = $derived((currentDow + 6) % 7);
+	// Date of most recent Monday as YYYY-MM-DD
+	const lastMondayStr = $derived(dateOffset(nowStr.slice(0, 10), -daysSinceMonday));
+
+	function dateOffset(dateStr: string, days: number): string {
+		// eslint-disable-next-line svelte/prefer-svelte-reactivity -- pure function, returns string immediately
+		const d = new Date(dateStr + 'T00:00:00Z');
+		d.setUTCDate(d.getUTCDate() + days);
+		return d.toISOString().slice(0, 10);
+	}
+
+	// ---- derived: per-instance costs ----
+	interface InstanceCostData {
+		slug: string;
+		domain: string;
+		status: string;
+		mtd: number;
+		budgetCredits: number;
+		usedCredits: number;
+		projected: number;
+		accentIndex: number;
+		dailyCosts: number[];
+	}
+
+	/** Extract the max daily UniqueUsers from cost telemetry entries.metrics for a given slug. */
+	function extractMaxDailyUniqueUsers(slug: string): number {
+		const costResp = costsBySlug.get(slug);
+		if (!costResp) return 0;
+		let maxVal = 0;
+		for (const day of costResp.days) {
+			for (const entry of day.entries) {
+				for (const metric of entry.metrics ?? []) {
+					if (metric.metric_name === 'UniqueUsers') {
+						maxVal = Math.max(maxVal, metric.value);
+					}
+				}
+			}
+		}
+		return Math.round(maxVal);
+	}
+
+	const instanceCosts = $derived.by((): InstanceCostData[] => {
+		return instances.map((inst, idx) => {
+			const costResp = costsBySlug.get(inst.slug);
+			const budgetResp = budgetsBySlug.get(inst.slug);
+			const days = costResp?.days ?? [];
+			const monthPrefix = `${currentMonth}-`;
+			const mtdDays = days.filter((d) => d.date.startsWith(monthPrefix));
+			const mtd = mtdDays.reduce((sum, d) => sum + (d.day_cost || 0), 0);
+			const projected = daysElapsed > 0 ? (mtd / daysElapsed) * daysInMonth : mtd;
+
+			const budgetCredits = budgetResp?.included_credits ?? 0;
+			const usedCredits = budgetResp?.used_credits ?? 0;
+
+			const dailyCosts = mtdDays
+				.sort((a, b) => a.date.localeCompare(b.date))
+				.map((d) => d.day_cost || 0);
+
+			return {
+				slug: inst.slug,
+				domain: inst.managed_lesser_domain || inst.hosted_base_domain || '—',
+				status: inst.status,
+				mtd,
+				budgetCredits,
+				usedCredits,
+				projected,
+				accentIndex: idx,
+				dailyCosts,
+			};
+		});
+	});
+
+	const totalMtd = $derived(instanceCosts.reduce((s, i) => s + i.mtd, 0));
+	const totalBudgetCredits = $derived(instanceCosts.reduce((s, i) => s + i.budgetCredits, 0));
+	const totalUsedCredits = $derived(instanceCosts.reduce((s, i) => s + i.usedCredits, 0));
+	const totalProjected = $derived(instanceCosts.reduce((s, i) => s + i.projected, 0));
+
+	// ---- derived: fleet-level metric denominators ----
+	const totalMaxDailyUsers = $derived(
+		instances.reduce((sum, inst) => sum + extractMaxDailyUniqueUsers(inst.slug), 0)
+	);
+	const totalStatuses = $derived(
+		instances.reduce((sum, inst) => {
+			const a = activityBySlug.get(inst.slug);
+			return sum + (a?.statuses ?? 0);
+		}, 0)
+	);
+
+	const perActiveUser = $derived(totalMaxDailyUsers > 0 ? totalMtd / totalMaxDailyUsers : 0);
+	const perFederatedPost = $derived(totalStatuses > 0 ? totalMtd / totalStatuses : 0);
+
+	// ---- derived: weekly stacked data via SVG chart ----
+	interface WeekStack {
+		label: string;
+		stacks: number[];
+		isProjection: boolean;
+	}
+
+	const weeklyStacks = $derived.by((): WeekStack[] => {
+		if (instanceCosts.length === 0) return [];
+
+		const weeks: WeekStack[] = [];
+		const today = nowStr.slice(0, 10); // YYYY-MM-DD
+
+		// 4 prior complete weeks (Mon–Sun), most recent first
+		for (let w = 4; w >= 1; w--) {
+			const weekEnd = dateOffset(lastMondayStr, -(w - 1) * 7 - 1);
+			const weekStart = dateOffset(weekEnd, -6);
+			const label = shortDateLabel(weekStart);
+			const stacks = instanceCosts.map((ic) => weekCost(ic.slug, weekStart, weekEnd));
+			weeks.push({ label, stacks, isProjection: false });
+		}
+
+		// Current partial week (Mon through yesterday)
+		{
+			const yesterday = dateOffset(today, -1);
+			const label = shortDateLabel(lastMondayStr);
+			const stacks = instanceCosts.map((ic) => weekCost(ic.slug, lastMondayStr, yesterday));
+			weeks.push({ label, stacks, isProjection: false });
+		}
+
+		// Projection for current week
+		{
+			const weekEndStr = dateOffset(lastMondayStr, 6);
+			const projLabel = shortDateLabel(weekEndStr) + ' · proj.';
+			const fraction = daysSinceMonday + 1 > 0 ? 7 / (daysSinceMonday + 1) : 1;
+			const stacks = instanceCosts.map((ic) => {
+				const partial = weekCost(ic.slug, lastMondayStr, today);
+				return partial * fraction;
+			});
+			weeks.push({ label: projLabel, stacks, isProjection: true });
+		}
+
+		return weeks;
+	});
+
+	function shortDateLabel(dateStr: string): string {
+		const m = Number(dateStr.slice(5, 7));
+		const d = Number(dateStr.slice(8, 10));
+		const names = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+		return `${names[m - 1] ?? '??'} ${d}`;
+	}
+
+	function weekCost(slug: string, startStr: string, endStr: string): number {
+		let total = 0;
+		for (const day of costsBySlug.get(slug)?.days ?? []) {
+			if (day.date >= startStr && day.date <= endStr) {
+				total += day.day_cost || 0;
+			}
+		}
+		return total;
+	}
+
+	const maxWeekTotal = $derived(
+		Math.max(...weeklyStacks.map((w) => w.stacks.reduce((a, b) => a + b, 0)), 1)
+	);
+
+	// ---- SVG chart constants ----
+	const CHART_BAR_W = 52;
+	const CHART_GAP = 22;
+	const CHART_MAX_H = 180;
+	const CHART_PADD_Y = 8;
+	const LEGEND_HEIGHT = 22;
+
+	const chartSvgWidth = $derived(weeklyStacks.length * (CHART_BAR_W + CHART_GAP) - CHART_GAP + 2);
+	const chartSvgHeight = $derived(CHART_MAX_H + CHART_PADD_Y + LEGEND_HEIGHT);
+
+	// ---- accent color palette ----
+	const ACCENT_COLORS = $derived([
+		'var(--ds-secondary-500, #8d64d1)',
+		'var(--ds-primary-500, #e6a645)',
+		'var(--ds-warning-500, #f59e0b)',
+		'var(--ds-success-500, #22c55e)',
+		'var(--ds-info-500, #3b82f6)',
+		'var(--ds-fg-3, #999)',
+	]);
+
+	const NUM_ACCENTS = $derived(ACCENT_COLORS.length);
+
+	// ---- formatting ----
 	function formatError(err: unknown): string {
 		if (!err) return 'unknown error';
 		const maybe = err as Partial<ApiError>;
@@ -60,44 +283,83 @@ Issue: equaltoai/lesser-host#413
 		return String(err);
 	}
 
-	function statusBadge(status: string): {
-		variant: 'outlined' | 'filled';
-		color: 'success' | 'warning' | 'error' | 'gray';
-	} {
+	function formatCurrency(amount: number): string {
+		return `$${amount.toFixed(2)}`;
+	}
+
+	function formatMonthLabel(dateStr: string): string {
+		if (!dateStr) return '—';
+		try {
+			const d = new Date(dateStr + 'T00:00:00Z');
+			return d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+		} catch {
+			return dateStr;
+		}
+	}
+
+	function burnTone(ratio: number): 'warning' | 'error' | 'accent' | undefined {
+		if (ratio > 1.0) return 'error';
+		if (ratio > 0.8) return 'warning';
+		return undefined;
+	}
+
+	function statusBadge(status: string): { variant: 'outlined' | 'filled'; color: 'success' | 'warning' | 'error' | 'gray' } {
 		const s = (status || '').toLowerCase();
-		if (s === 'paid' || s === 'active') return { variant: 'filled', color: 'success' };
-		if (s === 'pending') return { variant: 'outlined', color: 'warning' };
-		if (s === 'error' || s === 'failed') return { variant: 'filled', color: 'error' };
+		if (s === 'paid' || s === 'open' || s === 'active') return { variant: 'filled', color: 'success' };
+		if (s === 'draft' || s === 'pending') return { variant: 'outlined', color: 'warning' };
+		if (s === 'void' || s === 'uncollectible') return { variant: 'filled', color: 'error' };
 		return { variant: 'outlined', color: 'gray' };
 	}
 
-	function initCheckoutNotice() {
-		const qs = new URLSearchParams(window.location.search);
-		if (qs.get('success') === '1') {
-			checkoutNotice =
-				'Checkout completed. It may take a moment for credits/payment method to appear after webhook reconciliation.';
-		} else if (qs.get('canceled') === '1') {
-			checkoutNotice = 'Checkout canceled.';
-		}
-
-		if (checkoutNotice) {
-			history.replaceState({}, '', window.location.pathname);
-		}
-	}
-
+	// ---- data loading ----
 	async function loadAll() {
 		errorMessage = null;
-		purchases = null;
-		methods = null;
-
+		instances = [];
+		costsBySlug = new Map();
+		budgetsBySlug = new Map();
+		activityBySlug = new Map();
+		invoicesResponse = null;
+		paymentMethodResponse = null;
 		loading = true;
+
 		try {
-			const [p, m] = await Promise.all([
-				portalListCreditPurchases(token),
-				portalListPaymentMethods(token),
+			const [instResp, invResp, pmResp] = await Promise.all([
+				portalListInstances(token),
+				portalListInvoices(token).catch(() => null),
+				portalGetPaymentMethod(token).catch(() => null),
 			]);
-			purchases = p;
-			methods = m;
+
+			instances = instResp.instances ?? [];
+			invoicesResponse = invResp;
+			paymentMethodResponse = pmResp;
+
+			const monthStart = `${currentMonth}-01`;
+
+			// Fetch cost telemetry, budgets, and activity in parallel per instance.
+			const dataPromises = instances.map(async (inst) => {
+				const [costResult, budgetResult, activityResult] = await Promise.allSettled([
+					portalGetInstanceCost(token, inst.slug, monthStart, nowStr.slice(0, 10)),
+					portalGetBudgetMonth(token, inst.slug, currentMonth),
+					portalGetInstanceActivity(token, inst.slug),
+				]);
+				return { slug: inst.slug, costResult, budgetResult, activityResult };
+			});
+			const dataResults = await Promise.all(dataPromises);
+
+			// eslint-disable-next-line svelte/prefer-svelte-reactivity -- temporary Maps for data assembly, not reactive state
+			const costMap = new Map<string, PortalCostResponse>();
+			// eslint-disable-next-line svelte/prefer-svelte-reactivity -- temporary Maps for data assembly, not reactive state
+			const budgetMap = new Map<string, BudgetMonthResponse>();
+			// eslint-disable-next-line svelte/prefer-svelte-reactivity -- temporary Maps for data assembly, not reactive state
+			const activityMap = new Map<string, PortalInstanceActivityResponse>();
+			for (const r of dataResults) {
+				if (r.costResult.status === 'fulfilled') costMap.set(r.slug, r.costResult.value);
+				if (r.budgetResult.status === 'fulfilled') budgetMap.set(r.slug, r.budgetResult.value);
+				if (r.activityResult.status === 'fulfilled') activityMap.set(r.slug, r.activityResult.value);
+			}
+			costsBySlug = costMap;
+			budgetsBySlug = budgetMap;
+			activityBySlug = activityMap;
 		} catch (err) {
 			if ((err as Partial<ApiError>).status === 401) {
 				await logout();
@@ -110,251 +372,609 @@ Issue: equaltoai/lesser-host#413
 		}
 	}
 
-	async function addPaymentMethod() {
-		addPaymentMethodError = null;
-		addPaymentMethodLoading = true;
-		try {
-			const res = await portalCreatePaymentMethodCheckout(token);
-			if (!isSafeRedirectUrl(res.checkout_url)) {
-				addPaymentMethodError = 'Invalid checkout URL received from server.';
-				return;
-			}
-			window.location.assign(res.checkout_url);
-		} catch (err) {
-			if ((err as Partial<ApiError>).status === 401) {
-				await logout();
-				navigate('/login');
-				return;
-			}
-			addPaymentMethodError = formatError(err);
-		} finally {
-			addPaymentMethodLoading = false;
-		}
-	}
-
 	onMount(() => {
-		initCheckoutNotice();
 		void loadAll();
 	});
 </script>
 
-<PageFrame width="default">
+<PageFrame width="wide" asideLabel="Billing details">
 	{#snippet header()}
 		<PageTitle
-			eyebrow="Billing"
-			title="Billing"
-			description="Credit purchases and payment methods."
+			eyebrow="Cost &amp; billing"
+			title="Where the money goes."
+			description="Per-instance cost across compute, storage, network, and the AWS fixed costs we eat for you. Real-time, billed monthly."
 		>
 			{#snippet actions()}
 				<Button variant="outline" onclick={() => void loadAll()} disabled={loading}>Refresh</Button>
-				<Link {...linkProps('/portal')} variant="ghost">Back</Link>
 			{/snippet}
 		</PageTitle>
 	{/snippet}
 
-	{#if checkoutNotice}
-		<Alert variant="info" title="Checkout">{checkoutNotice}</Alert>
-	{/if}
+	{#snippet aside()}
+		<div class="billing-rail">
+			<!-- This month panel -->
+			<Panel title="This month" headerLevel={2}>
+				<Eyebrow>{currentMonthLabel}</Eyebrow>
+				<div class="billing-rail__amount">
+					<span class="billing-rail__value">{formatCurrency(totalMtd)}</span>
+					<span class="billing-rail__budget">of {totalBudgetCredits} credits</span>
+				</div>
+				<ProgressBar value={totalUsedCredits} max={Math.max(1, totalBudgetCredits)} />
+				<div class="billing-rail__row">
+					<span class="billing-rail__sub">Projected {formatCurrency(totalProjected)}</span>
+				</div>
+				{#if instanceCosts.length > 0 && instanceCosts[0].dailyCosts.length > 0}
+					<div class="billing-rail__sparkline-wrap">
+						<Sparkline values={instanceCosts[0].dailyCosts} color="var(--ds-secondary-500)" />
+					</div>
+				{/if}
+			</Panel>
 
+			<!-- Payment method panel -->
+			<Panel title="Payment" headerLevel={2}>
+				{#if paymentMethodResponse?.payment_method}
+					{@const pm = paymentMethodResponse.payment_method}
+					{@const badge = statusBadge(pm.status)}
+					<div class="billing-pm">
+						<div class="billing-pm__card">
+							<div class="billing-pm__card-icon"></div>
+							<div class="billing-pm__info">
+								<span class="billing-pm__number">{pm.brand || pm.type}{pm.last4 ? ` •••• ${pm.last4}` : ''}</span>
+								{#if pm.exp_month && pm.exp_year}
+									<span class="billing-pm__expiry">exp {String(pm.exp_month).padStart(2, '0')}/{String(pm.exp_year).slice(-2)}</span>
+								{/if}
+							</div>
+						</div>
+						<div class="billing-pm__badge-wrap">
+							<Badge variant={badge.variant} color={badge.color} size="sm">{pm.status}</Badge>
+						</div>
+					</div>
+				{:else if paymentMethodResponse && !paymentMethodResponse.payment_method}
+					<Text size="sm" color="secondary">No payment method on file.</Text>
+				{:else}
+					<Text size="sm" color="secondary">Loading…</Text>
+				{/if}
+			</Panel>
+
+			<!-- Recent invoices panel -->
+			<Panel title="Invoices" headerLevel={2}>
+				{#if invoicesResponse && invoicesResponse.invoices.length === 0}
+					<Text size="sm" color="secondary">No invoices yet.</Text>
+				{:else if invoicesResponse}
+					<div class="billing-invoices">
+						{#each invoicesResponse.invoices.slice(0, 5) as inv (inv.id)}
+							{@const badge = statusBadge(inv.status)}
+							<div class="billing-invoices__item">
+								<div class="billing-invoices__main">
+									<span class="billing-invoices__id">{inv.id}</span>
+									<span class="billing-invoices__period">{formatMonthLabel(inv.period_start)}</span>
+								</div>
+								<div class="billing-invoices__meta">
+									<span class="billing-invoices__amount">{formatCurrency(inv.amount_due / 100)}</span>
+									<Badge variant={badge.variant} color={badge.color} size="sm">{inv.status}</Badge>
+								</div>
+							</div>
+						{/each}
+					</div>
+				{:else}
+					<Text size="sm" color="secondary">Loading…</Text>
+				{/if}
+			</Panel>
+		</div>
+	{/snippet}
+
+	<!-- MAIN CONTENT -->
 	{#if loading}
 		<div class="billing__loading">
 			<Spinner size="md" />
-			<Text>Loading…</Text>
+			<Text>Loading billing data…</Text>
 		</div>
 	{:else if errorMessage}
 		<Alert variant="error" title="Failed to load billing">{errorMessage}</Alert>
 	{:else}
-		<Panel title="Payment methods" headerLevel={2}>
-			<Text size="sm" color="secondary">
-				Redirect-only setup flow (no third-party scripts).
-			</Text>
+		<!-- Four metric cards -->
+		<div class="billing-metrics">
+			<Metric
+				label="MTD"
+				value={formatCurrency(totalMtd)}
+				sub={`of ${totalBudgetCredits} credits aggregate budget`}
+			/>
+			<Metric
+				label="Projected EOM"
+				value={formatCurrency(totalProjected)}
+				sub="based on daily trailing"
+			/>
+			<Metric
+				label="Per active user"
+				value={totalMaxDailyUsers > 0 ? formatCurrency(perActiveUser) : '$—'}
+				sub={totalMaxDailyUsers > 0 ? `${totalMaxDailyUsers} peak daily users` : 'no active-user data'}
+			/>
+			<Metric
+				label="Per federated post"
+				value={totalStatuses > 0 ? formatCurrency(perFederatedPost) : '$—'}
+				sub={totalStatuses > 0 ? `${totalStatuses} statuses (instance activity)` : 'no post/status data'}
+			/>
+		</div>
 
-			<div class="billing__row">
-				<Button
-					variant="solid"
-					onclick={() => void addPaymentMethod()}
-					disabled={addPaymentMethodLoading}
-				>
-					Add / replace payment method
-				</Button>
-				{#if addPaymentMethodLoading}
-					<div class="billing__loading-inline">
-						<Spinner size="sm" />
-						<Text size="sm">Redirecting…</Text>
+		<!-- Stacked weekly bar chart (CSP-safe: SVG presentation attributes) -->
+		<Panel title="Weekly spend" headerLevel={2}>
+			<Eyebrow>{currentMonthLabel} · stacked by instance</Eyebrow>
+			{#if weeklyStacks.length > 0}
+				<div class="billing-chart">
+					<div class="billing-chart__svg-wrap">
+						<svg
+							viewBox="0 0 {chartSvgWidth} {chartSvgHeight}"
+							width="100%"
+							height={chartSvgHeight}
+							focusable="false"
+							role="img"
+							aria-label="Weekly spend chart"
+						>
+							{#each weeklyStacks as week, wi (wi)}
+								{@const wTotal = week.stacks.reduce((a, b) => a + b, 0)}
+								{@const x = wi * (CHART_BAR_W + CHART_GAP)}
+								{@const totalBarH = maxWeekTotal > 0 ? (wTotal / maxWeekTotal) * CHART_MAX_H : 0}
+								<!-- Render bars from bottom up -->
+								{#each week.stacks as stack, si (si)}
+									{#if stack > 0}
+										{@const h = (stack / maxWeekTotal) * CHART_MAX_H}
+										{@const below = week.stacks.slice(0, si).reduce((a, b) => a + b, 0)}
+										{@const belowH = (below / maxWeekTotal) * CHART_MAX_H}
+										{@const barY = CHART_MAX_H - belowH - h + CHART_PADD_Y}
+										<rect
+											x={x + 1}
+											y={barY}
+											width={CHART_BAR_W}
+											height={Math.max(0.5, h)}
+											fill={instanceCosts[si] ? ACCENT_COLORS[instanceCosts[si].accentIndex % NUM_ACCENTS] : ACCENT_COLORS[si % NUM_ACCENTS]}
+											opacity={week.isProjection ? '0.35' : '0.88'}
+											rx="3"
+										>
+											<title>{instanceCosts[si]?.slug ?? `instance-${si}`}: {formatCurrency(stack)}</title>
+										</rect>
+									{/if}
+								{/each}
+								<!-- Projection dashed border -->
+								{#if week.isProjection && totalBarH > 0}
+									{@const y = CHART_MAX_H - totalBarH + CHART_PADD_Y}
+									<rect
+										x={x + 1}
+										y={y}
+										width={CHART_BAR_W}
+										height={Math.max(0.5, totalBarH)}
+										fill="none"
+										stroke="var(--ds-border-strong, rgba(107,56,16,0.3))"
+										stroke-width="2"
+										stroke-dasharray="6 4"
+										rx="3"
+									/>
+								{/if}
+							{/each}
+						</svg>
 					</div>
-				{/if}
-			</div>
-			{#if addPaymentMethodError}
-				<Alert variant="error" title="Setup failed">{addPaymentMethodError}</Alert>
-			{/if}
-
-			{#if methods && methods.methods.length === 0}
-				<Alert variant="info" title="No payment methods">
-					<Text size="sm">No payment method on file.</Text>
-				</Alert>
-			{:else if methods}
-				<div class="billing__list">
-					{#each methods.methods as method (method.id)}
-						<div class="billing__list-row">
-							<div class="billing__list-main">
-								<Text size="sm">
-									{@const badge = statusBadge(method.status)}
-									<Badge variant={badge.variant} color={badge.color} size="sm">{method.status}</Badge>
-									<span class="billing__mono">{method.brand || method.type || 'method'}</span>
-									{#if method.last4}
-										<span class="billing__mono">•••• {method.last4}</span>
-									{/if}
-									{#if methods.default_payment_method_id && methods.default_payment_method_id === method.id}
-										<Badge variant="outlined" color="gray" size="sm">default</Badge>
-									{/if}
-								</Text>
-								<Text size="sm" color="secondary">
-									expires {method.exp_month || '—'}/{method.exp_year || '—'} · provider
-									<span class="billing__mono">{method.provider}</span>
-								</Text>
-							</div>
-							<div class="billing__list-meta">
-								<CopyButton size="sm" text={method.id} />
-								<Text size="sm" color="secondary">
-									<span class="billing__mono">{method.created_at}</span>
-								</Text>
-							</div>
-						</div>
+					<div class="billing-chart__labels">
+					{#each weeklyStacks as week, wi (wi)}
+						<span class="billing-chart__label" class:billing-chart__label--proj={week.isProjection}>
+							{formatCurrency(week.stacks.reduce((a, b) => a + b, 0))}
+							<span class="billing-chart__label-date">{week.label}</span>
+						</span>
 					{/each}
 				</div>
+				<div class="billing-chart__legend">
+					{#each instanceCosts as ic, idx (ic.slug)}
+							<div class="billing-chart__legend-item">
+								<span
+									class="billing-chart__swatch"
+									data-accent={idx % NUM_ACCENTS}
+								></span>
+								<span>{ic.slug}</span>
+								<span class="billing-chart__legend-cost">{formatCurrency(ic.mtd)}</span>
+							</div>
+						{/each}
+					</div>
+				</div>
 			{:else}
-				<Alert variant="warning" title="No data">
-					<Text size="sm">No response from payment method endpoints.</Text>
-				</Alert>
+				<Text size="sm" color="secondary">No cost data available for chart.</Text>
 			{/if}
 		</Panel>
 
-		<Panel title="Credit purchases" headerLevel={2}>
-			<Text size="sm" color="secondary">
-				Purchases are stored server-side; receipts may appear after payment completes.
-			</Text>
-
-			{#if purchases && purchases.purchases.length === 0}
-				<Alert variant="info" title="No purchases">
-					<Text size="sm">No credit purchases yet.</Text>
-				</Alert>
-			{:else if purchases}
-				<div class="billing__list">
-					{#each purchases.purchases.slice(0, 50) as purchase (purchase.id)}
-						<div class="billing__list-row">
-							<div class="billing__list-main">
-								<Text size="sm">
-									{@const badge = statusBadge(purchase.status)}
-									<Badge variant={badge.variant} color={badge.color} size="sm">{purchase.status}</Badge>
-									<span class="billing__mono">{purchase.instance_slug}</span>
-									· <span class="billing__mono">{purchase.month}</span>
-									· credits <span class="billing__mono">{String(purchase.credits)}</span>
-								</Text>
-								<Text size="sm" color="secondary">
-									amount <span class="billing__mono">{String(purchase.amount_cents)}</span>
-									<span class="billing__mono">{purchase.currency}</span>
-									· provider <span class="billing__mono">{purchase.provider}</span>
-								</Text>
-								{#if purchase.receipt_url}
-									<Text size="sm" color="secondary">
-										receipt
-										<a
-											class="billing__link"
-											href={purchase.receipt_url}
-											target="_blank"
-											rel="noopener noreferrer"
-										>
-											{purchase.receipt_url}
-										</a>
-									</Text>
-								{/if}
-								{#if purchase.request_id}
-									<Text size="sm" color="secondary">
-										request <span class="billing__mono">{purchase.request_id}</span>
-									</Text>
-								{/if}
-							</div>
-							<div class="billing__list-meta">
-								<CopyButton size="sm" text={purchase.id} />
-								<Text size="sm" color="secondary">
-									<span class="billing__mono">{purchase.created_at}</span>
-								</Text>
-							</div>
-						</div>
-					{/each}
+		<!-- Per-instance breakdown table -->
+		<Panel title="Breakdown" headerLevel={2}>
+			<Eyebrow>Per instance</Eyebrow>
+			{#if instanceCosts.length > 0}
+				<div class="billing-table-wrap">
+					<table class="billing-table">
+						<thead>
+							<tr>
+								<th>Instance</th>
+								<th class="billing-table__num">MTD (USD)</th>
+								<th class="billing-table__num">Budget (credits)</th>
+								<th class="billing-table__num">Projected (USD)</th>
+								<th>Burn (credits)</th>
+							</tr>
+						</thead>
+						<tbody>
+						{#each instanceCosts as ic, idx (ic.slug)}
+							{@const creditRatio = ic.budgetCredits > 0 ? ic.usedCredits / ic.budgetCredits : 0}
+							{@const overBudget = ic.usedCredits > ic.budgetCredits}
+							<tr>
+									<td>
+										<div class="billing-table__instance">
+											<span
+												class="billing-table__accent"
+												data-accent={idx % NUM_ACCENTS}
+											></span>
+											<div class="billing-table__instance-info">
+												<strong>{ic.slug}</strong>
+												<span class="billing-table__domain">{ic.domain}</span>
+											</div>
+										</div>
+									</td>
+									<td class="billing-table__num"><strong>{formatCurrency(ic.mtd)}</strong></td>
+									<td class="billing-table__num billing-table__num--muted">{ic.budgetCredits} credits</td>
+									<td class="billing-table__num">
+										{formatCurrency(ic.projected)}
+										{#if overBudget}
+											<span class="billing-table__over-badge">over</span>
+										{/if}
+									</td>
+									<td>
+										<div class="billing-table__burn">
+											<ProgressBar value={ic.usedCredits} max={Math.max(1, ic.budgetCredits)} tone={burnTone(creditRatio)} />
+											<span class="billing-table__burn-pct">{Math.round(creditRatio * 100)}%</span>
+										</div>
+									</td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
 				</div>
-				{#if purchases.purchases.length > 50}
-					<Text size="sm" color="secondary">Showing first 50 purchases.</Text>
-				{/if}
 			{:else}
-				<Alert variant="warning" title="No data">
-					<Text size="sm">No response from credit purchase endpoints.</Text>
-				</Alert>
+				<Text size="sm" color="secondary">No instances with cost data.</Text>
 			{/if}
 		</Panel>
 	{/if}
 </PageFrame>
 
 <style>
+	/* ---- Loading ---- */
 	.billing__loading {
 		display: flex;
 		gap: var(--ds-space-3);
 		align-items: center;
 	}
 
-	.billing__row {
-		display: flex;
-		gap: var(--ds-space-3);
-		align-items: center;
-		margin-top: var(--ds-space-4);
-		flex-wrap: wrap;
-	}
-
-	.billing__loading-inline {
-		display: flex;
-		gap: var(--ds-space-2);
-		align-items: center;
-	}
-
-	.billing__list {
-		display: flex;
-		flex-direction: column;
-		gap: var(--ds-space-3);
-		margin-top: var(--ds-space-4);
-	}
-
-	.billing__list-row {
-		display: flex;
+	/* ---- Metric card grid ---- */
+	.billing-metrics {
+		display: grid;
+		grid-template-columns: repeat(4, 1fr);
 		gap: var(--ds-space-4);
-		justify-content: space-between;
-		flex-wrap: wrap;
-		padding: var(--ds-space-3);
-		border: 1px solid var(--ds-border-subtle, var(--gr-color-border-subtle));
-		border-radius: var(--ds-radius-md, var(--gr-radius-md));
-		background: var(--ds-bg-raised, var(--gr-color-surface));
+		margin-bottom: var(--ds-space-5);
 	}
 
-	.billing__list-main {
+	/* ---- Right rail ---- */
+	.billing-rail {
 		display: flex;
 		flex-direction: column;
-		gap: var(--ds-space-1);
+		gap: var(--ds-space-4);
 	}
 
-	.billing__list-meta {
+	.billing-rail__amount {
 		display: flex;
-		flex-direction: column;
-		gap: var(--ds-space-2);
 		align-items: flex-end;
+		gap: 0.6rem;
+		margin-bottom: 0.5rem;
 	}
 
-	.billing__mono {
-		font-family: var(--ds-font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
+	.billing-rail__value {
+		font-family: var(--ds-font-heading, Georgia, serif);
+		font-size: 1.9rem;
+		font-weight: 700;
+		letter-spacing: -0.02em;
+		line-height: 1;
 	}
 
-	.billing__link {
-		word-break: break-all;
-		color: var(--ds-action-link, var(--gr-color-primary-foreground));
-		text-decoration: underline;
-		text-underline-offset: 2px;
+	.billing-rail__budget {
+		font-size: 0.82rem;
+		color: var(--ds-fg-3, rgba(51, 33, 22, 0.58));
+		padding-bottom: 0.3rem;
+	}
+
+	.billing-rail__row {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		margin-top: 0.5rem;
+		font-size: 0.82rem;
+	}
+
+	.billing-rail__sub {
+		color: var(--ds-fg-2, rgba(51, 33, 22, 0.78));
+	}
+
+	.billing-rail__sparkline-wrap {
+		margin-top: 0.75rem;
+		height: 36px;
+	}
+
+	/* ---- Payment method panel ---- */
+	.billing-pm {
+		display: flex;
+		flex-direction: column;
+		gap: 0.6rem;
+	}
+
+	.billing-pm__card {
+		display: flex;
+		align-items: center;
+		gap: 0.6rem;
+	}
+
+	.billing-pm__card-icon {
+		width: 32px;
+		height: 20px;
+		border-radius: 3px;
+		background: linear-gradient(135deg, var(--ds-secondary-500), var(--ds-secondary-700));
+	}
+
+	.billing-pm__info {
+		display: flex;
+		flex-direction: column;
+		gap: 0;
+	}
+
+	.billing-pm__number {
+		font-family: var(--ds-font-mono, ui-monospace, monospace);
+		font-size: 0.84rem;
+	}
+
+	.billing-pm__expiry {
+		font-size: 0.72rem;
+		color: var(--ds-fg-3, rgba(51, 33, 22, 0.58));
+	}
+
+	.billing-pm__badge-wrap {
+		margin-top: 0.3rem;
+	}
+
+	/* ---- Recent invoices panel ---- */
+	.billing-invoices {
+		display: flex;
+		flex-direction: column;
+		gap: 0.4rem;
+	}
+
+	.billing-invoices__item {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		padding: 0.4rem 0;
+		gap: 0.4rem;
+	}
+
+	.billing-invoices__main {
+		display: flex;
+		flex-direction: column;
+		gap: 0;
+	}
+
+	.billing-invoices__id {
+		font-family: var(--ds-font-mono, ui-monospace, monospace);
+		font-size: 0.82rem;
+		font-weight: 600;
+	}
+
+	.billing-invoices__period {
+		font-size: 0.72rem;
+		color: var(--ds-fg-3, rgba(51, 33, 22, 0.58));
+	}
+
+	.billing-invoices__meta {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+	}
+
+	.billing-invoices__amount {
+		font-family: var(--ds-font-mono, ui-monospace, monospace);
+		font-size: 0.82rem;
+	}
+
+	/* ---- Stacked bar chart ---- */
+	.billing-chart {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+
+	.billing-chart__svg-wrap {
+		width: 100%;
+		overflow-x: auto;
+	}
+
+	.billing-chart__labels {
+		display: flex;
+		gap: 1.2rem;
+		justify-content: space-around;
+	}
+
+	.billing-chart__label {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 2px;
+		flex: 1;
+		min-width: 0;
+		font-family: var(--ds-font-mono, ui-monospace, monospace);
+		font-size: 0.74rem;
+		color: var(--ds-fg-2, rgba(51, 33, 22, 0.78));
+	}
+
+	.billing-chart__label--proj {
+		opacity: 0.5;
+	}
+
+	.billing-chart__label-date {
+		font-family: var(--ds-font-sans, sans-serif);
+		font-size: 0.7rem;
+		color: var(--ds-fg-3, rgba(51, 33, 22, 0.58));
+		white-space: nowrap;
+	}
+
+	.billing-chart__legend {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.75rem;
+		margin-top: 0.25rem;
+	}
+
+	.billing-chart__legend-item {
+		display: flex;
+		align-items: center;
+		gap: 5px;
+		font-size: 0.8rem;
+	}
+
+	.billing-chart__swatch {
+		width: 10px;
+		height: 10px;
+		border-radius: 2px;
+		flex-shrink: 0;
+	}
+
+	.billing-chart__legend-cost {
+		font-family: var(--ds-font-mono, ui-monospace, monospace);
+		color: var(--ds-fg-3, rgba(51, 33, 22, 0.58));
+	}
+
+	/* Accent swatch colors via data-accent attribute (CSP-safe) */
+	.billing-chart__swatch[data-accent='0'],
+	.billing-table__accent[data-accent='0'] {
+		background: var(--ds-secondary-500, #8d64d1);
+	}
+	.billing-chart__swatch[data-accent='1'],
+	.billing-table__accent[data-accent='1'] {
+		background: var(--ds-primary-500, #e6a645);
+	}
+	.billing-chart__swatch[data-accent='2'],
+	.billing-table__accent[data-accent='2'] {
+		background: var(--ds-warning-500, #f59e0b);
+	}
+	.billing-chart__swatch[data-accent='3'],
+	.billing-table__accent[data-accent='3'] {
+		background: var(--ds-success-500, #22c55e);
+	}
+	.billing-chart__swatch[data-accent='4'],
+	.billing-table__accent[data-accent='4'] {
+		background: var(--ds-info-500, #3b82f6);
+	}
+	.billing-chart__swatch[data-accent='5'],
+	.billing-table__accent[data-accent='5'] {
+		background: var(--ds-fg-3, #999);
+	}
+
+	/* ---- Breakdown table ---- */
+	.billing-table-wrap {
+		overflow-x: auto;
+	}
+
+	.billing-table {
+		width: 100%;
+		border-collapse: collapse;
+		font-size: 0.88rem;
+	}
+
+	.billing-table th {
+		text-align: left;
+		font-size: 0.72rem;
+		font-weight: 700;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--ds-fg-3, rgba(51, 33, 22, 0.58));
+		padding: 0.5rem 0.75rem;
+		border-bottom: 1px solid var(--ds-border-subtle, rgba(107, 56, 16, 0.1));
+	}
+
+	.billing-table td {
+		padding: 0.6rem 0.75rem;
+		border-bottom: 1px solid var(--ds-border-subtle, rgba(107, 56, 16, 0.08));
+		vertical-align: middle;
+	}
+
+	.billing-table tbody tr:hover {
+		background: var(--ds-bg-raised, rgba(255, 255, 255, 0.4));
+	}
+
+	.billing-table__num {
+		font-family: var(--ds-font-mono, ui-monospace, monospace);
+		text-align: right;
+	}
+
+	.billing-table__num--muted {
+		color: var(--ds-fg-3, rgba(51, 33, 22, 0.58));
+	}
+
+	.billing-table__instance {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+	}
+
+	.billing-table__accent {
+		width: 6px;
+		height: 24px;
+		border-radius: 2px;
+		flex-shrink: 0;
+	}
+
+	.billing-table__instance-info {
+		display: flex;
+		flex-direction: column;
+		gap: 0;
+	}
+
+	.billing-table__domain {
+		font-family: var(--ds-font-mono, ui-monospace, monospace);
+		font-size: 0.72rem;
+		color: var(--ds-fg-3, rgba(51, 33, 22, 0.58));
+	}
+
+	.billing-table__over-badge {
+		display: inline-block;
+		margin-left: 0.4rem;
+		padding: 0.1rem 0.35rem;
+		font-size: 0.68rem;
+		font-weight: 700;
+		border-radius: 4px;
+		background: var(--ds-error-100, #fee2e2);
+		color: var(--ds-error-700, #b91c1c);
+	}
+
+	.billing-table__burn {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		min-width: 160px;
+	}
+
+	.billing-table__burn-pct {
+		font-family: var(--ds-font-mono, ui-monospace, monospace);
+		font-size: 0.74rem;
+		color: var(--ds-fg-3, rgba(51, 33, 22, 0.58));
+		white-space: nowrap;
+		min-width: 2.5rem;
+		text-align: right;
+	}
+
+	/* ---- Responsive ---- */
+	@media (max-width: 900px) {
+		.billing-metrics {
+			grid-template-columns: repeat(2, 1fr);
+		}
+	}
+	@media (max-width: 500px) {
+		.billing-metrics {
+			grid-template-columns: 1fr;
+		}
 	}
 </style>

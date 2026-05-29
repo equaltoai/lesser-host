@@ -1,0 +1,4 @@
+interface:
+  display_name: "GitHub Provenance"
+  short_description: "Track host steward GitHub provenance"
+  default_prompt: "Use $github-provenance to handle host GitHub work with routed provenance-aware tools first."

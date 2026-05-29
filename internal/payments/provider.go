@@ -22,6 +22,9 @@ type Provider interface {
 
 	ParseWebhookEvent(ctx context.Context, headers map[string][]string, body []byte) (*WebhookEvent, error)
 	ResolveSetupPaymentMethod(ctx context.Context, setupIntentID string) (*PaymentMethodDetails, error)
+
+	// ListRecentInvoices returns the most recent invoices for a customer.
+	ListRecentInvoices(ctx context.Context, customerID string, limit int64) ([]InvoiceInfo, error)
 }
 
 // EnsureCustomerInput identifies the user/customer to ensure in the provider.
@@ -93,6 +96,18 @@ type PaymentMethodDetails struct {
 
 	ExpMonth int64
 	ExpYear  int64
+}
+
+// InvoiceInfo is a provider-agnostic invoice summary. No raw vendor objects or secrets.
+type InvoiceInfo struct {
+	ID          string `json:"id"`
+	PeriodStart string `json:"period_start"` // ISO 8601 date (YYYY-MM-DD or full timestamp)
+	PeriodEnd   string `json:"period_end"`   // ISO 8601 date
+	AmountDue   int64  `json:"amount_due"`
+	Currency    string `json:"currency"`
+	Status      string `json:"status"` // e.g. "paid", "open", "void"
+	HostedURL   string `json:"hosted_invoice_url,omitempty"`
+	PDFURL      string `json:"invoice_pdf_url,omitempty"`
 }
 
 // ErrNotConfigured is returned when payments are not configured.

@@ -1403,3 +1403,622 @@ func TestHandlePortalInstanceDomainOps_PrimaryConflict(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// M7 — Instance Overview data prerequisites (Project 42)
+// ---------------------------------------------------------------------------
+
+func TestDeriveSoulAnchorState(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil instance returns empty", func(t *testing.T) {
+		if got := deriveSoulAnchorState(nil); got != "" {
+			t.Fatalf("expected empty, got %q", got)
+		}
+	})
+
+	t.Run("soul not enabled returns empty", func(t *testing.T) {
+		f := false
+		inst := &models.Instance{SoulEnabled: &f}
+		if got := deriveSoulAnchorState(inst); got != "" {
+			t.Fatalf("expected empty, got %q", got)
+		}
+	})
+
+	t.Run("soul nil returns empty", func(t *testing.T) {
+		inst := &models.Instance{SoulEnabled: nil}
+		if got := deriveSoulAnchorState(inst); got != "" {
+			t.Fatalf("expected empty, got %q", got)
+		}
+	})
+
+	t.Run("soul enabled but not provisioned returns empty", func(t *testing.T) {
+		tru := true
+		inst := &models.Instance{SoulEnabled: &tru}
+		if got := deriveSoulAnchorState(inst); got != "" {
+			t.Fatalf("expected empty, got %q", got)
+		}
+	})
+
+	t.Run("soul enabled and provisioned returns anchored", func(t *testing.T) {
+		tru := true
+		inst := &models.Instance{
+			SoulEnabled:       &tru,
+			SoulProvisionedAt: time.Date(2026, 1, 15, 0, 0, 0, 0, time.UTC),
+		}
+		if got := deriveSoulAnchorState(inst); got != "anchored" {
+			t.Fatalf("expected anchored, got %q", got)
+		}
+	})
+}
+
+func TestHandlePortalGetInstance_OwnerEnrichment(t *testing.T) {
+	t.Parallel()
+
+	tdb := newPortalTestDB()
+	s := &Server{store: store.New(tdb.db)}
+
+	qUpdate := new(ttmocks.MockQuery)
+	tdb.db.On("Model", mock.AnythingOfType("*models.UpdateJob")).Return(qUpdate).Maybe()
+	addStandardMockQueryStubs(qUpdate)
+	qUpdate.On("All", mock.AnythingOfType("*[]*models.UpdateJob")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.UpdateJob](t, args, 0)
+		*dest = []*models.UpdateJob{}
+	}).Maybe()
+
+	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive}
+	}).Once()
+
+	// Clear the .Maybe() User stub from newPortalTestDB before adding a .Once()
+	// override. test-assert mock matches expected calls in order, so our .Once()
+	// would never be reached if we left the .Maybe() ahead of it.
+	tdb.qUser.ExpectedCalls = nil
+	addStandardMockQueryStubs(tdb.qUser)
+
+	// Override with a .Once() returning a richer owner profile.
+	tdb.qUser.On("First", mock.AnythingOfType("*models.User")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.User](t, args, 0)
+		*dest = models.User{Username: "alice", DisplayName: "Alice Example", Role: models.RoleCustomer}
+	}).Once()
+
+	ctx := &apptheory.Context{AuthIdentity: "alice", Params: map[string]string{"slug": "demo"}}
+	resp, err := s.handlePortalGetInstance(ctx)
+	if err != nil || resp == nil || resp.Status != 200 {
+		t.Fatalf("resp=%#v err=%v", resp, err)
+	}
+
+	var body instanceResponse
+	if err := json.Unmarshal(resp.Body, &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if body.OwnerHandle != "Alice Example" {
+		t.Fatalf("OwnerHandle = %q, want \"Alice Example\"", body.OwnerHandle)
+	}
+	if body.OwnerRole != models.RoleCustomer {
+		t.Fatalf("OwnerRole = %q, want %q", body.OwnerRole, models.RoleCustomer)
+	}
+	if body.OwnerAvatarHash != "" {
+		t.Fatalf("OwnerAvatarHash = %q, want empty (no avatar storage)", body.OwnerAvatarHash)
+	}
+}
+
+func TestHandlePortalGetInstance_OwnerEnrichmentFallbackToUsername(t *testing.T) {
+	t.Parallel()
+
+	tdb := newPortalTestDB()
+	s := &Server{store: store.New(tdb.db)}
+
+	qUpdate := new(ttmocks.MockQuery)
+	tdb.db.On("Model", mock.AnythingOfType("*models.UpdateJob")).Return(qUpdate).Maybe()
+	addStandardMockQueryStubs(qUpdate)
+	qUpdate.On("All", mock.AnythingOfType("*[]*models.UpdateJob")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.UpdateJob](t, args, 0)
+		*dest = []*models.UpdateJob{}
+	}).Maybe()
+
+	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive}
+	}).Once()
+
+	// User exists but has no DisplayName — OwnerHandle should fall back to Username.
+	tdb.qUser.ExpectedCalls = nil
+	addStandardMockQueryStubs(tdb.qUser)
+	tdb.qUser.On("First", mock.AnythingOfType("*models.User")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.User](t, args, 0)
+		*dest = models.User{Username: "alice", DisplayName: "", Role: models.RoleCustomer}
+	}).Once()
+
+	ctx := &apptheory.Context{AuthIdentity: "alice", Params: map[string]string{"slug": "demo"}}
+	resp, err := s.handlePortalGetInstance(ctx)
+	if err != nil || resp == nil || resp.Status != 200 {
+		t.Fatalf("resp=%#v err=%v", resp, err)
+	}
+
+	var body instanceResponse
+	if err := json.Unmarshal(resp.Body, &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if body.OwnerHandle != testUsernameAlice {
+		t.Fatalf("OwnerHandle = %q, want %q (username fallback)", body.OwnerHandle, testUsernameAlice)
+	}
+}
+
+func TestHandlePortalGetInstance_OwnerUserNotFoundGraceful(t *testing.T) {
+	t.Parallel()
+
+	tdb := newPortalTestDB()
+	s := &Server{store: store.New(tdb.db)}
+
+	qUpdate := new(ttmocks.MockQuery)
+	tdb.db.On("Model", mock.AnythingOfType("*models.UpdateJob")).Return(qUpdate).Maybe()
+	addStandardMockQueryStubs(qUpdate)
+	qUpdate.On("All", mock.AnythingOfType("*[]*models.UpdateJob")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.UpdateJob](t, args, 0)
+		*dest = []*models.UpdateJob{}
+	}).Maybe()
+
+	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{Slug: "demo", Owner: "wallet-abc123", Status: models.InstanceStatusActive}
+	}).Once()
+
+	// Override with a .Once() returning not-found.
+	tdb.qUser.ExpectedCalls = nil
+	addStandardMockQueryStubs(tdb.qUser)
+	tdb.qUser.On("First", mock.AnythingOfType("*models.User")).Return(theoryErrors.ErrItemNotFound).Once()
+
+	ctx := &apptheory.Context{AuthIdentity: "wallet-abc123", Params: map[string]string{"slug": "demo"}}
+	resp, err := s.handlePortalGetInstance(ctx)
+	if err != nil || resp == nil || resp.Status != 200 {
+		t.Fatalf("resp=%#v err=%v", resp, err)
+	}
+
+	var body instanceResponse
+	if err := json.Unmarshal(resp.Body, &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if body.OwnerHandle != "" {
+		t.Fatalf("OwnerHandle = %q, want empty (user not found)", body.OwnerHandle)
+	}
+	if body.OwnerRole != "" {
+		t.Fatalf("OwnerRole = %q, want empty", body.OwnerRole)
+	}
+}
+
+func TestHandlePortalGetInstance_CrossTenantIsolation(t *testing.T) {
+	t.Parallel()
+
+	tdb := newPortalTestDB()
+	s := &Server{store: store.New(tdb.db)}
+
+	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{Slug: "demo", Owner: "bob", Status: models.InstanceStatusActive}
+	}).Once()
+
+	// Alice requests Bob's instance — must be forbidden.
+	ctx := &apptheory.Context{AuthIdentity: "alice", Params: map[string]string{"slug": "demo"}}
+	_, err := s.handlePortalGetInstance(ctx)
+	if err == nil {
+		t.Fatalf("expected forbidden error")
+	}
+	appErr, ok := err.(*apptheory.AppError)
+	if !ok || appErr.Code != appErrCodeForbidden {
+		t.Fatalf("expected %s, got %#v", appErrCodeForbidden, err)
+	}
+}
+
+func TestHandlePortalGetInstance_DriftFields(t *testing.T) {
+	t.Parallel()
+
+	tdb := newPortalTestDB()
+	s := &Server{store: store.New(tdb.db)}
+
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+
+	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive}
+	}).Once()
+
+	qUpdate := new(ttmocks.MockQuery)
+	tdb.db.On("Model", mock.AnythingOfType("*models.UpdateJob")).Return(qUpdate).Maybe()
+	addStandardMockQueryStubs(qUpdate)
+	qUpdate.On("All", mock.AnythingOfType("*[]*models.UpdateJob")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.UpdateJob](t, args, 0)
+		*dest = []*models.UpdateJob{
+			{ID: "lesser-1", InstanceSlug: "demo", Status: models.UpdateJobStatusOK, LesserVersion: "v1.2.7", UpdatedAt: now},
+			{ID: "body-1", InstanceSlug: "demo", Status: models.UpdateJobStatusOK, BodyOnly: true, LesserBodyVersion: "v0.3.0", UpdatedAt: now},
+		}
+	}).Once()
+
+	ctx := &apptheory.Context{AuthIdentity: "alice", Params: map[string]string{"slug": "demo"}}
+	resp, err := s.handlePortalGetInstance(ctx)
+	if err != nil || resp == nil || resp.Status != 200 {
+		t.Fatalf("resp=%#v err=%v", resp, err)
+	}
+
+	var body instanceResponse
+	if err := json.Unmarshal(resp.Body, &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if body.LesserDrift != stackDriftOK {
+		t.Fatalf("LesserDrift = %q, want %q", body.LesserDrift, stackDriftOK)
+	}
+	if body.LesserBodyDrift != stackDriftOK {
+		t.Fatalf("LesserBodyDrift = %q, want %q", body.LesserBodyDrift, stackDriftOK)
+	}
+	if body.MCPDrift != stackDriftUnknown {
+		t.Fatalf("MCPDrift = %q, want %q (no MCP job)", body.MCPDrift, stackDriftUnknown)
+	}
+	if body.DriftSummary == "" {
+		t.Fatalf("DriftSummary is empty")
+	}
+}
+
+// TestHandlePortalGetInstance_DriftOkFallback ensures that when a newer
+// non-ok (e.g. error) update job exists alongside an older ok job for the
+// same component kind, the detail endpoint drift categorisation matches the
+// /stack endpoint: it skips the non-ok job and reports the latest ok job's
+// drift (ok), rather than picking the newest job regardless of status and
+// reporting "unknown".
+func TestHandlePortalGetInstance_DriftOkFallback(t *testing.T) {
+	t.Parallel()
+
+	tdb := newPortalTestDB()
+	s := &Server{store: store.New(tdb.db)}
+
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+
+	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive}
+	}).Once()
+
+	// Newer error job + older ok job for lesser.  ListUpdateJobsByInstance
+	// returns newest-first, so the error job comes first.
+	qUpdate := new(ttmocks.MockQuery)
+	tdb.db.On("Model", mock.AnythingOfType("*models.UpdateJob")).Return(qUpdate).Maybe()
+	addStandardMockQueryStubs(qUpdate)
+	qUpdate.On("All", mock.AnythingOfType("*[]*models.UpdateJob")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.UpdateJob](t, args, 0)
+		*dest = []*models.UpdateJob{
+			{ID: "lesser-err", InstanceSlug: "demo", Status: models.UpdateJobStatusError, LesserVersion: "v1.2.8", UpdatedAt: now},
+			{ID: "lesser-ok", InstanceSlug: "demo", Status: models.UpdateJobStatusOK, LesserVersion: "v1.2.7", UpdatedAt: now.Add(-1 * time.Hour)},
+		}
+	}).Once()
+
+	ctx := &apptheory.Context{AuthIdentity: "alice", Params: map[string]string{"slug": "demo"}}
+	resp, err := s.handlePortalGetInstance(ctx)
+	if err != nil || resp == nil || resp.Status != 200 {
+		t.Fatalf("resp=%#v err=%v", resp, err)
+	}
+
+	var body instanceResponse
+	if err := json.Unmarshal(resp.Body, &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	// Drift must be "ok" (from the successful job), matching /stack.
+	if body.LesserDrift != stackDriftOK {
+		t.Fatalf("LesserDrift = %q, want %q (should fall back to older ok job, not newer error job)", body.LesserDrift, stackDriftOK)
+	}
+
+	// Managed-update status must reflect the newest job (error).
+	if body.LesserUpdateStatus != models.UpdateJobStatusError {
+		t.Fatalf("LesserUpdateStatus = %q, want %q (should reflect newest job)", body.LesserUpdateStatus, models.UpdateJobStatusError)
+	}
+
+	// Soul anchor absence regression: zero-time must not appear in JSON.
+	if body.SoulAnchorAt != nil {
+		t.Fatalf("SoulAnchorAt = %v, want nil (zero-time absence regression)", body.SoulAnchorAt)
+	}
+}
+
+func TestHandlePortalGetInstance_DriftWireStale(t *testing.T) {
+	t.Parallel()
+
+	tdb := newPortalTestDB()
+	s := &Server{store: store.New(tdb.db)}
+
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+
+	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive}
+	}).Once()
+
+	// MCP wired against old body version; body has a newer version.
+	qUpdate := new(ttmocks.MockQuery)
+	tdb.db.On("Model", mock.AnythingOfType("*models.UpdateJob")).Return(qUpdate).Maybe()
+	addStandardMockQueryStubs(qUpdate)
+	qUpdate.On("All", mock.AnythingOfType("*[]*models.UpdateJob")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.UpdateJob](t, args, 0)
+		*dest = []*models.UpdateJob{
+			{ID: "mcp-1", InstanceSlug: "demo", Status: models.UpdateJobStatusOK, MCPOnly: true, LesserBodyVersion: "v0.2.0", UpdatedAt: now.Add(-1 * time.Hour)},
+			{ID: "body-1", InstanceSlug: "demo", Status: models.UpdateJobStatusOK, BodyOnly: true, LesserBodyVersion: "v0.3.0", UpdatedAt: now},
+		}
+	}).Once()
+
+	ctx := &apptheory.Context{AuthIdentity: "alice", Params: map[string]string{"slug": "demo"}}
+	resp, err := s.handlePortalGetInstance(ctx)
+	if err != nil || resp == nil || resp.Status != 200 {
+		t.Fatalf("resp=%#v err=%v", resp, err)
+	}
+
+	var body instanceResponse
+	if err := json.Unmarshal(resp.Body, &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if body.MCPDrift != stackDriftWireStale {
+		t.Fatalf("MCPDrift = %q, want %q", body.MCPDrift, stackDriftWireStale)
+	}
+}
+
+func TestHandlePortalGetInstance_SoulAnchorFields(t *testing.T) {
+	t.Parallel()
+
+	t.Run("soul disabled returns empty anchor state", func(t *testing.T) {
+		tdb := newPortalTestDB()
+		s := &Server{store: store.New(tdb.db)}
+
+		qUpdate := new(ttmocks.MockQuery)
+		tdb.db.On("Model", mock.AnythingOfType("*models.UpdateJob")).Return(qUpdate).Maybe()
+		addStandardMockQueryStubs(qUpdate)
+		qUpdate.On("All", mock.AnythingOfType("*[]*models.UpdateJob")).Return(nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*[]*models.UpdateJob](t, args, 0)
+			*dest = []*models.UpdateJob{}
+		}).Maybe()
+
+		f := false
+		tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+			*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive, SoulEnabled: &f}
+		}).Once()
+
+		ctx := &apptheory.Context{AuthIdentity: "alice", Params: map[string]string{"slug": "demo"}}
+		resp, err := s.handlePortalGetInstance(ctx)
+		if err != nil || resp == nil || resp.Status != 200 {
+			t.Fatalf("resp=%#v err=%v", resp, err)
+		}
+
+		var body instanceResponse
+		if err := json.Unmarshal(resp.Body, &body); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if body.SoulAnchorState != "" {
+			t.Fatalf("SoulAnchorState = %q, want empty", body.SoulAnchorState)
+		}
+		if body.SoulAnchorAt != nil {
+			t.Fatalf("SoulAnchorAt = %v, want nil pointer", body.SoulAnchorAt)
+		}
+	})
+
+	t.Run("soul enabled and provisioned returns anchored", func(t *testing.T) {
+		tdb := newPortalTestDB()
+		s := &Server{store: store.New(tdb.db)}
+
+		qUpdate := new(ttmocks.MockQuery)
+		tdb.db.On("Model", mock.AnythingOfType("*models.UpdateJob")).Return(qUpdate).Maybe()
+		addStandardMockQueryStubs(qUpdate)
+		qUpdate.On("All", mock.AnythingOfType("*[]*models.UpdateJob")).Return(nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*[]*models.UpdateJob](t, args, 0)
+			*dest = []*models.UpdateJob{}
+		}).Maybe()
+
+		now := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC)
+		tru := true
+		tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+			*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive, SoulEnabled: &tru, SoulProvisionedAt: now}
+		}).Once()
+
+		ctx := &apptheory.Context{AuthIdentity: "alice", Params: map[string]string{"slug": "demo"}}
+		resp, err := s.handlePortalGetInstance(ctx)
+		if err != nil || resp == nil || resp.Status != 200 {
+			t.Fatalf("resp=%#v err=%v", resp, err)
+		}
+
+		var body instanceResponse
+		if err := json.Unmarshal(resp.Body, &body); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if body.SoulAnchorState != "anchored" {
+			t.Fatalf("SoulAnchorState = %q, want \"anchored\"", body.SoulAnchorState)
+		}
+		assertSoulAnchorAtEqual(t, body.SoulAnchorAt, now)
+	})
+}
+
+// TestHandlePortalGetInstance_SoulAnchorFields_JSONAbsence verifies that
+// soul_anchor_at is absent from JSON (not "0001-01-01T00:00:00Z") when
+// the soul is not provisioned. This guards against Go's time.Time omitempty
+// behavior where zero time still serializes.
+func TestHandlePortalGetInstance_SoulAnchorFields_JSONAbsence(t *testing.T) {
+	t.Parallel()
+
+	tdb := newPortalTestDB()
+	s := &Server{store: store.New(tdb.db)}
+
+	qUpdate := new(ttmocks.MockQuery)
+	tdb.db.On("Model", mock.AnythingOfType("*models.UpdateJob")).Return(qUpdate).Maybe()
+	addStandardMockQueryStubs(qUpdate)
+	qUpdate.On("All", mock.AnythingOfType("*[]*models.UpdateJob")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.UpdateJob](t, args, 0)
+		*dest = []*models.UpdateJob{}
+	}).Maybe()
+
+	f := false
+	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{Slug: "demo", Owner: "alice", Status: models.InstanceStatusActive, SoulEnabled: &f}
+	}).Once()
+
+	ctx := &apptheory.Context{AuthIdentity: "alice", Params: map[string]string{"slug": "demo"}}
+	resp, err := s.handlePortalGetInstance(ctx)
+	if err != nil || resp == nil || resp.Status != 200 {
+		t.Fatalf("resp=%#v err=%v", resp, err)
+	}
+
+	assertJSONFieldAbsent(t, resp.Body, "soul_anchor_at")
+}
+
+func TestInstanceResponseDTO_RedactionProof(t *testing.T) {
+	t.Parallel()
+
+	resp := instanceResponse{
+		Slug:            "demo",
+		Owner:           "alice",
+		Status:          "active",
+		OwnerHandle:     "Alice Example",
+		OwnerRole:       "customer",
+		SoulAnchorState: "anchored",
+		SoulAnchorAt:    soulAnchorTestTime(),
+		LesserDrift:     stackDriftOK,
+		LesserBodyDrift: stackDriftOK,
+		MCPDrift:        stackDriftUnknown,
+		DriftSummary:    "partial telemetry",
+	}
+
+	b, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	raw := string(b)
+
+	// Forbidden: internal storage keys.
+	for _, forbidden := range []string{
+		`"pk"`, `"PK"`,
+		`"sk"`, `"SK"`,
+		`"ttl"`, `"TTL"`,
+		`"gsi1PK"`, `"gsi1pk"`,
+		`"gsi1SK"`, `"gsi1sk"`,
+		`"gsi2PK"`, `"gsi2pk"`,
+		`"gsi2SK"`, `"gsi2sk"`,
+	} {
+		if strings.Contains(raw, forbidden) {
+			t.Fatalf("leaked internal key %q in JSON: %s", forbidden, raw)
+		}
+	}
+
+	// Forbidden: account identifiers and secrets.
+	for _, forbidden := range []string{
+		`"account_id"`,
+		`"accountId"`,
+		`"instance_key_secret"`,
+		`"secret_arn"`,
+		`"raw_key"`,
+		`"raw_secret"`,
+	} {
+		if strings.Contains(raw, forbidden) {
+			t.Fatalf("leaked sensitive field %q in JSON: %s", forbidden, raw)
+		}
+	}
+
+	// Confirm the new M7 fields are present.
+	for _, want := range []string{
+		`"owner_handle"`,
+		`"owner_role"`,
+		`"soul_anchor_state"`,
+		`"lesser_drift"`,
+		`"lesser_body_drift"`,
+		`"mcp_drift"`,
+		`"drift_summary"`,
+	} {
+		if !strings.Contains(raw, want) {
+			t.Fatalf("missing expected field %q in JSON: %s", want, raw)
+		}
+	}
+}
+
+func TestEnrichDerivedDrift_NilResponse(t *testing.T) {
+	t.Parallel()
+	enrichDerivedDrift(nil, nil, nil, nil)
+}
+
+func TestEnrichDerivedDrift_EmptyJobs(t *testing.T) {
+	t.Parallel()
+
+	resp := &instanceResponse{}
+	enrichDerivedDrift(resp, nil, nil, nil)
+
+	if resp.LesserDrift != stackDriftUnknown {
+		t.Fatalf("LesserDrift = %q, want %q", resp.LesserDrift, stackDriftUnknown)
+	}
+	if resp.LesserBodyDrift != stackDriftUnknown {
+		t.Fatalf("LesserBodyDrift = %q, want %q", resp.LesserBodyDrift, stackDriftUnknown)
+	}
+	if resp.MCPDrift != stackDriftUnknown {
+		t.Fatalf("MCPDrift = %q, want %q", resp.MCPDrift, stackDriftUnknown)
+	}
+	if resp.DriftSummary == "" {
+		t.Fatalf("DriftSummary is empty")
+	}
+}
+
+func TestComputeMCPDriftForDetail_NilMCPJob(t *testing.T) {
+	t.Parallel()
+	if got := computeMCPDriftForDetail(nil, nil); got != stackDriftUnknown {
+		t.Fatalf("expected unknown, got %q", got)
+	}
+}
+
+func TestComputeMCPDriftForDetail_NonOKMCPJob(t *testing.T) {
+	t.Parallel()
+	job := &models.UpdateJob{Status: models.UpdateJobStatusRunning}
+	if got := computeMCPDriftForDetail(job, nil); got != stackDriftUnknown {
+		t.Fatalf("expected unknown, got %q", got)
+	}
+}
+
+func TestComputeDriftForKind_NilJob(t *testing.T) {
+	t.Parallel()
+	if got := computeDriftForKind(nil); got != stackDriftUnknown {
+		t.Fatalf("expected unknown, got %q", got)
+	}
+}
+
+func TestComputeDriftForKind_NonOKJob(t *testing.T) {
+	t.Parallel()
+	job := &models.UpdateJob{Status: models.UpdateJobStatusError}
+	if got := computeDriftForKind(job); got != stackDriftUnknown {
+		t.Fatalf("expected unknown, got %q", got)
+	}
+}
+
+func TestEnrichOwnerIdentity_NilArgs(t *testing.T) {
+	t.Parallel()
+	enrichOwnerIdentity(nil, nil, nil, nil)
+	enrichOwnerIdentity(&apptheory.Context{}, nil, &models.Instance{Owner: "alice"}, &instanceResponse{})
+	enrichOwnerIdentity(&apptheory.Context{}, &Server{}, nil, &instanceResponse{})
+}
+
+// soulAnchorTestTime returns a pointer to a deterministic test timestamp.
+// Used by DTO tests that need a non-nil *time.Time for the SoulAnchorAt field.
+func soulAnchorTestTime() *time.Time {
+	t := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC)
+	return &t
+}
+
+// assertSoulAnchorAtEqual fails t if at is nil or does not equal want.
+func assertSoulAnchorAtEqual(t *testing.T, at *time.Time, want time.Time) {
+	t.Helper()
+	if at == nil || !at.Equal(want) {
+		t.Fatalf("SoulAnchorAt = %v, want %v", at, want)
+	}
+}
+
+// assertJSONFieldAbsent fails t if raw contains a JSON key for field.
+func assertJSONFieldAbsent(t *testing.T, raw []byte, field string) {
+	t.Helper()
+	needle := "\"" + field + "\""
+	if strings.Contains(string(raw), needle) {
+		t.Fatalf("JSON contains %s, want absent: %s", needle, string(raw))
+	}
+}
