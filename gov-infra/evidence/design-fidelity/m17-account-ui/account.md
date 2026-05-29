@@ -126,7 +126,7 @@ Both paths use the same `<Account />` component inside `<PortalShell>` — the M
 | File | Change |
 |------|--------|
 | `web/src/pages/Account.svelte` | REWRITTEN — slim identity + session view with DefinitionList panels, masked wallet, honest action buttons, preserved passkey management |
-| `web/src/pages/Account.svelte.test.ts` | NEW — 268 tests covering identity/session DL fields, wallet masking, honest button states, CSP safety, route dispatch, DOM mount |
+| `web/src/pages/Account.svelte.test.ts` | NEW — 31 Account tests; full web suite: 24 files, 268 tests |
 | `web/fixtures/m17-account.html` | NEW — standalone HTML entry for headless PNG capture |
 | `web/fixtures/m17-account.ts` | NEW — session pre-load + portal-me mock + Account component mount |
 | `web/fixtures/vite.fixture.m17.config.ts` | NEW — minimal Vite config for fixture server |

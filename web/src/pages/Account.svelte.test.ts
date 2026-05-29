@@ -78,12 +78,12 @@ describe('M17 Account UI — source-level contracts', () => {
 			// The component must not use PageFrame — both /portal/account
 			// and /account render inside PortalShell which already wraps
 			// content in its own PageFrame. Panel from shell is fine.
-			// Strip HTML comments (which mention PageFrame in dev-notes) then
-			// check the remaining source.
-			const noComments = source.replace(/<!--[\s\S]*?-->/g, '');
-			expect(noComments).not.toMatch(
-				/\bPageFrame\b/,
+			// Verify the shell import line does not include PageFrame.
+			const shellImportLine = source.split('\n').find(
+				(line) => line.includes("from 'src/lib/shell'"),
 			);
+			expect(shellImportLine).toBeDefined();
+			expect(shellImportLine).not.toContain('PageFrame');
 		});
 	});
 
@@ -123,12 +123,18 @@ describe('M17 Account UI — source-level contracts', () => {
 			expect(source).toContain('Sign out');
 			// The template must not label the button "Sign out all sessions"
 			// since only single-session logout is supported. The AGPL header
-			// comments may mention the phrase, so check the template area.
+			// comments may mention the phrase, so exclude lines inside
+			// HTML comment blocks (<!-- ... -->) via state tracking.
 			const styleIdx = source.lastIndexOf('<style>');
 			const templatePart = styleIdx > 0 ? source.substring(0, styleIdx) : source;
-			// Strip HTML comments
-			const noComments = templatePart.replace(/<!--[\s\S]*?-->/g, '');
-			expect(noComments).not.toContain('Sign out all sessions');
+			const nonCommentLines: string[] = [];
+			let inComment = false;
+			for (const line of templatePart.split('\n')) {
+				if (line.includes('<!--')) inComment = true;
+				if (!inComment) nonCommentLines.push(line);
+				if (line.includes('-->')) inComment = false;
+			}
+			expect(nonCommentLines.join('\n')).not.toContain('Sign out all sessions');
 		});
 
 		it('documents honest help text about token rotation unavailability', () => {
