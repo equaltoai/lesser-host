@@ -11,11 +11,11 @@
   <a class="skip-link" href="#main">Skip to content</a>
 
   <div class="app-layout">
-    <!-- Sticky Sidebar Navigation -->
+    <!-- Glassmorphic Sidebar Navigation -->
     <aside class="sidebar" id="sidebar">
       <div class="sidebar-header">
         <a class="brand" href="./" aria-label="lesser-host home">
-          <span class="brand-mark" aria-hidden="true">lh</span>
+          <span class="brand-mark" aria-hidden="true">&lt;</span>
           <span class="brand-name">lesser-host</span>
         </a>
         <span class="version-badge">v1.2.0-beta</span>
@@ -150,7 +150,7 @@
                 <polyline points="12 5 19 12 12 19"></polyline>
               </svg>
             </a>
-            <a class="button" href="https://github.com/equaltoai/lesser-host" target="_blank" rel="noopener noreferrer">
+            <a class="button button-secondary" href="https://github.com/equaltoai/lesser-host" target="_blank" rel="noopener noreferrer">
               <span>View source</span>
               <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"></path>
@@ -199,7 +199,7 @@
           <h2 id="capabilities-title">Core Capabilities</h2>
         </div>
         <div class="capabilities-grid">
-          <article class="capability-card accent-blue">
+          <article class="capability-card accent-provision">
             <div class="card-icon-container">
               <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
@@ -209,7 +209,7 @@
             <h3>Managed instances</h3>
             <p>Creates dedicated AWS accounts, delegates <code>slug.greater.website</code>, verifies Lesser and Body release assets, and drives CodeBuild runners.</p>
           </article>
-          <article class="capability-card accent-green">
+          <article class="capability-card accent-trust">
             <div class="card-icon-container">
               <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
@@ -219,7 +219,7 @@
             <h3>Attestations and safety</h3>
             <p>Serves public JWKS and attestation lookups, plus instance-authenticated preview, render, safety, moderation, and AI-evidence workflows.</p>
           </article>
-          <article class="capability-card accent-yellow">
+          <article class="capability-card accent-identity">
             <div class="card-icon-container">
               <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <circle cx="12" cy="12" r="10"></circle>
@@ -230,7 +230,7 @@
             <h3>Soul registry</h3>
             <p>Combines on-chain ERC-721 identity anchors, off-chain TableTheory state, S3 registration artifacts, and Safe-ready governance payloads.</p>
           </article>
-          <article class="capability-card accent-red">
+          <article class="capability-card accent-operate">
             <div class="card-icon-container">
               <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <rect x="2" y="4" width="20" height="16" rx="2"></rect>
@@ -396,15 +396,15 @@
         <p class="section-intro">These constraints shape every production change in the repository to guarantee a high-trust architecture.</p>
 
         <div class="invariants-grid">
-          <article class="invariant-card border-blue">
+          <article class="invariant-card border-purple">
             <h3>Multi-tenant isolation</h3>
             <p>Each managed instance has its own AWS account and delegated DNS zone. Host avoids tenant content and stores only control-plane metadata.</p>
           </article>
-          <article class="invariant-card border-green">
+          <article class="invariant-card border-amber">
             <h3>Consumer release verification</h3>
             <p>Lesser and lesser-body artifacts are downloaded, manifest-checked, and SHA-256 verified before any managed deployment proceeds.</p>
           </article>
-          <article class="invariant-card border-yellow">
+          <article class="invariant-card border-green">
             <h3>Trust API rigor</h3>
             <p>Instance API keys are raw only at presentation time; host persists and compares hashes. Attestations are signed and publicly verifiable.</p>
           </article>
@@ -412,7 +412,7 @@
             <h3>On-chain care</h3>
             <p>Soul and TipSplitter operations use Solidity tests, linting, Slither, Sepolia-first deploys, and Safe-ready mainnet governance.</p>
           </article>
-          <article class="invariant-card border-purple">
+          <article class="invariant-card border-blue">
             <h3>Governance evidence</h3>
             <p><code>gov-infra/</code> verifiers are deterministic, fail closed, and emit evidence rather than silently weakening the rubric.</p>
           </article>
@@ -444,7 +444,7 @@
               <span class="dot minimize"></span>
               <span class="dot expand"></span>
             </div>
-            <span class="terminal-title">bash - local-verification</span>
+            <span class="terminal-title">bash — local-verification</span>
           </div>
           <div class="terminal-body">
             <pre class="terminal-code"><code><span class="prompt">$</span> <span class="cmd-bin">go</span> <span class="cmd-sub">test</span> <span class="cmd-arg">./...</span>
@@ -571,7 +571,7 @@
 
       <!-- Footer -->
       <footer class="site-footer">
-        <p>AGPL-3.0-only source &bull; Strict CSP &bull; Multi-tenant isolation &bull; Release-verifying managed hosting</p>
+        <p>AGPL-3.0-only source · Strict CSP · Multi-tenant isolation · Release-verifying managed hosting</p>
       </footer>
     </main>
   </div>
