@@ -295,6 +295,49 @@ export function soulListMyAgents(token: string): Promise<SoulMineAgentsResponse>
 	});
 }
 
+export interface PortalSoulRosterInstance {
+	slug: string;
+	domain?: string;
+}
+
+export interface PortalSoulRosterLesserAgent {
+	username?: string;
+	display_name?: string;
+	agent_type?: string;
+	agent_version?: string;
+	status: 'loaded' | 'not_configured' | 'not_found' | 'unavailable' | string;
+	source: string;
+}
+
+export interface PortalSoulRosterTips {
+	received: number;
+	period: 'all_time' | string;
+	label: string;
+	source: string;
+}
+
+export interface PortalSoulRosterItem {
+	agent: SoulAgentIdentity;
+	reputation?: SoulAgentReputation;
+	instance: PortalSoulRosterInstance;
+	lesser_agent?: PortalSoulRosterLesserAgent;
+	tips: PortalSoulRosterTips;
+	anchor_assurance?: SoulAnchorAssurance;
+}
+
+export interface PortalSoulRosterResponse {
+	souls: PortalSoulRosterItem[];
+	count: number;
+}
+
+export function soulListPortalRoster(token: string): Promise<PortalSoulRosterResponse> {
+	return fetchJson<PortalSoulRosterResponse>('/api/v1/portal/souls/roster', {
+		headers: {
+			authorization: `Bearer ${token}`,
+		},
+	});
+}
+
 export interface SoulRegistryProofInstructions {
 	method: string;
 	dns_name?: string;

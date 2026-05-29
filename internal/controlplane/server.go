@@ -154,6 +154,7 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 
 	// Portal identity helpers.
 	app.Get("/api/v1/portal/me", s.handlePortalMe, apptheory.RequireAuth())
+	app.Get("/api/v1/portal/souls/roster", s.handlePortalSoulRoster, apptheory.RequireAuth())
 
 	// Portal instance management (owner-scoped).
 	app.Post("/api/v1/portal/instances", s.handlePortalCreateInstance, apptheory.RequireAuth())
