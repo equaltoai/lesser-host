@@ -181,6 +181,50 @@ All data rendered by the M14 surface is sourced from existing on-wire API contra
 
 ## Screenshot
 
-**PNG not generated.** The steward cannot produce a rendered screenshot in the current environment (no headless browser, no running dev server, no display server). The `soul-detail.png` evidence artifact should be captured from the running application after deploying to `lab`. Until then, this markdown document serves as the design-fidelity evidence.
+**Path:** `gov-infra/evidence/design-fidelity/m14-soul-detail-ui/soul-detail.png`
 
-> **Capture instructions:** Deploy to lab, navigate to `/portal/souls/{any-agent-id-from-roster}`, capture a 1440×900 viewport screenshot, and save as `gov-infra/evidence/design-fidelity/m14-soul-detail-ui/soul-detail.png`.
+**Capture command:**
+```bash
+cd web && npx vite --config fixtures/vite.fixture.m14.config.ts --host 127.0.0.1 --port 5206 &
+node -e "
+const puppeteer = require('/tmp/node_modules/puppeteer');
+const browser = await puppeteer.launch({
+  headless: 'new',
+  executablePath: '/usr/bin/google-chrome',
+  args: ['--no-sandbox', '--disable-setuid-sandbox'],
+});
+const page = await browser.newPage();
+await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
+await page.goto('http://127.0.0.1:5206/fixtures/m14-soul-detail.html', { waitUntil: 'networkidle0' });
+await page.waitForSelector('.soul-detail__metrics');
+await page.screenshot({ path: 'gov-infra/evidence/design-fidelity/m14-soul-detail-ui/soul-detail.png' });
+await browser.close();
+"
+```
+
+**Resolution:** 1440 × 900, PNG, 8-bit RGB, ~241 KB.
+
+**Target agent:** `0x1a2b3c4d5e6f7890abcdef1234567890abcdef12` (local_id: `maeve`), a graduated soul with `self_description_version: 3`, `immutable_onchain` anchor, `anthropic:claude-sonnet-4-6` model, 184 tip events, 14 continuity entries across 6 of 7 trailing days, and 10 comm activity items.
+
+### Fixture files
+
+| File | Purpose |
+|------|---------|
+| `web/fixtures/m14-soul-detail.html` | Standalone HTML entry with 1440px viewport for headless capture |
+| `web/fixtures/m14-soul-detail.ts` | Mock `window.fetch` interceptor with realistic owner-scoped roster, agent detail, 7-day continuity entries with a gap day, and 10 comm activity items across 3 channel types |
+| `web/fixtures/vite.fixture.m14.config.ts` | Minimal Vite config (port 5206, watch disabled, Svelte plugin) |
+
+### Data sources in the fixture
+
+| API endpoint | Mocked data |
+|---|---|
+| `GET /api/v1/portal/souls/roster` | 2-soul roster (maeve graduated, atlas graduated), owner-scoped with full `instance`, `lesser_agent`, `tips`, `anchor_assurance` enrichment |
+| `GET /api/v1/soul/agents/{agentId}` | Agent identity (local_id, domain, capabilities, self_description_version, lifecycle_status, minted_at, anchor_assurance) + reputation block |
+| `GET /api/v1/soul/agents/{agentId}/continuity?limit=50` | 14 continuity entries across 6 of 7 trailing days (Tue 3, Mon 2, Sun 5, Fri 1, Thu 2, Wed 1; Sat 0 as gap day) |
+| `GET /api/v1/soul/agents/{agentId}/comm/activity?limit=50` | 10 activity items: email (5), SMS (4), voice (1) — mix of inbound/outbound, varied statuses, realistic counterparties and previews |
+
+### Deliberate fixture deviations from live behaviour
+
+- **No real auth token:** The fixture uses a mock bearer token (`mock-fixture-token-for-m14`). All `window.fetch` calls are intercepted before they reach any network layer.
+- **Synthetic timestamps:** Continuity entries and comm activity use `Date.now()`-relative timestamps so the 7-day continuity bar chart and relative-time activity labels render deterministically.
+- **Roster-only gate:** The fixture matches the target `agentId` against the mocked roster; a non-matching agentId would trigger the unauthorized/not-found state (not exercised in this capture).
