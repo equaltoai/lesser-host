@@ -1,27 +1,45 @@
 <!--
-@component
-Account — customer / operator account settings page.
+ @component
+ Account — M17 slim identity and session view for /portal/account.
 
-M1.1 re-skin: renders on the new shell (greater-components `PageFrame` +
-`PageTitle` + `Panel`) and consumes DS tokens through the existing
-`--gr-*` bridge. Data-layer behavior, endpoint shape, and session/WebAuthn
-flows are preserved byte-for-byte from the pre-M1 implementation; only
-the visual layer changes.
+ Project 42 M17 re-skin: replaces the M1 flat profile display with a
+ slim two-panel DefinitionList layout (Identity + Session) matching the
+ design reference at docs/design/web-ui-rework-2026-05-24/project/src/
+ portal-pages-2.jsx PortalAccount (lines ~471-500). Preserves existing
+ data-layer behavior, WebAuthn passkey management for operator/admin
+ accounts, and single-session sign-out.
 
-Posture invariants preserved:
-  - Strict-no-inline-CSP safe: no inline scripts, no inline styles,
-    no third-party origins.
-  - Trust-API instance-auth untouched (account page does not handle
-    instance keys).
-  - Multi-tenant isolation: consumes only self-scoped portal/operator
-    endpoints; no cross-tenant reads.
+ Posture invariants preserved:
+   - Strict-CSP safe: no inline style attributes or inline scripts; no
+     third-party origins.
+   - Multi-tenant isolation: consumes only self-scoped portal/operator
+     me endpoints; no cross-tenant reads.
+   - Trust-API instance-auth untouched (account page does not handle
+     instance keys).
+   - No auth/session backend changes; UI only.
+   - Wallet/session identifiers masked/truncated.
+   - No PageFrame wrapper (PortalShell provides one); fixes double-
+     nesting on both /portal/account and legacy /account routes.
 
-Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M1.1
-Issue: equaltoai/lesser-host#410
--->
+ Design deviations (deliberate):
+   - "Rotate token" is rendered as a disabled button because no session-
+     token rotation endpoint exists in the current backend. Honest help
+     text notes this.
+   - "Sign out" is single-session only (the existing backend /api/v1/auth/
+     logout terminates only the current session). The button label is
+     "Sign out" (not "Sign out all sessions") to avoid misleading users.
+   - IP field renders "—" (unavailable) because session metadata does
+     not include client IP in the current session store.
+   - Passkey management is preserved for operator/admin accounts as a
+     third panel below the main two panels because removing it would
+     break existing supported WebAuthn management behavior.
 
+ Source: issue equaltoai/lesser-host#551
+ @license AGPL-3.0-only
+ -->
 <script lang="ts">
 	import { onMount } from 'svelte';
+
 	import type { ApiError } from 'src/lib/api/http';
 	import type { OperatorMeResponse } from 'src/lib/api/operators';
 	import { getOperatorMe } from 'src/lib/api/operators';
@@ -35,12 +53,24 @@ Issue: equaltoai/lesser-host#410
 		webAuthnRegisterFinish,
 		webAuthnUpdateCredential,
 	} from 'src/lib/api/webauthn';
-	import { navigate } from 'src/lib/router';
 	import { logout } from 'src/lib/auth/logout';
+	import { navigate } from 'src/lib/router';
 	import { session } from 'src/lib/session';
 	import { serializeCredentialCreation, toPublicKeyCreationOptions } from 'src/lib/webauthn/client';
-	import { Alert, Button, Spinner, Text, TextField } from 'src/lib/ui';
-	import { PageFrame, PageTitle, Panel } from 'src/lib/shell';
+	import { Eyebrow } from 'src/lib/components/primitives';
+	import { Panel } from 'src/lib/shell';
+	import {
+		Alert,
+		Button,
+		DefinitionItem,
+		DefinitionList,
+		Heading,
+		Spinner,
+		Text,
+		TextField,
+	} from 'src/lib/ui';
+
+	// ── Profile type ───────────────────────────────────────────────────
 
 	type Profile = {
 		username: string;
@@ -49,10 +79,13 @@ Issue: equaltoai/lesser-host#410
 		email?: string;
 	};
 
+	// ── State ──────────────────────────────────────────────────────────
+
 	let profileLoading = $state(false);
 	let profileError = $state<string | null>(null);
 	let profile = $state<Profile | null>(null);
 
+	// Passkey management (operator/admin only; preserved from M1)
 	let passkeysLoading = $state(false);
 	let passkeysError = $state<string | null>(null);
 	let passkeys = $state<WebAuthnCredentialSummary[]>([]);
@@ -65,6 +98,10 @@ Issue: equaltoai/lesser-host#410
 	let editName = $state('');
 	let editLoading = $state(false);
 	let editError = $state<string | null>(null);
+
+	let signingOut = $state(false);
+
+	// ── Helpers ────────────────────────────────────────────────────────
 
 	function formatError(err: unknown): string {
 		if (!err) return 'unknown error';
@@ -79,6 +116,28 @@ Issue: equaltoai/lesser-host#410
 	function isOperatorRole(role: string): boolean {
 		return role === 'admin' || role === 'operator';
 	}
+
+	/** Mask a wallet address to first 6 + … + last 4 characters. */
+	function maskWallet(addr: string | undefined): string {
+		const a = (addr ?? '').trim();
+		if (!a) return '';
+		if (a.length <= 14) return a;
+		return `${a.slice(0, 6)}…${a.slice(-4)}`;
+	}
+
+	/** Format an ISO expiry string for human readability. */
+	function formatExpiry(expiresAt: string | undefined): string {
+		if (!expiresAt) return '—';
+		try {
+			const d = new Date(expiresAt);
+			if (!Number.isFinite(d.getTime())) return '—';
+			return d.toLocaleString();
+		} catch {
+			return '—';
+		}
+	}
+
+	// ── Profile loading ────────────────────────────────────────────────
 
 	async function loadProfile() {
 		profileError = null;
@@ -119,17 +178,15 @@ Issue: equaltoai/lesser-host#410
 		}
 	}
 
+	// ── Passkey management (preserved from M1 for operator/admin) ──────
+
 	async function loadPasskeys() {
 		passkeysError = null;
 		passkeys = [];
 
 		const current = $session;
-		if (!current) {
-			return;
-		}
-		if (!isOperatorRole(current.role)) {
-			return;
-		}
+		if (!current) return;
+		if (!isOperatorRole(current.role)) return;
 
 		passkeysLoading = true;
 		try {
@@ -253,9 +310,7 @@ Issue: equaltoai/lesser-host#410
 			return;
 		}
 
-		if (!confirm(`Delete passkey "${cred.name}"?`)) {
-			return;
-		}
+		if (!confirm(`Delete passkey "${cred.name}"?`)) return;
 
 		passkeysLoading = true;
 		try {
@@ -268,6 +323,23 @@ Issue: equaltoai/lesser-host#410
 		}
 	}
 
+	// ── Sign out (single session) ──────────────────────────────────────
+
+	async function handleSignOut() {
+		signingOut = true;
+		try {
+			await logout();
+			navigate('/login');
+		} catch {
+			// logout() already clears session locally
+			navigate('/login');
+		} finally {
+			signingOut = false;
+		}
+	}
+
+	// ── Lifecycle ──────────────────────────────────────────────────────
+
 	onMount(() => {
 		if (!$session) {
 			navigate('/login');
@@ -278,64 +350,94 @@ Issue: equaltoai/lesser-host#410
 	});
 </script>
 
-<PageFrame width="default">
-	{#snippet header()}
-		<PageTitle
-			eyebrow="Account"
-			title="Account settings"
-			description="Profile, role, and passkey credentials for the signed-in account."
-		/>
-	{/snippet}
+<!-- ═══ Page header ════════════════════════════════════════════════════ -->
 
-	{#if !$session}
-		<Alert variant="warning" title="Signed out">
-			<Text size="sm">Sign in to manage account settings.</Text>
-		</Alert>
-	{:else if profileLoading}
-		<div class="account__loading">
-			<Spinner size="md" />
-			<Text>Loading…</Text>
-		</div>
-	{:else if profileError}
-		<Alert variant="error" title="Account error">{profileError}</Alert>
-	{:else if profile}
+<div class="account__header">
+	<Eyebrow>Settings</Eyebrow>
+	<Heading level={1}>Account</Heading>
+	<Text size="sm" color="secondary">Identity, sessions, and connected wallets.</Text>
+</div>
+
+<!-- ═══ Content ════════════════════════════════════════════════════════ -->
+
+{#if !$session}
+	<Alert variant="warning" title="Signed out">
+		<Text size="sm">Sign in to manage account settings.</Text>
+	</Alert>
+{:else if profileLoading}
+	<div class="account__loading">
+		<Spinner size="md" />
+		<Text>Loading…</Text>
+	</div>
+{:else if profileError}
+	<Alert variant="error" title="Account error">{profileError}</Alert>
+{:else if profile}
+	<div class="account__panels">
+		<!-- ── Identity / Profile panel ─────────────────────────────── -->
 		<Panel title="Profile" headerLevel={2}>
-			{#snippet actions()}
-				<Button variant="outline" onclick={() => void loadProfile()} disabled={profileLoading}>
-					Refresh profile
-				</Button>
-			{/snippet}
+			<Eyebrow>Identity</Eyebrow>
+			<DefinitionList>
+				<DefinitionItem label="Username" monospace>
+					<Text size="sm">{profile.username}</Text>
+				</DefinitionItem>
+				<DefinitionItem label="Display name">
+					<Text size="sm">{profile.displayName || '—'}</Text>
+				</DefinitionItem>
+				<DefinitionItem label="Email" monospace>
+					<Text size="sm">{profile.email || '—'}</Text>
+				</DefinitionItem>
+				<DefinitionItem label="Role" monospace>
+					<Text size="sm">{profile.role}</Text>
+				</DefinitionItem>
+			</DefinitionList>
+		</Panel>
 
-			<div class="account__profile">
-				<Text size="sm">
-					Username: <span class="account__mono">{profile.username}</span>
-				</Text>
-				<Text size="sm">
-					Role: <span class="account__mono">{profile.role}</span>
-				</Text>
-				<Text size="sm">
-					Display name: <span class="account__mono">{profile.displayName || '—'}</span>
-				</Text>
-				<Text size="sm">
-					Email: <span class="account__mono">{profile.email || '—'}</span>
-				</Text>
-				<Text size="sm">
-					Method: <span class="account__mono">{$session.method || '—'}</span>
-				</Text>
-				<Text size="sm">
-					Linked wallet: <span class="account__mono">{$session.walletAddress || '—'}</span>
+		<!-- ── Session panel ────────────────────────────────────────── -->
+		<Panel title="Current session" headerLevel={2}>
+			<Eyebrow>Session</Eyebrow>
+			<DefinitionList>
+				<DefinitionItem label="Method" monospace>
+					<Text size="sm">{$session.method || '—'}</Text>
+				</DefinitionItem>
+				<DefinitionItem label="Wallet" monospace>
+					<Text size="sm">
+						{@const wallet = $session.walletAddress}
+						{wallet ? maskWallet(wallet) : '—'}
+					</Text>
+				</DefinitionItem>
+				<DefinitionItem label="Token expires" monospace>
+					<Text size="sm">{formatExpiry($session.expiresAt)}</Text>
+				</DefinitionItem>
+				<DefinitionItem label="IP">
+					<Text size="sm" color="secondary">—</Text>
+				</DefinitionItem>
+			</DefinitionList>
+
+			<div class="account__actions">
+				<Button variant="outline" size="sm" disabled
+					title="Session-token rotation is not yet available"
+				>
+					Rotate token
+				</Button>
+				<Button variant="ghost" size="sm"
+					onclick={() => void handleSignOut()}
+					disabled={signingOut}
+				>
+					Sign out
+				</Button>
+			</div>
+
+			<div class="account__actions-help">
+				<Text size="sm" color="secondary">
+					Session-token rotation is not yet supported. Sign out signs out the current
+					session only.
 				</Text>
 			</div>
 		</Panel>
 
+		<!-- ── Passkey management (operator/admin only, preserved) ───── -->
 		{#if isOperatorRole(profile.role)}
 			<Panel title="Passkeys" headerLevel={2}>
-				{#snippet actions()}
-					<Button variant="outline" onclick={() => void loadPasskeys()} disabled={passkeysLoading}>
-						Refresh passkeys
-					</Button>
-				{/snippet}
-
 				<Text size="sm" color="secondary">
 					Register passkeys (WebAuthn) for operator/admin accounts. Challenges expire in ~5 minutes.
 				</Text>
@@ -434,10 +536,19 @@ Issue: equaltoai/lesser-host#410
 				</Panel>
 			{/if}
 		{/if}
-	{/if}
-</PageFrame>
+	</div>
+{/if}
+
+<!-- ═══ Styles (CSP-safe: no inline style attributes) ══════════════════ -->
 
 <style>
+	.account__header {
+		display: flex;
+		flex-direction: column;
+		gap: var(--ds-space-1);
+		margin-bottom: var(--ds-space-6);
+	}
+
 	.account__loading {
 		display: flex;
 		gap: var(--ds-space-3);
@@ -451,10 +562,21 @@ Issue: equaltoai/lesser-host#410
 		margin-top: var(--ds-space-3);
 	}
 
-	.account__profile {
+	.account__panels {
 		display: flex;
 		flex-direction: column;
+		gap: var(--ds-space-6);
+	}
+
+	.account__actions {
+		display: flex;
 		gap: var(--ds-space-2);
+		align-items: center;
+		margin-top: var(--ds-space-4);
+	}
+
+	.account__actions-help {
+		margin-top: var(--ds-space-2);
 	}
 
 	.account__row {
