@@ -9,13 +9,13 @@ Fleet-level trust & federation dashboard consuming the M16 owner-scoped
 per-instance trust-data endpoint. Loads all the customer's instances,
 fetches trust data for each, and aggregates across the fleet.
 
-Layout:
-  1. Page header with eyebrow "Trust & federation" + title
-  2. Four metric cards (SummaryStrip): reachable peers, warnings,
-     severed last 30d, signature failures 24h
-  3. Left panel: peer constellation grid + sparkline panels
-     (signature failures, queue depth)
-  4. Right rail: trust score gauge + dimensions + vouches list + severed alert
+ Layout:
+   1. Page header with eyebrow "Trust & federation" + title
+   2. Four metric cards (SummaryStrip): reachable peers, warnings,
+      severed peers, signature failures
+   3. Left panel: peer constellation grid + sparkline panels
+      (signature failures, queue depth)
+   4. Right rail: trust score gauge + dimensions + vouches list + severed alert
 
 Documented deviations from design fixture:
   - Federation peer data is not yet instrumented (M16 backend returns
@@ -226,6 +226,8 @@ Issue: equaltoai/lesser-host#550
 		`${totalPeers} peer${totalPeers !== 1 ? 's' : ''}, ${federation.severed} severed.`,
 	);
 
+	const sigFailuresLabel = $derived(`Sig failures ${signatures.windowHours}h`);
+
 	// ── Trust score gauge helpers ──────────────────────────────────────
 
 	const gaugeSize = 160;
@@ -366,12 +368,12 @@ Issue: equaltoai/lesser-host#550
 				status={federation.warning > 0 ? 'warning' : 'default'}
 			/>
 			<StatCard
-				label="Severed last 30d"
+				label="Severed peers"
 				value={String(federation.severed)}
 				status={federation.severed > 0 ? 'danger' : 'default'}
 			/>
 			<StatCard
-				label="Sig failures 24h"
+				label={sigFailuresLabel}
 				value={String(signatures.totalFailures)}
 				status={
 					signatures.totalFailures > 0 ? 'warning' : 'success'

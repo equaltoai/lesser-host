@@ -79,12 +79,16 @@ describe('M15 Trust UI — source-level contracts', () => {
 		it('renders vouches as list/count, not strength bars', () => {
 			// Per M16: vouches should be list/count presence, not strength
 			// ranking, until a numeric strength source exists.
-			// The template area (after the <style> tag) should not render
-			// any strength-bar-like visual components for vouch items.
+			// Inspect the template area (before the <style> tag), not the
+			// style block.
 			const styleIdx = source.lastIndexOf('<style>');
-			const templatePart = styleIdx > 0 ? source.substring(styleIdx) : source;
-			// Template should not contain strength bar rendering.
-			expect(templatePart).not.toMatch(/vouch.*strength.*bar/i);
+			const templatePart = styleIdx > 0 ? source.substring(0, styleIdx) : source;
+			// Vouch items render as list items (trust__vouch-list, trust__vouch-item),
+			// not as progress bars or comparative strength indicators.
+			expect(templatePart).toContain('trust__vouch-list');
+			expect(templatePart).toContain('trust__vouch-item');
+			// Should not contain per-vouch progress-bar rendering patterns.
+			expect(templatePart).not.toMatch(/vouch-item.*ProgressBar/i);
 			// The component should reference vouchItem properties correctly.
 			expect(source).toContain('vouches.items');
 		});
@@ -102,6 +106,28 @@ describe('M15 Trust UI — source-level contracts', () => {
 		it('avoids dynamic width via style attribute in progress bars', () => {
 			// The progress bar must use SVG width attribute, not CSS style.
 			expect(source).not.toMatch(/style\s*=\s*["']width:\s*\{/);
+		});
+	});
+
+	describe('label correctness', () => {
+		it('does not hardcode "Sig failures 24h"', () => {
+			// The M16 window is 168h, not 24h. The label must be dynamic.
+			expect(source).not.toContain('24h');
+		});
+
+		it('derives sig-failures label from signatures.windowHours', () => {
+			expect(source).toContain('sigFailuresLabel');
+			expect(source).toMatch(/signatures\.windowHours/);
+		});
+
+		it('does not hardcode "Severed last 30d"', () => {
+			// The M16 federation DTO exposes `severed` without a last-30d
+			// window. Use an honest label.
+			expect(source).not.toContain('Severed last 30d');
+		});
+
+		it('uses "Severed peers" label', () => {
+			expect(source).toContain('Severed peers');
 		});
 	});
 });
