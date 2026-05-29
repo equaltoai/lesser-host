@@ -169,11 +169,11 @@
             <span class="stat-label">Go services &amp; workers</span>
           </div>
           <div class="stat-item">
-            <span class="stat-value">3</span>
+            <span class="stat-value">4</span>
             <span class="stat-label">Solidity contracts</span>
           </div>
           <div class="stat-item">
-            <span class="stat-value">70+</span>
+            <span class="stat-value">100+</span>
             <span class="stat-label">Documentation files</span>
           </div>
           <div class="stat-item">
@@ -335,6 +335,7 @@
               <span class="endpoint-tag get">GET</span> <code>/api/v1/portal/instances/{slug}/usage/{month}</code>
               <span class="endpoint-tag get">GET</span> <code>/api/v1/portal/instances/{slug}/usage/{month}/summary</code>
               <span class="endpoint-tag get">GET</span> <code>/api/v1/portal/instances/{slug}/budgets</code>
+              <span class="endpoint-tag get">GET</span> <code>/api/v1/portal/instances/{slug}/budgets/{month}</code>
               <span class="endpoint-tag put">PUT</span> <code>/api/v1/portal/instances/{slug}/budgets/{month}</code>
             </div>
           </article>
@@ -358,7 +359,7 @@
               <span class="endpoint-tag get">GET</span> <code>/api/v1/soul/agents/{agentId}</code>
               <span class="endpoint-tag get">GET</span> <code>/api/v1/soul/agents/{agentId}/registration</code>
               <span class="endpoint-tag get">GET</span> <code>/api/v1/soul/agents/{agentId}/reputation</code>
-              <span class="endpoint-tag get">GET</span> <code>/api/v1/soul/search?q=...&amp;domain=...</code>
+              <span class="endpoint-tag get">GET</span> <code>/api/v1/soul/search?q=...&amp;domain=...&amp;capability=...</code>
               <span class="endpoint-tag post">POST</span> <code>/api/v1/soul/agents/register/begin</code>
               <span class="endpoint-tag post">POST</span> <code>/api/v1/soul/agents/{agentId}/rotate-wallet/begin</code>
               <span class="endpoint-tag post">POST</span> <code>/api/v1/soul/agents/{agentId}/suspend</code>
@@ -382,7 +383,7 @@
             </div>
             <p class="card-kicker">Public</p>
             <h3>JWKS &amp; Attestations</h3>
-            <p>Serves RS256 public keys at <code>/.well-known/jwks.json</code> and signed attestations at <code>/attestations/{id}</code>. All responses are publicly cacheable with immutable TTLs. Attestation lookups by <code>(instance_slug, actor_uri, object_uri, content_hash)</code> tuple.</p>
+            <p>Serves RS256 public keys at <code>/.well-known/jwks.json</code> and signed attestations at <code>/attestations/{id}</code>. Public endpoints (JWKS, attestations) are publicly cacheable with immutable TTLs. Preview, render, and AI endpoints require instance-key authentication. Attestation lookups by <code>(instance_slug, actor_uri, object_uri, content_hash)</code> tuple.</p>
           </article>
           <article class="capability-card accent-provision">
             <div class="card-icon-container">
@@ -829,7 +830,11 @@
           </article>
           <article class="runtime-card">
             <div class="runtime-header"><span class="badge worker-badge">Contract</span><h3>ReputationAttestation.sol</h3></div>
-            <p>Owner-only <code>publishRoot(bytes32 root, uint256 blockRef, uint256 count)</code>. <code>latestRoot()</code> returns <code>(root, blockRef, count, timestamp)</code>.</p>
+            <p>Owner-only <code>publishRoot(bytes32 root, uint256 blockRef, uint256 count)</code>. <code>latestRoot()</code> returns <code>(root, blockRef, count, timestamp)</code>. Used by soul-reputation-worker for on-chain reputation root publication.</p>
+          </article>
+          <article class="runtime-card">
+            <div class="runtime-header"><span class="badge worker-badge">Contract</span><h3>ValidationAttestation.sol</h3></div>
+            <p>Owner-only <code>publishRoot</code> for off-chain validation result snapshots. <code>latestRoot()</code> returns <code>(root, blockRef, count, timestamp)</code>. Used by soul-reputation-worker for on-chain validation root publication.</p>
           </article>
         </div>
 
@@ -918,7 +923,7 @@
 
         <div class="mt-8">
           <h3 class="h3-detail">Credit System</h3>
-          <div class="posture-grid" class="grid-4">
+          <div class="posture-grid grid-4">
             <div class="posture-card">
               <span class="card-kicker">Rule</span>
               <h3 class="h3-card-sm">Cache Hits Are Free</h3>

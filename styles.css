@@ -42,10 +42,14 @@
   --ds-lesser-600: #9333ea;
 
   /* ─── Semantic status colors ──────────────────────────────────────────── */
+  --ds-success-50:  #f0fdf4;
+  --ds-success-100: #dcfce7;
   --ds-success-500: #22c55e;
   --ds-success-700: #15803d;
   --ds-warning-500: #f59e0b;
   --ds-warning-700: #b45309;
+  --ds-error-50:  #fef2f2;
+  --ds-error-100: #fee2e2;
   --ds-error-500: #ef4444;
   --ds-error-700: #b91c1c;
   --ds-info-500: #3b82f6;
@@ -779,25 +783,25 @@ section {
 }
 
 .accent-identity .card-icon-container {
-  background: #e8f5e9;
+  background: var(--ds-success-50);
   color: var(--ds-success-700);
-  border: 1px solid #c8e6c9;
+  border: 1px solid var(--ds-success-100);
 }
 .accent-identity .card-kicker {
   color: var(--ds-success-700);
-  background: #e8f5e9;
-  border-color: #c8e6c9;
+  background: var(--ds-success-50);
+  border-color: var(--ds-success-100);
 }
 
 .accent-operate .card-icon-container {
-  background: #fce4ec;
+  background: var(--ds-error-50);
   color: var(--ds-error-700);
-  border: 1px solid #f8bbd0;
+  border: 1px solid var(--ds-error-100);
 }
 .accent-operate .card-kicker {
   color: var(--ds-error-700);
-  background: #fce4ec;
-  border-color: #f8bbd0;
+  background: var(--ds-error-50);
+  border-color: var(--ds-error-100);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -926,9 +930,9 @@ section {
 }
 
 .ingress-badge {
-  background: #e8f5e9;
+  background: var(--ds-success-50);
   color: var(--ds-success-700);
-  border: 1px solid #c8e6c9;
+  border: 1px solid var(--ds-success-100);
 }
 
 .runtime-card p {
@@ -1296,6 +1300,13 @@ section {
   border-radius: var(--ds-radius-xl);
   padding: 1.5rem;
   box-shadow: var(--ds-shadow-sm);
+  transition: transform var(--ds-duration-base), box-shadow var(--ds-duration-base), border-color var(--ds-duration-base);
+}
+
+.api-surface-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--ds-shadow-md);
+  border-color: var(--ds-border-strong);
 }
 
 .api-surface-card h3 {
@@ -1394,6 +1405,7 @@ section {
 
 /* ═══════════════════════════════════════════════════════════════════════════
    Responsive Breakpoints
+   ═══════════════════════════════════════════════════════════════════════════ */
 
 @media (max-width: 1080px) {
   .main-content {
@@ -1405,7 +1417,8 @@ section {
   .posture-grid,
   .runtime-grid,
   .invariants-grid,
-  .doc-links-grid {
+  .doc-links-grid,
+  .api-surface-grid {
     grid-template-columns: repeat(2, 1fr);
   }
 }
