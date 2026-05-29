@@ -2,8 +2,11 @@ package controlplane
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -21,9 +24,8 @@ import (
 type portalTrustDataResponse struct {
 	InstanceSlug string `json:"instance_slug"`
 
-	// Federation contains federation-peer health counters and (optionally)
-	// a bounded set of peer rows. When host-side federation telemetry is not
-	// yet instrumented, counters are zero and the peers list is empty.
+	// Federation contains federation-peer health counters and a bounded set of
+	// peer rows from the requested managed Lesser instance's admin federation API.
 	Federation portalTrustFederationResponse `json:"federation"`
 
 	// Signatures contains signature-failure counters scoped to the dashboard
@@ -31,8 +33,9 @@ type portalTrustDataResponse struct {
 	// configured and agents are bound to the requesting instance.
 	Signatures portalTrustSignaturesResponse `json:"signatures"`
 
-	// QueueDepth contains an inbound queue depth time series. When host-side
-	// queue-depth telemetry is not yet persisted, the series is empty.
+	// QueueDepth contains an inbound queue depth time series. Populated from
+	// instance-scoped queue-depth samples; current snapshots are derived from
+	// canonical soul-comm mailbox rows scoped by instance slug + bound agent ID.
 	QueueDepth portalTrustQueueDepthResponse `json:"queue_depth"`
 
 	// TrustScore exposes a computed trust score with documented formula and
@@ -49,13 +52,14 @@ type portalTrustDataResponse struct {
 // portalTrustFederationResponse contains federation-peer health data for a
 // single managed instance.
 //
-// Data source (planned):
-//   - Managed Lesser instances expose federation health via
-//     /api/v1/admin/federation/*. Host-side aggregation (worker or
-//     polling-based) will persist roll-up counters and bounded peer rows.
+// Data source: the requested owner-scoped managed Lesser instance's admin
+// federation endpoints, reached server-side with its one-time instance key:
+//   - /api/v1/admin/federation/statistics (availability/time-range probe)
+//   - /api/v1/admin/federation/instances (peer rows and health counters)
 //
-// Current status: host-side federation telemetry is not yet instrumented.
-// Counters are zero and the peers list is empty.
+// If the requested instance has no managed endpoint/key (for example, external
+// registrations), the response degrades to zero/empty values without consulting
+// any global or cross-tenant data source.
 type portalTrustFederationResponse struct {
 	// Reachable is the count of federation peers currently reachable.
 	Reachable int `json:"reachable"`
@@ -63,28 +67,38 @@ type portalTrustFederationResponse struct {
 	// Warning is the count of peers with degraded reachability.
 	Warning int `json:"warning"`
 
-	// Severed is the count of peers whose federation link has been severed.
+	// Severed is the count of peers whose federation link has been suspended.
 	Severed int `json:"severed"`
 
-	// Peers is an optional bounded list of peer rows (max 50). Each row
-	// includes the peer domain and its status.
+	// Peers is a bounded list of peer rows (max 50). Each row includes the peer
+	// domain, status, and an honest last_seen or last_fetch timestamp.
 	Peers []portalTrustFederationPeerRow `json:"peers"`
+
+	// Source names the backing telemetry source for audit/debug display.
+	Source string `json:"source"`
+
+	// Truncated is true when host hit its admin API fetch cap before Lesser's
+	// pagination was exhausted. Counters then reflect fetched rows only.
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 // portalTrustFederationPeerRow is a single federation peer row. Sensitive
 // fields (hosting account IDs, raw connection credentials) are never included.
 type portalTrustFederationPeerRow struct {
-	Domain string `json:"domain"`
-	Status string `json:"status"` // reachable, warning, severed
+	Domain        string `json:"domain"`
+	Status        string `json:"status"` // reachable, warning, severed
+	LastSeen      string `json:"last_seen,omitempty"`
+	LastFetch     string `json:"last_fetch,omitempty"`
+	FollowerCount *int   `json:"follower_count,omitempty"`
 }
 
 // portalTrustSignaturesResponse contains signature-failure counters over the
 // dashboard window, scoped to agents bound to the requesting instance.
 //
 // Data source: SoulAgentFailure rows (FailureType = "signature_failure")
-// queried per resolved agent, filtered to the 168-hour dashboard window.
+// queried per resolved agent, filtered to the 24-hour dashboard window.
 type portalTrustSignaturesResponse struct {
-	// WindowHours is the lookback window in hours (default 168 = 7 days).
+	// WindowHours is the lookback window in hours (default 24 hours).
 	WindowHours int `json:"window_hours"`
 
 	// TotalFailures is the total signature-failure count in the window.
@@ -102,16 +116,20 @@ type portalTrustSignaturesSourceRow struct {
 }
 
 // portalTrustQueueDepthResponse contains an inbound queue depth time series
-// for the customer-owned instance(s).
+// for the customer-owned instance.
 //
-// Data source (planned):
-//   - SQS queue depth metrics (ApproximateNumberOfMessages) collected
-//     periodically and stored in a host-side time-series model.
-//
-// Current status: host-side queue-depth time series is not yet persisted.
-// The series is empty.
+// Data source: TrustQueueDepthSample rows scoped to the requested instance slug.
+// Current samples are recorded from SoulCommMailboxMessage Count() queries that
+// are scoped by instance slug + bound agent ID; no global SQS or cross-tenant
+// queue is queried.
 type portalTrustQueueDepthResponse struct {
-	// Series contains time-series data points (max 168 hourly points = 7 days).
+	// WindowHours is the lookback window in hours (default 24 hours).
+	WindowHours int `json:"window_hours"`
+
+	// Source names the backing telemetry source.
+	Source string `json:"source"`
+
+	// Series contains time-series data points (max 48 points in the 24h window).
 	Series []portalTrustQueueDepthPoint `json:"series"`
 }
 
@@ -199,14 +217,47 @@ const trustScoreFormula = "trust_score = average(Composite) across agents; " +
 // trustScoreSource identifies the backing data model.
 const trustScoreSource = "lesser-host:soul_agent_reputation"
 
-// trustSignaturesWindowHours is the dashboard lookback window (7 days).
-const trustSignaturesWindowHours = 168
+// trustFederationSource identifies the Lesser admin API used for peer telemetry.
+const trustFederationSource = "lesser:/api/v1/admin/federation"
+
+// trustQueueDepthSource identifies the scoped host model used for queue telemetry.
+const trustQueueDepthSource = "lesser-host:soul_comm_mailbox_queue"
+
+const (
+	trustFederationStatusReachable = "reachable"
+	trustFederationStatusWarning   = "warning"
+	trustFederationStatusSevered   = "severed"
+)
+
+// trustSignaturesWindowHours is the dashboard lookback window (24 hours).
+const trustSignaturesWindowHours = 24
+
+// trustQueueDepthWindowHours is the queue-depth dashboard lookback window (24 hours).
+const trustQueueDepthWindowHours = 24
 
 // trustVouchesMaxItems caps the number of vouch items returned.
 const trustVouchesMaxItems = 50
 
 // trustSignaturesMaxSources caps the number of by-source rows returned.
 const trustSignaturesMaxSources = 50
+
+// trustFederationPeerRowsMax caps peer rows returned to the browser.
+const trustFederationPeerRowsMax = 50
+
+// trustFederationFetchLimit is the page size used against Lesser's admin API.
+const trustFederationFetchLimit = 100
+
+// trustFederationFetchCap bounds host-side federation pages consumed per request.
+const trustFederationFetchCap = 500
+
+// trustFederationDegradedTrustThreshold maps low non-zero Lesser trust scores to warnings.
+const trustFederationDegradedTrustThreshold = 50.0
+
+// trustFederationStaleSeenHours maps stale peers to warning status.
+const trustFederationStaleSeenHours = 30 * 24
+
+// trustQueueDepthMaxSeriesPoints caps queue-depth points returned to the browser.
+const trustQueueDepthMaxSeriesPoints = 48
 
 // signatureFailureType is the normalized SoulAgentFailure.FailureType value
 // for signature failures. The model normalises FailureType to lowercase.
@@ -217,6 +268,51 @@ const signatureFailureType = "signature_failure"
 // vouches as a list/count rather than a comparative strength bar until a
 // numeric strength source exists.
 const vouchDefaultStrength = 1.0
+
+type lesserFederationInstanceInfo struct {
+	Domain        string  `json:"domain"`
+	IsSilenced    bool    `json:"is_silenced"`
+	IsSuspended   bool    `json:"is_suspended"`
+	FirstSeen     string  `json:"first_seen"`
+	LastSeen      string  `json:"last_seen"`
+	ActiveUsers   int64   `json:"active_users"`
+	TotalMessages int64   `json:"total_messages"`
+	TrustScore    float64 `json:"trust_score"`
+	Software      string  `json:"software"`
+	Version       string  `json:"version"`
+}
+
+type lesserFederationInstancesPage struct {
+	Instances  []lesserFederationInstanceInfo `json:"instances"`
+	NextCursor *string                        `json:"next_cursor"`
+}
+
+func (p *lesserFederationInstancesPage) UnmarshalJSON(data []byte) error {
+	var arr []lesserFederationInstanceInfo
+	if err := json.Unmarshal(data, &arr); err == nil {
+		p.Instances = arr
+		p.NextCursor = nil
+		return nil
+	}
+	type pageAlias lesserFederationInstancesPage
+	var obj pageAlias
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return err
+	}
+	p.Instances = obj.Instances
+	p.NextCursor = obj.NextCursor
+	return nil
+}
+
+type lesserFederationStatisticsResponse struct {
+	ActiveInstances int `json:"active_instances"`
+	TotalUsers      int `json:"total_users"`
+	TotalMessages   int `json:"total_messages"`
+	TimeRange       struct {
+		Start string `json:"start"`
+		End   string `json:"end"`
+	} `json:"time_range"`
+}
 
 // handlePortalGetTrustData returns per-instance trust data for the Trust
 // dashboard. Requires customer authentication and instance ownership (or
@@ -230,12 +326,13 @@ func (s *Server) handlePortalGetTrustData(ctx *apptheory.Context) (*apptheory.Re
 	}
 
 	resp := portalTrustDataResponse{
-		InstanceSlug: inst.Slug,
+		InstanceSlug: strings.ToLower(strings.TrimSpace(inst.Slug)),
 		Federation: portalTrustFederationResponse{
 			Reachable: 0,
 			Warning:   0,
 			Severed:   0,
 			Peers:     []portalTrustFederationPeerRow{},
+			Source:    trustFederationSource,
 		},
 		Signatures: portalTrustSignaturesResponse{
 			WindowHours:   trustSignaturesWindowHours,
@@ -243,7 +340,9 @@ func (s *Server) handlePortalGetTrustData(ctx *apptheory.Context) (*apptheory.Re
 			BySource:      []portalTrustSignaturesSourceRow{},
 		},
 		QueueDepth: portalTrustQueueDepthResponse{
-			Series: []portalTrustQueueDepthPoint{},
+			WindowHours: trustQueueDepthWindowHours,
+			Source:      trustQueueDepthSource,
+			Series:      []portalTrustQueueDepthPoint{},
 		},
 		TrustScore: portalTrustScoreResponse{
 			Score:      0,
@@ -257,11 +356,16 @@ func (s *Server) handlePortalGetTrustData(ctx *apptheory.Context) (*apptheory.Re
 		},
 	}
 
+	if federation, appErr := s.loadTrustFederation(ctx, inst); appErr == nil {
+		resp.Federation = federation
+	}
+
 	// Populate soul-backed data when the soul registry is configured.
 	if s.cfg.SoulEnabled {
 		agentIDs := s.resolveAgentIDsForInstance(ctx, inst)
 		if len(agentIDs) > 0 {
 			resp.Signatures = s.loadTrustSignatures(ctx.Context(), agentIDs)
+			resp.QueueDepth = s.loadTrustQueueDepth(ctx.Context(), inst, agentIDs)
 			resp.TrustScore = s.loadTrustScore(ctx.Context(), agentIDs)
 			resp.Vouches = s.loadTrustVouches(ctx.Context(), agentIDs)
 		}
@@ -288,8 +392,322 @@ func (s *Server) resolveAgentIDsForInstance(ctx *apptheory.Context, inst *models
 	return agentIDs
 }
 
+func (s *Server) loadTrustFederation(ctx *apptheory.Context, inst *models.Instance) (portalTrustFederationResponse, *apptheory.AppError) {
+	resp := portalTrustFederationResponse{
+		Peers:  []portalTrustFederationPeerRow{},
+		Source: trustFederationSource,
+	}
+	if s == nil || inst == nil {
+		return resp, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
+	apiKey, keyErr := s.resolvePortalCostInstanceKey(ctx.Context(), inst)
+	if keyErr != nil || strings.TrimSpace(apiKey) == "" {
+		return resp, &apptheory.AppError{Code: "app.internal", Message: "failed to resolve instance federation access"}
+	}
+	baseURL, urlErr := s.resolvePortalCostMetricsBaseURL(inst)
+	if urlErr != nil {
+		return resp, &apptheory.AppError{Code: "app.internal", Message: "failed to resolve instance federation endpoint"}
+	}
+
+	client := s.portalCostHTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: instanceMetricsTimeout}
+	}
+
+	// Probe statistics first. The current DTO does not expose the aggregate
+	// active-users/messages counters, but this call verifies the managed admin
+	// federation surface and future-proofs the same server-side access path.
+	_ = s.fetchLesserFederationStatistics(ctx.Context(), client, baseURL, apiKey)
+
+	instances, truncated, appErr := s.fetchLesserFederationInstances(ctx.Context(), client, baseURL, apiKey)
+	if appErr != nil {
+		return resp, appErr
+	}
+	return buildTrustFederationResponse(instances, time.Now().UTC(), truncated), nil
+}
+
+func (s *Server) fetchLesserFederationStatistics(ctx context.Context, client *http.Client, baseURL string, apiKey string) *apptheory.AppError {
+	endpoint, err := buildManagedInstanceFederationURL(baseURL, "/api/v1/admin/federation/statistics", nil)
+	if err != nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "failed to resolve federation statistics endpoint"}
+	}
+	var decoded lesserFederationStatisticsResponse
+	return decodeManagedLesserJSON(ctx, client, http.MethodGet, endpoint, apiKey, &decoded)
+}
+
+func (s *Server) fetchLesserFederationInstances(ctx context.Context, client *http.Client, baseURL string, apiKey string) ([]lesserFederationInstanceInfo, bool, *apptheory.AppError) {
+	out := make([]lesserFederationInstanceInfo, 0)
+	cursor := ""
+	truncated := false
+
+	for len(out) < trustFederationFetchCap {
+		q := url.Values{}
+		q.Set("limit", fmt.Sprintf("%d", trustFederationFetchLimit))
+		if strings.TrimSpace(cursor) != "" {
+			q.Set("cursor", strings.TrimSpace(cursor))
+		}
+		endpoint, err := buildManagedInstanceFederationURL(baseURL, "/api/v1/admin/federation/instances", q)
+		if err != nil {
+			return nil, false, &apptheory.AppError{Code: "app.internal", Message: "failed to resolve federation instances endpoint"}
+		}
+
+		var page lesserFederationInstancesPage
+		if appErr := decodeManagedLesserJSON(ctx, client, http.MethodGet, endpoint, apiKey, &page); appErr != nil {
+			return nil, false, appErr
+		}
+		out = append(out, page.Instances...)
+		if page.NextCursor == nil || strings.TrimSpace(*page.NextCursor) == "" {
+			return out, false, nil
+		}
+		cursor = strings.TrimSpace(*page.NextCursor)
+	}
+	truncated = strings.TrimSpace(cursor) != ""
+	return out, truncated, nil
+}
+
+func buildManagedInstanceFederationURL(baseURL string, path string, q url.Values) (string, error) {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if baseURL == "" {
+		return "", fmt.Errorf("base url is required")
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	u, err := url.Parse(baseURL + path)
+	if err != nil {
+		return "", err
+	}
+	if q != nil {
+		u.RawQuery = q.Encode()
+	}
+	return u.String(), nil
+}
+
+func decodeManagedLesserJSON(ctx context.Context, client *http.Client, method string, endpoint string, apiKey string, dest any) *apptheory.AppError {
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, nil)
+	if err != nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "failed to create managed Lesser request"}
+	}
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(apiKey))
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := client.Do(req) //nolint:gosec // endpoint is derived from managed instance metadata or an injected test seam.
+	if err != nil {
+		return &apptheory.AppError{Code: "app.upstream_unavailable", Message: "failed to reach managed Lesser"}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
+		return &apptheory.AppError{Code: "app.upstream_error", Message: "managed Lesser request failed"}
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(dest); err != nil {
+		return &apptheory.AppError{Code: "app.upstream_error", Message: "failed to decode managed Lesser response"}
+	}
+	return nil
+}
+
+func buildTrustFederationResponse(instances []lesserFederationInstanceInfo, fetchedAt time.Time, truncated bool) portalTrustFederationResponse {
+	resp := portalTrustFederationResponse{
+		Peers:     []portalTrustFederationPeerRow{},
+		Source:    trustFederationSource,
+		Truncated: truncated,
+	}
+	if fetchedAt.IsZero() {
+		fetchedAt = time.Now().UTC()
+	}
+
+	seen := make(map[string]struct{}, len(instances))
+	for _, info := range instances {
+		domain := strings.ToLower(strings.TrimSpace(info.Domain))
+		if domain == "" {
+			continue
+		}
+		if _, ok := seen[domain]; ok {
+			continue
+		}
+		seen[domain] = struct{}{}
+
+		status := trustFederationStatus(info, fetchedAt)
+		switch status {
+		case trustFederationStatusSevered:
+			resp.Severed++
+		case trustFederationStatusWarning:
+			resp.Warning++
+		default:
+			resp.Reachable++
+		}
+
+		if len(resp.Peers) >= trustFederationPeerRowsMax {
+			continue
+		}
+		row := portalTrustFederationPeerRow{
+			Domain: domain,
+			Status: status,
+		}
+		lastSeen := strings.TrimSpace(info.LastSeen)
+		if lastSeen != "" {
+			row.LastSeen = lastSeen
+		} else {
+			row.LastFetch = fetchedAt.UTC().Format(time.RFC3339)
+		}
+		resp.Peers = append(resp.Peers, row)
+	}
+
+	sort.Slice(resp.Peers, func(i, j int) bool {
+		return resp.Peers[i].Domain < resp.Peers[j].Domain
+	})
+	return resp
+}
+
+func trustFederationStatus(info lesserFederationInstanceInfo, now time.Time) string {
+	if info.IsSuspended {
+		return trustFederationStatusSevered
+	}
+	if info.IsSilenced {
+		return trustFederationStatusWarning
+	}
+	if info.TrustScore > 0 && info.TrustScore < trustFederationDegradedTrustThreshold {
+		return trustFederationStatusWarning
+	}
+	lastSeen := strings.TrimSpace(info.LastSeen)
+	if lastSeen != "" {
+		if ts, err := time.Parse(time.RFC3339, lastSeen); err == nil && !ts.IsZero() && ts.Before(now.UTC().Add(-trustFederationStaleSeenHours*time.Hour)) {
+			return trustFederationStatusWarning
+		}
+	}
+	return trustFederationStatusReachable
+}
+
+// loadTrustQueueDepth records a best-effort current queue-depth sample and then
+// returns persisted instance-scoped samples in the 24-hour dashboard window.
+func (s *Server) loadTrustQueueDepth(ctx context.Context, inst *models.Instance, agentIDs []string) portalTrustQueueDepthResponse {
+	resp := newPortalTrustQueueDepthResponse()
+	if !canLoadTrustQueueDepth(s, inst, agentIDs) {
+		return resp
+	}
+
+	slug := strings.ToLower(strings.TrimSpace(inst.Slug))
+	now := time.Now().UTC()
+	if sample, err := s.recordTrustQueueDepthSnapshot(ctx, slug, agentIDs, now); err == nil && sample != nil {
+		resp.Series = []portalTrustQueueDepthPoint{trustQueueDepthPointFromSample(sample)}
+	}
+	if points, err := s.loadPersistedTrustQueueDepthPoints(ctx, slug, now); err == nil && len(points) > 0 {
+		resp.Series = points
+	}
+	return resp
+}
+
+func newPortalTrustQueueDepthResponse() portalTrustQueueDepthResponse {
+	return portalTrustQueueDepthResponse{
+		WindowHours: trustQueueDepthWindowHours,
+		Source:      trustQueueDepthSource,
+		Series:      []portalTrustQueueDepthPoint{},
+	}
+}
+
+func canLoadTrustQueueDepth(s *Server, inst *models.Instance, agentIDs []string) bool {
+	return s != nil && s.store != nil && s.store.DB != nil && inst != nil && strings.TrimSpace(inst.Slug) != "" && len(agentIDs) > 0
+}
+
+func (s *Server) loadPersistedTrustQueueDepthPoints(ctx context.Context, slug string, now time.Time) ([]portalTrustQueueDepthPoint, error) {
+	var samples []*models.TrustQueueDepthSample
+	err := s.store.DB.WithContext(ctx).
+		Model(&models.TrustQueueDepthSample{}).
+		Where("PK", "=", models.TrustQueueDepthSamplePK(slug)).
+		Where("SK", "begins_with", "SAMPLE#").
+		OrderBy("SK", "DESC").
+		Limit(trustQueueDepthMaxSeriesPoints).
+		All(&samples)
+	if err != nil && !theoryErrors.IsNotFound(err) {
+		return nil, err
+	}
+	return trustQueueDepthPointsFromSamples(samples, slug, now), nil
+}
+
+func trustQueueDepthPointsFromSamples(samples []*models.TrustQueueDepthSample, slug string, now time.Time) []portalTrustQueueDepthPoint {
+	windowStart := now.Add(-trustQueueDepthWindowHours * time.Hour)
+	points := make([]portalTrustQueueDepthPoint, 0, minInt(len(samples), trustQueueDepthMaxSeriesPoints))
+	for _, sample := range samples {
+		if !trustQueueDepthSampleInScope(sample, slug, windowStart) {
+			continue
+		}
+		points = append(points, trustQueueDepthPointFromSample(sample))
+		if len(points) >= trustQueueDepthMaxSeriesPoints {
+			break
+		}
+	}
+	sort.Slice(points, func(i, j int) bool {
+		return points[i].Timestamp < points[j].Timestamp
+	})
+	return points
+}
+
+func trustQueueDepthSampleInScope(sample *models.TrustQueueDepthSample, slug string, windowStart time.Time) bool {
+	return sample != nil && strings.ToLower(strings.TrimSpace(sample.InstanceSlug)) == slug && !sample.Timestamp.Before(windowStart)
+}
+
+func (s *Server) recordTrustQueueDepthSnapshot(ctx context.Context, instanceSlug string, agentIDs []string, now time.Time) (*models.TrustQueueDepthSample, error) {
+	depth := 0
+	for _, agentID := range uniqueSortedStrings(agentIDs) {
+		if agentID == "" {
+			continue
+		}
+		count, err := s.store.DB.WithContext(ctx).
+			Model(&models.SoulCommMailboxMessage{}).
+			Where("PK", "=", models.SoulCommMailboxAgentPK(instanceSlug, agentID)).
+			Filter("direction", "=", models.SoulCommDirectionInbound).
+			Filter("status", "=", models.SoulCommMailboxStatusQueued).
+			Filter("deleted", "=", false).
+			Count()
+		if err != nil && !theoryErrors.IsNotFound(err) {
+			continue
+		}
+		if count > 0 {
+			depth += int(count)
+		}
+	}
+
+	sample := &models.TrustQueueDepthSample{
+		InstanceSlug: strings.ToLower(strings.TrimSpace(instanceSlug)),
+		Timestamp:    now,
+		Depth:        depth,
+		Source:       trustQueueDepthSource,
+	}
+	if err := s.store.DB.WithContext(ctx).Model(sample).Create(); err != nil && !theoryErrors.IsConditionFailed(err) {
+		return sample, err
+	}
+	return sample, nil
+}
+
+func trustQueueDepthPointFromSample(sample *models.TrustQueueDepthSample) portalTrustQueueDepthPoint {
+	if sample == nil {
+		return portalTrustQueueDepthPoint{}
+	}
+	return portalTrustQueueDepthPoint{
+		Timestamp: sample.Timestamp.UTC().Format(time.RFC3339),
+		Depth:     sample.Depth,
+	}
+}
+
+func uniqueSortedStrings(values []string) []string {
+	set := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value != "" {
+			set[value] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(set))
+	for value := range set {
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // loadTrustSignatures queries SoulAgentFailure rows for the given agent IDs,
-// filters to signature_failure types within the 168-hour window, and returns
+// filters to signature_failure types within the 24-hour window, and returns
 // total and per-agent breakdown counts.
 func (s *Server) loadTrustSignatures(ctx context.Context, agentIDs []string) portalTrustSignaturesResponse {
 	windowStart := time.Now().UTC().Add(-trustSignaturesWindowHours * time.Hour)

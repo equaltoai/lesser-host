@@ -12,10 +12,16 @@ import { fetchJson } from './http';
 /** Federation peer status values. */
 export type PeerStatus = 'reachable' | 'warning' | 'severed';
 
-/** A single federation peer row (domain + status). */
+/** A single federation peer row (domain + status + redacted timing). */
 export interface TrustFederationPeerRow {
 	domain: string;
 	status: PeerStatus;
+	/** Lesser admin federation last_seen timestamp, when provided. */
+	last_seen?: string;
+	/** Host fetch timestamp when Lesser has no last_seen value. */
+	last_fetch?: string;
+	/** Nullable/omitted until a real follower-count source exists. */
+	follower_count?: number | null;
 }
 
 /** Federation health counters and optional peer list. */
@@ -24,6 +30,8 @@ export interface TrustFederationResponse {
 	warning: number;
 	severed: number;
 	peers: TrustFederationPeerRow[];
+	source?: string;
+	truncated?: boolean;
 }
 
 /** Per-bound-agent signature failure count. */
@@ -48,6 +56,8 @@ export interface TrustQueueDepthPoint {
 
 /** Inbound queue depth time series. */
 export interface TrustQueueDepthResponse {
+	window_hours?: number;
+	source?: string;
 	series: TrustQueueDepthPoint[];
 }
 

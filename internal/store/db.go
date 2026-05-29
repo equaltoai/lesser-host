@@ -87,6 +87,7 @@ func LambdaInit() (DB, error) {
 		&models.SoulChannelAgentIndex{},
 		&models.SoulRelationshipFromIndex{},
 		&models.SoulAgentDispute{},
+		&models.TrustQueueDepthSample{},
 	)
 	if err != nil {
 		return nil, err
