@@ -31,6 +31,7 @@
 	import { session } from 'src/lib/session';
 	import Setup from 'src/pages/Setup.svelte';
 	import TipRegistryRegister from 'src/pages/TipRegistryRegister.svelte';
+	import PortalTrust from 'src/pages/portal/Trust.svelte';
 	import Trust from 'src/pages/Trust.svelte';
 
 	let isOperatorRoute = $derived($currentPath === '/operator' || $currentPath.startsWith('/operator/'));
@@ -61,12 +62,18 @@
 		)
 	);
 	// Project 42 M0.1: helpers for /portal/trust + /portal/account dispatch.
-	// Specific paths checked before the generic /portal/ catch-all so they
-	// render Trust + Account directly under PortalShell (matching the
-	// design's namespacing) rather than falling through to Portal.svelte's
-	// instance-list switch (which would return "Unknown portal path").
+	// Project 42 M15 (#550): /portal/trust (exact) routes to the new M15
+	// Trust dashboard; /portal/trust/attestations/* routes to the existing
+	// public attestation inspector so attestation lookup is preserved inside
+	// portal chrome.
+	let isPortalTrustDashboardRoute = $derived(
+		$currentPath === '/portal/trust'
+	);
+	let isPortalTrustAttestationRoute = $derived(
+		$currentPath.startsWith('/portal/trust/attestations')
+	);
 	let isPortalTrustRoute = $derived(
-		$currentPath === '/portal/trust' || $currentPath.startsWith('/portal/trust/')
+		isPortalTrustDashboardRoute || isPortalTrustAttestationRoute
 	);
 	let isPortalAccountRoute = $derived($currentPath === '/portal/account');
 
@@ -89,7 +96,11 @@
 			{#if $currentPath === '/portal' || $currentPath === '/portal/fleet' || $currentPath.startsWith('/portal/fleet/')}
 				<PortalFleet token={$session?.token ?? ''} />
 			{:else if isPortalTrustRoute}
-				<Trust />
+				{#if isPortalTrustDashboardRoute}
+					<PortalTrust token={$session?.token ?? ''} />
+				{:else}
+					<Trust />
+				{/if}
 			{:else if isPortalAccountRoute}
 				<Account />
 			{:else if $currentPath.startsWith('/portal/')}
