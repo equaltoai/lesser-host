@@ -94,3 +94,70 @@ export function portalListPaymentMethods(token: string): Promise<ListPaymentMeth
 	});
 }
 
+// ---------------------------------------------------------------------------
+// Invoice history (M12 backend, shipped)
+// GET /api/v1/portal/billing/invoices
+// ---------------------------------------------------------------------------
+
+/** Portal-safe invoice DTO. No raw Stripe objects, no account_ids, no internal storage keys. */
+export interface InvoiceSummary {
+	id: string;
+	period_start: string;
+	period_end: string;
+	amount_due: number;
+	currency: string;
+	status: string;
+	hosted_invoice_url?: string;
+	invoice_pdf_url?: string;
+}
+
+export interface ListInvoicesResponse {
+	invoices: InvoiceSummary[];
+	count: number;
+}
+
+/**
+ * List recent invoices for the authenticated portal customer.
+ * Returns up to 25 recent invoices from the payment provider.
+ */
+export function portalListInvoices(token: string): Promise<ListInvoicesResponse> {
+	return fetchJson<ListInvoicesResponse>('/api/v1/portal/billing/invoices', {
+		headers: {
+			authorization: `Bearer ${token}`,
+		},
+	});
+}
+
+// ---------------------------------------------------------------------------
+// Payment method (M12 backend, shipped)
+// GET /api/v1/portal/billing/payment-method
+// ---------------------------------------------------------------------------
+
+/** Portal-safe payment-method DTO. Masked card details only — no PAN, no CVV, no full tokens. */
+export interface PaymentMethodSafe {
+	id: string;
+	type: string;
+	brand?: string;
+	last4?: string;
+	exp_month?: number;
+	exp_year?: number;
+	status: string;
+}
+
+export interface GetPaymentMethodResponse {
+	/** Null when the customer has no default payment method on file. */
+	payment_method: PaymentMethodSafe | null;
+}
+
+/**
+ * Get the default payment method for the authenticated portal customer.
+ * Returns null payment_method when no method is on file.
+ */
+export function portalGetPaymentMethod(token: string): Promise<GetPaymentMethodResponse> {
+	return fetchJson<GetPaymentMethodResponse>('/api/v1/portal/billing/payment-method', {
+		headers: {
+			authorization: `Bearer ${token}`,
+		},
+	});
+}
+
