@@ -1,8 +1,8 @@
 /**
- * M15 Trust UI contract tests.
+ * M15 Trust UI contract tests — Issue #573 real-data rendering.
  *
- * Route compatibility, CSP safety, attestation route preservation, and
- * public trust API path protection.
+ * Route compatibility, CSP safety, attestation route preservation,
+ * real DTO field rendering, honest empty states, and sparkline truthfulness.
  *
  * @license AGPL-3.0-only
  */
@@ -33,22 +33,13 @@ const appSource = readFileSync(
 describe('M15 Trust UI — source-level contracts', () => {
 	describe('CSP safety (strict no-inline)', () => {
 		it('contains no inline style= attribute', () => {
-			// The component must never emit inline style attributes.
-			// Svelte static styles are fine (compiled to <style> blocks).
-			// We check for attribute patterns that would produce CSP violations.
 			const styleAttrPattern = /\bstyle\s*=\s*"/g;
-			// Allow only CSS custom property passing on SVG elements which
-			// Svelte handles as presentation attributes.
 			const matches = source.match(styleAttrPattern);
-			// If any exist, verify they are permitted (e.g., none should exist
-			// since we removed all inline styles)
 			if (matches) {
-				// Double-check: none of the matches should be inline CSS
 				for (const m of matches) {
-					expect(m).toBe(''); // fail if present
+					expect(m).toBe('');
 				}
 			}
-			// No expectation needed — the loop above catches violations
 			expect(true).toBe(true);
 		});
 
@@ -57,7 +48,6 @@ describe('M15 Trust UI — source-level contracts', () => {
 		});
 
 		it('imports no third-party origin resources', () => {
-			// No external font/script/style imports in component
 			expect(source).not.toMatch(/https?:\/\/[^/]+\/[^"'\s]*\.(?:js|css|woff2?)/);
 		});
 	});
@@ -77,42 +67,43 @@ describe('M15 Trust UI — source-level contracts', () => {
 		});
 
 		it('renders vouches as list/count, not strength bars', () => {
-			// Per M16: vouches should be list/count presence, not strength
-			// ranking, until a numeric strength source exists.
-			// Inspect the template area (before the <style> tag), not the
-			// style block.
 			const styleIdx = source.lastIndexOf('<style>');
 			const templatePart = styleIdx > 0 ? source.substring(0, styleIdx) : source;
-			// Vouch items render as list items (trust__vouch-list, trust__vouch-item),
-			// not as progress bars or comparative strength indicators.
 			expect(templatePart).toContain('trust__vouch-list');
 			expect(templatePart).toContain('trust__vouch-item');
-			// Should not contain per-vouch progress-bar rendering patterns.
 			expect(templatePart).not.toMatch(/vouch-item.*ProgressBar/i);
-			// The component should reference vouchItem properties correctly.
 			expect(source).toContain('vouches.items');
 		});
 
-		it('shows honest federation empty state when peers are not instrumented', () => {
-			expect(source).toContain('not yet instrumented');
+		// ── #573: Honest empty states ───────────────────────────────────
+
+		it('shows honest empty state when no scoped peer data is present', () => {
+			expect(source).toContain('No scoped federation peer data is present');
 		});
 
-		it('shows honest queue depth empty state when not instrumented', () => {
-			expect(source).toContain('Inbound queue depth');
+		it('does not claim federation telemetry is "not yet instrumented"', () => {
+			// #573: the normal empty-state path must not say instrumentation is missing
+			expect(source).not.toContain('not yet instrumented');
+		});
+
+		it('shows honest queue depth empty state', () => {
+			expect(source).toContain('No inbound queue depth data is present');
 		});
 	});
 
 	describe('CSP: no inline style= attribute in template', () => {
 		it('avoids dynamic width via style attribute in progress bars', () => {
-			// The progress bar must use SVG width attribute, not CSS style.
 			expect(source).not.toMatch(/style\s*=\s*["']width:\s*\{/);
 		});
 	});
 
 	describe('label correctness', () => {
-		it('does not hardcode "Sig failures 24h"', () => {
-			// The M16 window is 168h, not 24h. The label must be dynamic.
-			expect(source).not.toContain('24h');
+		it('does not hardcode "Sig failures 24h" as a literal', () => {
+			// The label is dynamic: "Sig failures {windowHours}h".
+			// With the backend 24h window the rendered label is "Sig failures 24h",
+			// but the source must derive it, not hardcode it.
+			expect(source).toContain('sigFailuresLabel');
+			expect(source).not.toContain("'Sig failures 24h'");
 		});
 
 		it('derives sig-failures label from signatures.windowHours', () => {
@@ -121,13 +112,74 @@ describe('M15 Trust UI — source-level contracts', () => {
 		});
 
 		it('does not hardcode "Severed last 30d"', () => {
-			// The M16 federation DTO exposes `severed` without a last-30d
-			// window. Use an honest label.
 			expect(source).not.toContain('Severed last 30d');
 		});
 
 		it('uses "Severed peers" label', () => {
 			expect(source).toContain('Severed peers');
+		});
+	});
+
+	// ── #573: Peer grid renders follower_count and timestamps ─────────
+
+	describe('peer grid renders real fields', () => {
+		it('renders follower_count conditionally', () => {
+			expect(source).toContain('peer.follower_count');
+		});
+
+		it('shows "followers unavailable" when follower_count is null/absent', () => {
+			expect(source).toContain('followers unavailable');
+		});
+
+		it('renders last_seen timestamp', () => {
+			expect(source).toContain('peer.last_seen');
+			expect(source).toContain('Seen:');
+		});
+
+		it('renders last_fetch as fallback when last_seen is absent', () => {
+			expect(source).toContain('peer.last_fetch');
+			expect(source).toContain('Fetch:');
+		});
+	});
+
+	// ── #573: Signature failures — no fabricated sparkline ────────────
+
+	describe('signature failures panel truthfulness', () => {
+		it('does not render a Sparkline in the signature failures panel', () => {
+			// Per #573: the signature DTO has total_failures + by_source but
+			// no time-series "series" field. The UI must not fabricate a
+			// sparkline from per-source aggregate counts.
+			// The only Sparkline in Trust.svelte should be in the queue depth panel.
+			const styleIdx = source.lastIndexOf('<style>');
+			const templatePart = styleIdx > 0 ? source.substring(0, styleIdx) : source;
+
+			// Count Sparkline occurrences in template (before <style>)
+			const sparklineMatches = templatePart.match(/<Sparkline/g);
+			// Only the queue depth Sparkline should exist (1 occurrence).
+			expect(sparklineMatches?.length ?? 0).toBe(1);
+		});
+
+		it('renders source list honestly without time-series claim', () => {
+			expect(source).toContain('trust__source-list');
+			expect(source).toContain('Failures by source');
+		});
+	});
+
+	// ── #573: Queue depth sparkline from real series ──────────────────
+
+	describe('queue depth renders real time series', () => {
+		it('renders Sparkline from queueDepth.seriesDepthValues', () => {
+			expect(source).toContain('queueDepth.seriesDepthValues');
+		});
+
+		it('renders queue depth Sparkline with values from series', () => {
+			const styleIdx = source.lastIndexOf('<style>');
+			const templatePart = styleIdx > 0 ? source.substring(0, styleIdx) : source;
+			// Sparkline should be inside the queue depth panel
+			const qdSectionStart = templatePart.indexOf('Inbound queue depth');
+			const qdSectionEnd = templatePart.indexOf('</section>', qdSectionStart);
+			const qdSection = templatePart.substring(qdSectionStart, qdSectionEnd);
+			expect(qdSection).toContain('Sparkline');
 		});
 	});
 });
@@ -152,27 +204,23 @@ describe('M15 Trust UI — App.svelte route dispatch', () => {
 	});
 
 	it('renders PortalTrust for dashboard route and Trust for attestation subroute', () => {
-		// The template should have both PortalTrust and Trust rendering branches.
 		expect(appSource).toContain('<PortalTrust');
 		expect(appSource).toContain('<Trust />');
 	});
 
 	it('preserves public /trust route dispatch to Trust component', () => {
-		// /trust paths should still route to Trust (public attestation inspector).
 		expect(appSource).toContain("startsWith('/trust/')");
 		expect(appSource).toContain('<Trust />');
 	});
 });
 
-// ── DOM mount test — component renders ─────────────────────────────────
+// ── DOM mount tests — component renders ─────────────────────────────────
 
 describe('M15 Trust UI — DOM mount', () => {
 	it('mounts without error and renders the page header', async () => {
 		const target = document.createElement('div');
 		document.body.appendChild(target);
 
-		// Mount with empty token — the component should render its
-		// initial loading state or error state gracefully.
 		const instance = mount(PortalTrust, {
 			target,
 			props: { token: '' },
@@ -180,11 +228,8 @@ describe('M15 Trust UI — DOM mount', () => {
 
 		await tick();
 
-		// Should render the header even before data loads.
 		const header = target.querySelector('.trust__header');
 		expect(header).not.toBeNull();
-
-		// The heading should contain the eyebrow text.
 		expect(header?.textContent).toContain('Trust');
 		expect(header?.textContent).toContain('federation');
 
@@ -201,7 +246,6 @@ describe('M15 Trust UI — DOM mount', () => {
 			props: { token: '' },
 		});
 
-		// The section should exist even with no data.
 		const section = target.querySelector('[aria-label="Federation peer constellation"]');
 		expect(section).not.toBeNull();
 

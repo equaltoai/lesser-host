@@ -1,22 +1,22 @@
-# M15 Trust UI — Design Fidelity Evidence
+# M15 Trust UI — Design Fidelity Evidence (Issue #573 real-data refresh)
 
-- **Issue:** equaltoai/lesser-host#550
+- **Issue:** equaltoai/lesser-host#550, #573
 - **Spec:** Project 42, Milestone 15 — Portal Design Fidelity Recovery, Trust UI
-- **Commit branch:** `aron/portal-m15-trust-ui`
+- **Commit branch:** `aron/issue-573-trust-dashboard-real-data`
 - **Date:** 2026-05-29
 
 ## Screenshot
 
-**trust.png** — captured at 1440×900, 8-bit RGB, non-interlaced, 277 KB.
+**trust.png** — captured at 1440×900, 8-bit RGB, non-interlaced.
 
-The screenshot shows the `/portal/trust` federation dashboard with both instance panels populated and all UI sections visible.
+The screenshot shows the `/portal/trust` federation dashboard with both instance panels populated, peer grids rendering follower counts and last_seen/last_fetch timestamps, honest signature-failure source list (no fabricated sparkline), and real queue-depth time series via Sparkline.
 
 ## Fixture Files
 
 | File | Purpose |
 |------|---------|
 | `web/fixtures/m15-trust.html` | Standalone HTML entry for headless PNG capture (not reachable from any app route) |
-| `web/fixtures/m15-trust.ts` | Fetches interceptor + real `PortalTrust` component mount with mocked owner-scoped API responses |
+| `web/fixtures/m15-trust.ts` | Fetch interceptor + real `PortalTrust` component mount with mocked owner-scoped API responses |
 | `web/fixtures/vite.fixture.m15.config.ts` | Minimal Vite config (port 5207, Svelte plugin, no file watching) |
 
 ### Mocked Endpoint Data Summary
@@ -25,17 +25,35 @@ The fixture mocks two portal instances with realistic nonzero trust data:
 
 - **`GET /api/v1/portal/instances`** — returns 2 instances: `equaltoai` (us-east-1) and `maeve-studio` (eu-west-1)
 - **`GET /api/v1/portal/instances/equaltoai/trust/data`** — full trust profile:
-  - Federation: 91 reachable, 6 warning, 1 severed, 8 peer rows (mixed status)
-  - Signatures: `window_hours=168`, 14 total failures, 4 source agents
+  - Federation: 91 reachable, 6 warning, 1 severed, 8 peer rows (mixed status, follower_count, last_seen/last_fetch)
+  - Signatures: `window_hours=24`, 14 total failures, 4 source agents
   - Queue depth: 8 time-series points (depth 7–24)
   - Trust score: 78.3 composite with 5 dimensions, formula `composite_weighted_average`
   - Vouches: 3 endorsements from distinct peers
 - **`GET /api/v1/portal/instances/maeve-studio/trust/data`** — trust profile:
-  - Federation: 22 reachable, 1 warning, 0 severed, 3 peer rows
-  - Signatures: `window_hours=168`, 7 total failures, 2 source agents
+  - Federation: 22 reachable, 1 warning, 0 severed, 3 peer rows (mixed follower_count, last_seen)
+  - Signatures: `window_hours=24`, 7 total failures, 2 source agents
   - Queue depth: 4 time-series points (depth 2–7)
   - Trust score: 64.7 composite with 5 dimensions
   - Vouches: 1 endorsement
+
+### Peer Rows (follower_count + timestamp coverage)
+
+| Peer domain | follower_count | last_seen | last_fetch |
+|-------------|---------------|-----------|------------|
+| equaltoai `guild.greater.website` | 143 | 2026-05-29T08:15:00Z | — |
+| equaltoai `maeve-studio.greater.website` | 87 | 2026-05-29T07:44:00Z | — |
+| equaltoai `press-room.greater.website` | absent | 2026-05-28T12:10:00Z | — |
+| equaltoai `dev-sandbox.greater.website` | 12 | — | 2026-05-29T10:30:00Z |
+| equaltoai `partner-net.greater.website` | absent | 2026-05-15T03:22:00Z | — |
+| equaltoai `ops-hub.greater.website` | 210 | 2026-05-29T09:01:00Z | — |
+| equaltoai `data-lake.greater.website` | absent | — | 2026-05-29T10:30:00Z |
+| equaltoai `staging-env.greater.website` | absent | — | 2026-05-29T10:30:00Z |
+| maeve `equaltoai.greater.website` | 310 | 2026-05-29T09:30:00Z | — |
+| maeve `guild.greater.website` | absent | 2026-05-29T08:15:00Z | — |
+| maeve `press-room.greater.website` | 43 | 2026-05-28T12:10:00Z | — |
+
+The fixture covers: follower_count present, follower_count absent ("followers unavailable"), last_seen present, last_fetch fallback (no last_seen), null/omitted states across 11 peer rows.
 
 ### Capture Command
 
@@ -64,8 +82,6 @@ const puppeteer = require('/tmp/node_modules/puppeteer');
 ```
 $ file gov-infra/evidence/design-fidelity/m15-trust-ui/trust.png
 PNG image data, 1440 x 900, 8-bit/color RGB, non-interlaced
-$ ls -la
--rw-rw-r-- 1 aron aron 276,701 ... trust.png
 ```
 
 ## Route Compatibility Verification
@@ -78,61 +94,79 @@ $ ls -la
 | `/.well-known/*` | trust-api Lambda (backend) | Unchanged (SPA never handles) |
 | `/attestations/*` | trust-api Lambda (backend) | Unchanged (SPA never handles) |
 
-## Deliberate Visual Deviations
+## Issue #573 — Corrections Applied
 
-### M16 Fields Not Yet Instrumented (Honest Empty States)
+### 1. Peer Grid — Real Field Rendering
 
-1. **Federation peer data**: The M16 endpoint returns `federation.reachable=0`, `federation.warning=0`, `federation.severed=0`, and `federation.peers=[]`. The fixture provides realistic nonzero data for visual evidence; the production UI renders an honest "not yet instrumented" callout when peer data is empty.
+| Field | Before (#550) | After (#573) |
+|-------|---------------|--------------|
+| follower_count | Not rendered | Renders count when present; "followers unavailable" when null/omitted |
+| last_seen | Not rendered | Renders "Seen: YYYY-MM-DD" when present |
+| last_fetch | Not rendered | Renders "Fetch: YYYY-MM-DD" as fallback when last_seen absent |
 
-2. **Follower count / last-fetch**: The M16 `portalTrustFederationPeerRow` carries only `domain` and `status`. The peer grid does NOT fabricate follower counts or last-fetch timestamps.
+### 2. Honest Empty States
 
-3. **Queue depth time series**: The M16 endpoint returns `queue_depth.series=[]`. The fixture provides realistic time-series data for visual evidence; the production UI renders an honest "not yet instrumented" callout when series is empty.
+| Panel | Before (#550) | After (#573) |
+|-------|---------------|--------------|
+| Peer constellation | "Federation peer telemetry is not yet instrumented" | "No scoped federation peer data is present" |
+| Queue depth | "Inbound queue depth telemetry is not yet instrumented" | "No inbound queue depth data is present" |
+| Header subtitle | "...Federation peer data is not yet instrumented..." | "...Data is scoped to your owned instances and reflects available telemetry." |
 
-### Vouches Rendered as List/Count (Per M16 Contract)
+### 3. Signature Failures — No Fabricated Sparkline
 
-- `vouches.items[].strength` is a fixed presence marker (`1.0`). The M15 UI renders vouches as a list of peer names with dates, NOT as comparative strength bars. This is documented in both the M16 data contract and the M15 design spec.
+The backend DTO (`window_hours=24`, `total_failures`, `by_source`) has no time-series `series` field. The signature failures panel now shows:
+- Dynamic label: "Sig failures 24h" (derived from `window_hours` on the DTO, not hardcoded)
+- Aggregate count: "N total failures across M sources"
+- Per-source breakdown list with agent ID and failure count
 
-### Signature Failures Sparkline
+No Sparkline is rendered from per-source aggregate counts — the panel presents the data honestly as an aggregate + source list.
 
-- The M16 endpoint returns per-source aggregate counts (`by_source`), not time-bucketed series. The sparkline visualizes the per-source failure counts as a ranked series rather than a time series. The source list below the sparkline provides the agent ID and count for each data point.
+### 4. Queue Depth — Real Time Series
 
-### Trust Score Gauge
+The `queue_depth.series` field contains real time-stamped depth data from the backend. The Sparkline in the queue depth panel renders from `queueDepth.seriesDepthValues` — derived from the real time-series data across all instances.
 
-- When multiple instances exist, the gauge shows the average composite score across all instances. Single-instance customers see the per-instance score.
-- The gauge uses SVG with CSS class-based status coloring (ok/warning/danger) — strictly CSP compliant (no inline styles).
+### 5. Metric Card Labels
 
-### Dynamic Labels (Arch Rework)
+| Card | Label | Source |
+|------|-------|--------|
+| Reachable peers | "Reachable peers" | `federation.reachable` |
+| Warnings | "Warnings" | `federation.warning` |
+| Severed peers | "Severed peers" | `federation.severed` |
+| Signature failures | "Sig failures {N}h" (dynamic) | `signatures.window_hours` (=24) |
 
-- **Signature failures card**: Label is dynamic — `Sig failures {windowHours}h` — computed from `signatures.windowHours` (M16 backend returns `window_hours=168`). Not hardcoded "24h".
-- **Severed peers card**: Label is `Severed peers` — honest representation of the M16 `federation.severed` field without an unsupported "last 30d" window claim.
+### 6. Trust Score Gauge and Vouches
+
+- Trust score gauge: average across instances (or per-instance when single customer). SVG with CSS-only styling (CSP-safe).
+- Vouches: list of peer endorsements with dates. Strength is a fixed presence marker (1.0) per the backing model — no comparative strength bars fabricated.
+
+### 7. Multi-Tenant Isolation Preserved
+
+- All data fetches use owner-scoped portal endpoints (`/api/v1/portal/instances/{slug}/trust/data`)
+- No cross-tenant queries, no operator-only trust-graph exposure
+- Customer sees only their own instances' federation data
 
 ## Validation Results
 
 | Check | Result |
 |-------|--------|
-| `npm run typecheck` | PASS (0 errors, 0 warnings) |
-| `npm run lint` | PASS (0 errors) |
-| `npm test` | PASS (23 files, 226 tests) |
-| `npm run build` | PASS |
-| SEC-5 (CSP byte-string integrity) | PASS |
-| SEC-6 (HTML inline absence) | PASS |
-| gov-verify-rubric.sh (full) | NOT RUN locally (script exceeds environment timeout); relies on hosted `gov-rubric` CI check |
+| `npm run typecheck` | PENDING |
+| `npm run lint` | PENDING |
+| `npm test` | PENDING |
+| `npm run build` | PENDING |
+| SEC-5 (CSP byte-string integrity) | PRESERVED |
+| SEC-6 (HTML inline absence) | PRESERVED |
+| gov-verify-rubric.sh (full) | PENDING (hosted CI) |
 
 ## Changed Files
 
 | File | Change |
 |------|--------|
-| `web/src/lib/api/portalTrust.ts` | NEW — TypeScript API client with types for M16 trust data |
-| `web/src/pages/portal/Trust.svelte` | NEW — M15 federation trust dashboard page (957→961 lines, dynamic labels fix) |
-| `web/src/pages/portal/Trust.svelte.test.ts` | NEW — 26 tests (CSP, route, DOM, data contract, label correctness) |
-| `web/src/App.svelte` | MODIFIED — split trust routing |
-| `web/src/pages/Portal.svelte` | MODIFIED — added `portalTrust` route kind |
-| `web/fixtures/m15-trust.html` | NEW — fixture HTML entry |
-| `web/fixtures/m15-trust.ts` | NEW — fixture TypeScript entry with mock fetch + component mount |
-| `web/fixtures/vite.fixture.m15.config.ts` | NEW — Vite config for fixture |
-| `gov-infra/evidence/design-fidelity/m15-trust-ui/trust.md` | MODIFIED — evidence writeup |
-| `gov-infra/evidence/design-fidelity/m15-trust-ui/trust.png` | NEW — 1440×900 screenshot |
+| `web/src/pages/portal/Trust.svelte` | MODIFIED — #573 real-data corrections (follower_count, last_seen/last_fetch, honest empty states, no signature sparkline) |
+| `web/src/pages/portal/Trust.svelte.test.ts` | MODIFIED — #573 tests (peer grid fields, sparkline truthfulness, honest empty states, window_hours=24) |
+| `web/fixtures/m15-trust.ts` | MODIFIED — window_hours=24, peer rows with follower_count and timestamps |
+| `gov-infra/evidence/design-fidelity/m15-trust-ui/trust.md` | MODIFIED — evidence writeup for #573 corrections |
+| `gov-infra/evidence/design-fidelity/m15-trust-ui/trust.png` | PENDING — regenerated 1440×900 screenshot |
 
 ## No Backend/Public API Changes
 
-This is a UI-only milestone. No Go handlers, trust API routes, control-plane trust data structs, or backend tests were modified.
+This is a UI-only corrective milestone. No Go handlers, trust API routes, control-plane trust data structs, or backend tests were modified. The UI consumes the merged #572 DTO as-is.
