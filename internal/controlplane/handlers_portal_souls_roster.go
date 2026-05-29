@@ -26,11 +26,12 @@ type portalSoulRosterResponse struct {
 }
 
 type portalSoulRosterItem struct {
-	Agent       models.SoulAgentIdentity     `json:"agent"`
-	Reputation  *models.SoulAgentReputation  `json:"reputation,omitempty"`
-	Instance    portalSoulRosterInstance     `json:"instance"`
-	LesserAgent *portalSoulRosterLesserAgent `json:"lesser_agent,omitempty"`
-	Tips        portalSoulRosterTips         `json:"tips"`
+	Agent           models.SoulAgentIdentity     `json:"agent"`
+	Reputation      *models.SoulAgentReputation  `json:"reputation,omitempty"`
+	Instance        portalSoulRosterInstance     `json:"instance"`
+	LesserAgent     *portalSoulRosterLesserAgent `json:"lesser_agent,omitempty"`
+	Tips            portalSoulRosterTips         `json:"tips"`
+	AnchorAssurance *soulAnchorAssuranceView     `json:"anchor_assurance,omitempty"`
 }
 
 type portalSoulRosterInstance struct {
@@ -217,6 +218,8 @@ func (s *Server) loadPortalSoulRosterItems(ctx *apptheory.Context, candidates []
 			return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to load agent reputation"}
 		}
 
+		assurance := buildSoulAnchorAssuranceFromIdentity(identity, s.cfg.SoulChainID)
+
 		item := portalSoulRosterItem{
 			Agent:      *identity,
 			Reputation: rep,
@@ -224,8 +227,9 @@ func (s *Server) loadPortalSoulRosterItems(ctx *apptheory.Context, candidates []
 				Slug:   portalSoulRosterInstanceSlug(candidate.instance),
 				Domain: strings.ToLower(strings.TrimSpace(candidate.domain)),
 			},
-			LesserAgent: s.fetchPortalSoulLesserAgent(ctx, candidate.instance, portalSoulRosterAgentUsername(identity, candidate)),
-			Tips:        portalSoulRosterTipsFromReputation(rep),
+			LesserAgent:     s.fetchPortalSoulLesserAgent(ctx, candidate.instance, portalSoulRosterAgentUsername(identity, candidate)),
+			Tips:            portalSoulRosterTipsFromReputation(rep),
+			AnchorAssurance: &assurance,
 		}
 		out = append(out, item)
 	}

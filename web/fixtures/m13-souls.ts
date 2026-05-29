@@ -270,14 +270,20 @@ const mockRoster = {
 			slug: item.agent.domain.split('.')[0],
 			domain: item.agent.domain,
 		};
+		const agent = { ...item.agent };
+		// Move anchor_assurance from agent to roster-item level (matches the real
+		// endpoint shape: built server-side via buildSoulAnchorAssuranceFromIdentity).
+		const anchor_assurance = agent.anchor_assurance;
+		delete agent.anchor_assurance;
 		return {
-			...item,
+			agent,
+			reputation: item.reputation,
 			instance,
 			lesser_agent: {
-				username: item.agent.local_id,
-				display_name: item.agent.local_id,
+				username: agent.local_id,
+				display_name: agent.local_id,
 				agent_type: 'assistant',
-				agent_version: modelByLocalId[item.agent.local_id] ?? 'unknown',
+				agent_version: modelByLocalId[agent.local_id] ?? 'unknown',
 				status: 'loaded',
 				source: 'lesser:/api/v1/agents/{username}',
 			},
@@ -287,6 +293,7 @@ const mockRoster = {
 				label: 'Tip events · all time',
 				source: 'lesser-host:soul_agent_reputation',
 			},
+			anchor_assurance,
 		};
 	}),
 	count: mockSouls.count,

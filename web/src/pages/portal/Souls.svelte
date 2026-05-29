@@ -80,13 +80,13 @@ Issue: equaltoai/lesser-host#547
 	}
 
 	function deriveAnchor(
-		agent: SoulAgentIdentity,
+		item: PortalSoulRosterItem,
 	): { label: string; tone: 'success' | 'warning' | 'error' | undefined } {
-		const state = (agent.anchor_assurance?.state || '').toLowerCase();
+		const state = (item.anchor_assurance?.state || '').toLowerCase();
 		if (state === 'immutable_onchain') return { label: 'fresh', tone: 'success' };
 		if (state === 'hosted_offchain') return { label: 'pending', tone: 'warning' };
 		// Fallback: derive from mint status
-		if (agent.minted_at) return { label: 'fresh', tone: 'success' };
+		if (item.agent.minted_at) return { label: 'fresh', tone: 'success' };
 		return { label: 'pending', tone: 'warning' };
 	}
 
@@ -109,7 +109,7 @@ Issue: equaltoai/lesser-host#547
 		souls
 			.map((item) => {
 				const stage = deriveStage(item.agent);
-				const anchor = deriveAnchor(item.agent);
+				const anchor = deriveAnchor(item);
 				return { item, stage, anchorLabel: anchor.label, anchorTone: anchor.tone };
 			})
 			.sort((a, b) => {

@@ -322,6 +322,7 @@ export interface PortalSoulRosterItem {
 	instance: PortalSoulRosterInstance;
 	lesser_agent?: PortalSoulRosterLesserAgent;
 	tips: PortalSoulRosterTips;
+	anchor_assurance?: SoulAnchorAssurance;
 }
 
 export interface PortalSoulRosterResponse {
