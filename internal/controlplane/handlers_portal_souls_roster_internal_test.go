@@ -392,7 +392,7 @@ func TestHandlePortalSoulRoster_IsolationExcludesUnownedDomainSouls(t *testing.T
 			"roster[%d] must not include Bob's soul (unowned domain)", i)
 	}
 
-	// Extra defence: prove Lesser was only queried for Alice's agent.
+	// Extra defense: prove Lesser was only queried for Alice's agent.
 	require.Len(t, gotPaths, 1)
 	require.Contains(t, gotPaths[0], "agent-a")
 
