@@ -17,7 +17,7 @@
 	import InstanceKeys from 'src/pages/portal/InstanceKeys.svelte';
 	import InstanceUsage from 'src/pages/portal/InstanceUsage.svelte';
 	import Instances from 'src/pages/portal/Instances.svelte';
-	import SoulAgentDetail from 'src/pages/portal/SoulAgentDetail.svelte';
+	import SoulDetail from 'src/pages/portal/SoulDetail.svelte';
 	import SoulMintConversation from 'src/pages/portal/SoulMintConversation.svelte';
 	import SoulRegister from 'src/pages/portal/SoulRegister.svelte';
 	import Souls from 'src/pages/portal/Souls.svelte';
@@ -259,7 +259,7 @@
 			{:else if portalRoute.kind === 'soulMint'}
 				<SoulMintConversation token={$session.token} agentId={portalRoute.agentId} />
 			{:else if portalRoute.kind === 'soulAgent'}
-				<SoulAgentDetail token={$session.token} agentId={portalRoute.agentId} />
+				<SoulDetail token={$session.token} agentId={portalRoute.agentId} />
 			{:else if portalRoute.kind === 'billing'}
 				<Billing token={$session.token} />
 			{:else}
