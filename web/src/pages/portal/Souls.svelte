@@ -7,11 +7,14 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 Replaces the legacy "secondary lesser-host portal surface" framing with the
 Project 42 design-spec roster: filterable table (All / Graduated / In review)
-with columns for Soul, Instance, Stage, Anchor, Model, and Tips·May, plus a
-right rail showing roster-status counts and soul-minting guidance.
+with columns for Soul, Instance, Stage, Anchor, Model, and tip-event totals,
+plus a right rail showing roster-status counts and soul-minting guidance.
 
 Data source (owner-scoped, read-only):
-  - soulListMyAgents(token) → SoulMineAgentItem[] via GET /api/v1/soul/agents/mine
+  - soulListPortalRoster(token) → PortalSoulRosterItem[] via
+    GET /api/v1/portal/souls/roster
+  - Server-side roster bridge joins lesser-host soul registry rows with
+    Lesser GET /api/v1/agents/{username} metadata for model/version.
 
 Stage derivation maps real API fields onto the design's stage vocabulary:
   graduated  = self_description_version > 0 (profile published)
@@ -20,9 +23,9 @@ Stage derivation maps real API fields onto the design's stage vocabulary:
   on_hold    = status suspended or self_suspended
 
 Documented deviations from the design fixture (see evidence MD):
-  - Model column: not available in SoulAgentIdentity; renders "—"
-  - Tips·May: only tips_received (total) available via SoulAgentReputation;
-    no monthly breakdown; renders "—"
+  - Tips are represented by the persisted all-time tip-event count. The
+    current contracts do not expose a current-month dollars aggregate, so the
+    table labels the real period/source instead of fabricating a May value.
   - Simulacrum guidance card: no safe same-origin URL exists; renders
     explanatory copy with a disabled action rather than a dead route.
   - Tabs are single-filter (not multi-select) since the real data model
@@ -31,10 +34,9 @@ Documented deviations from the design fixture (see evidence MD):
 Posture invariants preserved:
   - Strict-no-inline-CSP safe: no inline style attributes; styling through
     CSS classes and CSS custom properties only.
-  - Multi-tenant isolation: consumes only the per-owner /api/v1/soul/agents/mine
-    endpoint; no cross-tenant reads.
-  - Trust-API instance-auth untouched: souls portal is not an instance-key surface.
-  - No new backend endpoints. No soul-request flow. UI-only.
+  - Multi-tenant isolation: consumes only the per-owner portal roster endpoint;
+    the server enforces owner scope before resolving instance/Lesser metadata.
+  - Raw instance keys never reach the browser. No soul-request flow.
 
 Source: design fixture portal-pages-2.jsx:171–249 (PortalSouls)
 Issue: equaltoai/lesser-host#547
@@ -45,8 +47,8 @@ Issue: equaltoai/lesser-host#547
 	import { onMount } from 'svelte';
 
 	import type { ApiError } from 'src/lib/api/http';
-	import type { SoulMineAgentItem, SoulAgentIdentity } from 'src/lib/api/soul';
-	import { soulListMyAgents } from 'src/lib/api/soul';
+	import type { PortalSoulRosterItem, SoulAgentIdentity } from 'src/lib/api/soul';
+	import { soulListPortalRoster } from 'src/lib/api/soul';
 	import { logout } from 'src/lib/auth/logout';
 	import { navigate } from 'src/lib/router';
 	import { Alert, Avatar, Badge, Button, DefinitionItem, DefinitionList, Spinner, Tabs, Text } from 'src/lib/ui';
@@ -56,12 +58,12 @@ Issue: equaltoai/lesser-host#547
 
 	let loading = $state(false);
 	let errorMessage = $state<string | null>(null);
-	let agents = $state<SoulMineAgentItem[]>([]);
+	let souls = $state<PortalSoulRosterItem[]>([]);
 
 	// ── Derived data ──────────────────────────────────────────────────────
 
 	interface SoulRow {
-		item: SoulMineAgentItem;
+		item: PortalSoulRosterItem;
 		stage: string;
 		anchorLabel: string;
 		anchorTone: 'success' | 'warning' | 'error' | undefined;
@@ -104,7 +106,7 @@ Issue: equaltoai/lesser-host#547
 	}
 
 	const rows = $derived<SoulRow[]>(
-		agents
+		souls
 			.map((item) => {
 				const stage = deriveStage(item.agent);
 				const anchor = deriveAnchor(item.agent);
@@ -113,6 +115,8 @@ Issue: equaltoai/lesser-host#547
 			.sort((a, b) => {
 				const so = stageSortOrder(a.stage) - stageSortOrder(b.stage);
 				if (so !== 0) return so;
+				const instanceSort = (a.item.instance.slug || '').localeCompare(b.item.instance.slug || '');
+				if (instanceSort !== 0) return instanceSort;
 				return a.item.agent.domain.localeCompare(b.item.agent.domain);
 			}),
 	);
@@ -174,14 +178,28 @@ Issue: equaltoai/lesser-host#547
 
 	// ── Tips display ──────────────────────────────────────────────────────
 
-	function formatTips(item: SoulMineAgentItem): string {
-		if (item.reputation && typeof item.reputation.tips_received === 'number') {
-			// Total tips received (all-time); no monthly breakdown available.
-			// Per design spec deviation: render total with a note rather than
-			// fabricating a monthly figure.
-			return `$${item.reputation.tips_received.toFixed(2)}`;
+	function formatTips(item: PortalSoulRosterItem): string {
+		if (item.tips && typeof item.tips.received === 'number') {
+			return new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(item.tips.received);
 		}
-		return '—';
+		return '0';
+	}
+
+	function modelLabel(item: PortalSoulRosterItem): string {
+		const version = item.lesser_agent?.agent_version?.trim();
+		if (version) return version;
+
+		const agentType = item.lesser_agent?.agent_type?.trim();
+		if (agentType) return agentType;
+
+		const status = item.lesser_agent?.status;
+		if (status === 'not_found') return 'Not found';
+		if (status === 'not_configured') return 'Not configured';
+		return 'Unavailable';
+	}
+
+	function instanceLabel(item: PortalSoulRosterItem): string {
+		return item.instance.slug || item.agent.domain;
 	}
 
 	// ── Format helpers ────────────────────────────────────────────────────
@@ -203,8 +221,8 @@ Issue: equaltoai/lesser-host#547
 
 		loading = true;
 		try {
-			const res = await soulListMyAgents(token);
-			agents = res.agents ?? [];
+			const res = await soulListPortalRoster(token);
+			souls = res.souls ?? [];
 		} catch (err) {
 			if ((err as Partial<ApiError>).status === 401) {
 				await logout();
@@ -278,7 +296,7 @@ Issue: equaltoai/lesser-host#547
 		</div>
 	{:else if errorMessage}
 		<Alert variant="error" title="Failed to load souls roster">{errorMessage}</Alert>
-	{:else if agents.length === 0}
+	{:else if souls.length === 0}
 		<Panel title="No souls" headerLevel={2}>
 			<div class="souls__empty">
 				<Text size="sm" color="secondary">No soul-bound agents found for your instances.</Text>
@@ -309,7 +327,7 @@ Issue: equaltoai/lesser-host#547
 								<th>Stage</th>
 								<th>Anchor</th>
 								<th>Model</th>
-								<th class="souls-table__num">Tips &middot; All time</th>
+								<th class="souls-table__num">Tip events &middot; All time</th>
 								<th></th>
 							</tr>
 						</thead>
@@ -344,7 +362,12 @@ Issue: equaltoai/lesser-host#547
 											</div>
 										</div>
 									</td>
-									<td class="souls-table__mono">{row.item.agent.domain}</td>
+									<td>
+										<div class="souls-table__instance">
+											<strong>{instanceLabel(row.item)}</strong>
+											<span class="souls-table__handle">{row.item.instance.domain || row.item.agent.domain}</span>
+										</div>
+									</td>
 									<td>
 										<Badge variant={sb.variant} color={sb.color} size="sm">
 											{stageLabel(row.stage)}
@@ -361,7 +384,9 @@ Issue: equaltoai/lesser-host#547
 											{row.anchorLabel}
 										</Badge>
 									</td>
-									<td class="souls-table__mono souls-table__muted">&mdash;</td>
+									<td class:souls-table__muted={row.item.lesser_agent?.status !== 'loaded'} class="souls-table__mono">
+										{modelLabel(row.item)}
+									</td>
 									<td class="souls-table__mono">{formatTips(row.item)}</td>
 									<td class="souls-table__chevron">
 										<svg
@@ -488,6 +513,12 @@ Issue: equaltoai/lesser-host#547
 	}
 
 	.souls-table__soul-info {
+		display: flex;
+		flex-direction: column;
+		gap: 0;
+	}
+
+	.souls-table__instance {
 		display: flex;
 		flex-direction: column;
 		gap: 0;

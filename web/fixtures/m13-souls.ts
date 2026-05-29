@@ -247,6 +247,51 @@ const mockSouls = {
 	count: 7,
 };
 
+const modelByLocalId: Record<string, string> = {
+	maeve: 'anthropic:claude-sonnet-4-6',
+	atlas: 'openai:gpt-5.1',
+	mae: 'openai:gpt-5-mini',
+	ribbon: 'anthropic:claude-haiku-4-6',
+	iris: 'openai:gpt-5-mini',
+	'drone-04': 'local:llama-3.3-70b',
+	hex: 'openai:gpt-5-mini',
+};
+
+const instanceByDomain: Record<string, { slug: string; domain: string }> = {
+	'equaltoai.greater.website': { slug: 'equaltoai', domain: 'dev.equaltoai.greater.website' },
+	'maeve-studio.greater.website': { slug: 'maeve-studio', domain: 'dev.maeve-studio.greater.website' },
+	'guild.greater.website': { slug: 'guild', domain: 'dev.guild.greater.website' },
+	'press-room.greater.website': { slug: 'press-room', domain: 'dev.press-room.greater.website' },
+};
+
+const mockRoster = {
+	souls: mockSouls.agents.map((item) => {
+		const instance = instanceByDomain[item.agent.domain] ?? {
+			slug: item.agent.domain.split('.')[0],
+			domain: item.agent.domain,
+		};
+		return {
+			...item,
+			instance,
+			lesser_agent: {
+				username: item.agent.local_id,
+				display_name: item.agent.local_id,
+				agent_type: 'assistant',
+				agent_version: modelByLocalId[item.agent.local_id] ?? 'unknown',
+				status: 'loaded',
+				source: 'lesser:/api/v1/agents/{username}',
+			},
+			tips: {
+				received: Math.trunc(item.reputation?.tips_received ?? 0),
+				period: 'all_time',
+				label: 'Tip events · all time',
+				source: 'lesser-host:soul_agent_reputation',
+			},
+		};
+	}),
+	count: mockSouls.count,
+};
+
 // ── Fetch interceptor ────────────────────────────────────────────────
 
 function mockFetch(input: RequestInfo | URL, _init?: RequestInit): Promise<Response> {
@@ -259,7 +304,7 @@ function mockFetch(input: RequestInfo | URL, _init?: RequestInit): Promise<Respo
 			headers: { 'content-type': 'application/json' },
 		});
 
-	if (url.includes('/api/v1/soul/agents/mine')) return Promise.resolve(json(mockSouls));
+	if (url.includes('/api/v1/portal/souls/roster')) return Promise.resolve(json(mockRoster));
 
 	// Fallback: return empty JSON with 404 for unmatched routes
 	return Promise.resolve(
