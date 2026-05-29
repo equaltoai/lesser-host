@@ -43,11 +43,11 @@
    - Instance (slug or domain from roster)
    - Requested date (formatted from `minted_at` or `updated_at`)
    - Graduated date (conditional, only for graduated souls)
-7. **Right rail — Anchor gauge** — `Panel` with `CostGauge` driven by anchor_assurance level:
-   - `fresh` → 80/100
-   - `stale` → 30/100
-   - other/unknown → 50/100
-   - Status text and label from real data
+7. **Right rail — Anchor gauge** — `Panel` with `CostGauge` driven by `anchor_assurance.state`:
+   - `immutable_onchain` → 80/100, label "fresh", status "immutable onchain"
+   - `hosted_offchain` → 30/100, label "pending", status "hosted offchain"
+   - absent → 0/100, label "No anchor"
+   - No stale `as { status?: string }` or `as { level?: string }` casts; all derivation uses the typed `SoulAnchorAssurance.state` field.
 8. **Right rail — Earnings panel** — `Panel` showing tip-event count with honest period label from the roster's `tips` field. Explanatory text noting dollar-denominated earnings are not yet available on the wire.
 
 ### Authorization gate (owner-scoped)
@@ -168,7 +168,7 @@ All data rendered by the M14 surface is sourced from existing on-wire API contra
 | Soul identity (handle, domain, avatar, stage) | Yes | `soulPublicGetAgent` + `soulListPortalRoster` |
 | Instance slug/domain | Yes | `soulListPortalRoster.item.instance` |
 | Model/version | Yes | `soulListPortalRoster.item.lesser_agent` |
-| Anchor status/level | Yes | `soulListPortalRoster.item.anchor_assurance` or `soulPublicGetAgent.agent.anchor_assurance` |
+| Anchor state | Yes | `soulListPortalRoster.item.anchor_assurance.state` or `soulPublicGetAgent.agent.anchor_assurance.state` |
 | Tip events count | Yes | `soulListPortalRoster.item.tips` |
 | Continuity entries | Yes | `soulPublicGetContinuity` |
 | Comm activity items | Yes | `soulAgentListCommActivity` |
@@ -202,9 +202,13 @@ await browser.close();
 "
 ```
 
-**Resolution:** 1440 × 900, PNG, 8-bit RGB, ~284 KB.
+**Resolution:** 1440 × 900, PNG, 8-bit RGB, ~290 KB.
 
-**Target agent:** `0x1a2b3c4d5e6f7890abcdef1234567890abcdef12` (local_id: `maeve`), a graduated soul with `self_description_version: 3`, `immutable_onchain` anchor, `anthropic:claude-sonnet-4-6` model, 184 tip events, 14 continuity entries across 6 of 7 trailing days, and 10 comm activity items.
+**Target agent:** `0x1a2b3c4d5e6f7890abcdef1234567890abcdef12` (local_id: `maeve`), a graduated soul with `self_description_version: 3`, `immutable_onchain` anchor, `anthropic:claude-sonnet-4-6` model, 184 tip events, 14 continuity entries across 6 of 7 trailing days, and 10 comm activity items. The anchor gauge correctly renders "fresh" (80%) with "immutable onchain" status — no stale "unknown" or 50% fallback.
+
+### Review rework (2026-05-29)
+
+The anchor derivation was reworked to read the typed `anchor_assurance.state` field (`immutable_onchain` | `hosted_offchain`) instead of nonexistent `status`/`level` fields accessed via unsafe `as { ... }` casts (PR review #4390554639). The previous implementation always rendered "unknown" / 50% in production because `SoulAnchorAssurance` does not expose `status` or `level`. The rework mirrors the M13 `Souls.svelte` `deriveAnchor` pattern. The screenshot was re-captured and now shows the correct state-derived label and status. PNG size increased from ~284 KB to ~290 KB due to the corrected label text.
 
 ### Fixture files
 

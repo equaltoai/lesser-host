@@ -33,8 +33,9 @@ Documented deviations from the design fixture (see evidence MD):
   - Continuity bar chart uses real continuity entry timestamps bucketed into
     trailing 7-day windows; if fewer than 7 days of data exist the chart
     still renders with available buckets.
-  - Anchor gauge reuses CostGauge with a stability-derived percentage; the
-    label reflects the anchor_assurance status string from real data.
+  - Anchor gauge uses the typed `anchor_assurance?.state` field (`immutable_onchain`
+    | `hosted_offchain`) to derive the CostGauge percentage (80 / 30) and
+    anchor label/status; no stale `as { status?: string }` casts.
   - "Open profile", "Refresh anchor", "Configure" buttons are not included
     (they are mutation actions outside M14 read-only scope).
 
@@ -71,7 +72,6 @@ Issue: equaltoai/lesser-host#548
 	import { linkProps, navigate } from 'src/lib/router';
 	import {
 		Alert,
-		Avatar,
 		Badge,
 		Button,
 		Link,
@@ -211,25 +211,30 @@ Issue: equaltoai/lesser-host#548
 		return agent?.agent?.updated_at || null;
 	});
 
-	let anchorStatus = $derived.by(() => {
+	let anchorState = $derived.by(() => {
 		const aa = rosterItem?.anchor_assurance || agent?.agent?.anchor_assurance;
-		if (!aa) return 'unknown';
-		return (aa as { status?: string }).status || 'unknown';
+		return aa?.state ?? null;
+	});
+
+	let anchorStatus = $derived.by(() => {
+		if (!anchorState) return 'No anchor';
+		if (anchorState === 'immutable_onchain') return 'immutable onchain';
+		if (anchorState === 'hosted_offchain') return 'hosted offchain';
+		return anchorState;
 	});
 
 	let anchorFreshness = $derived.by(() => {
-		const aa = rosterItem?.anchor_assurance || agent?.agent?.anchor_assurance;
-		if (!aa) return 0;
-		const level = (aa as { level?: string }).level;
-		if (level === 'fresh') return 80;
-		if (level === 'stale') return 30;
+		if (!anchorState) return 0;
+		if (anchorState === 'immutable_onchain') return 80;
+		if (anchorState === 'hosted_offchain') return 30;
 		return 50;
 	});
 
 	let anchorLabel = $derived.by(() => {
-		const aa = rosterItem?.anchor_assurance || agent?.agent?.anchor_assurance;
-		if (!aa) return 'No anchor';
-		return (aa as { level?: string }).level || 'unknown';
+		if (!anchorState) return 'No anchor';
+		if (anchorState === 'immutable_onchain') return 'fresh';
+		if (anchorState === 'hosted_offchain') return 'pending';
+		return 'unknown';
 	});
 
 	let tipEventsReceived = $derived.by(() => {
@@ -353,7 +358,7 @@ Issue: equaltoai/lesser-host#548
 		<PageTitle
 			eyebrow="Soul"
 			title={displayName}
-			description="Continuity loop, recent activity, anchor health and tip earnings."
+			description={`${handleDomain} · Continuity loop, recent activity, anchor health and tip earnings.`}
 		>
 			{#snippet actions()}
 				<Link {...linkProps('/portal/souls')} variant="ghost">Back to roster</Link>
