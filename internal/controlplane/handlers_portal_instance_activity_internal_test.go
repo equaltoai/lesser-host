@@ -72,9 +72,9 @@ func TestHandlePortalGetInstanceActivity_SendsBearerAuth(t *testing.T) {
 		gotPath = r.URL.Path
 		w.Header().Set("Content-Type", "application/json")
 		// Return a single week in the current month with 42 statuses.
-		_, _ = w.Write([]byte(fmt.Sprintf(`[
+		_, _ = fmt.Fprintf(w, `[
 			{"week":"%s","statuses":"42","logins":"10","registrations":"3"}
-		]`, week)))
+		]`, week)
 	})
 
 	ctx := &apptheory.Context{
@@ -99,11 +99,11 @@ func TestHandlePortalGetInstanceActivity_MapsStatuses(t *testing.T) {
 
 	s, _ := newActivityTestServer(t, baseCostInstance("alice"), func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(fmt.Sprintf(`[
+		_, _ = fmt.Fprintf(w, `[
 			{"week":"%s","statuses":"100","logins":"20","registrations":"5"},
 			{"week":"%s","statuses":"200","logins":"30","registrations":"7"},
 			{"week":"%s","statuses":"50","logins":"15","registrations":"2"}
-		]`, w1, w2, w3)))
+		]`, w1, w2, w3)
 	})
 
 	ctx := &apptheory.Context{
@@ -132,10 +132,10 @@ func TestHandlePortalGetInstanceActivity_FiltersOutOfMonthWeeks(t *testing.T) {
 
 	s, _ := newActivityTestServer(t, baseCostInstance("alice"), func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(fmt.Sprintf(`[
+		_, _ = fmt.Fprintf(w, `[
 			{"week":"%s","statuses":"999","logins":"50","registrations":"10"},
 			{"week":"%s","statuses":"75","logins":"12","registrations":"3"}
-		]`, old, current)))
+		]`, old, current)
 	})
 
 	ctx := &apptheory.Context{
@@ -180,7 +180,7 @@ func TestHandlePortalGetInstanceActivity_OperatorBypassesOwnership(t *testing.T)
 
 	s, _ := newActivityTestServer(t, baseCostInstance("bob"), func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(fmt.Sprintf(`[{"week":"%s","statuses":"10","logins":"1","registrations":"0"}]`, week)))
+		_, _ = fmt.Fprintf(w, `[{"week":"%s","statuses":"10","logins":"1","registrations":"0"}]`, week)
 	})
 
 	ctx := &apptheory.Context{
@@ -231,9 +231,9 @@ func TestHandlePortalGetInstanceActivity_NoActivityDataYet(t *testing.T) {
 	s, _ := newActivityTestServer(t, baseCostInstance("alice"), func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		// All weeks from a past month — none in the current month.
-		_, _ = w.Write([]byte(fmt.Sprintf(`[
+		_, _ = fmt.Fprintf(w, `[
 			{"week":"%s","statuses":"50","logins":"10","registrations":"2"}
-		]`, old)))
+		]`, old)
 	})
 
 	ctx := &apptheory.Context{
