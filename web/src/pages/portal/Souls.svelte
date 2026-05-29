@@ -1,41 +1,190 @@
 <!--
 @component
-Souls — legacy portal soul tools list (secondary surface; canonical
-agent-first flow lives in the Simulacrum client served from Lesser).
+Souls — fleet souls roster at /portal/souls (M13 re-skin).
 
-M1.2 re-skin: renders on the new shell (greater-components `PageFrame` +
-`PageTitle` + `Panel`) and consumes DS tokens through the existing
-`--gr-*` bridge. Endpoint shape, error handling, and badge logic are
-preserved byte-for-byte from the pre-M1 implementation; only the visual
-layer changes.
+SPDX-License-Identifier: AGPL-3.0-only
+@license AGPL-3.0-only
+
+Replaces the legacy "secondary lesser-host portal surface" framing with the
+Project 42 design-spec roster: filterable table (All / Graduated / In review)
+with columns for Soul, Instance, Stage, Anchor, Model, and Tips·May, plus a
+right rail showing roster-status counts and soul-minting guidance.
+
+Data source (owner-scoped, read-only):
+  - soulListMyAgents(token) → SoulMineAgentItem[] via GET /api/v1/soul/agents/mine
+
+Stage derivation maps real API fields onto the design's stage vocabulary:
+  graduated  = self_description_version > 0 (profile published)
+  in_review  = status active but no self_description yet
+  requested  = status pending
+  on_hold    = status suspended or self_suspended
+
+Documented deviations from the design fixture (see evidence MD):
+  - Model column: not available in SoulAgentIdentity; renders "—"
+  - Tips·May: only tips_received (total) available via SoulAgentReputation;
+    no monthly breakdown; renders "—"
+  - Simulacrum guidance card: no safe same-origin URL exists; renders
+    explanatory copy with a disabled action rather than a dead route.
+  - Tabs are single-filter (not multi-select) since the real data model
+    maps to the design stages through a derived stage function.
 
 Posture invariants preserved:
-  - Strict-no-inline-CSP safe.
-  - Trust-API instance-auth untouched (soul tools are not instance-key
-    surfaces).
-  - Multi-tenant isolation: consumes only the per-owner `mine` agent
+  - Strict-no-inline-CSP safe: no inline style attributes; styling through
+    CSS classes and CSS custom properties only.
+  - Multi-tenant isolation: consumes only the per-owner /api/v1/soul/agents/mine
     endpoint; no cross-tenant reads.
+  - Trust-API instance-auth untouched: souls portal is not an instance-key surface.
+  - No new backend endpoints. No soul-request flow. UI-only.
 
-Source: docs/enumerated-changes-web-ui-rework-2026-05-24.md M1.2
-Issue: equaltoai/lesser-host#411
+Source: design fixture portal-pages-2.jsx:171–249 (PortalSouls)
+Issue: equaltoai/lesser-host#547
+@license AGPL-3.0-only
 -->
 
 <script lang="ts">
 	import { onMount } from 'svelte';
 
 	import type { ApiError } from 'src/lib/api/http';
-	import type { SoulMineAgentItem } from 'src/lib/api/soul';
+	import type { SoulMineAgentItem, SoulAgentIdentity } from 'src/lib/api/soul';
 	import { soulListMyAgents } from 'src/lib/api/soul';
 	import { logout } from 'src/lib/auth/logout';
-	import { linkProps, navigate } from 'src/lib/router';
-	import { Alert, Badge, Button, CopyButton, Link, Spinner, Text } from 'src/lib/ui';
-	import { PageFrame, PageTitle, Panel, Callout } from 'src/lib/shell';
+	import { navigate } from 'src/lib/router';
+	import { Alert, Avatar, Badge, Button, DefinitionItem, DefinitionList, Spinner, Tabs, Text } from 'src/lib/ui';
+	import { PageFrame, PageTitle, Panel } from 'src/lib/shell';
 
 	let { token } = $props<{ token: string }>();
 
 	let loading = $state(false);
 	let errorMessage = $state<string | null>(null);
 	let agents = $state<SoulMineAgentItem[]>([]);
+
+	// ── Derived data ──────────────────────────────────────────────────────
+
+	interface SoulRow {
+		item: SoulMineAgentItem;
+		stage: string;
+		anchorLabel: string;
+		anchorTone: 'success' | 'warning' | 'error' | undefined;
+	}
+
+	function deriveStage(agent: SoulAgentIdentity): string {
+		const sdv = agent.self_description_version;
+		if (sdv != null && sdv > 0) return 'graduated';
+		const s = (agent.status || '').toLowerCase();
+		if (s === 'active') return 'in_review';
+		if (s === 'pending') return 'requested';
+		if (s === 'suspended' || s === 'self_suspended') return 'on_hold';
+		return s || 'unknown';
+	}
+
+	function deriveAnchor(
+		agent: SoulAgentIdentity,
+	): { label: string; tone: 'success' | 'warning' | 'error' | undefined } {
+		const state = (agent.anchor_assurance?.state || '').toLowerCase();
+		if (state === 'immutable_onchain') return { label: 'fresh', tone: 'success' };
+		if (state === 'hosted_offchain') return { label: 'pending', tone: 'warning' };
+		// Fallback: derive from mint status
+		if (agent.minted_at) return { label: 'fresh', tone: 'success' };
+		return { label: 'pending', tone: 'warning' };
+	}
+
+	function stageSortOrder(stage: string): number {
+		switch (stage) {
+			case 'graduated':
+				return 0;
+			case 'in_review':
+				return 1;
+			case 'requested':
+				return 2;
+			case 'on_hold':
+				return 3;
+			default:
+				return 4;
+		}
+	}
+
+	const rows = $derived<SoulRow[]>(
+		agents
+			.map((item) => {
+				const stage = deriveStage(item.agent);
+				const anchor = deriveAnchor(item.agent);
+				return { item, stage, anchorLabel: anchor.label, anchorTone: anchor.tone };
+			})
+			.sort((a, b) => {
+				const so = stageSortOrder(a.stage) - stageSortOrder(b.stage);
+				if (so !== 0) return so;
+				return a.item.agent.domain.localeCompare(b.item.agent.domain);
+			}),
+	);
+
+	const stageCounts = $derived.by(() => {
+		const counts: Record<string, number> = { total: rows.length };
+		for (const row of rows) {
+			counts[row.stage] = (counts[row.stage] || 0) + 1;
+		}
+		return counts;
+	});
+
+	// ── Tab filtering ─────────────────────────────────────────────────────
+
+	let activeFilter = $state<string>('all');
+
+	const filterTabs = $derived([
+		{ id: 'all' as const, label: `All (${rows.length})` },
+		{ id: 'graduated' as const, label: `Graduated (${stageCounts.graduated ?? 0})` },
+		{ id: 'in_review' as const, label: `In review (${stageCounts.in_review ?? 0})` },
+	]);
+
+	function handleTabChange(tabId: string) {
+		activeFilter = tabId;
+	}
+
+	const filteredRows = $derived(
+		activeFilter === 'all' ? rows : rows.filter((r) => r.stage === activeFilter),
+	);
+
+	// ── Stage badge ───────────────────────────────────────────────────────
+
+	function stageBadge(stage: string): {
+		variant: 'outlined' | 'filled';
+		color: 'success' | 'warning' | 'error' | 'gray';
+	} {
+		switch (stage) {
+			case 'graduated':
+				return { variant: 'filled', color: 'success' };
+			case 'in_review':
+				return { variant: 'outlined', color: 'warning' };
+			case 'on_hold':
+				return { variant: 'filled', color: 'error' };
+			default:
+				return { variant: 'outlined', color: 'gray' };
+		}
+	}
+
+	function stageLabel(stage: string): string {
+		switch (stage) {
+			case 'in_review':
+				return 'In review';
+			case 'on_hold':
+				return 'On hold';
+			default:
+				return stage.charAt(0).toUpperCase() + stage.slice(1);
+		}
+	}
+
+	// ── Tips display ──────────────────────────────────────────────────────
+
+	function formatTips(item: SoulMineAgentItem): string {
+		if (item.reputation && typeof item.reputation.tips_received === 'number') {
+			// Total tips received (all-time); no monthly breakdown available.
+			// Per design spec deviation: render total with a note rather than
+			// fabricating a monthly figure.
+			return `$${item.reputation.tips_received.toFixed(2)}`;
+		}
+		return '—';
+	}
+
+	// ── Format helpers ────────────────────────────────────────────────────
 
 	function formatError(err: unknown): string {
 		if (!err) return 'unknown error';
@@ -47,26 +196,10 @@ Issue: equaltoai/lesser-host#411
 		return String(err);
 	}
 
-	function badgeForStatus(status: string): {
-		variant: 'outlined' | 'filled';
-		color: 'success' | 'warning' | 'error' | 'gray';
-	} {
-		const s = (status || '').toLowerCase();
-		if (s === 'active') return { variant: 'filled', color: 'success' };
-		if (s === 'pending') return { variant: 'outlined', color: 'warning' };
-		if (s === 'suspended') return { variant: 'filled', color: 'error' };
-		return { variant: 'outlined', color: 'gray' };
-	}
-
-	function shortHex(hex: string, left: number = 8, right: number = 6): string {
-		const h = (hex || '').trim();
-		if (h.length <= left + right + 2) return h;
-		return `${h.slice(0, left)}…${h.slice(-right)}`;
-	}
+	// ── Load ──────────────────────────────────────────────────────────────
 
 	async function load() {
 		errorMessage = null;
-		agents = [];
 
 		loading = true;
 		try {
@@ -89,157 +222,299 @@ Issue: equaltoai/lesser-host#411
 	});
 </script>
 
-<PageFrame width="default">
+<PageFrame width="wide" asideLabel="Soul roster details">
 	{#snippet header()}
 		<PageTitle
-			eyebrow="Souls"
-			title="Legacy soul tools"
-			description="Secondary lesser-host portal surface for soul operations and inspection."
+			eyebrow="Agents · Souls"
+			title="Soul roster."
+			description="Soul-bound AI agents tied to your instances. Each soul is one continuity-loop process &mdash; its anchor is refreshed continually so context survives restarts."
 		>
 			{#snippet actions()}
-				<Button variant="outline" onclick={() => void load()} disabled={loading}>Refresh</Button>
 				<Button variant="solid" onclick={() => navigate('/portal/souls/register')}>
-					Open legacy registration
+					+ Request a soul
 				</Button>
 			{/snippet}
 		</PageTitle>
 	{/snippet}
 
-	<Callout tone="warning" title="Agent-first flow lives in Simulacrum">
-		Use the Simulacrum agent workspace on your Lesser instance for the canonical request, review,
-		approval, and finalize experience. Keep this portal surface for fallback, recovery, or
-		operator-guided work.
-	</Callout>
+	{#snippet aside()}
+		<div class="souls-rail">
+			<!-- Roster status -->
+			<Panel title="Roster" headerLevel={2}>
+				<DefinitionList>
+					<DefinitionItem label="Total">{stageCounts.total ?? 0}</DefinitionItem>
+					<DefinitionItem label="Graduated">{stageCounts.graduated ?? 0}</DefinitionItem>
+					<DefinitionItem label="In review">{stageCounts.in_review ?? 0}</DefinitionItem>
+					<DefinitionItem label="Requested">{stageCounts.requested ?? 0}</DefinitionItem>
+					<DefinitionItem label="On hold">{stageCounts.on_hold ?? 0}</DefinitionItem>
+				</DefinitionList>
+			</Panel>
 
+			<!-- Soul minting guidance -->
+			<Panel title="Soul minting" headerLevel={2}>
+				<div class="souls-rail__minting">
+					<Text size="sm" color="secondary">
+						The canonical soul creation flow is designed for the Simulacrum agent workspace. This
+						roster is your operator-facing view of soul-bound agents across all instances.
+					</Text>
+					<div class="souls-rail__minting-action">
+						<Button variant="outline" size="sm" disabled={true}>
+							Open Simulacrum
+						</Button>
+					</div>
+					<Text size="xs" color="secondary">
+						Navigate to your Lesser instance to access the agent workspace.
+					</Text>
+				</div>
+			</Panel>
+		</div>
+	{/snippet}
+
+	<!-- MAIN CONTENT -->
 	{#if loading}
 		<div class="souls__loading">
 			<Spinner size="md" />
-			<Text>Loading agents…</Text>
+			<Text>Loading souls&hellip;</Text>
 		</div>
 	{:else if errorMessage}
-		<Alert variant="error" title="Failed to load /api/v1/soul/agents/mine">{errorMessage}</Alert>
+		<Alert variant="error" title="Failed to load souls roster">{errorMessage}</Alert>
 	{:else if agents.length === 0}
-		<Panel title="No agents" headerLevel={2}>
-			<Text size="sm" color="secondary">No legacy portal agents found yet.</Text>
-			<div class="souls__actions-inline">
-				<Button variant="solid" onclick={() => navigate('/portal/souls/register')}>
-					Open legacy registration
-				</Button>
+		<Panel title="No souls" headerLevel={2}>
+			<div class="souls__empty">
+				<Text size="sm" color="secondary">No soul-bound agents found for your instances.</Text>
+				<div class="souls__empty-actions">
+					<Button variant="solid" onclick={() => navigate('/portal/souls/register')}>
+						+ Request a soul
+					</Button>
+				</div>
 			</div>
 		</Panel>
 	{:else}
-		<Panel title="My agents" headerLevel={2}>
-			<ul class="souls__list">
-				{#each agents as item (item.agent.agent_id)}
-					{@const statusBadge = badgeForStatus(item.agent.status)}
-					{@const needsProfile = !item.agent.self_description_version}
-					<li class="souls__item">
-						<div class="souls__item-meta">
-							<div class="souls__row">
-								<Text size="sm" weight="medium">{item.agent.domain}/{item.agent.local_id}</Text>
-								<Badge variant={statusBadge.variant} color={statusBadge.color} size="sm">
-									{item.agent.status}
-								</Badge>
-							</div>
-							<Text size="sm" color="secondary">
-								Agent ID: <span class="souls__mono">{shortHex(item.agent.agent_id, 14, 10)}</span>
-							</Text>
-							<Text size="sm" color="secondary">
-								Wallet: <span class="souls__mono">{shortHex(item.agent.wallet)}</span>
-							</Text>
-							{#if needsProfile}
-								<Text size="sm" color="secondary">Profile status: setup not finished</Text>
-							{:else}
-								<Text size="sm" color="secondary">
-									Profile status: published v{item.agent.self_description_version}
-								</Text>
-							{/if}
-							{#if item.reputation}
-								<Text size="sm" color="secondary">
-									Reputation:
-									<span class="souls__mono">{item.reputation.composite.toFixed(3)}</span>
-									(block {item.reputation.block_ref ?? '—'})
-								</Text>
-							{:else}
-								<Text size="sm" color="secondary">Reputation: —</Text>
-							{/if}
-						</div>
-						<div class="souls__item-actions">
-							{#if needsProfile}
-								<Button
-									variant="solid"
-									onclick={() => navigate(`/portal/souls/${item.agent.agent_id}/mint`)}
+		<Panel title="Roster" headerLevel={2}>
+			<section class="souls__tabs-nav">
+				<Tabs tabs={filterTabs} activeTab={activeFilter} onTabChange={handleTabChange} variant="underline" />
+			</section>
+
+			{#if filteredRows.length === 0}
+				<div class="souls__empty">
+					<Text size="sm" color="secondary">No souls match the selected filter.</Text>
+				</div>
+			{:else}
+				<div class="souls-table-wrap">
+					<table class="souls-table">
+						<thead>
+							<tr>
+								<th>Soul</th>
+								<th>Instance</th>
+								<th>Stage</th>
+								<th>Anchor</th>
+								<th>Model</th>
+								<th class="souls-table__num">Tips &middot; All time</th>
+								<th></th>
+							</tr>
+						</thead>
+						<tbody>
+							{#each filteredRows as row (row.item.agent.agent_id)}
+								{@const sb = stageBadge(row.stage)}
+								<tr
+									class="souls-table__row-clickable"
+									onclick={() => navigate(`/portal/souls/${row.item.agent.agent_id}`)}
+									onkeydown={(e) => {
+										if (e.key === 'Enter' || e.key === ' ') {
+											e.preventDefault();
+											navigate(`/portal/souls/${row.item.agent.agent_id}`);
+										}
+									}}
+									role="link"
+									tabindex="0"
+									aria-label={`View ${row.item.agent.local_id} details`}
 								>
-									Open legacy profile step
-								</Button>
-							{/if}
-							<Link {...linkProps(`/portal/souls/${item.agent.agent_id}`)} variant="default">
-								Open
-							</Link>
-							<CopyButton size="sm" text={item.agent.agent_id} />
-						</div>
-					</li>
-				{/each}
-			</ul>
+									<td>
+										<div class="souls-table__soul">
+											<Avatar
+												name={row.item.agent.local_id}
+												src={row.item.agent.avatar?.image}
+												size="sm"
+											/>
+											<div class="souls-table__soul-info">
+												<strong>{row.item.agent.local_id}</strong>
+												<span class="souls-table__handle"
+													>{row.item.agent.domain}/{row.item.agent.local_id}</span
+												>
+											</div>
+										</div>
+									</td>
+									<td class="souls-table__mono">{row.item.agent.domain}</td>
+									<td>
+										<Badge variant={sb.variant} color={sb.color} size="sm">
+											{stageLabel(row.stage)}
+										</Badge>
+									</td>
+									<td>
+										<Badge
+											variant={row.anchorTone === 'error'
+												? 'filled'
+												: 'outlined'}
+											color={row.anchorTone ?? 'gray'}
+											size="sm"
+										>
+											{row.anchorLabel}
+										</Badge>
+									</td>
+									<td class="souls-table__mono souls-table__muted">&mdash;</td>
+									<td class="souls-table__mono">{formatTips(row.item)}</td>
+									<td class="souls-table__chevron">
+										<svg
+											width="15"
+											height="15"
+											viewBox="0 0 15 15"
+											fill="none"
+											focusable="false"
+											aria-hidden="true"
+										>
+											<path
+												d="M5.5 3L10.5 7.5L5.5 12"
+												stroke="var(--ds-fg-3, rgba(51, 33, 22, 0.58))"
+												stroke-width="1.5"
+												stroke-linecap="round"
+												stroke-linejoin="round"
+											/>
+										</svg>
+									</td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+				</div>
+			{/if}
 		</Panel>
 	{/if}
 </PageFrame>
 
 <style>
+	/* ---- Loading ---- */
 	.souls__loading {
 		display: flex;
 		gap: var(--ds-space-3);
 		align-items: center;
 	}
 
-	.souls__list {
+	/* ---- Empty ---- */
+	.souls__empty {
 		display: flex;
 		flex-direction: column;
 		gap: var(--ds-space-3);
-		list-style: none;
-		padding: 0;
-		margin: 0;
 	}
 
-	.souls__item {
+	.souls__empty-actions {
 		display: flex;
-		gap: var(--ds-space-4);
-		justify-content: space-between;
-		align-items: flex-start;
-		flex-wrap: wrap;
-		padding: var(--ds-space-3);
-		border: 1px solid var(--ds-border-subtle, var(--gr-color-border-subtle));
-		border-radius: var(--ds-radius-md, var(--gr-radius-md));
-		background: var(--ds-bg-raised, var(--gr-color-surface));
+		gap: var(--ds-space-2);
 	}
 
-	.souls__item-meta {
+	/* ---- Tabs navigation ---- */
+	.souls__tabs-nav {
+		margin-bottom: var(--ds-space-4);
+	}
+
+	/* ---- Right rail ---- */
+	.souls-rail {
 		display: flex;
 		flex-direction: column;
-		gap: var(--ds-space-1);
+		gap: var(--ds-space-4);
 	}
 
-	.souls__item-actions {
+	.souls-rail__minting {
+		display: flex;
+		flex-direction: column;
+		gap: var(--ds-space-3);
+	}
+
+	.souls-rail__minting-action {
 		display: flex;
 		gap: var(--ds-space-2);
+	}
+
+	/* ---- Table ---- */
+	.souls-table-wrap {
+		overflow-x: auto;
+	}
+
+	.souls-table {
+		width: 100%;
+		border-collapse: collapse;
+		font-size: 0.88rem;
+	}
+
+	.souls-table th {
+		text-align: left;
+		font-size: 0.72rem;
+		font-weight: 700;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--ds-fg-3, rgba(51, 33, 22, 0.58));
+		padding: 0.5rem 0.75rem;
+		border-bottom: 1px solid var(--ds-border-subtle, rgba(107, 56, 16, 0.1));
+		white-space: nowrap;
+	}
+
+	.souls-table td {
+		padding: 0.6rem 0.75rem;
+		border-bottom: 1px solid var(--ds-border-subtle, rgba(107, 56, 16, 0.08));
+		vertical-align: middle;
+	}
+
+	.souls-table__row-clickable {
+		cursor: pointer;
+	}
+
+	.souls-table__row-clickable:hover {
+		background: var(--ds-bg-raised, rgba(255, 255, 255, 0.4));
+	}
+
+	.souls-table__row-clickable:focus-visible {
+		outline: 2px solid var(--ds-primary-500, #e6a645);
+		outline-offset: -2px;
+	}
+
+	.souls-table__num {
+		font-family: var(--ds-font-mono, ui-monospace, monospace);
+		text-align: right;
+	}
+
+	.souls-table__soul {
+		display: flex;
 		align-items: center;
-		flex-wrap: wrap;
+		gap: 0.7rem;
 	}
 
-	.souls__actions-inline {
+	.souls-table__soul-info {
 		display: flex;
-		gap: var(--ds-space-2);
-		margin-top: var(--ds-space-3);
+		flex-direction: column;
+		gap: 0;
 	}
 
-	.souls__row {
-		display: flex;
-		gap: var(--ds-space-2);
-		align-items: center;
-		flex-wrap: wrap;
+	.souls-table__handle {
+		font-family: var(--ds-font-mono, ui-monospace, monospace);
+		font-size: 0.78rem;
+		color: var(--ds-fg-3, rgba(51, 33, 22, 0.58));
 	}
 
-	.souls__mono {
-		font-family: var(--ds-font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
+	.souls-table__mono {
+		font-family: var(--ds-font-mono, ui-monospace, monospace);
+	}
+
+	.souls-table__muted {
+		color: var(--ds-fg-3, rgba(51, 33, 22, 0.58));
+	}
+
+	.souls-table__chevron {
+		width: 40px;
+		text-align: right;
+		vertical-align: middle;
+	}
+
+	.souls-table__chevron svg {
+		display: inline-block;
+		vertical-align: middle;
 	}
 </style>

@@ -1,5 +1,6 @@
 export {
 	Alert,
+	Avatar,
 	Badge,
 	Button,
 	Card,
@@ -15,6 +16,7 @@ export {
 	Select,
 	Spinner,
 	Switch,
+	Tabs,
 	Text,
 	TextField,
 	TextArea,
