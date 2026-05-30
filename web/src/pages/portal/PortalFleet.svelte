@@ -25,7 +25,8 @@ Issue: equaltoai/lesser-host#391
 -->
 
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onDestroy, onMount } from 'svelte';
+	import { get } from 'svelte/store';
 
 	import type { ApiError } from 'src/lib/api/http';
 	import type { InstanceResponse } from 'src/lib/api/portalInstances';
@@ -38,8 +39,9 @@ Issue: equaltoai/lesser-host#391
 	import FleetCard from 'src/lib/components/FleetCard.svelte';
 	import CostGauge from 'src/lib/components/CostGauge.svelte';
 	import type { FleetCardMetadataItem } from 'src/lib/greater/host-platform';
-	import { portalFleetInstances } from 'src/lib/portalFleetState';
+	import { clearPortalFleetState, portalFleetInstances } from 'src/lib/portalFleetState';
 	import { mapInstanceFleetStatus } from 'src/lib/fleetStatus';
+	import { session } from 'src/lib/session';
 
 	let { token } = $props<{ token: string }>();
 
@@ -53,6 +55,8 @@ Issue: equaltoai/lesser-host#391
 	let createSlug = $state('');
 	let createLoading = $state(false);
 	let createError = $state<string | null>(null);
+	let loadGeneration = 0;
+	let destroyed = false;
 
 	function currentMonthUTC(): string {
 		return new Date().toISOString().slice(0, 7);
@@ -94,39 +98,36 @@ Issue: equaltoai/lesser-host#391
 	 */
 	const COST_THRESHOLDS = { warning: 0.75, danger: 0.95 } as const;
 
+	function isLoadCurrent(loadId: number, loadToken: string): boolean {
+		return !destroyed && loadId === loadGeneration && get(session)?.token === loadToken;
+	}
+
 	async function loadFleet() {
+		const loadId = (loadGeneration += 1);
+		const loadToken = token;
 		errorMessage = null;
 		instances = [];
 		budgets = {};
 		// Clear the shared fleet snapshot during a refetch so a stale
 		// snapshot never produces palette entries for instances the
 		// current user no longer has access to.
-		portalFleetInstances.set([]);
+		clearPortalFleetState();
 
 		loading = true;
 		try {
-			const res = await portalListInstances(token);
+			const res = await portalListInstances(loadToken);
+			if (!isLoadCurrent(loadId, loadToken)) return;
+
 			const list = res.instances ?? [];
-			instances = list;
-			// Publish the projection that PortalShell's CommandPalette
-			// uses to build per-instance "Open <slug>" entries. Narrow
-			// the projection to slug + a couple of low-sensitivity fields
-			// so growth in InstanceResponse doesn't widen what the palette
-			// observes.
-			portalFleetInstances.set(
-				list.map((inst) => ({
-					slug: inst.slug,
-					hosted_region: inst.hosted_region,
-					lesser_version: inst.lesser_version,
-				}))
-			);
 
 			// Fetch budgets in parallel; fail-quiet per-instance so one
 			// missing-budget 404 doesn't fail the whole fleet view.
 			const month = currentMonthUTC();
 			const settlements = await Promise.allSettled(
-				list.map((inst) => portalGetBudgetMonth(token, inst.slug, month))
+				list.map((inst) => portalGetBudgetMonth(loadToken, inst.slug, month))
 			);
+			if (!isLoadCurrent(loadId, loadToken)) return;
+
 			const map: Record<string, BudgetMonthResponse> = {};
 			for (let i = 0; i < settlements.length; i += 1) {
 				const result = settlements[i];
@@ -138,8 +139,24 @@ Issue: equaltoai/lesser-host#391
 				// 404 / other failures: leave map[slug] unset; FleetCard
 				// will simply omit the cost slot for that instance.
 			}
+			instances = list;
 			budgets = map;
+			// Publish the projection that PortalShell's CommandPalette
+			// uses to build per-instance "Open <slug>" entries. Narrow
+			// the projection to slug + a couple of low-sensitivity fields
+			// so growth in InstanceResponse doesn't widen what the palette
+			// observes. This write is guarded after all awaits so logout or
+			// user-switch during an in-flight load cannot repopulate stale
+			// fleet metadata.
+			portalFleetInstances.set(
+				list.map((inst) => ({
+					slug: inst.slug,
+					hosted_region: inst.hosted_region,
+					lesser_version: inst.lesser_version,
+				}))
+			);
 		} catch (err) {
+			if (!isLoadCurrent(loadId, loadToken)) return;
 			if ((err as Partial<ApiError>).status === 401) {
 				await logout();
 				navigate('/login');
@@ -147,7 +164,9 @@ Issue: equaltoai/lesser-host#391
 			}
 			errorMessage = formatError(err);
 		} finally {
-			loading = false;
+			if (!destroyed && loadId === loadGeneration) {
+				loading = false;
+			}
 		}
 	}
 
@@ -198,6 +217,11 @@ Issue: equaltoai/lesser-host#391
 
 	onMount(() => {
 		void loadFleet();
+	});
+
+	onDestroy(() => {
+		destroyed = true;
+		loadGeneration += 1;
 	});
 </script>
 

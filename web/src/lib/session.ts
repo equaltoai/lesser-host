@@ -1,4 +1,5 @@
 import { derived, writable } from 'svelte/store';
+import { clearPortalFleetState } from './portalFleetState';
 import { isSafeAppPath } from './router';
 
 export interface Session {
@@ -117,6 +118,7 @@ export const session = writable<Session | null>(loadInitialSession());
 
 session.subscribe((value) => {
 	if (!value) {
+		clearPortalFleetState();
 		sessionStorage.removeItem(SESSION_STORAGE_KEY);
 		removeSafeAppSessionHandoff();
 		return;
@@ -165,10 +167,15 @@ export function stageSafeAppSessionHandoff(value: Session | null, maxAgeMs: numb
 }
 
 export function setSession(value: Session | null): void {
+	if (!value) {
+		clearSession();
+		return;
+	}
 	session.set(value);
 }
 
 export function clearSession(): void {
+	clearPortalFleetState();
 	session.set(null);
 }
 
