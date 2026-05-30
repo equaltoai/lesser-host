@@ -23,6 +23,7 @@ import (
 
 type recordingTransactionBuilder struct {
 	putCount               int
+	putModels              []any
 	updateWithBuilderCalls []recordingUpdateWithBuilderCall
 }
 
@@ -33,8 +34,14 @@ type recordingUpdateWithBuilderCall struct {
 
 const updateJobUpdatedAtField = "UpdatedAt"
 
-func (r *recordingTransactionBuilder) Put(_ any, _ ...core.TransactCondition) core.TransactionBuilder {
+func (r *recordingTransactionBuilder) Put(model any, _ ...core.TransactCondition) core.TransactionBuilder {
 	r.putCount++
+	if job, ok := model.(*models.ProvisionJob); ok && job != nil {
+		jobCopy := *job
+		r.putModels = append(r.putModels, &jobCopy)
+		return r
+	}
+	r.putModels = append(r.putModels, model)
 	return r
 }
 
