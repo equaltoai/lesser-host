@@ -38,11 +38,13 @@ const (
 
 // fakeCostExplorerAPI implements costExplorerAPI for tests.
 type fakeCostExplorerAPI struct {
-	results []cetypes.ResultByTime
-	err     error
+	results   []cetypes.ResultByTime
+	lastInput *costexplorer.GetCostAndUsageInput
+	err       error
 }
 
-func (f *fakeCostExplorerAPI) GetCostAndUsage(_ context.Context, _ *costexplorer.GetCostAndUsageInput, _ ...func(*costexplorer.Options)) (*costexplorer.GetCostAndUsageOutput, error) {
+func (f *fakeCostExplorerAPI) GetCostAndUsage(_ context.Context, params *costexplorer.GetCostAndUsageInput, _ ...func(*costexplorer.Options)) (*costexplorer.GetCostAndUsageOutput, error) {
+	f.lastInput = params
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -304,6 +306,75 @@ func TestCECollectCosts_HappyPath(t *testing.T) {
 	}
 	if result.Currency != testCECurrencyUSD {
 		t.Fatalf("result currency = %q, want USD", result.Currency)
+	}
+}
+
+func TestCECollectCosts_QueryInputFiltersLinkedAccount(t *testing.T) {
+	t.Parallel()
+
+	start, end := validWindow()
+	api := &fakeCostExplorerAPI{
+		results: []cetypes.ResultByTime{
+			ceResultByTime(testCEDate1, ceServiceGroup(testCEServiceLambda, "0.05")),
+		},
+	}
+
+	cc := makeCECollector(api)
+	if _, err := cc.CollectCosts(context.Background(), validScope(), start, end); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if api.lastInput == nil {
+		t.Fatal("expected GetCostAndUsage input to be captured")
+	}
+	if api.lastInput.Filter == nil {
+		t.Fatal("expected Cost Explorer input to include tenant filter")
+	}
+	if api.lastInput.Filter.Dimensions == nil {
+		t.Fatalf("expected Cost Explorer filter to use dimensions, got %#v", api.lastInput.Filter)
+	}
+	if api.lastInput.Filter.Dimensions.Key != cetypes.DimensionLinkedAccount {
+		t.Fatalf("filter dimension key = %q, want %q",
+			api.lastInput.Filter.Dimensions.Key, cetypes.DimensionLinkedAccount)
+	}
+	values := api.lastInput.Filter.Dimensions.Values
+	if len(values) != 1 || values[0] != testAccountID {
+		t.Fatalf("filter values = %#v, want [%q]", values, testAccountID)
+	}
+}
+
+func TestBuildCostExplorerResultRejectsUnscopedResults(t *testing.T) {
+	t.Parallel()
+
+	start, end := validWindow()
+	_, err := buildCostExplorerResult(validScope(), start, end, tenantScopedCostExplorerResults{
+		results: []cetypes.ResultByTime{
+			ceResultByTime(testCEDate1, ceServiceGroup(testCEServiceLambda, "0.05")),
+		},
+	})
+	if err == nil {
+		t.Fatal("expected unscoped Cost Explorer results to be rejected")
+	}
+	if !strings.Contains(err.Error(), "unscoped Cost Explorer results") {
+		t.Fatalf("error should mention unscoped results: %v", err)
+	}
+}
+
+func TestBuildCostExplorerResultRejectsAccountScopeMismatch(t *testing.T) {
+	t.Parallel()
+
+	start, end := validWindow()
+	_, err := buildCostExplorerResult(validScope(), start, end, tenantScopedCostExplorerResults{
+		accountID: "999999999999",
+		results: []cetypes.ResultByTime{
+			ceResultByTime(testCEDate1, ceServiceGroup(testCEServiceLambda, "0.05")),
+		},
+	})
+	if err == nil {
+		t.Fatal("expected mismatched Cost Explorer account scope to be rejected")
+	}
+	if !strings.Contains(err.Error(), "account scope mismatch") {
+		t.Fatalf("error should mention account scope mismatch: %v", err)
 	}
 }
 
