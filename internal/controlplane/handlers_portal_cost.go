@@ -42,6 +42,10 @@ type portalCostDayEntry struct {
 // are supplied (past 30 days inclusive).
 const costQueryDefaultDays = 30
 
+// costQueryMaxDays caps explicit portal cost windows before the request is
+// proxied to the managed Lesser instance.
+const costQueryMaxDays = 366
+
 // handlePortalGetInstanceCost implements GET /api/v1/portal/instances/{slug}/cost.
 //
 // Ownership is enforced via requireInstanceAccess before any instance-key
@@ -100,6 +104,9 @@ func parseCostDateWindow(ctx *apptheory.Context) (from, to string, appErr *appth
 	}
 	if fromTime.After(toTime) {
 		return "", "", &apptheory.AppError{Code: "app.bad_request", Message: "from must not be after to"}
+	}
+	if toTime.Sub(fromTime) > time.Duration(costQueryMaxDays)*24*time.Hour {
+		return "", "", &apptheory.AppError{Code: "app.bad_request", Message: "date range must not exceed 366 days"}
 	}
 
 	return from, to, nil

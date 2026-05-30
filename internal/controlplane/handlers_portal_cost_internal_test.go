@@ -162,6 +162,71 @@ func TestHandlePortalGetInstanceCost_EmptyLesserData(t *testing.T) {
 	require.Equal(t, 0.0, body.TotalCost)
 }
 
+func TestHandlePortalGetInstanceCost_DateRangeTooWideRejectedBeforeUpstream(t *testing.T) {
+	t.Parallel()
+
+	tdb, qInst := newCostTestDB()
+	stubCostInstanceFirst(t, qInst, baseCostInstance("alice"))
+
+	secretReads := 0
+	upstreamCalls := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	s := &Server{
+		cfg:                  config.Config{Stage: "lab"},
+		store:                store.New(tdb),
+		portalCostHTTPClient: ts.Client(),
+		fetchInstanceKeyPlaintextFunc: func(context.Context, *models.Instance) (string, error) {
+			secretReads++
+			return testRawKey, nil
+		},
+		resolveInstanceMetricsBaseURLFunc: func(*models.Instance) (string, error) {
+			return ts.URL, nil
+		},
+	}
+
+	_, err := s.handlePortalGetInstanceCost(newCostHandlerCtx(testCostSlug1, map[string][]string{
+		"from": {"2025-01-01"},
+		"to":   {"2026-01-03"},
+	}))
+	require.Error(t, err)
+	appErr, ok := err.(*apptheory.AppError)
+	require.True(t, ok)
+	require.Equal(t, "app.bad_request", appErr.Code)
+	require.Zero(t, secretReads)
+	require.Zero(t, upstreamCalls)
+}
+
+func TestHandlePortalGetInstanceCost_MaxDateRangeSucceeds(t *testing.T) {
+	t.Parallel()
+
+	var gotPath string
+	var gotFrom string
+	var gotTo string
+	s, _ := newCostTestServer(t, baseCostInstance("alice"), func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotFrom = r.URL.Query().Get("from")
+		gotTo = r.URL.Query().Get("to")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"period":{"start":"2025-01-01","end":"2026-01-02","days":366,"timezone":"UTC"},"daily":[]}`))
+	})
+
+	resp, err := s.handlePortalGetInstanceCost(newCostHandlerCtx(testCostSlug1, map[string][]string{
+		"from": {"2025-01-01"},
+		"to":   {"2026-01-02"},
+	}))
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.Equal(t, http.StatusOK, resp.Status)
+	require.Equal(t, "/api/v1/instance/metrics/daily", gotPath)
+	require.Equal(t, "2025-01-01", gotFrom)
+	require.Equal(t, "2026-01-02", gotTo)
+}
+
 func TestHandlePortalGetInstanceCost_WrongOwnerForbiddenBeforeSecretOrHTTP(t *testing.T) {
 	t.Parallel()
 
