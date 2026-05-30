@@ -18,9 +18,19 @@ const (
 
 // QueueMessage is the SQS payload processed by comm-worker.
 type QueueMessage struct {
-	Kind         string              `json:"kind"`
-	Provider     string              `json:"provider,omitempty"` // migadu|telnyx|test
-	Notification InboundNotification `json:"notification"`
+	Kind                  string                       `json:"kind"`
+	Provider              string                       `json:"provider,omitempty"` // migadu|telnyx|test
+	Notification          InboundNotification          `json:"notification"`
+	SenderSoulAttribution *SenderSoulAttributionPolicy `json:"senderSoulAttribution,omitempty"`
+}
+
+// SenderSoulAttributionPolicy is internal comm-queue metadata. It is not part
+// of the delivered communication:inbound notification; it gates best-effort
+// sender soulAgentId enrichment when the producer can prove the sender address
+// was authenticated for attribution.
+type SenderSoulAttributionPolicy struct {
+	Allowed bool   `json:"allowed"`
+	Method  string `json:"method,omitempty"`
 }
 
 // InboundNotification matches the communication:inbound notification payload contract.
