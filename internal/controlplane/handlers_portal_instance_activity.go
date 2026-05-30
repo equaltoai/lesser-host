@@ -75,10 +75,7 @@ func (s *Server) handlePortalGetInstanceActivity(ctx *apptheory.Context) (*appth
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Accept", "application/json")
 
-	client := s.portalCostHTTPClient
-	if client == nil {
-		client = &http.Client{Timeout: instanceMetricsTimeout}
-	}
+	client := s.portalManagedHTTPClient()
 
 	resp, respErr := client.Do(req) //nolint:gosec // URL is derived from managed instance metadata, not from browser input.
 	if respErr != nil {

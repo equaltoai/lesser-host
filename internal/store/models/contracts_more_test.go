@@ -50,6 +50,7 @@ func TestModelContracts_TableNameAndKeyAccessors(t *testing.T) {
 		TipHostRegistration{},
 		TipHostState{},
 		TipRegistryOperation{},
+		UsageMeteringDedup{},
 		WebAuthnChallenge{},
 		WebAuthnCredential{},
 		VanityDomainRequest{},
@@ -162,6 +163,16 @@ func TestModelContracts_TableNameAndKeyAccessors(t *testing.T) {
 	require.NoError(t, idem.BeforeCreate())
 	require.NotEmpty(t, idem.GetPK())
 	require.NotEmpty(t, idem.GetSK())
+
+	dedup := &UsageMeteringDedup{
+		InstanceSlug: "slug",
+		Month:        "2026-05",
+		Module:       "comm.voice.call",
+		Target:       "call-1",
+	}
+	require.NoError(t, dedup.BeforeCreate())
+	require.NotEmpty(t, dedup.GetPK())
+	require.NotEmpty(t, dedup.GetSK())
 }
 
 func TestModelContracts_BeforeUpdate_MaintainsKeys(t *testing.T) {

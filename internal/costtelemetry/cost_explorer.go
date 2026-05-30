@@ -25,12 +25,9 @@ type costExplorerAPI interface {
 //
 // Cost Explorer is typically queried from the management / payer account
 // with a LINKED_ACCOUNT filter rather than directly from the linked
-// account. Production implementations must translate the accountID
-// parameter into the appropriate Cost Explorer filter when the worker
-// runs from the host (payer) account. The interface does not prescribe
-// the implementation — the accountID and region parameters carry tenant
-// dimensions, and the factory's Client method is the seam for test
-// injection.
+// account. The collector itself applies that LINKED_ACCOUNT filter to
+// every Cost Explorer query; the factory's Client method is only the
+// seam for selecting credentials / region and for test injection.
 //
 // M3.8 watchpoint: CloudWatch no-dimension queries are treated as
 // per-tenant-account aggregates because the tenant account is the
@@ -126,8 +123,8 @@ type costExplorerCollectorImpl struct {
 
 // NewCostExplorerCollector constructs an AWS SDK-backed CostExplorerCollector.
 // The factory is used to create per-account clients, which in production
-// may apply a LINKED_ACCOUNT filter when the worker runs from the host
-// (payer) account.
+// may select host / payer credentials while the collector applies the
+// required LINKED_ACCOUNT filter for the tenant account.
 func NewCostExplorerCollector(factory CostExplorerClientFactory) CostExplorerCollector {
 	return &costExplorerCollectorImpl{factory: factory}
 }
@@ -152,7 +149,7 @@ func (c *costExplorerCollectorImpl) CollectCosts(ctx context.Context, scope Tena
 	startDate := windowStart.UTC().Truncate(24 * time.Hour)
 	endDate := ceilingDay(windowEnd.UTC())
 
-	results, err := c.queryCostExplorer(ctx, client, startDate, endDate)
+	results, err := c.queryCostExplorer(ctx, client, scope.AccountID, startDate, endDate)
 	if err != nil {
 		return nil, fmt.Errorf("costtelemetry: querying Cost Explorer for %s (account %s): %w",
 			scope.Slug, scope.AccountID, err)
@@ -161,13 +158,24 @@ func (c *costExplorerCollectorImpl) CollectCosts(ctx context.Context, scope Tena
 	return buildCostExplorerResult(scope, windowStart, windowEnd, results)
 }
 
+// tenantScopedCostExplorerResults binds raw Cost Explorer responses to the
+// tenant account filter that was applied to the AWS request. Keeping this as
+// an unexported carrier prevents buildCostExplorerResult from stamping tenant
+// identity onto arbitrary, unscoped Cost Explorer output.
+type tenantScopedCostExplorerResults struct {
+	accountID string
+	results   []cetypes.ResultByTime
+}
+
 // queryCostExplorer calls GetCostAndUsage with DAILY granularity grouped
-// by SERVICE, paginating when the response carries a continuation token.
+// by SERVICE and filtered by LINKED_ACCOUNT, paginating when the response
+// carries a continuation token.
 func (c *costExplorerCollectorImpl) queryCostExplorer(
 	ctx context.Context,
 	client costExplorerAPI,
+	accountID string,
 	startDate, endDate time.Time,
-) ([]cetypes.ResultByTime, error) {
+) (tenantScopedCostExplorerResults, error) {
 	input := &costexplorer.GetCostAndUsageInput{
 		Granularity: cetypes.GranularityDaily,
 		Metrics:     []string{costBreakdownMetric},
@@ -181,13 +189,19 @@ func (c *costExplorerCollectorImpl) queryCostExplorer(
 				Key:  aws.String(string(cetypes.DimensionService)),
 			},
 		},
+		Filter: &cetypes.Expression{
+			Dimensions: &cetypes.DimensionValues{
+				Key:    cetypes.DimensionLinkedAccount,
+				Values: []string{accountID},
+			},
+		},
 	}
 
 	var allResults []cetypes.ResultByTime
 	for {
 		output, err := client.GetCostAndUsage(ctx, input)
 		if err != nil {
-			return nil, fmt.Errorf("GetCostAndUsage: %w", err)
+			return tenantScopedCostExplorerResults{}, fmt.Errorf("GetCostAndUsage: %w", err)
 		}
 		allResults = append(allResults, output.ResultsByTime...)
 		if output.NextPageToken == nil {
@@ -195,7 +209,10 @@ func (c *costExplorerCollectorImpl) queryCostExplorer(
 		}
 		input.NextPageToken = output.NextPageToken
 	}
-	return allResults, nil
+	return tenantScopedCostExplorerResults{
+		accountID: accountID,
+		results:   allResults,
+	}, nil
 }
 
 // costBreakdownKey is the composite key for CostExplorer cost entries,
@@ -256,9 +273,17 @@ func aggregateCostBreakdowns(results []cetypes.ResultByTime) (map[costBreakdownK
 func buildCostExplorerResult(
 	scope TenantScope,
 	windowStart, windowEnd time.Time,
-	results []cetypes.ResultByTime,
+	scoped tenantScopedCostExplorerResults,
 ) (*CostExplorerResult, error) {
-	costMap, totalCost, currency := aggregateCostBreakdowns(results)
+	if scoped.accountID == "" {
+		return nil, fmt.Errorf("costtelemetry: refusing to stamp tenant identity onto unscoped Cost Explorer results")
+	}
+	if scoped.accountID != scope.AccountID {
+		return nil, fmt.Errorf("costtelemetry: Cost Explorer account scope mismatch: query account %q, tenant account %q",
+			scoped.accountID, scope.AccountID)
+	}
+
+	costMap, totalCost, currency := aggregateCostBreakdowns(scoped.results)
 
 	costs := make([]CostBreakdown, 0, len(costMap))
 	for _, cb := range costMap {

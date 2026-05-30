@@ -255,6 +255,27 @@ func TestModels_UpdateKeysAndDefaults(t *testing.T) {
 		require.Equal(t, BillingTypeNone, e.BillingType)
 	})
 
+	t.Run("UsageMeteringDedup_BeforeCreate", func(t *testing.T) {
+		t.Parallel()
+
+		d := &UsageMeteringDedup{InstanceSlug: " slug ", Month: " 2026-05 ", Module: " comm.voice.call ", Target: " call-1 "}
+		require.NoError(t, d.BeforeCreate())
+		require.Equal(t, "slug", d.InstanceSlug)
+		require.Equal(t, "2026-05", d.Month)
+		require.Equal(t, "comm.voice.call", d.Module)
+		require.Equal(t, "call-1", d.Target)
+		require.NotEmpty(t, d.ID)
+		require.Equal(t, UsageMeteringDedupPK("slug", "2026-05"), d.PK)
+		require.Equal(t, UsageMeteringDedupSK(d.ID), d.SK)
+		require.False(t, d.CreatedAt.IsZero())
+
+		again := &UsageMeteringDedup{InstanceSlug: "slug", Month: "2026-05", Module: "comm.voice.call", Target: "call-1"}
+		require.NoError(t, again.BeforeCreate())
+		require.Equal(t, d.ID, again.ID)
+		require.Equal(t, d.PK, again.PK)
+		require.Equal(t, d.SK, again.SK)
+	})
+
 	t.Run("ProvisionJob_BeforeCreate", func(t *testing.T) {
 		t.Parallel()
 

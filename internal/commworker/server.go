@@ -190,7 +190,7 @@ func (s *Server) processInbound(ctx context.Context, _ string, msg QueueMessage)
 		return nil
 	}
 
-	return s.deliverResolvedInbound(ctx, agentID, channel, notif, identity, inst, provider)
+	return s.deliverResolvedInbound(ctx, agentID, channel, notif, identity, inst, provider, msg.senderSoulAttributionAllowed())
 }
 
 func (s *Server) resolveInboundIdentity(ctx context.Context, channel string, to *InboundParty) (string, *models.SoulAgentIdentity, bool, error) {
@@ -335,9 +335,9 @@ func (s *Server) handleRateLimitedInbound(ctx context.Context, agentID string, c
 	return true, nil
 }
 
-func (s *Server) deliverResolvedInbound(ctx context.Context, agentID string, channel string, notif InboundNotification, identity *models.SoulAgentIdentity, inst *models.Instance, provider string) error {
+func (s *Server) deliverResolvedInbound(ctx context.Context, agentID string, channel string, notif InboundNotification, identity *models.SoulAgentIdentity, inst *models.Instance, provider string, senderSoulAttributionAllowed bool) error {
 	// Best-effort: annotate soul-to-soul sender identity.
-	s.maybeAnnotateSenderSoul(ctx, &notif)
+	s.maybeAnnotateSenderSoul(ctx, &notif, senderSoulAttributionAllowed)
 	annotateRecipientSoulAgentID(agentID, notif.To)
 	s.maybeAnnotateRecipientAddress(ctx, agentID, channel, notif.To)
 
@@ -932,11 +932,18 @@ func normalizePhone(raw string) string {
 	return raw
 }
 
-func (s *Server) maybeAnnotateSenderSoul(ctx context.Context, notif *InboundNotification) {
+func (m QueueMessage) senderSoulAttributionAllowed() bool {
+	return m.SenderSoulAttribution != nil && m.SenderSoulAttribution.Allowed
+}
+
+func (s *Server) maybeAnnotateSenderSoul(ctx context.Context, notif *InboundNotification, emailAttributionAllowed bool) {
 	if s == nil || s.store == nil || notif == nil {
 		return
 	}
 	if notif.From.SoulAgentID != nil && strings.TrimSpace(*notif.From.SoulAgentID) != "" {
+		return
+	}
+	if strings.EqualFold(strings.TrimSpace(notif.Channel), inboundChannelEmail) && !emailAttributionAllowed {
 		return
 	}
 

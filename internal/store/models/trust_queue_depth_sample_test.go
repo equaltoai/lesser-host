@@ -21,10 +21,28 @@ func TestTrustQueueDepthSampleKeysAndTTL(t *testing.T) {
 	require.NoError(t, sample.BeforeCreate())
 	require.Equal(t, "demo", sample.InstanceSlug)
 	require.Equal(t, "TRUST#QUEUE_DEPTH#INSTANCE#demo", sample.PK)
-	require.Equal(t, "SAMPLE#2026-05-29T20:30:00.000000123Z", sample.SK)
+	require.Equal(t, "SAMPLE#2026-05-29T20:00:00Z", sample.SK)
 	require.Equal(t, ts.Add(TrustQueueDepthSampleRetentionDays*24*time.Hour).Unix(), sample.TTL)
 	require.Equal(t, sample.PK, sample.GetPK())
 	require.Equal(t, sample.SK, sample.GetSK())
+}
+
+func TestTrustQueueDepthSampleKeysCoalesceWithinBucket(t *testing.T) {
+	t.Parallel()
+
+	first := &TrustQueueDepthSample{
+		InstanceSlug: "demo",
+		Timestamp:    time.Date(2026, 5, 29, 20, 5, 0, 0, time.UTC),
+	}
+	second := &TrustQueueDepthSample{
+		InstanceSlug: "demo",
+		Timestamp:    time.Date(2026, 5, 29, 20, 55, 0, 0, time.UTC),
+	}
+
+	require.NoError(t, first.BeforeCreate())
+	require.NoError(t, second.BeforeCreate())
+	require.Equal(t, first.PK, second.PK)
+	require.Equal(t, first.SK, second.SK)
 }
 
 func TestTrustQueueDepthSampleRedactionShape(t *testing.T) {

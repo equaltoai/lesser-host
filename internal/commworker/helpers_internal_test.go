@@ -430,7 +430,7 @@ func testMaybeAnnotateSenderSoulHelper(t *testing.T, s *Server) {
 	t.Helper()
 
 	annotate := InboundNotification{Channel: "email", From: InboundParty{Address: "alice@example.com"}}
-	s.maybeAnnotateSenderSoul(context.Background(), &annotate)
+	s.maybeAnnotateSenderSoul(context.Background(), &annotate, true)
 	if annotate.From.SoulAgentID == nil || *annotate.From.SoulAgentID != "0xabc" {
 		t.Fatalf("expected annotated sender soul: %#v", annotate.From.SoulAgentID)
 	}

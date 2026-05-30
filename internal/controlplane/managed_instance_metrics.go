@@ -18,6 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 
+	"github.com/equaltoai/lesser-host/internal/outboundhttp"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -60,6 +61,13 @@ func (s *Server) resolvePortalCostInstanceKey(ctx context.Context, inst *models.
 	return s.defaultFetchInstanceKeyPlaintext(ctx, inst)
 }
 
+func (s *Server) portalManagedHTTPClient() *http.Client {
+	if s != nil && s.portalCostHTTPClient != nil {
+		return s.portalCostHTTPClient
+	}
+	return outboundhttp.NewSSRFProtectedClient(nil, outboundhttp.WithTimeout(instanceMetricsTimeout))
+}
+
 func (s *Server) fetchManagedInstanceMetrics(ctx context.Context, inst *models.Instance, apiKey string, from string, to string) (lesserInstanceMetricsResponse, *apptheory.AppError) {
 	apiKey = strings.TrimSpace(apiKey)
 	if apiKey == "" {
@@ -83,10 +91,7 @@ func (s *Server) fetchManagedInstanceMetrics(ctx context.Context, inst *models.I
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Accept", "application/json")
 
-	client := s.portalCostHTTPClient
-	if client == nil {
-		client = &http.Client{Timeout: instanceMetricsTimeout}
-	}
+	client := s.portalManagedHTTPClient()
 
 	resp, err := client.Do(req) //nolint:gosec // URL is derived from managed instance metadata or an injected test seam, not from browser input.
 	if err != nil {

@@ -24,6 +24,11 @@ import (
 type portalTrustDataResponse struct {
 	InstanceSlug string `json:"instance_slug"`
 
+	// Truncated is true when host hit a soul-backed fan-out or row-read cap
+	// while building the trust-data response. Counters then reflect bounded
+	// work only. The field is omitted for the normal, complete response shape.
+	Truncated bool `json:"truncated,omitempty"`
+
 	// Federation contains federation-peer health counters and a bounded set of
 	// peer rows from the requested managed Lesser instance's admin federation API.
 	Federation portalTrustFederationResponse `json:"federation"`
@@ -113,6 +118,10 @@ type portalTrustSignaturesResponse struct {
 	// SoulAgentFailure.Timestamp; raw failure IDs, descriptions, storage keys,
 	// account IDs, and agent IDs are not exposed in the point shape.
 	Series []portalTrustSignatureSeriesPoint `json:"series"`
+
+	// Truncated is true when host hit a fan-out or row-read cap while reading
+	// signature-failure rows. Counts then reflect the bounded rows read.
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 // portalTrustSignaturesSourceRow is a per-bound-agent signature-failure count.
@@ -205,6 +214,11 @@ type portalTrustVouchesResponse struct {
 
 	// Count is the total number of vouches available (may exceed Items length).
 	Count int `json:"count"`
+
+	// Truncated is true when host hit a fan-out or row-read cap while reading
+	// endorsement rows. Count is still computed with Count() for processed
+	// agents; Items reflect the bounded rows read.
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 // portalTrustVouchItem is a single vouch entry. Sensitive provenance fields
@@ -252,6 +266,26 @@ const trustQueueDepthWindowHours = 24
 
 // trustVouchesMaxItems caps the number of vouch items returned.
 const trustVouchesMaxItems = 50
+
+// trustDataMaxAgentFanout bounds soul-backed per-agent query fan-out for a
+// single trust-data request. The response Truncated flags expose cap hits.
+const trustDataMaxAgentFanout = 50
+
+// trustSignaturesMaxRowsPerAgent is a defensive cap for already-window-bounded
+// SoulAgentFailure rows read per agent.
+const trustSignaturesMaxRowsPerAgent = 500
+
+// trustSignaturesMaxRowsPerRequest bounds total signature rows read across all
+// processed agents in a single request.
+const trustSignaturesMaxRowsPerRequest = 2000
+
+// trustVouchesMaxRowsPerAgent caps endorsement rows loaded per agent before the
+// response-level 50-item truncation. Count uses Count(); Items use bounded rows.
+const trustVouchesMaxRowsPerAgent = trustVouchesMaxItems + 25
+
+// trustVouchesMaxRowsPerRequest bounds total endorsement rows loaded across all
+// processed agents in a single request.
+const trustVouchesMaxRowsPerRequest = 500
 
 // trustSignaturesMaxSources caps the number of by-source rows returned.
 const trustSignaturesMaxSources = 50
@@ -379,11 +413,14 @@ func (s *Server) handlePortalGetTrustData(ctx *apptheory.Context) (*apptheory.Re
 	// Populate soul-backed data when the soul registry is configured.
 	if s.cfg.SoulEnabled {
 		agentIDs := s.resolveAgentIDsForInstance(ctx, inst)
+		agentIDs, agentFanoutTruncated := boundedTrustAgentIDs(agentIDs)
 		if len(agentIDs) > 0 {
+			resp.Truncated = agentFanoutTruncated
 			resp.Signatures = s.loadTrustSignatures(ctx.Context(), agentIDs)
 			resp.QueueDepth = s.loadTrustQueueDepth(ctx.Context(), inst, agentIDs)
 			resp.TrustScore = s.loadTrustScore(ctx.Context(), agentIDs)
 			resp.Vouches = s.loadTrustVouches(ctx.Context(), agentIDs)
+			resp.Truncated = resp.Truncated || resp.Signatures.Truncated || resp.Vouches.Truncated
 		}
 	}
 
@@ -426,10 +463,7 @@ func (s *Server) loadTrustFederation(ctx *apptheory.Context, inst *models.Instan
 		return resp, &apptheory.AppError{Code: "app.internal", Message: "failed to resolve instance federation endpoint"}
 	}
 
-	client := s.portalCostHTTPClient
-	if client == nil {
-		client = &http.Client{Timeout: instanceMetricsTimeout}
-	}
+	client := s.portalManagedHTTPClient()
 
 	// Probe statistics first. The current DTO does not expose the aggregate
 	// active-users/messages counters, but this call verifies the managed admin
@@ -595,8 +629,9 @@ func trustFederationStatus(info lesserFederationInstanceInfo, now time.Time) str
 	return trustFederationStatusReachable
 }
 
-// loadTrustQueueDepth records a best-effort current queue-depth sample and then
-// returns persisted instance-scoped samples in the 24-hour dashboard window.
+// loadTrustQueueDepth records a best-effort, coalesced current queue-depth
+// sample and then returns persisted instance-scoped samples in the 24-hour
+// dashboard window.
 func (s *Server) loadTrustQueueDepth(ctx context.Context, inst *models.Instance, agentIDs []string) portalTrustQueueDepthResponse {
 	resp := newPortalTrustQueueDepthResponse()
 	if !canLoadTrustQueueDepth(s, inst, agentIDs) {
@@ -664,6 +699,22 @@ func trustQueueDepthSampleInScope(sample *models.TrustQueueDepthSample, slug str
 }
 
 func (s *Server) recordTrustQueueDepthSnapshot(ctx context.Context, instanceSlug string, agentIDs []string, now time.Time) (*models.TrustQueueDepthSample, error) {
+	sample := &models.TrustQueueDepthSample{
+		InstanceSlug: strings.ToLower(strings.TrimSpace(instanceSlug)),
+		Timestamp:    now,
+		Source:       trustQueueDepthSource,
+	}
+	if err := sample.BeforeCreate(); err != nil {
+		return sample, err
+	}
+	existing, exists, err := s.loadTrustQueueDepthSampleBucket(ctx, sample)
+	if err != nil {
+		return nil, err
+	}
+	if exists {
+		return existing, nil
+	}
+
 	depth := 0
 	for _, agentID := range uniqueSortedStrings(agentIDs) {
 		if agentID == "" {
@@ -684,16 +735,33 @@ func (s *Server) recordTrustQueueDepthSnapshot(ctx context.Context, instanceSlug
 		}
 	}
 
-	sample := &models.TrustQueueDepthSample{
-		InstanceSlug: strings.ToLower(strings.TrimSpace(instanceSlug)),
-		Timestamp:    now,
-		Depth:        depth,
-		Source:       trustQueueDepthSource,
-	}
-	if err := s.store.DB.WithContext(ctx).Model(sample).Create(); err != nil && !theoryErrors.IsConditionFailed(err) {
+	sample.Depth = depth
+	if err := s.store.DB.WithContext(ctx).Model(sample).IfNotExists().Create(); err != nil {
+		if theoryErrors.IsConditionFailed(err) {
+			return nil, nil
+		}
 		return sample, err
 	}
 	return sample, nil
+}
+
+func (s *Server) loadTrustQueueDepthSampleBucket(ctx context.Context, sample *models.TrustQueueDepthSample) (*models.TrustQueueDepthSample, bool, error) {
+	if s == nil || s.store == nil || s.store.DB == nil || sample == nil {
+		return nil, false, nil
+	}
+	var existing models.TrustQueueDepthSample
+	err := s.store.DB.WithContext(ctx).
+		Model(&models.TrustQueueDepthSample{}).
+		Where("PK", "=", sample.PK).
+		Where("SK", "=", sample.SK).
+		First(&existing)
+	if err != nil {
+		if theoryErrors.IsNotFound(err) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	return &existing, true, nil
 }
 
 func trustQueueDepthPointFromSample(sample *models.TrustQueueDepthSample) portalTrustQueueDepthPoint {
@@ -722,33 +790,61 @@ func uniqueSortedStrings(values []string) []string {
 	return out
 }
 
+func boundedTrustAgentIDs(agentIDs []string) ([]string, bool) {
+	out := uniqueSortedStrings(agentIDs)
+	if len(out) <= trustDataMaxAgentFanout {
+		return out, false
+	}
+	return out[:trustDataMaxAgentFanout], true
+}
+
 // loadTrustSignatures queries SoulAgentFailure rows for the given agent IDs,
 // filters to signature_failure types within the 24-hour window, and returns
-// total and per-agent breakdown counts plus a redacted hourly time series.
+// total and per-agent breakdown counts plus a redacted hourly time series. The
+// storage query is constrained by the FAILURE#{RFC3339Nano} sort-key range and
+// defensive row caps before the type post-filter runs.
 func (s *Server) loadTrustSignatures(ctx context.Context, agentIDs []string) portalTrustSignaturesResponse {
 	now := time.Now().UTC()
 	windowStart := now.Add(-trustSignaturesWindowHours * time.Hour)
+	agentIDs, agentFanoutTruncated := boundedTrustAgentIDs(agentIDs)
 
 	resp := portalTrustSignaturesResponse{
 		WindowHours: trustSignaturesWindowHours,
 		BySource:    []portalTrustSignaturesSourceRow{},
 		Series:      []portalTrustSignatureSeriesPoint{},
+		Truncated:   agentFanoutTruncated,
 	}
 
 	bySource := make(map[string]int) // agentID → failure count
 	byBucket := make(map[time.Time]int)
 	totalFailures := 0
+	rowsRead := 0
 
 	for _, agentID := range agentIDs {
+		remainingRows := trustSignaturesMaxRowsPerRequest - rowsRead
+		if remainingRows <= 0 {
+			resp.Truncated = true
+			break
+		}
+		limit := minInt(trustSignaturesMaxRowsPerAgent, remainingRows)
 		pk := fmt.Sprintf("SOUL#AGENT#%s", agentID)
 		var failures []*models.SoulAgentFailure
 		err := s.store.DB.WithContext(ctx).
 			Model(&models.SoulAgentFailure{}).
 			Where("PK", "=", pk).
-			Where("SK", "begins_with", "FAILURE#").
+			Where("SK", "BETWEEN", []any{
+				signatureFailureSortKeyLowerBound(windowStart),
+				signatureFailureSortKeyUpperBound(now),
+			}).
+			OrderBy("SK", "ASC").
+			Limit(limit).
 			All(&failures)
 		if err != nil && !theoryErrors.IsNotFound(err) {
 			continue // degrade gracefully on read errors
+		}
+		rowsRead += len(failures)
+		if len(failures) >= limit || rowsRead >= trustSignaturesMaxRowsPerRequest {
+			resp.Truncated = true
 		}
 
 		for _, f := range failures {
@@ -773,6 +869,14 @@ func (s *Server) loadTrustSignatures(ctx context.Context, agentIDs []string) por
 	resp.BySource = sortedSourceRows(bySource, trustSignaturesMaxSources)
 	resp.Series = sortedSignatureSeries(byBucket)
 	return resp
+}
+
+func signatureFailureSortKeyLowerBound(ts time.Time) string {
+	return fmt.Sprintf("FAILURE#%s", ts.UTC().Format(time.RFC3339Nano))
+}
+
+func signatureFailureSortKeyUpperBound(ts time.Time) string {
+	return fmt.Sprintf("FAILURE#%s~", ts.UTC().Format(time.RFC3339Nano))
 }
 
 func signatureFailureTimestampOutOfWindow(ts time.Time, windowStart time.Time, now time.Time) bool {
@@ -892,40 +996,37 @@ func (s *Server) loadTrustScore(ctx context.Context, agentIDs []string) portalTr
 
 // loadTrustVouches queries SoulAgentPeerEndorsement rows for the given agent
 // IDs, returning bounded peer/strength pairs with provenance redacted. Count
-// reflects total available endorsements even when items are bounded.
+// uses Count() instead of loading all endorsement rows; Items are built from
+// bounded per-agent OrderBy(SK DESC)+Limit reads and a request-level row cap.
 func (s *Server) loadTrustVouches(ctx context.Context, agentIDs []string) portalTrustVouchesResponse {
-	resp := portalTrustVouchesResponse{}
-
-	type vouchEntry struct {
-		peer      string
-		createdAt time.Time
+	agentIDs, agentFanoutTruncated := boundedTrustAgentIDs(agentIDs)
+	resp := portalTrustVouchesResponse{
+		Items:     []portalTrustVouchItem{},
+		Truncated: agentFanoutTruncated,
 	}
-	var all []vouchEntry
+
+	var all []portalTrustVouchEntry
+	rowsRead := 0
 
 	for _, agentID := range agentIDs {
+		remainingRows := trustVouchesMaxRowsPerRequest - rowsRead
+		if remainingRows <= 0 {
+			resp.Truncated = true
+			break
+		}
+		limit := minInt(trustVouchesMaxRowsPerAgent, remainingRows)
 		pk := fmt.Sprintf("SOUL#AGENT#%s", agentID)
-		var endorsements []*models.SoulAgentPeerEndorsement
-		err := s.store.DB.WithContext(ctx).
-			Model(&models.SoulAgentPeerEndorsement{}).
-			Where("PK", "=", pk).
-			Where("SK", "begins_with", "ENDORSEMENT#").
-			All(&endorsements)
+		endorsements, count, truncated, err := s.loadBoundedTrustVouchesForAgent(ctx, pk, limit)
 		if err != nil && !theoryErrors.IsNotFound(err) {
 			continue // degrade on read error
 		}
-
-		for _, e := range endorsements {
-			if e == nil {
-				continue
-			}
-			all = append(all, vouchEntry{
-				peer:      strings.TrimSpace(e.EndorserAgentID),
-				createdAt: e.CreatedAt,
-			})
+		rowsRead += len(endorsements)
+		resp.Count += count
+		if truncated || rowsRead >= trustVouchesMaxRowsPerRequest {
+			resp.Truncated = true
 		}
+		all = appendTrustVouchEntries(all, endorsements)
 	}
-
-	resp.Count = len(all)
 
 	// Stable sort by created_at descending.
 	sort.Slice(all, func(i, j int) bool {
@@ -949,4 +1050,50 @@ func (s *Server) loadTrustVouches(ctx context.Context, agentIDs []string) portal
 	resp.Items = items
 
 	return resp
+}
+
+type portalTrustVouchEntry struct {
+	peer      string
+	createdAt time.Time
+}
+
+func (s *Server) loadBoundedTrustVouchesForAgent(ctx context.Context, pk string, limit int) ([]*models.SoulAgentPeerEndorsement, int, bool, error) {
+	count, countErr := s.store.DB.WithContext(ctx).
+		Model(&models.SoulAgentPeerEndorsement{}).
+		Where("PK", "=", pk).
+		Where("SK", "begins_with", "ENDORSEMENT#").
+		Count()
+
+	var endorsements []*models.SoulAgentPeerEndorsement
+	err := s.store.DB.WithContext(ctx).
+		Model(&models.SoulAgentPeerEndorsement{}).
+		Where("PK", "=", pk).
+		Where("SK", "begins_with", "ENDORSEMENT#").
+		OrderBy("SK", "DESC").
+		Limit(limit).
+		All(&endorsements)
+	if err != nil {
+		return nil, 0, false, err
+	}
+
+	countOut := len(endorsements)
+	truncated := len(endorsements) >= limit
+	if countErr == nil && count > int64(countOut) {
+		countOut = int(count)
+		truncated = true
+	}
+	return endorsements, countOut, truncated, nil
+}
+
+func appendTrustVouchEntries(out []portalTrustVouchEntry, endorsements []*models.SoulAgentPeerEndorsement) []portalTrustVouchEntry {
+	for _, e := range endorsements {
+		if e == nil {
+			continue
+		}
+		out = append(out, portalTrustVouchEntry{
+			peer:      strings.TrimSpace(e.EndorserAgentID),
+			createdAt: e.CreatedAt,
+		})
+	}
+	return out
 }
