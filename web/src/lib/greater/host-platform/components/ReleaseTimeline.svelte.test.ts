@@ -55,9 +55,7 @@ describe('ReleaseTimeline release-note href safety', () => {
 
 			expect(target.querySelector('.gr-host-platform-release-timeline__link')).toBeNull();
 			expect(renderedHrefs).not.toContain(href);
-			expect(renderedHrefs.some((renderedHref) => renderedHref.startsWith('javascript:'))).toBe(false);
-			expect(renderedHrefs.some((renderedHref) => renderedHref.startsWith('data:'))).toBe(false);
-			expect(renderedHrefs.some((renderedHref) => renderedHref.startsWith('vbscript:'))).toBe(false);
+			expect(renderedHrefs.every((renderedHref) => renderedHref === '' || /^https?:\/\//i.test(renderedHref))).toBe(true);
 		},
 	);
 });
