@@ -1223,7 +1223,7 @@ check_parity() {
     record_result "DOC-5" "Docs" "BLOCKED" "Threat model or controls matrix missing" "${evidence_path}"
   else
     local threat_ids
-    threat_ids=$(grep -oE 'THR-[0-9]+' "${threat_model}" | sort -u || true)
+    threat_ids=$(grep -oE '(THR-[0-9]+|T-[A-Z][A-Z0-9-]*-[0-9]+)' "${threat_model}" | sort -u || true)
 
     local missing=""
     for thr_id in ${threat_ids}; do
@@ -1994,11 +1994,13 @@ require_pattern "${roadmap}" 'list endpoints return redacted previews/metadata' 
 require_pattern "${roadmap}" 'bearer token is hashed \(`sha256\(raw_key\)`\) and matched to the' 'roadmap requires hash-match instance auth semantics'
 
 require_pattern "${threats}" 'THR-11' 'threat model includes bounded mailbox threat'
+require_pattern "${threats}" 'T-AUTH-DRIFT-001' 'threat model includes representative T-* threat'
 require_pattern "${threats}" 'Bounded mailbox content/state drift' 'threat model names content/state drift'
 require_pattern "${threats}" 'retained indefinitely, list endpoints expose full bodies, read/archive/delete state lacks audit, instance-auth falls back to plaintext, or mailbox data crosses tenant boundaries' 'threat model enumerates insecure mailbox expansion cases'
 
 require_pattern "${controls}" 'CMP-4' 'controls matrix includes CMP-4'
 require_pattern "${controls}" 'THR-11' 'controls matrix maps THR-11'
+require_pattern "${controls}" 'T-AUTH-DRIFT-001' 'controls matrix maps representative T-* threat'
 require_pattern "${controls}" 'retention, encryption, access audit, list/content split, no semantic-memory role, hash-only instance auth, write-once events, protected identity/provenance fields, and no body-owned mailbox truth' 'controls matrix enumerates bounded mailbox controls with semantics'
 
 require_pattern "${evidence}" 'CMP-4' 'evidence plan includes CMP-4'
