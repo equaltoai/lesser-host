@@ -781,6 +781,29 @@ describe('PortalShell', () => {
 			expect(groupLabels).toContain('Souls');
 		});
 
+		it('removes fleet-derived Open commands after central session clear', async () => {
+			setSession(customerSession());
+			mockListInstances.mockResolvedValue({ instances: [], count: 0 });
+			mockGetPortalMe.mockResolvedValue({ username: 'u', role: 'customer', method: 'wallet' });
+			mockSoulListMyAgents.mockResolvedValue({ agents: [], count: 0 });
+
+			portalFleetInstances.set([{ slug: 'alpha', hosted_region: 'us-east-1', lesser_version: 'v1.0.0' }]);
+
+			const { target } = mountPortalShell();
+			await settle();
+
+			openPalette();
+			await tick();
+
+			const dialog = target.querySelector('[role="dialog"][aria-modal="true"]')!;
+			expect(dialog.textContent).toContain('Open alpha');
+
+			clearSession();
+			await tick();
+
+			expect(dialog.textContent).not.toContain('Open alpha');
+		});
+
 		it('renders stubbed actions as disabled items', async () => {
 			setSession(customerSession());
 			mockListInstances.mockResolvedValue({ instances: [], count: 0 });
