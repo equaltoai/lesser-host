@@ -420,11 +420,9 @@ func TestDefaultMigaduClientEnsuresMailboxAndForwarding(t *testing.T) {
 	}
 }
 
-func TestDefaultMigaduClient_MailboxAlreadyExistsProceedsToForwarding(t *testing.T) {
-	// CSR-008: When Migadu returns 409 Conflict on mailbox creation, the
-	// migration must not fail; it must proceed to create the forwarding
-	// (which is the essential operation) and complete successfully.
-	server := newMigaduConflictMailboxTestServer(t)
+func TestDefaultMigaduClientMailboxConflictFailsClosedWithoutForwarding(t *testing.T) {
+	var paths []string
+	server := newMigaduConflictMailboxTestServer(t, &paths)
 	defer server.Close()
 
 	oldCredsLoader := migaduCredsLoader
@@ -450,19 +448,26 @@ func TestDefaultMigaduClient_MailboxAlreadyExistsProceedsToForwarding(t *testing
 		LocalPart:         testNewLocalPart,
 		ForwardingAddress: testForwardingAddr,
 	})
-	if err != nil {
-		t.Fatalf("expected mailbox-already-exists to be non-fatal, got: %v", err)
+	if !errors.Is(err, errMigaduMailboxAlreadyExists) {
+		t.Fatalf("expected mailbox conflict to fail closed, got: %v", err)
+	}
+	got := strings.Join(paths, ",")
+	if got != "POST "+testMailboxesPath {
+		t.Fatalf("expected mailbox POST only and no forwarding POST on 409, got %q", got)
 	}
 }
 
-func newMigaduConflictMailboxTestServer(t *testing.T) *httptest.Server {
+func newMigaduConflictMailboxTestServer(t *testing.T, paths *[]string) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*paths = append(*paths, r.Method+" "+r.URL.Path)
+		assertMigaduTestAuth(t, r)
 		switch r.URL.Path {
 		case testMailboxesPath:
+			assertMigaduMailboxRequest(t, r)
 			w.WriteHeader(http.StatusConflict)
 		case "/domains/lessersoul.ai/mailboxes/" + testNewLocalPart + "/forwardings":
-			w.WriteHeader(http.StatusCreated)
+			t.Fatalf("forwarding POST must not be issued after unverified mailbox conflict")
 		default:
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}

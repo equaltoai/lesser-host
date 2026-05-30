@@ -53,9 +53,9 @@ var (
 
 // errMigaduMailboxAlreadyExists is a sentinel returned by defaultMigaduCreateMailbox
 // when the Migadu API responds with HTTP 409 Conflict, meaning a mailbox with the
-// same local part already exists. The caller should treat this as a non-fatal
-// signal: the mailbox exists (possibly from a prior migration run) and forwarding
-// may still be created or already be in place.
+// same local part already exists. Callers must treat this as a fail-closed error:
+// without a verified ownership/state read, the migration must not add forwarding
+// to a mailbox it did not create.
 var errMigaduMailboxAlreadyExists = errors.New("migadu mailbox already exists")
 
 type migrationConfig struct {
@@ -689,7 +689,7 @@ func (defaultMigaduClient) EnsureMailboxAndForwarding(ctx context.Context, input
 	if input.DisplayName == "" {
 		input.DisplayName = input.LocalPart
 	}
-	if err := defaultMigaduCreateMailbox(ctx, creds, input.LocalPart, input.DisplayName, password); err != nil && !errors.Is(err, errMigaduMailboxAlreadyExists) {
+	if err := defaultMigaduCreateMailbox(ctx, creds, input.LocalPart, input.DisplayName, password); err != nil {
 		return err
 	}
 	return defaultMigaduCreateForwarding(ctx, creds, input.LocalPart, input.ForwardingAddress)
