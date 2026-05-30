@@ -56,6 +56,8 @@ type telnyxVoiceWebhook struct {
 	} `json:"data"`
 }
 
+const commVoiceCallUsageModule = "comm.voice.call"
+
 func (s *Server) handleCommEmailInboundWebhook(ctx *apptheory.Context) (*apptheory.Response, error) {
 	if s == nil || ctx == nil || s.enqueueCommMessage == nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
@@ -454,10 +456,10 @@ func (s *Server) meterTelnyxVoiceUsage(ctx *apptheory.Context, agentID string, i
 	billingType := billing.TypeFromParts(includedDebited, overageDebited)
 
 	ledger := &models.UsageLedgerEntry{
-		ID:                     billing.UsageLedgerEntryID(instanceSlug, month, callID, "comm.voice.call", callID, credits),
+		ID:                     billing.UsageLedgerEntryID(instanceSlug, month, callID, commVoiceCallUsageModule, callID, credits),
 		InstanceSlug:           instanceSlug,
 		Month:                  month,
-		Module:                 "comm.voice.call",
+		Module:                 commVoiceCallUsageModule,
 		Target:                 callID,
 		Cached:                 false,
 		Reason:                 billingType,
@@ -474,6 +476,15 @@ func (s *Server) meterTelnyxVoiceUsage(ctx *apptheory.Context, agentID string, i
 	}
 	_ = ledger.UpdateKeys()
 
+	dedup := &models.UsageMeteringDedup{
+		InstanceSlug: instanceSlug,
+		Month:        month,
+		Module:       commVoiceCallUsageModule,
+		Target:       callID,
+		CreatedAt:    now,
+	}
+	_ = dedup.UpdateKeys()
+
 	updateBudget := &models.InstanceBudgetMonth{
 		InstanceSlug: instanceSlug,
 		Month:        month,
@@ -482,6 +493,7 @@ func (s *Server) meterTelnyxVoiceUsage(ctx *apptheory.Context, agentID string, i
 	_ = updateBudget.UpdateKeys()
 
 	err := s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
+		tx.Create(dedup)
 		tx.Create(ledger)
 		tx.UpdateWithBuilder(updateBudget, func(ub core.UpdateBuilder) error {
 			ub.Add("UsedCredits", credits)

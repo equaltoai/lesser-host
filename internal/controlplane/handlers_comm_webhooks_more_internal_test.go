@@ -62,6 +62,7 @@ const (
 	commWebhookSecretSSMParam   = "/test/comm/webhook"
 	commWebhookTestInstanceSlug = "inst1"
 	commWebhookTestSecret       = "test-webhook-secret"
+	commWebhookTestCallID       = "call-1"
 )
 
 type commWebhookHandler func(*Server, *apptheory.Context) (*apptheory.Response, error)
@@ -107,7 +108,7 @@ func TestExtractTelnyxVoiceFields(t *testing.T) {
 		"duration_seconds": json.Number("61"),
 	}
 	from, to, callID, occurredAt, duration := extractTelnyxVoiceFields(tel)
-	if from != "+15550142" || to != "+15550143" || callID != "call-1" || occurredAt != commWebhookReceivedAt || duration != 61 {
+	if from != "+15550142" || to != "+15550143" || callID != commWebhookTestCallID || occurredAt != commWebhookReceivedAt || duration != 61 {
 		t.Fatalf("unexpected extracted voice fields: from=%q to=%q callID=%q occurredAt=%q duration=%d", from, to, callID, occurredAt, duration)
 	}
 }
@@ -629,7 +630,7 @@ func TestMeterTelnyxVoiceCall_StoreNotInitializedReturnsError(t *testing.T) {
 	t.Parallel()
 
 	s := &Server{}
-	if err := s.meterTelnyxVoiceCall(&apptheory.Context{}, "+15550142", "call-1", 60); err == nil || err.Error() != "store not initialized" {
+	if err := s.meterTelnyxVoiceCall(&apptheory.Context{}, "+15550142", commWebhookTestCallID, 60); err == nil || err.Error() != "store not initialized" {
 		t.Fatalf("expected store not initialized error, got %v", err)
 	}
 }
@@ -639,13 +640,13 @@ func TestMeterTelnyxVoiceCall_InvalidInputsAreIgnored(t *testing.T) {
 
 	s := &Server{store: store.New(ttmocks.NewMockExtendedDB())}
 	ctx := &apptheory.Context{}
-	if err := s.meterTelnyxVoiceCall(ctx, "", "call-1", 60); err != nil {
+	if err := s.meterTelnyxVoiceCall(ctx, "", commWebhookTestCallID, 60); err != nil {
 		t.Fatalf("expected nil for blank phone, got %v", err)
 	}
 	if err := s.meterTelnyxVoiceCall(ctx, "+15550142", "", 60); err != nil {
 		t.Fatalf("expected nil for blank call id, got %v", err)
 	}
-	if err := s.meterTelnyxVoiceCall(ctx, "+15550142", "call-1", 0); err != nil {
+	if err := s.meterTelnyxVoiceCall(ctx, "+15550142", commWebhookTestCallID, 0); err != nil {
 		t.Fatalf("expected nil for non-positive duration, got %v", err)
 	}
 }
@@ -656,7 +657,7 @@ func TestMeterTelnyxVoiceCall_PhoneIndexNotFound(t *testing.T) {
 	tdb := newCommWebhookTestDB()
 	s := &Server{store: store.New(tdb.db)}
 	tdb.qPhone.On("First", mock.AnythingOfType("*models.SoulPhoneAgentIndex")).Return(assertNotFound()).Once()
-	if err := s.meterTelnyxVoiceCall(&apptheory.Context{}, "+1 (555) 0142", "call-1", 60); err != nil {
+	if err := s.meterTelnyxVoiceCall(&apptheory.Context{}, "+1 (555) 0142", commWebhookTestCallID, 60); err != nil {
 		t.Fatalf("expected nil when phone index missing, got %v", err)
 	}
 }
@@ -667,7 +668,7 @@ func TestMeterTelnyxVoiceCall_BlankAgentIDIgnored(t *testing.T) {
 	tdb := newCommWebhookTestDB()
 	s := &Server{store: store.New(tdb.db)}
 	expectCommWebhookPhoneAgent(t, tdb.qPhone, " ")
-	if err := s.meterTelnyxVoiceCall(&apptheory.Context{}, "+15550142", "call-1", 60); err != nil {
+	if err := s.meterTelnyxVoiceCall(&apptheory.Context{}, "+15550142", commWebhookTestCallID, 60); err != nil {
 		t.Fatalf("expected nil when agent id blank, got %v", err)
 	}
 }
@@ -679,7 +680,7 @@ func TestMeterTelnyxVoiceCall_IdentityMissing(t *testing.T) {
 	s := &Server{store: store.New(tdb.db)}
 	expectCommWebhookPhoneAgent(t, tdb.qPhone, "0xabc")
 	tdb.qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(assertNotFound()).Once()
-	if err := s.meterTelnyxVoiceCall(&apptheory.Context{}, "+15550142", "call-1", 60); err != nil {
+	if err := s.meterTelnyxVoiceCall(&apptheory.Context{}, "+15550142", commWebhookTestCallID, 60); err != nil {
 		t.Fatalf("expected nil when identity missing, got %v", err)
 	}
 }
@@ -692,7 +693,7 @@ func TestMeterTelnyxVoiceCall_DomainMissing(t *testing.T) {
 	expectCommWebhookPhoneAgent(t, tdb.qPhone, "0xabc")
 	expectCommWebhookIdentity(t, tdb.qIdentity, "0xabc", "example.com")
 	tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(assertNotFound()).Once()
-	if err := s.meterTelnyxVoiceCall(&apptheory.Context{}, "+15550142", "call-1", 60); err != nil {
+	if err := s.meterTelnyxVoiceCall(&apptheory.Context{}, "+15550142", commWebhookTestCallID, 60); err != nil {
 		t.Fatalf("expected nil when domain missing, got %v", err)
 	}
 }
@@ -705,7 +706,7 @@ func TestMeterTelnyxVoiceCall_BlankInstanceSlugIgnored(t *testing.T) {
 	expectCommWebhookPhoneAgent(t, tdb.qPhone, "0xabc")
 	expectCommWebhookIdentity(t, tdb.qIdentity, "0xabc", "example.com")
 	expectCommWebhookDomain(t, tdb.qDomain, " ")
-	if err := s.meterTelnyxVoiceCall(&apptheory.Context{}, "+15550142", "call-1", 60); err != nil {
+	if err := s.meterTelnyxVoiceCall(&apptheory.Context{}, "+15550142", commWebhookTestCallID, 60); err != nil {
 		t.Fatalf("expected nil when instance slug blank, got %v", err)
 	}
 }
@@ -719,7 +720,7 @@ func TestMeterTelnyxVoiceCall_BudgetMissing(t *testing.T) {
 	expectCommWebhookIdentity(t, tdb.qIdentity, "0xabc", "example.com")
 	expectCommWebhookDomain(t, tdb.qDomain, commWebhookTestInstanceSlug)
 	tdb.qBudget.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(assertNotFound()).Once()
-	if err := s.meterTelnyxVoiceCall(&apptheory.Context{}, "+15550142", "call-1", 60); err != nil {
+	if err := s.meterTelnyxVoiceCall(&apptheory.Context{}, "+15550142", commWebhookTestCallID, 60); err != nil {
 		t.Fatalf("expected nil when budget missing, got %v", err)
 	}
 }
@@ -782,26 +783,11 @@ func TestMeterTelnyxVoiceCall_CreatesLedgerAndBudgetUpdate(t *testing.T) {
 		*dest = models.InstanceBudgetMonth{InstanceSlug: commWebhookTestInstanceSlug, IncludedCredits: 12, UsedCredits: 5}
 	}).Once()
 
-	tb.On("Create", mock.Anything, mock.Anything).Return(tb).Once().Run(func(args mock.Arguments) {
-		entry := testutil.RequireMockArg[*models.UsageLedgerEntry](t, args, 0)
-		if entry.InstanceSlug != commWebhookTestInstanceSlug {
-			t.Fatalf("expected instance slug %s, got %q", commWebhookTestInstanceSlug, entry.InstanceSlug)
-		}
-		if entry.Module != "comm.voice.call" || entry.Target != "call-1" {
-			t.Fatalf("unexpected ledger routing fields: %+v", entry)
-		}
-		if entry.RequestedCredits != 16 || entry.DebitedCredits != 16 {
-			t.Fatalf("expected 16 credits for 2 billable minutes, got requested=%d debited=%d", entry.RequestedCredits, entry.DebitedCredits)
-		}
-		if entry.IncludedDebitedCredits != 7 || entry.OverageDebitedCredits != 9 {
-			t.Fatalf("expected mixed included/overage split 7/9, got %d/%d", entry.IncludedDebitedCredits, entry.OverageDebitedCredits)
-		}
-		if entry.BillingType != models.BillingTypeMixed {
-			t.Fatalf("expected mixed billing type, got %q", entry.BillingType)
-		}
-		if !strings.HasPrefix(entry.ActorURI, "soul_agent:0xabc") {
-			t.Fatalf("expected actor uri for agent, got %q", entry.ActorURI)
-		}
+	var sawDedup, sawLedger bool
+	tb.On("Create", mock.Anything, mock.Anything).Return(tb).Twice().Run(func(args mock.Arguments) {
+		gotDedup, gotLedger := assertTelnyxVoiceMeteringCreate(t, args.Get(0), commWebhookTestCallID)
+		sawDedup = sawDedup || gotDedup
+		sawLedger = sawLedger || gotLedger
 	})
 	tb.On("UpdateWithBuilder", mock.Anything, mock.Anything, mock.Anything).Return(tb).Once().Run(func(args mock.Arguments) {
 		budget := testutil.RequireMockArg[*models.InstanceBudgetMonth](t, args, 0)
@@ -813,8 +799,11 @@ func TestMeterTelnyxVoiceCall_CreatesLedgerAndBudgetUpdate(t *testing.T) {
 		}
 	})
 
-	if err := s.meterTelnyxVoiceCall(ctx, "+1 (555) 0142", "call-1", 61); err != nil {
+	if err := s.meterTelnyxVoiceCall(ctx, "+1 (555) 0142", commWebhookTestCallID, 61); err != nil {
 		t.Fatalf("unexpected err: %v", err)
+	}
+	if !sawDedup || !sawLedger {
+		t.Fatalf("expected voice metering to create both dedup and ledger records, saw dedup=%v ledger=%v", sawDedup, sawLedger)
 	}
 }
 
@@ -834,10 +823,10 @@ func TestMeterTelnyxVoiceCall_DuplicateLedgerIsIdempotent(t *testing.T) {
 		dest := testutil.RequireMockArg[*models.InstanceBudgetMonth](t, args, 0)
 		*dest = models.InstanceBudgetMonth{InstanceSlug: commWebhookTestInstanceSlug, IncludedCredits: 12, UsedCredits: 5}
 	}).Once()
-	tb.On("Create", mock.Anything, mock.Anything).Return(tb).Once()
+	tb.On("Create", mock.Anything, mock.Anything).Return(tb).Twice()
 	tb.On("UpdateWithBuilder", mock.Anything, mock.Anything, mock.Anything).Return(tb).Once()
 
-	if err := s.meterTelnyxVoiceCall(&apptheory.Context{}, "+15550142", "call-1", 60); err != nil {
+	if err := s.meterTelnyxVoiceCall(&apptheory.Context{}, "+15550142", commWebhookTestCallID, 60); err != nil {
 		t.Fatalf("expected duplicate ledger to be idempotent, got %v", err)
 	}
 }
@@ -999,6 +988,53 @@ func assertCommWebhookReceivedAt(t *testing.T, receivedAt string) {
 	}
 	if _, err := time.Parse(time.RFC3339Nano, receivedAt); err != nil {
 		t.Fatalf("expected RFC3339Nano fallback timestamp, got %q err=%v", receivedAt, err)
+	}
+}
+
+func assertTelnyxVoiceMeteringCreate(t *testing.T, model any, callID string) (dedup bool, ledger bool) {
+	t.Helper()
+	switch item := model.(type) {
+	case *models.UsageMeteringDedup:
+		assertTelnyxVoiceMeteringDedup(t, item, callID)
+		return true, false
+	case *models.UsageLedgerEntry:
+		assertTelnyxVoiceUsageLedger(t, item, callID)
+		return false, true
+	default:
+		t.Fatalf("unexpected transaction create model %T", item)
+		return false, false
+	}
+}
+
+func assertTelnyxVoiceMeteringDedup(t *testing.T, item *models.UsageMeteringDedup, callID string) {
+	t.Helper()
+	if item.InstanceSlug != commWebhookTestInstanceSlug || item.Module != commVoiceCallUsageModule || item.Target != callID {
+		t.Fatalf("unexpected voice metering dedup: %#v", item)
+	}
+	if item.PK == "" || item.SK == "" {
+		t.Fatalf("expected dedup keys to be populated: %#v", item)
+	}
+}
+
+func assertTelnyxVoiceUsageLedger(t *testing.T, entry *models.UsageLedgerEntry, callID string) {
+	t.Helper()
+	if entry.InstanceSlug != commWebhookTestInstanceSlug {
+		t.Fatalf("expected instance slug %s, got %q", commWebhookTestInstanceSlug, entry.InstanceSlug)
+	}
+	if entry.Module != commVoiceCallUsageModule || entry.Target != callID {
+		t.Fatalf("unexpected ledger routing fields: %+v", entry)
+	}
+	if entry.RequestedCredits != 16 || entry.DebitedCredits != 16 {
+		t.Fatalf("expected 16 credits for 2 billable minutes, got requested=%d debited=%d", entry.RequestedCredits, entry.DebitedCredits)
+	}
+	if entry.IncludedDebitedCredits != 7 || entry.OverageDebitedCredits != 9 {
+		t.Fatalf("expected mixed included/overage split 7/9, got %d/%d", entry.IncludedDebitedCredits, entry.OverageDebitedCredits)
+	}
+	if entry.BillingType != models.BillingTypeMixed {
+		t.Fatalf("expected mixed billing type, got %q", entry.BillingType)
+	}
+	if !strings.HasPrefix(entry.ActorURI, "soul_agent:0xabc") {
+		t.Fatalf("expected actor uri for agent, got %q", entry.ActorURI)
 	}
 }
 
