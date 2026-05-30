@@ -632,8 +632,9 @@ func trustFederationStatus(info lesserFederationInstanceInfo, now time.Time) str
 	return trustFederationStatusReachable
 }
 
-// loadTrustQueueDepth records a best-effort current queue-depth sample and then
-// returns persisted instance-scoped samples in the 24-hour dashboard window.
+// loadTrustQueueDepth records a best-effort, coalesced current queue-depth
+// sample and then returns persisted instance-scoped samples in the 24-hour
+// dashboard window.
 func (s *Server) loadTrustQueueDepth(ctx context.Context, inst *models.Instance, agentIDs []string) portalTrustQueueDepthResponse {
 	resp := newPortalTrustQueueDepthResponse()
 	if !canLoadTrustQueueDepth(s, inst, agentIDs) {
@@ -701,6 +702,22 @@ func trustQueueDepthSampleInScope(sample *models.TrustQueueDepthSample, slug str
 }
 
 func (s *Server) recordTrustQueueDepthSnapshot(ctx context.Context, instanceSlug string, agentIDs []string, now time.Time) (*models.TrustQueueDepthSample, error) {
+	sample := &models.TrustQueueDepthSample{
+		InstanceSlug: strings.ToLower(strings.TrimSpace(instanceSlug)),
+		Timestamp:    now,
+		Source:       trustQueueDepthSource,
+	}
+	if err := sample.BeforeCreate(); err != nil {
+		return sample, err
+	}
+	existing, exists, err := s.loadTrustQueueDepthSampleBucket(ctx, sample)
+	if err != nil {
+		return nil, err
+	}
+	if exists {
+		return existing, nil
+	}
+
 	depth := 0
 	for _, agentID := range uniqueSortedStrings(agentIDs) {
 		if agentID == "" {
@@ -721,16 +738,33 @@ func (s *Server) recordTrustQueueDepthSnapshot(ctx context.Context, instanceSlug
 		}
 	}
 
-	sample := &models.TrustQueueDepthSample{
-		InstanceSlug: strings.ToLower(strings.TrimSpace(instanceSlug)),
-		Timestamp:    now,
-		Depth:        depth,
-		Source:       trustQueueDepthSource,
-	}
-	if err := s.store.DB.WithContext(ctx).Model(sample).Create(); err != nil && !theoryErrors.IsConditionFailed(err) {
+	sample.Depth = depth
+	if err := s.store.DB.WithContext(ctx).Model(sample).IfNotExists().Create(); err != nil {
+		if theoryErrors.IsConditionFailed(err) {
+			return nil, nil
+		}
 		return sample, err
 	}
 	return sample, nil
+}
+
+func (s *Server) loadTrustQueueDepthSampleBucket(ctx context.Context, sample *models.TrustQueueDepthSample) (*models.TrustQueueDepthSample, bool, error) {
+	if s == nil || s.store == nil || s.store.DB == nil || sample == nil {
+		return nil, false, nil
+	}
+	var existing models.TrustQueueDepthSample
+	err := s.store.DB.WithContext(ctx).
+		Model(&models.TrustQueueDepthSample{}).
+		Where("PK", "=", sample.PK).
+		Where("SK", "=", sample.SK).
+		First(&existing)
+	if err != nil {
+		if theoryErrors.IsNotFound(err) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	return &existing, true, nil
 }
 
 func trustQueueDepthPointFromSample(sample *models.TrustQueueDepthSample) portalTrustQueueDepthPoint {
