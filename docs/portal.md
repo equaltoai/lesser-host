@@ -59,6 +59,10 @@ All instance endpoints require auth. Access rules:
 Creating an instance also creates a managed **primary domain** record for `slug.<MANAGED_PARENT_DOMAIN>` (default:
 `slug.greater.website`).
 
+Instance responses include `managed: true` when the instance has lesser.host-managed DNS/provisioning metadata
+(`hosted_base_domain`). Fresh portal-managed instances are `managed: true` before `hosted_region` or
+`hosted_account_id` exist; externally registered instances are `managed: false`.
+
 ### Configure instance features
 
 - `PUT /api/v1/portal/instances/{slug}/config`
