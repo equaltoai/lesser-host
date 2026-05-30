@@ -635,6 +635,8 @@ func newSoulTrustTestDB(t *testing.T) *soulTrustTestDB {
 	tdb.qEndorse.On("Count").Return(int64(0), nil).Maybe()
 	tdb.qQueue.On("OrderBy", mock.Anything, mock.Anything).Return(tdb.qQueue).Maybe()
 	tdb.qQueue.On("Limit", mock.Anything).Return(tdb.qQueue).Maybe()
+	tdb.qQueue.On("First", mock.AnythingOfType("*models.TrustQueueDepthSample")).Return(theoryErrors.ErrItemNotFound).Maybe()
+	tdb.qQueue.On("IfNotExists").Return(tdb.qQueue).Maybe()
 	tdb.qQueue.On("Create").Return(nil).Maybe()
 	tdb.qQueue.On("All", mock.Anything).Return(theoryErrors.ErrItemNotFound).Maybe()
 
@@ -1135,6 +1137,92 @@ func TestHandlePortalGetTrustData_QueueDepthSnapshotCountsScopedMailboxRows(t *t
 	require.Equal(t, 7, data.QueueDepth.Series[0].Depth)
 }
 
+func TestRecordTrustQueueDepthSnapshot_CoalescesBucketBeforeMailboxCounts(t *testing.T) {
+	t.Parallel()
+
+	db := ttmocks.NewMockExtendedDB()
+	qQueue := new(ttmocks.MockQuery)
+	qMailbox := new(ttmocks.MockQuery)
+	db.On("WithContext", mock.Anything).Return(db).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.TrustQueueDepthSample")).Return(qQueue).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulCommMailboxMessage")).Return(qMailbox).Maybe()
+
+	agentID := "0x0000000000000000000000000000000000000000000000000000000000000aaa"
+	now := time.Date(2026, 5, 30, 12, 5, 0, 0, time.UTC)
+	laterSameBucket := now.Add(35 * time.Minute)
+	existing := models.TrustQueueDepthSample{
+		InstanceSlug: "demo",
+		Timestamp:    now,
+		Depth:        7,
+		Source:       trustQueueDepthSource,
+	}
+
+	qQueue.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qQueue).Maybe()
+	qQueue.On("OrderBy", "SK", "DESC").Return(qQueue).Maybe()
+	qQueue.On("Limit", trustQueueDepthMaxSeriesPoints).Return(qQueue).Maybe()
+	qQueue.On("All", mock.Anything).Return(theoryErrors.ErrItemNotFound).Maybe()
+	qQueue.On("First", mock.AnythingOfType("*models.TrustQueueDepthSample")).Return(theoryErrors.ErrItemNotFound).Once()
+	qQueue.On("First", mock.AnythingOfType("*models.TrustQueueDepthSample")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.TrustQueueDepthSample](t, args, 0)
+		*dest = existing
+	}).Once()
+	qQueue.On("IfNotExists").Return(qQueue).Once()
+	qQueue.On("Create").Return(nil).Once()
+
+	qMailbox.On("Where", "PK", "=", models.SoulCommMailboxAgentPK("demo", agentID)).Return(qMailbox).Once()
+	qMailbox.On("Filter", "direction", "=", models.SoulCommDirectionInbound).Return(qMailbox).Once()
+	qMailbox.On("Filter", "status", "=", models.SoulCommMailboxStatusQueued).Return(qMailbox).Once()
+	qMailbox.On("Filter", "deleted", "=", false).Return(qMailbox).Once()
+	qMailbox.On("Count").Return(int64(7), nil).Once()
+
+	s := &Server{store: store.New(db)}
+	inst := &models.Instance{Slug: "demo"}
+
+	first, err := s.recordTrustQueueDepthSnapshot(context.Background(), inst.Slug, []string{agentID}, now)
+	require.NoError(t, err)
+	require.NotNil(t, first)
+	require.Equal(t, 7, first.Depth)
+
+	second, err := s.recordTrustQueueDepthSnapshot(context.Background(), inst.Slug, []string{agentID}, laterSameBucket)
+	require.NoError(t, err)
+	require.NotNil(t, second)
+	require.Equal(t, 7, second.Depth)
+
+	qMailbox.AssertNumberOfCalls(t, "Count", 1)
+	qQueue.AssertNumberOfCalls(t, "IfNotExists", 1)
+	qQueue.AssertNumberOfCalls(t, "Create", 1)
+}
+
+func TestRecordTrustQueueDepthSnapshot_ConditionFailedSuppressesDuplicate(t *testing.T) {
+	t.Parallel()
+
+	db := ttmocks.NewMockExtendedDB()
+	qQueue := new(ttmocks.MockQuery)
+	qMailbox := new(ttmocks.MockQuery)
+	db.On("WithContext", mock.Anything).Return(db).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.TrustQueueDepthSample")).Return(qQueue).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulCommMailboxMessage")).Return(qMailbox).Maybe()
+
+	agentID := "0x0000000000000000000000000000000000000000000000000000000000000aaa"
+	qQueue.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qQueue).Maybe()
+	qQueue.On("First", mock.AnythingOfType("*models.TrustQueueDepthSample")).Return(theoryErrors.ErrItemNotFound).Once()
+	qQueue.On("IfNotExists").Return(qQueue).Once()
+	qQueue.On("Create").Return(theoryErrors.ErrConditionFailed).Once()
+
+	qMailbox.On("Where", "PK", "=", models.SoulCommMailboxAgentPK("demo", agentID)).Return(qMailbox).Once()
+	qMailbox.On("Filter", "direction", "=", models.SoulCommDirectionInbound).Return(qMailbox).Once()
+	qMailbox.On("Filter", "status", "=", models.SoulCommMailboxStatusQueued).Return(qMailbox).Once()
+	qMailbox.On("Filter", "deleted", "=", false).Return(qMailbox).Once()
+	qMailbox.On("Count").Return(int64(3), nil).Once()
+
+	s := &Server{store: store.New(db)}
+	sample, err := s.recordTrustQueueDepthSnapshot(context.Background(), "demo", []string{agentID}, time.Now().UTC())
+	require.NoError(t, err)
+	require.Nil(t, sample)
+	qMailbox.AssertNumberOfCalls(t, "Count", 1)
+	qQueue.AssertNumberOfCalls(t, "Create", 1)
+}
+
 func TestHandlePortalGetTrustData_QueueDepthSeriesBoundedAndScoped(t *testing.T) {
 	t.Parallel()
 
@@ -1167,6 +1255,8 @@ func TestHandlePortalGetTrustData_QueueDepthSeriesBoundedAndScoped(t *testing.T)
 	tdb.qQueue.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(tdb.qQueue).Maybe()
 	tdb.qQueue.On("OrderBy", "SK", "DESC").Return(tdb.qQueue).Once()
 	tdb.qQueue.On("Limit", trustQueueDepthMaxSeriesPoints).Return(tdb.qQueue).Once()
+	tdb.qQueue.On("First", mock.AnythingOfType("*models.TrustQueueDepthSample")).Return(theoryErrors.ErrItemNotFound).Once()
+	tdb.qQueue.On("IfNotExists").Return(tdb.qQueue).Maybe()
 	tdb.qQueue.On("Create").Return(nil).Maybe()
 	samples := make([]*models.TrustQueueDepthSample, 0, 61)
 	for i := 0; i < 60; i++ {

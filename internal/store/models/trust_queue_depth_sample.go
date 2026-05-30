@@ -11,13 +11,17 @@ import (
 // retained briefly for operational debugging and verifier evidence.
 const TrustQueueDepthSampleRetentionDays = 31
 
+// TrustQueueDepthSampleBucketDuration coalesces portal-triggered queue-depth
+// snapshots so repeated reads within a bucket share one deterministic item key.
+const TrustQueueDepthSampleBucketDuration = time.Hour
+
 // TrustQueueDepthSample stores an instance-scoped queue-depth snapshot for the
 // Trust dashboard.
 //
 // Keys:
 //
 //	PK: TRUST#QUEUE_DEPTH#INSTANCE#{instanceSlug}
-//	SK: SAMPLE#{timestamp}
+//	SK: SAMPLE#{hour_bucket}
 //
 // The item intentionally stores only the tenant slug, sample timestamp, count,
 // and source label. It does not store account IDs, raw keys, mailbox delivery
@@ -63,7 +67,8 @@ func (s *TrustQueueDepthSample) UpdateKeys() error {
 	if s.Depth < 0 {
 		s.Depth = 0
 	}
-	ts := s.Timestamp.Format("2006-01-02T15:04:05.000000000Z")
+	bucket := s.Timestamp.Truncate(TrustQueueDepthSampleBucketDuration)
+	ts := bucket.Format(time.RFC3339)
 	s.PK = TrustQueueDepthSamplePK(s.InstanceSlug)
 	s.SK = fmt.Sprintf("SAMPLE#%s", ts)
 	s.TTL = s.Timestamp.Add(TrustQueueDepthSampleRetentionDays * 24 * time.Hour).Unix()
