@@ -84,6 +84,10 @@
 		return job.status === 'ok' || job.status === 'error';
 	}
 
+	function isManagedInstance(inst: InstanceResponse | null): boolean {
+		return inst?.managed === true;
+	}
+
 	function formatStep(step?: string): string {
 		const raw = (step || '').trim();
 		if (!raw) return '—';
@@ -758,13 +762,12 @@
 						Restart provisioning
 					</Button>
 				</div>
-			{:else if instance.hosted_account_id && instance.hosted_region && instance.hosted_base_domain}
+			{:else if isManagedInstance(instance)}
 				<!--
-				Project 42 M0.3 (#528): the form only appears for managed
-				instances that have never been provisioned (provision_status
-				is empty AND no live provisioning-job record). Non-managed /
-				externally-registered instances skip this entire branch and
-				render the explanatory alert below.
+				Project 43 M4 LH-28 (#598): backend exposes the managed
+				instance signal. Fresh managed instances have HostedBaseDomain
+				before HostedRegion or HostedAccountID exists, so do not infer
+				managed state from the full provisioning receipt.
 				-->
 				<Alert variant="info" title="Not started">
 					<Text size="sm">Start managed provisioning to allocate infrastructure for this instance.</Text>
@@ -812,7 +815,7 @@
 				<Alert variant="error" title="Update jobs">{updatesError}</Alert>
 			{/if}
 
-			{@const managed = Boolean(instance.hosted_account_id && instance.hosted_region && instance.hosted_base_domain)}
+			{@const managed = isManagedInstance(instance)}
 
 			{#if !managed}
 				<Alert variant="info" title="Managed updates unavailable">

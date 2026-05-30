@@ -62,6 +62,7 @@ type instanceResponse struct {
 	HostedAccountID           string    `json:"hosted_account_id,omitempty"`
 	HostedRegion              string    `json:"hosted_region,omitempty"`
 	HostedBaseDomain          string    `json:"hosted_base_domain,omitempty"`
+	Managed                   bool      `json:"managed"`
 	ManagedLesserDomain       string    `json:"managed_lesser_domain,omitempty"`
 	HostedZoneID              string    `json:"hosted_zone_id,omitempty"`
 	LesserVersion             string    `json:"lesser_version,omitempty"`
@@ -213,6 +214,7 @@ func instanceResponseFromModel(inst *models.Instance) instanceResponse {
 		HostedAccountID:           strings.TrimSpace(inst.HostedAccountID),
 		HostedRegion:              strings.TrimSpace(inst.HostedRegion),
 		HostedBaseDomain:          strings.TrimSpace(inst.HostedBaseDomain),
+		Managed:                   isManagedInstanceModel(inst),
 		HostedZoneID:              strings.TrimSpace(inst.HostedZoneID),
 		LesserVersion:             strings.TrimSpace(inst.LesserVersion),
 		LesserBodyVersion:         strings.TrimSpace(inst.LesserBodyVersion),
@@ -254,6 +256,18 @@ func instanceResponseFromModel(inst *models.Instance) instanceResponse {
 		SoulAnchorState:           deriveSoulAnchorState(inst),
 		SoulAnchorAt:              soulAnchorPtrFromTime(inst.SoulProvisionedAt),
 	}
+}
+
+func isManagedInstanceModel(inst *models.Instance) bool {
+	if inst == nil {
+		return false
+	}
+	// Portal-created managed instances receive their managed primary
+	// HostedBaseDomain at creation time. External-instance approval
+	// deliberately creates an Instance without managed DNS/provisioning
+	// metadata, so this is the stable managed-vs-external discriminator
+	// before HostedRegion and HostedAccountID are known.
+	return strings.TrimSpace(inst.HostedBaseDomain) != ""
 }
 
 // soulAnchorPtrFromTime returns nil when t is zero, otherwise a pointer to t.
