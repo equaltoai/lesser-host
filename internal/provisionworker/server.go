@@ -511,6 +511,7 @@ func (s *Server) failJob(ctx context.Context, job *models.ProvisionJob, requestI
 	job.ErrorMessage = strings.TrimSpace(msg)
 	job.RequestID = strings.TrimSpace(requestID)
 	job.UpdatedAt = now
+	clearProvisionJobConsentArtifacts(job)
 	_ = job.UpdateKeys()
 
 	updateInst := &models.Instance{Slug: strings.TrimSpace(job.InstanceSlug)}
@@ -1646,13 +1647,20 @@ func clearProvisionJobConsentArtifacts(job *models.ProvisionJob) {
 	if job == nil {
 		return
 	}
+	clearProvisionJobConsentPlaintext(job)
+	job.ConsentEncrypted = ""
+}
+
+func clearProvisionJobConsentPlaintext(job *models.ProvisionJob) {
+	if job == nil {
+		return
+	}
 	if strings.TrimSpace(job.ConsentMessageHash) == "" && job.ConsentMessage != "" {
 		sum := sha256.Sum256([]byte(job.ConsentMessage))
 		job.ConsentMessageHash = hex.EncodeToString(sum[:])
 	}
 	job.ConsentMessage = ""
 	job.ConsentSignature = ""
-	job.ConsentEncrypted = ""
 }
 
 func (s *Server) advanceProvisionDeployWait(ctx context.Context, job *models.ProvisionJob, requestID string, now time.Time) (time.Duration, bool, error) {
@@ -1946,6 +1954,7 @@ func (s *Server) persistJobAndInstance(ctx context.Context, job *models.Provisio
 
 	job.RequestID = strings.TrimSpace(requestID)
 	job.UpdatedAt = now
+	clearProvisionJobConsentPlaintext(job)
 	_ = job.UpdateKeys()
 
 	return s.persistModelAndInstance(ctx, job, strings.TrimSpace(job.InstanceSlug), instanceUpdate)

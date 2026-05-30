@@ -127,6 +127,7 @@ type soulLifecycleTestDB struct {
 	qChannelIdx *ttmocks.MockQuery
 	qENS        *ttmocks.MockQuery
 	qContinuity *ttmocks.MockQuery
+	qChallenge  *ttmocks.MockQuery
 	qDispute    *ttmocks.MockQuery
 }
 
@@ -152,6 +153,7 @@ func newSoulLifecycleTestDB() soulLifecycleTestDB {
 	qChannelTypeIdx := new(ttmocks.MockQuery)
 	qENSResolution := new(ttmocks.MockQuery)
 	qContinuity := new(ttmocks.MockQuery)
+	qChallenge := new(ttmocks.MockQuery)
 	qDispute := new(ttmocks.MockQuery)
 
 	db.On("WithContext", mock.Anything).Return(db).Maybe()
@@ -175,6 +177,7 @@ func newSoulLifecycleTestDB() soulLifecycleTestDB {
 	db.On("Model", mock.AnythingOfType("*models.SoulChannelAgentIndex")).Return(qChannelTypeIdx).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(qENSResolution).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentContinuity")).Return(qContinuity).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulLifecycleChallenge")).Return(qChallenge).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentDispute")).Return(qDispute).Maybe()
 
 	for _, q := range []*ttmocks.MockQuery{
@@ -198,11 +201,13 @@ func newSoulLifecycleTestDB() soulLifecycleTestDB {
 		qChannelTypeIdx,
 		qENSResolution,
 		qContinuity,
+		qChallenge,
 		qDispute,
 	} {
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("Index", mock.Anything).Return(q).Maybe()
 		q.On("Limit", mock.Anything).Return(q).Maybe()
+		q.On("ConsistentRead").Return(q).Maybe()
 		q.On("Cursor", mock.Anything).Return(q).Maybe()
 		q.On("OrderBy", mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("IfExists").Return(q).Maybe()
@@ -237,6 +242,7 @@ func newSoulLifecycleTestDB() soulLifecycleTestDB {
 		qChannelIdx: qChannelTypeIdx,
 		qENS:        qENSResolution,
 		qContinuity: qContinuity,
+		qChallenge:  qChallenge,
 		qDispute:    qDispute,
 	}
 }

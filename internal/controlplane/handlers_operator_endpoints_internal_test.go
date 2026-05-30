@@ -1,7 +1,9 @@
 package controlplane
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -145,6 +147,21 @@ func makeInstance(slug, lesserVer, bodyVer string, bodyUpdateAt, mcpWiredAt time
 		McpWiredAt:         mcpWiredAt,
 		UpdatedAt:          bodyUpdateAt,
 	}
+}
+
+func expectedRemediationAuditTarget(slugs []string) string {
+	sum := sha256.Sum256([]byte(strings.Join(slugs, ",")))
+	return fmt.Sprintf("fleet:mcp-remediation:count=%d:hash=%s", len(slugs), fmt.Sprintf("%x", sum)[:16])
+}
+
+func makeMaxLengthFleetAuditInputs(count int) ([]string, []string) {
+	slugs := make([]string, 0, count)
+	jobIDs := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		slugs = append(slugs, fmt.Sprintf("lh22-%058d", i))
+		jobIDs = append(jobIDs, fmt.Sprintf("job%019d", i))
+	}
+	return slugs, jobIDs
 }
 
 func instanceWithProvisionJob(slug, lesserVer, provisionJobID string, updatedAt time.Time) *models.Instance {
@@ -833,11 +850,10 @@ func TestHandleOperatorRemediateMCPDrift_VersionFromDeployedBody(t *testing.T) {
 		"MCP remediation must wire against deployed current_body, not config target v0.4.0")
 }
 
-// TestHandleOperatorRemediateMCPDrift_AuditIncludesSlugList is the Blocker 3
-// regression: the audit record must include the affected slug list, not just a
-// count. Pre-rework, the audit Target was "fleet:mcp-remediation:N-slugs";
-// post-rework, it must be "fleet:mcp-remediation:slugs=slug1,slug2;jobs=job1,job2".
-func TestHandleOperatorRemediateMCPDrift_AuditIncludesSlugList(t *testing.T) {
+// TestHandleOperatorRemediateMCPDrift_AuditDetailsIncludeSlugList is the
+// regression: the audit record must keep the full affected slug/job lists in
+// non-key Details while Target stays bounded for DynamoDB PK safety.
+func TestHandleOperatorRemediateMCPDrift_AuditDetailsIncludeSlugList(t *testing.T) {
 	t.Parallel()
 
 	tdb := newOperatorEndpointTestDB()
@@ -963,10 +979,186 @@ func TestHandleOperatorRemediateMCPDrift_AuditIncludesSlugList(t *testing.T) {
 
 	audits := createdAuditLogs(t, tdb)
 	require.Len(t, audits, 1)
-	require.Contains(t, audits[0].Target, "slugs=ws-audit-1,ws-audit-2")
-	require.Contains(t, audits[0].Target, ";jobs=")
+	require.Equal(t, expectedRemediationAuditTarget([]string{"ws-audit-1", "ws-audit-2"}), audits[0].Target)
+	require.NotContains(t, audits[0].Target, "ws-audit-1")
+	require.NotContains(t, audits[0].Target, "ws-audit-2")
+	require.NotContains(t, audits[0].Target, "slugs=")
+	require.NotContains(t, audits[0].Target, ";jobs=")
+	require.Contains(t, audits[0].Details, "slugs=ws-audit-1,ws-audit-2")
+	require.Contains(t, audits[0].Details, ";jobs=")
 	for _, id := range body.CreatedJobIDs {
-		require.Contains(t, audits[0].Target, id)
+		require.Contains(t, audits[0].Details, id)
+	}
+}
+
+func TestEmitRemediationAudit_BoundsTargetAndPreservesLargeDetails(t *testing.T) {
+	t.Parallel()
+
+	tdb := newOperatorEndpointTestDB()
+	s := &Server{store: store.New(tdb.db)}
+	slugs, jobIDs := makeMaxLengthFleetAuditInputs(200)
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+
+	ctx := operatorAuthenticatedCtx()
+	err := s.emitRemediationAudit(ctx, slugs, jobIDs, now, "alice")
+	require.NoError(t, err)
+	tdb.qAudit.AssertCalled(t, "Create")
+
+	audits := createdAuditLogs(t, tdb)
+	require.Len(t, audits, 1)
+	audit := audits[0]
+	require.Equal(t, expectedRemediationAuditTarget(slugs), audit.Target)
+	require.Equal(t, "slugs="+strings.Join(slugs, ",")+";jobs="+strings.Join(jobIDs, ","), audit.Details)
+	require.Less(t, len(audit.PK), 2048)
+	require.LessOrEqual(t, len(audit.PK), 1024)
+	require.NotContains(t, audit.Target, slugs[0])
+	require.NotContains(t, audit.Target, slugs[len(slugs)-1])
+	require.NotContains(t, audit.Target, jobIDs[0])
+	require.NotContains(t, audit.Target, jobIDs[len(jobIDs)-1])
+}
+
+func TestEmitRemediationAudit_RoundTripByExactTarget(t *testing.T) {
+	t.Parallel()
+
+	db := ttmocks.NewMockExtendedDB()
+	qAudit := new(ttmocks.MockQuery)
+	slugs := []string{"roundtrip-a", "roundtrip-b"}
+	jobIDs := []string{"job-roundtrip-a", "job-roundtrip-b"}
+	target := expectedRemediationAuditTarget(slugs)
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	var created *models.AuditLogEntry
+
+	db.On("WithContext", mock.Anything).Return(db).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.AuditLogEntry")).Return(qAudit).Run(func(args mock.Arguments) {
+		entry, ok := args.Get(0).(*models.AuditLogEntry)
+		if !ok || strings.TrimSpace(entry.Action) == "" {
+			return
+		}
+		copyEntry := *entry
+		created = &copyEntry
+	}).Maybe()
+	qAudit.On("Create").Return(nil).Once()
+	qAudit.On("Where", "PK", "=", "AUDIT#"+target).Return(qAudit).Once()
+	qAudit.On("Where", "SK", "BEGINS_WITH", "EVENT#").Return(qAudit).Once()
+	qAudit.On("Limit", 200).Return(qAudit).Once()
+	qAudit.On("All", mock.AnythingOfType("*[]*models.AuditLogEntry")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.AuditLogEntry](t, args, 0)
+		require.NotNil(t, created)
+		*dest = []*models.AuditLogEntry{created}
+	}).Once()
+
+	s := &Server{store: store.New(db)}
+	ctx := operatorAuthenticatedCtx()
+	require.NoError(t, s.emitRemediationAudit(ctx, slugs, jobIDs, now, "alice"))
+
+	items, appErr := s.listOperatorAuditLogEntries(ctx, operatorAuditLogFilters{Target: target, Limit: 200})
+	require.Nil(t, appErr)
+	require.Len(t, items, 1)
+	require.Equal(t, target, items[0].Target)
+	require.Equal(t, "slugs=roundtrip-a,roundtrip-b;jobs=job-roundtrip-a,job-roundtrip-b", items[0].Details)
+}
+
+func TestEmitRemediationAudit_EmptyFleet(t *testing.T) {
+	t.Parallel()
+
+	tdb := newOperatorEndpointTestDB()
+	s := &Server{store: store.New(tdb.db)}
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+
+	require.NoError(t, s.emitRemediationAudit(operatorAuthenticatedCtx(), nil, nil, now, "alice"))
+
+	audits := createdAuditLogs(t, tdb)
+	require.Len(t, audits, 1)
+	require.Equal(t, expectedRemediationAuditTarget(nil), audits[0].Target)
+	require.Equal(t, "slugs=;jobs=", audits[0].Details)
+	require.Less(t, len(audits[0].PK), 2048)
+}
+
+func TestHandleOperatorRemediateMCPDrift_LargeFleetPersistsOneAuditRecord(t *testing.T) {
+	t.Parallel()
+
+	tdb := newOperatorEndpointTestDB()
+	s := &Server{store: store.New(tdb.db), cfg: config.Config{
+		ManagedLesserBodyDefaultVersion: "v0.3.0",
+		ManagedInstanceRoleName:         "ManagedInstanceRole",
+	}}
+
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	slugs, _ := makeMaxLengthFleetAuditInputs(200)
+	instances := make([]*models.Instance, 0, len(slugs))
+	for _, slug := range slugs {
+		instances = append(instances, &models.Instance{
+			Slug:               slug,
+			Owner:              "alice",
+			Status:             models.InstanceStatusActive,
+			LesserBodyVersion:  "v0.3.0",
+			LesserBodyUpdateAt: now,
+			McpWiredAt:         now,
+			UpdatedAt:          now,
+			HostedAccountID:    "123456789012",
+			HostedRegion:       "us-east-1",
+			HostedBaseDomain:   slug + ".greater.website",
+			LesserVersion:      "v1.4.2",
+		})
+	}
+	tdb.qInstance.On("All", mock.AnythingOfType("*[]*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.Instance](t, args, 0)
+		*dest = instances
+	}).Once()
+
+	for _, slug := range slugs {
+		slug := slug
+		tdb.qUpdate.On("All", mock.AnythingOfType("*[]*models.UpdateJob")).Return(nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*[]*models.UpdateJob](t, args, 0)
+			*dest = []*models.UpdateJob{
+				{
+					ID: "body-" + slug, InstanceSlug: slug, Status: models.UpdateJobStatusOK,
+					BodyOnly: true, LesserBodyVersion: "v0.3.0", UpdatedAt: now.Add(-1 * time.Hour),
+				},
+				{
+					ID: "mcp-" + slug, InstanceSlug: slug, Status: models.UpdateJobStatusOK,
+					MCPOnly: true, LesserBodyVersion: "v0.2.9", UpdatedAt: now.Add(-2 * time.Hour),
+				},
+			}
+		}).Once()
+	}
+	tdb.qUpdate.On("All", mock.AnythingOfType("*[]*models.UpdateJob")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.UpdateJob](t, args, 0)
+		*dest = []*models.UpdateJob{}
+	}).Once()
+
+	for _, slug := range slugs {
+		slug := slug
+		tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+			*dest = models.Instance{
+				Slug: slug, Owner: "alice", Status: models.InstanceStatusActive,
+				LesserBodyVersion: "v0.3.0", HostedAccountID: "123456789012",
+				HostedRegion: "us-east-1", HostedBaseDomain: slug + ".greater.website",
+				LesserHostInstanceKeySecretARN: "", LesserVersion: "v1.4.2",
+			}
+		}).Once()
+	}
+
+	ctx := operatorAuthenticatedCtx()
+	resp, err := s.handleOperatorRemediateMCPDrift(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 200, resp.Status)
+
+	var body remediateMCPDriftResponse
+	require.NoError(t, json.Unmarshal(resp.Body, &body))
+	require.Len(t, body.CreatedJobIDs, len(slugs))
+	require.Equal(t, len(slugs), body.Created)
+	require.Equal(t, 0, body.Skipped)
+	tdb.qAudit.AssertNumberOfCalls(t, "Create", 1)
+
+	audits := createdAuditLogs(t, tdb)
+	require.Len(t, audits, 1)
+	require.Equal(t, expectedRemediationAuditTarget(slugs), audits[0].Target)
+	require.Contains(t, audits[0].Details, "slugs="+strings.Join(slugs, ","))
+	require.Contains(t, audits[0].Details, ";jobs=")
+	for _, id := range body.CreatedJobIDs {
+		require.Contains(t, audits[0].Details, id)
 	}
 }
 

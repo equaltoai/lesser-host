@@ -1,6 +1,8 @@
 package controlplane
 
 import (
+	"context"
+	"crypto/sha256"
 	"fmt"
 	"net/http"
 	"strings"
@@ -98,7 +100,9 @@ func (s *Server) handleOperatorRemediateMCPDrift(ctx *apptheory.Context) (*appth
 
 	// Emit operator audit event AFTER remediation so we can include the
 	// affected slug list and created job IDs.
-	s.emitRemediationAudit(ctx, remediatedSlugs, createdJobIDs, now, actor)
+	if auditErr := s.emitRemediationAudit(ctx, remediatedSlugs, createdJobIDs, now, actor); auditErr != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to persist remediation audit log"}
+	}
 
 	return apptheory.JSON(http.StatusOK, remediateMCPDriftResponse{
 		CreatedJobIDs: createdJobIDs,
@@ -223,35 +227,54 @@ func (s *Server) createRemediationMCPJob(
 	return job, nil
 }
 
-// emitRemediationAudit writes an operator audit event for MCP remediation.
-// The audit record includes the affected slug list and created job IDs using
-// existing AuditLogEntry fields — no tenant content or secrets are logged.
+// emitRemediationAudit writes an operator audit event for MCP remediation after
+// remediation finishes. The key-bearing Target is bounded and deterministic;
+// the full affected slug list and created job IDs are carried in Details.
 func (s *Server) emitRemediationAudit(
 	ctx *apptheory.Context,
 	slugs []string,
 	jobIDs []string,
 	now time.Time,
 	actor string,
-) {
+) error {
 	if s == nil || s.store == nil || s.store.DB == nil {
-		return
+		return nil
 	}
 
-	target := fmt.Sprintf("fleet:mcp-remediation:%d-slugs", len(slugs))
-	if len(slugs) > 0 {
-		target = fmt.Sprintf("fleet:mcp-remediation:slugs=%s", strings.Join(slugs, ","))
-	}
-	if len(jobIDs) > 0 {
-		target += fmt.Sprintf(";jobs=%s", strings.Join(jobIDs, ","))
+	joinedSlugs := strings.Join(slugs, ",")
+	sum := sha256.Sum256([]byte(joinedSlugs))
+	hash := fmt.Sprintf("%x", sum)[:16]
+	target := fmt.Sprintf("fleet:mcp-remediation:count=%d:hash=%s", len(slugs), hash)
+	details := fmt.Sprintf("slugs=%s;jobs=%s", joinedSlugs, strings.Join(jobIDs, ","))
+
+	requestID := ""
+	if ctx != nil {
+		requestID = strings.TrimSpace(ctx.RequestID)
 	}
 
 	audit := &models.AuditLogEntry{
 		Actor:     actor,
 		Action:    "operator.fleet.remediate_mcp_drift",
 		Target:    target,
-		RequestID: strings.TrimSpace(ctx.RequestID),
+		Details:   details,
+		RequestID: requestID,
 		CreatedAt: now,
 	}
-	_ = audit.UpdateKeys()
-	s.tryWriteAuditLog(ctx, audit)
+	if strings.TrimSpace(audit.Actor) == "" && ctx != nil {
+		audit.Actor = strings.TrimSpace(ctx.AuthIdentity)
+	}
+	if strings.TrimSpace(audit.RequestID) == "" && ctx != nil {
+		audit.RequestID = strings.TrimSpace(ctx.RequestID)
+	}
+	if ctx != nil {
+		applyAuditSourceProvenance(ctx, audit)
+		if s.tryWriteAuditLogWithContext(ctx.Context(), audit) {
+			return nil
+		}
+		return fmt.Errorf("remediation audit log was not persisted")
+	}
+	if s.tryWriteAuditLogWithContext(context.Background(), audit) {
+		return nil
+	}
+	return fmt.Errorf("remediation audit log was not persisted")
 }
