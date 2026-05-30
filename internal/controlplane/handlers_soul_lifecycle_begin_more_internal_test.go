@@ -25,6 +25,7 @@ func TestHandleSoulArchiveAgentBegin_MorePaths(t *testing.T) {
 		t.Parallel()
 
 		tdb := newSoulLifecycleTestDB()
+		expectSoulLifecycleChallengeCreate(t, tdb, agentIDHex, soulLifecycleChallengePurposeArchiveAgent, "")
 		s := &Server{
 			store: store.New(tdb.db),
 			cfg: config.Config{
@@ -130,6 +131,7 @@ func TestHandleSoulDesignateSuccessorBegin_MorePaths(t *testing.T) {
 		t.Parallel()
 
 		tdb := newSoulLifecycleTestDB()
+		expectSoulLifecycleChallengeCreate(t, tdb, agentIDHex, soulLifecycleChallengePurposeDesignateSuccessor, successorIDHex)
 		s := &Server{
 			store: store.New(tdb.db),
 			cfg: config.Config{

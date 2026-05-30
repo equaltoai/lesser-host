@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"crypto/ecdsa"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,8 @@ import (
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/crypto"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
+	"github.com/theory-cloud/tabletheory/pkg/core"
+	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
 
 	"github.com/stretchr/testify/mock"
@@ -39,6 +42,8 @@ func TestHandleSoulArchiveAgent_ArchivesAndWritesAudit(t *testing.T) {
 
 	timestamp := canonicalSoulSignedTimestamp(time.Now().Add(-time.Minute).UTC())
 	continuityNonce := "test-archive-nonce"
+	challenge := newSoulLifecycleChallenge(agentIDHex, continuityNonce, soulLifecycleChallengePurposeArchiveAgent, "", time.Now().UTC())
+	expectSoulLifecycleChallengeLookup(t, tdb, challenge)
 	digest, appErr := computeSoulContinuityEntryDigest(
 		models.SoulContinuityEntryTypeArchived,
 		timestamp,
@@ -56,6 +61,7 @@ func TestHandleSoulArchiveAgent_ArchivesAndWritesAudit(t *testing.T) {
 	}
 	sigHex := "0x" + hex.EncodeToString(sig)
 
+	expectSoulLifecycleChallengeDelete(t, tb, agentIDHex, continuityNonce, soulLifecycleChallengePurposeArchiveAgent, "")
 	expectArchiveIdentityUpdate(t, tb)
 	expectArchiveContinuityCreate(t, tb, agentIDHex, sigHex, timestamp)
 	tb.On("Put", mock.Anything, mock.Anything).Return(tb).Once()
@@ -112,6 +118,8 @@ func TestHandleSoulDesignateSuccessor_SucceedsAndCreatesEntries(t *testing.T) {
 
 	timestamp := canonicalSoulSignedTimestamp(time.Now().Add(-time.Minute).UTC())
 	continuityNonce := "test-succession-nonce"
+	challenge := newSoulLifecycleChallenge(agentIDHex, continuityNonce, soulLifecycleChallengePurposeDesignateSuccessor, successorIDHex, time.Now().UTC())
+	expectSoulLifecycleChallengeLookup(t, tdb, challenge)
 	declaredDigest, appErr := computeSoulContinuityEntryDigest(
 		models.SoulContinuityEntryTypeSuccessionDeclared,
 		timestamp,
@@ -146,6 +154,7 @@ func TestHandleSoulDesignateSuccessor_SucceedsAndCreatesEntries(t *testing.T) {
 	}
 	receivedSigHex := "0x" + hex.EncodeToString(receivedSigBytes)
 
+	expectSoulLifecycleChallengeDelete(t, tb, agentIDHex, continuityNonce, soulLifecycleChallengePurposeDesignateSuccessor, successorIDHex)
 	expectSuccessorUpdates(t, tb, agentIDHex, successorIDHex)
 	createKinds := expectSuccessorContinuityCreates(t, tb, agentIDHex, successorIDHex, declaredSigHex, receivedSigHex, timestamp)
 
@@ -191,6 +200,110 @@ func prepareSoulLifecycleTransitionServer(t *testing.T, tdb soulLifecycleTestDB)
 	tdb.db.TransactWriteBuilder = tb
 	tdb.db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Once()
 	return tb
+}
+
+func expectSoulLifecycleChallengeLookup(t *testing.T, tdb soulLifecycleTestDB, challenge *models.SoulLifecycleChallenge) {
+	t.Helper()
+	tdb.qChallenge.On("First", mock.AnythingOfType("*models.SoulLifecycleChallenge")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulLifecycleChallenge](t, args, 0)
+		*dest = *challenge
+	}).Once()
+}
+
+func expectSoulLifecycleChallengeNotFound(tdb soulLifecycleTestDB) {
+	tdb.qChallenge.On("First", mock.AnythingOfType("*models.SoulLifecycleChallenge")).Return(theoryErrors.ErrItemNotFound).Once()
+}
+
+func expectSoulLifecycleChallengeCreate(t *testing.T, tdb soulLifecycleTestDB, agentIDHex string, purpose string, successorIDHex string) *ttmocks.MockTransactionBuilder {
+	t.Helper()
+	tb := new(ttmocks.MockTransactionBuilder)
+	tdb.db.TransactWriteBuilder = tb
+	tdb.db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Once()
+	tb.On("Create", mock.Anything, mock.Anything).Return(tb).Once().Run(func(args mock.Arguments) {
+		challenge := testutil.RequireMockArg[*models.SoulLifecycleChallenge](t, args, 0)
+		if challenge.AgentID != strings.ToLower(strings.TrimSpace(agentIDHex)) {
+			t.Fatalf("expected challenge agent id %q, got %q", strings.ToLower(strings.TrimSpace(agentIDHex)), challenge.AgentID)
+		}
+		if challenge.Purpose != strings.ToLower(strings.TrimSpace(purpose)) {
+			t.Fatalf("expected challenge purpose %q, got %q", strings.ToLower(strings.TrimSpace(purpose)), challenge.Purpose)
+		}
+		if challenge.SuccessorAgentID != strings.ToLower(strings.TrimSpace(successorIDHex)) {
+			t.Fatalf("expected challenge successor %q, got %q", strings.ToLower(strings.TrimSpace(successorIDHex)), challenge.SuccessorAgentID)
+		}
+		if strings.TrimSpace(challenge.Nonce) == "" {
+			t.Fatalf("expected issued nonce")
+		}
+		if challenge.ExpiresAt.Sub(challenge.IssuedAt) != soulLifecycleChallengeTTL {
+			t.Fatalf("expected ttl %s, got %s", soulLifecycleChallengeTTL, challenge.ExpiresAt.Sub(challenge.IssuedAt))
+		}
+	})
+	return tb
+}
+
+func expectSoulLifecycleChallengeDelete(t *testing.T, tb *ttmocks.MockTransactionBuilder, agentIDHex string, nonce string, purpose string, successorIDHex string) {
+	t.Helper()
+	tb.On("Delete", mock.Anything, mock.Anything).Return(tb).Once().Run(func(args mock.Arguments) {
+		challenge := testutil.RequireMockArg[*models.SoulLifecycleChallenge](t, args, 0)
+		if challenge.AgentID != strings.ToLower(strings.TrimSpace(agentIDHex)) {
+			t.Fatalf("expected challenge agent id %q, got %q", strings.ToLower(strings.TrimSpace(agentIDHex)), challenge.AgentID)
+		}
+		if challenge.Nonce != strings.TrimSpace(nonce) {
+			t.Fatalf("expected challenge nonce %q, got %q", strings.TrimSpace(nonce), challenge.Nonce)
+		}
+		if challenge.Purpose != strings.ToLower(strings.TrimSpace(purpose)) {
+			t.Fatalf("expected challenge purpose %q, got %q", strings.ToLower(strings.TrimSpace(purpose)), challenge.Purpose)
+		}
+		if challenge.SuccessorAgentID != strings.ToLower(strings.TrimSpace(successorIDHex)) {
+			t.Fatalf("expected challenge successor %q, got %q", strings.ToLower(strings.TrimSpace(successorIDHex)), challenge.SuccessorAgentID)
+		}
+
+		conditions, ok := args.Get(1).([]core.TransactCondition)
+		if !ok {
+			t.Fatalf("expected transactional delete conditions, got %T", args.Get(1))
+		}
+		if len(conditions) != 2 {
+			t.Fatalf("expected IfExists + TTL conditions, got %#v", conditions)
+		}
+		if conditions[0].Kind != core.TransactConditionKindPrimaryKeyExists {
+			t.Fatalf("expected primary-key-exists condition, got %#v", conditions[0])
+		}
+		if conditions[1].Kind != core.TransactConditionKindField || conditions[1].Field != "TTL" || conditions[1].Operator != ">" {
+			t.Fatalf("expected TTL freshness condition, got %#v", conditions[1])
+		}
+	})
+}
+
+func signSoulArchiveContinuityForTest(t *testing.T, privateKey *ecdsa.PrivateKey, agentIDHex string, timestamp string, continuityNonce string) string {
+	t.Helper()
+	digest, appErr := computeSoulContinuityEntryDigest(
+		models.SoulContinuityEntryTypeArchived,
+		timestamp,
+		"Archived",
+		"",
+		[]string{"agent:" + agentIDHex},
+		continuityNonce,
+	)
+	if appErr != nil {
+		t.Fatalf("digest: %v", appErr)
+	}
+	sig, sigErr := crypto.Sign(accounts.TextHash(digest), privateKey)
+	if sigErr != nil {
+		t.Fatalf("sign: %v", sigErr)
+	}
+	return "0x" + hex.EncodeToString(sig)
+}
+
+func newSoulArchiveCompletionContext(agentIDHex string, timestamp string, sigHex string, continuityNonce string) *apptheory.Context {
+	ctx := &apptheory.Context{
+		RequestID:    "r-lh06",
+		AuthIdentity: "alice",
+		Params:       map[string]string{"agentId": agentIDHex},
+		Request: apptheory.Request{
+			Body: []byte(`{"reason":"done","timestamp":"` + timestamp + `","signature":"` + sigHex + `","continuity_nonce":"` + continuityNonce + `"}`),
+		},
+	}
+	ctx.Set(ctxKeyOperatorRole, models.RoleOperator)
+	return ctx
 }
 
 func seedSoulLifecycleTransitionAccess(t *testing.T, tdb soulLifecycleTestDB, agentIDHex string, wallet string) {
@@ -475,6 +588,8 @@ func TestHandleSoulArchiveAgent_TransactionFailureReturnsInternalError(t *testin
 
 	timestamp := canonicalSoulSignedTimestamp(time.Now().Add(-time.Minute).UTC())
 	continuityNonce := "test-archive-nonce-2"
+	challenge := newSoulLifecycleChallenge(agentIDHex, continuityNonce, soulLifecycleChallengePurposeArchiveAgent, "", time.Now().UTC())
+	expectSoulLifecycleChallengeLookup(t, tdb, challenge)
 	digest, appErr := computeSoulContinuityEntryDigest(
 		models.SoulContinuityEntryTypeArchived,
 		timestamp,
@@ -512,6 +627,124 @@ func TestHandleSoulArchiveAgent_TransactionFailureReturnsInternalError(t *testin
 	}
 	if appErr.Code != appErrCodeInternal {
 		t.Fatalf("expected %s, got %s", appErrCodeInternal, appErr.Code)
+	}
+}
+
+func TestHandleSoulArchiveAgent_RejectsConsumedNonceReplay(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulLifecycleTestDB()
+	key, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	wallet := strings.ToLower(crypto.PubkeyToAddress(key.PublicKey).Hex())
+	tb := prepareSoulLifecycleTransitionServer(t, tdb)
+
+	agentIDHex := soulLifecycleTestAgentIDHex
+	timestamp := canonicalSoulSignedTimestamp(time.Now().Add(-time.Minute).UTC())
+	continuityNonce := "replayed-archive-nonce"
+	sigHex := signSoulArchiveContinuityForTest(t, key, agentIDHex, timestamp, continuityNonce)
+
+	seedSoulLifecycleTransitionAccess(t, tdb, agentIDHex, wallet)
+	challenge := newSoulLifecycleChallenge(agentIDHex, continuityNonce, soulLifecycleChallengePurposeArchiveAgent, "", time.Now().UTC())
+	expectSoulLifecycleChallengeLookup(t, tdb, challenge)
+	expectSoulLifecycleChallengeDelete(t, tb, agentIDHex, continuityNonce, soulLifecycleChallengePurposeArchiveAgent, "")
+	expectArchiveIdentityUpdate(t, tb)
+	expectArchiveContinuityCreate(t, tb, agentIDHex, sigHex, timestamp)
+	tb.On("Put", mock.Anything, mock.Anything).Return(tb).Once()
+
+	firstCtx := newSoulArchiveCompletionContext(agentIDHex, timestamp, sigHex, continuityNonce)
+	resp, callErr := newSoulLifecycleTransitionServer(tdb).handleSoulArchiveAgent(firstCtx)
+	if callErr != nil {
+		t.Fatalf("first archive completion unexpected err: %v", callErr)
+	}
+	if resp.Status != http.StatusOK {
+		t.Fatalf("expected first completion 200, got %d", resp.Status)
+	}
+
+	seedSoulLifecycleTransitionAccess(t, tdb, agentIDHex, wallet)
+	expectSoulLifecycleChallengeNotFound(tdb)
+
+	secondCtx := newSoulArchiveCompletionContext(agentIDHex, timestamp, sigHex, continuityNonce)
+	_, callErr = newSoulLifecycleTransitionServer(tdb).handleSoulArchiveAgent(secondCtx)
+	if callErr == nil {
+		t.Fatalf("expected replayed continuity_nonce to be rejected")
+	}
+	appErr, ok := callErr.(*apptheory.AppError)
+	if !ok {
+		t.Fatalf("expected AppError, got %T", callErr)
+	}
+	if appErr.Code != appErrCodeBadRequest {
+		t.Fatalf("expected %s, got %s", appErrCodeBadRequest, appErr.Code)
+	}
+}
+
+func TestHandleSoulArchiveAgent_RejectsUnknownNonce(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulLifecycleTestDB()
+	key, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	wallet := strings.ToLower(crypto.PubkeyToAddress(key.PublicKey).Hex())
+
+	agentIDHex := soulLifecycleTestAgentIDHex
+	timestamp := canonicalSoulSignedTimestamp(time.Now().Add(-time.Minute).UTC())
+	continuityNonce := "never-issued-archive-nonce"
+	sigHex := signSoulArchiveContinuityForTest(t, key, agentIDHex, timestamp, continuityNonce)
+
+	seedSoulLifecycleTransitionAccess(t, tdb, agentIDHex, wallet)
+	expectSoulLifecycleChallengeNotFound(tdb)
+
+	ctx := newSoulArchiveCompletionContext(agentIDHex, timestamp, sigHex, continuityNonce)
+	_, callErr := newSoulLifecycleTransitionServer(tdb).handleSoulArchiveAgent(ctx)
+	if callErr == nil {
+		t.Fatalf("expected unknown continuity_nonce to be rejected")
+	}
+	appErr, ok := callErr.(*apptheory.AppError)
+	if !ok {
+		t.Fatalf("expected AppError, got %T", callErr)
+	}
+	if appErr.Code != appErrCodeBadRequest {
+		t.Fatalf("expected %s, got %s", appErrCodeBadRequest, appErr.Code)
+	}
+}
+
+func TestHandleSoulArchiveAgent_RejectsExpiredNonce(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulLifecycleTestDB()
+	key, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	wallet := strings.ToLower(crypto.PubkeyToAddress(key.PublicKey).Hex())
+
+	agentIDHex := soulLifecycleTestAgentIDHex
+	timestamp := canonicalSoulSignedTimestamp(time.Now().Add(-time.Minute).UTC())
+	continuityNonce := "expired-archive-nonce"
+	sigHex := signSoulArchiveContinuityForTest(t, key, agentIDHex, timestamp, continuityNonce)
+
+	seedSoulLifecycleTransitionAccess(t, tdb, agentIDHex, wallet)
+	expiredChallenge := newSoulLifecycleChallenge(agentIDHex, continuityNonce, soulLifecycleChallengePurposeArchiveAgent, "", time.Now().Add(-10*time.Minute).UTC())
+	expectSoulLifecycleChallengeLookup(t, tdb, expiredChallenge)
+
+	ctx := newSoulArchiveCompletionContext(agentIDHex, timestamp, sigHex, continuityNonce)
+	_, callErr := newSoulLifecycleTransitionServer(tdb).handleSoulArchiveAgent(ctx)
+	if callErr == nil {
+		t.Fatalf("expected expired continuity_nonce to be rejected")
+	}
+	appErr, ok := callErr.(*apptheory.AppError)
+	if !ok {
+		t.Fatalf("expected AppError, got %T", callErr)
+	}
+	if appErr.Code != appErrCodeBadRequest {
+		t.Fatalf("expected %s, got %s", appErrCodeBadRequest, appErr.Code)
+	}
+	if !strings.Contains(appErr.Message, "expired") {
+		t.Fatalf("expected expired nonce message, got %q", appErr.Message)
 	}
 }
 

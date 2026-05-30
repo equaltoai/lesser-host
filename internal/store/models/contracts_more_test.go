@@ -43,6 +43,7 @@ func TestModelContracts_TableNameAndKeyAccessors(t *testing.T) {
 		User{},
 		ProvisionJob{},
 		RenderArtifact{},
+		SoulLifecycleChallenge{},
 		SetupSession{},
 		SoulCommSendIdempotency{},
 		SoulX402InvocationGrant{},
@@ -110,6 +111,18 @@ func TestModelContracts_TableNameAndKeyAccessors(t *testing.T) {
 	require.NoError(t, ra.BeforeCreate())
 	require.NotEmpty(t, ra.GetPK())
 	require.NotEmpty(t, ra.GetSK())
+
+	lifecycleChallenge := &SoulLifecycleChallenge{
+		AgentID:   " 0xABC ",
+		Nonce:     " lifecycle-nonce ",
+		Purpose:   " Archive_Agent ",
+		IssuedAt:  time.Now().UTC(),
+		ExpiresAt: time.Now().Add(5 * time.Minute).UTC(),
+	}
+	require.NoError(t, lifecycleChallenge.BeforeCreate())
+	require.Equal(t, "SOUL#AGENT#0xabc", lifecycleChallenge.GetPK())
+	require.Equal(t, "LIFECYCLE_CHALLENGE#lifecycle-nonce", lifecycleChallenge.GetSK())
+	require.Equal(t, lifecycleChallenge.ExpiresAt.Unix(), lifecycleChallenge.TTL)
 
 	x402Grant := &SoulX402InvocationGrant{
 		GrantID:                         "x402-grant-id",
