@@ -68,10 +68,29 @@ PASS: raw-key retention semantics absent
 PASS: cross-tenant mailbox query semantics absent
 PASS: body-owned mailbox authority semantics absent
 PASS: negative fixture rejected for retention
+PASS: literal negative fixture rejected for retention: retention policy is disabled
+PASS: literal negative fixture rejected for retention: purge is turned off
 PASS: negative fixture rejected for encryption
+PASS: literal negative fixture rejected for encryption: encryption is disabled
+PASS: literal negative fixture rejected for encryption: encryption is turned off
 PASS: negative fixture rejected for access audit
+PASS: literal negative fixture rejected for access audit: access audit is disabled
+PASS: literal negative fixture rejected for access audit: audit logging is turned off
 PASS: negative fixture rejected for list/content split
+PASS: literal negative fixture rejected for list/content split: list redaction is disabled
+PASS: literal negative fixture rejected for list/content split: unredacted list responses are enabled
+PASS: literal negative fixture rejected for list/content split: full content list responses are permitted
 PASS: negative fixture rejected for hash-only auth
+PASS: literal negative fixture rejected for hash-only auth: raw instance key storage is enabled
+PASS: literal negative fixture rejected for hash-only auth: plaintext instance-key fallback is turned on
+PASS: literal negative fixture rejected for hash-only auth: hash-only instance auth is disabled
 PASS: negative fixture rejected for tenant isolation
+PASS: literal negative fixture rejected for tenant isolation: cross-tenant search is enabled
+PASS: literal negative fixture rejected for tenant isolation: cross-tenant mailbox analytics are turned on
+PASS: literal negative fixture rejected for tenant isolation: cross-tenant access is permitted
+PASS: literal negative fixture rejected for tenant isolation: tenant isolation is disabled
 PASS: negative fixture rejected for body-owned mailbox authority
+PASS: literal negative fixture rejected for body-owned mailbox authority: body-owned mailbox storage is enabled
+PASS: literal negative fixture rejected for body-owned mailbox authority: body mailbox authority is permitted
+PASS: literal negative fixture rejected for body-owned mailbox authority: body-owned mailbox truth is in scope
 PASS: bounded soul comm mailbox governance controls are explicit
