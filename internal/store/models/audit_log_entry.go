@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+const auditLogPartitionKeyMaxBytes = 1024
+
 // AuditLogEntry records an operator action for auditing.
 type AuditLogEntry struct {
 	_ struct{} `theorydb:"naming:camelCase"`
@@ -17,6 +19,7 @@ type AuditLogEntry struct {
 	Actor     string    `theorydb:"attr:actor" json:"actor"`
 	Action    string    `theorydb:"attr:action" json:"action"`
 	Target    string    `theorydb:"attr:target" json:"target"`
+	Details   string    `theorydb:"attr:details,omitempty" json:"details,omitempty"`
 	RequestID string    `theorydb:"attr:requestID" json:"request_id"`
 	CreatedAt time.Time `theorydb:"attr:createdAt" json:"created_at"`
 
@@ -50,7 +53,12 @@ func (a *AuditLogEntry) UpdateKeys() error {
 		a.ID = fmt.Sprintf("%d", createdAt.UnixNano())
 	}
 	target := strings.TrimSpace(a.Target)
-	a.PK = fmt.Sprintf("AUDIT#%s", target)
+	pk := fmt.Sprintf("AUDIT#%s", target)
+	if len(pk) > auditLogPartitionKeyMaxBytes {
+		a.PK = ""
+		return fmt.Errorf("audit log target too long: partition key length %d exceeds %d bytes", len(pk), auditLogPartitionKeyMaxBytes)
+	}
+	a.PK = pk
 	a.SK = fmt.Sprintf("EVENT#%s#%s", createdAt.Format(time.RFC3339Nano), a.ID)
 	return nil
 }

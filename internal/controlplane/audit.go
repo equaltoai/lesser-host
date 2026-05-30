@@ -24,7 +24,7 @@ func (s *Server) tryWriteAuditLog(ctx *apptheory.Context, entry *models.AuditLog
 	}
 	applyAuditSourceProvenance(ctx, entry)
 
-	s.tryWriteAuditLogWithContext(ctx.Context(), entry)
+	_ = s.tryWriteAuditLogWithContext(ctx.Context(), entry)
 }
 
 func applyAuditSourceProvenance(ctx *apptheory.Context, entry *models.AuditLogEntry) {
@@ -38,20 +38,35 @@ func applyAuditSourceProvenance(ctx *apptheory.Context, entry *models.AuditLogEn
 	entry.SourceValid = source.Valid
 }
 
-func (s *Server) tryWriteAuditLogWithContext(ctx context.Context, entry *models.AuditLogEntry) {
+func (s *Server) tryWriteAuditLogWithContext(ctx context.Context, entry *models.AuditLogEntry) bool {
 	if s == nil || s.store == nil || s.store.DB == nil || entry == nil {
-		return
+		return true
 	}
 
-	_ = entry.UpdateKeys()
-	if err := s.store.DB.WithContext(ctx).Model(entry).Create(); err != nil {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := entry.UpdateKeys(); err != nil {
 		log.Printf(
-			"controlplane: audit log write failed action=%q actor=%q target=%q request_id=%q: %v",
+			"controlplane: audit log write failed audit_persisted=false action=%q actor=%q target=%q request_id=%q: %v",
 			strings.TrimSpace(entry.Action),
 			strings.TrimSpace(entry.Actor),
 			strings.TrimSpace(entry.Target),
 			strings.TrimSpace(entry.RequestID),
 			err,
 		)
+		return false
 	}
+	if err := s.store.DB.WithContext(ctx).Model(entry).Create(); err != nil {
+		log.Printf(
+			"controlplane: audit log write failed audit_persisted=false action=%q actor=%q target=%q request_id=%q: %v",
+			strings.TrimSpace(entry.Action),
+			strings.TrimSpace(entry.Actor),
+			strings.TrimSpace(entry.Target),
+			strings.TrimSpace(entry.RequestID),
+			err,
+		)
+		return false
+	}
+	return true
 }
