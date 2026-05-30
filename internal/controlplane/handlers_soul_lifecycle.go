@@ -59,6 +59,10 @@ const (
 	soulContinuitySummaryArchived           = "Archived"
 	soulContinuitySummarySuccessionDeclared = "Succession declared"
 	soulContinuitySummarySuccessionReceived = "Succession received"
+
+	soulLifecycleChallengeTTL                       = 5 * time.Minute
+	soulLifecycleChallengePurposeArchiveAgent       = "archive_agent"
+	soulLifecycleChallengePurposeDesignateSuccessor = "designate_successor"
 )
 
 // --- Handlers ---
@@ -104,6 +108,11 @@ func (s *Server) handleSoulArchiveAgentBegin(ctx *apptheory.Context) (*apptheory
 
 	digest, appErr := computeSoulContinuityEntryDigest(models.SoulContinuityEntryTypeArchived, timestamp, summary, "", references, continuityNonce)
 	if appErr != nil {
+		return nil, appErr
+	}
+
+	challenge := newSoulLifecycleChallenge(agentIDHex, continuityNonce, soulLifecycleChallengePurposeArchiveAgent, "", now)
+	if appErr := s.persistSoulLifecycleChallenge(ctx, challenge); appErr != nil {
 		return nil, appErr
 	}
 
@@ -153,6 +162,10 @@ func (s *Server) handleSoulArchiveAgent(ctx *apptheory.Context) (*apptheory.Resp
 	}
 
 	now := time.Now().UTC()
+	challenge, appErr := s.loadSoulLifecycleChallenge(ctx, agentIDHex, continuityNonce, soulLifecycleChallengePurposeArchiveAgent, "", now)
+	if appErr != nil {
+		return nil, appErr
+	}
 
 	// Verify archive continuity signature (EIP-191 over keccak256(JCS(unsignedEntry))).
 	continuitySummary, continuityRefs := soulArchiveContinuityPayload(agentIDHex)
@@ -192,13 +205,14 @@ func (s *Server) handleSoulArchiveAgent(ctx *apptheory.Context) (*apptheory.Resp
 	_ = audit.UpdateKeys()
 
 	if err := s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
+		tx.Delete(challenge, tabletheory.IfExists(), tabletheory.Condition("TTL", ">", now.Unix()))
 		tx.Update(identity, []string{"Status", "LifecycleStatus", "LifecycleReason", "UpdatedAt"}, tabletheory.IfExists())
 		tx.Create(continuity)
 		tx.Put(audit)
 		return nil
 	}); err != nil {
 		if theoryErrors.IsConditionFailed(err) {
-			return nil, &apptheory.AppError{Code: "app.not_found", Message: "agent not found"}
+			return nil, invalidSoulLifecycleChallengeError()
 		}
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to archive agent"}
 	}
@@ -242,8 +256,13 @@ func (s *Server) handleSoulDesignateSuccessorBegin(ctx *apptheory.Context) (*app
 	if nonceErr != nil {
 		return nil, nonceErr
 	}
-	beginResp, appErr := buildSoulDesignateSuccessorBeginResponse(agentIDHex, successorIDHex, canonicalSoulSignedTimestamp(time.Now().UTC()), continuityNonce)
+	now := time.Now().UTC()
+	beginResp, appErr := buildSoulDesignateSuccessorBeginResponse(agentIDHex, successorIDHex, canonicalSoulSignedTimestamp(now), continuityNonce)
 	if appErr != nil {
+		return nil, appErr
+	}
+	challenge := newSoulLifecycleChallenge(agentIDHex, continuityNonce, soulLifecycleChallengePurposeDesignateSuccessor, successorIDHex, now)
+	if appErr := s.persistSoulLifecycleChallenge(ctx, challenge); appErr != nil {
 		return nil, appErr
 	}
 	return apptheory.JSON(http.StatusOK, beginResp)
@@ -280,28 +299,20 @@ func (s *Server) handleSoulDesignateSuccessor(ctx *apptheory.Context) (*apptheor
 		return nil, appErr
 	}
 
+	now := time.Now().UTC()
+	challenge, appErr := s.loadSoulLifecycleChallenge(ctx, agentIDHex, continuityNonce, soulLifecycleChallengePurposeDesignateSuccessor, successorIDHex, now)
+	if appErr != nil {
+		return nil, appErr
+	}
+
 	successorIdentity, appErr := s.loadSoulActiveSuccessorIdentity(ctx, identity, agentIDHex, successorIDHex)
 	if appErr != nil {
 		return nil, appErr
 	}
 
-	now := time.Now().UTC()
-
 	declaredSummary, declaredRefs, receivedSummary, receivedRefs := soulSuccessionContinuityPayloads(agentIDHex, successorIDHex)
-	declaredDigest, appErr := computeSoulContinuityEntryDigest(models.SoulContinuityEntryTypeSuccessionDeclared, timestampCanonical, declaredSummary, "", declaredRefs, continuityNonce)
-	if appErr != nil {
+	if appErr := verifySoulDesignateSuccessorContinuitySignatures(identity.Wallet, successorIdentity.Wallet, timestampCanonical, continuityNonce, declaredSummary, declaredRefs, receivedSummary, receivedRefs, predSig, succSig); appErr != nil {
 		return nil, appErr
-	}
-	if sigErr := verifyEthereumSignatureBytesNonMalleable(identity.Wallet, declaredDigest, predSig); sigErr != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid predecessor continuity signature"}
-	}
-
-	receivedDigest, appErr := computeSoulContinuityEntryDigest(models.SoulContinuityEntryTypeSuccessionReceived, timestampCanonical, receivedSummary, "", receivedRefs, continuityNonce)
-	if appErr != nil {
-		return nil, appErr
-	}
-	if sigErr := verifyEthereumSignatureBytesNonMalleable(successorIdentity.Wallet, receivedDigest, succSig); sigErr != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid successor continuity signature"}
 	}
 
 	identity.Status = models.SoulAgentStatusSucceeded
@@ -346,6 +357,7 @@ func (s *Server) handleSoulDesignateSuccessor(ctx *apptheory.Context) (*apptheor
 	_ = audit.UpdateKeys()
 
 	if err := s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
+		tx.Delete(challenge, tabletheory.IfExists(), tabletheory.Condition("TTL", ">", now.Unix()))
 		tx.Update(identity, []string{"Status", "LifecycleStatus", "LifecycleReason", "SuccessorAgentID", "UpdatedAt"}, tabletheory.IfExists())
 		tx.Update(successorIdentity, []string{"PredecessorAgentID", "UpdatedAt"}, tabletheory.IfExists())
 		tx.Create(predContinuity)
@@ -354,7 +366,7 @@ func (s *Server) handleSoulDesignateSuccessor(ctx *apptheory.Context) (*apptheor
 		return nil
 	}); err != nil {
 		if theoryErrors.IsConditionFailed(err) {
-			return nil, &apptheory.AppError{Code: "app.not_found", Message: "agent not found"}
+			return nil, invalidSoulLifecycleChallengeError()
 		}
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to designate successor"}
 	}
@@ -386,6 +398,122 @@ func validateSoulLifecycleMutableStatus(identity *models.SoulAgentIdentity, acti
 		return nil
 	}
 	return &apptheory.AppError{Code: "app.conflict", Message: fmt.Sprintf("only active or self-suspended agents can %s", strings.TrimSpace(action))}
+}
+
+func verifySoulDesignateSuccessorContinuitySignatures(predecessorWallet string, successorWallet string, timestampCanonical string, continuityNonce string, declaredSummary string, declaredRefs []string, receivedSummary string, receivedRefs []string, predSig string, succSig string) *apptheory.AppError {
+	declaredDigest, appErr := computeSoulContinuityEntryDigest(models.SoulContinuityEntryTypeSuccessionDeclared, timestampCanonical, declaredSummary, "", declaredRefs, continuityNonce)
+	if appErr != nil {
+		return appErr
+	}
+	if sigErr := verifyEthereumSignatureBytesNonMalleable(predecessorWallet, declaredDigest, predSig); sigErr != nil {
+		return &apptheory.AppError{Code: "app.bad_request", Message: "invalid predecessor continuity signature"}
+	}
+
+	receivedDigest, appErr := computeSoulContinuityEntryDigest(models.SoulContinuityEntryTypeSuccessionReceived, timestampCanonical, receivedSummary, "", receivedRefs, continuityNonce)
+	if appErr != nil {
+		return appErr
+	}
+	if sigErr := verifyEthereumSignatureBytesNonMalleable(successorWallet, receivedDigest, succSig); sigErr != nil {
+		return &apptheory.AppError{Code: "app.bad_request", Message: "invalid successor continuity signature"}
+	}
+	return nil
+}
+
+func newSoulLifecycleChallenge(agentIDHex string, nonce string, purpose string, successorIDHex string, now time.Time) *models.SoulLifecycleChallenge {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	challenge := &models.SoulLifecycleChallenge{
+		AgentID:          agentIDHex,
+		Nonce:            nonce,
+		Purpose:          purpose,
+		SuccessorAgentID: successorIDHex,
+		IssuedAt:         now.UTC(),
+		ExpiresAt:        now.UTC().Add(soulLifecycleChallengeTTL),
+	}
+	_ = challenge.UpdateKeys()
+	return challenge
+}
+
+func (s *Server) persistSoulLifecycleChallenge(ctx *apptheory.Context, challenge *models.SoulLifecycleChallenge) *apptheory.AppError {
+	if s == nil || s.store == nil || s.store.DB == nil || ctx == nil || challenge == nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if err := s.store.DB.TransactWrite(ctx.Context(), func(tx core.TransactionBuilder) error {
+		tx.Create(challenge)
+		return nil
+	}); err != nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "failed to issue lifecycle challenge"}
+	}
+	return nil
+}
+
+func (s *Server) loadSoulLifecycleChallenge(ctx *apptheory.Context, agentIDHex string, nonce string, purpose string, successorIDHex string, now time.Time) (*models.SoulLifecycleChallenge, *apptheory.AppError) {
+	if s == nil || s.store == nil || s.store.DB == nil || ctx == nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	agentIDHex = strings.ToLower(strings.TrimSpace(agentIDHex))
+	nonce = strings.TrimSpace(nonce)
+	if agentIDHex == "" || nonce == "" {
+		return nil, invalidSoulLifecycleChallengeError()
+	}
+
+	key := &models.SoulLifecycleChallenge{
+		AgentID: agentIDHex,
+		Nonce:   nonce,
+	}
+	_ = key.UpdateKeys()
+
+	var challenge models.SoulLifecycleChallenge
+	err := s.store.DB.WithContext(ctx.Context()).
+		Model(&models.SoulLifecycleChallenge{}).
+		Where("PK", "=", key.PK).
+		Where("SK", "=", key.SK).
+		ConsistentRead().
+		Limit(1).
+		First(&challenge)
+	if theoryErrors.IsNotFound(err) {
+		return nil, invalidSoulLifecycleChallengeError()
+	}
+	if err != nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to load lifecycle challenge"}
+	}
+	if appErr := validateSoulLifecycleChallenge(&challenge, agentIDHex, nonce, purpose, successorIDHex, now); appErr != nil {
+		return nil, appErr
+	}
+	return &challenge, nil
+}
+
+func validateSoulLifecycleChallenge(challenge *models.SoulLifecycleChallenge, agentIDHex string, nonce string, purpose string, successorIDHex string, now time.Time) *apptheory.AppError {
+	if challenge == nil {
+		return invalidSoulLifecycleChallengeError()
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	agentIDHex = strings.ToLower(strings.TrimSpace(agentIDHex))
+	nonce = strings.TrimSpace(nonce)
+	purpose = strings.ToLower(strings.TrimSpace(purpose))
+	successorIDHex = strings.ToLower(strings.TrimSpace(successorIDHex))
+
+	if strings.ToLower(strings.TrimSpace(challenge.AgentID)) != agentIDHex ||
+		strings.TrimSpace(challenge.Nonce) != nonce ||
+		strings.ToLower(strings.TrimSpace(challenge.Purpose)) != purpose {
+		return invalidSoulLifecycleChallengeError()
+	}
+	if purpose == soulLifecycleChallengePurposeDesignateSuccessor &&
+		strings.ToLower(strings.TrimSpace(challenge.SuccessorAgentID)) != successorIDHex {
+		return invalidSoulLifecycleChallengeError()
+	}
+	if challenge.ExpiresAt.IsZero() || !now.Before(challenge.ExpiresAt.UTC()) {
+		return &apptheory.AppError{Code: "app.bad_request", Message: "continuity_nonce expired"}
+	}
+	_ = challenge.UpdateKeys()
+	return nil
+}
+
+func invalidSoulLifecycleChallengeError() *apptheory.AppError {
+	return &apptheory.AppError{Code: "app.bad_request", Message: "invalid continuity_nonce"}
 }
 
 func parseSoulArchiveRequestBody(ctx *apptheory.Context) (reason string, parsedTS time.Time, timestampCanonical string, sig string, continuityNonce string, appErr *apptheory.AppError) {
