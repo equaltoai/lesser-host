@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/equaltoai/lesser-host/internal/config"
+	"github.com/equaltoai/lesser-host/internal/costtelemetry"
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 	"github.com/equaltoai/lesser-host/internal/testutil"
@@ -137,8 +138,48 @@ func TestHandlePortalGetInstanceCost_SendsBearerAuthAndMapsDailyRows(t *testing.
 	require.InDelta(t, 0.12, body.Days[0].Entries[0].Cost, 0.000001)
 	require.NotEmpty(t, body.Days[0].Entries[0].Metrics)
 	require.NotContains(t, string(resp.Body), testRawKey)
-	for _, forbidden := range []string{`"account_id"`, `"PK"`, `"SK"`, `"ttl"`, `"entries_json"`, `"EntriesJSON"`, `"instance_key"`, `"raw_key"`} {
+	for _, forbidden := range []string{`"account_id"`, `"pk"`, `"PK"`, `"sk"`, `"SK"`, `"ttl"`, `"entries_json"`, `"EntriesJSON"`, `"instance_key"`, `"raw_key"`} {
 		require.NotContains(t, string(resp.Body), forbidden)
+	}
+}
+
+func TestPortalCostResponseJSONOmitsCostTelemetrySensitiveFields(t *testing.T) {
+	t.Parallel()
+
+	body := portalCostResponse{
+		InstanceSlug: testCostSlug1,
+		FromDate:     testCostDate1,
+		ToDate:       testCostDate2,
+		Days: []portalCostDayEntry{
+			{
+				Date:     testCostDate1,
+				DayCost:  0.12,
+				Currency: "USD",
+				Entries: []costtelemetry.ReconciledCostEntry{
+					{
+						Date:     testCostDate1,
+						Service:  "Managed Lesser",
+						Cost:     0.12,
+						Currency: "USD",
+						Metrics: []costtelemetry.ServiceAttribution{
+							{Service: "Lambda", MetricName: "Invocations", Stat: "Sum", Unit: "Count", Value: 42},
+						},
+					},
+				},
+			},
+		},
+		Count:     1,
+		TotalCost: 0.12,
+		Currency:  "USD",
+	}
+
+	raw, err := json.Marshal(body)
+	require.NoError(t, err)
+	payload := string(raw)
+	require.Contains(t, payload, `"entries"`)
+	require.Contains(t, payload, `"metrics"`)
+	for _, forbidden := range []string{`"account_id"`, `"pk"`, `"PK"`, `"sk"`, `"SK"`, `"ttl"`, `"entries_json"`, `"EntriesJSON"`, `"instance_key"`, `"raw_key"`} {
+		require.NotContains(t, payload, forbidden)
 	}
 }
 
