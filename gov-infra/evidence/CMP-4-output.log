@@ -32,10 +32,12 @@ PASS: roadmap requires bounded retention/encryption/audit semantics
 PASS: roadmap requires list redaction semantics
 PASS: roadmap requires hash-match instance auth semantics
 PASS: threat model includes bounded mailbox threat
+PASS: threat model includes representative T-* threat
 PASS: threat model names content/state drift
 PASS: threat model enumerates insecure mailbox expansion cases
 PASS: controls matrix includes CMP-4
 PASS: controls matrix maps THR-11
+PASS: controls matrix maps representative T-* threat
 PASS: controls matrix enumerates bounded mailbox controls with semantics
 PASS: evidence plan includes CMP-4
 PASS: evidence plan names CMP-4 evidence path
