@@ -129,6 +129,56 @@ function lambdaEnvironment(fn: Record<string, unknown> | undefined): Record<stri
 	return variables && typeof variables === 'object' ? (variables as Record<string, unknown>) : {};
 }
 
+function findBucketByLogicalIdPrefix(
+	template: SynthesizedTemplate,
+	logicalIdPrefix: string,
+): Record<string, unknown> {
+	const entry = findResourceEntries(template, 'AWS::S3::Bucket').find(([logicalId]) =>
+		logicalId.startsWith(logicalIdPrefix),
+	);
+	assert.ok(entry, `expected S3 bucket logical id starting with ${logicalIdPrefix}`);
+	return entry[1].Properties ?? {};
+}
+
+function bucketLifecycleRules(bucket: Record<string, unknown>): Array<Record<string, unknown>> {
+	const lifecycle = bucket.LifecycleConfiguration;
+	assert.ok(lifecycle && typeof lifecycle === 'object', 'expected bucket lifecycle configuration');
+	const rules = (lifecycle as { Rules?: unknown }).Rules;
+	assert.ok(Array.isArray(rules), 'expected bucket lifecycle rules');
+	return rules.filter((rule): rule is Record<string, unknown> => Boolean(rule) && typeof rule === 'object');
+}
+
+function lifecycleRuleId(rule: Record<string, unknown>): string {
+	return typeof rule.Id === 'string' ? rule.Id : JSON.stringify(rule.Id);
+}
+
+function lifecycleRulePrefix(rule: Record<string, unknown>): string | undefined {
+	const filter = rule.Filter;
+	if (filter && typeof filter === 'object') {
+		const prefix = (filter as { Prefix?: unknown }).Prefix;
+		if (typeof prefix === 'string') {
+			return prefix;
+		}
+	}
+	return typeof rule.Prefix === 'string' ? rule.Prefix : undefined;
+}
+
+function lifecycleRuleExpiresCurrentObjects(rule: Record<string, unknown>): boolean {
+	return 'ExpirationInDays' in rule || 'ExpirationDate' in rule || 'ExpiredObjectDeleteMarker' in rule;
+}
+
+function expiringLifecycleRulesMatchingKey(
+	rules: Array<Record<string, unknown>>,
+	key: string,
+): Array<Record<string, unknown>> {
+	return rules
+		.filter(lifecycleRuleExpiresCurrentObjects)
+		.filter((rule) => {
+			const prefix = lifecycleRulePrefix(rule);
+			return prefix === undefined || key.startsWith(prefix);
+		});
+}
+
 test('trust api receives soul registration runtime configuration', () => {
 	const template = synthTemplate();
 	const trustFn = findLambdaByFunctionName(template, 'trust-api');
@@ -242,6 +292,49 @@ test('web SSR Lambda packages the Vite manifest beside the server bundle', () =>
 		fn?.Handler,
 		'server/face-app.handler',
 		'WebSsrFn must package web/dist so face-app can read ../.vite/manifest.json and emit client assets',
+	);
+});
+
+test('LH-27 htmlStore lifecycle does not expire static hydration sidecars', () => {
+	const template = synthTemplate();
+	const htmlStoreBucket = findBucketByLogicalIdPrefix(template, 'WebHtmlStoreBucket');
+	const rules = bucketLifecycleRules(htmlStoreBucket);
+
+	const expiringStaticSidecarRules = expiringLifecycleRulesMatchingKey(
+		rules,
+		'_facetheory/data/home.json',
+	);
+	assert.deepEqual(
+		expiringStaticSidecarRules.map(lifecycleRuleId),
+		[],
+		'_facetheory/data/* static sidecars are deploy-pruned and must not match any expiring lifecycle rule',
+	);
+
+	const expiringIsrRules = expiringLifecycleRulesMatchingKey(rules, 'isr/index.html');
+	assert.equal(
+		expiringIsrRules.length,
+		1,
+		'ISR HTML objects under the AppTheory htmlStoreKeyPrefix must retain lifecycle expiration',
+	);
+	assert.equal(lifecycleRulePrefix(expiringIsrRules[0]!), 'isr/');
+
+	const expiringRuntimeSidecarRules = expiringLifecycleRulesMatchingKey(
+		rules,
+		'isr/ssr-hydration/example-digest/1-2.json',
+	);
+	assert.equal(
+		expiringRuntimeSidecarRules.length,
+		1,
+		'future /_facetheory/ssr-data signed sidecars should expire when stored under the ISR prefix',
+	);
+	assert.equal(lifecycleRulePrefix(expiringRuntimeSidecarRules[0]!), 'isr/');
+
+	const webSsrFn = findLambdaByFunctionName(template, '-web-ssr');
+	const env = lambdaEnvironment(webSsrFn);
+	assert.equal(
+		env.FACETHEORY_ISR_PREFIX,
+		'isr',
+		'future runtime sidecar storage should use the same ISR-prefixed object namespace',
 	);
 });
 
