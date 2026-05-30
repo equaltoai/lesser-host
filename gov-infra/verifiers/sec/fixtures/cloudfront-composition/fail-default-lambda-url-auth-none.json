@@ -1,0 +1,243 @@
+{
+  "Resources": {
+    "HtmlStoreOriginAccessControl": {
+      "Properties": {},
+      "Type": "AWS::CloudFront::OriginAccessControl"
+    },
+    "SsrFunctionUrl": {
+      "Properties": {
+        "AuthType": "NONE",
+        "InvokeMode": "RESPONSE_STREAM",
+        "TargetFunctionArn": {
+          "Fn::GetAtt": [
+            "WebSsrFn",
+            "Arn"
+          ]
+        }
+      },
+      "Type": "AWS::Lambda::Url"
+    },
+    "SsrOriginAccessControl": {
+      "Properties": {},
+      "Type": "AWS::CloudFront::OriginAccessControl"
+    },
+    "WebDistribution": {
+      "Properties": {
+        "DistributionConfig": {
+          "CacheBehaviors": [
+            {
+              "AllowedMethods": [
+                "GET",
+                "HEAD",
+                "OPTIONS"
+              ],
+              "PathPattern": "_facetheory/data/*",
+              "TargetOriginId": "html-store-origin"
+            },
+            {
+              "PathPattern": "resolve*",
+              "TargetOriginId": "trust-origin"
+            },
+            {
+              "PathPattern": "health*",
+              "TargetOriginId": "trust-origin"
+            },
+            {
+              "PathPattern": "api/v1/previews*",
+              "TargetOriginId": "trust-origin"
+            },
+            {
+              "PathPattern": "api/v1/renders*",
+              "TargetOriginId": "trust-origin"
+            },
+            {
+              "PathPattern": "api/v1/trust/*",
+              "TargetOriginId": "trust-origin"
+            },
+            {
+              "PathPattern": "api/v1/publish/jobs*",
+              "TargetOriginId": "trust-origin"
+            },
+            {
+              "PathPattern": "api/v1/soul/agents/*/update-registration",
+              "TargetOriginId": "trust-origin"
+            },
+            {
+              "PathPattern": "api/v1/ai/*",
+              "TargetOriginId": "trust-origin"
+            },
+            {
+              "PathPattern": "api/v1/budget/debit",
+              "TargetOriginId": "trust-origin"
+            },
+            {
+              "PathPattern": ".well-known/*",
+              "TargetOriginId": "trust-origin"
+            },
+            {
+              "PathPattern": "attestations",
+              "TargetOriginId": "trust-origin"
+            },
+            {
+              "PathPattern": "attestations/*",
+              "TargetOriginId": "trust-origin"
+            },
+            {
+              "PathPattern": "api/v1/soul/agents/register/*/mint-conversation*",
+              "TargetOriginId": "sse-origin"
+            },
+            {
+              "PathPattern": "api/v1/soul/agents/*/mint-conversation*",
+              "TargetOriginId": "sse-origin"
+            },
+            {
+              "PathPattern": "api/*",
+              "TargetOriginId": "control-plane-origin"
+            },
+            {
+              "PathPattern": "auth/*",
+              "TargetOriginId": "control-plane-origin"
+            },
+            {
+              "PathPattern": "webhooks/*",
+              "TargetOriginId": "control-plane-origin"
+            },
+            {
+              "PathPattern": "setup/status",
+              "TargetOriginId": "control-plane-origin"
+            },
+            {
+              "PathPattern": "setup/bootstrap/*",
+              "TargetOriginId": "control-plane-origin"
+            },
+            {
+              "PathPattern": "setup/admin",
+              "TargetOriginId": "control-plane-origin"
+            },
+            {
+              "PathPattern": "setup/finalize",
+              "TargetOriginId": "control-plane-origin"
+            }
+          ],
+          "DefaultCacheBehavior": {
+            "AllowedMethods": [
+              "GET",
+              "HEAD",
+              "OPTIONS",
+              "PUT",
+              "PATCH",
+              "POST",
+              "DELETE"
+            ],
+            "TargetOriginId": "ssr-origin",
+            "ViewerProtocolPolicy": "redirect-to-https"
+          },
+          "Origins": [
+            {
+              "CustomOriginConfig": {
+                "OriginProtocolPolicy": "https-only"
+              },
+              "DomainName": {
+                "Fn::Select": [
+                  2,
+                  {
+                    "Fn::Split": [
+                      "/",
+                      {
+                        "Fn::GetAtt": [
+                          "SsrFunctionUrl",
+                          "FunctionUrl"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              "Id": "ssr-origin",
+              "OriginAccessControlId": {
+                "Ref": "SsrOriginAccessControl"
+              }
+            },
+            {
+              "DomainName": {
+                "Fn::GetAtt": [
+                  "WebHtmlStoreBucket",
+                  "RegionalDomainName"
+                ]
+              },
+              "Id": "html-store-origin",
+              "OriginAccessControlId": {
+                "Ref": "HtmlStoreOriginAccessControl"
+              },
+              "S3OriginConfig": {}
+            },
+            {
+              "CustomOriginConfig": {
+                "OriginProtocolPolicy": "https-only"
+              },
+              "DomainName": {
+                "Fn::Join": [
+                  "",
+                  [
+                    {
+                      "Ref": "TrustHttpApi"
+                    },
+                    ".execute-api.",
+                    {
+                      "Ref": "AWS::Region"
+                    },
+                    ".amazonaws.com"
+                  ]
+                ]
+              },
+              "Id": "trust-origin"
+            },
+            {
+              "CustomOriginConfig": {
+                "OriginProtocolPolicy": "https-only"
+              },
+              "DomainName": {
+                "Fn::Join": [
+                  "",
+                  [
+                    {
+                      "Ref": "ControlPlaneSseRestApi"
+                    },
+                    ".execute-api.",
+                    {
+                      "Ref": "AWS::Region"
+                    },
+                    ".amazonaws.com"
+                  ]
+                ]
+              },
+              "Id": "sse-origin"
+            },
+            {
+              "CustomOriginConfig": {
+                "OriginProtocolPolicy": "https-only"
+              },
+              "DomainName": {
+                "Fn::Join": [
+                  "",
+                  [
+                    {
+                      "Ref": "ControlPlaneHttpApi"
+                    },
+                    ".execute-api.",
+                    {
+                      "Ref": "AWS::Region"
+                    },
+                    ".amazonaws.com"
+                  ]
+                ]
+              },
+              "Id": "control-plane-origin"
+            }
+          ]
+        }
+      },
+      "Type": "AWS::CloudFront::Distribution"
+    }
+  }
+}
