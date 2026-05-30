@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -627,6 +628,11 @@ func newSoulTrustTestDB(t *testing.T) *soulTrustTestDB {
 	// samples. Tests that need populated queue data reset these expectations.
 	tdb.qMailbox.On("Filter", mock.Anything, mock.Anything, mock.Anything).Return(tdb.qMailbox).Maybe()
 	tdb.qMailbox.On("Count").Return(int64(0), nil).Maybe()
+	tdb.qFailure.On("OrderBy", mock.Anything, mock.Anything).Return(tdb.qFailure).Maybe()
+	tdb.qFailure.On("Limit", mock.Anything).Return(tdb.qFailure).Maybe()
+	tdb.qEndorse.On("OrderBy", mock.Anything, mock.Anything).Return(tdb.qEndorse).Maybe()
+	tdb.qEndorse.On("Limit", mock.Anything).Return(tdb.qEndorse).Maybe()
+	tdb.qEndorse.On("Count").Return(int64(0), nil).Maybe()
 	tdb.qQueue.On("OrderBy", mock.Anything, mock.Anything).Return(tdb.qQueue).Maybe()
 	tdb.qQueue.On("Limit", mock.Anything).Return(tdb.qQueue).Maybe()
 	tdb.qQueue.On("Create").Return(nil).Maybe()
@@ -943,6 +949,144 @@ func TestHandlePortalGetTrustData_SoulPopulatedSignatureFailures(t *testing.T) {
 		require.NotContains(t, point, "PK")
 		require.NotContains(t, point, "SK")
 	}
+}
+
+func TestLoadTrustSignaturesUsesWindowRangeAndLimit(t *testing.T) {
+	t.Parallel()
+
+	db := ttmocks.NewMockExtendedDB()
+	db.On("WithContext", mock.Anything).Return(db).Maybe()
+	qFailure := new(ttmocks.MockQuery)
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentFailure")).Return(qFailure).Maybe()
+
+	agentID := "0x0000000000000000000000000000000000000000000000000000000000000aaa"
+	pk := fmt.Sprintf("SOUL#AGENT#%s", agentID)
+	now := time.Now().UTC()
+	seeded := make([]*models.SoulAgentFailure, 0, 2504)
+	for i := 0; i < 2500; i++ {
+		seeded = append(seeded, portalTrustFailureFixture(t, agentID, fmt.Sprintf("legacy-%04d", i), "signature_failure", now.Add(-72*time.Hour-time.Duration(i)*time.Second)))
+	}
+	seeded = append(seeded,
+		portalTrustFailureFixture(t, agentID, "in-window-1", "signature_failure", now.Add(-1*time.Hour)),
+		portalTrustFailureFixture(t, agentID, "in-window-2", "SIGNATURE_FAILURE", now.Add(-2*time.Hour)),
+		portalTrustFailureFixture(t, agentID, "in-window-other-type", "crash_loop", now.Add(-3*time.Hour)),
+		portalTrustFailureFixture(t, agentID, "future", "signature_failure", now.Add(1*time.Hour)),
+	)
+
+	var (
+		lowerBound string
+		upperBound string
+		rowsRead   int
+	)
+	qFailure.On("Where", "PK", "=", pk).Return(qFailure).Once()
+	qFailure.On("Where", "SK", "BETWEEN", mock.MatchedBy(func(value any) bool {
+		bounds, ok := value.([]any)
+		if !ok || len(bounds) != 2 {
+			return false
+		}
+		lower, okLower := bounds[0].(string)
+		upper, okUpper := bounds[1].(string)
+		if !okLower || !okUpper {
+			return false
+		}
+		lowerBound = lower
+		upperBound = upper
+		return strings.HasPrefix(lower, "FAILURE#") &&
+			strings.HasPrefix(upper, "FAILURE#") &&
+			strings.HasSuffix(upper, "~") &&
+			lower < upper
+	})).Return(qFailure).Once()
+	qFailure.On("OrderBy", "SK", "ASC").Return(qFailure).Once()
+	qFailure.On("Limit", trustSignaturesMaxRowsPerAgent).Return(qFailure).Once()
+	qFailure.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+		require.NotEmpty(t, lowerBound)
+		require.NotEmpty(t, upperBound)
+		dest := testutil.RequireMockArg[*[]*models.SoulAgentFailure](t, args, 0)
+		bounded := make([]*models.SoulAgentFailure, 0)
+		for _, f := range seeded {
+			if f.SK >= lowerBound && f.SK <= upperBound {
+				bounded = append(bounded, f)
+			}
+		}
+		sort.Slice(bounded, func(i, j int) bool { return bounded[i].SK < bounded[j].SK })
+		if len(bounded) > trustSignaturesMaxRowsPerAgent {
+			bounded = bounded[:trustSignaturesMaxRowsPerAgent]
+		}
+		rowsRead = len(bounded)
+		*dest = bounded
+	}).Once()
+
+	resp := (&Server{store: store.New(db)}).loadTrustSignatures(context.Background(), []string{agentID})
+
+	require.Equal(t, trustSignaturesWindowHours, resp.WindowHours)
+	require.Equal(t, 2, resp.TotalFailures)
+	require.False(t, resp.Truncated)
+	require.Len(t, resp.BySource, 1)
+	require.Equal(t, agentID, resp.BySource[0].Source)
+	require.Equal(t, 2, resp.BySource[0].Failures)
+	require.NotEmpty(t, resp.Series)
+	require.Less(t, rowsRead, len(seeded), "storage read should be bounded by the SK range, not total legacy rows")
+	require.LessOrEqual(t, rowsRead, trustSignaturesMaxRowsPerAgent)
+
+	qFailure.AssertExpectations(t)
+}
+
+func TestLoadTrustVouchesUsesDescendingLimitAndCount(t *testing.T) {
+	t.Parallel()
+
+	db := ttmocks.NewMockExtendedDB()
+	db.On("WithContext", mock.Anything).Return(db).Maybe()
+	qEndorse := new(ttmocks.MockQuery)
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentPeerEndorsement")).Return(qEndorse).Maybe()
+
+	agentID := "0x0000000000000000000000000000000000000000000000000000000000000aaa"
+	pk := fmt.Sprintf("SOUL#AGENT#%s", agentID)
+	now := time.Now().UTC().Truncate(time.Second)
+	seeded := make([]*models.SoulAgentPeerEndorsement, 0, 200)
+	for i := 0; i < 200; i++ {
+		seeded = append(seeded, portalTrustEndorsementFixture(t, agentID, fmt.Sprintf("0x%064x", i+1), now.Add(time.Duration(i)*time.Second)))
+	}
+
+	rowsRead := 0
+	qEndorse.On("Where", "PK", "=", pk).Return(qEndorse).Twice()
+	qEndorse.On("Where", "SK", "begins_with", "ENDORSEMENT#").Return(qEndorse).Twice()
+	qEndorse.On("Count").Return(int64(len(seeded)), nil).Once()
+	qEndorse.On("OrderBy", "SK", "DESC").Return(qEndorse).Once()
+	qEndorse.On("Limit", trustVouchesMaxRowsPerAgent).Return(qEndorse).Once()
+	qEndorse.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulAgentPeerEndorsement](t, args, 0)
+		bounded := append([]*models.SoulAgentPeerEndorsement(nil), seeded...)
+		sort.Slice(bounded, func(i, j int) bool { return bounded[i].SK > bounded[j].SK })
+		bounded = bounded[:trustVouchesMaxRowsPerAgent]
+		rowsRead = len(bounded)
+		*dest = bounded
+	}).Once()
+
+	resp := (&Server{store: store.New(db)}).loadTrustVouches(context.Background(), []string{agentID})
+
+	require.Equal(t, len(seeded), resp.Count)
+	require.Len(t, resp.Items, trustVouchesMaxItems)
+	require.True(t, resp.Truncated)
+	require.Equal(t, vouchDefaultStrength, resp.Items[0].Strength)
+	require.Equal(t, "endorsement", resp.Items[0].Type)
+	require.Equal(t, seeded[len(seeded)-1].EndorserAgentID, resp.Items[0].Peer)
+	require.Less(t, rowsRead, len(seeded), "storage read should be bounded by Limit, not total endorsements")
+	require.LessOrEqual(t, rowsRead, trustVouchesMaxRowsPerAgent)
+
+	qEndorse.AssertExpectations(t)
+}
+
+func TestBoundedTrustAgentIDsCapsFanout(t *testing.T) {
+	t.Parallel()
+
+	agentIDs := make([]string, 0, trustDataMaxAgentFanout+10)
+	for i := 0; i < trustDataMaxAgentFanout+10; i++ {
+		agentIDs = append(agentIDs, fmt.Sprintf("0x%064x", i+1))
+	}
+	bounded, truncated := boundedTrustAgentIDs(agentIDs)
+	require.True(t, truncated)
+	require.Len(t, bounded, trustDataMaxAgentFanout)
+	require.True(t, sort.StringsAreSorted(bounded))
 }
 
 func TestHandlePortalGetTrustData_QueueDepthSnapshotCountsScopedMailboxRows(t *testing.T) {
@@ -1485,4 +1629,28 @@ func TestHandlePortalGetTrustData_SoulVouchesBoundedTo50(t *testing.T) {
 		require.Equal(t, 1.0, item.Strength)
 		require.Equal(t, "endorsement", item.Type)
 	}
+}
+
+func portalTrustFailureFixture(t *testing.T, agentID string, failureID string, failureType string, ts time.Time) *models.SoulAgentFailure {
+	t.Helper()
+	failure := &models.SoulAgentFailure{
+		AgentID:     agentID,
+		FailureID:   failureID,
+		FailureType: failureType,
+		Timestamp:   ts.UTC(),
+	}
+	require.NoError(t, failure.UpdateKeys())
+	return failure
+}
+
+func portalTrustEndorsementFixture(t *testing.T, agentID string, endorserAgentID string, createdAt time.Time) *models.SoulAgentPeerEndorsement {
+	t.Helper()
+	endorsement := &models.SoulAgentPeerEndorsement{
+		AgentID:         agentID,
+		EndorserAgentID: endorserAgentID,
+		Signature:       "0xsig",
+		CreatedAt:       createdAt.UTC(),
+	}
+	require.NoError(t, endorsement.UpdateKeys())
+	return endorsement
 }
