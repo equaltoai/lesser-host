@@ -23,5 +23,24 @@ describe('session', () => {
 		expect(consumeSessionExpiredAt()).toBe(expiresAt);
 		expect(consumeSessionExpiredAt()).toBeNull();
 	});
-});
 
+	it('clears portal fleet command state when the session is cleared', async () => {
+		const { clearSession, setSession } = await import('src/lib/session');
+		const { portalFleetInstances } = await import('src/lib/portalFleetState');
+
+		setSession({
+			tokenType: 'Bearer',
+			token: 'token',
+			expiresAt: new Date(Date.now() + 60_000).toISOString(),
+			username: 'alice',
+			role: 'customer',
+		});
+		portalFleetInstances.set([{ slug: 'alpha', hosted_region: 'us-east-1', lesser_version: 'v1.0.0' }]);
+
+		expect(get(portalFleetInstances)).toHaveLength(1);
+
+		clearSession();
+
+		expect(get(portalFleetInstances)).toEqual([]);
+	});
+});

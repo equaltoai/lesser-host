@@ -131,7 +131,7 @@ export interface ReleaseTimelineItem {
 	adoption?: number | string;
 	/** Optional secondary description. */
 	description?: string;
-	/** Optional changelog / release-notes URL. */
+	/** Optional changelog / release-notes URL. Only http(s) URLs are honored. */
 	href?: string;
 }
 

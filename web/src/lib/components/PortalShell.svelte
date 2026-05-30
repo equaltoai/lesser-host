@@ -336,26 +336,27 @@ Issue: equaltoai/lesser-host#536
 
 	// ── Command palette (preserved from M0/M1, M3 replaces) ───────────
 
-	const derivedInstanceCommands = $derived<CommandPaletteItem[]>(
-		instanceCommands ??
-			$portalFleetInstances.map((inst) => {
-				const descriptionParts = [];
-				if (inst.hosted_region) descriptionParts.push(inst.hosted_region);
-				if (inst.lesser_version) descriptionParts.push(inst.lesser_version);
-				const description = descriptionParts.join(' • ') || undefined;
-				return {
-					id: `instance.${inst.slug}`,
-					label: `Open ${inst.slug}`,
-					description: description ?? 'Managed instance',
-					keywords: [
-						inst.slug,
-						...(inst.hosted_region ? [inst.hosted_region] : []),
-						...(inst.lesser_version ? [inst.lesser_version] : []),
-						'instance',
-					],
-				};
-			})
-	);
+	const derivedInstanceCommands = $derived.by<CommandPaletteItem[]>(() => {
+		if (!$session?.token) return [];
+		if (instanceCommands) return instanceCommands;
+		return $portalFleetInstances.map((inst) => {
+			const descriptionParts = [];
+			if (inst.hosted_region) descriptionParts.push(inst.hosted_region);
+			if (inst.lesser_version) descriptionParts.push(inst.lesser_version);
+			const description = descriptionParts.join(' • ') || undefined;
+			return {
+				id: `instance.${inst.slug}`,
+				label: `Open ${inst.slug}`,
+				description: description ?? 'Managed instance',
+				keywords: [
+					inst.slug,
+					...(inst.hosted_region ? [inst.hosted_region] : []),
+					...(inst.lesser_version ? [inst.lesser_version] : []),
+					'instance',
+				],
+			};
+		});
+	});
 
 	const navigationGroup = $derived<CommandPaletteGroup>({
 		id: 'nav',
@@ -456,7 +457,7 @@ Issue: equaltoai/lesser-host#536
 	});
 
 	const instancesGroup = $derived<CommandPaletteGroup | null>(
-		derivedInstanceCommands.length > 0
+		$session?.token && derivedInstanceCommands.length > 0
 			? {
 					id: 'instances',
 					label: 'Instances',

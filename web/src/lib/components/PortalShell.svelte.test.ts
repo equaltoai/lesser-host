@@ -781,6 +781,55 @@ describe('PortalShell', () => {
 			expect(groupLabels).toContain('Souls');
 		});
 
+		it('removes fleet-derived Open commands after central session clear', async () => {
+			setSession(customerSession());
+			mockListInstances.mockResolvedValue({ instances: [], count: 0 });
+			mockGetPortalMe.mockResolvedValue({ username: 'u', role: 'customer', method: 'wallet' });
+			mockSoulListMyAgents.mockResolvedValue({ agents: [], count: 0 });
+
+			portalFleetInstances.set([{ slug: 'alpha', hosted_region: 'us-east-1', lesser_version: 'v1.0.0' }]);
+
+			const { target } = mountPortalShell();
+			await settle();
+
+			openPalette();
+			await tick();
+
+			const dialog = target.querySelector('[role="dialog"][aria-modal="true"]')!;
+			expect(dialog.textContent).toContain('Open alpha');
+
+			clearSession();
+			await tick();
+
+			expect(dialog.textContent).not.toContain('Open alpha');
+		});
+
+		it('hides stale fleet-derived Open commands on /trust when no session is present', async () => {
+			clearSession();
+			portalFleetInstances.set([{ slug: 'alpha', hosted_region: 'us-east-1', lesser_version: 'v1.0.0' }]);
+			window.history.pushState({}, '', '/trust');
+
+			const { target } = mountPortalShell();
+			window.dispatchEvent(new PopStateEvent('popstate'));
+			await settle();
+
+			openPalette();
+			await tick();
+
+			const dialog = target.querySelector('[role="dialog"][aria-modal="true"]')!;
+			expect(dialog).not.toBeNull();
+			expect(window.location.pathname).toBe('/trust');
+
+			const groupLabels = Array.from(dialog.querySelectorAll('[role="group"]')).map((group) => {
+				const labelId = group.getAttribute('aria-labelledby');
+				return labelId ? target.querySelector('#' + labelId)?.textContent?.trim() : '';
+			});
+			expect(groupLabels).not.toContain('Instances');
+			expect(dialog.textContent).not.toContain('Open alpha');
+			expect(dialog.textContent).not.toContain('us-east-1');
+			expect(dialog.textContent).not.toContain('v1.0.0');
+		});
+
 		it('renders stubbed actions as disabled items', async () => {
 			setSession(customerSession());
 			mockListInstances.mockResolvedValue({ instances: [], count: 0 });

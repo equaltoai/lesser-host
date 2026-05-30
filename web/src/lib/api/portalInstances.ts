@@ -20,6 +20,7 @@ export interface InstanceResponse {
 	hosted_account_id?: string;
 	hosted_region?: string;
 	hosted_base_domain?: string;
+	managed?: boolean;
 	managed_lesser_domain?: string;
 	hosted_zone_id?: string;
 	lesser_version?: string;

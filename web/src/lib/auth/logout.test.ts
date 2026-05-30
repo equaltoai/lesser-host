@@ -13,6 +13,7 @@ describe('logout', () => {
 
 	it('clears the local session even if the API call fails', async () => {
 		const { session, setSession } = await import('src/lib/session');
+		const { portalFleetInstances } = await import('src/lib/portalFleetState');
 		const { logout } = await import('src/lib/auth/logout');
 
 		setSession({
@@ -22,14 +23,17 @@ describe('logout', () => {
 			username: 'alice',
 			role: 'customer',
 		});
+		portalFleetInstances.set([{ slug: 'alpha', hosted_region: 'us-east-1', lesser_version: 'v1.0.0' }]);
 
 		expect(get(session)).not.toBeNull();
+		expect(get(portalFleetInstances)).toHaveLength(1);
 
 		vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network down')));
 
 		await expect(logout()).rejects.toThrow('network down');
 
 		expect(get(session)).toBeNull();
+		expect(get(portalFleetInstances)).toEqual([]);
 	});
 
 	it('waits for server-side revocation before clearing the local session', async () => {

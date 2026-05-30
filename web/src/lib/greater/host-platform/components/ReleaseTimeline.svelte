@@ -40,6 +40,7 @@ runtime style writes. All styling via stable `--gr-*` tokens.
 <script lang="ts">
 	import type { HTMLAttributes } from 'svelte/elements';
 	import type { Snippet } from 'svelte';
+	import { safeHref } from 'src/lib/api/http';
 	import { useStableId } from 'src/lib/greater/utils';
 	import type { ReleaseAdoptionFormatter, ReleaseStatus, ReleaseTimelineItem } from '../types.js';
 
@@ -183,6 +184,7 @@ runtime style writes. All styling via stable `--gr-*` tokens.
 				{@const isoDate = dateIsoAttr(release.date)}
 				{@const adoptionText = (formatAdoption ?? defaultFormatAdoption)(release.adoption)}
 				{@const adoptionRatio = numericAdoption(release.adoption)}
+				{@const releaseHref = safeHref(release.href)}
 				<li
 					id={stableId.value ? `${stableId.value}-rel-${release.id}` : undefined}
 					class={[
@@ -251,12 +253,12 @@ runtime style writes. All styling via stable `--gr-*` tokens.
 								</p>
 							{/if}
 						{/if}
-						{#if release.href || itemActions}
+						{#if releaseHref || itemActions}
 							<div class="gr-host-platform-release-timeline__actions" role="group">
-								{#if release.href}
+								{#if releaseHref}
 									<a
 										class="gr-host-platform-release-timeline__link"
-										href={release.href}
+										href={releaseHref}
 										aria-label={`Release notes for ${release.version}`}
 									>
 										Release notes

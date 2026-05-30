@@ -103,3 +103,24 @@ func TestSanitizePortalURL(t *testing.T) {
 		})
 	}
 }
+
+func TestInstanceResponseManagedFlagDerivesFromHostedBaseDomain(t *testing.T) {
+	t.Parallel()
+
+	freshManaged := instanceResponseFromModel(&models.Instance{
+		Slug:             "fresh",
+		Status:           models.InstanceStatusActive,
+		HostedBaseDomain: "fresh.greater.website",
+	})
+	if !freshManaged.Managed {
+		t.Fatalf("fresh portal-managed instance must be managed before region/account assignment: %#v", freshManaged)
+	}
+
+	external := instanceResponseFromModel(&models.Instance{
+		Slug:   "external",
+		Status: models.InstanceStatusActive,
+	})
+	if external.Managed {
+		t.Fatalf("external registration without hosted base domain must not be managed: %#v", external)
+	}
+}
