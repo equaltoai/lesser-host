@@ -1902,7 +1902,9 @@ forbid_pattern() {
 assert_negative_fixture_rejected() {
   local pattern="$1"
   local label="$2"
+  shift 2
   local fixture
+  local literal
   fixture="$(mktemp)"
   cat > "${fixture}" <<'__CMP4_NEGATIVE_FIXTURE__'
 # Bounded soul comm mailbox authority
@@ -1928,6 +1930,9 @@ tenant isolation not required; not required to isolate tenants; tenant boundarie
 Body-owned: body may own mailbox storage; mailbox truth may be body-owned; body primary mailbox authority;
 mailbox authority belongs to body; body can act as mailbox owner; not required for host to own mailbox.
 __CMP4_NEGATIVE_FIXTURE__
+  for literal in "$@"; do
+    printf '%s\n' "${literal}" >> "${fixture}"
+  done
   if grep -Eiq -- "${pattern}" "${fixture}"; then
     echo "PASS: negative fixture rejected for ${label}"
   else
@@ -1935,6 +1940,15 @@ __CMP4_NEGATIVE_FIXTURE__
     echo "  forbidden pattern: ${pattern}"
     fail=1
   fi
+  for literal in "$@"; do
+    if printf '%s\n' "${literal}" | grep -Eiq -- "${pattern}"; then
+      echo "PASS: literal negative fixture rejected for ${label}: ${literal}"
+    else
+      echo "FAIL: literal negative fixture did not exercise forbidden semantic for ${label}: ${literal}"
+      echo "  forbidden pattern: ${pattern}"
+      fail=1
+    fi
+  done
   rm -f "${fixture}"
 }
 
@@ -1996,18 +2010,21 @@ require_pattern "${evidence}" 'CMP-4-output\.log' 'evidence plan names CMP-4 evi
 	# ensures circumlocution regressions are caught by the fixture assertions, not
 	# just by the policy-file scans. Categories: retention, encryption, access-audit,
 	# list/content-split, raw-keys, cross-tenant, body-owned mailbox authority.
-	PAT_RETENTION='no (explicit )?retention policy|without (a[n]? )?retention policy|retained? indefinitely|indefinite retention|unbounded retention|retention (is )?(optional|not (required|mandatory|enforced|needed|necessary))|optional retention|skip retention|best[- ]effort retention|keep (content|messages?|mailbox items?) forever|never purge|not (required|mandatory|enforced) to (retain|purge|expire)|(retention|purge|expir(y|ation)).*(not|no) (required|mandatory|enforced|needed)|may (be )?(retained|stored|kept) (indefinitely|forever|without limit)|without (any )?(retention|purging|expiry)|no (requirement|need|obligation) to (retain|purge)|retention (may|can) be (skipped|omitted|avoided|bypassed|waived)|content (may|can) persist (forever|indefinitely|without limit)|(retention|purge).*(not|never|no) (applied?|enforced|implemented)'
-	PAT_ENCRYPTION='unencrypted|without encryption|do not encrypt|skip encryption|encryption (is )?(optional|not (required|mandatory|enforced|needed|necessary))|optional encryption|stored? in plaintext|plaintext (mailbox|message|content|body)|not (required|mandatory|enforced) to encrypt|may (be )?(stored|sent|kept|persisted) (unencrypted|in (the )?clear|without encryption)|(stored?|content|messages?|mailbox).*(without|not|no|never) encrypt|encrypt.*(may|can) be (skipped|omitted|avoided|bypassed|waived)|(at rest|in transit).*(not|no|without) encrypt|no (requirement|need|obligation) (for|to) encrypt'
-	PAT_ACCESS_AUDIT='without access[- ]audit|skip access[- ]audit|no access[- ]audit|access audit can be skipped|audit logging (is )?(optional|not (required|mandatory|enforced|needed|necessary))|optional audit|unaudited (read|content|state|mutation)|read(s)? without audit|audit (is )?not (required|mandatory|enforced|needed|necessary)|not (required|mandatory|enforced) to audit|audit (logging )?(may|can) be (skipped|omitted|avoided|bypassed|waived)|without (any )?(audit|auditing|audit trail)|no (requirement|need|obligation) (for|to) audit|(access|content|state|mutation).*(may|can) (be|go) unaudited|audit trail.*(not|no|never) (required?|mandatory|enforced)'
-	PAT_LIST_CONTENT='list endpoints return (full|complete|raw).*bod(y|ies)|full bod(y|ies).*list endpoints|include full bod(y|ies).*list|list (responses|payloads|results) include (full|complete|raw).*(message|content|bod(y|ies))|complete (message|content|bod(y|ies)).*list (responses|payloads|results)|list (responses?|payloads?|endpoints?|results?).*(may|can) include (full|complete|raw|entire).*(bod(y|ies)|message|content)|(full|complete|raw|entire) (bod(y|ies)|message|content).*(may|can) (be )?included in list|list.*not required to redact|redaction.*not (required|mandatory|enforced)|redaction (may|can) be (skipped|omitted|avoided)|list (may|can) return unredacted|unredacted.*list'
-	PAT_RAW_KEYS='raw instance keys are stored|store raw (instance )?keys|log raw (instance )?keys|return raw (instance )?keys|plaintext (instance[- ]?)?key fallback|instance[- ]auth falls back to plaintext|accept raw (instance )?keys from storage|instance keys? (may|can) be (stored|kept|persisted|retained) (in|as) (plaintext|raw)|(may|can) store (raw|plaintext) (instance )?keys?|keys? (may|can) be (stored|kept|persisted) without hash|hash.*not (required|mandatory|enforced|needed)|not (required|mandatory|enforced) to hash (instance )?keys?|without hash.*instance (auth|key)|instance (auth|key).*without hash|(may|can) accept (raw|plaintext) (instance )?keys?'
-	PAT_CROSS_TENANT='cross-tenant (mailbox )?(search|analytics) is allowed|allow(s|ed)? cross-tenant (mailbox )?(search|analytics)|global mailbox (search|analytics) (is )?allowed|search (mailbox )?content across tenants|cross-tenant.*not (prohibited|forbidden|restricted|prevented|blocked)|(may|can) (search|query|access) (mailbox )?(content|data|items?) across tenants|tenant isolation.*not (required|mandatory|enforced|needed|necessary)|not (required|mandatory|enforced) to isolate tenants?|tenant boundar(y|ies).*(may|can) be crossed|cross-tenant (mailbox )?(search|analytics|access).*not (prohibited|forbidden|restricted)'
-	PAT_BODY_OWNED='body-owned mailbox storage is allowed|body (owns|stores|persists) mailbox truth|body (may|can) own mailbox (storage|truth|state)|mailbox (storage|truth|state).*(may|can) be body-owned|body.*primary mailbox authority|mailbox authority.*belongs to body|body (may|can) (be|act as) (the )?mailbox (authority|owner)|not (required|mandatory) for host to own mailbox'
+	PAT_RETENTION='no (explicit )?retention policy|without (a[n]? )?retention policy|retained? indefinitely|indefinite retention|unbounded retention|retention (is )?(optional|not (required|mandatory|enforced|needed|necessary))|optional retention|skip retention|best[- ]effort retention|keep (content|messages?|mailbox items?) forever|never purge|not (required|mandatory|enforced) to (retain|purge|expire)|(retention|purge|expir(y|ation)).*(not|no) (required|mandatory|enforced|needed)|may (be )?(retained|stored|kept) (indefinitely|forever|without limit)|without (any )?(retention|purging|expiry)|no (requirement|need|obligation) to (retain|purge)|retention (may|can) be (skipped|omitted|avoided|bypassed|waived)|content (may|can) persist (forever|indefinitely|without limit)|(retention|purge).*(not|never|no) (applied?|enforced|implemented)|(retention policy|retention|purge|purging|expir(y|ation)) (is )?(disabled|turned off)'
+	PAT_ENCRYPTION='unencrypted|without encryption|do not encrypt|skip encryption|encryption (is )?(optional|not (required|mandatory|enforced|needed|necessary)|disabled|turned off)|optional encryption|stored? in plaintext|plaintext (mailbox|message|content|body)|not (required|mandatory|enforced) to encrypt|may (be )?(stored|sent|kept|persisted) (unencrypted|in (the )?clear|without encryption)|(stored?|content|messages?|mailbox).*(without|not|no|never) encrypt|encrypt.*(may|can) be (skipped|omitted|avoided|bypassed|waived)|(at rest|in transit).*(not|no|without) encrypt|no (requirement|need|obligation) (for|to) encrypt|(at rest|in transit) encryption (is )?(disabled|turned off)'
+	PAT_ACCESS_AUDIT='without access[- ]audit|skip access[- ]audit|no access[- ]audit|access audit can be skipped|audit logging (is )?(optional|not (required|mandatory|enforced|needed|necessary)|disabled|turned off)|optional audit|unaudited (read|content|state|mutation)|read(s)? without audit|audit (is )?(not (required|mandatory|enforced|needed|necessary)|disabled|turned off)|not (required|mandatory|enforced) to audit|audit (logging )?(may|can) be (skipped|omitted|avoided|bypassed|waived)|without (any )?(audit|auditing|audit trail)|no (requirement|need|obligation) (for|to) audit|(access|content|state|mutation).*(may|can) (be|go) unaudited|audit trail.*(not|no|never) (required?|mandatory|enforced)|(access[- ]audit|audit trail) (is )?(disabled|turned off)'
+	PAT_LIST_CONTENT='list endpoints return (full|complete|raw).*bod(y|ies)|full bod(y|ies).*list endpoints|include full bod(y|ies).*list|list (responses|payloads|results) include (full|complete|raw).*(message|content|bod(y|ies))|complete (message|content|bod(y|ies)).*list (responses|payloads|results)|list (responses?|payloads?|endpoints?|results?).*(may|can) include (full|complete|raw|entire).*(bod(y|ies)|message|content)|(full|complete|raw|entire) (bod(y|ies)|message|content).*(may|can) (be )?included in list|list.*not required to redact|redaction.*not (required|mandatory|enforced)|redaction (may|can) be (skipped|omitted|avoided)|list (may|can) return unredacted|unredacted.*list|(redaction|list redaction) (is )?(disabled|turned off)|(full|complete|raw|entire).*(bod(y|ies)|message|content).*list.*(enabled|turned on|permitted|in scope)|unredacted.*list.*(enabled|turned on|permitted|in scope)|list.*unredacted.*(enabled|turned on|permitted|in scope)'
+	PAT_RAW_KEYS='raw instance keys are stored|store raw (instance )?keys|log raw (instance )?keys|return raw (instance )?keys|plaintext (instance[- ]?)?key fallback|instance[- ]auth falls back to plaintext|accept raw (instance )?keys from storage|instance keys? (may|can) be (stored|kept|persisted|retained) (in|as) (plaintext|raw)|(may|can) store (raw|plaintext) (instance )?keys?|keys? (may|can) be (stored|kept|persisted) without hash|hash.*not (required|mandatory|enforced|needed)|not (required|mandatory|enforced) to hash (instance )?keys?|without hash.*instance (auth|key)|instance (auth|key).*without hash|(may|can) accept (raw|plaintext) (instance )?keys?|(raw|plaintext) (instance[- ]?)?key (storage|retention|fallback) (is )?(enabled|turned on|permitted|in scope)|plaintext (instance[- ]?)?key fallback (is )?(enabled|turned on|permitted|in scope)|(hashing|hash-only instance auth|hash-only authentication) (is )?(disabled|turned off)'
+	PAT_CROSS_TENANT='cross-tenant (mailbox )?(search|analytics|access) ((is|are) )?(allowed|enabled|turned on|permitted|in scope)|allow(s|ed)? cross-tenant (mailbox )?(search|analytics|access)|global mailbox (search|analytics|access) ((is|are) )?(allowed|enabled|turned on|permitted|in scope)|search (mailbox )?content across tenants|cross-tenant.*not (prohibited|forbidden|restricted|prevented|blocked)|(may|can) (search|query|access) (mailbox )?(content|data|items?) across tenants|tenant isolation.*not (required|mandatory|enforced|needed|necessary)|not (required|mandatory|enforced) to isolate tenants?|tenant boundar(y|ies).*(may|can) be crossed|cross-tenant (mailbox )?(search|analytics|access).*not (prohibited|forbidden|restricted)|tenant isolation (is )?(disabled|turned off)|tenant boundar(y|ies).*(disabled|turned off)'
+	PAT_BODY_OWNED='body-owned mailbox (storage|truth|state|authority) (is )?(allowed|enabled|turned on|permitted|in scope)|body (owns|stores|persists) mailbox truth|body (may|can) own mailbox (storage|truth|state)|mailbox (storage|truth|state).*(may|can) be body-owned|body.*primary mailbox authority|mailbox authority.*belongs to body|body (may|can) (be|act as) (the )?mailbox (authority|owner)|body mailbox authority (is )?(enabled|turned on|permitted|in scope)|not (required|mandatory) for host to own mailbox'
 
 	for f in "${adr}" "${soul}" "${roadmap}" "${controls}"; do
   # CSR-022: forbid patterns expanded to catch semantically-equivalent insecure
   # wording that would bypass simpler regex matches. Covers circumlocutions:
-  # "not required", "may be", "can be", "optional", "without", "no requirement".
+  # "not required", "may be", "can be", "optional", "without",
+  # "no requirement", plus affirmative weakening verbs ("enabled",
+  # "turned on", "permitted", "in scope") and control-disabling verbs
+  # ("disabled", "turned off") where they weaken the category.
   forbid_pattern "${f}" "${PAT_RETENTION}" 'insecure retention semantics'
   forbid_pattern "${f}" "${PAT_ENCRYPTION}" 'insecure encryption semantics'
   forbid_pattern "${f}" "${PAT_ACCESS_AUDIT}" 'insecure access-audit semantics'
@@ -2017,13 +2034,32 @@ require_pattern "${evidence}" 'CMP-4-output\.log' 'evidence plan names CMP-4 evi
   forbid_pattern "${f}" "${PAT_BODY_OWNED}" 'body-owned mailbox authority semantics'
 done
 
-assert_negative_fixture_rejected "${PAT_RETENTION}" 'retention'
-assert_negative_fixture_rejected "${PAT_ENCRYPTION}" 'encryption'
-assert_negative_fixture_rejected "${PAT_ACCESS_AUDIT}" 'access audit'
-assert_negative_fixture_rejected "${PAT_LIST_CONTENT}" 'list/content split'
-assert_negative_fixture_rejected "${PAT_RAW_KEYS}" 'hash-only auth'
-assert_negative_fixture_rejected "${PAT_CROSS_TENANT}" 'tenant isolation'
-assert_negative_fixture_rejected "${PAT_BODY_OWNED}" 'body-owned mailbox authority'
+assert_negative_fixture_rejected "${PAT_RETENTION}" 'retention' \
+  'retention policy is disabled' \
+  'purge is turned off'
+assert_negative_fixture_rejected "${PAT_ENCRYPTION}" 'encryption' \
+  'encryption is disabled' \
+  'encryption is turned off'
+assert_negative_fixture_rejected "${PAT_ACCESS_AUDIT}" 'access audit' \
+  'access audit is disabled' \
+  'audit logging is turned off'
+assert_negative_fixture_rejected "${PAT_LIST_CONTENT}" 'list/content split' \
+  'list redaction is disabled' \
+  'unredacted list responses are enabled' \
+  'full content list responses are permitted'
+assert_negative_fixture_rejected "${PAT_RAW_KEYS}" 'hash-only auth' \
+  'raw instance key storage is enabled' \
+  'plaintext instance-key fallback is turned on' \
+  'hash-only instance auth is disabled'
+assert_negative_fixture_rejected "${PAT_CROSS_TENANT}" 'tenant isolation' \
+  'cross-tenant search is enabled' \
+  'cross-tenant mailbox analytics are turned on' \
+  'cross-tenant access is permitted' \
+  'tenant isolation is disabled'
+assert_negative_fixture_rejected "${PAT_BODY_OWNED}" 'body-owned mailbox authority' \
+  'body-owned mailbox storage is enabled' \
+  'body mailbox authority is permitted' \
+  'body-owned mailbox truth is in scope'
 
 if [[ "${fail}" -ne 0 ]]; then
   exit 1
