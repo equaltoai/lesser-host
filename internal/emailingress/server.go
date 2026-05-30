@@ -125,6 +125,7 @@ func (s *Server) handleRecord(ctx context.Context, record events.SimpleEmailReco
 	if err != nil {
 		return err
 	}
+	senderSoulAttribution := senderSoulAttributionPolicy(record.SES.Mail.Source, record.SES.Receipt, rawMessage)
 
 	receivedAt := record.SES.Mail.Timestamp.UTC()
 	if receivedAt.IsZero() {
@@ -138,8 +139,9 @@ func (s *Server) handleRecord(ctx context.Context, record events.SimpleEmailReco
 			continue
 		}
 		msg := commworker.QueueMessage{
-			Kind:     commworker.QueueMessageKindInbound,
-			Provider: "migadu",
+			Kind:                  commworker.QueueMessageKindInbound,
+			Provider:              "migadu",
+			SenderSoulAttribution: senderSoulAttribution,
 			Notification: commworker.InboundNotification{
 				Type:         "communication:inbound",
 				Channel:      "email",
@@ -174,6 +176,84 @@ func sesReceiptVerdictsAccepted(receipt events.SimpleEmailReceipt) bool {
 
 func sesVerdictPass(verdict events.SimpleEmailVerdict) bool {
 	return strings.EqualFold(strings.TrimSpace(verdict.Status), "PASS")
+}
+
+func senderSoulAttributionPolicy(source string, receipt events.SimpleEmailReceipt, rawMessage []byte) *commworker.SenderSoulAttributionPolicy {
+	sourceDomain := emailDomain(source)
+	if sourceDomain == "" {
+		return nil
+	}
+	// SES evaluates SPF against the SMTP envelope MAIL FROM domain, which is
+	// the same identity exposed as Mail.Source.
+	if sesVerdictPass(receipt.SPFVerdict) {
+		return &commworker.SenderSoulAttributionPolicy{Allowed: true, Method: "spf"}
+	}
+
+	// SES evaluates DMARC/DKIM against the RFC 5322 From domain. Require that
+	// domain to align with Mail.Source before using those verdicts to authorize
+	// Mail.Source-driven soul attribution.
+	headerFromDomain := rawHeaderFromDomain(rawMessage)
+	if !domainsAlign(headerFromDomain, sourceDomain) {
+		return nil
+	}
+	if sesVerdictPass(receipt.DMARCVerdict) {
+		return &commworker.SenderSoulAttributionPolicy{Allowed: true, Method: "dmarc"}
+	}
+	if sesVerdictPass(receipt.DKIMVerdict) {
+		return &commworker.SenderSoulAttributionPolicy{Allowed: true, Method: "dkim"}
+	}
+	return nil
+}
+
+func rawHeaderFromDomain(rawMessage []byte) string {
+	msg, err := mail.ReadMessage(bytes.NewReader(rawMessage))
+	if err != nil {
+		return ""
+	}
+	return emailDomain(msg.Header.Get("From"))
+}
+
+func emailDomain(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if parsed, err := mail.ParseAddress(raw); err == nil {
+		raw = parsed.Address
+	}
+	return normalizedEmailDomain(raw)
+}
+
+func normalizedEmailDomain(raw string) string {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	value = strings.Trim(value, "<>\"'()[]{}")
+	if value == "" {
+		return ""
+	}
+	if at := strings.LastIndex(value, "@"); at >= 0 {
+		value = value[at+1:]
+	}
+	value = strings.Trim(value, ".;,)<>\"'")
+	if value == "" || strings.ContainsAny(value, " \t\r\n") {
+		return ""
+	}
+	return value
+}
+
+func domainsAlign(authDomain string, sourceDomain string) bool {
+	authDomain = normalizedEmailDomain(authDomain)
+	sourceDomain = normalizedEmailDomain(sourceDomain)
+	if authDomain == "" || sourceDomain == "" {
+		return false
+	}
+	if authDomain == sourceDomain {
+		return true
+	}
+	if !strings.Contains(authDomain, ".") || !strings.Contains(sourceDomain, ".") {
+		return false
+	}
+	return strings.HasSuffix(authDomain, "."+sourceDomain) ||
+		strings.HasSuffix(sourceDomain, "."+authDomain)
 }
 
 func safeLogToken(value string) string {

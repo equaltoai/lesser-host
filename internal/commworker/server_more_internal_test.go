@@ -513,7 +513,7 @@ func TestResolveAgentInstance_RejectsInvalidManagedStageAlias(t *testing.T) {
 func TestMaybeAnnotateSenderSoul_Branches(t *testing.T) {
 	t.Parallel()
 
-	(*Server)(nil).maybeAnnotateSenderSoul(context.Background(), nil)
+	(*Server)(nil).maybeAnnotateSenderSoul(context.Background(), nil, false)
 
 	s := &Server{store: &hookedStore{
 		fakeStore: &fakeStore{},
@@ -522,14 +522,14 @@ func TestMaybeAnnotateSenderSoul_Branches(t *testing.T) {
 		},
 	}}
 	notif := &InboundNotification{Channel: "email", From: InboundParty{Address: "sender@example.com"}}
-	s.maybeAnnotateSenderSoul(context.Background(), notif)
+	s.maybeAnnotateSenderSoul(context.Background(), notif, true)
 	if notif.From.SoulAgentID != nil {
 		t.Fatalf("expected failed lookup to leave sender unannotated: %#v", notif.From.SoulAgentID)
 	}
 
 	existing := "0xalready"
 	notif = &InboundNotification{Channel: "email", From: InboundParty{Address: "sender@example.com", SoulAgentID: &existing}}
-	s.maybeAnnotateSenderSoul(context.Background(), notif)
+	s.maybeAnnotateSenderSoul(context.Background(), notif, true)
 	if notif.From.SoulAgentID == nil || *notif.From.SoulAgentID != existing {
 		t.Fatalf("expected existing annotation to be preserved: %#v", notif.From.SoulAgentID)
 	}
@@ -541,15 +541,78 @@ func TestMaybeAnnotateSenderSoul_Branches(t *testing.T) {
 		},
 	}}
 	notif = &InboundNotification{Channel: "sms", From: InboundParty{Number: " +1 (555) 123-4567 "}}
-	s.maybeAnnotateSenderSoul(context.Background(), notif)
+	s.maybeAnnotateSenderSoul(context.Background(), notif, true)
 	if notif.From.SoulAgentID == nil || *notif.From.SoulAgentID != "0xphone-sender" {
 		t.Fatalf("expected phone sender annotation, got %#v", notif.From.SoulAgentID)
 	}
 
 	notif = &InboundNotification{Channel: "voice", From: InboundParty{}}
-	s.maybeAnnotateSenderSoul(context.Background(), notif)
+	s.maybeAnnotateSenderSoul(context.Background(), notif, true)
 	if notif.From.SoulAgentID != nil {
 		t.Fatalf("expected empty voice sender to remain nil, got %#v", notif.From.SoulAgentID)
+	}
+}
+
+func TestProcessInbound_EmailSenderSoulRequiresAlignedAttributionPolicy(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 3, 5, 12, 0, 0, 0, time.UTC)
+	agentID := commStoreTestAgentID
+	to := commTestAgentEmail
+	const victimSource = "victim@lessersoul.ai"
+
+	tests := []struct {
+		name       string
+		policy     *SenderSoulAttributionPolicy
+		wantSender bool
+	}{
+		{
+			name:       "unaligned source auth leaves sender soul unauthenticated for attribution",
+			policy:     nil,
+			wantSender: false,
+		},
+		{
+			name:       "aligned source auth permits sender soul attribution",
+			policy:     &SenderSoulAttributionPolicy{Allowed: true, Method: "dkim"},
+			wantSender: true,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			fs := newActiveInboundStore(now, agentID, inboundChannelEmail, to)
+			fs.emailIndex[victimSource] = commTestSenderSoulID
+
+			var delivered InboundNotification
+			s := NewServer(config.Config{Stage: "lab"}, fs, nil, nil)
+			s.now = func() time.Time { return now }
+			s.fetchInstanceKeyPlaintext = func(context.Context, *models.Instance) (string, error) { return testInstanceAPIKey, nil }
+			s.deliverNotification = func(_ context.Context, _ string, apiKey string, notif InboundNotification) error {
+				if apiKey != testInstanceAPIKey {
+					t.Fatalf("unexpected api key: %q", apiKey)
+				}
+				delivered = notif
+				return nil
+			}
+
+			msg := newInboundEmailMessage(now, to)
+			msg.Notification.From = InboundParty{Address: victimSource}
+			msg.SenderSoulAttribution = tc.policy
+
+			if err := s.processInbound(context.Background(), "req-email-attribution", msg); err != nil {
+				t.Fatalf("processInbound: %v", err)
+			}
+			if tc.wantSender {
+				if delivered.From.SoulAgentID == nil || *delivered.From.SoulAgentID != commTestSenderSoulID {
+					t.Fatalf("expected sender soul attribution, got %#v", delivered.From.SoulAgentID)
+				}
+			} else if delivered.From.SoulAgentID != nil {
+				t.Fatalf("expected sender soul attribution to remain absent, got %#v", delivered.From.SoulAgentID)
+			}
+		})
 	}
 }
 

@@ -517,6 +517,131 @@ func TestHandleSESEvent_RejectsUnauthenticatedSenderVerdicts(t *testing.T) {
 	}
 }
 
+func TestHandleSESEvent_UnalignedDKIMSourceDoesNotAllowSoulAttribution(t *testing.T) {
+	t.Parallel()
+
+	const victimSource = "victim@lessersoul.ai"
+	raw := strings.Join([]string{
+		"Authentication-Results: amazonses.com; dkim=pass header.d=attacker.example; dmarc=pass header.from=attacker.example",
+		"From: Mallory <mallory@attacker.example>",
+		"To: medic@inbound.lessersoul.ai",
+		"Subject: Hello",
+		"Message-ID: <msg-unaligned@example.com>",
+		"Content-Type: text/plain; charset=utf-8",
+		"",
+		"Email body",
+		"",
+	}, "\r\n")
+
+	s3Client := &fakeS3{bodyByKey: map[string]string{"ses/inbound/ses-msg-unaligned": raw}}
+	sqsClient := &fakeSQS{}
+	srv := &Server{
+		cfg: config.Config{
+			CommQueueURL:           "queue",
+			SoulEmailInboundDomain: "inbound.lessersoul.ai",
+			InboundEmailBucketName: "bucket",
+			InboundEmailS3Prefix:   "ses/inbound/",
+		},
+		s3:   s3Client,
+		sqs:  sqsClient,
+		now:  time.Now,
+		logf: func(string, ...any) {},
+	}
+
+	event := events.SimpleEmailEvent{Records: []events.SimpleEmailRecord{{SES: events.SimpleEmailService{
+		Mail: events.SimpleEmailMessage{
+			Source:      victimSource,
+			MessageID:   "ses-msg-unaligned",
+			Destination: []string{inboundBridgeAddress},
+		},
+		Receipt: events.SimpleEmailReceipt{
+			SpamVerdict:  events.SimpleEmailVerdict{Status: "PASS"},
+			VirusVerdict: events.SimpleEmailVerdict{Status: "PASS"},
+			SPFVerdict:   events.SimpleEmailVerdict{Status: "FAIL"},
+			DKIMVerdict:  events.SimpleEmailVerdict{Status: "PASS"},
+			DMARCVerdict: events.SimpleEmailVerdict{Status: "FAIL"},
+		},
+	}}}}
+
+	if err := srv.HandleSESEvent(context.Background(), event); err != nil {
+		t.Fatalf("HandleSESEvent: %v", err)
+	}
+	if len(sqsClient.bodies) != 1 {
+		t.Fatalf("expected message to remain deliverable, got %d queued messages", len(sqsClient.bodies))
+	}
+	var msg commworker.QueueMessage
+	if err := json.Unmarshal([]byte(sqsClient.bodies[0]), &msg); err != nil {
+		t.Fatalf("unmarshal queued body: %v", err)
+	}
+	if msg.Notification.From.Address != victimSource {
+		t.Fatalf("expected SES Mail.Source to remain the displayed sender address, got %#v", msg.Notification.From)
+	}
+	if msg.SenderSoulAttribution != nil && msg.SenderSoulAttribution.Allowed {
+		t.Fatalf("expected unaligned DKIM auth not to permit sender soul attribution, got %#v", msg.SenderSoulAttribution)
+	}
+}
+
+func TestHandleSESEvent_AlignedDKIMSourceAllowsSoulAttribution(t *testing.T) {
+	t.Parallel()
+
+	const source = "victim@lessersoul.ai"
+	raw := strings.Join([]string{
+		"Authentication-Results: amazonses.com; dkim=pass header.d=lessersoul.ai; dmarc=fail header.from=lessersoul.ai",
+		"From: Victim <victim@lessersoul.ai>",
+		"To: medic@inbound.lessersoul.ai",
+		"Subject: Hello",
+		"Message-ID: <msg-aligned@example.com>",
+		"Content-Type: text/plain; charset=utf-8",
+		"",
+		"Email body",
+		"",
+	}, "\r\n")
+
+	s3Client := &fakeS3{bodyByKey: map[string]string{"ses/inbound/ses-msg-aligned": raw}}
+	sqsClient := &fakeSQS{}
+	srv := &Server{
+		cfg: config.Config{
+			CommQueueURL:           "queue",
+			SoulEmailInboundDomain: "inbound.lessersoul.ai",
+			InboundEmailBucketName: "bucket",
+			InboundEmailS3Prefix:   "ses/inbound/",
+		},
+		s3:   s3Client,
+		sqs:  sqsClient,
+		now:  time.Now,
+		logf: func(string, ...any) {},
+	}
+
+	event := events.SimpleEmailEvent{Records: []events.SimpleEmailRecord{{SES: events.SimpleEmailService{
+		Mail: events.SimpleEmailMessage{
+			Source:      source,
+			MessageID:   "ses-msg-aligned",
+			Destination: []string{inboundBridgeAddress},
+		},
+		Receipt: events.SimpleEmailReceipt{
+			SpamVerdict:  events.SimpleEmailVerdict{Status: "PASS"},
+			VirusVerdict: events.SimpleEmailVerdict{Status: "PASS"},
+			SPFVerdict:   events.SimpleEmailVerdict{Status: "FAIL"},
+			DKIMVerdict:  events.SimpleEmailVerdict{Status: "PASS"},
+			DMARCVerdict: events.SimpleEmailVerdict{Status: "FAIL"},
+		},
+	}}}}
+
+	if err := srv.HandleSESEvent(context.Background(), event); err != nil {
+		t.Fatalf("HandleSESEvent: %v", err)
+	}
+	if len(sqsClient.bodies) != 1 {
+		t.Fatalf("expected 1 queued message, got %d", len(sqsClient.bodies))
+	}
+	var msg commworker.QueueMessage
+	if err := json.Unmarshal([]byte(sqsClient.bodies[0]), &msg); err != nil {
+		t.Fatalf("unmarshal queued body: %v", err)
+	}
+	if msg.SenderSoulAttribution == nil || !msg.SenderSoulAttribution.Allowed || msg.SenderSoulAttribution.Method != "dkim" {
+		t.Fatalf("expected aligned DKIM auth to permit sender soul attribution, got %#v", msg.SenderSoulAttribution)
+	}
+}
+
 func TestHandleSESEvent_PropagatesQueueError(t *testing.T) {
 	t.Parallel()
 
