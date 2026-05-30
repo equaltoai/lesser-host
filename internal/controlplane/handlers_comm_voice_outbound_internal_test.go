@@ -40,6 +40,25 @@ func voiceInstructionFixture() models.SoulCommVoiceInstruction {
 	}
 }
 
+func assertOutboundVoiceMeteringCreate(t *testing.T, model any, callID string) {
+	t.Helper()
+	switch item := model.(type) {
+	case *models.UsageMeteringDedup:
+		if item.InstanceSlug != commWebhookTestInstanceSlug || item.Module != commVoiceCallUsageModule || item.Target != callID {
+			t.Fatalf("unexpected outbound voice metering dedup: %#v", item)
+		}
+	case *models.UsageLedgerEntry:
+		if item.InstanceSlug != commWebhookTestInstanceSlug || item.Target != callID || item.RequestID != callID {
+			t.Fatalf("unexpected outbound voice ledger identity: %#v", item)
+		}
+		if item.ActorURI != "soul_agent:0xabc" || item.RequestedCredits != 16 || item.DebitedCredits != 16 {
+			t.Fatalf("unexpected outbound voice ledger accounting: %#v", item)
+		}
+	default:
+		t.Fatalf("unexpected outbound voice transaction create model %T", item)
+	}
+}
+
 func newVoiceGatherCaptureServer(t *testing.T) (*Server, func() *commworker.QueueMessage) {
 	t.Helper()
 
@@ -572,14 +591,8 @@ func TestMaybeHandleOutboundVoiceStatusWebhook_BillsOutboundExternalRecipient(t 
 
 	db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Once()
 	db.On("TransactWrite", mock.Anything, mock.Anything).Return(theoryErrors.ErrConditionFailed).Once()
-	tx.On("Create", mock.Anything, mock.Anything).Return(tx).Once().Run(func(args mock.Arguments) {
-		entry := testutil.RequireMockArg[*models.UsageLedgerEntry](t, args, 0)
-		if entry.InstanceSlug != commWebhookTestInstanceSlug || entry.Target != commVoiceCallControlID || entry.RequestID != commVoiceCallControlID {
-			t.Fatalf("unexpected outbound voice ledger identity: %#v", entry)
-		}
-		if entry.ActorURI != "soul_agent:0xabc" || entry.RequestedCredits != 16 || entry.DebitedCredits != 16 {
-			t.Fatalf("unexpected outbound voice ledger accounting: %#v", entry)
-		}
+	tx.On("Create", mock.Anything, mock.Anything).Return(tx).Twice().Run(func(args mock.Arguments) {
+		assertOutboundVoiceMeteringCreate(t, args.Get(0), commVoiceCallControlID)
 	})
 	tx.On("UpdateWithBuilder", mock.Anything, mock.Anything, mock.Anything).Return(tx).Once()
 
