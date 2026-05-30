@@ -281,10 +281,7 @@ func (s *Server) fetchPortalSoulLesserAgent(ctx *apptheory.Context, inst *models
 	}
 	req.Header.Set("Accept", "application/json")
 
-	client := s.portalCostHTTPClient
-	if client == nil {
-		client = &http.Client{Timeout: instanceMetricsTimeout}
-	}
+	client := s.portalManagedHTTPClient()
 
 	resp, err := client.Do(req) //nolint:gosec // URL is derived from managed instance metadata or an injected test seam, not browser input.
 	if err != nil {

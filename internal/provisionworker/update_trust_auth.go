@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/equaltoai/lesser-host/internal/outboundhttp"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -38,9 +39,9 @@ func verifyTrustAuthEndpoint(ctx context.Context, client *http.Client, baseURL s
 	req.Header.Set("Authorization", "Bearer "+instanceKey)
 
 	if client == nil {
-		client = ssrfProtectedHTTPClient(nil)
+		client = outboundhttp.NewSSRFProtectedClient(nil)
 	}
-	resp, err := client.Do(req) //nolint:gosec // SSRF mitigated by ssrfProtectedHTTPClient (verify path) or caller-provided transport in tests.
+	resp, err := client.Do(req) //nolint:gosec // SSRF mitigated by outboundhttp.NewSSRFProtectedClient (verify path) or caller-provided transport in tests.
 	if err != nil {
 		return false, err.Error()
 	}

@@ -463,10 +463,7 @@ func (s *Server) loadTrustFederation(ctx *apptheory.Context, inst *models.Instan
 		return resp, &apptheory.AppError{Code: "app.internal", Message: "failed to resolve instance federation endpoint"}
 	}
 
-	client := s.portalCostHTTPClient
-	if client == nil {
-		client = &http.Client{Timeout: instanceMetricsTimeout}
-	}
+	client := s.portalManagedHTTPClient()
 
 	// Probe statistics first. The current DTO does not expose the aggregate
 	// active-users/messages counters, but this call verifies the managed admin
