@@ -41,7 +41,7 @@
     "@graphql-typed-document-node/core": "^3.2.0",
     "@noble/hashes": "^2.0.1",
     "@safe-global/safe-apps-sdk": "^9.1.0",
-    "@theory-cloud/facetheory": "https://github.com/theory-cloud/FaceTheory/releases/download/v3.4.2/theory-cloud-facetheory-3.4.2.tgz",
+    "@theory-cloud/facetheory": "https://github.com/theory-cloud/FaceTheory/releases/download/v3.4.4/theory-cloud-facetheory-3.4.4.tgz",
     "focus-trap": "^8.0.0",
     "graphql": "^16.13.1",
     "graphql-ws": "^6.0.7",
@@ -59,10 +59,10 @@
     "shiki": "^4.0.2",
     "tabbable": "^6.4.0",
     "unified": "^11.0.5",
-    "viem": "^2.47.4"
+    "viem": "^2.51.3"
   },
   "overrides": {
-    "brace-expansion": "5.0.5",
+    "brace-expansion": "5.0.6",
     "devalue": "5.8.1",
     "flatted": "3.4.2",
     "minimatch": "10.2.4",
