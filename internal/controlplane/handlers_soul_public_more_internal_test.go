@@ -1155,6 +1155,13 @@ func TestHandleSoulPublicSearch_UsesENSBranch(t *testing.T) {
 	if err != nil || resp.Status != http.StatusOK {
 		t.Fatalf("unexpected: resp=%#v err=%v", resp, err)
 	}
+	var out soulSearchResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Count != 1 || len(out.Results) != 1 || out.Results[0].AgentID != agentID {
+		t.Fatalf("expected instance-scoped ENS search result for %s, got %#v", agentID, out)
+	}
 }
 
 func TestHandleSoulPublicSearch_ENSBranchRespectsPrincipalFilter(t *testing.T) {

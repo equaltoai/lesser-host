@@ -407,18 +407,27 @@ func TestParseENSGatewayRequestAndResolveHandler(t *testing.T) {
 	}
 
 	var out ensGatewayResolveJSON
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+	if unmarshalErr := json.Unmarshal(resp.Body, &out); unmarshalErr != nil {
+		t.Fatalf("unmarshal: %v", unmarshalErr)
 	}
 	if !strings.HasPrefix(out.Data, "0x") {
 		t.Fatalf("expected hex-encoded data, got %q", out.Data)
 	}
 
-	if _, err := s.handleENSGatewayResolve(&apptheory.Context{Request: apptheory.Request{Query: map[string][]string{"sender": {"not-hex"}, "data": {hexutil.Encode(innerData)}}}}); err == nil {
-		t.Fatalf("expected invalid sender error")
-	}
-	if _, err := s.handleENSGatewayResolve(&apptheory.Context{Request: apptheory.Request{Query: map[string][]string{"sender": {"0x000000000000000000000000000000000000cafe"}, "data": {hexutil.Encode(innerData)}}}}); err == nil {
-		t.Fatalf("expected unsupported sender error")
+	requireENSGatewayResolveErrorCode(t, s, map[string][]string{"sender": {"not-hex"}, "data": {hexutil.Encode(innerData)}}, "ccip.bad_request")
+	requireENSGatewayResolveErrorCode(t, s, map[string][]string{
+		"sender": {"0x000000000000000000000000000000000000cafe"},
+		"name":   {"agent.inst1.lessersoul.eth"},
+		"data":   {hexutil.Encode(innerData)},
+	}, "ccip.sender_unsupported")
+}
+
+func requireENSGatewayResolveErrorCode(t *testing.T, s *Server, query map[string][]string, want string) {
+	t.Helper()
+
+	_, err := s.handleENSGatewayResolve(&apptheory.Context{Request: apptheory.Request{Query: query}})
+	if appErr, ok := err.(*apptheory.AppTheoryError); !ok || appErr.Code != want {
+		t.Fatalf("expected ENS gateway error %q, got %#v", want, err)
 	}
 }
 
