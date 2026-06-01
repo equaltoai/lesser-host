@@ -33,6 +33,10 @@ These two surfaces are related, but intentionally not the same thing. See `docs/
   - ERC-721 policy: `tokenId == agentId`
   - Registration signing: EIP-191 over `keccak256(JCS(registration-without-selfAttestation))`
 - Suspension policy: `docs/adr/0003-suspension-policy.md`
+- Hosted identity + ENS invariants: `docs/adr/0007-hosted-identity-and-ens-invariants.md`
+  - managed ENS names use `<name>.<instance-slug>.lessersoul.eth`
+  - ENS chain/resolver selection is independent from legacy `SoulRegistry` chain/contract selection
+  - hosted online identity persists in host state and public artifacts; `SoulRegistry` mint state is optional assurance
 - Agent ID conformance vectors: `docs/spec/agent-id-test-vectors.md`
 
 ## Hosted-bound-soul policy vocabulary v1
