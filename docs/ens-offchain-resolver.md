@@ -21,6 +21,26 @@ EIP-3668 gateways support `{sender}` and `{data}` substitutions. The recommended
 https://ens-gateway.lessersoul.ai/resolve?sender={sender}&data={data}
 ```
 
+## host runtime configuration
+
+`lesser-host` keeps ENS gateway configuration separate from legacy `SoulRegistry` configuration:
+
+- `lab` resolves `lessersoul.eth` on Sepolia (`ENS_GATEWAY_CHAIN_ID=11155111`,
+  `ENS_GATEWAY_CHAIN_NAME=sepolia`).
+- `live` resolves `lessersoul.eth` on Ethereum mainnet (`ENS_GATEWAY_CHAIN_ID=1`,
+  `ENS_GATEWAY_CHAIN_NAME=mainnet`), even if `SOUL_CHAIN_ID` points at a different optional/legacy registry chain.
+- Resolver sender validation uses the stage-specific CDK context keys:
+  - `ensGatewayResolverAddressLab`
+  - `ensGatewayResolverAddressLive`
+- The legacy generic `ensGatewayResolverAddress` context key is accepted only as a lab migration fallback. Do not use it
+  for live.
+- Runtime env names are ENS-specific: `ENS_GATEWAY_ENABLED`, `ENS_GATEWAY_ROOT_NAME`,
+  `ENS_GATEWAY_RESOLVER_ADDRESS`, `ENS_GATEWAY_CHAIN_ID`, `ENS_GATEWAY_CHAIN_NAME`,
+  `ENS_GATEWAY_SIGNING_KEY_ID`, and `ENS_GATEWAY_TTL_SECONDS`.
+
+Each stage keeps its own `ENSGatewaySigningKey` KMS key in the CDK stack. M1 configuration changes do not deploy
+resolver contracts, rotate signers, backfill names, or perform Sepolia/mainnet actions.
+
 ## Signer address (KMS)
 
 The ENS gateway signs responses using a secp256k1 key. The resolver contract stores the corresponding Ethereum

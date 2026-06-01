@@ -51,6 +51,10 @@ func TestLoad_Defaults(t *testing.T) {
 	t.Setenv("ATTESTATION_PUBLIC_KEY_IDS", "k1,k2")
 	t.Setenv("TIP_ENABLED", "true")
 	t.Setenv("TIP_DEFAULT_HOST_FEE_BPS", "250")
+	t.Setenv("ENS_GATEWAY_ENABLED", "")
+	t.Setenv("ENS_GATEWAY_CHAIN_ID", "")
+	t.Setenv("ENS_GATEWAY_CHAIN_NAME", "")
+	t.Setenv("ENS_GATEWAY_ROOT_NAME", "")
 
 	cfg := Load()
 
@@ -86,6 +90,67 @@ func TestLoad_Defaults(t *testing.T) {
 	}
 	if cfg.SoulCommMailboxRetentionDays != 90 {
 		t.Fatalf("expected mailbox retention default 90, got %d", cfg.SoulCommMailboxRetentionDays)
+	}
+}
+
+func TestLoad_ENSGatewayDefaultStageConfig(t *testing.T) {
+	t.Setenv("STAGE", "")
+	t.Setenv("ENS_GATEWAY_CHAIN_ID", "")
+	t.Setenv("ENS_GATEWAY_CHAIN_NAME", "")
+	t.Setenv("ENS_GATEWAY_ROOT_NAME", "")
+
+	cfg := Load()
+
+	if cfg.ENSGatewayChainID != 11155111 || cfg.ENSGatewayChainName != "sepolia" {
+		t.Fatalf("expected lab ENS gateway default Sepolia, got chain_id=%d chain_name=%q", cfg.ENSGatewayChainID, cfg.ENSGatewayChainName)
+	}
+	if cfg.ENSGatewayRootName != "lessersoul.eth" {
+		t.Fatalf("expected default ENS root, got %q", cfg.ENSGatewayRootName)
+	}
+}
+
+func TestLoad_ENSGatewayConfigIndependentFromSoulRegistry(t *testing.T) {
+	t.Setenv("STAGE", "live")
+	t.Setenv("ENS_GATEWAY_ENABLED", "true")
+	t.Setenv("ENS_GATEWAY_ROOT_NAME", " Lessersoul.ETH ")
+	t.Setenv("ENS_GATEWAY_RESOLVER_ADDRESS", " 0x0000000000000000000000000000000000000001 ")
+	t.Setenv("SOUL_ENABLED", "false")
+	t.Setenv("SOUL_CHAIN_ID", "11155111")
+	t.Setenv("SOUL_REGISTRY_CONTRACT_ADDRESS", "0x0000000000000000000000000000000000000002")
+
+	cfg := Load()
+
+	if !cfg.ENSGatewayEnabled {
+		t.Fatalf("expected ENS gateway enabled from ENS-specific env")
+	}
+	if cfg.ENSGatewayChainID != 1 {
+		t.Fatalf("expected live ENS gateway chain to stay mainnet, got %d", cfg.ENSGatewayChainID)
+	}
+	if cfg.ENSGatewayChainName != "mainnet" {
+		t.Fatalf("expected live ENS gateway chain name mainnet, got %q", cfg.ENSGatewayChainName)
+	}
+	if cfg.ENSGatewayRootName != "lessersoul.eth" {
+		t.Fatalf("expected normalized ENS root name, got %q", cfg.ENSGatewayRootName)
+	}
+	if cfg.ENSGatewayResolverAddress != "0x0000000000000000000000000000000000000001" {
+		t.Fatalf("unexpected ENS resolver address: %q", cfg.ENSGatewayResolverAddress)
+	}
+	if cfg.SoulEnabled {
+		t.Fatalf("expected legacy SoulRegistry config to remain disabled")
+	}
+	if cfg.SoulChainID != 11155111 {
+		t.Fatalf("expected legacy SoulRegistry chain to remain separate Sepolia value, got %d", cfg.SoulChainID)
+	}
+}
+
+func TestLoad_ENSGatewayEnabledLegacyFallback(t *testing.T) {
+	t.Setenv("ENS_GATEWAY_ENABLED", "")
+	t.Setenv("SOUL_ENABLED", "true")
+
+	cfg := Load()
+
+	if !cfg.ENSGatewayEnabled {
+		t.Fatalf("expected legacy SOUL_ENABLED fallback while ENS_GATEWAY_ENABLED is unset")
 	}
 }
 

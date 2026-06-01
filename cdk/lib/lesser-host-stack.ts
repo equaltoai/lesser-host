@@ -35,6 +35,12 @@ import { renderProvisionRunnerBuildCommands, renderProvisionRunnerPreBuildComman
 import { CostTelemetryWorker } from './cost-telemetry-worker-construct';
 import { INBOUND_EMAIL_RULE_SET_NAME } from './ses-inbound-rule-set-name';
 import { soulEmailInboundDomainFromContext } from './soul-email-inbound-domain';
+import {
+	ensGatewayChainConfigForStage,
+	ensGatewayContextForStage,
+	ensGatewayResolverAddressFromContext,
+	ensGatewayRootNameFromContext,
+} from './ens-gateway-config';
 export interface LesserHostStackProps extends cdk.StackProps {
 	stage: string;
 }
@@ -258,9 +264,11 @@ export class LesserHostStack extends cdk.Stack {
 			(this.node.tryGetContext('bootstrapWalletAddress') as string | undefined) ?? '';
 			const webAuthnRPID = (this.node.tryGetContext('webauthnRpId') as string | undefined) ?? '';
 			const webAuthnOrigins = (this.node.tryGetContext('webauthnOrigins') as string | undefined) ?? '';
-			const ensGatewayResolverAddress =
-				(this.node.tryGetContext('ensGatewayResolverAddress') as string | undefined) ?? '';
-			const ensGatewayTTLSeconds = (this.node.tryGetContext('ensGatewayTtlSeconds') as string | undefined) ?? '';
+			const ensGatewayChain = ensGatewayChainConfigForStage(stage);
+			const ensGatewayEnabled = ensGatewayContextForStage(this, stage, 'ensGatewayEnabled');
+			const ensGatewayRootName = ensGatewayRootNameFromContext(this);
+			const ensGatewayResolverAddress = ensGatewayResolverAddressFromContext(this, stage);
+			const ensGatewayTTLSeconds = ensGatewayContextForStage(this, stage, 'ensGatewayTtlSeconds');
 
 		const managedProvisioningEnabled =
 			(this.node.tryGetContext('managedProvisioningEnabled') as string | undefined) ?? '';
@@ -516,6 +524,10 @@ export class LesserHostStack extends cdk.Stack {
 			SOUL_TX_MODE: soulTxMode,
 			SOUL_SUPPORTED_CAPABILITIES: soulSupportedCapabilities,
 			SOUL_PACK_BUCKET_NAME: soulPackBucket.bucketName,
+			ENS_GATEWAY_ENABLED: ensGatewayEnabled.trim(),
+			ENS_GATEWAY_CHAIN_ID: ensGatewayChain.chainId,
+			ENS_GATEWAY_CHAIN_NAME: ensGatewayChain.chainName,
+			ENS_GATEWAY_ROOT_NAME: ensGatewayRootName,
 			ENS_GATEWAY_SIGNING_KEY_ID: ensGatewaySigningKey.keyId,
 			ENS_GATEWAY_RESOLVER_ADDRESS: ensGatewayResolverAddress.trim(),
 			ENS_GATEWAY_TTL_SECONDS: ensGatewayTTLSeconds.trim(),

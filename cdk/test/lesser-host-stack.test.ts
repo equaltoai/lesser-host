@@ -1,15 +1,27 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 
 import * as cdk from 'aws-cdk-lib';
 
 import { LesserHostStack, shouldUseLocalWebBundling } from '../lib/lesser-host-stack';
+import {
+	LAB_ENS_GATEWAY_CHAIN_ID,
+	LAB_ENS_GATEWAY_CHAIN_NAME,
+	LIVE_ENS_GATEWAY_CHAIN_ID,
+	LIVE_ENS_GATEWAY_CHAIN_NAME,
+	ensGatewayChainConfigForStage,
+	ensGatewayContextForStage,
+	ensGatewayResolverAddressFromContext,
+} from '../lib/ens-gateway-config';
 import { INBOUND_EMAIL_RULE_SET_NAME } from '../lib/ses-inbound-rule-set-name';
 import {
 	LAB_SOUL_EMAIL_INBOUND_DOMAIN,
 	LIVE_SOUL_EMAIL_INBOUND_DOMAIN,
 	defaultSoulEmailInboundDomainForStage,
+	soulEmailInboundDomainFromContext,
 } from '../lib/soul-email-inbound-domain';
 
 process.env.GOTOOLCHAIN = process.env.GOTOOLCHAIN || 'auto';
@@ -20,33 +32,38 @@ type SynthesizedTemplate = {
 
 let synthesizedTemplate: SynthesizedTemplate | undefined;
 
-function synthTemplate(): SynthesizedTemplate {
-	if (synthesizedTemplate) {
-		return synthesizedTemplate;
+function synthesizeTemplate(stage: string, context: Record<string, unknown>, stackId: string): SynthesizedTemplate {
+	// Full LesserHostStack synthesis stages web assets. Keep each test synth in
+	// its own short-lived outdir so repeated assertions cannot accumulate
+	// copied web/CDK asset directories and exhaust hosted runner disk.
+	const outdir = mkdtempSync(join(tmpdir(), 'lesser-host-cdk-test-'));
+	try {
+		const app = new cdk.App({ context, outdir });
+		const stack = new LesserHostStack(app, stackId, { stage });
+		const assembly = app.synth();
+		const artifact = assembly.getStackArtifact(stack.artifactId);
+		return JSON.parse(readFileSync(artifact.templateFullPath, 'utf8')) as SynthesizedTemplate;
+	} finally {
+		rmSync(outdir, { recursive: true, force: true });
 	}
+}
 
-	const app = new cdk.App();
-	const stack = new LesserHostStack(app, 'TestLesserHostStack', { stage: 'lab' });
-	const assembly = app.synth();
-	const artifact = assembly.getStackArtifact(stack.artifactId);
-	synthesizedTemplate = JSON.parse(readFileSync(artifact.templateFullPath, 'utf8')) as SynthesizedTemplate;
+function synthTemplate(): SynthesizedTemplate {
+	if (!synthesizedTemplate) {
+		synthesizedTemplate = synthesizeTemplate('lab', {}, 'TestLesserHostStack');
+	}
 	return synthesizedTemplate;
 }
 
 function synthTemplateWithContext(context: Record<string, unknown>): SynthesizedTemplate {
-	const app = new cdk.App({ context });
-	const stack = new LesserHostStack(app, 'TestLesserHostStackWithContext', { stage: 'lab' });
-	const assembly = app.synth();
-	const artifact = assembly.getStackArtifact(stack.artifactId);
-	return JSON.parse(readFileSync(artifact.templateFullPath, 'utf8')) as SynthesizedTemplate;
+	return synthesizeTemplate('lab', context, 'TestLesserHostStackWithContext');
 }
 
 function synthTemplateForStage(stage: string, context: Record<string, unknown> = {}): SynthesizedTemplate {
-	const app = new cdk.App({ context });
-	const stack = new LesserHostStack(app, `TestLesserHostStack-${stage}`, { stage });
-	const assembly = app.synth();
-	const artifact = assembly.getStackArtifact(stack.artifactId);
-	return JSON.parse(readFileSync(artifact.templateFullPath, 'utf8')) as SynthesizedTemplate;
+	if (Object.keys(context).length === 0 && stage.trim() !== 'live') {
+		return synthTemplate();
+	}
+	return synthesizeTemplate(stage, context, `TestLesserHostStack-${stage}`);
 }
 
 function findResources(template: SynthesizedTemplate, type: string): Array<Record<string, unknown>> {
@@ -176,19 +193,18 @@ test('stage-specific inbound bridge domain defaults are explicit', () => {
 });
 
 test('stage-specific inbound bridge context overrides remain disjoint', () => {
+	const scope = new cdk.App({
+		context: {
+			soulEmailInboundDomainLab: 'lab-override.example',
+			soulEmailInboundDomainLive: 'live-override.example',
+			soulEmailInboundDomain: 'generic.example',
+		},
+	});
 	for (const { stage, want } of [
 		{ stage: 'lab', want: 'lab-override.example' },
 		{ stage: 'live', want: 'live-override.example' },
 	]) {
-		const template = synthTemplateForStage(stage, {
-			soulEmailInboundDomainLab: 'lab-override.example',
-			soulEmailInboundDomainLive: 'live-override.example',
-			soulEmailInboundDomain: 'generic.example',
-		});
-		const rules = findResourceEntries(template, 'AWS::SES::ReceiptRule');
-		assert.equal(rules.length, 1);
-		const rule = (rules[0]![1].Properties?.Rule as Record<string, unknown> | undefined) ?? {};
-		assert.deepEqual(rule.Recipients, [want]);
+		assert.equal(soulEmailInboundDomainFromContext(scope, stage), want);
 	}
 });
 
@@ -299,6 +315,79 @@ test('trust api receives soul registration runtime configuration', () => {
 	]) {
 		assert.ok(key in env, `expected trust-api environment to include ${key}`);
 	}
+});
+
+test('trust api receives ENS gateway runtime configuration separate from soul registry config', () => {
+	const template = synthTemplateForStage('live', {
+		ensGatewayEnabledLive: 'true',
+		ensGatewayResolverAddressLab: '0x0000000000000000000000000000000000001111',
+		ensGatewayResolverAddressLive: '0x0000000000000000000000000000000000002222',
+		ensGatewayRootName: 'lessersoul.eth',
+		soulEnabledLive: 'false',
+		soulChainIdLive: '11155111',
+		soulRegistryContractAddressLive: '0x0000000000000000000000000000000000003333',
+	});
+	const trustFn = findLambdaByFunctionName(template, 'trust-api');
+	const env = lambdaEnvironment(trustFn);
+
+	assert.equal(env.ENS_GATEWAY_ENABLED, 'true');
+	assert.equal(env.ENS_GATEWAY_CHAIN_ID, LIVE_ENS_GATEWAY_CHAIN_ID);
+	assert.equal(env.ENS_GATEWAY_CHAIN_NAME, LIVE_ENS_GATEWAY_CHAIN_NAME);
+	assert.equal(env.ENS_GATEWAY_ROOT_NAME, 'lessersoul.eth');
+	assert.equal(env.ENS_GATEWAY_RESOLVER_ADDRESS, '0x0000000000000000000000000000000000002222');
+
+	assert.equal(env.SOUL_ENABLED, 'false');
+	assert.equal(env.SOUL_CHAIN_ID, '11155111');
+	assert.equal(env.SOUL_REGISTRY_CONTRACT_ADDRESS, '0x0000000000000000000000000000000000003333');
+});
+
+test('ENS gateway lab and live context selection uses stage-owned resolver and chain values', () => {
+	const context = {
+		ensGatewayEnabledLab: 'true',
+		ensGatewayEnabledLive: 'true',
+		ensGatewayResolverAddressLab: '0x0000000000000000000000000000000000001111',
+		ensGatewayResolverAddressLive: '0x0000000000000000000000000000000000002222',
+		ensGatewayResolverAddress: '0x0000000000000000000000000000000000009999',
+		soulChainIdLab: '31337',
+		soulChainIdLive: '8453',
+	};
+	const scope = new cdk.App({ context });
+
+	assert.equal(
+		ensGatewayResolverAddressFromContext(scope, 'lab'),
+		'0x0000000000000000000000000000000000001111',
+	);
+	assert.equal(
+		ensGatewayResolverAddressFromContext(scope, 'live'),
+		'0x0000000000000000000000000000000000002222',
+	);
+	assert.notEqual(
+		ensGatewayResolverAddressFromContext(scope, 'lab'),
+		ensGatewayResolverAddressFromContext(scope, 'live'),
+	);
+
+	assert.equal(ensGatewayContextForStage(scope, 'lab', 'ensGatewayEnabled'), 'true');
+	assert.equal(ensGatewayContextForStage(scope, 'live', 'ensGatewayEnabled'), 'true');
+
+	const labChain = ensGatewayChainConfigForStage('lab');
+	const liveChain = ensGatewayChainConfigForStage('live');
+	assert.equal(labChain.chainId, LAB_ENS_GATEWAY_CHAIN_ID);
+	assert.equal(labChain.chainName, LAB_ENS_GATEWAY_CHAIN_NAME);
+	assert.equal(liveChain.chainId, LIVE_ENS_GATEWAY_CHAIN_ID);
+	assert.equal(liveChain.chainName, LIVE_ENS_GATEWAY_CHAIN_NAME);
+});
+
+test('legacy generic ENS resolver context is a lab-only migration fallback', () => {
+	const context = {
+		ensGatewayResolverAddress: '0x0000000000000000000000000000000000009999',
+	};
+	const scope = new cdk.App({ context });
+
+	assert.equal(
+		ensGatewayResolverAddressFromContext(scope, 'lab'),
+		'0x0000000000000000000000000000000000009999',
+	);
+	assert.equal(ensGatewayResolverAddressFromContext(scope, 'live'), '');
 });
 
 test('provision runner cannot assume the organization vending role', () => {
