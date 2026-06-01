@@ -3,6 +3,11 @@
 This document covers the on-chain contracts that implement the `lesser-soul` registry anchor described in
 `lesser-soul/SPEC.md`.
 
+Project 44 hosted identity work treats these on-chain contracts as optional/legacy assurance and lifecycle surfaces for
+managed hosted online identity. Persistent hosted identity, managed ENS publication, communication policy, and x402 grant
+authority are host-backed and do not require a `SoulRegistry` mint. See
+`docs/adr/0007-hosted-identity-and-ens-invariants.md`.
+
 For the full soul surface (control-plane APIs, instance integration, and MCP wiring), start with:
 - `docs/soul-surface.md`
 
