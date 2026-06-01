@@ -77,3 +77,23 @@ func LegacyBareManagedENSNameForMigration(name string) (string, error) {
 	}
 	return fmt.Sprintf("%s.%s", handle, ManagedENSRootName), nil
 }
+
+// IsLegacyBareManagedENSName reports whether name is the pre-instance-scoped
+// managed ENS shape:
+//
+//	<name>.lessersoul.eth
+//
+// This helper is intentionally for fail-closed compatibility checks and
+// migration guardrails. It must not be used to route legacy bare names as
+// current public channels or gateway aliases for the canonical
+// <name>.<instance-slug>.lessersoul.eth name.
+func IsLegacyBareManagedENSName(name string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	normalized = strings.TrimSuffix(normalized, ".")
+	labels := strings.Split(normalized, ".")
+	if len(labels) != 3 || strings.Join(labels[1:], ".") != ManagedENSRootName {
+		return false
+	}
+	_, err := ValidateManagedHandle(labels[0])
+	return err == nil
+}

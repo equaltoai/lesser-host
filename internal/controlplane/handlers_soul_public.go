@@ -940,6 +940,9 @@ func (s *Server) searchSoulAgentsByENS(ctx context.Context, params soulPublicSea
 	if ensName == "" {
 		return nil, false, "", &apptheory.AppError{Code: "app.bad_request", Message: "ens is required"}
 	}
+	if soul.IsLegacyBareManagedENSName(ensName) {
+		return []soulSearchResult{}, false, "", nil
+	}
 
 	key := &models.SoulAgentENSResolution{ENSName: ensName}
 	_ = key.UpdateKeys()

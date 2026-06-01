@@ -50,6 +50,10 @@ artifacts MUST NOT advertise legacy bare names such as `<name>.lessersoul.eth` a
 Existing bare names, aliases, examples, or receipts may exist as legacy migration inputs. Later backfill/canary work must
 treat them as compatibility material, not as the target shape.
 
+Legacy bare managed ENS names (`<name>.lessersoul.eth`) fail closed on current public discovery, ENS search, and the
+ENS gateway. They are not public/gateway aliases for canonical instance-scoped names unless a future governance-reviewed
+change adds explicit bounded alias records and tests.
+
 ### 3. ENS chain and resolver selection are independent from SoulRegistry chain selection
 
 ENS gateway chain/resolver configuration is its own stage-owned concern:
@@ -171,6 +175,8 @@ Later Project 44 milestones should use this checklist as their done/rollback/evi
 - [ ] No SoulRegistry readiness/mint requirement blocks hosted identity, ENS publication, channel policy, or x402 grant
       eligibility.
 - [ ] Consumer-facing schema examples and generated contract snapshots are updated where the public shape changes.
+- [ ] Legacy bare managed ENS names fail closed on public discovery/search and gateway resolution; migration-only
+      replacement behavior remains bounded to known legacy managed channels.
 
 ### M4 — Resolver deployment/runbooks
 

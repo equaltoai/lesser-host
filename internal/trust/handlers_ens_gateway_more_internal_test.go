@@ -32,7 +32,7 @@ type ensGatewayTestDB struct {
 	qChannel *ttmocks.MockQuery
 }
 
-const ensGatewaySuccessorName = "next.lessersoul.eth"
+const ensGatewaySuccessorName = "next.inst1.lessersoul.eth"
 
 func newENSGatewayTestDB() ensGatewayTestDB {
 	qRes := new(ttmocks.MockQuery)
@@ -199,6 +199,16 @@ func TestLoadENSGatewayMaterialAndSuccessorLookup(t *testing.T) {
 	})
 }
 
+func TestLoadENSGatewayMaterial_LegacyBareManagedNameFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	s := NewServer(config.Config{}, store.New(ttmocks.NewMockExtendedDB()))
+	got, ok, err := s.loadENSGatewayMaterial(context.Background(), "Agent.Lessersoul.eth.")
+	if err != nil || ok || got != (ensGatewayMaterial{}) {
+		t.Fatalf("expected legacy bare managed name to fail closed, got material=%#v ok=%v err=%v", got, ok, err)
+	}
+}
+
 func mustManagedENSNameForGatewayTest(t testing.TB, name string, instanceSlug string) string {
 	t.Helper()
 	ensName, err := soul.ManagedENSName(name, instanceSlug)
@@ -213,8 +223,8 @@ func newENSGatewayAnswerTestServer(addr common.Address) (*Server, common.Hash, [
 		store:    store.New(newTestDBWithModelQueries()),
 		ensCache: &ensGatewayCache{},
 	}
-	s.cacheENSGatewayMaterial("agent.lessersoul.eth", ensGatewayMaterial{
-		ENSName:          "agent.lessersoul.eth",
+	s.cacheENSGatewayMaterial("agent.inst1.lessersoul.eth", ensGatewayMaterial{
+		ENSName:          "agent.inst1.lessersoul.eth",
 		AgentID:          "0xabc",
 		Wallet:           addr.Hex(),
 		Status:           models.SoulAgentStatusActive,
@@ -226,7 +236,7 @@ func newENSGatewayAnswerTestServer(addr common.Address) (*Server, common.Hash, [
 		SuccessorENSOK:   true,
 	}, true, time.Now().UTC())
 
-	node := ensNameHash("agent.lessersoul.eth")
+	node := ensNameHash("agent.inst1.lessersoul.eth")
 	var nodeBytes [32]byte
 	copy(nodeBytes[:], node[:])
 	return s, node, nodeBytes
@@ -239,7 +249,7 @@ func TestAnswerENSQuery_AddrAndCoin(t *testing.T) {
 	s, node, nodeBytes := newENSGatewayAnswerTestServer(addr)
 
 	addrArgs, _ := ensAddrInputs.Pack(nodeBytes)
-	addrOut, err := s.answerENSQuery(context.Background(), "agent.lessersoul.eth", node, append(append([]byte(nil), ensAddrSelector...), addrArgs...))
+	addrOut, err := s.answerENSQuery(context.Background(), "agent.inst1.lessersoul.eth", node, append(append([]byte(nil), ensAddrSelector...), addrArgs...))
 	if err != nil {
 		t.Fatalf("addr query: %v", err)
 	}
@@ -253,7 +263,7 @@ func TestAnswerENSQuery_AddrAndCoin(t *testing.T) {
 	}
 
 	coinArgs, _ := ensAddrCoinInputs.Pack(nodeBytes, big.NewInt(60))
-	coinOut, err := s.answerENSQuery(context.Background(), "agent.lessersoul.eth", node, append(append([]byte(nil), ensAddrCoinSelector...), coinArgs...))
+	coinOut, err := s.answerENSQuery(context.Background(), "agent.inst1.lessersoul.eth", node, append(append([]byte(nil), ensAddrCoinSelector...), coinArgs...))
 	if err != nil {
 		t.Fatalf("coin query: %v", err)
 	}
@@ -267,7 +277,7 @@ func TestAnswerENSQuery_AddrAndCoin(t *testing.T) {
 	}
 
 	coinArgsUnsupported, _ := ensAddrCoinInputs.Pack(nodeBytes, big.NewInt(0))
-	coinOutUnsupported, err := s.answerENSQuery(context.Background(), "agent.lessersoul.eth", node, append(append([]byte(nil), ensAddrCoinSelector...), coinArgsUnsupported...))
+	coinOutUnsupported, err := s.answerENSQuery(context.Background(), "agent.inst1.lessersoul.eth", node, append(append([]byte(nil), ensAddrCoinSelector...), coinArgsUnsupported...))
 	if err != nil {
 		t.Fatalf("unsupported coin query: %v", err)
 	}
@@ -287,7 +297,7 @@ func TestAnswerENSQuery_TextAndContenthash(t *testing.T) {
 	s, node, nodeBytes := newENSGatewayAnswerTestServer(common.HexToAddress("0x0000000000000000000000000000000000001234"))
 
 	textArgs, _ := ensTextInputs.Pack(nodeBytes, "soul.successor")
-	textOut, err := s.answerENSQuery(context.Background(), "agent.lessersoul.eth", node, append(append([]byte(nil), ensTextSelector...), textArgs...))
+	textOut, err := s.answerENSQuery(context.Background(), "agent.inst1.lessersoul.eth", node, append(append([]byte(nil), ensTextSelector...), textArgs...))
 	if err != nil {
 		t.Fatalf("text query: %v", err)
 	}
@@ -301,7 +311,7 @@ func TestAnswerENSQuery_TextAndContenthash(t *testing.T) {
 	}
 
 	contentArgs, _ := ensContenthashInputs.Pack(nodeBytes)
-	contentOut, err := s.answerENSQuery(context.Background(), "agent.lessersoul.eth", node, append(append([]byte(nil), ensContenthashSelector...), contentArgs...))
+	contentOut, err := s.answerENSQuery(context.Background(), "agent.inst1.lessersoul.eth", node, append(append([]byte(nil), ensContenthashSelector...), contentArgs...))
 	if err != nil {
 		t.Fatalf("contenthash query: %v", err)
 	}
@@ -320,15 +330,15 @@ func TestAnswerENSQuery_Validation(t *testing.T) {
 
 	s, node, nodeBytes := newENSGatewayAnswerTestServer(common.HexToAddress("0x0000000000000000000000000000000000001234"))
 	addrArgs, _ := ensAddrInputs.Pack(nodeBytes)
-	if _, err := s.answerENSQuery(context.Background(), "agent.lessersoul.eth", node, []byte{0x01, 0x02, 0x03}); err == nil {
+	if _, err := s.answerENSQuery(context.Background(), "agent.inst1.lessersoul.eth", node, []byte{0x01, 0x02, 0x03}); err == nil {
 		t.Fatalf("expected invalid inner resolver data error")
 	}
 
 	badNodeArgs, _ := ensAddrInputs.Pack([32]byte{})
-	if _, err := s.answerENSQuery(context.Background(), "agent.lessersoul.eth", node, append(append([]byte(nil), ensAddrSelector...), badNodeArgs...)); err == nil {
+	if _, err := s.answerENSQuery(context.Background(), "agent.inst1.lessersoul.eth", node, append(append([]byte(nil), ensAddrSelector...), badNodeArgs...)); err == nil {
 		t.Fatalf("expected node mismatch error")
 	}
-	if _, err := s.answerENSQuery(context.Background(), "agent.lessersoul.eth", node, append([]byte{0xff, 0xee, 0xdd, 0xcc}, addrArgs...)); err == nil {
+	if _, err := s.answerENSQuery(context.Background(), "agent.inst1.lessersoul.eth", node, append([]byte{0xff, 0xee, 0xdd, 0xcc}, addrArgs...)); err == nil {
 		t.Fatalf("expected unsupported query error")
 	}
 }
@@ -336,14 +346,14 @@ func TestAnswerENSQuery_Validation(t *testing.T) {
 func TestParseENSGatewayRequestAndResolveHandler(t *testing.T) {
 	t.Parallel()
 
-	node := ensNameHash("agent.lessersoul.eth")
+	node := ensNameHash("agent.inst1.lessersoul.eth")
 	var nodeBytes [32]byte
 	copy(nodeBytes[:], node[:])
 
 	innerArgs, _ := ensAddrInputs.Pack(nodeBytes)
 	innerData := append(append([]byte(nil), ensAddrSelector...), innerArgs...)
 
-	callData, encodedName, parsedInner, err := parseENSGatewayRequest("agent.lessersoul.eth", hexutil.Encode(innerData))
+	callData, encodedName, parsedInner, err := parseENSGatewayRequest("agent.inst1.lessersoul.eth", hexutil.Encode(innerData))
 	if err != nil {
 		t.Fatalf("parse compatibility request: %v", err)
 	}
@@ -377,15 +387,15 @@ func TestParseENSGatewayRequestAndResolveHandler(t *testing.T) {
 		store:    store.New(newTestDBWithModelQueries()),
 		ensCache: &ensGatewayCache{},
 	}
-	s.cacheENSGatewayMaterial("agent.lessersoul.eth", ensGatewayMaterial{
-		ENSName: "agent.lessersoul.eth",
+	s.cacheENSGatewayMaterial("agent.inst1.lessersoul.eth", ensGatewayMaterial{
+		ENSName: "agent.inst1.lessersoul.eth",
 		Wallet:  common.HexToAddress("0x0000000000000000000000000000000000001234").Hex(),
 	}, true, time.Now().UTC())
 
 	resp, err := s.handleENSGatewayResolve(&apptheory.Context{
 		Request: apptheory.Request{Query: map[string][]string{
 			"sender": {resolverAddr},
-			"name":   {"agent.lessersoul.eth"},
+			"name":   {"agent.inst1.lessersoul.eth"},
 			"data":   {hexutil.Encode(innerData)},
 		}},
 	})
