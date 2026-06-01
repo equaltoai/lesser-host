@@ -27,6 +27,10 @@ provider state, and registration authority are reviewed.
   forwarding idempotently. It does not execute the live migration gate by
   itself. The command refuses inventory whose `schema_version`, `stage`, or
   `table_name` does not match the requested run config.
+- Provider forwarding targets are stage-specific. When
+  `SOUL_EMAIL_INBOUND_DOMAIN` / `--email-inbound-domain` is omitted, the script
+  derives the bridge from `--stage` / `STAGE`: `lab` uses
+  `lab.lessersoul.ai`; `live` uses `inbound.lessersoul.ai`.
 
 ## Required sequence
 
@@ -53,8 +57,9 @@ provider state, and registration authority are reviewed.
    `/lesser-host/soul/<stage>/agents/<agentId>/channels/email/migadu_password`
    and ensures the new Migadu mailbox plus inbound forwarding:
    `provider_prepared` requires the exact expected forwarding target
-   `<agent-local-id>.<instance-slug>@inbound.lessersoul.ai`; an unrelated
-   forwarding or alias is not sufficient.
+   `<agent-local-id>.<instance-slug>@<stage-bridge-domain>`; an unrelated
+   forwarding or alias is not sufficient. For `lab`, that bridge is
+   `lab.lessersoul.ai`; for `live`, it is `inbound.lessersoul.ai`.
 
    ```bash
    SOUL_EMAIL_INBOUND_DOMAIN=inbound.lessersoul.ai \
@@ -65,6 +70,11 @@ provider state, and registration authority are reviewed.
      --apply \
      --out gov-infra/evidence/project37/m2-email-provider-prepare-live.json
    ```
+
+   The live value is shown explicitly above to make the operator handoff
+   auditable. Lab dry-runs and lab provider-prepare commands should either omit
+   the variable with `--stage lab`, or set
+   `SOUL_EMAIL_INBOUND_DOMAIN=lab.lessersoul.ai` explicitly.
 
 5. Each selected agent publishes a self-attested registration update advertising
    only the new instance-scoped email address, or Aron approves a disclosed host

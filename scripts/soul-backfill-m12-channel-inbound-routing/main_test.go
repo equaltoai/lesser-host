@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/mock"
 
 	"github.com/equaltoai/lesser-host/internal/secrets"
+	"github.com/equaltoai/lesser-host/internal/soulemail"
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 	"github.com/equaltoai/lesser-host/internal/testutil"
@@ -79,6 +80,43 @@ func TestParseConfig(t *testing.T) {
 	}
 	if cfg.emailInboundDomain != "inbound.lessersoul.ai" {
 		t.Fatalf("unexpected email inbound domain: %q", cfg.emailInboundDomain)
+	}
+	if cfg.stage != soulemail.DefaultStage {
+		t.Fatalf("unexpected default stage: %q", cfg.stage)
+	}
+}
+
+func TestParseConfigDefaultsInboundDomainByStage(t *testing.T) {
+	origArgs := os.Args
+	origFlagSet := flag.CommandLine
+	defer func() {
+		os.Args = origArgs
+		flag.CommandLine = origFlagSet
+	}()
+
+	for _, tc := range []struct {
+		name  string
+		stage string
+		want  string
+	}{
+		{name: "lab", stage: "lab", want: soulemail.LabInboundDomain},
+		{name: "live", stage: "live", want: soulemail.LiveInboundDomain},
+		{name: "blank", stage: "", want: soulemail.LabInboundDomain},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("STATE_TABLE_NAME", "lesser-host-"+soulemail.NormalizeStage(tc.stage)+"-state")
+			t.Setenv("PUBLIC_BASE_URL", "https://lab.lesser.host")
+			t.Setenv("STAGE", tc.stage)
+			t.Setenv("SOUL_EMAIL_INBOUND_DOMAIN", "")
+
+			os.Args = []string{"soul-backfill-m12-channel-inbound-routing", "--phone=false"}
+			flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
+
+			cfg := parseConfig()
+			if cfg.emailInboundDomain != tc.want {
+				t.Fatalf("unexpected email inbound domain: %q, want %q", cfg.emailInboundDomain, tc.want)
+			}
+		})
 	}
 }
 

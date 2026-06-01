@@ -6,6 +6,11 @@ import * as cdk from 'aws-cdk-lib';
 
 import { LesserHostStack, shouldUseLocalWebBundling } from '../lib/lesser-host-stack';
 import { INBOUND_EMAIL_RULE_SET_NAME } from '../lib/ses-inbound-rule-set-name';
+import {
+	LAB_SOUL_EMAIL_INBOUND_DOMAIN,
+	LIVE_SOUL_EMAIL_INBOUND_DOMAIN,
+	defaultSoulEmailInboundDomainForStage,
+} from '../lib/soul-email-inbound-domain';
 
 process.env.GOTOOLCHAIN = process.env.GOTOOLCHAIN || 'auto';
 
@@ -101,20 +106,21 @@ test('stack schedules the managed update sweep every five minutes', () => {
 });
 
 test('stages add unique SES inbound rules to the shared activated rule set', () => {
-	const perStageEmailContext = {
-		soulEmailInboundDomainLab: 'lab.lessersoul.ai',
-		soulEmailInboundDomainLive: 'inbound.lessersoul.ai',
-	};
 	for (const { stage, recipient, ruleName } of [
-		{ stage: 'lab', recipient: 'lab.lessersoul.ai', ruleName: 'lesser-host-lab-ingress' },
-		{ stage: 'live', recipient: 'inbound.lessersoul.ai', ruleName: 'lesser-host-live-ingress' },
+		{ stage: 'lab', recipient: LAB_SOUL_EMAIL_INBOUND_DOMAIN, ruleName: 'lesser-host-lab-ingress' },
+		{ stage: 'live', recipient: LIVE_SOUL_EMAIL_INBOUND_DOMAIN, ruleName: 'lesser-host-live-ingress' },
 	]) {
-		const template = synthTemplateForStage(stage, perStageEmailContext);
+		const template = synthTemplateForStage(stage);
 
 		assert.equal(
 			findResources(template, 'AWS::SES::ReceiptRuleSet').length,
 			0,
 			`${stage} stack must import the shared SES receipt rule set by name, not create its own`,
+		);
+		assert.equal(
+			findResources(template, 'Custom::AWS').length,
+			0,
+			`${stage} stack must not activate or mutate the shared SES receipt rule set`,
 		);
 
 		const rules = findResourceEntries(template, 'AWS::SES::ReceiptRule');
@@ -152,10 +158,37 @@ test('stages add unique SES inbound rules to the shared activated rule set', () 
 			fn.Properties?.FunctionName === `lesser-host-${stage}-email-ingress`
 		);
 		assert.ok(emailIngressFn, `expected ${stage} email-ingress function`);
+		const emailIngressEnv = (
+			emailIngressFn[1].Properties?.Environment as { Variables?: Record<string, unknown> } | undefined
+		)?.Variables ?? {};
+		assert.equal(emailIngressEnv.SOUL_EMAIL_INBOUND_DOMAIN, recipient);
 		const lambdaAction = (actions[1] as { LambdaAction?: Record<string, unknown> }).LambdaAction;
 		assert.ok(lambdaAction, `expected ${stage} receipt rule Lambda action`);
 		assert.equal(lambdaAction.InvocationType, 'Event');
 		assert.deepEqual(lambdaAction.FunctionArn, { 'Fn::GetAtt': [emailIngressFn[0], 'Arn'] });
+	}
+});
+
+test('stage-specific inbound bridge domain defaults are explicit', () => {
+	assert.equal(defaultSoulEmailInboundDomainForStage('lab'), LAB_SOUL_EMAIL_INBOUND_DOMAIN);
+	assert.equal(defaultSoulEmailInboundDomainForStage(' live '), LIVE_SOUL_EMAIL_INBOUND_DOMAIN);
+	assert.equal(defaultSoulEmailInboundDomainForStage('preview'), LAB_SOUL_EMAIL_INBOUND_DOMAIN);
+});
+
+test('stage-specific inbound bridge context overrides remain disjoint', () => {
+	for (const { stage, want } of [
+		{ stage: 'lab', want: 'lab-override.example' },
+		{ stage: 'live', want: 'live-override.example' },
+	]) {
+		const template = synthTemplateForStage(stage, {
+			soulEmailInboundDomainLab: 'lab-override.example',
+			soulEmailInboundDomainLive: 'live-override.example',
+			soulEmailInboundDomain: 'generic.example',
+		});
+		const rules = findResourceEntries(template, 'AWS::SES::ReceiptRule');
+		assert.equal(rules.length, 1);
+		const rule = (rules[0]![1].Properties?.Rule as Record<string, unknown> | undefined) ?? {};
+		assert.deepEqual(rule.Recipients, [want]);
 	}
 });
 

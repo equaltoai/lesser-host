@@ -88,6 +88,9 @@ The command is read-only. It scans soul identities and loads only the host recor
 It computes the proposed `<agent-local-id>.<instance-slug>@lessersoul.ai` address, detects duplicate proposed addresses, and detects local-part overflow before any provider or database mutation. If duplicates, overflow, missing/invalid instance slug state, missing/mismatched current email indexes, or other report-level issues are present, the command exits non-zero (`2`).
 
 The optional provider-state file is a redacted operator snapshot, not a secret export. Shape:
+For lab evidence, forwarding snapshots should use the lab bridge
+(`lab.lessersoul.ai`); live evidence uses the live bridge
+(`inbound.lessersoul.ai`).
 
 ```json
 {
@@ -97,7 +100,7 @@ The optional provider-state file is a redacted operator snapshot, not a secret e
     {
       "local_part": "pilot",
       "mailbox_exists": true,
-      "forwardings": ["pilot@inbound.lessersoul.ai"],
+      "forwardings": ["pilot@lab.lessersoul.ai"],
       "aliases": ["pilot"]
     },
     {
