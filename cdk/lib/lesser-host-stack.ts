@@ -343,8 +343,7 @@ export class LesserHostStack extends cdk.Stack {
 		const soulReputationWeightTrust = soulContext('soulReputationWeightTrust');
 		const soulValidationDecayEpochHours = soulContext('soulValidationDecayEpochHours');
 		const soulValidationDecayRate = soulContext('soulValidationDecayRate');
-		const soulEmailInboundDomain =
-			((this.node.tryGetContext('soulEmailInboundDomain') as string | undefined) ?? 'inbound.lessersoul.ai').trim();
+		const soulEmailInboundDomain = (soulContext('soulEmailInboundDomain') || 'inbound.lessersoul.ai').trim();
 		const inboundEmailS3Prefix = 'ses/inbound/';
 
 		const paymentsProvider = (this.node.tryGetContext('paymentsProvider') as string | undefined) ?? '';

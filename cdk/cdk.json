@@ -25,11 +25,13 @@
     "soulReputationAttestationContractAddressLab": "<YOUR_SOUL_REPUTATION_ATTESTATION_CONTRACT_ADDRESS_LAB>",
     "soulValidationAttestationContractAddressLab": "<YOUR_SOUL_VALIDATION_ATTESTATION_CONTRACT_ADDRESS_LAB>",
     "soulRpcUrlSsmParamLab": "/lesser-host/api/infura/sepolia",
+    "soulEmailInboundDomainLab": "lab.lessersoul.ai",
 
     "soulEnabledLive": "false",
     "soulChainIdLive": "8453",
     "soulRegistryContractAddressLive": "",
     "soulRpcUrlSsmParamLive": "",
+    "soulEmailInboundDomainLive": "inbound.lessersoul.ai",
 
     "soulMintSignerKeySsmParamLab": "/lesser-host/soul/lab/mint-signer-key",
     "soulMintSignerKeySsmParamLive": "/lesser-host/soul/live/mint-signer-key",
