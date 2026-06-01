@@ -33,6 +33,7 @@ import * as wafv2 from 'aws-cdk-lib/aws-wafv2';
 
 import { renderProvisionRunnerBuildCommands, renderProvisionRunnerPreBuildCommands } from './provision-runner-buildspec';
 import { CostTelemetryWorker } from './cost-telemetry-worker-construct';
+import { INBOUND_EMAIL_RULE_SET_NAME } from './ses-inbound-rule-set-name';
 export interface LesserHostStackProps extends cdk.StackProps {
 	stage: string;
 }
@@ -669,10 +670,13 @@ export class LesserHostStack extends cdk.Stack {
 				nextSigningKeyLength: 'RSA_2048_BIT',
 			},
 		});
-		const inboundEmailRuleSet = new ses.ReceiptRuleSet(this, 'InboundEmailRuleSet', {
-			receiptRuleSetName: `${namePrefix}-inbound-email`,
-		});
-		const inboundEmailRule = inboundEmailRuleSet.addRule('Ingress', {
+		const inboundEmailRuleSet = ses.ReceiptRuleSet.fromReceiptRuleSetName(
+			this,
+			'InboundEmailRuleSet',
+			INBOUND_EMAIL_RULE_SET_NAME,
+		);
+		const inboundEmailRule = inboundEmailRuleSet.addRule(`Ingress-${stage}`, {
+			receiptRuleName: `${namePrefix}-ingress`,
 			enabled: true,
 			recipients: [soulEmailInboundDomain],
 			scanEnabled: true,
