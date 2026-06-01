@@ -5,6 +5,7 @@ import test from 'node:test';
 import * as cdk from 'aws-cdk-lib';
 
 import { LesserHostStack, shouldUseLocalWebBundling } from '../lib/lesser-host-stack';
+import { INBOUND_EMAIL_RULE_SET_NAME } from '../lib/ses-inbound-rule-set-name';
 
 process.env.GOTOOLCHAIN = process.env.GOTOOLCHAIN || 'auto';
 
@@ -30,6 +31,14 @@ function synthTemplate(): SynthesizedTemplate {
 function synthTemplateWithContext(context: Record<string, unknown>): SynthesizedTemplate {
 	const app = new cdk.App({ context });
 	const stack = new LesserHostStack(app, 'TestLesserHostStackWithContext', { stage: 'lab' });
+	const assembly = app.synth();
+	const artifact = assembly.getStackArtifact(stack.artifactId);
+	return JSON.parse(readFileSync(artifact.templateFullPath, 'utf8')) as SynthesizedTemplate;
+}
+
+function synthTemplateForStage(stage: string, context: Record<string, unknown> = {}): SynthesizedTemplate {
+	const app = new cdk.App({ context });
+	const stack = new LesserHostStack(app, `TestLesserHostStack-${stage}`, { stage });
 	const assembly = app.synth();
 	const artifact = assembly.getStackArtifact(stack.artifactId);
 	return JSON.parse(readFileSync(artifact.templateFullPath, 'utf8')) as SynthesizedTemplate;
@@ -89,6 +98,65 @@ test('stack schedules the managed update sweep every five minutes', () => {
 	});
 
 	assert.ok(matchingRule, 'expected managed update sweep EventBridge rule');
+});
+
+test('stages add unique SES inbound rules to the shared activated rule set', () => {
+	const perStageEmailContext = {
+		soulEmailInboundDomainLab: 'lab.lessersoul.ai',
+		soulEmailInboundDomainLive: 'inbound.lessersoul.ai',
+	};
+	for (const { stage, recipient, ruleName } of [
+		{ stage: 'lab', recipient: 'lab.lessersoul.ai', ruleName: 'lesser-host-lab-ingress' },
+		{ stage: 'live', recipient: 'inbound.lessersoul.ai', ruleName: 'lesser-host-live-ingress' },
+	]) {
+		const template = synthTemplateForStage(stage, perStageEmailContext);
+
+		assert.equal(
+			findResources(template, 'AWS::SES::ReceiptRuleSet').length,
+			0,
+			`${stage} stack must import the shared SES receipt rule set by name, not create its own`,
+		);
+
+		const rules = findResourceEntries(template, 'AWS::SES::ReceiptRule');
+		assert.equal(rules.length, 1, `expected exactly one SES receipt rule in ${stage}`);
+		const [logicalId, resource] = rules[0]!;
+		assert.ok(
+			logicalId.startsWith(`InboundEmailRuleSetIngress${stage}`),
+			`expected stage-unique Ingress-${stage} logical id, got ${logicalId}`,
+		);
+
+		const props = resource.Properties ?? {};
+		assert.equal(props.RuleSetName, INBOUND_EMAIL_RULE_SET_NAME);
+		const rule = props.Rule;
+		assert.ok(rule && typeof rule === 'object', `expected ${stage} receipt rule properties`);
+		const ruleProps = rule as Record<string, unknown>;
+		assert.equal(ruleProps.Name, ruleName);
+		assert.deepEqual(ruleProps.Recipients, [recipient]);
+		assert.equal(ruleProps.Enabled, true);
+		assert.equal(ruleProps.ScanEnabled, true);
+		assert.equal(ruleProps.TlsPolicy, 'Require');
+
+		const actions = ruleProps.Actions;
+		assert.ok(Array.isArray(actions), `expected ${stage} receipt rule actions`);
+		const inboundBucket = findResourceEntries(template, 'AWS::S3::Bucket').find(([, bucket]) => {
+			const bucketName = JSON.stringify(bucket.Properties?.BucketName);
+			return bucketName.includes(`lesser-host-${stage}-`) && bucketName.includes('-inbound-email');
+		});
+		assert.ok(inboundBucket, `expected ${stage} inbound email bucket`);
+		const s3Action = (actions[0] as { S3Action?: Record<string, unknown> }).S3Action;
+		assert.ok(s3Action, `expected ${stage} receipt rule S3 action`);
+		assert.deepEqual(s3Action.BucketName, { Ref: inboundBucket[0] });
+		assert.equal(s3Action.ObjectKeyPrefix, 'ses/inbound/');
+
+		const emailIngressFn = findResourceEntries(template, 'AWS::Lambda::Function').find(([, fn]) =>
+			fn.Properties?.FunctionName === `lesser-host-${stage}-email-ingress`
+		);
+		assert.ok(emailIngressFn, `expected ${stage} email-ingress function`);
+		const lambdaAction = (actions[1] as { LambdaAction?: Record<string, unknown> }).LambdaAction;
+		assert.ok(lambdaAction, `expected ${stage} receipt rule Lambda action`);
+		assert.equal(lambdaAction.InvocationType, 'Event');
+		assert.deepEqual(lambdaAction.FunctionArn, { 'Fn::GetAtt': [emailIngressFn[0], 'Arn'] });
+	}
 });
 
 test('control-plane HTTP API access logs do not persist raw request paths', () => {
