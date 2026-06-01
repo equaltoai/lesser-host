@@ -116,3 +116,19 @@ func TestManagedENSName_CanonicalInstanceScopedForm(t *testing.T) {
 		})
 	}
 }
+
+func TestLegacyBareManagedENSNameForMigration(t *testing.T) {
+	t.Parallel()
+
+	got, err := LegacyBareManagedENSNameForMigration("agent-alice")
+	if err != nil {
+		t.Fatalf("LegacyBareManagedENSNameForMigration unexpected err: %v", err)
+	}
+	if got != "agent-alice.lessersoul.eth" {
+		t.Fatalf("LegacyBareManagedENSNameForMigration got %q", got)
+	}
+
+	if _, err := LegacyBareManagedENSNameForMigration("Agent-Alice"); err == nil {
+		t.Fatal("expected legacy helper to preserve managed handle validation")
+	}
+}

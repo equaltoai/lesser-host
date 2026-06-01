@@ -527,16 +527,45 @@ func (s *Server) buildSoulV3ENSSync(agentIDHex string, identity *models.SoulAgen
 		return nil, nil
 	}
 	ens := regV3.Channels.ENS
+	ensName := strings.TrimSpace(ens.Name)
 	desired := &models.SoulAgentChannel{
 		AgentID:            agentIDHex,
 		ChannelType:        models.SoulChannelTypeENS,
-		Identifier:         strings.TrimSpace(ens.Name),
+		Identifier:         ensName,
 		ENSResolverAddress: strings.TrimSpace(ens.ResolverAddress),
 		ENSChain:           strings.TrimSpace(ens.Chain),
 		Status:             models.SoulChannelStatusActive,
 		UpdatedAt:          now,
 	}
-	return desired, nil
+	resolution := &models.SoulAgentENSResolution{
+		ENSName:             ensName,
+		AgentID:             agentIDHex,
+		Wallet:              firstNonEmpty(identity.Wallet, regV3.Wallet),
+		LocalID:             firstNonEmpty(identity.LocalID, regV3.LocalID),
+		Domain:              firstNonEmpty(identity.Domain, regV3.Domain),
+		SoulRegistrationURI: s.currentSoulRegistrationURI(agentIDHex),
+		MCPEndpoint:         strings.TrimSpace(regV3.Endpoints.MCP),
+		ActivityPubURI:      strings.TrimSpace(regV3.Endpoints.ActivityPub),
+		Email:               emailAddress,
+		Phone:               phoneNumber,
+		Description:         strings.TrimSpace(regV3.SelfDescription.Purpose),
+		Status:              firstNonEmpty(regV3.Lifecycle.Status, identity.LifecycleStatus, identity.Status),
+		UpdatedAt:           now,
+	}
+	if createdAt, ok := parseRFC3339Loose(regV3.Created); ok {
+		resolution.CreatedAt = createdAt
+	}
+	if resolution.CreatedAt.IsZero() {
+		resolution.CreatedAt = now
+	}
+	return desired, resolution
+}
+
+func (s *Server) currentSoulRegistrationURI(agentIDHex string) string {
+	if s == nil || strings.TrimSpace(s.cfg.SoulPackBucketName) == "" || strings.TrimSpace(agentIDHex) == "" {
+		return ""
+	}
+	return fmt.Sprintf("s3://%s/%s", strings.TrimSpace(s.cfg.SoulPackBucketName), soulRegistrationS3Key(agentIDHex))
 }
 
 func buildSoulV3EmailSync(agentIDHex string, regV3 *soul.RegistrationFileV3, now time.Time) (*models.SoulAgentChannel, *models.SoulEmailAgentIndex) {
@@ -607,6 +636,11 @@ func (s *Server) syncSoulV3Channel(
 	}
 	if legacyEmailAlias != nil {
 		if appErr := s.ensureSoulEmailLegacyAliasIndex(ctx, legacyEmailAlias); appErr != nil {
+			return appErr
+		}
+	}
+	if channelType == models.SoulChannelTypeENS && desiredENS != nil {
+		if appErr := s.preflightSoulENSResolutionAssignable(ctx, desiredENS); appErr != nil {
 			return appErr
 		}
 	}
@@ -1025,6 +1059,33 @@ func (s *Server) ensureSoulENSResolution(ctx context.Context, idx *models.SoulAg
 			return &apptheory.AppError{Code: "app.conflict", Message: "ens name is already provisioned"}
 		}
 		return &apptheory.AppError{Code: "app.internal", Message: "failed to update ens resolution"}
+	}
+	return nil
+}
+
+func (s *Server) preflightSoulENSResolutionAssignable(ctx context.Context, idx *models.SoulAgentENSResolution) *apptheory.AppError {
+	if idx == nil {
+		return nil
+	}
+	probe := *idx
+	_ = probe.UpdateKeys()
+	if strings.TrimSpace(probe.ENSName) == "" || strings.TrimSpace(probe.AgentID) == "" {
+		return &apptheory.AppError{Code: "app.bad_request", Message: "ens resolution is invalid"}
+	}
+	var existing models.SoulAgentENSResolution
+	err := s.store.DB.WithContext(ctx).
+		Model(&models.SoulAgentENSResolution{}).
+		Where("PK", "=", probe.PK).
+		Where("SK", "=", probe.SK).
+		First(&existing)
+	if err == nil {
+		if strings.EqualFold(strings.TrimSpace(existing.AgentID), strings.TrimSpace(probe.AgentID)) {
+			return nil
+		}
+		return &apptheory.AppError{Code: "app.conflict", Message: "ens name is already provisioned"}
+	}
+	if !theoryErrors.IsNotFound(err) {
+		return &apptheory.AppError{Code: "app.internal", Message: "failed to validate ens resolution"}
 	}
 	return nil
 }

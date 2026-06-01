@@ -167,6 +167,10 @@ func TestHandleSoulPublicGetAgentChannels_DiscoveryV3ENSAndPhone(t *testing.T) {
 	s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true}}
 
 	agentID := "0x" + strings.Repeat("44", 32)
+	canonicalENSName, err := soul.ManagedENSName("agent-caro", "inst1")
+	if err != nil {
+		t.Fatalf("ManagedENSName: %v", err)
+	}
 	identityUpdated := time.Date(2026, 3, 4, 9, 0, 0, 0, time.UTC)
 	ensUpdated := identityUpdated.Add(30 * time.Minute)
 	phoneUpdated := identityUpdated.Add(2 * time.Hour)
@@ -188,9 +192,9 @@ func TestHandleSoulPublicGetAgentChannels_DiscoveryV3ENSAndPhone(t *testing.T) {
 		*dest = models.SoulAgentChannel{
 			AgentID:            agentID,
 			ChannelType:        models.SoulChannelTypeENS,
-			Identifier:         "agent-caro.lessersoul.eth",
+			Identifier:         canonicalENSName,
 			ENSResolverAddress: "0xresolver",
-			ENSChain:           "base",
+			ENSChain:           "sepolia",
 			UpdatedAt:          ensUpdated,
 		}
 	}).Once()
@@ -228,7 +232,7 @@ func TestHandleSoulPublicGetAgentChannels_DiscoveryV3ENSAndPhone(t *testing.T) {
 	if out.AgentID != agentID {
 		t.Fatalf("expected agentId %q, got %q", agentID, out.AgentID)
 	}
-	if out.Channels.ENS == nil || out.Channels.ENS.Name != "agent-caro.lessersoul.eth" {
+	if out.Channels.ENS == nil || out.Channels.ENS.Name != canonicalENSName || out.Channels.ENS.Chain != "sepolia" {
 		t.Fatalf("unexpected ENS channel: %#v", out.Channels.ENS)
 	}
 	if out.Channels.Email != nil {

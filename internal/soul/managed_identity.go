@@ -64,3 +64,16 @@ func ManagedENSName(name string, instanceSlug string) (string, error) {
 	}
 	return fmt.Sprintf("%s.%s.%s", handle, slug, ManagedENSRootName), nil
 }
+
+// LegacyBareManagedENSNameForMigration derives the pre-instance-scoped managed
+// ENS name that host emitted before managed ENS names included the instance
+// slug. It exists only so migration paths can recognize and replace known
+// legacy managed state without treating arbitrary external ENS channels as
+// host-managed.
+func LegacyBareManagedENSNameForMigration(name string) (string, error) {
+	handle, err := ValidateManagedHandle(name)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s.%s", handle, ManagedENSRootName), nil
+}

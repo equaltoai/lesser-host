@@ -19,4 +19,7 @@ const (
 	appErrCodeConflict     = "app.conflict"
 
 	cacheControlNoStore = "no-store"
+
+	ensGatewayChainMainnet = "mainnet"
+	ensGatewayChainSepolia = "sepolia"
 )

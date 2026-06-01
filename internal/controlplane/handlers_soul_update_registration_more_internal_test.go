@@ -429,6 +429,7 @@ func TestUpdateSoulAgentRegistrationForInstance_V3_SyncsENSWithoutS3Key(t *testi
 	}).Once()
 	tdb.qCapIdx.On("First", mock.AnythingOfType("*models.SoulCapabilityAgentIndex")).Return(theoryErrors.ErrItemNotFound).Once()
 	tdb.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(theoryErrors.ErrItemNotFound).Times(3)
+	tdb.qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(theoryErrors.ErrItemNotFound).Twice()
 
 	parsedABI, err := abi.JSON(strings.NewReader(soul.SoulRegistryABI))
 	if err != nil {
@@ -560,8 +561,8 @@ func TestUpdateSoulAgentRegistrationForInstance_V3_SyncsENSWithoutS3Key(t *testi
 	}
 
 	summary := collectSyncV3StateModels(tdb.db.Calls, agentIDHex)
-	if len(summary.ensNames) != 0 {
-		t.Fatalf("expected self-asserted ENS resolution to remain unindexed, got %v", summary.ensNames)
+	if !summary.ensNames["agent-alice.lessersoul.eth"] {
+		t.Fatalf("expected self-asserted ENS resolution material, got %v", summary.ensNames)
 	}
 }
 
@@ -882,9 +883,13 @@ func TestSyncSoulV3StateFromRegistration_PreservesManagedFieldsAndCleansUpIndexe
 	tdb := newSoulLifecycleTestDB()
 	s := &Server{
 		store: store.New(tdb.db),
-		cfg:   config.Config{WebAuthnRPID: "portal.example"},
+		cfg:   config.Config{SoulPackBucketName: "bucket", WebAuthnRPID: "portal.example"},
 	}
 	now := time.Date(2026, time.March, 5, 13, 14, 15, 0, time.UTC)
+	canonicalENSName, err := soul.ManagedENSName("agent-alice", "inst1")
+	if err != nil {
+		t.Fatalf("ManagedENSName: %v", err)
+	}
 	rep := 0.8
 	identity := &models.SoulAgentIdentity{
 		AgentID:         soulLifecycleTestAgentIDHex,
@@ -902,10 +907,12 @@ func TestSyncSoulV3StateFromRegistration_PreservesManagedFieldsAndCleansUpIndexe
 			Identifier:  "old-agent.lessersoul.eth",
 		}
 	}).Once()
+	tdb.qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(theoryErrors.ErrItemNotFound).Once()
 	tdb.qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentENSResolution](t, args, 0)
 		*dest = models.SoulAgentENSResolution{ENSName: "old-agent.lessersoul.eth", AgentID: identity.AgentID}
 	}).Once()
+	tdb.qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(theoryErrors.ErrItemNotFound).Once()
 	tdb.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentChannel](t, args, 0)
 		*dest = models.SoulAgentChannel{
@@ -939,11 +946,19 @@ func TestSyncSoulV3StateFromRegistration_PreservesManagedFieldsAndCleansUpIndexe
 	}).Once()
 
 	regV3 := &soul.RegistrationFileV3{
+		Version: "3",
+		AgentID: identity.AgentID,
+		Domain:  identity.Domain,
+		LocalID: identity.LocalID,
+		Wallet:  identity.Wallet,
+		SelfDescription: soul.SelfDescriptionV2{
+			Purpose: "I summarize documents for humans.",
+		},
 		Channels: &soul.ChannelsV3{
 			ENS: &soul.ENSChannelV3{
-				Name:            "agent-alice.lessersoul.eth",
+				Name:            canonicalENSName,
 				ResolverAddress: "0x0000000000000000000000000000000000000002",
-				Chain:           "mainnet",
+				Chain:           "sepolia",
 			},
 			Phone: &soul.PhoneChannelV3{
 				Number:       "+15557654321",
@@ -979,6 +994,11 @@ func TestSyncSoulV3StateFromRegistration_PreservesManagedFieldsAndCleansUpIndexe
 			MCP:         "https://example.com/mcp",
 			ActivityPub: "https://example.com/activitypub",
 		},
+		Lifecycle: soul.LifecycleV2{
+			Status: models.SoulAgentStatusActive,
+		},
+		Created: "2026-03-01T00:00:00Z",
+		Updated: "2026-03-05T13:14:15Z",
 	}
 
 	if appErr := s.syncSoulV3StateFromRegistration(context.Background(), identity.AgentID, identity, regV3, now); appErr != nil {
@@ -989,7 +1009,8 @@ func TestSyncSoulV3StateFromRegistration_PreservesManagedFieldsAndCleansUpIndexe
 
 	assertSyncV3PhoneModel(t, summary.phoneModel, now)
 	assertSyncV3PrefsModel(t, summary.prefsModel, rep)
-	assertSyncV3Indexes(t, summary)
+	assertSyncV3Indexes(t, summary, canonicalENSName)
+	assertSyncV3ENSResolution(t, summary.ensResolution, canonicalENSName, identity, now)
 }
 
 func TestSyncSoulV3StateFromRegistration_RejectsManagedChannelIdentifierChange(t *testing.T) {
@@ -1028,6 +1049,70 @@ func TestSyncSoulV3StateFromRegistration_RejectsManagedChannelIdentifierChange(t
 	if appErr == nil || appErr.Code != appErrCodeConflict || appErr.Message != "managed channel must be deprovisioned before changing identifier" {
 		t.Fatalf("expected managed channel conflict, got %v", appErr)
 	}
+}
+
+func TestSyncSoulV3Channel_PreflightsENSConflictBeforeCleanupAndUpsert(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulLifecycleTestDB()
+	s := &Server{store: store.New(tdb.db)}
+	identity := &models.SoulAgentIdentity{
+		AgentID: soulLifecycleTestAgentIDHex,
+		Domain:  "example.com",
+		LocalID: "agent-alice",
+	}
+	oldENSName := "old-agent.lessersoul.eth"
+	desiredENSName := "foreign-agent.lessersoul.eth"
+
+	oldResolutionKey := &models.SoulAgentENSResolution{ENSName: oldENSName, AgentID: identity.AgentID}
+	_ = oldResolutionKey.UpdateKeys()
+	desiredResolution := &models.SoulAgentENSResolution{ENSName: desiredENSName, AgentID: identity.AgentID}
+	_ = desiredResolution.UpdateKeys()
+
+	tdb.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentChannel](t, args, 0)
+		*dest = models.SoulAgentChannel{
+			AgentID:     identity.AgentID,
+			ChannelType: models.SoulChannelTypeENS,
+			Identifier:  oldENSName,
+			Status:      models.SoulChannelStatusActive,
+		}
+	}).Once()
+
+	tdb.qENS.ExpectedCalls = nil
+	var ensPK string
+	tdb.qENS.On("Where", "PK", "=", mock.Anything).Return(tdb.qENS).Run(func(args mock.Arguments) {
+		ensPK, _ = args.Get(2).(string)
+	}).Maybe()
+	tdb.qENS.On("Where", "SK", "=", "RESOLUTION").Return(tdb.qENS).Maybe()
+	tdb.qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentENSResolution](t, args, 0)
+		switch ensPK {
+		case desiredResolution.PK:
+			*dest = models.SoulAgentENSResolution{ENSName: desiredENSName, AgentID: "0xother"}
+		case oldResolutionKey.PK:
+			*dest = models.SoulAgentENSResolution{ENSName: oldENSName, AgentID: identity.AgentID}
+		default:
+			t.Fatalf("unexpected ENS resolution lookup PK %q", ensPK)
+		}
+	}).Once()
+
+	desiredChannel := &models.SoulAgentChannel{
+		AgentID:     identity.AgentID,
+		ChannelType: models.SoulChannelTypeENS,
+		Identifier:  desiredENSName,
+		Status:      models.SoulChannelStatusActive,
+	}
+	appErr := s.syncSoulV3Channel(context.Background(), identity.AgentID, identity, models.SoulChannelTypeENS, desiredChannel, nil, nil, desiredResolution)
+	if appErr == nil || appErr.Code != appErrCodeConflict || appErr.Message != "ens name is already provisioned" {
+		t.Fatalf("expected ENS ownership conflict, got %v", appErr)
+	}
+
+	tdb.qENS.AssertNumberOfCalls(t, "First", 1)
+	tdb.qENS.AssertNotCalled(t, "Delete")
+	tdb.qENS.AssertNotCalled(t, "Create")
+	tdb.qENS.AssertNotCalled(t, "CreateOrUpdate")
+	tdb.qChannel.AssertNotCalled(t, "CreateOrUpdate")
 }
 
 func TestSyncSoulV3StateFromRegistration_AllowsProject37LegacyEmailMigration(t *testing.T) {
@@ -1512,6 +1597,7 @@ func collectCapabilityClaimLevels(calls []mock.Call) map[string]string {
 type syncV3StateModels struct {
 	phoneModel        *models.SoulAgentChannel
 	prefsModel        *models.SoulAgentContactPreferences
+	ensResolution     *models.SoulAgentENSResolution
 	ensNames          map[string]bool
 	emailIndexSeen    bool
 	phoneIndexes      map[string]bool
@@ -1544,6 +1630,9 @@ func recordSyncV3StateModel(summary *syncV3StateModels, model any, agentID strin
 	case *models.SoulAgentENSResolution:
 		if strings.TrimSpace(v.ENSName) != "" {
 			summary.ensNames[v.ENSName] = true
+		}
+		if v.AgentID == agentID && strings.TrimSpace(v.SoulRegistrationURI) != "" {
+			summary.ensResolution = v
 		}
 	case *models.SoulEmailAgentIndex:
 		if v.Email == "old-agent@example.com" {
@@ -1601,10 +1690,10 @@ func assertSyncV3PrefsModel(t *testing.T, prefsModel *models.SoulAgentContactPre
 	}
 }
 
-func assertSyncV3Indexes(t *testing.T, summary syncV3StateModels) {
+func assertSyncV3Indexes(t *testing.T, summary syncV3StateModels, canonicalENSName string) {
 	t.Helper()
-	if !summary.ensNames["old-agent.lessersoul.eth"] || summary.ensNames["agent-alice.lessersoul.eth"] {
-		t.Fatalf("expected old ENS cleanup without self-asserted ENS upsert, got %v", summary.ensNames)
+	if !summary.ensNames["old-agent.lessersoul.eth"] || !summary.ensNames[canonicalENSName] {
+		t.Fatalf("expected old ENS cleanup and canonical ENS upsert, got %v", summary.ensNames)
 	}
 	if !summary.emailIndexSeen {
 		t.Fatalf("expected old email index cleanup")
@@ -1614,5 +1703,43 @@ func assertSyncV3Indexes(t *testing.T, summary syncV3StateModels) {
 	}
 	if !summary.channelIndexTypes[models.SoulChannelTypeEmail] || summary.channelIndexTypes[models.SoulChannelTypePhone] {
 		t.Fatalf("expected only removed email channel index cleanup, got %v", summary.channelIndexTypes)
+	}
+}
+
+func assertSyncV3ENSResolution(t *testing.T, resolution *models.SoulAgentENSResolution, canonicalENSName string, identity *models.SoulAgentIdentity, now time.Time) {
+	t.Helper()
+	if resolution == nil {
+		t.Fatalf("expected canonical ENS resolution material")
+	}
+	if resolution.ENSName != canonicalENSName || resolution.AgentID != identity.AgentID {
+		t.Fatalf("unexpected ENS resolution identity: %#v", resolution)
+	}
+	assertSyncV3ENSResolutionIdentity(t, resolution, identity)
+	assertSyncV3ENSResolutionMaterial(t, resolution, now)
+}
+
+func assertSyncV3ENSResolutionIdentity(t *testing.T, resolution *models.SoulAgentENSResolution, identity *models.SoulAgentIdentity) {
+	t.Helper()
+	if resolution.Wallet != identity.Wallet || resolution.LocalID != identity.LocalID || resolution.Domain != identity.Domain {
+		t.Fatalf("expected identity fields in ENS resolution, got %#v", resolution)
+	}
+	if resolution.SoulRegistrationURI != "s3://bucket/"+soulRegistrationS3Key(identity.AgentID) {
+		t.Fatalf("unexpected registration URI: %q", resolution.SoulRegistrationURI)
+	}
+}
+
+func assertSyncV3ENSResolutionMaterial(t *testing.T, resolution *models.SoulAgentENSResolution, now time.Time) {
+	t.Helper()
+	if resolution.MCPEndpoint != "https://example.com/mcp" || resolution.ActivityPubURI != "https://example.com/activitypub" {
+		t.Fatalf("unexpected endpoint material: %#v", resolution)
+	}
+	if resolution.Phone != "+15557654321" || resolution.Email != "" {
+		t.Fatalf("unexpected contact material: %#v", resolution)
+	}
+	if resolution.Description != "I summarize documents for humans." || resolution.Status != models.SoulAgentStatusActive {
+		t.Fatalf("unexpected text/status material: %#v", resolution)
+	}
+	if !resolution.CreatedAt.Equal(time.Date(2026, time.March, 1, 0, 0, 0, 0, time.UTC)) || !resolution.UpdatedAt.Equal(now) {
+		t.Fatalf("unexpected ENS resolution timestamps: created=%v updated=%v", resolution.CreatedAt, resolution.UpdatedAt)
 	}
 }

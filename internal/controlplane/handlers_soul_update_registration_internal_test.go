@@ -267,6 +267,7 @@ func TestHandleSoulAgentUpdateRegistration_V3_FirstVersion_AllowsNullPreviousVer
 
 	// v3 sync reads existing channel records by SK.
 	tdb.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(theoryErrors.ErrItemNotFound).Times(3)
+	tdb.qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(theoryErrors.ErrItemNotFound).Twice()
 
 	parsedABI, err := abi.JSON(strings.NewReader(soul.SoulRegistryABI))
 	if err != nil {

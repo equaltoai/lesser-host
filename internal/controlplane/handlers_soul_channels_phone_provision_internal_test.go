@@ -107,6 +107,8 @@ func newProvisionPhoneServer(tdb soulLifecycleTestDB, packs soulPackStore) *Serv
 			SoulPackBucketName:          "bucket",
 			SoulSupportedCapabilities:   []string{"social"},
 			PublicBaseURL:               "https://lab.lesser.host",
+			ENSGatewayChainName:         "sepolia",
+			ENSGatewayResolverAddress:   "0x0000000000000000000000000000000000000002",
 			Stage:                       "lab",
 		},
 	}
@@ -394,6 +396,7 @@ func TestHandleSoulBeginProvisionPhoneChannel_SearchSuccessBuildsProvisionalRegi
 	if !ok || channels["phone"] == nil {
 		t.Fatalf("expected phone channel in registration: %#v", out.Registration)
 	}
+	assertProvisionENSChannelMetadata(t, out.Registration, mustProvisionPhoneENSName(t, "agent-bot"), "sepolia", "0x0000000000000000000000000000000000000002")
 }
 
 func TestHandleSoulProvisionPhoneChannel_ExpectedVersionIsRequired(t *testing.T) {
@@ -483,7 +486,7 @@ func TestHandleSoulProvisionPhoneChannel_SuccessPublishesRegistrationAndRecordsP
 	seedProvisionPhoneRegistration(t, packs, identity)
 
 	tdb.qPhoneIdx.On("First", mock.AnythingOfType("*models.SoulPhoneAgentIndex")).Return(theoryErrors.ErrItemNotFound).Twice()
-	tdb.qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(theoryErrors.ErrItemNotFound).Once()
+	tdb.qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(theoryErrors.ErrItemNotFound).Twice()
 	tdb.qVersion.On("First", mock.AnythingOfType("*models.SoulAgentVersion")).Return(theoryErrors.ErrItemNotFound).Maybe()
 	tdb.qCapIdx.On("First", mock.AnythingOfType("*models.SoulCapabilityAgentIndex")).Return(theoryErrors.ErrItemNotFound).Maybe()
 	tdb.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(theoryErrors.ErrItemNotFound).Times(3)
@@ -609,6 +612,7 @@ func assertProvisionPhonePublishedRegistration(t *testing.T, packs *fakeSoulPack
 	if !ok || strings.TrimSpace(extractStringField(phone, "number")) != "+15551234567" {
 		t.Fatalf("expected published phone number, got %#v", channels["phone"])
 	}
+	assertProvisionENSChannelMetadata(t, published, mustProvisionPhoneENSName(t, "agent-bot"), "sepolia", "0x0000000000000000000000000000000000000002")
 }
 
 func TestHandleSoulDeprovisionPhoneChannel_MissingPhoneChannelIsIdempotent(t *testing.T) {

@@ -77,6 +77,8 @@ func newProvisionPhoneE2EFixture(t *testing.T) *provisionPhoneE2EFixture {
 			SoulRegistryContractAddress: "0x0000000000000000000000000000000000000001",
 			SoulPackBucketName:          "bucket",
 			PublicBaseURL:               "https://lab.lesser.host",
+			ENSGatewayChainName:         "sepolia",
+			ENSGatewayResolverAddress:   "0x0000000000000000000000000000000000000002",
 			Stage:                       "lab",
 		},
 		soulPacks: fixture.packs,
@@ -139,7 +141,7 @@ func seedProvisionPhoneE2EAccess(t *testing.T, fixture *provisionPhoneE2EFixture
 	fixture.tdb.db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Once()
 
 	fixture.tdb.qPhoneIdx.On("First", mock.AnythingOfType("*models.SoulPhoneAgentIndex")).Return(theoryErrors.ErrItemNotFound).Twice()
-	fixture.tdb.qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(theoryErrors.ErrItemNotFound).Once()
+	fixture.tdb.qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(theoryErrors.ErrItemNotFound).Twice()
 	fixture.tdb.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(theoryErrors.ErrItemNotFound).Times(3)
 	fixture.tdb.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentChannel](t, args, 0)
@@ -249,6 +251,7 @@ func assertProvisionPhonePublished(t *testing.T, fixture *provisionPhoneE2EFixtu
 	if !ok || ensAny == nil || strings.TrimSpace(extractStringField(ensAny, "name")) != mustProvisionPhoneENSName(t, "agent-alice") {
 		t.Fatalf("expected canonical channels.ens.name to be published, got %#v", chAny["ens"])
 	}
+	assertProvisionENSChannelMetadata(t, published, mustProvisionPhoneENSName(t, "agent-alice"), "sepolia", "0x0000000000000000000000000000000000000002")
 }
 
 func assertProvisionPhoneIdempotent(t *testing.T, fixture *provisionPhoneE2EFixture, confirmBody []byte) {

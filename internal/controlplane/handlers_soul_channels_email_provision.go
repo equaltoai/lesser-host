@@ -352,7 +352,7 @@ func (s *Server) buildSoulProvisionEmailRegistration(ctx context.Context, base m
 	reg["changeSummary"] = "Provision email channel"
 	setProvisionSelfAttestation(reg, input.SelfAttestationHex)
 	ch := cloneProvisionChannels(reg)
-	ensureProvisionENSChannel(ch, input.ENSName)
+	s.ensureProvisionENSChannel(ch, input.ENSName)
 	ch["email"] = map[string]any{
 		"address":      strings.TrimSpace(input.EmailAddress),
 		"capabilities": []any{"receive", "send"},
@@ -422,14 +422,89 @@ func cloneProvisionChannels(reg map[string]any) map[string]any {
 	return out
 }
 
-func ensureProvisionENSChannel(channels map[string]any, ensName string) {
-	if _, ok := channels["ens"]; ok || strings.TrimSpace(ensName) == "" {
+func (s *Server) ensureProvisionENSChannel(channels map[string]any, ensName string) {
+	ensName = strings.TrimSpace(ensName)
+	if ensName == "" {
 		return
 	}
-	channels["ens"] = map[string]any{
-		"name":  strings.TrimSpace(ensName),
-		"chain": "mainnet",
+	existing, ok := channels["ens"]
+	if ok && !shouldReplaceProvisionENSChannel(existing, ensName) {
+		return
 	}
+	channels["ens"] = s.buildProvisionENSChannel(ensName)
+}
+
+func (s *Server) buildProvisionENSChannel(ensName string) map[string]any {
+	out := map[string]any{
+		"name": strings.TrimSpace(ensName),
+	}
+	if chain := s.provisionENSChainName(); chain != "" {
+		out["chain"] = chain
+	}
+	if s != nil {
+		if resolver := strings.TrimSpace(s.cfg.ENSGatewayResolverAddress); resolver != "" {
+			out["resolverAddress"] = resolver
+		}
+	}
+	return out
+}
+
+func (s *Server) provisionENSChainName() string {
+	if s == nil {
+		return ""
+	}
+	if chain := strings.ToLower(strings.TrimSpace(s.cfg.ENSGatewayChainName)); chain != "" {
+		return chain
+	}
+	switch s.cfg.ENSGatewayChainID {
+	case 1:
+		return ensGatewayChainMainnet
+	case 11155111:
+		return ensGatewayChainSepolia
+	}
+	switch strings.ToLower(strings.TrimSpace(s.cfg.Stage)) {
+	case defaultControlPlaneStage:
+		return ensGatewayChainSepolia
+	case "live":
+		return ensGatewayChainMainnet
+	default:
+		return ""
+	}
+}
+
+func shouldReplaceProvisionENSChannel(existing any, desiredName string) bool {
+	existingName := provisionENSChannelName(existing)
+	if strings.TrimSpace(existingName) == "" {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(existingName), strings.TrimSpace(desiredName)) {
+		return true
+	}
+	return isLegacyBareManagedProvisionENSName(existingName, desiredName)
+}
+
+func provisionENSChannelName(existing any) string {
+	switch m := existing.(type) {
+	case map[string]any:
+		return extractStringField(m, "name")
+	case map[string]string:
+		return strings.TrimSpace(m["name"])
+	default:
+		return ""
+	}
+}
+
+func isLegacyBareManagedProvisionENSName(existingName string, desiredName string) bool {
+	desiredName = strings.ToLower(strings.TrimSpace(desiredName))
+	labels := strings.Split(desiredName, ".")
+	if len(labels) != 4 || strings.Join(labels[2:], ".") != soul.ManagedENSRootName {
+		return false
+	}
+	legacy, err := soul.LegacyBareManagedENSNameForMigration(labels[0])
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(existingName), legacy)
 }
 
 func parseSoulProvisionRegistrationV3(reg map[string]any) (*soul.RegistrationFileV3, *apptheory.AppError) {

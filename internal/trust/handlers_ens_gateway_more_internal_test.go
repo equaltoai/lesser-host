@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/mock"
 
 	"github.com/equaltoai/lesser-host/internal/config"
+	"github.com/equaltoai/lesser-host/internal/soul"
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 	"github.com/equaltoai/lesser-host/internal/testutil"
@@ -132,6 +133,7 @@ func TestLoadENSGatewayMaterialAndSuccessorLookup(t *testing.T) {
 	t.Run("success_and_cache_hit", func(t *testing.T) {
 		t.Parallel()
 
+		ensName := mustManagedENSNameForGatewayTest(t, "agent", "inst1")
 		tdb := newENSGatewayTestDB()
 		s := &Server{
 			cfg:      config.Config{SoulEnabled: true, ENSGatewaySignatureTTLSeconds: 15},
@@ -142,7 +144,7 @@ func TestLoadENSGatewayMaterialAndSuccessorLookup(t *testing.T) {
 		tdb.qRes.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(nil).Run(func(args mock.Arguments) {
 			dest := testutil.RequireMockArg[*models.SoulAgentENSResolution](t, args, 0)
 			*dest = models.SoulAgentENSResolution{
-				ENSName:             "agent.lessersoul.eth",
+				ENSName:             ensName,
 				AgentID:             agentID,
 				SoulRegistrationURI: "s3://bucket/reg.json",
 				MCPEndpoint:         "https://example.com/mcp",
@@ -167,15 +169,15 @@ func TestLoadENSGatewayMaterialAndSuccessorLookup(t *testing.T) {
 			*dest = models.SoulAgentChannel{AgentID: successorID, ChannelType: models.SoulChannelTypeENS, Identifier: ensGatewaySuccessorName}
 		}).Once()
 
-		got, ok, err := s.loadENSGatewayMaterial(context.Background(), "Agent.Lessersoul.ETH")
+		got, ok, err := s.loadENSGatewayMaterial(context.Background(), "Agent.Inst1.Lessersoul.ETH")
 		if err != nil || !ok {
 			t.Fatalf("loadENSGatewayMaterial err=%v ok=%v", err, ok)
 		}
-		if got.ENSName != "agent.lessersoul.eth" || got.SuccessorENSName != ensGatewaySuccessorName || !got.SuccessorENSOK {
+		if got.ENSName != ensName || got.SuccessorENSName != ensGatewaySuccessorName || !got.SuccessorENSOK {
 			t.Fatalf("unexpected material: %#v", got)
 		}
 
-		cached, ok, err := s.loadENSGatewayMaterial(context.Background(), "agent.lessersoul.eth")
+		cached, ok, err := s.loadENSGatewayMaterial(context.Background(), ensName)
 		if err != nil || !ok || cached.AgentID != agentID {
 			t.Fatalf("expected cache hit, got material=%#v ok=%v err=%v", cached, ok, err)
 		}
@@ -195,6 +197,15 @@ func TestLoadENSGatewayMaterialAndSuccessorLookup(t *testing.T) {
 			t.Fatalf("unexpected blank successor result: name=%q ok=%v err=%v", name, ok, err)
 		}
 	})
+}
+
+func mustManagedENSNameForGatewayTest(t testing.TB, name string, instanceSlug string) string {
+	t.Helper()
+	ensName, err := soul.ManagedENSName(name, instanceSlug)
+	if err != nil {
+		t.Fatalf("ManagedENSName(%q, %q): %v", name, instanceSlug, err)
+	}
+	return ensName
 }
 
 func newENSGatewayAnswerTestServer(addr common.Address) (*Server, common.Hash, [32]byte) {
