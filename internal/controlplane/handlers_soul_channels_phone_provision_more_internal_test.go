@@ -141,7 +141,7 @@ func seedProvisionPhoneE2EAccess(t *testing.T, fixture *provisionPhoneE2EFixture
 	fixture.tdb.db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Once()
 
 	fixture.tdb.qPhoneIdx.On("First", mock.AnythingOfType("*models.SoulPhoneAgentIndex")).Return(theoryErrors.ErrItemNotFound).Twice()
-	fixture.tdb.qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(theoryErrors.ErrItemNotFound).Once()
+	fixture.tdb.qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(theoryErrors.ErrItemNotFound).Twice()
 	fixture.tdb.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(theoryErrors.ErrItemNotFound).Times(3)
 	fixture.tdb.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentChannel](t, args, 0)

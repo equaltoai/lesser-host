@@ -639,6 +639,11 @@ func (s *Server) syncSoulV3Channel(
 			return appErr
 		}
 	}
+	if channelType == models.SoulChannelTypeENS && desiredENS != nil {
+		if appErr := s.preflightSoulENSResolutionAssignable(ctx, desiredENS); appErr != nil {
+			return appErr
+		}
+	}
 	if appErr := s.cleanupSoulV3ChannelIndexes(ctx, agentIDHex, channelType, identity, existing, desired); appErr != nil {
 		return appErr
 	}
@@ -1054,6 +1059,33 @@ func (s *Server) ensureSoulENSResolution(ctx context.Context, idx *models.SoulAg
 			return &apptheory.AppError{Code: "app.conflict", Message: "ens name is already provisioned"}
 		}
 		return &apptheory.AppError{Code: "app.internal", Message: "failed to update ens resolution"}
+	}
+	return nil
+}
+
+func (s *Server) preflightSoulENSResolutionAssignable(ctx context.Context, idx *models.SoulAgentENSResolution) *apptheory.AppError {
+	if idx == nil {
+		return nil
+	}
+	probe := *idx
+	_ = probe.UpdateKeys()
+	if strings.TrimSpace(probe.ENSName) == "" || strings.TrimSpace(probe.AgentID) == "" {
+		return &apptheory.AppError{Code: "app.bad_request", Message: "ens resolution is invalid"}
+	}
+	var existing models.SoulAgentENSResolution
+	err := s.store.DB.WithContext(ctx).
+		Model(&models.SoulAgentENSResolution{}).
+		Where("PK", "=", probe.PK).
+		Where("SK", "=", probe.SK).
+		First(&existing)
+	if err == nil {
+		if strings.EqualFold(strings.TrimSpace(existing.AgentID), strings.TrimSpace(probe.AgentID)) {
+			return nil
+		}
+		return &apptheory.AppError{Code: "app.conflict", Message: "ens name is already provisioned"}
+	}
+	if !theoryErrors.IsNotFound(err) {
+		return &apptheory.AppError{Code: "app.internal", Message: "failed to validate ens resolution"}
 	}
 	return nil
 }

@@ -429,7 +429,7 @@ func TestUpdateSoulAgentRegistrationForInstance_V3_SyncsENSWithoutS3Key(t *testi
 	}).Once()
 	tdb.qCapIdx.On("First", mock.AnythingOfType("*models.SoulCapabilityAgentIndex")).Return(theoryErrors.ErrItemNotFound).Once()
 	tdb.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(theoryErrors.ErrItemNotFound).Times(3)
-	tdb.qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(theoryErrors.ErrItemNotFound).Once()
+	tdb.qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(theoryErrors.ErrItemNotFound).Twice()
 
 	parsedABI, err := abi.JSON(strings.NewReader(soul.SoulRegistryABI))
 	if err != nil {
@@ -907,6 +907,7 @@ func TestSyncSoulV3StateFromRegistration_PreservesManagedFieldsAndCleansUpIndexe
 			Identifier:  "old-agent.lessersoul.eth",
 		}
 	}).Once()
+	tdb.qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(theoryErrors.ErrItemNotFound).Once()
 	tdb.qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentENSResolution](t, args, 0)
 		*dest = models.SoulAgentENSResolution{ENSName: "old-agent.lessersoul.eth", AgentID: identity.AgentID}
@@ -1048,6 +1049,70 @@ func TestSyncSoulV3StateFromRegistration_RejectsManagedChannelIdentifierChange(t
 	if appErr == nil || appErr.Code != appErrCodeConflict || appErr.Message != "managed channel must be deprovisioned before changing identifier" {
 		t.Fatalf("expected managed channel conflict, got %v", appErr)
 	}
+}
+
+func TestSyncSoulV3Channel_PreflightsENSConflictBeforeCleanupAndUpsert(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulLifecycleTestDB()
+	s := &Server{store: store.New(tdb.db)}
+	identity := &models.SoulAgentIdentity{
+		AgentID: soulLifecycleTestAgentIDHex,
+		Domain:  "example.com",
+		LocalID: "agent-alice",
+	}
+	oldENSName := "old-agent.lessersoul.eth"
+	desiredENSName := "foreign-agent.lessersoul.eth"
+
+	oldResolutionKey := &models.SoulAgentENSResolution{ENSName: oldENSName, AgentID: identity.AgentID}
+	_ = oldResolutionKey.UpdateKeys()
+	desiredResolution := &models.SoulAgentENSResolution{ENSName: desiredENSName, AgentID: identity.AgentID}
+	_ = desiredResolution.UpdateKeys()
+
+	tdb.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentChannel](t, args, 0)
+		*dest = models.SoulAgentChannel{
+			AgentID:     identity.AgentID,
+			ChannelType: models.SoulChannelTypeENS,
+			Identifier:  oldENSName,
+			Status:      models.SoulChannelStatusActive,
+		}
+	}).Once()
+
+	tdb.qENS.ExpectedCalls = nil
+	var ensPK string
+	tdb.qENS.On("Where", "PK", "=", mock.Anything).Return(tdb.qENS).Run(func(args mock.Arguments) {
+		ensPK, _ = args.Get(2).(string)
+	}).Maybe()
+	tdb.qENS.On("Where", "SK", "=", "RESOLUTION").Return(tdb.qENS).Maybe()
+	tdb.qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentENSResolution](t, args, 0)
+		switch ensPK {
+		case desiredResolution.PK:
+			*dest = models.SoulAgentENSResolution{ENSName: desiredENSName, AgentID: "0xother"}
+		case oldResolutionKey.PK:
+			*dest = models.SoulAgentENSResolution{ENSName: oldENSName, AgentID: identity.AgentID}
+		default:
+			t.Fatalf("unexpected ENS resolution lookup PK %q", ensPK)
+		}
+	}).Once()
+
+	desiredChannel := &models.SoulAgentChannel{
+		AgentID:     identity.AgentID,
+		ChannelType: models.SoulChannelTypeENS,
+		Identifier:  desiredENSName,
+		Status:      models.SoulChannelStatusActive,
+	}
+	appErr := s.syncSoulV3Channel(context.Background(), identity.AgentID, identity, models.SoulChannelTypeENS, desiredChannel, nil, nil, desiredResolution)
+	if appErr == nil || appErr.Code != appErrCodeConflict || appErr.Message != "ens name is already provisioned" {
+		t.Fatalf("expected ENS ownership conflict, got %v", appErr)
+	}
+
+	tdb.qENS.AssertNumberOfCalls(t, "First", 1)
+	tdb.qENS.AssertNotCalled(t, "Delete")
+	tdb.qENS.AssertNotCalled(t, "Create")
+	tdb.qENS.AssertNotCalled(t, "CreateOrUpdate")
+	tdb.qChannel.AssertNotCalled(t, "CreateOrUpdate")
 }
 
 func TestSyncSoulV3StateFromRegistration_AllowsProject37LegacyEmailMigration(t *testing.T) {
