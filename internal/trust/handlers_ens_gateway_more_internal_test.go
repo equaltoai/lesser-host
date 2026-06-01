@@ -358,7 +358,7 @@ func TestParseENSGatewayRequestAndResolveHandler(t *testing.T) {
 
 	s := &Server{
 		cfg: config.Config{
-			SoulEnabled:                   true,
+			ENSGatewayEnabled:             true,
 			ENSGatewayResolverAddress:     resolverAddr,
 			ENSGatewaySigningPrivateKey:   privateKeyHex,
 			ENSGatewaySignatureTTLSeconds: 60,
@@ -398,5 +398,100 @@ func TestParseENSGatewayRequestAndResolveHandler(t *testing.T) {
 	}
 	if _, err := s.handleENSGatewayResolve(&apptheory.Context{Request: apptheory.Request{Query: map[string][]string{"sender": {"0x000000000000000000000000000000000000cafe"}, "data": {hexutil.Encode(innerData)}}}}); err == nil {
 		t.Fatalf("expected unsupported sender error")
+	}
+}
+
+func TestResolveENSGatewayTarget_StageResolverIsolation(t *testing.T) {
+	t.Parallel()
+
+	labResolver := common.HexToAddress("0x0000000000000000000000000000000000001111").Hex()
+	liveResolver := common.HexToAddress("0x0000000000000000000000000000000000002222").Hex()
+
+	tests := []struct {
+		name     string
+		cfg      config.Config
+		sender   string
+		want     common.Address
+		wantCode string
+	}{
+		{
+			name: "lab accepts configured Sepolia resolver sender",
+			cfg: config.Config{
+				Stage:                     "lab",
+				ENSGatewayEnabled:         true,
+				ENSGatewayChainID:         11155111,
+				ENSGatewayChainName:       "sepolia",
+				ENSGatewayResolverAddress: labResolver,
+			},
+			sender: labResolver,
+			want:   common.HexToAddress(labResolver),
+		},
+		{
+			name: "lab rejects live mainnet resolver sender",
+			cfg: config.Config{
+				Stage:                     "lab",
+				ENSGatewayEnabled:         true,
+				ENSGatewayChainID:         11155111,
+				ENSGatewayChainName:       "sepolia",
+				ENSGatewayResolverAddress: labResolver,
+			},
+			sender:   liveResolver,
+			wantCode: "ccip.sender_unsupported",
+		},
+		{
+			name: "live accepts configured mainnet resolver sender",
+			cfg: config.Config{
+				Stage:                     "live",
+				ENSGatewayEnabled:         true,
+				ENSGatewayChainID:         1,
+				ENSGatewayChainName:       "mainnet",
+				ENSGatewayResolverAddress: liveResolver,
+			},
+			sender: liveResolver,
+			want:   common.HexToAddress(liveResolver),
+		},
+		{
+			name: "live rejects lab Sepolia resolver sender",
+			cfg: config.Config{
+				Stage:                     "live",
+				ENSGatewayEnabled:         true,
+				ENSGatewayChainID:         1,
+				ENSGatewayChainName:       "mainnet",
+				ENSGatewayResolverAddress: liveResolver,
+			},
+			sender:   labResolver,
+			wantCode: "ccip.sender_unsupported",
+		},
+		{
+			name: "missing configured resolver fails closed",
+			cfg: config.Config{
+				Stage:               "live",
+				ENSGatewayEnabled:   true,
+				ENSGatewayChainID:   1,
+				ENSGatewayChainName: "mainnet",
+			},
+			sender:   liveResolver,
+			wantCode: "app.not_found",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			s := &Server{cfg: tt.cfg}
+			got, err := s.resolveENSGatewayTarget(map[string][]string{"sender": {tt.sender}})
+			if tt.wantCode != "" {
+				requireENSGatewayError(t, err, tt.wantCode, 0)
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolveENSGatewayTarget: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("expected %s, got %s", tt.want.Hex(), got.Hex())
+			}
+		})
 	}
 }

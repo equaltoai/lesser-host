@@ -46,7 +46,7 @@ func (s *Server) handleENSGatewayResolve(ctx *apptheory.Context) (*apptheory.Res
 	if s == nil || ctx == nil || s.store == nil || s.store.DB == nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
-	if !s.cfg.SoulEnabled {
+	if !s.cfg.ENSGatewayEnabled {
 		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
 	}
 
@@ -97,23 +97,27 @@ func (s *Server) parseENSGatewayResolveQuery(ctx *apptheory.Context) (common.Add
 }
 
 func (s *Server) resolveENSGatewayTarget(query map[string][]string) (common.Address, error) {
+	resolverAddress := strings.TrimSpace(s.cfg.ENSGatewayResolverAddress)
+	if resolverAddress == "" {
+		return common.Address{}, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
+	}
+	if !common.IsHexAddress(resolverAddress) {
+		return common.Address{}, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
 	targetRaw := strings.TrimSpace(httpx.FirstQueryValue(query, "sender"))
 	if targetRaw == "" {
 		targetRaw = strings.TrimSpace(httpx.FirstQueryValue(query, "to"))
 	}
 	if targetRaw == "" {
-		targetRaw = strings.TrimSpace(s.cfg.ENSGatewayResolverAddress)
-	}
-	if targetRaw == "" {
-		return common.Address{}, apptheory.NewAppTheoryError("ccip.bad_request", "sender is required").WithStatusCode(http.StatusBadRequest)
+		targetRaw = resolverAddress
 	}
 
-	resolverAddress := strings.TrimSpace(s.cfg.ENSGatewayResolverAddress)
-	if resolverAddress != "" && !strings.EqualFold(targetRaw, resolverAddress) {
-		return common.Address{}, apptheory.NewAppTheoryError("ccip.sender_unsupported", "sender not supported").WithStatusCode(http.StatusNotFound)
-	}
 	if !common.IsHexAddress(targetRaw) {
 		return common.Address{}, apptheory.NewAppTheoryError("ccip.bad_request", "invalid sender").WithStatusCode(http.StatusBadRequest)
+	}
+	if !strings.EqualFold(targetRaw, resolverAddress) {
+		return common.Address{}, apptheory.NewAppTheoryError("ccip.sender_unsupported", "sender not supported").WithStatusCode(http.StatusNotFound)
 	}
 	return common.HexToAddress(targetRaw), nil
 }

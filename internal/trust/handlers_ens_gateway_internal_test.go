@@ -133,14 +133,15 @@ func TestHandleENSGatewayResolve_Guards(t *testing.T) {
 		{
 			name: "nil ctx",
 			srv: newServer(config.Config{
-				SoulEnabled:                 true,
+				ENSGatewayEnabled:           true,
+				ENSGatewayResolverAddress:   validResolver,
 				ENSGatewaySigningPrivateKey: testENSGatewayPrivateKeyHex,
 			}),
 			ctx:  nil,
 			code: "app.internal",
 		},
 		{
-			name: "soul disabled",
+			name: "ens gateway disabled",
 			srv: newServer(config.Config{
 				ENSGatewaySigningPrivateKey: testENSGatewayPrivateKeyHex,
 			}),
@@ -150,7 +151,8 @@ func TestHandleENSGatewayResolve_Guards(t *testing.T) {
 		{
 			name: "signer missing",
 			srv: newServer(config.Config{
-				SoulEnabled: true,
+				ENSGatewayEnabled:         true,
+				ENSGatewayResolverAddress: validResolver,
 			}),
 			ctx:  &apptheory.Context{},
 			code: "app.not_found",
@@ -158,26 +160,26 @@ func TestHandleENSGatewayResolve_Guards(t *testing.T) {
 		{
 			name: "invalid signer",
 			srv: newServer(config.Config{
-				SoulEnabled:                 true,
+				ENSGatewayEnabled:           true,
+				ENSGatewayResolverAddress:   validResolver,
 				ENSGatewaySigningPrivateKey: "not-hex",
 			}),
 			ctx:  &apptheory.Context{},
 			code: "app.internal",
 		},
 		{
-			name: "sender required",
+			name: "resolver required",
 			srv: newServer(config.Config{
-				SoulEnabled:                 true,
+				ENSGatewayEnabled:           true,
 				ENSGatewaySigningPrivateKey: testENSGatewayPrivateKeyHex,
 			}),
-			ctx:    &apptheory.Context{Request: apptheory.Request{Query: map[string][]string{}}},
-			code:   "ccip.bad_request",
-			status: 400,
+			ctx:  &apptheory.Context{Request: apptheory.Request{Query: map[string][]string{}}},
+			code: "app.not_found",
 		},
 		{
 			name: "unsupported sender",
 			srv: newServer(config.Config{
-				SoulEnabled:                 true,
+				ENSGatewayEnabled:           true,
 				ENSGatewaySigningPrivateKey: testENSGatewayPrivateKeyHex,
 				ENSGatewayResolverAddress:   validResolver,
 			}),
@@ -190,7 +192,8 @@ func TestHandleENSGatewayResolve_Guards(t *testing.T) {
 		{
 			name: "invalid sender",
 			srv: newServer(config.Config{
-				SoulEnabled:                 true,
+				ENSGatewayEnabled:           true,
+				ENSGatewayResolverAddress:   validResolver,
 				ENSGatewaySigningPrivateKey: testENSGatewayPrivateKeyHex,
 			}),
 			ctx: &apptheory.Context{Request: apptheory.Request{Query: map[string][]string{
@@ -202,7 +205,8 @@ func TestHandleENSGatewayResolve_Guards(t *testing.T) {
 		{
 			name: "data required",
 			srv: newServer(config.Config{
-				SoulEnabled:                 true,
+				ENSGatewayEnabled:           true,
+				ENSGatewayResolverAddress:   validResolver,
 				ENSGatewaySigningPrivateKey: testENSGatewayPrivateKeyHex,
 			}),
 			ctx: &apptheory.Context{Request: apptheory.Request{Query: map[string][]string{
@@ -230,7 +234,7 @@ func TestHandleENSGatewayResolve_CompatibilityMode_Contenthash(t *testing.T) {
 
 	resolver := common.HexToAddress("0x0000000000000000000000000000000000004444").Hex()
 	srv := NewServer(config.Config{
-		SoulEnabled:                   true,
+		ENSGatewayEnabled:             true,
 		ENSGatewayResolverAddress:     resolver,
 		ENSGatewaySigningPrivateKey:   testENSGatewayPrivateKeyHex,
 		ENSGatewaySignatureTTLSeconds: 45,
@@ -305,18 +309,18 @@ func TestHandleENSGatewayResolve_Addr_SignsAndEncodes(t *testing.T) {
 		_ = dest.UpdateKeys()
 	}).Once()
 
-	srv := NewServer(config.Config{
-		SoulEnabled:                   true,
-		ENSGatewaySigningPrivateKey:   testENSGatewayPrivateKeyHex,
-		ENSGatewaySignatureTTLSeconds: 300,
-	}, store.New(db))
-
 	node := ensNameHash(ensName)
 	innerArgs, err := ensAddrInputs.Pack(node)
 	require.NoError(t, err)
 	callData := buildENSGatewayResolveCall(t, ensName, ensAddrSelector, innerArgs)
 
 	target := common.HexToAddress("0x0000000000000000000000000000000000001234")
+	srv := NewServer(config.Config{
+		ENSGatewayEnabled:             true,
+		ENSGatewayResolverAddress:     target.Hex(),
+		ENSGatewaySigningPrivateKey:   testENSGatewayPrivateKeyHex,
+		ENSGatewaySignatureTTLSeconds: 300,
+	}, store.New(db))
 
 	resp, err := srv.handleENSGatewayResolve(&apptheory.Context{
 		Request: apptheory.Request{
@@ -381,17 +385,17 @@ func TestHandleENSGatewayResolve_Text_StatusResolvesDeterministically(t *testing
 		_ = dest.UpdateKeys()
 	}).Once()
 
-	srv := NewServer(config.Config{
-		SoulEnabled:                 true,
-		ENSGatewaySigningPrivateKey: testENSGatewayPrivateKeyHex,
-	}, store.New(db))
-
 	node := ensNameHash(ensName)
 	innerArgs, err := ensTextInputs.Pack(node, "soul.status")
 	require.NoError(t, err)
 	callData := buildENSGatewayResolveCall(t, ensName, ensTextSelector, innerArgs)
 
 	target := common.HexToAddress("0x0000000000000000000000000000000000001234")
+	srv := NewServer(config.Config{
+		ENSGatewayEnabled:           true,
+		ENSGatewayResolverAddress:   target.Hex(),
+		ENSGatewaySigningPrivateKey: testENSGatewayPrivateKeyHex,
+	}, store.New(db))
 	resp, err := srv.handleENSGatewayResolve(&apptheory.Context{
 		Request: apptheory.Request{
 			Query: map[string][]string{
