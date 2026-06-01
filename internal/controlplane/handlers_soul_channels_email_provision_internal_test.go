@@ -29,7 +29,7 @@ const (
 	provisionTestInstanceSlug     = "inst1"
 	provisionTestEmailLocalPart   = provisionTestAgentLocalID + "." + provisionTestInstanceSlug
 	provisionTestEmailAddress     = provisionTestEmailLocalPart + "@lessersoul.ai"
-	provisionTestEmailENSName     = provisionTestAgentLocalID + ".lessersoul.eth"
+	provisionTestEmailENSName     = provisionTestAgentLocalID + "." + provisionTestInstanceSlug + ".lessersoul.eth"
 	provisionTestAgentDomain      = "example.com"
 	provisionTestStageAlias       = "dev.simulacrum.greater.website"
 	provisionTestStageBaseDomain  = "simulacrum.greater.website"
@@ -169,18 +169,43 @@ func TestBuildSoulProvisionManagedEmailAddress_DerivesInstanceScopedAddress(t *t
 		got.ENSName != provisionTestEmailENSName {
 		t.Fatalf("unexpected resolved address: %#v", got)
 	}
+
+	got, appErr = buildSoulProvisionManagedEmailAddress(provisionTestAgentLocalID, provisionTestInstanceSlug, provisionTestEmailLocalPart)
+	if appErr != nil {
+		t.Fatalf("expected exact local_part success, got %v", appErr)
+	}
+	if got.ProviderLocalPart != provisionTestEmailLocalPart {
+		t.Fatalf("unexpected exact local_part result: %#v", got)
+	}
 }
 
-func TestBuildSoulProvisionManagedEmailAddress_AllowsDotsAndSameLocalIDAcrossInstances(t *testing.T) {
+func TestBuildSoulProvisionManagedEmailAddress_RejectsAmbiguousHandleCharacters(t *testing.T) {
 	t.Parallel()
 
-	got, appErr := buildSoulProvisionManagedEmailAddress("Agent.With.Dot", "simulacrum", "agent.with.dot.simulacrum")
-	if appErr != nil {
-		t.Fatalf("expected dotted local id success, got %v", appErr)
+	invalid := []string{
+		"Agent-With-Uppercase",
+		"agent_with_underscore",
+		"agent.with.dot",
+		"agent with space",
+		"agent%2falice",
+		"agent/alice",
+		"@agent",
+		"-agent",
+		"agent-",
 	}
-	if got.ProviderLocalPart != "agent.with.dot.simulacrum" || got.Address != "agent.with.dot.simulacrum@lessersoul.ai" {
-		t.Fatalf("unexpected dotted address: %#v", got)
+	for _, raw := range invalid {
+		raw := raw
+		t.Run(raw, func(t *testing.T) {
+			t.Parallel()
+			if _, appErr := buildSoulProvisionManagedEmailAddress(raw, "simulacrum", ""); appErr == nil || appErr.Code != appErrCodeConflict {
+				t.Fatalf("expected invalid local id conflict for %q, got %v", raw, appErr)
+			}
+		})
 	}
+}
+
+func TestBuildSoulProvisionManagedEmailAddress_DerivesDistinctAddressesAcrossInstances(t *testing.T) {
+	t.Parallel()
 
 	a, appErr := buildSoulProvisionManagedEmailAddress("pilot", "simulacrum", "")
 	if appErr != nil {
@@ -247,7 +272,7 @@ func TestResolveSoulProvisionEmailAddress_ExactVanityDomain(t *testing.T) {
 	s := &Server{store: store.New(db)}
 	got, appErr := s.resolveSoulProvisionEmailAddress(context.Background(), &models.SoulAgentIdentity{
 		Domain:  "agents.example.com",
-		LocalID: "Pilot",
+		LocalID: "pilot",
 	}, "")
 	if appErr != nil {
 		t.Fatalf("expected exact vanity resolution, got %v", appErr)
@@ -282,7 +307,7 @@ func TestResolveSoulProvisionEmailAddress_ManagedStagePrimaryAlias(t *testing.T)
 	s := &Server{store: store.New(db), cfg: config.Config{Stage: "lab"}}
 	got, appErr := s.resolveSoulProvisionEmailAddress(context.Background(), &models.SoulAgentIdentity{
 		Domain:  provisionTestStageAlias,
-		LocalID: "Pilot",
+		LocalID: "pilot",
 	}, "")
 	if appErr != nil {
 		t.Fatalf("expected managed stage alias resolution, got %v", appErr)

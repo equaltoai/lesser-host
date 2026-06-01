@@ -330,7 +330,7 @@ func (s *Server) handleSoulAgentRegistrationBegin(ctx *apptheory.Context) (*appt
 		return nil, appErr
 	}
 
-	rawLocal := strings.TrimSpace(req.LocalID)
+	rawLocal := req.LocalID
 	local, appErr := normalizeSoulRegistrationBeginLocalID(rawLocal)
 	if appErr != nil {
 		return nil, appErr
@@ -454,8 +454,7 @@ func (s *Server) normalizeSoulRegistrationBeginDomain(ctx *apptheory.Context, ra
 }
 
 func normalizeSoulRegistrationBeginLocalID(rawLocal string) (string, *apptheory.AppError) {
-	rawLocal = strings.TrimSpace(rawLocal)
-	local, err := soul.NormalizeLocalAgentID(rawLocal)
+	local, err := soul.ValidateManagedHandle(rawLocal)
 	if err != nil {
 		return "", &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
 	}

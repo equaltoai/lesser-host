@@ -19,12 +19,23 @@ import (
 	"github.com/stretchr/testify/mock"
 
 	"github.com/equaltoai/lesser-host/internal/config"
+	"github.com/equaltoai/lesser-host/internal/soul"
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 	"github.com/equaltoai/lesser-host/internal/testutil"
 )
 
 const provisionPhoneInternalError = "internal error"
+const provisionPhoneTestInstanceSlug = "inst1"
+
+func mustProvisionPhoneENSName(t testing.TB, localID string) string {
+	t.Helper()
+	ensName, err := soul.ManagedENSName(localID, provisionPhoneTestInstanceSlug)
+	if err != nil {
+		t.Fatalf("ManagedENSName(%q, %q): %v", localID, provisionPhoneTestInstanceSlug, err)
+	}
+	return ensName
+}
 
 func testProvisionPhoneIdentity() *models.SoulAgentIdentity {
 	identity := testMintConversationIdentity()
@@ -142,15 +153,15 @@ func seedProvisionPhoneAccess(t *testing.T, tdb soulLifecycleTestDB, identities 
 		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
 		*dest = models.Domain{
 			Domain:       "example.com",
-			InstanceSlug: "inst1",
+			InstanceSlug: provisionPhoneTestInstanceSlug,
 			Status:       models.DomainStatusVerified,
 		}
-	}).Times(len(identities))
+	}).Maybe()
 
 	tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
-		*dest = models.Instance{Slug: "inst1", Owner: "admin"}
-	}).Times(len(identities))
+		*dest = models.Instance{Slug: provisionPhoneTestInstanceSlug, Owner: "admin"}
+	}).Maybe()
 
 	callIdx := 0
 	tdb.qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
@@ -198,7 +209,7 @@ func signProvisionPhoneRequest(
 		identity,
 		soulProvisionPhoneBuildInput{
 			PhoneNumber:        number,
-			ENSName:            strings.TrimSpace(identity.LocalID) + ".lessersoul.eth",
+			ENSName:            mustProvisionPhoneENSName(t, identity.LocalID),
 			IssuedAt:           issuedAt,
 			ExpectedPrev:       identity.SelfDescriptionVersion,
 			NextVersion:        identity.SelfDescriptionVersion + 1,
@@ -696,7 +707,7 @@ func TestHandleSoulDeprovisionPhoneChannel_SuccessReleasesProviderNumberAndClear
 	tdb.qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentENSResolution](t, args, 0)
 		*dest = models.SoulAgentENSResolution{
-			ENSName: "agent-bot.lessersoul.eth",
+			ENSName: mustProvisionPhoneENSName(t, "agent-bot"),
 			AgentID: identity.AgentID,
 			Phone:   "+15551234567",
 		}

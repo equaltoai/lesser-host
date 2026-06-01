@@ -511,7 +511,7 @@ func (s *Server) resolveSoulProvisionEmailAddress(ctx context.Context, identity 
 	if identity == nil {
 		return soulProvisionManagedEmailAddress{}, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
-	canonicalLocal, err := soul.NormalizeLocalAgentID(identity.LocalID)
+	canonicalLocal, err := soul.ValidateManagedHandle(identity.LocalID)
 	if err != nil || canonicalLocal == "" {
 		return soulProvisionManagedEmailAddress{}, &apptheory.AppError{Code: "app.conflict", Message: "agent local id is invalid"}
 	}
@@ -523,8 +523,35 @@ func (s *Server) resolveSoulProvisionEmailAddress(ctx context.Context, identity 
 }
 
 func (s *Server) resolveSoulProvisionEmailInstanceSlug(ctx context.Context, identity *models.SoulAgentIdentity) (string, *apptheory.AppError) {
+	return s.resolveSoulManagedIdentityInstanceSlug(ctx, identity, "managed email")
+}
+
+func (s *Server) resolveSoulProvisionENSName(ctx context.Context, identity *models.SoulAgentIdentity) (string, *apptheory.AppError) {
+	if identity == nil {
+		return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	canonicalLocal, err := soul.ValidateManagedHandle(identity.LocalID)
+	if err != nil || canonicalLocal == "" {
+		return "", &apptheory.AppError{Code: "app.conflict", Message: "agent local id is invalid"}
+	}
+	instanceSlug, appErr := s.resolveSoulManagedIdentityInstanceSlug(ctx, identity, "managed identity")
+	if appErr != nil {
+		return "", appErr
+	}
+	ensName, err := soul.ManagedENSName(canonicalLocal, instanceSlug)
+	if err != nil {
+		return "", &apptheory.AppError{Code: "app.conflict", Message: "managed ens name is invalid"}
+	}
+	return ensName, nil
+}
+
+func (s *Server) resolveSoulManagedIdentityInstanceSlug(ctx context.Context, identity *models.SoulAgentIdentity, surface string) (string, *apptheory.AppError) {
 	if s == nil || identity == nil {
 		return "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	surface = strings.TrimSpace(surface)
+	if surface == "" {
+		surface = "managed identity"
 	}
 	normalizedDomain, err := domains.NormalizeDomain(identity.Domain)
 	if err != nil {
@@ -533,29 +560,29 @@ func (s *Server) resolveSoulProvisionEmailInstanceSlug(ctx context.Context, iden
 
 	domain, loadErr := s.loadManagedStageAwareDomain(ctx, normalizedDomain)
 	if theoryErrors.IsNotFound(loadErr) {
-		return "", &apptheory.AppError{Code: "app.conflict", Message: "agent domain is not registered for managed email"}
+		return "", &apptheory.AppError{Code: "app.conflict", Message: "agent domain is not registered for " + surface}
 	}
 	if loadErr != nil {
 		return "", &apptheory.AppError{Code: "app.internal", Message: "failed to load agent domain"}
 	}
 	if domain == nil || !domainIsVerifiedOrActive(domain.Status) {
-		return "", &apptheory.AppError{Code: "app.conflict", Message: "agent domain is not verified for managed email"}
+		return "", &apptheory.AppError{Code: "app.conflict", Message: "agent domain is not verified for " + surface}
 	}
 
-	instanceSlug := strings.ToLower(strings.TrimSpace(domain.InstanceSlug))
-	if !instanceSlugRE.MatchString(instanceSlug) {
+	instanceSlug, err := soul.ValidateManagedInstanceSlug(domain.InstanceSlug)
+	if err != nil {
 		return "", &apptheory.AppError{Code: "app.conflict", Message: "agent domain instance slug is invalid"}
 	}
 	return instanceSlug, nil
 }
 
 func buildSoulProvisionManagedEmailAddress(agentLocalID string, instanceSlug string, requestedLocalPart string) (soulProvisionManagedEmailAddress, *apptheory.AppError) {
-	canonicalLocal, err := soul.NormalizeLocalAgentID(agentLocalID)
+	canonicalLocal, err := soul.ValidateManagedHandle(agentLocalID)
 	if err != nil || canonicalLocal == "" {
 		return soulProvisionManagedEmailAddress{}, &apptheory.AppError{Code: "app.conflict", Message: "agent local id is invalid"}
 	}
-	slug := strings.ToLower(strings.TrimSpace(instanceSlug))
-	if !instanceSlugRE.MatchString(slug) {
+	slug, err := soul.ValidateManagedInstanceSlug(instanceSlug)
+	if err != nil {
 		return soulProvisionManagedEmailAddress{}, &apptheory.AppError{Code: "app.conflict", Message: "agent domain instance slug is invalid"}
 	}
 
@@ -564,14 +591,18 @@ func buildSoulProvisionManagedEmailAddress(agentLocalID string, instanceSlug str
 		return soulProvisionManagedEmailAddress{}, &apptheory.AppError{Code: "app.conflict", Message: "email local_part exceeds 64-octet SMTP limit"}
 	}
 
-	if requested := strings.TrimSpace(requestedLocalPart); requested != "" {
-		requestedNorm, err := soul.NormalizeLocalAgentID(requested)
-		if err != nil {
-			return soulProvisionManagedEmailAddress{}, &apptheory.AppError{Code: "app.bad_request", Message: "local_part is invalid"}
-		}
-		if requestedNorm != providerLocalPart {
+	if requestedLocalPart != strings.TrimSpace(requestedLocalPart) {
+		return soulProvisionManagedEmailAddress{}, &apptheory.AppError{Code: "app.bad_request", Message: "local_part is invalid"}
+	}
+	if requested := requestedLocalPart; requested != "" {
+		if requested != providerLocalPart {
 			return soulProvisionManagedEmailAddress{}, &apptheory.AppError{Code: "app.conflict", Message: soulEmailProvisionErrDerivedLocalPartReq}
 		}
+	}
+
+	ensName, err := soul.ManagedENSName(canonicalLocal, slug)
+	if err != nil {
+		return soulProvisionManagedEmailAddress{}, &apptheory.AppError{Code: "app.conflict", Message: "managed ens name is invalid"}
 	}
 
 	return soulProvisionManagedEmailAddress{
@@ -579,7 +610,7 @@ func buildSoulProvisionManagedEmailAddress(agentLocalID string, instanceSlug str
 		InstanceSlug:      slug,
 		ProviderLocalPart: providerLocalPart,
 		Address:           providerLocalPart + "@" + soulManagedEmailDomain,
-		ENSName:           soulCanonicalENSName(canonicalLocal),
+		ENSName:           ensName,
 	}, nil
 }
 

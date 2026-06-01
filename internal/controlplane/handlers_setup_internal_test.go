@@ -3,6 +3,7 @@ package controlplane
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -51,13 +52,38 @@ func TestParseSetupCreateAdminRequestInput(t *testing.T) {
 		t.Fatalf("expected reserved username error")
 	}
 
-	ctx.Request.Body = []byte(`{"username":" alice ","displayName":" Alice ","wallet":{"challengeId":" c ","address":" a ","signature":" s ","message":" m "}}`)
+	ctx.Request.Body = []byte(`{"username":"alice","displayName":" Alice ","wallet":{"challengeId":" c ","address":" a ","signature":" s ","message":" m "}}`)
 	req, appErr := parseSetupCreateAdminRequestInput(ctx)
 	if appErr != nil {
 		t.Fatalf("parseSetupCreateAdminRequestInput: %v", appErr)
 	}
 	if req.Username != testUsernameAlice || req.DisplayName != "Alice" || req.Wallet.ChallengeID != "c" {
 		t.Fatalf("unexpected request: %#v", req)
+	}
+}
+
+func TestParseSetupCreateAdminRequestInput_RejectsUnsafeManagedUsernames(t *testing.T) {
+	t.Parallel()
+
+	for _, raw := range []string{
+		" Alice ",
+		"Agent-Alice",
+		"agent_alice",
+		"agent.alice",
+		"agent@alice",
+		"agent%2falice",
+		"agent/alice",
+		"-agent",
+		"agent-",
+	} {
+		raw := raw
+		t.Run(raw, func(t *testing.T) {
+			t.Parallel()
+			body := fmt.Sprintf(`{"username":%q,"wallet":{"challengeId":"c","address":"a","signature":"s","message":"m"}}`, raw)
+			if _, appErr := parseSetupCreateAdminRequestInput(&apptheory.Context{Request: apptheory.Request{Body: []byte(body)}}); appErr == nil || appErr.Code != appErrCodeBadRequest {
+				t.Fatalf("parseSetupCreateAdminRequestInput(%q) expected bad_request, got %v", raw, appErr)
+			}
+		})
 	}
 }
 

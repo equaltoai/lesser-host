@@ -10,6 +10,7 @@ import (
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/httpx"
+	"github.com/equaltoai/lesser-host/internal/soul"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -445,16 +446,20 @@ func parseSetupCreateAdminRequestInput(ctx *apptheory.Context) (setupCreateAdmin
 		return setupCreateAdminRequest{}, &apptheory.AppError{Code: "app.bad_request", Message: "invalid request"}
 	}
 
-	req.Username = strings.TrimSpace(req.Username)
 	req.DisplayName = strings.TrimSpace(req.DisplayName)
 	req.Wallet.ChallengeID = strings.TrimSpace(req.Wallet.ChallengeID)
 	req.Wallet.Address = strings.TrimSpace(req.Wallet.Address)
 	req.Wallet.Signature = strings.TrimSpace(req.Wallet.Signature)
 	req.Wallet.Message = strings.TrimSpace(req.Wallet.Message)
 
-	if req.Username == "" {
+	username, err := soul.ValidateManagedHandle(req.Username)
+	if strings.TrimSpace(req.Username) == "" {
 		return setupCreateAdminRequest{}, &apptheory.AppError{Code: "app.bad_request", Message: "username is required"}
 	}
+	if err != nil {
+		return setupCreateAdminRequest{}, &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
+	}
+	req.Username = username
 	if strings.EqualFold(req.Username, setupBootstrapUser) {
 		return setupCreateAdminRequest{}, &apptheory.AppError{Code: "app.bad_request", Message: "username is reserved"}
 	}

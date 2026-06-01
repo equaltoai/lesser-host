@@ -118,6 +118,39 @@ func TestManagedProvisionBaseDomain_NormalizesInput(t *testing.T) {
 	}
 }
 
+func TestNormalizeProvisionAdminUsername_UsesManagedHandleGrammar(t *testing.T) {
+	t.Parallel()
+
+	got, appErr := normalizeProvisionAdminUsername(testCostSlug1, "")
+	if appErr != nil || got != testCostSlug1 {
+		t.Fatalf("expected slug default, got %q appErr=%v", got, appErr)
+	}
+	got, appErr = normalizeProvisionAdminUsername(testCostSlug1, provisionTestAgentLocalID)
+	if appErr != nil || got != provisionTestAgentLocalID {
+		t.Fatalf("expected clean admin username, got %q appErr=%v", got, appErr)
+	}
+
+	for _, raw := range []string{
+		"Agent-Alice",
+		"agent_alice",
+		"agent.alice",
+		" agent-alice ",
+		"agent@alice",
+		"agent%2falice",
+		"agent/alice",
+		"-agent",
+		"agent-",
+	} {
+		raw := raw
+		t.Run(raw, func(t *testing.T) {
+			t.Parallel()
+			if got, appErr := normalizeProvisionAdminUsername(testCostSlug1, raw); appErr == nil || appErr.Code != appErrCodeBadRequest {
+				t.Fatalf("normalizeProvisionAdminUsername(%q) = %q, expected bad_request", raw, got)
+			}
+		})
+	}
+}
+
 func TestHandlePortalProvisionConsentChallenge_CreatesChallenge(t *testing.T) {
 	t.Parallel()
 

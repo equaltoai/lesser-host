@@ -694,12 +694,12 @@ func getItem(ctx context.Context, client dynamoClient, tableName, pk, sk string)
 }
 
 func buildProposedManagedAddress(agentLocalID, instanceSlug string) (proposedEmailInventory, error) {
-	localID, err := soul.NormalizeLocalAgentID(agentLocalID)
+	localID, err := soul.ValidateManagedHandle(agentLocalID)
 	if err != nil || localID == "" {
 		return proposedEmailInventory{}, errors.New("invalid_agent_local_id")
 	}
-	instanceSlug = strings.ToLower(strings.TrimSpace(instanceSlug))
-	if !managedInstanceSlugRE.MatchString(instanceSlug) {
+	instanceSlug, err = soul.ValidateManagedInstanceSlug(instanceSlug)
+	if err != nil || !managedInstanceSlugRE.MatchString(instanceSlug) {
 		return proposedEmailInventory{}, errors.New("invalid_instance_slug")
 	}
 	localPart := localID + "." + instanceSlug

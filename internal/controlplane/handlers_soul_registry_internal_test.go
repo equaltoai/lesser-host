@@ -279,6 +279,36 @@ func assertSoulAgentRegistrationHTTPSProof(t *testing.T, httpsBodyRaw string, to
 	}
 }
 
+func TestNormalizeSoulRegistrationBeginLocalID_RejectsUnsafeManagedHandles(t *testing.T) {
+	t.Parallel()
+
+	valid, appErr := normalizeSoulRegistrationBeginLocalID("agent-alice")
+	if appErr != nil || valid != "agent-alice" {
+		t.Fatalf("expected clean handle success, got valid=%q appErr=%v", valid, appErr)
+	}
+
+	for _, raw := range []string{
+		"Agent-Alice",
+		"soul_researcher",
+		"agent.alice",
+		"agent..alice",
+		" agent-alice ",
+		"agent@alice",
+		"agent%2falice",
+		"agent/alice",
+		"-agent",
+		"agent-",
+	} {
+		raw := raw
+		t.Run(raw, func(t *testing.T) {
+			t.Parallel()
+			if got, appErr := normalizeSoulRegistrationBeginLocalID(raw); appErr == nil || appErr.Code != appErrCodeBadRequest {
+				t.Fatalf("normalizeSoulRegistrationBeginLocalID(%q) = %q, expected bad_request", raw, got)
+			}
+		})
+	}
+}
+
 func TestHandleSoulAgentRegistrationBegin_StructuredCapabilities_Success(t *testing.T) {
 	t.Parallel()
 
