@@ -10,7 +10,9 @@
   "scripts": {
     "build": "hardhat compile",
     "deploy:sepolia": "hardhat run --network sepolia scripts/deploy-tip-splitter.js",
+    "deploy:sepolia:offchain-resolver": "hardhat run --network sepolia scripts/deploy-offchain-resolver.js",
     "deploy:sepolia:all": "hardhat run --network sepolia scripts/deploy-sepolia-all.js",
+    "deploy:mainnet:offchain-resolver": "hardhat run --network mainnet scripts/deploy-offchain-resolver.js",
     "deploy:sepolia:soul-registry": "hardhat run --network sepolia scripts/deploy-soul-registry.js",
     "deploy:sepolia:soul-attestations": "hardhat run --network sepolia scripts/deploy-soul-attestations.js",
     "deploy:sepolia:soul-renderers": "hardhat run --network sepolia scripts/deploy-soul-renderers.js",

@@ -11,6 +11,14 @@ Conventions:
 - `latest.json` is the stable pointer that should always reflect the current “active” deployment for that network.
 - Keep a Safe Transaction Builder import file alongside `latest.json` when there are required owner/admin calls.
 - Keep `latest.json` free of secrets (SSM parameter *names* are OK; values are not).
+- OffchainResolver ENS gateway operations use the canonical lab/live runbook at
+  `docs/ens-offchain-resolver.md`. That runbook distinguishes historical Sepolia records from the Project 44 target
+  templates (`https://lab.lesser.host/resolve?sender={sender}&data={data}` for lab and
+  `https://lesser.host/resolve?sender={sender}&data={data}` for live).
+- Resolver addresses are stage-specific CDK context, not legacy SoulRegistry config:
+  `ensGatewayResolverAddressLab` maps to lab trust API `ENS_GATEWAY_RESOLVER_ADDRESS`, and
+  `ensGatewayResolverAddressLive` maps to live trust API `ENS_GATEWAY_RESOLVER_ADDRESS`. The legacy generic
+  `ensGatewayResolverAddress` is a lab-only migration fallback.
 - When deploying new contracts:
   1. Deploy contracts (Hardhat scripts in `contracts/`).
   2. Update your local `docs/deployments/<network>/latest.json` with addresses + tx hashes + required Safe calls.

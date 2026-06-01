@@ -33,7 +33,7 @@ async function deployOffchainResolver({ url, signer, owner } = {}) {
   const initialOwner = owner ?? defaultOwner.address;
   const gatewayUrl =
     url ??
-    "https://ens-gateway.lessersoul.ai/resolve?sender={sender}&data={data}";
+    "https://lab.lesser.host/resolve?sender={sender}&data={data}";
 
   const OffchainResolver = await ethers.getContractFactory("OffchainResolver");
   const resolver = await OffchainResolver.deploy(
@@ -61,7 +61,7 @@ describe("OffchainResolver — CCIP-Read contract", () => {
       signer: signerWallet.address,
     });
 
-    const name = dnsEncode("agent-alice.lessersoul.eth");
+    const name = dnsEncode("agent-alice.simulacrum.lessersoul.eth");
     const data = "0x12345678";
 
     let caught;
@@ -115,7 +115,7 @@ describe("OffchainResolver — CCIP-Read contract", () => {
     });
     const addr = await resolver.getAddress();
 
-    const name = dnsEncode("agent-alice.lessersoul.eth");
+    const name = dnsEncode("agent-alice.simulacrum.lessersoul.eth");
     const data = "0x12345678";
     const callData = ResolverServiceIface.encodeFunctionData("resolve", [
       name,
