@@ -42,7 +42,12 @@ type Config struct {
 	// in the `/lesser-host/telnyx` JSON parameter as `webhook_public_key`.
 	TelnyxWebhookPublicKey string
 
-	// ENS gateway (CCIP-Read) configuration.
+	// ENS gateway (CCIP-Read) configuration. These fields are independent from
+	// legacy SoulRegistry chain/contract configuration.
+	ENSGatewayEnabled             bool
+	ENSGatewayChainID             int64
+	ENSGatewayChainName           string
+	ENSGatewayRootName            string
 	ENSGatewayResolverAddress     string
 	ENSGatewaySigningKeyID        string
 	ENSGatewaySigningPrivateKey   string
@@ -145,8 +150,6 @@ func Load() Config {
 	stateTableName := envString("STATE_TABLE_NAME")
 	publicBaseURL := envString("PUBLIC_BASE_URL")
 
-	ensGatewayTTL := envInt64Bounded("ENS_GATEWAY_TTL_SECONDS", 300, 30, 24*60*60)
-
 	origins := parseCSV(envString("WEBAUTHN_ORIGINS"))
 	publicKeyIDs := parseCSV(envString("ATTESTATION_PUBLIC_KEY_IDS"))
 
@@ -163,6 +166,18 @@ func Load() Config {
 	soulPublicCORSOrigins := parseCSV(envString("SOUL_PUBLIC_CORS_ORIGINS"))
 	soulPublicOnChainAvatarEnabled := envBoolOn("SOUL_PUBLIC_ONCHAIN_AVATAR_ENABLED")
 	soulV2StrictIntegrity := envBoolOn("SOUL_V2_STRICT_INTEGRITY")
+
+	defaultENSGatewayChainID, defaultENSGatewayChainName := defaultENSGatewayChain(stage)
+	ensGatewayEnabled := envBoolOn("ENS_GATEWAY_ENABLED")
+	if envString("ENS_GATEWAY_ENABLED") == "" {
+		// Backward-compatible migration: old deployments used SOUL_ENABLED to
+		// expose the ENS gateway. CDK now emits ENS_GATEWAY_ENABLED explicitly,
+		// so this fallback is only for hand-rolled/local environments that have
+		// not been updated yet.
+		ensGatewayEnabled = soulOn
+	}
+	ensGatewayTTL := envInt64Bounded("ENS_GATEWAY_TTL_SECONDS", 300, 30, 24*60*60)
+	ensGatewayRootName := envLowerStringDefault("ENS_GATEWAY_ROOT_NAME", "lessersoul.eth")
 
 	soulRepTipStartBlock := envUint64("SOUL_REPUTATION_TIP_START_BLOCK", 0)
 	soulRepTipChunkSize := envUint64Positive("SOUL_REPUTATION_TIP_BLOCK_CHUNK_SIZE", 5000)
@@ -221,6 +236,10 @@ func Load() Config {
 		),
 		TelnyxWebhookPublicKey: envString("TELNYX_WEBHOOK_PUBLIC_KEY"),
 
+		ENSGatewayEnabled:             ensGatewayEnabled,
+		ENSGatewayChainID:             envInt64Positive("ENS_GATEWAY_CHAIN_ID", defaultENSGatewayChainID),
+		ENSGatewayChainName:           envLowerStringDefault("ENS_GATEWAY_CHAIN_NAME", defaultENSGatewayChainName),
+		ENSGatewayRootName:            ensGatewayRootName,
 		ENSGatewayResolverAddress:     envString("ENS_GATEWAY_RESOLVER_ADDRESS"),
 		ENSGatewaySigningKeyID:        envString("ENS_GATEWAY_SIGNING_KEY_ID"),
 		ENSGatewaySigningPrivateKey:   envString("ENS_GATEWAY_SIGNING_PRIVATE_KEY"),
@@ -307,4 +326,11 @@ func Load() Config {
 		PaymentsCheckoutCancelURL:   checkoutCancelURL,
 		PaymentsCentsPer1000Credits: centsPer1000Credits,
 	}
+}
+
+func defaultENSGatewayChain(stage string) (int64, string) {
+	if stage == "live" {
+		return 1, "mainnet"
+	}
+	return 11155111, "sepolia"
 }
