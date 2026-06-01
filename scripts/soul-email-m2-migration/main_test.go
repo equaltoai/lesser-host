@@ -26,6 +26,11 @@ const (
 	testDisplayName     = "pilot"
 	testMailboxPassword = "mailbox-password"
 	testLiveStage       = "live"
+	testStateTableName  = "state"
+	testInventoryFile   = "inventory.json"
+	testInventoryFlag   = "--inventory"
+	testMigaduUser      = "migadu-user"
+	testMigaduToken     = "migadu-token"
 )
 const testMailboxesPath = "/domains/lessersoul.ai/mailboxes"
 
@@ -151,7 +156,7 @@ func TestRunMigration_RejectsInventoryMetadataMismatch(t *testing.T) {
 			inv := happyInventoryReport(nil)
 			tc.mut(&inv)
 			dir := t.TempDir()
-			path := filepath.Join(dir, "inventory.json")
+			path := filepath.Join(dir, testInventoryFile)
 			raw, err := jsonMarshalIndent(inv)
 			if err != nil {
 				t.Fatalf("marshal inventory: %v", err)
@@ -163,7 +168,7 @@ func TestRunMigration_RejectsInventoryMetadataMismatch(t *testing.T) {
 			provider := &fakeProvider{}
 			_, err = runMigration(context.Background(), provider, migrationConfig{
 				Stage:              defaultStage,
-				TableName:          "state",
+				TableName:          testStateTableName,
 				InventoryPath:      path,
 				EmailInboundDomain: defaultInboundDomain,
 				Apply:              true,
@@ -202,7 +207,7 @@ func TestRunMigration_TargetAndProviderFailureIssues(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	path := filepath.Join(dir, "inventory.json")
+	path := filepath.Join(dir, testInventoryFile)
 	raw, err := jsonMarshalIndent(happyInventoryReport(nil))
 	if err != nil {
 		t.Fatalf("marshal inventory: %v", err)
@@ -214,7 +219,7 @@ func TestRunMigration_TargetAndProviderFailureIssues(t *testing.T) {
 
 	targetReport, err := runMigration(context.Background(), &fakeProvider{}, migrationConfig{
 		Stage:              defaultStage,
-		TableName:          "state",
+		TableName:          testStateTableName,
 		InventoryPath:      path,
 		AgentID:            "0xmissing",
 		EmailInboundDomain: defaultInboundDomain,
@@ -278,7 +283,7 @@ func TestInventoryAndHelperErrorBranches(t *testing.T) {
 	}
 
 	reportPath := filepath.Join(dir, "report.json")
-	if err := writeMigrationReport(newMigrationReport(migrationConfig{Stage: defaultStage, TableName: "state", InventoryPath: "inventory.json"}, inventoryReport{}, time.Unix(0, 0).UTC()), reportPath, &bytes.Buffer{}); err != nil {
+	if err := writeMigrationReport(newMigrationReport(migrationConfig{Stage: defaultStage, TableName: testStateTableName, InventoryPath: testInventoryFile}, inventoryReport{}, time.Unix(0, 0).UTC()), reportPath, &bytes.Buffer{}); err != nil {
 		t.Fatalf("write report file: %v", err)
 	}
 	if info, err := os.Stat(reportPath); err != nil || info.Size() == 0 {
@@ -323,7 +328,7 @@ func TestApplyProviderPreparedActionsNilProviderAndSelection(t *testing.T) {
 func TestParseConfigAndWriteReport(t *testing.T) {
 	t.Parallel()
 
-	cfg, err := parseConfig([]string{"--inventory", "inventory.json", "--agent-id", " 0xAGENT ", "--apply", "--max-agents", "2"}, func(key string) string {
+	cfg, err := parseConfig([]string{testInventoryFlag, testInventoryFile, "--agent-id", " 0xAGENT ", "--apply", "--max-agents", "2"}, func(key string) string {
 		switch key {
 		case "STAGE":
 			return testLiveStage
@@ -340,30 +345,6 @@ func TestParseConfigAndWriteReport(t *testing.T) {
 		t.Fatalf("unexpected config: %#v", cfg)
 	}
 
-	for _, tc := range []struct {
-		name  string
-		args  []string
-		want  string
-		stage string
-	}{
-		{name: "lab flag", args: []string{"--stage", "lab", "--inventory", "inventory.json"}, want: soulemail.LabInboundDomain, stage: defaultStage},
-		{name: "live flag", args: []string{"--stage", "live", "--inventory", "inventory.json"}, want: soulemail.LiveInboundDomain, stage: testLiveStage},
-		{name: "blank env defaults lab", args: []string{"--inventory", "inventory.json"}, want: soulemail.LabInboundDomain, stage: defaultStage},
-	} {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			cfg, err := parseConfig(tc.args, func(string) string { return "" })
-			if err != nil {
-				t.Fatalf("parse config: %v", err)
-			}
-			if cfg.Stage != tc.stage || cfg.EmailInboundDomain != tc.want {
-				t.Fatalf("unexpected config: %#v, want stage=%q inbound=%q", cfg, tc.stage, tc.want)
-			}
-		})
-	}
-
 	var stdout bytes.Buffer
 	if err := writeMigrationReport(newMigrationReport(cfg, inventoryReport{}, time.Unix(0, 0).UTC()), "-", &stdout); err != nil {
 		t.Fatalf("write stdout: %v", err)
@@ -373,11 +354,39 @@ func TestParseConfigAndWriteReport(t *testing.T) {
 	}
 }
 
+func TestParseConfigDefaultsStageInboundDomain(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name  string
+		args  []string
+		want  string
+		stage string
+	}{
+		{name: "lab flag", args: []string{"--stage", "lab", testInventoryFlag, testInventoryFile}, want: soulemail.LabInboundDomain, stage: defaultStage},
+		{name: "live flag", args: []string{"--stage", "live", testInventoryFlag, testInventoryFile}, want: soulemail.LiveInboundDomain, stage: testLiveStage},
+		{name: "blank env defaults lab", args: []string{testInventoryFlag, testInventoryFile}, want: soulemail.LabInboundDomain, stage: defaultStage},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			parsedCfg, err := parseConfig(tc.args, func(string) string { return "" })
+			if err != nil {
+				t.Fatalf("parse config: %v", err)
+			}
+			if parsedCfg.Stage != tc.stage || parsedCfg.EmailInboundDomain != tc.want {
+				t.Fatalf("unexpected config: %#v, want stage=%q inbound=%q", parsedCfg, tc.stage, tc.want)
+			}
+		})
+	}
+}
+
 func TestRunCLI(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	inventoryPath := filepath.Join(dir, "inventory.json")
+	inventoryPath := filepath.Join(dir, testInventoryFile)
 	raw, err := jsonMarshalIndent(happyInventoryReport(nil))
 	if err != nil {
 		t.Fatalf("marshal inventory: %v", err)
@@ -387,9 +396,9 @@ func TestRunCLI(t *testing.T) {
 		t.Fatalf("write inventory: %v", writeErr)
 	}
 	var stdout, stderr bytes.Buffer
-	code := runCLI([]string{"--inventory", inventoryPath}, func(key string) string {
+	code := runCLI([]string{testInventoryFlag, inventoryPath}, func(key string) string {
 		if key == "STATE_TABLE_NAME" {
-			return "state"
+			return testStateTableName
 		}
 		return ""
 	}, &stdout, &stderr, &fakeProvider{}, time.Unix(0, 0).UTC())
@@ -414,7 +423,7 @@ func TestDefaultMigaduClientEnsuresMailboxAndForwarding(t *testing.T) {
 	oldPasswordLoader := migaduPasswordLoader
 	oldBaseURL := migaduAPIBaseURL
 	migaduCredsLoader = func(context.Context, secrets.SSMAPI) (secrets.MigaduCredentials, error) {
-		return secrets.MigaduCredentials{Username: "migadu-user", APIToken: "migadu-token"}, nil
+		return secrets.MigaduCredentials{Username: testMigaduUser, APIToken: testMigaduToken}, nil
 	}
 	migaduPasswordLoader = func(_ context.Context, stage string, agentID string) (string, error) {
 		if stage != defaultStage || agentID != testAgentID {
@@ -454,7 +463,7 @@ func TestDefaultMigaduClientMailboxConflictFailsClosedWithoutForwarding(t *testi
 	oldPasswordLoader := migaduPasswordLoader
 	oldBaseURL := migaduAPIBaseURL
 	migaduCredsLoader = func(context.Context, secrets.SSMAPI) (secrets.MigaduCredentials, error) {
-		return secrets.MigaduCredentials{Username: "migadu-user", APIToken: "migadu-token"}, nil
+		return secrets.MigaduCredentials{Username: testMigaduUser, APIToken: testMigaduToken}, nil
 	}
 	migaduPasswordLoader = func(context.Context, string, string) (string, error) {
 		return testMailboxPassword, nil
@@ -520,7 +529,7 @@ func newMigaduProviderTestServer(t *testing.T, paths *[]string) *httptest.Server
 func assertMigaduTestAuth(t *testing.T, r *http.Request) {
 	t.Helper()
 	user, pass, ok := r.BasicAuth()
-	if !ok || user != "migadu-user" || pass != "migadu-token" {
+	if !ok || user != testMigaduUser || pass != testMigaduToken {
 		t.Fatalf("unexpected auth user=%q pass=%q ok=%v", user, pass, ok)
 	}
 }
@@ -577,7 +586,7 @@ func TestDefaultMigaduClientProviderFailures(t *testing.T) {
 	}
 
 	migaduCredsLoader = func(context.Context, secrets.SSMAPI) (secrets.MigaduCredentials, error) {
-		return secrets.MigaduCredentials{Username: "migadu-user", APIToken: "migadu-token"}, nil
+		return secrets.MigaduCredentials{Username: testMigaduUser, APIToken: testMigaduToken}, nil
 	}
 	migaduAPIBaseURL = newFailingMigaduTestServer(t, http.StatusInternalServerError, http.StatusCreated).URL
 	if err := validDefaultMigaduPrepare().EnsureMailboxAndForwarding(context.Background(), validProviderPrepareRequest()); err == nil || !strings.Contains(err.Error(), "migadu mailbox") {
@@ -628,7 +637,7 @@ func runMigrationForTest(t *testing.T, apply bool, inv inventoryReport) migratio
 func runMigrationForTestWithProvider(t *testing.T, provider providerClient, apply bool, inv inventoryReport) migrationReport {
 	t.Helper()
 	dir := t.TempDir()
-	path := filepath.Join(dir, "inventory.json")
+	path := filepath.Join(dir, testInventoryFile)
 	raw, err := jsonMarshalIndent(inv)
 	if err != nil {
 		t.Fatalf("marshal inventory: %v", err)
@@ -639,7 +648,7 @@ func runMigrationForTestWithProvider(t *testing.T, provider providerClient, appl
 	}
 	report, err := runMigration(context.Background(), provider, migrationConfig{
 		Stage:              defaultStage,
-		TableName:          "state",
+		TableName:          testStateTableName,
 		InventoryPath:      path,
 		EmailInboundDomain: defaultInboundDomain,
 		Apply:              apply,
@@ -675,7 +684,7 @@ func happyInventoryReport(mut func(*managedEmailInventory)) inventoryReport {
 	if mut != nil {
 		mut(&rec)
 	}
-	return inventoryReport{SchemaVersion: 1, GeneratedAt: time.Unix(0, 0).UTC().Format(time.RFC3339), Stage: defaultStage, TableName: "state", Agents: []managedEmailInventory{rec}}
+	return inventoryReport{SchemaVersion: 1, GeneratedAt: time.Unix(0, 0).UTC().Format(time.RFC3339), Stage: defaultStage, TableName: testStateTableName, Agents: []managedEmailInventory{rec}}
 }
 
 func jsonMarshalIndent(v any) ([]byte, error) {
