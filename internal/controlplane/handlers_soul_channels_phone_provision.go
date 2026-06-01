@@ -83,10 +83,14 @@ func (s *Server) handleSoulBeginProvisionPhoneChannel(ctx *apptheory.Context) (*
 	now := time.Now().UTC()
 	expectedVersion := identity.SelfDescriptionVersion
 	nextVersion := expectedVersion + 1
+	ensName, appErr := s.resolveSoulProvisionENSName(ctx.Context(), identity)
+	if appErr != nil {
+		return nil, appErr
+	}
 
 	regMap, _, digest, appErr := s.buildSoulProvisionPhoneRegistration(ctx.Context(), baseReg, baseVersion, agentIDHex, identity, soulProvisionPhoneBuildInput{
 		PhoneNumber:        desired,
-		ENSName:            strings.TrimSpace(identity.LocalID) + ".lessersoul.eth",
+		ENSName:            ensName,
 		IssuedAt:           now,
 		ExpectedPrev:       expectedVersion,
 		NextVersion:        nextVersion,
@@ -172,10 +176,14 @@ func (s *Server) prepareSoulProvisionPhoneChannel(
 	if appErr != nil {
 		return nil, nil, appErr
 	}
+	ensName, appErr := s.resolveSoulProvisionENSName(ctx, identity)
+	if appErr != nil {
+		return nil, nil, appErr
+	}
 
 	regMap, regV3, digest, appErr := s.buildSoulProvisionPhoneRegistration(ctx, baseReg, baseVersion, agentIDHex, identity, soulProvisionPhoneBuildInput{
 		PhoneNumber:        number,
-		ENSName:            strings.TrimSpace(identity.LocalID) + ".lessersoul.eth",
+		ENSName:            ensName,
 		IssuedAt:           issuedAt.UTC(),
 		ExpectedPrev:       expectedVersion,
 		NextVersion:        expectedVersion + 1,
@@ -356,20 +364,22 @@ func (s *Server) finalizeSoulDeprovisionPhoneChannel(ctx *apptheory.Context, age
 	}
 
 	// Best-effort: clear phone field from ENS resolution record (if it exists).
-	ensName := strings.TrimSpace(identity.LocalID) + ".lessersoul.eth"
-	res := &models.SoulAgentENSResolution{ENSName: ensName}
-	_ = res.UpdateKeys()
-	var existing models.SoulAgentENSResolution
-	loadResolutionErr := s.store.DB.WithContext(ctx.Context()).
-		Model(&models.SoulAgentENSResolution{}).
-		Where("PK", "=", res.PK).
-		Where("SK", "=", res.SK).
-		First(&existing)
-	if loadResolutionErr == nil {
-		existing.Phone = ""
-		existing.UpdatedAt = now
-		_ = existing.UpdateKeys()
-		_ = s.store.DB.WithContext(ctx.Context()).Model(&existing).CreateOrUpdate()
+	ensName, appErr := s.resolveSoulProvisionENSName(ctx.Context(), identity)
+	if appErr == nil {
+		res := &models.SoulAgentENSResolution{ENSName: ensName}
+		_ = res.UpdateKeys()
+		var existing models.SoulAgentENSResolution
+		loadResolutionErr := s.store.DB.WithContext(ctx.Context()).
+			Model(&models.SoulAgentENSResolution{}).
+			Where("PK", "=", res.PK).
+			Where("SK", "=", res.SK).
+			First(&existing)
+		if loadResolutionErr == nil {
+			existing.Phone = ""
+			existing.UpdatedAt = now
+			_ = existing.UpdateKeys()
+			_ = s.store.DB.WithContext(ctx.Context()).Model(&existing).CreateOrUpdate()
+		}
 	}
 
 	_ = s.store.DB.WithContext(ctx.Context()).Model(&models.AuditLogEntry{

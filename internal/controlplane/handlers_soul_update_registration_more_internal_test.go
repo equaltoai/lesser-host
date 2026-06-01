@@ -98,7 +98,7 @@ func TestValidateSoulUpdateRegistrationIdentityFields_UsesFallbackKeysAndRejects
 	if appErr := validateSoulUpdateRegistrationIdentityFields(map[string]any{
 		"agent_id": soulLifecycleTestAgentIDHex,
 		"domain":   "EXAMPLE.COM",
-		"local_id": "@Agent-Alice/",
+		"local_id": "agent-alice",
 	}, soulLifecycleTestAgentIDHex, identity); appErr != nil {
 		t.Fatalf("expected fallback field names to validate, got %v", appErr)
 	}
@@ -133,7 +133,16 @@ func TestValidateSoulUpdateRegistrationIdentityFields_UsesFallbackKeysAndRejects
 				"domain":  "example.com",
 				"localId": "bad/local",
 			},
-			message: "local_id must not contain /, :, or @",
+			message: "managed handle must be 3-63 lowercase letters, digits, or hyphens and start/end with a letter or digit",
+		},
+		{
+			name: "ambiguous local id",
+			reg: map[string]any{
+				"agentId": soulLifecycleTestAgentIDHex,
+				"domain":  "example.com",
+				"localId": "agent.alice",
+			},
+			message: "managed handle must be 3-63 lowercase letters, digits, or hyphens and start/end with a letter or digit",
 		},
 		{
 			name: "localId mismatch",

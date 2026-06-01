@@ -123,9 +123,8 @@ Findings:
 - `docs/ens-offchain-resolver.md` describes the resolver contract and current mainnet-oriented deployment shape. Later
   Project 44 resolver/runbook work must extend it for the lab Sepolia and live mainnet split; M0 intentionally performs
   no deploy or resolver mutation.
-- `docs/contracts/openapi.yaml` and v3 fixtures still contain legacy bare ENS examples such as
-  `agent-bob.lessersoul.eth`. Later implementation milestones must update public schema examples and generated
-  consumers when the canonical instance-scoped form is implemented.
+- Project 44 M2 updates the v3 fixture examples to the canonical instance-scoped managed ENS form. Any remaining bare
+  `lessersoul.eth` examples are legacy, resolver-specific, or non-managed fixtures unless called out separately.
 
 No behavior changes are made by this audit.
 

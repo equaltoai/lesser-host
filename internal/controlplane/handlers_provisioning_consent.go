@@ -12,6 +12,7 @@ import (
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/httpx"
+	"github.com/equaltoai/lesser-host/internal/soul"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -60,14 +61,14 @@ func normalizeControlPlaneStage(stage string) string {
 
 func normalizeProvisionAdminUsername(slug, adminUsername string) (string, *apptheory.AppError) {
 	slug = strings.ToLower(strings.TrimSpace(slug))
-	adminUsername = strings.ToLower(strings.TrimSpace(adminUsername))
-	if adminUsername == "" {
+	if strings.TrimSpace(adminUsername) == "" {
 		adminUsername = slug
 	}
-	if adminUsername == "" || !instanceSlugRE.MatchString(adminUsername) {
+	normalized, err := soul.ValidateManagedHandle(adminUsername)
+	if err != nil || normalized == "" {
 		return "", &apptheory.AppError{Code: "app.bad_request", Message: "invalid admin_username"}
 	}
-	return adminUsername, nil
+	return normalized, nil
 }
 
 func normalizeLinkedWalletAddress(cred *models.WalletCredential) (string, *apptheory.AppError) {

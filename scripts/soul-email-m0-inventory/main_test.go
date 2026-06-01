@@ -24,14 +24,14 @@ const (
 func TestBuildProposedManagedAddress(t *testing.T) {
 	t.Parallel()
 
-	got, err := buildProposedManagedAddress(" Agent.With.Dot ", "Simulacrum")
+	got, err := buildProposedManagedAddress("agent-bot", "Simulacrum")
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if got.LocalPart != "agent.with.dot.simulacrum" || got.Address != "agent.with.dot.simulacrum@lessersoul.ai" {
+	if got.LocalPart != "agent-bot.simulacrum" || got.Address != "agent-bot.simulacrum@lessersoul.ai" {
 		t.Fatalf("unexpected proposed address: %#v", got)
 	}
-	if got.LocalPartLength != len("agent.with.dot.simulacrum") || got.Overflow {
+	if got.LocalPartLength != len("agent-bot.simulacrum") || got.Overflow {
 		t.Fatalf("unexpected proposed length/overflow: %#v", got)
 	}
 }
@@ -41,6 +41,9 @@ func TestBuildProposedManagedAddressRejectsInvalidSlugAndOverflow(t *testing.T) 
 
 	if _, err := buildProposedManagedAddress("agent", "bad_slug"); err == nil || err.Error() != "invalid_instance_slug" {
 		t.Fatalf("expected invalid_instance_slug, got %v", err)
+	}
+	if _, err := buildProposedManagedAddress("agent.with.dot", "slug"); err == nil || err.Error() != "invalid_agent_local_id" {
+		t.Fatalf("expected invalid_agent_local_id, got %v", err)
 	}
 
 	got, err := buildProposedManagedAddress("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "slug")

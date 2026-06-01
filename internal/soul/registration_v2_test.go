@@ -151,6 +151,8 @@ func TestRegistrationFileV2_ParseAndValidate(t *testing.T) {
 		{name: "bad agent id", mut: func(r *RegistrationFileV2) { r.AgentID = "0x1234" }},
 		{name: "bad domain", mut: func(r *RegistrationFileV2) { r.Domain = "bad domain" }},
 		{name: "bad local id", mut: func(r *RegistrationFileV2) { r.LocalID = "@" }},
+		{name: "ambiguous local id dot", mut: func(r *RegistrationFileV2) { r.LocalID = "agent.bot" }},
+		{name: "ambiguous local id uppercase", mut: func(r *RegistrationFileV2) { r.LocalID = "Agent-Bot" }},
 		{name: "bad wallet", mut: func(r *RegistrationFileV2) { r.Wallet = "not-an-address" }},
 		{name: "bad principal", mut: func(r *RegistrationFileV2) { r.Principal.Type = "robot" }},
 		{name: "bad self description", mut: func(r *RegistrationFileV2) { r.SelfDescription.Purpose = "short" }},

@@ -11,6 +11,7 @@ import (
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/httpx"
+	"github.com/equaltoai/lesser-host/internal/soul"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -265,6 +266,12 @@ func (s *Server) ensurePortalWalletUser(
 	displayName string,
 	now time.Time,
 ) (models.User, error) {
+	normalizedUsername, err := soul.ValidateManagedHandle(username)
+	if err != nil || normalizedUsername == "" {
+		return models.User{}, &apptheory.AppError{Code: "app.bad_request", Message: "username is invalid"}
+	}
+	username = normalizedUsername
+
 	user, found, err := s.getUserProfile(ctx, username)
 	if err != nil {
 		return models.User{}, err

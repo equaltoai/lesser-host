@@ -887,14 +887,6 @@ func trustedManagedSoulChannelForIndex(ch *models.SoulAgentChannel) bool {
 	}
 }
 
-func soulCanonicalENSName(localID string) string {
-	localID = strings.TrimSpace(localID)
-	if localID == "" {
-		return ""
-	}
-	return localID + ".lessersoul.eth"
-}
-
 func (s *Server) ensureSoulEmailAgentIndex(ctx context.Context, idx *models.SoulEmailAgentIndex) *apptheory.AppError {
 	if idx == nil {
 		return nil
@@ -1295,7 +1287,7 @@ func validateSoulUpdateRegistrationIdentityFields(reg map[string]any, agentIDHex
 	if bodyLocal == "" {
 		bodyLocal = extractStringField(reg, "local_id")
 	}
-	localNorm, err := soul.NormalizeLocalAgentID(bodyLocal)
+	localNorm, err := soul.ValidateManagedHandle(bodyLocal)
 	if err != nil {
 		return &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
 	}

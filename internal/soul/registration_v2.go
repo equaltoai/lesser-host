@@ -180,7 +180,7 @@ func validateRegistrationIdentity(agentID string, domain string, localID string,
 		return errors.New("domain is invalid")
 	}
 
-	normalizedLocalID, err := NormalizeLocalAgentID(localID)
+	normalizedLocalID, err := ValidateManagedHandle(localID)
 	if err != nil || normalizedLocalID == "" {
 		return errors.New("localId is invalid")
 	}

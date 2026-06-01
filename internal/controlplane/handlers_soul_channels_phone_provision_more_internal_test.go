@@ -108,11 +108,11 @@ func seedProvisionPhoneE2EAccess(t *testing.T, fixture *provisionPhoneE2EFixture
 	fixture.tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
 		*dest = models.Domain{Domain: "example.com", InstanceSlug: "inst1", Status: models.DomainStatusVerified}
-	}).Times(3)
+	}).Maybe()
 	fixture.tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
 		*dest = models.Instance{Slug: "inst1", Owner: "admin"}
-	}).Times(3)
+	}).Maybe()
 
 	identityCalls := 0
 	fixture.tdb.qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
@@ -245,6 +245,10 @@ func assertProvisionPhonePublished(t *testing.T, fixture *provisionPhoneE2EFixtu
 	if !ok || phoneAny == nil || strings.TrimSpace(extractStringField(phoneAny, "number")) != "+15551234567" {
 		t.Fatalf("expected channels.phone.number to be published, got %#v", chAny["phone"])
 	}
+	ensAny, ok := chAny["ens"].(map[string]any)
+	if !ok || ensAny == nil || strings.TrimSpace(extractStringField(ensAny, "name")) != mustProvisionPhoneENSName(t, "agent-alice") {
+		t.Fatalf("expected canonical channels.ens.name to be published, got %#v", chAny["ens"])
+	}
 }
 
 func assertProvisionPhoneIdempotent(t *testing.T, fixture *provisionPhoneE2EFixture, confirmBody []byte) {
@@ -297,11 +301,11 @@ func TestHandleSoulDeprovisionPhoneChannel_SuccessAndIdempotent(t *testing.T) {
 		tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
 			dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
 			*dest = models.Domain{Domain: "example.com", InstanceSlug: "inst1", Status: models.DomainStatusVerified}
-		}).Once()
+		}).Twice()
 		tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
 			dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
 			*dest = models.Instance{Slug: "inst1", Owner: "admin"}
-		}).Once()
+		}).Twice()
 		tdb.qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
 			dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
 			*dest = models.SoulAgentIdentity{
@@ -323,7 +327,7 @@ func TestHandleSoulDeprovisionPhoneChannel_SuccessAndIdempotent(t *testing.T) {
 		}).Once()
 		tdb.qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(nil).Run(func(args mock.Arguments) {
 			dest := testutil.RequireMockArg[*models.SoulAgentENSResolution](t, args, 0)
-			*dest = models.SoulAgentENSResolution{ENSName: "agent-alice.lessersoul.eth", Phone: "+15551234567"}
+			*dest = models.SoulAgentENSResolution{ENSName: mustProvisionPhoneENSName(t, "agent-alice"), Phone: "+15551234567"}
 		}).Once()
 
 		ctx := &apptheory.Context{
