@@ -182,26 +182,39 @@ All write endpoints require `Authorization: Bearer <session>`. Sessions are shar
   - `POST /api/v1/soul/reputation/publish`
   - `POST /api/v1/soul/validation/publish`
 
-## Inbound email bridge (`inbound.lessersoul.ai`)
+## Inbound email bridge (`lab.lessersoul.ai`, `inbound.lessersoul.ai`)
 
-Inbound soul email delivery uses a bridge domain instead of direct HTTP forwarding from Migadu:
+Inbound soul email delivery uses per-stage bridge domains instead of direct HTTP forwarding from Migadu:
 
 ```text
-Sender -> Migadu mailbox -> <agent-local-id>.<instance-slug>@inbound.lessersoul.ai -> SES receipt rule -> email-ingress Lambda -> comm-worker
+Sender -> Migadu mailbox -> <agent-local-id>.<instance-slug>@<stage-bridge-domain> -> SES receipt rule -> email-ingress Lambda -> comm-worker
 ```
 
 - Migadu remains the mailbox and outbound SMTP provider for `@lessersoul.ai`.
 - Project 37 defines the instance-scoped managed address contract in `docs/instance-scoped-soul-email-m0.md`: new managed soul email channels use `<agent-local-id>.<instance-slug>@lessersoul.ai`, with `instanceSlug` resolved from `Domain.InstanceSlug`.
-- New provisioning derives the provider local-part from `Domain.InstanceSlug` and sets Migadu forwarding targets to `<agent-local-id>.<instance-slug>@inbound.lessersoul.ai`.
+- New provisioning derives the provider local-part from `Domain.InstanceSlug` and sets Migadu forwarding targets to the current stage bridge: `lab.lessersoul.ai` for lab, `inbound.lessersoul.ai` for live.
 - Existing bare `<agent-local-id>@lessersoul.ai` addresses are legacy inbound aliases for migrated agents only; they are not current public channels after migration.
-- Amazon SES receives mail for `inbound.lessersoul.ai`, stores the raw message in S3, and invokes `cmd/email-ingress`.
+- Amazon SES receives mail for both bridge domains, stores the raw message in the stage's inbound S3 bucket, and invokes the matching stage's `cmd/email-ingress`.
 - `cmd/email-ingress` parses the raw RFC 5322 message and enqueues the existing `communication:inbound` payload shape for `comm-worker`.
 - `comm-worker` continues to resolve the final recipient against the canonical `@lessersoul.ai` address, so downstream routing and delivery semantics stay unchanged.
 
 Operational notes:
 
-- SES receiving is region-bound; `lesser-host` deploys the bridge only in an SES-inbound-capable region.
-- DNS for `inbound.lessersoul.ai` is managed outside Route53 today, so the stack outputs the DKIM verification CNAMEs and MX target for manual GoDaddy entry.
+- SES receiving is region-bound and account/region-scoped. AWS permits only one active receipt rule set, so `lesser-host` owns one shared activated rule set (`lesser-host-inbound-email`) and each stage adds a disjoint recipient rule (`lesser-host-lab-ingress` for `lab.lessersoul.ai`, `lesser-host-live-ingress` for `inbound.lessersoul.ai`).
+- Stage deployments import the shared receipt rule set by name. They must not create or activate their own rule set; only the dedicated owner stack activates the shared set.
+- DNS for `lab.lessersoul.ai` and `inbound.lessersoul.ai` is managed outside Route53 today, so the stack outputs the DKIM verification CNAMEs and MX target for manual GoDaddy entry.
+- Operator coexistence check:
+
+  ```bash
+  aws ses describe-active-receipt-rule-set \
+    --region <ses-receiving-region> \
+    --query 'Rules[].{Name:Name,Enabled:Enabled,Recipients:Recipients}'
+
+  dig +short MX lab.lessersoul.ai
+  dig +short MX inbound.lessersoul.ai
+  ```
+
+  The active rule set should include enabled rules for both bridge domains, and both MX records should point at the SES inbound endpoint for the receiving region.
 - Raw inbound mail is retained briefly in a dedicated S3 bucket with lifecycle expiration to support debugging without keeping message bodies indefinitely.
 
 ## Soul Comm Mailbox v1 authority

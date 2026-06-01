@@ -78,6 +78,11 @@ provider state.
      --out gov-infra/evidence/project37/m2-email-provider-prepare-live.json
    ```
 
+   Bridge-domain selection is stage-specific. The live command above forwards to
+   `inbound.lessersoul.ai`; lab commands must forward to `lab.lessersoul.ai`
+   (either by omitting `SOUL_EMAIL_INBOUND_DOMAIN` with `--stage lab`, or by
+   setting it explicitly).
+
    After this step, new addresses accept inbound delivery but no public
    channel switch has occurred. Old bare addresses still accept inbound.
 
@@ -130,10 +135,40 @@ Per M3 acceptance, the following must pass against live:
 
 ## Monitoring checks
 
+### SES bridge coexistence
+
+SES email receiving has one active receipt rule set per account/region. Host
+therefore keeps one shared active rule set and installs separate recipient rules
+for each always-on stage:
+
+| Stage | Bridge recipient domain | Expected rule name |
+|---|---|---|
+| lab | `lab.lessersoul.ai` | `lesser-host-lab-ingress` |
+| live | `inbound.lessersoul.ai` | `lesser-host-live-ingress` |
+
+Before and after live provider-prepare, verify both rules are present in the
+active shared rule set and both DNS MX records point at the SES inbound endpoint
+for the receiving region:
+
+```bash
+aws ses describe-active-receipt-rule-set \
+  --region <ses-receiving-region> \
+  --query 'Rules[].{Name:Name,Enabled:Enabled,Recipients:Recipients}'
+
+dig +short MX lab.lessersoul.ai
+dig +short MX inbound.lessersoul.ai
+```
+
+Do not create or activate a stage-specific SES rule set. If either rule or MX
+record is missing, stop provider changes until the shared rule set and DNS are
+repaired.
+
 ### Migadu provider state
 
 - Confirm each `<agent-local-id>.<instance-slug>` mailbox exists and has the
-  correct inbound forwarding target `<agent-local-id>.<instance-slug>@inbound.lessersoul.ai`.
+  correct inbound forwarding target
+  `<agent-local-id>.<instance-slug>@<stage-bridge-domain>` (`lab.lessersoul.ai`
+  in lab, `inbound.lessersoul.ai` in live).
 - Confirm each legacy `<agent-local-id>` mailbox/alias still accepts inbound.
 - Verify no unintended mailboxes or forwardings were created.
 

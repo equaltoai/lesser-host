@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/equaltoai/lesser-host/internal/secrets"
+	"github.com/equaltoai/lesser-host/internal/soulemail"
 )
 
 const (
@@ -21,7 +22,7 @@ const (
 	testOldEmail        = "pilot@lessersoul.ai"
 	testNewEmail        = "pilot.simulacrum@lessersoul.ai"
 	testNewLocalPart    = "pilot.simulacrum"
-	testForwardingAddr  = "pilot.simulacrum@inbound.lessersoul.ai"
+	testForwardingAddr  = "pilot.simulacrum@lab.lessersoul.ai"
 	testDisplayName     = "pilot"
 	testMailboxPassword = "mailbox-password"
 	testLiveStage       = "live"
@@ -335,8 +336,32 @@ func TestParseConfigAndWriteReport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse config: %v", err)
 	}
-	if !cfg.Apply || cfg.Stage != testLiveStage || cfg.TableName != "lesser-host-live-state" || cfg.AgentID != testAgentID || cfg.EmailInboundDomain != defaultInboundDomain || cfg.MaxAgents != 2 {
+	if !cfg.Apply || cfg.Stage != testLiveStage || cfg.TableName != "lesser-host-live-state" || cfg.AgentID != testAgentID || cfg.EmailInboundDomain != soulemail.LiveInboundDomain || cfg.MaxAgents != 2 {
 		t.Fatalf("unexpected config: %#v", cfg)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		args  []string
+		want  string
+		stage string
+	}{
+		{name: "lab flag", args: []string{"--stage", "lab", "--inventory", "inventory.json"}, want: soulemail.LabInboundDomain, stage: defaultStage},
+		{name: "live flag", args: []string{"--stage", "live", "--inventory", "inventory.json"}, want: soulemail.LiveInboundDomain, stage: testLiveStage},
+		{name: "blank env defaults lab", args: []string{"--inventory", "inventory.json"}, want: soulemail.LabInboundDomain, stage: defaultStage},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg, err := parseConfig(tc.args, func(string) string { return "" })
+			if err != nil {
+				t.Fatalf("parse config: %v", err)
+			}
+			if cfg.Stage != tc.stage || cfg.EmailInboundDomain != tc.want {
+				t.Fatalf("unexpected config: %#v, want stage=%q inbound=%q", cfg, tc.stage, tc.want)
+			}
+		})
 	}
 
 	var stdout bytes.Buffer

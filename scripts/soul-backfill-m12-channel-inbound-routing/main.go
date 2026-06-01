@@ -16,6 +16,7 @@ import (
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/secrets"
+	"github.com/equaltoai/lesser-host/internal/soulemail"
 	"github.com/equaltoai/lesser-host/internal/store"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
@@ -41,6 +42,7 @@ type config struct {
 	apply              bool
 	backfillEmail      bool
 	backfillPhone      bool
+	stage              string
 	publicBaseURL      string
 	emailInboundDomain string
 }
@@ -153,18 +155,23 @@ func main() {
 }
 
 func parseConfig() config {
-	var cfg config
+	cfg := config{stage: soulemail.NormalizeStage(os.Getenv("STAGE"))}
 	flag.StringVar(&cfg.agentID, "agent-id", "", "Optional target agent id (0x... 32-byte hex)")
 	flag.BoolVar(&cfg.apply, "apply", false, "Apply provider updates (default: dry-run)")
 	flag.BoolVar(&cfg.backfillEmail, "email", true, "Backfill Migadu inbound forwarding")
 	flag.BoolVar(&cfg.backfillPhone, "phone", true, "Backfill Telnyx messaging profile webhook")
+	flag.StringVar(&cfg.stage, "stage", cfg.stage, "Control-plane stage used to default SOUL_EMAIL_INBOUND_DOMAIN")
 	flag.StringVar(&cfg.publicBaseURL, "public-base-url", strings.TrimSpace(os.Getenv("PUBLIC_BASE_URL")), "Public base URL, e.g. https://lab.lesser.host")
-	flag.StringVar(&cfg.emailInboundDomain, "email-inbound-domain", strings.TrimSpace(os.Getenv("SOUL_EMAIL_INBOUND_DOMAIN")), "Inbound bridge email domain, e.g. inbound.lessersoul.ai")
+	flag.StringVar(&cfg.emailInboundDomain, "email-inbound-domain", strings.TrimSpace(os.Getenv("SOUL_EMAIL_INBOUND_DOMAIN")), "Inbound bridge email domain (defaults from --stage/STAGE)")
 	flag.Parse()
 
 	cfg.agentID = strings.ToLower(strings.TrimSpace(cfg.agentID))
+	cfg.stage = soulemail.NormalizeStage(cfg.stage)
 	cfg.publicBaseURL = normalizePublicBaseURL(cfg.publicBaseURL)
 	cfg.emailInboundDomain = strings.ToLower(strings.TrimSpace(cfg.emailInboundDomain))
+	if cfg.emailInboundDomain == "" {
+		cfg.emailInboundDomain = soulemail.DefaultInboundDomainForStage(cfg.stage)
+	}
 
 	if !cfg.backfillEmail && !cfg.backfillPhone {
 		die("must enable at least one of --email or --phone")

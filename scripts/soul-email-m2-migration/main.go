@@ -15,13 +15,14 @@ import (
 	"time"
 
 	"github.com/equaltoai/lesser-host/internal/secrets"
+	"github.com/equaltoai/lesser-host/internal/soulemail"
 )
 
 const (
 	migrationSchemaVersion = 1
-	defaultStage           = "lab"
+	defaultStage           = soulemail.DefaultStage
 	canonicalEmailDomain   = "lessersoul.ai"
-	defaultInboundDomain   = "inbound.lessersoul.ai"
+	defaultInboundDomain   = soulemail.LabInboundDomain
 	migaduBaseURL          = "https://api.migadu.com/v1"
 
 	migrationStateInventoryDryRun        = "inventory_dry_run"
@@ -198,18 +199,12 @@ func runCLI(args []string, getenv func(string) string, stdout io.Writer, stderr 
 }
 
 func parseConfig(args []string, getenv func(string) string) (migrationConfig, error) {
-	stageDefault := strings.ToLower(strings.TrimSpace(getenv("STAGE")))
-	if stageDefault == "" {
-		stageDefault = defaultStage
-	}
+	stageDefault := soulemail.NormalizeStage(getenv("STAGE"))
 	tableDefault := strings.TrimSpace(getenv("STATE_TABLE_NAME"))
 	if tableDefault == "" {
 		tableDefault = fmt.Sprintf("lesser-host-%s-state", stageDefault)
 	}
 	inboundDefault := strings.ToLower(strings.TrimSpace(getenv("SOUL_EMAIL_INBOUND_DOMAIN")))
-	if inboundDefault == "" {
-		inboundDefault = defaultInboundDomain
-	}
 
 	cfg := migrationConfig{Stage: stageDefault, TableName: tableDefault, EmailInboundDomain: inboundDefault}
 	fs := flag.NewFlagSet("soul-email-m2-migration", flag.ContinueOnError)
@@ -225,15 +220,15 @@ func parseConfig(args []string, getenv func(string) string) (migrationConfig, er
 	if err := fs.Parse(args); err != nil {
 		return migrationConfig{}, err
 	}
-	cfg.Stage = strings.ToLower(strings.TrimSpace(cfg.Stage))
-	if cfg.Stage == "" {
-		cfg.Stage = defaultStage
-	}
+	cfg.Stage = soulemail.NormalizeStage(cfg.Stage)
 	cfg.TableName = strings.TrimSpace(cfg.TableName)
 	cfg.InventoryPath = strings.TrimSpace(cfg.InventoryPath)
 	cfg.OutputPath = strings.TrimSpace(cfg.OutputPath)
 	cfg.AgentID = strings.ToLower(strings.TrimSpace(cfg.AgentID))
 	cfg.EmailInboundDomain = strings.ToLower(strings.TrimSpace(cfg.EmailInboundDomain))
+	if cfg.EmailInboundDomain == "" {
+		cfg.EmailInboundDomain = soulemail.DefaultInboundDomainForStage(cfg.Stage)
+	}
 	if cfg.InventoryPath == "" {
 		return migrationConfig{}, errors.New("--inventory is required")
 	}

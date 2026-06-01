@@ -34,6 +34,7 @@ import * as wafv2 from 'aws-cdk-lib/aws-wafv2';
 import { renderProvisionRunnerBuildCommands, renderProvisionRunnerPreBuildCommands } from './provision-runner-buildspec';
 import { CostTelemetryWorker } from './cost-telemetry-worker-construct';
 import { INBOUND_EMAIL_RULE_SET_NAME } from './ses-inbound-rule-set-name';
+import { soulEmailInboundDomainFromContext } from './soul-email-inbound-domain';
 export interface LesserHostStackProps extends cdk.StackProps {
 	stage: string;
 }
@@ -344,7 +345,7 @@ export class LesserHostStack extends cdk.Stack {
 		const soulReputationWeightTrust = soulContext('soulReputationWeightTrust');
 		const soulValidationDecayEpochHours = soulContext('soulValidationDecayEpochHours');
 		const soulValidationDecayRate = soulContext('soulValidationDecayRate');
-		const soulEmailInboundDomain = (soulContext('soulEmailInboundDomain') || 'inbound.lessersoul.ai').trim();
+		const soulEmailInboundDomain = soulEmailInboundDomainFromContext(this, stage);
 		const inboundEmailS3Prefix = 'ses/inbound/';
 
 		const paymentsProvider = (this.node.tryGetContext('paymentsProvider') as string | undefined) ?? '';
