@@ -220,6 +220,53 @@ func TestBuildSoulProvisionManagedEmailAddress_DerivesDistinctAddressesAcrossIns
 	}
 }
 
+func TestBuildSoulProvisionEmailRegistration_UpdatesOnlyManagedENSChannel(t *testing.T) {
+	t.Parallel()
+
+	fixture := newProvisionEmailE2EFixture(t)
+	s := fixture.server
+	now := time.Date(2026, time.March, 5, 12, 0, 0, 0, time.UTC)
+
+	legacyBase := testProvisionManagedChannelBaseRegistration(fixture.agentIDHex, fixture.wallet, fixture.principalDeclaration, fixture.principalSigHex)
+	legacyBase["channels"] = map[string]any{
+		"ens": map[string]any{
+			"name":  provisionTestAgentLocalID + ".lessersoul.eth",
+			"chain": "mainnet",
+		},
+	}
+	legacyReg, _, _, appErr := s.buildSoulProvisionEmailRegistration(context.Background(), legacyBase, "2", fixture.agentIDHex, &models.SoulAgentIdentity{LocalID: provisionTestAgentLocalID}, soulProvisionEmailBuildInput{
+		EmailAddress: provisionTestEmailAddress,
+		ENSName:      provisionTestEmailENSName,
+		IssuedAt:     now,
+		ExpectedPrev: 3,
+		NextVersion:  4,
+	})
+	if appErr != nil {
+		t.Fatalf("legacy build unexpected appErr: %v", appErr)
+	}
+	assertProvisionENSChannelMetadata(t, legacyReg, provisionTestEmailENSName, "sepolia", "0x0000000000000000000000000000000000000002")
+
+	externalBase := testProvisionManagedChannelBaseRegistration(fixture.agentIDHex, fixture.wallet, fixture.principalDeclaration, fixture.principalSigHex)
+	externalBase["channels"] = map[string]any{
+		"ens": map[string]any{
+			"name":            "external.eth",
+			"chain":           "mainnet",
+			"resolverAddress": "0x00000000000000000000000000000000000000ee",
+		},
+	}
+	externalReg, _, _, appErr := s.buildSoulProvisionEmailRegistration(context.Background(), externalBase, "2", fixture.agentIDHex, &models.SoulAgentIdentity{LocalID: provisionTestAgentLocalID}, soulProvisionEmailBuildInput{
+		EmailAddress: provisionTestEmailAddress,
+		ENSName:      provisionTestEmailENSName,
+		IssuedAt:     now,
+		ExpectedPrev: 3,
+		NextVersion:  4,
+	})
+	if appErr != nil {
+		t.Fatalf("external build unexpected appErr: %v", appErr)
+	}
+	assertProvisionENSChannelMetadata(t, externalReg, "external.eth", "mainnet", "0x00000000000000000000000000000000000000ee")
+}
+
 func TestBuildSoulProvisionManagedEmailAddress_RejectsOverflowAndInvalidSlug(t *testing.T) {
 	t.Parallel()
 
@@ -403,6 +450,8 @@ func newProvisionEmailE2EFixture(t *testing.T) *provisionEmailE2EFixture {
 			SoulSupportedCapabilities:   []string{"social"},
 			PublicBaseURL:               "https://lab.lesser.host",
 			SoulEmailInboundDomain:      "inbound.lessersoul.ai",
+			ENSGatewayChainName:         "sepolia",
+			ENSGatewayResolverAddress:   "0x0000000000000000000000000000000000000002",
 			Stage:                       "lab",
 		},
 		soulPacks: fixture.packs,
@@ -522,6 +571,7 @@ func runProvisionEmailBegin(t *testing.T, fixture *provisionEmailE2EFixture) sou
 	if beginOut.ENSName != provisionTestEmailENSName {
 		t.Fatalf("begin expected ens %s, got %q", provisionTestEmailENSName, beginOut.ENSName)
 	}
+	assertProvisionENSChannelMetadata(t, beginOut.Registration, provisionTestEmailENSName, "sepolia", "0x0000000000000000000000000000000000000002")
 	return beginOut
 }
 
@@ -601,6 +651,28 @@ func assertProvisionEmailPublished(t *testing.T, fixture *provisionEmailE2EFixtu
 	}
 	if strings.TrimSpace(extractStringField(emailAny, "address")) != provisionTestEmailAddress {
 		t.Fatalf("expected published channels.email.address %s, got %#v", provisionTestEmailAddress, emailAny["address"])
+	}
+	assertProvisionENSChannelMetadata(t, published, provisionTestEmailENSName, "sepolia", "0x0000000000000000000000000000000000000002")
+}
+
+func assertProvisionENSChannelMetadata(t *testing.T, reg map[string]any, wantName string, wantChain string, wantResolver string) {
+	t.Helper()
+	chAny, ok := reg["channels"].(map[string]any)
+	if !ok || chAny == nil {
+		t.Fatalf("expected registration channels object, got %#v", reg["channels"])
+	}
+	ensAny, ok := chAny["ens"].(map[string]any)
+	if !ok || ensAny == nil {
+		t.Fatalf("expected channels.ens object, got %#v", chAny["ens"])
+	}
+	if got := strings.TrimSpace(extractStringField(ensAny, "name")); got != wantName {
+		t.Fatalf("expected channels.ens.name %q, got %q", wantName, got)
+	}
+	if got := strings.TrimSpace(extractStringField(ensAny, "chain")); got != wantChain {
+		t.Fatalf("expected channels.ens.chain %q, got %q", wantChain, got)
+	}
+	if got := strings.TrimSpace(extractStringField(ensAny, "resolverAddress")); got != wantResolver {
+		t.Fatalf("expected channels.ens.resolverAddress %q, got %q", wantResolver, got)
 	}
 }
 

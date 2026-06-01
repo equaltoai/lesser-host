@@ -416,7 +416,7 @@ func (s *Server) buildSoulProvisionPhoneRegistration(ctx context.Context, base m
 	reg["changeSummary"] = "Provision phone channel"
 	setProvisionSelfAttestation(reg, input.SelfAttestationHex)
 	ch := cloneProvisionChannels(reg)
-	ensureProvisionENSChannel(ch, input.ENSName)
+	s.ensureProvisionENSChannel(ch, input.ENSName)
 	ch["phone"] = map[string]any{
 		"number":       strings.TrimSpace(input.PhoneNumber),
 		"provider":     "telnyx",

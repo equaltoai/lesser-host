@@ -77,6 +77,8 @@ func newProvisionPhoneE2EFixture(t *testing.T) *provisionPhoneE2EFixture {
 			SoulRegistryContractAddress: "0x0000000000000000000000000000000000000001",
 			SoulPackBucketName:          "bucket",
 			PublicBaseURL:               "https://lab.lesser.host",
+			ENSGatewayChainName:         "sepolia",
+			ENSGatewayResolverAddress:   "0x0000000000000000000000000000000000000002",
 			Stage:                       "lab",
 		},
 		soulPacks: fixture.packs,
@@ -249,6 +251,7 @@ func assertProvisionPhonePublished(t *testing.T, fixture *provisionPhoneE2EFixtu
 	if !ok || ensAny == nil || strings.TrimSpace(extractStringField(ensAny, "name")) != mustProvisionPhoneENSName(t, "agent-alice") {
 		t.Fatalf("expected canonical channels.ens.name to be published, got %#v", chAny["ens"])
 	}
+	assertProvisionENSChannelMetadata(t, published, mustProvisionPhoneENSName(t, "agent-alice"), "sepolia", "0x0000000000000000000000000000000000000002")
 }
 
 func assertProvisionPhoneIdempotent(t *testing.T, fixture *provisionPhoneE2EFixture, confirmBody []byte) {
