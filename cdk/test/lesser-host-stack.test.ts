@@ -5,6 +5,12 @@ import test from 'node:test';
 import * as cdk from 'aws-cdk-lib';
 
 import { LesserHostStack, shouldUseLocalWebBundling } from '../lib/lesser-host-stack';
+import {
+	LAB_ENS_GATEWAY_CHAIN_ID,
+	LAB_ENS_GATEWAY_CHAIN_NAME,
+	LIVE_ENS_GATEWAY_CHAIN_ID,
+	LIVE_ENS_GATEWAY_CHAIN_NAME,
+} from '../lib/ens-gateway-config';
 import { INBOUND_EMAIL_RULE_SET_NAME } from '../lib/ses-inbound-rule-set-name';
 import {
 	LAB_SOUL_EMAIL_INBOUND_DOMAIN,
@@ -299,6 +305,69 @@ test('trust api receives soul registration runtime configuration', () => {
 	]) {
 		assert.ok(key in env, `expected trust-api environment to include ${key}`);
 	}
+});
+
+test('trust api receives ENS gateway runtime configuration separate from soul registry config', () => {
+	const template = synthTemplateForStage('live', {
+		ensGatewayEnabledLive: 'true',
+		ensGatewayResolverAddressLab: '0x0000000000000000000000000000000000001111',
+		ensGatewayResolverAddressLive: '0x0000000000000000000000000000000000002222',
+		ensGatewayRootName: 'lessersoul.eth',
+		soulEnabledLive: 'false',
+		soulChainIdLive: '11155111',
+		soulRegistryContractAddressLive: '0x0000000000000000000000000000000000003333',
+	});
+	const trustFn = findLambdaByFunctionName(template, 'trust-api');
+	const env = lambdaEnvironment(trustFn);
+
+	assert.equal(env.ENS_GATEWAY_ENABLED, 'true');
+	assert.equal(env.ENS_GATEWAY_CHAIN_ID, LIVE_ENS_GATEWAY_CHAIN_ID);
+	assert.equal(env.ENS_GATEWAY_CHAIN_NAME, LIVE_ENS_GATEWAY_CHAIN_NAME);
+	assert.equal(env.ENS_GATEWAY_ROOT_NAME, 'lessersoul.eth');
+	assert.equal(env.ENS_GATEWAY_RESOLVER_ADDRESS, '0x0000000000000000000000000000000000002222');
+
+	assert.equal(env.SOUL_ENABLED, 'false');
+	assert.equal(env.SOUL_CHAIN_ID, '11155111');
+	assert.equal(env.SOUL_REGISTRY_CONTRACT_ADDRESS, '0x0000000000000000000000000000000000003333');
+});
+
+test('ENS gateway lab and live context selection uses stage-owned resolver and chain values', () => {
+	const context = {
+		ensGatewayEnabledLab: 'true',
+		ensGatewayEnabledLive: 'true',
+		ensGatewayResolverAddressLab: '0x0000000000000000000000000000000000001111',
+		ensGatewayResolverAddressLive: '0x0000000000000000000000000000000000002222',
+		ensGatewayResolverAddress: '0x0000000000000000000000000000000000009999',
+		soulChainIdLab: '31337',
+		soulChainIdLive: '8453',
+	};
+
+	const labEnv = lambdaEnvironment(findLambdaByFunctionName(synthTemplateForStage('lab', context), 'trust-api'));
+	const liveEnv = lambdaEnvironment(findLambdaByFunctionName(synthTemplateForStage('live', context), 'trust-api'));
+
+	assert.equal(labEnv.ENS_GATEWAY_RESOLVER_ADDRESS, '0x0000000000000000000000000000000000001111');
+	assert.equal(liveEnv.ENS_GATEWAY_RESOLVER_ADDRESS, '0x0000000000000000000000000000000000002222');
+	assert.notEqual(labEnv.ENS_GATEWAY_RESOLVER_ADDRESS, liveEnv.ENS_GATEWAY_RESOLVER_ADDRESS);
+
+	assert.equal(labEnv.ENS_GATEWAY_CHAIN_ID, LAB_ENS_GATEWAY_CHAIN_ID);
+	assert.equal(labEnv.ENS_GATEWAY_CHAIN_NAME, LAB_ENS_GATEWAY_CHAIN_NAME);
+	assert.equal(liveEnv.ENS_GATEWAY_CHAIN_ID, LIVE_ENS_GATEWAY_CHAIN_ID);
+	assert.equal(liveEnv.ENS_GATEWAY_CHAIN_NAME, LIVE_ENS_GATEWAY_CHAIN_NAME);
+
+	assert.equal(labEnv.SOUL_CHAIN_ID, '31337');
+	assert.equal(liveEnv.SOUL_CHAIN_ID, '8453');
+});
+
+test('legacy generic ENS resolver context is a lab-only migration fallback', () => {
+	const context = {
+		ensGatewayResolverAddress: '0x0000000000000000000000000000000000009999',
+	};
+
+	const labEnv = lambdaEnvironment(findLambdaByFunctionName(synthTemplateForStage('lab', context), 'trust-api'));
+	const liveEnv = lambdaEnvironment(findLambdaByFunctionName(synthTemplateForStage('live', context), 'trust-api'));
+
+	assert.equal(labEnv.ENS_GATEWAY_RESOLVER_ADDRESS, '0x0000000000000000000000000000000000009999');
+	assert.equal(liveEnv.ENS_GATEWAY_RESOLVER_ADDRESS, '');
 });
 
 test('provision runner cannot assume the organization vending role', () => {

@@ -36,6 +36,13 @@
     "soulMintSignerKeySsmParamLab": "/lesser-host/soul/lab/mint-signer-key",
     "soulMintSignerKeySsmParamLive": "/lesser-host/soul/live/mint-signer-key",
 
+    "ensGatewayEnabledLab": "true",
+    "ensGatewayEnabledLive": "false",
+    "ensGatewayRootName": "lessersoul.eth",
+    "ensGatewayResolverAddressLab": "<YOUR_SEPOLIA_ENS_GATEWAY_RESOLVER_ADDRESS_LAB>",
+    "ensGatewayResolverAddressLive": "<YOUR_MAINNET_ENS_GATEWAY_RESOLVER_ADDRESS_LIVE>",
+    "ensGatewayTtlSeconds": "300",
+
     "soulAdminSafeAddress": "<YOUR_SOUL_ADMIN_SAFE_ADDRESS>",
     "soulTxMode": "safe",
     "soulSupportedCapabilities": "social,commerce",
