@@ -194,6 +194,9 @@ func soulPublicENSChannelFromModel(c *models.SoulAgentChannel) *soulPublicENSCha
 	if c == nil || strings.TrimSpace(c.Identifier) == "" {
 		return nil
 	}
+	if soul.IsLegacyBareManagedENSName(c.Identifier) {
+		return nil
+	}
 	return &soulPublicENSChannel{
 		Name:            strings.TrimSpace(c.Identifier),
 		ResolverAddress: strings.TrimSpace(c.ENSResolverAddress),
@@ -349,12 +352,9 @@ func (s *Server) handleSoulPublicResolveENSName(ctx *apptheory.Context) (*appthe
 		return nil, &apptheory.AppError{Code: "app.not_found", Message: "not found"}
 	}
 
-	raw, _ := url.PathUnescape(strings.TrimSpace(ctx.Param("ensName")))
-	if raw == "" {
-		return nil, &apptheory.AppError{Code: appErrCodeBadRequest, Message: "ensName is required"}
-	}
-	if !soulENSNameRegex.MatchString(strings.ToLower(raw)) {
-		return nil, &apptheory.AppError{Code: appErrCodeBadRequest, Message: "ensName is invalid"}
+	raw, appErr := normalizeSoulPublicResolveENSName(ctx.Param("ensName"))
+	if appErr != nil {
+		return nil, appErr
 	}
 
 	key := &models.SoulAgentENSResolution{ENSName: raw}
@@ -396,6 +396,20 @@ func (s *Server) handleSoulPublicResolveENSName(ctx *apptheory.Context) (*appthe
 	}
 	s.setSoulPublicHeaders(ctx, resp, "public, max-age=60")
 	return resp, nil
+}
+
+func normalizeSoulPublicResolveENSName(rawParam string) (string, *apptheory.AppError) {
+	raw, _ := url.PathUnescape(strings.TrimSpace(rawParam))
+	if raw == "" {
+		return "", &apptheory.AppError{Code: appErrCodeBadRequest, Message: "ensName is required"}
+	}
+	if !soulENSNameRegex.MatchString(strings.ToLower(raw)) {
+		return "", &apptheory.AppError{Code: appErrCodeBadRequest, Message: "ensName is invalid"}
+	}
+	if soul.IsLegacyBareManagedENSName(raw) {
+		return "", &apptheory.AppError{Code: "app.not_found", Message: "not found"}
+	}
+	return raw, nil
 }
 
 func (s *Server) handleSoulPublicResolveEmail(ctx *apptheory.Context) (*apptheory.Response, error) {
@@ -594,6 +608,9 @@ func (s *Server) requirePublicResolvableSoulChannel(ctx *apptheory.Context, agen
 			return &apptheory.AppError{Code: "app.not_found", Message: "not found"}
 		}
 	case models.SoulChannelTypeENS:
+		if soul.IsLegacyBareManagedENSName(identifier) || soul.IsLegacyBareManagedENSName(chCopy.Identifier) {
+			return &apptheory.AppError{Code: "app.not_found", Message: "not found"}
+		}
 		if chCopy.Status != models.SoulChannelStatusActive {
 			return &apptheory.AppError{Code: "app.not_found", Message: "not found"}
 		}

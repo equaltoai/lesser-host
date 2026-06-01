@@ -274,7 +274,7 @@ func TestHandleENSGatewayResolve_Addr_SignsAndEncodes(t *testing.T) {
 
 	signerAddr := testENSGatewaySignerAddress(t)
 
-	ensName := "agent-bob.lessersoul.eth"
+	ensName := "agent-bob.inst1.lessersoul.eth"
 	agentID := "0x8db124b1d48e366002db4e61cc1501eeb8561e1ef06fd6f9abf9f984501d13ab"
 	wallet := "0x000000000000000000000000000000000000beef"
 
@@ -358,7 +358,7 @@ func TestHandleENSGatewayResolve_Addr_SignsAndEncodes(t *testing.T) {
 func TestHandleENSGatewayResolve_Text_StatusResolvesDeterministically(t *testing.T) {
 	t.Parallel()
 
-	ensName := "agent-alice.lessersoul.eth"
+	ensName := "agent-alice.inst1.lessersoul.eth"
 	agentID := "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 	qENS := new(ttmocks.MockQuery)
@@ -417,7 +417,7 @@ func TestHandleENSGatewayResolve_Text_StatusResolvesDeterministically(t *testing
 func TestAnswerENSQuery_Branches(t *testing.T) {
 	t.Parallel()
 
-	ensName := "agent-query.lessersoul.eth"
+	ensName := "agent-query.inst1.lessersoul.eth"
 	node := ensNameHash(ensName)
 
 	t.Run("inner data too short", func(t *testing.T) {
@@ -437,7 +437,7 @@ func TestAnswerENSQuery_Branches(t *testing.T) {
 	t.Run("addr node mismatch", func(t *testing.T) {
 		t.Parallel()
 
-		args, err := ensAddrInputs.Pack(ensNameHash("someone-else.lessersoul.eth"))
+		args, err := ensAddrInputs.Pack(ensNameHash("someone-else.inst1.lessersoul.eth"))
 		require.NoError(t, err)
 		_, err = (&Server{}).answerENSQuery(context.Background(), ensName, node, buildENSGatewayInnerCall(t, ensAddrSelector, args))
 		requireENSGatewayError(t, err, "ccip.bad_request", 400)
@@ -520,7 +520,7 @@ func TestLoadENSGatewayMaterial_CacheAndFallbacks(t *testing.T) {
 	t.Run("nil store errors", func(t *testing.T) {
 		t.Parallel()
 
-		_, ok, err := (&Server{}).loadENSGatewayMaterial(context.Background(), "agent.lessersoul.eth")
+		_, ok, err := (&Server{}).loadENSGatewayMaterial(context.Background(), "agent.inst1.lessersoul.eth")
 		require.Error(t, err)
 		require.False(t, ok)
 	})
@@ -544,12 +544,12 @@ func TestLoadENSGatewayMaterial_CacheAndFallbacks(t *testing.T) {
 
 		srv := NewServer(config.Config{ENSGatewaySignatureTTLSeconds: 5}, store.New(db))
 
-		first, ok, err := srv.loadENSGatewayMaterial(context.Background(), "agent.lessersoul.eth")
+		first, ok, err := srv.loadENSGatewayMaterial(context.Background(), "agent.inst1.lessersoul.eth")
 		require.NoError(t, err)
 		require.False(t, ok)
 		require.Equal(t, ensGatewayMaterial{}, first)
 
-		second, ok, err := srv.loadENSGatewayMaterial(context.Background(), "agent.lessersoul.eth")
+		second, ok, err := srv.loadENSGatewayMaterial(context.Background(), "agent.inst1.lessersoul.eth")
 		require.NoError(t, err)
 		require.False(t, ok)
 		require.Equal(t, ensGatewayMaterial{}, second)
@@ -562,11 +562,11 @@ func TestLoadENSGatewayMaterial_CacheAndFallbacks(t *testing.T) {
 		db := newTestDBWithModelQueries(modelQueryPair{model: &models.SoulAgentENSResolution{}, query: qENS})
 		qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(nil).Run(func(args mock.Arguments) {
 			dest := testutil.RequireMockArg[*models.SoulAgentENSResolution](t, args, 0)
-			*dest = models.SoulAgentENSResolution{ENSName: "agent.lessersoul.eth", AgentID: " "}
+			*dest = models.SoulAgentENSResolution{ENSName: "agent.inst1.lessersoul.eth", AgentID: " "}
 		}).Once()
 
 		srv := NewServer(config.Config{}, store.New(db))
-		_, ok, err := srv.loadENSGatewayMaterial(context.Background(), "agent.lessersoul.eth")
+		_, ok, err := srv.loadENSGatewayMaterial(context.Background(), "agent.inst1.lessersoul.eth")
 		require.NoError(t, err)
 		require.False(t, ok)
 	})
@@ -583,12 +583,12 @@ func TestLoadENSGatewayMaterial_CacheAndFallbacks(t *testing.T) {
 
 		qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(nil).Run(func(args mock.Arguments) {
 			dest := testutil.RequireMockArg[*models.SoulAgentENSResolution](t, args, 0)
-			*dest = models.SoulAgentENSResolution{ENSName: "agent.lessersoul.eth", AgentID: "0xabc"}
+			*dest = models.SoulAgentENSResolution{ENSName: "agent.inst1.lessersoul.eth", AgentID: "0xabc"}
 		}).Once()
 		qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(theoryErrors.ErrItemNotFound).Once()
 
 		srv := NewServer(config.Config{}, store.New(db))
-		_, ok, err := srv.loadENSGatewayMaterial(context.Background(), "agent.lessersoul.eth")
+		_, ok, err := srv.loadENSGatewayMaterial(context.Background(), "agent.inst1.lessersoul.eth")
 		require.NoError(t, err)
 		require.False(t, ok)
 	})
@@ -596,7 +596,7 @@ func TestLoadENSGatewayMaterial_CacheAndFallbacks(t *testing.T) {
 	t.Run("success caches material and successor", func(t *testing.T) {
 		t.Parallel()
 
-		ensName := "agent.lessersoul.eth"
+		ensName := "agent.inst1.lessersoul.eth"
 		agentID := "0xabc"
 		successorID := "0xdef"
 
@@ -634,7 +634,7 @@ func TestLoadENSGatewayMaterial_CacheAndFallbacks(t *testing.T) {
 		}).Once()
 		qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(nil).Run(func(args mock.Arguments) {
 			dest := testutil.RequireMockArg[*models.SoulAgentChannel](t, args, 0)
-			*dest = models.SoulAgentChannel{Identifier: " Next.Lessersoul.eth. "}
+			*dest = models.SoulAgentChannel{Identifier: " Next.Inst1.Lessersoul.eth. "}
 		}).Once()
 
 		srv := NewServer(config.Config{}, store.New(db))
@@ -652,7 +652,7 @@ func TestLoadENSGatewayMaterial_CacheAndFallbacks(t *testing.T) {
 		require.Equal(t, "hello world", first.Description)
 		require.Equal(t, successorID, first.SuccessorAgentID)
 		require.True(t, first.SuccessorENSOK)
-		require.Equal(t, "next.lessersoul.eth", first.SuccessorENSName)
+		require.Equal(t, "next.inst1.lessersoul.eth", first.SuccessorENSName)
 
 		second, ok, err := srv.loadENSGatewayMaterial(context.Background(), ensName)
 		require.NoError(t, err)
@@ -816,7 +816,7 @@ func TestENSTextValueAndCacheHelpers(t *testing.T) {
 		Description:      longDescription,
 		Status:           " active ",
 		SuccessorAgentID: " successor ",
-		SuccessorENSName: " next.lessersoul.eth ",
+		SuccessorENSName: " next.inst1.lessersoul.eth ",
 		SuccessorENSOK:   true,
 	}
 
@@ -827,7 +827,7 @@ func TestENSTextValueAndCacheHelpers(t *testing.T) {
 	require.Equal(t, "hello@example.com", ensTextValue(material, "email", context.Background()))
 	require.Equal(t, "+15551234567", ensTextValue(material, "phone", context.Background()))
 	require.Equal(t, "active", ensTextValue(material, "soul.status", context.Background()))
-	require.Equal(t, "next.lessersoul.eth", ensTextValue(material, "soul.successor", context.Background()))
+	require.Equal(t, "next.inst1.lessersoul.eth", ensTextValue(material, "soul.successor", context.Background()))
 	require.Len(t, ensTextValue(material, "description", context.Background()), 256)
 	require.Empty(t, ensTextValue(ensGatewayMaterial{SuccessorAgentID: "successor"}, "soul.successor", context.Background()))
 	require.Empty(t, ensTextValue(material, "unknown", context.Background()))

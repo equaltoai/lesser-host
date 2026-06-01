@@ -132,3 +132,36 @@ func TestLegacyBareManagedENSNameForMigration(t *testing.T) {
 		t.Fatal("expected legacy helper to preserve managed handle validation")
 	}
 }
+
+func TestIsLegacyBareManagedENSName(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range []string{
+		"agent-alice.lessersoul.eth",
+		"Agent-Alice.LesserSoul.ETH.",
+	} {
+		name := name
+		t.Run("legacy_"+name, func(t *testing.T) {
+			t.Parallel()
+			if !IsLegacyBareManagedENSName(name) {
+				t.Fatalf("IsLegacyBareManagedENSName(%q) = false, want true", name)
+			}
+		})
+	}
+
+	for _, name := range []string{
+		"agent-alice.simulacrum.lessersoul.eth",
+		"agent-alice.eth",
+		"bad_handle.lessersoul.eth",
+		"agent.lessersoul.ai",
+		"",
+	} {
+		name := name
+		t.Run("not_legacy_"+name, func(t *testing.T) {
+			t.Parallel()
+			if IsLegacyBareManagedENSName(name) {
+				t.Fatalf("IsLegacyBareManagedENSName(%q) = true, want false", name)
+			}
+		})
+	}
+}

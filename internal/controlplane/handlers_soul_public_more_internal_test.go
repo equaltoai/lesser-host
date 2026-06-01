@@ -95,7 +95,17 @@ func TestSearchSoulAgentsByENS_ResolutionNotFoundReturnsEmpty(t *testing.T) {
 	tdb := newSoulPublicTestDB()
 	s := &Server{store: store.New(tdb.db)}
 	tdb.qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(theoryErrors.ErrItemNotFound).Once()
+	assertSoulPublicENSSearchResults(t, s, soulPublicSearchParams{ENSName: "agent.inst1.lessersoul.eth"}, "")
+}
+
+func TestSearchSoulAgentsByENS_LegacyBareManagedNameFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulPublicTestDB()
+	s := &Server{store: store.New(tdb.db)}
+
 	assertSoulPublicENSSearchResults(t, s, soulPublicSearchParams{ENSName: "agent.lessersoul.eth"}, "")
+	tdb.qENS.AssertNotCalled(t, "First", mock.Anything)
 }
 
 func TestSearchSoulAgentsByENS_StatusDefaultsToActiveOnly(t *testing.T) {
@@ -109,7 +119,7 @@ func TestSearchSoulAgentsByENS_StatusDefaultsToActiveOnly(t *testing.T) {
 		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
 		*dest = models.SoulAgentIdentity{AgentID: agentID, Domain: "example.com", LocalID: "agent-a", Status: models.SoulAgentStatusSuspended}
 	}).Once()
-	assertSoulPublicENSSearchResults(t, s, soulPublicSearchParams{ENSName: "agent.lessersoul.eth"}, "")
+	assertSoulPublicENSSearchResults(t, s, soulPublicSearchParams{ENSName: "agent.inst1.lessersoul.eth"}, "")
 }
 
 func TestSearchSoulAgentsByENS_BoundaryFilterExcludesAgent(t *testing.T) {
@@ -122,7 +132,7 @@ func TestSearchSoulAgentsByENS_BoundaryFilterExcludesAgent(t *testing.T) {
 	mockSoulPublicENSIdentity(t, &tdb, agentID)
 	tdb.qBoundIdx.On("First", mock.AnythingOfType("*models.SoulBoundaryKeywordAgentIndex")).Return(theoryErrors.ErrItemNotFound).Once()
 	assertSoulPublicENSSearchResults(t, s, soulPublicSearchParams{
-		ENSName:    "agent.lessersoul.eth",
+		ENSName:    "agent.inst1.lessersoul.eth",
 		Boundary:   "finance",
 		Channels:   []string{"email"},
 		Limit:      1,
@@ -144,7 +154,7 @@ func TestSearchSoulAgentsByENS_ChannelFilterExcludesAgent(t *testing.T) {
 	}).Once()
 	tdb.qChanIdx.On("First", mock.AnythingOfType("*models.SoulChannelAgentIndex")).Return(theoryErrors.ErrItemNotFound).Once()
 	assertSoulPublicENSSearchResults(t, s, soulPublicSearchParams{
-		ENSName:  "agent.lessersoul.eth",
+		ENSName:  "agent.inst1.lessersoul.eth",
 		Boundary: "finance",
 		Channels: []string{"email"},
 	}, "")
@@ -167,7 +177,7 @@ func TestSearchSoulAgentsByENS_BoundaryAndChannelFiltersIncludeAgent(t *testing.
 		*dest = models.SoulChannelAgentIndex{AgentID: agentID, Domain: "example.com", LocalID: "agent-b", ChannelType: "email"}
 	}).Once()
 	assertSoulPublicENSSearchResults(t, s, soulPublicSearchParams{
-		ENSName:  "agent.lessersoul.eth",
+		ENSName:  "agent.inst1.lessersoul.eth",
 		Boundary: "finance",
 		Channels: []string{"email"},
 	}, agentID)
@@ -239,7 +249,7 @@ func mockSoulPublicENSResolution(t *testing.T, tdb *soulPublicTestDB, agentID st
 	t.Helper()
 	tdb.qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentENSResolution](t, args, 0)
-		*dest = models.SoulAgentENSResolution{ENSName: "agent.lessersoul.eth", AgentID: agentID}
+		*dest = models.SoulAgentENSResolution{ENSName: "agent.inst1.lessersoul.eth", AgentID: agentID}
 	}).Once()
 }
 
@@ -689,14 +699,14 @@ func TestSearchSoulAgentsByENS_SupportsRFC3339StatusOverride(t *testing.T) {
 	agentID := "0x" + strings.Repeat("dd", 32)
 	tdb.qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentENSResolution](t, args, 0)
-		*dest = models.SoulAgentENSResolution{ENSName: "agent.lessersoul.eth", AgentID: agentID}
+		*dest = models.SoulAgentENSResolution{ENSName: "agent.inst1.lessersoul.eth", AgentID: agentID}
 	}).Once()
 	tdb.qID.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
 		*dest = models.SoulAgentIdentity{AgentID: agentID, Domain: "example.com", LocalID: "agent-d", Status: models.SoulAgentStatusActive, LifecycleStatus: ""}
 	}).Once()
 
-	results, _, _, appErr := s.searchSoulAgentsByENS(context.Background(), soulPublicSearchParams{ENSName: "agent.lessersoul.eth", Status: models.SoulAgentStatusActive})
+	results, _, _, appErr := s.searchSoulAgentsByENS(context.Background(), soulPublicSearchParams{ENSName: "agent.inst1.lessersoul.eth", Status: models.SoulAgentStatusActive})
 	if appErr != nil || len(results) != 1 {
 		t.Fatalf("expected status override to match identity status, got results=%#v err=%v", results, appErr)
 	}
@@ -791,14 +801,14 @@ func TestSearchSoulAgentsByENS_ReturnsInternalOnIdentityNil(t *testing.T) {
 	agentID := "0x" + strings.Repeat("ee", 32)
 	tdb.qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentENSResolution](t, args, 0)
-		*dest = models.SoulAgentENSResolution{ENSName: "agent.lessersoul.eth", AgentID: agentID}
+		*dest = models.SoulAgentENSResolution{ENSName: "agent.inst1.lessersoul.eth", AgentID: agentID}
 	}).Once()
 	tdb.qID.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
 		*dest = models.SoulAgentIdentity{}
 	}).Once()
 
-	results, hasMore, nextCursor, appErr := s.searchSoulAgentsByENS(context.Background(), soulPublicSearchParams{ENSName: "agent.lessersoul.eth"})
+	results, hasMore, nextCursor, appErr := s.searchSoulAgentsByENS(context.Background(), soulPublicSearchParams{ENSName: "agent.inst1.lessersoul.eth"})
 	if appErr != nil || hasMore || nextCursor != "" || len(results) != 0 {
 		t.Fatalf("expected empty non-active result, got results=%#v hasMore=%v nextCursor=%q err=%v", results, hasMore, nextCursor, appErr)
 	}
@@ -979,11 +989,11 @@ func TestSearchSoulAgentsByENS_IdentityNotFoundReturnsEmpty(t *testing.T) {
 	agentID := "0x" + strings.Repeat("ab", 32)
 	tdb.qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentENSResolution](t, args, 0)
-		*dest = models.SoulAgentENSResolution{ENSName: "agent.lessersoul.eth", AgentID: agentID}
+		*dest = models.SoulAgentENSResolution{ENSName: "agent.inst1.lessersoul.eth", AgentID: agentID}
 	}).Once()
 	tdb.qID.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(theoryErrors.ErrItemNotFound).Once()
 
-	results, _, _, appErr := s.searchSoulAgentsByENS(context.Background(), soulPublicSearchParams{ENSName: "agent.lessersoul.eth"})
+	results, _, _, appErr := s.searchSoulAgentsByENS(context.Background(), soulPublicSearchParams{ENSName: "agent.inst1.lessersoul.eth"})
 	if appErr != nil || len(results) != 0 {
 		t.Fatalf("expected identity not found to return empty, got results=%#v err=%v", results, appErr)
 	}
@@ -996,7 +1006,7 @@ func TestSearchSoulAgentsByENS_ResolutionError(t *testing.T) {
 	s := &Server{store: store.New(tdb.db)}
 
 	tdb.qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(errors.New("boom")).Once()
-	_, _, _, appErr := s.searchSoulAgentsByENS(context.Background(), soulPublicSearchParams{ENSName: "agent.lessersoul.eth"})
+	_, _, _, appErr := s.searchSoulAgentsByENS(context.Background(), soulPublicSearchParams{ENSName: "agent.inst1.lessersoul.eth"})
 	if appErr == nil || appErr.Code != appErrCodeInternal {
 		t.Fatalf("expected internal error, got %#v", appErr)
 	}
@@ -1011,7 +1021,7 @@ func TestSearchSoulAgentsByENS_ChannelIndexError(t *testing.T) {
 	agentID := "0x" + strings.Repeat("bc", 32)
 	tdb.qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentENSResolution](t, args, 0)
-		*dest = models.SoulAgentENSResolution{ENSName: "agent.lessersoul.eth", AgentID: agentID}
+		*dest = models.SoulAgentENSResolution{ENSName: "agent.inst1.lessersoul.eth", AgentID: agentID}
 	}).Once()
 	tdb.qID.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
@@ -1019,7 +1029,7 @@ func TestSearchSoulAgentsByENS_ChannelIndexError(t *testing.T) {
 	}).Once()
 	tdb.qChanIdx.On("First", mock.AnythingOfType("*models.SoulChannelAgentIndex")).Return(errors.New("boom")).Once()
 
-	_, _, _, appErr := s.searchSoulAgentsByENS(context.Background(), soulPublicSearchParams{ENSName: "agent.lessersoul.eth", Channels: []string{"email"}})
+	_, _, _, appErr := s.searchSoulAgentsByENS(context.Background(), soulPublicSearchParams{ENSName: "agent.inst1.lessersoul.eth", Channels: []string{"email"}})
 	if appErr == nil || appErr.Code != appErrCodeInternal {
 		t.Fatalf("expected internal error for channel index, got %#v", appErr)
 	}
@@ -1034,7 +1044,7 @@ func TestSearchSoulAgentsByENS_BoundaryIndexError(t *testing.T) {
 	agentID := "0x" + strings.Repeat("cd", 32)
 	tdb.qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentENSResolution](t, args, 0)
-		*dest = models.SoulAgentENSResolution{ENSName: "agent.lessersoul.eth", AgentID: agentID}
+		*dest = models.SoulAgentENSResolution{ENSName: "agent.inst1.lessersoul.eth", AgentID: agentID}
 	}).Once()
 	tdb.qID.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
@@ -1042,7 +1052,7 @@ func TestSearchSoulAgentsByENS_BoundaryIndexError(t *testing.T) {
 	}).Once()
 	tdb.qBoundIdx.On("First", mock.AnythingOfType("*models.SoulBoundaryKeywordAgentIndex")).Return(errors.New("boom")).Once()
 
-	_, _, _, appErr := s.searchSoulAgentsByENS(context.Background(), soulPublicSearchParams{ENSName: "agent.lessersoul.eth", Boundary: "finance"})
+	_, _, _, appErr := s.searchSoulAgentsByENS(context.Background(), soulPublicSearchParams{ENSName: "agent.inst1.lessersoul.eth", Boundary: "finance"})
 	if appErr == nil || appErr.Code != appErrCodeInternal {
 		t.Fatalf("expected internal error for boundary index, got %#v", appErr)
 	}
@@ -1057,14 +1067,14 @@ func TestSearchSoulAgentsByENS_StatusMismatchExplicit(t *testing.T) {
 	agentID := "0x" + strings.Repeat("de", 32)
 	tdb.qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentENSResolution](t, args, 0)
-		*dest = models.SoulAgentENSResolution{ENSName: "agent.lessersoul.eth", AgentID: agentID}
+		*dest = models.SoulAgentENSResolution{ENSName: "agent.inst1.lessersoul.eth", AgentID: agentID}
 	}).Once()
 	tdb.qID.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
 		*dest = models.SoulAgentIdentity{AgentID: agentID, Domain: "example.com", LocalID: "agent-de", Status: models.SoulAgentStatusActive}
 	}).Once()
 
-	results, _, _, appErr := s.searchSoulAgentsByENS(context.Background(), soulPublicSearchParams{ENSName: "agent.lessersoul.eth", Status: models.SoulAgentStatusSuspended})
+	results, _, _, appErr := s.searchSoulAgentsByENS(context.Background(), soulPublicSearchParams{ENSName: "agent.inst1.lessersoul.eth", Status: models.SoulAgentStatusSuspended})
 	if appErr != nil || len(results) != 0 {
 		t.Fatalf("expected explicit status mismatch to return empty, got results=%#v err=%v", results, appErr)
 	}
@@ -1078,10 +1088,10 @@ func TestSearchSoulAgentsByENS_ResolutionEmptyAgentID(t *testing.T) {
 
 	tdb.qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentENSResolution](t, args, 0)
-		*dest = models.SoulAgentENSResolution{ENSName: "agent.lessersoul.eth", AgentID: " "}
+		*dest = models.SoulAgentENSResolution{ENSName: "agent.inst1.lessersoul.eth", AgentID: " "}
 	}).Once()
 
-	results, _, _, appErr := s.searchSoulAgentsByENS(context.Background(), soulPublicSearchParams{ENSName: "agent.lessersoul.eth"})
+	results, _, _, appErr := s.searchSoulAgentsByENS(context.Background(), soulPublicSearchParams{ENSName: "agent.inst1.lessersoul.eth"})
 	if appErr != nil || len(results) != 0 {
 		t.Fatalf("expected empty agent id resolution to return empty, got results=%#v err=%v", results, appErr)
 	}
@@ -1133,17 +1143,24 @@ func TestHandleSoulPublicSearch_UsesENSBranch(t *testing.T) {
 	agentID := "0x" + strings.Repeat("aa", 32)
 	tdb.qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentENSResolution](t, args, 0)
-		*dest = models.SoulAgentENSResolution{ENSName: "agent.lessersoul.eth", AgentID: agentID}
+		*dest = models.SoulAgentENSResolution{ENSName: "agent.inst1.lessersoul.eth", AgentID: agentID}
 	}).Once()
 	tdb.qID.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
 		*dest = models.SoulAgentIdentity{AgentID: agentID, Domain: "example.com", LocalID: "agent-a", Status: models.SoulAgentStatusActive}
 	}).Once()
 
-	ctx := &apptheory.Context{Request: apptheory.Request{Query: map[string][]string{"ens": {"agent.lessersoul.eth"}}}}
+	ctx := &apptheory.Context{Request: apptheory.Request{Query: map[string][]string{"ens": {"agent.inst1.lessersoul.eth"}}}}
 	resp, err := s.handleSoulPublicSearch(ctx)
 	if err != nil || resp.Status != http.StatusOK {
 		t.Fatalf("unexpected: resp=%#v err=%v", resp, err)
+	}
+	var out soulSearchResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Count != 1 || len(out.Results) != 1 || out.Results[0].AgentID != agentID {
+		t.Fatalf("expected instance-scoped ENS search result for %s, got %#v", agentID, out)
 	}
 }
 
@@ -1156,7 +1173,7 @@ func TestHandleSoulPublicSearch_ENSBranchRespectsPrincipalFilter(t *testing.T) {
 	agentID := "0x" + strings.Repeat("aa", 32)
 	tdb.qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentENSResolution](t, args, 0)
-		*dest = models.SoulAgentENSResolution{ENSName: "agent.lessersoul.eth", AgentID: agentID}
+		*dest = models.SoulAgentENSResolution{ENSName: "agent.inst1.lessersoul.eth", AgentID: agentID}
 	}).Once()
 	tdb.qID.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentIdentity](t, args, 0)
@@ -1170,7 +1187,7 @@ func TestHandleSoulPublicSearch_ENSBranchRespectsPrincipalFilter(t *testing.T) {
 	}).Once()
 
 	ctx := &apptheory.Context{Request: apptheory.Request{Query: map[string][]string{
-		"ens":       {"agent.lessersoul.eth"},
+		"ens":       {"agent.inst1.lessersoul.eth"},
 		"principal": {"0x00000000000000000000000000000000000000bb"},
 	}}}
 	resp, err := s.handleSoulPublicSearch(ctx)

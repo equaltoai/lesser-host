@@ -19,6 +19,7 @@ import (
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
 	"github.com/equaltoai/lesser-host/internal/httpx"
+	"github.com/equaltoai/lesser-host/internal/soul"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -409,12 +410,9 @@ func (s *Server) loadENSGatewayMaterial(ctx context.Context, ensName string) (en
 	if ensName == "" {
 		return ensGatewayMaterial{}, false, nil
 	}
-
 	now := time.Now().UTC()
-	if s.ensCache != nil {
-		if material, ok, hit := s.ensCache.get(ensName, now); hit {
-			return material, ok, nil
-		}
+	if material, ok, hit := s.cachedENSGatewayMaterialOrLegacyMiss(ensName, now); hit {
+		return material, ok, nil
 	}
 
 	key := &models.SoulAgentENSResolution{ENSName: ensName}
@@ -485,6 +483,18 @@ func (s *Server) loadENSGatewayMaterial(ctx context.Context, ensName string) (en
 
 	s.cacheENSGatewayMaterial(ensName, material, true, now)
 	return material, true, nil
+}
+
+func (s *Server) cachedENSGatewayMaterialOrLegacyMiss(ensName string, now time.Time) (ensGatewayMaterial, bool, bool) {
+	if soul.IsLegacyBareManagedENSName(ensName) {
+		s.cacheENSGatewayMaterial(ensName, ensGatewayMaterial{}, false, now)
+		return ensGatewayMaterial{}, false, true
+	}
+	if s.ensCache == nil {
+		return ensGatewayMaterial{}, false, false
+	}
+	material, ok, hit := s.ensCache.get(ensName, now)
+	return material, ok, hit
 }
 
 func (s *Server) cacheENSGatewayMaterial(ensName string, material ensGatewayMaterial, ok bool, now time.Time) {

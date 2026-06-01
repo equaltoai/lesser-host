@@ -508,7 +508,7 @@ func newSoulPublicAvatarTestServer(t *testing.T) (*Server, soulPublicAvatarExpec
 	tdb := newSoulPublicTestDB()
 	expected := soulPublicAvatarExpectations{
 		agentID:          "0x" + strings.Repeat("12", 32),
-		ensName:          "agent-bot.lessersoul.eth",
+		ensName:          "agent-bot.inst1.lessersoul.eth",
 		registryAddr:     common.HexToAddress("0x0000000000000000000000000000000000000abc"),
 		renderers:        [3]common.Address{common.HexToAddress("0x0000000000000000000000000000000000000100"), common.HexToAddress("0x0000000000000000000000000000000000000101"), common.HexToAddress("0x0000000000000000000000000000000000000102")},
 		images:           [3]string{encodeSoulPublicAvatarSVG("<svg>blob</svg>"), encodeSoulPublicAvatarSVG("<svg>geometry</svg>"), encodeSoulPublicAvatarSVG("<svg>sigil</svg>")},
@@ -1533,7 +1533,7 @@ func TestHandleSoulPublicSearch_ENS(t *testing.T) {
 
 	tdb.qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentENSResolution](t, args, 0)
-		*dest = models.SoulAgentENSResolution{ENSName: "agent-bob.lessersoul.eth", AgentID: agentID}
+		*dest = models.SoulAgentENSResolution{ENSName: "agent-bob.inst1.lessersoul.eth", AgentID: agentID}
 	}).Once()
 
 	tdb.qID.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(nil).Run(func(args mock.Arguments) {
@@ -1541,7 +1541,7 @@ func TestHandleSoulPublicSearch_ENS(t *testing.T) {
 		*dest = models.SoulAgentIdentity{AgentID: agentID, Domain: testDomainExampleCom, LocalID: "agent-bob", Status: models.SoulAgentStatusActive}
 	}).Once()
 
-	ctx := &apptheory.Context{Request: apptheory.Request{Query: map[string][]string{"ens": {"agent-bob.lessersoul.eth"}}}}
+	ctx := &apptheory.Context{Request: apptheory.Request{Query: map[string][]string{"ens": {"agent-bob.inst1.lessersoul.eth"}}}}
 	resp, err := s.handleSoulPublicSearch(ctx)
 	if err != nil || resp.Status != http.StatusOK {
 		t.Fatalf("unexpected: resp=%#v err=%v", resp, err)

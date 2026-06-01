@@ -164,7 +164,11 @@ func (s *Server) loadSoulPublicAgentENSName(ctx context.Context, agentIDHex stri
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(ens.Identifier), nil
+	ensName := strings.TrimSpace(ens.Identifier)
+	if soul.IsLegacyBareManagedENSName(ensName) {
+		return "", nil
+	}
+	return ensName, nil
 }
 
 func (s *Server) loadSoulPublicAgentAvatar(ctx context.Context, identity *models.SoulAgentIdentity) (*soulPublicAvatarView, error) {

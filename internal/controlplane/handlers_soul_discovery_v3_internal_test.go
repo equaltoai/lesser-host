@@ -40,18 +40,33 @@ func TestSoulPublicDiscoveryV3ENSChannelFromModel(t *testing.T) {
 	if got := soulPublicENSChannelFromModel(&models.SoulAgentChannel{Identifier: " "}); got != nil {
 		t.Fatalf("expected nil ENS channel for blank identifier, got %#v", got)
 	}
+	if got := soulPublicENSChannelFromModel(&models.SoulAgentChannel{Identifier: "agent.lessersoul.eth"}); got != nil {
+		t.Fatalf("expected nil ENS channel for legacy bare managed name, got %#v", got)
+	}
 
 	got := soulPublicENSChannelFromModel(&models.SoulAgentChannel{
-		Identifier:         " agent.lessersoul.eth ",
+		Identifier:         " agent.inst1.lessersoul.eth ",
 		ENSResolverAddress: " 0xresolver ",
 		ENSChain:           " base ",
 	})
 	if got == nil {
 		t.Fatalf("expected ENS channel")
 	}
-	if got.Name != "agent.lessersoul.eth" || got.ResolverAddress != "0xresolver" || got.Chain != "base" {
+	if got.Name != "agent.inst1.lessersoul.eth" || got.ResolverAddress != "0xresolver" || got.Chain != "base" {
 		t.Fatalf("unexpected ENS channel: %#v", got)
 	}
+}
+
+func TestHandleSoulPublicResolveENSName_LegacyBareManagedNameFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	tdb := newSoulPublicTestDB()
+	s := &Server{store: store.New(tdb.db), cfg: config.Config{SoulEnabled: true}}
+	ctx := &apptheory.Context{Params: map[string]string{"ensName": "agent.lessersoul.eth"}}
+
+	_, err := s.handleSoulPublicResolveENSName(ctx)
+	requireAppErrorCode(t, err, "app.not_found")
+	tdb.qENS.AssertNotCalled(t, "First", mock.Anything)
 }
 
 func TestSoulPublicDiscoveryV3EmailChannelFromModel(t *testing.T) {
@@ -372,8 +387,8 @@ func TestHandleSoulPublicResolveLookup_DiscoveryV3(t *testing.T) {
 				"ensName",
 				" ",
 				"agent.example.com",
-				"agent.lessersoul.eth",
-				"Agent%2Elessersoul.eth",
+				"agent.inst1.lessersoul.eth",
+				"Agent%2Einst1%2Elessersoul.eth",
 				func(s *Server, ctx *apptheory.Context) (*apptheory.Response, error) {
 					return s.handleSoulPublicResolveENSName(ctx)
 				},
@@ -618,7 +633,7 @@ func discoverySuccessSetup(setup discoveryResolveSetup, localID string) discover
 			*dest = models.SoulAgentChannel{
 				AgentID:     agentID,
 				ChannelType: models.SoulChannelTypeENS,
-				Identifier:  "agent.lessersoul.eth",
+				Identifier:  "agent.inst1.lessersoul.eth",
 				Status:      models.SoulChannelStatusActive,
 			}
 		}).Twice()
@@ -628,7 +643,7 @@ func discoverySuccessSetup(setup discoveryResolveSetup, localID string) discover
 func discoveryENSResolveSetup(t *testing.T, tdb *soulPublicTestDB, agentID string) {
 	tdb.qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.SoulAgentENSResolution](t, args, 0)
-		*dest = models.SoulAgentENSResolution{ENSName: "agent.lessersoul.eth", AgentID: agentID}
+		*dest = models.SoulAgentENSResolution{ENSName: "agent.inst1.lessersoul.eth", AgentID: agentID}
 	}).Once()
 }
 
