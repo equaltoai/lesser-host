@@ -8,14 +8,6 @@ function requireEnv(name) {
   return value.trim();
 }
 
-function optionalEnv(name, fallback = "") {
-  const value = process.env[name];
-  if (!value || value.trim() === "") {
-    return fallback;
-  }
-  return value.trim();
-}
-
 async function main() {
   const connection = await hre.network.connect();
   const { ethers } = connection;
@@ -25,10 +17,7 @@ async function main() {
 
   const initialOwner = requireEnv("INITIAL_OWNER");
   const signer = requireEnv("ENS_GATEWAY_SIGNER");
-  const gatewayUrl = optionalEnv(
-    "ENS_GATEWAY_URL",
-    "https://ens-gateway.lessersoul.ai/resolve?sender={sender}&data={data}",
-  );
+  const gatewayUrl = requireEnv("ENS_GATEWAY_URL");
 
   if (!ethers.isAddress(initialOwner)) {
     throw new Error(`INITIAL_OWNER is not a valid address: ${initialOwner}`);
@@ -38,6 +27,20 @@ async function main() {
   }
   if (!gatewayUrl.startsWith("https://")) {
     throw new Error("ENS_GATEWAY_URL must be an https:// URL template");
+  }
+  if (!gatewayUrl.includes("{sender}") || !gatewayUrl.includes("{data}")) {
+    throw new Error("ENS_GATEWAY_URL must include {sender} and {data} substitutions");
+  }
+
+  const expectedGatewayUrls = new Map([
+    [11155111, "https://lab.lesser.host/resolve?sender={sender}&data={data}"],
+    [1, "https://lesser.host/resolve?sender={sender}&data={data}"],
+  ]);
+  const expectedGatewayUrl = expectedGatewayUrls.get(chainId);
+  if (expectedGatewayUrl && gatewayUrl !== expectedGatewayUrl) {
+    throw new Error(
+      `ENS_GATEWAY_URL for chainId ${chainId} must be ${expectedGatewayUrl}`,
+    );
   }
 
   const signers = await ethers.getSigners();
@@ -62,6 +65,11 @@ async function main() {
   console.log(`    INITIAL_OWNER=${initialOwner}`);
   console.log(`    ENS_GATEWAY_URL=${gatewayUrl}`);
   console.log(`    ENS_GATEWAY_SIGNER=${signer}`);
+  if (chainId === 11155111) {
+    console.log(`  CDK context: ensGatewayResolverAddressLab=${address}`);
+  } else if (chainId === 1) {
+    console.log(`  CDK context: ensGatewayResolverAddressLive=${address}`);
+  }
 }
 
 main().catch((err) => {
