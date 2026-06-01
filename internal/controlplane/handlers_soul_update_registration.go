@@ -527,16 +527,45 @@ func (s *Server) buildSoulV3ENSSync(agentIDHex string, identity *models.SoulAgen
 		return nil, nil
 	}
 	ens := regV3.Channels.ENS
+	ensName := strings.TrimSpace(ens.Name)
 	desired := &models.SoulAgentChannel{
 		AgentID:            agentIDHex,
 		ChannelType:        models.SoulChannelTypeENS,
-		Identifier:         strings.TrimSpace(ens.Name),
+		Identifier:         ensName,
 		ENSResolverAddress: strings.TrimSpace(ens.ResolverAddress),
 		ENSChain:           strings.TrimSpace(ens.Chain),
 		Status:             models.SoulChannelStatusActive,
 		UpdatedAt:          now,
 	}
-	return desired, nil
+	resolution := &models.SoulAgentENSResolution{
+		ENSName:             ensName,
+		AgentID:             agentIDHex,
+		Wallet:              firstNonEmpty(identity.Wallet, regV3.Wallet),
+		LocalID:             firstNonEmpty(identity.LocalID, regV3.LocalID),
+		Domain:              firstNonEmpty(identity.Domain, regV3.Domain),
+		SoulRegistrationURI: s.currentSoulRegistrationURI(agentIDHex),
+		MCPEndpoint:         strings.TrimSpace(regV3.Endpoints.MCP),
+		ActivityPubURI:      strings.TrimSpace(regV3.Endpoints.ActivityPub),
+		Email:               emailAddress,
+		Phone:               phoneNumber,
+		Description:         strings.TrimSpace(regV3.SelfDescription.Purpose),
+		Status:              firstNonEmpty(regV3.Lifecycle.Status, identity.LifecycleStatus, identity.Status),
+		UpdatedAt:           now,
+	}
+	if createdAt, ok := parseRFC3339Loose(regV3.Created); ok {
+		resolution.CreatedAt = createdAt
+	}
+	if resolution.CreatedAt.IsZero() {
+		resolution.CreatedAt = now
+	}
+	return desired, resolution
+}
+
+func (s *Server) currentSoulRegistrationURI(agentIDHex string) string {
+	if s == nil || strings.TrimSpace(s.cfg.SoulPackBucketName) == "" || strings.TrimSpace(agentIDHex) == "" {
+		return ""
+	}
+	return fmt.Sprintf("s3://%s/%s", strings.TrimSpace(s.cfg.SoulPackBucketName), soulRegistrationS3Key(agentIDHex))
 }
 
 func buildSoulV3EmailSync(agentIDHex string, regV3 *soul.RegistrationFileV3, now time.Time) (*models.SoulAgentChannel, *models.SoulEmailAgentIndex) {

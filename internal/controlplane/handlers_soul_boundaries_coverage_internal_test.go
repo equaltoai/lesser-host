@@ -75,6 +75,7 @@ func seedBoundaryPortalAccess(t *testing.T, tdb soulLifecycleTestDB, agentIDHex 
 			UpdatedAt:              time.Now().UTC(),
 		}
 	}).Maybe()
+	tdb.qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(theoryErrors.ErrItemNotFound).Maybe()
 }
 
 func mustGenerateBoundaryWallet(t *testing.T) (*ecdsa.PrivateKey, string) {
