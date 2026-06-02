@@ -1,9 +1,13 @@
-# Project 44 M5 ENS backfill and canary evidence
+# Project 44 M5 ENS backfill tooling and blocked canary evidence
 
 Date: 2026-06-01
 
-This note is the bounded M5 evidence/runbook for #639 / #664-#668. It complements the canonical
-OffchainResolver runbook in [`docs/ens-offchain-resolver.md`](ens-offchain-resolver.md).
+This note is bounded Project 44 M5 evidence for the ENS inventory/backfill tooling and host-side lab/live checks. It
+supports the completed tooling/backfill subissues (#664, #665, and #666), and records the follow-up gate for the
+unresolved parent/canary issues (#639, #667, and #668). Full Sepolia/mainnet ENS-aware client canaries remain open until
+an operator runs the resolver cutover documented in the canonical OffchainResolver runbook and then captures final lab
+and live canary evidence. This note complements that runbook in
+[`docs/ens-offchain-resolver.md`](ens-offchain-resolver.md).
 
 ## Safety posture
 
@@ -196,3 +200,13 @@ submitted by this milestone PR.
 - For lab rollback, restore the captured channel identifiers and legacy resolution items from the local rollback file,
   then delete any canonical resolution items listed by `canonical_key`. Re-run the dry-run afterwards; the expected
   rollback state is 12 legacy managed bare channels/resolutions and 0 ambiguous records.
+
+## Conclusion and follow-up gate
+
+This PR lands the bounded M5 backfill tooling, lab host-side backfill evidence, live no-op inventory evidence, and direct
+gateway/discovery checks needed for #664, #665, and #666. It does **not** close the broader Project 44 parent/canary
+issues (#639, #667, or #668): the final ENS-aware Sepolia and mainnet canaries are still blocked on the operator-run
+resolver cutover because the current ENS registry resolvers do not match the configured Trust API resolver sender.
+
+After that cutover is performed outside this PR, re-run the final lab/live ENS-aware client canaries and attach the
+resulting evidence to #667 and #668 before closing #639.
