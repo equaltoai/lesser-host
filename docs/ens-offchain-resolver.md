@@ -5,6 +5,11 @@ This is the canonical Project 44 M4 runbook for deploying and operating the `Off
 execute the mutating commands in this document from a PR, CI job, or Codex session. Sepolia, mainnet, AWS, ENS, Safe,
 and CDK deploy mutations remain operator-run steps with explicit authorization.
 
+Project 44 M5's host-side ENS inventory/backfill tooling and lab/live canary evidence live in
+[`docs/project44-m5-ens-backfill-canaries.md`](project44-m5-ens-backfill-canaries.md). M5 does not replace the
+operator-run resolver cutover steps in this M4 runbook; if read-only canaries show an ENS registry resolver mismatch,
+the fix remains the explicit ENS/Safe operation documented here.
+
 The low-overhead design is one resolver per chain/stage and one existing `/resolve` gateway per host stage. Do not add a
 shared runtime router or gateway dispatcher for M4 unless a hard blocker is discovered and documented first.
 
