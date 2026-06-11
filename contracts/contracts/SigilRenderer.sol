@@ -25,6 +25,8 @@ contract SigilRenderer is ISoulAvatarRenderer {
     function renderAvatar(uint256 tokenId) external view override returns (string memory) {
         SoulPRNG.State memory st = SoulPRNG.seed(SoulSVGUtils.toString(tokenId));
 
+        // Slither does not track the explicit field assignments below.
+        // slither-disable-next-line uninitialized-local
         Grid memory g;
         uint256 gridIdx;
         (gridIdx, st) = SoulPRNG.randomChoice(st, 4);

@@ -9,6 +9,7 @@
   },
   "scripts": {
     "build": "hardhat compile",
+    "create:mainnet-env": "node scripts/create-mainnet-deployer-env.js",
     "deploy:sepolia": "hardhat run --network sepolia scripts/deploy-tip-splitter.js",
     "deploy:sepolia:offchain-resolver": "hardhat run --network sepolia scripts/deploy-offchain-resolver.js",
     "deploy:sepolia:all": "hardhat run --network sepolia scripts/deploy-sepolia-all.js",
@@ -18,7 +19,9 @@
     "deploy:sepolia:soul-renderers": "hardhat run --network sepolia scripts/deploy-soul-renderers.js",
     "lint": "solhint \"contracts/**/*.sol\"",
     "slither": "slither contracts/TipSplitter.sol --config-file slither.config.json",
-    "test": "hardhat compile && node --test test/*.test.js"
+    "test": "hardhat compile && node --test test/*.test.js",
+    "create:mainnet-mint-signer-env": "node scripts/create-mainnet-mint-signer-env.js",
+    "deploy:mainnet:all": "hardhat run --network mainnet scripts/deploy-mainnet-all.js"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-ethers": "^4.0.6",

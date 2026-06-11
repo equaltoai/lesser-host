@@ -10,10 +10,12 @@ library SoulSVGUtils {
     function base64Encode(bytes memory data) internal pure returns (string memory) {
         if (data.length == 0) return "";
 
+        // slither-disable-next-line divide-before-multiply
         uint256 encodedLen = 4 * ((data.length + 2) / 3);
         bytes memory result = new bytes(encodedLen);
 
         uint256 i;
+        // slither-disable-next-line uninitialized-local
         uint256 j;
         for (i = 0; i + 2 < data.length; i += 3) {
             uint256 a = uint256(uint8(data[i]));

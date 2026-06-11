@@ -125,6 +125,7 @@ contract SoulRegistry is ERC721, Ownable2Step, Pausable, EIP712 {
         if (msg.value != mintFee) {
             revert("SoulRegistry: incorrect fee");
         }
+        // slither-disable-next-line timestamp
         if (block.timestamp > deadline) {
             revert("SoulRegistry: expired");
         }
@@ -173,6 +174,7 @@ contract SoulRegistry is ERC721, Ownable2Step, Pausable, EIP712 {
         if (msg.value != mintFee) {
             revert("SoulRegistry: incorrect fee");
         }
+        // slither-disable-next-line timestamp
         if (block.timestamp > deadline) {
             revert("SoulRegistry: expired");
         }
@@ -307,6 +309,7 @@ contract SoulRegistry is ERC721, Ownable2Step, Pausable, EIP712 {
         if (mintedAt == 0) {
             return true;
         }
+        // slither-disable-next-line timestamp
         return block.timestamp >= mintedAt + claimWindowSeconds;
     }
 
@@ -329,6 +332,7 @@ contract SoulRegistry is ERC721, Ownable2Step, Pausable, EIP712 {
             SoulSVGUtils.base64Encode(bytes(svg))
         );
 
+        // slither-disable-next-line timestamp
         string memory soulboundStr = _ownerOf(tokenId) != address(0) &&
             _mintedAt[tokenId] > 0 &&
             block.timestamp >= _mintedAt[tokenId] + claimWindowSeconds
@@ -396,6 +400,7 @@ contract SoulRegistry is ERC721, Ownable2Step, Pausable, EIP712 {
         if (newWallet == currentWallet) {
             revert("SoulRegistry: no-op");
         }
+        // slither-disable-next-line timestamp
         if (block.timestamp > deadline) {
             revert("SoulRegistry: expired");
         }
@@ -452,6 +457,7 @@ contract SoulRegistry is ERC721, Ownable2Step, Pausable, EIP712 {
             amount = balance;
         }
         accumulatedFees -= amount;
+        // slither-disable-next-line low-level-calls
         (bool ok,) = recipient.call{value: amount}("");
         if (!ok) {
             revert("SoulRegistry: transfer failed");
@@ -485,6 +491,7 @@ contract SoulRegistry is ERC721, Ownable2Step, Pausable, EIP712 {
         // Rotation uses auth == address(0) to bypass the operator check and is allowed even when soulbound.
         if (from != address(0) && to != address(0) && auth != address(0)) {
             uint256 mintedAt = _mintedAt[tokenId];
+            // slither-disable-next-line timestamp
             if (mintedAt == 0 || block.timestamp >= mintedAt + claimWindowSeconds) {
                 revert("SoulRegistry: soulbound");
             }
