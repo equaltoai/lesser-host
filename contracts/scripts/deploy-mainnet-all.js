@@ -197,12 +197,15 @@ async function main() {
 
   // Guard against deploying with a stale .env: the generated env records the
   // funded deployer address; the runtime key must derive the same address.
-  const expectedDeployer = optionalEnv("PUBLIC_DEPLOYER_ADDRESS");
-  if (!rehearsal && expectedDeployer && ethers.getAddress(expectedDeployer) !== deployer.address) {
-    throw new Error(
-      `Deployer ${deployer.address} does not match PUBLIC_DEPLOYER_ADDRESS ${expectedDeployer}. ` +
-      "The loaded .env appears stale or mismatched; refusing to deploy."
-    );
+  // Required outside rehearsal — an env missing the var is itself suspect.
+  if (!rehearsal) {
+    const expectedDeployer = requireEnv("PUBLIC_DEPLOYER_ADDRESS");
+    if (ethers.getAddress(expectedDeployer) !== deployer.address) {
+      throw new Error(
+        `Deployer ${deployer.address} does not match PUBLIC_DEPLOYER_ADDRESS ${expectedDeployer}. ` +
+        "The loaded .env appears stale or mismatched; refusing to deploy."
+      );
+    }
   }
 
   console.log("Deploying full live contract set to Ethereum mainnet...");
