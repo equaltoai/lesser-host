@@ -10,11 +10,13 @@ library SoulSVGUtils {
     function base64Encode(bytes memory data) internal pure returns (string memory) {
         if (data.length == 0) return "";
 
+        // Intentional ceiling math: 4 * ceil(len / 3); truncation is the point.
         // slither-disable-next-line divide-before-multiply
         uint256 encodedLen = 4 * ((data.length + 2) / 3);
         bytes memory result = new bytes(encodedLen);
 
         uint256 i;
+        // Zero-initialized by Solidity; written before any dependent read.
         // slither-disable-next-line uninitialized-local
         uint256 j;
         for (i = 0; i + 2 < data.length; i += 3) {

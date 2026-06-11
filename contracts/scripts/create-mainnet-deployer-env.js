@@ -21,6 +21,11 @@ The private key is written only to the output file and is never printed.
 Defaults:
   --out .env
 
+IMPORTANT: hardhat loads contracts/.env only (bare dotenv/config). A file
+generated with a non-default --out is NOT picked up automatically; you must
+run deploys with DOTENV_CONFIG_PATH pointing at it (the exact invocation is
+printed after generation).
+
 Environment:
   MAINNET_RPC_URL  Optional; copied into the generated file if already set.
   LESSER_WALLET    Optional; copied into the generated file if already set.
@@ -29,6 +34,7 @@ Environment:
 Examples:
   node scripts/create-mainnet-deployer-env.js
   node scripts/create-mainnet-deployer-env.js --out .env.mainnet
+  DOTENV_CONFIG_PATH=.env.mainnet npm run deploy:mainnet:all
 `);
 }
 
@@ -107,6 +113,8 @@ async function main() {
     "",
     "# Full live soul/tip contract deployment args",
     `LESSER_WALLET=${quoteEnv(lesserWallet)}`,
+    "# 0 = souls are soulbound immediately at mint (transfers permanently blocked;",
+    "# wallet rotation still works). claimWindowSeconds is immutable post-deploy.",
     "SOUL_CLAIM_WINDOW_SECONDS=\"0\"",
     "SOUL_MINT_FEE_WEI=\"500000000000000\"",
     `SOUL_MINT_ATTESTOR=${quoteEnv(soulMintAttestor)}`,
@@ -125,6 +133,11 @@ async function main() {
   console.log(`Public deployer address to fund: ${wallet.address}`);
   console.log("Private key: written to file only (not printed)");
   console.log("Suggested funding depends on deployment scope; do not overfund this disposable deployer.");
+  if (args.out !== ".env") {
+    console.log("");
+    console.log("NOTE: hardhat only auto-loads contracts/.env. To use this file, run:");
+    console.log(`  DOTENV_CONFIG_PATH=${args.out} npm run deploy:mainnet:all`);
+  }
   if (!mainnetRpcUrl) {
     console.log("Reminder: edit MAINNET_RPC_URL in the generated file before deploying.");
   }

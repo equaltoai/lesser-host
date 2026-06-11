@@ -98,9 +98,13 @@ async function main() {
   console.log("Permissions: 0600");
   console.log(`Soul mint attestor address: ${wallet.address}`);
   console.log("Private key: written to file only (not printed)");
-  console.log("Store in SSM without echoing the value, for example:");
-  console.log(`  set -a; source ${outPath}; set +a`);
-  console.log('  aws ssm put-parameter --name "$SOUL_MINT_SIGNER_KEY_SSM_PARAM" --value "$SOUL_MINT_SIGNER_PRIVATE_KEY" --type SecureString --overwrite');
+  console.log("Store in SSM without exposing the key via argv or exported env.");
+  console.log("(--value puts the plaintext key in /proc/<pid>/cmdline; 'set -a; source' leaks it to every child process.)");
+  console.log("Use a 0600 cli-input-json file written in a subshell instead:");
+  console.log(`  ( umask 077; . ${outPath} && printf '{"Name":"%s","Value":"%s","Type":"SecureString","Overwrite":true}' \\`);
+  console.log('      "$SOUL_MINT_SIGNER_KEY_SSM_PARAM" "$SOUL_MINT_SIGNER_PRIVATE_KEY" > /tmp/mint-signer-param.json )');
+  console.log("  aws ssm put-parameter --cli-input-json file:///tmp/mint-signer-param.json");
+  console.log("  shred -u /tmp/mint-signer-param.json");
 }
 
 main().catch((err) => {
