@@ -1222,3 +1222,175 @@ describe("SoulRegistry — principalOf (v2)", () => {
     assert.equal(await registry.principalOf(999n), ethers.ZeroAddress);
   });
 });
+
+// ========= Mainnet configuration: claimWindowSeconds == 0 =========
+
+describe("SoulRegistry — claimWindowSeconds == 0 (mainnet configuration)", () => {
+  it("mints and is immediately soulbound: same-block transfers revert", async () => {
+    const { registry, owner, alice, bob } = await deployRegistry({
+      claimWindowSeconds: 0n,
+    });
+    const agentId = 4000n;
+
+    await registry.connect(owner).mintSoulOwner(alice.address, agentId, "ipfs://m", 0);
+
+    assert.equal(await registry.ownerOf(agentId), alice.address);
+    assert.equal(await registry.isSoulbound(agentId), true);
+
+    await assert.rejects(
+      registry.connect(alice).transferFrom(alice.address, bob.address, agentId),
+      /soulbound/,
+    );
+  });
+
+  it("selfMintSoul works at window 0 and the token stays soulbound", async () => {
+    const { registry, attestor, alice, bob } = await deployRegistryWithAttestor({
+      claimWindowSeconds: 0n,
+    });
+    const agentId = 4001n;
+    const metaURI = "ipfs://self-mint-window0";
+    const now = (await ethers.provider.getBlock("latest")).timestamp;
+    const deadline = BigInt(now + 3600);
+
+    const sig = await signSelfMintAttestation(attestor, registry, {
+      to: alice.address,
+      agentId,
+      metaURI,
+      avatarStyle: 0,
+      principal: alice.address,
+      deadline,
+      submitter: alice.address,
+    });
+
+    await registry
+      .connect(alice)
+      .selfMintSoul(alice.address, agentId, metaURI, 0, alice.address, deadline, sig, {
+        value: MINT_FEE,
+      });
+
+    assert.equal(await registry.ownerOf(agentId), alice.address);
+    assert.equal(await registry.isSoulbound(agentId), true);
+
+    await assert.rejects(
+      registry.connect(alice).transferFrom(alice.address, bob.address, agentId),
+      /soulbound/,
+    );
+  });
+
+  it("rotateWallet still succeeds at window 0", async () => {
+    const { registry, owner, alice, bob } = await deployRegistry({
+      claimWindowSeconds: 0n,
+    });
+    const agentId = 4002n;
+    await registry.connect(owner).mintSoulOwner(alice.address, agentId, "ipfs://m", 0);
+
+    const chainId = (await ethers.provider.getNetwork()).chainId;
+    const domain = {
+      name: "LesserSoul",
+      version: "1",
+      chainId,
+      verifyingContract: await registry.getAddress(),
+    };
+    const types = {
+      WalletRotationProposal: [
+        { name: "agentId", type: "uint256" },
+        { name: "currentWallet", type: "address" },
+        { name: "newWallet", type: "address" },
+        { name: "nonce", type: "uint256" },
+        { name: "deadline", type: "uint256" },
+      ],
+    };
+    const now = (await ethers.provider.getBlock("latest")).timestamp;
+    const message = {
+      agentId,
+      currentWallet: alice.address,
+      newWallet: bob.address,
+      nonce: 0n,
+      deadline: BigInt(now + 3600),
+    };
+    const currentSig = await alice.signTypedData(domain, types, message);
+    const newSig = await bob.signTypedData(domain, types, message);
+
+    await registry
+      .connect(owner)
+      .rotateWallet(agentId, bob.address, 0n, message.deadline, currentSig, newSig);
+
+    assert.equal(await registry.ownerOf(agentId), bob.address);
+    assert.equal(await registry.getAgentWallet(agentId), bob.address);
+  });
+
+  it("burnSoul still succeeds at window 0", async () => {
+    const { registry, owner, alice } = await deployRegistry({
+      claimWindowSeconds: 0n,
+    });
+    const agentId = 4003n;
+    await registry.connect(owner).mintSoulOwner(alice.address, agentId, "ipfs://m", 0);
+
+    await registry.connect(owner).burnSoul(agentId);
+    await assert.rejects(registry.ownerOf(agentId));
+  });
+});
+
+// ========= Pause coverage =========
+
+describe("SoulRegistry — Pause", () => {
+  it("pause blocks every mutating path; unpause restores them", async () => {
+    const { registry, owner, alice, bob } = await deployRegistry({
+      claimWindowSeconds: 3600n,
+    });
+    const agentId = 4100n;
+    await registry.connect(owner).mintSoulOwner(alice.address, agentId, "ipfs://m", 0);
+
+    await registry.connect(owner).pause();
+    assert.equal(await registry.paused(), true);
+
+    await assert.rejects(
+      registry.connect(owner).mintSoulOwner(bob.address, 4101n, "ipfs://m", 0),
+      /EnforcedPause/,
+    );
+    await assert.rejects(
+      registry.connect(alice).mintSoul(alice.address, 4102n, "ipfs://m", 0, 0n, "0x"),
+      /EnforcedPause/,
+    );
+    await assert.rejects(
+      registry
+        .connect(alice)
+        .selfMintSoul(alice.address, 4103n, "ipfs://m", 0, alice.address, 0n, "0x"),
+      /EnforcedPause/,
+    );
+    await assert.rejects(registry.connect(owner).burnSoul(agentId), /EnforcedPause/);
+    await assert.rejects(
+      registry.connect(owner).setMetaURI(agentId, "ipfs://new"),
+      /EnforcedPause/,
+    );
+    await assert.rejects(
+      registry.connect(alice).setAvatarStyle(agentId, 1),
+      /EnforcedPause/,
+    );
+    await assert.rejects(
+      registry.connect(owner).rotateWallet(agentId, bob.address, 0n, 0n, "0x", "0x"),
+      /EnforcedPause/,
+    );
+    // transferFrom has no whenNotPaused modifier; the _update override blocks it.
+    await assert.rejects(
+      registry.connect(alice).transferFrom(alice.address, bob.address, agentId),
+      /SoulRegistry: paused/,
+    );
+
+    await registry.connect(owner).unpause();
+    assert.equal(await registry.paused(), false);
+
+    await registry.connect(alice).transferFrom(alice.address, bob.address, agentId);
+    assert.equal(await registry.ownerOf(agentId), bob.address);
+    await registry.connect(owner).mintSoulOwner(bob.address, 4101n, "ipfs://m", 0);
+  });
+
+  it("pause and unpause are onlyOwner", async () => {
+    const { registry, owner, alice } = await deployRegistry();
+
+    await assert.rejects(registry.connect(alice).pause(), /OwnableUnauthorizedAccount/);
+    await registry.connect(owner).pause();
+    await assert.rejects(registry.connect(alice).unpause(), /OwnableUnauthorizedAccount/);
+    await registry.connect(owner).unpause();
+  });
+});
