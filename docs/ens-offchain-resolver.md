@@ -28,6 +28,10 @@ shared runtime router or gateway dispatcher for M4 unless a hard blocker is disc
 - `live` resolves `lessersoul.eth` on Ethereum mainnet (`chainId=1`).
 - The resolver contract stores the Ethereum address derived from the stage's KMS `ENSGatewaySigningKey`; the raw KMS key
   material is never exportable, logged, or committed.
+- `/resolve` remains reachable to standards-compliant ENS CCIP-Read clients that send no `User-Agent` header. CloudFront
+  WAF counts the AWS managed `NoUserAgent_HEADER` signal, then re-blocks no-`User-Agent` requests on every path except
+  exact `/resolve`. This interoperability exception does **not** bypass resolver sender validation, KMS signing, gateway
+  TTLs, known-bad-input rules, or rate limits.
 
 ## Stage matrix
 
@@ -410,8 +414,12 @@ Complete this checklist against Sepolia lab before any mainnet live action:
 - [ ] At least one canary identity exists as `<name>.<instance-slug>.lessersoul.eth` in lab host state.
 - [ ] The legacy bare name `<name>.lessersoul.eth` is not required for the canary and fails closed.
 - [ ] Gateway response TTL and signer rotation state (`previousSigner`) are understood before testing.
+- [ ] CloudFront WAF allows no-`User-Agent` CCIP-Read requests only on exact `/resolve`; no-`User-Agent` requests to
+      other host paths (for example `/health`) remain edge-blocked.
+- [ ] The CCIP-Read smoke test below passes with the default ethers transport. Do not add a custom `User-Agent` to the
+      gate; that would miss the deployed edge compatibility failure this checklist is meant to catch.
 
-Optional smoke-test script outline for an ENS-aware CCIP-read client:
+Smoke-test script outline for an ENS-aware CCIP-read client:
 
 ```bash
 cd contracts
@@ -438,6 +446,8 @@ const addrIface = new ethers.Interface(["function addr(bytes32 node) view return
 const resolverIface = new ethers.Interface(["function resolve(bytes name, bytes data) view returns (bytes)"]);
 const callData = resolverIface.encodeFunctionData("resolve", [dnsEncode(name), addrIface.encodeFunctionData("addr", [node])]);
 
+// Intentionally leave ethers' default fetch behavior unchanged. In Node, this is
+// the no-User-Agent CCIP client canary for CloudFront/WAF compatibility.
 const rawResolveResult = await provider.call({ to: resolverAddress, data: callData, enableCcipRead: true });
 const [resolvedBytes] = resolverIface.decodeFunctionResult("resolve", rawResolveResult);
 const [resolvedAddress] = addrIface.decodeFunctionResult("addr", resolvedBytes);
@@ -469,6 +479,8 @@ is satisfied:
 - [ ] The derived live KMS signer matches `OffchainResolver.signer()`.
 - [ ] `OffchainResolver.gatewayUrl()` equals `https://lesser.host/resolve?sender={sender}&data={data}`.
 - [ ] The live gateway is healthy from a first-party origin and signs only for the configured resolver sender.
+- [ ] The live CloudFront WAF route-scoped no-`User-Agent` exception is deployed: exact `/resolve` works for default
+      no-`User-Agent` CCIP-Read clients, and no-`User-Agent` requests to non-`/resolve` paths remain edge-blocked.
 - [ ] Owner/Safe access is confirmed for rollback (`setResolver`, `setSigner`, `setGatewayUrl`, and ownership recovery).
 - [ ] Previous resolver, signer, gateway URL, owner, and host deployment evidence are captured.
 - [ ] Safe-ready calldata for `ENSRegistry.setResolver`, `setSigner`, `setGatewayUrl`, and any ownership action has been
