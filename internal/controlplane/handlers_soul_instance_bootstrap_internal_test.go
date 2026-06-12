@@ -42,6 +42,7 @@ func TestSoulInstanceBootstrapScaffold_RequiresStrictInstanceKey(t *testing.T) {
 		if appErr.Code != soulInstanceBootstrapCodeUnauthorized || appErr.StatusCode != http.StatusUnauthorized {
 			t.Fatalf("expected unauthorized 401, got %#v", appErr)
 		}
+		tdb.qKey.AssertCalled(t, "ConsistentRead")
 		tdb.qKey.AssertNumberOfCalls(t, "First", 1)
 	})
 
@@ -65,6 +66,7 @@ func TestSoulInstanceBootstrapScaffold_RequiresStrictInstanceKey(t *testing.T) {
 		if appErr.Code != soulInstanceBootstrapCodeUnauthorized || appErr.StatusCode != http.StatusUnauthorized {
 			t.Fatalf("expected unauthorized 401, got %#v", appErr)
 		}
+		tdb.qKey.AssertCalled(t, "ConsistentRead")
 	})
 }
 

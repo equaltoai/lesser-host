@@ -207,7 +207,7 @@ func (s *Server) requireSoulInstanceBootstrapKey(ctx *apptheory.Context) (*model
 	}
 
 	tokenHash := sha256HexTrimmed(token)
-	key, err := s.loadSoulInstanceKeyByHash(ctx, tokenHash)
+	key, err := s.store.GetInstanceKey(ctx.Context(), tokenHash)
 	if theoryErrors.IsNotFound(err) {
 		return nil, soulInstanceBootstrapError(soulInstanceBootstrapCodeUnauthorized, soulInstanceBootstrapMessageUnauthorized, http.StatusUnauthorized, nil)
 	}
@@ -220,26 +220,6 @@ func (s *Server) requireSoulInstanceBootstrapKey(ctx *apptheory.Context) (*model
 
 	s.updateSoulInstanceKeyLastUsed(ctx, key)
 	return key, nil
-}
-
-func (s *Server) loadSoulInstanceKeyByHash(ctx *apptheory.Context, tokenHash string) (*models.InstanceKey, error) {
-	if s == nil || s.store == nil || s.store.DB == nil || ctx == nil {
-		return nil, fmt.Errorf("store not configured")
-	}
-	tokenHash = strings.TrimSpace(tokenHash)
-	if tokenHash == "" {
-		return nil, theoryErrors.ErrItemNotFound
-	}
-	var key models.InstanceKey
-	err := s.store.DB.WithContext(ctx.Context()).
-		Model(&models.InstanceKey{}).
-		Where("PK", "=", fmt.Sprintf("INSTANCE_KEY#%s", tokenHash)).
-		Where("SK", "=", "KEY").
-		First(&key)
-	if err != nil {
-		return nil, err
-	}
-	return &key, nil
 }
 
 func (s *Server) updateSoulInstanceKeyLastUsed(ctx *apptheory.Context, key *models.InstanceKey) {
