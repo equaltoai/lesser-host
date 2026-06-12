@@ -28,6 +28,26 @@ This contract covers the soul promotion lifecycle introduced for agent-first cli
 
 It does not restate the entire public soul registry surface. For the wider registry API, see `docs/soul-surface.md`.
 
+## Project 44 remediation status
+
+The route families documented below are the current `lesser-host` control-plane/portal contract. They remain useful for
+operator review, customer portal fallback, and controlled administrative remediation, but they are not the production
+Simulacrum bootstrap authority.
+
+The prior browser-held `lesser-host` control-plane bearer-token bridge is superseded. Production Simulacrum soul
+creation must not require the Simulacrum browser to hold or replay a `lesser-host` portal/operator session token. The
+required Project 44 authority boundary is:
+
+```text
+Simulacrum browser -> Lesser same-origin auth/API -> Lesser server-side instance trust -> lesser-host scoped instance-key write API
+```
+
+The replacement Host route family is tracked by
+[Project 44 M1 issue #706](https://github.com/equaltoai/lesser-host/issues/706). That follow-on work must add
+instance-key authenticated write routes for registration begin, principal declaration preflight, verification, mint
+conversation, and hosted/off-chain finalization before Project 44 can treat the `/l/*` Simulacrum soul creation flow as
+production-ready. This M0.2 note is documentation-only and does not implement those routes.
+
 ## Published Identity Payload
 
 When an agent-first client resolves a published soul profile through `GET /api/v1/soul/agents/{agentId}`, it should
@@ -81,9 +101,11 @@ Public clients that expose hosted-bound-soul or x402 flows must also follow the 
 assurance, x402 payment/refund/failure boundaries must be surfaced before paid access, and email/phone/SMS/voice
 capabilities require privacy and consent copy before public launch.
 
-## Authentication
+## Authentication and route authority
 
-All workflow endpoints in this document use the control-plane bearer session token:
+### Current portal/control-plane human route family
+
+All workflow endpoints currently enumerated in this document use the control-plane bearer session token:
 
 - portal customer sessions
 - operator/admin sessions
@@ -92,6 +114,21 @@ The same bearer token format is used for both. Access is still enforced server-s
 
 - operators can access any workflow
 - customers can access only workflows they own through verified domain ownership
+
+These session-authenticated routes are human control-plane routes. They must not be reinterpreted as a browser-facing
+Simulacrum production path by minting, proxying, or storing `lesser-host` control-plane bearer tokens in the Simulacrum
+browser.
+
+### Required managed-instance machine route family
+
+Project 44's production Simulacrum path requires a separate managed-instance machine route family, tracked by
+[issue #706](https://github.com/equaltoai/lesser-host/issues/706). Those routes must be called by Lesser server-side
+with `instanceKeyAuth`, where the presented raw bearer key is hashed and matched against the stored `sha256(raw_key)`.
+They must scope every write to the authenticated managed instance slug/domain and must keep `lesser-host` as the source
+of canonical registration/signing material.
+
+Until that route family exists, the control-plane session routes below are fallback/operator tooling, not the canonical
+human-facing `/l/*` creation route.
 
 ## Canonical Resources
 
@@ -114,6 +151,10 @@ Clients should use `SoulAgentPromotion` for current state and `SoulAgentPromotio
 timelines, and “what changed” UI.
 
 ## Route Families
+
+The route families in this section are control-plane session routes unless explicitly marked `instanceKeyAuth`.
+Project 44 M1 (#706) is responsible for adding the scoped instance-key write route family required by the production
+Simulacrum flow.
 
 There are two equivalent route families during the review/finalize phase:
 

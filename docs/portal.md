@@ -10,8 +10,21 @@ token mechanism as operator auth, but portal wallet login auto-creates a `custom
 For soul creation, review, approval, and finalize UX, the canonical user-facing path is now the agent-first
 Simulacrum client served from Lesser at `/l/*`.
 
-Portal soul routes remain supported as secondary, fallback, or operator-guided surfaces. They should not be presented as
-the primary product path once the Simulacrum flow is available.
+Portal soul routes remain supported as secondary, fallback, or operator-guided surfaces. They are human control-plane
+routes backed by portal/operator bearer sessions; they are not the production credential bridge for Simulacrum.
+Specifically, a browser-held `lesser-host` control-plane bearer token bootstrap is superseded and must not be presented
+as the primary product path.
+
+The production Project 44 path is:
+
+```text
+Simulacrum browser -> Lesser same-origin auth/API -> Lesser server-side instance trust -> lesser-host scoped instance-key write API
+```
+
+The missing `lesser-host` instance-key soul creation/write route family is tracked by
+[Project 44 M1 issue #706](https://github.com/equaltoai/lesser-host/issues/706). Until that route family lands, portal
+soul routes remain admin/operator tooling and controlled fallback surfaces, not the canonical human-facing Simulacrum
+soul creation path.
 
 Hosted-bound-soul and public x402 surfaces remain launch-gated until
 `docs/hosted-bound-soul-launch-gates.md` records accepted terminology, payment/refund/failure, and comms consent
@@ -22,6 +35,10 @@ presented as receiving principal/operator authority.
 ## Authentication
 
 ### Portal wallet login (public)
+
+Portal wallet login issues a `lesser-host` control-plane session for portal/customer or operator-admin work. It is not a
+credential to bootstrap into Simulacrum's browser runtime; Simulacrum production flows should authenticate to Lesser
+same-origin first and let Lesser call `lesser-host` server-side through scoped instance-key routes.
 
 1) Create a challenge:
 
