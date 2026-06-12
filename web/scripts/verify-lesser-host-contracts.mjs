@@ -13,6 +13,8 @@ const webDir = path.resolve(scriptDir, '..');
 const repoRoot = path.resolve(webDir, '..');
 const openapiPath = path.join(repoRoot, 'docs', 'contracts', 'openapi.yaml');
 const sseContractPath = path.join(repoRoot, 'docs', 'contracts', 'soul-mint-conversation-sse.json');
+const specV3SchemasDir = path.join(repoRoot, 'docs', 'spec', 'v3', 'schemas');
+const specV3FixturesDir = path.join(repoRoot, 'docs', 'spec', 'v3', 'fixtures');
 const generatedAdapterPath = path.join(webDir, 'src', 'lib', 'greater', 'adapters', 'rest', 'generated', 'lesser-host-api.ts');
 const openapiTypescriptBin = path.join(webDir, 'node_modules', '.bin', 'openapi-typescript');
 
@@ -33,12 +35,37 @@ const requiredPaths = [
   '/api/v1/soul/agents/{agentId}/mint-conversation/{conversationId}/finalize/preflight',
   '/api/v1/soul/agents/{agentId}/mint-conversation/{conversationId}/finalize/begin',
   '/api/v1/soul/agents/{agentId}/mint-conversation/{conversationId}/finalize',
+  '/api/v1/soul/instance/agents/register/begin',
+  '/api/v1/soul/instance/agents/register/{id}/principal-declaration/preflight',
+  '/api/v1/soul/instance/agents/register/{id}/verify',
+  '/api/v1/soul/instance/agents/register/{id}/mint-conversation',
+  '/api/v1/soul/instance/agents/register/{id}/mint-conversation/{conversationId}',
+  '/api/v1/soul/instance/agents/register/{id}/mint-conversation/{conversationId}/complete',
+  '/api/v1/soul/instance/agents/register/{id}/mint-conversation/{conversationId}/finalize/preflight',
+  '/api/v1/soul/instance/agents/register/{id}/mint-conversation/{conversationId}/finalize/begin',
+  '/api/v1/soul/instance/agents/register/{id}/mint-conversation/{conversationId}/finalize',
   '/api/v1/soul/x402/grants',
   '/api/v1/soul/x402/grants/{grantId}/consume'
 ];
 
+const requiredInstanceBootstrapPaths = [
+  '/api/v1/soul/instance/agents/register/begin',
+  '/api/v1/soul/instance/agents/register/{id}/principal-declaration/preflight',
+  '/api/v1/soul/instance/agents/register/{id}/verify',
+  '/api/v1/soul/instance/agents/register/{id}/mint-conversation',
+  '/api/v1/soul/instance/agents/register/{id}/mint-conversation/{conversationId}',
+  '/api/v1/soul/instance/agents/register/{id}/mint-conversation/{conversationId}/complete',
+  '/api/v1/soul/instance/agents/register/{id}/mint-conversation/{conversationId}/finalize/preflight',
+  '/api/v1/soul/instance/agents/register/{id}/mint-conversation/{conversationId}/finalize/begin',
+  '/api/v1/soul/instance/agents/register/{id}/mint-conversation/{conversationId}/finalize'
+];
+
 const requiredSchemas = [
   'AIUsage',
+  'SoulAgentRegistrationBeginRequest',
+  'SoulAgentRegistrationBeginResponse',
+  'SoulAgentRegistrationVerifyRequest',
+  'SoulAgentRegistrationVerifyResponse',
   'SoulMintConversationSSEInput',
   'SoulMintConversation',
   'SoulMintConversationCompleteRequest',
@@ -53,6 +80,7 @@ const requiredSchemas = [
   'SoulMintConversationFinalizeRequest',
   'SoulMintConversationFinalizePreflightResponse',
   'SoulMintConversationFinalizeResponse',
+  'SoulInstanceBootstrapErrorEnvelope',
   'SoulX402InvocationGrant',
   'SoulX402InvocationGrantIssueRequest',
   'SoulX402InvocationGrantIssueResponse',
@@ -66,6 +94,28 @@ const requiredSseEvents = [
   'conversation_done',
   'error'
 ];
+
+const requiredSpecV3Files = [
+  path.join(specV3SchemasDir, 'soul-instance-bootstrap.error.schema.json'),
+  path.join(specV3SchemasDir, 'soul-instance-bootstrap.finalize.response.schema.json'),
+  path.join(specV3FixturesDir, 'soul-instance-bootstrap.error.boundary-violation.example.json'),
+  path.join(specV3FixturesDir, 'soul-instance-bootstrap.finalize.response.hosted-offchain.example.json')
+];
+
+const requiredInstanceBootstrapErrorCodes = [
+  'soul_instance.unauthorized',
+  'soul_instance.invalid_request',
+  'soul_instance.boundary_violation',
+  'soul_instance.conflict',
+  'soul_instance.not_found',
+  'soul_instance.internal'
+];
+
+const soulAgentIDPattern = '0x[0-9a-fA-F]{64}';
+const runtimeRegistrationS3KeyPattern = `^registry/v1/agents/${soulAgentIDPattern}/registration\\.json$`;
+const runtimeVersionedRegistrationS3KeyPattern = `^registry/v1/agents/${soulAgentIDPattern}/versions/[1-9][0-9]*/registration\\.json$`;
+const runtimeRegistrationURIPattern = `^s3://[^/]+/registry/v1/agents/${soulAgentIDPattern}/registration\\.json$`;
+const runtimeVersionedRegistrationURIPattern = `^s3://[^/]+/registry/v1/agents/${soulAgentIDPattern}/versions/[1-9][0-9]*/registration\\.json$`;
 
 function assert(condition, message) {
   if (!condition) {
@@ -92,6 +142,44 @@ function verifyOpenApiSurface() {
     openapi.paths['/api/v1/soul/agents/{agentId}/mint-conversation']?.post?.responses?.['200']?.content?.['text/event-stream'],
     'agent-scoped mint-conversation route must publish a text/event-stream response'
   );
+  assert(
+    openapi.paths['/api/v1/soul/instance/agents/register/{id}/mint-conversation']?.post?.responses?.['200']?.content?.['text/event-stream'],
+    'instance-key registration mint-conversation route must publish a text/event-stream response'
+  );
+
+  for (const route of requiredInstanceBootstrapPaths) {
+    const method = route === '/api/v1/soul/instance/agents/register/{id}/mint-conversation/{conversationId}' ? 'get' : 'post';
+    const operation = openapi.paths[route]?.[method];
+    assert(operation, `missing OpenAPI operation for instance bootstrap route: ${method.toUpperCase()} ${route}`);
+    assert(
+      JSON.stringify(operation.security ?? []) === JSON.stringify([{ instanceKeyAuth: [] }]),
+      `instance bootstrap route must use only instanceKeyAuth: ${method.toUpperCase()} ${route}`
+    );
+    assert(
+      !JSON.stringify(operation.security ?? []).includes('sessionAuth'),
+      `instance bootstrap route must not document portal/control-plane session auth: ${method.toUpperCase()} ${route}`
+    );
+    for (const status of ['400', '401', '403', '404', '409', '500']) {
+      if (status === '404' && route === '/api/v1/soul/instance/agents/register/begin') {
+        continue;
+      }
+      assert(
+        operation.responses?.[status]?.content?.['application/json']?.schema?.$ref === '#/components/schemas/SoulInstanceBootstrapErrorEnvelope',
+        `instance bootstrap route must publish soul_instance error envelope for ${status}: ${method.toUpperCase()} ${route}`
+      );
+    }
+  }
+
+  const instanceAuthDescription = openapi.components?.securitySchemes?.instanceKeyAuth?.description ?? '';
+  assert(instanceAuthDescription.includes('sha256(raw_key)'), 'instanceKeyAuth must document sha256(raw_key) matching');
+  assert(!instanceAuthDescription.toLowerCase().includes('session token'), 'instanceKeyAuth must not describe session-token auth');
+
+  const finalizeRef = openapi.components?.schemas?.SoulMintConversationFinalizeResponse?.$ref ?? '';
+  assert(
+    finalizeRef.endsWith('/soul-instance-bootstrap.finalize.response.schema.json') ||
+      finalizeRef === '../spec/v3/schemas/soul-instance-bootstrap.finalize.response.schema.json',
+    'finalize response must reference the v3 hosted/off-chain finalize response schema'
+  );
 }
 
 function verifySseCompanionSurface() {
@@ -102,7 +190,8 @@ function verifySseCompanionSurface() {
 
   for (const route of [
     '/api/v1/soul/agents/register/{id}/mint-conversation',
-    '/api/v1/soul/agents/{agentId}/mint-conversation'
+    '/api/v1/soul/agents/{agentId}/mint-conversation',
+    '/api/v1/soul/instance/agents/register/{id}/mint-conversation'
   ]) {
     assert(sseContract.routes.includes(route), `SSE companion contract missing route: ${route}`);
   }
@@ -110,6 +199,69 @@ function verifySseCompanionSurface() {
   for (const eventName of requiredSseEvents) {
     assert(sseContract?.events?.[eventName]?.schema, `SSE companion contract missing event schema: ${eventName}`);
   }
+}
+
+function verifySpecV3BootstrapSurface() {
+  for (const file of requiredSpecV3Files) {
+    JSON.parse(readFileSync(file, 'utf8'));
+  }
+
+  const errorSchema = JSON.parse(readFileSync(path.join(specV3SchemasDir, 'soul-instance-bootstrap.error.schema.json'), 'utf8'));
+  const errorCodes = errorSchema?.properties?.error?.properties?.code?.enum ?? [];
+  for (const code of requiredInstanceBootstrapErrorCodes) {
+    assert(errorCodes.includes(code), `instance bootstrap error schema missing code: ${code}`);
+  }
+
+  const finalizeSchema = JSON.parse(readFileSync(path.join(specV3SchemasDir, 'soul-instance-bootstrap.finalize.response.schema.json'), 'utf8'));
+  for (const field of ['version', 'agent_id', 'agent', 'published_version', 'publication']) {
+    assert(finalizeSchema?.required?.includes(field), `instance bootstrap finalize response missing required field: ${field}`);
+  }
+  assert(
+    finalizeSchema?.properties?.agent?.$ref === 'soul-agent-identity.schema.json',
+    'instance bootstrap finalize response must bind to the canonical soul-agent-identity schema'
+  );
+
+  const publicationProps = finalizeSchema?.$defs?.publication?.properties ?? {};
+  assert(
+    publicationProps.registration_uri?.pattern === runtimeRegistrationURIPattern,
+    'finalize publication registration_uri must require the runtime registry/v1/agents S3 URI shape'
+  );
+  assert(
+    publicationProps.registration_s3_key?.pattern === runtimeRegistrationS3KeyPattern,
+    'finalize publication registration_s3_key must require the runtime registry/v1/agents key shape'
+  );
+  assert(
+    publicationProps.versioned_registration_uri?.pattern === runtimeVersionedRegistrationURIPattern,
+    'finalize publication versioned_registration_uri must require the runtime registry/v1/agents versioned S3 URI shape'
+  );
+  assert(
+    publicationProps.versioned_registration_s3_key?.pattern === runtimeVersionedRegistrationS3KeyPattern,
+    'finalize publication versioned_registration_s3_key must require the runtime registry/v1/agents versioned key shape'
+  );
+
+  const finalizeFixture = JSON.parse(
+    readFileSync(path.join(specV3FixturesDir, 'soul-instance-bootstrap.finalize.response.hosted-offchain.example.json'), 'utf8')
+  );
+  const fixtureAgentID = finalizeFixture?.agent_id;
+  const fixturePublishedVersion = finalizeFixture?.published_version;
+  const expectedRegistrationS3Key = `registry/v1/agents/${fixtureAgentID}/registration.json`;
+  const expectedVersionedRegistrationS3Key = `registry/v1/agents/${fixtureAgentID}/versions/${fixturePublishedVersion}/registration.json`;
+  assert(
+    finalizeFixture?.publication?.registration_s3_key === expectedRegistrationS3Key,
+    'hosted/off-chain finalize fixture must use the runtime soulRegistrationS3Key registry/v1/agents key shape'
+  );
+  assert(
+    finalizeFixture?.publication?.versioned_registration_s3_key === expectedVersionedRegistrationS3Key,
+    'hosted/off-chain finalize fixture must use the runtime soulRegistrationVersionedS3Key registry/v1/agents key shape'
+  );
+  assert(
+    finalizeFixture?.publication?.registration_uri === `s3://lesser-host-lab-soul-packs/${expectedRegistrationS3Key}`,
+    'hosted/off-chain finalize fixture registration_uri must use the runtime registry/v1/agents URI shape'
+  );
+  assert(
+    finalizeFixture?.publication?.versioned_registration_uri === `s3://lesser-host-lab-soul-packs/${expectedVersionedRegistrationS3Key}`,
+    'hosted/off-chain finalize fixture versioned_registration_uri must use the runtime registry/v1/agents URI shape'
+  );
 }
 
 function verifyGeneratedAdapter() {
@@ -142,6 +294,7 @@ function verifyGeneratedAdapter() {
 
 verifyOpenApiSurface();
 verifySseCompanionSurface();
+verifySpecV3BootstrapSurface();
 verifyGeneratedAdapter();
 
 process.stdout.write('PASS: lesser-host REST contracts are complete and in sync\n');

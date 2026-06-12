@@ -29,10 +29,17 @@ npm run verify:lesser-host-contracts
 - required soul mint-conversation routes or schemas are missing from `docs/contracts/openapi.yaml`
 - required instance-key mint-conversation read routes and compact/full response schemas are missing from
   `docs/contracts/openapi.yaml`
+- required instance-key bootstrap write routes, the `soul_instance.*` error envelope, hosted/off-chain finalize response
+  schema, or server-side instance-key auth semantics are missing from `docs/contracts/openapi.yaml`
 - the SSE companion contract is missing required events or routes
 - the checked-in generated adapter does not match a fresh regeneration
 
 CI and the governance rubric both run this verification so contract drift fails closed.
+
+The instance-key bootstrap route family under `/api/v1/soul/instance/agents/register/...` is a Host ↔ Lesser
+server-side contract. Its bearer token is the managed InstanceKey (`sha256(raw_key)` stored by Host); it is not a
+portal/control-plane session-token or browser credential contract. Greater Components syncs the generated adapter before
+Simulacrum consumes these capabilities.
 
 Release automation packages these artifacts as GitHub Release assets on every `v*` tag.
 
