@@ -16,6 +16,10 @@
 #      sidecar) and the default SSR Function URL origin may carry OAC.
 #      Custom/HTTP bearer-auth origins must NOT carry OAC (auth is in the
 #      Lambda handler). Any Custom origin other than default with OAC → FAIL.
+#   5. CloudFront WAF keeps the AWS managed no-User-Agent protection for every
+#      route except exact /resolve, where ENS CCIP-Read clients are permitted
+#      to omit User-Agent. This is implemented by counting the managed
+#      NoUserAgent_HEADER rule, then blocking its managed label outside /resolve.
 #
 # Pass: all composition invariants hold. Fail: any drift detected.
 # No partial credit.
@@ -45,6 +49,9 @@ CONTROL_PLANE_SSE_ORIGIN_MARKER="ControlPlaneSseRestApi"
 # is the intended named origin role for route-pinning.
 REQUIRED_BEARER_BEHAVIORS=$'resolve*|trust|trust-api resolver\nhealth*|trust|trust-api health\napi/v1/previews*|trust|trust-api previews\napi/v1/renders*|trust|trust-api renders\napi/v1/trust/*|trust|trust-api trust\napi/v1/publish/jobs*|trust|trust-api publish jobs\napi/v1/soul/agents/*/update-registration|trust|trust-api update-registration\napi/v1/ai/*|trust|trust-api AI\napi/v1/budget/debit|trust|trust-api budget debit\napi/v1/soul/agents/register/*/mint-conversation*|sse|control-plane SSE mint-conversation (register)\napi/v1/soul/agents/*/mint-conversation*|sse|control-plane SSE mint-conversation\napi/*|control-plane|control-plane API catch-all\nauth/*|control-plane|control-plane auth\nwebhooks/*|control-plane|control-plane webhooks\nsetup/status|control-plane|control-plane setup status\nsetup/bootstrap/*|control-plane|control-plane setup bootstrap\nsetup/admin|control-plane|control-plane setup admin\nsetup/finalize|control-plane|control-plane setup finalize\n.well-known/*|trust|trust-api .well-known\nattestations|trust|trust-api attestations exact\nattestations/*|trust|trust-api attestations wildcard'
 REQUIRED_BEARER_BEHAVIOR_COUNT=21
+NO_USER_AGENT_MANAGED_RULE="NoUserAgent_HEADER"
+NO_USER_AGENT_MANAGED_LABEL="awswaf:managed:aws:core-rule-set:NoUserAgent_Header"
+NO_USER_AGENT_EXCEPTION_RULE="BlockNoUserAgentExceptResolve"
 
 TEMPLATE_FILE="${SEC8_TEMPLATE_FILE:-}"
 
@@ -193,6 +200,138 @@ fi
 
 DISTRIBUTION_ID="${DISTRIBUTION_IDS[0]}"
 echo "CloudFront distribution: ${DISTRIBUTION_ID}"
+
+# ── Check 1b: WAF no-User-Agent route exception is exact ───────────────────
+#
+# AWSManagedRulesCommonRuleSet blocks requests that are missing User-Agent.
+# ENS CCIP-Read clients are not browsers, and the default Node ethers CCIP
+# fetch path may omit User-Agent. The exception must be route-scoped: count the
+# managed no-UA rule so it labels the request, then block that label everywhere
+# except exact /resolve.
+mapfile -t WEB_ACL_IDS < <(
+  jq -r '.Resources | to_entries[] | select(.value.Type == "AWS::WAFv2::WebACL") | .key' "${TEMPLATE_FILE}" | sort -u
+)
+
+if [[ ${#WEB_ACL_IDS[@]} -eq 0 ]]; then
+  echo "FAIL: no WAFv2 WebACL found in synthesized template" >&2
+  fail=1
+elif [[ ${#WEB_ACL_IDS[@]} -gt 1 ]]; then
+  echo "FAIL: expected exactly one WAFv2 WebACL, found ${#WEB_ACL_IDS[@]}: ${WEB_ACL_IDS[*]}" >&2
+  fail=1
+else
+  WEB_ACL_ID="${WEB_ACL_IDS[0]}"
+  echo "WAF WebACL: ${WEB_ACL_ID}"
+
+  COMMON_RULE_COUNT="$(
+    jq -r \
+      --arg webacl "${WEB_ACL_ID}" \
+      '[.Resources[$webacl].Properties.Rules[]? | select(.Name == "AWSManagedRulesCommonRuleSet")] | length' \
+      "${TEMPLATE_FILE}"
+  )"
+  if [[ "${COMMON_RULE_COUNT}" -ne 1 ]]; then
+    echo "FAIL: expected exactly one AWSManagedRulesCommonRuleSet rule, found ${COMMON_RULE_COUNT}" >&2
+    fail=1
+  fi
+
+  NO_UA_OVERRIDE_COUNT="$(
+    jq -r \
+      --arg webacl "${WEB_ACL_ID}" \
+      --arg rule "${NO_USER_AGENT_MANAGED_RULE}" \
+      '[.Resources[$webacl].Properties.Rules[]?
+        | select(.Name == "AWSManagedRulesCommonRuleSet")
+        | .Statement.ManagedRuleGroupStatement.RuleActionOverrides[]?
+        | select(.Name == $rule and (.ActionToUse.Count != null))] | length' \
+      "${TEMPLATE_FILE}"
+  )"
+  if [[ "${NO_UA_OVERRIDE_COUNT}" -ne 1 ]]; then
+    echo "FAIL: ${NO_USER_AGENT_MANAGED_RULE} must be overridden to Count exactly once" >&2
+    fail=1
+  else
+    echo "  ${NO_USER_AGENT_MANAGED_RULE}: Count override present"
+  fi
+
+  NO_UA_BLOCK_RULE_COUNT="$(
+    jq -r \
+      --arg webacl "${WEB_ACL_ID}" \
+      --arg rule "${NO_USER_AGENT_EXCEPTION_RULE}" \
+      '[.Resources[$webacl].Properties.Rules[]? | select(.Name == $rule)] | length' \
+      "${TEMPLATE_FILE}"
+  )"
+  if [[ "${NO_UA_BLOCK_RULE_COUNT}" -ne 1 ]]; then
+    echo "FAIL: expected exactly one ${NO_USER_AGENT_EXCEPTION_RULE} rule, found ${NO_UA_BLOCK_RULE_COUNT}" >&2
+    fail=1
+  else
+    NO_UA_BLOCK_RULE_OK="$(
+      jq -r \
+        --arg webacl "${WEB_ACL_ID}" \
+        --arg rule "${NO_USER_AGENT_EXCEPTION_RULE}" \
+        '.Resources[$webacl].Properties.Rules[]?
+         | select(.Name == $rule)
+         | if (.Priority == 1 and (.Action.Block != null)) then "yes" else "no" end' \
+        "${TEMPLATE_FILE}"
+    )"
+    if [[ "${NO_UA_BLOCK_RULE_OK}" != "yes" ]]; then
+      echo "FAIL: ${NO_USER_AGENT_EXCEPTION_RULE} must have Priority=1 and Action=Block" >&2
+      fail=1
+    fi
+
+    NO_UA_AND_STATEMENT_COUNT="$(
+      jq -r \
+        --arg webacl "${WEB_ACL_ID}" \
+        --arg rule "${NO_USER_AGENT_EXCEPTION_RULE}" \
+        '.Resources[$webacl].Properties.Rules[]?
+         | select(.Name == $rule)
+         | (.Statement.AndStatement.Statements // []) | length' \
+        "${TEMPLATE_FILE}"
+    )"
+    if [[ "${NO_UA_AND_STATEMENT_COUNT}" -ne 2 ]]; then
+      echo "FAIL: ${NO_USER_AGENT_EXCEPTION_RULE} must have exactly two AND predicates (managed label + path exception), found ${NO_UA_AND_STATEMENT_COUNT}" >&2
+      fail=1
+    fi
+
+    NO_UA_LABEL_PREDICATE_COUNT="$(
+      jq -r \
+        --arg webacl "${WEB_ACL_ID}" \
+        --arg rule "${NO_USER_AGENT_EXCEPTION_RULE}" \
+        --arg label "${NO_USER_AGENT_MANAGED_LABEL}" \
+        '[.Resources[$webacl].Properties.Rules[]?
+          | select(.Name == $rule)
+          | .Statement.AndStatement.Statements[]?
+          | select(.LabelMatchStatement.Scope == "LABEL" and .LabelMatchStatement.Key == $label)] | length' \
+        "${TEMPLATE_FILE}"
+    )"
+    if [[ "${NO_UA_LABEL_PREDICATE_COUNT}" -ne 1 ]]; then
+      echo "FAIL: ${NO_USER_AGENT_EXCEPTION_RULE} must match managed label ${NO_USER_AGENT_MANAGED_LABEL}" >&2
+      fail=1
+    fi
+
+    NO_UA_PATH_EXCEPTION_COUNT="$(
+      jq -r \
+        --arg webacl "${WEB_ACL_ID}" \
+        --arg rule "${NO_USER_AGENT_EXCEPTION_RULE}" \
+        '[.Resources[$webacl].Properties.Rules[]?
+          | select(.Name == $rule)
+          | .Statement.AndStatement.Statements[]?
+          | .NotStatement.Statement.ByteMatchStatement?
+          | select(
+              (.FieldToMatch.UriPath != null)
+              and .PositionalConstraint == "EXACTLY"
+              and .SearchString == "/resolve"
+              and (.TextTransformations == [{"Priority":0,"Type":"NONE"}])
+            )] | length' \
+        "${TEMPLATE_FILE}"
+    )"
+    if [[ "${NO_UA_PATH_EXCEPTION_COUNT}" -ne 1 ]]; then
+      echo "FAIL: ${NO_USER_AGENT_EXCEPTION_RULE} must exempt only exact /resolve" >&2
+      fail=1
+    fi
+
+    if [[ "${NO_UA_BLOCK_RULE_OK}" == "yes" && "${NO_UA_AND_STATEMENT_COUNT}" -eq 2 && "${NO_UA_LABEL_PREDICATE_COUNT}" -eq 1 && "${NO_UA_PATH_EXCEPTION_COUNT}" -eq 1 ]]; then
+      echo "  ${NO_USER_AGENT_EXCEPTION_RULE}: blocks ${NO_USER_AGENT_MANAGED_LABEL} except exact /resolve"
+    fi
+  fi
+fi
+echo ""
 
 # ── Check 2: Default origin is OAC-protected Lambda Function URL ──────────
 # shellcheck disable=SC2016 # jq reads $dist from --arg in jq_dist().
@@ -489,4 +628,4 @@ if [[ "${fail}" -ne 0 ]]; then
 fi
 
 echo ""
-echo "PASS: CloudFront distribution composition verified (SSR Lambda URL AWS_IAM/OAC default, S3 sidecar, ${REQUIRED_BEARER_BEHAVIOR_COUNT} bearer-auth behaviors pinned to intended origins, OAC audit clean)"
+echo "PASS: CloudFront distribution composition verified (SSR Lambda URL AWS_IAM/OAC default, S3 sidecar, ${REQUIRED_BEARER_BEHAVIOR_COUNT} bearer-auth behaviors pinned to intended origins, WAF no-User-Agent exception scoped to exact /resolve, OAC audit clean)"

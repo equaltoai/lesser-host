@@ -255,3 +255,95 @@ describe("OffchainResolver — CCIP-Read contract", () => {
     );
   });
 });
+
+// ========= Signature rejection paths =========
+
+describe("OffchainResolver — signature rejection paths", () => {
+  function signedResponse(signingKey, addr, callData, result, expires, serialization = "compact") {
+    const hash = ethersPkg.solidityPackedKeccak256(
+      ["bytes", "address", "uint64", "bytes32", "bytes32"],
+      ["0x1900", addr, expires, ethersPkg.keccak256(callData), ethersPkg.keccak256(result)],
+    );
+    const sig = signingKey.sign(hash);
+    const encodedSig = serialization === "compact" ? sig.compactSerialized : sig.serialized;
+    return ethersPkg.AbiCoder.defaultAbiCoder().encode(
+      ["bytes", "uint64", "bytes"],
+      [result, expires, encodedSig],
+    );
+  }
+
+  function encodeExtraData(callData, addr) {
+    return ethersPkg.AbiCoder.defaultAbiCoder().encode(
+      ["bytes", "address"],
+      [callData, addr],
+    );
+  }
+
+  it("rejects expired signatures", async () => {
+    const signerWallet = ethersPkg.Wallet.createRandom();
+    const signingKey = new ethersPkg.SigningKey(signerWallet.privateKey);
+    const { resolver } = await deployOffchainResolver({ signer: signerWallet.address });
+    const addr = await resolver.getAddress();
+
+    const callData = "0xdeadbeef";
+    const result = "0x1234";
+    const expires =
+      BigInt((await ethers.provider.getBlock("latest")).timestamp) - 1n;
+
+    const response = signedResponse(signingKey, addr, callData, result, expires);
+
+    await assert.rejects(
+      resolver.resolveWithProof(response, encodeExtraData(callData, addr)),
+      /Signature expired/,
+    );
+  });
+
+  it("rejects proofs for the correct target signed by an unauthorized key", async () => {
+    const signerWallet = ethersPkg.Wallet.createRandom();
+    const attackerKey = new ethersPkg.SigningKey(
+      ethersPkg.Wallet.createRandom().privateKey,
+    );
+    const { resolver } = await deployOffchainResolver({ signer: signerWallet.address });
+    const addr = await resolver.getAddress();
+
+    const callData = "0xdeadbeef";
+    const result = "0x1234";
+    const expires =
+      BigInt((await ethers.provider.getBlock("latest")).timestamp) + 300n;
+
+    // Correct target hash, but signed by a key that is neither signer nor previousSigner.
+    const response = signedResponse(attackerKey, addr, callData, result, expires);
+
+    await assert.rejects(
+      resolver.resolveWithProof(response, encodeExtraData(callData, addr)),
+      /OffchainResolver: invalid signature/,
+    );
+  });
+
+  it("accepts 65-byte signatures and rejects invalid lengths", async () => {
+    const signerWallet = ethersPkg.Wallet.createRandom();
+    const signingKey = new ethersPkg.SigningKey(signerWallet.privateKey);
+    const { resolver } = await deployOffchainResolver({ signer: signerWallet.address });
+    const addr = await resolver.getAddress();
+
+    const callData = "0xdeadbeef";
+    const result = "0x1234";
+    const expires =
+      BigInt((await ethers.provider.getBlock("latest")).timestamp) + 300n;
+
+    const response65 = signedResponse(signingKey, addr, callData, result, expires, "full");
+    assert.equal(
+      await resolver.resolveWithProof(response65, encodeExtraData(callData, addr)),
+      result,
+    );
+
+    const badResponse = ethersPkg.AbiCoder.defaultAbiCoder().encode(
+      ["bytes", "uint64", "bytes"],
+      [result, expires, "0x" + "11".repeat(63)],
+    );
+    await assert.rejects(
+      resolver.resolveWithProof(badResponse, encodeExtraData(callData, addr)),
+      /invalid signature length/,
+    );
+  });
+});

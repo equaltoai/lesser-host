@@ -41,6 +41,7 @@ import {
 	ensGatewayResolverAddressFromContext,
 	ensGatewayRootNameFromContext,
 } from './ens-gateway-config';
+import { hostWebAclRules } from './web-acl-rules';
 export interface LesserHostStackProps extends cdk.StackProps {
 	stage: string;
 }
@@ -1431,56 +1432,7 @@ export class LesserHostStack extends cdk.Stack {
 				metricName: `${namePrefix}-web-acl`,
 				sampledRequestsEnabled: true,
 			},
-			rules: [
-				{
-					name: 'AWSManagedRulesCommonRuleSet',
-					priority: 0,
-					overrideAction: { none: {} },
-					statement: {
-						managedRuleGroupStatement: {
-							vendorName: 'AWS',
-							name: 'AWSManagedRulesCommonRuleSet',
-						},
-					},
-					visibilityConfig: {
-						cloudWatchMetricsEnabled: true,
-						metricName: `${namePrefix}-waf-common`,
-						sampledRequestsEnabled: true,
-					},
-				},
-				{
-					name: 'AWSManagedRulesKnownBadInputsRuleSet',
-					priority: 1,
-					overrideAction: { none: {} },
-					statement: {
-						managedRuleGroupStatement: {
-							vendorName: 'AWS',
-							name: 'AWSManagedRulesKnownBadInputsRuleSet',
-						},
-					},
-					visibilityConfig: {
-						cloudWatchMetricsEnabled: true,
-						metricName: `${namePrefix}-waf-bad-inputs`,
-						sampledRequestsEnabled: true,
-					},
-				},
-				{
-					name: 'IpRateLimit',
-					priority: 2,
-					action: { block: {} },
-					statement: {
-						rateBasedStatement: {
-							limit: stage === 'live' ? 2000 : 5000,
-							aggregateKeyType: 'IP',
-						},
-					},
-					visibilityConfig: {
-						cloudWatchMetricsEnabled: true,
-						metricName: `${namePrefix}-waf-ip-rate-limit`,
-						sampledRequestsEnabled: true,
-					},
-				},
-			],
+			rules: hostWebAclRules(namePrefix, stage),
 		});
 
 		// Pre-build web/dist so WebSsrFn + WebSidecarsDeployment assets have

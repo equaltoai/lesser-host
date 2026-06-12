@@ -1792,7 +1792,20 @@ mkdir -p "${sec1_home}"
 
   cd contracts
   npm ci
-  slither contracts/TipSplitter.sol --config-file slither.config.json
+  production_contracts=(
+    contracts/SoulRegistry.sol
+    contracts/ReputationAttestation.sol
+    contracts/ValidationAttestation.sol
+    contracts/TipSplitter.sol
+    contracts/EtherealBlobRenderer.sol
+    contracts/SacredGeometryRenderer.sol
+    contracts/SigilRenderer.sol
+    contracts/OffchainResolver.sol
+  )
+  for contract in "${production_contracts[@]}"; do
+    echo "Running Slither on ${contract}"
+    slither "${contract}" --config-file slither.config.json
+  done
 )
 __GOV_CMD_SAST__
 )

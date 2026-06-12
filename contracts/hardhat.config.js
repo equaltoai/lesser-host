@@ -1,5 +1,6 @@
 import "dotenv/config";
 import HardhatEthers from "@nomicfoundation/hardhat-ethers";
+import HardhatVerify from "@nomicfoundation/hardhat-verify";
 
 /** @type import('hardhat/config').HardhatUserConfig */
 const sepoliaUrl = process.env.SEPOLIA_RPC_URL;
@@ -30,10 +31,20 @@ if (mainnetUrl) {
     url: mainnetUrl,
     accounts: sepoliaAccounts,
   };
+
+  // Rehearsal-only fork of mainnet (chainId 1) so deploy-mainnet-all.js can be
+  // exercised end-to-end (REHEARSAL=1) without sending real transactions.
+  networks.mainnetFork = {
+    type: "edr-simulated",
+    chainId: 1,
+    forking: {
+      url: mainnetUrl,
+    },
+  };
 }
 
 const config = {
-  plugins: [HardhatEthers],
+  plugins: [HardhatEthers, HardhatVerify],
   solidity: {
     version: "0.8.24",
     settings: {
@@ -42,6 +53,11 @@ const config = {
         enabled: true,
         runs: 200,
       },
+    },
+  },
+  verify: {
+    etherscan: {
+      apiKey: process.env.ETHERSCAN_API_KEY ?? "",
     },
   },
   paths: {

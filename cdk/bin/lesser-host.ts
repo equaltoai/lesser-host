@@ -23,6 +23,27 @@ function cdkDir(): string {
 	return findUpward(__dirname, (dir) => fs.existsSync(path.join(dir, 'cdk.json')));
 }
 
+function explicitCliContextKeys(argv: readonly string[]): Set<string> {
+	const keys = new Set<string>();
+	for (let i = 0; i < argv.length; i += 1) {
+		const arg = argv[i];
+		let assignment = '';
+		if (arg === '-c' || arg === '--context') {
+			assignment = argv[i + 1] ?? '';
+			i += 1;
+		} else if (arg.startsWith('--context=')) {
+			assignment = arg.slice('--context='.length);
+		} else {
+			continue;
+		}
+
+		const equals = assignment.indexOf('=');
+		const key = equals === -1 ? assignment : assignment.slice(0, equals);
+		if (key.trim() !== '') keys.add(key.trim());
+	}
+	return keys;
+}
+
 function applyLocalContextOverrides(app: cdk.App): void {
 	const localContextPath = path.join(cdkDir(), 'cdk.context.local.json');
 	if (!fs.existsSync(localContextPath)) return;
@@ -48,15 +69,13 @@ function applyLocalContextOverrides(app: cdk.App): void {
 
 	if (typeof maybeContext !== 'object' || maybeContext === null) return;
 
+	const cliContextKeys = explicitCliContextKeys(process.argv);
 	for (const [key, value] of Object.entries(maybeContext)) {
-		const currentValue = app.node.tryGetContext(key);
-		const currentString = typeof currentValue === 'string' ? currentValue : '';
-		const isPlaceholder =
-			currentValue === undefined ||
-			currentString.trim() === '' ||
-			currentString.includes('<YOUR_') ||
-			(currentString.startsWith('<') && currentString.endsWith('>'));
-		if (isPlaceholder) app.node.setContext(key, value);
+		// cdk.context.local.json is the operator-local source for deploy-time
+		// values, including booleans such as ensGatewayEnabledLive. It must be
+		// able to override public defaults in cdk.json, while explicit CLI
+		// -c/--context values still win for one-off diagnostics.
+		if (!cliContextKeys.has(key)) app.node.setContext(key, value);
 	}
 }
 

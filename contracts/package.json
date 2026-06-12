@@ -9,6 +9,7 @@
   },
   "scripts": {
     "build": "hardhat compile",
+    "create:mainnet-env": "node scripts/create-mainnet-deployer-env.js",
     "deploy:sepolia": "hardhat run --network sepolia scripts/deploy-tip-splitter.js",
     "deploy:sepolia:offchain-resolver": "hardhat run --network sepolia scripts/deploy-offchain-resolver.js",
     "deploy:sepolia:all": "hardhat run --network sepolia scripts/deploy-sepolia-all.js",
@@ -17,12 +18,17 @@
     "deploy:sepolia:soul-attestations": "hardhat run --network sepolia scripts/deploy-soul-attestations.js",
     "deploy:sepolia:soul-renderers": "hardhat run --network sepolia scripts/deploy-soul-renderers.js",
     "lint": "solhint \"contracts/**/*.sol\"",
-    "slither": "slither contracts/TipSplitter.sol --config-file slither.config.json",
-    "test": "hardhat compile && node --test test/*.test.js"
+    "slither": "for c in SoulRegistry ReputationAttestation ValidationAttestation TipSplitter EtherealBlobRenderer SacredGeometryRenderer SigilRenderer OffchainResolver; do echo \"--- slither $c ---\"; slither contracts/$c.sol --config-file slither.config.json || exit 1; done",
+    "test": "hardhat compile && node --test test/*.test.js",
+    "create:mainnet-mint-signer-env": "node scripts/create-mainnet-mint-signer-env.js",
+    "deploy:mainnet:all": "hardhat run --network mainnet scripts/deploy-mainnet-all.js",
+    "deploy:mainnet:rehearsal": "REHEARSAL=1 MAINNET_DEPLOY_CHECKPOINT_PATH=/tmp/lesser-mainnet-rehearsal/deploy-checkpoint.json MAINNET_DEPLOYMENT_RECORD_PATH=/tmp/lesser-mainnet-rehearsal/latest.json MAINNET_SAFE_TX_BUILDER_PATH=/tmp/lesser-mainnet-rehearsal/safe-tx-builder-soul-tip-post-deploy.json hardhat run --network mainnetFork scripts/deploy-mainnet-all.js",
+    "verify:mainnet:all": "hardhat run --network mainnet scripts/verify-mainnet-all.js"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-ethers": "^4.0.6",
     "@nomicfoundation/hardhat-network-helpers": "^3.0.4",
+    "@nomicfoundation/hardhat-verify": "^3.0.20",
     "@openzeppelin/contracts": "5.6.1",
     "dotenv": "^17.3.1",
     "ethers": "^6.16.0",

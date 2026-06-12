@@ -14,6 +14,8 @@ library SoulPRNG {
         bytes memory b = bytes(str);
         uint32 h;
         unchecked {
+            // XOR is intentional hash seeding (xmur3), not exponentiation.
+            // slither-disable-next-line incorrect-exp
             h = 1779033703 ^ uint32(b.length);
             for (uint256 i = 0; i < b.length; i++) {
                 h = _imul(h ^ uint32(uint8(b[i])), 3432918353);

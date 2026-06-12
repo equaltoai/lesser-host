@@ -559,6 +559,15 @@ type DistributionConfig = {
 	CacheBehaviors?: CloudFrontBehavior[];
 };
 
+type WebAclRule = {
+	Name?: unknown;
+	Priority?: unknown;
+	Action?: unknown;
+	OverrideAction?: unknown;
+	Statement?: Record<string, unknown>;
+	VisibilityConfig?: unknown;
+};
+
 function distributionConfig(template: SynthesizedTemplate): DistributionConfig {
 	const distributions = findResources(template, 'AWS::CloudFront::Distribution');
 	assert.equal(
@@ -569,6 +578,14 @@ function distributionConfig(template: SynthesizedTemplate): DistributionConfig {
 	const config = distributions[0]?.DistributionConfig;
 	assert.ok(config && typeof config === 'object', 'distribution missing DistributionConfig');
 	return config as DistributionConfig;
+}
+
+function webAclRules(template: SynthesizedTemplate): WebAclRule[] {
+	const webAcls = findResources(template, 'AWS::WAFv2::WebACL');
+	assert.equal(webAcls.length, 1, `expected exactly one WebACL, got ${webAcls.length}`);
+	const rules = webAcls[0]?.Rules;
+	assert.ok(Array.isArray(rules), 'WebACL missing Rules array');
+	return rules as WebAclRule[];
 }
 
 test('M0.13 distribution: preserves legacy logical id for in-place alias migration', () => {
@@ -684,6 +701,64 @@ test('M0.13 distribution: bearer-auth API/trust origins are NOT OAC-protected', 
 			`bearer-auth origin behind ${pattern} must NOT be OAC-protected; OAC would break the existing bearer auth contract`,
 		);
 	}
+});
+
+test('M0.13 WAF: allows no-User-Agent only for ENS /resolve CCIP-read', () => {
+	const rules = webAclRules(synthTemplate());
+	const commonRule = rules.find((rule) => rule.Name === 'AWSManagedRulesCommonRuleSet');
+	assert.ok(commonRule, 'expected AWSManagedRulesCommonRuleSet rule');
+	const commonStatement = commonRule.Statement?.ManagedRuleGroupStatement as
+		| { RuleActionOverrides?: Array<Record<string, unknown>> }
+		| undefined;
+	assert.ok(commonStatement, 'CommonRuleSet missing ManagedRuleGroupStatement');
+	const noUserAgentOverride = (commonStatement.RuleActionOverrides ?? []).find(
+		(override) => override.Name === 'NoUserAgent_HEADER',
+	);
+	assert.deepEqual(
+		noUserAgentOverride,
+		{ Name: 'NoUserAgent_HEADER', ActionToUse: { Count: {} } },
+		'managed no-User-Agent rule must be counted so host can apply a route-scoped /resolve exception',
+	);
+
+	const customRule = rules.find((rule) => rule.Name === 'BlockNoUserAgentExceptResolve');
+	assert.ok(customRule, 'expected custom no-User-Agent block rule');
+	assert.deepEqual(customRule.Action, { Block: {} }, 'custom no-User-Agent rule must block');
+	assert.equal(customRule.Priority, 1, 'custom no-User-Agent rule must run immediately after CommonRuleSet');
+
+	const andStatement = customRule.Statement?.AndStatement as { Statements?: Array<Record<string, unknown>> } | undefined;
+	assert.ok(andStatement, 'custom no-User-Agent rule must be an AND statement');
+	const statements = andStatement.Statements ?? [];
+	assert.equal(statements.length, 2, 'custom no-User-Agent rule must have exactly label and path predicates');
+
+	const labelPredicate = statements.find((statement) => statement.LabelMatchStatement);
+	assert.deepEqual(
+		labelPredicate,
+		{
+			LabelMatchStatement: {
+				Scope: 'LABEL',
+				Key: 'awswaf:managed:aws:core-rule-set:NoUserAgent_Header',
+			},
+		},
+		'custom rule must reuse the managed no-User-Agent label instead of reimplementing header semantics',
+	);
+
+	const pathPredicate = statements.find((statement) => statement.NotStatement);
+	assert.deepEqual(
+		pathPredicate,
+		{
+			NotStatement: {
+				Statement: {
+					ByteMatchStatement: {
+						FieldToMatch: { UriPath: {} },
+						PositionalConstraint: 'EXACTLY',
+						SearchString: '/resolve',
+						TextTransformations: [{ Priority: 0, Type: 'NONE' }],
+					},
+				},
+			},
+		},
+		'custom rule must exempt exactly /resolve and no broader trust/API path',
+	);
 });
 
 test('M0.13 distribution: preserves all bearer-auth path patterns from the legacy distribution', () => {
