@@ -187,6 +187,12 @@ func TestHandlePortalProvisionConsentChallenge_CreatesChallenge(t *testing.T) {
 		t.Fatalf("resp=%#v err=%v", resp, err)
 	}
 
+	assertProvisionConsentChallengeResponse(t, resp)
+}
+
+func assertProvisionConsentChallengeResponse(t *testing.T, resp *apptheory.Response) {
+	t.Helper()
+
 	var out provisionConsentChallengeResponse
 	if err := json.Unmarshal(resp.Body, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -203,6 +209,15 @@ func TestHandlePortalProvisionConsentChallenge_CreatesChallenge(t *testing.T) {
 	}
 	if payload.Kind != provisionInitAdminConsentKindV1 || payload.Instance != "dev.demo.greater.website" || payload.Username != testProvisionConsentSlugDemo {
 		t.Fatalf("unexpected structured consent payload: %#v", payload)
+	}
+	if out.Wallet.ExpiresAt.Sub(out.Wallet.IssuedAt) != provisionInitAdminConsentTTL {
+		t.Fatalf("unexpected consent ttl: issued=%s expires=%s", out.Wallet.IssuedAt, out.Wallet.ExpiresAt)
+	}
+	if provisionInitAdminConsentTTL >= provisionInitAdminConsentMaxFuture {
+		t.Fatalf("consent ttl %s must stay below Lesser's max future window %s", provisionInitAdminConsentTTL, provisionInitAdminConsentMaxFuture)
+	}
+	if !payload.ExpiresAt.Equal(out.Wallet.ExpiresAt.UTC()) {
+		t.Fatalf("message expiry does not match response expiry: message=%s response=%s", payload.ExpiresAt, out.Wallet.ExpiresAt)
 	}
 }
 
@@ -285,7 +300,7 @@ func TestConsumeProvisionConsentChallenge_MarksConsumedAndClearsMessage(t *testi
 		return ch != nil
 	})).Return(qConsent).Once()
 	qConsent.On("IfExists").Return(qConsent).Once()
-	qConsent.On("WithConditionExpression", mock.Anything, mock.Anything).Return(qConsent).Once()
+	qConsent.On("WithCondition", "Consumed", "=", false).Return(qConsent).Once()
 	qConsent.On("Update", []string{"Consumed", "ConsumedAt", "Message", "MessageHash"}).Return(nil).Once()
 
 	s := &Server{store: store.New(db)}
@@ -314,7 +329,7 @@ func TestConsumeProvisionConsentChallenge_RejectsAlreadyConsumed(t *testing.T) {
 	db.On("WithContext", mock.Anything).Return(db).Once()
 	db.On("Model", mock.AnythingOfType("*models.ProvisionConsentChallenge")).Return(qConsent).Once()
 	qConsent.On("IfExists").Return(qConsent).Once()
-	qConsent.On("WithConditionExpression", mock.Anything, mock.Anything).Return(qConsent).Once()
+	qConsent.On("WithCondition", "Consumed", "=", false).Return(qConsent).Once()
 	qConsent.On("Update", []string{"Consumed", "ConsumedAt", "Message", "MessageHash"}).Return(theoryErrors.ErrConditionFailed).Once()
 
 	s := &Server{store: store.New(db)}

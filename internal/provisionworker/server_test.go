@@ -119,6 +119,9 @@ func TestFailJob_UpdatesJobAndTransacts(t *testing.T) {
 	if job.ErrorCode != "code" || job.ErrorMessage != "msg" {
 		t.Fatalf("expected error details set")
 	}
+	if job.Note != job.ErrorMessage {
+		t.Fatalf("expected failure note to mirror error message, got note=%q error=%q", job.Note, job.ErrorMessage)
+	}
 	if job.RequestID != "req" {
 		t.Fatalf("expected request id set")
 	}

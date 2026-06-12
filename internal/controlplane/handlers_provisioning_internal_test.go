@@ -126,6 +126,33 @@ func TestBuildManagedProvisionJob_EncryptsConsentWithKey(t *testing.T) {
 	require.Equal(t, expiresAt.UTC(), job.ConsentExpiresAt)
 }
 
+func TestHydrateManagedProvisionJobFromInstance_ReusesPartialProvisioningState(t *testing.T) {
+	t.Parallel()
+
+	job := &models.ProvisionJob{
+		ID:           "job1",
+		InstanceSlug: "demo",
+		Region:       "us-west-2",
+		BaseDomain:   "demo.greater.website",
+	}
+	inst := &models.Instance{
+		Slug:             "demo",
+		HostedAccountID:  "123456789012",
+		HostedRegion:     "us-east-1",
+		HostedBaseDomain: "demo.greater.website",
+		HostedZoneID:     "Z123",
+	}
+
+	hydrateManagedProvisionJobFromInstance(job, inst)
+
+	require.Equal(t, "123456789012", job.AccountID)
+	require.Equal(t, "us-east-1", job.Region)
+	require.Equal(t, "demo.greater.website", job.BaseDomain)
+	require.Equal(t, "Z123", job.ChildHostedZoneID)
+	require.Equal(t, "PROVISION_JOB#job1", job.PK)
+	require.Equal(t, models.SKJob, job.SK)
+}
+
 func TestStartAndGetInstanceProvisioning(t *testing.T) {
 	t.Parallel()
 

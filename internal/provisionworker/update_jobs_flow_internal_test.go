@@ -371,6 +371,7 @@ func TestRunManagedUpdateStateMachine_BodyOnlyCompletesIndependently(t *testing.
 	require.Len(t, cb.startInputs, 1)
 	require.Equal(t, "lesser-body", envValue(cb.startInputs[0], "RUN_MODE"))
 	require.Equal(t, "v0.2.3", envValue(cb.startInputs[0], "LESSER_BODY_VERSION"))
+	require.Empty(t, envValue(cb.startInputs[0], "BODY_ENABLED"))
 }
 
 func TestRunManagedUpdateStateMachine_MCPOnlySkipsLesserAndBodyDeploy(t *testing.T) {
@@ -524,6 +525,7 @@ func TestRunManagedUpdateStateMachine_MCPOnlySkipsLesserAndBodyDeploy(t *testing
 	require.Len(t, cb.startInputs, 1)
 	require.Equal(t, "lesser-mcp", envValue(cb.startInputs[0], "RUN_MODE"))
 	require.Equal(t, "v0.2.3", envValue(cb.startInputs[0], "LESSER_BODY_VERSION"))
+	require.Equal(t, "true", envValue(cb.startInputs[0], "BODY_ENABLED"))
 }
 
 func TestUpdateJob_ProcessableAndMissingConfig(t *testing.T) {

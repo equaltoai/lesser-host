@@ -17,7 +17,11 @@ import (
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
-const deployRunnerModeLesser = "lesser"
+const (
+	deployRunnerModeLesser     = "lesser"
+	deployRunnerModeLesserBody = "lesser-body"
+	envBoolTrue                = "true"
+)
 
 var errDeployRunnerNotFound = errors.New("deploy runner not found")
 
@@ -103,6 +107,9 @@ func (s *Server) startDeployRunnerWithMode(ctx context.Context, job *models.Prov
 	env := s.buildDeployRunnerEnv(job, stage, receiptKey, bootstrapKey)
 	mode = normalizeDeployRunnerMode(mode)
 	env = append(env, cbtypes.EnvironmentVariable{Name: aws.String("RUN_MODE"), Value: aws.String(mode)})
+	if bodyEnabled, ok := provisionDeployRunnerBodyEnabledForMode(mode); ok {
+		env = append(env, cbtypes.EnvironmentVariable{Name: aws.String("BODY_ENABLED"), Value: aws.String(bodyEnabled)})
+	}
 	env = appendProvisionDeployRunnerInstanceEnv(env, runnerInputs)
 
 	idempotencyToken := codebuildIdempotencyToken(
@@ -126,6 +133,22 @@ func (s *Server) startDeployRunnerWithMode(ctx context.Context, job *models.Prov
 		return "", err
 	}
 	return codebuildBuildID(out)
+}
+
+func provisionDeployRunnerBodyEnabledForMode(mode string) (string, bool) {
+	switch normalizeDeployRunnerMode(mode) {
+	case deployRunnerModeLesser:
+		// Managed provisioning deploys Lesser first, then lesser-body, then
+		// reruns Lesser in RUN_MODE=lesser-mcp to attach the host-owned MCP
+		// route. Lesser's CLI defaults BODY_ENABLED to true, which makes the
+		// first Lesser deploy try to resolve the body SSM export before the
+		// body stack exists. Keep the first phase explicitly body-free.
+		return "false", true
+	case deployRunnerModeLesserMCP:
+		return envBoolTrue, true
+	default:
+		return "", false
+	}
 }
 
 func (s *Server) getDeployRunnerStatus(ctx context.Context, runID string) (string, string, error) {

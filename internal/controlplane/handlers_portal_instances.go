@@ -379,23 +379,23 @@ func validatePortalInstanceConfigUpdateRequest(req updateInstanceConfigRequest) 
 	return nil
 }
 
-func (s *Server) verifyPortalStartProvisionConsent(ctx *apptheory.Context, slug string, req startInstanceProvisionRequest) (startInstanceProvisionRequest, *apptheory.AppError) {
+func (s *Server) verifyPortalStartProvisionConsent(ctx *apptheory.Context, slug string, req startInstanceProvisionRequest) (startInstanceProvisionRequest, *models.ProvisionConsentChallenge, *apptheory.AppError) {
 	consentChallengeID := strings.TrimSpace(req.ConsentChallengeID)
 	consentMessage := req.ConsentMessage
 	consentSignature := strings.TrimSpace(req.ConsentSignature)
 	if consentChallengeID == "" {
-		return req, &apptheory.AppError{Code: "app.bad_request", Message: "consent_challenge_id is required"}
+		return req, nil, &apptheory.AppError{Code: "app.bad_request", Message: "consent_challenge_id is required"}
 	}
 	if strings.TrimSpace(consentMessage) == "" {
-		return req, &apptheory.AppError{Code: "app.bad_request", Message: "consent_message is required"}
+		return req, nil, &apptheory.AppError{Code: "app.bad_request", Message: "consent_message is required"}
 	}
 	if consentSignature == "" {
-		return req, &apptheory.AppError{Code: "app.bad_request", Message: "consent_signature is required"}
+		return req, nil, &apptheory.AppError{Code: "app.bad_request", Message: "consent_signature is required"}
 	}
 
 	chall, loadErr := s.getProvisionConsentChallenge(ctx, consentChallengeID)
 	if loadErr != nil {
-		return req, normalizeNotFound(loadErr)
+		return req, nil, normalizeNotFound(loadErr)
 	}
 
 	stage := strings.TrimSpace(s.cfg.Stage)
@@ -404,19 +404,16 @@ func (s *Server) verifyPortalStartProvisionConsent(ctx *apptheory.Context, slug 
 	}
 
 	if appErr := validateProvisionConsentChallenge(ctx, chall, slug, stage, consentMessage); appErr != nil {
-		return req, appErr
+		return req, nil, appErr
 	}
 	if reqAdmin := strings.ToLower(strings.TrimSpace(req.AdminUsername)); reqAdmin != "" && reqAdmin != strings.ToLower(strings.TrimSpace(chall.AdminUsername)) {
-		return req, &apptheory.AppError{Code: "app.bad_request", Message: "admin_username does not match consent challenge"}
+		return req, nil, &apptheory.AppError{Code: "app.bad_request", Message: "admin_username does not match consent challenge"}
 	}
 	if reservedErr := validateNotReservedWalletAddress(strings.TrimSpace(chall.WalletAddr), "wallet"); reservedErr != nil {
-		return req, reservedErr
-	}
-	if appErr := s.consumeProvisionConsentChallenge(ctx, chall, consentMessage, time.Now().UTC()); appErr != nil {
-		return req, appErr
+		return req, nil, reservedErr
 	}
 	if verifyErr := verifyEthereumSignature(strings.TrimSpace(chall.WalletAddr), strings.TrimSpace(chall.Message), consentSignature); verifyErr != nil {
-		return req, &apptheory.AppError{Code: "app.forbidden", Message: "invalid signature"}
+		return req, nil, &apptheory.AppError{Code: "app.forbidden", Message: "invalid signature"}
 	}
 
 	// Canonicalize consent artifacts from the stored challenge message.
@@ -428,7 +425,7 @@ func (s *Server) verifyPortalStartProvisionConsent(ctx *apptheory.Context, slug 
 	req.ConsentSignature = consentSignature
 	req.ConsentExpiresAt = chall.ExpiresAt
 
-	return req, nil
+	return req, chall, nil
 }
 
 func (s *Server) handlePortalStartInstanceProvisioning(ctx *apptheory.Context) (*apptheory.Response, error) {
@@ -459,18 +456,25 @@ func (s *Server) handlePortalStartInstanceProvisioning(ctx *apptheory.Context) (
 		return nil, err
 	}
 
-	req, appErr := s.verifyPortalStartProvisionConsent(ctx, slug, req)
+	req, chall, appErr := s.verifyPortalStartProvisionConsent(ctx, slug, req)
 	if appErr != nil {
 		return nil, appErr
 	}
 
 	now := time.Now().UTC()
-	job, baseDomain, region, appErr := s.buildManagedProvisionJob(slug, req, ctx.RequestID, now)
+	job, _, _, appErr := s.buildManagedProvisionJob(slug, req, ctx.RequestID, now)
 	if appErr != nil {
 		return nil, appErr
 	}
 	job.SoulEnabled = effectiveSoulEnabled(inst.SoulEnabled)
 	job.BodyEnabled = effectiveBodyEnabled(inst.BodyEnabled)
+	hydrateManagedProvisionJobFromInstance(job, inst)
+	baseDomain := strings.TrimSpace(job.BaseDomain)
+	region := strings.TrimSpace(job.Region)
+
+	if appErr := s.consumeProvisionConsentChallenge(ctx, chall, req.ConsentMessage, now); appErr != nil {
+		return nil, appErr
+	}
 
 	if appErr := s.createManagedProvisionJobTx(ctx, job, slug, baseDomain, region, ctx.AuthIdentity, "portal.instance.provision.start", ctx.RequestID, now); appErr != nil {
 		return nil, appErr
