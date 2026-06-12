@@ -509,6 +509,7 @@ func (s *Server) failJob(ctx context.Context, job *models.ProvisionJob, requestI
 	job.Step = "failed"
 	job.ErrorCode = strings.TrimSpace(code)
 	job.ErrorMessage = strings.TrimSpace(msg)
+	job.Note = job.ErrorMessage
 	job.RequestID = strings.TrimSpace(requestID)
 	job.UpdatedAt = now
 	clearProvisionJobConsentArtifacts(job)

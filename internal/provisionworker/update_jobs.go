@@ -1599,7 +1599,7 @@ func (s *Server) advanceUpdateBodyDeployStart(ctx context.Context, job *models.U
 		runnerLabel:      "lesser-body deploy runner",
 		startFailureCode: "body_deploy_start_failed",
 		startRunner: func(ctx context.Context, job *models.UpdateJob, inst *models.Instance) (string, error) {
-			return s.startUpdateDeployRunnerWithMode(ctx, job, inst, "lesser-body", s.updateBodyReceiptS3Key(job))
+			return s.startUpdateDeployRunnerWithMode(ctx, job, inst, deployRunnerModeLesserBody, s.updateBodyReceiptS3Key(job))
 		},
 	})
 }
@@ -1840,7 +1840,7 @@ func (s *Server) advanceUpdateDeployMcpStart(ctx context.Context, job *models.Up
 		runnerLabel:      "MCP wiring deploy runner",
 		startFailureCode: "mcp_deploy_start_failed",
 		startRunner: func(ctx context.Context, job *models.UpdateJob, inst *models.Instance) (string, error) {
-			return s.startUpdateDeployRunnerWithMode(ctx, job, inst, "lesser-mcp", s.updateMcpReceiptS3Key(job))
+			return s.startUpdateDeployRunnerWithMode(ctx, job, inst, deployRunnerModeLesserMCP, s.updateMcpReceiptS3Key(job))
 		},
 	})
 }

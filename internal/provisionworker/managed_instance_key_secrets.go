@@ -127,7 +127,7 @@ func validateManagedInstanceKeySecretTags(tags []smtypes.Tag, slug string, contr
 	slugTag := strings.ToLower(secretsManagerTagValue(tags, managedInstanceKeySecretTagInstanceSlug))
 	rawStageTag := secretsManagerTagValue(tags, managedInstanceKeySecretTagStage)
 	stageTag := managedInstanceKeySecretStage(rawStageTag)
-	if managedTag != "true" || slugTag != slug || stageTag != expectedStage {
+	if managedTag != envBoolTrue || slugTag != slug || stageTag != expectedStage {
 		return errManagedInstanceKeySecretTags
 	}
 	if strings.TrimSpace(rawStageTag) == "" {
@@ -179,7 +179,7 @@ func (s *Server) createManagedInstanceKeySecret(ctx context.Context, sm secretsM
 		Tags: []smtypes.Tag{
 			{Key: aws.String(managedInstanceKeySecretTagInstanceSlug), Value: aws.String(slug)},
 			{Key: aws.String(managedInstanceKeySecretTagKeyID), Value: aws.String(keyID)},
-			{Key: aws.String(managedInstanceKeySecretTagManaged), Value: aws.String("true")},
+			{Key: aws.String(managedInstanceKeySecretTagManaged), Value: aws.String(envBoolTrue)},
 			{Key: aws.String(managedInstanceKeySecretTagStage), Value: aws.String(stage)},
 		},
 	})
@@ -214,7 +214,7 @@ func updateManagedInstanceKeySecretTags(ctx context.Context, sm secretsManagerAP
 		Tags: []smtypes.Tag{
 			{Key: aws.String(managedInstanceKeySecretTagInstanceSlug), Value: aws.String(slug)},
 			{Key: aws.String(managedInstanceKeySecretTagKeyID), Value: aws.String(keyID)},
-			{Key: aws.String(managedInstanceKeySecretTagManaged), Value: aws.String("true")},
+			{Key: aws.String(managedInstanceKeySecretTagManaged), Value: aws.String(envBoolTrue)},
 			{Key: aws.String(managedInstanceKeySecretTagStage), Value: aws.String(stage)},
 		},
 	})

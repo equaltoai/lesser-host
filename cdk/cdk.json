@@ -67,7 +67,7 @@
     "managedAccountEmailTemplateLive": "<YOUR_EMAIL>+{slug}@<YOUR_DOMAIN>",
     "managedDefaultRegion": "us-east-1",
     "managedLesserDefaultVersion": "v1.2.6",
-    "managedLesserBodyDefaultVersion": "v0.2.3",
+    "managedLesserBodyDefaultVersion": "v0.4.8",
     "managedEnableAgentRegistration": "true"
   }
 }

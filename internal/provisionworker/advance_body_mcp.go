@@ -11,6 +11,7 @@ import (
 )
 
 const (
+	deployRunnerModeLesserMCP            = "lesser-mcp"
 	noteStartingLesserBodyDeployRunner   = "starting lesser-body deploy runner"
 	noteVerifyingDeployment              = "verifying deployment"
 	noteLesserBodyDeployRunnerInProgress = "lesser-body deploy runner in progress"
@@ -105,7 +106,7 @@ func (s *Server) advanceProvisionBodyDeployStartStartRunner(ctx context.Context,
 		job,
 		requestID,
 		now,
-		"lesser-body",
+		deployRunnerModeLesserBody,
 		s.bodyReceiptS3Key(job),
 		provisionStepBodyDeployWait,
 		"body_deploy_start_failed",
@@ -140,7 +141,7 @@ func (s *Server) advanceProvisionDeployMcpStartStartRunner(ctx context.Context, 
 		job,
 		requestID,
 		now,
-		"lesser-mcp",
+		deployRunnerModeLesserMCP,
 		s.mcpReceiptS3Key(job),
 		provisionStepDeployMcpWait,
 		"mcp_deploy_start_failed",

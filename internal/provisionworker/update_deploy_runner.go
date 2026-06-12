@@ -239,8 +239,11 @@ func (s *Server) startUpdateDeployRunnerWithMode(ctx context.Context, job *model
 
 	mode = normalizeDeployRunnerMode(mode)
 	env = append(env, cbtypes.EnvironmentVariable{Name: aws.String("RUN_MODE"), Value: aws.String(mode)})
-	if mode == "lesser-body" && job.BodyTemplateCertify {
-		env = append(env, cbtypes.EnvironmentVariable{Name: aws.String("BODY_TEMPLATE_CERTIFY"), Value: aws.String("true")})
+	if bodyEnabled, ok := updateDeployRunnerBodyEnabledForMode(mode, inst); ok {
+		env = append(env, cbtypes.EnvironmentVariable{Name: aws.String("BODY_ENABLED"), Value: aws.String(bodyEnabled)})
+	}
+	if mode == deployRunnerModeLesserBody && job.BodyTemplateCertify {
+		env = append(env, cbtypes.EnvironmentVariable{Name: aws.String("BODY_TEMPLATE_CERTIFY"), Value: aws.String(envBoolTrue)})
 	}
 
 	idempotencyToken := codebuildIdempotencyToken(
@@ -268,4 +271,22 @@ func (s *Server) startUpdateDeployRunnerWithMode(ctx context.Context, job *model
 
 func (s *Server) startUpdateDeployRunner(ctx context.Context, job *models.UpdateJob, inst *models.Instance) (string, error) {
 	return s.startUpdateDeployRunnerWithMode(ctx, job, inst, deployRunnerModeLesser, "")
+}
+
+func updateDeployRunnerBodyEnabledForMode(mode string, inst *models.Instance) (string, bool) {
+	switch normalizeDeployRunnerMode(mode) {
+	case deployRunnerModeLesser:
+		enabled := false
+		if inst != nil && effectiveBodyEnabled(inst.BodyEnabled) && strings.TrimSpace(inst.LesserBodyVersion) != "" && !inst.McpWiredAt.IsZero() {
+			enabled = true
+		}
+		if enabled {
+			return envBoolTrue, true
+		}
+		return "false", true
+	case deployRunnerModeLesserMCP:
+		return envBoolTrue, true
+	default:
+		return "", false
+	}
 }

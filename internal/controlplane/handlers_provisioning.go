@@ -369,6 +369,25 @@ func (s *Server) buildManagedProvisionJob(slug string, req startInstanceProvisio
 	return job, baseDomain, region, nil
 }
 
+func hydrateManagedProvisionJobFromInstance(job *models.ProvisionJob, inst *models.Instance) {
+	if job == nil || inst == nil {
+		return
+	}
+	if accountID := strings.TrimSpace(inst.HostedAccountID); accountID != "" && strings.TrimSpace(job.AccountID) == "" {
+		job.AccountID = accountID
+	}
+	if region := strings.TrimSpace(inst.HostedRegion); region != "" {
+		job.Region = region
+	}
+	if baseDomain := strings.TrimSpace(inst.HostedBaseDomain); baseDomain != "" && strings.TrimSpace(job.BaseDomain) == "" {
+		job.BaseDomain = baseDomain
+	}
+	if zoneID := strings.TrimSpace(inst.HostedZoneID); zoneID != "" && strings.TrimSpace(job.ChildHostedZoneID) == "" {
+		job.ChildHostedZoneID = zoneID
+	}
+	_ = job.UpdateKeys()
+}
+
 func expandManagedAccountEmailTemplate(tmpl string, slug string) string {
 	tmpl = strings.TrimSpace(tmpl)
 	if tmpl == "" {
@@ -455,12 +474,15 @@ func (s *Server) handleStartInstanceProvisioning(ctx *apptheory.Context) (*appth
 	}
 
 	now := time.Now().UTC()
-	job, baseDomain, region, appErr := s.buildManagedProvisionJob(slug, req, ctx.RequestID, now)
+	job, _, _, appErr := s.buildManagedProvisionJob(slug, req, ctx.RequestID, now)
 	if appErr != nil {
 		return nil, appErr
 	}
 	job.SoulEnabled = effectiveSoulEnabled(inst.SoulEnabled)
 	job.BodyEnabled = effectiveBodyEnabled(inst.BodyEnabled)
+	hydrateManagedProvisionJobFromInstance(job, inst)
+	baseDomain := strings.TrimSpace(job.BaseDomain)
+	region := strings.TrimSpace(job.Region)
 
 	if appErr := s.createManagedProvisionJobTx(ctx, job, slug, baseDomain, region, ctx.AuthIdentity, "instance.provision.start", ctx.RequestID, now); appErr != nil {
 		return nil, appErr

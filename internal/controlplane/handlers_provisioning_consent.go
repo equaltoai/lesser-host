@@ -27,7 +27,14 @@ type provisionConsentChallengeResponse struct {
 	Wallet        walletChallengeResponse `json:"wallet"`
 }
 
-const provisionInitAdminConsentKindV1 = "lesser.init_admin_consent.v1"
+const (
+	provisionInitAdminConsentKindV1 = "lesser.init_admin_consent.v1"
+	// Lesser M9 accepts init-admin consent only when expires_at is no more
+	// than one hour in the future. Keep host's challenge below that contract
+	// with a small clock-skew margin while still allowing slow first deploys.
+	provisionInitAdminConsentMaxFuture = time.Hour
+	provisionInitAdminConsentTTL       = 55 * time.Minute
+)
 
 type provisionInitAdminConsentV1 struct {
 	Kind      string    `json:"kind"`
@@ -158,7 +165,7 @@ func (s *Server) handlePortalProvisionConsentChallenge(ctx *apptheory.Context) (
 	}
 
 	now := time.Now().UTC()
-	expiresAt := now.Add(10 * time.Minute)
+	expiresAt := now.Add(provisionInitAdminConsentTTL)
 	baseDomain := managedProvisionBaseDomain(slug, s.cfg.ManagedParentDomain)
 	msg := buildProvisionConsentMessage(stage, baseDomain, adminUsername, nonce, expiresAt)
 
@@ -249,7 +256,13 @@ func (s *Server) consumeProvisionConsentChallenge(ctx *apptheory.Context, chall 
 	err := s.store.DB.WithContext(ctx.Context()).
 		Model(update).
 		IfExists().
-		WithConditionExpression("attribute_not_exists(consumed) OR consumed = :false", map[string]any{":false": false}).
+		// Use TableTheory's field-aware condition builder here instead of a raw
+		// expression: DynamoDB treats "consumed" as a reserved word, so a raw
+		// condition fails at runtime unless the attribute name is aliased.
+		// ProvisionConsentChallenge.BeforeCreate persists the zero-value
+		// Consumed=false, so the field condition is sufficient for single-use
+		// challenge consumption and preserves the existing replay guard.
+		WithCondition("Consumed", "=", false).
 		Update("Consumed", "ConsumedAt", "Message", "MessageHash")
 	if theoryErrors.IsConditionFailed(err) || theoryErrors.IsNotFound(err) {
 		return &apptheory.AppError{Code: "app.unauthorized", Message: "unauthorized"}
