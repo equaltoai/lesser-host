@@ -31,10 +31,10 @@
   "publication": {
     "agent_id": "0x1111111111111111111111111111111111111111111111111111111111111111",
     "published_version": 1,
-    "registration_uri": "s3://lesser-host-lab-soul-packs/soul/agents/0x1111111111111111111111111111111111111111111111111111111111111111/registration.json",
-    "registration_s3_key": "soul/agents/0x1111111111111111111111111111111111111111111111111111111111111111/registration.json",
-    "versioned_registration_uri": "s3://lesser-host-lab-soul-packs/soul/agents/0x1111111111111111111111111111111111111111111111111111111111111111/versions/1/registration.json",
-    "versioned_registration_s3_key": "soul/agents/0x1111111111111111111111111111111111111111111111111111111111111111/versions/1/registration.json",
+    "registration_uri": "s3://lesser-host-lab-soul-packs/registry/v1/agents/0x1111111111111111111111111111111111111111111111111111111111111111/registration.json",
+    "registration_s3_key": "registry/v1/agents/0x1111111111111111111111111111111111111111111111111111111111111111/registration.json",
+    "versioned_registration_uri": "s3://lesser-host-lab-soul-packs/registry/v1/agents/0x1111111111111111111111111111111111111111111111111111111111111111/versions/1/registration.json",
+    "versioned_registration_s3_key": "registry/v1/agents/0x1111111111111111111111111111111111111111111111111111111111111111/versions/1/registration.json",
     "anchor_state": "hosted_offchain",
     "published_at": "2026-06-12T16:35:00Z"
   },

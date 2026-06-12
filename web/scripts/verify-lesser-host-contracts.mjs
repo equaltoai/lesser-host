@@ -111,6 +111,12 @@ const requiredInstanceBootstrapErrorCodes = [
   'soul_instance.internal'
 ];
 
+const soulAgentIDPattern = '0x[0-9a-fA-F]{64}';
+const runtimeRegistrationS3KeyPattern = `^registry/v1/agents/${soulAgentIDPattern}/registration\\.json$`;
+const runtimeVersionedRegistrationS3KeyPattern = `^registry/v1/agents/${soulAgentIDPattern}/versions/[1-9][0-9]*/registration\\.json$`;
+const runtimeRegistrationURIPattern = `^s3://[^/]+/registry/v1/agents/${soulAgentIDPattern}/registration\\.json$`;
+const runtimeVersionedRegistrationURIPattern = `^s3://[^/]+/registry/v1/agents/${soulAgentIDPattern}/versions/[1-9][0-9]*/registration\\.json$`;
+
 function assert(condition, message) {
   if (!condition) {
     throw new Error(message);
@@ -213,6 +219,48 @@ function verifySpecV3BootstrapSurface() {
   assert(
     finalizeSchema?.properties?.agent?.$ref === 'soul-agent-identity.schema.json',
     'instance bootstrap finalize response must bind to the canonical soul-agent-identity schema'
+  );
+
+  const publicationProps = finalizeSchema?.$defs?.publication?.properties ?? {};
+  assert(
+    publicationProps.registration_uri?.pattern === runtimeRegistrationURIPattern,
+    'finalize publication registration_uri must require the runtime registry/v1/agents S3 URI shape'
+  );
+  assert(
+    publicationProps.registration_s3_key?.pattern === runtimeRegistrationS3KeyPattern,
+    'finalize publication registration_s3_key must require the runtime registry/v1/agents key shape'
+  );
+  assert(
+    publicationProps.versioned_registration_uri?.pattern === runtimeVersionedRegistrationURIPattern,
+    'finalize publication versioned_registration_uri must require the runtime registry/v1/agents versioned S3 URI shape'
+  );
+  assert(
+    publicationProps.versioned_registration_s3_key?.pattern === runtimeVersionedRegistrationS3KeyPattern,
+    'finalize publication versioned_registration_s3_key must require the runtime registry/v1/agents versioned key shape'
+  );
+
+  const finalizeFixture = JSON.parse(
+    readFileSync(path.join(specV3FixturesDir, 'soul-instance-bootstrap.finalize.response.hosted-offchain.example.json'), 'utf8')
+  );
+  const fixtureAgentID = finalizeFixture?.agent_id;
+  const fixturePublishedVersion = finalizeFixture?.published_version;
+  const expectedRegistrationS3Key = `registry/v1/agents/${fixtureAgentID}/registration.json`;
+  const expectedVersionedRegistrationS3Key = `registry/v1/agents/${fixtureAgentID}/versions/${fixturePublishedVersion}/registration.json`;
+  assert(
+    finalizeFixture?.publication?.registration_s3_key === expectedRegistrationS3Key,
+    'hosted/off-chain finalize fixture must use the runtime soulRegistrationS3Key registry/v1/agents key shape'
+  );
+  assert(
+    finalizeFixture?.publication?.versioned_registration_s3_key === expectedVersionedRegistrationS3Key,
+    'hosted/off-chain finalize fixture must use the runtime soulRegistrationVersionedS3Key registry/v1/agents key shape'
+  );
+  assert(
+    finalizeFixture?.publication?.registration_uri === `s3://lesser-host-lab-soul-packs/${expectedRegistrationS3Key}`,
+    'hosted/off-chain finalize fixture registration_uri must use the runtime registry/v1/agents URI shape'
+  );
+  assert(
+    finalizeFixture?.publication?.versioned_registration_uri === `s3://lesser-host-lab-soul-packs/${expectedVersionedRegistrationS3Key}`,
+    'hosted/off-chain finalize fixture versioned_registration_uri must use the runtime registry/v1/agents URI shape'
   );
 }
 

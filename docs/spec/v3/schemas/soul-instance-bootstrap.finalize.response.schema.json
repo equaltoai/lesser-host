@@ -13,10 +13,10 @@
       "properties": {
         "agent_id": { "type": "string", "pattern": "^0x[0-9a-fA-F]{64}$" },
         "published_version": { "type": "integer", "minimum": 1 },
-        "registration_uri": { "type": "string", "minLength": 1, "maxLength": 2048 },
-        "registration_s3_key": { "type": "string", "minLength": 1, "maxLength": 1024 },
-        "versioned_registration_uri": { "type": "string", "minLength": 1, "maxLength": 2048 },
-        "versioned_registration_s3_key": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "registration_uri": { "type": "string", "minLength": 1, "maxLength": 2048, "pattern": "^s3://[^/]+/registry/v1/agents/0x[0-9a-fA-F]{64}/registration\\.json$" },
+        "registration_s3_key": { "type": "string", "minLength": 1, "maxLength": 1024, "pattern": "^registry/v1/agents/0x[0-9a-fA-F]{64}/registration\\.json$" },
+        "versioned_registration_uri": { "type": "string", "minLength": 1, "maxLength": 2048, "pattern": "^s3://[^/]+/registry/v1/agents/0x[0-9a-fA-F]{64}/versions/[1-9][0-9]*/registration\\.json$" },
+        "versioned_registration_s3_key": { "type": "string", "minLength": 1, "maxLength": 1024, "pattern": "^registry/v1/agents/0x[0-9a-fA-F]{64}/versions/[1-9][0-9]*/registration\\.json$" },
         "anchor_state": { "type": "string", "enum": ["hosted_offchain", "immutable_onchain"] },
         "published_at": { "type": "string", "format": "date-time" }
       }
