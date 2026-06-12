@@ -135,10 +135,38 @@ type soulMintConversationFinalizeRequest struct {
 	SelfAttestation    string            `json:"self_attestation"`
 }
 
+type soulMintConversationPublicationEvidence struct {
+	AgentID                    string `json:"agent_id"`
+	PublishedVersion           int    `json:"published_version"`
+	RegistrationURI            string `json:"registration_uri,omitempty"`
+	RegistrationS3Key          string `json:"registration_s3_key,omitempty"`
+	VersionedRegistrationURI   string `json:"versioned_registration_uri,omitempty"`
+	VersionedRegistrationS3Key string `json:"versioned_registration_s3_key,omitempty"`
+	AnchorState                string `json:"anchor_state,omitempty"`
+	PublishedAt                string `json:"published_at,omitempty"`
+}
+
+type soulMintConversationPromotionEvidence struct {
+	AgentID                  string `json:"agent_id"`
+	RegistrationID           string `json:"registration_id,omitempty"`
+	Stage                    string `json:"stage,omitempty"`
+	RequestStatus            string `json:"request_status,omitempty"`
+	ReviewStatus             string `json:"review_status,omitempty"`
+	ReadinessStatus          string `json:"readiness_status,omitempty"`
+	AnchorState              string `json:"anchor_state,omitempty"`
+	LatestConversationID     string `json:"latest_conversation_id,omitempty"`
+	LatestConversationStatus string `json:"latest_conversation_status,omitempty"`
+	PublishedVersion         int    `json:"published_version,omitempty"`
+	GraduatedAt              string `json:"graduated_at,omitempty"`
+}
+
 type soulMintConversationFinalizeResponse struct {
-	Version          string                   `json:"version"`
-	Agent            models.SoulAgentIdentity `json:"agent"`
-	PublishedVersion int                      `json:"published_version"`
+	Version          string                                  `json:"version"`
+	AgentID          string                                  `json:"agent_id"`
+	Agent            models.SoulAgentIdentity                `json:"agent"`
+	PublishedVersion int                                     `json:"published_version"`
+	Publication      soulMintConversationPublicationEvidence `json:"publication"`
+	Promotion        *soulMintConversationPromotionEvidence  `json:"promotion,omitempty"`
 }
 
 func (r soulMintConversationFinalizeResponse) MarshalJSON() ([]byte, error) {
@@ -157,13 +185,19 @@ func (r soulMintConversationFinalizeResponse) MarshalJSON() ([]byte, error) {
 		delete(agent, "minted_at")
 	}
 	return json.Marshal(struct {
-		Version          string         `json:"version"`
-		Agent            map[string]any `json:"agent"`
-		PublishedVersion int            `json:"published_version"`
+		Version          string                                  `json:"version"`
+		AgentID          string                                  `json:"agent_id"`
+		Agent            map[string]any                          `json:"agent"`
+		PublishedVersion int                                     `json:"published_version"`
+		Publication      soulMintConversationPublicationEvidence `json:"publication"`
+		Promotion        *soulMintConversationPromotionEvidence  `json:"promotion,omitempty"`
 	}{
 		Version:          r.Version,
+		AgentID:          r.AgentID,
 		Agent:            agent,
 		PublishedVersion: r.PublishedVersion,
+		Publication:      r.Publication,
+		Promotion:        r.Promotion,
 	})
 }
 
@@ -201,6 +235,7 @@ type mintConversationFinalizeContext struct {
 	conv           *models.SoulAgentMintConversation
 	agentIDHex     string
 	conversationID string
+	auditActor     string
 }
 
 type mintConversationDebitParams struct {
@@ -416,6 +451,7 @@ func (s *Server) loadMintConversationFinalizeContext(ctx *apptheory.Context) (mi
 		conv:           conv,
 		agentIDHex:     regCtx.agentIDHex,
 		conversationID: conversationID,
+		auditActor:     strings.TrimSpace(ctx.AuthIdentity),
 	}, nil
 }
 
@@ -1157,11 +1193,91 @@ func (s *Server) handleSoulBeginFinalizeMintConversation(ctx *apptheory.Context)
 	if appErr != nil {
 		return nil, appErr
 	}
+	return s.beginFinalizeMintConversation(ctx, finalizeCtx)
+}
+
+func (s *Server) handleSoulAgentBeginFinalizeMintConversation(ctx *apptheory.Context) (*apptheory.Response, error) {
+	agentCtx, appErr := s.requireMintConversationAgentContext(ctx, true)
+	if appErr != nil {
+		return nil, appErr
+	}
+	conversationID, appErr := requireMintConversationID(ctx)
+	if appErr != nil {
+		return nil, appErr
+	}
+	conv, appErr := s.loadMintConversationByStatus(ctx.Context(), agentCtx.agentIDHex, conversationID, models.SoulMintConversationStatusCompleted, "conversation is not completed", "conversation has no produced declarations")
+	if appErr != nil {
+		return nil, appErr
+	}
+	return s.beginFinalizeMintConversation(ctx, mintConversationFinalizeContext{
+		reg:            agentCtx.reg,
+		inst:           agentCtx.inst,
+		identity:       agentCtx.identity,
+		conv:           conv,
+		agentIDHex:     agentCtx.agentIDHex,
+		conversationID: conversationID,
+		auditActor:     strings.TrimSpace(ctx.AuthIdentity),
+	})
+}
+
+func (s *Server) handleSoulFinalizeMintConversationPreflight(ctx *apptheory.Context) (*apptheory.Response, error) {
+	return s.handleSoulBeginFinalizeMintConversation(ctx)
+}
+
+func (s *Server) handleSoulAgentFinalizeMintConversationPreflight(ctx *apptheory.Context) (*apptheory.Response, error) {
+	return s.handleSoulAgentBeginFinalizeMintConversation(ctx)
+}
+
+// handleSoulFinalizeMintConversation publishes the v2 registration version derived from a completed mint conversation.
+func (s *Server) handleSoulFinalizeMintConversation(ctx *apptheory.Context) (*apptheory.Response, error) {
+	finalizeCtx, appErr := s.loadMintConversationFinalizeContext(ctx)
+	if appErr != nil {
+		return nil, appErr
+	}
+	return s.finalizeMintConversation(ctx, finalizeCtx)
+}
+
+func (s *Server) handleSoulAgentFinalizeMintConversation(ctx *apptheory.Context) (*apptheory.Response, error) {
+	agentCtx, appErr := s.requireMintConversationAgentContext(ctx, true)
+	if appErr != nil {
+		return nil, appErr
+	}
+	conversationID, appErr := requireMintConversationID(ctx)
+	if appErr != nil {
+		return nil, appErr
+	}
+	conv, appErr := s.loadMintConversationByStatus(ctx.Context(), agentCtx.agentIDHex, conversationID, models.SoulMintConversationStatusCompleted, "conversation is not completed", "conversation has no produced declarations")
+	if appErr != nil {
+		return nil, appErr
+	}
+
+	finalizeCtx := mintConversationFinalizeContext{
+		reg:            agentCtx.reg,
+		inst:           agentCtx.inst,
+		identity:       agentCtx.identity,
+		conv:           conv,
+		agentIDHex:     agentCtx.agentIDHex,
+		conversationID: conversationID,
+		auditActor:     strings.TrimSpace(ctx.AuthIdentity),
+	}
+	return s.finalizeMintConversation(ctx, finalizeCtx)
+}
+
+func (s *Server) beginFinalizeMintConversation(ctx *apptheory.Context, finalizeCtx mintConversationFinalizeContext) (*apptheory.Response, error) {
+	if finalizeCtx.identity == nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
 	if finalizeCtx.identity.SelfDescriptionVersion > 0 {
 		return nil, &apptheory.AppError{Code: "app.conflict", Message: soulMintConversationAlreadyPublishedMessage}
 	}
 	if activeErr := requireMintConversationFinalizeActiveIdentity(finalizeCtx.identity); activeErr != nil {
 		return nil, activeErr
+	}
+	if strings.TrimSpace(finalizeCtx.identity.PrincipalAddress) == "" ||
+		strings.TrimSpace(finalizeCtx.identity.PrincipalSignature) == "" ||
+		strings.TrimSpace(finalizeCtx.identity.PrincipalDeclaration) == "" ||
+		strings.TrimSpace(finalizeCtx.identity.PrincipalDeclaredAt) == "" {
+		return nil, &apptheory.AppError{Code: "app.conflict", Message: "principal declaration is missing; re-verify registration"}
 	}
 	publishIdentity := mintConversationFinalizeIdentityForPublication(finalizeCtx.identity)
 	req, err := parseMintConversationFinalizeBeginRequestBody(ctx)
@@ -1188,130 +1304,19 @@ func (s *Server) handleSoulBeginFinalizeMintConversation(ctx *apptheory.Context)
 	return s.respondMintConversationFinalizePreflight(publishIdentity, decl, req.BoundarySignatures, regMap, digest, now, expectedVersion, nextVersion)
 }
 
-func (s *Server) handleSoulAgentBeginFinalizeMintConversation(ctx *apptheory.Context) (*apptheory.Response, error) {
-	agentCtx, appErr := s.requireMintConversationAgentContext(ctx, true)
-	if appErr != nil {
-		return nil, appErr
+func (s *Server) finalizeMintConversation(ctx *apptheory.Context, finalizeCtx mintConversationFinalizeContext) (*apptheory.Response, error) {
+	if finalizeCtx.identity == nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
-	conversationID, appErr := requireMintConversationID(ctx)
-	if appErr != nil {
-		return nil, appErr
-	}
-	conv, appErr := s.loadMintConversationByStatus(ctx.Context(), agentCtx.agentIDHex, conversationID, models.SoulMintConversationStatusCompleted, "conversation is not completed", "conversation has no produced declarations")
-	if appErr != nil {
-		return nil, appErr
-	}
-	if agentCtx.identity.SelfDescriptionVersion > 0 {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: soulMintConversationAlreadyPublishedMessage}
-	}
-	if activeErr := requireMintConversationFinalizeActiveIdentity(agentCtx.identity); activeErr != nil {
-		return nil, activeErr
-	}
-	publishIdentity := mintConversationFinalizeIdentityForPublication(agentCtx.identity)
-	if strings.TrimSpace(agentCtx.identity.PrincipalAddress) == "" ||
-		strings.TrimSpace(agentCtx.identity.PrincipalSignature) == "" ||
-		strings.TrimSpace(agentCtx.identity.PrincipalDeclaration) == "" ||
-		strings.TrimSpace(agentCtx.identity.PrincipalDeclaredAt) == "" {
+	if strings.TrimSpace(finalizeCtx.identity.PrincipalAddress) == "" ||
+		strings.TrimSpace(finalizeCtx.identity.PrincipalSignature) == "" ||
+		strings.TrimSpace(finalizeCtx.identity.PrincipalDeclaration) == "" ||
+		strings.TrimSpace(finalizeCtx.identity.PrincipalDeclaredAt) == "" {
 		return nil, &apptheory.AppError{Code: "app.conflict", Message: "principal declaration is missing; re-verify registration"}
-	}
-
-	req, err := parseMintConversationFinalizeBeginRequestBody(ctx)
-	if err != nil {
-		return nil, err
-	}
-	decl, appErr := parseAndValidateMintConversationDeclarations(conv.ProducedDeclarations)
-	if appErr != nil {
-		return nil, appErr
-	}
-	if verifyErr := verifyMintConversationBoundarySignatures(agentCtx.identity.Wallet, decl.Boundaries, req.BoundarySignatures); verifyErr != nil {
-		return nil, verifyErr
-	}
-
-	now := time.Now().UTC()
-	expectedVersion := agentCtx.identity.SelfDescriptionVersion
-	nextVersion := expectedVersion + 1
-	regMap, _, digest, _, _, appErr := s.buildMintConversationFinalizeV2Registration(agentCtx.agentIDHex, publishIdentity, decl, req.BoundarySignatures, now, nextVersion, "0x00")
-	if appErr != nil {
-		return nil, appErr
-	}
-	return s.respondMintConversationFinalizePreflight(publishIdentity, decl, req.BoundarySignatures, regMap, digest, now, expectedVersion, nextVersion)
-}
-
-func (s *Server) handleSoulFinalizeMintConversationPreflight(ctx *apptheory.Context) (*apptheory.Response, error) {
-	return s.handleSoulBeginFinalizeMintConversation(ctx)
-}
-
-func (s *Server) handleSoulAgentFinalizeMintConversationPreflight(ctx *apptheory.Context) (*apptheory.Response, error) {
-	return s.handleSoulAgentBeginFinalizeMintConversation(ctx)
-}
-
-// handleSoulFinalizeMintConversation publishes the v2 registration version derived from a completed mint conversation.
-func (s *Server) handleSoulFinalizeMintConversation(ctx *apptheory.Context) (*apptheory.Response, error) {
-	finalizeCtx, appErr := s.loadMintConversationFinalizeContext(ctx)
-	if appErr != nil {
-		return nil, appErr
 	}
 	req, issuedAt, expectedVersion, selfSig, err := parseMintConversationFinalizeRequestBody(ctx)
 	if err != nil {
 		return nil, err
-	}
-
-	nextVersion := *expectedVersion + 1
-	if versionErr := requireMintConversationFinalizeVersionAndActive(finalizeCtx.identity, nextVersion, *expectedVersion); versionErr != nil {
-		return nil, versionErr
-	}
-	publishIdentity := mintConversationFinalizeIdentityForPublication(finalizeCtx.identity)
-	finalizeCtx.identity = publishIdentity
-	decl, appErr := parseAndValidateMintConversationDeclarations(finalizeCtx.conv.ProducedDeclarations)
-	if appErr != nil {
-		return nil, appErr
-	}
-	if verifyErr := verifyMintConversationBoundarySignatures(finalizeCtx.identity.Wallet, decl.Boundaries, req.BoundarySignatures); verifyErr != nil {
-		return nil, verifyErr
-	}
-
-	regMap, regV2, digest, capsNorm, claimLevels, appErr := s.buildMintConversationFinalizeV2Registration(finalizeCtx.agentIDHex, publishIdentity, decl, req.BoundarySignatures, issuedAt.UTC(), nextVersion, selfSig)
-	if appErr != nil {
-		return nil, appErr
-	}
-	if sigErr := verifyEthereumSignatureBytes(finalizeCtx.identity.Wallet, digest, selfSig); sigErr != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid registration signature"}
-	}
-	return s.finalizeMintConversationPublish(ctx, finalizeCtx, regV2, regMap, decl, req.BoundarySignatures, capsNorm, claimLevels, issuedAt, expectedVersion, selfSig)
-}
-
-func (s *Server) handleSoulAgentFinalizeMintConversation(ctx *apptheory.Context) (*apptheory.Response, error) {
-	agentCtx, appErr := s.requireMintConversationAgentContext(ctx, true)
-	if appErr != nil {
-		return nil, appErr
-	}
-	conversationID, appErr := requireMintConversationID(ctx)
-	if appErr != nil {
-		return nil, appErr
-	}
-	conv, appErr := s.loadMintConversationByStatus(ctx.Context(), agentCtx.agentIDHex, conversationID, models.SoulMintConversationStatusCompleted, "conversation is not completed", "conversation has no produced declarations")
-	if appErr != nil {
-		return nil, appErr
-	}
-	if strings.TrimSpace(agentCtx.identity.PrincipalAddress) == "" ||
-		strings.TrimSpace(agentCtx.identity.PrincipalSignature) == "" ||
-		strings.TrimSpace(agentCtx.identity.PrincipalDeclaration) == "" ||
-		strings.TrimSpace(agentCtx.identity.PrincipalDeclaredAt) == "" {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "principal declaration is missing; re-verify registration"}
-	}
-
-	req, issuedAt, expectedVersion, selfSig, err := parseMintConversationFinalizeRequestBody(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	finalizeCtx := mintConversationFinalizeContext{
-		reg:            agentCtx.reg,
-		inst:           agentCtx.inst,
-		identity:       agentCtx.identity,
-		conv:           conv,
-		agentIDHex:     agentCtx.agentIDHex,
-		conversationID: conversationID,
 	}
 
 	nextVersion := *expectedVersion + 1
@@ -1664,8 +1669,12 @@ func (s *Server) finalizeMintConversationPublish(
 	if appErr := s.persistMintConversationBoundaries(ctx.Context(), finalizeCtx.identity, bounds); appErr != nil {
 		return nil, appErr
 	}
+	auditActor := strings.TrimSpace(finalizeCtx.auditActor)
+	if auditActor == "" {
+		auditActor = strings.TrimSpace(ctx.AuthIdentity)
+	}
 	s.tryWriteAuditLog(ctx, &models.AuditLogEntry{
-		Actor:     strings.TrimSpace(ctx.AuthIdentity),
+		Actor:     auditActor,
 		Action:    "soul.mint_conversation.finalize",
 		Target:    fmt.Sprintf("soul_agent_identity:%s", finalizeCtx.agentIDHex),
 		RequestID: strings.TrimSpace(ctx.RequestID),
@@ -1686,11 +1695,64 @@ func (s *Server) finalizeMintConversationPublish(
 	})); appErr != nil {
 		return nil, appErr
 	}
+	promotionEvidence := buildMintConversationPromotionEvidence(promotion)
+	publication := s.buildMintConversationPublicationEvidence(finalizeCtx.agentIDHex, publishedVersion, soulAgentPromotionAnchorState(promotion), now)
 	return apptheory.JSON(http.StatusOK, soulMintConversationFinalizeResponse{
 		Version:          "1",
+		AgentID:          finalizeCtx.agentIDHex,
 		Agent:            *finalizeCtx.identity,
 		PublishedVersion: publishedVersion,
+		Publication:      publication,
+		Promotion:        promotionEvidence,
 	})
+}
+
+func buildMintConversationPromotionEvidence(promotion *models.SoulAgentPromotion) *soulMintConversationPromotionEvidence {
+	if promotion == nil {
+		return nil
+	}
+	out := &soulMintConversationPromotionEvidence{
+		AgentID:                  strings.TrimSpace(promotion.AgentID),
+		RegistrationID:           strings.TrimSpace(promotion.RegistrationID),
+		Stage:                    strings.TrimSpace(promotion.Stage),
+		RequestStatus:            strings.TrimSpace(promotion.RequestStatus),
+		ReviewStatus:             strings.TrimSpace(promotion.ReviewStatus),
+		ReadinessStatus:          strings.TrimSpace(promotion.ReadinessStatus),
+		AnchorState:              soulAgentPromotionAnchorState(promotion),
+		LatestConversationID:     strings.TrimSpace(promotion.LatestConversationID),
+		LatestConversationStatus: strings.TrimSpace(promotion.LatestConversationStatus),
+		PublishedVersion:         promotion.PublishedVersion,
+	}
+	if !promotion.GraduatedAt.IsZero() {
+		out.GraduatedAt = promotion.GraduatedAt.UTC().Format(time.RFC3339Nano)
+	}
+	return out
+}
+
+func (s *Server) buildMintConversationPublicationEvidence(agentIDHex string, publishedVersion int, anchorState string, publishedAt time.Time) soulMintConversationPublicationEvidence {
+	agentIDHex = strings.ToLower(strings.TrimSpace(agentIDHex))
+	currentKey := soulRegistrationS3Key(agentIDHex)
+	versionedKey := soulRegistrationVersionedS3Key(agentIDHex, publishedVersion)
+	bucket := ""
+	if s != nil {
+		bucket = strings.TrimSpace(s.cfg.SoulPackBucketName)
+	}
+	registrationURI := ""
+	versionedURI := ""
+	if bucket != "" {
+		registrationURI = fmt.Sprintf("s3://%s/%s", bucket, currentKey)
+		versionedURI = fmt.Sprintf("s3://%s/%s", bucket, versionedKey)
+	}
+	return soulMintConversationPublicationEvidence{
+		AgentID:                    agentIDHex,
+		PublishedVersion:           publishedVersion,
+		RegistrationURI:            registrationURI,
+		RegistrationS3Key:          currentKey,
+		VersionedRegistrationURI:   versionedURI,
+		VersionedRegistrationS3Key: versionedKey,
+		AnchorState:                strings.TrimSpace(anchorState),
+		PublishedAt:                publishedAt.UTC().Format(time.RFC3339Nano),
+	}
 }
 
 type mintConversationManagedENSMaterial struct {

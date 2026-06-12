@@ -22,21 +22,10 @@ const (
 	soulInstanceBootstrapCodeBoundaryViolation  = "soul_instance.boundary_violation"
 	soulInstanceBootstrapCodeConflict           = "soul_instance.conflict"
 	soulInstanceBootstrapCodeNotFound           = "soul_instance.not_found"
-	soulInstanceBootstrapCodeNotImplemented     = "soul_instance.not_implemented"
 	soulInstanceBootstrapCodeInternal           = "soul_instance.internal"
 	soulInstanceBootstrapMessageUnauthorized    = "unauthorized"
 	soulInstanceBootstrapMessageBoundary        = "resource is outside the authenticated instance boundary"
 	soulInstanceBootstrapBoundaryInstanceDomain = "instance_domain"
-
-	soulInstanceBootstrapRouteRegisterBegin        = "register_begin"
-	soulInstanceBootstrapRoutePrincipalPreflight   = "principal_declaration_preflight"
-	soulInstanceBootstrapRouteRegisterVerify       = "register_verify"
-	soulInstanceBootstrapRouteConversation         = "mint_conversation"
-	soulInstanceBootstrapRouteConversationGet      = "mint_conversation_get"
-	soulInstanceBootstrapRouteConversationComplete = "mint_conversation_complete"
-	soulInstanceBootstrapRouteFinalizePreflight    = "finalize_preflight"
-	soulInstanceBootstrapRouteFinalizeBegin        = "finalize_begin"
-	soulInstanceBootstrapRouteFinalize             = "finalize"
 )
 
 type soulInstanceBootstrapContext struct {
@@ -210,24 +199,39 @@ func (s *Server) handleSoulInstanceCompleteMintConversation(ctx *apptheory.Conte
 }
 
 func (s *Server) handleSoulInstanceFinalizeMintConversationPreflight(ctx *apptheory.Context) (*apptheory.Response, error) {
-	if _, appErr := s.requireSoulInstanceBootstrapConversationContext(ctx); appErr != nil {
-		return nil, appErr
-	}
-	return nil, soulInstanceBootstrapScaffoldError(soulInstanceBootstrapRouteFinalizePreflight)
+	return s.handleSoulInstanceBeginFinalizeMintConversation(ctx)
 }
 
 func (s *Server) handleSoulInstanceBeginFinalizeMintConversation(ctx *apptheory.Context) (*apptheory.Response, error) {
-	if _, appErr := s.requireSoulInstanceBootstrapConversationContext(ctx); appErr != nil {
+	convCtx, appErr := s.requireSoulInstanceBootstrapConversationContext(ctx)
+	if appErr != nil {
 		return nil, appErr
 	}
-	return nil, soulInstanceBootstrapScaffoldError(soulInstanceBootstrapRouteFinalizeBegin)
+	finalizeCtx, appErr := s.loadSoulInstanceMintConversationFinalizeContext(ctx, convCtx)
+	if appErr != nil {
+		return nil, appErr
+	}
+	resp, err := s.beginFinalizeMintConversation(ctx, finalizeCtx)
+	if err != nil {
+		return nil, soulInstanceBootstrapConversationErrorFromError(err)
+	}
+	return resp, nil
 }
 
 func (s *Server) handleSoulInstanceFinalizeMintConversation(ctx *apptheory.Context) (*apptheory.Response, error) {
-	if _, appErr := s.requireSoulInstanceBootstrapConversationContext(ctx); appErr != nil {
+	convCtx, appErr := s.requireSoulInstanceBootstrapConversationContext(ctx)
+	if appErr != nil {
 		return nil, appErr
 	}
-	return nil, soulInstanceBootstrapScaffoldError(soulInstanceBootstrapRouteFinalize)
+	finalizeCtx, appErr := s.loadSoulInstanceMintConversationFinalizeContext(ctx, convCtx)
+	if appErr != nil {
+		return nil, appErr
+	}
+	resp, err := s.finalizeMintConversation(ctx, finalizeCtx)
+	if err != nil {
+		return nil, soulInstanceBootstrapConversationErrorFromError(err)
+	}
+	return resp, nil
 }
 
 func (s *Server) requireSoulInstanceBootstrapContext(ctx *apptheory.Context) (soulInstanceBootstrapContext, *apptheory.AppTheoryError) {
@@ -293,6 +297,37 @@ func (s *Server) requireSoulInstanceBootstrapConversationContext(ctx *apptheory.
 		soulInstanceBootstrapRegistrationContext: regCtx,
 		conv:                                     conv,
 		conversationID:                           conversationID,
+	}, nil
+}
+
+func (s *Server) loadSoulInstanceMintConversationFinalizeContext(ctx *apptheory.Context, convCtx soulInstanceBootstrapConversationContext) (mintConversationFinalizeContext, *apptheory.AppTheoryError) {
+	if s == nil || s.soulPacks == nil || strings.TrimSpace(s.cfg.SoulPackBucketName) == "" {
+		return mintConversationFinalizeContext{}, soulInstanceBootstrapConversationErrorFromAppError(&apptheory.AppError{Code: "app.conflict", Message: "soul registry bucket is not configured"})
+	}
+	if appErr := requireMintConversationStatus(convCtx.conv, models.SoulMintConversationStatusCompleted, "conversation is not completed", "conversation has no produced declarations"); appErr != nil {
+		return mintConversationFinalizeContext{}, soulInstanceBootstrapConversationErrorFromAppError(appErr)
+	}
+	identity, err := s.getSoulAgentIdentity(ctx.Context(), convCtx.agentIDHex)
+	if theoryErrors.IsNotFound(err) {
+		return mintConversationFinalizeContext{}, soulInstanceBootstrapConversationErrorFromAppError(&apptheory.AppError{Code: "app.conflict", Message: "registration is not yet verified"})
+	}
+	if err != nil {
+		return mintConversationFinalizeContext{}, soulInstanceBootstrapError(soulInstanceBootstrapCodeInternal, "internal error", http.StatusInternalServerError, nil)
+	}
+	if strings.TrimSpace(identity.PrincipalAddress) == "" ||
+		strings.TrimSpace(identity.PrincipalSignature) == "" ||
+		strings.TrimSpace(identity.PrincipalDeclaration) == "" ||
+		strings.TrimSpace(identity.PrincipalDeclaredAt) == "" {
+		return mintConversationFinalizeContext{}, soulInstanceBootstrapConversationErrorFromAppError(&apptheory.AppError{Code: "app.conflict", Message: "principal declaration is missing; re-verify registration"})
+	}
+	return mintConversationFinalizeContext{
+		reg:            convCtx.reg,
+		inst:           convCtx.inst,
+		identity:       identity,
+		conv:           convCtx.conv,
+		agentIDHex:     convCtx.agentIDHex,
+		conversationID: convCtx.conversationID,
+		auditActor:     soulInstanceBootstrapActor(convCtx.instanceSlug),
 	}, nil
 }
 
@@ -536,15 +571,6 @@ func (s *Server) requireSoulInstanceBootstrapDomainAccess(ctx *apptheory.Context
 		return nil, nil, soulInstanceBootstrapError(soulInstanceBootstrapCodeInternal, "internal error", http.StatusInternalServerError, nil)
 	}
 	return d, inst, nil
-}
-
-func soulInstanceBootstrapScaffoldError(route string) *apptheory.AppTheoryError {
-	return soulInstanceBootstrapError(
-		soulInstanceBootstrapCodeNotImplemented,
-		"instance-key soul bootstrap route is scaffolded but not implemented",
-		http.StatusNotImplemented,
-		map[string]any{"route": strings.TrimSpace(route)},
-	)
 }
 
 func soulInstanceBootstrapBoundaryError(field string, reason string) *apptheory.AppTheoryError {

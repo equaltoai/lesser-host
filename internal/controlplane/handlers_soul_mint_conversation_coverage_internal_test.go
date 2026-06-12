@@ -278,7 +278,7 @@ func testMintConversationFinalizeRejectsInvalidRegistrationSignature(t *testing.
 	})
 	_, err = s.handleSoulFinalizeMintConversation(f.makeCtx(body))
 	appErr, ok := err.(*apptheory.AppError)
-	if !ok || appErr.Message != "invalid registration signature" {
+	if !ok || appErr.Message != soulInstanceBootstrapTestInvalidRegSig {
 		t.Fatalf("expected invalid registration signature error, got %#v", err)
 	}
 }

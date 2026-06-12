@@ -52,6 +52,8 @@ type mintConversationTestDB struct {
 	qENS         *ttmocks.MockQuery
 
 	convModels          []*models.SoulAgentMintConversation
+	auditModels         []*models.AuditLogEntry
+	lifecycleModels     []*models.SoulAgentPromotionLifecycleEvent
 	ensChannelModels    []*models.SoulAgentChannel
 	ensResolutionModels []*models.SoulAgentENSResolution
 }
@@ -94,10 +96,10 @@ func newMintConversationTestDB() *mintConversationTestDB {
 	})
 	db.On("Model", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(tdb.qBudget).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(tdb.qIdentity).Maybe()
-	db.On("Model", mock.AnythingOfType("*models.AuditLogEntry")).Return(tdb.qAudit).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.AuditLogEntry")).Return(tdb.qAudit).Maybe().Run(captureMintConversationAuditModel(tdb))
 	db.On("Model", mock.AnythingOfType("*models.WalletIndex")).Return(tdb.qWalletIdx).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentPromotion")).Return(tdb.qPromotion).Maybe()
-	db.On("Model", mock.AnythingOfType("*models.SoulAgentPromotionLifecycleEvent")).Return(tdb.qLifecycle).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentPromotionLifecycleEvent")).Return(tdb.qLifecycle).Maybe().Run(captureMintConversationLifecycleModel(tdb))
 	db.On("Model", mock.AnythingOfType("*models.SoulWalletAgentIndex")).Return(tdb.qWalletAgent).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulDomainAgentIndex")).Return(tdb.qDomainAgent).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulCapabilityAgentIndex")).Return(tdb.qCapAgent).Maybe()
@@ -151,6 +153,24 @@ func newMintConversationTestDB() *mintConversationTestDB {
 	})
 
 	return tdb
+}
+
+func captureMintConversationAuditModel(tdb *mintConversationTestDB) func(mock.Arguments) {
+	return func(args mock.Arguments) {
+		if entry, ok := args.Get(0).(*models.AuditLogEntry); ok && entry != nil {
+			copy := *entry
+			tdb.auditModels = append(tdb.auditModels, &copy)
+		}
+	}
+}
+
+func captureMintConversationLifecycleModel(tdb *mintConversationTestDB) func(mock.Arguments) {
+	return func(args mock.Arguments) {
+		if event, ok := args.Get(0).(*models.SoulAgentPromotionLifecycleEvent); ok && event != nil {
+			copy := *event
+			tdb.lifecycleModels = append(tdb.lifecycleModels, &copy)
+		}
+	}
 }
 
 func newMintConversationServer(tdb *mintConversationTestDB) *Server {
