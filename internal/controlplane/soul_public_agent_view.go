@@ -60,7 +60,7 @@ type soulPublicAgentView struct {
 	PredecessorAgentID     string                   `json:"predecessor_agent_id,omitempty"`
 	Status                 string                   `json:"status,omitempty"`
 	MintTxHash             string                   `json:"mint_tx_hash,omitempty"`
-	MintedAt               time.Time                `json:"minted_at,omitempty"`
+	MintedAt               *time.Time               `json:"minted_at,omitempty"`
 	UpdatedAt              time.Time                `json:"updated_at,omitempty"`
 }
 
@@ -151,7 +151,7 @@ func buildSoulPublicAgentIdentityView(identity *models.SoulAgentIdentity, chainI
 		PredecessorAgentID:     identity.PredecessorAgentID,
 		Status:                 identity.Status,
 		MintTxHash:             identity.MintTxHash,
-		MintedAt:               identity.MintedAt,
+		MintedAt:               timePtrIfNonZero(identity.MintedAt),
 		UpdatedAt:              identity.UpdatedAt,
 	}
 }

@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -51,6 +52,9 @@ func TestSoulAgentPromotionViewShowsFinalizePrereqs(t *testing.T) {
 	}
 	if len(view.NextActions) != 1 || view.NextActions[0] != testSoulPromotionActionBeginFinalize {
 		t.Fatalf("unexpected next actions: %#v", view.NextActions)
+	}
+	if view.AnchorState != models.SoulAnchorStateImmutableOnchain || view.OnchainBindingStatus != models.SoulOperationStatusExecuted {
+		t.Fatalf("expected immutable on-chain promotion state, got %#v", view)
 	}
 	if view.LatestBoundaryCount != 1 || view.LatestCapabilityCount != 1 {
 		t.Fatalf("expected declaration counts, got %#v", view)
@@ -119,6 +123,58 @@ func TestSoulAgentPromotionHelperBranches(t *testing.T) {
 	}, time.Date(2026, 3, 5, 12, 1, 0, 0, time.UTC))
 	if identityFallbackPromotion.RequestedBy != "" {
 		t.Fatalf("expected empty requester without registration owner, got %#v", identityFallbackPromotion)
+	}
+}
+
+func TestSoulAgentPromotionHostedOffchainNextActions(t *testing.T) {
+	now := time.Date(2026, 3, 5, 12, 0, 0, 0, time.UTC)
+	reg := &models.SoulAgentRegistration{
+		ID:               "reg-1",
+		Username:         testUsernameAlice,
+		DomainNormalized: "example.com",
+		LocalID:          "agent-bot",
+		AgentID:          soulLifecycleTestAgentIDHex,
+		Wallet:           "0x00000000000000000000000000000000000000aa",
+	}
+	op := &models.SoulOperation{OperationID: "op-1", Status: models.SoulOperationStatusPending}
+	promotion := updateSoulAgentPromotionForVerification(buildSoulAgentPromotionFromRegistration(reg, now), reg, op, "0x00000000000000000000000000000000000000bb", now.Add(time.Minute))
+
+	view := (&Server{}).buildSoulAgentPromotionView(promotion)
+	if view.ReadinessStatus != models.SoulAgentPromotionReadinessReadyForConversation ||
+		view.AnchorState != models.SoulAnchorStateHostedOffchain ||
+		view.OnchainBindingStatus != models.SoulOperationStatusPending ||
+		!view.OnchainBindingAvailable {
+		t.Fatalf("expected hosted-offchain conversation-ready view, got %#v", view)
+	}
+	if got := strings.Join(view.NextActions, ","); got != "record_mint_execution,start_review_conversation" {
+		t.Fatalf("unexpected hosted-offchain next actions: %#v", view.NextActions)
+	}
+
+	promotion = updateSoulAgentPromotionForConversation(promotion, "conv-1", models.SoulMintConversationStatusCompleted, now.Add(2*time.Minute))
+	promotion = updateSoulAgentPromotionReviewDigest(promotion, `{"boundaries":[{"id":"b1"}],"capabilities":["social"]}`)
+	view = (&Server{}).buildSoulAgentPromotionView(promotion)
+	if !view.HostedOffchainFinalizable {
+		t.Fatalf("expected hosted-offchain finalizable state, got %#v", view)
+	}
+	if got := strings.Join(view.NextActions, ","); got != "begin_finalize,record_mint_execution" {
+		t.Fatalf("unexpected hosted-offchain finalize actions: %#v", view.NextActions)
+	}
+
+	promotion = updateSoulAgentPromotionForGraduation(promotion, 1, now.Add(3*time.Minute))
+	view = (&Server{}).buildSoulAgentPromotionView(promotion)
+	if got := strings.Join(view.NextActions, ","); got != "record_mint_execution" {
+		t.Fatalf("expected hosted-offchain graduation to keep optional on-chain binding action, got %#v", view.NextActions)
+	}
+
+	executed := &models.SoulOperation{OperationID: "op-1", Status: models.SoulOperationStatusExecuted}
+	promotion = updateSoulAgentPromotionForMintExecution(promotion, executed, now.Add(4*time.Minute))
+	view = (&Server{}).buildSoulAgentPromotionView(promotion)
+	if view.Stage != models.SoulAgentPromotionStageGraduated ||
+		view.RequestStatus != models.SoulAgentPromotionRequestStatusGraduated ||
+		view.ReadinessStatus != models.SoulAgentPromotionReadinessGraduated ||
+		view.AnchorState != models.SoulAnchorStateImmutableOnchain ||
+		view.NextActions != nil {
+		t.Fatalf("expected post-graduation mint execution to upgrade anchor without workflow regression, got %#v", view)
 	}
 }
 

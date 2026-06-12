@@ -141,6 +141,32 @@ type soulMintConversationFinalizeResponse struct {
 	PublishedVersion int                      `json:"published_version"`
 }
 
+func (r soulMintConversationFinalizeResponse) MarshalJSON() ([]byte, error) {
+	agentBytes, err := json.Marshal(r.Agent)
+	if err != nil {
+		return nil, err
+	}
+	var agent map[string]any
+	if err := json.Unmarshal(agentBytes, &agent); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(r.Agent.MintTxHash) == "" {
+		delete(agent, "mint_tx_hash")
+	}
+	if r.Agent.MintedAt.IsZero() {
+		delete(agent, "minted_at")
+	}
+	return json.Marshal(struct {
+		Version          string         `json:"version"`
+		Agent            map[string]any `json:"agent"`
+		PublishedVersion int            `json:"published_version"`
+	}{
+		Version:          r.Version,
+		Agent:            agent,
+		PublishedVersion: r.PublishedVersion,
+	})
+}
+
 type soulAgentMintConversationsResponse struct {
 	Version       string                              `json:"version"`
 	Conversations []*models.SoulAgentMintConversation `json:"conversations"`
@@ -1132,6 +1158,7 @@ func (s *Server) handleSoulBeginFinalizeMintConversation(ctx *apptheory.Context)
 	if activeErr := requireMintConversationFinalizeActiveIdentity(finalizeCtx.identity); activeErr != nil {
 		return nil, activeErr
 	}
+	publishIdentity := mintConversationFinalizeIdentityForPublication(finalizeCtx.identity)
 	req, err := parseMintConversationFinalizeBeginRequestBody(ctx)
 	if err != nil {
 		return nil, err
@@ -1149,11 +1176,11 @@ func (s *Server) handleSoulBeginFinalizeMintConversation(ctx *apptheory.Context)
 	expectedVersion := finalizeCtx.identity.SelfDescriptionVersion
 	nextVersion := expectedVersion + 1
 
-	regMap, _, digest, _, _, appErr := s.buildMintConversationFinalizeV2Registration(finalizeCtx.agentIDHex, finalizeCtx.identity, decl, req.BoundarySignatures, now, nextVersion, "0x00")
+	regMap, _, digest, _, _, appErr := s.buildMintConversationFinalizeV2Registration(finalizeCtx.agentIDHex, publishIdentity, decl, req.BoundarySignatures, now, nextVersion, "0x00")
 	if appErr != nil {
 		return nil, appErr
 	}
-	return s.respondMintConversationFinalizePreflight(finalizeCtx.identity, decl, req.BoundarySignatures, regMap, digest, now, expectedVersion, nextVersion)
+	return s.respondMintConversationFinalizePreflight(publishIdentity, decl, req.BoundarySignatures, regMap, digest, now, expectedVersion, nextVersion)
 }
 
 func (s *Server) handleSoulAgentBeginFinalizeMintConversation(ctx *apptheory.Context) (*apptheory.Response, error) {
@@ -1175,6 +1202,7 @@ func (s *Server) handleSoulAgentBeginFinalizeMintConversation(ctx *apptheory.Con
 	if activeErr := requireMintConversationFinalizeActiveIdentity(agentCtx.identity); activeErr != nil {
 		return nil, activeErr
 	}
+	publishIdentity := mintConversationFinalizeIdentityForPublication(agentCtx.identity)
 	if strings.TrimSpace(agentCtx.identity.PrincipalAddress) == "" ||
 		strings.TrimSpace(agentCtx.identity.PrincipalSignature) == "" ||
 		strings.TrimSpace(agentCtx.identity.PrincipalDeclaration) == "" ||
@@ -1197,11 +1225,11 @@ func (s *Server) handleSoulAgentBeginFinalizeMintConversation(ctx *apptheory.Con
 	now := time.Now().UTC()
 	expectedVersion := agentCtx.identity.SelfDescriptionVersion
 	nextVersion := expectedVersion + 1
-	regMap, _, digest, _, _, appErr := s.buildMintConversationFinalizeV2Registration(agentCtx.agentIDHex, agentCtx.identity, decl, req.BoundarySignatures, now, nextVersion, "0x00")
+	regMap, _, digest, _, _, appErr := s.buildMintConversationFinalizeV2Registration(agentCtx.agentIDHex, publishIdentity, decl, req.BoundarySignatures, now, nextVersion, "0x00")
 	if appErr != nil {
 		return nil, appErr
 	}
-	return s.respondMintConversationFinalizePreflight(agentCtx.identity, decl, req.BoundarySignatures, regMap, digest, now, expectedVersion, nextVersion)
+	return s.respondMintConversationFinalizePreflight(publishIdentity, decl, req.BoundarySignatures, regMap, digest, now, expectedVersion, nextVersion)
 }
 
 func (s *Server) handleSoulFinalizeMintConversationPreflight(ctx *apptheory.Context) (*apptheory.Response, error) {
@@ -1227,6 +1255,8 @@ func (s *Server) handleSoulFinalizeMintConversation(ctx *apptheory.Context) (*ap
 	if versionErr := requireMintConversationFinalizeVersionAndActive(finalizeCtx.identity, nextVersion, *expectedVersion); versionErr != nil {
 		return nil, versionErr
 	}
+	publishIdentity := mintConversationFinalizeIdentityForPublication(finalizeCtx.identity)
+	finalizeCtx.identity = publishIdentity
 	decl, appErr := parseAndValidateMintConversationDeclarations(finalizeCtx.conv.ProducedDeclarations)
 	if appErr != nil {
 		return nil, appErr
@@ -1235,7 +1265,7 @@ func (s *Server) handleSoulFinalizeMintConversation(ctx *apptheory.Context) (*ap
 		return nil, verifyErr
 	}
 
-	regMap, regV2, digest, capsNorm, claimLevels, appErr := s.buildMintConversationFinalizeV2Registration(finalizeCtx.agentIDHex, finalizeCtx.identity, decl, req.BoundarySignatures, issuedAt.UTC(), nextVersion, selfSig)
+	regMap, regV2, digest, capsNorm, claimLevels, appErr := s.buildMintConversationFinalizeV2Registration(finalizeCtx.agentIDHex, publishIdentity, decl, req.BoundarySignatures, issuedAt.UTC(), nextVersion, selfSig)
 	if appErr != nil {
 		return nil, appErr
 	}
@@ -1283,6 +1313,8 @@ func (s *Server) handleSoulAgentFinalizeMintConversation(ctx *apptheory.Context)
 	if versionErr := requireMintConversationFinalizeVersionAndActive(finalizeCtx.identity, nextVersion, *expectedVersion); versionErr != nil {
 		return nil, versionErr
 	}
+	publishIdentity := mintConversationFinalizeIdentityForPublication(finalizeCtx.identity)
+	finalizeCtx.identity = publishIdentity
 
 	decl, appErr := parseAndValidateMintConversationDeclarations(finalizeCtx.conv.ProducedDeclarations)
 	if appErr != nil {
@@ -1292,7 +1324,7 @@ func (s *Server) handleSoulAgentFinalizeMintConversation(ctx *apptheory.Context)
 		return nil, verifyErr
 	}
 
-	regMap, regV2, digest, capsNorm, claimLevels, appErr := s.buildMintConversationFinalizeV2Registration(finalizeCtx.agentIDHex, finalizeCtx.identity, decl, req.BoundarySignatures, issuedAt.UTC(), nextVersion, selfSig)
+	regMap, regV2, digest, capsNorm, claimLevels, appErr := s.buildMintConversationFinalizeV2Registration(finalizeCtx.agentIDHex, publishIdentity, decl, req.BoundarySignatures, issuedAt.UTC(), nextVersion, selfSig)
 	if appErr != nil {
 		return nil, appErr
 	}
@@ -1613,9 +1645,16 @@ func (s *Server) finalizeMintConversationPublish(
 	bounds := buildMintConversationBoundaryModels(finalizeCtx.agentIDHex, decl.Boundaries, boundarySignatures, issuedAt, *expectedVersion+1)
 
 	now := time.Now().UTC()
+	ensMaterial, appErr := s.prepareMintConversationManagedENSMaterial(ctx.Context(), finalizeCtx.identity, finalizeCtx.inst, regV2, now)
+	if appErr != nil {
+		return nil, appErr
+	}
 	publishedVersion, pubErr := s.publishSoulAgentRegistrationV2(ctx.Context(), finalizeCtx.agentIDHex, finalizeCtx.identity, regV2, regBytes, regSHA256, selfSig, changeSummary, capsNorm, claimLevels, expectedVersion, now)
 	if pubErr != nil {
 		return nil, pubErr
+	}
+	if appErr := s.persistMintConversationManagedENSMaterial(ctx.Context(), ensMaterial); appErr != nil {
+		return nil, appErr
 	}
 	if appErr := s.persistMintConversationBoundaries(ctx.Context(), finalizeCtx.identity, bounds); appErr != nil {
 		return nil, appErr
@@ -1637,6 +1676,7 @@ func (s *Server) finalizeMintConversationPublish(
 		EventType:      models.SoulAgentPromotionEventTypeGraduated,
 		RequestID:      strings.TrimSpace(ctx.RequestID),
 		ConversationID: finalizeCtx.conversationID,
+		AnchorState:    soulAgentPromotionAnchorState(promotion),
 		OccurredAt:     now,
 	})); appErr != nil {
 		return nil, appErr
@@ -1646,6 +1686,106 @@ func (s *Server) finalizeMintConversationPublish(
 		Agent:            *finalizeCtx.identity,
 		PublishedVersion: publishedVersion,
 	})
+}
+
+type mintConversationManagedENSMaterial struct {
+	ensName    string
+	channel    *models.SoulAgentChannel
+	resolution *models.SoulAgentENSResolution
+	existing   *models.SoulAgentChannel
+}
+
+func (s *Server) prepareMintConversationManagedENSMaterial(
+	ctx context.Context,
+	identity *models.SoulAgentIdentity,
+	inst *models.Instance,
+	regV2 *soul.RegistrationFileV2,
+	now time.Time,
+) (*mintConversationManagedENSMaterial, *apptheory.AppError) {
+	if s == nil || identity == nil || inst == nil || regV2 == nil {
+		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	canonicalLocal, err := soul.ValidateManagedHandle(identity.LocalID)
+	if err != nil || canonicalLocal == "" {
+		return nil, &apptheory.AppError{Code: "app.conflict", Message: "agent local id is invalid"}
+	}
+	instanceSlug, err := soul.ValidateManagedInstanceSlug(inst.Slug)
+	if err != nil {
+		return nil, &apptheory.AppError{Code: "app.conflict", Message: "agent domain instance slug is invalid"}
+	}
+	ensName, err := soul.ManagedENSName(canonicalLocal, instanceSlug)
+	if err != nil {
+		return nil, &apptheory.AppError{Code: "app.conflict", Message: "managed ens name is invalid"}
+	}
+
+	channel := &models.SoulAgentChannel{
+		AgentID:            strings.TrimSpace(identity.AgentID),
+		ChannelType:        models.SoulChannelTypeENS,
+		Identifier:         ensName,
+		ENSResolverAddress: strings.TrimSpace(s.cfg.ENSGatewayResolverAddress),
+		ENSChain:           strings.TrimSpace(s.provisionENSChainName()),
+		Verified:           true,
+		VerifiedAt:         now.UTC(),
+		ProvisionedAt:      now.UTC(),
+		Status:             models.SoulChannelStatusActive,
+		UpdatedAt:          now.UTC(),
+	}
+	_ = channel.UpdateKeys()
+
+	resolution := &models.SoulAgentENSResolution{
+		ENSName:             ensName,
+		AgentID:             strings.TrimSpace(identity.AgentID),
+		Wallet:              strings.TrimSpace(identity.Wallet),
+		LocalID:             strings.TrimSpace(identity.LocalID),
+		Domain:              strings.TrimSpace(identity.Domain),
+		SoulRegistrationURI: s.currentSoulRegistrationURI(identity.AgentID),
+		MCPEndpoint:         strings.TrimSpace(regV2.Endpoints.MCP),
+		ActivityPubURI:      strings.TrimSpace(regV2.Endpoints.ActivityPub),
+		Description:         strings.TrimSpace(regV2.SelfDescription.Purpose),
+		Status:              firstNonEmpty(regV2.Lifecycle.Status, identity.LifecycleStatus, identity.Status),
+		UpdatedAt:           now.UTC(),
+	}
+	if createdAt, ok := parseRFC3339Loose(regV2.Created); ok {
+		resolution.CreatedAt = createdAt
+	}
+	if resolution.CreatedAt.IsZero() {
+		resolution.CreatedAt = now.UTC()
+	}
+	_ = resolution.UpdateKeys()
+
+	if appErr := s.preflightSoulENSResolutionAssignable(ctx, resolution); appErr != nil {
+		return nil, appErr
+	}
+	existing, appErr := s.loadExistingSoulChannel(ctx, strings.TrimSpace(identity.AgentID), models.SoulChannelTypeENS)
+	if appErr != nil {
+		return nil, appErr
+	}
+	return &mintConversationManagedENSMaterial{
+		ensName:    ensName,
+		channel:    channel,
+		resolution: resolution,
+		existing:   existing,
+	}, nil
+}
+
+func (s *Server) persistMintConversationManagedENSMaterial(ctx context.Context, material *mintConversationManagedENSMaterial) *apptheory.AppError {
+	if s == nil || material == nil || material.channel == nil || material.resolution == nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if material.existing != nil && strings.TrimSpace(material.existing.Identifier) != "" && !strings.EqualFold(strings.TrimSpace(material.existing.Identifier), material.ensName) {
+		oldResolution := &models.SoulAgentENSResolution{ENSName: material.existing.Identifier, AgentID: material.channel.AgentID}
+		_ = oldResolution.UpdateKeys()
+		if err := s.deleteSoulENSResolutionIfOwned(ctx, oldResolution); err != nil {
+			return &apptheory.AppError{Code: "app.internal", Message: "failed to delete ens resolution"}
+		}
+	}
+	if err := s.store.DB.WithContext(ctx).Model(material.channel).CreateOrUpdate(); err != nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "failed to update channel"}
+	}
+	if appErr := s.ensureSoulENSResolution(ctx, material.resolution); appErr != nil {
+		return appErr
+	}
+	return nil
 }
 
 func buildMintConversationBoundaryModels(agentIDHex string, boundaries []soul.BoundaryV2, boundarySignatures map[string]string, issuedAt time.Time, nextVersion int) []*models.SoulAgentBoundary {
@@ -1775,7 +1915,30 @@ func mintConversationFinalizeLifecycleStatus(identity *models.SoulAgentIdentity)
 	if lifecycleStatus == "" {
 		lifecycleStatus = strings.ToLower(strings.TrimSpace(identity.Status))
 	}
+	if lifecycleStatus == "" || lifecycleStatus == models.SoulAgentStatusPending {
+		return models.SoulAgentStatusActive
+	}
 	return lifecycleStatus
+}
+
+func mintConversationFinalizeIdentityForPublication(identity *models.SoulAgentIdentity) *models.SoulAgentIdentity {
+	if identity == nil {
+		return nil
+	}
+	copy := *identity
+	lifecycleStatus := strings.ToLower(strings.TrimSpace(copy.LifecycleStatus))
+	if lifecycleStatus == "" {
+		lifecycleStatus = strings.ToLower(strings.TrimSpace(copy.Status))
+	}
+	if lifecycleStatus == "" || lifecycleStatus == models.SoulAgentStatusPending {
+		copy.Status = models.SoulAgentStatusActive
+		copy.LifecycleStatus = models.SoulAgentStatusActive
+		if strings.TrimSpace(copy.AnchorState) == "" {
+			copy.AnchorState = models.SoulAnchorStateHostedOffchain
+		}
+		applyHostedBoundSoulPolicyDefaults(&copy)
+	}
+	return &copy
 }
 
 func requireMintConversationFinalizeVersionAndActive(identity *models.SoulAgentIdentity, nextVersion int, expectedVersion int) *apptheory.AppError {
@@ -1792,17 +1955,20 @@ func requireMintConversationFinalizeVersionAndActive(identity *models.SoulAgentI
 }
 
 func requireMintConversationFinalizeActiveIdentity(identity *models.SoulAgentIdentity) *apptheory.AppError {
+	if identity == nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
 	lifecycleStatus := ""
-	if identity != nil {
-		lifecycleStatus = strings.ToLower(strings.TrimSpace(identity.LifecycleStatus))
-		if lifecycleStatus == "" {
-			lifecycleStatus = strings.ToLower(strings.TrimSpace(identity.Status))
-		}
+	lifecycleStatus = strings.ToLower(strings.TrimSpace(identity.LifecycleStatus))
+	if lifecycleStatus == "" {
+		lifecycleStatus = strings.ToLower(strings.TrimSpace(identity.Status))
 	}
-	if lifecycleStatus != models.SoulAgentStatusActive {
-		return &apptheory.AppError{Code: "app.conflict", Message: "agent must be active before publishing mint conversation registration"}
+	switch lifecycleStatus {
+	case "", models.SoulAgentStatusPending, models.SoulAgentStatusActive:
+		return nil
+	default:
+		return &apptheory.AppError{Code: "app.conflict", Message: "agent must be active or pending before publishing mint conversation registration"}
 	}
-	return nil
 }
 
 func buildMintConversationFinalizePrincipal(identity *models.SoulAgentIdentity) map[string]any {

@@ -17,6 +17,7 @@ const generatedAdapterPath = path.join(webDir, 'src', 'lib', 'greater', 'adapter
 const openapiTypescriptBin = path.join(webDir, 'node_modules', '.bin', 'openapi-typescript');
 
 const requiredPaths = [
+  '/api/v1/soul/agents/register/{id}/principal-declaration/preflight',
   '/api/v1/soul/agents/register/{id}/mint-conversation',
   '/api/v1/soul/agents/register/{id}/mint-conversation/{conversationId}',
   '/api/v1/soul/agents/register/{id}/mint-conversation/{conversationId}/complete',
@@ -46,6 +47,8 @@ const requiredSchemas = [
   'SoulInstanceMintConversationsResponse',
   'SoulInstanceMintConversationResponse',
   'SoulMintConversationInstanceReadErrorEnvelope',
+  'SoulAgentRegistrationPrincipalDeclarationPreflightRequest',
+  'SoulAgentRegistrationPrincipalDeclarationPreflightResponse',
   'SoulMintConversationFinalizeBeginRequest',
   'SoulMintConversationFinalizeRequest',
   'SoulMintConversationFinalizePreflightResponse',

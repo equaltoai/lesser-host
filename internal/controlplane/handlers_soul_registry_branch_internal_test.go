@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -116,6 +117,27 @@ func newSoulRegistryVerifyContext(t *testing.T, s *Server, reg *models.SoulAgent
 	return ctx
 }
 
+func newSoulRegistryPrincipalPreflightContext(t *testing.T, reg *models.SoulAgentRegistration, mutate func(*soulAgentRegistrationPrincipalDeclarationPreflightRequest)) *apptheory.Context {
+	t.Helper()
+
+	req := soulAgentRegistrationPrincipalDeclarationPreflightRequest{
+		PrincipalAddress:     reg.Wallet,
+		PrincipalDeclaration: boundaryTestPrincipalDeclaration,
+		DeclaredAt:           canonicalSoulSignedTimestamp(time.Now().UTC()),
+	}
+	if mutate != nil {
+		mutate(&req)
+	}
+	body, err := json.Marshal(req)
+	require.NoError(t, err)
+
+	ctx := adminCtx()
+	ctx.RequestID = "req-principal-preflight"
+	ctx.Params = map[string]string{"id": reg.ID}
+	ctx.Request = apptheory.Request{Body: body}
+	return ctx
+}
+
 func newSoulIdentityOnlyServer() (*Server, *ttmocks.MockQuery) {
 	db, queries := newTestDBWithModelQueries("*models.SoulAgentIdentity")
 	qIdentity := queries[0]
@@ -132,6 +154,107 @@ func newSoulRegistrationOnlyServer() (*Server, *ttmocks.MockQuery) {
 	qReg.ExpectedCalls = nil
 	qReg.On("IfNotExists").Return(qReg).Maybe()
 	return &Server{store: store.New(db)}, qReg
+}
+
+func TestHandleSoulAgentRegistrationPrincipalDeclarationPreflight_SigningMaterial(t *testing.T) {
+	t.Parallel()
+
+	s, tdb, reg, key := newSoulRegistryVerifyHarness(t, nil)
+	tdb.qWalletIdx.On("First", mock.AnythingOfType("*models.WalletIndex")).Return(theoryErrors.ErrItemNotFound).Twice()
+
+	ctx := newSoulRegistryPrincipalPreflightContext(t, reg, nil)
+	resp, err := s.handleSoulAgentRegistrationPrincipalDeclarationPreflight(ctx)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.Status)
+
+	var out soulAgentRegistrationPrincipalDeclarationPreflightResponse
+	require.NoError(t, json.Unmarshal(resp.Body, &out))
+	require.Equal(t, "1", out.Version)
+	require.Equal(t, "eip191_personal_sign", out.SigningMethod)
+	require.Equal(t, "hex_bytes", out.MessageEncoding)
+	require.Equal(t, reg.Wallet, out.PrincipalAddress)
+	require.Equal(t, reg.Wallet, out.SignerAddress)
+	require.Equal(t, out.DigestHex, out.MessageHex)
+	require.Regexp(t, `^0x[0-9a-f]{64}$`, out.MessageHex)
+	require.NotEmpty(t, out.CanonicalJSON)
+
+	expectedDigest, appErr := s.computeSoulPrincipalDeclarationDigest(reg, out.PrincipalAddress, boundaryTestPrincipalDeclaration, out.DeclaredAt)
+	require.Nil(t, appErr)
+	expectedDigestHex := "0x" + hex.EncodeToString(expectedDigest)
+	require.Equal(t, expectedDigestHex, out.DigestHex)
+
+	messageBytes, err := hex.DecodeString(strings.TrimPrefix(out.MessageHex, "0x"))
+	require.NoError(t, err)
+	sigBytes, err := crypto.Sign(accounts.TextHash(messageBytes), key)
+	require.NoError(t, err)
+	sigHex := "0x" + hex.EncodeToString(sigBytes)
+
+	principalAddr, principalDeclaration, principalSig, declaredAt, appErr := s.validateSoulRegistrationVerifyPrincipalInputs(
+		ctx.Context(),
+		reg,
+		out.PrincipalAddress,
+		boundaryTestPrincipalDeclaration,
+		sigHex,
+		out.DeclaredAt,
+	)
+	require.Nil(t, appErr)
+	require.Equal(t, out.PrincipalAddress, principalAddr)
+	require.Equal(t, boundaryTestPrincipalDeclaration, principalDeclaration)
+	require.Equal(t, sigHex, principalSig)
+	require.Equal(t, out.DeclaredAt, declaredAt)
+}
+
+func TestHandleSoulAgentRegistrationPrincipalDeclarationPreflight_ValidationBranches(t *testing.T) {
+	t.Parallel()
+
+	t.Run("bad principal address", func(t *testing.T) {
+		s, _, reg, _ := newSoulRegistryVerifyHarness(t, nil)
+		ctx := newSoulRegistryPrincipalPreflightContext(t, reg, func(req *soulAgentRegistrationPrincipalDeclarationPreflightRequest) {
+			req.PrincipalAddress = "not-a-wallet"
+		})
+
+		_, err := s.handleSoulAgentRegistrationPrincipalDeclarationPreflight(ctx)
+		var appErr *apptheory.AppError
+		require.ErrorAs(t, err, &appErr)
+		require.Equal(t, "invalid principal_address", appErr.Message)
+	})
+
+	t.Run("missing declaration", func(t *testing.T) {
+		s, tdb, reg, _ := newSoulRegistryVerifyHarness(t, nil)
+		tdb.qWalletIdx.On("First", mock.AnythingOfType("*models.WalletIndex")).Return(theoryErrors.ErrItemNotFound).Once()
+		ctx := newSoulRegistryPrincipalPreflightContext(t, reg, func(req *soulAgentRegistrationPrincipalDeclarationPreflightRequest) {
+			req.PrincipalDeclaration = " "
+		})
+
+		_, err := s.handleSoulAgentRegistrationPrincipalDeclarationPreflight(ctx)
+		var appErr *apptheory.AppError
+		require.ErrorAs(t, err, &appErr)
+		require.Equal(t, "principal_declaration is required", appErr.Message)
+	})
+
+	t.Run("missing declared_at", func(t *testing.T) {
+		s, tdb, reg, _ := newSoulRegistryVerifyHarness(t, nil)
+		tdb.qWalletIdx.On("First", mock.AnythingOfType("*models.WalletIndex")).Return(theoryErrors.ErrItemNotFound).Once()
+		ctx := newSoulRegistryPrincipalPreflightContext(t, reg, func(req *soulAgentRegistrationPrincipalDeclarationPreflightRequest) {
+			req.DeclaredAt = " "
+		})
+
+		_, err := s.handleSoulAgentRegistrationPrincipalDeclarationPreflight(ctx)
+		var appErr *apptheory.AppError
+		require.ErrorAs(t, err, &appErr)
+		require.Equal(t, "declared_at is required", appErr.Message)
+	})
+
+	t.Run("expired registration", func(t *testing.T) {
+		s, _, reg, _ := newSoulRegistryVerifyHarness(t, nil)
+		reg.ExpiresAt = time.Now().Add(-time.Minute).UTC()
+		ctx := newSoulRegistryPrincipalPreflightContext(t, reg, nil)
+
+		_, err := s.handleSoulAgentRegistrationPrincipalDeclarationPreflight(ctx)
+		var appErr *apptheory.AppError
+		require.ErrorAs(t, err, &appErr)
+		require.Equal(t, "registration expired", appErr.Message)
+	})
 }
 
 func TestNormalizeSoulEVMAddress_Branches(t *testing.T) {

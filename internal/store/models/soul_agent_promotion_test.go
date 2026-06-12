@@ -17,16 +17,32 @@ func TestSoulAgentPromotionBeforeCreateSetsDefaults(t *testing.T) {
 		t.Fatalf("BeforeCreate: %v", err)
 	}
 
+	assertSoulAgentPromotionDefaults(t, promotion)
+	assertSoulAgentPromotionTimestamps(t, promotion)
+	assertSoulAgentPromotionKeys(t, promotion)
+}
+
+func assertSoulAgentPromotionDefaults(t *testing.T, promotion *SoulAgentPromotion) {
+	t.Helper()
 	if promotion.Stage != SoulAgentPromotionStageRequested ||
 		promotion.RequestStatus != SoulAgentPromotionRequestStatusRequested ||
 		promotion.ReviewStatus != SoulAgentPromotionReviewStatusNotStarted ||
 		promotion.ApprovalStatus != SoulAgentPromotionApprovalStatusPending ||
-		promotion.ReadinessStatus != SoulAgentPromotionReadinessAwaitingVerification {
+		promotion.ReadinessStatus != SoulAgentPromotionReadinessAwaitingVerification ||
+		promotion.AnchorState != SoulAnchorStateHostedOffchain {
 		t.Fatalf("unexpected defaults: %#v", promotion)
 	}
+}
+
+func assertSoulAgentPromotionTimestamps(t *testing.T, promotion *SoulAgentPromotion) {
+	t.Helper()
 	if promotion.RequestedAt.IsZero() || promotion.CreatedAt.IsZero() || promotion.UpdatedAt.IsZero() {
 		t.Fatalf("expected timestamps to be set: %#v", promotion)
 	}
+}
+
+func assertSoulAgentPromotionKeys(t *testing.T, promotion *SoulAgentPromotion) {
+	t.Helper()
 	if promotion.PK != "SOUL#AGENT#0xabcdef" || promotion.SK != "PROMOTION" {
 		t.Fatalf("unexpected keys: %q %q", promotion.PK, promotion.SK)
 	}
@@ -66,6 +82,7 @@ func TestSoulAgentPromotionUpdateKeysNormalizesStatusFields(t *testing.T) {
 		t.Fatalf("unexpected status normalization: %#v", promotion)
 	}
 	if promotion.MintOperationStatus != "executed" ||
+		promotion.AnchorState != SoulAnchorStateImmutableOnchain ||
 		promotion.PrincipalAddress != "0x00000000000000000000000000000000000000bb" ||
 		promotion.LatestConversationID != "conv-1" ||
 		promotion.LatestConversationStatus != "completed" ||
@@ -120,6 +137,7 @@ func promotionForNormalization() *SoulAgentPromotion {
 		ReadinessStatus:          " Ready_For_Finalize ",
 		MintOperationID:          " op-1 ",
 		MintOperationStatus:      " Executed ",
+		AnchorState:              " Immutable_Onchain ",
 		PrincipalAddress:         "0X00000000000000000000000000000000000000BB ",
 		LatestConversationID:     " conv-1 ",
 		LatestConversationStatus: " Completed ",

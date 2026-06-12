@@ -132,6 +132,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/soul/agents/register/{id}/principal-declaration/preflight": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Build Host-owned principal declaration signing material
+         * @description Returns the canonical JCS payload and 32-byte digest that the principal wallet must sign with EIP-191
+         *     `personal_sign` before calling registration verify. Clients must sign `message_hex` as hex bytes; they
+         *     should not reconstruct this digest locally.
+         */
+        post: operations["soulRegisterPrincipalDeclarationPreflight"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/soul/agents/register/{id}/verify": {
         parameters: {
             query?: never;
@@ -1104,6 +1126,12 @@ export interface components {
             mint_operation_id?: string;
             /** @enum {string} */
             mint_operation_status?: "pending" | "proposed" | "executed" | "failed";
+            /** @enum {string} */
+            anchor_state?: "hosted_offchain" | "immutable_onchain";
+            /** @enum {string} */
+            onchain_binding_status?: "unavailable" | "pending" | "proposed" | "executed" | "failed";
+            onchain_binding_available?: boolean;
+            hosted_offchain_finalizable?: boolean;
             principal_address?: string;
             latest_conversation_id?: string;
             /** @enum {string} */
@@ -1180,6 +1208,30 @@ export interface components {
             wallet: components["schemas"]["WalletChallengeResponse"];
             proofs: components["schemas"]["SoulRegistryProofInstructions"][];
             promotion?: components["schemas"]["SoulAgentPromotion"];
+        };
+        SoulAgentRegistrationPrincipalDeclarationPreflightRequest: {
+            principal_address: string;
+            principal_declaration: string;
+            /** Format: date-time */
+            declared_at: string;
+        };
+        SoulAgentRegistrationPrincipalDeclarationPreflightResponse: {
+            /** @enum {string} */
+            version: "1";
+            principal_address: string;
+            signer_address: string;
+            /** @enum {string} */
+            signing_method: "eip191_personal_sign";
+            /** @enum {string} */
+            message_encoding: "hex_bytes";
+            /** @description 32-byte digest encoded as 0x-prefixed hex; sign these bytes with EIP-191 personal_sign. */
+            message_hex: string;
+            /** @description Alias of message_hex for clients that name the signing bytes as a digest. */
+            digest_hex: string;
+            /** @description Host-owned JCS canonical JSON that produced digest_hex. */
+            canonical_json: string;
+            /** Format: date-time */
+            declared_at: string;
         };
         SoulAgentRegistrationVerifyRequest: {
             signature: string;
@@ -2544,6 +2596,77 @@ export interface operations {
             };
             /** @description Forbidden */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    soulRegisterPrincipalDeclarationPreflight: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SoulAgentRegistrationPrincipalDeclarationPreflightRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SoulAgentRegistrationPrincipalDeclarationPreflightResponse"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Not found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -18,8 +18,8 @@ For machine-readable schemas, also use:
 This contract covers the soul promotion lifecycle introduced for agent-first clients:
 
 - request creation
-- approval + mint operation preparation
-- mint execution acknowledgement
+- approval + optional mint operation preparation
+- optional mint execution acknowledgement / on-chain promotion
 - mint conversation review
 - finalize preflight and signing inputs
 - graduation publication
@@ -59,6 +59,22 @@ Anchor assurance is deliberately separate from capability and caller-access poli
 their allowed capabilities, x402 caller grants, and communication channels when their policy permits it. Promotion to
 `immutable_onchain` adds trust evidence; it must not create a second agent namespace, rotate `agent_id`, or silently
 change capability/access policy.
+
+Hosted/off-chain is a first-class production anchor state. A zero-state client may verify a registration, complete the
+mint conversation, and finalize publication before any on-chain mint receipt is recorded. That publishes the same
+agent namespace with `anchor_state=hosted_offchain`, no `mint_tx_hash` / `minted_at`, and
+`self_description_version` plus version history populated. Recording the prepared mint operation later promotes the
+same identity to `immutable_onchain`; clients must treat that as an anchor upgrade, not a replacement registration.
+
+Managed ENS material for host-provisioned identities is always instance-scoped:
+
+```text
+<local>.<instance-slug>.lessersoul.eth
+```
+
+Public profile, search, and ENS gateway resolution should use this canonical name where the domain-to-managed-instance
+mapping exists. Legacy bare names such as `<local>.lessersoul.eth` are migration-only and must not be used for new
+agent-first routing.
 
 Public clients that expose hosted-bound-soul or x402 flows must also follow the launch-gate disclosures in
 `docs/hosted-bound-soul-launch-gates.md`: hosted/off-chain wording must not be conflated with immutable/on-chain
@@ -149,7 +165,33 @@ Side effects:
 - creates the durable `SoulAgentPromotion`
 - emits lifecycle event `request_created`
 
-### 2. Verify and prepare approval
+### 2. Preflight principal declaration signing
+
+- `POST /api/v1/soul/agents/register/{id}/principal-declaration/preflight`
+
+Input:
+
+- `principal_address`
+- `principal_declaration`
+- `declared_at`
+
+Response includes Host-owned signing material:
+
+- `version`
+- `principal_address` / `signer_address`
+- `signing_method=eip191_personal_sign`
+- `message_encoding=hex_bytes`
+- `message_hex` and `digest_hex` (the same 32-byte `0x`-prefixed digest)
+- `canonical_json`
+- canonical `declared_at`
+
+Clients must ask the principal wallet to sign `message_hex` as hex bytes with EIP-191 `personal_sign`, then pass the
+resulting signature to verify as `principal_signature` with the returned canonical `declared_at`. Clients should not
+reconstruct the principal declaration digest themselves: the digest binds Host-owned registration state (`agentId`,
+wallet, domain, localId, chainId, registry contract), the requested principal address, the declaration, and
+`declared_at`.
+
+### 3. Verify and prepare approval
 
 - `POST /api/v1/soul/agents/register/{id}/verify`
 - equivalent agent-centric alias after resolution:
@@ -161,7 +203,7 @@ Input:
 - `principal_address`
 - `principal_declaration`
 - `principal_signature`
-- `declared_at`
+- `declared_at` (use the canonical value returned by the principal declaration preflight)
 
 Response includes:
 
@@ -173,11 +215,15 @@ Response includes:
 Side effects:
 
 - records proof verification
-- creates the mint `SoulOperation`
-- moves the promotion into approved / awaiting mint
+- creates the optional on-chain binding `SoulOperation`
+- moves the promotion into approved / ready for conversation with `anchor_state=hosted_offchain`
 - emits lifecycle event `request_approved`
 
-### 3. Record mint execution
+At this point the client may proceed directly to the mint conversation and hosted/off-chain finalize path. Use
+`promotion.next_actions` and the binding fields described below to decide whether to show an optional “bind on-chain”
+action.
+
+### 4. Optionally record mint execution
 
 - `POST /api/v1/soul/operations/{id}/record-execution`
 
@@ -185,10 +231,13 @@ This is usually performed by an operator or automation after the Safe transactio
 
 When the mint succeeds:
 
-- the promotion moves into minted / ready for conversation
+- the identity and promotion move to `anchor_state=immutable_onchain`
+- the promotion remains or moves into minted / ready for conversation
 - lifecycle event `mint_executed` is emitted
 
-### 4. Start or continue review
+This step may happen before hosted finalize or later as an upgrade. It is not required for zero-state publication.
+
+### 5. Start or continue review
 
 - registration-scoped:
   - `POST /api/v1/soul/agents/register/{id}/mint-conversation`
@@ -202,7 +251,7 @@ Important behavior:
 - the first transition into in-progress review emits lifecycle event `review_started`
 - additional turns in the same conversation do not emit duplicate `review_started` events
 
-### 5. Complete the review draft
+### 6. Complete the review draft
 
 - registration-scoped:
   - `POST /api/v1/soul/agents/register/{id}/mint-conversation/{conversationId}/complete`
@@ -217,7 +266,7 @@ Side effects:
 - review digest, boundary count, and capability count are stored on the promotion
 - lifecycle event `finalize_ready` is emitted
 
-### 6. Fetch finalize preflight and signing inputs
+### 7. Fetch finalize preflight and signing inputs
 
 - preferred:
   - `POST /api/v1/soul/agents/register/{id}/mint-conversation/{conversationId}/finalize/preflight`
@@ -239,7 +288,7 @@ The preflight response is the canonical source for finalize UI and signing prepa
 
 Clients should not reconstruct these values locally when the server already provides them.
 
-### 7. Finalize and publish graduation
+### 8. Finalize and publish graduation
 
 - registration-scoped:
   - `POST /api/v1/soul/agents/register/{id}/mint-conversation/{conversationId}/finalize`
@@ -260,8 +309,15 @@ Response includes:
 Side effects:
 
 - versioned registration JSON is published
+- pending hosted/off-chain identities are activated
+- `self_description_version` advances and version history is recorded
+- managed canonical ENS channel and gateway/search resolution are recorded as
+  `<local>.<instance-slug>.lessersoul.eth` when the managed domain mapping exists
 - promotion moves into graduated state
 - lifecycle event `graduated` is emitted
+
+If no mint receipt has been recorded, the returned `agent` remains `anchor_state=hosted_offchain` and omits mint
+transaction fields. If a mint receipt was already recorded, the returned `agent` remains `immutable_onchain`.
 
 ## Durable State Contract
 
@@ -283,6 +339,10 @@ Side effects:
 - review/mint metadata:
   - `mint_operation_id`
   - `mint_operation_status`
+  - `anchor_state`
+  - `onchain_binding_status`
+  - `onchain_binding_available`
+  - `hosted_offchain_finalizable`
   - `principal_address`
   - `latest_conversation_id`
   - `latest_conversation_status`
@@ -304,6 +364,18 @@ Side effects:
   - `prerequisites`
   - `next_actions`
 
+On-chain binding helper semantics:
+
+- `anchor_state=hosted_offchain` means the identity is publishable/usable from host state and may still be promoted.
+- `anchor_state=immutable_onchain` means a verified mint execution was recorded for this identity.
+- `onchain_binding_status` is one of `unavailable`, `pending`, `proposed`, `executed`, or `failed`.
+- `onchain_binding_available=true` means a mint operation exists that can be displayed or retried.
+- `hosted_offchain_finalizable=true` means the client can show hosted/off-chain finalize as the primary action even
+  though on-chain binding remains optional.
+- `next_actions` may include both `begin_finalize` and `record_mint_execution` when the hosted/offchain path is ready
+  and the on-chain binding operation is still pending; after hosted graduation it may still include
+  `record_mint_execution` as an upgrade action.
+
 Current state should be read from the promotion snapshot, not inferred by replaying events.
 
 ## Lifecycle Event Contract
@@ -316,9 +388,9 @@ Current event types:
 - `request_created`
   - request record exists and the wallet/proof workflow can begin
 - `request_approved`
-  - verification completed and the mint operation is ready for execution
+  - verification completed; hosted/off-chain review can begin and the mint operation is available for optional binding
 - `mint_executed`
-  - the on-chain mint succeeded and review can begin
+  - the on-chain mint succeeded and the identity was promoted to immutable on-chain assurance
 - `review_started`
   - the workflow entered a live mint-conversation review
 - `finalize_ready`

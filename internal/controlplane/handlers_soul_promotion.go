@@ -42,9 +42,13 @@ type soulAgentPromotionView struct {
 	ApprovalStatus  string `json:"approval_status"`
 	ReadinessStatus string `json:"readiness_status"`
 
-	MintOperationID     string `json:"mint_operation_id,omitempty"`
-	MintOperationStatus string `json:"mint_operation_status,omitempty"`
-	PrincipalAddress    string `json:"principal_address,omitempty"`
+	MintOperationID           string `json:"mint_operation_id,omitempty"`
+	MintOperationStatus       string `json:"mint_operation_status,omitempty"`
+	AnchorState               string `json:"anchor_state,omitempty"`
+	OnchainBindingStatus      string `json:"onchain_binding_status,omitempty"`
+	OnchainBindingAvailable   bool   `json:"onchain_binding_available,omitempty"`
+	HostedOffchainFinalizable bool   `json:"hosted_offchain_finalizable,omitempty"`
+	PrincipalAddress          string `json:"principal_address,omitempty"`
 
 	LatestConversationID     string `json:"latest_conversation_id,omitempty"`
 	LatestConversationStatus string `json:"latest_conversation_status,omitempty"`
@@ -122,6 +126,7 @@ func buildSoulAgentPromotionFromRegistration(reg *models.SoulAgentRegistration, 
 		ReviewStatus:    models.SoulAgentPromotionReviewStatusNotStarted,
 		ApprovalStatus:  models.SoulAgentPromotionApprovalStatusPending,
 		ReadinessStatus: models.SoulAgentPromotionReadinessAwaitingVerification,
+		AnchorState:     models.SoulAnchorStateHostedOffchain,
 		RequestedAt:     now.UTC(),
 		CreatedAt:       now.UTC(),
 		UpdatedAt:       now.UTC(),
@@ -144,7 +149,8 @@ func updateSoulAgentPromotionForVerification(promotion *models.SoulAgentPromotio
 	promotion.RequestStatus = models.SoulAgentPromotionRequestStatusVerified
 	promotion.ReviewStatus = models.SoulAgentPromotionReviewStatusNotStarted
 	promotion.ApprovalStatus = models.SoulAgentPromotionApprovalStatusApproved
-	promotion.ReadinessStatus = models.SoulAgentPromotionReadinessAwaitingMint
+	promotion.ReadinessStatus = models.SoulAgentPromotionReadinessReadyForConversation
+	promotion.AnchorState = models.SoulAnchorStateHostedOffchain
 	promotion.PrincipalAddress = strings.ToLower(strings.TrimSpace(principalAddress))
 	if op != nil {
 		promotion.MintOperationID = strings.TrimSpace(op.OperationID)
@@ -166,9 +172,14 @@ func updateSoulAgentPromotionForMintExecution(promotion *models.SoulAgentPromoti
 	if promotion == nil {
 		return nil
 	}
-	promotion.Stage = models.SoulAgentPromotionStageMinted
-	promotion.RequestStatus = models.SoulAgentPromotionRequestStatusMinted
-	promotion.ReadinessStatus = models.SoulAgentPromotionReadinessReadyForConversation
+	if !soulAgentPromotionIsGraduated(promotion) {
+		promotion.RequestStatus = models.SoulAgentPromotionRequestStatusMinted
+	}
+	if !soulAgentPromotionHasReviewProgress(promotion) && !soulAgentPromotionIsGraduated(promotion) {
+		promotion.Stage = models.SoulAgentPromotionStageMinted
+		promotion.ReadinessStatus = models.SoulAgentPromotionReadinessReadyForConversation
+	}
+	promotion.AnchorState = models.SoulAnchorStateImmutableOnchain
 	promotion.MintedAt = now.UTC()
 	if op != nil {
 		promotion.MintOperationID = strings.TrimSpace(op.OperationID)
@@ -176,6 +187,33 @@ func updateSoulAgentPromotionForMintExecution(promotion *models.SoulAgentPromoti
 	}
 	promotion.UpdatedAt = now.UTC()
 	return promotion
+}
+
+func soulAgentPromotionHasReviewProgress(promotion *models.SoulAgentPromotion) bool {
+	if promotion == nil {
+		return false
+	}
+	if strings.TrimSpace(promotion.LatestConversationID) != "" {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(promotion.ReviewStatus)) {
+	case models.SoulAgentPromotionReviewStatusConversationInProgress,
+		models.SoulAgentPromotionReviewStatusDraftReady,
+		models.SoulAgentPromotionReviewStatusPublished:
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(promotion.ReadinessStatus)) {
+	case models.SoulAgentPromotionReadinessReadyForFinalize,
+		models.SoulAgentPromotionReadinessGraduated:
+		return true
+	}
+	return false
+}
+
+func soulAgentPromotionIsGraduated(promotion *models.SoulAgentPromotion) bool {
+	return promotion != nil && (promotion.PublishedVersion > 0 ||
+		strings.EqualFold(strings.TrimSpace(promotion.Stage), models.SoulAgentPromotionStageGraduated) ||
+		strings.EqualFold(strings.TrimSpace(promotion.ReadinessStatus), models.SoulAgentPromotionReadinessGraduated))
 }
 
 func updateSoulAgentPromotionForConversation(promotion *models.SoulAgentPromotion, conversationID string, conversationStatus string, now time.Time) *models.SoulAgentPromotion {
@@ -211,6 +249,9 @@ func updateSoulAgentPromotionForGraduation(promotion *models.SoulAgentPromotion,
 	promotion.RequestStatus = models.SoulAgentPromotionRequestStatusGraduated
 	promotion.ReviewStatus = models.SoulAgentPromotionReviewStatusPublished
 	promotion.ReadinessStatus = models.SoulAgentPromotionReadinessGraduated
+	if strings.TrimSpace(promotion.AnchorState) == "" {
+		promotion.AnchorState = models.SoulAnchorStateHostedOffchain
+	}
 	promotion.PublishedVersion = publishedVersion
 	promotion.GraduatedAt = now.UTC()
 	promotion.UpdatedAt = now.UTC()
@@ -251,38 +292,44 @@ func (s *Server) buildSoulAgentPromotionView(promotion *models.SoulAgentPromotio
 		ReadyForFinalize:             strings.EqualFold(strings.TrimSpace(promotion.ReadinessStatus), models.SoulAgentPromotionReadinessReadyForFinalize) || promotion.PublishedVersion > 0,
 		Graduated:                    promotion.PublishedVersion > 0 || strings.EqualFold(strings.TrimSpace(promotion.Stage), models.SoulAgentPromotionStageGraduated),
 	}
+	anchorState := soulAgentPromotionAnchorState(promotion)
+	onchainStatus := soulAgentPromotionOnchainBindingStatus(promotion)
 	return soulAgentPromotionView{
-		AgentID:                  promotion.AgentID,
-		RegistrationID:           promotion.RegistrationID,
-		RequestedBy:              promotion.RequestedBy,
-		Domain:                   promotion.Domain,
-		LocalID:                  promotion.LocalID,
-		Wallet:                   promotion.Wallet,
-		Stage:                    promotion.Stage,
-		RequestStatus:            promotion.RequestStatus,
-		ReviewStatus:             promotion.ReviewStatus,
-		ApprovalStatus:           promotion.ApprovalStatus,
-		ReadinessStatus:          promotion.ReadinessStatus,
-		MintOperationID:          promotion.MintOperationID,
-		MintOperationStatus:      promotion.MintOperationStatus,
-		PrincipalAddress:         promotion.PrincipalAddress,
-		LatestConversationID:     promotion.LatestConversationID,
-		LatestConversationStatus: promotion.LatestConversationStatus,
-		LatestReviewSHA256:       promotion.LatestReviewSHA256,
-		LatestBoundaryCount:      promotion.LatestBoundaryCount,
-		LatestCapabilityCount:    promotion.LatestCapabilityCount,
-		PublishedVersion:         promotion.PublishedVersion,
-		RequestedAt:              promotion.RequestedAt,
-		VerifiedAt:               promotion.VerifiedAt,
-		ApprovedAt:               promotion.ApprovedAt,
-		MintedAt:                 promotion.MintedAt,
-		ReviewStartedAt:          promotion.ReviewStartedAt,
-		ReviewReadyAt:            promotion.ReviewReadyAt,
-		GraduatedAt:              promotion.GraduatedAt,
-		CreatedAt:                promotion.CreatedAt,
-		UpdatedAt:                promotion.UpdatedAt,
-		Prerequisites:            prereqs,
-		NextActions:              soulAgentPromotionNextActions(promotion),
+		AgentID:                   promotion.AgentID,
+		RegistrationID:            promotion.RegistrationID,
+		RequestedBy:               promotion.RequestedBy,
+		Domain:                    promotion.Domain,
+		LocalID:                   promotion.LocalID,
+		Wallet:                    promotion.Wallet,
+		Stage:                     promotion.Stage,
+		RequestStatus:             promotion.RequestStatus,
+		ReviewStatus:              promotion.ReviewStatus,
+		ApprovalStatus:            promotion.ApprovalStatus,
+		ReadinessStatus:           promotion.ReadinessStatus,
+		MintOperationID:           promotion.MintOperationID,
+		MintOperationStatus:       promotion.MintOperationStatus,
+		AnchorState:               anchorState,
+		OnchainBindingStatus:      onchainStatus,
+		OnchainBindingAvailable:   soulAgentPromotionOnchainBindingAvailable(promotion),
+		HostedOffchainFinalizable: soulAgentPromotionHostedOffchainFinalizable(promotion),
+		PrincipalAddress:          promotion.PrincipalAddress,
+		LatestConversationID:      promotion.LatestConversationID,
+		LatestConversationStatus:  promotion.LatestConversationStatus,
+		LatestReviewSHA256:        promotion.LatestReviewSHA256,
+		LatestBoundaryCount:       promotion.LatestBoundaryCount,
+		LatestCapabilityCount:     promotion.LatestCapabilityCount,
+		PublishedVersion:          promotion.PublishedVersion,
+		RequestedAt:               promotion.RequestedAt,
+		VerifiedAt:                promotion.VerifiedAt,
+		ApprovedAt:                promotion.ApprovedAt,
+		MintedAt:                  promotion.MintedAt,
+		ReviewStartedAt:           promotion.ReviewStartedAt,
+		ReviewReadyAt:             promotion.ReviewReadyAt,
+		GraduatedAt:               promotion.GraduatedAt,
+		CreatedAt:                 promotion.CreatedAt,
+		UpdatedAt:                 promotion.UpdatedAt,
+		Prerequisites:             prereqs,
+		NextActions:               soulAgentPromotionNextActions(promotion),
 	}
 }
 
@@ -302,14 +349,78 @@ func soulAgentPromotionNextActions(promotion *models.SoulAgentPromotion) []strin
 		} else {
 			actions = append(actions, "start_review_conversation")
 		}
+		actions = appendPendingOnchainBindingAction(actions, promotion)
 	case models.SoulAgentPromotionReadinessReadyForFinalize:
 		actions = append(actions, "begin_finalize")
+		actions = appendPendingOnchainBindingAction(actions, promotion)
 	}
-	if strings.EqualFold(strings.TrimSpace(promotion.Stage), models.SoulAgentPromotionStageGraduated) {
-		return nil
+	if soulAgentPromotionIsGraduated(promotion) {
+		actions = actions[:0]
+		actions = appendPendingOnchainBindingAction(actions, promotion)
+		if len(actions) == 0 {
+			return nil
+		}
 	}
 	sort.Strings(actions)
 	return actions
+}
+
+func soulAgentPromotionAnchorState(promotion *models.SoulAgentPromotion) string {
+	if promotion == nil {
+		return models.SoulAnchorStateHostedOffchain
+	}
+	switch strings.ToLower(strings.TrimSpace(promotion.AnchorState)) {
+	case models.SoulAnchorStateImmutableOnchain:
+		return models.SoulAnchorStateImmutableOnchain
+	default:
+		return models.SoulAnchorStateHostedOffchain
+	}
+}
+
+func soulAgentPromotionOnchainBindingStatus(promotion *models.SoulAgentPromotion) string {
+	if promotion == nil {
+		return "unavailable"
+	}
+	if soulAgentPromotionAnchorState(promotion) == models.SoulAnchorStateImmutableOnchain ||
+		strings.EqualFold(strings.TrimSpace(promotion.MintOperationStatus), models.SoulOperationStatusExecuted) {
+		return models.SoulOperationStatusExecuted
+	}
+	if strings.TrimSpace(promotion.MintOperationID) == "" {
+		return "unavailable"
+	}
+	switch strings.ToLower(strings.TrimSpace(promotion.MintOperationStatus)) {
+	case models.SoulOperationStatusFailed:
+		return models.SoulOperationStatusFailed
+	case models.SoulOperationStatusProposed:
+		return models.SoulOperationStatusProposed
+	default:
+		return models.SoulOperationStatusPending
+	}
+}
+
+func soulAgentPromotionOnchainBindingAvailable(promotion *models.SoulAgentPromotion) bool {
+	return promotion != nil && strings.TrimSpace(promotion.MintOperationID) != ""
+}
+
+func soulAgentPromotionHostedOffchainFinalizable(promotion *models.SoulAgentPromotion) bool {
+	return promotion != nil &&
+		soulAgentPromotionAnchorState(promotion) == models.SoulAnchorStateHostedOffchain &&
+		strings.EqualFold(strings.TrimSpace(promotion.ReadinessStatus), models.SoulAgentPromotionReadinessReadyForFinalize)
+}
+
+func appendPendingOnchainBindingAction(actions []string, promotion *models.SoulAgentPromotion) []string {
+	if promotion == nil {
+		return actions
+	}
+	if soulAgentPromotionAnchorState(promotion) == models.SoulAnchorStateImmutableOnchain {
+		return actions
+	}
+	switch soulAgentPromotionOnchainBindingStatus(promotion) {
+	case models.SoulOperationStatusPending, models.SoulOperationStatusProposed, models.SoulOperationStatusFailed:
+		return append(actions, "record_mint_execution")
+	default:
+		return actions
+	}
 }
 
 func (s *Server) loadSoulAgentPromotionForAccess(ctx *apptheory.Context, agentIDHex string) (*models.SoulAgentPromotion, *apptheory.AppError) {
