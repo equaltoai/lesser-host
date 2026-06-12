@@ -60,6 +60,16 @@ func TestV3ContractFixturesValidate(t *testing.T) {
 			schema:   filepath.Join(schemasDir, "soul-agent-channels.response.schema.json"),
 			fixtures: []string{filepath.Join(fixturesDir, "soul-agent-channels.response.example.json")},
 		},
+		{
+			name:     "soul_instance_bootstrap_error",
+			schema:   filepath.Join(schemasDir, "soul-instance-bootstrap.error.schema.json"),
+			fixtures: []string{filepath.Join(fixturesDir, "soul-instance-bootstrap.error.boundary-violation.example.json")},
+		},
+		{
+			name:     "soul_instance_bootstrap_finalize_response",
+			schema:   filepath.Join(schemasDir, "soul-instance-bootstrap.finalize.response.schema.json"),
+			fixtures: []string{filepath.Join(fixturesDir, "soul-instance-bootstrap.finalize.response.hosted-offchain.example.json")},
+		},
 	}
 
 	for _, tc := range cases {
@@ -94,14 +104,48 @@ func mustCompileSchema(t *testing.T, schemaPath string) *jsonschema.Schema {
 	compiler.DefaultDraft(jsonschema.Draft2020)
 	compiler.AssertFormat()
 
-	if addErr := compiler.AddResource(schemaPath, doc); addErr != nil {
-		t.Fatalf("add schema resource %s: %v", schemaPath, addErr)
+	for _, siblingPath := range mustSchemaFiles(t, filepath.Dir(schemaPath)) {
+		siblingDoc := doc
+		if siblingPath != schemaPath {
+			siblingDoc = mustReadJSON(t, siblingPath)
+		}
+		if addErr := compiler.AddResource(siblingPath, siblingDoc); addErr != nil {
+			t.Fatalf("add schema resource %s: %v", siblingPath, addErr)
+		}
+		if schemaID := schemaDocumentID(siblingDoc); schemaID != "" {
+			if addErr := compiler.AddResource(schemaID, siblingDoc); addErr != nil {
+				t.Fatalf("add schema resource %s: %v", schemaID, addErr)
+			}
+		}
 	}
+
 	schema, compileErr := compiler.Compile(schemaPath)
 	if compileErr != nil {
 		t.Fatalf("compile schema %s: %v", schemaPath, compileErr)
 	}
 	return schema
+}
+
+func mustSchemaFiles(t *testing.T, schemasDir string) []string {
+	t.Helper()
+
+	files, err := filepath.Glob(filepath.Join(schemasDir, "*.schema.json"))
+	if err != nil {
+		t.Fatalf("glob schemas: %v", err)
+	}
+	if len(files) == 0 {
+		t.Fatalf("no schemas found in %s", schemasDir)
+	}
+	return files
+}
+
+func schemaDocumentID(doc any) string {
+	obj, ok := doc.(map[string]any)
+	if !ok {
+		return ""
+	}
+	id, _ := obj["$id"].(string)
+	return id
 }
 
 func mustReadJSON(t *testing.T, path string) any {
