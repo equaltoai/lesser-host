@@ -671,6 +671,16 @@ components:
         mint_operation_status:
           type: string
           enum: [pending, proposed, executed, failed]
+        anchor_state:
+          type: string
+          enum: [hosted_offchain, immutable_onchain]
+        onchain_binding_status:
+          type: string
+          enum: [unavailable, pending, proposed, executed, failed]
+        onchain_binding_available:
+          type: boolean
+        hosted_offchain_finalizable:
+          type: boolean
         principal_address:
           type: string
           pattern: "^0x[0-9a-fA-F]{40}$"

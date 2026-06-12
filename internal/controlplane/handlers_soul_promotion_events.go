@@ -184,6 +184,7 @@ func promotionFromLifecycleEvent(event *models.SoulAgentPromotionLifecycleEvent)
 		ReadinessStatus:          event.ReadinessStatus,
 		MintOperationID:          event.MintOperationID,
 		MintOperationStatus:      event.MintOperationStatus,
+		AnchorState:              event.AnchorState,
 		PrincipalAddress:         event.PrincipalAddress,
 		LatestConversationID:     event.LatestConversationID,
 		LatestConversationStatus: event.LatestConversationStatus,

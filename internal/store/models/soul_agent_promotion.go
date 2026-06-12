@@ -77,6 +77,7 @@ type SoulAgentPromotion struct {
 
 	MintOperationID     string `theorydb:"attr:mintOperationId" json:"mint_operation_id,omitempty"`
 	MintOperationStatus string `theorydb:"attr:mintOperationStatus" json:"mint_operation_status,omitempty"`
+	AnchorState         string `theorydb:"attr:anchorState" json:"anchor_state,omitempty"`
 
 	PrincipalAddress string `theorydb:"attr:principalAddress" json:"principal_address,omitempty"`
 
@@ -125,6 +126,9 @@ func (p *SoulAgentPromotion) BeforeCreate() error {
 	if strings.TrimSpace(p.ReadinessStatus) == "" {
 		p.ReadinessStatus = SoulAgentPromotionReadinessAwaitingVerification
 	}
+	if strings.TrimSpace(p.AnchorState) == "" {
+		p.AnchorState = SoulAnchorStateHostedOffchain
+	}
 	if p.RequestedAt.IsZero() {
 		p.RequestedAt = p.CreatedAt
 	}
@@ -150,6 +154,7 @@ func (p *SoulAgentPromotion) UpdateKeys() error {
 	p.ReadinessStatus = strings.ToLower(strings.TrimSpace(p.ReadinessStatus))
 	p.MintOperationID = strings.TrimSpace(p.MintOperationID)
 	p.MintOperationStatus = strings.ToLower(strings.TrimSpace(p.MintOperationStatus))
+	p.AnchorState = strings.ToLower(strings.TrimSpace(p.AnchorState))
 	p.PrincipalAddress = strings.ToLower(strings.TrimSpace(p.PrincipalAddress))
 	p.LatestConversationID = strings.TrimSpace(p.LatestConversationID)
 	p.LatestConversationStatus = strings.ToLower(strings.TrimSpace(p.LatestConversationStatus))

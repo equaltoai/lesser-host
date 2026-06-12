@@ -406,6 +406,10 @@ export interface SoulAgentPromotion {
 	readiness_status: string;
 	mint_operation_id?: string;
 	mint_operation_status?: string;
+	anchor_state?: 'hosted_offchain' | 'immutable_onchain';
+	onchain_binding_status?: 'unavailable' | 'pending' | 'proposed' | 'executed' | 'failed';
+	onchain_binding_available?: boolean;
+	hosted_offchain_finalizable?: boolean;
 	principal_address?: string;
 	latest_conversation_id?: string;
 	latest_conversation_status?: string;

@@ -1104,6 +1104,12 @@ export interface components {
             mint_operation_id?: string;
             /** @enum {string} */
             mint_operation_status?: "pending" | "proposed" | "executed" | "failed";
+            /** @enum {string} */
+            anchor_state?: "hosted_offchain" | "immutable_onchain";
+            /** @enum {string} */
+            onchain_binding_status?: "unavailable" | "pending" | "proposed" | "executed" | "failed";
+            onchain_binding_available?: boolean;
+            hosted_offchain_finalizable?: boolean;
             principal_address?: string;
             latest_conversation_id?: string;
             /** @enum {string} */

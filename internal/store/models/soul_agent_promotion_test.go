@@ -21,7 +21,8 @@ func TestSoulAgentPromotionBeforeCreateSetsDefaults(t *testing.T) {
 		promotion.RequestStatus != SoulAgentPromotionRequestStatusRequested ||
 		promotion.ReviewStatus != SoulAgentPromotionReviewStatusNotStarted ||
 		promotion.ApprovalStatus != SoulAgentPromotionApprovalStatusPending ||
-		promotion.ReadinessStatus != SoulAgentPromotionReadinessAwaitingVerification {
+		promotion.ReadinessStatus != SoulAgentPromotionReadinessAwaitingVerification ||
+		promotion.AnchorState != SoulAnchorStateHostedOffchain {
 		t.Fatalf("unexpected defaults: %#v", promotion)
 	}
 	if promotion.RequestedAt.IsZero() || promotion.CreatedAt.IsZero() || promotion.UpdatedAt.IsZero() {
@@ -66,6 +67,7 @@ func TestSoulAgentPromotionUpdateKeysNormalizesStatusFields(t *testing.T) {
 		t.Fatalf("unexpected status normalization: %#v", promotion)
 	}
 	if promotion.MintOperationStatus != "executed" ||
+		promotion.AnchorState != SoulAnchorStateImmutableOnchain ||
 		promotion.PrincipalAddress != "0x00000000000000000000000000000000000000bb" ||
 		promotion.LatestConversationID != "conv-1" ||
 		promotion.LatestConversationStatus != "completed" ||
@@ -120,6 +122,7 @@ func promotionForNormalization() *SoulAgentPromotion {
 		ReadinessStatus:          " Ready_For_Finalize ",
 		MintOperationID:          " op-1 ",
 		MintOperationStatus:      " Executed ",
+		AnchorState:              " Immutable_Onchain ",
 		PrincipalAddress:         "0X00000000000000000000000000000000000000BB ",
 		LatestConversationID:     " conv-1 ",
 		LatestConversationStatus: " Completed ",

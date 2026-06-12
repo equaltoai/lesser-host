@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"encoding/hex"
@@ -41,8 +42,12 @@ type mintConversationTestDB struct {
 	qPromotion *ttmocks.MockQuery
 	qLifecycle *ttmocks.MockQuery
 	qUser      *ttmocks.MockQuery
+	qChannel   *ttmocks.MockQuery
+	qENS       *ttmocks.MockQuery
 
-	convModels []*models.SoulAgentMintConversation
+	convModels          []*models.SoulAgentMintConversation
+	ensChannelModels    []*models.SoulAgentChannel
+	ensResolutionModels []*models.SoulAgentENSResolution
 }
 
 func newMintConversationTestDB() *mintConversationTestDB {
@@ -59,6 +64,8 @@ func newMintConversationTestDB() *mintConversationTestDB {
 		qPromotion: new(ttmocks.MockQuery),
 		qLifecycle: new(ttmocks.MockQuery),
 		qUser:      new(ttmocks.MockQuery),
+		qChannel:   new(ttmocks.MockQuery),
+		qENS:       new(ttmocks.MockQuery),
 	}
 
 	db.On("WithContext", mock.Anything).Return(db).Maybe()
@@ -77,8 +84,20 @@ func newMintConversationTestDB() *mintConversationTestDB {
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentPromotion")).Return(tdb.qPromotion).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentPromotionLifecycleEvent")).Return(tdb.qLifecycle).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.User")).Return(tdb.qUser).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentChannel")).Return(tdb.qChannel).Maybe().Run(func(args mock.Arguments) {
+		if ch, ok := args.Get(0).(*models.SoulAgentChannel); ok && ch != nil && strings.TrimSpace(ch.Identifier) != "" {
+			copy := *ch
+			tdb.ensChannelModels = append(tdb.ensChannelModels, &copy)
+		}
+	})
+	db.On("Model", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(tdb.qENS).Maybe().Run(func(args mock.Arguments) {
+		if res, ok := args.Get(0).(*models.SoulAgentENSResolution); ok && res != nil && strings.TrimSpace(res.ENSName) != "" {
+			copy := *res
+			tdb.ensResolutionModels = append(tdb.ensResolutionModels, &copy)
+		}
+	})
 
-	for _, q := range []*ttmocks.MockQuery{tdb.qReg, tdb.qDomain, tdb.qInstance, tdb.qKey, tdb.qConv, tdb.qIdentity, tdb.qAudit, tdb.qPromotion, tdb.qLifecycle, tdb.qUser} {
+	for _, q := range []*ttmocks.MockQuery{tdb.qReg, tdb.qDomain, tdb.qInstance, tdb.qKey, tdb.qConv, tdb.qIdentity, tdb.qAudit, tdb.qPromotion, tdb.qLifecycle, tdb.qUser, tdb.qChannel, tdb.qENS} {
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("Index", mock.Anything).Return(q).Maybe()
 		q.On("Limit", mock.Anything).Return(q).Maybe()
@@ -94,6 +113,8 @@ func newMintConversationTestDB() *mintConversationTestDB {
 		}
 	}
 	tdb.qPromotion.On("First", mock.AnythingOfType("*models.SoulAgentPromotion")).Return(theoryErrors.ErrItemNotFound).Maybe()
+	tdb.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(theoryErrors.ErrItemNotFound).Maybe()
+	tdb.qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(theoryErrors.ErrItemNotFound).Maybe()
 	tdb.qUser.On("First", mock.AnythingOfType("*models.User")).Return(nil).Maybe().Run(func(args mock.Arguments) {
 		dest, ok := args.Get(0).(*models.User)
 		if !ok || dest == nil {
@@ -212,19 +233,24 @@ func testMintConversationIdentity() *models.SoulAgentIdentity {
 	return identity
 }
 
-func TestRequireMintConversationFinalizeActiveIdentityRejectsPending(t *testing.T) {
+func TestRequireMintConversationFinalizeActiveIdentityAllowsPendingHosted(t *testing.T) {
 	t.Parallel()
 
 	identity := testMintConversationIdentity()
-	appErr := requireMintConversationFinalizeActiveIdentity(identity)
-	if appErr == nil || appErr.Code != "app.conflict" {
-		t.Fatalf("expected pending identity conflict, got %#v", appErr)
+	if appErr := requireMintConversationFinalizeActiveIdentity(identity); appErr != nil {
+		t.Fatalf("expected pending hosted identity to pass, got %#v", appErr)
 	}
 
 	identity.Status = models.SoulAgentStatusActive
 	identity.LifecycleStatus = models.SoulAgentStatusActive
 	if appErr := requireMintConversationFinalizeActiveIdentity(identity); appErr != nil {
 		t.Fatalf("expected active identity to pass, got %#v", appErr)
+	}
+
+	identity.Status = models.SoulAgentStatusSuspended
+	identity.LifecycleStatus = models.SoulAgentStatusSuspended
+	if appErr := requireMintConversationFinalizeActiveIdentity(identity); appErr == nil || appErr.Code != "app.conflict" {
+		t.Fatalf("expected suspended identity conflict, got %#v", appErr)
 	}
 }
 
@@ -420,9 +446,6 @@ func testMintConversationFinalizeRegistrationHelper(t *testing.T, now time.Time)
 	decl.SelfDescription.Constraints = "Stay within provided context."
 	decl.Capabilities[0].LastValidated = "2026-03-05T12:00:00Z"
 	decl.Boundaries[0].Rationale = "Prevent deception."
-	identity.Status = models.SoulAgentStatusActive
-	identity.LifecycleStatus = models.SoulAgentStatusActive
-
 	reg, _, digest, capsNorm, claimLevels, appErr := s.buildMintConversationFinalizeV2Registration(identity.AgentID, identity, decl, map[string]string{"b1": "0x00"}, now, 2, "0x00")
 	assertMintConversationFinalizeRegistrationSuccess(t, identity, reg, digest, capsNorm, claimLevels, appErr)
 }
@@ -1198,8 +1221,6 @@ func TestMintConversationBeginAndFinalize_Success(t *testing.T) {
 	tdb.qIdentity.On("Update", mock.Anything, mock.Anything).Return(nil).Maybe()
 
 	identity, key := testMintConversationIdentityAndKey()
-	identity.Status = models.SoulAgentStatusActive
-	identity.LifecycleStatus = models.SoulAgentStatusActive
 	reg := models.SoulAgentRegistration{
 		ID:               "reg-1",
 		Username:         "alice",
@@ -1276,6 +1297,8 @@ func TestMintConversationBeginAndFinalize_Success(t *testing.T) {
 	}
 	out := mustFinalizeMintConversationResponse(t, resp)
 	assertMintConversationFinalizePersisted(t, packs, identity.AgentID, out)
+	assertMintConversationFinalizeHostedOffchain(t, out)
+	assertMintConversationManagedENSMaterial(t, tdb.ensChannelModels, tdb.ensResolutionModels, identity)
 }
 
 func assertMintConversationFinalizeRegistrationInputErrors(
@@ -1354,6 +1377,9 @@ func mustBeginFinalizeResponse(t *testing.T, resp *apptheory.Response) soulMintC
 
 func mustFinalizeMintConversationResponse(t *testing.T, resp *apptheory.Response) soulMintConversationFinalizeResponse {
 	t.Helper()
+	if bytes.Contains(resp.Body, []byte("minted_at")) || bytes.Contains(resp.Body, []byte("mint_tx_hash")) {
+		t.Fatalf("hosted finalize response should omit mint transaction fields: %s", string(resp.Body))
+	}
 	var out soulMintConversationFinalizeResponse
 	if err := json.Unmarshal(resp.Body, &out); err != nil {
 		t.Fatalf("Unmarshal finalize response: %v", err)
@@ -1371,5 +1397,55 @@ func assertMintConversationFinalizePersisted(t *testing.T, packs *fakeSoulPackSt
 	}
 	if _, ok := packs.objects[soulRegistrationVersionedS3Key(agentID, 1)]; !ok {
 		t.Fatalf("expected versioned registration artifact to be written: %#v", out)
+	}
+}
+
+func assertMintConversationFinalizeHostedOffchain(t *testing.T, out soulMintConversationFinalizeResponse) {
+	t.Helper()
+	if out.Agent.Status != models.SoulAgentStatusActive || out.Agent.LifecycleStatus != models.SoulAgentStatusActive {
+		t.Fatalf("expected hosted finalize to activate identity, got %#v", out.Agent)
+	}
+	if out.Agent.AnchorState != models.SoulAnchorStateHostedOffchain {
+		t.Fatalf("expected hosted off-chain anchor state, got %#v", out.Agent)
+	}
+	if out.Agent.MintTxHash != "" || !out.Agent.MintedAt.IsZero() {
+		t.Fatalf("expected no mint transaction fields on hosted finalize, got %#v", out.Agent)
+	}
+}
+
+func assertMintConversationManagedENSMaterial(t *testing.T, channels []*models.SoulAgentChannel, resolutions []*models.SoulAgentENSResolution, identity *models.SoulAgentIdentity) {
+	t.Helper()
+	var channel *models.SoulAgentChannel
+	for _, ch := range channels {
+		if ch != nil && strings.TrimSpace(ch.Identifier) != "" {
+			channel = ch
+		}
+	}
+	var resolution *models.SoulAgentENSResolution
+	for _, res := range resolutions {
+		if res != nil && strings.TrimSpace(res.ENSName) != "" {
+			resolution = res
+		}
+	}
+	if channel == nil {
+		t.Fatalf("expected managed ENS channel")
+	}
+	if resolution == nil {
+		t.Fatalf("expected managed ENS resolution")
+	}
+	const wantENS = "agent-bot.inst1.lessersoul.eth"
+	if channel.Identifier != wantENS || channel.ChannelType != models.SoulChannelTypeENS || !channel.Verified || channel.Status != models.SoulChannelStatusActive {
+		t.Fatalf("unexpected ENS channel: %#v", channel)
+	}
+	if resolution.ENSName != wantENS ||
+		resolution.AgentID != identity.AgentID ||
+		resolution.LocalID != identity.LocalID ||
+		resolution.Domain != identity.Domain ||
+		resolution.Wallet != strings.ToLower(identity.Wallet) ||
+		resolution.Status != models.SoulAgentStatusActive {
+		t.Fatalf("unexpected ENS resolution: %#v", resolution)
+	}
+	if soul.IsLegacyBareManagedENSName(channel.Identifier) || soul.IsLegacyBareManagedENSName(resolution.ENSName) {
+		t.Fatalf("managed ENS material used legacy bare name: channel=%q resolution=%q", channel.Identifier, resolution.ENSName)
 	}
 }

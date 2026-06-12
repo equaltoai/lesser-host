@@ -270,12 +270,54 @@ func (s *Server) finalizeSoulAgentRegistrationV2Identity(ctx context.Context, id
 		return appErr
 	}
 
+	updates := make([]string, 0, 16)
 	if identity.SelfDescriptionVersion != version {
 		identity.SelfDescriptionVersion = version
-		if err := s.store.DB.WithContext(ctx).Model(identity).IfExists().Update("SelfDescriptionVersion"); err != nil {
+		updates = append(updates, "SelfDescriptionVersion")
+	}
+
+	if shouldActivateSoulIdentityOnRegistrationPublish(identity) {
+		identity.Status = models.SoulAgentStatusActive
+		identity.LifecycleStatus = models.SoulAgentStatusActive
+		if strings.TrimSpace(identity.AnchorState) == "" {
+			identity.AnchorState = models.SoulAnchorStateHostedOffchain
+		}
+		applyHostedBoundSoulPolicyDefaults(identity)
+		updates = append(updates,
+			"Status",
+			"LifecycleStatus",
+			"PolicyVersion",
+			"AnchorState",
+			"OperationalBinding",
+			"CapabilityPolicyVersion",
+			"CallerAccessPaymentPolicyVersion",
+			"EmailDefaultAllowed",
+			"PhoneEntitlementStatus",
+			"SMSAllowed",
+			"VoiceAllowed",
+			"PublicPaidCallerAccess",
+			"PolicyMigrationState",
+		)
+	}
+
+	if len(updates) > 0 {
+		identity.UpdatedAt = now.UTC()
+		updates = append(updates, "UpdatedAt")
+		if err := s.store.DB.WithContext(ctx).Model(identity).IfExists().Update(updates...); err != nil {
 			return &apptheory.AppError{Code: "app.internal", Message: "failed to update identity version"}
 		}
 	}
 
 	return nil
+}
+
+func shouldActivateSoulIdentityOnRegistrationPublish(identity *models.SoulAgentIdentity) bool {
+	if identity == nil {
+		return false
+	}
+	status := strings.ToLower(strings.TrimSpace(identity.LifecycleStatus))
+	if status == "" {
+		status = strings.ToLower(strings.TrimSpace(identity.Status))
+	}
+	return status == "" || status == models.SoulAgentStatusPending
 }
