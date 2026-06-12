@@ -41,6 +41,7 @@ type Server struct {
 	portalCostHTTPClient              *http.Client
 	fetchInstanceKeyPlaintextFunc     func(ctx context.Context, inst *models.Instance) (string, error)
 	resolveInstanceMetricsBaseURLFunc func(inst *models.Instance) (string, error)
+	mintConversationStreamer          func(ctx context.Context, eventCh chan<- apptheory.SSEEvent, p streamMintConversationParams)
 
 	ssmGetParameter     func(ctx context.Context, name string) (string, error)
 	ssmPutSecureValue   func(ctx context.Context, name string, value string, overwrite bool) error

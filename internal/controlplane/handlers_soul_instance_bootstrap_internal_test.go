@@ -1,10 +1,12 @@
 package controlplane
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -15,6 +17,7 @@ import (
 	"github.com/stretchr/testify/mock"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
+	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
 
 	"github.com/equaltoai/lesser-host/internal/store/models"
 	"github.com/equaltoai/lesser-host/internal/testutil"
@@ -22,6 +25,8 @@ import (
 
 const (
 	soulInstanceBootstrapTestActor                = "instance:inst1"
+	soulInstanceBootstrapTestInstanceSlug         = "inst1"
+	soulInstanceBootstrapTestConversationMessage  = "hello"
 	soulInstanceBootstrapTestPrincipalDeclaration = "I declare authority over this Lesser-hosted soul."
 )
 
@@ -66,7 +71,7 @@ func TestSoulInstanceBootstrapScaffold_RequiresStrictInstanceKey(t *testing.T) {
 			dest := testutil.RequireMockArg[*models.InstanceKey](t, args, 0)
 			*dest = models.InstanceKey{
 				ID:           sha256HexTrimmed("raw-key"),
-				InstanceSlug: "inst1",
+				InstanceSlug: soulInstanceBootstrapTestInstanceSlug,
 				CreatedAt:    time.Now().Add(-time.Hour).UTC(),
 				RevokedAt:    time.Now().Add(-time.Minute).UTC(),
 			}
@@ -86,7 +91,7 @@ func TestSoulInstanceBootstrapScaffold_RejectsCrossInstanceDomainBeforeBusinessH
 
 	tdb := newMintConversationTestDB()
 	s := newMintConversationServer(tdb)
-	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, "inst1")
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
 	stubMintConversationInstanceDomain(t, tdb, testDomainExampleCom, "other-inst")
 
 	_, err := s.handleSoulInstanceAgentRegistrationBegin(newSoulInstanceBootstrapContext(map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey}, soulInstanceBootstrapDomainOnlyBody(testDomainExampleCom), nil))
@@ -94,7 +99,7 @@ func TestSoulInstanceBootstrapScaffold_RejectsCrossInstanceDomainBeforeBusinessH
 	if appErr.Code != soulInstanceBootstrapCodeBoundaryViolation || appErr.StatusCode != http.StatusForbidden {
 		t.Fatalf("expected boundary violation 403, got %#v", appErr)
 	}
-	if appErr.Details["field"] != "domain" || appErr.Details["reason"] != "tenant_domain_mismatch" {
+	if appErr.Details["field"] != "domain" || appErr.Details["reason"] != soulMintInstanceReadReasonTenantMismatch {
 		t.Fatalf("expected tenant-domain mismatch details, got %#v", appErr.Details)
 	}
 }
@@ -104,8 +109,8 @@ func TestSoulInstanceAgentRegistrationBegin_ScopesWritesToInstanceKey(t *testing
 
 	tdb := newMintConversationTestDB()
 	s := newMintConversationServer(tdb)
-	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, "inst1")
-	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, testDomainExampleCom, "inst1")
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
+	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, testDomainExampleCom, soulInstanceBootstrapTestInstanceSlug)
 	tdb.qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(theoryErrors.ErrItemNotFound).Once()
 
 	body, _ := json.Marshal(soulAgentRegistrationBeginRequest{
@@ -147,7 +152,7 @@ func TestSoulInstanceBootstrapScaffold_RejectsCrossInstanceRegistration(t *testi
 	tdb := newMintConversationTestDB()
 	s := newMintConversationServer(tdb)
 	reg := mintConversationHandleReg()
-	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, "inst1")
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
 	stubMintConversationRegistration(t, tdb, reg)
 	stubMintConversationInstanceDomain(t, tdb, reg.DomainNormalized, "other-inst")
 
@@ -160,7 +165,126 @@ func TestSoulInstanceBootstrapScaffold_RejectsCrossInstanceRegistration(t *testi
 	if appErr.Code != soulInstanceBootstrapCodeBoundaryViolation || appErr.StatusCode != http.StatusForbidden {
 		t.Fatalf("expected boundary violation 403, got %#v", appErr)
 	}
-	if appErr.Details["reason"] != "tenant_domain_mismatch" {
+	if appErr.Details["reason"] != soulMintInstanceReadReasonTenantMismatch {
+		t.Fatalf("expected tenant-domain mismatch details, got %#v", appErr.Details)
+	}
+}
+
+func TestSoulInstanceMintConversationRoutes_RequireStrictInstanceKey(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		call   func(*Server, *apptheory.Context) (*apptheory.Response, error)
+		params map[string]string
+	}{
+		{
+			name: "send",
+			call: func(s *Server, ctx *apptheory.Context) (*apptheory.Response, error) {
+				return s.handleSoulInstanceMintConversation(ctx)
+			},
+			params: map[string]string{"id": "reg-1"},
+		},
+		{
+			name: "get",
+			call: func(s *Server, ctx *apptheory.Context) (*apptheory.Response, error) {
+				return s.handleSoulInstanceGetRegistrationMintConversation(ctx)
+			},
+			params: map[string]string{"id": "reg-1", "conversationId": mintConversationTestConversationID},
+		},
+		{
+			name: "complete",
+			call: func(s *Server, ctx *apptheory.Context) (*apptheory.Response, error) {
+				return s.handleSoulInstanceCompleteMintConversation(ctx)
+			},
+			params: map[string]string{"id": "reg-1", "conversationId": mintConversationTestConversationID},
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run("missing bearer "+tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tdb := newMintConversationTestDB()
+			s := newMintConversationServer(tdb)
+			_, err := tc.call(s, newSoulInstanceBootstrapContext(nil, nil, tc.params))
+			appErr := requireAppTheoryError(t, err)
+			if appErr.Code != soulInstanceBootstrapCodeUnauthorized || appErr.StatusCode != http.StatusUnauthorized {
+				t.Fatalf("expected unauthorized 401, got %#v", appErr)
+			}
+			tdb.qKey.AssertNotCalled(t, "First")
+		})
+	}
+
+	t.Run("unknown key hash fails closed", func(t *testing.T) {
+		t.Parallel()
+
+		tdb := newMintConversationTestDB()
+		s := newMintConversationServer(tdb)
+		tdb.qKey.On("First", mock.AnythingOfType("*models.InstanceKey")).Return(theoryErrors.ErrItemNotFound).Once()
+
+		_, err := s.handleSoulInstanceMintConversation(newSoulInstanceBootstrapContext(
+			map[string]string{"authorization": "Bearer raw-key"},
+			mustMarshalJSON(t, soulMintConversationRequest{Message: soulInstanceBootstrapTestConversationMessage}),
+			map[string]string{"id": "reg-1"},
+		))
+		appErr := requireAppTheoryError(t, err)
+		if appErr.Code != soulInstanceBootstrapCodeUnauthorized || appErr.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("expected unauthorized 401, got %#v", appErr)
+		}
+		tdb.qKey.AssertCalled(t, "ConsistentRead")
+		tdb.qKey.AssertNumberOfCalls(t, "First", 1)
+	})
+
+	t.Run("revoked key fails closed", func(t *testing.T) {
+		t.Parallel()
+
+		tdb := newMintConversationTestDB()
+		s := newMintConversationServer(tdb)
+		tdb.qKey.On("First", mock.AnythingOfType("*models.InstanceKey")).Return(nil).Run(func(args mock.Arguments) {
+			dest := testutil.RequireMockArg[*models.InstanceKey](t, args, 0)
+			*dest = models.InstanceKey{
+				ID:           sha256HexTrimmed("raw-key"),
+				InstanceSlug: soulInstanceBootstrapTestInstanceSlug,
+				CreatedAt:    time.Now().Add(-time.Hour).UTC(),
+				RevokedAt:    time.Now().Add(-time.Minute).UTC(),
+			}
+		}).Once()
+
+		_, err := s.handleSoulInstanceGetRegistrationMintConversation(newSoulInstanceBootstrapContext(
+			map[string]string{"authorization": "Bearer raw-key"},
+			nil,
+			map[string]string{"id": "reg-1", "conversationId": mintConversationTestConversationID},
+		))
+		appErr := requireAppTheoryError(t, err)
+		if appErr.Code != soulInstanceBootstrapCodeUnauthorized || appErr.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("expected unauthorized 401, got %#v", appErr)
+		}
+		tdb.qKey.AssertCalled(t, "ConsistentRead")
+	})
+}
+
+func TestSoulInstanceMintConversation_RejectsCrossInstanceRegistration(t *testing.T) {
+	t.Parallel()
+
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	reg := mintConversationHandleReg()
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationRegistration(t, tdb, reg)
+	stubMintConversationInstanceDomain(t, tdb, reg.DomainNormalized, "other-inst")
+
+	_, err := s.handleSoulInstanceMintConversation(newSoulInstanceBootstrapContext(
+		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
+		mustMarshalJSON(t, soulMintConversationRequest{Message: soulInstanceBootstrapTestConversationMessage}),
+		map[string]string{"id": reg.ID},
+	))
+	appErr := requireAppTheoryError(t, err)
+	if appErr.Code != soulInstanceBootstrapCodeBoundaryViolation || appErr.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected boundary violation 403, got %#v", appErr)
+	}
+	if appErr.Details["reason"] != soulMintInstanceReadReasonTenantMismatch {
 		t.Fatalf("expected tenant-domain mismatch details, got %#v", appErr.Details)
 	}
 }
@@ -171,9 +295,9 @@ func TestSoulInstanceAgentRegistrationPrincipalDeclarationPreflight_MatchesCanon
 	tdb := newMintConversationTestDB()
 	s := newMintConversationServer(tdb)
 	reg := soulInstanceBootstrapTestRegistration("reg-preflight", "0x00000000000000000000000000000000000000aa", "wallet message")
-	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, "inst1")
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
 	stubMintConversationRegistration(t, tdb, reg)
-	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, "inst1")
+	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
 	tdb.qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(theoryErrors.ErrItemNotFound).Once()
 
 	principalDeclaration := soulInstanceBootstrapTestPrincipalDeclaration
@@ -225,9 +349,9 @@ func TestSoulInstanceAgentRegistrationVerify_CreatesOperationAndPromotion(t *tes
 	walletKey, walletAddr, walletSigHex := soulInstanceBootstrapSignedWallet(t, walletMessage)
 	reg := soulInstanceBootstrapTestRegistration("reg-verify", walletAddr, walletMessage)
 
-	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, "inst1")
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
 	stubMintConversationRegistration(t, tdb, reg)
-	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, "inst1")
+	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
 	tdb.qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(theoryErrors.ErrItemNotFound).Once()
 
 	principalDeclaration := soulInstanceBootstrapTestPrincipalDeclaration
@@ -284,9 +408,9 @@ func TestSoulInstanceAgentRegistrationVerify_ReplaysCompletedRegistrationWithout
 	}
 	_ = existingOp.UpdateKeys()
 
-	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, "inst1")
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
 	stubMintConversationRegistration(t, tdb, reg)
-	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, "inst1")
+	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
 	tdb.qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(theoryErrors.ErrItemNotFound).Once()
 	tdb.qPromotion.ExpectedCalls = nil
 	tdb.qPromotion.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(tdb.qPromotion).Maybe()
@@ -401,9 +525,9 @@ func TestSoulInstanceBootstrapScaffold_ConversationIdsCannotCrossRegistration(t 
 	tdb := newMintConversationTestDB()
 	s := newMintConversationServer(tdb)
 	reg := mintConversationHandleReg()
-	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, "inst1")
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
 	stubMintConversationRegistration(t, tdb, reg)
-	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, "inst1")
+	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
 	tdb.qConv.On("First", mock.AnythingOfType("*models.SoulAgentMintConversation")).Return(theoryErrors.ErrItemNotFound).Once()
 
 	_, err := s.handleSoulInstanceGetRegistrationMintConversation(newSoulInstanceBootstrapContext(
@@ -417,37 +541,308 @@ func TestSoulInstanceBootstrapScaffold_ConversationIdsCannotCrossRegistration(t 
 	}
 }
 
-func TestSoulInstanceBootstrapScaffold_ConversationRouteReachesScaffold(t *testing.T) {
+func TestSoulInstanceMintConversation_StartStreamsAndPersistsDurableState(t *testing.T) {
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	reg := mintConversationHandleReg()
+	t.Setenv("ANTHROPIC_API_KEY", "anthropic-test-key")
+	streamParams := make(chan streamMintConversationParams, 1)
+	s.mintConversationStreamer = func(_ctx context.Context, eventCh chan<- apptheory.SSEEvent, p streamMintConversationParams) {
+		defer close(eventCh)
+		streamParams <- p
+		eventCh <- apptheory.SSEEvent{Event: "conversation_start", Data: soulMintConversationStartEvent{ConversationID: p.conversationID, Model: p.modelSet}}
+		eventCh <- apptheory.SSEEvent{Event: "delta", Data: soulMintConversationDeltaEvent{Text: soulInstanceBootstrapTestConversationMessage}}
+		eventCh <- apptheory.SSEEvent{Event: "conversation_done", Data: soulMintConversationDoneEvent{ConversationID: p.conversationID, FullResponse: soulInstanceBootstrapTestConversationMessage}}
+	}
+
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationRegistration(t, tdb, reg)
+	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationIdentity(t, tdb, nil, theoryErrors.ErrItemNotFound)
+	expectSoulInstanceMintConversationDebit(t, tdb, reg.AgentID, true)
+
+	resp, err := s.handleSoulInstanceMintConversation(newSoulInstanceBootstrapContext(
+		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
+		mustMarshalJSON(t, soulMintConversationRequest{Model: "anthropic:claude-sonnet-4-6", Message: soulInstanceBootstrapTestConversationMessage}),
+		map[string]string{"id": reg.ID},
+	))
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if resp.Status != http.StatusOK || resp.Headers["content-type"][0] != "text/event-stream" {
+		t.Fatalf("expected SSE 200 response, got %#v", resp)
+	}
+	body, readErr := io.ReadAll(resp.BodyReader)
+	if readErr != nil {
+		t.Fatalf("read SSE: %v", readErr)
+	}
+	bodyText := string(body)
+	if !strings.Contains(bodyText, "event: conversation_start") || !strings.Contains(bodyText, "event: conversation_done") {
+		t.Fatalf("expected start/done SSE events, got %q", bodyText)
+	}
+
+	var p streamMintConversationParams
+	select {
+	case p = <-streamParams:
+	case <-time.After(time.Second):
+		t.Fatalf("streamer was not invoked")
+	}
+	if p.agentIDHex != reg.AgentID || p.modelSet != "anthropic:claude-sonnet-4-6" || len(p.existingMessages) != 1 || p.existingMessages[0].Content != soulInstanceBootstrapTestConversationMessage {
+		t.Fatalf("unexpected stream params: %#v", p)
+	}
+	tdb.qLifecycle.AssertCalled(t, "Create")
+}
+
+func TestSoulInstanceMintConversation_ContinueRejectsModelChange(t *testing.T) {
 	t.Parallel()
 
 	tdb := newMintConversationTestDB()
 	s := newMintConversationServer(tdb)
 	reg := mintConversationHandleReg()
-	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, "inst1")
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
 	stubMintConversationRegistration(t, tdb, reg)
-	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, "inst1")
+	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationIdentity(t, tdb, nil, theoryErrors.ErrItemNotFound)
 	stubMintConversationConversation(t, tdb, models.SoulAgentMintConversation{
 		AgentID:        reg.AgentID,
 		ConversationID: mintConversationTestConversationID,
-		Status:         models.SoulMintConversationStatusCompleted,
+		Model:          "anthropic:claude-sonnet-4-6",
+		Status:         models.SoulMintConversationStatusInProgress,
 		CreatedAt:      time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
 	})
 
-	_, err := s.handleSoulInstanceCompleteMintConversation(newSoulInstanceBootstrapContext(
+	_, err := s.handleSoulInstanceMintConversation(newSoulInstanceBootstrapContext(
+		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
+		mustMarshalJSON(t, soulMintConversationRequest{ConversationID: mintConversationTestConversationID, Model: "openai:gpt-5.4", Message: soulInstanceBootstrapTestConversationMessage}),
+		map[string]string{"id": reg.ID},
+	))
+	appErr := requireAppTheoryError(t, err)
+	if appErr.Code != soulInstanceBootstrapCodeConflict || appErr.StatusCode != http.StatusConflict || appErr.Message != "cannot change model for an existing conversation" {
+		t.Fatalf("expected model-change conflict 409, got %#v", appErr)
+	}
+}
+
+func TestSoulInstanceMintConversation_ContinueUsesStoredModelAndMessages(t *testing.T) {
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	reg := mintConversationHandleReg()
+	t.Setenv("ANTHROPIC_API_KEY", "anthropic-test-key")
+	streamParams := make(chan streamMintConversationParams, 1)
+	s.mintConversationStreamer = func(_ctx context.Context, eventCh chan<- apptheory.SSEEvent, p streamMintConversationParams) {
+		defer close(eventCh)
+		streamParams <- p
+		eventCh <- apptheory.SSEEvent{Event: "conversation_start", Data: soulMintConversationStartEvent{ConversationID: p.conversationID, Model: p.modelSet}}
+		eventCh <- apptheory.SSEEvent{Event: "conversation_done", Data: soulMintConversationDoneEvent{ConversationID: p.conversationID, FullResponse: "continued"}}
+	}
+
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationRegistration(t, tdb, reg)
+	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationIdentity(t, tdb, nil, theoryErrors.ErrItemNotFound)
+	stubMintConversationConversation(t, tdb, models.SoulAgentMintConversation{
+		AgentID:        reg.AgentID,
+		ConversationID: mintConversationTestConversationID,
+		Model:          "anthropic:claude-sonnet-4-6",
+		Messages:       encodeMintConversationBlob(`[{"role":"user","content":"first"},{"role":"assistant","content":"reply"}]`),
+		Status:         models.SoulMintConversationStatusInProgress,
+		Usage:          models.AIUsage{TotalTokens: 9},
+		CreatedAt:      time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
+	})
+	expectSoulInstanceMintConversationDebit(t, tdb, reg.AgentID, false)
+
+	resp, err := s.handleSoulInstanceMintConversation(newSoulInstanceBootstrapContext(
+		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
+		mustMarshalJSON(t, soulMintConversationRequest{ConversationID: mintConversationTestConversationID, Message: "second"}),
+		map[string]string{"id": reg.ID},
+	))
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	_, _ = io.ReadAll(resp.BodyReader)
+
+	var p streamMintConversationParams
+	select {
+	case p = <-streamParams:
+	case <-time.After(time.Second):
+		t.Fatalf("streamer was not invoked")
+	}
+	if p.conversationID != mintConversationTestConversationID || p.modelSet != "anthropic:claude-sonnet-4-6" || p.existingUsage.TotalTokens != 9 {
+		t.Fatalf("expected stored conversation context, got %#v", p)
+	}
+	if len(p.existingMessages) != 3 || p.existingMessages[0].Content != "first" || p.existingMessages[1].Content != "reply" || p.existingMessages[2].Content != "second" {
+		t.Fatalf("expected stored transcript plus new user message, got %#v", p.existingMessages)
+	}
+}
+
+func TestSoulInstanceGetRegistrationMintConversation_ReturnsDecodedEnvelope(t *testing.T) {
+	t.Parallel()
+
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	reg := mintConversationHandleReg()
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationRegistration(t, tdb, reg)
+	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationConversation(t, tdb, models.SoulAgentMintConversation{
+		AgentID:              reg.AgentID,
+		ConversationID:       mintConversationTestConversationID,
+		Model:                "anthropic:claude-sonnet-4-6",
+		Messages:             encodeMintConversationBlob(`[{"role":"user","content":"private"}]`),
+		ProducedDeclarations: encodeMintConversationBlob(`{"private":true}`),
+		Status:               models.SoulMintConversationStatusCompleted,
+		CreatedAt:            time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
+	})
+
+	resp, err := s.handleSoulInstanceGetRegistrationMintConversation(newSoulInstanceBootstrapContext(
 		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
 		nil,
 		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
 	))
-	appErr := requireAppTheoryError(t, err)
-	if appErr.Code != soulInstanceBootstrapCodeNotImplemented || appErr.StatusCode != http.StatusNotImplemented {
-		t.Fatalf("expected scaffold 501, got %#v", appErr)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
 	}
-	if appErr.Details["route"] != soulInstanceBootstrapRouteConversationComplete {
-		t.Fatalf("expected route detail, got %#v", appErr.Details)
+	if resp.Status != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%q", resp.Status, string(resp.Body))
+	}
+	var out soulInstanceMintConversationResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Version != "1" || out.Conversation == nil || !strings.Contains(out.Conversation.Messages, `"private"`) || !strings.Contains(out.Conversation.ProducedDeclarations, `"private":true`) {
+		t.Fatalf("expected decoded conversation envelope, got %#v", out)
 	}
 }
 
-func TestSoulInstanceBootstrapScaffold_AllRegistrationRoutesReachScaffold(t *testing.T) {
+func TestSoulInstanceGetRegistrationMintConversation_RejectsInvalidConversationID(t *testing.T) {
+	t.Parallel()
+
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	reg := mintConversationHandleReg()
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationRegistration(t, tdb, reg)
+	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
+
+	_, err := s.handleSoulInstanceGetRegistrationMintConversation(newSoulInstanceBootstrapContext(
+		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
+		nil,
+		map[string]string{"id": reg.ID, "conversationId": "bad/conversation"},
+	))
+	appErr := requireAppTheoryError(t, err)
+	if appErr.Code != soulMintInstanceReadCodeInvalidRequest || appErr.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected invalid conversation id 400, got %#v", appErr)
+	}
+	if appErr.Details["field"] != soulMintInstanceReadFieldConversationID {
+		t.Fatalf("expected conversationId details, got %#v", appErr.Details)
+	}
+}
+
+func TestSoulInstanceCompleteMintConversation_PersistsDeclarationsAndFinalizeReady(t *testing.T) {
+	t.Parallel()
+
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	reg := mintConversationHandleReg()
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationRegistration(t, tdb, reg)
+	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationConversation(t, tdb, models.SoulAgentMintConversation{
+		AgentID:        reg.AgentID,
+		ConversationID: mintConversationTestConversationID,
+		Model:          "anthropic:claude-sonnet-4-6",
+		Messages:       encodeMintConversationBlob(`[{"role":"user","content":"describe yourself"},{"role":"assistant","content":"done"}]`),
+		Status:         models.SoulMintConversationStatusInProgress,
+		CreatedAt:      time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
+	})
+	stubMintConversationIdentity(t, tdb, nil, theoryErrors.ErrItemNotFound)
+	tdb.qConv.On("Update", []string{"Status", "ProducedDeclarations", "CompletedAt", "Usage"}).Return(nil).Once()
+
+	resp, err := s.handleSoulInstanceCompleteMintConversation(newSoulInstanceBootstrapContext(
+		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
+		mustMarshalJSON(t, map[string]any{"declarations": testMintConversationDecl()}),
+		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
+	))
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if resp.Status != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%q", resp.Status, string(resp.Body))
+	}
+	var out models.SoulAgentMintConversation
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Status != models.SoulMintConversationStatusCompleted || !strings.Contains(out.ProducedDeclarations, `"selfDescription"`) {
+		t.Fatalf("expected completed conversation with declarations, got %#v", out)
+	}
+	tdb.qLifecycle.AssertCalled(t, "Create")
+}
+
+func TestSoulInstanceCompleteMintConversation_RejectsInvalidStates(t *testing.T) {
+	t.Parallel()
+
+	t.Run("conversation is not in progress", func(t *testing.T) {
+		t.Parallel()
+
+		tdb := newMintConversationTestDB()
+		s := newMintConversationServer(tdb)
+		reg := mintConversationHandleReg()
+		expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
+		stubMintConversationRegistration(t, tdb, reg)
+		stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
+		stubMintConversationConversation(t, tdb, models.SoulAgentMintConversation{
+			AgentID:        reg.AgentID,
+			ConversationID: mintConversationTestConversationID,
+			Status:         models.SoulMintConversationStatusCompleted,
+			CreatedAt:      time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
+		})
+		stubMintConversationIdentity(t, tdb, nil, theoryErrors.ErrItemNotFound)
+
+		_, err := s.handleSoulInstanceCompleteMintConversation(newSoulInstanceBootstrapContext(
+			map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
+			mustMarshalJSON(t, map[string]any{"declarations": testMintConversationDecl()}),
+			map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
+		))
+		appErr := requireAppTheoryError(t, err)
+		if appErr.Code != soulInstanceBootstrapCodeConflict || appErr.StatusCode != http.StatusConflict || appErr.Message != "conversation is not in progress" {
+			t.Fatalf("expected not-in-progress conflict, got %#v", appErr)
+		}
+	})
+
+	t.Run("already published agent", func(t *testing.T) {
+		t.Parallel()
+
+		tdb := newMintConversationTestDB()
+		s := newMintConversationServer(tdb)
+		reg := mintConversationHandleReg()
+		identity := testMintConversationIdentity()
+		identity.AgentID = reg.AgentID
+		identity.SelfDescriptionVersion = 1
+
+		expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
+		stubMintConversationRegistration(t, tdb, reg)
+		stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
+		stubMintConversationConversation(t, tdb, models.SoulAgentMintConversation{
+			AgentID:        reg.AgentID,
+			ConversationID: mintConversationTestConversationID,
+			Status:         models.SoulMintConversationStatusInProgress,
+			CreatedAt:      time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
+		})
+		stubMintConversationIdentity(t, tdb, identity, nil)
+
+		_, err := s.handleSoulInstanceCompleteMintConversation(newSoulInstanceBootstrapContext(
+			map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
+			mustMarshalJSON(t, map[string]any{"declarations": testMintConversationDecl()}),
+			map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
+		))
+		appErr := requireAppTheoryError(t, err)
+		if appErr.Code != soulInstanceBootstrapCodeConflict || appErr.StatusCode != http.StatusConflict || appErr.Message != soulMintConversationAlreadyPublishedMessage {
+			t.Fatalf("expected already-published conflict, got %#v", appErr)
+		}
+	})
+}
+
+func TestSoulInstanceBootstrapScaffold_FinalizeRoutesRemainScaffolded(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
@@ -456,21 +851,6 @@ func TestSoulInstanceBootstrapScaffold_AllRegistrationRoutesReachScaffold(t *tes
 		needsConv bool
 		call      func(*Server, *apptheory.Context) (*apptheory.Response, error)
 	}{
-		{
-			name:  "mint conversation",
-			route: soulInstanceBootstrapRouteConversation,
-			call: func(s *Server, ctx *apptheory.Context) (*apptheory.Response, error) {
-				return s.handleSoulInstanceMintConversation(ctx)
-			},
-		},
-		{
-			name:      "get conversation",
-			route:     soulInstanceBootstrapRouteConversationGet,
-			needsConv: true,
-			call: func(s *Server, ctx *apptheory.Context) (*apptheory.Response, error) {
-				return s.handleSoulInstanceGetRegistrationMintConversation(ctx)
-			},
-		},
 		{
 			name:      "finalize preflight",
 			route:     soulInstanceBootstrapRouteFinalizePreflight,
@@ -505,9 +885,9 @@ func TestSoulInstanceBootstrapScaffold_AllRegistrationRoutesReachScaffold(t *tes
 			tdb := newMintConversationTestDB()
 			s := newMintConversationServer(tdb)
 			reg := mintConversationHandleReg()
-			expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, "inst1")
+			expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
 			stubMintConversationRegistration(t, tdb, reg)
-			stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, "inst1")
+			stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
 
 			params := map[string]string{"id": reg.ID}
 			if tc.needsConv {
@@ -670,7 +1050,7 @@ func TestSoulInstanceBootstrapContextAndDomainHelperBranches(t *testing.T) {
 
 		tdb := newMintConversationTestDB()
 		s := newMintConversationServer(tdb)
-		expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, "inst1")
+		expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
 		_, appErr := s.requireSoulInstanceBootstrapRegistrationContext(newSoulInstanceBootstrapContext(
 			map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
 			nil,
@@ -686,7 +1066,7 @@ func TestSoulInstanceBootstrapContextAndDomainHelperBranches(t *testing.T) {
 
 		tdb := newMintConversationTestDB()
 		s := newMintConversationServer(tdb)
-		expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, "inst1")
+		expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
 		tdb.qReg.On("First", mock.AnythingOfType("*models.SoulAgentRegistration")).Return(theoryErrors.ErrItemNotFound).Once()
 		_, appErr := s.requireSoulInstanceBootstrapRegistrationContext(newSoulInstanceBootstrapContext(
 			map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
@@ -706,24 +1086,24 @@ func TestSoulInstanceBootstrapContextAndDomainHelperBranches(t *testing.T) {
 		ctx := newSoulInstanceBootstrapContext(nil, nil, nil)
 
 		tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(theoryErrors.ErrItemNotFound).Once()
-		if _, _, appErr := s.requireSoulInstanceBootstrapDomainAccess(ctx, "inst1", testDomainExampleCom); appErr == nil || appErr.Details["reason"] != "domain_not_owned" {
+		if _, _, appErr := s.requireSoulInstanceBootstrapDomainAccess(ctx, soulInstanceBootstrapTestInstanceSlug, testDomainExampleCom); appErr == nil || appErr.Details["reason"] != "domain_not_owned" {
 			t.Fatalf("expected domain_not_owned, got %#v", appErr)
 		}
 
 		tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
 			dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
-			*dest = models.Domain{Domain: testDomainExampleCom, InstanceSlug: "inst1", Status: models.DomainStatusPending}
+			*dest = models.Domain{Domain: testDomainExampleCom, InstanceSlug: soulInstanceBootstrapTestInstanceSlug, Status: models.DomainStatusPending}
 		}).Once()
-		if _, _, appErr := s.requireSoulInstanceBootstrapDomainAccess(ctx, "inst1", testDomainExampleCom); appErr == nil || appErr.Details["reason"] != "domain_not_verified" {
+		if _, _, appErr := s.requireSoulInstanceBootstrapDomainAccess(ctx, soulInstanceBootstrapTestInstanceSlug, testDomainExampleCom); appErr == nil || appErr.Details["reason"] != "domain_not_verified" {
 			t.Fatalf("expected domain_not_verified, got %#v", appErr)
 		}
 
 		tdb.qDomain.On("First", mock.AnythingOfType("*models.Domain")).Return(nil).Run(func(args mock.Arguments) {
 			dest := testutil.RequireMockArg[*models.Domain](t, args, 0)
-			*dest = models.Domain{Domain: testDomainExampleCom, InstanceSlug: "inst1", Status: models.DomainStatusVerified}
+			*dest = models.Domain{Domain: testDomainExampleCom, InstanceSlug: soulInstanceBootstrapTestInstanceSlug, Status: models.DomainStatusVerified}
 		}).Once()
 		tdb.qInstance.On("First", mock.AnythingOfType("*models.Instance")).Return(theoryErrors.ErrItemNotFound).Once()
-		if _, _, appErr := s.requireSoulInstanceBootstrapDomainAccess(ctx, "inst1", testDomainExampleCom); appErr == nil || appErr.Details["reason"] != "instance_not_found" {
+		if _, _, appErr := s.requireSoulInstanceBootstrapDomainAccess(ctx, soulInstanceBootstrapTestInstanceSlug, testDomainExampleCom); appErr == nil || appErr.Details["reason"] != "instance_not_found" {
 			t.Fatalf("expected instance_not_found, got %#v", appErr)
 		}
 	})
@@ -789,6 +1169,41 @@ func stubSoulInstanceBootstrapDomainAndInstance(t *testing.T, tdb *mintConversat
 		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
 		*dest = models.Instance{Slug: instanceSlug, HostedBaseDomain: domain}
 	}).Once()
+}
+
+func expectSoulInstanceMintConversationDebit(t *testing.T, tdb *mintConversationTestDB, agentID string, expectCreate bool) {
+	t.Helper()
+
+	tb := new(ttmocks.MockTransactionBuilder)
+	tdb.db.TransactWriteBuilder = tb
+	tdb.qBudget.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.InstanceBudgetMonth](t, args, 0)
+		*dest = models.InstanceBudgetMonth{
+			InstanceSlug:    soulInstanceBootstrapTestInstanceSlug,
+			Month:           time.Now().UTC().Format("2006-01"),
+			IncludedCredits: 100,
+			UsedCredits:     0,
+		}
+	}).Once()
+	tdb.db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Once()
+	tb.On("Put", mock.AnythingOfType("*models.UsageLedgerEntry"), mock.Anything).Return(tb).Once().Run(func(args mock.Arguments) {
+		entry := testutil.RequireMockArg[*models.UsageLedgerEntry](t, args, 0)
+		if entry.InstanceSlug != soulInstanceBootstrapTestInstanceSlug || entry.Module != soulMintConversationStreamModule || entry.RequestedCredits != soulMintConversationStreamBaseCredits {
+			t.Fatalf("unexpected mint conversation ledger entry: %#v", entry)
+		}
+	})
+	if expectCreate {
+		tb.On("Create", mock.AnythingOfType("*models.SoulAgentMintConversation"), mock.Anything).Return(tb).Once().Run(func(args mock.Arguments) {
+			conv := testutil.RequireMockArg[*models.SoulAgentMintConversation](t, args, 0)
+			if conv.AgentID != agentID || conv.ConversationID == "" || conv.Model == "" || conv.Status != models.SoulMintConversationStatusInProgress || conv.ChargedCredits != soulMintConversationStreamBaseCredits {
+				t.Fatalf("unexpected durable conversation create: %#v", conv)
+			}
+		})
+	} else {
+		tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.SoulAgentMintConversation"), mock.Anything, mock.Anything).Return(tb).Once()
+	}
+	tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.InstanceBudgetMonth"), mock.Anything, mock.Anything).Return(tb).Once()
+	tb.On("Execute").Return(nil).Once()
 }
 
 func soulInstanceBootstrapTestRegistration(id string, wallet string, walletMessage string) models.SoulAgentRegistration {
