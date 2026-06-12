@@ -28,6 +28,8 @@ const (
 	soulInstanceBootstrapTestInstanceSlug         = "inst1"
 	soulInstanceBootstrapTestConversationMessage  = "hello"
 	soulInstanceBootstrapTestPrincipalDeclaration = "I declare authority over this Lesser-hosted soul."
+	soulInstanceBootstrapTestSigningMethodEIP191  = "eip191_personal_sign"
+	soulInstanceBootstrapTestInvalidRegSig        = "invalid registration signature"
 )
 
 func TestSoulInstanceBootstrapScaffold_RequiresStrictInstanceKey(t *testing.T) {
@@ -199,6 +201,27 @@ func TestSoulInstanceMintConversationRoutes_RequireStrictInstanceKey(t *testing.
 			},
 			params: map[string]string{"id": "reg-1", "conversationId": mintConversationTestConversationID},
 		},
+		{
+			name: "finalize preflight",
+			call: func(s *Server, ctx *apptheory.Context) (*apptheory.Response, error) {
+				return s.handleSoulInstanceFinalizeMintConversationPreflight(ctx)
+			},
+			params: map[string]string{"id": "reg-1", "conversationId": mintConversationTestConversationID},
+		},
+		{
+			name: "finalize begin",
+			call: func(s *Server, ctx *apptheory.Context) (*apptheory.Response, error) {
+				return s.handleSoulInstanceBeginFinalizeMintConversation(ctx)
+			},
+			params: map[string]string{"id": "reg-1", "conversationId": mintConversationTestConversationID},
+		},
+		{
+			name: "finalize",
+			call: func(s *Server, ctx *apptheory.Context) (*apptheory.Response, error) {
+				return s.handleSoulInstanceFinalizeMintConversation(ctx)
+			},
+			params: map[string]string{"id": "reg-1", "conversationId": mintConversationTestConversationID},
+		},
 	}
 
 	for _, tc := range cases {
@@ -332,7 +355,7 @@ func TestSoulInstanceAgentRegistrationPrincipalDeclarationPreflight_MatchesCanon
 	if out.DigestHex != wantDigest || out.MessageHex != wantDigest || out.CanonicalJSON != material.canonicalJSON {
 		t.Fatalf("preflight did not return canonical material: got=%#v wantDigest=%s wantJSON=%s", out, wantDigest, material.canonicalJSON)
 	}
-	if out.SigningMethod != "eip191_personal_sign" || out.MessageEncoding != "hex_bytes" {
+	if out.SigningMethod != soulInstanceBootstrapTestSigningMethodEIP191 || out.MessageEncoding != "hex_bytes" {
 		t.Fatalf("unexpected signing metadata: %#v", out)
 	}
 }
@@ -533,6 +556,28 @@ func TestSoulInstanceBootstrapScaffold_ConversationIdsCannotCrossRegistration(t 
 	_, err := s.handleSoulInstanceGetRegistrationMintConversation(newSoulInstanceBootstrapContext(
 		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
 		nil,
+		map[string]string{"id": reg.ID, "conversationId": "conv-from-other-registration"},
+	))
+	appErr := requireAppTheoryError(t, err)
+	if appErr.Code != soulInstanceBootstrapCodeNotFound || appErr.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected conversation not found within registration boundary, got %#v", appErr)
+	}
+}
+
+func TestSoulInstanceFinalizeMintConversation_ConversationIdsCannotCrossRegistration(t *testing.T) {
+	t.Parallel()
+
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	reg := mintConversationHandleReg()
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationRegistration(t, tdb, reg)
+	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
+	tdb.qConv.On("First", mock.AnythingOfType("*models.SoulAgentMintConversation")).Return(theoryErrors.ErrItemNotFound).Once()
+
+	_, err := s.handleSoulInstanceBeginFinalizeMintConversation(newSoulInstanceBootstrapContext(
+		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
+		mustMarshalJSON(t, soulMintConversationFinalizeBeginRequest{BoundarySignatures: map[string]string{"b1": "0x00"}}),
 		map[string]string{"id": reg.ID, "conversationId": "conv-from-other-registration"},
 	))
 	appErr := requireAppTheoryError(t, err)
@@ -842,78 +887,277 @@ func TestSoulInstanceCompleteMintConversation_RejectsInvalidStates(t *testing.T)
 	})
 }
 
-func TestSoulInstanceBootstrapScaffold_FinalizeRoutesRemainScaffolded(t *testing.T) {
+func TestSoulInstanceFinalizeMintConversation_BeginAndPreflightReturnCanonicalSigningMaterial(t *testing.T) {
 	t.Parallel()
 
-	cases := []struct {
-		name      string
-		route     string
-		needsConv bool
-		call      func(*Server, *apptheory.Context) (*apptheory.Response, error)
+	for _, tc := range []struct {
+		name string
+		call func(*Server, *apptheory.Context) (*apptheory.Response, error)
 	}{
 		{
-			name:      "finalize preflight",
-			route:     soulInstanceBootstrapRouteFinalizePreflight,
-			needsConv: true,
-			call: func(s *Server, ctx *apptheory.Context) (*apptheory.Response, error) {
-				return s.handleSoulInstanceFinalizeMintConversationPreflight(ctx)
-			},
-		},
-		{
-			name:      "finalize begin",
-			route:     soulInstanceBootstrapRouteFinalizeBegin,
-			needsConv: true,
+			name: "begin",
 			call: func(s *Server, ctx *apptheory.Context) (*apptheory.Response, error) {
 				return s.handleSoulInstanceBeginFinalizeMintConversation(ctx)
 			},
 		},
 		{
-			name:      "finalize",
-			route:     soulInstanceBootstrapRouteFinalize,
-			needsConv: true,
+			name: "preflight alias",
 			call: func(s *Server, ctx *apptheory.Context) (*apptheory.Response, error) {
-				return s.handleSoulInstanceFinalizeMintConversation(ctx)
+				return s.handleSoulInstanceFinalizeMintConversationPreflight(ctx)
 			},
 		},
-	}
-
-	for _, tc := range cases {
+	} {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
 			tdb := newMintConversationTestDB()
 			s := newMintConversationServer(tdb)
-			reg := mintConversationHandleReg()
-			expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
-			stubMintConversationRegistration(t, tdb, reg)
-			stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
+			reg, identity, _, declBytes, boundarySigs := soulInstanceFinalizeFixture(t)
+			stubSoulInstanceFinalizeReadContext(t, tdb, reg, identity, models.SoulAgentMintConversation{
+				AgentID:              reg.AgentID,
+				ConversationID:       mintConversationTestConversationID,
+				Status:               models.SoulMintConversationStatusCompleted,
+				ProducedDeclarations: string(declBytes),
+				CreatedAt:            time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
+			})
 
-			params := map[string]string{"id": reg.ID}
-			if tc.needsConv {
-				params["conversationId"] = mintConversationTestConversationID
-				stubMintConversationConversation(t, tdb, models.SoulAgentMintConversation{
-					AgentID:        reg.AgentID,
-					ConversationID: mintConversationTestConversationID,
-					Status:         models.SoulMintConversationStatusCompleted,
-					CreatedAt:      time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
-				})
-			}
-
-			_, err := tc.call(s, newSoulInstanceBootstrapContext(
+			resp, err := tc.call(s, newSoulInstanceBootstrapContext(
 				map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
-				nil,
-				params,
+				mustMarshalJSON(t, soulMintConversationFinalizeBeginRequest{BoundarySignatures: boundarySigs}),
+				map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
 			))
-			appErr := requireAppTheoryError(t, err)
-			if appErr.Code != soulInstanceBootstrapCodeNotImplemented || appErr.StatusCode != http.StatusNotImplemented {
-				t.Fatalf("expected scaffold 501, got %#v", appErr)
+			if err != nil {
+				t.Fatalf("unexpected err: %v", err)
 			}
-			if appErr.Details["route"] != tc.route {
-				t.Fatalf("expected route %q detail, got %#v", tc.route, appErr.Details)
+			var out soulMintConversationFinalizeBeginResponse
+			if err := json.Unmarshal(resp.Body, &out); err != nil {
+				t.Fatalf("unmarshal: %v", err)
 			}
+			assertSoulInstanceFinalizeSigningMaterial(t, out)
 		})
 	}
+}
+
+func TestSoulInstanceFinalizeMintConversation_RejectsInvalidStates(t *testing.T) {
+	t.Parallel()
+	assertSoulInstanceFinalizeRejectsNotCompleted(t)
+	assertSoulInstanceFinalizeRejectsMissingDeclarations(t)
+	assertSoulInstanceFinalizeRejectsMissingPrincipal(t)
+	assertSoulInstanceFinalizeRejectsBadBoundarySignature(t)
+	assertSoulInstanceFinalizeRejectsBadSelfAttestation(t)
+	assertSoulInstanceFinalizeRejectsVersionMismatch(t)
+}
+
+func assertSoulInstanceFinalizeRejectsNotCompleted(t *testing.T) {
+	t.Helper()
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	reg, identity, _, _, boundarySigs := soulInstanceFinalizeFixture(t)
+	stubSoulInstanceFinalizeReadContext(t, tdb, reg, identity, models.SoulAgentMintConversation{
+		AgentID:        reg.AgentID,
+		ConversationID: mintConversationTestConversationID,
+		Status:         models.SoulMintConversationStatusInProgress,
+	})
+	_, err := s.handleSoulInstanceBeginFinalizeMintConversation(newSoulInstanceBootstrapContext(
+		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
+		mustMarshalJSON(t, soulMintConversationFinalizeBeginRequest{BoundarySignatures: boundarySigs}),
+		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
+	))
+	appErr := requireAppTheoryError(t, err)
+	if appErr.Code != soulInstanceBootstrapCodeConflict || appErr.Message != "conversation is not completed" {
+		t.Fatalf("expected completed-state conflict, got %#v", appErr)
+	}
+}
+
+func assertSoulInstanceFinalizeRejectsMissingDeclarations(t *testing.T) {
+	t.Helper()
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	reg, identity, _, _, boundarySigs := soulInstanceFinalizeFixture(t)
+	stubSoulInstanceFinalizeReadContext(t, tdb, reg, identity, models.SoulAgentMintConversation{
+		AgentID:        reg.AgentID,
+		ConversationID: mintConversationTestConversationID,
+		Status:         models.SoulMintConversationStatusCompleted,
+	})
+	_, err := s.handleSoulInstanceBeginFinalizeMintConversation(newSoulInstanceBootstrapContext(
+		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
+		mustMarshalJSON(t, soulMintConversationFinalizeBeginRequest{BoundarySignatures: boundarySigs}),
+		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
+	))
+	appErr := requireAppTheoryError(t, err)
+	if appErr.Code != soulInstanceBootstrapCodeConflict || appErr.Message != "conversation has no produced declarations" {
+		t.Fatalf("expected missing-declarations conflict, got %#v", appErr)
+	}
+}
+
+func assertSoulInstanceFinalizeRejectsMissingPrincipal(t *testing.T) {
+	t.Helper()
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	reg, identity, _, declBytes, boundarySigs := soulInstanceFinalizeFixture(t)
+	identity.PrincipalDeclaration = ""
+	stubSoulInstanceFinalizeReadContext(t, tdb, reg, identity, models.SoulAgentMintConversation{
+		AgentID:              reg.AgentID,
+		ConversationID:       mintConversationTestConversationID,
+		Status:               models.SoulMintConversationStatusCompleted,
+		ProducedDeclarations: string(declBytes),
+	})
+	_, err := s.handleSoulInstanceBeginFinalizeMintConversation(newSoulInstanceBootstrapContext(
+		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
+		mustMarshalJSON(t, soulMintConversationFinalizeBeginRequest{BoundarySignatures: boundarySigs}),
+		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
+	))
+	appErr := requireAppTheoryError(t, err)
+	if appErr.Code != soulInstanceBootstrapCodeConflict || appErr.Message != "principal declaration is missing; re-verify registration" {
+		t.Fatalf("expected missing-principal conflict, got %#v", appErr)
+	}
+}
+
+func assertSoulInstanceFinalizeRejectsBadBoundarySignature(t *testing.T) {
+	t.Helper()
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	reg, identity, _, declBytes, _ := soulInstanceFinalizeFixture(t)
+	stubSoulInstanceFinalizeReadContext(t, tdb, reg, identity, models.SoulAgentMintConversation{
+		AgentID:              reg.AgentID,
+		ConversationID:       mintConversationTestConversationID,
+		Status:               models.SoulMintConversationStatusCompleted,
+		ProducedDeclarations: string(declBytes),
+	})
+	_, err := s.handleSoulInstanceBeginFinalizeMintConversation(newSoulInstanceBootstrapContext(
+		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
+		mustMarshalJSON(t, soulMintConversationFinalizeBeginRequest{BoundarySignatures: map[string]string{"b1": "0x00"}}),
+		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
+	))
+	appErr := requireAppTheoryError(t, err)
+	if appErr.Code != soulInstanceBootstrapCodeInvalidRequest || !strings.Contains(appErr.Message, "invalid boundary signature") {
+		t.Fatalf("expected boundary signature rejection, got %#v", appErr)
+	}
+}
+
+func assertSoulInstanceFinalizeRejectsBadSelfAttestation(t *testing.T) {
+	t.Helper()
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	reg, identity, _, declBytes, boundarySigs := soulInstanceFinalizeFixture(t)
+	stubSoulInstanceFinalizeReadContext(t, tdb, reg, identity, models.SoulAgentMintConversation{
+		AgentID:              reg.AgentID,
+		ConversationID:       mintConversationTestConversationID,
+		Status:               models.SoulMintConversationStatusCompleted,
+		ProducedDeclarations: string(declBytes),
+	})
+	expectedVersion := 0
+	_, err := s.handleSoulInstanceFinalizeMintConversation(newSoulInstanceBootstrapContext(
+		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
+		mustMarshalJSON(t, soulMintConversationFinalizeRequest{
+			BoundarySignatures: boundarySigs,
+			IssuedAt:           time.Now().UTC().Format(time.RFC3339Nano),
+			ExpectedVersion:    &expectedVersion,
+			SelfAttestation:    "0x00",
+		}),
+		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
+	))
+	appErr := requireAppTheoryError(t, err)
+	if appErr.Code != soulInstanceBootstrapCodeInvalidRequest || appErr.Message != soulInstanceBootstrapTestInvalidRegSig {
+		t.Fatalf("expected self-attestation rejection, got %#v", appErr)
+	}
+}
+
+func assertSoulInstanceFinalizeRejectsVersionMismatch(t *testing.T) {
+	t.Helper()
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	reg, identity, key, declBytes, boundarySigs := soulInstanceFinalizeFixture(t)
+	stubSoulInstanceFinalizeReadContext(t, tdb, reg, identity, models.SoulAgentMintConversation{
+		AgentID:              reg.AgentID,
+		ConversationID:       mintConversationTestConversationID,
+		Status:               models.SoulMintConversationStatusCompleted,
+		ProducedDeclarations: string(declBytes),
+	})
+	issuedAt := time.Now().UTC()
+	expectedVersion := 1
+	regMap, _, digest, _, _, appErr := s.buildMintConversationFinalizeV2Registration(reg.AgentID, mintConversationFinalizeIdentityForPublication(identity), testMintConversationDecl(), boundarySigs, issuedAt, expectedVersion+1, "0x00")
+	if appErr != nil || regMap == nil {
+		t.Fatalf("build registration: %#v", appErr)
+	}
+	selfSig := soulInstanceFinalizeSignDigest(t, key, digest)
+	_, err := s.handleSoulInstanceFinalizeMintConversation(newSoulInstanceBootstrapContext(
+		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
+		mustMarshalJSON(t, soulMintConversationFinalizeRequest{
+			BoundarySignatures: boundarySigs,
+			IssuedAt:           issuedAt.Format(time.RFC3339Nano),
+			ExpectedVersion:    &expectedVersion,
+			SelfAttestation:    selfSig,
+		}),
+		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
+	))
+	appErrTheory := requireAppTheoryError(t, err)
+	if appErrTheory.Code != soulInstanceBootstrapCodeConflict || appErrTheory.Message != "version conflict; reload and try again" {
+		t.Fatalf("expected version conflict, got %#v", appErrTheory)
+	}
+}
+
+func TestSoulInstanceFinalizeMintConversation_SuccessPublishesHostedOffchain(t *testing.T) {
+	t.Parallel()
+
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	packs := &fakeSoulPackStore{}
+	s.soulPacks = packs
+	reg, identity, key, declBytes, boundarySigs := soulInstanceFinalizeFixture(t)
+
+	stubSoulInstanceFinalizeReadContext(t, tdb, reg, identity, models.SoulAgentMintConversation{
+		AgentID:              reg.AgentID,
+		ConversationID:       mintConversationTestConversationID,
+		Status:               models.SoulMintConversationStatusCompleted,
+		ProducedDeclarations: string(declBytes),
+	})
+	beginResp, err := s.handleSoulInstanceBeginFinalizeMintConversation(newSoulInstanceBootstrapContext(
+		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
+		mustMarshalJSON(t, soulMintConversationFinalizeBeginRequest{BoundarySignatures: boundarySigs}),
+		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
+	))
+	if err != nil {
+		t.Fatalf("begin finalize: %v", err)
+	}
+	beginOut := mustBeginFinalizeResponse(t, beginResp)
+	selfSig := soulInstanceFinalizeSignHexDigest(t, key, beginOut.DigestHex)
+
+	expectSoulInstanceFinalizePublishWrites(t, tdb)
+	stubSoulInstanceFinalizeReadContext(t, tdb, reg, identity, models.SoulAgentMintConversation{
+		AgentID:              reg.AgentID,
+		ConversationID:       mintConversationTestConversationID,
+		Status:               models.SoulMintConversationStatusCompleted,
+		ProducedDeclarations: string(declBytes),
+	})
+	finalizeResp, err := s.handleSoulInstanceFinalizeMintConversation(newSoulInstanceBootstrapContext(
+		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
+		mustMarshalJSON(t, soulMintConversationFinalizeRequest{
+			BoundarySignatures: boundarySigs,
+			IssuedAt:           beginOut.IssuedAt,
+			ExpectedVersion:    &beginOut.ExpectedVersion,
+			SelfAttestation:    selfSig,
+		}),
+		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
+	))
+	if err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	out := mustFinalizeMintConversationResponse(t, finalizeResp)
+	if out.AgentID != identity.AgentID || out.Publication.AgentID != identity.AgentID || out.Publication.PublishedVersion != 1 {
+		t.Fatalf("expected explicit agent publication evidence, got %#v", out)
+	}
+	if out.Publication.RegistrationURI == "" || out.Publication.RegistrationS3Key != soulRegistrationS3Key(identity.AgentID) || out.Publication.VersionedRegistrationS3Key != soulRegistrationVersionedS3Key(identity.AgentID, 1) {
+		t.Fatalf("expected registration publication locations, got %#v", out.Publication)
+	}
+	if out.Promotion == nil || out.Promotion.Stage != models.SoulAgentPromotionStageGraduated || out.Promotion.ReadinessStatus != models.SoulAgentPromotionReadinessGraduated || out.Promotion.LatestConversationID != mintConversationTestConversationID {
+		t.Fatalf("expected graduation promotion evidence, got %#v", out.Promotion)
+	}
+	assertMintConversationFinalizePersisted(t, packs, identity.AgentID, out)
+	assertMintConversationFinalizeHostedOffchain(t, out)
+	assertMintConversationManagedENSMaterial(t, tdb.ensChannelModels, tdb.ensResolutionModels, identity)
+	assertSoulInstanceFinalizeAuditAndLifecycle(t, tdb, identity.AgentID)
 }
 
 func TestSoulInstanceBootstrapHelperErrors(t *testing.T) {
@@ -1204,6 +1448,195 @@ func expectSoulInstanceMintConversationDebit(t *testing.T, tdb *mintConversation
 	}
 	tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.InstanceBudgetMonth"), mock.Anything, mock.Anything).Return(tb).Once()
 	tb.On("Execute").Return(nil).Once()
+}
+
+func soulInstanceFinalizeFixture(t *testing.T) (models.SoulAgentRegistration, *models.SoulAgentIdentity, *ecdsa.PrivateKey, []byte, map[string]string) {
+	t.Helper()
+	identity, key := testMintConversationIdentityAndKey()
+	identity.Domain = testDomainExampleCom
+	identity.AgentID = strings.ToLower(strings.TrimSpace(identity.AgentID))
+	reg := models.SoulAgentRegistration{
+		ID:               "reg-1",
+		Username:         soulInstanceBootstrapTestActor,
+		DomainRaw:        testDomainExampleCom,
+		DomainNormalized: testDomainExampleCom,
+		LocalIDRaw:       identity.LocalID,
+		LocalID:          identity.LocalID,
+		AgentID:          identity.AgentID,
+		Wallet:           identity.Wallet,
+		DNSVerified:      true,
+		HTTPSVerified:    true,
+		Status:           models.SoulAgentRegistrationStatusCompleted,
+		CompletedAt:      time.Date(2026, 3, 5, 12, 5, 0, 0, time.UTC),
+		VerifiedAt:       time.Date(2026, 3, 5, 12, 5, 0, 0, time.UTC),
+	}
+	decl := testMintConversationDecl()
+	declBytes, err := json.Marshal(decl)
+	if err != nil {
+		t.Fatalf("marshal declarations: %v", err)
+	}
+	return reg, identity, key, declBytes, soulInstanceFinalizeBoundarySignatures(t, key, decl)
+}
+
+func soulInstanceFinalizeBoundarySignatures(t *testing.T, key *ecdsa.PrivateKey, decl soulMintConversationProducedDeclarations) map[string]string {
+	t.Helper()
+	out := make(map[string]string, len(decl.Boundaries))
+	for _, boundary := range decl.Boundaries {
+		digest := crypto.Keccak256([]byte(strings.TrimSpace(boundary.Statement)))
+		out[strings.TrimSpace(boundary.ID)] = soulInstanceFinalizeSignDigest(t, key, digest)
+	}
+	return out
+}
+
+func soulInstanceFinalizeSignHexDigest(t *testing.T, key *ecdsa.PrivateKey, digestHex string) string {
+	t.Helper()
+	digest, err := hex.DecodeString(strings.TrimPrefix(strings.TrimSpace(digestHex), "0x"))
+	if err != nil {
+		t.Fatalf("decode digest: %v", err)
+	}
+	return soulInstanceFinalizeSignDigest(t, key, digest)
+}
+
+func soulInstanceFinalizeSignDigest(t *testing.T, key *ecdsa.PrivateKey, digest []byte) string {
+	t.Helper()
+	sig, err := crypto.Sign(accounts.TextHash(digest), key)
+	if err != nil {
+		t.Fatalf("sign digest: %v", err)
+	}
+	return "0x" + hex.EncodeToString(sig)
+}
+
+func stubSoulInstanceFinalizeReadContext(t *testing.T, tdb *mintConversationTestDB, reg models.SoulAgentRegistration, identity *models.SoulAgentIdentity, conv models.SoulAgentMintConversation) {
+	t.Helper()
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationRegistration(t, tdb, reg)
+	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationConversation(t, tdb, conv)
+	stubMintConversationIdentity(t, tdb, identity, nil)
+}
+
+func assertSoulInstanceFinalizeSigningMaterial(t *testing.T, out soulMintConversationFinalizeBeginResponse) {
+	t.Helper()
+	if out.Version != "1" || out.ExpectedVersion != 0 || out.NextVersion != 1 || out.RegistrationPreview == nil {
+		t.Fatalf("unexpected finalize preflight response: %#v", out)
+	}
+	assertSoulInstanceFinalizeSelfAttestationSigning(t, out)
+	assertSoulInstanceFinalizeCanonicalDigest(t, out)
+	assertSoulInstanceFinalizeRequestTemplate(t, out)
+	assertSoulInstanceFinalizeBoundaryRequirements(t, out)
+}
+
+func assertSoulInstanceFinalizeSelfAttestationSigning(t *testing.T, out soulMintConversationFinalizeBeginResponse) {
+	t.Helper()
+	if out.SelfAttestationSigning.SigningMethod != soulInstanceBootstrapTestSigningMethodEIP191 ||
+		out.SelfAttestationSigning.MessageEncoding != "hex_bytes" ||
+		out.SelfAttestationSigning.MessageHex != out.DigestHex ||
+		out.SelfAttestationSigning.DigestHex != out.DigestHex {
+		t.Fatalf("unexpected self-attestation signing material: %#v", out.SelfAttestationSigning)
+	}
+}
+
+func assertSoulInstanceFinalizeCanonicalDigest(t *testing.T, out soulMintConversationFinalizeBeginResponse) {
+	t.Helper()
+	canonicalJSON, appErr := buildMintConversationFinalizeCanonicalJSON(out.RegistrationPreview)
+	if appErr != nil {
+		t.Fatalf("canonical JSON: %#v", appErr)
+	}
+	if out.SelfAttestationSigning.CanonicalJSON != canonicalJSON {
+		t.Fatalf("canonical JSON mismatch: got=%s want=%s", out.SelfAttestationSigning.CanonicalJSON, canonicalJSON)
+	}
+	digest, appErr := computeSoulRegistrationSelfAttestationDigest(out.RegistrationPreview)
+	if appErr != nil {
+		t.Fatalf("registration digest: %#v", appErr)
+	}
+	wantDigestHex := "0x" + hex.EncodeToString(digest)
+	if out.DigestHex != wantDigestHex {
+		t.Fatalf("digest mismatch: got=%s want=%s", out.DigestHex, wantDigestHex)
+	}
+}
+
+func assertSoulInstanceFinalizeRequestTemplate(t *testing.T, out soulMintConversationFinalizeBeginResponse) {
+	t.Helper()
+	if out.FinalizeRequestTemplate.ExpectedVersion != out.ExpectedVersion ||
+		out.FinalizeRequestTemplate.IssuedAt != out.IssuedAt ||
+		out.FinalizeRequestTemplate.SelfAttestation != "" {
+		t.Fatalf("unexpected finalize request template: %#v", out.FinalizeRequestTemplate)
+	}
+}
+
+func assertSoulInstanceFinalizeBoundaryRequirements(t *testing.T, out soulMintConversationFinalizeBeginResponse) {
+	t.Helper()
+	if len(out.BoundaryRequirements) != 1 ||
+		out.BoundaryRequirements[0].SigningMethod != soulInstanceBootstrapTestSigningMethodEIP191 ||
+		out.BoundaryRequirements[0].MessageEncoding != "utf8" ||
+		out.BoundaryRequirements[0].SignatureHex == "" {
+		t.Fatalf("unexpected boundary requirements: %#v", out.BoundaryRequirements)
+	}
+}
+
+func expectSoulInstanceFinalizePublishWrites(t *testing.T, tdb *mintConversationTestDB) {
+	t.Helper()
+	qVersion := new(ttmocks.MockQuery)
+	qBoundary := new(ttmocks.MockQuery)
+	qBoundIdx := new(ttmocks.MockQuery)
+	for typeName, q := range map[string]*ttmocks.MockQuery{
+		"*models.SoulAgentVersion":              qVersion,
+		"*models.SoulAgentBoundary":             qBoundary,
+		"*models.SoulBoundaryKeywordAgentIndex": qBoundIdx,
+	} {
+		tdb.db.On("Model", mock.AnythingOfType(typeName)).Return(q).Maybe()
+		addStandardMockQueryStubs(q)
+	}
+	qVersion.On("All", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*[]*models.SoulAgentVersion](t, args, 0)
+		*dest = nil
+	}).Once()
+	qVersion.On("First", mock.AnythingOfType("*models.SoulAgentVersion")).Return(theoryErrors.ErrItemNotFound).Once()
+	tb := new(ttmocks.MockTransactionBuilder)
+	tdb.db.TransactWriteBuilder = tb
+	tdb.db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Once()
+	tb.On("ConditionCheck", mock.AnythingOfType("*models.SoulAgentIdentity"), mock.Anything).Return(tb).Once()
+	tb.On("Create", mock.AnythingOfType("*models.SoulAgentVersion"), mock.Anything).Return(tb).Once()
+	tb.On("Execute").Return(nil).Once()
+	tdb.qIdentity.On("Update", mock.Anything, mock.Anything).Return(nil).Maybe()
+}
+
+func assertSoulInstanceFinalizeAuditAndLifecycle(t *testing.T, tdb *mintConversationTestDB, agentID string) {
+	t.Helper()
+	assertSoulInstanceFinalizeAuditActor(t, tdb, agentID)
+	assertSoulInstanceFinalizeLifecycleEvent(t, tdb, agentID)
+}
+
+func assertSoulInstanceFinalizeAuditActor(t *testing.T, tdb *mintConversationTestDB, agentID string) {
+	t.Helper()
+	for _, entry := range tdb.auditModels {
+		if entry == nil {
+			continue
+		}
+		if entry.Action == "soul.mint_conversation.finalize" && entry.Target == "soul_agent_identity:"+agentID {
+			if entry.Actor != soulInstanceBootstrapTestActor {
+				t.Fatalf("expected instance audit actor, got %#v", entry)
+			}
+			return
+		}
+	}
+	t.Fatalf("expected finalize audit entry, got %#v", tdb.auditModels)
+}
+
+func assertSoulInstanceFinalizeLifecycleEvent(t *testing.T, tdb *mintConversationTestDB, agentID string) {
+	t.Helper()
+	for _, event := range tdb.lifecycleModels {
+		if event == nil {
+			continue
+		}
+		if event.EventType == models.SoulAgentPromotionEventTypeGraduated && event.AgentID == agentID {
+			if event.ConversationID != mintConversationTestConversationID || event.AnchorState != models.SoulAnchorStateHostedOffchain {
+				t.Fatalf("unexpected graduation lifecycle event: %#v", event)
+			}
+			return
+		}
+	}
+	t.Fatalf("expected graduated lifecycle event, got %#v", tdb.lifecycleModels)
 }
 
 func soulInstanceBootstrapTestRegistration(id string, wallet string, walletMessage string) models.SoulAgentRegistration {
