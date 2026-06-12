@@ -123,6 +123,30 @@ Body-facing contract:
 
 The soul registry is served by `cmd/control-plane-api` through the `lesser.host` distribution.
 
+### Project 44 route authority boundary
+
+Project 44 remediation distinguishes three soul-route authorities:
+
+1. **Public reads** — unauthenticated registry/profile/search reads for external clients and auditors.
+2. **Portal/control-plane human routes** — portal customer or operator/admin session routes for fallback, review, and
+   administrative workflows. These use `lesser-host` bearer sessions and remain host-control-plane tooling.
+3. **Managed-instance machine routes** — instance-key authenticated routes called by a managed Lesser server on behalf
+   of its same-origin `/l/*` Simulacrum browser flow.
+
+The superseded browser control-plane token bootstrap must not be used for production Simulacrum soul creation. A
+Simulacrum browser should authenticate to Lesser same-origin, then Lesser should call Host server-side through scoped
+instance-key routes:
+
+```text
+Simulacrum browser -> Lesser same-origin auth/API -> Lesser server-side instance trust -> lesser-host scoped instance-key write API
+```
+
+The required instance-key write route family for registration begin, principal declaration preflight, verification,
+mint conversation, and hosted/off-chain finalization is tracked by
+[Project 44 M1 issue #706](https://github.com/equaltoai/lesser-host/issues/706). Until that work lands, existing
+session-authenticated lifecycle writes remain portal/operator surfaces rather than the canonical human-facing
+Simulacrum path.
+
 ### Public read (no auth)
 
 - `GET /api/v1/soul/config`
@@ -162,6 +186,9 @@ Security boundaries:
 
 All write endpoints require `Authorization: Bearer <session>`. Sessions are shared with the portal/operator auth system
 (see `docs/portal.md`).
+
+These are control-plane human routes. They are intentionally distinct from managed-instance machine writes and must not
+be reached by giving a `lesser-host` control-plane bearer token to the Simulacrum browser.
 
 - Registration:
   - `POST /api/v1/soul/agents/register/begin`
