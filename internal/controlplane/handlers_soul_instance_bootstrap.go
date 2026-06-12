@@ -20,6 +20,7 @@ const (
 	soulInstanceBootstrapCodeUnauthorized       = "soul_instance.unauthorized"
 	soulInstanceBootstrapCodeInvalidRequest     = "soul_instance.invalid_request"
 	soulInstanceBootstrapCodeBoundaryViolation  = "soul_instance.boundary_violation"
+	soulInstanceBootstrapCodeConflict           = "soul_instance.conflict"
 	soulInstanceBootstrapCodeNotFound           = "soul_instance.not_found"
 	soulInstanceBootstrapCodeNotImplemented     = "soul_instance.not_implemented"
 	soulInstanceBootstrapCodeInternal           = "soul_instance.internal"
@@ -152,24 +153,60 @@ func (s *Server) handleSoulInstanceAgentRegistrationVerify(ctx *apptheory.Contex
 }
 
 func (s *Server) handleSoulInstanceMintConversation(ctx *apptheory.Context) (*apptheory.Response, error) {
-	if _, appErr := s.requireSoulInstanceBootstrapRegistrationContext(ctx); appErr != nil {
+	regCtx, appErr := s.requireSoulInstanceBootstrapRegistrationContext(ctx)
+	if appErr != nil {
 		return nil, appErr
 	}
-	return nil, soulInstanceBootstrapScaffoldError(soulInstanceBootstrapRouteConversation)
+	resp, err := s.handleSoulMintConversationForRegistration(ctx, mintConversationRegistrationContext{
+		reg:        regCtx.reg,
+		inst:       regCtx.inst,
+		agentIDHex: regCtx.agentIDHex,
+	})
+	if err != nil {
+		return nil, soulInstanceBootstrapConversationErrorFromError(err)
+	}
+	return resp, nil
 }
 
 func (s *Server) handleSoulInstanceGetRegistrationMintConversation(ctx *apptheory.Context) (*apptheory.Response, error) {
-	if _, appErr := s.requireSoulInstanceBootstrapConversationContext(ctx); appErr != nil {
+	convCtx, appErr := s.requireSoulInstanceBootstrapConversationContext(ctx)
+	if appErr != nil {
 		return nil, appErr
 	}
-	return nil, soulInstanceBootstrapScaffoldError(soulInstanceBootstrapRouteConversationGet)
+	decodeMintConversationFields(convCtx.conv)
+	if appErr := rejectOversizeSoulMintInstanceConversation(convCtx.conv); appErr != nil {
+		return nil, appErr
+	}
+	resp, err := soulMintInstanceReadJSON(http.StatusOK, soulInstanceMintConversationResponse{
+		Version:      "1",
+		Conversation: convCtx.conv,
+	}, soulMintInstanceReadSingleMaxBytes)
+	if err != nil {
+		return nil, soulMintInstanceReadResponseError(err)
+	}
+	return resp, nil
 }
 
 func (s *Server) handleSoulInstanceCompleteMintConversation(ctx *apptheory.Context) (*apptheory.Response, error) {
-	if _, appErr := s.requireSoulInstanceBootstrapConversationContext(ctx); appErr != nil {
+	convCtx, appErr := s.requireSoulInstanceBootstrapConversationContext(ctx)
+	if appErr != nil {
 		return nil, appErr
 	}
-	return nil, soulInstanceBootstrapScaffoldError(soulInstanceBootstrapRouteConversationComplete)
+	if publishGuardErr := s.ensureMintConversationAgentNotPublished(ctx.Context(), convCtx.agentIDHex); publishGuardErr != nil {
+		return nil, soulInstanceBootstrapConversationErrorFromAppError(publishGuardErr)
+	}
+	if appErr := requireMintConversationStatus(convCtx.conv, models.SoulMintConversationStatusInProgress, "conversation is not in progress", ""); appErr != nil {
+		return nil, soulInstanceBootstrapConversationErrorFromAppError(appErr)
+	}
+	resp, err := s.completeSoulMintConversationForRegistration(ctx, mintConversationRegistrationContext{
+		reg:        convCtx.reg,
+		inst:       convCtx.inst,
+		agentIDHex: convCtx.agentIDHex,
+	}, convCtx.conv, convCtx.conversationID)
+	if err != nil {
+		return nil, soulInstanceBootstrapConversationErrorFromError(err)
+	}
+	return resp, nil
 }
 
 func (s *Server) handleSoulInstanceFinalizeMintConversationPreflight(ctx *apptheory.Context) (*apptheory.Response, error) {
@@ -554,6 +591,41 @@ func soulInstanceBootstrapErrorFromError(err error) error {
 	var appErr *apptheory.AppError
 	if errors.As(err, &appErr) {
 		return soulInstanceBootstrapErrorFromAppError(appErr)
+	}
+	return err
+}
+
+func soulInstanceBootstrapConversationErrorFromAppError(appErr *apptheory.AppError) *apptheory.AppTheoryError {
+	if appErr == nil {
+		return nil
+	}
+	switch appErr.Code {
+	case appErrCodeUnauthorized:
+		return soulInstanceBootstrapError(soulInstanceBootstrapCodeUnauthorized, soulInstanceBootstrapMessageUnauthorized, http.StatusUnauthorized, nil)
+	case appErrCodeBadRequest:
+		return soulInstanceBootstrapError(soulInstanceBootstrapCodeInvalidRequest, appErr.Message, http.StatusBadRequest, nil)
+	case appErrCodeForbidden:
+		return soulInstanceBootstrapError(soulInstanceBootstrapCodeBoundaryViolation, appErr.Message, http.StatusForbidden, nil)
+	case soulMintAppErrCodeConflict:
+		return soulInstanceBootstrapError(soulInstanceBootstrapCodeConflict, appErr.Message, http.StatusConflict, nil)
+	case soulMintAppErrCodeNotFound:
+		return soulInstanceBootstrapError(soulInstanceBootstrapCodeNotFound, appErr.Message, http.StatusNotFound, nil)
+	default:
+		return soulInstanceBootstrapError(soulInstanceBootstrapCodeInternal, "internal error", http.StatusInternalServerError, nil)
+	}
+}
+
+func soulInstanceBootstrapConversationErrorFromError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var theoryErr *apptheory.AppTheoryError
+	if errors.As(err, &theoryErr) {
+		return theoryErr
+	}
+	var appErr *apptheory.AppError
+	if errors.As(err, &appErr) {
+		return soulInstanceBootstrapConversationErrorFromAppError(appErr)
 	}
 	return err
 }

@@ -363,14 +363,24 @@ func (s *Server) loadMintConversationByStatus(ctx context.Context, agentIDHex st
 	if err != nil {
 		return nil, &apptheory.AppError{Code: "app.not_found", Message: "conversation not found"}
 	}
-	decodeMintConversationFields(conv)
-	if conv.Status != expectedStatus {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: statusMessage}
-	}
-	if emptyDeclMessage != "" && strings.TrimSpace(conv.ProducedDeclarations) == "" {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: emptyDeclMessage}
+	if appErr := requireMintConversationStatus(conv, expectedStatus, statusMessage, emptyDeclMessage); appErr != nil {
+		return nil, appErr
 	}
 	return conv, nil
+}
+
+func requireMintConversationStatus(conv *models.SoulAgentMintConversation, expectedStatus string, statusMessage string, emptyDeclMessage string) *apptheory.AppError {
+	if conv == nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	decodeMintConversationFields(conv)
+	if conv.Status != expectedStatus {
+		return &apptheory.AppError{Code: "app.conflict", Message: statusMessage}
+	}
+	if emptyDeclMessage != "" && strings.TrimSpace(conv.ProducedDeclarations) == "" {
+		return &apptheory.AppError{Code: "app.conflict", Message: emptyDeclMessage}
+	}
+	return nil
 }
 
 func (s *Server) loadMintConversationFinalizeContext(ctx *apptheory.Context) (mintConversationFinalizeContext, *apptheory.AppError) {
@@ -608,6 +618,10 @@ func (s *Server) handleSoulMintConversation(ctx *apptheory.Context) (*apptheory.
 	if appErr != nil {
 		return nil, appErr
 	}
+	return s.handleSoulMintConversationForRegistration(ctx, regCtx)
+}
+
+func (s *Server) handleSoulMintConversationForRegistration(ctx *apptheory.Context, regCtx mintConversationRegistrationContext) (*apptheory.Response, error) {
 	if publishGuardErr := s.ensureMintConversationAgentNotPublished(ctx.Context(), regCtx.agentIDHex); publishGuardErr != nil {
 		return nil, publishGuardErr
 	}
@@ -660,7 +674,7 @@ func (s *Server) handleSoulMintConversation(ctx *apptheory.Context) (*apptheory.
 	// Create SSE event channel and start streaming.
 	eventCh := make(chan apptheory.SSEEvent, 16)
 
-	go s.streamMintConversation(ctx.Context(), eventCh, streamMintConversationParams{
+	s.startMintConversationStream(ctx.Context(), eventCh, streamMintConversationParams{
 		apiKey:           apiKey,
 		modelSet:         session.modelSet,
 		systemPrompt:     systemPrompt,
@@ -723,7 +737,7 @@ func (s *Server) handleSoulAgentMintConversation(ctx *apptheory.Context) (*appth
 	systemPrompt := buildMintConversationSystemPrompt(agentCtx.reg)
 	eventCh := make(chan apptheory.SSEEvent, 16)
 
-	go s.streamMintConversation(ctx.Context(), eventCh, streamMintConversationParams{
+	s.startMintConversationStream(ctx.Context(), eventCh, streamMintConversationParams{
 		apiKey:           apiKey,
 		modelSet:         session.modelSet,
 		systemPrompt:     systemPrompt,
@@ -928,6 +942,16 @@ func (s *Server) streamMintConversation(ctx context.Context, eventCh chan<- appt
 	})
 }
 
+func (s *Server) startMintConversationStream(ctx context.Context, eventCh chan<- apptheory.SSEEvent, p streamMintConversationParams) {
+	streamer := func(runCtx context.Context, ch chan<- apptheory.SSEEvent, params streamMintConversationParams) {
+		s.streamMintConversation(runCtx, ch, params)
+	}
+	if s != nil && s.mintConversationStreamer != nil {
+		streamer = s.mintConversationStreamer
+	}
+	go streamer(ctx, eventCh, p)
+}
+
 func (s *Server) updateMintConversationMessages(ctx context.Context, agentIDHex string, conversationID string, messages []soulMintConversationMessage) {
 	if s == nil || s.store == nil || s.store.DB == nil {
 		return
@@ -1032,30 +1056,7 @@ func (s *Server) handleSoulCompleteMintConversation(ctx *apptheory.Context) (*ap
 		return nil, appErr
 	}
 
-	now := time.Now().UTC()
-	declarationsJSON, extractUsage, appErr := s.resolveMintConversationCompletion(ctx, regCtx, conv, conversationID, now)
-	if appErr != nil {
-		return nil, appErr
-	}
-	if appErr := s.persistCompletedMintConversation(ctx.Context(), conv, declarationsJSON, extractUsage, now); appErr != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to complete conversation"}
-	}
-	promotion := s.loadOrFallbackSoulAgentPromotion(ctx.Context(), regCtx.agentIDHex, buildSoulAgentPromotionFromRegistration(regCtx.reg, now))
-	promotion = updateSoulAgentPromotionForConversation(promotion, conversationID, models.SoulMintConversationStatusCompleted, now)
-	promotion = updateSoulAgentPromotionReviewDigest(promotion, declarationsJSON)
-	if appErr := s.saveSoulAgentPromotion(ctx.Context(), promotion); appErr != nil {
-		return nil, appErr
-	}
-	if appErr := s.saveSoulAgentPromotionLifecycleEvent(ctx.Context(), buildSoulAgentPromotionLifecycleEvent(promotion, soulAgentPromotionLifecycleEventInput{
-		EventType:      models.SoulAgentPromotionEventTypeFinalizeReady,
-		RequestID:      strings.TrimSpace(ctx.RequestID),
-		ConversationID: conversationID,
-		OccurredAt:     now,
-	})); appErr != nil {
-		return nil, appErr
-	}
-
-	return apptheory.JSON(http.StatusOK, conv)
+	return s.completeSoulMintConversationForRegistration(ctx, regCtx, conv, conversationID)
 }
 
 func (s *Server) handleSoulAgentCompleteMintConversation(ctx *apptheory.Context) (*apptheory.Response, error) {
@@ -1075,19 +1076,23 @@ func (s *Server) handleSoulAgentCompleteMintConversation(ctx *apptheory.Context)
 		return nil, appErr
 	}
 
-	now := time.Now().UTC()
-	declarationsJSON, extractUsage, appErr := s.resolveMintConversationCompletion(ctx, mintConversationRegistrationContext{
+	return s.completeSoulMintConversationForRegistration(ctx, mintConversationRegistrationContext{
 		reg:        agentCtx.reg,
 		inst:       agentCtx.inst,
 		agentIDHex: agentCtx.agentIDHex,
-	}, conv, conversationID, now)
+	}, conv, conversationID)
+}
+
+func (s *Server) completeSoulMintConversationForRegistration(ctx *apptheory.Context, regCtx mintConversationRegistrationContext, conv *models.SoulAgentMintConversation, conversationID string) (*apptheory.Response, error) {
+	now := time.Now().UTC()
+	declarationsJSON, extractUsage, appErr := s.resolveMintConversationCompletion(ctx, regCtx, conv, conversationID, now)
 	if appErr != nil {
 		return nil, appErr
 	}
 	if appErr := s.persistCompletedMintConversation(ctx.Context(), conv, declarationsJSON, extractUsage, now); appErr != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to complete conversation"}
 	}
-	promotion := s.loadOrFallbackSoulAgentPromotion(ctx.Context(), agentCtx.agentIDHex, buildSoulAgentPromotionFromRegistration(agentCtx.reg, now))
+	promotion := s.loadOrFallbackSoulAgentPromotion(ctx.Context(), regCtx.agentIDHex, buildSoulAgentPromotionFromRegistration(regCtx.reg, now))
 	promotion = updateSoulAgentPromotionForConversation(promotion, conversationID, models.SoulMintConversationStatusCompleted, now)
 	promotion = updateSoulAgentPromotionReviewDigest(promotion, declarationsJSON)
 	if appErr := s.saveSoulAgentPromotion(ctx.Context(), promotion); appErr != nil {
