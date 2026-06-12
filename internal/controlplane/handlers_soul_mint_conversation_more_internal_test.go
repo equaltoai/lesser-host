@@ -31,19 +31,24 @@ import (
 const mintConversationTestConversationID = "conv-1"
 
 type mintConversationTestDB struct {
-	db         *ttmocks.MockExtendedDB
-	qReg       *ttmocks.MockQuery
-	qDomain    *ttmocks.MockQuery
-	qInstance  *ttmocks.MockQuery
-	qKey       *ttmocks.MockQuery
-	qConv      *ttmocks.MockQuery
-	qIdentity  *ttmocks.MockQuery
-	qAudit     *ttmocks.MockQuery
-	qPromotion *ttmocks.MockQuery
-	qLifecycle *ttmocks.MockQuery
-	qUser      *ttmocks.MockQuery
-	qChannel   *ttmocks.MockQuery
-	qENS       *ttmocks.MockQuery
+	db           *ttmocks.MockExtendedDB
+	qReg         *ttmocks.MockQuery
+	qOp          *ttmocks.MockQuery
+	qDomain      *ttmocks.MockQuery
+	qInstance    *ttmocks.MockQuery
+	qKey         *ttmocks.MockQuery
+	qConv        *ttmocks.MockQuery
+	qIdentity    *ttmocks.MockQuery
+	qAudit       *ttmocks.MockQuery
+	qWalletIdx   *ttmocks.MockQuery
+	qPromotion   *ttmocks.MockQuery
+	qLifecycle   *ttmocks.MockQuery
+	qWalletAgent *ttmocks.MockQuery
+	qDomainAgent *ttmocks.MockQuery
+	qCapAgent    *ttmocks.MockQuery
+	qUser        *ttmocks.MockQuery
+	qChannel     *ttmocks.MockQuery
+	qENS         *ttmocks.MockQuery
 
 	convModels          []*models.SoulAgentMintConversation
 	ensChannelModels    []*models.SoulAgentChannel
@@ -53,23 +58,29 @@ type mintConversationTestDB struct {
 func newMintConversationTestDB() *mintConversationTestDB {
 	db := ttmocks.NewMockExtendedDB()
 	tdb := &mintConversationTestDB{
-		db:         db,
-		qReg:       new(ttmocks.MockQuery),
-		qDomain:    new(ttmocks.MockQuery),
-		qInstance:  new(ttmocks.MockQuery),
-		qKey:       new(ttmocks.MockQuery),
-		qConv:      new(ttmocks.MockQuery),
-		qIdentity:  new(ttmocks.MockQuery),
-		qAudit:     new(ttmocks.MockQuery),
-		qPromotion: new(ttmocks.MockQuery),
-		qLifecycle: new(ttmocks.MockQuery),
-		qUser:      new(ttmocks.MockQuery),
-		qChannel:   new(ttmocks.MockQuery),
-		qENS:       new(ttmocks.MockQuery),
+		db:           db,
+		qReg:         new(ttmocks.MockQuery),
+		qOp:          new(ttmocks.MockQuery),
+		qDomain:      new(ttmocks.MockQuery),
+		qInstance:    new(ttmocks.MockQuery),
+		qKey:         new(ttmocks.MockQuery),
+		qConv:        new(ttmocks.MockQuery),
+		qIdentity:    new(ttmocks.MockQuery),
+		qAudit:       new(ttmocks.MockQuery),
+		qWalletIdx:   new(ttmocks.MockQuery),
+		qPromotion:   new(ttmocks.MockQuery),
+		qLifecycle:   new(ttmocks.MockQuery),
+		qWalletAgent: new(ttmocks.MockQuery),
+		qDomainAgent: new(ttmocks.MockQuery),
+		qCapAgent:    new(ttmocks.MockQuery),
+		qUser:        new(ttmocks.MockQuery),
+		qChannel:     new(ttmocks.MockQuery),
+		qENS:         new(ttmocks.MockQuery),
 	}
 
 	db.On("WithContext", mock.Anything).Return(db).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentRegistration")).Return(tdb.qReg).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulOperation")).Return(tdb.qOp).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.Domain")).Return(tdb.qDomain).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.Instance")).Return(tdb.qInstance).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.InstanceKey")).Return(tdb.qKey).Maybe()
@@ -81,8 +92,12 @@ func newMintConversationTestDB() *mintConversationTestDB {
 	})
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(tdb.qIdentity).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.AuditLogEntry")).Return(tdb.qAudit).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.WalletIndex")).Return(tdb.qWalletIdx).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentPromotion")).Return(tdb.qPromotion).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentPromotionLifecycleEvent")).Return(tdb.qLifecycle).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulWalletAgentIndex")).Return(tdb.qWalletAgent).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulDomainAgentIndex")).Return(tdb.qDomainAgent).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.SoulCapabilityAgentIndex")).Return(tdb.qCapAgent).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.User")).Return(tdb.qUser).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentChannel")).Return(tdb.qChannel).Maybe().Run(func(args mock.Arguments) {
 		if ch, ok := args.Get(0).(*models.SoulAgentChannel); ok && ch != nil && strings.TrimSpace(ch.Identifier) != "" {
@@ -97,7 +112,7 @@ func newMintConversationTestDB() *mintConversationTestDB {
 		}
 	})
 
-	for _, q := range []*ttmocks.MockQuery{tdb.qReg, tdb.qDomain, tdb.qInstance, tdb.qKey, tdb.qConv, tdb.qIdentity, tdb.qAudit, tdb.qPromotion, tdb.qLifecycle, tdb.qUser, tdb.qChannel, tdb.qENS} {
+	for _, q := range []*ttmocks.MockQuery{tdb.qReg, tdb.qOp, tdb.qDomain, tdb.qInstance, tdb.qKey, tdb.qConv, tdb.qIdentity, tdb.qAudit, tdb.qWalletIdx, tdb.qPromotion, tdb.qLifecycle, tdb.qWalletAgent, tdb.qDomainAgent, tdb.qCapAgent, tdb.qUser, tdb.qChannel, tdb.qENS} {
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("Index", mock.Anything).Return(q).Maybe()
 		q.On("Limit", mock.Anything).Return(q).Maybe()
@@ -113,6 +128,10 @@ func newMintConversationTestDB() *mintConversationTestDB {
 		}
 	}
 	tdb.qPromotion.On("First", mock.AnythingOfType("*models.SoulAgentPromotion")).Return(theoryErrors.ErrItemNotFound).Maybe()
+	tdb.qWalletIdx.On("First", mock.AnythingOfType("*models.WalletIndex")).Return(theoryErrors.ErrItemNotFound).Maybe()
+	tdb.qWalletAgent.On("First", mock.AnythingOfType("*models.SoulWalletAgentIndex")).Return(theoryErrors.ErrItemNotFound).Maybe()
+	tdb.qDomainAgent.On("First", mock.AnythingOfType("*models.SoulDomainAgentIndex")).Return(theoryErrors.ErrItemNotFound).Maybe()
+	tdb.qCapAgent.On("First", mock.AnythingOfType("*models.SoulCapabilityAgentIndex")).Return(theoryErrors.ErrItemNotFound).Maybe()
 	tdb.qChannel.On("First", mock.AnythingOfType("*models.SoulAgentChannel")).Return(theoryErrors.ErrItemNotFound).Maybe()
 	tdb.qENS.On("First", mock.AnythingOfType("*models.SoulAgentENSResolution")).Return(theoryErrors.ErrItemNotFound).Maybe()
 	tdb.qUser.On("First", mock.AnythingOfType("*models.User")).Return(nil).Maybe().Run(func(args mock.Arguments) {

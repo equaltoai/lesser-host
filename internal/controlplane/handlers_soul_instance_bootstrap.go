@@ -1,6 +1,8 @@
 package controlplane
 
 import (
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -62,7 +64,7 @@ func (s *Server) handleSoulInstanceAgentRegistrationBegin(ctx *apptheory.Context
 
 	var req soulAgentRegistrationBeginRequest
 	if err := httpx.ParseJSON(ctx, &req); err != nil {
-		return nil, err
+		return nil, soulInstanceBootstrapErrorFromError(err)
 	}
 	domainNormalized, appErr := normalizeSoulInstanceBootstrapDomain(req.Domain)
 	if appErr != nil {
@@ -72,21 +74,81 @@ func (s *Server) handleSoulInstanceAgentRegistrationBegin(ctx *apptheory.Context
 		return nil, appErr
 	}
 
-	return nil, soulInstanceBootstrapScaffoldError(soulInstanceBootstrapRouteRegisterBegin)
+	out, beginErr := s.beginSoulAgentRegistration(ctx, req, domainNormalized, true, soulInstanceBootstrapActor(instCtx.instanceSlug))
+	if beginErr != nil {
+		return nil, soulInstanceBootstrapErrorFromAppError(beginErr)
+	}
+	return apptheory.JSON(http.StatusCreated, out)
 }
 
 func (s *Server) handleSoulInstanceAgentRegistrationPrincipalDeclarationPreflight(ctx *apptheory.Context) (*apptheory.Response, error) {
-	if _, appErr := s.requireSoulInstanceBootstrapRegistrationContext(ctx); appErr != nil {
+	regCtx, appErr := s.requireSoulInstanceBootstrapRegistrationContext(ctx)
+	if appErr != nil {
 		return nil, appErr
 	}
-	return nil, soulInstanceBootstrapScaffoldError(soulInstanceBootstrapRoutePrincipalPreflight)
+
+	_, principalAddrRaw, principalDeclarationRaw, declaredAtRaw, err := parseSoulAgentRegistrationPrincipalDeclarationPreflightInput(ctx)
+	if err != nil {
+		return nil, soulInstanceBootstrapErrorFromError(err)
+	}
+
+	if appErr := s.requireSoulInstanceRegistrationUsableForSigning(ctx, regCtx.reg); appErr != nil {
+		return nil, appErr
+	}
+
+	principalAddr, principalDeclaration, declaredAt, normErr := s.normalizeSoulRegistrationPrincipalDeclarationInputs(
+		ctx.Context(),
+		principalAddrRaw,
+		principalDeclarationRaw,
+		declaredAtRaw,
+	)
+	if normErr != nil {
+		return nil, soulInstanceBootstrapErrorFromAppError(normErr)
+	}
+
+	material, materialErr := s.computeSoulPrincipalDeclarationSigningMaterial(regCtx.reg, principalAddr, principalDeclaration, declaredAt)
+	if materialErr != nil {
+		return nil, soulInstanceBootstrapErrorFromAppError(materialErr)
+	}
+	digestHex := "0x" + hex.EncodeToString(material.digest)
+
+	return apptheory.JSON(http.StatusOK, soulAgentRegistrationPrincipalDeclarationPreflightResponse{
+		Version:          "1",
+		PrincipalAddress: principalAddr,
+		SignerAddress:    principalAddr,
+		SigningMethod:    "eip191_personal_sign",
+		MessageEncoding:  "hex_bytes",
+		MessageHex:       digestHex,
+		DigestHex:        digestHex,
+		CanonicalJSON:    material.canonicalJSON,
+		DeclaredAt:       declaredAt,
+	})
 }
 
 func (s *Server) handleSoulInstanceAgentRegistrationVerify(ctx *apptheory.Context) (*apptheory.Response, error) {
-	if _, appErr := s.requireSoulInstanceBootstrapRegistrationContext(ctx); appErr != nil {
+	regCtx, appErr := s.requireSoulInstanceBootstrapRegistrationContext(ctx)
+	if appErr != nil {
 		return nil, appErr
 	}
-	return nil, soulInstanceBootstrapScaffoldError(soulInstanceBootstrapRouteRegisterVerify)
+
+	_, sig, principalAddrRaw, principalDeclarationRaw, principalSigRaw, declaredAtRaw, err := parseSoulAgentRegistrationVerifyInput(ctx)
+	if err != nil {
+		return nil, soulInstanceBootstrapErrorFromError(err)
+	}
+
+	resp, verifyErr := s.verifySoulInstanceAgentRegistration(
+		ctx,
+		regCtx,
+		sig,
+		principalAddrRaw,
+		principalDeclarationRaw,
+		principalSigRaw,
+		declaredAtRaw,
+	)
+	if verifyErr != nil {
+		return nil, verifyErr
+	}
+	return apptheory.JSON(http.StatusOK, resp)
 }
 
 func (s *Server) handleSoulInstanceMintConversation(ctx *apptheory.Context) (*apptheory.Response, error) {
@@ -231,6 +293,169 @@ func (s *Server) updateSoulInstanceKeyLastUsed(ctx *apptheory.Context, key *mode
 	_ = s.store.DB.WithContext(ctx.Context()).Model(key).IfExists().Update("LastUsedAt")
 }
 
+func (s *Server) requireSoulInstanceRegistrationUsableForSigning(ctx *apptheory.Context, reg *models.SoulAgentRegistration) *apptheory.AppTheoryError {
+	if reg == nil {
+		return soulInstanceBootstrapError(soulInstanceBootstrapCodeInternal, "internal error", http.StatusInternalServerError, nil)
+	}
+	status := strings.ToLower(strings.TrimSpace(reg.Status))
+	if status != models.SoulAgentRegistrationStatusCompleted && !reg.ExpiresAt.IsZero() && time.Now().After(reg.ExpiresAt) {
+		return soulInstanceBootstrapError(soulInstanceBootstrapCodeInvalidRequest, "registration expired", http.StatusBadRequest, nil)
+	}
+	if ensureErr := s.ensureSoulAgentNotActive(ctx.Context(), reg.AgentID); ensureErr != nil {
+		return soulInstanceBootstrapErrorFromAppError(ensureErr)
+	}
+	return nil
+}
+
+func (s *Server) verifySoulInstanceAgentRegistration(
+	ctx *apptheory.Context,
+	regCtx soulInstanceBootstrapRegistrationContext,
+	sig string,
+	principalAddrRaw string,
+	principalDeclarationRaw string,
+	principalSigRaw string,
+	declaredAtRaw string,
+) (soulAgentRegistrationVerifyResponse, *apptheory.AppTheoryError) {
+	reg := regCtx.reg
+	if reg == nil {
+		return soulAgentRegistrationVerifyResponse{}, soulInstanceBootstrapError(soulInstanceBootstrapCodeInternal, "internal error", http.StatusInternalServerError, nil)
+	}
+	if appErr := s.requireSoulInstanceRegistrationUsableForSigning(ctx, reg); appErr != nil {
+		return soulAgentRegistrationVerifyResponse{}, appErr
+	}
+
+	if verifyErr := verifySoulAgentRegistrationWallet(reg, sig); verifyErr != nil {
+		return soulAgentRegistrationVerifyResponse{}, soulInstanceBootstrapErrorFromAppError(verifyErr)
+	}
+
+	verifiedDNS, verifiedHTTPS, proofErr := verifySoulAgentRegistrationProofs(ctx.Context(), reg)
+	if proofErr != nil {
+		return soulAgentRegistrationVerifyResponse{}, soulInstanceBootstrapErrorFromAppError(proofErr)
+	}
+
+	principalAddr, principalDeclaration, principalSig, declaredAt, principalErr := s.validateSoulRegistrationVerifyPrincipalInputs(
+		ctx.Context(),
+		reg,
+		principalAddrRaw,
+		principalDeclarationRaw,
+		principalSigRaw,
+		declaredAtRaw,
+	)
+	if principalErr != nil {
+		return soulAgentRegistrationVerifyResponse{}, soulInstanceBootstrapErrorFromAppError(principalErr)
+	}
+
+	completed := strings.EqualFold(strings.TrimSpace(reg.Status), models.SoulAgentRegistrationStatusCompleted)
+	if completed {
+		return s.replaySoulInstanceCompletedRegistration(ctx, reg, principalAddr, principalSig, principalDeclaration, declaredAt)
+	}
+
+	op, safeTx, _, opErr := s.createSoulMintOperation(ctx.Context(), reg, principalAddr, principalSig, principalDeclaration, declaredAt)
+	if opErr != nil {
+		return soulAgentRegistrationVerifyResponse{}, soulInstanceBootstrapErrorFromAppError(opErr)
+	}
+
+	now := time.Now().UTC()
+	update, compErr := s.completeSoulAgentRegistration(ctx, reg, verifiedDNS, verifiedHTTPS, now)
+	if compErr != nil {
+		return soulAgentRegistrationVerifyResponse{}, soulInstanceBootstrapErrorFromAppError(compErr)
+	}
+	promotion, _ := s.getSoulAgentPromotion(ctx.Context(), reg.AgentID)
+	promotion = updateSoulAgentPromotionForVerification(promotion, reg, op, principalAddr, now)
+	if appErr := s.saveSoulAgentPromotion(ctx.Context(), promotion); appErr != nil {
+		return soulAgentRegistrationVerifyResponse{}, soulInstanceBootstrapErrorFromAppError(appErr)
+	}
+	if appErr := s.saveSoulAgentPromotionLifecycleEvent(ctx.Context(), buildSoulAgentPromotionLifecycleEvent(promotion, soulAgentPromotionLifecycleEventInput{
+		EventType:   models.SoulAgentPromotionEventTypeRequestApproved,
+		RequestID:   strings.TrimSpace(ctx.RequestID),
+		OperationID: op.OperationID,
+		OccurredAt:  now,
+	})); appErr != nil {
+		return soulAgentRegistrationVerifyResponse{}, soulInstanceBootstrapErrorFromAppError(appErr)
+	}
+
+	audit := &models.AuditLogEntry{
+		Actor:     soulInstanceBootstrapActor(regCtx.instanceSlug),
+		Action:    "soul.registration.verify",
+		Target:    fmt.Sprintf("soul_agent_registration:%s", reg.ID),
+		RequestID: ctx.RequestID,
+		CreatedAt: now,
+	}
+	s.tryWriteAuditLog(ctx, audit)
+
+	return soulAgentRegistrationVerifyResponse{
+		Registration: *update,
+		Operation:    *op,
+		SafeTx:       safeTx,
+		Promotion:    ptrTo(s.buildSoulAgentPromotionView(promotion)),
+	}, nil
+}
+
+func (s *Server) replaySoulInstanceCompletedRegistration(
+	ctx *apptheory.Context,
+	reg *models.SoulAgentRegistration,
+	principalAddr string,
+	principalSig string,
+	principalDeclaration string,
+	declaredAt string,
+) (soulAgentRegistrationVerifyResponse, *apptheory.AppTheoryError) {
+	promotion, _ := s.getSoulAgentPromotion(ctx.Context(), reg.AgentID)
+	if promotion != nil && strings.TrimSpace(promotion.PrincipalAddress) != "" && !strings.EqualFold(strings.TrimSpace(promotion.PrincipalAddress), principalAddr) {
+		return soulAgentRegistrationVerifyResponse{}, soulInstanceBootstrapError(soulInstanceBootstrapCodeBoundaryViolation, "principal_address mismatch for completed registration", http.StatusForbidden, nil)
+	}
+
+	op, appErr := s.loadSoulInstancePromotionOperation(ctx, promotion)
+	if appErr != nil {
+		return soulAgentRegistrationVerifyResponse{}, appErr
+	}
+	var safeTx *safeTxPayload
+	if op != nil {
+		safeTx = parseSafeTxPayload(op.SafePayloadJSON)
+	} else {
+		var opErr *apptheory.AppError
+		op, safeTx, _, opErr = s.createSoulMintOperation(ctx.Context(), reg, principalAddr, principalSig, principalDeclaration, declaredAt)
+		if opErr != nil {
+			return soulAgentRegistrationVerifyResponse{}, soulInstanceBootstrapErrorFromAppError(opErr)
+		}
+	}
+	if promotion == nil {
+		now := firstNonZeroTime(reg.CompletedAt, reg.VerifiedAt, time.Now().UTC())
+		if now.IsZero() {
+			now = time.Now().UTC()
+		}
+		promotion = updateSoulAgentPromotionForVerification(buildSoulAgentPromotionFromRegistration(reg, now), reg, op, principalAddr, now)
+	}
+
+	return soulAgentRegistrationVerifyResponse{
+		Registration: *reg,
+		Operation:    *op,
+		SafeTx:       safeTx,
+		Promotion:    ptrTo(s.buildSoulAgentPromotionView(promotion)),
+	}, nil
+}
+
+func (s *Server) loadSoulInstancePromotionOperation(ctx *apptheory.Context, promotion *models.SoulAgentPromotion) (*models.SoulOperation, *apptheory.AppTheoryError) {
+	if promotion == nil || strings.TrimSpace(promotion.MintOperationID) == "" {
+		return nil, nil
+	}
+	op, err := s.getSoulOperation(ctx.Context(), promotion.MintOperationID)
+	if theoryErrors.IsNotFound(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, soulInstanceBootstrapError(soulInstanceBootstrapCodeInternal, "internal error", http.StatusInternalServerError, nil)
+	}
+	return op, nil
+}
+
+func soulInstanceBootstrapActor(instanceSlug string) string {
+	instanceSlug = strings.ToLower(strings.TrimSpace(instanceSlug))
+	if instanceSlug == "" {
+		return "instance:unknown"
+	}
+	return "instance:" + instanceSlug
+}
+
 func normalizeSoulInstanceBootstrapDomain(rawDomain string) (string, *apptheory.AppTheoryError) {
 	domainNormalized, err := domains.NormalizeDomain(rawDomain)
 	if err != nil {
@@ -307,11 +532,30 @@ func soulInstanceBootstrapErrorFromAppError(appErr *apptheory.AppError) *apptheo
 		return soulInstanceBootstrapError(soulInstanceBootstrapCodeUnauthorized, soulInstanceBootstrapMessageUnauthorized, http.StatusUnauthorized, nil)
 	case appErrCodeBadRequest:
 		return soulInstanceBootstrapError(soulInstanceBootstrapCodeInvalidRequest, appErr.Message, http.StatusBadRequest, nil)
+	case appErrCodeForbidden:
+		return soulInstanceBootstrapError(soulInstanceBootstrapCodeBoundaryViolation, appErr.Message, http.StatusForbidden, nil)
 	case soulMintAppErrCodeConflict:
 		return soulInstanceBootstrapError(soulInstanceBootstrapCodeBoundaryViolation, appErr.Message, http.StatusForbidden, nil)
+	case soulMintAppErrCodeNotFound:
+		return soulInstanceBootstrapError(soulInstanceBootstrapCodeNotFound, appErr.Message, http.StatusNotFound, nil)
 	default:
 		return soulInstanceBootstrapError(soulInstanceBootstrapCodeInternal, "internal error", http.StatusInternalServerError, nil)
 	}
+}
+
+func soulInstanceBootstrapErrorFromError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var theoryErr *apptheory.AppTheoryError
+	if errors.As(err, &theoryErr) {
+		return theoryErr
+	}
+	var appErr *apptheory.AppError
+	if errors.As(err, &appErr) {
+		return soulInstanceBootstrapErrorFromAppError(appErr)
+	}
+	return err
 }
 
 func soulInstanceBootstrapError(code string, message string, status int, details map[string]any) *apptheory.AppTheoryError {
