@@ -55,6 +55,8 @@ type portalSoulRosterTips struct {
 	Source   string `json:"source"`
 }
 
+const portalSoulRosterLesserStatusUnavailable = "unavailable"
+
 type portalSoulDomainCandidate struct {
 	agentID  string
 	domain   string
@@ -277,7 +279,7 @@ func (s *Server) fetchPortalSoulLesserAgent(ctx *apptheory.Context, inst *models
 	endpoint := strings.TrimRight(baseURL, "/") + "/api/v1/agents/" + url.PathEscape(username)
 	req, err := http.NewRequestWithContext(ctx.Context(), http.MethodGet, endpoint, nil)
 	if err != nil {
-		return &portalSoulRosterLesserAgent{Username: username, Status: "unavailable", Source: "lesser:/api/v1/agents/{username}"}
+		return &portalSoulRosterLesserAgent{Username: username, Status: portalSoulRosterLesserStatusUnavailable, Source: "lesser:/api/v1/agents/{username}"}
 	}
 	req.Header.Set("Accept", "application/json")
 
@@ -285,13 +287,13 @@ func (s *Server) fetchPortalSoulLesserAgent(ctx *apptheory.Context, inst *models
 
 	resp, err := client.Do(req) //nolint:gosec // URL is derived from managed instance metadata or an injected test seam, not browser input.
 	if err != nil {
-		return &portalSoulRosterLesserAgent{Username: username, Status: "unavailable", Source: "lesser:/api/v1/agents/{username}"}
+		return &portalSoulRosterLesserAgent{Username: username, Status: portalSoulRosterLesserStatusUnavailable, Source: "lesser:/api/v1/agents/{username}"}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
-		status := "unavailable"
+		status := portalSoulRosterLesserStatusUnavailable
 		if resp.StatusCode == http.StatusNotFound {
 			status = "not_found"
 		}
@@ -300,7 +302,7 @@ func (s *Server) fetchPortalSoulLesserAgent(ctx *apptheory.Context, inst *models
 
 	var decoded lesserAgentMetadata
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&decoded); err != nil {
-		return &portalSoulRosterLesserAgent{Username: username, Status: "unavailable", Source: "lesser:/api/v1/agents/{username}"}
+		return &portalSoulRosterLesserAgent{Username: username, Status: portalSoulRosterLesserStatusUnavailable, Source: "lesser:/api/v1/agents/{username}"}
 	}
 
 	return &portalSoulRosterLesserAgent{

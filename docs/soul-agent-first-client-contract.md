@@ -165,7 +165,33 @@ Side effects:
 - creates the durable `SoulAgentPromotion`
 - emits lifecycle event `request_created`
 
-### 2. Verify and prepare approval
+### 2. Preflight principal declaration signing
+
+- `POST /api/v1/soul/agents/register/{id}/principal-declaration/preflight`
+
+Input:
+
+- `principal_address`
+- `principal_declaration`
+- `declared_at`
+
+Response includes Host-owned signing material:
+
+- `version`
+- `principal_address` / `signer_address`
+- `signing_method=eip191_personal_sign`
+- `message_encoding=hex_bytes`
+- `message_hex` and `digest_hex` (the same 32-byte `0x`-prefixed digest)
+- `canonical_json`
+- canonical `declared_at`
+
+Clients must ask the principal wallet to sign `message_hex` as hex bytes with EIP-191 `personal_sign`, then pass the
+resulting signature to verify as `principal_signature` with the returned canonical `declared_at`. Clients should not
+reconstruct the principal declaration digest themselves: the digest binds Host-owned registration state (`agentId`,
+wallet, domain, localId, chainId, registry contract), the requested principal address, the declaration, and
+`declared_at`.
+
+### 3. Verify and prepare approval
 
 - `POST /api/v1/soul/agents/register/{id}/verify`
 - equivalent agent-centric alias after resolution:
@@ -177,7 +203,7 @@ Input:
 - `principal_address`
 - `principal_declaration`
 - `principal_signature`
-- `declared_at`
+- `declared_at` (use the canonical value returned by the principal declaration preflight)
 
 Response includes:
 
@@ -197,7 +223,7 @@ At this point the client may proceed directly to the mint conversation and hoste
 `promotion.next_actions` and the binding fields described below to decide whether to show an optional “bind on-chain”
 action.
 
-### 3. Optionally record mint execution
+### 4. Optionally record mint execution
 
 - `POST /api/v1/soul/operations/{id}/record-execution`
 
@@ -211,7 +237,7 @@ When the mint succeeds:
 
 This step may happen before hosted finalize or later as an upgrade. It is not required for zero-state publication.
 
-### 4. Start or continue review
+### 5. Start or continue review
 
 - registration-scoped:
   - `POST /api/v1/soul/agents/register/{id}/mint-conversation`
@@ -225,7 +251,7 @@ Important behavior:
 - the first transition into in-progress review emits lifecycle event `review_started`
 - additional turns in the same conversation do not emit duplicate `review_started` events
 
-### 5. Complete the review draft
+### 6. Complete the review draft
 
 - registration-scoped:
   - `POST /api/v1/soul/agents/register/{id}/mint-conversation/{conversationId}/complete`
@@ -240,7 +266,7 @@ Side effects:
 - review digest, boundary count, and capability count are stored on the promotion
 - lifecycle event `finalize_ready` is emitted
 
-### 6. Fetch finalize preflight and signing inputs
+### 7. Fetch finalize preflight and signing inputs
 
 - preferred:
   - `POST /api/v1/soul/agents/register/{id}/mint-conversation/{conversationId}/finalize/preflight`
@@ -262,7 +288,7 @@ The preflight response is the canonical source for finalize UI and signing prepa
 
 Clients should not reconstruct these values locally when the server already provides them.
 
-### 7. Finalize and publish graduation
+### 8. Finalize and publish graduation
 
 - registration-scoped:
   - `POST /api/v1/soul/agents/register/{id}/mint-conversation/{conversationId}/finalize`

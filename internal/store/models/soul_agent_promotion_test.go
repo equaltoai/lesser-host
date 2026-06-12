@@ -17,6 +17,13 @@ func TestSoulAgentPromotionBeforeCreateSetsDefaults(t *testing.T) {
 		t.Fatalf("BeforeCreate: %v", err)
 	}
 
+	assertSoulAgentPromotionDefaults(t, promotion)
+	assertSoulAgentPromotionTimestamps(t, promotion)
+	assertSoulAgentPromotionKeys(t, promotion)
+}
+
+func assertSoulAgentPromotionDefaults(t *testing.T, promotion *SoulAgentPromotion) {
+	t.Helper()
 	if promotion.Stage != SoulAgentPromotionStageRequested ||
 		promotion.RequestStatus != SoulAgentPromotionRequestStatusRequested ||
 		promotion.ReviewStatus != SoulAgentPromotionReviewStatusNotStarted ||
@@ -25,9 +32,17 @@ func TestSoulAgentPromotionBeforeCreateSetsDefaults(t *testing.T) {
 		promotion.AnchorState != SoulAnchorStateHostedOffchain {
 		t.Fatalf("unexpected defaults: %#v", promotion)
 	}
+}
+
+func assertSoulAgentPromotionTimestamps(t *testing.T, promotion *SoulAgentPromotion) {
+	t.Helper()
 	if promotion.RequestedAt.IsZero() || promotion.CreatedAt.IsZero() || promotion.UpdatedAt.IsZero() {
 		t.Fatalf("expected timestamps to be set: %#v", promotion)
 	}
+}
+
+func assertSoulAgentPromotionKeys(t *testing.T, promotion *SoulAgentPromotion) {
+	t.Helper()
 	if promotion.PK != "SOUL#AGENT#0xabcdef" || promotion.SK != "PROMOTION" {
 		t.Fatalf("unexpected keys: %q %q", promotion.PK, promotion.SK)
 	}

@@ -1415,18 +1415,31 @@ func assertMintConversationFinalizeHostedOffchain(t *testing.T, out soulMintConv
 
 func assertMintConversationManagedENSMaterial(t *testing.T, channels []*models.SoulAgentChannel, resolutions []*models.SoulAgentENSResolution, identity *models.SoulAgentIdentity) {
 	t.Helper()
-	var channel *models.SoulAgentChannel
+	channel := firstManagedENSChannel(channels)
+	resolution := firstManagedENSResolution(resolutions)
+	requireManagedENSMaterial(t, channel, resolution, identity)
+}
+
+func firstManagedENSChannel(channels []*models.SoulAgentChannel) *models.SoulAgentChannel {
 	for _, ch := range channels {
 		if ch != nil && strings.TrimSpace(ch.Identifier) != "" {
-			channel = ch
+			return ch
 		}
 	}
-	var resolution *models.SoulAgentENSResolution
+	return nil
+}
+
+func firstManagedENSResolution(resolutions []*models.SoulAgentENSResolution) *models.SoulAgentENSResolution {
 	for _, res := range resolutions {
 		if res != nil && strings.TrimSpace(res.ENSName) != "" {
-			resolution = res
+			return res
 		}
 	}
+	return nil
+}
+
+func requireManagedENSMaterial(t *testing.T, channel *models.SoulAgentChannel, resolution *models.SoulAgentENSResolution, identity *models.SoulAgentIdentity) {
+	t.Helper()
 	if channel == nil {
 		t.Fatalf("expected managed ENS channel")
 	}

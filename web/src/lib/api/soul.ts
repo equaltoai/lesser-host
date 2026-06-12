@@ -513,6 +513,41 @@ export interface SoulAgentMintOperationResponse {
 	safe_tx?: SafeTxPayload;
 }
 
+export interface SoulAgentRegistrationPrincipalDeclarationPreflightResponse {
+	version: string;
+	principal_address: string;
+	signer_address: string;
+	signing_method: 'eip191_personal_sign';
+	message_encoding: 'hex_bytes';
+	message_hex: string;
+	digest_hex: string;
+	canonical_json: string;
+	declared_at: string;
+}
+
+export function soulAgentRegistrationPrincipalDeclarationPreflight(
+	token: string,
+	id: string,
+	input: {
+		principal_address: string;
+		principal_declaration: string;
+		declared_at: string;
+	},
+): Promise<SoulAgentRegistrationPrincipalDeclarationPreflightResponse> {
+	const req = jsonRequest(input);
+	return fetchJson<SoulAgentRegistrationPrincipalDeclarationPreflightResponse>(
+		`/api/v1/soul/agents/register/${encodeURIComponent(id)}/principal-declaration/preflight`,
+		{
+			method: 'POST',
+			headers: {
+				authorization: `Bearer ${token}`,
+				...req.headers,
+			},
+			body: req.body,
+		},
+	);
+}
+
 export interface SoulAgentRegistrationVerifyResponse {
 	registration: SoulAgentRegistration;
 	operation: SoulOperation;

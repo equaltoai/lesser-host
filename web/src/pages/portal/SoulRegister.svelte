@@ -15,6 +15,7 @@
 	} from 'src/lib/api/soul';
 	import {
 		soulAgentRegistrationBegin,
+		soulAgentRegistrationPrincipalDeclarationPreflight,
 		soulAgentRegistrationVerify,
 		soulCompleteMintConversation,
 		soulGetMintConversation,
@@ -37,7 +38,6 @@
 		switchEthereumChain,
 		waitForEthereumTransactionReceipt,
 	} from 'src/lib/wallet/ethereum';
-	import { jcsCanonicalize } from 'src/lib/wallet/jcs';
 	import { keccak256Utf8Hex } from 'src/lib/wallet/keccak';
 	import { Alert, Button, Card, CopyButton, DefinitionItem, DefinitionList, Heading, Link, Select, Spinner, Text, TextArea, TextField } from 'src/lib/ui';
 
@@ -832,10 +832,6 @@
 			principalSignError = 'Generate a registration challenge first.';
 			return;
 		}
-		if (!soulConfig?.chain_id || !soulConfig?.registry_contract_address) {
-			principalSignError = 'Soul registry configuration is unavailable.';
-			return;
-		}
 
 		principalSignLoading = true;
 		try {
@@ -847,23 +843,18 @@
 			}
 
 			const declaredAt = new Date().toISOString();
-			const reg = beginResult.registration;
-			const unsigned = {
-				kind: 'soul_principal_declaration',
-				version: '1',
-				agentId: reg.agent_id.trim().toLowerCase(),
-				wallet: reg.wallet_address.trim().toLowerCase(),
-				domain: reg.domain_normalized.trim().toLowerCase(),
-				localId: reg.local_id.trim(),
-				chainId: String(soulConfig.chain_id),
-				contract: soulConfig.registry_contract_address.trim().toLowerCase(),
-				principalAddress: addr.toLowerCase(),
-				declaration: decl,
-				declaredAt,
-			};
-			const digestHex = keccak256Utf8Hex(jcsCanonicalize(unsigned));
-			principalSignature = await personalSign(provider, digestHex, addr);
-			principalDeclaredAt = declaredAt;
+			const preflight = await soulAgentRegistrationPrincipalDeclarationPreflight(token, beginResult.registration.id, {
+				principal_address: addr,
+				principal_declaration: decl,
+				declared_at: declaredAt,
+			});
+			if (preflight.signing_method !== 'eip191_personal_sign' || preflight.message_encoding !== 'hex_bytes') {
+				principalSignError = 'Unsupported principal signing preflight returned by lesser-host.';
+				return;
+			}
+			principalSignature = await personalSign(provider, preflight.message_hex, preflight.principal_address);
+			principalAddress = preflight.principal_address;
+			principalDeclaredAt = preflight.declared_at;
 		} catch (err) {
 			principalSignError = formatError(err);
 		} finally {

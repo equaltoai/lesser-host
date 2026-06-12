@@ -67,6 +67,24 @@ type soulAgentRegistrationVerifyRequest struct {
 	DeclaredAt           string `json:"declared_at"`
 }
 
+type soulAgentRegistrationPrincipalDeclarationPreflightRequest struct {
+	PrincipalAddress     string `json:"principal_address"`
+	PrincipalDeclaration string `json:"principal_declaration"`
+	DeclaredAt           string `json:"declared_at"`
+}
+
+type soulAgentRegistrationPrincipalDeclarationPreflightResponse struct {
+	Version          string `json:"version"`
+	PrincipalAddress string `json:"principal_address"`
+	SignerAddress    string `json:"signer_address"`
+	SigningMethod    string `json:"signing_method"`
+	MessageEncoding  string `json:"message_encoding"`
+	MessageHex       string `json:"message_hex"`
+	DigestHex        string `json:"digest_hex"`
+	CanonicalJSON    string `json:"canonical_json"`
+	DeclaredAt       string `json:"declared_at"`
+}
+
 type soulAgentRegistrationVerifyResponse struct {
 	Registration models.SoulAgentRegistration `json:"registration"`
 	Operation    models.SoulOperation         `json:"operation"`
@@ -814,6 +832,61 @@ func (s *Server) createSoulMintOperation(ctx context.Context, reg *models.SoulAg
 	return op, payload, metaURI, nil
 }
 
+func (s *Server) handleSoulAgentRegistrationPrincipalDeclarationPreflight(ctx *apptheory.Context) (*apptheory.Response, error) {
+	if appErr := s.requireSoulRegistryConfigured(); appErr != nil {
+		return nil, appErr
+	}
+	if appErr := s.requireSoulPortalPrereqs(ctx); appErr != nil {
+		return nil, appErr
+	}
+
+	id, principalAddrRaw, principalDeclarationRaw, declaredAtRaw, err := parseSoulAgentRegistrationPrincipalDeclarationPreflightInput(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	reg, appErr := s.loadSoulAgentRegistrationForVerify(ctx, id)
+	if appErr != nil {
+		return nil, appErr
+	}
+
+	if ensureErr := s.ensureSoulAgentNotActive(ctx.Context(), reg.AgentID); ensureErr != nil {
+		return nil, ensureErr
+	}
+
+	if _, _, accessErr := s.requireSoulDomainAccess(ctx, reg.DomainNormalized); accessErr != nil {
+		return nil, accessErr
+	}
+
+	principalAddr, principalDeclaration, declaredAt, appErr := s.normalizeSoulRegistrationPrincipalDeclarationInputs(
+		ctx.Context(),
+		principalAddrRaw,
+		principalDeclarationRaw,
+		declaredAtRaw,
+	)
+	if appErr != nil {
+		return nil, appErr
+	}
+
+	material, appErr := s.computeSoulPrincipalDeclarationSigningMaterial(reg, principalAddr, principalDeclaration, declaredAt)
+	if appErr != nil {
+		return nil, appErr
+	}
+	digestHex := "0x" + hex.EncodeToString(material.digest)
+
+	return apptheory.JSON(http.StatusOK, soulAgentRegistrationPrincipalDeclarationPreflightResponse{
+		Version:          "1",
+		PrincipalAddress: principalAddr,
+		SignerAddress:    principalAddr,
+		SigningMethod:    "eip191_personal_sign",
+		MessageEncoding:  "hex_bytes",
+		MessageHex:       digestHex,
+		DigestHex:        digestHex,
+		CanonicalJSON:    material.canonicalJSON,
+		DeclaredAt:       declaredAt,
+	})
+}
+
 func (s *Server) handleSoulAgentRegistrationVerify(ctx *apptheory.Context) (*apptheory.Response, error) {
 	if appErr := s.requireSoulRegistryConfigured(); appErr != nil {
 		return nil, appErr
@@ -1110,27 +1183,9 @@ func (s *Server) validateSoulRegistrationVerifyPrincipalInputs(
 	principalSigRaw string,
 	declaredAtRaw string,
 ) (string, string, string, string, *apptheory.AppError) {
-	principalAddr, appErr := s.normalizeSoulEVMAddress(ctx, principalAddrRaw, "principal_address")
+	principalAddr, principalDeclaration, declaredAtCanonical, appErr := s.normalizeSoulRegistrationPrincipalDeclarationInputs(ctx, principalAddrRaw, principalDeclarationRaw, declaredAtRaw)
 	if appErr != nil {
 		return "", "", "", "", appErr
-	}
-	principalDeclaration := strings.TrimSpace(principalDeclarationRaw)
-	if principalDeclaration == "" || len(principalDeclaration) < 10 {
-		return "", "", "", "", &apptheory.AppError{Code: "app.bad_request", Message: "principal_declaration is required"}
-	}
-	if len(principalDeclaration) > 8192 {
-		return "", "", "", "", &apptheory.AppError{Code: "app.bad_request", Message: "principal_declaration is too long"}
-	}
-	declaredAt := strings.TrimSpace(declaredAtRaw)
-	if declaredAt == "" {
-		return "", "", "", "", &apptheory.AppError{Code: "app.bad_request", Message: "declared_at is required"}
-	}
-	_, declaredAtCanonical, tsErr := parseSoulSignedTimestamp(declaredAt, time.Now().UTC(), "declared_at")
-	if tsErr != nil {
-		if tsErr.Message == "declared_at must be RFC3339" {
-			tsErr.Message = "declared_at must be an RFC3339 timestamp"
-		}
-		return "", "", "", "", tsErr
 	}
 	principalSig := strings.TrimSpace(principalSigRaw)
 	if principalSig == "" {
@@ -1146,12 +1201,51 @@ func (s *Server) validateSoulRegistrationVerifyPrincipalInputs(
 	return principalAddr, principalDeclaration, principalSig, declaredAtCanonical, nil
 }
 
+func (s *Server) normalizeSoulRegistrationPrincipalDeclarationInputs(ctx context.Context, principalAddrRaw string, principalDeclarationRaw string, declaredAtRaw string) (string, string, string, *apptheory.AppError) {
+	principalAddr, appErr := s.normalizeSoulEVMAddress(ctx, principalAddrRaw, "principal_address")
+	if appErr != nil {
+		return "", "", "", appErr
+	}
+	principalDeclaration := strings.TrimSpace(principalDeclarationRaw)
+	if principalDeclaration == "" || len(principalDeclaration) < 10 {
+		return "", "", "", &apptheory.AppError{Code: "app.bad_request", Message: "principal_declaration is required"}
+	}
+	if len(principalDeclaration) > 8192 {
+		return "", "", "", &apptheory.AppError{Code: "app.bad_request", Message: "principal_declaration is too long"}
+	}
+	declaredAt := strings.TrimSpace(declaredAtRaw)
+	if declaredAt == "" {
+		return "", "", "", &apptheory.AppError{Code: "app.bad_request", Message: "declared_at is required"}
+	}
+	_, declaredAtCanonical, tsErr := parseSoulSignedTimestamp(declaredAt, time.Now().UTC(), "declared_at")
+	if tsErr != nil {
+		if tsErr.Message == "declared_at must be RFC3339" {
+			tsErr.Message = "declared_at must be an RFC3339 timestamp"
+		}
+		return "", "", "", tsErr
+	}
+	return principalAddr, principalDeclaration, declaredAtCanonical, nil
+}
+
+type soulPrincipalDeclarationSigningMaterial struct {
+	digest        []byte
+	canonicalJSON string
+}
+
 func (s *Server) computeSoulPrincipalDeclarationDigest(reg *models.SoulAgentRegistration, principalAddr string, principalDeclaration string, declaredAt string) ([]byte, *apptheory.AppError) {
+	material, appErr := s.computeSoulPrincipalDeclarationSigningMaterial(reg, principalAddr, principalDeclaration, declaredAt)
+	if appErr != nil {
+		return nil, appErr
+	}
+	return material.digest, nil
+}
+
+func (s *Server) computeSoulPrincipalDeclarationSigningMaterial(reg *models.SoulAgentRegistration, principalAddr string, principalDeclaration string, declaredAt string) (soulPrincipalDeclarationSigningMaterial, *apptheory.AppError) {
 	if s == nil || reg == nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+		return soulPrincipalDeclarationSigningMaterial{}, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 	if s.cfg.SoulChainID <= 0 || strings.TrimSpace(s.cfg.SoulRegistryContractAddress) == "" {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: "soul registry is not configured"}
+		return soulPrincipalDeclarationSigningMaterial{}, &apptheory.AppError{Code: "app.conflict", Message: "soul registry is not configured"}
 	}
 	unsigned := map[string]any{
 		"kind":             "soul_principal_declaration",
@@ -1168,13 +1262,16 @@ func (s *Server) computeSoulPrincipalDeclarationDigest(reg *models.SoulAgentRegi
 	}
 	unsignedBytes, err := json.Marshal(unsigned)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid principal declaration JSON"}
+		return soulPrincipalDeclarationSigningMaterial{}, &apptheory.AppError{Code: "app.bad_request", Message: "invalid principal declaration JSON"}
 	}
 	jcsBytes, err := jsoncanonicalizer.Transform(unsignedBytes)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid principal declaration JSON"}
+		return soulPrincipalDeclarationSigningMaterial{}, &apptheory.AppError{Code: "app.bad_request", Message: "invalid principal declaration JSON"}
 	}
-	return crypto.Keccak256(jcsBytes), nil
+	return soulPrincipalDeclarationSigningMaterial{
+		digest:        crypto.Keccak256(jcsBytes),
+		canonicalJSON: string(jcsBytes),
+	}, nil
 }
 
 func (s *Server) upsertSoulAgentIndexes(ctx context.Context, reg *models.SoulAgentRegistration) {
@@ -1229,4 +1326,26 @@ func parseSoulAgentRegistrationVerifyInput(ctx *apptheory.Context) (id string, s
 	declaredAt = strings.TrimSpace(req.DeclaredAt)
 
 	return id, sig, principalAddr, principalDeclaration, principalSig, declaredAt, nil
+}
+
+func parseSoulAgentRegistrationPrincipalDeclarationPreflightInput(ctx *apptheory.Context) (id string, principalAddr string, principalDeclaration string, declaredAt string, err error) {
+	if ctx == nil {
+		return "", "", "", "", &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
+	id = strings.TrimSpace(ctx.Param("id"))
+	if id == "" {
+		return "", "", "", "", &apptheory.AppError{Code: "app.bad_request", Message: "id is required"}
+	}
+
+	var req soulAgentRegistrationPrincipalDeclarationPreflightRequest
+	if err := httpx.ParseJSON(ctx, &req); err != nil {
+		return "", "", "", "", err
+	}
+
+	principalAddr = strings.TrimSpace(req.PrincipalAddress)
+	principalDeclaration = strings.TrimSpace(req.PrincipalDeclaration)
+	declaredAt = strings.TrimSpace(req.DeclaredAt)
+
+	return id, principalAddr, principalDeclaration, declaredAt, nil
 }
