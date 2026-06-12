@@ -348,36 +348,58 @@ func (s *Server) handleSoulAgentRegistrationBegin(ctx *apptheory.Context) (*appt
 		return nil, appErr
 	}
 
+	out, appErr := s.beginSoulAgentRegistration(ctx, req, domainNormalized, domainAccessAutoVerified, strings.TrimSpace(ctx.AuthIdentity))
+	if appErr != nil {
+		return nil, appErr
+	}
+	return apptheory.JSON(http.StatusCreated, out)
+}
+
+func (s *Server) beginSoulAgentRegistration(
+	ctx *apptheory.Context,
+	req soulAgentRegistrationBeginRequest,
+	domainNormalized string,
+	domainAccessAutoVerified bool,
+	actor string,
+) (soulAgentRegistrationBeginResponse, *apptheory.AppError) {
+	if ctx == nil {
+		return soulAgentRegistrationBeginResponse{}, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
+	rawDomain := strings.TrimSpace(req.Domain)
+	domainNormalized = strings.ToLower(strings.TrimSpace(domainNormalized))
+	actor = strings.TrimSpace(actor)
+
 	rawLocal := req.LocalID
 	local, appErr := normalizeSoulRegistrationBeginLocalID(rawLocal)
 	if appErr != nil {
-		return nil, appErr
+		return soulAgentRegistrationBeginResponse{}, appErr
 	}
 
 	wallet, appErr := s.normalizeSoulWalletAddress(ctx.Context(), req.Wallet)
 	if appErr != nil {
-		return nil, appErr
+		return soulAgentRegistrationBeginResponse{}, appErr
 	}
 
 	capNames, appErr := parseSoulRegistrationBeginCapabilities(req.Capabilities)
 	if appErr != nil {
-		return nil, appErr
+		return soulAgentRegistrationBeginResponse{}, appErr
 	}
 
 	caps := normalizeSoulCapabilitiesLoose(capNames)
 
 	agentIDHex, err := soul.DeriveAgentIDHex(domainNormalized, local)
 	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to derive agent_id"}
+		return soulAgentRegistrationBeginResponse{}, &apptheory.AppError{Code: "app.internal", Message: "failed to derive agent_id"}
 	}
 
 	if ensureErr := s.ensureSoulAgentNotActive(ctx.Context(), agentIDHex); ensureErr != nil {
-		return nil, ensureErr
+		return soulAgentRegistrationBeginResponse{}, ensureErr
 	}
 
 	proofToken, nonce, id, appErr := newSoulAgentRegistrationBeginTokens()
 	if appErr != nil {
-		return nil, appErr
+		return soulAgentRegistrationBeginResponse{}, appErr
 	}
 	proofValue := soulRegistryProofValue + proofToken
 
@@ -388,7 +410,7 @@ func (s *Server) handleSoulAgentRegistrationBegin(ctx *apptheory.Context) (*appt
 
 	reg := &models.SoulAgentRegistration{
 		ID:               id,
-		Username:         strings.TrimSpace(ctx.AuthIdentity),
+		Username:         actor,
 		DomainRaw:        rawDomain,
 		DomainNormalized: domainNormalized,
 		LocalIDRaw:       rawLocal,
@@ -407,22 +429,22 @@ func (s *Server) handleSoulAgentRegistrationBegin(ctx *apptheory.Context) (*appt
 		ExpiresAt:        expiresAt,
 	}
 	if appErr := s.createSoulAgentRegistration(ctx.Context(), reg); appErr != nil {
-		return nil, appErr
+		return soulAgentRegistrationBeginResponse{}, appErr
 	}
 	promotion := buildSoulAgentPromotionFromRegistration(reg, now)
 	if appErr := s.saveSoulAgentPromotion(ctx.Context(), promotion); appErr != nil {
-		return nil, appErr
+		return soulAgentRegistrationBeginResponse{}, appErr
 	}
 	if appErr := s.saveSoulAgentPromotionLifecycleEvent(ctx.Context(), buildSoulAgentPromotionLifecycleEvent(promotion, soulAgentPromotionLifecycleEventInput{
 		EventType:  models.SoulAgentPromotionEventTypeRequestCreated,
 		RequestID:  strings.TrimSpace(ctx.RequestID),
 		OccurredAt: now,
 	})); appErr != nil {
-		return nil, appErr
+		return soulAgentRegistrationBeginResponse{}, appErr
 	}
 
 	audit := &models.AuditLogEntry{
-		Actor:     strings.TrimSpace(ctx.AuthIdentity),
+		Actor:     actor,
 		Action:    "soul.registration.begin",
 		Target:    fmt.Sprintf("soul_agent_registration:%s", reg.ID),
 		RequestID: ctx.RequestID,
@@ -430,22 +452,13 @@ func (s *Server) handleSoulAgentRegistrationBegin(ctx *apptheory.Context) (*appt
 	}
 	s.tryWriteAuditLog(ctx, audit)
 
-	dnsName := soulRegistryProofPrefix + domainNormalized
-	httpsURL := "https://" + domainNormalized + path.Clean(soulRegistryWellKnown)
-	httpsBody, _ := json.Marshal(map[string]string{"lesser-soul-agent": proofToken})
-	proofs := []soulRegistryProofInstructions{
-		{Method: "dns_txt", DNSName: dnsName, DNSValue: proofValue},
-		{Method: "https_well_known", HTTPSURL: httpsURL, HTTPSBody: string(httpsBody)},
-	}
-	if domainAccessAutoVerified {
-		proofs = nil
-	}
+	proofs := buildSoulRegistrationProofInstructions(domainNormalized, proofToken, domainAccessAutoVerified)
 
-	return apptheory.JSON(http.StatusCreated, soulAgentRegistrationBeginResponse{
+	return soulAgentRegistrationBeginResponse{
 		Registration: *reg,
 		Wallet: walletChallengeResponse{
 			ID:        reg.ID,
-			Username:  strings.TrimSpace(ctx.AuthIdentity),
+			Username:  actor,
 			Address:   wallet,
 			ChainID:   int(s.cfg.SoulChainID),
 			Nonce:     nonce,
@@ -455,7 +468,23 @@ func (s *Server) handleSoulAgentRegistrationBegin(ctx *apptheory.Context) (*appt
 		},
 		Proofs:    proofs,
 		Promotion: ptrTo(s.buildSoulAgentPromotionView(promotion)),
-	})
+	}, nil
+}
+
+func buildSoulRegistrationProofInstructions(domainNormalized string, proofToken string, autoVerified bool) []soulRegistryProofInstructions {
+	if autoVerified {
+		return nil
+	}
+	domainNormalized = strings.ToLower(strings.TrimSpace(domainNormalized))
+	proofToken = strings.TrimSpace(proofToken)
+	proofValue := soulRegistryProofValue + proofToken
+	dnsName := soulRegistryProofPrefix + domainNormalized
+	httpsURL := "https://" + domainNormalized + path.Clean(soulRegistryWellKnown)
+	httpsBody, _ := json.Marshal(map[string]string{"lesser-soul-agent": proofToken})
+	return []soulRegistryProofInstructions{
+		{Method: "dns_txt", DNSName: dnsName, DNSValue: proofValue},
+		{Method: "https_well_known", HTTPSURL: httpsURL, HTTPSBody: string(httpsBody)},
+	}
 }
 
 func (s *Server) normalizeSoulRegistrationBeginDomain(ctx *apptheory.Context, rawDomain string) (string, bool, *apptheory.AppError) {
@@ -822,6 +851,9 @@ func (s *Server) createSoulMintOperation(ctx context.Context, reg *models.SoulAg
 	op, appErr = s.createOrLoadSoulOperation(ctx, op)
 	if appErr != nil {
 		return nil, nil, "", appErr
+	}
+	if storedPayload := parseSafeTxPayload(op.SafePayloadJSON); storedPayload != nil {
+		payload = storedPayload
 	}
 
 	if appErr := s.ensureSoulPendingAgentIdentity(ctx, reg, metaURI, principalAddress, principalSignature, principalDeclaration, principalDeclaredAt, now); appErr != nil {
