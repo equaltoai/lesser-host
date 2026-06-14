@@ -423,6 +423,28 @@ func requireMintConversationStatus(conv *models.SoulAgentMintConversation, expec
 	return nil
 }
 
+func requireMintConversationDurableAssistantTurn(conv *models.SoulAgentMintConversation) *apptheory.AppError {
+	if conv == nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	decodeMintConversationFields(conv)
+	rawMessages := strings.TrimSpace(conv.Messages)
+	if rawMessages == "" {
+		return &apptheory.AppError{Code: appErrCodeConflict, Message: "conversation has no durable messages"}
+	}
+
+	var messages []soulMintConversationMessage
+	if err := json.Unmarshal([]byte(rawMessages), &messages); err != nil {
+		return &apptheory.AppError{Code: appErrCodeConflict, Message: "conversation messages are invalid"}
+	}
+	for _, msg := range messages {
+		if strings.EqualFold(strings.TrimSpace(msg.Role), "assistant") && strings.TrimSpace(msg.Content) != "" {
+			return nil
+		}
+	}
+	return &apptheory.AppError{Code: appErrCodeConflict, Message: "conversation has no completed assistant turn"}
+}
+
 func (s *Server) loadMintConversationFinalizeContext(ctx *apptheory.Context) (mintConversationFinalizeContext, *apptheory.AppError) {
 	regCtx, appErr := s.requireMintConversationRegistrationContext(ctx, true)
 	if appErr != nil {
@@ -1126,6 +1148,9 @@ func (s *Server) handleSoulAgentCompleteMintConversation(ctx *apptheory.Context)
 
 func (s *Server) completeSoulMintConversationForRegistration(ctx *apptheory.Context, regCtx mintConversationRegistrationContext, conv *models.SoulAgentMintConversation, conversationID string) (*apptheory.Response, error) {
 	now := time.Now().UTC()
+	if appErr := requireMintConversationDurableAssistantTurn(conv); appErr != nil {
+		return nil, appErr
+	}
 	declarationsJSON, extractUsage, appErr := s.resolveMintConversationCompletion(ctx, regCtx, conv, conversationID, now)
 	if appErr != nil {
 		return nil, appErr

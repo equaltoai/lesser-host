@@ -21,6 +21,82 @@
       "Properties": {},
       "Type": "AWS::CloudFront::OriginAccessControl"
     },
+    "WebAcl": {
+      "Type": "AWS::WAFv2::WebACL",
+      "Properties": {
+        "Rules": [
+          {
+            "Name": "AWSManagedRulesCommonRuleSet",
+            "Priority": 0,
+            "Statement": {
+              "ManagedRuleGroupStatement": {
+                "VendorName": "AWS",
+                "Name": "AWSManagedRulesCommonRuleSet",
+                "RuleActionOverrides": [
+                  {
+                    "Name": "NoUserAgent_HEADER",
+                    "ActionToUse": {
+                      "Count": {}
+                    }
+                  }
+                ]
+              }
+            },
+            "OverrideAction": {
+              "None": {}
+            },
+            "VisibilityConfig": {
+              "CloudWatchMetricsEnabled": true,
+              "MetricName": "common",
+              "SampledRequestsEnabled": true
+            }
+          },
+          {
+            "Name": "BlockNoUserAgentExceptResolve",
+            "Priority": 1,
+            "Action": {
+              "Block": {}
+            },
+            "Statement": {
+              "AndStatement": {
+                "Statements": [
+                  {
+                    "LabelMatchStatement": {
+                      "Scope": "LABEL",
+                      "Key": "awswaf:managed:aws:core-rule-set:NoUserAgent_Header"
+                    }
+                  },
+                  {
+                    "NotStatement": {
+                      "Statement": {
+                        "ByteMatchStatement": {
+                          "FieldToMatch": {
+                            "UriPath": {}
+                          },
+                          "PositionalConstraint": "EXACTLY",
+                          "SearchString": "/resolve",
+                          "TextTransformations": [
+                            {
+                              "Priority": 0,
+                              "Type": "NONE"
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            "VisibilityConfig": {
+              "CloudWatchMetricsEnabled": true,
+              "MetricName": "no-user-agent",
+              "SampledRequestsEnabled": true
+            }
+          }
+        ]
+      }
+    },
     "WebDistribution": {
       "Properties": {
         "DistributionConfig": {
@@ -80,6 +156,10 @@
             },
             {
               "PathPattern": "api/v1/soul/agents/*/mint-conversation*",
+              "TargetOriginId": "sse-origin"
+            },
+            {
+              "PathPattern": "api/v1/soul/instance/agents/register/*/mint-conversation*",
               "TargetOriginId": "sse-origin"
             },
             {

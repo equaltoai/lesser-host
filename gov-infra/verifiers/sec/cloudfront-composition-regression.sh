@@ -71,3 +71,13 @@ run_expect_fail \
   "fixture-fail-expanded-required-patterns-missing" \
   "${FIXTURE_DIR}/fail-expanded-required-patterns-missing.json" \
   "required cache behavior 'resolve*' is missing"
+
+run_expect_fail \
+  "fixture-fail-instance-sse-behavior-missing" \
+  "${FIXTURE_DIR}/fail-instance-sse-behavior-missing.json" \
+  "required cache behavior 'api/v1/soul/instance/agents/register/*/mint-conversation*' is missing"
+
+run_expect_fail \
+  "fixture-fail-instance-sse-behavior-wrong-origin" \
+  "${FIXTURE_DIR}/fail-instance-sse-behavior-wrong-origin.json" \
+  "api/v1/soul/instance/agents/register/*/mint-conversation* routes to origin 'control-plane-origin', expected sse origin 'sse-origin'"

@@ -955,6 +955,53 @@ func TestSoulInstanceCompleteMintConversation_RejectsInvalidStates(t *testing.T)
 		}
 	})
 
+	t.Run("empty conversation has no durable assistant turn", func(t *testing.T) {
+		t.Parallel()
+
+		for _, tc := range []struct {
+			name     string
+			messages string
+			wantMsg  string
+		}{
+			{name: "no messages", messages: "", wantMsg: "conversation has no durable messages"},
+			{name: "user only", messages: `[{"role":"user","content":"describe yourself"}]`, wantMsg: "conversation has no completed assistant turn"},
+		} {
+			tc := tc
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+
+				reg, identity, _ := soulInstanceHostedInstanceTrustFixture(t)
+				tdb := newMintConversationTestDB()
+				s := newMintConversationServer(tdb)
+				expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
+				stubMintConversationRegistration(t, tdb, reg)
+				stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
+				conv := models.SoulAgentMintConversation{
+					AgentID:        reg.AgentID,
+					ConversationID: mintConversationTestConversationID,
+					Status:         models.SoulMintConversationStatusInProgress,
+					CreatedAt:      time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
+				}
+				if strings.TrimSpace(tc.messages) != "" {
+					conv.Messages = encodeMintConversationBlob(tc.messages)
+				}
+				stubMintConversationConversation(t, tdb, conv)
+				stubMintConversationIdentity(t, tdb, identity, nil)
+
+				_, err := s.handleSoulInstanceCompleteMintConversation(newSoulInstanceBootstrapContext(
+					map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
+					mustMarshalJSON(t, map[string]any{"declarations": testMintConversationDecl()}),
+					map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
+				))
+				appErr := requireAppTheoryError(t, err)
+				if appErr.Code != soulInstanceBootstrapCodeConflict || appErr.StatusCode != http.StatusConflict || appErr.Message != tc.wantMsg {
+					t.Fatalf("expected durable assistant-turn conflict %q, got %#v", tc.wantMsg, appErr)
+				}
+				tdb.qConv.AssertNumberOfCalls(t, "Update", 0)
+			})
+		}
+	})
+
 	t.Run("already published agent", func(t *testing.T) {
 		t.Parallel()
 
@@ -1053,6 +1100,7 @@ func TestSoulInstanceHostedInstanceTrustCompleteAcceptsDeclarations(t *testing.T
 		AgentID:        reg.AgentID,
 		ConversationID: mintConversationTestConversationID,
 		Status:         models.SoulMintConversationStatusInProgress,
+		Messages:       encodeMintConversationBlob(mintConversationDurableAssistantMessagesJSON()),
 		CreatedAt:      time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
 	})
 	stubMintConversationIdentity(t, tdb, identity, nil)
@@ -1141,45 +1189,77 @@ func TestSoulInstanceFinalizeMintConversation_RejectsInvalidStates(t *testing.T)
 	assertSoulInstanceFinalizeRejectsVersionMismatch(t)
 }
 
+type soulInstanceFinalizeCall struct {
+	name string
+	call func(*Server, *apptheory.Context) (*apptheory.Response, error)
+}
+
+func soulInstanceFinalizeStateCalls() []soulInstanceFinalizeCall {
+	return []soulInstanceFinalizeCall{
+		{
+			name: "begin",
+			call: func(s *Server, ctx *apptheory.Context) (*apptheory.Response, error) {
+				return s.handleSoulInstanceBeginFinalizeMintConversation(ctx)
+			},
+		},
+		{
+			name: "preflight",
+			call: func(s *Server, ctx *apptheory.Context) (*apptheory.Response, error) {
+				return s.handleSoulInstanceFinalizeMintConversationPreflight(ctx)
+			},
+		},
+		{
+			name: "finalize",
+			call: func(s *Server, ctx *apptheory.Context) (*apptheory.Response, error) {
+				return s.handleSoulInstanceFinalizeMintConversation(ctx)
+			},
+		},
+	}
+}
+
 func assertSoulInstanceFinalizeRejectsNotCompleted(t *testing.T) {
 	t.Helper()
-	tdb := newMintConversationTestDB()
-	s := newMintConversationServer(tdb)
-	reg, identity, _, _, boundarySigs := soulInstanceFinalizeFixture(t)
-	stubSoulInstanceFinalizeReadContext(t, tdb, reg, identity, models.SoulAgentMintConversation{
-		AgentID:        reg.AgentID,
-		ConversationID: mintConversationTestConversationID,
-		Status:         models.SoulMintConversationStatusInProgress,
-	})
-	_, err := s.handleSoulInstanceBeginFinalizeMintConversation(newSoulInstanceBootstrapContext(
-		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
-		mustMarshalJSON(t, soulMintConversationFinalizeBeginRequest{BoundarySignatures: boundarySigs}),
-		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
-	))
-	appErr := requireAppTheoryError(t, err)
-	if appErr.Code != soulInstanceBootstrapCodeConflict || appErr.Message != "conversation is not completed" {
-		t.Fatalf("expected completed-state conflict, got %#v", appErr)
+	for _, tc := range soulInstanceFinalizeStateCalls() {
+		tdb := newMintConversationTestDB()
+		s := newMintConversationServer(tdb)
+		reg, identity, _, _, boundarySigs := soulInstanceFinalizeFixture(t)
+		stubSoulInstanceFinalizeReadContext(t, tdb, reg, identity, models.SoulAgentMintConversation{
+			AgentID:        reg.AgentID,
+			ConversationID: mintConversationTestConversationID,
+			Status:         models.SoulMintConversationStatusInProgress,
+		})
+		_, err := tc.call(s, newSoulInstanceBootstrapContext(
+			map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
+			mustMarshalJSON(t, soulMintConversationFinalizeBeginRequest{BoundarySignatures: boundarySigs}),
+			map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
+		))
+		appErr := requireAppTheoryError(t, err)
+		if appErr.Code != soulInstanceBootstrapCodeConflict || appErr.StatusCode != http.StatusConflict || appErr.Message != "conversation is not completed" {
+			t.Fatalf("%s: expected completed-state conflict, got %#v", tc.name, appErr)
+		}
 	}
 }
 
 func assertSoulInstanceFinalizeRejectsMissingDeclarations(t *testing.T) {
 	t.Helper()
-	tdb := newMintConversationTestDB()
-	s := newMintConversationServer(tdb)
-	reg, identity, _, _, boundarySigs := soulInstanceFinalizeFixture(t)
-	stubSoulInstanceFinalizeReadContext(t, tdb, reg, identity, models.SoulAgentMintConversation{
-		AgentID:        reg.AgentID,
-		ConversationID: mintConversationTestConversationID,
-		Status:         models.SoulMintConversationStatusCompleted,
-	})
-	_, err := s.handleSoulInstanceBeginFinalizeMintConversation(newSoulInstanceBootstrapContext(
-		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
-		mustMarshalJSON(t, soulMintConversationFinalizeBeginRequest{BoundarySignatures: boundarySigs}),
-		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
-	))
-	appErr := requireAppTheoryError(t, err)
-	if appErr.Code != soulInstanceBootstrapCodeConflict || appErr.Message != "conversation has no produced declarations" {
-		t.Fatalf("expected missing-declarations conflict, got %#v", appErr)
+	for _, tc := range soulInstanceFinalizeStateCalls() {
+		tdb := newMintConversationTestDB()
+		s := newMintConversationServer(tdb)
+		reg, identity, _, _, boundarySigs := soulInstanceFinalizeFixture(t)
+		stubSoulInstanceFinalizeReadContext(t, tdb, reg, identity, models.SoulAgentMintConversation{
+			AgentID:        reg.AgentID,
+			ConversationID: mintConversationTestConversationID,
+			Status:         models.SoulMintConversationStatusCompleted,
+		})
+		_, err := tc.call(s, newSoulInstanceBootstrapContext(
+			map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
+			mustMarshalJSON(t, soulMintConversationFinalizeBeginRequest{BoundarySignatures: boundarySigs}),
+			map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
+		))
+		appErr := requireAppTheoryError(t, err)
+		if appErr.Code != soulInstanceBootstrapCodeConflict || appErr.StatusCode != http.StatusConflict || appErr.Message != "conversation has no produced declarations" {
+			t.Fatalf("%s: expected missing-declarations conflict, got %#v", tc.name, appErr)
+		}
 	}
 }
 

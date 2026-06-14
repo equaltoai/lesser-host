@@ -690,6 +690,7 @@ test('M0.13 distribution: bearer-auth API/trust origins are NOT OAC-protected', 
 		'api/v1/soul/agents/*/update-registration',
 		'api/v1/soul/agents/register/*/mint-conversation*',
 		'api/v1/soul/agents/*/mint-conversation*',
+		'api/v1/soul/instance/agents/register/*/mint-conversation*',
 	];
 	for (const pattern of bearerPatterns) {
 		const behavior = (config.CacheBehaviors ?? []).find((b) => b.PathPattern === pattern);
@@ -701,6 +702,22 @@ test('M0.13 distribution: bearer-auth API/trust origins are NOT OAC-protected', 
 			`bearer-auth origin behind ${pattern} must NOT be OAC-protected; OAC would break the existing bearer auth contract`,
 		);
 	}
+});
+
+test('M8.1 distribution: Lesser instance mint-conversation route uses SSE origin', () => {
+	const config = distributionConfig(synthTemplate());
+	const exactLesserPattern = 'api/v1/soul/instance/agents/register/*/mint-conversation*';
+	const behavior = (config.CacheBehaviors ?? []).find((b) => b.PathPattern === exactLesserPattern);
+	assert.ok(
+		behavior,
+		`expected exact Lesser-used instance mint-conversation pattern ${exactLesserPattern}`,
+	);
+	const origin = originById(config, behavior.TargetOriginId);
+	const domainSourceId = originDomainSourceLogicalId(origin);
+	assert.ok(
+		domainSourceId.startsWith('ControlPlaneSseRestApi'),
+		`exact Lesser-used instance mint-conversation route must use the SSE-capable REST API origin; got ${domainSourceId}`,
+	);
 });
 
 test('M0.13 WAF: allows no-User-Agent only for ENS /resolve CCIP-read', () => {
@@ -783,6 +800,7 @@ test('M0.13 distribution: preserves all bearer-auth path patterns from the legac
 		'api/v1/budget/debit',
 		'api/v1/soul/agents/register/*/mint-conversation*',
 		'api/v1/soul/agents/*/mint-conversation*',
+		'api/v1/soul/instance/agents/register/*/mint-conversation*',
 		'api/*',
 		'auth/*',
 		'webhooks/*',
