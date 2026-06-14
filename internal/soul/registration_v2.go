@@ -24,6 +24,13 @@ var (
 	regexHexSig       = regexp.MustCompile(`^0x[0-9a-fA-F]+$`)
 )
 
+const (
+	registrationAuthorityWalletPrincipal = "wallet_principal"
+	registrationAuthorityInstanceTrust   = "instance_trust"
+	registrationAnchorHostedOffchain     = "hosted_offchain"
+	registrationAnchorImmutableOnchain   = "immutable_onchain"
+)
+
 // RegistrationFileV2 is the v2 Soul Registration File schema (lesser-soul/SPEC.md Appendix A).
 type RegistrationFileV2 struct {
 	Version   string                 `json:"version"`
@@ -32,6 +39,10 @@ type RegistrationFileV2 struct {
 	LocalID   string                 `json:"localId"`
 	Wallet    string                 `json:"wallet"`
 	Principal PrincipalDeclarationV2 `json:"principal"`
+	// AuthorityModel is explicit for hosted/off-chain registrations that are
+	// authorized by the managed instance API key rather than a wallet principal.
+	AuthorityModel string `json:"authorityModel,omitempty"`
+	AnchorState    string `json:"anchorState,omitempty"`
 
 	SelfDescription SelfDescriptionV2   `json:"selfDescription"`
 	Capabilities    []CapabilityV2      `json:"capabilities"`
@@ -57,6 +68,16 @@ type PrincipalDeclarationV2 struct {
 	Declaration string `json:"declaration"`
 	Signature   string `json:"signature"`
 	DeclaredAt  string `json:"declaredAt"`
+}
+
+func (p PrincipalDeclarationV2) HasFields() bool {
+	return strings.TrimSpace(p.Type) != "" ||
+		strings.TrimSpace(p.Identifier) != "" ||
+		strings.TrimSpace(p.DisplayName) != "" ||
+		strings.TrimSpace(p.ContactURI) != "" ||
+		strings.TrimSpace(p.Declaration) != "" ||
+		strings.TrimSpace(p.Signature) != "" ||
+		strings.TrimSpace(p.DeclaredAt) != ""
 }
 
 var ErrPrincipalBindingMissing = errors.New("verified principal binding is missing")
@@ -127,6 +148,7 @@ type LifecycleV2 struct {
 
 type AttestationsV2 struct {
 	HostAttestation string `json:"hostAttestation,omitempty"`
+	HostAuthority   string `json:"hostAuthority,omitempty"`
 	SelfAttestation string `json:"selfAttestation"`
 }
 
@@ -145,22 +167,53 @@ func (r *RegistrationFileV2) Validate() error {
 	if r == nil {
 		return errRegistrationNil
 	}
+	authorityModel, err := validateRegistrationAuthorityModel(r.AuthorityModel)
+	if err != nil {
+		return err
+	}
 	if err := validateRegistrationVersion(r.Version, "2"); err != nil {
 		return err
 	}
-	if err := validateRegistrationIdentity(r.AgentID, r.Domain, r.LocalID, r.Wallet); err != nil {
+	if err := validateRegistrationAuthorityAndAnchor(authorityModel, r.AnchorState); err != nil {
 		return err
 	}
-	if err := r.validateCoreSections(); err != nil {
+	if err := validateRegistrationIdentityForAuthority(r.AgentID, r.Domain, r.LocalID, r.Wallet, authorityModel); err != nil {
+		return err
+	}
+	if err := r.validateCoreSectionsForAuthority(authorityModel); err != nil {
 		return err
 	}
 	if err := validateOptionalPreviousVersionURI(r.PreviousVersionURI); err != nil {
 		return err
 	}
-	if err := r.Attestations.Validate(); err != nil {
+	if err := r.Attestations.ValidateForAuthority(authorityModel); err != nil {
 		return fmt.Errorf("attestations: %w", err)
 	}
 	return validateRegistrationTimestamps(r.Created, r.Updated)
+}
+
+func validateRegistrationAuthorityModel(raw string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", registrationAuthorityWalletPrincipal:
+		return registrationAuthorityWalletPrincipal, nil
+	case registrationAuthorityInstanceTrust:
+		return registrationAuthorityInstanceTrust, nil
+	default:
+		return "", errors.New("authorityModel is invalid")
+	}
+}
+
+func validateRegistrationAuthorityAndAnchor(authorityModel string, anchorState string) error {
+	anchorState = strings.ToLower(strings.TrimSpace(anchorState))
+	switch anchorState {
+	case "", registrationAnchorHostedOffchain, registrationAnchorImmutableOnchain:
+	default:
+		return errors.New("anchorState is invalid")
+	}
+	if authorityModel == registrationAuthorityInstanceTrust && anchorState != registrationAnchorHostedOffchain {
+		return errors.New("anchorState must be hosted_offchain for authorityModel=instance_trust")
+	}
+	return nil
 }
 
 func validateRegistrationVersion(version string, expected string) error {
@@ -170,7 +223,7 @@ func validateRegistrationVersion(version string, expected string) error {
 	return nil
 }
 
-func validateRegistrationIdentity(agentID string, domain string, localID string, wallet string) error {
+func validateRegistrationIdentityForAuthority(agentID string, domain string, localID string, wallet string, authorityModel string) error {
 	if !regexAgentIDHex64.MatchString(strings.ToLower(strings.TrimSpace(agentID))) {
 		return errors.New("agentId must be a 0x-prefixed 32-byte hex string")
 	}
@@ -185,32 +238,70 @@ func validateRegistrationIdentity(agentID string, domain string, localID string,
 		return errors.New("localId is invalid")
 	}
 
-	if !common.IsHexAddress(strings.TrimSpace(wallet)) {
+	wallet = strings.TrimSpace(wallet)
+	if authorityModel == registrationAuthorityInstanceTrust {
+		if wallet != "" {
+			return errors.New("wallet must be omitted for authorityModel=instance_trust")
+		}
+		return nil
+	}
+
+	if !common.IsHexAddress(wallet) {
 		return errors.New("wallet is invalid")
 	}
 	return nil
 }
 
-func (r *RegistrationFileV2) validateCoreSections() error {
-	if err := r.Principal.ValidateWithDomainSeparation(strings.ToLower(strings.TrimSpace(r.AgentID))); err != nil {
+func (r *RegistrationFileV2) validateCoreSectionsForAuthority(authorityModel string) error {
+	if authorityModel == registrationAuthorityInstanceTrust {
+		if r.Principal.HasFields() {
+			return errors.New("principal must be omitted for authorityModel=instance_trust")
+		}
+	} else if err := r.Principal.ValidateWithDomainSeparation(strings.ToLower(strings.TrimSpace(r.AgentID))); err != nil {
 		return fmt.Errorf("principal: %w", err)
 	}
-	if err := r.SelfDescription.Validate(); err != nil {
+	if err := validateRegistrationSharedCoreSections(
+		r.AgentID,
+		r.SelfDescription,
+		r.Capabilities,
+		r.Boundaries,
+		r.Transparency,
+		r.Endpoints,
+		r.Lifecycle,
+		authorityModel,
+	); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateRegistrationSharedCoreSections(
+	agentID string,
+	selfDescription SelfDescriptionV2,
+	capabilities []CapabilityV2,
+	boundaries []BoundaryV2,
+	transparency map[string]any,
+	endpoints EndpointsV2,
+	lifecycle LifecycleV2,
+	authorityModel string,
+) error {
+	_ = agentID
+	if err := selfDescription.Validate(); err != nil {
 		return fmt.Errorf("selfDescription: %w", err)
 	}
-	if err := validateCapabilitiesV2(r.Capabilities); err != nil {
+	if err := validateCapabilitiesV2(capabilities); err != nil {
 		return err
 	}
-	if err := validateBoundariesV2(r.Boundaries); err != nil {
+	if err := validateBoundariesV2ForAuthority(boundaries, authorityModel); err != nil {
 		return err
 	}
-	if r.Transparency == nil {
+	if transparency == nil {
 		return errors.New("transparency is required")
 	}
-	if err := r.Endpoints.Validate(); err != nil {
+	if err := endpoints.Validate(); err != nil {
 		return fmt.Errorf("endpoints: %w", err)
 	}
-	if err := r.Lifecycle.Validate(); err != nil {
+	if err := lifecycle.Validate(); err != nil {
 		return fmt.Errorf("lifecycle: %w", err)
 	}
 	return nil
@@ -228,12 +319,12 @@ func validateCapabilitiesV2(capabilities []CapabilityV2) error {
 	return nil
 }
 
-func validateBoundariesV2(boundaries []BoundaryV2) error {
+func validateBoundariesV2ForAuthority(boundaries []BoundaryV2, authorityModel string) error {
 	if len(boundaries) == 0 {
 		return errors.New("boundaries must be a non-empty array")
 	}
 	for i := range boundaries {
-		if err := boundaries[i].Validate(); err != nil {
+		if err := boundaries[i].ValidateForAuthority(authorityModel); err != nil {
 			return fmt.Errorf("boundaries[%d]: %w", i, err)
 		}
 	}
@@ -439,6 +530,10 @@ func (c *CapabilityV2) Validate() error {
 }
 
 func (b *BoundaryV2) Validate() error {
+	return b.ValidateForAuthority(registrationAuthorityWalletPrincipal)
+}
+
+func (b *BoundaryV2) ValidateForAuthority(authorityModel string) error {
 	if b == nil {
 		return errors.New("is required")
 	}
@@ -459,7 +554,14 @@ func (b *BoundaryV2) Validate() error {
 	if strings.TrimSpace(b.AddedInVersion) == "" {
 		return errors.New("addedInVersion is required")
 	}
-	if !regexHexSig.MatchString(strings.TrimSpace(b.Signature)) {
+	sig := strings.TrimSpace(b.Signature)
+	if authorityModel == registrationAuthorityInstanceTrust {
+		if sig != "" {
+			return errors.New("signature must be omitted for authorityModel=instance_trust")
+		}
+		return nil
+	}
+	if !regexHexSig.MatchString(sig) {
 		return errors.New("signature must be hex (0x...)")
 	}
 	return nil
@@ -508,14 +610,27 @@ func (l *LifecycleV2) Validate() error {
 }
 
 func (a *AttestationsV2) Validate() error {
+	return a.ValidateForAuthority(registrationAuthorityWalletPrincipal)
+}
+
+func (a *AttestationsV2) ValidateForAuthority(authorityModel string) error {
 	if a == nil {
 		return errors.New("is required")
 	}
-	if strings.TrimSpace(a.SelfAttestation) == "" {
-		return errors.New("selfAttestation is required")
-	}
-	if !regexHexSig.MatchString(strings.TrimSpace(a.SelfAttestation)) {
-		return errors.New("selfAttestation must be hex (0x...)")
+	if authorityModel == registrationAuthorityInstanceTrust {
+		if strings.TrimSpace(a.HostAuthority) != registrationAuthorityInstanceTrust {
+			return errors.New("hostAuthority must be instance_trust")
+		}
+		if strings.TrimSpace(a.SelfAttestation) != "" {
+			return errors.New("selfAttestation must be omitted for authorityModel=instance_trust")
+		}
+	} else {
+		if strings.TrimSpace(a.SelfAttestation) == "" {
+			return errors.New("selfAttestation is required")
+		}
+		if !regexHexSig.MatchString(strings.TrimSpace(a.SelfAttestation)) {
+			return errors.New("selfAttestation must be hex (0x...)")
+		}
 	}
 	if strings.TrimSpace(a.HostAttestation) != "" {
 		if _, err := url.ParseRequestURI(strings.TrimSpace(a.HostAttestation)); err != nil {

@@ -183,6 +183,46 @@ func TestRegistrationFileV2_ParseAndValidate(t *testing.T) {
 	}
 }
 
+func TestRegistrationFileV2_HostedInstanceTrustAuthority(t *testing.T) {
+	t.Parallel()
+
+	hosted := validRegistrationV2(t)
+	hosted.Wallet = ""
+	hosted.Principal = PrincipalDeclarationV2{}
+	hosted.AuthorityModel = registrationAuthorityInstanceTrust
+	hosted.AnchorState = registrationAnchorHostedOffchain
+	hosted.Boundaries[0].Signature = ""
+	hosted.Attestations = AttestationsV2{HostAuthority: registrationAuthorityInstanceTrust}
+	if err := hosted.Validate(); err != nil {
+		t.Fatalf("hosted instance-trust registration should validate: %v", err)
+	}
+
+	cases := []struct {
+		name string
+		mut  func(*RegistrationFileV2)
+	}{
+		{name: "requires explicit hosted anchor", mut: func(r *RegistrationFileV2) { r.AnchorState = "" }},
+		{name: "rejects wallet", mut: func(r *RegistrationFileV2) { r.Wallet = "0x000000000000000000000000000000000000dEaD" }},
+		{name: "rejects principal", mut: func(r *RegistrationFileV2) { r.Principal = validPrincipalV2(t) }},
+		{name: "rejects boundary signature", mut: func(r *RegistrationFileV2) { r.Boundaries[0].Signature = "0x00" }},
+		{name: "requires host authority", mut: func(r *RegistrationFileV2) { r.Attestations.HostAuthority = "" }},
+		{name: "rejects self attestation", mut: func(r *RegistrationFileV2) { r.Attestations.SelfAttestation = "0x00" }},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			reg := hosted
+			tc.mut(&reg)
+			if err := reg.Validate(); err == nil {
+				t.Fatalf("expected hosted validation error")
+			}
+		})
+	}
+}
+
 func TestPrincipalDeclarationV2ValidateVerifiedBinding(t *testing.T) {
 	t.Parallel()
 

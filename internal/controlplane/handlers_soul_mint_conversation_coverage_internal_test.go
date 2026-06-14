@@ -111,18 +111,25 @@ func testMintConversationBeginFinalizeReturnsPreviewAndDigest(t *testing.T) {
 	if out.BoundaryRequirements[0].BoundaryID != "b1" || out.BoundaryRequirements[0].SignatureHex == "" || !strings.HasPrefix(out.BoundaryRequirements[0].DigestHex, "0x") {
 		t.Fatalf("unexpected boundary requirement: %#v", out.BoundaryRequirements)
 	}
-	if out.SelfAttestationSigning.CanonicalJSON == "" || out.SelfAttestationSigning.MessageHex != out.DigestHex {
-		t.Fatalf("unexpected self attestation signing input: %#v", out.SelfAttestationSigning)
-	}
+	assertMintConversationFinalizeSigningInput(t, out)
 	if out.FinalizeRequestTemplate.ExpectedVersion != out.ExpectedVersion || out.FinalizeRequestTemplate.IssuedAt != out.IssuedAt {
 		t.Fatalf("unexpected finalize request template: %#v", out.FinalizeRequestTemplate)
+	}
+}
+
+func assertMintConversationFinalizeSigningInput(t *testing.T, out soulMintConversationFinalizeBeginResponse) {
+	t.Helper()
+	if out.SelfAttestationSigning == nil ||
+		out.SelfAttestationSigning.CanonicalJSON == "" ||
+		out.SelfAttestationSigning.MessageHex != out.DigestHex {
+		t.Fatalf("unexpected self attestation signing input: %#v", out.SelfAttestationSigning)
 	}
 }
 
 func testMintConversationFinalizePreflightAliasReturnsPreviewAndDigest(t *testing.T) {
 	t.Helper()
 	out := beginFinalizeCoverageResponse(t, true)
-	if out.DigestHex == "" || out.SelfAttestationSigning.CanonicalJSON == "" {
+	if out.DigestHex == "" || out.SelfAttestationSigning == nil || out.SelfAttestationSigning.CanonicalJSON == "" {
 		t.Fatalf("expected alias preflight response, got %#v", out)
 	}
 }

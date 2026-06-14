@@ -30,7 +30,9 @@ type SoulAgentRegistration struct {
 	LocalID    string `theorydb:"attr:localId" json:"local_id"`
 
 	AgentID string `theorydb:"attr:agentId" json:"agent_id"` // hex-encoded uint256
-	Wallet  string `theorydb:"attr:wallet" json:"wallet_address"`
+	Wallet  string `theorydb:"attr:wallet" json:"wallet_address,omitempty"`
+
+	AuthorityModel string `theorydb:"attr:authorityModel" json:"authority_model,omitempty"`
 
 	Capabilities []string `theorydb:"attr:capabilities" json:"capabilities,omitempty"`
 
@@ -97,6 +99,7 @@ func (r *SoulAgentRegistration) UpdateKeys() error {
 
 	r.AgentID = strings.ToLower(strings.TrimSpace(r.AgentID))
 	r.Wallet = strings.ToLower(strings.TrimSpace(r.Wallet))
+	r.AuthorityModel = strings.ToLower(strings.TrimSpace(r.AuthorityModel))
 
 	r.WalletNonce = strings.TrimSpace(r.WalletNonce)
 	r.WalletMessage = strings.TrimSpace(r.WalletMessage)

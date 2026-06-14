@@ -180,6 +180,16 @@ function verifyOpenApiSurface() {
       finalizeRef === '../spec/v3/schemas/soul-instance-bootstrap.finalize.response.schema.json',
     'finalize response must reference the v3 hosted/off-chain finalize response schema'
   );
+  const beginRequired = openapi.components?.schemas?.SoulAgentRegistrationBeginRequest?.required ?? [];
+  assert(!beginRequired.includes('wallet_address'), 'registration begin request must not require wallet_address for instance_trust');
+  const beginAuthorityEnum = openapi.components?.schemas?.SoulAgentRegistrationBeginRequest?.properties?.authority_model?.enum ?? [];
+  assert(beginAuthorityEnum.includes('instance_trust'), 'registration begin request must document authority_model=instance_trust');
+
+  const finalizeRequestRequired = openapi.components?.schemas?.SoulMintConversationFinalizeRequest?.required ?? [];
+  assert(!finalizeRequestRequired.includes('self_attestation'), 'finalize request must not require self_attestation for instance_trust');
+  const preflightRequired = openapi.components?.schemas?.SoulMintConversationFinalizePreflightResponse?.required ?? [];
+  assert(preflightRequired.includes('authority_model'), 'finalize preflight must require authority_model evidence');
+  assert(!preflightRequired.includes('self_attestation_signing'), 'finalize preflight must not require wallet signing material for instance_trust');
 }
 
 function verifySseCompanionSurface() {
@@ -262,6 +272,12 @@ function verifySpecV3BootstrapSurface() {
     finalizeFixture?.publication?.versioned_registration_uri === `s3://lesser-host-lab-soul-packs/${expectedVersionedRegistrationS3Key}`,
     'hosted/off-chain finalize fixture versioned_registration_uri must use the runtime registry/v1/agents URI shape'
   );
+  assert(finalizeFixture?.agent?.authority_model === 'instance_trust', 'hosted/off-chain finalize fixture agent must use instance_trust authority');
+  assert(finalizeFixture?.agent?.anchor_state === 'hosted_offchain', 'hosted/off-chain finalize fixture agent must use hosted_offchain anchor state');
+  assert(!('wallet' in finalizeFixture.agent), 'hosted/off-chain finalize fixture agent must not include wallet');
+  assert(!('principal_address' in finalizeFixture.agent), 'hosted/off-chain finalize fixture agent must not include principal_address');
+  assert(finalizeFixture?.publication?.authority_model === 'instance_trust', 'hosted/off-chain publication evidence must use instance_trust authority');
+  assert(finalizeFixture?.promotion?.authority_model === 'instance_trust', 'hosted/off-chain promotion evidence must use instance_trust authority');
 }
 
 function verifyGeneratedAdapter() {

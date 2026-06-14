@@ -67,7 +67,9 @@ type SoulAgentPromotion struct {
 
 	Domain  string `theorydb:"attr:domain" json:"domain"`
 	LocalID string `theorydb:"attr:localId" json:"local_id"`
-	Wallet  string `theorydb:"attr:wallet" json:"wallet"`
+	Wallet  string `theorydb:"attr:wallet" json:"wallet,omitempty"`
+
+	AuthorityModel string `theorydb:"attr:authorityModel" json:"authority_model,omitempty"`
 
 	Stage           string `theorydb:"attr:stage" json:"stage"`
 	RequestStatus   string `theorydb:"attr:requestStatus" json:"request_status"`
@@ -147,6 +149,7 @@ func (p *SoulAgentPromotion) UpdateKeys() error {
 	p.Domain = strings.ToLower(strings.TrimSpace(p.Domain))
 	p.LocalID = normalizeSoulLocalID(p.LocalID)
 	p.Wallet = strings.ToLower(strings.TrimSpace(p.Wallet))
+	p.AuthorityModel = strings.ToLower(strings.TrimSpace(p.AuthorityModel))
 	p.Stage = strings.ToLower(strings.TrimSpace(p.Stage))
 	p.RequestStatus = strings.ToLower(strings.TrimSpace(p.RequestStatus))
 	p.ReviewStatus = strings.ToLower(strings.TrimSpace(p.ReviewStatus))

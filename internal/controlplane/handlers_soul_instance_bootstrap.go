@@ -64,7 +64,7 @@ func (s *Server) handleSoulInstanceAgentRegistrationBegin(ctx *apptheory.Context
 		return nil, appErr
 	}
 
-	out, beginErr := s.beginSoulAgentRegistration(ctx, req, domainNormalized, true, soulInstanceBootstrapActor(instCtx.instanceSlug))
+	out, beginErr := s.beginSoulAgentRegistration(ctx, req, domainNormalized, true, soulInstanceBootstrapActor(instCtx.instanceSlug), true)
 	if beginErr != nil {
 		return nil, soulInstanceBootstrapErrorFromAppError(beginErr)
 	}
@@ -313,6 +313,17 @@ func (s *Server) loadSoulInstanceMintConversationFinalizeContext(ctx *apptheory.
 	}
 	if err != nil {
 		return mintConversationFinalizeContext{}, soulInstanceBootstrapError(soulInstanceBootstrapCodeInternal, "internal error", http.StatusInternalServerError, nil)
+	}
+	if isExplicitInstanceTrustAuthority(convCtx.reg, identity) {
+		return mintConversationFinalizeContext{
+			reg:            convCtx.reg,
+			inst:           convCtx.inst,
+			identity:       identity,
+			conv:           convCtx.conv,
+			agentIDHex:     convCtx.agentIDHex,
+			conversationID: convCtx.conversationID,
+			auditActor:     soulInstanceBootstrapActor(convCtx.instanceSlug),
+		}, nil
 	}
 	if strings.TrimSpace(identity.PrincipalAddress) == "" ||
 		strings.TrimSpace(identity.PrincipalSignature) == "" ||
