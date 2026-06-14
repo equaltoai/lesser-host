@@ -1411,7 +1411,7 @@ func mustBeginFinalizeResponse(t *testing.T, resp *apptheory.Response) soulMintC
 	if out.ExpectedVersion != 0 || out.NextVersion != 1 || out.DigestHex == "" {
 		t.Fatalf("unexpected begin finalize response: %#v", out)
 	}
-	if len(out.BoundaryRequirements) == 0 || out.SelfAttestationSigning.CanonicalJSON == "" {
+	if len(out.BoundaryRequirements) == 0 || out.SelfAttestationSigning == nil || out.SelfAttestationSigning.CanonicalJSON == "" {
 		t.Fatalf("expected explicit preflight details, got %#v", out)
 	}
 	return out

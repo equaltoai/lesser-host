@@ -19,6 +19,7 @@ import (
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
 
+	"github.com/equaltoai/lesser-host/internal/soul"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 	"github.com/equaltoai/lesser-host/internal/testutil"
 )
@@ -134,7 +135,7 @@ func TestSoulInstanceAgentRegistrationBegin_ScopesWritesToInstanceKey(t *testing
 	if err := json.Unmarshal(resp.Body, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if out.Registration.Username != soulInstanceBootstrapTestActor || out.Wallet.Username != soulInstanceBootstrapTestActor {
+	if out.Registration.Username != soulInstanceBootstrapTestActor || out.Wallet == nil || out.Wallet.Username != soulInstanceBootstrapTestActor {
 		t.Fatalf("expected instance actor on registration/wallet challenge, got %#v", out)
 	}
 	if out.Registration.DomainNormalized != testDomainExampleCom || out.Registration.LocalID != provisionTestAgentLocalID {
@@ -146,6 +147,106 @@ func TestSoulInstanceAgentRegistrationBegin_ScopesWritesToInstanceKey(t *testing
 	if out.Promotion == nil || out.Promotion.RequestedBy != soulInstanceBootstrapTestActor || out.Promotion.AgentID != out.Registration.AgentID {
 		t.Fatalf("expected instance promotion snapshot, got %#v", out.Promotion)
 	}
+}
+
+func TestSoulInstanceHostedInstanceTrustNoWalletBeginReservesAuthority(t *testing.T) {
+	t.Parallel()
+
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
+	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, testDomainExampleCom, soulInstanceBootstrapTestInstanceSlug)
+	tdb.qIdentity.On("First", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(theoryErrors.ErrItemNotFound).Twice()
+
+	body, _ := json.Marshal(soulAgentRegistrationBeginRequest{
+		Domain:         "Example.COM",
+		LocalID:        provisionTestAgentLocalID,
+		AuthorityModel: models.SoulAuthorityModelInstanceTrust,
+		Capabilities:   []any{"travel_planning"},
+	})
+
+	resp, err := s.handleSoulInstanceAgentRegistrationBegin(newSoulInstanceBootstrapContext(map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey}, body, nil))
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if resp.Status != http.StatusCreated {
+		t.Fatalf("expected 201, got %d (body=%q)", resp.Status, string(resp.Body))
+	}
+
+	var out soulAgentRegistrationBeginResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	assertSoulInstanceHostedBeginOmitsWallet(t, out, resp.Body)
+	assertSoulInstanceHostedBeginRegistration(t, out.Registration)
+	assertSoulInstanceHostedBeginPromotion(t, out.Promotion)
+	tdb.qWalletAgent.AssertNotCalled(t, "CreateOrUpdate")
+}
+
+func assertSoulInstanceHostedBeginOmitsWallet(t *testing.T, out soulAgentRegistrationBeginResponse, body []byte) {
+	t.Helper()
+	if out.Wallet != nil || strings.Contains(string(body), `"wallet"`) || strings.Contains(string(body), `"wallet_address"`) {
+		t.Fatalf("hosted instance-trust begin must not return wallet material: %s", string(body))
+	}
+}
+
+func assertSoulInstanceHostedBeginRegistration(t *testing.T, reg models.SoulAgentRegistration) {
+	t.Helper()
+	if reg.AuthorityModel != models.SoulAuthorityModelInstanceTrust ||
+		reg.Wallet != "" ||
+		!reg.ExpiresAt.IsZero() ||
+		!reg.DNSVerified ||
+		!reg.HTTPSVerified {
+		t.Fatalf("unexpected hosted registration: %#v", reg)
+	}
+}
+
+func assertSoulInstanceHostedBeginPromotion(t *testing.T, promotion *soulAgentPromotionView) {
+	t.Helper()
+	if promotion == nil ||
+		promotion.AuthorityModel != models.SoulAuthorityModelInstanceTrust ||
+		promotion.AnchorState != models.SoulAnchorStateHostedOffchain ||
+		promotion.ReadinessStatus != models.SoulAgentPromotionReadinessReadyForConversation {
+		t.Fatalf("unexpected hosted promotion: %#v", promotion)
+	}
+}
+
+func TestSoulInstanceHostedInstanceTrustNoWalletBeginReplaysPendingAuthority(t *testing.T) {
+	t.Parallel()
+
+	reg, identity, promotion := soulInstanceHostedInstanceTrustFixture(t)
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
+	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationIdentity(t, tdb, identity, nil)
+	tdb.qPromotion.ExpectedCalls = nil
+	addStandardMockQueryStubs(tdb.qPromotion)
+	tdb.qPromotion.On("First", mock.AnythingOfType("*models.SoulAgentPromotion")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentPromotion](t, args, 0)
+		*dest = promotion
+	}).Once()
+	stubMintConversationRegistration(t, tdb, reg)
+
+	body, _ := json.Marshal(soulAgentRegistrationBeginRequest{
+		Domain:       strings.ToUpper(reg.DomainNormalized),
+		LocalID:      reg.LocalID,
+		Capabilities: []any{"travel_planning"},
+	})
+
+	resp, err := s.handleSoulInstanceAgentRegistrationBegin(newSoulInstanceBootstrapContext(map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey}, body, nil))
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	var out soulAgentRegistrationBeginResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Registration.ID != reg.ID || out.Registration.AgentID != reg.AgentID || out.Wallet != nil {
+		t.Fatalf("expected idempotent hosted replay, got %#v", out)
+	}
+	tdb.qReg.AssertNotCalled(t, "Create")
+	tdb.qIdentity.AssertNotCalled(t, "Create")
 }
 
 func TestSoulInstanceBootstrapScaffold_RejectsCrossInstanceRegistration(t *testing.T) {
@@ -939,6 +1040,97 @@ func TestSoulInstanceFinalizeMintConversation_BeginAndPreflightReturnCanonicalSi
 	}
 }
 
+func TestSoulInstanceHostedInstanceTrustCompleteAcceptsDeclarations(t *testing.T) {
+	t.Parallel()
+
+	reg, identity, _ := soulInstanceHostedInstanceTrustFixture(t)
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationRegistration(t, tdb, reg)
+	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationConversation(t, tdb, models.SoulAgentMintConversation{
+		AgentID:        reg.AgentID,
+		ConversationID: mintConversationTestConversationID,
+		Status:         models.SoulMintConversationStatusInProgress,
+		CreatedAt:      time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
+	})
+	stubMintConversationIdentity(t, tdb, identity, nil)
+
+	resp, err := s.handleSoulInstanceCompleteMintConversation(newSoulInstanceBootstrapContext(
+		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
+		mustMarshalJSON(t, map[string]any{"declarations": testMintConversationDecl()}),
+		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
+	))
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if resp.Status != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%q", resp.Status, string(resp.Body))
+	}
+	var out models.SoulAgentMintConversation
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Status != models.SoulMintConversationStatusCompleted || !strings.Contains(out.ProducedDeclarations, `"selfDescription"`) {
+		t.Fatalf("expected completed hosted conversation, got %#v", out)
+	}
+}
+
+func TestSoulInstanceHostedInstanceTrustFinalizePreflightOmitsWalletSignatures(t *testing.T) {
+	t.Parallel()
+
+	reg, identity, completedConv := soulInstanceHostedFinalizeFixture(t)
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	stubSoulInstanceFinalizeReadContext(t, tdb, reg, identity, completedConv)
+
+	resp, err := s.handleSoulInstanceBeginFinalizeMintConversation(newSoulInstanceBootstrapContext(
+		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
+		mustMarshalJSON(t, map[string]any{}),
+		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
+	))
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	var out soulMintConversationFinalizeBeginResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	assertSoulInstanceHostedInstanceTrustFinalizePreflight(t, out)
+}
+
+func TestSoulInstanceHostedInstanceTrustFinalizePublishesHostedOffchain(t *testing.T) {
+	t.Parallel()
+
+	reg, identity, completedConv := soulInstanceHostedFinalizeFixture(t)
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	stubSoulInstanceFinalizeReadContext(t, tdb, reg, identity, completedConv)
+	expectSoulInstanceFinalizePublishWrites(t, tdb)
+
+	resp, err := s.handleSoulInstanceFinalizeMintConversation(newSoulInstanceBootstrapContext(
+		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
+		mustMarshalJSON(t, map[string]any{}),
+		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
+	))
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	var out soulMintConversationFinalizeResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	assertSoulInstanceHostedInstanceTrustFinalizeResponse(t, out)
+
+	packs, ok := s.soulPacks.(*fakeSoulPackStoreForPublish)
+	if !ok {
+		t.Fatalf("unexpected soul pack store: %T", s.soulPacks)
+	}
+	published := packs.puts[soulRegistrationS3Key(reg.AgentID)]
+	assertSoulInstanceHostedInstanceTrustRegistrationFile(t, published)
+}
+
 func TestSoulInstanceFinalizeMintConversation_RejectsInvalidStates(t *testing.T) {
 	t.Parallel()
 	assertSoulInstanceFinalizeRejectsNotCompleted(t)
@@ -1450,6 +1642,61 @@ func expectSoulInstanceMintConversationDebit(t *testing.T, tdb *mintConversation
 	tb.On("Execute").Return(nil).Once()
 }
 
+func soulInstanceHostedInstanceTrustFixture(t *testing.T) (models.SoulAgentRegistration, *models.SoulAgentIdentity, models.SoulAgentPromotion) {
+	t.Helper()
+	agentID, err := soul.DeriveAgentIDHex(testDomainExampleCom, provisionTestAgentLocalID)
+	if err != nil {
+		t.Fatalf("derive agent id: %v", err)
+	}
+	now := time.Date(2026, 3, 5, 12, 0, 0, 0, time.UTC)
+	reg := models.SoulAgentRegistration{
+		ID:               "reg-hosted",
+		Username:         soulInstanceBootstrapTestActor,
+		DomainRaw:        testDomainExampleCom,
+		DomainNormalized: testDomainExampleCom,
+		LocalIDRaw:       provisionTestAgentLocalID,
+		LocalID:          provisionTestAgentLocalID,
+		AgentID:          agentID,
+		AuthorityModel:   models.SoulAuthorityModelInstanceTrust,
+		Capabilities:     []string{"travel_planning"},
+		DNSVerified:      true,
+		HTTPSVerified:    true,
+		Status:           models.SoulAgentRegistrationStatusPending,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	_ = reg.UpdateKeys()
+	identity := &models.SoulAgentIdentity{
+		AgentID:         agentID,
+		Domain:          testDomainExampleCom,
+		LocalID:         provisionTestAgentLocalID,
+		AuthorityModel:  models.SoulAuthorityModelInstanceTrust,
+		MetaURI:         "https://lesser.host/api/v1/soul/agents/" + agentID + "/registration",
+		Capabilities:    []string{"travel_planning"},
+		Status:          models.SoulAgentStatusPending,
+		LifecycleStatus: models.SoulAgentStatusPending,
+		AnchorState:     models.SoulAnchorStateHostedOffchain,
+		UpdatedAt:       now,
+	}
+	applyHostedBoundSoulPolicyDefaults(identity)
+	_ = identity.UpdateKeys()
+	promotion := updateSoulAgentPromotionForInstanceTrustBegin(buildSoulAgentPromotionFromRegistration(&reg, now), now)
+	return reg, identity, *promotion
+}
+
+func soulInstanceHostedFinalizeFixture(t *testing.T) (models.SoulAgentRegistration, *models.SoulAgentIdentity, models.SoulAgentMintConversation) {
+	t.Helper()
+	reg, identity, _ := soulInstanceHostedInstanceTrustFixture(t)
+	declBytes := mustMarshalJSON(t, testMintConversationDecl())
+	return reg, identity, models.SoulAgentMintConversation{
+		AgentID:              reg.AgentID,
+		ConversationID:       mintConversationTestConversationID,
+		Status:               models.SoulMintConversationStatusCompleted,
+		ProducedDeclarations: string(declBytes),
+		CreatedAt:            time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
+	}
+}
+
 func soulInstanceFinalizeFixture(t *testing.T) (models.SoulAgentRegistration, *models.SoulAgentIdentity, *ecdsa.PrivateKey, []byte, map[string]string) {
 	t.Helper()
 	identity, key := testMintConversationIdentityAndKey()
@@ -1528,7 +1775,8 @@ func assertSoulInstanceFinalizeSigningMaterial(t *testing.T, out soulMintConvers
 
 func assertSoulInstanceFinalizeSelfAttestationSigning(t *testing.T, out soulMintConversationFinalizeBeginResponse) {
 	t.Helper()
-	if out.SelfAttestationSigning.SigningMethod != soulInstanceBootstrapTestSigningMethodEIP191 ||
+	if out.SelfAttestationSigning == nil ||
+		out.SelfAttestationSigning.SigningMethod != soulInstanceBootstrapTestSigningMethodEIP191 ||
 		out.SelfAttestationSigning.MessageEncoding != "hex_bytes" ||
 		out.SelfAttestationSigning.MessageHex != out.DigestHex ||
 		out.SelfAttestationSigning.DigestHex != out.DigestHex {
@@ -1571,6 +1819,83 @@ func assertSoulInstanceFinalizeBoundaryRequirements(t *testing.T, out soulMintCo
 		out.BoundaryRequirements[0].MessageEncoding != "utf8" ||
 		out.BoundaryRequirements[0].SignatureHex == "" {
 		t.Fatalf("unexpected boundary requirements: %#v", out.BoundaryRequirements)
+	}
+}
+
+func assertSoulInstanceHostedInstanceTrustFinalizePreflight(t *testing.T, out soulMintConversationFinalizeBeginResponse) {
+	t.Helper()
+	if out.Version != "1" ||
+		out.AuthorityModel != models.SoulAuthorityModelInstanceTrust ||
+		out.AnchorState != models.SoulAnchorStateHostedOffchain ||
+		out.DigestHex != "" ||
+		out.SelfAttestationSigning != nil ||
+		out.RegistrationPreview == nil {
+		t.Fatalf("unexpected hosted preflight response: %#v", out)
+	}
+	if len(out.BoundaryRequirements) != 1 ||
+		out.BoundaryRequirements[0].SigningMethod != models.SoulAuthorityModelInstanceTrust ||
+		out.BoundaryRequirements[0].MessageEncoding != "none" ||
+		out.BoundaryRequirements[0].SignatureHex != "" ||
+		out.BoundaryRequirements[0].SignerWallet != "" ||
+		out.BoundaryRequirements[0].DigestHex != "" {
+		t.Fatalf("unexpected hosted boundary requirements: %#v", out.BoundaryRequirements)
+	}
+	assertSoulInstanceHostedInstanceTrustRegistrationMap(t, out.RegistrationPreview)
+}
+
+func assertSoulInstanceHostedInstanceTrustFinalizeResponse(t *testing.T, out soulMintConversationFinalizeResponse) {
+	t.Helper()
+	if out.Agent.AuthorityModel != models.SoulAuthorityModelInstanceTrust ||
+		out.Agent.AnchorState != models.SoulAnchorStateHostedOffchain ||
+		out.Agent.Wallet != "" ||
+		out.Agent.PrincipalAddress != "" ||
+		out.PublishedVersion != 1 ||
+		out.Publication.AuthorityModel != models.SoulAuthorityModelInstanceTrust ||
+		out.Publication.AnchorState != models.SoulAnchorStateHostedOffchain ||
+		out.Promotion == nil ||
+		out.Promotion.AuthorityModel != models.SoulAuthorityModelInstanceTrust {
+		t.Fatalf("unexpected hosted finalize response: %#v", out)
+	}
+}
+
+func assertSoulInstanceHostedInstanceTrustRegistrationMap(t *testing.T, reg map[string]any) {
+	t.Helper()
+	if reg["authorityModel"] != models.SoulAuthorityModelInstanceTrust ||
+		reg["anchorState"] != models.SoulAnchorStateHostedOffchain ||
+		reg["wallet"] != nil ||
+		reg["principal"] != nil {
+		t.Fatalf("unexpected hosted registration preview authority: %#v", reg)
+	}
+	att, ok := reg["attestations"].(map[string]any)
+	if !ok || att["hostAuthority"] != models.SoulAuthorityModelInstanceTrust || att["selfAttestation"] != nil {
+		t.Fatalf("unexpected hosted attestations: %#v", reg["attestations"])
+	}
+	boundaries, ok := reg["boundaries"].([]any)
+	if !ok || len(boundaries) != 1 {
+		t.Fatalf("unexpected hosted boundaries: %#v", reg["boundaries"])
+	}
+	first, ok := boundaries[0].(map[string]any)
+	if !ok || first["signature"] != nil {
+		t.Fatalf("hosted boundary must omit signature: %#v", boundaries[0])
+	}
+}
+
+func assertSoulInstanceHostedInstanceTrustRegistrationFile(t *testing.T, body []byte) {
+	t.Helper()
+	if len(body) == 0 {
+		t.Fatal("expected hosted registration artifact")
+	}
+	var reg map[string]any
+	if err := json.Unmarshal(body, &reg); err != nil {
+		t.Fatalf("unmarshal hosted registration artifact: %v", err)
+	}
+	assertSoulInstanceHostedInstanceTrustRegistrationMap(t, reg)
+	parsed, err := soul.ParseRegistrationFileV2(body)
+	if err != nil {
+		t.Fatalf("parse hosted registration artifact: %v", err)
+	}
+	if err := parsed.Validate(); err != nil {
+		t.Fatalf("validate hosted registration artifact: %v", err)
 	}
 }
 

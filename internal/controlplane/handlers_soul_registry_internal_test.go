@@ -224,7 +224,7 @@ func assertSoulAgentRegistrationBeginResponse(t *testing.T, body []byte) {
 	if err := json.Unmarshal(body, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if out.Registration.ID == "" || out.Wallet.Message == "" || out.Wallet.Nonce == "" {
+	if out.Registration.ID == "" || out.Wallet == nil || out.Wallet.Message == "" || out.Wallet.Nonce == "" {
 		t.Fatalf("unexpected response: %#v", out)
 	}
 	if out.Registration.DomainNormalized != testDomainExampleCom {

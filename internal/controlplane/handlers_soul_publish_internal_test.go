@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/ethereum/go-ethereum/common"
 	apptheory "github.com/theory-cloud/apptheory/runtime"
 	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
@@ -34,7 +35,12 @@ func (f *fakeSoulPackStoreForPublish) PutObject(ctx context.Context, key string,
 }
 
 func (f *fakeSoulPackStoreForPublish) GetObject(ctx context.Context, key string, maxBytes int64) ([]byte, string, string, error) {
-	return nil, "", "", nil
+	if f.puts != nil {
+		if body, ok := f.puts[key]; ok {
+			return append([]byte(nil), body...), commWebhookJSONContentType, "", nil
+		}
+	}
+	return nil, "", "", &s3types.NoSuchKey{}
 }
 
 type soulPublishTestDB struct {

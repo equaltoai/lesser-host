@@ -447,6 +447,10 @@
 				boundary_signatures: boundarySignatures,
 			});
 
+			if (!mintFinalizeBegin.digest_hex) {
+				mintFinalizeError = 'Finalize preflight did not return wallet signing material.';
+				return;
+			}
 			const selfAttestation = await personalSign(provider, mintFinalizeBegin.digest_hex, wallet);
 
 			mintFinalizeResult = await soulMintConversationFinalize(token, registrationId, mintConversationId, {

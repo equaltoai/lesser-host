@@ -34,7 +34,9 @@ type soulAgentPromotionView struct {
 
 	Domain  string `json:"domain"`
 	LocalID string `json:"local_id"`
-	Wallet  string `json:"wallet"`
+	Wallet  string `json:"wallet,omitempty"`
+
+	AuthorityModel string `json:"authority_model,omitempty"`
 
 	Stage           string `json:"stage"`
 	RequestStatus   string `json:"request_status"`
@@ -121,6 +123,7 @@ func buildSoulAgentPromotionFromRegistration(reg *models.SoulAgentRegistration, 
 		Domain:          reg.DomainNormalized,
 		LocalID:         reg.LocalID,
 		Wallet:          reg.Wallet,
+		AuthorityModel:  soulRegistrationAuthorityModel(reg),
 		Stage:           models.SoulAgentPromotionStageRequested,
 		RequestStatus:   models.SoulAgentPromotionRequestStatusRequested,
 		ReviewStatus:    models.SoulAgentPromotionReviewStatusNotStarted,
@@ -144,6 +147,7 @@ func updateSoulAgentPromotionForVerification(promotion *models.SoulAgentPromotio
 		promotion.Domain = reg.DomainNormalized
 		promotion.LocalID = reg.LocalID
 		promotion.Wallet = reg.Wallet
+		promotion.AuthorityModel = soulRegistrationAuthorityModel(reg)
 	}
 	promotion.Stage = models.SoulAgentPromotionStageApproved
 	promotion.RequestStatus = models.SoulAgentPromotionRequestStatusVerified
@@ -156,6 +160,29 @@ func updateSoulAgentPromotionForVerification(promotion *models.SoulAgentPromotio
 		promotion.MintOperationID = strings.TrimSpace(op.OperationID)
 		promotion.MintOperationStatus = strings.ToLower(strings.TrimSpace(op.Status))
 	}
+	if promotion.RequestedAt.IsZero() {
+		promotion.RequestedAt = now.UTC()
+	}
+	promotion.VerifiedAt = now.UTC()
+	promotion.ApprovedAt = now.UTC()
+	if promotion.CreatedAt.IsZero() {
+		promotion.CreatedAt = now.UTC()
+	}
+	promotion.UpdatedAt = now.UTC()
+	return promotion
+}
+
+func updateSoulAgentPromotionForInstanceTrustBegin(promotion *models.SoulAgentPromotion, now time.Time) *models.SoulAgentPromotion {
+	if promotion == nil {
+		return nil
+	}
+	promotion.AuthorityModel = models.SoulAuthorityModelInstanceTrust
+	promotion.Stage = models.SoulAgentPromotionStageApproved
+	promotion.RequestStatus = models.SoulAgentPromotionRequestStatusVerified
+	promotion.ReviewStatus = models.SoulAgentPromotionReviewStatusNotStarted
+	promotion.ApprovalStatus = models.SoulAgentPromotionApprovalStatusApproved
+	promotion.ReadinessStatus = models.SoulAgentPromotionReadinessReadyForConversation
+	promotion.AnchorState = models.SoulAnchorStateHostedOffchain
 	if promotion.RequestedAt.IsZero() {
 		promotion.RequestedAt = now.UTC()
 	}
@@ -282,8 +309,13 @@ func (s *Server) buildSoulAgentPromotionView(promotion *models.SoulAgentPromotio
 	if promotion == nil {
 		return soulAgentPromotionView{}
 	}
+	authorityModel := soulPromotionAuthorityModel(promotion)
+	principalRecorded := strings.TrimSpace(promotion.PrincipalAddress) != ""
+	if authorityModel == models.SoulAuthorityModelInstanceTrust {
+		principalRecorded = true
+	}
 	prereqs := soulAgentPromotionPrerequisites{
-		PrincipalDeclarationRecorded: strings.TrimSpace(promotion.PrincipalAddress) != "",
+		PrincipalDeclarationRecorded: principalRecorded,
 		MintOperationCreated:         strings.TrimSpace(promotion.MintOperationID) != "",
 		MintExecuted:                 strings.EqualFold(strings.TrimSpace(promotion.MintOperationStatus), models.SoulOperationStatusExecuted),
 		ConversationStarted:          strings.TrimSpace(promotion.LatestConversationID) != "",
@@ -301,6 +333,7 @@ func (s *Server) buildSoulAgentPromotionView(promotion *models.SoulAgentPromotio
 		Domain:                    promotion.Domain,
 		LocalID:                   promotion.LocalID,
 		Wallet:                    promotion.Wallet,
+		AuthorityModel:            authorityModel,
 		Stage:                     promotion.Stage,
 		RequestStatus:             promotion.RequestStatus,
 		ReviewStatus:              promotion.ReviewStatus,
@@ -363,6 +396,23 @@ func soulAgentPromotionNextActions(promotion *models.SoulAgentPromotion) []strin
 	}
 	sort.Strings(actions)
 	return actions
+}
+
+func soulPromotionAuthorityModel(promotion *models.SoulAgentPromotion) string {
+	if promotion == nil {
+		return ""
+	}
+	switch strings.ToLower(strings.TrimSpace(promotion.AuthorityModel)) {
+	case models.SoulAuthorityModelInstanceTrust:
+		return models.SoulAuthorityModelInstanceTrust
+	case models.SoulAuthorityModelWalletPrincipal:
+		return models.SoulAuthorityModelWalletPrincipal
+	default:
+		if strings.TrimSpace(promotion.Wallet) != "" || strings.TrimSpace(promotion.PrincipalAddress) != "" || strings.TrimSpace(promotion.MintOperationID) != "" {
+			return models.SoulAuthorityModelWalletPrincipal
+		}
+		return ""
+	}
 }
 
 func soulAgentPromotionAnchorState(promotion *models.SoulAgentPromotion) string {

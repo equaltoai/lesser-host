@@ -50,6 +50,8 @@ type SoulAgentPromotionLifecycleEvent struct {
 	LocalID string `theorydb:"attr:localId" json:"local_id,omitempty"`
 	Wallet  string `theorydb:"attr:wallet" json:"wallet,omitempty"`
 
+	AuthorityModel string `theorydb:"attr:authorityModel" json:"authority_model,omitempty"`
+
 	Stage           string `theorydb:"attr:stage" json:"stage,omitempty"`
 	RequestStatus   string `theorydb:"attr:requestStatus" json:"request_status,omitempty"`
 	ReviewStatus    string `theorydb:"attr:reviewStatus" json:"review_status,omitempty"`
@@ -134,6 +136,7 @@ func (e *SoulAgentPromotionLifecycleEvent) UpdateKeys() error {
 	e.Domain = strings.ToLower(strings.TrimSpace(e.Domain))
 	e.LocalID = strings.TrimSpace(e.LocalID)
 	e.Wallet = strings.TrimSpace(e.Wallet)
+	e.AuthorityModel = strings.ToLower(strings.TrimSpace(e.AuthorityModel))
 	e.Stage = strings.ToLower(strings.TrimSpace(e.Stage))
 	e.RequestStatus = strings.ToLower(strings.TrimSpace(e.RequestStatus))
 	e.ReviewStatus = strings.ToLower(strings.TrimSpace(e.ReviewStatus))

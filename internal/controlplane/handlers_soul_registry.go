@@ -37,10 +37,11 @@ const (
 )
 
 type soulAgentRegistrationBeginRequest struct {
-	Domain       string `json:"domain"`
-	LocalID      string `json:"local_id"`
-	Wallet       string `json:"wallet_address"`
-	Capabilities []any  `json:"capabilities,omitempty"`
+	Domain         string `json:"domain"`
+	LocalID        string `json:"local_id"`
+	Wallet         string `json:"wallet_address"`
+	AuthorityModel string `json:"authority_model,omitempty"`
+	Capabilities   []any  `json:"capabilities,omitempty"`
 }
 
 type soulRegistryProofInstructions struct {
@@ -53,7 +54,7 @@ type soulRegistryProofInstructions struct {
 
 type soulAgentRegistrationBeginResponse struct {
 	Registration models.SoulAgentRegistration    `json:"registration"`
-	Wallet       walletChallengeResponse         `json:"wallet"`
+	Wallet       *walletChallengeResponse        `json:"wallet,omitempty"`
 	Proofs       []soulRegistryProofInstructions `json:"proofs"`
 	Promotion    *soulAgentPromotionView         `json:"promotion,omitempty"`
 }
@@ -348,7 +349,7 @@ func (s *Server) handleSoulAgentRegistrationBegin(ctx *apptheory.Context) (*appt
 		return nil, appErr
 	}
 
-	out, appErr := s.beginSoulAgentRegistration(ctx, req, domainNormalized, domainAccessAutoVerified, strings.TrimSpace(ctx.AuthIdentity))
+	out, appErr := s.beginSoulAgentRegistration(ctx, req, domainNormalized, domainAccessAutoVerified, strings.TrimSpace(ctx.AuthIdentity), false)
 	if appErr != nil {
 		return nil, appErr
 	}
@@ -361,6 +362,7 @@ func (s *Server) beginSoulAgentRegistration(
 	domainNormalized string,
 	domainAccessAutoVerified bool,
 	actor string,
+	allowInstanceTrustNoWallet bool,
 ) (soulAgentRegistrationBeginResponse, *apptheory.AppError) {
 	if ctx == nil {
 		return soulAgentRegistrationBeginResponse{}, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
@@ -376,7 +378,7 @@ func (s *Server) beginSoulAgentRegistration(
 		return soulAgentRegistrationBeginResponse{}, appErr
 	}
 
-	wallet, appErr := s.normalizeSoulWalletAddress(ctx.Context(), req.Wallet)
+	authorityModel, wallet, appErr := s.resolveSoulRegistrationBeginAuthority(ctx.Context(), req, allowInstanceTrustNoWallet)
 	if appErr != nil {
 		return soulAgentRegistrationBeginResponse{}, appErr
 	}
@@ -393,6 +395,15 @@ func (s *Server) beginSoulAgentRegistration(
 		return soulAgentRegistrationBeginResponse{}, &apptheory.AppError{Code: "app.internal", Message: "failed to derive agent_id"}
 	}
 
+	now := time.Now().UTC()
+	replayed, ok, replayErr := s.replaySoulRegistrationBeginIfHostedInstanceTrust(ctx.Context(), authorityModel, agentIDHex)
+	if replayErr != nil {
+		return soulAgentRegistrationBeginResponse{}, replayErr
+	}
+	if ok {
+		return replayed, nil
+	}
+
 	if ensureErr := s.ensureSoulAgentNotActive(ctx.Context(), agentIDHex); ensureErr != nil {
 		return soulAgentRegistrationBeginResponse{}, ensureErr
 	}
@@ -403,10 +414,7 @@ func (s *Server) beginSoulAgentRegistration(
 	}
 	proofValue := soulRegistryProofValue + proofToken
 
-	now := time.Now().UTC()
-	expiresAt := now.Add(30 * time.Minute)
-
-	msg := buildSoulRegistryWalletMessage(domainNormalized, local, agentIDHex, wallet, s.cfg.SoulChainID, caps, proofValue, nonce, now, expiresAt)
+	expiresAt, msg := s.buildSoulRegistrationBeginWalletMaterial(authorityModel, domainNormalized, local, agentIDHex, wallet, caps, proofValue, nonce, now)
 
 	reg := &models.SoulAgentRegistration{
 		ID:               id,
@@ -417,6 +425,7 @@ func (s *Server) beginSoulAgentRegistration(
 		LocalID:          local,
 		AgentID:          agentIDHex,
 		Wallet:           wallet,
+		AuthorityModel:   authorityModel,
 		Capabilities:     caps,
 		WalletNonce:      nonce,
 		WalletMessage:    msg,
@@ -428,11 +437,17 @@ func (s *Server) beginSoulAgentRegistration(
 		UpdatedAt:        now,
 		ExpiresAt:        expiresAt,
 	}
-	if appErr := s.createSoulAgentRegistration(ctx.Context(), reg); appErr != nil {
+	appErr = s.createSoulAgentRegistration(ctx.Context(), reg)
+	if appErr != nil {
 		return soulAgentRegistrationBeginResponse{}, appErr
 	}
 	promotion := buildSoulAgentPromotionFromRegistration(reg, now)
-	if appErr := s.saveSoulAgentPromotion(ctx.Context(), promotion); appErr != nil {
+	promotion, appErr = s.prepareSoulRegistrationBeginHostedAuthority(ctx.Context(), reg, promotion, now)
+	if appErr != nil {
+		return soulAgentRegistrationBeginResponse{}, appErr
+	}
+	appErr = s.saveSoulAgentPromotion(ctx.Context(), promotion)
+	if appErr != nil {
 		return soulAgentRegistrationBeginResponse{}, appErr
 	}
 	if appErr := s.saveSoulAgentPromotionLifecycleEvent(ctx.Context(), buildSoulAgentPromotionLifecycleEvent(promotion, soulAgentPromotionLifecycleEventInput{
@@ -454,9 +469,49 @@ func (s *Server) beginSoulAgentRegistration(
 
 	proofs := buildSoulRegistrationProofInstructions(domainNormalized, proofToken, domainAccessAutoVerified)
 
-	return soulAgentRegistrationBeginResponse{
+	return s.buildSoulAgentRegistrationBeginResponse(reg, promotion, proofs, authorityModel, actor, wallet, nonce, msg, now, expiresAt), nil
+}
+
+func (s *Server) buildSoulRegistrationBeginWalletMaterial(authorityModel string, domainNormalized string, local string, agentIDHex string, wallet string, caps []string, proofValue string, nonce string, now time.Time) (time.Time, string) {
+	if authorityModel != models.SoulAuthorityModelWalletPrincipal {
+		return time.Time{}, ""
+	}
+	expiresAt := now.Add(30 * time.Minute)
+	msg := buildSoulRegistryWalletMessage(domainNormalized, local, agentIDHex, wallet, s.cfg.SoulChainID, caps, proofValue, nonce, now, expiresAt)
+	return expiresAt, msg
+}
+
+func (s *Server) prepareSoulRegistrationBeginHostedAuthority(ctx context.Context, reg *models.SoulAgentRegistration, promotion *models.SoulAgentPromotion, now time.Time) (*models.SoulAgentPromotion, *apptheory.AppError) {
+	if normalizeSoulAuthorityModel(reg.AuthorityModel) != models.SoulAuthorityModelInstanceTrust {
+		return promotion, nil
+	}
+	promotion = updateSoulAgentPromotionForInstanceTrustBegin(promotion, now)
+	if appErr := s.ensureSoulHostedInstanceTrustIdentity(ctx, reg, now); appErr != nil {
+		return nil, appErr
+	}
+	s.upsertSoulAgentIndexes(ctx, reg)
+	return promotion, nil
+}
+
+func (s *Server) buildSoulAgentRegistrationBeginResponse(
+	reg *models.SoulAgentRegistration,
+	promotion *models.SoulAgentPromotion,
+	proofs []soulRegistryProofInstructions,
+	authorityModel string,
+	actor string,
+	wallet string,
+	nonce string,
+	msg string,
+	now time.Time,
+	expiresAt time.Time,
+) soulAgentRegistrationBeginResponse {
+	out := soulAgentRegistrationBeginResponse{
 		Registration: *reg,
-		Wallet: walletChallengeResponse{
+		Proofs:       proofs,
+		Promotion:    ptrTo(s.buildSoulAgentPromotionView(promotion)),
+	}
+	if authorityModel == models.SoulAuthorityModelWalletPrincipal {
+		out.Wallet = &walletChallengeResponse{
 			ID:        reg.ID,
 			Username:  actor,
 			Address:   wallet,
@@ -465,10 +520,16 @@ func (s *Server) beginSoulAgentRegistration(
 			Message:   msg,
 			IssuedAt:  now,
 			ExpiresAt: expiresAt,
-		},
-		Proofs:    proofs,
-		Promotion: ptrTo(s.buildSoulAgentPromotionView(promotion)),
-	}, nil
+		}
+	}
+	return out
+}
+
+func (s *Server) replaySoulRegistrationBeginIfHostedInstanceTrust(ctx context.Context, authorityModel string, agentIDHex string) (soulAgentRegistrationBeginResponse, bool, *apptheory.AppError) {
+	if authorityModel != models.SoulAuthorityModelInstanceTrust {
+		return soulAgentRegistrationBeginResponse{}, false, nil
+	}
+	return s.replaySoulHostedInstanceTrustBegin(ctx, agentIDHex)
 }
 
 func buildSoulRegistrationProofInstructions(domainNormalized string, proofToken string, autoVerified bool) []soulRegistryProofInstructions {
@@ -498,6 +559,42 @@ func (s *Server) normalizeSoulRegistrationBeginDomain(ctx *apptheory.Context, ra
 		return "", false, accessErr
 	}
 	return domainNormalized, autoVerified, nil
+}
+
+func (s *Server) resolveSoulRegistrationBeginAuthority(ctx context.Context, req soulAgentRegistrationBeginRequest, allowInstanceTrustNoWallet bool) (authorityModel string, wallet string, appErr *apptheory.AppError) {
+	requestedAuthority := normalizeSoulAuthorityModel(req.AuthorityModel)
+	if strings.TrimSpace(req.AuthorityModel) != "" && requestedAuthority == "" {
+		return "", "", &apptheory.AppError{Code: "app.bad_request", Message: "authority_model is invalid"}
+	}
+
+	rawWallet := strings.TrimSpace(req.Wallet)
+	switch {
+	case requestedAuthority == models.SoulAuthorityModelInstanceTrust:
+		if !allowInstanceTrustNoWallet {
+			return "", "", &apptheory.AppError{Code: "app.forbidden", Message: "authority_model is not allowed on this route"}
+		}
+		if rawWallet != "" {
+			return "", "", &apptheory.AppError{Code: "app.bad_request", Message: "wallet_address must be omitted for authority_model=instance_trust"}
+		}
+		return models.SoulAuthorityModelInstanceTrust, "", nil
+	case requestedAuthority == models.SoulAuthorityModelWalletPrincipal:
+		wallet, appErr = s.normalizeSoulWalletAddress(ctx, rawWallet)
+		if appErr != nil {
+			return "", "", appErr
+		}
+		return models.SoulAuthorityModelWalletPrincipal, wallet, nil
+	case rawWallet == "":
+		if !allowInstanceTrustNoWallet {
+			return "", "", &apptheory.AppError{Code: "app.bad_request", Message: "wallet_address is required"}
+		}
+		return models.SoulAuthorityModelInstanceTrust, "", nil
+	default:
+		wallet, appErr = s.normalizeSoulWalletAddress(ctx, rawWallet)
+		if appErr != nil {
+			return "", "", appErr
+		}
+		return models.SoulAuthorityModelWalletPrincipal, wallet, nil
+	}
 }
 
 func normalizeSoulRegistrationBeginLocalID(rawLocal string) (string, *apptheory.AppError) {
@@ -725,6 +822,7 @@ func (s *Server) completeSoulAgentRegistration(ctx *apptheory.Context, reg *mode
 		LocalID:          reg.LocalID,
 		AgentID:          reg.AgentID,
 		Wallet:           reg.Wallet,
+		AuthorityModel:   soulRegistrationAuthorityModel(reg),
 		Capabilities:     reg.Capabilities,
 		WalletNonce:      reg.WalletNonce,
 		WalletMessage:    reg.WalletMessage,
@@ -745,6 +843,7 @@ func (s *Server) completeSoulAgentRegistration(ctx *apptheory.Context, reg *mode
 		"DNSVerified",
 		"HTTPSVerified",
 		"WalletVerified",
+		"AuthorityModel",
 		"VerifiedAt",
 		"Status",
 		"UpdatedAt",
@@ -1110,6 +1209,34 @@ func (s *Server) ensureSoulPendingAgentIdentity(ctx context.Context, reg *models
 	return nil
 }
 
+func (s *Server) ensureSoulHostedInstanceTrustIdentity(ctx context.Context, reg *models.SoulAgentRegistration, now time.Time) *apptheory.AppError {
+	if s == nil || s.store == nil || s.store.DB == nil || reg == nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if normalizeSoulAuthorityModel(reg.AuthorityModel) != models.SoulAuthorityModelInstanceTrust {
+		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+
+	identity := buildSoulHostedInstanceTrustIdentity(reg, s.soulMetaURI(reg.AgentID), now)
+	_ = identity.UpdateKeys()
+	if err := s.store.DB.WithContext(ctx).Model(identity).IfNotExists().Create(); err != nil {
+		if !theoryErrors.IsConditionFailed(err) {
+			return &apptheory.AppError{Code: "app.internal", Message: "failed to create hosted agent identity"}
+		}
+		existing, getErr := s.getSoulAgentIdentity(ctx, reg.AgentID)
+		if getErr != nil {
+			return &apptheory.AppError{Code: "app.internal", Message: "failed to load hosted agent identity"}
+		}
+		if strings.EqualFold(strings.TrimSpace(existing.Status), models.SoulAgentStatusActive) || existing.SelfDescriptionVersion > 0 {
+			return &apptheory.AppError{Code: "app.conflict", Message: "agent is already registered"}
+		}
+		if normalizeSoulAuthorityModel(existing.AuthorityModel) != models.SoulAuthorityModelInstanceTrust {
+			return &apptheory.AppError{Code: "app.conflict", Message: "agent namespace is already reserved by another authority model"}
+		}
+	}
+	return nil
+}
+
 func buildSoulPendingAgentIdentity(
 	reg *models.SoulAgentRegistration,
 	metaURI string,
@@ -1124,6 +1251,7 @@ func buildSoulPendingAgentIdentity(
 		Domain:               reg.DomainNormalized,
 		LocalID:              reg.LocalID,
 		Wallet:               reg.Wallet,
+		AuthorityModel:       firstNonEmpty(reg.AuthorityModel, models.SoulAuthorityModelWalletPrincipal),
 		TokenID:              reg.AgentID,
 		MetaURI:              metaURI,
 		Capabilities:         reg.Capabilities,
@@ -1136,6 +1264,67 @@ func buildSoulPendingAgentIdentity(
 	}
 	applyHostedBoundSoulPolicyDefaults(identity)
 	return identity
+}
+
+func buildSoulHostedInstanceTrustIdentity(reg *models.SoulAgentRegistration, metaURI string, now time.Time) *models.SoulAgentIdentity {
+	identity := &models.SoulAgentIdentity{
+		AgentID:         reg.AgentID,
+		Domain:          reg.DomainNormalized,
+		LocalID:         reg.LocalID,
+		Wallet:          "",
+		AuthorityModel:  models.SoulAuthorityModelInstanceTrust,
+		TokenID:         "",
+		MetaURI:         metaURI,
+		Capabilities:    reg.Capabilities,
+		Status:          models.SoulAgentStatusPending,
+		LifecycleStatus: models.SoulAgentStatusPending,
+		AnchorState:     models.SoulAnchorStateHostedOffchain,
+		UpdatedAt:       now,
+	}
+	applyHostedBoundSoulPolicyDefaults(identity)
+	return identity
+}
+
+func (s *Server) replaySoulHostedInstanceTrustBegin(ctx context.Context, agentIDHex string) (soulAgentRegistrationBeginResponse, bool, *apptheory.AppError) {
+	identity, err := s.getSoulAgentIdentity(ctx, agentIDHex)
+	if theoryErrors.IsNotFound(err) {
+		return soulAgentRegistrationBeginResponse{}, false, nil
+	}
+	if err != nil {
+		return soulAgentRegistrationBeginResponse{}, false, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if identity == nil {
+		return soulAgentRegistrationBeginResponse{}, false, nil
+	}
+	if strings.EqualFold(strings.TrimSpace(identity.Status), models.SoulAgentStatusActive) || identity.SelfDescriptionVersion > 0 {
+		return soulAgentRegistrationBeginResponse{}, false, &apptheory.AppError{Code: "app.conflict", Message: "agent is already registered"}
+	}
+	if normalizeSoulAuthorityModel(identity.AuthorityModel) != models.SoulAuthorityModelInstanceTrust {
+		return soulAgentRegistrationBeginResponse{}, false, &apptheory.AppError{Code: "app.conflict", Message: "agent namespace is already reserved by another authority model"}
+	}
+
+	promotion, err := s.getSoulAgentPromotion(ctx, agentIDHex)
+	if err != nil || promotion == nil || strings.TrimSpace(promotion.RegistrationID) == "" {
+		return soulAgentRegistrationBeginResponse{}, false, nil
+	}
+	if normalizeSoulAuthorityModel(promotion.AuthorityModel) != models.SoulAuthorityModelInstanceTrust {
+		return soulAgentRegistrationBeginResponse{}, false, nil
+	}
+	reg, err := s.getSoulAgentRegistration(ctx, promotion.RegistrationID)
+	if theoryErrors.IsNotFound(err) {
+		return soulAgentRegistrationBeginResponse{}, false, nil
+	}
+	if err != nil {
+		return soulAgentRegistrationBeginResponse{}, false, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if normalizeSoulAuthorityModel(reg.AuthorityModel) != models.SoulAuthorityModelInstanceTrust {
+		return soulAgentRegistrationBeginResponse{}, false, nil
+	}
+	return soulAgentRegistrationBeginResponse{
+		Registration: *reg,
+		Proofs:       []soulRegistryProofInstructions{},
+		Promotion:    ptrTo(s.buildSoulAgentPromotionView(promotion)),
+	}, true, nil
 }
 
 func (s *Server) reconcileSoulPendingIdentity(
@@ -1311,9 +1500,11 @@ func (s *Server) upsertSoulAgentIndexes(ctx context.Context, reg *models.SoulAge
 		return
 	}
 
-	wi := &models.SoulWalletAgentIndex{Wallet: reg.Wallet, AgentID: reg.AgentID}
-	_ = wi.UpdateKeys()
-	_ = s.store.DB.WithContext(ctx).Model(wi).CreateOrUpdate()
+	if strings.TrimSpace(reg.Wallet) != "" {
+		wi := &models.SoulWalletAgentIndex{Wallet: reg.Wallet, AgentID: reg.AgentID}
+		_ = wi.UpdateKeys()
+		_ = s.store.DB.WithContext(ctx).Model(wi).CreateOrUpdate()
+	}
 
 	di := &models.SoulDomainAgentIndex{Domain: reg.DomainNormalized, LocalID: reg.LocalID, AgentID: reg.AgentID}
 	_ = di.UpdateKeys()

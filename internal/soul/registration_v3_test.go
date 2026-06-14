@@ -141,6 +141,21 @@ func TestRegistrationFileV3_ParseAndValidate(t *testing.T) {
 	}
 }
 
+func TestRegistrationFileV3_HostedInstanceTrustAuthority(t *testing.T) {
+	t.Parallel()
+
+	reg := validRegistrationV3(t)
+	reg.Wallet = ""
+	reg.Principal = PrincipalDeclarationV2{}
+	reg.AuthorityModel = registrationAuthorityInstanceTrust
+	reg.AnchorState = registrationAnchorHostedOffchain
+	reg.Boundaries[0].Signature = ""
+	reg.Attestations = AttestationsV2{HostAuthority: registrationAuthorityInstanceTrust}
+	if err := reg.Validate(); err != nil {
+		t.Fatalf("hosted v3 instance-trust registration should validate: %v", err)
+	}
+}
+
 func TestRegistrationV3ChannelsLeafValidator(t *testing.T) {
 	t.Parallel()
 

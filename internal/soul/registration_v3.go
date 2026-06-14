@@ -27,6 +27,10 @@ type RegistrationFileV3 struct {
 	LocalID   string                 `json:"localId"`
 	Wallet    string                 `json:"wallet"`
 	Principal PrincipalDeclarationV2 `json:"principal"`
+	// AuthorityModel is explicit for hosted/off-chain registrations that are
+	// authorized by the managed instance API key rather than a wallet principal.
+	AuthorityModel string `json:"authorityModel,omitempty"`
+	AnchorState    string `json:"anchorState,omitempty"`
 
 	SelfDescription SelfDescriptionV2   `json:"selfDescription"`
 	Capabilities    []CapabilityV2      `json:"capabilities"`
@@ -124,42 +128,47 @@ func (r *RegistrationFileV3) Validate() error {
 	if r == nil {
 		return errRegistrationNil
 	}
+	authorityModel, err := validateRegistrationAuthorityModel(r.AuthorityModel)
+	if err != nil {
+		return err
+	}
 	if err := validateRegistrationVersion(r.Version, "3"); err != nil {
 		return err
 	}
-	if err := validateRegistrationIdentity(r.AgentID, r.Domain, r.LocalID, r.Wallet); err != nil {
+	if err := validateRegistrationAuthorityAndAnchor(authorityModel, r.AnchorState); err != nil {
 		return err
 	}
-	if err := r.validateCoreSections(); err != nil {
+	if err := validateRegistrationIdentityForAuthority(r.AgentID, r.Domain, r.LocalID, r.Wallet, authorityModel); err != nil {
 		return err
 	}
-	if err := r.Attestations.Validate(); err != nil {
+	if err := r.validateCoreSectionsForAuthority(authorityModel); err != nil {
+		return err
+	}
+	if err := r.Attestations.ValidateForAuthority(authorityModel); err != nil {
 		return fmt.Errorf("attestations: %w", err)
 	}
 	return validateRegistrationTimestamps(r.Created, r.Updated)
 }
 
-func (r *RegistrationFileV3) validateCoreSections() error {
-	if err := r.Principal.ValidateWithDomainSeparation(strings.ToLower(strings.TrimSpace(r.AgentID))); err != nil {
+func (r *RegistrationFileV3) validateCoreSectionsForAuthority(authorityModel string) error {
+	if authorityModel == registrationAuthorityInstanceTrust {
+		if r.Principal.HasFields() {
+			return errors.New("principal must be omitted for authorityModel=instance_trust")
+		}
+	} else if err := r.Principal.ValidateWithDomainSeparation(strings.ToLower(strings.TrimSpace(r.AgentID))); err != nil {
 		return fmt.Errorf("principal: %w", err)
 	}
-	if err := r.SelfDescription.Validate(); err != nil {
-		return fmt.Errorf("selfDescription: %w", err)
-	}
-	if err := validateCapabilitiesV2(r.Capabilities); err != nil {
+	if err := validateRegistrationSharedCoreSections(
+		r.AgentID,
+		r.SelfDescription,
+		r.Capabilities,
+		r.Boundaries,
+		r.Transparency,
+		r.Endpoints,
+		r.Lifecycle,
+		authorityModel,
+	); err != nil {
 		return err
-	}
-	if err := validateBoundariesV2(r.Boundaries); err != nil {
-		return err
-	}
-	if r.Transparency == nil {
-		return errors.New("transparency is required")
-	}
-	if err := r.Endpoints.Validate(); err != nil {
-		return fmt.Errorf("endpoints: %w", err)
-	}
-	if err := r.Lifecycle.Validate(); err != nil {
-		return fmt.Errorf("lifecycle: %w", err)
 	}
 	if err := validateOptionalPreviousVersionURI(r.PreviousVersionURI); err != nil {
 		return err

@@ -37,6 +37,8 @@ const (
 	SoulPublicPaidCallerAccessGrantable       = "grantable"
 	SoulPolicyMigrationStateImplicitDefaultV1 = "implicit_default_v1"
 	SoulPolicyMigrationStatePersistedV1       = "persisted_v1"
+	SoulAuthorityModelWalletPrincipal         = "wallet_principal"
+	SoulAuthorityModelInstanceTrust           = "instance_trust"
 )
 
 // SoulAgentIdentity stores the off-chain identity record for a soul agent.
@@ -56,9 +58,11 @@ type SoulAgentIdentity struct {
 	Domain  string `theorydb:"attr:domain" json:"domain"`
 	LocalID string `theorydb:"attr:localId" json:"local_id"`
 
-	Wallet  string `theorydb:"attr:wallet" json:"wallet"`
-	TokenID string `theorydb:"attr:tokenId" json:"token_id,omitempty"`
-	MetaURI string `theorydb:"attr:metaURI" json:"meta_uri,omitempty"`
+	Wallet string `theorydb:"attr:wallet" json:"wallet,omitempty"`
+
+	AuthorityModel string `theorydb:"attr:authorityModel" json:"authority_model,omitempty"`
+	TokenID        string `theorydb:"attr:tokenId" json:"token_id,omitempty"`
+	MetaURI        string `theorydb:"attr:metaURI" json:"meta_uri,omitempty"`
 
 	Capabilities []string `theorydb:"attr:capabilities" json:"capabilities,omitempty"`
 
@@ -195,6 +199,7 @@ func (a *SoulAgentIdentity) UpdateKeys() error {
 	a.Domain = strings.ToLower(strings.TrimSpace(a.Domain))
 	a.LocalID = normalizeSoulLocalID(a.LocalID)
 	a.Wallet = strings.ToLower(strings.TrimSpace(a.Wallet))
+	a.AuthorityModel = strings.ToLower(strings.TrimSpace(a.AuthorityModel))
 	a.TokenID = strings.ToLower(strings.TrimSpace(a.TokenID))
 	a.MetaURI = strings.TrimSpace(a.MetaURI)
 	a.PrincipalAddress = strings.ToLower(strings.TrimSpace(a.PrincipalAddress))

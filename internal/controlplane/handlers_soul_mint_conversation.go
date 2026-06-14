@@ -92,11 +92,11 @@ type soulMintConversationFinalizeBoundaryRequirement struct {
 	Rationale       string `json:"rationale,omitempty"`
 	Supersedes      string `json:"supersedes,omitempty"`
 	SignatureHex    string `json:"signature_hex,omitempty"`
-	SignerWallet    string `json:"signer_wallet"`
+	SignerWallet    string `json:"signer_wallet,omitempty"`
 	SigningMethod   string `json:"signing_method"`
 	MessageEncoding string `json:"message_encoding"`
 	Message         string `json:"message"`
-	DigestHex       string `json:"digest_hex"`
+	DigestHex       string `json:"digest_hex,omitempty"`
 }
 
 type soulMintConversationFinalizeSigningInput struct {
@@ -112,18 +112,20 @@ type soulMintConversationFinalizeRequestTemplate struct {
 	BoundarySignatures map[string]string `json:"boundary_signatures"`
 	IssuedAt           string            `json:"issued_at"`
 	ExpectedVersion    int               `json:"expected_version"`
-	SelfAttestation    string            `json:"self_attestation"`
+	SelfAttestation    string            `json:"self_attestation,omitempty"`
 }
 
 type soulMintConversationFinalizeBeginResponse struct {
 	Version                 string                                            `json:"version"`
-	DigestHex               string                                            `json:"digest_hex"`
+	AuthorityModel          string                                            `json:"authority_model,omitempty"`
+	AnchorState             string                                            `json:"anchor_state,omitempty"`
+	DigestHex               string                                            `json:"digest_hex,omitempty"`
 	IssuedAt                string                                            `json:"issued_at"`
 	ExpectedVersion         int                                               `json:"expected_version"`
 	NextVersion             int                                               `json:"next_version"`
 	DeclarationsPreview     soulMintConversationProducedDeclarations          `json:"declarations_preview"`
 	BoundaryRequirements    []soulMintConversationFinalizeBoundaryRequirement `json:"boundary_requirements,omitempty"`
-	SelfAttestationSigning  soulMintConversationFinalizeSigningInput          `json:"self_attestation_signing"`
+	SelfAttestationSigning  *soulMintConversationFinalizeSigningInput         `json:"self_attestation_signing,omitempty"`
 	FinalizeRequestTemplate soulMintConversationFinalizeRequestTemplate       `json:"finalize_request_template"`
 	RegistrationPreview     map[string]any                                    `json:"registration_preview,omitempty"`
 }
@@ -142,6 +144,7 @@ type soulMintConversationPublicationEvidence struct {
 	RegistrationS3Key          string `json:"registration_s3_key,omitempty"`
 	VersionedRegistrationURI   string `json:"versioned_registration_uri,omitempty"`
 	VersionedRegistrationS3Key string `json:"versioned_registration_s3_key,omitempty"`
+	AuthorityModel             string `json:"authority_model,omitempty"`
 	AnchorState                string `json:"anchor_state,omitempty"`
 	PublishedAt                string `json:"published_at,omitempty"`
 }
@@ -153,6 +156,7 @@ type soulMintConversationPromotionEvidence struct {
 	RequestStatus            string `json:"request_status,omitempty"`
 	ReviewStatus             string `json:"review_status,omitempty"`
 	ReadinessStatus          string `json:"readiness_status,omitempty"`
+	AuthorityModel           string `json:"authority_model,omitempty"`
 	AnchorState              string `json:"anchor_state,omitempty"`
 	LatestConversationID     string `json:"latest_conversation_id,omitempty"`
 	LatestConversationStatus string `json:"latest_conversation_status,omitempty"`
@@ -291,6 +295,7 @@ func mintConversationRegistrationFromIdentity(identity *models.SoulAgentIdentity
 		LocalID:          strings.TrimSpace(identity.LocalID),
 		AgentID:          strings.TrimSpace(identity.AgentID),
 		Wallet:           strings.TrimSpace(identity.Wallet),
+		AuthorityModel:   soulIdentityAuthorityModel(identity),
 		Capabilities:     append([]string(nil), identity.Capabilities...),
 	}
 }
@@ -1273,6 +1278,9 @@ func (s *Server) beginFinalizeMintConversation(ctx *apptheory.Context, finalizeC
 	if activeErr := requireMintConversationFinalizeActiveIdentity(finalizeCtx.identity); activeErr != nil {
 		return nil, activeErr
 	}
+	if isExplicitInstanceTrustAuthority(finalizeCtx.reg, finalizeCtx.identity) {
+		return s.beginFinalizeMintConversationInstanceTrust(ctx, finalizeCtx)
+	}
 	if strings.TrimSpace(finalizeCtx.identity.PrincipalAddress) == "" ||
 		strings.TrimSpace(finalizeCtx.identity.PrincipalSignature) == "" ||
 		strings.TrimSpace(finalizeCtx.identity.PrincipalDeclaration) == "" ||
@@ -1307,6 +1315,9 @@ func (s *Server) beginFinalizeMintConversation(ctx *apptheory.Context, finalizeC
 func (s *Server) finalizeMintConversation(ctx *apptheory.Context, finalizeCtx mintConversationFinalizeContext) (*apptheory.Response, error) {
 	if finalizeCtx.identity == nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if isExplicitInstanceTrustAuthority(finalizeCtx.reg, finalizeCtx.identity) {
+		return s.finalizeMintConversationInstanceTrust(ctx, finalizeCtx)
 	}
 	if strings.TrimSpace(finalizeCtx.identity.PrincipalAddress) == "" ||
 		strings.TrimSpace(finalizeCtx.identity.PrincipalSignature) == "" ||
@@ -1344,6 +1355,67 @@ func (s *Server) finalizeMintConversation(ctx *apptheory.Context, finalizeCtx mi
 	return s.finalizeMintConversationPublish(ctx, finalizeCtx, regV2, regMap, decl, req.BoundarySignatures, capsNorm, claimLevels, issuedAt, expectedVersion, selfSig)
 }
 
+func (s *Server) beginFinalizeMintConversationInstanceTrust(ctx *apptheory.Context, finalizeCtx mintConversationFinalizeContext) (*apptheory.Response, error) {
+	if appErr := requireExplicitInstanceTrustAuthority(finalizeCtx.reg, finalizeCtx.identity); appErr != nil {
+		return nil, appErr
+	}
+	publishIdentity := mintConversationFinalizeIdentityForPublication(finalizeCtx.identity)
+	req, err := parseMintConversationFinalizeBeginRequestBodyOptional(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	decl, appErr := parseAndValidateMintConversationDeclarations(finalizeCtx.conv.ProducedDeclarations)
+	if appErr != nil {
+		return nil, appErr
+	}
+
+	now := time.Now().UTC()
+	expectedVersion := finalizeCtx.identity.SelfDescriptionVersion
+	nextVersion := expectedVersion + 1
+	regMap, _, _, _, _, appErr := s.buildMintConversationFinalizeV2RegistrationWithOptions(finalizeCtx.agentIDHex, publishIdentity, decl, req.BoundarySignatures, now, nextVersion, "", mintConversationFinalizeRegistrationOptions{
+		AuthorityModel:    models.SoulAuthorityModelInstanceTrust,
+		AnchorState:       models.SoulAnchorStateHostedOffchain,
+		IncludeSignatures: false,
+	})
+	if appErr != nil {
+		return nil, appErr
+	}
+	return s.respondMintConversationFinalizePreflightInstanceTrust(decl, req.BoundarySignatures, regMap, now, expectedVersion, nextVersion)
+}
+
+func (s *Server) finalizeMintConversationInstanceTrust(ctx *apptheory.Context, finalizeCtx mintConversationFinalizeContext) (*apptheory.Response, error) {
+	if appErr := requireExplicitInstanceTrustAuthority(finalizeCtx.reg, finalizeCtx.identity); appErr != nil {
+		return nil, appErr
+	}
+	req, issuedAt, expectedVersion, err := parseMintConversationFinalizeInstanceTrustRequestBody(ctx, finalizeCtx.identity.SelfDescriptionVersion)
+	if err != nil {
+		return nil, err
+	}
+
+	nextVersion := *expectedVersion + 1
+	if versionErr := requireMintConversationFinalizeVersionAndActive(finalizeCtx.identity, nextVersion, *expectedVersion); versionErr != nil {
+		return nil, versionErr
+	}
+	publishIdentity := mintConversationFinalizeIdentityForPublication(finalizeCtx.identity)
+	finalizeCtx.identity = publishIdentity
+
+	decl, appErr := parseAndValidateMintConversationDeclarations(finalizeCtx.conv.ProducedDeclarations)
+	if appErr != nil {
+		return nil, appErr
+	}
+
+	regMap, regV2, _, capsNorm, claimLevels, appErr := s.buildMintConversationFinalizeV2RegistrationWithOptions(finalizeCtx.agentIDHex, publishIdentity, decl, req.BoundarySignatures, issuedAt.UTC(), nextVersion, "", mintConversationFinalizeRegistrationOptions{
+		AuthorityModel:    models.SoulAuthorityModelInstanceTrust,
+		AnchorState:       models.SoulAnchorStateHostedOffchain,
+		IncludeSignatures: false,
+	})
+	if appErr != nil {
+		return nil, appErr
+	}
+	return s.finalizeMintConversationPublish(ctx, finalizeCtx, regV2, regMap, decl, req.BoundarySignatures, capsNorm, claimLevels, issuedAt, expectedVersion, "")
+}
+
 // --- Helpers ---
 
 func (s *Server) respondMintConversationFinalizePreflight(
@@ -1365,6 +1437,8 @@ func (s *Server) respondMintConversationFinalizePreflight(
 	digestHex := "0x" + hex.EncodeToString(digest)
 	return apptheory.JSON(http.StatusOK, soulMintConversationFinalizeBeginResponse{
 		Version:             "1",
+		AuthorityModel:      models.SoulAuthorityModelWalletPrincipal,
+		AnchorState:         soulIdentityAnchorState(identity),
 		DigestHex:           digestHex,
 		IssuedAt:            issuedAtStr,
 		ExpectedVersion:     expectedVersion,
@@ -1375,7 +1449,7 @@ func (s *Server) respondMintConversationFinalizePreflight(
 			decl.Boundaries,
 			boundarySignatures,
 		),
-		SelfAttestationSigning: soulMintConversationFinalizeSigningInput{
+		SelfAttestationSigning: &soulMintConversationFinalizeSigningInput{
 			SignerWallet:    strings.TrimSpace(identity.Wallet),
 			SigningMethod:   "eip191_personal_sign",
 			MessageEncoding: "hex_bytes",
@@ -1383,6 +1457,37 @@ func (s *Server) respondMintConversationFinalizePreflight(
 			DigestHex:       digestHex,
 			CanonicalJSON:   canonicalJSON,
 		},
+		FinalizeRequestTemplate: soulMintConversationFinalizeRequestTemplate{
+			BoundarySignatures: copyMintConversationBoundarySignatures(boundarySignatures),
+			IssuedAt:           issuedAtStr,
+			ExpectedVersion:    expectedVersion,
+			SelfAttestation:    "",
+		},
+		RegistrationPreview: regMap,
+	})
+}
+
+func (s *Server) respondMintConversationFinalizePreflightInstanceTrust(
+	decl soulMintConversationProducedDeclarations,
+	boundarySignatures map[string]string,
+	regMap map[string]any,
+	issuedAt time.Time,
+	expectedVersion int,
+	nextVersion int,
+) (*apptheory.Response, error) {
+	issuedAtStr := issuedAt.UTC().Format(time.RFC3339Nano)
+	return apptheory.JSON(http.StatusOK, soulMintConversationFinalizeBeginResponse{
+		Version:             "1",
+		AuthorityModel:      models.SoulAuthorityModelInstanceTrust,
+		AnchorState:         models.SoulAnchorStateHostedOffchain,
+		IssuedAt:            issuedAtStr,
+		ExpectedVersion:     expectedVersion,
+		NextVersion:         nextVersion,
+		DeclarationsPreview: decl,
+		BoundaryRequirements: buildMintConversationFinalizeHostedBoundaryRequirements(
+			decl.Boundaries,
+			boundarySignatures,
+		),
 		FinalizeRequestTemplate: soulMintConversationFinalizeRequestTemplate{
 			BoundarySignatures: copyMintConversationBoundarySignatures(boundarySignatures),
 			IssuedAt:           issuedAtStr,
@@ -1411,6 +1516,34 @@ func buildMintConversationFinalizeBoundaryRequirements(
 			MessageEncoding: "utf8",
 			Message:         strings.TrimSpace(b.Statement),
 			DigestHex:       "0x" + hex.EncodeToString(crypto.Keccak256([]byte(strings.TrimSpace(b.Statement)))),
+		}
+		if strings.TrimSpace(b.Rationale) != "" {
+			requirement.Rationale = strings.TrimSpace(b.Rationale)
+		}
+		if b.Supersedes != nil && strings.TrimSpace(*b.Supersedes) != "" {
+			requirement.Supersedes = strings.TrimSpace(*b.Supersedes)
+		}
+		out = append(out, requirement)
+	}
+	return out
+}
+
+func buildMintConversationFinalizeHostedBoundaryRequirements(
+	boundaries []soul.BoundaryV2,
+	boundarySignatures map[string]string,
+) []soulMintConversationFinalizeBoundaryRequirement {
+	out := make([]soulMintConversationFinalizeBoundaryRequirement, 0, len(boundaries))
+	for i := range boundaries {
+		b := boundaries[i]
+		requirement := soulMintConversationFinalizeBoundaryRequirement{
+			BoundaryID:      strings.TrimSpace(b.ID),
+			Category:        strings.ToLower(strings.TrimSpace(b.Category)),
+			Statement:       strings.TrimSpace(b.Statement),
+			SignatureHex:    strings.TrimSpace(boundarySignatures[strings.TrimSpace(b.ID)]),
+			SigningMethod:   "instance_trust",
+			MessageEncoding: "none",
+			Message:         strings.TrimSpace(b.Statement),
+			DigestHex:       "",
 		}
 		if strings.TrimSpace(b.Rationale) != "" {
 			requirement.Rationale = strings.TrimSpace(b.Rationale)
@@ -1452,6 +1585,18 @@ func copyMintConversationBoundarySignatures(in map[string]string) map[string]str
 		out[strings.TrimSpace(key)] = strings.TrimSpace(value)
 	}
 	return out
+}
+
+func soulIdentityAnchorState(identity *models.SoulAgentIdentity) string {
+	if identity == nil {
+		return models.SoulAnchorStateHostedOffchain
+	}
+	switch strings.ToLower(strings.TrimSpace(identity.AnchorState)) {
+	case models.SoulAnchorStateImmutableOnchain:
+		return models.SoulAnchorStateImmutableOnchain
+	default:
+		return models.SoulAnchorStateHostedOffchain
+	}
 }
 
 func parseMintConversationCompleteDeclarations(ctx *apptheory.Context) string {
@@ -1585,6 +1730,19 @@ func parseMintConversationFinalizeBeginRequestBody(ctx *apptheory.Context) (soul
 	return req, nil
 }
 
+func parseMintConversationFinalizeBeginRequestBodyOptional(ctx *apptheory.Context) (soulMintConversationFinalizeBeginRequest, error) {
+	var req soulMintConversationFinalizeBeginRequest
+	if ctx != nil && len(bytes.TrimSpace(ctx.Request.Body)) > 0 {
+		if parseErr := httpx.ParseJSON(ctx, &req); parseErr != nil {
+			return req, parseErr
+		}
+	}
+	if req.BoundarySignatures == nil {
+		req.BoundarySignatures = map[string]string{}
+	}
+	return req, nil
+}
+
 func parseMintConversationFinalizeRequestBody(ctx *apptheory.Context) (soulMintConversationFinalizeRequest, time.Time, *int, string, error) {
 	var req soulMintConversationFinalizeRequest
 	if parseErr := httpx.ParseJSON(ctx, &req); parseErr != nil {
@@ -1615,6 +1773,43 @@ func parseMintConversationFinalizeRequestBody(ctx *apptheory.Context) (soulMintC
 		return req, time.Time{}, nil, "", &apptheory.AppError{Code: "app.bad_request", Message: "self_attestation is required"}
 	}
 	return req, issuedAt, req.ExpectedVersion, selfSig, nil
+}
+
+func parseMintConversationFinalizeInstanceTrustRequestBody(ctx *apptheory.Context, currentVersion int) (soulMintConversationFinalizeRequest, time.Time, *int, error) {
+	var req soulMintConversationFinalizeRequest
+	if ctx != nil && len(bytes.TrimSpace(ctx.Request.Body)) > 0 {
+		if parseErr := httpx.ParseJSON(ctx, &req); parseErr != nil {
+			return req, time.Time{}, nil, parseErr
+		}
+	}
+	if req.BoundarySignatures == nil {
+		req.BoundarySignatures = map[string]string{}
+	}
+	if strings.TrimSpace(req.SelfAttestation) != "" {
+		return req, time.Time{}, nil, &apptheory.AppError{Code: "app.bad_request", Message: "self_attestation must be omitted for authority_model=instance_trust"}
+	}
+
+	issuedAt := time.Now().UTC()
+	issuedAtRaw := strings.TrimSpace(req.IssuedAt)
+	if issuedAtRaw != "" {
+		parsed, err := time.Parse(time.RFC3339Nano, issuedAtRaw)
+		if err != nil {
+			parsed, err = time.Parse(time.RFC3339, issuedAtRaw)
+		}
+		if err != nil {
+			return req, time.Time{}, nil, &apptheory.AppError{Code: "app.bad_request", Message: "issued_at must be an RFC3339 timestamp"}
+		}
+		issuedAt = parsed.UTC()
+	}
+
+	if req.ExpectedVersion == nil {
+		expected := currentVersion
+		req.ExpectedVersion = &expected
+	}
+	if *req.ExpectedVersion < 0 {
+		return req, time.Time{}, nil, &apptheory.AppError{Code: "app.bad_request", Message: "expected_version is invalid"}
+	}
+	return req, issuedAt, req.ExpectedVersion, nil
 }
 
 func verifyMintConversationBoundarySignatures(wallet string, boundaries []soul.BoundaryV2, signatures map[string]string) *apptheory.AppError {
@@ -1696,7 +1891,7 @@ func (s *Server) finalizeMintConversationPublish(
 		return nil, appErr
 	}
 	promotionEvidence := buildMintConversationPromotionEvidence(promotion)
-	publication := s.buildMintConversationPublicationEvidence(finalizeCtx.agentIDHex, publishedVersion, soulAgentPromotionAnchorState(promotion), now)
+	publication := s.buildMintConversationPublicationEvidence(finalizeCtx.agentIDHex, publishedVersion, soulPromotionAuthorityModel(promotion), soulAgentPromotionAnchorState(promotion), now)
 	return apptheory.JSON(http.StatusOK, soulMintConversationFinalizeResponse{
 		Version:          "1",
 		AgentID:          finalizeCtx.agentIDHex,
@@ -1718,6 +1913,7 @@ func buildMintConversationPromotionEvidence(promotion *models.SoulAgentPromotion
 		RequestStatus:            strings.TrimSpace(promotion.RequestStatus),
 		ReviewStatus:             strings.TrimSpace(promotion.ReviewStatus),
 		ReadinessStatus:          strings.TrimSpace(promotion.ReadinessStatus),
+		AuthorityModel:           soulPromotionAuthorityModel(promotion),
 		AnchorState:              soulAgentPromotionAnchorState(promotion),
 		LatestConversationID:     strings.TrimSpace(promotion.LatestConversationID),
 		LatestConversationStatus: strings.TrimSpace(promotion.LatestConversationStatus),
@@ -1729,7 +1925,7 @@ func buildMintConversationPromotionEvidence(promotion *models.SoulAgentPromotion
 	return out
 }
 
-func (s *Server) buildMintConversationPublicationEvidence(agentIDHex string, publishedVersion int, anchorState string, publishedAt time.Time) soulMintConversationPublicationEvidence {
+func (s *Server) buildMintConversationPublicationEvidence(agentIDHex string, publishedVersion int, authorityModel string, anchorState string, publishedAt time.Time) soulMintConversationPublicationEvidence {
 	agentIDHex = strings.ToLower(strings.TrimSpace(agentIDHex))
 	currentKey := soulRegistrationS3Key(agentIDHex)
 	versionedKey := soulRegistrationVersionedS3Key(agentIDHex, publishedVersion)
@@ -1750,6 +1946,7 @@ func (s *Server) buildMintConversationPublicationEvidence(agentIDHex string, pub
 		RegistrationS3Key:          currentKey,
 		VersionedRegistrationURI:   versionedURI,
 		VersionedRegistrationS3Key: versionedKey,
+		AuthorityModel:             normalizeSoulAuthorityModel(authorityModel),
 		AnchorState:                strings.TrimSpace(anchorState),
 		PublishedAt:                publishedAt.UTC().Format(time.RFC3339Nano),
 	}
@@ -1895,244 +2092,6 @@ func (s *Server) persistMintConversationBoundaries(ctx context.Context, identity
 		s.tryWriteSoulBoundaryKeywordIndexForBoundary(ctx, identity, b)
 	}
 	return nil
-}
-
-func (s *Server) buildMintConversationFinalizeV2Registration(
-	agentIDHex string,
-	identity *models.SoulAgentIdentity,
-	decl soulMintConversationProducedDeclarations,
-	boundarySignatures map[string]string,
-	issuedAt time.Time,
-	nextVersion int,
-	selfAttestation string,
-) (reg map[string]any, regV2 *soul.RegistrationFileV2, digest []byte, capsNorm []string, claimLevels map[string]string, appErr *apptheory.AppError) {
-	if s == nil || identity == nil {
-		return nil, nil, nil, nil, nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-	agentIDHex = strings.ToLower(strings.TrimSpace(agentIDHex))
-	if agentIDHex == "" {
-		return nil, nil, nil, nil, nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-	if nextVersion <= 0 {
-		return nil, nil, nil, nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid version"}
-	}
-
-	issuedAt = issuedAt.UTC()
-	issuedAtStr := issuedAt.Format(time.RFC3339Nano)
-	lifecycleStatus := mintConversationFinalizeLifecycleStatus(identity)
-	principal := buildMintConversationFinalizePrincipal(identity)
-	selfDesc := buildMintConversationFinalizeSelfDescription(decl.SelfDescription)
-	capsAny := buildMintConversationFinalizeCapabilities(decl.Capabilities)
-	boundsAny := buildMintConversationFinalizeBoundaries(decl.Boundaries, boundarySignatures, issuedAtStr, nextVersion)
-	changeSummary := fmt.Sprintf("Publish mint conversation declarations (v%d)", nextVersion)
-	transparency := nonNilMintConversationTransparency(decl.Transparency)
-
-	reg = map[string]any{
-		"version":         "2",
-		"agentId":         agentIDHex,
-		"domain":          strings.TrimSpace(identity.Domain),
-		"localId":         strings.TrimSpace(identity.LocalID),
-		"wallet":          strings.TrimSpace(identity.Wallet),
-		"principal":       principal,
-		"selfDescription": selfDesc,
-		"capabilities":    capsAny,
-		"boundaries":      boundsAny,
-		"transparency":    transparency,
-		"endpoints":       map[string]any{},
-		"lifecycle": map[string]any{
-			"status":          lifecycleStatus,
-			"statusChangedAt": issuedAtStr,
-		},
-		"attestations": map[string]any{
-			"selfAttestation": strings.TrimSpace(selfAttestation),
-		},
-		"created":       issuedAtStr,
-		"updated":       issuedAtStr,
-		"changeSummary": changeSummary,
-	}
-	if nextVersion > 1 {
-		prevKey := soulRegistrationVersionedS3Key(agentIDHex, nextVersion-1)
-		reg["previousVersionUri"] = fmt.Sprintf("s3://%s/%s", strings.TrimSpace(s.cfg.SoulPackBucketName), prevKey)
-	}
-
-	regBytes, err := json.Marshal(reg)
-	if err != nil {
-		return nil, nil, nil, nil, nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid registration JSON"}
-	}
-	parsed, appErr := parseMintConversationFinalizeV2Registration(regBytes)
-	if appErr != nil {
-		return nil, nil, nil, nil, nil, appErr
-	}
-
-	digest, appErr = computeSoulRegistrationSelfAttestationDigest(reg)
-	if appErr != nil {
-		return nil, nil, nil, nil, nil, appErr
-	}
-
-	// Capability indexing inputs.
-	caps := extractCapabilityNames(reg)
-	capsNorm = normalizeSoulCapabilitiesLoose(caps)
-	claimLevels = extractCapabilityClaimLevels(reg)
-
-	return reg, parsed, digest, capsNorm, claimLevels, nil
-}
-
-func mintConversationFinalizeLifecycleStatus(identity *models.SoulAgentIdentity) string {
-	lifecycleStatus := strings.ToLower(strings.TrimSpace(identity.LifecycleStatus))
-	if lifecycleStatus == "" {
-		lifecycleStatus = strings.ToLower(strings.TrimSpace(identity.Status))
-	}
-	if lifecycleStatus == "" || lifecycleStatus == models.SoulAgentStatusPending {
-		return models.SoulAgentStatusActive
-	}
-	return lifecycleStatus
-}
-
-func mintConversationFinalizeIdentityForPublication(identity *models.SoulAgentIdentity) *models.SoulAgentIdentity {
-	if identity == nil {
-		return nil
-	}
-	copy := *identity
-	lifecycleStatus := strings.ToLower(strings.TrimSpace(copy.LifecycleStatus))
-	if lifecycleStatus == "" {
-		lifecycleStatus = strings.ToLower(strings.TrimSpace(copy.Status))
-	}
-	if lifecycleStatus == "" || lifecycleStatus == models.SoulAgentStatusPending {
-		copy.Status = models.SoulAgentStatusActive
-		copy.LifecycleStatus = models.SoulAgentStatusActive
-		if strings.TrimSpace(copy.AnchorState) == "" {
-			copy.AnchorState = models.SoulAnchorStateHostedOffchain
-		}
-		applyHostedBoundSoulPolicyDefaults(&copy)
-	}
-	return &copy
-}
-
-func requireMintConversationFinalizeVersionAndActive(identity *models.SoulAgentIdentity, nextVersion int, expectedVersion int) *apptheory.AppError {
-	if identity == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-	if identity.SelfDescriptionVersion > nextVersion {
-		return &apptheory.AppError{Code: "app.conflict", Message: "agent has advanced beyond this version"}
-	}
-	if identity.SelfDescriptionVersion < expectedVersion {
-		return &apptheory.AppError{Code: "app.conflict", Message: "version conflict; reload and try again"}
-	}
-	return requireMintConversationFinalizeActiveIdentity(identity)
-}
-
-func requireMintConversationFinalizeActiveIdentity(identity *models.SoulAgentIdentity) *apptheory.AppError {
-	if identity == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-	lifecycleStatus := ""
-	lifecycleStatus = strings.ToLower(strings.TrimSpace(identity.LifecycleStatus))
-	if lifecycleStatus == "" {
-		lifecycleStatus = strings.ToLower(strings.TrimSpace(identity.Status))
-	}
-	switch lifecycleStatus {
-	case "", models.SoulAgentStatusPending, models.SoulAgentStatusActive:
-		return nil
-	default:
-		return &apptheory.AppError{Code: "app.conflict", Message: "agent must be active or pending before publishing mint conversation registration"}
-	}
-}
-
-func buildMintConversationFinalizePrincipal(identity *models.SoulAgentIdentity) map[string]any {
-	return map[string]any{
-		"type":        "individual",
-		"identifier":  strings.TrimSpace(identity.PrincipalAddress),
-		"declaration": strings.TrimSpace(identity.PrincipalDeclaration),
-		"signature":   strings.TrimSpace(identity.PrincipalSignature),
-		"declaredAt":  strings.TrimSpace(identity.PrincipalDeclaredAt),
-	}
-}
-
-func buildMintConversationFinalizeSelfDescription(selfDesc soul.SelfDescriptionV2) map[string]any {
-	out := map[string]any{
-		"purpose":    strings.TrimSpace(selfDesc.Purpose),
-		"authoredBy": strings.ToLower(strings.TrimSpace(selfDesc.AuthoredBy)),
-	}
-	if strings.TrimSpace(selfDesc.Constraints) != "" {
-		out["constraints"] = strings.TrimSpace(selfDesc.Constraints)
-	}
-	if strings.TrimSpace(selfDesc.Commitments) != "" {
-		out["commitments"] = strings.TrimSpace(selfDesc.Commitments)
-	}
-	if strings.TrimSpace(selfDesc.Limitations) != "" {
-		out["limitations"] = strings.TrimSpace(selfDesc.Limitations)
-	}
-	if strings.TrimSpace(selfDesc.MintingModel) != "" {
-		out["mintingModel"] = strings.TrimSpace(selfDesc.MintingModel)
-	}
-	return out
-}
-
-func buildMintConversationFinalizeCapabilities(capabilities []soul.CapabilityV2) []any {
-	out := make([]any, 0, len(capabilities))
-	for i := range capabilities {
-		c := capabilities[i]
-		item := map[string]any{
-			"capability": strings.TrimSpace(c.Capability),
-			"scope":      strings.TrimSpace(c.Scope),
-			"claimLevel": strings.ToLower(strings.TrimSpace(c.ClaimLevel)),
-		}
-		if len(c.Constraints) > 0 {
-			item["constraints"] = c.Constraints
-		}
-		if strings.TrimSpace(c.LastValidated) != "" {
-			item["lastValidated"] = strings.TrimSpace(c.LastValidated)
-		}
-		if strings.TrimSpace(c.ValidationRef) != "" {
-			item["validationRef"] = strings.TrimSpace(c.ValidationRef)
-		}
-		if strings.TrimSpace(c.DegradesTo) != "" {
-			item["degradesTo"] = strings.TrimSpace(c.DegradesTo)
-		}
-		out = append(out, item)
-	}
-	return out
-}
-
-func buildMintConversationFinalizeBoundaries(boundaries []soul.BoundaryV2, boundarySignatures map[string]string, issuedAt string, nextVersion int) []any {
-	out := make([]any, 0, len(boundaries))
-	for i := range boundaries {
-		b := boundaries[i]
-		item := map[string]any{
-			"id":             strings.TrimSpace(b.ID),
-			"category":       strings.ToLower(strings.TrimSpace(b.Category)),
-			"statement":      strings.TrimSpace(b.Statement),
-			"addedAt":        issuedAt,
-			"addedInVersion": strconv.Itoa(nextVersion),
-			"signature":      strings.TrimSpace(boundarySignatures[strings.TrimSpace(b.ID)]),
-		}
-		if strings.TrimSpace(b.Rationale) != "" {
-			item["rationale"] = strings.TrimSpace(b.Rationale)
-		}
-		if b.Supersedes != nil && strings.TrimSpace(*b.Supersedes) != "" {
-			item["supersedes"] = strings.TrimSpace(*b.Supersedes)
-		}
-		out = append(out, item)
-	}
-	return out
-}
-
-func nonNilMintConversationTransparency(transparency map[string]any) map[string]any {
-	if transparency == nil {
-		return map[string]any{}
-	}
-	return transparency
-}
-
-func parseMintConversationFinalizeV2Registration(regBytes []byte) (*soul.RegistrationFileV2, *apptheory.AppError) {
-	parsed, err := soul.ParseRegistrationFileV2(regBytes)
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "invalid v2 registration schema"}
-	}
-	if err := parsed.Validate(); err != nil {
-		return nil, &apptheory.AppError{Code: "app.bad_request", Message: err.Error()}
-	}
-	return parsed, nil
 }
 
 func buildMintConversationSystemPrompt(reg *models.SoulAgentRegistration) string {
