@@ -6,7 +6,7 @@
     },
     "SsrFunctionUrl": {
       "Properties": {
-        "AuthType": "NONE",
+        "AuthType": "AWS_IAM",
         "InvokeMode": "RESPONSE_STREAM",
         "TargetFunctionArn": {
           "Fn::GetAtt": [
@@ -164,10 +164,6 @@
             },
             {
               "PathPattern": "api/v1/soul/agents/*/mint-conversation*",
-              "TargetOriginId": "sse-origin"
-            },
-            {
-              "PathPattern": "api/v1/soul/instance/agents/register/*/mint-conversation*",
               "TargetOriginId": "sse-origin"
             },
             {

@@ -4,11 +4,12 @@ This rubric defines what “10/10” means and how category grades are computed.
 “green by dilution” by making scoring **versioned, measurable, and repeatable**.
 
 ## Versioning (no moving goalposts)
-- **Rubric version:** `v0.1.5` (2026-04-25)
+- **Rubric version:** `v0.1.6` (2026-06-14)
 - **Comparability rule:** grades are comparable only within the same version.
 - **Change rule:** bump the version + changelog entry for any rubric change (what changed + why).
 
 ### Changelog
+- `v0.1.6`: Tighten SEC-8 CloudFront composition verification so the exact Lesser-used instance-key registration mint-conversation SSE route must be present and pinned to the SSE-capable control-plane origin.
 - `v0.1.5`: Add CMP-4 bounded soul comm mailbox controls verifier for the approved host-authoritative mailbox content/state exception.
 - `v0.1.4`: Extend CON-3 to include lesser-host REST contract parity for the soul mint-conversation surface and the generated adapter/SSE companion artifacts.
 - `v0.1.3`: Extend CON-2 to include Solidity lint (solhint) and SEC-1 to include Solidity SAST (Slither) via the rubric verifier.

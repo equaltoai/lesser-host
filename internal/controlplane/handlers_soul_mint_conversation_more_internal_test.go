@@ -616,6 +616,7 @@ func TestMintConversationGetCompleteAndFinalizeGuards(t *testing.T) {
 	testMintConversationCompleteRequiresConversationID(t)
 	testMintConversationCompleteRejectsConversationNotInProgress(t)
 	testMintConversationCompleteRejectsPublishedRegistration(t)
+	testMintConversationCompleteRejectsMissingAssistantTurn(t)
 	testMintConversationCompleteAcceptsStringDeclarations(t)
 	testMintConversationCompleteAcceptsObjectDeclarations(t)
 	testMintConversationBeginFinalizeRequiresBucketConfiguration(t)
@@ -638,6 +639,10 @@ func mintConversationHandleReg() models.SoulAgentRegistration {
 		DomainNormalized: "example.com",
 		AgentID:          "0x" + strings.Repeat("11", 32),
 	}
+}
+
+func mintConversationDurableAssistantMessagesJSON() string {
+	return `[{"role":"user","content":"describe yourself"},{"role":"assistant","content":"done"}]`
 }
 
 func testMintConversationHandleRequiresRegistrationID(t *testing.T) {
@@ -921,6 +926,38 @@ func testMintConversationCompleteRejectsPublishedRegistration(t *testing.T) {
 	}
 }
 
+func testMintConversationCompleteRejectsMissingAssistantTurn(t *testing.T) {
+	t.Helper()
+	reg := mintConversationGuardReg()
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	stubMintConversationRegistration(t, tdb, reg)
+	stubMintConversationDomainAccess(t, tdb, reg.DomainNormalized)
+	stubMintConversationIdentity(t, tdb, nil, theoryErrors.ErrItemNotFound)
+	tdb.qConv.On("First", mock.AnythingOfType("*models.SoulAgentMintConversation")).Return(nil).Run(func(args mock.Arguments) {
+		dest, ok := args.Get(0).(*models.SoulAgentMintConversation)
+		if !ok || dest == nil {
+			t.Fatalf("expected *models.SoulAgentMintConversation, got %#v", args.Get(0))
+		}
+		*dest = models.SoulAgentMintConversation{
+			AgentID:        reg.AgentID,
+			ConversationID: mintConversationTestConversationID,
+			Status:         models.SoulMintConversationStatusInProgress,
+			Messages:       encodeMintConversationBlob(`[{"role":"user","content":"describe yourself"}]`),
+		}
+	}).Once()
+	body := mustMarshalJSON(t, map[string]any{"declarations": testMintConversationDecl()})
+	ctx := adminCtx()
+	ctx.Params = map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID}
+	ctx.Request.Body = body
+	_, err := s.handleSoulCompleteMintConversation(ctx)
+	appErr, ok := err.(*apptheory.AppError)
+	if !ok || appErr.Code != appErrCodeConflict || appErr.Message != "conversation has no completed assistant turn" {
+		t.Fatalf("expected durable assistant-turn conflict, got %#v", err)
+	}
+	tdb.qConv.AssertNumberOfCalls(t, "Update", 0)
+}
+
 func testMintConversationCompleteAcceptsStringDeclarations(t *testing.T) {
 	t.Helper()
 	reg := mintConversationGuardReg()
@@ -934,7 +971,12 @@ func testMintConversationCompleteAcceptsStringDeclarations(t *testing.T) {
 		if !ok || dest == nil {
 			t.Fatalf("expected *models.SoulAgentMintConversation, got %#v", args.Get(0))
 		}
-		*dest = models.SoulAgentMintConversation{AgentID: reg.AgentID, ConversationID: mintConversationTestConversationID, Status: models.SoulMintConversationStatusInProgress}
+		*dest = models.SoulAgentMintConversation{
+			AgentID:        reg.AgentID,
+			ConversationID: mintConversationTestConversationID,
+			Status:         models.SoulMintConversationStatusInProgress,
+			Messages:       encodeMintConversationBlob(mintConversationDurableAssistantMessagesJSON()),
+		}
 	}).Once()
 	tdb.qConv.On("Update", []string{"Status", "ProducedDeclarations", "CompletedAt", "Usage"}).Return(nil).Once()
 	declBytes := mustMarshalJSON(t, testMintConversationDecl())
@@ -968,7 +1010,12 @@ func testMintConversationCompleteAcceptsObjectDeclarations(t *testing.T) {
 		if !ok || dest == nil {
 			t.Fatalf("expected *models.SoulAgentMintConversation, got %#v", args.Get(0))
 		}
-		*dest = models.SoulAgentMintConversation{AgentID: reg.AgentID, ConversationID: "conv-2", Status: models.SoulMintConversationStatusInProgress}
+		*dest = models.SoulAgentMintConversation{
+			AgentID:        reg.AgentID,
+			ConversationID: "conv-2",
+			Status:         models.SoulMintConversationStatusInProgress,
+			Messages:       encodeMintConversationBlob(mintConversationDurableAssistantMessagesJSON()),
+		}
 	}).Once()
 	tdb.qConv.On("Update", []string{"Status", "ProducedDeclarations", "CompletedAt", "Usage"}).Return(nil).Once()
 	body := mustMarshalJSON(t, map[string]any{"declarations": testMintConversationDecl()})
