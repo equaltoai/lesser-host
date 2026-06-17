@@ -181,11 +181,14 @@ func (s *Server) handleSoulInstanceCompleteMintConversation(ctx *apptheory.Conte
 	if appErr != nil {
 		return nil, appErr
 	}
-	if publishGuardErr := s.ensureMintConversationAgentNotPublished(ctx.Context(), convCtx.agentIDHex); publishGuardErr != nil {
-		return nil, soulInstanceBootstrapConversationErrorFromAppError(publishGuardErr)
+	publishGuardErr := s.ensureMintConversationAgentNotPublished(ctx.Context(), convCtx.agentIDHex)
+	if replayReady, reason := mintConversationCompletionReplayReady(convCtx.conv); replayReady {
+		return apptheory.JSON(http.StatusOK, convCtx.conv)
+	} else if reason != "" {
+		return nil, soulInstanceMintConversationCompletionConflict(convCtx.conv, reason)
 	}
-	if appErr := requireMintConversationStatus(convCtx.conv, models.SoulMintConversationStatusInProgress, "conversation is not in progress", ""); appErr != nil {
-		return nil, soulInstanceBootstrapConversationErrorFromAppError(appErr)
+	if publishGuardErr != nil {
+		return nil, soulInstanceBootstrapConversationErrorFromAppError(publishGuardErr)
 	}
 	resp, err := s.completeSoulMintConversationForRegistration(ctx, mintConversationRegistrationContext{
 		reg:        convCtx.reg,
@@ -594,6 +597,15 @@ func soulInstanceBootstrapBoundaryError(field string, reason string) *apptheory.
 			"reason":   strings.TrimSpace(reason),
 			"boundary": soulInstanceBootstrapBoundaryInstanceDomain,
 		},
+	)
+}
+
+func soulInstanceMintConversationCompletionConflict(conv *models.SoulAgentMintConversation, reason string) *apptheory.AppTheoryError {
+	return soulInstanceBootstrapError(
+		soulInstanceBootstrapCodeConflict,
+		soulMintConversationCompleteConflictMessage,
+		http.StatusConflict,
+		mintConversationCompletionConflictDetails(conv, reason),
 	)
 }
 

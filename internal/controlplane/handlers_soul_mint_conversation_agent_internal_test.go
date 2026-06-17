@@ -421,6 +421,7 @@ func TestHandleSoulAgentMintConversation_ConflictsForPublishedAgent(t *testing.T
 
 	stubMintConversationIdentity(t, tdb, identity, nil)
 	stubMintConversationDomainAccess(t, tdb, identity.Domain)
+	tdb.qConv.On("First", mock.AnythingOfType("*models.SoulAgentMintConversation")).Return(theoryErrors.ErrItemNotFound).Once()
 
 	ctx := &apptheory.Context{
 		AuthIdentity: testUsernameAlice,
@@ -442,6 +443,7 @@ func TestHandleSoulAgentCompleteMintConversation_ConflictsForPublishedAgent(t *t
 
 	stubMintConversationIdentity(t, tdb, identity, nil)
 	stubMintConversationDomainAccess(t, tdb, identity.Domain)
+	tdb.qConv.On("First", mock.AnythingOfType("*models.SoulAgentMintConversation")).Return(theoryErrors.ErrItemNotFound).Once()
 
 	ctx := &apptheory.Context{
 		AuthIdentity: testUsernameAlice,
@@ -454,6 +456,46 @@ func TestHandleSoulAgentCompleteMintConversation_ConflictsForPublishedAgent(t *t
 	if _, err := s.handleSoulAgentCompleteMintConversation(ctx); err == nil {
 		t.Fatalf("expected published-agent conflict")
 	}
+}
+
+func TestHandleSoulAgentCompleteMintConversation_ReturnsCompletedConversationReplay(t *testing.T) {
+	t.Parallel()
+
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	identity := testMintConversationIdentity()
+	identity.SelfDescriptionVersion = 1
+	declBytes := mustMarshalJSON(t, testMintConversationDecl())
+
+	stubMintConversationIdentity(t, tdb, identity, nil)
+	stubMintConversationDomainAccess(t, tdb, identity.Domain)
+	stubMintConversationConversation(t, tdb, models.SoulAgentMintConversation{
+		AgentID:              identity.AgentID,
+		ConversationID:       mintConversationTestConversationID,
+		Status:               models.SoulMintConversationStatusCompleted,
+		ProducedDeclarations: encodeMintConversationBlob(string(declBytes)),
+	})
+
+	ctx := &apptheory.Context{
+		AuthIdentity: testUsernameAlice,
+		Params: map[string]string{
+			"agentId":        identity.AgentID,
+			"conversationId": mintConversationTestConversationID,
+		},
+	}
+
+	resp, err := s.handleSoulAgentCompleteMintConversation(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var out models.SoulAgentMintConversation
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.Status != http.StatusOK || out.Status != models.SoulMintConversationStatusCompleted || out.ProducedDeclarations != string(declBytes) {
+		t.Fatalf("expected completed conversation replay, status=%d out=%#v", resp.Status, out)
+	}
+	tdb.qConv.AssertNumberOfCalls(t, "Update", 0)
 }
 
 func newMintConversationInstanceReadContext(agentID string, conversationID string, query map[string][]string) *apptheory.Context {
@@ -505,6 +547,26 @@ func requireAppTheoryError(t *testing.T, err error) *apptheory.AppTheoryError {
 		t.Fatalf("expected AppTheoryError, got %T: %v", err, err)
 	}
 	return appErr
+}
+
+func assertMintConversationCompletionConflictDetails(t *testing.T, appErr *apptheory.AppTheoryError, wantCode string, wantStatusCode int, wantStatus string, wantPresent bool, wantValid bool, wantReason string) {
+	t.Helper()
+
+	if appErr.Code != wantCode || appErr.StatusCode != wantStatusCode || appErr.Message != soulMintConversationCompleteConflictMessage {
+		t.Fatalf("expected completion-state conflict code=%s status=%d message=%q, got %#v", wantCode, wantStatusCode, soulMintConversationCompleteConflictMessage, appErr)
+	}
+	if got := appErr.Details[soulMintConversationCompleteDetailStatus]; got != wantStatus {
+		t.Fatalf("expected conversation status detail %q, got %#v in %#v", wantStatus, got, appErr.Details)
+	}
+	if got := appErr.Details[soulMintConversationCompleteDetailDeclarationsPresent]; got != wantPresent {
+		t.Fatalf("expected declarations-present detail %v, got %#v in %#v", wantPresent, got, appErr.Details)
+	}
+	if got := appErr.Details[soulMintConversationCompleteDetailDeclarationsValid]; got != wantValid {
+		t.Fatalf("expected declarations-valid detail %v, got %#v in %#v", wantValid, got, appErr.Details)
+	}
+	if got := appErr.Details[soulMintConversationCompleteDetailReason]; got != wantReason {
+		t.Fatalf("expected reason detail %q, got %#v in %#v", wantReason, got, appErr.Details)
+	}
 }
 
 func TestHandleSoulAgentAliasRoutes_RequireConversationID(t *testing.T) {

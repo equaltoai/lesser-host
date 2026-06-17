@@ -465,8 +465,10 @@ These are the most important contract-level failure cases for clients to handle 
 
 - registration already published
   - review/finalize routes will reject workflows that already graduated
-- conversation is not in progress
-  - completion requires an active conversation
+- conversation cannot be completed from current state
+  - completion requires either an active `in_progress` conversation or a replay of an already `completed` conversation
+    with valid produced declarations; failed conversations and completed conversations without declarations fail closed
+    with `conversation_status` and `produced_declarations_present` details where available
 - promotion not found
   - agent-scoped promotion routes require a known durable workflow
 - unauthorized / forbidden
