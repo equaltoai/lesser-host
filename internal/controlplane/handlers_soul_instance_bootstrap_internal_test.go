@@ -930,6 +930,9 @@ func TestSoulInstanceCompleteMintConversation_ReturnsCompletedConversationReplay
 	tdb := newMintConversationTestDB()
 	s := newMintConversationServer(tdb)
 	reg := mintConversationHandleReg()
+	identity := testMintConversationIdentity()
+	identity.AgentID = reg.AgentID
+	identity.SelfDescriptionVersion = 1
 	declBytes := mustMarshalJSON(t, testMintConversationDecl())
 	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
 	stubMintConversationRegistration(t, tdb, reg)
@@ -943,7 +946,7 @@ func TestSoulInstanceCompleteMintConversation_ReturnsCompletedConversationReplay
 		CreatedAt:            time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
 		CompletedAt:          time.Date(2026, 3, 7, 12, 5, 0, 0, time.UTC),
 	})
-	stubMintConversationIdentity(t, tdb, nil, theoryErrors.ErrItemNotFound)
+	stubMintConversationIdentity(t, tdb, identity, nil)
 
 	resp, err := s.handleSoulInstanceCompleteMintConversation(newSoulInstanceBootstrapContext(
 		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},

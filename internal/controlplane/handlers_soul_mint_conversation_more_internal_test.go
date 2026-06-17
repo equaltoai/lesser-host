@@ -707,6 +707,7 @@ func testMintConversationHandleRejectsPublishedRegistration(t *testing.T) {
 	stubMintConversationRegistration(t, tdb, reg)
 	stubMintConversationDomainAccess(t, tdb, reg.DomainNormalized)
 	stubMintConversationIdentity(t, tdb, identity, nil)
+	tdb.qConv.On("First", mock.AnythingOfType("*models.SoulAgentMintConversation")).Return(theoryErrors.ErrItemNotFound).Once()
 
 	ctx := adminCtx()
 	ctx.Params = map[string]string{"id": reg.ID}
@@ -908,10 +909,13 @@ func testMintConversationCompleteReturnsCompletedConversationReplay(t *testing.T
 	reg := mintConversationGuardReg()
 	tdb := newMintConversationTestDB()
 	s := newMintConversationServer(tdb)
+	identity := testMintConversationIdentity()
+	identity.AgentID = reg.AgentID
+	identity.SelfDescriptionVersion = 1
 	declBytes := mustMarshalJSON(t, testMintConversationDecl())
 	stubMintConversationRegistration(t, tdb, reg)
 	stubMintConversationDomainAccess(t, tdb, reg.DomainNormalized)
-	stubMintConversationIdentity(t, tdb, nil, theoryErrors.ErrItemNotFound)
+	stubMintConversationIdentity(t, tdb, identity, nil)
 	tdb.qConv.On("First", mock.AnythingOfType("*models.SoulAgentMintConversation")).Return(nil).Run(func(args mock.Arguments) {
 		dest, ok := args.Get(0).(*models.SoulAgentMintConversation)
 		if !ok || dest == nil {
@@ -952,6 +956,7 @@ func testMintConversationCompleteRejectsPublishedRegistration(t *testing.T) {
 	stubMintConversationRegistration(t, tdb, reg)
 	stubMintConversationDomainAccess(t, tdb, reg.DomainNormalized)
 	stubMintConversationIdentity(t, tdb, identity, nil)
+	tdb.qConv.On("First", mock.AnythingOfType("*models.SoulAgentMintConversation")).Return(theoryErrors.ErrItemNotFound).Once()
 
 	ctx := adminCtx()
 	ctx.Params = map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID}

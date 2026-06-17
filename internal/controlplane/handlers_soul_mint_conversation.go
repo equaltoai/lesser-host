@@ -1185,21 +1185,25 @@ func (s *Server) handleSoulCompleteMintConversation(ctx *apptheory.Context) (*ap
 	if appErr != nil {
 		return nil, appErr
 	}
-	if publishGuardErr := s.ensureMintConversationAgentNotPublished(ctx.Context(), regCtx.agentIDHex); publishGuardErr != nil {
-		return nil, publishGuardErr
-	}
 	conversationID, appErr := requireMintConversationID(ctx)
 	if appErr != nil {
 		return nil, appErr
 	}
+	publishGuardErr := s.ensureMintConversationAgentNotPublished(ctx.Context(), regCtx.agentIDHex)
 	conv, appErr := s.loadMintConversationForCompletion(ctx.Context(), regCtx.agentIDHex, conversationID)
 	if appErr != nil {
+		if publishGuardErr != nil {
+			return nil, publishGuardErr
+		}
 		return nil, appErr
 	}
 	if replayReady, reason := mintConversationCompletionReplayReady(conv); replayReady {
 		return apptheory.JSON(http.StatusOK, conv)
 	} else if reason != "" {
 		return nil, mintConversationCompletionStateConflict(conv, reason)
+	}
+	if publishGuardErr != nil {
+		return nil, publishGuardErr
 	}
 
 	return s.completeSoulMintConversationForRegistration(ctx, regCtx, conv, conversationID)
@@ -1210,8 +1214,9 @@ func (s *Server) handleSoulAgentCompleteMintConversation(ctx *apptheory.Context)
 	if appErr != nil {
 		return nil, appErr
 	}
+	var publishGuardErr *apptheory.AppError
 	if agentCtx.identity != nil && agentCtx.identity.SelfDescriptionVersion > 0 {
-		return nil, &apptheory.AppError{Code: "app.conflict", Message: soulMintConversationAlreadyPublishedMessage}
+		publishGuardErr = &apptheory.AppError{Code: "app.conflict", Message: soulMintConversationAlreadyPublishedMessage}
 	}
 	conversationID, appErr := requireMintConversationID(ctx)
 	if appErr != nil {
@@ -1219,12 +1224,18 @@ func (s *Server) handleSoulAgentCompleteMintConversation(ctx *apptheory.Context)
 	}
 	conv, appErr := s.loadMintConversationForCompletion(ctx.Context(), agentCtx.agentIDHex, conversationID)
 	if appErr != nil {
+		if publishGuardErr != nil {
+			return nil, publishGuardErr
+		}
 		return nil, appErr
 	}
 	if replayReady, reason := mintConversationCompletionReplayReady(conv); replayReady {
 		return apptheory.JSON(http.StatusOK, conv)
 	} else if reason != "" {
 		return nil, mintConversationCompletionStateConflict(conv, reason)
+	}
+	if publishGuardErr != nil {
+		return nil, publishGuardErr
 	}
 
 	return s.completeSoulMintConversationForRegistration(ctx, mintConversationRegistrationContext{

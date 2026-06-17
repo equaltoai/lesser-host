@@ -421,6 +421,7 @@ func TestHandleSoulAgentMintConversation_ConflictsForPublishedAgent(t *testing.T
 
 	stubMintConversationIdentity(t, tdb, identity, nil)
 	stubMintConversationDomainAccess(t, tdb, identity.Domain)
+	tdb.qConv.On("First", mock.AnythingOfType("*models.SoulAgentMintConversation")).Return(theoryErrors.ErrItemNotFound).Once()
 
 	ctx := &apptheory.Context{
 		AuthIdentity: testUsernameAlice,
@@ -442,6 +443,7 @@ func TestHandleSoulAgentCompleteMintConversation_ConflictsForPublishedAgent(t *t
 
 	stubMintConversationIdentity(t, tdb, identity, nil)
 	stubMintConversationDomainAccess(t, tdb, identity.Domain)
+	tdb.qConv.On("First", mock.AnythingOfType("*models.SoulAgentMintConversation")).Return(theoryErrors.ErrItemNotFound).Once()
 
 	ctx := &apptheory.Context{
 		AuthIdentity: testUsernameAlice,
@@ -462,6 +464,7 @@ func TestHandleSoulAgentCompleteMintConversation_ReturnsCompletedConversationRep
 	tdb := newMintConversationTestDB()
 	s := newMintConversationServer(tdb)
 	identity := testMintConversationIdentity()
+	identity.SelfDescriptionVersion = 1
 	declBytes := mustMarshalJSON(t, testMintConversationDecl())
 
 	stubMintConversationIdentity(t, tdb, identity, nil)
