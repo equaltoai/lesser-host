@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -614,7 +615,8 @@ func TestMintConversationGetCompleteAndFinalizeGuards(t *testing.T) {
 	testMintConversationGetConversationSuccess(t)
 	testMintConversationGetRequiresDomainOwnership(t)
 	testMintConversationCompleteRequiresConversationID(t)
-	testMintConversationCompleteRejectsConversationNotInProgress(t)
+	testMintConversationCompleteRejectsFailedConversationState(t)
+	testMintConversationCompleteReturnsCompletedConversationReplay(t)
 	testMintConversationCompleteRejectsPublishedRegistration(t)
 	testMintConversationCompleteRejectsMissingAssistantTurn(t)
 	testMintConversationCompleteAcceptsStringDeclarations(t)
@@ -879,7 +881,7 @@ func testMintConversationCompleteRequiresConversationID(t *testing.T) {
 	}
 }
 
-func testMintConversationCompleteRejectsConversationNotInProgress(t *testing.T) {
+func testMintConversationCompleteRejectsFailedConversationState(t *testing.T) {
 	t.Helper()
 	reg := mintConversationGuardReg()
 	tdb := newMintConversationTestDB()
@@ -892,15 +894,50 @@ func testMintConversationCompleteRejectsConversationNotInProgress(t *testing.T) 
 		if !ok || dest == nil {
 			t.Fatalf("expected *models.SoulAgentMintConversation, got %#v", args.Get(0))
 		}
-		*dest = models.SoulAgentMintConversation{AgentID: reg.AgentID, ConversationID: mintConversationTestConversationID, Status: models.SoulMintConversationStatusCompleted}
+		*dest = models.SoulAgentMintConversation{AgentID: reg.AgentID, ConversationID: mintConversationTestConversationID, Status: models.SoulMintConversationStatusFailed}
 	}).Once()
 	ctx := adminCtx()
 	ctx.Params = map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID}
 	_, err := s.handleSoulCompleteMintConversation(ctx)
-	appErr, ok := err.(*apptheory.AppError)
-	if !ok || appErr.Message != "conversation is not in progress" {
-		t.Fatalf("expected conflict error, got %#v", err)
+	appErr := requireAppTheoryError(t, err)
+	assertMintConversationCompletionConflictDetails(t, appErr, appErrCodeConflict, http.StatusConflict, models.SoulMintConversationStatusFailed, false, false, soulMintConversationCompleteReasonInvalidState)
+}
+
+func testMintConversationCompleteReturnsCompletedConversationReplay(t *testing.T) {
+	t.Helper()
+	reg := mintConversationGuardReg()
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	declBytes := mustMarshalJSON(t, testMintConversationDecl())
+	stubMintConversationRegistration(t, tdb, reg)
+	stubMintConversationDomainAccess(t, tdb, reg.DomainNormalized)
+	stubMintConversationIdentity(t, tdb, nil, theoryErrors.ErrItemNotFound)
+	tdb.qConv.On("First", mock.AnythingOfType("*models.SoulAgentMintConversation")).Return(nil).Run(func(args mock.Arguments) {
+		dest, ok := args.Get(0).(*models.SoulAgentMintConversation)
+		if !ok || dest == nil {
+			t.Fatalf("expected *models.SoulAgentMintConversation, got %#v", args.Get(0))
+		}
+		*dest = models.SoulAgentMintConversation{
+			AgentID:              reg.AgentID,
+			ConversationID:       mintConversationTestConversationID,
+			Status:               models.SoulMintConversationStatusCompleted,
+			ProducedDeclarations: encodeMintConversationBlob(string(declBytes)),
+		}
+	}).Once()
+	ctx := adminCtx()
+	ctx.Params = map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID}
+	resp, err := s.handleSoulCompleteMintConversation(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
+	var out models.SoulAgentMintConversation
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.Status != http.StatusOK || out.Status != models.SoulMintConversationStatusCompleted || out.ProducedDeclarations != string(declBytes) {
+		t.Fatalf("expected completed conversation replay, status=%d out=%#v", resp.Status, out)
+	}
+	tdb.qConv.AssertNumberOfCalls(t, "Update", 0)
 }
 
 func testMintConversationCompleteRejectsPublishedRegistration(t *testing.T) {

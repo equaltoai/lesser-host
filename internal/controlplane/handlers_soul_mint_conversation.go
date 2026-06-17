@@ -40,6 +40,16 @@ const (
 	mintConversationBlobPrefix        = "b64:"
 
 	soulMintConversationAlreadyPublishedMessage = "registration is already published"
+
+	soulMintConversationCompleteConflictMessage           = "conversation cannot be completed from current state"
+	soulMintConversationCompleteReasonInvalidState        = "invalid_completion_state"
+	soulMintConversationCompleteReasonMissingDeclarations = "missing_produced_declarations"
+	soulMintConversationCompleteReasonInvalidDeclarations = "invalid_produced_declarations"
+	soulMintConversationCompleteDetailReason              = "reason"
+	soulMintConversationCompleteDetailStatus              = "conversation_status"
+	soulMintConversationCompleteDetailExpectedStatus      = "expected_status"
+	soulMintConversationCompleteDetailDeclarationsPresent = "produced_declarations_present"
+	soulMintConversationCompleteDetailDeclarationsValid   = "produced_declarations_valid"
 )
 
 // --- Request / Response types ---
@@ -407,6 +417,74 @@ func (s *Server) loadMintConversationByStatus(ctx context.Context, agentIDHex st
 		return nil, appErr
 	}
 	return conv, nil
+}
+
+func (s *Server) loadMintConversationForCompletion(ctx context.Context, agentIDHex string, conversationID string) (*models.SoulAgentMintConversation, *apptheory.AppError) {
+	conv, err := getSoulAgentItemBySK[models.SoulAgentMintConversation](s, ctx, agentIDHex, fmt.Sprintf("MINT_CONVERSATION#%s", conversationID))
+	if err != nil {
+		return nil, &apptheory.AppError{Code: "app.not_found", Message: "conversation not found"}
+	}
+	decodeMintConversationFields(conv)
+	return conv, nil
+}
+
+func mintConversationCompletionReplayReady(conv *models.SoulAgentMintConversation) (bool, string) {
+	if conv == nil {
+		return false, soulMintConversationCompleteReasonInvalidState
+	}
+	decodeMintConversationFields(conv)
+	switch strings.TrimSpace(conv.Status) {
+	case models.SoulMintConversationStatusCompleted:
+		present, valid := mintConversationProducedDeclarationsState(conv)
+		if valid {
+			return true, ""
+		}
+		if !present {
+			return false, soulMintConversationCompleteReasonMissingDeclarations
+		}
+		return false, soulMintConversationCompleteReasonInvalidDeclarations
+	case models.SoulMintConversationStatusInProgress:
+		return false, ""
+	default:
+		return false, soulMintConversationCompleteReasonInvalidState
+	}
+}
+
+func mintConversationProducedDeclarationsState(conv *models.SoulAgentMintConversation) (present bool, valid bool) {
+	if conv == nil {
+		return false, false
+	}
+	decodeMintConversationFields(conv)
+	raw := strings.TrimSpace(conv.ProducedDeclarations)
+	if raw == "" {
+		return false, false
+	}
+	_, appErr := parseAndValidateMintConversationDeclarations(raw)
+	return true, appErr == nil
+}
+
+func mintConversationCompletionConflictDetails(conv *models.SoulAgentMintConversation, reason string) map[string]any {
+	status := "unknown"
+	if conv != nil {
+		decodeMintConversationFields(conv)
+		if trimmed := strings.TrimSpace(conv.Status); trimmed != "" {
+			status = trimmed
+		}
+	}
+	present, valid := mintConversationProducedDeclarationsState(conv)
+	return map[string]any{
+		soulMintConversationCompleteDetailReason:              strings.TrimSpace(reason),
+		soulMintConversationCompleteDetailStatus:              status,
+		soulMintConversationCompleteDetailExpectedStatus:      models.SoulMintConversationStatusInProgress,
+		soulMintConversationCompleteDetailDeclarationsPresent: present,
+		soulMintConversationCompleteDetailDeclarationsValid:   valid,
+	}
+}
+
+func mintConversationCompletionStateConflict(conv *models.SoulAgentMintConversation, reason string) *apptheory.AppTheoryError {
+	return apptheory.NewAppTheoryError(appErrCodeConflict, soulMintConversationCompleteConflictMessage).
+		WithStatusCode(http.StatusConflict).
+		WithDetails(mintConversationCompletionConflictDetails(conv, reason))
 }
 
 func requireMintConversationStatus(conv *models.SoulAgentMintConversation, expectedStatus string, statusMessage string, emptyDeclMessage string) *apptheory.AppError {
@@ -1114,9 +1192,14 @@ func (s *Server) handleSoulCompleteMintConversation(ctx *apptheory.Context) (*ap
 	if appErr != nil {
 		return nil, appErr
 	}
-	conv, appErr := s.loadMintConversationByStatus(ctx.Context(), regCtx.agentIDHex, conversationID, models.SoulMintConversationStatusInProgress, "conversation is not in progress", "")
+	conv, appErr := s.loadMintConversationForCompletion(ctx.Context(), regCtx.agentIDHex, conversationID)
 	if appErr != nil {
 		return nil, appErr
+	}
+	if replayReady, reason := mintConversationCompletionReplayReady(conv); replayReady {
+		return apptheory.JSON(http.StatusOK, conv)
+	} else if reason != "" {
+		return nil, mintConversationCompletionStateConflict(conv, reason)
 	}
 
 	return s.completeSoulMintConversationForRegistration(ctx, regCtx, conv, conversationID)
@@ -1134,9 +1217,14 @@ func (s *Server) handleSoulAgentCompleteMintConversation(ctx *apptheory.Context)
 	if appErr != nil {
 		return nil, appErr
 	}
-	conv, appErr := s.loadMintConversationByStatus(ctx.Context(), agentCtx.agentIDHex, conversationID, models.SoulMintConversationStatusInProgress, "conversation is not in progress", "")
+	conv, appErr := s.loadMintConversationForCompletion(ctx.Context(), agentCtx.agentIDHex, conversationID)
 	if appErr != nil {
 		return nil, appErr
+	}
+	if replayReady, reason := mintConversationCompletionReplayReady(conv); replayReady {
+		return apptheory.JSON(http.StatusOK, conv)
+	} else if reason != "" {
+		return nil, mintConversationCompletionStateConflict(conv, reason)
 	}
 
 	return s.completeSoulMintConversationForRegistration(ctx, mintConversationRegistrationContext{
