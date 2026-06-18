@@ -100,3 +100,25 @@ func TestParseAndValidateMintConversationDeclarations_AcceptsValid(t *testing.T)
 		t.Fatalf("unexpected error: %v", appErr)
 	}
 }
+
+func TestParseAndValidateMintConversationDeclarations_AcceptsHostedContractEmptyArrays(t *testing.T) {
+	t.Parallel()
+
+	raw := `{
+	  "selfDescription": {"purpose": "A valid purpose string.", "authoredBy": "agent"},
+	  "capabilities": [],
+	  "boundaries": [],
+	  "transparency": {}
+	}`
+
+	got, appErr := parseAndValidateMintConversationDeclarations(raw)
+	if appErr != nil {
+		t.Fatalf("unexpected error: %v", appErr)
+	}
+	if got.Capabilities == nil {
+		t.Fatalf("expected capabilities to remain a concrete empty array")
+	}
+	if got.Boundaries == nil {
+		t.Fatalf("expected boundaries to remain a concrete empty array")
+	}
+}

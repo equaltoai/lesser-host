@@ -2393,8 +2393,8 @@ func (s *Server) extractMintConversationDeclarations(ctx context.Context, reg *m
 func buildMintConversationProducedDeclarations(draft llm.MintConversationDeclarationsDraft, now time.Time, modelSet string) (soulMintConversationProducedDeclarations, *apptheory.AppError) {
 	decl := soulMintConversationProducedDeclarations{
 		SelfDescription: draft.SelfDescription,
-		Capabilities:    nil,
-		Boundaries:      nil,
+		Capabilities:    []soul.CapabilityV2{},
+		Boundaries:      []soul.BoundaryV2{},
 		Transparency:    draft.Transparency,
 	}
 
@@ -2415,9 +2415,6 @@ func buildMintConversationProducedDeclarations(draft llm.MintConversationDeclara
 		}
 		caps = append(caps, c)
 	}
-	if len(caps) == 0 {
-		return soulMintConversationProducedDeclarations{}, &apptheory.AppError{Code: "app.internal", Message: "invalid extracted capabilities"}
-	}
 	decl.Capabilities = caps
 
 	bounds := make([]soul.BoundaryV2, 0, len(draft.Boundaries))
@@ -2437,9 +2434,6 @@ func buildMintConversationProducedDeclarations(draft llm.MintConversationDeclara
 		}
 		bounds = append(bounds, entry)
 	}
-	if len(bounds) == 0 {
-		return soulMintConversationProducedDeclarations{}, &apptheory.AppError{Code: "app.internal", Message: "invalid extracted boundaries"}
-	}
 	decl.Boundaries = bounds
 
 	if decl.Transparency == nil {
@@ -2455,6 +2449,26 @@ func parseAndValidateMintConversationDeclarations(raw string) (soulMintConversat
 		return soulMintConversationProducedDeclarations{}, &apptheory.AppError{Code: "app.bad_request", Message: "declarations is required"}
 	}
 
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &fields); err != nil {
+		return soulMintConversationProducedDeclarations{}, &apptheory.AppError{Code: "app.bad_request", Message: "invalid declarations JSON"}
+	}
+	if !mintConversationJSONFieldPresent(fields, "capabilities") {
+		return soulMintConversationProducedDeclarations{}, &apptheory.AppError{Code: "app.bad_request", Message: "capabilities is required"}
+	}
+	if !mintConversationJSONFieldPresent(fields, "boundaries") {
+		return soulMintConversationProducedDeclarations{}, &apptheory.AppError{Code: "app.bad_request", Message: "boundaries is required"}
+	}
+	if !mintConversationJSONFieldPresent(fields, "transparency") {
+		return soulMintConversationProducedDeclarations{}, &apptheory.AppError{Code: "app.bad_request", Message: "transparency is required"}
+	}
+	if !mintConversationJSONFieldIsArray(fields["capabilities"]) {
+		return soulMintConversationProducedDeclarations{}, &apptheory.AppError{Code: "app.bad_request", Message: "capabilities must be an array"}
+	}
+	if !mintConversationJSONFieldIsArray(fields["boundaries"]) {
+		return soulMintConversationProducedDeclarations{}, &apptheory.AppError{Code: "app.bad_request", Message: "boundaries must be an array"}
+	}
+
 	var decl soulMintConversationProducedDeclarations
 	if err := json.Unmarshal([]byte(raw), &decl); err != nil {
 		return soulMintConversationProducedDeclarations{}, &apptheory.AppError{Code: "app.bad_request", Message: "invalid declarations JSON"}
@@ -2463,16 +2477,10 @@ func parseAndValidateMintConversationDeclarations(raw string) (soulMintConversat
 	if err := decl.SelfDescription.Validate(); err != nil {
 		return soulMintConversationProducedDeclarations{}, &apptheory.AppError{Code: "app.bad_request", Message: "invalid selfDescription: " + err.Error()}
 	}
-	if len(decl.Capabilities) == 0 {
-		return soulMintConversationProducedDeclarations{}, &apptheory.AppError{Code: "app.bad_request", Message: "capabilities is required"}
-	}
 	for i := range decl.Capabilities {
 		if err := decl.Capabilities[i].Validate(); err != nil {
 			return soulMintConversationProducedDeclarations{}, &apptheory.AppError{Code: "app.bad_request", Message: fmt.Sprintf("invalid capabilities[%d]: %s", i, err.Error())}
 		}
-	}
-	if len(decl.Boundaries) == 0 {
-		return soulMintConversationProducedDeclarations{}, &apptheory.AppError{Code: "app.bad_request", Message: "boundaries is required"}
 	}
 	for i := range decl.Boundaries {
 		if err := decl.Boundaries[i].Validate(); err != nil {
