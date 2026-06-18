@@ -345,21 +345,28 @@ func testMintConversationProducedDeclarationsBranches(t *testing.T, now time.Tim
 	}, now, "openai:gpt-5.4"); appErr == nil || appErr.Message != "invalid extracted selfDescription" {
 		t.Fatalf("expected selfDescription error, got %#v", appErr)
 	}
-	if _, appErr := buildMintConversationProducedDeclarations(llm.MintConversationDeclarationsDraft{
+	decl, appErr := buildMintConversationProducedDeclarations(llm.MintConversationDeclarationsDraft{
 		SelfDescription: soul.SelfDescriptionV2{Purpose: "A sufficiently long purpose string.", AuthoredBy: "agent"},
 		Capabilities:    []soul.CapabilityV2{{Capability: "", Scope: "skip"}},
 		Boundaries:      []llm.MintConversationBoundaryDraft{{Category: "refusal", Statement: "I will not impersonate humans."}},
-	}, now, "openai:gpt-5.4"); appErr == nil || appErr.Message != "invalid extracted capabilities" {
-		t.Fatalf("expected capabilities error, got %#v", appErr)
+	}, now, "openai:gpt-5.4")
+	if appErr != nil {
+		t.Fatalf("expected hosted contract to allow empty extracted capabilities, got %#v", appErr)
+	}
+	if decl.Capabilities == nil || len(decl.Capabilities) != 0 || len(decl.Boundaries) != 1 {
+		t.Fatalf("expected empty capabilities with retained valid boundary, got %#v", decl)
 	}
 
-	decl, appErr := buildMintConversationProducedDeclarations(llm.MintConversationDeclarationsDraft{
+	decl, appErr = buildMintConversationProducedDeclarations(llm.MintConversationDeclarationsDraft{
 		SelfDescription: soul.SelfDescriptionV2{Purpose: "A sufficiently long purpose string.", AuthoredBy: "agent"},
 		Capabilities:    []soul.CapabilityV2{{Capability: "travel_planning", Scope: "Draft itineraries."}},
 		Boundaries:      []llm.MintConversationBoundaryDraft{{Category: "", Statement: "skip"}},
 	}, now, "openai:gpt-5.4")
-	if appErr == nil || appErr.Message != "invalid extracted boundaries" {
-		t.Fatalf("expected boundaries error, got %#v / %#v", decl, appErr)
+	if appErr != nil {
+		t.Fatalf("expected hosted contract to allow empty extracted boundaries, got %#v", appErr)
+	}
+	if decl.Boundaries == nil || len(decl.Boundaries) != 0 || len(decl.Capabilities) != 1 {
+		t.Fatalf("expected retained valid capability with empty boundaries, got %#v", decl)
 	}
 
 	decl, appErr = buildMintConversationProducedDeclarations(llm.MintConversationDeclarationsDraft{

@@ -970,6 +970,56 @@ func TestSoulInstanceCompleteMintConversation_ReturnsCompletedConversationReplay
 	tdb.qLifecycle.AssertNumberOfCalls(t, "Create", 0)
 }
 
+func TestSoulInstanceCompleteMintConversation_ReplaysHostedContractEmptyDeclarationArrays(t *testing.T) {
+	t.Parallel()
+
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	reg := mintConversationHandleReg()
+	identity := testMintConversationIdentity()
+	identity.AgentID = reg.AgentID
+	identity.SelfDescriptionVersion = 1
+	decl := testMintConversationDecl()
+	decl.Capabilities = []soul.CapabilityV2{}
+	decl.Boundaries = []soul.BoundaryV2{}
+	decl.Transparency = map[string]any{}
+	declBytes := mustMarshalJSON(t, decl)
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationRegistration(t, tdb, reg)
+	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationConversation(t, tdb, models.SoulAgentMintConversation{
+		AgentID:              reg.AgentID,
+		ConversationID:       mintConversationTestConversationID,
+		Model:                "anthropic:claude-sonnet-4-6",
+		ProducedDeclarations: encodeMintConversationBlob(string(declBytes)),
+		Status:               models.SoulMintConversationStatusCompleted,
+		CreatedAt:            time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
+		CompletedAt:          time.Date(2026, 3, 7, 12, 5, 0, 0, time.UTC),
+	})
+	stubMintConversationIdentity(t, tdb, identity, nil)
+
+	resp, err := s.handleSoulInstanceCompleteMintConversation(newSoulInstanceBootstrapContext(
+		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
+		nil,
+		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
+	))
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if resp.Status != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%q", resp.Status, string(resp.Body))
+	}
+	var out models.SoulAgentMintConversation
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Status != models.SoulMintConversationStatusCompleted || out.ProducedDeclarations != string(declBytes) {
+		t.Fatalf("expected stored hosted declarations with empty arrays, got %#v", out)
+	}
+	tdb.qConv.AssertNumberOfCalls(t, "Update", 0)
+	tdb.qLifecycle.AssertNumberOfCalls(t, "Create", 0)
+}
+
 func TestSoulInstanceCompleteMintConversation_RejectsInvalidStates(t *testing.T) {
 	t.Parallel()
 
