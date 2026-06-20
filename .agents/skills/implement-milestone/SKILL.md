@@ -1,18 +1,18 @@
 ---
 name: implement-milestone
-description: Use to execute a single milestone (or GitHub Project phase) of work — feature branch off main, commits per enumerated task, PR review with gov-infra verifiers, merge to main. Runs one milestone at a time. Deploys themselves (CDK lab/live, on-chain Sepolia/mainnet, managed-instance rollout) are handled separately.
+description: Use to execute a single milestone (or GitHub Project phase) of work — feature branch off main, commits per enumerated task, PR review with Gov-infra rubric evidence, and feature -> staging integration. Runs one milestone at a time. Main promotion and deploys are operator-owned follow-ons.
 ---
 
 # Implement a milestone
 
-This skill moves host work through code, review (with CI-enforced gov-infra verifiers), and merge to `main`. host uses a single-main branch model with feature branches. Once merged, stage deploys (`theory app up --stage <stage>`), on-chain deploys (Sepolia → Safe-ready mainnet), and managed-instance rollouts follow per the roadmap.
+This skill moves host work through code, review, and feature -> `staging` integration. host uses a feature -> staging -> main release model: feature branches PR to `staging` and are gated by required review, the existing `gov-rubric` job, and the seven parallel CI jobs. Staging -> main promotion is operator-owned, accepts PRs only from `staging`, and does not require `gov-rubric` as a main-promotion gate. Once promoted to `main`, deploy stages (`theory app up --stage <lab|live>`), on-chain deploys (Sepolia → Safe-ready mainnet), and managed-instance rollouts follow per the roadmap.
 
 ## Hard preconditions
 
 Do not start without all of the following:
 
 - **A specific milestone named**, from `plan-roadmap` or a GitHub Project phase
-- **Clean working tree on `main`** at a known-green commit
+- **Clean working tree on current `main`** at a known-green commit; feature branches open against `staging` after `staging` is created/refreshed from `main` when required by the milestone
 - **MCP tools healthy.** Call `memory_recent` first.
 - **`go test ./...` passes** on `main`
 - **`go vet ./...` passes**
@@ -34,7 +34,7 @@ One feature branch per milestone. One PR per milestone. One commit per task.
 
 - **Branch name**: observed patterns — `aron/issue-<N>-<topic>`, `codex/<topic>`, `issue/<N>-<topic>`, `chore/<maintenance>`
 - **Branched from**: `main` at a known-green commit
-- **PR target**: `main`
+- **PR target**: `staging` for feature/milestone work. Only operator-owned promotion PRs target `main`, and those must use `staging` as the source branch.
 - **PR title**: clear, Conventional Commits style encouraged
 - **Open PR as draft**
 
@@ -81,7 +81,8 @@ PR description template:
 - gov-infra verifiers (CI)
 
 ## Stage rollout plan (handoff after merge)
-- [ ] Merged to main
+- [ ] Merged to staging
+- [ ] Promoted from staging to main by operator
 - [ ] Deployed to lab
 - [ ] Lab soak complete
 - [ ] Deployed to live
@@ -165,11 +166,11 @@ When all tasks committed and pushed:
 6. Confirm gov-infra verifiers pass (CI will re-run).
 7. Promote PR out of draft.
 8. Request required review.
-9. **Leave merging to a reviewer** who confirms CI including gov-infra verifiers is green.
+9. **Leave merging to a reviewer** who confirms CI including the staging Gov-infra rubric gate is green.
 
 ## Hand off after merge
 
-Once merged to `main`, downstream flows take over per the roadmap:
+Once the milestone is merged to `staging` and then operator-promoted from `staging` to `main`, downstream flows take over per the roadmap:
 
 - `theory app up --stage lab` deploy (operator-run)
 - Lab soak
@@ -180,7 +181,7 @@ Once merged to `main`, downstream flows take over per the roadmap:
 - Managed-instance rollout (if provisioning changed, canary customer → broader)
 - Release artifact publication (if relevant)
 
-`implement-milestone` does not run these. Its output is a merged PR + handoff.
+`implement-milestone` does not run these. Its output is a feature -> staging PR plus evidence for operator-owned staging -> main promotion and deploy handoff.
 
 ## What this skill will not do
 
