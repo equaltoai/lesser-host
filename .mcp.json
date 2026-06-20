@@ -1,8 +1,8 @@
 {
   "mcpServers": {
-    "host_lab": {
+    "theorymcp": {
       "type": "http",
-      "url": "https://lab.theorymcp.ai/equaltoai/agents/host/mcp"
+      "url": "https://theorymcp.ai/equaltoai/agents/host/mcp"
     }
   }
 }
