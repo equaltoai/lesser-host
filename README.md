@@ -20,6 +20,7 @@
 - Managed instance provisioning (incl. lesser-body + `POST /mcp/{actor}`): `docs/managed-instance-provisioning.md`
 - Soul registry surface + instance integration: `docs/soul-surface.md`
 - Soul registry contracts: `docs/soul-registry.md`
+- Release branching and branch protection: `docs/release-branching.md`
 
 ## Local verification
 

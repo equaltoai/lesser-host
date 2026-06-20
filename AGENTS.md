@@ -148,6 +148,16 @@ Public trust endpoints (no auth):
 - `GET /attestations` (lookup)
 - `GET /attestations/{id}`
 
+## Branching and release model
+
+`lesser-host` uses `feature -> staging -> main` for source control. Feature branches branch from current `main` and open PRs to `staging`. `staging` is gated by required review plus the existing `gov-rubric` job and the seven parallel CI jobs (`go-test`, `golangci-lint`, `cdk-synth`, `contracts-compile`, `slither`, `web-build`, `contract-verify`) with branches up to date.
+
+`main` is canonical production, protected, and operator-owned. It accepts PRs only from `staging`; direct pushes and force-pushes are blocked. Main protection requires the default checks only and does not require `gov-rubric` again, because the Gov-infra rubric is the staging gate. Releases are manual `v*` tags cut from `main`.
+
+Do not confuse git branch `staging` with host deploy stages. Deploy stages remain `lab -> live` through the AppTheory deploy contract.
+
+See `docs/release-branching.md` for the branch-protection specs and operator apply commands.
+
 ## Deployment (AWS CDK + AppTheory contract)
 
 ### Required: `theory app up/down --execute`

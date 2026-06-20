@@ -5,6 +5,7 @@ This directory contains maintainer documentation for `lesser-host` (the `lesser.
 ## Start here
 
 - Roadmap: `docs/roadmap.md`
+- Release branching and branch protection: `docs/release-branching.md`
 - Portal + operator API surface: `docs/portal.md`
 - Managed provisioning (end-to-end): `docs/managed-instance-provisioning.md`
 - Soul registry surface + instance integration (incl. AgentCore MCP): `docs/soul-surface.md`

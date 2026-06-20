@@ -2,6 +2,12 @@
 
 Thanks for contributing to `lesser-host`.
 
+## Branching and releases
+
+Feature branches are opened against `staging`, not `main`. The `staging` branch is the integration gate and requires the existing Gov-infra rubric check plus the seven parallel CI jobs. Promotion from `staging` to `main` is operator-owned; `main` accepts PRs only from `staging` and releases are manual `v*` tags cut from `main`. See `docs/release-branching.md`.
+
+Git branch `staging` is not a deploy stage. Deploy stages remain `lab -> live` through `theory app up/down --stage <lab|live> --execute`.
+
 ## Development quickstart
 
 - Go tests: `go test ./...`
