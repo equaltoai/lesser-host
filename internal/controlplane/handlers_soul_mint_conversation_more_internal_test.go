@@ -39,6 +39,7 @@ type mintConversationTestDB struct {
 	qInstance    *ttmocks.MockQuery
 	qKey         *ttmocks.MockQuery
 	qConv        *ttmocks.MockQuery
+	qMintIdem    *ttmocks.MockQuery
 	qBudget      *ttmocks.MockQuery
 	qIdentity    *ttmocks.MockQuery
 	qAudit       *ttmocks.MockQuery
@@ -69,6 +70,7 @@ func newMintConversationTestDB() *mintConversationTestDB {
 		qInstance:    new(ttmocks.MockQuery),
 		qKey:         new(ttmocks.MockQuery),
 		qConv:        new(ttmocks.MockQuery),
+		qMintIdem:    new(ttmocks.MockQuery),
 		qBudget:      new(ttmocks.MockQuery),
 		qIdentity:    new(ttmocks.MockQuery),
 		qAudit:       new(ttmocks.MockQuery),
@@ -95,6 +97,7 @@ func newMintConversationTestDB() *mintConversationTestDB {
 			tdb.convModels = append(tdb.convModels, &copy)
 		}
 	})
+	db.On("Model", mock.AnythingOfType("*models.SoulMintConversationIdempotency")).Return(tdb.qMintIdem).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(tdb.qBudget).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(tdb.qIdentity).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.AuditLogEntry")).Return(tdb.qAudit).Maybe().Run(captureMintConversationAuditModel(tdb))
@@ -118,7 +121,7 @@ func newMintConversationTestDB() *mintConversationTestDB {
 		}
 	})
 
-	for _, q := range []*ttmocks.MockQuery{tdb.qReg, tdb.qOp, tdb.qDomain, tdb.qInstance, tdb.qKey, tdb.qConv, tdb.qBudget, tdb.qIdentity, tdb.qAudit, tdb.qWalletIdx, tdb.qPromotion, tdb.qLifecycle, tdb.qWalletAgent, tdb.qDomainAgent, tdb.qCapAgent, tdb.qUser, tdb.qChannel, tdb.qENS} {
+	for _, q := range []*ttmocks.MockQuery{tdb.qReg, tdb.qOp, tdb.qDomain, tdb.qInstance, tdb.qKey, tdb.qConv, tdb.qMintIdem, tdb.qBudget, tdb.qIdentity, tdb.qAudit, tdb.qWalletIdx, tdb.qPromotion, tdb.qLifecycle, tdb.qWalletAgent, tdb.qDomainAgent, tdb.qCapAgent, tdb.qUser, tdb.qChannel, tdb.qENS} {
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("Index", mock.Anything).Return(q).Maybe()
 		q.On("Limit", mock.Anything).Return(q).Maybe()

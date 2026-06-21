@@ -15,6 +15,7 @@ const openapiPath = path.join(repoRoot, 'docs', 'contracts', 'openapi.yaml');
 const sseContractPath = path.join(repoRoot, 'docs', 'contracts', 'soul-mint-conversation-sse.json');
 const specV3SchemasDir = path.join(repoRoot, 'docs', 'spec', 'v3', 'schemas');
 const specV3FixturesDir = path.join(repoRoot, 'docs', 'spec', 'v3', 'fixtures');
+const hostedGenesisContractPath = path.join(repoRoot, 'docs', 'contracts', 'hosted-genesis-conversation.md');
 const generatedAdapterPath = path.join(webDir, 'src', 'lib', 'greater', 'adapters', 'rest', 'generated', 'lesser-host-api.ts');
 const openapiTypescriptBin = path.join(webDir, 'node_modules', '.bin', 'openapi-typescript');
 
@@ -157,8 +158,11 @@ function verifyOpenApiSurface() {
     openapi.paths['/api/v1/soul/instance/agents/register/{id}/mint-conversation']?.post;
   const instanceGet =
     openapi.paths['/api/v1/soul/instance/agents/register/{id}/mint-conversation/{conversationId}']?.get;
+  const instanceComplete =
+    openapi.paths['/api/v1/soul/instance/agents/register/{id}/mint-conversation/{conversationId}/complete']?.post;
   assert(instancePost, 'missing instance-key registration mint-conversation POST operation');
   assert(instanceGet, 'missing instance-key registration mint-conversation GET operation');
+  assert(instanceComplete, 'missing instance-key registration mint-conversation complete operation');
   assert(
     instancePost.operationId === 'soulInstanceStartRegistrationMintConversation',
     'instance-key registration mint-conversation POST must not be locked to an SSE operation id'
@@ -187,6 +191,18 @@ function verifyOpenApiSurface() {
     instancePost?.requestBody?.content?.['application/json']?.schema?.$ref ===
       '#/components/schemas/SoulHostedGenesisMintConversationRequest',
     'instance-key registration mint-conversation POST must use the hosted-genesis JSON request schema'
+  );
+  assert(
+    openapi.components?.schemas?.SoulHostedGenesisMintConversationRequest?.properties?.lesser_request_id,
+    'hosted-genesis POST request schema must include optional lesser_request_id for trace echoing'
+  );
+  assert(
+    jsonSchemaRef(instanceComplete, '202', 'application/json') === '#/components/schemas/SoulHostedGenesisConversationResponse',
+    'instance-key registration mint-conversation complete 202 must return progress-safe HostConversation JSON'
+  );
+  assert(
+    jsonSchemaRef(instanceComplete, '200', 'application/json') === '#/components/schemas/SoulHostedGenesisConversationResponse',
+    'instance-key registration mint-conversation complete 200 must return compact HostConversation JSON without raw transcript fields'
   );
 
   for (const route of requiredInstanceBootstrapPaths) {
@@ -297,6 +313,13 @@ function assertHostedGenesisConversationExample(file, expectedStatus) {
 }
 
 function verifyHostedGenesisConversationSurface() {
+  const contractDoc = readFileSync(hostedGenesisContractPath, 'utf8');
+  assert(
+    contractDoc.includes('collapses `created` to `in_progress`') ||
+      contractDoc.includes('collapses `created` snapshots'),
+    'hosted-genesis contract must document the Lesser projection decision for created status'
+  );
+
   const schema = JSON.parse(readFileSync(path.join(specV3SchemasDir, 'hosted-genesis.conversation.response.schema.json'), 'utf8'));
   const statusEnum = schema?.$defs?.status?.enum ?? [];
   for (const status of [
