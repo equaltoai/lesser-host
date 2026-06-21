@@ -67,6 +67,8 @@ const requiredSchemas = [
   'SoulAgentRegistrationVerifyRequest',
   'SoulAgentRegistrationVerifyResponse',
   'SoulMintConversationSSEInput',
+  'SoulHostedGenesisMintConversationRequest',
+  'SoulHostedGenesisConversationResponse',
   'SoulMintConversation',
   'SoulMintConversationCompleteRequest',
   'SoulAgentMintConversationsResponse',
@@ -96,6 +98,10 @@ const requiredSseEvents = [
 ];
 
 const requiredSpecV3Files = [
+  path.join(specV3SchemasDir, 'hosted-genesis.conversation.response.schema.json'),
+  path.join(specV3FixturesDir, 'hosted-genesis.conversation.in-progress.example.json'),
+  path.join(specV3FixturesDir, 'hosted-genesis.conversation.completed-declaration-ready.example.json'),
+  path.join(specV3FixturesDir, 'hosted-genesis.conversation.failed.example.json'),
   path.join(specV3SchemasDir, 'soul-instance-bootstrap.error.schema.json'),
   path.join(specV3SchemasDir, 'soul-instance-bootstrap.finalize.response.schema.json'),
   path.join(specV3FixturesDir, 'soul-instance-bootstrap.error.boundary-violation.example.json'),
@@ -123,6 +129,10 @@ function assert(condition, message) {
   }
 }
 
+function jsonSchemaRef(operation, status, contentType) {
+  return operation?.responses?.[status]?.content?.[contentType]?.schema?.$ref ?? '';
+}
+
 function verifyOpenApiSurface() {
   const openapi = parseYaml(readFileSync(openapiPath, 'utf8'));
 
@@ -142,9 +152,41 @@ function verifyOpenApiSurface() {
     openapi.paths['/api/v1/soul/agents/{agentId}/mint-conversation']?.post?.responses?.['200']?.content?.['text/event-stream'],
     'agent-scoped mint-conversation route must publish a text/event-stream response'
   );
+
+  const instancePost =
+    openapi.paths['/api/v1/soul/instance/agents/register/{id}/mint-conversation']?.post;
+  const instanceGet =
+    openapi.paths['/api/v1/soul/instance/agents/register/{id}/mint-conversation/{conversationId}']?.get;
+  assert(instancePost, 'missing instance-key registration mint-conversation POST operation');
+  assert(instanceGet, 'missing instance-key registration mint-conversation GET operation');
   assert(
-    openapi.paths['/api/v1/soul/instance/agents/register/{id}/mint-conversation']?.post?.responses?.['200']?.content?.['text/event-stream'],
-    'instance-key registration mint-conversation route must publish a text/event-stream response'
+    instancePost.operationId === 'soulInstanceStartRegistrationMintConversation',
+    'instance-key registration mint-conversation POST must not be locked to an SSE operation id'
+  );
+  assert(
+    instancePost['x-authoritative-completion'] === 'durable-json',
+    'instance-key registration mint-conversation POST must declare durable JSON authoritative completion'
+  );
+  assert(
+    !instancePost?.responses?.['200']?.content?.['text/event-stream'],
+    'instance-key registration mint-conversation POST must not be documented as text/event-stream authoritative'
+  );
+  assert(
+    jsonSchemaRef(instancePost, '200', 'application/json') === '#/components/schemas/SoulHostedGenesisConversationResponse',
+    'instance-key registration mint-conversation POST 200 must return SoulHostedGenesisConversationResponse JSON'
+  );
+  assert(
+    jsonSchemaRef(instancePost, '202', 'application/json') === '#/components/schemas/SoulHostedGenesisConversationResponse',
+    'instance-key registration mint-conversation POST 202 must return SoulHostedGenesisConversationResponse JSON'
+  );
+  assert(
+    jsonSchemaRef(instanceGet, '200', 'application/json') === '#/components/schemas/SoulHostedGenesisConversationResponse',
+    'instance-key registration mint-conversation GET must return SoulHostedGenesisConversationResponse JSON'
+  );
+  assert(
+    instancePost?.requestBody?.content?.['application/json']?.schema?.$ref ===
+      '#/components/schemas/SoulHostedGenesisMintConversationRequest',
+    'instance-key registration mint-conversation POST must use the hosted-genesis JSON request schema'
   );
 
   for (const route of requiredInstanceBootstrapPaths) {
@@ -200,15 +242,89 @@ function verifySseCompanionSurface() {
 
   for (const route of [
     '/api/v1/soul/agents/register/{id}/mint-conversation',
-    '/api/v1/soul/agents/{agentId}/mint-conversation',
-    '/api/v1/soul/instance/agents/register/{id}/mint-conversation'
+    '/api/v1/soul/agents/{agentId}/mint-conversation'
   ]) {
     assert(sseContract.routes.includes(route), `SSE companion contract missing route: ${route}`);
   }
+  assert(
+    !sseContract.routes.includes('/api/v1/soul/instance/agents/register/{id}/mint-conversation'),
+    'SSE companion contract must not claim the Lesser instance-key mint-conversation route'
+  );
 
   for (const eventName of requiredSseEvents) {
     assert(sseContract?.events?.[eventName]?.schema, `SSE companion contract missing event schema: ${eventName}`);
   }
+}
+
+function assertHostedGenesisConversationExample(file, expectedStatus) {
+  const payload = JSON.parse(readFileSync(path.join(specV3FixturesDir, file), 'utf8'));
+  assert(payload?.version === '1', `${file} must declare version=1`);
+  assert(typeof payload?.request_id === 'string' && payload.request_id.length > 0, `${file} must include request_id`);
+
+  const conversation = payload?.conversation;
+  assert(conversation, `${file} must include conversation`);
+  for (const field of ['registration_id', 'conversation_id', 'agent_id', 'status', 'message_count', 'request_id']) {
+    assert(conversation[field] !== undefined && conversation[field] !== '', `${file} conversation missing ${field}`);
+  }
+  assert(conversation.status === expectedStatus, `${file} expected status=${expectedStatus}, got ${conversation.status}`);
+  assert(conversation.request_id === payload.request_id, `${file} conversation.request_id must match top-level request_id`);
+  assert(!('messages' in conversation), `${file} must not expose raw conversation messages`);
+
+  if (expectedStatus === 'declaration_ready') {
+    const produced = conversation.produced_declarations;
+    assert(produced, `${file} declaration_ready must include produced_declarations`);
+    assert(/^sha256:[0-9a-f]{64}$/.test(produced.declaration_hash ?? ''), `${file} must include declaration_hash evidence`);
+    for (const field of ['selfDescription', 'capabilities', 'boundaries', 'transparency']) {
+      assert(produced.declarations?.[field] !== undefined, `${file} produced_declarations missing ${field}`);
+    }
+    assert(produced.evidence?.conversation_id === conversation.conversation_id, `${file} evidence must bind conversation_id`);
+    assert(produced.evidence?.registration_id === conversation.registration_id, `${file} evidence must bind registration_id`);
+    assert(produced.evidence?.agent_id === conversation.agent_id, `${file} evidence must bind agent_id`);
+  } else {
+    assert(
+      !('produced_declarations' in conversation),
+      `${file} must not include produced_declarations before declaration_ready`
+    );
+  }
+
+  if (expectedStatus === 'failed') {
+    const failure = conversation.failure;
+    assert(failure?.code, `${file} failed status must include failure.code`);
+    assert(['refresh_state', 'retry_same_step', 'restart_soul_bootstrap', 'operator_action'].includes(failure?.recovery?.action), `${file} failed status must include typed recovery.action`);
+  } else {
+    assert(!('failure' in conversation), `${file} must not include failure outside failed status`);
+  }
+}
+
+function verifyHostedGenesisConversationSurface() {
+  const schema = JSON.parse(readFileSync(path.join(specV3SchemasDir, 'hosted-genesis.conversation.response.schema.json'), 'utf8'));
+  const statusEnum = schema?.$defs?.status?.enum ?? [];
+  for (const status of [
+    'created',
+    'in_progress',
+    'assistant_turn_ready',
+    'declaration_extraction_pending',
+    'declaration_ready',
+    'failed'
+  ]) {
+    assert(statusEnum.includes(status), `hosted-genesis conversation schema missing status: ${status}`);
+  }
+  assert(!statusEnum.includes('completed'), 'hosted-genesis contract must use declaration_ready instead of legacy completed');
+  const requiredFields = schema?.$defs?.conversation?.required ?? [];
+  for (const field of ['registration_id', 'conversation_id', 'agent_id', 'status', 'message_count', 'request_id']) {
+    assert(requiredFields.includes(field), `hosted-genesis conversation schema missing required field: ${field}`);
+  }
+  const recoveryActions = schema?.$defs?.failure?.properties?.recovery?.properties?.action?.enum ?? [];
+  for (const action of ['refresh_state', 'retry_same_step', 'restart_soul_bootstrap', 'operator_action']) {
+    assert(recoveryActions.includes(action), `hosted-genesis failure recovery missing action: ${action}`);
+  }
+
+  assertHostedGenesisConversationExample('hosted-genesis.conversation.in-progress.example.json', 'in_progress');
+  assertHostedGenesisConversationExample(
+    'hosted-genesis.conversation.completed-declaration-ready.example.json',
+    'declaration_ready'
+  );
+  assertHostedGenesisConversationExample('hosted-genesis.conversation.failed.example.json', 'failed');
 }
 
 function verifySpecV3BootstrapSurface() {
@@ -310,6 +426,7 @@ function verifyGeneratedAdapter() {
 
 verifyOpenApiSurface();
 verifySseCompanionSurface();
+verifyHostedGenesisConversationSurface();
 verifySpecV3BootstrapSurface();
 verifyGeneratedAdapter();
 
