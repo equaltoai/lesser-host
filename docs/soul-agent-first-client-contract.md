@@ -11,6 +11,8 @@ For machine-readable schemas, also use:
 
 - `docs/contracts/openapi.yaml`
 - `docs/contracts/soul-mint-conversation-sse.json`
+- `docs/contracts/hosted-genesis-conversation.md`
+- `docs/spec/v3/schemas/hosted-genesis.conversation.response.schema.json`
 - `web/src/lib/api/soul.ts`
 
 ## Scope
@@ -127,8 +129,10 @@ with `instanceKeyAuth`, where the presented raw bearer key is hashed and matched
 They must scope every write to the authenticated managed instance slug/domain and must keep `lesser-host` as the source
 of canonical registration/signing material.
 
-Until that route family exists, the control-plane session routes below are fallback/operator tooling, not the canonical
-human-facing `/l/*` creation route.
+Project 49 locks the durable async hosted-genesis status contract for that route family. Lesser must treat the
+instance-key mint-conversation path as JSON-authoritative durable state: `HTTP 200` / `HTTP 202` is transport success
+only, `conversation_id` is persisted early, and publish readiness requires `status=declaration_ready` plus
+`produced_declarations`. See `docs/contracts/hosted-genesis-conversation.md`.
 
 ## Canonical Resources
 
@@ -144,7 +148,8 @@ These are the resources an agent-first client should treat as canonical:
   - list per-agent events with `GET /api/v1/soul/agents/{agentId}/promotion/events`
 - `SoulAgentMintConversation`
   - review conversation record
-  - streamed creation via SSE
+  - portal/native Host UI streamed creation via SSE on non-instance routes
+  - Lesser instance-key hosted genesis via durable JSON HostConversation status
   - explicit completion + finalize steps
 
 Clients should use `SoulAgentPromotion` for current state and `SoulAgentPromotionLifecycleEvent` for notifications,
@@ -153,8 +158,7 @@ timelines, and “what changed” UI.
 ## Route Families
 
 The route families in this section are control-plane session routes unless explicitly marked `instanceKeyAuth`.
-Project 44 M1 (#706) is responsible for adding the scoped instance-key write route family required by the production
-Simulacrum flow.
+Project 49 makes the Lesser production mint-conversation path durable JSON rather than SSE-authoritative.
 
 There are two equivalent route families during the review/finalize phase:
 
@@ -165,7 +169,17 @@ There are two equivalent route families during the review/finalize phase:
 
 The client should prefer the agent-scoped form once `agentId` is known and stored.
 
-There is also a narrow instance-key read family for Lesser-mediated private self-scope reads:
+There is also a scoped instance-key registration bootstrap family for Lesser-mediated hosted genesis:
+
+- `POST /api/v1/soul/instance/agents/register/{id}/mint-conversation`
+- `GET /api/v1/soul/instance/agents/register/{id}/mint-conversation/{conversationId}`
+
+These routes are **not** portal/session routes. They require `instanceKeyAuth` using strict `sha256(raw bearer)` lookup,
+do not accept the legacy plaintext key-id fallback, and enforce that the authenticated instance owns the managed domain
+for the requested registration. The POST route returns a durable HostConversation status envelope, not an authoritative
+SSE completion stream. The GET route is the durable status read used for polling/resume/completion.
+
+There is also a narrow instance-key agent read family for Lesser-mediated private self-scope reads:
 
 - `GET /api/v1/soul/instance/agents/{agentId}/mint-conversations`
 - `GET /api/v1/soul/instance/agents/{agentId}/mint-conversations/{conversationId}`
@@ -174,8 +188,9 @@ These routes are **not** portal/session routes. They require `instanceKeyAuth` u
 do not accept the legacy plaintext key-id fallback, and enforce that the authenticated instance owns the managed domain
 for the requested agent identity. The list route returns compact metadata only and never includes `messages` or
 `produced_declarations`; the explicit single-conversation route may return the bounded full private record for the
-requested conversation. Instance keys do not gain access to mint start, complete, finalize preflight, finalize begin, or
-finalize mutation routes. Bounds are part of the contract: list defaults to `limit=20` and rejects values above `50`,
+requested conversation. Instance keys do not gain access to general portal/control-plane mint start, complete, finalize
+preflight, finalize begin, or finalize mutation routes beyond the explicitly documented registration bootstrap family.
+Bounds are part of the contract: list defaults to `limit=20` and rejects values above `50`,
 conversation IDs are opaque safe path values up to `128` characters, list responses are capped at `1 MiB`, single
 responses are capped at `2 MiB`, oversize responses fail with `413 soul_mint.response_too_large` rather than silent
 truncation, and rate limiting returns `429 soul_mint.rate_limited` with `Retry-After` when available.
@@ -280,12 +295,25 @@ This step may happen before hosted finalize or later as an upgrade. It is not re
 
 ### 5. Start or continue review
 
+For the Lesser instance-key hosted-genesis path:
+
+- `POST /api/v1/soul/instance/agents/register/{id}/mint-conversation`
+- `GET /api/v1/soul/instance/agents/register/{id}/mint-conversation/{conversationId}`
+
+The POST response and GET status read are durable JSON HostConversation envelopes. `HTTP 200` / `HTTP 202` is transport
+success only. Lesser must persist `conversation_id` immediately, project `in_progress` and
+`declaration_extraction_pending` as progress, and only advance to publish when the status read returns
+`declaration_ready` with `produced_declarations`.
+
+For portal/native Host UI routes:
+
 - registration-scoped:
   - `POST /api/v1/soul/agents/register/{id}/mint-conversation`
 - agent-scoped:
   - `POST /api/v1/soul/agents/{agentId}/mint-conversation`
 
-This endpoint streams the assistant response over SSE and updates the durable conversation record.
+These endpoints stream the assistant response over SSE and update the durable conversation record. SSE is delivery, not
+the authoritative completion mechanism for Lesser.
 
 Important behavior:
 
