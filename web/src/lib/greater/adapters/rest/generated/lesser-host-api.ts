@@ -457,13 +457,20 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Start or continue an instance-key registration mint conversation over SSE
-         * @description Streams the assistant response using `text/event-stream` for a registration owned by the authenticated managed
-         *     instance. The bearer token is the managed InstanceKey and Host enforces the registration's domain boundary before
-         *     streaming. Canonical SSE event names and payload schemas are published in
-         *     `docs/contracts/soul-mint-conversation-sse.json`.
+         * Start or continue an instance-key registration mint conversation with durable JSON status
+         * @description JSON-authoritative server-to-server route for Lesser. It creates or appends a hosted-genesis turn for a
+         *     registration owned by the authenticated managed instance and returns a durable HostConversation status envelope.
+         *     The bearer token is the managed InstanceKey (`sha256(raw_key)` stored by Host) and Host enforces the
+         *     registration's domain boundary before returning any conversation id or status.
+         *
+         *     HTTP `200` or `202` means transport/request acceptance only; it is not terminal completion. Lesser must persist
+         *     `conversation_id` immediately, then poll `GET
+         *     /api/v1/soul/instance/agents/register/{id}/mint-conversation/{conversationId}` until the durable status is
+         *     `declaration_ready` (terminal declaration evidence present) or `failed` (typed bounded recovery). SSE remains an
+         *     optional portal/native Host UI delivery mechanism on the non-instance routes, but it is not the authoritative
+         *     completion mechanism for this Lesser path.
          */
-        post: operations["soulInstanceStartRegistrationMintConversationSSE"];
+        post: operations["soulInstanceStartRegistrationMintConversation"];
         delete?: never;
         options?: never;
         head?: never;
@@ -478,9 +485,11 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Get an instance-key registration mint-conversation record
-         * @description Server-to-server route for managed Lesser instances. Returns the bounded private conversation record for a
-         *     registration inside the authenticated instance boundary.
+         * Read durable hosted-genesis mint-conversation status
+         * @description JSON-authoritative durable status read for managed Lesser instances. Returns the current HostConversation status
+         *     envelope for a registration inside the authenticated instance boundary. This route is the polling/resume source
+         *     of truth for hosted genesis; it returns terminal declaration evidence only when `conversation.status` is
+         *     `declaration_ready`, and returns typed failure/recovery when `conversation.status` is `failed`.
          */
         get: operations["soulInstanceGetRegistrationMintConversation"];
         put?: never;
@@ -1491,6 +1500,20 @@ export interface components {
             conversation_id?: string;
             message: string;
         };
+        /**
+         * @description JSON-authoritative Host ↔ Lesser request for creating or appending a hosted-genesis mint-conversation turn.
+         *     `conversation_id` is supplied when Lesser is resuming or appending to a persisted Host conversation. The optional
+         *     `idempotency_key` and `correlation_id` are client-safe cross-boundary identifiers; they must not contain raw Host
+         *     credentials, browser bearer tokens, raw LLM transcripts, or tenant user content.
+         */
+        SoulHostedGenesisMintConversationRequest: {
+            model?: string;
+            conversation_id?: string;
+            message: string;
+            idempotency_key?: string;
+            correlation_id?: string;
+        };
+        SoulHostedGenesisConversationResponse: components["schemas"]["hosted-genesis.conversation.response.schema"];
         SoulMintConversation: {
             agent_id: string;
             conversation_id: string;
@@ -1988,6 +2011,157 @@ export interface components {
                     [key: string]: unknown;
                 };
                 request_id?: string;
+            };
+        };
+        declarations: {
+            selfDescription: {
+                [key: string]: unknown;
+            };
+            capabilities: {
+                [key: string]: unknown;
+            }[];
+            boundaries: {
+                [key: string]: unknown;
+            }[];
+            transparency: {
+                [key: string]: unknown;
+            };
+        };
+        /** @enum {string} */
+        status: "created" | "in_progress" | "assistant_turn_ready" | "declaration_extraction_pending" | "declaration_ready" | "failed";
+        produced_declarations: {
+            declaration_id: string;
+            declaration_hash: string;
+            /** Format: date-time */
+            produced_at: string;
+            declarations: components["schemas"]["declarations"];
+            evidence: {
+                /** @constant */
+                source: "host_conversation";
+                registration_id: string;
+                conversation_id: string;
+                agent_id: string;
+                message_count: number;
+                model?: string;
+                request_id: string;
+            };
+        };
+        failure: {
+            /** @enum {string} */
+            code: "llm_unavailable" | "assistant_turn_failed" | "declaration_extraction_failed" | "invalid_completion_state" | "missing_produced_declarations" | "invalid_produced_declarations" | "tenant_boundary_violation" | "operator_action_required";
+            message: string;
+            retryable: boolean;
+            recovery: {
+                /** @enum {string} */
+                action: "refresh_state" | "retry_same_step" | "restart_soul_bootstrap" | "operator_action";
+                max_attempts?: number;
+                retry_after_seconds?: number;
+                reason?: string;
+            };
+        };
+        trace_ids: {
+            host_request_id?: string;
+            correlation_id?: string;
+            idempotency_key?: string;
+            lesser_request_id?: string;
+        };
+        conversation: {
+            registration_id: string;
+            conversation_id: string;
+            agent_id: string;
+            status: components["schemas"]["status"];
+            latest_turn_id?: string;
+            message_count: number;
+            produced_declarations?: components["schemas"]["produced_declarations"];
+            failure?: components["schemas"]["failure"];
+            request_id: string;
+            trace_ids?: components["schemas"]["trace_ids"];
+            poll_after_seconds?: number;
+            /** Format: date-time */
+            created_at?: string;
+            /** Format: date-time */
+            updated_at?: string;
+            /** Format: date-time */
+            completed_at?: string;
+        };
+        /** Hosted genesis durable conversation response */
+        "hosted-genesis.conversation.response.schema": {
+            /** @constant */
+            version: "1";
+            request_id: string;
+            conversation: components["schemas"]["conversation"];
+            $defs: {
+                /** @enum {string} */
+                status: "created" | "in_progress" | "assistant_turn_ready" | "declaration_extraction_pending" | "declaration_ready" | "failed";
+                trace_ids: {
+                    host_request_id?: string;
+                    correlation_id?: string;
+                    idempotency_key?: string;
+                    lesser_request_id?: string;
+                };
+                declarations: {
+                    selfDescription: {
+                        [key: string]: unknown;
+                    };
+                    capabilities: {
+                        [key: string]: unknown;
+                    }[];
+                    boundaries: {
+                        [key: string]: unknown;
+                    }[];
+                    transparency: {
+                        [key: string]: unknown;
+                    };
+                };
+                produced_declarations: {
+                    declaration_id: string;
+                    declaration_hash: string;
+                    /** Format: date-time */
+                    produced_at: string;
+                    declarations: components["schemas"]["declarations"];
+                    evidence: {
+                        /** @constant */
+                        source: "host_conversation";
+                        registration_id: string;
+                        conversation_id: string;
+                        agent_id: string;
+                        message_count: number;
+                        model?: string;
+                        request_id: string;
+                    };
+                };
+                failure: {
+                    /** @enum {string} */
+                    code: "llm_unavailable" | "assistant_turn_failed" | "declaration_extraction_failed" | "invalid_completion_state" | "missing_produced_declarations" | "invalid_produced_declarations" | "tenant_boundary_violation" | "operator_action_required";
+                    message: string;
+                    retryable: boolean;
+                    recovery: {
+                        /** @enum {string} */
+                        action: "refresh_state" | "retry_same_step" | "restart_soul_bootstrap" | "operator_action";
+                        max_attempts?: number;
+                        retry_after_seconds?: number;
+                        reason?: string;
+                    };
+                };
+                conversation: {
+                    registration_id: string;
+                    conversation_id: string;
+                    agent_id: string;
+                    status: components["schemas"]["status"];
+                    latest_turn_id?: string;
+                    message_count: number;
+                    produced_declarations?: components["schemas"]["produced_declarations"];
+                    failure?: components["schemas"]["failure"];
+                    request_id: string;
+                    trace_ids?: components["schemas"]["trace_ids"];
+                    poll_after_seconds?: number;
+                    /** Format: date-time */
+                    created_at?: string;
+                    /** Format: date-time */
+                    updated_at?: string;
+                    /** Format: date-time */
+                    completed_at?: string;
+                };
             };
         };
         /**
@@ -4132,7 +4306,7 @@ export interface operations {
             };
         };
     };
-    soulInstanceStartRegistrationMintConversationSSE: {
+    soulInstanceStartRegistrationMintConversation: {
         parameters: {
             query?: never;
             header?: never;
@@ -4143,17 +4317,32 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["SoulMintConversationSSEInput"];
+                "application/json": components["schemas"]["SoulHostedGenesisMintConversationRequest"];
             };
         };
         responses: {
-            /** @description SSE stream of mint-conversation events */
+            /**
+             * @description Request accepted or replayed and the current durable HostConversation status is available. This is transport
+             *     success only; inspect `conversation.status` before advancing workflow state.
+             */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "text/event-stream": string;
+                    "application/json": components["schemas"]["hosted-genesis.conversation.response.schema"];
+                };
+            };
+            /**
+             * @description Request accepted and asynchronous hosted-genesis work is in progress. This is transport success only; Lesser
+             *     must poll the durable status read using the returned `conversation.conversation_id`.
+             */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["hosted-genesis.conversation.response.schema"];
                 };
             };
             /** @description Invalid request */
@@ -4224,13 +4413,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description OK */
+            /** @description Current durable HostConversation status. HTTP 200 is transport success only. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SoulInstanceMintConversationResponse"];
+                    "application/json": components["schemas"]["hosted-genesis.conversation.response.schema"];
                 };
             };
             /** @description Invalid request */

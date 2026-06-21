@@ -6,9 +6,11 @@ surfaces implemented by `lesser-host`.
 - `schemas/` — JSON Schema (draft 2020-12)
 - `fixtures/` — example payloads intended for cross-repo consumption (`lesser`, `lesser-body`)
 
-The instance-key bootstrap schemas (`soul-instance-bootstrap.*`) are the Host ↔ Lesser server-side contract for
-managed-instance soul creation. They describe server-held instance-key calls only; they do not establish a browser-held
-Host credential path.
+The instance-key bootstrap schemas (`soul-instance-bootstrap.*`) and hosted-genesis durable conversation schema
+(`hosted-genesis.conversation.response.schema.json`) are the Host ↔ Lesser server-side contract for managed-instance
+soul creation. They describe server-held instance-key calls only; they do not establish a browser-held Host credential
+path. The hosted-genesis examples lock `in_progress`, terminal `declaration_ready` with produced declarations, and
+`failed` with typed bounded recovery.
 
 Managed `@lessersoul.ai` email examples use the Project 37 current-channel form
 `<agent-local-id>.<instance-slug>@lessersoul.ai`. Bare `<agent-local-id>@lessersoul.ai`
