@@ -739,7 +739,7 @@ test('M0.13 distribution: bearer-auth API/trust origins are NOT OAC-protected', 
 	}
 });
 
-test('P49 M2 distribution: Lesser instance mint-conversation route uses JSON control-plane origin', () => {
+test('P49 M2 distribution: Lesser instance mint-conversation route uses mint-conversation REST origin', () => {
 	const config = distributionConfig(synthTemplate());
 	const exactLesserPattern = 'api/v1/soul/instance/agents/register/*/mint-conversation*';
 	const behavior = (config.CacheBehaviors ?? []).find((b) => b.PathPattern === exactLesserPattern);
@@ -750,8 +750,8 @@ test('P49 M2 distribution: Lesser instance mint-conversation route uses JSON con
 	const origin = originById(config, behavior.TargetOriginId);
 	const domainSourceId = originDomainSourceLogicalId(origin);
 	assert.ok(
-		domainSourceId.startsWith('ControlPlaneHttpApi'),
-		`exact Lesser-used instance mint-conversation route must use the durable JSON control-plane HTTP API origin; got ${domainSourceId}`,
+		domainSourceId.startsWith('ControlPlaneSseRestApi'),
+		`exact Lesser-used instance mint-conversation route must use the mint-conversation REST origin while returning durable JSON; got ${domainSourceId}`,
 	);
 });
 

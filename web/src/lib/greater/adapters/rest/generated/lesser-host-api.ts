@@ -516,7 +516,7 @@ export interface paths {
          *     but the assistant turn or declaration extraction is not ready yet, this route returns `202` plus the durable
          *     HostConversation progress envelope; HTTP success is not terminal. If the stored conversation is already
          *     `completed`/`declaration_ready` and has valid produced declarations, the route is idempotent and returns the
-         *     completed conversation without re-extracting or rewriting declarations. Failed conversations and completed
+         *     compact HostConversation declaration-ready envelope without re-extracting or rewriting declarations. Failed conversations and completed
          *     conversations without valid produced declarations fail closed with structured state details.
          */
         post: operations["soulInstanceCompleteRegistrationMintConversation"];
@@ -4500,13 +4500,13 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Terminal replay or synchronous completion with valid produced declarations. */
+            /** @description Terminal replay or synchronous completion with valid produced declarations; returns the compact HostConversation envelope and never raw transcript fields. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SoulMintConversation"];
+                    "application/json": components["schemas"]["hosted-genesis.conversation.response.schema"];
                 };
             };
             /** @description Assistant turn or declaration extraction is still in progress; inspect `conversation.status`. */

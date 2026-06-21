@@ -22,6 +22,12 @@ control-plane session tokens.
 - `GET /api/v1/soul/instance/agents/register/{id}/mint-conversation/{conversationId}`
   - Durable status read.
   - Source of truth for polling, resume, declaration readiness, and typed failure recovery.
+- `POST /api/v1/soul/instance/agents/register/{id}/mint-conversation/{conversationId}/complete`
+  - Progress-safe completion/extraction handoff for Lesser.
+  - `HTTP 202` returns the compact HostConversation progress envelope while assistant or declaration extraction work is
+    still running.
+  - `HTTP 200` returns the same compact HostConversation envelope with `status=declaration_ready` only when valid
+    produced declarations exist; it never returns raw transcript fields.
 
 SSE may remain available for portal/native Host UI routes, but SSE is not the authoritative completion mechanism for
 the Lesser instance-key path.

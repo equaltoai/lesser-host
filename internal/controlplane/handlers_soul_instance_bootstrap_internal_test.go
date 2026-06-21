@@ -31,6 +31,7 @@ const (
 	soulInstanceBootstrapTestPrincipalDeclaration = "I declare authority over this Lesser-hosted soul."
 	soulInstanceBootstrapTestSigningMethodEIP191  = "eip191_personal_sign"
 	soulInstanceBootstrapTestInvalidRegSig        = "invalid registration signature"
+	soulInstanceBootstrapTestIdempotencyKey       = "idem-1"
 )
 
 func TestSoulInstanceBootstrapScaffold_RequiresStrictInstanceKey(t *testing.T) {
@@ -707,37 +708,14 @@ func TestSoulInstanceMintConversation_StartReturnsJSONAndEnqueuesDurableState(t 
 
 	resp, err := s.handleSoulInstanceMintConversation(newSoulInstanceBootstrapContext(
 		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
-		mustMarshalJSON(t, soulMintConversationRequest{Model: "anthropic:claude-sonnet-4-6", Message: soulInstanceBootstrapTestConversationMessage, IdempotencyKey: "idem-1", CorrelationID: "corr-1"}),
+		mustMarshalJSON(t, soulMintConversationRequest{Model: "anthropic:claude-sonnet-4-6", Message: soulInstanceBootstrapTestConversationMessage, IdempotencyKey: soulInstanceBootstrapTestIdempotencyKey, CorrelationID: "corr-1"}),
 		map[string]string{"id": reg.ID},
 	))
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if resp.Status != http.StatusAccepted || !strings.Contains(resp.Headers["content-type"][0], "application/json") {
-		t.Fatalf("expected JSON 202 response, got %#v", resp)
-	}
-	var out hostedGenesisConversationResponse
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if out.Conversation.ConversationID == "" || out.Conversation.Status != models.SoulMintConversationStatusInProgress || out.Conversation.RequestID != "req-instance-bootstrap" || out.Conversation.MessageCount != 1 {
-		t.Fatalf("expected in-progress durable status, got %#v", out)
-	}
-	if out.Conversation.TraceIDs == nil || out.Conversation.TraceIDs.IdempotencyKey != "idem-1" || out.Conversation.TraceIDs.CorrelationID != "corr-1" {
-		t.Fatalf("expected trace ids, got %#v", out.Conversation.TraceIDs)
-	}
-	if strings.Contains(string(resp.Body), soulInstanceBootstrapTestConversationMessage) || strings.Contains(string(resp.Body), mintConversationInstanceReadTestRawKey) {
-		t.Fatalf("response leaked transcript or credential material: %s", string(resp.Body))
-	}
-
-	select {
-	case msg := <-enqueued:
-		if msg.Kind != hostedgenesis.QueueMessageKind || msg.Step != hostedgenesis.StepAssistantTurn || msg.ConversationID != out.Conversation.ConversationID || msg.RegistrationID != reg.ID || msg.IdempotencyKey != "idem-1" {
-			t.Fatalf("unexpected queued message: %#v", msg)
-		}
-	case <-time.After(time.Second):
-		t.Fatalf("hosted genesis turn was not enqueued")
-	}
+	out := assertSoulInstanceMintConversationAcceptedResponse(t, resp)
+	assertSoulInstanceMintConversationQueued(t, enqueued, reg.ID, out.Conversation.ConversationID)
 	tdb.qLifecycle.AssertCalled(t, "Create")
 }
 
@@ -997,12 +975,16 @@ func TestSoulInstanceCompleteMintConversation_PersistsDeclarationsAndFinalizeRea
 	if resp.Status != http.StatusOK {
 		t.Fatalf("expected 200, got %d body=%q", resp.Status, string(resp.Body))
 	}
-	var out models.SoulAgentMintConversation
+	var out hostedGenesisConversationResponse
 	if err := json.Unmarshal(resp.Body, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if out.Status != models.SoulMintConversationStatusCompleted || !strings.Contains(out.ProducedDeclarations, `"selfDescription"`) {
+	if out.Conversation.Status != models.SoulMintConversationStatusDeclarationReady || out.Conversation.ProducedDeclarations == nil {
 		t.Fatalf("expected completed conversation with declarations, got %#v", out)
+	}
+	body := string(resp.Body)
+	if strings.Contains(body, "describe yourself") || strings.Contains(body, "done") || strings.Contains(body, mintConversationInstanceReadTestRawKey) {
+		t.Fatalf("instance completion leaked transcript or credential material: %s", body)
 	}
 	tdb.qLifecycle.AssertCalled(t, "Create")
 }
@@ -1094,12 +1076,15 @@ func TestSoulInstanceCompleteMintConversation_ReturnsCompletedConversationReplay
 	if resp.Status != http.StatusOK {
 		t.Fatalf("expected 200, got %d body=%q", resp.Status, string(resp.Body))
 	}
-	var out models.SoulAgentMintConversation
+	var out hostedGenesisConversationResponse
 	if err := json.Unmarshal(resp.Body, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if out.Status != models.SoulMintConversationStatusCompleted || out.ProducedDeclarations != string(declBytes) {
+	if out.Conversation.Status != models.SoulMintConversationStatusDeclarationReady || out.Conversation.ProducedDeclarations == nil || out.Conversation.ProducedDeclarations.DeclarationHash == "" {
 		t.Fatalf("expected stored completed declarations, got %#v", out)
+	}
+	if strings.Contains(string(resp.Body), `"messages"`) || strings.Contains(string(resp.Body), mintConversationInstanceReadTestRawKey) {
+		t.Fatalf("instance completion replay leaked private fields: %s", string(resp.Body))
 	}
 	tdb.qConv.AssertNumberOfCalls(t, "Update", 0)
 	tdb.qLifecycle.AssertNumberOfCalls(t, "Create", 0)
@@ -1144,18 +1129,18 @@ func TestSoulInstanceCompleteMintConversation_ReplaysHostedContractEmptyDeclarat
 	if resp.Status != http.StatusOK {
 		t.Fatalf("expected 200, got %d body=%q", resp.Status, string(resp.Body))
 	}
-	var out models.SoulAgentMintConversation
+	var out hostedGenesisConversationResponse
 	if err := json.Unmarshal(resp.Body, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if out.Status != models.SoulMintConversationStatusCompleted || out.ProducedDeclarations != string(declBytes) {
+	if out.Conversation.Status != models.SoulMintConversationStatusDeclarationReady || out.Conversation.ProducedDeclarations == nil || len(out.Conversation.ProducedDeclarations.Declarations.Capabilities) != 0 || len(out.Conversation.ProducedDeclarations.Declarations.Boundaries) != 0 {
 		t.Fatalf("expected stored hosted declarations with empty arrays, got %#v", out)
 	}
 	tdb.qConv.AssertNumberOfCalls(t, "Update", 0)
 	tdb.qLifecycle.AssertNumberOfCalls(t, "Create", 0)
 }
 
-func TestSoulInstanceCompleteMintConversation_RejectsInvalidStates(t *testing.T) {
+func TestSoulInstanceCompleteMintConversation_RejectsTerminalInvalidStates(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
@@ -1178,116 +1163,60 @@ func TestSoulInstanceCompleteMintConversation_RejectsInvalidStates(t *testing.T)
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			tdb := newMintConversationTestDB()
-			s := newMintConversationServer(tdb)
-			reg := mintConversationHandleReg()
-			expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
-			stubMintConversationRegistration(t, tdb, reg)
-			stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
-			stubMintConversationConversation(t, tdb, models.SoulAgentMintConversation{
-				AgentID:        reg.AgentID,
-				ConversationID: mintConversationTestConversationID,
-				Status:         tc.status,
-				CreatedAt:      time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
-			})
-			stubMintConversationIdentity(t, tdb, nil, theoryErrors.ErrItemNotFound)
-
-			_, err := s.handleSoulInstanceCompleteMintConversation(newSoulInstanceBootstrapContext(
-				map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
-				mustMarshalJSON(t, map[string]any{"declarations": testMintConversationDecl()}),
-				map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
-			))
-			appErr := requireAppTheoryError(t, err)
-			assertMintConversationCompletionConflictDetails(t, appErr, soulInstanceBootstrapCodeConflict, http.StatusConflict, tc.status, false, false, tc.reason)
+			assertSoulInstanceCompleteTerminalConflict(t, tc.status, tc.reason)
 		})
 	}
+}
 
-	t.Run("empty conversation has no durable assistant turn", func(t *testing.T) {
-		t.Parallel()
+func TestSoulInstanceCompleteMintConversation_ReturnsProgressWithoutAssistantTurn(t *testing.T) {
+	t.Parallel()
 
-		for _, tc := range []struct {
-			name     string
-			messages string
-		}{
-			{name: "no messages", messages: ""},
-			{name: "user only", messages: `[{"role":"user","content":"describe yourself"}]`},
-		} {
-			tc := tc
-			t.Run(tc.name, func(t *testing.T) {
-				t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		messages string
+	}{
+		{name: "no messages", messages: ""},
+		{name: "user only", messages: `[{"role":"user","content":"describe yourself"}]`},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-				reg, identity, _ := soulInstanceHostedInstanceTrustFixture(t)
-				tdb := newMintConversationTestDB()
-				s := newMintConversationServer(tdb)
-				expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
-				stubMintConversationRegistration(t, tdb, reg)
-				stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
-				conv := models.SoulAgentMintConversation{
-					AgentID:        reg.AgentID,
-					ConversationID: mintConversationTestConversationID,
-					Status:         models.SoulMintConversationStatusInProgress,
-					CreatedAt:      time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
-				}
-				if strings.TrimSpace(tc.messages) != "" {
-					conv.Messages = encodeMintConversationBlob(tc.messages)
-				}
-				stubMintConversationConversation(t, tdb, conv)
-				stubMintConversationIdentity(t, tdb, identity, nil)
-
-				resp, err := s.handleSoulInstanceCompleteMintConversation(newSoulInstanceBootstrapContext(
-					map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
-					mustMarshalJSON(t, map[string]any{"declarations": testMintConversationDecl()}),
-					map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
-				))
-				if err != nil {
-					t.Fatalf("unexpected progress response error: %v", err)
-				}
-				if resp.Status != http.StatusAccepted {
-					t.Fatalf("expected 202 progress response, got %#v", resp)
-				}
-				var out hostedGenesisConversationResponse
-				if err := json.Unmarshal(resp.Body, &out); err != nil {
-					t.Fatalf("unmarshal: %v", err)
-				}
-				if out.Conversation.Status != models.SoulMintConversationStatusInProgress || out.Conversation.ConversationID != mintConversationTestConversationID || out.Conversation.PollAfterSeconds == 0 {
-					t.Fatalf("expected in-progress completion response, got %#v", out)
-				}
-				tdb.qConv.AssertNumberOfCalls(t, "Update", 0)
-			})
-		}
-	})
-
-	t.Run("already published agent", func(t *testing.T) {
-		t.Parallel()
-
-		tdb := newMintConversationTestDB()
-		s := newMintConversationServer(tdb)
-		reg := mintConversationHandleReg()
-		identity := testMintConversationIdentity()
-		identity.AgentID = reg.AgentID
-		identity.SelfDescriptionVersion = 1
-
-		expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
-		stubMintConversationRegistration(t, tdb, reg)
-		stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
-		stubMintConversationConversation(t, tdb, models.SoulAgentMintConversation{
-			AgentID:        reg.AgentID,
-			ConversationID: mintConversationTestConversationID,
-			Status:         models.SoulMintConversationStatusInProgress,
-			CreatedAt:      time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
+			assertSoulInstanceCompleteProgressWithoutAssistant(t, tc.messages)
 		})
-		stubMintConversationIdentity(t, tdb, identity, nil)
+	}
+}
 
-		_, err := s.handleSoulInstanceCompleteMintConversation(newSoulInstanceBootstrapContext(
-			map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
-			mustMarshalJSON(t, map[string]any{"declarations": testMintConversationDecl()}),
-			map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
-		))
-		appErr := requireAppTheoryError(t, err)
-		if appErr.Code != soulInstanceBootstrapCodeConflict || appErr.StatusCode != http.StatusConflict || appErr.Message != soulMintConversationAlreadyPublishedMessage {
-			t.Fatalf("expected already-published conflict, got %#v", appErr)
-		}
+func TestSoulInstanceCompleteMintConversation_RejectsAlreadyPublishedAgent(t *testing.T) {
+	t.Parallel()
+
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	reg := mintConversationHandleReg()
+	identity := testMintConversationIdentity()
+	identity.AgentID = reg.AgentID
+	identity.SelfDescriptionVersion = 1
+
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationRegistration(t, tdb, reg)
+	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationConversation(t, tdb, models.SoulAgentMintConversation{
+		AgentID:        reg.AgentID,
+		ConversationID: mintConversationTestConversationID,
+		Status:         models.SoulMintConversationStatusInProgress,
+		CreatedAt:      time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
 	})
+	stubMintConversationIdentity(t, tdb, identity, nil)
+
+	_, err := s.handleSoulInstanceCompleteMintConversation(newSoulInstanceBootstrapContext(
+		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
+		mustMarshalJSON(t, map[string]any{"declarations": testMintConversationDecl()}),
+		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
+	))
+	appErr := requireAppTheoryError(t, err)
+	if appErr.Code != soulInstanceBootstrapCodeConflict || appErr.StatusCode != http.StatusConflict || appErr.Message != soulMintConversationAlreadyPublishedMessage {
+		t.Fatalf("expected already-published conflict, got %#v", appErr)
+	}
 }
 
 func TestSoulInstanceFinalizeMintConversation_BeginAndPreflightReturnCanonicalSigningMaterial(t *testing.T) {
@@ -1371,12 +1300,15 @@ func TestSoulInstanceHostedInstanceTrustCompleteAcceptsDeclarations(t *testing.T
 	if resp.Status != http.StatusOK {
 		t.Fatalf("expected 200, got %d body=%q", resp.Status, string(resp.Body))
 	}
-	var out models.SoulAgentMintConversation
+	var out hostedGenesisConversationResponse
 	if err := json.Unmarshal(resp.Body, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if out.Status != models.SoulMintConversationStatusCompleted || !strings.Contains(out.ProducedDeclarations, `"selfDescription"`) {
+	if out.Conversation.Status != models.SoulMintConversationStatusDeclarationReady || out.Conversation.ProducedDeclarations == nil {
 		t.Fatalf("expected completed hosted conversation, got %#v", out)
+	}
+	if strings.Contains(string(resp.Body), `"messages"`) || strings.Contains(string(resp.Body), "describe yourself") || strings.Contains(string(resp.Body), "done") || strings.Contains(string(resp.Body), mintConversationInstanceReadTestRawKey) {
+		t.Fatalf("hosted instance-trust complete leaked private fields: %s", string(resp.Body))
 	}
 }
 
@@ -2176,6 +2108,117 @@ func assertSoulInstanceFinalizeBoundaryRequirements(t *testing.T, out soulMintCo
 		out.BoundaryRequirements[0].SignatureHex == "" {
 		t.Fatalf("unexpected boundary requirements: %#v", out.BoundaryRequirements)
 	}
+}
+
+func assertSoulInstanceMintConversationAcceptedResponse(t *testing.T, resp *apptheory.Response) hostedGenesisConversationResponse {
+	t.Helper()
+	if resp.Status != http.StatusAccepted || !strings.Contains(resp.Headers["content-type"][0], "application/json") {
+		t.Fatalf("expected JSON 202 response, got %#v", resp)
+	}
+	var out hostedGenesisConversationResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Conversation.ConversationID == "" ||
+		out.Conversation.Status != models.SoulMintConversationStatusInProgress ||
+		out.Conversation.RequestID != "req-instance-bootstrap" ||
+		out.Conversation.MessageCount != 1 {
+		t.Fatalf("expected in-progress durable status, got %#v", out)
+	}
+	if out.Conversation.TraceIDs == nil ||
+		out.Conversation.TraceIDs.IdempotencyKey != soulInstanceBootstrapTestIdempotencyKey ||
+		out.Conversation.TraceIDs.CorrelationID != "corr-1" {
+		t.Fatalf("expected trace ids, got %#v", out.Conversation.TraceIDs)
+	}
+	if strings.Contains(string(resp.Body), soulInstanceBootstrapTestConversationMessage) ||
+		strings.Contains(string(resp.Body), mintConversationInstanceReadTestRawKey) {
+		t.Fatalf("response leaked transcript or credential material: %s", string(resp.Body))
+	}
+	return out
+}
+
+func assertSoulInstanceMintConversationQueued(t *testing.T, enqueued <-chan hostedgenesis.QueueMessage, registrationID string, conversationID string) {
+	t.Helper()
+	select {
+	case msg := <-enqueued:
+		if msg.Kind != hostedgenesis.QueueMessageKind ||
+			msg.Step != hostedgenesis.StepAssistantTurn ||
+			msg.ConversationID != conversationID ||
+			msg.RegistrationID != registrationID ||
+			msg.IdempotencyKey != soulInstanceBootstrapTestIdempotencyKey {
+			t.Fatalf("unexpected queued message: %#v", msg)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("hosted genesis turn was not enqueued")
+	}
+}
+
+func assertSoulInstanceCompleteTerminalConflict(t *testing.T, status string, reason string) {
+	t.Helper()
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	reg := mintConversationHandleReg()
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationRegistration(t, tdb, reg)
+	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationConversation(t, tdb, models.SoulAgentMintConversation{
+		AgentID:        reg.AgentID,
+		ConversationID: mintConversationTestConversationID,
+		Status:         status,
+		CreatedAt:      time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
+	})
+	stubMintConversationIdentity(t, tdb, nil, theoryErrors.ErrItemNotFound)
+
+	_, err := s.handleSoulInstanceCompleteMintConversation(newSoulInstanceBootstrapContext(
+		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
+		mustMarshalJSON(t, map[string]any{"declarations": testMintConversationDecl()}),
+		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
+	))
+	appErr := requireAppTheoryError(t, err)
+	assertMintConversationCompletionConflictDetails(t, appErr, soulInstanceBootstrapCodeConflict, http.StatusConflict, status, false, false, reason)
+}
+
+func assertSoulInstanceCompleteProgressWithoutAssistant(t *testing.T, messages string) {
+	t.Helper()
+	reg, identity, _ := soulInstanceHostedInstanceTrustFixture(t)
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationRegistration(t, tdb, reg)
+	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
+	conv := models.SoulAgentMintConversation{
+		AgentID:        reg.AgentID,
+		ConversationID: mintConversationTestConversationID,
+		Status:         models.SoulMintConversationStatusInProgress,
+		CreatedAt:      time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
+	}
+	if strings.TrimSpace(messages) != "" {
+		conv.Messages = encodeMintConversationBlob(messages)
+	}
+	stubMintConversationConversation(t, tdb, conv)
+	stubMintConversationIdentity(t, tdb, identity, nil)
+
+	resp, err := s.handleSoulInstanceCompleteMintConversation(newSoulInstanceBootstrapContext(
+		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
+		mustMarshalJSON(t, map[string]any{"declarations": testMintConversationDecl()}),
+		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
+	))
+	if err != nil {
+		t.Fatalf("unexpected progress response error: %v", err)
+	}
+	if resp.Status != http.StatusAccepted {
+		t.Fatalf("expected 202 progress response, got %#v", resp)
+	}
+	var out hostedGenesisConversationResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Conversation.Status != models.SoulMintConversationStatusInProgress ||
+		out.Conversation.ConversationID != mintConversationTestConversationID ||
+		out.Conversation.PollAfterSeconds == 0 {
+		t.Fatalf("expected in-progress completion response, got %#v", out)
+	}
+	tdb.qConv.AssertNumberOfCalls(t, "Update", 0)
 }
 
 func assertSoulInstanceHostedInstanceTrustFinalizePreflight(t *testing.T, out soulMintConversationFinalizeBeginResponse) {

@@ -200,6 +200,10 @@ function verifyOpenApiSurface() {
     jsonSchemaRef(instanceComplete, '202', 'application/json') === '#/components/schemas/SoulHostedGenesisConversationResponse',
     'instance-key registration mint-conversation complete 202 must return progress-safe HostConversation JSON'
   );
+  assert(
+    jsonSchemaRef(instanceComplete, '200', 'application/json') === '#/components/schemas/SoulHostedGenesisConversationResponse',
+    'instance-key registration mint-conversation complete 200 must return compact HostConversation JSON without raw transcript fields'
+  );
 
   for (const route of requiredInstanceBootstrapPaths) {
     const method = route === '/api/v1/soul/instance/agents/register/{id}/mint-conversation/{conversationId}' ? 'get' : 'post';

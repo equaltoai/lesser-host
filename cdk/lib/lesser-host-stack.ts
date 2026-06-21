@@ -1588,7 +1588,7 @@ export class LesserHostStack extends cdk.Stack {
 		attachBearerBehavior('api/v1/budget/debit', trustApiBehavior);
 		attachBearerBehavior('api/v1/soul/agents/register/*/mint-conversation*', apiSseBehavior);
 		attachBearerBehavior('api/v1/soul/agents/*/mint-conversation*', apiSseBehavior);
-		attachBearerBehavior('api/v1/soul/instance/agents/register/*/mint-conversation*', apiBehavior);
+		attachBearerBehavior('api/v1/soul/instance/agents/register/*/mint-conversation*', apiSseBehavior);
 
 		attachBearerBehavior('api/*', apiBehavior);
 		attachBearerBehavior('auth/*', apiBehavior);

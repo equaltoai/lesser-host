@@ -180,7 +180,7 @@ func (s *Server) handleSoulInstanceCompleteMintConversation(ctx *apptheory.Conte
 	}
 	publishGuardErr := s.ensureMintConversationAgentNotPublished(ctx.Context(), convCtx.agentIDHex)
 	if replayReady, reason := mintConversationCompletionReplayReady(convCtx.conv); replayReady {
-		return apptheory.JSON(http.StatusOK, convCtx.conv)
+		return hostedGenesisConversationJSON(http.StatusOK, convCtx.conv, hostedGenesisProjectionOptions{RegistrationID: convCtx.reg.ID, RequestID: strings.TrimSpace(ctx.RequestID), CollapseCreated: true})
 	} else if reason != "" {
 		return nil, soulInstanceMintConversationCompletionConflict(convCtx.conv, reason)
 	}
@@ -196,11 +196,11 @@ func (s *Server) handleSoulInstanceCompleteMintConversation(ctx *apptheory.Conte
 		}
 		return hostedGenesisConversationJSON(http.StatusAccepted, convCtx.conv, hostedGenesisProjectionOptions{RegistrationID: convCtx.reg.ID, RequestID: strings.TrimSpace(ctx.RequestID), CollapseCreated: true})
 	}
-	resp, err := s.completeSoulMintConversationForRegistration(ctx, mintConversationRegistrationContext{
+	resp, err := s.completeSoulMintConversationForRegistrationWithProjection(ctx, mintConversationRegistrationContext{
 		reg:        convCtx.reg,
 		inst:       convCtx.inst,
 		agentIDHex: convCtx.agentIDHex,
-	}, convCtx.conv, convCtx.conversationID)
+	}, convCtx.conv, convCtx.conversationID, &hostedGenesisProjectionOptions{RegistrationID: convCtx.reg.ID, RequestID: strings.TrimSpace(ctx.RequestID), CollapseCreated: true})
 	if err != nil {
 		return nil, soulInstanceBootstrapConversationErrorFromError(err)
 	}

@@ -409,17 +409,6 @@ func (s *Server) listSoulAgentMintConversations(ctx context.Context, agentIDHex 
 	return items, nil
 }
 
-func (s *Server) loadMintConversationByStatus(ctx context.Context, agentIDHex string, conversationID string, expectedStatus string, statusMessage string, emptyDeclMessage string) (*models.SoulAgentMintConversation, *apptheory.AppError) {
-	conv, err := getSoulAgentItemBySK[models.SoulAgentMintConversation](s, ctx, agentIDHex, fmt.Sprintf("MINT_CONVERSATION#%s", conversationID))
-	if err != nil {
-		return nil, &apptheory.AppError{Code: "app.not_found", Message: "conversation not found"}
-	}
-	if appErr := requireMintConversationStatus(conv, expectedStatus, statusMessage, emptyDeclMessage); appErr != nil {
-		return nil, appErr
-	}
-	return conv, nil
-}
-
 func (s *Server) loadMintConversationForCompletion(ctx context.Context, agentIDHex string, conversationID string) (*models.SoulAgentMintConversation, *apptheory.AppError) {
 	conv, err := getSoulAgentItemBySK[models.SoulAgentMintConversation](s, ctx, agentIDHex, fmt.Sprintf("MINT_CONVERSATION#%s", conversationID))
 	if err != nil {
@@ -486,20 +475,6 @@ func mintConversationCompletionStateConflict(conv *models.SoulAgentMintConversat
 	return apptheory.NewAppTheoryError(appErrCodeConflict, soulMintConversationCompleteConflictMessage).
 		WithStatusCode(http.StatusConflict).
 		WithDetails(mintConversationCompletionConflictDetails(conv, reason))
-}
-
-func requireMintConversationStatus(conv *models.SoulAgentMintConversation, expectedStatus string, statusMessage string, emptyDeclMessage string) *apptheory.AppError {
-	if conv == nil {
-		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
-	}
-	decodeMintConversationFields(conv)
-	if conv.Status != expectedStatus {
-		return &apptheory.AppError{Code: "app.conflict", Message: statusMessage}
-	}
-	if emptyDeclMessage != "" && strings.TrimSpace(conv.ProducedDeclarations) == "" {
-		return &apptheory.AppError{Code: "app.conflict", Message: emptyDeclMessage}
-	}
-	return nil
 }
 
 func requireMintConversationReadyForFinalize(conv *models.SoulAgentMintConversation, statusMessage string, emptyDeclMessage string) *apptheory.AppError {
@@ -1277,36 +1252,6 @@ func (s *Server) handleSoulAgentCompleteMintConversation(ctx *apptheory.Context)
 		inst:       agentCtx.inst,
 		agentIDHex: agentCtx.agentIDHex,
 	}, conv, conversationID)
-}
-
-func (s *Server) completeSoulMintConversationForRegistration(ctx *apptheory.Context, regCtx mintConversationRegistrationContext, conv *models.SoulAgentMintConversation, conversationID string) (*apptheory.Response, error) {
-	now := time.Now().UTC()
-	if appErr := requireMintConversationDurableAssistantTurn(conv); appErr != nil {
-		return nil, appErr
-	}
-	declarationsJSON, extractUsage, appErr := s.resolveMintConversationCompletion(ctx, regCtx, conv, conversationID, now)
-	if appErr != nil {
-		return nil, appErr
-	}
-	if appErr := s.persistCompletedMintConversation(ctx.Context(), conv, declarationsJSON, extractUsage, now); appErr != nil {
-		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to complete conversation"}
-	}
-	promotion := s.loadOrFallbackSoulAgentPromotion(ctx.Context(), regCtx.agentIDHex, buildSoulAgentPromotionFromRegistration(regCtx.reg, now))
-	promotion = updateSoulAgentPromotionForConversation(promotion, conversationID, models.SoulMintConversationStatusCompleted, now)
-	promotion = updateSoulAgentPromotionReviewDigest(promotion, declarationsJSON)
-	if appErr := s.saveSoulAgentPromotion(ctx.Context(), promotion); appErr != nil {
-		return nil, appErr
-	}
-	if appErr := s.saveSoulAgentPromotionLifecycleEvent(ctx.Context(), buildSoulAgentPromotionLifecycleEvent(promotion, soulAgentPromotionLifecycleEventInput{
-		EventType:      models.SoulAgentPromotionEventTypeFinalizeReady,
-		RequestID:      strings.TrimSpace(ctx.RequestID),
-		ConversationID: conversationID,
-		OccurredAt:     now,
-	})); appErr != nil {
-		return nil, appErr
-	}
-
-	return apptheory.JSON(http.StatusOK, conv)
 }
 
 // handleSoulGetMintConversation retrieves a mint conversation record.

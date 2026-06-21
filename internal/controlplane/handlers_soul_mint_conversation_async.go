@@ -36,29 +36,15 @@ func (s *Server) handleSoulMintConversationForRegistrationAsync(ctx *apptheory.C
 	if err != nil {
 		return nil, err
 	}
-	if err := validateHostedGenesisRequestIDs(&req); err != nil {
-		return nil, err
+	if validationErr := validateHostedGenesisRequestIDs(&req); validationErr != nil {
+		return nil, validationErr
 	}
 
 	now := time.Now().UTC()
 	instanceSlug = firstNonEmpty(instanceSlug, regCtx.inst.Slug)
-	reqHash := hostedGenesisRequestHash(regCtx.reg.ID, "", req.Model, message)
-	if strings.TrimSpace(req.IdempotencyKey) != "" {
-		if replay, replayMsg, replayErr := s.replayHostedGenesisIdempotency(ctx, regCtx, instanceSlug, req, reqHash); replayErr != nil {
-			return nil, replayErr
-		} else if replay != nil {
-			if enqueueErr := s.enqueueHostedGenesisTurn(ctx.Context(), replayMsg); enqueueErr != nil {
-				return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to enqueue hosted genesis turn"}
-			}
-			return hostedGenesisConversationJSON(http.StatusAccepted, replay, hostedGenesisProjectionOptions{
-				RegistrationID:  regCtx.reg.ID,
-				RequestID:       strings.TrimSpace(ctx.RequestID),
-				CollapseCreated: true,
-				CorrelationID:   req.CorrelationID,
-				IdempotencyKey:  req.IdempotencyKey,
-				LesserRequestID: req.LesserRequestID,
-			})
-		}
+	reqHash := hostedGenesisRequestHash(regCtx.reg.ID, req.ConversationID, req.Model, message)
+	if replayResp, replayed, replayErr := s.replayHostedGenesisIdempotencyResponse(ctx, regCtx, instanceSlug, req, reqHash); replayErr != nil || replayed {
+		return replayResp, replayErr
 	}
 
 	session, appErr := s.loadHostedGenesisTurnSession(ctx.Context(), regCtx.agentIDHex, req.ConversationID, req.Model)
@@ -74,62 +60,22 @@ func (s *Server) handleSoulMintConversationForRegistrationAsync(ctx *apptheory.C
 		return nil, appErr
 	}
 
-	updatedMessages := append(append([]soulMintConversationMessage(nil), session.existingMessages...), soulMintConversationMessage{Role: "user", Content: message})
-	messagesJSON, err := json.Marshal(updatedMessages)
+	updatedMessages, messagesJSON, err := serializeHostedGenesisAcceptedTurn(session, message)
 	if err != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to serialize conversation"}
 	}
 	idem := buildHostedGenesisIdempotency(instanceSlug, regCtx, session, req, reqHash, now, strings.TrimSpace(ctx.RequestID))
-	if appErr := s.persistHostedGenesisAcceptedTurn(ctx.Context(), regCtx, session, updatedMessages, string(messagesJSON), idem, firstNonEmpty(req.IdempotencyKey, ctx.RequestID), strings.TrimSpace(ctx.RequestID), now); appErr != nil {
+	if appErr := s.persistHostedGenesisAcceptedTurn(ctx.Context(), regCtx, session, updatedMessages, messagesJSON, idem, firstNonEmpty(req.IdempotencyKey, ctx.RequestID), strings.TrimSpace(ctx.RequestID), now); appErr != nil {
 		return nil, appErr
 	}
 
-	conv := session.conv
-	if conv == nil {
-		conv = &models.SoulAgentMintConversation{AgentID: regCtx.agentIDHex, ConversationID: session.conversationID, Model: session.modelSet, CreatedAt: now}
-	}
-	conv.Messages = string(messagesJSON)
-	conv.Status = models.SoulMintConversationStatusInProgress
-	conv.LatestTurnID = session.turnID
-	conv.RequestID = strings.TrimSpace(ctx.RequestID)
-	conv.CorrelationID = strings.TrimSpace(req.CorrelationID)
-	conv.IdempotencyKey = strings.TrimSpace(req.IdempotencyKey)
-	conv.UpdatedAt = now
-	if conv.CreatedAt.IsZero() {
-		conv.CreatedAt = now
-	}
-
-	msg := hostedgenesis.QueueMessage{
-		Kind:           hostedgenesis.QueueMessageKind,
-		Step:           hostedgenesis.StepAssistantTurn,
-		RegistrationID: strings.TrimSpace(regCtx.reg.ID),
-		InstanceSlug:   strings.TrimSpace(instanceSlug),
-		AgentID:        strings.TrimSpace(regCtx.agentIDHex),
-		ConversationID: strings.TrimSpace(session.conversationID),
-		TurnID:         strings.TrimSpace(session.turnID),
-		RequestID:      strings.TrimSpace(ctx.RequestID),
-		CorrelationID:  strings.TrimSpace(req.CorrelationID),
-		IdempotencyKey: strings.TrimSpace(req.IdempotencyKey),
-	}
-	if enqueueErr := s.enqueueHostedGenesisTurn(ctx.Context(), msg); enqueueErr != nil {
+	conv := buildHostedGenesisAcceptedConversation(regCtx, session, req, messagesJSON, strings.TrimSpace(ctx.RequestID), now)
+	if enqueueErr := s.enqueueHostedGenesisTurn(ctx.Context(), buildHostedGenesisAssistantQueueMessage(regCtx, instanceSlug, session, req, strings.TrimSpace(ctx.RequestID))); enqueueErr != nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "failed to enqueue hosted genesis turn"}
 	}
 
-	promotion := s.loadOrFallbackSoulAgentPromotion(ctx.Context(), regCtx.agentIDHex, buildSoulAgentPromotionFromRegistration(regCtx.reg, now))
-	previousPromotion := cloneSoulAgentPromotion(promotion)
-	promotion = updateSoulAgentPromotionForConversation(promotion, session.conversationID, models.SoulMintConversationStatusInProgress, now)
-	if appErr := s.saveSoulAgentPromotion(ctx.Context(), promotion); appErr != nil {
+	if appErr := s.saveHostedGenesisAcceptedPromotion(ctx.Context(), regCtx, session, strings.TrimSpace(ctx.RequestID), now); appErr != nil {
 		return nil, appErr
-	}
-	if shouldEmitSoulPromotionReviewStartedEvent(previousPromotion, promotion, session.conversationID) {
-		if appErr := s.saveSoulAgentPromotionLifecycleEvent(ctx.Context(), buildSoulAgentPromotionLifecycleEvent(promotion, soulAgentPromotionLifecycleEventInput{
-			EventType:      models.SoulAgentPromotionEventTypeReviewStarted,
-			RequestID:      strings.TrimSpace(ctx.RequestID),
-			ConversationID: session.conversationID,
-			OccurredAt:     now,
-		})); appErr != nil {
-			return nil, appErr
-		}
 	}
 
 	return hostedGenesisConversationJSON(http.StatusAccepted, conv, hostedGenesisProjectionOptions{
@@ -140,6 +86,87 @@ func (s *Server) handleSoulMintConversationForRegistrationAsync(ctx *apptheory.C
 		IdempotencyKey:  req.IdempotencyKey,
 		LesserRequestID: req.LesserRequestID,
 	})
+}
+
+func serializeHostedGenesisAcceptedTurn(session hostedGenesisTurnSession, message string) ([]soulMintConversationMessage, string, error) {
+	updatedMessages := append(append([]soulMintConversationMessage(nil), session.existingMessages...), soulMintConversationMessage{Role: "user", Content: message})
+	messagesJSON, err := json.Marshal(updatedMessages)
+	return updatedMessages, string(messagesJSON), err
+}
+
+func buildHostedGenesisAcceptedConversation(regCtx mintConversationRegistrationContext, session hostedGenesisTurnSession, req soulMintConversationRequest, messagesJSON string, requestID string, now time.Time) *models.SoulAgentMintConversation {
+	conv := session.conv
+	if conv == nil {
+		conv = &models.SoulAgentMintConversation{AgentID: regCtx.agentIDHex, ConversationID: session.conversationID, Model: session.modelSet, CreatedAt: now}
+	}
+	conv.Messages = messagesJSON
+	conv.Status = models.SoulMintConversationStatusInProgress
+	conv.LatestTurnID = session.turnID
+	conv.RequestID = strings.TrimSpace(requestID)
+	conv.CorrelationID = strings.TrimSpace(req.CorrelationID)
+	conv.IdempotencyKey = strings.TrimSpace(req.IdempotencyKey)
+	conv.UpdatedAt = now
+	if conv.CreatedAt.IsZero() {
+		conv.CreatedAt = now
+	}
+	return conv
+}
+
+func buildHostedGenesisAssistantQueueMessage(regCtx mintConversationRegistrationContext, instanceSlug string, session hostedGenesisTurnSession, req soulMintConversationRequest, requestID string) hostedgenesis.QueueMessage {
+	return hostedgenesis.QueueMessage{
+		Kind:           hostedgenesis.QueueMessageKind,
+		Step:           hostedgenesis.StepAssistantTurn,
+		RegistrationID: strings.TrimSpace(regCtx.reg.ID),
+		InstanceSlug:   strings.TrimSpace(instanceSlug),
+		AgentID:        strings.TrimSpace(regCtx.agentIDHex),
+		ConversationID: strings.TrimSpace(session.conversationID),
+		TurnID:         strings.TrimSpace(session.turnID),
+		RequestID:      strings.TrimSpace(requestID),
+		CorrelationID:  strings.TrimSpace(req.CorrelationID),
+		IdempotencyKey: strings.TrimSpace(req.IdempotencyKey),
+	}
+}
+
+func (s *Server) saveHostedGenesisAcceptedPromotion(ctx context.Context, regCtx mintConversationRegistrationContext, session hostedGenesisTurnSession, requestID string, now time.Time) *apptheory.AppError {
+	promotion := s.loadOrFallbackSoulAgentPromotion(ctx, regCtx.agentIDHex, buildSoulAgentPromotionFromRegistration(regCtx.reg, now))
+	previousPromotion := cloneSoulAgentPromotion(promotion)
+	promotion = updateSoulAgentPromotionForConversation(promotion, session.conversationID, models.SoulMintConversationStatusInProgress, now)
+	if appErr := s.saveSoulAgentPromotion(ctx, promotion); appErr != nil {
+		return appErr
+	}
+	if shouldEmitSoulPromotionReviewStartedEvent(previousPromotion, promotion, session.conversationID) {
+		if appErr := s.saveSoulAgentPromotionLifecycleEvent(ctx, buildSoulAgentPromotionLifecycleEvent(promotion, soulAgentPromotionLifecycleEventInput{
+			EventType:      models.SoulAgentPromotionEventTypeReviewStarted,
+			RequestID:      strings.TrimSpace(requestID),
+			ConversationID: session.conversationID,
+			OccurredAt:     now,
+		})); appErr != nil {
+			return appErr
+		}
+	}
+	return nil
+}
+
+func (s *Server) replayHostedGenesisIdempotencyResponse(ctx *apptheory.Context, regCtx mintConversationRegistrationContext, instanceSlug string, req soulMintConversationRequest, reqHash string) (*apptheory.Response, bool, error) {
+	if strings.TrimSpace(req.IdempotencyKey) == "" {
+		return nil, false, nil
+	}
+	replay, replayMsg, replayErr := s.replayHostedGenesisIdempotency(ctx, regCtx, instanceSlug, req, reqHash)
+	if replayErr != nil || replay == nil {
+		return nil, replay != nil, replayErr
+	}
+	if enqueueErr := s.enqueueHostedGenesisTurn(ctx.Context(), replayMsg); enqueueErr != nil {
+		return nil, true, &apptheory.AppError{Code: "app.internal", Message: "failed to enqueue hosted genesis turn"}
+	}
+	resp, err := hostedGenesisConversationJSON(http.StatusAccepted, replay, hostedGenesisProjectionOptions{
+		RegistrationID:  regCtx.reg.ID,
+		RequestID:       strings.TrimSpace(ctx.RequestID),
+		CollapseCreated: true,
+		CorrelationID:   req.CorrelationID,
+		IdempotencyKey:  req.IdempotencyKey,
+		LesserRequestID: req.LesserRequestID,
+	})
+	return resp, true, err
 }
 
 func validateHostedGenesisRequestIDs(req *soulMintConversationRequest) error {
@@ -176,8 +203,8 @@ func (s *Server) loadHostedGenesisTurnSession(ctx context.Context, agentIDHex st
 		if session.modelSet == "" {
 			session.modelSet = defaultSoulMintConversationModel
 		}
-		token, err := newToken(16)
-		if err != nil {
+		token, tokenErr := newToken(16)
+		if tokenErr != nil {
 			return hostedGenesisTurnSession{}, &apptheory.AppError{Code: "app.internal", Message: "failed to create conversation id"}
 		}
 		session.conversationID = token

@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"strings"
 	"time"
 
@@ -364,17 +363,6 @@ func nilIfEmptyTrace(trace hostedGenesisTraceIDs) *hostedGenesisTraceIDs {
 		return nil
 	}
 	return &trace
-}
-
-func hostedGenesisProgressResponse(ctx *apptheory.Context, status int, regID string, conv *models.SoulAgentMintConversation) (*apptheory.Response, error) {
-	requestID := ""
-	if ctx != nil {
-		requestID = strings.TrimSpace(ctx.RequestID)
-	}
-	if status == 0 {
-		status = http.StatusAccepted
-	}
-	return hostedGenesisConversationJSON(status, conv, hostedGenesisProjectionOptions{RegistrationID: regID, RequestID: requestID, CollapseCreated: true})
 }
 
 func hostedGenesisRequestHash(registrationID string, conversationID string, model string, message string) string {

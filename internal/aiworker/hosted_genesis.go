@@ -118,16 +118,7 @@ func (s *Server) processHostedGenesisAssistantTurn(ctx context.Context, workerRe
 	}
 	runCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), hostedGenesisRunTimeout)
 	defer cancel()
-	var fullResponse string
-	var usage models.AIUsage
-	switch {
-	case strings.HasPrefix(strings.ToLower(modelSet), "openai:"):
-		fullResponse, usage, err = llm.StreamMintConversationOpenAI(runCtx, apiKey, modelSet, hostedGenesisSystemPrompt(reg), llmMessages, func(string) {})
-	case strings.HasPrefix(strings.ToLower(modelSet), "anthropic:"):
-		fullResponse, usage, err = llm.StreamMintConversationAnthropic(runCtx, apiKey, modelSet, hostedGenesisSystemPrompt(reg), llmMessages, func(string) {})
-	default:
-		err = fmt.Errorf("unsupported model set")
-	}
+	fullResponse, usage, err := runHostedGenesisAssistantModel(runCtx, apiKey, modelSet, hostedGenesisSystemPrompt(reg), llmMessages)
 	if err != nil || strings.TrimSpace(fullResponse) == "" {
 		log.Printf("aiworker: hosted genesis assistant turn failed agent_hash=%s conversation_hash=%s provider=%s err=%v", hostedGenesisAuditHash(conv.AgentID), hostedGenesisAuditHash(conv.ConversationID), hostedGenesisProvider(modelSet), err)
 		s.markHostedGenesisConversationFailed(ctx, st, conv, hostedGenesisFailureAssistantTurnFailed, workerRequestID)
@@ -187,16 +178,7 @@ func (s *Server) processHostedGenesisDeclarationExtraction(ctx context.Context, 
 	for _, m := range messages {
 		in.Messages = append(in.Messages, llm.MintConversationMessage{Role: strings.ToLower(strings.TrimSpace(m.Role)), Content: strings.TrimSpace(m.Content)})
 	}
-	var draft llm.MintConversationDeclarationsDraft
-	var usage models.AIUsage
-	switch {
-	case strings.HasPrefix(strings.ToLower(modelSet), "openai:"):
-		draft, usage, err = llm.MintConversationDeclarationsOpenAI(ctx, apiKey, modelSet, in)
-	case strings.HasPrefix(strings.ToLower(modelSet), "anthropic:"):
-		draft, usage, err = llm.MintConversationDeclarationsAnthropic(ctx, apiKey, modelSet, in)
-	default:
-		err = fmt.Errorf("unsupported model set")
-	}
+	draft, usage, err := runHostedGenesisDeclarationModel(ctx, apiKey, modelSet, in)
 	if err != nil {
 		log.Printf("aiworker: hosted genesis declaration extraction failed agent_hash=%s conversation_hash=%s provider=%s err=%v", hostedGenesisAuditHash(conv.AgentID), hostedGenesisAuditHash(conv.ConversationID), hostedGenesisProvider(modelSet), err)
 		s.markHostedGenesisConversationFailed(ctx, st, conv, hostedGenesisFailureDeclarationExtractionFailed, workerRequestID)
@@ -230,28 +212,18 @@ func (s *Server) loadAndValidateHostedGenesisJob(ctx context.Context, st hostedG
 	if err != nil || reg == nil {
 		return nil, nil, nil
 	}
-	if !strings.EqualFold(strings.TrimSpace(reg.AgentID), strings.TrimSpace(msg.AgentID)) {
+	if !hostedGenesisRegistrationMatchesJob(reg, msg) {
 		return nil, nil, nil
 	}
-	domain, err := st.GetDomain(ctx, reg.DomainNormalized)
-	if err != nil || domain == nil || !hostedGenesisDomainActive(domain) || !strings.EqualFold(strings.TrimSpace(domain.InstanceSlug), strings.TrimSpace(msg.InstanceSlug)) {
+	if !hostedGenesisJobBoundaryValid(ctx, st, reg, msg) {
 		conv, _ := st.GetSoulAgentMintConversation(ctx, msg.AgentID, msg.ConversationID)
 		s.markHostedGenesisConversationFailed(ctx, st, conv, hostedGenesisFailureTenantBoundaryViolation, msg.RequestID)
 		return nil, nil, nil
 	}
-	inst, err := st.GetInstance(ctx, msg.InstanceSlug)
-	if err != nil || inst == nil || !strings.EqualFold(strings.TrimSpace(inst.Slug), strings.TrimSpace(msg.InstanceSlug)) {
+	if !hostedGenesisJobIdempotencyValid(ctx, st, msg) {
 		conv, _ := st.GetSoulAgentMintConversation(ctx, msg.AgentID, msg.ConversationID)
-		s.markHostedGenesisConversationFailed(ctx, st, conv, hostedGenesisFailureTenantBoundaryViolation, msg.RequestID)
+		s.markHostedGenesisConversationFailed(ctx, st, conv, hostedGenesisFailureInvalidCompletionState, msg.RequestID)
 		return nil, nil, nil
-	}
-	if strings.TrimSpace(msg.IdempotencyKey) != "" {
-		idem, err := st.GetSoulMintConversationIdempotency(ctx, msg.InstanceSlug, msg.RegistrationID, msg.IdempotencyKey)
-		if err != nil || idem == nil || !strings.EqualFold(strings.TrimSpace(idem.ConversationID), strings.TrimSpace(msg.ConversationID)) {
-			conv, _ := st.GetSoulAgentMintConversation(ctx, msg.AgentID, msg.ConversationID)
-			s.markHostedGenesisConversationFailed(ctx, st, conv, hostedGenesisFailureInvalidCompletionState, msg.RequestID)
-			return nil, nil, nil
-		}
 	}
 	conv, err := st.GetSoulAgentMintConversation(ctx, msg.AgentID, msg.ConversationID)
 	if err != nil || conv == nil {
@@ -260,6 +232,55 @@ func (s *Server) loadAndValidateHostedGenesisJob(ctx context.Context, st hostedG
 	conv.Messages = models.DecodeSoulMintConversationBlob(conv.Messages)
 	conv.ProducedDeclarations = models.DecodeSoulMintConversationBlob(conv.ProducedDeclarations)
 	return reg, conv, nil
+}
+
+var runHostedGenesisAssistantModel = defaultRunHostedGenesisAssistantModel
+
+func defaultRunHostedGenesisAssistantModel(ctx context.Context, apiKey string, modelSet string, systemPrompt string, messages []llm.MintConversationMessage) (string, models.AIUsage, error) {
+	switch {
+	case strings.HasPrefix(strings.ToLower(modelSet), "openai:"):
+		return llm.StreamMintConversationOpenAI(ctx, apiKey, modelSet, systemPrompt, messages, func(string) {})
+	case strings.HasPrefix(strings.ToLower(modelSet), "anthropic:"):
+		return llm.StreamMintConversationAnthropic(ctx, apiKey, modelSet, systemPrompt, messages, func(string) {})
+	default:
+		return "", models.AIUsage{}, fmt.Errorf("unsupported model set")
+	}
+}
+
+var runHostedGenesisDeclarationModel = defaultRunHostedGenesisDeclarationModel
+
+func defaultRunHostedGenesisDeclarationModel(ctx context.Context, apiKey string, modelSet string, in llm.MintConversationDeclarationsInput) (llm.MintConversationDeclarationsDraft, models.AIUsage, error) {
+	switch {
+	case strings.HasPrefix(strings.ToLower(modelSet), "openai:"):
+		return llm.MintConversationDeclarationsOpenAI(ctx, apiKey, modelSet, in)
+	case strings.HasPrefix(strings.ToLower(modelSet), "anthropic:"):
+		return llm.MintConversationDeclarationsAnthropic(ctx, apiKey, modelSet, in)
+	default:
+		return llm.MintConversationDeclarationsDraft{}, models.AIUsage{}, fmt.Errorf("unsupported model set")
+	}
+}
+
+func hostedGenesisRegistrationMatchesJob(reg *models.SoulAgentRegistration, msg hostedgenesis.QueueMessage) bool {
+	return reg != nil && strings.EqualFold(strings.TrimSpace(reg.AgentID), strings.TrimSpace(msg.AgentID))
+}
+
+func hostedGenesisJobBoundaryValid(ctx context.Context, st hostedGenesisStore, reg *models.SoulAgentRegistration, msg hostedgenesis.QueueMessage) bool {
+	domain, domainErr := st.GetDomain(ctx, reg.DomainNormalized)
+	if domainErr != nil || domain == nil || !hostedGenesisDomainActive(domain) || !strings.EqualFold(strings.TrimSpace(domain.InstanceSlug), strings.TrimSpace(msg.InstanceSlug)) {
+		return false
+	}
+	inst, instErr := st.GetInstance(ctx, msg.InstanceSlug)
+	return instErr == nil && inst != nil && strings.EqualFold(strings.TrimSpace(inst.Slug), strings.TrimSpace(msg.InstanceSlug))
+}
+
+func hostedGenesisJobIdempotencyValid(ctx context.Context, st hostedGenesisStore, msg hostedgenesis.QueueMessage) bool {
+	if strings.TrimSpace(msg.IdempotencyKey) == "" {
+		return true
+	}
+	idem, idemErr := st.GetSoulMintConversationIdempotency(ctx, msg.InstanceSlug, msg.RegistrationID, msg.IdempotencyKey)
+	return idemErr == nil && idem != nil &&
+		strings.EqualFold(strings.TrimSpace(idem.ConversationID), strings.TrimSpace(msg.ConversationID)) &&
+		strings.EqualFold(strings.TrimSpace(idem.TurnID), strings.TrimSpace(msg.TurnID))
 }
 
 func (s *Server) markHostedGenesisConversationFailed(ctx context.Context, st hostedGenesisStore, conv *models.SoulAgentMintConversation, reason string, requestID string) {

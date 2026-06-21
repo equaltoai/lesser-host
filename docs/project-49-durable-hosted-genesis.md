@@ -17,10 +17,13 @@ durable JSON status contract owned by Host.
   - Returns the compact durable HostConversation projection for polling/resume.
 - `POST /api/v1/soul/instance/agents/register/{id}/mint-conversation/{conversationId}/complete`
   - Returns `202` progress while the assistant turn or declaration extraction is still running.
-  - Returns terminal success only when valid produced declarations exist.
+  - Returns terminal `200` success as the compact HostConversation `declaration_ready` envelope only when valid produced
+    declarations exist; it does not expose raw transcripts.
 - Finalize/preflight/begin/finalize fail closed unless the active conversation has valid produced declarations.
 
 SSE can remain for non-instance Host UI routes, but it is no longer the authoritative Lesser completion mechanism.
+CloudFront may still route the mint-conversation subtree through Host's REST control-plane mint-conversation origin for
+transport compatibility; the Lesser instance-key contract is JSON state, not SSE state.
 
 ### Worker and retry model
 
