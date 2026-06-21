@@ -12,6 +12,11 @@ soul creation. They describe server-held instance-key calls only; they do not es
 path. The hosted-genesis examples lock `in_progress`, terminal `declaration_ready` with produced declarations, and
 `failed` with typed bounded recovery.
 
+The hosted-genesis status enum includes `created` for Host durable records that may be reserved before the first
+accepted user turn. Host collapses `created` to `in_progress` on the Lesser instance-key projection because Lesser's
+first accepted POST response already has a persisted `conversation_id` and user turn. Lesser consumers should persist
+`host_conversation_id` immediately and may project any observed `created` snapshot as `in_progress`.
+
 Managed `@lessersoul.ai` email examples use the Project 37 current-channel form
 `<agent-local-id>.<instance-slug>@lessersoul.ai`. Bare `<agent-local-id>@lessersoul.ai`
 addresses are legacy inbound aliases only after migration and should not appear as

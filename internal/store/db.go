@@ -77,6 +77,7 @@ func LambdaInit() (DB, error) {
 		&models.SoulAgentContinuity{},
 		&models.SoulLifecycleChallenge{},
 		&models.SoulAgentMintConversation{},
+		&models.SoulMintConversationIdempotency{},
 		&models.SoulAgentValidationRecord{},
 		&models.SoulCommMessageStatus{},
 		&models.SoulCommMailboxMessage{},

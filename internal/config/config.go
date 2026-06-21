@@ -53,11 +53,12 @@ type Config struct {
 	ENSGatewaySigningPrivateKey   string
 	ENSGatewaySignatureTTLSeconds int64
 
-	ArtifactBucketName string
-	PreviewQueueURL    string
-	SafetyQueueURL     string
-	ProvisionQueueURL  string
-	CommQueueURL       string
+	ArtifactBucketName    string
+	PreviewQueueURL       string
+	SafetyQueueURL        string
+	HostedGenesisQueueURL string
+	ProvisionQueueURL     string
+	CommQueueURL          string
 
 	BootstrapWalletAddress string
 
@@ -245,11 +246,12 @@ func Load() Config {
 		ENSGatewaySigningPrivateKey:   envString("ENS_GATEWAY_SIGNING_PRIVATE_KEY"),
 		ENSGatewaySignatureTTLSeconds: ensGatewayTTL,
 
-		ArtifactBucketName: envString("ARTIFACT_BUCKET_NAME"),
-		PreviewQueueURL:    envString("PREVIEW_QUEUE_URL"),
-		SafetyQueueURL:     envString("SAFETY_QUEUE_URL"),
-		ProvisionQueueURL:  envString("PROVISION_QUEUE_URL"),
-		CommQueueURL:       envString("COMM_QUEUE_URL"),
+		ArtifactBucketName:    envString("ARTIFACT_BUCKET_NAME"),
+		PreviewQueueURL:       envString("PREVIEW_QUEUE_URL"),
+		SafetyQueueURL:        envString("SAFETY_QUEUE_URL"),
+		HostedGenesisQueueURL: envString("HOSTED_GENESIS_QUEUE_URL"),
+		ProvisionQueueURL:     envString("PROVISION_QUEUE_URL"),
+		CommQueueURL:          envString("COMM_QUEUE_URL"),
 
 		BootstrapWalletAddress: envString("BOOTSTRAP_WALLET_ADDRESS"),
 

@@ -12,22 +12,29 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 
 	"github.com/equaltoai/lesser-host/internal/commworker"
+	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/provisioning"
 )
 
 type queueClient struct {
-	provisionQueueURL string
-	commQueueURL      string
+	provisionQueueURL     string
+	commQueueURL          string
+	hostedGenesisQueueURL string
 
 	once   sync.Once
 	client *sqs.Client
 	err    error
 }
 
-func newQueueClient(provisionQueueURL string, commQueueURL string) *queueClient {
+func newQueueClient(provisionQueueURL string, commQueueURL string, hostedGenesisQueueURL ...string) *queueClient {
+	hostedURL := ""
+	if len(hostedGenesisQueueURL) > 0 {
+		hostedURL = hostedGenesisQueueURL[0]
+	}
 	return &queueClient{
-		provisionQueueURL: strings.TrimSpace(provisionQueueURL),
-		commQueueURL:      strings.TrimSpace(commQueueURL),
+		provisionQueueURL:     strings.TrimSpace(provisionQueueURL),
+		commQueueURL:          strings.TrimSpace(commQueueURL),
+		hostedGenesisQueueURL: strings.TrimSpace(hostedURL),
 	}
 }
 
@@ -85,6 +92,32 @@ func (q *queueClient) enqueueCommMessage(ctx context.Context, msg commworker.Que
 	url := strings.TrimSpace(q.commQueueURL)
 	if url == "" {
 		return fmt.Errorf("comm queue url is not configured")
+	}
+
+	body, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+
+	client, err := q.sqsClient(ctx)
+	if err != nil {
+		return err
+	}
+
+	_, err = client.SendMessage(ctx, &sqs.SendMessageInput{
+		QueueUrl:    aws.String(url),
+		MessageBody: aws.String(string(body)),
+	})
+	return err
+}
+
+func (q *queueClient) enqueueHostedGenesisMessage(ctx context.Context, msg hostedgenesis.QueueMessage) error {
+	if q == nil {
+		return fmt.Errorf("queue client is nil")
+	}
+	url := strings.TrimSpace(q.hostedGenesisQueueURL)
+	if url == "" {
+		return fmt.Errorf("hosted genesis queue url is not configured")
 	}
 
 	body, err := json.Marshal(msg)

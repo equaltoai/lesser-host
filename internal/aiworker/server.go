@@ -104,6 +104,10 @@ func (s *Server) Register(app *apptheory.App) {
 	if queueName != "" {
 		app.SQS(queueName, s.handleSafetyQueueMessage)
 	}
+	hostedGenesisQueueName := sqsQueueNameFromURL(s.cfg.HostedGenesisQueueURL)
+	if hostedGenesisQueueName != "" {
+		app.SQS(hostedGenesisQueueName, s.handleHostedGenesisQueueMessage)
+	}
 }
 
 func (s *Server) handleSafetyQueueMessage(ctx *apptheory.EventContext, msg events.SQSMessage) error {
