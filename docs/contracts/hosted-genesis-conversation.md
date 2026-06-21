@@ -5,7 +5,8 @@ failure this contract fixes was a transport-success response (`HTTP 200` plus a 
 conversation as `in_progress` with no declarations and Lesser could not persist a `host_conversation_id`.
 
 This document is a contract artifact for Host, Lesser, Greater, and Sim. M1.1 only locks names and examples; it does
-not implement the M2 async worker/queue.
+not implement the M2 async worker/queue. M2 implements the Lesser instance-key JSON projection, hosted-genesis worker
+queue, idempotent retry semantics, and fail-closed finalize behavior described here.
 
 ## Authoritative Lesser route family
 
@@ -64,6 +65,16 @@ Locked status enum:
 The current implementation's legacy `completed` state maps to the locked `declaration_ready` contract status when and
 only when valid `produced_declarations` are present. Downstream M1.2/M1.3 consumers should project
 `declaration_ready`, not infer terminal success from transport status or from the legacy word `completed`.
+
+### `created` projection decision for Lesser
+
+Host keeps `created` in the locked enum for durable records that exist before the first accepted user turn (for example,
+future pre-created/reserved conversations). On the Lesser instance-key route family, Host collapses `created` snapshots
+to `in_progress`. The POST path persists a conversation id and accepted user turn before returning to Lesser, so the
+first successful Lesser-visible status is `in_progress`, not `created`.
+
+Lesser M3 should therefore project Host `created` as its local `in_progress` row if a status read ever observes it, and
+should not wait for an explicit local `created` projection before persisting `host_conversation_id`.
 
 ## Invariants
 

@@ -146,11 +146,11 @@ func (s *Server) handleSoulInstanceMintConversation(ctx *apptheory.Context) (*ap
 	if appErr != nil {
 		return nil, appErr
 	}
-	resp, err := s.handleSoulMintConversationForRegistration(ctx, mintConversationRegistrationContext{
+	resp, err := s.handleSoulMintConversationForRegistrationAsync(ctx, mintConversationRegistrationContext{
 		reg:        regCtx.reg,
 		inst:       regCtx.inst,
 		agentIDHex: regCtx.agentIDHex,
-	})
+	}, regCtx.instanceSlug)
 	if err != nil {
 		return nil, soulInstanceBootstrapConversationErrorFromError(err)
 	}
@@ -166,14 +166,11 @@ func (s *Server) handleSoulInstanceGetRegistrationMintConversation(ctx *apptheor
 	if appErr := rejectOversizeSoulMintInstanceConversation(convCtx.conv); appErr != nil {
 		return nil, appErr
 	}
-	resp, err := soulMintInstanceReadJSON(http.StatusOK, soulInstanceMintConversationResponse{
-		Version:      "1",
-		Conversation: convCtx.conv,
-	}, soulMintInstanceReadSingleMaxBytes)
-	if err != nil {
-		return nil, soulMintInstanceReadResponseError(err)
-	}
-	return resp, nil
+	return hostedGenesisConversationJSON(http.StatusOK, convCtx.conv, hostedGenesisProjectionOptions{
+		RegistrationID:  convCtx.reg.ID,
+		RequestID:       strings.TrimSpace(ctx.RequestID),
+		CollapseCreated: true,
+	})
 }
 
 func (s *Server) handleSoulInstanceCompleteMintConversation(ctx *apptheory.Context) (*apptheory.Response, error) {
@@ -189,6 +186,15 @@ func (s *Server) handleSoulInstanceCompleteMintConversation(ctx *apptheory.Conte
 	}
 	if publishGuardErr != nil {
 		return nil, soulInstanceBootstrapConversationErrorFromAppError(publishGuardErr)
+	}
+	if ok, _ := mintConversationHasDurableAssistantTurn(convCtx.conv); !ok {
+		return hostedGenesisConversationJSON(http.StatusAccepted, convCtx.conv, hostedGenesisProjectionOptions{RegistrationID: convCtx.reg.ID, RequestID: strings.TrimSpace(ctx.RequestID), CollapseCreated: true})
+	}
+	if strings.TrimSpace(convCtx.conv.Status) == models.SoulMintConversationStatusDeclarationExtractionPending || parseMintConversationCompleteDeclarations(ctx) == "" {
+		if err := s.startHostedGenesisDeclarationExtraction(ctx, convCtx); err != nil {
+			return nil, soulInstanceBootstrapConversationErrorFromError(err)
+		}
+		return hostedGenesisConversationJSON(http.StatusAccepted, convCtx.conv, hostedGenesisProjectionOptions{RegistrationID: convCtx.reg.ID, RequestID: strings.TrimSpace(ctx.RequestID), CollapseCreated: true})
 	}
 	resp, err := s.completeSoulMintConversationForRegistration(ctx, mintConversationRegistrationContext{
 		reg:        convCtx.reg,
@@ -307,7 +313,7 @@ func (s *Server) loadSoulInstanceMintConversationFinalizeContext(ctx *apptheory.
 	if s == nil || s.soulPacks == nil || strings.TrimSpace(s.cfg.SoulPackBucketName) == "" {
 		return mintConversationFinalizeContext{}, soulInstanceBootstrapConversationErrorFromAppError(&apptheory.AppError{Code: "app.conflict", Message: "soul registry bucket is not configured"})
 	}
-	if appErr := requireMintConversationStatus(convCtx.conv, models.SoulMintConversationStatusCompleted, "conversation is not completed", "conversation has no produced declarations"); appErr != nil {
+	if appErr := requireMintConversationReadyForFinalize(convCtx.conv, "conversation is not completed", "conversation has no produced declarations"); appErr != nil {
 		return mintConversationFinalizeContext{}, soulInstanceBootstrapConversationErrorFromAppError(appErr)
 	}
 	identity, err := s.getSoulAgentIdentity(ctx.Context(), convCtx.agentIDHex)

@@ -114,7 +114,7 @@ components:
                   maxLength: 128
                 conversation_status:
                   type: string
-                  enum: [unknown, pending, in_progress, completed, failed]
+                  enum: [unknown, pending, created, in_progress, assistant_turn_ready, declaration_extraction_pending, declaration_ready, completed, failed]
                 expected_status:
                   type: string
                   minLength: 1
@@ -717,7 +717,7 @@ components:
           type: string
         latest_conversation_status:
           type: string
-          enum: [in_progress, completed, failed]
+          enum: [created, in_progress, assistant_turn_ready, declaration_extraction_pending, declaration_ready, completed, failed]
         latest_review_sha256:
           type: string
           pattern: "^[0-9a-f]{64}$"
@@ -1061,6 +1061,10 @@ components:
           type: string
           minLength: 1
           maxLength: 128
+        lesser_request_id:
+          type: string
+          minLength: 1
+          maxLength: 128
 
     SoulHostedGenesisConversationResponse:
       $ref: "../spec/v3/schemas/hosted-genesis.conversation.response.schema.json"
@@ -1088,7 +1092,10 @@ components:
           type: string
         status:
           type: string
-          enum: [in_progress, completed, failed]
+          description: >
+            Legacy raw Host record status. `completed` is retained for backward compatibility and maps to the
+            durable hosted-genesis contract status `declaration_ready` only when valid produced declarations exist.
+          enum: [created, in_progress, assistant_turn_ready, declaration_extraction_pending, declaration_ready, completed, failed]
         usage:
           $ref: "#/components/schemas/AIUsage"
         charged_credits:
@@ -1146,7 +1153,7 @@ components:
           type: string
         status:
           type: string
-          enum: [in_progress, completed, failed]
+          enum: [created, in_progress, assistant_turn_ready, declaration_extraction_pending, declaration_ready, completed, failed]
         usage:
           $ref: "#/components/schemas/AIUsage"
         charged_credits:
@@ -2963,10 +2970,12 @@ paths:
       summary: Complete or replay an instance-key registration mint conversation
       description: |
         Server-to-server route for managed Lesser instances. Completes a conversation inside the authenticated instance
-        boundary and persists the produced declarations for finalize preflight/finalize. If the stored conversation is
-        already `completed` and has valid produced declarations, the route is idempotent and returns the completed
-        conversation without re-extracting or rewriting declarations. Failed conversations and completed conversations
-        without valid produced declarations fail closed with structured state details.
+        boundary and persists the produced declarations for finalize preflight/finalize. If Host has accepted the turn
+        but the assistant turn or declaration extraction is not ready yet, this route returns `202` plus the durable
+        HostConversation progress envelope; HTTP success is not terminal. If the stored conversation is already
+        `completed`/`declaration_ready` and has valid produced declarations, the route is idempotent and returns the
+        completed conversation without re-extracting or rewriting declarations. Failed conversations and completed
+        conversations without valid produced declarations fail closed with structured state details.
       security:
         - instanceKeyAuth: []
       parameters:
@@ -2992,11 +3001,17 @@ paths:
               $ref: "#/components/schemas/SoulMintConversationCompleteRequest"
       responses:
         "200":
-          description: OK
+          description: Terminal replay or synchronous completion with valid produced declarations.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/SoulMintConversation"
+        "202":
+          description: Assistant turn or declaration extraction is still in progress; inspect `conversation.status`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SoulHostedGenesisConversationResponse"
         "400":
           description: Invalid request
           content:

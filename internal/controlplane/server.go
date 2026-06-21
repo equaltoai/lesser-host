@@ -12,6 +12,7 @@ import (
 	"github.com/equaltoai/lesser-host/internal/commmailbox"
 	"github.com/equaltoai/lesser-host/internal/commworker"
 	"github.com/equaltoai/lesser-host/internal/config"
+	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/outboundhttp"
 	"github.com/equaltoai/lesser-host/internal/payments"
 	"github.com/equaltoai/lesser-host/internal/store"
@@ -56,7 +57,8 @@ type Server struct {
 	telnyxSendSMS       func(ctx context.Context, from string, to string, text string) (string, error)
 	telnyxCallVoice     func(ctx context.Context, from string, to string, texmlURL string, statusCallbackURL string) (string, error)
 
-	enqueueCommMessage func(ctx context.Context, msg commworker.QueueMessage) error
+	enqueueCommMessage          func(ctx context.Context, msg commworker.QueueMessage) error
+	enqueueHostedGenesisMessage func(ctx context.Context, msg hostedgenesis.QueueMessage) error
 
 	// paymentsProviderFactory is a test-injection hook. When non-nil, handlers
 	// use it instead of payments.NewProvider.
@@ -73,7 +75,7 @@ func NewServer(cfg config.Config, st *store.Store) *Server {
 		cfg:                  cfg,
 		store:                st,
 		webAuthn:             webAuthn,
-		queues:               newQueueClient(cfg.ProvisionQueueURL, cfg.CommQueueURL),
+		queues:               newQueueClient(cfg.ProvisionQueueURL, cfg.CommQueueURL, cfg.HostedGenesisQueueURL),
 		r53:                  newRoute53Client(),
 		soulPacks:            artifacts.New(cfg.SoulPackBucketName),
 		soulAvatarCache:      &soulPublicAvatarCache{},
@@ -98,6 +100,7 @@ func NewServer(cfg config.Config, st *store.Store) *Server {
 		srv.mailboxContentStore = commmailbox.NewS3Store(cfg.SoulCommMailboxBucketName)
 	}
 	srv.enqueueCommMessage = srv.queues.enqueueCommMessage
+	srv.enqueueHostedGenesisMessage = srv.queues.enqueueHostedGenesisMessage
 	return srv
 }
 

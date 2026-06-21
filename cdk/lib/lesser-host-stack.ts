@@ -155,10 +155,25 @@ export class LesserHostStack extends cdk.Stack {
 		safetyDLQ.applyRemovalPolicy(removalPolicy);
 		const safetyQueue = new sqs.Queue(this, 'SafetyQueue', {
 			queueName: `${namePrefix}-safety-queue`,
+			visibilityTimeout: cdk.Duration.minutes(3),
 			deadLetterQueue: { queue: safetyDLQ, maxReceiveCount: 3 },
 			encryption: sqs.QueueEncryption.SQS_MANAGED,
 		});
 		safetyQueue.applyRemovalPolicy(removalPolicy);
+
+		const hostedGenesisDLQ = new sqs.Queue(this, 'HostedGenesisDLQ', {
+			queueName: `${namePrefix}-hosted-genesis-dlq`,
+			retentionPeriod: cdk.Duration.days(14),
+			encryption: sqs.QueueEncryption.SQS_MANAGED,
+		});
+		hostedGenesisDLQ.applyRemovalPolicy(removalPolicy);
+		const hostedGenesisQueue = new sqs.Queue(this, 'HostedGenesisQueue', {
+			queueName: `${namePrefix}-hosted-genesis-queue`,
+			visibilityTimeout: cdk.Duration.minutes(3),
+			deadLetterQueue: { queue: hostedGenesisDLQ, maxReceiveCount: 3 },
+			encryption: sqs.QueueEncryption.SQS_MANAGED,
+		});
+		hostedGenesisQueue.applyRemovalPolicy(removalPolicy);
 
 		const provisionDLQ = new sqs.Queue(this, 'ProvisionDLQ', {
 			queueName: `${namePrefix}-provision-dlq`,
@@ -204,6 +219,15 @@ export class LesserHostStack extends cdk.Stack {
 		new cloudwatch.Alarm(this, 'SafetyDLQAlarm', {
 			alarmName: `${namePrefix}-safety-dlq-visible`,
 			metric: safetyDLQ.metricApproximateNumberOfMessagesVisible({ period: dlqAlarmPeriod }),
+			threshold: dlqAlarmThreshold,
+			comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+			evaluationPeriods: 1,
+			datapointsToAlarm: 1,
+			treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+		});
+		new cloudwatch.Alarm(this, 'HostedGenesisDLQAlarm', {
+			alarmName: `${namePrefix}-hosted-genesis-dlq-visible`,
+			metric: hostedGenesisDLQ.metricApproximateNumberOfMessagesVisible({ period: dlqAlarmPeriod }),
 			threshold: dlqAlarmThreshold,
 			comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
 			evaluationPeriods: 1,
@@ -462,6 +486,7 @@ export class LesserHostStack extends cdk.Stack {
 			SAFETY_QUEUE_URL: safetyQueue.queueUrl,
 			PROVISION_QUEUE_URL: provisionQueue.queueUrl,
 			COMM_QUEUE_URL: commQueue.queueUrl,
+			HOSTED_GENESIS_QUEUE_URL: hostedGenesisQueue.queueUrl,
 			SOUL_COMM_MAILBOX_BUCKET_NAME: soulCommMailboxBucket.bucketName,
 			SOUL_COMM_MAILBOX_RETENTION_DAYS: String(soulCommMailboxRetentionDays),
 			BOOTSTRAP_WALLET_ADDRESS: bootstrapWalletAddress,
@@ -562,9 +587,10 @@ export class LesserHostStack extends cdk.Stack {
 			ARTIFACT_BUCKET_NAME: artifactsBucket.bucketName,
 			PREVIEW_QUEUE_URL: previewQueue.queueUrl,
 			SAFETY_QUEUE_URL: safetyQueue.queueUrl,
+			HOSTED_GENESIS_QUEUE_URL: hostedGenesisQueue.queueUrl,
 			ATTESTATION_SIGNING_KEY_ID: attestationSigningKey.keyId,
 			ATTESTATION_PUBLIC_KEY_IDS: attestationSigningKey.keyId,
-		});
+		}, { timeoutSeconds: 120 });
 
 		const soulReputationWorkerFn = this.goLambda(
 			'SoulReputationWorker',
@@ -671,6 +697,8 @@ export class LesserHostStack extends cdk.Stack {
 		safetyQueue.grantSendMessages(controlPlaneFn);
 		safetyQueue.grantSendMessages(trustFn);
 		safetyQueue.grantConsumeMessages(aiWorkerFn);
+		hostedGenesisQueue.grantSendMessages(controlPlaneFn);
+		hostedGenesisQueue.grantConsumeMessages(aiWorkerFn);
 		provisionQueue.grantSendMessages(controlPlaneFn);
 		provisionQueue.grantConsumeMessages(provisionWorkerFn);
 		provisionQueue.grantSendMessages(provisionWorkerFn);
@@ -787,6 +815,7 @@ export class LesserHostStack extends cdk.Stack {
 
 		renderWorkerFn.addEventSource(new lambdaEventSources.SqsEventSource(previewQueue, { batchSize: 1 }));
 		aiWorkerFn.addEventSource(new lambdaEventSources.SqsEventSource(safetyQueue, { batchSize: 5 }));
+		aiWorkerFn.addEventSource(new lambdaEventSources.SqsEventSource(hostedGenesisQueue, { batchSize: 1 }));
 		provisionWorkerFn.addEventSource(new lambdaEventSources.SqsEventSource(provisionQueue, { batchSize: 1 }));
 		commWorkerFn.addEventSource(new lambdaEventSources.SqsEventSource(commQueue, { batchSize: 1 }));
 
@@ -1559,7 +1588,7 @@ export class LesserHostStack extends cdk.Stack {
 		attachBearerBehavior('api/v1/budget/debit', trustApiBehavior);
 		attachBearerBehavior('api/v1/soul/agents/register/*/mint-conversation*', apiSseBehavior);
 		attachBearerBehavior('api/v1/soul/agents/*/mint-conversation*', apiSseBehavior);
-		attachBearerBehavior('api/v1/soul/instance/agents/register/*/mint-conversation*', apiSseBehavior);
+		attachBearerBehavior('api/v1/soul/instance/agents/register/*/mint-conversation*', apiBehavior);
 
 		attachBearerBehavior('api/*', apiBehavior);
 		attachBearerBehavior('auth/*', apiBehavior);
@@ -1685,6 +1714,7 @@ export class LesserHostStack extends cdk.Stack {
 			new cdk.CfnOutput(this, 'AttestationSigningKeyId', { value: attestationSigningKey.keyId });
 			new cdk.CfnOutput(this, 'PreviewQueueUrl', { value: previewQueue.queueUrl });
 			new cdk.CfnOutput(this, 'SafetyQueueUrl', { value: safetyQueue.queueUrl });
+			new cdk.CfnOutput(this, 'HostedGenesisQueueUrl', { value: hostedGenesisQueue.queueUrl });
 			new cdk.CfnOutput(this, 'ProvisionQueueUrl', { value: provisionQueue.queueUrl });
 			new cdk.CfnOutput(this, 'RenderWorkerFunctionName', { value: renderWorkerFn.functionName });
 			new cdk.CfnOutput(this, 'AiWorkerFunctionName', { value: aiWorkerFn.functionName });

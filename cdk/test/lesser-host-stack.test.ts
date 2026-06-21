@@ -469,6 +469,41 @@ test('provision worker receives deploy runner role arn for tenant trust repair',
 	);
 });
 
+test('hosted genesis durable async queue is wired to control plane and ai worker', () => {
+	const template = synthTemplate();
+	const queues = findResourceEntries(template, 'AWS::SQS::Queue');
+	const queue = queues.find(([, resource]) =>
+		resource.Properties?.QueueName === 'lesser-host-lab-hosted-genesis-queue'
+	);
+	const dlq = queues.find(([, resource]) =>
+		resource.Properties?.QueueName === 'lesser-host-lab-hosted-genesis-dlq'
+	);
+	assert.ok(queue, 'expected hosted genesis worker queue');
+	assert.ok(dlq, 'expected hosted genesis DLQ');
+	assert.equal(queue[1].Properties?.VisibilityTimeout, 180, 'hosted genesis queue must cover ai-worker timeout');
+	assert.deepEqual(
+		queue[1].Properties?.RedrivePolicy,
+		{
+			deadLetterTargetArn: { 'Fn::GetAtt': [dlq[0], 'Arn'] },
+			maxReceiveCount: 3,
+		},
+		'hosted genesis queue must fail closed to its DLQ after bounded retries',
+	);
+
+	const controlPlane = findLambdaByFunctionName(template, 'control-plane-api');
+	const aiWorker = findLambdaByFunctionName(template, 'ai-worker');
+	const controlPlaneEnv = lambdaEnvironment(controlPlane);
+	const aiWorkerEnv = lambdaEnvironment(aiWorker);
+	assert.ok('HOSTED_GENESIS_QUEUE_URL' in controlPlaneEnv, 'control plane must receive hosted genesis queue url');
+	assert.ok('HOSTED_GENESIS_QUEUE_URL' in aiWorkerEnv, 'ai worker must receive hosted genesis queue url');
+	assert.equal(aiWorker?.Timeout, 120, 'ai worker needs durable async LLM work timeout headroom');
+
+	const mappings = findResources(template, 'AWS::Lambda::EventSourceMapping');
+	const mapping = mappings.find((entry) => JSON.stringify(entry).includes(queue[0]) && JSON.stringify(entry).includes('AiWorker'));
+	assert.ok(mapping, 'expected hosted genesis queue event source on ai-worker');
+	assert.equal(mapping.BatchSize, 1, 'hosted genesis jobs must process one conversation turn at a time');
+});
+
 test('web asset bundling does not execute npm locally in CI', () => {
 	assert.equal(shouldUseLocalWebBundling({ CI: 'true' }), false);
 	assert.equal(shouldUseLocalWebBundling({ GITHUB_ACTIONS: 'true' }), false);
@@ -704,7 +739,7 @@ test('M0.13 distribution: bearer-auth API/trust origins are NOT OAC-protected', 
 	}
 });
 
-test('M8.1 distribution: Lesser instance mint-conversation route uses SSE origin', () => {
+test('P49 M2 distribution: Lesser instance mint-conversation route uses JSON control-plane origin', () => {
 	const config = distributionConfig(synthTemplate());
 	const exactLesserPattern = 'api/v1/soul/instance/agents/register/*/mint-conversation*';
 	const behavior = (config.CacheBehaviors ?? []).find((b) => b.PathPattern === exactLesserPattern);
@@ -715,8 +750,8 @@ test('M8.1 distribution: Lesser instance mint-conversation route uses SSE origin
 	const origin = originById(config, behavior.TargetOriginId);
 	const domainSourceId = originDomainSourceLogicalId(origin);
 	assert.ok(
-		domainSourceId.startsWith('ControlPlaneSseRestApi'),
-		`exact Lesser-used instance mint-conversation route must use the SSE-capable REST API origin; got ${domainSourceId}`,
+		domainSourceId.startsWith('ControlPlaneHttpApi'),
+		`exact Lesser-used instance mint-conversation route must use the durable JSON control-plane HTTP API origin; got ${domainSourceId}`,
 	);
 });
 

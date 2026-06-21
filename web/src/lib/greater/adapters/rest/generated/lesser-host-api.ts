@@ -512,10 +512,12 @@ export interface paths {
         /**
          * Complete or replay an instance-key registration mint conversation
          * @description Server-to-server route for managed Lesser instances. Completes a conversation inside the authenticated instance
-         *     boundary and persists the produced declarations for finalize preflight/finalize. If the stored conversation is
-         *     already `completed` and has valid produced declarations, the route is idempotent and returns the completed
-         *     conversation without re-extracting or rewriting declarations. Failed conversations and completed conversations
-         *     without valid produced declarations fail closed with structured state details.
+         *     boundary and persists the produced declarations for finalize preflight/finalize. If Host has accepted the turn
+         *     but the assistant turn or declaration extraction is not ready yet, this route returns `202` plus the durable
+         *     HostConversation progress envelope; HTTP success is not terminal. If the stored conversation is already
+         *     `completed`/`declaration_ready` and has valid produced declarations, the route is idempotent and returns the
+         *     completed conversation without re-extracting or rewriting declarations. Failed conversations and completed
+         *     conversations without valid produced declarations fail closed with structured state details.
          */
         post: operations["soulInstanceCompleteRegistrationMintConversation"];
         delete?: never;
@@ -1108,7 +1110,7 @@ export interface components {
                 details?: {
                     reason?: string;
                     /** @enum {string} */
-                    conversation_status?: "unknown" | "pending" | "in_progress" | "completed" | "failed";
+                    conversation_status?: "unknown" | "pending" | "created" | "in_progress" | "assistant_turn_ready" | "declaration_extraction_pending" | "declaration_ready" | "completed" | "failed";
                     expected_status?: string;
                     produced_declarations_present?: boolean;
                     produced_declarations_valid?: boolean;
@@ -1368,7 +1370,7 @@ export interface components {
             principal_address?: string;
             latest_conversation_id?: string;
             /** @enum {string} */
-            latest_conversation_status?: "in_progress" | "completed" | "failed";
+            latest_conversation_status?: "created" | "in_progress" | "assistant_turn_ready" | "declaration_extraction_pending" | "declaration_ready" | "completed" | "failed";
             latest_review_sha256?: string;
             latest_boundary_count?: number;
             latest_capability_count?: number;
@@ -1512,6 +1514,7 @@ export interface components {
             message: string;
             idempotency_key?: string;
             correlation_id?: string;
+            lesser_request_id?: string;
         };
         SoulHostedGenesisConversationResponse: components["schemas"]["hosted-genesis.conversation.response.schema"];
         SoulMintConversation: {
@@ -1520,8 +1523,11 @@ export interface components {
             model: string;
             messages?: string;
             produced_declarations?: string;
-            /** @enum {string} */
-            status: "in_progress" | "completed" | "failed";
+            /**
+             * @description Legacy raw Host record status. `completed` is retained for backward compatibility and maps to the durable hosted-genesis contract status `declaration_ready` only when valid produced declarations exist.
+             * @enum {string}
+             */
+            status: "created" | "in_progress" | "assistant_turn_ready" | "declaration_extraction_pending" | "declaration_ready" | "completed" | "failed";
             usage?: components["schemas"]["AIUsage"];
             charged_credits?: number;
             /** Format: date-time */
@@ -1543,7 +1549,7 @@ export interface components {
             conversation_id: string;
             model?: string;
             /** @enum {string} */
-            status: "in_progress" | "completed" | "failed";
+            status: "created" | "in_progress" | "assistant_turn_ready" | "declaration_extraction_pending" | "declaration_ready" | "completed" | "failed";
             usage?: components["schemas"]["AIUsage"];
             charged_credits?: number;
             /** Format: date-time */
@@ -4494,13 +4500,22 @@ export interface operations {
             };
         };
         responses: {
-            /** @description OK */
+            /** @description Terminal replay or synchronous completion with valid produced declarations. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["SoulMintConversation"];
+                };
+            };
+            /** @description Assistant turn or declaration extraction is still in progress; inspect `conversation.status`. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["hosted-genesis.conversation.response.schema"];
                 };
             };
             /** @description Invalid request */
