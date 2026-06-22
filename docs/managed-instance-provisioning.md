@@ -174,6 +174,8 @@ The control plane needs (at minimum):
 - `MANAGED_PROVISIONING_ENABLED=true` to allow the provisioning worker to run.
 - `MANAGED_ORG_VENDING_ROLE_ARN` (optional) role ARN in the Organizations management/delegated admin account that the
   control plane can assume for `organizations:*` and cross-account `sts:AssumeRole` into instance accounts.
+  Leave this blank until the org-bootstrap stack outputs a real ARN; example placeholder values are treated as absent
+  and omitted from deployable IAM policies.
 - `MANAGED_PARENT_DOMAIN` (default: `greater.website`)
 - `MANAGED_PARENT_HOSTED_ZONE_ID` (central account Route53 hosted zone id for `greater.website`)
 - `MANAGED_INSTANCE_ROLE_NAME` (default: `OrganizationAccountAccessRole`)

@@ -47,9 +47,27 @@ export interface LesserHostStackProps extends cdk.StackProps {
 }
 
 const defaultManagedInstanceRoleName = 'OrganizationAccountAccessRole';
+const managedOrgVendingRoleArnPattern = /^arn:(aws|aws-us-gov|aws-cn):iam::\d{12}:role\/[\w+=,.@/-]+$/;
+const examplePlaceholderPattern = /<[^>]*YOUR[^>]*>|YOUR_[A-Z0-9_]+/i;
 
 export function shouldUseLocalWebBundling(env: NodeJS.ProcessEnv = process.env): boolean {
 	return env.CI !== 'true' && env.GITHUB_ACTIONS !== 'true';
+}
+
+function sanitizedManagedOrgVendingRoleArn(rawValue: unknown): string {
+	const value = sanitizedOptionalContextString(rawValue);
+	if (value === '' || examplePlaceholderPattern.test(value)) {
+		return '';
+	}
+	if (!managedOrgVendingRoleArnPattern.test(value)) {
+		throw new Error('managedOrgVendingRoleArn must be a valid IAM role ARN or blank');
+	}
+	return value;
+}
+
+function sanitizedOptionalContextString(rawValue: unknown): string {
+	const value = typeof rawValue === 'string' ? rawValue.trim() : '';
+	return examplePlaceholderPattern.test(value) ? '' : value;
 }
 
 export class LesserHostStack extends cdk.Stack {
@@ -297,11 +315,15 @@ export class LesserHostStack extends cdk.Stack {
 
 		const managedProvisioningEnabled =
 			(this.node.tryGetContext('managedProvisioningEnabled') as string | undefined) ?? '';
-		const managedOrgVendingRoleArn =
-			(this.node.tryGetContext('managedOrgVendingRoleArn') as string | undefined) ?? '';
+		const managedOrgVendingRoleArn = sanitizedManagedOrgVendingRoleArn(
+			this.node.tryGetContext('managedOrgVendingRoleArn'),
+		);
+		const managedOrgVendingRoleEnv: Record<string, string> = managedOrgVendingRoleArn
+			? { MANAGED_ORG_VENDING_ROLE_ARN: managedOrgVendingRoleArn }
+			: {};
 		const managedParentDomain = (this.node.tryGetContext('managedParentDomain') as string | undefined) ?? '';
 		const managedParentHostedZoneId =
-			(this.node.tryGetContext('managedParentHostedZoneId') as string | undefined) ?? '';
+			sanitizedOptionalContextString(this.node.tryGetContext('managedParentHostedZoneId'));
 		const managedInstanceRoleName =
 			(this.node.tryGetContext('managedInstanceRoleName') as string | undefined) ?? defaultManagedInstanceRoleName;
 		const managedTargetOuId = (this.node.tryGetContext('managedTargetOuId') as string | undefined) ?? '';
@@ -624,7 +646,7 @@ export class LesserHostStack extends cdk.Stack {
 			ARTIFACT_BUCKET_NAME: artifactsBucket.bucketName,
 			PROVISION_QUEUE_URL: provisionQueue.queueUrl,
 			MANAGED_PROVISIONING_ENABLED: managedProvisioningEnabled,
-			MANAGED_ORG_VENDING_ROLE_ARN: managedOrgVendingRoleArn,
+			...managedOrgVendingRoleEnv,
 			MANAGED_PARENT_DOMAIN: managedParentDomain,
 			MANAGED_PARENT_HOSTED_ZONE_ID: managedParentHostedZoneId,
 			MANAGED_INSTANCE_ROLE_NAME: managedInstanceRoleName,
@@ -651,7 +673,7 @@ export class LesserHostStack extends cdk.Stack {
 			SOUL_COMM_MAILBOX_BUCKET_NAME: soulCommMailboxBucket.bucketName,
 			SOUL_COMM_MAILBOX_RETENTION_DAYS: String(soulCommMailboxRetentionDays),
 			SOUL_ENABLED: soulEnabled,
-			MANAGED_ORG_VENDING_ROLE_ARN: managedOrgVendingRoleArn,
+			...managedOrgVendingRoleEnv,
 			MANAGED_INSTANCE_ROLE_NAME: managedInstanceRoleName,
 			MANAGED_DEFAULT_REGION: managedDefaultRegion,
 		});
@@ -1185,7 +1207,7 @@ export class LesserHostStack extends cdk.Stack {
 		}
 
 		const webRootDomain = (this.node.tryGetContext('webRootDomain') as string | undefined) ?? 'lesser.host';
-		const webHostedZoneId = (this.node.tryGetContext('webHostedZoneId') as string | undefined) ?? '';
+		const webHostedZoneId = sanitizedOptionalContextString(this.node.tryGetContext('webHostedZoneId'));
 		const webHostedZoneName =
 			(this.node.tryGetContext('webHostedZoneName') as string | undefined) ?? webRootDomain;
 		const webDomainName = stage === 'live' ? webRootDomain : `${stage}.${webRootDomain}`;
