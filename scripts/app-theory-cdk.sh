@@ -29,6 +29,12 @@ case "$stage" in
     ;;
 esac
 
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+repo_root="$(cd "$script_dir/.." && pwd -P)"
+cdk_dir="$repo_root/cdk"
+
+"$repo_root/scripts/validate-deploy-provenance.sh" "$repo_root"
+
 aws_profile="${AWS_PROFILE:-}"
 case "$aws_profile" in
   ""|*[!A-Za-z0-9_+=,.@-]*)
@@ -55,14 +61,45 @@ if [ -z "${AWS_DEFAULT_REGION:-}" ] && [ -n "${AWS_REGION:-}" ]; then
   export AWS_DEFAULT_REGION="$AWS_REGION"
 fi
 
+cd "$cdk_dir"
+
 npm ci
 npm run build
 
 case "$action" in
   up)
-    ./node_modules/.bin/cdk deploy --all -c "stage=$stage" --require-approval never
+    synth_out="$(mktemp -d "${TMPDIR:-/tmp}/lesser-host-cdk-synth.XXXXXX")"
+    cleanup() {
+      rm -rf "$synth_out"
+    }
+    trap cleanup EXIT
+
+    ./node_modules/.bin/cdk synth --all -c "stage=$stage" --output "$synth_out"
+    template_path="$synth_out/lesser-host-$stage.template.json"
+    if [ ! -f "$template_path" ]; then
+      template_count="$(find "$synth_out" -maxdepth 1 -type f -name '*.template.json' | wc -l | tr -d ' ')"
+      if [ "$template_count" = "1" ]; then
+        template_path="$(find "$synth_out" -maxdepth 1 -type f -name '*.template.json' -print -quit)"
+      else
+        echo "expected one synthesized template for stage $stage in $synth_out" >&2
+        exit 1
+      fi
+    fi
+    "$repo_root/scripts/validate-hosted-genesis-template.mjs" "$template_path"
+
+    if [ "${LESSER_HOST_CDK_DRY_RUN:-}" = "1" ]; then
+      echo "dry run: would deploy validated cloud assembly $synth_out for stage $stage" >&2
+      exit 0
+    fi
+
+    ./node_modules/.bin/cdk deploy --app "$synth_out" --all --require-approval never
     ;;
   down)
+    if [ "${LESSER_HOST_CDK_DRY_RUN:-}" = "1" ]; then
+      echo "dry run: would destroy stage $stage from $cdk_dir" >&2
+      exit 0
+    fi
+
     ./node_modules/.bin/cdk destroy --all -c "stage=$stage" --force
     ;;
 esac

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -28,6 +29,7 @@ process.env.GOTOOLCHAIN = process.env.GOTOOLCHAIN || 'auto';
 
 type SynthesizedTemplate = {
 	Resources?: Record<string, { Type?: string; Properties?: Record<string, unknown> }>;
+	Outputs?: Record<string, unknown>;
 };
 
 let synthesizedTemplate: SynthesizedTemplate | undefined;
@@ -502,6 +504,75 @@ test('hosted genesis durable async queue is wired to control plane and ai worker
 	const mapping = mappings.find((entry) => JSON.stringify(entry).includes(queue[0]) && JSON.stringify(entry).includes('AiWorker'));
 	assert.ok(mapping, 'expected hosted genesis queue event source on ai-worker');
 	assert.equal(mapping.BatchSize, 1, 'hosted genesis jobs must process one conversation turn at a time');
+});
+
+function hostedGenesisTemplateGuardPath(): string {
+	return join(process.cwd(), '..', 'scripts', 'validate-hosted-genesis-template.mjs');
+}
+
+function writeTemplateGuardFixture(template: SynthesizedTemplate): { path: string; cleanup: () => void } {
+	const outdir = mkdtempSync(join(tmpdir(), 'lesser-host-template-guard-'));
+	const templatePath = join(outdir, 'template.json');
+	writeFileSync(templatePath, JSON.stringify(template), 'utf8');
+	return {
+		path: templatePath,
+		cleanup: () => rmSync(outdir, { recursive: true, force: true }),
+	};
+}
+
+function runHostedGenesisTemplateGuard(templatePath: string): { status: number | null; stderr: string } {
+	const result = spawnSync(process.execPath, [hostedGenesisTemplateGuardPath(), templatePath], {
+		encoding: 'utf8',
+	});
+	return {
+		status: result.status,
+		stderr: result.stderr,
+	};
+}
+
+function stalePreM2TemplateFixture(template: SynthesizedTemplate): SynthesizedTemplate {
+	const stale = JSON.parse(JSON.stringify(template)) as SynthesizedTemplate;
+	for (const logicalId of Object.keys(stale.Resources ?? {})) {
+		if (logicalId.includes('HostedGenesis')) {
+			delete stale.Resources?.[logicalId];
+		}
+	}
+	for (const resource of Object.values(stale.Resources ?? {})) {
+		if (resource.Type !== 'AWS::Lambda::Function') {
+			continue;
+		}
+		const variables = (
+			resource.Properties?.Environment as { Variables?: Record<string, unknown> } | undefined
+		)?.Variables;
+		delete variables?.HOSTED_GENESIS_QUEUE_URL;
+	}
+	delete stale.Outputs?.HostedGenesisQueueUrl;
+	return stale;
+}
+
+test('hosted genesis deploy preflight validator accepts the synthesized M2 template', () => {
+	const fixture = writeTemplateGuardFixture(synthTemplate());
+	try {
+		const result = runHostedGenesisTemplateGuard(fixture.path);
+		assert.equal(result.status, 0, result.stderr);
+		assert.match(
+			result.stderr,
+			/HostedGenesisQueue, HOSTED_GENESIS_QUEUE_URL, HostedGenesisQueueUrl, and AI worker EventSourceMapping/,
+		);
+	} finally {
+		fixture.cleanup();
+	}
+});
+
+test('hosted genesis deploy preflight validator rejects stale pre-M2 templates', () => {
+	const fixture = writeTemplateGuardFixture(stalePreM2TemplateFixture(synthTemplate()));
+	try {
+		const result = runHostedGenesisTemplateGuard(fixture.path);
+		assert.notEqual(result.status, 0, 'expected stale pre-M2 template to fail hosted genesis guard');
+		assert.match(result.stderr, /missing HostedGenesisQueue SQS resource/);
+	} finally {
+		fixture.cleanup();
+	}
 });
 
 test('web asset bundling does not execute npm locally in CI', () => {
