@@ -68,6 +68,21 @@ function synthTemplateForStage(stage: string, context: Record<string, unknown> =
 	return synthesizeTemplate(stage, context, `TestLesserHostStack-${stage}`);
 }
 
+function runDependencyCycleValidator(template: Record<string, unknown>) {
+	const tempDir = mkdtempSync(join(tmpdir(), 'lesser-host-cfn-deps-'));
+	try {
+		const templatePath = join(tempDir, 'template.json');
+		writeFileSync(templatePath, JSON.stringify(template, null, 2));
+		return spawnSync(
+			process.execPath,
+			[join(process.cwd(), '..', 'scripts', 'validate-cfn-dependency-cycles.mjs'), templatePath],
+			{ encoding: 'utf8' },
+		);
+	} finally {
+		rmSync(tempDir, { recursive: true, force: true });
+	}
+}
+
 function findResources(template: SynthesizedTemplate, type: string): Array<Record<string, unknown>> {
 	return Object.values(template.Resources ?? {})
 		.filter((resource) => resource?.Type === type)
@@ -942,6 +957,45 @@ test('P49 M2 distribution: Lesser instance mint-conversation route uses mint-con
 		domainSourceId.startsWith('ControlPlaneSseRestApi'),
 		`exact Lesser-used instance mint-conversation route must use the mint-conversation REST origin while returning durable JSON; got ${domainSourceId}`,
 	);
+});
+
+test('P49 deploy preflight: synthesized lab template has no CloudFormation dependency cycle', () => {
+	const result = runDependencyCycleValidator(synthTemplate() as Record<string, unknown>);
+	assert.equal(
+		result.status,
+		0,
+		`expected dependency-cycle validator to pass\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+	);
+	assert.match(result.stdout, /CloudFormation dependency graph OK: no circular dependencies/);
+});
+
+test('P49 deploy preflight: dependency-cycle validator fails on intrinsic cycles', () => {
+	const result = runDependencyCycleValidator({
+		Resources: {
+			Alpha: {
+				Type: 'Custom::Alpha',
+				Properties: {
+					BetaRef: { Ref: 'Beta' },
+				},
+			},
+			Beta: {
+				Type: 'Custom::Beta',
+				Properties: {
+					GammaArn: { 'Fn::Sub': '${Gamma.Arn}' },
+				},
+			},
+			Gamma: {
+				Type: 'Custom::Gamma',
+				DependsOn: ['Alpha'],
+				Properties: {},
+			},
+		},
+	});
+	assert.equal(result.status, 1, `expected dependency-cycle validator to fail\nstdout:\n${result.stdout}`);
+	assert.match(result.stderr, /CloudFormation dependency cycle detected/);
+	assert.match(result.stderr, /Alpha -> Beta/);
+	assert.match(result.stderr, /Beta -> Gamma/);
+	assert.match(result.stderr, /Gamma -> Alpha/);
 });
 
 test('M0.13 WAF: allows no-User-Agent only for ENS /resolve CCIP-read', () => {
