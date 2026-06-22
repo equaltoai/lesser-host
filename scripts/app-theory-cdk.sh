@@ -86,6 +86,7 @@ case "$action" in
       fi
     fi
     "$repo_root/scripts/validate-hosted-genesis-template.mjs" "$template_path"
+    "$repo_root/scripts/validate-deploy-template-placeholders.mjs" "$template_path"
 
     if [ "${LESSER_HOST_CDK_DRY_RUN:-}" = "1" ]; then
       echo "dry run: would deploy validated cloud assembly $synth_out for stage $stage" >&2
