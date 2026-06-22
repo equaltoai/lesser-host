@@ -1421,9 +1421,10 @@ export class LesserHostStack extends cdk.Stack {
 		const controlPlaneOrigin = new origins.HttpOrigin(controlPlaneDomain, {
 			protocolPolicy: cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
 		});
-		const controlPlaneSseOrigin = new origins.RestApiOrigin(controlPlaneSseApi, {
-			readTimeout: cdk.Duration.seconds(120),
-			responseCompletionTimeout: cdk.Duration.seconds(180),
+		// Avoid RestApiOrigin: its generated DeploymentStage edge cycles through PUBLIC_BASE_URL.
+		const controlPlaneSseOrigin = new origins.HttpOrigin(cdk.Fn.join('', [controlPlaneSseApi.restApiId, `.execute-api.${cdk.Aws.REGION}.`, cdk.Aws.URL_SUFFIX]), {
+			originPath: `/${stage}`, protocolPolicy: cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
+			readTimeout: cdk.Duration.seconds(120), responseCompletionTimeout: cdk.Duration.seconds(180),
 		});
 		const trustOrigin = new origins.HttpOrigin(trustDomain, {
 			protocolPolicy: cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
@@ -1486,10 +1487,8 @@ export class LesserHostStack extends cdk.Stack {
 			rules: hostWebAclRules(namePrefix, stage),
 		});
 
-		// Pre-build web/dist so WebSsrFn + WebSidecarsDeployment assets have
-		// inputs ready (mirrors the Go Lambda factory: build first, then
-		// fromAsset). AppTheorySsrSite wraps the SSR Lambda with an
-		// OAC-protected Function URL (AWS_IAM fail-closed) as default origin.
+		// Pre-build web/dist so SSR assets exist before fromAsset; AppTheorySsrSite
+		// wraps the SSR Lambda with an OAC-protected Function URL (AWS_IAM fail-closed).
 		this.ensureWebBuild();
 		const webSsrFn = new lambda.Function(this, 'WebSsrFn', {
 			functionName: `${namePrefix}-web-ssr`,
