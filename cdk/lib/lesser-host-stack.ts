@@ -1421,7 +1421,22 @@ export class LesserHostStack extends cdk.Stack {
 		const controlPlaneOrigin = new origins.HttpOrigin(controlPlaneDomain, {
 			protocolPolicy: cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
 		});
-		const controlPlaneSseOrigin = new origins.RestApiOrigin(controlPlaneSseApi, {
+		// Do not use RestApiOrigin here: it derives DomainName/OriginPath
+		// from restApi.url, which references the generated DeploymentStage.
+		// Because control-plane also receives PUBLIC_BASE_URL from this
+		// distribution, that stage dependency creates a CloudFormation cycle:
+		// Lambda -> distribution -> REST stage -> REST deployment/methods ->
+		// Lambda. CloudFront can be configured with the deterministic
+		// execute-api host + stage path without waiting for the stage resource,
+		// and it still reaches the same regional REST API origin over HTTPS.
+		const controlPlaneSseDomain = cdk.Fn.join('', [
+			controlPlaneSseApi.restApiId,
+			`.execute-api.${cdk.Aws.REGION}.`,
+			cdk.Aws.URL_SUFFIX,
+		]);
+		const controlPlaneSseOrigin = new origins.HttpOrigin(controlPlaneSseDomain, {
+			originPath: `/${stage}`,
+			protocolPolicy: cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
 			readTimeout: cdk.Duration.seconds(120),
 			responseCompletionTimeout: cdk.Duration.seconds(180),
 		});
