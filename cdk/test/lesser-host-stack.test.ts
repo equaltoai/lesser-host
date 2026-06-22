@@ -456,6 +456,37 @@ test('provision runner cannot assume the organization vending role', () => {
 	}
 });
 
+test('placeholder organization vending role context is omitted from deployable wiring', () => {
+	const placeholderOrgVendingRoleArn = 'arn:aws:iam::<YOUR_ORG_ACCOUNT_ID>:role/lesser-host-org-vending';
+	const template = synthTemplateWithContext({ managedOrgVendingRoleArn: placeholderOrgVendingRoleArn });
+	const provisionWorker = findLambdaByFunctionName(template, 'provision-worker');
+	const commWorker = findLambdaByFunctionName(template, 'comm-worker');
+
+	assert.ok(
+		!('MANAGED_ORG_VENDING_ROLE_ARN' in lambdaEnvironment(provisionWorker)),
+		'provision worker must omit placeholder org vending role env wiring',
+	);
+	assert.ok(
+		!('MANAGED_ORG_VENDING_ROLE_ARN' in lambdaEnvironment(commWorker)),
+		'comm worker must omit placeholder org vending role env wiring',
+	);
+
+	for (const [logicalId, resource] of findResourceEntries(template, 'AWS::IAM::Policy')) {
+		assert.doesNotMatch(
+			JSON.stringify(resource.Properties ?? {}),
+			/<YOUR_ORG_ACCOUNT_ID>/,
+			`expected ${logicalId} to omit placeholder org vending role ARN`,
+		);
+	}
+});
+
+test('malformed non-placeholder organization vending role context fails synthesis', () => {
+	assert.throws(
+		() => synthTemplateWithContext({ managedOrgVendingRoleArn: 'not-an-iam-role-arn' }),
+		/managedOrgVendingRoleArn must be a valid IAM role ARN or blank/,
+	);
+});
+
 test('provision worker receives deploy runner role arn for tenant trust repair', () => {
 	const template = synthTemplate();
 	const provisionWorker = findLambdaByFunctionName(template, 'provision-worker');
@@ -510,6 +541,10 @@ function hostedGenesisTemplateGuardPath(): string {
 	return join(process.cwd(), '..', 'scripts', 'validate-hosted-genesis-template.mjs');
 }
 
+function deployTemplatePlaceholderGuardPath(): string {
+	return join(process.cwd(), '..', 'scripts', 'validate-deploy-template-placeholders.mjs');
+}
+
 function writeTemplateGuardFixture(template: SynthesizedTemplate): { path: string; cleanup: () => void } {
 	const outdir = mkdtempSync(join(tmpdir(), 'lesser-host-template-guard-'));
 	const templatePath = join(outdir, 'template.json');
@@ -522,6 +557,16 @@ function writeTemplateGuardFixture(template: SynthesizedTemplate): { path: strin
 
 function runHostedGenesisTemplateGuard(templatePath: string): { status: number | null; stderr: string } {
 	const result = spawnSync(process.execPath, [hostedGenesisTemplateGuardPath(), templatePath], {
+		encoding: 'utf8',
+	});
+	return {
+		status: result.status,
+		stderr: result.stderr,
+	};
+}
+
+function runDeployTemplatePlaceholderGuard(templatePath: string): { status: number | null; stderr: string } {
+	const result = spawnSync(process.execPath, [deployTemplatePlaceholderGuardPath(), templatePath], {
 		encoding: 'utf8',
 	});
 	return {
@@ -550,6 +595,42 @@ function stalePreM2TemplateFixture(template: SynthesizedTemplate): SynthesizedTe
 	return stale;
 }
 
+function withPlaceholderIamPolicy(template: SynthesizedTemplate): SynthesizedTemplate {
+	const copy = JSON.parse(JSON.stringify(template)) as SynthesizedTemplate;
+	const policy = findResourceEntries(copy, 'AWS::IAM::Policy')[0];
+	assert.ok(policy, 'expected an IAM policy fixture target');
+	const properties = policy[1].Properties ?? {};
+	properties.PolicyDocument = {
+		Version: '2012-10-17',
+		Statement: [
+			{
+				Effect: 'Allow',
+				Action: 'sts:AssumeRole',
+				Resource: 'arn:aws:iam::<YOUR_ORG_ACCOUNT_ID>:role/lesser-host-org-vending',
+			},
+		],
+	};
+	policy[1].Properties = properties;
+	return copy;
+}
+
+function withPlaceholderManagedOrgVendingEnv(template: SynthesizedTemplate): SynthesizedTemplate {
+	const copy = JSON.parse(JSON.stringify(template)) as SynthesizedTemplate;
+	const commWorker = findResourceEntries(copy, 'AWS::Lambda::Function').find(([, resource]) =>
+		resource.Properties?.FunctionName === 'lesser-host-lab-comm-worker'
+	);
+	assert.ok(commWorker, 'expected comm worker fixture target');
+	const environment = (commWorker[1].Properties?.Environment ?? {}) as Record<string, unknown>;
+	const variables = (environment.Variables ?? {}) as Record<string, unknown>;
+	variables.MANAGED_ORG_VENDING_ROLE_ARN = 'arn:aws:iam::<YOUR_ORG_ACCOUNT_ID>:role/lesser-host-org-vending';
+	environment.Variables = variables;
+	commWorker[1].Properties = {
+		...(commWorker[1].Properties ?? {}),
+		Environment: environment,
+	};
+	return copy;
+}
+
 test('hosted genesis deploy preflight validator accepts the synthesized M2 template', () => {
 	const fixture = writeTemplateGuardFixture(synthTemplate());
 	try {
@@ -570,6 +651,43 @@ test('hosted genesis deploy preflight validator rejects stale pre-M2 templates',
 		const result = runHostedGenesisTemplateGuard(fixture.path);
 		assert.notEqual(result.status, 0, 'expected stale pre-M2 template to fail hosted genesis guard');
 		assert.match(result.stderr, /missing HostedGenesisQueue SQS resource/);
+	} finally {
+		fixture.cleanup();
+	}
+});
+
+test('deploy template placeholder guard accepts sanitized synthesized templates', () => {
+	const fixture = writeTemplateGuardFixture(synthTemplateWithContext({
+		managedOrgVendingRoleArn: 'arn:aws:iam::<YOUR_ORG_ACCOUNT_ID>:role/lesser-host-org-vending',
+		managedParentHostedZoneId: '<YOUR_MANAGED_PARENT_HOSTED_ZONE_ID>',
+		webHostedZoneId: '<YOUR_HOSTED_ZONE_ID>',
+	}));
+	try {
+		const result = runDeployTemplatePlaceholderGuard(fixture.path);
+		assert.equal(result.status, 0, result.stderr);
+		assert.match(result.stderr, /no placeholder tokens in IAM resources or managed org vending env wiring/);
+	} finally {
+		fixture.cleanup();
+	}
+});
+
+test('deploy template placeholder guard rejects placeholder IAM policy resources', () => {
+	const fixture = writeTemplateGuardFixture(withPlaceholderIamPolicy(synthTemplate()));
+	try {
+		const result = runDeployTemplatePlaceholderGuard(fixture.path);
+		assert.notEqual(result.status, 0, 'expected placeholder IAM policy to fail deploy template guard');
+		assert.match(result.stderr, /placeholder token found in deploy-critical template fields/);
+	} finally {
+		fixture.cleanup();
+	}
+});
+
+test('deploy template placeholder guard rejects placeholder org vending env wiring', () => {
+	const fixture = writeTemplateGuardFixture(withPlaceholderManagedOrgVendingEnv(synthTemplate()));
+	try {
+		const result = runDeployTemplatePlaceholderGuard(fixture.path);
+		assert.notEqual(result.status, 0, 'expected placeholder env wiring to fail deploy template guard');
+		assert.match(result.stderr, /MANAGED_ORG_VENDING_ROLE_ARN/);
 	} finally {
 		fixture.cleanup();
 	}
