@@ -27,6 +27,15 @@ import {
 
 process.env.GOTOOLCHAIN = process.env.GOTOOLCHAIN || 'auto';
 
+const liveLookupAccount = '123456789012';
+const liveLookupRegion = 'us-east-1';
+const liveLookupHostedZoneId = 'ZEXAMPLELESSERHOST';
+const liveLookupContextKey = `hosted-zone:account=${liveLookupAccount}:domainName=lesser.host:privateZone=false:region=${liveLookupRegion}`;
+const liveLookupContext = {
+	[liveLookupContextKey]: { Id: `/hostedzone/${liveLookupHostedZoneId}`, Name: 'lesser.host.' },
+};
+const liveStackEnv = { account: liveLookupAccount, region: liveLookupRegion };
+
 type SynthesizedTemplate = {
 	Resources?: Record<string, { Type?: string; Properties?: Record<string, unknown> }>;
 	Outputs?: Record<string, unknown>;
@@ -34,14 +43,14 @@ type SynthesizedTemplate = {
 
 let synthesizedTemplate: SynthesizedTemplate | undefined;
 
-function synthesizeTemplate(stage: string, context: Record<string, unknown>, stackId: string): SynthesizedTemplate {
+function synthesizeTemplate(stage: string, context: Record<string, unknown>, stackId: string, props: cdk.StackProps = {}): SynthesizedTemplate {
 	// Full LesserHostStack synthesis stages web assets. Keep each test synth in
 	// its own short-lived outdir so repeated assertions cannot accumulate
 	// copied web/CDK asset directories and exhaust hosted runner disk.
 	const outdir = mkdtempSync(join(tmpdir(), 'lesser-host-cdk-test-'));
 	try {
 		const app = new cdk.App({ context, outdir });
-		const stack = new LesserHostStack(app, stackId, { stage });
+		const stack = new LesserHostStack(app, stackId, { stage, ...props });
 		const assembly = app.synth();
 		const artifact = assembly.getStackArtifact(stack.artifactId);
 		return JSON.parse(readFileSync(artifact.templateFullPath, 'utf8')) as SynthesizedTemplate;
@@ -62,10 +71,11 @@ function synthTemplateWithContext(context: Record<string, unknown>): Synthesized
 }
 
 function synthTemplateForStage(stage: string, context: Record<string, unknown> = {}): SynthesizedTemplate {
-	if (Object.keys(context).length === 0 && stage.trim() !== 'live') {
+	const isLive = stage.trim() === 'live';
+	if (Object.keys(context).length === 0 && !isLive) {
 		return synthTemplate();
 	}
-	return synthesizeTemplate(stage, context, `TestLesserHostStack-${stage}`);
+	return synthesizeTemplate(stage, isLive ? { ...liveLookupContext, ...context } : context, `TestLesserHostStack-${stage}`, isLive ? { env: liveStackEnv } : {});
 }
 
 function runDependencyCycleValidator(template: Record<string, unknown>) {
@@ -660,6 +670,30 @@ function withPlaceholderManagedOrgVendingEnv(template: SynthesizedTemplate): Syn
 	return copy;
 }
 
+function normalizedDnsName(value: unknown): string {
+	return typeof value === 'string' ? value.trim().replace(/\.$/, '').toLowerCase() : '';
+}
+
+function withoutLiveDomainBindings(template: SynthesizedTemplate): SynthesizedTemplate {
+	const copy = JSON.parse(JSON.stringify(template)) as SynthesizedTemplate;
+	for (const [, resource] of findResourceEntries(copy, 'AWS::CloudFront::Distribution')) {
+		const config = (resource.Properties?.DistributionConfig ?? {}) as Record<string, unknown>;
+		delete config.Aliases;
+		config.ViewerCertificate = { CloudFrontDefaultCertificate: true };
+	}
+	for (const [logicalId, resource] of findResourceEntries(copy, 'AWS::Route53::RecordSet')) {
+		if (logicalId.startsWith('WebAlias') || normalizedDnsName(resource.Properties?.Name) === 'lesser.host') {
+			delete copy.Resources?.[logicalId];
+		}
+	}
+	for (const [, resource] of findResourceEntries(copy, 'AWS::Lambda::Function')) {
+		const variables = ((resource.Properties?.Environment as { Variables?: Record<string, unknown> } | undefined)?.Variables) ?? {};
+		if (variables.PUBLIC_BASE_URL !== undefined) variables.PUBLIC_BASE_URL = 'https://d111111abcdef8.cloudfront.net';
+	}
+	(copy.Outputs!.WebUrl as { Value?: unknown }).Value = 'https://d111111abcdef8.cloudfront.net';
+	return copy;
+}
+
 test('hosted genesis deploy preflight validator accepts the synthesized M2 template', () => {
 	const fixture = writeTemplateGuardFixture(synthTemplate());
 	try {
@@ -722,13 +756,40 @@ test('deploy template placeholder guard rejects placeholder org vending env wiri
 	}
 });
 
-test('live custom-domain deploy guard rejects synthesized live templates without domain context', () => {
-	const fixture = writeTemplateGuardFixture(synthTemplateForStage('live'));
+test('live synthesizes lesser.host by default without local webHostedZoneId context', () => {
+	const template = synthTemplateForStage('live');
+	const config = distributionConfig(template) as DistributionConfig & { Aliases?: unknown; ViewerCertificate?: Record<string, unknown> };
+	assert.deepEqual(config.Aliases, ['lesser.host']);
+	assert.ok(config.ViewerCertificate && 'AcmCertificateArn' in config.ViewerCertificate);
+
+	const apexRecords = findResources(template, 'AWS::Route53::RecordSet').filter((record) =>
+		normalizedDnsName(record.Name) === 'lesser.host'
+	);
+	assert.deepEqual(new Set(apexRecords.map((record) => record.Type)), new Set(['A', 'AAAA']));
+	const publicBaseUrls = findResources(template, 'AWS::Lambda::Function')
+		.map((fn) => lambdaEnvironment(fn).PUBLIC_BASE_URL)
+		.filter((value) => value !== undefined);
+	assert.ok(publicBaseUrls.length > 0, 'expected live lambdas to receive PUBLIC_BASE_URL');
+	assert.ok(publicBaseUrls.every((value) => value === 'https://lesser.host'));
+	assert.equal((template.Outputs?.WebUrl as { Value?: unknown } | undefined)?.Value, 'https://lesser.host');
+
+	const fixture = writeTemplateGuardFixture(template);
 	try {
 		const result = runLiveDomainTemplateGuard('live', fixture.path);
-		assert.notEqual(result.status, 0, 'expected no-domain live template to fail live custom-domain guard');
-		assert.match(result.stderr, /cdk\/cdk\.context\.local\.json/);
-		assert.match(result.stderr, /webHostedZoneId/);
+		assert.equal(result.status, 0, result.stderr);
+		assert.match(result.stderr, /preserves lesser\.host CloudFront alias/);
+	} finally {
+		fixture.cleanup();
+	}
+});
+
+test('live custom-domain deploy guard remains a backstop for broken domain resolution', () => {
+	const fixture = writeTemplateGuardFixture(withoutLiveDomainBindings(synthTemplateForStage('live')));
+	try {
+		const result = runLiveDomainTemplateGuard('live', fixture.path);
+		assert.notEqual(result.status, 0, 'expected broken live template to fail live custom-domain guard');
+		assert.doesNotMatch(result.stderr, /cdk\/cdk\.context\.local\.json/);
+		assert.match(result.stderr, /domain resolution is broken or AWS hosted-zone lookup\/profile access is unavailable/);
 		assert.match(result.stderr, /missing Aliases entry lesser\.host/);
 		assert.match(result.stderr, /missing Route53 apex A record/);
 		assert.match(result.stderr, /PUBLIC_BASE_URL/);
@@ -738,11 +799,13 @@ test('live custom-domain deploy guard rejects synthesized live templates without
 	}
 });
 
-test('live custom-domain deploy guard accepts domain-backed synthesized live templates', () => {
-	const fixture = writeTemplateGuardFixture(synthTemplateForStage('live', {
-		webHostedZoneId: 'ZEXAMPLELESSERHOST',
+test('live custom-domain deploy guard accepts explicit diagnostic hosted-zone context', () => {
+	const template = synthTemplateForStage('live', {
+		webHostedZoneId: 'ZEXPLICITLESSERHOST',
 		webHostedZoneName: 'lesser.host',
-	}));
+	});
+	assert.ok(findResources(template, 'AWS::Route53::RecordSet').some((record) => record.HostedZoneId === 'ZEXPLICITLESSERHOST'));
+	const fixture = writeTemplateGuardFixture(template);
 	try {
 		const result = runLiveDomainTemplateGuard('live', fixture.path);
 		assert.equal(result.status, 0, result.stderr);
