@@ -78,6 +78,22 @@ function synthTemplateForStage(stage: string, context: Record<string, unknown> =
 	return synthesizeTemplate(stage, isLive ? { ...liveLookupContext, ...context } : context, `TestLesserHostStack-${stage}`, isLive ? { env: liveStackEnv } : {});
 }
 
+function cdkJsonContext(): Record<string, unknown> {
+	const cdkJson = JSON.parse(readFileSync(join(process.cwd(), 'cdk.json'), 'utf8')) as { context?: unknown };
+	assert.ok(cdkJson.context && typeof cdkJson.context === 'object', 'expected cdk.json context object');
+	return cdkJson.context as Record<string, unknown>;
+}
+
+function synthTemplateForStageWithCdkJsonContext(stage: string, context: Record<string, unknown> = {}): SynthesizedTemplate {
+	const isLive = stage.trim() === 'live';
+	return synthesizeTemplate(
+		stage,
+		isLive ? { ...cdkJsonContext(), ...liveLookupContext, ...context } : { ...cdkJsonContext(), ...context },
+		`TestLesserHostStack-cdk-json-${stage}`,
+		isLive ? { env: liveStackEnv } : {},
+	);
+}
+
 function runDependencyCycleValidator(template: Record<string, unknown>) {
 	const tempDir = mkdtempSync(join(tmpdir(), 'lesser-host-cfn-deps-'));
 	try {
@@ -350,7 +366,7 @@ test('trust api receives ENS gateway runtime configuration separate from soul re
 		ensGatewayResolverAddressLab: '0x0000000000000000000000000000000000001111',
 		ensGatewayResolverAddressLive: '0x0000000000000000000000000000000000002222',
 		ensGatewayRootName: 'lessersoul.eth',
-		soulEnabledLive: 'false',
+		soulEnabledLive: 'true',
 		soulChainIdLive: '11155111',
 		soulRegistryContractAddressLive: '0x0000000000000000000000000000000000003333',
 	});
@@ -363,7 +379,7 @@ test('trust api receives ENS gateway runtime configuration separate from soul re
 	assert.equal(env.ENS_GATEWAY_ROOT_NAME, 'lessersoul.eth');
 	assert.equal(env.ENS_GATEWAY_RESOLVER_ADDRESS, '0x0000000000000000000000000000000000002222');
 
-	assert.equal(env.SOUL_ENABLED, 'false');
+	assert.equal(env.SOUL_ENABLED, 'true');
 	assert.equal(env.SOUL_CHAIN_ID, '11155111');
 	assert.equal(env.SOUL_REGISTRY_CONTRACT_ADDRESS, '0x0000000000000000000000000000000000003333');
 });
@@ -719,6 +735,19 @@ test('hosted genesis deploy preflight validator rejects stale pre-M2 templates',
 	}
 });
 
+test('hosted genesis deploy preflight validator rejects live soul-disabled templates', () => {
+	const fixture = writeTemplateGuardFixture(synthTemplateForStage('live', { soulEnabledLive: 'false' }));
+	try {
+		const result = runHostedGenesisTemplateGuard(fixture.path);
+		assert.notEqual(result.status, 0, 'expected live soul-disabled template to fail hosted genesis guard');
+		assert.match(result.stderr, /live hosted genesis and soul search require SOUL_ENABLED=true/);
+		assert.match(result.stderr, /ControlPlaneApi.*SOUL_ENABLED=false/);
+		assert.match(result.stderr, /TrustApi.*SOUL_ENABLED=false/);
+	} finally {
+		fixture.cleanup();
+	}
+});
+
 test('deploy template placeholder guard accepts sanitized synthesized templates', () => {
 	const fixture = writeTemplateGuardFixture(synthTemplateWithContext({
 		managedOrgVendingRoleArn: 'arn:aws:iam::<YOUR_ORG_ACCOUNT_ID>:role/lesser-host-org-vending',
@@ -778,6 +807,31 @@ test('live synthesizes lesser.host by default without local webHostedZoneId cont
 		const result = runLiveDomainTemplateGuard('live', fixture.path);
 		assert.equal(result.status, 0, result.stderr);
 		assert.match(result.stderr, /preserves lesser\.host CloudFront alias/);
+	} finally {
+		fixture.cleanup();
+	}
+});
+
+test('live cdk.json defaults keep hosted off-chain soul search enabled', () => {
+	const template = synthTemplateForStageWithCdkJsonContext('live');
+	const soulEnabledLambdas: Record<string, unknown> = {};
+	for (const [logicalId, resource] of findResourceEntries(template, 'AWS::Lambda::Function')) {
+		const env = lambdaEnvironment(resource.Properties ?? {});
+		if (Object.prototype.hasOwnProperty.call(env, 'SOUL_ENABLED')) {
+			soulEnabledLambdas[logicalId] = env.SOUL_ENABLED;
+		}
+	}
+	assert.deepEqual(new Set(Object.values(soulEnabledLambdas)), new Set(['true']));
+	assert.ok(Object.keys(soulEnabledLambdas).some((logicalId) => logicalId.includes('ControlPlaneApi')));
+	assert.ok(Object.keys(soulEnabledLambdas).some((logicalId) => logicalId.includes('TrustApi')));
+
+	const fixture = writeTemplateGuardFixture(template);
+	try {
+		const hostedGenesis = runHostedGenesisTemplateGuard(fixture.path);
+		assert.equal(hostedGenesis.status, 0, hostedGenesis.stderr);
+		const liveDomain = runLiveDomainTemplateGuard('live', fixture.path);
+		assert.equal(liveDomain.status, 0, liveDomain.stderr);
+		assert.match(liveDomain.stderr, /preserves lesser\.host CloudFront alias/);
 	} finally {
 		fixture.cleanup();
 	}

@@ -27,7 +27,7 @@
     "soulRpcUrlSsmParamLab": "/lesser-host/api/infura/sepolia",
     "soulEmailInboundDomainLab": "lab.lessersoul.ai",
 
-    "soulEnabledLive": "false",
+    "soulEnabledLive": "true",
     "soulChainIdLive": "8453",
     "soulRegistryContractAddressLive": "",
     "soulRpcUrlSsmParamLive": "",
