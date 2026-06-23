@@ -560,6 +560,10 @@ function deployTemplatePlaceholderGuardPath(): string {
 	return join(process.cwd(), '..', 'scripts', 'validate-deploy-template-placeholders.mjs');
 }
 
+function liveDomainTemplateGuardPath(): string {
+	return join(process.cwd(), '..', 'scripts', 'validate-live-domain-template.mjs');
+}
+
 function writeTemplateGuardFixture(template: SynthesizedTemplate): { path: string; cleanup: () => void } {
 	const outdir = mkdtempSync(join(tmpdir(), 'lesser-host-template-guard-'));
 	const templatePath = join(outdir, 'template.json');
@@ -582,6 +586,16 @@ function runHostedGenesisTemplateGuard(templatePath: string): { status: number |
 
 function runDeployTemplatePlaceholderGuard(templatePath: string): { status: number | null; stderr: string } {
 	const result = spawnSync(process.execPath, [deployTemplatePlaceholderGuardPath(), templatePath], {
+		encoding: 'utf8',
+	});
+	return {
+		status: result.status,
+		stderr: result.stderr,
+	};
+}
+
+function runLiveDomainTemplateGuard(stage: string, templatePath: string): { status: number | null; stderr: string } {
+	const result = spawnSync(process.execPath, [liveDomainTemplateGuardPath(), stage, templatePath], {
 		encoding: 'utf8',
 	});
 	return {
@@ -703,6 +717,50 @@ test('deploy template placeholder guard rejects placeholder org vending env wiri
 		const result = runDeployTemplatePlaceholderGuard(fixture.path);
 		assert.notEqual(result.status, 0, 'expected placeholder env wiring to fail deploy template guard');
 		assert.match(result.stderr, /MANAGED_ORG_VENDING_ROLE_ARN/);
+	} finally {
+		fixture.cleanup();
+	}
+});
+
+test('live custom-domain deploy guard rejects synthesized live templates without domain context', () => {
+	const fixture = writeTemplateGuardFixture(synthTemplateForStage('live'));
+	try {
+		const result = runLiveDomainTemplateGuard('live', fixture.path);
+		assert.notEqual(result.status, 0, 'expected no-domain live template to fail live custom-domain guard');
+		assert.match(result.stderr, /cdk\/cdk\.context\.local\.json/);
+		assert.match(result.stderr, /webHostedZoneId/);
+		assert.match(result.stderr, /missing Aliases entry lesser\.host/);
+		assert.match(result.stderr, /missing Route53 apex A record/);
+		assert.match(result.stderr, /PUBLIC_BASE_URL/);
+		assert.match(result.stderr, /WebUrl output/);
+	} finally {
+		fixture.cleanup();
+	}
+});
+
+test('live custom-domain deploy guard accepts domain-backed synthesized live templates', () => {
+	const fixture = writeTemplateGuardFixture(synthTemplateForStage('live', {
+		webHostedZoneId: 'ZEXAMPLELESSERHOST',
+		webHostedZoneName: 'lesser.host',
+	}));
+	try {
+		const result = runLiveDomainTemplateGuard('live', fixture.path);
+		assert.equal(result.status, 0, result.stderr);
+		assert.match(result.stderr, /preserves lesser\.host CloudFront alias/);
+		assert.match(result.stderr, /ACM viewer certificate/);
+		assert.match(result.stderr, /Route53 A\/AAAA records/);
+	} finally {
+		fixture.cleanup();
+	}
+});
+
+test('live custom-domain deploy guard skips lab templates intentionally', () => {
+	const fixture = writeTemplateGuardFixture(synthTemplate());
+	try {
+		const result = runLiveDomainTemplateGuard('lab', fixture.path);
+		assert.equal(result.status, 0, result.stderr);
+		assert.match(result.stderr, /skipped stage lab/);
+		assert.match(result.stderr, /only live is required to preserve lesser\.host/);
 	} finally {
 		fixture.cleanup();
 	}
