@@ -1208,8 +1208,7 @@ export class LesserHostStack extends cdk.Stack {
 
 		const webRootDomain = (this.node.tryGetContext('webRootDomain') as string | undefined) ?? 'lesser.host';
 		const webHostedZoneId = sanitizedOptionalContextString(this.node.tryGetContext('webHostedZoneId'));
-		const webHostedZoneName =
-			(this.node.tryGetContext('webHostedZoneName') as string | undefined) ?? webRootDomain;
+		const webHostedZoneName = (this.node.tryGetContext('webHostedZoneName') as string | undefined) ?? webRootDomain;
 		const webDomainName = stage === 'live' ? webRootDomain : `${stage}.${webRootDomain}`;
 
 		const webBucket = new s3.Bucket(this, 'WebBucket', {
@@ -1397,14 +1396,17 @@ export class LesserHostStack extends cdk.Stack {
 }`),
 		});
 
-		let webZone: route53.IHostedZone | undefined;
-		let webCert: acm.ICertificate | undefined;
+		let webZone: route53.IHostedZone | undefined; let webCert: acm.ICertificate | undefined;
 		if (webHostedZoneId.trim()) {
 			webZone = route53.HostedZone.fromHostedZoneAttributes(this, 'WebHostedZone', {
 				hostedZoneId: webHostedZoneId.trim(),
 				zoneName: webHostedZoneName.trim() || webRootDomain,
 			});
+		} else if (stage === 'live') {
+			webZone = route53.HostedZone.fromLookup(this, 'WebHostedZone', { domainName: webHostedZoneName.trim() || webRootDomain, privateZone: false });
+		}
 
+		if (webZone) {
 			webCert = new acm.DnsValidatedCertificate(this, 'WebCertificate', {
 				domainName: webDomainName,
 				hostedZone: webZone,

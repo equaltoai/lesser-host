@@ -11,7 +11,7 @@ function usage() {
 function fail(details) {
 	const detailText = details.length > 0 ? details.join('; ') : 'unknown validation failure';
 	console.error(
-		`live custom-domain guard: synthesized live template would omit or remove the canonical first-party Host domain ${canonicalDomain}; refusing before cdk deploy. Ensure cdk/cdk.context.local.json contains a valid webHostedZoneId for ${canonicalDomain}. Details: ${detailText}`,
+		`live custom-domain guard: synthesized live template would omit or remove the canonical first-party Host domain ${canonicalDomain}; refusing before cdk deploy. Live CDK domain resolution must synthesize ${canonicalDomain} by default; this failure means CDK domain resolution is broken or AWS hosted-zone lookup/profile access is unavailable. Details: ${detailText}`,
 	);
 	process.exit(1);
 }
