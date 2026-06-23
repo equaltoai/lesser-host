@@ -21,6 +21,16 @@ function hasRefTo(value, logicalId) {
 	return Object.values(value).some((entry) => hasRefTo(entry, logicalId));
 }
 
+function valueSummary(value) {
+	if (typeof value === 'string') return value;
+	if (value === undefined) return '<missing>';
+	try {
+		return JSON.stringify(value);
+	} catch {
+		return String(value);
+	}
+}
+
 const templatePath = process.argv[2];
 if (!templatePath || process.argv.length !== 3) {
 	usage();
@@ -66,9 +76,11 @@ const controlPlane = findLambda('control-plane-api', 'ControlPlaneApi');
 if (!controlPlane) {
 	fail('missing control-plane Lambda function');
 }
-if (!Object.prototype.hasOwnProperty.call(lambdaEnv(controlPlane), 'HOSTED_GENESIS_QUEUE_URL')) {
+const controlPlaneEnv = lambdaEnv(controlPlane);
+if (!Object.prototype.hasOwnProperty.call(controlPlaneEnv, 'HOSTED_GENESIS_QUEUE_URL')) {
 	fail('control-plane Lambda lacks HOSTED_GENESIS_QUEUE_URL');
 }
+const stage = typeof controlPlaneEnv.STAGE === 'string' ? controlPlaneEnv.STAGE.trim().toLowerCase() : '';
 
 const aiWorker = findLambda('ai-worker', 'AiWorker');
 if (!aiWorker) {
@@ -94,6 +106,24 @@ if (!hostedGenesisMapping) {
 }
 if (asRecord(hostedGenesisMapping[1].Properties).BatchSize !== 1) {
 	fail('AI worker hosted genesis EventSourceMapping must use BatchSize 1');
+}
+
+if (stage === 'live') {
+	const soulRuntimeChecks = [
+		[controlPlane[0], controlPlaneEnv],
+		...lambdaEntries
+			.filter(([logicalId]) => logicalId !== controlPlane[0])
+			.map(([logicalId, resource]) => [logicalId, lambdaEnv([logicalId, resource])])
+			.filter(([, env]) => Object.prototype.hasOwnProperty.call(env, 'SOUL_ENABLED')),
+	];
+	const soulDisabled = soulRuntimeChecks
+		.filter(([, env]) => env.SOUL_ENABLED !== 'true')
+		.map(([logicalId, env]) => `${logicalId} SOUL_ENABLED=${valueSummary(env.SOUL_ENABLED)}`);
+	if (soulDisabled.length > 0) {
+		fail(
+			`live hosted genesis and soul search require SOUL_ENABLED=true on soul-aware Lambdas; invalid runtime config: ${soulDisabled.join(', ')}`,
+		);
+	}
 }
 
 console.error(
