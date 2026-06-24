@@ -15,7 +15,6 @@ func TestNewKMSService_DedupAndDefaults(t *testing.T) {
 	s := NewKMSService(" key ", []string{"k1", " k1 ", "k2", ""})
 	if s == nil {
 		t.Fatalf("expected service")
-		return
 	}
 	if s.signingKeyID != "key" {
 		t.Fatalf("unexpected signing key: %q", s.signingKeyID)
