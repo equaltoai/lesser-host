@@ -26,6 +26,7 @@ type fakeHostedGenesisStore struct {
 	reg      *models.SoulAgentRegistration
 	domain   *models.Domain
 	instance *models.Instance
+	session  *models.HostedGenesisSession
 	conv     *models.SoulAgentMintConversation
 	idem     *models.SoulMintConversationIdempotency
 	putCount int
@@ -76,6 +77,35 @@ func (f *fakeHostedGenesisStore) GetSoulAgentMintConversation(_ context.Context,
 	}
 	cp := *f.conv
 	return &cp, nil
+}
+
+func (f *fakeHostedGenesisStore) GetHostedGenesisSession(_ context.Context, instanceSlug string, conversationID string) (*models.HostedGenesisSession, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.session == nil ||
+		!strings.EqualFold(strings.TrimSpace(f.session.InstanceSlug), strings.TrimSpace(instanceSlug)) ||
+		strings.TrimSpace(f.session.ConversationID) != strings.TrimSpace(conversationID) {
+		return nil, errNotFound
+	}
+	cp := *f.session
+	cp.TurnLedger = append([]hostedgenesis.TurnLedgerEntry(nil), f.session.TurnLedger...)
+	return &cp, nil
+}
+
+func (f *fakeHostedGenesisStore) UpdateHostedGenesisSession(_ context.Context, item *models.HostedGenesisSession, expectedVersion int64, expectedStatus hostedgenesis.Status) error {
+	if item == nil {
+		return nil
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.session == nil || f.session.Version != expectedVersion || hostedgenesis.NormalizeStatus(f.session.Status) != expectedStatus {
+		return errNotFound
+	}
+	cp := *item
+	cp.Version = expectedVersion + 1
+	cp.TurnLedger = append([]hostedgenesis.TurnLedgerEntry(nil), item.TurnLedger...)
+	f.session = &cp
+	return nil
 }
 
 func (f *fakeHostedGenesisStore) PutSoulAgentMintConversation(_ context.Context, item *models.SoulAgentMintConversation) error {
@@ -137,6 +167,27 @@ func newHostedGenesisWorkerStore(turnID string) *fakeHostedGenesisStore {
 			LatestTurnID:   turnID,
 			CreatedAt:      now,
 			UpdatedAt:      now,
+		},
+		session: &models.HostedGenesisSession{
+			InstanceSlug:   "inst-worker",
+			RegistrationID: "reg-worker",
+			AgentID:        "0x" + strings.Repeat("44", 32),
+			ConversationID: "conv-worker",
+			Status:         string(hostedgenesis.StatusInProgress),
+			Model:          "deterministic",
+			LatestTurnID:   turnID,
+			MessageCount:   1,
+			TurnLedger: []hostedgenesis.TurnLedgerEntry{{
+				TurnID:         turnID,
+				IdempotencyKey: "idem-worker",
+				RequestHash:    strings.Repeat("a", 64),
+				ChargedCredits: 10,
+				MessageCount:   1,
+				AcceptedAt:     now,
+			}},
+			RequestID: "req-host",
+			CreatedAt: now,
+			UpdatedAt: now,
 		},
 		idem: &models.SoulMintConversationIdempotency{
 			InstanceSlug:   "inst-worker",
@@ -246,6 +297,7 @@ func TestHostedGenesisAssistantTurnDropsStaleConversation(t *testing.T) {
 
 	st := newHostedGenesisWorkerStore("turn-worker")
 	st.conv.Status = models.SoulMintConversationStatusAssistantTurnReady
+	st.session.Status = string(hostedgenesis.StatusAssistantTurnReady)
 	srv := NewServer(config.Config{}, st, artifacts.New(""), fakeComprehend{}, fakeRekognition{})
 
 	err := srv.processHostedGenesisAssistantTurn(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepAssistantTurn, "turn-worker"))
@@ -275,9 +327,9 @@ func TestHostedGenesisJobValidationRejectsTenantBoundaryMismatch(t *testing.T) {
 	st.domain.InstanceSlug = "other-instance"
 	srv := NewServer(config.Config{}, st, artifacts.New(""), fakeComprehend{}, fakeRekognition{})
 
-	reg, conv, err := srv.loadAndValidateHostedGenesisJob(context.Background(), st, hostedGenesisWorkerQueueMessage(hostedgenesis.StepAssistantTurn, "turn-worker"))
-	if err != nil || reg != nil || conv != nil {
-		t.Fatalf("expected boundary mismatch to drop job, reg=%#v conv=%#v err=%v", reg, conv, err)
+	reg, conv, session, err := srv.loadAndValidateHostedGenesisJob(context.Background(), st, hostedGenesisWorkerQueueMessage(hostedgenesis.StepAssistantTurn, "turn-worker"))
+	if err != nil || reg != nil || conv != nil || session != nil {
+		t.Fatalf("expected boundary mismatch to drop job, reg=%#v conv=%#v session=%#v err=%v", reg, conv, session, err)
 	}
 	assertHostedGenesisWorkerFailure(t, st, hostedGenesisFailureTenantBoundaryViolation)
 }
@@ -290,9 +342,9 @@ func TestHostedGenesisJobValidationAllowsMissingIdempotencyKey(t *testing.T) {
 	msg := hostedGenesisWorkerQueueMessage(hostedgenesis.StepAssistantTurn, "turn-worker")
 	msg.IdempotencyKey = ""
 
-	reg, conv, err := srv.loadAndValidateHostedGenesisJob(context.Background(), st, msg)
-	if err != nil || reg == nil || conv == nil {
-		t.Fatalf("expected valid job without idempotency key, reg=%#v conv=%#v err=%v", reg, conv, err)
+	reg, conv, session, err := srv.loadAndValidateHostedGenesisJob(context.Background(), st, msg)
+	if err != nil || reg == nil || conv == nil || session == nil {
+		t.Fatalf("expected valid job without idempotency key, reg=%#v conv=%#v session=%#v err=%v", reg, conv, session, err)
 	}
 	if decoded := models.DecodeSoulMintConversationBlob(conv.Messages); !strings.Contains(decoded, "reload-safe-user-turn") {
 		t.Fatalf("expected decoded durable transcript, got %q", decoded)
@@ -307,9 +359,9 @@ func TestHostedGenesisJobValidationDropsRegistrationMismatch(t *testing.T) {
 	msg := hostedGenesisWorkerQueueMessage(hostedgenesis.StepAssistantTurn, "turn-worker")
 	msg.AgentID = "0x" + strings.Repeat("55", 32)
 
-	reg, conv, err := srv.loadAndValidateHostedGenesisJob(context.Background(), st, msg)
-	if err != nil || reg != nil || conv != nil || st.putCount != 0 {
-		t.Fatalf("expected registration mismatch to drop without write, reg=%#v conv=%#v put=%d err=%v", reg, conv, st.putCount, err)
+	reg, conv, session, err := srv.loadAndValidateHostedGenesisJob(context.Background(), st, msg)
+	if err != nil || reg != nil || conv != nil || session != nil || st.putCount != 0 {
+		t.Fatalf("expected registration mismatch to drop without write, reg=%#v conv=%#v session=%#v put=%d err=%v", reg, conv, session, st.putCount, err)
 	}
 }
 
@@ -321,6 +373,7 @@ func TestHostedGenesisDeclarationExtractionProgressSafeFailures(t *testing.T) {
 
 		st := newHostedGenesisWorkerStore("turn-worker")
 		st.conv.Status = models.SoulMintConversationStatusDeclarationExtractionPending
+		st.session.Status = string(hostedgenesis.StatusDeclarationExtractionPending)
 		srv := NewServer(config.Config{}, st, artifacts.New(""), fakeComprehend{}, fakeRekognition{})
 
 		err := srv.processHostedGenesisDeclarationExtraction(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepDeclarationExtraction, "turn-worker"))
@@ -335,6 +388,7 @@ func TestHostedGenesisDeclarationExtractionProgressSafeFailures(t *testing.T) {
 
 		st := newHostedGenesisWorkerStore("turn-worker")
 		st.conv.Status = models.SoulMintConversationStatusDeclarationExtractionPending
+		st.session.Status = string(hostedgenesis.StatusDeclarationExtractionPending)
 		st.conv.Messages = models.EncodeSoulMintConversationBlob(`[{"role":"user","content":"describe"},{"role":"assistant","content":"draft"}]`)
 		srv := NewServer(config.Config{}, st, artifacts.New(""), fakeComprehend{}, fakeRekognition{})
 		ctx := &apptheory.EventContext{RequestID: "worker-req"}
@@ -352,6 +406,7 @@ func TestHostedGenesisDeclarationExtractionDropsNonPendingStatus(t *testing.T) {
 
 	st := newHostedGenesisWorkerStore("turn-worker")
 	st.conv.Status = models.SoulMintConversationStatusAssistantTurnReady
+	st.session.Status = string(hostedgenesis.StatusAssistantTurnReady)
 	st.conv.Messages = models.EncodeSoulMintConversationBlob(`[{"role":"user","content":"describe"},{"role":"assistant","content":"draft"}]`)
 	srv := NewServer(config.Config{}, st, artifacts.New(""), fakeComprehend{}, fakeRekognition{})
 
@@ -366,6 +421,7 @@ func TestHostedGenesisDeclarationExtractionRejectsInvalidTranscript(t *testing.T
 
 	st := newHostedGenesisWorkerStore("turn-worker")
 	st.conv.Status = models.SoulMintConversationStatusDeclarationExtractionPending
+	st.session.Status = string(hostedgenesis.StatusDeclarationExtractionPending)
 	st.conv.Messages = models.EncodeSoulMintConversationBlob(`not-json`)
 	srv := NewServer(config.Config{}, st, artifacts.New(""), fakeComprehend{}, fakeRekognition{})
 
@@ -399,6 +455,7 @@ func TestHostedGenesisWorkerCompletesAssistantAndDeclarationTurns(t *testing.T) 
 
 	assistantStore := newHostedGenesisWorkerStore("turn-worker")
 	assistantStore.conv.Model = hostedGenesisWorkerOpenAIModel
+	assistantStore.session.Model = hostedGenesisWorkerOpenAIModel
 	srv := NewServer(config.Config{}, assistantStore, artifacts.New(""), fakeComprehend{}, fakeRekognition{})
 	err := srv.processHostedGenesisAssistantTurn(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepAssistantTurn, "turn-worker"))
 	if err != nil {
@@ -409,6 +466,8 @@ func TestHostedGenesisWorkerCompletesAssistantAndDeclarationTurns(t *testing.T) 
 	declarationStore := newHostedGenesisWorkerStore("turn-worker")
 	declarationStore.conv.Model = hostedGenesisWorkerOpenAIModel
 	declarationStore.conv.Status = models.SoulMintConversationStatusDeclarationExtractionPending
+	declarationStore.session.Status = string(hostedgenesis.StatusDeclarationExtractionPending)
+	declarationStore.session.Model = hostedGenesisWorkerOpenAIModel
 	declarationStore.conv.Messages = models.EncodeSoulMintConversationBlob(`[{"role":"user","content":"describe"},{"role":"assistant","content":"assistant ready"}]`)
 	srv = NewServer(config.Config{}, declarationStore, artifacts.New(""), fakeComprehend{}, fakeRekognition{})
 	err = srv.processHostedGenesisDeclarationExtraction(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepDeclarationExtraction, "turn-worker"))
@@ -428,6 +487,7 @@ func TestHostedGenesisWorkerFailsClosedOnEmptyAssistantResponse(t *testing.T) {
 
 	st := newHostedGenesisWorkerStore("turn-worker")
 	st.conv.Model = hostedGenesisWorkerOpenAIModel
+	st.session.Model = hostedGenesisWorkerOpenAIModel
 	srv := NewServer(config.Config{}, st, artifacts.New(""), fakeComprehend{}, fakeRekognition{})
 	err := srv.processHostedGenesisAssistantTurn(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepAssistantTurn, "turn-worker"))
 	if err != nil {
@@ -449,6 +509,8 @@ func TestHostedGenesisWorkerFailsClosedOnInvalidDeclarationDraft(t *testing.T) {
 	st := newHostedGenesisWorkerStore("turn-worker")
 	st.conv.Model = hostedGenesisWorkerOpenAIModel
 	st.conv.Status = models.SoulMintConversationStatusDeclarationExtractionPending
+	st.session.Status = string(hostedgenesis.StatusDeclarationExtractionPending)
+	st.session.Model = hostedGenesisWorkerOpenAIModel
 	st.conv.Messages = models.EncodeSoulMintConversationBlob(`[{"role":"user","content":"describe"},{"role":"assistant","content":"assistant ready"}]`)
 	srv := NewServer(config.Config{}, st, artifacts.New(""), fakeComprehend{}, fakeRekognition{})
 	err := srv.processHostedGenesisDeclarationExtraction(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepDeclarationExtraction, "turn-worker"))
@@ -469,6 +531,8 @@ func TestHostedGenesisWorkerReturnsDeclarationModelError(t *testing.T) {
 	st := newHostedGenesisWorkerStore("turn-worker")
 	st.conv.Model = hostedGenesisWorkerOpenAIModel
 	st.conv.Status = models.SoulMintConversationStatusDeclarationExtractionPending
+	st.session.Status = string(hostedgenesis.StatusDeclarationExtractionPending)
+	st.session.Model = hostedGenesisWorkerOpenAIModel
 	st.conv.Messages = models.EncodeSoulMintConversationBlob(`[{"role":"user","content":"describe"},{"role":"assistant","content":"assistant ready"}]`)
 	srv := NewServer(config.Config{}, st, artifacts.New(""), fakeComprehend{}, fakeRekognition{})
 	err := srv.processHostedGenesisDeclarationExtraction(context.Background(), "worker-req", hostedGenesisWorkerQueueMessage(hostedgenesis.StepDeclarationExtraction, "turn-worker"))
@@ -614,6 +678,9 @@ func assertHostedGenesisWorkerFailure(t *testing.T, st *fakeHostedGenesisStore, 
 	if st.conv.Status != models.SoulMintConversationStatusFailed || st.conv.StatusReason != reason {
 		t.Fatalf("expected %s failure, got %#v", reason, st.conv)
 	}
+	if st.session == nil || hostedgenesis.NormalizeStatus(st.session.Status) != hostedgenesis.StatusFailed || st.session.Failure == nil || string(st.session.Failure.Code) != reason {
+		t.Fatalf("expected session %s failure, got %#v", reason, st.session)
+	}
 }
 
 func assertHostedGenesisAssistantReady(t *testing.T, st *fakeHostedGenesisStore) {
@@ -625,6 +692,9 @@ func assertHostedGenesisAssistantReady(t *testing.T, st *fakeHostedGenesisStore)
 	}
 	if st.conv.Status != models.SoulMintConversationStatusAssistantTurnReady || st.conv.StatusReason != "" {
 		t.Fatalf("expected assistant-ready status, got %#v", st.conv)
+	}
+	if st.session == nil || hostedgenesis.NormalizeStatus(st.session.Status) != hostedgenesis.StatusAssistantTurnReady || st.session.AssistantCheckpointRef == "" {
+		t.Fatalf("expected assistant-ready session checkpoint, got %#v", st.session)
 	}
 	decoded := models.DecodeSoulMintConversationBlob(st.conv.Messages)
 	if !strings.Contains(decoded, "assistant ready") || strings.Contains(st.conv.Messages, "assistant ready") {
@@ -644,6 +714,9 @@ func assertHostedGenesisDeclarationReady(t *testing.T, st *fakeHostedGenesisStor
 	}
 	if st.conv.Status != models.SoulMintConversationStatusDeclarationReady || st.conv.CompletedAt.IsZero() {
 		t.Fatalf("expected declaration-ready status, got %#v", st.conv)
+	}
+	if st.session == nil || hostedgenesis.NormalizeStatus(st.session.Status) != hostedgenesis.StatusDeclarationReady || st.session.DeclarationCheckpoint == nil {
+		t.Fatalf("expected declaration-ready session checkpoint, got %#v", st.session)
 	}
 	decoded := models.DecodeSoulMintConversationBlob(st.conv.ProducedDeclarations)
 	if !strings.Contains(decoded, "hosted_genesis_planning") || strings.Contains(st.conv.ProducedDeclarations, "hosted_genesis_planning") {

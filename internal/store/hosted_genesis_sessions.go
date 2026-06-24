@@ -75,6 +75,7 @@ func (s *Store) UpdateHostedGenesisSession(ctx context.Context, item *models.Hos
 	return s.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
 		tx.UpdateWithBuilder(item, func(ub core.UpdateBuilder) error {
 			ub.Set("Status", item.Status)
+			ub.Set("Model", item.Model)
 			ub.Set("LatestTurnID", item.LatestTurnID)
 			ub.Set("MessageCount", item.MessageCount)
 			ub.Set("TurnLedger", item.TurnLedger)

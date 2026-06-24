@@ -33,9 +33,10 @@ const (
 	soulMintConversationStreamBaseCredits  = int64(10)
 	soulMintConversationExtractBaseCredits = int64(10)
 
-	soulMintConversationStreamModule  = "soul.mint_conversation.stream"
-	soulMintConversationExtractModule = "soul.mint_conversation.extract"
-	defaultSoulMintConversationModel  = "anthropic:claude-sonnet-4-6"
+	soulMintConversationStreamModule           = "soul.mint_conversation.stream"
+	soulMintConversationExtractModule          = "soul.mint_conversation.extract"
+	defaultSoulMintConversationModel           = "anthropic:claude-sonnet-4-6"
+	mintConversationUnsupportedModelSetMessage = "unsupported model set"
 
 	soulMintConversationAlreadyPublishedMessage = "registration is already published"
 
@@ -248,6 +249,7 @@ type mintConversationFinalizeContext struct {
 	inst           *models.Instance
 	identity       *models.SoulAgentIdentity
 	conv           *models.SoulAgentMintConversation
+	session        *models.HostedGenesisSession
 	agentIDHex     string
 	conversationID string
 	auditActor     string
@@ -454,7 +456,7 @@ func mintConversationProducedDeclarationsState(conv *models.SoulAgentMintConvers
 }
 
 func mintConversationCompletionConflictDetails(conv *models.SoulAgentMintConversation, reason string) map[string]any {
-	status := "unknown"
+	status := stackDriftUnknown
 	if conv != nil {
 		decodeMintConversationFields(conv)
 		if trimmed := strings.TrimSpace(conv.Status); trimmed != "" {
@@ -1381,6 +1383,9 @@ func (s *Server) beginFinalizeMintConversation(ctx *apptheory.Context, finalizeC
 	if finalizeCtx.identity == nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
+	if appErr := requireHostedGenesisFinalizeDeclarationsMatchSession(finalizeCtx.session, finalizeCtx.conv); appErr != nil {
+		return nil, appErr
+	}
 	if finalizeCtx.identity.SelfDescriptionVersion > 0 {
 		return nil, &apptheory.AppError{Code: "app.conflict", Message: soulMintConversationAlreadyPublishedMessage}
 	}
@@ -1424,6 +1429,9 @@ func (s *Server) beginFinalizeMintConversation(ctx *apptheory.Context, finalizeC
 func (s *Server) finalizeMintConversation(ctx *apptheory.Context, finalizeCtx mintConversationFinalizeContext) (*apptheory.Response, error) {
 	if finalizeCtx.identity == nil {
 		return nil, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if appErr := requireHostedGenesisFinalizeDeclarationsMatchSession(finalizeCtx.session, finalizeCtx.conv); appErr != nil {
+		return nil, appErr
 	}
 	if isExplicitInstanceTrustAuthority(finalizeCtx.reg, finalizeCtx.identity) {
 		return s.finalizeMintConversationInstanceTrust(ctx, finalizeCtx)
@@ -2290,7 +2298,7 @@ func (s *Server) apiKeyForMintConversationModel(ctx context.Context, modelSet st
 		}
 		return k, nil
 	default:
-		return "", &apptheory.AppError{Code: "app.bad_request", Message: "unsupported model set"}
+		return "", &apptheory.AppError{Code: "app.bad_request", Message: mintConversationUnsupportedModelSetMessage}
 	}
 }
 
@@ -2353,7 +2361,7 @@ func (s *Server) extractMintConversationDeclarations(ctx context.Context, reg *m
 		draft = out
 		usage = u
 	default:
-		return soulMintConversationProducedDeclarations{}, models.AIUsage{}, &apptheory.AppError{Code: "app.bad_request", Message: "unsupported model set"}
+		return soulMintConversationProducedDeclarations{}, models.AIUsage{}, &apptheory.AppError{Code: "app.bad_request", Message: mintConversationUnsupportedModelSetMessage}
 	}
 
 	decl, appErr := buildMintConversationProducedDeclarations(draft, now, modelSet)

@@ -84,6 +84,7 @@ func ValidateTransition(from Status, to Status) error {
 		StatusAssistantTurnReady: {
 			StatusInProgress,
 			StatusDeclarationExtractionPending,
+			StatusDeclarationReady,
 		},
 		StatusDeclarationExtractionPending: {
 			StatusDeclarationReady,

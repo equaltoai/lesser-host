@@ -48,6 +48,7 @@ type SessionSeed struct {
 	AgentID               string
 	ConversationID        string
 	Status                Status
+	Model                 string
 	LatestTurnID          string
 	MessageCount          int
 	TurnLedger            []TurnLedgerEntry
@@ -85,6 +86,7 @@ func PlanLegacySessionMigration(input LegacySessionInput) (MigrationPlan, error)
 		ConversationID: input.ConversationID,
 		LatestTurnID:   input.LatestTurnID,
 		MessageCount:   input.MessageCount,
+		Model:          input.Model,
 		RequestID:      input.RequestID,
 		TraceIDs: &TraceIDs{
 			HostRequestID:  input.RequestID,

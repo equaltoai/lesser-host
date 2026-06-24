@@ -215,10 +215,6 @@ func buildHostedGenesisConversationResponse(conv *models.SoulAgentMintConversati
 	}
 }
 
-func hostedGenesisConversationJSON(status int, conv *models.SoulAgentMintConversation, opts hostedGenesisProjectionOptions) (*apptheory.Response, error) {
-	return apptheory.JSON(status, buildHostedGenesisConversationResponse(conv, opts))
-}
-
 func isHostedGenesisProgressStatus(status string) bool {
 	switch strings.TrimSpace(status) {
 	case models.SoulMintConversationStatusCreated,
