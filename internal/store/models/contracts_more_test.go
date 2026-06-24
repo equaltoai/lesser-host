@@ -34,6 +34,7 @@ func TestModelContracts_TableNameAndKeyAccessors(t *testing.T) {
 		CreditPurchase{},
 		Domain{},
 		ExternalInstanceRegistration{},
+		HostedGenesisSession{},
 		Instance{},
 		InstanceBudgetMonth{},
 		InstanceKey{},
@@ -96,6 +97,11 @@ func TestModelContracts_TableNameAndKeyAccessors(t *testing.T) {
 	require.NoError(t, er.BeforeCreate())
 	require.NotEmpty(t, er.GetPK())
 	require.NotEmpty(t, er.GetSK())
+
+	hgs := &HostedGenesisSession{InstanceSlug: "slug", RegistrationID: "reg", AgentID: "0xabc", ConversationID: "conv"}
+	require.NoError(t, hgs.BeforeCreate())
+	require.NotEmpty(t, hgs.GetPK())
+	require.NotEmpty(t, hgs.GetSK())
 
 	bm := &InstanceBudgetMonth{InstanceSlug: "slug", Month: "2026-02"}
 	require.NoError(t, bm.BeforeCreate())
