@@ -56,6 +56,7 @@ func TestCreateWalletChallenge_Success(t *testing.T) {
 	}
 	if ch == nil {
 		t.Fatalf("expected challenge")
+		return
 	}
 	if ch.ID == "" || ch.Nonce == "" || ch.Message == "" {
 		t.Fatalf("expected id/nonce/message set: %#v", ch)

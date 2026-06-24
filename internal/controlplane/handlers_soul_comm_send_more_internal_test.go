@@ -1007,6 +1007,7 @@ func TestEnforceSoulCommSendGuards_RecipientFirstContactPreferences(t *testing.T
 		)
 		if appErr == nil {
 			t.Fatalf("expected preference violation")
+			return
 		}
 		if appErr.Code != commCodePreferenceViolation || appErr.StatusCode != http.StatusForbidden {
 			t.Fatalf("expected %s/403, got %q/%d", commCodePreferenceViolation, appErr.Code, appErr.StatusCode)
@@ -1089,6 +1090,7 @@ func TestEnforceSoulCommSendGuards_EmailCCBCCFirstContactPreferences(t *testing.
 	)
 	if appErr == nil {
 		t.Fatalf("expected preference violation")
+		return
 	}
 	if appErr.Code != commCodePreferenceViolation || appErr.StatusCode != http.StatusForbidden {
 		t.Fatalf("expected %s/403, got %q/%d", commCodePreferenceViolation, appErr.Code, appErr.StatusCode)
@@ -1127,6 +1129,7 @@ func TestEnforceSoulCommSendGuards_InReplyToRequiresRecipientThread(t *testing.T
 		)
 		if appErr == nil {
 			t.Fatalf("expected boundary violation")
+			return
 		}
 		if appErr.Code != commCodeBoundaryViolation || appErr.StatusCode != http.StatusForbidden {
 			t.Fatalf("expected %s/403, got %q/%d", commCodeBoundaryViolation, appErr.Code, appErr.StatusCode)
@@ -1173,6 +1176,7 @@ func TestEnforceSoulCommSendGuards_InReplyToRequiresRecipientThread(t *testing.T
 		)
 		if appErr == nil {
 			t.Fatalf("expected boundary violation for cc outside thread")
+			return
 		}
 		if appErr.Code != commCodeBoundaryViolation || appErr.StatusCode != http.StatusForbidden {
 			t.Fatalf("expected %s/403, got %q/%d", commCodeBoundaryViolation, appErr.Code, appErr.StatusCode)

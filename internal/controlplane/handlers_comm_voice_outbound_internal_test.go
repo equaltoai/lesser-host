@@ -394,6 +394,7 @@ func TestHandleCommVoiceGatherWebhook_CapturesSpeechReplyAndUpdatesStatus(t *tes
 	queued := getQueued()
 	if queued == nil {
 		t.Fatalf("expected queued reply notification")
+		return
 	}
 	if queued.Notification.Channel != commChannelVoice || queued.Notification.Body != commVoiceReplyBody {
 		t.Fatalf("unexpected queued notification: %#v", queued.Notification)

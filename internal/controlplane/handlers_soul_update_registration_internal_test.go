@@ -706,6 +706,7 @@ func TestValidateCapabilityClaimLevelTransitions_RejectsDowngrade(t *testing.T) 
 	})
 	if appErr == nil {
 		t.Fatalf("expected error")
+		return
 	}
 	if appErr.Code != appErrCodeBadRequest {
 		t.Fatalf("expected bad_request, got %q", appErr.Code)

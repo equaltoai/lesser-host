@@ -172,6 +172,7 @@ func requireSoulPublicAvatarCacheHit(t *testing.T, cache *soulPublicAvatarCache,
 	}
 	if got == nil {
 		t.Fatalf("expected cache avatar for %q", key)
+		return nil
 	}
 	if got.Image != "image" {
 		t.Fatalf("expected cloned cache image, got %#v", got)
@@ -503,6 +504,7 @@ func assertSoulPublicAvatarFullLoaderView(t *testing.T, view *soulPublicAvatarVi
 
 	if view == nil {
 		t.Fatalf("expected avatar view")
+		return
 	}
 	if view.CurrentStyleID == nil {
 		t.Fatalf("expected current style selection, got %#v", view)

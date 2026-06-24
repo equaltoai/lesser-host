@@ -176,6 +176,7 @@ func decodePublishRootResponse(t *testing.T, resp *apptheory.Response) publishRo
 
 	if resp == nil {
 		t.Fatalf("missing response")
+		return publishRootResponse{}
 	}
 	if resp.Status != http.StatusOK {
 		t.Fatalf("expected 200, got %d (body=%q)", resp.Status, string(resp.Body))
