@@ -77,11 +77,6 @@ type soulInstanceMintConversationsResponse struct {
 	Limit         int                                   `json:"limit"`
 }
 
-type soulInstanceMintConversationResponse struct {
-	Version      string                            `json:"version"`
-	Conversation *models.SoulAgentMintConversation `json:"conversation"`
-}
-
 type soulInstanceMintConversationSummary struct {
 	AgentID        string         `json:"agent_id"`
 	ConversationID string         `json:"conversation_id"`
@@ -412,23 +407,27 @@ func (s *Server) handleSoulInstanceGetMintConversation(ctx *apptheory.Context) (
 		return nil, appErr
 	}
 
-	conv, err := getSoulAgentItemBySK[models.SoulAgentMintConversation](s, ctx.Context(), reqCtx.agentIDHex, fmt.Sprintf("MINT_CONVERSATION#%s", conversationID))
-	if err != nil {
+	session, err := s.store.GetHostedGenesisSession(ctx.Context(), reqCtx.key.InstanceSlug, conversationID)
+	if err != nil || session == nil || !strings.EqualFold(strings.TrimSpace(session.AgentID), strings.TrimSpace(reqCtx.agentIDHex)) {
 		appErr := soulMintInstanceReadError(soulMintInstanceReadCodeNotFound, "conversation not found", http.StatusNotFound, nil)
 		s.logSoulMintInstanceReadAccess(ctx, reqCtx.key, reqCtx.agentIDHex, conversationID, soulMintInstanceReadRouteSingle, "error", appErr.StatusCode, 0, start)
 		return nil, appErr
 	}
-	decodeMintConversationFields(conv)
+	conv, convErr := getSoulAgentItemBySK[models.SoulAgentMintConversation](s, ctx.Context(), reqCtx.agentIDHex, fmt.Sprintf("MINT_CONVERSATION#%s", conversationID))
+	if convErr == nil && conv != nil {
+		decodeMintConversationFields(conv)
+	}
 
 	if appErr := rejectOversizeSoulMintInstanceConversation(conv); appErr != nil {
 		s.logSoulMintInstanceReadAccess(ctx, reqCtx.key, reqCtx.agentIDHex, conversationID, soulMintInstanceReadRouteSingle, "error", appErr.StatusCode, 0, start)
 		return nil, appErr
 	}
 
-	resp, jsonErr := soulMintInstanceReadJSON(http.StatusOK, soulInstanceMintConversationResponse{
-		Version:      "1",
-		Conversation: conv,
-	}, soulMintInstanceReadSingleMaxBytes)
+	resp, jsonErr := hostedGenesisConversationJSONFromSession(http.StatusOK, session, conv, hostedGenesisProjectionOptions{
+		RegistrationID:  session.RegistrationID,
+		RequestID:       strings.TrimSpace(ctx.RequestID),
+		CollapseCreated: true,
+	})
 	if jsonErr != nil {
 		appErr := soulMintInstanceReadResponseError(jsonErr)
 		s.logSoulMintInstanceReadAccess(ctx, reqCtx.key, reqCtx.agentIDHex, conversationID, soulMintInstanceReadRouteSingle, "error", appErr.StatusCode, 0, start)

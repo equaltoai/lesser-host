@@ -37,6 +37,7 @@ type HostedGenesisSession struct {
 	AgentID        string `theorydb:"attr:agentId" json:"agent_id"`
 	ConversationID string `theorydb:"attr:conversationId" json:"conversation_id"`
 	Status         string `theorydb:"attr:status" json:"status"`
+	Model          string `theorydb:"attr:model" json:"model,omitempty"`
 
 	LatestTurnID string                          `theorydb:"attr:latestTurnId" json:"latest_turn_id,omitempty"`
 	MessageCount int                             `theorydb:"attr:messageCount" json:"message_count"`
@@ -92,6 +93,7 @@ func (s *HostedGenesisSession) UpdateKeys() error {
 	s.AgentID = strings.ToLower(strings.TrimSpace(s.AgentID))
 	s.ConversationID = strings.TrimSpace(s.ConversationID)
 	s.Status = string(hostedgenesis.NormalizeStatus(s.Status))
+	s.Model = strings.TrimSpace(s.Model)
 	s.LatestTurnID = strings.TrimSpace(s.LatestTurnID)
 	s.InputCheckpointRef = strings.TrimSpace(s.InputCheckpointRef)
 	s.AssistantCheckpointRef = strings.TrimSpace(s.AssistantCheckpointRef)
@@ -224,6 +226,7 @@ func HostedGenesisSessionAgentGSI2PK(instanceSlug string, agentID string) string
 func HostedGenesisSessionUpdateFields() []string {
 	return []string{
 		"Status",
+		"Model",
 		"LatestTurnID",
 		"MessageCount",
 		"TurnLedger",
@@ -249,6 +252,7 @@ func NewHostedGenesisSessionFromSeed(seed hostedgenesis.SessionSeed) *HostedGene
 		AgentID:               seed.AgentID,
 		ConversationID:        seed.ConversationID,
 		Status:                string(seed.Status),
+		Model:                 seed.Model,
 		LatestTurnID:          seed.LatestTurnID,
 		MessageCount:          seed.MessageCount,
 		TurnLedger:            append([]hostedgenesis.TurnLedgerEntry(nil), seed.TurnLedger...),

@@ -39,6 +39,7 @@ type mintConversationTestDB struct {
 	qInstance    *ttmocks.MockQuery
 	qKey         *ttmocks.MockQuery
 	qConv        *ttmocks.MockQuery
+	qHosted      *ttmocks.MockQuery
 	qMintIdem    *ttmocks.MockQuery
 	qBudget      *ttmocks.MockQuery
 	qIdentity    *ttmocks.MockQuery
@@ -58,6 +59,7 @@ type mintConversationTestDB struct {
 	lifecycleModels     []*models.SoulAgentPromotionLifecycleEvent
 	ensChannelModels    []*models.SoulAgentChannel
 	ensResolutionModels []*models.SoulAgentENSResolution
+	lastReg             *models.SoulAgentRegistration
 }
 
 func newMintConversationTestDB() *mintConversationTestDB {
@@ -70,6 +72,7 @@ func newMintConversationTestDB() *mintConversationTestDB {
 		qInstance:    new(ttmocks.MockQuery),
 		qKey:         new(ttmocks.MockQuery),
 		qConv:        new(ttmocks.MockQuery),
+		qHosted:      new(ttmocks.MockQuery),
 		qMintIdem:    new(ttmocks.MockQuery),
 		qBudget:      new(ttmocks.MockQuery),
 		qIdentity:    new(ttmocks.MockQuery),
@@ -97,6 +100,7 @@ func newMintConversationTestDB() *mintConversationTestDB {
 			tdb.convModels = append(tdb.convModels, &copy)
 		}
 	})
+	db.On("Model", mock.AnythingOfType("*models.HostedGenesisSession")).Return(tdb.qHosted).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulMintConversationIdempotency")).Return(tdb.qMintIdem).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(tdb.qBudget).Maybe()
 	db.On("Model", mock.AnythingOfType("*models.SoulAgentIdentity")).Return(tdb.qIdentity).Maybe()
@@ -121,7 +125,7 @@ func newMintConversationTestDB() *mintConversationTestDB {
 		}
 	})
 
-	for _, q := range []*ttmocks.MockQuery{tdb.qReg, tdb.qOp, tdb.qDomain, tdb.qInstance, tdb.qKey, tdb.qConv, tdb.qMintIdem, tdb.qBudget, tdb.qIdentity, tdb.qAudit, tdb.qWalletIdx, tdb.qPromotion, tdb.qLifecycle, tdb.qWalletAgent, tdb.qDomainAgent, tdb.qCapAgent, tdb.qUser, tdb.qChannel, tdb.qENS} {
+	for _, q := range []*ttmocks.MockQuery{tdb.qReg, tdb.qOp, tdb.qDomain, tdb.qInstance, tdb.qKey, tdb.qConv, tdb.qHosted, tdb.qMintIdem, tdb.qBudget, tdb.qIdentity, tdb.qAudit, tdb.qWalletIdx, tdb.qPromotion, tdb.qLifecycle, tdb.qWalletAgent, tdb.qDomainAgent, tdb.qCapAgent, tdb.qUser, tdb.qChannel, tdb.qENS} {
 		q.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(q).Maybe()
 		q.On("Index", mock.Anything).Return(q).Maybe()
 		q.On("Limit", mock.Anything).Return(q).Maybe()
@@ -200,6 +204,8 @@ func stubMintConversationRegistration(t *testing.T, tdb *mintConversationTestDB,
 			t.Fatalf("expected *models.SoulAgentRegistration, got %#v", args.Get(0))
 		}
 		*dest = reg
+		cp := reg
+		tdb.lastReg = &cp
 	}).Once()
 }
 
@@ -1151,6 +1157,10 @@ func TestDebitSoulMintConversationCredits_Branches(t *testing.T) {
 	t.Run("overage path condition failures and callback errors", func(t *testing.T) {
 		testDebitSoulMintConversationOverageAndFailures(t)
 	})
+
+	t.Run("legacy stream debit creates and updates conversations", func(t *testing.T) {
+		testDebitMintConversationStreamCredits(t)
+	})
 }
 
 func newMintConversationDebitServer() (*Server, *ttmocks.MockExtendedDB, *ttmocks.MockQuery, *ttmocks.MockTransactionBuilder) {
@@ -1158,6 +1168,48 @@ func newMintConversationDebitServer() (*Server, *ttmocks.MockExtendedDB, *ttmock
 	tb := new(ttmocks.MockTransactionBuilder)
 	db.TransactWriteBuilder = tb
 	return &Server{store: store.New(db)}, db, queries[0], tb
+}
+
+func testDebitMintConversationStreamCredits(t *testing.T) {
+	t.Helper()
+
+	now := time.Date(2026, 3, 5, 12, 0, 0, 0, time.UTC)
+	inst := &models.Instance{Slug: "inst1"}
+	for _, tc := range []struct {
+		name  string
+		fresh bool
+	}{
+		{name: "create", fresh: true},
+		{name: "update", fresh: false},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			s, db, qBudget, tb := newMintConversationDebitServer()
+			qBudget.On("First", mock.AnythingOfType("*models.InstanceBudgetMonth")).Return(nil).Run(func(args mock.Arguments) {
+				dest := testutil.RequireMockArg[*models.InstanceBudgetMonth](t, args, 0)
+				*dest = models.InstanceBudgetMonth{InstanceSlug: "inst1", Month: "2026-03", IncludedCredits: 50, UsedCredits: 5}
+			}).Once()
+			db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Once()
+			tb.On("Put", mock.AnythingOfType("*models.UsageLedgerEntry"), mock.Anything).Return(tb).Once()
+			tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.InstanceBudgetMonth"), mock.Anything, mock.Anything).Return(tb).Once()
+			if tc.fresh {
+				tb.On("Create", mock.AnythingOfType("*models.SoulAgentMintConversation"), mock.Anything).Return(tb).Once().Run(func(args mock.Arguments) {
+					conv := testutil.RequireMockArg[*models.SoulAgentMintConversation](t, args, 0)
+					if conv.Status != models.SoulMintConversationStatusInProgress || conv.ChargedCredits != soulMintConversationStreamBaseCredits {
+						t.Fatalf("unexpected created conversation: %#v", conv)
+					}
+				})
+			} else {
+				tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.SoulAgentMintConversation"), mock.Anything, mock.Anything).Return(tb).Once()
+			}
+			tb.On("Execute").Return(nil).Once()
+
+			session := mintConversationSession{conversationID: mintConversationTestConversationID, modelSet: defaultSoulMintConversationModel, isNew: tc.fresh}
+			if appErr := s.debitMintConversationStreamCredits(t.Context(), inst, "0xabc", session, "req-stream", now); appErr != nil {
+				t.Fatalf("stream debit failed: %#v", appErr)
+			}
+		})
+	}
 }
 
 func testDebitSoulMintConversationGuardRails(t *testing.T) {

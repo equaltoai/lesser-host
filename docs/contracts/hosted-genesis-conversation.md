@@ -5,9 +5,10 @@ failure this contract fixes was a transport-success response (`HTTP 200` plus a 
 conversation as `in_progress` with no declarations and Lesser could not persist a `host_conversation_id`.
 
 This document is a contract artifact for Host, Lesser, Greater, and Sim. Project 49 M1.1 locked names and examples.
-Project 50 Milestone A implements the Host-owned source-of-truth model/repository foundation; the full Lesser
-instance-key runtime projection, hosted-genesis worker queue, idempotent debit semantics, and fail-closed finalize wiring
-remain follow-on implementation slices.
+Project 50 Milestone A implements the Host-owned source-of-truth model/repository foundation. Project 51 M2 routes
+the Lesser instance-key runtime through `HostedGenesisSession` first: POST commits the session and idempotency/debit
+ledger before transport execution, GET/status projects from the session, completion/finalize gates read declaration
+checkpoint readiness from the session, and `SoulAgentMintConversation` is compatibility/projection input only.
 
 ## Authoritative Lesser route family
 
@@ -66,8 +67,10 @@ same request hash replays the existing turn and must not append another user tur
 `latest_turn_id`, enqueue duplicate user-visible work, or debit credits again. A retry with the same idempotency key and
 a different request hash fails closed as an idempotency conflict.
 
-SQS, AppTheory MicroVM registry/cache state, and HTTP/SSE transport state are reconstructible execution details. They do
-not determine user-visible progress, retry, or billing state.
+SQS, AppTheory MicroVM registry/cache state, AI-worker delivery, and HTTP/SSE transport state are reconstructible
+execution details. They do not determine user-visible progress, retry, finalize readiness, or billing state. If queue
+delivery is missing or stale, status remains the compact `HostedGenesisSession` projection and retry/finalize decisions
+continue to fail closed from that Host row.
 
 ## HostConversation envelope
 
@@ -135,5 +138,8 @@ should not wait for an explicit local `created` projection before persisting `ho
 7. Legacy migration is deterministic. Existing `SOUL_REG` / `MINT_CONVERSATION` rows are dry-run planned into
    `HostedGenesisSession` seeds without importing raw transcripts; ambiguous active rows become typed recovery states
    rather than deriving progress from SQS.
-8. Human-visible evidence is compact. Responses carry ids, status, typed recovery, and declaration summary/evidence; they
+8. `SoulAgentMintConversation` is compatibility/projection input after Project 51 M2. It may supply legacy declaration
+   JSON or safe migration hints, but it no longer defines user-visible status, retry, billing, recovery, or finalize
+   authority for the Lesser instance-key route family.
+9. Human-visible evidence is compact. Responses carry ids, status, typed recovery, and declaration summary/evidence; they
    do not expose raw Host credentials or require raw LLM transcripts.

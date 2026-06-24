@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/stretchr/testify/mock"
 
+	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -25,6 +27,171 @@ func stubMintConversationConversation(t *testing.T, tdb *mintConversationTestDB,
 		}
 		*dest = conv
 	}).Once()
+	if strings.TrimSpace(conv.IdempotencyKey) == "" {
+		stubHostedGenesisSessionFromConversation(t, tdb, conv)
+	}
+}
+
+func stubHostedGenesisSessionFromConversation(t *testing.T, tdb *mintConversationTestDB, conv models.SoulAgentMintConversation) {
+	t.Helper()
+	tdb.qHosted.On("First", mock.AnythingOfType("*models.HostedGenesisSession")).Return(nil).Run(func(args mock.Arguments) {
+		dest, ok := args.Get(0).(*models.HostedGenesisSession)
+		if !ok || dest == nil {
+			t.Fatalf("expected *models.HostedGenesisSession, got %#v", args.Get(0))
+		}
+		*dest = hostedGenesisSessionFromLegacyConversationForTest(tdb, conv)
+	}).Maybe()
+}
+
+func hostedGenesisSessionFromLegacyConversationForTest(tdb *mintConversationTestDB, conv models.SoulAgentMintConversation) models.HostedGenesisSession {
+	decodeMintConversationFields(&conv)
+	registrationID := legacyHostedGenesisRegistrationIDForTest(tdb)
+	now := firstTime(conv.UpdatedAt, conv.CompletedAt, conv.CreatedAt, time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC))
+	if conv.CreatedAt.IsZero() {
+		conv.CreatedAt = now
+	}
+	session := baseHostedGenesisSessionFromLegacyConversationForTest(conv, registrationID, now)
+	applyHostedGenesisTurnLedgerFromLegacyForTest(&session, conv, now)
+	applyHostedGenesisDeclarationFromLegacyForTest(&session, conv, registrationID)
+	applyHostedGenesisFailureFromLegacyForTest(&session, now)
+	_ = session.BeforeCreate()
+	return session
+}
+
+func legacyHostedGenesisRegistrationIDForTest(tdb *mintConversationTestDB) string {
+	if tdb != nil && tdb.lastReg != nil && strings.TrimSpace(tdb.lastReg.ID) != "" {
+		return strings.TrimSpace(tdb.lastReg.ID)
+	}
+	return "reg-1"
+}
+
+func baseHostedGenesisSessionFromLegacyConversationForTest(conv models.SoulAgentMintConversation, registrationID string, now time.Time) models.HostedGenesisSession {
+	status := hostedgenesis.NormalizeStatus(conv.Status)
+	if status == hostedgenesis.Status("") || !hostedgenesis.IsAllowedStatus(status) {
+		status = hostedgenesis.StatusFailed
+	}
+	messageCount := mintConversationMessageCount(&conv)
+	return models.HostedGenesisSession{
+		InstanceSlug:   soulInstanceBootstrapTestInstanceSlug,
+		RegistrationID: registrationID,
+		AgentID:        conv.AgentID,
+		ConversationID: conv.ConversationID,
+		Status:         string(status),
+		Model:          conv.Model,
+		LatestTurnID:   conv.LatestTurnID,
+		MessageCount:   messageCount,
+		RequestID:      conv.RequestID,
+		TraceIDs:       &hostedgenesis.TraceIDs{HostRequestID: conv.RequestID, CorrelationID: conv.CorrelationID, IdempotencyKey: conv.IdempotencyKey},
+		CreatedAt:      firstTime(conv.CreatedAt, now),
+		UpdatedAt:      now,
+		CompletedAt:    conv.CompletedAt,
+	}
+}
+
+func applyHostedGenesisTurnLedgerFromLegacyForTest(session *models.HostedGenesisSession, conv models.SoulAgentMintConversation, now time.Time) {
+	if session == nil {
+		return
+	}
+	if session.MessageCount <= 0 && strings.TrimSpace(conv.LatestTurnID) != "" {
+		session.MessageCount = 1
+	}
+	if strings.TrimSpace(conv.LatestTurnID) == "" {
+		return
+	}
+	session.TurnLedger = []hostedgenesis.TurnLedgerEntry{{
+		TurnID:         conv.LatestTurnID,
+		IdempotencyKey: conv.IdempotencyKey,
+		RequestHash:    strings.Repeat("a", 64),
+		ChargedCredits: maxInt64(conv.ChargedCredits, soulMintConversationStreamBaseCredits),
+		MessageCount:   maxInt(session.MessageCount, 1),
+		AcceptedAt:     firstTime(conv.CreatedAt, now),
+	}}
+}
+
+func applyHostedGenesisDeclarationFromLegacyForTest(session *models.HostedGenesisSession, conv models.SoulAgentMintConversation, registrationID string) {
+	if session == nil || !legacyConversationNeedsDeclarationCheckpointForTest(conv) {
+		return
+	}
+	messageCount := maxInt(session.MessageCount, 1)
+	session.MessageCount = messageCount
+	requestID := firstNonEmpty(conv.RequestID, "req-test")
+	produced := buildHostedGenesisProducedDeclarations(&conv, registrationID, requestID, messageCount)
+	if produced == nil {
+		markHostedGenesisLegacyDeclarationFailureForTest(session, conv)
+		return
+	}
+	if !setHostedGenesisLegacyDeclarationCheckpointForTest(session, conv, produced, registrationID, requestID, messageCount) {
+		session.Status = string(hostedgenesis.StatusFailed)
+		session.DeclarationCheckpoint = nil
+	}
+}
+
+func legacyConversationNeedsDeclarationCheckpointForTest(conv models.SoulAgentMintConversation) bool {
+	return hostedgenesis.NormalizeStatus(conv.Status) == hostedgenesis.StatusDeclarationReady || strings.TrimSpace(conv.Status) == models.SoulMintConversationStatusCompleted
+}
+
+func setHostedGenesisLegacyDeclarationCheckpointForTest(session *models.HostedGenesisSession, conv models.SoulAgentMintConversation, produced *hostedGenesisProducedDeclarations, registrationID string, requestID string, messageCount int) bool {
+	producedAt, _ := time.Parse(time.RFC3339Nano, produced.ProducedAt)
+	session.Status = string(hostedgenesis.StatusDeclarationReady)
+	session.DeclarationCheckpoint = &hostedgenesis.DeclarationCheckpoint{
+		DeclarationID:   produced.DeclarationID,
+		DeclarationHash: produced.DeclarationHash,
+		CheckpointRef:   "checkpoint://hosted-genesis/" + conv.ConversationID + "/declaration/" + strings.TrimPrefix(produced.DeclarationHash, "sha256:")[:16],
+		ProducedAt:      producedAt,
+		RegistrationID:  registrationID,
+		ConversationID:  conv.ConversationID,
+		AgentID:         conv.AgentID,
+		MessageCount:    messageCount,
+		Model:           conv.Model,
+		RequestID:       requestID,
+	}
+	return session.DeclarationCheckpoint.Validate() == nil
+}
+
+func markHostedGenesisLegacyDeclarationFailureForTest(session *models.HostedGenesisSession, conv models.SoulAgentMintConversation) {
+	session.Status = string(hostedgenesis.StatusFailed)
+	if strings.TrimSpace(conv.ProducedDeclarations) == "" {
+		session.Failure = testHostedGenesisFailure(hostedgenesis.FailureCodeMissingProducedDeclarations)
+		return
+	}
+	session.Failure = testHostedGenesisFailure(hostedgenesis.FailureCodeInvalidProducedDeclarations)
+}
+
+func applyHostedGenesisFailureFromLegacyForTest(session *models.HostedGenesisSession, now time.Time) {
+	if session == nil || hostedgenesis.NormalizeStatus(session.Status) != hostedgenesis.StatusFailed {
+		return
+	}
+	if session.Failure == nil {
+		session.Failure = testHostedGenesisFailure(hostedgenesis.FailureCodeInvalidCompletionState)
+	}
+	session.CompletedAt = firstTime(session.CompletedAt, now)
+}
+
+func testHostedGenesisFailure(code hostedgenesis.FailureCode) *hostedgenesis.Failure {
+	action := hostedgenesis.RecoveryActionRefreshState
+	if code == hostedgenesis.FailureCodeMissingProducedDeclarations || code == hostedgenesis.FailureCodeInvalidProducedDeclarations {
+		action = hostedgenesis.RecoveryActionRestartSoulBootstrap
+	}
+	return &hostedgenesis.Failure{
+		Code:      code,
+		Message:   hostedGenesisFailureMessage(string(code)),
+		Retryable: false,
+		Recovery:  hostedgenesis.Recovery{Action: action, Reason: string(code)},
+	}
+}
+
+func maxInt(a int, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func maxInt64(a int64, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func stubMintConversationIdentity(t *testing.T, tdb *mintConversationTestDB, identity *models.SoulAgentIdentity, err error) {

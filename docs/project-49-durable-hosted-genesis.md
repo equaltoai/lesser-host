@@ -25,6 +25,24 @@ SSE can remain for non-instance Host UI routes, but it is no longer the authorit
 CloudFront may still route the mint-conversation subtree through Host's REST control-plane mint-conversation origin for
 transport compatibility; the Lesser instance-key contract is JSON state, not SSE state.
 
+
+## Project 51 M2 runtime binding
+
+Project 51 M2 dogfoods the `HostedGenesisSession` model/repository foundation before AppTheory MicroVM execution is
+introduced. The Lesser instance-key hosted-genesis route family now treats the Host session row as user-visible truth:
+
+- POST creates or updates `HostedGenesisSession` before queue delivery, and the debit/idempotency transaction is the
+  exactly-once authority. SQS enqueue is best-effort transport and is not success authority.
+- GET/status and instance read endpoints project compact HostConversation state from `HostedGenesisSession`; stale or
+  missing queue delivery cannot invent status.
+- Complete/declaration/finalize reads publish readiness from `HostedGenesisSession.status=declaration_ready` plus a valid
+  declaration checkpoint. The PR does not mutate cloud or on-chain state.
+- `SoulAgentMintConversation` remains only compatibility/projection/migration input. Host does not delete compatibility
+  rows without a separate migration/runbook and does not import raw transcripts into the session source of truth.
+
+The M0 AppTheory MicroVM decision is preserved: no raw-AWS MicroVM substitute or local framework fork is introduced in
+this milestone.
+
 ### Worker and retry model
 
 The control plane enqueues hosted-genesis work on `HOSTED_GENESIS_QUEUE_URL`. The AI worker consumes one hosted-genesis

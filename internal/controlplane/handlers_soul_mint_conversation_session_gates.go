@@ -1,0 +1,103 @@
+package controlplane
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"strings"
+
+	apptheory "github.com/theory-cloud/apptheory/runtime"
+
+	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
+	"github.com/equaltoai/lesser-host/internal/store/models"
+)
+
+func hostedGenesisSessionCompletionReplayReady(session *models.HostedGenesisSession) (bool, string) {
+	if session == nil {
+		return false, soulMintConversationCompleteReasonInvalidState
+	}
+	switch hostedgenesis.NormalizeStatus(session.Status) {
+	case hostedgenesis.StatusDeclarationReady:
+		if err := hostedgenesis.CanPublish(hostedgenesis.PublishGateInput{
+			Status:                hostedgenesis.StatusDeclarationReady,
+			RegistrationID:        session.RegistrationID,
+			ConversationID:        session.ConversationID,
+			AgentID:               session.AgentID,
+			DeclarationCheckpoint: session.DeclarationCheckpoint,
+		}); err != nil {
+			return false, soulMintConversationCompleteReasonInvalidDeclarations
+		}
+		return true, ""
+	case hostedgenesis.StatusFailed:
+		if session.Failure != nil {
+			switch session.Failure.Code {
+			case hostedgenesis.FailureCodeMissingProducedDeclarations:
+				return false, soulMintConversationCompleteReasonMissingDeclarations
+			case hostedgenesis.FailureCodeInvalidProducedDeclarations:
+				return false, soulMintConversationCompleteReasonInvalidDeclarations
+			}
+		}
+		return false, soulMintConversationCompleteReasonInvalidState
+	case hostedgenesis.StatusCreated,
+		hostedgenesis.StatusInProgress,
+		hostedgenesis.StatusAssistantTurnReady,
+		hostedgenesis.StatusDeclarationExtractionPending:
+		return false, ""
+	default:
+		return false, soulMintConversationCompleteReasonInvalidState
+	}
+}
+
+func requireHostedGenesisSessionReadyForFinalize(session *models.HostedGenesisSession, statusMessage string, emptyDeclMessage string) *apptheory.AppError {
+	if session == nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	status := hostedgenesis.NormalizeStatus(session.Status)
+	if status != hostedgenesis.StatusDeclarationReady {
+		if status == hostedgenesis.StatusFailed && session.Failure != nil {
+			switch session.Failure.Code {
+			case hostedgenesis.FailureCodeMissingProducedDeclarations:
+				return &apptheory.AppError{Code: "app.conflict", Message: emptyDeclMessage}
+			case hostedgenesis.FailureCodeInvalidProducedDeclarations:
+				return &apptheory.AppError{Code: "app.conflict", Message: "conversation has invalid produced declarations"}
+			}
+		}
+		return &apptheory.AppError{Code: "app.conflict", Message: statusMessage}
+	}
+	if session.DeclarationCheckpoint == nil {
+		return &apptheory.AppError{Code: "app.conflict", Message: emptyDeclMessage}
+	}
+	if err := hostedgenesis.CanPublish(hostedgenesis.PublishGateInput{
+		Status:                hostedgenesis.StatusDeclarationReady,
+		RegistrationID:        session.RegistrationID,
+		ConversationID:        session.ConversationID,
+		AgentID:               session.AgentID,
+		DeclarationCheckpoint: session.DeclarationCheckpoint,
+	}); err != nil {
+		return &apptheory.AppError{Code: "app.conflict", Message: "conversation has invalid produced declarations"}
+	}
+	return nil
+}
+
+func requireHostedGenesisFinalizeDeclarationsMatchSession(session *models.HostedGenesisSession, conv *models.SoulAgentMintConversation) *apptheory.AppError {
+	if session == nil {
+		return nil
+	}
+	if appErr := requireHostedGenesisSessionReadyForFinalize(session, "conversation is not completed", "conversation has no produced declarations"); appErr != nil {
+		return appErr
+	}
+	if conv == nil {
+		return &apptheory.AppError{Code: "app.conflict", Message: "conversation has no produced declarations"}
+	}
+	raw := strings.TrimSpace(models.DecodeSoulMintConversationBlob(conv.ProducedDeclarations))
+	if raw == "" {
+		return &apptheory.AppError{Code: "app.conflict", Message: "conversation has no produced declarations"}
+	}
+	sum := sha256.Sum256([]byte(raw))
+	if session.DeclarationCheckpoint == nil || !strings.EqualFold(session.DeclarationCheckpoint.DeclarationHash, "sha256:"+hex.EncodeToString(sum[:])) {
+		return &apptheory.AppError{Code: "app.conflict", Message: "conversation has invalid produced declarations"}
+	}
+	if _, appErr := parseAndValidateMintConversationDeclarations(raw); appErr != nil {
+		return appErr
+	}
+	return nil
+}
