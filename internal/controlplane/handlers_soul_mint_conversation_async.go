@@ -503,6 +503,10 @@ func cloneHostedGenesisSession(session *models.HostedGenesisSession) *models.Hos
 	}
 	copy := *session
 	copy.TurnLedger = append([]hostedgenesis.TurnLedgerEntry(nil), session.TurnLedger...)
+	if session.MicroVMLifecycleRef != nil {
+		ref := *session.MicroVMLifecycleRef
+		copy.MicroVMLifecycleRef = &ref
+	}
 	if session.DeclarationCheckpoint != nil {
 		cp := *session.DeclarationCheckpoint
 		copy.DeclarationCheckpoint = &cp
@@ -545,6 +549,7 @@ func addHostedGenesisSessionWrite(tx core.TransactionBuilder, session *models.Ho
 		ub.Set("AssistantCheckpointRef", session.AssistantCheckpointRef)
 		ub.Set("ExecutionStateRef", session.ExecutionStateRef)
 		ub.Set("MicroVMExecutionID", session.MicroVMExecutionID)
+		ub.Set("MicroVMLifecycleRef", session.MicroVMLifecycleRef)
 		ub.Set("DeclarationCheckpoint", session.DeclarationCheckpoint)
 		ub.Set("Failure", session.Failure)
 		ub.Set("TraceIDs", session.TraceIDs)

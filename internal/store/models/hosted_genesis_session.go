@@ -46,10 +46,11 @@ type HostedGenesisSession struct {
 	// Checkpoint references are ids only. Raw prompts, message lists, transcripts,
 	// provider credentials, Instance API keys, wallet signatures, SSM values, AWS
 	// credentials, and MicroVM endpoint tokens must not be persisted here.
-	InputCheckpointRef     string `theorydb:"attr:inputCheckpointRef" json:"input_checkpoint_ref,omitempty"`
-	AssistantCheckpointRef string `theorydb:"attr:assistantCheckpointRef" json:"assistant_checkpoint_ref,omitempty"`
-	ExecutionStateRef      string `theorydb:"attr:executionStateRef" json:"execution_state_ref,omitempty"`
-	MicroVMExecutionID     string `theorydb:"attr:microVmExecutionId" json:"microvm_execution_id,omitempty"`
+	InputCheckpointRef     string                             `theorydb:"attr:inputCheckpointRef" json:"input_checkpoint_ref,omitempty"`
+	AssistantCheckpointRef string                             `theorydb:"attr:assistantCheckpointRef" json:"assistant_checkpoint_ref,omitempty"`
+	ExecutionStateRef      string                             `theorydb:"attr:executionStateRef" json:"execution_state_ref,omitempty"`
+	MicroVMExecutionID     string                             `theorydb:"attr:microVmExecutionId" json:"microvm_execution_id,omitempty"`
+	MicroVMLifecycleRef    *hostedgenesis.MicroVMLifecycleRef `theorydb:"attr:microVmLifecycleRef" json:"-"`
 
 	DeclarationCheckpoint *hostedgenesis.DeclarationCheckpoint `theorydb:"attr:declarationCheckpoint" json:"declaration_checkpoint,omitempty"`
 	Failure               *hostedgenesis.Failure               `theorydb:"attr:failure" json:"failure,omitempty"`
@@ -99,6 +100,12 @@ func (s *HostedGenesisSession) UpdateKeys() error {
 	s.AssistantCheckpointRef = strings.TrimSpace(s.AssistantCheckpointRef)
 	s.ExecutionStateRef = strings.TrimSpace(s.ExecutionStateRef)
 	s.MicroVMExecutionID = strings.TrimSpace(s.MicroVMExecutionID)
+	if s.MicroVMLifecycleRef != nil {
+		binding := s.MicroVMSessionBinding()
+		if err := s.MicroVMLifecycleRef.Validate(binding); err != nil {
+			return err
+		}
+	}
 	s.RequestID = strings.TrimSpace(s.RequestID)
 
 	s.PK = HostedGenesisSessionPK(s.InstanceSlug)
@@ -194,6 +201,42 @@ func (s *HostedGenesisSession) ToProjectionInput() hostedgenesis.ProjectionInput
 	}
 }
 
+// MicroVMSessionBinding rebuilds the AppTheory MicroVM controller binding from
+// Host's authoritative HostedGenesisSession ids. Registry/cache state is not
+// required to reconstruct this envelope.
+func (s *HostedGenesisSession) MicroVMSessionBinding() hostedgenesis.MicroVMSessionBinding {
+	if s == nil {
+		return hostedgenesis.MicroVMSessionBinding{}
+	}
+	turnID := s.LatestTurnID
+	if turnID == "" && len(s.TurnLedger) > 0 {
+		turnID = s.TurnLedger[len(s.TurnLedger)-1].TurnID
+	}
+	return hostedgenesis.MicroVMSessionBinding{
+		InstanceSlug:   normalizeSlug(s.InstanceSlug),
+		RegistrationID: strings.TrimSpace(s.RegistrationID),
+		AgentID:        strings.ToLower(strings.TrimSpace(s.AgentID)),
+		ConversationID: strings.TrimSpace(s.ConversationID),
+		TurnID:         strings.TrimSpace(turnID),
+	}
+}
+
+// ApplyMicroVMLifecycleRef records non-authoritative AppTheory execution/cache
+// state after validating that it maps back to this Host session.
+func (s *HostedGenesisSession) ApplyMicroVMLifecycleRef(ref hostedgenesis.MicroVMLifecycleRef) error {
+	if s == nil {
+		return hostedgenesis.ErrInvalidMicroVMLifecycleRef
+	}
+	binding := s.MicroVMSessionBinding()
+	if err := ref.Validate(binding); err != nil {
+		return err
+	}
+	s.MicroVMLifecycleRef = &ref
+	s.ExecutionStateRef = hostedgenesis.FormatMicroVMExecutionStateRef(ref)
+	s.MicroVMExecutionID = strings.TrimSpace(ref.MicroVMID)
+	return nil
+}
+
 // GetPK returns the partition key for HostedGenesisSession.
 func (s *HostedGenesisSession) GetPK() string { return s.PK }
 
@@ -234,6 +277,7 @@ func HostedGenesisSessionUpdateFields() []string {
 		"AssistantCheckpointRef",
 		"ExecutionStateRef",
 		"MicroVMExecutionID",
+		"MicroVMLifecycleRef",
 		"DeclarationCheckpoint",
 		"Failure",
 		"TraceIDs",

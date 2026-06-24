@@ -219,3 +219,73 @@ func assertModelHasNoRawSecretFields(t *testing.T, typ reflect.Type) {
 		assertModelHasNoRawSecretFields(t, field.Type)
 	}
 }
+
+func TestHostedGenesisSessionMicroVMRefIsExecutionCacheOnly(t *testing.T) {
+	t.Parallel()
+
+	session := validHostedGenesisSessionModel()
+	binding := session.MicroVMSessionBinding()
+	now := time.Date(2026, 6, 24, 18, 15, 0, 0, time.UTC)
+	ref := hostedgenesis.MicroVMLifecycleRef{
+		SourceOfTruth:   hostedgenesis.MicroVMSourceOfTruth,
+		TenantID:        binding.TenantID(),
+		Namespace:       hostedgenesis.MicroVMNamespace,
+		SessionID:       session.ConversationID,
+		LifecycleState:  "starting",
+		DesiredState:    "started",
+		MicroVMID:       "microvm_123",
+		LastAction:      "start",
+		LastTransition:  now,
+		RegistryVersion: 2,
+		UpdatedAt:       now,
+	}
+	require.NoError(t, session.ApplyMicroVMLifecycleRef(ref))
+	require.NoError(t, session.BeforeCreate())
+	require.NotNil(t, session.MicroVMLifecycleRef)
+	require.Contains(t, session.ExecutionStateRef, "microvm://host-dynamodb-hosted-genesis-session/slug:demo/conv_123")
+	require.Equal(t, "microvm_123", session.MicroVMExecutionID)
+
+	modelPayload, err := json.Marshal(session)
+	require.NoError(t, err)
+	modelText := strings.ToLower(string(modelPayload))
+	require.NotContains(t, modelText, "microvm_lifecycle_ref")
+	require.NotContains(t, modelText, "network_connector")
+
+	projection, err := hostedgenesis.NewConversationProjection(session.ToProjectionInput(), true)
+	require.NoError(t, err)
+	require.Equal(t, hostedgenesis.StatusInProgress, projection.Status)
+	payload, err := json.Marshal(projection)
+	require.NoError(t, err)
+	jsonText := strings.ToLower(string(payload))
+	require.NotContains(t, jsonText, "microvm")
+	require.NotContains(t, jsonText, "endpoint")
+	require.NotContains(t, jsonText, "token")
+}
+
+func TestHostedGenesisSessionMicroVMRefRejectsCrossTenantRegistryState(t *testing.T) {
+	t.Parallel()
+
+	session := validHostedGenesisSessionModel()
+	binding := session.MicroVMSessionBinding()
+	now := time.Date(2026, 6, 24, 18, 15, 0, 0, time.UTC)
+	ref := hostedgenesis.MicroVMLifecycleRef{
+		SourceOfTruth:   hostedgenesis.MicroVMSourceOfTruth,
+		TenantID:        "slug:other",
+		Namespace:       hostedgenesis.MicroVMNamespace,
+		SessionID:       session.ConversationID,
+		LifecycleState:  "started",
+		DesiredState:    "started",
+		LastAction:      "status",
+		LastTransition:  now,
+		RegistryVersion: 1,
+		UpdatedAt:       now,
+	}
+	require.ErrorIs(t, ref.Validate(binding), hostedgenesis.ErrInvalidMicroVMLifecycleRef)
+	require.ErrorIs(t, session.ApplyMicroVMLifecycleRef(ref), hostedgenesis.ErrInvalidMicroVMLifecycleRef)
+
+	// Host truth still reconstructs the safe AppTheory binding without registry/cache state.
+	rebuilt := session.MicroVMSessionBinding()
+	require.NoError(t, rebuilt.Validate())
+	require.Equal(t, "slug:demo", rebuilt.TenantID())
+	require.Equal(t, "conv_123", rebuilt.ConversationID)
+}

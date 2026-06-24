@@ -83,6 +83,7 @@ func (s *Store) UpdateHostedGenesisSession(ctx context.Context, item *models.Hos
 			ub.Set("AssistantCheckpointRef", item.AssistantCheckpointRef)
 			ub.Set("ExecutionStateRef", item.ExecutionStateRef)
 			ub.Set("MicroVMExecutionID", item.MicroVMExecutionID)
+			ub.Set("MicroVMLifecycleRef", item.MicroVMLifecycleRef)
 			ub.Set("DeclarationCheckpoint", item.DeclarationCheckpoint)
 			ub.Set("Failure", item.Failure)
 			ub.Set("TraceIDs", item.TraceIDs)
