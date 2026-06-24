@@ -578,6 +578,100 @@ test('hosted genesis durable async queue is wired to control plane and ai worker
 	assert.equal(mapping.BatchSize, 1, 'hosted genesis jobs must process one conversation turn at a time');
 });
 
+
+const hostedGenesisMicrovmLabContext = {
+	hostedGenesisMicrovmLabEnabled: 'true',
+	hostedGenesisMicrovmVpcId: 'vpc-0abc123def4567890',
+	hostedGenesisMicrovmPrivateSubnetId: 'subnet-0abc123def4567890',
+	hostedGenesisMicrovmPrivateSubnetAvailabilityZone: 'us-east-1a',
+	hostedGenesisMicrovmSecurityGroupId: 'sg-0abc123def4567890',
+	hostedGenesisMicrovmBaseImageArn: 'arn:aws:lambda:us-east-1:123456789012:microvm-image/base/apptheory-al2023',
+	hostedGenesisMicrovmBaseImageVersion: '1',
+	hostedGenesisMicrovmBuildRoleArn: 'arn:aws:iam::123456789012:role/apptheory-microvm-image-build-lab',
+	hostedGenesisMicrovmCodeArtifactUri: 's3://lesser-host-lab-artifacts/microvm/hosted-genesis.tar',
+	hostedGenesisMicrovmAuthorizerTokenSha256: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+};
+
+test('hosted genesis AppTheory MicroVM lab wiring is disabled by default', () => {
+	const template = synthTemplate();
+	assert.equal(findResources(template, 'AWS::Lambda::NetworkConnector').length, 0);
+	assert.equal(findResources(template, 'AWS::Lambda::MicrovmImage').length, 0);
+	assert.equal(
+		findResourceEntries(template, 'AWS::Lambda::Function').some(([, fn]) =>
+			String(fn.Properties?.FunctionName ?? '').includes('hosted-genesis-microvm')
+		),
+		false,
+		'MicroVM controller/authorizer Lambdas must not synthesize without explicit lab enablement',
+	);
+});
+
+test('hosted genesis AppTheory MicroVM lab wiring fails closed without required context', () => {
+	assert.throws(
+		() => synthTemplateWithContext({ hostedGenesisMicrovmLabEnabled: 'true' }),
+		/hostedGenesisMicrovmLabEnabled requires hostedGenesisMicrovmVpcId/,
+	);
+	assert.throws(
+		() => synthTemplateWithContext({ ...hostedGenesisMicrovmLabContext, hostedGenesisMicrovmAuthorizerTokenSha256: 'raw-token' }),
+		/hostedGenesisMicrovmAuthorizerTokenSha256 must be a sha256 digest/,
+	);
+	assert.throws(
+		() => synthTemplateForStage('live', hostedGenesisMicrovmLabContext),
+		/lab-only/,
+	);
+});
+
+test('hosted genesis AppTheory MicroVM lab wiring uses AppTheory constructs with protected routes', () => {
+	const template = synthTemplateWithContext(hostedGenesisMicrovmLabContext);
+	const connectors = findResourceEntries(template, 'AWS::Lambda::NetworkConnector');
+	const images = findResourceEntries(template, 'AWS::Lambda::MicrovmImage');
+	assert.equal(connectors.length, 1, 'expected AppTheoryMicrovmNetworkConnector L1 resource');
+	assert.equal(images.length, 1, 'expected AppTheoryMicrovmImage L1 resource');
+
+	const authorizerFn = findResourceEntries(template, 'AWS::Lambda::Function').find(([, fn]) =>
+		fn.Properties?.FunctionName === 'lesser-host-lab-hosted-genesis-microvm-authorizer'
+	);
+	assert.ok(authorizerFn, 'expected lab-only controller authorizer Lambda');
+	const authorizerEnv = lambdaEnvironment(authorizerFn[1].Properties ?? {});
+	assert.equal(authorizerEnv.STAGE, 'lab');
+	assert.equal(authorizerEnv.HOSTED_GENESIS_MICROVM_AUTH_TOKEN_SHA256, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+
+	const controllerFn = findResourceEntries(template, 'AWS::Lambda::Function').find(([, fn]) =>
+		fn.Properties?.FunctionName === 'lesser-host-lab-hosted-genesis-microvm-controller'
+	);
+	assert.ok(controllerFn, 'expected AppTheory-created controller Lambda');
+	const controllerEnv = lambdaEnvironment(controllerFn[1].Properties ?? {});
+	assert.equal(controllerEnv.STAGE, 'lab');
+	assert.equal(controllerEnv.APPTHEORY_MICROVM_CONTROLLER_AUTH_REQUIRED, 'true');
+	assert.equal(controllerEnv.APPTHEORY_MICROVM_CONTROLLER_AUTH_DEFAULT, 'deny');
+	assert.equal(controllerEnv.HOSTED_GENESIS_MICROVM_ADAPTER_FEEDBACK, 'delivery-bcb585616b891657');
+	assert.ok(controllerEnv.APPTHEORY_MICROVM_SESSION_REGISTRY_TABLE, 'expected AppTheory registry table env');
+
+	const routes = findResources(template, 'AWS::ApiGatewayV2::Route').filter((route) =>
+		String(route.RouteKey ?? '').includes('/microvms')
+	);
+	assert.deepEqual(
+		routes.map((route) => route.RouteKey).sort(),
+		[
+			'GET /microvms/{session_id}',
+			'GET /microvms/{session_id}/status',
+			'POST /microvms',
+			'POST /microvms/{session_id}/start',
+			'POST /microvms/{session_id}/stop',
+		].sort(),
+	);
+	for (const route of routes) {
+		assert.equal(route.AuthorizationType, 'CUSTOM', `route ${route.RouteKey} must use the fail-closed authorizer`);
+		assert.ok(route.AuthorizerId, `route ${route.RouteKey} must attach authorizer id`);
+	}
+
+	const sessionTable = findResourceEntries(template, 'AWS::DynamoDB::Table').find(([, table]) =>
+		JSON.stringify(table.Properties?.TableName).includes('hosted-genesis-microvm-sessions')
+	);
+	assert.ok(sessionTable, 'expected AppTheory controller-owned session registry table');
+	const ttl = sessionTable[1].Properties?.TimeToLiveSpecification as { AttributeName?: unknown; Enabled?: unknown } | undefined;
+	assert.deepEqual(ttl, { AttributeName: 'ttl', Enabled: true });
+});
+
 function hostedGenesisTemplateGuardPath(): string {
 	return join(process.cwd(), '..', 'scripts', 'validate-hosted-genesis-template.mjs');
 }

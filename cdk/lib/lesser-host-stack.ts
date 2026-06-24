@@ -1,7 +1,6 @@
 import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
-
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import { AppTheorySsrSite, AppTheorySsrSiteMode } from '@theory-cloud/apptheory-cdk';
@@ -10,18 +9,18 @@ import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import * as codebuild from 'aws-cdk-lib/aws-codebuild';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
-	import * as events from 'aws-cdk-lib/aws-events';
-	import * as targets from 'aws-cdk-lib/aws-events-targets';
-	import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
-	import * as iam from 'aws-cdk-lib/aws-iam';
-	import * as kms from 'aws-cdk-lib/aws-kms';
-	import * as lambda from 'aws-cdk-lib/aws-lambda';
-	import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
-	import * as logs from 'aws-cdk-lib/aws-logs';
+import * as events from 'aws-cdk-lib/aws-events';
+import * as targets from 'aws-cdk-lib/aws-events-targets';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import * as kms from 'aws-cdk-lib/aws-kms';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
+import * as logs from 'aws-cdk-lib/aws-logs';
 import * as route53 from 'aws-cdk-lib/aws-route53';
-		import * as route53Targets from 'aws-cdk-lib/aws-route53-targets';
-		import * as s3 from 'aws-cdk-lib/aws-s3';
-		import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
+import * as route53Targets from 'aws-cdk-lib/aws-route53-targets';
+import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
 import * as ses from 'aws-cdk-lib/aws-ses';
 import * as sesActions from 'aws-cdk-lib/aws-ses-actions';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
@@ -30,9 +29,9 @@ import * as apigw from 'aws-cdk-lib/aws-apigateway';
 import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import * as apigwv2Integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 import * as wafv2 from 'aws-cdk-lib/aws-wafv2';
-
 import { renderProvisionRunnerBuildCommands, renderProvisionRunnerPreBuildCommands } from './provision-runner-buildspec';
 import { CostTelemetryWorker } from './cost-telemetry-worker-construct';
+import { configureHostedGenesisMicrovmLab } from './hosted-genesis-microvm';
 import { INBOUND_EMAIL_RULE_SET_NAME } from './ses-inbound-rule-set-name';
 import { soulEmailInboundDomainFromContext } from './soul-email-inbound-domain';
 import {
@@ -690,6 +689,7 @@ export class LesserHostStack extends cdk.Stack {
 			{ memorySize: 512, timeoutSeconds: 30 },
 		);
 		const costTelemetry = new CostTelemetryWorker(this, 'CostTelemetry', { namePrefix, repoRoot, stage });
+		void configureHostedGenesisMicrovmLab(this, { stage, namePrefix, repoRoot, removalPolicy });
 		stateTable.grantReadWriteData(controlPlaneFn);
 		stateTable.grantReadWriteData(trustFn);
 		stateTable.grantReadWriteData(renderWorkerFn);
