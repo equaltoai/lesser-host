@@ -178,6 +178,7 @@ func assertX402IssueMinimized(t *testing.T, resp *apptheory.Response, out soulX4
 	}
 	if captured == nil {
 		t.Fatalf("expected captured grant")
+		return
 	}
 	if captured.PaymentEvidenceHash != sha256HexTrimmed("raw-payment-evidence") {
 		t.Fatalf("grant did not store payment evidence hash: %#v", captured)

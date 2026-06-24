@@ -134,6 +134,7 @@ func decodeEntries(t *testing.T, record *models.CostTelemetry) []ReconciledCostE
 	t.Helper()
 	if record == nil {
 		t.Fatal("record is nil")
+		return nil
 	}
 	var entries []ReconciledCostEntry
 	if err := json.Unmarshal([]byte(record.EntriesJSON), &entries); err != nil {
@@ -220,6 +221,7 @@ func TestCacheWriteMultiDaySplit(t *testing.T) {
 	d1 := store.recordByDate(testCacheDate1)
 	if d1 == nil {
 		t.Fatalf("no record for date %q", testCacheDate1)
+		return
 	}
 	if d1.DayCost != 3.00 {
 		t.Errorf("Day1 DayCost = %f, want 3.00", d1.DayCost)
@@ -233,6 +235,7 @@ func TestCacheWriteMultiDaySplit(t *testing.T) {
 	d2 := store.recordByDate(testCacheDate2)
 	if d2 == nil {
 		t.Fatalf("no record for date %q", testCacheDate2)
+		return
 	}
 	if d2.DayCost != 3.50 {
 		t.Errorf("Day2 DayCost = %f, want 3.50", d2.DayCost)
@@ -432,6 +435,7 @@ func TestCacheWriteTTLSet(t *testing.T) {
 	rec := store.recordByDate(testCacheDate1)
 	if rec == nil {
 		t.Fatalf("no record written")
+		return
 	}
 
 	// TTL must be non-zero.
@@ -588,6 +592,7 @@ func TestCacheWritePKShape(t *testing.T) {
 	rec := store.recordByDate(testCacheDate1)
 	if rec == nil {
 		t.Fatalf("no record written")
+		return
 	}
 
 	// PK must be COST_TELEMETRY#<slug>.

@@ -1,12 +1,13 @@
 # Hosted genesis durable conversation contract
 
-Project 49 locks the Host-owned durable async contract for Lesser-driven hosted/off-chain soul genesis. The observed
+Project 50 Milestone A extends the Project 49 contract by adding the Host-owned `HostedGenesisSession` DynamoDB source of truth. Project 49 locked the Host-owned durable async contract for Lesser-driven hosted/off-chain soul genesis. The observed
 failure this contract fixes was a transport-success response (`HTTP 200` plus a request id) while Host persisted the
 conversation as `in_progress` with no declarations and Lesser could not persist a `host_conversation_id`.
 
-This document is a contract artifact for Host, Lesser, Greater, and Sim. M1.1 only locks names and examples; it does
-not implement the M2 async worker/queue. M2 implements the Lesser instance-key JSON projection, hosted-genesis worker
-queue, idempotent retry semantics, and fail-closed finalize behavior described here.
+This document is a contract artifact for Host, Lesser, Greater, and Sim. Project 49 M1.1 locked names and examples.
+Project 50 Milestone A implements the Host-owned source-of-truth model/repository foundation; the full Lesser
+instance-key runtime projection, hosted-genesis worker queue, idempotent debit semantics, and fail-closed finalize wiring
+remain follow-on implementation slices.
 
 ## Authoritative Lesser route family
 
@@ -31,6 +32,42 @@ control-plane session tokens.
 
 SSE may remain available for portal/native Host UI routes, but SSE is not the authoritative completion mechanism for
 the Lesser instance-key path.
+
+## Host-owned source-of-truth row
+
+Milestone A introduces `HostedGenesisSession` as the Host DynamoDB/TableTheory business record for hosted/off-chain
+genesis. AppTheory MicroVM session registry, memory, disk, and lifecycle data are execution/cache state only; they are
+reconstructible from the Host row and never become the user-visible source of truth.
+
+Key shape and tenancy rules:
+
+- primary key: `PK=HOSTED_GENESIS#INSTANCE#{instance_slug}`, `SK=SESSION#{conversation_id}`
+- registration and agent GSIs also include `instance_slug` so lookups cannot cross Managed instance boundaries
+- writes after create use TableTheory optimistic-lock `version` checks; stale expected versions fail closed instead of
+  overwriting a concurrent state transition
+- status updates also carry an expected current status condition, so an otherwise current `version` cannot skip the
+  locked Host state-machine transition table
+- `created` is valid only for pre-turn Host rows and still collapses to `in_progress` on Lesser instance-key reads
+- accepted turns are tracked in a compact `turn_ledger` of turn ids, idempotency keys, request hashes, checkpoint refs,
+  and billing ledger refs only
+
+Durable fields are ids, bounded status, and checkpoint references only. The model does not carry raw prompts, raw
+message lists, provider keys, Instance API keys, wallet signatures, signing material, SSM values, AWS credentials,
+provider secrets, MicroVM endpoint tokens, or browser Host credentials. Declaration publish/finalize readiness is gated
+by `status=declaration_ready` plus a valid declaration checkpoint (`declaration_id`, `declaration_hash`,
+`checkpoint_ref`, registration/conversation/agent ids, message count, request id, and produced timestamp). Typed
+`failed` recovery actions are server-authored and limited to the locked recovery enum below.
+
+### Idempotency ledger semantics
+
+The durable `HostedGenesisSession` turn ledger is the Host source of truth for retry semantics. For a caller-provided
+`idempotency_key`, Host records the request hash and accepted `turn_id` once. A retry with the same idempotency key and
+same request hash replays the existing turn and must not append another user turn, advance `message_count` or
+`latest_turn_id`, enqueue duplicate user-visible work, or debit credits again. A retry with the same idempotency key and
+a different request hash fails closed as an idempotency conflict.
+
+SQS, AppTheory MicroVM registry/cache state, and HTTP/SSE transport state are reconstructible execution details. They do
+not determine user-visible progress, retry, or billing state.
 
 ## HostConversation envelope
 
@@ -95,5 +132,8 @@ should not wait for an explicit local `created` projection before persisting `ho
    `restart_soul_bootstrap`, or `operator_action`.
 6. Idempotency is cross-boundary. `idempotency_key` and `correlation_id` are accepted on POST and echoed through
    `trace_ids` when available; callers must keep them client-safe.
-7. Human-visible evidence is compact. Responses carry ids, status, typed recovery, and declaration summary/evidence; they
+7. Legacy migration is deterministic. Existing `SOUL_REG` / `MINT_CONVERSATION` rows are dry-run planned into
+   `HostedGenesisSession` seeds without importing raw transcripts; ambiguous active rows become typed recovery states
+   rather than deriving progress from SQS.
+8. Human-visible evidence is compact. Responses carry ids, status, typed recovery, and declaration summary/evidence; they
    do not expose raw Host credentials or require raw LLM transcripts.

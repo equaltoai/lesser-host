@@ -326,6 +326,7 @@ func TestNewServerDefaultsAndRegister(t *testing.T) {
 	s := NewServer(config.Config{}, store, nil, nil)
 	if s == nil {
 		t.Fatal("expected server")
+		return
 	}
 	if s.store != store || s.now == nil || s.fetchInstanceKeyPlaintext == nil || s.deliverNotification == nil || s.ssmGetParameter == nil || s.migaduSendSMTP == nil {
 		t.Fatalf("expected default dependencies to be populated: %#v", s)

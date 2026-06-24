@@ -68,6 +68,7 @@ func TestParseAndValidateMintConversationDeclarations_RejectsInvalid(t *testing.
 	_, appErr := parseAndValidateMintConversationDeclarations(raw)
 	if appErr == nil {
 		t.Fatalf("expected error")
+		return
 	}
 	if appErr.Code != appErrCodeBadRequest {
 		t.Fatalf("expected %s, got %s", appErrCodeBadRequest, appErr.Code)

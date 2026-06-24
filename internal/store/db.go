@@ -26,6 +26,7 @@ func LambdaInit() (DB, error) {
 		&models.CreditPurchase{},
 		&models.Domain{},
 		&models.ExternalInstanceRegistration{},
+		&models.HostedGenesisSession{},
 		&models.SetupSession{},
 		&models.TipHostRegistration{},
 		&models.TipHostState{},

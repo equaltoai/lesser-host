@@ -1583,9 +1583,11 @@ func requireManagedENSMaterial(t *testing.T, channel *models.SoulAgentChannel, r
 	t.Helper()
 	if channel == nil {
 		t.Fatalf("expected managed ENS channel")
+		return
 	}
 	if resolution == nil {
 		t.Fatalf("expected managed ENS resolution")
+		return
 	}
 	const wantENS = "agent-bot.inst1.lessersoul.eth"
 	if channel.Identifier != wantENS || channel.ChannelType != models.SoulChannelTypeENS || !channel.Verified || channel.Status != models.SoulChannelStatusActive {

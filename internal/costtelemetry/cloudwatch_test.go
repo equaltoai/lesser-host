@@ -692,6 +692,7 @@ func TestNewCloudWatchCollector_ReturnsInterface(t *testing.T) {
 	}
 	if report == nil {
 		t.Fatal("expected non-nil report")
+		return
 	}
 	if report.Slug != testSlug {
 		t.Fatalf("expected slug 'demo', got %q", report.Slug)

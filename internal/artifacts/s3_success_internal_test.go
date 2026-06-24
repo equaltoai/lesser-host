@@ -161,6 +161,7 @@ func TestNewWithClient_NilClient_ReturnsStore(t *testing.T) {
 	st := NewWithClient(" bucket ", nil)
 	if st == nil {
 		t.Fatalf("expected store")
+		return
 	}
 	if st.bucket != "bucket" {
 		t.Fatalf("expected trimmed bucket, got %q", st.bucket)
