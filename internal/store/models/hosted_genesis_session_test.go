@@ -42,12 +42,20 @@ func TestHostedGenesisSessionRejectsUngatedTerminalStates(t *testing.T) {
 	ready := validHostedGenesisSessionModel()
 	ready.Status = string(hostedgenesis.StatusDeclarationReady)
 	ready.DeclarationCheckpoint = nil
-	require.ErrorIs(t, ready.BeforeCreate(), hostedgenesis.ErrInvalidDeclarationGate)
+	require.ErrorIs(t, ready.BeforeCreate(), hostedgenesis.ErrInvalidPublishGate)
 
 	failed := validHostedGenesisSessionModel()
 	failed.Status = string(hostedgenesis.StatusFailed)
 	failed.Failure = nil
 	require.ErrorIs(t, failed.BeforeCreate(), hostedgenesis.ErrInvalidFailureRecovery)
+}
+
+func TestHostedGenesisSessionRejectsInvalidTurnLedger(t *testing.T) {
+	t.Parallel()
+
+	session := validHostedGenesisSessionModel()
+	session.TurnLedger = append(session.TurnLedger, session.TurnLedger[0])
+	require.ErrorIs(t, session.BeforeCreate(), hostedgenesis.ErrDuplicateTurnID)
 }
 
 func TestHostedGenesisSessionModelHasNoSecretBearingFields(t *testing.T) {
@@ -94,16 +102,64 @@ func TestHostedGenesisSessionProjectionInputIsCompact(t *testing.T) {
 	require.NotContains(t, jsonText, "provider_secret")
 }
 
+func TestHostedGenesisSessionFromMigrationSeed(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
+	seed := hostedgenesis.SessionSeed{
+		InstanceSlug:   " Demo ",
+		RegistrationID: "reg_123",
+		AgentID:        "0x2222222222222222222222222222222222222222222222222222222222222222",
+		ConversationID: "conv_123",
+		Status:         hostedgenesis.StatusFailed,
+		LatestTurnID:   "turn_123",
+		MessageCount:   1,
+		TurnLedger: []hostedgenesis.TurnLedgerEntry{{
+			TurnID:           "turn_123",
+			IdempotencyKey:   "idem_123",
+			RequestHash:      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			BillingLedgerRef: "legacy-mint-conversation:conv_123",
+			ChargedCredits:   1,
+			MessageCount:     1,
+			AcceptedAt:       now,
+		}},
+		Failure: &hostedgenesis.Failure{
+			Code:      hostedgenesis.FailureCodeAssistantTurnFailed,
+			Message:   "Assistant turn did not reach declaration extraction.",
+			Retryable: true,
+			Recovery:  hostedgenesis.Recovery{Action: hostedgenesis.RecoveryActionRetrySameStep, MaxAttempts: 3, RetryAfterSeconds: 30},
+		},
+		RequestID: "req_123",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	session := NewHostedGenesisSessionFromSeed(seed)
+	require.NoError(t, session.BeforeCreate())
+	require.Equal(t, "demo", session.InstanceSlug)
+	require.Equal(t, string(hostedgenesis.StatusFailed), session.Status)
+	require.Len(t, session.TurnLedger, 1)
+}
+
 func validHostedGenesisSessionModel() *HostedGenesisSession {
 	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
 	return &HostedGenesisSession{
-		InstanceSlug:       " Demo ",
-		RegistrationID:     "reg_123",
-		AgentID:            " 0x2222222222222222222222222222222222222222222222222222222222222222 ",
-		ConversationID:     "conv_123",
-		Status:             string(hostedgenesis.StatusInProgress),
-		LatestTurnID:       "turn_123",
-		MessageCount:       1,
+		InstanceSlug:   " Demo ",
+		RegistrationID: "reg_123",
+		AgentID:        " 0x2222222222222222222222222222222222222222222222222222222222222222 ",
+		ConversationID: "conv_123",
+		Status:         string(hostedgenesis.StatusInProgress),
+		LatestTurnID:   "turn_123",
+		MessageCount:   1,
+		TurnLedger: []hostedgenesis.TurnLedgerEntry{{
+			TurnID:           "turn_123",
+			IdempotencyKey:   "idem_123",
+			RequestHash:      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			BillingLedgerRef: "usage:mint:conv_123:turn_123",
+			ChargedCredits:   1,
+			MessageCount:     1,
+			AcceptedAt:       now,
+		}},
 		InputCheckpointRef: "checkpoint://hosted-genesis/input_123",
 		ExecutionStateRef:  "microvm-session:conv_123",
 		MicroVMExecutionID: "microvm_123",

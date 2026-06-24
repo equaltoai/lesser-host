@@ -38,8 +38,9 @@ type HostedGenesisSession struct {
 	ConversationID string `theorydb:"attr:conversationId" json:"conversation_id"`
 	Status         string `theorydb:"attr:status" json:"status"`
 
-	LatestTurnID string `theorydb:"attr:latestTurnId" json:"latest_turn_id,omitempty"`
-	MessageCount int    `theorydb:"attr:messageCount" json:"message_count"`
+	LatestTurnID string                          `theorydb:"attr:latestTurnId" json:"latest_turn_id,omitempty"`
+	MessageCount int                             `theorydb:"attr:messageCount" json:"message_count"`
+	TurnLedger   []hostedgenesis.TurnLedgerEntry `theorydb:"attr:turnLedger" json:"turn_ledger,omitempty"`
 
 	// Checkpoint references are ids only. Raw prompts, message lists, transcripts,
 	// provider credentials, Instance API keys, wallet signatures, SSM values, AWS
@@ -127,11 +128,14 @@ func (s *HostedGenesisSession) validateAndUpdateKeys() error {
 		return fmt.Errorf("status is invalid")
 	}
 	if s.Status == string(hostedgenesis.StatusDeclarationReady) {
-		if err := hostedgenesis.CanFinalize(hostedgenesis.Status(s.Status), s.DeclarationCheckpoint); err != nil {
+		if err := hostedgenesis.CanPublish(hostedgenesis.PublishGateInput{
+			Status:                hostedgenesis.Status(s.Status),
+			RegistrationID:        s.RegistrationID,
+			ConversationID:        s.ConversationID,
+			AgentID:               s.AgentID,
+			DeclarationCheckpoint: s.DeclarationCheckpoint,
+		}); err != nil {
 			return err
-		}
-		if !s.declarationCheckpointMatchesSession() {
-			return hostedgenesis.ErrInvalidDeclarationGate
 		}
 	}
 	if s.Status == string(hostedgenesis.StatusFailed) {
@@ -142,16 +146,27 @@ func (s *HostedGenesisSession) validateAndUpdateKeys() error {
 			return err
 		}
 	}
+	if err := s.validateTurnLedger(); err != nil {
+		return err
+	}
 	return nil
 }
 
-func (s *HostedGenesisSession) declarationCheckpointMatchesSession() bool {
-	if s == nil || s.DeclarationCheckpoint == nil {
-		return false
+func (s *HostedGenesisSession) validateTurnLedger() error {
+	if len(s.TurnLedger) == 0 {
+		return nil
 	}
-	return strings.TrimSpace(s.DeclarationCheckpoint.RegistrationID) == s.RegistrationID &&
-		strings.TrimSpace(s.DeclarationCheckpoint.ConversationID) == s.ConversationID &&
-		strings.ToLower(strings.TrimSpace(s.DeclarationCheckpoint.AgentID)) == s.AgentID
+	if err := hostedgenesis.ValidateTurnLedger(s.TurnLedger); err != nil {
+		return err
+	}
+	last := s.TurnLedger[len(s.TurnLedger)-1].Normalize()
+	if s.LatestTurnID != "" && s.LatestTurnID != last.TurnID {
+		return hostedgenesis.ErrInvalidTurnLedger
+	}
+	if s.MessageCount < last.MessageCount {
+		return hostedgenesis.ErrInvalidTurnLedger
+	}
+	return nil
 }
 
 // ToProjectionInput converts the store model to a compact hostedgenesis
@@ -211,6 +226,7 @@ func HostedGenesisSessionUpdateFields() []string {
 		"Status",
 		"LatestTurnID",
 		"MessageCount",
+		"TurnLedger",
 		"InputCheckpointRef",
 		"AssistantCheckpointRef",
 		"ExecutionStateRef",
@@ -221,6 +237,28 @@ func HostedGenesisSessionUpdateFields() []string {
 		"RequestID",
 		"UpdatedAt",
 		"CompletedAt",
+	}
+}
+
+// NewHostedGenesisSessionFromSeed converts a store-agnostic migration/runtime
+// seed into the TableTheory model without importing raw transcript fields.
+func NewHostedGenesisSessionFromSeed(seed hostedgenesis.SessionSeed) *HostedGenesisSession {
+	return &HostedGenesisSession{
+		InstanceSlug:          seed.InstanceSlug,
+		RegistrationID:        seed.RegistrationID,
+		AgentID:               seed.AgentID,
+		ConversationID:        seed.ConversationID,
+		Status:                string(seed.Status),
+		LatestTurnID:          seed.LatestTurnID,
+		MessageCount:          seed.MessageCount,
+		TurnLedger:            append([]hostedgenesis.TurnLedgerEntry(nil), seed.TurnLedger...),
+		DeclarationCheckpoint: seed.DeclarationCheckpoint,
+		Failure:               seed.Failure,
+		TraceIDs:              seed.TraceIDs,
+		RequestID:             seed.RequestID,
+		CreatedAt:             seed.CreatedAt,
+		UpdatedAt:             seed.UpdatedAt,
+		CompletedAt:           seed.CompletedAt,
 	}
 }
 

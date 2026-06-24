@@ -9,6 +9,7 @@ import (
 	"github.com/theory-cloud/tabletheory/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
+	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
@@ -51,16 +52,24 @@ func (s *Store) CreateHostedGenesisSession(ctx context.Context, item *models.Hos
 }
 
 // UpdateHostedGenesisSession updates a durable hosted-genesis source-of-truth
-// row under an explicit optimistic-lock version. A stale expectedVersion must
-// fail as a transaction condition error rather than silently overwriting state.
-func (s *Store) UpdateHostedGenesisSession(ctx context.Context, item *models.HostedGenesisSession, expectedVersion int64) error {
+// row under an explicit optimistic-lock version and expected current status. A
+// stale expectedVersion or expectedStatus must fail as a transaction condition
+// error rather than silently overwriting state.
+func (s *Store) UpdateHostedGenesisSession(ctx context.Context, item *models.HostedGenesisSession, expectedVersion int64, expectedStatus hostedgenesis.Status) error {
 	if s == nil || s.DB == nil || item == nil {
 		return theoryErrors.ErrItemNotFound
 	}
 	if expectedVersion < 0 {
 		return fmt.Errorf("expected version must be non-negative")
 	}
+	expectedStatus = hostedgenesis.NormalizeStatus(string(expectedStatus))
+	if !hostedgenesis.IsAllowedStatus(expectedStatus) {
+		return hostedgenesis.ErrInvalidStatusTransition
+	}
 	if err := item.BeforeUpdate(); err != nil {
+		return err
+	}
+	if err := hostedgenesis.ValidateTransition(expectedStatus, hostedgenesis.Status(item.Status)); err != nil {
 		return err
 	}
 	return s.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
@@ -68,6 +77,7 @@ func (s *Store) UpdateHostedGenesisSession(ctx context.Context, item *models.Hos
 			ub.Set("Status", item.Status)
 			ub.Set("LatestTurnID", item.LatestTurnID)
 			ub.Set("MessageCount", item.MessageCount)
+			ub.Set("TurnLedger", item.TurnLedger)
 			ub.Set("InputCheckpointRef", item.InputCheckpointRef)
 			ub.Set("AssistantCheckpointRef", item.AssistantCheckpointRef)
 			ub.Set("ExecutionStateRef", item.ExecutionStateRef)
@@ -80,7 +90,7 @@ func (s *Store) UpdateHostedGenesisSession(ctx context.Context, item *models.Hos
 			ub.Set("CompletedAt", item.CompletedAt)
 			ub.Add("Version", int64(1))
 			return nil
-		}, tabletheory.IfExists(), tabletheory.AtVersion(expectedVersion))
+		}, tabletheory.IfExists(), tabletheory.AtVersion(expectedVersion), tabletheory.Condition("Status", "=", string(expectedStatus)))
 		return nil
 	})
 }

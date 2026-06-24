@@ -45,7 +45,11 @@ Key shape and tenancy rules:
 - registration and agent GSIs also include `instance_slug` so lookups cannot cross Managed instance boundaries
 - writes after create use TableTheory optimistic-lock `version` checks; stale expected versions fail closed instead of
   overwriting a concurrent state transition
+- status updates also carry an expected current status condition, so an otherwise current `version` cannot skip the
+  locked Host state-machine transition table
 - `created` is valid only for pre-turn Host rows and still collapses to `in_progress` on Lesser instance-key reads
+- accepted turns are tracked in a compact `turn_ledger` of turn ids, idempotency keys, request hashes, checkpoint refs,
+  and billing ledger refs only
 
 Durable fields are ids, bounded status, and checkpoint references only. The model does not carry raw prompts, raw
 message lists, provider keys, Instance API keys, wallet signatures, signing material, SSM values, AWS credentials,
@@ -53,6 +57,17 @@ provider secrets, MicroVM endpoint tokens, or browser Host credentials. Declarat
 by `status=declaration_ready` plus a valid declaration checkpoint (`declaration_id`, `declaration_hash`,
 `checkpoint_ref`, registration/conversation/agent ids, message count, request id, and produced timestamp). Typed
 `failed` recovery actions are server-authored and limited to the locked recovery enum below.
+
+### Idempotency ledger semantics
+
+The durable `HostedGenesisSession` turn ledger is the Host source of truth for retry semantics. For a caller-provided
+`idempotency_key`, Host records the request hash and accepted `turn_id` once. A retry with the same idempotency key and
+same request hash replays the existing turn and must not append another user turn, advance `message_count` or
+`latest_turn_id`, enqueue duplicate user-visible work, or debit credits again. A retry with the same idempotency key and
+a different request hash fails closed as an idempotency conflict.
+
+SQS, AppTheory MicroVM registry/cache state, and HTTP/SSE transport state are reconstructible execution details. They do
+not determine user-visible progress, retry, or billing state.
 
 ## HostConversation envelope
 
@@ -117,5 +132,8 @@ should not wait for an explicit local `created` projection before persisting `ho
    `restart_soul_bootstrap`, or `operator_action`.
 6. Idempotency is cross-boundary. `idempotency_key` and `correlation_id` are accepted on POST and echoed through
    `trace_ids` when available; callers must keep them client-safe.
-7. Human-visible evidence is compact. Responses carry ids, status, typed recovery, and declaration summary/evidence; they
+7. Legacy migration is deterministic. Existing `SOUL_REG` / `MINT_CONVERSATION` rows are dry-run planned into
+   `HostedGenesisSession` seeds without importing raw transcripts; ambiguous active rows become typed recovery states
+   rather than deriving progress from SQS.
+8. Human-visible evidence is compact. Responses carry ids, status, typed recovery, and declaration summary/evidence; they
    do not expose raw Host credentials or require raw LLM transcripts.

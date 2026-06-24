@@ -1,0 +1,22 @@
+{
+  "instance_slug": "Demo",
+  "registration_id": "reg_legacy",
+  "agent_id": "0x2222222222222222222222222222222222222222222222222222222222222222",
+  "conversation_id": "conv_legacy_ready",
+  "status": "completed",
+  "latest_turn_id": "turn_legacy_assistant",
+  "message_count": 2,
+  "model": "openai:gpt-5.4",
+  "request_id": "req_legacy_ready",
+  "correlation_id": "corr_legacy_ready",
+  "idempotency_key": "idem_legacy_ready",
+  "request_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "produced_declarations_present": true,
+  "produced_declarations_valid": true,
+  "declaration_id": "decl_legacy_ready",
+  "declaration_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "declaration_checkpoint_ref": "checkpoint://hosted-genesis/decl_legacy_ready",
+  "created_at": "2026-06-24T12:00:00Z",
+  "updated_at": "2026-06-24T12:04:00Z",
+  "completed_at": "2026-06-24T12:04:00Z"
+}

@@ -79,15 +79,18 @@ func TestStore_UpdateHostedGenesisSessionUsesExpectedVersion(t *testing.T) {
 		session, ok := item.(*models.HostedGenesisSession)
 		return ok && session.PK == "HOSTED_GENESIS#INSTANCE#demo" && session.SK == "SESSION#conv_123"
 	}), mock.Anything, mock.MatchedBy(func(conditions []core.TransactCondition) bool {
-		return hasConditionKind(conditions, core.TransactConditionKindPrimaryKeyExists) && hasVersionCondition(conditions, 7)
+		return hasConditionKind(conditions, core.TransactConditionKindPrimaryKeyExists) &&
+			hasVersionCondition(conditions, 7) &&
+			hasStatusCondition(conditions, hostedgenesis.StatusInProgress)
 	})).Return(tx).Once()
 
 	st := New(db)
 	session := validStoreHostedGenesisSession()
 	session.Status = string(hostedgenesis.StatusAssistantTurnReady)
-	require.NoError(t, st.UpdateHostedGenesisSession(ctx, session, 7))
+	require.NoError(t, st.UpdateHostedGenesisSession(ctx, session, 7, hostedgenesis.StatusInProgress))
 	require.Equal(t, int64(1), ub.adds["Version"])
 	require.Equal(t, string(hostedgenesis.StatusAssistantTurnReady), ub.sets["Status"])
+	require.Len(t, ub.sets["TurnLedger"], 1)
 	require.NotContains(t, ub.sets, "Version")
 
 	db.AssertExpectations(t)
@@ -102,21 +105,46 @@ func TestStore_UpdateHostedGenesisSessionPropagatesVersionConflict(t *testing.T)
 	db.On("TransactWrite", ctx, mock.Anything).Return(theoryErrors.ErrConditionFailed).Once()
 
 	st := New(db)
-	err := st.UpdateHostedGenesisSession(ctx, validStoreHostedGenesisSession(), 3)
+	err := st.UpdateHostedGenesisSession(ctx, validStoreHostedGenesisSession(), 3, hostedgenesis.StatusInProgress)
 	require.ErrorIs(t, err, theoryErrors.ErrConditionFailed)
+	db.AssertExpectations(t)
+}
+
+func TestStore_UpdateHostedGenesisSessionRejectsIllegalTransitionBeforeWrite(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := ttmocks.NewMockExtendedDBStrict()
+	st := New(db)
+	session := validStoreHostedGenesisSession()
+	session.Status = string(hostedgenesis.StatusDeclarationReady)
+	checkpoint := validStoreDeclarationCheckpoint()
+	session.DeclarationCheckpoint = &checkpoint
+
+	err := st.UpdateHostedGenesisSession(ctx, session, 7, hostedgenesis.StatusCreated)
+	require.ErrorIs(t, err, hostedgenesis.ErrInvalidStatusTransition)
 	db.AssertExpectations(t)
 }
 
 func validStoreHostedGenesisSession() *models.HostedGenesisSession {
 	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
 	session := &models.HostedGenesisSession{
-		InstanceSlug:       " Demo ",
-		RegistrationID:     "reg_123",
-		AgentID:            "0x2222222222222222222222222222222222222222222222222222222222222222",
-		ConversationID:     "conv_123",
-		Status:             string(hostedgenesis.StatusInProgress),
-		LatestTurnID:       "turn_123",
-		MessageCount:       1,
+		InstanceSlug:   " Demo ",
+		RegistrationID: "reg_123",
+		AgentID:        "0x2222222222222222222222222222222222222222222222222222222222222222",
+		ConversationID: "conv_123",
+		Status:         string(hostedgenesis.StatusInProgress),
+		LatestTurnID:   "turn_123",
+		MessageCount:   1,
+		TurnLedger: []hostedgenesis.TurnLedgerEntry{{
+			TurnID:           "turn_123",
+			IdempotencyKey:   "idem_123",
+			RequestHash:      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			BillingLedgerRef: "usage:mint:conv_123:turn_123",
+			ChargedCredits:   1,
+			MessageCount:     1,
+			AcceptedAt:       now,
+		}},
 		InputCheckpointRef: "checkpoint://hosted-genesis/input_123",
 		RequestID:          "req_123",
 		TraceIDs:           &hostedgenesis.TraceIDs{HostRequestID: "req_123", CorrelationID: "corr_123", IdempotencyKey: "idem_123"},
@@ -125,6 +153,21 @@ func validStoreHostedGenesisSession() *models.HostedGenesisSession {
 	}
 	_ = session.BeforeCreate()
 	return session
+}
+
+func validStoreDeclarationCheckpoint() hostedgenesis.DeclarationCheckpoint {
+	return hostedgenesis.DeclarationCheckpoint{
+		DeclarationID:   "decl_123",
+		DeclarationHash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		CheckpointRef:   "checkpoint://hosted-genesis/decl_123",
+		ProducedAt:      time.Date(2026, 6, 24, 12, 3, 0, 0, time.UTC),
+		RegistrationID:  "reg_123",
+		ConversationID:  "conv_123",
+		AgentID:         "0x2222222222222222222222222222222222222222222222222222222222222222",
+		MessageCount:    2,
+		Model:           "openai:gpt-5.4",
+		RequestID:       "req_123",
+	}
 }
 
 func hasConditionKind(conditions []core.TransactCondition, kind core.TransactConditionKind) bool {
@@ -139,6 +182,18 @@ func hasConditionKind(conditions []core.TransactCondition, kind core.TransactCon
 func hasVersionCondition(conditions []core.TransactCondition, version int64) bool {
 	for _, condition := range conditions {
 		if condition.Kind == core.TransactConditionKindVersionEquals && condition.Value == version {
+			return true
+		}
+	}
+	return false
+}
+
+func hasStatusCondition(conditions []core.TransactCondition, status hostedgenesis.Status) bool {
+	for _, condition := range conditions {
+		if condition.Kind == core.TransactConditionKindField &&
+			condition.Field == "Status" &&
+			condition.Operator == "=" &&
+			condition.Value == string(status) {
 			return true
 		}
 	}

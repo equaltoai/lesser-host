@@ -72,6 +72,35 @@ func TestFinalizeRequiresDeclarationReadyCheckpoint(t *testing.T) {
 	require.ErrorIs(t, CanFinalize(StatusDeclarationReady, &checkpoint), ErrInvalidDeclarationGate)
 }
 
+func TestPublishGateBindsDeclarationCheckpointToSession(t *testing.T) {
+	t.Parallel()
+
+	checkpoint := validDeclarationCheckpoint()
+	require.NoError(t, CanPublish(PublishGateInput{
+		Status:                StatusDeclarationReady,
+		RegistrationID:        checkpoint.RegistrationID,
+		ConversationID:        checkpoint.ConversationID,
+		AgentID:               checkpoint.AgentID,
+		DeclarationCheckpoint: &checkpoint,
+	}))
+
+	require.ErrorIs(t, CanPublish(PublishGateInput{
+		Status:                StatusInProgress,
+		RegistrationID:        checkpoint.RegistrationID,
+		ConversationID:        checkpoint.ConversationID,
+		AgentID:               checkpoint.AgentID,
+		DeclarationCheckpoint: &checkpoint,
+	}), ErrInvalidPublishGate)
+
+	require.ErrorIs(t, CanPublish(PublishGateInput{
+		Status:                StatusDeclarationReady,
+		RegistrationID:        checkpoint.RegistrationID,
+		ConversationID:        "conv_other",
+		AgentID:               checkpoint.AgentID,
+		DeclarationCheckpoint: &checkpoint,
+	}), ErrInvalidPublishGate)
+}
+
 func TestFailedRecoveryActionsAreServerAuthoredAndBounded(t *testing.T) {
 	t.Parallel()
 

@@ -253,10 +253,19 @@ func isAllowedRecoveryAction(action RecoveryAction) bool {
 
 // CanFinalize enforces the declaration_ready gate used before publish/finalize.
 func CanFinalize(status Status, checkpoint *DeclarationCheckpoint) error {
-	if NormalizeStatus(string(status)) != StatusDeclarationReady || checkpoint == nil {
+	if checkpoint == nil {
 		return ErrInvalidDeclarationGate
 	}
-	return checkpoint.Validate()
+	if err := CanPublish(PublishGateInput{
+		Status:                status,
+		RegistrationID:        checkpoint.RegistrationID,
+		ConversationID:        checkpoint.ConversationID,
+		AgentID:               checkpoint.AgentID,
+		DeclarationCheckpoint: checkpoint,
+	}); err != nil {
+		return ErrInvalidDeclarationGate
+	}
+	return nil
 }
 
 // ConversationProjection is the compact session view safe for Host/Lesser
