@@ -54,7 +54,7 @@ func IsAllowedStatus(status Status) bool {
 }
 
 // ValidateTransition enforces the Host-owned state machine foundation. It is
-// intentionally stricter than transport lifecycles: MicroVM create/start/status
+// intentionally stricter than transport lifecycles: MicroVM run/get/suspend/resume/terminate
 // events do not advance user-visible state unless Host writes one of these
 // legal transitions to DynamoDB.
 func ValidateTransition(from Status, to Status) error {

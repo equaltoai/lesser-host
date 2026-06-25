@@ -10,6 +10,7 @@ import {
   AppTheoryMicrovmNetworkProtocol,
 } from "@theory-cloud/apptheory-cdk";
 import * as cdk from "aws-cdk-lib";
+import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import type { Construct } from "constructs";
@@ -37,6 +38,7 @@ export interface HostedGenesisMicrovmLabProps {
   readonly namePrefix: string;
   readonly repoRoot: string;
   readonly removalPolicy: cdk.RemovalPolicy;
+  readonly stateTable: dynamodb.ITable;
 }
 
 export interface HostedGenesisMicrovmLabResult {
@@ -96,6 +98,14 @@ export function configureHostedGenesisMicrovmLab(
         Boundary: HOSTED_GENESIS_MICROVM_NAMESPACE,
       },
     },
+  );
+  const ingressConnector = AppTheoryMicrovmNetworkConnector.allIngress(
+    scope,
+    "HostedGenesisMicrovmIngressConnector",
+  );
+  const shellIngressConnector = AppTheoryMicrovmNetworkConnector.shellIngress(
+    scope,
+    "HostedGenesisMicrovmShellIngressConnector",
   );
 
   const microvmImage = new AppTheoryMicrovmImage(
@@ -197,7 +207,9 @@ export function configureHostedGenesisMicrovmLab(
           HOSTED_GENESIS_MICROVM_NAMESPACE: HOSTED_GENESIS_MICROVM_NAMESPACE,
           HOSTED_GENESIS_MICROVM_SOURCE_OF_TRUTH:
             HOSTED_GENESIS_MICROVM_SOURCE_OF_TRUTH,
-          HOSTED_GENESIS_MICROVM_ADAPTER_FEEDBACK: "delivery-bcb585616b891657",
+          HOSTED_GENESIS_MICROVM_AUTH_TOKEN_SHA256:
+            cfg.authorizerTokenSha256,
+          STATE_TABLE_NAME: props.stateTable.tableName,
         },
       },
       authorizer,
@@ -205,7 +217,9 @@ export function configureHostedGenesisMicrovmLab(
       authorizerHeaderName: "Authorization",
       authorizerCacheTtl: cdk.Duration.seconds(0),
       microvmImage,
+      ingressNetworkConnectors: [ingressConnector],
       egressNetworkConnectors: [egressConnector],
+      shellIngressNetworkConnector: shellIngressConnector,
       sessionTableName: `${props.namePrefix}-hosted-genesis-microvm-sessions`,
       sessionTableRemovalPolicy: props.removalPolicy,
       sessionTableDeletionProtection: false,
@@ -218,6 +232,7 @@ export function configureHostedGenesisMicrovmLab(
       },
     },
   );
+  props.stateTable.grantReadData(controller.controllerFunction);
 
   new cdk.CfnOutput(scope, "HostedGenesisMicrovmControllerEndpoint", {
     value: controller.endpoint,

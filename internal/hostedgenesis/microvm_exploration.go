@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	// MicroVMNamespace is the AppTheory MicroVM namespace Host will use for
+	// MicroVMNamespace is the AppTheory MicroVM namespace Host uses for
 	// hosted-genesis execution sessions. The durable Host HostedGenesisSession
 	// record remains the source of truth; this namespace scopes execution/cache
 	// records only.
@@ -19,7 +19,7 @@ const (
 	MicroVMSourceOfTruth = "host-dynamodb-hosted-genesis-session"
 
 	// MicroVMControllerID is the stable Host controller id used in AppTheory
-	// session records for non-deploying contract tests and future controller code.
+	// session records for non-deploying contract tests and controller code.
 	MicroVMControllerID = "lesser-host-hosted-genesis"
 
 	// MicroVMAuthSubject is a sanitized service subject. It is not a bearer token,
@@ -81,15 +81,17 @@ func (b MicroVMSessionBinding) Metadata() map[string]string {
 	return metadata
 }
 
-// NewMicroVMCreateRequest builds the AppTheory v1.14 MicroVM create envelope
-// Host would use after a HostedGenesisSession row has been committed in
-// DynamoDB. The function is a compile-safe exploration scaffold: it does not
-// call AWS, create a MicroVM, enqueue SQS, or mutate Host state.
-func NewMicroVMCreateRequest(
+// NewMicroVMRunRequest builds the AppTheory v1.15 M16 MicroVM run envelope Host
+// uses after a HostedGenesisSession row has been committed in DynamoDB. The
+// function is compile-safe and does not call AWS, enqueue SQS, or mutate Host
+// state.
+func NewMicroVMRunRequest(
 	requestID string,
 	binding MicroVMSessionBinding,
 	imageRef string,
 	networkConnectorRef string,
+	ingressNetworkConnectorRefs []string,
+	egressNetworkConnectorRefs []string,
 ) (runtimemicrovm.ControllerRequest, error) {
 	requestID = strings.TrimSpace(requestID)
 	imageRef = strings.TrimSpace(imageRef)
@@ -101,24 +103,26 @@ func NewMicroVMCreateRequest(
 		return runtimemicrovm.ControllerRequest{}, err
 	}
 	return runtimemicrovm.ControllerRequest{
-		Command:             runtimemicrovm.CommandCreate,
-		RequestID:           requestID,
-		TenantID:            binding.TenantID(),
-		Namespace:           MicroVMNamespace,
-		AuthContext:         authContext(binding),
-		SessionID:           strings.TrimSpace(binding.ConversationID),
-		ImageRef:            imageRef,
-		NetworkConnectorRef: networkConnectorRef,
+		Command:                     runtimemicrovm.CommandRun,
+		RequestID:                   requestID,
+		TenantID:                    binding.TenantID(),
+		Namespace:                   MicroVMNamespace,
+		AuthContext:                 authContext(binding),
+		SessionID:                   strings.TrimSpace(binding.ConversationID),
+		ImageRef:                    imageRef,
+		NetworkConnectorRef:         networkConnectorRef,
+		IngressNetworkConnectorRefs: normalizeStringSlice(ingressNetworkConnectorRefs),
+		EgressNetworkConnectorRefs:  normalizeStringSlice(egressNetworkConnectorRefs),
 		SessionSpec: runtimemicrovm.SessionSpec{
 			Metadata: binding.Metadata(),
 		},
 	}, nil
 }
 
-// NewMicroVMCommandRequest builds a start/stop/status/session controller
-// envelope for an existing hosted-genesis MicroVM execution session. Host state
-// must decide whether this command is allowed before calling the controller.
-func NewMicroVMCommandRequest(
+// NewMicroVMOperationRequest builds a canonical M16 controller envelope for an
+// existing hosted-genesis MicroVM execution session. Host state must decide
+// whether this operation is allowed before calling the controller.
+func NewMicroVMOperationRequest(
 	command runtimemicrovm.Command,
 	requestID string,
 	binding MicroVMSessionBinding,
@@ -131,34 +135,42 @@ func NewMicroVMCommandRequest(
 		return runtimemicrovm.ControllerRequest{}, err
 	}
 	switch command {
-	case runtimemicrovm.CommandStart,
-		runtimemicrovm.CommandStop,
-		runtimemicrovm.CommandStatus,
-		runtimemicrovm.CommandSession:
-		return runtimemicrovm.ControllerRequest{
+	case runtimemicrovm.CommandGet,
+		runtimemicrovm.CommandList,
+		runtimemicrovm.CommandSuspend,
+		runtimemicrovm.CommandResume,
+		runtimemicrovm.CommandTerminate,
+		runtimemicrovm.CommandAuthToken,
+		runtimemicrovm.CommandShellAuthToken:
+		req := runtimemicrovm.ControllerRequest{
 			Command:     command,
 			RequestID:   requestID,
 			TenantID:    binding.TenantID(),
 			Namespace:   MicroVMNamespace,
 			AuthContext: authContext(binding),
-			SessionID:   strings.TrimSpace(binding.ConversationID),
-		}, nil
+		}
+		if command != runtimemicrovm.CommandList {
+			req.SessionID = strings.TrimSpace(binding.ConversationID)
+		}
+		if command == runtimemicrovm.CommandAuthToken {
+			req.AllowedPortScope = []runtimemicrovm.ProviderPortScope{{Port: 443}}
+		}
+		return req, nil
 	default:
 		return runtimemicrovm.ControllerRequest{}, errInvalidMicroVMBinding
 	}
 }
 
-// ValidateAppTheoryMicroVMContracts validates the AppTheory v1.14 controller,
-// registry, and escape-hatch contracts Host depends on for the next
-// implementation milestone.
+// ValidateAppTheoryMicroVMContracts validates the AppTheory v1.15 M16 operation
+// contract and registry contract Host depends on for the active lab path.
 func ValidateAppTheoryMicroVMContracts() error {
-	if err := runtimemicrovm.ValidateControllerContract(runtimemicrovm.DefaultControllerContract()); err != nil {
+	if err := runtimemicrovm.ValidateOperationContract(runtimemicrovm.DefaultOperationContract()); err != nil {
 		return err
 	}
-	if err := runtimemicrovm.ValidateSessionRegistryContract(runtimemicrovm.DefaultSessionRegistryContract()); err != nil {
+	if err := runtimemicrovm.ValidateRealLifecycleContract(runtimemicrovm.DefaultRealLifecycleContract()); err != nil {
 		return err
 	}
-	return runtimemicrovm.ValidateEscapeHatches(runtimemicrovm.EscapeHatches{})
+	return runtimemicrovm.ValidateSessionRegistryContract(runtimemicrovm.DefaultSessionRegistryContract())
 }
 
 func authContext(binding MicroVMSessionBinding) runtimemicrovm.AuthContext {

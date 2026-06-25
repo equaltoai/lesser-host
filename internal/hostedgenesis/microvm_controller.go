@@ -11,12 +11,12 @@ import (
 )
 
 const (
-	// AppTheoryFeedbackDeliveryID is the routed Factory/AppTheory feedback thread
-	// for the missing concrete Go AWS Lambda MicroVM constrained client. Host's
-	// M3 dogfood glue must stay removable once AppTheory absorbs that adapter.
-	AppTheoryFeedbackDeliveryID = "delivery-bcb585616b891657"
-
 	microVMLifecycleRefSource = MicroVMSourceOfTruth
+
+	// MicroVMRegistryReconstructionTTL bounds reconstructed AppTheory registry
+	// cache state. Host truth remains HostedGenesisSession; reconstructed records
+	// only rehydrate execution/cache bindings long enough for M16 operations.
+	MicroVMRegistryReconstructionTTL = time.Hour
 )
 
 var (
@@ -30,30 +30,54 @@ var (
 // must commit/load HostedGenesisSession first, then pass only the safe binding
 // ids through this controller.
 type MicroVMControllerRuntime struct {
-	controller          *runtimemicrovm.Controller
-	imageRef            string
-	networkConnectorRef string
+	controller                  *runtimemicrovm.Controller
+	imageRef                    string
+	networkConnectorRef         string
+	ingressNetworkConnectorRefs []string
+	egressNetworkConnectorRefs  []string
 }
 
-// MicroVMControllerRuntimeConfig configures the AppTheory controller boundary.
-// The Client must implement AppTheory runtime/microvm.Client; Host business
-// logic never receives a raw AWS SDK client or lifecycle hook payload.
+// MicroVMControllerRuntimeConfig configures the AppTheory M16 controller
+// boundary. Provider must be an AppTheory runtime/microvm.Provider; Host
+// business logic never receives a raw AWS SDK client, provider token, or
+// lifecycle hook payload.
 type MicroVMControllerRuntimeConfig struct {
-	Client              runtimemicrovm.Client
-	ImageRef            string
-	NetworkConnectorRef string
-	ControllerID        string
-	Clock               runtimemicrovm.Clock
-	IDGenerator         runtimemicrovm.IDGenerator
+	Provider                    runtimemicrovm.Provider
+	Registry                    runtimemicrovm.SessionRegistry
+	ReconstructionHook          runtimemicrovm.SessionReconstructionHook
+	ImageRef                    string
+	NetworkConnectorRef         string
+	IngressNetworkConnectorRefs []string
+	EgressNetworkConnectorRefs  []string
+	ControllerID                string
+	Clock                       runtimemicrovm.Clock
+	IDGenerator                 runtimemicrovm.IDGenerator
+	SessionTTL                  time.Duration
+	ReconstructionStaleAfter    time.Duration
 }
 
-// NewMicroVMControllerRuntime creates the AppTheory controller Host uses for
-// lab-only dogfood and deterministic tests.
+// NewMicroVMControllerRuntime creates the AppTheory M16 real controller Host
+// uses for lab-only dogfood and deterministic tests.
 func NewMicroVMControllerRuntime(cfg MicroVMControllerRuntimeConfig) (*MicroVMControllerRuntime, error) {
 	imageRef := strings.TrimSpace(cfg.ImageRef)
 	networkConnectorRef := strings.TrimSpace(cfg.NetworkConnectorRef)
-	if cfg.Client == nil || imageRef == "" || networkConnectorRef == "" {
+	if cfg.Provider == nil || cfg.Registry == nil || imageRef == "" || networkConnectorRef == "" {
 		return nil, ErrMicroVMControllerIncomplete
+	}
+	registry := cfg.Registry
+	if cfg.ReconstructionHook != nil {
+		opts := []runtimemicrovm.SessionReconstructionOption{}
+		if cfg.ReconstructionStaleAfter > 0 {
+			opts = append(opts, runtimemicrovm.WithSessionReconstructionStaleAfter(cfg.ReconstructionStaleAfter))
+		}
+		if cfg.Clock != nil {
+			opts = append(opts, runtimemicrovm.WithSessionReconstructionClock(cfg.Clock))
+		}
+		wrapped, err := runtimemicrovm.NewReconstructingSessionRegistry(registry, cfg.ReconstructionHook, opts...)
+		if err != nil {
+			return nil, err
+		}
+		registry = wrapped
 	}
 	opts := []runtimemicrovm.ControllerOption{runtimemicrovm.WithControllerID(firstNonEmptyString(cfg.ControllerID, MicroVMControllerID))}
 	if cfg.Clock != nil {
@@ -62,44 +86,71 @@ func NewMicroVMControllerRuntime(cfg MicroVMControllerRuntimeConfig) (*MicroVMCo
 	if cfg.IDGenerator != nil {
 		opts = append(opts, runtimemicrovm.WithControllerIDGenerator(cfg.IDGenerator))
 	}
-	controller, err := runtimemicrovm.NewController(cfg.Client, opts...)
+	if cfg.SessionTTL > 0 {
+		opts = append(opts, runtimemicrovm.WithControllerSessionTTL(cfg.SessionTTL))
+	}
+	controller, err := runtimemicrovm.NewRealController(cfg.Provider, registry, opts...)
 	if err != nil {
 		return nil, err
 	}
-	return &MicroVMControllerRuntime{controller: controller, imageRef: imageRef, networkConnectorRef: networkConnectorRef}, nil
+	return &MicroVMControllerRuntime{
+		controller:                  controller,
+		imageRef:                    imageRef,
+		networkConnectorRef:         networkConnectorRef,
+		ingressNetworkConnectorRefs: normalizeStringSlice(cfg.IngressNetworkConnectorRefs),
+		egressNetworkConnectorRefs:  normalizeStringSlice(cfg.EgressNetworkConnectorRefs),
+	}, nil
+}
+
+// Controller returns the AppTheory controller so cmd entrypoints can register
+// the canonical M16 HTTP routes with microvm.RegisterControllerRoutes.
+func (r *MicroVMControllerRuntime) Controller() *runtimemicrovm.Controller {
+	if r == nil {
+		return nil
+	}
+	return r.controller
 }
 
 // Handle passes a prebuilt ControllerRequest through AppTheory's validator and
 // safe envelope. It exists for Lambda handlers; business code should prefer the
-// typed helpers below so create commands always use the CDK-provided refs.
+// typed helpers below so run commands always use the CDK-provided refs.
 func (r *MicroVMControllerRuntime) Handle(ctx context.Context, req runtimemicrovm.ControllerRequest) (runtimemicrovm.ControllerResponse, error) {
 	if r == nil || r.controller == nil {
 		return runtimemicrovm.ControllerResponse{}, ErrMicroVMControllerIncomplete
 	}
-	if req.Command == runtimemicrovm.CommandCreate {
+	if req.Command == runtimemicrovm.CommandRun {
 		if strings.TrimSpace(req.ImageRef) == "" {
 			req.ImageRef = r.imageRef
 		}
 		if strings.TrimSpace(req.NetworkConnectorRef) == "" {
 			req.NetworkConnectorRef = r.networkConnectorRef
 		}
+		if len(req.IngressNetworkConnectorRefs) == 0 {
+			req.IngressNetworkConnectorRefs = append([]string(nil), r.ingressNetworkConnectorRefs...)
+		}
+		if len(req.EgressNetworkConnectorRefs) == 0 {
+			req.EgressNetworkConnectorRefs = append([]string(nil), r.egressNetworkConnectorRefs...)
+		}
+	}
+	if req.Command == runtimemicrovm.CommandAuthToken && len(req.AllowedPortScope) == 0 {
+		req.AllowedPortScope = []runtimemicrovm.ProviderPortScope{{Port: 443}}
 	}
 	return r.controller.Handle(ctx, req)
 }
 
-// Create issues an AppTheory create command for the already-committed Host
+// Run issues an AppTheory M16 run command for the already-committed Host
 // session binding.
-func (r *MicroVMControllerRuntime) Create(ctx context.Context, requestID string, binding MicroVMSessionBinding) (runtimemicrovm.ControllerResponse, error) {
-	req, err := NewMicroVMCreateRequest(requestID, binding, r.imageRef, r.networkConnectorRef)
+func (r *MicroVMControllerRuntime) Run(ctx context.Context, requestID string, binding MicroVMSessionBinding) (runtimemicrovm.ControllerResponse, error) {
+	req, err := NewMicroVMRunRequest(requestID, binding, r.imageRef, r.networkConnectorRef, r.ingressNetworkConnectorRefs, r.egressNetworkConnectorRefs)
 	if err != nil {
 		return runtimemicrovm.ControllerResponse{}, err
 	}
 	return r.Handle(ctx, req)
 }
 
-// Command issues start/status/session/stop for an existing execution/cache ref.
+// Command issues canonical M16 operations for an existing execution/cache ref.
 func (r *MicroVMControllerRuntime) Command(ctx context.Context, command runtimemicrovm.Command, requestID string, binding MicroVMSessionBinding) (runtimemicrovm.ControllerResponse, error) {
-	req, err := NewMicroVMCommandRequest(command, requestID, binding)
+	req, err := NewMicroVMOperationRequest(command, requestID, binding)
 	if err != nil {
 		return runtimemicrovm.ControllerResponse{}, err
 	}
@@ -139,8 +190,6 @@ func (r MicroVMLifecycleRef) Validate(binding MicroVMSessionBinding) error {
 	if r.LifecycleState == "" || r.LastAction == "" || r.UpdatedAt.IsZero() {
 		return ErrInvalidMicroVMLifecycleRef
 	}
-	// Validate through AppTheory's status contract without requiring create-only
-	// image/connector fields. Start/status/session/stop responses all fit here.
 	status := runtimemicrovm.SessionStatus{
 		TenantID:        r.TenantID,
 		Namespace:       r.Namespace,
@@ -173,13 +222,13 @@ func MicroVMLifecycleRefFromResponse(binding MicroVMSessionBinding, resp runtime
 		SessionID:       strings.TrimSpace(resp.SessionID),
 		LifecycleState:  state,
 		DesiredState:    resp.DesiredState,
-		MicroVMID:       strings.TrimSpace(resp.MicroVMID),
-		LastAction:      resp.LastAction,
-		LastTransition:  resp.LastTransition,
+		MicroVMID:       firstNonEmptyString(resp.ProviderMicroVMID, resp.MicroVMID),
+		LastAction:      resp.Command,
+		LastTransition:  firstNonZeroTimeValue(resp.LastTransition, observedAt),
 		RegistryVersion: resp.RegistryVersion,
 		UpdatedAt:       observedAt.UTC(),
 	}
-	if resp.Command == runtimemicrovm.CommandCreate && ref.DesiredState == "" {
+	if ref.DesiredState == "" {
 		ref.DesiredState = state
 	}
 	if ref.TenantID == "" {
@@ -255,6 +304,16 @@ func normalizeMicroVMLifecycleRef(ref MicroVMLifecycleRef) MicroVMLifecycleRef {
 	return ref
 }
 
+func normalizeStringSlice(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
 func firstNonEmptyString(values ...string) string {
 	for _, value := range values {
 		if trimmed := strings.TrimSpace(value); trimmed != "" {
@@ -295,5 +354,5 @@ func firstPositiveInt64(values ...int64) int64 {
 // suitable for HostedGenesisSession.ExecutionStateRef.
 func FormatMicroVMExecutionStateRef(ref MicroVMLifecycleRef) string {
 	ref = normalizeMicroVMLifecycleRef(ref)
-	return fmt.Sprintf("microvm://%s/%s/%s?action=%s&state=%s&registry_version=%d", ref.SourceOfTruth, ref.TenantID, ref.SessionID, ref.LastAction, ref.LifecycleState, ref.RegistryVersion)
+	return fmt.Sprintf("microvm://%s/%s/%s#%s@%d", ref.SourceOfTruth, ref.TenantID, ref.SessionID, ref.LifecycleState, firstPositiveInt64(ref.RegistryVersion, 1))
 }

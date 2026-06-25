@@ -15,57 +15,82 @@ import (
 	microvmtestkit "github.com/theory-cloud/apptheory/testkit/microvm"
 )
 
-func TestMicroVMControllerRuntimeExercisesAppTheoryCommands(t *testing.T) {
+func TestMicroVMControllerRuntimeExercisesAppTheoryM16Commands(t *testing.T) {
 	t.Parallel()
 
 	binding := testMicroVMBinding()
-	client := microvmtestkit.NewFakeClientWithTime(time.Date(2026, 6, 24, 18, 0, 0, 0, time.UTC))
+	provider := microvmtestkit.NewFakeProviderWithTime(time.Date(2026, 6, 25, 18, 0, 0, 0, time.UTC))
 	runtime, err := NewMicroVMControllerRuntime(MicroVMControllerRuntimeConfig{
-		Client:              client,
-		ImageRef:            "arn:aws:lambda:us-east-1:123456789012:microvm-image/hosted-genesis:1",
-		NetworkConnectorRef: "arn:aws:lambda:us-east-1:123456789012:network-connector/hosted-genesis",
+		Provider:                    provider,
+		Registry:                    runtimemicrovm.NewMemorySessionRegistry(),
+		ImageRef:                    "arn:aws:lambda:us-east-1:123456789012:microvm-image/hosted-genesis:1",
+		NetworkConnectorRef:         "arn:aws:lambda:us-east-1:123456789012:network-connector/hosted-genesis-egress",
+		IngressNetworkConnectorRefs: []string{"ALL_INGRESS"},
+		EgressNetworkConnectorRefs:  []string{"arn:aws:lambda:us-east-1:123456789012:network-connector/hosted-genesis-egress"},
 	})
 	require.NoError(t, err)
 
-	create, err := runtime.Create(context.Background(), "req-create", binding)
+	run, err := runtime.Run(context.Background(), "req-run", binding)
 	require.NoError(t, err)
-	require.Equal(t, runtimemicrovm.CommandCreate, create.Command)
-	require.Equal(t, runtimemicrovm.StateRequested, create.State)
-	require.Equal(t, "conv_123", create.SessionID)
+	require.Equal(t, runtimemicrovm.CommandRun, run.Command)
+	require.Equal(t, runtimemicrovm.StateRunning, run.State)
+	require.Equal(t, "conv_123", run.SessionID)
+	require.NotEmpty(t, run.ProviderMicroVMID)
 
-	start, err := runtime.Command(context.Background(), runtimemicrovm.CommandStart, "req-start", binding)
+	get, err := runtime.Command(context.Background(), runtimemicrovm.CommandGet, "req-get", binding)
 	require.NoError(t, err)
-	require.Equal(t, runtimemicrovm.StateStarting, start.State)
-	require.Equal(t, runtimemicrovm.StateStarted, start.DesiredState)
+	require.Equal(t, runtimemicrovm.CommandGet, get.Command)
+	require.Equal(t, runtimemicrovm.StateRunning, get.State)
 
-	status, err := runtime.Command(context.Background(), runtimemicrovm.CommandStatus, "req-status", binding)
+	list, err := runtime.Command(context.Background(), runtimemicrovm.CommandList, "req-list", binding)
 	require.NoError(t, err)
-	require.Equal(t, runtimemicrovm.CommandStatus, status.Command)
-	require.Equal(t, runtimemicrovm.StateStarting, status.LifecycleState)
+	require.Equal(t, runtimemicrovm.CommandList, list.Command)
+	require.Len(t, list.Sessions, 1)
+	require.Equal(t, "slug:demo", list.Sessions[0].TenantID)
 
-	session, err := runtime.Command(context.Background(), runtimemicrovm.CommandSession, "req-session", binding)
+	suspend, err := runtime.Command(context.Background(), runtimemicrovm.CommandSuspend, "req-suspend", binding)
 	require.NoError(t, err)
-	require.Equal(t, runtimemicrovm.CommandSession, session.Command)
-	require.Equal(t, "slug:demo", session.TenantID)
+	require.Equal(t, runtimemicrovm.StateSuspended, suspend.State)
 
-	stop, err := runtime.Command(context.Background(), runtimemicrovm.CommandStop, "req-stop", binding)
+	resume, err := runtime.Command(context.Background(), runtimemicrovm.CommandResume, "req-resume", binding)
 	require.NoError(t, err)
-	require.Equal(t, runtimemicrovm.StateStopping, stop.State)
-	require.Equal(t, runtimemicrovm.StateStopped, stop.DesiredState)
+	require.Equal(t, runtimemicrovm.StateReady, resume.State)
 
-	calls := client.Calls()
-	require.Len(t, calls, 5)
-	require.Equal(t, []runtimemicrovm.Command{
-		runtimemicrovm.CommandCreate,
-		runtimemicrovm.CommandStart,
-		runtimemicrovm.CommandStatus,
-		runtimemicrovm.CommandSession,
-		runtimemicrovm.CommandStop,
-	}, []runtimemicrovm.Command{calls[0].Command, calls[1].Command, calls[2].Command, calls[3].Command, calls[4].Command})
+	authToken, err := runtime.Command(context.Background(), runtimemicrovm.CommandAuthToken, "req-auth-token", binding)
+	require.NoError(t, err)
+	require.Equal(t, runtimemicrovm.CommandAuthToken, authToken.Command)
+	require.Equal(t, "auth", authToken.TokenType)
+	require.NotEmpty(t, authToken.TokenID)
+	require.Empty(t, authToken.ProviderState)
+
+	shellToken, err := runtime.Command(context.Background(), runtimemicrovm.CommandShellAuthToken, "req-shell-auth-token", binding)
+	require.NoError(t, err)
+	require.Equal(t, runtimemicrovm.CommandShellAuthToken, shellToken.Command)
+	require.Equal(t, "shell", shellToken.TokenType)
+	require.NotEmpty(t, shellToken.TokenID)
+
+	terminate, err := runtime.Command(context.Background(), runtimemicrovm.CommandTerminate, "req-terminate", binding)
+	require.NoError(t, err)
+	require.Equal(t, runtimemicrovm.StateTerminated, terminate.State)
+
+	calls := provider.Calls()
+	require.Len(t, calls, 8)
+	require.Equal(t, []runtimemicrovm.Operation{
+		runtimemicrovm.OperationRun,
+		runtimemicrovm.OperationGet,
+		runtimemicrovm.OperationList,
+		runtimemicrovm.OperationSuspend,
+		runtimemicrovm.OperationResume,
+		runtimemicrovm.OperationAuthToken,
+		runtimemicrovm.OperationShellAuthToken,
+		runtimemicrovm.OperationTerminate,
+	}, []runtimemicrovm.Operation{calls[0].Operation, calls[1].Operation, calls[2].Operation, calls[3].Operation, calls[4].Operation, calls[5].Operation, calls[6].Operation, calls[7].Operation})
 	for _, call := range calls {
 		require.Equal(t, "slug:demo", call.TenantID)
 		require.Equal(t, MicroVMNamespace, call.Namespace)
-		require.Equal(t, "conv_123", call.SessionID)
+		if call.Operation != runtimemicrovm.OperationList {
+			require.Equal(t, "conv_123", call.SessionID)
+		}
 	}
 }
 
@@ -74,13 +99,14 @@ func TestMicroVMControllerRuntimeSafeEnvelopeRejectsForbiddenFields(t *testing.T
 
 	binding := testMicroVMBinding()
 	runtime, err := NewMicroVMControllerRuntime(MicroVMControllerRuntimeConfig{
-		Client:              microvmtestkit.NewFakeClient(),
+		Provider:            microvmtestkit.NewFakeProvider(),
+		Registry:            runtimemicrovm.NewMemorySessionRegistry(),
 		ImageRef:            "image-ref",
 		NetworkConnectorRef: "network-ref",
 	})
 	require.NoError(t, err)
 
-	req, err := NewMicroVMCreateRequest("req-forbidden", binding, "image-ref", "network-ref")
+	req, err := NewMicroVMRunRequest("req-forbidden", binding, "image-ref", "network-ref", nil, nil)
 	require.NoError(t, err)
 	req.SessionSpec.Metadata["bearer_token"] = "must-not-cross-boundary"
 
@@ -97,69 +123,71 @@ func TestMicroVMLifecycleRefReconcilesExecutionCacheOnly(t *testing.T) {
 	t.Parallel()
 
 	binding := testMicroVMBinding()
-	client := microvmtestkit.NewFakeClient()
-	runtime, err := NewMicroVMControllerRuntime(MicroVMControllerRuntimeConfig{Client: client, ImageRef: "image-ref", NetworkConnectorRef: "network-ref"})
+	provider := microvmtestkit.NewFakeProvider()
+	runtime, err := NewMicroVMControllerRuntime(MicroVMControllerRuntimeConfig{Provider: provider, Registry: runtimemicrovm.NewMemorySessionRegistry(), ImageRef: "image-ref", NetworkConnectorRef: "network-ref"})
 	require.NoError(t, err)
 
-	create, err := runtime.Create(context.Background(), "req-create", binding)
+	run, err := runtime.Run(context.Background(), "req-run", binding)
 	require.NoError(t, err)
-	ref, err := MicroVMLifecycleRefFromResponse(binding, create, time.Date(2026, 6, 24, 18, 1, 0, 0, time.UTC))
+	ref, err := MicroVMLifecycleRefFromResponse(binding, run, time.Date(2026, 6, 25, 18, 1, 0, 0, time.UTC))
 	require.NoError(t, err)
 	require.Equal(t, MicroVMSourceOfTruth, ref.SourceOfTruth)
 	require.Equal(t, "slug:demo", ref.TenantID)
 	require.Equal(t, "conv_123", ref.SessionID)
-	require.Equal(t, runtimemicrovm.CommandCreate, ref.LastAction)
+	require.Equal(t, runtimemicrovm.CommandRun, ref.LastAction)
+	require.Equal(t, run.ProviderMicroVMID, ref.MicroVMID)
 
-	_, err = runtime.Command(context.Background(), runtimemicrovm.CommandStart, "req-start", binding)
-	require.NoError(t, err)
-	status, err := runtime.Command(context.Background(), runtimemicrovm.CommandStatus, "req-status", binding)
+	get, err := runtime.Command(context.Background(), runtimemicrovm.CommandGet, "req-get", binding)
 	require.NoError(t, err)
 	reconciled, err := ReconcileMicroVMRegistryStatus(binding, ref, runtimemicrovm.SessionStatus{
-		TenantID:        status.TenantID,
-		Namespace:       status.Namespace,
-		SessionID:       status.SessionID,
-		State:           status.State,
-		DesiredState:    status.DesiredState,
-		LifecycleState:  status.LifecycleState,
-		MicroVMID:       status.MicroVMID,
-		LastAction:      status.LastAction,
-		LastTransition:  status.LastTransition,
-		RegistryVersion: status.RegistryVersion,
+		TenantID:        get.TenantID,
+		Namespace:       get.Namespace,
+		SessionID:       get.SessionID,
+		State:           get.State,
+		DesiredState:    get.DesiredState,
+		LifecycleState:  get.LifecycleState,
+		MicroVMID:       get.ProviderMicroVMID,
+		LastAction:      get.Command,
+		LastTransition:  time.Date(2026, 6, 25, 18, 2, 0, 0, time.UTC),
+		RegistryVersion: get.RegistryVersion,
 	})
 	require.NoError(t, err)
-	require.Equal(t, runtimemicrovm.CommandStart, reconciled.LastAction)
+	require.Equal(t, runtimemicrovm.CommandGet, reconciled.LastAction)
 
 	_, err = ReconcileMicroVMRegistryStatus(binding, ref, runtimemicrovm.SessionStatus{
 		TenantID:        "slug:other",
 		Namespace:       MicroVMNamespace,
 		SessionID:       "conv_123",
-		State:           runtimemicrovm.StateStarted,
-		DesiredState:    runtimemicrovm.StateStarted,
-		LifecycleState:  runtimemicrovm.StateStarted,
-		LastAction:      runtimemicrovm.CommandStatus,
+		State:           runtimemicrovm.StateRunning,
+		DesiredState:    runtimemicrovm.StateRunning,
+		LifecycleState:  runtimemicrovm.StateRunning,
+		LastAction:      runtimemicrovm.CommandGet,
 		LastTransition:  time.Now().UTC(),
 		RegistryVersion: 1,
 	})
 	require.ErrorIs(t, err, ErrStaleMicroVMRegistryState)
 
-	lostRegistryRuntime, err := NewMicroVMControllerRuntime(MicroVMControllerRuntimeConfig{Client: microvmtestkit.NewFakeClient(), ImageRef: "image-ref", NetworkConnectorRef: "network-ref"})
+	lostRegistryRuntime, err := NewMicroVMControllerRuntime(MicroVMControllerRuntimeConfig{Provider: microvmtestkit.NewFakeProvider(), Registry: runtimemicrovm.NewMemorySessionRegistry(), ImageRef: "image-ref", NetworkConnectorRef: "network-ref"})
 	require.NoError(t, err)
-	_, err = lostRegistryRuntime.Command(context.Background(), runtimemicrovm.CommandStatus, "req-lost", binding)
-	require.Error(t, err, "registry/cache loss must not invent Host business state")
+	_, err = lostRegistryRuntime.Command(context.Background(), runtimemicrovm.CommandGet, "req-lost", binding)
+	require.Error(t, err, "registry/cache loss must not invent Host business state without reconstruction")
 	require.NoError(t, ref.Validate(binding), "Host can still reconstruct the MicroVM binding from HostedGenesisSession truth")
 }
 
-func TestProvisionalDogfoodMicroVMClientUsesAppTheoryRegistryWithoutRawSDK(t *testing.T) {
+func TestMicroVMControllerRuntimeUsesAppTheoryM16WithoutLocalAdapter(t *testing.T) {
 	t.Parallel()
 
-	client, err := NewProvisionalDogfoodMicroVMClient(runtimemicrovm.NewMemorySessionRegistry(), time.Minute)
+	runtime, err := NewMicroVMControllerRuntime(MicroVMControllerRuntimeConfig{
+		Provider:            microvmtestkit.NewFakeProvider(),
+		Registry:            runtimemicrovm.NewMemorySessionRegistry(),
+		ImageRef:            "image-ref",
+		NetworkConnectorRef: "network-ref",
+	})
 	require.NoError(t, err)
-	var constrained runtimemicrovm.Client = client
-	require.NotNil(t, constrained)
+	require.NotNil(t, runtime.Controller())
 	require.NoError(t, ValidateAppTheoryMicroVMContracts())
-	require.Equal(t, "delivery-bcb585616b891657", AppTheoryFeedbackDeliveryID)
 
-	_, currentFile, _, ok := runtime.Caller(0)
+	_, currentFile, _, ok := runtimepkgCaller()
 	require.True(t, ok)
 	packageDir := filepath.Dir(currentFile)
 	entries, err := os.ReadDir(packageDir)
@@ -171,35 +199,38 @@ func TestProvisionalDogfoodMicroVMClientUsesAppTheoryRegistryWithoutRawSDK(t *te
 		b, err := os.ReadFile(filepath.Join(packageDir, entry.Name()))
 		require.NoError(t, err)
 		source := string(b)
-		forbiddenImport := "aws-sdk-go-v2/service/" + "lambda"
-		require.NotContains(t, source, forbiddenImport, "dogfood adapter must not expose a raw Lambda SDK dependency")
+		retiredAdapter := "ProvisionalDogfood" + "MicroVMClient"
+		require.NotContains(t, source, retiredAdapter, "v1.15 M16 adoption must retire Host's provisional adapter")
 		forbiddenEscape := "RawAWSSDK" + ": true"
 		require.NotContains(t, source, forbiddenEscape, "AppTheory raw SDK escape hatch must remain disabled")
 	}
 }
 
-func TestMicroVMLabCanaryHarnessExercisesLifecycleAndSecretChecks(t *testing.T) {
+func TestMicroVMLabCanaryHarnessExercisesM16LifecycleAndSecretChecks(t *testing.T) {
 	t.Parallel()
 
 	binding := testMicroVMBinding()
-	client := microvmtestkit.NewFakeClientWithTime(time.Date(2026, 6, 24, 19, 0, 0, 0, time.UTC))
-	runtime, err := NewMicroVMControllerRuntime(MicroVMControllerRuntimeConfig{Client: client, ImageRef: "image-ref", NetworkConnectorRef: "network-ref"})
+	provider := microvmtestkit.NewFakeProviderWithTime(time.Date(2026, 6, 25, 19, 0, 0, 0, time.UTC))
+	runtime, err := NewMicroVMControllerRuntime(MicroVMControllerRuntimeConfig{Provider: provider, Registry: runtimemicrovm.NewMemorySessionRegistry(), ImageRef: "image-ref", NetworkConnectorRef: "network-ref"})
 	require.NoError(t, err)
 
-	responses := make([]runtimemicrovm.ControllerResponse, 0, 5)
+	responses := make([]runtimemicrovm.ControllerResponse, 0, 8)
 	for _, step := range []struct {
 		command runtimemicrovm.Command
 		request string
 	}{
-		{runtimemicrovm.CommandCreate, "canary-create"},
-		{runtimemicrovm.CommandStart, "canary-start"},
-		{runtimemicrovm.CommandStatus, "canary-status"},
-		{runtimemicrovm.CommandSession, "canary-session"},
-		{runtimemicrovm.CommandStop, "canary-stop"},
+		{runtimemicrovm.CommandRun, "canary-run"},
+		{runtimemicrovm.CommandGet, "canary-get"},
+		{runtimemicrovm.CommandList, "canary-list"},
+		{runtimemicrovm.CommandSuspend, "canary-suspend"},
+		{runtimemicrovm.CommandResume, "canary-resume"},
+		{runtimemicrovm.CommandAuthToken, "canary-auth-token"},
+		{runtimemicrovm.CommandShellAuthToken, "canary-shell-auth-token"},
+		{runtimemicrovm.CommandTerminate, "canary-terminate"},
 	} {
 		var resp runtimemicrovm.ControllerResponse
-		if step.command == runtimemicrovm.CommandCreate {
-			resp, err = runtime.Create(context.Background(), step.request, binding)
+		if step.command == runtimemicrovm.CommandRun {
+			resp, err = runtime.Run(context.Background(), step.request, binding)
 		} else {
 			resp, err = runtime.Command(context.Background(), step.command, step.request, binding)
 		}
@@ -210,7 +241,7 @@ func TestMicroVMLabCanaryHarnessExercisesLifecycleAndSecretChecks(t *testing.T) 
 	evidence, err := json.MarshalIndent(struct {
 		Canary string                              `json:"canary"`
 		Steps  []runtimemicrovm.ControllerResponse `json:"steps"`
-	}{Canary: "hosted-genesis-microvm-non-deploying", Steps: responses}, "", "  ")
+	}{Canary: "hosted-genesis-microvm-m16-non-deploying", Steps: responses}, "", "  ")
 	require.NoError(t, err)
 	lower := strings.ToLower(string(evidence))
 	for _, forbidden := range []string{
@@ -221,13 +252,18 @@ func TestMicroVMLabCanaryHarnessExercisesLifecycleAndSecretChecks(t *testing.T) 
 		"aws_session_token",
 		"instance-api-key",
 		"provider_secret",
+		"provider_token",
+		"token_value",
 		"wallet_signature",
 		"raw transcript",
 		"endpoint_token",
+		"x-aws-proxy-auth",
 	} {
 		require.NotContains(t, lower, forbidden)
 	}
 }
+
+func runtimepkgCaller() (uintptr, string, int, bool) { return runtime.Caller(0) }
 
 func testMicroVMBinding() MicroVMSessionBinding {
 	return MicroVMSessionBinding{

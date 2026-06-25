@@ -2,11 +2,14 @@ package store
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
 	"github.com/theory-cloud/tabletheory/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
@@ -259,3 +262,97 @@ func (b *captureHostedGenesisUpdateBuilder) ConditionVersion(_ int64) core.Updat
 func (b *captureHostedGenesisUpdateBuilder) ReturnValues(_ string) core.UpdateBuilder       { return b }
 func (b *captureHostedGenesisUpdateBuilder) Execute() error                                 { return nil }
 func (b *captureHostedGenesisUpdateBuilder) ExecuteWithResult(_ any) error                  { return nil }
+
+func TestReconstructMicroVMRegistryRecordFromHostedGenesisSessionTruth(t *testing.T) {
+	t.Parallel()
+
+	session := validStoreHostedGenesisSession()
+	binding := session.MicroVMSessionBinding()
+	now := time.Date(2026, 6, 25, 21, 0, 0, 0, time.UTC)
+	ref := hostedgenesis.MicroVMLifecycleRef{
+		SourceOfTruth:       hostedgenesis.MicroVMSourceOfTruth,
+		TenantID:            binding.TenantID(),
+		Namespace:           hostedgenesis.MicroVMNamespace,
+		SessionID:           session.ConversationID,
+		LifecycleState:      runtimemicrovm.StateRunning,
+		DesiredState:        runtimemicrovm.StateRunning,
+		MicroVMID:           "provider-microvm-123",
+		ImageRef:            "image-from-host-ref",
+		NetworkConnectorRef: "egress-from-host-ref",
+		LastAction:          runtimemicrovm.CommandRun,
+		LastTransition:      now,
+		RegistryVersion:     3,
+		UpdatedAt:           now,
+	}
+	require.NoError(t, session.ApplyMicroVMLifecycleRef(ref))
+
+	record, err := ReconstructMicroVMRegistryRecordFromHostedGenesisSession(session, runtimemicrovm.SessionReconstructionRequest{
+		RequestID:   "req-reconstruct",
+		TenantID:    binding.TenantID(),
+		Namespace:   hostedgenesis.MicroVMNamespace,
+		SessionID:   session.ConversationID,
+		AuthSubject: hostedgenesis.MicroVMAuthSubject,
+		Now:         now,
+	}, HostedGenesisMicroVMReconstructionConfig{
+		ImageRef:                    "image-fallback",
+		NetworkConnectorRef:         "egress-fallback",
+		IngressNetworkConnectorRefs: []string{"ingress-ref"},
+		EgressNetworkConnectorRefs:  []string{"egress-ref"},
+		TTL:                         time.Hour,
+	})
+	require.NoError(t, err)
+	require.Equal(t, binding.TenantID(), record.TenantID)
+	require.Equal(t, hostedgenesis.MicroVMNamespace, record.Namespace)
+	require.Equal(t, session.ConversationID, record.SessionID)
+	require.Equal(t, "provider-microvm-123", record.ProviderMicroVMID)
+	require.Equal(t, runtimemicrovm.AWSLambdaMicroVMProviderID, record.ProviderID)
+	require.Equal(t, "image-from-host-ref", record.ImageRef)
+	require.Equal(t, "egress-from-host-ref", record.NetworkConnectorRef)
+	require.Equal(t, []string{"ingress-ref"}, record.IngressNetworkConnectorRefs)
+	require.Equal(t, []string{"egress-ref"}, record.EgressNetworkConnectorRefs)
+	require.Equal(t, hostedgenesis.MicroVMSourceOfTruth, record.Metadata["source_of_truth"])
+	encoded, err := json.Marshal(record)
+	require.NoError(t, err)
+	lower := strings.ToLower(string(encoded))
+	for _, forbidden := range []string{"bearer_token", "provider_token", "token_value", "raw transcript", "aws_secret_access_key"} {
+		require.NotContains(t, lower, forbidden)
+	}
+}
+
+func TestReconstructMicroVMRegistryRecordFailsClosedOnMismatchAndMissingTruth(t *testing.T) {
+	t.Parallel()
+
+	session := validStoreHostedGenesisSession()
+	binding := session.MicroVMSessionBinding()
+	_, err := ReconstructMicroVMRegistryRecordFromHostedGenesisSession(session, runtimemicrovm.SessionReconstructionRequest{
+		RequestID: "req-missing",
+		TenantID:  binding.TenantID(),
+		Namespace: hostedgenesis.MicroVMNamespace,
+		SessionID: session.ConversationID,
+		Now:       time.Date(2026, 6, 25, 21, 0, 0, 0, time.UTC),
+	}, HostedGenesisMicroVMReconstructionConfig{ImageRef: "image", NetworkConnectorRef: "egress"})
+	require.Error(t, err, "missing Host MicroVMLifecycleRef must fail closed")
+
+	now := time.Date(2026, 6, 25, 21, 0, 0, 0, time.UTC)
+	ref := hostedgenesis.MicroVMLifecycleRef{
+		SourceOfTruth:  hostedgenesis.MicroVMSourceOfTruth,
+		TenantID:       binding.TenantID(),
+		Namespace:      hostedgenesis.MicroVMNamespace,
+		SessionID:      session.ConversationID,
+		LifecycleState: runtimemicrovm.StateRunning,
+		DesiredState:   runtimemicrovm.StateRunning,
+		MicroVMID:      "provider-microvm-123",
+		LastAction:     runtimemicrovm.CommandRun,
+		LastTransition: now,
+		UpdatedAt:      now,
+	}
+	require.NoError(t, session.ApplyMicroVMLifecycleRef(ref))
+	_, err = ReconstructMicroVMRegistryRecordFromHostedGenesisSession(session, runtimemicrovm.SessionReconstructionRequest{
+		RequestID: "req-cross",
+		TenantID:  "slug:other",
+		Namespace: hostedgenesis.MicroVMNamespace,
+		SessionID: session.ConversationID,
+		Now:       now,
+	}, HostedGenesisMicroVMReconstructionConfig{ImageRef: "image", NetworkConnectorRef: "egress"})
+	require.Error(t, err, "tenant mismatch must fail closed")
+}
