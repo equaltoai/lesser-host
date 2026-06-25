@@ -643,8 +643,25 @@ test('hosted genesis AppTheory MicroVM lab wiring uses AppTheory constructs with
 	assert.equal(controllerEnv.STAGE, 'lab');
 	assert.equal(controllerEnv.APPTHEORY_MICROVM_CONTROLLER_AUTH_REQUIRED, 'true');
 	assert.equal(controllerEnv.APPTHEORY_MICROVM_CONTROLLER_AUTH_DEFAULT, 'deny');
-	assert.equal(controllerEnv.HOSTED_GENESIS_MICROVM_ADAPTER_FEEDBACK, 'delivery-bcb585616b891657');
+	assert.equal(controllerEnv.APPTHEORY_MICROVM_CONTRACT_VERSION, 'm16.microvm/v1');
+	assert.equal(
+		controllerEnv.APPTHEORY_MICROVM_CONTROLLER_OPERATIONS,
+		'run,get,list,suspend,resume,terminate,auth-token,shell-auth-token',
+	);
+	assert.ok(
+		String(controllerEnv.APPTHEORY_MICROVM_CONTROLLER_ROUTES ?? '').includes('POST /microvms/{session_id}/auth-token'),
+		'expected AppTheory M16 route manifest in controller env',
+	);
 	assert.ok(controllerEnv.APPTHEORY_MICROVM_SESSION_REGISTRY_TABLE, 'expected AppTheory registry table env');
+	assert.ok(controllerEnv.APPTHEORY_MICROVM_INGRESS_NETWORK_CONNECTOR_REFS, 'expected ingress connector refs env');
+	assert.ok(controllerEnv.APPTHEORY_MICROVM_EGRESS_NETWORK_CONNECTOR_REFS, 'expected egress connector refs env');
+	assert.ok(controllerEnv.APPTHEORY_MICROVM_SHELL_INGRESS_NETWORK_CONNECTOR_REF, 'expected shell ingress connector ref env');
+	assert.equal(controllerEnv.HOSTED_GENESIS_MICROVM_AUTH_TOKEN_SHA256, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+	assert.ok(controllerEnv.STATE_TABLE_NAME, 'expected Host state table env for HostedGenesisSession reconstruction');
+	assert.ok(
+		!('HOSTED_GENESIS_MICROVM_ADAPTER_FEEDBACK' in controllerEnv),
+		'v1.15 adoption must retire the provisional adapter feedback env',
+	);
 
 	const routes = findResources(template, 'AWS::ApiGatewayV2::Route').filter((route) =>
 		String(route.RouteKey ?? '').includes('/microvms')
@@ -652,11 +669,14 @@ test('hosted genesis AppTheory MicroVM lab wiring uses AppTheory constructs with
 	assert.deepEqual(
 		routes.map((route) => route.RouteKey).sort(),
 		[
+			'DELETE /microvms/{session_id}',
+			'GET /microvms',
 			'GET /microvms/{session_id}',
-			'GET /microvms/{session_id}/status',
 			'POST /microvms',
-			'POST /microvms/{session_id}/start',
-			'POST /microvms/{session_id}/stop',
+			'POST /microvms/{session_id}/auth-token',
+			'POST /microvms/{session_id}/resume',
+			'POST /microvms/{session_id}/shell-auth-token',
+			'POST /microvms/{session_id}/suspend',
 		].sort(),
 	);
 	for (const route of routes) {
@@ -670,6 +690,32 @@ test('hosted genesis AppTheory MicroVM lab wiring uses AppTheory constructs with
 	assert.ok(sessionTable, 'expected AppTheory controller-owned session registry table');
 	const ttl = sessionTable[1].Properties?.TimeToLiveSpecification as { AttributeName?: unknown; Enabled?: unknown } | undefined;
 	assert.deepEqual(ttl, { AttributeName: 'ttl', Enabled: true });
+
+	const controllerRoleRef = controllerFn[1].Properties?.Role as { 'Fn::GetAtt'?: unknown[] } | undefined;
+	assert.ok(controllerRoleRef && Array.isArray(controllerRoleRef['Fn::GetAtt']), 'expected controller Lambda role reference');
+	const controllerRoleLogicalId = String(controllerRoleRef['Fn::GetAtt'][0] ?? '');
+	assert.ok(controllerRoleLogicalId, 'expected controller Lambda role logical id');
+	const controllerPolicies = findResourceEntries(template, 'AWS::IAM::Policy').filter(([, policy]) => {
+		const roles = policy.Properties?.Roles;
+		return Array.isArray(roles) && roles.some((role) => role && typeof role === 'object' &&
+			'Ref' in role && (role as { Ref?: string }).Ref === controllerRoleLogicalId);
+	});
+	const controllerPolicyJson = JSON.stringify(controllerPolicies.map(([, policy]) => policy.Properties ?? {}));
+	for (const action of [
+		'lambda:RunMicrovm',
+		'lambda:GetMicrovm',
+		'lambda:ListMicrovms',
+		'lambda:SuspendMicrovm',
+		'lambda:ResumeMicrovm',
+		'lambda:TerminateMicrovm',
+		'lambda:CreateMicrovmAuthToken',
+		'lambda:CreateMicrovmShellAuthToken',
+		'lambda:PassNetworkConnector',
+		'dynamodb:GetItem',
+		'dynamodb:Query',
+	]) {
+		assert.ok(controllerPolicyJson.includes(action), `expected controller IAM to include ${action}`);
+	}
 });
 
 function hostedGenesisTemplateGuardPath(): string {
