@@ -714,7 +714,7 @@ test('hosted genesis AppTheory MicroVM lab wiring uses AppTheory constructs with
 		'dynamodb:GetItem',
 		'dynamodb:Query',
 	]) {
-		assert.match(controllerPolicyJson, new RegExp(action.replace(':', ':')), `expected controller IAM to include ${action}`);
+		assert.ok(controllerPolicyJson.includes(action), `expected controller IAM to include ${action}`);
 	}
 });
 
