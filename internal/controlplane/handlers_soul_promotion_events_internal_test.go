@@ -128,6 +128,7 @@ func assertSoulPromotionEventAnchorAssurance(t *testing.T, assurance *soulAnchor
 
 	if assurance == nil {
 		t.Fatalf("expected mint event anchor assurance evidence")
+		return
 	}
 	if assurance.State != models.SoulAnchorStateImmutableOnchain ||
 		assurance.Source != soulAnchorAssuranceSourceOnchainReceipt ||

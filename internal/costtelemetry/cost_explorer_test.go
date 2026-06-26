@@ -1269,6 +1269,7 @@ func TestNewCostExplorerCollector_ReturnsInterface(t *testing.T) {
 	}
 	if result == nil {
 		t.Fatal("expected non-nil result")
+		return
 	}
 	if result.Slug != testSlug {
 		t.Fatalf("expected slug 'demo', got %q", result.Slug)

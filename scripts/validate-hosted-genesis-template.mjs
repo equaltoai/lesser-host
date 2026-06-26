@@ -31,6 +31,22 @@ function valueSummary(value) {
 	}
 }
 
+function logicalRefs(value, out = new Set()) {
+	if (typeof value === 'string') {
+		out.add(value);
+		return out;
+	}
+	if (Array.isArray(value)) {
+		for (const entry of value) logicalRefs(entry, out);
+		return out;
+	}
+	if (!value || typeof value !== 'object') return out;
+	if (typeof value.Ref === 'string') out.add(value.Ref);
+	if (Array.isArray(value['Fn::GetAtt']) && typeof value['Fn::GetAtt'][0] === 'string') out.add(value['Fn::GetAtt'][0]);
+	for (const entry of Object.values(value)) logicalRefs(entry, out);
+	return out;
+}
+
 const templatePath = process.argv[2];
 if (!templatePath || process.argv.length !== 3) {
 	usage();
@@ -77,8 +93,8 @@ if (!controlPlane) {
 	fail('missing control-plane Lambda function');
 }
 const controlPlaneEnv = lambdaEnv(controlPlane);
-if (!Object.prototype.hasOwnProperty.call(controlPlaneEnv, 'HOSTED_GENESIS_QUEUE_URL')) {
-	fail('control-plane Lambda lacks HOSTED_GENESIS_QUEUE_URL');
+if (Object.prototype.hasOwnProperty.call(controlPlaneEnv, 'HOSTED_GENESIS_QUEUE_URL')) {
+	fail('control-plane Lambda must not receive HOSTED_GENESIS_QUEUE_URL; HostedGenesisSession is user-visible authority');
 }
 const stage = typeof controlPlaneEnv.STAGE === 'string' ? controlPlaneEnv.STAGE.trim().toLowerCase() : '';
 
@@ -94,6 +110,19 @@ if (!Object.prototype.hasOwnProperty.call(outputs, 'HostedGenesisQueueUrl')) {
 	fail('missing HostedGenesisQueueUrl stack output');
 }
 
+const controlPlaneRoleRefs = logicalRefs(asRecord(asRecord(controlPlane[1]).Properties).Role);
+const iamPolicies = resourceEntries.filter(([, resource]) => resource.Type === 'AWS::IAM::Policy');
+for (const [logicalId, policy] of iamPolicies) {
+	const properties = asRecord(policy.Properties);
+	const roleBindings = JSON.stringify(properties.Roles ?? {});
+	const appliesToControlPlane = [...controlPlaneRoleRefs].some((roleRef) => roleBindings.includes(roleRef));
+	if (!appliesToControlPlane) continue;
+	const policyText = JSON.stringify(properties.PolicyDocument ?? {});
+	if (policyText.includes(hostedGenesisQueueLogicalId) && policyText.includes('sqs:SendMessage')) {
+		fail(`control-plane IAM policy ${logicalId} grants SendMessage to HostedGenesisQueue; queue must remain operator/backfill only`);
+	}
+}
+
 const eventSourceMappings = resourceEntries.filter(([, resource]) => resource.Type === 'AWS::Lambda::EventSourceMapping');
 const aiWorkerLogicalId = aiWorker[0];
 const hostedGenesisMapping = eventSourceMappings.find(([, resource]) => {
@@ -106,6 +135,44 @@ if (!hostedGenesisMapping) {
 }
 if (asRecord(hostedGenesisMapping[1].Properties).BatchSize !== 1) {
 	fail('AI worker hosted genesis EventSourceMapping must use BatchSize 1');
+}
+
+const microvmController = lambdaEntries.find(([logicalId, resource]) =>
+	logicalId.includes('HostedGenesisMicrovmController') ||
+	JSON.stringify(asRecord(resource.Properties).FunctionName ?? '').includes('hosted-genesis-microvm-controller')
+);
+if (microvmController) {
+	const controllerEnv = lambdaEnv(microvmController);
+	if (controllerEnv.APPTHEORY_MICROVM_CONTROLLER_AUTH_REQUIRED !== 'true') {
+		fail('hosted genesis MicroVM controller must require AppTheory controller auth');
+	}
+	if (controllerEnv.APPTHEORY_MICROVM_CONTROLLER_AUTH_DEFAULT !== 'deny') {
+		fail('hosted genesis MicroVM controller must fail closed with default auth deny');
+	}
+	if (controllerEnv.APPTHEORY_MICROVM_CONTRACT_VERSION !== 'm16.microvm/v1') {
+		fail('hosted genesis MicroVM controller must pin the AppTheory v1.15 M16 contract');
+	}
+	if (!Object.prototype.hasOwnProperty.call(controllerEnv, 'STATE_TABLE_NAME')) {
+		fail('hosted genesis MicroVM controller requires STATE_TABLE_NAME for HostedGenesisSession reconstruction');
+	}
+	for (const key of Object.keys(controllerEnv)) {
+		const normalized = key.toLowerCase();
+		if (normalized.includes('token') && !normalized.endsWith('sha256')) {
+			fail(`hosted genesis MicroVM controller env ${key} looks token-bearing; only digests/non-secret refs are allowed`);
+		}
+	}
+}
+
+const microvmAuthorizer = lambdaEntries.find(([logicalId, resource]) =>
+	logicalId.includes('HostedGenesisMicrovmAuthorizer') ||
+	JSON.stringify(asRecord(resource.Properties).FunctionName ?? '').includes('hosted-genesis-microvm-authorizer')
+);
+if (microvmAuthorizer) {
+	const authorizerEnv = lambdaEnv(microvmAuthorizer);
+	const digest = authorizerEnv.APPTHEORY_MICROVM_AUTHORIZER_TOKEN_SHA256;
+	if (typeof digest !== 'string' || !/^sha256:[0-9a-f]{64}$/i.test(digest)) {
+		fail('hosted genesis MicroVM authorizer must receive only a sha256 token digest');
+	}
 }
 
 if (stage === 'live') {
@@ -127,5 +194,5 @@ if (stage === 'live') {
 }
 
 console.error(
-	`hosted genesis template guard: OK ${templatePath} contains HostedGenesisQueue, HOSTED_GENESIS_QUEUE_URL, HostedGenesisQueueUrl, and AI worker EventSourceMapping`,
+	`hosted genesis template guard: OK ${templatePath} keeps HostedGenesisSession as user-visible authority, HostedGenesisQueue as non-authoritative operator/backfill transport, AI worker EventSourceMapping, and AppTheory MicroVM fail-closed/no-token invariants`,
 );

@@ -426,6 +426,7 @@ func assertSoulPublicAgentOnchainAnchorAssurance(t *testing.T, assurance *soulAn
 
 	if assurance == nil {
 		t.Fatalf("expected anchor assurance metadata")
+		return
 	}
 	if assurance.State != models.SoulAnchorStateImmutableOnchain ||
 		assurance.Source != soulAnchorAssuranceSourceOnchainReceipt ||

@@ -101,6 +101,14 @@ linters:
       - linters:
           - errcheck
         text: 'Error return value of .((os\.)?std(out|err)\..*|.*Close|.*Flush|os\.Remove(All)?|.*print(f|ln)?|os\.(Un)?Setenv). is not checked'
+      # SEC-9 change-locks this attestation-signing test file. Keep the
+      # SA5011 exception scoped to the one nil-guard pattern that cannot be
+      # source-fixed in this PR without violating that governance lock.
+      - path: ^internal/attestations/kms_service_internal_test\.go$
+        linters:
+          - staticcheck
+        text: SA5011
+        source: 'if s == nil|s\.signingKeyID != "key"'
 
 issues:
   max-issues-per-linter: 0

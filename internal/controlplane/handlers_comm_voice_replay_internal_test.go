@@ -261,6 +261,7 @@ func (tx *voiceMeteringReplayTx) execute() error {
 	}
 	if dedup == nil {
 		tx.t.Fatalf("voice metering transaction did not create a dedup record")
+		return theoryErrors.ErrConditionFailed
 	}
 
 	dedupKey := dedup.PK + "|" + dedup.SK

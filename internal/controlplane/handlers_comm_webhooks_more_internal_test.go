@@ -923,6 +923,7 @@ func assertCommWebhookDisabled(t *testing.T, handler commWebhookHandler) {
 	}
 	if resp == nil {
 		t.Fatalf("expected response")
+		return
 	}
 	if resp.Status != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", resp.Status)
@@ -952,6 +953,7 @@ func requireCommWebhookOK(t *testing.T, resp *apptheory.Response, err error) {
 	}
 	if resp == nil {
 		t.Fatalf("expected response")
+		return
 	}
 	if resp.Status != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.Status)

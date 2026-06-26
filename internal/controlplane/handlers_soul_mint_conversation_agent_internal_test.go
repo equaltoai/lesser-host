@@ -183,7 +183,7 @@ func TestHandleSoulInstanceListMintConversations_UsesInstanceKeyAndCompactDTO(t 
 	tdb.qAudit.AssertCalled(t, "Create")
 }
 
-func TestHandleSoulInstanceGetMintConversation_ReturnsFullBoundedSingle(t *testing.T) {
+func TestHandleSoulInstanceGetMintConversation_ReturnsCompactSessionStatus(t *testing.T) {
 	t.Parallel()
 
 	tdb := newMintConversationTestDB()
@@ -213,12 +213,15 @@ func TestHandleSoulInstanceGetMintConversation_ReturnsFullBoundedSingle(t *testi
 		t.Fatalf("expected 200, got %d", resp.Status)
 	}
 
-	var out soulInstanceMintConversationResponse
+	var out hostedGenesisConversationResponse
 	if err := json.Unmarshal(resp.Body, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if out.Conversation == nil || !strings.Contains(out.Conversation.Messages, `"private"`) || !strings.Contains(out.Conversation.ProducedDeclarations, `"private":true`) {
-		t.Fatalf("expected explicit single-conversation route to include full bounded record, got %#v", out)
+	if out.Conversation.ConversationID != mintConversationTestConversationID || out.Conversation.Status != models.SoulMintConversationStatusFailed || out.Conversation.Failure == nil {
+		t.Fatalf("expected explicit single-conversation route to return compact session status, got %#v", out)
+	}
+	if strings.Contains(string(resp.Body), `"private"`) || strings.Contains(string(resp.Body), mintConversationInstanceReadTestRawKey) {
+		t.Fatalf("compact session status leaked private transcript/declarations/credential: %s", string(resp.Body))
 	}
 }
 

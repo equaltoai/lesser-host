@@ -25,10 +25,30 @@ SSE can remain for non-instance Host UI routes, but it is no longer the authorit
 CloudFront may still route the mint-conversation subtree through Host's REST control-plane mint-conversation origin for
 transport compatibility; the Lesser instance-key contract is JSON state, not SSE state.
 
-### Worker and retry model
 
-The control plane enqueues hosted-genesis work on `HOSTED_GENESIS_QUEUE_URL`. The AI worker consumes one hosted-genesis
-job at a time and re-loads all durable state before writing:
+## Project 51 M2 runtime binding
+
+Project 51 M2 dogfoods the `HostedGenesisSession` model/repository foundation before AppTheory MicroVM execution is
+introduced. The Lesser instance-key hosted-genesis route family now treats the Host session row as user-visible truth:
+
+- POST creates or updates `HostedGenesisSession`, and the debit/idempotency transaction is the exactly-once authority.
+  Project 51 M4 removes hosted-genesis SQS from this user-visible path; queue/DLQ/AI-worker state is not success,
+  recovery, or finalize authority.
+- GET/status and instance read endpoints project compact HostConversation state from `HostedGenesisSession`; stale or
+  missing queue delivery cannot invent status.
+- Complete/declaration/finalize reads publish readiness from `HostedGenesisSession.status=declaration_ready` plus a valid
+  declaration checkpoint. The PR does not mutate cloud or on-chain state.
+- `SoulAgentMintConversation` remains only compatibility/projection/migration input. Host does not delete compatibility
+  rows without a separate migration/runbook and does not import raw transcripts into the session source of truth.
+
+The M0 AppTheory MicroVM decision is preserved: no raw-AWS MicroVM substitute or local framework fork is introduced in
+this milestone.
+
+### Worker and retry model (M4 demoted)
+
+Hosted-genesis SQS may remain available for operator/backfill/janitor recovery, but the control plane no longer receives
+`HOSTED_GENESIS_QUEUE_URL` and does not enqueue user-visible conversation turns. If an operator/backfill path feeds the
+queue, the AI worker consumes one hosted-genesis job at a time and re-loads all durable state before writing:
 
 1. registration id and agent id
 2. registration domain
@@ -36,10 +56,10 @@ job at a time and re-loads all durable state before writing:
 4. conversation id/status/latest turn
 5. idempotency row when present
 
-The queue has an SQS-managed encrypted DLQ, three receive attempts, and a one-message batch size. Worker failures update
-the conversation to `failed` with a bounded recovery action; DLQ visibility is alarmed. Retry with the same
-`idempotency_key` and request hash replays the existing conversation/turn and does not append another user message or
-debit credits again.
+The queue has an SQS-managed encrypted DLQ, three receive attempts, and a one-message batch size. Queue loss, DLQ
+backlog, or AI-worker outage must not block status reads, recovery guidance, or finalize gate decisions once
+`HostedGenesisSession` truth exists. Retry with the same `idempotency_key` and request hash replays the existing
+conversation/turn and does not append another user message or debit credits again.
 
 ### `created` status decision
 

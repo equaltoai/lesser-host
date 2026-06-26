@@ -51,6 +51,7 @@ func TestSoulPublicDiscoveryV3ENSChannelFromModel(t *testing.T) {
 	})
 	if got == nil {
 		t.Fatalf("expected ENS channel")
+		return
 	}
 	if got.Name != "agent.inst1.lessersoul.eth" || got.ResolverAddress != "0xresolver" || got.Chain != "base" {
 		t.Fatalf("unexpected ENS channel: %#v", got)
@@ -85,6 +86,7 @@ func TestSoulPublicDiscoveryV3EmailChannelFromModel(t *testing.T) {
 	})
 	if got == nil {
 		t.Fatalf("expected email channel")
+		return
 	}
 	if got.Address != "person@example.com" || got.Status != "active" || got.VerifiedAt != "" {
 		t.Fatalf("unexpected email channel: %#v", got)
@@ -109,6 +111,7 @@ func TestSoulPublicDiscoveryV3PhoneChannelFromModel(t *testing.T) {
 	})
 	if got == nil {
 		t.Fatalf("expected phone channel")
+		return
 	}
 	if got.Number != "+14155550123" || got.Provider != commDeliveryProviderTelnyx || got.Status != "paused" {
 		t.Fatalf("unexpected phone channel: %#v", got)

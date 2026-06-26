@@ -1,0 +1,18 @@
+{
+  "instance_slug": "Demo",
+  "registration_id": "reg_legacy",
+  "agent_id": "0x2222222222222222222222222222222222222222222222222222222222222222",
+  "conversation_id": "conv_legacy_progress",
+  "status": "in_progress",
+  "latest_turn_id": "turn_legacy_user",
+  "message_count": 1,
+  "model": "anthropic:claude-sonnet-4-6",
+  "request_id": "req_legacy_progress",
+  "correlation_id": "corr_legacy_progress",
+  "idempotency_key": "idem_legacy_progress",
+  "request_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "produced_declarations_present": false,
+  "produced_declarations_valid": false,
+  "created_at": "2026-06-24T11:58:00Z",
+  "updated_at": "2026-06-24T11:59:00Z"
+}

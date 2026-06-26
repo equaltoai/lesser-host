@@ -247,6 +247,7 @@ func TestNormalizeClaimVerifyRetrieval(t *testing.T) {
 	})
 	if got == nil {
 		t.Fatalf("expected value")
+		return
 	}
 	if got.Mode != ai.ClaimVerifyRetrievalModeOpenAIWebSearch {
 		t.Fatalf("unexpected mode: %#v", got)

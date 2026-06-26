@@ -1659,6 +1659,7 @@ func assertSyncV3PhoneModel(t *testing.T, phoneModel *models.SoulAgentChannel, n
 	t.Helper()
 	if phoneModel == nil {
 		t.Fatalf("expected updated phone channel model call")
+		return
 	}
 	if phoneModel.Provider != "" {
 		t.Fatalf("expected self-asserted phone update not to inherit provider, got %q", phoneModel.Provider)
@@ -1678,6 +1679,7 @@ func assertSyncV3PrefsModel(t *testing.T, prefsModel *models.SoulAgentContactPre
 	t.Helper()
 	if prefsModel == nil {
 		t.Fatalf("expected contact preferences upsert model call")
+		return
 	}
 	if prefsModel.Preferred != "voice" || prefsModel.Fallback != "email" {
 		t.Fatalf("expected normalized preferences, got preferred=%q fallback=%q", prefsModel.Preferred, prefsModel.Fallback)
@@ -1710,6 +1712,7 @@ func assertSyncV3ENSResolution(t *testing.T, resolution *models.SoulAgentENSReso
 	t.Helper()
 	if resolution == nil {
 		t.Fatalf("expected canonical ENS resolution material")
+		return
 	}
 	if resolution.ENSName != canonicalENSName || resolution.AgentID != identity.AgentID {
 		t.Fatalf("unexpected ENS resolution identity: %#v", resolution)
