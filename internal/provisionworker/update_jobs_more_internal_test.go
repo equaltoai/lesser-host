@@ -1030,6 +1030,102 @@ func TestAdvanceUpdateInstanceConfig_FailsWhenInstanceMetadataMissing(t *testing
 	require.Equal(t, "missing_instance_metadata", job.ErrorCode)
 }
 
+func TestAdvanceUpdateInstanceConfig_WaitsForAssumeRoleReadiness(t *testing.T) {
+	t.Parallel()
+
+	db := ttmocks.NewMockExtendedDB()
+	qInst := new(ttmocks.MockQuery)
+
+	db.On("WithContext", mock.Anything).Return(db).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.Instance")).Return(qInst).Maybe()
+	qInst.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qInst).Maybe()
+	qInst.On("ConsistentRead").Return(qInst).Maybe()
+	qInst.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{
+			Slug:             "slug",
+			Owner:            "wallet-deadbeef",
+			HostedAccountID:  "123",
+			HostedRegion:     "us-east-1",
+			HostedBaseDomain: "example.com",
+		}
+	}).Once()
+
+	now := time.Unix(1000, 0).UTC()
+	srv := &Server{
+		cfg:   config.Config{ManagedInstanceRoleName: "role", Stage: "lab"},
+		store: store.New(db),
+		sts:   &fakeSTS{err: errors.New("AccessDenied: role is still propagating")},
+	}
+	job := &models.UpdateJob{
+		ID:           "j1",
+		InstanceSlug: "slug",
+		Status:       models.UpdateJobStatusRunning,
+		Step:         updateStepInstanceConfig,
+		MaxAttempts:  1,
+		CreatedAt:    now.Add(-time.Minute),
+	}
+
+	delay, done, err := srv.advanceUpdateInstanceConfig(context.Background(), job, "req", now)
+	require.NoError(t, err)
+	require.False(t, done)
+	require.Equal(t, provisionDefaultPollDelay, delay)
+	require.Equal(t, models.UpdateJobStatusRunning, job.Status)
+	require.Equal(t, updateStepInstanceConfig, job.Step)
+	require.Equal(t, updateInstanceRoleReadinessNote, job.Note)
+	require.Empty(t, job.ErrorCode)
+	require.Empty(t, job.ErrorMessage)
+	require.Equal(t, int64(0), job.Attempts)
+}
+
+func TestAdvanceUpdateInstanceConfig_FailsWhenAssumeRoleReadinessDeadlineExceeded(t *testing.T) {
+	t.Parallel()
+
+	db := ttmocks.NewMockExtendedDB()
+	qInst := new(ttmocks.MockQuery)
+
+	db.On("WithContext", mock.Anything).Return(db).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.Instance")).Return(qInst).Maybe()
+	qInst.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qInst).Maybe()
+	qInst.On("ConsistentRead").Return(qInst).Maybe()
+	qInst.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{
+			Slug:             "slug",
+			Owner:            "wallet-deadbeef",
+			HostedAccountID:  "123",
+			HostedRegion:     "us-east-1",
+			HostedBaseDomain: "example.com",
+		}
+	}).Once()
+
+	now := time.Unix(1000, 0).UTC()
+	srv := &Server{
+		cfg:   config.Config{ManagedInstanceRoleName: "role", Stage: "lab"},
+		store: store.New(db),
+		sts:   &fakeSTS{err: errors.New("NoSuchEntity: role has not propagated")},
+	}
+	job := &models.UpdateJob{
+		ID:           "j1",
+		InstanceSlug: "slug",
+		Status:       models.UpdateJobStatusRunning,
+		Step:         updateStepInstanceConfig,
+		MaxAttempts:  10,
+		CreatedAt:    now.Add(-(updateInstanceRoleReadinessAge + time.Second)),
+	}
+
+	delay, done, err := srv.advanceUpdateInstanceConfig(context.Background(), job, "req", now)
+	require.NoError(t, err)
+	require.False(t, done)
+	require.Equal(t, time.Duration(0), delay)
+	require.Equal(t, models.UpdateJobStatusError, job.Status)
+	require.Equal(t, updateStepFailed, job.Step)
+	require.Equal(t, updateInstanceRoleReadinessCode, job.ErrorCode)
+	require.Equal(t, updateInstanceRoleReadinessMsg, job.ErrorMessage)
+	require.Equal(t, updateInstanceRoleReadinessMsg, job.Note)
+	require.Equal(t, int64(0), job.Attempts)
+}
+
 func TestAdvanceUpdateInstanceConfig_RetriesWhenSecretsManagerClientCannotBeAssumed(t *testing.T) {
 	t.Parallel()
 

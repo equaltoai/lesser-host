@@ -66,6 +66,13 @@ const (
 	updatePhaseStatusSkipped   = "skipped"
 )
 
+const (
+	updateInstanceRoleReadinessNote = "waiting for instance role readiness before ensuring instance key secret"
+	updateInstanceRoleReadinessCode = "instance_role_not_ready"
+	updateInstanceRoleReadinessMsg  = "timed out waiting for instance role readiness before ensuring instance key secret"
+	updateInstanceRoleReadinessAge  = provisionMaxAssumeRoleAge
+)
+
 type deployRunnerInfo struct {
 	Status        string
 	DeepLink      string
@@ -766,6 +773,38 @@ func (s *Server) retryUpdateJobOrFail(
 	return jitteredBackoff(job.Attempts, baseDelay, maxDelay), false, nil
 }
 
+func updateInstanceRoleReadinessStartedAt(job *models.UpdateJob) time.Time {
+	if job == nil {
+		return time.Time{}
+	}
+	if !job.CreatedAt.IsZero() {
+		return job.CreatedAt
+	}
+	return job.UpdatedAt
+}
+
+func updateInstanceRoleReadinessDeadlineExceeded(job *models.UpdateJob, now time.Time) bool {
+	startedAt := updateInstanceRoleReadinessStartedAt(job)
+	if startedAt.IsZero() {
+		return true
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	return now.Sub(startedAt) > updateInstanceRoleReadinessAge
+}
+
+func (s *Server) waitForUpdateInstanceRoleReadiness(ctx context.Context, job *models.UpdateJob, requestID string, now time.Time) (time.Duration, bool, error) {
+	if updateInstanceRoleReadinessDeadlineExceeded(job, now) {
+		return 0, false, s.failUpdateJob(ctx, job, requestID, now, updateInstanceRoleReadinessCode, updateInstanceRoleReadinessMsg)
+	}
+	job.Note = updateInstanceRoleReadinessNote
+	if err := s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil); err != nil {
+		return 0, false, err
+	}
+	return provisionDefaultPollDelay, false, nil
+}
+
 type managedUpdateMetadata struct {
 	accountID  string
 	roleName   string
@@ -911,6 +950,9 @@ func (s *Server) advanceUpdateInstanceConfig(ctx context.Context, job *models.Up
 	}
 	secretArn, err := s.ensureManagedInstanceKeySecret(ctx, pseudo, inst)
 	if err != nil {
+		if errors.Is(err, errAssumeRoleNotReady) {
+			return s.waitForUpdateInstanceRoleReadiness(ctx, job, requestID, now)
+		}
 		return s.retryUpdateJobOrFail(ctx, job, requestID, now, "instance_key_secret_failed", "failed to ensure instance key secret: "+err.Error(), provisionDefaultShortRetryDelay, 5*time.Minute)
 	}
 
