@@ -280,6 +280,16 @@ function findLambdaByFunctionName(template: SynthesizedTemplate, namePart: strin
 	});
 }
 
+function findLambdaEntryByFunctionName(
+	template: SynthesizedTemplate,
+	namePart: string,
+): [string, { Type?: string; Properties?: Record<string, unknown> }] | undefined {
+	return findResourceEntries(template, 'AWS::Lambda::Function').find(([, resource]) => {
+		const name = resource.Properties?.FunctionName;
+		return typeof name === 'string' && name.includes(namePart);
+	});
+}
+
 function lambdaEnvironment(fn: Record<string, unknown> | undefined): Record<string, unknown> {
 	const environment = fn?.Environment;
 	if (!environment || typeof environment !== 'object') {
@@ -287,6 +297,27 @@ function lambdaEnvironment(fn: Record<string, unknown> | undefined): Record<stri
 	}
 	const variables = (environment as { Variables?: unknown }).Variables;
 	return variables && typeof variables === 'object' ? (variables as Record<string, unknown>) : {};
+}
+
+function firstLogicalReference(value: unknown): string | undefined {
+	if (typeof value === 'string') {
+		return value;
+	}
+	if (!value || typeof value !== 'object') {
+		return undefined;
+	}
+	if ('Ref' in value && typeof (value as { Ref?: unknown }).Ref === 'string') {
+		return (value as { Ref: string }).Ref;
+	}
+	const getAtt = (value as { 'Fn::GetAtt'?: unknown })['Fn::GetAtt'];
+	if (Array.isArray(getAtt) && typeof getAtt[0] === 'string') {
+		return getAtt[0];
+	}
+	for (const entry of Object.values(value as Record<string, unknown>)) {
+		const found = firstLogicalReference(entry);
+		if (found) return found;
+	}
+	return undefined;
 }
 
 function findBucketByLogicalIdPrefix(
@@ -543,7 +574,7 @@ test('provision worker receives deploy runner role arn for tenant trust repair',
 	);
 });
 
-test('hosted genesis durable async queue is wired to control plane and ai worker', () => {
+test('hosted genesis recovery queue is operator/backfill only, not control-plane authority', () => {
 	const template = synthTemplate();
 	const queues = findResourceEntries(template, 'AWS::SQS::Queue');
 	const queue = queues.find(([, resource]) =>
@@ -568,9 +599,24 @@ test('hosted genesis durable async queue is wired to control plane and ai worker
 	const aiWorker = findLambdaByFunctionName(template, 'ai-worker');
 	const controlPlaneEnv = lambdaEnvironment(controlPlane);
 	const aiWorkerEnv = lambdaEnvironment(aiWorker);
-	assert.ok('HOSTED_GENESIS_QUEUE_URL' in controlPlaneEnv, 'control plane must receive hosted genesis queue url');
+	assert.ok(
+		!('HOSTED_GENESIS_QUEUE_URL' in controlPlaneEnv),
+		'control plane must not receive hosted genesis queue url; HostedGenesisSession is user-visible authority',
+	);
 	assert.ok('HOSTED_GENESIS_QUEUE_URL' in aiWorkerEnv, 'ai worker must receive hosted genesis queue url');
 	assert.equal(aiWorker?.Timeout, 120, 'ai worker needs durable async LLM work timeout headroom');
+
+	const controlPlaneEntry = findLambdaEntryByFunctionName(template, 'control-plane-api');
+	assert.ok(controlPlaneEntry, 'expected control-plane Lambda entry');
+	const controlPlaneRoleLogicalId = firstLogicalReference(controlPlaneEntry[1].Properties?.Role);
+	assert.ok(controlPlaneRoleLogicalId, 'expected control-plane role reference');
+	const controlPlanePolicies = findResourceEntries(template, 'AWS::IAM::Policy').filter(([, policy]) =>
+		JSON.stringify(policy.Properties?.Roles ?? '').includes(controlPlaneRoleLogicalId),
+	);
+	assert.ok(
+		!JSON.stringify(controlPlanePolicies).includes(queue[0]),
+		'control-plane role must not have hosted genesis SQS SendMessage authority',
+	);
 
 	const mappings = findResources(template, 'AWS::Lambda::EventSourceMapping');
 	const mapping = mappings.find((entry) => JSON.stringify(entry).includes(queue[0]) && JSON.stringify(entry).includes('AiWorker'));
@@ -790,6 +836,25 @@ function stalePreM2TemplateFixture(template: SynthesizedTemplate): SynthesizedTe
 	return stale;
 }
 
+function staleQueueAuthorityTemplateFixture(template: SynthesizedTemplate): SynthesizedTemplate {
+	const stale = JSON.parse(JSON.stringify(template)) as SynthesizedTemplate;
+	const hostedQueue = findResourceEntries(stale, 'AWS::SQS::Queue').find(([, resource]) =>
+		resource.Properties?.QueueName === 'lesser-host-lab-hosted-genesis-queue'
+	);
+	assert.ok(hostedQueue, 'expected hosted genesis queue fixture target');
+	const controlPlane = findLambdaEntryByFunctionName(stale, 'control-plane-api');
+	assert.ok(controlPlane, 'expected control-plane fixture target');
+	const environment = (controlPlane[1].Properties?.Environment ?? {}) as Record<string, unknown>;
+	const variables = (environment.Variables ?? {}) as Record<string, unknown>;
+	variables.HOSTED_GENESIS_QUEUE_URL = { Ref: hostedQueue[0] };
+	environment.Variables = variables;
+	controlPlane[1].Properties = {
+		...(controlPlane[1].Properties ?? {}),
+		Environment: environment,
+	};
+	return stale;
+}
+
 function withPlaceholderIamPolicy(template: SynthesizedTemplate): SynthesizedTemplate {
 	const copy = JSON.parse(JSON.stringify(template)) as SynthesizedTemplate;
 	const policy = findResourceEntries(copy, 'AWS::IAM::Policy')[0];
@@ -850,14 +915,14 @@ function withoutLiveDomainBindings(template: SynthesizedTemplate): SynthesizedTe
 	return copy;
 }
 
-test('hosted genesis deploy preflight validator accepts the synthesized M2 template', () => {
+test('hosted genesis deploy preflight validator accepts the synthesized M4 template', () => {
 	const fixture = writeTemplateGuardFixture(synthTemplate());
 	try {
 		const result = runHostedGenesisTemplateGuard(fixture.path);
 		assert.equal(result.status, 0, result.stderr);
 		assert.match(
 			result.stderr,
-			/HostedGenesisQueue, HOSTED_GENESIS_QUEUE_URL, HostedGenesisQueueUrl, and AI worker EventSourceMapping/,
+			/HostedGenesisSession as user-visible authority, HostedGenesisQueue as non-authoritative operator\/backfill transport/,
 		);
 	} finally {
 		fixture.cleanup();
@@ -870,6 +935,17 @@ test('hosted genesis deploy preflight validator rejects stale pre-M2 templates',
 		const result = runHostedGenesisTemplateGuard(fixture.path);
 		assert.notEqual(result.status, 0, 'expected stale pre-M2 template to fail hosted genesis guard');
 		assert.match(result.stderr, /missing HostedGenesisQueue SQS resource/);
+	} finally {
+		fixture.cleanup();
+	}
+});
+
+test('hosted genesis deploy preflight validator rejects stale queue-authority templates', () => {
+	const fixture = writeTemplateGuardFixture(staleQueueAuthorityTemplateFixture(synthTemplate()));
+	try {
+		const result = runHostedGenesisTemplateGuard(fixture.path);
+		assert.notEqual(result.status, 0, 'expected stale queue-authority template to fail hosted genesis guard');
+		assert.match(result.stderr, /control-plane Lambda must not receive HOSTED_GENESIS_QUEUE_URL/);
 	} finally {
 		fixture.cleanup();
 	}
@@ -1258,7 +1334,7 @@ test('M0.13 distribution: bearer-auth API/trust origins are NOT OAC-protected', 
 	}
 });
 
-test('P49 M2 distribution: Lesser instance mint-conversation route uses mint-conversation REST origin', () => {
+test('P51 M4 distribution: Lesser instance mint-conversation route uses JSON control-plane origin', () => {
 	const config = distributionConfig(synthTemplate());
 	const exactLesserPattern = 'api/v1/soul/instance/agents/register/*/mint-conversation*';
 	const behavior = (config.CacheBehaviors ?? []).find((b) => b.PathPattern === exactLesserPattern);
@@ -1269,8 +1345,8 @@ test('P49 M2 distribution: Lesser instance mint-conversation route uses mint-con
 	const origin = originById(config, behavior.TargetOriginId);
 	const domainSourceId = originDomainSourceLogicalId(origin);
 	assert.ok(
-		domainSourceId.startsWith('ControlPlaneSseRestApi'),
-		`exact Lesser-used instance mint-conversation route must use the mint-conversation REST origin while returning durable JSON; got ${domainSourceId}`,
+		domainSourceId.startsWith('ControlPlaneHttpApi'),
+		`exact Lesser-used instance mint-conversation route must use the JSON control-plane origin, not the legacy SSE origin; got ${domainSourceId}`,
 	);
 });
 

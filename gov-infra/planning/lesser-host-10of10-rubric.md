@@ -9,7 +9,8 @@ This rubric defines what “10/10” means and how category grades are computed.
 - **Change rule:** bump the version + changelog entry for any rubric change (what changed + why).
 
 ### Changelog
-- `v0.1.6`: Tighten SEC-8 CloudFront composition verification so the exact Lesser-used instance-key registration mint-conversation SSE route must be present and pinned to the SSE-capable control-plane origin.
+- `v0.1.7`: Replace the SEC-8 Lesser instance-key mint-conversation SSE-route guard with the M4 durable-session invariant: the exact Lesser-used instance-key registration mint-conversation route must be present and pinned to the JSON control-plane origin while legacy operator/UI streaming routes remain pinned to the SSE-capable origin.
+- `v0.1.6`: Tighten SEC-8 CloudFront composition verification so the exact Lesser-used instance-key registration mint-conversation SSE route must be present and pinned to the SSE-capable control-plane origin. Superseded for the Lesser instance-key route by `v0.1.7`.
 - `v0.1.5`: Add CMP-4 bounded soul comm mailbox controls verifier for the approved host-authoritative mailbox content/state exception.
 - `v0.1.4`: Extend CON-3 to include lesser-host REST contract parity for the soul mint-conversation surface and the generated adapter/SSE companion artifacts.
 - `v0.1.3`: Extend CON-2 to include Solidity lint (solhint) and SEC-1 to include Solidity SAST (Slither) via the rubric verifier.

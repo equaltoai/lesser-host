@@ -67,8 +67,10 @@ func (s *Server) handleSoulMintConversationForRegistrationAsync(ctx *apptheory.C
 		})
 	}
 	if _, appErr := s.apiKeyForMintConversationModel(ctx.Context(), session.modelSet); appErr != nil {
-		// Validate provider configuration before debiting or enqueueing. The worker
-		// reloads the key for the actual LLM call.
+		// Validate provider configuration before accepting a paid hosted-genesis
+		// execution handoff. Project 51 M4 deliberately keeps SQS out of this
+		// user-visible path; execution/recovery authority is the durable session
+		// plus AppTheory MicroVM execution/cache state.
 		return nil, appErr
 	}
 
@@ -82,9 +84,6 @@ func (s *Server) handleSoulMintConversationForRegistrationAsync(ctx *apptheory.C
 	}
 
 	conv := buildHostedGenesisAcceptedConversation(regCtx, session, req, messagesJSON, strings.TrimSpace(ctx.RequestID), now)
-	if enqueueErr := s.enqueueHostedGenesisTurn(ctx.Context(), buildHostedGenesisAssistantQueueMessage(regCtx, instanceSlug, session, req, strings.TrimSpace(ctx.RequestID))); enqueueErr != nil {
-		log.Printf("controlplane: hosted genesis session accepted without queue delivery agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(regCtx.agentIDHex), soulMintInstanceReadAuditHash(session.conversationID), enqueueErr)
-	}
 
 	if appErr := s.saveHostedGenesisAcceptedPromotion(ctx.Context(), regCtx, session, strings.TrimSpace(ctx.RequestID), now); appErr != nil {
 		log.Printf("controlplane: hosted genesis session accepted without promotion update agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(regCtx.agentIDHex), soulMintInstanceReadAuditHash(session.conversationID), appErr)
@@ -122,21 +121,6 @@ func buildHostedGenesisAcceptedConversation(regCtx mintConversationRegistrationC
 		conv.CreatedAt = now
 	}
 	return conv
-}
-
-func buildHostedGenesisAssistantQueueMessage(regCtx mintConversationRegistrationContext, instanceSlug string, session hostedGenesisTurnSession, req soulMintConversationRequest, requestID string) hostedgenesis.QueueMessage {
-	return hostedgenesis.QueueMessage{
-		Kind:           hostedgenesis.QueueMessageKind,
-		Step:           hostedgenesis.StepAssistantTurn,
-		RegistrationID: strings.TrimSpace(regCtx.reg.ID),
-		InstanceSlug:   strings.TrimSpace(instanceSlug),
-		AgentID:        strings.TrimSpace(regCtx.agentIDHex),
-		ConversationID: strings.TrimSpace(session.conversationID),
-		TurnID:         strings.TrimSpace(session.turnID),
-		RequestID:      strings.TrimSpace(requestID),
-		CorrelationID:  strings.TrimSpace(req.CorrelationID),
-		IdempotencyKey: strings.TrimSpace(req.IdempotencyKey),
-	}
 }
 
 func (s *Server) saveHostedGenesisAcceptedPromotion(ctx context.Context, regCtx mintConversationRegistrationContext, session hostedGenesisTurnSession, requestID string, now time.Time) *apptheory.AppError {
@@ -562,20 +546,6 @@ func addHostedGenesisSessionWrite(tx core.TransactionBuilder, session *models.Ho
 	return nil
 }
 
-func (s *Server) enqueueHostedGenesisTurn(ctx context.Context, msg hostedgenesis.QueueMessage) error {
-	if s == nil || s.enqueueHostedGenesisMessage == nil {
-		return fmt.Errorf("hosted genesis queue is not configured")
-	}
-	if strings.TrimSpace(msg.Kind) == "" {
-		msg.Kind = hostedgenesis.QueueMessageKind
-	}
-	if err := s.enqueueHostedGenesisMessage(ctx, msg); err != nil {
-		log.Printf("controlplane: enqueue hosted genesis turn failed agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(msg.AgentID), soulMintInstanceReadAuditHash(msg.ConversationID), err)
-		return err
-	}
-	return nil
-}
-
 func (s *Server) startHostedGenesisDeclarationExtraction(ctx *apptheory.Context, convCtx soulInstanceBootstrapConversationContext) error {
 	if convCtx.session == nil {
 		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
@@ -625,22 +595,9 @@ func (s *Server) startHostedGenesisDeclarationExtraction(ctx *apptheory.Context,
 			convCtx.conv.UpdatedAt = now
 		}
 	}
-	msg := hostedgenesis.QueueMessage{
-		Kind:           hostedgenesis.QueueMessageKind,
-		Step:           hostedgenesis.StepDeclarationExtraction,
-		RegistrationID: strings.TrimSpace(convCtx.reg.ID),
-		InstanceSlug:   strings.TrimSpace(convCtx.instanceSlug),
-		AgentID:        strings.TrimSpace(convCtx.agentIDHex),
-		ConversationID: strings.TrimSpace(convCtx.conversationID),
-		TurnID:         strings.TrimSpace(convCtx.session.LatestTurnID),
-		RequestID:      strings.TrimSpace(ctx.RequestID),
-	}
-	if convCtx.session.TraceIDs != nil {
-		msg.CorrelationID = strings.TrimSpace(convCtx.session.TraceIDs.CorrelationID)
-		msg.IdempotencyKey = strings.TrimSpace(convCtx.session.TraceIDs.IdempotencyKey)
-	}
-	if err := s.enqueueHostedGenesisTurn(ctx.Context(), msg); err != nil {
-		log.Printf("controlplane: hosted genesis declaration extraction marked pending without queue delivery agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(convCtx.agentIDHex), soulMintInstanceReadAuditHash(convCtx.conversationID), err)
-	}
+	// M4 demotes hosted-genesis SQS to operator/backfill recovery only. The
+	// user-visible complete path records the durable pending state and returns
+	// the HostedGenesisSession projection; it does not rely on queue delivery,
+	// DLQ state, or AI-worker liveness to make status/finalize decisions.
 	return nil
 }

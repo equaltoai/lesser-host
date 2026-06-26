@@ -690,14 +690,13 @@ func TestSoulInstanceFinalizeMintConversation_ConversationIdsCannotCrossRegistra
 	}
 }
 
-func TestSoulInstanceMintConversation_StartReturnsJSONAndEnqueuesDurableState(t *testing.T) {
+func TestSoulInstanceMintConversation_StartReturnsJSONWithoutQueueAuthority(t *testing.T) {
 	tdb := newMintConversationTestDB()
 	s := newMintConversationServer(tdb)
 	reg := mintConversationHandleReg()
 	t.Setenv("ANTHROPIC_API_KEY", "anthropic-test-key")
-	enqueued := make(chan hostedgenesis.QueueMessage, 1)
 	s.enqueueHostedGenesisMessage = func(_ context.Context, msg hostedgenesis.QueueMessage) error {
-		enqueued <- msg
+		t.Fatalf("user-visible hosted genesis start must not enqueue SQS authority: %#v", msg)
 		return nil
 	}
 
@@ -717,7 +716,9 @@ func TestSoulInstanceMintConversation_StartReturnsJSONAndEnqueuesDurableState(t 
 		t.Fatalf("unexpected err: %v", err)
 	}
 	out := assertSoulInstanceMintConversationAcceptedResponse(t, resp)
-	assertSoulInstanceMintConversationQueued(t, enqueued, reg.ID, out.Conversation.ConversationID)
+	if out.Conversation.RegistrationID != reg.ID {
+		t.Fatalf("expected durable session authority for registration %s, got %#v", reg.ID, out.Conversation)
+	}
 	tdb.qLifecycle.AssertCalled(t, "Create")
 }
 
@@ -726,9 +727,8 @@ func TestSoulInstanceMintConversation_IdempotentRetryDoesNotDebitOrAppend(t *tes
 	s := newMintConversationServer(tdb)
 	reg := mintConversationHandleReg()
 	t.Setenv("ANTHROPIC_API_KEY", "anthropic-test-key")
-	enqueued := make(chan hostedgenesis.QueueMessage, 1)
 	s.enqueueHostedGenesisMessage = func(_ context.Context, msg hostedgenesis.QueueMessage) error {
-		enqueued <- msg
+		t.Fatalf("idempotent replay must not enqueue duplicate user-visible execution: %#v", msg)
 		return nil
 	}
 	idemKey := "idem-retry-1"
@@ -800,11 +800,6 @@ func TestSoulInstanceMintConversation_IdempotentRetryDoesNotDebitOrAppend(t *tes
 	if out.Conversation.ConversationID != mintConversationTestConversationID || out.Conversation.MessageCount != 1 || out.Conversation.TraceIDs.IdempotencyKey != idemKey {
 		t.Fatalf("expected idempotent status replay without duplicate user message, got %#v", out)
 	}
-	select {
-	case msg := <-enqueued:
-		t.Fatalf("idempotent replay must not enqueue duplicate user-visible execution: %#v", msg)
-	default:
-	}
 	tdb.db.AssertNumberOfCalls(t, "TransactWrite", 0)
 	tdb.qBudget.AssertNumberOfCalls(t, "First", 0)
 }
@@ -843,9 +838,8 @@ func TestSoulInstanceMintConversation_ContinueUsesStoredModelAndMessages(t *test
 	s := newMintConversationServer(tdb)
 	reg := mintConversationHandleReg()
 	t.Setenv("ANTHROPIC_API_KEY", "anthropic-test-key")
-	enqueued := make(chan hostedgenesis.QueueMessage, 1)
 	s.enqueueHostedGenesisMessage = func(_ context.Context, msg hostedgenesis.QueueMessage) error {
-		enqueued <- msg
+		t.Fatalf("continued user-visible hosted genesis turn must not enqueue SQS authority: %#v", msg)
 		return nil
 	}
 
@@ -881,14 +875,6 @@ func TestSoulInstanceMintConversation_ContinueUsesStoredModelAndMessages(t *test
 	}
 	if out.Conversation.ConversationID != mintConversationTestConversationID || out.Conversation.Status != models.SoulMintConversationStatusInProgress || out.Conversation.MessageCount != 3 {
 		t.Fatalf("expected stored conversation status with appended user turn, got %#v", out)
-	}
-	select {
-	case msg := <-enqueued:
-		if msg.ConversationID != mintConversationTestConversationID || msg.Step != hostedgenesis.StepAssistantTurn {
-			t.Fatalf("unexpected queued message: %#v", msg)
-		}
-	case <-time.After(time.Second):
-		t.Fatalf("hosted genesis turn was not enqueued")
 	}
 }
 
@@ -1004,13 +990,12 @@ func TestSoulInstanceCompleteMintConversation_PersistsDeclarationsAndFinalizeRea
 	tdb.qLifecycle.AssertCalled(t, "Create")
 }
 
-func TestSoulInstanceCompleteMintConversation_AssistantReadyWithoutDeclarationsQueuesExtraction(t *testing.T) {
+func TestSoulInstanceCompleteMintConversation_AssistantReadyWithoutDeclarationsDoesNotQueueExtraction(t *testing.T) {
 	tdb := newMintConversationTestDB()
 	s := newMintConversationServer(tdb)
 	reg := mintConversationHandleReg()
-	enqueued := make(chan hostedgenesis.QueueMessage, 1)
 	s.enqueueHostedGenesisMessage = func(_ context.Context, msg hostedgenesis.QueueMessage) error {
-		enqueued <- msg
+		t.Fatalf("user-visible declaration extraction handoff must not enqueue SQS authority: %#v", msg)
 		return nil
 	}
 	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
@@ -1045,14 +1030,6 @@ func TestSoulInstanceCompleteMintConversation_AssistantReadyWithoutDeclarationsQ
 	}
 	if out.Conversation.Status != models.SoulMintConversationStatusDeclarationExtractionPending || out.Conversation.ProducedDeclarations != nil {
 		t.Fatalf("expected declaration extraction progress without terminal declarations, got %#v", out)
-	}
-	select {
-	case msg := <-enqueued:
-		if msg.Step != hostedgenesis.StepDeclarationExtraction || msg.ConversationID != mintConversationTestConversationID {
-			t.Fatalf("unexpected extraction queue message: %#v", msg)
-		}
-	case <-time.After(time.Second):
-		t.Fatalf("expected declaration extraction to be enqueued")
 	}
 }
 
@@ -1337,6 +1314,10 @@ func TestSoulInstanceHostedInstanceTrustFinalizePreflightOmitsWalletSignatures(t
 	reg, identity, completedConv := soulInstanceHostedFinalizeFixture(t)
 	tdb := newMintConversationTestDB()
 	s := newMintConversationServer(tdb)
+	s.enqueueHostedGenesisMessage = func(_ context.Context, msg hostedgenesis.QueueMessage) error {
+		t.Fatalf("finalize preflight must use HostedGenesisSession gate, not SQS: %#v", msg)
+		return nil
+	}
 	stubSoulInstanceFinalizeReadContext(t, tdb, reg, identity, completedConv)
 
 	resp, err := s.handleSoulInstanceBeginFinalizeMintConversation(newSoulInstanceBootstrapContext(
@@ -2175,22 +2156,6 @@ func assertSoulInstanceMintConversationAcceptedResponse(t *testing.T, resp *appt
 		t.Fatalf("response leaked transcript or credential material: %s", string(resp.Body))
 	}
 	return out
-}
-
-func assertSoulInstanceMintConversationQueued(t *testing.T, enqueued <-chan hostedgenesis.QueueMessage, registrationID string, conversationID string) {
-	t.Helper()
-	select {
-	case msg := <-enqueued:
-		if msg.Kind != hostedgenesis.QueueMessageKind ||
-			msg.Step != hostedgenesis.StepAssistantTurn ||
-			msg.ConversationID != conversationID ||
-			msg.RegistrationID != registrationID ||
-			msg.IdempotencyKey != soulInstanceBootstrapTestIdempotencyKey {
-			t.Fatalf("unexpected queued message: %#v", msg)
-		}
-	case <-time.After(time.Second):
-		t.Fatalf("hosted genesis turn was not enqueued")
-	}
 }
 
 func assertSoulInstanceCompleteTerminalConflict(t *testing.T, legacyStatus string, expectedSessionStatus string, reason string) {
