@@ -507,7 +507,6 @@ export class LesserHostStack extends cdk.Stack {
 			SAFETY_QUEUE_URL: safetyQueue.queueUrl,
 			PROVISION_QUEUE_URL: provisionQueue.queueUrl,
 			COMM_QUEUE_URL: commQueue.queueUrl,
-			HOSTED_GENESIS_QUEUE_URL: hostedGenesisQueue.queueUrl,
 			SOUL_COMM_MAILBOX_BUCKET_NAME: soulCommMailboxBucket.bucketName,
 			SOUL_COMM_MAILBOX_RETENTION_DAYS: String(soulCommMailboxRetentionDays),
 			BOOTSTRAP_WALLET_ADDRESS: bootstrapWalletAddress,
@@ -719,7 +718,6 @@ export class LesserHostStack extends cdk.Stack {
 		safetyQueue.grantSendMessages(controlPlaneFn);
 		safetyQueue.grantSendMessages(trustFn);
 		safetyQueue.grantConsumeMessages(aiWorkerFn);
-		hostedGenesisQueue.grantSendMessages(controlPlaneFn);
 		hostedGenesisQueue.grantConsumeMessages(aiWorkerFn);
 		provisionQueue.grantSendMessages(controlPlaneFn);
 		provisionQueue.grantConsumeMessages(provisionWorkerFn);
@@ -1611,7 +1609,8 @@ export class LesserHostStack extends cdk.Stack {
 		attachBearerBehavior('api/v1/budget/debit', trustApiBehavior);
 		attachBearerBehavior('api/v1/soul/agents/register/*/mint-conversation*', apiSseBehavior);
 		attachBearerBehavior('api/v1/soul/agents/*/mint-conversation*', apiSseBehavior);
-		attachBearerBehavior('api/v1/soul/instance/agents/register/*/mint-conversation*', apiSseBehavior);
+		// Lesser instance-key hosted-genesis uses JSON HostedGenesisSession authority, not legacy SSE/queue authority.
+		attachBearerBehavior('api/v1/soul/instance/agents/register/*/mint-conversation*', apiBehavior);
 
 		attachBearerBehavior('api/*', apiBehavior);
 		attachBearerBehavior('auth/*', apiBehavior);

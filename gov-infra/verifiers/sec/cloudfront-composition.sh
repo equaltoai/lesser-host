@@ -10,7 +10,7 @@
 #      GET/HEAD/OPTIONS only).
 #   3. Every required bearer-auth cache behavior is present with exact
 #      PathPattern matching (no fuzzy fallback), routes to its intended named
-#      origin (trust API, control-plane HTTP API, or control-plane SSE), and
+#      origin (trust API, control-plane HTTP API, or control-plane SSE for legacy UI streaming only), and
 #      the target origin must NOT carry OAC. Missing or misrouted → FAIL.
 #   4. S3 origins (framework-driven by AppTheorySsrSite + our htmlStoreBucket
 #      sidecar) and the default SSR Function URL origin may carry OAC.
@@ -47,7 +47,7 @@ CONTROL_PLANE_SSE_ORIGIN_MARKER="ControlPlaneSseRestApi"
 # Patterns are sourced from cdk/lib/lesser-host-stack.ts attachBearerBehavior()
 # calls. Missing any required behavior is a FAIL (fail-closed). The third field
 # is the intended named origin role for route-pinning.
-REQUIRED_BEARER_BEHAVIORS=$'resolve*|trust|trust-api resolver\nhealth*|trust|trust-api health\napi/v1/previews*|trust|trust-api previews\napi/v1/renders*|trust|trust-api renders\napi/v1/trust/*|trust|trust-api trust\napi/v1/publish/jobs*|trust|trust-api publish jobs\napi/v1/soul/agents/*/update-registration|trust|trust-api update-registration\napi/v1/ai/*|trust|trust-api AI\napi/v1/budget/debit|trust|trust-api budget debit\napi/v1/soul/agents/register/*/mint-conversation*|sse|control-plane SSE mint-conversation (register)\napi/v1/soul/agents/*/mint-conversation*|sse|control-plane SSE mint-conversation\napi/v1/soul/instance/agents/register/*/mint-conversation*|sse|control-plane SSE mint-conversation (instance register)\napi/*|control-plane|control-plane API catch-all\nauth/*|control-plane|control-plane auth\nwebhooks/*|control-plane|control-plane webhooks\nsetup/status|control-plane|control-plane setup status\nsetup/bootstrap/*|control-plane|control-plane setup bootstrap\nsetup/admin|control-plane|control-plane setup admin\nsetup/finalize|control-plane|control-plane setup finalize\n.well-known/*|trust|trust-api .well-known\nattestations|trust|trust-api attestations exact\nattestations/*|trust|trust-api attestations wildcard'
+REQUIRED_BEARER_BEHAVIORS=$'resolve*|trust|trust-api resolver\nhealth*|trust|trust-api health\napi/v1/previews*|trust|trust-api previews\napi/v1/renders*|trust|trust-api renders\napi/v1/trust/*|trust|trust-api trust\napi/v1/publish/jobs*|trust|trust-api publish jobs\napi/v1/soul/agents/*/update-registration|trust|trust-api update-registration\napi/v1/ai/*|trust|trust-api AI\napi/v1/budget/debit|trust|trust-api budget debit\napi/v1/soul/agents/register/*/mint-conversation*|sse|control-plane SSE mint-conversation (register)\napi/v1/soul/agents/*/mint-conversation*|sse|control-plane SSE mint-conversation\napi/v1/soul/instance/agents/register/*/mint-conversation*|control-plane|control-plane HostedGenesisSession JSON mint-conversation (instance register)\napi/*|control-plane|control-plane API catch-all\nauth/*|control-plane|control-plane auth\nwebhooks/*|control-plane|control-plane webhooks\nsetup/status|control-plane|control-plane setup status\nsetup/bootstrap/*|control-plane|control-plane setup bootstrap\nsetup/admin|control-plane|control-plane setup admin\nsetup/finalize|control-plane|control-plane setup finalize\n.well-known/*|trust|trust-api .well-known\nattestations|trust|trust-api attestations exact\nattestations/*|trust|trust-api attestations wildcard'
 REQUIRED_BEARER_BEHAVIOR_COUNT=22
 NO_USER_AGENT_MANAGED_RULE="NoUserAgent_HEADER"
 NO_USER_AGENT_MANAGED_LABEL="awswaf:managed:aws:core-rule-set:NoUserAgent_Header"
@@ -628,4 +628,4 @@ if [[ "${fail}" -ne 0 ]]; then
 fi
 
 echo ""
-echo "PASS: CloudFront distribution composition verified (SSR Lambda URL AWS_IAM/OAC default, S3 sidecar, ${REQUIRED_BEARER_BEHAVIOR_COUNT} bearer-auth behaviors pinned to intended origins, WAF no-User-Agent exception scoped to exact /resolve, OAC audit clean)"
+echo "PASS: CloudFront distribution composition verified (SSR Lambda URL AWS_IAM/OAC default, S3 sidecar, ${REQUIRED_BEARER_BEHAVIOR_COUNT} bearer-auth behaviors pinned to intended origins, instance hosted-genesis JSON route pinned to control-plane authority, WAF no-User-Agent exception scoped to exact /resolve, OAC audit clean)"

@@ -1,8 +1,12 @@
 package hostedgenesis
 
-// QueueMessage is the durable async worker command for hosted/off-chain soul
-// genesis. It carries only ids, hashes, and bounded client-safe correlation
-// values; raw credentials and raw transcript text stay in Host's store.
+// QueueMessage is the non-authoritative hosted/off-chain soul genesis recovery
+// command shape. Project 51 M4 demotes this SQS payload to janitor, telemetry,
+// backfill, and operator recovery use only: user-visible progress, retry
+// guidance, and finalize decisions must come from HostedGenesisSession plus
+// AppTheory MicroVM execution/cache state. It carries only ids, hashes, and
+// bounded client-safe correlation values; raw credentials and raw transcript
+// text stay out of queue payloads.
 type QueueMessage struct {
 	Kind           string `json:"kind"`
 	Step           string `json:"step"`

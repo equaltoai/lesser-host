@@ -160,6 +160,7 @@ func (s *Server) handleSoulInstanceMintConversation(ctx *apptheory.Context) (*ap
 }
 
 func (s *Server) handleSoulInstanceGetRegistrationMintConversation(ctx *apptheory.Context) (*apptheory.Response, error) {
+	started := time.Now().UTC()
 	convCtx, appErr := s.requireSoulInstanceBootstrapConversationContext(ctx)
 	if appErr != nil {
 		return nil, appErr
@@ -168,11 +169,16 @@ func (s *Server) handleSoulInstanceGetRegistrationMintConversation(ctx *apptheor
 	if appErr := rejectOversizeSoulMintInstanceConversation(convCtx.conv); appErr != nil {
 		return nil, appErr
 	}
-	return hostedGenesisConversationJSONFromSession(http.StatusOK, convCtx.session, convCtx.conv, hostedGenesisProjectionOptions{
+	resp, err := hostedGenesisConversationJSONFromSession(http.StatusOK, convCtx.session, convCtx.conv, hostedGenesisProjectionOptions{
 		RegistrationID:  convCtx.reg.ID,
 		RequestID:       strings.TrimSpace(ctx.RequestID),
 		CollapseCreated: true,
 	})
+	if err != nil {
+		return nil, err
+	}
+	s.recordSoulMintInstanceReadAudit(ctx, convCtx.key, convCtx.agentIDHex, convCtx.conversationID, soulMintInstanceReadRouteSingle, "success", resp.Status, len(resp.Body), started)
+	return resp, nil
 }
 
 func (s *Server) handleSoulInstanceCompleteMintConversation(ctx *apptheory.Context) (*apptheory.Response, error) {

@@ -168,7 +168,7 @@
             },
             {
               "PathPattern": "api/v1/soul/instance/agents/register/*/mint-conversation*",
-              "TargetOriginId": "sse-origin"
+              "TargetOriginId": "control-plane-origin"
             },
             {
               "PathPattern": "api/*",
