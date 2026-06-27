@@ -20,6 +20,7 @@ test('RUN_MODE=lesser uses the CLI binary with --release-dir', () => {
 	assert.match(buildCommands, /prepare_lesser_release_dir "\$LESSER_RELEASE_DIR"/);
 	assert.match(buildCommands, /prepare_lesser_checkout_dir "\$LESSER_RELEASE_DIR" "\$LESSER_CHECKOUT_DIR"/);
 	assert.match(buildCommands, /ensure_lesser_go_toolchain "\$LESSER_RELEASE_DIR"/);
+	assert.match(buildCommands, /ensure_lesser_host_instance_key_secret/);
 	assert.match(buildCommands, /export GOTOOLCHAIN="\$\{GOTOOLCHAIN:-auto\}"/);
 	assert.match(buildCommands, /cd "\$LESSER_CHECKOUT_DIR"/);
 	assert.match(buildCommands, /"\$LESSER_RELEASE_DIR\/lesser" up --app "\$APP_SLUG" --base-domain "\$BASE_DOMAIN" --aws-profile managed --provisioning-input "\$PROVISION_INPUT" --release-dir "\$LESSER_RELEASE_DIR"/);
@@ -36,6 +37,7 @@ test('RUN_MODE=lesser-body uses the release helper instead of a source checkout'
 	assert.match(buildCommands, /BODY_FAILURE_S3_KEY/);
 	assert.match(buildCommands, /body-template-certification\.json/);
 	assert.match(buildCommands, /body-failure\.json/);
+	assert.match(buildCommands, /managed_instance_key:\$instance_key\[0\]/);
 	assert.match(buildCommands, /prepare_lesser_body_auxiliary_assets/);
 	assert.match(buildCommands, /upload_lesser_body_auxiliary_assets "\$BODY_RELEASE_DIR" "\$BODY_ASSET_BUCKET" "\$BODY_ASSET_PREFIX"/);
 	assert.match(buildCommands, /AWS_PROFILE=managed aws s3 cp "\$body_release_dir\/\$path" "s3:\/\/\$body_asset_bucket\/\$object_key"/);
@@ -49,6 +51,7 @@ test('RUN_MODE=lesser-body uses the release helper instead of a source checkout'
 test('RUN_MODE=lesser-mcp uses the CLI binary with --release-dir', () => {
 	assert.match(buildCommands, /prepare_lesser_checkout_dir "\$LESSER_RELEASE_DIR" "\$LESSER_CHECKOUT_DIR"/);
 	assert.match(buildCommands, /ensure_lesser_go_toolchain "\$LESSER_RELEASE_DIR"/);
+	assert.match(buildCommands, /managed_instance_key:\$instance_key\[0\]/);
 	assert.match(buildCommands, /cd "\$LESSER_CHECKOUT_DIR"/);
 	assert.match(buildCommands, /"\$LESSER_RELEASE_DIR\/lesser" up --app "\$APP_SLUG" --base-domain "\$BASE_DOMAIN" --aws-profile managed --provisioning-input "\$PROVISION_INPUT" --release-dir "\$LESSER_RELEASE_DIR"/);
 	assert.match(buildCommands, /mcp_lambda_arn/);
@@ -56,6 +59,15 @@ test('RUN_MODE=lesser-mcp uses the CLI binary with --release-dir', () => {
 	assert.doesNotMatch(buildCommands, /npx cdk deploy/);
 	assert.doesNotMatch(buildCommands, /deploy_lesser_assembly_stack/);
 	assert.doesNotMatch(buildCommands, /aws cloudformation deploy/);
+});
+
+test('runner manages instance-key secret through managed profile receipt proof', () => {
+	assert.match(buildCommands, /aws secretsmanager describe-secret --profile managed --secret-id "\$secret_ref"/);
+	assert.match(buildCommands, /aws secretsmanager create-secret --profile managed/);
+	assert.match(buildCommands, /aws secretsmanager update-secret --profile managed --secret-id "\$secret_arn"/);
+	assert.match(buildCommands, /write_managed_instance_key_receipt "\$MANAGED_INSTANCE_KEY_RECEIPT_PATH"/);
+	assert.match(buildCommands, /managed_instance_key:\$instance_key\[0\]/);
+	assert.doesNotMatch(buildCommands, /secret:\$plaintext/);
 });
 
 test('runner emits explicit asset-contract failure messages', () => {

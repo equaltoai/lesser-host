@@ -878,6 +878,299 @@ func TestResolveUpdateDeployRunnerInputs_ErrorsForNonWalletOwner(t *testing.T) {
 	require.Error(t, err)
 }
 
+func updateStartBuildEnvValue(in *codebuild.StartBuildInput, name string) string {
+	if in == nil {
+		return ""
+	}
+	for _, env := range in.EnvironmentVariablesOverride {
+		if strings.TrimSpace(aws.ToString(env.Name)) == name {
+			return strings.TrimSpace(aws.ToString(env.Value))
+		}
+	}
+	return ""
+}
+
+func TestManagedInstanceKeyReceiptValidationBindsUpdateJob(t *testing.T) {
+	t.Parallel()
+
+	const keyID = "38ed91d202121369e6ad8f501c2839590ba5427b51cf16422f446d99f031601b"
+	baseJob := &models.UpdateJob{
+		ID:           "job1",
+		InstanceSlug: "theory",
+		AccountID:    "922120356241",
+		Region:       "us-east-1",
+	}
+	baseReceipt := managedInstanceKeyReceipt{
+		Version:      1,
+		Source:       managedInstanceKeyReceiptSourceDeployRunner,
+		SecretARN:    "arn:aws:secretsmanager:us-east-1:922120356241:secret:theory/instance-key",
+		KeyID:        keyID,
+		InstanceSlug: "theory",
+		Stage:        "live",
+		VerifiedAt:   "2026-06-27T00:00:00Z",
+	}
+
+	require.NoError(t, (&Server{cfg: config.Config{Stage: "live"}}).validateManagedInstanceKeyReceipt(baseJob, &baseReceipt))
+
+	tests := []struct {
+		name    string
+		server  *Server
+		job     *models.UpdateJob
+		receipt *managedInstanceKeyReceipt
+		want    string
+	}{
+		{
+			name:    "nil server",
+			server:  nil,
+			job:     baseJob,
+			receipt: &baseReceipt,
+			want:    "server is nil",
+		},
+		{
+			name:    "nil job",
+			server:  &Server{cfg: config.Config{Stage: "live"}},
+			job:     nil,
+			receipt: &baseReceipt,
+			want:    "job is nil",
+		},
+		{
+			name:    "missing proof",
+			server:  &Server{cfg: config.Config{Stage: "live"}},
+			job:     baseJob,
+			receipt: nil,
+			want:    "managed instance key proof missing",
+		},
+		{
+			name:   "unsupported version",
+			server: &Server{cfg: config.Config{Stage: "live"}},
+			job:    baseJob,
+			receipt: func() *managedInstanceKeyReceipt {
+				r := baseReceipt
+				r.Version = 2
+				return &r
+			}(),
+			want: "unsupported managed instance key receipt version",
+		},
+		{
+			name:   "invalid source",
+			server: &Server{cfg: config.Config{Stage: "live"}},
+			job:    baseJob,
+			receipt: func() *managedInstanceKeyReceipt {
+				r := baseReceipt
+				r.Source = "provision-worker"
+				return &r
+			}(),
+			want: "managed instance key receipt source is invalid",
+		},
+		{
+			name:   "slug mismatch",
+			server: &Server{cfg: config.Config{Stage: "live"}},
+			job:    baseJob,
+			receipt: func() *managedInstanceKeyReceipt {
+				r := baseReceipt
+				r.InstanceSlug = "other"
+				return &r
+			}(),
+			want: "managed instance key receipt slug does not match",
+		},
+		{
+			name:   "missing stage",
+			server: &Server{cfg: config.Config{Stage: "live"}},
+			job:    baseJob,
+			receipt: func() *managedInstanceKeyReceipt {
+				r := baseReceipt
+				r.Stage = ""
+				return &r
+			}(),
+			want: "managed instance key receipt stage is missing",
+		},
+		{
+			name:   "stage mismatch",
+			server: &Server{cfg: config.Config{Stage: "lab"}},
+			job:    baseJob,
+			receipt: func() *managedInstanceKeyReceipt {
+				r := baseReceipt
+				r.Stage = "live"
+				return &r
+			}(),
+			want: "managed instance key receipt stage does not match",
+		},
+		{
+			name:   "invalid arn",
+			server: &Server{cfg: config.Config{Stage: "live"}},
+			job:    baseJob,
+			receipt: func() *managedInstanceKeyReceipt {
+				r := baseReceipt
+				r.SecretARN = "theory/instance-key"
+				return &r
+			}(),
+			want: "managed instance key receipt secret ARN is invalid",
+		},
+		{
+			name:   "account mismatch",
+			server: &Server{cfg: config.Config{Stage: "live"}},
+			job:    baseJob,
+			receipt: func() *managedInstanceKeyReceipt {
+				r := baseReceipt
+				r.SecretARN = "arn:aws:secretsmanager:us-east-1:000000000000:secret:theory/instance-key"
+				return &r
+			}(),
+			want: "managed instance key receipt secret ARN account does not match",
+		},
+		{
+			name:   "region mismatch",
+			server: &Server{cfg: config.Config{Stage: "live"}},
+			job:    baseJob,
+			receipt: func() *managedInstanceKeyReceipt {
+				r := baseReceipt
+				r.SecretARN = "arn:aws:secretsmanager:us-west-2:922120356241:secret:theory/instance-key"
+				return &r
+			}(),
+			want: "managed instance key receipt secret ARN region does not match",
+		},
+		{
+			name:   "invalid key id",
+			server: &Server{cfg: config.Config{Stage: "live"}},
+			job:    baseJob,
+			receipt: func() *managedInstanceKeyReceipt {
+				r := baseReceipt
+				r.KeyID = strings.Repeat("z", 64)
+				return &r
+			}(),
+			want: "managed instance key receipt has invalid key id",
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := tc.server.validateManagedInstanceKeyReceipt(tc.job, tc.receipt)
+			require.ErrorContains(t, err, tc.want)
+		})
+	}
+}
+
+func TestManagedInstanceKeyReceiptJSONParsing(t *testing.T) {
+	t.Parallel()
+
+	receipt, err := managedInstanceKeyReceiptFromJSON("   ")
+	require.NoError(t, err)
+	require.Nil(t, receipt)
+
+	receipt, err = managedInstanceKeyReceiptFromJSON(`{"managed_instance_key":{"version":1,"source":"deploy-runner-managed-profile"}}`)
+	require.NoError(t, err)
+	require.NotNil(t, receipt)
+	require.Equal(t, 1, receipt.Version)
+	require.Equal(t, managedInstanceKeyReceiptSourceDeployRunner, receipt.Source)
+
+	_, err = managedInstanceKeyReceiptFromJSON(`{"managed_instance_key":`)
+	require.Error(t, err)
+}
+
+func TestStartUpdateDeployRunnerWithMode_DoesNotPreflightTargetAccountAccess(t *testing.T) {
+	t.Parallel()
+
+	cb := &fakeCodebuild{startOut: &codebuild.StartBuildOutput{Build: &cbtypes.Build{Id: aws.String("run1")}}}
+	stsClient := &fakeSTS{err: errors.New("AccessDenied")}
+	srv := &Server{
+		cfg: config.Config{
+			Stage:                             "live",
+			ManagedInstanceRoleName:           "OrganizationAccountAccessRole",
+			ManagedProvisionRunnerProjectName: "runner-project",
+			ManagedProvisionRunnerRoleARN:     "arn:aws:iam::693925625407:role/runner",
+			ArtifactBucketName:                "artifact-bucket",
+			ManagedLesserGitHubOwner:          "equaltoai",
+			ManagedLesserGitHubRepo:           "lesser",
+		},
+		cb:  cb,
+		sts: stsClient,
+		iamFactory: func(context.Context, string, string, string, string, string) (iamAPI, error) {
+			t.Fatalf("startUpdateDeployRunnerWithMode must not preflight target-account IAM")
+			return nil, errors.New("unexpected target IAM preflight")
+		},
+	}
+	job := &models.UpdateJob{
+		ID:                             "job1",
+		InstanceSlug:                   "theory",
+		AccountID:                      "922120356241",
+		AccountRoleName:                "OrganizationAccountAccessRole",
+		Region:                         "us-east-1",
+		BaseDomain:                     "theory.greater.website",
+		LesserVersion:                  "v1.2.3",
+		LesserHostBaseURL:              "https://lesser.host",
+		LesserHostAttestationsURL:      "https://lesser.host",
+		LesserHostInstanceKeySecretARN: "arn:aws:secretsmanager:us-east-1:922120356241:secret:theory/instance-key",
+		RotateInstanceKey:              true,
+	}
+	inst := &models.Instance{
+		Slug:             "theory",
+		Owner:            "wallet-deadbeef",
+		HostedAccountID:  "922120356241",
+		HostedRegion:     "us-east-1",
+		HostedBaseDomain: "theory.greater.website",
+	}
+
+	runID, err := srv.startUpdateDeployRunnerWithMode(context.Background(), job, inst, deployRunnerModeLesser, "")
+	require.NoError(t, err)
+	require.Equal(t, "run1", runID)
+	require.Empty(t, stsClient.lastArn)
+	require.Len(t, cb.startInputs, 1)
+	require.Equal(t, "lesser-host/deploy/theory", updateStartBuildEnvValue(cb.startInputs[0], "DEPLOY_EXTERNAL_ID"))
+	require.Equal(t, job.LesserHostInstanceKeySecretARN, updateStartBuildEnvValue(cb.startInputs[0], "LESSER_HOST_INSTANCE_KEY_SECRET_ID"))
+	require.Equal(t, "true", updateStartBuildEnvValue(cb.startInputs[0], "LESSER_HOST_INSTANCE_KEY_ROTATE"))
+}
+
+func TestApplyManagedInstanceKeyReceiptPersistsHostRecordWithoutTargetRead(t *testing.T) {
+	t.Parallel()
+
+	db := ttmocks.NewMockExtendedDB()
+	qKey := new(ttmocks.MockQuery)
+	db.On("WithContext", mock.Anything).Return(db).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.InstanceKey")).Return(qKey).Maybe()
+	qKey.On("IfNotExists").Return(qKey).Maybe()
+	qKey.On("Create").Return(nil).Once()
+
+	stsClient := &fakeSTS{err: errors.New("AccessDenied")}
+	srv := &Server{cfg: config.Config{Stage: "live"}, store: store.New(db), sts: stsClient}
+	job := &models.UpdateJob{ID: "job1", InstanceSlug: "theory", RotateInstanceKey: true}
+	receiptJSON := `{"managed_instance_key":{"version":1,"source":"deploy-runner-managed-profile","secret_arn":"arn:aws:secretsmanager:us-east-1:922120356241:secret:theory/instance-key","key_id":"38ed91d202121369e6ad8f501c2839590ba5427b51cf16422f446d99f031601b","instance_slug":"theory","stage":"live","rotated":true,"verified_at":"2026-06-27T00:00:00Z"}}`
+
+	require.NoError(t, srv.applyManagedInstanceKeyReceiptJSON(context.Background(), job, receiptJSON))
+	require.Equal(t, "arn:aws:secretsmanager:us-east-1:922120356241:secret:theory/instance-key", job.LesserHostInstanceKeySecretARN)
+	require.Equal(t, "38ed91d202121369e6ad8f501c2839590ba5427b51cf16422f446d99f031601b", job.RotatedInstanceKeyID)
+	require.Empty(t, stsClient.lastArn)
+}
+
+func TestVerifyUpdateUsesReceiptProofWhenDirectAssumeDenied(t *testing.T) {
+	t.Parallel()
+
+	db := ttmocks.NewMockExtendedDB()
+	qKey := new(ttmocks.MockQuery)
+	db.On("WithContext", mock.Anything).Return(db).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.InstanceKey")).Return(qKey).Maybe()
+	qKey.On("IfNotExists").Return(qKey).Maybe()
+	qKey.On("Create").Return(nil).Maybe()
+
+	stsClient := &fakeSTS{err: errors.New("AccessDenied")}
+	srv := &Server{cfg: config.Config{Stage: "live"}, store: store.New(db), sts: stsClient}
+	job := &models.UpdateJob{
+		ID:           "job1",
+		InstanceSlug: "theory",
+		AIEnabled:    true,
+		ReceiptJSON:  `{"managed_instance_key":{"version":1,"source":"deploy-runner-managed-profile","secret_arn":"arn:aws:secretsmanager:us-east-1:922120356241:secret:theory/instance-key","key_id":"38ed91d202121369e6ad8f501c2839590ba5427b51cf16422f446d99f031601b","instance_slug":"theory","stage":"live","verified_at":"2026-06-27T00:00:00Z"}}`,
+	}
+
+	trustOK, trustErr := srv.verifyUpdateTrustAuth(context.Background(), nil, job)
+	require.True(t, trustOK, trustErr)
+	require.Empty(t, trustErr)
+	aiOK, aiErr := srv.verifyUpdateAI(context.Background(), nil, job)
+	require.True(t, aiOK, aiErr)
+	require.Empty(t, aiErr)
+	require.Equal(t, "arn:aws:secretsmanager:us-east-1:922120356241:secret:theory/instance-key", job.LesserHostInstanceKeySecretARN)
+	require.Empty(t, stsClient.lastArn)
+}
+
 func TestAdvanceUpdateReceiptIngest_RequiresS3Client(t *testing.T) {
 	t.Parallel()
 
@@ -1030,7 +1323,7 @@ func TestAdvanceUpdateInstanceConfig_FailsWhenInstanceMetadataMissing(t *testing
 	require.Equal(t, "missing_instance_metadata", job.ErrorCode)
 }
 
-func TestAdvanceUpdateInstanceConfig_WaitsForAssumeRoleReadiness(t *testing.T) {
+func TestAdvanceUpdateInstanceConfig_DoesNotAssumeTargetRoleBeforeRunner(t *testing.T) {
 	t.Parallel()
 
 	db := ttmocks.NewMockExtendedDB()
@@ -1052,10 +1345,11 @@ func TestAdvanceUpdateInstanceConfig_WaitsForAssumeRoleReadiness(t *testing.T) {
 	}).Once()
 
 	now := time.Unix(1000, 0).UTC()
+	stsClient := &fakeSTS{err: errors.New("NoSuchEntity: role has not propagated")}
 	srv := &Server{
 		cfg:   config.Config{ManagedInstanceRoleName: "role", Stage: "lab"},
 		store: store.New(db),
-		sts:   &fakeSTS{err: errors.New("NoSuchEntity: role has not propagated")},
+		sts:   stsClient,
 	}
 	job := &models.UpdateJob{
 		ID:           "j1",
@@ -1069,16 +1363,18 @@ func TestAdvanceUpdateInstanceConfig_WaitsForAssumeRoleReadiness(t *testing.T) {
 	delay, done, err := srv.advanceUpdateInstanceConfig(context.Background(), job, "req", now)
 	require.NoError(t, err)
 	require.False(t, done)
-	require.Equal(t, provisionDefaultPollDelay, delay)
+	require.Equal(t, time.Duration(0), delay)
 	require.Equal(t, models.UpdateJobStatusRunning, job.Status)
-	require.Equal(t, updateStepInstanceConfig, job.Step)
-	require.Equal(t, updateInstanceRoleReadinessNote, job.Note)
+	require.Equal(t, updateStepDeployStart, job.Step)
+	require.Equal(t, "starting update deploy runner", job.Note)
+	require.Equal(t, "lab/slug/instance-key", job.LesserHostInstanceKeySecretARN)
 	require.Empty(t, job.ErrorCode)
 	require.Empty(t, job.ErrorMessage)
 	require.Equal(t, int64(0), job.Attempts)
+	require.Empty(t, stsClient.lastArn)
 }
 
-func TestAdvanceUpdateInstanceConfig_FailsOnAccessDeniedForActiveInstance(t *testing.T) {
+func TestAdvanceUpdateInstanceConfig_ExistingSecretARNProceedsOnDirectAssumeAccessDenied(t *testing.T) {
 	t.Parallel()
 
 	db := ttmocks.NewMockExtendedDB()
@@ -1091,13 +1387,14 @@ func TestAdvanceUpdateInstanceConfig_FailsOnAccessDeniedForActiveInstance(t *tes
 	qInst.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
 		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
 		*dest = models.Instance{
-			Slug:             "theory",
-			Owner:            "wallet-deadbeef",
-			Status:           models.InstanceStatusActive,
-			HostedAccountID:  "922120356241",
-			HostedRegion:     "us-east-1",
-			HostedBaseDomain: "theory.greater.website",
-			CreatedAt:        time.Unix(100, 0).UTC(),
+			Slug:                           "theory",
+			Owner:                          "wallet-deadbeef",
+			Status:                         models.InstanceStatusActive,
+			HostedAccountID:                "922120356241",
+			HostedRegion:                   "us-east-1",
+			HostedBaseDomain:               "theory.greater.website",
+			LesserHostInstanceKeySecretARN: "arn:aws:secretsmanager:us-east-1:922120356241:secret:theory/instance-key",
+			CreatedAt:                      time.Unix(100, 0).UTC(),
 		}
 	}).Once()
 
@@ -1105,10 +1402,11 @@ func TestAdvanceUpdateInstanceConfig_FailsOnAccessDeniedForActiveInstance(t *tes
 	targetARN := "arn:aws:iam::922120356241:role/OrganizationAccountAccessRole"
 	accessDenied := errors.New("AccessDenied: User: " + callerARN + " is not authorized to perform: sts:AssumeRole on resource: " + targetARN)
 	now := time.Unix(2000, 0).UTC()
+	stsClient := &fakeSTS{err: accessDenied}
 	srv := &Server{
 		cfg:   config.Config{ManagedInstanceRoleName: "OrganizationAccountAccessRole", Stage: "live"},
 		store: store.New(db),
-		sts:   &fakeSTS{err: accessDenied},
+		sts:   stsClient,
 	}
 	job := &models.UpdateJob{
 		ID:              "CqBkpMZWBBYIiEOeqLeY-Q",
@@ -1124,21 +1422,20 @@ func TestAdvanceUpdateInstanceConfig_FailsOnAccessDeniedForActiveInstance(t *tes
 	require.NoError(t, err)
 	require.False(t, done)
 	require.Equal(t, time.Duration(0), delay)
-	require.Equal(t, models.UpdateJobStatusError, job.Status)
-	require.Equal(t, updateStepFailed, job.Step)
-	require.Equal(t, updateInstanceRoleAccessDeniedCode, job.ErrorCode)
-	require.Contains(t, job.ErrorMessage, "AccessDenied")
-	require.Contains(t, job.ErrorMessage, callerARN)
-	require.Contains(t, job.ErrorMessage, targetARN)
-	require.Contains(t, job.ErrorMessage, assumeRoleRemediationAccessDenied)
-	require.Equal(t, job.ErrorMessage, job.Note)
+	require.Equal(t, models.UpdateJobStatusRunning, job.Status)
+	require.Equal(t, updateStepDeployStart, job.Step)
+	require.Equal(t, "starting update deploy runner", job.Note)
+	require.Equal(t, "arn:aws:secretsmanager:us-east-1:922120356241:secret:theory/instance-key", job.LesserHostInstanceKeySecretARN)
+	require.Empty(t, job.ErrorCode)
+	require.Empty(t, job.ErrorMessage)
 	require.Equal(t, int64(0), job.Attempts)
+	require.Empty(t, stsClient.lastArn)
 	for _, forbidden := range []string{"SecretAccessKey", "SessionToken", "AWS_SECRET_ACCESS_KEY"} {
 		require.NotContains(t, job.ErrorMessage, forbidden)
 	}
 }
 
-func TestAdvanceUpdateInstanceConfig_FailsWhenAssumeRoleReadinessDeadlineExceeded(t *testing.T) {
+func TestAdvanceUpdateInstanceConfig_UsesRunnerSecretEnsurePastOldReadinessDeadline(t *testing.T) {
 	t.Parallel()
 
 	db := ttmocks.NewMockExtendedDB()
@@ -1160,10 +1457,11 @@ func TestAdvanceUpdateInstanceConfig_FailsWhenAssumeRoleReadinessDeadlineExceede
 	}).Once()
 
 	now := time.Unix(1000, 0).UTC()
+	stsClient := &fakeSTS{err: errors.New("NoSuchEntity: role has not propagated")}
 	srv := &Server{
 		cfg:   config.Config{ManagedInstanceRoleName: "role", Stage: "lab"},
 		store: store.New(db),
-		sts:   &fakeSTS{err: errors.New("NoSuchEntity: role has not propagated")},
+		sts:   stsClient,
 	}
 	job := &models.UpdateJob{
 		ID:           "j1",
@@ -1171,22 +1469,23 @@ func TestAdvanceUpdateInstanceConfig_FailsWhenAssumeRoleReadinessDeadlineExceede
 		Status:       models.UpdateJobStatusRunning,
 		Step:         updateStepInstanceConfig,
 		MaxAttempts:  10,
-		CreatedAt:    now.Add(-(updateInstanceRoleReadinessAge + time.Second)),
+		CreatedAt:    now.Add(-(provisionMaxAssumeRoleAge + time.Second)),
 	}
 
 	delay, done, err := srv.advanceUpdateInstanceConfig(context.Background(), job, "req", now)
 	require.NoError(t, err)
 	require.False(t, done)
 	require.Equal(t, time.Duration(0), delay)
-	require.Equal(t, models.UpdateJobStatusError, job.Status)
-	require.Equal(t, updateStepFailed, job.Step)
-	require.Equal(t, updateInstanceRoleReadinessCode, job.ErrorCode)
-	require.Equal(t, updateInstanceRoleReadinessMsg, job.ErrorMessage)
-	require.Equal(t, updateInstanceRoleReadinessMsg, job.Note)
+	require.Equal(t, models.UpdateJobStatusRunning, job.Status)
+	require.Equal(t, updateStepDeployStart, job.Step)
+	require.Equal(t, "lab/slug/instance-key", job.LesserHostInstanceKeySecretARN)
+	require.Empty(t, job.ErrorCode)
+	require.Empty(t, job.ErrorMessage)
 	require.Equal(t, int64(0), job.Attempts)
+	require.Empty(t, stsClient.lastArn)
 }
 
-func TestAdvanceUpdateInstanceConfig_RetriesWhenSecretsManagerClientCannotBeAssumed(t *testing.T) {
+func TestAdvanceUpdateInstanceConfig_RotationIsDeferredToDeployRunner(t *testing.T) {
 	t.Parallel()
 
 	db := ttmocks.NewMockExtendedDB()
@@ -1207,13 +1506,16 @@ func TestAdvanceUpdateInstanceConfig_RetriesWhenSecretsManagerClientCannotBeAssu
 		}
 	}).Once()
 
-	// No secrets manager factory and no STS client: childSecretsManagerClient should fail, triggering retry logic.
+	// No secrets manager factory and no STS client: instance-key ensure/rotation is deferred to the deploy runner.
 	srv := &Server{cfg: config.Config{ManagedInstanceRoleName: "role", Stage: "lab"}, store: store.New(db)}
 	job := &models.UpdateJob{ID: "j1", InstanceSlug: "slug", Status: models.UpdateJobStatusRunning, Step: updateStepInstanceConfig, MaxAttempts: 3, RotateInstanceKey: true}
 
 	delay, done, err := srv.advanceUpdateInstanceConfig(context.Background(), job, "req", time.Unix(1, 0).UTC())
 	require.NoError(t, err)
 	require.False(t, done)
-	require.Equal(t, provisionDefaultShortRetryDelay, delay)
-	require.Equal(t, int64(1), job.Attempts)
+	require.Equal(t, time.Duration(0), delay)
+	require.Equal(t, updateStepDeployStart, job.Step)
+	require.Equal(t, "lab/slug/instance-key", job.LesserHostInstanceKeySecretARN)
+	require.Empty(t, job.RotatedInstanceKeyID)
+	require.Equal(t, int64(0), job.Attempts)
 }
