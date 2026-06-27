@@ -155,7 +155,15 @@ func ensureAssumeRolePolicyAllowsPrincipal(rawPolicy string, principalARN string
 		return "", false, err
 	}
 
-	updatedStatements, changed := applyExternalIDCondition(statements, principalARN, externalID)
+	managementPrincipalARN, err := managementRootPrincipalARN(principalARN)
+	if err != nil {
+		return "", false, err
+	}
+
+	updatedStatements, changed, err := applyExternalIDCondition(statements, principalARN, externalID, managementPrincipalARN)
+	if err != nil {
+		return "", false, err
+	}
 	if !changed {
 		return policyJSON, false, nil
 	}
@@ -191,40 +199,116 @@ func assumeRoleStatementHasExternalID(statement any, externalID string) bool {
 	return strings.TrimSpace(got) == strings.TrimSpace(externalID)
 }
 
-// applyExternalIDCondition ensures the statements list includes exactly one
-// statement that allows the principal with the required external-ID condition.
-// Returns the modified (or original) statements and whether any changes were made.
-func applyExternalIDCondition(statements []any, principalARN string, externalID string) ([]any, bool) {
-	// Check if a statement already exists that both allows the principal AND
-	// carries the expected external-ID condition.
-	for _, statement := range statements {
-		if assumeRoleStatementAllowsPrincipal(statement, principalARN) {
-			if externalID == "" || assumeRoleStatementHasExternalID(statement, externalID) {
-				return statements, false
-			}
-			// Statement allows the principal but is missing the external-ID
-			// condition. Replace it with a conditioned statement.
-			break
-		}
+// applyExternalIDCondition ensures the statements list includes an explicit
+// statement that allows the deploy-runner principal with the required
+// external-ID condition. If a broad/wildcard statement is hardened, it is not
+// collapsed to runner-only trust: direct Host runtime assume-role access is
+// preserved through the management-account root principal, and a deny guard
+// keeps that management trust from becoming an unconditioned deploy-runner
+// bypass.
+func applyExternalIDCondition(statements []any, principalARN string, externalID string, managementPrincipalARN string) ([]any, bool, error) {
+	if strings.TrimSpace(managementPrincipalARN) == "" {
+		return nil, false, fmt.Errorf("management principal arn is required")
 	}
 
-	// Remove any existing statements that allow the principal without the
-	// required external-ID condition, then add a properly conditioned statement.
-	filtered := make([]any, 0, len(statements)+1)
+	transform := newExternalIDConditionTransform(principalARN, externalID, managementPrincipalARN, len(statements))
 	for _, statement := range statements {
-		if !assumeRoleStatementAllowsPrincipal(statement, principalARN) {
-			filtered = append(filtered, statement)
-			continue
+		if err := transform.processStatement(statement); err != nil {
+			return nil, false, err
 		}
-		if externalID != "" && assumeRoleStatementHasExternalID(statement, externalID) {
-			filtered = append(filtered, statement)
-			continue
-		}
-		// Drop this statement — it allows the principal but lacks the
-		// required external-ID condition. We will replace it below.
+	}
+	updatedStatements, changed := transform.finish()
+	if !changed {
+		return statements, false, nil
+	}
+	return updatedStatements, true, nil
+}
+
+type externalIDConditionTransform struct {
+	principalARN           string
+	externalID             string
+	managementPrincipalARN string
+
+	runnerAllowFound     bool
+	runnerDenyFound      bool
+	managementTrustFound bool
+	changed              bool
+	filtered             []any
+}
+
+func newExternalIDConditionTransform(principalARN string, externalID string, managementPrincipalARN string, statementCount int) *externalIDConditionTransform {
+	return &externalIDConditionTransform{
+		principalARN:           principalARN,
+		externalID:             externalID,
+		managementPrincipalARN: managementPrincipalARN,
+		runnerDenyFound:        externalID == "",
+		filtered:               make([]any, 0, statementCount+3),
+	}
+}
+
+func (t *externalIDConditionTransform) processStatement(statement any) error {
+	if t.externalID != "" && assumeRoleStatementDeniesExternalIDMismatch(statement, t.principalARN, t.externalID) {
+		t.runnerDenyFound = true
+	}
+	if !assumeRoleStatementAllowsPrincipal(statement, t.principalARN) {
+		t.keepStatement(statement)
+		return nil
 	}
 
-	newStatement := map[string]any{
+	broadPrincipal := assumeRoleStatementHasWildcardPrincipal(statement)
+	if t.externalID == "" || (assumeRoleStatementHasExternalID(statement, t.externalID) && !broadPrincipal) {
+		t.keepRunnerStatement(statement)
+		return nil
+	}
+
+	if broadPrincipal || assumeRoleStatementAllowsExplicitPrincipal(statement, t.managementPrincipalARN) {
+		if err := t.addManagementStatement(statement); err != nil {
+			return err
+		}
+	}
+	t.changed = true
+	return nil
+}
+
+func (t *externalIDConditionTransform) keepStatement(statement any) {
+	t.filtered = append(t.filtered, statement)
+	if assumeRoleStatementAllowsExplicitPrincipal(statement, t.managementPrincipalARN) {
+		t.managementTrustFound = true
+	}
+}
+
+func (t *externalIDConditionTransform) keepRunnerStatement(statement any) {
+	t.filtered = append(t.filtered, statement)
+	t.runnerAllowFound = true
+}
+
+func (t *externalIDConditionTransform) addManagementStatement(statement any) error {
+	if t.managementTrustFound {
+		return nil
+	}
+	managementStatement, err := directManagementTrustStatementFrom(statement, t.managementPrincipalARN)
+	if err != nil {
+		return err
+	}
+	t.filtered = append(t.filtered, managementStatement)
+	t.managementTrustFound = true
+	return nil
+}
+
+func (t *externalIDConditionTransform) finish() ([]any, bool) {
+	if !t.runnerAllowFound {
+		t.filtered = append(t.filtered, deployRunnerAssumeRoleStatement(t.principalARN, t.externalID))
+		t.changed = true
+	}
+	if t.externalID != "" && t.managementTrustFound && !t.runnerDenyFound {
+		t.filtered = append(t.filtered, deployRunnerExternalIDDenyStatement(t.principalARN, t.externalID))
+		t.changed = true
+	}
+	return t.filtered, t.changed
+}
+
+func deployRunnerAssumeRoleStatement(principalARN string, externalID string) map[string]any {
+	statement := map[string]any{
 		"Effect": "Allow",
 		"Principal": map[string]any{
 			"AWS": principalARN,
@@ -232,14 +316,78 @@ func applyExternalIDCondition(statements []any, principalARN string, externalID 
 		"Action": "sts:AssumeRole",
 	}
 	if externalID != "" {
-		newStatement["Condition"] = map[string]any{
+		statement["Condition"] = map[string]any{
 			"StringEquals": map[string]any{
 				"sts:ExternalId": externalID,
 			},
 		}
 	}
-	statements = append(filtered, newStatement)
-	return statements, true
+	return statement
+}
+
+func deployRunnerExternalIDDenyStatement(principalARN string, externalID string) map[string]any {
+	return map[string]any{
+		"Effect": "Deny",
+		"Principal": map[string]any{
+			"AWS": principalARN,
+		},
+		"Action": "sts:AssumeRole",
+		"Condition": map[string]any{
+			"StringNotEquals": map[string]any{
+				"sts:ExternalId": externalID,
+			},
+		},
+	}
+}
+
+func directManagementTrustStatementFrom(statement any, managementPrincipalARN string) (map[string]any, error) {
+	if conditionMentionsExternalID(statement) {
+		return nil, fmt.Errorf("refusing to synthesize direct management trust from ExternalId-conditioned broad trust; restore explicit Host runtime management trust before hardening deploy-runner trust")
+	}
+
+	managementStatement := map[string]any{
+		"Effect": "Allow",
+		"Principal": map[string]any{
+			"AWS": managementPrincipalARN,
+		},
+		"Action": "sts:AssumeRole",
+	}
+
+	stmt, ok := statement.(map[string]any)
+	if !ok {
+		return managementStatement, nil
+	}
+	if condition, ok := stmt["Condition"]; ok {
+		clonedCondition, err := clonePolicyJSONValue(condition)
+		if err != nil {
+			return nil, fmt.Errorf("clone management trust condition: %w", err)
+		}
+		managementStatement["Condition"] = clonedCondition
+	}
+	return managementStatement, nil
+}
+
+func clonePolicyJSONValue(value any) (any, error) {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	var cloned any
+	if err := json.Unmarshal(raw, &cloned); err != nil {
+		return nil, err
+	}
+	return cloned, nil
+}
+
+func managementRootPrincipalARN(principalARN string) (string, error) {
+	parsed, err := arn.Parse(strings.TrimSpace(principalARN))
+	if err != nil {
+		return "", fmt.Errorf("derive management principal from deploy runner arn: %w", err)
+	}
+	if parsed.Service != "iam" || parsed.AccountID == "" {
+		return "", fmt.Errorf("derive management principal from deploy runner arn: expected iam role arn")
+	}
+	return fmt.Sprintf("arn:aws:iam::%s:root", parsed.AccountID), nil
 }
 
 func decodeAssumeRolePolicyDocument(rawPolicy string) (string, error) {
@@ -288,6 +436,54 @@ func assumeRoleStatementAllowsPrincipal(statement any, principalARN string) bool
 	return principalAllowsARN(stmt["Principal"], principalARN)
 }
 
+func assumeRoleStatementAllowsExplicitPrincipal(statement any, principalARN string) bool {
+	stmt, ok := statement.(map[string]any)
+	if !ok {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(fmt.Sprint(stmt["Effect"])), "Allow") {
+		return false
+	}
+	if !policyValueContains(stmt["Action"], "sts:AssumeRole") && !policyValueContains(stmt["Action"], "sts:*") && !policyValueContains(stmt["Action"], "*") {
+		return false
+	}
+	return principalNamesARN(stmt["Principal"], principalARN)
+}
+
+func assumeRoleStatementDeniesExternalIDMismatch(statement any, principalARN string, externalID string) bool {
+	stmt, ok := statement.(map[string]any)
+	if !ok {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(fmt.Sprint(stmt["Effect"])), "Deny") {
+		return false
+	}
+	if !policyValueContains(stmt["Action"], "sts:AssumeRole") && !policyValueContains(stmt["Action"], "sts:*") && !policyValueContains(stmt["Action"], "*") {
+		return false
+	}
+	if !principalAllowsARN(stmt["Principal"], principalARN) {
+		return false
+	}
+	condition, ok := stmt["Condition"].(map[string]any)
+	if !ok {
+		return false
+	}
+	stringNotEquals, ok := condition["StringNotEquals"].(map[string]any)
+	if !ok {
+		return false
+	}
+	got, ok := stringNotEquals["sts:ExternalId"].(string)
+	return ok && strings.TrimSpace(got) == strings.TrimSpace(externalID)
+}
+
+func assumeRoleStatementHasWildcardPrincipal(statement any) bool {
+	stmt, ok := statement.(map[string]any)
+	if !ok {
+		return false
+	}
+	return principalHasWildcard(stmt["Principal"])
+}
+
 func principalAllowsARN(value any, principalARN string) bool {
 	if policyValueContains(value, "*") || policyValueContains(value, principalARN) {
 		return true
@@ -297,6 +493,28 @@ func principalAllowsARN(value any, principalARN string) bool {
 		return false
 	}
 	return policyValueContains(principal["AWS"], principalARN) || policyValueContains(principal["AWS"], "*")
+}
+
+func principalNamesARN(value any, principalARN string) bool {
+	if policyValueContains(value, principalARN) {
+		return true
+	}
+	principal, ok := value.(map[string]any)
+	if !ok {
+		return false
+	}
+	return policyValueContains(principal["AWS"], principalARN)
+}
+
+func principalHasWildcard(value any) bool {
+	if policyValueContains(value, "*") {
+		return true
+	}
+	principal, ok := value.(map[string]any)
+	if !ok {
+		return false
+	}
+	return policyValueContains(principal["AWS"], "*")
 }
 
 func policyValueContains(value any, want string) bool {
@@ -316,6 +534,29 @@ func policyValueContains(value any, want string) bool {
 				return true
 			}
 		}
+	}
+	return false
+}
+
+func conditionMentionsExternalID(value any) bool {
+	switch v := value.(type) {
+	case map[string]any:
+		for key, item := range v {
+			if strings.EqualFold(strings.TrimSpace(key), "sts:ExternalId") {
+				return true
+			}
+			if conditionMentionsExternalID(item) {
+				return true
+			}
+		}
+	case []any:
+		for _, item := range v {
+			if conditionMentionsExternalID(item) {
+				return true
+			}
+		}
+	case []string:
+		return false
 	}
 	return false
 }

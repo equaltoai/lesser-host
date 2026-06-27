@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -62,6 +64,57 @@ func TestEnsureAssumeRolePolicyAllowsPrincipalAddsDeployRunner(t *testing.T) {
 	require.True(t, assumeRoleStatementAllowsPrincipal(statements[len(statements)-1], testDeployRunnerRoleARN))
 	require.True(t, assumeRoleStatementHasExternalID(statements[len(statements)-1], deployRunnerExternalID("demo")),
 		"new statement must carry the tenant-scoped external ID condition")
+}
+
+func TestEnsureAssumeRolePolicyAllowsPrincipalPreservesManagementRootTrust(t *testing.T) {
+	managementRootARN := "arn:aws:iam::111122223333:root"
+	policy := `{"Version":"2012-10-17","Statement":[{"Sid":"DirectHostRuntime","Effect":"Allow","Principal":{"AWS":"` + managementRootARN + `"},"Action":"sts:AssumeRole"}]}`
+
+	updated, changed, err := ensureAssumeRolePolicyAllowsPrincipal(policy, testDeployRunnerRoleARN, deployRunnerExternalID("demo"))
+	require.NoError(t, err)
+	require.True(t, changed)
+
+	var doc map[string]any
+	require.NoError(t, json.Unmarshal([]byte(updated), &doc))
+	statements, err := normalizedPolicyStatements(doc["Statement"])
+	require.NoError(t, err)
+	require.True(t, hasAssumeRoleAllowForPrincipal(statements, managementRootARN, ""),
+		"existing management-root trust must remain so direct Host runtime roles are not stranded")
+	require.True(t, hasAssumeRoleAllowForPrincipal(statements, testDeployRunnerRoleARN, deployRunnerExternalID("demo")),
+		"deploy runner must keep tenant-scoped ExternalId trust")
+	require.True(t, hasAssumeRoleExternalIDDenyForPrincipal(statements, testDeployRunnerRoleARN, deployRunnerExternalID("demo")),
+		"management-root trust must not become an unconditioned deploy-runner bypass")
+}
+
+func TestEnsureAssumeRolePolicyAllowsPrincipalHardensWildcardWithoutStrandingManagement(t *testing.T) {
+	managementRootARN := "arn:aws:iam::111122223333:root"
+	policy := `{"Version":"2012-10-17","Statement":[{"Sid":"LegacyBroadTrust","Effect":"Allow","Principal":"*","Action":"sts:AssumeRole"}]}`
+
+	updated, changed, err := ensureAssumeRolePolicyAllowsPrincipal(policy, testDeployRunnerRoleARN, deployRunnerExternalID("theory"))
+	require.NoError(t, err)
+	require.True(t, changed)
+
+	var doc map[string]any
+	require.NoError(t, json.Unmarshal([]byte(updated), &doc))
+	statements, err := normalizedPolicyStatements(doc["Statement"])
+	require.NoError(t, err)
+	require.False(t, hasAssumeRoleAllowForPrincipal(statements, "*", ""),
+		"legacy wildcard assume-role trust must be hardened instead of preserved")
+	require.True(t, hasAssumeRoleAllowForPrincipal(statements, managementRootARN, ""),
+		"hardening broad trust must preserve direct Host runtime access through explicit management trust")
+	require.True(t, hasAssumeRoleAllowForPrincipal(statements, testDeployRunnerRoleARN, deployRunnerExternalID("theory")),
+		"deploy runner trust must remain tenant-scoped by ExternalId")
+	require.True(t, hasAssumeRoleExternalIDDenyForPrincipal(statements, testDeployRunnerRoleARN, deployRunnerExternalID("theory")),
+		"deploy runner must not be able to use synthesized management trust without ExternalId")
+}
+
+func TestEnsureAssumeRolePolicyAllowsPrincipalRejectsConditionedWildcardTrust(t *testing.T) {
+	policy := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":"*","Action":"sts:AssumeRole","Condition":{"StringEquals":{"sts:ExternalId":"lesser-host/deploy/demo"}}}]}`
+
+	_, changed, err := ensureAssumeRolePolicyAllowsPrincipal(policy, testDeployRunnerRoleARN, deployRunnerExternalID("demo"))
+	require.Error(t, err)
+	require.False(t, changed)
+	require.Contains(t, err.Error(), "refusing to synthesize direct management trust")
 }
 
 func TestEnsureAssumeRolePolicyAllowsPrincipalAddsConditionToExistingStatement(t *testing.T) {
@@ -248,4 +301,47 @@ func TestAssumeRolePolicyHelperBranches(t *testing.T) {
 		"Principal": "*",
 		"Action":    "sts:AssumeRole",
 	}, testDeployRunnerRoleARN))
+}
+
+func hasAssumeRoleAllowForPrincipal(statements []any, principalARN string, externalID string) bool {
+	for _, statement := range statements {
+		if !assumeRoleStatementAllowsPrincipal(statement, principalARN) {
+			continue
+		}
+		if strings.TrimSpace(externalID) == "" || assumeRoleStatementHasExternalID(statement, externalID) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasAssumeRoleExternalIDDenyForPrincipal(statements []any, principalARN string, externalID string) bool {
+	for _, statement := range statements {
+		stmt, ok := statement.(map[string]any)
+		if !ok {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(fmt.Sprint(stmt["Effect"])), "Deny") {
+			continue
+		}
+		if !policyValueContains(stmt["Action"], "sts:AssumeRole") && !policyValueContains(stmt["Action"], "sts:*") && !policyValueContains(stmt["Action"], "*") {
+			continue
+		}
+		if !principalAllowsARN(stmt["Principal"], principalARN) {
+			continue
+		}
+		condition, ok := stmt["Condition"].(map[string]any)
+		if !ok {
+			continue
+		}
+		stringNotEquals, ok := condition["StringNotEquals"].(map[string]any)
+		if !ok {
+			continue
+		}
+		got, ok := stringNotEquals["sts:ExternalId"].(string)
+		if ok && strings.TrimSpace(got) == strings.TrimSpace(externalID) {
+			return true
+		}
+	}
+	return false
 }
