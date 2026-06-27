@@ -479,35 +479,6 @@ func TestAssumeInstanceRole_ValidationAndRetryableError(t *testing.T) {
 		t.Fatalf("expected assume role not ready, got err=%v delay=%v", err, delay)
 	}
 
-	accessDenied := errors.New("AccessDenied: User: arn:aws:sts::111122223333:assumed-role/lesser-host-live-ProvisionWorker/lesser-host-live-provision-worker is not authorized to perform: sts:AssumeRole on resource: arn:aws:iam::123:role/role")
-	s.sts = &fakeSTS{err: accessDenied}
-	if _, delay, err := s.assumeInstanceRole(context.Background(), "123", "role", "slug", "job"); !errors.Is(err, errAssumeRoleAccessDenied) || errors.Is(err, errAssumeRoleNotReady) || delay != provisionDefaultPollDelay {
-		t.Fatalf("expected typed access denied, got err=%v delay=%v", err, delay)
-	} else {
-		var assumeErr *assumeRoleError
-		if !errors.As(err, &assumeErr) {
-			t.Fatalf("expected assumeRoleError, got %T", err)
-		}
-		if assumeErr.awsCode != "AccessDenied" {
-			t.Fatalf("unexpected aws code: %q", assumeErr.awsCode)
-		}
-		if assumeErr.callerPrincipalARN != "arn:aws:sts::111122223333:assumed-role/lesser-host-live-ProvisionWorker/lesser-host-live-provision-worker" {
-			t.Fatalf("unexpected caller principal: %q", assumeErr.callerPrincipalARN)
-		}
-		if assumeErr.targetRoleARN != "arn:aws:iam::123:role/role" {
-			t.Fatalf("unexpected target role arn: %q", assumeErr.targetRoleARN)
-		}
-		if assumeErr.remediationClass != assumeRoleRemediationAccessDenied {
-			t.Fatalf("unexpected remediation class: %q", assumeErr.remediationClass)
-		}
-		msg := err.Error()
-		for _, forbidden := range []string{"SecretAccessKey", "SessionToken", "AWS_SECRET_ACCESS_KEY"} {
-			if strings.Contains(msg, forbidden) {
-				t.Fatalf("diagnostic leaked credential-shaped field %q in %q", forbidden, msg)
-			}
-		}
-	}
-
 	f := &fakeSTS{out: &sts.AssumeRoleOutput{Credentials: &ststypes.Credentials{AccessKeyId: aws.String("a"), SecretAccessKey: aws.String("b"), SessionToken: aws.String("c")}}}
 	s.sts = f
 	out, delay, err := s.assumeInstanceRole(context.Background(), "123", "role", strings.Repeat("x", 80), strings.Repeat("y", 80))
@@ -519,6 +490,43 @@ func TestAssumeInstanceRole_ValidationAndRetryableError(t *testing.T) {
 	}
 	if len(f.lastName) > 64 {
 		t.Fatalf("expected session name truncated, got %d", len(f.lastName))
+	}
+}
+
+func TestAssumeInstanceRole_AccessDeniedDiagnostic(t *testing.T) {
+	t.Parallel()
+
+	callerARN := "arn:aws:sts::111122223333:assumed-role/lesser-host-live-ProvisionWorker/lesser-host-live-provision-worker"
+	targetARN := "arn:aws:iam::123:role/role"
+	accessDenied := errors.New("AccessDenied: User: " + callerARN + " is not authorized to perform: sts:AssumeRole on resource: " + targetARN)
+	s := &Server{sts: &fakeSTS{err: accessDenied}}
+
+	_, delay, err := s.assumeInstanceRole(context.Background(), "123", "role", "slug", "job")
+	if !errors.Is(err, errAssumeRoleAccessDenied) || errors.Is(err, errAssumeRoleNotReady) || delay != provisionDefaultPollDelay {
+		t.Fatalf("expected typed access denied, got err=%v delay=%v", err, delay)
+	}
+
+	var assumeErr *assumeRoleError
+	if !errors.As(err, &assumeErr) {
+		t.Fatalf("expected assumeRoleError, got %T", err)
+	}
+	if assumeErr.awsCode != "AccessDenied" {
+		t.Fatalf("unexpected aws code: %q", assumeErr.awsCode)
+	}
+	if assumeErr.callerPrincipalARN != callerARN {
+		t.Fatalf("unexpected caller principal: %q", assumeErr.callerPrincipalARN)
+	}
+	if assumeErr.targetRoleARN != targetARN {
+		t.Fatalf("unexpected target role arn: %q", assumeErr.targetRoleARN)
+	}
+	if assumeErr.remediationClass != assumeRoleRemediationAccessDenied {
+		t.Fatalf("unexpected remediation class: %q", assumeErr.remediationClass)
+	}
+	msg := err.Error()
+	for _, forbidden := range []string{"SecretAccessKey", "SessionToken", "AWS_SECRET_ACCESS_KEY"} {
+		if strings.Contains(msg, forbidden) {
+			t.Fatalf("diagnostic leaked credential-shaped field %q in %q", forbidden, msg)
+		}
 	}
 }
 

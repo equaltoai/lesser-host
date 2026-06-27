@@ -819,6 +819,23 @@ func updateInstanceRoleAccessDeniedMessage(err error) string {
 	return "managed instance role access denied while ensuring instance key secret: " + msg
 }
 
+func (s *Server) maybeHandleUpdateInstanceRoleAssumeError(
+	ctx context.Context,
+	job *models.UpdateJob,
+	requestID string,
+	now time.Time,
+	err error,
+) (time.Duration, bool, error, bool) {
+	if errors.Is(err, errAssumeRoleAccessDenied) {
+		return 0, false, s.failUpdateJob(ctx, job, requestID, now, updateInstanceRoleAccessDeniedCode, updateInstanceRoleAccessDeniedMessage(err)), true
+	}
+	if errors.Is(err, errAssumeRoleNotReady) {
+		delay, done, waitErr := s.waitForUpdateInstanceRoleReadiness(ctx, job, requestID, now)
+		return delay, done, waitErr, true
+	}
+	return 0, false, nil, false
+}
+
 type managedUpdateMetadata struct {
 	accountID  string
 	roleName   string
@@ -964,11 +981,8 @@ func (s *Server) advanceUpdateInstanceConfig(ctx context.Context, job *models.Up
 	}
 	secretArn, err := s.ensureManagedInstanceKeySecret(ctx, pseudo, inst)
 	if err != nil {
-		if errors.Is(err, errAssumeRoleAccessDenied) {
-			return 0, false, s.failUpdateJob(ctx, job, requestID, now, updateInstanceRoleAccessDeniedCode, updateInstanceRoleAccessDeniedMessage(err))
-		}
-		if errors.Is(err, errAssumeRoleNotReady) {
-			return s.waitForUpdateInstanceRoleReadiness(ctx, job, requestID, now)
+		if delay, done, handleErr, handled := s.maybeHandleUpdateInstanceRoleAssumeError(ctx, job, requestID, now, err); handled {
+			return delay, done, handleErr
 		}
 		return s.retryUpdateJobOrFail(ctx, job, requestID, now, "instance_key_secret_failed", "failed to ensure instance key secret: "+err.Error(), provisionDefaultShortRetryDelay, 5*time.Minute)
 	}
@@ -976,11 +990,8 @@ func (s *Server) advanceUpdateInstanceConfig(ctx context.Context, job *models.Up
 	if shouldRotateUpdateInstanceKey(job) {
 		keyID, err := s.rotateManagedInstanceKeySecret(ctx, pseudo, secretArn)
 		if err != nil {
-			if errors.Is(err, errAssumeRoleAccessDenied) {
-				return 0, false, s.failUpdateJob(ctx, job, requestID, now, updateInstanceRoleAccessDeniedCode, updateInstanceRoleAccessDeniedMessage(err))
-			}
-			if errors.Is(err, errAssumeRoleNotReady) {
-				return s.waitForUpdateInstanceRoleReadiness(ctx, job, requestID, now)
+			if delay, done, handleErr, handled := s.maybeHandleUpdateInstanceRoleAssumeError(ctx, job, requestID, now, err); handled {
+				return delay, done, handleErr
 			}
 			return s.retryUpdateJobOrFail(ctx, job, requestID, now, "instance_key_rotation_failed", "failed to rotate instance key: "+err.Error(), provisionDefaultShortRetryDelay, 5*time.Minute)
 		}
