@@ -31,7 +31,7 @@ import (
 
 const (
 	testManagedUpdateTrustBaseURL    = "https://example.test"
-	testManagedUpdateReceiptJSON     = `{"app":"x","base_domain":"d"}`
+	testManagedUpdateReceiptJSON     = `{"app":"x","base_domain":"d","managed_instance_key":{"version":1,"source":"deploy-runner-managed-profile","secret_arn":"arn:aws:secretsmanager:us-east-1:123456789012:secret:slug/instance-key","key_id":"38ed91d202121369e6ad8f501c2839590ba5427b51cf16422f446d99f031601b","instance_slug":"slug","stage":"live","rotated":true,"verified_at":"2026-06-27T00:00:00Z"}}`
 	testManagedUpdateBodyReceiptJSON = `{"version":1,"stage":"dev","base_domain":"d","lesser_body_version":"v0.2.3"}`
 	testManagedUpdateMCPReceiptJSON  = `{"version":1,"stage":"dev","base_domain":"d","lesser_body_version":"v0.2.3","mcp_url":"https://api.dev.example.test/mcp/{actor}","mcp_lambda_arn":"arn:aws:lambda:us-east-1:123:function:mcp"}`
 )
@@ -175,7 +175,7 @@ func TestRunManagedUpdateStateMachine_HappyPath(t *testing.T) {
 	fsm := &fakeSecretsManager{
 		describeErr: &smtypes.ResourceNotFoundException{},
 		createOut: &secretsmanager.CreateSecretOutput{
-			ARN: aws.String("arn:aws:secretsmanager:us-east-1:000000000000:secret:slug/instance-key"),
+			ARN: aws.String("arn:aws:secretsmanager:us-east-1:123456789012:secret:slug/instance-key"),
 		},
 		getOut: &secretsmanager.GetSecretValueOutput{
 			SecretString: aws.String(`{"secret":"lhk_test"}`),
@@ -316,7 +316,7 @@ func TestRunManagedUpdateStateMachine_BodyOnlyCompletesIndependently(t *testing.
 	fsm := &fakeSecretsManager{
 		describeErr: &smtypes.ResourceNotFoundException{},
 		createOut: &secretsmanager.CreateSecretOutput{
-			ARN: aws.String("arn:aws:secretsmanager:us-east-1:000000000000:secret:slug/instance-key"),
+			ARN: aws.String("arn:aws:secretsmanager:us-east-1:123456789012:secret:slug/instance-key"),
 		},
 		getOut: &secretsmanager.GetSecretValueOutput{
 			SecretString: aws.String(`{"secret":"lhk_test"}`),
@@ -472,7 +472,7 @@ func TestRunManagedUpdateStateMachine_MCPOnlySkipsLesserAndBodyDeploy(t *testing
 	fsm := &fakeSecretsManager{
 		describeErr: &smtypes.ResourceNotFoundException{},
 		createOut: &secretsmanager.CreateSecretOutput{
-			ARN: aws.String("arn:aws:secretsmanager:us-east-1:000000000000:secret:slug/instance-key"),
+			ARN: aws.String("arn:aws:secretsmanager:us-east-1:123456789012:secret:slug/instance-key"),
 		},
 		getOut: &secretsmanager.GetSecretValueOutput{
 			SecretString: aws.String(`{"secret":"lhk_test"}`),

@@ -90,17 +90,6 @@ func (s *Server) startDeployRunnerWithMode(ctx context.Context, job *models.Prov
 	if err != nil {
 		return "", err
 	}
-	trustErr := s.ensureDeployRunnerAssumeRoleTrust(
-		ctx,
-		strings.TrimSpace(job.AccountID),
-		strings.TrimSpace(job.AccountRoleName),
-		strings.TrimSpace(job.Region),
-		strings.TrimSpace(job.InstanceSlug),
-		strings.TrimSpace(job.ID),
-	)
-	if trustErr != nil {
-		return "", trustErr
-	}
 
 	bootstrapKey := s.bootstrapS3Key(job)
 	stage := s.deployRunnerStage(job)

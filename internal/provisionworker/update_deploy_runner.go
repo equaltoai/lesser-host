@@ -176,6 +176,8 @@ func (s *Server) buildUpdateDeployRunnerEnv(job *models.UpdateJob, inputs update
 		{Name: aws.String("LESSER_HOST_URL"), Value: aws.String(inputs.lesserHostURL)},
 		{Name: aws.String("LESSER_HOST_ATTESTATIONS_URL"), Value: aws.String(inputs.lesserHostAttestationsURL)},
 		{Name: aws.String("LESSER_HOST_INSTANCE_KEY_ARN"), Value: aws.String(inputs.instanceKeySecretArn)},
+		{Name: aws.String("LESSER_HOST_INSTANCE_KEY_SECRET_ID"), Value: aws.String(inputs.instanceKeySecretArn)},
+		{Name: aws.String("LESSER_HOST_INSTANCE_KEY_ROTATE"), Value: aws.String(fmt.Sprintf("%t", shouldRotateUpdateInstanceKey(job)))},
 		{Name: aws.String("TRANSLATION_ENABLED"), Value: aws.String(fmt.Sprintf("%t", job.TranslationEnabled))},
 		{Name: aws.String("TIP_ENABLED"), Value: aws.String(fmt.Sprintf("%t", tipEnabled))},
 		{Name: aws.String("AI_ENABLED"), Value: aws.String(fmt.Sprintf("%t", job.AIEnabled))},
@@ -223,17 +225,6 @@ func (s *Server) startUpdateDeployRunnerWithMode(ctx context.Context, job *model
 	}
 	if strings.TrimSpace(receiptKey) != "" {
 		inputs.receiptKey = strings.TrimSpace(receiptKey)
-	}
-	trustErr := s.ensureDeployRunnerAssumeRoleTrust(
-		ctx,
-		inputs.accountID,
-		inputs.roleName,
-		inputs.region,
-		strings.TrimSpace(job.InstanceSlug),
-		strings.TrimSpace(job.ID),
-	)
-	if trustErr != nil {
-		return "", trustErr
 	}
 	env := s.buildUpdateDeployRunnerEnv(job, inputs)
 

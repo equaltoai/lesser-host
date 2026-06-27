@@ -66,15 +66,6 @@ const (
 	updatePhaseStatusSkipped   = "skipped"
 )
 
-const (
-	updateInstanceRoleReadinessNote = "waiting for instance role readiness before ensuring instance key secret"
-	updateInstanceRoleReadinessCode = "instance_role_not_ready"
-	updateInstanceRoleReadinessMsg  = "timed out waiting for instance role readiness before ensuring instance key secret"
-	updateInstanceRoleReadinessAge  = provisionMaxAssumeRoleAge
-
-	updateInstanceRoleAccessDeniedCode = "instance_role_access_denied"
-)
-
 type deployRunnerInfo struct {
 	Status        string
 	DeepLink      string
@@ -775,67 +766,6 @@ func (s *Server) retryUpdateJobOrFail(
 	return jitteredBackoff(job.Attempts, baseDelay, maxDelay), false, nil
 }
 
-func updateInstanceRoleReadinessStartedAt(job *models.UpdateJob) time.Time {
-	if job == nil {
-		return time.Time{}
-	}
-	if !job.CreatedAt.IsZero() {
-		return job.CreatedAt
-	}
-	return job.UpdatedAt
-}
-
-func updateInstanceRoleReadinessDeadlineExceeded(job *models.UpdateJob, now time.Time) bool {
-	startedAt := updateInstanceRoleReadinessStartedAt(job)
-	if startedAt.IsZero() {
-		return true
-	}
-	if now.IsZero() {
-		now = time.Now().UTC()
-	}
-	return now.Sub(startedAt) > updateInstanceRoleReadinessAge
-}
-
-func (s *Server) waitForUpdateInstanceRoleReadiness(ctx context.Context, job *models.UpdateJob, requestID string, now time.Time) (time.Duration, bool, error) {
-	if updateInstanceRoleReadinessDeadlineExceeded(job, now) {
-		return 0, false, s.failUpdateJob(ctx, job, requestID, now, updateInstanceRoleReadinessCode, updateInstanceRoleReadinessMsg)
-	}
-	job.Note = updateInstanceRoleReadinessNote
-	if err := s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil); err != nil {
-		return 0, false, err
-	}
-	return provisionDefaultPollDelay, false, nil
-}
-
-func updateInstanceRoleAccessDeniedMessage(err error) string {
-	var assumeErr *assumeRoleError
-	if errors.As(err, &assumeErr) && assumeErr != nil {
-		return "managed instance role access denied while ensuring instance key secret: " + assumeErr.Error()
-	}
-	msg := compactErr(err)
-	if msg == "" {
-		msg = "sts AssumeRole access denied"
-	}
-	return "managed instance role access denied while ensuring instance key secret: " + msg
-}
-
-func (s *Server) maybeHandleUpdateInstanceRoleAssumeError(
-	ctx context.Context,
-	job *models.UpdateJob,
-	requestID string,
-	now time.Time,
-	err error,
-) (time.Duration, bool, error, bool) {
-	if errors.Is(err, errAssumeRoleAccessDenied) {
-		return 0, false, s.failUpdateJob(ctx, job, requestID, now, updateInstanceRoleAccessDeniedCode, updateInstanceRoleAccessDeniedMessage(err)), true
-	}
-	if errors.Is(err, errAssumeRoleNotReady) {
-		delay, done, waitErr := s.waitForUpdateInstanceRoleReadiness(ctx, job, requestID, now)
-		return delay, done, waitErr, true
-	}
-	return 0, false, nil, false
-}
-
 type managedUpdateMetadata struct {
 	accountID  string
 	roleName   string
@@ -930,7 +860,7 @@ func updateInstanceConfigInstanceUpdate(publicBaseURL, attestationsURL, secretAr
 			ub.Set("LesserHostBaseURL", strings.TrimSpace(publicBaseURL))
 			ub.Set("LesserHostAttestationsURL", strings.TrimSpace(attestationsURL))
 		}
-		if strings.TrimSpace(secretArn) != "" {
+		if strings.HasPrefix(strings.TrimSpace(secretArn), "arn:aws:secretsmanager:") {
 			ub.Set("LesserHostInstanceKeySecretARN", strings.TrimSpace(secretArn))
 		}
 		ub.Set("TranslationEnabled", job.TranslationEnabled)
@@ -971,31 +901,18 @@ func (s *Server) advanceUpdateInstanceConfig(ctx context.Context, job *models.Up
 
 	publicBaseURL, attestationsURL := s.resolveUpdateHostURLs(job)
 
-	// Ensure the instance key secret exists in the instance account (and the InstanceKey record exists in lesser-host state).
-	pseudo := &models.ProvisionJob{
-		ID:              strings.TrimSpace(job.ID),
-		InstanceSlug:    strings.TrimSpace(job.InstanceSlug),
-		AccountID:       md.accountID,
-		AccountRoleName: md.roleName,
-		Region:          md.region,
+	// Do not assume into the managed instance account from the Provisioning worker
+	// here. The deployed access contract is the CodeBuild deploy-runner assuming
+	// the target role with the tenant-scoped ExternalId and then using the managed
+	// profile. Pass the existing secret ARN, or the canonical secret name if the
+	// instance has not recorded an ARN yet; the runner ensures/rotates the secret
+	// and returns a bounded key-id proof in its receipt.
+	secretArn := strings.TrimSpace(inst.LesserHostInstanceKeySecretARN)
+	if secretArn == "" {
+		secretArn = managedInstanceKeySecretName(s.cfg.Stage, strings.TrimSpace(job.InstanceSlug))
 	}
-	secretArn, err := s.ensureManagedInstanceKeySecret(ctx, pseudo, inst)
-	if err != nil {
-		if delay, done, handleErr, handled := s.maybeHandleUpdateInstanceRoleAssumeError(ctx, job, requestID, now, err); handled {
-			return delay, done, handleErr
-		}
-		return s.retryUpdateJobOrFail(ctx, job, requestID, now, "instance_key_secret_failed", "failed to ensure instance key secret: "+err.Error(), provisionDefaultShortRetryDelay, 5*time.Minute)
-	}
-
-	if shouldRotateUpdateInstanceKey(job) {
-		keyID, err := s.rotateManagedInstanceKeySecret(ctx, pseudo, secretArn)
-		if err != nil {
-			if delay, done, handleErr, handled := s.maybeHandleUpdateInstanceRoleAssumeError(ctx, job, requestID, now, err); handled {
-				return delay, done, handleErr
-			}
-			return s.retryUpdateJobOrFail(ctx, job, requestID, now, "instance_key_rotation_failed", "failed to rotate instance key: "+err.Error(), provisionDefaultShortRetryDelay, 5*time.Minute)
-		}
-		job.RotatedInstanceKeyID = strings.TrimSpace(keyID)
+	if secretArn == "" {
+		return 0, false, s.failUpdateJob(ctx, job, requestID, now, "instance_key_secret_ref_failed", "failed to derive instance key secret reference")
 	}
 
 	job.AccountID = md.accountID
@@ -1547,26 +1464,42 @@ func (s *Server) advanceUpdateDeployClaimed(ctx context.Context, job *models.Upd
 	})
 }
 
+func (s *Server) advanceUpdateLoadedDeployReceipt(
+	ctx context.Context,
+	job *models.UpdateJob,
+	requestID string,
+	now time.Time,
+	receiptJSON string,
+	receipt *lesserUpReceipt,
+) (time.Duration, bool, error) {
+	if receipt != nil {
+		if keyErr := s.applyManagedInstanceKeyReceipt(ctx, job, receipt.ManagedInstanceKey); keyErr != nil {
+			return 0, false, s.failUpdateJob(ctx, job, requestID, now, "receipt_instance_key_invalid", "failed to validate managed instance key receipt: "+keyErr.Error())
+		}
+	}
+	if strings.TrimSpace(job.RunID) != "" {
+		if info, infoErr := s.getDeployRunnerInfo(ctx, strings.TrimSpace(job.RunID)); infoErr == nil && strings.TrimSpace(info.DeepLink) != "" {
+			job.RunURL = strings.TrimSpace(info.DeepLink)
+			setUpdateJobPhaseRunURL(job, updatePhaseDeploy, info.DeepLink)
+		}
+	}
+	job.RunID = ""
+	job.ReceiptJSON = strings.TrimSpace(receiptJSON)
+	setUpdateJobPhaseSucceeded(job, updatePhaseDeploy)
+	job.Step = updateStepVerify
+	job.Note = noteVerifyingDeployment
+	setUpdateJobActivePhase(job, updatePhaseVerify)
+	if err := s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil); err != nil {
+		return 0, false, err
+	}
+	return s.advanceUpdateVerify(ctx, job, requestID, now)
+}
+
 func (s *Server) advanceUpdateDeployWait(ctx context.Context, job *models.UpdateJob, requestID string, now time.Time) (time.Duration, bool, error) {
 	if s != nil && job != nil {
 		receiptKey := s.updateReceiptS3Key(job)
-		if receiptJSON, _, err := s.loadReceiptFromS3(ctx, strings.TrimSpace(s.cfg.ArtifactBucketName), receiptKey); err == nil {
-			if strings.TrimSpace(job.RunID) != "" {
-				if info, infoErr := s.getDeployRunnerInfo(ctx, strings.TrimSpace(job.RunID)); infoErr == nil && strings.TrimSpace(info.DeepLink) != "" {
-					job.RunURL = strings.TrimSpace(info.DeepLink)
-					setUpdateJobPhaseRunURL(job, updatePhaseDeploy, info.DeepLink)
-				}
-			}
-			job.RunID = ""
-			job.ReceiptJSON = strings.TrimSpace(receiptJSON)
-			setUpdateJobPhaseSucceeded(job, updatePhaseDeploy)
-			job.Step = updateStepVerify
-			job.Note = noteVerifyingDeployment
-			setUpdateJobActivePhase(job, updatePhaseVerify)
-			if err := s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil); err != nil {
-				return 0, false, err
-			}
-			return s.advanceUpdateVerify(ctx, job, requestID, now)
+		if receiptJSON, receipt, err := s.loadReceiptFromS3(ctx, strings.TrimSpace(s.cfg.ArtifactBucketName), receiptKey); err == nil {
+			return s.advanceUpdateLoadedDeployReceipt(ctx, job, requestID, now, receiptJSON, receipt)
 		}
 	}
 	return s.advanceUpdateRunnerWait(ctx, job, requestID, now, updateRunnerWaitSpec{
@@ -1592,7 +1525,7 @@ func (s *Server) advanceUpdateReceiptIngest(ctx context.Context, job *models.Upd
 	}
 
 	receiptKey := s.updateReceiptS3Key(job)
-	receiptJSON, _, err := s.loadReceiptFromS3(ctx, strings.TrimSpace(s.cfg.ArtifactBucketName), receiptKey)
+	receiptJSON, receipt, err := s.loadReceiptFromS3(ctx, strings.TrimSpace(s.cfg.ArtifactBucketName), receiptKey)
 	if err != nil {
 		job.Attempts++
 		if job.Attempts >= job.MaxAttempts {
@@ -1601,6 +1534,12 @@ func (s *Server) advanceUpdateReceiptIngest(ctx context.Context, job *models.Upd
 		job.Note = "failed to load receipt; retrying: " + compactErr(err)
 		_ = s.persistUpdateJobAndInstance(ctx, job, requestID, now, nil)
 		return jitteredBackoff(job.Attempts, provisionDefaultShortRetryDelay, 5*time.Minute), false, nil
+	}
+
+	if receipt != nil {
+		if keyErr := s.applyManagedInstanceKeyReceipt(ctx, job, receipt.ManagedInstanceKey); keyErr != nil {
+			return 0, false, s.failUpdateJob(ctx, job, requestID, now, "receipt_instance_key_invalid", "failed to validate managed instance key receipt: "+keyErr.Error())
+		}
 	}
 
 	job.ReceiptJSON = strings.TrimSpace(receiptJSON)
@@ -2277,17 +2216,8 @@ func (s *Server) verifyUpdateAI(ctx context.Context, client *http.Client, job *m
 	if !job.AIEnabled {
 		return true, ""
 	}
-
-	key, err := s.resolveInstanceKeyPlaintext(ctx, job)
-	if err != nil {
-		return false, err.Error()
-	}
-
-	baseURL := strings.TrimSpace(job.LesserHostBaseURL)
-	if baseURL == "" {
-		baseURL = strings.TrimSpace(s.publicBaseURL())
-	}
-	return verifyAIEndpoint(ctx, client, baseURL, key, strings.TrimSpace(job.ID))
+	_ = client // plaintext-key proof is produced by the deploy runner while it has the managed profile.
+	return s.verifyUpdateAIAuth(ctx, job)
 }
 
 func updateVerifyInstanceUpdate(job *models.UpdateJob) func(core.UpdateBuilder) error {

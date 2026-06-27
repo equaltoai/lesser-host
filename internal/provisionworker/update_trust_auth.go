@@ -75,13 +75,19 @@ func (s *Server) verifyUpdateTrustAuth(ctx context.Context, client *http.Client,
 	if s == nil || job == nil {
 		return false, updateVerifyInternalError
 	}
-	key, err := s.resolveInstanceKeyPlaintext(ctx, job)
-	if err != nil {
+	_ = client // plaintext-key proof is produced by the deploy runner while it has the managed profile.
+	if _, err := s.ensureUpdateReceiptInstanceKeyRecord(ctx, job); err != nil {
 		return false, err.Error()
 	}
-	baseURL := strings.TrimSpace(job.LesserHostBaseURL)
-	if baseURL == "" {
-		baseURL = strings.TrimSpace(s.publicBaseURL())
+	return true, ""
+}
+
+func (s *Server) verifyUpdateAIAuth(ctx context.Context, job *models.UpdateJob) (bool, string) {
+	if s == nil || job == nil {
+		return false, updateVerifyInternalError
 	}
-	return verifyTrustAuthEndpoint(ctx, client, baseURL, key, strings.TrimSpace(job.InstanceSlug))
+	if _, err := s.ensureUpdateReceiptInstanceKeyRecord(ctx, job); err != nil {
+		return false, err.Error()
+	}
+	return true, ""
 }

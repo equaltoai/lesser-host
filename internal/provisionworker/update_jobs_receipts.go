@@ -196,6 +196,10 @@ func (s *Server) advanceUpdatePhaseReceiptLoaded(
 		job.LesserBodyVersion = strings.TrimSpace(bodyVersion)
 	}
 	job.ReceiptJSON = strings.TrimSpace(receiptJSON)
+	if keyErr := s.applyManagedInstanceKeyReceiptJSON(ctx, job, receiptJSON); keyErr != nil {
+		setUpdateJobPhaseFailed(job, spec.phase, "failed to validate managed instance key receipt: "+keyErr.Error())
+		return 0, false, s.failUpdateJob(ctx, job, requestID, now, "receipt_instance_key_invalid", "failed to validate managed instance key receipt: "+keyErr.Error())
+	}
 	job.Step = updateStepDone
 	job.Status = models.UpdateJobStatusOK
 	job.Note = strings.TrimSpace(spec.successNote)

@@ -28,6 +28,7 @@ STATE_DIR="$HOME/.lesser/$APP_SLUG/$BASE_DOMAIN"
 mkdir -p "$STATE_DIR"
 STAGE_DOMAIN="$BASE_DOMAIN"
 if [ "$STAGE" != "live" ]; then STAGE_DOMAIN="$STAGE.$BASE_DOMAIN"; fi
+ensure_lesser_host_instance_key_secret
 
 if [ "$RUN_MODE" = "lesser" ]; then
   ### INLINE: build-lesser.sh ###
