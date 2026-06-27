@@ -366,18 +366,30 @@ func TestAdvanceProvisionInstanceConfig_Branches(t *testing.T) {
 		require.Equal(t, "instance_not_found", job.ErrorCode)
 	})
 
-	t.Run("instance key secret failure retries", func(t *testing.T) {
+	t.Run("missing instance key secret arn still advances to deploy start", func(t *testing.T) {
 		st, db := newBranchTestStore()
 		mockBranchInstanceLookup(t, db, &models.Instance{Slug: "slug"}, nil)
-		srv := &Server{store: st}
+		stsClient := &fakeSTS{err: errors.New("AccessDenied")}
+		srv := &Server{
+			cfg:   config.Config{Stage: "lab"},
+			store: st,
+			sts:   stsClient,
+			smFactory: func(context.Context, string, string, string, string, string) (secretsManagerAPI, error) {
+				t.Fatalf("advanceProvisionInstanceConfig must not preflight target-account Secrets Manager")
+				return nil, errors.New("unexpected target Secrets Manager preflight")
+			},
+		}
 		job := managedProvisioningJob(provisionStepInstanceConfig)
 		job.MaxAttempts = 3
 
 		delay, done, err := srv.advanceProvisionInstanceConfig(context.Background(), job, "req", now)
 		require.NoError(t, err)
 		require.False(t, done)
-		require.Equal(t, provisionDefaultShortRetryDelay, delay)
-		require.Equal(t, int64(1), job.Attempts)
+		require.Zero(t, delay)
+		require.Equal(t, provisionStepDeployStart, job.Step)
+		require.Equal(t, "starting instance deploy runner", job.Note)
+		require.Equal(t, int64(0), job.Attempts)
 		require.Equal(t, models.ProvisionJobStatusRunning, job.Status)
+		require.Empty(t, stsClient.lastArn)
 	})
 }

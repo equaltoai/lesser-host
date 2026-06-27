@@ -63,9 +63,6 @@ func (s *Server) resolveProvisionDeployRunnerInstanceInputs(ctx context.Context,
 	if inputs.lesserHostAttestationsURL == "" {
 		inputs.lesserHostAttestationsURL = inputs.lesserHostURL
 	}
-	if inputs.instanceKeySecretArn == "" {
-		return provisionDeployRunnerInstanceInputs{}, fmt.Errorf("instance key secret arn is missing")
-	}
 	if inputs.lesserHostURL == "" {
 		return provisionDeployRunnerInstanceInputs{}, fmt.Errorf("lesser host base url is missing")
 	}
@@ -80,6 +77,7 @@ func appendProvisionDeployRunnerInstanceEnv(env []cbtypes.EnvironmentVariable, i
 		cbtypes.EnvironmentVariable{Name: aws.String("LESSER_HOST_URL"), Value: aws.String(inputs.lesserHostURL)},
 		cbtypes.EnvironmentVariable{Name: aws.String("LESSER_HOST_ATTESTATIONS_URL"), Value: aws.String(inputs.lesserHostAttestationsURL)},
 		cbtypes.EnvironmentVariable{Name: aws.String("LESSER_HOST_INSTANCE_KEY_ARN"), Value: aws.String(inputs.instanceKeySecretArn)},
+		cbtypes.EnvironmentVariable{Name: aws.String("LESSER_HOST_INSTANCE_KEY_SECRET_ID"), Value: aws.String(inputs.instanceKeySecretArn)},
 		cbtypes.EnvironmentVariable{Name: aws.String("TRANSLATION_ENABLED"), Value: aws.String(fmt.Sprintf("%t", inputs.translationEnabled))},
 		cbtypes.EnvironmentVariable{Name: aws.String("TIP_ENABLED"), Value: aws.String(fmt.Sprintf("%t", inputs.tipEnabled))},
 		cbtypes.EnvironmentVariable{Name: aws.String("AI_ENABLED"), Value: aws.String(fmt.Sprintf("%t", inputs.aiEnabled))},
