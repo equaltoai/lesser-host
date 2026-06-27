@@ -1088,7 +1088,7 @@ func (s *Server) advanceProvisionAssumeRole(ctx context.Context, job *models.Pro
 
 	_, retryAfter, err := s.assumeInstanceRole(ctx, accID, strings.TrimSpace(job.AccountRoleName), strings.TrimSpace(job.InstanceSlug), strings.TrimSpace(job.ID))
 	if err != nil {
-		if errors.Is(err, errAssumeRoleNotReady) {
+		if isBoundedAssumeRoleReadinessErr(err) {
 			job.Note = "waiting for role to become assumable"
 			_ = s.persistJobAndInstance(ctx, job, requestID, now, nil)
 			if retryAfter <= 0 {
@@ -2114,8 +2114,6 @@ func (s *Server) validateAdoptedProvisionAccount(ctx context.Context, job *model
 	return 0, false, nil
 }
 
-var errAssumeRoleNotReady = errors.New("assume role not ready")
-
 func (s *Server) assumeInstanceRole(ctx context.Context, accountID string, roleName string, slug string, jobID string) (*sts.AssumeRoleOutput, time.Duration, error) {
 	if s == nil || s.sts == nil {
 		return nil, 0, fmt.Errorf("sts client not initialized")
@@ -2140,24 +2138,11 @@ func (s *Server) assumeInstanceRole(ctx context.Context, accountID string, roleN
 	})
 	if err != nil {
 		if isRetryableAssumeRoleErr(err) {
-			return nil, provisionDefaultPollDelay, errAssumeRoleNotReady
+			return nil, provisionDefaultPollDelay, newAssumeRoleError(err, roleArn)
 		}
 		return nil, 0, err
 	}
 	return out, 0, nil
-}
-
-func isRetryableAssumeRoleErr(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "AccessDenied") ||
-		strings.Contains(msg, "AccessDeniedException") ||
-		strings.Contains(msg, "NoSuchEntity") ||
-		strings.Contains(msg, "could not be found") ||
-		strings.Contains(msg, "is not authorized") ||
-		strings.Contains(msg, "InvalidClientTokenId")
 }
 
 func (s *Server) ensureChildHostedZone(ctx context.Context, accountID string, roleName string, baseDomain string, existingZoneID string, existingNameServers []string, slug string, jobID string) (string, []string, error) {

@@ -1055,7 +1055,7 @@ func TestAdvanceUpdateInstanceConfig_WaitsForAssumeRoleReadiness(t *testing.T) {
 	srv := &Server{
 		cfg:   config.Config{ManagedInstanceRoleName: "role", Stage: "lab"},
 		store: store.New(db),
-		sts:   &fakeSTS{err: errors.New("AccessDenied: role is still propagating")},
+		sts:   &fakeSTS{err: errors.New("NoSuchEntity: role has not propagated")},
 	}
 	job := &models.UpdateJob{
 		ID:           "j1",
@@ -1076,6 +1076,66 @@ func TestAdvanceUpdateInstanceConfig_WaitsForAssumeRoleReadiness(t *testing.T) {
 	require.Empty(t, job.ErrorCode)
 	require.Empty(t, job.ErrorMessage)
 	require.Equal(t, int64(0), job.Attempts)
+}
+
+func TestAdvanceUpdateInstanceConfig_FailsOnAccessDeniedForActiveInstance(t *testing.T) {
+	t.Parallel()
+
+	db := ttmocks.NewMockExtendedDB()
+	qInst := new(ttmocks.MockQuery)
+
+	db.On("WithContext", mock.Anything).Return(db).Maybe()
+	db.On("Model", mock.AnythingOfType("*models.Instance")).Return(qInst).Maybe()
+	qInst.On("Where", mock.Anything, mock.Anything, mock.Anything).Return(qInst).Maybe()
+	qInst.On("ConsistentRead").Return(qInst).Maybe()
+	qInst.On("First", mock.AnythingOfType("*models.Instance")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.Instance](t, args, 0)
+		*dest = models.Instance{
+			Slug:             "theory",
+			Owner:            "wallet-deadbeef",
+			Status:           models.InstanceStatusActive,
+			HostedAccountID:  "922120356241",
+			HostedRegion:     "us-east-1",
+			HostedBaseDomain: "theory.greater.website",
+			CreatedAt:        time.Unix(100, 0).UTC(),
+		}
+	}).Once()
+
+	callerARN := "arn:aws:sts::693925625407:assumed-role/lesser-host-live-ProvisionWorkerServiceRole89A343D2-sqYFBuJR7NFJ/lesser-host-live-provision-worker"
+	targetARN := "arn:aws:iam::922120356241:role/OrganizationAccountAccessRole"
+	accessDenied := errors.New("AccessDenied: User: " + callerARN + " is not authorized to perform: sts:AssumeRole on resource: " + targetARN)
+	now := time.Unix(2000, 0).UTC()
+	srv := &Server{
+		cfg:   config.Config{ManagedInstanceRoleName: "OrganizationAccountAccessRole", Stage: "live"},
+		store: store.New(db),
+		sts:   &fakeSTS{err: accessDenied},
+	}
+	job := &models.UpdateJob{
+		ID:              "CqBkpMZWBBYIiEOeqLeY-Q",
+		InstanceSlug:    "theory",
+		Status:          models.UpdateJobStatusRunning,
+		Step:            updateStepInstanceConfig,
+		AccountRoleName: "OrganizationAccountAccessRole",
+		MaxAttempts:     10,
+		CreatedAt:       now.Add(-time.Minute),
+	}
+
+	delay, done, err := srv.advanceUpdateInstanceConfig(context.Background(), job, "req", now)
+	require.NoError(t, err)
+	require.False(t, done)
+	require.Equal(t, time.Duration(0), delay)
+	require.Equal(t, models.UpdateJobStatusError, job.Status)
+	require.Equal(t, updateStepFailed, job.Step)
+	require.Equal(t, updateInstanceRoleAccessDeniedCode, job.ErrorCode)
+	require.Contains(t, job.ErrorMessage, "AccessDenied")
+	require.Contains(t, job.ErrorMessage, callerARN)
+	require.Contains(t, job.ErrorMessage, targetARN)
+	require.Contains(t, job.ErrorMessage, assumeRoleRemediationAccessDenied)
+	require.Equal(t, job.ErrorMessage, job.Note)
+	require.Equal(t, int64(0), job.Attempts)
+	for _, forbidden := range []string{"SecretAccessKey", "SessionToken", "AWS_SECRET_ACCESS_KEY"} {
+		require.NotContains(t, job.ErrorMessage, forbidden)
+	}
 }
 
 func TestAdvanceUpdateInstanceConfig_FailsWhenAssumeRoleReadinessDeadlineExceeded(t *testing.T) {
