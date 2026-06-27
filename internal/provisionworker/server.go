@@ -1209,11 +1209,12 @@ func (s *Server) advanceProvisionInstanceConfig(ctx context.Context, job *models
 	publicBaseURL := strings.TrimSpace(s.publicBaseURL())
 	attestationsURL := strings.TrimSpace(publicBaseURL)
 	translationEnabled := provisionTranslationEnabled(inst)
-
-	secretArn, err := s.ensureManagedInstanceKeySecret(ctx, job, inst)
-	if err != nil {
-		return s.retryProvisionJobOrFail(ctx, job, requestID, now, "instance_key_secret_failed", "failed to ensure instance key secret: "+err.Error(), provisionDefaultShortRetryDelay, 5*time.Minute)
-	}
+	// Initial provisioning must not assume directly into the target account to
+	// create or read the InstanceKey secret. The deploy runner assumes the target
+	// role with the tenant-scoped ExternalId, derives the canonical secret from
+	// APP_SLUG/STAGE when no ARN is already recorded, and returns a bounded
+	// managed_instance_key proof in its receipt.
+	secretArn := strings.TrimSpace(inst.LesserHostInstanceKeySecretARN)
 
 	job.Step = provisionStepDeployStart
 	job.Note = "starting instance deploy runner"
@@ -1562,15 +1563,6 @@ func (s *Server) advanceProvisionDeployStart(ctx context.Context, job *models.Pr
 	if inst == nil {
 		return 0, false, s.failJob(ctx, job, requestID, now, "instance_not_found", "instance record not found")
 	}
-	if strings.TrimSpace(inst.LesserHostInstanceKeySecretARN) == "" {
-		job.Step = provisionStepInstanceConfig
-		job.Note = noteEnsuringInstanceConfiguration
-		persistErr := s.persistJobAndInstance(ctx, job, requestID, now, nil)
-		if persistErr != nil {
-			return 0, false, persistErr
-		}
-		return 0, false, nil
-	}
 	if provisionJobHasConsentArtifacts(job) && job.ConsentExpiresAt.IsZero() {
 		clearProvisionJobConsentArtifacts(job)
 		return 0, false, s.failJob(ctx, job, requestID, now, "provision_consent_expiration_missing", "provisioning consent expiration is missing")
@@ -1674,6 +1666,14 @@ func (s *Server) advanceProvisionReceiptIngest(ctx context.Context, job *models.
 	}
 
 	applyLesserUpReceipt(job, receiptJSON, receipt)
+	instanceKeySecretARN := ""
+	if receipt != nil {
+		var keyErr error
+		instanceKeySecretARN, keyErr = s.applyProvisionManagedInstanceKeyReceipt(ctx, job, receipt.ManagedInstanceKey)
+		if keyErr != nil {
+			return 0, false, s.failJob(ctx, job, requestID, now, "receipt_instance_key_invalid", "failed to validate managed instance key receipt: "+keyErr.Error())
+		}
+	}
 
 	continueToBody := job.BodyEnabled && job.McpWiredAt.IsZero()
 
@@ -1693,7 +1693,7 @@ func (s *Server) advanceProvisionReceiptIngest(ctx context.Context, job *models.
 	}
 
 	continuing := continueToBody
-	if err := s.persistJobAndInstance(ctx, job, requestID, now, provisionReceiptIngestInstanceUpdate(job, continuing)); err != nil {
+	if err := s.persistJobAndInstance(ctx, job, requestID, now, provisionReceiptIngestInstanceUpdate(job, continuing, instanceKeySecretARN)); err != nil {
 		return 0, false, err
 	}
 	return 0, !continuing, nil
@@ -1737,7 +1737,7 @@ func applyLesserUpReceipt(job *models.ProvisionJob, receiptJSON string, receipt 
 	}
 }
 
-func provisionReceiptIngestInstanceUpdate(job *models.ProvisionJob, continuing bool) func(core.UpdateBuilder) error {
+func provisionReceiptIngestInstanceUpdate(job *models.ProvisionJob, continuing bool, instanceKeySecretARN string) func(core.UpdateBuilder) error {
 	return func(ub core.UpdateBuilder) error {
 		ub.Set("ProvisionJobID", strings.TrimSpace(job.ID))
 		if continuing {
@@ -1756,6 +1756,9 @@ func provisionReceiptIngestInstanceUpdate(job *models.ProvisionJob, continuing b
 		}
 		if strings.TrimSpace(job.ChildHostedZoneID) != "" {
 			ub.Set("HostedZoneID", strings.TrimSpace(job.ChildHostedZoneID))
+		}
+		if strings.TrimSpace(instanceKeySecretARN) != "" {
+			ub.Set("LesserHostInstanceKeySecretARN", strings.TrimSpace(instanceKeySecretARN))
 		}
 		return nil
 	}

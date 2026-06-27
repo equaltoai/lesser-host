@@ -124,7 +124,38 @@ func validateManagedInstanceKeyReceiptKeyID(keyID string) error {
 	return nil
 }
 
-func validateManagedInstanceKeyReceiptSecretARN(job *models.UpdateJob, secretARN string) error {
+type managedInstanceKeyReceiptBinding struct {
+	kind      string
+	slug      string
+	accountID string
+	region    string
+}
+
+func updateManagedInstanceKeyReceiptBinding(job *models.UpdateJob) managedInstanceKeyReceiptBinding {
+	if job == nil {
+		return managedInstanceKeyReceiptBinding{kind: "job"}
+	}
+	return managedInstanceKeyReceiptBinding{
+		kind:      "update job",
+		slug:      strings.TrimSpace(job.InstanceSlug),
+		accountID: strings.TrimSpace(job.AccountID),
+		region:    strings.TrimSpace(job.Region),
+	}
+}
+
+func provisionManagedInstanceKeyReceiptBinding(job *models.ProvisionJob) managedInstanceKeyReceiptBinding {
+	if job == nil {
+		return managedInstanceKeyReceiptBinding{kind: "job"}
+	}
+	return managedInstanceKeyReceiptBinding{
+		kind:      "provision job",
+		slug:      strings.TrimSpace(job.InstanceSlug),
+		accountID: strings.TrimSpace(job.AccountID),
+		region:    strings.TrimSpace(job.Region),
+	}
+}
+
+func validateManagedInstanceKeyReceiptSecretARN(binding managedInstanceKeyReceiptBinding, secretARN string) error {
 	secretARN = strings.TrimSpace(secretARN)
 	if secretARN == "" {
 		return fmt.Errorf("managed instance key receipt secret ARN is invalid")
@@ -133,20 +164,23 @@ func validateManagedInstanceKeyReceiptSecretARN(job *models.UpdateJob, secretARN
 	if err != nil || parsed.Service != "secretsmanager" || strings.TrimSpace(parsed.Region) == "" || strings.TrimSpace(parsed.AccountID) == "" || !strings.HasPrefix(parsed.Resource, "secret:") {
 		return fmt.Errorf("managed instance key receipt secret ARN is invalid")
 	}
-	if want := strings.TrimSpace(job.AccountID); want != "" && parsed.AccountID != want {
-		return fmt.Errorf("managed instance key receipt secret ARN account does not match update job")
+	if want := strings.TrimSpace(binding.accountID); want != "" && parsed.AccountID != want {
+		return fmt.Errorf("managed instance key receipt secret ARN account does not match %s", binding.kind)
 	}
-	if want := strings.TrimSpace(job.Region); want != "" && parsed.Region != want {
-		return fmt.Errorf("managed instance key receipt secret ARN region does not match update job")
+	if want := strings.TrimSpace(binding.region); want != "" && parsed.Region != want {
+		return fmt.Errorf("managed instance key receipt secret ARN region does not match %s", binding.kind)
 	}
 	return nil
 }
 
-func (s *Server) validateManagedInstanceKeyReceipt(job *models.UpdateJob, receipt *managedInstanceKeyReceipt) error {
+func (s *Server) validateManagedInstanceKeyReceiptForBinding(binding managedInstanceKeyReceiptBinding, receipt *managedInstanceKeyReceipt) error {
 	if s == nil {
 		return fmt.Errorf("server is nil")
 	}
-	if job == nil {
+	if strings.TrimSpace(binding.kind) == "" {
+		binding.kind = "job"
+	}
+	if strings.TrimSpace(binding.slug) == "" {
 		return fmt.Errorf("job is nil")
 	}
 	if receipt == nil {
@@ -158,9 +192,9 @@ func (s *Server) validateManagedInstanceKeyReceipt(job *models.UpdateJob, receip
 	if strings.TrimSpace(receipt.Source) != managedInstanceKeyReceiptSourceDeployRunner {
 		return fmt.Errorf("managed instance key receipt source is invalid")
 	}
-	slug := strings.ToLower(strings.TrimSpace(job.InstanceSlug))
+	slug := strings.ToLower(strings.TrimSpace(binding.slug))
 	if slug == "" || strings.ToLower(strings.TrimSpace(receipt.InstanceSlug)) != slug {
-		return fmt.Errorf("managed instance key receipt slug does not match update job")
+		return fmt.Errorf("managed instance key receipt slug does not match %s", binding.kind)
 	}
 	if strings.TrimSpace(receipt.Stage) == "" {
 		return fmt.Errorf("managed instance key receipt stage is missing")
@@ -168,13 +202,17 @@ func (s *Server) validateManagedInstanceKeyReceipt(job *models.UpdateJob, receip
 	if got, want := managedInstanceKeySecretStage(receipt.Stage), managedInstanceKeySecretStage(s.cfg.Stage); got != want {
 		return fmt.Errorf("managed instance key receipt stage does not match control plane stage")
 	}
-	if err := validateManagedInstanceKeyReceiptSecretARN(job, receipt.SecretARN); err != nil {
+	if err := validateManagedInstanceKeyReceiptSecretARN(binding, receipt.SecretARN); err != nil {
 		return err
 	}
 	if err := validateManagedInstanceKeyReceiptKeyID(receipt.KeyID); err != nil {
 		return err
 	}
 	return nil
+}
+
+func (s *Server) validateManagedInstanceKeyReceipt(job *models.UpdateJob, receipt *managedInstanceKeyReceipt) error {
+	return s.validateManagedInstanceKeyReceiptForBinding(updateManagedInstanceKeyReceiptBinding(job), receipt)
 }
 
 func (s *Server) applyManagedInstanceKeyReceipt(ctx context.Context, job *models.UpdateJob, receipt *managedInstanceKeyReceipt) error {
@@ -193,6 +231,20 @@ func (s *Server) applyManagedInstanceKeyReceipt(ctx context.Context, job *models
 		job.RotatedInstanceKeyID = keyID
 	}
 	return nil
+}
+
+func (s *Server) applyProvisionManagedInstanceKeyReceipt(ctx context.Context, job *models.ProvisionJob, receipt *managedInstanceKeyReceipt) (string, error) {
+	if receipt == nil {
+		return "", fmt.Errorf("managed instance key proof missing from receipt")
+	}
+	if err := s.validateManagedInstanceKeyReceiptForBinding(provisionManagedInstanceKeyReceiptBinding(job), receipt); err != nil {
+		return "", err
+	}
+	keyID := strings.ToLower(strings.TrimSpace(receipt.KeyID))
+	if err := s.ensureInstanceKeyRecord(ctx, strings.TrimSpace(job.InstanceSlug), keyID); err != nil {
+		return "", fmt.Errorf("ensure instance key record from receipt: %w", err)
+	}
+	return strings.TrimSpace(receipt.SecretARN), nil
 }
 
 func (s *Server) applyManagedInstanceKeyReceiptJSON(ctx context.Context, job *models.UpdateJob, receiptJSON string) error {

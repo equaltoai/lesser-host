@@ -317,7 +317,9 @@ func TestProvisionStateMachine_SuccessPathAcrossSteps(t *testing.T) {
 		}}},
 	}
 
-	s3Client := &fakeS3{out: &s3.GetObjectOutput{Body: io.NopCloser(strings.NewReader(`{"app":"x","base_domain":"d","account_id":"123456789012","region":"us-east-1","hosted_zone":{"id":"/hostedzone/Z1","name":"d."}}`))}}
+	s3Client := &fakeS3{out: &s3.GetObjectOutput{Body: io.NopCloser(strings.NewReader(
+		provisionReceiptWithManagedInstanceKey("123456789012", "us-east-1", "demo", "lab", "arn:aws:secretsmanager:us-east-1:123456789012:secret:lab/demo/instance-key"),
+	))}}
 
 	sm := &fakeSecretsManager{
 		describeErr: &smtypes.ResourceNotFoundException{},
@@ -543,7 +545,7 @@ func TestProvisionStateMachine_SoulEnabled_SuccessPathAcrossSteps(t *testing.T) 
 		}}},
 	}
 
-	lesserReceipt := `{"app":"x","base_domain":"d","account_id":"123456789012","region":"us-east-1","hosted_zone":{"id":"/hostedzone/Z1","name":"d."}}`
+	lesserReceipt := provisionReceiptWithManagedInstanceKey("123456789012", "us-east-1", "demo", "lab", "arn:aws:secretsmanager:us-east-1:123456789012:secret:lab/demo/instance-key")
 	s3Client := &fakeS3{byKey: map[string]*s3.GetObjectOutput{
 		"managed/provisioning/demo/j1/state.json": {Body: io.NopCloser(strings.NewReader(lesserReceipt))},
 	}}

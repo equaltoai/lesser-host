@@ -14,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	smtypes "github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
 	"github.com/aws/smithy-go"
+	"github.com/stretchr/testify/mock"
 	ttmocks "github.com/theory-cloud/tabletheory/pkg/mocks"
 
 	"github.com/equaltoai/lesser-host/internal/config"
@@ -34,6 +35,11 @@ func newProvisionServerWithStore(t *testing.T) *Server {
 	t.Helper()
 
 	db := ttmocks.NewMockExtendedDB()
+	db.On("WithContext", mock.Anything).Return(db).Maybe()
+	qKey := new(ttmocks.MockQuery)
+	db.On("Model", mock.AnythingOfType("*models.InstanceKey")).Return(qKey).Maybe()
+	qKey.On("IfNotExists").Return(qKey).Maybe()
+	qKey.On("Create").Return(nil).Maybe()
 	st := store.New(db)
 	return &Server{
 		cfg: config.Config{
@@ -111,7 +117,9 @@ func TestAdvanceProvisionReceiptIngest_SetsDoneWhenBodyDisabled(t *testing.T) {
 
 	s := newProvisionServerWithStore(t)
 	s.cfg = config.Config{ArtifactBucketName: "bucket"}
-	s.s3 = &fakeS3{out: &s3.GetObjectOutput{Body: io.NopCloser(strings.NewReader(`{"app":"x","base_domain":"d","account_id":"123456789012","region":"us-east-1","hosted_zone":{"id":"/hostedzone/Z1","name":"d."}}`))}}
+	s.s3 = &fakeS3{out: &s3.GetObjectOutput{Body: io.NopCloser(strings.NewReader(
+		provisionReceiptWithManagedInstanceKey("123456789012", "us-east-1", "demo", "lab", "arn:aws:secretsmanager:us-east-1:123456789012:secret:lab/demo/instance-key"),
+	))}}
 
 	now := time.Unix(110, 0).UTC()
 	job := &models.ProvisionJob{

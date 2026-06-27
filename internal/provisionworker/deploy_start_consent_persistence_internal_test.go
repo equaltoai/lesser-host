@@ -51,20 +51,24 @@ func TestAdvanceProvisionDeployStart_ConsentRetryAndReroutePersistsStripPlaintex
 		assertPersistedConsentPlaintextClearedEncryptedPreserved(t, builder, encrypted)
 	})
 
-	t.Run("instance_config_reroute", func(t *testing.T) {
+	t.Run("missing_instance_key_secret_starts_runner", func(t *testing.T) {
 		st, db := newConsentPersistTestStore()
 		mockBranchInstanceLookup(t, db, deployStartConsentInstance(""), nil)
 		builder := expectProvisionJobPersist(t, db)
-		srv := consentPersistDeployStartServer(st, keyHex, nil)
+		cb := &fakeCodebuild{startOut: &codebuild.StartBuildOutput{Build: &cbtypes.Build{Id: aws.String("run1")}}}
+		srv := consentPersistDeployStartServer(st, keyHex, cb)
 		job := deployStartConsentJob(encrypted, now)
 
 		delay, done, err := srv.advanceProvisionDeployStart(context.Background(), job, "req", now)
 		require.NoError(t, err)
 		require.False(t, done)
-		require.Zero(t, delay)
-		require.Equal(t, provisionStepInstanceConfig, job.Step)
+		require.Equal(t, provisionDefaultPollDelay, delay)
+		require.Equal(t, provisionStepDeployWait, job.Step)
+		require.Equal(t, "run1", job.RunID)
+		require.Len(t, cb.startInputs, 1)
+		assertStartBuildConsentEnv(t, cb.startInputs[0], message, signature)
 
-		assertPersistedConsentPlaintextClearedEncryptedPreserved(t, builder, encrypted)
+		assertPersistedConsentArtifactsCleared(t, builder)
 	})
 
 	t.Run("deploy_start_error_retry", func(t *testing.T) {
