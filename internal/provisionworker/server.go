@@ -1513,49 +1513,6 @@ func (s *Server) canIgnoreLegacyInstanceKeySecret(secretID string, secretName st
 	return strings.TrimSpace(secretID) != "" && strings.TrimSpace(secretID) != strings.TrimSpace(secretName)
 }
 
-func (s *Server) rotateManagedInstanceKeySecret(ctx context.Context, job *models.ProvisionJob, secretArn string) (string, error) {
-	if err := s.requireStoreDB(); err != nil {
-		return "", err
-	}
-	if job == nil {
-		return "", fmt.Errorf("job is required")
-	}
-	secretArn = strings.TrimSpace(secretArn)
-	if secretArn == "" {
-		return "", fmt.Errorf("secretArn is required")
-	}
-
-	inputs, inputErr := managedInstanceSecretsInputsFromJob(job)
-	if inputErr != nil || strings.TrimSpace(inputs.region) == "" {
-		return "", fmt.Errorf("missing required rotation inputs")
-	}
-
-	sm, clientErr := s.childSecretsManagerClient(ctx, inputs.accountID, inputs.roleName, inputs.region, inputs.slug, inputs.jobID)
-	if clientErr != nil {
-		return "", clientErr
-	}
-
-	_, keyID, secretJSON, err := generateInstanceKeySecret()
-	if err != nil {
-		return "", err
-	}
-
-	if ensureErr := s.ensureInstanceKeyRecord(ctx, inputs.slug, keyID); ensureErr != nil {
-		return "", fmt.Errorf("ensure instance key record: %w", ensureErr)
-	}
-
-	if _, err := sm.UpdateSecret(ctx, &secretsmanager.UpdateSecretInput{
-		SecretId:     aws.String(secretArn),
-		SecretString: aws.String(secretJSON),
-	}); err != nil {
-		return "", err
-	}
-
-	updateManagedInstanceKeySecretTags(ctx, sm, secretArn, inputs.slug, keyID, s.cfg.Stage)
-
-	return keyID, nil
-}
-
 // decryptConsentFromJob decrypts the encrypted consent field on the job,
 // unpacking the structured JSON payload into ConsentMessage and ConsentSignature.
 // Returns an error when the key is missing or decryption fails — the caller

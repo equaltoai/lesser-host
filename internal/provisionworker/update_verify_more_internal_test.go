@@ -198,5 +198,5 @@ func TestServerVerifyUpdateAI_EarlyReturnsAndErrors(t *testing.T) {
 	job = &models.UpdateJob{ID: "j", AIEnabled: true}
 	ok, msg = (&Server{}).verifyUpdateAI(context.Background(), &http.Client{}, job)
 	require.False(t, ok)
-	require.Contains(t, msg, "instance key")
+	require.Contains(t, msg, "managed instance key proof")
 }

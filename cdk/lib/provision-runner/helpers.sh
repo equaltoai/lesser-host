@@ -484,6 +484,169 @@ bool_on() {
   case "$v" in true|1|yes|on) return 0 ;; *) return 1 ;; esac
 }
 
+managed_instance_key_stage() {
+  stage=$(printf "%s" "${STAGE:-lab}" | tr "[:upper:]" "[:lower:]")
+  case "$stage" in prod|production) stage="live" ;; esac
+  stage=$(printf "%s" "$stage" | tr -cd 'a-z0-9._-' | sed 's/^[._-]*//;s/[._-]*$//')
+  if [ -z "$stage" ]; then stage="lab"; fi
+  printf "%s" "$stage"
+}
+
+managed_instance_key_slug() {
+  printf "%s" "${APP_SLUG:-}" | tr "[:upper:]" "[:lower:]" | xargs
+}
+
+managed_instance_key_secret_name() {
+  key_stage=$(managed_instance_key_stage)
+  key_slug=$(managed_instance_key_slug)
+  if [ -z "$key_slug" ]; then fail "APP_SLUG is required for managed instance key secret"; fi
+  printf "%s/%s/instance-key" "$key_stage" "$key_slug"
+}
+
+managed_instance_key_id_for_plaintext() {
+  plaintext="$1"
+  printf "%s" "$plaintext" | sha256sum | awk '{print $1}'
+}
+
+new_lesser_host_instance_key() {
+  token=$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n\r')
+  test -n "$token" || fail "failed to generate instance key token"
+  printf "lhk_%s" "$token"
+}
+
+managed_instance_key_tag_value() {
+  desc_path="$1"
+  tag_key="$2"
+  jq -r --arg key "$tag_key" '.Tags[]? | select(.Key == $key) | .Value // empty' "$desc_path" | head -n 1
+}
+
+validate_managed_instance_key_secret_tags() {
+  desc_path="$1"
+  expected_slug=$(managed_instance_key_slug)
+  expected_stage=$(managed_instance_key_stage)
+  managed_tag=$(managed_instance_key_tag_value "$desc_path" "lesser-host:managed" | tr "[:upper:]" "[:lower:]")
+  slug_tag=$(managed_instance_key_tag_value "$desc_path" "lesser-host:instance-slug" | tr "[:upper:]" "[:lower:]")
+  stage_tag=$(managed_instance_key_tag_value "$desc_path" "lesser-host:control-plane-stage")
+  normalized_stage=$(printf "%s" "$stage_tag" | tr "[:upper:]" "[:lower:]" | tr -cd 'a-z0-9._-' | sed 's/^[._-]*//;s/[._-]*$//')
+  case "$normalized_stage" in prod|production) normalized_stage="live" ;; esac
+  test "$managed_tag" = "true" || fail "managed instance key secret is missing managed=true tag"
+  test "$slug_tag" = "$expected_slug" || fail "managed instance key secret slug tag mismatch"
+  test -n "$stage_tag" || fail "managed instance key secret stage tag is missing"
+  test "$normalized_stage" = "$expected_stage" || fail "managed instance key secret stage tag mismatch"
+}
+
+read_managed_instance_key_plaintext() {
+  secret_id="$1"
+  raw=$(aws secretsmanager get-secret-value --profile managed --secret-id "$secret_id" --query SecretString --output text)
+  test -n "$raw" && test "$raw" != "None" && test "$raw" != "null" || fail "managed instance key secret value is empty"
+  if printf "%s" "$raw" | grep -q '^{'; then
+    plaintext=$(printf "%s" "$raw" | jq -r '.secret // empty')
+  else
+    plaintext="$raw"
+  fi
+  test -n "$plaintext" || fail "managed instance key secret payload missing secret"
+  printf "%s" "$plaintext"
+}
+
+write_managed_instance_key_secret_payload() {
+  plaintext="$1"
+  payload_path="$2"
+  umask 077
+  printf "%s" "$plaintext" | jq -Rs '{secret:.}' > "$payload_path"
+}
+
+tag_managed_instance_key_secret() {
+  secret_arn="$1"
+  key_id="$2"
+  key_slug=$(managed_instance_key_slug)
+  key_stage=$(managed_instance_key_stage)
+  aws secretsmanager untag-resource --profile managed --secret-id "$secret_arn" --tag-keys "lesser-host:instance-key-id" "lesser-host:control-plane-stage" >/dev/null 2>&1 || true
+  aws secretsmanager tag-resource --profile managed --secret-id "$secret_arn" --tags \
+    Key=lesser-host:instance-slug,Value="$key_slug" \
+    Key=lesser-host:instance-key-id,Value="$key_id" \
+    Key=lesser-host:managed,Value=true \
+    Key=lesser-host:control-plane-stage,Value="$key_stage" >/dev/null
+}
+
+write_managed_instance_key_receipt() {
+  receipt_path="$1"
+  secret_arn="$2"
+  key_id="$3"
+  rotated="$4"
+  key_slug=$(managed_instance_key_slug)
+  key_stage=$(managed_instance_key_stage)
+  jq -n \
+    --arg source "deploy-runner-managed-profile" \
+    --arg secret_arn "$secret_arn" \
+    --arg key_id "$key_id" \
+    --arg instance_slug "$key_slug" \
+    --arg stage "$key_stage" \
+    --arg rotated "$rotated" \
+    --arg verified_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+    '{version:1,source:$source,secret_arn:$secret_arn,key_id:$key_id,instance_slug:$instance_slug,stage:$stage,rotated:($rotated=="true"),verified_at:$verified_at}' > "$receipt_path"
+}
+
+ensure_lesser_host_instance_key_secret() {
+  : "${STATE_DIR:?STATE_DIR is required}"
+  secret_ref="${LESSER_HOST_INSTANCE_KEY_SECRET_ID:-${LESSER_HOST_INSTANCE_KEY_ARN:-}}"
+  if [ -z "$secret_ref" ]; then secret_ref=$(managed_instance_key_secret_name); fi
+
+  desc_path="$STATE_DIR/managed-instance-key-describe.json"
+  desc_err="$STATE_DIR/managed-instance-key-describe.err"
+  payload_path="$STATE_DIR/managed-instance-key-payload.json"
+  MANAGED_INSTANCE_KEY_RECEIPT_PATH="$STATE_DIR/managed-instance-key.json"
+  rm -f "$desc_path" "$desc_err" "$payload_path" "$MANAGED_INSTANCE_KEY_RECEIPT_PATH"
+
+  if aws secretsmanager describe-secret --profile managed --secret-id "$secret_ref" --output json > "$desc_path" 2>"$desc_err"; then
+    validate_managed_instance_key_secret_tags "$desc_path"
+    secret_arn=$(jq -r '.ARN // empty' "$desc_path")
+    test -n "$secret_arn" && test "$secret_arn" != "null" || fail "managed instance key secret ARN is missing"
+    plaintext=$(read_managed_instance_key_plaintext "$secret_arn")
+    key_id=$(managed_instance_key_id_for_plaintext "$plaintext")
+    tagged_key_id=$(managed_instance_key_tag_value "$desc_path" "lesser-host:instance-key-id")
+    if [ -n "$tagged_key_id" ] && [ "$tagged_key_id" != "$key_id" ]; then
+      fail "managed instance key secret key-id tag mismatch"
+    fi
+    rotated="false"
+  else
+    if ! grep -q "ResourceNotFoundException" "$desc_err"; then
+      cat "$desc_err" >&2
+      fail "failed to describe managed instance key secret"
+    fi
+    secret_name=$(managed_instance_key_secret_name)
+    plaintext=$(new_lesser_host_instance_key)
+    key_id=$(managed_instance_key_id_for_plaintext "$plaintext")
+    write_managed_instance_key_secret_payload "$plaintext" "$payload_path"
+    secret_arn=$(aws secretsmanager create-secret --profile managed \
+      --name "$secret_name" \
+      --description "managed instance API key" \
+      --secret-string "file://$payload_path" \
+      --tags \
+        Key=lesser-host:instance-slug,Value="$(managed_instance_key_slug)" \
+        Key=lesser-host:instance-key-id,Value="$key_id" \
+        Key=lesser-host:managed,Value=true \
+        Key=lesser-host:control-plane-stage,Value="$(managed_instance_key_stage)" \
+      --query ARN --output text)
+    test -n "$secret_arn" && test "$secret_arn" != "None" && test "$secret_arn" != "null" || fail "managed instance key secret create returned empty ARN"
+    rotated="false"
+  fi
+
+  if bool_on "${LESSER_HOST_INSTANCE_KEY_ROTATE:-false}"; then
+    plaintext=$(new_lesser_host_instance_key)
+    key_id=$(managed_instance_key_id_for_plaintext "$plaintext")
+    write_managed_instance_key_secret_payload "$plaintext" "$payload_path"
+    aws secretsmanager update-secret --profile managed --secret-id "$secret_arn" --secret-string "file://$payload_path" >/dev/null
+    rotated="true"
+  fi
+
+  tag_managed_instance_key_secret "$secret_arn" "$key_id"
+  write_managed_instance_key_receipt "$MANAGED_INSTANCE_KEY_RECEIPT_PATH" "$secret_arn" "$key_id" "$rotated"
+  export LESSER_HOST_INSTANCE_KEY_ARN="$secret_arn"
+  export LESSER_HOST_INSTANCE_KEY_SECRET_ID="$secret_arn"
+  export MANAGED_INSTANCE_KEY_RECEIPT_PATH
+  rm -f "$payload_path" "$desc_err"
+}
+
 validate_https_custom_domain() {
   NAME="$1"
   VALUE="$2"
