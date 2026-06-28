@@ -256,9 +256,6 @@ func (s *Server) handleSoulInstanceFinalizeMintConversation(ctx *apptheory.Conte
 }
 
 func (s *Server) requireSoulInstanceBootstrapContext(ctx *apptheory.Context) (soulInstanceBootstrapContext, *apptheory.AppTheoryError) {
-	if appErr := s.requireSoulRegistryConfigured(); appErr != nil {
-		return soulInstanceBootstrapContext{}, soulInstanceBootstrapErrorFromAppError(appErr)
-	}
 	if appErr := requireStoreDB(s); appErr != nil {
 		return soulInstanceBootstrapContext{}, soulInstanceBootstrapErrorFromAppError(appErr)
 	}
@@ -269,6 +266,12 @@ func (s *Server) requireSoulInstanceBootstrapContext(ctx *apptheory.Context) (so
 	key, appErr := s.requireSoulInstanceBootstrapKey(ctx)
 	if appErr != nil {
 		return soulInstanceBootstrapContext{}, appErr
+	}
+	if !s.cfg.SoulEnabled {
+		return soulInstanceBootstrapContext{}, soulInstanceBootstrapErrorFromAppError(&apptheory.AppError{
+			Code:    appErrCodeConflict,
+			Message: "soul registry is not configured",
+		})
 	}
 	return soulInstanceBootstrapContext{key: key, instanceSlug: strings.TrimSpace(key.InstanceSlug)}, nil
 }
