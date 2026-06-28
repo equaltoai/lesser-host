@@ -695,6 +695,7 @@ func TestSoulInstanceMintConversation_StartReturnsJSONWithoutQueueAuthority(t *t
 	s := newMintConversationServer(tdb)
 	reg := mintConversationHandleReg()
 	t.Setenv("ANTHROPIC_API_KEY", "anthropic-test-key")
+	stubHostedGenesisAssistantRunner(t, s, "assistant reply", nil)
 	s.enqueueHostedGenesisMessage = func(_ context.Context, msg hostedgenesis.QueueMessage) error {
 		t.Fatalf("user-visible hosted genesis start must not enqueue SQS authority: %#v", msg)
 		return nil
@@ -706,6 +707,7 @@ func TestSoulInstanceMintConversation_StartReturnsJSONWithoutQueueAuthority(t *t
 	stubMintConversationIdentity(t, tdb, nil, theoryErrors.ErrItemNotFound)
 	tdb.qMintIdem.On("First", mock.AnythingOfType("*models.SoulMintConversationIdempotency")).Return(theoryErrors.ErrItemNotFound).Once()
 	expectSoulInstanceMintConversationDebit(t, tdb, reg.AgentID, true)
+	expectSoulInstanceMintConversationProgression(t, tdb, hostedgenesis.StatusAssistantTurnReady)
 
 	resp, err := s.handleSoulInstanceMintConversation(newSoulInstanceBootstrapContext(
 		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
@@ -722,11 +724,58 @@ func TestSoulInstanceMintConversation_StartReturnsJSONWithoutQueueAuthority(t *t
 	tdb.qLifecycle.AssertCalled(t, "Create")
 }
 
+func TestSoulInstanceMintConversation_AssistantFailurePersistsTypedFailure(t *testing.T) {
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	reg := mintConversationHandleReg()
+	t.Setenv("ANTHROPIC_API_KEY", "anthropic-test-key")
+	stubHostedGenesisAssistantRunner(t, s, "", errors.New("provider unavailable"))
+	s.enqueueHostedGenesisMessage = func(_ context.Context, msg hostedgenesis.QueueMessage) error {
+		t.Fatalf("failed hosted genesis turn must not enqueue SQS authority: %#v", msg)
+		return nil
+	}
+
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationRegistration(t, tdb, reg)
+	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationIdentity(t, tdb, nil, theoryErrors.ErrItemNotFound)
+	tdb.qMintIdem.On("First", mock.AnythingOfType("*models.SoulMintConversationIdempotency")).Return(theoryErrors.ErrItemNotFound).Once()
+	expectSoulInstanceMintConversationDebit(t, tdb, reg.AgentID, true)
+	expectSoulInstanceMintConversationProgression(t, tdb, hostedgenesis.StatusFailed)
+
+	resp, err := s.handleSoulInstanceMintConversation(newSoulInstanceBootstrapContext(
+		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
+		mustMarshalJSON(t, soulMintConversationRequest{Model: "anthropic:claude-sonnet-4-6", Message: soulInstanceBootstrapTestConversationMessage, IdempotencyKey: soulInstanceBootstrapTestIdempotencyKey, CorrelationID: "corr-1"}),
+		map[string]string{"id": reg.ID},
+	))
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if resp.Status != http.StatusOK {
+		t.Fatalf("expected JSON 200 failed response, got %#v", resp)
+	}
+	var out hostedGenesisConversationResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Conversation.Status != models.SoulMintConversationStatusFailed || out.Conversation.Failure == nil {
+		t.Fatalf("expected typed failed status, got %#v", out.Conversation)
+	}
+	if out.Conversation.Failure.Code != hostedGenesisFailureAssistantTurnFailed || out.Conversation.Failure.Recovery.Action != hostedGenesisRecoveryRetrySameStep {
+		t.Fatalf("expected retryable assistant failure, got %#v", out.Conversation.Failure)
+	}
+	if strings.Contains(string(resp.Body), soulInstanceBootstrapTestConversationMessage) ||
+		strings.Contains(string(resp.Body), mintConversationInstanceReadTestRawKey) {
+		t.Fatalf("failure response leaked transcript or credential material: %s", string(resp.Body))
+	}
+}
+
 func TestSoulInstanceMintConversation_IdempotentRetryDoesNotDebitOrAppend(t *testing.T) {
 	tdb := newMintConversationTestDB()
 	s := newMintConversationServer(tdb)
 	reg := mintConversationHandleReg()
 	t.Setenv("ANTHROPIC_API_KEY", "anthropic-test-key")
+	stubHostedGenesisAssistantRunner(t, s, "assistant retry reply", nil)
 	s.enqueueHostedGenesisMessage = func(_ context.Context, msg hostedgenesis.QueueMessage) error {
 		t.Fatalf("idempotent replay must not enqueue duplicate user-visible execution: %#v", msg)
 		return nil
@@ -781,6 +830,7 @@ func TestSoulInstanceMintConversation_IdempotentRetryDoesNotDebitOrAppend(t *tes
 		dest := testutil.RequireMockArg[*models.HostedGenesisSession](t, args, 0)
 		*dest = session
 	}).Once()
+	expectSoulInstanceMintConversationProgression(t, tdb, hostedgenesis.StatusAssistantTurnReady)
 
 	resp, err := s.handleSoulInstanceMintConversation(newSoulInstanceBootstrapContext(
 		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
@@ -790,17 +840,20 @@ func TestSoulInstanceMintConversation_IdempotentRetryDoesNotDebitOrAppend(t *tes
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if resp.Status != http.StatusAccepted {
-		t.Fatalf("expected 202 replay, got %#v", resp)
+	if resp.Status != http.StatusOK {
+		t.Fatalf("expected 200 progressed replay, got %#v", resp)
 	}
 	var out hostedGenesisConversationResponse
 	if err := json.Unmarshal(resp.Body, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if out.Conversation.ConversationID != mintConversationTestConversationID || out.Conversation.MessageCount != 1 || out.Conversation.TraceIDs.IdempotencyKey != idemKey {
-		t.Fatalf("expected idempotent status replay without duplicate user message, got %#v", out)
+	if out.Conversation.ConversationID != mintConversationTestConversationID ||
+		out.Conversation.Status != models.SoulMintConversationStatusAssistantTurnReady ||
+		out.Conversation.MessageCount != 2 ||
+		out.Conversation.TraceIDs.IdempotencyKey != idemKey {
+		t.Fatalf("expected idempotent progression without duplicate user message, got %#v", out)
 	}
-	tdb.db.AssertNumberOfCalls(t, "TransactWrite", 0)
+	tdb.db.AssertNumberOfCalls(t, "TransactWrite", 1)
 	tdb.qBudget.AssertNumberOfCalls(t, "First", 0)
 }
 
@@ -838,6 +891,7 @@ func TestSoulInstanceMintConversation_ContinueUsesStoredModelAndMessages(t *test
 	s := newMintConversationServer(tdb)
 	reg := mintConversationHandleReg()
 	t.Setenv("ANTHROPIC_API_KEY", "anthropic-test-key")
+	stubHostedGenesisAssistantRunner(t, s, "second assistant", nil)
 	s.enqueueHostedGenesisMessage = func(_ context.Context, msg hostedgenesis.QueueMessage) error {
 		t.Fatalf("continued user-visible hosted genesis turn must not enqueue SQS authority: %#v", msg)
 		return nil
@@ -857,6 +911,7 @@ func TestSoulInstanceMintConversation_ContinueUsesStoredModelAndMessages(t *test
 		CreatedAt:      time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
 	})
 	expectSoulInstanceMintConversationDebit(t, tdb, reg.AgentID, false)
+	expectSoulInstanceMintConversationProgression(t, tdb, hostedgenesis.StatusAssistantTurnReady)
 
 	resp, err := s.handleSoulInstanceMintConversation(newSoulInstanceBootstrapContext(
 		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
@@ -866,15 +921,15 @@ func TestSoulInstanceMintConversation_ContinueUsesStoredModelAndMessages(t *test
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if resp.Status != http.StatusAccepted {
-		t.Fatalf("expected 202, got %#v", resp)
+	if resp.Status != http.StatusOK {
+		t.Fatalf("expected 200, got %#v", resp)
 	}
 	var out hostedGenesisConversationResponse
 	if err := json.Unmarshal(resp.Body, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if out.Conversation.ConversationID != mintConversationTestConversationID || out.Conversation.Status != models.SoulMintConversationStatusInProgress || out.Conversation.MessageCount != 3 {
-		t.Fatalf("expected stored conversation status with appended user turn, got %#v", out)
+	if out.Conversation.ConversationID != mintConversationTestConversationID || out.Conversation.Status != models.SoulMintConversationStatusAssistantTurnReady || out.Conversation.MessageCount != 4 {
+		t.Fatalf("expected progressed assistant turn, got %#v", out)
 	}
 }
 
@@ -1920,6 +1975,34 @@ func expectSoulInstanceMintConversationDebit(t *testing.T, tdb *mintConversation
 	tb.On("Execute").Return(nil).Once()
 }
 
+func expectSoulInstanceMintConversationProgression(t *testing.T, tdb *mintConversationTestDB, wantStatus hostedgenesis.Status) {
+	t.Helper()
+	tb, _ := tdb.db.TransactWriteBuilder.(*ttmocks.MockTransactionBuilder)
+	if tb == nil {
+		tb = new(ttmocks.MockTransactionBuilder)
+		tdb.db.TransactWriteBuilder = tb
+	}
+	tdb.db.On("TransactWrite", mock.Anything, mock.Anything).Return(nil).Once()
+	tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.HostedGenesisSession"), mock.Anything, mock.Anything).Return(tb).Once().Run(func(args mock.Arguments) {
+		session := testutil.RequireMockArg[*models.HostedGenesisSession](t, args, 0)
+		if hostedgenesis.NormalizeStatus(session.Status) != wantStatus {
+			t.Fatalf("expected hosted genesis progression status %s, got %#v", wantStatus, session)
+		}
+		switch wantStatus {
+		case hostedgenesis.StatusAssistantTurnReady:
+			if session.AssistantCheckpointRef == "" || session.MessageCount < 2 || session.Failure != nil {
+				t.Fatalf("assistant-ready session must carry checkpoint/message count and no failure: %#v", session)
+			}
+		case hostedgenesis.StatusFailed:
+			if session.Failure == nil || session.Failure.Code != hostedgenesis.FailureCodeAssistantTurnFailed || !session.Failure.Retryable {
+				t.Fatalf("failed session must carry retryable assistant failure: %#v", session)
+			}
+		}
+	})
+	tb.On("UpdateWithBuilder", mock.AnythingOfType("*models.SoulAgentMintConversation"), mock.Anything, mock.Anything).Return(tb).Once()
+	tb.On("Execute").Return(nil).Once()
+}
+
 func expectSoulInstanceMintConversationExtractionDebit(t *testing.T, tdb *mintConversationTestDB) {
 	t.Helper()
 	tb := new(ttmocks.MockTransactionBuilder)
@@ -2133,18 +2216,18 @@ func assertSoulInstanceFinalizeBoundaryRequirements(t *testing.T, out soulMintCo
 
 func assertSoulInstanceMintConversationAcceptedResponse(t *testing.T, resp *apptheory.Response) hostedGenesisConversationResponse {
 	t.Helper()
-	if resp.Status != http.StatusAccepted || !strings.Contains(resp.Headers["content-type"][0], "application/json") {
-		t.Fatalf("expected JSON 202 response, got %#v", resp)
+	if resp.Status != http.StatusOK || !strings.Contains(resp.Headers["content-type"][0], "application/json") {
+		t.Fatalf("expected JSON 200 response, got %#v", resp)
 	}
 	var out hostedGenesisConversationResponse
 	if err := json.Unmarshal(resp.Body, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if out.Conversation.ConversationID == "" ||
-		out.Conversation.Status != models.SoulMintConversationStatusInProgress ||
+		out.Conversation.Status != models.SoulMintConversationStatusAssistantTurnReady ||
 		out.Conversation.RequestID != "req-instance-bootstrap" ||
-		out.Conversation.MessageCount != 1 {
-		t.Fatalf("expected in-progress durable status, got %#v", out)
+		out.Conversation.MessageCount != 2 {
+		t.Fatalf("expected progressed assistant-ready durable status, got %#v", out)
 	}
 	if out.Conversation.TraceIDs == nil ||
 		out.Conversation.TraceIDs.IdempotencyKey != soulInstanceBootstrapTestIdempotencyKey ||
@@ -2152,6 +2235,7 @@ func assertSoulInstanceMintConversationAcceptedResponse(t *testing.T, resp *appt
 		t.Fatalf("expected trace ids, got %#v", out.Conversation.TraceIDs)
 	}
 	if strings.Contains(string(resp.Body), soulInstanceBootstrapTestConversationMessage) ||
+		strings.Contains(string(resp.Body), "assistant reply") ||
 		strings.Contains(string(resp.Body), mintConversationInstanceReadTestRawKey) {
 		t.Fatalf("response leaked transcript or credential material: %s", string(resp.Body))
 	}

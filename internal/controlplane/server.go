@@ -57,8 +57,9 @@ type Server struct {
 	telnyxSendSMS       func(ctx context.Context, from string, to string, text string) (string, error)
 	telnyxCallVoice     func(ctx context.Context, from string, to string, texmlURL string, statusCallbackURL string) (string, error)
 
-	enqueueCommMessage          func(ctx context.Context, msg commworker.QueueMessage) error
-	enqueueHostedGenesisMessage func(ctx context.Context, msg hostedgenesis.QueueMessage) error
+	enqueueCommMessage           func(ctx context.Context, msg commworker.QueueMessage) error
+	enqueueHostedGenesisMessage  func(ctx context.Context, msg hostedgenesis.QueueMessage) error
+	hostedGenesisAssistantRunner func(ctx context.Context, in hostedGenesisAssistantRunInput) (hostedGenesisAssistantRunResult, error)
 
 	// paymentsProviderFactory is a test-injection hook. When non-nil, handlers
 	// use it instead of payments.NewProvider.

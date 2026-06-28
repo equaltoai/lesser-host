@@ -195,6 +195,25 @@ func newMintConversationServer(tdb *mintConversationTestDB) *Server {
 	}
 }
 
+func stubHostedGenesisAssistantRunner(t *testing.T, s *Server, response string, runErr error) {
+	t.Helper()
+	s.hostedGenesisAssistantRunner = func(_ context.Context, in hostedGenesisAssistantRunInput) (hostedGenesisAssistantRunResult, error) {
+		if strings.TrimSpace(in.apiKey) == "" || strings.TrimSpace(in.modelSet) == "" || strings.TrimSpace(in.systemPrompt) == "" {
+			t.Fatalf("hosted genesis assistant runner received incomplete safe input: %#v", in)
+		}
+		if len(in.messages) == 0 || strings.TrimSpace(in.messages[len(in.messages)-1].Content) == "" {
+			t.Fatalf("hosted genesis assistant runner received no accepted user turn: %#v", in.messages)
+		}
+		if strings.Contains(in.systemPrompt, mintConversationInstanceReadTestRawKey) {
+			t.Fatalf("hosted genesis assistant prompt leaked instance key")
+		}
+		return hostedGenesisAssistantRunResult{
+			fullResponse: response,
+			usage:        models.AIUsage{Provider: "test", Model: in.modelSet, InputTokens: 1, OutputTokens: 1, TotalTokens: 2},
+		}, runErr
+	}
+}
+
 func stubMintConversationRegistration(t *testing.T, tdb *mintConversationTestDB, reg models.SoulAgentRegistration) {
 	t.Helper()
 

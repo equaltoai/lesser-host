@@ -15,9 +15,12 @@ import (
 	"github.com/theory-cloud/tabletheory/pkg/core"
 	theoryErrors "github.com/theory-cloud/tabletheory/pkg/errors"
 
+	"github.com/equaltoai/lesser-host/internal/ai/llm"
 	"github.com/equaltoai/lesser-host/internal/hostedgenesis"
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
+
+const hostedGenesisAcceptedTurnRunTimeout = 90 * time.Second
 
 type hostedGenesisTurnSession struct {
 	conversationID   string
@@ -57,6 +60,24 @@ func (s *Server) handleSoulMintConversationForRegistrationAsync(ctx *apptheory.C
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "model is required"}
 	}
 	if session.replayed {
+		if hostedGenesisReplayedTurnNeedsProgression(session) {
+			apiKey, appErr := s.apiKeyForMintConversationModel(ctx.Context(), session.modelSet)
+			if appErr != nil {
+				return nil, appErr
+			}
+			progressedSession, progressedConv, status, appErr := s.progressHostedGenesisAcceptedTurn(ctx.Context(), regCtx, session, session.conv, session.existingMessages, apiKey, strings.TrimSpace(ctx.RequestID))
+			if appErr != nil {
+				return nil, appErr
+			}
+			return hostedGenesisConversationJSONFromSession(status, progressedSession, progressedConv, hostedGenesisProjectionOptions{
+				RegistrationID:  regCtx.reg.ID,
+				RequestID:       strings.TrimSpace(ctx.RequestID),
+				CollapseCreated: true,
+				CorrelationID:   req.CorrelationID,
+				IdempotencyKey:  req.IdempotencyKey,
+				LesserRequestID: req.LesserRequestID,
+			})
+		}
 		return hostedGenesisConversationJSONFromSession(http.StatusAccepted, session.session, session.conv, hostedGenesisProjectionOptions{
 			RegistrationID:  regCtx.reg.ID,
 			RequestID:       strings.TrimSpace(ctx.RequestID),
@@ -66,7 +87,8 @@ func (s *Server) handleSoulMintConversationForRegistrationAsync(ctx *apptheory.C
 			LesserRequestID: req.LesserRequestID,
 		})
 	}
-	if _, appErr := s.apiKeyForMintConversationModel(ctx.Context(), session.modelSet); appErr != nil {
+	apiKey, appErr := s.apiKeyForMintConversationModel(ctx.Context(), session.modelSet)
+	if appErr != nil {
 		// Validate provider configuration before accepting a paid hosted-genesis
 		// execution handoff. Project 51 M4 deliberately keeps SQS out of this
 		// user-visible path; execution/recovery authority is the durable session
@@ -89,7 +111,12 @@ func (s *Server) handleSoulMintConversationForRegistrationAsync(ctx *apptheory.C
 		log.Printf("controlplane: hosted genesis session accepted without promotion update agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(regCtx.agentIDHex), soulMintInstanceReadAuditHash(session.conversationID), appErr)
 	}
 
-	return hostedGenesisConversationJSONFromSession(http.StatusAccepted, session.session, conv, hostedGenesisProjectionOptions{
+	progressedSession, progressedConv, status, appErr := s.progressHostedGenesisAcceptedTurn(ctx.Context(), regCtx, session, conv, updatedMessages, apiKey, strings.TrimSpace(ctx.RequestID))
+	if appErr != nil {
+		return nil, appErr
+	}
+
+	return hostedGenesisConversationJSONFromSession(status, progressedSession, progressedConv, hostedGenesisProjectionOptions{
 		RegistrationID:  regCtx.reg.ID,
 		RequestID:       strings.TrimSpace(ctx.RequestID),
 		CollapseCreated: true,
@@ -97,6 +124,228 @@ func (s *Server) handleSoulMintConversationForRegistrationAsync(ctx *apptheory.C
 		IdempotencyKey:  req.IdempotencyKey,
 		LesserRequestID: req.LesserRequestID,
 	})
+}
+
+func hostedGenesisReplayedTurnNeedsProgression(session hostedGenesisTurnSession) bool {
+	if !session.replayed || session.session == nil || session.conv == nil || len(session.existingMessages) == 0 {
+		return false
+	}
+	if hostedgenesis.NormalizeStatus(session.session.Status) != hostedgenesis.StatusInProgress {
+		return false
+	}
+	return strings.TrimSpace(session.session.AssistantCheckpointRef) == "" &&
+		strings.TrimSpace(session.session.ExecutionStateRef) == "" &&
+		strings.TrimSpace(session.session.MicroVMExecutionID) == "" &&
+		session.session.MicroVMLifecycleRef == nil
+}
+
+type hostedGenesisAssistantRunInput struct {
+	apiKey       string
+	modelSet     string
+	systemPrompt string
+	messages     []soulMintConversationMessage
+}
+
+type hostedGenesisAssistantRunResult struct {
+	fullResponse string
+	usage        models.AIUsage
+}
+
+func (s *Server) progressHostedGenesisAcceptedTurn(ctx context.Context, regCtx mintConversationRegistrationContext, session hostedGenesisTurnSession, conv *models.SoulAgentMintConversation, acceptedMessages []soulMintConversationMessage, apiKey string, requestID string) (*models.HostedGenesisSession, *models.SoulAgentMintConversation, int, *apptheory.AppError) {
+	if session.session == nil || conv == nil {
+		return nil, nil, 0, &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	runCtx, cancel := context.WithTimeout(detachedMintConversationContext(ctx), hostedGenesisAcceptedTurnRunTimeout)
+	defer cancel()
+
+	result, err := s.runHostedGenesisAcceptedAssistant(runCtx, hostedGenesisAssistantRunInput{
+		apiKey:       strings.TrimSpace(apiKey),
+		modelSet:     session.modelSet,
+		systemPrompt: buildMintConversationSystemPrompt(regCtx.reg),
+		messages:     append([]soulMintConversationMessage(nil), acceptedMessages...),
+	})
+	if err != nil || strings.TrimSpace(result.fullResponse) == "" {
+		log.Printf("controlplane: hosted genesis assistant turn failed agent_hash=%s conversation_hash=%s provider=%s err=%v", soulMintInstanceReadAuditHash(regCtx.agentIDHex), soulMintInstanceReadAuditHash(session.conversationID), hostedGenesisProviderName(session.modelSet), err)
+		failedSession, failedConv, appErr := s.persistHostedGenesisAcceptedTurnFailure(ctx, session, conv, acceptedMessages, hostedGenesisFailureAssistantTurnFailed, requestID, time.Now().UTC())
+		if appErr != nil {
+			return nil, nil, 0, appErr
+		}
+		return failedSession, failedConv, http.StatusOK, nil
+	}
+
+	progressedSession, progressedConv, appErr := s.persistHostedGenesisAcceptedAssistantTurn(ctx, session, conv, acceptedMessages, result, requestID, time.Now().UTC())
+	if appErr != nil {
+		return nil, nil, 0, appErr
+	}
+	return progressedSession, progressedConv, http.StatusOK, nil
+}
+
+func (s *Server) runHostedGenesisAcceptedAssistant(ctx context.Context, in hostedGenesisAssistantRunInput) (hostedGenesisAssistantRunResult, error) {
+	if s != nil && s.hostedGenesisAssistantRunner != nil {
+		return s.hostedGenesisAssistantRunner(ctx, in)
+	}
+	llmMessages := make([]llm.MintConversationMessage, 0, len(in.messages))
+	for _, m := range in.messages {
+		llmMessages = append(llmMessages, llm.MintConversationMessage{
+			Role:    strings.ToLower(strings.TrimSpace(m.Role)),
+			Content: strings.TrimSpace(m.Content),
+		})
+	}
+	modelSet := strings.TrimSpace(in.modelSet)
+	switch {
+	case strings.HasPrefix(strings.ToLower(modelSet), "openai:"):
+		full, usage, err := llm.StreamMintConversationOpenAI(ctx, strings.TrimSpace(in.apiKey), modelSet, in.systemPrompt, llmMessages, func(string) {})
+		return hostedGenesisAssistantRunResult{fullResponse: full, usage: usage}, err
+	case strings.HasPrefix(strings.ToLower(modelSet), "anthropic:"):
+		full, usage, err := llm.StreamMintConversationAnthropic(ctx, strings.TrimSpace(in.apiKey), modelSet, in.systemPrompt, llmMessages, func(string) {})
+		return hostedGenesisAssistantRunResult{fullResponse: full, usage: usage}, err
+	default:
+		return hostedGenesisAssistantRunResult{}, fmt.Errorf("unsupported model set")
+	}
+}
+
+func (s *Server) persistHostedGenesisAcceptedAssistantTurn(ctx context.Context, session hostedGenesisTurnSession, conv *models.SoulAgentMintConversation, acceptedMessages []soulMintConversationMessage, result hostedGenesisAssistantRunResult, requestID string, now time.Time) (*models.HostedGenesisSession, *models.SoulAgentMintConversation, *apptheory.AppError) {
+	assistantMessage := soulMintConversationMessage{Role: "assistant", Content: strings.TrimSpace(result.fullResponse)}
+	updatedMessages := append(append([]soulMintConversationMessage(nil), acceptedMessages...), assistantMessage)
+	messagesJSON, err := json.Marshal(updatedMessages)
+	if err != nil {
+		return nil, nil, &apptheory.AppError{Code: "app.internal", Message: "failed to serialize conversation"}
+	}
+	progressedSession := cloneHostedGenesisSession(session.session)
+	progressedConv := cloneSoulAgentMintConversation(conv)
+	usage := addAIUsage(session.existingUsage, result.usage)
+	progressedSession.Status = string(hostedgenesis.StatusAssistantTurnReady)
+	progressedSession.MessageCount = hostedGenesisMaxInt(progressedSession.MessageCount, len(updatedMessages))
+	progressedSession.AssistantCheckpointRef = fmt.Sprintf("checkpoint://hosted-genesis/%s/assistant/%s", progressedSession.ConversationID, session.turnID)
+	progressedSession.Failure = nil
+	progressedSession.RequestID = strings.TrimSpace(requestID)
+	progressedSession.UpdatedAt = now
+	progressedSession.CompletedAt = time.Time{}
+	progressedConv.Messages = string(messagesJSON)
+	progressedConv.Usage = usage
+	progressedConv.Status = models.SoulMintConversationStatusAssistantTurnReady
+	progressedConv.StatusReason = ""
+	progressedConv.LatestTurnID = session.turnID
+	progressedConv.RequestID = strings.TrimSpace(requestID)
+	progressedConv.UpdatedAt = now
+	if appErr := s.persistHostedGenesisProgression(ctx, session, progressedSession, progressedConv, string(messagesJSON), "", usage, now); appErr != nil {
+		return nil, nil, appErr
+	}
+	return progressedSession, progressedConv, nil
+}
+
+func (s *Server) persistHostedGenesisAcceptedTurnFailure(ctx context.Context, session hostedGenesisTurnSession, conv *models.SoulAgentMintConversation, acceptedMessages []soulMintConversationMessage, reason string, requestID string, now time.Time) (*models.HostedGenesisSession, *models.SoulAgentMintConversation, *apptheory.AppError) {
+	messagesJSON, err := json.Marshal(acceptedMessages)
+	if err != nil {
+		return nil, nil, &apptheory.AppError{Code: "app.internal", Message: "failed to serialize conversation"}
+	}
+	failedSession := cloneHostedGenesisSession(session.session)
+	failedConv := cloneSoulAgentMintConversation(conv)
+	failedSession.Status = string(hostedgenesis.StatusFailed)
+	failedSession.Failure = hostedGenesisSessionFailureFromReason(reason)
+	failedSession.RequestID = strings.TrimSpace(requestID)
+	failedSession.UpdatedAt = now
+	failedSession.CompletedAt = now
+	failedConv.Messages = string(messagesJSON)
+	failedConv.Status = models.SoulMintConversationStatusFailed
+	failedConv.StatusReason = strings.TrimSpace(reason)
+	failedConv.LatestTurnID = session.turnID
+	failedConv.RequestID = strings.TrimSpace(requestID)
+	failedConv.UpdatedAt = now
+	failedConv.CompletedAt = now
+	if appErr := s.persistHostedGenesisProgression(ctx, session, failedSession, failedConv, string(messagesJSON), strings.TrimSpace(reason), failedConv.Usage, now); appErr != nil {
+		return nil, nil, appErr
+	}
+	return failedSession, failedConv, nil
+}
+
+func (s *Server) persistHostedGenesisProgression(ctx context.Context, accepted hostedGenesisTurnSession, session *models.HostedGenesisSession, conv *models.SoulAgentMintConversation, messagesJSON string, statusReason string, usage models.AIUsage, now time.Time) *apptheory.AppError {
+	if s == nil || s.store == nil || s.store.DB == nil || session == nil || conv == nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	updateConv := &models.SoulAgentMintConversation{
+		AgentID:        conv.AgentID,
+		ConversationID: conv.ConversationID,
+	}
+	_ = updateConv.UpdateKeys()
+	expectedVersion := hostedGenesisAcceptedTurnPostPersistVersion(accepted)
+	expectedStatus := hostedgenesis.StatusInProgress
+	if err := s.store.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
+		if err := addHostedGenesisSessionWrite(tx, session, false, expectedVersion, expectedStatus); err != nil {
+			return err
+		}
+		tx.UpdateWithBuilder(updateConv, func(ub core.UpdateBuilder) error {
+			ub.Set("Messages", encodeMintConversationBlob(messagesJSON))
+			ub.Set("Status", conv.Status)
+			ub.Set("StatusReason", strings.TrimSpace(statusReason))
+			ub.Set("LatestTurnID", conv.LatestTurnID)
+			ub.Set("RequestID", strings.TrimSpace(conv.RequestID))
+			ub.Set("UpdatedAt", now)
+			ub.Set("CompletedAt", conv.CompletedAt)
+			ub.Set("Usage", usage)
+			return nil
+		}, tabletheory.IfExists())
+		return nil
+	}); err != nil {
+		log.Printf("controlplane: hosted genesis progression persist failed agent_hash=%s conversation_hash=%s status=%s err=%v", soulMintInstanceReadAuditHash(conv.AgentID), soulMintInstanceReadAuditHash(conv.ConversationID), conv.Status, err)
+		return &apptheory.AppError{Code: "app.internal", Message: "failed to update conversation"}
+	}
+	return nil
+}
+
+func hostedGenesisAcceptedTurnPostPersistVersion(session hostedGenesisTurnSession) int64 {
+	if session.sessionIsNew {
+		if session.session != nil {
+			return session.session.Version
+		}
+		return 0
+	}
+	return session.expectedVersion + 1
+}
+
+func hostedGenesisSessionFailureFromReason(reason string) *hostedgenesis.Failure {
+	projected := hostedGenesisFailureFromReason(reason)
+	if projected == nil {
+		projected = hostedGenesisFailureFromReason(hostedGenesisFailureAssistantTurnFailed)
+	}
+	return &hostedgenesis.Failure{
+		Code:      hostedgenesis.FailureCode(projected.Code),
+		Message:   projected.Message,
+		Retryable: projected.Retryable,
+		Recovery: hostedgenesis.Recovery{
+			Action:            hostedgenesis.RecoveryAction(projected.Recovery.Action),
+			MaxAttempts:       projected.Recovery.MaxAttempts,
+			RetryAfterSeconds: projected.Recovery.RetryAfterSeconds,
+			Reason:            projected.Recovery.Reason,
+		},
+	}
+}
+
+func hostedGenesisProviderName(modelSet string) string {
+	modelSet = strings.ToLower(strings.TrimSpace(modelSet))
+	switch {
+	case strings.HasPrefix(modelSet, "openai:"):
+		return "openai"
+	case strings.HasPrefix(modelSet, "anthropic:"):
+		return "anthropic"
+	default:
+		return "unknown"
+	}
+}
+
+func cloneSoulAgentMintConversation(conv *models.SoulAgentMintConversation) *models.SoulAgentMintConversation {
+	if conv == nil {
+		return nil
+	}
+	copy := *conv
+	return &copy
+}
+
+func hostedGenesisMaxInt(a int, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func serializeHostedGenesisAcceptedTurn(session hostedGenesisTurnSession, message string) ([]soulMintConversationMessage, string, error) {
