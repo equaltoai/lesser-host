@@ -73,6 +73,76 @@ func TestHostedGenesisProducedDeclarationsFromSessionTrustsCheckpointHash(t *tes
 	}
 }
 
+func TestHostedGenesisSessionProjectionIncludesBoundedMessages(t *testing.T) {
+	t.Parallel()
+
+	acceptedAt := time.Date(2026, 3, 7, 12, 1, 0, 0, time.UTC)
+	session := testHostedGenesisSessionProjectionBase()
+	session.Status = string(hostedgenesis.StatusAssistantTurnReady)
+	session.MessageCount = 2
+	session.TurnLedger = []hostedgenesis.TurnLedgerEntry{{
+		TurnID:         "turn-session",
+		MessageCount:   1,
+		ChargedCredits: soulMintConversationStreamBaseCredits,
+		AcceptedAt:     acceptedAt,
+	}}
+	conv := &models.SoulAgentMintConversation{
+		AgentID:        session.AgentID,
+		ConversationID: session.ConversationID,
+		Messages:       models.EncodeSoulMintConversationBlob(`[{"role":"user","content":"hello host"},{"role":"assistant","content":"hello lesser"}]`),
+	}
+
+	resp := buildHostedGenesisConversationResponseFromSession(session, conv, hostedGenesisProjectionOptions{RequestID: "req-visible"})
+	if len(resp.Conversation.Messages) != 2 || resp.Conversation.MessagesTruncated {
+		t.Fatalf("expected two untruncated transcript messages, got %#v", resp.Conversation)
+	}
+	if got := resp.Conversation.Messages[0]; got.ID != "msg_000001" || got.Order != 1 || got.Role != hostedGenesisTranscriptRoleUser || got.Content != "hello host" || got.CreatedAt == nil || !got.CreatedAt.Equal(acceptedAt) {
+		t.Fatalf("unexpected user message projection: %#v", got)
+	}
+	if got := resp.Conversation.Messages[1]; got.ID != "msg_000002" || got.Order != 2 || got.Role != hostedGenesisTranscriptRoleAssistant || got.Content != "hello lesser" || got.CreatedAt != nil {
+		t.Fatalf("unexpected assistant message projection: %#v", got)
+	}
+}
+
+func TestHostedGenesisSessionProjectionBoundsAndOmitsUnsafeMessages(t *testing.T) {
+	t.Parallel()
+
+	session := testHostedGenesisSessionProjectionBase()
+	messages := make([]soulMintConversationMessage, 0, hostedGenesisTranscriptMaxMessages+2)
+	for i := 0; i < hostedGenesisTranscriptMaxMessages+1; i++ {
+		messages = append(messages, soulMintConversationMessage{Role: hostedGenesisTranscriptRoleUser, Content: "message"})
+	}
+	messages = append(messages, soulMintConversationMessage{Role: hostedGenesisTranscriptRoleAssistant, Content: strings.Repeat("x", hostedGenesisTranscriptMaxContentRunes+5)})
+	conv := &models.SoulAgentMintConversation{
+		AgentID:        session.AgentID,
+		ConversationID: session.ConversationID,
+		Messages:       models.EncodeSoulMintConversationBlob(string(mustMarshalJSON(t, messages))),
+	}
+
+	projected, bounded := buildHostedGenesisConversationMessages(session, conv)
+	if len(projected) != hostedGenesisTranscriptMaxMessages || !bounded {
+		t.Fatalf("expected bounded transcript projection, len=%d bounded=%v", len(projected), bounded)
+	}
+	if projected[0].Order != 3 || projected[len(projected)-1].Order != hostedGenesisTranscriptMaxMessages+2 || !projected[len(projected)-1].Truncated {
+		t.Fatalf("unexpected bounded transcript entries: first=%#v last=%#v", projected[0], projected[len(projected)-1])
+	}
+	if len([]rune(projected[len(projected)-1].Content)) != hostedGenesisTranscriptMaxContentRunes {
+		t.Fatalf("expected assistant content cap, got %d", len([]rune(projected[len(projected)-1].Content)))
+	}
+
+	unsafe := *conv
+	unsafe.Messages = models.EncodeSoulMintConversationBlob(`[{"role":"assistant","content":"AWS_SECRET_ACCESS_KEY=do-not-project"}]`)
+	if projected, _ := buildHostedGenesisConversationMessages(session, &unsafe); len(projected) != 0 {
+		t.Fatalf("unsafe credential-like transcript must be omitted, got %#v", projected)
+	}
+
+	mismatched := *conv
+	mismatched.AgentID = "0x" + strings.Repeat("99", 32)
+	if projected, _ := buildHostedGenesisConversationMessages(session, &mismatched); len(projected) != 0 {
+		t.Fatalf("mismatched compatibility row must not project transcript, got %#v", projected)
+	}
+}
+
 func TestHostedGenesisFinalizeSessionGates(t *testing.T) {
 	t.Parallel()
 

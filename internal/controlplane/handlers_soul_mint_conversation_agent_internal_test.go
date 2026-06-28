@@ -183,7 +183,7 @@ func TestHandleSoulInstanceListMintConversations_UsesInstanceKeyAndCompactDTO(t 
 	tdb.qAudit.AssertCalled(t, "Create")
 }
 
-func TestHandleSoulInstanceGetMintConversation_ReturnsCompactSessionStatus(t *testing.T) {
+func TestHandleSoulInstanceGetMintConversation_ReturnsHostedGenesisMessages(t *testing.T) {
 	t.Parallel()
 
 	tdb := newMintConversationTestDB()
@@ -197,9 +197,10 @@ func TestHandleSoulInstanceGetMintConversation_ReturnsCompactSessionStatus(t *te
 		AgentID:              identity.AgentID,
 		ConversationID:       mintConversationTestConversationID,
 		Model:                "anthropic:claude-sonnet-4-6",
-		Messages:             encodeMintConversationBlob(`[{"role":"user","content":"private"}]`),
+		Messages:             encodeMintConversationBlob(`[{"role":"user","content":"describe yourself"},{"role":"assistant","content":"I am ready."}]`),
 		ProducedDeclarations: encodeMintConversationBlob(`{"private":true}`),
-		Status:               models.SoulMintConversationStatusCompleted,
+		Status:               models.SoulMintConversationStatusAssistantTurnReady,
+		LatestTurnID:         "turn-ready",
 		CreatedAt:            time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
 	})
 
@@ -217,11 +218,14 @@ func TestHandleSoulInstanceGetMintConversation_ReturnsCompactSessionStatus(t *te
 	if err := json.Unmarshal(resp.Body, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if out.Conversation.ConversationID != mintConversationTestConversationID || out.Conversation.Status != models.SoulMintConversationStatusFailed || out.Conversation.Failure == nil {
-		t.Fatalf("expected explicit single-conversation route to return compact session status, got %#v", out)
+	if out.Conversation.ConversationID != mintConversationTestConversationID || out.Conversation.Status != models.SoulMintConversationStatusAssistantTurnReady || out.Conversation.Failure != nil {
+		t.Fatalf("expected explicit single-conversation route to return hosted-genesis status, got %#v", out)
 	}
-	if strings.Contains(string(resp.Body), `"private"`) || strings.Contains(string(resp.Body), mintConversationInstanceReadTestRawKey) {
-		t.Fatalf("compact session status leaked private transcript/declarations/credential: %s", string(resp.Body))
+	if len(out.Conversation.Messages) != 2 || out.Conversation.Messages[0].Role != hostedGenesisTranscriptRoleUser || out.Conversation.Messages[0].Content != "describe yourself" || out.Conversation.Messages[1].Role != hostedGenesisTranscriptRoleAssistant {
+		t.Fatalf("expected bounded transcript messages, got %#v", out.Conversation.Messages)
+	}
+	if strings.Contains(string(resp.Body), `produced_declarations`) || strings.Contains(string(resp.Body), mintConversationInstanceReadTestRawKey) {
+		t.Fatalf("hosted-genesis projection leaked declarations or credential: %s", string(resp.Body))
 	}
 }
 
