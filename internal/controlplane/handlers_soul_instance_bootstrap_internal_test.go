@@ -2234,12 +2234,22 @@ func assertSoulInstanceMintConversationAcceptedResponse(t *testing.T, resp *appt
 		out.Conversation.TraceIDs.CorrelationID != "corr-1" {
 		t.Fatalf("expected trace ids, got %#v", out.Conversation.TraceIDs)
 	}
-	if strings.Contains(string(resp.Body), soulInstanceBootstrapTestConversationMessage) ||
-		strings.Contains(string(resp.Body), "assistant reply") ||
-		strings.Contains(string(resp.Body), mintConversationInstanceReadTestRawKey) {
-		t.Fatalf("response leaked transcript or credential material: %s", string(resp.Body))
-	}
+	assertSoulInstanceMintConversationAcceptedTranscript(t, out, resp.Body)
 	return out
+}
+
+func assertSoulInstanceMintConversationAcceptedTranscript(t *testing.T, out hostedGenesisConversationResponse, body []byte) {
+	t.Helper()
+	if len(out.Conversation.Messages) != 2 ||
+		out.Conversation.Messages[0].Role != hostedGenesisTranscriptRoleUser ||
+		out.Conversation.Messages[0].Content != soulInstanceBootstrapTestConversationMessage ||
+		out.Conversation.Messages[1].Role != hostedGenesisTranscriptRoleAssistant ||
+		out.Conversation.Messages[1].Content != "assistant reply" {
+		t.Fatalf("expected bounded assistant-ready transcript projection, got %#v", out.Conversation.Messages)
+	}
+	if strings.Contains(string(body), mintConversationInstanceReadTestRawKey) {
+		t.Fatalf("response leaked credential material: %s", string(body))
+	}
 }
 
 func assertSoulInstanceCompleteTerminalConflict(t *testing.T, legacyStatus string, expectedSessionStatus string, reason string) {

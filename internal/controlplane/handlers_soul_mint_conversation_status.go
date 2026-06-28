@@ -16,6 +16,13 @@ import (
 const hostedGenesisConversationVersion = "1"
 
 const (
+	hostedGenesisTranscriptMaxMessages     = 64
+	hostedGenesisTranscriptMaxContentRunes = 8192
+	hostedGenesisTranscriptRoleUser        = "user"
+	hostedGenesisTranscriptRoleAssistant   = "assistant"
+)
+
+const (
 	hostedGenesisFailureLLMUnavailable              = "llm_unavailable"
 	hostedGenesisFailureAssistantTurnFailed         = "assistant_turn_failed"
 	hostedGenesisFailureDeclarationExtractionFailed = "declaration_extraction_failed"
@@ -44,6 +51,8 @@ type hostedGenesisConversationProjection struct {
 	Status               string                             `json:"status"`
 	LatestTurnID         string                             `json:"latest_turn_id,omitempty"`
 	MessageCount         int                                `json:"message_count"`
+	Messages             []hostedGenesisConversationMessage `json:"messages,omitempty"`
+	MessagesTruncated    bool                               `json:"messages_truncated,omitempty"`
 	ProducedDeclarations *hostedGenesisProducedDeclarations `json:"produced_declarations,omitempty"`
 	Failure              *hostedGenesisFailure              `json:"failure,omitempty"`
 	RequestID            string                             `json:"request_id"`
@@ -52,6 +61,15 @@ type hostedGenesisConversationProjection struct {
 	CreatedAt            *time.Time                         `json:"created_at,omitempty"`
 	UpdatedAt            *time.Time                         `json:"updated_at,omitempty"`
 	CompletedAt          *time.Time                         `json:"completed_at,omitempty"`
+}
+
+type hostedGenesisConversationMessage struct {
+	ID        string     `json:"id"`
+	Role      string     `json:"role"`
+	Content   string     `json:"content"`
+	Order     int        `json:"order"`
+	CreatedAt *time.Time `json:"created_at,omitempty"`
+	Truncated bool       `json:"truncated,omitempty"`
 }
 
 type hostedGenesisProducedDeclarations struct {
@@ -213,6 +231,133 @@ func buildHostedGenesisConversationResponse(conv *models.SoulAgentMintConversati
 		RequestID:    requestID,
 		Conversation: projection,
 	}
+}
+
+func buildHostedGenesisConversationMessages(session *models.HostedGenesisSession, conv *models.SoulAgentMintConversation) ([]hostedGenesisConversationMessage, bool) {
+	if session == nil || conv == nil || !hostedGenesisConversationMatchesSession(session, conv) {
+		return nil, false
+	}
+	raw := strings.TrimSpace(models.DecodeSoulMintConversationBlob(conv.Messages))
+	if raw == "" {
+		return nil, false
+	}
+
+	var messages []soulMintConversationMessage
+	if err := json.Unmarshal([]byte(raw), &messages); err != nil || len(messages) == 0 {
+		return nil, false
+	}
+
+	start := 0
+	bounded := false
+	if len(messages) > hostedGenesisTranscriptMaxMessages {
+		start = len(messages) - hostedGenesisTranscriptMaxMessages
+		bounded = true
+	}
+	out := make([]hostedGenesisConversationMessage, 0, len(messages)-start)
+	for i := start; i < len(messages); i++ {
+		role := hostedGenesisTranscriptRole(messages[i].Role)
+		content := strings.TrimSpace(messages[i].Content)
+		if role == "" || content == "" {
+			continue
+		}
+		if hostedGenesisTranscriptContentUnsafe(content) {
+			return nil, true
+		}
+		content, truncated := hostedGenesisTranscriptBoundContent(content)
+		if truncated {
+			bounded = true
+		}
+		order := i + 1
+		out = append(out, hostedGenesisConversationMessage{
+			ID:        hostedGenesisTranscriptMessageID(order),
+			Role:      role,
+			Content:   content,
+			Order:     order,
+			CreatedAt: hostedGenesisTranscriptMessageCreatedAt(session, role, order),
+			Truncated: truncated,
+		})
+	}
+	if len(out) == 0 {
+		return nil, bounded
+	}
+	return out, bounded
+}
+
+func hostedGenesisConversationMatchesSession(session *models.HostedGenesisSession, conv *models.SoulAgentMintConversation) bool {
+	if session == nil || conv == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(session.AgentID), strings.TrimSpace(conv.AgentID)) &&
+		strings.TrimSpace(session.ConversationID) == strings.TrimSpace(conv.ConversationID)
+}
+
+func hostedGenesisTranscriptRole(role string) string {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case hostedGenesisTranscriptRoleUser, hostedGenesisTranscriptRoleAssistant:
+		return strings.ToLower(strings.TrimSpace(role))
+	default:
+		return ""
+	}
+}
+
+func hostedGenesisTranscriptBoundContent(content string) (string, bool) {
+	runes := []rune(strings.TrimSpace(content))
+	if len(runes) <= hostedGenesisTranscriptMaxContentRunes {
+		return string(runes), false
+	}
+	return string(runes[:hostedGenesisTranscriptMaxContentRunes]), true
+}
+
+func hostedGenesisTranscriptMessageID(order int) string {
+	if order < 1 {
+		order = 1
+	}
+	return fmt.Sprintf("msg_%06d", order)
+}
+
+func hostedGenesisTranscriptMessageCreatedAt(session *models.HostedGenesisSession, role string, order int) *time.Time {
+	if session == nil || role != hostedGenesisTranscriptRoleUser || order <= 0 {
+		return nil
+	}
+	for _, entry := range session.TurnLedger {
+		entry = entry.Normalize()
+		if entry.MessageCount == order {
+			return timePtrIfSet(entry.AcceptedAt)
+		}
+	}
+	return nil
+}
+
+func hostedGenesisTranscriptContentUnsafe(content string) bool {
+	lower := strings.ToLower(content)
+	for _, marker := range []string{
+		"aws_secret_access_key",
+		"aws_access_key_id",
+		"aws_session_token",
+		"x-amz-security-token",
+		"secretaccesskey",
+		"organizationaccountaccessrole",
+		"arn:aws:iam",
+		"arn:aws:sts",
+		"microvm endpoint token",
+		"microvm_endpoint_token",
+		"instance api key",
+		"raw instance key",
+		"bearer ",
+		"ssm parameter",
+		"parameter store",
+		"/lesser-host/",
+		"mint-signer",
+		"governance-signer",
+		"seed phrase",
+		"private key",
+		"signing material",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func isHostedGenesisProgressStatus(status string) bool {

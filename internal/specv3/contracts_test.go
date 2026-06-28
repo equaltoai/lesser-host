@@ -66,6 +66,16 @@ func TestV3ContractFixturesValidate(t *testing.T) {
 			fixtures: []string{filepath.Join(fixturesDir, "soul-instance-bootstrap.error.boundary-violation.example.json")},
 		},
 		{
+			name:   "hosted_genesis_conversation_response",
+			schema: filepath.Join(schemasDir, "hosted-genesis.conversation.response.schema.json"),
+			fixtures: []string{
+				filepath.Join(fixturesDir, "hosted-genesis.conversation.in-progress.example.json"),
+				filepath.Join(fixturesDir, "hosted-genesis.conversation.assistant-turn-ready.example.json"),
+				filepath.Join(fixturesDir, "hosted-genesis.conversation.completed-declaration-ready.example.json"),
+				filepath.Join(fixturesDir, "hosted-genesis.conversation.failed.example.json"),
+			},
+		},
+		{
 			name:     "soul_instance_bootstrap_finalize_response",
 			schema:   filepath.Join(schemasDir, "soul-instance-bootstrap.finalize.response.schema.json"),
 			fixtures: []string{filepath.Join(fixturesDir, "soul-instance-bootstrap.finalize.response.hosted-offchain.example.json")},
