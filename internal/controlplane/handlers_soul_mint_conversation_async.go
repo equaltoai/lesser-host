@@ -20,7 +20,10 @@ import (
 	"github.com/equaltoai/lesser-host/internal/store/models"
 )
 
-const hostedGenesisAcceptedTurnRunTimeout = 90 * time.Second
+const (
+	hostedGenesisAcceptedTurnRunTimeout = 90 * time.Second
+	hostedGenesisProviderUnknown        = "unknown"
+)
 
 type hostedGenesisTurnSession struct {
 	conversationID   string
@@ -52,22 +55,22 @@ func (s *Server) handleSoulMintConversationForRegistrationAsync(ctx *apptheory.C
 
 	now := time.Now().UTC()
 	instanceSlug = firstNonEmpty(instanceSlug, regCtx.inst.Slug)
-	session, appErr := s.loadHostedGenesisTurnSession(ctx.Context(), regCtx, instanceSlug, req, message, strings.TrimSpace(ctx.RequestID), now)
-	if appErr != nil {
-		return nil, appErr
+	session, loadErr := s.loadHostedGenesisTurnSession(ctx.Context(), regCtx, instanceSlug, req, message, strings.TrimSpace(ctx.RequestID), now)
+	if loadErr != nil {
+		return nil, loadErr
 	}
 	if session.modelSet == "" {
 		return nil, &apptheory.AppError{Code: "app.bad_request", Message: "model is required"}
 	}
 	if session.replayed {
 		if hostedGenesisReplayedTurnNeedsProgression(session) {
-			apiKey, appErr := s.apiKeyForMintConversationModel(ctx.Context(), session.modelSet)
-			if appErr != nil {
-				return nil, appErr
+			apiKey, apiKeyErr := s.apiKeyForMintConversationModel(ctx.Context(), session.modelSet)
+			if apiKeyErr != nil {
+				return nil, apiKeyErr
 			}
-			progressedSession, progressedConv, status, appErr := s.progressHostedGenesisAcceptedTurn(ctx.Context(), regCtx, session, session.conv, session.existingMessages, apiKey, strings.TrimSpace(ctx.RequestID))
-			if appErr != nil {
-				return nil, appErr
+			progressedSession, progressedConv, status, progressErr := s.progressHostedGenesisAcceptedTurn(ctx.Context(), regCtx, session, session.conv, session.existingMessages, apiKey, strings.TrimSpace(ctx.RequestID))
+			if progressErr != nil {
+				return nil, progressErr
 			}
 			return hostedGenesisConversationJSONFromSession(status, progressedSession, progressedConv, hostedGenesisProjectionOptions{
 				RegistrationID:  regCtx.reg.ID,
@@ -87,13 +90,13 @@ func (s *Server) handleSoulMintConversationForRegistrationAsync(ctx *apptheory.C
 			LesserRequestID: req.LesserRequestID,
 		})
 	}
-	apiKey, appErr := s.apiKeyForMintConversationModel(ctx.Context(), session.modelSet)
-	if appErr != nil {
+	apiKey, apiKeyErr := s.apiKeyForMintConversationModel(ctx.Context(), session.modelSet)
+	if apiKeyErr != nil {
 		// Validate provider configuration before accepting a paid hosted-genesis
 		// execution handoff. Project 51 M4 deliberately keeps SQS out of this
 		// user-visible path; execution/recovery authority is the durable session
 		// plus AppTheory MicroVM execution/cache state.
-		return nil, appErr
+		return nil, apiKeyErr
 	}
 
 	updatedMessages, messagesJSON, err := serializeHostedGenesisAcceptedTurn(session, message)
@@ -111,9 +114,9 @@ func (s *Server) handleSoulMintConversationForRegistrationAsync(ctx *apptheory.C
 		log.Printf("controlplane: hosted genesis session accepted without promotion update agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(regCtx.agentIDHex), soulMintInstanceReadAuditHash(session.conversationID), appErr)
 	}
 
-	progressedSession, progressedConv, status, appErr := s.progressHostedGenesisAcceptedTurn(ctx.Context(), regCtx, session, conv, updatedMessages, apiKey, strings.TrimSpace(ctx.RequestID))
-	if appErr != nil {
-		return nil, appErr
+	progressedSession, progressedConv, status, progressErr := s.progressHostedGenesisAcceptedTurn(ctx.Context(), regCtx, session, conv, updatedMessages, apiKey, strings.TrimSpace(ctx.RequestID))
+	if progressErr != nil {
+		return nil, progressErr
 	}
 
 	return hostedGenesisConversationJSONFromSession(status, progressedSession, progressedConv, hostedGenesisProjectionOptions{
@@ -329,7 +332,7 @@ func hostedGenesisProviderName(modelSet string) string {
 	case strings.HasPrefix(modelSet, "anthropic:"):
 		return "anthropic"
 	default:
-		return "unknown"
+		return hostedGenesisProviderUnknown
 	}
 }
 
