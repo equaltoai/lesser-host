@@ -1,6 +1,9 @@
 .pai/
 .theory/
 .claude/
+.codex/
+.agents/
+opencode.json
 contracts/venv/
 .DS_Store
 .env
