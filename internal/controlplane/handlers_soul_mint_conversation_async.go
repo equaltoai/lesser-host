@@ -26,19 +26,21 @@ const (
 )
 
 type hostedGenesisTurnSession struct {
-	conversationID   string
-	turnID           string
-	modelSet         string
-	existingMessages []soulMintConversationMessage
-	existingUsage    models.AIUsage
-	sessionIsNew     bool
-	expectedStatus   hostedgenesis.Status
-	expectedVersion  int64
-	replayed         bool
-	requestHash      string
-	idempotency      *models.SoulMintConversationIdempotency
-	conv             *models.SoulAgentMintConversation
-	session          *models.HostedGenesisSession
+	conversationID     string
+	turnID             string
+	modelSet           string
+	existingMessages   []soulMintConversationMessage
+	existingUsage      models.AIUsage
+	sessionIsNew       bool
+	expectedStatus     hostedgenesis.Status
+	expectedVersion    int64
+	progressVersion    int64
+	hasProgressVersion bool
+	replayed           bool
+	requestHash        string
+	idempotency        *models.SoulMintConversationIdempotency
+	conv               *models.SoulAgentMintConversation
+	session            *models.HostedGenesisSession
 }
 
 func (s *Server) handleSoulMintConversationForRegistrationAsync(ctx *apptheory.Context, regCtx mintConversationRegistrationContext, instanceSlug string) (*apptheory.Response, error) {
@@ -297,6 +299,9 @@ func (s *Server) persistHostedGenesisProgression(ctx context.Context, accepted h
 }
 
 func hostedGenesisAcceptedTurnPostPersistVersion(session hostedGenesisTurnSession) int64 {
+	if session.hasProgressVersion {
+		return session.progressVersion
+	}
 	if session.sessionIsNew {
 		if session.session != nil {
 			return session.session.Version

@@ -73,7 +73,35 @@ func TestHostedGenesisProducedDeclarationsFromSessionTrustsCheckpointHash(t *tes
 	}
 }
 
-func TestHostedGenesisSessionProjectionIncludesBoundedMessages(t *testing.T) {
+func TestHostedGenesisSessionProjectionIncludesInProgressMessages(t *testing.T) {
+	t.Parallel()
+
+	acceptedAt := time.Date(2026, 3, 7, 12, 1, 0, 0, time.UTC)
+	session := testHostedGenesisSessionProjectionBase()
+	session.Status = string(hostedgenesis.StatusInProgress)
+	session.MessageCount = 1
+	session.TurnLedger = []hostedgenesis.TurnLedgerEntry{{
+		TurnID:         "turn-session",
+		MessageCount:   1,
+		ChargedCredits: soulMintConversationStreamBaseCredits,
+		AcceptedAt:     acceptedAt,
+	}}
+	conv := &models.SoulAgentMintConversation{
+		AgentID:        session.AgentID,
+		ConversationID: session.ConversationID,
+		Messages:       models.EncodeSoulMintConversationBlob(`[{"role":"user","content":"hello while waiting"}]`),
+	}
+
+	resp := buildHostedGenesisConversationResponseFromSession(session, conv, hostedGenesisProjectionOptions{RequestID: "req-visible"})
+	if len(resp.Conversation.Messages) != 1 || resp.Conversation.MessagesTruncated {
+		t.Fatalf("expected one untruncated in-progress transcript message, got %#v", resp.Conversation)
+	}
+	if got := resp.Conversation.Messages[0]; got.ID != "msg_000001" || got.Order != 1 || got.Role != hostedGenesisTranscriptRoleUser || got.Content != "hello while waiting" || got.CreatedAt == nil || !got.CreatedAt.Equal(acceptedAt) {
+		t.Fatalf("unexpected in-progress message projection: %#v", got)
+	}
+}
+
+func TestHostedGenesisSessionProjectionIncludesAssistantReadyMessages(t *testing.T) {
 	t.Parallel()
 
 	acceptedAt := time.Date(2026, 3, 7, 12, 1, 0, 0, time.UTC)
@@ -140,6 +168,24 @@ func TestHostedGenesisSessionProjectionBoundsAndOmitsUnsafeMessages(t *testing.T
 	mismatched.AgentID = "0x" + strings.Repeat("99", 32)
 	if projected, _ := buildHostedGenesisConversationMessages(session, &mismatched); len(projected) != 0 {
 		t.Fatalf("mismatched compatibility row must not project transcript, got %#v", projected)
+	}
+}
+
+func TestHostedGenesisSessionProjectionOmitsTerminalMessages(t *testing.T) {
+	t.Parallel()
+
+	session := testHostedGenesisSessionProjectionBase()
+	session.Status = string(hostedgenesis.StatusFailed)
+	session.Failure = testHostedGenesisFailure(hostedgenesis.FailureCodeAssistantTurnFailed)
+	conv := &models.SoulAgentMintConversation{
+		AgentID:        session.AgentID,
+		ConversationID: session.ConversationID,
+		Messages:       models.EncodeSoulMintConversationBlob(`[{"role":"user","content":"do not include terminal transcript"}]`),
+	}
+
+	resp := buildHostedGenesisConversationResponseFromSession(session, conv, hostedGenesisProjectionOptions{RequestID: "req-terminal"})
+	if len(resp.Conversation.Messages) != 0 || strings.Contains(string(mustMarshalJSON(t, resp)), "do not include terminal transcript") {
+		t.Fatalf("terminal status should omit transcript messages, got %#v", resp.Conversation)
 	}
 }
 

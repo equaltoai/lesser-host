@@ -360,6 +360,18 @@ func hostedGenesisTranscriptContentUnsafe(content string) bool {
 	return false
 }
 
+func hostedGenesisStatusIncludesMessages(status string) bool {
+	switch strings.TrimSpace(status) {
+	case models.SoulMintConversationStatusCreated,
+		models.SoulMintConversationStatusInProgress,
+		models.SoulMintConversationStatusAssistantTurnReady,
+		models.SoulMintConversationStatusDeclarationExtractionPending:
+		return true
+	default:
+		return false
+	}
+}
+
 func isHostedGenesisProgressStatus(status string) bool {
 	switch strings.TrimSpace(status) {
 	case models.SoulMintConversationStatusCreated,
