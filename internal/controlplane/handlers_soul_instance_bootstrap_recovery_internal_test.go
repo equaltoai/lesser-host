@@ -3,6 +3,7 @@ package controlplane
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +14,116 @@ import (
 	"github.com/equaltoai/lesser-host/internal/store/models"
 	"github.com/equaltoai/lesser-host/internal/testutil"
 )
+
+func TestSoulInstanceRecoverMintConversation_RetriggersStuckTurn(t *testing.T) {
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	reg := mintConversationHandleReg()
+	t.Setenv("ANTHROPIC_API_KEY", "anthropic-test-key")
+	runnerCalled := false
+	s.hostedGenesisAssistantRunner = func(_ context.Context, in hostedGenesisAssistantRunInput) (hostedGenesisAssistantRunResult, error) {
+		runnerCalled = true
+		if len(in.messages) != 1 || in.messages[0].Role != hostedGenesisTranscriptRoleUser || in.messages[0].Content != "stuck user turn" {
+			t.Fatalf("recovery must replay existing accepted messages without appending a duplicate turn: %#v", in.messages)
+		}
+		if strings.Contains(in.systemPrompt, mintConversationInstanceReadTestRawKey) {
+			t.Fatalf("recovery prompt leaked instance key")
+		}
+		return hostedGenesisAssistantRunResult{
+			fullResponse: "recovered assistant turn",
+			usage:        models.AIUsage{Provider: "test", Model: in.modelSet, InputTokens: 1, OutputTokens: 2, TotalTokens: 3},
+		}, nil
+	}
+
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationRegistration(t, tdb, reg)
+	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
+	stubSoulInstanceRecoveryConversation(t, tdb, models.SoulAgentMintConversation{
+		AgentID:        reg.AgentID,
+		ConversationID: mintConversationTestConversationID,
+		Model:          "anthropic:claude-sonnet-4-6",
+		Messages:       encodeMintConversationBlob(`[{"role":"user","content":"stuck user turn"}]`),
+		Status:         models.SoulMintConversationStatusInProgress,
+		LatestTurnID:   "turn-stuck",
+		CreatedAt:      time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
+	})
+	stubSoulInstanceRecoverySession(t, tdb, hostedGenesisRecoverySessionFixture(t, reg, hostedgenesis.StatusInProgress, ""))
+	expectSoulInstanceMintConversationProgression(t, tdb, hostedgenesis.StatusAssistantTurnReady)
+
+	resp, err := s.handleSoulInstanceRecoverMintConversation(newSoulInstanceBootstrapContext(
+		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
+		nil,
+		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
+	))
+	if err != nil {
+		t.Fatalf("unexpected recovery err: %v", err)
+	}
+	if !runnerCalled {
+		t.Fatalf("expected recovery to rerun the assistant turn")
+	}
+	if resp.Status != http.StatusOK {
+		t.Fatalf("expected 200 recovery response, got %#v", resp)
+	}
+	var out hostedGenesisConversationResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Conversation.Status != models.SoulMintConversationStatusAssistantTurnReady ||
+		out.Conversation.MessageCount != 2 ||
+		len(out.Conversation.Messages) != 2 ||
+		out.Conversation.Messages[1].Content != "recovered assistant turn" {
+		t.Fatalf("expected recovered assistant-ready response with transcript, got %#v", out.Conversation)
+	}
+	if strings.Contains(string(resp.Body), mintConversationInstanceReadTestRawKey) {
+		t.Fatalf("recovery response leaked credential material: %s", string(resp.Body))
+	}
+}
+
+func TestSoulInstanceRecoverMintConversation_NonStuckIsNoop(t *testing.T) {
+	tdb := newMintConversationTestDB()
+	s := newMintConversationServer(tdb)
+	reg := mintConversationHandleReg()
+	s.hostedGenesisAssistantRunner = func(_ context.Context, in hostedGenesisAssistantRunInput) (hostedGenesisAssistantRunResult, error) {
+		t.Fatalf("non-stuck recovery must not rerun assistant turn: %#v", in)
+		return hostedGenesisAssistantRunResult{}, nil
+	}
+
+	expectMintConversationInstanceKey(t, tdb, mintConversationInstanceReadTestRawKey, soulInstanceBootstrapTestInstanceSlug)
+	stubMintConversationRegistration(t, tdb, reg)
+	stubSoulInstanceBootstrapDomainAndInstance(t, tdb, reg.DomainNormalized, soulInstanceBootstrapTestInstanceSlug)
+	stubSoulInstanceRecoveryConversation(t, tdb, models.SoulAgentMintConversation{
+		AgentID:        reg.AgentID,
+		ConversationID: mintConversationTestConversationID,
+		Model:          "anthropic:claude-sonnet-4-6",
+		Messages:       encodeMintConversationBlob(`[{"role":"user","content":"already done"},{"role":"assistant","content":"ready"}]`),
+		Status:         models.SoulMintConversationStatusAssistantTurnReady,
+		LatestTurnID:   "turn-ready",
+		CreatedAt:      time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC),
+	})
+	stubSoulInstanceRecoverySession(t, tdb, hostedGenesisRecoverySessionFixture(t, reg, hostedgenesis.StatusAssistantTurnReady, "checkpoint://hosted-genesis/conv-1/assistant/turn-ready"))
+
+	resp, err := s.handleSoulInstanceRecoverMintConversation(newSoulInstanceBootstrapContext(
+		map[string]string{"authorization": "Bearer " + mintConversationInstanceReadTestRawKey},
+		nil,
+		map[string]string{"id": reg.ID, "conversationId": mintConversationTestConversationID},
+	))
+	if err != nil {
+		t.Fatalf("unexpected recovery err: %v", err)
+	}
+	if resp.Status != http.StatusOK {
+		t.Fatalf("expected 200 noop response, got %#v", resp)
+	}
+	var out hostedGenesisConversationResponse
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Conversation.Status != models.SoulMintConversationStatusAssistantTurnReady ||
+		len(out.Conversation.Messages) != 2 ||
+		out.Conversation.Messages[1].Content != "ready" {
+		t.Fatalf("expected current assistant-ready state without recovery mutation, got %#v", out.Conversation)
+	}
+	tdb.db.AssertNotCalled(t, "TransactWrite", mock.Anything, mock.Anything)
+}
 
 func TestSoulInstanceGetRegistrationMintConversation_ReturnsRecoveryWithoutQueueOrLeaks(t *testing.T) {
 	tdb := newMintConversationTestDB()
@@ -44,6 +155,57 @@ func TestSoulInstanceGetRegistrationMintConversation_ReturnsRecoveryWithoutQueue
 	assertHostedGenesisFailedRecoveryProjection(t, out.Conversation)
 	assertHostedGenesisResponseNoForbiddenValues(t, resp.Body, hostedGenesisStatusForbiddenValues())
 	assertHostedGenesisStatusAuditNoLeaks(t, tdb, append(hostedGenesisStatusForbiddenValues(), soulInstanceBootstrapTestInstanceSlug, reg.AgentID, mintConversationTestConversationID))
+}
+
+func stubSoulInstanceRecoveryConversation(t *testing.T, tdb *mintConversationTestDB, conv models.SoulAgentMintConversation) {
+	t.Helper()
+	tdb.qConv.On("First", mock.AnythingOfType("*models.SoulAgentMintConversation")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.SoulAgentMintConversation](t, args, 0)
+		*dest = conv
+	}).Once()
+}
+
+func stubSoulInstanceRecoverySession(t *testing.T, tdb *mintConversationTestDB, session models.HostedGenesisSession) {
+	t.Helper()
+	tdb.qHosted.On("First", mock.AnythingOfType("*models.HostedGenesisSession")).Return(nil).Run(func(args mock.Arguments) {
+		dest := testutil.RequireMockArg[*models.HostedGenesisSession](t, args, 0)
+		*dest = session
+	}).Once()
+}
+
+func hostedGenesisRecoverySessionFixture(t *testing.T, reg models.SoulAgentRegistration, status hostedgenesis.Status, assistantCheckpointRef string) models.HostedGenesisSession {
+	t.Helper()
+	now := time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC)
+	session := models.HostedGenesisSession{
+		Version:                3,
+		InstanceSlug:           soulInstanceBootstrapTestInstanceSlug,
+		RegistrationID:         reg.ID,
+		AgentID:                reg.AgentID,
+		ConversationID:         mintConversationTestConversationID,
+		Status:                 string(status),
+		Model:                  "anthropic:claude-sonnet-4-6",
+		LatestTurnID:           "turn-stuck",
+		MessageCount:           1,
+		AssistantCheckpointRef: strings.TrimSpace(assistantCheckpointRef),
+		TurnLedger: []hostedgenesis.TurnLedgerEntry{{
+			TurnID:         "turn-stuck",
+			ChargedCredits: soulMintConversationStreamBaseCredits,
+			MessageCount:   1,
+			AcceptedAt:     now,
+		}},
+		RequestID: "req-original",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if status == hostedgenesis.StatusAssistantTurnReady {
+		session.LatestTurnID = "turn-ready"
+		session.MessageCount = 2
+		session.TurnLedger[0].TurnID = "turn-ready"
+	}
+	if err := session.BeforeCreate(); err != nil {
+		t.Fatalf("session fixture: %v", err)
+	}
+	return session
 }
 
 func stubFailedRecoveryLegacyMintConversation(t *testing.T, tdb *mintConversationTestDB, reg models.SoulAgentRegistration, now time.Time) {

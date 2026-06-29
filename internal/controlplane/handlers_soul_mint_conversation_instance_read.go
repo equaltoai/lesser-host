@@ -28,8 +28,9 @@ const (
 	soulMintInstanceReadListMaxBytes            = 1024 * 1024
 	soulMintInstanceReadSingleMaxBytes          = 2 * 1024 * 1024
 
-	soulMintInstanceReadRouteList   = "mint_conversation_list"
-	soulMintInstanceReadRouteSingle = "mint_conversation_single"
+	soulMintInstanceReadRouteList    = "mint_conversation_list"
+	soulMintInstanceReadRouteSingle  = "mint_conversation_single"
+	soulMintInstanceReadRouteRecover = "mint_conversation_recover"
 
 	soulMintInstanceReadCodeInvalidRequest    = "soul_mint.invalid_request"
 	soulMintInstanceReadCodeUnauthorized      = "soul_mint.unauthorized"
