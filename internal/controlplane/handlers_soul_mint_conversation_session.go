@@ -61,6 +61,12 @@ func buildHostedGenesisConversationResponseFromSession(session *models.HostedGen
 		UpdatedAt:        timePtrIfSet(projection.UpdatedAt),
 		CompletedAt:      timePtrIfSet(projection.CompletedAt),
 	}
+	if hostedGenesisStatusIncludesMessages(string(projection.Status)) {
+		if messages, bounded := buildHostedGenesisConversationMessages(session, conv); len(messages) > 0 {
+			responseProjection.Messages = messages
+			responseProjection.MessagesTruncated = bounded
+		}
+	}
 	if projection.Status == hostedgenesis.StatusDeclarationReady {
 		responseProjection.ProducedDeclarations = buildHostedGenesisProducedDeclarationsFromSession(session, conv, requestID)
 	}

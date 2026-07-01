@@ -81,6 +81,7 @@ Machine-readable schema:
 Examples:
 
 - `docs/spec/v3/fixtures/hosted-genesis.conversation.in-progress.example.json`
+- `docs/spec/v3/fixtures/hosted-genesis.conversation.assistant-turn-ready.example.json`
 - `docs/spec/v3/fixtures/hosted-genesis.conversation.completed-declaration-ready.example.json`
 - `docs/spec/v3/fixtures/hosted-genesis.conversation.failed.example.json`
 
@@ -94,6 +95,8 @@ Field names locked for M1.1:
 | `status` | yes | One of the locked status names below. |
 | `latest_turn_id` | no | Opaque Host id for the most recent durable turn. |
 | `message_count` | yes | Count of durable turns/messages Host has accepted into this conversation. |
+| `messages` | no | Bounded private hosted-genesis transcript projection for Lesser same-origin relay. Entries expose only `id`, `role`, `content`, `order`, and `created_at` when Host has a safe timestamp. |
+| `messages_truncated` | no | `true` when Host bounded the projected transcript by entry count or content length. |
 | `produced_declarations` | only `declaration_ready` | Terminal declaration evidence. Publish is forbidden without it. |
 | `failure` | only `failed` | Typed bounded recovery instructions. |
 | `request_id` | yes | Host request id for the snapshot; safe for correlation/log lookup. |
@@ -111,6 +114,32 @@ Locked status enum:
 The current implementation's legacy `completed` state maps to the locked `declaration_ready` contract status when and
 only when valid `produced_declarations` are present. Downstream M1.2/M1.3 consumers should project
 `declaration_ready`, not infer terminal success from transport status or from the legacy word `completed`.
+
+
+### Bounded private transcript projection
+
+When `conversation.status=assistant_turn_ready`, the Lesser instance-key route family may include `conversation.messages`
+so Lesser can relay the hosted genesis dialogue through its same-origin UI without giving the browser Host credentials.
+This is a private server-to-server projection, not a new source of truth: `HostedGenesisSession` remains authoritative for
+ids, status, retry, billing, recovery, and declaration readiness. Host sources the transcript from decoded
+`SoulAgentMintConversation.Messages` only after the conversation id and agent id match the session, and omits the field
+when the compatibility row is absent, malformed, mismatched, or contains credential/infrastructure-shaped material.
+
+Transcript bounds are part of the contract: at most 64 entries are projected, each entry has at most 8192 characters of
+`content`, and `messages_truncated=true` indicates that Host bounded the projection. Entries contain only:
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `id` | yes | Opaque stable ordinal id (`msg_000001`, `msg_000002`, ...). |
+| `role` | yes | `user` or `assistant`; system/tool/internal roles are not projected. |
+| `content` | yes | Bounded client-visible turn text. |
+| `order` | yes | 1-based absolute order in the stored hosted-genesis transcript. |
+| `created_at` | no | Present only when Host has a safe durable timestamp, currently user turn acceptance time from the session turn ledger. |
+| `truncated` | no | Present and true only when this entry's content was bounded. |
+
+`messages` never carries provider secrets, Instance API keys, bearer tokens, wallet/signing material, SSM/AWS details,
+MicroVM endpoint tokens, target-account IAM details, or raw infrastructure state. If such material is detected in the
+stored compatibility transcript, Host omits the transcript projection rather than redacting in place.
 
 ### `created` projection decision for Lesser
 
@@ -139,7 +168,8 @@ should not wait for an explicit local `created` projection before persisting `ho
    `HostedGenesisSession` seeds without importing raw transcripts; ambiguous active rows become typed recovery states
    rather than deriving progress from SQS.
 8. `SoulAgentMintConversation` is compatibility/projection input after Project 51 M2. It may supply legacy declaration
-   JSON or safe migration hints, but it no longer defines user-visible status, retry, billing, recovery, or finalize
-   authority for the Lesser instance-key route family.
-9. Human-visible evidence is compact. Responses carry ids, status, typed recovery, and declaration summary/evidence; they
-   do not expose raw Host credentials or require raw LLM transcripts.
+   JSON, safe migration hints, and the bounded private transcript projection for Lesser display, but it no longer defines
+   user-visible status, retry, billing, recovery, or finalize authority for the Lesser instance-key route family.
+9. Human-visible evidence is compact. Responses carry ids, status, typed recovery, optional bounded `messages`, and
+   declaration summary/evidence; they do not expose raw Host credentials, raw Instance API keys, provider secrets,
+   signing material, SSM/AWS details, MicroVM endpoint tokens, target-account details, or raw infrastructure state.

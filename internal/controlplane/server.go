@@ -288,6 +288,7 @@ func (s *Server) RegisterRoutes(app *apptheory.App) {
 	app.Post("/api/v1/soul/instance/agents/register/{id}/verify", s.handleSoulInstanceAgentRegistrationVerify)
 	app.Post("/api/v1/soul/instance/agents/register/{id}/mint-conversation", s.handleSoulInstanceMintConversation)
 	app.Get("/api/v1/soul/instance/agents/register/{id}/mint-conversation/{conversationId}", s.handleSoulInstanceGetRegistrationMintConversation)
+	app.Post("/api/v1/soul/instance/agents/register/{id}/mint-conversation/{conversationId}/recover", s.handleSoulInstanceRecoverMintConversation)
 	app.Post("/api/v1/soul/instance/agents/register/{id}/mint-conversation/{conversationId}/complete", s.handleSoulInstanceCompleteMintConversation)
 	app.Post("/api/v1/soul/instance/agents/register/{id}/mint-conversation/{conversationId}/finalize/preflight", s.handleSoulInstanceFinalizeMintConversationPreflight)
 	app.Post("/api/v1/soul/instance/agents/register/{id}/mint-conversation/{conversationId}/finalize/begin", s.handleSoulInstanceBeginFinalizeMintConversation)
