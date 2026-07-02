@@ -84,6 +84,25 @@ func (s *Store) PutSoulAgentMintConversation(ctx context.Context, item *models.S
 	return s.DB.WithContext(ctx).Model(item).CreateOrUpdate()
 }
 
+// ListHostedGenesisSessionsByAgent queries all hosted-genesis sessions for an agent
+// within a managed instance using the agent-scoped GSI2 index. Results are ordered
+// by GSI2SK (createdAt) natively; callers sort by updatedAt in-memory if needed.
+func (s *Store) ListHostedGenesisSessionsByAgent(ctx context.Context, instanceSlug string, agentID string) ([]*models.HostedGenesisSession, error) {
+	if s == nil || s.DB == nil {
+		return nil, theoryErrors.ErrItemNotFound
+	}
+	var items []*models.HostedGenesisSession
+	err := s.DB.WithContext(ctx).
+		Model(&models.HostedGenesisSession{}).
+		Index("gsi2").
+		Where("gsi2PK", "=", models.HostedGenesisSessionAgentGSI2PK(instanceSlug, agentID)).
+		All(&items)
+	if err != nil && !theoryErrors.IsNotFound(err) {
+		return nil, err
+	}
+	return items, nil
+}
+
 // GetSoulMintConversationIdempotency loads a hosted-genesis idempotency reservation.
 func (s *Store) GetSoulMintConversationIdempotency(ctx context.Context, instanceSlug string, registrationID string, idempotencyKey string) (*models.SoulMintConversationIdempotency, error) {
 	if s == nil || s.DB == nil {
