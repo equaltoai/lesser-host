@@ -123,6 +123,15 @@ func (d *ControllerRuntimeDispatcher) DispatchMicroVMRun(ctx context.Context, re
 // execution path and never swallows a dead/expired VM as a silent no-op:
 // terminal observed state is reported via Terminal=true so the caller maps it
 // to a loud failure.
+//
+// H1.4: a session is Terminal when EITHER the observed lifecycle state is a
+// terminal MicroVM state (terminated/failed) OR the controller-reported
+// session expiry has passed (ExpiresAt is set and in the past). An expired
+// session is dead even when its lifecycle state is non-terminal (e.g. stopped):
+// the VM can no longer service the pending turn, so the recover path must map
+// it to a loud retryable failure rather than preserve a pending status that can
+// never advance. The reconciled lifecycle ref still reflects the observed
+// non-terminal state; only the Terminal flag forces the loud-failed mapping.
 func (d *ControllerRuntimeDispatcher) ReconcileMicroVM(ctx context.Context, requestID string, binding MicroVMSessionBinding, ref MicroVMLifecycleRef) (MicroVMReconcileResult, error) {
 	if d == nil || d.runtime == nil {
 		return MicroVMReconcileResult{}, ErrMicroVMDispatchUnavailable
@@ -168,6 +177,23 @@ func (d *ControllerRuntimeDispatcher) ReconcileMicroVM(ctx context.Context, requ
 	return MicroVMReconcileResult{
 		LifecycleRef: reconciled,
 		SessionID:    strings.TrimSpace(resp.SessionID),
-		Terminal:     runtimemicrovm.IsTerminalState(reconciled.LifecycleState),
+		Terminal:     microVMReconcileIsTerminal(reconciled.LifecycleState, resp.ExpiresAt, observedAt),
 	}, nil
+}
+
+// microVMReconcileIsTerminal reports whether a reconciled MicroVM session is
+// dead/expired and therefore must map to a loud retryable recovery failure. A
+// session is terminal when its observed lifecycle state is a terminal MicroVM
+// state (terminated/failed) OR its controller-reported expiry has passed. A zero
+// ExpiresAt (the controller did not report one) is not treated as expired; only
+// a set, past expiry forces the terminal mapping. observedAt is the controller
+// get observation time used to judge expiry.
+func microVMReconcileIsTerminal(state runtimemicrovm.LifecycleState, expiresAt time.Time, observedAt time.Time) bool {
+	if runtimemicrovm.IsTerminalState(state) {
+		return true
+	}
+	if expiresAt.IsZero() {
+		return false
+	}
+	return expiresAt.Before(observedAt) || expiresAt.Equal(observedAt)
 }
