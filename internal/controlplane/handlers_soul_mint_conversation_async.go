@@ -898,53 +898,119 @@ func (s *Server) startHostedGenesisDeclarationExtraction(ctx *apptheory.Context,
 		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
 	}
 	now := time.Now().UTC()
-	if hostedgenesis.NormalizeStatus(convCtx.session.Status) != hostedgenesis.StatusDeclarationExtractionPending {
-		expectedVersion := convCtx.session.Version
-		expectedStatus := hostedgenesis.NormalizeStatus(convCtx.session.Status)
-		convCtx.session.Status = string(hostedgenesis.StatusDeclarationExtractionPending)
-		convCtx.session.RequestID = strings.TrimSpace(ctx.RequestID)
-		convCtx.session.UpdatedAt = now
-		creditsDebited, appErr := s.debitSoulMintConversationCredits(
-			ctx.Context(),
-			convCtx.inst,
-			soulMintConversationExtractModule,
-			convCtx.conversationID,
-			firstNonEmpty(convCtx.conv.IdempotencyKey, ctx.RequestID),
-			soulMintConversationExtractBaseCredits,
-			now,
-			func(tx core.TransactionBuilder, creditsRequested int64) error {
-				if err := addHostedGenesisSessionWrite(tx, convCtx.session, false, expectedVersion, expectedStatus); err != nil {
-					return err
-				}
-				if convCtx.conv != nil {
-					update := &models.SoulAgentMintConversation{AgentID: convCtx.agentIDHex, ConversationID: convCtx.conversationID}
-					_ = update.UpdateKeys()
-					tx.UpdateWithBuilder(update, func(ub core.UpdateBuilder) error {
-						ub.Add("ChargedCredits", creditsRequested)
-						ub.Set("Status", models.SoulMintConversationStatusDeclarationExtractionPending)
-						ub.Set("StatusReason", "")
-						ub.Set("RequestID", strings.TrimSpace(ctx.RequestID))
-						ub.Set("UpdatedAt", now)
-						return nil
-					}, tabletheory.IfExists())
-				}
-				return nil
-			},
-		)
-		if appErr != nil {
-			return appErr
-		}
-		if convCtx.conv != nil {
-			convCtx.conv.ChargedCredits += creditsDebited
-			convCtx.conv.Status = models.SoulMintConversationStatusDeclarationExtractionPending
-			convCtx.conv.StatusReason = ""
-			convCtx.conv.RequestID = strings.TrimSpace(ctx.RequestID)
-			convCtx.conv.UpdatedAt = now
-		}
+	// H1.3 (kills G7): the pending extraction is serviced by dispatching a
+	// follow-on M16 controller run command on the same MicroVM session via the
+	// MicroVMDispatcher seam. The dispatch fires exactly once, on the transition
+	// into declaration_extraction_pending (the debit/persist block below). An
+	// already-pending session has already dispatched its extraction; re-entry is
+	// a no-op here and the recover path reconciles the in-VM extraction. The
+	// pending status is no longer a permanent trap: the VM services the
+	// extraction or the session fails loudly. An unwired dispatcher is
+	// fail-closed and loud; there is no silent fallback to a non-MicroVM
+	// extraction path. M4 demotes hosted-genesis SQS to operator/backfill
+	// recovery only; this path does not rely on queue delivery, DLQ state, or
+	// AI-worker liveness.
+	transitioned := hostedgenesis.NormalizeStatus(convCtx.session.Status) != hostedgenesis.StatusDeclarationExtractionPending
+	if !transitioned {
+		return nil
 	}
-	// M4 demotes hosted-genesis SQS to operator/backfill recovery only. The
-	// user-visible complete path records the durable pending state and returns
-	// the HostedGenesisSession projection; it does not rely on queue delivery,
-	// DLQ state, or AI-worker liveness to make status/finalize decisions.
+	expectedVersion := convCtx.session.Version
+	expectedStatus := hostedgenesis.NormalizeStatus(convCtx.session.Status)
+	convCtx.session.Status = string(hostedgenesis.StatusDeclarationExtractionPending)
+	convCtx.session.RequestID = strings.TrimSpace(ctx.RequestID)
+	convCtx.session.UpdatedAt = now
+	creditsDebited, appErr := s.debitSoulMintConversationCredits(
+		ctx.Context(),
+		convCtx.inst,
+		soulMintConversationExtractModule,
+		convCtx.conversationID,
+		firstNonEmpty(convCtx.conv.IdempotencyKey, ctx.RequestID),
+		soulMintConversationExtractBaseCredits,
+		now,
+		func(tx core.TransactionBuilder, creditsRequested int64) error {
+			if err := addHostedGenesisSessionWrite(tx, convCtx.session, false, expectedVersion, expectedStatus); err != nil {
+				return err
+			}
+			if convCtx.conv != nil {
+				update := &models.SoulAgentMintConversation{AgentID: convCtx.agentIDHex, ConversationID: convCtx.conversationID}
+				_ = update.UpdateKeys()
+				tx.UpdateWithBuilder(update, func(ub core.UpdateBuilder) error {
+					ub.Add("ChargedCredits", creditsRequested)
+					ub.Set("Status", models.SoulMintConversationStatusDeclarationExtractionPending)
+					ub.Set("StatusReason", "")
+					ub.Set("RequestID", strings.TrimSpace(ctx.RequestID))
+					ub.Set("UpdatedAt", now)
+					return nil
+				}, tabletheory.IfExists())
+			}
+			return nil
+		},
+	)
+	if appErr != nil {
+		return appErr
+	}
+	if convCtx.conv != nil {
+		convCtx.conv.ChargedCredits += creditsDebited
+		convCtx.conv.Status = models.SoulMintConversationStatusDeclarationExtractionPending
+		convCtx.conv.StatusReason = ""
+		convCtx.conv.RequestID = strings.TrimSpace(ctx.RequestID)
+		convCtx.conv.UpdatedAt = now
+	}
+	return s.dispatchHostedGenesisDeclarationExtraction(ctx, convCtx, now)
+}
+
+// dispatchHostedGenesisDeclarationExtraction issues the follow-on M16
+// controller run command that services a declaration_extraction_pending session
+// inside the MicroVM. It refreshes the non-authoritative lifecycle ref on the
+// authoritative HostedGenesisSession so the recover path can reconstruct the
+// extraction. It fails closed and loudly when the dispatcher is unwired or the
+// dispatch is rejected; it never falls back to a synchronous control-plane
+// extraction path.
+func (s *Server) dispatchHostedGenesisDeclarationExtraction(ctx *apptheory.Context, convCtx soulInstanceBootstrapConversationContext, now time.Time) error {
+	if s.hostedGenesisMicroVMDispatcher == nil {
+		log.Printf("controlplane: hosted genesis extraction dispatch unavailable agent_hash=%s conversation_hash=%s", soulMintInstanceReadAuditHash(convCtx.agentIDHex), soulMintInstanceReadAuditHash(convCtx.conversationID))
+		return &apptheory.AppError{Code: appErrCodeMicroVMUnavailable, Message: "MicroVM extraction dispatch is unavailable"}
+	}
+	binding := convCtx.session.MicroVMSessionBinding()
+	if err := binding.Validate(); err != nil {
+		log.Printf("controlplane: hosted genesis extraction binding invalid agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(convCtx.agentIDHex), soulMintInstanceReadAuditHash(convCtx.conversationID), err)
+		return &apptheory.AppError{Code: appErrCodeMicroVMUnavailable, Message: "MicroVM extraction binding is invalid"}
+	}
+	runCtx, cancel := context.WithTimeout(detachedMintConversationContext(ctx.Context()), hostedGenesisAcceptedTurnDispatchTimeout)
+	defer cancel()
+	dispatch, dispatchErr := s.hostedGenesisMicroVMDispatcher.DispatchMicroVMRun(runCtx, strings.TrimSpace(ctx.RequestID), binding)
+	if dispatchErr != nil {
+		log.Printf("controlplane: hosted genesis extraction dispatch failed agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(convCtx.agentIDHex), soulMintInstanceReadAuditHash(convCtx.conversationID), dispatchErr)
+		return &apptheory.AppError{Code: appErrCodeMicroVMUnavailable, Message: "MicroVM extraction dispatch failed"}
+	}
+	progressedSession := cloneHostedGenesisSession(convCtx.session)
+	if err := progressedSession.ApplyMicroVMLifecycleRef(dispatch.LifecycleRef); err != nil {
+		log.Printf("controlplane: hosted genesis extraction lifecycle ref rejected agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(convCtx.agentIDHex), soulMintInstanceReadAuditHash(convCtx.conversationID), err)
+		return &apptheory.AppError{Code: "app.internal", Message: "failed to record microvm extraction dispatch"}
+	}
+	progressedSession.RequestID = strings.TrimSpace(ctx.RequestID)
+	progressedSession.UpdatedAt = now
+	if err := s.persistHostedGenesisExtractionDispatch(ctx.Context(), convCtx.session, progressedSession, convCtx.session.Version, now); err != nil {
+		return err
+	}
+	convCtx.session = progressedSession
+	return nil
+}
+
+// persistHostedGenesisExtractionDispatch records the refreshed MicroVM
+// lifecycle ref on the authoritative HostedGenesisSession after the follow-on
+// extraction run dispatch. The durable status stays
+// declaration_extraction_pending; only the non-authoritative execution/cache
+// ref is refreshed under expected-version/expected-status optimistic locking.
+func (s *Server) persistHostedGenesisExtractionDispatch(ctx context.Context, accepted *models.HostedGenesisSession, progressed *models.HostedGenesisSession, expectedVersion int64, now time.Time) *apptheory.AppError {
+	if s == nil || s.store == nil || s.store.DB == nil || accepted == nil || progressed == nil {
+		return &apptheory.AppError{Code: "app.internal", Message: "internal error"}
+	}
+	if err := s.store.DB.TransactWrite(ctx, func(tx core.TransactionBuilder) error {
+		return addHostedGenesisSessionWrite(tx, progressed, false, expectedVersion, hostedgenesis.StatusDeclarationExtractionPending)
+	}); err != nil {
+		log.Printf("controlplane: hosted genesis extraction dispatch persist failed agent_hash=%s conversation_hash=%s err=%v", soulMintInstanceReadAuditHash(progressed.AgentID), soulMintInstanceReadAuditHash(progressed.ConversationID), err)
+		return &apptheory.AppError{Code: "app.internal", Message: "failed to persist microvm extraction dispatch"}
+	}
 	return nil
 }
