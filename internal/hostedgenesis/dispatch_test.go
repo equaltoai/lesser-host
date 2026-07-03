@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	runtimemicrovm "github.com/theory-cloud/apptheory/runtime/microvm"
@@ -203,4 +204,38 @@ func (f *failingSessionRegistry) Put(ctx context.Context, record runtimemicrovm.
 }
 func (f *failingSessionRegistry) Delete(ctx context.Context, key runtimemicrovm.SessionKey) error {
 	return f.err
+}
+
+// TestH1_4_MicroVMReconcileIsTerminalClassification proves the H1.4 terminal
+// classification used by the reconcile seam maps dead/expired sessions to
+// terminal=true and live sessions to terminal=false across every branch: a
+// terminal lifecycle state is terminal regardless of expiry; a non-terminal
+// state with a past expiry is terminal (expired/dead); a non-terminal state
+// with a future expiry is NOT terminal (live); a non-terminal state with no
+// reported expiry is NOT terminal. This is the lifecycle-state coverage H1.4
+// adds on top of H1.3's terminated/failed mapping: expiry-in-the-past is a
+// dead VM even when the lifecycle state is non-terminal (e.g. stopped).
+func TestH1_4_MicroVMReconcileIsTerminalClassification(t *testing.T) {
+	t.Parallel()
+	observedAt := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name      string
+		state     runtimemicrovm.LifecycleState
+		expiresAt time.Time
+		want      bool
+	}{
+		{"terminated is terminal regardless of expiry", runtimemicrovm.StateTerminated, observedAt.Add(-time.Hour), true},
+		{"failed is terminal regardless of expiry", runtimemicrovm.StateFailed, observedAt.Add(time.Hour), true},
+		{"non-terminal with past expiry is terminal (expired)", runtimemicrovm.StateStopped, observedAt.Add(-time.Minute), true},
+		{"non-terminal with expiry exactly at observation is terminal", runtimemicrovm.StateStopped, observedAt, true},
+		{"non-terminal with future expiry is not terminal (live)", runtimemicrovm.StateRunning, observedAt.Add(time.Hour), false},
+		{"non-terminal with no reported expiry is not terminal", runtimemicrovm.StateRunning, time.Time{}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := microVMReconcileIsTerminal(tc.state, tc.expiresAt, observedAt)
+			require.Equal(t, tc.want, got)
+		})
+	}
 }

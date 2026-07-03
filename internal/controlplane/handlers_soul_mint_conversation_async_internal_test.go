@@ -139,7 +139,10 @@ func TestH1_2_NonProductionSyncFallbackGuard(t *testing.T) {
 // TestH1_2_NonProductionSyncFallbackFailurePersistsTypedFailure covers the
 // non-production sync fallback's failure branch (provider error) so the
 // retained sync path's failure handling and provider-name logging stay covered
-// until H2.1 deletes the path.
+// until H2.1 deletes the path. H1.4 (kills G10a): a failed turn surfaces as a
+// loud non-2xx typed failure (502 assistant_turn_failed), not HTTP 200 with a
+// failed body. The durable session is still persisted as a retryable failed
+// turn before the error is returned.
 func TestH1_2_NonProductionSyncFallbackFailurePersistsTypedFailure(t *testing.T) {
 	tdb, s, reg, _ := h1d2AcceptPathFixture(t)
 	s.hostedGenesisMicroVMDispatcher = nil
@@ -148,21 +151,12 @@ func TestH1_2_NonProductionSyncFallbackFailurePersistsTypedFailure(t *testing.T)
 	expectSoulInstanceMintConversationProgression(t, tdb, hostedgenesis.StatusFailed)
 
 	resp, err := s.handleSoulInstanceMintConversation(h1d2AcceptPathRequest(t, reg))
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
+	if err == nil {
+		t.Fatalf("expected loud assistant-turn-failed error, got response %#v", resp)
 	}
-	if resp.Status != http.StatusOK {
-		t.Fatalf("expected 200 failed sync fallback response, got %#v", resp)
-	}
-	var out hostedGenesisConversationResponse
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if out.Conversation.Status != models.SoulMintConversationStatusFailed || out.Conversation.Failure == nil {
-		t.Fatalf("expected typed failed status, got %#v", out.Conversation)
-	}
-	if out.Conversation.Failure.Code != hostedGenesisFailureAssistantTurnFailed {
-		t.Fatalf("expected assistant_turn_failed, got %#v", out.Conversation.Failure)
+	appErr := requireAppTheoryError(t, err)
+	if appErr.Code != soulInstanceBootstrapCodeAssistantTurnFailed || appErr.StatusCode != http.StatusBadGateway {
+		t.Fatalf("expected typed assistant_turn_failed 502, got %#v", appErr)
 	}
 }
 
